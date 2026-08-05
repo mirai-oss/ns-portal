@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>N-Styleグループ ポータル</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🐔</text></svg>">
+<style>
+:root{
+  --bg:#f5f4f1; --card:#ffffff; --ink:#26221e; --muted:#8a8377;
+  --accent:#c8401f; --accent2:#a33318; --line:#e7e3dc; --ok:#2e7d32;
+}
+@media(prefers-color-scheme:dark){
+  :root{--bg:#1d1b18; --card:#282521; --ink:#f0ece5; --muted:#a29a8c; --line:#3a362f;}
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Noto Sans JP",sans-serif;background:var(--bg);color:var(--ink);min-height:100vh}
+.wrap{max-width:680px;margin:0 auto;padding:32px 20px 60px}
+header{text-align:center;margin-bottom:28px}
+header .logo{font-size:40px}
+header h1{font-size:22px;margin-top:6px;letter-spacing:.04em}
+header p{color:var(--muted);font-size:13px;margin-top:4px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:24px;box-shadow:0 1px 4px rgba(0,0,0,.04)}
+label{display:block;font-size:13px;color:var(--muted);margin:14px 0 4px}
+input{width:100%;padding:12px 14px;font-size:16px;border:1px solid var(--line);border-radius:10px;background:var(--bg);color:var(--ink)}
+input:focus{outline:2px solid var(--accent);border-color:transparent}
+.btn{display:block;width:100%;margin-top:20px;padding:13px;font-size:16px;font-weight:600;color:#fff;background:var(--accent);border:none;border-radius:10px;cursor:pointer}
+.btn:hover{background:var(--accent2)}
+.btn:disabled{opacity:.5;cursor:default}
+.err{color:#c62828;font-size:13px;margin-top:12px;text-align:center;min-height:1em}
+.userbar{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:18px;flex-wrap:wrap}
+.userbar .who{font-size:15px}
+.badge{display:inline-block;font-size:11px;font-weight:600;padding:3px 10px;border-radius:99px;background:var(--accent);color:#fff;margin-left:6px;vertical-align:1px}
+.badge.master{background:#6a1b9a}
+.linkbtn{background:none;border:none;color:var(--muted);font-size:13px;cursor:pointer;text-decoration:underline;padding:4px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+@media(max-width:520px){.grid{grid-template-columns:1fr}}
+a.tile{display:block;background:var(--card);border:1px solid var(--line);border-radius:16px;padding:20px 18px;text-decoration:none;color:var(--ink);transition:transform .08s,box-shadow .08s}
+a.tile:hover{transform:translateY(-2px);box-shadow:0 4px 14px rgba(0,0,0,.08)}
+.tile .ico{font-size:30px}
+.tile h3{font-size:16px;margin-top:8px}
+.tile p{font-size:12px;color:var(--muted);margin-top:4px;line-height:1.5}
+.tile .tag{display:inline-block;font-size:10px;margin-top:8px;padding:2px 8px;border-radius:99px;border:1px solid var(--line);color:var(--muted)}
+.tile .tag.sso{color:var(--ok);border-color:var(--ok)}
+.note{font-size:12px;color:var(--muted);text-align:center;margin-top:22px;line-height:1.7}
+details{margin-top:26px}
+summary{font-size:13px;color:var(--muted);cursor:pointer;text-align:center}
+.hidden{display:none}
+.spin{text-align:center;color:var(--muted);padding:60px 0}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <div class="logo">🐔</div>
+  <h1>N-Styleグループ ポータル</h1>
+  <p>統合アカウントで各システムへ</p>
+</header>
+<div id="app"><div class="spin">読み込み中…</div></div>
+</div>
+<script>
+const SUPA_URL="https://uuvsxzhpxtghojoubjcc.supabase.co";
+const SUPA_KEY="sb_publishable_MrwPJAx_Ws_fdRutprKCiQ_dg3wCiTr"; // 公開用キー（秘密情報ではない）
+const LS_KEY="nsportal_session_v1";
+const ROLE_NAME={AL:"アルバイト",SHAIN:"社員",TENCHO:"店長",TEAM:"チーム長",HQ:"本部",CEO:"社長"};
+
+const SYSTEMS=[
+ {key:"keiei", ico:"📊", name:"経営ダッシュボード", desc:"売上・広告・PL・入金・全店比較",
+  url:"https://mirai-oss.github.io/tori-dashboard/", roles:["TENCHO","TEAM","HQ","CEO"], login:"専用ID/PW（統合予定）"},
+ {key:"seisan", ico:"🧾", name:"精算ダッシュボード", desc:"業務委託店舗の精算書・振込管理",
+  url:"https://mirai-oss.github.io/seisan-dashboard/", roles:["HQ","CEO"], login:"専用ID/PW（統合予定）"},
+ {key:"joho", ico:"🗂️", name:"社内情報管理", desc:"法人・店舗・契約・口座などの重要情報",
+  url:"https://ns-info-system.vercel.app", roles:["TEAM","HQ","CEO"], login:"専用アカウント（統合予定）"},
+ {key:"nippo", ico:"📝", name:"日報・週報", desc:"日報の提出・確認・タスク",
+  url:"https://mirai-oss.github.io/nippo/", roles:["AL","SHAIN","TENCHO","TEAM","HQ","CEO"], login:"このアカウントでOK", sso:true},
+];
+
+const $=id=>document.getElementById(id);
+const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const sess={get:()=>{try{return JSON.parse(localStorage.getItem(LS_KEY))}catch(e){return null}},
+            set:v=>localStorage.setItem(LS_KEY,JSON.stringify(v)),
+            clear:()=>localStorage.removeItem(LS_KEY)};
+
+async function api(path,opt={},token){
+  const r=await fetch(SUPA_URL+path,{...opt,headers:{
+    "apikey":SUPA_KEY,"Content-Type":"application/json",
+    ...(token?{"Authorization":"Bearer "+token}:{}),...(opt.headers||{})}});
+  let body=null; try{body=await r.json()}catch(e){}
+  return {ok:r.ok,status:r.status,body};
+}
+
+async function login(email,pw){
+  const r=await api("/auth/v1/token?grant_type=password",{method:"POST",body:JSON.stringify({email,password:pw})});
+  if(!r.ok) throw new Error(r.body?.error_code==="invalid_credentials"?"メールアドレスまたはパスワードが違います":"ログインエラー: "+(r.body?.msg||r.status));
+  sess.set({at:r.body.access_token,rt:r.body.refresh_token,uid:r.body.user.id});
+  return r.body;
+}
+
+async function refresh(){
+  const s=sess.get(); if(!s?.rt) return false;
+  const r=await api("/auth/v1/token?grant_type=refresh_token",{method:"POST",body:JSON.stringify({refresh_token:s.rt})});
+  if(!r.ok){sess.clear();return false}
+  sess.set({at:r.body.access_token,rt:r.body.refresh_token,uid:r.body.user.id});
+  return true;
+}
+
+async function fetchMe(){
+  const s=sess.get(); if(!s) return null;
+  let r=await api(`/rest/v1/users?id=eq.${s.uid}&select=*`,{},s.at);
+  if(r.status===401){ if(!await refresh()) return null; const s2=sess.get(); r=await api(`/rest/v1/users?id=eq.${s2.uid}&select=*`,{},s2.at); }
+  if(!r.ok||!Array.isArray(r.body)||!r.body[0]) return null;
+  return r.body[0];
+}
+
+function renderLogin(err){
+  $("app").innerHTML=`<div class="card">
+    <label>メールアドレス</label><input type="email" id="lemail" autocomplete="username" inputmode="email">
+    <label>パスワード</label><input type="password" id="lpw" autocomplete="current-password">
+    <button class="btn" id="lbtn">ログイン</button>
+    <div class="err">${esc(err||"")}</div>
+    <div class="note">日報・週報システムと同じメールアドレス＋パスワードです。<br>アカウントが無い方は本部までご連絡ください。</div>
+  </div>`;
+  const go=async()=>{
+    $("lbtn").disabled=true;$("lbtn").textContent="ログイン中…";
+    try{await login($("lemail").value.trim(),$("lpw").value);await main()}
+    catch(e){renderLogin(e.message)}
+  };
+  $("lbtn").onclick=go;
+  $("lpw").onkeydown=e=>{if(e.key==="Enter")go()};
+}
+
+function renderHome(u){
+  const isMaster=!!u.is_master;
+  const tiles=SYSTEMS.filter(sy=>isMaster||sy.roles.includes(u.role));
+  $("app").innerHTML=`
+  <div class="userbar">
+    <div class="who">👤 ${esc(u.name)}<span class="badge${isMaster?" master":""}">${isMaster?"マスター":esc(ROLE_NAME[u.role]||u.role)}</span></div>
+    <button class="linkbtn" id="lout">ログアウト</button>
+  </div>
+  <div class="grid">${tiles.map(sy=>`
+    <a class="tile" href="${sy.url}" target="_blank" rel="noopener">
+      <div class="ico">${sy.ico}</div><h3>${esc(sy.name)}</h3><p>${esc(sy.desc)}</p>
+      <span class="tag${sy.sso?" sso":""}">${sy.sso?"✓ ":""}${esc(sy.login)}</span>
+    </a>`).join("")}
+  </div>
+  ${tiles.length===0?'<div class="card"><p style="text-align:center">表示できるシステムがありません。本部までお問い合わせください。</p></div>':""}
+  <details><summary>パスワードを変更する</summary>
+    <div class="card" style="margin-top:10px">
+      <label>新しいパスワード（8文字以上）</label><input type="password" id="npw" autocomplete="new-password">
+      <button class="btn" id="pwbtn">変更する</button><div class="err" id="pwmsg"></div>
+      <div class="note">ここで変えると日報・週報など統合アカウントを使う全システムのパスワードが変わります。</div>
+    </div>
+  </details>`;
+  $("lout").onclick=async()=>{const s=sess.get();if(s)await api("/auth/v1/logout",{method:"POST"},s.at).catch(()=>{});sess.clear();renderLogin()};
+  $("pwbtn").onclick=async()=>{
+    const pw=$("npw").value;
+    if(pw.length<8){$("pwmsg").textContent="8文字以上にしてください";return}
+    $("pwbtn").disabled=true;
+    const s=sess.get();
+    const r=await api("/auth/v1/user",{method:"PUT",body:JSON.stringify({password:pw})},s.at);
+    $("pwbtn").disabled=false;
+    $("pwmsg").style.color=r.ok?"var(--ok)":"";
+    $("pwmsg").textContent=r.ok?"変更しました":"変更できませんでした: "+(r.body?.msg||r.status);
+  };
+}
+
+async function main(){
+  if(!sess.get()){renderLogin();return}
+  const u=await fetchMe();
+  if(!u){sess.clear();renderLogin("セッションが切れました。もう一度ログインしてください。");return}
+  if(u.is_active===false){sess.clear();renderLogin("このアカウントは無効化されています。本部までお問い合わせください。");return}
+  renderHome(u);
+}
+main();
+</script>
+</body>
+</html>
