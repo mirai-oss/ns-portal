@@ -1,0 +1,3056 @@
+{
+ "columns": [
+  {
+   "table_name": "audit_logs",
+   "ordinal_position": 1,
+   "column_name": "id",
+   "data_type": "bigint",
+   "is_nullable": "NO",
+   "column_default": null
+  },
+  {
+   "table_name": "audit_logs",
+   "ordinal_position": 2,
+   "column_name": "user_id",
+   "data_type": "uuid",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "audit_logs",
+   "ordinal_position": 3,
+   "column_name": "action",
+   "data_type": "text",
+   "is_nullable": "NO",
+   "column_default": null
+  },
+  {
+   "table_name": "audit_logs",
+   "ordinal_position": 4,
+   "column_name": "target",
+   "data_type": "text",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "audit_logs",
+   "ordinal_position": 5,
+   "column_name": "detail",
+   "data_type": "jsonb",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "audit_logs",
+   "ordinal_position": 6,
+   "column_name": "created_at",
+   "data_type": "timestamp with time zone",
+   "is_nullable": "NO",
+   "column_default": "now()"
+  },
+  {
+   "table_name": "bank_accounts",
+   "ordinal_position": 1,
+   "column_name": "id",
+   "data_type": "uuid",
+   "is_nullable": "NO",
+   "column_default": "gen_random_uuid()"
+  },
+  {
+   "table_name": "bank_accounts",
+   "ordinal_position": 2,
+   "column_name": "corporation_id",
+   "data_type": "uuid",
+   "is_nullable": "NO",
+   "column_default": null
+  },
+  {
+   "table_name": "bank_accounts",
+   "ordinal_position": 3,
+   "column_name": "bank_name",
+   "data_type": "text",
+   "is_nullable": "NO",
+   "column_default": null
+  },
+  {
+   "table_name": "bank_accounts",
+   "ordinal_position": 4,
+   "column_name": "branch",
+   "data_type": "text",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "bank_accounts",
+   "ordinal_position": 5,
+   "column_name": "account_type",
+   "data_type": "text",
+   "is_nullable": "YES",
+   "column_default": "'普通'::text"
+  },
+  {
+   "table_name": "bank_accounts",
+   "ordinal_position": 6,
+   "column_name": "account_number",
+   "data_type": "text",
+   "is_nullable": "NO",
+   "column_default": null
+  },
+  {
+   "table_name": "bank_accounts",
+   "ordinal_position": 7,
+   "column_name": "purpose",
+   "data_type": "text",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "bank_accounts",
+   "ordinal_position": 8,
+   "column_name": "has_netbank",
+   "data_type": "boolean",
+   "is_nullable": "NO",
+   "column_default": "false"
+  },
+  {
+   "table_name": "bank_accounts",
+   "ordinal_position": 9,
+   "column_name": "created_at",
+   "data_type": "timestamp with time zone",
+   "is_nullable": "NO",
+   "column_default": "now()"
+  },
+  {
+   "table_name": "bank_accounts",
+   "ordinal_position": 10,
+   "column_name": "updated_at",
+   "data_type": "timestamp with time zone",
+   "is_nullable": "NO",
+   "column_default": "now()"
+  },
+  {
+   "table_name": "bank_accounts",
+   "ordinal_position": 11,
+   "column_name": "status",
+   "data_type": "text",
+   "is_nullable": "NO",
+   "column_default": "'使用中'::text"
+  },
+  {
+   "table_name": "brands",
+   "ordinal_position": 1,
+   "column_name": "id",
+   "data_type": "uuid",
+   "is_nullable": "NO",
+   "column_default": "gen_random_uuid()"
+  },
+  {
+   "table_name": "brands",
+   "ordinal_position": 2,
+   "column_name": "corporation_id",
+   "data_type": "uuid",
+   "is_nullable": "NO",
+   "column_default": null
+  },
+  {
+   "table_name": "brands",
+   "ordinal_position": 3,
+   "column_name": "name",
+   "data_type": "text",
+   "is_nullable": "NO",
+   "column_default": null
+  },
+  {
+   "table_name": "brands",
+   "ordinal_position": 4,
+   "column_name": "created_at",
+   "data_type": "timestamp with time zone",
+   "is_nullable": "NO",
+   "column_default": "now()"
+  },
+  {
+   "table_name": "categories",
+   "ordinal_position": 1,
+   "column_name": "id",
+   "data_type": "text",
+   "is_nullable": "NO",
+   "column_default": null
+  },
+  {
+   "table_name": "categories",
+   "ordinal_position": 2,
+   "column_name": "name",
+   "data_type": "text",
+   "is_nullable": "NO",
+   "column_default": null
+  },
+  {
+   "table_name": "categories",
+   "ordinal_position": 3,
+   "column_name": "sort_order",
+   "data_type": "integer",
+   "is_nullable": "NO",
+   "column_default": null
+  },
+  {
+   "table_name": "corporations",
+   "ordinal_position": 1,
+   "column_name": "id",
+   "data_type": "uuid",
+   "is_nullable": "NO",
+   "column_default": "gen_random_uuid()"
+  },
+  {
+   "table_name": "corporations",
+   "ordinal_position": 2,
+   "column_name": "code",
+   "data_type": "text",
+   "is_nullable": "NO",
+   "column_default": null
+  },
+  {
+   "table_name": "corporations",
+   "ordinal_position": 3,
+   "column_name": "name",
+   "data_type": "text",
+   "is_nullable": "NO",
+   "column_default": null
+  },
+  {
+   "table_name": "corporations",
+   "ordinal_position": 4,
+   "column_name": "created_at",
+   "data_type": "timestamp with time zone",
+   "is_nullable": "NO",
+   "column_default": "now()"
+  },
+  {
+   "table_name": "corporations",
+   "ordinal_position": 5,
+   "column_name": "postal_code",
+   "data_type": "text",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "corporations",
+   "ordinal_position": 6,
+   "column_name": "address",
+   "data_type": "text",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "corporations",
+   "ordinal_position": 7,
+   "column_name": "representative",
+   "data_type": "text",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "corporations",
+   "ordinal_position": 8,
+   "column_name": "established_on",
+   "data_type": "date",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "corporations",
+   "ordinal_position": 9,
+   "column_name": "phone",
+   "data_type": "text",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "corporations",
+   "ordinal_position": 10,
+   "column_name": "fax",
+   "data_type": "text",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "corporations",
+   "ordinal_position": 11,
+   "column_name": "corporate_number",
+   "data_type": "text",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "corporations",
+   "ordinal_position": 12,
+   "column_name": "invoice_number",
+   "data_type": "text",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "corporations",
+   "ordinal_position": 13,
+   "column_name": "capital",
+   "data_type": "text",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "corporations",
+   "ordinal_position": 14,
+   "column_name": "emp_insurance_number",
+   "data_type": "text",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "corporations",
+   "ordinal_position": 15,
+   "column_name": "labor_insurance_number",
+   "data_type": "text",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "corporations",
+   "ordinal_position": 16,
+   "column_name": "rep_address",
+   "data_type": "text",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "corporations",
+   "ordinal_position": 17,
+   "column_name": "rep_birth_date",
+   "data_type": "date",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "corporations",
+   "ordinal_position": 18,
+   "column_name": "rep_phone",
+   "data_type": "text",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "corporations",
+   "ordinal_position": 19,
+   "column_name": "memo",
+   "data_type": "text",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "credential_secret_history",
+   "ordinal_position": 1,
+   "column_name": "id",
+   "data_type": "bigint",
+   "is_nullable": "NO",
+   "column_default": null
+  },
+  {
+   "table_name": "credential_secret_history",
+   "ordinal_position": 2,
+   "column_name": "credential_id",
+   "data_type": "uuid",
+   "is_nullable": "NO",
+   "column_default": null
+  },
+  {
+   "table_name": "credential_secret_history",
+   "ordinal_position": 3,
+   "column_name": "secret",
+   "data_type": "text",
+   "is_nullable": "NO",
+   "column_default": null
+  },
+  {
+   "table_name": "credential_secret_history",
+   "ordinal_position": 4,
+   "column_name": "replaced_at",
+   "data_type": "timestamp with time zone",
+   "is_nullable": "NO",
+   "column_default": "now()"
+  },
+  {
+   "table_name": "credential_secret_history",
+   "ordinal_position": 5,
+   "column_name": "replaced_by",
+   "data_type": "uuid",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "credential_secrets",
+   "ordinal_position": 1,
+   "column_name": "credential_id",
+   "data_type": "uuid",
+   "is_nullable": "NO",
+   "column_default": null
+  },
+  {
+   "table_name": "credential_secrets",
+   "ordinal_position": 2,
+   "column_name": "secret",
+   "data_type": "text",
+   "is_nullable": "NO",
+   "column_default": null
+  },
+  {
+   "table_name": "credential_stores",
+   "ordinal_position": 1,
+   "column_name": "credential_id",
+   "data_type": "uuid",
+   "is_nullable": "NO",
+   "column_default": null
+  },
+  {
+   "table_name": "credential_stores",
+   "ordinal_position": 2,
+   "column_name": "store_id",
+   "data_type": "uuid",
+   "is_nullable": "NO",
+   "column_default": null
+  },
+  {
+   "table_name": "credentials",
+   "ordinal_position": 1,
+   "column_name": "id",
+   "data_type": "uuid",
+   "is_nullable": "NO",
+   "column_default": "gen_random_uuid()"
+  },
+  {
+   "table_name": "credentials",
+   "ordinal_position": 2,
+   "column_name": "corporation_id",
+   "data_type": "uuid",
+   "is_nullable": "NO",
+   "column_default": null
+  },
+  {
+   "table_name": "credentials",
+   "ordinal_position": 3,
+   "column_name": "category",
+   "data_type": "text",
+   "is_nullable": "NO",
+   "column_default": "'その他'::text"
+  },
+  {
+   "table_name": "credentials",
+   "ordinal_position": 4,
+   "column_name": "service_name",
+   "data_type": "text",
+   "is_nullable": "NO",
+   "column_default": null
+  },
+  {
+   "table_name": "credentials",
+   "ordinal_position": 5,
+   "column_name": "login_url",
+   "data_type": "text",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "credentials",
+   "ordinal_position": 6,
+   "column_name": "username",
+   "data_type": "text",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "credentials",
+   "ordinal_position": 7,
+   "column_name": "memo",
+   "data_type": "text",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "credentials",
+   "ordinal_position": 8,
+   "column_name": "media_plan",
+   "data_type": "text",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "credentials",
+   "ordinal_position": 9,
+   "column_name": "media_contact_name",
+   "data_type": "text",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "credentials",
+   "ordinal_position": 10,
+   "column_name": "media_contact_phone",
+   "data_type": "text",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "credentials",
+   "ordinal_position": 11,
+   "column_name": "media_contact_email",
+   "data_type": "text",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "credentials",
+   "ordinal_position": 12,
+   "column_name": "created_at",
+   "data_type": "timestamp with time zone",
+   "is_nullable": "NO",
+   "column_default": "now()"
+  },
+  {
+   "table_name": "credentials",
+   "ordinal_position": 13,
+   "column_name": "updated_at",
+   "data_type": "timestamp with time zone",
+   "is_nullable": "NO",
+   "column_default": "now()"
+  },
+  {
+   "table_name": "credentials",
+   "ordinal_position": 14,
+   "column_name": "status",
+   "data_type": "text",
+   "is_nullable": "NO",
+   "column_default": "'使用中'::text"
+  },
+  {
+   "table_name": "deadlines",
+   "ordinal_position": 1,
+   "column_name": "id",
+   "data_type": "uuid",
+   "is_nullable": "NO",
+   "column_default": "gen_random_uuid()"
+  },
+  {
+   "table_name": "deadlines",
+   "ordinal_position": 2,
+   "column_name": "corporation_id",
+   "data_type": "uuid",
+   "is_nullable": "NO",
+   "column_default": null
+  },
+  {
+   "table_name": "deadlines",
+   "ordinal_position": 3,
+   "column_name": "store_id",
+   "data_type": "uuid",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "deadlines",
+   "ordinal_position": 4,
+   "column_name": "title",
+   "data_type": "text",
+   "is_nullable": "NO",
+   "column_default": null
+  },
+  {
+   "table_name": "deadlines",
+   "ordinal_position": 5,
+   "column_name": "due_date",
+   "data_type": "date",
+   "is_nullable": "NO",
+   "column_default": null
+  },
+  {
+   "table_name": "deadlines",
+   "ordinal_position": 6,
+   "column_name": "memo",
+   "data_type": "text",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "deadlines",
+   "ordinal_position": 7,
+   "column_name": "created_at",
+   "data_type": "timestamp with time zone",
+   "is_nullable": "NO",
+   "column_default": "now()"
+  },
+  {
+   "table_name": "deadlines",
+   "ordinal_position": 8,
+   "column_name": "document_id",
+   "data_type": "uuid",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "documents",
+   "ordinal_position": 1,
+   "column_name": "id",
+   "data_type": "uuid",
+   "is_nullable": "NO",
+   "column_default": "gen_random_uuid()"
+  },
+  {
+   "table_name": "documents",
+   "ordinal_position": 2,
+   "column_name": "corporation_id",
+   "data_type": "uuid",
+   "is_nullable": "NO",
+   "column_default": null
+  },
+  {
+   "table_name": "documents",
+   "ordinal_position": 3,
+   "column_name": "store_id",
+   "data_type": "uuid",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "documents",
+   "ordinal_position": 4,
+   "column_name": "title",
+   "data_type": "text",
+   "is_nullable": "NO",
+   "column_default": null
+  },
+  {
+   "table_name": "documents",
+   "ordinal_position": 5,
+   "column_name": "kind",
+   "data_type": "text",
+   "is_nullable": "NO",
+   "column_default": "'その他'::text"
+  },
+  {
+   "table_name": "documents",
+   "ordinal_position": 6,
+   "column_name": "file_path",
+   "data_type": "text",
+   "is_nullable": "NO",
+   "column_default": null
+  },
+  {
+   "table_name": "documents",
+   "ordinal_position": 7,
+   "column_name": "mime_type",
+   "data_type": "text",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "documents",
+   "ordinal_position": 8,
+   "column_name": "size_bytes",
+   "data_type": "bigint",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "documents",
+   "ordinal_position": 9,
+   "column_name": "created_at",
+   "data_type": "timestamp with time zone",
+   "is_nullable": "NO",
+   "column_default": "now()"
+  },
+  {
+   "table_name": "employee_salaries",
+   "ordinal_position": 1,
+   "column_name": "employee_id",
+   "data_type": "uuid",
+   "is_nullable": "NO",
+   "column_default": null
+  },
+  {
+   "table_name": "employee_salaries",
+   "ordinal_position": 2,
+   "column_name": "base_salary",
+   "data_type": "bigint",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "employee_salaries",
+   "ordinal_position": 3,
+   "column_name": "incentive",
+   "data_type": "bigint",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "employee_salaries",
+   "ordinal_position": 4,
+   "column_name": "bonus_summer",
+   "data_type": "bigint",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "employee_salaries",
+   "ordinal_position": 5,
+   "column_name": "bonus_winter",
+   "data_type": "bigint",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "employee_salaries",
+   "ordinal_position": 6,
+   "column_name": "annual_income",
+   "data_type": "bigint",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "employee_salaries",
+   "ordinal_position": 7,
+   "column_name": "commute_allowance",
+   "data_type": "bigint",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "employee_salaries",
+   "ordinal_position": 8,
+   "column_name": "updated_at",
+   "data_type": "timestamp with time zone",
+   "is_nullable": "NO",
+   "column_default": "now()"
+  },
+  {
+   "table_name": "employees",
+   "ordinal_position": 1,
+   "column_name": "id",
+   "data_type": "uuid",
+   "is_nullable": "NO",
+   "column_default": "gen_random_uuid()"
+  },
+  {
+   "table_name": "employees",
+   "ordinal_position": 2,
+   "column_name": "corporation_id",
+   "data_type": "uuid",
+   "is_nullable": "NO",
+   "column_default": null
+  },
+  {
+   "table_name": "employees",
+   "ordinal_position": 3,
+   "column_name": "store_id",
+   "data_type": "uuid",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "employees",
+   "ordinal_position": 4,
+   "column_name": "name",
+   "data_type": "text",
+   "is_nullable": "NO",
+   "column_default": null
+  },
+  {
+   "table_name": "employees",
+   "ordinal_position": 5,
+   "column_name": "kana",
+   "data_type": "text",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "employees",
+   "ordinal_position": 6,
+   "column_name": "gender",
+   "data_type": "text",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "employees",
+   "ordinal_position": 7,
+   "column_name": "birth_date",
+   "data_type": "date",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "employees",
+   "ordinal_position": 8,
+   "column_name": "job",
+   "data_type": "text",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "employees",
+   "ordinal_position": 9,
+   "column_name": "role_title",
+   "data_type": "text",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "employees",
+   "ordinal_position": 10,
+   "column_name": "employment_type",
+   "data_type": "text",
+   "is_nullable": "NO",
+   "column_default": "'正社員'::text"
+  },
+  {
+   "table_name": "employees",
+   "ordinal_position": 11,
+   "column_name": "hired_on",
+   "data_type": "date",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "employees",
+   "ordinal_position": 12,
+   "column_name": "phone",
+   "data_type": "text",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "employees",
+   "ordinal_position": 13,
+   "column_name": "address",
+   "data_type": "text",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "employees",
+   "ordinal_position": 14,
+   "column_name": "nationality",
+   "data_type": "text",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "employees",
+   "ordinal_position": 15,
+   "column_name": "status",
+   "data_type": "text",
+   "is_nullable": "NO",
+   "column_default": "'在籍'::text"
+  },
+  {
+   "table_name": "employees",
+   "ordinal_position": 16,
+   "column_name": "memo",
+   "data_type": "text",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "employees",
+   "ordinal_position": 17,
+   "column_name": "created_at",
+   "data_type": "timestamp with time zone",
+   "is_nullable": "NO",
+   "column_default": "now()"
+  },
+  {
+   "table_name": "employees",
+   "ordinal_position": 18,
+   "column_name": "updated_at",
+   "data_type": "timestamp with time zone",
+   "is_nullable": "NO",
+   "column_default": "now()"
+  },
+  {
+   "table_name": "loans",
+   "ordinal_position": 1,
+   "column_name": "id",
+   "data_type": "uuid",
+   "is_nullable": "NO",
+   "column_default": "gen_random_uuid()"
+  },
+  {
+   "table_name": "loans",
+   "ordinal_position": 2,
+   "column_name": "corporation_id",
+   "data_type": "uuid",
+   "is_nullable": "NO",
+   "column_default": null
+  },
+  {
+   "table_name": "loans",
+   "ordinal_position": 3,
+   "column_name": "bank_name",
+   "data_type": "text",
+   "is_nullable": "NO",
+   "column_default": null
+  },
+  {
+   "table_name": "loans",
+   "ordinal_position": 4,
+   "column_name": "loan_type",
+   "data_type": "text",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "loans",
+   "ordinal_position": 5,
+   "column_name": "principal",
+   "data_type": "bigint",
+   "is_nullable": "NO",
+   "column_default": null
+  },
+  {
+   "table_name": "loans",
+   "ordinal_position": 6,
+   "column_name": "annual_rate",
+   "data_type": "numeric",
+   "is_nullable": "NO",
+   "column_default": "0"
+  },
+  {
+   "table_name": "loans",
+   "ordinal_position": 7,
+   "column_name": "start_month",
+   "data_type": "date",
+   "is_nullable": "NO",
+   "column_default": null
+  },
+  {
+   "table_name": "loans",
+   "ordinal_position": 8,
+   "column_name": "months",
+   "data_type": "integer",
+   "is_nullable": "NO",
+   "column_default": null
+  },
+  {
+   "table_name": "loans",
+   "ordinal_position": 9,
+   "column_name": "monthly_principal",
+   "data_type": "bigint",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "loans",
+   "ordinal_position": 10,
+   "column_name": "memo",
+   "data_type": "text",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "loans",
+   "ordinal_position": 11,
+   "column_name": "created_at",
+   "data_type": "timestamp with time zone",
+   "is_nullable": "NO",
+   "column_default": "now()"
+  },
+  {
+   "table_name": "loans",
+   "ordinal_position": 12,
+   "column_name": "repayment_method",
+   "data_type": "text",
+   "is_nullable": "NO",
+   "column_default": "'元金均等'::text"
+  },
+  {
+   "table_name": "photos",
+   "ordinal_position": 1,
+   "column_name": "id",
+   "data_type": "uuid",
+   "is_nullable": "NO",
+   "column_default": "gen_random_uuid()"
+  },
+  {
+   "table_name": "photos",
+   "ordinal_position": 2,
+   "column_name": "corporation_id",
+   "data_type": "uuid",
+   "is_nullable": "NO",
+   "column_default": null
+  },
+  {
+   "table_name": "photos",
+   "ordinal_position": 3,
+   "column_name": "store_id",
+   "data_type": "uuid",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "photos",
+   "ordinal_position": 4,
+   "column_name": "category",
+   "data_type": "text",
+   "is_nullable": "NO",
+   "column_default": "'その他'::text"
+  },
+  {
+   "table_name": "photos",
+   "ordinal_position": 5,
+   "column_name": "title",
+   "data_type": "text",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "photos",
+   "ordinal_position": 6,
+   "column_name": "file_path",
+   "data_type": "text",
+   "is_nullable": "NO",
+   "column_default": null
+  },
+  {
+   "table_name": "photos",
+   "ordinal_position": 7,
+   "column_name": "created_at",
+   "data_type": "timestamp with time zone",
+   "is_nullable": "NO",
+   "column_default": "now()"
+  },
+  {
+   "table_name": "photos",
+   "ordinal_position": 8,
+   "column_name": "original_url",
+   "data_type": "text",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "photos",
+   "ordinal_position": 9,
+   "column_name": "tags",
+   "data_type": "text",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "profiles",
+   "ordinal_position": 1,
+   "column_name": "id",
+   "data_type": "uuid",
+   "is_nullable": "NO",
+   "column_default": null
+  },
+  {
+   "table_name": "profiles",
+   "ordinal_position": 2,
+   "column_name": "name",
+   "data_type": "text",
+   "is_nullable": "NO",
+   "column_default": null
+  },
+  {
+   "table_name": "profiles",
+   "ordinal_position": 3,
+   "column_name": "role_id",
+   "data_type": "uuid",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "profiles",
+   "ordinal_position": 4,
+   "column_name": "is_master",
+   "data_type": "boolean",
+   "is_nullable": "NO",
+   "column_default": "false"
+  },
+  {
+   "table_name": "profiles",
+   "ordinal_position": 5,
+   "column_name": "is_active",
+   "data_type": "boolean",
+   "is_nullable": "NO",
+   "column_default": "true"
+  },
+  {
+   "table_name": "profiles",
+   "ordinal_position": 6,
+   "column_name": "created_at",
+   "data_type": "timestamp with time zone",
+   "is_nullable": "NO",
+   "column_default": "now()"
+  },
+  {
+   "table_name": "profiles",
+   "ordinal_position": 7,
+   "column_name": "email",
+   "data_type": "text",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "properties",
+   "ordinal_position": 1,
+   "column_name": "id",
+   "data_type": "uuid",
+   "is_nullable": "NO",
+   "column_default": "gen_random_uuid()"
+  },
+  {
+   "table_name": "properties",
+   "ordinal_position": 2,
+   "column_name": "corporation_id",
+   "data_type": "uuid",
+   "is_nullable": "NO",
+   "column_default": null
+  },
+  {
+   "table_name": "properties",
+   "ordinal_position": 3,
+   "column_name": "store_id",
+   "data_type": "uuid",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "properties",
+   "ordinal_position": 4,
+   "column_name": "management_company",
+   "data_type": "text",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "properties",
+   "ordinal_position": 5,
+   "column_name": "mgmt_phone",
+   "data_type": "text",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "properties",
+   "ordinal_position": 6,
+   "column_name": "mgmt_contact",
+   "data_type": "text",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "properties",
+   "ordinal_position": 7,
+   "column_name": "mgmt_mobile",
+   "data_type": "text",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "properties",
+   "ordinal_position": 8,
+   "column_name": "rent",
+   "data_type": "bigint",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "properties",
+   "ordinal_position": 9,
+   "column_name": "tsubo",
+   "data_type": "numeric",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "properties",
+   "ordinal_position": 10,
+   "column_name": "contract_type",
+   "data_type": "text",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "properties",
+   "ordinal_position": 11,
+   "column_name": "contract_date",
+   "data_type": "date",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "properties",
+   "ordinal_position": 12,
+   "column_name": "renewal_date",
+   "data_type": "date",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "properties",
+   "ordinal_position": 13,
+   "column_name": "deposit",
+   "data_type": "text",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "properties",
+   "ordinal_position": 14,
+   "column_name": "amortization",
+   "data_type": "text",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "properties",
+   "ordinal_position": 15,
+   "column_name": "landlord_name",
+   "data_type": "text",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "properties",
+   "ordinal_position": 16,
+   "column_name": "landlord_phone",
+   "data_type": "text",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "properties",
+   "ordinal_position": 17,
+   "column_name": "memo",
+   "data_type": "text",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "properties",
+   "ordinal_position": 18,
+   "column_name": "created_at",
+   "data_type": "timestamp with time zone",
+   "is_nullable": "NO",
+   "column_default": "now()"
+  },
+  {
+   "table_name": "properties",
+   "ordinal_position": 19,
+   "column_name": "updated_at",
+   "data_type": "timestamp with time zone",
+   "is_nullable": "NO",
+   "column_default": "now()"
+  },
+  {
+   "table_name": "properties",
+   "ordinal_position": 20,
+   "column_name": "document_id",
+   "data_type": "uuid",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "real_estate_properties",
+   "ordinal_position": 1,
+   "column_name": "id",
+   "data_type": "uuid",
+   "is_nullable": "NO",
+   "column_default": "gen_random_uuid()"
+  },
+  {
+   "table_name": "real_estate_properties",
+   "ordinal_position": 2,
+   "column_name": "corporation_id",
+   "data_type": "uuid",
+   "is_nullable": "NO",
+   "column_default": null
+  },
+  {
+   "table_name": "real_estate_properties",
+   "ordinal_position": 3,
+   "column_name": "name",
+   "data_type": "text",
+   "is_nullable": "NO",
+   "column_default": null
+  },
+  {
+   "table_name": "real_estate_properties",
+   "ordinal_position": 4,
+   "column_name": "postal_code",
+   "data_type": "text",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "real_estate_properties",
+   "ordinal_position": 5,
+   "column_name": "address",
+   "data_type": "text",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "real_estate_properties",
+   "ordinal_position": 6,
+   "column_name": "acquired_on",
+   "data_type": "date",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "real_estate_properties",
+   "ordinal_position": 7,
+   "column_name": "acquisition_price",
+   "data_type": "bigint",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "real_estate_properties",
+   "ordinal_position": 8,
+   "column_name": "loan_id",
+   "data_type": "uuid",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "real_estate_properties",
+   "ordinal_position": 9,
+   "column_name": "mgmt_fee",
+   "data_type": "bigint",
+   "is_nullable": "NO",
+   "column_default": "0"
+  },
+  {
+   "table_name": "real_estate_properties",
+   "ordinal_position": 10,
+   "column_name": "other_cost",
+   "data_type": "bigint",
+   "is_nullable": "NO",
+   "column_default": "0"
+  },
+  {
+   "table_name": "real_estate_properties",
+   "ordinal_position": 11,
+   "column_name": "memo",
+   "data_type": "text",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "real_estate_properties",
+   "ordinal_position": 12,
+   "column_name": "created_at",
+   "data_type": "timestamp with time zone",
+   "is_nullable": "NO",
+   "column_default": "now()"
+  },
+  {
+   "table_name": "real_estate_properties",
+   "ordinal_position": 13,
+   "column_name": "updated_at",
+   "data_type": "timestamp with time zone",
+   "is_nullable": "NO",
+   "column_default": "now()"
+  },
+  {
+   "table_name": "real_estate_units",
+   "ordinal_position": 1,
+   "column_name": "id",
+   "data_type": "uuid",
+   "is_nullable": "NO",
+   "column_default": "gen_random_uuid()"
+  },
+  {
+   "table_name": "real_estate_units",
+   "ordinal_position": 2,
+   "column_name": "property_id",
+   "data_type": "uuid",
+   "is_nullable": "NO",
+   "column_default": null
+  },
+  {
+   "table_name": "real_estate_units",
+   "ordinal_position": 3,
+   "column_name": "unit_name",
+   "data_type": "text",
+   "is_nullable": "NO",
+   "column_default": null
+  },
+  {
+   "table_name": "real_estate_units",
+   "ordinal_position": 4,
+   "column_name": "tenant_name",
+   "data_type": "text",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "real_estate_units",
+   "ordinal_position": 5,
+   "column_name": "rent",
+   "data_type": "bigint",
+   "is_nullable": "NO",
+   "column_default": "0"
+  },
+  {
+   "table_name": "real_estate_units",
+   "ordinal_position": 6,
+   "column_name": "status",
+   "data_type": "text",
+   "is_nullable": "NO",
+   "column_default": "'入居中'::text"
+  },
+  {
+   "table_name": "real_estate_units",
+   "ordinal_position": 7,
+   "column_name": "lease_renewal",
+   "data_type": "date",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "real_estate_units",
+   "ordinal_position": 8,
+   "column_name": "memo",
+   "data_type": "text",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "real_estate_units",
+   "ordinal_position": 9,
+   "column_name": "created_at",
+   "data_type": "timestamp with time zone",
+   "is_nullable": "NO",
+   "column_default": "now()"
+  },
+  {
+   "table_name": "real_estate_units",
+   "ordinal_position": 10,
+   "column_name": "updated_at",
+   "data_type": "timestamp with time zone",
+   "is_nullable": "NO",
+   "column_default": "now()"
+  },
+  {
+   "table_name": "role_corporations",
+   "ordinal_position": 1,
+   "column_name": "role_id",
+   "data_type": "uuid",
+   "is_nullable": "NO",
+   "column_default": null
+  },
+  {
+   "table_name": "role_corporations",
+   "ordinal_position": 2,
+   "column_name": "corporation_id",
+   "data_type": "uuid",
+   "is_nullable": "NO",
+   "column_default": null
+  },
+  {
+   "table_name": "role_permissions",
+   "ordinal_position": 1,
+   "column_name": "role_id",
+   "data_type": "uuid",
+   "is_nullable": "NO",
+   "column_default": null
+  },
+  {
+   "table_name": "role_permissions",
+   "ordinal_position": 2,
+   "column_name": "category_id",
+   "data_type": "text",
+   "is_nullable": "NO",
+   "column_default": null
+  },
+  {
+   "table_name": "role_permissions",
+   "ordinal_position": 3,
+   "column_name": "permission",
+   "data_type": "text",
+   "is_nullable": "NO",
+   "column_default": "'none'::text"
+  },
+  {
+   "table_name": "roles",
+   "ordinal_position": 1,
+   "column_name": "id",
+   "data_type": "uuid",
+   "is_nullable": "NO",
+   "column_default": "gen_random_uuid()"
+  },
+  {
+   "table_name": "roles",
+   "ordinal_position": 2,
+   "column_name": "name",
+   "data_type": "text",
+   "is_nullable": "NO",
+   "column_default": null
+  },
+  {
+   "table_name": "stores",
+   "ordinal_position": 1,
+   "column_name": "id",
+   "data_type": "uuid",
+   "is_nullable": "NO",
+   "column_default": "gen_random_uuid()"
+  },
+  {
+   "table_name": "stores",
+   "ordinal_position": 2,
+   "column_name": "corporation_id",
+   "data_type": "uuid",
+   "is_nullable": "NO",
+   "column_default": null
+  },
+  {
+   "table_name": "stores",
+   "ordinal_position": 3,
+   "column_name": "brand_id",
+   "data_type": "uuid",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "stores",
+   "ordinal_position": 4,
+   "column_name": "store_code",
+   "data_type": "text",
+   "is_nullable": "NO",
+   "column_default": null
+  },
+  {
+   "table_name": "stores",
+   "ordinal_position": 5,
+   "column_name": "name",
+   "data_type": "text",
+   "is_nullable": "NO",
+   "column_default": null
+  },
+  {
+   "table_name": "stores",
+   "ordinal_position": 6,
+   "column_name": "area",
+   "data_type": "text",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "stores",
+   "ordinal_position": 7,
+   "column_name": "is_active",
+   "data_type": "boolean",
+   "is_nullable": "NO",
+   "column_default": "true"
+  },
+  {
+   "table_name": "stores",
+   "ordinal_position": 8,
+   "column_name": "created_at",
+   "data_type": "timestamp with time zone",
+   "is_nullable": "NO",
+   "column_default": "now()"
+  },
+  {
+   "table_name": "stores",
+   "ordinal_position": 9,
+   "column_name": "postal_code",
+   "data_type": "text",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "stores",
+   "ordinal_position": 10,
+   "column_name": "address",
+   "data_type": "text",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "stores",
+   "ordinal_position": 11,
+   "column_name": "building",
+   "data_type": "text",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "stores",
+   "ordinal_position": 12,
+   "column_name": "phone",
+   "data_type": "text",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "stores",
+   "ordinal_position": 13,
+   "column_name": "fax",
+   "data_type": "text",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "stores",
+   "ordinal_position": 14,
+   "column_name": "official_url",
+   "data_type": "text",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "stores",
+   "ordinal_position": 15,
+   "column_name": "access_info",
+   "data_type": "text",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "stores",
+   "ordinal_position": 16,
+   "column_name": "manager_name",
+   "data_type": "text",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "stores",
+   "ordinal_position": 17,
+   "column_name": "business_hours",
+   "data_type": "text",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "stores",
+   "ordinal_position": 18,
+   "column_name": "emergency_contact",
+   "data_type": "text",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "stores",
+   "ordinal_position": 19,
+   "column_name": "postbox_info",
+   "data_type": "text",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "stores",
+   "ordinal_position": 20,
+   "column_name": "memo",
+   "data_type": "text",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "suppliers",
+   "ordinal_position": 1,
+   "column_name": "id",
+   "data_type": "uuid",
+   "is_nullable": "NO",
+   "column_default": "gen_random_uuid()"
+  },
+  {
+   "table_name": "suppliers",
+   "ordinal_position": 2,
+   "column_name": "corporation_id",
+   "data_type": "uuid",
+   "is_nullable": "NO",
+   "column_default": null
+  },
+  {
+   "table_name": "suppliers",
+   "ordinal_position": 3,
+   "column_name": "name",
+   "data_type": "text",
+   "is_nullable": "NO",
+   "column_default": null
+  },
+  {
+   "table_name": "suppliers",
+   "ordinal_position": 4,
+   "column_name": "kind",
+   "data_type": "text",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "suppliers",
+   "ordinal_position": 5,
+   "column_name": "phone",
+   "data_type": "text",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "suppliers",
+   "ordinal_position": 6,
+   "column_name": "contact_name",
+   "data_type": "text",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "suppliers",
+   "ordinal_position": 7,
+   "column_name": "contact_mobile",
+   "data_type": "text",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "suppliers",
+   "ordinal_position": 8,
+   "column_name": "contact2_name",
+   "data_type": "text",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "suppliers",
+   "ordinal_position": 9,
+   "column_name": "contact2_mobile",
+   "data_type": "text",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "suppliers",
+   "ordinal_position": 10,
+   "column_name": "email",
+   "data_type": "text",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "suppliers",
+   "ordinal_position": 11,
+   "column_name": "memo",
+   "data_type": "text",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "suppliers",
+   "ordinal_position": 12,
+   "column_name": "created_at",
+   "data_type": "timestamp with time zone",
+   "is_nullable": "NO",
+   "column_default": "now()"
+  },
+  {
+   "table_name": "suppliers",
+   "ordinal_position": 13,
+   "column_name": "status",
+   "data_type": "text",
+   "is_nullable": "NO",
+   "column_default": "'取引中'::text"
+  },
+  {
+   "table_name": "suppliers",
+   "ordinal_position": 14,
+   "column_name": "updated_at",
+   "data_type": "timestamp with time zone",
+   "is_nullable": "NO",
+   "column_default": "now()"
+  },
+  {
+   "table_name": "user_corporations",
+   "ordinal_position": 1,
+   "column_name": "user_id",
+   "data_type": "uuid",
+   "is_nullable": "NO",
+   "column_default": null
+  },
+  {
+   "table_name": "user_corporations",
+   "ordinal_position": 2,
+   "column_name": "corporation_id",
+   "data_type": "uuid",
+   "is_nullable": "NO",
+   "column_default": null
+  },
+  {
+   "table_name": "user_permissions",
+   "ordinal_position": 1,
+   "column_name": "user_id",
+   "data_type": "uuid",
+   "is_nullable": "NO",
+   "column_default": null
+  },
+  {
+   "table_name": "user_permissions",
+   "ordinal_position": 2,
+   "column_name": "category_id",
+   "data_type": "text",
+   "is_nullable": "NO",
+   "column_default": null
+  },
+  {
+   "table_name": "user_permissions",
+   "ordinal_position": 3,
+   "column_name": "permission",
+   "data_type": "text",
+   "is_nullable": "NO",
+   "column_default": null
+  },
+  {
+   "table_name": "user_stores",
+   "ordinal_position": 1,
+   "column_name": "user_id",
+   "data_type": "uuid",
+   "is_nullable": "NO",
+   "column_default": null
+  },
+  {
+   "table_name": "user_stores",
+   "ordinal_position": 2,
+   "column_name": "store_id",
+   "data_type": "uuid",
+   "is_nullable": "NO",
+   "column_default": null
+  },
+  {
+   "table_name": "utilities",
+   "ordinal_position": 1,
+   "column_name": "id",
+   "data_type": "uuid",
+   "is_nullable": "NO",
+   "column_default": "gen_random_uuid()"
+  },
+  {
+   "table_name": "utilities",
+   "ordinal_position": 2,
+   "column_name": "corporation_id",
+   "data_type": "uuid",
+   "is_nullable": "NO",
+   "column_default": null
+  },
+  {
+   "table_name": "utilities",
+   "ordinal_position": 3,
+   "column_name": "store_id",
+   "data_type": "uuid",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "utilities",
+   "ordinal_position": 4,
+   "column_name": "kind",
+   "data_type": "text",
+   "is_nullable": "NO",
+   "column_default": "'その他'::text"
+  },
+  {
+   "table_name": "utilities",
+   "ordinal_position": 5,
+   "column_name": "provider",
+   "data_type": "text",
+   "is_nullable": "NO",
+   "column_default": null
+  },
+  {
+   "table_name": "utilities",
+   "ordinal_position": 6,
+   "column_name": "customer_number",
+   "data_type": "text",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "utilities",
+   "ordinal_position": 7,
+   "column_name": "contact",
+   "data_type": "text",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "utilities",
+   "ordinal_position": 8,
+   "column_name": "status",
+   "data_type": "text",
+   "is_nullable": "NO",
+   "column_default": "'使用中'::text"
+  },
+  {
+   "table_name": "utilities",
+   "ordinal_position": 9,
+   "column_name": "memo",
+   "data_type": "text",
+   "is_nullable": "YES",
+   "column_default": null
+  },
+  {
+   "table_name": "utilities",
+   "ordinal_position": 10,
+   "column_name": "created_at",
+   "data_type": "timestamp with time zone",
+   "is_nullable": "NO",
+   "column_default": "now()"
+  },
+  {
+   "table_name": "utilities",
+   "ordinal_position": 11,
+   "column_name": "updated_at",
+   "data_type": "timestamp with time zone",
+   "is_nullable": "NO",
+   "column_default": "now()"
+  }
+ ],
+ "constraints": [
+  {
+   "table_name": "audit_logs",
+   "constraint_name": "audit_logs_user_id_fkey",
+   "constraint_type": "FOREIGN KEY",
+   "def": "FOREIGN KEY (user_id) REFERENCES profiles(id)"
+  },
+  {
+   "table_name": "audit_logs",
+   "constraint_name": "audit_logs_pkey",
+   "constraint_type": "PRIMARY KEY",
+   "def": "PRIMARY KEY (id)"
+  },
+  {
+   "table_name": "bank_accounts",
+   "constraint_name": "bank_accounts_corporation_id_fkey",
+   "constraint_type": "FOREIGN KEY",
+   "def": "FOREIGN KEY (corporation_id) REFERENCES corporations(id)"
+  },
+  {
+   "table_name": "bank_accounts",
+   "constraint_name": "bank_accounts_pkey",
+   "constraint_type": "PRIMARY KEY",
+   "def": "PRIMARY KEY (id)"
+  },
+  {
+   "table_name": "brands",
+   "constraint_name": "brands_corporation_id_fkey",
+   "constraint_type": "FOREIGN KEY",
+   "def": "FOREIGN KEY (corporation_id) REFERENCES corporations(id)"
+  },
+  {
+   "table_name": "brands",
+   "constraint_name": "brands_pkey",
+   "constraint_type": "PRIMARY KEY",
+   "def": "PRIMARY KEY (id)"
+  },
+  {
+   "table_name": "categories",
+   "constraint_name": "categories_pkey",
+   "constraint_type": "PRIMARY KEY",
+   "def": "PRIMARY KEY (id)"
+  },
+  {
+   "table_name": "corporations",
+   "constraint_name": "corporations_pkey",
+   "constraint_type": "PRIMARY KEY",
+   "def": "PRIMARY KEY (id)"
+  },
+  {
+   "table_name": "corporations",
+   "constraint_name": "corporations_code_key",
+   "constraint_type": "UNIQUE",
+   "def": "UNIQUE (code)"
+  },
+  {
+   "table_name": "credential_secret_history",
+   "constraint_name": "credential_secret_history_replaced_by_fkey",
+   "constraint_type": "FOREIGN KEY",
+   "def": "FOREIGN KEY (replaced_by) REFERENCES profiles(id)"
+  },
+  {
+   "table_name": "credential_secret_history",
+   "constraint_name": "credential_secret_history_credential_id_fkey",
+   "constraint_type": "FOREIGN KEY",
+   "def": "FOREIGN KEY (credential_id) REFERENCES credentials(id) ON DELETE CASCADE"
+  },
+  {
+   "table_name": "credential_secret_history",
+   "constraint_name": "credential_secret_history_pkey",
+   "constraint_type": "PRIMARY KEY",
+   "def": "PRIMARY KEY (id)"
+  },
+  {
+   "table_name": "credential_secrets",
+   "constraint_name": "credential_secrets_credential_id_fkey",
+   "constraint_type": "FOREIGN KEY",
+   "def": "FOREIGN KEY (credential_id) REFERENCES credentials(id) ON DELETE CASCADE"
+  },
+  {
+   "table_name": "credential_secrets",
+   "constraint_name": "credential_secrets_pkey",
+   "constraint_type": "PRIMARY KEY",
+   "def": "PRIMARY KEY (credential_id)"
+  },
+  {
+   "table_name": "credential_stores",
+   "constraint_name": "credential_stores_credential_id_fkey",
+   "constraint_type": "FOREIGN KEY",
+   "def": "FOREIGN KEY (credential_id) REFERENCES credentials(id) ON DELETE CASCADE"
+  },
+  {
+   "table_name": "credential_stores",
+   "constraint_name": "credential_stores_store_id_fkey",
+   "constraint_type": "FOREIGN KEY",
+   "def": "FOREIGN KEY (store_id) REFERENCES stores(id) ON DELETE CASCADE"
+  },
+  {
+   "table_name": "credential_stores",
+   "constraint_name": "credential_stores_pkey",
+   "constraint_type": "PRIMARY KEY",
+   "def": "PRIMARY KEY (credential_id, store_id)"
+  },
+  {
+   "table_name": "credentials",
+   "constraint_name": "credentials_corporation_id_fkey",
+   "constraint_type": "FOREIGN KEY",
+   "def": "FOREIGN KEY (corporation_id) REFERENCES corporations(id)"
+  },
+  {
+   "table_name": "credentials",
+   "constraint_name": "credentials_pkey",
+   "constraint_type": "PRIMARY KEY",
+   "def": "PRIMARY KEY (id)"
+  },
+  {
+   "table_name": "deadlines",
+   "constraint_name": "deadlines_store_id_fkey",
+   "constraint_type": "FOREIGN KEY",
+   "def": "FOREIGN KEY (store_id) REFERENCES stores(id) ON DELETE CASCADE"
+  },
+  {
+   "table_name": "deadlines",
+   "constraint_name": "deadlines_corporation_id_fkey",
+   "constraint_type": "FOREIGN KEY",
+   "def": "FOREIGN KEY (corporation_id) REFERENCES corporations(id)"
+  },
+  {
+   "table_name": "deadlines",
+   "constraint_name": "deadlines_document_id_fkey",
+   "constraint_type": "FOREIGN KEY",
+   "def": "FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE SET NULL"
+  },
+  {
+   "table_name": "deadlines",
+   "constraint_name": "deadlines_pkey",
+   "constraint_type": "PRIMARY KEY",
+   "def": "PRIMARY KEY (id)"
+  },
+  {
+   "table_name": "documents",
+   "constraint_name": "documents_corporation_id_fkey",
+   "constraint_type": "FOREIGN KEY",
+   "def": "FOREIGN KEY (corporation_id) REFERENCES corporations(id)"
+  },
+  {
+   "table_name": "documents",
+   "constraint_name": "documents_store_id_fkey",
+   "constraint_type": "FOREIGN KEY",
+   "def": "FOREIGN KEY (store_id) REFERENCES stores(id) ON DELETE SET NULL"
+  },
+  {
+   "table_name": "documents",
+   "constraint_name": "documents_pkey",
+   "constraint_type": "PRIMARY KEY",
+   "def": "PRIMARY KEY (id)"
+  },
+  {
+   "table_name": "employee_salaries",
+   "constraint_name": "employee_salaries_employee_id_fkey",
+   "constraint_type": "FOREIGN KEY",
+   "def": "FOREIGN KEY (employee_id) REFERENCES employees(id) ON DELETE CASCADE"
+  },
+  {
+   "table_name": "employee_salaries",
+   "constraint_name": "employee_salaries_pkey",
+   "constraint_type": "PRIMARY KEY",
+   "def": "PRIMARY KEY (employee_id)"
+  },
+  {
+   "table_name": "employees",
+   "constraint_name": "employees_corporation_id_fkey",
+   "constraint_type": "FOREIGN KEY",
+   "def": "FOREIGN KEY (corporation_id) REFERENCES corporations(id)"
+  },
+  {
+   "table_name": "employees",
+   "constraint_name": "employees_store_id_fkey",
+   "constraint_type": "FOREIGN KEY",
+   "def": "FOREIGN KEY (store_id) REFERENCES stores(id) ON DELETE SET NULL"
+  },
+  {
+   "table_name": "employees",
+   "constraint_name": "employees_pkey",
+   "constraint_type": "PRIMARY KEY",
+   "def": "PRIMARY KEY (id)"
+  },
+  {
+   "table_name": "loans",
+   "constraint_name": "loans_corporation_id_fkey",
+   "constraint_type": "FOREIGN KEY",
+   "def": "FOREIGN KEY (corporation_id) REFERENCES corporations(id)"
+  },
+  {
+   "table_name": "loans",
+   "constraint_name": "loans_pkey",
+   "constraint_type": "PRIMARY KEY",
+   "def": "PRIMARY KEY (id)"
+  },
+  {
+   "table_name": "photos",
+   "constraint_name": "photos_corporation_id_fkey",
+   "constraint_type": "FOREIGN KEY",
+   "def": "FOREIGN KEY (corporation_id) REFERENCES corporations(id)"
+  },
+  {
+   "table_name": "photos",
+   "constraint_name": "photos_store_id_fkey",
+   "constraint_type": "FOREIGN KEY",
+   "def": "FOREIGN KEY (store_id) REFERENCES stores(id) ON DELETE SET NULL"
+  },
+  {
+   "table_name": "photos",
+   "constraint_name": "photos_pkey",
+   "constraint_type": "PRIMARY KEY",
+   "def": "PRIMARY KEY (id)"
+  },
+  {
+   "table_name": "profiles",
+   "constraint_name": "profiles_id_fkey",
+   "constraint_type": "FOREIGN KEY",
+   "def": "FOREIGN KEY (id) REFERENCES auth.users(id) ON DELETE CASCADE"
+  },
+  {
+   "table_name": "profiles",
+   "constraint_name": "profiles_role_id_fkey",
+   "constraint_type": "FOREIGN KEY",
+   "def": "FOREIGN KEY (role_id) REFERENCES roles(id)"
+  },
+  {
+   "table_name": "profiles",
+   "constraint_name": "profiles_pkey",
+   "constraint_type": "PRIMARY KEY",
+   "def": "PRIMARY KEY (id)"
+  },
+  {
+   "table_name": "properties",
+   "constraint_name": "properties_corporation_id_fkey",
+   "constraint_type": "FOREIGN KEY",
+   "def": "FOREIGN KEY (corporation_id) REFERENCES corporations(id)"
+  },
+  {
+   "table_name": "properties",
+   "constraint_name": "properties_document_id_fkey",
+   "constraint_type": "FOREIGN KEY",
+   "def": "FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE SET NULL"
+  },
+  {
+   "table_name": "properties",
+   "constraint_name": "properties_store_id_fkey",
+   "constraint_type": "FOREIGN KEY",
+   "def": "FOREIGN KEY (store_id) REFERENCES stores(id) ON DELETE SET NULL"
+  },
+  {
+   "table_name": "properties",
+   "constraint_name": "properties_pkey",
+   "constraint_type": "PRIMARY KEY",
+   "def": "PRIMARY KEY (id)"
+  },
+  {
+   "table_name": "real_estate_properties",
+   "constraint_name": "real_estate_properties_corporation_id_fkey",
+   "constraint_type": "FOREIGN KEY",
+   "def": "FOREIGN KEY (corporation_id) REFERENCES corporations(id)"
+  },
+  {
+   "table_name": "real_estate_properties",
+   "constraint_name": "real_estate_properties_loan_id_fkey",
+   "constraint_type": "FOREIGN KEY",
+   "def": "FOREIGN KEY (loan_id) REFERENCES loans(id) ON DELETE SET NULL"
+  },
+  {
+   "table_name": "real_estate_properties",
+   "constraint_name": "real_estate_properties_pkey",
+   "constraint_type": "PRIMARY KEY",
+   "def": "PRIMARY KEY (id)"
+  },
+  {
+   "table_name": "real_estate_units",
+   "constraint_name": "real_estate_units_property_id_fkey",
+   "constraint_type": "FOREIGN KEY",
+   "def": "FOREIGN KEY (property_id) REFERENCES real_estate_properties(id) ON DELETE CASCADE"
+  },
+  {
+   "table_name": "real_estate_units",
+   "constraint_name": "real_estate_units_pkey",
+   "constraint_type": "PRIMARY KEY",
+   "def": "PRIMARY KEY (id)"
+  },
+  {
+   "table_name": "role_corporations",
+   "constraint_name": "role_corporations_corporation_id_fkey",
+   "constraint_type": "FOREIGN KEY",
+   "def": "FOREIGN KEY (corporation_id) REFERENCES corporations(id) ON DELETE CASCADE"
+  },
+  {
+   "table_name": "role_corporations",
+   "constraint_name": "role_corporations_role_id_fkey",
+   "constraint_type": "FOREIGN KEY",
+   "def": "FOREIGN KEY (role_id) REFERENCES roles(id) ON DELETE CASCADE"
+  },
+  {
+   "table_name": "role_corporations",
+   "constraint_name": "role_corporations_pkey",
+   "constraint_type": "PRIMARY KEY",
+   "def": "PRIMARY KEY (role_id, corporation_id)"
+  },
+  {
+   "table_name": "role_permissions",
+   "constraint_name": "role_permissions_permission_check",
+   "constraint_type": "CHECK",
+   "def": "CHECK ((permission = ANY (ARRAY['none'::text, 'view'::text, 'edit'::text])))"
+  },
+  {
+   "table_name": "role_permissions",
+   "constraint_name": "role_permissions_category_id_fkey",
+   "constraint_type": "FOREIGN KEY",
+   "def": "FOREIGN KEY (category_id) REFERENCES categories(id)"
+  },
+  {
+   "table_name": "role_permissions",
+   "constraint_name": "role_permissions_role_id_fkey",
+   "constraint_type": "FOREIGN KEY",
+   "def": "FOREIGN KEY (role_id) REFERENCES roles(id) ON DELETE CASCADE"
+  },
+  {
+   "table_name": "role_permissions",
+   "constraint_name": "role_permissions_pkey",
+   "constraint_type": "PRIMARY KEY",
+   "def": "PRIMARY KEY (role_id, category_id)"
+  },
+  {
+   "table_name": "roles",
+   "constraint_name": "roles_pkey",
+   "constraint_type": "PRIMARY KEY",
+   "def": "PRIMARY KEY (id)"
+  },
+  {
+   "table_name": "roles",
+   "constraint_name": "roles_name_key",
+   "constraint_type": "UNIQUE",
+   "def": "UNIQUE (name)"
+  },
+  {
+   "table_name": "stores",
+   "constraint_name": "stores_corporation_id_fkey",
+   "constraint_type": "FOREIGN KEY",
+   "def": "FOREIGN KEY (corporation_id) REFERENCES corporations(id)"
+  },
+  {
+   "table_name": "stores",
+   "constraint_name": "stores_brand_id_fkey",
+   "constraint_type": "FOREIGN KEY",
+   "def": "FOREIGN KEY (brand_id) REFERENCES brands(id)"
+  },
+  {
+   "table_name": "stores",
+   "constraint_name": "stores_pkey",
+   "constraint_type": "PRIMARY KEY",
+   "def": "PRIMARY KEY (id)"
+  },
+  {
+   "table_name": "stores",
+   "constraint_name": "stores_store_code_key",
+   "constraint_type": "UNIQUE",
+   "def": "UNIQUE (store_code)"
+  },
+  {
+   "table_name": "suppliers",
+   "constraint_name": "suppliers_corporation_id_fkey",
+   "constraint_type": "FOREIGN KEY",
+   "def": "FOREIGN KEY (corporation_id) REFERENCES corporations(id)"
+  },
+  {
+   "table_name": "suppliers",
+   "constraint_name": "suppliers_pkey",
+   "constraint_type": "PRIMARY KEY",
+   "def": "PRIMARY KEY (id)"
+  },
+  {
+   "table_name": "user_corporations",
+   "constraint_name": "user_corporations_user_id_fkey",
+   "constraint_type": "FOREIGN KEY",
+   "def": "FOREIGN KEY (user_id) REFERENCES profiles(id) ON DELETE CASCADE"
+  },
+  {
+   "table_name": "user_corporations",
+   "constraint_name": "user_corporations_corporation_id_fkey",
+   "constraint_type": "FOREIGN KEY",
+   "def": "FOREIGN KEY (corporation_id) REFERENCES corporations(id) ON DELETE CASCADE"
+  },
+  {
+   "table_name": "user_corporations",
+   "constraint_name": "user_corporations_pkey",
+   "constraint_type": "PRIMARY KEY",
+   "def": "PRIMARY KEY (user_id, corporation_id)"
+  },
+  {
+   "table_name": "user_permissions",
+   "constraint_name": "user_permissions_permission_check",
+   "constraint_type": "CHECK",
+   "def": "CHECK ((permission = ANY (ARRAY['none'::text, 'view'::text, 'edit'::text])))"
+  },
+  {
+   "table_name": "user_permissions",
+   "constraint_name": "user_permissions_user_id_fkey",
+   "constraint_type": "FOREIGN KEY",
+   "def": "FOREIGN KEY (user_id) REFERENCES profiles(id) ON DELETE CASCADE"
+  },
+  {
+   "table_name": "user_permissions",
+   "constraint_name": "user_permissions_category_id_fkey",
+   "constraint_type": "FOREIGN KEY",
+   "def": "FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE CASCADE"
+  },
+  {
+   "table_name": "user_permissions",
+   "constraint_name": "user_permissions_pkey",
+   "constraint_type": "PRIMARY KEY",
+   "def": "PRIMARY KEY (user_id, category_id)"
+  },
+  {
+   "table_name": "user_stores",
+   "constraint_name": "user_stores_store_id_fkey",
+   "constraint_type": "FOREIGN KEY",
+   "def": "FOREIGN KEY (store_id) REFERENCES stores(id) ON DELETE CASCADE"
+  },
+  {
+   "table_name": "user_stores",
+   "constraint_name": "user_stores_user_id_fkey",
+   "constraint_type": "FOREIGN KEY",
+   "def": "FOREIGN KEY (user_id) REFERENCES profiles(id) ON DELETE CASCADE"
+  },
+  {
+   "table_name": "user_stores",
+   "constraint_name": "user_stores_pkey",
+   "constraint_type": "PRIMARY KEY",
+   "def": "PRIMARY KEY (user_id, store_id)"
+  },
+  {
+   "table_name": "utilities",
+   "constraint_name": "utilities_store_id_fkey",
+   "constraint_type": "FOREIGN KEY",
+   "def": "FOREIGN KEY (store_id) REFERENCES stores(id) ON DELETE SET NULL"
+  },
+  {
+   "table_name": "utilities",
+   "constraint_name": "utilities_corporation_id_fkey",
+   "constraint_type": "FOREIGN KEY",
+   "def": "FOREIGN KEY (corporation_id) REFERENCES corporations(id)"
+  },
+  {
+   "table_name": "utilities",
+   "constraint_name": "utilities_pkey",
+   "constraint_type": "PRIMARY KEY",
+   "def": "PRIMARY KEY (id)"
+  }
+ ],
+ "indexes": [
+  {
+   "tablename": "audit_logs",
+   "indexname": "audit_logs_pkey",
+   "indexdef": "CREATE UNIQUE INDEX audit_logs_pkey ON public.audit_logs USING btree (id)"
+  },
+  {
+   "tablename": "bank_accounts",
+   "indexname": "bank_accounts_pkey",
+   "indexdef": "CREATE UNIQUE INDEX bank_accounts_pkey ON public.bank_accounts USING btree (id)"
+  },
+  {
+   "tablename": "brands",
+   "indexname": "brands_pkey",
+   "indexdef": "CREATE UNIQUE INDEX brands_pkey ON public.brands USING btree (id)"
+  },
+  {
+   "tablename": "categories",
+   "indexname": "categories_pkey",
+   "indexdef": "CREATE UNIQUE INDEX categories_pkey ON public.categories USING btree (id)"
+  },
+  {
+   "tablename": "corporations",
+   "indexname": "corporations_code_key",
+   "indexdef": "CREATE UNIQUE INDEX corporations_code_key ON public.corporations USING btree (code)"
+  },
+  {
+   "tablename": "corporations",
+   "indexname": "corporations_pkey",
+   "indexdef": "CREATE UNIQUE INDEX corporations_pkey ON public.corporations USING btree (id)"
+  },
+  {
+   "tablename": "credential_secret_history",
+   "indexname": "credential_secret_history_pkey",
+   "indexdef": "CREATE UNIQUE INDEX credential_secret_history_pkey ON public.credential_secret_history USING btree (id)"
+  },
+  {
+   "tablename": "credential_secrets",
+   "indexname": "credential_secrets_pkey",
+   "indexdef": "CREATE UNIQUE INDEX credential_secrets_pkey ON public.credential_secrets USING btree (credential_id)"
+  },
+  {
+   "tablename": "credential_stores",
+   "indexname": "credential_stores_pkey",
+   "indexdef": "CREATE UNIQUE INDEX credential_stores_pkey ON public.credential_stores USING btree (credential_id, store_id)"
+  },
+  {
+   "tablename": "credentials",
+   "indexname": "credentials_pkey",
+   "indexdef": "CREATE UNIQUE INDEX credentials_pkey ON public.credentials USING btree (id)"
+  },
+  {
+   "tablename": "deadlines",
+   "indexname": "deadlines_pkey",
+   "indexdef": "CREATE UNIQUE INDEX deadlines_pkey ON public.deadlines USING btree (id)"
+  },
+  {
+   "tablename": "documents",
+   "indexname": "documents_pkey",
+   "indexdef": "CREATE UNIQUE INDEX documents_pkey ON public.documents USING btree (id)"
+  },
+  {
+   "tablename": "employee_salaries",
+   "indexname": "employee_salaries_pkey",
+   "indexdef": "CREATE UNIQUE INDEX employee_salaries_pkey ON public.employee_salaries USING btree (employee_id)"
+  },
+  {
+   "tablename": "employees",
+   "indexname": "employees_pkey",
+   "indexdef": "CREATE UNIQUE INDEX employees_pkey ON public.employees USING btree (id)"
+  },
+  {
+   "tablename": "loans",
+   "indexname": "loans_pkey",
+   "indexdef": "CREATE UNIQUE INDEX loans_pkey ON public.loans USING btree (id)"
+  },
+  {
+   "tablename": "photos",
+   "indexname": "photos_pkey",
+   "indexdef": "CREATE UNIQUE INDEX photos_pkey ON public.photos USING btree (id)"
+  },
+  {
+   "tablename": "profiles",
+   "indexname": "profiles_pkey",
+   "indexdef": "CREATE UNIQUE INDEX profiles_pkey ON public.profiles USING btree (id)"
+  },
+  {
+   "tablename": "properties",
+   "indexname": "properties_pkey",
+   "indexdef": "CREATE UNIQUE INDEX properties_pkey ON public.properties USING btree (id)"
+  },
+  {
+   "tablename": "real_estate_properties",
+   "indexname": "real_estate_properties_pkey",
+   "indexdef": "CREATE UNIQUE INDEX real_estate_properties_pkey ON public.real_estate_properties USING btree (id)"
+  },
+  {
+   "tablename": "real_estate_units",
+   "indexname": "real_estate_units_pkey",
+   "indexdef": "CREATE UNIQUE INDEX real_estate_units_pkey ON public.real_estate_units USING btree (id)"
+  },
+  {
+   "tablename": "role_corporations",
+   "indexname": "role_corporations_pkey",
+   "indexdef": "CREATE UNIQUE INDEX role_corporations_pkey ON public.role_corporations USING btree (role_id, corporation_id)"
+  },
+  {
+   "tablename": "role_permissions",
+   "indexname": "role_permissions_pkey",
+   "indexdef": "CREATE UNIQUE INDEX role_permissions_pkey ON public.role_permissions USING btree (role_id, category_id)"
+  },
+  {
+   "tablename": "roles",
+   "indexname": "roles_pkey",
+   "indexdef": "CREATE UNIQUE INDEX roles_pkey ON public.roles USING btree (id)"
+  },
+  {
+   "tablename": "roles",
+   "indexname": "roles_name_key",
+   "indexdef": "CREATE UNIQUE INDEX roles_name_key ON public.roles USING btree (name)"
+  },
+  {
+   "tablename": "stores",
+   "indexname": "stores_store_code_key",
+   "indexdef": "CREATE UNIQUE INDEX stores_store_code_key ON public.stores USING btree (store_code)"
+  },
+  {
+   "tablename": "stores",
+   "indexname": "stores_pkey",
+   "indexdef": "CREATE UNIQUE INDEX stores_pkey ON public.stores USING btree (id)"
+  },
+  {
+   "tablename": "suppliers",
+   "indexname": "suppliers_pkey",
+   "indexdef": "CREATE UNIQUE INDEX suppliers_pkey ON public.suppliers USING btree (id)"
+  },
+  {
+   "tablename": "user_corporations",
+   "indexname": "user_corporations_pkey",
+   "indexdef": "CREATE UNIQUE INDEX user_corporations_pkey ON public.user_corporations USING btree (user_id, corporation_id)"
+  },
+  {
+   "tablename": "user_permissions",
+   "indexname": "user_permissions_pkey",
+   "indexdef": "CREATE UNIQUE INDEX user_permissions_pkey ON public.user_permissions USING btree (user_id, category_id)"
+  },
+  {
+   "tablename": "user_stores",
+   "indexname": "user_stores_pkey",
+   "indexdef": "CREATE UNIQUE INDEX user_stores_pkey ON public.user_stores USING btree (user_id, store_id)"
+  },
+  {
+   "tablename": "utilities",
+   "indexname": "utilities_pkey",
+   "indexdef": "CREATE UNIQUE INDEX utilities_pkey ON public.utilities USING btree (id)"
+  }
+ ],
+ "policies": [
+  {
+   "tablename": "audit_logs",
+   "policyname": "master_all",
+   "cmd": "ALL",
+   "permissive": "PERMISSIVE",
+   "roles": "{public}",
+   "qual": "is_master()",
+   "with_check": null
+  },
+  {
+   "tablename": "bank_accounts",
+   "policyname": "master_all",
+   "cmd": "ALL",
+   "permissive": "PERMISSIVE",
+   "roles": "{public}",
+   "qual": "is_master()",
+   "with_check": null
+  },
+  {
+   "tablename": "bank_accounts",
+   "policyname": "read_bank_accounts",
+   "cmd": "SELECT",
+   "permissive": "PERMISSIVE",
+   "roles": "{public}",
+   "qual": "(has_perm('bank'::text) AND can_access_corp(corporation_id))",
+   "with_check": null
+  },
+  {
+   "tablename": "brands",
+   "policyname": "master_all",
+   "cmd": "ALL",
+   "permissive": "PERMISSIVE",
+   "roles": "{public}",
+   "qual": "is_master()",
+   "with_check": null
+  },
+  {
+   "tablename": "brands",
+   "policyname": "read_basics",
+   "cmd": "SELECT",
+   "permissive": "PERMISSIVE",
+   "roles": "{public}",
+   "qual": "can_access_corp(corporation_id)",
+   "with_check": null
+  },
+  {
+   "tablename": "categories",
+   "policyname": "master_all",
+   "cmd": "ALL",
+   "permissive": "PERMISSIVE",
+   "roles": "{public}",
+   "qual": "is_master()",
+   "with_check": null
+  },
+  {
+   "tablename": "categories",
+   "policyname": "read_basics",
+   "cmd": "SELECT",
+   "permissive": "PERMISSIVE",
+   "roles": "{public}",
+   "qual": "(auth.uid() IS NOT NULL)",
+   "with_check": null
+  },
+  {
+   "tablename": "corporations",
+   "policyname": "master_all",
+   "cmd": "ALL",
+   "permissive": "PERMISSIVE",
+   "roles": "{public}",
+   "qual": "is_master()",
+   "with_check": null
+  },
+  {
+   "tablename": "corporations",
+   "policyname": "read_basics",
+   "cmd": "SELECT",
+   "permissive": "PERMISSIVE",
+   "roles": "{public}",
+   "qual": "can_access_corp(id)",
+   "with_check": null
+  },
+  {
+   "tablename": "credential_secrets",
+   "policyname": "master_all",
+   "cmd": "ALL",
+   "permissive": "PERMISSIVE",
+   "roles": "{public}",
+   "qual": "is_master()",
+   "with_check": null
+  },
+  {
+   "tablename": "credential_stores",
+   "policyname": "master_all",
+   "cmd": "ALL",
+   "permissive": "PERMISSIVE",
+   "roles": "{public}",
+   "qual": "is_master()",
+   "with_check": null
+  },
+  {
+   "tablename": "credential_stores",
+   "policyname": "read_credential_stores",
+   "cmd": "SELECT",
+   "permissive": "PERMISSIVE",
+   "roles": "{public}",
+   "qual": "(auth.uid() IS NOT NULL)",
+   "with_check": null
+  },
+  {
+   "tablename": "credentials",
+   "policyname": "master_all",
+   "cmd": "ALL",
+   "permissive": "PERMISSIVE",
+   "roles": "{public}",
+   "qual": "is_master()",
+   "with_check": null
+  },
+  {
+   "tablename": "credentials",
+   "policyname": "read_credentials",
+   "cmd": "SELECT",
+   "permissive": "PERMISSIVE",
+   "roles": "{public}",
+   "qual": "(has_perm('id_pw'::text) AND can_access_corp(corporation_id))",
+   "with_check": null
+  },
+  {
+   "tablename": "deadlines",
+   "policyname": "master_all",
+   "cmd": "ALL",
+   "permissive": "PERMISSIVE",
+   "roles": "{public}",
+   "qual": "is_master()",
+   "with_check": null
+  },
+  {
+   "tablename": "deadlines",
+   "policyname": "read_deadlines",
+   "cmd": "SELECT",
+   "permissive": "PERMISSIVE",
+   "roles": "{public}",
+   "qual": "can_access_corp(corporation_id)",
+   "with_check": null
+  },
+  {
+   "tablename": "documents",
+   "policyname": "insert_documents",
+   "cmd": "INSERT",
+   "permissive": "PERMISSIVE",
+   "roles": "{public}",
+   "qual": null,
+   "with_check": "(auth.uid() IS NOT NULL)"
+  },
+  {
+   "tablename": "documents",
+   "policyname": "master_all",
+   "cmd": "ALL",
+   "permissive": "PERMISSIVE",
+   "roles": "{public}",
+   "qual": "is_master()",
+   "with_check": null
+  },
+  {
+   "tablename": "documents",
+   "policyname": "read_documents",
+   "cmd": "SELECT",
+   "permissive": "PERMISSIVE",
+   "roles": "{public}",
+   "qual": "can_access_corp(corporation_id)",
+   "with_check": null
+  },
+  {
+   "tablename": "employee_salaries",
+   "policyname": "master_all",
+   "cmd": "ALL",
+   "permissive": "PERMISSIVE",
+   "roles": "{public}",
+   "qual": "is_master()",
+   "with_check": null
+  },
+  {
+   "tablename": "employee_salaries",
+   "policyname": "read_salaries",
+   "cmd": "SELECT",
+   "permissive": "PERMISSIVE",
+   "roles": "{public}",
+   "qual": "has_perm('salary'::text)",
+   "with_check": null
+  },
+  {
+   "tablename": "employees",
+   "policyname": "master_all",
+   "cmd": "ALL",
+   "permissive": "PERMISSIVE",
+   "roles": "{public}",
+   "qual": "is_master()",
+   "with_check": null
+  },
+  {
+   "tablename": "employees",
+   "policyname": "read_employees",
+   "cmd": "SELECT",
+   "permissive": "PERMISSIVE",
+   "roles": "{public}",
+   "qual": "(has_perm('employee'::text) AND can_access_corp(corporation_id))",
+   "with_check": null
+  },
+  {
+   "tablename": "loans",
+   "policyname": "master_all",
+   "cmd": "ALL",
+   "permissive": "PERMISSIVE",
+   "roles": "{public}",
+   "qual": "is_master()",
+   "with_check": null
+  },
+  {
+   "tablename": "loans",
+   "policyname": "read_loans",
+   "cmd": "SELECT",
+   "permissive": "PERMISSIVE",
+   "roles": "{public}",
+   "qual": "(has_perm('loan'::text) AND can_access_corp(corporation_id))",
+   "with_check": null
+  },
+  {
+   "tablename": "photos",
+   "policyname": "insert_photos",
+   "cmd": "INSERT",
+   "permissive": "PERMISSIVE",
+   "roles": "{public}",
+   "qual": null,
+   "with_check": "(auth.uid() IS NOT NULL)"
+  },
+  {
+   "tablename": "photos",
+   "policyname": "master_all",
+   "cmd": "ALL",
+   "permissive": "PERMISSIVE",
+   "roles": "{public}",
+   "qual": "is_master()",
+   "with_check": null
+  },
+  {
+   "tablename": "photos",
+   "policyname": "read_photos",
+   "cmd": "SELECT",
+   "permissive": "PERMISSIVE",
+   "roles": "{public}",
+   "qual": "can_access_corp(corporation_id)",
+   "with_check": null
+  },
+  {
+   "tablename": "profiles",
+   "policyname": "master_all",
+   "cmd": "ALL",
+   "permissive": "PERMISSIVE",
+   "roles": "{public}",
+   "qual": "is_master()",
+   "with_check": null
+  },
+  {
+   "tablename": "profiles",
+   "policyname": "read_own_profile",
+   "cmd": "SELECT",
+   "permissive": "PERMISSIVE",
+   "roles": "{public}",
+   "qual": "(id = auth.uid())",
+   "with_check": null
+  },
+  {
+   "tablename": "properties",
+   "policyname": "master_all",
+   "cmd": "ALL",
+   "permissive": "PERMISSIVE",
+   "roles": "{public}",
+   "qual": "is_master()",
+   "with_check": null
+  },
+  {
+   "tablename": "properties",
+   "policyname": "read_properties",
+   "cmd": "SELECT",
+   "permissive": "PERMISSIVE",
+   "roles": "{public}",
+   "qual": "(has_perm('property'::text) AND can_access_corp(corporation_id))",
+   "with_check": null
+  },
+  {
+   "tablename": "real_estate_properties",
+   "policyname": "master_all",
+   "cmd": "ALL",
+   "permissive": "PERMISSIVE",
+   "roles": "{public}",
+   "qual": "is_master()",
+   "with_check": null
+  },
+  {
+   "tablename": "real_estate_properties",
+   "policyname": "read_re",
+   "cmd": "SELECT",
+   "permissive": "PERMISSIVE",
+   "roles": "{public}",
+   "qual": "(has_perm('real_estate'::text) AND can_access_corp(corporation_id))",
+   "with_check": null
+  },
+  {
+   "tablename": "real_estate_units",
+   "policyname": "master_all",
+   "cmd": "ALL",
+   "permissive": "PERMISSIVE",
+   "roles": "{public}",
+   "qual": "is_master()",
+   "with_check": null
+  },
+  {
+   "tablename": "real_estate_units",
+   "policyname": "read_reu",
+   "cmd": "SELECT",
+   "permissive": "PERMISSIVE",
+   "roles": "{public}",
+   "qual": "has_perm('real_estate'::text)",
+   "with_check": null
+  },
+  {
+   "tablename": "role_corporations",
+   "policyname": "master_all",
+   "cmd": "ALL",
+   "permissive": "PERMISSIVE",
+   "roles": "{public}",
+   "qual": "is_master()",
+   "with_check": null
+  },
+  {
+   "tablename": "role_corporations",
+   "policyname": "read_rc",
+   "cmd": "SELECT",
+   "permissive": "PERMISSIVE",
+   "roles": "{public}",
+   "qual": "(auth.uid() IS NOT NULL)",
+   "with_check": null
+  },
+  {
+   "tablename": "role_permissions",
+   "policyname": "master_all",
+   "cmd": "ALL",
+   "permissive": "PERMISSIVE",
+   "roles": "{public}",
+   "qual": "is_master()",
+   "with_check": null
+  },
+  {
+   "tablename": "role_permissions",
+   "policyname": "read_own_permissions",
+   "cmd": "SELECT",
+   "permissive": "PERMISSIVE",
+   "roles": "{public}",
+   "qual": "(role_id = ( SELECT profiles.role_id\n   FROM profiles\n  WHERE (profiles.id = auth.uid())))",
+   "with_check": null
+  },
+  {
+   "tablename": "roles",
+   "policyname": "master_all",
+   "cmd": "ALL",
+   "permissive": "PERMISSIVE",
+   "roles": "{public}",
+   "qual": "is_master()",
+   "with_check": null
+  },
+  {
+   "tablename": "stores",
+   "policyname": "master_all",
+   "cmd": "ALL",
+   "permissive": "PERMISSIVE",
+   "roles": "{public}",
+   "qual": "is_master()",
+   "with_check": null
+  },
+  {
+   "tablename": "stores",
+   "policyname": "read_basics",
+   "cmd": "SELECT",
+   "permissive": "PERMISSIVE",
+   "roles": "{public}",
+   "qual": "can_access_corp(corporation_id)",
+   "with_check": null
+  },
+  {
+   "tablename": "suppliers",
+   "policyname": "master_all",
+   "cmd": "ALL",
+   "permissive": "PERMISSIVE",
+   "roles": "{public}",
+   "qual": "is_master()",
+   "with_check": null
+  },
+  {
+   "tablename": "suppliers",
+   "policyname": "read_suppliers",
+   "cmd": "SELECT",
+   "permissive": "PERMISSIVE",
+   "roles": "{public}",
+   "qual": "(has_perm('supplier'::text) AND can_access_corp(corporation_id))",
+   "with_check": null
+  },
+  {
+   "tablename": "user_corporations",
+   "policyname": "master_all",
+   "cmd": "ALL",
+   "permissive": "PERMISSIVE",
+   "roles": "{public}",
+   "qual": "is_master()",
+   "with_check": null
+  },
+  {
+   "tablename": "user_corporations",
+   "policyname": "read_own_uc",
+   "cmd": "SELECT",
+   "permissive": "PERMISSIVE",
+   "roles": "{public}",
+   "qual": "(user_id = auth.uid())",
+   "with_check": null
+  },
+  {
+   "tablename": "user_permissions",
+   "policyname": "master_all",
+   "cmd": "ALL",
+   "permissive": "PERMISSIVE",
+   "roles": "{public}",
+   "qual": "is_master()",
+   "with_check": null
+  },
+  {
+   "tablename": "user_permissions",
+   "policyname": "read_own_up",
+   "cmd": "SELECT",
+   "permissive": "PERMISSIVE",
+   "roles": "{public}",
+   "qual": "(user_id = auth.uid())",
+   "with_check": null
+  },
+  {
+   "tablename": "user_stores",
+   "policyname": "master_all",
+   "cmd": "ALL",
+   "permissive": "PERMISSIVE",
+   "roles": "{public}",
+   "qual": "is_master()",
+   "with_check": null
+  },
+  {
+   "tablename": "user_stores",
+   "policyname": "read_own_stores",
+   "cmd": "SELECT",
+   "permissive": "PERMISSIVE",
+   "roles": "{public}",
+   "qual": "(user_id = auth.uid())",
+   "with_check": null
+  },
+  {
+   "tablename": "utilities",
+   "policyname": "master_all",
+   "cmd": "ALL",
+   "permissive": "PERMISSIVE",
+   "roles": "{public}",
+   "qual": "is_master()",
+   "with_check": null
+  },
+  {
+   "tablename": "utilities",
+   "policyname": "read_utilities",
+   "cmd": "SELECT",
+   "permissive": "PERMISSIVE",
+   "roles": "{public}",
+   "qual": "(has_perm('utility'::text) AND can_access_corp(corporation_id))",
+   "with_check": null
+  }
+ ],
+ "functions": [
+  {
+   "proname": "archive_secret",
+   "def": "CREATE OR REPLACE FUNCTION public.archive_secret()\n RETURNS trigger\n LANGUAGE plpgsql\n SECURITY DEFINER\nAS $function$\nbegin\n  if old.secret is distinct from new.secret then\n    insert into credential_secret_history (credential_id, secret, replaced_by)\n    values (old.credential_id, old.secret, auth.uid());\n  end if;\n  return new;\nend $function$\n"
+  },
+  {
+   "proname": "can_access_corp",
+   "def": "CREATE OR REPLACE FUNCTION public.can_access_corp(corp uuid)\n RETURNS boolean\n LANGUAGE sql\n STABLE SECURITY DEFINER\nAS $function$\n  select coalesce((\n    select case\n      when p.is_master then true\n      when exists (select 1 from user_corporations uc where uc.user_id = p.id)\n        then exists (select 1 from user_corporations uc where uc.user_id = p.id and uc.corporation_id = corp)\n      when exists (select 1 from role_corporations rc where rc.role_id = p.role_id)\n        then exists (select 1 from role_corporations rc where rc.role_id = p.role_id and rc.corporation_id = corp)\n      else true\n    end\n    from profiles p where p.id = auth.uid() and p.is_active\n  ), false);\n$function$\n"
+  },
+  {
+   "proname": "export_credentials",
+   "def": "CREATE OR REPLACE FUNCTION public.export_credentials(corp uuid)\n RETURNS TABLE(service_name text, category text, store_names text, username text, secret text, login_url text, media_contact_name text, media_contact_phone text, memo text)\n LANGUAGE plpgsql\n SECURITY DEFINER\nAS $function$\ndeclare\n  v_ok boolean;\nbegin\n  select (p.is_master or exists (\n    select 1 from role_permissions rp\n    where rp.role_id = p.role_id\n      and rp.category_id = 'id_pw'\n      and rp.permission = 'edit'\n  )) into v_ok\n  from profiles p\n  where p.id = auth.uid() and p.is_active;\n\n  if v_ok is distinct from true then\n    raise exception 'permission denied';\n  end if;\n\n  insert into audit_logs (user_id, action, target)\n  values (auth.uid(), 'export_csv', 'credentials');\n\n  return query\n    select\n      c.service_name,\n      c.category,\n      coalesce((\n        select string_agg(s.name, '・')\n        from credential_stores cs\n        join stores s on s.id = cs.store_id\n        where cs.credential_id = c.id\n      ), '法人全体'),\n      c.username,\n      coalesce(sec.secret, ''),\n      c.login_url,\n      c.media_contact_name,\n      c.media_contact_phone,\n      c.memo\n    from credentials c\n    left join credential_secrets sec on sec.credential_id = c.id\n    where c.corporation_id = corp\n    order by c.service_name;\nend $function$\n"
+  },
+  {
+   "proname": "handle_new_user",
+   "def": "CREATE OR REPLACE FUNCTION public.handle_new_user()\n RETURNS trigger\n LANGUAGE plpgsql\n SECURITY DEFINER\nAS $function$\nbegin\n  insert into profiles (id, name, email)\n  values (new.id, coalesce(split_part(new.email, '@', 1), '新規ユーザー'), new.email)\n  on conflict (id) do nothing;\n  return new;\nend $function$\n"
+  },
+  {
+   "proname": "has_perm",
+   "def": "CREATE OR REPLACE FUNCTION public.has_perm(cat text)\n RETURNS boolean\n LANGUAGE sql\n STABLE SECURITY DEFINER\nAS $function$\n  select coalesce((\n    select case\n      when p.is_master then true\n      when exists (select 1 from user_permissions up where up.user_id = p.id and up.category_id = cat)\n        then (select up.permission <> 'none' from user_permissions up where up.user_id = p.id and up.category_id = cat)\n      else exists (select 1 from role_permissions rp where rp.role_id = p.role_id and rp.category_id = cat and rp.permission <> 'none')\n    end\n    from profiles p where p.id = auth.uid() and p.is_active\n  ), false);\n$function$\n"
+  },
+  {
+   "proname": "is_master",
+   "def": "CREATE OR REPLACE FUNCTION public.is_master()\n RETURNS boolean\n LANGUAGE sql\n STABLE SECURITY DEFINER\nAS $function$\n  select coalesce(\n    (select p.is_master from profiles p where p.id = auth.uid() and p.is_active),\n    false\n  );\n$function$\n"
+  },
+  {
+   "proname": "reveal_secret",
+   "def": "CREATE OR REPLACE FUNCTION public.reveal_secret(cred_id uuid, mode text DEFAULT 'reveal'::text)\n RETURNS text\n LANGUAGE plpgsql\n SECURITY DEFINER\nAS $function$\ndeclare\n  v_ok boolean;\n  v_secret text;\n  v_service text;\nbegin\n  select (p.is_master or exists (\n    select 1 from role_permissions rp\n    where rp.role_id = p.role_id\n      and rp.category_id = 'id_pw'\n      and rp.permission <> 'none'\n  )) into v_ok\n  from profiles p\n  where p.id = auth.uid() and p.is_active;\n\n  if v_ok is distinct from true then\n    raise exception 'permission denied';\n  end if;\n\n  select c.service_name into v_service from credentials c where c.id = cred_id;\n  select s.secret into v_secret from credential_secrets s where s.credential_id = cred_id;\n\n  insert into audit_logs (user_id, action, target)\n  values (auth.uid(), case when mode = 'copy' then 'copy_secret' else 'reveal_secret' end, v_service);\n\n  return v_secret;\nend $function$\n"
+  },
+  {
+   "proname": "reveal_secret_history",
+   "def": "CREATE OR REPLACE FUNCTION public.reveal_secret_history(cred_id uuid)\n RETURNS TABLE(replaced_at timestamp with time zone, replaced_by_name text, secret text)\n LANGUAGE plpgsql\n SECURITY DEFINER\nAS $function$\nbegin\n  if not is_master() then\n    raise exception 'permission denied';\n  end if;\n\n  insert into audit_logs (user_id, action, target)\n  values (auth.uid(), 'reveal_secret_history',\n    (select c.service_name from credentials c where c.id = cred_id));\n\n  return query\n    select h.replaced_at, coalesce(p.name, '不明'), h.secret\n    from credential_secret_history h\n    left join profiles p on p.id = h.replaced_by\n    where h.credential_id = cred_id\n    order by h.replaced_at desc\n    limit 20;\nend $function$\n"
+  }
+ ],
+ "triggers": [
+  {
+   "tbl": "credential_secrets",
+   "tgname": "on_secret_update",
+   "def": "CREATE TRIGGER on_secret_update BEFORE UPDATE ON public.credential_secrets FOR EACH ROW EXECUTE FUNCTION archive_secret()"
+  },
+  {
+   "tbl": "users",
+   "tgname": "on_auth_user_created",
+   "def": "CREATE TRIGGER on_auth_user_created AFTER INSERT ON auth.users FOR EACH ROW EXECUTE FUNCTION handle_new_user()"
+  }
+ ]
+}
