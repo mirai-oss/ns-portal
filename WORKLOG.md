@@ -11,3 +11,8 @@
 - 認証情報の置き場: ~/.config/ns-portal/supabase_pat と hub_service_role（chmod 600・リポジトリ外）
 - 経営DのSSO本番開通をユーザーが確認（shunji.nakayama@ns0314.com ↔ shachoアカウント。アカウント1本化第一号）
 - **権限設定画面を実装**: supabase/2026-08-05_portal_permissions.sql（portal_permissions=役割×システム既定24行、portal_user_overrides=個人例外、portal_is_master()、RLS=読み全員/書きマスターのみ）。ポータルに⚙️権限設定（マスター専用）＝役割マトリクス＋個人別例外（既定に従う/表示/非表示）。一時マスター・一時アルバイトユーザーで実機E2E（マトリクス保存→DB反映→復元、個人例外keiei=表示→アルバイト側ログインで経営Dタイル出現を確認）後、テストデータ全削除
+- フェーズ2a: 精算ダッシュボードにSSO実装（sd_supaLogin／権限シートG列メール／委託先はサーバー側で明示拒否）。SD_VERSION v5.4→v5.5-sso。**GAS再デプロイ待ち**
+- ポータル自動ログイン: ns-portal/tori/seisanは同一オリジン(mirai-oss.github.io)なのでlocalStorageを共有できる。両ダッシュボードが起動時にポータルのセッションを検出→期限切れならrefresh→supalogin。失敗時は静かに通常ログイン画面（実機で確認）
+- フェーズ2b調査: 社内情報管理システムは別Supabase(wciefkpooncglahqdtmu)・28テーブル/239列/53ポリシー/8関数/12MB・ストレージ1ファイル・利用者1人(中山さん、is_master)。**利用者が1人なのは連携待ちのためで今後増える**とユーザーから情報あり
+- 移設キット作成: supabase/migrate-info/（構造抽出→DDL生成）。ハブに一時スキーマを作り28テーブル/239列/FK43本の完全再現を検証済み→検証用スキーマは削除。本番切替はVercel環境変数変更が必要なため未実施
+- 要件定義書に「6.5 データ横断の方針」追記（人=users.id・店舗=store_no・評価はハブに置く・給与は分離金庫・正は1箇所）
