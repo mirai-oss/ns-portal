@@ -9,3 +9,5 @@
 - フェーズ1b実行: ユーザーのSupabase PATでManagement API経由SQL実行。stores 01〜12反映（09〜12はis_active=false）、store_aliases 34件、users.is_master追加、中山俊士（CEO）にis_master=true付与。確認クエリで検証済み
 - フェーズ1c実装: tori-dashboardにSSO追加（GAS action=supalogin / アカウントシートK列メール / ログイン画面に統合ログインUI）。一時Supabaseユーザーで実機E2E（認証成功→旧GAS検知→案内表示）を確認後ユーザー削除。app.js v91公開済み。**GAS再デプロイ（sso-v46）待ち**
 - 認証情報の置き場: ~/.config/ns-portal/supabase_pat と hub_service_role（chmod 600・リポジトリ外）
+- 経営DのSSO本番開通をユーザーが確認（shunji.nakayama@ns0314.com ↔ shachoアカウント。アカウント1本化第一号）
+- **権限設定画面を実装**: supabase/2026-08-05_portal_permissions.sql（portal_permissions=役割×システム既定24行、portal_user_overrides=個人例外、portal_is_master()、RLS=読み全員/書きマスターのみ）。ポータルに⚙️権限設定（マスター専用）＝役割マトリクス＋個人別例外（既定に従う/表示/非表示）。一時マスター・一時アルバイトユーザーで実機E2E（マトリクス保存→DB反映→復元、個人例外keiei=表示→アルバイト側ログインで経営Dタイル出現を確認）後、テストデータ全削除

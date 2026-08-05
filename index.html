@@ -22,12 +22,14 @@ header h1{font-size:22px;margin-top:6px;letter-spacing:.04em}
 header p{color:var(--muted);font-size:13px;margin-top:4px}
 .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:24px;box-shadow:0 1px 4px rgba(0,0,0,.04)}
 label{display:block;font-size:13px;color:var(--muted);margin:14px 0 4px}
-input{width:100%;padding:12px 14px;font-size:16px;border:1px solid var(--line);border-radius:10px;background:var(--bg);color:var(--ink)}
+input,select.inp{width:100%;padding:12px 14px;font-size:16px;border:1px solid var(--line);border-radius:10px;background:var(--bg);color:var(--ink)}
 input:focus{outline:2px solid var(--accent);border-color:transparent}
 .btn{display:block;width:100%;margin-top:20px;padding:13px;font-size:16px;font-weight:600;color:#fff;background:var(--accent);border:none;border-radius:10px;cursor:pointer}
 .btn:hover{background:var(--accent2)}
 .btn:disabled{opacity:.5;cursor:default}
+.btn.sub{background:transparent;color:var(--muted);border:1px dashed var(--muted);font-weight:400}
 .err{color:#c62828;font-size:13px;margin-top:12px;text-align:center;min-height:1em}
+.msg-ok{color:var(--ok)}
 .userbar{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:18px;flex-wrap:wrap}
 .userbar .who{font-size:15px}
 .badge{display:inline-block;font-size:11px;font-weight:600;padding:3px 10px;border-radius:99px;background:var(--accent);color:#fff;margin-left:6px;vertical-align:1px}
@@ -47,6 +49,20 @@ details{margin-top:26px}
 summary{font-size:13px;color:var(--muted);cursor:pointer;text-align:center}
 .hidden{display:none}
 .spin{text-align:center;color:var(--muted);padding:60px 0}
+/* 権限設定 */
+.pm-scroll{overflow-x:auto;margin-top:10px}
+table.pm{border-collapse:collapse;width:100%;font-size:13px}
+table.pm th,table.pm td{border:1px solid var(--line);padding:8px 6px;text-align:center;white-space:nowrap}
+table.pm th:first-child,table.pm td:first-child{text-align:left;padding-left:10px}
+table.pm th{background:var(--bg);font-weight:600;font-size:12px}
+table.pm input[type=checkbox]{width:18px;height:18px;padding:0;accent-color:var(--accent);cursor:pointer}
+.sec-title{font-size:15px;font-weight:600;margin:26px 0 4px}
+.sec-sub{font-size:12px;color:var(--muted);line-height:1.6}
+.ov-row{display:flex;align-items:center;gap:10px;margin-top:10px;flex-wrap:wrap}
+.ov-row .nm{flex:1;min-width:120px;font-size:14px}
+.ov-row select{padding:8px 10px;font-size:14px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink)}
+.ov-row select.ovon{border-color:var(--ok);color:var(--ok);font-weight:600}
+.ov-row select.ovoff{border-color:#c62828;color:#c62828;font-weight:600}
 </style>
 </head>
 <body>
@@ -62,11 +78,12 @@ summary{font-size:13px;color:var(--muted);cursor:pointer;text-align:center}
 const SUPA_URL="https://uuvsxzhpxtghojoubjcc.supabase.co";
 const SUPA_KEY="sb_publishable_MrwPJAx_Ws_fdRutprKCiQ_dg3wCiTr"; // 公開用キー（秘密情報ではない）
 const LS_KEY="nsportal_session_v1";
-const ROLE_NAME={AL:"アルバイト",SHAIN:"社員",TENCHO:"店長",TEAM:"チーム長",HQ:"本部",CEO:"社長"};
+const ROLE_NAME={CEO:"社長",HQ:"本部",TEAM:"チーム長",TENCHO:"店長",SHAIN:"社員",AL:"アルバイト"};
+const ROLE_ORDER=["CEO","HQ","TEAM","TENCHO","SHAIN","AL"];
 
 const SYSTEMS=[
  {key:"keiei", ico:"📊", name:"経営ダッシュボード", desc:"売上・広告・PL・入金・全店比較",
-  url:"https://mirai-oss.github.io/tori-dashboard/", roles:["TENCHO","TEAM","HQ","CEO"], login:"専用ID/PW（統合予定）"},
+  url:"https://mirai-oss.github.io/tori-dashboard/", roles:["TENCHO","TEAM","HQ","CEO"], login:"統合ログイン対応", sso:true},
  {key:"seisan", ico:"🧾", name:"精算ダッシュボード", desc:"業務委託店舗の精算書・振込管理",
   url:"https://mirai-oss.github.io/seisan-dashboard/", roles:["HQ","CEO"], login:"専用ID/PW（統合予定）"},
  {key:"joho", ico:"🗂️", name:"社内情報管理", desc:"法人・店舗・契約・口座などの重要情報",
@@ -80,13 +97,26 @@ const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&
 const sess={get:()=>{try{return JSON.parse(localStorage.getItem(LS_KEY))}catch(e){return null}},
             set:v=>localStorage.setItem(LS_KEY,JSON.stringify(v)),
             clear:()=>localStorage.removeItem(LS_KEY)};
+let ME=null;            // 自分のusers行
+let PERMS=null;         // {role:{system_key:bool}} 役割の既定（DBから）
+let MY_OVR={};          // 自分の例外 {system_key:bool}
+let VIEW="home";        // home | settings
+let USERS=[];           // 設定画面用ユーザー一覧
+let OVR_USER=null;      // 設定画面で選択中のユーザーid
+let OVR_MAP={};         // 選択中ユーザーの例外
 
 async function api(path,opt={},token){
   const r=await fetch(SUPA_URL+path,{...opt,headers:{
     "apikey":SUPA_KEY,"Content-Type":"application/json",
     ...(token?{"Authorization":"Bearer "+token}:{}),...(opt.headers||{})}});
-  let body=null; try{body=await r.json()}catch(e){}
+  let body=null; const tx=await r.text(); try{body=tx?JSON.parse(tx):null}catch(e){}
   return {ok:r.ok,status:r.status,body};
+}
+async function authed(path,opt={}){
+  const s=sess.get(); if(!s) return {ok:false,status:401,body:null};
+  let r=await api(path,opt,s.at);
+  if(r.status===401){ if(!await refresh()) return r; r=await api(path,opt,sess.get().at); }
+  return r;
 }
 
 async function login(email,pw){
@@ -95,7 +125,6 @@ async function login(email,pw){
   sess.set({at:r.body.access_token,rt:r.body.refresh_token,uid:r.body.user.id});
   return r.body;
 }
-
 async function refresh(){
   const s=sess.get(); if(!s?.rt) return false;
   const r=await api("/auth/v1/token?grant_type=refresh_token",{method:"POST",body:JSON.stringify({refresh_token:s.rt})});
@@ -103,16 +132,35 @@ async function refresh(){
   sess.set({at:r.body.access_token,rt:r.body.refresh_token,uid:r.body.user.id});
   return true;
 }
-
 async function fetchMe(){
   const s=sess.get(); if(!s) return null;
-  let r=await api(`/rest/v1/users?id=eq.${s.uid}&select=*`,{},s.at);
-  if(r.status===401){ if(!await refresh()) return null; const s2=sess.get(); r=await api(`/rest/v1/users?id=eq.${s2.uid}&select=*`,{},s2.at); }
+  const r=await authed(`/rest/v1/users?id=eq.${s.uid}&select=*`);
   if(!r.ok||!Array.isArray(r.body)||!r.body[0]) return null;
   return r.body[0];
 }
+async function fetchPerms(){
+  // 役割の既定と自分の例外。失敗してもコード内の初期値で動く（PERMS=null）
+  const s=sess.get(); if(!s) return;
+  const [p,o]=await Promise.all([
+    authed("/rest/v1/portal_permissions?select=role,system_key,allowed"),
+    authed(`/rest/v1/portal_user_overrides?user_id=eq.${s.uid}&select=system_key,allowed`)
+  ]);
+  if(p.ok&&Array.isArray(p.body)&&p.body.length){
+    PERMS={};
+    p.body.forEach(r=>{ (PERMS[r.role]=PERMS[r.role]||{})[r.system_key]=r.allowed; });
+  }
+  MY_OVR={};
+  if(o.ok&&Array.isArray(o.body)) o.body.forEach(r=>{ MY_OVR[r.system_key]=r.allowed; });
+}
+function canSee(sy,u){
+  if(u.is_master) return true;
+  if(sy.key in MY_OVR) return MY_OVR[sy.key];
+  if(PERMS&&PERMS[u.role]&&(sy.key in PERMS[u.role])) return PERMS[u.role][sy.key];
+  return sy.roles.includes(u.role); // DB未設定時の初期値
+}
 
 function renderLogin(err){
+  VIEW="home";
   $("app").innerHTML=`<div class="card">
     <label>メールアドレス</label><input type="email" id="lemail" autocomplete="username" inputmode="email">
     <label>パスワード</label><input type="password" id="lpw" autocomplete="current-password">
@@ -131,11 +179,14 @@ function renderLogin(err){
 
 function renderHome(u){
   const isMaster=!!u.is_master;
-  const tiles=SYSTEMS.filter(sy=>isMaster||sy.roles.includes(u.role));
+  const tiles=SYSTEMS.filter(sy=>canSee(sy,u));
   $("app").innerHTML=`
   <div class="userbar">
     <div class="who">👤 ${esc(u.name)}<span class="badge${isMaster?" master":""}">${isMaster?"マスター":esc(ROLE_NAME[u.role]||u.role)}</span></div>
-    <button class="linkbtn" id="lout">ログアウト</button>
+    <div>
+      ${isMaster?`<button class="linkbtn" id="gosettings">⚙️ 権限設定</button>`:""}
+      <button class="linkbtn" id="lout">ログアウト</button>
+    </div>
   </div>
   <div class="grid">${tiles.map(sy=>`
     <a class="tile" href="${sy.url}" target="_blank" rel="noopener">
@@ -151,17 +202,102 @@ function renderHome(u){
       <div class="note">ここで変えると日報・週報など統合アカウントを使う全システムのパスワードが変わります。</div>
     </div>
   </details>`;
+  if(isMaster)$("gosettings").onclick=async()=>{VIEW="settings";await renderSettings(u)};
   $("lout").onclick=async()=>{const s=sess.get();if(s)await api("/auth/v1/logout",{method:"POST"},s.at).catch(()=>{});sess.clear();renderLogin()};
   $("pwbtn").onclick=async()=>{
     const pw=$("npw").value;
     if(pw.length<8){$("pwmsg").textContent="8文字以上にしてください";return}
     $("pwbtn").disabled=true;
-    const s=sess.get();
-    const r=await api("/auth/v1/user",{method:"PUT",body:JSON.stringify({password:pw})},s.at);
+    const r=await authed("/auth/v1/user",{method:"PUT",body:JSON.stringify({password:pw})});
     $("pwbtn").disabled=false;
-    $("pwmsg").style.color=r.ok?"var(--ok)":"";
+    $("pwmsg").className=r.ok?"err msg-ok":"err";
     $("pwmsg").textContent=r.ok?"変更しました":"変更できませんでした: "+(r.body?.msg||r.status);
   };
+}
+
+/* ---------- マスター専用: 権限設定 ---------- */
+async function renderSettings(u){
+  $("app").innerHTML=`<div class="spin">権限設定を読み込み中…</div>`;
+  const [p,us]=await Promise.all([
+    authed("/rest/v1/portal_permissions?select=role,system_key,allowed"),
+    authed("/rest/v1/users?select=id,name,role,is_active,is_master&order=name")
+  ]);
+  if(!p.ok){$("app").innerHTML=`<div class="card"><p>権限データを読み込めませんでした（${p.status}）</p><button class="btn" onclick="location.reload()">再読み込み</button></div>`;return}
+  const pm={};
+  (p.body||[]).forEach(r=>{ (pm[r.role]=pm[r.role]||{})[r.system_key]=r.allowed; });
+  USERS=(us.body||[]).filter(x=>x.is_active&&!x.is_master);
+  if(!OVR_USER&&USERS.length)OVR_USER=USERS[0].id;
+  await loadOvr();
+
+  $("app").innerHTML=`
+  <div class="userbar">
+    <div class="who">⚙️ 権限設定<span class="badge master">マスター</span></div>
+    <button class="linkbtn" id="back">← ポータルへ戻る</button>
+  </div>
+  <div class="card">
+    <div class="sec-title" style="margin-top:0">役割ごとの既定（チェック＝表示する）</div>
+    <div class="sec-sub">役割ごとに、ポータルに表示するシステムを設定します。マスターは常に全システムが見えます。</div>
+    <div class="pm-scroll"><table class="pm">
+      <tr><th>システム</th>${ROLE_ORDER.map(r=>`<th>${ROLE_NAME[r]}</th>`).join("")}</tr>
+      ${SYSTEMS.map(sy=>`<tr><td>${sy.ico} ${esc(sy.name)}</td>${ROLE_ORDER.map(r=>{
+        const on=pm[r]?.[sy.key]??sy.roles.includes(r);
+        return `<td><input type="checkbox" data-role="${r}" data-sys="${sy.key}" ${on?"checked":""}></td>`;
+      }).join("")}</tr>`).join("")}
+    </table></div>
+    <button class="btn" id="savepm">役割の既定を保存</button>
+    <div class="err" id="pmmsg"></div>
+
+    <div class="sec-title">個人ごとの例外</div>
+    <div class="sec-sub">特定の人だけ既定と変えたいときに使います。「既定に従う」に戻せば役割の設定に追従します。</div>
+    <label>対象者</label>
+    <select class="inp" id="ovuser">${USERS.map(x=>`<option value="${x.id}" ${x.id===OVR_USER?"selected":""}>${esc(x.name)}（${ROLE_NAME[x.role]||x.role}）</option>`).join("")}</select>
+    <div id="ovlist">${ovListHtml()}</div>
+    <button class="btn" id="saveov">この人の例外を保存</button>
+    <div class="err" id="ovmsg"></div>
+  </div>`;
+  $("back").onclick=async()=>{VIEW="home";await fetchPerms();renderHome(ME)};
+  $("ovuser").onchange=async e=>{OVR_USER=e.target.value;await loadOvr();$("ovlist").innerHTML=ovListHtml();wireOvSelects()};
+  wireOvSelects();
+  $("savepm").onclick=async()=>{
+    const rows=[...document.querySelectorAll("table.pm input[type=checkbox]")].map(c=>({role:c.dataset.role,system_key:c.dataset.sys,allowed:c.checked}));
+    const m=$("pmmsg");m.className="err";m.textContent="保存中…";
+    const r=await authed("/rest/v1/portal_permissions",{method:"POST",headers:{Prefer:"resolution=merge-duplicates,return=minimal"},body:JSON.stringify(rows)});
+    m.className=r.ok?"err msg-ok":"err";
+    m.textContent=r.ok?"保存しました。次回のログイン/再読み込みから反映されます":"保存に失敗しました（"+r.status+"）";
+  };
+  $("saveov").onclick=async()=>{
+    const m=$("ovmsg");m.className="err";m.textContent="保存中…";
+    const sel=[...document.querySelectorAll("#ovlist select")];
+    const ups=[],dels=[];
+    sel.forEach(s=>{ if(s.value==="default")dels.push(s.dataset.sys); else ups.push({user_id:OVR_USER,system_key:s.dataset.sys,allowed:s.value==="on"}); });
+    let ok=true;
+    if(ups.length){ const r=await authed("/rest/v1/portal_user_overrides",{method:"POST",headers:{Prefer:"resolution=merge-duplicates,return=minimal"},body:JSON.stringify(ups)}); ok=ok&&r.ok; }
+    if(dels.length){ const r=await authed(`/rest/v1/portal_user_overrides?user_id=eq.${OVR_USER}&system_key=in.(${dels.join(",")})`,{method:"DELETE"}); ok=ok&&r.ok; }
+    m.className=ok?"err msg-ok":"err";
+    m.textContent=ok?"保存しました":"保存に失敗しました";
+  };
+}
+async function loadOvr(){
+  OVR_MAP={};
+  if(!OVR_USER)return;
+  const r=await authed(`/rest/v1/portal_user_overrides?user_id=eq.${OVR_USER}&select=system_key,allowed`);
+  if(r.ok&&Array.isArray(r.body))r.body.forEach(x=>{OVR_MAP[x.system_key]=x.allowed});
+}
+function ovListHtml(){
+  return SYSTEMS.map(sy=>{
+    const v=(sy.key in OVR_MAP)?(OVR_MAP[sy.key]?"on":"off"):"default";
+    return `<div class="ov-row"><span class="nm">${sy.ico} ${esc(sy.name)}</span>
+      <select data-sys="${sy.key}" class="${v==="on"?"ovon":v==="off"?"ovoff":""}">
+        <option value="default" ${v==="default"?"selected":""}>既定に従う</option>
+        <option value="on" ${v==="on"?"selected":""}>表示する</option>
+        <option value="off" ${v==="off"?"selected":""}>表示しない</option>
+      </select></div>`;
+  }).join("");
+}
+function wireOvSelects(){
+  document.querySelectorAll("#ovlist select").forEach(s=>{
+    s.onchange=()=>{s.className=s.value==="on"?"ovon":s.value==="off"?"ovoff":""};
+  });
 }
 
 async function main(){
@@ -169,6 +305,8 @@ async function main(){
   const u=await fetchMe();
   if(!u){sess.clear();renderLogin("セッションが切れました。もう一度ログインしてください。");return}
   if(u.is_active===false){sess.clear();renderLogin("このアカウントは無効化されています。本部までお問い合わせください。");return}
+  ME=u;
+  await fetchPerms();
   renderHome(u);
 }
 main();
