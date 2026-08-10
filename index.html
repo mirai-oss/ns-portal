@@ -104,6 +104,8 @@ const ROLE_NAME={CEO:"社長",HQ:"本部",TEAM:"チーム長",TENCHO:"店長",SH
 const ROLE_ORDER=["CEO","HQ","TEAM","TENCHO","SHAIN","AL"];
 
 const SYSTEMS=[
+ {key:"hqtasks", ico:"📌", name:"本部タスク", desc:"精算・広告費など本部ルーティンの進捗管理",
+  url:"tasks.html", roles:["TEAM","HQ","CEO"], login:"このアカウントでOK", sso:true},
  {key:"keiei", ico:"📊", name:"経営ダッシュボード", desc:"売上・広告・PL・入金・全店比較",
   url:"https://mirai-oss.github.io/tori-dashboard/", roles:["TENCHO","TEAM","HQ","CEO"], login:"統合ログイン対応", sso:true},
  {key:"seisan", ico:"🧾", name:"精算ダッシュボード", desc:"業務委託店舗の精算書・振込管理",

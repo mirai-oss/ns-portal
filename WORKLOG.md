@@ -25,3 +25,16 @@
 - 本部タスクボード設計書をv1.1確定版に更新: 確認4点の回答反映（専用テーブル承認／公開範囲=登録時に設定しRLS強制／全工程完了で自動完了・確認要は「社長確認」工程を入れる方式で3列化／通知=チャンネル登録×ルール方式）＋追加要望4点（👤自分フィルタは頻度横断・毎日タスクのシンプルUI[店舗別2択＋異常メモ必須で形骸化防止]・フリーワード検索[過去分含む]・📁過去タスク=月別無期限保存）。実装ステップ3d-1〜3d-4を定義
 - 設計書v1.2: シフト連携＝出勤日ベースの期限定義を追加（第5.5章）。休みでもタスクは対象日ごとに生成・表示継続、期限内=完了日≦対象日以降最初の出勤日。期限内フラグは保存せず対象日×完了日時×出勤日から都度計算（シフト導入後に遡及再判定可）。暫定はスマレジ勤怠実績→3eでシフト予定に切替。期限内完了率を評価KPIへ自動連携。たまりすぎ防止=出勤したのに未消化の日だけ数えて3日で停滞通知。実装ステップに3d-5追加
 - 実行スレッド用の実装指示書を作成: docs/実装指示書_本部タスクボード.md（並行セッション対策=git fetch必須・hq_接頭辞限定・既存ALTER禁止・新規ファイル中心／接続情報・SQL実行方法(curl必須)・実装手順3d-1〜3・テストの流儀・コミット規約・スコープ外を明記）。設計書v1.2が仕様の正
+
+## 2026-08-10 フェーズ3d-1実装（本部タスクボード 基盤＋ボード＋詳細）
+- supabase/2026-08-10_hq_tasks.sql 新規作成→Management API経由で適用（hq_接頭辞13テーブル: templates/template_steps/tasks/task_members/task_steps/links/photos/alerts/activity/generation_log/notify_channels/notify_rules/notifications ＋ hq_can_manage()等の関数・RLS一式・工程完了トリガー・親タスク自動完了トリガー）。既存テーブルは無変更。冪等・再適用で確認済み
+- **重要なバグ調査**: hq_tasksへのINSERT...RETURNINGがRLSで常に403拒否される不具合を発見。原因はSELECT方針`hq_task_visible(id)`が自テーブルをidで再クエリする設計だったため、INSERT直後の新規行をその内部サブクエリが認識できずRLS拒否になる（PostgreSQL/PostgRESTの既知の挙動。RETURNINGなしのINSERTや別テーブルからの参照では発生しない）。生SQLで最小再現（トリビアルなsecurity definer関数でも同様に失敗）してから特定。**対策**: hq_tasks自身のSELECT方針だけ`hq_task_visible_self(id, visibility, template_id)`という「行の列を直接渡す」版に変更（自己再クエリをやめる）。他テーブル（steps/links/photos/alerts/activity）は別テーブル参照のため元のhq_task_visible(task_id)のままで問題なし
+- tasks.html 新規実装: かんばん3列（未着手/進行中/完了）・サマリー信号（期限超過/今日期限/3日以上停止/今月完了、タップで絞り込み）・法人×頻度×👤自分の絞り込み（掛け合わせ可）・フリーワード検索（タイトル/注意事項/工程名/異常メモ/コメントを対象、過去分含む全期間）・🔁繰り返しタブ（月次表）・タスク詳細（工程の完了操作＝2択判定/異常メモ必須/写真必須をDBトリガーで強制、⚠️注意事項、リンク追加url/manual/credential、写真アップロード、履歴）・単発タスク作成UI。ログインはポータルのlocalStorageセッションをそのまま使用（SDKなし素fetch、index.htmlと同パターン）
+- index.html: 「📌 本部タスク」タイルを追加（表示条件はTEAM/HQ/CEO。既存タイル・ロジックは無変更、2行追加のみ）
+- **実機E2E**: service_roleで一時ユーザー3種（HQ役/TEAM役/AL役、*-test@example.com）を作成し検証
+  - HQ役: 単発タスク作成（工程2件）→両工程完了→親タスクが自動的に「完了」へ遷移することを確認。検索（「振込」でヒット）・繰り返しタブ（空状態）も確認
+  - TEAM役: 本部タスクタイル表示・ボード閲覧（visibility=all のタスクが見える）・自分が担当の工程を完了できることを確認。「単発タスク作成」ボタンが非表示であることを確認
+  - **RLS敵対テスト**: TEAM役でテンプレート作成・通知チャンネル登録を直接API POST→ともに403拒否を確認。他人のタスクのnotesを直接PATCH→RLSにより0件更新（実質拒否）を確認。AL役でタイルが表示されないこと、tasks.htmlを直接開いても担当外タスクは0件しか見えないこと、hq_tasks/hq_task_stepsへの直接SELECT/INSERTがそれぞれ空配列/403になることを確認
+  - テスト後: hq_tasks（カスケードでsteps等も含む）を全削除、一時ユーザー3件をauth.admin経由で削除。`select count(*) from users where email like '%test@example.com'`が0、`hq_tasks`/`hq_task_steps`が0件、ceo@example.comは健在であることを確認
+- 構文チェック: tasks.html・index.htmlのscriptブロックを`node -c`で確認
+- 未検証: 3d-2（繰り返しテンプレート・自動生成・毎日タスクUI）以降は未着手。GitHub Pagesへのデプロイ確認はコミット後に実施

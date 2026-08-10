@@ -1,0 +1,438 @@
+-- ============================================================
+-- 本部タスクボード（フェーズ3d／機能⑩）
+-- 画面=ポータル（tasks.html）／データ=ハブ。日報の既存tasksとは別物・無変更。
+-- テーブルはすべて hq_ 接頭辞の新規。既存テーブルへの変更なし。冪等。
+-- 設計書: docs/本部タスクボード設計書.html v1.2 が仕様の正
+-- ============================================================
+
+-- ---- 管理権限判定（マスター or 社長/本部） ----
+create or replace function hq_can_manage() returns boolean
+language sql stable security definer set search_path = public as $$
+  select coalesce(
+    (select (u.is_master or u.role in ('CEO','HQ'))
+     from users u where u.id = auth.uid() and u.is_active),
+    false
+  );
+$$;
+
+-- ---- テンプレート（繰り返しのひな形） ----
+create table if not exists hq_task_templates (
+  id uuid primary key default gen_random_uuid(),
+  title text not null,
+  corp text not null check (corp in ('LiveGate','SK','N-Style','トーホー')),
+  freq text not null check (freq in ('daily','weekly','monthly','once')),
+  weekly_dow int check (weekly_dow between 0 and 6),      -- freq='weekly'（0=日〜6=土）
+  monthly_dom int check (monthly_dom between 1 and 31),   -- freq='monthly'
+  due_offset_days int not null default 0,                 -- 対象日から期限までのオフセット(日)
+  notes text not null default '',                          -- ⚠️注意事項の既定
+  visibility text not null default 'all' check (visibility in ('all','members')),
+  alert_before3 boolean not null default true,
+  alert_before1 boolean not null default true,
+  alert_due boolean not null default true,
+  alert_overdue_daily boolean not null default true,
+  alert_recipient text not null default 'assignee' check (alert_recipient in ('assignee','creator','custom')),
+  alert_extra_user_ids uuid[] not null default '{}',
+  alert_channels text[] not null default '{inapp}',        -- inapp / lark
+  is_active boolean not null default true,
+  created_by uuid references users(id),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+-- 工程のひな形（テンプレに紐づく。頻度=dailyのときは子チェック定義として使う）
+create table if not exists hq_task_template_steps (
+  id uuid primary key default gen_random_uuid(),
+  template_id uuid not null references hq_task_templates(id) on delete cascade,
+  title text not null,
+  assignee_id uuid references users(id),      -- null可（毎日タスクの子チェック等、誰でも実施可）
+  offset_days int not null default 0,          -- 対象日からの工程期限オフセット(日)
+  sort_order int not null default 100,
+  kind text not null default 'step' check (kind in ('step','check')),
+  store_scope text check (store_scope in ('active','all')),  -- kind='check'かつ店舗別展開のとき（active=直営／all=委託含む全店）
+  is_binary boolean not null default false,     -- 2択（OK・異常あり）
+  requires_photo boolean not null default false,
+  created_at timestamptz not null default now()
+);
+
+-- ---- タスク本体（毎日・毎月分など1回ごとに1行、単発も含む） ----
+create table if not exists hq_tasks (
+  id uuid primary key default gen_random_uuid(),
+  template_id uuid references hq_task_templates(id) on delete set null,
+  title text not null,
+  corp text not null check (corp in ('LiveGate','SK','N-Style','トーホー')),
+  freq text not null check (freq in ('daily','weekly','monthly','once')),
+  target_date date not null,                    -- 対象日（8/5分などの基準日）
+  due_date date,                                 -- 期限（期限内かどうかは保存せず都度計算）
+  status text not null default 'todo' check (status in ('todo','doing','done')),
+  notes text not null default '',
+  visibility text not null default 'all' check (visibility in ('all','members')),
+  completed_at timestamptz,
+  created_by uuid references users(id),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (template_id, target_date)
+);
+create index if not exists hq_tasks_status_idx on hq_tasks (status, due_date);
+create index if not exists hq_tasks_target_idx on hq_tasks (target_date);
+
+-- 公開範囲=members のときの指定者リスト（テンプレ or タスクのどちらかに紐づく）
+create table if not exists hq_task_members (
+  id uuid primary key default gen_random_uuid(),
+  template_id uuid references hq_task_templates(id) on delete cascade,
+  task_id uuid references hq_tasks(id) on delete cascade,
+  user_id uuid not null references users(id) on delete cascade,
+  created_at timestamptz not null default now(),
+  check ((template_id is not null)::int + (task_id is not null)::int = 1)
+);
+
+-- ---- 工程・子チェック（タスクの実体） ----
+create table if not exists hq_task_steps (
+  id uuid primary key default gen_random_uuid(),
+  task_id uuid not null references hq_tasks(id) on delete cascade,
+  template_step_id uuid references hq_task_template_steps(id) on delete set null,
+  title text not null,
+  assignee_id uuid references users(id),
+  due_date date,
+  sort_order int not null default 100,
+  kind text not null default 'step' check (kind in ('step','check')),
+  is_binary boolean not null default false,
+  requires_photo boolean not null default false,
+  store_id uuid references stores(id),           -- 店舗別チェックのとき
+  judgement text check (judgement in ('ok','issue')),
+  issue_note text,
+  completed_at timestamptz,
+  completed_by uuid references users(id),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  check (judgement is distinct from 'issue' or (issue_note is not null and length(trim(issue_note)) > 0))
+);
+create index if not exists hq_task_steps_task_idx on hq_task_steps (task_id, sort_order);
+create index if not exists hq_task_steps_assignee_idx on hq_task_steps (assignee_id);
+
+-- 公開範囲・担当を考慮した「このタスクが見えるか」判定（RLSから使う）
+create or replace function hq_task_visible(t_id uuid) returns boolean
+language sql stable security definer set search_path = public as $$
+  select coalesce((
+    select
+      hq_can_manage()
+      or (t.visibility = 'all'
+          and exists(select 1 from users u where u.id = auth.uid() and u.is_active and u.role = 'TEAM'))
+      or exists (select 1 from hq_task_members m where m.task_id = t.id and m.user_id = auth.uid())
+      or (t.template_id is not null
+          and exists (select 1 from hq_task_members m where m.template_id = t.template_id and m.user_id = auth.uid()))
+      or exists (select 1 from hq_task_steps s where s.task_id = t.id and s.assignee_id = auth.uid())
+    from hq_tasks t where t.id = t_id
+  ), false);
+$$;
+
+-- 自己参照なしの可視判定（hq_tasks自身のSELECT方針専用）
+-- 注: 上のhq_task_visible(id)のように自テーブルをidで再クエリする関数をINSERT ... RETURNINGの
+-- SELECT方針に使うと、新規行がその内部サブクエリから見えずRLS拒否になることがある（実機検証済み）。
+-- そのためhq_tasks自身のSELECT方針だけは行の列を直接渡すこの関数を使う。他テーブルの方針は
+-- 別テーブル(hq_tasks)を参照するだけなのでこの問題は起きず、hq_task_visible(task_id)のままでよい。
+create or replace function hq_task_visible_self(t_id uuid, t_visibility text, t_template_id uuid) returns boolean
+language sql stable security definer set search_path = public as $$
+  select
+    hq_can_manage()
+    or (t_visibility = 'all'
+        and exists(select 1 from users u where u.id = auth.uid() and u.is_active and u.role = 'TEAM'))
+    or exists (select 1 from hq_task_members m where m.task_id = t_id and m.user_id = auth.uid())
+    or (t_template_id is not null
+        and exists (select 1 from hq_task_members m where m.template_id = t_template_id and m.user_id = auth.uid()))
+    or exists (select 1 from hq_task_steps s where s.task_id = t_id and s.assignee_id = auth.uid());
+$$;
+
+-- ---- 写真（タスク or 工程のどちらかに紐づく。既存バケット report-photos を流用） ----
+create table if not exists hq_task_photos (
+  id uuid primary key default gen_random_uuid(),
+  task_id uuid references hq_tasks(id) on delete cascade,
+  step_id uuid references hq_task_steps(id) on delete cascade,
+  storage_path text not null,
+  uploaded_by uuid references users(id),
+  created_at timestamptz not null default now(),
+  check (task_id is not null or step_id is not null)
+);
+create or replace function hq_task_photo_visible(p_task_id uuid, p_step_id uuid) returns boolean
+language sql stable security definer set search_path = public as $$
+  select case
+    when p_task_id is not null then hq_task_visible(p_task_id)
+    when p_step_id is not null then hq_task_visible((select task_id from hq_task_steps where id = p_step_id))
+    else false end;
+$$;
+
+-- 非管理者は完了関連の列だけ変更可・完了時のルール（判定必須・写真必須）を強制
+create or replace function hq_task_step_before_update() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+  if not hq_can_manage() then
+    if new.task_id <> old.task_id or new.title <> old.title or new.kind <> old.kind
+       or coalesce(new.assignee_id::text,'') <> coalesce(old.assignee_id::text,'')
+       or coalesce(new.due_date::text,'') <> coalesce(old.due_date::text,'')
+       or coalesce(new.store_id::text,'') <> coalesce(old.store_id::text,'')
+       or new.is_binary <> old.is_binary or new.requires_photo <> old.requires_photo then
+      raise exception 'この項目は編集できません';
+    end if;
+  end if;
+  if new.completed_at is not null and old.completed_at is null then
+    if new.is_binary and new.judgement is null then
+      raise exception '判定（OK・異常あり）を選択してください';
+    end if;
+    if new.requires_photo and not exists (select 1 from hq_task_photos p where p.step_id = new.id) then
+      raise exception '写真の添付が必要です';
+    end if;
+    if new.completed_by is null then new.completed_by := auth.uid(); end if;
+  end if;
+  if new.completed_at is null then
+    new.completed_by := null;
+  end if;
+  new.updated_at := now();
+  return new;
+end;
+$$;
+drop trigger if exists trg_hq_task_step_before_update on hq_task_steps;
+create trigger trg_hq_task_step_before_update before update on hq_task_steps
+for each row execute function hq_task_step_before_update();
+
+-- 親タスクの状態を工程の消化状況から自動計算（全工程完了で自動完了）
+create or replace function hq_task_recalc_status() returns trigger
+language plpgsql security definer set search_path = public as $$
+declare
+  v_task_id uuid := coalesce(new.task_id, old.task_id);
+  v_total int; v_done int;
+begin
+  select count(*), count(*) filter (where completed_at is not null) into v_total, v_done
+  from hq_task_steps where task_id = v_task_id;
+  if v_total > 0 and v_total = v_done then
+    update hq_tasks set status='done', completed_at = now(), updated_at = now()
+      where id = v_task_id and status <> 'done';
+  elsif v_done > 0 then
+    update hq_tasks set status='doing', updated_at = now()
+      where id = v_task_id and status = 'todo';
+  else
+    update hq_tasks set status='todo', completed_at = null, updated_at = now()
+      where id = v_task_id and status <> 'todo';
+  end if;
+  return null;
+end;
+$$;
+drop trigger if exists trg_hq_task_recalc on hq_task_steps;
+create trigger trg_hq_task_recalc after insert or update or delete on hq_task_steps
+for each row execute function hq_task_recalc_status();
+
+-- ---- 添付リンク（url / manual / credential） ----
+create table if not exists hq_task_links (
+  id uuid primary key default gen_random_uuid(),
+  task_id uuid not null references hq_tasks(id) on delete cascade,
+  kind text not null check (kind in ('url','manual','credential')),
+  label text not null,
+  url text,               -- kind='url'
+  manual_ref text,        -- kind='manual'（フェーズ3cのマニュアルID。未接続の間は任意メモ）
+  credential_ref text,    -- kind='credential'（社内情報管理の金庫キー・ラベルのみ。値は持たない）
+  created_by uuid references users(id),
+  created_at timestamptz not null default now()
+);
+
+-- ---- タスク個別のアラート上書き ----
+create table if not exists hq_task_alerts (
+  id uuid primary key default gen_random_uuid(),
+  task_id uuid not null references hq_tasks(id) on delete cascade,
+  before3 boolean not null default true,
+  before1 boolean not null default true,
+  due boolean not null default true,
+  overdue_daily boolean not null default true,
+  recipient text not null default 'assignee' check (recipient in ('assignee','creator','custom')),
+  extra_user_ids uuid[] not null default '{}',
+  channels text[] not null default '{inapp}',
+  created_at timestamptz not null default now(),
+  unique (task_id)
+);
+
+-- ---- 履歴（誰が・いつ・何をしたか） ----
+create table if not exists hq_task_activity (
+  id uuid primary key default gen_random_uuid(),
+  task_id uuid not null references hq_tasks(id) on delete cascade,
+  step_id uuid references hq_task_steps(id) on delete set null,
+  actor_id uuid references users(id),           -- null=自動（生成・アラート等）
+  kind text not null check (kind in ('create','step_complete','step_reopen','comment','photo','alert','stalled')),
+  detail text not null default '',
+  created_at timestamptz not null default now()
+);
+create index if not exists hq_task_activity_task_idx on hq_task_activity (task_id, created_at desc);
+
+-- ---- 日次生成の重複防止ログ ----
+create table if not exists hq_generation_log (
+  id uuid primary key default gen_random_uuid(),
+  work_date date not null unique,
+  generated_at timestamptz not null default now(),
+  generated_by uuid references users(id),
+  task_count int not null default 0
+);
+
+-- ---- 通知先チャンネル（Lark Webhookはここに保存。コード埋め込み禁止） ----
+create table if not exists hq_notify_channels (
+  id uuid primary key default gen_random_uuid(),
+  name text not null,
+  kind text not null check (kind in ('lark_webhook','inapp')),
+  webhook_url text,       -- kind='lark_webhook'のみ
+  keyword text,            -- Larkカスタムボットのキーワード要件対応
+  is_default boolean not null default false,
+  is_active boolean not null default true,
+  created_by uuid references users(id),
+  created_at timestamptz not null default now()
+);
+
+-- ---- 通知ルール ----
+create table if not exists hq_notify_rules (
+  id uuid primary key default gen_random_uuid(),
+  name text not null,
+  target_corp text check (target_corp in ('LiveGate','SK','N-Style','トーホー')),  -- null=すべて
+  target_freq text check (target_freq in ('daily','weekly','monthly','once')),      -- null=すべて
+  target_template_id uuid references hq_task_templates(id) on delete cascade,       -- null=すべて
+  event text not null check (event in ('due_alert','stalled','step_complete','issue_reported')),
+  channel_ids uuid[] not null default '{}',
+  sort_order int not null default 100,
+  is_active boolean not null default true,
+  created_by uuid references users(id),
+  created_at timestamptz not null default now()
+);
+
+-- ---- アプリ内通知（ベル。既存 notifications は日報用なので触らず新設） ----
+create table if not exists hq_notifications (
+  id uuid primary key default gen_random_uuid(),
+  recipient_id uuid not null references users(id) on delete cascade,
+  task_id uuid references hq_tasks(id) on delete cascade,
+  kind text not null check (kind in ('due_alert','stalled','step_complete','issue_reported')),
+  title text not null,
+  body text not null default '',
+  read_at timestamptz,
+  created_at timestamptz not null default now()
+);
+create index if not exists hq_notifications_recipient_idx on hq_notifications (recipient_id, read_at, created_at desc);
+
+-- ============================================================
+-- RLS
+-- ============================================================
+alter table hq_task_templates enable row level security;
+alter table hq_task_template_steps enable row level security;
+alter table hq_tasks enable row level security;
+alter table hq_task_members enable row level security;
+alter table hq_task_steps enable row level security;
+alter table hq_task_links enable row level security;
+alter table hq_task_photos enable row level security;
+alter table hq_task_alerts enable row level security;
+alter table hq_task_activity enable row level security;
+alter table hq_generation_log enable row level security;
+alter table hq_notify_channels enable row level security;
+alter table hq_notify_rules enable row level security;
+alter table hq_notifications enable row level security;
+
+-- テンプレート: 閲覧=本部系(マスター/社長/本部/チーム長)／編集=マスター・社長・本部のみ
+drop policy if exists hqtpl_read on hq_task_templates;
+create policy hqtpl_read on hq_task_templates for select using (
+  hq_can_manage() or exists(select 1 from users u where u.id = auth.uid() and u.is_active and u.role = 'TEAM')
+);
+drop policy if exists hqtpl_write on hq_task_templates;
+create policy hqtpl_write on hq_task_templates for all using (hq_can_manage()) with check (hq_can_manage());
+
+drop policy if exists hqtplstep_read on hq_task_template_steps;
+create policy hqtplstep_read on hq_task_template_steps for select using (
+  hq_can_manage() or exists(select 1 from users u where u.id = auth.uid() and u.is_active and u.role = 'TEAM')
+);
+drop policy if exists hqtplstep_write on hq_task_template_steps;
+create policy hqtplstep_write on hq_task_template_steps for all using (hq_can_manage()) with check (hq_can_manage());
+
+-- タスク本体: 閲覧=hq_task_visible／作成・削除=マスター・社長・本部のみ／更新=マスター・社長・本部のみ（完了は工程トリガー経由）
+drop policy if exists hqt_read on hq_tasks;
+create policy hqt_read on hq_tasks for select using (hq_task_visible_self(id, visibility, template_id));
+drop policy if exists hqt_insert on hq_tasks;
+create policy hqt_insert on hq_tasks for insert with check (hq_can_manage());
+drop policy if exists hqt_update on hq_tasks;
+create policy hqt_update on hq_tasks for update using (hq_can_manage()) with check (hq_can_manage());
+drop policy if exists hqt_delete on hq_tasks;
+create policy hqt_delete on hq_tasks for delete using (hq_can_manage());
+
+drop policy if exists hqmem_read on hq_task_members;
+create policy hqmem_read on hq_task_members for select using (hq_can_manage() or user_id = auth.uid());
+drop policy if exists hqmem_write on hq_task_members;
+create policy hqmem_write on hq_task_members for all using (hq_can_manage()) with check (hq_can_manage());
+
+-- 工程・子チェック: 閲覧=hq_task_visible／作成削除=マスター・社長・本部／更新=担当者本人 or 誰でも(assignee無しのcheck) or 管理者
+drop policy if exists hqs_read on hq_task_steps;
+create policy hqs_read on hq_task_steps for select using (hq_task_visible(task_id));
+drop policy if exists hqs_insert on hq_task_steps;
+create policy hqs_insert on hq_task_steps for insert with check (hq_can_manage());
+drop policy if exists hqs_update on hq_task_steps;
+create policy hqs_update on hq_task_steps for update using (
+  hq_can_manage() or assignee_id = auth.uid() or (assignee_id is null and hq_task_visible(task_id))
+) with check (
+  hq_can_manage() or assignee_id = auth.uid() or (assignee_id is null and hq_task_visible(task_id))
+);
+drop policy if exists hqs_delete on hq_task_steps;
+create policy hqs_delete on hq_task_steps for delete using (hq_can_manage());
+
+drop policy if exists hqlink_read on hq_task_links;
+create policy hqlink_read on hq_task_links for select using (hq_task_visible(task_id));
+drop policy if exists hqlink_write on hq_task_links;
+create policy hqlink_write on hq_task_links for all using (hq_can_manage()) with check (hq_can_manage());
+
+drop policy if exists hqphoto_read on hq_task_photos;
+create policy hqphoto_read on hq_task_photos for select using (hq_task_photo_visible(task_id, step_id));
+drop policy if exists hqphoto_insert on hq_task_photos;
+create policy hqphoto_insert on hq_task_photos for insert with check (
+  uploaded_by = auth.uid() and hq_task_photo_visible(task_id, step_id)
+);
+drop policy if exists hqphoto_delete on hq_task_photos;
+create policy hqphoto_delete on hq_task_photos for delete using (uploaded_by = auth.uid() or hq_can_manage());
+
+drop policy if exists hqalert_read on hq_task_alerts;
+create policy hqalert_read on hq_task_alerts for select using (hq_task_visible(task_id));
+drop policy if exists hqalert_write on hq_task_alerts;
+create policy hqalert_write on hq_task_alerts for all using (hq_can_manage()) with check (hq_can_manage());
+
+drop policy if exists hqact_read on hq_task_activity;
+create policy hqact_read on hq_task_activity for select using (hq_task_visible(task_id));
+drop policy if exists hqact_insert on hq_task_activity;
+create policy hqact_insert on hq_task_activity for insert with check (
+  hq_task_visible(task_id) and (actor_id = auth.uid() or (actor_id is null and hq_can_manage()))
+);
+
+drop policy if exists hqgl_read on hq_generation_log;
+create policy hqgl_read on hq_generation_log for select using (
+  hq_can_manage() or exists(select 1 from users u where u.id = auth.uid() and u.is_active and u.role = 'TEAM')
+);
+drop policy if exists hqgl_write on hq_generation_log;
+create policy hqgl_write on hq_generation_log for all using (hq_can_manage()) with check (hq_can_manage());
+
+drop policy if exists hqch_read on hq_notify_channels;
+create policy hqch_read on hq_notify_channels for select using (hq_can_manage());
+drop policy if exists hqch_write on hq_notify_channels;
+create policy hqch_write on hq_notify_channels for all using (hq_can_manage()) with check (hq_can_manage());
+
+drop policy if exists hqrule_read on hq_notify_rules;
+create policy hqrule_read on hq_notify_rules for select using (hq_can_manage());
+drop policy if exists hqrule_write on hq_notify_rules;
+create policy hqrule_write on hq_notify_rules for all using (hq_can_manage()) with check (hq_can_manage());
+
+drop policy if exists hqnotif_read on hq_notifications;
+create policy hqnotif_read on hq_notifications for select using (recipient_id = auth.uid() or hq_can_manage());
+drop policy if exists hqnotif_update on hq_notifications;
+create policy hqnotif_update on hq_notifications for update using (recipient_id = auth.uid()) with check (recipient_id = auth.uid());
+drop policy if exists hqnotif_insert on hq_notifications;
+create policy hqnotif_insert on hq_notifications for insert with check (hq_can_manage());
+drop policy if exists hqnotif_delete on hq_notifications;
+create policy hqnotif_delete on hq_notifications for delete using (hq_can_manage());
+
+-- ============================================================
+-- 3d-5準備: 期限内完了率の集計ビュー（担当者×月）だけ先に作成
+-- 暫定=期限(due_date)と完了日の単純比較。出勤日ベースの遡及判定は3d-5で置き換え予定
+-- ============================================================
+create or replace view hq_ontime_stats_v with (security_invoker = true) as
+select
+  s.assignee_id as user_id,
+  date_trunc('month', s.due_date)::date as month,
+  count(*) filter (where s.completed_at is not null) as completed_count,
+  count(*) filter (where s.completed_at is not null and s.completed_at::date <= s.due_date) as ontime_count,
+  count(*) filter (where s.is_binary and s.judgement = 'issue') as issue_count
+from hq_task_steps s
+where s.due_date is not null and s.assignee_id is not null
+group by s.assignee_id, date_trunc('month', s.due_date)::date;
