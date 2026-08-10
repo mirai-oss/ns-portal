@@ -132,7 +132,7 @@ footer{margin-top:60px;padding-top:16px;border-top:1px solid var(--line);font-si
 <header class="doc">
   <div class="eyebrow">N-Style Group — Phase 3 / 機能⑩</div>
   <h1>📌 本部タスクボード 設計書</h1>
-  <div class="meta">2026-08-05 ／ v1.0 ドラフト（承認待ち） ／ 置き場所: ポータル内・データはハブ（Supabase） ／ 対象: マスター・社長・本部・チーム長</div>
+  <div class="meta">2026-08-05 ／ <b>v1.1 確定版</b>（4つの確認事項に回答済み・追加要望4点を反映） ／ 置き場所: ポータル内・データはハブ（Supabase） ／ 対象: マスター・社長・本部・チーム長（公開範囲設定あり）</div>
 </header>
 
 <p class="lead">「毎月の精算処理、いまどこで止まってる？」に<b>3秒で答えられる</b>ことをこのボードの一番の仕事にします。タスクを流れ（サブタスク）で持ち、<b>いま誰の番か・何日止まっているか</b>を常に表に出す設計です。</p>
@@ -150,6 +150,19 @@ footer{margin-top:60px;padding-top:16px;border-top:1px solid var(--line);font-si
 <tr><td>期限前アラート</td><td>タスクごとに「◯日前・前日・当日・超過」を設定 → 毎朝の自動チェックで通知</td></tr>
 <tr><td>通知先を変えられる</td><td>アラートごとに宛先（担当者・作成者・追加の人）と手段（アプリ内・Lark）を設定</td></tr>
 <tr><td>複数法人を1箇所で</td><td>タスクに法人ラベル（LiveGate／SK／N-Style／トーホー）。1つのボードに全部出して、法人チップで絞り込み</td></tr>
+<tr><td>自分のタスクだけ横断で見たい <span class="pill p-freq">v1.1</span></td><td>「👤 自分」フィルタは頻度をまたいで効く＝毎日・毎週・毎月・単発の自分の担当分が<b>1つの一覧</b>に。頻度チップと組み合わせれば「毎日タスクの中の自分の分」にも絞れる（どちらもできる）</td></tr>
+<tr><td>フリーワード検索 <span class="pill p-freq">v1.1</span></td><td>ボード上部に検索欄。タイトル・注意事項・工程名・コメント・完了者を対象に、<b>過去の完了タスクも含めて</b>全期間検索</td></tr>
+<tr><td>適当にチェックさせない <span class="pill p-freq">v1.1</span></td><td>毎日タスクは「店舗別の子チェック＋2択（OK／異常あり）＋異常はコメント必須」方式。まとめて1タップで済ませられない構造にする（第3.5章）</td></tr>
+<tr><td>過去の完了タスクの置き場 <span class="pill p-freq">v1.1</span></td><td>「📁 過去タスク」タブに月別で<b>無期限保存</b>・検索対象（第7.5章）</td></tr>
+</table></div>
+
+<h3>確認事項への回答（2026-08-05 決定）</h3>
+<div class="tblwrap"><table class="spec">
+<tr><th>論点</th><th>決定</th></tr>
+<tr><td>データ設計</td><td><b>専用テーブル新設で承認</b>（日報の現場タスクは無変更）</td></tr>
+<tr><td>チーム長の閲覧範囲</td><td>テンプレート／タスク登録時に<b>「公開範囲」を設定</b>（既定=本部全員が見える／「指定した人だけ」も選べる）。チーム長は公開範囲に入っているか担当のタスクのみ表示</td></tr>
+<tr><td>完了の定義</td><td><b>全工程が終わったら自動で完了</b>。確認が必要なタスクだけ工程に「社長確認」を入れる運用（ボードの「確認待ち」列は廃止し3列に）</td></tr>
+<tr><td>通知先</td><td>固定のグループではなく<b>「通知ルール」を設定画面で自由に作れる方式</b>: 通知先チャンネル（Larkグループを複数登録可）×どのタスクの×どの出来事を、の組み合わせで設定（第8章）</td></tr>
 </table></div>
 
 <h2><span class="no">2</span>画面①: ボード（ホーム）</h2>
@@ -165,13 +178,14 @@ footer{margin-top:60px;padding-top:16px;border-top:1px solid var(--line);font-si
       <div class="kpi pause"><b>1</b>3日以上停止</div>
       <div class="kpi"><b>12</b>今月完了</div>
     </div>
+    <div style="margin-bottom:10px"><input type="search" placeholder="🔍 タスクを検索（例: 精算 / 家賃 / 中山）— 過去の完了分も対象" style="width:100%;border:1px solid var(--line);border-radius:99px;padding:7px 16px;font-size:12px;background:var(--card);color:var(--ink)"></div>
     <div class="filters rel">
       <span class="cal" style="top:-6px;left:-8px">2</span>
       <span class="chip on">すべての法人</span><span class="chip">LiveGate</span><span class="chip">SK</span><span class="chip">N-Style</span><span class="chip">トーホー</span>
-      <span class="chip" style="margin-left:10px">🔁 毎日</span><span class="chip">毎週</span><span class="chip on">毎月</span><span class="chip">単発</span>
-      <span class="chip" style="margin-left:10px">👤 担当: 全員</span>
+      <span class="chip" style="margin-left:10px">🔁 すべて</span><span class="chip">毎日</span><span class="chip">毎週</span><span class="chip">毎月</span><span class="chip">単発</span>
+      <span class="chip on" style="margin-left:10px">👤 自分のタスク</span>
     </div>
-    <div class="cols">
+    <div class="cols" style="grid-template-columns:repeat(3,minmax(170px,1fr))">
       <div class="col"><h4>未着手 <span>(2)</span></h4>
         <div class="tcard">
           <div class="rw"><span class="pill p-corp">トーホー</span><span class="pill p-freq">🔁 毎月25日</span></div>
@@ -201,16 +215,13 @@ footer{margin-top:60px;padding-top:16px;border-top:1px solid var(--line);font-si
           <div class="who"><span class="av y">原</span>いま: 原稿チェック（原さん）</div>
         </div>
       </div>
-      <div class="col"><h4>確認待ち <span>(1)</span></h4>
-        <div class="tcard">
+      <div class="col"><h4>完了 <span>(今月13)</span> <span style="font-weight:400">📁 過去タスクへ →</span></h4>
+        <div class="tcard" style="opacity:.62">
           <div class="rw"><span class="pill p-corp">N-Style</span><span class="pill p-freq">🔁 毎月</span></div>
           <div class="tt">広告費 月次集計の確定</div>
-          <div class="bar"><i style="width:100%"></i></div>
-          <div class="due">工程完了 ／ 承認待ち</div>
-          <div class="who"><span class="av">中</span>確認者: 中山さん</div>
+          <div class="bar done"><i style="width:100%"></i></div>
+          <div class="due">8/4 完了 ✓（最終工程: 社長確認）</div>
         </div>
-      </div>
-      <div class="col"><h4>完了 <span>(今月12)</span></h4>
         <div class="tcard" style="opacity:.62">
           <div class="rw"><span class="pill p-corp">SK</span><span class="pill p-freq">🔁 毎月25日</span></div>
           <div class="tt">給与計算・振込</div>
@@ -223,8 +234,8 @@ footer{margin-top:60px;padding-top:16px;border-top:1px solid var(--line);font-si
 </div></div>
 <ol class="ann">
 <li><b>信号（サマリー）</b> — 期限超過・今日期限・停止中の件数。タップでその条件に絞り込み。社長が見るのはまずここだけで済む。</li>
-<li><b>法人・頻度・担当の絞り込み</b> — 既定は「すべての法人」。4社のタスクが最初から1つのボードに混ざって表示される。</li>
-<li><b>停滞が形で分かる</b> — 止まっているカードは赤枠＋「⏸ 停止日数」＋「いま: 工程名（誰）」。開かなくても犯人（笑）が分かる。</li>
+<li><b>絞り込みは掛け合わせ</b> — 「👤 自分のタスク」を押すと<b>毎日・毎週・毎月・単発を横断して自分の担当分が1つの一覧</b>になる（頻度チップを足せば「毎日×自分」にも絞れる。どちらの見方もできる）。最上部は全期間対応のフリーワード検索。</li>
+<li><b>停滞が形で分かる</b> — 止まっているカードは赤枠＋「⏸ 停止日数」＋「いま: 工程名（誰）」。開かなくても誰の番か分かる。確認が必要なタスクは工程に「社長確認」を入れる方式にしたので、列は「未着手・進行中・完了」の3つに簡略化。</li>
 </ol>
 
 <h3>ボードのもう1つの見方: 🔁 繰り返しタブ（月次の定点観測）</h3>
@@ -241,6 +252,47 @@ footer{margin-top:60px;padding-top:16px;border-top:1px solid var(--line);font-si
     </table>
   </div>
 </div></div>
+
+<h2><span class="no">2.5</span>画面①b: 毎日タスク（シンプル版UI・形骸化させない仕掛け）</h2>
+<p>毎日タスクは工程で回すほど重くないので、<b>1画面のチェックリスト</b>にします。ただし「押すだけ」にはしません。行を開くとやり方・注意・リンクが出て、店舗別の子チェックがあるタスクは全店舗に答えないと完了になりません。</p>
+
+<div class="mock"><div class="screen rel">
+  <div class="chrome"><i></i><i></i><i></i><span class="url">portal — 📌 本部タスク ▸ 今日の毎日タスク 8/5(火)</span></div>
+  <div class="body">
+    <div class="rw" style="display:flex;gap:8px;align-items:center;margin-bottom:10px">
+      <b style="font-size:14px">今日の毎日タスク</b><span class="pill p-freq">2/4 完了</span>
+      <span class="chip on" style="margin-left:auto">👤 自分の分</span><span class="chip">全員分</span>
+    </div>
+    <div class="step d"><span class="st">✓</span><div style="flex:1"><b>売上速報の確認</b> <span class="sm">原さん ／ 8:12 完了</span></div></div>
+    <div class="step d"><span class="st">✓</span><div style="flex:1"><b>予約状況の確認（当日・翌日）</b> <span class="sm">青山さん ／ 8:40 完了</span></div></div>
+
+    <div class="step c rel" style="display:block"><span class="cal" style="top:-8px;right:-8px">1</span>
+      <div style="display:flex;gap:10px;align-items:flex-start">
+        <span class="st">▶</span>
+        <div style="flex:1"><b>入金確認（口座と売上の照合）</b> <span class="sm">原さん ／ 期限 10:00 ▼ 開いた状態</span></div>
+      </div>
+      <div style="margin:8px 0 0 32px">
+        <div class="sm" style="margin-bottom:6px">📖 <b>やり方:</b> PayPay銀行の入金明細と経営Dの入金管理タブを照合。金額が合わない店舗は「異常あり」にして内容をメモ。</div>
+        <div class="sm" style="margin-bottom:8px">⚠️ <b>注意:</b> カード売上は2営業日ズレるのが正常。ズレ以外の差額のみ異常扱い。 ／ 🔗 経営D入金管理 ／ 🔐 PayPay銀行（社内情報管理）</div>
+        <div class="rel"><span class="cal" style="top:-4px;right:0">2</span></div>
+        <table class="mtx" style="font-size:11.5px">
+          <tr><th>店舗別チェック</th><th>判定</th><th>メモ</th></tr>
+          <tr><td>鳥一代 本店</td><td><span class="pill p-ok">✓ OK</span></td><td>—</td></tr>
+          <tr><td>鳥一代 はなれ</td><td><span class="pill p-ok">✓ OK</span></td><td>—</td></tr>
+          <tr><td>鳥一代 恵比寿</td><td><span class="pill p-bad">⚠ 異常あり</span></td><td style="color:var(--bad)">現金入金 ▲12,400円 → コメント必須</td></tr>
+          <tr><td>芝の鳥一代 ほか5店舗…</td><td><span class="pill p-mut">未確認</span></td><td>—</td></tr>
+        </table>
+        <div class="sm" style="margin-top:6px;color:var(--muted)">※ 全店舗に「OK／異常あり」を付けるまでこのタスクは完了になりません（まとめてチェック不可）</div>
+      </div>
+    </div>
+    <div class="step n"><span class="st">4</span><div style="flex:1"><b>本部メールの確認・振り分け</b> <span class="sm">青山さん ／ 期限 12:00</span></div></div>
+  </div>
+</div></div>
+<ol class="ann">
+<li><b>行を開くと「やり方・注意・リンク」</b>が出る。普段は1行のシンプル表示、迷ったときだけ開けば手順書がそこにある。</li>
+<li><b>適当にやらせない3つの仕掛け</b> — ①店舗別の子チェックは<b>1店舗ずつ「OK／異常あり」の2択</b>（ただの✓より頭を使う）②「異常あり」を選ぶと<b>メモ必須</b>③誰が・何時に付けたか全部記録。さらに写真必須（チェックシートと同じ仕組み）も項目単位で設定可能。</li>
+</ol>
+<div class="note"><b>子チェックの種類（テンプレ登録時に選ぶ）:</b> ⬜ ふつうのチェック ／ 🏪 店舗別チェック（直営8 or 委託含む12店舗を自動展開）／ ⚖️ 2択（OK・異常あり＋異常メモ必須）／ 📷 写真必須。組み合わせ可（例: 店舗別×2択が入金確認）。</div>
 
 <h2><span class="no">3</span>画面②: タスク詳細</h2>
 <p>実物の「業務委託 精算処理」を例にした詳細画面。要望の全部入り（工程・注意事項・マニュアル・ID/PW・写真・アラート）です。</p>
@@ -300,10 +352,33 @@ footer{margin-top:60px;padding-top:16px;border-top:1px solid var(--line);font-si
     <div class="setrow">② 精算書の発行・送付 — <span class="tag">担当: 青山さん</span><span class="tag">+2日</span></div>
     <div class="setrow">③ 振込実行 — <span class="tag">担当: 中山さん</span><span class="tag">+3日</span></div>
     <div class="setrow">④ 振込済みチェック — <span class="tag">担当: 原さん</span><span class="tag">+5日</span></div>
+    <div class="sec">公開範囲（チーム長への見せ方）</div>
+    <div class="setrow"><span class="tag on">本部全員に公開（既定）</span><span class="tag">指定した人だけ</span>
+      <span style="color:var(--muted)">「指定した人だけ」を選ぶと →</span> <span class="tag">佐藤さん</span><span class="tag">＋追加</span></div>
     <div class="sec">アラートの既定</div>
     <div class="setrow">タイミング: <span class="tag on">3日前</span><span class="tag on">前日</span><span class="tag on">超過したら毎日</span>
       宛先: <span class="tag on">工程の担当者</span><span class="tag on">中山さん</span>
       手段: <span class="tag on">アプリ内</span><span class="tag on">Lark</span><span class="tag">メール（将来）</span></div>
+  </div>
+</div></div>
+
+<h3>通知ルール（設定画面・全体）</h3>
+<p>「どのタスクの・どの出来事を・どこに流すか」を自由に組める通知ルール方式です。Larkグループは複数登録でき、ルールごとに宛先を変えられます。</p>
+<div class="mock"><div class="screen">
+  <div class="chrome"><i></i><i></i><i></i><span class="url">portal — 📌 本部タスク ▸ ⚙️ 通知設定</span></div>
+  <div class="body">
+    <div class="sec" style="margin-top:0">通知先チャンネル（Larkグループを登録しておく）</div>
+    <div class="setrow">💬 <b>本部タスクGr</b> <span class="tag">Lark Webhook</span><span class="sm" style="color:var(--muted)">既定の通知先</span></div>
+    <div class="setrow">💬 <b>社長ダイレクト</b> <span class="tag">Lark Webhook</span></div>
+    <div class="setrow">🔔 <b>アプリ内通知</b> <span class="tag">ポータル・日報のベル</span><span class="sm" style="color:var(--muted)">常に有効</span></div>
+    <div class="sec">通知ルール（上から順に適用）</div>
+    <table class="mtx">
+      <tr><th>どのタスクの</th><th>どの出来事を</th><th>どこに</th></tr>
+      <tr><td>すべて</td><td>期限アラート（3日前・前日・超過）</td><td>💬 本部タスクGr ＋ 担当者へアプリ内</td></tr>
+      <tr><td>すべて</td><td>⏸ 3日以上停止</td><td>💬 社長ダイレクト</td></tr>
+      <tr><td>N-Style ／ 毎月「業務委託 精算処理」</td><td>工程完了のたび</td><td>💬 本部タスクGr</td></tr>
+      <tr><td>毎日タスク</td><td>⚠ 異常ありが付いたとき</td><td>💬 社長ダイレクト ＋ 本部タスクGr</td></tr>
+    </table>
   </div>
 </div></div>
 
@@ -326,12 +401,15 @@ footer{margin-top:60px;padding-top:16px;border-top:1px solid var(--line);font-si
 <tr><th>テーブル</th><th>役割・主な列</th></tr>
 <tr><td><code>hq_task_templates</code></td><td>繰り返しのひな形。タイトル／法人／頻度（毎日・毎週[曜日]・毎月[日]・単発）／期限オフセット／注意事項／作成者</td></tr>
 <tr><td><code>hq_tasks</code></td><td>実際のタスク（毎月分など1回ごとに1行）。テンプレID／法人／期限／状態（未着手・進行中・確認待ち・完了）／注意事項</td></tr>
-<tr><td><code>hq_task_steps</code></td><td>工程。タスクID／名前／<b>担当者（users.id）</b>／<b>期限</b>／完了日時・完了者／並び順</td></tr>
+<tr><td><code>hq_task_steps</code></td><td>工程・子チェック兼用。タスクID／名前／<b>担当者（users.id）</b>／<b>期限</b>／種類（工程・チェック・店舗別・2択・写真必須）／店舗ID（店舗別のとき）／判定（OK・異常あり）／異常メモ／完了日時・完了者／並び順</td></tr>
 <tr><td><code>hq_task_links</code></td><td>添付リンク。種類＝<code>url</code>／<code>manual</code>（マニュアルID）／<code>credential</code>（社内情報管理の金庫ID。<b>値は持たない</b>）</td></tr>
 <tr><td><code>hq_task_photos</code></td><td>写真。タスクIDまたは工程ID／保存先（チェックシートと同じバケット）／撮影者</td></tr>
-<tr><td><code>hq_task_alerts</code></td><td>アラート設定。タイミング（-3日・-1日・0日・超過）／宛先（担当者・作成者・指定ユーザー配列）／手段（アプリ内・Lark）</td></tr>
+<tr><td><code>hq_task_alerts</code></td><td>タスク個別のアラート上書き。タイミング（-3日・-1日・0日・超過）／宛先（担当者・作成者・指定ユーザー配列）</td></tr>
 <tr><td><code>hq_task_activity</code></td><td>履歴。誰が・いつ・何をしたか（完了／コメント／写真／差し戻し）</td></tr>
+<tr><td><code>hq_notify_channels</code> <span class="pill p-freq">v1.1</span></td><td>通知先チャンネル。名前／種類（Lark Webhook・アプリ内）／Webhook URL（シート等に置かずここで管理）</td></tr>
+<tr><td><code>hq_notify_rules</code> <span class="pill p-freq">v1.1</span></td><td>通知ルール。対象（全部・法人・頻度・特定テンプレ）／出来事（期限アラート・停滞・工程完了・異常あり）／宛先チャンネル</td></tr>
 </table></div>
+<p>公開範囲はテンプレ・タスクに<code>visibility</code>（<code>all</code>=本部全員／<code>members</code>=指定者のみ）と<code>hq_task_members</code>（指定者リスト）を持たせ、<b>行レベルセキュリティで強制</b>します（画面の出し分けだけでなくDBが守る）。</p>
 <div class="note"><b>設計判断の変更提案:</b> 要件定義書v2では「日報の既存tasksを拡張」としていましたが、工程・繰り返し・アラートを持たせると別物になるため、<b>本部タスクは専用テーブル群（hq_〜）で新設</b>に変更します。日報の現場タスクはそのまま無変更（壊さない）。人は同じ<code>users.id</code>なので「担当者ごとの全タスク横断」は問題なくできます。承認いただければ要件定義書を更新します。</div>
 
 <h2><span class="no">7</span>アラートの配信のしくみ</h2>
@@ -341,21 +419,29 @@ footer{margin-top:60px;padding-top:16px;border-top:1px solid var(--line);font-si
 <li>超過アラートは解消されるまで毎朝再通知（1日1回まで。うるさくしない）。</li>
 </ul>
 
+<h2><span class="no">7.5</span>過去の完了タスク（保存と検索）</h2>
+<ul>
+<li><b>置き場所:</b> ボードの「完了」列には<b>今月分だけ</b>表示。それより前は「📁 過去タスク」タブに<b>月別</b>で一覧（2026年8月 ▸ 7月 ▸ …）。</li>
+<li><b>保存期間: 無期限。</b>タスク・工程・誰がいつ完了したか・コメント・写真すべて残る（データ量は軽いので消す理由がない。写真だけ将来容量が逼迫したら古い分の整理を検討）。</li>
+<li><b>検索対象:</b> 上部のフリーワード検索は過去タスクも含めて全期間ヒット。「あの時どうやったっけ」を検索で引ける＝業務記録としても機能。</li>
+</ul>
+
 <h2><span class="no">8</span>権限</h2>
 <div class="tblwrap"><table class="spec">
 <tr><th>役割</th><th>できること</th></tr>
-<tr><td>マスター・社長・本部</td><td>全部（テンプレ作成・タスク編集・完了・削除・アラート設定・全法人閲覧）</td></tr>
-<tr><td>チーム長</td><td>ボード閲覧＋<b>自分が担当の工程の完了・コメント・写真</b>（テンプレ編集は不可）</td></tr>
+<tr><td>マスター・社長・本部</td><td>全部（テンプレ作成・タスク編集・完了・削除・通知設定・全法人閲覧）</td></tr>
+<tr><td>チーム長</td><td><b>公開範囲に含まれるタスク＋自分が担当のタスク</b>の閲覧と、自分の工程の完了・コメント・写真（テンプレ編集・通知設定は不可）</td></tr>
 <tr><td>店長以下</td><td>ボード自体が非表示。ただし工程の担当者に指名された場合のみ、そのタスクだけ通知が届き完了操作ができる</td></tr>
 </table></div>
 
-<h2><span class="no">9</span>確認したいこと（4点だけ）</h2>
-<div class="qs"><ol>
-<li><b>「日報tasks拡張→専用テーブル新設」への変更</b>（第6章の囲み）でOKですか？</li>
-<li><b>チーム長の閲覧範囲</b> — 全タスク見えてよい？ それとも自分が絡むタスクだけ？（上の表は「全部見える」前提）</li>
-<li><b>完了の定義</b> — 全工程が終わったら自動で完了？ それとも最後に社長の「確認して完了」を挟む？（モックは「確認待ち」列あり＝後者の前提）</li>
-<li><b>Lark通知の宛先</b> — 既存の日報グループに流す？ 本部タスク専用グループを新設する？</li>
-</ol></div>
+<h2><span class="no">9</span>実装ステップ（フェーズ3d）</h2>
+<div class="tblwrap"><table class="spec">
+<tr><th>順</th><th>内容</th></tr>
+<tr><td>3d-1</td><td>テーブル一式＋RLS（公開範囲含む）／ボード（かんばん3列・繰り返しタブ・検索・自分フィルタ）／タスク詳細（工程・注意事項・写真・リンク）</td></tr>
+<tr><td>3d-2</td><td>繰り返しテンプレート＋毎朝の自動生成（毎日タスクのシンプルUI・店舗別2択チェック含む）</td></tr>
+<tr><td>3d-3</td><td>通知（チャンネル登録・ルール・毎朝の期限/停滞チェック・アプリ内ベル＋Lark）／📁過去タスクタブ</td></tr>
+<tr><td>3d-4</td><td>🔐 ID/PWリンク（社内情報管理の本番切替後に接続）・📘マニュアルリンク（フェーズ3cのマニュアル完成後にID接続）</td></tr>
+</table></div>
 
-<footer>本部タスクボード設計書 v1.0 ／ 2026-08-05 ／ ns-portal/docs にも同じものを保存しています。承認後、フェーズ3d として実装に入ります。</footer>
+<footer>本部タスクボード設計書 <b>v1.1 確定版</b> ／ 2026-08-05 ／ 確認事項4点は回答反映済み・追加要望4点（自分フィルタ横断・毎日タスクUI・検索・過去タスク）も反映 ／ ns-portal/docs にも同じものを保存。</footer>
 </div>
