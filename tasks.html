@@ -167,6 +167,9 @@ let SEARCH_RESULTS=null;  // 検索中はこちらを表示
 let FILTER={corp:null,freq:null,mine:false,signal:null};
 let CUR_TASK=null;        // 詳細表示中のタスク（工程・リンク・写真・履歴込み）
 let OPEN_STEP=null;       // 詳細画面で開いている工程id
+let NOTIFICATIONS=[];     // アプリ内通知（自分宛）
+let NOTIF_UNREAD=0;
+let BELL_OPEN=false;
 const qs=new URLSearchParams(location.search);
 
 const isMaster=u=>!!(u&&u.is_master);
@@ -292,7 +295,15 @@ function renderBoard(u){
   $("app").innerHTML=`
   <div class="topbar">
     <h1>📌 本部タスク</h1>
-    <div class="who">👤 ${esc(u.name)} ／ <a href="index.html">← ポータルへ</a></div>
+    <div class="who">
+      <button class="linkbtn" id="bellbtn" style="position:relative">🔔${NOTIF_UNREAD?` <span class="tag" style="background:var(--accent);color:#fff;border-color:var(--accent)">${NOTIF_UNREAD}</span>`:""}</button>
+      👤 ${esc(u.name)} ／ <a href="index.html">← ポータルへ</a>
+    </div>
+  </div>
+  <div id="bellpanel" class="card" style="display:${BELL_OPEN?'block':'none'};margin-bottom:14px">
+    ${NOTIFICATIONS.length?NOTIFICATIONS.map(n=>`<div class="act-row" style="cursor:pointer${n.read_at?'':';font-weight:600'}" data-notifopen="${n.id}" data-notiftask="${n.task_id||''}">
+      <b>${fmtDT(n.created_at)}</b> ${esc(n.title)}${n.body?" — "+esc(n.body):""}
+    </div>`).join(""):'<div class="meta">通知はありません</div>'}
   </div>
   <div class="sig-row">
     <div class="sig overdue ${FILTER.signal==='overdue'?'active':''}" data-sig="overdue"><div class="n">${cnt.overdue}</div><div class="l">期限超過</div></div>
@@ -319,7 +330,9 @@ function renderBoard(u){
     <div>
       <button class="linkbtn" id="godaily">📆 今日の毎日タスク →</button>
       <button class="linkbtn" id="gorepeat">🔁 繰り返しタブ →</button>
+      <button class="linkbtn" id="gopast">📁 過去タスク →</button>
       ${canManage(u)?`<button class="linkbtn" id="gotpl">⚙️ テンプレート管理</button>`:""}
+      ${canManage(u)?`<button class="linkbtn" id="gonotify">🔔 通知設定</button>`:""}
       ${canManage(u)?`<button class="btn sm" id="newtask">＋ 単発タスク作成</button>`:""}
     </div>
   </div>
@@ -335,6 +348,16 @@ function wireBoard(u){
   let t=null;
   $("q").oninput=e=>{ SEARCHQ=e.target.value; clearTimeout(t); t=setTimeout(()=>runSearch(SEARCHQ),350); };
   if($("clearsearch"))$("clearsearch").onclick=()=>{SEARCHQ="";SEARCH_RESULTS=null;renderBoard(u);};
+  $("bellbtn").onclick=async()=>{
+    BELL_OPEN=!BELL_OPEN;
+    if(BELL_OPEN && NOTIF_UNREAD){ await markNotificationsRead(); }
+    renderBoard(u);
+  };
+  document.querySelectorAll("[data-notiftask]").forEach(el=>{
+    el.onclick=()=>{ if(el.dataset.notiftask) openDetail(el.dataset.notiftask); };
+  });
+  if($("gopast"))$("gopast").onclick=async()=>{VIEW="past"; $("app").innerHTML='<div class="spin">読み込み中…</div>'; await fetchPastMonths(); renderPast(u);};
+  if($("gonotify"))$("gonotify").onclick=async()=>{VIEW="notify"; $("app").innerHTML='<div class="spin">読み込み中…</div>'; await fetchNotifySettings(); renderNotify(u);};
   document.querySelectorAll("[data-corp]").forEach(c=>c.onclick=()=>{FILTER.corp=c.dataset.corp||null;renderBoard(u);});
   document.querySelectorAll("[data-freq]").forEach(c=>c.onclick=()=>{FILTER.freq=c.dataset.freq||null;renderBoard(u);});
   $("minechip").onclick=()=>{FILTER.mine=!FILTER.mine;renderBoard(u);};
@@ -517,6 +540,8 @@ function wireDetail(t,u){
         const r=await authed(`/rest/v1/hq_task_steps?id=eq.${sid}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify(payload)});
         if(!r.ok){ msg.textContent="完了にできませんでした（"+(r.status===409||r.status===400?"入力を確認してください":r.status)+"）"; btn.disabled=false; return; }
         await logActivity(t.id,"step_complete",`工程「${step.title}」完了`+(payload.issue_note?` — 異常あり: ${payload.issue_note}`:""),sid);
+        await notifyStepEvent(sid,"step_complete");
+        if(payload.judgement==="issue") await notifyStepEvent(sid,"issue_reported");
       }catch(e){ msg.textContent="エラー: "+e.message; btn.disabled=false; return; }
       OPEN_STEP=null; CUR_TASK=await fetchTaskDetail(t.id); renderDetail(u);
     };
@@ -782,6 +807,8 @@ function wireDaily(u){
         const r=await authed(`/rest/v1/hq_task_steps?id=eq.${sid}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify(payload)});
         if(!r.ok){ alert("完了にできませんでした"); btn.disabled=false; return; }
         await logActivity(parentTask.id,"step_complete",`「${step.title}」完了`+(payload.issue_note?` — 異常あり: ${payload.issue_note}`:""),sid);
+        await notifyStepEvent(sid,"step_complete");
+        if(payload.judgement==="issue") await notifyStepEvent(sid,"issue_reported");
       }catch(e){ alert("エラー: "+e.message); btn.disabled=false; return; }
       await fetchDaily(); renderDaily(u);
     };
@@ -979,6 +1006,152 @@ async function saveTemplate(u){
   VIEW="templates"; renderTemplates(u);
 }
 
+/* ---------- 通知（アプリ内ベル・Lark） ---------- */
+async function fetchNotifications(){
+  const r=await authed(`/rest/v1/hq_notifications?recipient_id=eq.${ME.id}&order=created_at.desc&limit=30`);
+  NOTIFICATIONS=(r.ok&&Array.isArray(r.body))?r.body:[];
+  NOTIF_UNREAD=NOTIFICATIONS.filter(n=>!n.read_at).length;
+}
+async function markNotificationsRead(){
+  const unreadIds=NOTIFICATIONS.filter(n=>!n.read_at).map(n=>n.id);
+  if(!unreadIds.length)return;
+  await authed(`/rest/v1/hq_notifications?id=in.(${unreadIds.join(",")})`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({read_at:new Date().toISOString()})});
+  NOTIFICATIONS.forEach(n=>{ if(!n.read_at) n.read_at=new Date().toISOString(); });
+  NOTIF_UNREAD=0;
+}
+async function sendLark(items){
+  for(const it of (items||[])){
+    if(!it||!it.webhook_url) continue;
+    const text=(it.keyword?`[${it.keyword}] `:"")+it.title+(it.body?`\n${it.body}`:"");
+    try{ await fetch(it.webhook_url,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({msg_type:"text",content:{text}})}); }
+    catch(e){ /* Lark送信の失敗は握りつぶす（アプリ内通知は既に記録済み） */ }
+  }
+}
+async function notifyStepEvent(stepId,event){
+  const r=await authed("/rest/v1/rpc/hq_notify_step_event",{method:"POST",body:JSON.stringify({p_step_id:stepId,p_event:event})});
+  if(r.ok&&Array.isArray(r.body)) await sendLark(r.body);
+}
+async function runAlertChecks(){
+  try{
+    const r=await authed("/rest/v1/rpc/hq_check_alerts",{method:"POST",body:JSON.stringify({})});
+    if(r.ok&&Array.isArray(r.body)) await sendLark(r.body);
+  }catch(e){}
+}
+
+/* ---------- 通知設定（チャンネル登録・ルール） ---------- */
+let NOTIFY_CHANNELS=[];
+let NOTIFY_RULES=[];
+const EVENT_LABEL={due_alert:"期限アラート（3日前・前日・当日・超過）",stalled:"⏸ 3日以上停止",step_complete:"工程完了のたび",issue_reported:"異常ありが付いたとき"};
+async function fetchNotifySettings(){
+  const [c,r]=await Promise.all([
+    authed("/rest/v1/hq_notify_channels?select=*&order=created_at"),
+    authed("/rest/v1/hq_notify_rules?select=*&order=sort_order"),
+  ]);
+  NOTIFY_CHANNELS=(c.ok&&Array.isArray(c.body))?c.body:[];
+  NOTIFY_RULES=(r.ok&&Array.isArray(r.body))?r.body:[];
+}
+function renderNotify(u){
+  $("app").innerHTML=`
+  <div class="topbar"><h1>🔔 通知設定</h1><div class="who"><button class="linkbtn" id="back">← ボードへ戻る</button></div></div>
+  <div class="sec"><h3 style="margin-top:0">通知先チャンネル</h3>
+    <div id="ch-list">${NOTIFY_CHANNELS.map(chRowHtml).join("")||'<div class="card">まだ登録されていません</div>'}</div>
+    <div class="card" style="margin-top:10px">
+      <label>種類</label><select id="ch-kind"><option value="lark_webhook">💬 Lark Webhook</option><option value="inapp">🔔 アプリ内通知</option></select>
+      <label>チャンネル名</label><input id="ch-name" placeholder="例: 本部タスクGr">
+      <div id="ch-urlwrap"><label>Webhook URL</label><input id="ch-url" type="url" placeholder="https://open.larksuite.com/open-apis/bot/v2/hook/…">
+      <label>キーワード（Larkのカスタムボットで必要な場合のみ）</label><input id="ch-keyword" placeholder="任意"></div>
+      <button class="btn sm" style="margin-top:8px" id="ch-add">追加</button>
+      <div class="err" id="ch-msg"></div>
+    </div>
+  </div>
+  <div class="sec"><h3>通知ルール（どのタスクの・どの出来事を・どこに流すか）</h3>
+    <div id="rule-list">${NOTIFY_RULES.map(ruleRowHtml).join("")||'<div class="card">まだ登録されていません</div>'}</div>
+    <div class="card" style="margin-top:10px">
+      <label>ルール名</label><input id="rl-name" placeholder="例: 期限アラート全体">
+      <label>対象の法人（空欄=すべて）</label><select id="rl-corp"><option value="">すべて</option>${CORP.map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join("")}</select>
+      <label>対象の頻度（空欄=すべて）</label><select id="rl-freq"><option value="">すべて</option><option value="daily">毎日</option><option value="weekly">毎週</option><option value="monthly">毎月</option><option value="once">単発</option></select>
+      <label>出来事</label><select id="rl-event">${Object.entries(EVENT_LABEL).map(([k,v])=>`<option value="${k}">${esc(v)}</option>`).join("")}</select>
+      <label>宛先チャンネル（複数選択可）</label>
+      <select id="rl-channels" multiple size="4">${NOTIFY_CHANNELS.map(c=>`<option value="${c.id}">${c.kind==="lark_webhook"?"💬":"🔔"} ${esc(c.name)}</option>`).join("")}</select>
+      <button class="btn sm" style="margin-top:8px" id="rl-add">追加</button>
+      <div class="err" id="rl-msg"></div>
+    </div>
+  </div>`;
+  $("back").onclick=()=>{VIEW="board";renderBoard(u);};
+  $("ch-kind").onchange=e=>{$("ch-urlwrap").style.display=e.target.value==="lark_webhook"?"block":"none";};
+  $("ch-add").onclick=async()=>{
+    const name=$("ch-name").value.trim(), kind=$("ch-kind").value;
+    if(!name){$("ch-msg").textContent="チャンネル名を入力してください";return}
+    const payload={name,kind,created_by:ME.id};
+    if(kind==="lark_webhook"){ payload.webhook_url=$("ch-url").value.trim(); payload.keyword=$("ch-keyword").value.trim()||null; if(!payload.webhook_url){$("ch-msg").textContent="Webhook URLを入力してください";return} }
+    $("ch-msg").textContent="追加中…";
+    const r=await authed("/rest/v1/hq_notify_channels",{method:"POST",headers:{Prefer:"return=minimal"},body:JSON.stringify(payload)});
+    if(!r.ok){$("ch-msg").textContent="追加できませんでした";return}
+    await fetchNotifySettings(); renderNotify(u);
+  };
+  document.querySelectorAll("[data-chdel]").forEach(b=>b.onclick=async()=>{
+    if(!confirm("このチャンネルを削除しますか？"))return;
+    await authed(`/rest/v1/hq_notify_channels?id=eq.${b.dataset.chdel}`,{method:"DELETE"});
+    await fetchNotifySettings(); renderNotify(u);
+  });
+  $("rl-add").onclick=async()=>{
+    const name=$("rl-name").value.trim();
+    if(!name){$("rl-msg").textContent="ルール名を入力してください";return}
+    const sel=[...$("rl-channels").selectedOptions].map(o=>o.value);
+    if(!sel.length){$("rl-msg").textContent="宛先チャンネルを1つ以上選択してください";return}
+    const payload={name,target_corp:$("rl-corp").value||null,target_freq:$("rl-freq").value||null,event:$("rl-event").value,channel_ids:sel,created_by:ME.id};
+    $("rl-msg").textContent="追加中…";
+    const r=await authed("/rest/v1/hq_notify_rules",{method:"POST",headers:{Prefer:"return=minimal"},body:JSON.stringify(payload)});
+    if(!r.ok){$("rl-msg").textContent="追加できませんでした";return}
+    await fetchNotifySettings(); renderNotify(u);
+  };
+  document.querySelectorAll("[data-ruledel]").forEach(b=>b.onclick=async()=>{
+    if(!confirm("このルールを削除しますか？"))return;
+    await authed(`/rest/v1/hq_notify_rules?id=eq.${b.dataset.ruledel}`,{method:"DELETE"});
+    await fetchNotifySettings(); renderNotify(u);
+  });
+}
+function chRowHtml(c){
+  return `<div class="link-row"><span>${c.kind==="lark_webhook"?"💬":"🔔"}</span><div style="flex:1">${esc(c.name)}${c.kind==="lark_webhook"?` <span class="meta">Lark Webhook${c.keyword?"／キーワード: "+esc(c.keyword):""}</span>`:' <span class="meta">アプリ内通知</span>'}</div><button class="linkbtn" data-chdel="${c.id}">削除</button></div>`;
+}
+function ruleRowHtml(r){
+  const chNames=(r.channel_ids||[]).map(id=>{const c=NOTIFY_CHANNELS.find(x=>x.id===id);return c?c.name:"?"}).join("、");
+  const target=[r.target_corp||"すべての法人",r.target_freq?FREQ_LABEL[r.target_freq]:"すべての頻度"].join(" ／ ");
+  return `<div class="link-row"><div style="flex:1"><b>${esc(r.name)}</b><div class="meta">${esc(target)} ／ ${esc(EVENT_LABEL[r.event]||r.event)} → ${esc(chNames)}</div></div><button class="linkbtn" data-ruledel="${r.id}">削除</button></div>`;
+}
+
+/* ---------- 過去タスク（月別・無期限保存） ---------- */
+let PAST_MONTHS=[];
+let PAST_MONTH=null;
+let PAST_TASKS=[];
+async function fetchPastMonths(){
+  const monthStart=monthStartStr();
+  const r=await authed(`/rest/v1/hq_tasks?status=eq.done&completed_at=lt.${monthStart}&select=completed_at&order=completed_at.desc&limit=1000`);
+  const set=new Set();
+  if(r.ok&&Array.isArray(r.body)) r.body.forEach(t=>{ set.add(t.completed_at.slice(0,7)); });
+  PAST_MONTHS=[...set].sort().reverse();
+  if(!PAST_MONTH||!PAST_MONTHS.includes(PAST_MONTH)) PAST_MONTH=PAST_MONTHS[0]||null;
+  if(PAST_MONTH) await fetchPastTasks(PAST_MONTH);
+}
+async function fetchPastTasks(ym){
+  const start=ym+"-01";
+  const d=new Date(start+"T00:00:00"); d.setMonth(d.getMonth()+1);
+  const next=d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-01";
+  const r=await authed(`/rest/v1/hq_tasks?status=eq.done&completed_at=gte.${start}&completed_at=lt.${next}&select=*,hq_task_steps(*)&order=completed_at.desc`);
+  PAST_TASKS=(r.ok&&Array.isArray(r.body))?r.body:[];
+}
+function renderPast(u){
+  $("app").innerHTML=`
+  <div class="topbar"><h1>📁 過去タスク</h1><div class="who"><button class="linkbtn" id="back">← ボードへ戻る</button></div></div>
+  <div class="chiprow">${PAST_MONTHS.map(m=>`<span class="chip ${PAST_MONTH===m?'active':''}" data-month="${m}">${m.replace("-","年")}月</span>`).join("")||'<span class="meta">過去の完了タスクはまだありません</span>'}</div>
+  <div class="board" style="display:block;margin-top:14px">
+    ${PAST_TASKS.map(taskCardHtml).join("")||'<div class="card">この月の完了タスクはありません</div>'}
+  </div>`;
+  $("back").onclick=()=>{VIEW="board";renderBoard(u);};
+  document.querySelectorAll("[data-month]").forEach(c=>c.onclick=async()=>{ PAST_MONTH=c.dataset.month; $("app").innerHTML='<div class="spin">読み込み中…</div>'; await fetchPastTasks(PAST_MONTH); renderPast(u); });
+  document.querySelectorAll("[data-open]").forEach(c=>c.onclick=()=>openDetail(c.dataset.open));
+}
+
 /* ---------- メイン ---------- */
 function renderLogin(err){
   $("app").innerHTML=`<div class="card">
@@ -995,7 +1168,8 @@ async function main(){
   ME=u;
   await fetchUsers(); await fetchStores();
   await ensureTodayGenerated();
-  await fetchBoard();
+  await Promise.all([fetchBoard(), fetchNotifications()]);
+  runAlertChecks();
   const openId=qs.get("task");
   if(openId){ openDetail(openId); return; }
   renderBoard(u);

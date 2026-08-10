@@ -53,3 +53,20 @@
   - テスト後: hq_tasks／hq_task_templates／hq_generation_logを全削除、一時ユーザー2件を削除。テストユーザー0件・関連テーブル0件を確認
 - 構文チェック: `node -c`で確認
 - 未検証: 3d-3（通知チャンネル・通知ルール・アプリ内ベル・Lark送信・📁過去タスクタブ）は未着手
+
+## 2026-08-10 フェーズ3d-3実装（通知＋過去タスク）— フェーズ3d完了
+- supabase/2026-08-10_hq_tasks.sql に追記・再適用: `hq_check_alerts()`（tasks.html読み込みのたび呼ぶ。期限アラート[3日前/前日/当日/超過]と3日以上停止を判定し、アプリ内通知(hq_notifications)へINSERT。同日重複は`created_at::date`一致チェックで防止。SQLからは外部HTTPを呼べないためLark送信対象[webhook_url/keyword/title/body]は戻り値としてクライアントへ返す設計）、`hq_notify_step_event(step_id,event)`（工程完了操作の直後にクライアントから呼ぶ。次工程の担当者へ「あなたの番です」を通知、異常ありなら作成者へ通知。どちらもhq_notify_rulesに一致するLarkチャンネルを戻り値で返す）
+- tasks.html 追記:
+  - 🔔通知設定（マスター/社長/本部限定）: 通知先チャンネル（Lark Webhook／アプリ内、キーワード欄あり）のCRUD、通知ルール（対象法人・対象頻度・出来事・宛先チャンネル複数選択）のCRUD
+  - 🔔ベル: 未読件数バッジ、クリックでパネル開閉＋既読化（開閉状態をトップレベルの`BELL_OPEN`で管理するよう修正——最初closureローカル変数で実装し再レンダーのたびリセットされるバグがあったため）
+  - 📁過去タスク: 今月より前の完了タスクを月別チップで一覧（無期限保存・検索は既存のフリーワード検索が過去分も対象）
+  - 工程完了操作（詳細画面・毎日タスク画面の両方）に`hq_notify_step_event`呼び出しとLark送信(`sendLark`)を接続。ページ読み込み時に`hq_check_alerts`を実行しLark送信
+- **実機E2E**: 一時ユーザー2種（HQ役/TEAM役）で検証
+  - HQ役: Lark Webhookチャンネル登録→期限アラート用ルール作成→期限が今日の工程を持つタスクを用意→`hq_check_alerts`実行でhq_notificationsに1件INSERT・RPCの戻り値にLark送信対象が含まれることを確認→ページ再読込しても同日は重複INSERTされないことを確認（DBで件数1件のまま）→ベルのバッジ表示・開閉・既読化（DBのread_at更新も確認）→工程完了操作で`hq_notify_step_event`が呼ばれ、登録したテスト用URLへfetchが試行されること（コンソールにCORSエラーが出ることで送信自体は実行されたと確認）→📁過去タスクタブで前月完了タスクが月別に表示されることを確認
+  - TEAM役: 「🔔通知設定」「⚙️テンプレート管理」「＋単発タスク作成」が非表示であることを確認
+  - **RLS敵対テスト**: TEAM役で通知チャンネル・通知ルールを直接API POST→ともに403拒否。通知チャンネルの直接SELECT→空配列（webhook URLが非開示）であることを確認
+  - `hq_ontime_stats_v`（3d-5準備の集計ビュー、3d-1で作成済み）が実データで正しく集計されることを確認
+  - テスト後: hq_tasks／hq_task_templates／hq_notify_channels／hq_notify_rules／hq_notifications／hq_generation_logを全削除、一時ユーザー2件を削除。関連テーブル・テストユーザー0件を確認
+- 構文チェック: `node -c`で確認。push後 `curl https://mirai-oss.github.io/ns-portal/tasks.html` で反映確認
+- **未検証・リスク**: 実際のLark Webhook URLでの送信可否（CORS）は本番URLでの確認が必要。テスト用ダミーURL(example.com)ではCORSプリフライトで失敗したが、これはexample.com側の制約であり実際のLark側の挙動は別途確認要
+- これでフェーズ3d-1〜3d-3が完了（3d-4/3d-5は設計書どおり準備のみ＝ID/PW・マニュアルリンクの実接続と出勤日ベース期限判定は今回のスコープ外）
