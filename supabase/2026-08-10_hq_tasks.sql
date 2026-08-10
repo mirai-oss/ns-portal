@@ -440,8 +440,11 @@ group by s.assignee_id, date_trunc('month', s.due_date)::date;
 -- ============================================================
 -- 3d-2: 繰り返しテンプレートからの当日分自動生成
 -- サーバーレス方式: tasks.htmlを誰かが開いたときにRPCで呼ぶ。
--- hq_generation_log(work_date unique) + hq_tasks(template_id,target_date unique) の
--- 二重のunique制約で「1日1回」を保証（同時に複数人が開いても重複生成されない）。
+-- 重複防止は hq_tasks(template_id,target_date) のunique制約が本体（毎回呼んでも
+-- 既存分は on conflict do nothing で無視されるだけなので安全・軽量）。
+-- hq_generation_log は「いつ何件生成したか」の記録用途のみで、生成の可否は判定しない
+-- （以前はwork_dateのunique制約で1日1回に絞っていたが、テンプレート登録前に1回でも
+-- 呼ばれると当日ずっと生成されなくなる不具合があったため撤廃）。
 -- 権限チェックなしで誰でも呼べる（システムの housekeeping 動作のため）。
 -- ============================================================
 create or replace function hq_generate_today() returns int
@@ -450,20 +453,12 @@ declare
   v_today date := current_date;
   v_dow int := extract(dow from v_today)::int;
   v_dom int := extract(day from v_today)::int;
-  v_log_id uuid;
   v_tpl record;
   v_task_id uuid;
   v_step record;
   v_store record;
   v_count int := 0;
 begin
-  insert into hq_generation_log(work_date, generated_by) values (v_today, auth.uid())
-    on conflict (work_date) do nothing
-    returning id into v_log_id;
-  if v_log_id is null then
-    return 0; -- 本日分は生成済み
-  end if;
-
   for v_tpl in
     select * from hq_task_templates
     where is_active
@@ -501,7 +496,10 @@ begin
     values (v_task_id, null, 'create', '自動生成（' || v_tpl.freq || '）');
   end loop;
 
-  update hq_generation_log set task_count = v_count where id = v_log_id;
+  if v_count > 0 then
+    insert into hq_generation_log(work_date, generated_by, task_count) values (v_today, auth.uid(), v_count)
+      on conflict (work_date) do update set task_count = hq_generation_log.task_count + excluded.task_count, generated_at = now();
+  end if;
   return v_count;
 end;
 $$;
