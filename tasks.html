@@ -119,7 +119,9 @@ const SUPA_URL="https://uuvsxzhpxtghojoubjcc.supabase.co";
 const SUPA_KEY="sb_publishable_MrwPJAx_Ws_fdRutprKCiQ_dg3wCiTr";
 const LS_KEY="nsportal_session_v1";
 const BUCKET="report-photos";
-const CORP=["LiveGate","SK","N-Style","トーホー"];
+let CORPS=[];              // hq_corpsから取得 {id,name,is_active,sort_order}
+const activeCorps=()=>CORPS.filter(c=>c.is_active);
+const ASSIGNABLE_ROLES=["HQ","CEO","TEAM"];
 const FREQ_LABEL={daily:"毎日",weekly:"毎週",monthly:"毎月",once:"単発"};
 const STATUS_LABEL={todo:"未着手",doing:"進行中",done:"完了"};
 const ROLE_NAME={CEO:"社長",HQ:"本部",TEAM:"チーム長",TENCHO:"店長",SHAIN:"社員",AL:"アルバイト"};
@@ -164,7 +166,7 @@ let VIEW="board";        // board | repeat | detail | new
 let TASKS=[];             // ボード表示範囲のタスク（工程埋め込み）
 let SEARCHQ="";
 let SEARCH_RESULTS=null;  // 検索中はこちらを表示
-let FILTER={corp:null,freq:null,mine:false,signal:null};
+let FILTER={corp:null,freq:null,assignee:null,signal:null};
 let CUR_TASK=null;        // 詳細表示中のタスク（工程・リンク・写真・履歴込み）
 let OPEN_STEP=null;       // 詳細画面で開いている工程id
 let NOTIFICATIONS=[];     // アプリ内通知（自分宛）
@@ -178,6 +180,7 @@ const userName=id=>{const u=USERS.find(x=>x.id===id);return u?u.name:"—";};
 function todayStr(){const d=new Date();return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0");}
 function monthStartStr(){const d=new Date();return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-01";}
 function fmtD(d){ if(!d) return "—"; const t=new Date(d+"T00:00:00"); return `${t.getMonth()+1}/${t.getDate()}`; }
+function fmtDD(d,tm){ if(!d) return "—"; const base=fmtD(d); return tm?`${base} ${tm.slice(0,5)}`:base; }
 function fmtDT(t){ if(!t) return "—"; const d=new Date(t); return `${d.getMonth()+1}/${d.getDate()} ${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`; }
 
 /* ---------- 工程・信号の判定（設計書 第5章） ---------- */
@@ -187,8 +190,9 @@ function computeSignal(t){
   const cur=steps.find(s=>!s.completed_at);
   if(t.status==="done"||!cur) return {cur:null,level:"done",stalledDays:0,overdue:false,dueToday:false};
   const today=todayStr();
-  const overdue=!!(cur.due_date && cur.due_date<today);
-  const dueToday=!!(cur.due_date && cur.due_date===today);
+  const dueMs=cur.due_date?new Date(cur.due_date+"T"+(cur.due_time?cur.due_time.slice(0,8):"23:59:59")).getTime():null;
+  const overdue=dueMs!==null && Date.now()>dueMs;
+  const dueToday=!!(cur.due_date && cur.due_date===today && !overdue);
   const dueSoon=!!(cur.due_date && !overdue && !dueToday && (new Date(cur.due_date)-new Date(today))/86400000<=2);
   const idx=steps.indexOf(cur);
   const sinceStr=idx>0?steps[idx-1].completed_at:t.created_at;
@@ -203,9 +207,14 @@ async function fetchUsers(){
   const r=await authed("/rest/v1/users?select=id,name,role,is_active,is_master&is_active=eq.true&order=name");
   USERS=(r.ok&&Array.isArray(r.body))?r.body:[];
 }
+const assignableUsers=()=>USERS.filter(u=>ASSIGNABLE_ROLES.includes(u.role));
 async function fetchStores(){
   const r=await authed("/rest/v1/stores?select=id,name,store_no,is_active&order=sort_order");
   STORES=(r.ok&&Array.isArray(r.body))?r.body:[];
+}
+async function fetchCorps(){
+  const r=await authed("/rest/v1/hq_corps?select=*&order=sort_order");
+  CORPS=(r.ok&&Array.isArray(r.body))?r.body:[];
 }
 async function fetchBoard(){
   const ms=monthStartStr();
@@ -255,9 +264,9 @@ function applyFilters(list){
   return list.filter(t=>{
     if(FILTER.corp && t.corp!==FILTER.corp) return false;
     if(FILTER.freq && t.freq!==FILTER.freq) return false;
-    if(FILTER.mine){
-      const mine=sortedSteps(t).some(s=>s.assignee_id===ME.id) || t.created_by===ME.id;
-      if(!mine) return false;
+    if(FILTER.assignee){
+      const match=sortedSteps(t).some(s=>s.assignee_id===FILTER.assignee) || t.created_by===FILTER.assignee;
+      if(!match) return false;
     }
     if(FILTER.signal){
       const sig=computeSignal(t);
@@ -282,7 +291,7 @@ function taskCardHtml(t){
     <div class="badges"><span class="tag">${esc(t.corp)}</span><span class="tag freq">${t.freq!=="once"?"🔁 "+FREQ_LABEL[t.freq]:"単発"}</span></div>
     ${sig.level==="stall"?`<div class="stall-badge">⏸ ${sig.stalledDays}日停止</div>`:""}
     <div class="ti">${esc(t.title)}</div>
-    <div class="meta">期限 ${fmtD(t.due_date)}${t.status==="done"?" ／ "+fmtD((t.completed_at||"").slice(0,10))+" 完了 ✓":""}</div>
+    <div class="meta">対象日 ${fmtD(t.target_date)} ／ 期限 ${fmtDD(t.due_date,t.due_time)}${t.status==="done"?" ／ "+fmtD((t.completed_at||"").slice(0,10))+" 完了 ✓":""}</div>
     ${sig.cur?`<div class="now">いま: ${esc(sig.cur.title)}（${esc(userName(sig.cur.assignee_id)||"未定")}）</div>`:""}
   </div>`;
 }
@@ -315,7 +324,7 @@ function renderBoard(u){
   <div class="toprow">
     <div class="chiprow" id="corpchips">
       <span class="chip ${!FILTER.corp?'active':''}" data-corp="">すべての法人</span>
-      ${CORP.map(c=>`<span class="chip ${FILTER.corp===c?'active':''}" data-corp="${esc(c)}">${esc(c)}</span>`).join("")}
+      ${CORPS.map(c=>`<span class="chip ${FILTER.corp===c.name?'active':''}" data-corp="${esc(c.name)}">${esc(c.name)}${c.is_active?"":" (非表示)"}</span>`).join("")}
     </div>
   </div>
   <div class="toprow">
@@ -325,7 +334,11 @@ function renderBoard(u){
       <span class="chip ${FILTER.freq==='weekly'?'active':''}" data-freq="weekly">毎週</span>
       <span class="chip ${FILTER.freq==='monthly'?'active':''}" data-freq="monthly">毎月</span>
       <span class="chip ${FILTER.freq==='once'?'active':''}" data-freq="once">単発</span>
-      <span class="chip ${FILTER.mine?'active':''}" id="minechip">👤 自分のタスク</span>
+      <span>👤 <select id="assigneesel" style="width:auto;display:inline-block;padding:5px 10px;font-size:12px;border-radius:99px">
+        <option value="">担当者ですべて表示</option>
+        <option value="${u.id}" ${FILTER.assignee===u.id?"selected":""}>自分（${esc(u.name)}）</option>
+        ${assignableUsers().filter(x=>x.id!==u.id).map(x=>`<option value="${x.id}" ${FILTER.assignee===x.id?"selected":""}>${esc(x.name)}</option>`).join("")}
+      </select></span>
     </div>
     <div>
       <button class="linkbtn" id="godaily">📆 今日の毎日タスク →</button>
@@ -333,6 +346,7 @@ function renderBoard(u){
       <button class="linkbtn" id="gopast">📁 過去タスク →</button>
       ${canManage(u)?`<button class="linkbtn" id="gotpl">⚙️ テンプレート管理</button>`:""}
       ${canManage(u)?`<button class="linkbtn" id="gonotify">🔔 通知設定</button>`:""}
+      ${canManage(u)?`<button class="linkbtn" id="gocorps">🏢 法人管理</button>`:""}
       ${canManage(u)?`<button class="btn sm" id="newtask">＋ 単発タスク作成</button>`:""}
     </div>
   </div>
@@ -358,9 +372,10 @@ function wireBoard(u){
   });
   if($("gopast"))$("gopast").onclick=async()=>{VIEW="past"; $("app").innerHTML='<div class="spin">読み込み中…</div>'; await fetchPastMonths(); renderPast(u);};
   if($("gonotify"))$("gonotify").onclick=async()=>{VIEW="notify"; $("app").innerHTML='<div class="spin">読み込み中…</div>'; await fetchNotifySettings(); renderNotify(u);};
+  if($("gocorps"))$("gocorps").onclick=()=>{VIEW="corps";renderCorps(u);};
   document.querySelectorAll("[data-corp]").forEach(c=>c.onclick=()=>{FILTER.corp=c.dataset.corp||null;renderBoard(u);});
   document.querySelectorAll("[data-freq]").forEach(c=>c.onclick=()=>{FILTER.freq=c.dataset.freq||null;renderBoard(u);});
-  $("minechip").onclick=()=>{FILTER.mine=!FILTER.mine;renderBoard(u);};
+  $("assigneesel").onchange=e=>{FILTER.assignee=e.target.value||null;renderBoard(u);};
   document.querySelectorAll("[data-sig]").forEach(c=>c.onclick=()=>{
     const v=c.dataset.sig; FILTER.signal=FILTER.signal===v?null:v; renderBoard(u);
   });
@@ -377,16 +392,16 @@ function renderRepeat(u){
   $("app").innerHTML=`
   <div class="topbar"><h1>🔁 繰り返し（今月）</h1><div class="who"><button class="linkbtn" id="back">← ボードへ戻る</button></div></div>
   <div class="card"><div class="pm-scroll" style="overflow-x:auto">
-  <table class="rp-table"><tr><th>タスク</th><th>法人</th><th>進捗</th><th>いま誰の番</th><th>期限</th><th>状態</th></tr>
+  <table class="rp-table"><tr><th>タスク</th><th>法人</th><th>対象日</th><th>進捗</th><th>いま誰の番</th><th>期限</th><th>状態</th></tr>
   ${list.map(t=>{
     const steps=sortedSteps(t); const done=steps.filter(s=>s.completed_at).length;
     const sig=computeSignal(t);
     const stateLabel=t.status==="done"?"✓ 完了":(sig.level==="stall"?`⏸ ${sig.stalledDays}日停止`:(sig.overdue?"超過":(t.status==="todo"?"未着手":"進行中")));
     return `<tr data-open="${t.id}" style="cursor:pointer">
-      <td>${esc(t.title)}</td><td>${esc(t.corp)}</td><td>${done}/${steps.length}</td>
+      <td>${esc(t.title)}</td><td>${esc(t.corp)}</td><td>${fmtD(t.target_date)}</td><td>${done}/${steps.length}</td>
       <td>${sig.cur?esc(userName(sig.cur.assignee_id)||"—")+"（"+esc(sig.cur.title)+"）":"—"}</td>
-      <td>${fmtD(t.due_date)}</td><td>${stateLabel}</td></tr>`;
-  }).join("")||`<tr><td colspan="6">繰り返しタスクはありません</td></tr>`}
+      <td>${fmtDD(t.due_date,t.due_time)}</td><td>${stateLabel}</td></tr>`;
+  }).join("")||`<tr><td colspan="7">繰り返しタスクはありません</td></tr>`}
   </table></div></div>`;
   $("back").onclick=()=>{VIEW="board";renderBoard(u);};
   document.querySelectorAll("[data-open]").forEach(c=>c.onclick=()=>openDetail(c.dataset.open));
@@ -424,7 +439,7 @@ function renderDetail(u){
     <div class="badges"><span class="tag">${esc(t.corp)}</span><span class="tag freq">${t.freq!=="once"?"🔁 "+FREQ_LABEL[t.freq]:"単発"}</span><span class="tag">${STATUS_LABEL[t.status]}</span>
     ${sig.level==="stall"?`<span class="stall-badge">⏸ ${sig.stalledDays}日停止</span>`:""}</div>
     <h1>${esc(t.title)}</h1>
-    <div class="meta" style="font-size:13px;color:var(--muted);margin-top:4px">対象日 ${fmtD(t.target_date)} ／ 期限 ${fmtD(t.due_date)}${t.status==="done"?" ／ "+fmtDT(t.completed_at)+" 完了":""}</div>
+    <div class="meta" style="font-size:13px;color:var(--muted);margin-top:4px">対象日 ${fmtD(t.target_date)} ／ 期限 ${fmtDD(t.due_date,t.due_time)}${t.status==="done"?" ／ "+fmtDT(t.completed_at)+" 完了":""}</div>
   </div>
 
   <div class="sec"><h3>① 工程（サブタスク）— ${doneCount}/${steps.length}</h3>
@@ -459,9 +474,9 @@ function stepHtml(t,s,u){
   const canTouch=canManage(u)||s.assignee_id===u.id||(!s.assignee_id);
   const open=OPEN_STEP===s.id;
   let metaLine="";
-  if(s.completed_at) metaLine=`担当: ${esc(userName(s.assignee_id)||"—")} ／ 期限 ${fmtD(s.due_date)} → ${fmtDT(s.completed_at)} 完了${esc(userName(s.completed_by)?" ("+userName(s.completed_by)+")":"")}`;
-  else if(s._isCurrent) metaLine=`<span class="now-tag">いまここ${s.due_date?"":""}</span> ／ 担当: ${esc(userName(s.assignee_id)||"未定")} ／ 期限 ${fmtD(s.due_date)}`;
-  else metaLine=`担当: ${esc(userName(s.assignee_id)||"未定")} ／ 期限 ${fmtD(s.due_date)}`;
+  if(s.completed_at) metaLine=`担当: ${esc(userName(s.assignee_id)||"—")} ／ 期限 ${fmtDD(s.due_date,s.due_time)} → ${fmtDT(s.completed_at)} 完了${esc(userName(s.completed_by)?" ("+userName(s.completed_by)+")":"")}`;
+  else if(s._isCurrent) metaLine=`<span class="now-tag">いまここ${s.due_date?"":""}</span> ／ 担当: ${esc(userName(s.assignee_id)||"未定")} ／ 期限 ${fmtDD(s.due_date,s.due_time)}`;
+  else metaLine=`担当: ${esc(userName(s.assignee_id)||"未定")} ／ 期限 ${fmtDD(s.due_date,s.due_time)}`;
   const photos=stepPhotosFor(t,s.id);
   return `<div class="step ${s._isCurrent?'cur':''}">
     <div class="row1" data-stepopen="${s.id}"><span class="ic">${stepIcon(s)}</span>
@@ -582,14 +597,14 @@ function wireDetail(t,u){
 }
 
 /* ---------- 単発タスク作成 ---------- */
-let NEW_STEPS=[{title:"",assignee_id:"",due_date:""}];
+let NEW_STEPS=[{title:"",assignee_id:"",due_date:"",due_time:""}];
 function renderNew(u){
-  NEW_STEPS=[{title:"",assignee_id:"",due_date:""}];
+  NEW_STEPS=[{title:"",assignee_id:"",due_date:"",due_time:""}];
   $("app").innerHTML=`
   <div class="topbar"><h1>＋ 単発タスクを作成</h1><div class="who"><button class="linkbtn" id="back">← ボードへ戻る</button></div></div>
   <div class="card">
     <label>タイトル</label><input id="nt-title" placeholder="例: 恵比寿 冷蔵庫の入替 見積比較">
-    <label>法人</label><select id="nt-corp">${CORP.map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join("")}</select>
+    <label>法人</label><select id="nt-corp">${activeCorps().map(c=>`<option value="${esc(c.name)}">${esc(c.name)}</option>`).join("")}</select>
     <label>対象日</label><input id="nt-target" type="date" value="${todayStr()}">
     <label>⚠️ 注意事項（任意）</label><textarea id="nt-notes" rows="2"></textarea>
     <label>公開範囲</label>
@@ -607,15 +622,16 @@ function renderNew(u){
   $("back").onclick=()=>{VIEW="board";renderBoard(u);};
   $("nt-vis").onchange=e=>{$("nt-memberswrap").style.display=e.target.value==="members"?"block":"none";};
   renderNewSteps();
-  $("nt-addstep").onclick=()=>{NEW_STEPS.push({title:"",assignee_id:"",due_date:""});renderNewSteps();};
+  $("nt-addstep").onclick=()=>{NEW_STEPS.push({title:"",assignee_id:"",due_date:"",due_time:""});renderNewSteps();};
   $("nt-send").onclick=()=>submitNewTask(u);
 }
 function renderNewSteps(){
   $("nt-steps").innerHTML=NEW_STEPS.map((s,i)=>`
     <div class="stepform-row" data-idx="${i}">
       <div class="f"><label>工程名</label><input class="ns-title" value="${esc(s.title)}" placeholder="例: 見積回収"></div>
-      <div class="f"><label>担当</label><select class="ns-assignee"><option value="">未定</option>${USERS.map(x=>`<option value="${x.id}" ${s.assignee_id===x.id?"selected":""}>${esc(x.name)}</option>`).join("")}</select></div>
-      <div class="f"><label>期限</label><input class="ns-due" type="date" value="${esc(s.due_date)}"></div>
+      <div class="f"><label>担当</label><select class="ns-assignee"><option value="">未定</option>${assignableUsers().map(x=>`<option value="${x.id}" ${s.assignee_id===x.id?"selected":""}>${esc(x.name)}</option>`).join("")}</select></div>
+      <div class="f"><label>期限日</label><input class="ns-due" type="date" value="${esc(s.due_date)}"></div>
+      <div class="f"><label>期限時刻（任意）</label><input class="ns-duetime" type="time" value="${esc(s.due_time)}"></div>
       ${NEW_STEPS.length>1?`<button class="linkbtn" data-rmstep="${i}">削除</button>`:""}
     </div>`).join("");
   document.querySelectorAll("#nt-steps [data-idx]").forEach(row=>{
@@ -623,6 +639,7 @@ function renderNewSteps(){
     row.querySelector(".ns-title").oninput=e=>NEW_STEPS[i].title=e.target.value;
     row.querySelector(".ns-assignee").onchange=e=>NEW_STEPS[i].assignee_id=e.target.value;
     row.querySelector(".ns-due").onchange=e=>NEW_STEPS[i].due_date=e.target.value;
+    row.querySelector(".ns-duetime").onchange=e=>NEW_STEPS[i].due_time=e.target.value;
   });
   document.querySelectorAll("[data-rmstep]").forEach(b=>b.onclick=()=>{NEW_STEPS.splice(+b.dataset.rmstep,1);renderNewSteps();});
 }
@@ -634,16 +651,17 @@ async function submitNewTask(u){
   if(!steps.length){msg.textContent="工程を1つ以上入力してください";return}
   const corp=$("nt-corp").value, target_date=$("nt-target").value||todayStr();
   const visibility=$("nt-vis").value;
-  const dueDates=steps.map(s=>s.due_date).filter(Boolean).sort();
-  const due_date=dueDates.length?dueDates[dueDates.length-1]:null;
+  const dueSorted=steps.filter(s=>s.due_date).sort((a,b)=>(a.due_date+(a.due_time||"23:59")).localeCompare(b.due_date+(b.due_time||"23:59")));
+  const lastDue=dueSorted[dueSorted.length-1]||null;
+  const due_date=lastDue?lastDue.due_date:null, due_time=lastDue?(lastDue.due_time||null):null;
   $("nt-send").disabled=true; msg.textContent="作成中…";
   const tr=await authed("/rest/v1/hq_tasks",{method:"POST",headers:{Prefer:"return=representation"},body:JSON.stringify({
-    title,corp,freq:"once",target_date,due_date,notes:$("nt-notes").value.trim(),visibility,created_by:ME.id
+    title,corp,freq:"once",target_date,due_date,due_time,notes:$("nt-notes").value.trim(),visibility,created_by:ME.id
   })});
   if(!tr.ok||!tr.body||!tr.body[0]){ msg.textContent="作成できませんでした（"+tr.status+"）"; $("nt-send").disabled=false; return; }
   const taskId=tr.body[0].id;
   await authed("/rest/v1/hq_task_steps",{method:"POST",headers:{Prefer:"return=minimal"},body:JSON.stringify(
-    steps.map((s,i)=>({task_id:taskId,title:s.title.trim(),assignee_id:s.assignee_id||null,due_date:s.due_date||null,sort_order:(i+1)*10,kind:"step"}))
+    steps.map((s,i)=>({task_id:taskId,title:s.title.trim(),assignee_id:s.assignee_id||null,due_date:s.due_date||null,due_time:s.due_time||null,sort_order:(i+1)*10,kind:"step"}))
   )});
   if(visibility==="members"){
     const sel=[...$("nt-members").selectedOptions].map(o=>o.value);
@@ -708,7 +726,7 @@ function dailyRowHtml(t,u,isPast){
     <div class="row1" data-dailyopen="${t.id}">
       <span class="ic">${t.status==="done"?"✓":"▶"}</span>
       <div class="st">${esc(t.title)}${isPast?`<span class="tag" style="margin-left:6px">${fmtD(t.target_date)}分</span>`:""}
-        <div class="meta">${done}/${steps.length} 完了${t.due_date?" ／ 期限 "+fmtD(t.due_date):""}</div>
+        <div class="meta">${done}/${steps.length} 完了${t.due_date?" ／ 期限 "+fmtDD(t.due_date,t.due_time):""}</div>
       </div>
       <span>${open?"▲":"▼"}</span>
     </div>
@@ -728,7 +746,7 @@ function dailyGroupHtml(g,u){
     }
     if(!canDo(s)) return `<div class="storecheck-row"><span>○</span><span style="flex:1">${esc(s.title)}</span><span class="meta">担当: ${esc(userName(s.assignee_id)||"未定")}</span></div>`;
     return `<div class="card" style="margin:8px 0">
-      <div style="margin-bottom:6px">${esc(s.title)}${s.due_date?` <span class="meta">期限 ${fmtD(s.due_date)}</span>`:""}</div>
+      <div style="margin-bottom:6px">${esc(s.title)}${s.due_date?` <span class="meta">期限 ${fmtDD(s.due_date,s.due_time)}</span>`:""}</div>
       ${s.is_binary?`<label>判定</label><select id="djudge-${s.id}"><option value="">選択してください</option><option value="ok">OK</option><option value="issue">異常あり</option></select>
         <div id="dissuewrap-${s.id}" style="display:none"><label>異常メモ（必須）</label><textarea id="dissuenote-${s.id}" rows="2"></textarea></div>`:""}
       ${s.requires_photo?`<label>写真（必須）</label><input type="file" accept="image/*" capture="environment" id="dphoto-${s.id}">`:""}
@@ -858,7 +876,7 @@ async function openTplEdit(u,tpl){
       TPL_EDIT._members=(rm.ok&&Array.isArray(rm.body))?rm.body.map(x=>x.user_id):[];
     } else TPL_EDIT._members=[];
   } else {
-    TPL_STEPS=[{title:"",assignee_id:"",offset_days:0,kind:"step",store_scope:"",is_binary:false,requires_photo:false}];
+    TPL_STEPS=[{title:"",assignee_id:"",offset_days:0,due_time:"",kind:"step",store_scope:"",is_binary:false,requires_photo:false}];
   }
   renderTplEdit(u);
 }
@@ -868,7 +886,7 @@ function renderTplEdit(u){
   <div class="topbar"><h1>${tpl.id?"テンプレートを編集":"新しいテンプレート"}</h1><div class="who"><button class="linkbtn" id="back">← 一覧へ戻る</button></div></div>
   <div class="card">
     <label>タイトル</label><input id="tp-title" value="${esc(tpl.title||"")}" placeholder="例: 業務委託 精算処理">
-    <label>法人</label><select id="tp-corp">${CORP.map(c=>`<option value="${esc(c)}" ${tpl.corp===c?"selected":""}>${esc(c)}</option>`).join("")}</select>
+    <label>法人</label><select id="tp-corp">${activeCorps().map(c=>`<option value="${esc(c.name)}" ${tpl.corp===c.name?"selected":""}>${esc(c.name)}</option>`).join("")}</select>
     <label>頻度</label>
     <select id="tp-freq">
       <option value="daily" ${tpl.freq==="daily"?"selected":""}>毎日</option>
@@ -885,6 +903,8 @@ function renderTplEdit(u){
     </div>
     <label>タスクの期限（対象日から何日後か）</label>
     <input id="tp-offset" type="number" min="0" value="${tpl.due_offset_days??0}">
+    <label>期限の時刻（任意・未設定なら日付のみ）</label>
+    <input id="tp-duetime" type="time" value="${esc(tpl.due_time||"")}">
     <label>⚠️ 注意事項（既定）</label><textarea id="tp-notes" rows="2">${esc(tpl.notes||"")}</textarea>
     <label>公開範囲</label>
     <select id="tp-vis"><option value="all" ${(!tpl.visibility||tpl.visibility==="all")?"selected":""}>本部全員に公開（既定）</option><option value="members" ${tpl.visibility==="members"?"selected":""}>指定した人だけ</option></select>
@@ -919,7 +939,7 @@ function renderTplEdit(u){
   };
   $("tp-vis").onchange=e=>{$("tp-memberswrap").style.display=e.target.value==="members"?"block":"none";};
   renderTplSteps();
-  $("tp-addstep").onclick=()=>{TPL_STEPS.push({title:"",assignee_id:"",offset_days:0,kind:"step",store_scope:"",is_binary:false,requires_photo:false});renderTplSteps();};
+  $("tp-addstep").onclick=()=>{TPL_STEPS.push({title:"",assignee_id:"",offset_days:0,due_time:"",kind:"step",store_scope:"",is_binary:false,requires_photo:false});renderTplSteps();};
   $("tp-save").onclick=()=>saveTemplate(u);
 }
 function renderTplSteps(){
@@ -927,8 +947,9 @@ function renderTplSteps(){
     <div class="card" style="margin-bottom:8px" data-tidx="${i}">
       <div class="stepform-row">
         <div class="f"><label>工程名</label><input class="ts-title" value="${esc(s.title)}" placeholder="例: 入力チェック"></div>
-        <div class="f"><label>担当（空欄=誰でも可）</label><select class="ts-assignee"><option value="">未定</option>${USERS.map(x=>`<option value="${x.id}" ${s.assignee_id===x.id?"selected":""}>${esc(x.name)}</option>`).join("")}</select></div>
+        <div class="f"><label>担当（空欄=誰でも可）</label><select class="ts-assignee"><option value="">未定</option>${assignableUsers().map(x=>`<option value="${x.id}" ${s.assignee_id===x.id?"selected":""}>${esc(x.name)}</option>`).join("")}</select></div>
         <div class="f"><label>期限オフセット(日)</label><input class="ts-offset" type="number" value="${s.offset_days||0}"></div>
+        <div class="f"><label>期限の時刻（任意）</label><input class="ts-duetime" type="time" value="${esc(s.due_time||"")}"></div>
         ${TPL_STEPS.length>1?`<button class="linkbtn" data-rmtstep="${i}">削除</button>`:""}
       </div>
       <label style="display:flex;align-items:center;gap:8px;cursor:pointer"><input type="checkbox" class="ts-ischeck" ${s.kind==="check"?"checked":""}> 毎日タスクの子チェックとして扱う（店舗別／2択／写真必須を選べます）</label>
@@ -947,6 +968,7 @@ function renderTplSteps(){
     row.querySelector(".ts-title").oninput=e=>TPL_STEPS[i].title=e.target.value;
     row.querySelector(".ts-assignee").onchange=e=>TPL_STEPS[i].assignee_id=e.target.value;
     row.querySelector(".ts-offset").onchange=e=>TPL_STEPS[i].offset_days=+e.target.value||0;
+    row.querySelector(".ts-duetime").onchange=e=>TPL_STEPS[i].due_time=e.target.value;
     const isCheck=row.querySelector(".ts-ischeck");
     const opts=row.querySelector(".ts-checkopts");
     const storeSplit=row.querySelector(".ts-storesplit");
@@ -974,6 +996,7 @@ async function saveTemplate(u){
     weekly_dow: freq==="weekly"?+$("tp-dow").value:null,
     monthly_dom: freq==="monthly"?+$("tp-dom").value:null,
     due_offset_days: +$("tp-offset").value||0,
+    due_time: $("tp-duetime").value||null,
     notes: $("tp-notes").value.trim(),
     visibility: $("tp-vis").value,
     alert_before3: $("tp-a3").checked, alert_before1: $("tp-a1").checked, alert_due: $("tp-a0").checked, alert_overdue_daily: $("tp-aod").checked,
@@ -995,7 +1018,7 @@ async function saveTemplate(u){
     await authed(`/rest/v1/hq_task_template_steps?template_id=eq.${tplId}`,{method:"DELETE"});
   }
   await authed("/rest/v1/hq_task_template_steps",{method:"POST",headers:{Prefer:"return=minimal"},body:JSON.stringify(
-    steps.map((s,i)=>({template_id:tplId,title:s.title.trim(),assignee_id:s.assignee_id||null,offset_days:s.offset_days||0,sort_order:(i+1)*10,kind:s.kind||"step",store_scope:s.store_scope||null,is_binary:!!s.is_binary,requires_photo:!!s.requires_photo}))
+    steps.map((s,i)=>({template_id:tplId,title:s.title.trim(),assignee_id:s.assignee_id||null,offset_days:s.offset_days||0,due_time:s.due_time||null,sort_order:(i+1)*10,kind:s.kind||"step",store_scope:s.store_scope||null,is_binary:!!s.is_binary,requires_photo:!!s.requires_photo}))
   )});
   await authed(`/rest/v1/hq_task_members?template_id=eq.${tplId}`,{method:"DELETE"});
   if(payload.visibility==="members"){
@@ -1068,7 +1091,7 @@ function renderNotify(u){
     <div id="rule-list">${NOTIFY_RULES.map(ruleRowHtml).join("")||'<div class="card">まだ登録されていません</div>'}</div>
     <div class="card" style="margin-top:10px">
       <label>ルール名</label><input id="rl-name" placeholder="例: 期限アラート全体">
-      <label>対象の法人（空欄=すべて）</label><select id="rl-corp"><option value="">すべて</option>${CORP.map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join("")}</select>
+      <label>対象の法人（空欄=すべて）</label><select id="rl-corp"><option value="">すべて</option>${CORPS.map(c=>`<option value="${esc(c.name)}">${esc(c.name)}</option>`).join("")}</select>
       <label>対象の頻度（空欄=すべて）</label><select id="rl-freq"><option value="">すべて</option><option value="daily">毎日</option><option value="weekly">毎週</option><option value="monthly">毎月</option><option value="once">単発</option></select>
       <label>出来事</label><select id="rl-event">${Object.entries(EVENT_LABEL).map(([k,v])=>`<option value="${k}">${esc(v)}</option>`).join("")}</select>
       <label>宛先チャンネル（複数選択可）</label>
@@ -1152,6 +1175,39 @@ function renderPast(u){
   document.querySelectorAll("[data-open]").forEach(c=>c.onclick=()=>openDetail(c.dataset.open));
 }
 
+/* ---------- 法人管理 ---------- */
+function renderCorps(u){
+  $("app").innerHTML=`
+  <div class="topbar"><h1>🏢 法人管理</h1><div class="who"><button class="linkbtn" id="back">← ボードへ戻る</button></div></div>
+  <div class="card">
+    <div id="corps-list">${CORPS.map(c=>`<div class="link-row">
+      <div style="flex:1">${esc(c.name)}${c.is_active?"":' <span class="tag">非表示</span>'}</div>
+      <button class="linkbtn" data-corptoggle="${c.id}">${c.is_active?"非表示にする":"表示に戻す"}</button>
+    </div>`).join("")||'<div class="meta">法人がありません</div>'}</div>
+    <div style="margin-top:14px;padding-top:10px;border-top:1px dashed var(--line)">
+      <label>法人名を追加</label><input id="corp-new" placeholder="例: 新法人株式会社">
+      <button class="btn sm" style="margin-top:8px" id="corp-add">追加</button>
+      <div class="err" id="corp-msg"></div>
+    </div>
+    <div class="meta" style="margin-top:10px">非表示にした法人は新規作成時の選択肢から外れますが、既存タスクの表示・絞り込みには残ります。</div>
+  </div>`;
+  $("back").onclick=()=>{VIEW="board";renderBoard(u);};
+  document.querySelectorAll("[data-corptoggle]").forEach(b=>b.onclick=async()=>{
+    const c=CORPS.find(x=>x.id===b.dataset.corptoggle);
+    await authed(`/rest/v1/hq_corps?id=eq.${c.id}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({is_active:!c.is_active})});
+    await fetchCorps(); renderCorps(u);
+  });
+  $("corp-add").onclick=async()=>{
+    const name=$("corp-new").value.trim();
+    if(!name){$("corp-msg").textContent="法人名を入力してください";return}
+    $("corp-msg").textContent="追加中…";
+    const sortMax=CORPS.length?Math.max(...CORPS.map(c=>c.sort_order)):0;
+    const r=await authed("/rest/v1/hq_corps",{method:"POST",headers:{Prefer:"return=minimal"},body:JSON.stringify({name,sort_order:sortMax+10})});
+    if(!r.ok){$("corp-msg").textContent="追加できませんでした（同名の法人がある可能性があります）";return}
+    await fetchCorps(); renderCorps(u);
+  };
+}
+
 /* ---------- メイン ---------- */
 function renderLogin(err){
   $("app").innerHTML=`<div class="card">
@@ -1166,7 +1222,7 @@ async function main(){
   if(!u){sess.clear();renderLogin("セッションが切れました。ポータルから再度ログインしてください。");return}
   if(u.is_active===false){renderLogin("このアカウントは無効化されています。");return}
   ME=u;
-  await fetchUsers(); await fetchStores();
+  await fetchUsers(); await fetchStores(); await fetchCorps();
   await ensureTodayGenerated();
   await Promise.all([fetchBoard(), fetchNotifications()]);
   runAlertChecks();

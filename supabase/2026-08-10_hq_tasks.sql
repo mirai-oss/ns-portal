@@ -642,3 +642,95 @@ begin
   return query select u,k,t,b from unnest(v_urls,v_kws,v_titles,v_bodies) as x(u,k,t,b);
 end;
 $$;
+
+-- ============================================================
+-- 微調整1: 期限に時刻を設定できるように（既存のdue_dateは日付のみのまま・
+-- due_timeは任意。未設定なら従来どおり日付のみの扱い）
+-- ============================================================
+alter table hq_task_templates add column if not exists due_time time;
+alter table hq_task_template_steps add column if not exists due_time time;
+alter table hq_tasks add column if not exists due_time time;
+alter table hq_task_steps add column if not exists due_time time;
+
+-- 自動生成でdue_timeも引き継ぐよう更新
+create or replace function hq_generate_today() returns int
+language plpgsql security definer set search_path = public as $$
+declare
+  v_today date := current_date;
+  v_dow int := extract(dow from v_today)::int;
+  v_dom int := extract(day from v_today)::int;
+  v_tpl record;
+  v_task_id uuid;
+  v_step record;
+  v_store record;
+  v_count int := 0;
+begin
+  for v_tpl in
+    select * from hq_task_templates
+    where is_active
+      and (
+        freq = 'daily'
+        or (freq = 'weekly' and weekly_dow = v_dow)
+        or (freq = 'monthly' and monthly_dom = v_dom)
+      )
+  loop
+    insert into hq_tasks (template_id, title, corp, freq, target_date, due_date, due_time, notes, visibility, created_by)
+    values (v_tpl.id, v_tpl.title, v_tpl.corp, v_tpl.freq, v_today, v_today + v_tpl.due_offset_days, v_tpl.due_time, v_tpl.notes, v_tpl.visibility, v_tpl.created_by)
+    on conflict (template_id, target_date) do nothing
+    returning id into v_task_id;
+
+    if v_task_id is null then
+      continue;
+    end if;
+    v_count := v_count + 1;
+
+    for v_step in select * from hq_task_template_steps where template_id = v_tpl.id order by sort_order loop
+      if v_step.kind = 'check' and v_step.store_scope is not null then
+        for v_store in
+          select id from stores where (v_step.store_scope = 'all' or is_active) order by sort_order
+        loop
+          insert into hq_task_steps(task_id, template_step_id, title, assignee_id, due_date, due_time, sort_order, kind, is_binary, requires_photo, store_id)
+          values (v_task_id, v_step.id, v_step.title, v_step.assignee_id, v_today + v_step.offset_days, v_step.due_time, v_step.sort_order, v_step.kind, v_step.is_binary, v_step.requires_photo, v_store.id);
+        end loop;
+      else
+        insert into hq_task_steps(task_id, template_step_id, title, assignee_id, due_date, due_time, sort_order, kind, is_binary, requires_photo)
+        values (v_task_id, v_step.id, v_step.title, v_step.assignee_id, v_today + v_step.offset_days, v_step.due_time, v_step.sort_order, v_step.kind, v_step.is_binary, v_step.requires_photo);
+      end if;
+    end loop;
+
+    insert into hq_task_activity(task_id, actor_id, kind, detail)
+    values (v_task_id, null, 'create', '自動生成（' || v_tpl.freq || '）');
+  end loop;
+
+  if v_count > 0 then
+    insert into hq_generation_log(work_date, generated_by, task_count) values (v_today, auth.uid(), v_count)
+      on conflict (work_date) do update set task_count = hq_generation_log.task_count + excluded.task_count, generated_at = now();
+  end if;
+  return v_count;
+end;
+$$;
+
+-- ============================================================
+-- 微調整2: 法人をマスタテーブル化（追加・非表示を管理者が自由に）
+-- 既存の4法人チェック制約は撤廃し自由入力に。表示側は原則hq_corpsを参照。
+-- ============================================================
+create table if not exists hq_corps (
+  id uuid primary key default gen_random_uuid(),
+  name text not null unique,
+  is_active boolean not null default true,
+  sort_order int not null default 100,
+  created_at timestamptz not null default now()
+);
+insert into hq_corps(name, sort_order) values
+  ('LiveGate', 10), ('SK', 20), ('N-Style', 30), ('トーホー', 40)
+on conflict (name) do nothing;
+
+alter table hq_corps enable row level security;
+drop policy if exists hqcorps_read on hq_corps;
+create policy hqcorps_read on hq_corps for select using (auth.uid() is not null);
+drop policy if exists hqcorps_write on hq_corps;
+create policy hqcorps_write on hq_corps for all using (hq_can_manage()) with check (hq_can_manage());
+
+alter table hq_tasks drop constraint if exists hq_tasks_corp_check;
+alter table hq_task_templates drop constraint if exists hq_task_templates_corp_check;
+alter table hq_notify_rules drop constraint if exists hq_notify_rules_target_corp_check;
