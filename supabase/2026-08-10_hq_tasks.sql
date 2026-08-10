@@ -436,3 +436,72 @@ select
 from hq_task_steps s
 where s.due_date is not null and s.assignee_id is not null
 group by s.assignee_id, date_trunc('month', s.due_date)::date;
+
+-- ============================================================
+-- 3d-2: 繰り返しテンプレートからの当日分自動生成
+-- サーバーレス方式: tasks.htmlを誰かが開いたときにRPCで呼ぶ。
+-- hq_generation_log(work_date unique) + hq_tasks(template_id,target_date unique) の
+-- 二重のunique制約で「1日1回」を保証（同時に複数人が開いても重複生成されない）。
+-- 権限チェックなしで誰でも呼べる（システムの housekeeping 動作のため）。
+-- ============================================================
+create or replace function hq_generate_today() returns int
+language plpgsql security definer set search_path = public as $$
+declare
+  v_today date := current_date;
+  v_dow int := extract(dow from v_today)::int;
+  v_dom int := extract(day from v_today)::int;
+  v_log_id uuid;
+  v_tpl record;
+  v_task_id uuid;
+  v_step record;
+  v_store record;
+  v_count int := 0;
+begin
+  insert into hq_generation_log(work_date, generated_by) values (v_today, auth.uid())
+    on conflict (work_date) do nothing
+    returning id into v_log_id;
+  if v_log_id is null then
+    return 0; -- 本日分は生成済み
+  end if;
+
+  for v_tpl in
+    select * from hq_task_templates
+    where is_active
+      and (
+        freq = 'daily'
+        or (freq = 'weekly' and weekly_dow = v_dow)
+        or (freq = 'monthly' and monthly_dom = v_dom)
+      )
+  loop
+    insert into hq_tasks (template_id, title, corp, freq, target_date, due_date, notes, visibility, created_by)
+    values (v_tpl.id, v_tpl.title, v_tpl.corp, v_tpl.freq, v_today, v_today + v_tpl.due_offset_days, v_tpl.notes, v_tpl.visibility, v_tpl.created_by)
+    on conflict (template_id, target_date) do nothing
+    returning id into v_task_id;
+
+    if v_task_id is null then
+      continue; -- 同時実行などで既に生成済み
+    end if;
+    v_count := v_count + 1;
+
+    for v_step in select * from hq_task_template_steps where template_id = v_tpl.id order by sort_order loop
+      if v_step.kind = 'check' and v_step.store_scope is not null then
+        for v_store in
+          select id from stores where (v_step.store_scope = 'all' or is_active) order by sort_order
+        loop
+          insert into hq_task_steps(task_id, template_step_id, title, assignee_id, due_date, sort_order, kind, is_binary, requires_photo, store_id)
+          values (v_task_id, v_step.id, v_step.title, v_step.assignee_id, v_today + v_step.offset_days, v_step.sort_order, v_step.kind, v_step.is_binary, v_step.requires_photo, v_store.id);
+        end loop;
+      else
+        insert into hq_task_steps(task_id, template_step_id, title, assignee_id, due_date, sort_order, kind, is_binary, requires_photo)
+        values (v_task_id, v_step.id, v_step.title, v_step.assignee_id, v_today + v_step.offset_days, v_step.sort_order, v_step.kind, v_step.is_binary, v_step.requires_photo);
+      end if;
+    end loop;
+
+    insert into hq_task_activity(task_id, actor_id, kind, detail)
+    values (v_task_id, null, 'create', '自動生成（' || v_tpl.freq || '）');
+  end loop;
+
+  update hq_generation_log set task_count = v_count where id = v_log_id;
+  return v_count;
+end;
+$$;

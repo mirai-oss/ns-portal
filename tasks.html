@@ -317,7 +317,9 @@ function renderBoard(u){
       <span class="chip ${FILTER.mine?'active':''}" id="minechip">👤 自分のタスク</span>
     </div>
     <div>
+      <button class="linkbtn" id="godaily">📆 今日の毎日タスク →</button>
       <button class="linkbtn" id="gorepeat">🔁 繰り返しタブ →</button>
+      ${canManage(u)?`<button class="linkbtn" id="gotpl">⚙️ テンプレート管理</button>`:""}
       ${canManage(u)?`<button class="btn sm" id="newtask">＋ 単発タスク作成</button>`:""}
     </div>
   </div>
@@ -341,6 +343,8 @@ function wireBoard(u){
   });
   document.querySelectorAll("[data-open]").forEach(c=>c.onclick=()=>openDetail(c.dataset.open));
   $("gorepeat").onclick=()=>{VIEW="repeat";renderRepeat(u);};
+  $("godaily").onclick=async()=>{VIEW="daily"; $("app").innerHTML='<div class="spin">読み込み中…</div>'; await fetchDaily(); renderDaily(u);};
+  if($("gotpl"))$("gotpl").onclick=async()=>{VIEW="templates"; $("app").innerHTML='<div class="spin">読み込み中…</div>'; await fetchTemplates(); renderTemplates(u);};
   if($("newtask"))$("newtask").onclick=()=>{VIEW="new";renderNew(u);};
 }
 
@@ -625,6 +629,356 @@ async function submitNewTask(u){
   openDetail(taskId);
 }
 
+/* ---------- 今日の毎日タスク（シンプルUI・第2.5章） ---------- */
+let DAILY_TASKS=[];
+let OPEN_DAILY=null;
+let DAILY_MINE=false;
+async function fetchDaily(){
+  const today=todayStr();
+  const r=await authed(`/rest/v1/hq_tasks?freq=eq.daily&or=(target_date.eq.${today},status.neq.done)&select=*,hq_task_steps(*)&order=target_date.asc`);
+  DAILY_TASKS=(r.ok&&Array.isArray(r.body))?r.body:[];
+}
+function groupStoreSteps(steps){
+  const map=new Map(), order=[];
+  steps.forEach(s=>{
+    const key=(s.store_id&&s.template_step_id)?("g:"+s.template_step_id):("s:"+s.id);
+    if(!map.has(key)){ map.set(key,{isGroup:!!(s.store_id&&s.template_step_id),rows:[],sort_order:s.sort_order}); order.push(key); }
+    map.get(key).rows.push(s);
+  });
+  return order.map(k=>map.get(k)).sort((a,b)=>a.sort_order-b.sort_order);
+}
+async function ensureTodayGenerated(){
+  try{ await authed("/rest/v1/rpc/hq_generate_today",{method:"POST",body:JSON.stringify({})}); }catch(e){}
+}
+function renderDaily(u){
+  const today=todayStr();
+  const todays=DAILY_TASKS.filter(t=>t.target_date===today);
+  const pastDue=DAILY_TASKS.filter(t=>t.target_date<today && t.status!=="done");
+  const visible=t=>!DAILY_MINE || sortedSteps(t).some(s=>s.assignee_id===u.id) || t.created_by===u.id;
+  const todaysV=todays.filter(visible), pastV=pastDue.filter(visible);
+  const doneCount=todaysV.filter(t=>t.status==="done").length;
+  const d=new Date(today+"T00:00:00");
+  const wd=["日","月","火","水","木","金","土"][d.getDay()];
+  $("app").innerHTML=`
+  <div class="topbar"><h1>今日の毎日タスク ${d.getMonth()+1}/${d.getDate()}(${wd})</h1><div class="who"><button class="linkbtn" id="back">← ボードへ戻る</button></div></div>
+  <div class="toprow"><div><b>${doneCount}/${todaysV.length} 完了</b></div>
+    <div class="chiprow"><span class="chip ${!DAILY_MINE?'active':''}" id="dm-all">全員分</span><span class="chip ${DAILY_MINE?'active':''}" id="dm-mine">👤 自分の分</span></div>
+  </div>
+  ${pastV.length?`<div class="notes-box" style="margin-bottom:14px">🌅 休み明けです。${pastV.length}件たまっています。今日中に完了すればすべて「期限内」になります。</div>`:""}
+  <div id="daily-list">
+    ${pastV.map(t=>dailyRowHtml(t,u,true)).join("")}
+    ${todaysV.map(t=>dailyRowHtml(t,u,false)).join("")||'<div class="card">今日の毎日タスクはありません</div>'}
+  </div>`;
+  $("back").onclick=()=>{VIEW="board";renderBoard(u);};
+  $("dm-all").onclick=()=>{DAILY_MINE=false;renderDaily(u);};
+  $("dm-mine").onclick=()=>{DAILY_MINE=true;renderDaily(u);};
+  wireDaily(u);
+}
+function dailyRowHtml(t,u,isPast){
+  const steps=sortedSteps(t);
+  const groups=groupStoreSteps(steps);
+  const done=steps.filter(s=>s.completed_at).length;
+  const open=OPEN_DAILY===t.id;
+  return `<div class="step ${t.status==='done'?'':'cur'}" style="margin-bottom:10px">
+    <div class="row1" data-dailyopen="${t.id}">
+      <span class="ic">${t.status==="done"?"✓":"▶"}</span>
+      <div class="st">${esc(t.title)}${isPast?`<span class="tag" style="margin-left:6px">${fmtD(t.target_date)}分</span>`:""}
+        <div class="meta">${done}/${steps.length} 完了${t.due_date?" ／ 期限 "+fmtD(t.due_date):""}</div>
+      </div>
+      <span>${open?"▲":"▼"}</span>
+    </div>
+    ${open?`<div class="step-body">
+      ${t.notes?`<div class="notes-box" style="margin-bottom:10px">📖 ${esc(t.notes)}</div>`:""}
+      ${(t._links||[]).map(l=>linkHtml(l,false)).join("")}
+      ${groups.map(g=>dailyGroupHtml(g,u)).join("")}
+    </div>`:""}
+  </div>`;
+}
+function dailyGroupHtml(g,u){
+  const canDo=s=>canManage(u)||s.assignee_id===u.id||!s.assignee_id;
+  if(!g.isGroup){
+    const s=g.rows[0];
+    if(s.completed_at){
+      return `<div class="storecheck-row"><span>✓</span><span style="flex:1">${esc(s.title)}</span><span class="meta">${esc(userName(s.completed_by))} ／ ${fmtDT(s.completed_at)}</span></div>`;
+    }
+    if(!canDo(s)) return `<div class="storecheck-row"><span>○</span><span style="flex:1">${esc(s.title)}</span><span class="meta">担当: ${esc(userName(s.assignee_id)||"未定")}</span></div>`;
+    return `<div class="card" style="margin:8px 0">
+      <div style="margin-bottom:6px">${esc(s.title)}${s.due_date?` <span class="meta">期限 ${fmtD(s.due_date)}</span>`:""}</div>
+      ${s.is_binary?`<label>判定</label><select id="djudge-${s.id}"><option value="">選択してください</option><option value="ok">OK</option><option value="issue">異常あり</option></select>
+        <div id="dissuewrap-${s.id}" style="display:none"><label>異常メモ（必須）</label><textarea id="dissuenote-${s.id}" rows="2"></textarea></div>`:""}
+      ${s.requires_photo?`<label>写真（必須）</label><input type="file" accept="image/*" capture="environment" id="dphoto-${s.id}">`:""}
+      <button class="btn sm" style="margin-top:8px" data-dcomplete="${s.id}">完了にする</button>
+      <div class="err" id="dmsg-${s.id}"></div>
+    </div>`;
+  }
+  const allDone=g.rows.every(r=>r.completed_at);
+  return `<div style="margin:10px 0">
+    <div style="font-weight:600;margin-bottom:4px">🏪 店舗別チェック</div>
+    <div class="card">
+    ${g.rows.map(s=>{
+      const store=STORES.find(x=>x.id===s.store_id);
+      const name=store?store.name:"店舗";
+      if(s.completed_at){
+        const okBadge=s.judgement==="issue"?`<span style="color:var(--stall)">⚠ 異常あり</span>`:(s.is_binary?`<span style="color:var(--ok)">✓ OK</span>`:"✓");
+        return `<div class="storecheck-row"><span style="flex:1">${esc(name)}</span>${okBadge}<span class="meta">${esc(s.issue_note||"—")}</span></div>`;
+      }
+      if(!canDo(s)) return `<div class="storecheck-row"><span style="flex:1">${esc(name)}</span><span class="meta">未確認</span></div>`;
+      return `<div class="storecheck-row" style="flex-wrap:wrap">
+        <span style="flex:1">${esc(name)}</span>
+        <select id="djudge-${s.id}" style="width:auto"><option value="">選択</option><option value="ok">OK</option><option value="issue">異常あり</option></select>
+        <input type="text" id="dissuenote-${s.id}" placeholder="異常メモ必須" style="width:auto;display:none">
+        ${s.requires_photo?`<input type="file" accept="image/*" capture="environment" id="dphoto-${s.id}" style="width:auto">`:""}
+        <button class="btn sm" data-dcomplete="${s.id}">確定</button>
+      </div>`;
+    }).join("")}
+    </div>
+    ${allDone?"":'<div class="meta" style="margin-top:4px">※ 全店舗に「OK／異常あり」を付けるまでこのタスクは完了になりません（まとめてチェック不可）</div>'}
+  </div>`;
+}
+function wireDaily(u){
+  document.querySelectorAll("[data-dailyopen]").forEach(el=>{
+    el.onclick=async()=>{
+      const id=el.dataset.dailyopen;
+      if(OPEN_DAILY===id){ OPEN_DAILY=null; renderDaily(u); return; }
+      OPEN_DAILY=id;
+      const t=DAILY_TASKS.find(x=>x.id===id);
+      if(t&&!t._links){ const r=await authed(`/rest/v1/hq_task_links?task_id=eq.${id}&order=created_at`); t._links=r.ok?r.body:[]; }
+      renderDaily(u);
+    };
+  });
+  document.querySelectorAll("select[id^='djudge-']").forEach(sel=>{
+    sel.onchange=()=>{
+      const sid=sel.id.replace("djudge-","");
+      const w=$("dissuewrap-"+sid); if(w) w.style.display=sel.value==="issue"?"block":"none";
+      const inline=$("dissuenote-"+sid); if(inline&&!w) inline.style.display=sel.value==="issue"?"inline-block":"none";
+    };
+  });
+  document.querySelectorAll("[data-dcomplete]").forEach(btn=>{
+    btn.onclick=async()=>{
+      const sid=btn.dataset.dcomplete;
+      let step=null,parentTask=null;
+      for(const t of DAILY_TASKS){ const s=sortedSteps(t).find(x=>x.id===sid); if(s){step=s;parentTask=t;break;} }
+      if(!step)return;
+      const payload={completed_at:new Date().toISOString()};
+      if(step.is_binary){
+        const jv=$("djudge-"+sid)?.value;
+        if(!jv){ alert("判定（OK・異常あり）を選択してください"); return; }
+        payload.judgement=jv;
+        if(jv==="issue"){
+          const note=($("dissuenote-"+sid)?.value||"").trim();
+          if(!note){ alert("異常メモを入力してください"); return; }
+          payload.issue_note=note;
+        }
+      }
+      btn.disabled=true;
+      try{
+        if(step.requires_photo){
+          const fi=$("dphoto-"+sid);
+          if(fi&&fi.files[0]){
+            const path=await uploadPhoto(fi.files[0]);
+            await authed("/rest/v1/hq_task_photos",{method:"POST",headers:{Prefer:"return=minimal"},body:JSON.stringify({step_id:sid,storage_path:path,uploaded_by:ME.id})});
+          } else { alert("写真を選択してください"); btn.disabled=false; return; }
+        }
+        const r=await authed(`/rest/v1/hq_task_steps?id=eq.${sid}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify(payload)});
+        if(!r.ok){ alert("完了にできませんでした"); btn.disabled=false; return; }
+        await logActivity(parentTask.id,"step_complete",`「${step.title}」完了`+(payload.issue_note?` — 異常あり: ${payload.issue_note}`:""),sid);
+      }catch(e){ alert("エラー: "+e.message); btn.disabled=false; return; }
+      await fetchDaily(); renderDaily(u);
+    };
+  });
+}
+
+/* ---------- テンプレート管理（繰り返し・アラート既定） ---------- */
+let TEMPLATES=[];
+let TPL_EDIT=null;
+let TPL_STEPS=[];
+async function fetchTemplates(){
+  const r=await authed("/rest/v1/hq_task_templates?select=*&order=created_at.desc");
+  TEMPLATES=(r.ok&&Array.isArray(r.body))?r.body:[];
+}
+function renderTemplates(u){
+  $("app").innerHTML=`
+  <div class="topbar"><h1>⚙️ テンプレート管理</h1><div class="who"><button class="linkbtn" id="back">← ボードへ戻る</button></div></div>
+  <button class="btn sm" id="tpl-new" style="margin-bottom:14px">＋ 新しいテンプレート</button>
+  <div id="tpl-list">${TEMPLATES.map(tplRowHtml).join("")||'<div class="card">テンプレートはまだありません</div>'}</div>`;
+  $("back").onclick=()=>{VIEW="board";renderBoard(u);};
+  $("tpl-new").onclick=()=>openTplEdit(u,null);
+  document.querySelectorAll("[data-tpledit]").forEach(b=>b.onclick=()=>openTplEdit(u,TEMPLATES.find(x=>x.id===b.dataset.tpledit)));
+  document.querySelectorAll("[data-tpldel]").forEach(b=>b.onclick=async()=>{
+    if(!confirm("このテンプレートを削除しますか？（生成済みのタスクは残ります）"))return;
+    await authed(`/rest/v1/hq_task_templates?id=eq.${b.dataset.tpldel}`,{method:"DELETE"});
+    await fetchTemplates(); renderTemplates(u);
+  });
+}
+function tplRowHtml(tpl){
+  const freqLabel = tpl.freq==="weekly" ? `毎週${["日","月","火","水","木","金","土"][tpl.weekly_dow]}曜`
+    : tpl.freq==="monthly" ? `毎月${tpl.monthly_dom}日` : FREQ_LABEL[tpl.freq];
+  return `<div class="card" style="margin-bottom:10px">
+    <div class="badges"><span class="tag">${esc(tpl.corp)}</span><span class="tag freq">🔁 ${esc(freqLabel)}</span>${tpl.is_active?"":'<span class="tag">停止中</span>'}</div>
+    <div style="font-weight:600;margin:4px 0">${esc(tpl.title)}</div>
+    <div class="meta">期限: 対象日+${tpl.due_offset_days}日 ／ 公開範囲: ${tpl.visibility==="all"?"本部全員":"指定した人だけ"}</div>
+    <button class="linkbtn" data-tpledit="${tpl.id}">編集</button>
+    <button class="linkbtn" data-tpldel="${tpl.id}">削除</button>
+  </div>`;
+}
+async function openTplEdit(u,tpl){
+  TPL_EDIT=tpl?{...tpl}:null;
+  if(tpl){
+    const r=await authed(`/rest/v1/hq_task_template_steps?template_id=eq.${tpl.id}&order=sort_order`);
+    TPL_STEPS=(r.ok&&Array.isArray(r.body))?r.body:[];
+    if(tpl.visibility==="members"){
+      const rm=await authed(`/rest/v1/hq_task_members?template_id=eq.${tpl.id}&select=user_id`);
+      TPL_EDIT._members=(rm.ok&&Array.isArray(rm.body))?rm.body.map(x=>x.user_id):[];
+    } else TPL_EDIT._members=[];
+  } else {
+    TPL_STEPS=[{title:"",assignee_id:"",offset_days:0,kind:"step",store_scope:"",is_binary:false,requires_photo:false}];
+  }
+  renderTplEdit(u);
+}
+function renderTplEdit(u){
+  const tpl=TPL_EDIT||{};
+  $("app").innerHTML=`
+  <div class="topbar"><h1>${tpl.id?"テンプレートを編集":"新しいテンプレート"}</h1><div class="who"><button class="linkbtn" id="back">← 一覧へ戻る</button></div></div>
+  <div class="card">
+    <label>タイトル</label><input id="tp-title" value="${esc(tpl.title||"")}" placeholder="例: 業務委託 精算処理">
+    <label>法人</label><select id="tp-corp">${CORP.map(c=>`<option value="${esc(c)}" ${tpl.corp===c?"selected":""}>${esc(c)}</option>`).join("")}</select>
+    <label>頻度</label>
+    <select id="tp-freq">
+      <option value="daily" ${tpl.freq==="daily"?"selected":""}>毎日</option>
+      <option value="weekly" ${tpl.freq==="weekly"?"selected":""}>毎週[曜日]</option>
+      <option value="monthly" ${(!tpl.freq||tpl.freq==="monthly")?"selected":""}>毎月[日]</option>
+    </select>
+    <div id="tp-weeklywrap" style="display:${tpl.freq==="weekly"?"block":"none"}">
+      <label>作成する曜日</label>
+      <select id="tp-dow">${["日","月","火","水","木","金","土"].map((d,i)=>`<option value="${i}" ${tpl.weekly_dow===i?"selected":""}>${d}曜</option>`).join("")}</select>
+    </div>
+    <div id="tp-monthlywrap" style="display:${(!tpl.freq||tpl.freq==="monthly")?"block":"none"}">
+      <label>作成する日（1〜31）</label>
+      <input id="tp-dom" type="number" min="1" max="31" value="${tpl.monthly_dom||1}">
+    </div>
+    <label>タスクの期限（対象日から何日後か）</label>
+    <input id="tp-offset" type="number" min="0" value="${tpl.due_offset_days??0}">
+    <label>⚠️ 注意事項（既定）</label><textarea id="tp-notes" rows="2">${esc(tpl.notes||"")}</textarea>
+    <label>公開範囲</label>
+    <select id="tp-vis"><option value="all" ${(!tpl.visibility||tpl.visibility==="all")?"selected":""}>本部全員に公開（既定）</option><option value="members" ${tpl.visibility==="members"?"selected":""}>指定した人だけ</option></select>
+    <div id="tp-memberswrap" style="display:${tpl.visibility==="members"?"block":"none"}">
+      <label>指定する人</label>
+      <select id="tp-members" multiple size="5">${USERS.map(x=>`<option value="${x.id}" ${(tpl._members||[]).includes(x.id)?"selected":""}>${esc(x.name)}（${ROLE_NAME[x.role]||x.role}）</option>`).join("")}</select>
+    </div>
+    <div class="sec"><h3>アラートの既定</h3>
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer"><input type="checkbox" id="tp-a3" ${tpl.alert_before3!==false?"checked":""}> 3日前</label>
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer"><input type="checkbox" id="tp-a1" ${tpl.alert_before1!==false?"checked":""}> 前日</label>
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer"><input type="checkbox" id="tp-a0" ${tpl.alert_due!==false?"checked":""}> 当日</label>
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer"><input type="checkbox" id="tp-aod" ${tpl.alert_overdue_daily!==false?"checked":""}> 超過したら毎日</label>
+      <label>宛先</label>
+      <select id="tp-recipient">
+        <option value="assignee" ${(!tpl.alert_recipient||tpl.alert_recipient==="assignee")?"selected":""}>工程の担当者</option>
+        <option value="creator" ${tpl.alert_recipient==="creator"?"selected":""}>作成者</option>
+      </select>
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer"><input type="checkbox" id="tp-cin" ${!tpl.alert_channels||tpl.alert_channels.includes("inapp")?"checked":""}> アプリ内</label>
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer"><input type="checkbox" id="tp-clark" ${tpl.alert_channels&&tpl.alert_channels.includes("lark")?"checked":""}> Lark</label>
+    </div>
+    <div class="sec"><h3>工程のひな形（毎日頻度なら子チェックとして使われます）</h3>
+      <div id="tp-steps"></div>
+      <button class="linkbtn" id="tp-addstep">＋ 工程を追加</button>
+    </div>
+    <button class="btn" id="tp-save" style="margin-top:16px">保存する</button>
+    <div class="err" id="tp-msg"></div>
+  </div>`;
+  $("back").onclick=()=>{VIEW="templates";renderTemplates(u);};
+  $("tp-freq").onchange=e=>{
+    $("tp-weeklywrap").style.display=e.target.value==="weekly"?"block":"none";
+    $("tp-monthlywrap").style.display=e.target.value==="monthly"?"block":"none";
+  };
+  $("tp-vis").onchange=e=>{$("tp-memberswrap").style.display=e.target.value==="members"?"block":"none";};
+  renderTplSteps();
+  $("tp-addstep").onclick=()=>{TPL_STEPS.push({title:"",assignee_id:"",offset_days:0,kind:"step",store_scope:"",is_binary:false,requires_photo:false});renderTplSteps();};
+  $("tp-save").onclick=()=>saveTemplate(u);
+}
+function renderTplSteps(){
+  $("tp-steps").innerHTML=TPL_STEPS.map((s,i)=>`
+    <div class="card" style="margin-bottom:8px" data-tidx="${i}">
+      <div class="stepform-row">
+        <div class="f"><label>工程名</label><input class="ts-title" value="${esc(s.title)}" placeholder="例: 入力チェック"></div>
+        <div class="f"><label>担当（空欄=誰でも可）</label><select class="ts-assignee"><option value="">未定</option>${USERS.map(x=>`<option value="${x.id}" ${s.assignee_id===x.id?"selected":""}>${esc(x.name)}</option>`).join("")}</select></div>
+        <div class="f"><label>期限オフセット(日)</label><input class="ts-offset" type="number" value="${s.offset_days||0}"></div>
+        ${TPL_STEPS.length>1?`<button class="linkbtn" data-rmtstep="${i}">削除</button>`:""}
+      </div>
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer"><input type="checkbox" class="ts-ischeck" ${s.kind==="check"?"checked":""}> 毎日タスクの子チェックとして扱う（店舗別／2択／写真必須を選べます）</label>
+      <div class="ts-checkopts" style="display:${s.kind==="check"?"flex":"none"};gap:16px;flex-wrap:wrap;margin-top:6px">
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" class="ts-storesplit" ${s.store_scope?"checked":""}> 🏪 店舗別チェック</label>
+        <select class="ts-storescope" style="width:auto;display:${s.store_scope?"inline-block":"none"}">
+          <option value="active" ${s.store_scope==="active"?"selected":""}>直営店舗のみ</option>
+          <option value="all" ${s.store_scope==="all"?"selected":""}>委託含む全店舗</option>
+        </select>
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" class="ts-binary" ${s.is_binary?"checked":""}> ⚖️ 2択（OK・異常あり）</label>
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" class="ts-photo" ${s.requires_photo?"checked":""}> 📷 写真必須</label>
+      </div>
+    </div>`).join("");
+  document.querySelectorAll("#tp-steps [data-tidx]").forEach(row=>{
+    const i=+row.dataset.tidx;
+    row.querySelector(".ts-title").oninput=e=>TPL_STEPS[i].title=e.target.value;
+    row.querySelector(".ts-assignee").onchange=e=>TPL_STEPS[i].assignee_id=e.target.value;
+    row.querySelector(".ts-offset").onchange=e=>TPL_STEPS[i].offset_days=+e.target.value||0;
+    const isCheck=row.querySelector(".ts-ischeck");
+    const opts=row.querySelector(".ts-checkopts");
+    const storeSplit=row.querySelector(".ts-storesplit");
+    const storeScope=row.querySelector(".ts-storescope");
+    isCheck.onchange=()=>{
+      TPL_STEPS[i].kind=isCheck.checked?"check":"step"; opts.style.display=isCheck.checked?"flex":"none";
+      if(!isCheck.checked){ TPL_STEPS[i].store_scope=""; storeSplit.checked=false; storeScope.style.display="none"; }
+    };
+    storeSplit.onchange=()=>{ storeScope.style.display=storeSplit.checked?"inline-block":"none"; TPL_STEPS[i].store_scope=storeSplit.checked?storeScope.value:""; };
+    storeScope.onchange=()=>{ TPL_STEPS[i].store_scope=storeSplit.checked?storeScope.value:""; };
+    row.querySelector(".ts-binary").onchange=e=>TPL_STEPS[i].is_binary=e.target.checked;
+    row.querySelector(".ts-photo").onchange=e=>TPL_STEPS[i].requires_photo=e.target.checked;
+  });
+  document.querySelectorAll("[data-rmtstep]").forEach(b=>b.onclick=()=>{TPL_STEPS.splice(+b.dataset.rmtstep,1);renderTplSteps();});
+}
+async function saveTemplate(u){
+  const title=$("tp-title").value.trim();
+  const msg=$("tp-msg"); msg.className="err"; msg.textContent="";
+  if(!title){msg.textContent="タイトルを入力してください";return}
+  const steps=TPL_STEPS.filter(s=>s.title.trim());
+  if(!steps.length){msg.textContent="工程を1つ以上入力してください";return}
+  const freq=$("tp-freq").value;
+  const payload={
+    title, corp:$("tp-corp").value, freq,
+    weekly_dow: freq==="weekly"?+$("tp-dow").value:null,
+    monthly_dom: freq==="monthly"?+$("tp-dom").value:null,
+    due_offset_days: +$("tp-offset").value||0,
+    notes: $("tp-notes").value.trim(),
+    visibility: $("tp-vis").value,
+    alert_before3: $("tp-a3").checked, alert_before1: $("tp-a1").checked, alert_due: $("tp-a0").checked, alert_overdue_daily: $("tp-aod").checked,
+    alert_recipient: $("tp-recipient").value,
+    alert_channels: [$("tp-cin").checked?"inapp":null, $("tp-clark").checked?"lark":null].filter(Boolean),
+    created_by: ME.id,
+  };
+  $("tp-save").disabled=true; msg.textContent="保存中…";
+  let tplId=TPL_EDIT&&TPL_EDIT.id;
+  let r;
+  if(tplId){
+    r=await authed(`/rest/v1/hq_task_templates?id=eq.${tplId}`,{method:"PATCH",headers:{Prefer:"return=representation"},body:JSON.stringify({...payload,updated_at:new Date().toISOString()})});
+  } else {
+    r=await authed("/rest/v1/hq_task_templates",{method:"POST",headers:{Prefer:"return=representation"},body:JSON.stringify(payload)});
+  }
+  if(!r.ok||!r.body||!r.body[0]){ msg.textContent="保存できませんでした（"+r.status+"）"; $("tp-save").disabled=false; return; }
+  tplId=r.body[0].id;
+  if(TPL_EDIT&&TPL_EDIT.id){
+    await authed(`/rest/v1/hq_task_template_steps?template_id=eq.${tplId}`,{method:"DELETE"});
+  }
+  await authed("/rest/v1/hq_task_template_steps",{method:"POST",headers:{Prefer:"return=minimal"},body:JSON.stringify(
+    steps.map((s,i)=>({template_id:tplId,title:s.title.trim(),assignee_id:s.assignee_id||null,offset_days:s.offset_days||0,sort_order:(i+1)*10,kind:s.kind||"step",store_scope:s.store_scope||null,is_binary:!!s.is_binary,requires_photo:!!s.requires_photo}))
+  )});
+  await authed(`/rest/v1/hq_task_members?template_id=eq.${tplId}`,{method:"DELETE"});
+  if(payload.visibility==="members"){
+    const sel=[...$("tp-members").selectedOptions].map(o=>o.value);
+    if(sel.length) await authed("/rest/v1/hq_task_members",{method:"POST",headers:{Prefer:"return=minimal"},body:JSON.stringify(sel.map(uid=>({template_id:tplId,user_id:uid})))});
+  }
+  await fetchTemplates();
+  VIEW="templates"; renderTemplates(u);
+}
+
 /* ---------- メイン ---------- */
 function renderLogin(err){
   $("app").innerHTML=`<div class="card">
@@ -640,6 +994,7 @@ async function main(){
   if(u.is_active===false){renderLogin("このアカウントは無効化されています。");return}
   ME=u;
   await fetchUsers(); await fetchStores();
+  await ensureTodayGenerated();
   await fetchBoard();
   const openId=qs.get("task");
   if(openId){ openDetail(openId); return; }
