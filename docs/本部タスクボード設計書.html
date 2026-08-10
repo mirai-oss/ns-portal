@@ -132,7 +132,7 @@ footer{margin-top:60px;padding-top:16px;border-top:1px solid var(--line);font-si
 <header class="doc">
   <div class="eyebrow">N-Style Group — Phase 3 / 機能⑩</div>
   <h1>📌 本部タスクボード 設計書</h1>
-  <div class="meta">2026-08-05 ／ <b>v1.1 確定版</b>（4つの確認事項に回答済み・追加要望4点を反映） ／ 置き場所: ポータル内・データはハブ（Supabase） ／ 対象: マスター・社長・本部・チーム長（公開範囲設定あり）</div>
+  <div class="meta">2026-08-05 ／ <b>v1.2 確定版</b>（シフト連携＝出勤日ベースの期限定義を追加） ／ 置き場所: ポータル内・データはハブ（Supabase） ／ 対象: マスター・社長・本部・チーム長（公開範囲設定あり）</div>
 </header>
 
 <p class="lead">「毎月の精算処理、いまどこで止まってる？」に<b>3秒で答えられる</b>ことをこのボードの一番の仕事にします。タスクを流れ（サブタスク）で持ち、<b>いま誰の番か・何日止まっているか</b>を常に表に出す設計です。</p>
@@ -154,6 +154,7 @@ footer{margin-top:60px;padding-top:16px;border-top:1px solid var(--line);font-si
 <tr><td>フリーワード検索 <span class="pill p-freq">v1.1</span></td><td>ボード上部に検索欄。タイトル・注意事項・工程名・コメント・完了者を対象に、<b>過去の完了タスクも含めて</b>全期間検索</td></tr>
 <tr><td>適当にチェックさせない <span class="pill p-freq">v1.1</span></td><td>毎日タスクは「店舗別の子チェック＋2択（OK／異常あり）＋異常はコメント必須」方式。まとめて1タップで済ませられない構造にする（第3.5章）</td></tr>
 <tr><td>過去の完了タスクの置き場 <span class="pill p-freq">v1.1</span></td><td>「📁 過去タスク」タブに月別で<b>無期限保存</b>・検索対象（第7.5章）</td></tr>
+<tr><td>シフト連携＝出勤日ベースの期限 <span class="pill p-freq">v1.2</span></td><td>休みの日の分もタスクは消えずに残り、<b>次の出勤日中に消化すれば「期限内」</b>と判定（第5.5章）。期限内完了率は評価制度のKPIに自動連携できる形で記録</td></tr>
 </table></div>
 
 <h3>確認事項への回答（2026-08-05 決定）</h3>
@@ -396,11 +397,31 @@ footer{margin-top:60px;padding-top:16px;border-top:1px solid var(--line);font-si
 <li>「動きなし」＝ 工程完了・コメント・写真追加のどれも無い日数。</li>
 </ul>
 
+<h2><span class="no">5.5</span>出勤日ベースの期限（シフト連携・評価制度への接続）<span class="pill p-freq" style="vertical-align:4px">v1.2</span></h2>
+<p>担当者が休みの日でもタスクは消えません。ただし「遅れ」の判定は本人の出勤日で行います。</p>
+<ul>
+<li><b>タスクは対象日ごとに必ず作られる</b> — 8/5・8/6が休みでも「8/5分」「8/6分」はそのまま残り、画面に表示され続ける。</li>
+<li><b>期限内の定義</b> — <b>完了日 ≦ 担当者の「対象日以降で最初の出勤日」</b>。8/5・8/6が休みで8/7出勤なら、8/7中に3日分を消化すれば<b>すべて期限内</b>。8/8にずれ込んだ分から「遅れ」。</li>
+<li><b>評価への接続</b> — 「期限内完了率」「異常見逃しゼロ」などを担当者別・月別に自動集計し、評価制度（機能⑪）のKPIとしてそのまま取り込める形で記録する。</li>
+<li><b>シフト機能（フェーズ3e）ができるまでの暫定</b> — 出勤日はまずスマレジの勤怠実績（ハブに取込済みの打刻データ）で代用し、シフト機能完成後は「シフト上の出勤予定」を正として判定を切り替える。<b>記録するのは「対象日」と「完了日時」という事実だけ</b>なので、判定ルールが変わっても過去分をさかのぼって再計算できる。</li>
+</ul>
+
+<div class="mock"><div class="screen">
+  <div class="chrome"><i></i><i></i><i></i><span class="url">portal — 📌 今日の毎日タスク 8/7(木)（8/5・8/6 休みだった場合）</span></div>
+  <div class="body">
+    <div class="cau" style="margin-bottom:10px">🌅 休み明けです。<b>8/5分・8/6分がたまっています</b>。今日中に完了すればすべて「期限内」になります。</div>
+    <div class="step n"><span class="st">5</span><div style="flex:1"><b>入金確認（口座と売上の照合）</b> <span class="pill p-mut">8/5分</span> <span class="sm">今日中で期限内</span></div></div>
+    <div class="step n"><span class="st">6</span><div style="flex:1"><b>入金確認（口座と売上の照合）</b> <span class="pill p-mut">8/6分</span> <span class="sm">今日中で期限内</span></div></div>
+    <div class="step n"><span class="st">7</span><div style="flex:1"><b>入金確認（口座と売上の照合）</b> <span class="pill p-freq">今日 8/7分</span></div></div>
+  </div>
+</div></div>
+<div class="note"><b>たまりすぎ防止:</b> 未消化が3日分を超えたら停滞扱いにして通知ルールへ流す（連休などで正常にたまっている場合と区別するため、判定は出勤日ベース＝「出勤したのに消化しなかった日」だけを数える）。</div>
+
 <h2><span class="no">6</span>データ設計（ハブSupabase・7テーブル）</h2>
 <div class="tblwrap"><table class="spec">
 <tr><th>テーブル</th><th>役割・主な列</th></tr>
 <tr><td><code>hq_task_templates</code></td><td>繰り返しのひな形。タイトル／法人／頻度（毎日・毎週[曜日]・毎月[日]・単発）／期限オフセット／注意事項／作成者</td></tr>
-<tr><td><code>hq_tasks</code></td><td>実際のタスク（毎月分など1回ごとに1行）。テンプレID／法人／期限／状態（未着手・進行中・確認待ち・完了）／注意事項</td></tr>
+<tr><td><code>hq_tasks</code></td><td>実際のタスク（毎日・毎月分など1回ごとに1行）。テンプレID／法人／<b>対象日（8/5分などの基準日）</b>／期限／状態（未着手・進行中・完了）／注意事項。<b>期限内かどうかは保存せず「対象日×完了日時×出勤日」から都度計算</b>（シフト導入後に遡って再判定できる）</td></tr>
 <tr><td><code>hq_task_steps</code></td><td>工程・子チェック兼用。タスクID／名前／<b>担当者（users.id）</b>／<b>期限</b>／種類（工程・チェック・店舗別・2択・写真必須）／店舗ID（店舗別のとき）／判定（OK・異常あり）／異常メモ／完了日時・完了者／並び順</td></tr>
 <tr><td><code>hq_task_links</code></td><td>添付リンク。種類＝<code>url</code>／<code>manual</code>（マニュアルID）／<code>credential</code>（社内情報管理の金庫ID。<b>値は持たない</b>）</td></tr>
 <tr><td><code>hq_task_photos</code></td><td>写真。タスクIDまたは工程ID／保存先（チェックシートと同じバケット）／撮影者</td></tr>
@@ -441,7 +462,8 @@ footer{margin-top:60px;padding-top:16px;border-top:1px solid var(--line);font-si
 <tr><td>3d-2</td><td>繰り返しテンプレート＋毎朝の自動生成（毎日タスクのシンプルUI・店舗別2択チェック含む）</td></tr>
 <tr><td>3d-3</td><td>通知（チャンネル登録・ルール・毎朝の期限/停滞チェック・アプリ内ベル＋Lark）／📁過去タスクタブ</td></tr>
 <tr><td>3d-4</td><td>🔐 ID/PWリンク（社内情報管理の本番切替後に接続）・📘マニュアルリンク（フェーズ3cのマニュアル完成後にID接続）</td></tr>
+<tr><td>3d-5</td><td>出勤日ベースの期限判定（暫定=スマレジ勤怠実績）＋期限内完了率の担当者別集計 → シフト機能（3e）完成後にシフト予定ベースへ切替、評価制度（⑪）へKPI連携</td></tr>
 </table></div>
 
-<footer>本部タスクボード設計書 <b>v1.1 確定版</b> ／ 2026-08-05 ／ 確認事項4点は回答反映済み・追加要望4点（自分フィルタ横断・毎日タスクUI・検索・過去タスク）も反映 ／ ns-portal/docs にも同じものを保存。</footer>
+<footer>本部タスクボード設計書 <b>v1.2 確定版</b> ／ 2026-08-05 ／ 確認事項4点回答済み＋追加要望5点（自分フィルタ横断・毎日タスクUI・検索・過去タスク・シフト連携期限）反映 ／ ns-portal/docs にも同じものを保存。</footer>
 </div>
