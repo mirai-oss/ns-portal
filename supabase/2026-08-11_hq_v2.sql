@@ -265,3 +265,109 @@ $$;
 -- C-3: タスクのメモ・備考欄（自由記入、カード先頭1行に表示）
 -- ============================================================
 alter table hq_tasks add column if not exists memo text;
+
+-- ============================================================
+-- C-4: テンプレ/工程への概要・URL・写真・マニュアルプルダウン連携
+-- 対象owner種別を拡張: task_id / step_id / template_id / template_step_id のいずれか1つ。
+-- manual_items（別スレッド管理・読取専用）へはFK参照のみ、書き込みは一切行わない。
+-- ============================================================
+alter table hq_task_templates add column if not exists description text;
+alter table hq_tasks add column if not exists description text;
+
+alter table hq_task_links alter column task_id drop not null;
+alter table hq_task_links add column if not exists step_id uuid references hq_task_steps(id) on delete cascade;
+alter table hq_task_links add column if not exists template_id uuid references hq_task_templates(id) on delete cascade;
+alter table hq_task_links add column if not exists template_step_id uuid references hq_task_template_steps(id) on delete cascade;
+alter table hq_task_links add column if not exists manual_id uuid references manual_items(id);
+alter table hq_task_links drop constraint if exists hq_task_links_owner_check;
+alter table hq_task_links add constraint hq_task_links_owner_check check (
+  (task_id is not null)::int + (step_id is not null)::int + (template_id is not null)::int + (template_step_id is not null)::int = 1
+);
+
+alter table hq_task_photos add column if not exists template_id uuid references hq_task_templates(id) on delete cascade;
+alter table hq_task_photos add column if not exists template_step_id uuid references hq_task_template_steps(id) on delete cascade;
+alter table hq_task_photos drop constraint if exists hq_task_photos_check;
+alter table hq_task_photos drop constraint if exists hq_task_photos_owner_check;
+alter table hq_task_photos add constraint hq_task_photos_owner_check check (
+  (task_id is not null)::int + (step_id is not null)::int + (template_id is not null)::int + (template_step_id is not null)::int = 1
+);
+
+drop policy if exists hqlink_read on hq_task_links;
+create policy hqlink_read on hq_task_links for select using (
+  (task_id is not null and hq_task_visible(task_id))
+  or (step_id is not null and hq_task_visible((select task_id from hq_task_steps where id = step_id)))
+  or ((template_id is not null or template_step_id is not null)
+      and (hq_can_manage() or exists(select 1 from users u where u.id = auth.uid() and u.is_active and u.role = 'TEAM')))
+);
+
+drop policy if exists hqphoto_read on hq_task_photos;
+create policy hqphoto_read on hq_task_photos for select using (
+  hq_task_photo_visible(task_id, step_id)
+  or ((template_id is not null or template_step_id is not null)
+      and (hq_can_manage() or exists(select 1 from users u where u.id = auth.uid() and u.is_active and u.role = 'TEAM')))
+);
+drop policy if exists hqphoto_insert on hq_task_photos;
+create policy hqphoto_insert on hq_task_photos for insert with check (
+  uploaded_by = auth.uid() and (
+    hq_task_photo_visible(task_id, step_id)
+    or ((template_id is not null or template_step_id is not null) and hq_can_manage())
+  )
+);
+
+-- hq_generate_today: テンプレの概要(description)を生成タスクへ引き継ぐ（他ロジックは変更なし）
+create or replace function hq_generate_today() returns int
+language plpgsql security definer set search_path = public as $$
+declare
+  v_today date := current_date;
+  v_dow int := extract(dow from v_today)::int;
+  v_dom int := extract(day from v_today)::int;
+  v_tpl record;
+  v_task_id uuid;
+  v_step record;
+  v_store record;
+  v_count int := 0;
+begin
+  for v_tpl in
+    select * from hq_task_templates
+    where is_active
+      and (
+        freq = 'daily'
+        or (freq = 'weekly' and weekly_dow = v_dow)
+        or (freq = 'monthly' and monthly_dom = v_dom)
+      )
+  loop
+    insert into hq_tasks (template_id, title, corp, freq, target_date, due_date, due_time, notes, description, visibility, created_by)
+    values (v_tpl.id, v_tpl.title, v_tpl.corp, v_tpl.freq, v_today, v_today + v_tpl.due_offset_days, v_tpl.due_time, v_tpl.notes, v_tpl.description, v_tpl.visibility, v_tpl.created_by)
+    on conflict (template_id, target_date) do nothing
+    returning id into v_task_id;
+
+    if v_task_id is null then
+      continue;
+    end if;
+    v_count := v_count + 1;
+
+    for v_step in select * from hq_task_template_steps where template_id = v_tpl.id order by sort_order loop
+      if v_step.kind = 'check' and v_step.store_scope is not null then
+        for v_store in
+          select id from stores where (v_step.store_scope = 'all' or is_active) order by sort_order
+        loop
+          insert into hq_task_steps(task_id, template_step_id, title, assignee_id, due_date, due_time, sort_order, kind, is_binary, requires_photo, store_id)
+          values (v_task_id, v_step.id, v_step.title, v_step.assignee_id, v_today + v_step.offset_days, v_step.due_time, v_step.sort_order, v_step.kind, v_step.is_binary, v_step.requires_photo, v_store.id);
+        end loop;
+      else
+        insert into hq_task_steps(task_id, template_step_id, title, assignee_id, due_date, due_time, sort_order, kind, is_binary, requires_photo)
+        values (v_task_id, v_step.id, v_step.title, v_step.assignee_id, v_today + v_step.offset_days, v_step.due_time, v_step.sort_order, v_step.kind, v_step.is_binary, v_step.requires_photo);
+      end if;
+    end loop;
+
+    insert into hq_task_activity(task_id, actor_id, kind, detail)
+    values (v_task_id, null, 'create', '自動生成（' || v_tpl.freq || '）');
+  end loop;
+
+  if v_count > 0 then
+    insert into hq_generation_log(work_date, generated_by, task_count) values (v_today, auth.uid(), v_count)
+      on conflict (work_date) do update set task_count = hq_generation_log.task_count + excluded.task_count, generated_at = now();
+  end if;
+  return v_count;
+end;
+$$;

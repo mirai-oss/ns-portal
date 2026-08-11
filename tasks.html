@@ -132,6 +132,7 @@ const SUPA_KEY="sb_publishable_MrwPJAx_Ws_fdRutprKCiQ_dg3wCiTr";
 const LS_KEY="nsportal_session_v1";
 const BUCKET="report-photos";
 let CORPS=[];              // hq_corpsから取得 {id,name,is_active,sort_order}
+let MANUAL_ITEMS=null;     // manual_items（category='本部マニュアル'・読取専用）を遅延取得しキャッシュ
 const activeCorps=()=>CORPS.filter(c=>c.is_active);
 const ASSIGNABLE_ROLES=["HQ","CEO","TEAM"];
 const FREQ_LABEL={daily:"毎日",weekly:"毎週",monthly:"毎月",once:"単発"};
@@ -279,12 +280,16 @@ async function fetchTaskDetail(id){
   task._photos=photos.ok?photos.body:[];
   task._activity=act.ok?act.body:[];
   task._comments=coms.ok?coms.body:[];
-  // 工程ごとの写真（step_id指定）もまとめて取得
+  // 工程ごとの写真・リンク（step_id指定）もまとめて取得
   const stepIds=sortedSteps(task).map(s=>s.id);
   if(stepIds.length){
-    const sp=await authed(`/rest/v1/hq_task_photos?step_id=in.(${stepIds.join(",")})&order=created_at`);
+    const [sp,sl]=await Promise.all([
+      authed(`/rest/v1/hq_task_photos?step_id=in.(${stepIds.join(",")})&order=created_at`),
+      authed(`/rest/v1/hq_task_links?step_id=in.(${stepIds.join(",")})&order=created_at`),
+    ]);
     task._stepPhotos=sp.ok?sp.body:[];
-  } else task._stepPhotos=[];
+    task._stepLinks=sl.ok?sl.body:[];
+  } else { task._stepPhotos=[]; task._stepLinks=[]; }
   return task;
 }
 
@@ -464,6 +469,7 @@ function stalledInfo(t){
 }
 function stepIcon(s){ return s.completed_at?"✓":(s._isCurrent?"▶":"○"); }
 function stepPhotosFor(t,stepId){ return (t._stepPhotos||[]).filter(p=>p.step_id===stepId); }
+function stepLinksFor(t,stepId){ return (t._stepLinks||[]).filter(l=>l.step_id===stepId); }
 function photoUrl(path){ return `${SUPA_URL}/storage/v1/object/public/${BUCKET}/${path}`; }
 
 function renderDetail(u){
@@ -502,6 +508,8 @@ function renderDetail(u){
   <div class="sec"><h3>① 工程（サブタスク）— ${doneCount}/${steps.length}</h3>
     <div id="steplist">${groupStoreSteps(steps).map(g=>stepOrGroupHtml(t,g,u)).join("")||'<div class="card">工程がありません</div>'}</div>
   </div>
+
+  ${t.description?`<div class="sec"><h3>📄 概要</h3><div class="card"><div class="meta">${esc(t.description).replace(/\n/g,"<br>")}</div></div></div>`:""}
 
   ${t.notes?`<div class="sec"><h3>② ⚠️ 注意事項</h3><div class="notes-box">${esc(t.notes).replace(/\\n/g,"<br>")}</div></div>`:""}
 
@@ -548,6 +556,8 @@ function stepHtml(t,s,u){
   else if(s._isCurrent) metaLine=`<span class="now-tag">いまここ${s.due_date?"":""}</span> ／ 担当: ${esc(userName(s.assignee_id)||"未定")} ／ 期限 ${fmtDD(s.due_date,s.due_time)}`;
   else metaLine=`担当: ${esc(userName(s.assignee_id)||"未定")} ／ 期限 ${fmtDD(s.due_date,s.due_time)}`;
   const photos=stepPhotosFor(t,s.id);
+  const links=stepLinksFor(t,s.id);
+  const attCanEdit=canManage(u);
   return `<div class="step ${s._isCurrent?'cur':''}">
     <div class="row1" data-stepopen="${s.id}"><span class="ic">${stepIcon(s)}</span>
       <div class="st">${esc(s.title)}<div class="meta">${metaLine}${s.completed_at&&canTouch?` ／ <button class="linkbtn" data-stepundo="${s.id}" onclick="event.stopPropagation()">↩️ 取り消す</button>`:""}</div>
@@ -562,7 +572,8 @@ function stepHtml(t,s,u){
         <div class="photo-grid">${photos.map(p=>`<a href="${photoUrl(p.storage_path)}" target="_blank"><img src="${photoUrl(p.storage_path)}"></a>`).join("")}</div>`:""}
       <button class="btn sm" style="margin-top:8px" data-complete="${s.id}">この工程を完了にする</button>
       <div class="err" id="stepmsg-${s.id}"></div>
-    </div>`:(photos.length?`<div class="photo-grid">${photos.map(p=>`<a href="${photoUrl(p.storage_path)}" target="_blank"><img src="${photoUrl(p.storage_path)}"></a>`).join("")}</div>`:"")}
+    </div>`:""}
+    ${(links.length||photos.length||attCanEdit)?attachBoxHtml(`tsatt-${s.id}`,links,photos,attCanEdit):""}
   </div>`;
 }
 function stepOrGroupHtml(t,g,u){
@@ -605,20 +616,117 @@ function stepOrGroupHtml(t,g,u){
 }
 function linkHtml(l,canEdit){
   const ico=l.kind==="url"?"🔗":(l.kind==="manual"?"📘":"🔐");
-  const body=l.kind==="url"?`<a href="${esc(l.url)}" target="_blank" rel="noopener">${esc(l.label)}</a>`
-    :l.kind==="manual"?`${esc(l.label)}${l.manual_ref?` <span class="meta">(${esc(l.manual_ref)})</span>`:""}`
-    :`${esc(l.label)} <span class="meta">→ 社内情報管理で開く</span>`;
+  const body=l.kind==="credential"?`${esc(l.label)} <span class="meta">→ 社内情報管理で開く</span>`
+    :l.url?`<a href="${esc(l.url)}" target="_blank" rel="noopener">${esc(l.label)}</a>`
+    :`${esc(l.label)}${l.manual_ref?` <span class="meta">(${esc(l.manual_ref)})</span>`:""}`;
   return `<div class="link-row"><span>${ico}</span><div style="flex:1">${body}</div>${canEdit?`<button class="linkbtn" data-dellink="${l.id}">削除</button>`:""}</div>`;
 }
 function linkFormHtml(){
   return `<div style="margin-top:12px;padding-top:10px;border-top:1px dashed var(--line)">
     <label>種類</label><select id="lk-kind"><option value="url">🔗 URL</option><option value="manual">📘 マニュアル</option><option value="credential">🔐 ID/PW（社内情報管理）</option></select>
-    <label>ラベル</label><input id="lk-label" placeholder="例: 精算ダッシュボード">
+    <label>ラベル（任意）</label><input id="lk-label" placeholder="例: 精算ダッシュボード">
     <div id="lk-urlwrap"><label>URL</label><input id="lk-url" type="url" placeholder="https://…"></div>
-    <div id="lk-refwrap" style="display:none"><label>参照メモ（任意・マニュアルID/金庫キーなど）</label><input id="lk-ref"></div>
+    <div id="lk-manualwrap" style="display:none">
+      <label>本部マニュアルから選ぶ</label>
+      <select id="lk-manualsel"><option value="">選択してください</option></select>
+      <div class="meta" id="lk-manualempty" style="display:none">本部マニュアルにまだ登録がありません（日報アプリのマニュアルで登録）</div>
+      <label>または任意のURL</label><input id="lk-manualurl" type="url" placeholder="https://…（任意）">
+    </div>
+    <div id="lk-refwrap" style="display:none"><label>参照メモ（任意・金庫キーなど）</label><input id="lk-ref"></div>
     <button class="btn sm" style="margin-top:8px" id="lk-add">追加</button>
     <div class="err" id="lk-msg"></div>
   </div>`;
+}
+/* ---------- C-4: 概要・URL・写真・マニュアルプルダウン（テンプレ／工程共通） ---------- */
+async function ensureManualItems(){
+  if(MANUAL_ITEMS) return MANUAL_ITEMS;
+  const r=await authed(`/rest/v1/manual_items?category=eq.${encodeURIComponent("本部マニュアル")}&is_active=eq.true&select=id,label,url&order=sort_order`);
+  MANUAL_ITEMS=(r.ok&&Array.isArray(r.body))?r.body:[];
+  return MANUAL_ITEMS;
+}
+function fillManualSelect(selEl,emptyEl){
+  if(!selEl) return;
+  if(MANUAL_ITEMS&&MANUAL_ITEMS.length){
+    selEl.innerHTML='<option value="">選択してください</option>'+MANUAL_ITEMS.map(m=>`<option value="${m.id}">${esc(m.label)}</option>`).join("");
+    selEl.style.display=""; if(emptyEl) emptyEl.style.display="none";
+  } else {
+    selEl.style.display="none"; if(emptyEl) emptyEl.style.display="block";
+  }
+}
+function attachBoxHtml(prefix,links,photos,canEdit){
+  const linksHtml=(links||[]).map(l=>linkHtml(l,canEdit)).join("");
+  const photosHtml=(photos||[]).map(p=>`<a href="${photoUrl(p.storage_path)}" target="_blank"><img src="${photoUrl(p.storage_path)}"></a>`).join("");
+  return `<div class="attach-box" style="margin-top:10px;padding-top:10px;border-top:1px dashed var(--line)">
+    <div id="${prefix}-list">
+      ${linksHtml}${photosHtml?`<div class="photo-grid">${photosHtml}</div>`:""}
+      ${(!linksHtml&&!photosHtml)?'<div class="meta" style="color:var(--muted)">添付はまだありません</div>':""}
+    </div>
+    ${canEdit?`
+      <label style="margin-top:8px">📎 マニュアル・URLを追加</label>
+      <select id="${prefix}-kind"><option value="url">🔗 URL</option><option value="manual">📘 マニュアル</option></select>
+      <input id="${prefix}-label" placeholder="ラベル（任意）">
+      <div id="${prefix}-urlwrap"><input id="${prefix}-url" type="url" placeholder="https://…"></div>
+      <div id="${prefix}-manualwrap" style="display:none">
+        <select id="${prefix}-manualsel"><option value="">選択してください</option></select>
+        <div class="meta" id="${prefix}-manualempty" style="display:none">本部マニュアルにまだ登録がありません（日報アプリのマニュアルで登録）</div>
+      </div>
+      <button class="linkbtn" id="${prefix}-lkadd" style="margin-top:6px">＋リンク追加</button>
+      <div style="margin-top:6px"><label>📷 写真を追加</label><input type="file" accept="image/*" id="${prefix}-photo"></div>
+      <div class="err" id="${prefix}-msg"></div>
+    `:""}
+  </div>`;
+}
+function wireDelLinkButtonsIn(prefix,onSaved){
+  const list=$(`${prefix}-list`); if(!list) return;
+  list.querySelectorAll("[data-dellink]").forEach(b=>{
+    b.onclick=async()=>{
+      if(!confirm("このリンクを削除しますか？"))return;
+      await authed(`/rest/v1/hq_task_links?id=eq.${b.dataset.dellink}`,{method:"DELETE"});
+      await onSaved();
+    };
+  });
+}
+function wireAttachBox(prefix,owner,canEdit,onSaved){
+  wireDelLinkButtonsIn(prefix,onSaved);
+  if(!canEdit) return;
+  const kindSel=$(`${prefix}-kind`);
+  if(!kindSel) return;
+  ensureManualItems().then(()=>fillManualSelect($(`${prefix}-manualsel`),$(`${prefix}-manualempty`)));
+  kindSel.onchange=()=>{
+    $(`${prefix}-urlwrap`).style.display=kindSel.value==="url"?"block":"none";
+    $(`${prefix}-manualwrap`).style.display=kindSel.value==="manual"?"block":"none";
+  };
+  $(`${prefix}-lkadd`).onclick=async()=>{
+    const kind=kindSel.value;
+    const label=$(`${prefix}-label`).value.trim();
+    const msg=$(`${prefix}-msg`);
+    const payload={...owner,kind,created_by:ME.id};
+    if(kind==="url"){
+      const url=$(`${prefix}-url`).value.trim();
+      if(!url){msg.textContent="URLを入力してください";return}
+      payload.url=url; payload.label=label||url;
+    } else {
+      const sel=$(`${prefix}-manualsel`).value;
+      if(!sel){msg.textContent="マニュアルを選択してください";return}
+      const mi=(MANUAL_ITEMS||[]).find(x=>x.id===sel);
+      payload.manual_id=sel; payload.url=mi?mi.url:null; payload.label=label||(mi?mi.label:"マニュアル");
+    }
+    msg.textContent="追加中…";
+    const r=await authed("/rest/v1/hq_task_links",{method:"POST",headers:{Prefer:"return=minimal"},body:JSON.stringify(payload)});
+    if(!r.ok){msg.textContent="追加できませんでした";return}
+    await onSaved();
+  };
+  const photoInput=$(`${prefix}-photo`);
+  if(photoInput) photoInput.onchange=async e=>{
+    const f=e.target.files[0]; if(!f)return;
+    const msg=$(`${prefix}-msg`); msg.textContent="アップロード中…";
+    try{
+      const path=await uploadPhoto(f);
+      const r=await authed("/rest/v1/hq_task_photos",{method:"POST",headers:{Prefer:"return=minimal"},body:JSON.stringify({...owner,storage_path:path,uploaded_by:ME.id})});
+      if(!r.ok) throw new Error();
+      await onSaved();
+    }catch(err){ msg.textContent="アップロードできませんでした"; }
+  };
 }
 async function logActivity(taskId,kind,detail,stepId){
   await authed("/rest/v1/hq_task_activity",{method:"POST",headers:{Prefer:"return=minimal"},
@@ -777,26 +885,48 @@ function wireDetail(t,u){
     };
   });
   const kindSel=$("lk-kind");
-  if(kindSel) kindSel.onchange=()=>{
-    $("lk-urlwrap").style.display=kindSel.value==="url"?"block":"none";
-    $("lk-refwrap").style.display=kindSel.value!=="url"?"block":"none";
-  };
+  if(kindSel){
+    ensureManualItems().then(()=>fillManualSelect($("lk-manualsel"),$("lk-manualempty")));
+    kindSel.onchange=()=>{
+      $("lk-urlwrap").style.display=kindSel.value==="url"?"block":"none";
+      $("lk-manualwrap").style.display=kindSel.value==="manual"?"block":"none";
+      $("lk-refwrap").style.display=kindSel.value==="credential"?"block":"none";
+    };
+  }
   if($("lk-add")) $("lk-add").onclick=async()=>{
     const kind=$("lk-kind").value, label=$("lk-label").value.trim();
-    if(!label){$("lk-msg").textContent="ラベルを入力してください";return}
-    const payload={task_id:t.id,kind,label,created_by:ME.id};
-    if(kind==="url") payload.url=$("lk-url").value.trim();
-    else payload.manual_ref=$("lk-ref").value.trim()||null, payload.credential_ref=kind==="credential"?($("lk-ref").value.trim()||null):null;
+    const payload={task_id:t.id,kind,created_by:ME.id};
+    if(kind==="url"){
+      const url=$("lk-url").value.trim();
+      if(!url){$("lk-msg").textContent="URLを入力してください";return}
+      payload.url=url; payload.label=label||url;
+    } else if(kind==="manual"){
+      const sel=$("lk-manualsel").value, freeUrl=$("lk-manualurl").value.trim();
+      if(sel){
+        const mi=(MANUAL_ITEMS||[]).find(x=>x.id===sel);
+        payload.manual_id=sel; payload.url=mi?mi.url:null; payload.label=label||(mi?mi.label:"マニュアル");
+      } else if(freeUrl){
+        payload.url=freeUrl; payload.label=label||"マニュアル";
+      } else {
+        $("lk-msg").textContent="マニュアルを選択するかURLを入力してください"; return;
+      }
+    } else {
+      if(!label){$("lk-msg").textContent="ラベルを入力してください";return}
+      payload.label=label; payload.credential_ref=$("lk-ref").value.trim()||null;
+    }
     $("lk-msg").textContent="追加中…";
     const r=await authed("/rest/v1/hq_task_links",{method:"POST",headers:{Prefer:"return=minimal"},body:JSON.stringify(payload)});
     if(!r.ok){$("lk-msg").textContent="追加できませんでした";return}
-    await logActivity(t.id,"comment",`リンク追加: ${label}`);
+    await logActivity(t.id,"comment",`リンク追加: ${payload.label}`);
     CUR_TASK=await fetchTaskDetail(t.id); renderDetail(u);
   };
   document.querySelectorAll("[data-dellink]").forEach(b=>b.onclick=async()=>{
     if(!confirm("このリンクを削除しますか？"))return;
     await authed(`/rest/v1/hq_task_links?id=eq.${b.dataset.dellink}`,{method:"DELETE"});
     CUR_TASK=await fetchTaskDetail(t.id); renderDetail(u);
+  });
+  sortedSteps(t).forEach(s=>{
+    wireAttachBox(`tsatt-${s.id}`,{step_id:s.id},canManage(u),async()=>{ CUR_TASK=await fetchTaskDetail(t.id); renderDetail(u); });
   });
   if($("taskphoto")) $("taskphoto").onchange=async e=>{
     const f=e.target.files[0]; if(!f)return;
@@ -821,6 +951,7 @@ function renderNew(u){
     <label>タイトル</label><input id="nt-title" placeholder="例: 恵比寿 冷蔵庫の入替 見積比較">
     <label>法人</label><select id="nt-corp">${activeCorps().map(c=>`<option value="${esc(c.name)}">${esc(c.name)}</option>`).join("")}</select>
     <label>対象日</label><input id="nt-target" type="date" value="${todayStr()}">
+    <label>概要（説明文・任意）</label><textarea id="nt-desc" rows="2"></textarea>
     <label>⚠️ 注意事項（任意）</label><textarea id="nt-notes" rows="2"></textarea>
     <label>公開範囲</label>
     <select id="nt-vis"><option value="all">本部全員に公開（既定）</option><option value="members">指定した人だけ</option></select>
@@ -871,7 +1002,7 @@ async function submitNewTask(u){
   const due_date=lastDue?lastDue.due_date:null, due_time=lastDue?(lastDue.due_time||null):null;
   $("nt-send").disabled=true; msg.textContent="作成中…";
   const tr=await authed("/rest/v1/hq_tasks",{method:"POST",headers:{Prefer:"return=representation"},body:JSON.stringify({
-    title,corp,freq:"once",target_date,due_date,due_time,notes:$("nt-notes").value.trim(),visibility,created_by:ME.id
+    title,corp,freq:"once",target_date,due_date,due_time,notes:$("nt-notes").value.trim(),description:$("nt-desc").value.trim()||null,visibility,created_by:ME.id
   })});
   if(!tr.ok||!tr.body||!tr.body[0]){ msg.textContent="作成できませんでした（"+tr.status+"）"; $("nt-send").disabled=false; return; }
   const taskId=tr.body[0].id;
@@ -1102,10 +1233,52 @@ async function openTplEdit(u,tpl){
       const rm=await authed(`/rest/v1/hq_task_members?template_id=eq.${tpl.id}&select=user_id`);
       TPL_EDIT._members=(rm.ok&&Array.isArray(rm.body))?rm.body.map(x=>x.user_id):[];
     } else TPL_EDIT._members=[];
+    const [lr,pr]=await Promise.all([
+      authed(`/rest/v1/hq_task_links?template_id=eq.${tpl.id}&order=created_at`),
+      authed(`/rest/v1/hq_task_photos?template_id=eq.${tpl.id}&order=created_at`),
+    ]);
+    TPL_EDIT._links=(lr.ok&&Array.isArray(lr.body))?lr.body:[];
+    TPL_EDIT._photos=(pr.ok&&Array.isArray(pr.body))?pr.body:[];
+    const stepIds=TPL_STEPS.map(s=>s.id).filter(Boolean);
+    if(stepIds.length){
+      const [slr,spr]=await Promise.all([
+        authed(`/rest/v1/hq_task_links?template_step_id=in.(${stepIds.join(",")})`),
+        authed(`/rest/v1/hq_task_photos?template_step_id=in.(${stepIds.join(",")})`),
+      ]);
+      const stepLinks=(slr.ok&&Array.isArray(slr.body))?slr.body:[];
+      const stepPhotos=(spr.ok&&Array.isArray(spr.body))?spr.body:[];
+      TPL_STEPS.forEach(s=>{ s._links=stepLinks.filter(l=>l.template_step_id===s.id); s._photos=stepPhotos.filter(p=>p.template_step_id===s.id); });
+    }
   } else {
     TPL_STEPS=[{title:"",assignee_id:"",offset_days:0,due_time:"",kind:"step",store_scope:"",is_binary:false,requires_photo:false}];
   }
   renderTplEdit(u);
+}
+async function refreshTplAttach(){
+  const [lr,pr]=await Promise.all([
+    authed(`/rest/v1/hq_task_links?template_id=eq.${TPL_EDIT.id}&order=created_at`),
+    authed(`/rest/v1/hq_task_photos?template_id=eq.${TPL_EDIT.id}&order=created_at`),
+  ]);
+  TPL_EDIT._links=(lr.ok&&Array.isArray(lr.body))?lr.body:[];
+  TPL_EDIT._photos=(pr.ok&&Array.isArray(pr.body))?pr.body:[];
+  const list=$("tpl-att-list");
+  if(list){
+    const linksHtml=TPL_EDIT._links.map(l=>linkHtml(l,true)).join("");
+    const photosHtml=TPL_EDIT._photos.map(p=>`<a href="${photoUrl(p.storage_path)}" target="_blank"><img src="${photoUrl(p.storage_path)}"></a>`).join("");
+    list.innerHTML=`${linksHtml}${photosHtml?`<div class="photo-grid">${photosHtml}</div>`:""}${(!linksHtml&&!photosHtml)?'<div class="meta" style="color:var(--muted)">添付はまだありません</div>':""}`;
+    wireDelLinkButtonsIn("tpl-att",refreshTplAttach);
+  }
+  if($("tpl-att-label")) $("tpl-att-label").value="";
+  if($("tpl-att-url")) $("tpl-att-url").value="";
+}
+async function refreshTplStepAttach(stepId){
+  const [lr,pr]=await Promise.all([
+    authed(`/rest/v1/hq_task_links?template_step_id=eq.${stepId}&order=created_at`),
+    authed(`/rest/v1/hq_task_photos?template_step_id=eq.${stepId}&order=created_at`),
+  ]);
+  const step=TPL_STEPS.find(s=>s.id===stepId);
+  if(step){ step._links=(lr.ok&&Array.isArray(lr.body))?lr.body:[]; step._photos=(pr.ok&&Array.isArray(pr.body))?pr.body:[]; }
+  renderTplSteps();
 }
 function renderTplEdit(u){
   const tpl=TPL_EDIT||{};
@@ -1113,6 +1286,7 @@ function renderTplEdit(u){
   <div class="topbar"><h1>${tpl.id?"テンプレートを編集":"新しいテンプレート"}</h1><div class="who"><button class="linkbtn" id="back">← 一覧へ戻る</button></div></div>
   <div class="card">
     <label>タイトル</label><input id="tp-title" value="${esc(tpl.title||"")}" placeholder="例: 業務委託 精算処理">
+    <label>概要（説明文・任意）</label><textarea id="tp-desc" rows="2" placeholder="このタスクの目的や進め方など">${esc(tpl.description||"")}</textarea>
     <label>法人</label><select id="tp-corp">${activeCorps().map(c=>`<option value="${esc(c.name)}" ${tpl.corp===c.name?"selected":""}>${esc(c.name)}</option>`).join("")}</select>
     <label>頻度</label>
     <select id="tp-freq">
@@ -1162,6 +1336,11 @@ function renderTplEdit(u){
       <div id="tp-steps"></div>
       <button class="linkbtn" id="tp-addstep">＋ 工程を追加</button>
     </div>
+    <div class="sec"><h3>📎 添付・マニュアル（生成されたタスクへ引き継がれます）</h3>
+      <div class="card">
+        ${tpl.id?attachBoxHtml("tpl-att",tpl._links,tpl._photos,true):'<div class="meta" style="color:var(--muted)">保存すると添付を追加できます</div>'}
+      </div>
+    </div>
     <button class="btn sub" id="tp-preview" style="margin-top:16px">👁 プレビュー</button>
     <button class="btn" id="tp-save" style="margin-top:16px">保存する</button>
     <div class="err" id="tp-msg"></div>
@@ -1176,6 +1355,7 @@ function renderTplEdit(u){
   renderTplSteps();
   $("tp-addstep").onclick=()=>{TPL_STEPS.push({title:"",assignee_id:"",offset_days:0,due_time:"",kind:"step",store_scope:"",is_binary:false,requires_photo:false});renderTplSteps();};
   $("tp-save").onclick=()=>saveTemplate(u);
+  if(tpl.id) wireAttachBox("tpl-att",{template_id:tpl.id},true,refreshTplAttach);
 }
 function renderTplSteps(){
   $("tp-steps").innerHTML=TPL_STEPS.map((s,i)=>`
@@ -1197,6 +1377,7 @@ function renderTplSteps(){
         <label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" class="ts-binary" ${s.is_binary?"checked":""}> ⚖️ 2択（OK・異常あり）</label>
         <label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" class="ts-photo" ${s.requires_photo?"checked":""}> 📷 写真必須</label>
       </div>
+      ${s.id?attachBoxHtml(`tstep-att-${s.id}`,s._links,s._photos,true):'<div class="meta" style="color:var(--muted);margin-top:8px">保存すると工程ごとにマニュアル・写真を追加できます</div>'}
     </div>`).join("");
   document.querySelectorAll("#tp-steps [data-tidx]").forEach(row=>{
     const i=+row.dataset.tidx;
@@ -1218,6 +1399,10 @@ function renderTplSteps(){
     row.querySelector(".ts-photo").onchange=e=>TPL_STEPS[i].requires_photo=e.target.checked;
   });
   document.querySelectorAll("[data-rmtstep]").forEach(b=>b.onclick=()=>{TPL_STEPS.splice(+b.dataset.rmtstep,1);renderTplSteps();});
+  TPL_STEPS.forEach(s=>{
+    if(!s.id) return;
+    wireAttachBox(`tstep-att-${s.id}`,{template_step_id:s.id},true,()=>refreshTplStepAttach(s.id));
+  });
 }
 async function saveTemplate(u){
   const title=$("tp-title").value.trim();
@@ -1233,6 +1418,7 @@ async function saveTemplate(u){
     due_offset_days: +$("tp-offset").value||0,
     due_time: $("tp-duetime").value||null,
     notes: $("tp-notes").value.trim(),
+    description: $("tp-desc").value.trim()||null,
     visibility: $("tp-vis").value,
     alert_before3: $("tp-a3").checked, alert_before1: $("tp-a1").checked, alert_due: $("tp-a0").checked, alert_overdue_daily: $("tp-aod").checked,
     alert_recipient: $("tp-recipient").value,
@@ -1249,12 +1435,22 @@ async function saveTemplate(u){
   }
   if(!r.ok||!r.body||!r.body[0]){ msg.textContent="保存できませんでした（"+r.status+"）"; $("tp-save").disabled=false; return; }
   tplId=r.body[0].id;
+  // 工程ひな形はid維持のupsert（既存の添付=リンク/写真をtemplate_step_id経由で失わないため、
+  // 削除→再作成ではなくPATCH/POSTを使い分け、外れたものだけDELETEする）
+  const keepIds=steps.map(s=>s.id).filter(Boolean);
   if(TPL_EDIT&&TPL_EDIT.id){
-    await authed(`/rest/v1/hq_task_template_steps?template_id=eq.${tplId}`,{method:"DELETE"});
+    const removedFilter=keepIds.length?`&id=not.in.(${keepIds.join(",")})`:"";
+    await authed(`/rest/v1/hq_task_template_steps?template_id=eq.${tplId}${removedFilter}`,{method:"DELETE"});
   }
-  await authed("/rest/v1/hq_task_template_steps",{method:"POST",headers:{Prefer:"return=minimal"},body:JSON.stringify(
-    steps.map((s,i)=>({template_id:tplId,title:s.title.trim(),assignee_id:s.assignee_id||null,offset_days:s.offset_days||0,due_time:s.due_time||null,sort_order:(i+1)*10,kind:s.kind||"step",store_scope:s.store_scope||null,is_binary:!!s.is_binary,requires_photo:!!s.requires_photo}))
-  )});
+  for(let i=0;i<steps.length;i++){
+    const s=steps[i];
+    const body={template_id:tplId,title:s.title.trim(),assignee_id:s.assignee_id||null,offset_days:s.offset_days||0,due_time:s.due_time||null,sort_order:(i+1)*10,kind:s.kind||"step",store_scope:s.store_scope||null,is_binary:!!s.is_binary,requires_photo:!!s.requires_photo};
+    if(s.id){
+      await authed(`/rest/v1/hq_task_template_steps?id=eq.${s.id}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify(body)});
+    } else {
+      await authed("/rest/v1/hq_task_template_steps",{method:"POST",headers:{Prefer:"return=minimal"},body:JSON.stringify(body)});
+    }
+  }
   await authed(`/rest/v1/hq_task_members?template_id=eq.${tplId}`,{method:"DELETE"});
   if(payload.visibility==="members"){
     const sel=[...$("tp-members").selectedOptions].map(o=>o.value);
