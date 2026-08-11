@@ -169,7 +169,7 @@ let VIEW="board";        // board | repeat | detail | new
 let TASKS=[];             // ボード表示範囲のタスク（工程埋め込み）
 let SEARCHQ="";
 let SEARCH_RESULTS=null;  // 検索中はこちらを表示
-let FILTER={corp:null,freq:null,assignee:null,signal:null};
+let FILTER={corp:null,freq:null,assignee:null,creator:null,signal:null};
 let CUR_TASK=null;        // 詳細表示中のタスク（工程・リンク・写真・履歴込み）
 let OPEN_STEP=null;       // 詳細画面で開いている工程id
 let NOTIFICATIONS=[];     // アプリ内通知（自分宛）
@@ -268,9 +268,10 @@ function applyFilters(list){
     if(FILTER.corp && t.corp!==FILTER.corp) return false;
     if(FILTER.freq && t.freq!==FILTER.freq) return false;
     if(FILTER.assignee){
-      const match=sortedSteps(t).some(s=>s.assignee_id===FILTER.assignee) || t.created_by===FILTER.assignee;
+      const match=sortedSteps(t).some(s=>s.assignee_id===FILTER.assignee);
       if(!match) return false;
     }
+    if(FILTER.creator && t.created_by!==FILTER.creator) return false;
     if(FILTER.signal){
       const sig=computeSignal(t);
       if(FILTER.signal==="overdue" && !sig.overdue) return false;
