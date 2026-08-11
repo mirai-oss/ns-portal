@@ -60,7 +60,15 @@ textarea{resize:vertical}
 
 /* かんばん */
 .board{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:14px}
-@media(max-width:760px){.board{grid-template-columns:1fr}}
+@media(max-width:760px){
+  .board{
+    display:flex; grid-template-columns:none;
+    overflow-x:auto; scroll-snap-type:x mandatory; -webkit-overflow-scrolling:touch;
+    padding-bottom:8px; margin-left:-16px; margin-right:-16px; padding-left:16px; padding-right:16px;
+  }
+  .board .col{min-width:86vw; max-width:86vw; flex-shrink:0; scroll-snap-align:start}
+  .board .col h2{position:sticky; top:0; background:var(--bg); padding:4px 0}
+}
 .col{background:transparent}
 .col h2{font-size:14px;margin-bottom:8px;color:var(--muted)}
 .col h2 b{color:var(--ink)}
