@@ -260,3 +260,8 @@ begin
   return query select k,t,kw,ti,bo from unnest(v_kinds,v_targets,v_kws,v_titles,v_bodies) as x(k,t,kw,ti,bo);
 end;
 $$;
+
+-- ============================================================
+-- C-3: タスクのメモ・備考欄（自由記入、カード先頭1行に表示）
+-- ============================================================
+alter table hq_tasks add column if not exists memo text;

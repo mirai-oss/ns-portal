@@ -83,6 +83,7 @@ textarea{resize:vertical}
 .tcard .meta{font-size:12px;color:var(--muted);line-height:1.6}
 .tcard .stall-badge{display:inline-block;font-size:11px;color:#fff;background:var(--stall);padding:1px 8px;border-radius:99px;margin-bottom:4px}
 .tcard .now{font-size:12px;margin-top:4px}
+.tcard .memo-line{font-size:12px;margin-top:4px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .empty-col{font-size:12px;color:var(--muted);padding:10px 4px}
 
 /* 繰り返しタブ */
@@ -321,6 +322,7 @@ function taskCardHtml(t){
     ${sig.level==="stall"?`<div class="stall-badge">⏸ ${sig.stalledDays}日停止</div>`:""}
     <div class="ti">${esc(t.title)}</div>
     <div class="meta">対象日 ${fmtD(t.target_date)} ／ 期限 ${fmtDD(t.due_date,t.due_time)}${t.status==="done"?" ／ "+fmtD((t.completed_at||"").slice(0,10))+" 完了 ✓":""}</div>
+    ${t.memo?`<div class="memo-line">📝 ${esc((t.memo.split("\n")[0]||"").slice(0,60))}</div>`:""}
     ${sig.cur?`<div class="now">いま: ${esc(sig.cur.title)}（${esc(userName(sig.cur.assignee_id)||"未定")}）</div>`:""}
   </div>`;
 }
@@ -486,6 +488,15 @@ function renderDetail(u){
       ${t.created_by===u.id?`<button class="linkbtn" id="deltask">🗑 タスクを削除</button>`:""}
     </div>
     <div class="err" id="taskactmsg"></div>
+  </div>
+
+  <div class="sec"><h3>📝 メモ</h3>
+    <div class="card">
+      ${canEdit?`<textarea id="taskmemo" rows="2" placeholder="例: 先方の返事待ち">${esc(t.memo||"")}</textarea>
+        <button class="btn sm" style="margin-top:8px" id="memosave">保存</button>
+        <div class="err" id="memomsg"></div>`
+        :`<div class="meta">${t.memo?esc(t.memo).replace(/\n/g,"<br>"):"まだありません"}</div>`}
+    </div>
   </div>
 
   <div class="sec"><h3>① 工程（サブタスク）— ${doneCount}/${steps.length}</h3>
@@ -693,6 +704,14 @@ async function uploadPhoto(file){
 }
 function wireDetail(t,u){
   wireCommentBox(t,u);
+  if($("memosave")) $("memosave").onclick=async()=>{
+    const msg=$("memomsg"); msg.textContent="保存中…";
+    const memo=$("taskmemo").value;
+    const r=await authed(`/rest/v1/hq_tasks?id=eq.${t.id}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({memo:memo||null})});
+    if(!r.ok){ msg.textContent="保存できませんでした"; return; }
+    t.memo=memo||null; msg.className="err msg-ok"; msg.textContent="保存しました";
+    const idx=TASKS.findIndex(x=>x.id===t.id); if(idx>=0) TASKS[idx].memo=t.memo;
+  };
   if($("undotask")) $("undotask").onclick=async()=>{
     const msg=$("taskactmsg"); msg.textContent="";
     const steps=sortedSteps(t).filter(s=>s.completed_at);
