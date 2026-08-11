@@ -197,6 +197,7 @@ let OPEN_STEP=null;       // 詳細画面で開いている工程id
 let NOTIFICATIONS=[];     // アプリ内通知（自分宛）
 let NOTIF_UNREAD=0;
 let BELL_OPEN=false;
+let MY_CHATWORK=null;      // 自分のChatworkアカウントID（登録済みなら）
 const qs=new URLSearchParams(location.search);
 
 const isMaster=u=>!!(u&&u.is_master);
@@ -334,6 +335,7 @@ function renderBoard(u){
     <h1>📌 本部タスク</h1>
     <div class="who">
       <button class="linkbtn" id="bellbtn" style="position:relative">🔔${NOTIF_UNREAD?` <span class="tag" style="background:var(--accent);color:#fff;border-color:var(--accent)">${NOTIF_UNREAD}</span>`:""}</button>
+      ${ASSIGNABLE_ROLES.includes(u.role)?`<button class="linkbtn" id="mycwbtn">🟢 Chatwork ID</button>`:""}
       👤 ${esc(u.name)} ／ <a href="index.html">← ポータルへ</a>
     </div>
   </div>
@@ -409,6 +411,7 @@ function wireBoard(u){
   if($("gopast"))$("gopast").onclick=async()=>{VIEW="past"; $("app").innerHTML='<div class="spin">読み込み中…</div>'; await fetchPastMonths(); renderPast(u);};
   if($("gonotify"))$("gonotify").onclick=async()=>{VIEW="notify"; $("app").innerHTML='<div class="spin">読み込み中…</div>'; await fetchNotifySettings(); renderNotify(u);};
   if($("gocorps"))$("gocorps").onclick=()=>{VIEW="corps";renderCorps(u);};
+  if($("mycwbtn"))$("mycwbtn").onclick=()=>openMyChatworkModal(u);
   document.querySelectorAll("[data-corp]").forEach(c=>c.onclick=()=>{FILTER.corp=c.dataset.corp||null;renderBoard(u);});
   document.querySelectorAll("[data-freq]").forEach(c=>c.onclick=()=>{FILTER.freq=c.dataset.freq||null;renderBoard(u);});
   $("assigneesel").onchange=e=>{FILTER.assignee=e.target.value||null;renderBoard(u);};
@@ -666,7 +669,8 @@ function wireCommentBox(t,u){
     $("comment-send").disabled=false;
     if(!r.ok||!r.body||!r.body[0]){ msg.textContent="投稿できませんでした"; return; }
     if(mentions.length){
-      await authed("/rest/v1/rpc/hq_notify_comment",{method:"POST",body:JSON.stringify({p_comment_id:r.body[0].id})});
+      const nr=await authed("/rest/v1/rpc/hq_notify_comment",{method:"POST",body:JSON.stringify({p_comment_id:r.body[0].id})});
+      if(nr.ok&&Array.isArray(nr.body)) await sendNotifications(nr.body);
     }
     CUR_TASK=await fetchTaskDetail(t.id); renderDetail(u);
   };
@@ -1290,6 +1294,32 @@ async function fetchNotifications(){
   NOTIFICATIONS=(r.ok&&Array.isArray(r.body))?r.body:[];
   NOTIF_UNREAD=NOTIFICATIONS.filter(n=>!n.read_at).length;
 }
+async function fetchMyChatwork(){
+  const r=await authed(`/rest/v1/hq_user_chatwork?user_id=eq.${ME.id}&select=account_id`);
+  MY_CHATWORK=(r.ok&&Array.isArray(r.body)&&r.body[0])?r.body[0].account_id:null;
+}
+function openMyChatworkModal(u){
+  const modal=document.createElement("div");
+  modal.id="cwModal";
+  modal.style.cssText="position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:1000;display:flex;align-items:center;justify-content:center;padding:20px";
+  modal.innerHTML=`<div class="card" style="max-width:360px;width:100%">
+    <div class="topbar" style="margin-bottom:8px"><h1 style="font-size:16px">🟢 自分のChatwork ID</h1><button class="linkbtn" id="cwclose">×</button></div>
+    <div class="sec-sub" style="margin-bottom:8px">@メンションされたときにChatworkでも[To:あなた]で届くようにする任意設定です。</div>
+    <label>Chatworkアカウント ID</label><input id="cw-id" placeholder="例: 1234567" value="${esc(MY_CHATWORK||"")}">
+    <button class="btn sm" style="margin-top:8px" id="cw-save">保存</button>
+    <div class="err" id="cw-msg"></div>
+  </div>`;
+  document.body.appendChild(modal);
+  $("cwclose").onclick=()=>modal.remove();
+  modal.onclick=e=>{ if(e.target===modal) modal.remove(); };
+  $("cw-save").onclick=async()=>{
+    const id=$("cw-id").value.trim();
+    const msg=$("cw-msg"); msg.textContent="保存中…";
+    const r=await authed("/rest/v1/hq_user_chatwork",{method:"POST",headers:{Prefer:"resolution=merge-duplicates,return=minimal"},body:JSON.stringify({user_id:u.id,account_id:id,updated_at:new Date().toISOString()})});
+    if(!r.ok){ msg.textContent="保存できませんでした"; return; }
+    MY_CHATWORK=id; modal.remove();
+  };
+}
 async function markNotificationsRead(){
   const unreadIds=NOTIFICATIONS.filter(n=>!n.read_at).map(n=>n.id);
   if(!unreadIds.length)return;
@@ -1297,29 +1327,37 @@ async function markNotificationsRead(){
   NOTIFICATIONS.forEach(n=>{ if(!n.read_at) n.read_at=new Date().toISOString(); });
   NOTIF_UNREAD=0;
 }
-async function sendLark(items){
+const CHATWORK_FN_URL=SUPA_URL+"/functions/v1/notify-chatwork";
+async function sendNotifications(items){
   for(const it of (items||[])){
-    if(!it||!it.webhook_url) continue;
+    if(!it||!it.channel_kind||!it.target) continue;
     const text=(it.keyword?`[${it.keyword}] `:"")+it.title+(it.body?`\n${it.body}`:"");
-    try{ await fetch(it.webhook_url,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({msg_type:"text",content:{text}})}); }
-    catch(e){ /* Lark送信の失敗は握りつぶす（アプリ内通知は既に記録済み） */ }
+    try{
+      if(it.channel_kind==="lark_webhook"){
+        await fetch(it.target,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({msg_type:"text",content:{text}})});
+      } else if(it.channel_kind==="chatwork"){
+        const s=sess.get();
+        await fetch(CHATWORK_FN_URL,{method:"POST",headers:{"Content-Type":"application/json","Authorization":"Bearer "+(s?s.at:"")},body:JSON.stringify({room_id:it.target,body:text})});
+      }
+    }catch(e){ /* 通知送信の失敗は握りつぶす（アプリ内通知は既に記録済み） */ }
   }
 }
 async function notifyStepEvent(stepId,event){
   const r=await authed("/rest/v1/rpc/hq_notify_step_event",{method:"POST",body:JSON.stringify({p_step_id:stepId,p_event:event})});
-  if(r.ok&&Array.isArray(r.body)) await sendLark(r.body);
+  if(r.ok&&Array.isArray(r.body)) await sendNotifications(r.body);
 }
 async function runAlertChecks(){
   try{
     const r=await authed("/rest/v1/rpc/hq_check_alerts",{method:"POST",body:JSON.stringify({})});
-    if(r.ok&&Array.isArray(r.body)) await sendLark(r.body);
+    if(r.ok&&Array.isArray(r.body)) await sendNotifications(r.body);
   }catch(e){}
 }
 
 /* ---------- 通知設定（チャンネル登録・ルール） ---------- */
 let NOTIFY_CHANNELS=[];
 let NOTIFY_RULES=[];
-const EVENT_LABEL={due_alert:"期限アラート（3日前・前日・当日・超過）",stalled:"⏸ 3日以上停止",step_complete:"工程完了のたび",issue_reported:"異常ありが付いたとき"};
+const EVENT_LABEL={due_alert:"期限アラート（3日前・前日・当日・超過）",stalled:"⏸ 3日以上停止",step_complete:"工程完了のたび",issue_reported:"異常ありが付いたとき",mention:"@メンションされたとき"};
+const CHANNEL_ICON={lark_webhook:"💬",inapp:"🔔",chatwork:"🟢"};
 async function fetchNotifySettings(){
   const [c,r]=await Promise.all([
     authed("/rest/v1/hq_notify_channels?select=*&order=created_at"),
@@ -1334,12 +1372,21 @@ function renderNotify(u){
   <div class="sec"><h3 style="margin-top:0">通知先チャンネル</h3>
     <div id="ch-list">${NOTIFY_CHANNELS.map(chRowHtml).join("")||'<div class="card">まだ登録されていません</div>'}</div>
     <div class="card" style="margin-top:10px">
-      <label>種類</label><select id="ch-kind"><option value="lark_webhook">💬 Lark Webhook</option><option value="inapp">🔔 アプリ内通知</option></select>
+      <label>種類</label><select id="ch-kind"><option value="lark_webhook">💬 Lark Webhook</option><option value="chatwork">🟢 Chatwork</option><option value="inapp">🔔 アプリ内通知</option></select>
       <label>チャンネル名</label><input id="ch-name" placeholder="例: 本部タスクGr">
       <div id="ch-urlwrap"><label>Webhook URL</label><input id="ch-url" type="url" placeholder="https://open.larksuite.com/open-apis/bot/v2/hook/…">
       <label>キーワード（Larkのカスタムボットで必要な場合のみ）</label><input id="ch-keyword" placeholder="任意"></div>
+      <div id="ch-roomwrap" style="display:none"><label>Chatwork ルームID</label><input id="ch-room" placeholder="例: 123456789"></div>
       <button class="btn sm" style="margin-top:8px" id="ch-add">追加</button>
       <div class="err" id="ch-msg"></div>
+    </div>
+  </div>
+  <div class="sec"><h3>💬 自分のChatwork ID（メンション用）</h3>
+    <div class="card">
+      <div class="sec-sub" style="margin-bottom:8px">登録しておくと、あなたが@メンションされたときにChatwork側でも[To:あなた]として届きます（本部タスクGrなどへの通知に含まれます）。</div>
+      <label>Chatworkアカウント ID</label><input id="mycw-id" placeholder="例: 1234567" value="${esc(MY_CHATWORK||"")}">
+      <button class="btn sm" style="margin-top:8px" id="mycw-save">保存</button>
+      <div class="err" id="mycw-msg"></div>
     </div>
   </div>
   <div class="sec"><h3>通知ルール（どのタスクの・どの出来事を・どこに流すか）</h3>
@@ -1350,18 +1397,22 @@ function renderNotify(u){
       <label>対象の頻度（空欄=すべて）</label><select id="rl-freq"><option value="">すべて</option><option value="daily">毎日</option><option value="weekly">毎週</option><option value="monthly">毎月</option><option value="once">単発</option></select>
       <label>出来事</label><select id="rl-event">${Object.entries(EVENT_LABEL).map(([k,v])=>`<option value="${k}">${esc(v)}</option>`).join("")}</select>
       <label>宛先チャンネル（複数選択可）</label>
-      <select id="rl-channels" multiple size="4">${NOTIFY_CHANNELS.map(c=>`<option value="${c.id}">${c.kind==="lark_webhook"?"💬":"🔔"} ${esc(c.name)}</option>`).join("")}</select>
+      <select id="rl-channels" multiple size="4">${NOTIFY_CHANNELS.map(c=>`<option value="${c.id}">${CHANNEL_ICON[c.kind]||"📣"} ${esc(c.name)}</option>`).join("")}</select>
       <button class="btn sm" style="margin-top:8px" id="rl-add">追加</button>
       <div class="err" id="rl-msg"></div>
     </div>
   </div>`;
   $("back").onclick=()=>{VIEW="board";renderBoard(u);};
-  $("ch-kind").onchange=e=>{$("ch-urlwrap").style.display=e.target.value==="lark_webhook"?"block":"none";};
+  $("ch-kind").onchange=e=>{
+    $("ch-urlwrap").style.display=e.target.value==="lark_webhook"?"block":"none";
+    $("ch-roomwrap").style.display=e.target.value==="chatwork"?"block":"none";
+  };
   $("ch-add").onclick=async()=>{
     const name=$("ch-name").value.trim(), kind=$("ch-kind").value;
     if(!name){$("ch-msg").textContent="チャンネル名を入力してください";return}
     const payload={name,kind,created_by:ME.id};
     if(kind==="lark_webhook"){ payload.webhook_url=$("ch-url").value.trim(); payload.keyword=$("ch-keyword").value.trim()||null; if(!payload.webhook_url){$("ch-msg").textContent="Webhook URLを入力してください";return} }
+    if(kind==="chatwork"){ payload.room_id=$("ch-room").value.trim(); if(!payload.room_id){$("ch-msg").textContent="ルームIDを入力してください";return} }
     $("ch-msg").textContent="追加中…";
     const r=await authed("/rest/v1/hq_notify_channels",{method:"POST",headers:{Prefer:"return=minimal"},body:JSON.stringify(payload)});
     if(!r.ok){$("ch-msg").textContent="追加できませんでした";return}
@@ -1372,6 +1423,13 @@ function renderNotify(u){
     await authed(`/rest/v1/hq_notify_channels?id=eq.${b.dataset.chdel}`,{method:"DELETE"});
     await fetchNotifySettings(); renderNotify(u);
   });
+  if($("mycw-save")) $("mycw-save").onclick=async()=>{
+    const id=$("mycw-id").value.trim();
+    const msg=$("mycw-msg"); msg.textContent="保存中…";
+    const r=await authed("/rest/v1/hq_user_chatwork",{method:"POST",headers:{Prefer:"resolution=merge-duplicates,return=minimal"},body:JSON.stringify({user_id:u.id,account_id:id,updated_at:new Date().toISOString()})});
+    if(!r.ok){ msg.textContent="保存できませんでした"; return; }
+    MY_CHATWORK=id; msg.className="err msg-ok"; msg.textContent="保存しました";
+  };
   $("rl-add").onclick=async()=>{
     const name=$("rl-name").value.trim();
     if(!name){$("rl-msg").textContent="ルール名を入力してください";return}
@@ -1390,7 +1448,10 @@ function renderNotify(u){
   });
 }
 function chRowHtml(c){
-  return `<div class="link-row"><span>${c.kind==="lark_webhook"?"💬":"🔔"}</span><div style="flex:1">${esc(c.name)}${c.kind==="lark_webhook"?` <span class="meta">Lark Webhook${c.keyword?"／キーワード: "+esc(c.keyword):""}</span>`:' <span class="meta">アプリ内通知</span>'}</div><button class="linkbtn" data-chdel="${c.id}">削除</button></div>`;
+  const desc=c.kind==="lark_webhook"?`Lark Webhook${c.keyword?"／キーワード: "+esc(c.keyword):""}`
+    :c.kind==="chatwork"?`Chatwork／ルームID: ${esc(c.room_id||"")}`
+    :"アプリ内通知";
+  return `<div class="link-row"><span>${CHANNEL_ICON[c.kind]||"📣"}</span><div style="flex:1">${esc(c.name)} <span class="meta">${desc}</span></div><button class="linkbtn" data-chdel="${c.id}">削除</button></div>`;
 }
 function ruleRowHtml(r){
   const chNames=(r.channel_ids||[]).map(id=>{const c=NOTIFY_CHANNELS.find(x=>x.id===id);return c?c.name:"?"}).join("、");
@@ -1479,7 +1540,7 @@ async function main(){
   ME=u;
   await fetchUsers(); await fetchStores(); await fetchCorps();
   await ensureTodayGenerated();
-  await Promise.all([fetchBoard(), fetchNotifications()]);
+  await Promise.all([fetchBoard(), fetchNotifications(), fetchMyChatwork()]);
   runAlertChecks();
   const openId=qs.get("task");
   if(openId){ openDetail(openId); return; }
