@@ -120,6 +120,17 @@ textarea{resize:vertical}
 .stepform-row{display:flex;gap:8px;align-items:flex-end;margin-bottom:8px;flex-wrap:wrap}
 .stepform-row .f{flex:1;min-width:120px}
 .stepform-row .f label{margin:0 0 4px}
+.print-task{margin-bottom:18px}
+.print-task-title{font-weight:700;font-size:15px;margin-bottom:6px}
+.print-table{width:100%;border-collapse:collapse;font-size:13px}
+.print-table th,.print-table td{border:1px solid #999;padding:6px 8px;text-align:left}
+.print-table .chk{width:60px;text-align:center;font-size:16px}
+@media print{
+  body *{visibility:hidden}
+  #printarea,#printarea *{visibility:visible}
+  #printarea{display:block;position:absolute;top:0;left:0;width:100%}
+  .no-print{display:none !important}
+}
 </style>
 </head>
 <body>
@@ -1049,7 +1060,7 @@ function renderDaily(u){
   const d=new Date(today+"T00:00:00");
   const wd=["日","月","火","水","木","金","土"][d.getDay()];
   $("app").innerHTML=`
-  <div class="topbar"><h1>今日の毎日タスク ${d.getMonth()+1}/${d.getDate()}(${wd})</h1><div class="who"><button class="linkbtn" id="back">← ボードへ戻る</button></div></div>
+  <div class="topbar"><h1>今日の毎日タスク ${d.getMonth()+1}/${d.getDate()}(${wd})</h1><div class="who"><button class="linkbtn" id="doprint">🖨 今日の分を印刷</button><button class="linkbtn" id="back">← ボードへ戻る</button></div></div>
   <div class="toprow"><div><b>${doneCount}/${todaysV.length} 完了</b></div>
     <div class="chiprow"><span class="chip ${!DAILY_MINE?'active':''}" id="dm-all">全員分</span><span class="chip ${DAILY_MINE?'active':''}" id="dm-mine">👤 自分の分</span></div>
   </div>
@@ -1059,6 +1070,7 @@ function renderDaily(u){
     ${todaysV.map(t=>dailyRowHtml(t,u,false)).join("")||'<div class="card">今日の毎日タスクはありません</div>'}
   </div>`;
   $("back").onclick=()=>{VIEW="board";renderBoard(u);};
+  $("doprint").onclick=()=>openPrintSelect(u,todaysV);
   $("dm-all").onclick=()=>{DAILY_MINE=false;renderDaily(u);};
   $("dm-mine").onclick=()=>{DAILY_MINE=true;renderDaily(u);};
   wireDaily(u);
@@ -1189,6 +1201,58 @@ function wireDaily(u){
       await fetchDaily(); renderDaily(u);
     };
   });
+}
+
+/* ---------- C-5: 本日タスクの印刷ビュー ---------- */
+let PRINT_CANDIDATES=[];
+let PRINT_SELECTED=new Set();
+let PRINT_LIST=[];
+function openPrintSelect(u,candidates){
+  PRINT_CANDIDATES=candidates;
+  PRINT_SELECTED=new Set(candidates.filter(t=>t.status!=="done").map(t=>t.id));
+  VIEW="printselect"; renderPrintSelect(u);
+}
+function renderPrintSelect(u){
+  $("app").innerHTML=`
+  <div class="topbar"><h1>🖨 今日の分を印刷</h1><div class="who"><button class="linkbtn" id="back">← 戻る</button></div></div>
+  <div class="card">
+    <div class="meta" style="margin-bottom:10px">印刷するタスクを選択してください（${fmtD(todayStr())}）</div>
+    ${PRINT_CANDIDATES.length?PRINT_CANDIDATES.map(t=>`
+      <label style="display:flex;align-items:center;gap:8px;padding:6px 0;cursor:pointer">
+        <input type="checkbox" class="print-chk" data-ptask="${t.id}" ${PRINT_SELECTED.has(t.id)?"checked":""}>
+        <span>${esc(t.title)}（${esc(t.corp)}）${t.status==="done"?' <span class="meta">完了済み</span>':""}</span>
+      </label>`).join(""):'<div class="meta">対象のタスクはありません</div>'}
+    <button class="btn" id="print-go" style="margin-top:16px">この内容で印刷プレビュー</button>
+  </div>`;
+  $("back").onclick=()=>{VIEW="daily";renderDaily(u);};
+  document.querySelectorAll(".print-chk").forEach(cb=>{
+    cb.onchange=()=>{ if(cb.checked) PRINT_SELECTED.add(cb.dataset.ptask); else PRINT_SELECTED.delete(cb.dataset.ptask); };
+  });
+  $("print-go").onclick=()=>{
+    const list=PRINT_CANDIDATES.filter(t=>PRINT_SELECTED.has(t.id));
+    if(!list.length){ alert("1件以上選択してください"); return; }
+    PRINT_LIST=list;
+    VIEW="print"; renderPrintPreview(u);
+  };
+}
+function renderPrintPreview(u){
+  $("app").innerHTML=`
+  <div class="topbar no-print"><h1>🖨 印刷プレビュー</h1><div class="who"><button class="btn sm" id="doprint2">印刷する</button><button class="linkbtn" id="back">← 戻る</button></div></div>
+  <div id="printarea">
+    <h2 style="margin:0 0 10px">本部タスク チェックリスト（${fmtD(todayStr())}）</h2>
+    ${PRINT_LIST.map(t=>`
+      <div class="print-task">
+        <div class="print-task-title">${esc(t.title)}（${esc(t.corp)}）</div>
+        <table class="print-table">
+          <thead><tr><th>工程</th><th>担当</th><th>期限</th><th>チェック</th></tr></thead>
+          <tbody>
+            ${sortedSteps(t).map(s=>`<tr><td>${esc(s.title)}</td><td>${esc(userName(s.assignee_id)||"—")}</td><td>${fmtDD(s.due_date,s.due_time)}</td><td class="chk">□</td></tr>`).join("")||`<tr><td colspan="4">工程なし</td></tr>`}
+          </tbody>
+        </table>
+      </div>`).join("")}
+  </div>`;
+  $("back").onclick=()=>{VIEW="printselect";renderPrintSelect(u);};
+  $("doprint2").onclick=()=>window.print();
 }
 
 /* ---------- テンプレート管理（繰り返し・アラート既定） ---------- */
