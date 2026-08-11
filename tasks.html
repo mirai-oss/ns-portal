@@ -264,17 +264,19 @@ async function runSearch(q){
   renderBoard(ME);
 }
 async function fetchTaskDetail(id){
-  const [t,links,photos,act]=await Promise.all([
+  const [t,links,photos,act,coms]=await Promise.all([
     authed(`/rest/v1/hq_tasks?id=eq.${id}&select=*,hq_task_steps(*)`),
     authed(`/rest/v1/hq_task_links?task_id=eq.${id}&order=created_at`),
     authed(`/rest/v1/hq_task_photos?task_id=eq.${id}&order=created_at`),
     authed(`/rest/v1/hq_task_activity?task_id=eq.${id}&order=created_at.desc&limit=100`),
+    authed(`/rest/v1/hq_task_comments?task_id=eq.${id}&order=created_at`),
   ]);
   if(!t.ok||!Array.isArray(t.body)||!t.body[0]) return null;
   const task=t.body[0];
   task._links=links.ok?links.body:[];
   task._photos=photos.ok?photos.body:[];
   task._activity=act.ok?act.body:[];
+  task._comments=coms.ok?coms.body:[];
   // 工程ごとの写真（step_id指定）もまとめて取得
   const stepIds=sortedSteps(task).map(s=>s.id);
   if(stepIds.length){
@@ -504,6 +506,19 @@ function renderDetail(u){
     </div>
   </div>
 
+  <div class="sec"><h3>💬 コメント</h3>
+    <div class="card">
+      <div id="commentlist">${(t._comments||[]).map(c=>commentHtml(c)).join("")||'<div class="meta">まだコメントはありません</div>'}</div>
+      <div style="margin-top:12px;padding-top:10px;border-top:1px dashed var(--line);position:relative">
+        <label>コメントを追加（@で本部メンバーをメンション）</label>
+        <textarea id="comment-body" rows="2" placeholder="コメントを入力…　@で本部メンバーをメンション"></textarea>
+        <div id="mention-dropdown" style="display:none;position:absolute;z-index:10;background:var(--card);border:1px solid var(--line);border-radius:8px;box-shadow:0 4px 14px rgba(0,0,0,.12);max-height:180px;overflow-y:auto;width:calc(100% - 4px)"></div>
+        <button class="btn sm" style="margin-top:8px" id="comment-send">投稿</button>
+        <div class="err" id="comment-msg"></div>
+      </div>
+    </div>
+  </div>
+
   <div class="sec"><h3>履歴</h3>
     <div class="card">${(t._activity||[]).map(a=>`<div class="act-row"><b>${fmtDT(a.created_at)}</b> ${esc(a.actor_id?userName(a.actor_id):"自動")} — ${esc(a.detail)}</div>`).join("")||'<div class="meta">履歴はまだありません</div>'}</div>
   </div>`;
@@ -595,6 +610,74 @@ async function logActivity(taskId,kind,detail,stepId){
   await authed("/rest/v1/hq_task_activity",{method:"POST",headers:{Prefer:"return=minimal"},
     body:JSON.stringify({task_id:taskId,step_id:stepId||null,actor_id:ME.id,kind,detail})});
 }
+
+/* ---------- C-1: コメント＋@メンション ---------- */
+function highlightMentions(body){
+  let html=esc(body);
+  assignableUsers().forEach(x=>{
+    const needle=esc("@"+x.name);
+    if(html.includes(needle)){
+      html=html.split(needle).join(`<span style="color:var(--accent);font-weight:600">${needle}</span>`);
+    }
+  });
+  return html.replace(/\n/g,"<br>");
+}
+function commentHtml(c){
+  return `<div class="act-row" style="padding:8px 0">
+    <b>${esc(userName(c.created_by))}</b> <span class="meta">${fmtDT(c.created_at)}</span>
+    ${c.created_by===ME.id?`<button class="linkbtn" data-delcomment="${c.id}" style="float:right">削除</button>`:""}
+    <div style="margin-top:4px;font-size:14px">${highlightMentions(c.body)}</div>
+  </div>`;
+}
+function findMentionCandidates(prefix){
+  const p=prefix.toLowerCase();
+  return assignableUsers().filter(x=>x.name.toLowerCase().includes(p));
+}
+function wireCommentBox(t,u){
+  const ta=$("comment-body"); if(!ta) return;
+  const dd=$("mention-dropdown");
+  ta.oninput=()=>{
+    const v=ta.value.slice(0,ta.selectionStart||ta.value.length);
+    const m=v.match(/@([^\s@]*)$/);
+    if(!m){ dd.style.display="none"; return; }
+    const cands=findMentionCandidates(m[1]);
+    if(!cands.length){ dd.style.display="none"; return; }
+    dd.innerHTML=cands.map(x=>`<div class="link-row" style="cursor:pointer;padding:8px 12px" data-mentionpick="${esc(x.name)}">${esc(x.name)}</div>`).join("");
+    dd.style.display="block";
+    dd.querySelectorAll("[data-mentionpick]").forEach(el=>{
+      el.onclick=()=>{
+        const name=el.dataset.mentionpick;
+        const before=ta.value.slice(0,ta.selectionStart||ta.value.length).replace(/@([^\s@]*)$/,"@"+name+" ");
+        const after=ta.value.slice(ta.selectionStart||ta.value.length);
+        ta.value=before+after;
+        dd.style.display="none";
+        ta.focus();
+      };
+    });
+  };
+  ta.onblur=()=>{ setTimeout(()=>{ dd.style.display="none"; },150); };
+  $("comment-send").onclick=async()=>{
+    const body=ta.value.trim();
+    const msg=$("comment-msg"); msg.textContent="";
+    if(!body){ msg.textContent="コメントを入力してください"; return; }
+    const mentions=assignableUsers().filter(x=>body.includes("@"+x.name)).map(x=>x.id);
+    $("comment-send").disabled=true; msg.textContent="投稿中…";
+    const r=await authed("/rest/v1/hq_task_comments",{method:"POST",headers:{Prefer:"return=representation"},body:JSON.stringify({task_id:t.id,body,mentions,created_by:ME.id})});
+    $("comment-send").disabled=false;
+    if(!r.ok||!r.body||!r.body[0]){ msg.textContent="投稿できませんでした"; return; }
+    if(mentions.length){
+      await authed("/rest/v1/rpc/hq_notify_comment",{method:"POST",body:JSON.stringify({p_comment_id:r.body[0].id})});
+    }
+    CUR_TASK=await fetchTaskDetail(t.id); renderDetail(u);
+  };
+  document.querySelectorAll("[data-delcomment]").forEach(b=>{
+    b.onclick=async()=>{
+      if(!confirm("このコメントを削除しますか？"))return;
+      await authed(`/rest/v1/hq_task_comments?id=eq.${b.dataset.delcomment}`,{method:"DELETE"});
+      CUR_TASK=await fetchTaskDetail(t.id); renderDetail(u);
+    };
+  });
+}
 async function uploadPhoto(file){
   const s=sess.get();
   const ext=(file.name.split(".").pop()||"jpg").toLowerCase().replace(/[^a-z0-9]/g,"")||"jpg";
@@ -605,6 +688,7 @@ async function uploadPhoto(file){
   return path;
 }
 function wireDetail(t,u){
+  wireCommentBox(t,u);
   if($("undotask")) $("undotask").onclick=async()=>{
     const msg=$("taskactmsg"); msg.textContent="";
     const steps=sortedSteps(t).filter(s=>s.completed_at);
