@@ -470,6 +470,11 @@ function renderDetail(u){
     ${sig.level==="stall"?`<span class="stall-badge">⏸ ${sig.stalledDays}日停止</span>`:""}</div>
     <h1>${esc(t.title)}</h1>
     <div class="meta" style="font-size:13px;color:var(--muted);margin-top:4px">対象日 ${fmtD(t.target_date)} ／ 期限 ${fmtDD(t.due_date,t.due_time)}${t.status==="done"?" ／ "+fmtDT(t.completed_at)+" 完了":""}</div>
+    <div style="margin-top:8px">
+      ${t.status==="done"?`<button class="linkbtn" id="undotask">↩️ 完了を取り消す</button>`:""}
+      ${t.created_by===u.id?`<button class="linkbtn" id="deltask">🗑 タスクを削除</button>`:""}
+    </div>
+    <div class="err" id="taskactmsg"></div>
   </div>
 
   <div class="sec"><h3>① 工程（サブタスク）— ${doneCount}/${steps.length}</h3>
@@ -510,7 +515,8 @@ function stepHtml(t,s,u){
   const photos=stepPhotosFor(t,s.id);
   return `<div class="step ${s._isCurrent?'cur':''}">
     <div class="row1" data-stepopen="${s.id}"><span class="ic">${stepIcon(s)}</span>
-      <div class="st">${esc(s.title)}<div class="meta">${metaLine}</div></div>
+      <div class="st">${esc(s.title)}<div class="meta">${metaLine}${s.completed_at&&canTouch?` ／ <button class="linkbtn" data-stepundo="${s.id}" onclick="event.stopPropagation()">↩️ 取り消す</button>`:""}</div>
+      </div>
       ${!s.completed_at&&canTouch?`<span>${open?"▲":"▼"}</span>`:""}
     </div>
     ${!s.completed_at&&canTouch&&open?`<div class="step-body">
@@ -541,7 +547,7 @@ function stepOrGroupHtml(t,g,u){
       const photos=stepPhotosFor(t,s.id);
       if(s.completed_at){
         const badge=s.judgement==="issue"?`<span style="color:var(--stall)">⚠ 異常あり</span>`:(s.is_binary?`<span style="color:var(--ok)">✓ OK</span>`:"✓");
-        return `<div class="storecheck-row"><span style="flex:1">${esc(name)}</span>${badge}<span class="meta">${esc(s.issue_note||"—")}</span></div>`;
+        return `<div class="storecheck-row"><span style="flex:1">${esc(name)}</span>${badge}<span class="meta">${esc(s.issue_note||"—")}</span>${canTouch?`<button class="linkbtn" data-stepundo="${s.id}">↩️</button>`:""}</div>`;
       }
       if(!canTouch) return `<div class="storecheck-row"><span style="flex:1">${esc(name)}</span><span class="meta">担当: ${esc(userName(s.assignee_id)||"未定")}</span></div>`;
       const open=OPEN_STEP===s.id;
@@ -593,6 +599,34 @@ async function uploadPhoto(file){
   return path;
 }
 function wireDetail(t,u){
+  if($("undotask")) $("undotask").onclick=async()=>{
+    const msg=$("taskactmsg"); msg.textContent="";
+    const steps=sortedSteps(t).filter(s=>s.completed_at);
+    if(!steps.length)return;
+    const last=steps.reduce((a,b)=>new Date(a.completed_at)>new Date(b.completed_at)?a:b);
+    const r=await authed(`/rest/v1/hq_task_steps?id=eq.${last.id}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({completed_at:null,judgement:null,issue_note:null})});
+    if(!r.ok){ msg.textContent="取り消せませんでした（権限がない可能性があります）"; return; }
+    await logActivity(t.id,"step_reopen",`工程「${last.title}」の完了を取り消し`,last.id);
+    CUR_TASK=await fetchTaskDetail(t.id); renderDetail(u);
+  };
+  if($("deltask")) $("deltask").onclick=async()=>{
+    if(!confirm("このタスクを削除しますか？工程・写真・履歴もすべて削除され、元に戻せません。"))return;
+    const msg=$("taskactmsg"); msg.textContent="削除中…";
+    const r=await authed(`/rest/v1/hq_tasks?id=eq.${t.id}`,{method:"DELETE"});
+    if(!r.ok){ msg.textContent="削除できませんでした（作成者のみ削除できます）"; return; }
+    VIEW="board"; CUR_TASK=null; history.replaceState(null,"","tasks.html");
+    await fetchBoard(); renderBoard(u);
+  };
+  document.querySelectorAll("[data-stepundo]").forEach(btn=>{
+    btn.onclick=async()=>{
+      const sid=btn.dataset.stepundo;
+      const step=sortedSteps(t).find(s=>s.id===sid);
+      const r=await authed(`/rest/v1/hq_task_steps?id=eq.${sid}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({completed_at:null,judgement:null,issue_note:null})});
+      if(!r.ok){ alert("取り消せませんでした（権限がない可能性があります）"); return; }
+      await logActivity(t.id,"step_reopen",`工程「${step.title}」の完了を取り消し`,sid);
+      CUR_TASK=await fetchTaskDetail(t.id); renderDetail(u);
+    };
+  });
   document.querySelectorAll("[data-stepopen]").forEach(el=>{
     el.onclick=()=>{ const id=el.dataset.stepopen; OPEN_STEP=OPEN_STEP===id?null:id; renderDetail(u); };
   });
@@ -810,7 +844,7 @@ function dailyGroupHtml(g,u){
   if(!g.isGroup){
     const s=g.rows[0];
     if(s.completed_at){
-      return `<div class="storecheck-row"><span>✓</span><span style="flex:1">${esc(s.title)}</span><span class="meta">${esc(userName(s.completed_by))} ／ ${fmtDT(s.completed_at)}</span></div>`;
+      return `<div class="storecheck-row"><span>✓</span><span style="flex:1">${esc(s.title)}</span><span class="meta">${esc(userName(s.completed_by))} ／ ${fmtDT(s.completed_at)}</span>${canDo(s)?`<button class="linkbtn" data-stepundo="${s.id}">↩️ 取り消す</button>`:""}</div>`;
     }
     if(!canDo(s)) return `<div class="storecheck-row"><span>○</span><span style="flex:1">${esc(s.title)}</span><span class="meta">担当: ${esc(userName(s.assignee_id)||"未定")}</span></div>`;
     return `<div class="card" style="margin:8px 0">
@@ -831,7 +865,7 @@ function dailyGroupHtml(g,u){
       const name=store?store.name:"店舗";
       if(s.completed_at){
         const okBadge=s.judgement==="issue"?`<span style="color:var(--stall)">⚠ 異常あり</span>`:(s.is_binary?`<span style="color:var(--ok)">✓ OK</span>`:"✓");
-        return `<div class="storecheck-row"><span style="flex:1">${esc(name)}</span>${okBadge}<span class="meta">${esc(s.issue_note||"—")}</span></div>`;
+        return `<div class="storecheck-row"><span style="flex:1">${esc(name)}</span>${okBadge}<span class="meta">${esc(s.issue_note||"—")}</span>${canDo(s)?`<button class="linkbtn" data-stepundo="${s.id}">↩️</button>`:""}</div>`;
       }
       if(!canDo(s)) return `<div class="storecheck-row"><span style="flex:1">${esc(name)}</span><span class="meta">未確認</span></div>`;
       return `<div class="storecheck-row" style="flex-wrap:wrap">
@@ -862,6 +896,18 @@ function wireDaily(u){
       const sid=sel.id.replace("djudge-","");
       const w=$("dissuewrap-"+sid); if(w) w.style.display=sel.value==="issue"?"block":"none";
       const inline=$("dissuenote-"+sid); if(inline&&!w) inline.style.display=sel.value==="issue"?"inline-block":"none";
+    };
+  });
+  document.querySelectorAll("[data-stepundo]").forEach(btn=>{
+    btn.onclick=async()=>{
+      const sid=btn.dataset.stepundo;
+      let step=null,parentTask=null;
+      for(const t2 of DAILY_TASKS){ const s=sortedSteps(t2).find(x=>x.id===sid); if(s){step=s;parentTask=t2;break;} }
+      if(!step)return;
+      const r=await authed(`/rest/v1/hq_task_steps?id=eq.${sid}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({completed_at:null,judgement:null,issue_note:null})});
+      if(!r.ok){ alert("取り消せませんでした（権限がない可能性があります）"); return; }
+      await logActivity(parentTask.id,"step_reopen",`「${step.title}」の完了を取り消し`,sid);
+      await fetchDaily(); renderDaily(u);
     };
   });
   document.querySelectorAll("[data-dcomplete]").forEach(btn=>{
