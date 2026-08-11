@@ -365,6 +365,11 @@ function renderBoard(u){
         <option value="${u.id}" ${FILTER.assignee===u.id?"selected":""}>自分（${esc(u.name)}）</option>
         ${assignableUsers().filter(x=>x.id!==u.id).map(x=>`<option value="${x.id}" ${FILTER.assignee===x.id?"selected":""}>${esc(x.name)}</option>`).join("")}
       </select></span>
+      <span>📤 <select id="creatorsel" style="width:auto;display:inline-block;padding:5px 10px;font-size:12px;border-radius:99px">
+        <option value="">依頼者ですべて表示</option>
+        <option value="${u.id}" ${FILTER.creator===u.id?"selected":""}>自分が依頼（${esc(u.name)}）</option>
+        ${assignableUsers().filter(x=>x.id!==u.id).map(x=>`<option value="${x.id}" ${FILTER.creator===x.id?"selected":""}>${esc(x.name)}</option>`).join("")}
+      </select></span>
       <span>並び替え: <select id="sortsel" style="width:auto;display:inline-block;padding:5px 10px;font-size:12px;border-radius:99px">
         ${Object.entries(SORT_LABEL).map(([k,v])=>`<option value="${k}" ${SORT_MODE===k?"selected":""}>${esc(v)}</option>`).join("")}
       </select></span>
@@ -405,6 +410,7 @@ function wireBoard(u){
   document.querySelectorAll("[data-corp]").forEach(c=>c.onclick=()=>{FILTER.corp=c.dataset.corp||null;renderBoard(u);});
   document.querySelectorAll("[data-freq]").forEach(c=>c.onclick=()=>{FILTER.freq=c.dataset.freq||null;renderBoard(u);});
   $("assigneesel").onchange=e=>{FILTER.assignee=e.target.value||null;renderBoard(u);};
+  $("creatorsel").onchange=e=>{FILTER.creator=e.target.value||null;renderBoard(u);};
   $("sortsel").onchange=e=>{SORT_MODE=e.target.value; localStorage.setItem("hq_sort",SORT_MODE); renderBoard(u);};
   document.querySelectorAll("[data-sig]").forEach(c=>c.onclick=()=>{
     const v=c.dataset.sig; FILTER.signal=FILTER.signal===v?null:v; renderBoard(u);
