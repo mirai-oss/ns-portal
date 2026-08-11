@@ -1055,10 +1055,12 @@ function renderTplEdit(u){
       <div id="tp-steps"></div>
       <button class="linkbtn" id="tp-addstep">＋ 工程を追加</button>
     </div>
+    <button class="btn sub" id="tp-preview" style="margin-top:16px">👁 プレビュー</button>
     <button class="btn" id="tp-save" style="margin-top:16px">保存する</button>
     <div class="err" id="tp-msg"></div>
   </div>`;
   $("back").onclick=()=>{VIEW="templates";renderTemplates(u);};
+  $("tp-preview").onclick=()=>openTplPreview();
   $("tp-freq").onchange=e=>{
     $("tp-weeklywrap").style.display=e.target.value==="weekly"?"block":"none";
     $("tp-monthlywrap").style.display=e.target.value==="monthly"?"block":"none";
@@ -1153,6 +1155,49 @@ async function saveTemplate(u){
   }
   await fetchTemplates();
   VIEW="templates"; renderTemplates(u);
+}
+
+/* ---------- B-6: テンプレプレビュー（保存せず見た目だけ確認） ---------- */
+function buildPreviewTask(){
+  const title=($("tp-title")?.value||"").trim()||"（無題）";
+  const corp=$("tp-corp")?.value||(CORPS[0]?.name||"");
+  const freq=$("tp-freq")?.value||"daily";
+  const notes=($("tp-notes")?.value||"").trim();
+  const due_offset=+($("tp-offset")?.value)||0;
+  const due_time=$("tp-duetime")?.value||null;
+  const today=todayStr();
+  const addDays=(base,n)=>{ const d=new Date(base+"T00:00:00"); d.setDate(d.getDate()+n); return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0"); };
+  const due_date=addDays(today,due_offset);
+  const steps=TPL_STEPS.filter(s=>s.title.trim()).map((s,i)=>{
+    const step_due=addDays(today,s.offset_days||0);
+    if(s.kind==="check" && s.store_scope){
+      const list=(s.store_scope==="all"?STORES:STORES.filter(x=>x.is_active));
+      return list.map((store,j)=>({id:`preview-${i}-${j}`,template_step_id:`preview-tpl-${i}`,title:s.title,assignee_id:s.assignee_id||null,due_date:step_due,due_time:s.due_time||null,sort_order:(i+1)*10,kind:s.kind,is_binary:!!s.is_binary,requires_photo:!!s.requires_photo,store_id:store.id,completed_at:null}));
+    }
+    return [{id:`preview-${i}`,template_step_id:null,title:s.title,assignee_id:s.assignee_id||null,due_date:step_due,due_time:s.due_time||null,sort_order:(i+1)*10,kind:s.kind||"step",is_binary:!!s.is_binary,requires_photo:!!s.requires_photo,store_id:null,completed_at:null}];
+  }).flat();
+  return {id:"preview-task",template_id:null,title,corp,freq,target_date:today,due_date,due_time,status:"todo",notes,
+    visibility:$("tp-vis")?.value||"all",completed_at:null,created_by:ME.id,created_at:new Date().toISOString(),
+    hq_task_steps:steps,_links:[],_photos:[],_activity:[]};
+}
+function openTplPreview(){
+  const dummy=buildPreviewTask();
+  const groups=groupStoreSteps(dummy.hq_task_steps);
+  const modal=document.createElement("div");
+  modal.id="previewModal";
+  modal.style.cssText="position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:1000;overflow-y:auto;padding:20px 12px";
+  modal.innerHTML=`<div style="max-width:680px;margin:0 auto;background:var(--bg);border-radius:14px;padding:20px 18px 28px">
+    <div class="topbar"><h1>👁 プレビュー</h1><button class="linkbtn" id="closepreview">閉じる ×</button></div>
+    <div class="sec-sub" style="margin-bottom:14px">保存はされません。実際の見え方の確認用です（対象日は今日として計算）。</div>
+    <h3 style="margin-bottom:8px">ボードでのカード表示</h3>
+    <div style="max-width:320px">${taskCardHtml(dummy)}</div>
+    <h3 style="margin:20px 0 8px">詳細画面での工程表示</h3>
+    ${dummy.notes?`<div class="notes-box" style="margin-bottom:12px">${esc(dummy.notes)}</div>`:""}
+    <div>${groups.map(g=>stepOrGroupHtml(dummy,g,ME)).join("")||'<div class="card">工程がありません</div>'}</div>
+  </div>`;
+  document.body.appendChild(modal);
+  $("closepreview").onclick=()=>modal.remove();
+  modal.onclick=e=>{ if(e.target===modal) modal.remove(); };
 }
 
 /* ---------- 通知（アプリ内ベル・Lark） ---------- */
