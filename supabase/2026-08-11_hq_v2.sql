@@ -585,3 +585,76 @@ $$;
 -- account_idは共有ルームでの[To:]タグ用の任意設定になったため、必須制約を外す
 -- （個人通知ルーム方式ではroom_idのみの登録でも成立するため）
 alter table hq_user_chatwork alter column account_id drop not null;
+
+-- ============================================================
+-- 店舗別チェックの個別店舗選択（直営のみ/委託含む全店の2択に加えて、
+-- 特定の店舗だけを選んでチェック対象にできるように拡張）
+-- ============================================================
+alter table hq_task_template_steps add column if not exists store_ids uuid[];
+
+create or replace function hq_generate_today() returns int
+language plpgsql security definer set search_path = public as $$
+declare
+  v_today date := current_date;
+  v_dow int := extract(dow from v_today)::int;
+  v_dom int := extract(day from v_today)::int;
+  v_tpl record;
+  v_task_id uuid;
+  v_step record;
+  v_store record;
+  v_count int := 0;
+begin
+  for v_tpl in
+    select * from hq_task_templates
+    where is_active
+      and (
+        freq = 'daily'
+        or (freq = 'weekly' and weekly_dow = v_dow)
+        or (freq = 'monthly' and monthly_dom = v_dom)
+      )
+  loop
+    insert into hq_tasks (template_id, title, corp, freq, target_date, due_date, due_time, notes, description, visibility, created_by)
+    values (v_tpl.id, v_tpl.title, v_tpl.corp, v_tpl.freq, v_today, v_today + v_tpl.due_offset_days, v_tpl.due_time, v_tpl.notes, v_tpl.description, v_tpl.visibility, v_tpl.created_by)
+    on conflict (template_id, target_date) do nothing
+    returning id into v_task_id;
+
+    if v_task_id is null then
+      continue;
+    end if;
+    v_count := v_count + 1;
+
+    for v_step in select * from hq_task_template_steps where template_id = v_tpl.id order by sort_order loop
+      if v_step.kind = 'check' and v_step.store_scope is not null then
+        for v_store in
+          select id from stores where
+            case
+              when v_step.store_ids is not null and array_length(v_step.store_ids,1) > 0 then id = any(v_step.store_ids)
+              else (v_step.store_scope = 'all' or is_active)
+            end
+          order by sort_order
+        loop
+          insert into hq_task_steps(task_id, template_step_id, title, assignee_id, due_date, due_time, sort_order, kind, is_binary, requires_photo, store_id)
+          values (v_task_id, v_step.id, v_step.title, v_step.assignee_id, v_today + v_step.offset_days, v_step.due_time, v_step.sort_order, v_step.kind, v_step.is_binary, v_step.requires_photo, v_store.id);
+        end loop;
+      else
+        insert into hq_task_steps(task_id, template_step_id, title, assignee_id, due_date, due_time, sort_order, kind, is_binary, requires_photo)
+        values (v_task_id, v_step.id, v_step.title, v_step.assignee_id, v_today + v_step.offset_days, v_step.due_time, v_step.sort_order, v_step.kind, v_step.is_binary, v_step.requires_photo);
+      end if;
+    end loop;
+
+    insert into hq_task_activity(task_id, actor_id, kind, detail)
+    values (v_task_id, null, 'create', '自動生成（' || v_tpl.freq || '）');
+  end loop;
+
+  if v_count > 0 then
+    insert into hq_generation_log(work_date, generated_by, task_count) values (v_today, auth.uid(), v_count)
+      on conflict (work_date) do update set task_count = hq_generation_log.task_count + excluded.task_count, generated_at = now();
+  end if;
+  return v_count;
+end;
+$$;
+
+-- store_scopeのCHECK制約に'custom'（個別選択）を追加
+alter table hq_task_template_steps drop constraint if exists hq_task_template_steps_store_scope_check;
+alter table hq_task_template_steps add constraint hq_task_template_steps_store_scope_check
+  check (store_scope in ('active','all','custom'));

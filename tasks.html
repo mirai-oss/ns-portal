@@ -83,6 +83,9 @@ textarea{resize:vertical}
 .tcard .ti{font-size:14px;font-weight:600;margin-bottom:4px}
 .tcard .meta{font-size:12px;color:var(--muted);line-height:1.6}
 .tcard .stall-badge{display:inline-block;font-size:11px;color:#fff;background:var(--stall);padding:1px 8px;border-radius:99px;margin-bottom:4px}
+.due-badge{font-weight:600}
+.due-badge.stall{background:var(--stall);color:#fff;border-color:var(--stall)}
+.due-badge.warn{background:var(--warn);color:#fff;border-color:var(--warn)}
 .tcard .now{font-size:12px;margin-top:4px}
 .tcard .memo-line{font-size:12px;margin-top:4px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .empty-col{font-size:12px;color:var(--muted);padding:10px 4px}
@@ -188,6 +191,13 @@ async function fetchMe(){
 
 let ME=null, USERS=[], STORES=[];
 let VIEW="board";        // board | repeat | detail | new
+let NAV_STACK=[];        // 戻る操作用の画面履歴（各要素は「その画面を再表示する」関数）
+let CURRENT_RENDER=()=>renderBoard(ME);  // 現在表示中の画面を再描画する関数（次の画面へ進む直前にNAV_STACKへ積む）
+function pushNav(){ NAV_STACK.push(CURRENT_RENDER); }
+function goBack(u){
+  const prev=NAV_STACK.pop();
+  if(prev){ prev(); } else { VIEW="board"; CUR_TASK=null; history.replaceState(null,"","tasks.html"); renderBoard(u); }
+}
 let TASKS=[];             // ボード表示範囲のタスク（工程埋め込み）
 let SEARCHQ="";
 let SEARCH_RESULTS=null;  // 検索中はこちらを表示
@@ -334,16 +344,28 @@ function summaryCounts(){
 function taskCardHtml(t){
   const sig=computeSignal(t);
   const cls=sig.level==="stall"?"stall":(sig.level==="warn"?"warn":"");
+  const steps=sortedSteps(t);
+  const doneCount=steps.filter(s=>s.completed_at).length;
   return `<div class="tcard ${cls}" data-open="${t.id}">
-    <div class="badges"><span class="tag">${esc(t.corp)}</span><span class="tag freq">${t.freq!=="once"?"🔁 "+FREQ_LABEL[t.freq]:"単発"}</span></div>
+    <div class="badges"><span class="tag">${esc(t.corp)}</span><span class="tag freq">${t.freq!=="once"?"🔁 "+FREQ_LABEL[t.freq]:"単発"}</span>${dueBadgeHtml(sig)}</div>
     ${sig.level==="stall"?`<div class="stall-badge">⏸ ${sig.stalledDays}日停止</div>`:""}
     <div class="ti">${esc(t.title)}</div>
     <div class="meta">対象日 ${fmtD(t.target_date)} ／ 期限 ${fmtDD(t.due_date,t.due_time)}${t.status==="done"?" ／ "+fmtD((t.completed_at||"").slice(0,10))+" 完了 ✓":""}</div>
+    ${steps.length?`<div class="meta">工程 ${doneCount}/${steps.length} 完了</div>`:""}
     ${t.memo?`<div class="memo-line">📝 ${esc((t.memo.split("\n")[0]||"").slice(0,60))}</div>`:""}
-    ${sig.cur?`<div class="now">いま: ${esc(sig.cur.title)}（${esc(userName(sig.cur.assignee_id)||"未定")}）</div>`:""}
+    ${sig.cur?`<div class="now">いま: ${esc(sig.cur.title)}（${esc(userName(sig.cur.assignee_id)||"未定")}）${sig.cur.due_date?` ／ 期限 ${fmtDD(sig.cur.due_date,sig.cur.due_time)}`:""}</div>`:""}
   </div>`;
 }
+function dueBadgeHtml(sig){
+  if(!sig.cur||!sig.cur.due_date) return "";
+  if(sig.overdue) return `<span class="tag due-badge stall">⚠ 期限超過</span>`;
+  if(sig.dueToday) return `<span class="tag due-badge warn">🔴 本日期限</span>`;
+  const diffDays=Math.round((new Date(sig.cur.due_date+"T00:00:00")-new Date(todayStr()+"T00:00:00"))/86400000);
+  if(diffDays>0 && diffDays<=7) return `<span class="tag due-badge">あと${diffDays}日</span>`;
+  return "";
+}
 function renderBoard(u){
+  CURRENT_RENDER=()=>renderBoard(u);
   const src=SEARCH_RESULTS!==null?SEARCH_RESULTS:TASKS;
   const list=sortTasks(applyFilters(src));
   const cols={todo:[],doing:[],done:[]};
@@ -427,9 +449,9 @@ function wireBoard(u){
   document.querySelectorAll("[data-notiftask]").forEach(el=>{
     el.onclick=()=>{ if(el.dataset.notiftask) openDetail(el.dataset.notiftask); };
   });
-  if($("gopast"))$("gopast").onclick=async()=>{VIEW="past"; $("app").innerHTML='<div class="spin">読み込み中…</div>'; await fetchPastMonths(); renderPast(u);};
-  if($("gonotify"))$("gonotify").onclick=async()=>{VIEW="notify"; $("app").innerHTML='<div class="spin">読み込み中…</div>'; await fetchNotifySettings(); renderNotify(u);};
-  if($("gocorps"))$("gocorps").onclick=()=>{VIEW="corps";renderCorps(u);};
+  if($("gopast"))$("gopast").onclick=async()=>{pushNav(); VIEW="past"; $("app").innerHTML='<div class="spin">読み込み中…</div>'; await fetchPastMonths(); renderPast(u);};
+  if($("gonotify"))$("gonotify").onclick=async()=>{pushNav(); VIEW="notify"; $("app").innerHTML='<div class="spin">読み込み中…</div>'; await fetchNotifySettings(); renderNotify(u);};
+  if($("gocorps"))$("gocorps").onclick=()=>{pushNav(); VIEW="corps";renderCorps(u);};
   if($("mycwbtn"))$("mycwbtn").onclick=()=>openMyChatworkModal(u);
   document.querySelectorAll("[data-corp]").forEach(c=>c.onclick=()=>{FILTER.corp=c.dataset.corp||null;renderBoard(u);});
   document.querySelectorAll("[data-freq]").forEach(c=>c.onclick=()=>{FILTER.freq=c.dataset.freq||null;renderBoard(u);});
@@ -440,14 +462,15 @@ function wireBoard(u){
     const v=c.dataset.sig; FILTER.signal=FILTER.signal===v?null:v; renderBoard(u);
   });
   document.querySelectorAll("[data-open]").forEach(c=>c.onclick=()=>openDetail(c.dataset.open));
-  $("gorepeat").onclick=()=>{VIEW="repeat";renderRepeat(u);};
-  $("godaily").onclick=async()=>{VIEW="daily"; $("app").innerHTML='<div class="spin">読み込み中…</div>'; await fetchDaily(); renderDaily(u);};
-  if($("gotpl"))$("gotpl").onclick=async()=>{VIEW="templates"; $("app").innerHTML='<div class="spin">読み込み中…</div>'; await fetchTemplates(); renderTemplates(u);};
-  if($("newtask"))$("newtask").onclick=()=>{VIEW="new";renderNew(u);};
+  $("gorepeat").onclick=()=>{pushNav(); VIEW="repeat";renderRepeat(u);};
+  $("godaily").onclick=async()=>{pushNav(); VIEW="daily"; $("app").innerHTML='<div class="spin">読み込み中…</div>'; await fetchDaily(); renderDaily(u);};
+  if($("gotpl"))$("gotpl").onclick=async()=>{pushNav(); VIEW="templates"; $("app").innerHTML='<div class="spin">読み込み中…</div>'; await fetchTemplates(); renderTemplates(u);};
+  if($("newtask"))$("newtask").onclick=()=>{pushNav(); VIEW="new";renderNew(u);};
 }
 
 /* ---------- 繰り返しタブ ---------- */
 function renderRepeat(u){
+  CURRENT_RENDER=()=>renderRepeat(u);
   const list=TASKS.filter(t=>t.freq!=="once");
   $("app").innerHTML=`
   <div class="topbar"><h1>🔁 繰り返し（今月）</h1><div class="who"><button class="linkbtn" id="back">← ボードへ戻る</button></div></div>
@@ -463,12 +486,13 @@ function renderRepeat(u){
       <td>${fmtDD(t.due_date,t.due_time)}</td><td>${stateLabel}</td></tr>`;
   }).join("")||`<tr><td colspan="7">繰り返しタスクはありません</td></tr>`}
   </table></div></div>`;
-  $("back").onclick=()=>{VIEW="board";renderBoard(u);};
+  $("back").onclick=()=>goBack(u);
   document.querySelectorAll("[data-open]").forEach(c=>c.onclick=()=>openDetail(c.dataset.open));
 }
 
 /* ---------- タスク詳細 ---------- */
 async function openDetail(id){
+  pushNav();
   VIEW="detail"; OPEN_STEP=null;
   $("app").innerHTML=`<div class="spin">読み込み中…</div>`;
   history.replaceState(null,"","tasks.html?task="+id);
@@ -486,7 +510,8 @@ function photoUrl(path){ return `${SUPA_URL}/storage/v1/object/public/${BUCKET}/
 
 function renderDetail(u){
   const t=CUR_TASK;
-  if(!t){ $("app").innerHTML=`<div class="card"><p>タスクを表示できませんでした（削除された、または閲覧権限がありません）</p><button class="btn" id="back0">← ボードへ</button></div>`; $("back0").onclick=()=>{VIEW="board";renderBoard(u);}; return; }
+  if(!t){ $("app").innerHTML=`<div class="card"><p>タスクを表示できませんでした（削除された、または閲覧権限がありません）</p><button class="btn" id="back0">← 戻る</button></div>`; $("back0").onclick=()=>goBack(u); return; }
+  CURRENT_RENDER=(snap=>()=>{ CUR_TASK=snap; VIEW="detail"; renderDetail(u); })(t);
   const steps=sortedSteps(t);
   const sig=computeSignal(t);
   const curId=sig.cur?sig.cur.id:null;
@@ -557,7 +582,7 @@ function renderDetail(u){
     <div class="card">${(t._activity||[]).map(a=>`<div class="act-row"><b>${fmtDT(a.created_at)}</b> ${esc(a.actor_id?userName(a.actor_id):"自動")} — ${esc(a.detail)}</div>`).join("")||'<div class="meta">履歴はまだありません</div>'}</div>
   </div>`;
 
-  $("back").onclick=()=>{VIEW="board";CUR_TASK=null;history.replaceState(null,"","tasks.html");renderBoard(u);};
+  $("back").onclick=()=>{history.replaceState(null,"","tasks.html");goBack(u);};
   wireDetail(t,u);
 }
 function stepHtml(t,s,u){
@@ -607,11 +632,11 @@ function stepOrGroupHtml(t,g,u){
         const badge=s.judgement==="issue"?`<span style="color:var(--stall)">⚠ 異常あり</span>`:(s.is_binary?`<span style="color:var(--ok)">✓ OK</span>`:"✓");
         return `<div class="storecheck-row"><span style="flex:1">${esc(name)}</span>${badge}<span class="meta">${esc(s.issue_note||"—")}</span>${canTouch?`<button class="linkbtn" data-stepundo="${s.id}">↩️</button>`:""}</div>`;
       }
-      if(!canTouch) return `<div class="storecheck-row"><span style="flex:1">${esc(name)}</span><span class="meta">担当: ${esc(userName(s.assignee_id)||"未定")}</span></div>`;
+      if(!canTouch) return `<div class="storecheck-row"><span style="flex:1">${esc(name)}<div class="meta">担当: ${esc(userName(s.assignee_id)||"未定")} ／ 期限 ${fmtDD(s.due_date,s.due_time)}</div></span></div>`;
       const open=OPEN_STEP===s.id;
       return `<div style="border-bottom:1px solid var(--line)">
         <div class="storecheck-row" data-stepopen="${s.id}" style="cursor:pointer">
-          <span style="flex:1">${esc(name)}</span><span>${open?"▲":"▼"}</span>
+          <span style="flex:1">${esc(name)}<div class="meta">担当: ${esc(userName(s.assignee_id)||"未定")} ／ 期限 ${fmtDD(s.due_date,s.due_time)}</div></span><span>${open?"▲":"▼"}</span>
         </div>
         ${open?`<div class="step-body" style="padding-bottom:10px">
           ${s.is_binary?`<label>判定</label><select id="judge-${s.id}"><option value="">選択してください</option><option value="ok">OK</option><option value="issue">異常あり</option></select>
@@ -847,7 +872,7 @@ function wireDetail(t,u){
     const msg=$("taskactmsg"); msg.textContent="削除中…";
     const r=await authed(`/rest/v1/hq_tasks?id=eq.${t.id}`,{method:"DELETE"});
     if(!r.ok){ msg.textContent="削除できませんでした（作成者のみ削除できます）"; return; }
-    VIEW="board"; CUR_TASK=null; history.replaceState(null,"","tasks.html");
+    NAV_STACK=[]; VIEW="board"; CUR_TASK=null; history.replaceState(null,"","tasks.html");
     await fetchBoard(); renderBoard(u);
   };
   document.querySelectorAll("[data-stepundo]").forEach(btn=>{
@@ -957,8 +982,9 @@ function wireDetail(t,u){
 let NEW_STEPS=[{title:"",assignee_id:"",due_date:"",due_time:""}];
 function renderNew(u){
   NEW_STEPS=[{title:"",assignee_id:"",due_date:"",due_time:""}];
+  CURRENT_RENDER=()=>renderNew(u);
   $("app").innerHTML=`
-  <div class="topbar"><h1>＋ 単発タスクを作成</h1><div class="who"><button class="linkbtn" id="back">← ボードへ戻る</button></div></div>
+  <div class="topbar"><h1>＋ 単発タスクを作成</h1><div class="who"><button class="linkbtn" id="back">← 戻る</button></div></div>
   <div class="card">
     <label>タイトル</label><input id="nt-title" placeholder="例: 恵比寿 冷蔵庫の入替 見積比較">
     <label>法人</label><select id="nt-corp">${activeCorps().map(c=>`<option value="${esc(c.name)}">${esc(c.name)}</option>`).join("")}</select>
@@ -977,7 +1003,7 @@ function renderNew(u){
     <button class="btn" id="nt-send" style="margin-top:16px">作成する</button>
     <div class="err" id="nt-msg"></div>
   </div>`;
-  $("back").onclick=()=>{VIEW="board";renderBoard(u);};
+  $("back").onclick=()=>goBack(u);
   $("nt-vis").onchange=e=>{$("nt-memberswrap").style.display=e.target.value==="members"?"block":"none";};
   renderNewSteps();
   $("nt-addstep").onclick=()=>{NEW_STEPS.push({title:"",assignee_id:"",due_date:"",due_time:""});renderNewSteps();};
@@ -1052,6 +1078,7 @@ async function ensureTodayGenerated(){
   try{ await authed("/rest/v1/rpc/hq_generate_today",{method:"POST",body:JSON.stringify({})}); }catch(e){}
 }
 function renderDaily(u){
+  CURRENT_RENDER=()=>renderDaily(u);
   const today=todayStr();
   const todays=DAILY_TASKS.filter(t=>t.target_date===today);
   const pastDue=DAILY_TASKS.filter(t=>t.target_date<today && t.status!=="done");
@@ -1070,7 +1097,7 @@ function renderDaily(u){
     ${pastV.map(t=>dailyRowHtml(t,u,true)).join("")}
     ${todaysV.map(t=>dailyRowHtml(t,u,false)).join("")||'<div class="card">今日の毎日タスクはありません</div>'}
   </div>`;
-  $("back").onclick=()=>{VIEW="board";renderBoard(u);};
+  $("back").onclick=()=>goBack(u);
   $("doprint").onclick=()=>openPrintSelect(u,todaysV);
   $("dm-all").onclick=()=>{DAILY_MINE=false;renderDaily(u);};
   $("dm-mine").onclick=()=>{DAILY_MINE=true;renderDaily(u);};
@@ -1209,11 +1236,13 @@ let PRINT_CANDIDATES=[];
 let PRINT_SELECTED=new Set();
 let PRINT_LIST=[];
 function openPrintSelect(u,candidates){
+  pushNav();
   PRINT_CANDIDATES=candidates;
   PRINT_SELECTED=new Set(candidates.filter(t=>t.status!=="done").map(t=>t.id));
   VIEW="printselect"; renderPrintSelect(u);
 }
 function renderPrintSelect(u){
+  CURRENT_RENDER=()=>renderPrintSelect(u);
   $("app").innerHTML=`
   <div class="topbar"><h1>🖨 今日の分を印刷</h1><div class="who"><button class="linkbtn" id="back">← 戻る</button></div></div>
   <div class="card">
@@ -1225,13 +1254,14 @@ function renderPrintSelect(u){
       </label>`).join(""):'<div class="meta">対象のタスクはありません</div>'}
     <button class="btn" id="print-go" style="margin-top:16px">この内容で印刷プレビュー</button>
   </div>`;
-  $("back").onclick=()=>{VIEW="daily";renderDaily(u);};
+  $("back").onclick=()=>goBack(u);
   document.querySelectorAll(".print-chk").forEach(cb=>{
     cb.onchange=()=>{ if(cb.checked) PRINT_SELECTED.add(cb.dataset.ptask); else PRINT_SELECTED.delete(cb.dataset.ptask); };
   });
   $("print-go").onclick=()=>{
     const list=PRINT_CANDIDATES.filter(t=>PRINT_SELECTED.has(t.id));
     if(!list.length){ alert("1件以上選択してください"); return; }
+    pushNav();
     PRINT_LIST=list;
     VIEW="print"; renderPrintPreview(u);
   };
@@ -1251,6 +1281,7 @@ function printStepRowsHtml(g){
   }).join("");
 }
 function renderPrintPreview(u){
+  CURRENT_RENDER=()=>renderPrintPreview(u);
   $("app").innerHTML=`
   <div class="topbar no-print"><h1>🖨 印刷プレビュー</h1><div class="who"><button class="btn sm" id="doprint2">印刷する</button><button class="linkbtn" id="back">← 戻る</button></div></div>
   <div id="printarea">
@@ -1266,7 +1297,7 @@ function renderPrintPreview(u){
         </table>
       </div>`).join("")}
   </div>`;
-  $("back").onclick=()=>{VIEW="printselect";renderPrintSelect(u);};
+  $("back").onclick=()=>goBack(u);
   $("doprint2").onclick=()=>window.print();
 }
 
@@ -1279,14 +1310,15 @@ async function fetchTemplates(){
   TEMPLATES=(r.ok&&Array.isArray(r.body))?r.body:[];
 }
 function renderTemplates(u){
+  CURRENT_RENDER=()=>renderTemplates(u);
   $("app").innerHTML=`
   <div class="topbar"><h1>⚙️ テンプレート管理</h1><div class="who"><button class="linkbtn" id="back">← ボードへ戻る</button></div></div>
   <button class="btn sm" id="tpl-new" style="margin-bottom:14px">＋ 新しいテンプレート</button>
   <button class="linkbtn" id="tpl-csv" style="margin-bottom:14px;margin-left:8px">📤 CSV一括登録</button>
   <div id="tpl-list">${TEMPLATES.map(tplRowHtml).join("")||'<div class="card">テンプレートはまだありません</div>'}</div>`;
-  $("back").onclick=()=>{VIEW="board";renderBoard(u);};
+  $("back").onclick=()=>goBack(u);
   $("tpl-new").onclick=()=>openTplEdit(u,null);
-  $("tpl-csv").onclick=()=>{VIEW="csvimport";renderCsvImport(u);};
+  $("tpl-csv").onclick=()=>{pushNav(); VIEW="csvimport";renderCsvImport(u);};
   document.querySelectorAll("[data-tpledit]").forEach(b=>b.onclick=()=>openTplEdit(u,TEMPLATES.find(x=>x.id===b.dataset.tpledit)));
   document.querySelectorAll("[data-tpldel]").forEach(b=>b.onclick=async()=>{
     if(!confirm("このテンプレートを削除しますか？（生成済みのタスクは残ります）"))return;
@@ -1306,6 +1338,7 @@ function tplRowHtml(tpl){
   </div>`;
 }
 async function openTplEdit(u,tpl){
+  pushNav();
   TPL_EDIT=tpl?{...tpl}:null;
   if(tpl){
     const r=await authed(`/rest/v1/hq_task_template_steps?template_id=eq.${tpl.id}&order=sort_order`);
@@ -1363,6 +1396,7 @@ async function refreshTplStepAttach(stepId){
 }
 function renderTplEdit(u){
   const tpl=TPL_EDIT||{};
+  CURRENT_RENDER=((snapTpl,snapSteps)=>()=>{ TPL_EDIT=snapTpl; TPL_STEPS=snapSteps; renderTplEdit(u); })(TPL_EDIT,TPL_STEPS);
   $("app").innerHTML=`
   <div class="topbar"><h1>${tpl.id?"テンプレートを編集":"新しいテンプレート"}</h1><div class="who"><button class="linkbtn" id="back">← 一覧へ戻る</button></div></div>
   <div class="card">
@@ -1402,16 +1436,7 @@ function renderTplEdit(u){
         <label class="chipcheck"><input type="checkbox" id="tp-a0" ${tpl.alert_due!==false?"checked":""}> 当日</label>
         <label class="chipcheck"><input type="checkbox" id="tp-aod" ${tpl.alert_overdue_daily!==false?"checked":""}> 超過したら毎日</label>
       </div>
-      <label>宛先</label>
-      <select id="tp-recipient">
-        <option value="assignee" ${(!tpl.alert_recipient||tpl.alert_recipient==="assignee")?"selected":""}>工程の担当者</option>
-        <option value="creator" ${tpl.alert_recipient==="creator"?"selected":""}>作成者</option>
-      </select>
-      <div class="sec-sub" style="margin:10px 0 4px">手段</div>
-      <div class="chiprow">
-        <label class="chipcheck"><input type="checkbox" id="tp-cin" ${!tpl.alert_channels||tpl.alert_channels.includes("inapp")?"checked":""}> アプリ内</label>
-        <label class="chipcheck"><input type="checkbox" id="tp-clark" ${tpl.alert_channels&&tpl.alert_channels.includes("lark")?"checked":""}> Lark</label>
-      </div>
+      <div class="meta" style="margin-top:10px">宛先は工程の担当者（未定なら作成者）に自動で届きます。Lark・Chatwork等の送信先やアプリ内以外への通知は「🔔通知設定」の通知ルールで、法人・頻度・このテンプレ単位に絞って設定できます。</div>
     </div>
     <div class="sec"><h3>工程のひな形（毎日頻度なら子チェックとして使われます）</h3>
       <div id="tp-steps"></div>
@@ -1426,7 +1451,7 @@ function renderTplEdit(u){
     <button class="btn" id="tp-save" style="margin-top:16px">保存する</button>
     <div class="err" id="tp-msg"></div>
   </div>`;
-  $("back").onclick=()=>{VIEW="templates";renderTemplates(u);};
+  $("back").onclick=()=>goBack(u);
   $("tp-preview").onclick=()=>openTplPreview();
   $("tp-freq").onchange=e=>{
     $("tp-weeklywrap").style.display=e.target.value==="weekly"?"block":"none";
@@ -1454,9 +1479,13 @@ function renderTplSteps(){
         <select class="ts-storescope" style="width:auto;display:${s.store_scope?"inline-block":"none"}">
           <option value="active" ${s.store_scope==="active"?"selected":""}>直営店舗のみ</option>
           <option value="all" ${s.store_scope==="all"?"selected":""}>委託含む全店舗</option>
+          <option value="custom" ${s.store_scope==="custom"?"selected":""}>個別選択</option>
         </select>
         <label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" class="ts-binary" ${s.is_binary?"checked":""}> ⚖️ 2択（OK・異常あり）</label>
         <label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" class="ts-photo" ${s.requires_photo?"checked":""}> 📷 写真必須</label>
+      </div>
+      <div class="ts-storelist" style="display:${s.store_scope==="custom"?"block":"none"};width:100%;margin-top:6px;max-height:180px;overflow-y:auto;border:1px solid var(--line);border-radius:8px;padding:8px">
+        ${STORES.map(store=>`<label style="display:flex;align-items:center;gap:6px;padding:3px 0;cursor:pointer"><input type="checkbox" class="ts-storeid" value="${store.id}" ${(s.store_ids||[]).includes(store.id)?"checked":""}> ${esc(store.name)}${store.is_active?"":"（委託）"}</label>`).join("")||'<div class="meta">店舗マスタが登録されていません</div>'}
       </div>
       ${s.id?attachBoxHtml(`tstep-att-${s.id}`,s._links,s._photos,true):'<div class="meta" style="color:var(--muted);margin-top:8px">保存すると工程ごとにマニュアル・写真を追加できます</div>'}
     </div>`).join("");
@@ -1470,12 +1499,17 @@ function renderTplSteps(){
     const opts=row.querySelector(".ts-checkopts");
     const storeSplit=row.querySelector(".ts-storesplit");
     const storeScope=row.querySelector(".ts-storescope");
+    const storeList=row.querySelector(".ts-storelist");
+    const syncStoreList=()=>{ storeList.style.display=(storeSplit.checked&&storeScope.value==="custom")?"block":"none"; };
     isCheck.onchange=()=>{
       TPL_STEPS[i].kind=isCheck.checked?"check":"step"; opts.style.display=isCheck.checked?"flex":"none";
-      if(!isCheck.checked){ TPL_STEPS[i].store_scope=""; storeSplit.checked=false; storeScope.style.display="none"; }
+      if(!isCheck.checked){ TPL_STEPS[i].store_scope=""; storeSplit.checked=false; storeScope.style.display="none"; syncStoreList(); }
     };
-    storeSplit.onchange=()=>{ storeScope.style.display=storeSplit.checked?"inline-block":"none"; TPL_STEPS[i].store_scope=storeSplit.checked?storeScope.value:""; };
-    storeScope.onchange=()=>{ TPL_STEPS[i].store_scope=storeSplit.checked?storeScope.value:""; };
+    storeSplit.onchange=()=>{ storeScope.style.display=storeSplit.checked?"inline-block":"none"; TPL_STEPS[i].store_scope=storeSplit.checked?storeScope.value:""; syncStoreList(); };
+    storeScope.onchange=()=>{ TPL_STEPS[i].store_scope=storeSplit.checked?storeScope.value:""; syncStoreList(); };
+    row.querySelectorAll(".ts-storeid").forEach(cb=>{
+      cb.onchange=()=>{ TPL_STEPS[i].store_ids=[...row.querySelectorAll(".ts-storeid:checked")].map(x=>x.value); };
+    });
     row.querySelector(".ts-binary").onchange=e=>TPL_STEPS[i].is_binary=e.target.checked;
     row.querySelector(".ts-photo").onchange=e=>TPL_STEPS[i].requires_photo=e.target.checked;
   });
@@ -1491,6 +1525,7 @@ async function saveTemplate(u){
   if(!title){msg.textContent="タイトルを入力してください";return}
   const steps=TPL_STEPS.filter(s=>s.title.trim());
   if(!steps.length){msg.textContent="工程を1つ以上入力してください";return}
+  if(steps.some(s=>s.store_scope==="custom"&&!(s.store_ids&&s.store_ids.length))){msg.textContent="店舗を個別選択にした工程は、1店舗以上選んでください";return}
   const freq=$("tp-freq").value;
   const payload={
     title, corp:$("tp-corp").value, freq,
@@ -1502,8 +1537,6 @@ async function saveTemplate(u){
     description: $("tp-desc").value.trim()||null,
     visibility: $("tp-vis").value,
     alert_before3: $("tp-a3").checked, alert_before1: $("tp-a1").checked, alert_due: $("tp-a0").checked, alert_overdue_daily: $("tp-aod").checked,
-    alert_recipient: $("tp-recipient").value,
-    alert_channels: [$("tp-cin").checked?"inapp":null, $("tp-clark").checked?"lark":null].filter(Boolean),
     created_by: ME.id,
   };
   $("tp-save").disabled=true; msg.textContent="保存中…";
@@ -1525,7 +1558,7 @@ async function saveTemplate(u){
   }
   for(let i=0;i<steps.length;i++){
     const s=steps[i];
-    const body={template_id:tplId,title:s.title.trim(),assignee_id:s.assignee_id||null,offset_days:s.offset_days||0,due_time:s.due_time||null,sort_order:(i+1)*10,kind:s.kind||"step",store_scope:s.store_scope||null,is_binary:!!s.is_binary,requires_photo:!!s.requires_photo};
+    const body={template_id:tplId,title:s.title.trim(),assignee_id:s.assignee_id||null,offset_days:s.offset_days||0,due_time:s.due_time||null,sort_order:(i+1)*10,kind:s.kind||"step",store_scope:s.store_scope||null,store_ids:(s.store_scope==="custom"&&s.store_ids&&s.store_ids.length)?s.store_ids:null,is_binary:!!s.is_binary,requires_photo:!!s.requires_photo};
     if(s.id){
       await authed(`/rest/v1/hq_task_template_steps?id=eq.${s.id}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify(body)});
     } else {
@@ -1538,7 +1571,7 @@ async function saveTemplate(u){
     if(sel.length) await authed("/rest/v1/hq_task_members",{method:"POST",headers:{Prefer:"return=minimal"},body:JSON.stringify(sel.map(uid=>({template_id:tplId,user_id:uid})))});
   }
   await fetchTemplates();
-  VIEW="templates"; renderTemplates(u);
+  goBack(u);
 }
 
 /* ---------- C-6: テンプレのCSV一括登録 ---------- */
@@ -1644,6 +1677,7 @@ function validateCsvRows(rows){
 }
 let CSV_PARSED=null;
 function renderCsvImport(u){
+  CURRENT_RENDER=()=>renderCsvImport(u);
   $("app").innerHTML=`
   <div class="topbar"><h1>📤 テンプレのCSV一括登録</h1><div class="who"><button class="linkbtn" id="back">← テンプレ一覧へ</button></div></div>
   <div class="card">
@@ -1653,7 +1687,7 @@ function renderCsvImport(u){
     <input type="file" accept=".csv,text/csv" id="csv-file">
     <div id="csv-preview" style="margin-top:14px"></div>
   </div>`;
-  $("back").onclick=()=>{VIEW="templates";renderTemplates(u);};
+  $("back").onclick=()=>goBack(u);
   $("csv-dl").onclick=()=>downloadTextFile("hq_template_import_sample.csv",buildTemplateCsvSample());
   $("csv-file").onchange=async e=>{
     const f=e.target.files[0]; if(!f) return;
@@ -1698,7 +1732,7 @@ async function commitCsvImport(u){
   msg.className=fail?"err":"err msg-ok";
   msg.textContent=`完了: ${ok}件のテンプレートを作成しました${fail?`（${fail}件は失敗しました）`:""}`;
   btn.disabled=false;
-  setTimeout(()=>{ VIEW="templates"; renderTemplates(u); },1200);
+  setTimeout(()=>goBack(u),1200);
 }
 
 /* ---------- B-6: テンプレプレビュー（保存せず見た目だけ確認） ---------- */
@@ -1715,7 +1749,7 @@ function buildPreviewTask(){
   const steps=TPL_STEPS.filter(s=>s.title.trim()).map((s,i)=>{
     const step_due=addDays(today,s.offset_days||0);
     if(s.kind==="check" && s.store_scope){
-      const list=(s.store_scope==="all"?STORES:STORES.filter(x=>x.is_active));
+      const list=(s.store_scope==="custom"?STORES.filter(x=>(s.store_ids||[]).includes(x.id)):(s.store_scope==="all"?STORES:STORES.filter(x=>x.is_active)));
       return list.map((store,j)=>({id:`preview-${i}-${j}`,template_step_id:`preview-tpl-${i}`,title:s.title,assignee_id:s.assignee_id||null,due_date:step_due,due_time:s.due_time||null,sort_order:(i+1)*10,kind:s.kind,is_binary:!!s.is_binary,requires_photo:!!s.requires_photo,store_id:store.id,completed_at:null}));
     }
     return [{id:`preview-${i}`,template_step_id:null,title:s.title,assignee_id:s.assignee_id||null,due_date:step_due,due_time:s.due_time||null,sort_order:(i+1)*10,kind:s.kind||"step",is_binary:!!s.is_binary,requires_photo:!!s.requires_photo,store_id:null,completed_at:null}];
@@ -1826,6 +1860,7 @@ async function fetchNotifySettings(){
   NOTIFY_RULES=(r.ok&&Array.isArray(r.body))?r.body:[];
 }
 function renderNotify(u){
+  CURRENT_RENDER=()=>renderNotify(u);
   $("app").innerHTML=`
   <div class="topbar"><h1>🔔 通知設定</h1><div class="who"><button class="linkbtn" id="back">← ボードへ戻る</button></div></div>
   <div class="sec"><h3 style="margin-top:0">通知先チャンネル</h3>
@@ -1863,7 +1898,7 @@ function renderNotify(u){
       <div class="err" id="rl-msg"></div>
     </div>
   </div>`;
-  $("back").onclick=()=>{VIEW="board";renderBoard(u);};
+  $("back").onclick=()=>goBack(u);
   $("ch-kind").onchange=e=>{
     $("ch-urlwrap").style.display=e.target.value==="lark_webhook"?"block":"none";
     $("ch-roomwrap").style.display=e.target.value==="chatwork"?"block":"none";
@@ -1942,19 +1977,21 @@ async function fetchPastTasks(ym){
   PAST_TASKS=(r.ok&&Array.isArray(r.body))?r.body:[];
 }
 function renderPast(u){
+  CURRENT_RENDER=()=>renderPast(u);
   $("app").innerHTML=`
   <div class="topbar"><h1>📁 過去タスク</h1><div class="who"><button class="linkbtn" id="back">← ボードへ戻る</button></div></div>
   <div class="chiprow">${PAST_MONTHS.map(m=>`<span class="chip ${PAST_MONTH===m?'active':''}" data-month="${m}">${m.replace("-","年")}月</span>`).join("")||'<span class="meta">過去の完了タスクはまだありません</span>'}</div>
   <div class="board" style="display:block;margin-top:14px">
     ${PAST_TASKS.map(taskCardHtml).join("")||'<div class="card">この月の完了タスクはありません</div>'}
   </div>`;
-  $("back").onclick=()=>{VIEW="board";renderBoard(u);};
+  $("back").onclick=()=>goBack(u);
   document.querySelectorAll("[data-month]").forEach(c=>c.onclick=async()=>{ PAST_MONTH=c.dataset.month; $("app").innerHTML='<div class="spin">読み込み中…</div>'; await fetchPastTasks(PAST_MONTH); renderPast(u); });
   document.querySelectorAll("[data-open]").forEach(c=>c.onclick=()=>openDetail(c.dataset.open));
 }
 
 /* ---------- 法人管理 ---------- */
 function renderCorps(u){
+  CURRENT_RENDER=()=>renderCorps(u);
   $("app").innerHTML=`
   <div class="topbar"><h1>🏢 法人管理</h1><div class="who"><button class="linkbtn" id="back">← ボードへ戻る</button></div></div>
   <div class="card">
@@ -1969,7 +2006,7 @@ function renderCorps(u){
     </div>
     <div class="meta" style="margin-top:10px">非表示にした法人は新規作成時の選択肢から外れますが、既存タスクの表示・絞り込みには残ります。</div>
   </div>`;
-  $("back").onclick=()=>{VIEW="board";renderBoard(u);};
+  $("back").onclick=()=>goBack(u);
   document.querySelectorAll("[data-corptoggle]").forEach(b=>b.onclick=async()=>{
     const c=CORPS.find(x=>x.id===b.dataset.corptoggle);
     await authed(`/rest/v1/hq_corps?id=eq.${c.id}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({is_active:!c.is_active})});
@@ -2023,8 +2060,8 @@ main();
     const dx=t.clientX-sx, dy=t.clientY-sy;
     if(dx>=60 && Math.abs(dy)<40){
       tracking=false;
-      const backBtn=document.getElementById("back");
-      if(backBtn) backBtn.click();
+      const backBtn=document.getElementById("back")||document.getElementById("back0");
+      if(backBtn) backBtn.click(); else goBack(ME);
     }
   },{passive:true});
   document.addEventListener("touchend",()=>{ tracking=false; },{passive:true});
