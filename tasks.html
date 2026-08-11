@@ -243,7 +243,7 @@ function computeSignal(t){
 
 /* ---------- データ取得 ---------- */
 async function fetchUsers(){
-  const r=await authed("/rest/v1/users?select=id,name,role,is_active,is_master&is_active=eq.true&order=name");
+  const r=await authed("/rest/v1/users?select=id,name,email,role,is_active,is_master&is_active=eq.true&order=name");
   USERS=(r.ok&&Array.isArray(r.body))?r.body:[];
 }
 const assignableUsers=()=>USERS.filter(u=>ASSIGNABLE_ROLES.includes(u.role));
@@ -1267,9 +1267,11 @@ function renderTemplates(u){
   $("app").innerHTML=`
   <div class="topbar"><h1>⚙️ テンプレート管理</h1><div class="who"><button class="linkbtn" id="back">← ボードへ戻る</button></div></div>
   <button class="btn sm" id="tpl-new" style="margin-bottom:14px">＋ 新しいテンプレート</button>
+  <button class="linkbtn" id="tpl-csv" style="margin-bottom:14px;margin-left:8px">📤 CSV一括登録</button>
   <div id="tpl-list">${TEMPLATES.map(tplRowHtml).join("")||'<div class="card">テンプレートはまだありません</div>'}</div>`;
   $("back").onclick=()=>{VIEW="board";renderBoard(u);};
   $("tpl-new").onclick=()=>openTplEdit(u,null);
+  $("tpl-csv").onclick=()=>{VIEW="csvimport";renderCsvImport(u);};
   document.querySelectorAll("[data-tpledit]").forEach(b=>b.onclick=()=>openTplEdit(u,TEMPLATES.find(x=>x.id===b.dataset.tpledit)));
   document.querySelectorAll("[data-tpldel]").forEach(b=>b.onclick=async()=>{
     if(!confirm("このテンプレートを削除しますか？（生成済みのタスクは残ります）"))return;
@@ -1522,6 +1524,166 @@ async function saveTemplate(u){
   }
   await fetchTemplates();
   VIEW="templates"; renderTemplates(u);
+}
+
+/* ---------- C-6: テンプレのCSV一括登録 ---------- */
+const CSV_HEADERS=["行種別","タイトル","頻度","曜日/日","法人","担当メール","期限オフセット","時刻","注意事項","公開範囲"];
+const CSV_WEEKDOW={"日":0,"月":1,"火":2,"水":3,"木":4,"金":5,"土":6};
+const CSV_FREQ={"毎日":"daily","毎週":"weekly","毎月":"monthly"};
+function csvEscape(v){
+  const s=String(v??"");
+  return /[",\n]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s;
+}
+function buildTemplateCsvSample(){
+  const rows=[CSV_HEADERS,
+    ["template","入金確認（毎日）","毎日","","N-Style","","0","18:00","レジ締め後に確認","全員"],
+    ["step","レジ金額の入力","","","","tanaka@example.com","0","18:00","",""],
+    ["step","差異チェック","","","","","0","18:30","",""],
+    ["template","月次精算（毎月1日）","毎月","1","LiveGate","","3","","","全員"],
+    ["step","経費集計","","","","suzuki@example.com","3","",""],
+  ];
+  return rows.map(r=>r.map(csvEscape).join(",")).join("\r\n");
+}
+function downloadTextFile(filename,text,mime){
+  const blob=new Blob(["﻿"+text],{type:(mime||"text/csv")+";charset=utf-8"});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement("a");
+  a.href=url; a.download=filename; document.body.appendChild(a); a.click();
+  document.body.removeChild(a); URL.revokeObjectURL(url);
+}
+function parseCsv(text){
+  const rows=[]; let row=[]; let field=""; let inQuotes=false;
+  const s=text.replace(/^﻿/,"");
+  for(let i=0;i<s.length;i++){
+    const c=s[i];
+    if(inQuotes){
+      if(c==='"'){ if(s[i+1]==='"'){ field+='"'; i++; } else inQuotes=false; }
+      else field+=c;
+    } else {
+      if(c==='"') inQuotes=true;
+      else if(c===","){ row.push(field); field=""; }
+      else if(c==="\n"){ row.push(field); rows.push(row); row=[]; field=""; }
+      else if(c==="\r"){ /* skip, \n handles the break */ }
+      else field+=c;
+    }
+  }
+  if(field.length||row.length){ row.push(field); rows.push(row); }
+  return rows.filter(r=>r.some(v=>v.trim()!==""));
+}
+function validateCsvRows(rows){
+  if(!rows.length) return {templates:[],errors:[{line:0,reason:"データがありません"}]};
+  const header=rows[0].map(h=>h.trim());
+  const idx=name=>header.indexOf(name);
+  const need=["行種別","タイトル"];
+  for(const n of need){ if(idx(n)<0) return {templates:[],errors:[{line:1,reason:`列「${n}」が見つかりません（雛形CSVの列名を変更しないでください）`}]}; }
+  const col={kind:idx("行種別"),title:idx("タイトル"),freq:idx("頻度"),dow:idx("曜日/日"),corp:idx("法人"),email:idx("担当メール"),offset:idx("期限オフセット"),time:idx("時刻"),notes:idx("注意事項"),vis:idx("公開範囲")};
+  const templates=[]; const errors=[]; let cur=null;
+  for(let i=1;i<rows.length;i++){
+    const r=rows[i]; const line=i+1;
+    const kind=(r[col.kind]||"").trim();
+    const title=(r[col.title]||"").trim();
+    if(!kind){ continue; }
+    if(kind==="template"){
+      if(!title){ errors.push({line,reason:"タイトルが空です"}); cur=null; continue; }
+      const freqRaw=(r[col.freq]||"").trim();
+      const freq=CSV_FREQ[freqRaw]||(["daily","weekly","monthly"].includes(freqRaw)?freqRaw:null);
+      if(!freq){ errors.push({line,reason:`頻度「${freqRaw}」は毎日／毎週／毎月のいずれかで指定してください`}); cur=null; continue; }
+      const corp=(r[col.corp]||"").trim();
+      if(!activeCorps().some(c=>c.name===corp)){ errors.push({line,reason:`法人「${corp}」が見つかりません（法人管理で有効な法人名を指定してください）`}); cur=null; continue; }
+      let weekly_dow=null, monthly_dom=null;
+      const dowRaw=(r[col.dow]||"").trim();
+      if(freq==="weekly"){
+        weekly_dow=CSV_WEEKDOW[dowRaw]??(/^[0-6]$/.test(dowRaw)?+dowRaw:null);
+        if(weekly_dow===null){ errors.push({line,reason:`毎週テンプレには「曜日/日」に日〜土 または 0〜6 を指定してください`}); cur=null; continue; }
+      } else if(freq==="monthly"){
+        monthly_dom=/^\d+$/.test(dowRaw)?+dowRaw:null;
+        if(!monthly_dom||monthly_dom<1||monthly_dom>31){ errors.push({line,reason:`毎月テンプレには「曜日/日」に1〜31の日付を指定してください`}); cur=null; continue; }
+      }
+      const visRaw=(r[col.vis]||"").trim();
+      const visibility=(visRaw==="指定"||visRaw==="members")?"members":"all";
+      cur={line,title,corp,freq,weekly_dow,monthly_dom,
+        due_offset_days:+((r[col.offset]||"0").trim())||0,
+        due_time:(r[col.time]||"").trim()||null,
+        notes:(r[col.notes]||"").trim(),
+        visibility,
+        steps:[]};
+      templates.push(cur);
+    } else if(kind==="step"){
+      if(!cur){ errors.push({line,reason:"この工程行より前にテンプレート行（行種別=template）が必要です"}); continue; }
+      if(!title){ errors.push({line,reason:"工程のタイトルが空です"}); continue; }
+      const emailRaw=(r[col.email]||"").trim();
+      let assignee_id=null;
+      if(emailRaw){
+        const usr=USERS.find(x=>(x.email||"").toLowerCase()===emailRaw.toLowerCase());
+        if(!usr){ errors.push({line,reason:`担当メール「${emailRaw}」に一致する本部メンバーが見つかりません`}); continue; }
+        if(!ASSIGNABLE_ROLES.includes(usr.role)){ errors.push({line,reason:`担当メール「${emailRaw}」は本部・社長・チーム長以外のため指定できません`}); continue; }
+        assignee_id=usr.id;
+      }
+      cur.steps.push({line,title,assignee_id,offset_days:+((r[col.offset]||"0").trim())||0,due_time:(r[col.time]||"").trim()||null});
+    } else {
+      errors.push({line,reason:`行種別「${kind}」はtemplateまたはstepで指定してください`});
+    }
+  }
+  templates.forEach(t=>{ if(!t.steps.length) errors.push({line:t.line,reason:`テンプレート「${t.title}」に工程行がありません（1件以上必要）`}); });
+  return {templates:templates.filter(t=>t.steps.length),errors};
+}
+let CSV_PARSED=null;
+function renderCsvImport(u){
+  $("app").innerHTML=`
+  <div class="topbar"><h1>📤 テンプレのCSV一括登録</h1><div class="who"><button class="linkbtn" id="back">← テンプレ一覧へ</button></div></div>
+  <div class="card">
+    <div class="meta" style="margin-bottom:10px">①雛形CSVをダウンロード → ②Excel等で編集 → ③このページにアップロードして内容を確認 → ④取り込む、の順で使います。</div>
+    <button class="btn sm" id="csv-dl">雛形CSVをダウンロード</button>
+    <label style="margin-top:16px">編集したCSVを選択</label>
+    <input type="file" accept=".csv,text/csv" id="csv-file">
+    <div id="csv-preview" style="margin-top:14px"></div>
+  </div>`;
+  $("back").onclick=()=>{VIEW="templates";renderTemplates(u);};
+  $("csv-dl").onclick=()=>downloadTextFile("hq_template_import_sample.csv",buildTemplateCsvSample());
+  $("csv-file").onchange=async e=>{
+    const f=e.target.files[0]; if(!f) return;
+    const text=await f.text();
+    const rows=parseCsv(text);
+    CSV_PARSED=validateCsvRows(rows);
+    renderCsvPreview(u);
+  };
+}
+function renderCsvPreview(u){
+  const box=$("csv-preview"); if(!box) return;
+  const {templates,errors}=CSV_PARSED;
+  const stepCount=templates.reduce((n,t)=>n+t.steps.length,0);
+  box.innerHTML=`
+    <div class="notes-box" style="margin-bottom:10px">✅ ${templates.length}件のテンプレート・${stepCount}件の工程を作成します</div>
+    ${errors.length?`<div class="err" style="white-space:pre-line;margin-bottom:10px">⚠️ 取り込めない行が${errors.length}件あります（該当行はスキップされます）\n${errors.map(e=>`${e.line}行目: ${e.reason}`).join("\n")}</div>`:""}
+    ${templates.length?templates.map(t=>`<div class="card" style="margin-bottom:8px">
+      <div style="font-weight:600">${esc(t.title)}<span class="tag" style="margin-left:6px">${esc(t.corp)}</span></div>
+      <div class="meta">${FREQ_LABEL[t.freq]}／工程${t.steps.length}件</div>
+    </div>`).join(""):""}
+    ${templates.length?`<button class="btn" id="csv-commit" style="margin-top:8px">この内容で取り込む</button>`:""}
+    <div class="err" id="csv-msg"></div>`;
+  if($("csv-commit")) $("csv-commit").onclick=()=>commitCsvImport(u);
+}
+async function commitCsvImport(u){
+  const msg=$("csv-msg"); msg.className="err"; msg.textContent="取り込み中…";
+  const btn=$("csv-commit"); btn.disabled=true;
+  let ok=0,fail=0;
+  for(const t of CSV_PARSED.templates){
+    const r=await authed("/rest/v1/hq_task_templates",{method:"POST",headers:{Prefer:"return=representation"},body:JSON.stringify({
+      title:t.title,corp:t.corp,freq:t.freq,weekly_dow:t.weekly_dow,monthly_dom:t.monthly_dom,
+      due_offset_days:t.due_offset_days,due_time:t.due_time,notes:t.notes,visibility:t.visibility,created_by:ME.id
+    })});
+    if(!r.ok||!r.body||!r.body[0]){ fail++; continue; }
+    const tplId=r.body[0].id;
+    const sr=await authed("/rest/v1/hq_task_template_steps",{method:"POST",headers:{Prefer:"return=minimal"},body:JSON.stringify(
+      t.steps.map((s,i)=>({template_id:tplId,title:s.title,assignee_id:s.assignee_id,offset_days:s.offset_days,due_time:s.due_time,sort_order:(i+1)*10,kind:"step"}))
+    )});
+    if(sr.ok) ok++; else fail++;
+  }
+  await fetchTemplates();
+  msg.className=fail?"err":"err msg-ok";
+  msg.textContent=`完了: ${ok}件のテンプレートを作成しました${fail?`（${fail}件は失敗しました）`:""}`;
+  btn.disabled=false;
+  setTimeout(()=>{ VIEW="templates"; renderTemplates(u); },1200);
 }
 
 /* ---------- B-6: テンプレプレビュー（保存せず見た目だけ確認） ---------- */
