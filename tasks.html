@@ -25,6 +25,7 @@ a{color:inherit}
 label{display:block;font-size:13px;color:var(--muted);margin:12px 0 4px}
 input,select,textarea{width:100%;padding:10px 12px;font-size:15px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);font-family:inherit}
 textarea{resize:vertical}
+.btn,.linkbtn,.chip,button{touch-action:manipulation}
 .btn{display:inline-block;padding:10px 18px;font-size:14px;font-weight:600;color:#fff;background:var(--accent);border:none;border-radius:8px;cursor:pointer}
 .btn:hover{background:var(--accent2)}
 .btn:disabled{opacity:.5;cursor:default}
@@ -1054,7 +1055,7 @@ function renderDaily(u){
   const today=todayStr();
   const todays=DAILY_TASKS.filter(t=>t.target_date===today);
   const pastDue=DAILY_TASKS.filter(t=>t.target_date<today && t.status!=="done");
-  const visible=t=>!DAILY_MINE || sortedSteps(t).some(s=>s.assignee_id===u.id) || t.created_by===u.id;
+  const visible=t=>!DAILY_MINE || sortedSteps(t).some(s=>s.assignee_id===u.id);
   const todaysV=todays.filter(visible), pastV=pastDue.filter(visible);
   const doneCount=todaysV.filter(t=>t.status==="done").length;
   const d=new Date(today+"T00:00:00");
@@ -1235,6 +1236,20 @@ function renderPrintSelect(u){
     VIEW="print"; renderPrintPreview(u);
   };
 }
+function printStepRowsHtml(g){
+  if(!g.isGroup){
+    const s=g.rows[0];
+    return `<tr><td>${esc(s.title)}</td><td>${esc(userName(s.assignee_id)||"—")}</td><td>${fmtDD(s.due_date,s.due_time)}</td><td class="chk">□</td></tr>`;
+  }
+  const sorted=g.rows.slice().sort((a,b)=>{
+    const sa=STORES.find(x=>x.id===a.store_id), sb=STORES.find(x=>x.id===b.store_id);
+    return (sa?sa.store_no:"").localeCompare(sb?sb.store_no:"");
+  });
+  return sorted.map(s=>{
+    const store=STORES.find(x=>x.id===s.store_id); const name=store?store.name:"店舗";
+    return `<tr><td>${esc(s.title)}（${esc(name)}）</td><td>${esc(userName(s.assignee_id)||"—")}</td><td>${fmtDD(s.due_date,s.due_time)}</td><td class="chk">□</td></tr>`;
+  }).join("");
+}
 function renderPrintPreview(u){
   $("app").innerHTML=`
   <div class="topbar no-print"><h1>🖨 印刷プレビュー</h1><div class="who"><button class="btn sm" id="doprint2">印刷する</button><button class="linkbtn" id="back">← 戻る</button></div></div>
@@ -1246,7 +1261,7 @@ function renderPrintPreview(u){
         <table class="print-table">
           <thead><tr><th>工程</th><th>担当</th><th>期限</th><th>チェック</th></tr></thead>
           <tbody>
-            ${sortedSteps(t).map(s=>`<tr><td>${esc(s.title)}</td><td>${esc(userName(s.assignee_id)||"—")}</td><td>${fmtDD(s.due_date,s.due_time)}</td><td class="chk">□</td></tr>`).join("")||`<tr><td colspan="4">工程なし</td></tr>`}
+            ${groupStoreSteps(sortedSteps(t)).map(printStepRowsHtml).join("")||`<tr><td colspan="4">工程なし</td></tr>`}
           </tbody>
         </table>
       </div>`).join("")}
