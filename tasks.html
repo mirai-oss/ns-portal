@@ -210,7 +210,7 @@ let OPEN_STEP=null;       // 詳細画面で開いている工程id
 let NOTIFICATIONS=[];     // アプリ内通知（自分宛）
 let NOTIF_UNREAD=0;
 let BELL_OPEN=false;
-let MY_CHATWORK=null;      // 自分のChatworkアカウントID（登録済みなら）
+let MY_CHATWORK=null;      // 自分のChatwork設定 {account_id, room_id}（登録済みなら）
 const qs=new URLSearchParams(location.search);
 
 const isMaster=u=>!!(u&&u.is_master);
@@ -1736,17 +1736,19 @@ async function fetchNotifications(){
   NOTIF_UNREAD=NOTIFICATIONS.filter(n=>!n.read_at).length;
 }
 async function fetchMyChatwork(){
-  const r=await authed(`/rest/v1/hq_user_chatwork?user_id=eq.${ME.id}&select=account_id`);
-  MY_CHATWORK=(r.ok&&Array.isArray(r.body)&&r.body[0])?r.body[0].account_id:null;
+  const r=await authed(`/rest/v1/hq_user_chatwork?user_id=eq.${ME.id}&select=account_id,room_id`);
+  MY_CHATWORK=(r.ok&&Array.isArray(r.body)&&r.body[0])?r.body[0]:null;
 }
 function openMyChatworkModal(u){
   const modal=document.createElement("div");
   modal.id="cwModal";
   modal.style.cssText="position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:1000;display:flex;align-items:center;justify-content:center;padding:20px";
   modal.innerHTML=`<div class="card" style="max-width:360px;width:100%">
-    <div class="topbar" style="margin-bottom:8px"><h1 style="font-size:16px">🟢 自分のChatwork ID</h1><button class="linkbtn" id="cwclose">×</button></div>
-    <div class="sec-sub" style="margin-bottom:8px">@メンションされたときにChatworkでも[To:あなた]で届くようにする任意設定です。</div>
-    <label>Chatworkアカウント ID</label><input id="cw-id" placeholder="例: 1234567" value="${esc(MY_CHATWORK||"")}">
+    <div class="topbar" style="margin-bottom:8px"><h1 style="font-size:16px">🟢 自分のChatwork通知設定</h1><button class="linkbtn" id="cwclose">×</button></div>
+    <div class="sec-sub" style="margin-bottom:8px">個人通知ルームIDを設定すると、あなた宛ての通知（メンション・期限アラート等）が、あなた専用のChatworkルームに他の人には見えない形で届きます。</div>
+    <label>個人通知ルームID（Botとの専用チャットのルームID）</label><input id="cw-room" placeholder="例: 123456789" value="${esc((MY_CHATWORK&&MY_CHATWORK.room_id)||"")}">
+    <div class="sec-sub" style="margin:12px 0 8px">共有ルームで@メンションされたときに[To:あなた]と表示させたい場合（任意・上記と別設定）</div>
+    <label>Chatworkアカウント ID</label><input id="cw-id" placeholder="例: 1234567" value="${esc((MY_CHATWORK&&MY_CHATWORK.account_id)||"")}">
     <button class="btn sm" style="margin-top:8px" id="cw-save">保存</button>
     <div class="err" id="cw-msg"></div>
   </div>`;
@@ -1755,10 +1757,11 @@ function openMyChatworkModal(u){
   modal.onclick=e=>{ if(e.target===modal) modal.remove(); };
   $("cw-save").onclick=async()=>{
     const id=$("cw-id").value.trim();
+    const roomId=$("cw-room").value.trim();
     const msg=$("cw-msg"); msg.textContent="保存中…";
-    const r=await authed("/rest/v1/hq_user_chatwork",{method:"POST",headers:{Prefer:"resolution=merge-duplicates,return=minimal"},body:JSON.stringify({user_id:u.id,account_id:id,updated_at:new Date().toISOString()})});
+    const r=await authed("/rest/v1/hq_user_chatwork",{method:"POST",headers:{Prefer:"resolution=merge-duplicates,return=minimal"},body:JSON.stringify({user_id:u.id,account_id:id||null,room_id:roomId||null,updated_at:new Date().toISOString()})});
     if(!r.ok){ msg.textContent="保存できませんでした"; return; }
-    MY_CHATWORK=id; modal.remove();
+    MY_CHATWORK={account_id:id||null,room_id:roomId||null}; modal.remove();
   };
 }
 async function markNotificationsRead(){
@@ -1822,10 +1825,12 @@ function renderNotify(u){
       <div class="err" id="ch-msg"></div>
     </div>
   </div>
-  <div class="sec"><h3>💬 自分のChatwork ID（メンション用）</h3>
+  <div class="sec"><h3>💬 自分のChatwork通知設定</h3>
     <div class="card">
-      <div class="sec-sub" style="margin-bottom:8px">登録しておくと、あなたが@メンションされたときにChatwork側でも[To:あなた]として届きます（本部タスクGrなどへの通知に含まれます）。</div>
-      <label>Chatworkアカウント ID</label><input id="mycw-id" placeholder="例: 1234567" value="${esc(MY_CHATWORK||"")}">
+      <div class="sec-sub" style="margin-bottom:8px">個人通知ルームIDを設定すると、あなた宛ての通知（メンション・期限アラート等）が、あなた専用のChatworkルームに他の人には見えない形で届きます。</div>
+      <label>個人通知ルームID（Botとの専用チャットのルームID）</label><input id="mycw-room" placeholder="例: 123456789" value="${esc((MY_CHATWORK&&MY_CHATWORK.room_id)||"")}">
+      <div class="sec-sub" style="margin:12px 0 8px">共有ルームで@メンションされたときに[To:あなた]と表示させたい場合（任意・上記と別設定）</div>
+      <label>Chatworkアカウント ID</label><input id="mycw-id" placeholder="例: 1234567" value="${esc((MY_CHATWORK&&MY_CHATWORK.account_id)||"")}">
       <button class="btn sm" style="margin-top:8px" id="mycw-save">保存</button>
       <div class="err" id="mycw-msg"></div>
     </div>
@@ -1866,10 +1871,11 @@ function renderNotify(u){
   });
   if($("mycw-save")) $("mycw-save").onclick=async()=>{
     const id=$("mycw-id").value.trim();
+    const roomId=$("mycw-room").value.trim();
     const msg=$("mycw-msg"); msg.textContent="保存中…";
-    const r=await authed("/rest/v1/hq_user_chatwork",{method:"POST",headers:{Prefer:"resolution=merge-duplicates,return=minimal"},body:JSON.stringify({user_id:u.id,account_id:id,updated_at:new Date().toISOString()})});
+    const r=await authed("/rest/v1/hq_user_chatwork",{method:"POST",headers:{Prefer:"resolution=merge-duplicates,return=minimal"},body:JSON.stringify({user_id:u.id,account_id:id||null,room_id:roomId||null,updated_at:new Date().toISOString()})});
     if(!r.ok){ msg.textContent="保存できませんでした"; return; }
-    MY_CHATWORK=id; msg.className="err msg-ok"; msg.textContent="保存しました";
+    MY_CHATWORK={account_id:id||null,room_id:roomId||null}; msg.className="err msg-ok"; msg.textContent="保存しました";
   };
   $("rl-add").onclick=async()=>{
     const name=$("rl-name").value.trim();
