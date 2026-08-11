@@ -193,11 +193,29 @@ let ME=null, USERS=[], STORES=[];
 let VIEW="board";        // board | repeat | detail | new
 let NAV_STACK=[];        // 戻る操作用の画面履歴（各要素は「その画面を再表示する」関数）
 let CURRENT_RENDER=()=>renderBoard(ME);  // 現在表示中の画面を再描画する関数（次の画面へ進む直前にNAV_STACKへ積む）
-function pushNav(){ NAV_STACK.push(CURRENT_RENDER); }
-function goBack(u){
-  const prev=NAV_STACK.pop();
-  if(prev){ prev(); } else { VIEW="board"; CUR_TASK=null; history.replaceState(null,"","tasks.html"); renderBoard(u); }
+// 画面遷移はブラウザ履歴(pushState)と1対1に対応させる。
+// これをやらないと、端末の戻るボタン・画面端スワイプ（OS標準の戻る操作）が
+// tasks.html自体を離れてしまい、ポータル(index.html)まで一気に戻ってしまう。
+// 実際の再描画はpopstateハンドラ1本に集約し、アプリ内の「← 戻る」も
+// goBack()→history.back()→popstate という同じ経路を通す。
+function pushNav(url){
+  NAV_STACK.push(CURRENT_RENDER);
+  try{ history.pushState({hqNav:NAV_STACK.length},"",url||"tasks.html"); }catch(e){}
 }
+function goBack(u){
+  if(NAV_STACK.length){ history.back(); return; }
+  VIEW="board"; CUR_TASK=null;
+  try{ history.replaceState({hqNav:0},"","tasks.html"); }catch(e){}
+  renderBoard(u||ME);
+}
+window.addEventListener("popstate",e=>{
+  const depth=(e.state&&typeof e.state.hqNav==="number")?e.state.hqNav:0;
+  let fn=null;
+  while(NAV_STACK.length>depth) fn=NAV_STACK.pop();
+  if(!fn) return;                    // 「進む」方向など、再現できない遷移は現在画面を維持
+  if(!NAV_STACK.length) CUR_TASK=null;
+  fn();
+});
 let TASKS=[];             // ボード表示範囲のタスク（工程埋め込み）
 let SEARCHQ="";
 let SEARCH_RESULTS=null;  // 検索中はこちらを表示
@@ -222,16 +240,31 @@ let NOTIFICATIONS=[];     // アプリ内通知（自分宛）
 let NOTIF_UNREAD=0;
 let BELL_OPEN=false;
 let MY_CHATWORK=null;      // 自分のChatwork設定 {account_id, room_id}（登録済みなら）
+let FEATURE_PERMS={};      // hq_feature_permissions {feature: min_level}（マスターが権限設定画面で変更）
 const qs=new URLSearchParams(location.search);
 
 const isMaster=u=>!!(u&&u.is_master);
 const canManage=u=>!!(u&&(u.is_master||u.role==="CEO"||u.role==="HQ"));
+// 機能ごとの利用可否。min_levelは master / manage（＝マスター・社長・本部） / team（＝＋チーム長）。
+// 未登録の機能は従来どおり manage 扱い。表示制御はここ、実際の強制はDB側のRLS（hq_feature_allowed）。
+const FEATURE_LABEL={templates:"⚙️ テンプレート管理",newtask:"＋ タスク追加",notify:"🔔 通知設定",corps:"🏢 法人管理"};
+const LEVEL_LABEL={master:"マスターのみ",manage:"マスター・社長・本部",team:"マスター・社長・本部・チーム長"};
+function canFeature(u,key){
+  if(!u) return false;
+  const lv=FEATURE_PERMS[key]||"manage";
+  if(lv==="master") return isMaster(u);
+  if(lv==="team") return !!(u.is_master||["CEO","HQ","TEAM"].includes(u.role));
+  return canManage(u);
+}
 const userName=id=>{const u=USERS.find(x=>x.id===id);return u?u.name:"—";};
 function todayStr(){const d=new Date();return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0");}
 function monthStartStr(){const d=new Date();return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-01";}
 function fmtD(d){ if(!d) return "—"; const t=new Date(d+"T00:00:00"); return `${t.getMonth()+1}/${t.getDate()}`; }
 function fmtDD(d,tm){ if(!d) return "—"; const base=fmtD(d); return tm?`${base} ${tm.slice(0,5)}`:base; }
 function fmtDT(t){ if(!t) return "—"; const d=new Date(t); return `${d.getMonth()+1}/${d.getDate()} ${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`; }
+function ymd(d){ return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0"); }
+function addDaysStr(base,n){ const d=new Date(base+"T00:00:00"); d.setDate(d.getDate()+(+n||0)); return ymd(d); }
+function diffDaysStr(from,to){ return Math.round((new Date(to+"T00:00:00")-new Date(from+"T00:00:00"))/86400000); }
 
 /* ---------- 工程・信号の判定（設計書 第5章） ---------- */
 function sortedSteps(t){ return (t.hq_task_steps||[]).slice().sort((a,b)=>a.sort_order-b.sort_order); }
@@ -265,6 +298,11 @@ async function fetchStores(){
 async function fetchCorps(){
   const r=await authed("/rest/v1/hq_corps?select=*&order=sort_order");
   CORPS=(r.ok&&Array.isArray(r.body))?r.body:[];
+}
+async function fetchFeaturePerms(){
+  const r=await authed("/rest/v1/hq_feature_permissions?select=feature,min_level");
+  FEATURE_PERMS={};
+  if(r.ok&&Array.isArray(r.body)) r.body.forEach(x=>{ FEATURE_PERMS[x.feature]=x.min_level; });
 }
 async function fetchBoard(){
   const ms=monthStartStr();
@@ -423,10 +461,11 @@ function renderBoard(u){
       <button class="linkbtn" id="godaily">📆 今日の毎日タスク →</button>
       <button class="linkbtn" id="gorepeat">🔁 繰り返しタブ →</button>
       <button class="linkbtn" id="gopast">📁 過去タスク →</button>
-      ${canManage(u)?`<button class="linkbtn" id="gotpl">⚙️ テンプレート管理</button>`:""}
-      ${canManage(u)?`<button class="linkbtn" id="gonotify">🔔 通知設定</button>`:""}
-      ${canManage(u)?`<button class="linkbtn" id="gocorps">🏢 法人管理</button>`:""}
-      ${canManage(u)?`<button class="btn sm" id="newtask">＋ 単発タスク作成</button>`:""}
+      ${canFeature(u,"templates")?`<button class="linkbtn" id="gotpl">⚙️ テンプレート管理</button>`:""}
+      ${canFeature(u,"notify")?`<button class="linkbtn" id="gonotify">🔔 通知設定</button>`:""}
+      ${canFeature(u,"corps")?`<button class="linkbtn" id="gocorps">🏢 法人管理</button>`:""}
+      ${isMaster(u)?`<button class="linkbtn" id="goperms">🔑 権限設定</button>`:""}
+      ${canFeature(u,"newtask")?`<button class="btn sm" id="newtask">＋ タスク追加</button>`:""}
     </div>
   </div>
   ${SEARCH_RESULTS!==null?`<div class="card" style="margin:10px 0"><b>検索結果: ${list.length}件</b> <button class="linkbtn" id="clearsearch">検索をやめる</button></div>`:""}
@@ -452,6 +491,7 @@ function wireBoard(u){
   if($("gopast"))$("gopast").onclick=async()=>{pushNav(); VIEW="past"; $("app").innerHTML='<div class="spin">読み込み中…</div>'; await fetchPastMonths(); renderPast(u);};
   if($("gonotify"))$("gonotify").onclick=async()=>{pushNav(); VIEW="notify"; $("app").innerHTML='<div class="spin">読み込み中…</div>'; await fetchNotifySettings(); renderNotify(u);};
   if($("gocorps"))$("gocorps").onclick=()=>{pushNav(); VIEW="corps";renderCorps(u);};
+  if($("goperms"))$("goperms").onclick=()=>{pushNav(); VIEW="perms";renderPerms(u);};
   if($("mycwbtn"))$("mycwbtn").onclick=()=>openMyChatworkModal(u);
   document.querySelectorAll("[data-corp]").forEach(c=>c.onclick=()=>{FILTER.corp=c.dataset.corp||null;renderBoard(u);});
   document.querySelectorAll("[data-freq]").forEach(c=>c.onclick=()=>{FILTER.freq=c.dataset.freq||null;renderBoard(u);});
@@ -465,7 +505,7 @@ function wireBoard(u){
   $("gorepeat").onclick=()=>{pushNav(); VIEW="repeat";renderRepeat(u);};
   $("godaily").onclick=async()=>{pushNav(); VIEW="daily"; $("app").innerHTML='<div class="spin">読み込み中…</div>'; await fetchDaily(); renderDaily(u);};
   if($("gotpl"))$("gotpl").onclick=async()=>{pushNav(); VIEW="templates"; $("app").innerHTML='<div class="spin">読み込み中…</div>'; await fetchTemplates(); renderTemplates(u);};
-  if($("newtask"))$("newtask").onclick=()=>{pushNav(); VIEW="new";renderNew(u);};
+  if($("newtask"))$("newtask").onclick=()=>{pushNav(); VIEW="addtask";renderAddTask(u);};
 }
 
 /* ---------- 繰り返しタブ ---------- */
@@ -473,7 +513,7 @@ function renderRepeat(u){
   CURRENT_RENDER=()=>renderRepeat(u);
   const list=TASKS.filter(t=>t.freq!=="once");
   $("app").innerHTML=`
-  <div class="topbar"><h1>🔁 繰り返し（今月）</h1><div class="who"><button class="linkbtn" id="back">← ボードへ戻る</button></div></div>
+  <div class="topbar"><h1>🔁 繰り返し（今月）</h1><div class="who"><button class="linkbtn" id="back">← 戻る</button></div></div>
   <div class="card"><div class="pm-scroll" style="overflow-x:auto">
   <table class="rp-table"><tr><th>タスク</th><th>法人</th><th>対象日</th><th>進捗</th><th>いま誰の番</th><th>期限</th><th>状態</th></tr>
   ${list.map(t=>{
@@ -492,10 +532,9 @@ function renderRepeat(u){
 
 /* ---------- タスク詳細 ---------- */
 async function openDetail(id){
-  pushNav();
+  pushNav("tasks.html?task="+id);
   VIEW="detail"; OPEN_STEP=null;
   $("app").innerHTML=`<div class="spin">読み込み中…</div>`;
-  history.replaceState(null,"","tasks.html?task="+id);
   CUR_TASK=await fetchTaskDetail(id);
   renderDetail(ME);
 }
@@ -520,7 +559,7 @@ function renderDetail(u){
   const canEdit=canManage(u);
 
   $("app").innerHTML=`
-  <div class="topbar"><div></div><div class="who"><button class="linkbtn" id="back">← ボードへ戻る</button></div></div>
+  <div class="topbar"><div></div><div class="who"><button class="linkbtn" id="back">← 戻る</button></div></div>
   <div class="dh">
     <div class="badges"><span class="tag">${esc(t.corp)}</span><span class="tag freq">${t.freq!=="once"?"🔁 "+FREQ_LABEL[t.freq]:"単発"}</span><span class="tag">${STATUS_LABEL[t.status]}</span>
     ${sig.level==="stall"?`<span class="stall-badge">⏸ ${sig.stalledDays}日停止</span>`:""}</div>
@@ -582,7 +621,7 @@ function renderDetail(u){
     <div class="card">${(t._activity||[]).map(a=>`<div class="act-row"><b>${fmtDT(a.created_at)}</b> ${esc(a.actor_id?userName(a.actor_id):"自動")} — ${esc(a.detail)}</div>`).join("")||'<div class="meta">履歴はまだありません</div>'}</div>
   </div>`;
 
-  $("back").onclick=()=>{history.replaceState(null,"","tasks.html");goBack(u);};
+  $("back").onclick=()=>goBack(u);
   wireDetail(t,u);
 }
 function stepHtml(t,s,u){
@@ -613,6 +652,25 @@ function stepHtml(t,s,u){
     ${(links.length||photos.length||attCanEdit)?attachBoxHtml(`tsatt-${s.id}`,links,photos,attCanEdit):""}
   </div>`;
 }
+/* 店舗別チェックの一括完了ボタン。
+   ・写真必須の工程は1店舗ずつ写真が要る（DBトリガーが強制）ので一括対象外
+   ・自分が触れない（他人が担当の）行が残っている場合も、途中まで通って残りが
+     RLSで弾かれるだけになるので出さない
+   ・2択(is_binary)の工程はまとめて「OK」を付ける。異常があった店舗は
+     先に個別で「異常あり」を確定してから、残りをこのボタンで片付ける運用 */
+function bulkDoneBtnHtml(rows,u){
+  const rest=rows.filter(s=>!s.completed_at);
+  if(rest.length<2) return "";
+  if(rest.some(s=>s.requires_photo)) return `<div class="meta" style="padding:0 12px 6px">※ 写真必須のため一括完了はできません（店舗ごとに写真を添付してください）</div>`;
+  const canDo=s=>canManage(u)||s.assignee_id===u.id||!s.assignee_id;
+  if(!rest.every(canDo)) return "";
+  const binary=rest.some(s=>s.is_binary);
+  return `<div style="padding:0 12px 8px">
+    <button class="btn sm" data-bulkids="${rest.map(s=>s.id).join(",")}" data-bulkbinary="${binary?1:0}" data-bulklabel="${esc(rows[0].title)}">
+      ☑️ 残り${rest.length}店舗をまとめて完了${binary?"（OK）":""}
+    </button>
+  </div>`;
+}
 function stepOrGroupHtml(t,g,u){
   if(!g.isGroup) return stepHtml(t,g.rows[0],u);
   const sorted=g.rows.slice().sort((a,b)=>{
@@ -623,6 +681,7 @@ function stepOrGroupHtml(t,g,u){
   const first=sorted[0];
   return `<div class="step">
     <div style="padding:10px 12px 4px;font-weight:600">🏪 ${esc(first.title)} — ${doneCount}/${sorted.length}</div>
+    ${bulkDoneBtnHtml(sorted,u)}
     <div style="padding:0 12px 10px">
     ${sorted.map(s=>{
       const store=STORES.find(x=>x.id===s.store_id); const name=store?store.name:"店舗";
@@ -765,6 +824,30 @@ function wireAttachBox(prefix,owner,canEdit,onSaved){
     }catch(err){ msg.textContent="アップロードできませんでした"; }
   };
 }
+/* 店舗別チェックの一括完了。詳細画面と「今日の毎日タスク」画面の両方から使う
+   （同じロジックを2箇所に書くと片方だけ直し忘れるため1本にまとめている）。
+   onDone は完了後の再取得＆再描画。 */
+function wireBulkDone(taskIdOf,onDone){
+  document.querySelectorAll("[data-bulkids]").forEach(btn=>{
+    btn.onclick=async()=>{
+      const ids=btn.dataset.bulkids.split(",").filter(Boolean);
+      if(!ids.length) return;
+      const label=btn.dataset.bulklabel||"店舗別チェック";
+      if(!confirm(`「${label}」の未完了 ${ids.length}店舗をまとめて完了にします。よろしいですか？`)) return;
+      const payload={completed_at:new Date().toISOString()};
+      if(btn.dataset.bulkbinary==="1") payload.judgement="ok";
+      btn.disabled=true;
+      const r=await authed(`/rest/v1/hq_task_steps?id=in.(${ids.join(",")})`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify(payload)});
+      if(!r.ok){ alert("まとめて完了にできませんでした（権限や写真必須の設定を確認してください）"); btn.disabled=false; return; }
+      const taskId=taskIdOf(ids[0]);
+      if(taskId){
+        await logActivity(taskId,"step_complete",`「${label}」を${ids.length}店舗まとめて完了`);
+        await notifyStepEvent(ids[ids.length-1],"step_complete");
+      }
+      await onDone();
+    };
+  });
+}
 async function logActivity(taskId,kind,detail,stepId){
   await authed("/rest/v1/hq_task_activity",{method:"POST",headers:{Prefer:"return=minimal"},
     body:JSON.stringify({task_id:taskId,step_id:stepId||null,actor_id:ME.id,kind,detail})});
@@ -849,6 +932,7 @@ async function uploadPhoto(file){
 }
 function wireDetail(t,u){
   wireCommentBox(t,u);
+  wireBulkDone(()=>t.id,async()=>{ OPEN_STEP=null; CUR_TASK=await fetchTaskDetail(t.id); renderDetail(u); });
   if($("memosave")) $("memosave").onclick=async()=>{
     const msg=$("memomsg"); msg.textContent="保存中…";
     const memo=$("taskmemo").value;
@@ -872,8 +956,8 @@ function wireDetail(t,u){
     const msg=$("taskactmsg"); msg.textContent="削除中…";
     const r=await authed(`/rest/v1/hq_tasks?id=eq.${t.id}`,{method:"DELETE"});
     if(!r.ok){ msg.textContent="削除できませんでした（作成者のみ削除できます）"; return; }
-    NAV_STACK=[]; VIEW="board"; CUR_TASK=null; history.replaceState(null,"","tasks.html");
-    await fetchBoard(); renderBoard(u);
+    CUR_TASK=null;
+    await fetchBoard(); goBack(u);
   };
   document.querySelectorAll("[data-stepundo]").forEach(btn=>{
     btn.onclick=async()=>{
@@ -978,6 +1062,77 @@ function wireDetail(t,u){
   };
 }
 
+/* ---------- タスク追加（単発を作る／テンプレートから追加する の入口） ---------- */
+function renderAddTask(u){
+  CURRENT_RENDER=()=>renderAddTask(u);
+  $("app").innerHTML=`
+  <div class="topbar"><h1>＋ タスク追加</h1><div class="who"><button class="linkbtn" id="back">← 戻る</button></div></div>
+  <div class="card" style="margin-bottom:10px">
+    <div style="font-weight:600;margin-bottom:4px">📝 単発タスクを作成</div>
+    <div class="meta" style="margin-bottom:10px">1回きりのタスクをその場で作ります。対象日は今日（作成日）になります。</div>
+    <button class="btn sm" id="add-once">単発タスクを作成する</button>
+  </div>
+  <div class="card">
+    <div style="font-weight:600;margin-bottom:4px">🔁 テンプレートから追加</div>
+    <div class="meta" style="margin-bottom:10px">登録済みのテンプレートから、自動生成を待たずに今すぐ1件つくります（毎月のテンプレなら「その月の分」になります）。</div>
+    <button class="btn sm" id="add-tpl">テンプレートを選ぶ</button>
+  </div>`;
+  $("back").onclick=()=>goBack(u);
+  $("add-once").onclick=()=>{pushNav(); VIEW="new"; renderNew(u);};
+  $("add-tpl").onclick=async()=>{
+    pushNav(); VIEW="tplpick";
+    $("app").innerHTML='<div class="spin">読み込み中…</div>';
+    await fetchTemplates(); renderTplPick(u);
+  };
+}
+
+/* テンプレートを選んで、その場で1件つくる（対象日は既定=今日） */
+let TPLPICK_Q="";
+function tplFreqLabel(t){
+  return t.freq==="weekly"?`毎週${["日","月","火","水","木","金","土"][t.weekly_dow]}曜`
+    :t.freq==="monthly"?`毎月${t.monthly_dom}日`:FREQ_LABEL[t.freq];
+}
+function refreshTplPickList(u){
+  const q=TPLPICK_Q.trim().toLowerCase();
+  const list=TEMPLATES.filter(t=>t.is_active!==false)
+    .filter(t=>!q||(t.title||"").toLowerCase().includes(q)||(t.corp||"").toLowerCase().includes(q));
+  $("tpk-list").innerHTML=list.map(t=>`<div class="card" style="margin-bottom:8px">
+      <div class="badges"><span class="tag">${esc(t.corp)}</span><span class="tag freq">🔁 ${esc(tplFreqLabel(t))}</span></div>
+      <div style="font-weight:600;margin:4px 0">${esc(t.title)}</div>
+      <div class="meta">期限: 対象日${t.due_offset_days?"の"+t.due_offset_days+"日後":"の当日"}${t.due_time?" "+t.due_time.slice(0,5):""}</div>
+      <button class="btn sm" style="margin-top:8px" data-tplcreate="${t.id}">このテンプレートで追加</button>
+    </div>`).join("")||`<div class="card">${TEMPLATES.length?"条件に合うテンプレートはありません":"使えるテンプレートがありません"}</div>`;
+  document.querySelectorAll("[data-tplcreate]").forEach(b=>b.onclick=async()=>{
+    const tpl=TEMPLATES.find(x=>x.id===b.dataset.tplcreate);
+    const date=$("tpk-date").value||todayStr();
+    if(!confirm(`「${tpl.title}」を対象日 ${fmtD(date)} で追加します。よろしいですか？`)) return;
+    const msg=$("tpk-msg"); msg.className="err"; msg.textContent="作成中…"; b.disabled=true;
+    const r=await authed("/rest/v1/rpc/hq_create_from_template",{method:"POST",body:JSON.stringify({p_template_id:tpl.id,p_target_date:date})});
+    const row=(r.ok&&Array.isArray(r.body))?r.body[0]:null;
+    if(!row||!row.task_id){ msg.textContent="追加できませんでした（権限がない可能性があります）"; b.disabled=false; return; }
+    await fetchBoard();
+    if(!row.was_created) alert("この対象日のタスクはすでに作成済みです。そのタスクを開きます。");
+    openDetail(row.task_id);
+  });
+}
+function renderTplPick(u){
+  CURRENT_RENDER=()=>renderTplPick(u);
+  $("app").innerHTML=`
+  <div class="topbar"><h1>🔁 テンプレートから追加</h1><div class="who"><button class="linkbtn" id="back">← 戻る</button></div></div>
+  <div class="card" style="margin-bottom:10px">
+    <label>対象日（通常は今日のままでOK）</label>
+    <input id="tpk-date" type="date" value="${todayStr()}">
+    <div class="meta" style="margin-top:6px">対象日を基準にテンプレの期限が計算されます。同じテンプレ・同じ対象日のタスクが二重に作られることはありません。</div>
+  </div>
+  <div class="searchbox"><span class="mag">🔍</span><input id="tpk-q" type="search" placeholder="テンプレート名・法人で絞り込み" value="${esc(TPLPICK_Q)}"></div>
+  <div id="tpk-list"></div>
+  <div class="err" id="tpk-msg"></div>`;
+  $("back").onclick=()=>goBack(u);
+  let tm=null;
+  $("tpk-q").oninput=e=>{ TPLPICK_Q=e.target.value; clearTimeout(tm); tm=setTimeout(()=>refreshTplPickList(u),250); };
+  refreshTplPickList(u);
+}
+
 /* ---------- 単発タスク作成 ---------- */
 let NEW_STEPS=[{title:"",assignee_id:"",due_date:"",due_time:""}];
 function renderNew(u){
@@ -988,7 +1143,7 @@ function renderNew(u){
   <div class="card">
     <label>タイトル</label><input id="nt-title" placeholder="例: 恵比寿 冷蔵庫の入替 見積比較">
     <label>法人</label><select id="nt-corp">${activeCorps().map(c=>`<option value="${esc(c.name)}">${esc(c.name)}</option>`).join("")}</select>
-    <label>対象日</label><input id="nt-target" type="date" value="${todayStr()}">
+    <div class="meta" style="margin-top:10px">対象日は自動で今日（${fmtD(todayStr())}）になります。</div>
     <label>概要（説明文・任意）</label><textarea id="nt-desc" rows="2"></textarea>
     <label>⚠️ 注意事項（任意）</label><textarea id="nt-notes" rows="2"></textarea>
     <label>公開範囲</label>
@@ -1033,7 +1188,7 @@ async function submitNewTask(u){
   if(!title){msg.textContent="タイトルを入力してください";return}
   const steps=NEW_STEPS.filter(s=>s.title.trim());
   if(!steps.length){msg.textContent="工程を1つ以上入力してください";return}
-  const corp=$("nt-corp").value, target_date=$("nt-target").value||todayStr();
+  const corp=$("nt-corp").value, target_date=todayStr();   // 対象日=作成日（固定・選択させない）
   const visibility=$("nt-vis").value;
   const dueSorted=steps.filter(s=>s.due_date).sort((a,b)=>(a.due_date+(a.due_time||"23:59")).localeCompare(b.due_date+(b.due_time||"23:59")));
   const lastDue=dueSorted[dueSorted.length-1]||null;
@@ -1088,7 +1243,7 @@ function renderDaily(u){
   const d=new Date(today+"T00:00:00");
   const wd=["日","月","火","水","木","金","土"][d.getDay()];
   $("app").innerHTML=`
-  <div class="topbar"><h1>今日の毎日タスク ${d.getMonth()+1}/${d.getDate()}(${wd})</h1><div class="who"><button class="linkbtn" id="doprint">🖨 今日の分を印刷</button><button class="linkbtn" id="back">← ボードへ戻る</button></div></div>
+  <div class="topbar"><h1>今日の毎日タスク ${d.getMonth()+1}/${d.getDate()}(${wd})</h1><div class="who"><button class="linkbtn" id="doprint">🖨 今日の分を印刷</button><button class="linkbtn" id="back">← 戻る</button></div></div>
   <div class="toprow"><div><b>${doneCount}/${todaysV.length} 完了</b></div>
     <div class="chiprow"><span class="chip ${!DAILY_MINE?'active':''}" id="dm-all">全員分</span><span class="chip ${DAILY_MINE?'active':''}" id="dm-mine">👤 自分の分</span></div>
   </div>
@@ -1143,6 +1298,7 @@ function dailyGroupHtml(g,u){
   const allDone=g.rows.every(r=>r.completed_at);
   return `<div style="margin:10px 0">
     <div style="font-weight:600;margin-bottom:4px">🏪 店舗別チェック</div>
+    ${bulkDoneBtnHtml(g.rows,u)}
     <div class="card">
     ${g.rows.map(s=>{
       const store=STORES.find(x=>x.id===s.store_id);
@@ -1161,10 +1317,12 @@ function dailyGroupHtml(g,u){
       </div>`;
     }).join("")}
     </div>
-    ${allDone?"":'<div class="meta" style="margin-top:4px">※ 全店舗に「OK／異常あり」を付けるまでこのタスクは完了になりません（まとめてチェック不可）</div>'}
+    ${allDone?"":'<div class="meta" style="margin-top:4px">※ 全店舗に「OK／異常あり」を付けるまでこのタスクは完了になりません。異常があった店舗を先に確定してから、残りを上の「まとめて完了」で片付けられます</div>'}
   </div>`;
 }
 function wireDaily(u){
+  wireBulkDone(sid=>{ for(const t of DAILY_TASKS){ if(sortedSteps(t).some(x=>x.id===sid)) return t.id; } return null; },
+               async()=>{ await fetchDaily(); renderDaily(u); });
   document.querySelectorAll("[data-dailyopen]").forEach(el=>{
     el.onclick=async()=>{
       const id=el.dataset.dailyopen;
@@ -1309,30 +1467,67 @@ async function fetchTemplates(){
   const r=await authed("/rest/v1/hq_task_templates?select=*&order=created_at.desc");
   TEMPLATES=(r.ok&&Array.isArray(r.body))?r.body:[];
 }
-function renderTemplates(u){
-  CURRENT_RENDER=()=>renderTemplates(u);
-  $("app").innerHTML=`
-  <div class="topbar"><h1>⚙️ テンプレート管理</h1><div class="who"><button class="linkbtn" id="back">← ボードへ戻る</button></div></div>
-  <button class="btn sm" id="tpl-new" style="margin-bottom:14px">＋ 新しいテンプレート</button>
-  <button class="linkbtn" id="tpl-csv" style="margin-bottom:14px;margin-left:8px">📤 CSV一括登録</button>
-  <div id="tpl-list">${TEMPLATES.map(tplRowHtml).join("")||'<div class="card">テンプレートはまだありません</div>'}</div>`;
-  $("back").onclick=()=>goBack(u);
-  $("tpl-new").onclick=()=>openTplEdit(u,null);
-  $("tpl-csv").onclick=()=>{pushNav(); VIEW="csvimport";renderCsvImport(u);};
+let TPL_FILTER={freq:"",corp:"",q:""};
+function filteredTemplates(){
+  const q=TPL_FILTER.q.trim().toLowerCase();
+  return TEMPLATES.filter(t=>{
+    if(TPL_FILTER.freq && t.freq!==TPL_FILTER.freq) return false;
+    if(TPL_FILTER.corp && t.corp!==TPL_FILTER.corp) return false;
+    if(q && !((t.title||"").toLowerCase().includes(q)||(t.notes||"").toLowerCase().includes(q)||(t.description||"").toLowerCase().includes(q))) return false;
+    return true;
+  });
+}
+// 一覧だけ差し替える（フリーワード入力中にフォーカスが飛ばないように全体再描画はしない）
+function refreshTplList(u){
+  const list=filteredTemplates();
+  $("tpl-count").textContent=`${list.length}/${TEMPLATES.length}件`;
+  $("tpl-list").innerHTML=list.map(tplRowHtml).join("")||`<div class="card">${TEMPLATES.length?"条件に合うテンプレートはありません":"テンプレートはまだありません"}</div>`;
   document.querySelectorAll("[data-tpledit]").forEach(b=>b.onclick=()=>openTplEdit(u,TEMPLATES.find(x=>x.id===b.dataset.tpledit)));
   document.querySelectorAll("[data-tpldel]").forEach(b=>b.onclick=async()=>{
     if(!confirm("このテンプレートを削除しますか？（生成済みのタスクは残ります）"))return;
     await authed(`/rest/v1/hq_task_templates?id=eq.${b.dataset.tpldel}`,{method:"DELETE"});
-    await fetchTemplates(); renderTemplates(u);
+    await fetchTemplates(); refreshTplList(u);
   });
 }
+function renderTemplates(u){
+  CURRENT_RENDER=()=>renderTemplates(u);
+  $("app").innerHTML=`
+  <div class="topbar"><h1>⚙️ テンプレート管理</h1><div class="who"><button class="linkbtn" id="back">← 戻る</button></div></div>
+  <button class="btn sm" id="tpl-new" style="margin-bottom:14px">＋ 新しいテンプレート</button>
+  <button class="linkbtn" id="tpl-csv" style="margin-bottom:14px;margin-left:8px">📤 CSV一括登録</button>
+  <div class="card" style="margin-bottom:12px">
+    <div class="chiprow" style="margin-bottom:0;align-items:center">
+      <span>🔁 <select id="tf-freq" style="width:auto;display:inline-block;padding:5px 10px;font-size:12px;border-radius:99px">
+        <option value="">頻度: すべて</option>
+        <option value="daily" ${TPL_FILTER.freq==="daily"?"selected":""}>毎日</option>
+        <option value="weekly" ${TPL_FILTER.freq==="weekly"?"selected":""}>毎週</option>
+        <option value="monthly" ${TPL_FILTER.freq==="monthly"?"selected":""}>毎月</option>
+      </select></span>
+      <span>🏢 <select id="tf-corp" style="width:auto;display:inline-block;padding:5px 10px;font-size:12px;border-radius:99px">
+        <option value="">法人: すべて</option>
+        ${CORPS.map(c=>`<option value="${esc(c.name)}" ${TPL_FILTER.corp===c.name?"selected":""}>${esc(c.name)}</option>`).join("")}
+      </select></span>
+      <span class="meta" id="tpl-count"></span>
+      <button class="linkbtn" id="tf-clear">絞り込みを解除</button>
+    </div>
+    <div class="searchbox" style="margin:10px 0 0"><span class="mag">🔍</span><input id="tf-q" type="search" placeholder="フリーワード（テンプレ名・注意事項・概要）" value="${esc(TPL_FILTER.q)}"></div>
+  </div>
+  <div id="tpl-list"></div>`;
+  $("back").onclick=()=>goBack(u);
+  $("tpl-new").onclick=()=>openTplEdit(u,null);
+  $("tpl-csv").onclick=()=>{pushNav(); VIEW="csvimport";renderCsvImport(u);};
+  $("tf-freq").onchange=e=>{TPL_FILTER.freq=e.target.value;refreshTplList(u);};
+  $("tf-corp").onchange=e=>{TPL_FILTER.corp=e.target.value;refreshTplList(u);};
+  let tq=null;
+  $("tf-q").oninput=e=>{TPL_FILTER.q=e.target.value;clearTimeout(tq);tq=setTimeout(()=>refreshTplList(u),250);};
+  $("tf-clear").onclick=()=>{TPL_FILTER={freq:"",corp:"",q:""};renderTemplates(u);};
+  refreshTplList(u);
+}
 function tplRowHtml(tpl){
-  const freqLabel = tpl.freq==="weekly" ? `毎週${["日","月","火","水","木","金","土"][tpl.weekly_dow]}曜`
-    : tpl.freq==="monthly" ? `毎月${tpl.monthly_dom}日` : FREQ_LABEL[tpl.freq];
   return `<div class="card" style="margin-bottom:10px">
-    <div class="badges"><span class="tag">${esc(tpl.corp)}</span><span class="tag freq">🔁 ${esc(freqLabel)}</span>${tpl.is_active?"":'<span class="tag">停止中</span>'}</div>
+    <div class="badges"><span class="tag">${esc(tpl.corp)}</span><span class="tag freq">🔁 ${esc(tplFreqLabel(tpl))}</span>${tpl.is_active?"":'<span class="tag">停止中</span>'}</div>
     <div style="font-weight:600;margin:4px 0">${esc(tpl.title)}</div>
-    <div class="meta">期限: 対象日+${tpl.due_offset_days}日 ／ 公開範囲: ${tpl.visibility==="all"?"本部全員":"指定した人だけ"}</div>
+    <div class="meta">期限: 対象日${tpl.due_offset_days?"の"+tpl.due_offset_days+"日後":"の当日"}${tpl.due_time?" "+tpl.due_time.slice(0,5):""} ／ 公開範囲: ${tpl.visibility==="all"?"本部全員":"指定した人だけ"}</div>
     <button class="linkbtn" data-tpledit="${tpl.id}">編集</button>
     <button class="linkbtn" data-tpldel="${tpl.id}">削除</button>
   </div>`;
@@ -1340,6 +1535,7 @@ function tplRowHtml(tpl){
 async function openTplEdit(u,tpl){
   pushNav();
   TPL_EDIT=tpl?{...tpl}:null;
+  TPL_DUE_OFFSET=tpl?(tpl.due_offset_days??0):0;
   if(tpl){
     const r=await authed(`/rest/v1/hq_task_template_steps?template_id=eq.${tpl.id}&order=sort_order`);
     TPL_STEPS=(r.ok&&Array.isArray(r.body))?r.body:[];
@@ -1396,9 +1592,9 @@ async function refreshTplStepAttach(stepId){
 }
 function renderTplEdit(u){
   const tpl=TPL_EDIT||{};
-  CURRENT_RENDER=((snapTpl,snapSteps)=>()=>{ TPL_EDIT=snapTpl; TPL_STEPS=snapSteps; renderTplEdit(u); })(TPL_EDIT,TPL_STEPS);
+  CURRENT_RENDER=((snapTpl,snapSteps,snapOffset)=>()=>{ TPL_EDIT=snapTpl; TPL_STEPS=snapSteps; TPL_DUE_OFFSET=snapOffset; renderTplEdit(u); })(TPL_EDIT,TPL_STEPS,TPL_DUE_OFFSET);
   $("app").innerHTML=`
-  <div class="topbar"><h1>${tpl.id?"テンプレートを編集":"新しいテンプレート"}</h1><div class="who"><button class="linkbtn" id="back">← 一覧へ戻る</button></div></div>
+  <div class="topbar"><h1>${tpl.id?"テンプレートを編集":"新しいテンプレート"}</h1><div class="who"><button class="linkbtn" id="back">← 戻る</button></div></div>
   <div class="card">
     <label>タイトル</label><input id="tp-title" value="${esc(tpl.title||"")}" placeholder="例: 業務委託 精算処理">
     <label>概要（説明文・任意）</label><textarea id="tp-desc" rows="2" placeholder="このタスクの目的や進め方など">${esc(tpl.description||"")}</textarea>
@@ -1417,8 +1613,9 @@ function renderTplEdit(u){
       <label>作成する日（1〜31）</label>
       <input id="tp-dom" type="number" min="1" max="31" value="${tpl.monthly_dom||1}">
     </div>
-    <label>タスクの期限（対象日から何日後か）</label>
-    <input id="tp-offset" type="number" min="0" value="${tpl.due_offset_days??0}">
+    <label>タスクの期限日</label>
+    <input id="tp-duedate" type="date" value="${addDaysStr(tplBaseDate(),tpl.due_offset_days??0)}">
+    <div class="meta" id="tp-basehint"></div>
     <label>期限の時刻（任意・未設定なら日付のみ）</label>
     <input id="tp-duetime" type="time" value="${esc(tpl.due_time||"")}">
     <label>⚠️ 注意事項（既定）</label><textarea id="tp-notes" rows="2">${esc(tpl.notes||"")}</textarea>
@@ -1456,12 +1653,55 @@ function renderTplEdit(u){
   $("tp-freq").onchange=e=>{
     $("tp-weeklywrap").style.display=e.target.value==="weekly"?"block":"none";
     $("tp-monthlywrap").style.display=e.target.value==="monthly"?"block":"none";
+    refreshTplDueDates();
+  };
+  $("tp-dow").onchange=refreshTplDueDates;
+  $("tp-dom").onchange=refreshTplDueDates;
+  $("tp-duedate").onchange=e=>{
+    const base=tplBaseDate(), d=e.target.value;
+    if(!d){ e.target.value=addDaysStr(base,TPL_DUE_OFFSET); return; }
+    const n=diffDaysStr(base,d);
+    if(n<0){ $("tp-msg").className="err"; $("tp-msg").textContent="期限日は対象日（"+fmtD(base)+"）以降にしてください"; e.target.value=addDaysStr(base,TPL_DUE_OFFSET); return; }
+    $("tp-msg").textContent=""; TPL_DUE_OFFSET=n; refreshTplDueDates();
   };
   $("tp-vis").onchange=e=>{$("tp-memberswrap").style.display=e.target.value==="members"?"block":"none";};
   renderTplSteps();
   $("tp-addstep").onclick=()=>{TPL_STEPS.push({title:"",assignee_id:"",offset_days:0,due_time:"",kind:"step",store_scope:"",is_binary:false,requires_photo:false});renderTplSteps();};
   $("tp-save").onclick=()=>saveTemplate(u);
   if(tpl.id) wireAttachBox("tpl-att",{template_id:tpl.id},true,refreshTplAttach);
+  refreshTplDueDates();
+}
+/* 期限は「対象日から何日後か」で保存する（毎回の対象日を基準に自動計算されるため）。
+   ただしオフセットの数字は分かりにくいので、画面上は必ず実日付で見せる。
+   その基準になるのが「次にこのテンプレから作られる対象日」= tplBaseDate()。 */
+let TPL_DUE_OFFSET=0;
+function tplBaseDate(){
+  const today=todayStr();
+  const freq=$("tp-freq")?$("tp-freq").value:(TPL_EDIT&&TPL_EDIT.freq)||"monthly";
+  if(freq==="daily") return today;
+  if(freq==="weekly"){
+    const dow=+(($("tp-dow")&&$("tp-dow").value)??((TPL_EDIT&&TPL_EDIT.weekly_dow)||0));
+    const d=new Date(today+"T00:00:00");
+    return addDaysStr(today,(dow-d.getDay()+7)%7);
+  }
+  const domRaw=+(($("tp-dom")&&$("tp-dom").value)??((TPL_EDIT&&TPL_EDIT.monthly_dom)||1));
+  const dom=Math.min(31,Math.max(1,domRaw||1));
+  const d=new Date(today+"T00:00:00");
+  let y=d.getFullYear(), m=d.getMonth();
+  if(Math.min(dom,new Date(y,m+1,0).getDate())<d.getDate()){ m++; if(m>11){m=0;y++;} }
+  return ymd(new Date(y,m,Math.min(dom,new Date(y,m+1,0).getDate())));
+}
+function refreshTplDueDates(){
+  const base=tplBaseDate();
+  if($("tp-duedate")) $("tp-duedate").value=addDaysStr(base,TPL_DUE_OFFSET);
+  if($("tp-basehint")) $("tp-basehint").textContent=
+    `次に作られる対象日は ${fmtD(base)} です。期限は「対象日の${TPL_DUE_OFFSET===0?"当日":TPL_DUE_OFFSET+"日後"}」として保存され、毎回の対象日に合わせて自動でずれます。`;
+  TPL_STEPS.forEach((s,i)=>{
+    const el=document.querySelector(`#tp-steps [data-tidx="${i}"] .ts-due`);
+    if(el) el.value=addDaysStr(base,s.offset_days||0);
+    const hint=document.querySelector(`#tp-steps [data-tidx="${i}"] .ts-duehint`);
+    if(hint) hint.textContent=(s.offset_days||0)===0?"対象日の当日":`対象日の${s.offset_days}日後`;
+  });
 }
 function renderTplSteps(){
   $("tp-steps").innerHTML=TPL_STEPS.map((s,i)=>`
@@ -1469,7 +1709,7 @@ function renderTplSteps(){
       <div class="stepform-row">
         <div class="f"><label>工程名</label><input class="ts-title" value="${esc(s.title)}" placeholder="例: 入力チェック"></div>
         <div class="f"><label>担当（空欄=誰でも可）</label><select class="ts-assignee"><option value="">未定</option>${assignableUsers().map(x=>`<option value="${x.id}" ${s.assignee_id===x.id?"selected":""}>${esc(x.name)}</option>`).join("")}</select></div>
-        <div class="f"><label>期限オフセット(日)</label><input class="ts-offset" type="number" value="${s.offset_days||0}"></div>
+        <div class="f"><label>工程の期限日</label><input class="ts-due" type="date" value="${addDaysStr(tplBaseDate(),s.offset_days||0)}"><div class="meta ts-duehint"></div></div>
         <div class="f"><label>期限の時刻（任意）</label><input class="ts-duetime" type="time" value="${esc(s.due_time||"")}"></div>
         ${TPL_STEPS.length>1?`<button class="linkbtn" data-rmtstep="${i}">削除</button>`:""}
       </div>
@@ -1493,7 +1733,12 @@ function renderTplSteps(){
     const i=+row.dataset.tidx;
     row.querySelector(".ts-title").oninput=e=>TPL_STEPS[i].title=e.target.value;
     row.querySelector(".ts-assignee").onchange=e=>TPL_STEPS[i].assignee_id=e.target.value;
-    row.querySelector(".ts-offset").onchange=e=>TPL_STEPS[i].offset_days=+e.target.value||0;
+    row.querySelector(".ts-due").onchange=e=>{
+      const base=tplBaseDate();
+      const n=e.target.value?diffDaysStr(base,e.target.value):0;
+      if(n<0){ alert("工程の期限日は対象日（"+fmtD(base)+"）以降にしてください"); e.target.value=addDaysStr(base,TPL_STEPS[i].offset_days||0); return; }
+      TPL_STEPS[i].offset_days=n; refreshTplDueDates();
+    };
     row.querySelector(".ts-duetime").onchange=e=>TPL_STEPS[i].due_time=e.target.value;
     const isCheck=row.querySelector(".ts-ischeck");
     const opts=row.querySelector(".ts-checkopts");
@@ -1518,6 +1763,7 @@ function renderTplSteps(){
     if(!s.id) return;
     wireAttachBox(`tstep-att-${s.id}`,{template_step_id:s.id},true,()=>refreshTplStepAttach(s.id));
   });
+  refreshTplDueDates();
 }
 async function saveTemplate(u){
   const title=$("tp-title").value.trim();
@@ -1531,7 +1777,7 @@ async function saveTemplate(u){
     title, corp:$("tp-corp").value, freq,
     weekly_dow: freq==="weekly"?+$("tp-dow").value:null,
     monthly_dom: freq==="monthly"?+$("tp-dom").value:null,
-    due_offset_days: +$("tp-offset").value||0,
+    due_offset_days: TPL_DUE_OFFSET||0,   // 画面は実日付、DBは「対象日から何日後か」で保持
     due_time: $("tp-duetime").value||null,
     notes: $("tp-notes").value.trim(),
     description: $("tp-desc").value.trim()||null,
@@ -1575,7 +1821,10 @@ async function saveTemplate(u){
 }
 
 /* ---------- C-6: テンプレのCSV一括登録 ---------- */
-const CSV_HEADERS=["行種別","タイトル","頻度","曜日/日","法人","担当メール","期限オフセット","時刻","注意事項","公開範囲"];
+// CSVは繰り返しテンプレの一括登録なので、期限は実日付ではなく「対象日から何日後か」で書く
+// （テンプレは毎回別の対象日で生成されるため、1つの日付では表せない）。
+// 旧雛形の列名「期限オフセット」も引き続き読み込めるようにしてある。
+const CSV_HEADERS=["行種別","タイトル","頻度","曜日/日","法人","担当メール","期限（対象日の何日後）","時刻","注意事項","公開範囲"];
 const CSV_WEEKDOW={"日":0,"月":1,"火":2,"水":3,"木":4,"金":5,"土":6};
 const CSV_FREQ={"毎日":"daily","毎週":"weekly","毎月":"monthly"};
 function csvEscape(v){
@@ -1624,7 +1873,8 @@ function validateCsvRows(rows){
   const idx=name=>header.indexOf(name);
   const need=["行種別","タイトル"];
   for(const n of need){ if(idx(n)<0) return {templates:[],errors:[{line:1,reason:`列「${n}」が見つかりません（雛形CSVの列名を変更しないでください）`}]}; }
-  const col={kind:idx("行種別"),title:idx("タイトル"),freq:idx("頻度"),dow:idx("曜日/日"),corp:idx("法人"),email:idx("担当メール"),offset:idx("期限オフセット"),time:idx("時刻"),notes:idx("注意事項"),vis:idx("公開範囲")};
+  const offsetIdx=idx("期限（対象日の何日後）")>=0?idx("期限（対象日の何日後）"):idx("期限オフセット");
+  const col={kind:idx("行種別"),title:idx("タイトル"),freq:idx("頻度"),dow:idx("曜日/日"),corp:idx("法人"),email:idx("担当メール"),offset:offsetIdx,time:idx("時刻"),notes:idx("注意事項"),vis:idx("公開範囲")};
   const templates=[]; const errors=[]; let cur=null;
   for(let i=1;i<rows.length;i++){
     const r=rows[i]; const line=i+1;
@@ -1679,7 +1929,7 @@ let CSV_PARSED=null;
 function renderCsvImport(u){
   CURRENT_RENDER=()=>renderCsvImport(u);
   $("app").innerHTML=`
-  <div class="topbar"><h1>📤 テンプレのCSV一括登録</h1><div class="who"><button class="linkbtn" id="back">← テンプレ一覧へ</button></div></div>
+  <div class="topbar"><h1>📤 テンプレのCSV一括登録</h1><div class="who"><button class="linkbtn" id="back">← 戻る</button></div></div>
   <div class="card">
     <div class="meta" style="margin-bottom:10px">①雛形CSVをダウンロード → ②Excel等で編集 → ③このページにアップロードして内容を確認 → ④取り込む、の順で使います。</div>
     <button class="btn sm" id="csv-dl">雛形CSVをダウンロード</button>
@@ -1741,7 +1991,7 @@ function buildPreviewTask(){
   const corp=$("tp-corp")?.value||(CORPS[0]?.name||"");
   const freq=$("tp-freq")?.value||"daily";
   const notes=($("tp-notes")?.value||"").trim();
-  const due_offset=+($("tp-offset")?.value)||0;
+  const due_offset=TPL_DUE_OFFSET||0;
   const due_time=$("tp-duetime")?.value||null;
   const today=todayStr();
   const addDays=(base,n)=>{ const d=new Date(base+"T00:00:00"); d.setDate(d.getDate()+n); return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0"); };
@@ -1862,7 +2112,7 @@ async function fetchNotifySettings(){
 function renderNotify(u){
   CURRENT_RENDER=()=>renderNotify(u);
   $("app").innerHTML=`
-  <div class="topbar"><h1>🔔 通知設定</h1><div class="who"><button class="linkbtn" id="back">← ボードへ戻る</button></div></div>
+  <div class="topbar"><h1>🔔 通知設定</h1><div class="who"><button class="linkbtn" id="back">← 戻る</button></div></div>
   <div class="sec"><h3 style="margin-top:0">通知先チャンネル</h3>
     <div id="ch-list">${NOTIFY_CHANNELS.map(chRowHtml).join("")||'<div class="card">まだ登録されていません</div>'}</div>
     <div class="card" style="margin-top:10px">
@@ -1979,7 +2229,7 @@ async function fetchPastTasks(ym){
 function renderPast(u){
   CURRENT_RENDER=()=>renderPast(u);
   $("app").innerHTML=`
-  <div class="topbar"><h1>📁 過去タスク</h1><div class="who"><button class="linkbtn" id="back">← ボードへ戻る</button></div></div>
+  <div class="topbar"><h1>📁 過去タスク</h1><div class="who"><button class="linkbtn" id="back">← 戻る</button></div></div>
   <div class="chiprow">${PAST_MONTHS.map(m=>`<span class="chip ${PAST_MONTH===m?'active':''}" data-month="${m}">${m.replace("-","年")}月</span>`).join("")||'<span class="meta">過去の完了タスクはまだありません</span>'}</div>
   <div class="board" style="display:block;margin-top:14px">
     ${PAST_TASKS.map(taskCardHtml).join("")||'<div class="card">この月の完了タスクはありません</div>'}
@@ -1993,7 +2243,7 @@ function renderPast(u){
 function renderCorps(u){
   CURRENT_RENDER=()=>renderCorps(u);
   $("app").innerHTML=`
-  <div class="topbar"><h1>🏢 法人管理</h1><div class="who"><button class="linkbtn" id="back">← ボードへ戻る</button></div></div>
+  <div class="topbar"><h1>🏢 法人管理</h1><div class="who"><button class="linkbtn" id="back">← 戻る</button></div></div>
   <div class="card">
     <div id="corps-list">${CORPS.map(c=>`<div class="link-row">
       <div style="flex:1">${esc(c.name)}${c.is_active?"":' <span class="tag">非表示</span>'}</div>
@@ -2023,6 +2273,38 @@ function renderCorps(u){
   };
 }
 
+/* ---------- 権限設定（マスター専用） ----------
+   画面のボタンを出すかどうかだけでなく、DB側のRLS（hq_feature_allowed）も
+   この設定を見ている。つまりURL直打ちやAPI直叩きでも同じ制限がかかる。 */
+function renderPerms(u){
+  CURRENT_RENDER=()=>renderPerms(u);
+  const keys=Object.keys(FEATURE_LABEL);
+  $("app").innerHTML=`
+  <div class="topbar"><h1>🔑 権限設定</h1><div class="who"><button class="linkbtn" id="back">← 戻る</button></div></div>
+  <div class="card">
+    <div class="meta" style="margin-bottom:12px">機能ごとに「どこまでの役割が使えるか」を決めます。変更できるのはマスターアカウントだけです。</div>
+    ${keys.map(k=>`<div style="padding:10px 0;border-bottom:1px solid var(--line)">
+      <div style="font-weight:600;margin-bottom:6px">${esc(FEATURE_LABEL[k])}</div>
+      <select data-perm="${k}">
+        ${Object.entries(LEVEL_LABEL).map(([lv,label])=>`<option value="${lv}" ${(FEATURE_PERMS[k]||"manage")===lv?"selected":""}>${esc(label)}</option>`).join("")}
+      </select>
+    </div>`).join("")}
+    <button class="btn" style="margin-top:16px" id="perm-save">保存する</button>
+    <div class="err" id="perm-msg"></div>
+    <div class="meta" style="margin-top:12px">※ 自分のChatwork通知ルームの登録は、通知設定の権限に関係なくボード右上の「🟢 Chatwork ID」から誰でも行えます。</div>
+  </div>`;
+  $("back").onclick=()=>goBack(u);
+  $("perm-save").onclick=async()=>{
+    const msg=$("perm-msg"); msg.className="err"; msg.textContent="保存中…";
+    const rows=keys.map(k=>({feature:k,min_level:document.querySelector(`[data-perm="${k}"]`).value,updated_at:new Date().toISOString(),updated_by:ME.id}));
+    const r=await authed("/rest/v1/hq_feature_permissions",{method:"POST",headers:{Prefer:"resolution=merge-duplicates,return=minimal"},body:JSON.stringify(rows)});
+    if(!r.ok){ msg.textContent="保存できませんでした（マスターアカウントのみ変更できます）"; return; }
+    await fetchFeaturePerms();
+    renderPerms(u);   // 画面ごと作り直すのでメッセージは描画後にセットする
+    $("perm-msg").className="err msg-ok"; $("perm-msg").textContent="保存しました";
+  };
+}
+
 /* ---------- メイン ---------- */
 function renderLogin(err){
   $("app").innerHTML=`<div class="card">
@@ -2037,35 +2319,23 @@ async function main(){
   if(!u){sess.clear();renderLogin("セッションが切れました。ポータルから再度ログインしてください。");return}
   if(u.is_active===false){renderLogin("このアカウントは無効化されています。");return}
   ME=u;
-  await fetchUsers(); await fetchStores(); await fetchCorps();
+  await fetchUsers(); await fetchStores(); await fetchCorps(); await fetchFeaturePerms();
   await ensureTodayGenerated();
   await Promise.all([fetchBoard(), fetchNotifications(), fetchMyChatwork()]);
   runAlertChecks();
+  // 履歴の起点。これ以降の画面遷移はpushNav()で1階層ずつ積む（戻る操作の基準になる）
+  try{ history.replaceState({hqNav:0},"","tasks.html"); }catch(e){}
   const openId=qs.get("task");
   if(openId){ openDetail(openId); return; }
   renderBoard(u);
 }
 main();
 
-/* ---------- B-5: 画面左端からの右スワイプで前の画面に戻る ---------- */
-(function(){
-  let sx=null, sy=null, tracking=false;
-  document.addEventListener("touchstart",e=>{
-    const t=e.touches[0];
-    if(t.clientX<=24){ sx=t.clientX; sy=t.clientY; tracking=true; } else { tracking=false; }
-  },{passive:true});
-  document.addEventListener("touchmove",e=>{
-    if(!tracking) return;
-    const t=e.touches[0];
-    const dx=t.clientX-sx, dy=t.clientY-sy;
-    if(dx>=60 && Math.abs(dy)<40){
-      tracking=false;
-      const backBtn=document.getElementById("back")||document.getElementById("back0");
-      if(backBtn) backBtn.click(); else goBack(ME);
-    }
-  },{passive:true});
-  document.addEventListener("touchend",()=>{ tracking=false; },{passive:true});
-})();
+/* ---------- B-5: 画面端の右スワイプで前の画面に戻る ----------
+   自前のスワイプ検出は廃止。画面遷移をpushStateで履歴に積むようにしたため、
+   OS標準の戻る操作（iOSの左端スワイプ・Androidの戻るジェスチャ／戻るボタン）が
+   そのまま「1個前の画面」に戻る。自前検出を残すとOSの戻ると二重に発火して
+   2画面分戻ってしまうため、意図的に削除している。 */
 </script>
 </body>
 </html>
