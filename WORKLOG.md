@@ -86,3 +86,40 @@
 
 ## 2026-08-11
 - ユーザーレビュー（実機スクショ2枚＋参考動画2本）を受け、タスクボード改善の実装指示書v2を作成: docs/実装指示書_タスクボード改善v2.md（バグ3件=工程一覧の店舗名なし/閉じられない・アラート設定レイアウト崩れ・自分フィルタに作成タスク混入、UX6件=モバイル横スワイプかんばん・並び替え(localStorage)・完了取消/削除(作成者のみRLS)・依頼フィルタ・スワイプバック・テンプレプレビュー、機能6件=コメント+メンション通知・Chatworkチャンネル(Edge Function中継)・メモ欄・テンプレ/工程への写真URL/マニュアルプルダウン(manual_items読み取り専用)・本日タスク印刷・CSV一括登録）。実行は別スレッド
+
+## 2026-08-11 実装指示書v2（14項目）実装完了
+- 新規SQL: supabase/2026-08-11_hq_v2.sql（既存の2026-08-10_hq_tasks.sqlは編集せず追記のみ、hq_プレフィックステーブルのみ変更、manual_itemsは読み取り専用のまま）。項目ごとに1コミット、コミット前後で`git fetch`して並行セッションとの衝突がないことを確認。
+
+### A（バグ修正）
+- **A-1** 詳細画面の店舗別チェックに店舗名を表示し、個別に開閉できるよう修正（`stepOrGroupHtml`新設。原因は店舗別チェックの行が店舗名なしで見分けがつかず「閉じられない」ように見えていたことで、開閉トグル自体は元々正常だった）
+- **A-2** テンプレ編集のアラート設定チェックボックス群がラベル単体のdisplay:flexだけでは横並びにならない不具合を`.chiprow`ラッパーで修正
+- **A-3** ボードの「自分のタスク」フィルタが担当者に加えて作成者(created_by)もORで拾っていたため、依頼しただけのタスクまで混ざっていた不具合を修正。フィルタは担当のみ、依頼側は別途B-4で分離
+
+### B（UX改善）
+- **B-1** モバイル幅で`.board`を`flex + overflow-x:auto + scroll-snap-type:x mandatory`に変更し、縦積みから横スワイプかんばんへ
+- **B-2** 並び替え（期限が近い順・作成が新しい順・停滞が長い順）を追加。`localStorage['hq_sort']`にのみ保存（DBに保存しない設計）
+- **B-3** 完了取り消しボタン・タスク削除ボタンを追加。削除はRLSで作成者本人のみに強制（`hqt_delete`ポリシーを`created_by=auth.uid()`に変更）
+- **B-4** 「自分が依頼」フィルタを担当フィルタと独立した`#creatorsel`として追加
+- **B-5** 画面左端からの右スワイプで前の画面に戻る機能をネイティブtouchイベント（`{passive:true}`、`preventDefault`なし）で実装。既存の`id="back"`ボタンを汎用的に流用
+- **B-6** テンプレ編集に👁プレビューを追加。保存前の入力値から仮のタスクオブジェクトを組み立て、本番と同じ`taskCardHtml`/`stepOrGroupHtml`で描画
+
+### C（機能追加）
+- **C-1** タスク内コメント＋@メンション（本部・社長・チーム長のみ候補）＋アプリ内通知。`hq_task_comments`テーブル新設
+- **C-2** Chatwork通知チャンネル。`hq_notify_channels`にkind='chatwork'とroom_id列を追加、個人のChatwork ID登録用`hq_user_chatwork`を新設。Chatwork APIトークンはブラウザに渡さずSupabase Edge Function `notify-chatwork`（secret `CHATWORK_API_TOKEN`をサーバー側で保持）経由で中継。`hq_check_alerts`/`hq_notify_step_event`/`hq_notify_comment`の戻り値を`channel_kind/target/keyword/title/body`の統一形式に整理してLark・Chatworkを共通ディスパッチ（`sendNotifications`）で処理。**実装後にCORSプリフライト未対応でブラウザから一切呼び出せない不具合をE2Eで発見・修正**（Edge Function側にOPTIONSハンドラとAccess-Control-Allow-*ヘッダを追加、version2として再デプロイ）
+- **C-3** タスクにメモ欄（`hq_tasks.memo`）を追加。詳細画面で編集（本部/社長/マスターのみ、既存のhqt_update RLSで強制）、ボードカードには先頭1行のみ省略表示
+- **C-4** テンプレに概要(`description`)・URL・写真、テンプレの工程ひな形・実タスクの工程それぞれにもリンク（URL/マニュアル）と写真を追加できるように拡張。`hq_task_links`/`hq_task_photos`のowner列を`task_id/step_id/template_id/template_step_id`の排他4択に拡張。マニュアル種別を選ぶと`manual_items`（別スレッド管理・category='本部マニュアル'・読み取り専用）からプルダウン選択でき、0件時は案内文＋任意URL入力にフォールバック。`hq_generate_today()`をテンプレの概要をタスクへコピーするよう更新。**副産物の修正**: テンプレ保存が工程ひな形を毎回delete→再作成する実装だったため、工程に付けた添付がcascadeで保存のたびに消えるバグを、id維持のupsert方式に変更して解消
+- **C-5** 「今日の毎日タスク」画面に🖨印刷ボタンを追加。対象タスクをチェックボックスで選択→タスク名・工程・担当・期限・チェック欄□の印刷用レイアウトをプレビュー→`window.print()`。`@media print`で画面UIを非表示にし印刷エリアのみ出力（PDF生成ライブラリ不使用）
+- **C-6** テンプレート管理に📤CSV一括登録を追加。雛形CSV（BOM付きUTF-8、記入例2テンプレ×3工程入り）をダウンロード→編集したCSVをアップロード→取込前プレビュー（作成件数・エラー行を行番号と理由付きで表示）→確定で一括作成。担当者はメールアドレスでusersと照合し、未一致・対象外ロールはエラー行として明示しスキップ（黙って捨てない）
+
+### 実機E2E（全項目で一時ユーザー作成→検証→削除を実施）
+- 一時ユーザー（HQ役・TEAM役・TENCHO役）を都度Admin APIで作成し、各画面の表示・操作をブラウザで直接検証（フォーム入力→保存→DB照会で確認、の往復）
+- **RLS敵対テスト**: メモ欄PATCH（TENCHO役で403）、C-2のチャンネル/ルールCRUD（TEAM役で読取可・書込403）、C-4のテンプレ/工程添付（TEAM役で読取可・書込403）、C-6のテンプレ作成（TENCHO役で403）をAPI直叩きで確認
+- B-1: 375px幅で`.board`のflex/overflow-x/scroll-snap-typeが有効なことをcomputed styleで確認。B-5: 合成touchイベントでdetail→boardへの画面遷移を確認
+- C-2はChatwork実送信こそ未検証（トークン未設定のため）だが、Edge Function呼び出し自体（CORS含む）・`hq_notify_comment`の戻り値形状・アプリ内通知INSERTは確認済み
+- テスト後は毎回、作成したテストタスク・テンプレ・チャンネル・ルール・コメント・一時ユーザーを全削除し、件数0を確認してから次の項目へ
+- 構文チェック: 各コミット前に`node -c`で`<script>`ブロックを確認
+
+### 未検証・ユーザーに依頼が必要なこと
+- **Chatwork APIトークン**: `notify-chatwork` Edge Functionは実装・デプロイ済み（CORS修正込み）だが、`CHATWORK_API_TOKEN`のシークレット未設定のため実際のChatwork送信は未検証。トークンを発行のうえ、チャットで貼り付けるかローカルファイルで渡していただければ設定して送信確認まで行う
+- Lark Webhookの実URLでの送信可否は3d-3の時点から未検証のまま（ダミーURLでのCORS制約により）。実際の運用URLでの確認は別途要
+- C-4のマニュアルプルダウンは`manual_items`に`category='本部マニュアル'`のデータが現状0件のため、0件フォールバック表示までの確認に留まる（データ登録後の実際の選択動作は未検証）
