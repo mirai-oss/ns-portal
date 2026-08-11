@@ -178,6 +178,20 @@ let TASKS=[];             // ボード表示範囲のタスク（工程埋め込
 let SEARCHQ="";
 let SEARCH_RESULTS=null;  // 検索中はこちらを表示
 let FILTER={corp:null,freq:null,assignee:null,creator:null,signal:null};
+let SORT_MODE=localStorage.getItem("hq_sort")||"due";  // due | created | stalled（このブラウザだけに効く。DB保存なし）
+const SORT_LABEL={due:"期限が近い順（既定）",created:"作成が新しい順",stalled:"停滞が長い順"};
+function sortTasks(list){
+  const arr=list.slice();
+  if(SORT_MODE==="created"){
+    arr.sort((a,b)=>new Date(b.created_at)-new Date(a.created_at));
+  } else if(SORT_MODE==="stalled"){
+    arr.sort((a,b)=>computeSignal(b).stalledDays-computeSignal(a).stalledDays);
+  } else {
+    const key=t=>t.due_date?new Date(t.due_date+"T"+(t.due_time?t.due_time.slice(0,8):"23:59:59")).getTime():Infinity;
+    arr.sort((a,b)=>key(a)-key(b));
+  }
+  return arr;
+}
 let CUR_TASK=null;        // 詳細表示中のタスク（工程・リンク・写真・履歴込み）
 let OPEN_STEP=null;       // 詳細画面で開いている工程id
 let NOTIFICATIONS=[];     // アプリ内通知（自分宛）
@@ -309,7 +323,7 @@ function taskCardHtml(t){
 }
 function renderBoard(u){
   const src=SEARCH_RESULTS!==null?SEARCH_RESULTS:TASKS;
-  const list=applyFilters(src);
+  const list=sortTasks(applyFilters(src));
   const cols={todo:[],doing:[],done:[]};
   list.forEach(t=>cols[t.status]?.push(t));
   const cnt=summaryCounts();
@@ -351,6 +365,9 @@ function renderBoard(u){
         <option value="${u.id}" ${FILTER.assignee===u.id?"selected":""}>自分（${esc(u.name)}）</option>
         ${assignableUsers().filter(x=>x.id!==u.id).map(x=>`<option value="${x.id}" ${FILTER.assignee===x.id?"selected":""}>${esc(x.name)}</option>`).join("")}
       </select></span>
+      <span>並び替え: <select id="sortsel" style="width:auto;display:inline-block;padding:5px 10px;font-size:12px;border-radius:99px">
+        ${Object.entries(SORT_LABEL).map(([k,v])=>`<option value="${k}" ${SORT_MODE===k?"selected":""}>${esc(v)}</option>`).join("")}
+      </select></span>
     </div>
     <div>
       <button class="linkbtn" id="godaily">📆 今日の毎日タスク →</button>
@@ -388,6 +405,7 @@ function wireBoard(u){
   document.querySelectorAll("[data-corp]").forEach(c=>c.onclick=()=>{FILTER.corp=c.dataset.corp||null;renderBoard(u);});
   document.querySelectorAll("[data-freq]").forEach(c=>c.onclick=()=>{FILTER.freq=c.dataset.freq||null;renderBoard(u);});
   $("assigneesel").onchange=e=>{FILTER.assignee=e.target.value||null;renderBoard(u);};
+  $("sortsel").onchange=e=>{SORT_MODE=e.target.value; localStorage.setItem("hq_sort",SORT_MODE); renderBoard(u);};
   document.querySelectorAll("[data-sig]").forEach(c=>c.onclick=()=>{
     const v=c.dataset.sig; FILTER.signal=FILTER.signal===v?null:v; renderBoard(u);
   });
