@@ -443,7 +443,7 @@ function renderDetail(u){
   </div>
 
   <div class="sec"><h3>① 工程（サブタスク）— ${doneCount}/${steps.length}</h3>
-    <div id="steplist">${steps.map(s=>stepHtml(t,s,u)).join("")||'<div class="card">工程がありません</div>'}</div>
+    <div id="steplist">${groupStoreSteps(steps).map(g=>stepOrGroupHtml(t,g,u)).join("")||'<div class="card">工程がありません</div>'}</div>
   </div>
 
   ${t.notes?`<div class="sec"><h3>② ⚠️ 注意事項</h3><div class="notes-box">${esc(t.notes).replace(/\\n/g,"<br>")}</div></div>`:""}
@@ -492,6 +492,44 @@ function stepHtml(t,s,u){
       <button class="btn sm" style="margin-top:8px" data-complete="${s.id}">この工程を完了にする</button>
       <div class="err" id="stepmsg-${s.id}"></div>
     </div>`:(photos.length?`<div class="photo-grid">${photos.map(p=>`<a href="${photoUrl(p.storage_path)}" target="_blank"><img src="${photoUrl(p.storage_path)}"></a>`).join("")}</div>`:"")}
+  </div>`;
+}
+function stepOrGroupHtml(t,g,u){
+  if(!g.isGroup) return stepHtml(t,g.rows[0],u);
+  const sorted=g.rows.slice().sort((a,b)=>{
+    const sa=STORES.find(x=>x.id===a.store_id), sb=STORES.find(x=>x.id===b.store_id);
+    return (sa?sa.store_no:"").localeCompare(sb?sb.store_no:"");
+  });
+  const doneCount=sorted.filter(r=>r.completed_at).length;
+  const first=sorted[0];
+  return `<div class="step">
+    <div style="padding:10px 12px 4px;font-weight:600">🏪 ${esc(first.title)} — ${doneCount}/${sorted.length}</div>
+    <div style="padding:0 12px 10px">
+    ${sorted.map(s=>{
+      const store=STORES.find(x=>x.id===s.store_id); const name=store?store.name:"店舗";
+      const canTouch=canManage(u)||s.assignee_id===u.id||(!s.assignee_id);
+      const photos=stepPhotosFor(t,s.id);
+      if(s.completed_at){
+        const badge=s.judgement==="issue"?`<span style="color:var(--stall)">⚠ 異常あり</span>`:(s.is_binary?`<span style="color:var(--ok)">✓ OK</span>`:"✓");
+        return `<div class="storecheck-row"><span style="flex:1">${esc(name)}</span>${badge}<span class="meta">${esc(s.issue_note||"—")}</span></div>`;
+      }
+      if(!canTouch) return `<div class="storecheck-row"><span style="flex:1">${esc(name)}</span><span class="meta">担当: ${esc(userName(s.assignee_id)||"未定")}</span></div>`;
+      const open=OPEN_STEP===s.id;
+      return `<div style="border-bottom:1px solid var(--line)">
+        <div class="storecheck-row" data-stepopen="${s.id}" style="cursor:pointer">
+          <span style="flex:1">${esc(name)}</span><span>${open?"▲":"▼"}</span>
+        </div>
+        ${open?`<div class="step-body" style="padding-bottom:10px">
+          ${s.is_binary?`<label>判定</label><select id="judge-${s.id}"><option value="">選択してください</option><option value="ok">OK</option><option value="issue">異常あり</option></select>
+            <div id="issuewrap-${s.id}" style="display:none"><label>異常メモ（必須）</label><textarea id="issuenote-${s.id}" rows="2"></textarea></div>`:""}
+          ${s.requires_photo?`<label>写真（必須）</label><input type="file" accept="image/*" capture="environment" id="stepphoto-${s.id}">
+            <div class="photo-grid">${photos.map(p=>`<a href="${photoUrl(p.storage_path)}" target="_blank"><img src="${photoUrl(p.storage_path)}"></a>`).join("")}</div>`:""}
+          <button class="btn sm" style="margin-top:8px" data-complete="${s.id}">この工程を完了にする</button>
+          <div class="err" id="stepmsg-${s.id}"></div>
+        </div>`:""}
+      </div>`;
+    }).join("")}
+    </div>
   </div>`;
 }
 function linkHtml(l,canEdit){
