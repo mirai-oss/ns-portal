@@ -1,0 +1,363 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>N-Styleポータル ホーム改修プロトタイプ</title>
+<style>
+:root{
+  color-scheme: light;
+  --ink:#221d16; --muted:#7d7466; --line:#e3ddd2; --soft:#f4f1ea; --panel:#ffffff;
+  --accent:#b73a1c; --accent-soft:#f6e7e2;
+  --green:#2f8a4b; --green-soft:#e7f4ec; --amber:#a87b00; --amber-soft:#f9efd6;
+  --red:#bd3f32; --red-soft:#fce6e2; --blue:#2b6cb0; --blue-soft:#e8effb;
+  --side:#241f18; --shadow:0 12px 30px rgba(45,35,20,.08);
+  font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Noto Sans JP",sans-serif;
+}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;background:#efece4;color:var(--ink);font-size:14px}
+button,input,select{font:inherit}
+button{border:0;cursor:pointer;background:none;color:inherit}
+.shell{display:grid;grid-template-columns:236px minmax(0,1fr);min-height:100vh}
+/* ---- サイドバー ---- */
+.side{background:var(--side);color:#efe7da;padding:20px 14px;display:flex;flex-direction:column;gap:18px}
+.brand{display:flex;align-items:center;gap:11px;padding:0 6px 14px;border-bottom:1px solid rgba(255,255,255,.12)}
+.mark{width:38px;height:38px;border-radius:9px;display:grid;place-items:center;background:#e2b343;font-size:20px}
+.brand strong{display:block;font-size:14.5px;line-height:1.25}
+.brand span{color:#a89c88;font-size:11px}
+.nav{display:grid;gap:3px}
+.nav .cap{font-size:10px;letter-spacing:.14em;color:#8d8271;padding:12px 12px 4px}
+.nav button,.nav a{min-height:40px;border-radius:8px;color:#cfc5b4;display:flex;align-items:center;gap:10px;padding:0 12px;text-align:left;text-decoration:none;font-size:13.5px}
+.nav .active,.nav button:hover,.nav a:hover{background:rgba(255,255,255,.1);color:#fff}
+.nav .ext::after{content:"↗";margin-left:auto;font-size:11px;color:#8d8271}
+.nav .cnt{margin-left:auto;background:var(--accent);color:#fff;font-size:10.5px;font-weight:700;border-radius:99px;padding:1px 7px}
+.side-foot{margin-top:auto;font-size:11px;color:#8d8271;padding:0 6px}
+/* ---- メイン ---- */
+main{min-width:0;display:flex;flex-direction:column}
+.topbar{min-height:64px;display:flex;align-items:center;justify-content:space-between;gap:14px;padding:12px 26px;background:rgba(255,255,255,.92);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:5;backdrop-filter:blur(8px)}
+h1{margin:0;font-size:19px}
+.dateline{color:var(--muted);font-size:12px;margin-top:3px}
+.tools{display:flex;gap:8px;align-items:center;flex-wrap:wrap;justify-content:flex-end}
+.search{display:flex;align-items:center;gap:8px;min-height:38px;padding:0 12px;border:1px solid var(--line);border-radius:8px;background:#fff;width:min(280px,40vw)}
+.search input{border:0;outline:0;width:100%;background:transparent}
+.rolepick{min-height:38px;border:1px solid var(--accent);color:var(--accent);font-weight:700;border-radius:8px;background:var(--accent-soft);padding:0 10px}
+.iconb{width:38px;height:38px;border-radius:8px;display:grid;place-items:center;background:#fff;border:1px solid var(--line);position:relative;font-size:15px}
+.iconb .dot{position:absolute;top:7px;right:7px;width:8px;height:8px;border-radius:99px;background:var(--red);border:2px solid #fff}
+.content{width:min(1440px,100%);margin:0 auto;padding:20px 26px 40px;display:grid;gap:16px}
+.demo-note{background:var(--amber-soft);border:1px solid var(--amber);border-radius:8px;padding:8px 14px;font-size:12px;color:#6b5200}
+/* ---- KPI ---- */
+.summary{display:grid;grid-template-columns:repeat(4,minmax(150px,1fr));gap:12px}
+.card,.panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;box-shadow:var(--shadow)}
+.card{padding:14px 16px;min-height:118px;display:grid;align-content:space-between;gap:10px}
+.card a{color:inherit;text-decoration:none}
+.chead{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.ctitle{color:var(--muted);font-size:12px}
+.badge{display:inline-flex;align-items:center;height:24px;border-radius:99px;font-size:11.5px;font-weight:700;padding:0 9px;white-space:nowrap}
+.b-up{color:var(--green);background:var(--green-soft)} .b-warn{color:var(--amber);background:var(--amber-soft)}
+.b-bad{color:var(--red);background:var(--red-soft)} .b-info{color:var(--blue);background:var(--blue-soft)}
+.value{font-size:27px;font-weight:800;line-height:1;font-variant-numeric:tabular-nums}
+.sub{color:var(--muted);font-size:12px;line-height:1.5}
+/* ---- パネル ---- */
+.grid2{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(300px,.9fr);gap:16px;align-items:start}
+.split{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px;align-items:start}
+.phead{min-height:52px;display:flex;align-items:center;justify-content:space-between;gap:10px;padding:12px 16px;border-bottom:1px solid var(--line)}
+.phead h2{margin:0;font-size:15px}
+.phead .sub2{color:var(--muted);font-size:12px}
+.seg{display:flex;padding:3px;gap:3px;border:1px solid var(--line);border-radius:8px;background:var(--soft)}
+.seg button{min-height:28px;border-radius:6px;padding:0 10px;color:var(--muted);font-size:12.5px}
+.seg button.active{background:#fff;color:var(--ink);box-shadow:0 2px 8px rgba(45,35,20,.1)}
+.chart-area{height:280px;padding:10px 14px 16px}
+canvas{width:100%;height:100%;display:block}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{padding:11px 16px;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap}
+th{color:var(--muted);font-size:11.5px;background:#faf8f3}
+tr:last-child td{border-bottom:0}
+td.num{font-variant-numeric:tabular-nums}
+.st{display:inline-flex;align-items:center;height:23px;padding:0 9px;border-radius:99px;font-size:11.5px;font-weight:700;white-space:nowrap}
+.s-ok{color:var(--green);background:var(--green-soft)} .s-bad{color:var(--red);background:var(--red-soft)}
+.s-warn{color:var(--amber);background:var(--amber-soft)} .s-mut{color:var(--muted);background:var(--soft)}
+.tblwrap{overflow-x:auto}
+/* お知らせ */
+.post{padding:12px 16px;border-bottom:1px solid var(--line)}
+.post:last-child{border-bottom:0}
+.post b{font-size:13.5px}
+.post .pm{color:var(--muted);font-size:11.5px;margin-top:2px}
+.post p{margin:6px 0 0;font-size:12.5px;line-height:1.6;color:#4d463c}
+.pin{color:var(--accent)}
+/* アラート・タスク */
+.item{display:grid;grid-template-columns:36px minmax(0,1fr) auto;gap:11px;align-items:center;padding:11px 16px;border-bottom:1px solid var(--line)}
+.item:last-child{border-bottom:0}
+.item strong{display:block;font-size:13px;margin-bottom:3px}
+.item span{color:var(--muted);font-size:12px}
+.av{width:36px;height:36px;border-radius:9px;display:grid;place-items:center;font-size:15px;background:var(--soft)}
+.task{grid-template-columns:30px minmax(0,1fr) auto;cursor:pointer;width:100%;text-align:left;background:none}
+.chk{width:21px;height:21px;border:2px solid #b3a892;border-radius:6px;display:grid;place-items:center;background:#fff}
+.task.done .chk{background:var(--green);border-color:var(--green)}
+.task.done .chk::before{content:"";width:9px;height:5px;border-left:2px solid #fff;border-bottom:2px solid #fff;transform:rotate(-45deg);margin-top:-2px}
+.task.done strong,.task.done span{color:#9a8f7d;text-decoration:line-through}
+.empty{padding:22px;color:var(--muted);text-align:center;font-size:12.5px}
+footer{padding:14px 26px 26px;color:var(--muted);font-size:11.5px;text-align:center}
+@media(max-width:1080px){
+  .shell{grid-template-columns:1fr}
+  .side{position:sticky;top:0;z-index:6;padding:10px;flex-direction:row;align-items:center;overflow-x:auto;gap:8px}
+  .brand{border:0;padding:0;flex:0 0 auto}
+  .nav{display:flex;flex:0 0 auto}
+  .nav .cap{display:none}
+  .nav button,.nav a{white-space:nowrap}
+  .side-foot{display:none}
+  .grid2,.split{grid-template-columns:1fr}
+  .summary{grid-template-columns:repeat(2,minmax(150px,1fr))}
+}
+@media(max-width:680px){
+  .topbar{flex-direction:column;align-items:stretch}
+  .content{padding:14px}
+  .summary{grid-template-columns:1fr 1fr}
+}
+</style>
+</head>
+<body>
+<div class="shell">
+<aside class="side">
+  <div class="brand"><div class="mark">🐔</div><div><strong>N-Styleグループ</strong><span>ポータル</span></div></div>
+  <nav class="nav">
+    <button class="active">🏠 概要（この画面）</button>
+    <button>📢 お知らせ <span class="cnt">2</span></button>
+    <button>📌 本部タスク <span class="cnt">3</span></button>
+    <div class="cap">各システムへ</div>
+    <a class="ext" href="javascript:void(0)">📝 日報・週報</a>
+    <a class="ext" href="javascript:void(0)">📊 経営ダッシュボード</a>
+    <a class="ext" href="javascript:void(0)">🧾 精算ダッシュボード</a>
+    <a class="ext" href="javascript:void(0)">🗂️ 社内情報管理</a>
+    <div class="cap">管理</div>
+    <button>⚙️ 権限・通知設定</button>
+  </nav>
+  <div class="side-foot">ログイン: 中山 俊士（マスター）</div>
+</aside>
+
+<main>
+  <header class="topbar">
+    <div><h1>おはようございます、中山さん</h1><div class="dateline" id="today"></div></div>
+    <div class="tools">
+      <label class="search">🔍<input id="q" type="search" placeholder="タスク・お知らせ・機能を検索"></label>
+      <select class="rolepick" id="role" title="役割によって見える内容が変わるデモ">
+        <option value="ceo">👑 社長・本部の見え方</option>
+        <option value="tencho">🏪 店長の見え方</option>
+        <option value="staff">👤 社員・アルバイトの見え方</option>
+      </select>
+      <button class="iconb" title="通知">🔔<span class="dot"></span></button>
+    </div>
+  </header>
+
+  <section class="content">
+    <div class="demo-note">🔧 これは<b>操作できるデモ（数字は全部サンプル）</b>です。右上の「👑 社長・本部の見え方」を切り替えると、役割ごとに画面がどう変わるかを確認できます。</div>
+
+    <!-- KPI -->
+    <div class="summary" id="kpis"></div>
+
+    <!-- チャート + アラート -->
+    <div class="grid2" id="chartrow">
+      <section class="panel">
+        <div class="phead"><h2>売上推移（全店）</h2>
+          <div class="seg" id="metricseg">
+            <button class="active" data-m="sales">売上</button><button data-m="yoy">前年比</button><button data-m="fl">F/L率</button>
+          </div>
+        </div>
+        <div class="chart-area"><canvas id="trend"></canvas></div>
+      </section>
+      <section class="panel">
+        <div class="phead"><h2>⚠️ 要対応（全システム横断）</h2><span class="sub2" id="alertcnt"></span></div>
+        <div id="alerts"></div>
+      </section>
+    </div>
+
+    <!-- お知らせ + 本日のタスク -->
+    <div class="split">
+      <section class="panel">
+        <div class="phead"><h2>📢 お知らせ（掲示板）</h2><span class="sub2">すべて見る →</span></div>
+        <div id="posts"></div>
+      </section>
+      <section class="panel">
+        <div class="phead"><h2>✅ 今日の自分のタスク</h2><span class="sub2" id="taskcnt"></span></div>
+        <div id="tasks"></div>
+      </section>
+    </div>
+
+    <!-- 店舗別の今日 -->
+    <section class="panel" id="storepanel">
+      <div class="phead"><h2>🏪 店舗別・今日の状況</h2><span class="sub2">昨日売上=経営D ／ チェック=現場アプリ ／ 日報=日報システム</span></div>
+      <div class="tblwrap"><table>
+        <thead><tr><th>店舗</th><th>昨日の売上</th><th>前年同曜日比</th><th>チェックシート</th><th>日報（昨日分）</th></tr></thead>
+        <tbody id="stores"></tbody>
+      </table></div>
+    </section>
+
+    <!-- 最近の動き -->
+    <section class="panel">
+      <div class="phead"><h2>🕐 最近の動き（全システムの記録）</h2><span class="sub2">直近6件</span></div>
+      <div id="timeline"></div>
+    </section>
+  </section>
+  <footer>N-Styleポータル ホーム改修プロトタイプ（2026-08-12）／ 数字・名前はすべてデモ用サンプル</footer>
+</main>
+</div>
+
+<script>
+const $=id=>document.getElementById(id);
+const today=new Date();
+$("today").textContent=new Intl.DateTimeFormat("ja-JP",{year:"numeric",month:"long",day:"numeric",weekday:"long"}).format(today)+" ・ データ更新 朝6:00（手動更新可）";
+
+/* ================= デモデータ ================= */
+const KPI={
+ ceo:[
+  ["今月の売上（全店）","¥38.2M","+6.8%","b-up","目標の54%・12日時点（経営Dから）"],
+  ["日報の提出（昨日）","12/14人","2人 未提出","b-warn","未提出: 恵比寿1・川崎1（日報から）"],
+  ["本部タスク","停滞 1件","期限超過 1","b-bad","精算処理が振込で2日停止（本部タスクから）"],
+  ["チェックシート（今日）","42/64","65%","b-info","クローズ分は夜に増えます（現場アプリから）"]
+ ],
+ tencho:[
+  ["自店の昨日売上","¥512K","+4.2%","b-up","恵比寿（経営Dから）"],
+  ["今日のチェック","6/9","あと3つ","b-warn","クローズ前に完了してください"],
+  ["自分のタスク","3件","期限今日 1","b-info","本部タスクから"],
+  ["日報","未提出","","b-bad","今日の分がまだです"]
+ ],
+ staff:[
+  ["今日のチェック","2/5","あと3つ","b-warn","担当分のみ表示"],
+  ["自分のタスク","1件","","b-info",""],
+  ["日報","提出済み ✓","","b-up","8:12に提出"],
+  ["お知らせ","新着 2件","","b-info","掲示板を確認してください"]
+ ]
+};
+const ALERTS={
+ ceo:[
+  ["📌","精算処理が2日停止しています","いま: 振込実行（中山さん）／期限 8/13","本部タスク","s-bad"],
+  ["📝","日報の未提出が2人います","恵比寿1名・川崎1名（昨日分）","日報","s-warn"],
+  ["☑️","入金確認で「異常あり」1件","恵比寿: 現金入金 ▲12,400円（原さん報告）","チェック","s-bad"],
+  ["🧾","精算書の確認期限が近づいています","委託4店舗分・8/15まで","精算","s-warn"]
+ ],
+ tencho:[
+  ["☑️","クローズチェックが未完了です","昨日: 3項目が未実施のまま","チェック","s-warn"],
+  ["📌","「販促POP差し替え」の期限が今日です","担当: あなた","本部タスク","s-bad"]
+ ],
+ staff:[
+  ["☑️","今日の担当チェックが残っています","仕込み分 3項目","チェック","s-warn"]
+ ]
+};
+const POSTS=[
+ ["📌 8月の営業方針について","8/12 9:00 ／ 中山 俊士","お盆期間の営業時間と、各店の重点商品について共有します。動画を確認してください。",true],
+ ["新メニュー研修動画","8/10 15:00 ／ 原 美香","鶏武者の新メニュー3品の調理動画をアップしました。全店キッチン担当は視聴必須です。",false],
+ ["従業員紹介キャンペーン開始","8/8 11:00 ／ 青山 純","紹介1名につき…詳細は本文参照。",false]
+];
+const TASKS={
+ ceo:[["精算: 振込実行（8月分）","期限 8/13 ⚠ 2日停止",false],["役員会資料の確認","期限 今日 15:00",false],["新規出店候補の内見日程調整","期限 8/15",true]],
+ tencho:[["販促POP差し替え","期限 今日",false],["アルバイト面接（16:00）","今日",false],["発注量の見直しメモ提出","期限 8/14",true]],
+ staff:[["清掃写真の提出（トイレ・客席）","今日中",false]]
+};
+const STORES=[
+ ["鳥一代 本店","¥486K","+3.1%",[8,9],"提出済み"],
+ ["鳥一代 はなれ","¥352K","+1.8%",[9,9],"提出済み"],
+ ["芝の鳥一代","¥298K","-2.4%",[7,9],"提出済み"],
+ ["鳥一代 恵比寿","¥512K","+4.2%",[6,9],"未提出"],
+ ["鳥一代 新橋","¥441K","+9.6%",[9,9],"提出済み"],
+ ["鶏武者 新横浜","¥389K","+0.9%",[5,9],"提出済み"],
+ ["鶏武者 川崎店","¥367K","-1.1%",[4,9],"未提出"],
+ ["黒霧屋 新横浜","¥298K","+5.0%",[8,9],"提出済み"]
+];
+const TIMELINE=[
+ ["8:12","日報が提出されました","本店・はなれ・芝 ほか9件（日報）"],
+ ["8:05","チェックシート: オープン準備が完了","本店 9/9・新橋 9/9（現場アプリ）"],
+ ["7:41","入金確認で異常が報告されました","恵比寿: 現金入金 ▲12,400円 → 社長ダイレクトに通知済み（チェック）"],
+ ["6:00","今日の毎日タスクを自動生成","本部タスク 4件・店舗チェック 8店舗分"],
+ ["昨日 23:10","昨日売上を取込","ns-daily-importが8店舗分を更新（経営D）"],
+ ["昨日 18:30","お知らせが投稿されました","「8月の営業方針について」（掲示板）"]
+];
+const CHART={
+ sales:{data:[28,31,29,35,38,36,41,38,42,45,44,48],label:"月次売上（百万円）",color:"#b73a1c"},
+ yoy:{data:[102,104,99,107,109,105,111,106,108,112,110,114],label:"前年比（%）",color:"#2b6cb0"},
+ fl:{data:[58,57,59,56,55,56,54,55,54,53,54,52],label:"F/L合計率（%）",color:"#2f8a4b"}
+};
+
+/* ================= 描画 ================= */
+function esc(s){return String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
+let role="ceo";
+function renderKpis(){
+ $("kpis").innerHTML=KPI[role].map(([t,v,b,tone,sub])=>`
+  <article class="card"><div class="chead"><div class="ctitle">${t}</div>${b?`<span class="badge ${tone}">${b}</span>`:""}</div>
+  <div><div class="value">${v}</div><div class="sub">${sub}</div></div></article>`).join("");
+}
+function renderAlerts(){
+ const list=ALERTS[role];
+ $("alertcnt").textContent=`${list.length}件`;
+ $("alerts").innerHTML=list.length?list.map(([ic,t,d,src,tone])=>`
+  <div class="item"><div class="av">${ic}</div><div><strong>${esc(t)}</strong><span>${esc(d)}</span></div><span class="st ${tone}">${src}</span></div>`).join("")
+  :`<div class="empty">要対応はありません 🎉</div>`;
+}
+function renderPosts(){
+ $("posts").innerHTML=POSTS.slice(0,3).map(([t,m,body,pin])=>`
+  <div class="post"><b>${pin?'<span class="pin">📌 </span>':""}${esc(t)}</b><div class="pm">${esc(m)}</div><p>${esc(body)}</p></div>`).join("");
+}
+let taskState=JSON.parse(JSON.stringify(TASKS));
+function renderTasks(){
+ const list=taskState[role];
+ const done=list.filter(t=>t[2]).length;
+ $("taskcnt").textContent=`${done}/${list.length} 完了`;
+ $("tasks").innerHTML=list.map(([t,due,d],i)=>`
+  <button class="item task ${d?"done":""}" data-i="${i}"><span class="chk"></span>
+  <span><strong>${esc(t)}</strong><span>${esc(due)}</span></span>
+  <span class="st ${d?"s-ok":"s-mut"}">${d?"完了":"未完了"}</span></button>`).join("");
+}
+function renderStores(){
+ $("stores").innerHTML=STORES.map(([n,uri,yoy,ck,np])=>{
+  const pct=Math.round(ck[0]/ck[1]*100);
+  const yoyBad=yoy.startsWith("-");
+  return `<tr><td><strong>${esc(n)}</strong></td><td class="num">${uri}</td>
+   <td class="num"><span class="st ${yoyBad?"s-bad":"s-ok"}">${yoy}</span></td>
+   <td><span class="st ${pct===100?"s-ok":pct>=60?"s-warn":"s-bad"}">${ck[0]}/${ck[1]}（${pct}%）</span></td>
+   <td><span class="st ${np==="提出済み"?"s-ok":"s-bad"}">${np}</span></td></tr>`;
+ }).join("");
+}
+function renderTimeline(){
+ $("timeline").innerHTML=TIMELINE.map(([tm,t,d])=>`
+  <div class="item"><div class="av" style="font-size:11px;background:transparent;color:var(--muted)">${tm}</div>
+  <div><strong>${esc(t)}</strong><span>${esc(d)}</span></div><span></span></div>`).join("");
+}
+function drawChart(m="sales"){
+ const cv=$("trend"),ctx=cv.getContext("2d");
+ const rect=cv.getBoundingClientRect(),r=window.devicePixelRatio||1;
+ cv.width=Math.max(500,rect.width*r);cv.height=Math.max(220,rect.height*r);ctx.scale(r,r);
+ const w=cv.width/r,h=cv.height/r,pad={t:20,r:16,b:30,l:42};
+ const {data,color,label}=CHART[m];
+ const max=Math.max(...data)*1.15,min=Math.min(...data)*0.85;
+ const pw=w-pad.l-pad.r,ph=h-pad.t-pad.b;
+ ctx.clearRect(0,0,w,h);
+ ctx.strokeStyle="#eee7db";ctx.fillStyle="#7d7466";ctx.font="11px system-ui";ctx.lineWidth=1;
+ for(let i=0;i<=4;i++){const y=pad.t+ph*i/4;ctx.beginPath();ctx.moveTo(pad.l,y);ctx.lineTo(w-pad.r,y);ctx.stroke();
+  ctx.fillText(String(Math.round(max-(max-min)*i/4)),6,y+4);}
+ const pts=data.map((v,i)=>[pad.l+pw*i/(data.length-1),pad.t+ph-((v-min)/(max-min))*ph]);
+ const g=ctx.createLinearGradient(0,pad.t,0,h-pad.b);g.addColorStop(0,color+"2e");g.addColorStop(1,color+"00");
+ ctx.beginPath();pts.forEach(([x,y],i)=>i?ctx.lineTo(x,y):ctx.moveTo(x,y));
+ ctx.lineTo(w-pad.r,h-pad.b);ctx.lineTo(pad.l,h-pad.b);ctx.closePath();ctx.fillStyle=g;ctx.fill();
+ ctx.beginPath();pts.forEach(([x,y],i)=>i?ctx.lineTo(x,y):ctx.moveTo(x,y));ctx.strokeStyle=color;ctx.lineWidth=2.5;ctx.stroke();
+ pts.forEach(([x,y])=>{ctx.beginPath();ctx.arc(x,y,3.5,0,7);ctx.fillStyle="#fff";ctx.fill();ctx.strokeStyle=color;ctx.lineWidth=2;ctx.stroke();});
+ ctx.fillStyle="#7d7466";
+ ["9月","10月","11月","12月","1月","2月","3月","4月","5月","6月","7月","8月"].forEach((l,i)=>{ctx.fillText(l,pad.l+pw*i/11-9,h-10)});
+ ctx.fillText(label,pad.l,14);
+}
+/* ================= 操作 ================= */
+$("role").onchange=e=>{role=e.target.value;renderKpis();renderAlerts();renderTasks();
+ $("storepanel").style.display=role==="staff"?"none":"";
+ $("chartrow").style.display=role==="ceo"?"":"none";
+};
+$("metricseg").querySelectorAll("button").forEach(b=>b.onclick=()=>{
+ $("metricseg").querySelectorAll("button").forEach(x=>x.classList.remove("active"));
+ b.classList.add("active");drawChart(b.dataset.m);
+});
+$("tasks").addEventListener("click",e=>{
+ const b=e.target.closest("[data-i]");if(!b)return;
+ taskState[role][+b.dataset.i][2]=!taskState[role][+b.dataset.i][2];renderTasks();
+});
+$("q").addEventListener("input",()=>{/* 実装版では機能ガイド＋お知らせ＋タスクの横断検索 */});
+window.addEventListener("resize",()=>drawChart(document.querySelector("#metricseg .active").dataset.m));
+renderKpis();renderAlerts();renderPosts();renderTasks();renderStores();renderTimeline();drawChart("sales");
+</script>
+</body>
+</html>
