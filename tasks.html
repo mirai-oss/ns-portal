@@ -121,9 +121,33 @@ textarea{resize:vertical}
 .act-row{font-size:12px;color:var(--muted);padding:5px 0;border-bottom:1px solid var(--line)}
 .act-row:last-child{border-bottom:none}
 .act-row b{color:var(--ink);font-weight:600}
-.stepform-row{display:flex;gap:8px;align-items:flex-end;margin-bottom:8px;flex-wrap:wrap}
+/* align-items:flex-start（bottom揃えにしない）。工程の期限日のように入力の下にヒント文が
+   付く項目があると、bottom揃えでは項目ごとに高さが変わりラベルの位置がガタつくため */
+.stepform-row{display:flex;gap:8px;align-items:flex-start;margin-bottom:8px;flex-wrap:wrap}
 .stepform-row .f{flex:1;min-width:120px}
 .stepform-row .f label{margin:0 0 4px}
+@media(max-width:600px){
+  /* 狭い画面で2列に押し込むと「担当（空欄=誰でも可）」等のラベル・日付入力が
+     崩れるため、1項目1行に積む */
+  .stepform-row .f{flex:1 1 100%}
+}
+/* チェック＋短いラベルの並び（例: 🏪店舗別チェック／⚖️2択／📷写真必須）。
+   横並びのまま文字だけが折り返すと縦に潰れて読めなくなるため、
+   ラベル内では折り返させず、入らなければ項目ごと次の行へ回す */
+/* input,select,textareaに一律width:100%が掛かっているため、チェックボックスは
+   明示的にwidth:autoで打ち消さないと行いっぱいに広がってしまう（.chipcheckと同じ対策） */
+.optchk input,.optline input{width:auto}
+.optchk{display:flex;align-items:center;gap:6px;cursor:pointer;white-space:nowrap;flex:0 0 auto}
+/* 長文の説明つきチェック（例: 「毎日タスクの子チェックとして扱う…」）。
+   文章は折り返してよいが、チェックボックスは折り返した段落の中央ではなく
+   1行目の高さに揃える */
+.optline{display:flex;align-items:flex-start;gap:8px;cursor:pointer}
+.optline input{margin-top:3px;flex:0 0 auto}
+/* flex-basis:0で「残り幅いっぱいまで伸びる」動作にする。span無し（flex-basis:auto任意）だと
+   日本語テキストはどの文字の間でも改行できてしまうため、幅が足りないとき縮小方向に
+   際限なく潰れて1文字ずつ縦積みになる不具合があった */
+.optline span{flex:1 1 0%}
+.ts-checkopts{align-items:center}
 .print-task{margin-bottom:18px}
 .print-task-title{font-weight:700;font-size:15px;margin-bottom:6px}
 .print-table{width:100%;border-collapse:collapse;font-size:13px}
@@ -1713,19 +1737,19 @@ function renderTplSteps(){
         <div class="f"><label>期限の時刻（任意）</label><input class="ts-duetime" type="time" value="${esc(s.due_time||"")}"></div>
         ${TPL_STEPS.length>1?`<button class="linkbtn" data-rmtstep="${i}">削除</button>`:""}
       </div>
-      <label style="display:flex;align-items:center;gap:8px;cursor:pointer"><input type="checkbox" class="ts-ischeck" ${s.kind==="check"?"checked":""}> 毎日タスクの子チェックとして扱う（店舗別／2択／写真必須を選べます）</label>
+      <label class="optline"><input type="checkbox" class="ts-ischeck" ${s.kind==="check"?"checked":""}><span>毎日タスクの子チェックとして扱う（店舗別／2択／写真必須を選べます）</span></label>
       <div class="ts-checkopts" style="display:${s.kind==="check"?"flex":"none"};gap:16px;flex-wrap:wrap;margin-top:6px">
-        <label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" class="ts-storesplit" ${s.store_scope?"checked":""}> 🏪 店舗別チェック</label>
-        <select class="ts-storescope" style="width:auto;display:${s.store_scope?"inline-block":"none"}">
+        <label class="optchk"><input type="checkbox" class="ts-storesplit" ${s.store_scope?"checked":""}> 🏪 店舗別チェック</label>
+        <select class="ts-storescope" style="width:auto;flex:0 0 auto;display:${s.store_scope?"inline-block":"none"}">
           <option value="active" ${s.store_scope==="active"?"selected":""}>直営店舗のみ</option>
           <option value="all" ${s.store_scope==="all"?"selected":""}>委託含む全店舗</option>
           <option value="custom" ${s.store_scope==="custom"?"selected":""}>個別選択</option>
         </select>
-        <label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" class="ts-binary" ${s.is_binary?"checked":""}> ⚖️ 2択（OK・異常あり）</label>
-        <label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" class="ts-photo" ${s.requires_photo?"checked":""}> 📷 写真必須</label>
+        <label class="optchk"><input type="checkbox" class="ts-binary" ${s.is_binary?"checked":""}> ⚖️ 2択（OK・異常あり）</label>
+        <label class="optchk"><input type="checkbox" class="ts-photo" ${s.requires_photo?"checked":""}> 📷 写真必須</label>
       </div>
       <div class="ts-storelist" style="display:${s.store_scope==="custom"?"block":"none"};width:100%;margin-top:6px;max-height:180px;overflow-y:auto;border:1px solid var(--line);border-radius:8px;padding:8px">
-        ${STORES.map(store=>`<label style="display:flex;align-items:center;gap:6px;padding:3px 0;cursor:pointer"><input type="checkbox" class="ts-storeid" value="${store.id}" ${(s.store_ids||[]).includes(store.id)?"checked":""}> ${esc(store.name)}${store.is_active?"":"（委託）"}</label>`).join("")||'<div class="meta">店舗マスタが登録されていません</div>'}
+        ${STORES.map(store=>`<label class="optchk" style="padding:3px 0"><input type="checkbox" class="ts-storeid" value="${store.id}" ${(s.store_ids||[]).includes(store.id)?"checked":""}> ${esc(store.name)}${store.is_active?"":"（委託）"}</label>`).join("")||'<div class="meta">店舗マスタが登録されていません</div>'}
       </div>
       ${s.id?attachBoxHtml(`tstep-att-${s.id}`,s._links,s._photos,true):'<div class="meta" style="color:var(--muted);margin-top:8px">保存すると工程ごとにマニュアル・写真を追加できます</div>'}
     </div>`).join("");
