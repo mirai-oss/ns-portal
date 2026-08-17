@@ -81,7 +81,11 @@ main{min-width:0;display:flex;flex-direction:column}
 .bellpanel .brow.unread{background:var(--accent-soft)}
 .bellpanel .empty{padding:20px;text-align:center;color:var(--muted);font-size:12.5px}
 
-.content{width:min(1440px,100%);margin:0 auto;padding:20px 26px 40px;display:grid;gap:16px}
+/* grid-template-columnsを明示しないと暗黙の1列がmax-content基準（子要素の
+   .dcolsが持つminmax(280px,...)の下限など）でサイズされ、狭い画面で親の幅を
+   突き破ってページ全体が横に伸びてしまう（実機で発生）。minmax(0,1fr)で
+   「利用可能な幅いっぱいに縮む1列」に固定する */
+.content{width:min(1440px,100%);margin:0 auto;padding:20px 26px 40px;display:grid;grid-template-columns:minmax(0,1fr);gap:16px}
 .demo-note{background:var(--amber-soft);border:1px solid var(--amber);border-radius:8px;padding:8px 14px;font-size:12px;color:#6b5200}
 
 /* KPI */
@@ -101,12 +105,16 @@ main{min-width:0;display:flex;flex-direction:column}
 .skel .value{background:var(--soft);border-radius:6px;color:transparent}
 
 /* パネル */
-.dgrid-main{display:grid;gap:16px;align-content:start}
-.dgrid-side{display:grid;gap:16px;align-content:start}
+/* .contentと同じ理由でgrid-template-columnsを明示（暗黙列のmax-content化を防ぐ） */
+.dgrid-main{display:grid;grid-template-columns:minmax(0,1fr);gap:16px;align-content:start}
+.dgrid-side{display:grid;grid-template-columns:minmax(0,1fr);gap:16px;align-content:start}
 .dcols{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(280px,.9fr);gap:16px;align-items:start}
 .phead{min-height:52px;display:flex;align-items:center;justify-content:space-between;gap:10px;padding:12px 16px;border-bottom:1px solid var(--line)}
 .phead h2{margin:0;font-size:15px}
-.phead .sub2{color:var(--muted);font-size:12px;white-space:nowrap}
+/* white-space:nowrapにすると、panel_storesの説明文のように長いキャプションが
+   折り返さず横に伸び続けて画面をはみ出す（実機で発生）。短い件数バッジ等は
+   nowrapが無くても1行に収まるので、素直に折り返し可能にしておく */
+.phead .sub2{color:var(--muted);font-size:12px;text-align:right}
 .phead .sub2 a,.phead .sub2 button{color:var(--accent);text-decoration:none;font-size:12px}
 .seg{display:flex;padding:3px;gap:3px;border:1px solid var(--line);border-radius:8px;background:var(--soft)}
 .seg button{min-height:28px;border-radius:6px;padding:0 10px;color:var(--muted);font-size:12.5px}
