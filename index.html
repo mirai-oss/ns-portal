@@ -7,149 +7,233 @@
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🐔</text></svg>">
 <style>
 :root{
-  --bg:#f5f4f1; --card:#ffffff; --ink:#26221e; --muted:#8a8377;
-  --accent:#c8401f; --accent2:#a33318; --line:#e7e3dc; --ok:#2e7d32;
+  color-scheme: light;
+  --ink:#221d16; --muted:#7d7466; --line:#e3ddd2; --soft:#f4f1ea; --panel:#ffffff; --bg:#efece4;
+  --accent:#b73a1c; --accent2:#9c3117; --accent-soft:#f6e7e2;
+  --green:#2f8a4b; --green-soft:#e7f4ec; --amber:#a87b00; --amber-soft:#f9efd6;
+  --red:#bd3f32; --red-soft:#fce6e2; --blue:#2b6cb0; --blue-soft:#e8effb;
+  --side:#241f18; --shadow:0 12px 30px rgba(45,35,20,.08);
 }
-@media(prefers-color-scheme:dark){
-  :root{--bg:#1d1b18; --card:#282521; --ink:#f0ece5; --muted:#a29a8c; --line:#3a362f;}
-}
-*{box-sizing:border-box;margin:0;padding:0}
-body{font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Noto Sans JP",sans-serif;background:var(--bg);color:var(--ink);min-height:100vh}
-.wrap{max-width:680px;margin:0 auto;padding:32px 20px 60px}
-header{text-align:center;margin-bottom:28px}
-header .logo{font-size:40px}
-header h1{font-size:22px;margin-top:6px;letter-spacing:.04em}
-header p{color:var(--muted);font-size:13px;margin-top:4px}
-.card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:24px;box-shadow:0 1px 4px rgba(0,0,0,.04)}
-label{display:block;font-size:13px;color:var(--muted);margin:14px 0 4px}
-input,select.inp{width:100%;padding:12px 14px;font-size:16px;border:1px solid var(--line);border-radius:10px;background:var(--bg);color:var(--ink)}
-input:focus{outline:2px solid var(--accent);border-color:transparent}
-.btn{display:block;width:100%;margin-top:20px;padding:13px;font-size:16px;font-weight:600;color:#fff;background:var(--accent);border:none;border-radius:10px;cursor:pointer}
-.btn:hover{background:var(--accent2)}
-.btn:disabled{opacity:.5;cursor:default}
-.btn.sub{background:transparent;color:var(--muted);border:1px dashed var(--muted);font-weight:400}
-.err{color:#c62828;font-size:13px;margin-top:12px;text-align:center;min-height:1em}
-.msg-ok{color:var(--ok)}
-.userbar{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:18px;flex-wrap:wrap}
-.userbar .who{font-size:15px}
-.badge{display:inline-block;font-size:11px;font-weight:600;padding:3px 10px;border-radius:99px;background:var(--accent);color:#fff;margin-left:6px;vertical-align:1px}
-.badge.master{background:#6a1b9a}
-.linkbtn{background:none;border:none;color:var(--muted);font-size:13px;cursor:pointer;text-decoration:underline;padding:4px}
-.grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
-@media(max-width:520px){.grid{grid-template-columns:1fr}}
-a.tile{display:block;background:var(--card);border:1px solid var(--line);border-radius:16px;padding:20px 18px;text-decoration:none;color:var(--ink);transition:transform .08s,box-shadow .08s}
-a.tile:hover{transform:translateY(-2px);box-shadow:0 4px 14px rgba(0,0,0,.08)}
-.tile .ico{font-size:30px}
-.tile h3{font-size:16px;margin-top:8px}
-.tile p{font-size:12px;color:var(--muted);margin-top:4px;line-height:1.5}
-.tile .tag{display:inline-block;font-size:10px;margin-top:8px;padding:2px 8px;border-radius:99px;border:1px solid var(--line);color:var(--muted)}
-.tile .tag.sso{color:var(--ok);border-color:var(--ok)}
-.note{font-size:12px;color:var(--muted);text-align:center;margin-top:22px;line-height:1.7}
-details{margin-top:26px}
-summary{font-size:13px;color:var(--muted);cursor:pointer;text-align:center}
-.hidden{display:none}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;background:var(--bg);color:var(--ink);font-size:14px;font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Noto Sans JP",sans-serif}
+button,input,select,textarea{font:inherit}
+button{border:0;cursor:pointer;background:none;color:inherit}
+a{color:inherit}
 .spin{text-align:center;color:var(--muted);padding:60px 0}
-/* 検索 */
-.searchbox{position:relative;margin-bottom:18px}
-.searchbox input{padding-left:42px}
-.searchbox .mag{position:absolute;left:14px;top:50%;transform:translateY(-50%);font-size:16px;pointer-events:none}
-.sr{background:var(--card);border:1px solid var(--line);border-radius:12px;margin-top:8px;overflow:hidden}
-.sr a{display:flex;align-items:center;gap:10px;padding:12px 14px;text-decoration:none;color:var(--ink);border-bottom:1px solid var(--line);font-size:14px}
-.sr a:last-child{border-bottom:none}
-.sr a:hover{background:var(--bg)}
-.sr .where{margin-left:auto;font-size:11px;color:var(--muted);white-space:nowrap}
-.sr .soon{margin-left:auto;font-size:11px;color:#b58a00;white-space:nowrap}
+.err{color:#c62828;font-size:13px}
+.msg-ok{color:var(--green)}
+
+/* ---------- ログイン画面（シェル無し・単独ページ） ---------- */
+.authwrap{max-width:420px;margin:0 auto;padding:52px 20px 60px}
+.authwrap header{text-align:center;margin-bottom:26px}
+.authwrap header .logo{font-size:40px}
+.authwrap header h1{font-size:21px;margin-top:6px;letter-spacing:.03em}
+.authwrap header p{color:var(--muted);font-size:13px;margin-top:4px}
+.acard{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:24px;box-shadow:var(--shadow)}
+.acard label{display:block;font-size:13px;color:var(--muted);margin:14px 0 4px}
+.acard input{width:100%;padding:12px 14px;font-size:16px;border:1px solid var(--line);border-radius:10px;background:var(--soft);color:var(--ink)}
+.acard input:focus{outline:2px solid var(--accent);border-color:transparent}
+.abtn{display:block;width:100%;margin-top:20px;padding:13px;font-size:16px;font-weight:600;color:#fff;background:var(--accent);border-radius:10px}
+.abtn:hover{background:var(--accent2)}
+.abtn:disabled{opacity:.5}
+.anote{font-size:12px;color:var(--muted);text-align:center;margin-top:18px;line-height:1.7}
+.aerr{color:#c62828;font-size:13px;margin-top:12px;text-align:center;min-height:1em}
+
+/* ---------- ダッシュボードシェル ---------- */
+.shell{display:grid;grid-template-columns:236px minmax(0,1fr);min-height:100vh}
+.side{background:var(--side);color:#efe7da;padding:20px 14px;display:flex;flex-direction:column;gap:18px;position:sticky;top:0;height:100vh;overflow-y:auto}
+.brand{display:flex;align-items:center;gap:11px;padding:0 6px 14px;border-bottom:1px solid rgba(255,255,255,.12)}
+.mark{width:38px;height:38px;border-radius:9px;display:grid;place-items:center;background:#e2b343;font-size:20px;flex:0 0 auto}
+.brand strong{display:block;font-size:14.5px;line-height:1.25}
+.brand span{color:#a89c88;font-size:11px}
+.nav{display:grid;gap:3px}
+.nav .cap{font-size:10px;letter-spacing:.14em;color:#8d8271;padding:12px 12px 4px}
+.nav button,.nav a{min-height:40px;border-radius:8px;color:#cfc5b4;display:flex;align-items:center;gap:10px;padding:0 12px;text-align:left;text-decoration:none;font-size:13.5px;width:100%}
+.nav .active,.nav button:hover,.nav a:hover{background:rgba(255,255,255,.1);color:#fff}
+.nav .ext::after{content:"↗";margin-left:auto;font-size:11px;color:#8d8271}
+.nav .cnt{margin-left:auto;background:var(--accent);color:#fff;font-size:10.5px;font-weight:700;border-radius:99px;padding:1px 7px}
+.side-foot{margin-top:auto;font-size:11px;color:#a89c88;padding:10px 6px 0;border-top:1px solid rgba(255,255,255,.12)}
+.side-foot .sfname{color:#efe7da;font-size:13px;margin-bottom:6px}
+.side-foot button{color:#cfc5b4;text-decoration:underline;font-size:11px;padding:2px 0;display:block}
+.side-foot button:hover{color:#fff}
+
+main{min-width:0;display:flex;flex-direction:column}
+.topbar{min-height:64px;display:flex;align-items:center;justify-content:space-between;gap:14px;padding:12px 26px;background:rgba(255,255,255,.92);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:5;backdrop-filter:blur(8px)}
+.topbar h1{margin:0;font-size:19px}
+.dateline{color:var(--muted);font-size:12px;margin-top:3px}
+.tools{display:flex;gap:8px;align-items:center;flex-wrap:wrap;justify-content:flex-end;position:relative}
+.toolicons{display:flex;gap:8px;align-items:center;margin-left:auto}
+.search{display:flex;align-items:center;gap:8px;min-height:38px;padding:0 12px;border:1px solid var(--line);border-radius:8px;background:#fff;width:min(280px,40vw);position:relative}
+.search input{border:0;outline:0;width:100%;background:transparent}
+.searchdrop{position:absolute;top:calc(100% + 6px);left:0;right:0;background:var(--panel);border:1px solid var(--line);border-radius:10px;box-shadow:var(--shadow);overflow:hidden;z-index:20;max-height:60vh;overflow-y:auto}
+.searchdrop a,.searchdrop button{display:flex;align-items:center;gap:10px;padding:11px 14px;text-decoration:none;color:var(--ink);border-bottom:1px solid var(--line);font-size:13.5px;width:100%;text-align:left}
+.searchdrop a:last-child,.searchdrop button:last-child{border-bottom:none}
+.searchdrop a:hover,.searchdrop button:hover{background:var(--soft)}
+.searchdrop .where{margin-left:auto;font-size:11px;color:var(--muted);white-space:nowrap}
+.iconb{width:38px;height:38px;border-radius:8px;display:grid;place-items:center;background:#fff;border:1px solid var(--line);position:relative;font-size:15px}
+.iconb .dot{position:absolute;top:7px;right:7px;width:8px;height:8px;border-radius:99px;background:var(--red);border:2px solid #fff}
+.refreshb{font-size:11px;color:var(--muted);border:1px solid var(--line);border-radius:8px;padding:0 10px;min-height:38px;background:#fff}
+.refreshb:hover{color:var(--ink)}
+.bellpanel{position:absolute;top:calc(100% + 6px);right:0;width:320px;max-width:88vw;background:var(--panel);border:1px solid var(--line);border-radius:10px;box-shadow:var(--shadow);z-index:20;max-height:70vh;overflow-y:auto}
+.bellpanel .brow{padding:10px 14px;border-bottom:1px solid var(--line);font-size:12.5px;cursor:pointer}
+.bellpanel .brow:last-child{border-bottom:none}
+.bellpanel .brow b{display:block;font-size:13px;margin-bottom:2px}
+.bellpanel .brow.unread{background:var(--accent-soft)}
+.bellpanel .empty{padding:20px;text-align:center;color:var(--muted);font-size:12.5px}
+
+.content{width:min(1440px,100%);margin:0 auto;padding:20px 26px 40px;display:grid;gap:16px}
+.demo-note{background:var(--amber-soft);border:1px solid var(--amber);border-radius:8px;padding:8px 14px;font-size:12px;color:#6b5200}
+
+/* KPI */
+.summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}
+.summary>a{display:block;color:inherit;text-decoration:none}
+.dcard,.panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;box-shadow:var(--shadow)}
+.dcard{padding:14px 16px;min-height:112px;display:grid;align-content:space-between;gap:10px}
+.dcard a{color:inherit;text-decoration:none;display:block}
+.chead{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.ctitle{color:var(--muted);font-size:12px}
+.badge{display:inline-flex;align-items:center;height:24px;border-radius:99px;font-size:11.5px;font-weight:700;padding:0 9px;white-space:nowrap}
+.b-up{color:var(--green);background:var(--green-soft)} .b-warn{color:var(--amber);background:var(--amber-soft)}
+.b-bad{color:var(--red);background:var(--red-soft)} .b-info{color:var(--blue);background:var(--blue-soft)}
+.value{font-size:26px;font-weight:800;line-height:1;font-variant-numeric:tabular-nums}
+.sub{color:var(--muted);font-size:12px;line-height:1.5}
+.skel{opacity:.5}
+.skel .value{background:var(--soft);border-radius:6px;color:transparent}
+
+/* パネル */
+.dgrid-main{display:grid;gap:16px;align-content:start}
+.dgrid-side{display:grid;gap:16px;align-content:start}
+.dcols{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(280px,.9fr);gap:16px;align-items:start}
+.phead{min-height:52px;display:flex;align-items:center;justify-content:space-between;gap:10px;padding:12px 16px;border-bottom:1px solid var(--line)}
+.phead h2{margin:0;font-size:15px}
+.phead .sub2{color:var(--muted);font-size:12px;white-space:nowrap}
+.phead .sub2 a,.phead .sub2 button{color:var(--accent);text-decoration:none;font-size:12px}
+.seg{display:flex;padding:3px;gap:3px;border:1px solid var(--line);border-radius:8px;background:var(--soft)}
+.seg button{min-height:28px;border-radius:6px;padding:0 10px;color:var(--muted);font-size:12.5px}
+.seg button.active{background:#fff;color:var(--ink);box-shadow:0 2px 8px rgba(45,35,20,.1)}
+.chart-area{height:260px;padding:10px 14px 16px}
+canvas{width:100%;height:100%;display:block}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{padding:11px 16px;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap}
+th{color:var(--muted);font-size:11.5px;background:#faf8f3}
+tr:last-child td{border-bottom:0}
+td.num{font-variant-numeric:tabular-nums}
+.st{display:inline-flex;align-items:center;height:23px;padding:0 9px;border-radius:99px;font-size:11.5px;font-weight:700;white-space:nowrap}
+.s-ok{color:var(--green);background:var(--green-soft)} .s-bad{color:var(--red);background:var(--red-soft)}
+.s-warn{color:var(--amber);background:var(--amber-soft)} .s-mut{color:var(--muted);background:var(--soft)}
+.tblwrap{overflow-x:auto}
 /* お知らせ */
-.posthead{display:flex;align-items:center;justify-content:space-between;margin:22px 0 10px}
-.posthead h2{font-size:16px}
-.post{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px 18px;margin-bottom:12px}
-.post .pt{font-size:15px;font-weight:600}
-.post .pm{font-size:11px;color:var(--muted);margin-top:2px}
-.post .pb{font-size:14px;margin-top:8px;line-height:1.7;white-space:pre-wrap;word-break:break-word}
-.post .pin{color:var(--accent);font-size:12px;margin-right:4px}
-.post a.plink{color:var(--accent);font-size:13px;word-break:break-all}
-.ytwrap{position:relative;padding-top:56.25%;margin-top:10px;border-radius:10px;overflow:hidden}
+.post{padding:12px 16px;border-bottom:1px solid var(--line);position:relative}
+.post:last-child{border-bottom:0}
+.post b{font-size:13.5px}
+.post .pm{color:var(--muted);font-size:11.5px;margin-top:2px}
+.post .pb{margin:6px 0 0;font-size:12.5px;line-height:1.6;color:#4d463c;white-space:pre-wrap;word-break:break-word}
+.pin{color:var(--accent)}
+.post .plink{color:var(--accent);font-size:12.5px;word-break:break-all;display:inline-block;margin-top:6px}
+.ytwrap{position:relative;padding-top:56.25%;margin-top:8px;border-radius:8px;overflow:hidden}
 .ytwrap iframe{position:absolute;inset:0;width:100%;height:100%;border:0}
-.post .pdel{background:none;border:none;color:var(--muted);font-size:12px;cursor:pointer;text-decoration:underline;padding:2px;float:right}
-/* 権限設定 */
+.post .pact{position:absolute;top:12px;right:16px;display:flex;gap:8px}
+.post .pact button{color:var(--muted);font-size:11px;text-decoration:underline}
+.post .pact button:hover{color:var(--ink)}
+/* アラート・タスク */
+.item{display:grid;grid-template-columns:36px minmax(0,1fr) auto;gap:11px;align-items:center;padding:11px 16px;border-bottom:1px solid var(--line);text-decoration:none;color:inherit}
+.item:last-child{border-bottom:0}
+.item strong{display:block;font-size:13px;margin-bottom:3px}
+.item span{color:var(--muted);font-size:12px}
+.av{width:36px;height:36px;border-radius:9px;display:grid;place-items:center;font-size:15px;background:var(--soft)}
+.task{grid-template-columns:30px minmax(0,1fr) auto;cursor:pointer;width:100%;text-align:left;background:none}
+.chk{width:21px;height:21px;border:2px solid #b3a892;border-radius:6px;display:grid;place-items:center;background:#fff;flex:0 0 auto}
+.task.done .chk{background:var(--green);border-color:var(--green)}
+.task.done .chk::before{content:"";width:9px;height:5px;border-left:2px solid #fff;border-bottom:2px solid #fff;transform:rotate(-45deg);margin-top:-2px}
+.task.done strong,.task.done span{color:#9a8f7d;text-decoration:line-through}
+.empty{padding:22px;color:var(--muted);text-align:center;font-size:12.5px}
+footer{padding:14px 26px 26px;color:var(--muted);font-size:11.5px;text-align:center}
+
+/* 設定・お知らせ全部・検索結果ページ（サブ画面） */
+.subhead{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;gap:10px;flex-wrap:wrap}
+.subhead h1{margin:0;font-size:19px}
+.backlink{color:var(--accent);font-size:13px;background:none;text-decoration:underline}
+.formcard{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:18px;box-shadow:var(--shadow);margin-bottom:16px}
+.formcard label{display:block;font-size:13px;color:var(--muted);margin:12px 0 4px}
+.formcard label:first-child{margin-top:0}
+.formcard input,.formcard textarea,.formcard select{width:100%;padding:10px 12px;font-size:15px;border:1px solid var(--line);border-radius:8px;background:var(--soft);color:var(--ink);font-family:inherit}
+.formcard textarea{resize:vertical}
+.btn{display:inline-block;padding:10px 18px;font-size:14px;font-weight:600;color:#fff;background:var(--accent);border-radius:8px}
+.btn:hover{background:var(--accent2)}
+.btn:disabled{opacity:.5}
+.btn.sm{padding:6px 12px;font-size:13px}
+.btn.sub{background:transparent;color:var(--muted);border:1px dashed var(--muted);font-weight:400}
+.linkbtn{color:var(--muted);font-size:13px;text-decoration:underline}
+.linkbtn:hover{color:var(--ink)}
+.tabrow{display:flex;gap:6px;margin-bottom:16px;flex-wrap:wrap}
+.tabrow button{padding:8px 16px;border-radius:99px;border:1px solid var(--line);background:#fff;font-size:13px}
+.tabrow button.active{background:var(--accent);color:#fff;border-color:var(--accent)}
 .pm-scroll{overflow-x:auto;margin-top:10px}
 table.pm{border-collapse:collapse;width:100%;font-size:13px}
 table.pm th,table.pm td{border:1px solid var(--line);padding:8px 6px;text-align:center;white-space:nowrap}
 table.pm th:first-child,table.pm td:first-child{text-align:left;padding-left:10px}
-table.pm th{background:var(--bg);font-weight:600;font-size:12px}
+table.pm th{background:var(--soft);font-weight:600;font-size:12px}
 table.pm input[type=checkbox]{width:18px;height:18px;padding:0;accent-color:var(--accent);cursor:pointer}
-.sec-title{font-size:15px;font-weight:600;margin:26px 0 4px}
+.sec-title{font-size:15px;font-weight:600;margin:22px 0 4px}
+.sec-title:first-child{margin-top:0}
 .sec-sub{font-size:12px;color:var(--muted);line-height:1.6}
 .ov-row{display:flex;align-items:center;gap:10px;margin-top:10px;flex-wrap:wrap}
 .ov-row .nm{flex:1;min-width:120px;font-size:14px}
-.ov-row select{padding:8px 10px;font-size:14px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink)}
-.ov-row select.ovon{border-color:var(--ok);color:var(--ok);font-weight:600}
+.ov-row select{padding:8px 10px;font-size:14px;border:1px solid var(--line);border-radius:8px;background:var(--soft);color:var(--ink);width:auto}
+.ov-row select.ovon{border-color:var(--green);color:var(--green);font-weight:600}
 .ov-row select.ovoff{border-color:#c62828;color:#c62828;font-weight:600}
+.wcfg-role{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px}
+.wcfg-role button{padding:7px 14px;border-radius:99px;border:1px solid var(--line);background:#fff;font-size:12.5px}
+.wcfg-role button.active{background:var(--side);color:#fff;border-color:var(--side)}
+.wcfg-area{margin-bottom:18px}
+.wcfg-area h3{font-size:13.5px;margin:0 0 8px}
+.wcfg-row{display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;margin-bottom:6px;background:#fff}
+.wcfg-row label{display:flex;align-items:center;gap:8px;flex:1;font-size:13.5px;margin:0}
+.wcfg-row input[type=checkbox]{width:17px;height:17px;accent-color:var(--accent)}
+.wcfg-row .updn{display:flex;gap:2px}
+.wcfg-row .updn button{width:26px;height:26px;border:1px solid var(--line);border-radius:6px;background:var(--soft);font-size:12px}
+.wcfg-row .updn button:disabled{opacity:.3;cursor:default}
+
+@media(max-width:1080px){
+  .shell{grid-template-columns:1fr}
+  .side{position:sticky;top:0;z-index:6;padding:10px;flex-direction:row;align-items:center;overflow-x:auto;gap:8px;height:auto}
+  .brand{border:0;padding:0;flex:0 0 auto}
+  .nav{display:flex;flex:0 0 auto}
+  .nav .cap{display:none}
+  .nav button,.nav a{white-space:nowrap}
+  .side-foot{display:none}
+  .dcols{grid-template-columns:1fr}
+}
+@media(max-width:680px){
+  .topbar{flex-direction:column;align-items:stretch;padding:10px 14px}
+  .tools{justify-content:stretch}
+  .search{width:100%;order:1}
+  .toolicons{order:2}
+  .content{padding:14px}
+  .summary{grid-template-columns:1fr 1fr}
+}
 </style>
 </head>
 <body>
-<div class="wrap">
-<header>
-  <div class="logo">🐔</div>
-  <h1>N-Styleグループ ポータル</h1>
-  <p>統合アカウントで各システムへ</p>
-</header>
-<div id="app"><div class="spin">読み込み中…</div></div>
-</div>
+<div id="root"><div class="spin">読み込み中…</div></div>
 <script>
+/* ============================================================
+   認証・セッション（変更禁止部分）
+   nsportal_session_v1 のキー名・{at,rt,uid}の形式は
+   tori/seisanダッシュボードの自動ログインが直接読みに来るため、
+   絶対に変えない。tasks.htmlもこの節と同じ実装を持つ（今回は不変更）。
+   ============================================================ */
 const SUPA_URL="https://uuvsxzhpxtghojoubjcc.supabase.co";
 const SUPA_KEY="sb_publishable_MrwPJAx_Ws_fdRutprKCiQ_dg3wCiTr"; // 公開用キー（秘密情報ではない）
 const LS_KEY="nsportal_session_v1";
 const ROLE_NAME={CEO:"社長",HQ:"本部",TEAM:"チーム長",TENCHO:"店長",SHAIN:"社員",AL:"アルバイト"};
 const ROLE_ORDER=["CEO","HQ","TEAM","TENCHO","SHAIN","AL"];
 
-const SYSTEMS=[
- {key:"hqtasks", ico:"📌", name:"本部タスク", desc:"精算・広告費など本部ルーティンの進捗管理",
-  url:"tasks.html", roles:["TEAM","HQ","CEO"], login:"このアカウントでOK", sso:true},
- {key:"keiei", ico:"📊", name:"経営ダッシュボード", desc:"売上・広告・PL・入金・全店比較",
-  url:"https://mirai-oss.github.io/tori-dashboard/", roles:["TENCHO","TEAM","HQ","CEO"], login:"統合ログイン対応", sso:true},
- {key:"seisan", ico:"🧾", name:"精算ダッシュボード", desc:"業務委託店舗の精算書・振込管理",
-  url:"https://mirai-oss.github.io/seisan-dashboard/", roles:["HQ","CEO"], login:"統合ログイン対応", sso:true},
- {key:"joho", ico:"🗂️", name:"社内情報管理", desc:"法人・店舗・契約・口座などの重要情報",
-  url:"https://ns-info-system.vercel.app", roles:["TEAM","HQ","CEO"], login:"専用アカウント（統合予定）"},
- {key:"nippo", ico:"📝", name:"日報・週報", desc:"日報の提出・確認・タスク",
-  url:"https://mirai-oss.github.io/nippo/", roles:["AL","SHAIN","TENCHO","TEAM","HQ","CEO"], login:"このアカウントでOK", sso:true},
-];
-
-// 「どこで何ができるか」の案内インデックス（検索用）。準備中の機能も載せて迷子を防ぐ
-const GUIDE=[
- {q:"売上 前年比 客単価 日別 月次 比較 f率 l率 原価 人件費", label:"売上・原価・人件費を見る", sys:"keiei"},
- {q:"広告 費用対効果 媒体 ホットペッパー 食べログ ぐるなび", label:"広告の費用対効果を見る・入力する", sys:"keiei"},
- {q:"入金 口座 振込 通帳 差額", label:"入金の確認・口座CSV取込", sys:"keiei"},
- {q:"予約 コース 席のみ", label:"予約データを見る", sys:"keiei"},
- {q:"口コミ レビュー 星 グーグル google", label:"Google口コミの推移を見る", sys:"keiei"},
- {q:"pl 経費 販管費 損益", label:"PL・経費を見る・入力する", sys:"keiei"},
- {q:"精算 委託 振込金額 請求 精算書", label:"業務委託店舗の精算書・振込管理", sys:"seisan"},
- {q:"契約 口座情報 賃貸 物件 仕入先 業者 id パスワード 金庫 給与 融資 借入", label:"会社の重要情報（契約・口座・仕入先など）", sys:"joho"},
- {q:"日報 週報 提出 報告", label:"日報・週報を提出する", sys:"nippo"},
- {q:"タスク 依頼 やること", label:"タスクの確認・依頼", sys:"nippo"},
- {q:"パスワード 変更", label:"パスワードを変更する（このページ下部）", sys:null},
- {q:"アカウント 発行 追加 新入社員 入社", label:"アカウント発行は本部へ連絡（日報の管理画面から発行）", sys:"nippo"},
- {q:"チェックシート オープン クローズ 清掃 ルーティン", label:"店舗チェックシート", soon:true},
- {q:"レシピ マニュアル 仕込み ドリンク 作り方 動画", label:"レシピ・マニュアル", soon:true},
- {q:"シフト 希望 人数", label:"シフト作成・シミュレーション", soon:true},
- {q:"打刻 タイムカード 出勤 退勤", label:"打刻", soon:true},
- {q:"発注 食材 仕入 数量", label:"発注管理", soon:true},
- {q:"カレンダー 予定 スケジュール", label:"カレンダー連携", soon:true},
-];
-let POSTS=null;   // 掲示板の投稿一覧
 const $=id=>document.getElementById(id);
 const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const sess={get:()=>{try{return JSON.parse(localStorage.getItem(LS_KEY))}catch(e){return null}},
             set:v=>localStorage.setItem(LS_KEY,JSON.stringify(v)),
             clear:()=>localStorage.removeItem(LS_KEY)};
-let ME=null;            // 自分のusers行
-let PERMS=null;         // {role:{system_key:bool}} 役割の既定（DBから）
-let MY_OVR={};          // 自分の例外 {system_key:bool}
-let VIEW="home";        // home | settings
-let USERS=[];           // 設定画面用ユーザー一覧
-let OVR_USER=null;      // 設定画面で選択中のユーザーid
-let OVR_MAP={};         // 選択中ユーザーの例外
 
 async function api(path,opt={},token){
   const r=await fetch(SUPA_URL+path,{...opt,headers:{
@@ -164,7 +248,6 @@ async function authed(path,opt={}){
   if(r.status===401){ if(!await refresh()) return r; r=await api(path,opt,sess.get().at); }
   return r;
 }
-
 async function login(email,pw){
   const r=await api("/auth/v1/token?grant_type=password",{method:"POST",body:JSON.stringify({email,password:pw})});
   if(!r.ok) throw new Error(r.body?.error_code==="invalid_credentials"?"メールアドレスまたはパスワードが違います":"ログインエラー: "+(r.body?.msg||r.status));
@@ -184,8 +267,55 @@ async function fetchMe(){
   if(!r.ok||!Array.isArray(r.body)||!r.body[0]) return null;
   return r.body[0];
 }
+
+/* ============================================================
+   システム一覧・検索ガイド（既存のまま）
+   ============================================================ */
+const SYSTEMS=[
+ {key:"hqtasks", ico:"📌", name:"本部タスク", desc:"精算・広告費など本部ルーティンの進捗管理",
+  url:"tasks.html", roles:["TEAM","HQ","CEO"], login:"このアカウントでOK", sso:true, internal:true},
+ {key:"keiei", ico:"📊", name:"経営ダッシュボード", desc:"売上・広告・PL・入金・全店比較",
+  url:"https://mirai-oss.github.io/tori-dashboard/", roles:["TENCHO","TEAM","HQ","CEO"], login:"統合ログイン対応", sso:true},
+ {key:"seisan", ico:"🧾", name:"精算ダッシュボード", desc:"業務委託店舗の精算書・振込管理",
+  url:"https://mirai-oss.github.io/seisan-dashboard/", roles:["HQ","CEO"], login:"統合ログイン対応", sso:true},
+ {key:"joho", ico:"🗂️", name:"社内情報管理", desc:"法人・店舗・契約・口座などの重要情報",
+  url:"https://ns-info-system.vercel.app", roles:["TEAM","HQ","CEO"], login:"専用アカウント（統合予定）"},
+ {key:"nippo", ico:"📝", name:"日報・週報", desc:"日報の提出・確認・タスク",
+  url:"https://mirai-oss.github.io/nippo/", roles:["AL","SHAIN","TENCHO","TEAM","HQ","CEO"], login:"このアカウントでOK", sso:true},
+];
+const GUIDE=[
+ {q:"売上 前年比 客単価 日別 月次 比較 f率 l率 原価 人件費", label:"売上・原価・人件費を見る", sys:"keiei"},
+ {q:"広告 費用対効果 媒体 ホットペッパー 食べログ ぐるなび", label:"広告の費用対効果を見る・入力する", sys:"keiei"},
+ {q:"入金 口座 振込 通帳 差額", label:"入金の確認・口座CSV取込", sys:"keiei"},
+ {q:"予約 コース 席のみ", label:"予約データを見る", sys:"keiei"},
+ {q:"口コミ レビュー 星 グーグル google", label:"Google口コミの推移を見る", sys:"keiei"},
+ {q:"pl 経費 販管費 損益", label:"PL・経費を見る・入力する", sys:"keiei"},
+ {q:"精算 委託 振込金額 請求 精算書", label:"業務委託店舗の精算書・振込管理", sys:"seisan"},
+ {q:"契約 口座情報 賃貸 物件 仕入先 業者 id パスワード 金庫 給与 融資 借入", label:"会社の重要情報（契約・口座・仕入先など）", sys:"joho"},
+ {q:"日報 週報 提出 報告", label:"日報・週報を提出する", sys:"nippo"},
+ {q:"タスク 依頼 やること", label:"タスクの確認・依頼", sys:"hqtasks"},
+ {q:"パスワード 変更", label:"パスワードを変更する（左下のアカウントから）", sys:null},
+ {q:"アカウント 発行 追加 新入社員 入社", label:"アカウント発行は本部へ連絡（日報の管理画面から発行）", sys:"nippo"},
+ {q:"チェックシート オープン クローズ 清掃 ルーティン", label:"店舗チェックシート", sys:"nippo"},
+ {q:"レシピ マニュアル 仕込み ドリンク 作り方 動画", label:"レシピ・マニュアル", soon:true},
+ {q:"シフト 希望 人数", label:"シフト作成・シミュレーション", soon:true},
+ {q:"打刻 タイムカード 出勤 退勤", label:"打刻", soon:true},
+ {q:"発注 食材 仕入 数量", label:"発注管理", soon:true},
+ {q:"カレンダー 予定 スケジュール", label:"カレンダー連携", soon:true},
+];
+
+let ME=null, PERMS=null, MY_OVR={};
+let POSTS=null;
+let VIEW="home";           // home | posts | settings
+let SETTLE_TAB="perm";     // settings画面内タブ: perm | layout
+const isMaster=u=>!!(u&&u.is_master);
+const canSee=(sy,u)=>{
+  if(u.is_master) return true;
+  if(sy.key in MY_OVR) return MY_OVR[sy.key];
+  if(PERMS&&PERMS[u.role]&&(sy.key in PERMS[u.role])) return PERMS[u.role][sy.key];
+  return sy.roles.includes(u.role);
+};
 async function fetchPerms(){
-  // 役割の既定と自分の例外。失敗してもコード内の初期値で動く（PERMS=null）
   const s=sess.get(); if(!s) return;
   const [p,o]=await Promise.all([
     authed("/rest/v1/portal_permissions?select=role,system_key,allowed"),
@@ -198,14 +328,21 @@ async function fetchPerms(){
   MY_OVR={};
   if(o.ok&&Array.isArray(o.body)) o.body.forEach(r=>{ MY_OVR[r.system_key]=r.allowed; });
 }
-function canSee(sy,u){
-  if(u.is_master) return true;
-  if(sy.key in MY_OVR) return MY_OVR[sy.key];
-  if(PERMS&&PERMS[u.role]&&(sy.key in PERMS[u.role])) return PERMS[u.role][sy.key];
-  return sy.roles.includes(u.role); // DB未設定時の初期値
-}
 
-/* ---------- 掲示板 ---------- */
+/* ============================================================
+   日付・共通ヘルパー
+   ============================================================ */
+function ymd(d){ return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0"); }
+function todayStr(){ return ymd(new Date()); }
+function addDaysStr(base,n){ const d=new Date(base+"T00:00:00"); d.setDate(d.getDate()+(+n||0)); return ymd(d); }
+function fmtD(t){ if(!t) return "—"; const d=new Date(t); return `${d.getMonth()+1}/${d.getDate()}`; }
+function fmtDT(t){ if(!t) return "—"; const d=new Date(t); return `${d.getMonth()+1}/${d.getDate()} ${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`; }
+function fmtTime(t){ if(!t) return "—"; const d=new Date(t); return `${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`; }
+function yen(n){ n=Math.round(n||0); if(Math.abs(n)>=1e6) return "¥"+(n/1e6).toFixed(1)+"M"; if(Math.abs(n)>=1e4) return "¥"+Math.round(n/1e4)+"万"; return "¥"+n.toLocaleString(); }
+
+/* ============================================================
+   お知らせ（掲示板）— 既存機能そのまま。表示だけ新デザインに合わせる
+   ============================================================ */
 const canPost=u=>!!(u&&(u.is_master||u.role==="CEO"||u.role==="HQ"));
 async function fetchPosts(){
   let r=await authed("/rest/v1/portal_posts?select=*,author:users(name)&order=pinned.desc,created_at.desc&limit=100");
@@ -213,25 +350,24 @@ async function fetchPosts(){
   POSTS=(r.ok&&Array.isArray(r.body))?r.body:[];
 }
 function ytId(u){ const m=String(u||"").match(/(?:youtu\.be\/|[?&]v=|shorts\/|embed\/)([\w-]{11})/); return m?m[1]:null; }
-function fmtD(t){ const d=new Date(t); return `${d.getMonth()+1}/${d.getDate()} ${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`; }
 function postHtml(p,u){
   const yid=ytId(p.url);
   return `<div class="post" data-pid="${p.id}">
-    ${canPost(u)?`<button class="pdel" data-del="${p.id}">削除</button><button class="pdel" data-edit="${p.id}">✏️ 編集</button>`:""}
-    <div class="pt">${p.pinned?'<span class="pin">📌</span>':""}${esc(p.title)}</div>
-    <div class="pm">${fmtD(p.created_at)}${p.author&&p.author.name?` ／ ${esc(p.author.name)}`:""}</div>
+    ${canPost(u)?`<div class="pact"><button data-edit="${p.id}">✏️ 編集</button><button data-del="${p.id}">削除</button></div>`:""}
+    <b>${p.pinned?'<span class="pin">📌 </span>':""}${esc(p.title)}</b>
+    <div class="pm">${fmtDT(p.created_at)}${p.author&&p.author.name?` ／ ${esc(p.author.name)}`:""}</div>
     ${p.body?`<div class="pb">${esc(p.body)}</div>`:""}
     ${yid?`<div class="ytwrap"><iframe src="https://www.youtube.com/embed/${yid}" title="動画" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen loading="lazy"></iframe></div>`
-        :(p.url?`<div style="margin-top:8px"><a class="plink" href="${esc(p.url)}" target="_blank" rel="noopener">🔗 ${esc(p.url)}</a></div>`:"")}
+        :(p.url?`<a class="plink" href="${esc(p.url)}" target="_blank" rel="noopener">🔗 ${esc(p.url)}</a>`:"")}
   </div>`;
 }
-let EDIT_ID=null;   // 編集中の投稿id（null=新規投稿モード）
-function wirePostDeletes(u){
+let EDIT_ID=null;
+function wirePostActions(u,after){
   document.querySelectorAll("[data-del]").forEach(b=>{
     b.onclick=async()=>{
       if(!confirm("この投稿を削除しますか？"))return;
       const r=await authed(`/rest/v1/portal_posts?id=eq.${b.dataset.del}`,{method:"DELETE"});
-      if(r.ok){ if(EDIT_ID===b.dataset.del)EDIT_ID=null; await fetchPosts(); (VIEW==="posts"?renderPosts:renderHome)(u); }
+      if(r.ok){ if(EDIT_ID===b.dataset.del)EDIT_ID=null; await fetchPosts(); after(); }
       else alert("削除できませんでした（"+r.status+"）");
     };
   });
@@ -241,7 +377,9 @@ function wirePostDeletes(u){
   });
 }
 
-/* ---------- 検索 ---------- */
+/* ============================================================
+   検索（既存ロジックのまま。GUIDE＋お知らせ横断）
+   ============================================================ */
 function searchAll(qs,u){
   const q=qs.trim().toLowerCase();
   if(!q) return "";
@@ -249,37 +387,583 @@ function searchAll(qs,u){
   GUIDE.forEach(g=>{
     if((g.q+" "+g.label).toLowerCase().includes(q)){
       const sy=g.sys?SYSTEMS.find(s=>s.key===g.sys):null;
-      if(sy&&!canSee(sy,u))return;             // 権限が無いシステムの案内は出さない
+      if(sy&&!canSee(sy,u))return;
       hits.push(sy
-        ?`<a href="${sy.url}" target="_blank" rel="noopener">${sy.ico} ${esc(g.label)}<span class="where">${esc(sy.name)} →</span></a>`
-        :`<a href="javascript:void(0)">📍 ${esc(g.label)}${g.soon?'<span class="soon">🚧 準備中</span>':""}</a>`);
+        ?`<a href="${sy.url}" ${sy.internal?"":'target="_blank" rel="noopener"'}>${sy.ico} ${esc(g.label)}<span class="where">${esc(sy.name)} →</span></a>`
+        :`<button type="button">📍 ${esc(g.label)}${g.soon?'<span class="where">🚧 準備中</span>':""}</button>`);
     }
   });
   (POSTS||[]).forEach(p=>{
     if((p.title+" "+(p.body||"")).toLowerCase().includes(q))
-      hits.push(`<a href="javascript:void(0)" data-goto-post="${p.id}">📢 ${esc(p.title)}<span class="where">お知らせ →</span></a>`);
+      hits.push(`<button type="button" data-goto-post="${p.id}">📢 ${esc(p.title)}<span class="where">お知らせ →</span></button>`);
   });
-  return hits.length?`<div class="sr">${hits.slice(0,8).join("")}</div>`
-                    :`<div class="sr"><a href="javascript:void(0)">該当なし — 本部までお問い合わせください</a></div>`;
+  return hits.length?hits.slice(0,8).join(""):`<button type="button">該当なし — 本部までお問い合わせください</button>`;
 }
+// 検索・ベルの「外側クリックで閉じる」は再描画のたびに増殖させないよう、
+// スクリプト読み込み時に1回だけ登録するグローバルハンドラで面倒を見る（下部の即時実行ブロック参照）。
 function wireSearch(u){
   const box=$("q"); if(!box)return;
-  box.oninput=()=>{ $("qres").innerHTML=searchAll(box.value,u);
+  const drop=$("qdrop");
+  box.oninput=()=>{
+    const html=searchAll(box.value,u);
+    if(!box.value.trim()){ drop.style.display="none"; drop.innerHTML=""; return; }
+    drop.innerHTML=html; drop.style.display="block";
     document.querySelectorAll("[data-goto-post]").forEach(a=>{
-      a.onclick=async()=>{ VIEW="posts"; renderPosts(u);
+      a.onclick=()=>{ drop.style.display="none"; box.value=""; VIEW="posts"; renderPosts(u);
         setTimeout(()=>{ const el=document.querySelector(`[data-pid="${a.dataset.gotoPost}"]`); if(el)el.scrollIntoView({behavior:"smooth"}); },100); };
     });
   };
 }
 
+/* ============================================================
+   🔔 通知ベル（既存 hq_notifications の読み取りのみ。新設なし）
+   本部タスクボード(tasks.html)と同じテーブルを読むだけで、
+   書き込み（既読化）もそちらと同じRLSの範囲内で行う。
+   ============================================================ */
+let NOTIFS=[], NOTIF_UNREAD=0, BELL_OPEN=false;
+async function fetchNotifs(){
+  try{
+    const r=await authed(`/rest/v1/hq_notifications?recipient_id=eq.${ME.id}&order=created_at.desc&limit=20`);
+    NOTIFS=(r.ok&&Array.isArray(r.body))?r.body:[];
+    NOTIF_UNREAD=NOTIFS.filter(n=>!n.read_at).length;
+  }catch(e){ NOTIFS=[]; NOTIF_UNREAD=0; }
+}
+async function markNotifsRead(){
+  const ids=NOTIFS.filter(n=>!n.read_at).map(n=>n.id);
+  if(!ids.length) return;
+  await authed(`/rest/v1/hq_notifications?id=in.(${ids.join(",")})`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({read_at:new Date().toISOString()})});
+  NOTIFS.forEach(n=>{ if(!n.read_at) n.read_at=new Date().toISOString(); });
+  NOTIF_UNREAD=0;
+}
+function bellHtml(){
+  return `<button class="iconb" id="bellbtn" title="通知">🔔${NOTIF_UNREAD?'<span class="dot"></span>':""}</button>
+    <div class="bellpanel" id="bellpanel" style="display:${BELL_OPEN?"block":"none"}">
+      ${NOTIFS.length?NOTIFS.map(n=>`<div class="brow${n.read_at?"":" unread"}" data-notif="${n.task_id||""}"><b>${esc(n.title)}</b>${esc(n.body||"")}<div style="color:var(--muted);margin-top:2px">${fmtDT(n.created_at)}</div></div>`).join("")
+        :'<div class="empty">通知はありません</div>'}
+    </div>`;
+}
+function wireBell(u){
+  const btn=$("bellbtn"); if(!btn) return;
+  btn.onclick=async e=>{
+    e.stopPropagation();
+    BELL_OPEN=!BELL_OPEN;
+    if(BELL_OPEN&&NOTIF_UNREAD) await markNotifsRead();
+    refreshBell(u);
+  };
+  wireBellItems(u);
+}
+function wireBellItems(u){
+  document.querySelectorAll("[data-notif]").forEach(el=>{
+    el.onclick=()=>{ if(el.dataset.notif) window.open("tasks.html?task="+el.dataset.notif,"_blank"); };
+  });
+}
+// ベルの開閉・既読化だけを反映する軽い再描画（検索窓やtori更新ボタンは巻き込まない）
+function refreshBell(u){
+  const wrap=$("bellwrap"); if(!wrap) return;
+  wrap.innerHTML=bellHtml();
+  wireBell(u);
+}
+
+/* ============================================================
+   経営ダッシュボード連携（tori GAS）
+   参考: tori-dashboard/app.js の doSsoLogin / fetchData（読むだけ・変更しない）。
+   ポータルのSupabaseセッションでtoriへSSOし、日別シートを取得してクライアント側で集計する。
+   取得失敗（メール未登録・GAS落ち）は静かに劣化＝カード側で「経営Dに接続できません」を出すだけで、
+   画面全体はブロックしない。
+   ============================================================ */
+const TORI_GAS_URL="https://script.google.com/macros/s/AKfycbz9rd37EZa6X8WRMVEBrXobN8DbYWkHRlhFNYU5rd1UZ0V8j0-6shMQjEeoi4HDWZ0B/exec";
+const TORI_CACHE_KEY="portal_tori_cache";
+async function toriApi(params){
+  const r=await fetch(TORI_GAS_URL,{method:"POST",headers:{"Content-Type":"text/plain;charset=utf-8"},body:JSON.stringify(params)});
+  if(!r.ok) throw new Error("HTTP "+r.status);
+  return r.json();
+}
+async function toriSsoLogin(){
+  const s=sess.get(); if(!s?.at) throw new Error("未ログイン");
+  const d=await toriApi({action:"supalogin",stoken:s.at});
+  if(!d.ok) throw new Error(d.error||"経営Dへの接続に失敗しました");
+  return d.token;
+}
+// 数値抽出・日付解析・列探索はtori-dashboard/app.jsの同名関数を参考に最小限だけ再実装（読むだけ・移植せず参照のみ）
+const toriNum=v=>parseFloat(String(v==null?"":v).replace(/[^0-9.\-]/g,""))||0;
+const toriDate=ds=>{ const m=String(ds==null?"":ds).match(/(\d{4})[\/\-年.](\d{1,2})[\/\-月.](\d{1,2})/); if(!m)return 0; const Y=+m[1],M=+m[2],Dd=+m[3]; if(!Y||!M||!Dd)return 0; return new Date(Y,M-1,Dd).getTime(); };
+function toriColAny(H,kwsList){ for(const kws of kwsList){ const i=H.findIndex(h=>String(h).indexOf(kws)>=0); if(i>=0) return i; } return -1; }
+function toriFindHeader(rows,kws){ for(let i=0;i<Math.min(rows.length,10);i++){ const line=rows[i].join(","); if(kws.every(k=>line.includes(k))) return i; } return 0; }
+function parseToriDaily(rows){
+  if(!Array.isArray(rows)||!rows.length) return [];
+  const hi=toriFindHeader(rows,["店舗","純売上"]);
+  const H=rows[hi].map(h=>String(h).trim());
+  const iD=toriColAny(H,["日付","営業日","勤務日","年月日"]), iS=toriColAny(H,["店舗名","店舗"]),
+        iSl=toriColAny(H,["純売上","総売上","売上"]), iL=toriColAny(H,["人件費合計","人件費"]), iC=toriColAny(H,["仕入金額","仕入","原価"]);
+  if(iD<0||iS<0||iSl<0) return [];
+  const recs=[];
+  for(let i=hi+1;i<rows.length;i++){
+    const c=rows[i]; const st=String(c[iS]||"").trim(); const t=toriDate(c[iD]);
+    if(!st||!t) continue;
+    recs.push({store:st,t,sales:toriNum(c[iSl]),labor:iL>=0?toriNum(c[iL]):0,cost:iC>=0?toriNum(c[iC]):0});
+  }
+  return recs;
+}
+function toriCacheGet(){ try{ return JSON.parse(localStorage.getItem(TORI_CACHE_KEY)); }catch(e){ return null; } }
+function toriCacheSet(v){ try{ localStorage.setItem(TORI_CACHE_KEY,JSON.stringify(v)); }catch(e){} }
+function toriCacheFresh(c){
+  if(!c||!c.fetchedAt||!Array.isArray(c.daily)) return false;
+  const fetched=new Date(c.fetchedAt), now=new Date();
+  const today11=new Date(now.getFullYear(),now.getMonth(),now.getDate(),11,0,0);
+  if(now<today11) return true;                      // 今日の11時前は前回のキャッシュのままでよい
+  return fetched>=today11;                            // 11時以降は「今日の11時以降に取得済み」なら新鮮
+}
+let TORI_STATE={status:"idle",daily:[],error:null};   // idle|loading|ok|error
+async function ensureToriData(force){
+  const cached=toriCacheGet();
+  if(!force&&toriCacheFresh(cached)){ TORI_STATE={status:"ok",daily:cached.daily,error:null}; return TORI_STATE; }
+  TORI_STATE={status:"loading",daily:cached?cached.daily:[],error:null};
+  try{
+    const token=await toriSsoLogin();
+    const d=await toriApi({action:"data",token,months:13,keys:"daily"});
+    if(!d.ok) throw new Error(d.error||"取得に失敗しました");
+    const daily=parseToriDaily((d.sheets||{}).daily||[]);
+    toriCacheSet({fetchedAt:new Date().toISOString(),daily});
+    TORI_STATE={status:"ok",daily,error:null};
+  }catch(e){
+    TORI_STATE={status:"error",daily:cached?cached.daily:[],error:e.message||"接続できません"};
+  }
+  return TORI_STATE;
+}
+
+/* ============================================================
+   ハブDBの横断ウィジェット用データ取得
+   （本部タスク=hq_*／チェックシート=checklist_*／日報=reports／
+    店舗=stores・user_stores。いずれも読み取りのみ）
+   ============================================================ */
+let HUB={ hqTasks:null, checklist:null, reportsY:null, stores:null };
+
+function sortedSteps(t){ return (t.hq_task_steps||[]).slice().sort((a,b)=>a.sort_order-b.sort_order); }
+function currentStep(t){ return sortedSteps(t).find(s=>!s.completed_at)||null; }
+async function fetchHqTasks(){
+  try{
+    const r=await authed(`/rest/v1/hq_tasks?select=*,hq_task_steps(*)&status=neq.done`);
+    HUB.hqTasks=(r.ok&&Array.isArray(r.body))?r.body:[];
+  }catch(e){ HUB.hqTasks=[]; }
+  return HUB.hqTasks;
+}
+function hqSignal(t){
+  const cur=currentStep(t); const today=todayStr();
+  if(!cur) return {cur:null,overdue:false,dueToday:false,stalled:false,stalledDays:0};
+  const overdue=!!(cur.due_date&&cur.due_date<today);
+  const dueToday=!!(cur.due_date&&cur.due_date===today);
+  const steps=sortedSteps(t); const idx=steps.indexOf(cur);
+  const since=idx>0?steps[idx-1].completed_at:t.created_at;
+  const stalledDays=since?Math.floor((Date.now()-new Date(since).getTime())/86400000):0;
+  return {cur,overdue,dueToday,stalled:overdue||stalledDays>=3,stalledDays};
+}
+async function fetchStores(){
+  try{
+    const r=await authed("/rest/v1/stores?select=id,name,store_no,is_active&is_active=eq.true&order=sort_order");
+    HUB.stores=(r.ok&&Array.isArray(r.body))?r.body:[];
+  }catch(e){ HUB.stores=[]; }
+  return HUB.stores;
+}
+async function fetchChecklistToday(){
+  try{
+    const today=todayStr();
+    const [tpl,items,checks]=await Promise.all([
+      authed("/rest/v1/checklist_templates?is_active=eq.true&select=id,store_id"),
+      authed("/rest/v1/checklist_items?is_active=eq.true&select=id,template_id"),
+      authed(`/rest/v1/checklist_checks?work_date=eq.${today}&select=item_id,store_id`),
+    ]);
+    HUB.checklist={
+      templates:(tpl.ok&&Array.isArray(tpl.body))?tpl.body:[],
+      items:(items.ok&&Array.isArray(items.body))?items.body:[],
+      checks:(checks.ok&&Array.isArray(checks.body))?checks.body:[],
+    };
+  }catch(e){ HUB.checklist=null; }
+  return HUB.checklist;
+}
+// 店舗ごとの「今日の対象項目数・完了数」を組み立てる（template.store_id=null は全店共通）
+function checklistPerStore(){
+  const ck=HUB.checklist, stores=HUB.stores||[];
+  if(!ck) return [];
+  return stores.map(st=>{
+    const tpls=ck.templates.filter(t=>!t.store_id||t.store_id===st.id).map(t=>t.id);
+    const itemIds=ck.items.filter(i=>tpls.includes(i.template_id)).map(i=>i.id);
+    const done=ck.checks.filter(c=>c.store_id===st.id&&itemIds.includes(c.item_id)).length;
+    return {store:st,total:itemIds.length,done};
+  });
+}
+async function fetchReportsYesterday(){
+  try{
+    const yday=addDaysStr(todayStr(),-1);
+    const t0=new Date(yday+"T00:00:00"), t1=new Date(todayStr()+"T00:00:00");
+    const [stat,sub]=await Promise.all([
+      authed("/rest/v1/rpc/dash_stats",{method:"POST",body:JSON.stringify({p_from:t0.toISOString(),p_to:t1.toISOString()})}),
+      authed(`/rest/v1/reports?kind=eq.daily&report_date=eq.${yday}&select=author_id`),
+    ]);
+    const rows=(stat.ok&&Array.isArray(stat.body))?stat.body:null;
+    const submitted=(sub.ok&&Array.isArray(sub.body))?new Set(sub.body.map(r=>r.author_id)):new Set();
+    if(!rows) throw new Error("no data");
+    // 社長は日報の対象外（nippo側の集計と合わせる）
+    const usersR=await authed("/rest/v1/users?select=id,role,name&is_active=eq.true");
+    const users=(usersR.ok&&Array.isArray(usersR.body))?usersR.body:[];
+    const targets=rows.map(r=>users.find(u=>u.id===r.uid)).filter(u=>u&&u.role!=="CEO");
+    const missing=targets.filter(u=>!submitted.has(u.id));
+    HUB.reportsY={date:yday,total:targets.length,submitted:targets.length-missing.length,missing,submittedIds:submitted};
+  }catch(e){ HUB.reportsY=null; }
+  return HUB.reportsY;
+}
+// 店舗ごとの「昨日分の日報が(誰か1人でも)提出済みか」。reports.store_idを直接見る
+// （report自体がどの店舗のぶんかを持っているため、著者の所属店舗を介するより正確）
+async function fetchReportsByStore(){
+  if(!HUB.reportsY||!HUB.stores) return {};
+  try{
+    const r=await authed(`/rest/v1/reports?kind=eq.daily&report_date=eq.${HUB.reportsY.date}&select=store_id`);
+    const rows=(r.ok&&Array.isArray(r.body))?r.body:[];
+    const submittedStoreIds=new Set(rows.map(x=>x.store_id).filter(Boolean));
+    const out={};
+    HUB.stores.forEach(st=>{ out[st.id]=submittedStoreIds.has(st.id); });
+    return out;
+  }catch(e){ return {}; }
+}
+async function fetchOverdueChecklistAlerts(){
+  try{
+    const r=await authed("/rest/v1/checklist_overdue_alerts?resolved_at=is.null&select=*,item:checklist_items(label),store:stores(name)&order=alerted_at.desc&limit=8");
+    return (r.ok&&Array.isArray(r.body))?r.body:[];
+  }catch(e){ return []; }
+}
+
+/* ============================================================
+   ウィジェットレジストリ
+   新しいウィジェットは WIDGETS に1エントリ追加すれば、
+   🎛画面のカスタマイズの設定画面に自動で並ぶ。
+   render(ctx) は ctx={u, HUB, TORI_STATE} を受け取りHTML文字列を返す。
+   ============================================================ */
+const WIDGETS={
+ kpi_sales:{ label:"今月売上（前年比つき）", area:"kpi",
+   render(ctx){
+     const st=ctx.tori;
+     if(st.status==="loading"&&!st.daily.length) return kpiSkeleton("今月の売上");
+     if(st.status==="error"&&!st.daily.length) return kpiOffline("今月の売上","経営Dに接続できません",st.error);
+     const scoped=myStoreScope(ctx.u);
+     if(scoped&&!scoped.length) return kpiCard("自店の昨日売上","—","","所属店舗が未設定です");
+     if(scoped){
+       // 店舗スコープの役割（店長等）には「自店の昨日売上」を出す
+       const yday=new Date(Date.now()-86400000);
+       const rows=st.daily.filter(r=>scoped.includes(r.store)&&sameDay(r.t,yday));
+       const sum=rows.reduce((s,r)=>s+r.sales,0);
+       const prev=st.daily.filter(r=>scoped.includes(r.store)&&sameDayLastYearSameDow(r.t,yday));
+       const psum=prev.reduce((s,r)=>s+r.sales,0);
+       const yoy=psum>0?Math.round((sum/psum-1)*1000)/10:null;
+       return kpiCard("自店の昨日売上",yen(sum),yoyBadge(yoy),`${scoped[0]||""}（経営Dから）`);
+     }
+     // 前年比は「今月・当日まで」対「前年同月・同じ日数まで」で揃える（未来日や
+     // プレースホルダ行が混じっても不当に膨らまないよう、今月側も日付で区切る）
+     const now=new Date();
+     const rows=st.daily.filter(r=>{ const d=new Date(r.t); return d.getFullYear()===now.getFullYear()&&d.getMonth()===now.getMonth()&&d.getDate()<=now.getDate(); });
+     const sum=rows.reduce((s,r)=>s+r.sales,0);
+     const prevRows=st.daily.filter(r=>{ const d=new Date(r.t); return d.getFullYear()===now.getFullYear()-1&&d.getMonth()===now.getMonth()&&d.getDate()<=now.getDate(); });
+     const psum=prevRows.reduce((s,r)=>s+r.sales,0);
+     const yoy=psum>0?Math.round((sum/psum-1)*1000)/10:null;
+     return kpiCard("今月の売上（全店）",yen(sum),yoyBadge(yoy),`${now.getDate()}日時点（経営Dから）`);
+   }},
+ kpi_fl:{ label:"F/L率（今月）", area:"kpi",
+   render(ctx){
+     const st=ctx.tori;
+     if(st.status==="loading"&&!st.daily.length) return kpiSkeleton("F/L率");
+     if(st.status==="error"&&!st.daily.length) return kpiOffline("F/L率","経営Dに接続できません",st.error);
+     const now=new Date();
+     const rows=st.daily.filter(r=>{ const d=new Date(r.t); return d.getFullYear()===now.getFullYear()&&d.getMonth()===now.getMonth(); });
+     const sales=rows.reduce((s,r)=>s+r.sales,0), fl=rows.reduce((s,r)=>s+r.cost+r.labor,0);
+     const pct=sales>0?Math.round(fl/sales*1000)/10:null;
+     return kpiCard("F/L率（今月）",pct==null?"—":pct+"%",pct==null?"":`<span class="badge ${pct<=55?"b-up":pct<=60?"b-warn":"b-bad"}">${pct<=55?"良好":pct<=60?"注意":"要対応"}</span>`,"原価+人件費 ÷ 売上（経営Dから）");
+   }},
+ kpi_nippo:{ label:"日報提出（昨日）", area:"kpi",
+   render(ctx){
+     const scoped=myStoreScope(ctx.u);
+     if(scoped){
+       const meSubmitted=ctx.hqNippoMine;
+       if(meSubmitted==null) return kpiOffline("日報","状況を取得できません","");
+       return kpiCard("日報",meSubmitted?"提出済み ✓":"未提出",`<span class="badge ${meSubmitted?"b-up":"b-bad"}">${meSubmitted?"":"今日"}</span>`,meSubmitted?"":"今日の分がまだです");
+     }
+     const r=HUB.reportsY;
+     if(!r) return kpiOffline("日報の提出（昨日）","日報データを取得できません","");
+     const miss=r.missing.map(u=>esc(u.name)).slice(0,4).join("・");
+     return kpiCard("日報の提出（昨日）",`${r.submitted}/${r.total}人`,r.missing.length?`<span class="badge b-warn">${r.missing.length}人 未提出</span>`:`<span class="badge b-up">全員提出</span>`,r.missing.length?`未提出: ${miss}（日報から）`:"（日報から）");
+   }},
+ kpi_tasks:{ label:"本部タスク（停滞・超過）", area:"kpi",
+   render(ctx){
+     const tasks=HUB.hqTasks||[];
+     const sig=tasks.map(hqSignal);
+     const overdue=sig.filter(s=>s.overdue).length, stall=sig.filter(s=>s.stalled).length;
+     if(!stall) return kpiCard("本部タスク","停滞なし","<span class=\"badge b-up\">良好</span>","（本部タスクから）");
+     const worst=tasks[sig.findIndex(s=>s.stalled)];
+     return `<a href="tasks.html" target="_blank">${kpiCard("本部タスク",`停滞 ${stall}件`,overdue?`<span class="badge b-bad">期限超過 ${overdue}</span>`:"",worst?`${esc(worst.title)}が${sig.find(s=>s.stalled).stalledDays}日停止（本部タスクから）`:"")}</a>`;
+   }},
+ kpi_check:{ label:"チェックシート実施率（今日）", area:"kpi",
+   render(ctx){
+     const scoped=myStoreScope(ctx.u);
+     if(scoped&&!scoped.length) return kpiCard("今日のチェック","—","","所属店舗が未設定です");
+     const rows=checklistPerStore();
+     if(!HUB.checklist) return kpiOffline("チェックシート（今日）","取得できません","");
+     const target=scoped?rows.filter(r=>scoped.includes(r.store.name)):rows;
+     const total=target.reduce((s,r)=>s+r.total,0), done=target.reduce((s,r)=>s+r.done,0);
+     const pct=total>0?Math.round(done/total*100):0;
+     return kpiCard(scoped?"今日のチェック":"チェックシート（今日）",`${done}/${total}`,`<span class="badge ${pct>=90?"b-up":pct>=60?"b-warn":"b-bad"}">${pct}%</span>`,scoped?"自店の実施状況":"クローズ分は夜に増えます（現場アプリから）");
+   }},
+ kpi_mytasks:{ label:"自分のタスク", area:"kpi",
+   render(ctx){
+     const mine=(HUB.hqTasks||[]).filter(t=>{ const cur=currentStep(t); return cur&&cur.assignee_id===ctx.u.id; });
+     if(!mine.length) return kpiCard("自分のタスク","0件","","本部タスクから");
+     const overdue=mine.filter(t=>hqSignal(t).overdue).length;
+     const soonest=mine.slice().sort((a,b)=>{ const da=currentStep(a).due_date||"9999", db=currentStep(b).due_date||"9999"; return da.localeCompare(db); })[0];
+     const cur=currentStep(soonest);
+     return `<a href="tasks.html" target="_blank">${kpiCard("自分のタスク",`${mine.length}件`,overdue?`<span class="badge b-bad">期限超過 ${overdue}</span>`:"",cur?`次: ${esc(cur.title)}（本部タスクから）`:"")}</a>`;
+   }},
+
+ panel_chart:{ label:"売上推移チャート", area:"main",
+   render(ctx){
+     return `<section class="panel" id="w-panel_chart">
+       <div class="phead"><h2>売上推移（全店）</h2>
+         <div class="seg" id="chartseg">
+           <button class="active" data-m="sales">売上</button><button data-m="yoy">前年比</button><button data-m="fl">F/L率</button>
+         </div>
+       </div>
+       <div class="chart-area"><canvas id="trendcv"></canvas></div>
+     </section>`;
+   },
+   after(ctx){
+     const seg=$("chartseg"); if(!seg) return;
+     seg.querySelectorAll("button").forEach(b=>b.onclick=()=>{
+       seg.querySelectorAll("button").forEach(x=>x.classList.remove("active")); b.classList.add("active");
+       drawTrendChart(ctx.tori.daily,b.dataset.m);
+     });
+     drawTrendChart(ctx.tori.daily,"sales");
+   }},
+ panel_alerts:{ label:"⚠️要対応（横断）", area:"side",
+   render(ctx){
+     const list=ctx.alerts||[];
+     return `<section class="panel"><div class="phead"><h2>⚠️ 要対応（全システム横断）</h2><span class="sub2">${list.length}件</span></div>
+       <div>${list.length?list.map(a=>`<a class="item" href="${a.href||'javascript:void(0)'}" ${a.blank?'target="_blank" rel="noopener"':""}><div class="av">${a.icon}</div><div><strong>${esc(a.title)}</strong><span>${esc(a.detail)}</span></div><span class="st ${a.tone}">${esc(a.badge)}</span></a>`).join(""):'<div class="empty">要対応はありません 🎉</div>'}</div>
+     </section>`;
+   }},
+ panel_posts:{ label:"📢お知らせ", area:"main",
+   render(ctx){
+     return `<section class="panel"><div class="phead"><h2>📢 お知らせ（掲示板）</h2><span class="sub2"><button type="button" id="gopostsfromhome">すべて見る →</button></span></div>
+       <div>${(POSTS||[]).slice(0,3).map(p=>postHtml(p,ctx.u)).join("")||'<div class="empty">まだお知らせはありません</div>'}</div>
+     </section>`;
+   },
+   after(ctx){
+     wirePostActions(ctx.u,()=>renderHome(ctx.u));
+     const b=$("gopostsfromhome"); if(b) b.onclick=()=>{ VIEW="posts"; renderPosts(ctx.u); };
+   }},
+ panel_mytasks:{ label:"✅今日の自分のタスク", area:"side",
+   render(ctx){
+     const mine=(HUB.hqTasks||[]).filter(t=>{ const cur=currentStep(t); return cur&&cur.assignee_id===ctx.u.id; });
+     const done=0; // 完了分はhq_tasksのstatus=neq.doneで既に除外済みのため常に未完了のみ表示
+     return `<section class="panel"><div class="phead"><h2>✅ 今日の自分のタスク</h2><span class="sub2">${mine.length}件</span></div>
+       <div>${mine.length?mine.map(t=>{ const cur=currentStep(t); const sig=hqSignal(t);
+         return `<a class="item task" href="tasks.html?task=${t.id}" target="_blank"><span class="chk"></span><span><strong>${esc(cur.title)}</strong><span>${esc(t.title)}${cur.due_date?" ／ 期限 "+fmtD(cur.due_date):""}${sig.overdue?" ⚠ 超過":sig.stalled?` ${sig.stalledDays}日停止`:""}</span></span><span class="st ${sig.overdue?"s-bad":"s-mut"}">未完了</span></a>`;
+       }).join(""):'<div class="empty">今は割り当てられているタスクがありません</div>'}</div>
+     </section>`;
+   }},
+ panel_stores:{ label:"🏪店舗別・今日の状況", area:"wide",
+   render(ctx){
+     const stores=HUB.stores||[];
+     const ckRows=checklistPerStore();
+     const daily=ctx.tori.daily||[];
+     const yday=new Date(Date.now()-86400000);
+     const reportsByStore=ctx.reportsByStore||{};
+     const rows=stores.map(st=>{
+       const ck=ckRows.find(r=>r.store.id===st.id)||{total:0,done:0};
+       const sales=daily.filter(r=>r.store===st.name&&sameDay(r.t,yday));
+       const sum=sales.reduce((s,r)=>s+r.sales,0);
+       const prev=daily.filter(r=>r.store===st.name&&sameDayLastYearSameDow(r.t,yday));
+       const psum=prev.reduce((s,r)=>s+r.sales,0);
+       const yoy=psum>0?Math.round((sum/psum-1)*1000)/10:null;
+       const nippo=st.id in reportsByStore?reportsByStore[st.id]:null;
+       return {name:st.name,sales:sum,hasSales:sales.length>0,yoy,ck,nippo};
+     });
+     return `<section class="panel"><div class="phead"><h2>🏪 店舗別・今日の状況</h2><span class="sub2">昨日売上=経営D ／ チェック=現場アプリ ／ 日報=日報システム</span></div>
+       <div class="tblwrap"><table><thead><tr><th>店舗</th><th>昨日の売上</th><th>前年同曜日比</th><th>チェックシート</th><th>日報（昨日分）</th></tr></thead>
+       <tbody>${rows.map(r=>{
+         const pct=r.ck.total>0?Math.round(r.ck.done/r.ck.total*100):null;
+         return `<tr><td><strong>${esc(r.name)}</strong></td>
+           <td class="num">${r.hasSales?yen(r.sales):"—"}</td>
+           <td class="num">${r.yoy==null?"—":`<span class="st ${r.yoy<0?"s-bad":"s-ok"}">${r.yoy>0?"+":""}${r.yoy}%</span>`}</td>
+           <td>${r.ck.total?`<span class="st ${pct===100?"s-ok":pct>=60?"s-warn":"s-bad"}">${r.ck.done}/${r.ck.total}（${pct}%）</span>`:'<span class="st s-mut">対象なし</span>'}</td>
+           <td>${r.nippo==null?'<span class="st s-mut">—</span>':`<span class="st ${r.nippo?"s-ok":"s-bad"}">${r.nippo?"提出済み":"未提出"}</span>`}</td>
+         </tr>`;
+       }).join("")||`<tr><td colspan="5">店舗がありません</td></tr>`}</tbody></table></div>
+     </section>`;
+   }},
+ panel_timeline:{ label:"🕐最近の動き", area:"wide",
+   render(ctx){
+     const list=ctx.timeline||[];
+     return `<section class="panel"><div class="phead"><h2>🕐 最近の動き（全システムの記録）</h2><span class="sub2">直近${list.length}件</span></div>
+       <div>${list.length?list.map(e=>`<div class="item"><div class="av" style="font-size:11px;background:transparent;color:var(--muted)">${esc(e.time)}</div><div><strong>${esc(e.title)}</strong><span>${esc(e.detail)}</span></div><span></span></div>`).join(""):'<div class="empty">まだ記録がありません</div>'}</div>
+     </section>`;
+   }},
+};
+function kpiCard(title,value,badgeHtml,sub){
+  return `<article class="dcard"><div class="chead"><div class="ctitle">${esc(title)}</div>${badgeHtml||""}</div><div><div class="value">${value}</div><div class="sub">${esc(sub||"")}</div></div></article>`;
+}
+function kpiSkeleton(title){ return `<article class="dcard skel"><div class="chead"><div class="ctitle">${esc(title)}</div></div><div><div class="value">------</div><div class="sub">取得中…</div></div></article>`; }
+function kpiOffline(title,msg,detail){ return `<article class="dcard"><div class="chead"><div class="ctitle">${esc(title)}</div><span class="badge b-warn">未接続</span></div><div><div class="value" style="font-size:15px;font-weight:600">${esc(msg)}</div><div class="sub">${esc(detail||"")}</div></div></article>`; }
+function yoyBadge(yoy){ return yoy==null?"":`<span class="badge ${yoy>=0?"b-up":"b-bad"}">${yoy>0?"+":""}${yoy}%</span>`; }
+function sameDay(t,d){ const a=new Date(t); return a.getFullYear()===d.getFullYear()&&a.getMonth()===d.getMonth()&&a.getDate()===d.getDate(); }
+function sameDayLastYearSameDow(t,ref){
+  const a=new Date(t); if(a.getFullYear()!==ref.getFullYear()-1) return false;
+  // 前年の「同じ曜日」に最も近い同週日（簡易版：月日が近傍7日以内かつ曜日一致）
+  const diff=Math.abs((a-new Date(ref.getFullYear()-1,ref.getMonth(),ref.getDate()))/86400000);
+  return diff<=3 && a.getDay()===ref.getDay();
+}
+// 店長・社員・アルバイトなど「自分の店舗」だけを見る役割かどうか。
+// TEAM以上はnull=全社スコープ。店舗が未割当のときは[]を返す（店舗未設定の状態と、
+// 全社を見てよい役割とを混同すると、店舗未割当の一般職に全社の日報未提出者一覧のような
+// 本来見せるべきでない情報が漏れてしまうため、nullと[]を明確に区別している）
+function myStoreScope(u){
+  if(!u||u.is_master) return null;
+  if(["CEO","HQ","TEAM"].includes(u.role)) return null;
+  return ME_STORES.slice();
+}
+let ME_STORES=[];
+async function fetchMyStores(){
+  try{
+    const r=await authed(`/rest/v1/user_stores?user_id=eq.${ME.id}&select=store:stores(name)`);
+    ME_STORES=(r.ok&&Array.isArray(r.body))?r.body.map(x=>x.store&&x.store.name).filter(Boolean):[];
+  }catch(e){ ME_STORES=[]; }
+}
+function drawTrendChart(daily,metric){
+  const cv=$("trendcv"); if(!cv) return; const ctx=cv.getContext("2d");
+  const rect=cv.getBoundingClientRect(), r=window.devicePixelRatio||1;
+  cv.width=Math.max(500,rect.width*r); cv.height=Math.max(220,rect.height*r); ctx.scale(r,r);
+  const w=cv.width/r,h=cv.height/r,pad={t:20,r:16,b:30,l:46};
+  const months=[]; const now=new Date();
+  for(let i=11;i>=0;i--){ const d=new Date(now.getFullYear(),now.getMonth()-i,1); months.push(d); }
+  const data=months.map(m=>{
+    const rows=daily.filter(r=>{ const d=new Date(r.t); return d.getFullYear()===m.getFullYear()&&d.getMonth()===m.getMonth(); });
+    const sales=rows.reduce((s,r)=>s+r.sales,0);
+    if(metric==="sales") return Math.round(sales/1e6*10)/10;
+    if(metric==="fl"){ const fl=rows.reduce((s,r)=>s+r.cost+r.labor,0); return sales>0?Math.round(fl/sales*1000)/10:0; }
+    const py=new Date(m.getFullYear()-1,m.getMonth(),1);
+    const prows=daily.filter(r=>{ const d=new Date(r.t); return d.getFullYear()===py.getFullYear()&&d.getMonth()===py.getMonth(); });
+    const psales=prows.reduce((s,r)=>s+r.sales,0);
+    return psales>0?Math.round(sales/psales*1000)/10:0;
+  });
+  const color=metric==="sales"?"#b73a1c":metric==="fl"?"#2f8a4b":"#2b6cb0";
+  const label=metric==="sales"?"月次売上（百万円）":metric==="fl"?"F/L合計率（%）":"前年比（%）";
+  const max=Math.max(...data,1)*1.15, min=Math.min(...data,0)*0.85;
+  const pw=w-pad.l-pad.r, ph=h-pad.t-pad.b;
+  ctx.clearRect(0,0,w,h);
+  ctx.strokeStyle="#eee7db"; ctx.fillStyle="#7d7466"; ctx.font="11px system-ui"; ctx.lineWidth=1;
+  for(let i=0;i<=4;i++){ const y=pad.t+ph*i/4; ctx.beginPath(); ctx.moveTo(pad.l,y); ctx.lineTo(w-pad.r,y); ctx.stroke();
+    ctx.fillText(String(Math.round(max-(max-min)*i/4)),6,y+4); }
+  const pts=data.map((v,i)=>[pad.l+pw*i/(data.length-1),pad.t+ph-((v-min)/(max-min||1))*ph]);
+  const g=ctx.createLinearGradient(0,pad.t,0,h-pad.b); g.addColorStop(0,color+"2e"); g.addColorStop(1,color+"00");
+  ctx.beginPath(); pts.forEach(([x,y],i)=>i?ctx.lineTo(x,y):ctx.moveTo(x,y));
+  ctx.lineTo(w-pad.r,h-pad.b); ctx.lineTo(pad.l,h-pad.b); ctx.closePath(); ctx.fillStyle=g; ctx.fill();
+  ctx.beginPath(); pts.forEach(([x,y],i)=>i?ctx.lineTo(x,y):ctx.moveTo(x,y)); ctx.strokeStyle=color; ctx.lineWidth=2.5; ctx.stroke();
+  pts.forEach(([x,y])=>{ ctx.beginPath(); ctx.arc(x,y,3.5,0,7); ctx.fillStyle="#fff"; ctx.fill(); ctx.strokeStyle=color; ctx.lineWidth=2; ctx.stroke(); });
+  ctx.fillStyle="#7d7466";
+  months.forEach((m,i)=>{ ctx.fillText((m.getMonth()+1)+"月",pad.l+pw*i/11-9,h-10); });
+  ctx.fillText(label,pad.l,14);
+}
+
+/* ============================================================
+   レイアウト解決（portal_layouts。空ならコード内の既定にフォールバック）
+   ============================================================ */
+const DEFAULT_LAYOUT={
+  MASTER:{kpi:["kpi_sales","kpi_nippo","kpi_tasks","kpi_check"],main:["panel_chart","panel_posts"],side:["panel_alerts","panel_mytasks"],wide:["panel_stores","panel_timeline"]},
+  CEO:   {kpi:["kpi_sales","kpi_nippo","kpi_tasks","kpi_check"],main:["panel_chart","panel_posts"],side:["panel_alerts","panel_mytasks"],wide:["panel_stores","panel_timeline"]},
+  HQ:    {kpi:["kpi_sales","kpi_nippo","kpi_tasks","kpi_check"],main:["panel_chart","panel_posts"],side:["panel_alerts","panel_mytasks"],wide:["panel_stores","panel_timeline"]},
+  TEAM:  {kpi:["kpi_sales","kpi_nippo","kpi_tasks","kpi_check"],main:["panel_chart","panel_posts"],side:["panel_alerts","panel_mytasks"],wide:["panel_stores","panel_timeline"]},
+  TENCHO:{kpi:["kpi_sales","kpi_check","kpi_mytasks","kpi_nippo"],main:["panel_posts"],side:["panel_mytasks"],wide:["panel_stores","panel_timeline"]},
+  SHAIN: {kpi:["kpi_check","kpi_mytasks","kpi_nippo"],main:["panel_posts"],side:["panel_mytasks"],wide:["panel_timeline"]},
+  AL:    {kpi:["kpi_check","kpi_mytasks","kpi_nippo"],main:["panel_posts"],side:["panel_mytasks"],wide:["panel_timeline"]},
+};
+let LAYOUTS=null; // {role:{area:[{widget_key,position,enabled}]}}
+async function fetchLayouts(){
+  try{
+    const r=await authed("/rest/v1/portal_layouts?select=role,area,widget_key,position,enabled&order=position");
+    LAYOUTS={};
+    if(r.ok&&Array.isArray(r.body)) r.body.forEach(row=>{
+      (LAYOUTS[row.role]=LAYOUTS[row.role]||{}); (LAYOUTS[row.role][row.area]=LAYOUTS[row.role][row.area]||[]).push(row);
+    });
+  }catch(e){ LAYOUTS={}; }
+}
+function layoutFor(role){
+  const custom=LAYOUTS&&LAYOUTS[role];
+  const areas=["kpi","main","side","wide"];
+  const out={};
+  areas.forEach(a=>{
+    if(custom&&custom[a]&&custom[a].length){
+      out[a]=custom[a].slice().sort((x,y)=>x.position-y.position).filter(x=>x.enabled).map(x=>x.widget_key).filter(k=>WIDGETS[k]);
+    } else {
+      out[a]=(DEFAULT_LAYOUT[role]&&DEFAULT_LAYOUT[role][a])||[];
+    }
+  });
+  return out;
+}
+function roleKeyOf(u){ return u.is_master?"MASTER":u.role; }
+
+/* ============================================================
+   ⚠️要対応・最近の動き の集約
+   ============================================================ */
+async function buildAlerts(u){
+  const list=[];
+  (HUB.hqTasks||[]).forEach(t=>{
+    const sig=hqSignal(t); if(!sig.stalled) return;
+    list.push({icon:"📌",title:sig.overdue?`${t.title}の期限が超過しています`:`${t.title}が停止しています`,
+      detail:`いま: ${sig.cur.title}${sig.overdue?"":`／${sig.stalledDays}日停止`}`,badge:"本部タスク",tone:"s-bad",href:`tasks.html?task=${t.id}`,blank:true});
+  });
+  const canSeeMissingReports=u.is_master||(canSee(SYSTEMS.find(s=>s.key==="nippo"),u)&&["CEO","HQ","TEAM"].includes(u.role));
+  if(canSeeMissingReports&&HUB.reportsY&&HUB.reportsY.missing.length){
+    list.push({icon:"📝",title:`日報の未提出が${HUB.reportsY.missing.length}人います`,
+      detail:HUB.reportsY.missing.map(x=>x.name).slice(0,6).join("・")+"（昨日分）",badge:"日報",tone:"s-warn",href:"https://mirai-oss.github.io/nippo/",blank:true});
+  }
+  const overdueCk=await fetchOverdueChecklistAlerts();
+  overdueCk.forEach(a=>{
+    const label=(a.item&&a.item.label)||"チェック";
+    list.push({icon:"☑️",title:`「${label}」が期限切れ未完了です`,
+      detail:`${(a.store&&a.store.name)||""}（対応済みにする＝現場アプリから）`,badge:"チェック",tone:"s-warn",href:"https://mirai-oss.github.io/nippo/",blank:true});
+  });
+  NOTIFS.filter(n=>!n.read_at).forEach(n=>{
+    if(list.some(x=>x.href&&x.href.includes(n.task_id||"__none__"))) return;
+    list.push({icon:"🔔",title:n.title,detail:n.body||"",badge:"通知",tone:"s-info",href:n.task_id?`tasks.html?task=${n.task_id}`:"tasks.html",blank:true});
+  });
+  return list.slice(0,8);
+}
+async function buildTimeline(u){
+  const out=[];
+  try{
+    const r=await authed("/rest/v1/hq_task_activity?select=*,task:hq_tasks(title)&order=created_at.desc&limit=10");
+    if(r.ok) (r.body||[]).forEach(a=>out.push({t:new Date(a.created_at).getTime(),time:fmtTime(a.created_at),title:a.kind==="create"?"タスクが作成されました":a.kind==="step_complete"?"工程が完了しました":a.detail,detail:`${a.task&&a.task.title||""}（本部タスク）`}));
+  }catch(e){}
+  try{
+    const r=await authed("/rest/v1/checklist_check_log?action=eq.checked&select=*,item:checklist_items(label),store:stores(name)&order=acted_at.desc&limit=10");
+    if(r.ok) (r.body||[]).forEach(c=>out.push({t:new Date(c.acted_at).getTime(),time:fmtTime(c.acted_at),title:`チェックシート: ${c.item&&c.item.label||""}が完了`,detail:`${c.store&&c.store.name||""}（現場アプリ）`}));
+  }catch(e){}
+  try{
+    const r=await authed("/rest/v1/portal_posts?select=title,created_at&order=created_at.desc&limit=5");
+    if(r.ok) (r.body||[]).forEach(p=>out.push({t:new Date(p.created_at).getTime(),time:fmtTime(p.created_at),title:"お知らせが投稿されました",detail:`「${p.title}」（掲示板）`}));
+  }catch(e){}
+  return out.sort((a,b)=>b.t-a.t).slice(0,6);
+}
+
+/* ============================================================
+   画面: ログイン
+   ============================================================ */
 function renderLogin(err){
   VIEW="home";
-  $("app").innerHTML=`<div class="card">
-    <label>メールアドレス</label><input type="email" id="lemail" autocomplete="username" inputmode="email">
-    <label>パスワード</label><input type="password" id="lpw" autocomplete="current-password">
-    <button class="btn" id="lbtn">ログイン</button>
-    <div class="err">${esc(err||"")}</div>
-    <div class="note">日報・週報システムと同じメールアドレス＋パスワードです。<br>アカウントが無い方は本部までご連絡ください。</div>
+  document.getElementById("root").innerHTML=`
+  <div class="authwrap">
+    <header><div class="logo">🐔</div><h1>N-Styleグループ ポータル</h1><p>統合アカウントで各システムへ</p></header>
+    <div class="acard">
+      <label>メールアドレス</label><input type="email" id="lemail" autocomplete="username" inputmode="email">
+      <label>パスワード</label><input type="password" id="lpw" autocomplete="current-password">
+      <button class="abtn" id="lbtn">ログイン</button>
+      <div class="aerr">${esc(err||"")}</div>
+      <div class="anote">日報・週報システムと同じメールアドレス＋パスワードです。<br>アカウントが無い方は本部までご連絡ください。</div>
+    </div>
   </div>`;
   const go=async()=>{
     $("lbtn").disabled=true;$("lbtn").textContent="ログイン中…";
@@ -290,46 +974,65 @@ function renderLogin(err){
   $("lpw").onkeydown=e=>{if(e.key==="Enter")go()};
 }
 
-function renderHome(u){
-  const isMaster=!!u.is_master;
-  const tiles=SYSTEMS.filter(sy=>canSee(sy,u));
-  $("app").innerHTML=`
-  <div class="userbar">
-    <div class="who">👤 ${esc(u.name)}<span class="badge${isMaster?" master":""}">${isMaster?"マスター":esc(ROLE_NAME[u.role]||u.role)}</span></div>
-    <div>
-      ${isMaster?`<button class="linkbtn" id="gosettings">⚙️ 権限設定</button>`:""}
-      <button class="linkbtn" id="lout">ログアウト</button>
+/* ============================================================
+   シェル（サイドバー・topbar）
+   ============================================================ */
+function sidebarHtml(u){
+  const ext=SYSTEMS.filter(sy=>!sy.internal&&canSee(sy,u));
+  const hq=SYSTEMS.find(sy=>sy.key==="hqtasks");
+  const showHq=hq&&canSee(hq,u);
+  return `<aside class="side">
+    <div class="brand"><div class="mark">🐔</div><div><strong>N-Styleグループ</strong><span>ポータル</span></div></div>
+    <nav class="nav">
+      <button class="${VIEW==="home"?"active":""}" id="navhome">🏠 概要（この画面）</button>
+      <button class="${VIEW==="posts"?"active":""}" id="navposts">📢 お知らせ${POSTS&&POSTS.length?`<span class="cnt">${POSTS.length}</span>`:""}</button>
+      ${showHq?`<a href="tasks.html" id="navhq">📌 本部タスク${NAV_HQ_CNT?`<span class="cnt">${NAV_HQ_CNT}</span>`:""}</a>`:""}
+      <div class="cap">各システムへ</div>
+      ${ext.map(sy=>`<a class="ext" href="${sy.url}" target="_blank" rel="noopener">${sy.ico} ${esc(sy.name)}</a>`).join("")}
+      ${isMaster(u)?`<div class="cap">管理</div><button class="${VIEW==="settings"?"active":""}" id="navsettings">⚙️ 権限・画面設定</button>`:""}
+    </nav>
+    <div class="side-foot">
+      <div class="sfname">👤 ${esc(u.name)}${isMaster(u)?"（マスター）":`（${esc(ROLE_NAME[u.role]||u.role)}）`}</div>
+      <button id="gopw">🔑 パスワードを変更</button>
+      <button id="lout">ログアウト</button>
     </div>
-  </div>
-  ${(POSTS&&POSTS.length)||canPost(u)?`
-  <div class="posthead" style="margin-top:0">
-    <h2>📢 お知らせ</h2>
-    <button class="linkbtn" id="allposts">すべて見る${POSTS&&POSTS.length?`（${POSTS.length}）`:""} →</button>
-  </div>
-  ${(POSTS||[]).slice(0,3).map(p=>postHtml(p,u)).join("")||'<div class="post"><div class="pm">まだお知らせはありません</div></div>'}`:""}
-  <div class="searchbox" style="margin-top:20px">
-    <span class="mag">🔍</span>
-    <input id="q" type="search" placeholder="やりたいこと・お知らせを検索（例: 精算 / シフト / 口コミ）">
-    <div id="qres"></div>
-  </div>
-  <div class="grid">${tiles.map(sy=>`
-    <a class="tile" href="${sy.url}" target="_blank" rel="noopener">
-      <div class="ico">${sy.ico}</div><h3>${esc(sy.name)}</h3><p>${esc(sy.desc)}</p>
-      <span class="tag${sy.sso?" sso":""}">${sy.sso?"✓ ":""}${esc(sy.login)}</span>
-    </a>`).join("")}
-  </div>
-  ${tiles.length===0?'<div class="card"><p style="text-align:center">表示できるシステムがありません。本部までお問い合わせください。</p></div>':""}
-  <details><summary>パスワードを変更する</summary>
-    <div class="card" style="margin-top:10px">
-      <label>新しいパスワード（8文字以上）</label><input type="password" id="npw" autocomplete="new-password">
-      <button class="btn" id="pwbtn">変更する</button><div class="err" id="pwmsg"></div>
-      <div class="note">ここで変えると日報・週報など統合アカウントを使う全システムのパスワードが変わります。</div>
-    </div>
-  </details>`;
-  if(isMaster)$("gosettings").onclick=async()=>{VIEW="settings";await renderSettings(u)};
-  if($("allposts"))$("allposts").onclick=()=>{VIEW="posts";renderPosts(u)};
-  wireSearch(u); wirePostDeletes(u);
-  $("lout").onclick=async()=>{const s=sess.get();if(s)await api("/auth/v1/logout",{method:"POST"},s.at).catch(()=>{});sess.clear();renderLogin()};
+  </aside>`;
+}
+let NAV_HQ_CNT=0;
+function toolsHtml(u){
+  return `<label class="search">🔍<input id="q" type="search" placeholder="タスク・お知らせ・機能を検索"><div class="searchdrop" id="qdrop" style="display:none"></div></label>
+    <div class="toolicons" id="toolicons"><span id="bellwrap">${bellHtml()}</span></div>`;
+}
+function wireRefreshBtn(u){
+  const b=$("torirefresh"); if(!b) return;
+  b.onclick=async()=>{
+    b.disabled=true; b.textContent="更新中…";
+    await ensureToriData(true);
+    b.disabled=false; b.textContent="🔄 更新";
+    renderHome(u);
+  };
+}
+function wireSidebar(u){
+  $("navhome").onclick=()=>{ VIEW="home"; renderHome(u); };
+  $("navposts").onclick=()=>{ VIEW="posts"; renderPosts(u); };
+  if($("navsettings")) $("navsettings").onclick=()=>{ VIEW="settings"; renderSettings(u); };
+  $("lout").onclick=async()=>{ if(!confirm("ログアウトしますか？"))return; const s=sess.get(); if(s)await api("/auth/v1/logout",{method:"POST"},s.at).catch(()=>{}); sess.clear(); renderLogin(); };
+  $("gopw").onclick=()=>openPwModal();
+}
+function openPwModal(){
+  const modal=document.createElement("div");
+  modal.style.cssText="position:fixed;inset:0;background:rgba(20,15,8,.5);z-index:100;display:flex;align-items:center;justify-content:center;padding:20px";
+  modal.innerHTML=`<div class="formcard" style="max-width:360px;width:100%;margin:0">
+    <div class="sec-title">🔑 パスワードを変更</div>
+    <label>新しいパスワード（8文字以上）</label><input type="password" id="npw" autocomplete="new-password">
+    <button class="btn" style="margin-top:14px" id="pwbtn">変更する</button>
+    <button class="btn sub" style="margin-top:8px" id="pwcancel">閉じる</button>
+    <div class="err" id="pwmsg" style="margin-top:8px"></div>
+    <div class="sec-sub" style="margin-top:10px">ここで変えると日報・週報など統合アカウントを使う全システムのパスワードが変わります。</div>
+  </div>`;
+  document.body.appendChild(modal);
+  modal.onclick=e=>{ if(e.target===modal) modal.remove(); };
+  $("pwcancel").onclick=()=>modal.remove();
   $("pwbtn").onclick=async()=>{
     const pw=$("npw").value;
     if(pw.length<8){$("pwmsg").textContent="8文字以上にしてください";return}
@@ -341,30 +1044,116 @@ function renderHome(u){
   };
 }
 
-/* ---------- お知らせ一覧・投稿 ---------- */
+/* ============================================================
+   画面: ホーム（総合ダッシュボード）
+   ============================================================ */
+async function renderHome(u){
+  VIEW="home";
+  const root=$("root")||document.getElementById("root");
+  root.innerHTML=`<div class="shell">${sidebarHtml(u)}<main>
+    <header class="topbar">
+      <div><h1>おはようございます、${esc((u.name||"").replace(/(さん|様)$/,""))}さん</h1><div class="dateline" id="dateline"></div></div>
+      <div class="tools" id="tools">${toolsHtml(u)}</div>
+    </header>
+    <section class="content" id="dashcontent"><div class="spin">読み込み中…</div></section>
+    <footer>N-Styleグループ ポータル</footer>
+  </main></div>`;
+  $("dateline").textContent=new Intl.DateTimeFormat("ja-JP",{year:"numeric",month:"long",day:"numeric",weekday:"long"}).format(new Date())+toriDateSuffix();
+  wireSidebar(u); wireSearch(u); wireBell(u); wireRefreshBtn(u);
+
+  const layout=layoutFor(roleKeyOf(u));
+  const allKeys=new Set([...layout.kpi,...layout.main,...layout.side,...layout.wide]);
+  const needsTori=[...allKeys].some(k=>["kpi_sales","kpi_fl","panel_chart","panel_stores"].includes(k));
+  const needsChecklist=[...allKeys].some(k=>["kpi_check","panel_stores"].includes(k));
+  const needsStores=needsChecklist||[...allKeys].some(k=>["panel_stores"].includes(k))||myStoreScopeNeeded(u);
+  const needsReports=[...allKeys].some(k=>["kpi_nippo","panel_stores"].includes(k));
+  // hq_tasksは「⚠️要対応」（レイアウトに関係なく常時集計）にも使うため常に取得する
+  const jobs=[fetchMyStores(),fetchHqTasks()];
+  if(needsStores) jobs.push(fetchStores());
+  if(needsChecklist) jobs.push(fetchChecklistToday());
+  if(needsReports) jobs.push(fetchReportsYesterday());
+  await Promise.all(jobs);
+
+  let toriState={status:"idle",daily:[],error:null};
+  if(needsTori){ renderDashboardArea(u,layout,toriState); toriState=await ensureToriData(false); }
+
+  // 個人の日報提出有無（店舗スコープの役割向け）
+  let hqNippoMine=null;
+  if(myStoreScope(u)){
+    try{
+      const yday=addDaysStr(todayStr(),-1);
+      const r=await authed(`/rest/v1/reports?kind=eq.daily&report_date=eq.${yday}&author_id=eq.${u.id}&select=id`);
+      hqNippoMine=r.ok&&Array.isArray(r.body)?r.body.length>0:null;
+    }catch(e){ hqNippoMine=null; }
+  }
+
+  const reportsByStore=await fetchReportsByStore();
+
+  NAV_HQ_CNT=(HUB.hqTasks||[]).filter(t=>{ const cur=currentStep(t); return cur&&cur.assignee_id===u.id; }).length;
+
+  const alerts=await buildAlerts(u);
+  const timeline=await buildTimeline(u);
+
+  renderDashboardArea(u,layout,toriState,{alerts,timeline,hqNippoMine,reportsByStore});
+  // サイドバーのバッジ更新（本部タスク件数）
+  const navhq=$("navhq"); if(navhq&&NAV_HQ_CNT){ const cnt=navhq.querySelector(".cnt"); if(!cnt){ navhq.insertAdjacentHTML("beforeend",`<span class="cnt">${NAV_HQ_CNT}</span>`); } }
+}
+function myStoreScopeNeeded(u){ return u&&!u.is_master&&!["CEO","HQ","TEAM"].includes(u.role); }
+function toriDateSuffix(){
+  const c=toriCacheGet();
+  if(!c||!c.fetchedAt) return " ・ 経営データ未取得";
+  const d=new Date(c.fetchedAt);
+  return ` ・ 経営データ更新 ${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}（🔄で手動更新可）`;
+}
+function renderDashboardArea(u,layout,toriState,extra){
+  extra=extra||{};
+  const ctx={u,tori:toriState,alerts:extra.alerts||[],timeline:extra.timeline||[],hqNippoMine:extra.hqNippoMine,reportsByStore:extra.reportsByStore||{}};
+  const kpiHtml=layout.kpi.map(k=>WIDGETS[k]?WIDGETS[k].render(ctx):"").join("");
+  const mainHtml=layout.main.map(k=>WIDGETS[k]?WIDGETS[k].render(ctx):"").join("");
+  const sideHtml=layout.side.map(k=>WIDGETS[k]?WIDGETS[k].render(ctx):"").join("");
+  const wideHtml=layout.wide.map(k=>WIDGETS[k]?WIDGETS[k].render(ctx):"").join("");
+  const toriRefreshBtn=(layout.kpi.includes("kpi_sales")||layout.kpi.includes("kpi_fl")||layout.main.includes("panel_chart")||layout.wide.includes("panel_stores"))
+    ?`<button class="refreshb" id="torirefresh">🔄 更新</button>`:"";
+  // ベルと同じアイコン列にtori更新ボタンを追加（検索窓とは別グループにして、
+  // モバイルで検索窓が全幅になってもアイコン類がまとまって1行に収まるようにする）
+  const icons=$("toolicons"); if(icons&&toriRefreshBtn&&!$("torirefresh")) icons.insertAdjacentHTML("afterbegin",toriRefreshBtn);
+  $("dashcontent").innerHTML=`
+    ${kpiHtml?`<div class="summary">${kpiHtml}</div>`:""}
+    ${(mainHtml||sideHtml)?`<div class="dcols"><div class="dgrid-main">${mainHtml}</div><div class="dgrid-side">${sideHtml}</div></div>`:""}
+    ${wideHtml}
+  `;
+  layout.main.concat(layout.side).forEach(k=>{ if(WIDGETS[k]&&WIDGETS[k].after) WIDGETS[k].after(ctx); });
+  wireRefreshBtn(u);
+}
+
+/* ============================================================
+   画面: お知らせ全部
+   ============================================================ */
 function renderPosts(u){
   VIEW="posts";
-  $("app").innerHTML=`
-  <div class="userbar">
-    <div class="who">📢 お知らせ</div>
-    <button class="linkbtn" id="back">← ポータルへ戻る</button>
-  </div>
-  ${canPost(u)?(()=>{
-    const ep=EDIT_ID?(POSTS||[]).find(p=>p.id===EDIT_ID):null;
-    return `
-  <div class="card" style="margin-bottom:16px${ep?';outline:2px solid var(--accent)':''}">
-    <div class="sec-title" style="margin-top:0">${ep?"✏️ お知らせを編集":"新しいお知らせを投稿"}</div>
-    <label>タイトル</label><input id="np-title" placeholder="例: 8月の営業について" value="${ep?esc(ep.title):""}">
-    <label>本文</label><textarea id="np-body" rows="4" style="width:100%;padding:12px 14px;font-size:16px;border:1px solid var(--line);border-radius:10px;background:var(--bg);color:var(--ink);font-family:inherit">${ep?esc(ep.body||""):""}</textarea>
-    <label>リンク（任意。YouTubeのURLは動画として埋め込まれます）</label><input id="np-url" type="url" placeholder="https://www.youtube.com/watch?v=…" value="${ep?esc(ep.url||""):""}">
-    <label style="display:flex;align-items:center;gap:8px;cursor:pointer"><input type="checkbox" id="np-pin" ${ep&&ep.pinned?"checked":""} style="width:18px;height:18px;padding:0;accent-color:var(--accent)"> 📌 上部に固定する</label>
-    <button class="btn" id="np-send">${ep?"更新する":"投稿する"}</button>
-    ${ep?`<button class="btn sub" id="np-cancel">編集をやめる</button>`:""}
-    <div class="err" id="np-msg"></div>
-  </div>`;})():""}
-  <div id="postlist">${(POSTS||[]).map(p=>postHtml(p,u)).join("")||'<div class="post"><div class="pm">まだお知らせはありません</div></div>'}</div>`;
-  $("back").onclick=()=>{VIEW="home";renderHome(u)};
-  wirePostDeletes(u);
+  const root=document.getElementById("root");
+  root.innerHTML=`<div class="shell">${sidebarHtml(u)}<main>
+    <header class="topbar"><div><h1>📢 お知らせ</h1></div><div class="tools" id="tools">${toolsHtml(u)}</div></header>
+    <section class="content">
+      ${canPost(u)?(()=>{
+        const ep=EDIT_ID?(POSTS||[]).find(p=>p.id===EDIT_ID):null;
+        return `<div class="formcard" style="${ep?"outline:2px solid var(--accent)":""}">
+          <div class="sec-title">${ep?"✏️ お知らせを編集":"新しいお知らせを投稿"}</div>
+          <label>タイトル</label><input id="np-title" placeholder="例: 8月の営業について" value="${ep?esc(ep.title):""}">
+          <label>本文</label><textarea id="np-body" rows="4">${ep?esc(ep.body||""):""}</textarea>
+          <label>リンク（任意。YouTubeのURLは動画として埋め込まれます）</label><input id="np-url" type="url" placeholder="https://www.youtube.com/watch?v=…" value="${ep?esc(ep.url||""):""}">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-top:12px"><input type="checkbox" id="np-pin" ${ep&&ep.pinned?"checked":""} style="width:18px;height:18px;padding:0;accent-color:var(--accent)"> 📌 上部に固定する</label>
+          <button class="btn" style="margin-top:14px" id="np-send">${ep?"更新する":"投稿する"}</button>
+          ${ep?`<button class="btn sub" style="margin-top:8px" id="np-cancel">編集をやめる</button>`:""}
+          <div class="err" id="np-msg" style="margin-top:8px"></div>
+        </div>`;
+      })():""}
+      <section class="panel" id="postlist">${(POSTS||[]).map(p=>postHtml(p,u)).join("")||'<div class="empty">まだお知らせはありません</div>'}</section>
+    </section>
+    <footer>N-Styleグループ ポータル</footer>
+  </main></div>`;
+  wireSidebar(u); wireSearch(u); wireBell(u);
+  wirePostActions(u,()=>renderPosts(u));
   if($("np-cancel"))$("np-cancel").onclick=()=>{EDIT_ID=null;renderPosts(u)};
   if($("np-send"))$("np-send").onclick=async()=>{
     const title=$("np-title").value.trim();
@@ -382,27 +1171,42 @@ function renderPosts(u){
   };
 }
 
-/* ---------- マスター専用: 権限設定 ---------- */
+/* ============================================================
+   画面: 設定（権限設定 + 🎛画面のカスタマイズ）※マスター専用
+   ============================================================ */
 async function renderSettings(u){
-  $("app").innerHTML=`<div class="spin">権限設定を読み込み中…</div>`;
+  VIEW="settings";
+  const root=document.getElementById("root");
+  root.innerHTML=`<div class="shell">${sidebarHtml(u)}<main>
+    <header class="topbar"><div><h1>⚙️ 権限・画面設定</h1></div><div class="tools" id="tools">${toolsHtml(u)}</div></header>
+    <section class="content">
+      <div class="tabrow">
+        <button class="${SETTLE_TAB==="perm"?"active":""}" id="tabperm">🔐 権限設定</button>
+        <button class="${SETTLE_TAB==="layout"?"active":""}" id="tablayout">🎛 画面のカスタマイズ</button>
+      </div>
+      <div id="settlebody"><div class="spin">読み込み中…</div></div>
+    </section>
+    <footer>N-Styleグループ ポータル</footer>
+  </main></div>`;
+  wireSidebar(u); wireSearch(u); wireBell(u);
+  $("tabperm").onclick=()=>{SETTLE_TAB="perm";renderSettings(u)};
+  $("tablayout").onclick=()=>{SETTLE_TAB="layout";renderSettings(u)};
+  if(SETTLE_TAB==="perm") await renderPermTab(u); else await renderLayoutTab(u);
+}
+
+async function renderPermTab(u){
   const [p,us]=await Promise.all([
     authed("/rest/v1/portal_permissions?select=role,system_key,allowed"),
     authed("/rest/v1/users?select=id,name,role,is_active,is_master&order=name")
   ]);
-  if(!p.ok){$("app").innerHTML=`<div class="card"><p>権限データを読み込めませんでした（${p.status}）</p><button class="btn" onclick="location.reload()">再読み込み</button></div>`;return}
+  if(!p.ok){$("settlebody").innerHTML=`<div class="formcard"><p>権限データを読み込めませんでした（${p.status}）</p></div>`;return}
   const pm={};
   (p.body||[]).forEach(r=>{ (pm[r.role]=pm[r.role]||{})[r.system_key]=r.allowed; });
-  USERS=(us.body||[]).filter(x=>x.is_active&&!x.is_master);
-  if(!OVR_USER&&USERS.length)OVR_USER=USERS[0].id;
+  const users=(us.body||[]).filter(x=>x.is_active&&!x.is_master);
+  if(!SETTINGS_OVR_USER&&users.length) SETTINGS_OVR_USER=users[0].id;
   await loadOvr();
-
-  $("app").innerHTML=`
-  <div class="userbar">
-    <div class="who">⚙️ 権限設定<span class="badge master">マスター</span></div>
-    <button class="linkbtn" id="back">← ポータルへ戻る</button>
-  </div>
-  <div class="card">
-    <div class="sec-title" style="margin-top:0">役割ごとの既定（チェック＝表示する）</div>
+  $("settlebody").innerHTML=`<div class="formcard">
+    <div class="sec-title">役割ごとの既定（チェック＝表示する）</div>
     <div class="sec-sub">役割ごとに、ポータルに表示するシステムを設定します。マスターは常に全システムが見えます。</div>
     <div class="pm-scroll"><table class="pm">
       <tr><th>システム</th>${ROLE_ORDER.map(r=>`<th>${ROLE_NAME[r]}</th>`).join("")}</tr>
@@ -411,19 +1215,18 @@ async function renderSettings(u){
         return `<td><input type="checkbox" data-role="${r}" data-sys="${sy.key}" ${on?"checked":""}></td>`;
       }).join("")}</tr>`).join("")}
     </table></div>
-    <button class="btn" id="savepm">役割の既定を保存</button>
-    <div class="err" id="pmmsg"></div>
+    <button class="btn" style="margin-top:14px" id="savepm">役割の既定を保存</button>
+    <div class="err" id="pmmsg" style="margin-top:8px"></div>
 
     <div class="sec-title">個人ごとの例外</div>
     <div class="sec-sub">特定の人だけ既定と変えたいときに使います。「既定に従う」に戻せば役割の設定に追従します。</div>
     <label>対象者</label>
-    <select class="inp" id="ovuser">${USERS.map(x=>`<option value="${x.id}" ${x.id===OVR_USER?"selected":""}>${esc(x.name)}（${ROLE_NAME[x.role]||x.role}）</option>`).join("")}</select>
+    <select id="ovuser">${users.map(x=>`<option value="${x.id}" ${x.id===SETTINGS_OVR_USER?"selected":""}>${esc(x.name)}（${ROLE_NAME[x.role]||x.role}）</option>`).join("")}</select>
     <div id="ovlist">${ovListHtml()}</div>
-    <button class="btn" id="saveov">この人の例外を保存</button>
-    <div class="err" id="ovmsg"></div>
+    <button class="btn" style="margin-top:10px" id="saveov">この人の例外を保存</button>
+    <div class="err" id="ovmsg" style="margin-top:8px"></div>
   </div>`;
-  $("back").onclick=async()=>{VIEW="home";await fetchPerms();renderHome(ME)};
-  $("ovuser").onchange=async e=>{OVR_USER=e.target.value;await loadOvr();$("ovlist").innerHTML=ovListHtml();wireOvSelects()};
+  $("ovuser").onchange=async e=>{SETTINGS_OVR_USER=e.target.value;await loadOvr();$("ovlist").innerHTML=ovListHtml();wireOvSelects()};
   wireOvSelects();
   $("savepm").onclick=async()=>{
     const rows=[...document.querySelectorAll("table.pm input[type=checkbox]")].map(c=>({role:c.dataset.role,system_key:c.dataset.sys,allowed:c.checked}));
@@ -436,23 +1239,24 @@ async function renderSettings(u){
     const m=$("ovmsg");m.className="err";m.textContent="保存中…";
     const sel=[...document.querySelectorAll("#ovlist select")];
     const ups=[],dels=[];
-    sel.forEach(s=>{ if(s.value==="default")dels.push(s.dataset.sys); else ups.push({user_id:OVR_USER,system_key:s.dataset.sys,allowed:s.value==="on"}); });
+    sel.forEach(s=>{ if(s.value==="default")dels.push(s.dataset.sys); else ups.push({user_id:SETTINGS_OVR_USER,system_key:s.dataset.sys,allowed:s.value==="on"}); });
     let ok=true;
     if(ups.length){ const r=await authed("/rest/v1/portal_user_overrides",{method:"POST",headers:{Prefer:"resolution=merge-duplicates,return=minimal"},body:JSON.stringify(ups)}); ok=ok&&r.ok; }
-    if(dels.length){ const r=await authed(`/rest/v1/portal_user_overrides?user_id=eq.${OVR_USER}&system_key=in.(${dels.join(",")})`,{method:"DELETE"}); ok=ok&&r.ok; }
+    if(dels.length){ const r=await authed(`/rest/v1/portal_user_overrides?user_id=eq.${SETTINGS_OVR_USER}&system_key=in.(${dels.join(",")})`,{method:"DELETE"}); ok=ok&&r.ok; }
     m.className=ok?"err msg-ok":"err";
     m.textContent=ok?"保存しました":"保存に失敗しました";
   };
 }
+let SETTINGS_OVR_USER=null, SETTINGS_OVR_MAP={};
 async function loadOvr(){
-  OVR_MAP={};
-  if(!OVR_USER)return;
-  const r=await authed(`/rest/v1/portal_user_overrides?user_id=eq.${OVR_USER}&select=system_key,allowed`);
-  if(r.ok&&Array.isArray(r.body))r.body.forEach(x=>{OVR_MAP[x.system_key]=x.allowed});
+  SETTINGS_OVR_MAP={};
+  if(!SETTINGS_OVR_USER)return;
+  const r=await authed(`/rest/v1/portal_user_overrides?user_id=eq.${SETTINGS_OVR_USER}&select=system_key,allowed`);
+  if(r.ok&&Array.isArray(r.body))r.body.forEach(x=>{SETTINGS_OVR_MAP[x.system_key]=x.allowed});
 }
 function ovListHtml(){
   return SYSTEMS.map(sy=>{
-    const v=(sy.key in OVR_MAP)?(OVR_MAP[sy.key]?"on":"off"):"default";
+    const v=(sy.key in SETTINGS_OVR_MAP)?(SETTINGS_OVR_MAP[sy.key]?"on":"off"):"default";
     return `<div class="ov-row"><span class="nm">${sy.ico} ${esc(sy.name)}</span>
       <select data-sys="${sy.key}" class="${v==="on"?"ovon":v==="off"?"ovoff":""}">
         <option value="default" ${v==="default"?"selected":""}>既定に従う</option>
@@ -467,16 +1271,123 @@ function wireOvSelects(){
   });
 }
 
+/* ---- 🎛 画面のカスタマイズ ---- */
+let WCFG_ROLE="MASTER", WCFG_DRAFT=null, WCFG_PREVIEW=false;
+const WCFG_ROLES=["MASTER","CEO","HQ","TEAM","TENCHO","SHAIN","AL"];
+const WCFG_ROLE_LABEL={MASTER:"マスター",CEO:"社長",HQ:"本部",TEAM:"チーム長",TENCHO:"店長",SHAIN:"社員",AL:"アルバイト"};
+const AREA_LABEL={kpi:"KPI（上段の数字カード）",main:"メイン（左の広い列）",side:"サイド（右の狭い列）",wide:"下段（全幅）"};
+async function renderLayoutTab(u){
+  await fetchLayouts();
+  WCFG_DRAFT=JSON.parse(JSON.stringify(layoutForEdit(WCFG_ROLE)));
+  $("settlebody").innerHTML=layoutTabHtml();
+  wireLayoutTab(u);
+}
+// 編集用: enabled=falseの未使用ウィジェットも含めて、area別に全ウィジェットを並べる
+function layoutForEdit(role){
+  const cur=layoutFor(role);
+  const areas=["kpi","main","side","wide"];
+  const out={};
+  areas.forEach(a=>{
+    const enabledKeys=cur[a];
+    const others=Object.keys(WIDGETS).filter(k=>WIDGETS[k].area===a&&!enabledKeys.includes(k));
+    out[a]=[...enabledKeys.map(k=>({key:k,enabled:true})),...others.map(k=>({key:k,enabled:false}))];
+  });
+  return out;
+}
+function layoutTabHtml(){
+  return `<div class="formcard">
+    <div class="sec-sub" style="margin-bottom:10px">役割を選び、エリアごとにウィジェットの表示・非表示と並び順を編集して保存します。「この役割の画面をプレビュー」で見え方をその場で確認できます。</div>
+    <div class="wcfg-role">${WCFG_ROLES.map(r=>`<button data-r="${r}" class="${WCFG_ROLE===r?"active":""}">${WCFG_ROLE_LABEL[r]}</button>`).join("")}</div>
+    ${["kpi","main","side","wide"].map(a=>`
+      <div class="wcfg-area"><h3>${AREA_LABEL[a]}</h3>
+        ${WCFG_DRAFT[a].map((w,i)=>`
+          <div class="wcfg-row" data-area="${a}" data-idx="${i}">
+            <label><input type="checkbox" class="wcfg-en" ${w.enabled?"checked":""}> ${esc(WIDGETS[w.key]?WIDGETS[w.key].label:w.key)}</label>
+            <div class="updn"><button class="wcfg-up" ${i===0?"disabled":""}>↑</button><button class="wcfg-dn" ${i===WCFG_DRAFT[a].length-1?"disabled":""}>↓</button></div>
+          </div>`).join("")||'<div class="sec-sub">このエリアに使えるウィジェットはまだありません</div>'}
+      </div>`).join("")}
+    <button class="btn" id="wcfgsave">保存する</button>
+    <button class="btn sub" id="wcfgpreview">👁 この役割の画面をプレビュー</button>
+    <button class="btn sub" id="wcfgreset">既定に戻す</button>
+    <div class="err" id="wcfgmsg" style="margin-top:8px"></div>
+  </div>`;
+}
+function wireLayoutTab(u){
+  document.querySelectorAll(".wcfg-role button").forEach(b=>b.onclick=async()=>{
+    WCFG_ROLE=b.dataset.r; WCFG_DRAFT=JSON.parse(JSON.stringify(layoutForEdit(WCFG_ROLE)));
+    $("settlebody").innerHTML=layoutTabHtml(); wireLayoutTab(u);
+  });
+  document.querySelectorAll(".wcfg-row").forEach(row=>{
+    const a=row.dataset.area,i=+row.dataset.idx;
+    row.querySelector(".wcfg-en").onchange=e=>{ WCFG_DRAFT[a][i].enabled=e.target.checked; };
+    const up=row.querySelector(".wcfg-up"), dn=row.querySelector(".wcfg-dn");
+    if(up) up.onclick=()=>{ if(i>0){ const arr=WCFG_DRAFT[a]; [arr[i-1],arr[i]]=[arr[i],arr[i-1]]; $("settlebody").innerHTML=layoutTabHtml(); wireLayoutTab(u); } };
+    if(dn) dn.onclick=()=>{ const arr=WCFG_DRAFT[a]; if(i<arr.length-1){ [arr[i+1],arr[i]]=[arr[i],arr[i+1]]; $("settlebody").innerHTML=layoutTabHtml(); wireLayoutTab(u); } };
+  });
+  $("wcfgsave").onclick=async()=>{
+    const m=$("wcfgmsg"); m.className="err"; m.textContent="保存中…";
+    const rows=[];
+    ["kpi","main","side","wide"].forEach(a=>{ WCFG_DRAFT[a].forEach((w,i)=>{ rows.push({role:WCFG_ROLE,area:a,widget_key:w.key,position:(i+1)*10,enabled:w.enabled,updated_at:new Date().toISOString()}); }); });
+    const r=await authed("/rest/v1/portal_layouts",{method:"POST",headers:{Prefer:"resolution=merge-duplicates,return=minimal"},body:JSON.stringify(rows)});
+    m.className=r.ok?"err msg-ok":"err";
+    m.textContent=r.ok?"保存しました":"保存できませんでした（マスターアカウントのみ変更できます）";
+    if(r.ok) await fetchLayouts();
+  };
+  $("wcfgreset").onclick=async()=>{
+    if(!confirm(`「${WCFG_ROLE_LABEL[WCFG_ROLE]}」の設定を既定に戻します。よろしいですか？`))return;
+    const m=$("wcfgmsg"); m.className="err"; m.textContent="処理中…";
+    const r=await authed(`/rest/v1/portal_layouts?role=eq.${WCFG_ROLE}`,{method:"DELETE"});
+    m.className=r.ok?"err msg-ok":"err"; m.textContent=r.ok?"既定に戻しました":"失敗しました";
+    if(r.ok){ await fetchLayouts(); WCFG_DRAFT=JSON.parse(JSON.stringify(layoutForEdit(WCFG_ROLE))); $("settlebody").innerHTML=layoutTabHtml(); wireLayoutTab(u); }
+  };
+  $("wcfgpreview").onclick=()=>openPreviewModal(u);
+}
+function openPreviewModal(u){
+  const layout={ kpi:WCFG_DRAFT.kpi.filter(w=>w.enabled).map(w=>w.key), main:WCFG_DRAFT.main.filter(w=>w.enabled).map(w=>w.key),
+                 side:WCFG_DRAFT.side.filter(w=>w.enabled).map(w=>w.key), wide:WCFG_DRAFT.wide.filter(w=>w.enabled).map(w=>w.key) };
+  const modal=document.createElement("div");
+  modal.style.cssText="position:fixed;inset:0;background:rgba(20,15,8,.6);z-index:100;overflow-y:auto;padding:24px 12px";
+  modal.innerHTML=`<div style="max-width:1100px;margin:0 auto;background:var(--bg);border-radius:14px;padding:16px">
+    <div class="subhead"><h1>👁 ${WCFG_ROLE_LABEL[WCFG_ROLE]}の見え方（プレビュー・保存はされません）</h1><button class="backlink" id="closepreview">閉じる ×</button></div>
+    <section class="content" style="padding:0" id="previewarea"><div class="spin">読み込み中…</div></section>
+  </div>`;
+  document.body.appendChild(modal);
+  $("closepreview").onclick=()=>modal.remove();
+  modal.onclick=e=>{ if(e.target===modal) modal.remove(); };
+  (async()=>{
+    const ctx={u,tori:TORI_STATE.status==="ok"||TORI_STATE.daily.length?TORI_STATE:await ensureToriData(false),alerts:await buildAlerts(u),timeline:await buildTimeline(u),hqNippoMine:null,reportsByStore:{}};
+    const kpiHtml=layout.kpi.map(k=>WIDGETS[k]?WIDGETS[k].render(ctx):"").join("");
+    const mainHtml=layout.main.map(k=>WIDGETS[k]?WIDGETS[k].render(ctx):"").join("");
+    const sideHtml=layout.side.map(k=>WIDGETS[k]?WIDGETS[k].render(ctx):"").join("");
+    const wideHtml=layout.wide.map(k=>WIDGETS[k]?WIDGETS[k].render(ctx):"").join("");
+    const area=$("previewarea"); if(!area) return;
+    area.innerHTML=`${kpiHtml?`<div class="summary">${kpiHtml}</div>`:""}${(mainHtml||sideHtml)?`<div class="dcols"><div class="dgrid-main">${mainHtml}</div><div class="dgrid-side">${sideHtml}</div></div>`:""}${wideHtml}`;
+    layout.main.concat(layout.side).forEach(k=>{ if(WIDGETS[k]&&WIDGETS[k].after) WIDGETS[k].after(ctx); });
+  })();
+}
+
+/* ============================================================
+   起動
+   ============================================================ */
 async function main(){
   if(!sess.get()){renderLogin();return}
   const u=await fetchMe();
   if(!u){sess.clear();renderLogin("セッションが切れました。もう一度ログインしてください。");return}
   if(u.is_active===false){sess.clear();renderLogin("このアカウントは無効化されています。本部までお問い合わせください。");return}
   ME=u;
-  await Promise.all([fetchPerms(),fetchPosts()]);
-  renderHome(u);
+  await Promise.all([fetchPerms(),fetchPosts(),fetchNotifs()]);
+  await renderHome(u);
 }
 main();
+
+// 検索窓・通知ベルの「外側クリックで閉じる」。再描画のたびに登録し直すと
+// リスナーが増殖するため、ここで1回だけ登録する（IDでその都度DOMを引き直すので
+// 中身が再描画されても参照は腐らない）。
+document.addEventListener("click",e=>{
+  const drop=$("qdrop");
+  if(drop&&drop.style.display!=="none"&&!e.target.closest(".search")) drop.style.display="none";
+  if(BELL_OPEN&&!e.target.closest(".tools")&&ME){ BELL_OPEN=false; refreshBell(ME); }
+});
 </script>
 </body>
 </html>

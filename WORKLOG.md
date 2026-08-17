@@ -178,3 +178,24 @@
 - ユーザーがUIサンプル持込み→総合管理ダッシュボード化を決定。操作可能プロトタイプ作成: docs/ポータルホーム改修_プロトタイプ.html（Artifact 2db025cf…、役割切替デモ・実機動作確認済み）
 - 決定事項: ①ホーム置き換えOK ②売上は朝10時更新→11時以降の初回アクセスで自動取得＋🔄手動（localStorageキャッシュ）③④KPIの中身と役割ごとの表示は**ウィジェット設定**（portal_layoutsテーブル＋WIDGETSレジストリ＋マスター専用🎛画面カスタマイズUI）で後から画面上で変更可能に
 - 実行スレッド用: docs/実装指示書_ポータルホーム改修.md 作成（tasks.htmlは並行スレッドが改修中のため変更禁止・nsportal_session_v1の形式不変が絶対条件・経営D連携はsupalogin→daily 13ヶ月・劣化表示）
+
+## 2026-08-17 ポータルホームの総合ダッシュボード化（実装）
+`docs/実装指示書_ポータルホーム改修.md`に従い、`index.html`を全面改修。第0章の並行セッション注意（tasks.html不変・nsportal_session_v1形式不変）を厳守。**tasks.htmlは今回無変更**。
+
+- **新規SQL適用済み**: `supabase/2026-08-12_portal_layouts.sql`（role/area/widget_key/position/enabled。読み=ログイン全員・書き=既存`portal_is_master()`）。Management API経由で適用・`information_schema.tables`で存在確認済み
+- **index.html全面改修**: サイドバー（🏠概要／📢お知らせ／📌本部タスク／各システムへ／⚙️権限・画面設定[マスターのみ]）＋topbar（検索・🔔ベル・🔄経営D更新）のシェルに変更。ログイン・セッション（`nsportal_session_v1`の`{at,rt,uid}`形式）・`api`/`authed`/`login`/`refresh`/`fetchMe`は**旧ファイルとバイト単位で完全一致することを`git show HEAD:index.html`との差分で確認**（tori/seisanの自動ログインへの影響ゼロを保証）
+- **ウィジェットレジストリ（WIDGETS）**: kpi_sales/kpi_fl/kpi_nippo/kpi_tasks/kpi_check/kpi_mytasks（KPIエリア）、panel_chart/panel_posts（main）、panel_alerts/panel_mytasks（side）、panel_stores/panel_timeline（wide）の10種。新規ウィジェットはレジストリに1エントリ追加するだけで🎛画面のカスタマイズに自動で並ぶ
+- **経営Dダッシュボード連携**: `tori-dashboard/app.js`のSSO(`action=supalogin`)・データ取得(`action=data`)を読むだけで同じ規約を再実装（GAS URLは埋め込み・tori側は無変更）。`localStorage['portal_tori_cache']`に`{fetchedAt,daily}`でキャッシュ、11時ルール（キャッシュ無し／今日の11時より前に取得済みかつ現在11時以降→再取得）を実装。役割によりkpi_salesが「今月の売上（全店）」⇔「自店の昨日売上」に、kpi_checkが「チェックシート（今日・全店）」⇔「今日のチェック（自店）」に、kpi_nippoが「日報の提出（昨日・全社の未提出者一覧）」⇔「日報（自分の提出有無）」に自動で切り替わる（TEAM以上=全社スコープ、TENCHO/SHAIN/ALはmyStoreScope()で自店スコープ）
+- **⚠️要対応の集約**: hq_tasks（期限超過・3日以上停止）／reports（昨日の未提出者、CEO・HQ・TEAM・マスターのみ）／`checklist_overdue_alerts`（resolved_at is null、期限切れチェック未完了）／hq_notifications未読、の4系統を優先順でマージし最大8件。**設計書は「checklist_checksのresult=ng」を想定していたが実スキーマにその列は無かった**ため、実在する`checklist_overdue_alerts`（2026-08-12_checklist_deadline_alert.sqlで新設済み）に差し替え
+- **🔔通知ベル**: 新設せず、既存`hq_notifications`をrecipient_id=自分で読むだけ（tasks.htmlと同じテーブル・同じ既読化ロジック）
+- **🎛画面のカスタマイズ**（⚙️内・マスター専用）: 役割タブ×エリアごとにウィジェットの表示/非表示チェックと↑↓並び替え→保存（`portal_layouts`へupsert）。「この役割の画面をプレビュー」は実データのままウィジェット構成だけ差し替えて表示（保存はしない）。「既定に戻す」はその役割の行を全削除しコード内既定にフォールバック
+- **実機E2E（一時ユーザー3種、Admin API作成→削除）**:
+  - HQ役: ダッシュボード全体が実データ（本部タスクの停滞3件・期限超過2、日報未提出18人、チェックシート1/18、実際のお知らせ投稿）で正しく描画されることを確認。**tori GASへの実SSOも実際に叩き**、未登録メールに対して`「このメールに対応するダッシュボードアカウントがありません」`という正しいエラーが返る（＝CORS・リクエスト形式・エラーハンドリングが本番で正しく動作）ことを確認
+  - **RLS敵対テスト**: HQ役で`portal_layouts`へ直接POST→**403（`new row violates row-level security policy`）を確認**。SELECTは許可（空配列）
+  - TENCHO役: 役割別デフォルトレイアウト（自店売上/自店チェック/自分のタスク/日報）で描画。店舗未割当のため管理者向け表示にフォールバックすることを確認（後述のバグ発見のきっかけ）
+  - AL役: 3KPI構成・店舗別テーブル非表示など役割別デフォルトを確認。sidebar・お知らせ投稿フォーム非表示（権限なし）を確認
+  - **実機で発見し即修正したバグ**: 店舗未割当のTENCHO/AL役が、`myStoreScope()`が`null`を返すことで**管理者向けの「日報未提出者18人の実名一覧」等の全社データにフォールバックしてしまう**情報漏えいリスクを発見。`myStoreScope()`を「未割当でも空配列`[]`を返す」よう変更し、店舗スコープ役の各ウィジェットは「所属店舗が未設定です」の安全なプレースホルダを表示するよう修正。修正後、AL役で再確認し個人スコープの表示に留まることを確認
+  - 一時ユーザー3件・`public.users`行を完全削除、`portal_layouts`が0件のままであることを確認
+- **モバイル対応**: 375px幅で確認。サイドバーは横スクロール、KPIグリッドは2列、main/sideの2カラムは1カラムに収納。**実機確認で発覚した崩れ**: topbarの検索窓がモバイルで`width:100%`になり、flex-wrapで🔄更新・🔔ベルが1個ずつ別行に落ちてバラバラに見えた→検索窓とアイコン類を別グループ（`.toolicons`）に分けて修正（アイコン2つが1行にまとまるように）
+- **実装中に自己発見・修正した計算バグ**: kpi_sales（今月の売上・全店）の前年比計算で、今月側を「当月まるごと」、前年側を「当日と同じ日数まで」で比較しており、未来日やプレースホルダ行が混ざると前年比が不当に膨らむ不整合があった（実測+254%相当）。今月側も「当日まで」に揃えて修正（修正後、想定通りの値になることをユニットテストで確認）
+- **未確認・要フォロー**: ①F/L率・売上推移チャートは列名を`tori-dashboard/app.js`の`ingestDaily`を参考に軽量再実装したもので、実データでの数値の妥当性は未検証（実際に経営Dへ接続できる本番アカウントでの確認が必要）②`reports`のRLSは`can_view()`関数依存で、HQ役でも`permission_overrides`次第では全社分が見えない場合がある（本物のマスター=CEO役なので実運用上は問題ないはずだが、HQ役アカウントでの日報系ウィジェットの見え方は実データで要確認）③パスワード変更モーダル・検索（GUIDE+お知らせ横断、範囲は変更せず）は実機での基本動作確認のみ
