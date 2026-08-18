@@ -170,7 +170,9 @@ const SUPA_URL="https://uuvsxzhpxtghojoubjcc.supabase.co";
 const SUPA_KEY="sb_publishable_MrwPJAx_Ws_fdRutprKCiQ_dg3wCiTr";
 const LS_KEY="nsportal_session_v1";
 const BUCKET="report-photos";
-let CORPS=[];              // hq_corpsから取得 {id,name,is_active,sort_order}
+let CORPS=[];              // corporations（法人マスタの正本）から取得 {id,name,is_active,sort_order}
+                            // ※2026-08-17法人マスタ統一により hq_corps から切替。hq_corps自体は
+                            // 互換のため残っているが新規書き込みはしない（読むだけなら自由）
 let MANUAL_ITEMS=null;     // manual_items（category='本部マニュアル'・読取専用）を遅延取得しキャッシュ
 const activeCorps=()=>CORPS.filter(c=>c.is_active);
 const ASSIGNABLE_ROLES=["HQ","CEO","TEAM"];
@@ -320,7 +322,7 @@ async function fetchStores(){
   STORES=(r.ok&&Array.isArray(r.body))?r.body:[];
 }
 async function fetchCorps(){
-  const r=await authed("/rest/v1/hq_corps?select=*&order=sort_order");
+  const r=await authed("/rest/v1/corporations?select=*&order=sort_order");
   CORPS=(r.ok&&Array.isArray(r.body))?r.body:[];
 }
 async function fetchFeaturePerms(){
@@ -2283,7 +2285,7 @@ function renderCorps(u){
   $("back").onclick=()=>goBack(u);
   document.querySelectorAll("[data-corptoggle]").forEach(b=>b.onclick=async()=>{
     const c=CORPS.find(x=>x.id===b.dataset.corptoggle);
-    await authed(`/rest/v1/hq_corps?id=eq.${c.id}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({is_active:!c.is_active})});
+    await authed(`/rest/v1/corporations?id=eq.${c.id}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({is_active:!c.is_active})});
     await fetchCorps(); renderCorps(u);
   });
   $("corp-add").onclick=async()=>{
@@ -2291,7 +2293,7 @@ function renderCorps(u){
     if(!name){$("corp-msg").textContent="法人名を入力してください";return}
     $("corp-msg").textContent="追加中…";
     const sortMax=CORPS.length?Math.max(...CORPS.map(c=>c.sort_order)):0;
-    const r=await authed("/rest/v1/hq_corps",{method:"POST",headers:{Prefer:"return=minimal"},body:JSON.stringify({name,sort_order:sortMax+10})});
+    const r=await authed("/rest/v1/corporations",{method:"POST",headers:{Prefer:"return=minimal"},body:JSON.stringify({name,sort_order:sortMax+10})});
     if(!r.ok){$("corp-msg").textContent="追加できませんでした（同名の法人がある可能性があります）";return}
     await fetchCorps(); renderCorps(u);
   };

@@ -231,3 +231,29 @@
 ## 2026-08-17 v3.2凍結＋第3期実装フェーズの指示書
 - §24③を「Vercelホスティング比較・決定 → 社内情報本番切替」の順に修正（§14 0cも同様）。要件定義書v3.2を**確定・凍結**（以後は事実の追記のみ・方針変更はユーザー承認で版上げ）
 - docs/実装指示書_第3期実装フェーズ.md 作成: A=Pro化伴走＋事後チェック（課金操作はユーザー・バックアップ/RLS回帰/復旧手順文書化）B=法人マスタ統一（public.corporations正本・hq_corpsのID引き継ぎ推奨・stores.corporation_id・不明店舗はユーザー確認）C=ホスティング比較提案→決定→切替（切替直前に3_copy_data.py再実行）D=経費申請（expense_6テーブル・1段承認+多段構造・3ステップ申請UI・承認1タップ・承認完了→hq_タスク自動生成・受入チェックリスト付き）
+
+## 2026-08-18 第3期フェーズB: 法人マスタ統一
+`docs/実装指示書_第3期実装フェーズ.md` §B・要件定義書v3.2 §16.5に従い実施。フェーズA（Supabase Pro化）は課金操作のためユーザーへ案内済み・ユーザー判断待ち（§0-3の規定によりPro化を待たずBへ着手）。
+
+- **現状調査**: `hq_corps`（4件: LiveGate/SK/N-Style/トーホー、name text unique）と`info.corporations`（4件: code=livegate/sk/nstyle/toho、正式名称・法人情報あり）が実データで1:1対応することを目視確認。`info.stores`は店番01〜05（鳥一代グループ）のみ収録・全てトーホー。06〜12（2枚看板店・委託店）は`info.stores`未収録
+- **新規SQL** `supabase/2026-08-17_corporations.sql`（冪等・追加のみ）:
+  - `public.corporations`新設。**id=hq_corps.idを引き継ぎ**（hq_tasks.corp/hq_task_templates.corpは元々法人名の文字列でhq_corps.idへのFKではないため、id引き継ぎ自体はhq_タスク側のデータ移行を要さない）。`corp_code`・`legacy_info_id`は`info.corporations`との名称突き合わせで補完（name→codeのCASE式で明示。実データ確認済みの4法人分）。`name`は既存UIのバッジ表示に使う短い表示名（hq_corps由来）をそのまま正としている（info.corporationsの正式名称=「株式会社LiveGate」等に置き換えると既存UIのバッジ表示が崩れるため。**この解釈で良いか要確認**）
+  - `stores.corporation_id`列を追加（既存列は無変更）。`info.stores`と店舗名一致する店番01〜05のみ自動で埋め、**06〜12は不明なためnullのまま**（後述の対応表を参照）
+  - RLS: 読み=ログイン全員／書き=既存`portal_can_post()`（マスター/CEO/HQ）を流用
+  - id列に`default gen_random_uuid()`・`name`に`unique`制約を追加（既存hq_corpsの挙動=同名法人の追加を拒否、を引き継ぐため）
+- **tasks.htmlの参照切替**（4箇所のみ）: `fetchCorps()`の取得元を`/rest/v1/hq_corps`→`/rest/v1/corporations`に変更。法人管理画面の追加(`corp-add`)・非表示切替(`corptoggle`)の書き込み先も`corporations`に変更。`hq_corps`自体は削除せず残す（新規書き込みだけ止める）
+- **RLS敵対テスト**: 一時TEAM役ユーザーで`corporations`へ直接POST→**403**（`new row violates row-level security policy`）を確認。SELECTは許可（4件）。あわせて`stores.corporation_id`へのPATCHも試行→**RLSにより0件更新（既存の`upd_stores_admin`ポリシー=CEO/HQのみのため、TEAM役には効かず無視される）**であることを確認（既存のstores RLSは今回無変更）
+- **実機E2E**: 一時HQ役ユーザーでボード画面の法人フィルタ（LiveGate/SK/N-Style/トーホー）・単発タスク作成の法人プルダウンが新テーブルから正しく表示されることを確認。法人管理画面（クライアント側の表示判定のみ一時的に緩めて到達。実際のネットワーク要求は本物のHQロールのトークンで送信＝corporations側のRLS検証としては有効）で①非表示⇔表示のトグル②新規法人追加（自動採番されたid・corp_code/legacy_info_idが正しくnullになることを確認）③同名法人の追加が拒否されることを確認。テストデータ（一時法人・一時ユーザー2件）を完全削除、削除後の件数0を確認
+- 冪等性: SQLファイルを3回連続適用してエラーなし・データ変化なしを確認
+
+### 店舗×法人 対応表
+
+| store_no | 店舗名 | corporation_id | 状態 |
+|---|---|---|---|
+| 01〜05 | 鳥一代 本店／はなれ／芝の鳥一代／恵比寿／新橋 | トーホー | ✅ 自動確定（info.stores一致） |
+| 06 | 鶏武者 新横浜 | **未確定** | ⚠️ ユーザー確認要 |
+| 07 | 鶏武者 川崎店 | **未確定** | ⚠️ ユーザー確認要 |
+| 08 | 黒霧屋 新横浜 | **未確定** | ⚠️ ユーザー確認要 |
+| 09〜12 | じんべぇ川崎／じんべぇ新横浜／エース本厚木／秋葉原肉寿司 | **未確定** | ⚠️ 委託店（is_active=false）。法人に含めるかどうかも含めユーザー確認要 |
+
+- **未確認・要フォロー**: ①`corporations.name`を短縮表示名のまま据え置いた設計判断（上記）の妥当性 ②店舗06〜12のcorporation_id確定はユーザー回答待ち（回答受領後、追加のUPDATE文で埋める。SQLファイルは追記ではなく別途日付ファイルで対応予定）③本部タスク側（hq_tasks.corp等）の値そのものをID参照に置き換える作業は今回のスコープ外（要件定義書の設計判断どおり、文字列名のままで実害なしのため）
