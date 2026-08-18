@@ -991,12 +991,15 @@ function sidebarHtml(u){
   const ext=SYSTEMS.filter(sy=>!sy.internal&&canSee(sy,u));
   const hq=SYSTEMS.find(sy=>sy.key==="hqtasks");
   const showHq=hq&&canSee(hq,u);
+  const exp=SYSTEMS.find(sy=>sy.key==="expenses");
+  const showExp=exp&&canSee(exp,u);
   return `<aside class="side">
     <div class="brand"><div class="mark">🐔</div><div><strong>N-Styleグループ</strong><span>ポータル</span></div></div>
     <nav class="nav">
       <button class="${VIEW==="home"?"active":""}" id="navhome">🏠 概要（この画面）</button>
       <button class="${VIEW==="posts"?"active":""}" id="navposts">📢 お知らせ${POSTS&&POSTS.length?`<span class="cnt">${POSTS.length}</span>`:""}</button>
       ${showHq?`<a href="tasks.html" id="navhq">📌 本部タスク${NAV_HQ_CNT?`<span class="cnt">${NAV_HQ_CNT}</span>`:""}</a>`:""}
+      ${showExp?`<a href="expenses.html" id="navexp">💴 経費申請</a>`:""}
       <div class="cap">各システムへ</div>
       ${ext.map(sy=>`<a class="ext" href="${sy.url}" target="_blank" rel="noopener">${sy.ico} ${esc(sy.name)}</a>`).join("")}
       ${isMaster(u)?`<div class="cap">管理</div><button class="${VIEW==="settings"?"active":""}" id="navsettings">⚙️ 権限・画面設定</button>`:""}
