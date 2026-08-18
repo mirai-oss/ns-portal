@@ -260,3 +260,17 @@
 
 ## 2026-08-18 第3期フェーズC-1: ホスティング比較提案の作成
 `docs/ホスティング比較_社内情報.md` を作成。ns-info-systemの実コードを確認し、移行判断に直結する2点を特定: ①`src/middleware.ts`が全ページで認証＋2段階認証(MFA)ゲートを実施 ②`/api/extract-dates`がpdf-parse使用のため`runtime="nodejs"`明示。WebSearchで2026年8月時点の実勢を確認: Vercel Pro $20/月/シート・Cloudflare Workers $5/月〜（ただしOpenNextアダプタとNext.js 16の間に既知の非互換Issue=cloudflare/workers-sdk#13755が未解決）・Netlify $20/月定額（2026年4月にシート課金廃止）。3案比較のうえ**Vercel Pro継続を推奨**（機密情報システムでMiddleware/PDF機能を新環境に持ち込むリスクを月1,500円程度の差額のために取らない判断）。**ユーザーの決定待ち**（決定後にCUTOVER.mdへ進む）。
+
+## 2026-08-18 第3期フェーズA検証・B追加確定・C準備
+ユーザーがSupabase Proのカード登録を実施。以下を確認・実施した。
+
+**フェーズA検証**:
+- Management APIで組織のプラン確認 → `"plan":"pro"` を確認（課金反映済み）
+- 日次バックアップ確認 → `walg_enabled:true`、直近7日分の物理バックアップが`COMPLETED`で揃っていることを確認（`pitr_enabled`はfalse＝PITRは別途の有料オプションで今回は対象外）
+- **RLS・Storage回帰スモークテスト**（一時AL役ユーザー）: ①プロフィール取得・タスク一覧取得（RLSスコープ内で正常）②`report-photos`バケットへの自分のuidフォルダへの写真アップロード（200 OK、Pro化後もStorage正常動作）③他人のuidフォルダへのアップロード試行→**400で拒否**④本部限定テーブル(`hq_notify_channels`)への直接POST→**403で拒否**。全項目パスし、Pro化によるRLS/Storageの回帰は無し。テストユーザー・アップロードした写真を完全削除（削除漏れが1件あったのを検知して追加削除、最終的に0件確認）
+- 復旧手順の文書化（`docs/バックアップと復旧.md`）は次のコミットで対応（未了）
+
+**フェーズB追加**: ユーザー回答（06〜08は有限会社トーホーエージェンシーが運営）を反映。`supabase/2026-08-18_corporations_store_map_06_08.sql`で`stores.corporation_id`を確定・適用済み
+- **09〜12は保留・要確認**: 精算ダッシュボード(`seisan-dashboard`)のコードを調査した結果、これら委託店の運営元（委託先）は`法人設定_精算ダッシュボード`という**Googleスプレッドシート**で管理されており、`public.corporations`（LiveGate/SK/N-Style/トーホーの内部4法人のみ）には含まれない**外部の委託事業者**である可能性が高いことが判明。SQL経由で直接読めるデータではないため、ユーザーに実際の委託先名を確認する必要がある（詳細は完了報告で質問済み）
+
+**フェーズC準備**: ユーザーが「Vercel Proで進める」と決定。切替直前のデータ最新化として`supabase/migrate-info/3_copy_data.py`を再実行 → **194行を移送、全テーブル件数一致を確認**（`info.corporations`4件含む）。Vercel Pro化・環境変数設定・デプロイはユーザー操作待ち（案内済み）
