@@ -1,0 +1,669 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>💴 経費申請 — N-Styleグループ ポータル</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>💴</text></svg>">
+<style>
+:root{
+  --bg:#f5f4f1; --card:#ffffff; --ink:#26221e; --muted:#8a8377;
+  --accent:#c8401f; --accent2:#a33318; --line:#e7e3dc; --ok:#2e7d32;
+  --warn:#b58a00; --bad:#c62828;
+}
+@media(prefers-color-scheme:dark){
+  :root{--bg:#1d1b18; --card:#282521; --ink:#f0ece5; --muted:#a29a8c; --line:#3a362f;}
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Noto Sans JP",sans-serif;background:var(--bg);color:var(--ink);min-height:100vh}
+.wrap{max-width:640px;margin:0 auto;padding:20px 16px 60px}
+a{color:inherit}
+.spin{text-align:center;color:var(--muted);padding:60px 0}
+.err{color:#c62828;font-size:13px}
+.msg-ok{color:var(--ok)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px 18px;box-shadow:0 1px 4px rgba(0,0,0,.04)}
+label{display:block;font-size:13px;color:var(--muted);margin:12px 0 4px}
+label:first-child{margin-top:0}
+input,select,textarea{width:100%;padding:10px 12px;font-size:15px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);font-family:inherit}
+textarea{resize:vertical}
+.btn,.linkbtn,.chip,button{touch-action:manipulation}
+.btn{display:inline-block;padding:12px 20px;font-size:15px;font-weight:600;color:#fff;background:var(--accent);border:none;border-radius:10px;cursor:pointer;width:100%}
+.btn:hover{background:var(--accent2)}
+.btn:disabled{opacity:.5;cursor:default}
+.btn.sub{background:transparent;color:var(--muted);border:1px dashed var(--muted);font-weight:400}
+.btn.sm{padding:8px 14px;font-size:13px;width:auto}
+.linkbtn{background:none;border:none;color:var(--muted);font-size:13px;cursor:pointer;text-decoration:underline;padding:4px}
+.topbar{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:16px;flex-wrap:wrap}
+.topbar h1{font-size:19px}
+.topbar .who{font-size:13px;color:var(--muted)}
+.tabrow{display:flex;gap:6px;margin-bottom:16px;flex-wrap:wrap;overflow-x:auto}
+.tabrow button{padding:9px 16px;border-radius:99px;border:1px solid var(--line);background:var(--card);font-size:13.5px;white-space:nowrap;cursor:pointer}
+.tabrow button.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+.tabrow button .cnt{margin-left:6px;background:rgba(0,0,0,.15);border-radius:99px;padding:1px 7px;font-size:11px}
+.tabrow button.active .cnt{background:rgba(255,255,255,.3)}
+
+/* 申請3ステップ */
+.stepwiz{display:grid;gap:14px}
+.stepcard{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:22px 20px;box-shadow:0 1px 4px rgba(0,0,0,.04)}
+.stepcard .stepno{font-size:12px;color:var(--accent);font-weight:700;letter-spacing:.06em}
+.stepcard h2{font-size:17px;margin:4px 0 14px}
+.amtinput{font-size:36px;font-weight:800;text-align:center;padding:16px;border:2px solid var(--line);border-radius:14px;background:var(--bg)}
+.amtinput:focus{outline:none;border-color:var(--accent)}
+.yenpad{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:12px}
+.yenpad button{padding:14px 0;font-size:16px;font-weight:600;border:1px solid var(--line);border-radius:10px;background:var(--bg);cursor:pointer}
+.yenpad button:active{background:var(--accent-soft,#f6e7e2)}
+.photobox{border:2px dashed var(--line);border-radius:14px;padding:24px;text-align:center;cursor:pointer;position:relative}
+.photobox input[type=file]{position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;height:100%}
+.photobox .ico{font-size:34px}
+.photo-grid{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+.photo-grid .ph{position:relative;width:84px;height:84px}
+.photo-grid img{width:84px;height:84px;object-fit:cover;border-radius:10px;border:1px solid var(--line)}
+.photo-grid .rm{position:absolute;top:-6px;right:-6px;width:22px;height:22px;border-radius:99px;background:var(--bad);color:#fff;border:2px solid var(--card);font-size:13px;line-height:1;display:grid;place-items:center;cursor:pointer}
+.wizardnav{display:flex;gap:10px;margin-top:4px}
+.wizardnav .btn.sub{flex:0 0 auto;width:auto;padding:12px 16px}
+.wizardnav .btn{flex:1}
+.stepdots{display:flex;gap:6px;justify-content:center;margin-bottom:14px}
+.stepdots span{width:8px;height:8px;border-radius:99px;background:var(--line)}
+.stepdots span.on{background:var(--accent)}
+
+/* 一覧・カード */
+.reqcard{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px 16px;margin-bottom:10px;cursor:pointer}
+.reqcard .rhead{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:4px}
+.reqcard .amt{font-size:20px;font-weight:800}
+.reqcard .purpose{font-size:14px;margin:2px 0}
+.reqcard .meta{font-size:12px;color:var(--muted)}
+.badge{display:inline-block;font-size:11px;font-weight:700;padding:3px 10px;border-radius:99px;white-space:nowrap}
+.badge.draft{color:var(--muted);background:var(--line)}
+.badge.pending{color:var(--warn);background:#f9efd6}
+.badge.approved{color:var(--ok);background:#e7f4ec}
+.badge.rejected{color:var(--bad);background:#fce6e2}
+.reject-note{background:#fce6e2;border:1px solid #eab4a8;border-radius:10px;padding:10px 12px;font-size:13px;color:#7a2318;margin-top:8px}
+.empty{padding:40px 10px;text-align:center;color:var(--muted);font-size:13px}
+
+/* 詳細モーダル */
+.modal-bg{position:fixed;inset:0;background:rgba(20,15,8,.55);z-index:100;display:flex;align-items:center;justify-content:center;padding:16px;overflow-y:auto}
+.modal{background:var(--card);border-radius:16px;padding:20px;max-width:480px;width:100%;max-height:90vh;overflow-y:auto}
+.modal .mhead{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px}
+.modal .mhead h2{font-size:17px}
+.detail-row{display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--line);font-size:13.5px}
+.detail-row:last-child{border-bottom:none}
+.detail-row .k{color:var(--muted)}
+.zoomphoto{width:100%;border-radius:10px;margin-top:8px;cursor:zoom-in}
+
+/* 管理画面テーブル */
+.mgmt-scroll{overflow-x:auto;margin-top:10px}
+table.mg{width:100%;border-collapse:collapse;font-size:13px}
+table.mg th,table.mg td{border-bottom:1px solid var(--line);padding:8px 10px;text-align:left;white-space:nowrap}
+table.mg th{color:var(--muted);font-weight:600;font-size:11.5px;background:var(--bg)}
+.filterrow{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
+.filterrow select,.filterrow input{width:auto;font-size:13px;padding:8px 10px}
+.sec-title{font-size:15px;font-weight:600;margin:22px 0 8px}
+.sec-title:first-child{margin-top:0}
+.sec-sub{font-size:12px;color:var(--muted);line-height:1.6;margin-bottom:8px}
+.mgrow{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--line)}
+.mgrow:last-child{border-bottom:none}
+.mgrow .nm{flex:1;font-size:14px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<div id="app"><div class="spin">読み込み中…</div></div>
+</div>
+<script>
+/* ============================================================
+   認証・セッション（index.html / tasks.html と同一実装。
+   nsportal_session_v1 の形式は変更しない）
+   ============================================================ */
+const SUPA_URL="https://uuvsxzhpxtghojoubjcc.supabase.co";
+const SUPA_KEY="sb_publishable_MrwPJAx_Ws_fdRutprKCiQ_dg3wCiTr";
+const LS_KEY="nsportal_session_v1";
+const BUCKET="report-photos";
+const ROLE_NAME={CEO:"社長",HQ:"本部",TEAM:"チーム長",TENCHO:"店長",SHAIN:"社員",AL:"アルバイト"};
+const STATUS_LABEL={draft:"下書き",pending:"申請中",approved:"承認済み",rejected:"差戻し"};
+
+const $=id=>document.getElementById(id);
+const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const sess={get:()=>{try{return JSON.parse(localStorage.getItem(LS_KEY))}catch(e){return null}},
+            set:v=>localStorage.setItem(LS_KEY,JSON.stringify(v)),
+            clear:()=>localStorage.removeItem(LS_KEY)};
+
+async function api(path,opt={},token){
+  const r=await fetch(SUPA_URL+path,{...opt,headers:{
+    "apikey":SUPA_KEY,...(opt.isBinary?{}:{"Content-Type":"application/json"}),
+    ...(token?{"Authorization":"Bearer "+token}:{}),...(opt.headers||{})}});
+  let body=null; const tx=await r.text(); try{body=tx?JSON.parse(tx):null}catch(e){}
+  return {ok:r.ok,status:r.status,body};
+}
+async function authed(path,opt={}){
+  const s=sess.get(); if(!s) return {ok:false,status:401,body:null};
+  let r=await api(path,opt,s.at);
+  if(r.status===401){ if(!await refresh()) return r; r=await api(path,opt,sess.get().at); }
+  return r;
+}
+async function refresh(){
+  const s=sess.get(); if(!s?.rt) return false;
+  const r=await api("/auth/v1/token?grant_type=refresh_token",{method:"POST",body:JSON.stringify({refresh_token:s.rt})});
+  if(!r.ok){sess.clear();return false}
+  sess.set({at:r.body.access_token,rt:r.body.refresh_token,uid:r.body.user.id});
+  return true;
+}
+async function fetchMe(){
+  const s=sess.get(); if(!s) return null;
+  const r=await authed(`/rest/v1/users?id=eq.${s.uid}&select=*`);
+  if(!r.ok||!Array.isArray(r.body)||!r.body[0]) return null;
+  return r.body[0];
+}
+async function uploadPhoto(file){
+  const s=sess.get();
+  const ext=(file.name.split(".").pop()||"jpg").toLowerCase().replace(/[^a-z0-9]/g,"")||"jpg";
+  const path=`${s.uid}/expense_${Date.now()}_${Math.random().toString(36).slice(2,7)}.${ext}`;
+  const buf=await file.arrayBuffer();
+  const r=await api(`/storage/v1/object/${BUCKET}/${path}`,{method:"POST",isBinary:true,headers:{"Content-Type":file.type||"image/jpeg"},body:buf},s.at);
+  if(!r.ok) throw new Error("アップロード失敗");
+  return path;
+}
+function photoUrl(path){ return `${SUPA_URL}/storage/v1/object/public/${BUCKET}/${path}`; }
+function fmtD(d){ if(!d) return "—"; const t=new Date(d+"T00:00:00"); return `${t.getMonth()+1}/${t.getDate()}`; }
+function fmtDT(t){ if(!t) return "—"; const d=new Date(t); return `${d.getMonth()+1}/${d.getDate()} ${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`; }
+function yen(n){ return "¥"+Number(n||0).toLocaleString(); }
+function todayStr(){ const d=new Date(); return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0"); }
+
+/* ============================================================
+   グローバル状態
+   ============================================================ */
+let ME=null;
+let CATEGORIES=[], STORES=[], CORPS=[], MY_STORES=[];
+let VIEW="new";          // new | mine | approve | manage
+const canManage=u=>!!(u&&(u.is_master||u.role==="CEO"||u.role==="HQ"));
+const isApproverRole=u=>!!(u&&(u.is_master||["CEO","HQ","TEAM"].includes(u.role)));
+
+async function fetchMasters(){
+  const [c,s,corp,us]=await Promise.all([
+    authed("/rest/v1/expense_categories?select=id,name,sort_order&is_active=eq.true&order=sort_order"),
+    authed("/rest/v1/stores?select=id,name,store_no,corporation_id&is_active=eq.true&order=sort_order"),
+    authed("/rest/v1/corporations?select=id,name,corp_code&is_active=eq.true&order=sort_order"),
+    authed(`/rest/v1/user_stores?user_id=eq.${ME.id}&select=store_id,is_primary&order=is_primary.desc`),
+  ]);
+  CATEGORIES=(c.ok&&Array.isArray(c.body))?c.body:[];
+  STORES=(s.ok&&Array.isArray(s.body))?s.body:[];
+  CORPS=(corp.ok&&Array.isArray(corp.body))?corp.body:[];
+  MY_STORES=(us.ok&&Array.isArray(us.body))?us.body.map(x=>x.store_id):[];
+}
+function corpForStore(storeId){
+  const st=STORES.find(x=>x.id===storeId);
+  if(st&&st.corporation_id) return st.corporation_id;
+  const hq=CORPS.find(c=>c.corp_code==="nstyle"); // 未設定店舗は本社=N-Styleへフォールバック
+  return hq?hq.id:(CORPS[0]?CORPS[0].id:null);
+}
+
+/* ============================================================
+   申請3ステップ（金額→写真→用途）
+   ============================================================ */
+let WIZ_STEP=1;
+let WIZ={amount:"",photos:[],use_date:todayStr(),store_id:null,category_id:null,purpose:"",memo:""};
+function resetWizard(){
+  WIZ_STEP=1;
+  WIZ={amount:"",photos:[],use_date:todayStr(),store_id:MY_STORES[0]||null,category_id:CATEGORIES[0]?CATEGORIES[0].id:null,purpose:"",memo:""};
+}
+function renderWizard(u){
+  VIEW="new";
+  $("app").innerHTML=shellHtml(u,`
+    <div class="stepdots"><span class="${WIZ_STEP>=1?"on":""}"></span><span class="${WIZ_STEP>=2?"on":""}"></span><span class="${WIZ_STEP>=3?"on":""}"></span></div>
+    <div class="stepwiz">${wizStepHtml()}</div>
+  `);
+  wireShell(u); wireWizard(u);
+}
+function wizStepHtml(){
+  if(WIZ_STEP===1){
+    return `<div class="stepcard">
+      <div class="stepno">STEP 1 / 3</div>
+      <h2>💰 いくら使いましたか？</h2>
+      <input class="amtinput" id="wz-amount" type="number" inputmode="numeric" placeholder="0" value="${WIZ.amount}">
+      <div class="yenpad">
+        ${[500,1000,3000,5000,10000,30000].map(v=>`<button type="button" data-add="${v}">+${v.toLocaleString()}</button>`).join("")}
+      </div>
+      <div class="err" id="wz-msg1"></div>
+      <div class="wizardnav" style="margin-top:18px"><button class="btn" id="wz-next1">次へ（写真）→</button></div>
+    </div>`;
+  }
+  if(WIZ_STEP===2){
+    return `<div class="stepcard">
+      <div class="stepno">STEP 2 / 3</div>
+      <h2>📷 レシートを撮影・添付</h2>
+      <label class="photobox"><div class="ico">📷</div><div>タップして写真を選ぶ（複数可）</div><input type="file" accept="image/*" capture="environment" id="wz-photo" multiple></label>
+      <div class="photo-grid" id="wz-photolist">${WIZ.photos.map((p,i)=>`<div class="ph"><img src="${p.preview}"><span class="rm" data-rmphoto="${i}">×</span></div>`).join("")}</div>
+      <div class="err" id="wz-msg2"></div>
+      <div class="wizardnav" style="margin-top:18px"><button class="btn sub" id="wz-back2">← 戻る</button><button class="btn" id="wz-next2">次へ（用途）→</button></div>
+    </div>`;
+  }
+  return `<div class="stepcard">
+    <div class="stepno">STEP 3 / 3</div>
+    <h2>📝 何に使いましたか？</h2>
+    <label>用途</label><textarea id="wz-purpose" rows="2" placeholder="例: 取引先訪問のタクシー代">${esc(WIZ.purpose)}</textarea>
+    <label>利用日</label><input id="wz-date" type="date" value="${WIZ.use_date}">
+    <label>店舗</label><select id="wz-store"><option value="">選択してください</option>${STORES.map(s=>`<option value="${s.id}" ${WIZ.store_id===s.id?"selected":""}>${esc(s.name)}</option>`).join("")}</select>
+    <label>科目</label><select id="wz-category">${CATEGORIES.map(c=>`<option value="${c.id}" ${WIZ.category_id===c.id?"selected":""}>${esc(c.name)}</option>`).join("")}</select>
+    <label>備考（任意）</label><textarea id="wz-memo" rows="2">${esc(WIZ.memo)}</textarea>
+    <div class="err" id="wz-msg3"></div>
+    <div class="wizardnav" style="margin-top:18px"><button class="btn sub" id="wz-back3">← 戻る</button><button class="btn" id="wz-submit">この内容で申請する</button></div>
+    <button class="btn sub" style="margin-top:8px" id="wz-savedraft">下書きとして保存</button>
+  </div>`;
+}
+function wireWizard(u){
+  if(WIZ_STEP===1){
+    const inp=$("wz-amount");
+    inp.oninput=()=>{ WIZ.amount=inp.value; };
+    document.querySelectorAll("[data-add]").forEach(b=>b.onclick=()=>{
+      WIZ.amount=String((+WIZ.amount||0)+ +b.dataset.add); inp.value=WIZ.amount;
+    });
+    $("wz-next1").onclick=()=>{
+      const n=+WIZ.amount;
+      if(!n||n<=0){ $("wz-msg1").textContent="金額を入力してください"; return; }
+      WIZ_STEP=2; renderWizard(u);
+    };
+  } else if(WIZ_STEP===2){
+    $("wz-back2").onclick=()=>{ WIZ_STEP=1; renderWizard(u); };
+    $("wz-next2").onclick=()=>{ WIZ_STEP=3; renderWizard(u); };
+    $("wz-photo").onchange=async e=>{
+      const files=[...e.target.files]; if(!files.length) return;
+      $("wz-msg2").textContent="読み込み中…";
+      for(const f of files){
+        const preview=await new Promise(res=>{ const r=new FileReader(); r.onload=()=>res(r.result); r.readAsDataURL(f); });
+        WIZ.photos.push({file:f,preview});
+      }
+      $("wz-msg2").textContent="";
+      renderWizard(u);
+    };
+    document.querySelectorAll("[data-rmphoto]").forEach(b=>b.onclick=()=>{
+      WIZ.photos.splice(+b.dataset.rmphoto,1); renderWizard(u);
+    });
+  } else {
+    $("wz-back3").onclick=()=>{ WIZ_STEP=2; renderWizard(u); };
+    $("wz-purpose").oninput=e=>WIZ.purpose=e.target.value;
+    $("wz-date").onchange=e=>WIZ.use_date=e.target.value;
+    $("wz-store").onchange=e=>WIZ.store_id=e.target.value||null;
+    $("wz-category").onchange=e=>WIZ.category_id=e.target.value||null;
+    $("wz-memo").oninput=e=>WIZ.memo=e.target.value;
+    $("wz-savedraft").onclick=()=>saveWizard(u,false);
+    $("wz-submit").onclick=()=>saveWizard(u,true);
+  }
+}
+async function saveWizard(u,submit){
+  const msg=$("wz-msg3"); msg.className="err"; msg.textContent="";
+  if(!WIZ.purpose.trim()){ msg.textContent="用途を入力してください"; return; }
+  if(!(+WIZ.amount>0)){ msg.textContent="金額が未入力です。STEP1に戻って入力してください"; return; }
+  const btn=submit?$("wz-submit"):$("wz-savedraft");
+  btn.disabled=true; msg.className=""; msg.textContent=submit?"申請中…":"保存中…";
+  try{
+    const corpId=WIZ.store_id?corpForStore(WIZ.store_id):null;
+    const payload={
+      applicant_id:ME.id, use_date:WIZ.use_date, amount:+WIZ.amount, purpose:WIZ.purpose.trim(),
+      category_id:WIZ.category_id||null, store_id:WIZ.store_id||null, corporation_id:corpId, memo:WIZ.memo.trim()||null,
+    };
+    const r=await authed("/rest/v1/expense_requests",{method:"POST",headers:{Prefer:"return=representation"},body:JSON.stringify(payload)});
+    if(!r.ok||!r.body||!r.body[0]) throw new Error("作成できませんでした（"+r.status+"）");
+    const reqId=r.body[0].id;
+    for(const p of WIZ.photos){
+      const path=await uploadPhoto(p.file);
+      await authed("/rest/v1/expense_photos",{method:"POST",headers:{Prefer:"return=minimal"},body:JSON.stringify({request_id:reqId,storage_path:path,created_by:ME.id})});
+    }
+    if(submit){
+      const sr=await authed("/rest/v1/rpc/expense_submit",{method:"POST",body:JSON.stringify({p_request_id:reqId})});
+      if(!sr.ok){
+        const em=(sr.body&&sr.body.message)||"提出できませんでした";
+        msg.className="err"; msg.textContent=em+"（下書きとしては保存されています。「自分の申請」から再提出できます）"; btn.disabled=false; return;
+      }
+      await sendNotifications(sr.body);
+    }
+    resetWizard();
+    VIEW="mine"; await loadMine(); renderMine(u);
+  }catch(e){ msg.textContent="エラー: "+e.message; btn.disabled=false; }
+}
+
+/* ============================================================
+   通知配信（既存hq_notify基盤と同じ「対象を返してクライアントが送る」方式を流用）
+   ============================================================ */
+const CHATWORK_FN_URL=SUPA_URL+"/functions/v1/notify-chatwork";
+async function sendNotifications(items){
+  for(const it of (items||[])){
+    if(!it||!it.channel_kind||!it.target) continue;
+    const text=(it.keyword?`[${it.keyword}] `:"")+it.title+(it.body?`\n${it.body}`:"");
+    try{
+      if(it.channel_kind==="chatwork"){
+        const s=sess.get();
+        await fetch(CHATWORK_FN_URL,{method:"POST",headers:{"Content-Type":"application/json","Authorization":"Bearer "+(s?s.at:"")},body:JSON.stringify({room_id:it.target,body:text})});
+      } else if(it.channel_kind==="lark_webhook"){
+        await fetch(it.target,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({msg_type:"text",content:{text}})});
+      }
+    }catch(e){ /* 通知配信の失敗は握りつぶす（アプリ内通知は既に記録済み） */ }
+  }
+}
+
+/* ============================================================
+   自分の申請一覧
+   ============================================================ */
+let MINE=[];
+async function loadMine(){
+  const r=await authed(`/rest/v1/expense_requests?applicant_id=eq.${ME.id}&select=*,category:expense_categories(name),store:stores(name)&order=created_at.desc`);
+  MINE=(r.ok&&Array.isArray(r.body))?r.body:[];
+}
+function renderMine(u){
+  VIEW="mine";
+  $("app").innerHTML=shellHtml(u,`
+    <div id="mine-list">${MINE.length?MINE.map(mineCardHtml).join(""):'<div class="empty">まだ申請はありません</div>'}</div>
+  `);
+  wireShell(u);
+  document.querySelectorAll("[data-openreq]").forEach(el=>el.onclick=()=>openReqDetail(u,el.dataset.openreq,"mine"));
+}
+function mineCardHtml(r){
+  return `<div class="reqcard" data-openreq="${r.id}">
+    <div class="rhead"><span class="amt">${yen(r.amount)}</span><span class="badge ${r.status}">${STATUS_LABEL[r.status]}</span></div>
+    <div class="purpose">${esc(r.purpose)}</div>
+    <div class="meta">${fmtD(r.use_date)}${r.store?" ／ "+esc(r.store.name):""}${r.category?" ／ "+esc(r.category.name):""}</div>
+    ${r.status==="rejected"&&r.reject_reason?`<div class="reject-note">↩️ 差戻し理由: ${esc(r.reject_reason)}</div>`:""}
+  </div>`;
+}
+
+/* ============================================================
+   承認画面
+   ============================================================ */
+let APPROVE_LIST=[];
+async function loadApprove(){
+  const r=await authed(`/rest/v1/expense_requests?approver_id=eq.${ME.id}&status=eq.pending&select=*,category:expense_categories(name),store:stores(name),applicant:users!expense_requests_applicant_id_fkey(name)&order=applied_at.asc`);
+  APPROVE_LIST=(r.ok&&Array.isArray(r.body))?r.body:[];
+}
+function renderApprove(u){
+  VIEW="approve";
+  $("app").innerHTML=shellHtml(u,`
+    <div id="approve-list">${APPROVE_LIST.length?APPROVE_LIST.map(approveCardHtml).join(""):'<div class="empty">承認待ちの申請はありません 🎉</div>'}</div>
+  `);
+  wireShell(u);
+  document.querySelectorAll("[data-openreq]").forEach(el=>el.onclick=()=>openReqDetail(u,el.dataset.openreq,"approve"));
+}
+function approveCardHtml(r){
+  return `<div class="reqcard" data-openreq="${r.id}">
+    <div class="rhead"><span class="amt">${yen(r.amount)}</span><span class="meta">${fmtDT(r.applied_at)}</span></div>
+    <div class="purpose">${esc(r.applicant&&r.applicant.name||"—")} — ${esc(r.purpose)}</div>
+    <div class="meta">${fmtD(r.use_date)}${r.store?" ／ "+esc(r.store.name):""}${r.category?" ／ "+esc(r.category.name):""}</div>
+  </div>`;
+}
+
+/* ============================================================
+   申請詳細（写真拡大・承認/差戻し・再申請）
+   ============================================================ */
+async function openReqDetail(u,reqId,fromView){
+  const r=await authed(`/rest/v1/expense_requests?id=eq.${reqId}&select=*,category:expense_categories(name),store:stores(name),corporation:corporations(name),applicant:users!expense_requests_applicant_id_fkey(name)`);
+  if(!r.ok||!r.body||!r.body[0]) return;
+  const req=r.body[0];
+  const pr=await authed(`/rest/v1/expense_photos?request_id=eq.${reqId}&select=*`);
+  const photos=(pr.ok&&Array.isArray(pr.body))?pr.body:[];
+  const canAct=fromView==="approve"&&req.status==="pending"&&req.approver_id===ME.id;
+  const canReapply=fromView==="mine"&&req.status==="rejected"&&req.applicant_id===ME.id;
+
+  const modal=document.createElement("div");
+  modal.className="modal-bg"; modal.id="reqModal";
+  modal.innerHTML=`<div class="modal">
+    <div class="mhead"><h2>${yen(req.amount)}</h2><button class="linkbtn" id="closereqmodal">閉じる ×</button></div>
+    <div class="badge ${req.status}">${STATUS_LABEL[req.status]}</div>
+    <div class="detail-row"><span class="k">申請者</span><span>${esc(req.applicant&&req.applicant.name||"—")}</span></div>
+    <div class="detail-row"><span class="k">用途</span><span>${esc(req.purpose)}</span></div>
+    <div class="detail-row"><span class="k">利用日</span><span>${fmtD(req.use_date)}</span></div>
+    <div class="detail-row"><span class="k">店舗</span><span>${esc(req.store&&req.store.name||"—")}</span></div>
+    <div class="detail-row"><span class="k">法人</span><span>${esc(req.corporation&&req.corporation.name||"—")}</span></div>
+    <div class="detail-row"><span class="k">科目</span><span>${esc(req.category&&req.category.name||"—")}</span></div>
+    ${req.memo?`<div class="detail-row"><span class="k">備考</span><span>${esc(req.memo)}</span></div>`:""}
+    <div class="detail-row"><span class="k">申請日時</span><span>${fmtDT(req.applied_at)}</span></div>
+    ${req.decided_at?`<div class="detail-row"><span class="k">決裁日時</span><span>${fmtDT(req.decided_at)}</span></div>`:""}
+    ${req.status==="rejected"&&req.reject_reason?`<div class="reject-note">↩️ 差戻し理由: ${esc(req.reject_reason)}</div>`:""}
+    <div class="photo-grid" style="margin-top:10px">${photos.map(p=>`<a href="${photoUrl(p.storage_path)}" target="_blank"><img src="${photoUrl(p.storage_path)}" style="width:100%;height:auto;max-width:200px"></a>`).join("")||'<div class="meta" style="color:var(--muted);font-size:12px">写真はありません</div>'}</div>
+    ${canAct?`
+      <div style="margin-top:16px;display:grid;gap:8px">
+        <button class="btn" id="req-approve">✅ 承認する</button>
+        <button class="btn sub" id="req-reject">↩️ 差戻す</button>
+        <div id="req-rejectbox" style="display:none">
+          <label>差戻し理由（必須）</label><textarea id="req-reason" rows="2"></textarea>
+          <button class="btn" style="margin-top:8px;background:var(--bad)" id="req-rejectsend">この理由で差戻す</button>
+        </div>
+      </div>`:""}
+    ${canReapply?`<button class="btn" style="margin-top:16px" id="req-reapply">🔁 同じ内容で再申請する</button>`:""}
+    <div class="err" id="req-msg" style="margin-top:8px"></div>
+  </div>`;
+  document.body.appendChild(modal);
+  modal.onclick=e=>{ if(e.target===modal) modal.remove(); };
+  $("closereqmodal").onclick=()=>modal.remove();
+  if(canAct){
+    $("req-approve").onclick=async()=>{
+      $("req-approve").disabled=true;
+      $("req-msg").textContent="処理中…";
+      const r=await authed("/rest/v1/rpc/expense_approve",{method:"POST",body:JSON.stringify({p_request_id:reqId})});
+      if(!r.ok){ $("req-msg").textContent=(r.body&&r.body.message)||"承認できませんでした"; $("req-approve").disabled=false; return; }
+      await sendNotifications(r.body);
+      modal.remove(); await loadApprove(); renderApprove(u);
+    };
+    $("req-reject").onclick=()=>{ $("req-rejectbox").style.display="block"; };
+    $("req-rejectsend").onclick=async()=>{
+      const reason=$("req-reason").value.trim();
+      if(!reason){ $("req-msg").textContent="差戻し理由を入力してください"; return; }
+      $("req-msg").textContent="処理中…";
+      const r=await authed("/rest/v1/rpc/expense_reject",{method:"POST",body:JSON.stringify({p_request_id:reqId,p_reason:reason})});
+      if(!r.ok){ $("req-msg").textContent=(r.body&&r.body.message)||"差戻せませんでした"; return; }
+      await sendNotifications(r.body);
+      modal.remove(); await loadApprove(); renderApprove(u);
+    };
+  }
+  if(canReapply){
+    $("req-reapply").onclick=()=>{
+      modal.remove();
+      resetWizard();
+      WIZ.amount=String(req.amount); WIZ.use_date=req.use_date; WIZ.store_id=req.store_id; WIZ.category_id=req.category_id;
+      WIZ.purpose=req.purpose; WIZ.memo=req.memo||""; WIZ_STEP=3;
+      renderWizard(u);
+    };
+  }
+}
+
+/* ============================================================
+   管理画面（HQ/CEO/マスター）
+   ============================================================ */
+let MGMT_LIST=[]; let MGMT_FILTER={month:"",store:"",corp:"",status:""};
+let TASK_TEMPLATES=[]; let EXPENSE_SETTINGS={};
+async function loadManage(){
+  const [r,tpl,set]=await Promise.all([
+    authed(`/rest/v1/expense_requests?select=*,category:expense_categories(name),store:stores(name),corporation:corporations(name),applicant:users!expense_requests_applicant_id_fkey(name)&order=created_at.desc&limit=500`),
+    authed("/rest/v1/hq_task_templates?select=id,title&is_active=eq.true&order=title"),
+    authed("/rest/v1/expense_settings?select=key,value"),
+  ]);
+  MGMT_LIST=(r.ok&&Array.isArray(r.body))?r.body:[];
+  TASK_TEMPLATES=(tpl.ok&&Array.isArray(tpl.body))?tpl.body:[];
+  EXPENSE_SETTINGS={};
+  if(set.ok&&Array.isArray(set.body)) set.body.forEach(x=>{ EXPENSE_SETTINGS[x.key]=x.value; });
+}
+function filteredMgmt(){
+  return MGMT_LIST.filter(r=>{
+    if(MGMT_FILTER.month && r.use_date.slice(0,7)!==MGMT_FILTER.month) return false;
+    if(MGMT_FILTER.store && r.store_id!==MGMT_FILTER.store) return false;
+    if(MGMT_FILTER.corp && r.corporation_id!==MGMT_FILTER.corp) return false;
+    if(MGMT_FILTER.status && r.status!==MGMT_FILTER.status) return false;
+    return true;
+  });
+}
+function renderManage(u){
+  VIEW="manage";
+  const list=filteredMgmt();
+  const months=[...new Set(MGMT_LIST.map(r=>r.use_date.slice(0,7)))].sort().reverse();
+  $("app").innerHTML=shellHtml(u,`
+    <div class="sec-title">全件一覧</div>
+    <div class="filterrow">
+      <select id="mg-month"><option value="">月: すべて</option>${months.map(m=>`<option value="${m}" ${MGMT_FILTER.month===m?"selected":""}>${m}</option>`).join("")}</select>
+      <select id="mg-store"><option value="">店舗: すべて</option>${STORES.map(s=>`<option value="${s.id}" ${MGMT_FILTER.store===s.id?"selected":""}>${esc(s.name)}</option>`).join("")}</select>
+      <select id="mg-corp"><option value="">法人: すべて</option>${CORPS.map(c=>`<option value="${c.id}" ${MGMT_FILTER.corp===c.id?"selected":""}>${esc(c.name)}</option>`).join("")}</select>
+      <select id="mg-status"><option value="">状態: すべて</option>${Object.entries(STATUS_LABEL).map(([k,v])=>`<option value="${k}" ${MGMT_FILTER.status===k?"selected":""}>${v}</option>`).join("")}</select>
+      <button class="btn sm" id="mg-csv">📤 CSV出力</button>
+    </div>
+    <div class="meta" style="font-size:12px;color:var(--muted);margin-bottom:6px">${list.length}件</div>
+    <div class="mgmt-scroll"><table class="mg">
+      <tr><th>日付</th><th>申請者</th><th>金額</th><th>用途</th><th>店舗</th><th>法人</th><th>科目</th><th>状態</th></tr>
+      ${list.map(r=>`<tr data-openreq="${r.id}" style="cursor:pointer">
+        <td>${fmtD(r.use_date)}</td><td>${esc(r.applicant&&r.applicant.name||"—")}</td><td>${yen(r.amount)}</td>
+        <td>${esc(r.purpose)}</td><td>${esc(r.store&&r.store.name||"—")}</td><td>${esc(r.corporation&&r.corporation.name||"—")}</td>
+        <td>${esc(r.category&&r.category.name||"—")}</td><td><span class="badge ${r.status}">${STATUS_LABEL[r.status]}</span></td>
+      </tr>`).join("")||`<tr><td colspan="8">該当する申請はありません</td></tr>`}
+    </table></div>
+
+    <div class="sec-title">科目マスタ</div>
+    <div class="card"><div id="cat-list">${CATEGORIES.map(c=>`<div class="mgrow"><span class="nm">${esc(c.name)}</span><button class="linkbtn" data-catdel="${c.id}">削除</button></div>`).join("")}</div>
+      <label>科目を追加</label><input id="cat-new" placeholder="例: 交際費">
+      <button class="btn sm" style="margin-top:8px" id="cat-add">追加</button>
+      <div class="err" id="cat-msg"></div>
+    </div>
+
+    <div class="sec-title">承認ルート設定</div>
+    <div class="card"><div class="sec-sub">申請者の役職ごとに、承認者をどう決めるかを設定します。</div>
+      <div id="rule-list"></div>
+    </div>
+
+    <div class="sec-title">タスクテンプレ紐付け設定</div>
+    <div class="card"><div class="sec-sub">承認完了時に本部タスクを自動生成する場合、使うテンプレートを選んでください（未設定ならタスクは作られません）。</div>
+      <select id="settings-tpl"><option value="">（自動生成しない）</option>${TASK_TEMPLATES.map(t=>`<option value="${t.id}" ${EXPENSE_SETTINGS.default_task_template_id===t.id?"selected":""}>${esc(t.title)}</option>`).join("")}</select>
+      <button class="btn sm" style="margin-top:8px" id="settings-save">保存</button>
+      <div class="err" id="settings-msg"></div>
+    </div>
+  `);
+  wireShell(u);
+  renderApproverRules();
+  $("mg-month").onchange=e=>{MGMT_FILTER.month=e.target.value;renderManage(u);};
+  $("mg-store").onchange=e=>{MGMT_FILTER.store=e.target.value;renderManage(u);};
+  $("mg-corp").onchange=e=>{MGMT_FILTER.corp=e.target.value;renderManage(u);};
+  $("mg-status").onchange=e=>{MGMT_FILTER.status=e.target.value;renderManage(u);};
+  $("mg-csv").onclick=()=>exportCsv(list);
+  document.querySelectorAll("[data-openreq]").forEach(el=>el.onclick=()=>openReqDetail(u,el.dataset.openreq,"manage"));
+
+  $("cat-add").onclick=async()=>{
+    const name=$("cat-new").value.trim();
+    if(!name){$("cat-msg").textContent="科目名を入力してください";return}
+    const sortMax=CATEGORIES.length?Math.max(...CATEGORIES.map(c=>c.sort_order)):0;
+    const r=await authed("/rest/v1/expense_categories",{method:"POST",headers:{Prefer:"return=minimal"},body:JSON.stringify({name,sort_order:sortMax+10})});
+    if(!r.ok){$("cat-msg").textContent="追加できませんでした（同名科目がある可能性があります）";return}
+    await fetchMasters(); renderManage(u);
+  };
+  document.querySelectorAll("[data-catdel]").forEach(b=>b.onclick=async()=>{
+    if(!confirm("この科目を削除しますか？"))return;
+    await authed(`/rest/v1/expense_categories?id=eq.${b.dataset.catdel}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({is_active:false})});
+    await fetchMasters(); renderManage(u);
+  });
+
+  $("settings-save").onclick=async()=>{
+    const val=$("settings-tpl").value;
+    const msg=$("settings-msg"); msg.textContent="保存中…";
+    const r=await authed("/rest/v1/expense_settings",{method:"POST",headers:{Prefer:"resolution=merge-duplicates,return=minimal"},body:JSON.stringify({key:"default_task_template_id",value:val||null,updated_at:new Date().toISOString()})});
+    msg.className=r.ok?"err msg-ok":"err"; msg.textContent=r.ok?"保存しました":"保存できませんでした";
+  };
+}
+let APPROVER_RULES=[];
+async function renderApproverRules(){
+  const r=await authed("/rest/v1/expense_approver_rules?select=*&order=applicant_role");
+  APPROVER_RULES=(r.ok&&Array.isArray(r.body))?r.body:[];
+  const usersR=await authed("/rest/v1/users?select=id,name,role&is_active=eq.true&order=name");
+  const users=(usersR.ok&&Array.isArray(usersR.body))?usersR.body:[];
+  $("rule-list").innerHTML=APPROVER_RULES.map(rule=>`
+    <div class="mgrow" data-role="${rule.applicant_role}">
+      <span class="nm">${ROLE_NAME[rule.applicant_role]||rule.applicant_role}</span>
+      <select class="rule-mode" style="width:auto">
+        <option value="team_of_store" ${rule.approver_mode==="team_of_store"?"selected":""}>所属店舗のチーム長</option>
+        <option value="fixed_role" ${rule.approver_mode==="fixed_role"?"selected":""}>特定の役職（いずれか1人）</option>
+        <option value="fixed_user" ${rule.approver_mode==="fixed_user"?"selected":""}>特定の1人を指定</option>
+      </select>
+      <select class="rule-role" style="width:auto;display:${rule.approver_mode==="fixed_role"?"inline-block":"none"}">
+        <option value="HQ" ${rule.fixed_role==="HQ"?"selected":""}>本部</option>
+        <option value="CEO" ${rule.fixed_role==="CEO"?"selected":""}>社長</option>
+      </select>
+      <select class="rule-user" style="width:auto;display:${rule.approver_mode==="fixed_user"?"inline-block":"none"}">
+        <option value="">選択してください</option>${users.map(x=>`<option value="${x.id}" ${rule.fixed_user_id===x.id?"selected":""}>${esc(x.name)}</option>`).join("")}
+      </select>
+      <button class="linkbtn" data-rulesave="${rule.applicant_role}">保存</button>
+    </div>`).join("");
+  document.querySelectorAll("#rule-list [data-role]").forEach(row=>{
+    const modeSel=row.querySelector(".rule-mode"), roleSel=row.querySelector(".rule-role"), userSel=row.querySelector(".rule-user");
+    modeSel.onchange=()=>{
+      roleSel.style.display=modeSel.value==="fixed_role"?"inline-block":"none";
+      userSel.style.display=modeSel.value==="fixed_user"?"inline-block":"none";
+    };
+  });
+  document.querySelectorAll("[data-rulesave]").forEach(b=>b.onclick=async()=>{
+    const row=b.closest("[data-role]");
+    const mode=row.querySelector(".rule-mode").value;
+    const payload={applicant_role:b.dataset.rulesave, approver_mode:mode,
+      fixed_role:mode==="fixed_role"?row.querySelector(".rule-role").value:null,
+      fixed_user_id:mode==="fixed_user"?(row.querySelector(".rule-user").value||null):null,
+      updated_at:new Date().toISOString()};
+    const r=await authed("/rest/v1/expense_approver_rules",{method:"POST",headers:{Prefer:"resolution=merge-duplicates,return=minimal"},body:JSON.stringify(payload)});
+    b.textContent=r.ok?"保存しました":"失敗しました";
+    setTimeout(()=>{b.textContent="保存"},1500);
+  });
+}
+function exportCsv(list){
+  const esc2=v=>{ const s=String(v??""); return /[",\n]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s; };
+  const headers=["利用日","申請者","金額","用途","店舗","法人","科目","状態","申請日時","承認日時","備考"];
+  const rows=list.map(r=>[r.use_date, r.applicant&&r.applicant.name, r.amount, r.purpose, r.store&&r.store.name, r.corporation&&r.corporation.name, r.category&&r.category.name, STATUS_LABEL[r.status], r.applied_at?fmtDT(r.applied_at):"", r.decided_at?fmtDT(r.decided_at):"", r.memo||""]);
+  const csv=[headers,...rows].map(row=>row.map(esc2).join(",")).join("\r\n");
+  const blob=new Blob(["﻿"+csv],{type:"text/csv;charset=utf-8"});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement("a"); a.href=url; a.download=`経費申請_${todayStr()}.csv`; a.click();
+  setTimeout(()=>URL.revokeObjectURL(url),1000);
+}
+
+/* ============================================================
+   シェル（タブ・トップバー）
+   ============================================================ */
+let APPROVE_COUNT=0;
+function shellHtml(u,bodyHtml){
+  const tabs=[
+    {key:"new",label:"＋ 申請する",show:true},
+    {key:"mine",label:"自分の申請",show:true},
+    {key:"approve",label:"承認",show:isApproverRole(u),cnt:APPROVE_COUNT},
+    {key:"manage",label:"管理",show:canManage(u)},
+  ];
+  return `
+  <div class="topbar">
+    <h1>💴 経費申請</h1>
+    <div class="who">👤 ${esc(u.name)} ／ <a href="index.html">← ポータルへ</a></div>
+  </div>
+  <div class="tabrow">${tabs.filter(t=>t.show).map(t=>`<button class="${VIEW===t.key?"active":""}" data-tab="${t.key}">${t.label}${t.cnt?`<span class="cnt">${t.cnt}</span>`:""}</button>`).join("")}</div>
+  ${bodyHtml}`;
+}
+function wireShell(u){
+  document.querySelectorAll("[data-tab]").forEach(b=>b.onclick=async()=>{
+    const k=b.dataset.tab;
+    $("app").innerHTML='<div class="spin">読み込み中…</div>';
+    if(k==="new"){ resetWizard(); renderWizard(u); }
+    else if(k==="mine"){ await loadMine(); renderMine(u); }
+    else if(k==="approve"){ await loadApprove(); renderApprove(u); }
+    else if(k==="manage"){ await loadManage(); renderManage(u); }
+  });
+}
+
+/* ============================================================
+   起動
+   ============================================================ */
+function renderLogin(){
+  $("app").innerHTML=`<div class="card">
+    <p style="margin-bottom:10px">ログインが必要です。ポータルからアクセスしてください。</p>
+    <a class="btn" href="index.html">← ポータルへ</a>
+  </div>`;
+}
+async function main(){
+  if(!sess.get()){renderLogin();return}
+  const u=await fetchMe();
+  if(!u){sess.clear();renderLogin();return}
+  if(u.is_active===false){renderLogin();return}
+  ME=u;
+  await fetchMasters();
+  resetWizard();
+  const ar=await authed(`/rest/v1/expense_requests?approver_id=eq.${u.id}&status=eq.pending&select=id`);
+  APPROVE_COUNT=(ar.ok&&Array.isArray(ar.body))?ar.body.length:0;
+  renderWizard(u);
+}
+main();
+</script>
+</body>
+</html>

@@ -264,7 +264,7 @@ create or replace function expense_approve(p_request_id uuid, p_comment text def
 language plpgsql security definer set search_path = public as $$
 declare
   v_req record; v_tpl_id uuid; v_task_id uuid;
-  v_step record; v_store record;
+  v_tpl record; v_step record; v_store record;
   v_kinds text[] := '{}'; v_targets text[] := '{}'; v_kws text[] := '{}'; v_titles text[] := '{}'; v_bodies text[] := '{}';
   v_personal text; v_title text; v_body text; v_applicant_name text; v_today date := current_date;
 begin
@@ -282,11 +282,11 @@ begin
 
   if v_tpl_id is not null then
     select name into v_applicant_name from users where id = v_req.applicant_id;
-    select * into v_step from hq_task_templates where id = v_tpl_id;
-    if v_step is not null then
+    select * into v_tpl from hq_task_templates where id = v_tpl_id;
+    if v_tpl is not null then
       insert into hq_tasks (template_id, title, corp, freq, target_date, due_date, due_time, notes, description, visibility, memo, created_by)
-      values (v_step.id, v_step.title, v_step.corp, v_step.freq, v_today, v_today + v_step.due_offset_days, v_step.due_time,
-              v_step.notes, v_step.description, v_step.visibility,
+      values (v_tpl.id, v_tpl.title, v_tpl.corp, v_tpl.freq, v_today, v_today + v_tpl.due_offset_days, v_tpl.due_time,
+              v_tpl.notes, v_tpl.description, v_tpl.visibility,
               '経費申請 #' || substr(p_request_id::text,1,8) || ' ／ ' || coalesce(v_applicant_name,'') || ' ／ ' || v_req.amount::text || '円 ／ ' || v_req.purpose,
               auth.uid())
       on conflict (template_id, target_date) do nothing
