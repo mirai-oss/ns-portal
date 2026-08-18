@@ -174,7 +174,7 @@ function todayStr(){ const d=new Date(); return d.getFullYear()+"-"+String(d.get
 let ME=null;
 let CATEGORIES=[], STORES=[], CORPS=[], MY_STORES=[];
 let VIEW="new";          // new | mine | approve | manage
-const canManage=u=>!!(u&&(u.is_master||u.role==="CEO"||u.role==="HQ"));
+const canManage=u=>!!(u&&(u.role==="CEO"||u.role==="HQ"));
 const isApproverRole=u=>!!(u&&(u.is_master||["CEO","HQ","TEAM"].includes(u.role)));
 
 async function fetchMasters(){
