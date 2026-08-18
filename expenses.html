@@ -399,6 +399,7 @@ async function openReqDetail(u,reqId,fromView){
   const photos=(pr.ok&&Array.isArray(pr.body))?pr.body:[];
   const canAct=fromView==="approve"&&req.status==="pending"&&req.approver_id===ME.id;
   const canReapply=fromView==="mine"&&req.status==="rejected"&&req.applicant_id===ME.id;
+  const canCancelDraft=fromView==="mine"&&req.status==="draft"&&req.applicant_id===ME.id;
 
   const modal=document.createElement("div");
   modal.className="modal-bg"; modal.id="reqModal";
@@ -426,6 +427,7 @@ async function openReqDetail(u,reqId,fromView){
         </div>
       </div>`:""}
     ${canReapply?`<button class="btn" style="margin-top:16px" id="req-reapply">🔁 同じ内容で再申請する</button>`:""}
+    ${canCancelDraft?`<button class="btn sub" style="margin-top:16px;color:var(--bad);border-color:var(--bad)" id="req-canceldraft">🗑️ この下書きを取り消す</button>`:""}
     <div class="err" id="req-msg" style="margin-top:8px"></div>
   </div>`;
   document.body.appendChild(modal);
@@ -458,6 +460,16 @@ async function openReqDetail(u,reqId,fromView){
       WIZ.amount=String(req.amount); WIZ.use_date=req.use_date; WIZ.store_id=req.store_id; WIZ.category_id=req.category_id;
       WIZ.purpose=req.purpose; WIZ.memo=req.memo||""; WIZ_STEP=3;
       renderWizard(u);
+    };
+  }
+  if(canCancelDraft){
+    $("req-canceldraft").onclick=async()=>{
+      if(!confirm("この下書きを取り消します。元に戻せません。よろしいですか？"))return;
+      $("req-canceldraft").disabled=true;
+      $("req-msg").textContent="削除中…";
+      const r=await authed(`/rest/v1/expense_requests?id=eq.${reqId}`,{method:"DELETE"});
+      if(!r.ok){ $("req-msg").textContent="削除できませんでした"; $("req-canceldraft").disabled=false; return; }
+      modal.remove(); await loadMine(); renderMine(u);
     };
   }
 }
