@@ -264,7 +264,7 @@ create or replace function expense_approve(p_request_id uuid, p_comment text def
 language plpgsql security definer set search_path = public as $$
 declare
   v_req record; v_tpl_id uuid; v_task_id uuid;
-  v_tpl record; v_step record; v_store record;
+  v_step record; v_store record;
   v_kinds text[] := '{}'; v_targets text[] := '{}'; v_kws text[] := '{}'; v_titles text[] := '{}'; v_bodies text[] := '{}';
   v_personal text; v_title text; v_body text; v_applicant_name text; v_today date := current_date;
 begin
@@ -279,40 +279,40 @@ begin
   values (p_request_id, 1, auth.uid(), 'approved', p_comment);
 
   v_tpl_id := coalesce(v_req.task_template_id, (select value::uuid from expense_settings where key = 'default_task_template_id'));
+  select name into v_applicant_name from users where id = v_req.applicant_id;
 
-  if v_tpl_id is not null then
-    select name into v_applicant_name from users where id = v_req.applicant_id;
-    select * into v_tpl from hq_task_templates where id = v_tpl_id;
-    if v_tpl is not null then
-      insert into hq_tasks (template_id, title, corp, freq, target_date, due_date, due_time, notes, description, visibility, memo, created_by)
-      values (v_tpl.id, v_tpl.title, v_tpl.corp, v_tpl.freq, v_today, v_today + v_tpl.due_offset_days, v_tpl.due_time,
-              v_tpl.notes, v_tpl.description, v_tpl.visibility,
-              '経費申請 #' || substr(p_request_id::text,1,8) || ' ／ ' || coalesce(v_applicant_name,'') || ' ／ ' || v_req.amount::text || '円 ／ ' || v_req.purpose,
-              auth.uid())
-      on conflict (template_id, target_date) do nothing
-      returning id into v_task_id;
+  -- テンプレをレコード変数に読んでからIFで囲んでinsertする書き方だと、
+  -- IF条件は正しくtrueと判定されるのに中のinsertだけ実行されない不具合を実機で確認したため、
+  -- hq_generate_today()と同じ「insert...select...where」の無条件1文にしている（v_tpl_idがnullなら0件insertになるだけで安全）
+  insert into hq_tasks (template_id, title, corp, freq, target_date, due_date, due_time, notes, description, visibility, memo, created_by)
+  select t.id, t.title, t.corp, t.freq, v_today, v_today + t.due_offset_days, t.due_time,
+         t.notes, t.description, t.visibility,
+         '経費申請 #' || substr(p_request_id::text,1,8) || ' ／ ' || coalesce(v_applicant_name,'') || ' ／ ' || v_req.amount::text || '円 ／ ' || v_req.purpose,
+         auth.uid()
+  from hq_task_templates t
+  where t.id = v_tpl_id
+  on conflict (template_id, target_date) do nothing
+  returning id into v_task_id;
 
-      if v_task_id is not null then
-        for v_step in select * from hq_task_template_steps where template_id = v_tpl_id order by sort_order loop
-          if v_step.kind = 'check' and v_step.store_scope is not null then
-            for v_store in
-              select id from stores where
-                case when v_step.store_ids is not null and array_length(v_step.store_ids,1) > 0 then id = any(v_step.store_ids)
-                     else (v_step.store_scope = 'all' or is_active) end
-              order by sort_order
-            loop
-              insert into hq_task_steps(task_id, template_step_id, title, assignee_id, due_date, due_time, sort_order, kind, is_binary, requires_photo, store_id)
-              values (v_task_id, v_step.id, v_step.title, v_step.assignee_id, v_today + v_step.offset_days, v_step.due_time, v_step.sort_order, v_step.kind, v_step.is_binary, v_step.requires_photo, v_store.id);
-            end loop;
-          else
-            insert into hq_task_steps(task_id, template_step_id, title, assignee_id, due_date, due_time, sort_order, kind, is_binary, requires_photo)
-            values (v_task_id, v_step.id, v_step.title, v_step.assignee_id, v_today + v_step.offset_days, v_step.due_time, v_step.sort_order, v_step.kind, v_step.is_binary, v_step.requires_photo);
-          end if;
+  if v_task_id is not null then
+    for v_step in select * from hq_task_template_steps where template_id = v_tpl_id order by sort_order loop
+      if v_step.kind = 'check' and v_step.store_scope is not null then
+        for v_store in
+          select id from stores where
+            case when v_step.store_ids is not null and array_length(v_step.store_ids,1) > 0 then id = any(v_step.store_ids)
+                 else (v_step.store_scope = 'all' or is_active) end
+          order by sort_order
+        loop
+          insert into hq_task_steps(task_id, template_step_id, title, assignee_id, due_date, due_time, sort_order, kind, is_binary, requires_photo, store_id)
+          values (v_task_id, v_step.id, v_step.title, v_step.assignee_id, v_today + v_step.offset_days, v_step.due_time, v_step.sort_order, v_step.kind, v_step.is_binary, v_step.requires_photo, v_store.id);
         end loop;
-        insert into hq_task_activity(task_id, actor_id, kind, detail)
-        values (v_task_id, auth.uid(), 'create', '経費申請の承認により自動生成');
+      else
+        insert into hq_task_steps(task_id, template_step_id, title, assignee_id, due_date, due_time, sort_order, kind, is_binary, requires_photo)
+        values (v_task_id, v_step.id, v_step.title, v_step.assignee_id, v_today + v_step.offset_days, v_step.due_time, v_step.sort_order, v_step.kind, v_step.is_binary, v_step.requires_photo);
       end if;
-    end if;
+    end loop;
+    insert into hq_task_activity(task_id, actor_id, kind, detail)
+    values (v_task_id, auth.uid(), 'create', '経費申請の承認により自動生成');
   end if;
 
   update expense_requests set
