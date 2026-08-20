@@ -429,3 +429,15 @@
 **並行編集への対応**: nippo側は実装中に他セッションが42コミット分（v2.6.80時点でv2.6.79まで）先行しており、`git stash`→`pull --ff-only`→`stash pop`でコンフリクトが発生。差分アルゴリズムが「マニュアル機能」（他セッション追加）と「シフト機能」（本セッション追加）を同じ挿入位置で誤って混ぜてしまい手動修復が危険だったため、一度`git checkout HEAD`で最新upstreamに完全リセットしてから、自分の追加分（シフト機能一式398行相当）をstash内容から正確に抽出して手動で再適用する方式に切替。再適用後に構文チェック・実機再確認を実施してから commit（`a23f9c8` v2.6.80）。
 
 **残**: 4f（未提出者への自動リマインド通知）は今回未実装。必要人数の初期データ投入・時間帯プリセットの初期データ投入は各店長が今後管理画面から行う運用
+
+## 2026-08-20 シフト4f（LINEリマインド）着手・準備のみでスレッド区切り
+ユーザー要望: 未提出者へのLINEリマインド（求人用LINEを共用）。GPS打刻付き⑤は別途後回し。
+
+**調査で判明**: nippoには既に「求人用LINE」チャンネル（`app_secrets`のline_channel_token等）と、応募者(`applicants`)向けのLINE連携基盤（`line_intake`/`apply_line_code`/`line_issue_code`等のRPC、`line-webhook` Edge Function）が本番稼働中。ただし`public.users`側（既存従業員向け）のLINE連携は`line_user_id`列がスキーマ上あるだけで**0/16人が未連携**、従業員向けの連携フロー自体が未実装だった。既存の`line-webhook`の`action:"daily"`（毎日リマインド）を叩く外部cronはユーザーに確認したところ「心当たりない＝おそらく未使用」。→ `hq_generate_today()`と同じ「ページ読み込み時にチェック」方式で自動化する設計に決定。
+
+**用意したもの（DB未適用・Edge Function未デプロイ）**:
+- `supabase/2026-08-20_shift_reminders.sql`: `public.users`に`line_code`/`line_linked_at`列を追加するALTER。**ユーザーにSQL Editor実行を依頼済み、本セッション終了時点で未実行**
+- `supabase/2026-08-20_shift_reminders_functions.sql`: 従業員用LINE連携RPC（`user_issue_line_code`/`user_unlink_line`/`line_intake_user`＝応募者向け`line_intake`とは完全に独立した新規関数）と、未提出者リマインドRPC（`sf_reminder_targets`＝締切当日の未提出者一覧を返す読み取り専用・`sf_mark_reminded`＝送信済み記録、`sf_reminder_log`テーブル）。上記ALTER適用後でないと実行できないため未適用
+- `supabase/functions/line-webhook/index.ts`: 本番Edge Function `line-webhook`（応募者とのLINEやりとりで稼働中）への変更版。**バイナリ(ESZIP)から実際のソースをUTF-8完全復元した上で、既存ロジックには一切手を加えず2箇所だけ追加**（①Webhook受信ループで応募者として認識できなかった場合のみ`line_intake_user`を試す②新アクション`push_user`＝ログイン必須・TEAM/HQ/CEO/TENCHO/マスター限定で任意の従業員へのLINE送信）。`diff`で既存部分が完全に無変更であることを確認済み。**まだ本番デプロイしていない**
+
+**次スレッドへの引き継ぎ**: `docs/引継ぎ書_2026-08-20_シフトLINEリマインド続き.md`と`docs/実装指示書_シフトLINEリマインド.md`を参照
