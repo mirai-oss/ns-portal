@@ -6,22 +6,23 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
-**最終更新**: 2026-08-21（MacBook側セッション。Day1実行中の途中経過。ネットワーク切断リスクのため中間保存）
+**最終更新**: 2026-08-21（MacBook側セッション）
 
 **仕様の正（最新版）**: `docs/要件定義書.md` **v3.4（2026-08-21）**。v3.3（シフト詳細§25）に続き、§26データ基盤統合ロードマップ・§27シフト勤怠ベースライン設計を追記。スマレジAPI調査の確定結果（勤怠読み取り可・給与は自前計算・プレミアムプラン前提）を§25.1に反映済み。ロードマップ全文は `docs/データ基盤統合ロードマップ.md`
 
-**進行中**: シフト機能（④）はスマレジ双方向同期まで完了・ユーザー実機再確認待ち（Mac mini側）。データ基盤はロードマップ**Day 0完了**→**Day 1実行中**（`docs/実装指示書_データ基盤Day1_保全.md`）。
-- ✅ タスクA完了・push済み: GASコード全量バックアップ（`NStyle-AI/gas-backup/`。対象6件+追加発見1件=口コミ評価DB取込WebApp）。二重ID疑惑は解消（本体はA-3側）。A-4にA-6の精算コードが誤混入している疑いを発見（要ユーザー確認、詳細は`NStyle-AI/gas-backup/pl-system/README.md`）
-- ✅ タスクB完了・push済み: 取込タスク台帳を12本・現行実行方式（launchd+dispatch.js 3分ポーリング）に更新（`NStyle-AI/ai-agent-team/import_task_board.md`）
-- ⏳ タスクC（ns-info-systemローカル整備）・タスクD（従業員ID一本化準備）は**未着手**。次スレッドはここから再開
-- 実行スレッドはNStyle-AI/CLAUDE.mdの「終了時」手順（WORKLOG追記→📍書き換え→再push）をタスクC/D完了後にもう一度行う予定
+**進行中**: シフト機能（④）はスマレジ双方向同期まで完了・ユーザー実機再確認待ち（Mac mini側）。データ基盤は**ロードマップDay 1（保全）完了**（`docs/実装指示書_データ基盤Day1_保全.md`のタスクA〜D、詳細は本ファイル下の「2026-08-21（MacBook側・別スレッド）Day 1（保全）実行」参照）。
+- ✅ タスクA: GASコード全量バックアップ済み（`NStyle-AI/gas-backup/`）。**要ユーザー確認**: A-4にA-6（精算ダッシュボード）のコードが誤混入している疑い（実害なし・未デプロイ）
+- ✅ タスクB: 取込タスク台帳を12本・現行実行方式に更新済み
+- ✅ タスクC: ns-info-systemのローカル環境をハブ向けに整備・ビルド成功確認済み
+- ⚠️ タスクD: `info.employees.user_id`列は追加済みだが、氏名の自動突合が**0件**（14名全員が要目視確認）。在籍3名を含め**ユーザーの手動対応付け待ち**（次にやること①参照）
+- 次にDay 2（勤怠API取込）に進む場合は、この📍とロードマップPart 2を先に確認すること
 
 **直近のコミット（この時点。鵜呑みにせず必ず`git fetch origin && git log --oneline -1 origin/main`で照合すること）**:
-- `ns-portal`: `c1ec49a`
+- `ns-portal`: このコミット
 - `nippo`: `db926ba`
-- `NStyle-AI`: `aa87148`（タスクA・タスクB分。タスクC/D分は未コミット）
+- `NStyle-AI`: `aa87148`（タスクA・B分。タスクC/Dはリポジトリ変更なし＝C=ローカル.envのみ・D=DB変更のみ）
 
-**次にやること候補**: ①**Day 1タスクC・Dの実行**（`docs/実装指示書_データ基盤Day1_保全.md` のタスクC/D。タスクA/Bは完了済みなので再実行不要） ②シフトはユーザーの「🔄スマレジと同期する」実機確認の結果次第で、§27のベースラインGap実装（作成グリッド・打刻・実績）へ。
+**次にやること候補**: ①**タスクDの手動対応付け**（`info.employees`14名 ×`public.users`16名の氏名突合が自動0件だったため、ユーザーが目視で対応を決め、確定後にUPDATE文を実行する。特に在籍中の3名=西内孝治・逸見巡・鈴木夏輝を優先） ②**Day 2（勤怠API取込）の実行**（プレミアムプラン確定済みのため障害なく進行可） ③シフトはユーザーの「🔄スマレジと同期する」実機確認の結果次第で、§27のベースラインGap実装（作成グリッド・打刻・実績）へ。
 
 **⚠️ このWORKLOGを最新に保つ仕組み**: `ns-portal/CLAUDE.md`と`nippo/CLAUDE.md`に「作業前後に必ずやること」を明記済み（どのPC・どのスレッドでも自動的に読み込まれる指示ファイル）。要点＝**作業を終える前に必ずこの「📍現在の状況」を書き換えてからpushする**。
 
@@ -621,3 +622,25 @@ Auth Admin APIで使い捨てTENCHOユーザーを作成（`user_metadata.role`�
 - 補足: 監査レポート全文（リスク詳細・重複データ一覧を含む）はセキュリティ所見を含むため公開リポには置かず、ユーザーへ直接ファイル送付済み。保全系の対応項目はロードマップPhase 0〜1に反映済み
 - 追記（同日）: 監査レポート全文を非公開`NStyle-AI/company/knowledge/`に保存し、NStyle-AI/CLAUDE.mdに「開発作業前はns-portal/WORKLOG冒頭を読む」導線を追加。ns-portal/CLAUDE.mdにトークン節約の鉄則（冒頭のみ読む・部分読み・アーカイブ運用）を追加。**Day 0のユーザー作業（スマレジプラン確認・Supabase Pro化）完了の連絡あり**→次はロードマップDay 1（GASバックアップ等の保全）
 - 追記（同日・MacBook側）: Day 0のユーザー作業完了（**スマレジタイムカード=プレミアムプラン**・Supabase Pro化済み）。Day 1（保全: GASバックアップ・台帳現行化・ns-info-system環境整備・従業員ID準備）の実装指示書を作成 → `docs/実装指示書_データ基盤Day1_保全.md`。実行は別スレッド（Sonnet 5想定）が担当。GASは閲覧・コピーのみで編集厳禁、本番SQLはユーザー確認ゲートあり、と指示書に明記
+
+## 2026-08-21（MacBook側・別スレッド） Day 1（保全）実行 — タスクA〜D完了
+
+`docs/実装指示書_データ基盤Day1_保全.md` を実行。Wi-Fi切断リスクのためタスクA/B完了時点で一度中間pushを実施（このWORKLOGにも当時「進行中」で反映済み）。以下は最終まとめ。
+
+**タスクA（GASコード全量バックアップ）**: 対象6件すべて`clasp clone`（閲覧・ダウンロードのみ、編集・保存・デプロイ一切なし）で`NStyle-AI/gas-backup/`に保存・push済み。
+- **二重ID疑惑（A-2/A-3）は解消**: 本体の同期ロジック（`ver:`定数・BigQuery連携・IMPORTRANGE元）は【サーバー】ダッシュボード（A-3）側にあり、`tori-dashboard/gas/Code.gs`とほぼ完全一致（末尾改行のみの差分）。【仮】ダッシュボード（A-2）は診断・軽量集計用の手前のシートで本体ロジックを持たない。「2つのシートID」は本番1系統＋仮入力の2段構成であり、GASが重複しているわけではない。
+- **リポジトリ版との差分**: A-3の連携本番.gs／媒体.gs／日報.gsはリポジトリ版とほぼ完全一致（差分なし＝リポジトリが最新に追従できている）。A-4（PL管理システム コード.gs）はリポジトリ版が旧v1相当で、本番はv2（`syncAd()`・L04法定福利費/L05通勤手当の自動化・O21運営委託費追加など）に進んでおり325行分の差分あり。
+- **★要ユーザー確認の重要発見**: A-4のApps Scriptプロジェクトに入っている`pl_dbpl_autosync.gs`は、リポジトリの同名ファイル（PL管理システム用の同期スクリプト）とは全くの別内容で、実際には精算ダッシュボード（A-6）のバックエンド（ログイン・振込管理・Lark通知、`SD_VERSION='v5.6-sso'`）が誤って混入している状態。A-6には本来の置き場所として`精算書発行.gs`(`v5.4`)と`SeisanDashboard.gs`(`v5.11-unlockfix`)が別途存在しており、**同種のコードが3バージョンに分岐**。A-4プロジェクト自体は未デプロイのため実害は今のところ無い模様だが、整理を推奨（詳細: `NStyle-AI/gas-backup/pl-system/README.md`）。
+- 追加調査で「口コミ評価DB 取込WebApp」という独立GASプロジェクト（オーナー: mirai nakayama、編集者権限あり）を発見し同様にバックアップ（`gas-backup/review-db/`）。LarkBot.gsは独立プロジェクトとして見つからず（15分の探索で打ち切り。未作成の可能性）。LarkCronはA-3に`日報.gs`としてバインド済みで存在確認。
+- シークレットスキャン実施: `review-db/コード.gs`に`IMPORT_TOKEN_FALLBACK`のハードコード値あり（非公開リポのため値はそのまま保存。存在は各READMEに明記）。`SD_SSO_SUPA_KEY`はSupabase publishable（公開前提）キーのため問題なし。
+
+**タスクB（取込タスク台帳の現行化）**: `ns-daily-import/config.js`を正本として、`NStyle-AI/ai-agent-team/import_task_board.md`を9本表記→実態の12本に更新。実行方式の記述も「Mac mini上のlaunchd + dispatch.js（`install-launchd.sh`のStartInterval=180秒＝3分おきポーリング）」に修正し、`tori-dashboard/tasks.html`からの手動起動も明記。「前回」列はMacBookから確認不可のため「Mac mini側ログ参照」に変更。
+
+**タスクC（ns-info-systemローカル環境整備）**: `git pull --rebase`はコンフリクトなしでfast-forward。`.env.local`をハブ向け（`NEXT_PUBLIC_SUPABASE_URL=https://uuvsxzhpxtghojoubjcc.supabase.co`・ハブのpublishableキー・`NEXT_PUBLIC_SUPABASE_SCHEMA=info`）に書き換え、旧値は`.env.local.old-wciefkpooncglahqdtmu`にリネーム保存（両方git管理外）。`npm install`でpull時に追加された`exceljs`依存が未インストールだったため導入 → `npm run build`成功を確認。
+
+**タスクD（従業員ID一本化準備）**: このMacに接続情報（Management API PAT）が無かったため、ユーザーに新規PAT発行を依頼（`~/.config/ns-portal/supabase_pat`、chmod 600、Mac mini側の鍵はコピーせず新規発行＝アカウント単位で特定PCに依存しない）。
+- ユーザー確認の上、`alter table info.employees add column if not exists user_id uuid references public.users(id);`を本番Supabaseで実行 → 追加を確認済み。
+- 突合（氏名の空白除去比較、読み取りのみ）: `info.employees`14件（在籍3・休職1・退職9）× `public.users`16件で**自動一致0件**。完全に別の氏名集合で、現状は完全ゼロマッチ（想定外の結果のためユーザーへ提示・目視確認待ち。詳細は本セッションの報告メッセージ参照）。
+- 完了検証: `select count(*) from info.employees where user_id is null and status='在籍';` → **3**（0ではない。理由＝自動一致が0件だったため。在籍3名の目視での対応付けをユーザーに依頼中）。
+
+**Day 1完了条件**: A/B/C完了。Dはuser_id列追加・突合リスト提示まで完了、確定UPDATEはユーザーの目視確認待ち（未実施）。
