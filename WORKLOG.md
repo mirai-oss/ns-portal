@@ -441,3 +441,16 @@
 - `supabase/functions/line-webhook/index.ts`: 本番Edge Function `line-webhook`（応募者とのLINEやりとりで稼働中）への変更版。**バイナリ(ESZIP)から実際のソースをUTF-8完全復元した上で、既存ロジックには一切手を加えず2箇所だけ追加**（①Webhook受信ループで応募者として認識できなかった場合のみ`line_intake_user`を試す②新アクション`push_user`＝ログイン必須・TEAM/HQ/CEO/TENCHO/マスター限定で任意の従業員へのLINE送信）。`diff`で既存部分が完全に無変更であることを確認済み。**まだ本番デプロイしていない**
 
 **次スレッドへの引き継ぎ**: `docs/引継ぎ書_2026-08-20_シフトLINEリマインド続き.md`と`docs/実装指示書_シフトLINEリマインド.md`を参照
+
+## 2026-08-21 シフト4f（LINEリマインド）Step1・Step2実施
+引継ぎを受けて続きを実施。
+
+**Step1完了**: `supabase/2026-08-20_shift_reminders_functions.sql`をManagement API経由で適用。`user_issue_line_code`/`user_unlink_line`/`line_intake_user`/`sf_reminder_targets`/`sf_mark_reminded`の5関数と`sf_reminder_log`テーブルの作成を`information_schema`で確認。
+
+**Step2完了**: `line-webhook`をデプロイする前に、本番の現行コードをManagement APIでESZIPバイナリごと取得し直し、UTF-8のソースを再復元。前スレッドが用意した改修版`index.ts`と`diff`した結果、差分は指示書どおりの2箇所（①webhook受信ループでの`line_intake_user`フォールバック②新アクション`push_user`）のみで、既存ロジックは前回確認時から無変更であることを再確認してからデプロイ（version 9→10、verify_jwt=false）。デプロイ後、署名なしリクエストで`x-line-signature`検証の401が返ることを確認し、応募者向けWebhook受信ルートが壊れていないことをスモークテストで確認（実LINEメッセージでの完全なE2Eは4f Step4で別途実施予定）。
+
+**残**: Step3（nippo側UI：従業員のLINE連携画面・管理画面でのリマインド自動チェック）とStep4（実機E2E・使い捨てユーザーでの本番LINE連携確認）
+
+**Step3完了（nippo `d07dc99` v2.6.81）**: ⚙️設定に「💚 シフト連絡用LINE」カードを追加（`user_issue_line_code`で合言葉発行→`line.me/R/oaMessage/{oa}/?{code}`リンク＝応募者向けと同じ既存パターンを流用→送信するだけで連携／`user_unlink_line`で解除）。📅シフト画面（`shiftView()`）を開くたびに管理者ロール（is_master/CEO/HQ/TEAM/TENCHO）のみ`sfEnsureReminders()`を1回試行し、`sf_reminder_targets()`が返した締切当日の未提出者へ`line-webhook`の`push_user`アクションでLINE送信、成功後`sf_mark_reminded`で記録（`sessionStorage`で同日2重チェック回避・DB側ユニーク制約が最終防衛）。管理画面の未提出者一覧に「（⚠️LINE未連携）」表示も追加。ローカルプレビュー（`nippo-preview`）でsettingsViewの3状態（未連携／合言葉発行後／連携済み）とsfEnsureRemindersの権限ガード・二重実行防止を関数直接呼び出しで確認済み（実ログイン・実LINE送信は含まない）。
+
+**残（Step4のみ）**: 実機E2E。使い捨てTENCHOユーザーの作成・実際のLINEアプリでの合言葉送信・締切当日データでのリマインド送信・二重送信防止・後始末までの一連は、実際のLINEアプリでのやりとりが必須のため**ユーザー本人の実機操作が必要**。次に着手する際は実装指示書Step4の8項目に沿って進める
