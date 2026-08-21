@@ -1,0 +1,80 @@
+name: 給与明細APIとの月次自動突合
+
+# 発火は「外部cron（cron-job.org 等）」から workflow_dispatch API を叩いて行う。
+#   POST https://api.github.com/repos/mirai-oss/ns-portal/actions/workflows/smaregi-payroll-reconcile.yml/dispatches
+#   body: {"ref":"main"}
+# GitHub内蔵の schedule: は時刻が数十分〜数時間ずれる（無料/publicの仕様）ため使わない
+# （smaregi-attendance-sync.yml と同じ方針）。
+#
+# セットアップ手順（ユーザー作業・1回のみ。cron-job.orgは既にsmaregi-attendance-sync用に
+# アカウント作成済みのはずなので、2つ目のcronjobを追加するだけでよい）:
+#   1. https://cron-job.org にログイン →「Create cronjob」
+#   2. URL に上記のdispatches APIエンドポイントを設定
+#      - Method: POST
+#      - Headers: Authorization: Bearer <GitHubのPersonal Access Token（workflow権限）>
+#                 Accept: application/vnd.github+json
+#                 Content-Type: application/json
+#      - Body: {"ref":"main"}
+#      - Schedule: 毎月5日 08:00 JST（＝ 前月分の勤務実績が確定してから突合するため余裕を持たせた）
+#   3. トークンはsmaregi-attendance-sync.yml設定時に発行したものをそのまま使い回してよい
+#
+# 手動実行: GitHubの Actions タブ → 本workflow → Run workflow でも実行可能
+# （year/monthを指定すれば過去月の突合もできる。空欄なら「先月」分を対象にする）
+on:
+  workflow_dispatch:
+    inputs:
+      year:
+        description: '対象年（例: 2026。空欄なら先月の年を自動判定）'
+        required: false
+        default: ''
+        type: string
+      month:
+        description: '対象月（例: 8。空欄なら先月）'
+        required: false
+        default: ''
+        type: string
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: 設定チェック（未設定ならスキップ）
+        run: |
+          if [ -z "${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" ]; then
+            echo "::error::SUPABASE_SERVICE_ROLE_KEY が未設定です（Settings → Secrets and variables → Actions）"
+            exit 1
+          fi
+
+      - name: smaregi-payroll-reconcileを呼び出す
+        env:
+          SR_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          YEAR: ${{ github.event.inputs.year }}
+          MONTH: ${{ github.event.inputs.month }}
+        run: |
+          BODY="{}"
+          if [ -n "$YEAR" ] || [ -n "$MONTH" ]; then
+            BODY=$(node -e "console.log(JSON.stringify({year: process.env.YEAR ? Number(process.env.YEAR) : undefined, month: process.env.MONTH ? Number(process.env.MONTH) : undefined}))")
+          fi
+          echo "リクエストボディ: $BODY"
+          RES=$(curl -s -w "\n%{http_code}" -X POST \
+            "https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/smaregi-payroll-reconcile" \
+            -H "Authorization: Bearer $SR_KEY" \
+            -H "Content-Type: application/json" \
+            -d "$BODY")
+          HTTP_CODE=$(echo "$RES" | tail -1)
+          BODY_TEXT=$(echo "$RES" | sed '$d')
+          echo "$BODY_TEXT"
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "::error::smaregi-payroll-reconcileが失敗しました（HTTP $HTTP_CODE）"
+            exit 1
+          fi
+          OK=$(echo "$BODY_TEXT" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{console.log(JSON.parse(d).ok)}catch(e){console.log('false')}})")
+          if [ "$OK" != "true" ]; then
+            echo "::error::突合処理がエラーを返しました"
+            exit 1
+          fi
+          MISMATCH=$(echo "$BODY_TEXT" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{console.log(JSON.parse(d).mismatchCount||0)}catch(e){console.log(0)}})")
+          if [ "$MISMATCH" -gt "0" ]; then
+            echo "::warning::$MISMATCH 件の差額（1,000円以上）が見つかりました。LINEに通知済みのはずです"
+          fi
