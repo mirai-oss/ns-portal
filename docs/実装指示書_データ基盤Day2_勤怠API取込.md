@@ -66,12 +66,15 @@ Day1タスクDの実施中に発覚した重要な方針決定（詳細は`WORKL
 
 ## 完了条件（Day 2 Mac mini側）
 
-- [ ] `smaregi-sync`のソースをリポジトリへバックアップ済み
-- [ ] 勤怠実績APIの疎通確認済み（スコープ不足なら依頼済み）
-- [ ] `labor_cost_daily`（または同等の設計）がDBに存在
-- [ ] `smaregi-attendance-sync`が本番稼働し、前日分の実績を自動取得できる
-- [ ] 従業員特定は`employee_profiles.smaregi_staff_id`ベースで実装されている（`info.employees`の氏名突合に依存していない）
-- [ ] 旧経路（CSV→シート）は引き続き動いている
+- [x] `smaregi-sync`のソースをリポジトリへバックアップ済み（2026-08-21実施。副産物として合言葉ハードコード関数6件も発見・修正）
+- [x] 勤怠実績APIの疎通確認済み（スコープ追加は不要だった。正しいエンドポイントは`GET /timecard/shifts/staffs/{staffId}/daily?division=result&year=&month=`で、`shiftDaily`は日付→店舗ID→連番のネストオブジェクト）
+- [x] `labor_cost_daily`がDBに存在（`supabase/2026-08-21_labor_cost_daily.sql`）
+- [x] `smaregi-attendance-sync`を実装・デプロイ・実機テスト済み（2日分6件の取込を確認）。**ただし日次自動実行のスケジュール設定は未着手**（GitHub Actions cron vs Mac mini launchd、要ユーザー確認）
+- [x] 従業員特定は`employee_profiles.smaregi_staff_id`ベースで実装済み
+- [x] 旧経路（CSV→シート）は無変更・並走
+- [ ] 過去90日バックフィル＋シート3日分スポット突合＋給与明細API 1ヶ月分突合（タスクD・未着手。時間の都合でDay3相当として持ち越し）
+- [ ] `computed_cost`（時給・深夜割増・交通費の自前精密計算）は未実装（`smaregi_estimate_cost`＝スマレジAPI概算値のみ保存されている状態）
+- [ ] 既知ギャップの原因調査: `smaregi_staff_id=347`（所属事業所なしでAPI 400）／`smaregi_store_id=7`（storesテーブル未登録）
 
 ## 終了時（省略禁止・CLAUDE.mdの4ステップ）
 

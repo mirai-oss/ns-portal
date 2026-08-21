@@ -10,17 +10,19 @@
 
 **仕様の正（最新版）**: `docs/要件定義書.md` **v3.4（2026-08-21）**。v3.3（シフト詳細§25）に続き、§26データ基盤統合ロードマップ・§27シフト勤怠ベースライン設計を追記。スマレジAPI調査の確定結果（勤怠読み取り可・給与は自前計算・プレミアムプラン前提）を§25.1に反映済み。ロードマップ全文は `docs/データ基盤統合ロードマップ.md`
 
-**進行中**: シフト機能（④）はスマレジ双方向同期まで完了・ユーザー実機再確認待ち（Mac mini側）。データ基盤は**Day 1（保全）全タスク完了＋Day 2 MacBook側4項目完了**。Mac mini側（スマレジ勤怠API取込）は指示書作成済み・実行待ち。
+**進行中**: シフト機能（④）はスマレジ双方向同期まで完了・ユーザー実機再確認待ち（Mac mini側）。データ基盤は**Day 1（保全）全タスク完了＋Day 2（MacBook側4項目＋Mac mini側の主要実装）完了**。
 - ✅ Day1 タスクA〜D完了（詳細は本ファイル下の「2026-08-21（MacBook側・別スレッド）」エントリ群参照）。**要ユーザー確認（未対応）**: A-4にA-6（精算ダッシュボード）のコードが誤混入している疑い（実害なし・未デプロイ）
-- ✅ Day2 MacBook側4項目完了: ①勘定科目マスタ(account_items)新設 ②ブランド正本をstores.signsに宣言 ③LINE共有シークレットのローテーション（R6対応。副産物としてリポジトリ未保存だった関数5つを発見しgit管理下へ） ④report-photosバケットの署名URL化→非公開化（R5対応。3画面・実機確認済み）
-- ⏳ Day2 Mac mini側（スマレジ勤怠API取込）は**未着手**。指示書: `docs/実装指示書_データ基盤Day2_勤怠API取込.md`。**「スマレジが従業員情報の正本」方針を必ず反映すること**（`employee_profiles.smaregi_staff_id`をキーに使う。`public.users.smaregi_staff_id`は別列・未使用なので混同注意）。着手前に`smaregi-sync` Edge Function（リポジトリ未保存と判明）のバックアップも指示書に明記済み
+- ✅ Day2 MacBook側4項目完了: ①勘定科目マスタ(account_items)新設 ②ブランド正本をstores.signsに宣言 ③LINE共有シークレットのローテーション（R6対応） ④report-photosバケットの署名URL化→非公開化（R5対応。3画面・実機確認済み）
+- ✅ Day2 Mac mini側（スマレジ勤怠API取込）**主要実装完了**（このMacBookセッションでユーザー了承の上そのまま実行）: `smaregi-attendance-sync`Edge Function新規実装・`labor_cost_daily`テーブル新設・実機テストで2日分6件の取込を確認済み。指示書: `docs/実装指示書_データ基盤Day2_勤怠API取込.md`
+- ✅ R6（共有シークレット平文露出）の全数対応完了: 当初7箇所＋smaregi-syncバックアップ中に発見した6箇所＋smaregi-sync自身＝**全13箇所**を`app_secrets`参照に統一
+- ⏳ **未着手（次回への申し送り）**: 過去90日バックフィル＋シート突合＋給与明細API突合（Day3相当）／日次自動実行のスケジュール設定（GitHub Actions cron vs Mac mini launchd、要ユーザー確認）／`computed_cost`（時給・深夜割増・交通費の自前精密計算、現状はスマレジAPIの概算値のみ）／smaregi_staff_id=347・smaregi_store_id=7の2ギャップ調査
 
 **直近のコミット（この時点。鵜呑みにせず必ず`git fetch origin && git log --oneline -1 origin/main`で照合すること）**:
 - `ns-portal`: このコミット
 - `nippo`: `f245734`
 - `NStyle-AI`: `aa87148`（Day1タスクA・B分。Day2はNStyle-AI側の変更なし）
 
-**次にやること候補**: ①**Day 2 Mac mini側（スマレジ勤怠API取込）の実行**（`docs/実装指示書_データ基盤Day2_勤怠API取込.md`のとおり。プレミアムプラン確定済みのため障害なく進行可） ②A-4に誤混入した精算ダッシュボードのコード整理（優先度は低いが要ユーザー確認） ③シフトはユーザーの「🔄スマレジと同期する」実機確認の結果次第で、§27のベースラインGap実装（作成グリッド・打刻・実績）へ。
+**次にやること候補**: ①**Day 2の残り**（過去90日バックフィル・給与明細API突合・日次自動実行スケジュールの決定） ②A-4に誤混入した精算ダッシュボードのコード整理（優先度は低いが要ユーザー確認） ③シフトはユーザーの「🔄スマレジと同期する」実機確認の結果次第で、§27のベースラインGap実装（作成グリッド・打刻・実績）へ。
 
 **⚠️ このWORKLOGを最新に保つ仕組み**: `ns-portal/CLAUDE.md`と`nippo/CLAUDE.md`に「作業前後に必ずやること」を明記済み（どのPC・どのスレッドでも自動的に読み込まれる指示ファイル）。要点＝**作業を終える前に必ずこの「📍現在の状況」を書き換えてからpushする**。
 
@@ -682,3 +684,21 @@ Auth Admin APIで使い捨てTENCHOユーザーを作成（`user_metadata.role`�
 **接続情報の補足**: このMac用に新規Supabase Management API PAT（`~/.config/ns-portal/supabase_pat`）とservice_roleキー（`~/.config/ns-portal/hub_service_role`、動作確認のテスト用途で取得・chmod 600）を発行・保存。次回このMacで作業する場合は既存のものを使う。
 
 **Mac mini側への申し送り**: `docs/実装指示書_データ基盤Day2_勤怠API取込.md`を新規作成。従業員特定は`employee_profiles.smaregi_staff_id`（13/13件登録済み・既存の`smaregi-shift-sync`が使用中の実績あるキー）を使うこと、`public.users.smaregi_staff_id`（0/17件・別列・おそらく未使用）と混同しないことを明記。**追加の発見**: `smaregi-sync` Edge Function（従業員同期・v2.6.14・本番ACTIVE）がリポジトリに存在しない（`smaregi-shift-sync`はあるが`smaregi-sync`は無い）→ Mac mini側での着手前バックアップを指示書に明記。`labor_cost_daily`テーブルは未作成、`attendance_records`テーブルは存在するが0件（監査レポートの「実在するか不明」という指摘が的中）。
+
+## 2026-08-21（MacBook側・同セッション） Day 2 Mac mini側（スマレジ勤怠API取込）を実施・実機動作確認まで完了
+
+ユーザーの指示により、Mac mini側予定だった作業もこのMacBookセッションでそのまま実行（Edge Function/SQLはSupabase API経由のため機種を問わない）。
+
+**タスクA（疎通確認）**: 使い捨てEdge Functionでスコープ確認。既存スコープ`timecard.shifts:read timecard.shifts:write`のままで勤怠実績取得が可能と判明（追加スコープ申請は不要だった）。**重要な発見**: 実績取得の正しいエンドポイントは`GET /{contract}/timecard/shifts/staffs/{staffId}/daily?division=result&year=YYYY&month=MM`（`division=schedule`と同じ構造で、実績は`result`）。応答の`shiftDaily`は配列ではなく「日付→店舗ID→連番」のネストしたオブジェクト（試行錯誤で判明。監査レポート記載の`GET /shifts/results`という素朴な一覧エンドポイントは存在しなかった）。既知の従業員IDでdivision=schedule/resultの両方に実データがあることを確認し検証完了。
+
+**タスクB（DBスキーマ）**: `supabase/2026-08-21_labor_cost_daily.sql`。`labor_cost_daily`新設＋`attendance_records`に`smaregi_shift_result_id`列（重複防止の一意キー）を追加。
+
+**タスクC（smaregi-attendance-sync実装）**: `supabase/functions/smaregi-attendance-sync/index.ts`。従業員特定は`employee_profiles.smaregi_staff_id`ベース。実機テスト（2026-08-19〜20の2日分）で6件を実際に取込・`attendance_records`/`labor_cost_daily`両方への反映を確認済み。旧経路（CSV→シート）は無変更・並走。**軽微な既知ギャップ**（要フォロー）: smaregi_staff_id=347(中山さん本人)は「所属事業所が存在しません」でAPI 400（CEOは特定店舗に紐付いていないため？）／smaregi_store_id=7が`stores`テーブルに未登録（is_active=trueの8店舗にもfalseの4店舗にも該当なし）。
+
+**副産物（重要・R6の続き）**: `smaregi-sync`をリポジトリへバックアップ中に、同じ漏洩合言葉を使う関数がさらに6つ（`migrate_intake`／`indeed_message_intake`／`indeed_fill_url`／`indeed_intake`／`form_intake`＝採用管理のIndeed/フォーム/CSV移行取込口、`notify_route_send`＝Chatwork/Lark中継）DB上に存在し、リポジトリ未保存だったと判明。`smaregi-sync`自身の`notify_chatwork`アクションにもハードコードあり。すべて`checklist_intake_secret_ok()`（新旧両対応）を使うよう修正・デプロイ・動作確認済み。**これで同じ合言葉を使っていた全13箇所（8/21当初分7＋今回6＋smaregi-sync）が`app_secrets`参照に統一された**。
+
+**未着手（次回への申し送り）**:
+- 過去90日分のバックフィル・シートとの3日分スポット突合・給与明細APIとの1ヶ月分突合（Day3相当）
+- 日次自動実行のスケジュール設定（GitHub Actions cronかMac mini launchdか未決定。ユーザー確認が必要）
+- `computed_cost`（時給・深夜割増・交通費を使った自前の精密計算）は未実装。現状は`smaregi_estimate_cost`（スマレジAPIの概算値）のみ保存
+- smaregi_staff_id=347・smaregi_store_id=7の2ギャップの原因調査
