@@ -1,0 +1,79 @@
+name: スマレジ勤怠実績の日次取込
+
+# 発火は「外部cron（cron-job.org 等）」から workflow_dispatch API を叩いて行う。
+#   POST https://api.github.com/repos/mirai-oss/ns-portal/actions/workflows/smaregi-attendance-sync.yml/dispatches
+#   body: {"ref":"main"}
+# GitHub内蔵の schedule: は時刻が数十分〜数時間ずれる（無料/publicの仕様）ため使わない
+# （tori-dashboard/.github/workflows/lark-report.yml と同じ方針）。
+#
+# セットアップ手順（ユーザー作業・1回のみ）:
+#   1. https://cron-job.org でアカウント作成（無料）
+#   2. 「Create cronjob」→ URL に上記のdispatches APIエンドポイントを設定
+#      - Method: POST
+#      - Headers: Authorization: Bearer <GitHubのPersonal Access Token（workflow権限）>
+#                 Accept: application/vnd.github+json
+#                 Content-Type: application/json
+#      - Body: {"ref":"main"}
+#      - Schedule: 毎日 08:00 JST（＝ 23:00 UTC 前日）を目安に設定
+#   3. GitHub側: Settings → Developer settings → Personal access tokens で
+#      「repo」「workflow」スコープ付きのトークンを発行し、cron-job.orgのAuthorizationヘッダに設定
+#
+# 手動実行: GitHubの Actions タブ → 本workflow → Run workflow でも実行可能
+on:
+  workflow_dispatch:
+    inputs:
+      date_from:
+        description: '取得開始日（YYYY-MM-DD。空欄なら昨日）'
+        required: false
+        default: ''
+        type: string
+      date_to:
+        description: '取得終了日（YYYY-MM-DD。空欄なら昨日）'
+        required: false
+        default: ''
+        type: string
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: 設定チェック（未設定ならスキップ）
+        run: |
+          if [ -z "${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" ]; then
+            echo "::error::SUPABASE_SERVICE_ROLE_KEY が未設定です（Settings → Secrets and variables → Actions）"
+            exit 1
+          fi
+
+      - name: smaregi-attendance-syncを呼び出す
+        env:
+          SR_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          DATE_FROM: ${{ github.event.inputs.date_from }}
+          DATE_TO: ${{ github.event.inputs.date_to }}
+        run: |
+          BODY="{}"
+          if [ -n "$DATE_FROM" ] || [ -n "$DATE_TO" ]; then
+            BODY=$(node -e "console.log(JSON.stringify({date_from: process.env.DATE_FROM || undefined, date_to: process.env.DATE_TO || undefined}))")
+          fi
+          echo "リクエストボディ: $BODY"
+          RES=$(curl -s -w "\n%{http_code}" -X POST \
+            "https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/smaregi-attendance-sync" \
+            -H "Authorization: Bearer $SR_KEY" \
+            -H "Content-Type: application/json" \
+            -d "$BODY")
+          HTTP_CODE=$(echo "$RES" | tail -1)
+          BODY_TEXT=$(echo "$RES" | sed '$d')
+          echo "$BODY_TEXT"
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "::error::smaregi-attendance-syncが失敗しました（HTTP $HTTP_CODE）"
+            exit 1
+          fi
+          OK=$(echo "$BODY_TEXT" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{console.log(JSON.parse(d).ok)}catch(e){console.log('false')}})")
+          if [ "$OK" != "true" ]; then
+            echo "::error::同期処理がエラーを返しました"
+            exit 1
+          fi
+          ERR_COUNT=$(echo "$BODY_TEXT" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{console.log(JSON.parse(d).errorCount||0)}catch(e){console.log(0)}})")
+          if [ "$ERR_COUNT" -gt "0" ]; then
+            echo "::warning::$ERR_COUNT 件のエラーがありました（未対応のstaff_id/store_idなど。ログ参照）"
+          fi
