@@ -106,7 +106,7 @@ Deno.serve(async (req) => {
     const { data: store } = await sb.from("stores").select("smaregi_store_id").eq("id", storeId).single();
     const smStoreId = store?.smaregi_store_id;
 
-    // ---- スマレジに既にある予定シフトを取り込む（Smaregi→ポータル。ポータル側に無い日だけ追加、既存データは上書きしない） ----
+    // ---- スマレジと常に同じ状態に合わせる（Smaregi→ポータルの一方向リコンサイル。追加・時刻の食い違い修正・スマレジ側で消えた分の削除） ----
     if (action === "import_from_smaregi") {
       if (!smStoreId) return json({ ok: false, error: "店舗にスマレジ店舗IDが未設定です" }, 400);
       const range = periodRange(periodKey);
@@ -114,22 +114,26 @@ Deno.serve(async (req) => {
 
       const { data: members } = await sb.from("user_stores").select("user_id").eq("store_id", storeId);
       const userIds = [...new Set((members ?? []).map((m: any) => m.user_id))];
-      if (!userIds.length) return json({ ok: true, imported: 0, skipped: 0 });
+      if (!userIds.length) return json({ ok: true, added: 0, updated: 0, removed: 0 });
 
       const { data: profs } = await sb.from("employee_profiles").select("user_id,smaregi_staff_id").in("user_id", userIds);
       const staffToUser: Record<string, string> = {};
       (profs ?? []).forEach((p: any) => { if (p.smaregi_staff_id) staffToUser[p.smaregi_staff_id] = p.user_id; });
       const staffIds = Object.keys(staffToUser);
-      if (!staffIds.length) return json({ ok: true, imported: 0, skipped: 0 });
+      if (!staffIds.length) return json({ ok: true, added: 0, updated: 0, removed: 0 });
 
-      const { data: existing } = await sb.from("sf_shifts").select("user_id,work_date").eq("store_id", storeId).eq("period_key", periodKey);
-      const existingSet = new Set((existing ?? []).map((r: any) => `${r.user_id}|${r.work_date}`));
+      // ポータル側の現状（この店舗・この期間）
+      const { data: existing } = await sb.from("sf_shifts")
+        .select("id,user_id,work_date,start_time,end_time,is_off,smaregi_shift_result_id")
+        .eq("store_id", storeId).eq("period_key", periodKey);
+      const existingByKey: Record<string, any> = {};
+      (existing ?? []).forEach((r: any) => { existingByKey[`${r.user_id}|${r.work_date}`] = r; });
 
       let token: string;
       try { token = await getToken(); } catch (e) { return json({ ok: false, error: "スマレジ認証に失敗しました: " + String(e) }, 502); }
 
-      const toInsert: any[] = [];
-      let skipped = 0;
+      // スマレジ側の現状（この店舗・対象スタッフ・対象月）を1人1日1件に正規化
+      const smaregiByKey: Record<string, { shiftResultId: string; start: string; end: string }> = {};
       for (const staffId of staffIds) {
         const userId = staffToUser[staffId];
         let res: Response;
@@ -151,33 +155,56 @@ Deno.serve(async (req) => {
             const rec = byStore[idx];
             if (!rec?.attendance || !rec?.leaving) continue;
             const key = `${userId}|${dateKey}`;
-            if (existingSet.has(key)) { skipped++; continue; }
-            existingSet.add(key); // 同じ日に複数レコードがある場合は最初の1件のみ（sf_shiftsは1人1日1件のため）
-            toInsert.push({
-              user_id: userId,
-              store_id: storeId,
-              work_date: dateKey,
-              period_key: periodKey,
-              preset_id: null,
-              is_off: false,
-              start_time: String(rec.attendance).slice(11, 16),
-              end_time: String(rec.leaving).slice(11, 16),
-              break_minutes: 0,
-              status: "published",
-              published_at: new Date().toISOString(),
-              smaregi_sync_status: "synced",
-              smaregi_shift_result_id: String(rec.shiftResultId ?? ""),
-              created_by: uid,
-              updated_at: new Date().toISOString(),
-            });
+            if (smaregiByKey[key]) continue; // 同じ日に複数レコードがある場合は最初の1件のみ（sf_shiftsは1人1日1件のため）
+            smaregiByKey[key] = {
+              shiftResultId: String(rec.shiftResultId ?? ""),
+              start: String(rec.attendance).slice(11, 16),
+              end: String(rec.leaving).slice(11, 16),
+            };
           }
         }
       }
+
+      const nowIso = new Date().toISOString();
+      const toInsert: any[] = [];
+      let updated = 0, removed = 0;
+
+      // スマレジにある分 → ポータルに無ければ追加、あって内容が違えば上書き（スマレジを正として合わせる）
+      for (const key of Object.keys(smaregiByKey)) {
+        const sm = smaregiByKey[key];
+        const cur = existingByKey[key];
+        const [userId, workDate] = key.split("|");
+        if (!cur) {
+          toInsert.push({
+            user_id: userId, store_id: storeId, work_date: workDate, period_key: periodKey,
+            preset_id: null, is_off: false, start_time: sm.start, end_time: sm.end, break_minutes: 0,
+            status: "published", published_at: nowIso,
+            smaregi_sync_status: "synced", smaregi_shift_result_id: sm.shiftResultId,
+            created_by: uid, updated_at: nowIso,
+          });
+        } else if (!cur.is_off && (String(cur.start_time).slice(0, 5) !== sm.start || String(cur.end_time).slice(0, 5) !== sm.end || cur.smaregi_shift_result_id !== sm.shiftResultId)) {
+          await sb.from("sf_shifts").update({
+            start_time: sm.start, end_time: sm.end, status: "published", published_at: nowIso,
+            smaregi_sync_status: "synced", smaregi_shift_result_id: sm.shiftResultId, smaregi_error: null, updated_at: nowIso,
+          }).eq("id", cur.id);
+          updated++;
+        }
+      }
+
+      // ポータルにはあるがスマレジから消えた分（スマレジ側で削除された）→ ポータルからも削除
+      for (const key of Object.keys(existingByKey)) {
+        const cur = existingByKey[key];
+        if (cur.smaregi_shift_result_id && !smaregiByKey[key]) {
+          await sb.from("sf_shifts").delete().eq("id", cur.id);
+          removed++;
+        }
+      }
+
       if (toInsert.length) {
         const { error: insErr } = await sb.from("sf_shifts").insert(toInsert);
         if (insErr) return json({ ok: false, error: insErr.message }, 500);
       }
-      return json({ ok: true, imported: toInsert.length, skipped });
+      return json({ ok: true, added: toInsert.length, updated, removed });
     }
 
     // ---- 公開時の同期（既定動作。旧仕様と互換） ----
