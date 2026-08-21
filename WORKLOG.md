@@ -454,3 +454,16 @@
 **Step3完了（nippo `d07dc99` v2.6.81）**: ⚙️設定に「💚 シフト連絡用LINE」カードを追加（`user_issue_line_code`で合言葉発行→`line.me/R/oaMessage/{oa}/?{code}`リンク＝応募者向けと同じ既存パターンを流用→送信するだけで連携／`user_unlink_line`で解除）。📅シフト画面（`shiftView()`）を開くたびに管理者ロール（is_master/CEO/HQ/TEAM/TENCHO）のみ`sfEnsureReminders()`を1回試行し、`sf_reminder_targets()`が返した締切当日の未提出者へ`line-webhook`の`push_user`アクションでLINE送信、成功後`sf_mark_reminded`で記録（`sessionStorage`で同日2重チェック回避・DB側ユニーク制約が最終防衛）。管理画面の未提出者一覧に「（⚠️LINE未連携）」表示も追加。ローカルプレビュー（`nippo-preview`）でsettingsViewの3状態（未連携／合言葉発行後／連携済み）とsfEnsureRemindersの権限ガード・二重実行防止を関数直接呼び出しで確認済み（実ログイン・実LINE送信は含まない）。
 
 **残（Step4のみ）**: 実機E2E。使い捨てTENCHOユーザーの作成・実際のLINEアプリでの合言葉送信・締切当日データでのリマインド送信・二重送信防止・後始末までの一連は、実際のLINEアプリでのやりとりが必須のため**ユーザー本人の実機操作が必要**。次に着手する際は実装指示書Step4の8項目に沿って進める
+
+## 2026-08-21 シフト4f Step4（実機E2E）完了・4f全工程完了
+Auth Admin APIで使い捨てTENCHOユーザーを作成（`user_metadata.role`指定で`handle_new_user`から直接TENCHOとして生成）、`user_stores`で「鶏武者 新横浜」に紐付け。ブラウザで実際にログインし⚙️設定の「LINEと連携する」を押して合言葉（6桁）を発行→ユーザー本人が実際のLINEアプリでその合言葉を求人用公式アカウントへ送信→`line_user_id`が実際に設定され連携完了を確認。
+
+**締切当日の対象者抽出ロジックの検証**: 今日(2026-08-21)は締切日（5日・20日）ではないため本番`sf_reminder_targets()`が空配列を返すことをまず確認。次に「締切当日ゲートのみ外した」一時検証用関数`sf_reminder_targets_test()`（本番関数の複製、ユーザー許可を得てから作成）でテストユーザーが正しく対象者として抽出されること（period_key=2026-09-B）を確認。**実在の対象者が14〜15件同時に返ってきたため、push_userはテストユーザー1件だけに限定し、実在の従業員には一切送信しないよう徹底**。
+
+`push_user`アクションでテストユーザーへ実際にLINEメッセージを送信→ユーザー本人が受信を確認。`sf_mark_reminded`実行後に再度`sf_reminder_targets_test()`を呼び、テストユーザーが対象から外れる（二重送信防止）ことを確認。
+
+応募者向け既存フローについては、今回のテスト連携自体が「署名検証→line_intake（応募者ではないためfalse）→新設line_intake_user」という共有コードパスを実際のLINE Webhookで通しており、Step2のdiff確認と合わせて健全性を確認済みと判断（新規に応募者データを作る追加テストは行わなかった）。
+
+**後始末**: Auth Admin APIでテストユーザーを削除（`public.users`・`user_stores`・`sf_reminder_log`・`sf_shifts`が全て0件になることを確認）、一時検証用関数`sf_reminder_targets_test()`をDROP、ローカルの一時ファイル（トークン等）を削除。
+
+**シフト4f（LINEリマインド）全工程完了**。`docs/シフト打刻_設計書.md`§8を更新済み。次の優先項目は要件定義書の開発順どおり: 3:役職テスト→4:評価制度→5:AIエージェント化→6:発注管理→7:カレンダー/ドメイン。または⑤打刻（GPS位置情報付き。`timecard.attendances:write`スコープの追加申請から）
