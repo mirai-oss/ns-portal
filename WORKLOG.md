@@ -34,7 +34,7 @@
   5. `computed_cost`自前計算（優先度低下）
 
 **直近のコミット（この時点。鵜呑みにせず必ず`git fetch origin && git log --oneline -1 origin/main`で照合すること）**:
-- `ns-portal`: `4ee76e8`（このエントリのpush前。実際のpush後のハッシュは末尾のタイムライン参照）
+- `ns-portal`: `458c5c3`
 - `nippo`: `f245734`
 - `NStyle-AI`: `126f0ae`（A-4/A-6のGASコード整理・README更新分）
 
