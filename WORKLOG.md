@@ -8,15 +8,78 @@
 
 **最終更新**: 2026-08-21
 
+**仕様の正（最新版）**: `docs/要件定義書.md` **v3.3（2026-08-21）**。v3.2で確定・凍結後、シフト・打刻（④⑤）の詳細要件（§25）を追記して版上げ。以後は実装で判明した事実の追記のみ・方針変更はユーザー承認のうえ版を上げる運用
+
 **進行中**: シフト機能（④）の不具合対応・スマレジ双方向同期が完了。ユーザーによる実機再確認待ち。
 
-**直近のコミット（この時点）**:
-- `ns-portal`: `8050827`
+**直近のコミット（この時点。鵜呑みにせず必ず`git fetch origin && git log --oneline -1 origin/main`で照合すること）**:
+- `ns-portal`: `f39a4ef`
 - `nippo`: `8b2453e`
 
-※上の2つは更新時点のスナップショットであり、他のPC/セッションが後から進めている可能性がある。**信用せず、必ず`git fetch origin && git log --oneline -1 origin/main`で実際の最新を確認すること。**
-
 **次にやること候補**: ユーザーが「🔄スマレジと同期する」を試した結果次第。問題なければ要件定義書の開発順どおり次の機能（③役職テスト等）へ、または⑤打刻（GPS付き）。
+
+---
+
+## 🗺 全体像（システム一覧）
+
+| システム | リポジトリ | 公開URL | データベース |
+|---|---|---|---|
+| ポータル＋本部タスクボード＋経費申請 | `github.com/mirai-oss/ns-portal` | https://mirai-oss.github.io/ns-portal/ | **ハブ**（下記） |
+| 日報・現場アプリ（シフト・チェックシート・マニュアル等） | `github.com/mirai-oss/nippo` | https://mirai-oss.github.io/nippo/ | **ハブ**（同じDB。nippoとns-portalは同じプロジェクトの同じテーブル群を読み書きしている） |
+| 経営ダッシュボード | `github.com/mirai-oss/tori-dashboard` | （GAS/BigQuery） | 別（SSO認証だけハブを参照） |
+| 精算ダッシュボード | `github.com/mirai-oss/seisan-dashboard` | （GAS） | 別（SSO認証だけハブを参照） |
+| 社内情報管理システム | `ns-info-system`（Next.js/Vercel） | https://ns-info-system.vercel.app | **別のSupabaseプロジェクト**（`wciefkpooncglahqdtmu`。機密情報専用） |
+
+**ハブ = Supabaseプロジェクト `uuvsxzhpxtghojoubjcc`**。ローカル作業ディレクトリ（このMac）: `/Users/mirai/Claude/` 直下に上記リポジトリが並んでいる。
+
+---
+
+## 📄 ドキュメント一覧（`ns-portal/docs/`。何が今も生きていて、何が過去の実装済みの記録かの索引）
+
+| ファイル | 状態 | 内容 |
+|---|---|---|
+| `要件定義書.md` | **常に最新（v3.3）** | 全体の決定事項・フェーズ計画の正。まずこれ |
+| `シフト打刻_設計書.md` | **稼働中（v1.0）** | シフト（④）打刻（⑤）の設計。§8に4a〜4fの実装状況を反映済み（4fまで完了、⑤は未着手） |
+| `実装指示書_シフトLINEリマインド.md` / `引継ぎ書_2026-08-20_シフトLINEリマインド続き.md` | 完了済み（参考） | シフト4f（LINEリマインド）の指示書。2026-08-21に全工程完了 |
+| `本部タスクボード設計書.html` | 完了済み（参考） | 本部タスクボード（tasks.html）の元設計v1.2。実装済み |
+| `実装指示書_本部タスクボード.md` / `引継ぎ書_本部タスクボードv2_2026-08-11.md` / `実装指示書_タスクボード改善v2.md` | 完了済み（参考） | 本部タスクボードの実装指示・改善14項目。全て実装済み |
+| `実装指示書_ポータルホーム改修.md` | 完了済み（参考） | ポータルホーム総合ダッシュボード化。実装済み |
+| `実装指示書_第3期実装フェーズ.md` / `フェーズC_本番切替手順.md` / `ホスティング比較_社内情報.md` / `バックアップと復旧.md` | 完了済み（参考） | 第3期（Pro化・法人マスタ統一・社内情報Vercel切替・経費申請）。全工程完了 |
+| `引継ぎ書_2026-08-19_次スレッド用.md` | 完了済み（参考） | 2026-08-19時点の引継ぎ。以降の作業はWORKLOG本文を参照 |
+| `引継ぎ書_他PC作業時の注意_2026-08-12.md` | **超過（このWORKLOGに統合済み）** | 内容（DBテーブルの持ち主・接続情報等）は下の2セクションに転記済み。今後はこちらを見なくてよい |
+
+---
+
+## 🔐 共有ハブDBの「テーブルの持ち主」整理（重要・事故防止）
+
+同じSupabaseプロジェクトに複数システムが自分のテーブルを持ち寄っている。接頭辞でおおよその持ち主が分かるが例外もある。
+
+| テーブル群 | 持ち主 | 他システムからの扱い |
+|---|---|---|
+| `hq_*`（タスク関連一式） | 本部タスクボード（ns-portal） | 他システムは触らない・読むことも基本ない |
+| `portal_*`（権限・掲示板等） | ポータル（ns-portal） | 他システムは触らない |
+| `sf_*`（シフト関連一式） | シフト機能（nippoのUI／SQLはns-portalリポジトリ内） | 他システムは触らない |
+| `expense_*`（経費申請） | ns-portal | 他システムは触らない |
+| `checklist_*` | 日報（nippo）の機能。SQL定義だけns-portalリポジトリ内 | nippoが自由に使ってよい |
+| `manual_items` | 日報（nippo）のマニュアル機能 | **本部タスクボードが`id`/`label`/`url`/`category`/`is_active`/`sort_order`列をFK参照・SELECTしている**。この列の意味・型を変える場合は本部タスクボード側にも影響するため要連絡 |
+| `users` | 共有（全システムが使う） | 列追加は基本安全。**`role`の取りうる値**（`CEO`/`HQ`/`TEAM`/`TENCHO`/`SHAIN`/`AL`）と**`is_master`/`is_active`の意味**は各システムのRLS・権限判定が直接依存しているため、値の意味を変えたり列を消したりしない |
+| `stores` | 共有（全システムが使う） | `id`/`is_active`/`sort_order`/`store_no`/`smaregi_store_id`列は複数システムが直接参照。列追加はOK、既存列の削除・型変更はNG |
+| `employee_profiles` | 共有 | `smaregi_staff_id`をシフト機能・スマレジ連携が参照。削除・型変更しない |
+| `report-photos`（Storageバケット） | 共有 | 全システムが`{uid}/....`の形でパスを切っている（先頭フォルダ=`auth.uid()`必須というRLSポリシーに従う必要がある）。このパス規約を崩すとアップロードが軒並み失敗する |
+| それ以外の日報既存テーブル（`reports`/`attendance_records`/`teams`等） | 日報（nippo）専有 | 他システムは触っていない・参照もしていない |
+
+**既存のマイグレーションSQLファイルは編集しない**（新しい変更は日付入りの新規ファイルを追加）。**既存の本番Edge Function（`line-webhook`・`smaregi-sync`・`smaregi-shift-sync`・`hq_generate_today`等）を書き換えるときは、必ず本番バイナリから完全なソースをUTF-8で復元しdiffで既存部分が無変更であることを確認してからデプロイする**。
+
+---
+
+## 🔑 接続情報（このMac固有。別PCでは別途用意が必要）
+
+- Supabaseプロジェクト（ハブ）: ref `uuvsxzhpxtghojoubjcc`
+- Management API PAT: `~/.config/ns-portal/supabase_pat`（chmod 600・リポジトリ外）
+- service_roleキー: `~/.config/ns-portal/hub_service_role`
+- SQL実行: `POST https://api.supabase.com/v1/projects/{ref}/database/query`（curl必須。Pythonのurllib等はCloudflareにブロックされる）
+- ローカルプレビュー設定: `/Users/mirai/Claude/.claude/launch.json`（`portal`=8891・`nippo-preview`=8892・`ns-info-dev`=3000等）
+- 別のパソコンでハブDBにSQLを実行する必要が出た場合は、このMacの鍵ファイルをコピーするのではなく、ユーザーに新しいPATの発行を依頼するのが安全（鍵の使い回しは避ける）
 
 ---
 
