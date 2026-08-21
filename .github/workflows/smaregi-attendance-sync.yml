@@ -19,6 +19,10 @@ name: スマレジ勤怠実績の日次取込
 #      「repo」「workflow」スコープ付きのトークンを発行し、cron-job.orgのAuthorizationヘッダに設定
 #
 # 手動実行: GitHubの Actions タブ → 本workflow → Run workflow でも実行可能
+#
+# 2026-08-22 追記: 取込直後に smaregi-attendance-anomaly-check（勤怠の異常値チェック。
+#   1時間以内／13時間超え／24時間超えの勤務を検知してLINEアラート）を後続ステップとして呼ぶよう追加。
+#   smaregi-attendance-sync本体のロジックは無変更（新しいステップの追加のみ）。
 on:
   workflow_dispatch:
     inputs:
@@ -76,4 +80,31 @@ jobs:
           ERR_COUNT=$(echo "$BODY_TEXT" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{console.log(JSON.parse(d).errorCount||0)}catch(e){console.log(0)}})")
           if [ "$ERR_COUNT" -gt "0" ]; then
             echo "::warning::$ERR_COUNT 件のエラーがありました（未対応のstaff_id/store_idなど。ログ参照）"
+          fi
+
+      - name: smaregi-attendance-anomaly-checkを呼び出す（異常値チェック・失敗しても取込自体は成功扱い）
+        env:
+          SR_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          DATE_FROM: ${{ github.event.inputs.date_from }}
+          DATE_TO: ${{ github.event.inputs.date_to }}
+        run: |
+          BODY="{}"
+          if [ -n "$DATE_FROM" ] || [ -n "$DATE_TO" ]; then
+            BODY=$(node -e "console.log(JSON.stringify({date_from: process.env.DATE_FROM || undefined, date_to: process.env.DATE_TO || undefined}))")
+          fi
+          RES=$(curl -s -w "\n%{http_code}" -X POST \
+            "https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/smaregi-attendance-anomaly-check" \
+            -H "Authorization: Bearer $SR_KEY" \
+            -H "Content-Type: application/json" \
+            -d "$BODY")
+          HTTP_CODE=$(echo "$RES" | tail -1)
+          BODY_TEXT=$(echo "$RES" | sed '$d')
+          echo "$BODY_TEXT"
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "::warning::smaregi-attendance-anomaly-checkが失敗しました（HTTP $HTTP_CODE）。取込自体は成功しているのでジョブは失敗にしない"
+            exit 0
+          fi
+          ANOMALY_COUNT=$(echo "$BODY_TEXT" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{console.log(JSON.parse(d).anomalyCount||0)}catch(e){console.log(0)}})")
+          if [ "$ANOMALY_COUNT" -gt "0" ]; then
+            echo "::warning::$ANOMALY_COUNT 件の異常値（1時間以内／13時間超え／24時間超え）が見つかりました。LINEに通知済みのはずです"
           fi
