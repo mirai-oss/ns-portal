@@ -10,19 +10,20 @@
 
 **仕様の正（最新版）**: `docs/要件定義書.md` **v3.4（2026-08-21）**。v3.3（シフト詳細§25）に続き、§26データ基盤統合ロードマップ・§27シフト勤怠ベースライン設計を追記。スマレジAPI調査の確定結果（勤怠読み取り可・給与は自前計算・プレミアムプラン前提）を§25.1に反映済み。ロードマップ全文は `docs/データ基盤統合ロードマップ.md`
 
-**進行中**: シフト機能（④）はスマレジ双方向同期まで完了・ユーザー実機再確認待ち（Mac mini側）。データ基盤は**Day 1（保全）全タスク完了＋Day 2（MacBook側4項目＋Mac mini側の主要実装）完了**。
+**進行中**: シフト機能（④）はスマレジ双方向同期まで完了・ユーザー実機再確認待ち（Mac mini側）。データ基盤は**Day 1（保全）全タスク完了＋Day 2 完結**（MacBook側4項目＋Mac mini側の勤怠API取込＋日次自動実行まで）。
 - ✅ Day1 タスクA〜D完了（詳細は本ファイル下の「2026-08-21（MacBook側・別スレッド）」エントリ群参照）。**要ユーザー確認（未対応）**: A-4にA-6（精算ダッシュボード）のコードが誤混入している疑い（実害なし・未デプロイ）
 - ✅ Day2 MacBook側4項目完了: ①勘定科目マスタ(account_items)新設 ②ブランド正本をstores.signsに宣言 ③LINE共有シークレットのローテーション（R6対応） ④report-photosバケットの署名URL化→非公開化（R5対応。3画面・実機確認済み）
-- ✅ Day2 Mac mini側（スマレジ勤怠API取込）**主要実装完了**（このMacBookセッションでユーザー了承の上そのまま実行）: `smaregi-attendance-sync`Edge Function新規実装・`labor_cost_daily`テーブル新設・実機テストで2日分6件の取込を確認済み。指示書: `docs/実装指示書_データ基盤Day2_勤怠API取込.md`
+- ✅ Day2 Mac mini側（スマレジ勤怠API取込）完了（このMacBookセッションでユーザー了承の上そのまま実行）: `smaregi-attendance-sync`Edge Function新規実装・`labor_cost_daily`テーブル新設・**日次自動実行をGitHub Actionsで設定しGitHub Actions経由での実行成功まで確認済み**（`.github/workflows/smaregi-attendance-sync.yml`）。指示書: `docs/実装指示書_データ基盤Day2_勤怠API取込.md`
 - ✅ R6（共有シークレット平文露出）の全数対応完了: 当初7箇所＋smaregi-syncバックアップ中に発見した6箇所＋smaregi-sync自身＝**全13箇所**を`app_secrets`参照に統一
-- ⏳ **未着手（次回への申し送り）**: 過去90日バックフィル＋シート突合＋給与明細API突合（Day3相当）／日次自動実行のスケジュール設定（GitHub Actions cron vs Mac mini launchd、要ユーザー確認）／`computed_cost`（時給・深夜割増・交通費の自前精密計算、現状はスマレジAPIの概算値のみ）／smaregi_staff_id=347・smaregi_store_id=7の2ギャップ調査
+- ⚠️ **ユーザー作業が1件だけ残っている**: cron-job.orgでの日次実行トリガー設定（アカウント操作のためこのセッションでは実施不可。手順は`.github/workflows/smaregi-attendance-sync.yml`冒頭コメント参照）
+- ⏳ **未着手（次回への申し送り）**: 過去90日バックフィル＋シート突合＋給与明細API突合（Day3相当）／`computed_cost`（時給・深夜割増・交通費の自前精密計算、現状はスマレジAPIの概算値のみ）／smaregi_staff_id=347・smaregi_store_id=7の2ギャップ調査
 
 **直近のコミット（この時点。鵜呑みにせず必ず`git fetch origin && git log --oneline -1 origin/main`で照合すること）**:
 - `ns-portal`: このコミット
 - `nippo`: `f245734`
 - `NStyle-AI`: `aa87148`（Day1タスクA・B分。Day2はNStyle-AI側の変更なし）
 
-**次にやること候補**: ①**Day 2の残り**（過去90日バックフィル・給与明細API突合・日次自動実行スケジュールの決定） ②A-4に誤混入した精算ダッシュボードのコード整理（優先度は低いが要ユーザー確認） ③シフトはユーザーの「🔄スマレジと同期する」実機確認の結果次第で、§27のベースラインGap実装（作成グリッド・打刻・実績）へ。
+**次にやること候補**: ①**cron-job.orgの設定**（ユーザー作業。手順は上記ワークフローファイル参照） ②Day 3相当（過去90日バックフィル・給与明細API突合） ③A-4に誤混入した精算ダッシュボードのコード整理（優先度は低いが要ユーザー確認） ④シフトはユーザーの「🔄スマレジと同期する」実機確認の結果次第で、§27のベースラインGap実装（作成グリッド・打刻・実績）へ。
 
 **⚠️ このWORKLOGを最新に保つ仕組み**: `ns-portal/CLAUDE.md`と`nippo/CLAUDE.md`に「作業前後に必ずやること」を明記済み（どのPC・どのスレッドでも自動的に読み込まれる指示ファイル）。要点＝**作業を終える前に必ずこの「📍現在の状況」を書き換えてからpushする**。
 
@@ -699,6 +700,20 @@ Auth Admin APIで使い捨てTENCHOユーザーを作成（`user_metadata.role`�
 
 **未着手（次回への申し送り）**:
 - 過去90日分のバックフィル・シートとの3日分スポット突合・給与明細APIとの1ヶ月分突合（Day3相当）
-- 日次自動実行のスケジュール設定（GitHub Actions cronかMac mini launchdか未決定。ユーザー確認が必要）
 - `computed_cost`（時給・深夜割増・交通費を使った自前の精密計算）は未実装。現状は`smaregi_estimate_cost`（スマレジAPIの概算値）のみ保存
 - smaregi_staff_id=347・smaregi_store_id=7の2ギャップの原因調査
+
+## 2026-08-21（MacBook側・同セッション） 日次自動実行をGitHub Actionsで設定・実機確認完了
+
+ユーザーの希望（「どのPCでもできることを考えたらGitHub Actionsかな」）により決定。
+
+- `.github/workflows/smaregi-attendance-sync.yml`新規作成。`tori-dashboard/lark-report.yml`と同じ方針（**GitHub内蔵の`schedule:`は無料/publicリポで数十分〜数時間ずれるため使わない**。外部cron(cron-job.org等)から`workflow_dispatch` APIを叩く方式）
+- `SUPABASE_SERVICE_ROLE_KEY`をns-portalのGitHub Actions Secretsに新規登録
+- `gh workflow run`で実機テスト → **GitHub Actions経由での実行成功を確認**（`inserted:6, errorCount:3`＝既知の2ギャップのみ、エラー内容もwarningとして正しく表面化）
+
+**⚠️ユーザー作業が必要（このセッションでは実施不可・アカウント操作のため）**: cron-job.orgでの日次実行の設定。ワークフローファイル冒頭のコメントに手順を記載済み:
+1. https://cron-job.org でアカウント作成
+2. `POST https://api.github.com/repos/mirai-oss/ns-portal/actions/workflows/smaregi-attendance-sync.yml/dispatches`（body: `{"ref":"main"}`）を毎日08:00 JST頃に叩くよう設定
+3. GitHub側で「repo」「workflow」スコープのPersonal Access Tokenを発行し、cron-job.orgのAuthorizationヘッダに設定
+
+**Day 2完結**。次はDay 3相当（過去90日バックフィル・給与明細API突合）、または要件定義書の他の開発順（役職テスト・評価制度等）。

@@ -69,7 +69,7 @@ Day1タスクDの実施中に発覚した重要な方針決定（詳細は`WORKL
 - [x] `smaregi-sync`のソースをリポジトリへバックアップ済み（2026-08-21実施。副産物として合言葉ハードコード関数6件も発見・修正）
 - [x] 勤怠実績APIの疎通確認済み（スコープ追加は不要だった。正しいエンドポイントは`GET /timecard/shifts/staffs/{staffId}/daily?division=result&year=&month=`で、`shiftDaily`は日付→店舗ID→連番のネストオブジェクト）
 - [x] `labor_cost_daily`がDBに存在（`supabase/2026-08-21_labor_cost_daily.sql`）
-- [x] `smaregi-attendance-sync`を実装・デプロイ・実機テスト済み（2日分6件の取込を確認）。**ただし日次自動実行のスケジュール設定は未着手**（GitHub Actions cron vs Mac mini launchd、要ユーザー確認）
+- [x] `smaregi-attendance-sync`を実装・デプロイ・実機テスト済み（2日分6件の取込を確認）。**日次自動実行はGitHub Actionsで設定済み**（`.github/workflows/smaregi-attendance-sync.yml`。GitHub Actions経由の実行成功を確認済み）。残るはユーザー作業のcron-job.org設定のみ（ワークフローファイル冒頭のコメント参照）
 - [x] 従業員特定は`employee_profiles.smaregi_staff_id`ベースで実装済み
 - [x] 旧経路（CSV→シート）は無変更・並走
 - [ ] 過去90日バックフィル＋シート3日分スポット突合＋給与明細API 1ヶ月分突合（タスクD・未着手。時間の都合でDay3相当として持ち越し）
