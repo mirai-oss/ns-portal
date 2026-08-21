@@ -99,7 +99,8 @@ async function linePush(sb: ReturnType<typeof createClient>, text: string) {
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
       body: JSON.stringify({ to: r.line_user_id, messages: [{ type: "text", text: text.slice(0, 4900) }] }),
     });
-    results.push({ name: r.name, ok: res.ok, status: res.status });
+    const bodyText = res.ok ? "" : (await res.text()).slice(0, 300);
+    results.push({ name: r.name, ok: res.ok, status: res.status, body: bodyText });
   }
   return { ok: results.some((r) => r.ok), results };
 }
