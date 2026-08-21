@@ -1,5 +1,6 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
-const INTAKE_SECRET = "4259598a7ce747d54e2bf84326131129f21eb77f54dfdcdd";
+// 2026-08-21: 平文ハードコードだった合言葉をapp_secretsへ移行（データ基盤Day2 タスク4）。
+// secrets()内で取得し、呼び出し時は intakeSecret を使う。body.secretの検証は新旧どちらでも通す。
 const APP_URL = Deno.env.get("APP_URL") ?? "https://mirai-oss.github.io/nippo/";
 const cors = {
   "Access-Control-Allow-Origin": "*",
@@ -24,7 +25,9 @@ function jwtUid(req) {
 async function secrets(sb) {
   const { data } = await sb.from("app_secrets").select("key,value").in("key", [
     "line_channel_token",
-    "line_channel_secret"
+    "line_channel_secret",
+    "checklist_intake_secret",
+    "checklist_intake_secret_prev"
   ]);
   const m = {};
   (data ?? []).forEach((r)=>{
@@ -32,7 +35,9 @@ async function secrets(sb) {
   }); // 前後の空白・改行を落とす
   return {
     token: m.line_channel_token ?? "",
-    secret: m.line_channel_secret ?? ""
+    secret: m.line_channel_secret ?? "",
+    intakeSecret: m.checklist_intake_secret ?? "",
+    intakeSecretPrev: m.checklist_intake_secret_prev ?? ""
   };
 }
 // LINEの署名検証（本文のHMAC-SHA256をBase64にしたものが x-line-signature と一致する）
@@ -103,7 +108,7 @@ Deno.serve(async (req)=>{
       body = {};
     }
     const sb = svc();
-    const { token, secret } = await secrets(sb);
+    const { token, secret, intakeSecret, intakeSecretPrev } = await secrets(sb);
     // ---------------- 1) LINEからのWebhook ----------------
     if (Array.isArray(body.events)) {
       const sig = req.headers.get("x-line-signature") ?? "";
@@ -121,7 +126,7 @@ Deno.serve(async (req)=>{
         if (ev.type === "follow") continue;
         if (ev.type !== "message" || ev.message?.type !== "text") continue;
         const { data: r } = await sb.rpc("line_intake", {
-          p_secret: INTAKE_SECRET,
+          p_secret: intakeSecret,
           p_line_user_id: uid,
           p_text: String(ev.message.text ?? ""),
           p_event_id: String(ev.message.id ?? ev.webhookEventId ?? ""),
@@ -134,7 +139,7 @@ Deno.serve(async (req)=>{
         // （既存の応募者フローには一切影響しない。r.ok が false のときのみ実行）
         if (!r?.ok) {
           const { data: ur } = await sb.rpc("line_intake_user", {
-            p_secret: INTAKE_SECRET,
+            p_secret: intakeSecret,
             p_line_user_id: uid,
             p_text: String(ev.message.text ?? "")
           });
@@ -148,12 +153,12 @@ Deno.serve(async (req)=>{
     // ---------------- 2) 毎日の点検（GASから合言葉つきで呼ばれる） ----------------
     // ③ 面接日を過ぎた人のお知らせ ＋ ④ 入社登録フォーム未提出のリマインドLINE
     if (body.action === "daily") {
-      if (body.secret !== INTAKE_SECRET) return json({
+      if (body.secret !== intakeSecret && body.secret !== intakeSecretPrev) return json({
         ok: false,
         error: "認証エラー"
       }, 403);
       const { data: t, error } = await sb.rpc("recruit_daily_targets", {
-        p_secret: INTAKE_SECRET
+        p_secret: intakeSecret
       });
       if (error) return json({
         ok: false,
@@ -174,19 +179,19 @@ Deno.serve(async (req)=>{
         const res = await linePush(token, ap.line_user_id, text);
         if (res.ok) {
           await sb.rpc("line_log_out", {
-            p_secret: INTAKE_SECRET,
+            p_secret: intakeSecret,
             p_applicant: r.id,
             p_text: text
           });
           // v2.6.36 種類ごとに「送った印」を付け分ける
           if (r.kind === "interview") {
             await sb.rpc("mark_interview_reminded", {
-              p_secret: INTAKE_SECRET,
+              p_secret: intakeSecret,
               p_applicant: r.id
             });
           } else {
             await sb.rpc("recruit_mark_reminded", {
-              p_secret: INTAKE_SECRET,
+              p_secret: intakeSecret,
               p_applicant: r.id
             });
           }
@@ -244,7 +249,7 @@ Deno.serve(async (req)=>{
         error: `LINEの応答: ${sent.status} ${sent.body}`
       }, 400);
       await sb.rpc("line_log_out", {
-        p_secret: INTAKE_SECRET,
+        p_secret: intakeSecret,
         p_applicant: ap.id,
         p_text: String(text)
       });
@@ -362,7 +367,7 @@ Deno.serve(async (req)=>{
         error: `LINEの応答: ${sent.status} ${sent.body}`
       }, 400);
       await sb.rpc("line_log_out", {
-        p_secret: INTAKE_SECRET,
+        p_secret: intakeSecret,
         p_applicant: ap.id,
         p_text: text
       });
