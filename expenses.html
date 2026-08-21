@@ -162,7 +162,39 @@ async function uploadPhoto(file){
   if(!r.ok) throw new Error("アップロード失敗");
   return path;
 }
-function photoUrl(path){ return `${SUPA_URL}/storage/v1/object/public/${BUCKET}/${path}`; }
+// 2026-08-21 データ基盤Day2: report-photosバケット非公開化に伴い署名URL方式へ変更。
+// photoUrl()は直接は使わず、レンダリング側は data-photo-path 属性で埋め込み、
+// resolveLazyPhotos()がDOM挿入後にまとめて署名URLを取得してsrc/hrefへ反映する
+// （1件ずつawaitさせず、テンプレート文字列の同期組み立てを崩さないための遅延解決方式）。
+function photoUrl(path){ return `${SUPA_URL}/storage/v1/object/public/${BUCKET}/${path}`; } // 後方互換のみ・非公開化後は使わない
+const _signedUrlCache=new Map(); // path -> {url, exp}
+let _lazyPhotoTimer=null;
+function schedulePhotoResolve(){ clearTimeout(_lazyPhotoTimer); _lazyPhotoTimer=setTimeout(resolveLazyPhotos,50); }
+async function resolveLazyPhotos(){
+  const els=[...document.querySelectorAll('[data-photo-path]:not([data-photo-resolved])')];
+  if(!els.length) return;
+  els.forEach(el=>el.dataset.photoResolved="pending");
+  const now=Date.now();
+  const need=[]; const paths=new Set();
+  els.forEach(el=>{
+    const p=el.dataset.photoPath; const c=_signedUrlCache.get(p);
+    if(c&&c.exp>now){ applyPhotoUrl(el,c.url); }
+    else { need.push(el); paths.add(p); }
+  });
+  if(!paths.size) return;
+  const s=sess.get(); if(!s){ need.forEach(el=>el.dataset.photoResolved=""); return; }
+  const r=await authed(`/storage/v1/object/sign/${BUCKET}`,{method:"POST",body:JSON.stringify({expiresIn:3600,paths:[...paths]})});
+  const map={};
+  (Array.isArray(r.body)?r.body:[]).forEach(x=>{ if(x.path&&x.signedURL) map[x.path]=`${SUPA_URL}/storage/v1${x.signedURL}`; });
+  need.forEach(el=>{
+    const url=map[el.dataset.photoPath];
+    el.dataset.photoResolved=url?"1":"";
+    if(url){ _signedUrlCache.set(el.dataset.photoPath,{url,exp:now+55*60*1000}); applyPhotoUrl(el,url); }
+  });
+}
+function applyPhotoUrl(el,url){ if(el.tagName==="IMG") el.src=url; else el.href=url; }
+new MutationObserver(schedulePhotoResolve).observe(document.body,{childList:true,subtree:true});
+function photoTag(path){ const p=esc(path); return `data-photo-path="${p}"`; } // imgのsrc/aのhrefは空のまま、後でresolveLazyPhotosが埋める
 function fmtD(d){ if(!d) return "—"; const t=new Date(d+"T00:00:00"); return `${t.getMonth()+1}/${t.getDate()}`; }
 function fmtDT(t){ if(!t) return "—"; const d=new Date(t); return `${d.getMonth()+1}/${d.getDate()} ${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`; }
 function yen(n){ return "¥"+Number(n||0).toLocaleString(); }
@@ -416,7 +448,7 @@ async function openReqDetail(u,reqId,fromView){
     <div class="detail-row"><span class="k">申請日時</span><span>${fmtDT(req.applied_at)}</span></div>
     ${req.decided_at?`<div class="detail-row"><span class="k">決裁日時</span><span>${fmtDT(req.decided_at)}</span></div>`:""}
     ${req.status==="rejected"&&req.reject_reason?`<div class="reject-note">↩️ 差戻し理由: ${esc(req.reject_reason)}</div>`:""}
-    <div class="photo-grid" style="margin-top:10px">${photos.map(p=>`<a href="${photoUrl(p.storage_path)}" target="_blank"><img src="${photoUrl(p.storage_path)}" style="width:100%;height:auto;max-width:200px"></a>`).join("")||'<div class="meta" style="color:var(--muted);font-size:12px">写真はありません</div>'}</div>
+    <div class="photo-grid" style="margin-top:10px">${photos.map(p=>`<a ${photoTag(p.storage_path)} href="#" target="_blank"><img ${photoTag(p.storage_path)} src="" style="width:100%;height:auto;max-width:200px"></a>`).join("")||'<div class="meta" style="color:var(--muted);font-size:12px">写真はありません</div>'}</div>
     ${canAct?`
       <div style="margin-top:16px;display:grid;gap:8px">
         <button class="btn" id="req-approve">✅ 承認する</button>
