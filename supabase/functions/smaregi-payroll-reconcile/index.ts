@@ -13,8 +13,11 @@
 //     前月分の勤務実績が変更される余地を見込んで5日まで待つ運用にしている）
 //   認可: CEO/HQ/マスターのユーザーJWT、またはservice_role直呼び（smaregi-attendance-syncと同じ方針）
 //
-// 除外: smaregi_staff_id=347（中山＝CEO本人）は本部打刻の対象外につき突合しない
+// 除外1: smaregi_staff_id=347（中山＝CEO本人）は本部打刻の対象外につき突合しない
 //   （2026-08-22 ユーザー確認済み。普段打刻しないため、スマレジ側も事業所未割当でエラーになる）
+// 除外2: 打刻（worked_minutes）はあるのに見積もり(smaregi_estimate_cost)が常に0円の人は、
+//   月給制（固定残業等が別についていて単純な金額一致確認になじまない）と推定し、突合対象から自動除外する
+//   （2026-08-22 青山純さんのケースでユーザー確認済み。給与明細APIの呼び出し自体を省略できる副次効果もある）
 //
 // LINE通知: 既存のline-webhookは呼ばずに、app_secrets（line_channel_token）を直接読んで
 //   LINE Push APIを叩く（line-webhookのpush_userはアプリの利用者JWTを前提にした権限チェックのため、
@@ -142,23 +145,34 @@ Deno.serve(async (req) => {
     const token = await getToken();
     const mismatches: any[] = [];
     const checked: any[] = [];
+    const excluded: any[] = [];
     const errors: string[] = [];
 
     for (const p of profs ?? []) {
       const staffId = p.smaregi_staff_id as string;
+      const name = (p as any).users?.name ?? `smaregi_staff_id=${staffId}`;
       if (EXCLUDE_STAFF_IDS.has(staffId)) continue;
       try {
         const { data: rows } = await sb.from("labor_cost_daily")
-          .select("smaregi_estimate_cost")
+          .select("smaregi_estimate_cost,worked_minutes")
           .eq("user_id", p.user_id)
           .gte("work_date", monthStart)
           .lt("work_date", monthEnd);
-        const estimateSum = (rows ?? []).reduce((s, r: any) => s + Number(r.smaregi_estimate_cost ?? 0), 0);
         if (!rows?.length) { continue; } // その月に勤務実績が無い人は突合対象外
+
+        const estimateSum = rows.reduce((s, r: any) => s + Number(r.smaregi_estimate_cost ?? 0), 0);
+        const workedMinutes = rows.reduce((s, r: any) => s + Number(r.worked_minutes ?? 0), 0);
+
+        // 2026-08-22 ユーザー確認: 打刻はあるが見積もり(smaregi_estimate_cost)が常に0円の人は
+        // 月給制（固定残業等が別付きで、単純な金額一致確認になじまない）と推定し、突合対象から除外する。
+        // 給与明細API呼び出し自体を省略できるので、判定はlabor_cost_dailyの情報だけで完結させている。
+        if (workedMinutes > 0 && estimateSum === 0) {
+          excluded.push({ name, staffId, reason: "打刻はあるが見積もりが常に0円（月給制と推定）" });
+          continue;
+        }
 
         const budget = await fetchMonthlyBudget(token, staffId, year, month);
         const diff = Math.round(estimateSum) - Math.round(budget.regularWage);
-        const name = (p as any).users?.name ?? `smaregi_staff_id=${staffId}`;
         checked.push({ name, staffId, estimateSum, regularWage: budget.regularWage, diff });
         if (Math.abs(diff) >= ALERT_THRESHOLD_YEN) {
           mismatches.push({ name, staffId, estimateSum, regularWage: budget.regularWage, diff });
@@ -182,6 +196,8 @@ Deno.serve(async (req) => {
       year, month,
       staffChecked: checked.length,
       checked,
+      excludedCount: excluded.length,
+      excluded,
       mismatchCount: mismatches.length,
       mismatches,
       errorCount: errors.length,
