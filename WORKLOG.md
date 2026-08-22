@@ -6,11 +6,11 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
-**最終更新**: 2026-08-22（Mac mini側スレッド。Lark日報のBigQuery新経路配信を全グループ展開・実機確認済み。**データ基盤統合ロードマップ Day1〜5が全項目完了**）
+**最終更新**: 2026-08-22（Mac mini側スレッド。Day6「店舗追加の1箇所化」着手。nippoの店舗管理画面を拡張し、法人・看板・別名・天気地点・Lark配信/精算対象フラグを編集可能にした）
 
 **仕様の正（最新版）**: `docs/要件定義書.md` **v3.4（2026-08-21）**。ロードマップ全文は `docs/データ基盤統合ロードマップ.md`
 
-**進行中**: シフト機能（④）はスマレジ双方向同期まで完了・ユーザー実機再確認待ち。**データ基盤統合ロードマップDay1〜5が全項目完了**（タブ切替5枚・PL広告費確認・dash-syncのGAS往復廃止・Lark新経路配信）。次はDay6「店舗追加の1箇所化」・Day7「総合検証」だが優先度は未確認（ユーザーに次の方針を確認すること）。
+**進行中**: シフト機能（④）はスマレジ双方向同期まで完了・ユーザー実機再確認待ち。データ基盤統合ロードマップはDay1〜5完了に続き**Day6「店舗追加の1箇所化」に着手・1つ目のタスク（nippo店舗管理画面拡張）が完了**。残り2つ（経営DのGASをSupabase直読みに切替／Lark配信matrix自動生成）は未着手。
 
 **👉 次回セッション（別PCの可能性あり）はまず `docs/引継ぎ書_2026-08-22_Day4-5_BigQuery切替続き.md` を読むこと**（4リポジトリ横断の詳細な引継ぎ書。接続情報・注意点・次の一手をまとめてある。`docs/引継ぎ書_2026-08-22_データ基盤Day3続き.md`は前々スレッド分の背景として引き続き有効。Day4の詳細は`NStyle-AI/gas-backup/dashboard-server/README.md`の追記参照）。
 
@@ -34,6 +34,7 @@
 - ✅ **「PLの広告費部分の切替」は追加作業不要・既に対応済みと確認（2026-08-22）**。PLタブの「媒体販促費（自動）」行はPL管理システム（別GASプロジェクト）の`syncAd()`トリガーが毎朝DB_PLへ直接書き込んでいる普通の1行（`PL_AUTO_MEMO`でマーク）のため、DB_PL全体をミラーする既存の`bqSyncPL`/`bqGetPL`に**最初から含まれていた**。ユーザーが実機でBigQueryトグルON→PLタブの媒体販促費に数字が入っていることを確認済み。**別スコープの補足**: これとは別に「広告管理」タブ（💾広告費DB＋💾広告効果DBを直接読むROI分析専用画面）が存在し、そちらは今回のBQ化の対象に**含まれていない**（未依頼・未着手）
 - ✅ **日報dash-syncのGAS往復廃止・完了（2026-08-22）**。`dash-sync`（`ns-portal`のSupabase Edge Function。本番デプロイのみでリポジトリ未コミットだったため本番バイナリから復元して調査）は「GASログイン→スプレッドシート全読み→Supabase保存」という遅い経路だった。**当初GCPサービスアカウント方式（BigQueryへ直接クエリ）で進めたが、組織ポリシー`iam.disableServiceAccountKeyCreation`でサービスアカウントの鍵作成自体がブロックされ断念**（ユーザーが組織ポリシー管理者への確認を試みたが解決せず）。代替として、tori-dashboardのGAS側に**ログイン不要・BQ_LOAD_TOKEN認証のみの軽量アクション`bqDailyStoreForSync`**（スプレッドシートは一切読まず`fact_daily_store`を直接SELECTするだけ）を追加し、`dash-sync`はそこへGETリクエスト1回で実績データを取得する方式に変更（目標/目標月次は手入力のためBQ未ミラーのまま、従来どおりGASログイン経由）。`BQ_LOAD_TOKEN`をSupabaseの秘密変数として新規登録。実機テスト（`action:"daily"`を直接実行）で実績629件・売上目標217件・FL目標7件が正しく同期され`dash_sync_log`にも記録されることを確認（所要約13秒）。GAS`ping`=`fix-v53`。未対応店舗名3件（横濱ホルモン会館エース本厚木店等）は`stores`の対応表未登録が原因の既存課題で今回とは無関係
 - ✅ **Lark日報のBigQuery新経路配信・完了（2026-08-22）**。`tori-dashboard`の`scripts/lark-report.mjs`（画像撮影スクリプト）に`REPORT_USE_BQ=1`オプションを追加。撮影前に推移分析タブと同じ`App.setDailySource('bq')`を呼び`D.daily`をBigQuery経由にしてから`App.report()`を実行（`reportData()`が`stat()`経由で`D.daily`を使うため変更箇所は1つで済んだ）。`only_group=group1`で先行検証（4店舗success・画像も目視確認してレイアウト崩れ無し）→ユーザー確認のうえgroup2/group3・全体比較表・鳥一代8店舗版すべてに展開。**ヒヤリハット**: 展開後の動作確認で`only_group`指定なしの`workflow_dispatch`を実行してしまい、全グループへ本日分の日報を重複送信するところだった。ジョブ開始55〜70秒後（Lark送信ステップ到達前）に気づいてユーザー確認のうえ即キャンセルし実害なしと確認。**教訓**: 実際にメッセージを送るworkflowの動作確認は、送信範囲を絞るパラメータ（`only_group`等）を必ず使うこと。**このセッションの`gh`トークンには`workflow`スコープがあり`.github/workflows/`へ直接pushできた**（CLAUDE.mdの「pushできない」は別セッション時点の制約だった可能性。都度`gh auth status`で確認するのが確実）。あわせて`scripts/lark-report.workflow.yml`（pushできる側の控え）が本番の`.github/workflows/lark-report.yml`（only_group/only_stores・リトライロジック追加済み）から乖離していたため同期した。**データ基盤統合ロードマップ Day1〜5が全項目完了**
+- ✅ **Day6①: nippoの店舗管理画面を拡張・完了（2026-08-22）**（`nippo` v2.6.84）。ロードマップが求める項目のうち、**法人(`corporation_id`)・看板(`signs`)・別名(`store_aliases`)はデータとしてはDay1（2026-08-05）から既に存在**していたが編集UIが無かったため追加。**新規に列を追加**したのは天気地点（`stores.weather_lat`/`weather_lon`、経営DのWX_LOCS地域デフォルトの代替になる。マイグレーション`2026-08-22_store_admin_fields.sql`）・Lark配信フラグ(`lark_enabled`)・精算対象フラグ(`seisan_target`)。あわせて①新規店舗の`store_no`自動採番（既存の最大値+1、99=本部は除外）②未完了警告チェックリスト（営業中店舗でスマレジ紐付け・法人・看板・別名が未設定なら一覧表示）③看板・別名はチップ形式で追加/削除（別名は`store_aliases`への差分upsert/delete）④天気地点は経営D同一の3地域プリセット（横浜/本厚木/東京）ボタン＋手動緯度経度入力、を実装。ローカルプレビューでモックデータを使い、警告表示・チップ追加削除・自動採番・実クリックイベント経由の動作まで確認してからpush、GitHub Pages反映も確認済み。**残るDay6の2項目（経営DのGASがSupabase storesを直読み・Lark配信matrixの自動生成）は未着手**（今回追加した列を使う側の実装がまだ無い状態）
 - ⏳ 未着手（次にやること・優先順）:
   1. `bq-sales-reconcile`タスクの実機動作確認（Mac mini側。毎日11:00の自動実行結果、またはLarkから「実行 BQ突合」で手動確認）
   2. `smaregi-payroll-reconcile`用のcron-job.orgジョブ追加（毎月5日08:00 JST。要ユーザー作業）
@@ -41,11 +42,12 @@
   4. Chatwork連携（経理担当者向け。将来対応、未着手）
   5. 人件費列をスマレジタイムカードAPI由来のデータに置き換える構想（ユーザー指摘・`dashboard-server/README.md`に記録済み）
   6. `computed_cost`自前計算（優先度低下）
-  7. **Day6（店舗追加の1箇所化）・Day7（総合検証・完成判定）**: まだ未着手。着手前にユーザーへ優先度を確認すること（Day5完了で一区切りついたため）
+  7. **Day6残り2項目**: 経営DのGAS（`tori-dashboard/app.js`の`CANON_STORES`・`gas/Code.gs`の`DB_店舗名対応`/`DB_店舗親子`・`app.js`の`WX_LOCS`正規表現）をSupabase `stores`/`store_aliases`直読みに切替／Lark配信matrix（`.github/workflows/lark-report.yml`の3グループ手動ベタ書き）を`lark_enabled`フラグから自動生成するスクリプト。**GAS↔Supabase間の新しい接続を作る規模の作業**なので着手前に設計判断が要る
+  8. Day7（総合検証・完成判定）: 未着手
 
 **直近のコミット（この時点。鵜呑みにせず必ず`git fetch origin && git log --oneline -1 origin/main`で照合すること）**:
-- `ns-portal`: `0518989`
-- `nippo`: `f245734`
+- `ns-portal`: `552f950`
+- `nippo`: `9cdca2b`（店舗管理画面拡張）
 - `NStyle-AI`: `94db5a0`（bqDailyStore追加の記録）
 - `ns-daily-import`: `0139ff3`（bq-sales-reconcileタスク追加）
 - `tori-dashboard`: `8d156de`（Lark新経路配信・全グループ展開完了）
