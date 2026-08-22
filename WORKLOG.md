@@ -6,11 +6,11 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
-**最終更新**: 2026-08-22（MacBook側・翌朝スレッド。cron-job.org自動発火の不具合を修正＋Day4のBigQuery売上ミラーを実装・突合完全一致まで確認）
+**最終更新**: 2026-08-22（MacBook側・翌朝スレッド。cron-job.org不具合修正＋Day4のBigQuery売上ミラー＋「推移分析」タブのデータソース切替フラグまで実装完了）
 
 **仕様の正（最新版）**: `docs/要件定義書.md` **v3.4（2026-08-21）**。ロードマップ全文は `docs/データ基盤統合ロードマップ.md`
 
-**進行中**: シフト機能（④）はスマレジ双方向同期まで完了・ユーザー実機再確認待ち（Mac mini側）。データ基盤は**Day 1・Day 2・Day 3完了・Day 4（BigQuery売上ミラー）も主要部分が完了**（`分析_日別店舗`等をBigQueryへミラーし直近35日の突合で完全一致を確認済み）。
+**進行中**: シフト機能（④）はスマレジ双方向同期まで完了・ユーザー実機再確認待ち（Mac mini側）。データ基盤は**Day 1〜4がほぼ完了**（`分析_日別店舗`等のBigQueryミラー・突合完全一致・「推移分析」タブのBQ/シート切替トグルまで実装済み）。残るのはユーザー側の実機最終確認と細かな後片付けのみ。
 
 **👉 次回セッションはまず本📍と直近のWORKLOGエントリ（2026-08-22の最後の数件）を読むこと**（`docs/引継ぎ書_2026-08-22_データ基盤Day3続き.md`は前スレッド分の背景として引き続き有効。Day4の詳細は`NStyle-AI/gas-backup/dashboard-server/README.md`の追記参照）。
 
@@ -29,20 +29,23 @@
 - ✅ **cron-job.org自動発火の不具合を発見・修正**（朝の実地確認で判明）。GitHub PATの控えを紛失していたためAuthorizationヘッダーが未設定で、08:00 JSTの自動発火が毎回GitHubに届く前段階で失敗していた。トークンを再生成しcron-job.org側に正しく設定、実機テストでGitHub Actionsに正常に届くことを確認済み
 - ✅ **Day4（BigQuery売上基盤構築）着手・主要部分完了**。`ns-daily-import`の12ジョブ自体は無変更のまま、既存の`分析_日別店舗`（最終集計値）と支払い/媒体別/仕入れ/人件費の4DBシートを`tori-analytics.sales`データセットへミラーする機能を`dashboard-server`（連携本番.gs）に追加。全履歴バックフィル完了・直近35日の突合で純売上/仕入れ/人件費合計/行数すべて完全一致を確認済み。詳細・ハマったポイントは`NStyle-AI/gas-backup/dashboard-server/README.md`参照
 - ✅ **`ns-daily-import`に日次タスク`bq-sales-reconcile`を追加**（毎日11:00、`bqSyncSales`→`bqReconcileSales`を呼び差額があればメール通知）。既存12ジョブ・GAS側ロジックは無変更。**注意: このMacBookに`.env`が無くNode側タスク自体の実機動作確認は未実施**（Mac mini側で次回実行時か`node run.js bq-sales-reconcile`で要確認）
+- ✅ **「推移分析」タブのデータソース切替フラグを実装**（`tori-dashboard`リポジトリ、Phase4「切替」着手）。`分析_日別店舗`の読み取り経路（`ingestDaily`/`viewAnalysis`/`viewDowCompare`）は無変更のまま、`fact_daily_store`から同じ形のデータを返す新アクション`bqDailyStore`をGASに追加。社長/本部限定のトグルボタンをapp.jsに追加（既定=シート）。GAS`ping`=`fix-v49`・GitHub Pages`v=94`とも本番反映・一致確認済み。**⚠️ 実際にログインしてトグルON→数値一致の最終確認はユーザー作業として未実施**（AIはログイン情報を持たないため）
 - ⏳ 未着手（次にやること・優先順）:
-  1. **`bq-sales-reconcile`タスクの実機動作確認**（Mac mini側。毎日11:00の自動実行結果、またはLarkから「実行 BQ突合」で手動確認）
-  2. `smaregi-payroll-reconcile`用のcron-job.orgジョブ追加（毎月5日08:00 JST。要ユーザー作業）
-  3. LINE公式アカウントの月間送信上限問題（保留中。対応するならLINE Developersでプラン・上限を確認するところから）
-  4. Chatwork連携（経理担当者向け。将来対応、未着手）
-  5. 人件費列をスマレジタイムカードAPI由来のデータに置き換える構想（ユーザー指摘・Day4の次のステップとして`dashboard-server/README.md`に記録済み）
-  6. `computed_cost`自前計算（優先度低下）
-  7. Day4の残り（Mac mini: 経営D GASにタブ単位のデータソース切替フラグ実装→「推移分析」タブから切替開始）／Day5以降（Phase 4「切替」）
+  1. **「推移分析」タブの新トグルの最終確認**（ユーザー自身がログインし、社長/本部アカウントでBigQueryに切り替えて数値が一致するか見る）
+  2. `bq-sales-reconcile`タスクの実機動作確認（Mac mini側。毎日11:00の自動実行結果、またはLarkから「実行 BQ突合」で手動確認）
+  3. `smaregi-payroll-reconcile`用のcron-job.orgジョブ追加（毎月5日08:00 JST。要ユーザー作業）
+  4. LINE公式アカウントの月間送信上限問題（保留中。対応するならLINE Developersでプラン・上限を確認するところから）
+  5. Chatwork連携（経理担当者向け。将来対応、未着手）
+  6. 人件費列をスマレジタイムカードAPI由来のデータに置き換える構想（ユーザー指摘・`dashboard-server/README.md`に記録済み）
+  7. `computed_cost`自前計算（優先度低下）
+  8. Day4残り（経営D GASの他タブ＝目標管理・明細分析等への切替展開）／Day5以降（Phase 4「切替」の本格展開）
 
 **直近のコミット（この時点。鵜呑みにせず必ず`git fetch origin && git log --oneline -1 origin/main`で照合すること）**:
 - `ns-portal`: `32981fa`
 - `nippo`: `f245734`
-- `NStyle-AI`: `7b303d5`（取込タスク台帳13本目追加）
+- `NStyle-AI`: `94db5a0`（bqDailyStore追加の記録）
 - `ns-daily-import`: `0139ff3`（bq-sales-reconcileタスク追加）
+- `tori-dashboard`: `b157815`（推移分析タブのデータソース切替フラグ実装）
 
 **⚠️ このWORKLOGを最新に保つ仕組み**: `ns-portal/CLAUDE.md`と`nippo/CLAUDE.md`に「作業前後に必ずやること」を明記済み（どのPC・どのスレッドでも自動的に読み込まれる指示ファイル）。要点＝**作業を終える前に必ずこの「📍現在の状況」を書き換えてからpushする**。
 
@@ -914,3 +917,20 @@ GitHubで新しいPAT（`repo`・`workflow`スコープ）を再生成し、cron
 **NStyle-AIリポジトリの取込タスク台帳（`ai-agent-team/import_task_board.md`）も13本目として更新**。README.mdは既に「旧い値のことがある」と明記された非正本ドキュメントのため今回は変更していない（CLAUDE.mdのタスク表は朝の一括取込8本のみのスコープなので変更不要と判断）。
 
 **⚠️ 未確認事項**: このMacBookには`ns-daily-import/.env`が無く（秘密情報はMac mini側のみに存在）、追加したNode側タスク自体の実機動作は未確認。GAS側のアクション単体（`bqSyncSales`/`bqReconcileSales`）は今朝のセッションで直接curlし正常動作・完全一致を確認済みだが、**Node側のタスクとして正しく呼べるかは次回、Mac mini側で毎日11:00の自動実行結果を見るか`node run.js bq-sales-reconcile`を手動実行して確認する必要がある**。
+
+## 2026-08-22（続き） 「推移分析」タブのBigQueryデータソース切替フラグを実装（Day4後半・tori-dashboard）
+
+ユーザーが「今日のうちに実装まで進めてほしい」と明言したため、`tori-dashboard`リポジトリ（`app.js`約6000行・`gas/Code.gs`。独自のCLAUDE.md/HANDOFF.mdを持つ、しっかり管理されたリポジトリ）でEnterPlanMode→Explore agent 2件（app.js側・GAS側）を並行実行して調査した上で実装。
+
+**気づき**: 今朝直接デプロイした`連携本番.gs`の変更が、実は`tori-dashboard`リポジトリの`gas/Code.gs`（同じ本番プロジェクトのソース管理コピー）と同期していなかったことが判明。まずこれを追いつかせ、CLAUDE.mdのルール通り`ping`の`ver`を`fix-v47`→`fix-v48`に更新・`HANDOFF.md`に記録してから、本題（推移分析タブの切替）に着手した。
+
+**設計の鍵**: `viewAnalysis()`（推移分析タブの描画）は`D.daily`という配列をJS側でその場で日/週/月集計しており、`D.daily`は`ingestDaily(rows)`が「ヘッダー行+データ行の2次元配列」から**列名のキーワード部分一致**で動的に構築している（固定インデックス非依存）。→ **新しいGASアクションが同じ形（日本語ヘッダー付き2次元配列）を返せば、クライアント側のingestDaily/viewAnalysis/viewDowCompareは一切変更不要**と判明。既存の「明細分析」タブ（`action:'bqDetail'`でBQを読む、ログイン必須・店舗スコープ制限）をお手本にした。
+
+**実装**:
+- GAS: `bqDailyStore(p,session)`を追加。`fact_daily_store`から`SELECT`し、日本語ヘッダー付き2次元配列に整形して`{ok:true,sheets:{daily:[...]}}`で返す（`bqDetail`と同じログイン必須方針）。`ping`の`ver`を`fix-v48`→`fix-v49`に更新
+- app.js: `S.useBqDaily`（既定false=シート、localStorage永続化）・`fetchDailyBQ()`・`App.setDailySource()`・推移分析タブに社長/本部限定のトグルボタンを追加。`index.html`の`?v`を93→94
+- デプロイは今朝と同じ手順（`projects.versions.create`→`projects.deployments.update`）。`clasp`のアクセストークンが再度期限切れになったため`clasp deployments`で再リフレッシュしてから実施
+- `scripts/status.sh`でGAS(`fix-v49`)・GitHub Pages(`v=94`)ともリポジトリと本番が完全一致することを確認
+- `HANDOFF.md`・`NStyle-AI/gas-backup/dashboard-server/README.md`双方に記録、バックアップ（`連携本番.gs`）も最新化してpush
+
+**残作業**: 実際にログインしてトグルをONにし、数値がシート表示時と一致するかの最終確認はユーザー自身にお願いする（AIはダッシュボードのログイン情報を持たないため）。分析_日別店舗とfact_daily_storeは既に完全一致確認済みなので、一致するはずという想定。
