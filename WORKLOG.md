@@ -41,7 +41,7 @@
   7. Day5残り: PLの広告費部分の切替（`広告費用対効果_管理シート`という別スプレッドシートが発生源のため別途調査要）／日報dash-syncのSupabase直読み化／Lark配信の新経路移行
 
 **直近のコミット（この時点。鵜呑みにせず必ず`git fetch origin && git log --oneline -1 origin/main`で照合すること）**:
-- `ns-portal`: （このコミット自体。直後のコミットハッシュを参照）
+- `ns-portal`: `e20fe41`
 - `nippo`: `f245734`
 - `NStyle-AI`: `94db5a0`（bqDailyStore追加の記録）
 - `ns-daily-import`: `0139ff3`（bq-sales-reconcileタスク追加）
