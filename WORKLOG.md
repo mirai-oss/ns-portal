@@ -6,18 +6,17 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
-**最終更新**: 2026-08-22（実装スレッド。**Day6②③のコードは実装完了・push済み。本番SQL未実行＋ユーザー手作業4点が残っている状態**）
+**最終更新**: 2026-08-22（実装スレッド。**Day6②③のコード実装＋本番SQL適用まで完了。残りはユーザー手作業3点**）
 
 **仕様の正（最新版）**: `docs/要件定義書.md` **v3.4（2026-08-21）**。ロードマップ全文は `docs/データ基盤統合ロードマップ.md`
 
-**進行中**: シフト機能（④）はスマレジ双方向同期まで完了・ユーザー実機再確認待ち。データ基盤統合ロードマップDay6「店舗追加の1箇所化」は①nippo店舗管理画面拡張が完了済みに続き、**②経営D GASのSupabase直読み・③配信matrix自動生成＋Chatwork対応のコードを実装完了**（詳細は本日付「Day6②③実装」エントリ）。
+**進行中**: シフト機能（④）はスマレジ双方向同期まで完了・ユーザー実機再確認待ち。データ基盤統合ロードマップDay6「店舗追加の1箇所化」は①nippo店舗管理画面拡張が完了済みに続き、**②経営D GASのSupabase直読み・③配信matrix自動生成＋Chatwork対応のコード実装＋本番SQL適用が完了**（詳細は本日付「Day6②③実装」エントリ）。ユーザー確認のうえ本番SQL実行済み・`anon`キーでVIEW2本が読めて`stores`本体は読めないこと／動的matrixが現行3グループと完全一致することを確認済み。
 
 **👉 次回セッション（別PCの可能性あり）へ引継ぎ: 残作業はコードではなくユーザー操作待ち**
-1. **本番SQL未実行**: `ns-portal/supabase/2026-08-22_store_directory.sql`（store_aliases.kind／stores.file_key追加・report_channels等新設・匿名VIEW2本・12店舗の値seed）。ユーザー確認後に実行すること（CLAUDE.mdの鉄則どおり、実装者が無断で実行しない）
-2. **tori-dashboard GAS再デプロイ**: `gas/Code.gs`を貼り替え→「デプロイを管理→編集→新バージョン」（ping ver=fix-v54になっていることを確認）
-3. **tori-dashboard workflow差し替え**: `scripts/lark-report.workflow.yml`の内容を`.github/workflows/lark-report.yml`へユーザーがGitHub Web UIで貼り替え（動的matrix生成・現行3グループと同一であることをローカルでシミュレーション済み＝コード上は安全）
-4. **Chatwork**: 既存送信経路（`smaregi-sync`の`notify_chatwork`アクション＋`app_secrets.chatwork_token`）はテキストのみでファイル添付非対応と判明→§2-1の例外条件により`lark-report.mjs`から直接Chatwork API（メッセージ＋ファイル添付）を呼ぶ設計で実装済み。**トークンをどうするかユーザー判断待ち**（a: 既存の`chatwork_token`と同じ値を`CHATWORK_API_TOKEN`としてtori-dashboardのGitHub Secretsにも登録＝アカウントは複製しない／b: §2-2の案内どおり配信専用の新規Bot登録）。登録後、nippo「配信グループ管理」でkind=chatwork・Secret名`CHATWORK_API_TOKEN`・ルームIDを設定
-5. seed後、**12店舗をnippo店舗管理画面で確認**（特に天気地点・配信グループ所属・store_aliases kind='listing'はREVIEW_CHILDREN分のみseed済みでDB_店舗親子シート分は未反映）
+1. **tori-dashboard GAS再デプロイ**: `gas/Code.gs`を貼り替え→「デプロイを管理→編集→新バージョン」（ping ver=fix-v54になっていることを確認）
+2. **tori-dashboard workflow差し替え**: `scripts/lark-report.workflow.yml`の内容を`.github/workflows/lark-report.yml`へユーザーがGitHub Web UIで貼り替え（動的matrix生成・現行3グループと同一であることを本番VIEWに対してnode変換ロジックで確認済み）
+3. **Chatwork**: 既存送信経路（`smaregi-sync`の`notify_chatwork`アクション＋`app_secrets.chatwork_token`）はテキストのみでファイル添付非対応と判明→§2-1の例外条件により`lark-report.mjs`から直接Chatwork API（メッセージ＋ファイル添付）を呼ぶ設計で実装済み。**ユーザー判断: 既存トークンを流用する方針に決定**（新規Bot登録はしない）。GitHub SecretsへのCHATWORK_API_TOKEN登録はSecrets登録がユーザー操作のため実装者は代行せず、コマンドを案内済み（本スレッドの応答参照）。登録後、nippo「配信グループ管理」でkind=chatwork・Secret名`CHATWORK_API_TOKEN`・ルームIDを設定
+4. **12店舗をnippo店舗管理画面で確認**（特に配信グループ所属・store_aliases kind='listing'はREVIEW_CHILDREN分のみseed済みでDB_店舗親子シート分は未反映。天気地点は12店舗ともバックフィル済み・確認のみでよい）
 
 背景は `docs/実装指示書_Day6_店舗マスタ1箇所化②③.md`・`docs/引継ぎ書_2026-08-22_Day6店舗マスタ1箇所化続き.md`。
 
@@ -991,3 +990,9 @@ GitHubで新しいPAT（`repo`・`workflow`スコープ）を再生成し、cron
 - **配信matrix動的生成＋Chatwork送信**: `scripts/lark-report.mjs`を`buildText()`（要約テキスト組み立て）＋`sendLark()`（既存のLarkカード送信）＋`sendChatwork()`（新規: `POST /v2/rooms/{room}/messages`でテキスト、report.pngがあれば`POST /v2/rooms/{room}/files`でそのまま添付＝GitHub Release経由不要）に分割。`scripts/lark-report.workflow.yml`（コピー用。**`.github/workflows/`へは指示書§0の鉄則どおりCLI から直接pushしていない**）に`prepare`ジョブを追加（`report_channel_matrix_v`をcurl→`fromJSON`できるmatrix JSONを出力）、`group-report`ジョブは`needs: prepare`＋`strategy.matrix: ${{ fromJSON(...) }}`に変更、Chatwork行は画像をGitHub Releaseへ上げずreport.pngを直接添付する分岐を追加
 - 検証: `node --check`でapp.js・gas/Code.gs・lark-report.mjsの構文確認、nippoの単一`<script>`をPythonで抽出して構文確認、tori-dashboard/nippoともローカルpreviewでconsoleエラー無しを確認（ログイン後のUI実地確認は本番SQL未適用のため未実施）。YAML構文はPython `yaml.safe_load`で確認
 - **残作業はユーザー操作4点**（詳細は📍現在の状況）: SQL実行確認／GAS再デプロイ／workflow Web UI差し替え／Chatworkトークン方針決定＋登録。コード面はここまでで完成
+
+## 2026-08-22（続き） Day6②③本番SQL実行・検証完了
+- ユーザー確認のうえ`2026-08-22_store_directory.sql`を本番Supabaseへ実行
+- 実行後の目視確認で**天気地点backfillの店舗04（鳥一代 恵比寿）漏れ**を発見（in句に'04'が抜けていた）→本番を直接UPDATEで是正、ファイル側も修正してコミット（1639b97）
+- 検証: `anon`キーで`store_directory_v`（12店舗・file_key・weather・aliases[kind込み]）と`report_channel_matrix_v`が読める一方`stores`本体は`[]`（RLSで空）であることをcurlで確認。`report_channel_matrix_v?report_kinds=cs.{daily}`（prepareジョブと同じクエリ）が3グループを返すことを確認。matrixの内容（group/secret_name/stores文字列）が現行workflowの静的3グループと完全一致
+- ユーザー判断: Chatworkトークンは新規Bot発行せず**既存の`app_secrets.chatwork_token`（Bot「mirai nakayama」）と同じ値をtori-dashboardのGitHub Secret `CHATWORK_API_TOKEN`に登録**する方針に決定。Secrets登録はユーザー操作のため、値を本文に出さず`gh secret set`用コマンドを案内（本スレッドの応答参照）
