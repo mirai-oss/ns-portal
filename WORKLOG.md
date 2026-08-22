@@ -46,7 +46,7 @@
   8. Day7（総合検証・完成判定）: 未着手
 
 **直近のコミット（この時点。鵜呑みにせず必ず`git fetch origin && git log --oneline -1 origin/main`で照合すること）**:
-- `ns-portal`: `679de1b`
+- `ns-portal`: `6c8b569`
 - `nippo`: `9cdca2b`（店舗管理画面拡張）
 - `NStyle-AI`: `94db5a0`（bqDailyStore追加の記録）
 - `ns-daily-import`: `0139ff3`（bq-sales-reconcileタスク追加）
