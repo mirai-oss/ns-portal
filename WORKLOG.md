@@ -44,7 +44,7 @@
   7. **Day6（店舗追加の1箇所化）・Day7（総合検証・完成判定）**: まだ未着手。着手前にユーザーへ優先度を確認すること（Day5完了で一区切りついたため）
 
 **直近のコミット（この時点。鵜呑みにせず必ず`git fetch origin && git log --oneline -1 origin/main`で照合すること）**:
-- `ns-portal`: `e25f8dc`
+- `ns-portal`: `0518989`
 - `nippo`: `f245734`
 - `NStyle-AI`: `94db5a0`（bqDailyStore追加の記録）
 - `ns-daily-import`: `0139ff3`（bq-sales-reconcileタスク追加）
