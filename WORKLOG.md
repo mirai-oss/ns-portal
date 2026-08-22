@@ -934,3 +934,5 @@ GitHubで新しいPAT（`repo`・`workflow`スコープ）を再生成し、cron
 - `HANDOFF.md`・`NStyle-AI/gas-backup/dashboard-server/README.md`双方に記録、バックアップ（`連携本番.gs`）も最新化してpush
 
 **残作業**: 実際にログインしてトグルをONにし、数値がシート表示時と一致するかの最終確認はユーザー自身にお願いする（AIはダッシュボードのログイン情報を持たないため）。分析_日別店舗とfact_daily_storeは既に完全一致確認済みなので、一致するはずという想定。
+
+**→ ユーザーが実機確認: 問題なし（数値一致）**。「推移分析」タブのBQ切替（Phase4「切替」の第一弾）は完了。`tori-dashboard/HANDOFF.md`も更新済み。**Day4はこれでほぼ完了**（残るは`bq-sales-reconcile`タスクのMac mini側実機確認のみ）。次はDay5（他タブ＝ダッシュボード/PL/入金/目標の切替展開、日報dash-syncのSupabase直読み化、Lark配信の新経路移行）に進むかどうかをユーザーと相談する。
