@@ -6,13 +6,20 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
-**最終更新**: 2026-08-22（設計スレッド。**Day6②③の設計確定・Chatwork3点もユーザー回答済み**で指示書に反映。実装着手可能）
+**最終更新**: 2026-08-22（実装スレッド。**Day6②③のコードは実装完了・push済み。本番SQL未実行＋ユーザー手作業4点が残っている状態**）
 
 **仕様の正（最新版）**: `docs/要件定義書.md` **v3.4（2026-08-21）**。ロードマップ全文は `docs/データ基盤統合ロードマップ.md`
 
-**進行中**: シフト機能（④）はスマレジ双方向同期まで完了・ユーザー実機再確認待ち。データ基盤統合ロードマップはDay1〜5完了に続き**Day6「店舗追加の1箇所化」に着手・1つ目のタスク（nippo店舗管理画面拡張）が完了**。残り2つ（経営DのGASをSupabase直読みに切替／Lark配信matrix自動生成）は未着手。
+**進行中**: シフト機能（④）はスマレジ双方向同期まで完了・ユーザー実機再確認待ち。データ基盤統合ロードマップDay6「店舗追加の1箇所化」は①nippo店舗管理画面拡張が完了済みに続き、**②経営D GASのSupabase直読み・③配信matrix自動生成＋Chatwork対応のコードを実装完了**（詳細は本日付「Day6②③実装」エントリ）。
 
-**👉 次回セッション（別PCの可能性あり）はまず `docs/実装指示書_Day6_店舗マスタ1箇所化②③.md` を読むこと**（Day6②③の設計結論＝匿名読み取りVIEW方式／親子=store_aliases.kind=listing／天気は店舗別lat/lon＋フォールバック／配信はチャネル非依存テーブル＋Actions動的matrix＋Chatwork対応。実装手順・受入条件つき）。背景は `docs/引継ぎ書_2026-08-22_Day6店舗マスタ1箇所化続き.md`。Chatwork3点は回答済み（本部タスク/経費/アラートは既にChatwork稼働中→**既存送信経路の再利用を最優先**・日報配信の切替時期はユーザー判断・アルバイトはLINE継続・トークンはユーザーが登録）。
+**👉 次回セッション（別PCの可能性あり）へ引継ぎ: 残作業はコードではなくユーザー操作待ち**
+1. **本番SQL未実行**: `ns-portal/supabase/2026-08-22_store_directory.sql`（store_aliases.kind／stores.file_key追加・report_channels等新設・匿名VIEW2本・12店舗の値seed）。ユーザー確認後に実行すること（CLAUDE.mdの鉄則どおり、実装者が無断で実行しない）
+2. **tori-dashboard GAS再デプロイ**: `gas/Code.gs`を貼り替え→「デプロイを管理→編集→新バージョン」（ping ver=fix-v54になっていることを確認）
+3. **tori-dashboard workflow差し替え**: `scripts/lark-report.workflow.yml`の内容を`.github/workflows/lark-report.yml`へユーザーがGitHub Web UIで貼り替え（動的matrix生成・現行3グループと同一であることをローカルでシミュレーション済み＝コード上は安全）
+4. **Chatwork**: 既存送信経路（`smaregi-sync`の`notify_chatwork`アクション＋`app_secrets.chatwork_token`）はテキストのみでファイル添付非対応と判明→§2-1の例外条件により`lark-report.mjs`から直接Chatwork API（メッセージ＋ファイル添付）を呼ぶ設計で実装済み。**トークンをどうするかユーザー判断待ち**（a: 既存の`chatwork_token`と同じ値を`CHATWORK_API_TOKEN`としてtori-dashboardのGitHub Secretsにも登録＝アカウントは複製しない／b: §2-2の案内どおり配信専用の新規Bot登録）。登録後、nippo「配信グループ管理」でkind=chatwork・Secret名`CHATWORK_API_TOKEN`・ルームIDを設定
+5. seed後、**12店舗をnippo店舗管理画面で確認**（特に天気地点・配信グループ所属・store_aliases kind='listing'はREVIEW_CHILDREN分のみseed済みでDB_店舗親子シート分は未反映）
+
+背景は `docs/実装指示書_Day6_店舗マスタ1箇所化②③.md`・`docs/引継ぎ書_2026-08-22_Day6店舗マスタ1箇所化続き.md`。
 
 - ✅ Day1（保全）タスクA〜D完了。**A-4のA-6コード誤混入は2026-08-22に調査・解決済み**（詳細は同日のエントリ参照）
 - ✅ Day2（マスタ仕上げ＋勤怠API基盤）完了。R6（共有シークレット平文露出、全13箇所）対応済み。cron-job.org自動実行も設定・実機確認済み
@@ -969,3 +976,18 @@ GitHubで新しいPAT（`repo`・`workflow`スコープ）を再生成し、cron
 - 未決（ユーザー回答待ち）: Chatwork統一の範囲/並行期間・ルーム構成（アルバイト含む再編か）・APIトークン発行者
 - docs/実装指示書_Day6_店舗マスタ1箇所化②③.md 作成（workflowはWeb UI差し替え運用・入金辞書はスコープ外を明記）
 - ユーザー回答反映: 本部タスク通知・経費通知・期限アラートは既にChatwork稼働中（他スレッド実装）／日報週報月報のChatwork化は今後の可能性／アルバイトはLINE継続（有料化済み・上限問題解消）／トークン登録はユーザー。指示書§2を「確定」に書き換え、**既存Chatwork送信経路（hq_notify系Edge Function or 精算GAS sd_notifyChatwork_）の調査・再利用を最初のタスク**に設定（トークンを複製しない方針）
+
+## 2026-08-22（続き） Day6②③実装（経営D GASのSupabase直読み・配信matrix自動生成・Chatwork対応）
+- **既存Chatwork送信経路の調査結果**（§2-1の指示どおり最初に実施）: ns-portalの`smaregi-sync`Edge Function（action=`notify_chatwork`）が`app_secrets.chatwork_token`（Bot「mirai nakayama」）を使ってテキスト送信の中継をしている（`hq_notify_channels`経由でDB関数`notify_route_send`から呼ばれる）が、**画像/ファイル添付には非対応**（Chatworkの`/files`エンドポイントを扱っていない）。精算ダッシュボードの`sd_notifyChatwork_`はGAS内関数でリモート呼び出し不可・別トークンの可能性あり、再利用不可と判断。→ 指示書§2-1の例外条件（画像添付API未対応）に該当するため、**`lark-report.mjs`から直接Chatwork APIを呼ぶ**設計（§1決定4どおり）を採用。トークンを新規に複製しないため、**GitHub Secret `CHATWORK_API_TOKEN`には既存の`app_secrets.chatwork_token`と同じ値を登録することを推奨**（新規Bot発行はユーザーが希望する場合のみ）としてユーザー判断待ちに設定
+- **SQL**（未実行・ユーザー確認待ち）: `ns-portal/supabase/2026-08-22_store_directory.sql`
+  - `store_aliases.kind`追加（name/listing）／`stores.file_key`追加
+  - `report_channels`・`report_channel_stores`新設＋RLS（読み=ログイン全員・書き=`checklist_can_manage()`）
+  - 匿名読み取り専用VIEW2本: `store_directory_v`（店舗＋別名を集約・smaregi_store_id等は含めない列ホワイトリスト）／`report_channel_matrix_v`（配信グループ×店舗をカンマ文字列で集約）。`grant select ... to anon`
+  - seed: 現行Lark3グループをそのままreport_channels/report_channel_storesへ、file_key、天気lat/lon（WX_LOCS相当・12店舗）、seisan_target（09〜12=true）、store_aliases kind='listing'（REVIEW_CHILDREN分のみ。**DB_店舗親子シートの内容はGASログイン権限が必要で本SQLから取得できず未反映**→nippo画面での確認時に補完）
+  - 動的matrix生成ロジックをローカルでシミュレーションし、seed後の`report_channel_matrix_v`が現行の静的3グループと店舗・Secret名まで完全一致することを確認済み（`node -e`でprepareジョブと同じ変換コードを実行して比較）
+- **tori-dashboard GAS** (`gas/Code.gs`, 未デプロイ・ユーザー作業待ち): `fetchStoreDirectory_()`新設（`store_directory_v`をCacheServiceで10分キャッシュ、失敗時はnullを返し呼び出し側がフォールバック、天気地点未設定店舗をログ出力）。`resolveAdStore_()`をstore_aliasesベースの1段引きに変更（取得失敗時のみ従来のDB_店舗名対応→DB_店舗親子の2段引きシート方式にフォールバック）。`getData()`のレスポンスに`stores`キーを追加。ping ver `fix-v53`→`fix-v54`
+- **tori-dashboard app.js/index.html**: `D.storeDirectory`を新設しfetchData()で受信。`canonStoreOrder()`（表示順）・`wxLocOf()`（店舗別緯度経度優先）・`childrenOfStore`/`parentOfStore`/`allChildStores`（store_aliases kind='listing'をマージ、DB_店舗親子との差分は`console.warn`でログ）を、data.storesがあれば優先・無ければ現行定数にフォールバックする形に変更。CANON_STORES/WX_LOCS/REVIEW_CHILDREN自体は削除していない。`index.html`の`app.js?v=`を97→98
+- **nippo店舗管理画面** (`index.html`のadminStoresView): 「📮 Lark配信:する/しない」トグルを廃止し、**配信グループ所属（複数選択チップ）**に置換（`report_channel_stores`と差分同期）。画面内に**配信グループ管理**の小ブロックを追加（グループ名・種別(Lark/Chatwork)・Secret名・ChatworkルームID・配信種別(日次/週次/月次)・有効フラグの追加/編集/削除）。`stores.lark_enabled`列は参照しない（列は残す。§0の鉄則どおり）
+- **配信matrix動的生成＋Chatwork送信**: `scripts/lark-report.mjs`を`buildText()`（要約テキスト組み立て）＋`sendLark()`（既存のLarkカード送信）＋`sendChatwork()`（新規: `POST /v2/rooms/{room}/messages`でテキスト、report.pngがあれば`POST /v2/rooms/{room}/files`でそのまま添付＝GitHub Release経由不要）に分割。`scripts/lark-report.workflow.yml`（コピー用。**`.github/workflows/`へは指示書§0の鉄則どおりCLI から直接pushしていない**）に`prepare`ジョブを追加（`report_channel_matrix_v`をcurl→`fromJSON`できるmatrix JSONを出力）、`group-report`ジョブは`needs: prepare`＋`strategy.matrix: ${{ fromJSON(...) }}`に変更、Chatwork行は画像をGitHub Releaseへ上げずreport.pngを直接添付する分岐を追加
+- 検証: `node --check`でapp.js・gas/Code.gs・lark-report.mjsの構文確認、nippoの単一`<script>`をPythonで抽出して構文確認、tori-dashboard/nippoともローカルpreviewでconsoleエラー無しを確認（ログイン後のUI実地確認は本番SQL未適用のため未実施）。YAML構文はPython `yaml.safe_load`で確認
+- **残作業はユーザー操作4点**（詳細は📍現在の状況）: SQL実行確認／GAS再デプロイ／workflow Web UI差し替え／Chatworkトークン方針決定＋登録。コード面はここまでで完成
