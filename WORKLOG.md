@@ -28,18 +28,21 @@
 - ✅ **A-4（PL管理システム）のA-6コード誤混入問題を解決**（Day1からの持ち越し）。本番Webアプリに`?action=ping`（読み取り専用）で問い合わせ、実際に動いているのは`SeisanDashboard.gs`(v5.11-unlockfix)のみと実証確認 → A-4の`pl_dbpl_autosync.gs`(v5.6-sso)・A-6内の`精算書発行.gs`(v5.4)はどちらも死んでいるコードと判明。ユーザー確認の上、Apps Script APIで両方削除（バックアップはNStyle-AIリポジトリに保持）。削除後も本番pingでv5.11-unlockfixが変わらず動作することを再確認済み。**おまけの発見**: `SeisanDashboard.gs`に`sd_notifyChatwork_`というChatwork通知の実装が既にあり、保留中のChatwork連携タスクで参考にできそう。**判明した注意点**: `clasp push`はファイル削除を反映しない不具合があり（「already up to date」と表示されるが実際には削除されない）、削除を伴う変更はApps Script APIを直接叩く必要がある
 - ✅ **cron-job.org自動発火の不具合を発見・修正**（朝の実地確認で判明）。GitHub PATの控えを紛失していたためAuthorizationヘッダーが未設定で、08:00 JSTの自動発火が毎回GitHubに届く前段階で失敗していた。トークンを再生成しcron-job.org側に正しく設定、実機テストでGitHub Actionsに正常に届くことを確認済み
 - ✅ **Day4（BigQuery売上基盤構築）着手・主要部分完了**。`ns-daily-import`の12ジョブ自体は無変更のまま、既存の`分析_日別店舗`（最終集計値）と支払い/媒体別/仕入れ/人件費の4DBシートを`tori-analytics.sales`データセットへミラーする機能を`dashboard-server`（連携本番.gs）に追加。全履歴バックフィル完了・直近35日の突合で純売上/仕入れ/人件費合計/行数すべて完全一致を確認済み。詳細・ハマったポイントは`NStyle-AI/gas-backup/dashboard-server/README.md`参照
+- ✅ **`ns-daily-import`に日次タスク`bq-sales-reconcile`を追加**（毎日11:00、`bqSyncSales`→`bqReconcileSales`を呼び差額があればメール通知）。既存12ジョブ・GAS側ロジックは無変更。**注意: このMacBookに`.env`が無くNode側タスク自体の実機動作確認は未実施**（Mac mini側で次回実行時か`node run.js bq-sales-reconcile`で要確認）
 - ⏳ 未着手（次にやること・優先順）:
-  1. **`ns-daily-import`に日次タスクを追加**（`bqSyncSales`→`bqReconcileSales`を毎日呼び、`mismatched`があればメール通知。GAS側の実装は完了済み・Node側の呼び出しタスクが未着手）
+  1. **`bq-sales-reconcile`タスクの実機動作確認**（Mac mini側。毎日11:00の自動実行結果、またはLarkから「実行 BQ突合」で手動確認）
   2. `smaregi-payroll-reconcile`用のcron-job.orgジョブ追加（毎月5日08:00 JST。要ユーザー作業）
   3. LINE公式アカウントの月間送信上限問題（保留中。対応するならLINE Developersでプラン・上限を確認するところから）
   4. Chatwork連携（経理担当者向け。将来対応、未着手）
   5. 人件費列をスマレジタイムカードAPI由来のデータに置き換える構想（ユーザー指摘・Day4の次のステップとして`dashboard-server/README.md`に記録済み）
   6. `computed_cost`自前計算（優先度低下）
+  7. Day4の残り（Mac mini: 経営D GASにタブ単位のデータソース切替フラグ実装→「推移分析」タブから切替開始）／Day5以降（Phase 4「切替」）
 
 **直近のコミット（この時点。鵜呑みにせず必ず`git fetch origin && git log --oneline -1 origin/main`で照合すること）**:
-- `ns-portal`: `8c626ef`
+- `ns-portal`: `066f393`
 - `nippo`: `f245734`
-- `NStyle-AI`: `34339a4`（dashboard-server BQミラー機能の記録分）
+- `NStyle-AI`: `7b303d5`（取込タスク台帳13本目追加）
+- `ns-daily-import`: `0139ff3`（bq-sales-reconcileタスク追加）
 
 **⚠️ このWORKLOGを最新に保つ仕組み**: `ns-portal/CLAUDE.md`と`nippo/CLAUDE.md`に「作業前後に必ずやること」を明記済み（どのPC・どのスレッドでも自動的に読み込まれる指示ファイル）。要点＝**作業を終える前に必ずこの「📍現在の状況」を書き換えてからpushする**。
 
@@ -901,3 +904,13 @@ GitHubで新しいPAT（`repo`・`workflow`スコープ）を再生成し、cron
 **最終結果**: 5テーブルへの初回同期（全履歴バックフィル兼務）成功、直近35日間の突合で純売上・仕入れ・人件費合計・行数（500件）すべて完全一致を確認。調査用に追加した一時デバッグ関数はすべて削除し、バックアップ（NStyle-AIリポジトリ）も最新化・push済み。既存の`dinii-orders`のBigQuery連携（`bqLoadOrders`）には影響がないことも都度確認済み。
 
 **残作業**: `ns-daily-import`側に日次で`bqSyncSales`→`bqReconcileSales`を呼びメール通知する新規タスクを追加すること（GAS側の実装は完了・Node側の呼び出しタスクが未着手）。
+
+## 2026-08-22（続き） ns-daily-importに日次タスク(bq-sales-reconcile)を追加
+
+ユーザーから「すべての整理を終わってから肉付けとUIをしていきたい。次に進めてください」と指示があり、Day4の残タスク（ns-daily-import側の日次呼び出し）に着手。
+
+`ns-daily-import/lib/gas.js`に`bqSyncSales()`/`bqReconcileSales()`を追加（既存の`bqLoadOrders`と同じ`BQ_LOAD_GAS_URL`/`BQ_LOAD_TOKEN`を流用、新しい秘密情報は不要）。新規タスク`tasks/bq-sales-reconcile.js`を作成し、`config.js`の`DAILY_INDEPENDENT`に`11:00`実行で登録（GAS側の分析テーブル再生成トリガーが毎日10時台のため、その後に設定）。差額(`mismatched`)があれば既存の`notify()`でメール通知、一致していれば無通知（データの不一致は「処理失敗」ではなく「要確認事項」のため、`run.js`の例外→リトライフローとは意図的に切り離した）。`lark-listener.js`にも手動起動用エイリアス（「実行 BQ突合」）を追加。既存の12ジョブ・GAS側ロジックは無変更。
+
+**NStyle-AIリポジトリの取込タスク台帳（`ai-agent-team/import_task_board.md`）も13本目として更新**。README.mdは既に「旧い値のことがある」と明記された非正本ドキュメントのため今回は変更していない（CLAUDE.mdのタスク表は朝の一括取込8本のみのスコープなので変更不要と判断）。
+
+**⚠️ 未確認事項**: このMacBookには`ns-daily-import/.env`が無く（秘密情報はMac mini側のみに存在）、追加したNode側タスク自体の実機動作は未確認。GAS側のアクション単体（`bqSyncSales`/`bqReconcileSales`）は今朝のセッションで直接curlし正常動作・完全一致を確認済みだが、**Node側のタスクとして正しく呼べるかは次回、Mac mini側で毎日11:00の自動実行結果を見るか`node run.js bq-sales-reconcile`を手動実行して確認する必要がある**。
