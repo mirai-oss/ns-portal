@@ -39,7 +39,7 @@
   7. Day4の残り（Mac mini: 経営D GASにタブ単位のデータソース切替フラグ実装→「推移分析」タブから切替開始）／Day5以降（Phase 4「切替」）
 
 **直近のコミット（この時点。鵜呑みにせず必ず`git fetch origin && git log --oneline -1 origin/main`で照合すること）**:
-- `ns-portal`: `066f393`
+- `ns-portal`: `32981fa`
 - `nippo`: `f245734`
 - `NStyle-AI`: `7b303d5`（取込タスク台帳13本目追加）
 - `ns-daily-import`: `0139ff3`（bq-sales-reconcileタスク追加）
