@@ -37,7 +37,7 @@
   6. `computed_cost`自前計算（優先度低下）
 
 **直近のコミット（この時点。鵜呑みにせず必ず`git fetch origin && git log --oneline -1 origin/main`で照合すること）**:
-- `ns-portal`: `458c5c3`（このエントリ自体のpush前。末尾のタイムラインで最新化）
+- `ns-portal`: `8c626ef`
 - `nippo`: `f245734`
 - `NStyle-AI`: `34339a4`（dashboard-server BQミラー機能の記録分）
 
