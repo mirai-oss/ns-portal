@@ -6,11 +6,11 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
-**最終更新**: 2026-08-22（Mac mini側スレッド。dash-syncのGAS往復廃止が完了。GCP組織ポリシーでサービスアカウント方式は断念し、GASの軽量BigQuery問い合わせ経由に切替えて実機確認済み）
+**最終更新**: 2026-08-22（Mac mini側スレッド。Lark日報のBigQuery新経路配信を全グループ展開・実機確認済み。**データ基盤統合ロードマップ Day1〜5が全項目完了**）
 
 **仕様の正（最新版）**: `docs/要件定義書.md` **v3.4（2026-08-21）**。ロードマップ全文は `docs/データ基盤統合ロードマップ.md`
 
-**進行中**: シフト機能（④）はスマレジ双方向同期まで完了・ユーザー実機再確認待ち。データ基盤は**Day 1〜4完了・Day5はタブ切替・PL広告費・dash-syncのGAS往復廃止が完了**。**残るDay5項目は「Lark日報をgroup1だけ新経路で配信」の1つのみ**（未着手。ロードマップ再確認で判明、以前のWORKLOGの書き方が不正確だった）。
+**進行中**: シフト機能（④）はスマレジ双方向同期まで完了・ユーザー実機再確認待ち。**データ基盤統合ロードマップDay1〜5が全項目完了**（タブ切替5枚・PL広告費確認・dash-syncのGAS往復廃止・Lark新経路配信）。次はDay6「店舗追加の1箇所化」・Day7「総合検証」だが優先度は未確認（ユーザーに次の方針を確認すること）。
 
 **👉 次回セッション（別PCの可能性あり）はまず `docs/引継ぎ書_2026-08-22_Day4-5_BigQuery切替続き.md` を読むこと**（4リポジトリ横断の詳細な引継ぎ書。接続情報・注意点・次の一手をまとめてある。`docs/引継ぎ書_2026-08-22_データ基盤Day3続き.md`は前々スレッド分の背景として引き続き有効。Day4の詳細は`NStyle-AI/gas-backup/dashboard-server/README.md`の追記参照）。
 
@@ -33,6 +33,7 @@
 - ✅ **「入金管理」タブのデータソース切替を実装・実機確認済み（2026-08-22）**（`tori-dashboard`、Phase4「切替」の最後の1枚）。`分析_日別店舗`と同じくローカルシート「入金DB」が対象（`bqSalesTargets_`に追加・新規`stg_deposit`テーブル）、読み出しは`bqGetPL`と同じ方針の`bqGetDeposit`を新設。**2つハマった点**: ①`readSheet()`のコメントにある「入金DBの1行目に空行が入った」過去の事故の影響で、実際は2行目がヘッダー・3行目からデータという状態だったため`startRow`を2→3に修正して解消（実データのエラーメッセージから判明）②**GAS Webアプリをcurlで直接叩く際、POST（`-d`でJSON送信）だとリダイレクト先が405 Method Not Allowedを返す**現象が発生（`curl -L`はデフォルトで302後にPOST→GETへ変換するため、`--post302`を付けても解消しない）。`curl -G --data-urlencode`でGET方式に変えたら解決＝**今後GAS webappを直接curlで叩く時はGET方式を使うこと**（`ping`が元からGETなのはこのため）。ユーザー環境でclasp未ログイン（別マシン）だったため、今回はCLAUDE.mdの標準手順どおりコード全文をファイル送付→手動貼り替え→新バージョンデプロイで対応（`ping`=`fix-v52`・`app.js?v=97`）。**Day5「タブを順次切替」は全5タブ完了**
 - ✅ **「PLの広告費部分の切替」は追加作業不要・既に対応済みと確認（2026-08-22）**。PLタブの「媒体販促費（自動）」行はPL管理システム（別GASプロジェクト）の`syncAd()`トリガーが毎朝DB_PLへ直接書き込んでいる普通の1行（`PL_AUTO_MEMO`でマーク）のため、DB_PL全体をミラーする既存の`bqSyncPL`/`bqGetPL`に**最初から含まれていた**。ユーザーが実機でBigQueryトグルON→PLタブの媒体販促費に数字が入っていることを確認済み。**別スコープの補足**: これとは別に「広告管理」タブ（💾広告費DB＋💾広告効果DBを直接読むROI分析専用画面）が存在し、そちらは今回のBQ化の対象に**含まれていない**（未依頼・未着手）
 - ✅ **日報dash-syncのGAS往復廃止・完了（2026-08-22）**。`dash-sync`（`ns-portal`のSupabase Edge Function。本番デプロイのみでリポジトリ未コミットだったため本番バイナリから復元して調査）は「GASログイン→スプレッドシート全読み→Supabase保存」という遅い経路だった。**当初GCPサービスアカウント方式（BigQueryへ直接クエリ）で進めたが、組織ポリシー`iam.disableServiceAccountKeyCreation`でサービスアカウントの鍵作成自体がブロックされ断念**（ユーザーが組織ポリシー管理者への確認を試みたが解決せず）。代替として、tori-dashboardのGAS側に**ログイン不要・BQ_LOAD_TOKEN認証のみの軽量アクション`bqDailyStoreForSync`**（スプレッドシートは一切読まず`fact_daily_store`を直接SELECTするだけ）を追加し、`dash-sync`はそこへGETリクエスト1回で実績データを取得する方式に変更（目標/目標月次は手入力のためBQ未ミラーのまま、従来どおりGASログイン経由）。`BQ_LOAD_TOKEN`をSupabaseの秘密変数として新規登録。実機テスト（`action:"daily"`を直接実行）で実績629件・売上目標217件・FL目標7件が正しく同期され`dash_sync_log`にも記録されることを確認（所要約13秒）。GAS`ping`=`fix-v53`。未対応店舗名3件（横濱ホルモン会館エース本厚木店等）は`stores`の対応表未登録が原因の既存課題で今回とは無関係
+- ✅ **Lark日報のBigQuery新経路配信・完了（2026-08-22）**。`tori-dashboard`の`scripts/lark-report.mjs`（画像撮影スクリプト）に`REPORT_USE_BQ=1`オプションを追加。撮影前に推移分析タブと同じ`App.setDailySource('bq')`を呼び`D.daily`をBigQuery経由にしてから`App.report()`を実行（`reportData()`が`stat()`経由で`D.daily`を使うため変更箇所は1つで済んだ）。`only_group=group1`で先行検証（4店舗success・画像も目視確認してレイアウト崩れ無し）→ユーザー確認のうえgroup2/group3・全体比較表・鳥一代8店舗版すべてに展開。**ヒヤリハット**: 展開後の動作確認で`only_group`指定なしの`workflow_dispatch`を実行してしまい、全グループへ本日分の日報を重複送信するところだった。ジョブ開始55〜70秒後（Lark送信ステップ到達前）に気づいてユーザー確認のうえ即キャンセルし実害なしと確認。**教訓**: 実際にメッセージを送るworkflowの動作確認は、送信範囲を絞るパラメータ（`only_group`等）を必ず使うこと。**このセッションの`gh`トークンには`workflow`スコープがあり`.github/workflows/`へ直接pushできた**（CLAUDE.mdの「pushできない」は別セッション時点の制約だった可能性。都度`gh auth status`で確認するのが確実）。あわせて`scripts/lark-report.workflow.yml`（pushできる側の控え）が本番の`.github/workflows/lark-report.yml`（only_group/only_stores・リトライロジック追加済み）から乖離していたため同期した。**データ基盤統合ロードマップ Day1〜5が全項目完了**
 - ⏳ 未着手（次にやること・優先順）:
   1. `bq-sales-reconcile`タスクの実機動作確認（Mac mini側。毎日11:00の自動実行結果、またはLarkから「実行 BQ突合」で手動確認）
   2. `smaregi-payroll-reconcile`用のcron-job.orgジョブ追加（毎月5日08:00 JST。要ユーザー作業）
@@ -40,14 +41,14 @@
   4. Chatwork連携（経理担当者向け。将来対応、未着手）
   5. 人件費列をスマレジタイムカードAPI由来のデータに置き換える構想（ユーザー指摘・`dashboard-server/README.md`に記録済み）
   6. `computed_cost`自前計算（優先度低下）
-  7. **Day5最後の1項目: Lark日報をgroup1だけ新経路で配信→画像崩れが無いことを確認→全グループ切替**（未着手。詳細不明のため次スレッドは`docs/データ基盤統合ロードマップ.md`Day5の記述とtori-dashboardのLark配信実装〔`scripts/lark-report.mjs`等〕を先に調査すること）
+  7. **Day6（店舗追加の1箇所化）・Day7（総合検証・完成判定）**: まだ未着手。着手前にユーザーへ優先度を確認すること（Day5完了で一区切りついたため）
 
 **直近のコミット（この時点。鵜呑みにせず必ず`git fetch origin && git log --oneline -1 origin/main`で照合すること）**:
 - `ns-portal`: `e25f8dc`
 - `nippo`: `f245734`
 - `NStyle-AI`: `94db5a0`（bqDailyStore追加の記録）
 - `ns-daily-import`: `0139ff3`（bq-sales-reconcileタスク追加）
-- `tori-dashboard`: `4051260`（dash-sync完了・Lark新経路配信が残タスクと記録）
+- `tori-dashboard`: `8d156de`（Lark新経路配信・全グループ展開完了）
 
 **⚠️ このWORKLOGを最新に保つ仕組み**: `ns-portal/CLAUDE.md`と`nippo/CLAUDE.md`に「作業前後に必ずやること」を明記済み（どのPC・どのスレッドでも自動的に読み込まれる指示ファイル）。要点＝**作業を終える前に必ずこの「📍現在の状況」を書き換えてからpushする**。
 
