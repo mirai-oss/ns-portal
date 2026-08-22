@@ -1,8 +1,8 @@
-// 2026-08-22 作成・未デプロイ（WIP）。GCPサービスアカウント鍵の発行が組織ポリシー
-// （iam.disableServiceAccountKeyCreation）でブロックされたため、ユーザーが組織ポリシー管理者に
-// 解除可否を確認中。解除できなければGCP_BQ_SA_JSON方式は使わず、代わりにGAS側へ軽量な
-// BigQuery問い合わせ専用アクションを追加する方式に切替える。詳細はtori-dashboard/HANDOFF.md
-// 「2026-08-22（続き6）」参照。デプロイ前に必ず本番の現行dash-syncをバイナリから復元してdiffすること。
+// 2026-08-22 更新。GCPサービスアカウント鍵の発行が組織ポリシー（iam.disableServiceAccountKeyCreation）
+// でブロックされたため、BigQueryへは直接クエリせず、tori-dashboardのGAS側に追加した軽量アクション
+// bqDailyStoreForSync（ログイン不要・BQ_LOAD_TOKEN認証のみ・スプレッドシート不使用）を経由する方式にした。
+// これにより「ログイン→スプレッドシート全読み」という遅い経路は無くなる（GAS自体は残るが軽い問い合わせのみ）。
+// 目標/目標月次（手入力のためBQ未ミラー）は引き続き従来どおりのログイン経由（dashCall/action=data）で取得する。
 import { createClient } from "npm:@supabase/supabase-js@2";
 const INTAKE_SECRET = "4259598a7ce747d54e2bf84326131129f21eb77f54dfdcdd";
 // tori-dashboardのGAS Web App URL（公開リポジトリのapp.jsに同じ値がある。秘密情報ではない）
@@ -40,70 +40,21 @@ async function dashCall(body: unknown) {
   catch (_) { return { ok: false, error: "ダッシュボードの応答を読めませんでした: " + text.slice(0, 200) }; }
 }
 
-// ============== BigQuery直接クエリ（2026-08-22追加。GASを経由せず倉庫(BigQuery)へ直接読みに行く） ==============
-// 「実績（daily）」はここでBigQueryのfact_daily_storeから直接取得する。
+// ============== BigQuery問い合わせ（2026-08-22追加。GASの軽量アクション経由。ログイン・スプレッドシート読みは無し） ==============
+// 「実績（daily）」はGASの bqDailyStoreForSync アクションから取得する（BQ_LOAD_TOKEN認証・専用トークン）。
 // 「目標/目標月次」は人が手で入力する管理シート側の値で、BigQueryミラーの対象外のまま
-// （自動集計データではないため）→ 引き続きGAS経由（dashCall）で取得する。両者は完全に独立した経路。
-const BQ_PROJECT = "tori-analytics";
-const BQ_DATASET = "sales";
-
-function b64url(bytes: Uint8Array): string {
-  let str = "";
-  bytes.forEach((b) => { str += String.fromCharCode(b); });
-  return btoa(str).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
-function b64urlStr(s: string): string { return b64url(new TextEncoder().encode(s)); }
-
-async function importSaKey(pem: string): Promise<CryptoKey> {
-  const body = pem.replace(/-----BEGIN PRIVATE KEY-----/, "").replace(/-----END PRIVATE KEY-----/, "").replace(/\s+/g, "");
-  const der = Uint8Array.from(atob(body), (c) => c.charCodeAt(0));
-  return await crypto.subtle.importKey("pkcs8", der.buffer, { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }, false, ["sign"]);
-}
-
-let cachedToken: { token: string; exp: number } | null = null;
-async function bqAccessToken(): Promise<string> {
-  if (cachedToken && cachedToken.exp > Date.now() / 1000 + 60) return cachedToken.token;
-  const saRaw = Deno.env.get("GCP_BQ_SA_JSON");
-  if (!saRaw) throw new Error("GCP_BQ_SA_JSON が未設定です（サービスアカウントの鍵をSupabaseの秘密変数に登録してください）");
-  const sa = JSON.parse(saRaw);
-  const now = Math.floor(Date.now() / 1000);
-  const header = { alg: "RS256", typ: "JWT" };
-  const claim = {
-    iss: sa.client_email,
-    scope: "https://www.googleapis.com/auth/bigquery.readonly",
-    aud: "https://oauth2.googleapis.com/token",
-    iat: now,
-    exp: now + 3600,
-  };
-  const signingInput = `${b64urlStr(JSON.stringify(header))}.${b64urlStr(JSON.stringify(claim))}`;
-  const key = await importSaKey(sa.private_key);
-  const sig = await crypto.subtle.sign("RSASSA-PKCS1-v1_5", key, new TextEncoder().encode(signingInput));
-  const jwt = `${signingInput}.${b64url(new Uint8Array(sig))}`;
-
-  const res = await fetch("https://oauth2.googleapis.com/token", {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: "grant_type=" + encodeURIComponent("urn:ietf:params:oauth:grant-type:jwt-bearer") + "&assertion=" + encodeURIComponent(jwt),
-  });
+// （自動集計データではないため）→ 引き続きGAS経由（dashCall・ログイン方式）で取得する。両者は完全に独立した経路。
+async function bqDailyStoreForSync(months: number) {
+  const tk = Deno.env.get("BQ_LOAD_TOKEN");
+  if (!tk) throw new Error("BQ_LOAD_TOKEN が未設定です（Supabaseの秘密変数に登録してください）");
+  const url = new URL(DASH_API_URL);
+  url.searchParams.set("action", "bqDailyStoreForSync");
+  url.searchParams.set("token", tk);
+  url.searchParams.set("months", String(months));
+  const res = await fetch(url.toString());
   const j = await res.json();
-  if (!res.ok || !j.access_token) throw new Error("Google認証に失敗しました: " + JSON.stringify(j));
-  cachedToken = { token: j.access_token, exp: now + (j.expires_in ?? 3600) };
-  return j.access_token;
-}
-
-// SELECT文を投げて [ [列名,...], [値,...], ... ] の形（既存のsheets.dailyと同じ構造）で返す
-async function bqQuery(sql: string): Promise<any[][]> {
-  const token = await bqAccessToken();
-  const res = await fetch(`https://bigquery.googleapis.com/bigquery/v2/projects/${BQ_PROJECT}/queries`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ query: sql, useLegacySql: false, timeoutMs: 30000 }),
-  });
-  const j = await res.json();
-  if (!res.ok || j.jobComplete === false) throw new Error("BigQueryクエリに失敗しました: " + JSON.stringify(j).slice(0, 500));
-  const fields = (j.schema?.fields ?? []).map((f: any) => f.name);
-  const rows = (j.rows ?? []).map((r: any) => r.f.map((c: any) => c.v));
-  return [fields, ...rows];
+  if (!j.ok) throw new Error("BigQuery問い合わせに失敗しました: " + (j.error ?? JSON.stringify(j)));
+  return j.sheets?.daily ?? [];
 }
 
 // ---- 列名のゆらぎに強い読み方（tori-dashboardのapp.js ingestDaily 等と同じ考え方。目標/目標月次はGAS経由のまま使う） ----
@@ -143,18 +94,14 @@ async function runSync(sb: any) {
   });
   const unmatched = new Set<string>();
 
-  // --- ① 分析_日別店舗（実績）: BigQueryから直接（GASを経由しない） ---
+  // --- ① 分析_日別店舗（実績）: GASの軽量BigQuery問い合わせアクション経由（ログイン・スプレッドシート読みは無し） ---
   const dailyUpserts: any[] = [];
   try {
-    const cutoff = new Date(); cutoff.setMonth(cutoff.getMonth() - 2);
-    const cutoffStr = cutoff.toISOString().slice(0, 10);
-    const dailyRows = await bqQuery(
-      `SELECT date, store_name, net_sales, cogs, labor_cost_total FROM \`${BQ_PROJECT}.${BQ_DATASET}.fact_daily_store\` WHERE date >= DATE('${cutoffStr}')`,
-    );
+    const dailyRows = await bqDailyStoreForSync(2);
     for (let r = 1; r < dailyRows.length; r++) {
       const row = dailyRows[r];
       const storeName = String(row[1] ?? "").trim();
-      const dateStr = String(row[0] ?? "");
+      const dateStr = toDateStr(row[0]);
       if (!storeName || !dateStr) continue;
       const storeId = nameMap.get(storeName);
       if (!storeId) { unmatched.add(storeName); continue; }
