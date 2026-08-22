@@ -6,17 +6,15 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
-**最終更新**: 2026-08-22（実装スレッド。**Day6②③のコード実装＋本番SQL適用まで完了。残りはユーザー手作業3点**）
+**最終更新**: 2026-08-22（実装スレッド。**Day6②③のコード実装・本番SQL適用・ユーザー側の再デプロイ/差し替え/Secrets登録まで全部完了**。残るのはnippo画面での店舗確認のみ）
 
 **仕様の正（最新版）**: `docs/要件定義書.md` **v3.4（2026-08-21）**。ロードマップ全文は `docs/データ基盤統合ロードマップ.md`
 
-**進行中**: シフト機能（④）はスマレジ双方向同期まで完了・ユーザー実機再確認待ち。データ基盤統合ロードマップDay6「店舗追加の1箇所化」は①nippo店舗管理画面拡張が完了済みに続き、**②経営D GASのSupabase直読み・③配信matrix自動生成＋Chatwork対応のコード実装＋本番SQL適用が完了**（詳細は本日付「Day6②③実装」エントリ）。ユーザー確認のうえ本番SQL実行済み・`anon`キーでVIEW2本が読めて`stores`本体は読めないこと／動的matrixが現行3グループと完全一致することを確認済み。
+**進行中**: シフト機能（④）はスマレジ双方向同期まで完了・ユーザー実機再確認待ち。データ基盤統合ロードマップDay6「店舗追加の1箇所化」は①nippo店舗管理画面拡張・**②経営D GASのSupabase直読み・③配信matrix自動生成＋Chatwork対応まで実装・デプロイ完了**（詳細は本日付「Day6②③実装」「本番SQL実行・検証完了」「ユーザー側デプロイ完了」の各エントリ）。GAS再デプロイ（`ver: fix-v54`確認済み）・`.github/workflows/lark-report.yml`の動的matrix版への差し替え（`prepare`/`report`/`group-report`の3ジョブ構成をgit上で内容完全一致まで確認済み）・GitHub Secret `CHATWORK_API_TOKEN`登録、いずれもユーザーが実施し完了確認済み。
 
-**👉 次回セッション（別PCの可能性あり）へ引継ぎ: 残作業はコードではなくユーザー操作待ち**
-1. **tori-dashboard GAS再デプロイ**: `gas/Code.gs`を貼り替え→「デプロイを管理→編集→新バージョン」（ping ver=fix-v54になっていることを確認）
-2. **tori-dashboard workflow差し替え**: `scripts/lark-report.workflow.yml`の内容を`.github/workflows/lark-report.yml`へユーザーがGitHub Web UIで貼り替え（動的matrix生成・現行3グループと同一であることを本番VIEWに対してnode変換ロジックで確認済み）
-3. **Chatwork**: 既存送信経路（`smaregi-sync`の`notify_chatwork`アクション＋`app_secrets.chatwork_token`）はテキストのみでファイル添付非対応と判明→§2-1の例外条件により`lark-report.mjs`から直接Chatwork API（メッセージ＋ファイル添付）を呼ぶ設計で実装済み。**ユーザー判断: 既存トークンを流用する方針に決定**（新規Bot登録はしない）。GitHub SecretsへのCHATWORK_API_TOKEN登録はSecrets登録がユーザー操作のため実装者は代行せず、コマンドを案内済み（本スレッドの応答参照）。登録後、nippo「配信グループ管理」でkind=chatwork・Secret名`CHATWORK_API_TOKEN`・ルームIDを設定
-4. **12店舗をnippo店舗管理画面で確認**（特に配信グループ所属・store_aliases kind='listing'はREVIEW_CHILDREN分のみseed済みでDB_店舗親子シート分は未反映。天気地点は12店舗ともバックフィル済み・確認のみでよい）
+**👉 次回セッション（別PCの可能性あり）へ引継ぎ: 残りはコード・インフラではなくデータ確認1点のみ**
+1. **12店舗をnippo店舗管理画面で確認**: 配信グループ所属（現状はLarkの現行3グループのみseed済み。Chatworkグループはまだ1つも作られていない＝作りたい場合は「配信グループ管理」でkind=chatworkの新規グループを追加し、Secret名`CHATWORK_API_TOKEN`とChatworkルームIDを設定）／store_aliases kind='listing'（REVIEW_CHILDREN分のみseed済みでDB_店舗親子シート分は未反映）／天気地点は12店舗ともバックフィル済みで確認のみでよい
+2. 上記確認後、**次回の日報・週報・月報自動配信（cron-job.orgからのworkflow_dispatch）で動的matrixが実際に正しく動くか**を実地で見ておくとよい（コード上の検証は完了しているが、本番Actions実行はまだ観測していない）
 
 背景は `docs/実装指示書_Day6_店舗マスタ1箇所化②③.md`・`docs/引継ぎ書_2026-08-22_Day6店舗マスタ1箇所化続き.md`。
 
@@ -996,3 +994,9 @@ GitHubで新しいPAT（`repo`・`workflow`スコープ）を再生成し、cron
 - 実行後の目視確認で**天気地点backfillの店舗04（鳥一代 恵比寿）漏れ**を発見（in句に'04'が抜けていた）→本番を直接UPDATEで是正、ファイル側も修正してコミット（1639b97）
 - 検証: `anon`キーで`store_directory_v`（12店舗・file_key・weather・aliases[kind込み]）と`report_channel_matrix_v`が読める一方`stores`本体は`[]`（RLSで空）であることをcurlで確認。`report_channel_matrix_v?report_kinds=cs.{daily}`（prepareジョブと同じクエリ）が3グループを返すことを確認。matrixの内容（group/secret_name/stores文字列）が現行workflowの静的3グループと完全一致
 - ユーザー判断: Chatworkトークンは新規Bot発行せず**既存の`app_secrets.chatwork_token`（Bot「mirai nakayama」）と同じ値をtori-dashboardのGitHub Secret `CHATWORK_API_TOKEN`に登録**する方針に決定。Secrets登録はユーザー操作のため、値を本文に出さず`gh secret set`用コマンドを案内（本スレッドの応答参照）
+
+## 2026-08-22（続き） Day6②③ ユーザー側の再デプロイ・差し替え・Secrets登録が完了
+- ユーザーが3点を実施: ①GAS再デプロイ（`?action=ping`で`ver:"fix-v54"`を実機確認）②GitHub Secret `CHATWORK_API_TOKEN`登録③`.github/workflows/lark-report.yml`を`scripts/lark-report.workflow.yml`の内容へWeb UIで差し替え
+- Secretsページ（`/settings/secrets/actions`）が最初「Page not found」になった件は、ブラウザがこのリポジトリの管理者アカウント`mirai-oss`でログインしていなかったことが原因と判明・案内して解決
+- ワークフロー差し替えの確認で、`raw.githubusercontent.com`のCDNキャッシュにより一時「反映されていない」ように見えたが、`git fetch`で実コミット（`0bfbfe0 Refactor Lark report workflow for dynamic matrix generation`）を確認→ローカルへpull→`diff`で`scripts/lark-report.workflow.yml`と完全一致・YAML構文も正常なことを確認。**CDN経由の確認は信用しすぎない・gitが正**という教訓
+- これでDay6②③はコード・本番SQL・ユーザー側デプロイまで全部完了。残るのはnippo画面での12店舗確認とChatwork配信グループの新規作成（希望する場合）のみ
