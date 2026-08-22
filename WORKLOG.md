@@ -42,7 +42,7 @@
   7. Day5残り: 日報dash-syncのSupabase直読み化／Lark配信の新経路移行（着手中）
 
 **直近のコミット（この時点。鵜呑みにせず必ず`git fetch origin && git log --oneline -1 origin/main`で照合すること）**:
-- `ns-portal`: （直後のコミットで更新）
+- `ns-portal`: `8dc350e`
 - `nippo`: `f245734`
 - `NStyle-AI`: `94db5a0`（bqDailyStore追加の記録）
 - `ns-daily-import`: `0139ff3`（bq-sales-reconcileタスク追加）
