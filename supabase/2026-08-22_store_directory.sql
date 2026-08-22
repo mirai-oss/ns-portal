@@ -148,7 +148,7 @@ update public.stores set weather_lat = 35.4408, weather_lon = 139.3648
   where store_no in ('11') and weather_lat is null;
 --     tokyo（既定）
 update public.stores set weather_lat = 35.6895, weather_lon = 139.6917
-  where store_no in ('01','02','03','05','12') and weather_lat is null;
+  where store_no in ('01','02','03','04','05','12') and weather_lat is null;
 
 -- 5-4) seisan_target（要件定義書§4の委託4店舗）
 update public.stores set seisan_target = true where store_no in ('09','10','11','12');
