@@ -43,7 +43,7 @@
   7. **Day5最後の1項目: Lark日報をgroup1だけ新経路で配信→画像崩れが無いことを確認→全グループ切替**（未着手。詳細不明のため次スレッドは`docs/データ基盤統合ロードマップ.md`Day5の記述とtori-dashboardのLark配信実装〔`scripts/lark-report.mjs`等〕を先に調査すること）
 
 **直近のコミット（この時点。鵜呑みにせず必ず`git fetch origin && git log --oneline -1 origin/main`で照合すること）**:
-- `ns-portal`: `07cab08`
+- `ns-portal`: `e25f8dc`
 - `nippo`: `f245734`
 - `NStyle-AI`: `94db5a0`（bqDailyStore追加の記録）
 - `ns-daily-import`: `0139ff3`（bq-sales-reconcileタスク追加）
