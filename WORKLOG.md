@@ -962,3 +962,8 @@ GitHubで新しいPAT（`repo`・`workflow`スコープ）を再生成し、cron
 使い捨てのデバッグアクションで`DB_PL`とBQ側の合計金額・件数を突合し、**完全一致（596件・157,998,380円）を確認**（デバッグ関数は削除済み）。GAS`ping`=`fix-v50`・GitHub Pages`v=96`とも本番反映・一致確認済み。`HANDOFF.md`にも記録・push。
 
 入金DB（実際の銀行入金額、入金管理タブのメインデータ）は今回のスコープ外のまま。これでDay5「タブを順次切替」は**推移分析・ダッシュボード・目標管理・PL（一部）の4タブ**が対象になった。
+
+## 2026-08-22 Day6 ②③の設計確定→実装指示書
+- 引継ぎ書（Day6店舗マスタ1箇所化続き）の5論点に結論: ①GAS→Supabaseは匿名読み取り専用VIEW2本（列ホワイトリスト・anonにSELECTのみ・GASは10分キャッシュ＋定数フォールバック）②親子ブランドは階層テーブルを作らずstore_aliases.kind='listing'（REVIEW_CHILDREN/DB_店舗親子の実体は口コミ上の別掲載名）③天気は店舗別緯度経度を正・未設定はWX_LOCSフォールバック・12店舗は実装者がSQLでバックフィル④配信はチャネル非依存化（report_channels/report_channel_stores・Secret名のみDB保持）＋**GitHub Actions動的matrix（prepジョブ→fromJSON、コミット不要）**＋Chatwork送信（/messages＋/filesで画像直接添付）をLarkと混在可に⑤12店舗の値は実装者seed→ユーザー画面確認
+- 未決（ユーザー回答待ち）: Chatwork統一の範囲/並行期間・ルーム構成（アルバイト含む再編か）・APIトークン発行者
+- docs/実装指示書_Day6_店舗マスタ1箇所化②③.md 作成（workflowはWeb UI差し替え運用・入金辞書はスコープ外を明記）
