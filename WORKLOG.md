@@ -6,13 +6,13 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
-**最終更新**: 2026-08-22（MacBook側・別スレッド。給与突合の自動化＋勤怠の異常値チェックを実装＋A-4誤混入コード解決。ユーザーの意向で本スレッドはここで区切り）
+**最終更新**: 2026-08-22（MacBook側・翌朝スレッド。cron-job.org自動発火の不具合を修正＋Day4のBigQuery売上ミラーを実装・突合完全一致まで確認）
 
 **仕様の正（最新版）**: `docs/要件定義書.md` **v3.4（2026-08-21）**。ロードマップ全文は `docs/データ基盤統合ロードマップ.md`
 
-**進行中**: シフト機能（④）はスマレジ双方向同期まで完了・ユーザー実機再確認待ち（Mac mini側）。データ基盤は**Day 1・Day 2・Day 3が完了条件を満たした状態**（過去90日の人件費突合・異常値検知の仕組みまで実装済み）。**Day 4（BigQuery移行）は`ns-daily-import`という別の成熟したプロジェクトへの本格的な機能追加**で、着手するかはユーザーの意向次第（まだ着手していない）。
+**進行中**: シフト機能（④）はスマレジ双方向同期まで完了・ユーザー実機再確認待ち（Mac mini側）。データ基盤は**Day 1・Day 2・Day 3完了・Day 4（BigQuery売上ミラー）も主要部分が完了**（`分析_日別店舗`等をBigQueryへミラーし直近35日の突合で完全一致を確認済み）。
 
-**👉 次回セッションはまず本📍と直近のWORKLOGエントリ（2026-08-22の最後の3〜4件）を読むこと**（`docs/引継ぎ書_2026-08-22_データ基盤Day3続き.md`は前スレッド分の背景として引き続き有効。Day4に進む場合は`ns-daily-import/WORKLOG.md`・`ns-daily-import/CLAUDE.md`も読むこと）。
+**👉 次回セッションはまず本📍と直近のWORKLOGエントリ（2026-08-22の最後の数件）を読むこと**（`docs/引継ぎ書_2026-08-22_データ基盤Day3続き.md`は前スレッド分の背景として引き続き有効。Day4の詳細は`NStyle-AI/gas-backup/dashboard-server/README.md`の追記参照）。
 
 - ✅ Day1（保全）タスクA〜D完了。**A-4のA-6コード誤混入は2026-08-22に調査・解決済み**（詳細は同日のエントリ参照）
 - ✅ Day2（マスタ仕上げ＋勤怠API基盤）完了。R6（共有シークレット平文露出、全13箇所）対応済み。cron-job.org自動実行も設定・実機確認済み
@@ -26,19 +26,20 @@
   - ✅ 事業所（店舗）ごとの賃金振り分けを実データで検証済み: `budgets/monthly`APIに実際に働いた店舗のIDを渡すと正しい額、働いていない店舗のIDを渡すと404（該当なし）が返ることを確認 → **スマレジ側は店舗ごとに正しく仕訳している**。ただし現状、複数店舗を掛け持ちしている従業員は0名（発生したら改めて要検証）
   - ✅ **`smaregi-attendance-anomaly-check`Edge Function新設・デプロイ済み**（ユーザー要望）。1時間以内／13時間超え／24時間超えの勤務を検知しLINEアラート。`smaregi-attendance-sync.yml`の後続ステップとして日次自動実行に組み込み済み（sync本体は無変更）。過去90日分で試験実行し、齊藤隆治さんの13時間超え勤務8件を正しく検知。**月給制の人（青山純さん等）も除外していない＝対象に含まれる**ことを実データで確認済み（ユーザー要望通り）
 - ✅ **A-4（PL管理システム）のA-6コード誤混入問題を解決**（Day1からの持ち越し）。本番Webアプリに`?action=ping`（読み取り専用）で問い合わせ、実際に動いているのは`SeisanDashboard.gs`(v5.11-unlockfix)のみと実証確認 → A-4の`pl_dbpl_autosync.gs`(v5.6-sso)・A-6内の`精算書発行.gs`(v5.4)はどちらも死んでいるコードと判明。ユーザー確認の上、Apps Script APIで両方削除（バックアップはNStyle-AIリポジトリに保持）。削除後も本番pingでv5.11-unlockfixが変わらず動作することを再確認済み。**おまけの発見**: `SeisanDashboard.gs`に`sd_notifyChatwork_`というChatwork通知の実装が既にあり、保留中のChatwork連携タスクで参考にできそう。**判明した注意点**: `clasp push`はファイル削除を反映しない不具合があり（「already up to date」と表示されるが実際には削除されない）、削除を伴う変更はApps Script APIを直接叩く必要がある
+- ✅ **cron-job.org自動発火の不具合を発見・修正**（朝の実地確認で判明）。GitHub PATの控えを紛失していたためAuthorizationヘッダーが未設定で、08:00 JSTの自動発火が毎回GitHubに届く前段階で失敗していた。トークンを再生成しcron-job.org側に正しく設定、実機テストでGitHub Actionsに正常に届くことを確認済み
+- ✅ **Day4（BigQuery売上基盤構築）着手・主要部分完了**。`ns-daily-import`の12ジョブ自体は無変更のまま、既存の`分析_日別店舗`（最終集計値）と支払い/媒体別/仕入れ/人件費の4DBシートを`tori-analytics.sales`データセットへミラーする機能を`dashboard-server`（連携本番.gs）に追加。全履歴バックフィル完了・直近35日の突合で純売上/仕入れ/人件費合計/行数すべて完全一致を確認済み。詳細・ハマったポイントは`NStyle-AI/gas-backup/dashboard-server/README.md`参照
 - ⏳ 未着手（次にやること・優先順）:
-  1. **cron-job.orgに`smaregi-payroll-reconcile`用のジョブを追加**（毎月5日08:00 JST。要ユーザー作業＝cron-job.orgへのログインが必要なためAIでは代行不可。手順はワークフローファイル`.github/workflows/smaregi-payroll-reconcile.yml`のコメント参照）
-  2. cron-job.org自動発火の実地確認（08:00 JST以降にGitHub Actions実行履歴を見て、ユーザーが押していないrunが増えているか確認。**2026-08-22は深夜のセッションだったため時刻の都合で今回も未確認。次回セッション開始時にまず確認すること**）
-  3. LINE公式アカウントの月間送信上限問題（保留中。対応するならLINE Developersでプラン・上限を確認するところから。解決しないと給与突合・異常値チェックどちらのアラートも届かない状態が続く）
+  1. **`ns-daily-import`に日次タスクを追加**（`bqSyncSales`→`bqReconcileSales`を毎日呼び、`mismatched`があればメール通知。GAS側の実装は完了済み・Node側の呼び出しタスクが未着手）
+  2. `smaregi-payroll-reconcile`用のcron-job.orgジョブ追加（毎月5日08:00 JST。要ユーザー作業）
+  3. LINE公式アカウントの月間送信上限問題（保留中。対応するならLINE Developersでプラン・上限を確認するところから）
   4. Chatwork連携（経理担当者向け。将来対応、未着手）
-  5. `computed_cost`自前計算（優先度低下）
+  5. 人件費列をスマレジタイムカードAPI由来のデータに置き換える構想（ユーザー指摘・Day4の次のステップとして`dashboard-server/README.md`に記録済み）
+  6. `computed_cost`自前計算（優先度低下）
 
 **直近のコミット（この時点。鵜呑みにせず必ず`git fetch origin && git log --oneline -1 origin/main`で照合すること）**:
-- `ns-portal`: `458c5c3`
+- `ns-portal`: `458c5c3`（このエントリ自体のpush前。末尾のタイムラインで最新化）
 - `nippo`: `f245734`
-- `NStyle-AI`: `126f0ae`（A-4/A-6のGASコード整理・README更新分）
-
-**次にやること候補**: ①**`docs/引継ぎ書_2026-08-22_データ基盤Day3続き.md`のとおりDay3の残りを進める**（給与明細APIの自動化・横展開） ②A-4に誤混入した精算ダッシュボードのコード整理（優先度は低いが要ユーザー確認） ③シフトはユーザーの「🔄スマレジと同期する」実機確認の結果次第で、§27のベースラインGap実装（作成グリッド・打刻・実績）へ。
+- `NStyle-AI`: `34339a4`（dashboard-server BQミラー機能の記録分）
 
 **⚠️ このWORKLOGを最新に保つ仕組み**: `ns-portal/CLAUDE.md`と`nippo/CLAUDE.md`に「作業前後に必ずやること」を明記済み（どのPC・どのスレッドでも自動的に読み込まれる指示ファイル）。要点＝**作業を終える前に必ずこの「📍現在の状況」を書き換えてからpushする**。
 
@@ -876,3 +877,27 @@ Day3の残タスクが尽きたため、ロードマップ全文（`docs/デー�
 1. GitHub Actions実行履歴（`smaregi-attendance-sync.yml`・`smaregi-payroll-reconcile.yml`）を見て、cron-job.orgの自動発火が実際に起きているか確認
 2. （ユーザーがcron-job.orgにジョブ追加済みなら）`smaregi-payroll-reconcile`の月次自動実行が動くか確認
 3. Day4（BigQuery移行）に進むかどうかはユーザーの意向次第。進む場合は`ns-daily-import`リポジトリのWORKLOG.md・CLAUDE.mdを先に読むこと（今夜は概要確認のみで中身には入っていない）
+
+## 2026-08-22（翌朝） cron-job.org自動発火の不具合を発見・修正
+
+朝一で「①cron-job.org自動発火の実地確認」に着手（時刻09:03 JST、設定の08:00 JSTを過ぎていたため確認可能に）。GitHub Actionsの実行履歴には今朝の自動実行が一切記録されておらず、cron-job.org自体を見てもらったところ「Last execution: Today at 8:00:33 AM — Failed (HTTP error)」と判明。cron-job.orgの設定画面を見せてもらうと、必要な3つのヘッダー（Authorization/Accept/Content-Type）のうち**Authorizationヘッダー（GitHub PAT）が設定されていなかった**（ユーザーいわく「トークンの控えを紛失していた」とのこと）。
+
+GitHubで新しいPAT（`repo`・`workflow`スコープ）を再生成し、cron-job.orgのHeadersに`Authorization: Bearer <トークン>`を追加（Acceptヘッダーも追加）→ 保存後、cron-job.org側の「Test run」で実行 →「204 No Content」（GitHubのdispatch API成功時の正常応答）を確認 → GitHub Actions側にも新しい実行が記録され、`smaregi-attendance-sync`・後続の`smaregi-attendance-anomaly-check`とも正常終了することを確認。**cron-job.org自動発火問題は解決**。
+
+## 2026-08-22（続き） Day4（BigQuery売上基盤構築）に着手・完全一致まで到達
+
+ユーザーの指示で「では続きをお願いします」→「ではDay4に移行」。ロードマップのDay4は`ns-daily-import`（別の成熟した自動化プロジェクト）へのBigQuery機能追加だが、調査の結果「12ジョブ個別に二重書き」より「既に毎日自動集計されている`分析_日別店舗`シートをそのままBQへミラーする」方が安全・低コストと判明（既存の店舗名表記ゆれ辞書・FL率計算等のロジックを複製せずに済む）。ユーザーに確認した上でこの方針を採用（EnterPlanMode/ExitPlanModeで計画承認を得てから実装）。ユーザーからは「将来的には完全移行したい、特に人件費はスマレジタイムカードAPI由来の方が正確」という補足があり、次のステップとして記録。
+
+**実装**: `dashboard-server`プロジェクト（`連携本番.gs`、既にBigQuery Advanced Service有効・`bqLoadOrders`が本番稼働中）に、`bqSetupSalesDataset`/`bqSyncSales`/`bqReconcileSales`を追加。新設`tori-analytics.sales`データセットに`fact_daily_store`（分析_日別店舗のミラー）と4つのstagingテーブル（支払い/媒体別/仕入れ/人件費DB）を作成。「売上DB」プロジェクト側は無変更。
+
+**詰まった点と解決**（詳細は`NStyle-AI/gas-backup/dashboard-server/README.md`）:
+- `clasp login`のセッションが切れておりユーザーに再ログインを依頼
+- Apps Script APIの`updateContent`だけでは本番Webアプリ（バージョン固定デプロイ）に反映されないと判明 → `projects.versions.create`＋`projects.deployments.update`で正式に新バージョンを配信する必要があった（v81→v90まで段階的に更新）
+- 新バージョン配信後、BigQueryスコープの再承認が必要になり、ユーザーにApps Scriptエディタで`testBQ`を1回手動実行してもらい解消
+- 支払いDB等4シートが「1行目=シート見出し・2行目=本当のヘッダー・3行目からデータ」という2行プリアンブル構造だったため読み込み開始行を修正
+- 人件費率等の0除算によるNaN/Infinityと、NUMERIC型の小数点9桁制限（dinii-orders.jsの既知の教訓と同じ）に対応
+- 突合の日付比較が「時刻付きDate」同士だったため境界の1日分がズレる不具合を発見・修正（日付文字列比較に統一）
+
+**最終結果**: 5テーブルへの初回同期（全履歴バックフィル兼務）成功、直近35日間の突合で純売上・仕入れ・人件費合計・行数（500件）すべて完全一致を確認。調査用に追加した一時デバッグ関数はすべて削除し、バックアップ（NStyle-AIリポジトリ）も最新化・push済み。既存の`dinii-orders`のBigQuery連携（`bqLoadOrders`）には影響がないことも都度確認済み。
+
+**残作業**: `ns-daily-import`側に日次で`bqSyncSales`→`bqReconcileSales`を呼びメール通知する新規タスクを追加すること（GAS側の実装は完了・Node側の呼び出しタスクが未着手）。
