@@ -43,7 +43,7 @@
   7. Day5残り: **dash-syncのGAS往復廃止（組織ポリシー確認待ちで中断中・上記参照）**／Lark配信の新経路移行（未着手）
 
 **直近のコミット（この時点。鵜呑みにせず必ず`git fetch origin && git log --oneline -1 origin/main`で照合すること）**:
-- `ns-portal`: `cb19035`（dash-sync BigQuery直読み版・未デプロイ）
+- `ns-portal`: `d9a5f4a`
 - `nippo`: `f245734`
 - `NStyle-AI`: `94db5a0`（bqDailyStore追加の記録）
 - `ns-daily-import`: `0139ff3`（bq-sales-reconcileタスク追加）
