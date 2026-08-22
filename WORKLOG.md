@@ -41,7 +41,7 @@
   8. Day4残り（経営D GASの他タブ＝目標管理・明細分析等への切替展開）／Day5以降（Phase 4「切替」の本格展開）
 
 **直近のコミット（この時点。鵜呑みにせず必ず`git fetch origin && git log --oneline -1 origin/main`で照合すること）**:
-- `ns-portal`: `32981fa`
+- `ns-portal`: `9f278cb`
 - `nippo`: `f245734`
 - `NStyle-AI`: `94db5a0`（bqDailyStore追加の記録）
 - `ns-daily-import`: `0139ff3`（bq-sales-reconcileタスク追加）
