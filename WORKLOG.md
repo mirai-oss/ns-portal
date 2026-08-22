@@ -40,7 +40,7 @@
   7. Day5残り: PL・入金タブの切替（`分析_日別店舗`以外がソースのため別途調査要）／日報dash-syncのSupabase直読み化／Lark配信の新経路移行
 
 **直近のコミット（この時点。鵜呑みにせず必ず`git fetch origin && git log --oneline -1 origin/main`で照合すること）**:
-- `ns-portal`: `9f278cb`
+- `ns-portal`: `ec86b2c`
 - `nippo`: `f245734`
 - `NStyle-AI`: `94db5a0`（bqDailyStore追加の記録）
 - `ns-daily-import`: `0139ff3`（bq-sales-reconcileタスク追加）
