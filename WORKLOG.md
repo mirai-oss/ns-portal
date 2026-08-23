@@ -1238,4 +1238,9 @@ GitHubで新しいPAT（`repo`・`workflow`スコープ）を再生成し、cron
   - 動作確認でcurlのPOST→リダイレクト時の癖（`script.googleusercontent.com`への転送後、GET/POSTどちらでも失敗する゠`--post302 --post303`でも405）にハマったが、ns-daily-importと同じNode.js `fetch()`で直接テストしたところ正常動作（ダミートークンで`unauthorized`、実トークンで82秒後に`{"ok":true}`）を確認。**今後この種のGAS webapp疎通確認はcurlでなくNode fetchを使うこと**（教訓として記録）
   - `ns-daily-import`側: `lib/gas.js`に`rebuildAnalysis()`追加（既存GAS_URL/GAS_TOKEN流用）、新規タスク`tasks/morning-refresh.js`追加（①rebuildAnalysis→②bqSyncSales→③bqReconcileSalesの順。冒頭で当日の朝一括取込8本の完了マーカー(`logs/.done-<task>-YYYYMMDD`)を確認し、未完了なら15分待って再確認→それでも揃っていなければスキップ）、`config.js`の`DAILY_INDEPENDENT`に`['morning-refresh','08:45',{}]`を追加。コミット・プッシュ済み。**Mac mini側でのgit pullが必要**（次回Mac miniセッションで反映確認must）
   - **タスク2はコード面は完了**。Mac mini側の反映確認と、翌朝09:05時点でBQモードに前日分が出ることの実地確認が残作業
-- タスク3（BQモード既定化）は前提条件（タスク0〜2完了・数値突合の結論確定）未達のため未着手
+- タスク3（BQモード既定化）: 前提条件が完全には揃っていない（数値突合はまだ明細分析のみ・全タブ横断はしていない／タスク2の実地確認は翌朝待ち）ため、substep3（S.useBqDailyの既定値反転・本番影響あり）はまだ着手せず、安全なsubstep1・2の下ごしらえだけ先行実装
+  - substep1（キャッシュ）: bqDailyStore/bqGetPL/bqGetDeposit/bqGetMediaにbqDetailと同方式のCacheService 10分キャッシュを追加（speed-v4）
+  - substep2（フォールバック）: BQ取得失敗時に自動でシート経路へ切替える仕組みをapp.jsに追加。フォールバック中は画面に注意書き表示
+  - **検証で発覚**: bqPerfDiagを2回連続実行して確認したところ、小さいデータのbqGetPL/bqDetailはキャッシュが効いていた（2回目22ms・51ms）が、全期間・全店舗ぶんを返すbqDailyStore/bqGetDeposit/bqGetMediaはCacheServiceの1キー100KB上限を超えて`put`が黙って失敗し、キャッシュが実質無効なままだった（2回目も1回目とほぼ同じ5000〜5700ms）。長い文字列を複数キーに分割保存する方式に修正（speed-v5）し、再検証で5アクション全て2回目は数十ms（19〜38ms）になることを確認。**substep1・2完了**
+  - 下ごしらえ中に別問題を発見（別記録）: PL入力(`savePlEntries`/`savePlBulk`)がBigQuery側(`stg_pl`)への同期(`bqSyncPL`)を呼んでおらず、手入力した経費がBQモードには毎朝8時の自動同期まで反映されない。キャッシュとは無関係の既存の抜け穴。BQモード既定化（substep3）を進めるなら先に直すべき候補として記録
+  - substep3（既定値反転）・substep4（段階展開）は本番へ影響するため、着手前に必ずユーザー確認
