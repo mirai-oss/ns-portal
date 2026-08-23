@@ -79,6 +79,8 @@
 
 ## 📄 ドキュメント一覧（`ns-portal/docs/`。何が今も生きていて、何が過去の実装済みの記録かの索引）
 
+**診断ツール（別リポ）**: `tori-dashboard/.github/workflows/bq-diag.yml`（2026-08-23新設）——BigQuery `fact_daily_store`の任意の日付・店舗を、Lark/Chatworkへの送信なしで直接照会できる（`gh workflow run bq-diag.yml -R mirai-oss/tori-dashboard -f dates=YYYY-MM-DD,YYYY-MM-DD -f store=店舗名`）。データ未同期の疑いがあるときの定石として使う。
+
 | ファイル | 状態 | 内容 |
 |---|---|---|
 | `要件定義書.md` | **常に最新（v3.4）** | 全体の決定事項・フェーズ計画の正。まずこれ |
@@ -1100,3 +1102,8 @@ GitHubで新しいPAT（`repo`・`workflow`スコープ）を再生成し、cron
 - **送信を一切行わない診断専用ワークフロー`tori-dashboard/.github/workflows/bq-diag.yml`を新設**（commit `9b66012`）。`reportDataBQ`を任意の日付・店舗で直接照会し、report-meta.jsonの中身だけ表示する（Lark/Chatworkへは送らない）。今後同種の確認が必要な時の定石ツールとして使える
 - 確認結果: 2026-08-20 sales=2,922,903/guests=943（実データあり）／2026-08-21 sales=4,488,413/guests=1,292（実データあり）／**2026-08-22 sales=0/guests=0（データ無し）**
 - Mac mini側の推定（シートには8/22分が反映されたが、シート→BQ同期(`bqSyncSales`)が今日まだ走っていない）と整合する結果を報告済み。修正後の再確認はMac mini側からの依頼待ち
+
+## 2026-08-23（続き） 8/22売上取込停止・完全解決を確認（クローズ）
+- Mac mini側で`bq-sales-reconcile`を手動実行し完了（fact_daily_store=7363行ほか5テーブル同期・直近35日492件完全一致）。**障害原因はMac miniの再起動と判明**
+- `bq-diag.yml`で裏取り: 2026-08-22 sales=4,126,024/guests=1,159（正しく同期済み）、2026-08-23 sales=0/guests=0（想定どおり未同期・明日の朝バッチ+11時同期で入る）
+- **この件はクローズ**。8/22朝からのバッチ停止は解決済み
