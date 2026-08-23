@@ -1137,3 +1137,10 @@ GitHubで新しいPAT（`repo`・`workflow`スコープ）を再生成し、cron
   4. tori-dashboardのスクリプトプロパティに`PL_SYNC_TOKEN`（同じ値）と`SEISAN_WEBAPP_URL`（精算ダッシュボードのウェブアプリURL）を登録
   5. `?action=syncSeisanFeeToPl&token=<BQ_LOAD_TOKEN>&ym=2026-07`等で動作確認（GETで可・ログイン不要）
 - 次スレッドは②複数店舗選択（自由選択方式）から着手すること
+
+## 2026-08-23（続き） 運営委託費PL自動連携・実地テスト成功
+- 設定完了後の実地テストで、複数回`unauthorized`エラーが発生（原因切り分けに時間を要した）。**最終的な原因はSEISAN_WEBAPP_URLの設定ミス**（経営ダッシュボード側に誤ったURLが登録されていた）とユーザーが特定・修正
+- 修正後、`gh workflow run seisan-sync-diag.yml -f ym=2026-07`で実地確認: **秋葉原 肉寿司 = ¥3,316,183**（精算書PDFの「業務委託費（税抜）」と完全一致）を確認。他3店舗（じんべぇ川崎・じんべぇ新横浜・エース本厚木）はデータ無しで正しくスキップ
+- DB_PLへの書き込み完了。ユーザーにPLタブでの目視確認を依頼中
+- **診断過程で判明した副産物**: `SD_VERSION`が今まで固定値（'v5.11-unlockfix'）でバージョン管理されておらず、コード変更の反映確認ができない状態だった。今回`v5.12-plsync-diag`に更新（今後コード変更時は都度バージョン文字列も更新すること）
+- **次のステップ**: 月次自動実行の仕組み化（cron-job.org等）は未着手。手動実行（`?action=syncSeisanFeeToPl&token=...&ym=YYYY-MM`）は動作確認済み
