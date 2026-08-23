@@ -108,6 +108,21 @@ create table if not exists invoice_email_outbox (
 );
 create index if not exists invoice_email_outbox_status_idx on invoice_email_outbox (status, queued_at);
 
+-- ---- 取込除外ルール（2026-08-24追加）: 件名・送信元アドレスに一致するメールを今後
+-- 取り込み自体しないようにする管理者設定。判定はEdge Function invoice-intake側で行い、
+-- 一致したら invoice_emails へは一切insertしない（＝アプリ上に一度も出てこない）。
+-- 「①対象外にする」ボタン（invoice_emails.mail_status='archived'）とは別物＝
+-- あちらは取込済みのメールを都度アプリ内で仕分けるだけで、今後の取込は止めない
+create table if not exists invoice_intake_exclusion_rules (
+  id uuid primary key default gen_random_uuid(),
+  rule_type text not null check (rule_type in ('subject_contains','from_contains')),
+  pattern text not null,
+  note text,
+  is_active boolean not null default true,
+  created_by uuid references users(id),
+  created_at timestamptz not null default now()
+);
+
 -- ============================================================
 -- 権限判定関数
 -- 指示書§2: role in ('CEO','HQ') or is_master、＋portal_user_overrides(system_key='invoices')で個人単位に追加開放
@@ -167,6 +182,12 @@ create policy inv_audit_read on invoice_audit_logs for select using (invoice_can
 drop policy if exists inv_outbox_read on invoice_email_outbox;
 create policy inv_outbox_read on invoice_email_outbox for select using (invoice_can_access());
 -- insertはinvoice_queue_reply経由のみ。updateはinvoice-send Edge Function(service_role)のみ＝直接policyなし
+
+alter table invoice_intake_exclusion_rules enable row level security;
+drop policy if exists inv_exclrule_all on invoice_intake_exclusion_rules;
+create policy inv_exclrule_all on invoice_intake_exclusion_rules for all
+  using (invoice_can_access()) with check (invoice_can_access());
+-- 判定を行うEdge Function invoice-intakeはservice_roleのためRLSの対象外（読めれば十分）
 
 -- ============================================================
 -- 処理フロー RPC（すべてsecurity definer・invoice_audit_logsへ記録）
@@ -280,6 +301,49 @@ begin
 
   insert into invoice_audit_logs(entity_type, entity_id, action, user_id, note)
   values ('invoice_email', p_email_id, 'reopen', auth.uid(), p_reason);
+
+  return jsonb_build_object('success', true);
+end;
+$$;
+
+-- 対象外にする（2026-08-24追加）: 請求書ではないメールを「処理中」にせず専用の枠へ仕分ける。
+-- mail_status='archived'を使う（今後の取込自体は止めない＝invoice_intake_exclusion_rulesとは別物）
+create or replace function invoice_mark_not_applicable(p_email_id uuid, p_reason text default null) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare v_email invoice_emails;
+begin
+  if not invoice_can_access() then raise exception '権限がありません'; end if;
+  select * into v_email from invoice_emails where id = p_email_id;
+  if v_email is null then raise exception '対象が見つかりません'; end if;
+  if v_email.mail_status = 'archived' then raise exception '既に対象外です'; end if;
+
+  update invoice_emails set
+    mail_status = 'archived',
+    processing_user_id = null, processing_started_at = null, locked_at = null, lock_expires_at = null,
+    updated_at = now()
+  where id = p_email_id;
+
+  insert into invoice_audit_logs(entity_type, entity_id, action, user_id, note)
+  values ('invoice_email', p_email_id, 'mark_not_applicable', auth.uid(), p_reason);
+
+  return jsonb_build_object('success', true);
+end;
+$$;
+
+-- 対象外を解除して未処理に戻す
+create or replace function invoice_restore_from_archive(p_email_id uuid, p_reason text default null) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare v_email invoice_emails;
+begin
+  if not invoice_can_access() then raise exception '権限がありません'; end if;
+  select * into v_email from invoice_emails where id = p_email_id;
+  if v_email is null then raise exception '対象が見つかりません'; end if;
+  if v_email.mail_status <> 'archived' then raise exception '対象外のメールのみ解除できます'; end if;
+
+  update invoice_emails set mail_status = 'read', updated_at = now() where id = p_email_id;
+
+  insert into invoice_audit_logs(entity_type, entity_id, action, user_id, note)
+  values ('invoice_email', p_email_id, 'unmark_not_applicable', auth.uid(), p_reason);
 
   return jsonb_build_object('success', true);
 end;

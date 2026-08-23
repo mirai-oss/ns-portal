@@ -73,6 +73,22 @@ Deno.serve(async (req: Request) => {
   const gmailMessageId: string = body.gmail_message_id;
   if (!gmailMessageId) return json({ error: "gmail_message_idは必須です" }, 400);
 
+  // 取込除外ルール（2026-08-24追加）: 管理画面で設定した件名/送信元パターンに一致する場合は
+  // invoice_emailsへ一切insertしない（＝アプリに一度も出てこない）。「対象外にする」ボタン
+  // （取込済みメールをmail_status='archived'へ仕分けるだけ）とは別物で、今後の取込自体を止める
+  const { data: rules } = await db
+    .from("invoice_intake_exclusion_rules").select("rule_type, pattern").eq("is_active", true);
+  const subjectLower = String(body.subject ?? "").toLowerCase();
+  const fromLower = String(body.from_address ?? "").toLowerCase();
+  const excluded = (rules ?? []).some((r: any) => {
+    const pat = String(r.pattern ?? "").toLowerCase();
+    if (!pat) return false;
+    if (r.rule_type === "subject_contains") return subjectLower.includes(pat);
+    if (r.rule_type === "from_contains") return fromLower.includes(pat);
+    return false;
+  });
+  if (excluded) return json({ success: true, excluded: true });
+
   // 重複スキップ（再実行しても件数不変）。select→insertの2手順だとその間に同じメッセージが
   // 別リクエストで先に登録された場合にunique制約違反(500)になり得るため、upsert(ON CONFLICT DO
   // NOTHING)で一発に行う。ignoreDuplicatesで無視された行はreturning結果に出ないため、その場合は
