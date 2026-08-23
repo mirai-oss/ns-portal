@@ -1260,3 +1260,4 @@ GitHubで新しいPAT（`repo`・`workflow`スコープ）を再生成し、cron
 - `docs/実装指示書_請求書メール管理Phase1_2026-08-23.md`作成（自己完結版）。**Codex案のGmail OAuth方式をGAS方式に変更**（indeed-intake実績の流用・トークン管理不要・数日短縮）。新規独立GASプロジェクト＋Edge Function invoice-intake＋非公開バケットinvoice-files＋RPCによるDBレベル担当ロック。5日でMVPの日割り付き
 - `docs/実装スケジュール_最短計画_2026-08-23.md`作成（ライン1=請求書5日→1.5／ライン2=PL3点セット4-5日→シフトUI v5 ①②→③④／小粒=BQ既定化・見張り番・Day7残り）
 - モック2点を`docs/mockups/`に保存（シフトUI v5・請求書UIプロトタイプ。秘密情報なし確認済み）
+- 追記（同日）: ユーザー確定により**返信機能をPhase 1に含める**（MVP 5日→6日）。指示書に§4.5追加（outboxテーブル・GAS WebApp送信・返信のみ/新規送信不可・確認画面必須・自分宛テスト）。スケジュールも更新
