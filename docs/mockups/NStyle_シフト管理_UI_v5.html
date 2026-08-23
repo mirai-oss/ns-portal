@@ -1,0 +1,743 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>N-Style シフト管理 UI v4</title>
+<style>
+:root{
+  --bg:#f4f1eb;--panel:#fff;--ink:#231f1a;--muted:#7d756d;--line:#e4ddd4;--nav:#211d18;
+  --accent:#c94728;--red:#c93f2b;--redsoft:#fde9e4;--green:#2f8f63;--greensoft:#e8f5ee;
+  --amber:#b77b13;--ambersoft:#fff3d8;--blue:#2f6fb7;--bluesoft:#e8f0fb;--purple:#6849a8;--purplesoft:#f1ebff;
+  --shadow:0 8px 24px rgba(35,31,26,.06);
+}
+*{box-sizing:border-box}
+body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans JP",sans-serif;background:var(--bg);color:var(--ink)}
+button,input,select{font:inherit}
+button{cursor:pointer}
+.app{display:grid;grid-template-columns:250px 1fr;min-height:100vh}
+.side{background:var(--nav);color:#fff;padding:22px 18px;position:sticky;top:0;height:100vh}
+.brand{font-size:18px;font-weight:900;padding-bottom:18px;border-bottom:1px solid #ffffff20}
+.brand small{display:block;color:#bdb6ad;font-size:12px;margin-top:4px}
+.nav{margin-top:18px}
+.nav button{width:100%;border:0;background:transparent;color:#d8d1c9;padding:12px;border-radius:10px;text-align:left;margin:3px 0}
+.nav .active{background:#3a342e;color:#fff;font-weight:800}
+.top{height:72px;background:#fff;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center;padding:0 26px;position:sticky;top:0;z-index:10}
+.top h1{margin:0;font-size:22px}
+.meta{font-size:12px;color:var(--muted);margin-top:4px}
+.content{padding:22px 26px 50px;max-width:1650px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:16px;box-shadow:var(--shadow)}
+.btn{border:1px solid var(--line);background:#fff;border-radius:10px;padding:9px 12px}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+.btn.green{background:var(--green);border-color:var(--green);color:#fff}
+.badge{display:inline-block;padding:4px 8px;border-radius:999px;font-size:11px;font-weight:800}
+.green{background:var(--greensoft);color:var(--green)}
+.red{background:var(--redsoft);color:var(--red)}
+.amber{background:var(--ambersoft);color:var(--amber)}
+.blue{background:var(--bluesoft);color:var(--blue)}
+.purple{background:var(--purplesoft);color:var(--purple)}
+.gray{background:#f2efeb;color:#736b63}
+
+.toolbar{padding:13px;display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:center}
+.toolbar-left,.toolbar-right{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.select{border:1px solid var(--line);background:#fff;border-radius:10px;padding:9px 10px}
+
+.metrics{display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin:12px 0}
+.metric{padding:14px}
+.metric small{display:block;color:var(--muted);font-size:11px}
+.metric b{display:block;font-size:22px;margin-top:4px}
+
+.stepnav{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:14px 0}
+.stepbtn{border:1px solid var(--line);background:#fff;border-radius:14px;padding:12px;text-align:left}
+.stepbtn small{display:block;color:var(--muted);font-size:10px;margin-top:3px}
+.stepbtn.active{background:#211d18;color:#fff;border-color:#211d18}
+.stepbtn.active small{color:#d4cec7}
+
+.page{display:none}
+.page.active{display:block}
+
+.layout{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:14px}
+.calendar{padding:14px}
+.cal-head{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:10px}
+.periods{display:flex;gap:6px}
+.periods button{border:1px solid var(--line);background:#fff;border-radius:999px;padding:7px 10px;font-size:11px}
+.periods button.active{background:#211d18;color:#fff}
+.half-grid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:8px}
+.day{min-height:120px;border:1px solid var(--line);border-radius:12px;padding:9px;background:#fff;cursor:pointer}
+.day.active{box-shadow:0 0 0 2px var(--accent) inset}
+.day b{font-size:12px}
+.day small{font-size:9px;color:var(--muted)}
+.coverage{margin-top:7px}
+.coverage strong{display:block;font-size:15px}
+.tags{display:flex;gap:4px;flex-wrap:wrap;margin-top:7px}
+.tag{font-size:9px;padding:4px 6px;border-radius:7px;background:#f2efeb;color:#746b63}
+.tag.help{background:var(--purplesoft);color:var(--purple)}
+.tag.short{background:var(--ambersoft);color:var(--amber)}
+
+.sidepanel{padding:14px;position:sticky;top:88px;height:max-content}
+.sidepanel h3{margin:0;font-size:17px}
+.mini-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:10px 0}
+.mini{border:1px solid var(--line);border-radius:10px;padding:9px;background:#faf8f5}
+.mini small{display:block;color:var(--muted);font-size:10px}
+.mini b{font-size:15px}
+.person{padding:8px 0;border-bottom:1px solid var(--line)}
+.person:last-child{border:0}
+.person .row{display:flex;justify-content:space-between;gap:8px}
+.person b{font-size:12px}
+.person span{font-size:10px;color:var(--muted)}
+.person .shift{font-size:11px;margin-top:3px;color:#5e554d}
+
+.gantt-card{margin-top:14px}
+.section-head{padding:14px 16px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center;gap:10px}
+.body{padding:14px}
+.gantt-wrap{overflow:auto;border:1px solid var(--line);border-radius:12px}
+.gantt{min-width:1120px;padding:10px}
+.ghead,.grow{display:grid;grid-template-columns:165px repeat(16,1fr);gap:2px;align-items:center}
+.ghead div{font-size:9px;color:var(--muted);text-align:center}
+.ghead div:first-child{text-align:left}
+.grow{min-height:40px;border-top:1px solid #efe9e2}
+.gname{font-size:11px;padding:6px 4px}
+.gname b{display:block;font-size:12px}
+.gname small{font-size:9px;color:var(--muted)}
+.gslot{height:30px;border-radius:5px;background:#f6f2ed}
+.gslot.emp{background:var(--greensoft);border:1px solid #c6e2d3}
+.gslot.pa{background:#fff4df;border:1px solid #efd9a4}
+.gslot.help{background:var(--purplesoft);border:1px solid #d9cbf4}
+.role-summary{border-top:2px solid var(--line);margin-top:10px}
+.role-row{display:grid;grid-template-columns:150px 1fr;gap:8px;padding:8px 4px;border-bottom:1px solid var(--line)}
+.role-row b{font-size:12px}
+.role-row span{font-size:11px;color:#5f574f}
+
+.finance{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:12px}
+.finance .card{padding:13px}
+.finance small{display:block;color:var(--muted);font-size:11px}
+.finance b{font-size:20px;display:block;margin-top:4px}
+
+.adjust-grid{display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:14px}
+.shift-table-wrap{overflow:auto}
+.shift-table{border-collapse:separate;border-spacing:0;width:max-content;min-width:100%;font-size:11px}
+.shift-table th,.shift-table td{border-right:1px solid var(--line);border-bottom:1px solid var(--line);padding:7px;background:#fff;white-space:nowrap;text-align:center}
+.shift-table thead th{background:#f7f3ee;position:sticky;top:0;z-index:2}
+.shift-table th:first-child,.shift-table td:first-child{position:sticky;left:0;z-index:1;background:#fff;text-align:left;min-width:165px}
+.shift-table thead th:first-child{z-index:3;background:#f7f3ee}
+.cell{border-radius:8px;padding:6px 8px;background:#f7f3ee;min-width:72px}
+.cell.ok{background:var(--greensoft);color:var(--green)}
+.cell.need{background:var(--redsoft);color:var(--red);font-weight:800}
+.cell.help{background:var(--purplesoft);color:var(--purple)}
+.cell.edited{background:var(--bluesoft);color:var(--blue);font-weight:800}
+.reqbox{padding:14px}
+.reqday{padding:10px 0;border-bottom:1px solid var(--line)}
+.reqday:last-child{border:0}
+.reqday b{font-size:12px}
+.reqday p{margin:4px 0 0;font-size:10px;color:var(--muted)}
+.bottom-action{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:12px;padding:12px 14px;border:1px solid var(--line);border-radius:14px;background:#fff}
+
+.confirmed-layout{display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:14px}
+.month-card{padding:14px}
+.month-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:7px}
+.month-day{min-height:115px;border:1px solid var(--line);border-radius:10px;padding:8px;background:#fff}
+.month-day .d{font-size:11px;color:var(--muted)}
+.month-day .s{font-size:10px;margin-top:5px;padding:5px;border-radius:7px;background:#f7f3ee}
+.month-day .s.ok{background:var(--greensoft);color:var(--green)}
+.month-day .s.help{background:var(--purplesoft);color:var(--purple)}
+.todo{padding:10px 0;border-bottom:1px solid var(--line)}
+.todo:last-child{border:0}
+.todo b{font-size:12px}
+.todo p{margin:4px 0 0;font-size:11px;color:var(--muted)}
+
+.actual-top{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:12px}
+.actual-top .card{padding:13px}
+.actual-top small{display:block;color:var(--muted);font-size:11px}
+.actual-top b{display:block;font-size:22px;margin-top:4px}
+.subtabs{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
+.subtab{border:1px solid var(--line);background:#fff;border-radius:999px;padding:8px 12px}
+.subtab.active{background:#211d18;color:#fff;border-color:#211d18}
+.subpanel{display:none}
+.subpanel.active{display:block}
+.two-col{display:grid;grid-template-columns:360px minmax(0,1fr);gap:14px}
+.list-card{padding:14px}
+.rank-item{padding:11px 0;border-bottom:1px solid var(--line)}
+.rank-item:last-child{border:0}
+.rank-head{display:flex;justify-content:space-between;gap:8px}
+.rank-head b{font-size:13px}
+.rank-head span{font-size:11px;color:var(--muted)}
+.progress{height:10px;background:#f1ece5;border-radius:999px;overflow:hidden;margin-top:8px}
+.progress > div{height:100%;background:linear-gradient(90deg,var(--green),#60b084)}
+.rank-meta{display:flex;justify-content:space-between;gap:8px;font-size:11px;color:#5f574f;margin-top:6px}
+.table-card{padding:14px}
+.tablewrap{overflow:auto}
+.tbl{width:100%;border-collapse:collapse}
+.tbl th,.tbl td{padding:10px;border-bottom:1px solid var(--line);font-size:11px;text-align:left;white-space:nowrap}
+.tbl th{background:#faf8f5;color:var(--muted)}
+.positive{color:var(--red);font-weight:800}
+.negative{color:var(--green);font-weight:800}
+.note{padding:10px 12px;border-radius:10px;background:#faf8f5;border:1px solid var(--line);font-size:12px;color:#5f574f}
+
+@media(max-width:1100px){
+  .metrics{grid-template-columns:repeat(3,1fr)}
+  .layout,.adjust-grid,.confirmed-layout,.two-col{grid-template-columns:1fr}
+  .finance,.actual-top{grid-template-columns:repeat(2,1fr)}
+  .sidepanel{position:static}
+  .half-grid{grid-template-columns:repeat(5,1fr)}
+}
+@media(max-width:760px){
+  .app{display:block}
+  .side{display:none}
+  .top{height:auto;min-height:58px;padding:10px 12px}
+  .top h1{font-size:17px}
+  .content{padding:12px 10px 78px}
+  .toolbar{display:block}
+  .toolbar-left,.toolbar-right{display:grid;grid-template-columns:1fr 1fr;margin-top:7px}
+  .toolbar-left>*,.toolbar-right>*{width:100%}
+  .metrics,.finance,.actual-top{grid-template-columns:1fr 1fr}
+  .stepnav{grid-template-columns:1fr 1fr}
+  .half-grid{grid-template-columns:1fr}
+  .day{min-height:auto;display:grid;grid-template-columns:80px 1fr;gap:8px}
+  .day .tags{grid-column:2}
+  .month-grid{grid-template-columns:1fr}
+  .month-day{min-height:auto;display:grid;grid-template-columns:70px 1fr;gap:6px}
+  .bottom-action{position:sticky;bottom:8px;z-index:8;flex-direction:column;align-items:stretch;background:rgba(255,255,255,.96);backdrop-filter:blur(12px)}
+  .tbl,.tbl tbody,.tbl tr,.tbl td{display:block;width:100%}
+  .tbl thead{display:none}
+  .tbl tr{border:1px solid var(--line);border-radius:12px;margin-bottom:8px;padding:8px;background:#fff}
+  .tbl td{border:0;padding:4px;white-space:normal}
+}
+
+/* ===== Smartregi sync UI ===== */
+.syncbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
+.sync-status{display:inline-flex;align-items:center;gap:6px;padding:7px 10px;border-radius:999px;font-size:11px;font-weight:800;border:1px solid var(--line);background:#fff}
+.sync-status.synced{background:var(--greensoft);color:var(--green);border-color:#c6e2d3}
+.sync-status.pending{background:var(--ambersoft);color:var(--amber);border-color:#efd9a4}
+.sync-status.error{background:var(--redsoft);color:var(--red);border-color:#efb9ae}
+.sync-status.conflict{background:var(--purplesoft);color:var(--purple);border-color:#d9cbf4}
+.editable-time{display:flex;gap:6px;align-items:center}
+.editable-time input{width:76px;border:1px solid var(--line);border-radius:8px;padding:6px 7px;background:#fff;font-size:11px}
+.editable-time button{border:1px solid var(--line);background:#fff;border-radius:8px;padding:6px 8px;font-size:10px}
+.sync-note{padding:10px 12px;border:1px solid #c6e2d3;background:#f7fcf9;border-radius:10px;font-size:11px;color:#436653;margin-bottom:12px}
+.audit-mini{font-size:10px;color:var(--muted);margin-top:4px}
+@media(max-width:760px){
+  .editable-time{display:grid;grid-template-columns:1fr 1fr auto}
+  .editable-time input{width:100%}
+}
+
+</style>
+</head>
+<body>
+<div class="app">
+<aside class="side">
+  <div class="brand">🐔 N-Styleグループ<small>シフト管理</small></div>
+  <div class="nav">
+    <button class="active">📅 シフト管理</button>
+    <button>👥 従業員</button>
+    <button>📊 人件費</button>
+  </div>
+</aside>
+
+<section>
+<header class="top">
+  <div>
+    <h1>シフト管理</h1>
+    <div class="meta">提出確認 → 調整・確定 → 公開後確認 → 実績・差分</div>
+  </div>
+  <button class="btn">🔔</button>
+</header>
+
+<div class="content">
+  <div class="metrics top-kpis">
+    <div class="card metric"><small>提出済み</small><b>42 / 48</b><span class="badge green">87.5%</span></div>
+    <div class="card metric"><small>未提出</small><b style="color:var(--red)">6</b><span class="badge red">要確認</span></div>
+    <div class="card metric"><small>ヘルプ可能</small><b>9人</b><span class="badge blue">他店舗含む</span></div>
+    <div class="card metric"><small>不足時間帯</small><b style="color:var(--amber)">4</b><span class="badge amber">要調整</span></div>
+    <div class="card metric"><small>想定人件費率</small><b id="topLaborRate">28.4%</b><span class="badge green">基準内</span></div>
+  </div>
+
+  <div class="card toolbar">
+    <div class="toolbar-left">
+      <select class="select"><option>鳥一代 恵比寿</option><option>鳥一代 新橋</option><option>鳥一代 本店</option></select>
+      <input class="select" type="month" value="2026-09">
+      <select class="select" id="meal" onchange="updateFinance(this.value)">
+        <option value="all">一括</option>
+        <option value="lunch">ランチ</option>
+        <option value="dinner">ディナー</option>
+      </select>
+    </div>
+    <div class="toolbar-right">
+      <button class="btn" onclick="downloadCSV()">CSV</button>
+      <button class="btn">未提出者に通知</button>
+    </div>
+  </div>
+
+  <div class="stepnav">
+    <button class="stepbtn active" data-page="request" onclick="showPage('request')"><b>① 希望シフト</b><small>半月・日別・ヘルプ候補を確認</small></button>
+    <button class="stepbtn" data-page="adjust" onclick="showPage('adjust')"><b>② シフト調整</b><small>不足・役割・人件費を見て調整</small></button>
+    <button class="stepbtn" data-page="confirmed" onclick="showPage('confirmed')"><b>③ 確定シフト</b><small>公開後の確認・変更・再通知</small></button>
+    <button class="stepbtn" data-page="actual" onclick="showPage('actual')"><b>④ 実績・差分</b><small>叶え率 / 売上実績 / PA差分</small></button>
+  </div>
+
+  <section id="request" class="page active">
+    <div class="layout">
+      <div class="card calendar">
+        <div class="cal-head">
+          <div><b id="periodTitle">2026年9月 前半</b><div class="meta">日付を押すと、その日の希望者一覧を確認</div></div>
+          <div class="periods">
+            <button class="active" onclick="switchPeriod('first',this)">1〜15日</button>
+            <button onclick="switchPeriod('second',this)">16日〜月末</button>
+          </div>
+        </div>
+        <div id="firstGrid" class="half-grid"></div>
+        <div id="secondGrid" class="half-grid" style="display:none"></div>
+      </div>
+
+      <div class="card sidepanel">
+        <h3 id="selectedDate">9/1 火</h3><div class="meta">この日の希望シフト</div>
+        <div class="mini-grid"><div class="mini"><small>必要</small><b id="need">6人</b></div><div class="mini"><small>希望提出</small><b id="submitted">6人</b></div></div>
+        <div id="peopleList"></div>
+        <button class="btn primary" style="width:100%;margin-top:10px" onclick="showPage('adjust')">この日を調整する</button>
+      </div>
+    </div>
+
+    <div class="card gantt-card">
+      <div class="section-head"><div><b>日毎の出勤希望ガント</b><div class="meta">メイン所属 / ヘルプ希望 / 社員 / PAを区別</div></div><select class="select"><option>9/4 金</option><option>9/5 土</option></select></div>
+      <div class="body">
+        <div class="gantt-wrap"><div class="gantt">
+          <div class="ghead"><div>従業員</div><div>10</div><div>11</div><div>12</div><div>13</div><div>14</div><div>15</div><div>16</div><div>17</div><div>18</div><div>19</div><div>20</div><div>21</div><div>22</div><div>23</div><div>24</div><div>25</div></div>
+          <div class="grow"><div class="gname"><b>佐藤 太郎 <span class="badge green">メイン</span></b><small>社員 / ホールA</small></div><div class="gslot"></div><div class="gslot"></div><div class="gslot"></div><div class="gslot"></div><div class="gslot"></div><div class="gslot"></div><div class="gslot"></div><div class="gslot emp"></div><div class="gslot emp"></div><div class="gslot emp"></div><div class="gslot emp"></div><div class="gslot emp"></div><div class="gslot emp"></div><div class="gslot emp"></div><div class="gslot"></div><div class="gslot"></div></div>
+          <div class="grow"><div class="gname"><b>肥田 葵 <span class="badge green">メイン</span></b><small>社員 / ドリンクA</small></div><div class="gslot"></div><div class="gslot"></div><div class="gslot"></div><div class="gslot"></div><div class="gslot"></div><div class="gslot"></div><div class="gslot"></div><div class="gslot emp"></div><div class="gslot emp"></div><div class="gslot emp"></div><div class="gslot emp"></div><div class="gslot emp"></div><div class="gslot"></div><div class="gslot"></div><div class="gslot"></div><div class="gslot"></div></div>
+          <div class="grow"><div class="gname"><b>Sagar <span class="badge gray">メイン</span></b><small>PA / キッチンA</small></div><div class="gslot"></div><div class="gslot"></div><div class="gslot pa"></div><div class="gslot pa"></div><div class="gslot pa"></div><div class="gslot pa"></div><div class="gslot pa"></div><div class="gslot pa"></div><div class="gslot pa"></div><div class="gslot pa"></div><div class="gslot pa"></div><div class="gslot pa"></div><div class="gslot pa"></div><div class="gslot"></div><div class="gslot"></div><div class="gslot"></div></div>
+          <div class="grow"><div class="gname"><b>田中 海 <span class="badge purple">ヘルプ</span></b><small>PA / 新橋所属・ホールA</small></div><div class="gslot"></div><div class="gslot"></div><div class="gslot"></div><div class="gslot"></div><div class="gslot"></div><div class="gslot"></div><div class="gslot"></div><div class="gslot help"></div><div class="gslot help"></div><div class="gslot help"></div><div class="gslot help"></div><div class="gslot help"></div><div class="gslot help"></div><div class="gslot"></div><div class="gslot"></div><div class="gslot"></div></div>
+          <div class="role-summary">
+            <div class="role-row"><b>ホール 3人</b><span>佐藤 太郎 / 山本 健 / 田中 海（ヘルプ・新橋）</span></div>
+            <div class="role-row"><b>キッチン 2人</b><span>Sagar / Nguyen A</span></div>
+            <div class="role-row"><b>ドリンク 1人</b><span>肥田 葵</span></div>
+            <div class="role-row"><b>合計 6人</b><span>社員2人 / PA4人 / ヘルプ1人</span></div>
+          </div>
+        </div></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="adjust" class="page">
+    <div class="finance">
+      <div class="card"><small>売上予想</small><b id="sales">12,400,000円</b></div>
+      <div class="card"><small>社員人件費</small><b id="empCost">1,280,000円</b></div>
+      <div class="card"><small>PA人件費</small><b id="paCost">2,240,000円</b></div>
+      <div class="card"><small>総人件費</small><b id="totalCost">3,520,000円</b></div>
+    </div>
+
+    <div class="adjust-grid">
+      <div class="card">
+        <div class="section-head"><div><b>シフト調整</b><div class="meta">希望シフトをベースに、不足・役割・ヘルプ候補を調整</div></div><div><button class="btn">自動配置案</button> <button class="btn">ヘルプ候補</button></div></div>
+        <div class="body shift-table-wrap">
+          <table class="shift-table">
+            <thead><tr><th>従業員</th><th>9/1</th><th>9/2</th><th>9/3</th><th>9/4</th><th>9/5</th><th>9/6</th><th>9/7</th></tr></thead>
+            <tbody>
+              <tr><td><b>佐藤 太郎</b><div class="meta">社員 / ホールA</div></td><td><div class="cell ok">12-22</div></td><td><div class="cell ok">17-23</div></td><td><div class="cell">休</div></td><td><div class="cell ok">17-23</div></td><td><div class="cell ok">12-23</div></td><td><div class="cell">休</div></td><td><div class="cell ok">17-23</div></td></tr>
+              <tr><td><b>肥田 葵</b><div class="meta">社員 / ドリンクA</div></td><td><div class="cell ok">17-23</div></td><td><div class="cell">休</div></td><td><div class="cell ok">12-22</div></td><td><div class="cell need" onclick="assignCell(this)">不足</div></td><td><div class="cell ok">17-23</div></td><td><div class="cell">休</div></td><td><div class="cell ok">17-23</div></td></tr>
+              <tr><td><b>Sagar</b><div class="meta">PA / キッチンA</div></td><td><div class="cell ok">12-22</div></td><td><div class="cell ok">12-22</div></td><td><div class="cell ok">17-23</div></td><td><div class="cell help">ヘルプ可</div></td><td><div class="cell need" onclick="assignCell(this)">不足</div></td><td><div class="cell ok">12-22</div></td><td><div class="cell">休</div></td></tr>
+              <tr><td><b>田中 海</b><div class="meta">PA / 新橋 / ヘルプ候補</div></td><td><div class="cell">-</div></td><td><div class="cell">-</div></td><td><div class="cell">-</div></td><td><div class="cell help">17-23</div></td><td><div class="cell help">17-23</div></td><td><div class="cell">-</div></td><td><div class="cell">-</div></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card reqbox">
+        <b>調整が必要な日</b>
+        <div class="reqday"><b>9/4 金</b><p>ホールA 1名不足 / ヘルプ候補2名</p></div>
+        <div class="reqday"><b>9/5 土</b><p>キッチンA 1名不足 / ヘルプ候補1名</p></div>
+        <div class="reqday"><b>9/10 木</b><p>18:00〜20:00 1名不足</p></div>
+      </div>
+    </div>
+
+    <div class="bottom-action">
+      <div><b>公開前チェック</b><div class="meta" id="adjustStatus">不足枠 3件があります</div></div>
+      <div><button class="btn">下書き保存</button> <button class="btn green" onclick="confirmShift()">このシフトで確定・公開</button></div>
+    </div>
+  </section>
+
+  <section id="confirmed" class="page">
+    <div class="confirmed-layout">
+      <div class="card month-card">
+        <div class="section-head" style="padding:0 0 12px;border:0"><div><b>9月 確定シフト</b><div class="meta">公開済み 8/25 18:00</div></div><span class="badge green">公開済み</span></div>
+        <div class="month-grid">
+          <div class="month-day"><div class="d">9/1 火</div><div class="s ok">佐藤 12-22</div><div class="s ok">肥田 17-23</div></div>
+          <div class="month-day"><div class="d">9/2 水</div><div class="s ok">佐藤 17-23</div><div class="s ok">Sagar 12-22</div></div>
+          <div class="month-day"><div class="d">9/3 木</div><div class="s ok">肥田 12-22</div></div>
+          <div class="month-day"><div class="d">9/4 金</div><div class="s help">田中 海 ヘルプ 17-23</div><div class="s ok">佐藤 17-23</div></div>
+          <div class="month-day"><div class="d">9/5 土</div><div class="s help">新橋→恵比寿 ヘルプ</div><div class="s ok">佐藤 12-23</div></div>
+          <div class="month-day"><div class="d">9/6 日</div><div class="s ok">Sagar 12-22</div></div>
+          <div class="month-day"><div class="d">9/7 月</div><div class="s ok">佐藤 17-23</div></div>
+        </div>
+      </div>
+
+      <div>
+        <div class="card sidepanel">
+          <b>公開後の確認</b>
+          <div class="todo"><b>未確認 5名</b><p>確定シフトをまだ確認していません</p></div>
+          <div class="todo"><b>変更申請 2件</b><p>9/4・9/12の交代希望</p></div>
+          <div class="todo"><b>ヘルプ確定 3名</b><p>新橋→恵比寿 2名 / 本店→恵比寿 1名</p></div>
+        </div>
+        <div class="card sidepanel" style="margin-top:12px">
+          <b>通知</b>
+          <div class="todo"><b>公開通知</b><p>48名へ送信済み</p></div>
+          <button class="btn" style="width:100%;margin-top:8px" onclick="alert('未確認者へ再通知しました（デモ）')">未確認者へ再通知</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="actual" class="page">
+    <div class="syncbar">
+      <span class="sync-status synced" id="syncState">● スマレジタイムカード同期済み</span>
+      <span class="meta">最終同期：2026/08/23 15:21</span>
+      <button class="btn" onclick="manualSync()">今すぐ同期</button>
+    </div>
+    <div class="sync-note">
+      シフト予定時間・打刻実績時間はスマレジタイムカードAPIから取得する想定です。この画面で修正した場合は、スマレジタイムカード側へ更新して再同期し、両システムの値を一致させます。
+    </div>
+    <div class="actual-top">
+      <div class="card"><small>売上実績（前半累計）</small><b>12,870,350円</b><span class="badge green">予想比 +470,350円</span></div>
+      <div class="card"><small>実績 人件費率</small><b>27.9%</b><span class="badge green">予想比 -0.5pt</span></div>
+      <div class="card"><small>PA削減時間</small><b>14.5h</b><span class="badge blue">売上好調日で調整</span></div>
+      <div class="card"><small>PA超過時間</small><b style="color:var(--red)">9.0h</b><span class="badge red">繁忙対応</span></div>
+    </div>
+
+    <div class="subtabs">
+      <button class="subtab active" data-sub="fulfill" onclick="showSub('fulfill')">シフト叶え率</button>
+      <button class="subtab" data-sub="gap" onclick="showSub('gap')">シフトと実績の差分</button>
+    </div>
+
+    <div id="fulfill" class="subpanel active">
+      <div class="two-col">
+        <div class="card list-card">
+          <b>従業員ごとのシフト叶え率</b>
+          <div class="meta">希望に対して、実際に入れた日数・時間を確認</div>
+
+          <div class="rank-item">
+            <div class="rank-head"><b>佐藤 太郎</b><span>15希望 / 15実績</span></div>
+            <div class="progress"><div style="width:100%"></div></div>
+            <div class="rank-meta"><span>叶え率 100%</span><span>希望 112.0h / 実績 112.0h</span></div>
+          </div>
+
+          <div class="rank-item">
+            <div class="rank-head"><b>肥田 葵</b><span>12希望 / 11実績</span></div>
+            <div class="progress"><div style="width:91.7%"></div></div>
+            <div class="rank-meta"><span>叶え率 91.7%</span><span>希望 74.0h / 実績 68.0h</span></div>
+          </div>
+
+          <div class="rank-item">
+            <div class="rank-head"><b>Sagar</b><span>14希望 / 12実績</span></div>
+            <div class="progress"><div style="width:85.7%"></div></div>
+            <div class="rank-meta"><span>叶え率 85.7%</span><span>希望 96.0h / 実績 84.0h</span></div>
+          </div>
+
+          <div class="rank-item">
+            <div class="rank-head"><b>田中 海（ヘルプ）</b><span>6希望 / 5実績</span></div>
+            <div class="progress"><div style="width:83.3%"></div></div>
+            <div class="rank-meta"><span>叶え率 83.3%</span><span>希望 30.0h / 実績 26.0h</span></div>
+          </div>
+
+          <div class="rank-item">
+            <div class="rank-head"><b>Nguyen A</b><span>10希望 / 7実績</span></div>
+            <div class="progress"><div style="width:70%"></div></div>
+            <div class="rank-meta"><span>叶え率 70.0%</span><span>希望 60.0h / 実績 42.0h</span></div>
+          </div>
+        </div>
+
+        <div class="card table-card">
+          <b>叶え率一覧</b>
+          <div class="meta">日数・時間の両方で見える化</div>
+          <div class="tablewrap">
+            <table class="tbl">
+              <thead>
+                <tr><th>従業員</th><th>区分</th><th>希望日数</th><th>実績日数</th><th>叶え率</th><th>希望時間</th><th>実績時間</th><th>差分</th></tr>
+              </thead>
+              <tbody>
+                <tr><td>佐藤 太郎</td><td>社員</td><td>15</td><td>15</td><td>100.0%</td><td>112.0h</td><td>112.0h</td><td>0.0h</td></tr>
+                <tr><td>肥田 葵</td><td>社員</td><td>12</td><td>11</td><td>91.7%</td><td>74.0h</td><td>68.0h</td><td class="negative">-6.0h</td></tr>
+                <tr><td>Sagar</td><td>PA</td><td>14</td><td>12</td><td>85.7%</td><td>96.0h</td><td>84.0h</td><td class="negative">-12.0h</td></tr>
+                <tr><td>田中 海</td><td>PA(ヘルプ)</td><td>6</td><td>5</td><td>83.3%</td><td>30.0h</td><td>26.0h</td><td class="negative">-4.0h</td></tr>
+                <tr><td>Nguyen A</td><td>PA</td><td>10</td><td>7</td><td>70.0%</td><td>60.0h</td><td>42.0h</td><td class="negative">-18.0h</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="note" style="margin-top:12px">叶え率は「実際に入った日数 ÷ 希望日数」で計算。時間差分も一緒に見ることで、単に日数だけではなく実働のズレも把握できるようにしています。</div>
+        </div>
+      </div>
+    </div>
+
+    <div id="gap" class="subpanel">
+      <div class="card table-card">
+        <b>日別 実績差分</b>
+        <div class="meta">売上実績・実績人件費率・PA時間の削減/超過を日ごとに表示</div>
+        <div class="tablewrap" style="margin-top:10px">
+          <table class="tbl">
+            <thead>
+              <tr>
+                <th>日付</th>
+                <th>売上予想</th>
+                <th>売上実績</th>
+                <th>売上差分</th>
+                <th>想定人件費率</th>
+                <th>実績人件費率</th>
+                <th>差分</th>
+                <th>シフト予定時間</th>
+                <th>実績打刻時間</th>
+                <th>削減/超過</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>9/1 火<div class="audit-mini">Smartregi ID: ATT-0901</div></td>
+                <td>820,000円</td><td>845,500円</td><td class="positive">+25,500円</td>
+                <td>28.2%</td><td>27.5%</td><td class="negative">-0.7pt</td>
+                <td>
+                  <div class="editable-time">
+                    <input type="time" value="17:00" data-original="17:00">
+                    <input type="time" value="23:00" data-original="23:00">
+                    <button onclick="saveTime(this,'予定')">保存</button>
+                  </div>
+                </td>
+                <td>
+                  <div class="editable-time">
+                    <input type="time" value="17:03" data-original="17:03">
+                    <input type="time" value="22:47" data-original="22:47">
+                    <button onclick="saveTime(this,'実績')">保存</button>
+                  </div>
+                </td>
+                <td><span class="negative">-0.3h</span><div class="audit-mini syncrow">同期済み</div></td>
+              </tr>
+              <tr>
+                <td>9/2 水<div class="audit-mini">Smartregi ID: ATT-0902</div></td>
+                <td>790,000円</td><td>752,300円</td><td class="negative">-37,700円</td>
+                <td>28.1%</td><td>29.6%</td><td class="positive">+1.5pt</td>
+                <td>
+                  <div class="editable-time">
+                    <input type="time" value="17:00" data-original="17:00">
+                    <input type="time" value="23:00" data-original="23:00">
+                    <button onclick="saveTime(this,'予定')">保存</button>
+                  </div>
+                </td>
+                <td>
+                  <div class="editable-time">
+                    <input type="time" value="16:55" data-original="16:55">
+                    <input type="time" value="23:22" data-original="23:22">
+                    <button onclick="saveTime(this,'実績')">保存</button>
+                  </div>
+                </td>
+                <td><span class="positive">+0.5h</span><div class="audit-mini syncrow">同期済み</div></td>
+              </tr>
+              <tr>
+                <td>9/3 木<div class="audit-mini">Smartregi ID: ATT-0903</div></td>
+                <td>760,000円</td><td>741,800円</td><td class="negative">-18,200円</td>
+                <td>27.8%</td><td>28.9%</td><td class="positive">+1.1pt</td>
+                <td>
+                  <div class="editable-time">
+                    <input type="time" value="12:00" data-original="12:00">
+                    <input type="time" value="22:00" data-original="22:00">
+                    <button onclick="saveTime(this,'予定')">保存</button>
+                  </div>
+                </td>
+                <td>
+                  <div class="editable-time">
+                    <input type="time" value="12:08" data-original="12:08">
+                    <input type="time" value="21:42" data-original="21:42">
+                    <button onclick="saveTime(this,'実績')">保存</button>
+                  </div>
+                </td>
+                <td><span class="negative">-0.4h</span><div class="audit-mini syncrow">同期済み</div></td>
+              </tr>
+              <tr>
+                <td>9/4 金<div class="audit-mini">Smartregi ID: ATT-0904</div></td>
+                <td>980,000円</td><td>1,054,200円</td><td class="positive">+74,200円</td>
+                <td>29.0%</td><td>28.1%</td><td class="negative">-0.9pt</td>
+                <td>
+                  <div class="editable-time">
+                    <input type="time" value="17:00" data-original="17:00">
+                    <input type="time" value="23:00" data-original="23:00">
+                    <button onclick="saveTime(this,'予定')">保存</button>
+                  </div>
+                </td>
+                <td>
+                  <div class="editable-time">
+                    <input type="time" value="16:58" data-original="16:58">
+                    <input type="time" value="23:35" data-original="23:35">
+                    <button onclick="saveTime(this,'実績')">保存</button>
+                  </div>
+                </td>
+                <td><span class="positive">+0.6h</span><div class="audit-mini syncrow">同期済み</div></td>
+              </tr>
+              <tr>
+                <td>9/5 土<div class="audit-mini">Smartregi ID: ATT-0905</div></td>
+                <td>1,180,000円</td><td>1,245,700円</td><td class="positive">+65,700円</td>
+                <td>30.2%</td><td>29.4%</td><td class="negative">-0.8pt</td>
+                <td>
+                  <div class="editable-time">
+                    <input type="time" value="12:00" data-original="12:00">
+                    <input type="time" value="23:00" data-original="23:00">
+                    <button onclick="saveTime(this,'予定')">保存</button>
+                  </div>
+                </td>
+                <td>
+                  <div class="editable-time">
+                    <input type="time" value="11:55" data-original="11:55">
+                    <input type="time" value="23:28" data-original="23:28">
+                    <button onclick="saveTime(this,'実績')">保存</button>
+                  </div>
+                </td>
+                <td><span class="positive">+0.6h</span><div class="audit-mini syncrow">同期済み</div></td>
+              </tr>
+              <tr>
+                <td>9/6 日<div class="audit-mini">Smartregi ID: ATT-0906</div></td>
+                <td>1,050,000円</td><td>1,009,100円</td><td class="negative">-40,900円</td>
+                <td>29.8%</td><td>30.7%</td><td class="positive">+0.9pt</td>
+                <td>
+                  <div class="editable-time">
+                    <input type="time" value="12:00" data-original="12:00">
+                    <input type="time" value="22:00" data-original="22:00">
+                    <button onclick="saveTime(this,'予定')">保存</button>
+                  </div>
+                </td>
+                <td>
+                  <div class="editable-time">
+                    <input type="time" value="12:10" data-original="12:10">
+                    <input type="time" value="21:36" data-original="21:36">
+                    <button onclick="saveTime(this,'実績')">保存</button>
+                  </div>
+                </td>
+                <td><span class="negative">-0.6h</span><div class="audit-mini syncrow">同期済み</div></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="finance" style="margin-top:12px">
+        <div class="card"><small>前半 PA予定時間</small><b>272.0h</b></div>
+        <div class="card"><small>前半 PA実績時間</small><b>267.5h</b></div>
+        <div class="card"><small>削減できた時間</small><b>14.5h</b></div>
+        <div class="card"><small>超過した時間</small><b style="color:var(--red)">9.0h</b></div>
+      </div>
+
+      <div class="note">この画面は、将来的に売上実績DBと勤怠実績を自動連携させて、日別の人件費率・PA時間差分・売上差分を自動集計する想定です。どの日に削れたか、どの日にオーバーしたかが一目で分かるようにしています。</div>
+    </div>
+  </section>
+</div>
+</section>
+</div>
+
+<script>
+const firstDays=[['9/1 火',6,6,'ok'],['9/2 水',6,6,'ok'],['9/3 木',5,6,'warn'],['9/4 金',7,8,'warn'],['9/5 土',8,9,'warn'],['9/6 日',8,8,'ok'],['9/7 月',6,6,'ok'],['9/8 火',6,6,'ok'],['9/9 水',6,6,'ok'],['9/10 木',5,6,'warn'],['9/11 金',8,8,'ok'],['9/12 土',9,9,'ok'],['9/13 日',7,8,'warn'],['9/14 月',6,6,'ok'],['9/15 火',6,6,'ok']];
+const secondDays=[['9/16 水',6,6,'ok'],['9/17 木',6,6,'ok'],['9/18 金',7,8,'warn'],['9/19 土',9,9,'ok'],['9/20 日',8,8,'ok'],['9/21 月',5,6,'warn'],['9/22 火',6,6,'ok'],['9/23 水',6,6,'ok'],['9/24 木',6,6,'ok'],['9/25 金',8,8,'ok'],['9/26 土',8,9,'warn'],['9/27 日',8,8,'ok'],['9/28 月',6,6,'ok'],['9/29 火',6,6,'ok'],['9/30 水',6,6,'ok']];
+const people=[['佐藤 太郎','社員 / ホールA','12:00–22:00','メイン'],['肥田 葵','社員 / ドリンクA','17:00–23:00','メイン'],['Sagar','PA / キッチンA','12:00–22:00','メイン'],['田中 海','PA / 新橋所属・ホールA','17:00–23:00','ヘルプ'],['Nguyen A','PA / キッチンB','17:00–23:00','メイン'],['山本 健','PA / ホールB','17:00–23:30','メイン'],['鈴木 翔','PA / ホールB','18:00–23:00','メイン'],['高橋 美咲','PA / ホールA','12:00–18:00','メイン']];
+
+function renderGrid(id,days){
+  const el=document.getElementById(id);
+  el.innerHTML=days.map((d,i)=>`<div class="day ${i===0?'active':''}" onclick="selectDay(this,'${d[0]}',${d[1]},${d[2]},'${d[3]}')"><div><b>${d[0]}</b><br><small>${d[0].includes('土')||d[0].includes('日')?'週末':'平日'}</small></div><div class="coverage"><strong>${d[1]} / ${d[2]}人</strong><span class="${d[3]}">${d[3]==='ok'?'充足':(d[2]-d[1])+'人不足'}</span></div><div class="tags">${d[3]==='warn'?'<span class="tag short">不足あり</span>':''}${d[0]==='9/4 金'?'<span class="tag help">ヘルプ候補2</span>':''}</div></div>`).join('');
+}
+function selectDay(el,title,submitted,need,status){
+  document.querySelectorAll('.day').forEach(x=>x.classList.remove('active'));
+  el.classList.add('active');
+  document.getElementById('selectedDate').textContent=title;
+  document.getElementById('submitted').textContent=submitted+'人';
+  document.getElementById('need').textContent=need+'人';
+  document.getElementById('peopleList').innerHTML=people.slice(0,submitted).map(p=>`<div class="person"><div class="row"><b>${p[0]} ${p[3]==='ヘルプ'?'<span class="badge purple">ヘルプ</span>':'<span class="badge green">メイン</span>'}</b><span>${p[1]}</span></div><div class="shift">${p[2]}</div></div>`).join('');
+}
+function switchPeriod(p,btn){
+  document.querySelectorAll('.periods button').forEach(x=>x.classList.remove('active'));
+  btn.classList.add('active');
+  document.getElementById('firstGrid').style.display=p==='first'?'grid':'none';
+  document.getElementById('secondGrid').style.display=p==='second'?'grid':'none';
+  document.getElementById('periodTitle').textContent=p==='first'?'2026年9月 前半':'2026年9月 後半';
+  (p==='first'?document.querySelector('#firstGrid .day'):document.querySelector('#secondGrid .day'))?.click();
+}
+function showPage(id){
+  document.querySelectorAll('.page').forEach(x=>x.classList.remove('active'));
+  document.getElementById(id).classList.add('active');
+  document.querySelectorAll('.stepbtn').forEach(x=>x.classList.toggle('active',x.dataset.page===id));
+  window.scrollTo({top:0,behavior:'smooth'});
+}
+function showSub(id){
+  document.querySelectorAll('.subpanel').forEach(x=>x.classList.remove('active'));
+  document.getElementById(id).classList.add('active');
+  document.querySelectorAll('.subtab').forEach(x=>x.classList.toggle('active',x.dataset.sub===id));
+}
+function assignCell(el){
+  el.textContent='17-23';
+  el.className='cell edited';
+  document.getElementById('adjustStatus').textContent='不足枠 2件に減りました';
+}
+function confirmShift(){
+  if(confirm('このシフトで確定・公開しますか？')){
+    alert('シフトを公開しました（デモ）');
+    showPage('confirmed');
+  }
+}
+function updateFinance(v){
+  const m={
+    all:['12,400,000円','1,280,000円','2,240,000円','3,520,000円','28.4%'],
+    lunch:['4,850,000円','510,000円','870,000円','1,380,000円','28.5%'],
+    dinner:['7,550,000円','770,000円','1,370,000円','2,140,000円','28.3%']
+  }[v];
+  document.getElementById('sales').textContent=m[0];
+  document.getElementById('empCost').textContent=m[1];
+  document.getElementById('paCost').textContent=m[2];
+  document.getElementById('totalCost').textContent=m[3];
+  document.getElementById('topLaborRate').textContent=m[4];
+}
+
+function saveTime(btn,type){
+  const wrap=btn.closest('.editable-time');
+  const inputs=wrap.querySelectorAll('input');
+  const row=btn.closest('tr');
+  const status=row.querySelector('.syncrow');
+  const syncState=document.getElementById('syncState');
+
+  status.textContent='同期中…';
+  status.style.color='var(--amber)';
+  syncState.className='sync-status pending';
+  syncState.textContent='● スマレジタイムカードへ同期中';
+
+  btn.disabled=true;
+
+  setTimeout(()=>{
+    inputs.forEach(i=>i.dataset.original=i.value);
+    status.textContent='スマレジ同期済み';
+    status.style.color='var(--green)';
+    syncState.className='sync-status synced';
+    syncState.textContent='● スマレジタイムカード同期済み';
+    btn.disabled=false;
+    alert(type+'時間を修正し、スマレジタイムカードへ同期しました（UIデモ）');
+  },700);
+}
+
+function manualSync(){
+  const syncState=document.getElementById('syncState');
+  syncState.className='sync-status pending';
+  syncState.textContent='● 同期中…';
+  setTimeout(()=>{
+    syncState.className='sync-status synced';
+    syncState.textContent='● スマレジタイムカード同期済み';
+    document.querySelectorAll('.syncrow').forEach(x=>{
+      x.textContent='同期済み';
+      x.style.color='var(--green)';
+    });
+    alert('スマレジタイムカードから最新データを取得しました（UIデモ）');
+  },700);
+}
+
+function downloadCSV(){
+  const rows=[['画面','店舗','期間'],['シフト管理','鳥一代 恵比寿','2026-09']];
+  const csv='\ufeff'+rows.map(r=>r.join(',')).join('\n');
+  const blob=new Blob([csv],{type:'text/csv;charset=utf-8'});
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(blob);
+  a.download='shift.csv';
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+renderGrid('firstGrid',firstDays);
+renderGrid('secondGrid',secondDays);
+document.querySelector('#firstGrid .day')?.click();
+</script>
+</body>
+</html>
