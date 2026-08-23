@@ -292,6 +292,8 @@ const SYSTEMS=[
   url:"https://mirai-oss.github.io/nippo/", roles:["AL","SHAIN","TENCHO","TEAM","HQ","CEO"], login:"このアカウントでOK", sso:true},
  {key:"expenses", ico:"💴", name:"経費申請", desc:"立替経費の申請・承認",
   url:"expenses.html", roles:["AL","SHAIN","TENCHO","TEAM","HQ","CEO"], login:"このアカウントでOK", sso:true, internal:true},
+ {key:"invoices", ico:"📨", name:"請求書管理", desc:"info@宛の請求書メールの処理・履歴管理",
+  url:"invoices.html", roles:["HQ","CEO"], login:"このアカウントでOK", sso:true, internal:true},
 ];
 const GUIDE=[
  {q:"売上 前年比 客単価 日別 月次 比較 f率 l率 原価 人件費", label:"売上・原価・人件費を見る", sys:"keiei"},
@@ -301,6 +303,7 @@ const GUIDE=[
  {q:"口コミ レビュー 星 グーグル google", label:"Google口コミの推移を見る", sys:"keiei"},
  {q:"pl 経費 販管費 損益", label:"PL・経費を見る・入力する", sys:"keiei"},
  {q:"精算 委託 振込金額 請求 精算書", label:"業務委託店舗の精算書・振込管理", sys:"seisan"},
+ {q:"請求書 info@ 支払い ベンダー 業者請求 メール処理", label:"info@宛の請求書メールを処理する", sys:"invoices"},
  {q:"契約 口座情報 賃貸 物件 仕入先 業者 id パスワード 金庫 給与 融資 借入", label:"会社の重要情報（契約・口座・仕入先など）", sys:"joho"},
  {q:"日報 週報 提出 報告", label:"日報・週報を提出する", sys:"nippo"},
  {q:"タスク 依頼 やること", label:"タスクの確認・依頼", sys:"hqtasks"},
@@ -993,6 +996,8 @@ function sidebarHtml(u){
   const showHq=hq&&canSee(hq,u);
   const exp=SYSTEMS.find(sy=>sy.key==="expenses");
   const showExp=exp&&canSee(exp,u);
+  const inv=SYSTEMS.find(sy=>sy.key==="invoices");
+  const showInv=inv&&canSee(inv,u);
   return `<aside class="side">
     <div class="brand"><div class="mark">🐔</div><div><strong>N-Styleグループ</strong><span>ポータル</span></div></div>
     <nav class="nav">
@@ -1000,6 +1005,7 @@ function sidebarHtml(u){
       <button class="${VIEW==="posts"?"active":""}" id="navposts">📢 お知らせ${POSTS&&POSTS.length?`<span class="cnt">${POSTS.length}</span>`:""}</button>
       ${showHq?`<a href="tasks.html" id="navhq">📌 本部タスク${NAV_HQ_CNT?`<span class="cnt">${NAV_HQ_CNT}</span>`:""}</a>`:""}
       ${showExp?`<a href="expenses.html" id="navexp">💴 経費申請</a>`:""}
+      ${showInv?`<a href="invoices.html" id="navinv">📨 請求書管理</a>`:""}
       <div class="cap">各システムへ</div>
       ${ext.map(sy=>`<a class="ext" href="${sy.url}" target="_blank" rel="noopener">${sy.ico} ${esc(sy.name)}</a>`).join("")}
       ${isMaster(u)?`<div class="cap">管理</div><button class="${VIEW==="settings"?"active":""}" id="navsettings">⚙️ 権限・画面設定</button>`:""}

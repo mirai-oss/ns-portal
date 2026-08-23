@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>📨 請求書管理 — N-Styleグループ ポータル</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📨</text></svg>">
+<style>
+:root{
+  --bg:#f5f4f1; --card:#ffffff; --ink:#26221e; --muted:#8a8377;
+  --accent:#c8401f; --accent2:#a33318; --line:#e7e3dc; --ok:#2e7d32;
+  --warn:#b58a00; --bad:#c62828;
+}
+@media(prefers-color-scheme:dark){
+  :root{--bg:#1d1b18; --card:#282521; --ink:#f0ece5; --muted:#a29a8c; --line:#3a362f;}
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Noto Sans JP",sans-serif;background:var(--bg);color:var(--ink);min-height:100vh}
+.wrap{max-width:900px;margin:0 auto;padding:20px 16px 60px}
+a{color:inherit}
+.spin{text-align:center;color:var(--muted);padding:60px 0}
+.err{color:#c62828;font-size:13px}
+.msg-ok{color:var(--ok)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px 18px;box-shadow:0 1px 4px rgba(0,0,0,.04)}
+label{display:block;font-size:13px;color:var(--muted);margin:12px 0 4px}
+label:first-child{margin-top:0}
+input,select,textarea{width:100%;padding:10px 12px;font-size:15px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);font-family:inherit}
+textarea{resize:vertical}
+.btn,.linkbtn,.chip,button{touch-action:manipulation}
+.btn{display:inline-block;padding:12px 20px;font-size:15px;font-weight:600;color:#fff;background:var(--accent);border:none;border-radius:10px;cursor:pointer;width:100%}
+.btn:hover{background:var(--accent2)}
+.btn:disabled{opacity:.5;cursor:default}
+.btn.sub{background:transparent;color:var(--muted);border:1px dashed var(--muted);font-weight:400}
+.btn.sm{padding:8px 14px;font-size:13px;width:auto}
+.linkbtn{background:none;border:none;color:var(--muted);font-size:13px;cursor:pointer;text-decoration:underline;padding:4px}
+.topbar{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:16px;flex-wrap:wrap}
+.topbar h1{font-size:19px}
+.topbar .who{font-size:13px;color:var(--muted)}
+.tabrow{display:flex;gap:6px;margin-bottom:16px;flex-wrap:wrap;overflow-x:auto}
+.tabrow button{padding:9px 16px;border-radius:99px;border:1px solid var(--line);background:var(--card);font-size:13.5px;white-space:nowrap;cursor:pointer}
+.tabrow button.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+.tabrow button .cnt{margin-left:6px;background:rgba(0,0,0,.15);border-radius:99px;padding:1px 7px;font-size:11px}
+.tabrow button.active .cnt{background:rgba(255,255,255,.3)}
+
+.mgmt-scroll{overflow-x:auto}
+table.mg{width:100%;border-collapse:collapse;font-size:13px}
+table.mg th,table.mg td{border-bottom:1px solid var(--line);padding:9px 10px;text-align:left;white-space:nowrap}
+table.mg th{color:var(--muted);font-weight:600;font-size:11.5px;background:var(--bg)}
+table.mg tr[data-openmail]{cursor:pointer}
+table.mg tr[data-openmail]:hover{background:var(--bg)}
+.subjcell{max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.badge{display:inline-block;font-size:11px;font-weight:700;padding:3px 10px;border-radius:99px;white-space:nowrap}
+.badge.unread{color:var(--accent);background:#f7e2da}
+.badge.read{color:var(--muted);background:var(--line)}
+.badge.processing{color:var(--warn);background:#f9efd6}
+.badge.completed{color:var(--ok);background:#e7f4ec}
+.badge.archived{color:var(--muted);background:var(--line)}
+.dupbadge{font-size:11px;color:var(--bad)}
+.empty{padding:40px 10px;text-align:center;color:var(--muted);font-size:13px}
+
+.modal-bg{position:fixed;inset:0;background:rgba(20,15,8,.55);z-index:100;display:flex;align-items:flex-start;justify-content:center;padding:16px;overflow-y:auto}
+.modal{background:var(--card);border-radius:16px;padding:20px;max-width:640px;width:100%;max-height:none;margin:20px 0}
+.modal .mhead{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;gap:10px}
+.modal .mhead h2{font-size:16px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.detail-row{display:flex;justify-content:space-between;gap:10px;padding:7px 0;border-bottom:1px solid var(--line);font-size:13.5px}
+.detail-row:last-child{border-bottom:none}
+.detail-row .k{color:var(--muted);flex:0 0 90px}
+.detail-row .v{text-align:right;overflow:hidden;text-overflow:ellipsis}
+.bodyframe{width:100%;height:280px;border:1px solid var(--line);border-radius:10px;margin-top:10px;background:#fff}
+.attlist{margin-top:8px;display:grid;gap:6px}
+.attitem{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;font-size:13px}
+.sec-title{font-size:14px;font-weight:600;margin:18px 0 8px}
+.sec-title:first-child{margin-top:0}
+.loglist{font-size:12px;color:var(--muted);display:grid;gap:4px;max-height:160px;overflow-y:auto}
+.actionrow{display:grid;gap:8px;margin-top:16px}
+.confirmbox{background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:12px;margin-top:10px;font-size:13px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<div id="app"><div class="spin">読み込み中…</div></div>
+</div>
+<script>
+/* ============================================================
+   認証・セッション（index.html / expenses.html と同一実装。
+   nsportal_session_v1 の形式は変更しない）
+   ============================================================ */
+const SUPA_URL="https://uuvsxzhpxtghojoubjcc.supabase.co";
+const SUPA_KEY="sb_publishable_MrwPJAx_Ws_fdRutprKCiQ_dg3wCiTr";
+const LS_KEY="nsportal_session_v1";
+const BUCKET="invoice-files";
+
+const MAIL_STATUS_LABEL={unread:"未読",read:"既読",processing:"処理中",completed:"完了",archived:"アーカイブ"};
+
+const $=id=>document.getElementById(id);
+const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const sess={get:()=>{try{return JSON.parse(localStorage.getItem(LS_KEY))}catch(e){return null}},
+            set:v=>localStorage.setItem(LS_KEY,JSON.stringify(v)),
+            clear:()=>localStorage.removeItem(LS_KEY)};
+
+async function api(path,opt={},token){
+  const r=await fetch(SUPA_URL+path,{...opt,headers:{
+    "apikey":SUPA_KEY,...(opt.isBinary?{}:{"Content-Type":"application/json"}),
+    ...(token?{"Authorization":"Bearer "+token}:{}),...(opt.headers||{})}});
+  let body=null; const tx=await r.text(); try{body=tx?JSON.parse(tx):null}catch(e){}
+  return {ok:r.ok,status:r.status,body};
+}
+async function authed(path,opt={}){
+  const s=sess.get(); if(!s) return {ok:false,status:401,body:null};
+  let r=await api(path,opt,s.at);
+  if(r.status===401){ if(!await refresh()) return r; r=await api(path,opt,sess.get().at); }
+  return r;
+}
+async function refresh(){
+  const s=sess.get(); if(!s?.rt) return false;
+  const r=await api("/auth/v1/token?grant_type=refresh_token",{method:"POST",body:JSON.stringify({refresh_token:s.rt})});
+  if(!r.ok){sess.clear();return false}
+  sess.set({at:r.body.access_token,rt:r.body.refresh_token,uid:r.body.user.id});
+  return true;
+}
+async function fetchMe(){
+  const s=sess.get(); if(!s) return null;
+  const r=await authed(`/rest/v1/users?id=eq.${s.uid}&select=*`);
+  if(!r.ok||!Array.isArray(r.body)||!r.body[0]) return null;
+  return r.body[0];
+}
+
+// 添付は非公開バケット。署名URLはクリック時に都度取得する（expenses.htmlの遅延解決方式とは違い
+// 一覧に大量表示しないため、詳細モーダルを開いたときにまとめて1回だけ取りに行けば十分）
+async function signAttachmentUrls(paths){
+  if(!paths.length) return {};
+  const r=await authed(`/storage/v1/object/sign/${BUCKET}`,{method:"POST",body:JSON.stringify({expiresIn:3600,paths})});
+  const map={};
+  (Array.isArray(r.body)?r.body:[]).forEach(x=>{ if(x.path&&x.signedURL) map[x.path]=`${SUPA_URL}/storage/v1${x.signedURL}`; });
+  return map;
+}
+function fmtDT(t){ if(!t) return "—"; const d=new Date(t); return `${d.getMonth()+1}/${d.getDate()} ${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`; }
+
+/* ============================================================
+   グローバル状態
+   ============================================================ */
+let ME=null;
+let TAB="unprocessed"; // unprocessed | processing | completed | all
+let LIST=[];
+const canManage=u=>!!(u&&(u.is_master||u.role==="CEO"||u.role==="HQ"));
+
+/* ============================================================
+   一覧
+   ============================================================ */
+async function loadList(){
+  let filter="";
+  if(TAB==="unprocessed") filter="&mail_status=in.(unread,read)";
+  else if(TAB==="processing") filter="&mail_status=eq.processing";
+  else if(TAB==="completed") filter="&mail_status=eq.completed";
+  const r=await authed(`/rest/v1/invoice_emails?select=id,from_address,subject,received_at,mail_status,duplicate_suspected,processing_user_id,updated_at,processor:users!invoice_emails_processing_user_id_fkey(name),atts:invoice_attachments(id)${filter}&order=received_at.desc&limit=300`);
+  LIST=(r.ok&&Array.isArray(r.body))?r.body:[];
+}
+function shellHtml(u,bodyHtml){
+  const tabs=[
+    {key:"unprocessed",label:"未処理"},
+    {key:"processing",label:"処理中"},
+    {key:"completed",label:"完了"},
+    {key:"all",label:"すべて"},
+  ];
+  return `
+  <div class="topbar">
+    <h1>📨 請求書管理</h1>
+    <div class="who">👤 ${esc(u.name)} ／ <a href="index.html">← ポータルへ</a></div>
+  </div>
+  <div class="tabrow">${tabs.map(t=>`<button class="${TAB===t.key?"active":""}" data-tab="${t.key}">${t.label}</button>`).join("")}</div>
+  ${bodyHtml}`;
+}
+function wireShell(u){
+  document.querySelectorAll("[data-tab]").forEach(b=>b.onclick=async()=>{
+    TAB=b.dataset.tab;
+    $("app").innerHTML='<div class="spin">読み込み中…</div>';
+    await loadList(); renderList(u);
+  });
+}
+function renderList(u){
+  $("app").innerHTML=shellHtml(u,`
+    <div class="mgmt-scroll"><table class="mg">
+      <tr><th>送信元</th><th>件名</th><th>受信日時</th><th>📎</th><th>状態</th><th>担当者</th><th>最終更新</th></tr>
+      ${LIST.map(m=>`<tr data-openmail="${m.id}">
+        <td>${esc(m.from_address||"—")}</td>
+        <td class="subjcell">${esc(m.subject||"（件名なし）")}${m.duplicate_suspected?' <span class="dupbadge">⚠️重複疑い</span>':""}</td>
+        <td>${fmtDT(m.received_at)}</td>
+        <td>${(m.atts&&m.atts.length)?"📎"+m.atts.length:"—"}</td>
+        <td><span class="badge ${m.mail_status}">${MAIL_STATUS_LABEL[m.mail_status]}</span></td>
+        <td>${m.processor?esc(m.processor.name)+"さんが処理中":"—"}</td>
+        <td>${fmtDT(m.updated_at)}</td>
+      </tr>`).join("")||`<tr><td colspan="7">該当するメールはありません</td></tr>`}
+    </table></div>
+  `);
+  wireShell(u);
+  document.querySelectorAll("[data-openmail]").forEach(el=>el.onclick=()=>openMailDetail(u,el.dataset.openmail));
+}
+
+/* ============================================================
+   詳細モーダル
+   ============================================================ */
+async function openMailDetail(u,emailId){
+  const [mr,ar,rr,lr]=await Promise.all([
+    authed(`/rest/v1/invoice_emails?id=eq.${emailId}&select=*,processor:users!invoice_emails_processing_user_id_fkey(name),completer:users!invoice_emails_completed_by_fkey(name)`),
+    authed(`/rest/v1/invoice_attachments?email_id=eq.${emailId}&select=*&order=created_at`),
+    authed(`/rest/v1/invoice_email_reads?email_id=eq.${emailId}&select=opened_at,reader:users(name)&order=opened_at.desc&limit=20`),
+    authed(`/rest/v1/invoice_audit_logs?entity_id=eq.${emailId}&select=*,actor:users(name)&order=created_at.desc&limit=50`),
+  ]);
+  if(!mr.ok||!mr.body||!mr.body[0]) return;
+  const mail=mr.body[0];
+  const atts=(ar.ok&&Array.isArray(ar.body))?ar.body:[];
+  const reads=(rr.ok&&Array.isArray(rr.body))?rr.body:[];
+  const logs=(lr.ok&&Array.isArray(lr.body))?lr.body:[];
+  const ivr=await authed(`/rest/v1/invoices?email_id=eq.${emailId}&select=*&limit=1`);
+  const invoice=(ivr.ok&&Array.isArray(ivr.body)&&ivr.body[0])?ivr.body[0]:null;
+
+  // 開封記録（初回のみでよいが、RPC側はunread→readの遷移だけなので毎回呼んでも安全）
+  authed("/rest/v1/rpc/invoice_record_read",{method:"POST",body:JSON.stringify({p_email_id:emailId})});
+
+  const canStart=(mail.mail_status==="unread"||mail.mail_status==="read")&&!mail.processing_user_id;
+  const isHolder=mail.processing_user_id===ME.id;
+  const canRelease=!!mail.processing_user_id&&(isHolder||canManage(ME));
+  const canComplete=isHolder&&mail.mail_status==="processing";
+  const canReply=canManage(ME)||true; // invoice_can_access()側で最終判定。UIは全員に見せてRPCで弾く
+
+  const modal=document.createElement("div");
+  modal.className="modal-bg"; modal.id="mailModal";
+  modal.innerHTML=`<div class="modal">
+    <div class="mhead"><h2>${esc(mail.subject||"（件名なし）")}</h2><button class="linkbtn" id="closemailmodal">閉じる ×</button></div>
+    <span class="badge ${mail.mail_status}">${MAIL_STATUS_LABEL[mail.mail_status]}</span>
+    ${mail.duplicate_suspected?'<span class="dupbadge" style="margin-left:8px">⚠️ 同じ添付ファイルの重複疑いがあります</span>':""}
+    <div class="detail-row"><span class="k">送信元</span><span class="v">${esc(mail.from_address||"—")}</span></div>
+    <div class="detail-row"><span class="k">宛先</span><span class="v">${esc(mail.to_address||"—")}</span></div>
+    ${mail.cc_address?`<div class="detail-row"><span class="k">CC</span><span class="v">${esc(mail.cc_address)}</span></div>`:""}
+    <div class="detail-row"><span class="k">受信日時</span><span class="v">${fmtDT(mail.received_at)}</span></div>
+    ${mail.processor?`<div class="detail-row"><span class="k">担当</span><span class="v">${esc(mail.processor.name)}さん</span></div>`:""}
+    ${mail.completer?`<div class="detail-row"><span class="k">完了者</span><span class="v">${esc(mail.completer.name)}さん（${fmtDT(mail.completed_at)}）</span></div>`:""}
+    ${mail.completion_note?`<div class="detail-row"><span class="k">完了メモ</span><span class="v">${esc(mail.completion_note)}</span></div>`:""}
+
+    <div class="sec-title">本文</div>
+    <iframe class="bodyframe" id="mailbodyframe" sandbox=""></iframe>
+
+    <div class="sec-title">添付（${atts.length}件）</div>
+    <div class="attlist" id="attlist">${atts.map(a=>`<div class="attitem"><span>📎 ${esc(a.file_name)}</span><a class="linkbtn" data-attpath="${esc(a.storage_path)}" href="#" target="_blank">開く</a></div>`).join("")||'<div class="meta" style="color:var(--muted);font-size:12px">添付はありません</div>'}</div>
+
+    <div class="sec-title">請求書情報（任意）</div>
+    <div class="card">
+      <label>請求元</label><input id="iv-vendor" value="${esc(invoice&&invoice.vendor_name||"")}">
+      <label>請求書番号</label><input id="iv-number" value="${esc(invoice&&invoice.invoice_number||"")}">
+      <label>金額</label><input id="iv-amount" type="number" value="${invoice&&invoice.amount!=null?invoice.amount:""}">
+      <label>支払期限</label><input id="iv-duedate" type="date" value="${invoice&&invoice.due_date||""}">
+      <button class="btn sm" style="margin-top:10px" id="iv-save">保存</button>
+      <div class="err" id="iv-msg"></div>
+    </div>
+
+    <div class="actionrow">
+      ${canStart?`<button class="btn" id="act-start">📥 この請求書を処理する</button>`:""}
+      ${canComplete?`<button class="btn" id="act-complete">✅ 処理完了</button>`:""}
+      ${canRelease?`<button class="btn sub" id="act-release">🔓 ロック解除（管理者・理由必須）</button>`:""}
+    </div>
+    <div id="completebox" style="display:none;margin-top:10px">
+      <label>完了メモ（任意）</label><textarea id="complete-note" rows="2"></textarea>
+      <button class="btn" style="margin-top:8px" id="complete-send">この内容で完了する</button>
+    </div>
+    <div id="releasebox" style="display:none;margin-top:10px">
+      <label>解除理由（必須）</label><textarea id="release-reason" rows="2"></textarea>
+      <button class="btn" style="margin-top:8px;background:var(--bad)" id="release-send">解除する</button>
+    </div>
+    <div class="err" id="act-msg" style="margin-top:8px"></div>
+
+    <div class="sec-title">✉️ 返信</div>
+    <div class="card" id="replycard">
+      <label>本文</label><textarea id="reply-body" rows="4" placeholder="宛先は元メールの送信元に固定されます"></textarea>
+      <button class="btn sm" style="margin-top:8px" id="reply-confirm">確認画面へ</button>
+      <div id="replyconfirm" style="display:none">
+        <div class="confirmbox">
+          <div class="detail-row"><span class="k">宛先</span><span class="v">${esc(mail.from_address||"—")}</span></div>
+          <div class="detail-row"><span class="k">件名</span><span class="v">Re: ${esc(mail.subject||"")}</span></div>
+          <div class="detail-row"><span class="k">本文</span><span class="v" id="reply-preview" style="white-space:pre-wrap;text-align:left"></span></div>
+        </div>
+        <button class="btn" style="margin-top:8px" id="reply-send">送信する</button>
+        <button class="btn sub" style="margin-top:8px" id="reply-cancel">戻る</button>
+      </div>
+      <div class="err" id="reply-msg" style="margin-top:8px"></div>
+    </div>
+
+    <div class="sec-title">開封履歴</div>
+    <div class="loglist">${reads.map(x=>`<div>👁️ ${esc(x.reader&&x.reader.name||"—")} — ${fmtDT(x.opened_at)}</div>`).join("")||'<div>まだ誰も開いていません</div>'}</div>
+
+    <div class="sec-title">処理履歴</div>
+    <div class="loglist">${logs.map(x=>`<div>${logIcon(x.action)} ${esc(x.actor&&x.actor.name||"—")} — ${logLabel(x.action)}（${fmtDT(x.created_at)}）${x.note?" ／ "+esc(x.note):""}</div>`).join("")||'<div>履歴はありません</div>'}</div>
+  </div>`;
+  document.body.appendChild(modal);
+  modal.onclick=e=>{ if(e.target===modal) modal.remove(); };
+  $("closemailmodal").onclick=()=>modal.remove();
+
+  // 本文はsrcdocをDOMプロパティで直接セット（テンプレート文字列に埋め込むとエスケープが崩れるため）。
+  // sandbox=""（allow-scriptsもallow-same-originも付けない）でスクリプト実行を封じる＝XSS対策
+  $("mailbodyframe").srcdoc = mail.body_html || (mail.body_text ? "<pre>"+esc(mail.body_text)+"</pre>" : "（本文なし）");
+
+  // 添付の署名URLをまとめて解決
+  if(atts.length){
+    const map=await signAttachmentUrls(atts.map(a=>a.storage_path));
+    document.querySelectorAll("[data-attpath]").forEach(el=>{ const url=map[el.dataset.attpath]; if(url) el.href=url; });
+  }
+
+  const closeAndReload=async()=>{ modal.remove(); await loadList(); renderList(u); };
+
+  if(canStart){
+    $("act-start").onclick=async()=>{
+      $("act-start").disabled=true; $("act-msg").textContent="処理中…";
+      const r=await authed("/rest/v1/rpc/invoice_start_processing",{method:"POST",body:JSON.stringify({p_email_id:emailId})});
+      if(!r.ok){ $("act-msg").textContent=(r.body&&r.body.message)||"処理を開始できませんでした"; $("act-start").disabled=false; return; }
+      if(r.body&&r.body.success===false){ $("act-msg").textContent=(r.body.held_by||"他の人")+"さんが処理中です"; $("act-start").disabled=false; return; }
+      await closeAndReload();
+    };
+  }
+  if(canComplete){
+    $("act-complete").onclick=()=>{ $("completebox").style.display="block"; };
+    $("complete-send").onclick=async()=>{
+      $("complete-send").disabled=true; $("act-msg").textContent="処理中…";
+      const r=await authed("/rest/v1/rpc/invoice_complete",{method:"POST",body:JSON.stringify({p_email_id:emailId,p_note:$("complete-note").value.trim()||null})});
+      if(!r.ok){ $("act-msg").textContent=(r.body&&r.body.message)||"完了できませんでした"; $("complete-send").disabled=false; return; }
+      await closeAndReload();
+    };
+  }
+  if(canRelease){
+    $("act-release").onclick=()=>{ $("releasebox").style.display="block"; };
+    $("release-send").onclick=async()=>{
+      const reason=$("release-reason").value.trim();
+      if(!reason){ $("act-msg").textContent="解除理由を入力してください"; return; }
+      $("release-send").disabled=true; $("act-msg").textContent="処理中…";
+      const r=await authed("/rest/v1/rpc/invoice_release_lock",{method:"POST",body:JSON.stringify({p_email_id:emailId,p_reason:reason})});
+      if(!r.ok){ $("act-msg").textContent=(r.body&&r.body.message)||"解除できませんでした"; $("release-send").disabled=false; return; }
+      await closeAndReload();
+    };
+  }
+
+  $("iv-save").onclick=async()=>{
+    const msg=$("iv-msg"); msg.textContent="保存中…";
+    const payload={
+      vendor_name:$("iv-vendor").value.trim()||null,
+      invoice_number:$("iv-number").value.trim()||null,
+      amount:$("iv-amount").value?+$("iv-amount").value:null,
+      due_date:$("iv-duedate").value||null,
+    };
+    let r;
+    if(invoice){
+      r=await authed(`/rest/v1/invoices?id=eq.${invoice.id}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({...payload,updated_at:new Date().toISOString()})});
+    }else{
+      r=await authed("/rest/v1/invoices",{method:"POST",headers:{Prefer:"return=minimal"},body:JSON.stringify({...payload,email_id:emailId})});
+    }
+    msg.className=r.ok?"err msg-ok":"err"; msg.textContent=r.ok?"保存しました":"保存できませんでした";
+  };
+
+  // 返信: RPCでoutboxへqueue → 即座にinvoice-send Edge Functionを呼んで送信
+  $("reply-confirm").onclick=()=>{
+    const body=$("reply-body").value.trim();
+    if(!body){ $("reply-msg").textContent="本文を入力してください"; return; }
+    $("reply-preview").textContent=body;
+    $("replyconfirm").style.display="block";
+  };
+  $("reply-cancel").onclick=()=>{ $("replyconfirm").style.display="none"; };
+  $("reply-send").onclick=async()=>{
+    $("reply-send").disabled=true; $("reply-msg").textContent="送信中…";
+    const body=$("reply-body").value.trim();
+    const qr=await authed("/rest/v1/rpc/invoice_queue_reply",{method:"POST",body:JSON.stringify({p_email_id:emailId,p_body:body})});
+    if(!qr.ok){ $("reply-msg").textContent=(qr.body&&qr.body.message)||"送信予約に失敗しました"; $("reply-send").disabled=false; return; }
+    const outboxId=qr.body;
+    const s=sess.get();
+    const sr=await fetch(SUPA_URL+"/functions/v1/invoice-send",{method:"POST",headers:{"Content-Type":"application/json","apikey":SUPA_KEY,"Authorization":"Bearer "+(s?s.at:"")},body:JSON.stringify({outbox_id:outboxId})});
+    const sj=await sr.json().catch(()=>({}));
+    if(!sr.ok||!sj.success){
+      $("reply-msg").className="err msg-ok";
+      $("reply-msg").textContent="送信予約は完了しました。即時送信には失敗しましたが、数分以内に自動で再送されます。";
+    }else{
+      $("reply-msg").className="err msg-ok";
+      $("reply-msg").textContent="送信しました";
+    }
+    await closeAndReload();
+  };
+}
+function logIcon(action){
+  return {intake:"📥",open:"👁️",start_processing:"📥",release_lock:"🔓",complete:"✅",reply_queued:"✉️",reply_sent:"📤"}[action]||"・";
+}
+function logLabel(action){
+  return {intake:"取込",open:"開封",start_processing:"処理開始",release_lock:"ロック解除",complete:"処理完了",reply_queued:"返信を予約",reply_sent:"返信を送信"}[action]||action;
+}
+
+/* ============================================================
+   起動
+   ============================================================ */
+function renderLogin(){
+  $("app").innerHTML=`<div class="card">
+    <p style="margin-bottom:10px">ログインが必要です。ポータルからアクセスしてください。</p>
+    <a class="btn" href="index.html">← ポータルへ</a>
+  </div>`;
+}
+async function main(){
+  if(!sess.get()){renderLogin();return}
+  const u=await fetchMe();
+  if(!u){sess.clear();renderLogin();return}
+  if(u.is_active===false){renderLogin();return}
+  ME=u;
+  await loadList();
+  renderList(u);
+}
+main();
+</script>
+</body>
+</html>
