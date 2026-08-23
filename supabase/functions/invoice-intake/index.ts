@@ -39,6 +39,16 @@ function base64ToBytes(b64: string): Uint8Array {
   return bytes;
 }
 
+// 2026-08-24: Supabase Storage(S3互換)のオブジェクトキーは全角括弧・絵文字・スペース等の
+// 一部の文字を受け付けず、日本語のファイル名をそのまま使うと「Invalid key」で保存自体が
+// 静かに失敗することが実機で判明。保存パスは拡張子だけを引き継いだ連番に変換し、元のファイル
+// 名は invoice_attachments.file_name（表示用）に別途そのまま保存する
+function safeStorageFileName(originalName: string, index: number): string {
+  const m = /\.[A-Za-z0-9]{1,10}$/.exec(originalName || "");
+  const ext = m ? m[0].toLowerCase() : "";
+  return `${index}${ext}`;
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: cors });
   if (req.method !== "POST") return json({ error: "POSTのみ対応" }, 405);
@@ -92,11 +102,52 @@ Deno.serve(async (req: Request) => {
     const { data: existing, error: existErr } = await db
       .from("invoice_emails").select("id").eq("gmail_message_id", gmailMessageId).single();
     if (existErr || !existing) return json({ error: "重複確認に失敗しました: " + (existErr?.message ?? "not found") }, 500);
-    return json({ success: true, duplicate_message: true, email_id: existing.id });
+    emailId = existing.id as string;
+
+    // 2026-08-24: メールは既に登録済みでも、添付が0件のまま・かつ今回のペイロードに
+    // 添付があるなら補完する（自己修復）。原因は取込側のバグ（Outlook等がPDFに
+    // Content-Disposition:inlineを付け、includeInlineImages:falseの設定で取りこぼしていた）。
+    // GAS側の一括再スキャン（resyncAllLabeledAttachments_oneOff）から呼ばれたときに機能する。
+    const attachmentsIn: any[] = Array.isArray(body.attachments) ? body.attachments : [];
+    if (attachmentsIn.length) {
+      const { count } = await db.from("invoice_attachments").select("id", { count: "exact", head: true }).eq("email_id", emailId);
+      if (!count) {
+        const saved = await saveAttachments(db, emailId, attachmentsIn);
+        if (saved.duplicateSuspected) await db.from("invoice_emails").update({ duplicate_suspected: true }).eq("id", emailId);
+        if (saved.failed.length) {
+          await db.from("invoice_audit_logs").insert({
+            entity_type: "invoice_email", entity_id: emailId, action: "intake", actor_type: "human",
+            note: "添付の一部が保存できませんでした: " + saved.failed.map((f) => f.file_name + "(" + f.reason + ")").join(", "),
+          });
+        }
+        return json({
+          success: true, duplicate_message: true, email_id: emailId,
+          attachments_saved: saved.savedCount, attachments_backfilled: true, attachments_failed: saved.failed,
+        });
+      }
+    }
+    return json({ success: true, duplicate_message: true, email_id: emailId });
   }
   const attachments: any[] = Array.isArray(body.attachments) ? body.attachments : [];
+  const { duplicateSuspected, savedCount, failed } = await saveAttachments(db, emailId, attachments);
+
+  if (duplicateSuspected) {
+    await db.from("invoice_emails").update({ duplicate_suspected: true }).eq("id", emailId);
+  }
+
+  await db.from("invoice_audit_logs").insert({
+    entity_type: "invoice_email", entity_id: emailId, action: "intake", actor_type: "human",
+    new_value: { attachments: savedCount, duplicate_suspected: duplicateSuspected, attachments_failed: failed },
+    note: failed.length ? "添付の一部が保存できませんでした: " + failed.map((f) => f.file_name + "(" + f.reason + ")").join(", ") : null,
+  });
+
+  return json({ success: true, email_id: emailId, attachments_saved: savedCount, duplicate_suspected: duplicateSuspected, attachments_failed: failed });
+});
+
+async function saveAttachments(db: ReturnType<typeof createClient>, emailId: string, attachments: any[]) {
   let duplicateSuspected = false;
   let savedCount = 0;
+  const failed: { file_name: string; reason: string }[] = [];
 
   for (let i = 0; i < attachments.length; i++) {
     const att = attachments[i];
@@ -104,13 +155,18 @@ Deno.serve(async (req: Request) => {
     try {
       const bytes = base64ToBytes(att.base64);
       const hash = await sha256Hex(bytes);
-      const storagePath = `${emailId}/${i + 1}_${att.file_name}`;
+      const storagePath = `${emailId}/${safeStorageFileName(att.file_name, i + 1)}`;
 
-      const { error: upErr } = await db.storage.from(BUCKET).upload(storagePath, bytes, {
+      // upsert:true＝再実行（自己修復の再送信等）で同じパスに前回の残骸があっても失敗しない
+      const { error: storeErr } = await db.storage.from(BUCKET).upload(storagePath, bytes, {
         contentType: att.mime_type || "application/octet-stream",
-        upsert: false,
+        upsert: true,
       });
-      if (upErr) { console.error("添付アップロード失敗: " + att.file_name + " " + upErr.message); continue; }
+      if (storeErr) {
+        console.error("添付アップロード失敗: " + att.file_name + " " + storeErr.message);
+        failed.push({ file_name: att.file_name, reason: storeErr.message });
+        continue;
+      }
 
       const { data: dupHash } = await db
         .from("invoice_attachments").select("id").eq("file_hash", hash).limit(1).maybeSingle();
@@ -124,21 +180,17 @@ Deno.serve(async (req: Request) => {
         file_hash: hash,
         size_bytes: att.size_bytes ?? bytes.length,
       });
-      if (attErr) { console.error("添付レコード登録失敗: " + att.file_name + " " + attErr.message); continue; }
+      if (attErr) {
+        console.error("添付レコード登録失敗: " + att.file_name + " " + attErr.message);
+        failed.push({ file_name: att.file_name, reason: attErr.message });
+        continue;
+      }
       savedCount++;
     } catch (e) {
       console.error("添付処理エラー: " + att.file_name + " " + e);
+      failed.push({ file_name: att.file_name, reason: String(e) });
     }
   }
 
-  if (duplicateSuspected) {
-    await db.from("invoice_emails").update({ duplicate_suspected: true }).eq("id", emailId);
-  }
-
-  await db.from("invoice_audit_logs").insert({
-    entity_type: "invoice_email", entity_id: emailId, action: "intake", actor_type: "human",
-    new_value: { attachments: savedCount, duplicate_suspected: duplicateSuspected },
-  });
-
-  return json({ success: true, email_id: emailId, attachments_saved: savedCount, duplicate_suspected: duplicateSuspected });
-});
+  return { duplicateSuspected, savedCount, failed };
+}

@@ -352,17 +352,13 @@ on conflict (role, system_key) do nothing;
 -- report-photos（公開バケット）は使用しない（監査R5の教訓＝請求書は機密）
 -- パス規約: {email_id}/{添付連番}_{ファイル名}
 -- ============================================================
+-- 2026-08-24: 実機で「zip添付・Outlook経由のPDF等がallowed_mime_typesに一致せず
+-- アップロードが静かに失敗する」事故が発生（エラーがログにしか出ずUI上は成功に見えた）。
+-- メール添付はMIMEタイプが多様（zip/octet-stream等）で許可リスト方式に向かないため、
+-- 種類は制限せずサイズ上限(20MB)とアクセス制御(RLS・非公開・署名URL)だけで守る方針に変更
 insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
-values (
-  'invoice-files', 'invoice-files', false, 20971520,
-  array[
-    'application/pdf','image/jpeg','image/png','image/gif','image/webp',
-    'application/msword','application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-    'application/vnd.ms-excel','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-    'text/plain'
-  ]
-)
-on conflict (id) do nothing;
+values ('invoice-files', 'invoice-files', false, 20971520, null)
+on conflict (id) do update set allowed_mime_types = null;
 
 drop policy if exists invoice_files_read on storage.objects;
 create policy invoice_files_read on storage.objects for select

@@ -85,6 +85,28 @@ function applyInvoiceLabelBulk_oneOff() {
   console.log("ラベル付け完了: " + okCount + "/" + ids.length + (ngIds.length ? "  失敗: " + ngIds.join(",") : ""));
 }
 
+// 2026-08-24: 添付の取りこぼし修正（includeInlineImages:false→true）を既存の取込済みメールにも
+// 適用するための再スキャン（1回限りの手動実行）。「請求書」ラベルが付いた全メールを対象に
+// もう一度送信し直すが、Edge Function側が「既に登録済み・添付0件・今回添付あり」の場合だけ
+// 追加保存する自己修復方式になっているため、正常に添付がある分は変更されず安全に再実行できる。
+// 「請求書取込済」ラベルの有無は見ない（既に付いていても対象にする）
+function resyncAllLabeledAttachments_oneOff() {
+  var threads = GmailApp.search('label:' + SOURCE_LABEL_NAME, 0, 200);
+  var okCount = 0, ngCount = 0;
+  for (var t = 0; t < threads.length; t++) {
+    var messages = threads[t].getMessages();
+    for (var m = 0; m < messages.length; m++) {
+      try {
+        if (postMessage_(threads[t], messages[m])) okCount++; else ngCount++;
+      } catch (e) {
+        console.error("resync failed: " + e);
+        ngCount++;
+      }
+    }
+  }
+  console.log("再スキャン完了: 成功" + okCount + "件 失敗" + ngCount + "件");
+}
+
 function getSecret_() {
   var s = PropertiesService.getScriptProperties().getProperty("INVOICE_INTAKE_SECRET");
   if (!s) throw new Error("スクリプトプロパティ INVOICE_INTAKE_SECRET が未設定です");
@@ -144,19 +166,28 @@ function checkInvoiceMails_(query, maxThreads) {
   }
 }
 
+// 2026-08-24: includeInlineImages:falseだと本物の請求書PDFまで取りこぼす実例が見つかった
+// （Outlook for iOS等、送信元によってPDF添付にContent-Disposition:inlineが付くことがあり、
+// Gmail側がそれを「インライン」として扱うため）。true に変更し、代わりに「署名ロゴ等の小さい
+// 画像」だけを除外する方式にした（PDF・Office文書等は画像でないのでサイズに関わらず必ず残す）
+// 2026-08-24: 実機で49.7KBの署名ロゴが紛れ込む例を確認したため30KB→100KBへ引き上げ
+var SIGNATURE_IMAGE_MAX_BYTES = 100 * 1024; // これ未満のimage/*は署名ロゴ等とみなしスキップ
+
 function postMessage_(thread, msg) {
-  var rawAttachments = msg.getAttachments({ includeInlineImages: false, includeAttachments: true });
+  var rawAttachments = msg.getAttachments({ includeInlineImages: true, includeAttachments: true });
   var attPayload = [];
   for (var i = 0; i < rawAttachments.length; i++) {
     var blob = rawAttachments[i];
     var bytes = blob.getBytes();
+    var mime = blob.getContentType() || "";
+    if (mime.indexOf("image/") === 0 && bytes.length < SIGNATURE_IMAGE_MAX_BYTES) continue; // 署名ロゴ等をスキップ
     if (bytes.length > MAX_ATTACHMENT_BYTES) {
       console.error("添付が20MB超のためスキップ: " + blob.getName());
       continue;
     }
     attPayload.push({
       file_name: blob.getName(),
-      mime_type: blob.getContentType(),
+      mime_type: mime,
       size_bytes: bytes.length,
       base64: Utilities.base64Encode(bytes)
     });
@@ -185,7 +216,15 @@ function postMessage_(thread, msg) {
     muteHttpExceptions: true
   });
   var code = res.getResponseCode();
-  if (code >= 300) { console.error("invoice-intake: " + code + " " + res.getContentText()); return false; }
+  var txt = res.getContentText();
+  if (code >= 300) { console.error("invoice-intake: " + code + " " + txt); return false; }
+  // 添付の一部だけ保存に失敗した場合はレスポンスがsuccess:trueでも見逃さないよう警告を出す
+  try {
+    var j = JSON.parse(txt);
+    if (j.attachments_failed && j.attachments_failed.length) {
+      console.error("添付の一部が保存できませんでした（" + msg.getSubject() + "）: " + JSON.stringify(j.attachments_failed));
+    }
+  } catch (e) { /* ignore */ }
   return true;
 }
 

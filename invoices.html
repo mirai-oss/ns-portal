@@ -3,77 +3,149 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-<title>📨 請求書管理 — N-Styleグループ ポータル</title>
+<title>📨 請求書メール — N-Styleグループ ポータル</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📨</text></svg>">
 <style>
+/* ============================================================
+   配色・レイアウトはユーザー提供のUIプロトタイプ（mail-shell）に準拠
+   ============================================================ */
 :root{
-  --bg:#f5f4f1; --card:#ffffff; --ink:#26221e; --muted:#8a8377;
-  --accent:#c8401f; --accent2:#a33318; --line:#e7e3dc; --ok:#2e7d32;
-  --warn:#b58a00; --bad:#c62828;
+  --bg:#f4f1eb; --panel:#fff; --ink:#231f1a; --muted:#7d756d; --line:#e4ddd4;
+  --accent:#c94728; --accent-soft:#fce9e3;
+  --green:#2f8f63; --green-soft:#e7f5ed;
+  --amber:#b77b13; --amber-soft:#fff3d8;
+  --blue:#2f6fb7; --blue-soft:#e8f0fb;
+  --shadow:0 8px 28px rgba(35,31,26,.08); --radius:16px;
 }
 @media(prefers-color-scheme:dark){
-  :root{--bg:#1d1b18; --card:#282521; --ink:#f0ece5; --muted:#a29a8c; --line:#3a362f;}
+  :root{--bg:#211d18; --panel:#2b2620; --ink:#f2ede6; --muted:#b3aa9f; --line:#433c33; --accent-soft:#4a2c22; --green-soft:#1f3a2c; --amber-soft:#3d3018; --blue-soft:#1e3049;}
 }
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Noto Sans JP",sans-serif;background:var(--bg);color:var(--ink);min-height:100vh}
-.wrap{max-width:900px;margin:0 auto;padding:20px 16px 60px}
 a{color:inherit}
+button,input,select,textarea{font:inherit}
+.wrap{max-width:1400px;margin:0 auto;padding:0 20px 60px}
 .spin{text-align:center;color:var(--muted);padding:60px 0}
-.err{color:#c62828;font-size:13px}
-.msg-ok{color:var(--ok)}
-.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px 18px;box-shadow:0 1px 4px rgba(0,0,0,.04)}
-label{display:block;font-size:13px;color:var(--muted);margin:12px 0 4px}
-label:first-child{margin-top:0}
-input,select,textarea{width:100%;padding:10px 12px;font-size:15px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);font-family:inherit}
-textarea{resize:vertical}
-.btn,.linkbtn,.chip,button{touch-action:manipulation}
-.btn{display:inline-block;padding:12px 20px;font-size:15px;font-weight:600;color:#fff;background:var(--accent);border:none;border-radius:10px;cursor:pointer;width:100%}
-.btn:hover{background:var(--accent2)}
-.btn:disabled{opacity:.5;cursor:default}
-.btn.sub{background:transparent;color:var(--muted);border:1px dashed var(--muted);font-weight:400}
-.btn.sm{padding:8px 14px;font-size:13px;width:auto}
-.linkbtn{background:none;border:none;color:var(--muted);font-size:13px;cursor:pointer;text-decoration:underline;padding:4px}
-.topbar{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:16px;flex-wrap:wrap}
-.topbar h1{font-size:19px}
+.err{color:var(--accent);font-size:13px}
+.msg-ok{color:var(--green)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow)}
+.topbar{height:74px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;background:var(--bg);z-index:5}
+.topbar h1{font-size:21px}
 .topbar .who{font-size:13px;color:var(--muted)}
-.tabrow{display:flex;gap:6px;margin-bottom:16px;flex-wrap:wrap;overflow-x:auto}
-.tabrow button{padding:9px 16px;border-radius:99px;border:1px solid var(--line);background:var(--card);font-size:13.5px;white-space:nowrap;cursor:pointer}
-.tabrow button.active{background:var(--accent);color:#fff;border-color:var(--accent)}
-.tabrow button .cnt{margin-left:6px;background:rgba(0,0,0,.15);border-radius:99px;padding:1px 7px;font-size:11px}
-.tabrow button.active .cnt{background:rgba(255,255,255,.3)}
 
-.mgmt-scroll{overflow-x:auto}
-table.mg{width:100%;border-collapse:collapse;font-size:13px}
-table.mg th,table.mg td{border-bottom:1px solid var(--line);padding:9px 10px;text-align:left;white-space:nowrap}
-table.mg th{color:var(--muted);font-weight:600;font-size:11.5px;background:var(--bg)}
-table.mg tr[data-openmail]{cursor:pointer}
-table.mg tr[data-openmail]:hover{background:var(--bg)}
-.subjcell{max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.badge{display:inline-block;font-size:11px;font-weight:700;padding:3px 10px;border-radius:99px;white-space:nowrap}
-.badge.unread{color:var(--accent);background:#f7e2da}
-.badge.read{color:var(--muted);background:var(--line)}
-.badge.processing{color:var(--warn);background:#f9efd6}
-.badge.completed{color:var(--ok);background:#e7f4ec}
-.badge.archived{color:var(--muted);background:var(--line)}
-.dupbadge{font-size:11px;color:var(--bad)}
-.empty{padding:40px 10px;text-align:center;color:var(--muted);font-size:13px}
+/* ---- mail-shell（プロトタイプ準拠） ---- */
+.mail-shell{--m-line:var(--line);--m-muted:var(--muted);--m-red:var(--accent);--m-redsoft:var(--accent-soft);
+  --m-green:var(--green);--m-greensoft:var(--green-soft);--m-blue:var(--blue);--m-bluesoft:var(--blue-soft);
+  --m-amber:var(--amber);--m-ambersoft:var(--amber-soft);}
+.mail-summary{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-bottom:14px}
+.mail-kpi{padding:16px}.mail-kpi small{display:block;color:var(--m-muted);font-size:12px}.mail-kpi b{display:block;font-size:28px;margin-top:5px}
+.mail-tabs{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
+.mail-tab{border:1px solid var(--m-line);background:var(--panel);border-radius:999px;padding:8px 14px;cursor:pointer;color:var(--ink)}
+.mail-tab.active{background:var(--ink);color:var(--bg);border-color:var(--ink)}
+.mail-chips{display:flex;gap:6px;flex-wrap:wrap;padding:10px 12px 0}
+.mail-chip{border:1px solid var(--m-line);background:var(--panel);border-radius:999px;padding:6px 11px;cursor:pointer;font-size:12px;color:var(--muted)}
+.mail-chip.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+.mail-layout{display:grid;grid-template-columns:minmax(340px,.9fr) minmax(0,1.5fr);gap:14px;align-items:start}
+.mail-list-card{overflow:hidden}
+.mail-toolbar{padding:12px;border-bottom:1px solid var(--m-line);display:flex;gap:8px;align-items:center}
+.mail-toolbar input{flex:1;border:1px solid var(--m-line);border-radius:10px;padding:10px;background:var(--panel);color:var(--ink)}
+.mail-list-scroll{max-height:74vh;overflow-y:auto}
+.mail-item{padding:13px 14px;border-bottom:1px solid var(--m-line);cursor:pointer;background:var(--panel);position:relative}
+.mail-item:hover{background:var(--bg)}
+.mail-item.active{background:var(--accent-soft);box-shadow:inset 3px 0 var(--accent)}
+.mail-item.unread .mail-subject{font-weight:800}
+.mail-item.locked:after{content:"処理中";position:absolute;right:12px;top:12px;background:var(--m-bluesoft);color:var(--m-blue);font-size:10px;font-weight:800;padding:4px 7px;border-radius:999px}
+.mail-item.dup:after{content:"重複疑い";position:absolute;right:12px;top:12px;background:var(--m-redsoft);color:var(--m-red);font-size:10px;font-weight:800;padding:4px 7px;border-radius:999px}
+.mail-item.completed:after{content:"完了";position:absolute;right:12px;top:12px;background:var(--m-greensoft);color:var(--m-green);font-size:10px;font-weight:800;padding:4px 7px;border-radius:999px}
+.mail-from{font-size:12px;color:var(--m-muted);padding-right:74px}
+.mail-subject{font-size:14px;margin-top:3px;padding-right:74px}
+.mail-preview{font-size:11px;color:var(--muted);margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.mail-meta{display:flex;justify-content:space-between;gap:8px;margin-top:8px;font-size:10px;color:var(--muted)}
+.mail-detail{min-width:0}
+.mail-detail-head{padding:17px 18px;border-bottom:1px solid var(--m-line)}
+.mail-detail-head h2{margin:7px 0 4px;font-size:20px}
+.mail-detail-head .meta{color:var(--muted);font-size:12px}
+.mail-detail-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin-top:12px}
+.mail-mini{border:1px solid var(--m-line);border-radius:10px;padding:10px;background:var(--bg)}
+.mail-mini small{display:block;color:var(--m-muted);font-size:10px;margin-bottom:3px}
+.mail-mini b{font-size:13px}
+.mail-ownerbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:12px}
+.hq-badges{display:flex;gap:6px;flex-wrap:wrap}
+.hq-pill{padding:4px 8px;border-radius:999px;font-size:11px;font-weight:800;display:inline-block}
+.hq-pill.red{background:var(--m-redsoft);color:var(--m-red)}
+.hq-pill.amber{background:var(--m-ambersoft);color:var(--m-amber)}
+.hq-pill.green{background:var(--m-greensoft);color:var(--m-green)}
+.hq-pill.blue{background:var(--m-bluesoft);color:var(--m-blue)}
+.hq-pill.gray{background:var(--bg);color:var(--muted)}
+.hq-btn{border:1px solid var(--m-line);background:var(--panel);border-radius:10px;padding:9px 13px;cursor:pointer;color:var(--ink)}
+.hq-btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+.hq-btn.green{background:var(--green);border-color:var(--green);color:#fff}
+.hq-btn:disabled{opacity:.45;cursor:not-allowed}
+.mail-lock{margin:12px 18px 0;padding:12px;border:1px solid #b8d0eb;background:var(--blue-soft);border-radius:12px;color:#315c86;font-size:12px}
+.mail-alert{margin:12px 18px 0;padding:12px;border:1px solid #efb7aa;background:var(--accent-soft);border-radius:12px;color:#9d3425;font-size:12px}
+.mail-body{padding:18px}
+.mail-body-frame{width:100%;height:260px;border:1px solid var(--m-line);border-radius:10px;background:#fff}
+.invoice-attach{border:1px solid var(--m-line);border-radius:14px;padding:12px;background:var(--bg);margin-top:14px}
+.invoice-attach h3{margin:0 0 8px;font-size:14px}
+.attlist{display:grid;gap:6px}
+.attitem{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--m-line);border-radius:9px;font-size:13px;background:var(--panel)}
+.ai-box{border:1px solid var(--m-line);border-radius:12px;background:var(--panel);padding:12px;margin-top:14px}
+.ai-box h3{margin:0 0 8px;font-size:14px}
+.ai-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.ai-field{padding:9px;border:1px solid var(--m-line);border-radius:9px;background:var(--bg)}
+.ai-field small{display:block;color:var(--m-muted);font-size:10px;margin-bottom:4px}
+.ai-field input{width:100%;border:none;background:transparent;font-size:13px;font-weight:700;color:var(--ink)}
+.mail-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+.mail-actions button{border:1px solid var(--m-line);background:var(--panel);border-radius:10px;padding:9px 12px;cursor:pointer;color:var(--ink)}
+.mail-actions .primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+.mail-actions .green{background:var(--green);color:#fff;border-color:var(--green)}
+.mail-history{margin-top:14px;border-top:1px solid var(--m-line);padding-top:12px}
+.mail-history-row{display:grid;grid-template-columns:12px 1fr;gap:8px;padding:7px 0;font-size:11px;color:var(--muted)}
+.mail-history-row span:first-child{width:8px;height:8px;background:#cfc6bc;border-radius:50%;margin-top:4px}
+.mail-history-row.done span:first-child{background:var(--green)}
+.replybox{margin-top:14px;border-top:1px solid var(--m-line);padding-top:12px;display:none}
+.replybox.open{display:block}
+.replybox textarea{width:100%;border:1px solid var(--m-line);border-radius:10px;padding:10px;min-height:100px;background:var(--panel);color:var(--ink)}
+.confirmbox{background:var(--bg);border:1px solid var(--m-line);border-radius:10px;padding:12px;margin-top:10px;font-size:13px;white-space:pre-wrap}
 
-.modal-bg{position:fixed;inset:0;background:rgba(20,15,8,.55);z-index:100;display:flex;align-items:flex-start;justify-content:center;padding:16px;overflow-y:auto}
-.modal{background:var(--card);border-radius:16px;padding:20px;max-width:640px;width:100%;max-height:none;margin:20px 0}
-.modal .mhead{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;gap:10px}
-.modal .mhead h2{font-size:16px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.detail-row{display:flex;justify-content:space-between;gap:10px;padding:7px 0;border-bottom:1px solid var(--line);font-size:13.5px}
-.detail-row:last-child{border-bottom:none}
-.detail-row .k{color:var(--muted);flex:0 0 90px}
-.detail-row .v{text-align:right;overflow:hidden;text-overflow:ellipsis}
-.bodyframe{width:100%;height:280px;border:1px solid var(--line);border-radius:10px;margin-top:10px;background:#fff}
-.attlist{margin-top:8px;display:grid;gap:6px}
-.attitem{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;font-size:13px}
-.sec-title{font-size:14px;font-weight:600;margin:18px 0 8px}
-.sec-title:first-child{margin-top:0}
-.loglist{font-size:12px;color:var(--muted);display:grid;gap:4px;max-height:160px;overflow-y:auto}
-.actionrow{display:grid;gap:8px;margin-top:16px}
-.confirmbox{background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:12px;margin-top:10px;font-size:13px}
+.invoice-list{display:none}.invoice-list.active{display:block}
+.mail-inbox{display:none}.mail-inbox.active{display:block}
+.invoice-table{width:100%;border-collapse:collapse}
+.invoice-table th,.invoice-table td{padding:11px 12px;border-bottom:1px solid var(--line);text-align:left;font-size:12px}
+.invoice-table th{color:var(--muted);background:var(--bg)}
+.invoice-table tr[data-openmail]{cursor:pointer}
+.invoice-status{padding:4px 7px;border-radius:999px;font-size:10px;font-weight:800;display:inline-block}
+.invoice-status.wait{background:var(--amber-soft);color:var(--amber)}
+.invoice-status.done{background:var(--green-soft);color:var(--green)}
+.invoice-status.check{background:var(--blue-soft);color:var(--blue)}
+.invoice-status.gray{background:var(--bg);color:var(--muted)}
+.empty{padding:34px 10px;text-align:center;color:var(--muted);font-size:13px}
+.hq-tablewrap{overflow:auto}
+
+@media(max-width:900px){
+  .mail-layout{grid-template-columns:1fr}
+  .mail-summary{grid-template-columns:1fr 1fr}
+  .mail-detail-grid{grid-template-columns:1fr 1fr}
+}
+@media(max-width:760px){
+  .wrap{padding:0 14px 80px}
+  .mail-summary{gap:8px}.mail-kpi{padding:12px}.mail-kpi b{font-size:22px}
+  .mail-tabs{flex-wrap:nowrap;overflow-x:auto}.mail-tab{flex:0 0 auto;font-size:12px;padding:7px 11px}
+  .mail-list-scroll{max-height:none}
+  .mail-item{padding:12px}.mail-from{font-size:11px}.mail-subject{font-size:13px}.mail-preview{font-size:10px}
+  .mail-detail{margin-top:10px}
+  .mail-detail-head{padding:14px}.mail-detail-head h2{font-size:17px}
+  .mail-detail-grid{grid-template-columns:1fr 1fr;gap:7px}.mail-mini{padding:9px}
+  .mail-lock,.mail-alert{margin:10px 14px 0}
+  .mail-body{padding:14px}
+  .ai-grid{grid-template-columns:1fr}
+  .mail-actions{display:grid;grid-template-columns:1fr 1fr}.mail-actions button{min-height:42px}
+  .invoice-table,.invoice-table tbody,.invoice-table tr,.invoice-table td{display:block;width:100%}
+  .invoice-table thead{display:none}
+  .invoice-table tr{border:1px solid var(--line);border-radius:12px;margin-bottom:8px;padding:9px;background:var(--panel)}
+  .invoice-table td{border:0;padding:4px}
+}
+@media(max-width:390px){.mail-summary,.mail-detail-grid,.ai-grid{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
@@ -82,15 +154,17 @@ table.mg tr[data-openmail]:hover{background:var(--bg)}
 </div>
 <script>
 /* ============================================================
-   認証・セッション（index.html / expenses.html と同一実装。
-   nsportal_session_v1 の形式は変更しない）
+   認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
 const SUPA_URL="https://uuvsxzhpxtghojoubjcc.supabase.co";
 const SUPA_KEY="sb_publishable_MrwPJAx_Ws_fdRutprKCiQ_dg3wCiTr";
 const LS_KEY="nsportal_session_v1";
 const BUCKET="invoice-files";
 
-const MAIL_STATUS_LABEL={unread:"未読",read:"既読",processing:"処理中",completed:"完了",archived:"アーカイブ"};
+const MAIL_STATUS_LABEL={unread:"未処理",read:"未処理",processing:"処理中",completed:"完了",archived:"アーカイブ"};
+const MAIL_STATUS_PILL={unread:"red",read:"red",processing:"blue",completed:"green",archived:"gray"};
+const INVOICE_STATUS_LABEL={draft:"下書き",registered:"確認中",duplicate_suspected:"重複疑い",waiting_payment:"支払待ち",paid:"完了",cancelled:"取消"};
+const INVOICE_STATUS_CLASS={draft:"gray",registered:"check",duplicate_suspected:"wait",waiting_payment:"wait",paid:"done",cancelled:"gray"};
 
 const $=id=>document.getElementById(id);
 const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -124,9 +198,6 @@ async function fetchMe(){
   if(!r.ok||!Array.isArray(r.body)||!r.body[0]) return null;
   return r.body[0];
 }
-
-// 添付は非公開バケット。署名URLはクリック時に都度取得する（expenses.htmlの遅延解決方式とは違い
-// 一覧に大量表示しないため、詳細モーダルを開いたときにまとめて1回だけ取りに行けば十分）
 async function signAttachmentUrls(paths){
   if(!paths.length) return {};
   const r=await authed(`/storage/v1/object/sign/${BUCKET}`,{method:"POST",body:JSON.stringify({expiresIn:3600,paths})});
@@ -135,206 +206,332 @@ async function signAttachmentUrls(paths){
   return map;
 }
 function fmtDT(t){ if(!t) return "—"; const d=new Date(t); return `${d.getMonth()+1}/${d.getDate()} ${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`; }
+function fmtD(t){ if(!t) return "—"; const d=new Date(t); return `${d.getMonth()+1}/${d.getDate()}`; }
+function yen(n){ return n==null?"—":"¥"+Number(n).toLocaleString(); }
+
+// 本文中のリンクをクリックできるようにする（スクリプトは実行させない=XSS対策は維持）。
+// iframeはsandbox="allow-popups allow-popups-to-escape-sandbox"のみ許可＝
+// リンクを新しいタブで開くことだけを許し、iframe内でのスクリプト実行・トップ画面遷移は禁止のまま。
+function prepareBodyHtml(html){
+  const doc=new DOMParser().parseFromString(html,"text/html");
+  doc.querySelectorAll("script,style,iframe,object,embed").forEach(el=>el.remove());
+  doc.querySelectorAll("a[href]").forEach(a=>{ a.setAttribute("target","_blank"); a.setAttribute("rel","noopener noreferrer"); });
+  return doc.body ? doc.body.innerHTML : html;
+}
+function linkifyText(text){
+  const e=esc(text);
+  return e.replace(/(https?:\/\/[^\s<>"'）】]+)/g, url => `<a href="${url}" target="_blank" rel="noopener noreferrer">${url}</a>`);
+}
 
 /* ============================================================
    グローバル状態
    ============================================================ */
 let ME=null;
-let TAB="unprocessed"; // unprocessed | processing | completed | all
-let LIST=[];
+let MASTER_MAILS=[];      // 受信トレイの全件（KPI・フィルタの元データ）
+let CHIP="unprocessed";   // unprocessed | processing | completed | all
+let SEARCH_Q="";
+let TAB="inbox";           // inbox | invoiceList | history | sent
+let SELECTED_ID=null;
+let SELECTED=null;         // 選択中メールの詳細一式
 const canManage=u=>!!(u&&(u.is_master||u.role==="CEO"||u.role==="HQ"));
 
 /* ============================================================
-   一覧
+   受信トレイ（一覧マスタ）
    ============================================================ */
-async function loadList(){
-  let filter="";
-  if(TAB==="unprocessed") filter="&mail_status=in.(unread,read)";
-  else if(TAB==="processing") filter="&mail_status=eq.processing";
-  else if(TAB==="completed") filter="&mail_status=eq.completed";
-  const r=await authed(`/rest/v1/invoice_emails?select=id,from_address,subject,received_at,mail_status,duplicate_suspected,processing_user_id,updated_at,processor:users!invoice_emails_processing_user_id_fkey(name),atts:invoice_attachments(id)${filter}&order=received_at.desc&limit=300`);
-  LIST=(r.ok&&Array.isArray(r.body))?r.body:[];
+async function loadInboxMaster(){
+  const r=await authed(`/rest/v1/invoice_emails?select=id,from_address,subject,body_text,received_at,mail_status,duplicate_suspected,processing_user_id,completed_at,updated_at,processor:users!invoice_emails_processing_user_id_fkey(name),atts:invoice_attachments(id)&order=received_at.desc&limit=500`);
+  MASTER_MAILS=(r.ok&&Array.isArray(r.body))?r.body:[];
 }
-function shellHtml(u,bodyHtml){
-  const tabs=[
-    {key:"unprocessed",label:"未処理"},
-    {key:"processing",label:"処理中"},
-    {key:"completed",label:"完了"},
-    {key:"all",label:"すべて"},
-  ];
+function kpiCounts(){
+  const now=new Date();
+  const unprocessed=MASTER_MAILS.filter(m=>m.mail_status==="unread"||m.mail_status==="read").length;
+  const processing=MASTER_MAILS.filter(m=>m.mail_status==="processing").length;
+  const completedThisMonth=MASTER_MAILS.filter(m=>m.mail_status==="completed"&&m.completed_at&&new Date(m.completed_at).getMonth()===now.getMonth()&&new Date(m.completed_at).getFullYear()===now.getFullYear()).length;
+  return {unprocessed,processing,completedThisMonth};
+}
+function filteredMails(){
+  let list=MASTER_MAILS;
+  if(CHIP==="unprocessed") list=list.filter(m=>m.mail_status==="unread"||m.mail_status==="read");
+  else if(CHIP==="processing") list=list.filter(m=>m.mail_status==="processing");
+  else if(CHIP==="completed") list=list.filter(m=>m.mail_status==="completed");
+  if(SEARCH_Q.trim()){
+    const q=SEARCH_Q.trim().toLowerCase();
+    list=list.filter(m=>(m.from_address||"").toLowerCase().includes(q)||(m.subject||"").toLowerCase().includes(q));
+  }
+  return list;
+}
+
+/* ============================================================
+   シェル（KPI・タブ）
+   ============================================================ */
+let WAITING_PAYMENT_COUNT=0;
+async function loadWaitingPaymentCount(){
+  const r=await authed(`/rest/v1/invoices?invoice_status=eq.waiting_payment&select=id`);
+  WAITING_PAYMENT_COUNT=(r.ok&&Array.isArray(r.body))?r.body.length:0;
+}
+function shellHtml(u){
+  const k=kpiCounts();
   return `
   <div class="topbar">
-    <h1>📨 請求書管理</h1>
+    <h1>📨 請求書メール</h1>
     <div class="who">👤 ${esc(u.name)} ／ <a href="index.html">← ポータルへ</a></div>
   </div>
-  <div class="tabrow">${tabs.map(t=>`<button class="${TAB===t.key?"active":""}" data-tab="${t.key}">${t.label}</button>`).join("")}</div>
-  ${bodyHtml}`;
+  <div class="mail-shell">
+    <div class="mail-summary">
+      <div class="card mail-kpi"><small>未処理メール</small><b style="color:var(--accent)">${k.unprocessed}</b></div>
+      <div class="card mail-kpi"><small>処理中</small><b style="color:var(--blue)">${k.processing}</b></div>
+      <div class="card mail-kpi"><small>支払待ち請求書</small><b>${WAITING_PAYMENT_COUNT}</b></div>
+      <div class="card mail-kpi"><small>今月完了</small><b style="color:var(--green)">${k.completedThisMonth}</b></div>
+    </div>
+    <div class="mail-tabs">
+      <button class="mail-tab ${TAB==='inbox'?'active':''}" data-tab="inbox">受信トレイ</button>
+      <button class="mail-tab ${TAB==='invoiceList'?'active':''}" data-tab="invoiceList">請求書一覧</button>
+      <button class="mail-tab ${TAB==='history'?'active':''}" data-tab="history">処理履歴</button>
+      <button class="mail-tab ${TAB==='sent'?'active':''}" data-tab="sent">送信済み</button>
+    </div>
+    <div id="tabbody"></div>
+  </div>`;
 }
 function wireShell(u){
   document.querySelectorAll("[data-tab]").forEach(b=>b.onclick=async()=>{
     TAB=b.dataset.tab;
-    $("app").innerHTML='<div class="spin">読み込み中…</div>';
-    await loadList(); renderList(u);
+    document.querySelectorAll(".mail-tab").forEach(x=>x.classList.toggle("active",x.dataset.tab===TAB));
+    await renderTabBody(u);
   });
 }
-function renderList(u){
-  $("app").innerHTML=shellHtml(u,`
-    <div class="mgmt-scroll"><table class="mg">
-      <tr><th>送信元</th><th>件名</th><th>受信日時</th><th>📎</th><th>状態</th><th>担当者</th><th>最終更新</th></tr>
-      ${LIST.map(m=>`<tr data-openmail="${m.id}">
-        <td>${esc(m.from_address||"—")}</td>
-        <td class="subjcell">${esc(m.subject||"（件名なし）")}${m.duplicate_suspected?' <span class="dupbadge">⚠️重複疑い</span>':""}</td>
-        <td>${fmtDT(m.received_at)}</td>
-        <td>${(m.atts&&m.atts.length)?"📎"+m.atts.length:"—"}</td>
-        <td><span class="badge ${m.mail_status}">${MAIL_STATUS_LABEL[m.mail_status]}</span></td>
-        <td>${m.processor?esc(m.processor.name)+"さんが処理中":"—"}</td>
-        <td>${fmtDT(m.updated_at)}</td>
-      </tr>`).join("")||`<tr><td colspan="7">該当するメールはありません</td></tr>`}
-    </table></div>
-  `);
-  wireShell(u);
-  document.querySelectorAll("[data-openmail]").forEach(el=>el.onclick=()=>openMailDetail(u,el.dataset.openmail));
+async function renderTabBody(u){
+  $("tabbody").innerHTML='<div class="spin">読み込み中…</div>';
+  if(TAB==="inbox") renderInbox(u);
+  else if(TAB==="invoiceList") await renderInvoiceListTab(u);
+  else if(TAB==="history") await renderHistoryTab(u);
+  else if(TAB==="sent") await renderSentTab(u);
 }
 
 /* ============================================================
-   詳細モーダル
+   受信トレイ（左=一覧・右=詳細）
    ============================================================ */
-async function openMailDetail(u,emailId){
-  const [mr,ar,rr,lr]=await Promise.all([
+function renderInbox(u){
+  const list=filteredMails();
+  $("tabbody").innerHTML=`
+    <section class="mail-inbox active">
+      <div class="mail-layout">
+        <div class="card mail-list-card">
+          <div class="mail-toolbar"><input id="mailSearch" placeholder="🔎 送信元・件名を検索" value="${esc(SEARCH_Q)}"></div>
+          <div class="mail-chips">
+            ${[["unprocessed","未処理"],["processing","処理中"],["completed","完了"],["all","すべて"]].map(([k,l])=>
+              `<button class="mail-chip ${CHIP===k?'active':''}" data-chip="${k}">${l}</button>`).join("")}
+          </div>
+          <div class="mail-list-scroll" id="mailListScroll">
+            ${list.length?list.map(mailItemHtml).join(""):'<div class="empty">該当するメールはありません</div>'}
+          </div>
+        </div>
+        <div class="card mail-detail" id="mailDetail">
+          <div class="empty">左の一覧からメールを選んでください</div>
+        </div>
+      </div>
+    </section>`;
+  $("mailSearch").oninput=e=>{ SEARCH_Q=e.target.value; renderMailListOnly(); };
+  document.querySelectorAll("[data-chip]").forEach(b=>b.onclick=()=>{ CHIP=b.dataset.chip; renderInbox(u); });
+  wireMailListClicks(u);
+  if(SELECTED_ID && list.some(m=>m.id===SELECTED_ID)) openMailDetail(u,SELECTED_ID,true);
+}
+function renderMailListOnly(){
+  const list=filteredMails();
+  $("mailListScroll").innerHTML=list.length?list.map(mailItemHtml).join(""):'<div class="empty">該当するメールはありません</div>';
+  wireMailListClicks(ME);
+}
+function wireMailListClicks(u){
+  document.querySelectorAll("[data-openmail]").forEach(el=>el.onclick=()=>openMailDetail(u,el.dataset.openmail,false));
+}
+function mailItemHtml(m){
+  const cls=["mail-item"];
+  if(m.mail_status==="unread") cls.push("unread");
+  if(m.mail_status==="processing") cls.push("locked");
+  if(m.mail_status==="completed") cls.push("completed");
+  if(m.duplicate_suspected) cls.push("dup");
+  if(m.id===SELECTED_ID) cls.push("active");
+  const preview=(m.body_text||"").replace(/\s+/g," ").trim().slice(0,60);
+  const metaLeft=m.mail_status==="processing"&&m.processor?`担当：${esc(m.processor.name)}`:((m.atts&&m.atts.length)?`添付 ${m.atts.length}件`:"添付なし");
+  return `<div class="${cls.join(' ')}" data-openmail="${m.id}">
+    <div class="mail-from">${esc(m.from_address||"—")}</div>
+    <div class="mail-subject">${esc(m.subject||"（件名なし）")}</div>
+    <div class="mail-preview">${esc(preview)}</div>
+    <div class="mail-meta"><span>${metaLeft}</span><span>${fmtDT(m.received_at)}</span></div>
+  </div>`;
+}
+
+/* ============================================================
+   メール詳細
+   ============================================================ */
+async function openMailDetail(u,emailId,skipHighlight){
+  SELECTED_ID=emailId;
+  if(!skipHighlight){
+    document.querySelectorAll(".mail-item").forEach(el=>el.classList.toggle("active",el.dataset.openmail===emailId));
+  }
+  $("mailDetail").innerHTML='<div class="spin">読み込み中…</div>';
+
+  const [mr,ar,rr,lr,ivr]=await Promise.all([
     authed(`/rest/v1/invoice_emails?id=eq.${emailId}&select=*,processor:users!invoice_emails_processing_user_id_fkey(name),completer:users!invoice_emails_completed_by_fkey(name)`),
     authed(`/rest/v1/invoice_attachments?email_id=eq.${emailId}&select=*&order=created_at`),
-    authed(`/rest/v1/invoice_email_reads?email_id=eq.${emailId}&select=opened_at,reader:users(name)&order=opened_at.desc&limit=20`),
-    authed(`/rest/v1/invoice_audit_logs?entity_id=eq.${emailId}&select=*,actor:users(name)&order=created_at.desc&limit=50`),
+    authed(`/rest/v1/invoice_email_reads?email_id=eq.${emailId}&select=opened_at,reader:users(name)&order=opened_at.asc&limit=1`),
+    authed(`/rest/v1/invoice_audit_logs?entity_id=eq.${emailId}&select=*,actor:users(name)&order=created_at.asc&limit=50`),
+    authed(`/rest/v1/invoices?email_id=eq.${emailId}&select=*&limit=1`),
   ]);
-  if(!mr.ok||!mr.body||!mr.body[0]) return;
+  if(!mr.ok||!mr.body||!mr.body[0]){ $("mailDetail").innerHTML='<div class="empty">読み込みに失敗しました</div>'; return; }
   const mail=mr.body[0];
   const atts=(ar.ok&&Array.isArray(ar.body))?ar.body:[];
-  const reads=(rr.ok&&Array.isArray(rr.body))?rr.body:[];
+  const firstRead=(rr.ok&&Array.isArray(rr.body)&&rr.body[0])?rr.body[0]:null;
   const logs=(lr.ok&&Array.isArray(lr.body))?lr.body:[];
-  const ivr=await authed(`/rest/v1/invoices?email_id=eq.${emailId}&select=*&limit=1`);
   const invoice=(ivr.ok&&Array.isArray(ivr.body)&&ivr.body[0])?ivr.body[0]:null;
+  SELECTED={mail,atts,firstRead,logs,invoice};
 
-  // 開封記録（初回のみでよいが、RPC側はunread→readの遷移だけなので毎回呼んでも安全）
-  authed("/rest/v1/rpc/invoice_record_read",{method:"POST",body:JSON.stringify({p_email_id:emailId})});
+  // 開封記録（unread→readの遷移のみ。何度呼んでも安全）
+  authed("/rest/v1/rpc/invoice_record_read",{method:"POST",body:JSON.stringify({p_email_id:emailId})}).then(()=>{
+    const m=MASTER_MAILS.find(x=>x.id===emailId);
+    if(m&&m.mail_status==="unread"){ m.mail_status="read"; }
+  });
 
+  renderMailDetail(u);
+}
+
+function renderMailDetail(u){
+  const {mail,atts,firstRead,logs,invoice}=SELECTED;
   const canStart=(mail.mail_status==="unread"||mail.mail_status==="read")&&!mail.processing_user_id;
   const isHolder=mail.processing_user_id===ME.id;
   const canRelease=!!mail.processing_user_id&&(isHolder||canManage(ME));
   const canComplete=isHolder&&mail.mail_status==="processing";
-  const canReply=canManage(ME)||true; // invoice_can_access()側で最終判定。UIは全員に見せてRPCで弾く
+  const pillKind=MAIL_STATUS_PILL[mail.mail_status]||"gray";
 
-  const modal=document.createElement("div");
-  modal.className="modal-bg"; modal.id="mailModal";
-  modal.innerHTML=`<div class="modal">
-    <div class="mhead"><h2>${esc(mail.subject||"（件名なし）")}</h2><button class="linkbtn" id="closemailmodal">閉じる ×</button></div>
-    <span class="badge ${mail.mail_status}">${MAIL_STATUS_LABEL[mail.mail_status]}</span>
-    ${mail.duplicate_suspected?'<span class="dupbadge" style="margin-left:8px">⚠️ 同じ添付ファイルの重複疑いがあります</span>':""}
-    <div class="detail-row"><span class="k">送信元</span><span class="v">${esc(mail.from_address||"—")}</span></div>
-    <div class="detail-row"><span class="k">宛先</span><span class="v">${esc(mail.to_address||"—")}</span></div>
-    ${mail.cc_address?`<div class="detail-row"><span class="k">CC</span><span class="v">${esc(mail.cc_address)}</span></div>`:""}
-    <div class="detail-row"><span class="k">受信日時</span><span class="v">${fmtDT(mail.received_at)}</span></div>
-    ${mail.processor?`<div class="detail-row"><span class="k">担当</span><span class="v">${esc(mail.processor.name)}さん</span></div>`:""}
-    ${mail.completer?`<div class="detail-row"><span class="k">完了者</span><span class="v">${esc(mail.completer.name)}さん（${fmtDT(mail.completed_at)}）</span></div>`:""}
-    ${mail.completion_note?`<div class="detail-row"><span class="k">完了メモ</span><span class="v">${esc(mail.completion_note)}</span></div>`:""}
-
-    <div class="sec-title">本文</div>
-    <iframe class="bodyframe" id="mailbodyframe" sandbox=""></iframe>
-
-    <div class="sec-title">添付（${atts.length}件）</div>
-    <div class="attlist" id="attlist">${atts.map(a=>`<div class="attitem"><span>📎 ${esc(a.file_name)}</span><a class="linkbtn" data-attpath="${esc(a.storage_path)}" href="#" target="_blank">開く</a></div>`).join("")||'<div class="meta" style="color:var(--muted);font-size:12px">添付はありません</div>'}</div>
-
-    <div class="sec-title">請求書情報（任意）</div>
-    <div class="card">
-      <label>請求元</label><input id="iv-vendor" value="${esc(invoice&&invoice.vendor_name||"")}">
-      <label>請求書番号</label><input id="iv-number" value="${esc(invoice&&invoice.invoice_number||"")}">
-      <label>金額</label><input id="iv-amount" type="number" value="${invoice&&invoice.amount!=null?invoice.amount:""}">
-      <label>支払期限</label><input id="iv-duedate" type="date" value="${invoice&&invoice.due_date||""}">
-      <button class="btn sm" style="margin-top:10px" id="iv-save">保存</button>
-      <div class="err" id="iv-msg"></div>
-    </div>
-
-    <div class="actionrow">
-      ${canStart?`<button class="btn" id="act-start">📥 この請求書を処理する</button>`:""}
-      ${canComplete?`<button class="btn" id="act-complete">✅ 処理完了</button>`:""}
-      ${canRelease?`<button class="btn sub" id="act-release">🔓 ロック解除（管理者・理由必須）</button>`:""}
-    </div>
-    <div id="completebox" style="display:none;margin-top:10px">
-      <label>完了メモ（任意）</label><textarea id="complete-note" rows="2"></textarea>
-      <button class="btn" style="margin-top:8px" id="complete-send">この内容で完了する</button>
-    </div>
-    <div id="releasebox" style="display:none;margin-top:10px">
-      <label>解除理由（必須）</label><textarea id="release-reason" rows="2"></textarea>
-      <button class="btn" style="margin-top:8px;background:var(--bad)" id="release-send">解除する</button>
-    </div>
-    <div class="err" id="act-msg" style="margin-top:8px"></div>
-
-    <div class="sec-title">✉️ 返信</div>
-    <div class="card" id="replycard">
-      <label>本文</label><textarea id="reply-body" rows="4" placeholder="宛先は元メールの送信元に固定されます"></textarea>
-      <button class="btn sm" style="margin-top:8px" id="reply-confirm">確認画面へ</button>
-      <div id="replyconfirm" style="display:none">
-        <div class="confirmbox">
-          <div class="detail-row"><span class="k">宛先</span><span class="v">${esc(mail.from_address||"—")}</span></div>
-          <div class="detail-row"><span class="k">件名</span><span class="v">Re: ${esc(mail.subject||"")}</span></div>
-          <div class="detail-row"><span class="k">本文</span><span class="v" id="reply-preview" style="white-space:pre-wrap;text-align:left"></span></div>
-        </div>
-        <button class="btn" style="margin-top:8px" id="reply-send">送信する</button>
-        <button class="btn sub" style="margin-top:8px" id="reply-cancel">戻る</button>
+  $("mailDetail").innerHTML=`
+    <div class="mail-detail-head">
+      <div class="hq-badges">
+        <span class="hq-pill ${pillKind}">${MAIL_STATUS_LABEL[mail.mail_status]||mail.mail_status}</span>
+        ${atts.length?'<span class="hq-pill gray">添付あり</span>':''}
+        ${mail.duplicate_suspected?'<span class="hq-pill red">重複疑い</span>':''}
       </div>
-      <div class="err" id="reply-msg" style="margin-top:8px"></div>
+      <h2>${esc(mail.subject||"（件名なし）")}</h2>
+      <div class="meta">${esc(mail.from_address||"—")} 　→　 ${esc(mail.to_address||"—")}</div>
+      <div class="mail-detail-grid">
+        <div class="mail-mini"><small>受信</small><b>${fmtDT(mail.received_at)}</b></div>
+        <div class="mail-mini"><small>最初に開いた人</small><b>${firstRead?esc(firstRead.reader&&firstRead.reader.name||"—"):"未開封"}</b></div>
+        <div class="mail-mini"><small>処理担当</small><b>${mail.processor?esc(mail.processor.name):"未設定"}</b></div>
+        <div class="mail-mini"><small>処理状態</small><b>${MAIL_STATUS_LABEL[mail.mail_status]||mail.mail_status}</b></div>
+      </div>
+      <div class="mail-ownerbar">
+        ${canStart?'<button class="hq-btn primary" id="act-start">このメールを処理する</button>':''}
+        ${canComplete?'<button class="hq-btn green" id="act-complete">処理を完了</button>':''}
+        ${canRelease?'<button class="hq-btn" id="act-release">🔓 ロック解除</button>':''}
+      </div>
+      <div id="completebox" style="display:none;margin-top:10px">
+        <label style="font-size:12px;color:var(--muted)">完了メモ（任意）</label>
+        <textarea id="complete-note" rows="2" style="width:100%;border:1px solid var(--line);border-radius:8px;padding:8px;margin-top:4px"></textarea>
+        <button class="hq-btn primary" style="margin-top:8px" id="complete-send">この内容で完了する</button>
+      </div>
+      <div id="releasebox" style="display:none;margin-top:10px">
+        <label style="font-size:12px;color:var(--muted)">解除理由（必須）</label>
+        <textarea id="release-reason" rows="2" style="width:100%;border:1px solid var(--line);border-radius:8px;padding:8px;margin-top:4px"></textarea>
+        <button class="hq-btn" style="margin-top:8px;background:var(--accent);color:#fff;border-color:var(--accent)" id="release-send">解除する</button>
+      </div>
+      <div class="err" id="act-msg" style="margin-top:6px"></div>
     </div>
 
-    <div class="sec-title">開封履歴</div>
-    <div class="loglist">${reads.map(x=>`<div>👁️ ${esc(x.reader&&x.reader.name||"—")} — ${fmtDT(x.opened_at)}</div>`).join("")||'<div>まだ誰も開いていません</div>'}</div>
+    ${mail.mail_status==="processing"&&!isHolder?`<div class="mail-lock">🔒 <b>${esc(mail.processor?mail.processor.name:"担当者")}さんが処理中です。</b> 他の人は処理を開始できません。</div>`:""}
+    ${mail.duplicate_suspected?'<div class="mail-alert">⚠️ <b>重複の可能性があります。</b> 同じ添付ファイル（ハッシュ一致）が既に登録されています。</div>':""}
 
-    <div class="sec-title">処理履歴</div>
-    <div class="loglist">${logs.map(x=>`<div>${logIcon(x.action)} ${esc(x.actor&&x.actor.name||"—")} — ${logLabel(x.action)}（${fmtDT(x.created_at)}）${x.note?" ／ "+esc(x.note):""}</div>`).join("")||'<div>履歴はありません</div>'}</div>
-  </div>`;
-  document.body.appendChild(modal);
-  modal.onclick=e=>{ if(e.target===modal) modal.remove(); };
-  $("closemailmodal").onclick=()=>modal.remove();
+    <div class="mail-body">
+      <iframe class="mail-body-frame" id="mailBodyFrame" sandbox="allow-popups allow-popups-to-escape-sandbox"></iframe>
 
-  // 本文はsrcdocをDOMプロパティで直接セット（テンプレート文字列に埋め込むとエスケープが崩れるため）。
-  // sandbox=""（allow-scriptsもallow-same-originも付けない）でスクリプト実行を封じる＝XSS対策
-  $("mailbodyframe").srcdoc = mail.body_html || (mail.body_text ? "<pre>"+esc(mail.body_text)+"</pre>" : "（本文なし）");
+      <div class="invoice-attach">
+        <h3>📎 添付（${atts.length}件）</h3>
+        <div class="attlist" id="attlist">${atts.map(a=>`<div class="attitem"><span>📄 ${esc(a.file_name)}</span><a data-attpath="${esc(a.storage_path)}" download="${esc(a.file_name)}" href="#" target="_blank" rel="noopener">開く</a></div>`).join("")||'<div class="meta" style="color:var(--muted);font-size:12px">添付はありません</div>'}</div>
+      </div>
 
-  // 添付の署名URLをまとめて解決
+      <div class="ai-box">
+        <h3>🧾 請求書情報（手動入力・任意）</h3>
+        <div class="ai-grid">
+          <div class="ai-field"><small>請求元</small><input id="iv-vendor" value="${esc(invoice&&invoice.vendor_name||"")}"></div>
+          <div class="ai-field"><small>請求書番号</small><input id="iv-number" value="${esc(invoice&&invoice.invoice_number||"")}"></div>
+          <div class="ai-field"><small>金額</small><input id="iv-amount" type="number" value="${invoice&&invoice.amount!=null?invoice.amount:""}"></div>
+          <div class="ai-field"><small>支払期限</small><input id="iv-duedate" type="date" value="${invoice&&invoice.due_date||""}"></div>
+        </div>
+        <div class="mail-actions">
+          <button id="iv-save">💾 請求書情報を保存</button>
+          <button id="reply-open">↩ 返信</button>
+        </div>
+        <div class="err" id="iv-msg" style="margin-top:6px"></div>
+      </div>
+
+      <div class="replybox" id="replybox">
+        <b style="font-size:12px">✉️ 返信</b>
+        <textarea id="reply-body" placeholder="宛先は元メールの送信元に固定されます"></textarea>
+        <button class="hq-btn" style="margin-top:8px" id="reply-confirm">確認画面へ</button>
+        <div id="replyconfirm" style="display:none">
+          <div class="confirmbox">宛先: ${esc(mail.from_address||"—")}
+件名: Re: ${esc(mail.subject||"")}
+本文:
+<span id="reply-preview"></span></div>
+          <button class="hq-btn primary" style="margin-top:8px" id="reply-send">送信する</button>
+          <button class="hq-btn" style="margin-top:8px" id="reply-cancel">戻る</button>
+        </div>
+        <div class="err" id="reply-msg" style="margin-top:6px"></div>
+      </div>
+
+      <div class="mail-history">
+        <b style="font-size:12px">処理履歴</b>
+        <div id="mailHistory">${logs.length?logs.map(x=>`<div class="mail-history-row done"><span></span><div>${fmtDT(x.created_at)}　${esc(x.actor&&x.actor.name||"—")}が${logLabel(x.action)}${x.note?"（"+esc(x.note)+"）":""}</div></div>`).join(""):'<div class="mail-history-row"><span></span><div>まだ履歴はありません</div></div>'}</div>
+      </div>
+    </div>
+  `;
+
+  // 本文はsrcdoc（DOMプロパティで直接セット）。sandboxはallow-popupsのみ＝
+  // リンクは新規タブで開けるがスクリプト実行・トップ遷移は不可のまま
+  const bodyHtml = mail.body_html ? prepareBodyHtml(mail.body_html) : (mail.body_text ? `<pre style="white-space:pre-wrap;font-family:inherit">${linkifyText(mail.body_text)}</pre>` : "（本文なし）");
+  $("mailBodyFrame").srcdoc = `<!doctype html><html><head><meta charset="utf-8"><style>body{font-family:-apple-system,sans-serif;font-size:13px;line-height:1.7;color:#3a352f;margin:10px}</style></head><body>${bodyHtml}</body></html>`;
+
   if(atts.length){
-    const map=await signAttachmentUrls(atts.map(a=>a.storage_path));
-    document.querySelectorAll("[data-attpath]").forEach(el=>{ const url=map[el.dataset.attpath]; if(url) el.href=url; });
+    signAttachmentUrls(atts.map(a=>a.storage_path)).then(map=>{
+      document.querySelectorAll("[data-attpath]").forEach(el=>{ const url=map[el.dataset.attpath]; if(url) el.href=url; });
+    });
   }
 
-  const closeAndReload=async()=>{ modal.remove(); await loadList(); renderList(u); };
+  wireDetailActions(u);
+}
+function logLabel(action){
+  return {intake:"取込",open:"開封",start_processing:"処理を開始",release_lock:"ロックを解除",complete:"処理を完了",reply_queued:"返信を予約",reply_sent:"返信を送信"}[action]||action;
+}
+function wireDetailActions(u){
+  const {mail}=SELECTED;
+  const emailId=mail.id;
+  const reloadDetail=async()=>{ await loadInboxMaster(); await loadWaitingPaymentCount(); const list=filteredMails(); $("tabbody").querySelector(".mail-list-scroll") && (document.getElementById("mailListScroll").innerHTML=list.length?list.map(mailItemHtml).join(""):'<div class="empty">該当するメールはありません</div>'); wireMailListClicks(u); document.querySelector(".mail-summary").outerHTML=(()=>{const k=kpiCounts();return `<div class="mail-summary">
+      <div class="card mail-kpi"><small>未処理メール</small><b style="color:var(--accent)">${k.unprocessed}</b></div>
+      <div class="card mail-kpi"><small>処理中</small><b style="color:var(--blue)">${k.processing}</b></div>
+      <div class="card mail-kpi"><small>支払待ち請求書</small><b>${WAITING_PAYMENT_COUNT}</b></div>
+      <div class="card mail-kpi"><small>今月完了</small><b style="color:var(--green)">${k.completedThisMonth}</b></div>
+    </div>`;})(); await openMailDetail(u,emailId,true); };
 
-  if(canStart){
-    $("act-start").onclick=async()=>{
-      $("act-start").disabled=true; $("act-msg").textContent="処理中…";
-      const r=await authed("/rest/v1/rpc/invoice_start_processing",{method:"POST",body:JSON.stringify({p_email_id:emailId})});
-      if(!r.ok){ $("act-msg").textContent=(r.body&&r.body.message)||"処理を開始できませんでした"; $("act-start").disabled=false; return; }
-      if(r.body&&r.body.success===false){ $("act-msg").textContent=(r.body.held_by||"他の人")+"さんが処理中です"; $("act-start").disabled=false; return; }
-      await closeAndReload();
-    };
-  }
-  if(canComplete){
-    $("act-complete").onclick=()=>{ $("completebox").style.display="block"; };
-    $("complete-send").onclick=async()=>{
-      $("complete-send").disabled=true; $("act-msg").textContent="処理中…";
-      const r=await authed("/rest/v1/rpc/invoice_complete",{method:"POST",body:JSON.stringify({p_email_id:emailId,p_note:$("complete-note").value.trim()||null})});
-      if(!r.ok){ $("act-msg").textContent=(r.body&&r.body.message)||"完了できませんでした"; $("complete-send").disabled=false; return; }
-      await closeAndReload();
-    };
-  }
-  if(canRelease){
-    $("act-release").onclick=()=>{ $("releasebox").style.display="block"; };
-    $("release-send").onclick=async()=>{
-      const reason=$("release-reason").value.trim();
-      if(!reason){ $("act-msg").textContent="解除理由を入力してください"; return; }
-      $("release-send").disabled=true; $("act-msg").textContent="処理中…";
-      const r=await authed("/rest/v1/rpc/invoice_release_lock",{method:"POST",body:JSON.stringify({p_email_id:emailId,p_reason:reason})});
-      if(!r.ok){ $("act-msg").textContent=(r.body&&r.body.message)||"解除できませんでした"; $("release-send").disabled=false; return; }
-      await closeAndReload();
-    };
-  }
+  if($("act-start")) $("act-start").onclick=async()=>{
+    $("act-start").disabled=true; $("act-msg").textContent="処理中…";
+    const r=await authed("/rest/v1/rpc/invoice_start_processing",{method:"POST",body:JSON.stringify({p_email_id:emailId})});
+    if(!r.ok){ $("act-msg").textContent=(r.body&&r.body.message)||"処理を開始できませんでした"; $("act-start").disabled=false; return; }
+    if(r.body&&r.body.success===false){ $("act-msg").textContent=(r.body.held_by||"他の人")+"さんが処理中です"; $("act-start").disabled=false; return; }
+    await reloadDetail();
+  };
+  if($("act-complete")) $("act-complete").onclick=()=>{ $("completebox").style.display="block"; };
+  if($("complete-send")) $("complete-send").onclick=async()=>{
+    $("complete-send").disabled=true; $("act-msg").textContent="処理中…";
+    const r=await authed("/rest/v1/rpc/invoice_complete",{method:"POST",body:JSON.stringify({p_email_id:emailId,p_note:$("complete-note").value.trim()||null})});
+    if(!r.ok){ $("act-msg").textContent=(r.body&&r.body.message)||"完了できませんでした"; $("complete-send").disabled=false; return; }
+    await reloadDetail();
+  };
+  if($("act-release")) $("act-release").onclick=()=>{ $("releasebox").style.display="block"; };
+  if($("release-send")) $("release-send").onclick=async()=>{
+    const reason=$("release-reason").value.trim();
+    if(!reason){ $("act-msg").textContent="解除理由を入力してください"; return; }
+    $("release-send").disabled=true; $("act-msg").textContent="処理中…";
+    const r=await authed("/rest/v1/rpc/invoice_release_lock",{method:"POST",body:JSON.stringify({p_email_id:emailId,p_reason:reason})});
+    if(!r.ok){ $("act-msg").textContent=(r.body&&r.body.message)||"解除できませんでした"; $("release-send").disabled=false; return; }
+    await reloadDetail();
+  };
 
   $("iv-save").onclick=async()=>{
     const msg=$("iv-msg"); msg.textContent="保存中…";
@@ -345,15 +542,15 @@ async function openMailDetail(u,emailId){
       due_date:$("iv-duedate").value||null,
     };
     let r;
-    if(invoice){
-      r=await authed(`/rest/v1/invoices?id=eq.${invoice.id}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({...payload,updated_at:new Date().toISOString()})});
+    if(SELECTED.invoice){
+      r=await authed(`/rest/v1/invoices?id=eq.${SELECTED.invoice.id}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({...payload,updated_at:new Date().toISOString()})});
     }else{
       r=await authed("/rest/v1/invoices",{method:"POST",headers:{Prefer:"return=minimal"},body:JSON.stringify({...payload,email_id:emailId})});
     }
     msg.className=r.ok?"err msg-ok":"err"; msg.textContent=r.ok?"保存しました":"保存できませんでした";
   };
 
-  // 返信: RPCでoutboxへqueue → 即座にinvoice-send Edge Functionを呼んで送信
+  $("reply-open").onclick=()=>{ $("replybox").classList.toggle("open"); };
   $("reply-confirm").onclick=()=>{
     const body=$("reply-body").value.trim();
     if(!body){ $("reply-msg").textContent="本文を入力してください"; return; }
@@ -370,30 +567,79 @@ async function openMailDetail(u,emailId){
     const s=sess.get();
     const sr=await fetch(SUPA_URL+"/functions/v1/invoice-send",{method:"POST",headers:{"Content-Type":"application/json","apikey":SUPA_KEY,"Authorization":"Bearer "+(s?s.at:"")},body:JSON.stringify({outbox_id:outboxId})});
     const sj=await sr.json().catch(()=>({}));
-    if(!sr.ok||!sj.success){
-      $("reply-msg").className="err msg-ok";
-      $("reply-msg").textContent="送信予約は完了しました。即時送信には失敗しましたが、数分以内に自動で再送されます。";
-    }else{
-      $("reply-msg").className="err msg-ok";
-      $("reply-msg").textContent="送信しました";
-    }
-    await closeAndReload();
+    $("reply-msg").className="err msg-ok";
+    $("reply-msg").textContent=(sr.ok&&sj.success)?"送信しました":"送信予約は完了しました。数分以内に自動で再送されます。";
+    await reloadDetail();
   };
 }
-function logIcon(action){
-  return {intake:"📥",open:"👁️",start_processing:"📥",release_lock:"🔓",complete:"✅",reply_queued:"✉️",reply_sent:"📤"}[action]||"・";
+
+/* ============================================================
+   請求書一覧タブ
+   ============================================================ */
+async function renderInvoiceListTab(u){
+  const r=await authed(`/rest/v1/invoices?select=*,email:invoice_emails(subject,from_address,processing_user_id,processor:users!invoice_emails_processing_user_id_fkey(name))&order=created_at.desc&limit=300`);
+  const rows=(r.ok&&Array.isArray(r.body))?r.body:[];
+  $("tabbody").innerHTML=`
+    <section class="invoice-list active">
+      <div class="card hq-tablewrap">
+        <table class="invoice-table">
+          <thead><tr><th>請求元</th><th>請求番号</th><th>金額</th><th>期限</th><th>担当</th><th>状態</th></tr></thead>
+          <tbody>
+            ${rows.map(row=>`<tr data-openmail="${row.email_id}">
+              <td><b>${esc(row.vendor_name||(row.email&&row.email.from_address)||"—")}</b></td>
+              <td>${esc(row.invoice_number||"—")}</td>
+              <td>${yen(row.amount)}</td>
+              <td>${fmtD(row.due_date)}</td>
+              <td>${esc(row.email&&row.email.processor&&row.email.processor.name||"—")}</td>
+              <td><span class="invoice-status ${INVOICE_STATUS_CLASS[row.invoice_status]||'gray'}">${INVOICE_STATUS_LABEL[row.invoice_status]||row.invoice_status}</span></td>
+            </tr>`).join("")||'<tr><td colspan="6">まだ登録された請求書はありません</td></tr>'}
+          </tbody>
+        </table>
+      </div>
+    </section>`;
+  document.querySelectorAll("[data-openmail]").forEach(el=>el.onclick=async()=>{
+    TAB="inbox";
+    document.querySelectorAll(".mail-tab").forEach(x=>x.classList.toggle("active",x.dataset.tab==="inbox"));
+    renderInbox(u);
+    await openMailDetail(u,el.dataset.openmail,false);
+  });
 }
-function logLabel(action){
-  return {intake:"取込",open:"開封",start_processing:"処理開始",release_lock:"ロック解除",complete:"処理完了",reply_queued:"返信を予約",reply_sent:"返信を送信"}[action]||action;
+
+/* ============================================================
+   処理履歴タブ（全メール横断の監査ログ）
+   ============================================================ */
+async function renderHistoryTab(u){
+  const r=await authed(`/rest/v1/invoice_audit_logs?select=*,actor:users(name)&order=created_at.desc&limit=200`);
+  const rows=(r.ok&&Array.isArray(r.body))?r.body:[];
+  $("tabbody").innerHTML=`
+    <section class="invoice-list active">
+      <div class="card hq-tablewrap"><table class="invoice-table"><tbody>
+        ${rows.map(x=>`<tr><td><b>${fmtDT(x.created_at)}</b></td><td>${esc(x.actor&&x.actor.name||"—")}が${logLabel(x.action)}${x.note?"（"+esc(x.note)+"）":""}</td></tr>`).join("")||'<tr><td colspan="2">履歴はありません</td></tr>'}
+      </tbody></table></div>
+    </section>`;
+}
+
+/* ============================================================
+   送信済みタブ
+   ============================================================ */
+async function renderSentTab(u){
+  const r=await authed(`/rest/v1/invoice_email_outbox?status=eq.sent&select=*,email:invoice_emails(subject,from_address)&order=sent_at.desc&limit=200`);
+  const rows=(r.ok&&Array.isArray(r.body))?r.body:[];
+  $("tabbody").innerHTML=`
+    <section class="invoice-list active">
+      <div class="card hq-tablewrap"><table class="invoice-table"><tbody>
+        ${rows.map(x=>`<tr><td><b>Re: ${esc(x.email&&x.email.subject||"")}</b><div class="meta" style="color:var(--muted);font-size:11px">宛先：${esc(x.email&&x.email.from_address||"—")}</div></td><td>${fmtDT(x.sent_at)}</td></tr>`).join("")||'<tr><td colspan="2">送信済みの返信はありません</td></tr>'}
+      </tbody></table></div>
+    </section>`;
 }
 
 /* ============================================================
    起動
    ============================================================ */
 function renderLogin(){
-  $("app").innerHTML=`<div class="card">
+  $("app").innerHTML=`<div class="card" style="padding:20px;margin-top:20px">
     <p style="margin-bottom:10px">ログインが必要です。ポータルからアクセスしてください。</p>
-    <a class="btn" href="index.html">← ポータルへ</a>
+    <a class="hq-btn primary" href="index.html" style="text-decoration:none;display:inline-block">← ポータルへ</a>
   </div>`;
 }
 async function main(){
@@ -402,8 +648,10 @@ async function main(){
   if(!u){sess.clear();renderLogin();return}
   if(u.is_active===false){renderLogin();return}
   ME=u;
-  await loadList();
-  renderList(u);
+  await Promise.all([loadInboxMaster(), loadWaitingPaymentCount()]);
+  $("app").innerHTML=shellHtml(u);
+  wireShell(u);
+  await renderTabBody(u);
 }
 main();
 </script>
