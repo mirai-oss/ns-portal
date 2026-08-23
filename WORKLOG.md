@@ -1242,5 +1242,6 @@ GitHubで新しいPAT（`repo`・`workflow`スコープ）を再生成し、cron
   - substep1（キャッシュ）: bqDailyStore/bqGetPL/bqGetDeposit/bqGetMediaにbqDetailと同方式のCacheService 10分キャッシュを追加（speed-v4）
   - substep2（フォールバック）: BQ取得失敗時に自動でシート経路へ切替える仕組みをapp.jsに追加。フォールバック中は画面に注意書き表示
   - **検証で発覚**: bqPerfDiagを2回連続実行して確認したところ、小さいデータのbqGetPL/bqDetailはキャッシュが効いていた（2回目22ms・51ms）が、全期間・全店舗ぶんを返すbqDailyStore/bqGetDeposit/bqGetMediaはCacheServiceの1キー100KB上限を超えて`put`が黙って失敗し、キャッシュが実質無効なままだった（2回目も1回目とほぼ同じ5000〜5700ms）。長い文字列を複数キーに分割保存する方式に修正（speed-v5）し、再検証で5アクション全て2回目は数十ms（19〜38ms）になることを確認。**substep1・2完了**
-  - 下ごしらえ中に別問題を発見（別記録）: PL入力(`savePlEntries`/`savePlBulk`)がBigQuery側(`stg_pl`)への同期(`bqSyncPL`)を呼んでおらず、手入力した経費がBQモードには毎朝8時の自動同期まで反映されない。キャッシュとは無関係の既存の抜け穴。BQモード既定化（substep3）を進めるなら先に直すべき候補として記録
-  - substep3（既定値反転）・substep4（段階展開）は本番へ影響するため、着手前に必ずユーザー確認
+  - 下ごしらえ中に発見した別問題を修正（speed-v6）: PL入力(`savePlEntries`/`savePlBulk`)がBigQuery側(`stg_pl`)への同期(`bqSyncPL`)を呼んでおらず、手入力した経費がBQモードには翌朝8時の自動同期まで反映されなかった。両関数の末尾で`bqSyncPL`を呼ぶよう修正。あわせて`bqGetPL`のキャッシュ（substep1）が同期直後も古いまま返らないよう、世代番号方式のキャッシュ無効化(`bqCacheGen_`/`bqCacheGenBump_`)を追加（`bqSyncPL`成功のたびに世代を進める。店舗権限スコープごとに多数あるキャッシュキーを個別に消さず一括無効化できる）
+  - タスク3前提条件①（数値突合）の裏付けを追加: 診断ワークフロー`reconcile-check.yml`（既存の`bqReconcileSales`を手動実行するだけ）で直近35日を突合 → `net_sales`・`cogs`・`labor_cost_total`とも**完全一致（差額0・492件）**を確認。PL/入金/媒体別は専用の突合ロジックが無いが、いずれも同じ`bqSyncAllSales`（WRITE_TRUNCATE全置換）で作られており、上記と同じ仕組みで完全一致が実証された以上、高い確度で健全と判断
+  - **safeに進められる範囲はここまで完了**。substep3（既定値反転）・substep4（段階展開）は本番へ影響するため、着手前に必ずユーザー確認
