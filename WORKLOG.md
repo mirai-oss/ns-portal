@@ -1229,5 +1229,13 @@ GitHubで新しいPAT（`repo`・`workflow`スコープ）を再生成し、cron
   - 動作確認用に`bqPerfDiag`へdataFreshnessの検証を追加（speed-v2）したところ、シート側の最新日判定にもBQ側(fix-v72)と同根のバグを発見: `分析_日別店舗`シートにも月末まで日付欄だけ先に埋まった実績0件のテンプレート行があり、末尾の日付だけ見ると未来日(8/31)を誤って「最新」と判定していた。P列(客数合計)・R列(純売上)も見て実績が入っている行に限定するよう修正（speed-v3）
   - BigQuery同期を手動実行できるワークフロー`manual-bq-sync.yml`を追加（普段はMac mini側が毎日11:00に自動実行。動作確認・朝イチ最新化用。全置換・冪等なので何度実行しても安全）
   - speed-v3で最終検証: `bqMaxDate`=`sheetMaxDate`=2026-08-22・`bqSyncedAt`/`bqSyncedOk`とも正しく取得できることを確認。**タスク1完了**
-- タスク2（朝の反映前倒し）は着手前にブロッカーを発見: 「分析_日別店舗を再生成する」トリガーはtori-dashboardのCode.gsではなく、**売上DB側の別GASプロジェクト（分析集計.gs）**にあり、ローカル（NStyle-AI/gas-backup/dashboard-server）にソースが無い（連携本番.gs等のバックアップはCode.gsと同一内容で、再生成トリガーの記載なし）。Code.gs冒頭コメントにも「売上DBプロジェクト(コード.gs/取込WebApp.gs/分析集計.gs)は一切変更しない」という既存方針が明記されている。着手にはそのプロジェクトのソース取得（clasp clone or ユーザーによる共有）が必要・ユーザーに相談中
+- タスク2（朝の反映前倒し）: 着手前にブロッカーを発見（「分析_日別店舗を再生成する」トリガーはtori-dashboardのCode.gsではなく売上DB側の別GASプロジェクトにあり、ローカルにソースが無かった）。ユーザーがApps Scriptエディタから該当ファイルを共有してくれて解決
+  - トリガー一覧を精査したところ、6個中3個（`updateDashboardAll`・`rebuildAnalysisThenTransferMediaDailyOnly`・`transferToDashboard`）がエラー率100%と判明。実行数ログで原因を特定:
+    - `updateDashboardAll`・`rebuildAnalysisThenTransferMediaDailyOnly`は「Script function not found」＝過去のリファクタで削除された関数を指す幽霊トリガー
+    - `transferToDashboard`は関数自体は存在するが`SpreadsheetApp.getUi()`を無条件で呼んでおり、時間主導型トリガー実行時（UIコンテキスト無し）に必ず例外になるバグ
+    - ただし実際の分析再生成は`refreshAllDashboard()`（①`buildAnalysisTables()`②`transferToDashboard()`③④ミラー、を順に呼ぶ。②の呼び出しは③④の前でtry/catchされているため、②が上記バグで毎回失敗していても①③④は独立して成功する）が担っており、tori-dashboardが使う【サーバー】ダッシュボード（DASHBOARD2_ID）には実害が無いと確認。②の影響先は別スプレッドシート（【仮】ダッシュボード・DASHBOARD_ID）のみ。バグ自体は残置（別途対応候補としてメモ）
+  - `buildAnalysisTables()`を外部から起動できるよう、売上DBの`取込WebApp.gs`（doPost・既存のCSV取込と同じtoken分岐パターン）に`type:'rebuildAnalysis'`アクションを追加（新規トークン不要・既存IMPORT_TOKENを流用）。全文差し替え用ファイルをユーザーに送付し反映
+  - 動作確認でcurlのPOST→リダイレクト時の癖（`script.googleusercontent.com`への転送後、GET/POSTどちらでも失敗する゠`--post302 --post303`でも405）にハマったが、ns-daily-importと同じNode.js `fetch()`で直接テストしたところ正常動作（ダミートークンで`unauthorized`、実トークンで82秒後に`{"ok":true}`）を確認。**今後この種のGAS webapp疎通確認はcurlでなくNode fetchを使うこと**（教訓として記録）
+  - `ns-daily-import`側: `lib/gas.js`に`rebuildAnalysis()`追加（既存GAS_URL/GAS_TOKEN流用）、新規タスク`tasks/morning-refresh.js`追加（①rebuildAnalysis→②bqSyncSales→③bqReconcileSalesの順。冒頭で当日の朝一括取込8本の完了マーカー(`logs/.done-<task>-YYYYMMDD`)を確認し、未完了なら15分待って再確認→それでも揃っていなければスキップ）、`config.js`の`DAILY_INDEPENDENT`に`['morning-refresh','08:45',{}]`を追加。コミット・プッシュ済み。**Mac mini側でのgit pullが必要**（次回Mac miniセッションで反映確認must）
+  - **タスク2はコード面は完了**。Mac mini側の反映確認と、翌朝09:05時点でBQモードに前日分が出ることの実地確認が残作業
 - タスク3（BQモード既定化）は前提条件（タスク0〜2完了・数値突合の結論確定）未達のため未着手
