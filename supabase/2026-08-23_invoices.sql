@@ -277,6 +277,77 @@ begin
 end;
 $$;
 
+-- 一括操作（2026-08-24追加）: 過去分の未処理メールをまとめて処理したいという要望に対応。
+-- p_action='start'   : まとめて処理開始（既に他の人がロック中のものはスキップ）
+-- p_action='complete': まとめて完了（他の人がロック中のものはスキップ。未処理のものは自分が
+--                       処理したことにして完了＝バックログの一括消化を想定。既に完了済みはスキップ）
+-- p_action='waiting_payment': invoicesの状態を「支払待ち」に設定（無ければ新規作成）。
+--                       mail_status（処理中/完了）とは独立して使える
+create or replace function invoice_bulk_action(p_email_ids uuid[], p_action text, p_note text default null) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare
+  v_id uuid; v_email invoice_emails; v_success int := 0; v_skipped jsonb := '[]'::jsonb; v_holder text;
+begin
+  if not invoice_can_access() then raise exception '権限がありません'; end if;
+  if p_action not in ('start','complete','waiting_payment') then raise exception '不正なアクションです'; end if;
+
+  foreach v_id in array p_email_ids loop
+    select * into v_email from invoice_emails where id = v_id;
+    if v_email is null then
+      v_skipped := v_skipped || jsonb_build_object('id', v_id, 'reason', '対象が見つかりません');
+      continue;
+    end if;
+
+    if p_action = 'start' then
+      if v_email.processing_user_id is not null and v_email.lock_expires_at > now() then
+        select u.name into v_holder from users u where u.id = v_email.processing_user_id;
+        v_skipped := v_skipped || jsonb_build_object('id', v_id, 'reason', coalesce(v_holder,'他の人') || 'さんが処理中');
+        continue;
+      end if;
+      update invoice_emails set
+        processing_user_id = auth.uid(), processing_started_at = now(),
+        locked_at = now(), lock_expires_at = now() + interval '24 hours',
+        mail_status = 'processing', updated_at = now()
+      where id = v_id;
+      insert into invoice_audit_logs(entity_type, entity_id, action, user_id, note)
+      values ('invoice_email', v_id, 'start_processing', auth.uid(), coalesce(p_note, '一括処理'));
+      v_success := v_success + 1;
+
+    elsif p_action = 'complete' then
+      if v_email.mail_status = 'completed' then
+        v_skipped := v_skipped || jsonb_build_object('id', v_id, 'reason', '既に完了済み');
+        continue;
+      end if;
+      if v_email.processing_user_id is not null and v_email.processing_user_id <> auth.uid() and v_email.lock_expires_at > now() then
+        select u.name into v_holder from users u where u.id = v_email.processing_user_id;
+        v_skipped := v_skipped || jsonb_build_object('id', v_id, 'reason', coalesce(v_holder,'他の人') || 'さんが処理中のためスキップ');
+        continue;
+      end if;
+      update invoice_emails set
+        processing_user_id = coalesce(v_email.processing_user_id, auth.uid()),
+        mail_status = 'completed', completed_by = auth.uid(), completed_at = now(),
+        completion_note = coalesce(p_note, completion_note), updated_at = now()
+      where id = v_id;
+      insert into invoice_audit_logs(entity_type, entity_id, action, user_id, note)
+      values ('invoice_email', v_id, 'complete', auth.uid(), coalesce(p_note, '一括処理'));
+      v_success := v_success + 1;
+
+    elsif p_action = 'waiting_payment' then
+      if exists(select 1 from invoices where email_id = v_id) then
+        update invoices set invoice_status = 'waiting_payment', assigned_user_id = auth.uid(), updated_at = now() where email_id = v_id;
+      else
+        insert into invoices(email_id, invoice_status, assigned_user_id) values (v_id, 'waiting_payment', auth.uid());
+      end if;
+      insert into invoice_audit_logs(entity_type, entity_id, action, user_id, note)
+      values ('invoice_email', v_id, 'invoice_status_set', auth.uid(), '支払待ちに設定（一括）');
+      v_success := v_success + 1;
+    end if;
+  end loop;
+
+  return jsonb_build_object('success_count', v_success, 'skipped', v_skipped);
+end;
+$$;
+
 -- 手動添付の登録（2026-08-24追加）: ダウンロードリンク＋パスワード式など、メールに直接
 -- 添付されていない請求書をユーザーがダウンロードして手動でアップロードした場合に、その
 -- ファイルをメールへ紐付ける。ファイル本体はクライアントが自分のJWTでstorageへ直接

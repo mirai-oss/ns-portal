@@ -45,12 +45,17 @@ button,input,select,textarea{font:inherit}
 .mail-chips{display:flex;gap:6px;flex-wrap:wrap;padding:10px 12px 0}
 .mail-chip{border:1px solid var(--m-line);background:var(--panel);border-radius:999px;padding:6px 11px;cursor:pointer;font-size:12px;color:var(--muted)}
 .mail-chip.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+.bulkbar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:10px 12px;border-bottom:1px solid var(--line)}
+.bulk-actions{display:flex;gap:6px;flex-wrap:wrap;margin-left:auto}
+.bulk-actions .hq-btn{font-size:12px;padding:7px 10px}
 .mail-layout{display:grid;grid-template-columns:minmax(340px,.9fr) minmax(0,1.5fr);gap:14px;align-items:start}
 .mail-list-card{overflow:hidden}
 .mail-toolbar{padding:12px;border-bottom:1px solid var(--m-line);display:flex;gap:8px;align-items:center}
 .mail-toolbar input{flex:1;border:1px solid var(--m-line);border-radius:10px;padding:10px;background:var(--panel);color:var(--ink)}
 .mail-list-scroll{max-height:74vh;overflow-y:auto}
-.mail-item{padding:13px 14px;border-bottom:1px solid var(--m-line);cursor:pointer;background:var(--panel);position:relative}
+.mail-item{padding:13px 14px 13px 36px;border-bottom:1px solid var(--m-line);cursor:pointer;background:var(--panel);position:relative}
+.mail-checkwrap{position:absolute;left:10px;top:15px}
+.mail-checkwrap input{width:16px;height:16px}
 .mail-item:hover{background:var(--bg)}
 .mail-item.active{background:var(--accent-soft);box-shadow:inset 3px 0 var(--accent)}
 .mail-item.unread .mail-subject{font-weight:800}
@@ -94,7 +99,7 @@ button,input,select,textarea{font:inherit}
 .ai-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
 .ai-field{padding:9px;border:1px solid var(--m-line);border-radius:9px;background:var(--bg)}
 .ai-field small{display:block;color:var(--m-muted);font-size:10px;margin-bottom:4px}
-.ai-field input{width:100%;border:none;background:transparent;font-size:13px;font-weight:700;color:var(--ink)}
+.ai-field input,.ai-field select{width:100%;border:none;background:transparent;font-size:13px;font-weight:700;color:var(--ink)}
 .mail-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
 .mail-actions button{border:1px solid var(--m-line);background:var(--panel);border-radius:10px;padding:9px 12px;cursor:pointer;color:var(--ink)}
 .mail-actions .primary{background:var(--accent);color:#fff;border-color:var(--accent)}
@@ -132,7 +137,8 @@ button,input,select,textarea{font:inherit}
   .mail-summary{gap:8px}.mail-kpi{padding:12px}.mail-kpi b{font-size:22px}
   .mail-tabs{flex-wrap:nowrap;overflow-x:auto}.mail-tab{flex:0 0 auto;font-size:12px;padding:7px 11px}
   .mail-list-scroll{max-height:none}
-  .mail-item{padding:12px}.mail-from{font-size:11px}.mail-subject{font-size:13px}.mail-preview{font-size:10px}
+  .mail-item{padding:12px 12px 12px 32px}.mail-from{font-size:11px}.mail-subject{font-size:13px}.mail-preview{font-size:10px}
+  .bulkbar{padding:8px 10px}.bulk-actions{width:100%}.bulk-actions .hq-btn{flex:1;min-height:38px}
   .mail-detail{margin-top:10px}
   .mail-detail-head{padding:14px}.mail-detail-head h2{font-size:17px}
   .mail-detail-grid{grid-template-columns:1fr 1fr;gap:7px}.mail-mini{padding:9px}
@@ -310,8 +316,10 @@ async function renderTabBody(u){
 /* ============================================================
    受信トレイ（左=一覧・右=詳細）
    ============================================================ */
+let BULK_SELECTED=new Set();
 function renderInbox(u){
   const list=filteredMails();
+  BULK_SELECTED=new Set([...BULK_SELECTED].filter(id=>list.some(m=>m.id===id)));
   $("tabbody").innerHTML=`
     <section class="mail-inbox active">
       <div class="mail-layout">
@@ -321,6 +329,16 @@ function renderInbox(u){
             ${[["unprocessed","未処理"],["processing","処理中"],["completed","完了"],["all","すべて"]].map(([k,l])=>
               `<button class="mail-chip ${CHIP===k?'active':''}" data-chip="${k}">${l}</button>`).join("")}
           </div>
+          <div class="bulkbar" id="bulkbar">
+            <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)"><input type="checkbox" id="bulk-selectall">全選択</label>
+            <span id="bulk-count" style="font-size:12px;color:var(--muted)"></span>
+            <div class="bulk-actions">
+              <button class="hq-btn" id="bulk-start" disabled>まとめて処理開始</button>
+              <button class="hq-btn" id="bulk-waiting" disabled>支払待ちにする</button>
+              <button class="hq-btn primary" id="bulk-complete" disabled>まとめて完了</button>
+            </div>
+          </div>
+          <div class="err" id="bulk-msg" style="padding:0 12px"></div>
           <div class="mail-list-scroll" id="mailListScroll">
             ${list.length?list.map(mailItemHtml).join(""):'<div class="empty">該当するメールはありません</div>'}
           </div>
@@ -333,15 +351,64 @@ function renderInbox(u){
   $("mailSearch").oninput=e=>{ SEARCH_Q=e.target.value; renderMailListOnly(); };
   document.querySelectorAll("[data-chip]").forEach(b=>b.onclick=()=>{ CHIP=b.dataset.chip; renderInbox(u); });
   wireMailListClicks(u);
+  wireBulkBar(u);
   if(SELECTED_ID && list.some(m=>m.id===SELECTED_ID)) openMailDetail(u,SELECTED_ID,true);
 }
 function renderMailListOnly(){
   const list=filteredMails();
+  BULK_SELECTED=new Set([...BULK_SELECTED].filter(id=>list.some(m=>m.id===id)));
   $("mailListScroll").innerHTML=list.length?list.map(mailItemHtml).join(""):'<div class="empty">該当するメールはありません</div>';
   wireMailListClicks(ME);
+  updateBulkBar();
 }
 function wireMailListClicks(u){
   document.querySelectorAll("[data-openmail]").forEach(el=>el.onclick=()=>openMailDetail(u,el.dataset.openmail,false));
+  document.querySelectorAll("[data-bulkcheck]").forEach(el=>{
+    el.onclick=e=>e.stopPropagation();
+    el.onchange=e=>{
+      const id=el.dataset.bulkcheck;
+      if(e.target.checked) BULK_SELECTED.add(id); else BULK_SELECTED.delete(id);
+      updateBulkBar();
+    };
+  });
+}
+function updateBulkBar(){
+  const n=BULK_SELECTED.size;
+  const cnt=$("bulk-count"); if(cnt) cnt.textContent=n?`${n}件選択中`:"";
+  ["bulk-start","bulk-waiting","bulk-complete"].forEach(id=>{ const el=$(id); if(el) el.disabled=n===0; });
+  const all=$("bulk-selectall"); if(all) all.checked=n>0&&n===filteredMails().length;
+}
+function wireBulkBar(u){
+  updateBulkBar();
+  $("bulk-selectall").onchange=e=>{
+    const list=filteredMails();
+    if(e.target.checked) list.forEach(m=>BULK_SELECTED.add(m.id)); else BULK_SELECTED.clear();
+    document.querySelectorAll("[data-bulkcheck]").forEach(el=>{ el.checked=BULK_SELECTED.has(el.dataset.bulkcheck); });
+    updateBulkBar();
+  };
+  $("bulk-start").onclick=()=>runBulkAction(u,"start","まとめて処理を開始します。他の人が処理中のものはスキップされます。よろしいですか？");
+  $("bulk-waiting").onclick=()=>runBulkAction(u,"waiting_payment","選択したメールの請求書を「支払待ち」にします。よろしいですか？");
+  $("bulk-complete").onclick=()=>runBulkAction(u,"complete","まとめて完了にします。他の人が処理中のものはスキップされます。よろしいですか？");
+}
+async function runBulkAction(u,action,confirmMsg){
+  if(!BULK_SELECTED.size) return;
+  if(!confirm(confirmMsg)) return;
+  const msg=$("bulk-msg"); msg.className="err"; msg.textContent="処理中…";
+  const r=await authed("/rest/v1/rpc/invoice_bulk_action",{method:"POST",body:JSON.stringify({p_email_ids:[...BULK_SELECTED],p_action:action})});
+  if(!r.ok){ msg.textContent=(r.body&&r.body.message)||"失敗しました"; return; }
+  const skipped=(r.body&&r.body.skipped)||[];
+  msg.className="err msg-ok";
+  msg.textContent=`${r.body.success_count}件完了`+(skipped.length?`／${skipped.length}件スキップ（他の人が処理中等）`:"");
+  BULK_SELECTED.clear();
+  await loadInboxMaster(); await loadWaitingPaymentCount();
+  const k=kpiCounts();
+  document.querySelector(".mail-summary").outerHTML=`<div class="mail-summary">
+      <div class="card mail-kpi"><small>未処理メール</small><b style="color:var(--accent)">${k.unprocessed}</b></div>
+      <div class="card mail-kpi"><small>処理中</small><b style="color:var(--blue)">${k.processing}</b></div>
+      <div class="card mail-kpi"><small>支払待ち請求書</small><b>${WAITING_PAYMENT_COUNT}</b></div>
+      <div class="card mail-kpi"><small>今月完了</small><b style="color:var(--green)">${k.completedThisMonth}</b></div>
+    </div>`;
+  renderMailListOnly();
 }
 function mailItemHtml(m){
   const cls=["mail-item"];
@@ -353,6 +420,7 @@ function mailItemHtml(m){
   const preview=(m.body_text||"").replace(/\s+/g," ").trim().slice(0,60);
   const metaLeft=m.mail_status==="processing"&&m.processor?`担当：${esc(m.processor.name)}`:((m.atts&&m.atts.length)?`添付 ${m.atts.length}件`:"添付なし");
   return `<div class="${cls.join(' ')}" data-openmail="${m.id}">
+    <label class="mail-checkwrap"><input type="checkbox" data-bulkcheck="${m.id}" ${BULK_SELECTED.has(m.id)?"checked":""}></label>
     <div class="mail-from">${esc(m.from_address||"—")}</div>
     <div class="mail-subject">${esc(m.subject||"（件名なし）")}</div>
     <div class="mail-preview">${esc(preview)}</div>
@@ -459,6 +527,7 @@ function renderMailDetail(u){
           <div class="ai-field"><small>請求書番号</small><input id="iv-number" value="${esc(invoice&&invoice.invoice_number||"")}"></div>
           <div class="ai-field"><small>金額</small><input id="iv-amount" type="number" value="${invoice&&invoice.amount!=null?invoice.amount:""}"></div>
           <div class="ai-field"><small>支払期限</small><input id="iv-duedate" type="date" value="${invoice&&invoice.due_date||""}"></div>
+          <div class="ai-field"><small>状態</small><select id="iv-status">${Object.entries(INVOICE_STATUS_LABEL).map(([k,l])=>`<option value="${k}" ${(invoice?invoice.invoice_status:"draft")===k?"selected":""}>${l}</option>`).join("")}</select></div>
         </div>
         <div class="mail-actions">
           <button id="iv-save">💾 請求書情報を保存</button>
@@ -503,7 +572,7 @@ function renderMailDetail(u){
   wireDetailActions(u);
 }
 function logLabel(action){
-  return {intake:"取込",open:"開封",start_processing:"処理を開始",release_lock:"ロックを解除",complete:"処理を完了",reply_queued:"返信を予約",reply_sent:"返信を送信",manual_attach:"ファイルを手動で追加"}[action]||action;
+  return {intake:"取込",open:"開封",start_processing:"処理を開始",release_lock:"ロックを解除",complete:"処理を完了",reply_queued:"返信を予約",reply_sent:"返信を送信",manual_attach:"ファイルを手動で追加",invoice_status_set:"請求書の状態を変更"}[action]||action;
 }
 function wireDetailActions(u){
   const {mail}=SELECTED;
@@ -546,6 +615,7 @@ function wireDetailActions(u){
       invoice_number:$("iv-number").value.trim()||null,
       amount:$("iv-amount").value?+$("iv-amount").value:null,
       due_date:$("iv-duedate").value||null,
+      invoice_status:$("iv-status").value,
     };
     let r;
     if(SELECTED.invoice){
@@ -554,6 +624,7 @@ function wireDetailActions(u){
       r=await authed("/rest/v1/invoices",{method:"POST",headers:{Prefer:"return=minimal"},body:JSON.stringify({...payload,email_id:emailId})});
     }
     msg.className=r.ok?"err msg-ok":"err"; msg.textContent=r.ok?"保存しました":"保存できませんでした";
+    if(r.ok) await loadWaitingPaymentCount();
   };
 
   // ダウンロードリンク＋パスワード式などメールに直接添付がない請求書を、ダウンロード後に
