@@ -6,6 +6,8 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
+**★2026-08-24 追記（本セッション・別の並行スレッド）**: 請求書メール管理Phase1（`docs/実装指示書_請求書メール管理Phase1_2026-08-23.md`）のD1〜D2相当を実装・本番デプロイ・実機確認まで完了（コミット`44a6c8e`）。GAS新規プロジェクト`invoice-intake`＋Edge Function 2本＋DB一式＋`invoices.html`。取込基準は当初案の「info@宛全メール」から**Gmail「請求書」ラベル駆動へ変更**（実機検証で無関係メール混入が発覚しユーザー確認の上変更）。詳細・残作業（UIのE2E確認・返信機能テスト・D6権限テスト）は本日付の時系列エントリ参照。**このセッションは8/22売上取込バッチ・ダッシュボード高速化とは無関係**（並行だが別スコープ）。
+
 **★2026-08-23 追記（別の並行スレッド）**: **次に続きをやるなら `docs/引継ぎ書_2026-08-23_ダッシュボード高速化とデータ基盤_続き.md` を先に読むこと**（このヘッダーより新しい状態を反映）。このスレッドはtori-dashboardのダッシュボード高速化（実装指示書_ダッシュボード高速化_2026-08-23.md のタスク0〜3）とPL機能に専念しており、下記「8/22朝の売上取込バッチ停止」は本セッション内で**データが8/22分まで正常に取り込まれていたことを確認済み**（`detailVsDailyDiag`実測）。解決済みの可能性が高いが、この段落自体は他スレッドの更新を待つため未書き換え。12店舗確認・Chatworkグループ作成の状況もこのスレッドでは未確認。
 
 **最終更新**: 2026-08-23（別スレッド。**Day6は実質完了。レポート生成タイムアウト問題はPuppeteer/ログイン方式を完全に廃止しBigQuery直読み方式(`capture-bq`)へ作り替えて解決・全グループ×全種別で実地検証済み**。また応募者LINE連携の緊急障害（LINE Webhook OFF）を発見・解決。**現在進行中の別件: 8/22朝の売上取込バッチがMac mini側で全停止しており、Mac mini担当セッションが調査・復旧対応中**（このセッションは非関与・WORKLOG経由で同期）。詳細は本日付の一連のエントリ参照）
@@ -55,7 +57,7 @@
   8. Day7（総合検証・完成判定）: 未着手。**本番影響のある検証（シート停止テスト等）を含むため、8/22障害が落ち着いてから着手すること**
 
 **直近のコミット（この時点。鵜呑みにせず必ず`git fetch origin && git log --oneline -1 origin/main`で照合すること）**:
-- `ns-portal`: `6c8b569`
+- `ns-portal`: `44a6c8e`（請求書メール管理Phase1実装）
 - `nippo`: `9cdca2b`（店舗管理画面拡張）
 - `NStyle-AI`: `94db5a0`（bqDailyStore追加の記録）
 - `ns-daily-import`: `0139ff3`（bq-sales-reconcileタスク追加）
@@ -1261,3 +1263,23 @@ GitHubで新しいPAT（`repo`・`workflow`スコープ）を再生成し、cron
 - `docs/実装スケジュール_最短計画_2026-08-23.md`作成（ライン1=請求書5日→1.5／ライン2=PL3点セット4-5日→シフトUI v5 ①②→③④／小粒=BQ既定化・見張り番・Day7残り）
 - モック2点を`docs/mockups/`に保存（シフトUI v5・請求書UIプロトタイプ。秘密情報なし確認済み）
 - 追記（同日）: ユーザー確定により**返信機能をPhase 1に含める**（MVP 5日→6日）。指示書に§4.5追加（outboxテーブル・GAS WebApp送信・返信のみ/新規送信不可・確認画面必須・自分宛テスト）。スケジュールも更新
+
+## 2026-08-24 請求書メール管理Phase1 実装（D1〜D2完了・本番実機確認済み）
+- `docs/実装指示書_請求書メール管理Phase1_2026-08-23.md`どおりD1〜D5相当のコードを実装。コミット`44a6c8e`（push済み）
+  - `supabase/2026-08-23_invoices.sql`: `invoice_emails`/`invoice_email_reads`/`invoice_attachments`/`invoices`/`invoice_audit_logs`/`invoice_email_outbox`＋RLS＋RPC一式（`invoice_start_processing`＝二重処理防止の本体／`invoice_release_lock`／`invoice_complete`／`invoice_record_read`／`invoice_queue_reply`／`invoice_outbox_pull_queued`・`mark_sent`・`mark_failed`）＋`invoice_can_access()`（`portal_user_overrides`個人開放にも対応）＋共有シークレット（`app_secrets.invoice_intake_secret`、値はコード上に一切書かず`gen_random_bytes`生成）＋非公開バケット`invoice-files`
+  - `supabase/functions/invoice-intake`・`invoice-send`: Edge Function 2本。本番デプロイ済み（`invoice-intake`は`--no-verify-jwt`＝GASからのanonキー呼び出し用、`invoice-send`はユーザーJWT転送でRLS判定）
+  - `gas/invoice-intake/`: 新規独立GASプロジェクト（`indeed-intake.gs`とは完全分離）。スクリプトID`1QHKXZGAuFRQBo2FK3T8OaKXz0BV_C-8hEXAhbokmS0cVhgr3fApHQ6gD`、WebApp URL控え済み（Edge Function `invoice-send`の`INVOICE_GAS_WEBAPP_URL`に設定済み）
+  - `invoices.html`（新規）・`index.html`にSYSTEMSタイル「📨 請求書管理」追加（`system_key='invoices'`）
+- **本番SQL適用・Edge Functionデプロイ・GASプロジェクト作成/デプロイまで完了**。RPCの同時実行テスト（使い捨てデータで2セッション同時に`invoice_start_processing`実行）で1件のみ成功・もう一方は`held_by`で保有者名が返ることを確認、テストデータ削除・0件確認済み
+- **実機検証で3つの不具合を発見・その場で修正**（いずれもD1〜D2の完了判定に必須の実地テストで判明）:
+  1. GAS検索条件`deliveredto:info@ns0314.com`が実際には0件ヒット（このメール環境ではDelivered-Toヘッダーに一致しない）。指示書§3が最初から想定していた検証項目で発覚
+  2. Edge Function `invoice-intake`のselect→insert方式に隙があり、同じスレッド内で一部メッセージだけ処理成功→ラベル未付与→再実行で成功済み分がunique制約違反(500)になるバグ。upsert(`ON CONFLICT DO NOTHING`)方式に修正して解消
+  3. `GmailApp.search`が1回最大50スレッドしか返さない制限に気づかず、バックフィルが1回で終わらず複数回の再実行が必要だった（バックフィル専用に取得上限を200へ引き上げ対応）
+- **設計変更（ユーザー判断・重要）**: 当初「info@宛の全メール」を無差別に取り込む設計だったが、実機検証でIndeed応募通知・PayPay銀行の口座通知等まで混入すると判明。**取込基準をGmailラベル駆動に変更**（Gmail上で「請求書」ラベルが付いたメールだけを対象。「請求書取込済」ラベルは引き続き取込済みマーカーとして使用）。誤って取り込んだ606件（メール・添付42ファイル）は削除・ストレージも空に戻して再構築。90日以内の請求書関連スレッド60件を目視確認（広告メール1件のみ除外、パスワード通知メールは「管理画面ログインが必要なタスク」として意図的に含める＝ユーザー方針）し「請求書」ラベルを一括付与、自動取込で78メール・添付11件が正しく取り込まれることを確認。**今後は「請求書」ラベルを付けたメールが5分ごとに自動取込まれる**（過去分もラベルを付ければ自動的に拾われる）
+- Gmail連携MCP（`mcp__e37bd280-...`）はラベル一覧・スレッド検索は使えたが、ラベルの作成・削除・付与などの書き込み系は権限不足で使用不可（要:コネクタ再接続で権限追加）。書き込みが必要な操作はすべてGAS側（フル権限あり）の一回限りヘルパー関数で代替した
+- **未完了（次回セッションへ）**:
+  1. `invoices.html`のE2E確認（一覧・詳細・ロック・完了・開封履歴・監査ログ表示。ブラウザでの実機確認は未実施）
+  2. D5返信機能の実地テスト（**自分宛メールでのみ**。差出人=info@・スレッド継続・監査ログ確認）
+  3. D6: 権限外ロールで403確認・スマホ表示確認・指示書§6完成条件チェックリスト全項目
+  4. GASコードに残っている1回限りのヘルパー関数（`resetProcessedLabel_oneOff`・`applyInvoiceLabelBulk_oneOff`）は役目を終えたら削除してよい
+- 参考: シークレット値・スクリプトID等の機微情報はこのWORKLOGにも書いていない。必要な場合は`app_secrets`テーブルまたはGASスクリプトプロパティを直接参照すること
