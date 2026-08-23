@@ -115,13 +115,19 @@ create index if not exists invoice_email_outbox_status_idx on invoice_email_outb
 -- あちらは取込済みのメールを都度アプリ内で仕分けるだけで、今後の取込は止めない
 create table if not exists invoice_intake_exclusion_rules (
   id uuid primary key default gen_random_uuid(),
-  rule_type text not null check (rule_type in ('subject_contains','from_contains')),
+  rule_type text not null check (rule_type in ('subject_contains','from_contains','subject_exact','from_exact')),
   pattern text not null,
   note text,
   is_active boolean not null default true,
   created_by uuid references users(id),
   created_at timestamptz not null default now()
 );
+-- 2026-08-24追加: 完全一致タイプ(subject_exact/from_exact)を許可するよう制約を更新
+-- （部分一致だと「ATM」等の短い語がsubjectに偶然含まれるだけで意図しないメールまで
+-- 除外されてしまう懸念にユーザーから指摘があったため。特に送信元アドレス指定で有効）
+alter table invoice_intake_exclusion_rules drop constraint if exists invoice_intake_exclusion_rules_rule_type_check;
+alter table invoice_intake_exclusion_rules add constraint invoice_intake_exclusion_rules_rule_type_check
+  check (rule_type in ('subject_contains','from_contains','subject_exact','from_exact'));
 
 -- ============================================================
 -- 権限判定関数

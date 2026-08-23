@@ -78,13 +78,20 @@ Deno.serve(async (req: Request) => {
   // （取込済みメールをmail_status='archived'へ仕分けるだけ）とは別物で、今後の取込自体を止める
   const { data: rules } = await db
     .from("invoice_intake_exclusion_rules").select("rule_type, pattern").eq("is_active", true);
-  const subjectLower = String(body.subject ?? "").toLowerCase();
-  const fromLower = String(body.from_address ?? "").toLowerCase();
+  const subjectLower = String(body.subject ?? "").toLowerCase().trim();
+  const fromRaw = String(body.from_address ?? "");
+  const fromLower = fromRaw.toLowerCase();
+  // "表示名 <email@example.com>" 形式から実際のメールアドレス部分だけを取り出す
+  // （完全一致は表示名込みの文字列とは一致しないため、アドレス部分のみで比較する）
+  const fromEmailMatch = fromRaw.match(/<([^>]+)>/);
+  const fromEmailLower = (fromEmailMatch ? fromEmailMatch[1] : fromRaw).toLowerCase().trim();
   const excluded = (rules ?? []).some((r: any) => {
-    const pat = String(r.pattern ?? "").toLowerCase();
+    const pat = String(r.pattern ?? "").toLowerCase().trim();
     if (!pat) return false;
     if (r.rule_type === "subject_contains") return subjectLower.includes(pat);
     if (r.rule_type === "from_contains") return fromLower.includes(pat);
+    if (r.rule_type === "subject_exact") return subjectLower === pat;
+    if (r.rule_type === "from_exact") return fromEmailLower === pat;
     return false;
   });
   if (excluded) return json({ success: true, excluded: true });

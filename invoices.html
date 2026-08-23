@@ -841,7 +841,7 @@ async function renderNotApplicableTab(u){
 /* ============================================================
    設定タブ（取込除外ルール）
    ============================================================ */
-const RULE_TYPE_LABEL={subject_contains:"件名に含む",from_contains:"送信元に含む"};
+const RULE_TYPE_LABEL={subject_contains:"件名に含む（部分一致）",from_contains:"送信元に含む（部分一致）",subject_exact:"件名が完全一致",from_exact:"送信元アドレスが完全一致"};
 async function renderSettingsTab(u){
   const r=await authed(`/rest/v1/invoice_intake_exclusion_rules?select=*&order=created_at.desc`);
   const rows=(r.ok&&Array.isArray(r.body))?r.body:[];
@@ -850,13 +850,19 @@ async function renderSettingsTab(u){
       <div class="card" style="padding:16px;margin-bottom:14px">
         <h3 style="font-size:14px;margin-bottom:10px">🚫 今後取り込みしないメールの設定</h3>
         <div class="meta" style="color:var(--muted);font-size:12px;margin-bottom:10px">ここで設定した条件に一致するメールは、今後は取込自体を行いません（既に取り込み済みのものには影響しません）。「対象外にする」ボタンとは別の仕組みです。</div>
-        <div style="display:grid;grid-template-columns:140px 1fr auto;gap:8px;align-items:end">
+        <div style="display:grid;grid-template-columns:190px 1fr auto;gap:8px;align-items:end">
           <div><label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">条件</label>
-            <select id="rule-type"><option value="subject_contains">件名に含む</option><option value="from_contains">送信元に含む</option></select></div>
-          <div><label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">パターン（部分一致・大文字小文字を区別しない）</label>
-            <input id="rule-pattern" placeholder="例: 応募 / example.com"></div>
+            <select id="rule-type">
+              <option value="subject_contains">件名に含む（部分一致）</option>
+              <option value="from_contains">送信元に含む（部分一致）</option>
+              <option value="subject_exact">件名が完全一致</option>
+              <option value="from_exact">送信元アドレスが完全一致</option>
+            </select></div>
+          <div><label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px" id="rule-pattern-label">パターン（大文字小文字を区別しない）</label>
+            <input id="rule-pattern" placeholder="例: 応募"></div>
           <button class="hq-btn primary" id="rule-add">＋ 追加</button>
         </div>
+        <div class="meta" style="color:var(--muted);font-size:11px;margin-top:6px">完全一致は短い語（「ATM」等）が意図せず広く一致してしまう部分一致の弱点を避けたい時に使ってください。「送信元アドレスが完全一致」は表示名を除いた実際のアドレス部分（例: info@example.com）で比較します。</div>
         <div class="err" id="rule-msg" style="margin-top:8px"></div>
       </div>
       <div class="card hq-tablewrap">
@@ -877,6 +883,9 @@ async function renderSettingsTab(u){
         </table>
       </div>
     </section>`;
+  const RULE_PLACEHOLDER={subject_contains:"例: 応募",from_contains:"例: example.com",subject_exact:"例: ATMお預け入れのご確認",from_exact:"例: info@example.com"};
+  $("rule-type").onchange=e=>{ $("rule-pattern").placeholder=RULE_PLACEHOLDER[e.target.value]||""; };
+  $("rule-pattern").placeholder=RULE_PLACEHOLDER[$("rule-type").value]||"";
   $("rule-add").onclick=async()=>{
     const pattern=$("rule-pattern").value.trim();
     const msg=$("rule-msg");
