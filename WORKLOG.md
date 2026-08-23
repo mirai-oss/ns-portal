@@ -1281,5 +1281,16 @@ GitHubで新しいPAT（`repo`・`workflow`スコープ）を再生成し、cron
   1. `invoices.html`のE2E確認（一覧・詳細・ロック・完了・開封履歴・監査ログ表示。ブラウザでの実機確認は未実施）
   2. D5返信機能の実地テスト（**自分宛メールでのみ**。差出人=info@・スレッド継続・監査ログ確認）
   3. D6: 権限外ロールで403確認・スマホ表示確認・指示書§6完成条件チェックリスト全項目
-  4. GASコードに残っている1回限りのヘルパー関数（`resetProcessedLabel_oneOff`・`applyInvoiceLabelBulk_oneOff`）は役目を終えたら削除してよい
+  4. GASコードに残っている1回限りのヘルパー関数（`resetProcessedLabel_oneOff`・`applyInvoiceLabelBulk_oneOff`・`resyncAllLabeledAttachments_oneOff`）は役目を終えたら削除してよい
 - 参考: シークレット値・スクリプトID等の機微情報はこのWORKLOGにも書いていない。必要な場合は`app_secrets`テーブルまたはGASスクリプトプロパティを直接参照すること
+
+## 2026-08-24（続き） UIをユーザー提供プロトタイプに全面刷新＋添付取込の実機不具合4件を修正（コミット`0344ba1`・`bb5d638`）
+- ユーザーから「UIが読みにくい・処理しづらい・請求書か分かりにくい」とフィードバック、参考UIプロトタイプ（mail-shell系デザイン）を提供いただき`invoices.html`を全面刷新。KPIカード4枚・受信トレイ（左=一覧/右=詳細の分割ビュー、未読太字・処理中/重複疑いバッジ）・請求書一覧/処理履歴/送信済みタブ構成に変更。本文はsandboxedなiframeのまま`allow-popups allow-popups-to-escape-sandbox`を許可し、**本文中のリンクを新規タブで開けるように**した（スクリプト実行は引き続き禁止のまま）
+- 実際の請求書メールで動作確認したところ、**添付ファイルがシステムに反映されない実機不具合を4件発見・修正**:
+  1. `includeInlineImages:false`だとOutlook等がPDFにContent-Disposition:inlineを付けるケースを取りこぼす→trueに変更し、代わりに100KB未満のimage/*だけ除外する方式に
+  2. `invoice-files`バケットの`allowed_mime_types`が厳しすぎてzip等が静かにアップロード失敗→制限を撤廃（サイズ上限20MB・非公開・RLS・署名URLで保護する方針に統一）
+  3. 保存パスに元のファイル名（全角括弧・絵文字含む）をそのまま使いSupabase Storageが「Invalid key」で拒否→拡張子だけ引き継いだ連番パスに変更
+  4. 上記1・2の間に「本物のPDFは保存失敗・49.7KBの署名ロゴだけが保存される」という紛らわしい状態が発生（ユーザーが「変なロゴが出てくる」と発見）。誤って保存された6件は削除済み
+  - 既存登録済みメールも「添付0件のまま」なら後から補完する自己修復ロジックをEdge Function `invoice-intake`に追加し、GAS `resyncAllLabeledAttachments_oneOff`で3回再スキャンして収束を確認（最終的に32件の添付が正しく保存・PDFとzip両方確認済み）
+- **手動添付機能を追加**（ユーザー要望）: 請求管理ロボ・楽楽明細等「ダウンロードリンク＋パスワード」式で本文に添付がない請求書向けに、ダウンロードしたファイルを詳細画面からアップロードしてメールへ紐付けられるようにした。RPC `invoice_attach_manual_file`＋`storage.objects`へのinsert policy追加。監査ログに`manual_attach`で記録（将来の自動化の足がかりとしてユーザーが明示的に要望）
+- GASの取込条件（`label:請求書 -label:請求書取込済`のみ）は実際の受信箱での既読化・アーカイブ操作と無関係であることを確認・コードにコメントで明記（ユーザー懸念に対する回答）
