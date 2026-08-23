@@ -485,6 +485,7 @@ function renderMailDetail(u){
   const isHolder=mail.processing_user_id===ME.id;
   const canRelease=!!mail.processing_user_id&&(isHolder||canManage(ME));
   const canComplete=isHolder&&mail.mail_status==="processing";
+  const canReopen=mail.mail_status==="completed";
   const pillKind=MAIL_STATUS_PILL[mail.mail_status]||"gray";
 
   $("mailDetail").innerHTML=`
@@ -507,6 +508,7 @@ function renderMailDetail(u){
         ${canStart?'<button class="hq-btn primary" id="act-start">このメールを処理する</button>':''}
         ${canComplete?'<button class="hq-btn green" id="act-complete">処理を完了</button>':''}
         ${canRelease?'<button class="hq-btn" id="act-release">🔓 ロック解除</button>':''}
+        ${canReopen?'<button class="hq-btn" id="act-reopen">↩️ 未処理に戻す</button>':''}
       </div>
       <div id="completebox" style="display:none;margin-top:10px">
         <label style="font-size:12px;color:var(--muted)">完了メモ（任意）</label>
@@ -590,7 +592,7 @@ function renderMailDetail(u){
   wireDetailActions(u);
 }
 function logLabel(action){
-  return {intake:"取込",open:"開封",start_processing:"処理を開始",release_lock:"ロックを解除",complete:"処理を完了",reply_queued:"返信を予約",reply_sent:"返信を送信",manual_attach:"ファイルを手動で追加",invoice_status_set:"請求書の状態を変更"}[action]||action;
+  return {intake:"取込",open:"開封",start_processing:"処理を開始",release_lock:"ロックを解除",complete:"処理を完了",reply_queued:"返信を予約",reply_sent:"返信を送信",manual_attach:"ファイルを手動で追加",invoice_status_set:"請求書の状態を変更",reopen:"未処理に戻す"}[action]||action;
 }
 function wireDetailActions(u){
   const {mail}=SELECTED;
@@ -628,6 +630,14 @@ function wireDetailActions(u){
     $("release-send").disabled=true; $("act-msg").textContent="処理中…";
     const r=await authed("/rest/v1/rpc/invoice_release_lock",{method:"POST",body:JSON.stringify({p_email_id:emailId,p_reason:reason})});
     if(!r.ok){ $("act-msg").textContent=(r.body&&r.body.message)||"解除できませんでした"; $("release-send").disabled=false; return; }
+    await reloadDetail();
+  };
+  if($("act-reopen")) $("act-reopen").onclick=async()=>{
+    if(!confirm("このメールを未処理に戻します。担当・完了情報はクリアされます。よろしいですか？")) return;
+    $("act-reopen").disabled=true; $("act-msg").textContent="処理中…";
+    const reason=prompt("戻す理由（任意）")||null;
+    const r=await authed("/rest/v1/rpc/invoice_reopen",{method:"POST",body:JSON.stringify({p_email_id:emailId,p_reason:reason})});
+    if(!r.ok){ $("act-msg").textContent=(r.body&&r.body.message)||"未処理に戻せませんでした"; $("act-reopen").disabled=false; return; }
     await reloadDetail();
   };
 

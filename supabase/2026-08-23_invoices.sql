@@ -259,6 +259,32 @@ begin
 end;
 $$;
 
+-- 完了取消（未処理に戻す。2026-08-24追加・ユーザー要望）: 完了後に間違いに気付いた場合等に
+-- 処理前の状態へ戻す。ロック・担当・完了情報をすべてクリアし、次に処理する人が改めて
+-- 「処理する」を押せる状態にする
+create or replace function invoice_reopen(p_email_id uuid, p_reason text default null) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare v_email invoice_emails;
+begin
+  if not invoice_can_access() then raise exception '権限がありません'; end if;
+  select * into v_email from invoice_emails where id = p_email_id;
+  if v_email is null then raise exception '対象が見つかりません'; end if;
+  if v_email.mail_status <> 'completed' then raise exception '完了状態のメールのみ未処理に戻せます'; end if;
+
+  update invoice_emails set
+    mail_status = 'read',
+    processing_user_id = null, processing_started_at = null, locked_at = null, lock_expires_at = null,
+    completed_by = null, completed_at = null, completion_note = null,
+    updated_at = now()
+  where id = p_email_id;
+
+  insert into invoice_audit_logs(entity_type, entity_id, action, user_id, note)
+  values ('invoice_email', p_email_id, 'reopen', auth.uid(), p_reason);
+
+  return jsonb_build_object('success', true);
+end;
+$$;
+
 -- 開封記録（詳細を開いたら自動insert）
 create or replace function invoice_record_read(p_email_id uuid) returns jsonb
 language plpgsql security definer set search_path = public as $$
