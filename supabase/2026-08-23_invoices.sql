@@ -277,6 +277,35 @@ begin
 end;
 $$;
 
+-- 手動添付の登録（2026-08-24追加）: ダウンロードリンク＋パスワード式など、メールに直接
+-- 添付されていない請求書をユーザーがダウンロードして手動でアップロードした場合に、その
+-- ファイルをメールへ紐付ける。ファイル本体はクライアントが自分のJWTでstorageへ直接
+-- アップロード（storage.objectsのinsert policyで許可）し、このRPCはメタデータ登録＋監査ログのみ
+create or replace function invoice_attach_manual_file(
+  p_email_id uuid, p_file_name text, p_mime_type text, p_storage_path text, p_file_hash text, p_size_bytes bigint
+) returns uuid
+language plpgsql security definer set search_path = public as $$
+declare v_attachment_id uuid; v_dup boolean;
+begin
+  if not invoice_can_access() then raise exception '権限がありません'; end if;
+  if not exists(select 1 from invoice_emails where id = p_email_id) then raise exception '対象が見つかりません'; end if;
+
+  insert into invoice_attachments(email_id, file_name, mime_type, storage_path, file_hash, size_bytes)
+  values (p_email_id, p_file_name, p_mime_type, p_storage_path, p_file_hash, p_size_bytes)
+  returning id into v_attachment_id;
+
+  select exists(select 1 from invoice_attachments where file_hash = p_file_hash and id <> v_attachment_id) into v_dup;
+  if v_dup then
+    update invoice_emails set duplicate_suspected = true where id = p_email_id;
+  end if;
+
+  insert into invoice_audit_logs(entity_type, entity_id, action, user_id, note)
+  values ('invoice_email', p_email_id, 'manual_attach', auth.uid(), p_file_name);
+
+  return v_attachment_id;
+end;
+$$;
+
 -- 返信キュー投入（処理権限者のみ。実送信はinvoice-send Edge Functionが担当）
 create or replace function invoice_queue_reply(p_email_id uuid, p_body text) returns uuid
 language plpgsql security definer set search_path = public as $$
@@ -363,7 +392,12 @@ on conflict (id) do update set allowed_mime_types = null;
 drop policy if exists invoice_files_read on storage.objects;
 create policy invoice_files_read on storage.objects for select
   using (bucket_id = 'invoice-files' and invoice_can_access());
--- insert/update/deleteの直接policyは無し＝Edge Function(service_role)のみが書き込む
+-- 2026-08-24追加: 手動添付アップロード用。処理権限者は自分のJWTで直接storageへアップロードできる
+-- （メタデータ登録はinvoice_attach_manual_file RPC経由・監査ログに記録される）
+drop policy if exists invoice_files_insert on storage.objects;
+create policy invoice_files_insert on storage.objects for insert
+  with check (bucket_id = 'invoice-files' and invoice_can_access());
+-- update/deleteの直接policyは無し＝Edge Function(service_role)のみ
 
 -- 確認用（本番適用後、SQL Editorで実行して構造・初期値を確認）:
 -- select role, system_key, allowed from portal_permissions where system_key = 'invoices';

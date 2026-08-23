@@ -35,6 +35,9 @@ const SUPA_ANON = "sb_publishable_MrwPJAx_Ws_fdRutprKCiQ_dg3wCiTr";
 const INTAKE_FN_URL = SUPA_URL + "/functions/v1/invoice-intake";
 const SOURCE_LABEL_NAME = "請求書";       // これが付いているメールだけを取込対象とする（人・Gmailフィルタが付ける）
 const PROCESSED_LABEL_NAME = "請求書取込済"; // 取込済みの印（このスクリプトが付ける・重複防止）
+// ラベルのみで判定＝実際の受信箱で既読にする・アーカイブするなど（is:unread/in:inbox等）は
+// 一切条件に含めない。取込・表示は本人のメール操作（既読/アーカイブ）と完全に無関係
+// （ユーザー確認済み・2026-08-24）
 const SEARCH_QUERY = 'label:' + SOURCE_LABEL_NAME + ' -label:' + PROCESSED_LABEL_NAME;
 const FROM_ALIAS = "info@ns0314.com";
 const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024; // invoice-filesバケットの上限(20MB)に合わせる

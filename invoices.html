@@ -444,6 +444,12 @@ function renderMailDetail(u){
       <div class="invoice-attach">
         <h3>📎 添付（${atts.length}件）</h3>
         <div class="attlist" id="attlist">${atts.map(a=>`<div class="attitem"><span>📄 ${esc(a.file_name)}</span><a data-attpath="${esc(a.storage_path)}" download="${esc(a.file_name)}" href="#" target="_blank" rel="noopener">開く</a></div>`).join("")||'<div class="meta" style="color:var(--muted);font-size:12px">添付はありません</div>'}</div>
+        <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--m-line)">
+          <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:6px">ダウンロードリンク式の請求書はここから追加できます（ダウンロード→ここでアップロード）</label>
+          <input type="file" id="manual-att-file" style="font-size:12px">
+          <button class="hq-btn" style="margin-top:6px" id="manual-att-upload">＋ このメールに紐付けて追加</button>
+          <div class="err" id="manual-att-msg" style="margin-top:6px"></div>
+        </div>
       </div>
 
       <div class="ai-box">
@@ -497,7 +503,7 @@ function renderMailDetail(u){
   wireDetailActions(u);
 }
 function logLabel(action){
-  return {intake:"取込",open:"開封",start_processing:"処理を開始",release_lock:"ロックを解除",complete:"処理を完了",reply_queued:"返信を予約",reply_sent:"返信を送信"}[action]||action;
+  return {intake:"取込",open:"開封",start_processing:"処理を開始",release_lock:"ロックを解除",complete:"処理を完了",reply_queued:"返信を予約",reply_sent:"返信を送信",manual_attach:"ファイルを手動で追加"}[action]||action;
 }
 function wireDetailActions(u){
   const {mail}=SELECTED;
@@ -548,6 +554,38 @@ function wireDetailActions(u){
       r=await authed("/rest/v1/invoices",{method:"POST",headers:{Prefer:"return=minimal"},body:JSON.stringify({...payload,email_id:emailId})});
     }
     msg.className=r.ok?"err msg-ok":"err"; msg.textContent=r.ok?"保存しました":"保存できませんでした";
+  };
+
+  // ダウンロードリンク＋パスワード式などメールに直接添付がない請求書を、ダウンロード後に
+  // 手動でアップロードしてこのメールへ紐付ける（ファイルはユーザー自身のJWTでstorageへ直接
+  // アップロードし、invoice_attach_manual_file RPCでメタデータ登録＋監査ログに記録）
+  $("manual-att-upload").onclick=async()=>{
+    const msg=$("manual-att-msg");
+    const f=$("manual-att-file").files[0];
+    if(!f){ msg.textContent="ファイルを選択してください"; return; }
+    $("manual-att-upload").disabled=true; msg.className="err"; msg.textContent="アップロード中…";
+    try{
+      const buf=await f.arrayBuffer();
+      const hashBuf=await crypto.subtle.digest("SHA-256",buf);
+      const hash=Array.from(new Uint8Array(hashBuf)).map(b=>b.toString(16).padStart(2,"0")).join("");
+      const ext=(f.name.split(".").pop()||"").toLowerCase().replace(/[^a-z0-9]/g,"");
+      const path=`${emailId}/manual_${Date.now()}${ext?"."+ext:""}`;
+      const s=sess.get();
+      const upRes=await fetch(`${SUPA_URL}/storage/v1/object/${BUCKET}/${path}`,{
+        method:"POST",
+        headers:{"apikey":SUPA_KEY,"Authorization":"Bearer "+(s?s.at:""),"Content-Type":f.type||"application/octet-stream"},
+        body:buf
+      });
+      if(!upRes.ok) throw new Error("アップロードに失敗しました");
+      const r=await authed("/rest/v1/rpc/invoice_attach_manual_file",{method:"POST",body:JSON.stringify({
+        p_email_id:emailId, p_file_name:f.name, p_mime_type:f.type||null, p_storage_path:path, p_file_hash:hash, p_size_bytes:f.size
+      })});
+      if(!r.ok) throw new Error((r.body&&r.body.message)||"登録に失敗しました");
+      msg.className="err msg-ok"; msg.textContent="追加しました";
+      await openMailDetail(u,emailId,true);
+    }catch(e){
+      msg.textContent="エラー: "+e.message; $("manual-att-upload").disabled=false;
+    }
   };
 
   $("reply-open").onclick=()=>{ $("replybox").classList.toggle("open"); };
