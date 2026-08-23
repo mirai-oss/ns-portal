@@ -379,7 +379,7 @@ declare
   v_id uuid; v_email invoice_emails; v_success int := 0; v_skipped jsonb := '[]'::jsonb; v_holder text;
 begin
   if not invoice_can_access() then raise exception '権限がありません'; end if;
-  if p_action not in ('start','complete','waiting_payment') then raise exception '不正なアクションです'; end if;
+  if p_action not in ('start','complete','waiting_payment','not_applicable') then raise exception '不正なアクションです'; end if;
 
   foreach v_id in array p_email_ids loop
     select * into v_email from invoice_emails where id = v_id;
@@ -430,6 +430,20 @@ begin
       end if;
       insert into invoice_audit_logs(entity_type, entity_id, action, user_id, note)
       values ('invoice_email', v_id, 'invoice_status_set', auth.uid(), '支払待ちに設定（一括）');
+      v_success := v_success + 1;
+
+    elsif p_action = 'not_applicable' then
+      if v_email.mail_status = 'archived' then
+        v_skipped := v_skipped || jsonb_build_object('id', v_id, 'reason', '既に対象外');
+        continue;
+      end if;
+      update invoice_emails set
+        mail_status = 'archived',
+        processing_user_id = null, processing_started_at = null, locked_at = null, lock_expires_at = null,
+        updated_at = now()
+      where id = v_id;
+      insert into invoice_audit_logs(entity_type, entity_id, action, user_id, note)
+      values ('invoice_email', v_id, 'mark_not_applicable', auth.uid(), coalesce(p_note, '一括処理'));
       v_success := v_success + 1;
     end if;
   end loop;

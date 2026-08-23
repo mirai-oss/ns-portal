@@ -350,6 +350,7 @@ function renderInbox(u){
               <button class="hq-btn" id="bulk-start" disabled>まとめて処理開始</button>
               <button class="hq-btn" id="bulk-waiting" disabled>支払待ちにする</button>
               <button class="hq-btn primary" id="bulk-complete" disabled>まとめて完了</button>
+              <button class="hq-btn" id="bulk-notapplicable" disabled>🚫 まとめて対象外</button>
             </div>
           </div>
           <div class="err" id="bulk-msg" style="padding:0 12px"></div>
@@ -389,7 +390,7 @@ function wireMailListClicks(u){
 function updateBulkBar(){
   const n=BULK_SELECTED.size;
   const cnt=$("bulk-count"); if(cnt) cnt.textContent=n?`${n}件選択中`:"";
-  ["bulk-start","bulk-waiting","bulk-complete"].forEach(id=>{ const el=$(id); if(el) el.disabled=n===0; });
+  ["bulk-start","bulk-waiting","bulk-complete","bulk-notapplicable"].forEach(id=>{ const el=$(id); if(el) el.disabled=n===0; });
   const all=$("bulk-selectall"); if(all) all.checked=n>0&&n===filteredMails().length;
 }
 function wireBulkBar(u){
@@ -403,6 +404,7 @@ function wireBulkBar(u){
   $("bulk-start").onclick=()=>runBulkAction(u,"start","まとめて処理を開始します。他の人が処理中のものはスキップされます。よろしいですか？");
   $("bulk-waiting").onclick=()=>runBulkAction(u,"waiting_payment","選択したメールの請求書を「支払待ち」にします。よろしいですか？");
   $("bulk-complete").onclick=()=>runBulkAction(u,"complete","まとめて完了にします。他の人が処理中のものはスキップされます。よろしいですか？");
+  $("bulk-notapplicable").onclick=()=>runBulkAction(u,"not_applicable","選択したメールをまとめて「対象外」にします（請求書ではないメール）。よろしいですか？");
 }
 async function runBulkAction(u,action,confirmMsg){
   if(!BULK_SELECTED.size) return;
