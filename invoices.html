@@ -127,10 +127,16 @@ button,input,select,textarea{font:inherit}
 .empty{padding:34px 10px;text-align:center;color:var(--muted);font-size:13px}
 .hq-tablewrap{overflow:auto}
 
+.mobile-back{display:none}
 @media(max-width:900px){
   .mail-layout{grid-template-columns:1fr}
   .mail-summary{grid-template-columns:1fr 1fr}
   .mail-detail-grid{grid-template-columns:1fr 1fr}
+  /* スマホ・タブレット幅: 一覧をタップしたら一覧を隠して詳細だけ全画面表示（下にスクロール
+     しないと詳細が見えない問題への対応）。「戻る」で一覧表示に戻す */
+  .mobile-back{display:inline-flex;align-items:center;gap:4px;border:1px solid var(--line);background:var(--panel);border-radius:10px;padding:8px 12px;cursor:pointer;color:var(--ink);font-size:13px;margin-bottom:10px}
+  #mailLayout.mobile-detail .mail-list-card{display:none}
+  #mailLayout:not(.mobile-detail) .mail-detail{display:none}
 }
 @media(max-width:760px){
   .wrap{padding:0 14px 80px}
@@ -317,12 +323,15 @@ async function renderTabBody(u){
    受信トレイ（左=一覧・右=詳細）
    ============================================================ */
 let BULK_SELECTED=new Set();
+let MOBILE_VIEW="list"; // list | detail（スマホ幅でどちらを表示するか）
+function isMobileWidth(){ return window.matchMedia("(max-width:900px)").matches; }
 function renderInbox(u){
   const list=filteredMails();
   BULK_SELECTED=new Set([...BULK_SELECTED].filter(id=>list.some(m=>m.id===id)));
+  MOBILE_VIEW="list"; // タブ/絞り込み切替のたびに一覧表示へ戻す
   $("tabbody").innerHTML=`
     <section class="mail-inbox active">
-      <div class="mail-layout">
+      <div class="mail-layout" id="mailLayout">
         <div class="card mail-list-card">
           <div class="mail-toolbar"><input id="mailSearch" placeholder="🔎 送信元・件名を検索" value="${esc(SEARCH_Q)}"></div>
           <div class="mail-chips">
@@ -460,6 +469,14 @@ async function openMailDetail(u,emailId,skipHighlight){
   });
 
   renderMailDetail(u);
+
+  // スマホ幅では一覧を隠して詳細だけ全画面表示にする（下スクロールしないと詳細が
+  // 見えない問題への対応）。PC幅では常に左右並びのまま何もしない
+  if(isMobileWidth()){
+    MOBILE_VIEW="detail";
+    const layout=$("mailLayout"); if(layout) layout.classList.add("mobile-detail");
+    window.scrollTo({top:0,behavior:"instant"});
+  }
 }
 
 function renderMailDetail(u){
@@ -472,6 +489,7 @@ function renderMailDetail(u){
 
   $("mailDetail").innerHTML=`
     <div class="mail-detail-head">
+      <button class="mobile-back" id="mobile-back-btn">← 一覧へ戻る</button>
       <div class="hq-badges">
         <span class="hq-pill ${pillKind}">${MAIL_STATUS_LABEL[mail.mail_status]||mail.mail_status}</span>
         ${atts.length?'<span class="hq-pill gray">添付あり</span>':''}
@@ -577,6 +595,11 @@ function logLabel(action){
 function wireDetailActions(u){
   const {mail}=SELECTED;
   const emailId=mail.id;
+  if($("mobile-back-btn")) $("mobile-back-btn").onclick=()=>{
+    MOBILE_VIEW="list";
+    const layout=$("mailLayout"); if(layout) layout.classList.remove("mobile-detail");
+    window.scrollTo({top:0,behavior:"instant"});
+  };
   const reloadDetail=async()=>{ await loadInboxMaster(); await loadWaitingPaymentCount(); const list=filteredMails(); $("tabbody").querySelector(".mail-list-scroll") && (document.getElementById("mailListScroll").innerHTML=list.length?list.map(mailItemHtml).join(""):'<div class="empty">該当するメールはありません</div>'); wireMailListClicks(u); document.querySelector(".mail-summary").outerHTML=(()=>{const k=kpiCounts();return `<div class="mail-summary">
       <div class="card mail-kpi"><small>未処理メール</small><b style="color:var(--accent)">${k.unprocessed}</b></div>
       <div class="card mail-kpi"><small>処理中</small><b style="color:var(--blue)">${k.processing}</b></div>
