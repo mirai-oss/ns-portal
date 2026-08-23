@@ -1059,3 +1059,10 @@ GitHubで新しいPAT（`repo`・`workflow`スコープ）を再生成し、cron
   2. GitHub Secret `BQ_LOAD_TOKEN`をtori-dashboardリポジトリに新規登録（値はGASのスクリプトプロパティ、またはdash-sync用にSupabaseへ登録済みの同名の値を流用）
   3. 上記2点完了後、`gh workflow run lark-report.yml -f kind=daily -f only_group=group1`等で実地テスト
 - 旧来のブラウザ版`capture`（ログイン→スクリーンショット）はコードとして残置（画像付き配信を将来再開したくなった場合のため）。現在のworkflowからは呼ばれていない
+
+## 2026-08-23（続き） capture-bq方式の実地テスト成功・日付バグを発見即修正
+- ユーザーがGAS再デプロイ（ver fix-v55）とGitHub Secret `BQ_LOAD_TOKEN`登録を完了
+- `gh workflow run lark-report.yml -f kind=daily -f only_group=group1`で実地テスト（run 32609855108）: **4店舗すべて成功・所要37秒**（従来はログイン待ちだけで45分タイムアウトしていた）。仕組みとしては完全に機能することを確認
+- ただし送信されたレポートの日付が全店舗とも「2026/08/31」（本来は8/23前後のはず）になっている不具合を発見。原因は`reportDataBQ`の「最新日」判定が単純な`MAX(date)`だったため、月末まで日付欄だけ先に埋まっているテンプレート行（実績はまだ0件）を拾ってしまっていたこと
+- `net_sales > 0 OR guests_total > 0`の行に限定して最新日を判定するよう修正（commit `9f8c326`・push済み・ver fix-v55→fix-v56）。**ユーザーへ再デプロイ依頼中（未確認）**
+- 次回セッションはfix-v56へのデプロイ確認→再テストから再開すること
