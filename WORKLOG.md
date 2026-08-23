@@ -1072,3 +1072,12 @@ GitHubで新しいPAT（`repo`・`workflow`スコープ）を再生成し、cron
 - `gh workflow run lark-report.yml -f kind=daily -f only_group=group1`で再テスト（run 32610033660）: **4店舗すべて成功・所要約30秒**。日付も「2026/08/21」（直近で実売上のある日）と正常な値に修正されたことを確認
 - **2026-08-22〜23にかけてのレポート生成タイムアウト問題は解決とする**。旧来のPuppeteer/ログイン方式は完全に廃止し、GAS新アクション`reportDataBQ`（BigQuery直読み・ログイン不要）へ移行完了。データ量が増えても速度が変わらない構造になったため、同種の問題は今後発生しない見込み
 - 未検証: group2・group3（他店舗）およびweekly/monthly種別・Chatworkチャネルでの実地確認。次回、通常の自動発火（cron-job.org、only_group指定なし）で全体を見ておくとよい
+
+## 2026-08-23（続き） capture-bq方式の残り検証（group2/group3・週報・月報）完了
+- 1店舗ずつに絞って追加テストを実施し、いずれも成功（実際に届くメッセージ数を最小化するため`only_stores`で1店舗に限定）
+  - group2（黒霧屋 新横浜・kind=daily）✓
+  - group3（鶏武者 新横浜・kind=daily）✓
+  - group1（鳥一代 本店・kind=weekly）✓ 週報 2026/08/18〜2026/08/24 と正しい範囲
+  - group1（鳥一代 本店・kind=monthly）✓ 月報 2026/08月 と正しい範囲
+- **capture-bq方式は全グループ・全レポート種別で動作確認完了**。未検証はChatworkチャネルのみ（配信グループが未作成のためユーザー判断で引き続き保留）
+- 別件（8/22売上取込停止）はMac mini側セッションが対応中のため、こちらでは追加調査せず。次はWORKLOG経由で同期
