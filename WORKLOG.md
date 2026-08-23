@@ -57,7 +57,7 @@
   8. Day7（総合検証・完成判定）: 未着手。**本番影響のある検証（シート停止テスト等）を含むため、8/22障害が落ち着いてから着手すること**
 
 **直近のコミット（この時点。鵜呑みにせず必ず`git fetch origin && git log --oneline -1 origin/main`で照合すること）**:
-- `ns-portal`: `5ac761b`（請求書メール管理Phase1実装・UI刷新・取込除外ルール等）
+- `ns-portal`: `99b99e1`（請求書メール管理Phase1実装・UI刷新・取込除外ルール完全一致対応等）
 - `nippo`: `9cdca2b`（店舗管理画面拡張）
 - `NStyle-AI`: `94db5a0`（bqDailyStore追加の記録）
 - `ns-daily-import`: `0139ff3`（bq-sales-reconcileタスク追加）
@@ -1302,3 +1302,4 @@ GitHubで新しいPAT（`repo`・`workflow`スコープ）を再生成し、cron
   - **取込除外ルール**（`invoice_intake_exclusion_rules`テーブル＋⚙️設定タブ）: 件名/送信元の部分一致で今後の取込自体を止める管理者設定。判定はEdge Function `invoice-intake`側（一致したらinvoice_emailsへ一切insertしない）。実機で動作確認済み
   - **対象外タブ**: 「🚫対象外にする」ボタンで請求書ではないメールを`mail_status='archived'`へ仕分ける専用タブ。今後の取込は止めない＝取込除外ルールとは独立した仕組み（ユーザーが画面キャプチャで意図を明示）
   - 次回セッションへ: これらもまだブラウザでのE2E実機確認は未実施
+- **一括「対象外」＋除外ルールの完全一致対応を追加**（コミット`d273a98`・`99b99e1`）: `invoice_bulk_action`に`not_applicable`アクションを追加し一覧から複数選択でまとめて対象外にできるように。取込除外ルールは部分一致のみだと「ATM」等の短い語で意図しない広範囲一致が起きる懸念があったため、件名/送信元アドレスの完全一致タイプ（`subject_exact`/`from_exact`）を追加。送信元の完全一致は"表示名 &lt;email&gt;"形式から実アドレス部分だけを抽出して比較。実機でexact一致/非一致の両方を確認済み
