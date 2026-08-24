@@ -286,7 +286,7 @@ window.addEventListener("popstate",e=>{
    受信トレイ（一覧マスタ）
    ============================================================ */
 async function loadInboxMaster(){
-  const r=await authed(`/rest/v1/invoice_emails?select=id,from_address,subject,body_text,received_at,mail_status,duplicate_suspected,processing_user_id,completed_at,updated_at,processor:users!invoice_emails_processing_user_id_fkey(name),atts:invoice_attachments(id)&order=received_at.desc&limit=500`);
+  const r=await authed(`/rest/v1/invoice_emails?select=id,from_address,subject,body_text,received_at,mail_status,duplicate_suspected,is_important,processing_user_id,completed_at,updated_at,processor:users!invoice_emails_processing_user_id_fkey(name),atts:invoice_attachments(id)&order=received_at.desc&limit=500`);
   MASTER_MAILS=(r.ok&&Array.isArray(r.body))?r.body:[];
 }
 function kpiCounts(){
@@ -339,6 +339,7 @@ function shellHtml(u){
       <button class="mail-tab ${TAB==='history'?'active':''}" data-tab="history">処理履歴</button>
       <button class="mail-tab ${TAB==='sent'?'active':''}" data-tab="sent">送信済み</button>
       <button class="mail-tab ${TAB==='notApplicable'?'active':''}" data-tab="notApplicable">対象外</button>
+      <button class="mail-tab ${TAB==='important'?'active':''}" data-tab="important">⭐ 重要</button>
       <button class="mail-tab ${TAB==='settings'?'active':''}" data-tab="settings">⚙️ 設定</button>
     </div>
     <div id="tabbody"></div>
@@ -421,6 +422,7 @@ async function renderTabBody(u){
   else if(TAB==="history") await renderHistoryTab(u);
   else if(TAB==="sent") await renderSentTab(u);
   else if(TAB==="notApplicable") await renderNotApplicableTab(u);
+  else if(TAB==="important") await renderImportantTab(u);
   else if(TAB==="settings") await renderSettingsTab(u);
 }
 
@@ -451,6 +453,7 @@ function renderInbox(u){
               <button class="hq-btn" id="bulk-waiting" disabled>支払待ちにする</button>
               <button class="hq-btn primary" id="bulk-complete" disabled>まとめて完了</button>
               <button class="hq-btn" id="bulk-notapplicable" disabled>🚫 まとめて対象外</button>
+              <button class="hq-btn" id="bulk-important" disabled>⭐ まとめて重要</button>
             </div>
           </div>
           <div class="err" id="bulk-msg" style="padding:0 12px"></div>
@@ -490,7 +493,7 @@ function wireMailListClicks(u){
 function updateBulkBar(){
   const n=BULK_SELECTED.size;
   const cnt=$("bulk-count"); if(cnt) cnt.textContent=n?`${n}件選択中`:"";
-  ["bulk-start","bulk-waiting","bulk-complete","bulk-notapplicable"].forEach(id=>{ const el=$(id); if(el) el.disabled=n===0; });
+  ["bulk-start","bulk-waiting","bulk-complete","bulk-notapplicable","bulk-important"].forEach(id=>{ const el=$(id); if(el) el.disabled=n===0; });
   const all=$("bulk-selectall"); if(all) all.checked=n>0&&n===filteredMails().length;
 }
 function wireBulkBar(u){
@@ -505,6 +508,7 @@ function wireBulkBar(u){
   $("bulk-waiting").onclick=()=>runBulkAction(u,"waiting_payment","選択したメールの請求書を「支払待ち」にします。よろしいですか？");
   $("bulk-complete").onclick=()=>runBulkAction(u,"complete","まとめて完了にします。他の人が処理中のものはスキップされます。よろしいですか？");
   $("bulk-notapplicable").onclick=()=>runBulkAction(u,"not_applicable","選択したメールをまとめて「対象外」にします（請求書ではないメール）。よろしいですか？");
+  $("bulk-important").onclick=()=>runBulkAction(u,"mark_important","選択したメールをまとめて「重要」にします。よろしいですか？");
 }
 async function runBulkAction(u,action,confirmMsg){
   if(!BULK_SELECTED.size) return;
@@ -539,7 +543,7 @@ function mailItemHtml(m){
   return `<div class="${cls.join(' ')}" data-openmail="${m.id}">
     <label class="mail-checkwrap"><input type="checkbox" data-bulkcheck="${m.id}" ${BULK_SELECTED.has(m.id)?"checked":""}></label>
     <div class="mail-from">${esc(m.from_address||"—")}</div>
-    <div class="mail-subject">${esc(m.subject||"（件名なし）")}</div>
+    <div class="mail-subject">${m.is_important?"⭐ ":""}${esc(m.subject||"（件名なし）")}</div>
     <div class="mail-preview">${esc(preview)}</div>
     <div class="mail-meta"><span>${metaLeft}</span><span>${fmtDT(m.received_at)}</span></div>
   </div>`;
@@ -643,6 +647,7 @@ function renderMailDetail(u){
         <span class="hq-pill ${pillKind}">${MAIL_STATUS_LABEL[mail.mail_status]||mail.mail_status}</span>
         ${atts.length?'<span class="hq-pill gray">添付あり</span>':''}
         ${mail.duplicate_suspected?'<span class="hq-pill red">重複疑い</span>':''}
+        ${mail.is_important?'<span class="hq-pill amber">⭐ 重要</span>':''}
       </div>
       <h2>${esc(mail.subject||"（件名なし）")}</h2>
       <div class="meta">${esc(mail.from_address||"—")} 　→　 ${esc(mail.to_address||"—")}</div>
@@ -659,6 +664,7 @@ function renderMailDetail(u){
         ${canReopen?'<button class="hq-btn" id="act-reopen">↩️ 未処理に戻す</button>':''}
         ${canMarkNA?'<button class="hq-btn" id="act-notapplicable">🚫 対象外にする</button>':''}
         ${canUnmarkNA?'<button class="hq-btn" id="act-unmark-notapplicable">↩️ 対象外を解除</button>':''}
+        <button class="hq-btn" id="act-toggle-important">${mail.is_important?"★ 重要を解除":"⭐ 重要にする"}</button>
       </div>
       <div id="completebox" style="display:none;margin-top:10px">
         <label style="font-size:12px;color:var(--muted)">完了メモ（任意）</label>
@@ -742,7 +748,7 @@ function renderMailDetail(u){
   wireDetailActions(u);
 }
 function logLabel(action){
-  return {intake:"取込",open:"開封",start_processing:"処理を開始",release_lock:"ロックを解除",complete:"処理を完了",reply_queued:"返信を予約",reply_sent:"返信を送信",manual_attach:"ファイルを手動で追加",invoice_status_set:"請求書の状態を変更",reopen:"未処理に戻す",mark_not_applicable:"対象外に設定",unmark_not_applicable:"対象外を解除",compose_queued:"新規メールを予約",compose_sent:"新規メールを送信"}[action]||action;
+  return {intake:"取込",open:"開封",start_processing:"処理を開始",release_lock:"ロックを解除",complete:"処理を完了",reply_queued:"返信を予約",reply_sent:"返信を送信",manual_attach:"ファイルを手動で追加",invoice_status_set:"請求書の状態を変更",reopen:"未処理に戻す",mark_not_applicable:"対象外に設定",unmark_not_applicable:"対象外を解除",compose_queued:"新規メールを予約",compose_sent:"新規メールを送信",mark_important:"重要に設定",unmark_important:"重要を解除"}[action]||action;
 }
 function wireDetailActions(u){
   const {mail}=SELECTED;
@@ -811,6 +817,12 @@ function wireDetailActions(u){
     $("act-unmark-notapplicable").disabled=true; $("act-msg").textContent="処理中…";
     const r=await authed("/rest/v1/rpc/invoice_restore_from_archive",{method:"POST",body:JSON.stringify({p_email_id:emailId})});
     if(!r.ok){ $("act-msg").textContent=(r.body&&r.body.message)||"解除できませんでした"; $("act-unmark-notapplicable").disabled=false; return; }
+    await reloadDetail();
+  };
+  $("act-toggle-important").onclick=async()=>{
+    $("act-toggle-important").disabled=true; $("act-msg").textContent="処理中…";
+    const r=await authed("/rest/v1/rpc/invoice_toggle_important",{method:"POST",body:JSON.stringify({p_email_id:emailId,p_important:!mail.is_important})});
+    if(!r.ok){ $("act-msg").textContent=(r.body&&r.body.message)||"変更できませんでした"; $("act-toggle-important").disabled=false; return; }
     await reloadDetail();
   };
 
@@ -987,6 +999,39 @@ async function renderNotApplicableTab(u){
     if(!r2.ok){ alert((r2.body&&r2.body.message)||"解除できませんでした"); el.disabled=false; return; }
     await loadInboxMaster(); await loadWaitingPaymentCount();
     await renderNotApplicableTab(u);
+  });
+}
+
+/* ============================================================
+   重要タブ（mail_status＝処理ワークフローの状態とは独立。請求書でなくても
+   残しておきたいメールをここに仕分けられる）
+   ============================================================ */
+async function renderImportantTab(u){
+  const r=await authed(`/rest/v1/invoice_emails?is_important=eq.true&select=id,from_address,subject,received_at,mail_status&order=received_at.desc&limit=300`);
+  const rows=(r.ok&&Array.isArray(r.body))?r.body:[];
+  $("tabbody").innerHTML=`
+    <section class="invoice-list active">
+      <div class="card hq-tablewrap">
+        <table class="invoice-table">
+          <thead><tr><th>送信元</th><th>件名</th><th>状態</th><th>受信日時</th><th></th></tr></thead>
+          <tbody>
+            ${rows.map(m=>`<tr>
+              <td>${esc(m.from_address||"—")}</td>
+              <td data-openmail="${m.id}" style="cursor:pointer">⭐ ${esc(m.subject||"（件名なし）")}</td>
+              <td><span class="hq-pill ${MAIL_STATUS_PILL[m.mail_status]||'gray'}">${MAIL_STATUS_LABEL[m.mail_status]||m.mail_status}</span></td>
+              <td>${fmtDT(m.received_at)}</td>
+              <td><button class="hq-btn" style="font-size:11px;padding:6px 9px" data-unimportant="${m.id}">★ 解除</button></td>
+            </tr>`).join("")||'<tr><td colspan="5">重要に設定したメールはありません</td></tr>'}
+          </tbody>
+        </table>
+      </div>
+    </section>`;
+  document.querySelectorAll("[data-openmail]").forEach(el=>el.onclick=()=>openMailDetailModal(u,el.dataset.openmail));
+  document.querySelectorAll("[data-unimportant]").forEach(el=>el.onclick=async()=>{
+    el.disabled=true;
+    const r2=await authed("/rest/v1/rpc/invoice_toggle_important",{method:"POST",body:JSON.stringify({p_email_id:el.dataset.unimportant,p_important:false})});
+    if(!r2.ok){ alert((r2.body&&r2.body.message)||"解除できませんでした"); el.disabled=false; return; }
+    await renderImportantTab(u);
   });
 }
 

@@ -1018,6 +1018,7 @@ function sidebarHtml(u){
   </aside>`;
 }
 let NAV_HQ_CNT=0;
+let NAV_INV_CNT=0;
 function toolsHtml(u){
   return `<label class="search">🔍<input id="q" type="search" placeholder="タスク・お知らせ・機能を検索"><div class="searchdrop" id="qdrop" style="display:none"></div></label>
     <div class="toolicons" id="toolicons"><span id="bellwrap">${bellHtml()}</span></div>`;
@@ -1116,6 +1117,15 @@ async function renderHome(u){
   renderDashboardArea(u,layout,toriState,{alerts,timeline,hqNippoMine,reportsByStore});
   // サイドバーのバッジ更新（本部タスク件数）
   const navhq=$("navhq"); if(navhq&&NAV_HQ_CNT){ const cnt=navhq.querySelector(".cnt"); if(!cnt){ navhq.insertAdjacentHTML("beforeend",`<span class="cnt">${NAV_HQ_CNT}</span>`); } }
+  // サイドバーのバッジ更新（請求書メール未処理件数。権限が無く"navinv"リンク自体が
+  // 無い場合は何もしない＝問い合わせも行わない）
+  if($("navinv")){
+    try{
+      const invR=await authed(`/rest/v1/invoice_emails?mail_status=in.(unread,read)&select=id`);
+      NAV_INV_CNT=(invR.ok&&Array.isArray(invR.body))?invR.body.length:0;
+    }catch(e){ NAV_INV_CNT=0; }
+    const navinv=$("navinv"); if(navinv&&NAV_INV_CNT){ const cnt=navinv.querySelector(".cnt"); if(!cnt){ navinv.insertAdjacentHTML("beforeend",`<span class="cnt">${NAV_INV_CNT}</span>`); } }
+  }
 }
 function myStoreScopeNeeded(u){ return u&&!u.is_master&&!["CEO","HQ","TEAM"].includes(u.role); }
 function toriDateSuffix(){

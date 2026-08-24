@@ -36,6 +36,10 @@ create table if not exists invoice_emails (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+-- 2026-08-24追加: 「重要」フラグ。mail_status（処理中/完了等の処理ワークフロー状態）とは
+-- 独立して立てられる＝請求書でなくても残しておきたいメールをここに仕分けられる
+alter table invoice_emails add column if not exists is_important boolean not null default false;
+create index if not exists invoice_emails_important_idx on invoice_emails (is_important) where is_important;
 create index if not exists invoice_emails_status_idx on invoice_emails (mail_status, received_at desc);
 create index if not exists invoice_emails_received_idx on invoice_emails (received_at desc);
 
@@ -365,6 +369,23 @@ begin
 end;
 $$;
 
+-- 「重要」フラグの切替（2026-08-24追加）。mail_status（処理ワークフロー）とは独立して
+-- 立てられる＝請求書一覧・処理履歴とは別に、後で読み返したいメールをここで残せる
+create or replace function invoice_toggle_important(p_email_id uuid, p_important boolean) returns jsonb
+language plpgsql security definer set search_path = public as $$
+begin
+  if not invoice_can_access() then raise exception '権限がありません'; end if;
+  if not exists(select 1 from invoice_emails where id = p_email_id) then raise exception '対象が見つかりません'; end if;
+
+  update invoice_emails set is_important = p_important, updated_at = now() where id = p_email_id;
+
+  insert into invoice_audit_logs(entity_type, entity_id, action, user_id)
+  values ('invoice_email', p_email_id, case when p_important then 'mark_important' else 'unmark_important' end, auth.uid());
+
+  return jsonb_build_object('success', true);
+end;
+$$;
+
 -- 開封記録（詳細を開いたら自動insert）
 create or replace function invoice_record_read(p_email_id uuid) returns jsonb
 language plpgsql security definer set search_path = public as $$
@@ -395,7 +416,7 @@ declare
   v_id uuid; v_email invoice_emails; v_success int := 0; v_skipped jsonb := '[]'::jsonb; v_holder text;
 begin
   if not invoice_can_access() then raise exception '権限がありません'; end if;
-  if p_action not in ('start','complete','waiting_payment','not_applicable') then raise exception '不正なアクションです'; end if;
+  if p_action not in ('start','complete','waiting_payment','not_applicable','mark_important') then raise exception '不正なアクションです'; end if;
 
   foreach v_id in array p_email_ids loop
     select * into v_email from invoice_emails where id = v_id;
@@ -460,6 +481,12 @@ begin
       where id = v_id;
       insert into invoice_audit_logs(entity_type, entity_id, action, user_id, note)
       values ('invoice_email', v_id, 'mark_not_applicable', auth.uid(), coalesce(p_note, '一括処理'));
+      v_success := v_success + 1;
+
+    elsif p_action = 'mark_important' then
+      update invoice_emails set is_important = true, updated_at = now() where id = v_id;
+      insert into invoice_audit_logs(entity_type, entity_id, action, user_id, note)
+      values ('invoice_email', v_id, 'mark_important', auth.uid(), coalesce(p_note, '一括処理'));
       v_success := v_success + 1;
     end if;
   end loop;
