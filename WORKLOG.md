@@ -1399,6 +1399,13 @@ GitHubで新しいPAT（`repo`・`workflow`スコープ）を再生成し、cron
 - **実装**（`tori-dashboard`コミット`a5893a0`・`96f489d`、`app.js?v=120`。GAS変更なし）: `applyBqDailyRoleDefault_()`を追加。localStorageに明示設定（トグル操作履歴）が無いユーザーに限りrole基準で既定値を決定（第1段階=role∈{社長,本部}のみtrue）。全ログイン導線が経由する`afterLogin()`とページ再読込時のセッション復元処理の両方に組込み。既にトグルでON/OFFを選んだユーザーの選択（切り戻し手段）は上書きしない設計。ローカルデモモードで4パターン（社長→既定ON／本部→既定ON／店舗→既定OFF／社長だが手動OFF済み→OFF維持）を確認済み
 - **次にやること**: 2営業日（〜2026-08-26頃）で問題なければ`applyBqDailyRoleDefault_()`の役職条件を広げ全役職へ展開（ユーザー確認のうえ）。A-4は担当Dの給与按分レポート承認待ち（承認後、担当Dからメッセージで連携する運用とユーザーが指示）
 - 参照: `docs/実装指示書_並行開発の担当分け_2026-08-24.md`担当A／`docs/実装指示書_ダッシュボード高速化_2026-08-23.md`タスク3
+
+## 2026-08-24（担当A実行スレッド・続き2） 担当Fからの依頼（embed/深リンク対応）に対応完了
+
+- ユーザーから「担当Fから別の指示が飛んでいるはずなのでそちらを先に動かして」と指示を受け、本WORKLOGの「担当A（tori-dashboard）への依頼」（担当Fのコミット`62184d4`等）を確認・着手
+- **`tori-dashboard`に`?embed=1`（ヘッダー/ナビ非表示）・`?tab=`または`#tab=`（ログイン後の初期タブ直接指定）を実装・デプロイ完了**（コミット`d9dd5c9`・`3538e95`、`app.js?v=121`）。`init()`でURLパラメータを保持→`afterLogin()`で`myTabs()`許可リストと突合のうえ適用。権限外・存在しないキーは既定タブへフォールバック。ローカルデモモードで4パターン確認済み。GAS変更なし
+- **担当Fへ**: portal.htmlのiframe src（`KEIEI_URL`）に`?embed=1&tab=xxx`を付与すれば深リンクが有効になります。xxxのキー一覧は`tori-dashboard/HANDOFF.md`本日付エントリ「F-3依頼対応」参照（`dash`/`target`/`analysis`/`detail`/`pl`/`deposit`/`ad`/`review`/`weekly`/`weeklyAdmin`/`ai`/`accounts`）。対応してもらえたら、統合済みの「経営管理」項目を元のサブ項目一覧に戻していただけます
+- nippo側（担当B宛の同種依頼）は担当A範囲外のため未対応・担当Bへの依頼のまま
 - 骨子: **ファイル所有権マトリクス**（tori-dashboard/app.js+GASデプロイ=A専任、nippo/index.html=B専任、invoices系=C専任、smaregi系workflow/EdgeFn=D専任、tasks.html=E専任、ポータルindex.htmlは原則凍結）＋WORKLOG競合は両方残す＋SQLは日付入り新規ファイルのみ＋Edge Functionは自分の分だけデプロイ
 - 担当間の受け渡しはSync2点のみ（BQ既定化のユーザーOK／給与按分のD→A引き継ぎ）。AI面接・書類承認AIはユーザー回答待ちのため対象外と明記
 - ステータスボードの「次にやる」冒頭に担当分けへの導線を追加
