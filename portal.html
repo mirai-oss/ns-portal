@@ -52,8 +52,13 @@ a{color:inherit}
 /* ---------- シェル本体（プロトタイプ準拠のクラス名） ---------- */
 .app{display:grid;grid-template-columns:280px minmax(0,1fr);min-height:100vh;transition:grid-template-columns .18s}
 .app.collapsed{grid-template-columns:0 minmax(0,1fr)}
-.app.collapsed .sidebar{width:280px;transform:translateX(-280px);position:fixed}
-.sidebar{background:var(--nav);color:var(--nav-ink);padding:20px 16px;position:sticky;top:0;height:100vh;overflow-y:auto;overflow-x:hidden;transition:transform .18s}
+/* grid項目は既定でmin-width:autoのため、トラック幅を0にしただけでは中身の
+   最小サイズ分だけ縮まずに残ってしまう（実機で.mainが0側の列に押し込まれ、
+   見出しが1文字ずつ縦に折り返される崩れが発生）。min-width:0を明示して
+   トラック通りに0まで縮めさせる。position:fixedにしない＝grid配置の順序を
+   崩さない（.sidebarを流れから外すと.mainが繰り上がって0側の列に入ってしまう） */
+.app.collapsed .sidebar{min-width:0;width:0;padding:0;border:0;overflow:hidden}
+.sidebar{background:var(--nav);color:var(--nav-ink);padding:20px 16px;position:sticky;top:0;height:100vh;overflow-y:auto;overflow-x:hidden;transition:width .18s,padding .18s}
 .collapse-tab{display:none;position:fixed;left:0;top:14px;z-index:30;background:var(--nav);color:#fff;border:1px solid var(--nav-line);border-left:0;border-radius:0 10px 10px 0;padding:9px 7px;font-size:13px}
 .app.collapsed .collapse-tab{display:block}
 .sidebar-toggle{margin-left:auto;color:var(--nav-ink);font-size:15px;padding:4px 6px;border-radius:6px}
@@ -170,7 +175,6 @@ canvas{width:100%;height:100%;display:block}
      機能せず、iframeが極端に潰れて下に背景色の余白だけ残る不具合が実機で発生したため、
      デスクトップと同じ「高さが伝わる」構造（flex column）のまま幅だけ1カラムにする */
   .app{display:flex;flex-direction:column;min-height:100vh}
-  .app.collapsed .sidebar{position:static;transform:none}
   .main{flex:1;min-height:0}
   .sidebar{display:none}
   .topbar{padding:0 16px;min-height:60px}
