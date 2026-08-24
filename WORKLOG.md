@@ -1378,3 +1378,7 @@ GitHubで新しいPAT（`repo`・`workflow`スコープ）を再生成し、cron
 - 骨子: **ファイル所有権マトリクス**（tori-dashboard/app.js+GASデプロイ=A専任、nippo/index.html=B専任、invoices系=C専任、smaregi系workflow/EdgeFn=D専任、tasks.html=E専任、ポータルindex.htmlは原則凍結）＋WORKLOG競合は両方残す＋SQLは日付入り新規ファイルのみ＋Edge Functionは自分の分だけデプロイ
 - 担当間の受け渡しはSync2点のみ（BQ既定化のユーザーOK／給与按分のD→A引き継ぎ）。AI面接・書類承認AIはユーザー回答待ちのため対象外と明記
 - ステータスボードの「次にやる」冒頭に担当分けへの導線を追加
+
+## 2026-08-24（MacBook側・続き） 統合ポータルシェル（担当F）を最優先レーンとして追加
+- ユーザー最優先要望: サイドバー型UI（請求書プロトタイプのデザイン踏襲）で全システムをポータル内に表示し、ID/PW再入力を無くしたい。4論点を確定（iframe方式・社内情報SSOもセット・新URL並行公開→検証後切替・未実装は準備中バッジ）。将来はPWA化でアプリ＋スマホプッシュ通知へ（バックログA7の実行計画として布石を指示書に記載）
+- `docs/実装指示書_統合ポータルシェル_2026-08-24.md`作成（F-1シェル本体=portal.html新規／F-2社内情報SSOハンドオフ=同一Supabase Authなのでトークン受け渡しのみ・MFA維持／F-3 embed対応は各担当へ依頼制／F-4 PWAは将来）。担当分け指示書に担当F追加（縄張り=portal.html新規＋ns-info-systemリポジトリ。index.htmlは切替時のリダイレクトのみ）
