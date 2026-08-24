@@ -1,0 +1,44 @@
+name: 【使い捨てテスト】Anthropic Admin APIキー確認
+
+# D-4着手前の確認用。ANTHROPIC_ADMIN_API_KEYが正しく設定され、Usage & Cost Admin APIに
+# アクセスできるかだけを確認する。確認後は削除する（本実装はD-4で別途行う）。
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: 設定チェック
+        run: |
+          if [ -z "${{ secrets.ANTHROPIC_ADMIN_API_KEY }}" ]; then
+            echo "::error::ANTHROPIC_ADMIN_API_KEY が未設定です"
+            exit 1
+          fi
+
+      - name: cost_report APIを直近2日分で叩く
+        env:
+          KEY: ${{ secrets.ANTHROPIC_ADMIN_API_KEY }}
+        run: |
+          END=$(date -u +%Y-%m-%dT00:00:00Z)
+          START=$(date -u -d '2 days ago' +%Y-%m-%dT00:00:00Z)
+          echo "期間: $START 〜 $END"
+          RES=$(curl -s -w "\n%{http_code}" -G "https://api.anthropic.com/v1/organizations/cost_report" \
+            -H "x-api-key: $KEY" \
+            -H "anthropic-version: 2023-06-01" \
+            --data-urlencode "starting_at=$START" \
+            --data-urlencode "ending_at=$END" \
+            --data-urlencode "bucket_width=1d")
+          HTTP_CODE=$(echo "$RES" | tail -1)
+          BODY=$(echo "$RES" | sed '$d')
+          echo "HTTPステータス: $HTTP_CODE"
+          echo "$BODY"
+          if [ "$HTTP_CODE" == "200" ]; then
+            echo "::notice::✅ 認証成功・APIアクセスOK"
+          elif [ "$HTTP_CODE" == "401" ] || [ "$HTTP_CODE" == "403" ]; then
+            echo "::error::❌ 認証失敗（キーが違う/権限不足/組織設定が未了の可能性）"
+            exit 1
+          else
+            echo "::warning::HTTPステータス$HTTP_CODE（認証は通っている可能性あり。内容を確認してください）"
+          fi
