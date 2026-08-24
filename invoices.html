@@ -735,7 +735,7 @@ function renderMailDetail(u){
       </div>
 
       <div class="ai-box">
-        <h3>🧾 請求書情報（手動入力・任意）</h3>
+        <h3>🧾 請求書情報（AI自動入力 or 手動入力・任意）</h3>
         <div class="ai-grid">
           <div class="ai-field"><small>請求元</small><input id="iv-vendor" value="${esc(invoice&&invoice.vendor_name||"")}"></div>
           <div class="ai-field"><small>請求書番号</small><input id="iv-number" value="${esc(invoice&&invoice.invoice_number||"")}"></div>
@@ -744,6 +744,7 @@ function renderMailDetail(u){
           <div class="ai-field"><small>状態</small><select id="iv-status">${Object.entries(INVOICE_STATUS_LABEL).map(([k,l])=>`<option value="${k}" ${(invoice?invoice.invoice_status:"draft")===k?"selected":""}>${l}</option>`).join("")}</select></div>
         </div>
         <div class="mail-actions">
+          ${atts.length?'<button id="iv-ai-fill">🤖 AIで自動入力</button>':""}
           <button id="iv-save">💾 請求書情報を保存</button>
           <button id="reply-open">↩ 返信</button>
         </div>
@@ -865,6 +866,25 @@ function wireDetailActions(u){
     await reloadDetail();
   };
 
+  if($("iv-ai-fill")) $("iv-ai-fill").onclick=async()=>{
+    const btn=$("iv-ai-fill"), msg=$("iv-msg");
+    btn.disabled=true; msg.className="err"; msg.textContent="AIが添付を読み取っています…（数十秒かかることがあります）";
+    try{
+      const s=sess.get();
+      const fr=await fetch(SUPA_URL+"/functions/v1/invoice-ocr",{method:"POST",headers:{"Content-Type":"application/json","apikey":SUPA_KEY,"Authorization":"Bearer "+(s?s.at:"")},body:JSON.stringify({email_id:emailId})});
+      const fj=await fr.json().catch(()=>({}));
+      if(!fr.ok||!fj.success){ msg.textContent=fj.error||"AI読み取りに失敗しました"; btn.disabled=false; return; }
+      const f=fj.fields||{};
+      if(!f.is_invoice){ msg.textContent="請求書らしき添付が見つかりませんでした。内容を確認して手入力してください"; btn.disabled=false; return; }
+      if(f.vendor_name) $("iv-vendor").value=f.vendor_name;
+      if(f.invoice_number) $("iv-number").value=f.invoice_number;
+      if(f.amount!=null) $("iv-amount").value=f.amount;
+      if(f.due_date) $("iv-duedate").value=f.due_date;
+      msg.className="err msg-ok";
+      msg.textContent="AIが読み取りました。内容を確認して「請求書情報を保存」を押してください"+(f.note?"（"+f.note+"）":"");
+    }catch(e){ msg.textContent="AI読み取り中にエラーが発生しました"; }
+    btn.disabled=false;
+  };
   $("iv-save").onclick=async()=>{
     const msg=$("iv-msg"); msg.textContent="保存中…";
     const payload={
