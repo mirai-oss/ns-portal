@@ -51,8 +51,8 @@ ul.tight{margin:6px 0 0;padding-left:18px;font-size:12px;color:#5f574f;line-heig
 <div class="wrap">
 
 <div class="kpis">
-<div class="kpi"><small>✅ 完成・稼働中の大物</small><b style="color:var(--green)">10</b></div>
-<div class="kpi"><small>🔨 実装済み・デプロイ待ち</small><b style="color:var(--blue)">2</b></div>
+<div class="kpi"><small>✅ 完成・稼働中の大物</small><b style="color:var(--green)">11</b></div>
+<div class="kpi"><small>🔨 対応中の改善</small><b style="color:var(--blue)">3</b></div>
 <div class="kpi"><small>📋 次にやる（順番決定済み）</small><b style="color:var(--purple)">6</b></div>
 <div class="kpi"><small>🙋 あなたの判断・作業待ち</small><b style="color:var(--amber)">6</b></div>
 </div>
@@ -64,6 +64,7 @@ ul.tight{margin:6px 0 0;padding-left:18px;font-size:12px;color:#5f574f;line-heig
 <div class="card left-done"><h3>🏗 データ基盤 Day1〜6</h3><p>GAS全バックアップ／従業員ID一本化／勤怠API自動取込＋給与突合＋異常検知（毎日自動）／売上BigQuery化（全履歴突合一致）／店舗追加の1箇所化（店舗管理画面＋自動配信）</p></div>
 <div class="card left-done"><h3>⚡ ダッシュボード高速化</h3><p>データ鮮度表示／朝8:45反映の前倒し／10分キャッシュ／BQ失敗時の自動フォールバック／Lark日報のBigQuery直読み化（ブラウザ操作全廃）</p></div>
 <div class="card left-done"><h3>📊 PL機能（第1弾）</h3><p>運営委託費の自動連携（精算書→PL・毎週）／複数店舗の自由合算表示</p></div>
+<div class="card left-done"><h3>📂 PL第2弾 <span class="badge b-new">NEW 8/24完成</span></h3><p>補助科目（開閉式内訳）／スポット人件費（日付単位→人件費率・PL自動反映）／<b>MF試算表CSV取込</b>（12ヶ月一括照合・二重計上ガード）まで本番デプロイ済み</p></div>
 <div class="card left-done"><h3>💴 経費申請</h3><p>3タップ申請・承認フロー・タスク自動生成・管理タブ</p></div>
 <div class="card left-done"><h3>🔐 社内情報管理</h3><p>ハブ移設・本番切替済み。給与金庫・ID/PW金庫・Excel入出力</p></div>
 <div class="card left-done"><h3>🏠 ポータル＋本部タスクボード</h3><p>アカウント1本化・SSO・掲示板・かんばん・通知・権限設定</p></div>
@@ -71,15 +72,16 @@ ul.tight{margin:6px 0 0;padding-left:18px;font-size:12px;color:#5f574f;line-heig
 <div class="card left-done"><h3>📋 設計・調査ドキュメント</h3><p>データ基盤監査／要件定義書v3.4／設計仕様書／スマレジAPI調査／シフトUIデザイン確定（従業員側・店長側とも）</p></div>
 </div>
 
-<h2>🔨 実装済み・あとはデプロイだけ</h2>
+<h2>🔨 対応中（8/24調査で確定した改善）</h2>
 <div class="grid">
-<div class="card left-run"><h3>📂 PL補助科目 <span class="badge b-run">デプロイ待ち</span></h3><p>勘定科目の下に電気/ガス/水道のような内訳。合計表示＋▶で開閉。コード完成・手順書あり（GAS貼り替え）</p></div>
-<div class="card left-run"><h3>⏱ スポット人件費 <span class="badge b-run">デプロイ待ち</span></h3><p>タイミー等を日付単位で入力→日別の人件費率・PLに自動反映。コード完成・手順書あり</p></div>
+<div class="card left-run"><h3>⏳ BQモード読み込み中のガード表示</h3><p>開いた直後の数秒間、壊れた暫定数字（人件費率116%等）が出る問題。データ自体は正常と確認済み。読込中プレースホルダを出す小改修（指示書あり）</p></div>
+<div class="card left-run"><h3>🧪 スポット人件費のテストデータ削除</h3><p>8/1付「タイミー ¥1,000,000」が8月の人件費を押し上げ中。削除確認待ち</p></div>
+<div class="card left-run"><h3>👔 社員固定給の店舗按分・再設計</h3><p>現状は手入力表の店舗名が正（スマレジ無関係・暦日割り）と判明。勤務実績ベースの自動按分へ移行する設計済み（比較突合→切替）</p></div>
 </div>
 
 <h2>📋 次にやる（優先順）</h2>
 <div class="grid">
-<div class="card left-next"><h3>1️⃣ PL仕上げ</h3><p>補助科目・スポットのデプロイ→<b>MF試算表CSV取込</b>の実装（2〜3日。実CSVで仕様検証済み・設計確定）</p></div>
+<div class="card left-next"><h3>1️⃣ BQ表示ガード＋社員給与按分</h3><p>docs/実装指示書_BQ表示改善と社員給与按分_2026-08-24.md（読込中表示・テストデータ削除・勤務実績ベースの按分）</p></div>
 <div class="card left-next"><h3>2️⃣ BQモードを全員の既定に</h3><p>ダッシュボード高速化の最後の一手。下ごしらえ完了・<b>あなたのOK待ち</b>（社長・本部→全役職の段階展開）</p></div>
 <div class="card left-next"><h3>3️⃣ シフト管理UI v5（店長・本部側）</h3><p>①希望確認→②調整グリッド→③確定→④実績・叶え率の4ステップ画面（デザイン採用済み・約2週間）</p></div>
 <div class="card left-next"><h3>4️⃣ 朝の見張り番</h3><p>昨日分データの有無を毎朝自動チェック→無い時だけLark警告（「無通知障害」の再発防止・0.5日）</p></div>
