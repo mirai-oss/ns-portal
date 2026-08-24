@@ -8,113 +8,41 @@
 // 事故があったため、障害を分離する目的で新規に作っている。このファイル・この
 // プロジェクトの内容を既存のindeed-intake.gsへ追記・統合しない。
 //
-// 初回セットアップ手順:
+// 初回セットアップ手順（実施済み・参考用。別アカウント等へ作り直す場合はこの順で）:
 //   1. スクリプトエディタ「プロジェクトの設定」→「スクリプト プロパティ」に
 //      INVOICE_INTAKE_SECRET を登録する（値はSupabaseの
 //      `select value from app_secrets where key='invoice_intake_secret'` と同じもの。
 //      コードには絶対に書かない＝2026-08-21のINTAKE_SECRET平文露出事故の教訓）
 //   2. 関数「setup」を1回実行（実行時に権限の承認が出たら許可）
 //      → ラベル「請求書」「請求書取込済」作成＋5分ごとのトリガー登録＋即時1回実行
-//   3. 初回のみ「importAllLabeled」を1回実行（「請求書」ラベルが付いている過去メールを
-//      まとめて取込む。件数が多ければ複数回実行。実行時間の上限に注意）
+//   3. 初回のみ「importAllLabeled」を1回実行（対象条件に合う過去メールをまとめて
+//      取込む。1回の呼び出しで最大200スレッドまでのため、件数が多ければ「取込済」が
+//      付いていないメールが無くなるまで複数回実行。実行時間の上限にも注意）
 //   4. 「デプロイ」→「新しいデプロイ」→種類=ウェブアプリ、実行ユーザー=自分、
 //      アクセスできるユーザー=全員、で公開しURLを控える
 //      （Supabase Edge Function invoice-send の環境変数 INVOICE_GAS_WEBAPP_URL に設定する）
 //   5. Gmail設定「アカウントとインポート」→「名前を付けて送信」に info@ns0314.com の
 //      エイリアスが登録済みであること（差出人をinfo@にするために必須・ユーザー確認1分）
 //
-// 【取込の判定基準】2026-08-24変更: 当初「info@宛の全メール」を対象にしていたが、
-// 実機検証でIndeed応募通知・銀行通知等まで無差別に取り込んでしまうことが判明（ユーザー
-// 確認済み）。判定を「Gmailのラベル」に変更した＝Gmail側で「請求書」ラベルが付いている
-// メールだけをこのシステムの対象とする。ラベル付けは手動でもGmail側のフィルタ自動振り分け
-// でもよい。過去メールも「請求書」ラベルさえ付いていれば取込対象になる（日付の制限なし）。
+// 【取込の判定基準（2026-08-24確定・ユーザー確認済み）】
+//   info@ns0314.com宛（To/CC）のメールは件名・ラベルに関わらずすべて取込対象。
+//   「請求書」ラベルが付いたメールも（info@宛でなくても）追加で拾う。
+//   ただしshunji.nakayama@ns0314.com（社長個人）がToに直接指定されているメールは対象外
+//   （CCに入っているだけの正規の請求書スレッドまでは除外しない）。
+//   ラベル・宛先のみで判定＝実際の受信箱で既読にする・アーカイブするなど（is:unread/
+//   in:inbox等）は一切条件に含めない＝本人のメール操作とは完全に無関係に動く。
+//   （検討過程で「請求書」ラベル限定にした時期もあったが、件名にキーワードが無い
+//   メールを取りこぼす実例が出たため上記の形に戻した）
 // =====================================================================
 
 const SUPA_URL = "https://uuvsxzhpxtghojoubjcc.supabase.co";
 const SUPA_ANON = "sb_publishable_MrwPJAx_Ws_fdRutprKCiQ_dg3wCiTr";
 const INTAKE_FN_URL = SUPA_URL + "/functions/v1/invoice-intake";
-const SOURCE_LABEL_NAME = "請求書";       // これが付いているメールだけを取込対象とする（人・Gmailフィルタが付ける）
+const SOURCE_LABEL_NAME = "請求書";       // 付いていれば追加で取込対象にするラベル（必須ではない）
 const PROCESSED_LABEL_NAME = "請求書取込済"; // 取込済みの印（このスクリプトが付ける・重複防止）
-// 2026-08-24再変更: 「請求書」ラベルのみに絞ると、件名等に「請求書」という言葉を含まない
-// メール（例:添付だけのテストメール）がラベリング漏れで取りこぼされる実例が発生。
-// ユーザー確認の上、info@ns0314.com宛のメールは件名・ラベルに関わらずすべて取込対象に戻し、
-// 「請求書」ラベルはそれに加えて拾いたい場合の追加ルートとして残す（OR条件）。
-// ラベル・宛先のみで判定＝実際の受信箱で既読にする・アーカイブするなど（is:unread/in:inbox等）は
-// 一切条件に含めない。取込・表示は本人のメール操作（既読/アーカイブ）と完全に無関係
-// 2026-08-24再々変更: shunji.nakayama@ns0314.com（社長個人宛）は本システムの対象外と
-// ユーザー確認。To欄に直接指定されているメールは除外する（CCに入っているだけの
-// 実際の請求書メールまでは除外しない＝-to:のみでCCは対象にしたまま）
 const SEARCH_QUERY = '(to:info@ns0314.com OR cc:info@ns0314.com OR label:' + SOURCE_LABEL_NAME + ') -to:shunji.nakayama@ns0314.com -label:' + PROCESSED_LABEL_NAME;
 const FROM_ALIAS = "info@ns0314.com";
 const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024; // invoice-filesバケットの上限(20MB)に合わせる
-
-// 2026-08-24: 誤って「info@宛の全メール」を取込んでしまった際の後始末用（1回限りの手動実行）。
-// 「請求書取込済」ラベルが569スレッドに付いたまま残っており、このままだと本物の請求書に
-// 「請求書」ラベルを付けても「取込済」判定で除外されてしまうため、ラベルを削除→空で作り直す
-// （Gmailはラベルを削除すると全メッセージから一括で外れる。メール自体は削除されない）。
-// 役目を終えたら削除してよい関数。
-function resetProcessedLabel_oneOff() {
-  var old = GmailApp.getUserLabelByName(PROCESSED_LABEL_NAME);
-  if (old) old.deleteLabel();
-  GmailApp.createLabel(PROCESSED_LABEL_NAME);
-}
-
-// 2026-08-24: 過去メールへの初回ラベル付け（1回限りの手動実行）。
-// 直近90日で件名に請求書関連キーワードを含むスレッドを目視確認し（広告・お知らせ等の
-// 誤検出3件は除外済み、パスワード通知メールは実務上必要なので含める＝ユーザー確認済み）、
-// 「請求書」ラベルを一括で付ける。役目を終えたら削除してよい関数。
-function applyInvoiceLabelBulk_oneOff() {
-  var ids = [
-    "1a00d9a19878573f","19ffed7481d9b977","19ff8f4a288448e1","19feb1a8259e0794","19fea07dc94f20b6",
-    "19fe9ae532577b97","19fe107bb7f67158","19fd9dae72a254be","19fd9a1f10bfd17e","19fd63aba472d54c",
-    "19fd623e4cdeaced","19fd6204cad692b5","19fd4a7bf7da744b","19fd4a7bd9df25fb","19fd48650b2ef62d",
-    "19fd111ad5a002b3","19fcf30d5060da0d","19fcc4f3bcfbd506","19fca8b0de66b0ef","19fc66d4aee10080",
-    "19fc65c83a07154f","19fc1ac4c69b3973","19fb59e2837d04ab","19f936c5d16b2bc5","19f936c484035cf4",
-    "19f68fb2079ac9d2","19f634c6e9928e21","19f5978a1551dec1","19f49d32345b61e2","19f4617dc254a85a",
-    "19f443d816a9b1e7","19f405747edf929d","19f3a07966b66061","19f36c54089419ac","19f36c2024b559a5",
-    "19f36b5da631f1d2","19f3680988f62576","19f368092765aa95","19f34e83e202df7f","19f26fd76b8ee04c",
-    "19f25f98303345b8","19f2539e08ef8894","19f1ccf6914cc365","19e26212a9770c28","19ec9741afb74922",
-    "19eb668161408ba1","19eb086df91686ae","19ea5ba828e8cc35","19e9642fe1634f63",
-    "19e95b2d334d43d8","19e95af4bd343286","19e906e12250bfdf","19e906ce57629ff9","19e8bd45fb1bb59d",
-    "19e8bd45e393391f","19e8b1b667e18a00","19e860974ac08aef","19e82be0b6b0c603","19e8286721b3e976"
-  ];
-  var label = GmailApp.getUserLabelByName(SOURCE_LABEL_NAME) || GmailApp.createLabel(SOURCE_LABEL_NAME);
-  var okCount = 0, ngIds = [];
-  for (var i = 0; i < ids.length; i++) {
-    try {
-      var thread = GmailApp.getThreadById(ids[i]);
-      if (!thread) { ngIds.push(ids[i]); continue; }
-      thread.addLabel(label);
-      okCount++;
-    } catch (e) {
-      console.error("label failed: " + ids[i] + " " + e);
-      ngIds.push(ids[i]);
-    }
-  }
-  console.log("ラベル付け完了: " + okCount + "/" + ids.length + (ngIds.length ? "  失敗: " + ngIds.join(",") : ""));
-}
-
-// 2026-08-24: 添付の取りこぼし修正（includeInlineImages:false→true）を既存の取込済みメールにも
-// 適用するための再スキャン（1回限りの手動実行）。「請求書」ラベルが付いた全メールを対象に
-// もう一度送信し直すが、Edge Function側が「既に登録済み・添付0件・今回添付あり」の場合だけ
-// 追加保存する自己修復方式になっているため、正常に添付がある分は変更されず安全に再実行できる。
-// 「請求書取込済」ラベルの有無は見ない（既に付いていても対象にする）
-function resyncAllLabeledAttachments_oneOff() {
-  var threads = GmailApp.search('label:' + SOURCE_LABEL_NAME, 0, 200);
-  var okCount = 0, ngCount = 0;
-  for (var t = 0; t < threads.length; t++) {
-    var messages = threads[t].getMessages();
-    for (var m = 0; m < messages.length; m++) {
-      try {
-        if (postMessage_(threads[t], messages[m])) okCount++; else ngCount++;
-      } catch (e) {
-        console.error("resync failed: " + e);
-        ngCount++;
-      }
-    }
-  }
-  console.log("再スキャン完了: 成功" + okCount + "件 失敗" + ngCount + "件");
-}
 
 function getSecret_() {
   var s = PropertiesService.getScriptProperties().getProperty("INVOICE_INTAKE_SECRET");
