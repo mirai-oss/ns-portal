@@ -1,0 +1,60 @@
+name: Anthropic API費用の日次同期
+
+# D-4（docs/実装指示書_担当D_勤怠給与監視_2026-08-24.md）。
+# 毎日、Anthropicの公式Usage & Cost Admin APIから直近の利用料を取得し、
+# api_cost_dailyへ円換算とともに保存する（表示・Lark配信は別workflowの想定）。
+#
+# 発火は他のcron系workflowと同じく外部cron（cron-job.org）からworkflow_dispatch APIを叩く。
+#   POST https://api.github.com/repos/mirai-oss/ns-portal/actions/workflows/api-cost-report-sync.yml/dispatches
+#   body: {"ref":"main"}
+#   Schedule: 毎日 09:00 JST 目安（他のD担当workflowと時間を分散）
+#
+# 手動実行: GitHubの Actions タブ → 本workflow → Run workflow でも実行可能
+on:
+  workflow_dispatch:
+    inputs:
+      days:
+        description: '同期する日数（空欄なら2＝UTC昨日と一昨日）'
+        required: false
+        default: ''
+        type: string
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: 設定チェック（未設定ならスキップ）
+        run: |
+          if [ -z "${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" ]; then
+            echo "::error::SUPABASE_SERVICE_ROLE_KEY が未設定です"
+            exit 1
+          fi
+
+      - name: api-cost-report-syncを呼び出す
+        env:
+          SR_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          DAYS: ${{ github.event.inputs.days }}
+        run: |
+          BODY="{}"
+          if [ -n "$DAYS" ]; then
+            BODY=$(node -e "console.log(JSON.stringify({days: Number(process.env.DAYS)}))")
+          fi
+          echo "リクエストボディ: $BODY"
+          RES=$(curl -s -w "\n%{http_code}" -X POST \
+            "https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/api-cost-report-sync" \
+            -H "Authorization: Bearer $SR_KEY" \
+            -H "Content-Type: application/json" \
+            -d "$BODY")
+          HTTP_CODE=$(echo "$RES" | tail -1)
+          BODY_TEXT=$(echo "$RES" | sed '$d')
+          echo "$BODY_TEXT"
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "::error::api-cost-report-syncが失敗しました（HTTP $HTTP_CODE）"
+            exit 1
+          fi
+          OK=$(echo "$BODY_TEXT" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{console.log(JSON.parse(d).ok)}catch(e){console.log('false')}})")
+          if [ "$OK" != "true" ]; then
+            echo "::error::同期処理がエラーを返しました"
+            exit 1
+          fi
