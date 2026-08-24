@@ -50,8 +50,15 @@ a{color:inherit}
 .aerr{color:#c62828;font-size:13px;margin-top:12px;text-align:center;min-height:1em}
 
 /* ---------- シェル本体（プロトタイプ準拠のクラス名） ---------- */
-.app{display:grid;grid-template-columns:280px minmax(0,1fr);min-height:100vh}
-.sidebar{background:var(--nav);color:var(--nav-ink);padding:20px 16px;position:sticky;top:0;height:100vh;overflow-y:auto}
+.app{display:grid;grid-template-columns:280px minmax(0,1fr);min-height:100vh;transition:grid-template-columns .18s}
+.app.collapsed{grid-template-columns:0 minmax(0,1fr)}
+.app.collapsed .sidebar{width:280px;transform:translateX(-280px);position:fixed}
+.sidebar{background:var(--nav);color:var(--nav-ink);padding:20px 16px;position:sticky;top:0;height:100vh;overflow-y:auto;overflow-x:hidden;transition:transform .18s}
+.collapse-tab{display:none;position:fixed;left:0;top:14px;z-index:30;background:var(--nav);color:#fff;border:1px solid var(--nav-line);border-left:0;border-radius:0 10px 10px 0;padding:9px 7px;font-size:13px}
+.app.collapsed .collapse-tab{display:block}
+.sidebar-toggle{margin-left:auto;color:var(--nav-ink);font-size:15px;padding:4px 6px;border-radius:6px}
+.sidebar-toggle:hover{background:rgba(255,255,255,.08);color:#fff}
+@media(max-width:760px){.collapse-tab{display:none!important}}
 .brand{display:flex;gap:12px;align-items:center;padding:4px 4px 18px;border-bottom:1px solid var(--nav-line);margin-bottom:14px}
 .brand-badge{width:40px;height:40px;border-radius:12px;background:#f0c24f;display:grid;place-items:center;font-size:20px;flex:0 0 auto}
 .brand strong{display:block;font-size:17px;color:#fff}.brand small{color:#bdb6ad;font-size:11.5px}
@@ -159,7 +166,12 @@ canvas{width:100%;height:100%;display:block}
 .mobile-more-head button{border:0;background:var(--panel);width:34px;height:34px;border-radius:10px;font-size:15px}
 
 @media(max-width:760px){
-  .app{display:block}
+  /* display:blockだとiframeがflex:1で高さを確保する仕組み（.main→.framewrap→iframe）が
+     機能せず、iframeが極端に潰れて下に背景色の余白だけ残る不具合が実機で発生したため、
+     デスクトップと同じ「高さが伝わる」構造（flex column）のまま幅だけ1カラムにする */
+  .app{display:flex;flex-direction:column;min-height:100vh}
+  .app.collapsed .sidebar{position:static;transform:none}
+  .main{flex:1;min-height:0}
   .sidebar{display:none}
   .topbar{padding:0 16px;min-height:60px}
   .top-actions{display:none}
@@ -596,6 +608,27 @@ const WIDGETS={
    </section>`;
  }},
 };
+
+/* ============================================================
+   データ連携状況（社長・本部のみ）。今回は既存の dash_sync_log
+   （日報→BigQuery売上ミラーの最終実行記録。nippo設定画面が使っているのと同じ表）
+   を読むだけの最小版。スマレジ勤怠・売上突合など他の連携状況は、
+   それぞれの担当（主に担当D）が状態を安全に読める形（ユーザー権限で
+   読めるテーブル／ビュー）で公開してくれ次第、順次ここに追加していく想定
+   ============================================================ */
+async function fetchSyncStatus(){
+  try{
+    const r=await authed("/rest/v1/dash_sync_log?select=ran_at,ok,detail&order=ran_at.desc&limit=1");
+    return (r.ok&&Array.isArray(r.body)&&r.body[0])?r.body[0]:null;
+  }catch(e){ return null; }
+}
+function syncStatusHtml(row){
+  const okBadge=row?(row.ok?'<span class="badge b-up">OK</span>':'<span class="badge b-bad">失敗</span>'):'<span class="badge b-warn">未取得</span>';
+  return `<section class="panel" style="margin-top:16px"><div class="phead"><h2>🔌 データ連携状況</h2>${okBadge}</div>
+    <div class="item"><span class="av">📊</span><span><strong>日報 → BigQuery（売上等ミラー）</strong><span>${row?`最終実行: ${fmtDT(row.ran_at)}${row.detail?"／"+esc(String(row.detail).slice(0,80)):""}`:"情報を取得できません"}</span></span><span></span></div>
+    <div class="empty" style="text-align:left;padding:6px 17px 14px">スマレジ勤怠・売上突合など他の連携状況は今後追加予定です</div>
+  </section>`;
+}
 const DEFAULT_LAYOUT={
   MASTER:{kpi:["kpi_sales","kpi_nippo","kpi_tasks","kpi_check"],main:"panel_chart",side:"panel_alerts"},
   CEO:   {kpi:["kpi_sales","kpi_nippo","kpi_tasks","kpi_check"],main:"panel_chart",side:"panel_alerts"},
@@ -730,11 +763,23 @@ const GROUPS=[
     {key:"recruit-dash",        ico:"📈", label:"採用ダッシュボード", soon:true},
     {key:"recruit-personality", ico:"🧠", label:"性格診断", soon:true},
   ]},
+  // tori-dashboardのTAB_LABELS(app.js:38)・ROLE_TABS(app.js:29)を突き合わせて全項目を反映
+  // （2026-08-24追加分。partner=外販専用タブのため対象外。tori-dashboard側にも
+  // 権限チェックがあるため、ここでの出し分けは主にUI上の分かりやすさのため）
   {cap:"経営管理",ico:"📊", items:[
-    {key:"keiei-dash",    sysKey:"keiei", ico:"📊", label:"経営ダッシュボード", url:keieiTab("dash")},
-    {key:"keiei-pl",      sysKey:"keiei", ico:"📑", label:"PL管理",     url:keieiTab("pl")},
-    {key:"keiei-ads",     sysKey:"keiei", ico:"📣", label:"広告管理",   url:keieiTab("ad")},
-    {key:"keiei-deposit", sysKey:"keiei", ico:"💰", label:"入金管理",   url:keieiTab("deposit")},
+    {key:"keiei-dash",     sysKey:"keiei", ico:"📊", label:"経営ダッシュボード", url:keieiTab("dash")},
+    {key:"keiei-target",   sysKey:"keiei", ico:"🎯", label:"目標管理",   url:keieiTab("target")},
+    {key:"keiei-analysis", sysKey:"keiei", ico:"📈", label:"推移分析",   url:keieiTab("analysis")},
+    {key:"keiei-detail",   sysKey:"keiei", ico:"🧾", label:"明細分析",   url:keieiTab("detail")},
+    {key:"keiei-pl",       sysKey:"keiei", ico:"📑", label:"PL管理",     url:keieiTab("pl")},
+    {key:"keiei-deposit",  sysKey:"keiei", ico:"💰", label:"入金管理",   url:keieiTab("deposit")},
+    {key:"keiei-ads",      sysKey:"keiei", ico:"📣", label:"広告管理",   url:keieiTab("ad")},
+    {key:"keiei-review",   sysKey:"keiei", ico:"⭐", label:"口コミ",     url:keieiTab("review")},
+    {key:"keiei-weekly",   sysKey:"keiei", ico:"🗒️", label:"週報（経営）", url:keieiTab("weekly")},
+    {key:"keiei-ai",       sysKey:"keiei", ico:"🤖", label:"AI検索",     url:keieiTab("ai")},
+    // 週報管理・アカウント管理は社長・本部のみ（tori-dashboard ROLE_TABS準拠）
+    {key:"keiei-weeklyadmin", sysKey:"keiei", roles:["HQ","CEO"], ico:"🗂️", label:"週報管理",     url:keieiTab("weeklyAdmin")},
+    {key:"keiei-accounts",    sysKey:"keiei", roles:["HQ","CEO"], ico:"👤", label:"アカウント管理", url:keieiTab("accounts")},
   ]},
 ];
 function itemVisible(it,grp,u){
@@ -760,6 +805,7 @@ function visibleLeafItems(u){
 
 let ME=null, VIEW="home", CUR=null;
 let OPEN_GROUP="現場・日報"; // アコーディオン式に開いているグループは常に1つだけ（下のwireNav参照）
+let SIDEBAR_COLLAPSED=(()=>{ try{ return localStorage.getItem("portal_sidebar_collapsed")==="1"; }catch(e){ return false; } })();
 let NAV_HQ_CNT=0, NAV_INV_CNT=0;
 
 /* ============================================================
@@ -867,14 +913,16 @@ function sidebarHtml(u){
     </div>`;
   }).join("");
   return `<aside class="sidebar" id="sidebar">
-    <div class="brand"><div class="brand-badge">🐔</div><div><strong>N-Styleグループ</strong><small>統合ポータル</small></div></div>
+    <div class="brand"><div class="brand-badge">🐔</div><div><strong>N-Styleグループ</strong><small>統合ポータル</small></div><button class="sidebar-toggle" id="sidebarCollapse" title="メニューをしまう">⟨⟨</button></div>
     ${topHtml}
     <div class="section-title">各システム</div>
     ${sysHtml}
     ${groupsHtml}
+    ${u.is_master?`<div class="section-title">管理</div>
+    <button class="nav-item" id="adminovr"><span>⚙️</span><span>管理項目を見せる人を設定</span></button>
+    <button class="nav-item" id="permlink"><span>🔑</span><span>権限・画面設定（従来ポータル）</span></button>`:""}
     <div class="userbox">
       👤 ${esc(u.name)}${u.is_master?"（マスター）":`（${esc(ROLE_NAME[u.role]||u.role)}）`}
-      ${u.is_master?'<button id="adminovr">⚙️ 管理項目を見せる人を設定</button>':""}
       <button id="tolegacy">← 従来のポータルへ</button>
       <button id="lout">ログアウト</button>
     </div>
@@ -908,14 +956,15 @@ function topActionsHtml(){
   </div>`;
 }
 function shellHtml(u){
-  return `<div class="app" id="app">
+  return `<div class="app${SIDEBAR_COLLAPSED?" collapsed":""}" id="app">
+    <button class="collapse-tab" id="sidebarExpand" title="メニューを開く">☰</button>
     ${sidebarHtml(u)}
     <main class="main">
       <header class="topbar">
         <div><h1 id="pagetitle">おはようございます、${esc((u.name||"").replace(/(さん|様)$/,""))}さん</h1><div class="meta" id="pagemeta">N-Styleグループ / 統合ポータル</div></div>
         ${topActionsHtml()}
       </header>
-      <div class="content" id="viewarea" style="flex:1;display:flex;flex-direction:column;padding:0"><div class="spin">読み込み中…</div></div>
+      <div class="content" id="viewarea" style="flex:1;min-height:0;display:flex;flex-direction:column;padding:0"><div class="spin">読み込み中…</div></div>
     </main>
     ${mobilebarHtml(u)}
     ${moreSheetHtml(u)}
@@ -965,6 +1014,14 @@ function wireNav(u){
   const moreClose=$("moreClose"); if(moreClose) moreClose.onclick=closeMobileMore;
   const mm=$("mobileMore"); if(mm) mm.onclick=e=>{ if(e.target===mm) closeMobileMore(); };
   const adminovr=$("adminovr"); if(adminovr) adminovr.onclick=()=>openAdminOverrideModal();
+  const permlink=$("permlink"); if(permlink) permlink.onclick=()=>{ location.href="index.html"; };
+  const setCollapsed=v=>{
+    SIDEBAR_COLLAPSED=v;
+    try{ localStorage.setItem("portal_sidebar_collapsed", v?"1":"0"); }catch(e){}
+    $("app").classList.toggle("collapsed",v);
+  };
+  const sc=$("sidebarCollapse"); if(sc) sc.onclick=()=>setCollapsed(true);
+  const se=$("sidebarExpand"); if(se) se.onclick=()=>setCollapsed(false);
   const tolegacy=$("tolegacy"); if(tolegacy) tolegacy.onclick=()=>{ location.href="index.html"; };
   const lout=$("lout"); if(lout) lout.onclick=async()=>{
     if(!confirm("ログアウトしますか？"))return;
@@ -1065,6 +1122,7 @@ async function renderHomeArea(u){
 
   let toriState={status:"idle",daily:[],error:null};
   const draw=(alerts)=>{
+    if(VIEW!=="home") return; // 読み込み中に他の画面へ移動していたら、後から来た結果で上書きしない
     const ctx={u,tori:toriState,alerts:alerts||[]};
     if(myStoreScope(u)){ /* hqNippoMineは下のジョブで別途セット */ }
     const kpiHtml=layout.kpi.map(k=>WIDGETS[k]?WIDGETS[k].render(ctx):"").join("");
@@ -1106,6 +1164,9 @@ async function renderHomeArea(u){
   }
   NAV_HQ_CNT=(HUB.hqTasks||[]).filter(t=>{ const cur=currentStep(t); return cur&&cur.assignee_id===u.id; }).length;
   const alerts=await buildAlerts(u);
+  const showSync=u.is_master||["HQ","CEO"].includes(u.role);
+  const syncRow=showSync?await fetchSyncStatus():null;
+  if(VIEW!=="home") return; // 読み込み中に他の画面へ移動していたら、後から来た結果で上書きしない
   const ctxFinal={u,tori:toriState,alerts,hqNippoMine};
   const kpiHtml2=layout.kpi.map(k=>WIDGETS[k]?WIDGETS[k].render(ctxFinal):"").join("");
   const mainW2=WIDGETS[layout.main], sideW2=WIDGETS[layout.side];
@@ -1128,6 +1189,7 @@ async function renderHomeArea(u){
           ${quickActionsHtml(u)}
         </div>
       </div>
+      ${showSync?syncStatusHtml(syncRow):""}
     </div>`;
   if(mainW2&&mainW2.after) mainW2.after(ctxFinal);
   document.querySelectorAll("[data-key]").forEach(b=>{ b.onclick=()=>openItem(b.dataset.key,u); });
