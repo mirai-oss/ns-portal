@@ -1823,3 +1823,5 @@ D-3（朝の見張り番）を実装している最中、新設した確認用�
 - **原因**: 前回のembed=1実装（`695dd53`）でサイドバー同梱の`body.withnav`クラスを外す設計にしたが、PCでの940px幅拡張（`body.withnav .app{max-width:940px;...}`）も同じ`withnav`クラスに依存していたため一緒に外れ、480px固定＋中央寄せの見た目に戻ってしまっていた（＝iframe内で左右に大きな余白ができる不具合）
 - **修正**: `withnav`とは別に`body.embedmode`クラスを新設し、`body.embedmode .app{max-width:none;margin:0}`でiframeいっぱいに広げるようにした。`withnav`自体・PC通常時の940px幅拡張ロジックは無変更
 - **検証**: `node --check`で構文確認。**実機確認は未実施**
+
+**担当F追記**: コードレビュー実施。`body.embedmode .app{max-width:none;margin:0}`が`@media(min-width:900px)`ブロックの外（＝画面幅を問わず常時有効）に置かれており、`withnav`の940px拡張ロジックとは完全に独立していることを確認。狙いどおりの実装。GitHub Pagesへの反映も確認済み（`https://mirai-oss.github.io/nippo/?page=recruit&embed=1`が200）。**ログイン後の実際の見た目（余白が本当に消えるか）は次回の実ログイン時に確認予定**。tori-dashboard側（担当A宛・?tab=が2回目以降無視される不具合）は本稿時点で未対応
