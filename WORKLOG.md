@@ -1815,3 +1815,11 @@ D-3（朝の見張り番）を実装している最中、新設した確認用�
 - 原因: `app.js:6953-6958`の「localStorageに保存済みのログイン情報を復元する」経路（一度でもこのブラウザで経営ダッシュボードにログインした後は毎回ここを通る）が、`S.auth`をセットするだけで**`afterLogin()`を一度も呼んでいない**。`?tab=`（`S.pendingTab`）を実際に適用しているのは`afterLogin()`内の1文（`app.js:1719`）だけなので、復元経路ではこの適用が起きない。さらに`app.js:6964`の`if(!restored&&apiUrl()) trySilentPortalLogin();`により、復元済み（`restored=true`）の場合は`afterLogin()`を呼ぶ`trySilentPortalLogin()`自体もスキップされる。**結果、ポータル埋め込みで2回目以降どのタブをクリックしても、最初にログインした時のタブのまま変わらない**（ユーザーの言う「バラバラでリンクされていない」の実体）
 - 依頼内容: `app.js:6957-6958`の復元経路でも、`afterLogin()`と同じ「`S.pendingTab`が`myTabs()`に含まれていれば`S.tab`に反映する」処理を通してほしい（`afterLogin()`をそのまま呼ぶか、同等の1行を追記するかは担当Aの判断で）
 - portal.html側の実装（`?embed=1&tab=xxx`の送信）は正しく機能している。修正はtori-dashboard側のみで完結する見込み
+
+## 2026-08-24（担当B実行スレッド・続き8）embed=1の左右余白バグを修正（担当F報告）
+
+担当Fから直接依頼。`nippo/index.html`のみ変更（コミット`5603a46`）。
+
+- **原因**: 前回のembed=1実装（`695dd53`）でサイドバー同梱の`body.withnav`クラスを外す設計にしたが、PCでの940px幅拡張（`body.withnav .app{max-width:940px;...}`）も同じ`withnav`クラスに依存していたため一緒に外れ、480px固定＋中央寄せの見た目に戻ってしまっていた（＝iframe内で左右に大きな余白ができる不具合）
+- **修正**: `withnav`とは別に`body.embedmode`クラスを新設し、`body.embedmode .app{max-width:none;margin:0}`でiframeいっぱいに広げるようにした。`withnav`自体・PC通常時の940px幅拡張ロジックは無変更
+- **検証**: `node --check`で構文確認。**実機確認は未実施**
