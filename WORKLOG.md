@@ -1676,3 +1676,16 @@ C-2の実ログインE2Eのため、既存の慣例（使い捨てテストユ�
 - **反映内容**: `NIPPO_URL`に付けていた統合済みの1項目「日報・週報・シフト」を元の**5つの個別項目に戻し**、それぞれに対応する`?page=`を付与（日報→`?page=write`／週報→`?page=weekly`／チェック→`?page=check`／シフト→`?page=shift`／マニュアル→`?page=manuals`）。採用管理の「応募者・採用管理」も`?page=recruit`に更新。**tori-dashboard（担当A宛の同種の依頼）はまだ未対応のため、経営管理は引き続き1グループ1項目のまま**（対応が来次第、同様に分割する）
 - **確認**: portal.html側で各項目クリック時にiframeのsrcが正しく`?page=...`付きのURLになることをローカルで確認。あわせて本番のnippo（`https://mirai-oss.github.io/nippo/?page=check`）に未ログイン状態でアクセスし、エラーなく通常のログイン画面が表示されることを確認（`?page=`はログイン後の初期表示に効くとの設計のため、**ログイン後の実際の遷移確認＝完全なE2Eは次回、実アカウントでの検証時にあわせて実施**）
 - portal.html側の残作業は無し。tori-dashboard側の対応が来たら経営管理グループも同様に分割する
+
+## 2026-08-24（担当F実行スレッド・続き4）担当A対応分（tori-dashboard深リンク＋embed）をportal.htmlに反映＋担当Bへembed対応を追加依頼
+
+ユーザーから「担当Aも完了してると報告あったよ」と連絡を受け、`tori-dashboard/HANDOFF.md`「F-3依頼対応」（`app.js?v=121`・コミット`d9dd5c9`/`3538e95`）を確認し反映。
+
+- **反映内容**: 経営管理グループを1項目から**4項目に復元**し、`KEIEI_URL`に`?embed=1&tab=xxx`を付与（経営ダッシュボード→`tab=dash`／PL管理→`tab=pl`／広告管理→`tab=ad`／入金管理→`tab=deposit`）。`embed=1`はtori-dashboard自身のヘッダー・ナビを非表示にする指定のため、二重表示問題（F-3で依頼していたもう1つの論点）もこれで同時に解消
+- **確認**: ローカルでportal.html→経営管理→PL管理クリック時、iframeのsrcが`https://mirai-oss.github.io/tori-dashboard/?embed=1&tab=pl`になることを確認。**実ログインでの最終表示（embed時にヘッダー/ナビが本当に消えるか・tabが正しく開くか）は次回実アカウントでのE2Eで確認予定**
+- **新たに判明した問題→担当Bへ追加依頼**: nippo側は`?page=`（担当B対応済み）はあるが`embed=1`が無いため、**現場・日報グループの各画面（日報/週報/チェック/シフト/マニュアル）を開くと、nippo自身の左サイドバー（🏠ホーム/📝日報/📋一覧/…の縦メニュー）とポータルのサイドバーが二重に表示されてしまう**ことをユーザーが実機で発見（スクリーンショット添付あり）。tori-dashboard側で担当Aが実装した`embed=1`（`app.js?v=121`）と同じ考え方で、nippoにも実装してほしい。具体的には:
+  1. `index.html`の`?page=`読み取り処理（753行目`const deepLinkPage=new URLSearchParams(location.search).get("page");`付近）に`const embedMode=new URLSearchParams(location.search).get("embed")==="1";`を追加
+  2. `render()`関数（1535行目）内、`document.getElementById("nav").style.display="flex";`（1536行目）と`document.body.classList.add("withnav");`（1537行目）を、`embedMode`のときはスキップ（nav要素を出さない）
+  3. 同じく`render()`内の`$("app").innerHTML=`...`（1558行目）で組み立てている`<header><b>日報・週報システム</b>...</header>`の部分を、`embedMode`のときは省略する
+  - portal.html側は`nippoPage()`ヘルパーで既に`&embed=1`を付与済み（現時点は未対応のパラメータとして無視されるだけで実害なし）なので、**nippo側の対応が入り次第、追加の変更なしで即座に効く**
+- 精算管理（seisan-dashboard）・社内情報管理（ns-info-system）は元々1画面のみのアプリのため、embed対応の必要性は低いと判断し依頼していない

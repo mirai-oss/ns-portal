@@ -654,18 +654,26 @@ async function fetchPosts(){
    メニュー構成（実装指示書_統合ポータルシェル_2026-08-24.md F-1準拠）
    深リンク調査（コードを読むだけ・変更なし）: 当初nippo・tori-dashboardとも
    URLでタブを直接指定する仕組みが無く、担当A・担当Bへ実装を依頼していた
-   （経緯はWORKLOG参照）。**担当Bが対応済み**（nippoコミットc345911・
-   `?page=<key>`パラメータ新設。使えるkey: home/write/weekly/list/check/
-   shift/tasks/chat/manuals/recruit/admin/settings/dash。権限的に見えない
-   ページ・未知のキーはホームへ安全にフォールバックする設計）。
-   tori-dashboard側（担当A宛の依頼）は本稿時点でまだ未対応のため、経営管理は
-   引き続き1グループ1項目のまま（対応が来たらここを同様に分割する）。
+   （経緯はWORKLOG参照）。**担当A・担当Bとも対応済み**。
+   - nippo（担当B・コミットc345911）: `?page=<key>`新設。使えるkey: home/
+     write/weekly/list/check/shift/tasks/chat/manuals/recruit/admin/
+     settings/dash。権限的に見えないページ・未知のキーはホームへ安全に
+     フォールバック
+   - tori-dashboard（担当A・app.js?v=121）: `?embed=1`でヘッダー/ナビ非表示
+     （二重表示防止）・`?tab=<key>`でログイン後の初期タブ指定。使えるkey:
+     dash/target/analysis/detail/pl/deposit/ad/review/weekly/
+     weeklyAdmin/ai/accounts（`TAB_LABELS`=app.js:38）。権限外・存在しない
+     キーは既定タブへフォールバック
    ============================================================ */
 const NIPPO_URL="https://mirai-oss.github.io/nippo/";
 const KEIEI_URL="https://mirai-oss.github.io/tori-dashboard/";
 const SEISAN_URL="https://mirai-oss.github.io/seisan-dashboard/";
 const JOHO_URL="https://ns-info-system.vercel.app";
-const nippoPage=p=>NIPPO_URL+"?page="+p;
+// embed=1は現時点ではnippo側が未対応（担当Bへ依頼中・下記WORKLOG参照）だが、
+// 未知のパラメータとして無視されるだけで実害が無いため先付けしておく。
+// nippoが対応した瞬間、portal.html側は無改修でヘッダー二重表示が消える
+const nippoPage=p=>NIPPO_URL+"?page="+p+"&embed=1";
+const keieiTab=t=>KEIEI_URL+"?embed=1&tab="+t;
 
 const TOP_ITEMS=[
   {key:"home",ico:"🏠",label:"概要（ホーム）",type:"home"},
@@ -674,15 +682,12 @@ const TOP_ITEMS=[
   {key:"invoices",sysKey:"invoices",ico:"✉️",label:"請求書メール",url:"invoices.html",countKey:"inv"},
   {key:"expenses",sysKey:"expenses",ico:"🧾",label:"経費申請",url:"expenses.html"},
 ];
-/* 経営管理・精算管理・社内情報は、実際のアプリ（tori-dashboard等）が
-   URLで内部タブを指定する仕組みをまだ持っていない（tori-dashboardは担当A
-   へ実装依頼済み・上記コメント参照）ため、複数のサブ項目を並べても
-   結局すべて同じページが開くだけで意味が無い。それを避けるため、サブ項目に
-   分けず1グループ=1項目（クリックすると迷わずアプリが開く）にしている。
-   現場・日報／採用管理はnippo側の対応（?page=）が入ったため、実際に別の
-   ページへ飛ぶ開閉グループとして下のGROUPSに分けている。 */
+/* 精算管理・社内情報は、実際のアプリがURLで内部タブを指定する仕組みを
+   持っていない（もともと1画面のアプリのため元々複数タブが無い）ため
+   1グループ=1項目のまま。現場・日報／採用管理／経営管理は、nippo・
+   tori-dashboard双方の対応が入ったため、実際に別のページへ飛ぶ開閉
+   グループとして下のGROUPSに分けている。 */
 const SYS_ITEMS=[
-  {key:"keiei",  sysKey:"keiei",  ico:"📊", label:"経営ダッシュボード", url:KEIEI_URL},
   {key:"seisan", sysKey:"seisan", ico:"🧮", label:"精算ダッシュボード", url:SEISAN_URL},
   {key:"joho",   sysKey:"joho",   ico:"🔐", label:"社内情報管理", url:JOHO_URL, external:true, sso:true},
 ];
@@ -698,6 +703,12 @@ const GROUPS=[
     {key:"recruit",             sysKey:"nippo", ico:"🧑‍💼", label:"応募者・採用管理", url:nippoPage("recruit")},
     {key:"recruit-dash",        ico:"📈", label:"採用ダッシュボード", soon:true},
     {key:"recruit-personality", ico:"🧠", label:"性格診断", soon:true},
+  ]},
+  {cap:"経営管理",ico:"📊", items:[
+    {key:"keiei-dash",    sysKey:"keiei", ico:"📊", label:"経営ダッシュボード", url:keieiTab("dash")},
+    {key:"keiei-pl",      sysKey:"keiei", ico:"📑", label:"PL管理",     url:keieiTab("pl")},
+    {key:"keiei-ads",     sysKey:"keiei", ico:"📣", label:"広告管理",   url:keieiTab("ad")},
+    {key:"keiei-deposit", sysKey:"keiei", ico:"💰", label:"入金管理",   url:keieiTab("deposit")},
   ]},
 ];
 function itemVisible(it,grp,u){
@@ -800,7 +811,7 @@ function sidebarHtml(u){
   </aside>`;
 }
 function mobilebarHtml(u){
-  const prefer=["keiei","hqtasks","nippo-daily","expenses"];
+  const prefer=["keiei-dash","hqtasks","nippo-daily","expenses"];
   const picks=[];
   prefer.forEach(k=>{ if(picks.length>=3) return; const f=findItem(k); if(f&&itemVisible(f.it,f.grp,u)) picks.push(f.it); });
   const btns=[{key:"home",ico:"🏠",label:"ホーム"}].concat(picks.map(it=>({key:it.key,ico:it.ico,label:it.label.replace(/(ダッシュボード|メール|申請)$/,"")})));
@@ -950,8 +961,8 @@ function salesHeroHtml(ctx){
   return `<div class="mobile-home-summary"><small>今月の売上（全店）</small><div class="sales">${yen(sum)}</div>${yoy!=null?`<div class="delta">▲ 前年比 ${yoy>0?"+":""}${yoy}%</div>`:""}</div>`;
 }
 function homeQuickGroups(u){
-  const keieiItem=SYS_ITEMS.find(it=>it.key==="keiei");
-  const keiei=(keieiItem&&itemVisible(keieiItem,null,u))?[keieiItem]:[];
+  const keieiGrp=GROUPS.find(g=>g.cap==="経営管理");
+  const keiei=keieiGrp.items.filter(it=>itemVisible(it,keieiGrp,u));
   const gyomu=[]; // 業務（現場・本部）
   ["hqtasks","invoices","nippo-daily","expenses"].forEach(k=>{ const f=findItem(k); if(f&&itemVisible(f.it,f.grp,u)) gyomu.push(f.it); });
   return {keiei,gyomu};
