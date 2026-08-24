@@ -101,8 +101,15 @@ button,input,select,textarea{font:inherit}
 .mail-body-frame{width:100%;height:260px;border:1px solid var(--m-line);border-radius:10px;background:#fff}
 .invoice-attach{border:1px solid var(--m-line);border-radius:14px;padding:12px;background:var(--bg);margin-top:14px}
 .invoice-attach h3{margin:0 0 8px;font-size:14px}
-.attlist{display:grid;gap:6px}
-.attitem{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--m-line);border-radius:9px;font-size:13px;background:var(--panel)}
+.attgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px}
+.attcard{border:1px solid var(--m-line);border-radius:12px;overflow:hidden;background:var(--panel)}
+.attcard-preview{height:220px;background:#fff;display:flex;align-items:center;justify-content:center;overflow:hidden}
+.attcard-preview iframe{width:100%;height:100%;border:none}
+.attcard-preview img{max-width:100%;max-height:100%;object-fit:contain}
+.attcard-preview .noprev{font-size:13px;color:var(--muted);text-align:center;padding:0 10px}
+.attcard-preview .noprev .ico{font-size:34px;display:block;margin-bottom:6px}
+.attcard-foot{padding:8px 10px;display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:12px;border-top:1px solid var(--m-line)}
+.attcard-foot .fname{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink)}
 .ai-box{border:1px solid var(--m-line);border-radius:12px;background:var(--panel);padding:12px;margin-top:14px}
 .ai-box h3{margin:0 0 8px;font-size:14px}
 .ai-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
@@ -161,6 +168,7 @@ button,input,select,textarea{font:inherit}
   .mail-lock,.mail-alert{margin:10px 14px 0}
   .mail-body{padding:14px}
   .ai-grid{grid-template-columns:1fr}
+  .attgrid{grid-template-columns:1fr}.attcard-preview{height:180px}
   .mail-actions{display:grid;grid-template-columns:1fr 1fr}.mail-actions button{min-height:42px}
   .invoice-table,.invoice-table tbody,.invoice-table tr,.invoice-table td{display:block;width:100%}
   .invoice-table thead{display:none}
@@ -702,7 +710,22 @@ function renderMailDetail(u){
 
       <div class="invoice-attach">
         <h3>📎 添付（${atts.length}件）</h3>
-        <div class="attlist" id="attlist">${atts.map(a=>`<div class="attitem"><span>📄 ${esc(a.file_name)}</span><a data-attpath="${esc(a.storage_path)}" download="${esc(a.file_name)}" href="#" target="_blank" rel="noopener">開く</a></div>`).join("")||'<div class="meta" style="color:var(--muted);font-size:12px">添付はありません</div>'}</div>
+        <div class="attgrid" id="attlist">${atts.map(a=>{
+          const isPdf=a.mime_type==="application/pdf";
+          const isImg=(a.mime_type||"").indexOf("image/")===0;
+          const preview=isPdf
+            ? `<iframe data-attpreview="${esc(a.storage_path)}" title="${esc(a.file_name)}"></iframe>`
+            : isImg
+              ? `<img data-attpreview="${esc(a.storage_path)}" alt="${esc(a.file_name)}">`
+              : `<div class="noprev"><span class="ico">📄</span>プレビュー非対応<br>（開いて確認してください）</div>`;
+          return `<div class="attcard">
+            <div class="attcard-preview">${preview}</div>
+            <div class="attcard-foot">
+              <span class="fname">${esc(a.file_name)}</span>
+              <a data-attpath="${esc(a.storage_path)}" download="${esc(a.file_name)}" href="#" target="_blank" rel="noopener">開く</a>
+            </div>
+          </div>`;
+        }).join("")||'<div class="meta" style="color:var(--muted);font-size:12px">添付はありません</div>'}</div>
         <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--m-line)">
           <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:6px">ダウンロードリンク式の請求書はここから追加できます（ダウンロード→ここでアップロード）</label>
           <input type="file" id="manual-att-file" style="font-size:12px">
@@ -757,6 +780,7 @@ function renderMailDetail(u){
   if(atts.length){
     signAttachmentUrls(atts.map(a=>a.storage_path)).then(map=>{
       document.querySelectorAll("[data-attpath]").forEach(el=>{ const url=map[el.dataset.attpath]; if(url) el.href=url; });
+      document.querySelectorAll("[data-attpreview]").forEach(el=>{ const url=map[el.dataset.attpreview]; if(url) el.src=url; });
     });
   }
 
