@@ -751,6 +751,10 @@ const GROUPS=[
     {key:"nippo-list",   sysKey:"nippo", ico:"📋", label:"一覧",     url:nippoPage("list")},
     {key:"nippo-check",  sysKey:"nippo", ico:"✅", label:"チェック", url:nippoPage("check")},
     {key:"nippo-shift",  sysKey:"nippo", ico:"📅", label:"シフト",   url:nippoPage("shift")},
+    // シフトの④実績ステップが独立ページに分離された（担当B・2026-08-24）。
+    // 従業員(SHAIN)・バイト(AL)には出さない（nippo側のnavactual表示条件=
+    // 店長(TENCHO)・チーム長(TEAM)・本部(HQ)・社長(CEO)のみに合わせた）
+    {key:"nippo-actual", sysKey:"nippo", roles:["TENCHO","TEAM","HQ","CEO"], ico:"📊", label:"実績確認", url:nippoPage("actual")},
     {key:"nippo-tasks",  sysKey:"nippo", ico:"✅", label:"タスク（現場）", url:nippoPage("tasks")},
     {key:"nippo-chat",   sysKey:"nippo", ico:"💬", label:"チャット", url:nippoPage("chat")},
     {key:"nippo-manual", sysKey:"nippo", ico:"📘", label:"マニュアル", url:nippoPage("manuals")},
