@@ -1382,3 +1382,7 @@ GitHubで新しいPAT（`repo`・`workflow`スコープ）を再生成し、cron
 ## 2026-08-24（MacBook側・続き） 統合ポータルシェル（担当F）を最優先レーンとして追加
 - ユーザー最優先要望: サイドバー型UI（請求書プロトタイプのデザイン踏襲）で全システムをポータル内に表示し、ID/PW再入力を無くしたい。4論点を確定（iframe方式・社内情報SSOもセット・新URL並行公開→検証後切替・未実装は準備中バッジ）。将来はPWA化でアプリ＋スマホプッシュ通知へ（バックログA7の実行計画として布石を指示書に記載）
 - `docs/実装指示書_統合ポータルシェル_2026-08-24.md`作成（F-1シェル本体=portal.html新規／F-2社内情報SSOハンドオフ=同一Supabase Authなのでトークン受け渡しのみ・MFA維持／F-3 embed対応は各担当へ依頼制／F-4 PWAは将来）。担当分け指示書に担当F追加（縄張り=portal.html新規＋ns-info-systemリポジトリ。index.htmlは切替時のリダイレクトのみ）
+
+## 2026-08-24（MacBook側・続き） Anthropic API費用の自動レポートを担当D/Fに追加
+- ユーザー要望: API利用額を月次でLark配信＋管理システム内のダッシュボード表示。公式Usage & Cost Admin API（/v1/organizations/cost_report・Admin APIキー必須・USDセント・日次粒度）の仕様を確認のうえ、**D-4**（日次取得→Supabase `api_cost_daily`→Lark月次/週次/しきい値配信）と**F-1.5**（ポータルシェルのAI利用料ウィジェット）として担当分けに追加
+- ユーザー作業: Admin APIキーの発行（個人アカウント不可・Console→Settings→Organizationで組織設定が前提・スコープは読み取り限定）→GitHub Secret登録。ステータスボードの判断待ちに追記済み
