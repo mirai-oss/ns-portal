@@ -87,8 +87,11 @@ Deno.serve(async (req) => {
     }
 
     // 対象期間: デフォルトは「昨日」（smaregi-attendance-syncと同じ日次バッチ想定）
-    const today = new Date();
-    const yesterday = new Date(today.getTime() - 86400000);
+    // 2026-08-24修正: new Date()がUTC基準のため、08:00 JST（=前日23:00 UTC）に実行される
+    // cronでは「JSTの本当の昨日」ではなく2日前を指してしまうバグを修正
+    // （smaregi-attendance-syncと同じ原因。D-3実装中に発覚。詳細はそちらのコメント参照）
+    const nowJst = new Date(Date.now() + 9 * 3600 * 1000);
+    const yesterday = new Date(nowJst.getTime() - 86400000);
     const dateFrom = body.date_from || yesterday.toISOString().slice(0, 10);
     const dateTo = body.date_to || yesterday.toISOString().slice(0, 10);
 

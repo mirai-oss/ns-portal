@@ -110,10 +110,19 @@ Deno.serve(async (req) => {
     }
 
     // 対象期間: デフォルトは「昨日」（日次バッチ想定）
-    const today = new Date();
-    const yesterday = new Date(today.getTime() - 86400000);
-    const dateFrom = body.date_from ? new Date(body.date_from) : yesterday;
-    const dateTo = body.date_to ? new Date(body.date_to) : yesterday;
+    // 2026-08-24修正: 旧実装には2つのバグが複合していた（D-3実装中に8/22・8/23の欠落で発覚）。
+    //   ①new Date()がUTC基準のため、08:00 JST（=前日23:00 UTC）に実行されるcronでは
+    //     「JSTの本当の昨日」ではなく2日前を指してしまう
+    //   ②日付文字列(body.date_from等)からはnew Date("YYYY-MM-DD")で常に0時0分になるのに対し、
+    //     デフォルトの「昨日」はnew Date()由来で時刻成分が残ったままだったため、下のフィルタ
+    //     `d < dateFrom`（dは0時0分）が単一日指定時に常にtrueとなり、実際にはinserted:0のまま
+    //     何日も自動同期が空振りし続けていた（実行ログの"inserted":0の連続で確認）
+    // 対策: JST基準で計算した「昨日」を一度'YYYY-MM-DD'文字列にしてから、body.date_from等と
+    //   同じnew Date(文字列)経路に通す（＝常に0時0分になる・時刻成分を持ち込まない）。
+    const nowJst = new Date(Date.now() + 9 * 3600 * 1000);
+    const yesterdayStr = new Date(nowJst.getTime() - 86400000).toISOString().slice(0, 10);
+    const dateFrom = new Date(body.date_from || yesterdayStr);
+    const dateTo = new Date(body.date_to || yesterdayStr);
 
     const { data: profs } = await sb.from("employee_profiles").select("user_id,smaregi_staff_id").not("smaregi_staff_id", "is", null);
     const { data: stores } = await sb.from("stores").select("id,smaregi_store_id").not("smaregi_store_id", "is", null);
