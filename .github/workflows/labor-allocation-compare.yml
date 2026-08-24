@@ -1,0 +1,61 @@
+name: 社員給与按分の比較レポート（週次）
+
+# D-2（docs/実装指示書_担当D_勤怠給与監視_2026-08-24.md）。
+# 現行（社員人件費DB由来・暦日割り）と勤務日ベース按分を店舗×日で比較し、
+# labor_allocation_compare_reportへ保存する。切替は行わない（比較のみ）。
+#
+# 発火は他のsmaregi-*ワークフローと同じく外部cron（cron-job.org 等）から
+# workflow_dispatch APIを叩いて行う。
+#   POST https://api.github.com/repos/mirai-oss/ns-portal/actions/workflows/labor-allocation-compare.yml/dispatches
+#   body: {"ref":"main"}
+#   Schedule: 毎週月曜 09:00 JST（既存smaregi-payroll-reconcileの毎月5日実行より高頻度に確認する）
+#
+# 手動実行: GitHubの Actions タブ → 本workflow → Run workflow でも実行可能
+on:
+  workflow_dispatch:
+    inputs:
+      months:
+        description: '比較する完了済み月数（空欄なら2＝先月・先々月）'
+        required: false
+        default: ''
+        type: string
+
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: 設定チェック（未設定ならスキップ）
+        run: |
+          if [ -z "${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" ]; then
+            echo "::error::SUPABASE_SERVICE_ROLE_KEY が未設定です（Settings → Secrets and variables → Actions）"
+            exit 1
+          fi
+
+      - name: labor-allocation-compareを呼び出す
+        env:
+          SR_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          MONTHS: ${{ github.event.inputs.months }}
+        run: |
+          BODY="{}"
+          if [ -n "$MONTHS" ]; then
+            BODY=$(node -e "console.log(JSON.stringify({months: Number(process.env.MONTHS)}))")
+          fi
+          echo "リクエストボディ: $BODY"
+          RES=$(curl -s -w "\n%{http_code}" -X POST \
+            "https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/labor-allocation-compare" \
+            -H "Authorization: Bearer $SR_KEY" \
+            -H "Content-Type: application/json" \
+            -d "$BODY")
+          HTTP_CODE=$(echo "$RES" | tail -1)
+          BODY_TEXT=$(echo "$RES" | sed '$d')
+          echo "$BODY_TEXT"
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "::error::labor-allocation-compareが失敗しました（HTTP $HTTP_CODE）"
+            exit 1
+          fi
+          OK=$(echo "$BODY_TEXT" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{console.log(JSON.parse(d).ok)}catch(e){console.log('false')}})")
+          if [ "$OK" != "true" ]; then
+            echo "::error::比較処理がエラーを返しました"
+            exit 1
+          fi
