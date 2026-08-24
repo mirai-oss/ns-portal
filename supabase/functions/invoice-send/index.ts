@@ -38,14 +38,15 @@ Deno.serve(async (req: Request) => {
   const uc = userClient(req);
   const { data: ob, error: obErr } = await uc
     .from("invoice_email_outbox")
-    .select("id, email_id, body_text, status, queued_by, invoice_emails(from_address, subject, gmail_thread_id, gmail_message_id)")
+    .select("id, email_id, body_text, status, queued_by, send_mode, to_address, subject, invoice_emails(from_address, subject, gmail_thread_id, gmail_message_id)")
     .eq("id", outboxId)
     .maybeSingle();
   if (obErr) return json({ error: "確認に失敗しました: " + obErr.message }, 500);
   if (!ob) return json({ error: "対象が見つからないか権限がありません" }, 403);
-  if (ob.status !== "queued") return json({ error: "この返信はすでに処理済みです" }, 400);
+  if (ob.status !== "queued") return json({ error: "この送信はすでに処理済みです" }, 400);
 
   const email: any = ob.invoice_emails;
+  const isCompose = ob.send_mode === "compose";
   const gasUrl = Deno.env.get("INVOICE_GAS_WEBAPP_URL");
   const secret = Deno.env.get("INVOICE_INTAKE_SECRET");
   if (!gasUrl || !secret) return json({ error: "送信設定が未完了です（INVOICE_GAS_WEBAPP_URL/INVOICE_INTAKE_SECRET）" }, 500);
@@ -55,14 +56,18 @@ Deno.serve(async (req: Request) => {
     gasRes = await fetch(gasUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        token: secret,
-        thread_id: email?.gmail_thread_id ?? "",
-        message_id: email?.gmail_message_id ?? "",
-        to: email?.from_address ?? "",
-        subject: email?.subject ?? "",
-        body: ob.body_text,
-      }),
+      body: JSON.stringify(
+        isCompose
+          ? { token: secret, mode: "compose", to: ob.to_address ?? "", subject: ob.subject ?? "", body: ob.body_text }
+          : {
+              token: secret, mode: "reply",
+              thread_id: email?.gmail_thread_id ?? "",
+              message_id: email?.gmail_message_id ?? "",
+              to: email?.from_address ?? "",
+              subject: email?.subject ?? "",
+              body: ob.body_text,
+            }
+      ),
     });
   } catch (e) {
     return json({ error: "GASへの送信要求が失敗しました（自動で再送されます）: " + e }, 502);
@@ -81,7 +86,9 @@ Deno.serve(async (req: Request) => {
   }).eq("id", ob.id);
 
   await db.from("invoice_audit_logs").insert({
-    entity_type: "invoice_email", entity_id: ob.email_id, action: "reply_sent",
+    entity_type: isCompose ? "invoice_email_outbox" : "invoice_email",
+    entity_id: isCompose ? ob.id : ob.email_id,
+    action: isCompose ? "compose_sent" : "reply_sent",
     user_id: ob.queued_by, actor_type: "human", note: ob.body_text,
   });
 

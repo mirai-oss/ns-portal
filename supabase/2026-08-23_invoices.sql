@@ -97,7 +97,7 @@ create index if not exists invoice_audit_logs_entity_idx on invoice_audit_logs (
 -- ---- 返信outbox（指示書§4.5・2026-08-23確定） ----
 create table if not exists invoice_email_outbox (
   id uuid primary key default gen_random_uuid(),
-  email_id uuid not null references invoice_emails(id),
+  email_id uuid references invoice_emails(id),
   body_text text not null,
   status text not null default 'queued' check (status in ('queued','sent','failed')),
   queued_by uuid references users(id),
@@ -106,6 +106,16 @@ create table if not exists invoice_email_outbox (
   gmail_sent_message_id text,
   error text
 );
+-- 2026-08-24追加: 返信専用だったoutboxを「新規メール作成」にも対応させる。
+-- email_idはcompose（新規作成）ではnullになるためnot null制約を外す。
+-- send_mode='reply'は従来どおりinvoice_emailsから宛先/件名を都度導出、
+-- 'compose'はto_address/subjectをoutbox自身に持つ
+alter table invoice_email_outbox alter column email_id drop not null;
+alter table invoice_email_outbox add column if not exists to_address text;
+alter table invoice_email_outbox add column if not exists subject text;
+alter table invoice_email_outbox add column if not exists send_mode text not null default 'reply';
+alter table invoice_email_outbox drop constraint if exists invoice_email_outbox_send_mode_check;
+alter table invoice_email_outbox add constraint invoice_email_outbox_send_mode_check check (send_mode in ('reply','compose'));
 create index if not exists invoice_email_outbox_status_idx on invoice_email_outbox (status, queued_at);
 
 -- ---- 取込除外ルール（2026-08-24追加）: 件名・送信元アドレスに一致するメールを今後
@@ -488,16 +498,21 @@ end;
 $$;
 
 -- 返信キュー投入（処理権限者のみ。実送信はinvoice-send Edge Functionが担当）
+-- to_address/subjectは「送った相手」の履歴（新規作成のあて先候補）として使えるよう、
+-- 返信時点でも元メールのFromから抽出して埋めておく（2026-08-24）
 create or replace function invoice_queue_reply(p_email_id uuid, p_body text) returns uuid
 language plpgsql security definer set search_path = public as $$
-declare v_outbox_id uuid;
+declare v_outbox_id uuid; v_email invoice_emails; v_to text;
 begin
   if not invoice_can_access() then raise exception '権限がありません'; end if;
   if p_body is null or length(trim(p_body)) = 0 then raise exception '本文を入力してください'; end if;
-  if not exists(select 1 from invoice_emails where id = p_email_id) then raise exception '対象が見つかりません'; end if;
+  select * into v_email from invoice_emails where id = p_email_id;
+  if v_email is null then raise exception '対象が見つかりません'; end if;
 
-  insert into invoice_email_outbox(email_id, body_text, status, queued_by)
-  values (p_email_id, p_body, 'queued', auth.uid())
+  v_to := coalesce(nullif(substring(v_email.from_address from '<([^>]+)>'), ''), v_email.from_address);
+
+  insert into invoice_email_outbox(email_id, body_text, status, queued_by, to_address, subject, send_mode)
+  values (p_email_id, p_body, 'queued', auth.uid(), v_to, 'Re: ' || coalesce(v_email.subject, ''), 'reply')
   returning id into v_outbox_id;
 
   insert into invoice_audit_logs(entity_type, entity_id, action, user_id, note)
@@ -505,6 +520,34 @@ begin
 
   return v_outbox_id;
 end;
+$$;
+
+-- 新規メール作成キュー投入（2026-08-24追加。既存スレッドへの返信ではなく新規送信）
+create or replace function invoice_queue_compose(p_to_address text, p_subject text, p_body text) returns uuid
+language plpgsql security definer set search_path = public as $$
+declare v_outbox_id uuid;
+begin
+  if not invoice_can_access() then raise exception '権限がありません'; end if;
+  if p_to_address is null or length(trim(p_to_address)) = 0 then raise exception '宛先を入力してください'; end if;
+  if p_body is null or length(trim(p_body)) = 0 then raise exception '本文を入力してください'; end if;
+
+  insert into invoice_email_outbox(email_id, body_text, status, queued_by, to_address, subject, send_mode)
+  values (null, p_body, 'queued', auth.uid(), trim(p_to_address), coalesce(nullif(trim(p_subject), ''), '（件名なし）'), 'compose')
+  returning id into v_outbox_id;
+
+  insert into invoice_audit_logs(entity_type, entity_id, action, user_id, note)
+  values ('invoice_email_outbox', v_outbox_id, 'compose_queued', auth.uid(), p_to_address || ' / ' || left(p_body, 500));
+
+  return v_outbox_id;
+end;
+$$;
+
+-- 宛先の入力候補（新規作成用アドレス帳）: 過去に送信成功した宛先一覧
+create or replace function invoice_recipient_suggestions() returns table(to_address text)
+language sql stable security definer set search_path = public as $$
+  select distinct o.to_address from invoice_email_outbox o
+  where o.status = 'sent' and o.to_address is not null and invoice_can_access()
+  order by o.to_address;
 $$;
 
 -- ============================================================
@@ -531,8 +574,13 @@ begin
    where id = p_outbox_id returning * into v_ob;
   if v_ob.id is null then raise exception '対象が見つかりません'; end if;
 
-  insert into invoice_audit_logs(entity_type, entity_id, action, user_id, actor_type, note)
-  values ('invoice_email', v_ob.email_id, 'reply_sent', v_ob.queued_by, 'human', v_ob.body_text);
+  if v_ob.send_mode = 'compose' then
+    insert into invoice_audit_logs(entity_type, entity_id, action, user_id, actor_type, note)
+    values ('invoice_email_outbox', v_ob.id, 'compose_sent', v_ob.queued_by, 'human', v_ob.body_text);
+  else
+    insert into invoice_audit_logs(entity_type, entity_id, action, user_id, actor_type, note)
+    values ('invoice_email', v_ob.email_id, 'reply_sent', v_ob.queued_by, 'human', v_ob.body_text);
+  end if;
 
   return jsonb_build_object('success', true);
 end;

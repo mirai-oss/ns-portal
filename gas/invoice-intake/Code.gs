@@ -250,7 +250,9 @@ function doPost(e) {
     return jsonOut_({ success: false, error: "unauthorized" });
   }
   try {
-    var sentId = sendReply_(body.thread_id, body.body);
+    var sentId = body.mode === "compose"
+      ? sendCompose_(body.to, body.subject, body.body)
+      : sendReply_(body.thread_id, body.body);
     return jsonOut_({ success: true, sent_message_id: sentId });
   } catch (err) {
     return jsonOut_({ success: false, error: String(err) });
@@ -281,9 +283,14 @@ function sendQueuedReplies() {
 
 function trySendOne_(ob) {
   try {
-    var info = fetchEmailInfo_(ob.email_id);
-    if (!info) { console.error("invoice outbox: email not found " + ob.email_id); return; }
-    var sentId = sendReply_(info.gmail_thread_id, ob.body_text);
+    var sentId;
+    if (ob.send_mode === "compose") {
+      sentId = sendCompose_(ob.to_address, ob.subject, ob.body_text);
+    } else {
+      var info = fetchEmailInfo_(ob.email_id);
+      if (!info) { console.error("invoice outbox: email not found " + ob.email_id); return; }
+      sentId = sendReply_(info.gmail_thread_id, ob.body_text);
+    }
     markSent_(ob.id, sentId);
   } catch (e) {
     console.error("invoice outbox send failed: " + ob.id + " " + e);
@@ -334,4 +341,14 @@ function sendReply_(threadId, bodyText) {
   last.reply(bodyText, { from: FROM_ALIAS });
   var after = thread.getMessages();
   return after[after.length - 1].getId();
+}
+
+// 新規メール作成（2026-08-24追加。返信ではなく新しいスレッドを起こす）。
+// 差出人=info@ns0314.com固定。createDraft().send()を使うのは、送信済みメッセージの
+// IDをその場で取得するため（GmailApp.sendEmailは戻り値が無くIDが取れない）
+function sendCompose_(to, subject, bodyText) {
+  if (!to) throw new Error("宛先が指定されていません");
+  var draft = GmailApp.createDraft(to, subject || "（件名なし）", bodyText, { from: FROM_ALIAS });
+  var sent = draft.send();
+  return sent.getId();
 }

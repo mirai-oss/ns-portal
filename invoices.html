@@ -29,6 +29,14 @@ button,input,select,textarea{font:inherit}
 .err{color:var(--accent);font-size:13px}
 .msg-ok{color:var(--green)}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow)}
+.modal-bg{position:fixed;inset:0;background:rgba(20,15,8,.55);z-index:100;display:flex;align-items:flex-start;justify-content:center;padding:16px;overflow-y:auto}
+.modal{background:var(--panel);border-radius:16px;padding:20px;max-width:520px;width:100%;margin:20px 0}
+.modal .mhead{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px}
+.modal .mhead h2{font-size:16px}
+.modal label{display:block;font-size:12px;color:var(--muted);margin:12px 0 4px}
+.modal label:first-of-type{margin-top:0}
+.modal input,.modal textarea{width:100%;border:1px solid var(--line);border-radius:8px;padding:10px;background:var(--bg);color:var(--ink)}
+.modal textarea{min-height:120px;resize:vertical}
 .topbar{height:74px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;background:var(--bg);z-index:5}
 .topbar h1{font-size:21px}
 .topbar .who{font-size:13px;color:var(--muted)}
@@ -287,7 +295,10 @@ function shellHtml(u){
   return `
   <div class="topbar">
     <h1>📨 請求書メール</h1>
-    <div class="who">👤 ${esc(u.name)} ／ <a href="index.html">← ポータルへ</a></div>
+    <div class="who" style="display:flex;align-items:center;gap:10px">
+      <button class="hq-btn primary" id="compose-open">✏️ 新規作成</button>
+      <span>👤 ${esc(u.name)} ／ <a href="index.html">← ポータルへ</a></span>
+    </div>
   </div>
   <div class="mail-shell">
     <div class="mail-summary">
@@ -313,6 +324,67 @@ function wireShell(u){
     document.querySelectorAll(".mail-tab").forEach(x=>x.classList.toggle("active",x.dataset.tab===TAB));
     await renderTabBody(u);
   });
+  $("compose-open").onclick=()=>openComposeModal(u);
+}
+
+/* ============================================================
+   新規メール作成（既存スレッドへの返信ではなく新規送信。宛先は過去に送った
+   相手から入力候補=datalistで補完する）
+   ============================================================ */
+async function openComposeModal(u){
+  const r=await authed("/rest/v1/rpc/invoice_recipient_suggestions",{method:"POST",body:"{}"});
+  const suggestions=(r.ok&&Array.isArray(r.body))?r.body.map(x=>x.to_address):[];
+
+  const modal=document.createElement("div");
+  modal.className="modal-bg"; modal.id="composeModal";
+  modal.innerHTML=`<div class="modal">
+    <div class="mhead"><h2>✏️ 新規メール作成</h2><button class="linkbtn" id="composeClose" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:13px">閉じる ×</button></div>
+    <label>宛先</label>
+    <input id="cp-to" list="cp-suggestions" placeholder="例: info@example.com">
+    <datalist id="cp-suggestions">${suggestions.map(a=>`<option value="${esc(a)}">`).join("")}</datalist>
+    <label>件名</label>
+    <input id="cp-subject" placeholder="件名">
+    <label>本文</label>
+    <textarea id="cp-body"></textarea>
+    <button class="hq-btn primary" style="margin-top:10px;width:100%" id="cp-confirm-btn">確認画面へ</button>
+    <div id="cp-confirmbox" style="display:none">
+      <div class="confirmbox">宛先: <span id="cp-preview-to"></span>
+件名: <span id="cp-preview-subject"></span>
+本文:
+<span id="cp-preview-body"></span></div>
+      <button class="hq-btn primary" style="margin-top:8px;width:100%" id="cp-send-btn">送信する</button>
+      <button class="hq-btn" style="margin-top:8px;width:100%" id="cp-back-btn">戻る</button>
+    </div>
+    <div class="err" id="cp-msg" style="margin-top:8px"></div>
+  </div>`;
+  document.body.appendChild(modal);
+  modal.onclick=e=>{ if(e.target===modal) modal.remove(); };
+  $("composeClose").onclick=()=>modal.remove();
+
+  $("cp-confirm-btn").onclick=()=>{
+    const to=$("cp-to").value.trim(), subject=$("cp-subject").value.trim(), body=$("cp-body").value.trim();
+    const msg=$("cp-msg"); msg.textContent="";
+    if(!to){ msg.textContent="宛先を入力してください"; return; }
+    if(!body){ msg.textContent="本文を入力してください"; return; }
+    $("cp-preview-to").textContent=to;
+    $("cp-preview-subject").textContent=subject||"（件名なし）";
+    $("cp-preview-body").textContent=body;
+    $("cp-confirmbox").style.display="block";
+  };
+  $("cp-back-btn").onclick=()=>{ $("cp-confirmbox").style.display="none"; };
+  $("cp-send-btn").onclick=async()=>{
+    $("cp-send-btn").disabled=true; $("cp-msg").className="err"; $("cp-msg").textContent="送信中…";
+    const to=$("cp-to").value.trim(), subject=$("cp-subject").value.trim(), body=$("cp-body").value.trim();
+    const qr=await authed("/rest/v1/rpc/invoice_queue_compose",{method:"POST",body:JSON.stringify({p_to_address:to,p_subject:subject,p_body:body})});
+    if(!qr.ok){ $("cp-msg").textContent=(qr.body&&qr.body.message)||"送信予約に失敗しました"; $("cp-send-btn").disabled=false; return; }
+    const outboxId=qr.body;
+    const s=sess.get();
+    const sr=await fetch(SUPA_URL+"/functions/v1/invoice-send",{method:"POST",headers:{"Content-Type":"application/json","apikey":SUPA_KEY,"Authorization":"Bearer "+(s?s.at:"")},body:JSON.stringify({outbox_id:outboxId})});
+    const sj=await sr.json().catch(()=>({}));
+    $("cp-msg").className="err msg-ok";
+    $("cp-msg").textContent=(sr.ok&&sj.success)?"送信しました":"送信予約は完了しました。数分以内に自動で再送されます。";
+    setTimeout(()=>modal.remove(),1200);
+  };
 }
 async function renderTabBody(u){
   $("tabbody").innerHTML='<div class="spin">読み込み中…</div>';
@@ -604,7 +676,7 @@ function renderMailDetail(u){
   wireDetailActions(u);
 }
 function logLabel(action){
-  return {intake:"取込",open:"開封",start_processing:"処理を開始",release_lock:"ロックを解除",complete:"処理を完了",reply_queued:"返信を予約",reply_sent:"返信を送信",manual_attach:"ファイルを手動で追加",invoice_status_set:"請求書の状態を変更",reopen:"未処理に戻す",mark_not_applicable:"対象外に設定",unmark_not_applicable:"対象外を解除"}[action]||action;
+  return {intake:"取込",open:"開封",start_processing:"処理を開始",release_lock:"ロックを解除",complete:"処理を完了",reply_queued:"返信を予約",reply_sent:"返信を送信",manual_attach:"ファイルを手動で追加",invoice_status_set:"請求書の状態を変更",reopen:"未処理に戻す",mark_not_applicable:"対象外に設定",unmark_not_applicable:"対象外を解除",compose_queued:"新規メールを予約",compose_sent:"新規メールを送信"}[action]||action;
 }
 function wireDetailActions(u){
   const {mail}=SELECTED;
@@ -795,7 +867,12 @@ async function renderSentTab(u){
   $("tabbody").innerHTML=`
     <section class="invoice-list active">
       <div class="card hq-tablewrap"><table class="invoice-table"><tbody>
-        ${rows.map(x=>`<tr><td><b>Re: ${esc(x.email&&x.email.subject||"")}</b><div class="meta" style="color:var(--muted);font-size:11px">宛先：${esc(x.email&&x.email.from_address||"—")}</div></td><td>${fmtDT(x.sent_at)}</td></tr>`).join("")||'<tr><td colspan="2">送信済みの返信はありません</td></tr>'}
+        ${rows.map(x=>{
+          const isCompose=x.send_mode==="compose";
+          const subject=isCompose?(x.subject||"（件名なし）"):("Re: "+(x.email&&x.email.subject||""));
+          const to=isCompose?x.to_address:(x.email&&x.email.from_address);
+          return `<tr><td>${isCompose?'<span class="hq-pill blue" style="margin-right:6px">新規</span>':''}<b>${esc(subject)}</b><div class="meta" style="color:var(--muted);font-size:11px">宛先：${esc(to||"—")}</div></td><td>${fmtDT(x.sent_at)}</td></tr>`;
+        }).join("")||'<tr><td colspan="2">送信済みのメールはありません</td></tr>'}
       </tbody></table></div>
     </section>`;
 }
