@@ -23,6 +23,17 @@ name: スマレジ勤怠実績の日次取込
 # 2026-08-22 追記: 取込直後に smaregi-attendance-anomaly-check（勤怠の異常値チェック。
 #   1時間以内／13時間超え／24時間超えの勤務を検知してLINEアラート）を後続ステップとして呼ぶよう追加。
 #   smaregi-attendance-sync本体のロジックは無変更（新しいステップの追加のみ）。
+#
+# 2026-08-24 追記（D-1・月またぎ再取込の修正）: 旧CSV取込にあった
+#   「当月1〜10日は前月分も再チェックする」仕組み（PREV_MONTH_UNTIL_DAY:10）がAPI移行時に
+#   引き継がれておらず、月末〜月初にスマレジ側で行われた前月分の打刻修正が labor_cost_daily に
+#   反映されないまま取り残される不具合があった。Edge Function自体はdate_from/date_to対応済みなので
+#   変更不要（指示書どおり最短ルート）。ワークフロー側に「JST基準で当月1〜10日なら前月1日〜末日を
+#   追加でsync呼び出しする」ステップを追加して対応（既存の当日分syncステップは無変更）。
+#   smaregi-payroll-reconcile（毎月5日実行・前月分の勤務実績安定を5日まで待つ設計）は本ステップにより
+#   labor_cost_daily が5日までに前月分の修正を取り込めるようになるため、追加対応不要と確認済み。
+#   smaregi-attendance-anomaly-checkは対象に含めない（過去分に対して再実行すると同じ異常値を
+#   毎日再アラートしてしまう＝LINE誤送信のヒヤリハットの教訓に反するため。従来どおり「昨日分」のみ）。
 on:
   workflow_dispatch:
     inputs:
@@ -40,7 +51,7 @@ on:
 jobs:
   sync:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - name: 設定チェック（未設定ならスキップ）
         run: |
@@ -80,6 +91,41 @@ jobs:
           ERR_COUNT=$(echo "$BODY_TEXT" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{console.log(JSON.parse(d).errorCount||0)}catch(e){console.log(0)}})")
           if [ "$ERR_COUNT" -gt "0" ]; then
             echo "::warning::$ERR_COUNT 件のエラーがありました（未対応のstaff_id/store_idなど。ログ参照）"
+          fi
+
+      - name: 月またぎ再取込（JST当月1〜10日のみ・前月分を追加sync）
+        env:
+          SR_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          DAY=$(TZ=Asia/Tokyo date +%-d)
+          if [ "$DAY" -gt 10 ]; then
+            echo "本日はJST${DAY}日のため月またぎ再取込はスキップ（対象は1〜10日）"
+            exit 0
+          fi
+          PREV_FROM=$(TZ=Asia/Tokyo date -d "$(TZ=Asia/Tokyo date +%Y-%m-01) -1 month" +%Y-%m-%d)
+          PREV_TO=$(TZ=Asia/Tokyo date -d "$(TZ=Asia/Tokyo date +%Y-%m-01) -1 day" +%Y-%m-%d)
+          echo "JST${DAY}日のため前月分を再取込: $PREV_FROM 〜 $PREV_TO"
+          BODY=$(PREV_FROM="$PREV_FROM" PREV_TO="$PREV_TO" node -e "console.log(JSON.stringify({date_from: process.env.PREV_FROM, date_to: process.env.PREV_TO}))")
+          RES=$(curl -s -w "\n%{http_code}" -X POST \
+            "https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/smaregi-attendance-sync" \
+            -H "Authorization: Bearer $SR_KEY" \
+            -H "Content-Type: application/json" \
+            -d "$BODY")
+          HTTP_CODE=$(echo "$RES" | tail -1)
+          BODY_TEXT=$(echo "$RES" | sed '$d')
+          echo "$BODY_TEXT"
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "::warning::月またぎ再取込が失敗しました（HTTP $HTTP_CODE）。10日までの間、翌日以降の再実行に期待する"
+            exit 0
+          fi
+          OK=$(echo "$BODY_TEXT" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{console.log(JSON.parse(d).ok)}catch(e){console.log('false')}})")
+          if [ "$OK" != "true" ]; then
+            echo "::warning::月またぎ再取込がエラーを返しました"
+            exit 0
+          fi
+          ERR_COUNT=$(echo "$BODY_TEXT" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{console.log(JSON.parse(d).errorCount||0)}catch(e){console.log(0)}})")
+          if [ "$ERR_COUNT" -gt "0" ]; then
+            echo "::warning::月またぎ再取込で$ERR_COUNT 件のエラーがありました（未対応のstaff_id/store_idなど。ログ参照）"
           fi
 
       - name: smaregi-attendance-anomaly-checkを呼び出す（異常値チェック・失敗しても取込自体は成功扱い）
