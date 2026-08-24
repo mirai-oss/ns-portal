@@ -7,9 +7,12 @@
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🐔</text></svg>">
 <style>
 /* ============================================================
-   配色は請求書メール管理(invoices.html)・UIプロトタイプに準拠。
-   このファイルは「担当F: 統合ポータルシェル」専用の新規ファイル。
-   既存index.htmlは無変更のまま並行公開する（実装指示書_統合ポータルシェル_2026-08-24.md）。
+   配色・サイドバー構成はユーザー提供プロトタイプ
+   （NStyle_請求書メール管理_UIプロトタイプ_動作修正版.html）に準拠。
+   ホームのKPI・チャート・要対応欄は index.html の既存ロジック
+   （WIDGETS/DEFAULT_LAYOUT/buildAlerts等）をそのまま移植し実データ化。
+   各システムの中身は既存画面をiframeで埋め込む（作り直さない）。
+   参照: docs/実装指示書_統合ポータルシェル_2026-08-24.md F-1
    ============================================================ */
 :root{
   --bg:#f4f1eb; --panel:#fff; --ink:#231f1a; --muted:#7d756d; --line:#e4ddd4;
@@ -17,11 +20,12 @@
   --green:#2f8f63; --green-soft:#e7f5ed;
   --amber:#b77b13; --amber-soft:#fff3d8;
   --blue:#2f6fb7; --blue-soft:#e8f0fb;
+  --red:#c94728; --red-soft:#fce9e3;
   --shadow:0 8px 28px rgba(35,31,26,.08); --radius:16px;
   --nav:#211d18; --nav-line:rgba(255,255,255,.1); --nav-ink:#ddd6cf;
 }
 @media(prefers-color-scheme:dark){
-  :root{--bg:#211d18; --panel:#2b2620; --ink:#f2ede6; --muted:#b3aa9f; --line:#433c33; --accent-soft:#4a2c22; --green-soft:#1f3a2c; --amber-soft:#3d3018; --blue-soft:#1e3049;}
+  :root{--bg:#211d18; --panel:#2b2620; --ink:#f2ede6; --muted:#b3aa9f; --line:#433c33; --accent-soft:#4a2c22; --green-soft:#1f3a2c; --amber-soft:#3d3018; --blue-soft:#1e3049; --red-soft:#4a2c22;}
 }
 *{box-sizing:border-box}
 body{margin:0;min-height:100vh;background:var(--bg);color:var(--ink);font-size:14px;font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Noto Sans JP",sans-serif}
@@ -45,59 +49,132 @@ a{color:inherit}
 .anote{font-size:12px;color:var(--muted);text-align:center;margin-top:18px;line-height:1.7}
 .aerr{color:#c62828;font-size:13px;margin-top:12px;text-align:center;min-height:1em}
 
-/* ---------- シェル本体 ---------- */
-.app{display:grid;grid-template-columns:260px minmax(0,1fr);min-height:100vh}
-.ov{display:none;position:fixed;inset:0;background:rgba(20,15,8,.5);z-index:19}
-.ov.show{display:block}
-.side{background:var(--nav);color:var(--nav-ink);padding:18px 14px;display:flex;flex-direction:column;gap:6px;position:sticky;top:0;height:100vh;overflow-y:auto;z-index:20}
-.brand{display:flex;align-items:center;gap:11px;padding:2px 8px 14px;border-bottom:1px solid var(--nav-line);margin-bottom:8px}
-.brand .mark{width:36px;height:36px;border-radius:9px;display:grid;place-items:center;background:#f0c24f;font-size:19px;flex:0 0 auto}
-.brand strong{display:block;font-size:14.5px;line-height:1.25;color:#fff}
-.brand span{color:#a89c88;font-size:11px}
-.navcap{font-size:10.5px;letter-spacing:.12em;color:#8f887f;text-transform:uppercase;padding:12px 10px 5px}
-.navgrp{display:flex;flex-direction:column;gap:2px;margin-bottom:2px}
-.navitem{width:100%;min-height:38px;border-radius:8px;color:var(--nav-ink);display:flex;align-items:center;gap:9px;padding:0 10px;text-align:left;text-decoration:none;font-size:13.5px}
-.navitem:hover{background:rgba(255,255,255,.07);color:#fff}
-.navitem.active{background:#3a342e;color:#fff;font-weight:700}
-.navitem.soon{opacity:.5;cursor:default}
-.navitem .badge-soon{margin-left:auto;background:rgba(255,255,255,.12);color:#cfc7bd;font-size:9.5px;font-weight:700;border-radius:99px;padding:2px 7px;white-space:nowrap}
-.navitem .ext{margin-left:auto;font-size:11px;color:#8d8271}
-.side-foot{margin-top:auto;font-size:11px;color:#a89c88;padding:12px 8px 0;border-top:1px solid var(--nav-line)}
-.side-foot .sfname{color:#efe7da;font-size:13px;margin-bottom:6px}
-.side-foot button{color:var(--nav-ink);text-decoration:underline;font-size:11px;padding:2px 0;display:block}
-.side-foot button:hover{color:#fff}
+/* ---------- シェル本体（プロトタイプ準拠のクラス名） ---------- */
+.app{display:grid;grid-template-columns:280px minmax(0,1fr);min-height:100vh}
+.sidebar{background:var(--nav);color:var(--nav-ink);padding:20px 16px;position:sticky;top:0;height:100vh;overflow-y:auto}
+.brand{display:flex;gap:12px;align-items:center;padding:4px 4px 18px;border-bottom:1px solid var(--nav-line);margin-bottom:14px}
+.brand-badge{width:40px;height:40px;border-radius:12px;background:#f0c24f;display:grid;place-items:center;font-size:20px;flex:0 0 auto}
+.brand strong{display:block;font-size:17px;color:#fff}.brand small{color:#bdb6ad;font-size:11.5px}
+.section-title{font-size:10.5px;color:#8f887f;text-transform:uppercase;letter-spacing:.12em;margin:20px 10px 7px}
+.nav-item,.nav-group-head{width:100%;border:0;background:transparent;color:var(--nav-ink);text-align:left;padding:10px 11px;border-radius:10px;display:flex;align-items:center;gap:10px;cursor:pointer;font-size:13.5px}
+.nav-item:hover,.nav-group-head:hover{background:rgba(255,255,255,.06);color:#fff}
+.nav-item.active{background:#3a342e;color:#fff;font-weight:700}
+.nav-item.soon{opacity:.55;cursor:default}
+.nav-item .count,.nav-item .badge-soon{margin-left:auto;background:var(--accent);color:#fff;border-radius:99px;padding:2px 7px;font-size:10.5px;font-weight:700;white-space:nowrap}
+.nav-item .badge-soon{background:rgba(255,255,255,.14);color:#cfc7bd}
+.nav-item .ext{margin-left:auto;font-size:11px;color:#8d8271}
+.nav-group-head{font-weight:700;color:#fff}
+.chev{margin-left:auto;transition:.2s;color:#a89c88}.nav-group.open .chev{transform:rotate(90deg)}
+.subnav{display:none;padding:2px 0 6px 12px}.nav-group.open .subnav{display:block}
+.subnav .nav-item{font-size:13.5px;padding:9px 10px}
+.userbox{margin-top:20px;padding-top:16px;border-top:1px solid var(--nav-line);font-size:12.5px;color:#cfc7bd;line-height:1.8}
+.userbox button{color:#cfc7bd;text-decoration:underline;font-size:11.5px;display:block;padding:1px 0}
+.userbox button:hover{color:#fff}
 
-main{min-width:0;display:flex;flex-direction:column;height:100vh}
-.topbar{min-height:58px;display:flex;align-items:center;gap:12px;padding:0 20px;background:var(--panel);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:5}
-.hamb{display:none;font-size:20px;width:36px;height:36px;border-radius:8px}
-.hamb:hover{background:var(--bg)}
-.topbar h1{margin:0;font-size:16.5px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.topactions{display:flex;gap:8px;align-items:center}
-.topactions a,.topactions button{font-size:12px;color:var(--muted);border:1px solid var(--line);border-radius:8px;padding:7px 11px;white-space:nowrap;text-decoration:none}
-.topactions a:hover,.topactions button:hover{color:var(--ink);background:var(--bg)}
-.framewrap{flex:1;min-height:0;display:flex;flex-direction:column}
+.main{min-width:0;display:flex;flex-direction:column}
+.topbar{min-height:70px;background:var(--panel);border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:16px;padding:0 26px;position:sticky;top:0;z-index:5;flex-wrap:wrap}
+.topbar h1{font-size:20px;margin:10px 0 0}.topbar .meta{color:var(--muted);font-size:12.5px;margin:2px 0 10px}
+.top-actions{display:flex;gap:9px;align-items:center;margin:10px 0;position:relative}
+.search{border:1px solid var(--line);background:var(--bg);border-radius:11px;padding:10px 13px;min-width:280px;color:var(--ink)}
+.searchdrop{position:absolute;top:calc(100% + 6px);left:0;right:74px;background:var(--panel);border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow);overflow:hidden;z-index:20;max-height:60vh;overflow-y:auto}
+.searchdrop button{display:block;width:100%;text-align:left;padding:11px 14px;border-bottom:1px solid var(--line);font-size:13px;color:var(--ink)}
+.searchdrop button:last-child{border-bottom:0}
+.searchdrop button:hover{background:var(--bg)}
+.iconbtn{border:1px solid var(--line);background:var(--panel);border-radius:11px;padding:10px 12px;cursor:pointer;position:relative;color:var(--ink);white-space:nowrap}
+.iconbtn:hover{background:var(--bg)}
+.iconbtn .dot{position:absolute;top:6px;right:6px;width:8px;height:8px;border-radius:99px;background:var(--accent);border:2px solid var(--panel)}
+.bellpanel{position:absolute;top:calc(100% + 6px);right:0;width:320px;max-width:88vw;background:var(--panel);border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow);z-index:20;max-height:70vh;overflow-y:auto}
+.bellpanel .brow{padding:10px 14px;border-bottom:1px solid var(--line);font-size:12.5px}
+.bellpanel .brow:last-child{border-bottom:none}
+.bellpanel .brow b{display:block;font-size:13px;margin-bottom:2px}
+.bellpanel .brow.unread{background:var(--accent-soft)}
+.bellpanel .empty{padding:20px;text-align:center;color:var(--muted);font-size:12.5px}
+
+.content{padding:22px 26px 46px;max-width:1500px;margin:0 auto;width:100%}
+.framewrap{flex:1;min-height:0;display:flex;flex-direction:column;padding:0}
 .framewrap iframe{flex:1;width:100%;border:0;background:var(--panel)}
 
-/* ホームパネル */
-.home{padding:26px 30px 46px;max-width:1100px;margin:0 auto;width:100%;overflow-y:auto}
-.home h2{margin:0 0 4px;font-size:22px}
-.home p.lead{color:var(--muted);margin:0 0 22px}
-.qgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px}
-.qcard{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px;text-align:left;box-shadow:var(--shadow)}
-.qcard:hover{border-color:#cfc5ba}
-.qcard .ico{font-size:22px}
-.qcard b{display:block;font-size:14px;margin-top:8px}
-.qcard span{color:var(--muted);font-size:11.5px}
-.toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:10px 18px;border-radius:99px;font-size:13px;box-shadow:var(--shadow);z-index:50;opacity:0;pointer-events:none;transition:opacity .2s}
-.toast.show{opacity:1}
+/* KPI・パネル（index.htmlのダッシュボード部品を流用） */
+.summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px}
+.dcard,.panel{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow)}
+.dcard{padding:15px 17px;min-height:106px;display:grid;align-content:space-between;gap:9px}
+.dcard a{color:inherit;text-decoration:none;display:block}
+.chead{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.ctitle{color:var(--muted);font-size:12px}
+.badge{display:inline-flex;align-items:center;height:23px;border-radius:99px;font-size:11px;font-weight:700;padding:0 9px;white-space:nowrap}
+.b-up{color:var(--green);background:var(--green-soft)} .b-warn{color:var(--amber);background:var(--amber-soft)}
+.b-bad{color:var(--red);background:var(--red-soft)} .b-info{color:var(--blue);background:var(--blue-soft)}
+.value{font-size:25px;font-weight:800;line-height:1;font-variant-numeric:tabular-nums}
+.sub{color:var(--muted);font-size:12px;line-height:1.5}
+.skel{opacity:.5}
+.skel .value{background:var(--bg);border-radius:6px;color:transparent}
+.two{display:grid;grid-template-columns:1.5fr .9fr;gap:16px;margin-top:16px;align-items:start}
+.phead{min-height:52px;display:flex;align-items:center;justify-content:space-between;gap:10px;padding:13px 17px;border-bottom:1px solid var(--line)}
+.phead h2{margin:0;font-size:15px}
+.phead .sub2{color:var(--muted);font-size:12px}
+.chart-area{height:250px;padding:10px 14px 16px}
+canvas{width:100%;height:100%;display:block}
+.item{display:grid;grid-template-columns:34px minmax(0,1fr) auto;gap:10px;align-items:center;padding:11px 17px;border-bottom:1px solid var(--line);text-decoration:none;color:inherit}
+.item:last-child{border-bottom:0}
+.item strong{display:block;font-size:13px;margin-bottom:2px}
+.item span{color:var(--muted);font-size:11.5px}
+.av{width:34px;height:34px;border-radius:9px;display:grid;place-items:center;font-size:14px;background:var(--bg)}
+.st{display:inline-flex;align-items:center;height:22px;padding:0 8px;border-radius:99px;font-size:11px;font-weight:700;white-space:nowrap}
+.s-ok{color:var(--green);background:var(--green-soft)} .s-bad{color:var(--red);background:var(--red-soft)}
+.s-warn{color:var(--amber);background:var(--amber-soft)} .s-mut{color:var(--muted);background:var(--bg)}
+.empty{padding:22px;color:var(--muted);text-align:center;font-size:12.5px}
 
-@media(max-width:900px){
-  .app{grid-template-columns:1fr}
-  .side{position:fixed;left:0;top:0;width:260px;transform:translateX(-100%);transition:transform .2s}
-  .side.open{transform:translateX(0)}
-  .hamb{display:grid;place-items:center}
-  .home{padding:18px}
+/* よく使う機能（デスクトップ・簡易版） */
+.quick{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;padding:16px}
+.quick button{border:1px solid var(--line);background:var(--panel);border-radius:14px;padding:16px;text-align:left;cursor:pointer}
+.quick button:hover{border-color:#cfc5ba}
+.quick strong{display:block;font-size:14.5px}.quick small{color:var(--muted)}
+
+/* モバイルホーム（プロトタイプ準拠） */
+.mobile-home{display:none}
+.mobile-home-summary{background:var(--nav);color:#fff;border-radius:16px;padding:16px;margin-bottom:12px}
+.mobile-home-summary small{color:#cfc8c0;display:block;margin-bottom:5px}
+.mobile-home-summary .sales{font-size:27px;font-weight:900}
+.mobile-home-summary .delta{font-size:12px;margin-top:6px;color:#c8ead7}
+.mobile-kpi-row{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:14px}
+.mobile-kpi-row .dcard{min-height:0;padding:12px}
+.mobile-kpi-row .value{font-size:19px}
+.mobile-section-title{display:flex;justify-content:space-between;align-items:center;margin:14px 2px 8px}
+.mobile-section-title b{font-size:14.5px}
+.mobile-section-title span{color:#8a8179;font-size:11px}
+.mobile-system-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.mobile-system-btn{min-height:76px;border:1px solid var(--line);background:var(--panel);border-radius:14px;padding:12px;text-align:left;cursor:pointer}
+.mobile-system-btn strong{display:block;font-size:13.5px;margin-top:4px}
+.mobile-system-btn small{display:block;color:var(--muted);margin-top:2px;font-size:10.5px}
+.mobile-system-btn .icon{font-size:19px}
+.desktop-home{display:block}
+
+/* モバイル下部ナビ・「その他」シート */
+.mobilebar{display:none}
+.mobile-more{position:fixed;inset:0;z-index:60;display:none;background:rgba(20,17,14,.4);align-items:flex-end}
+.mobile-more.open{display:flex}
+.mobile-more-panel{width:100%;background:var(--bg);border-radius:20px 20px 0 0;padding:14px 12px calc(18px + env(safe-area-inset-bottom));max-height:80vh;overflow:auto}
+.mobile-more-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}
+.mobile-more-head b{font-size:15px}
+.mobile-more-head button{border:0;background:var(--panel);width:34px;height:34px;border-radius:10px;font-size:15px}
+
+@media(max-width:760px){
+  .app{display:block}
+  .sidebar{display:none}
+  .topbar{padding:0 16px;min-height:60px}
+  .top-actions{display:none}
+  .content{padding:14px 12px 90px}
+  .two{grid-template-columns:1fr}
+  .quick{grid-template-columns:1fr}
+  .desktop-home{display:none}
+  .mobile-home{display:block}
+  .mobilebar{display:grid;grid-template-columns:repeat(5,1fr);position:fixed;left:0;right:0;bottom:0;z-index:45;padding:7px 6px calc(7px + env(safe-area-inset-bottom));background:rgba(255,255,255,.97);border-top:1px solid var(--line);box-shadow:0 -6px 24px rgba(35,31,26,.08)}
+  .mobilebar button{border:0;background:transparent;color:#6d655d;font-size:10px;line-height:1.3;padding:6px 2px;border-radius:9px;text-align:center}
+  .mobilebar button.active{color:var(--accent);font-weight:700}
 }
+.toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:10px 18px;border-radius:99px;font-size:13px;box-shadow:var(--shadow);z-index:80;opacity:0;pointer-events:none;transition:opacity .2s}
+.toast.show{opacity:1}
+@media(max-width:760px){.toast{bottom:78px}}
 </style>
 </head>
 <body>
@@ -154,6 +231,17 @@ async function fetchMe(){
 }
 
 /* ============================================================
+   日付・共通ヘルパー（index.htmlと同一）
+   ============================================================ */
+function ymd(d){ return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0"); }
+function todayStr(){ return ymd(new Date()); }
+function addDaysStr(base,n){ const d=new Date(base+"T00:00:00"); d.setDate(d.getDate()+(+n||0)); return ymd(d); }
+function fmtD(t){ if(!t) return "—"; const d=new Date(t); return `${d.getMonth()+1}/${d.getDate()}`; }
+function fmtDT(t){ if(!t) return "—"; const d=new Date(t); return `${d.getMonth()+1}/${d.getDate()} ${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`; }
+function fmtTime(t){ if(!t) return "—"; const d=new Date(t); return `${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`; }
+function yen(n){ n=Math.round(n||0); if(Math.abs(n)>=1e6) return "¥"+(n/1e6).toFixed(1)+"M"; if(Math.abs(n)>=1e4) return "¥"+Math.round(n/1e4)+"万"; return "¥"+n.toLocaleString(); }
+
+/* ============================================================
    権限（既存 portal_permissions / portal_user_overrides をそのまま読む。
    キーは index.html の SYSTEMS と同じ7種のみ使用＝新しい権限の仕組みは作らない）
    ============================================================ */
@@ -186,80 +274,452 @@ function canSeeKey(key,u){
   if(PERMS&&PERMS[u.role]&&(key in PERMS[u.role])) return PERMS[u.role][key];
   return (SYS_ROLES[key]||[]).includes(u.role);
 }
+function myStoreScope(u){
+  if(!u||u.is_master) return null;
+  if(["CEO","HQ","TEAM"].includes(u.role)) return null;
+  return ME_STORES.slice();
+}
+let ME_STORES=[];
+async function fetchMyStores(){
+  try{
+    const r=await authed(`/rest/v1/user_stores?user_id=eq.${ME.id}&select=store:stores(name)`);
+    ME_STORES=(r.ok&&Array.isArray(r.body))?r.body.map(x=>x.store&&x.store.name).filter(Boolean):[];
+  }catch(e){ ME_STORES=[]; }
+}
 
 /* ============================================================
-   メニュー構成（実装指示書_統合ポータルシェル_2026-08-24.md F-1の表に準拠）
-   深リンク調査（コードを読むだけ・変更なし）:
-   - nippo(index.html)・tori-dashboard(app.js)ともにURLハッシュ/クエリで
-     タブを直接指定する仕組みは無い（invite/apply/a/debug等の個別パラメータのみ）。
-   - そのため「現場・日報」「採用管理」「経営管理」配下の項目は、現時点では
-     どれをクリックしても同じiframe（同じ埋め込み先）を開く暫定実装。
-     タブ直リンク化は担当A・担当BへWORKLOGで依頼済み（F-3）。
+   ハブDB横断データ（本部タスク・チェック・日報・店舗）
+   index.htmlのHUB取得ロジックをそのまま移植（読み取りのみ）
+   ============================================================ */
+let HUB={ hqTasks:null, checklist:null, stores:null };
+function sortedSteps(t){ return (t.hq_task_steps||[]).slice().sort((a,b)=>a.sort_order-b.sort_order); }
+function currentStep(t){ return sortedSteps(t).find(s=>!s.completed_at)||null; }
+async function fetchHqTasks(){
+  try{
+    const r=await authed(`/rest/v1/hq_tasks?select=*,hq_task_steps(*)&status=neq.done`);
+    HUB.hqTasks=(r.ok&&Array.isArray(r.body))?r.body:[];
+  }catch(e){ HUB.hqTasks=[]; }
+  return HUB.hqTasks;
+}
+function hqSignal(t){
+  const cur=currentStep(t); const today=todayStr();
+  if(!cur) return {cur:null,overdue:false,dueToday:false,stalled:false,stalledDays:0};
+  const overdue=!!(cur.due_date&&cur.due_date<today);
+  const dueToday=!!(cur.due_date&&cur.due_date===today);
+  const steps=sortedSteps(t); const idx=steps.indexOf(cur);
+  const since=idx>0?steps[idx-1].completed_at:t.created_at;
+  const stalledDays=since?Math.floor((Date.now()-new Date(since).getTime())/86400000):0;
+  return {cur,overdue,dueToday,stalled:overdue||stalledDays>=3,stalledDays};
+}
+async function fetchStores(){
+  try{
+    const r=await authed("/rest/v1/stores?select=id,name,store_no,is_active&is_active=eq.true&order=sort_order");
+    HUB.stores=(r.ok&&Array.isArray(r.body))?r.body:[];
+  }catch(e){ HUB.stores=[]; }
+  return HUB.stores;
+}
+async function fetchChecklistToday(){
+  try{
+    const today=todayStr();
+    const [tpl,items,checks]=await Promise.all([
+      authed("/rest/v1/checklist_templates?is_active=eq.true&select=id,store_id"),
+      authed("/rest/v1/checklist_items?is_active=eq.true&select=id,template_id"),
+      authed(`/rest/v1/checklist_checks?work_date=eq.${today}&select=item_id,store_id`),
+    ]);
+    HUB.checklist={
+      templates:(tpl.ok&&Array.isArray(tpl.body))?tpl.body:[],
+      items:(items.ok&&Array.isArray(items.body))?items.body:[],
+      checks:(checks.ok&&Array.isArray(checks.body))?checks.body:[],
+    };
+  }catch(e){ HUB.checklist=null; }
+  return HUB.checklist;
+}
+function checklistPerStore(){
+  const ck=HUB.checklist, stores=HUB.stores||[];
+  if(!ck) return [];
+  return stores.map(st=>{
+    const tpls=ck.templates.filter(t=>!t.store_id||t.store_id===st.id).map(t=>t.id);
+    const itemIds=ck.items.filter(i=>tpls.includes(i.template_id)).map(i=>i.id);
+    const done=ck.checks.filter(c=>c.store_id===st.id&&itemIds.includes(c.item_id)).length;
+    return {store:st,total:itemIds.length,done};
+  });
+}
+let HUB_REPORTS_Y=null;
+async function fetchReportsYesterday(){
+  try{
+    const yday=addDaysStr(todayStr(),-1);
+    const t0=new Date(yday+"T00:00:00"), t1=new Date(todayStr()+"T00:00:00");
+    const [stat,sub]=await Promise.all([
+      authed("/rest/v1/rpc/dash_stats",{method:"POST",body:JSON.stringify({p_from:t0.toISOString(),p_to:t1.toISOString()})}),
+      authed(`/rest/v1/reports?kind=eq.daily&report_date=eq.${yday}&select=author_id`),
+    ]);
+    const rows=(stat.ok&&Array.isArray(stat.body))?stat.body:null;
+    const submitted=(sub.ok&&Array.isArray(sub.body))?new Set(sub.body.map(r=>r.author_id)):new Set();
+    if(!rows) throw new Error("no data");
+    const usersR=await authed("/rest/v1/users?select=id,role,name&is_active=eq.true");
+    const users=(usersR.ok&&Array.isArray(usersR.body))?usersR.body:[];
+    const targets=rows.map(r=>users.find(u=>u.id===r.uid)).filter(u=>u&&u.role!=="CEO");
+    const missing=targets.filter(u=>!submitted.has(u.id));
+    HUB_REPORTS_Y={date:yday,total:targets.length,submitted:targets.length-missing.length,missing};
+  }catch(e){ HUB_REPORTS_Y=null; }
+  return HUB_REPORTS_Y;
+}
+async function fetchOverdueChecklistAlerts(){
+  try{
+    const r=await authed("/rest/v1/checklist_overdue_alerts?resolved_at=is.null&select=*,item:checklist_items(label),store:stores(name)&order=alerted_at.desc&limit=8");
+    return (r.ok&&Array.isArray(r.body))?r.body:[];
+  }catch(e){ return []; }
+}
+
+/* ============================================================
+   通知ベル（index.htmlと同一。hq_notificationsの読み取りのみ）
+   ============================================================ */
+let NOTIFS=[], NOTIF_UNREAD=0, BELL_OPEN=false;
+async function fetchNotifs(){
+  try{
+    const r=await authed(`/rest/v1/hq_notifications?recipient_id=eq.${ME.id}&order=created_at.desc&limit=20`);
+    NOTIFS=(r.ok&&Array.isArray(r.body))?r.body:[];
+    NOTIF_UNREAD=NOTIFS.filter(n=>!n.read_at).length;
+  }catch(e){ NOTIFS=[]; NOTIF_UNREAD=0; }
+}
+async function markNotifsRead(){
+  const ids=NOTIFS.filter(n=>!n.read_at).map(n=>n.id);
+  if(!ids.length) return;
+  await authed(`/rest/v1/hq_notifications?id=in.(${ids.join(",")})`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({read_at:new Date().toISOString()})});
+  NOTIFS.forEach(n=>{ if(!n.read_at) n.read_at=new Date().toISOString(); });
+  NOTIF_UNREAD=0;
+}
+function bellHtml(){
+  return `<button class="iconbtn" id="bellbtn" title="通知">🔔${NOTIF_UNREAD?'<span class="dot"></span>':""}</button>
+    <div class="bellpanel" id="bellpanel" style="display:${BELL_OPEN?"block":"none"}">
+      ${NOTIFS.length?NOTIFS.map(n=>`<div class="brow${n.read_at?"":" unread"}" data-notif="${n.task_id||""}"><b>${esc(n.title)}</b>${esc(n.body||"")}<div style="color:var(--muted);margin-top:2px">${fmtDT(n.created_at)}</div></div>`).join("")
+        :'<div class="empty">通知はありません</div>'}
+    </div>`;
+}
+function wireBell(){
+  const btn=$("bellbtn"); if(!btn) return;
+  btn.onclick=async e=>{
+    e.stopPropagation();
+    BELL_OPEN=!BELL_OPEN;
+    if(BELL_OPEN&&NOTIF_UNREAD) await markNotifsRead();
+    refreshBell();
+  };
+  document.querySelectorAll("[data-notif]").forEach(el=>{
+    el.onclick=()=>{ if(el.dataset.notif) window.open("tasks.html?task="+el.dataset.notif,"_blank"); };
+  });
+}
+function refreshBell(){
+  const wrap=$("bellwrap"); if(!wrap) return;
+  wrap.innerHTML=bellHtml();
+  wireBell();
+}
+
+/* ============================================================
+   経営ダッシュボード連携（tori GAS。index.htmlと同一実装）
+   ============================================================ */
+const TORI_GAS_URL="https://script.google.com/macros/s/AKfycbz9rd37EZa6X8WRMVEBrXobN8DbYWkHRlhFNYU5rd1UZ0V8j0-6shMQjEeoi4HDWZ0B/exec";
+const TORI_CACHE_KEY="portal_tori_cache";
+async function toriApi(params){
+  const r=await fetch(TORI_GAS_URL,{method:"POST",headers:{"Content-Type":"text/plain;charset=utf-8"},body:JSON.stringify(params)});
+  if(!r.ok) throw new Error("HTTP "+r.status);
+  return r.json();
+}
+async function toriSsoLogin(){
+  const s=sess.get(); if(!s?.at) throw new Error("未ログイン");
+  const d=await toriApi({action:"supalogin",stoken:s.at});
+  if(!d.ok) throw new Error(d.error||"経営Dへの接続に失敗しました");
+  return d.token;
+}
+const toriNum=v=>parseFloat(String(v==null?"":v).replace(/[^0-9.\-]/g,""))||0;
+const toriDate=ds=>{ const m=String(ds==null?"":ds).match(/(\d{4})[\/\-年.](\d{1,2})[\/\-月.](\d{1,2})/); if(!m)return 0; const Y=+m[1],M=+m[2],Dd=+m[3]; if(!Y||!M||!Dd)return 0; return new Date(Y,M-1,Dd).getTime(); };
+function toriColAny(H,kwsList){ for(const kws of kwsList){ const i=H.findIndex(h=>String(h).indexOf(kws)>=0); if(i>=0) return i; } return -1; }
+function toriFindHeader(rows,kws){ for(let i=0;i<Math.min(rows.length,10);i++){ const line=rows[i].join(","); if(kws.every(k=>line.includes(k))) return i; } return 0; }
+function parseToriDaily(rows){
+  if(!Array.isArray(rows)||!rows.length) return [];
+  const hi=toriFindHeader(rows,["店舗","純売上"]);
+  const H=rows[hi].map(h=>String(h).trim());
+  const iD=toriColAny(H,["日付","営業日","勤務日","年月日"]), iS=toriColAny(H,["店舗名","店舗"]),
+        iSl=toriColAny(H,["純売上","総売上","売上"]), iL=toriColAny(H,["人件費合計","人件費"]), iC=toriColAny(H,["仕入金額","仕入","原価"]);
+  if(iD<0||iS<0||iSl<0) return [];
+  const recs=[];
+  for(let i=hi+1;i<rows.length;i++){
+    const c=rows[i]; const st=String(c[iS]||"").trim(); const t=toriDate(c[iD]);
+    if(!st||!t) continue;
+    recs.push({store:st,t,sales:toriNum(c[iSl]),labor:iL>=0?toriNum(c[iL]):0,cost:iC>=0?toriNum(c[iC]):0});
+  }
+  return recs;
+}
+function toriCacheGet(){ try{ return JSON.parse(localStorage.getItem(TORI_CACHE_KEY)); }catch(e){ return null; } }
+function toriCacheSet(v){ try{ localStorage.setItem(TORI_CACHE_KEY,JSON.stringify(v)); }catch(e){} }
+function toriCacheFresh(c){
+  if(!c||!c.fetchedAt||!Array.isArray(c.daily)) return false;
+  const fetched=new Date(c.fetchedAt), now=new Date();
+  const today11=new Date(now.getFullYear(),now.getMonth(),now.getDate(),11,0,0);
+  if(now<today11) return true;
+  return fetched>=today11;
+}
+let TORI_STATE={status:"idle",daily:[],error:null};
+async function ensureToriData(force){
+  const cached=toriCacheGet();
+  if(!force&&toriCacheFresh(cached)){ TORI_STATE={status:"ok",daily:cached.daily,error:null}; return TORI_STATE; }
+  TORI_STATE={status:"loading",daily:cached?cached.daily:[],error:null};
+  try{
+    const token=await toriSsoLogin();
+    const d=await toriApi({action:"data",token,months:13,keys:"daily"});
+    if(!d.ok) throw new Error(d.error||"取得に失敗しました");
+    const daily=parseToriDaily((d.sheets||{}).daily||[]);
+    toriCacheSet({fetchedAt:new Date().toISOString(),daily});
+    TORI_STATE={status:"ok",daily,error:null};
+  }catch(e){
+    TORI_STATE={status:"error",daily:cached?cached.daily:[],error:e.message||"接続できません"};
+  }
+  return TORI_STATE;
+}
+function sameDay(t,d){ const a=new Date(t); return a.getFullYear()===d.getFullYear()&&a.getMonth()===d.getMonth()&&a.getDate()===d.getDate(); }
+function sameDayLastYearSameDow(t,ref){
+  const a=new Date(t); if(a.getFullYear()!==ref.getFullYear()-1) return false;
+  const diff=Math.abs((a-new Date(ref.getFullYear()-1,ref.getMonth(),ref.getDate()))/86400000);
+  return diff<=3 && a.getDay()===ref.getDay();
+}
+function yoyBadge(yoy){ return yoy==null?"":`<span class="badge ${yoy>=0?"b-up":"b-bad"}">${yoy>0?"+":""}${yoy}%</span>`; }
+function kpiCard(title,value,badgeHtml,sub){
+  return `<article class="dcard"><div class="chead"><div class="ctitle">${esc(title)}</div>${badgeHtml||""}</div><div><div class="value">${value}</div><div class="sub">${esc(sub||"")}</div></div></article>`;
+}
+function kpiSkeleton(title){ return `<article class="dcard skel"><div class="chead"><div class="ctitle">${esc(title)}</div></div><div><div class="value">------</div><div class="sub">取得中…</div></div></article>`; }
+function kpiOffline(title,msg,detail){ return `<article class="dcard"><div class="chead"><div class="ctitle">${esc(title)}</div><span class="badge b-warn">未接続</span></div><div><div class="value" style="font-size:14px;font-weight:600">${esc(msg)}</div><div class="sub">${esc(detail||"")}</div></div></article>`; }
+
+/* ============================================================
+   ホームのKPI/パネル ウィジェット（index.htmlのWIDGETSを移植）
+   ============================================================ */
+const WIDGETS={
+ kpi_sales:{ render(ctx){
+   const st=ctx.tori;
+   if(st.status==="loading"&&!st.daily.length) return kpiSkeleton("今月の売上");
+   if(st.status==="error"&&!st.daily.length) return kpiOffline("今月の売上","経営Dに接続できません",st.error);
+   const scoped=myStoreScope(ctx.u);
+   if(scoped&&!scoped.length) return kpiCard("自店の昨日売上","—","","所属店舗が未設定です");
+   if(scoped){
+     const yday=new Date(Date.now()-86400000);
+     const rows=st.daily.filter(r=>scoped.includes(r.store)&&sameDay(r.t,yday));
+     const sum=rows.reduce((s,r)=>s+r.sales,0);
+     const prev=st.daily.filter(r=>scoped.includes(r.store)&&sameDayLastYearSameDow(r.t,yday));
+     const psum=prev.reduce((s,r)=>s+r.sales,0);
+     const yoy=psum>0?Math.round((sum/psum-1)*1000)/10:null;
+     return kpiCard("自店の昨日売上",yen(sum),yoyBadge(yoy),`${scoped[0]||""}（経営Dから）`);
+   }
+   const now=new Date();
+   const rows=st.daily.filter(r=>{ const d=new Date(r.t); return d.getFullYear()===now.getFullYear()&&d.getMonth()===now.getMonth()&&d.getDate()<=now.getDate(); });
+   const sum=rows.reduce((s,r)=>s+r.sales,0);
+   const prevRows=st.daily.filter(r=>{ const d=new Date(r.t); return d.getFullYear()===now.getFullYear()-1&&d.getMonth()===now.getMonth()&&d.getDate()<=now.getDate(); });
+   const psum=prevRows.reduce((s,r)=>s+r.sales,0);
+   const yoy=psum>0?Math.round((sum/psum-1)*1000)/10:null;
+   return kpiCard("今月の売上（全店）",yen(sum),yoyBadge(yoy),`${now.getDate()}日時点（経営Dから）`);
+ }},
+ kpi_nippo:{ render(ctx){
+   const scoped=myStoreScope(ctx.u);
+   if(scoped){
+     const meSubmitted=ctx.hqNippoMine;
+     if(meSubmitted==null) return kpiOffline("日報","状況を取得できません","");
+     return kpiCard("日報",meSubmitted?"提出済み ✓":"未提出",`<span class="badge ${meSubmitted?"b-up":"b-bad"}">${meSubmitted?"":"今日"}</span>`,meSubmitted?"":"今日の分がまだです");
+   }
+   const r=HUB_REPORTS_Y;
+   if(!r) return kpiOffline("日報の提出（昨日）","日報データを取得できません","");
+   const miss=r.missing.map(u=>esc(u.name)).slice(0,4).join("・");
+   return kpiCard("日報の提出（昨日）",`${r.submitted}/${r.total}人`,r.missing.length?`<span class="badge b-warn">${r.missing.length}人 未提出</span>`:`<span class="badge b-up">全員提出</span>`,r.missing.length?`未提出: ${miss}（日報から）`:"（日報から）");
+ }},
+ kpi_tasks:{ render(ctx){
+   const tasks=HUB.hqTasks||[];
+   const sig=tasks.map(hqSignal);
+   const overdue=sig.filter(s=>s.overdue).length, stall=sig.filter(s=>s.stalled).length;
+   if(!stall) return kpiCard("本部タスク","停滞なし","<span class=\"badge b-up\">良好</span>","（本部タスクから）");
+   const worst=tasks[sig.findIndex(s=>s.stalled)];
+   return `<a href="tasks.html" target="_blank">${kpiCard("本部タスク",`停滞 ${stall}件`,overdue?`<span class="badge b-bad">期限超過 ${overdue}</span>`:"",worst?`${esc(worst.title)}が${sig.find(s=>s.stalled).stalledDays}日停止（本部タスクから）`:"")}</a>`;
+ }},
+ kpi_check:{ render(ctx){
+   const scoped=myStoreScope(ctx.u);
+   if(scoped&&!scoped.length) return kpiCard("今日のチェック","—","","所属店舗が未設定です");
+   const rows=checklistPerStore();
+   if(!HUB.checklist) return kpiOffline("チェックシート（今日）","取得できません","");
+   const target=scoped?rows.filter(r=>scoped.includes(r.store.name)):rows;
+   const total=target.reduce((s,r)=>s+r.total,0), done=target.reduce((s,r)=>s+r.done,0);
+   const pct=total>0?Math.round(done/total*100):0;
+   return kpiCard(scoped?"今日のチェック":"チェックシート（今日）",`${done}/${total}`,`<span class="badge ${pct>=90?"b-up":pct>=60?"b-warn":"b-bad"}">${pct}%</span>`,scoped?"自店の実施状況":"クローズ分は夜に増えます（現場アプリから）");
+ }},
+ kpi_mytasks:{ render(ctx){
+   const mine=(HUB.hqTasks||[]).filter(t=>{ const cur=currentStep(t); return cur&&cur.assignee_id===ctx.u.id; });
+   if(!mine.length) return kpiCard("自分のタスク","0件","","本部タスクから");
+   const overdue=mine.filter(t=>hqSignal(t).overdue).length;
+   const soonest=mine.slice().sort((a,b)=>{ const da=currentStep(a).due_date||"9999", db=currentStep(b).due_date||"9999"; return da.localeCompare(db); })[0];
+   const cur=currentStep(soonest);
+   return `<a href="tasks.html" target="_blank">${kpiCard("自分のタスク",`${mine.length}件`,overdue?`<span class="badge b-bad">期限超過 ${overdue}</span>`:"",cur?`次: ${esc(cur.title)}（本部タスクから）`:"")}</a>`;
+ }},
+ panel_chart:{ render(ctx){
+   return `<section class="panel" id="w-panel_chart">
+     <div class="phead"><h2>売上推移（全店）</h2></div>
+     <div class="chart-area"><canvas id="trendcv"></canvas></div>
+   </section>`;
+ }, after(ctx){ drawTrendChart(ctx.tori.daily,"sales"); }},
+ panel_alerts:{ render(ctx){
+   const list=ctx.alerts||[];
+   return `<section class="panel"><div class="phead"><h2>⚠️ 要対応（全システム横断）</h2><span class="sub2">${list.length}件</span></div>
+     <div>${list.length?list.map(a=>`<a class="item" href="${a.href||'javascript:void(0)'}" ${a.blank?'target="_blank" rel="noopener"':""}><div class="av">${a.icon}</div><div><strong>${esc(a.title)}</strong><span>${esc(a.detail)}</span></div><span class="st ${a.tone}">${esc(a.badge)}</span></a>`).join(""):'<div class="empty">要対応はありません 🎉</div>'}</div>
+   </section>`;
+ }},
+ panel_mytasks:{ render(ctx){
+   const mine=(HUB.hqTasks||[]).filter(t=>{ const cur=currentStep(t); return cur&&cur.assignee_id===ctx.u.id; });
+   return `<section class="panel"><div class="phead"><h2>✅ 今日の自分のタスク</h2><span class="sub2">${mine.length}件</span></div>
+     <div>${mine.length?mine.map(t=>{ const cur=currentStep(t); const sig=hqSignal(t);
+       return `<a class="item" href="tasks.html?task=${t.id}" target="_blank"><span class="av">✅</span><span><strong>${esc(cur.title)}</strong><span>${esc(t.title)}${cur.due_date?" ／ 期限 "+fmtD(cur.due_date):""}${sig.overdue?" ⚠ 超過":sig.stalled?` ${sig.stalledDays}日停止`:""}</span></span><span class="st ${sig.overdue?"s-bad":"s-mut"}">未完了</span></a>`;
+     }).join(""):'<div class="empty">今は割り当てられているタスクがありません</div>'}</div>
+   </section>`;
+ }},
+ panel_posts:{ render(ctx){
+   const list=(POSTS||[]).slice(0,3);
+   return `<section class="panel"><div class="phead"><h2>📢 お知らせ</h2><span class="sub2"><button type="button" data-goto-notice>すべて見る →</button></span></div>
+     <div>${list.length?list.map(p=>`<div class="item"><span class="av">📢</span><span><strong>${esc(p.title)}</strong><span>${fmtDT(p.created_at)}</span></span><span></span></div>`).join(""):'<div class="empty">まだお知らせはありません</div>'}</div>
+   </section>`;
+ }},
+};
+const DEFAULT_LAYOUT={
+  MASTER:{kpi:["kpi_sales","kpi_nippo","kpi_tasks","kpi_check"],main:"panel_chart",side:"panel_alerts"},
+  CEO:   {kpi:["kpi_sales","kpi_nippo","kpi_tasks","kpi_check"],main:"panel_chart",side:"panel_alerts"},
+  HQ:    {kpi:["kpi_sales","kpi_nippo","kpi_tasks","kpi_check"],main:"panel_chart",side:"panel_alerts"},
+  TEAM:  {kpi:["kpi_sales","kpi_nippo","kpi_tasks","kpi_check"],main:"panel_chart",side:"panel_alerts"},
+  TENCHO:{kpi:["kpi_sales","kpi_check","kpi_mytasks","kpi_nippo"],main:"panel_posts",side:"panel_mytasks"},
+  SHAIN: {kpi:["kpi_check","kpi_mytasks","kpi_nippo"],main:"panel_posts",side:"panel_mytasks"},
+  AL:    {kpi:["kpi_check","kpi_mytasks","kpi_nippo"],main:"panel_posts",side:"panel_mytasks"},
+};
+function roleKeyOf(u){ return u.is_master?"MASTER":u.role; }
+function layoutFor(u){ return DEFAULT_LAYOUT[roleKeyOf(u)]||DEFAULT_LAYOUT.AL; }
+function drawTrendChart(daily,metric){
+  const cv=$("trendcv"); if(!cv) return; const ctx=cv.getContext("2d");
+  const rect=cv.getBoundingClientRect(), r=window.devicePixelRatio||1;
+  cv.width=Math.max(500,rect.width*r); cv.height=Math.max(220,rect.height*r); ctx.scale(r,r);
+  const w=cv.width/r,h=cv.height/r,pad={t:20,r:16,b:30,l:46};
+  const months=[]; const now=new Date();
+  for(let i=11;i>=0;i--){ const d=new Date(now.getFullYear(),now.getMonth()-i,1); months.push(d); }
+  const data=months.map(m=>{
+    const rows=daily.filter(r=>{ const d=new Date(r.t); return d.getFullYear()===m.getFullYear()&&d.getMonth()===m.getMonth(); });
+    const sales=rows.reduce((s,r)=>s+r.sales,0);
+    return Math.round(sales/1e6*10)/10;
+  });
+  const color="#c94728";
+  const max=Math.max(...data,1)*1.15, min=Math.min(...data,0)*0.85;
+  const pw=w-pad.l-pad.r, ph=h-pad.t-pad.b;
+  ctx.clearRect(0,0,w,h);
+  ctx.strokeStyle="#eee7db"; ctx.fillStyle="#7d7466"; ctx.font="11px system-ui"; ctx.lineWidth=1;
+  for(let i=0;i<=4;i++){ const y=pad.t+ph*i/4; ctx.beginPath(); ctx.moveTo(pad.l,y); ctx.lineTo(w-pad.r,y); ctx.stroke();
+    ctx.fillText(String(Math.round(max-(max-min)*i/4)),6,y+4); }
+  const pts=data.map((v,i)=>[pad.l+pw*i/(data.length-1),pad.t+ph-((v-min)/(max-min||1))*ph]);
+  const g=ctx.createLinearGradient(0,pad.t,0,h-pad.b); g.addColorStop(0,color+"2e"); g.addColorStop(1,color+"00");
+  ctx.beginPath(); pts.forEach(([x,y],i)=>i?ctx.lineTo(x,y):ctx.moveTo(x,y));
+  ctx.lineTo(w-pad.r,h-pad.b); ctx.lineTo(pad.l,h-pad.b); ctx.closePath(); ctx.fillStyle=g; ctx.fill();
+  ctx.beginPath(); pts.forEach(([x,y],i)=>i?ctx.lineTo(x,y):ctx.moveTo(x,y)); ctx.strokeStyle=color; ctx.lineWidth=2.5; ctx.stroke();
+  pts.forEach(([x,y])=>{ ctx.beginPath(); ctx.arc(x,y,3.5,0,7); ctx.fillStyle="#fff"; ctx.fill(); ctx.strokeStyle=color; ctx.lineWidth=2; ctx.stroke(); });
+  ctx.fillStyle="#7d7466";
+  months.forEach((m,i)=>{ ctx.fillText((m.getMonth()+1)+"月",pad.l+pw*i/11-9,h-10); });
+  ctx.fillText("月次売上（百万円）",pad.l,14);
+}
+async function buildAlerts(u){
+  const list=[];
+  (HUB.hqTasks||[]).forEach(t=>{
+    const sig=hqSignal(t); if(!sig.stalled) return;
+    list.push({icon:"📌",title:sig.overdue?`${t.title}の期限が超過しています`:`${t.title}が停止しています`,
+      detail:`いま: ${sig.cur.title}${sig.overdue?"":`／${sig.stalledDays}日停止`}`,badge:"本部タスク",tone:"s-bad",href:`tasks.html?task=${t.id}`,blank:true});
+  });
+  const canSeeMissingReports=u.is_master||(canSeeKey("nippo",u)&&["CEO","HQ","TEAM"].includes(u.role));
+  if(canSeeMissingReports&&HUB_REPORTS_Y&&HUB_REPORTS_Y.missing.length){
+    list.push({icon:"📝",title:`日報の未提出が${HUB_REPORTS_Y.missing.length}人います`,
+      detail:HUB_REPORTS_Y.missing.map(x=>x.name).slice(0,6).join("・")+"（昨日分）",badge:"日報",tone:"s-warn",href:"https://mirai-oss.github.io/nippo/",blank:true});
+  }
+  const overdueCk=await fetchOverdueChecklistAlerts();
+  overdueCk.forEach(a=>{
+    const label=(a.item&&a.item.label)||"チェック";
+    list.push({icon:"☑️",title:`「${label}」が期限切れ未完了です`,
+      detail:`${(a.store&&a.store.name)||""}（対応済みにする＝現場アプリから）`,badge:"チェック",tone:"s-warn",href:"https://mirai-oss.github.io/nippo/",blank:true});
+  });
+  NOTIFS.filter(n=>!n.read_at).forEach(n=>{
+    if(list.some(x=>x.href&&x.href.includes(n.task_id||"__none__"))) return;
+    list.push({icon:"🔔",title:n.title,detail:n.body||"",badge:"通知",tone:"s-info",href:n.task_id?`tasks.html?task=${n.task_id}`:"tasks.html",blank:true});
+  });
+  return list.slice(0,8);
+}
+let POSTS=null;
+async function fetchPosts(){
+  const r=await authed("/rest/v1/portal_posts?select=*&order=pinned.desc,created_at.desc&limit=100");
+  POSTS=(r.ok&&Array.isArray(r.body))?r.body:[];
+}
+
+/* ============================================================
+   メニュー構成（実装指示書_統合ポータルシェル_2026-08-24.md F-1準拠）
+   深リンク調査（コードを読むだけ・変更なし）: nippo・tori-dashboardとも
+   URLハッシュ/クエリでタブを直接指定する仕組みが無いため、グループ配下の
+   項目はどれをクリックしても同じiframeを開く暫定実装（担当A/BへF-3で依頼済み）。
    ============================================================ */
 const NIPPO_URL="https://mirai-oss.github.io/nippo/";
 const KEIEI_URL="https://mirai-oss.github.io/tori-dashboard/";
 const SEISAN_URL="https://mirai-oss.github.io/seisan-dashboard/";
 const JOHO_URL="https://ns-info-system.vercel.app";
 
-const MENU=[
-  {items:[{key:"home",ico:"🏠",label:"概要（ホーム）",type:"home"}]},
-  {cap:"📝 現場・日報", items:[
+const TOP_ITEMS=[
+  {key:"home",ico:"🏠",label:"概要（ホーム）",type:"home"},
+  {key:"notice",ico:"📣",label:"お知らせ",url:"index.html",countKey:"posts"},
+  {key:"hqtasks",sysKey:"hqtasks",ico:"📌",label:"本部タスク",url:"tasks.html",countKey:"hq"},
+  {key:"invoices",sysKey:"invoices",ico:"✉️",label:"請求書メール",url:"invoices.html",countKey:"inv"},
+  {key:"expenses",sysKey:"expenses",ico:"🧾",label:"経費申請",url:"expenses.html"},
+];
+const GROUPS=[
+  {cap:"現場・日報",ico:"📝",open:true, items:[
     {key:"nippo-daily",  sysKey:"nippo", ico:"📝", label:"日報",     url:NIPPO_URL},
     {key:"nippo-weekly", sysKey:"nippo", ico:"🗓️", label:"週報",     url:NIPPO_URL},
     {key:"nippo-check",  sysKey:"nippo", ico:"✅", label:"チェック", url:NIPPO_URL},
     {key:"nippo-shift",  sysKey:"nippo", ico:"📅", label:"シフト",   url:NIPPO_URL},
     {key:"nippo-manual", sysKey:"nippo", ico:"📘", label:"マニュアル", url:NIPPO_URL},
   ]},
-  {cap:"👥 採用管理", roles:["TEAM","HQ","CEO"], items:[
+  {cap:"採用管理",ico:"👥", roles:["TEAM","HQ","CEO"], items:[
     {key:"recruit-dash",        ico:"📈", label:"採用ダッシュボード", soon:true},
     {key:"recruit-applicants",  sysKey:"nippo", ico:"🧑‍💼", label:"応募者一覧", url:NIPPO_URL},
     {key:"recruit-jobs",        sysKey:"nippo", ico:"📋", label:"求人一覧",   url:NIPPO_URL},
     {key:"recruit-media",       sysKey:"nippo", ico:"📊", label:"媒体分析",   url:NIPPO_URL},
     {key:"recruit-personality", ico:"🧠", label:"性格診断", soon:true},
   ]},
-  {cap:"📊 経営管理", items:[
+  {cap:"経営管理",ico:"📊", items:[
     {key:"keiei-dash",    sysKey:"keiei", ico:"📊", label:"経営ダッシュボード", url:KEIEI_URL},
     {key:"keiei-pl",      sysKey:"keiei", ico:"📑", label:"PL管理",     url:KEIEI_URL},
     {key:"keiei-ads",     sysKey:"keiei", ico:"📣", label:"広告管理",   url:KEIEI_URL},
     {key:"keiei-deposit", sysKey:"keiei", ico:"💰", label:"入金管理",   url:KEIEI_URL},
   ]},
-  {cap:"🧮 精算管理", items:[
+  {cap:"精算管理",ico:"💴", items:[
     {key:"seisan", sysKey:"seisan", ico:"🧮", label:"精算ダッシュボード", url:SEISAN_URL},
   ]},
-  {cap:"💴 経費申請", items:[
-    {key:"expenses", sysKey:"expenses", ico:"💴", label:"申請・承認", url:"expenses.html"},
-  ]},
-  {cap:"🧾 請求書", items:[
-    {key:"invoices", sysKey:"invoices", ico:"🧾", label:"メール管理", url:"invoices.html"},
-  ]},
-  {cap:"✅ タスク", items:[
-    {key:"hqtasks", sysKey:"hqtasks", ico:"✅", label:"本部タスクボード", url:"tasks.html"},
-  ]},
-  {cap:"🔐 社内情報", items:[
-    // 別オリジン(Vercel)のためiframeにしない＝新しいタブ＋SSOハンドオフ（F-2）
+  {cap:"社内情報",ico:"🔐", items:[
     {key:"joho", sysKey:"joho", ico:"🔐", label:"社内情報管理", url:JOHO_URL, external:true, sso:true},
   ]},
-  {cap:"📢 お知らせ・検索", items:[
-    // 既存index.htmlをそのままiframe流用（index.html自体は無変更）
-    {key:"notice", ico:"📢", label:"お知らせ・検索", url:"index.html"},
-  ]},
 ];
-
 function itemVisible(it,grp,u){
   if(u.is_master) return true;
   if(it.sysKey && !canSeeKey(it.sysKey,u)) return false;
-  if(grp.roles && !grp.roles.includes(u.role)) return false;
+  if(grp&&grp.roles && !grp.roles.includes(u.role)) return false;
   return true;
+}
+function findItem(key){
+  for(const it of TOP_ITEMS) if(it.key===key) return {it,grp:null};
+  for(const grp of GROUPS) for(const it of grp.items) if(it.key===key) return {it,grp};
+  return null;
+}
+function visibleLeafItems(u){
+  const out=[];
+  TOP_ITEMS.forEach(it=>{ if(it.type!=="home"&&itemVisible(it,null,u)) out.push(it); });
+  GROUPS.forEach(grp=>grp.items.forEach(it=>{ if(!it.soon&&itemVisible(it,grp,u)) out.push(it); }));
+  return out;
 }
 
 let ME=null, VIEW="home", CUR=null;
+let NAV_HQ_CNT=0, NAV_INV_CNT=0;
 
 /* ============================================================
-   F-2: 社内情報管理へのSSOハンドオフ
-   現在のSupabaseセッション(access_token/refresh_token)をURLフラグメント
-   （#以降＝サーバーに送信されない）に載せて新しいタブで開く。
-   ns-info-system側は /sso が受け口（setSession→hash削除→ホームへ）。
-   MFA(TOTP)は ns-info-system 側のミドルウェアがそのまま維持する。
+   F-2: 社内情報管理へのSSOハンドオフ（現在のセッションをURLフラグメントに
+   載せて新しいタブで開く。ns-info-system側の受け口=/sso。MFAは維持される）
    ============================================================ */
 function openJohoSso(){
   const s=sess.get();
@@ -299,59 +759,77 @@ function renderLogin(err){
 }
 
 /* ============================================================
-   シェル本体
+   シェル本体（サイドバー・topbar・モバイル下部ナビ）
    ============================================================ */
+function navItemHtml(it,activeKey){
+  if(it.soon) return `<button class="nav-item soon" data-soon="1"><span>${it.ico}</span><span>${esc(it.label)}</span><span class="badge-soon">🚧 準備中</span></button>`;
+  const cnt=it.countKey==="posts"?(POSTS?POSTS.length:0):it.countKey==="hq"?NAV_HQ_CNT:it.countKey==="inv"?NAV_INV_CNT:0;
+  return `<button class="nav-item${activeKey===it.key?" active":""}" data-key="${it.key}"><span>${it.ico}</span><span>${esc(it.label)}</span>${cnt?`<span class="count">${cnt}</span>`:""}${it.external?'<span class="ext">↗</span>':""}</button>`;
+}
 function sidebarHtml(u){
-  const groups=MENU.map(grp=>{
-    const items=grp.items.filter(it=>it.type==="home"||itemVisible(it,grp,u));
+  const activeKey=VIEW==="home"?"home":CUR;
+  const topHtml=TOP_ITEMS.filter(it=>it.type==="home"||itemVisible(it,null,u)).map(it=>navItemHtml(it,activeKey)).join("");
+  const groupsHtml=GROUPS.map(grp=>{
+    const items=grp.items.filter(it=>itemVisible(it,grp,u));
     if(!items.length) return "";
-    const rows=items.map(it=>{
-      if(it.type==="home") return `<button class="navitem${VIEW==="home"?" active":""}" data-key="${it.key}">${it.ico} ${esc(it.label)}</button>`;
-      if(it.soon) return `<button class="navitem soon" data-soon="1">${it.ico} ${esc(it.label)}<span class="badge-soon">🚧 準備中</span></button>`;
-      return `<button class="navitem${CUR===it.key?" active":""}" data-key="${it.key}">${it.ico} ${esc(it.label)}${it.external?'<span class="ext">↗</span>':""}</button>`;
-    }).join("");
-    return `${grp.cap?`<div class="navcap">${esc(grp.cap)}</div>`:""}<div class="navgrp">${rows}</div>`;
+    const isOpen=grp.open||items.some(it=>it.key===CUR);
+    return `<div class="nav-group${isOpen?" open":""}" data-group="${esc(grp.cap)}">
+      <button class="nav-group-head"><span>${grp.ico}</span><span>${esc(grp.cap)}</span><span class="chev">›</span></button>
+      <div class="subnav">${items.map(it=>navItemHtml(it,activeKey)).join("")}</div>
+    </div>`;
   }).join("");
-  return `<aside class="side" id="side">
-    <div class="brand"><div class="mark">🐔</div><div><strong>N-Styleグループ</strong><span>統合ポータル</span></div></div>
-    <nav>${groups}</nav>
-    <div class="side-foot">
-      <div class="sfname">👤 ${esc(u.name)}${u.is_master?"（マスター）":`（${esc(ROLE_NAME[u.role]||u.role)}）`}</div>
+  return `<aside class="sidebar" id="sidebar">
+    <div class="brand"><div class="brand-badge">🐔</div><div><strong>N-Styleグループ</strong><small>統合ポータル</small></div></div>
+    ${topHtml}
+    <div class="section-title">各システム</div>
+    ${groupsHtml}
+    <div class="userbox">
+      👤 ${esc(u.name)}${u.is_master?"（マスター）":`（${esc(ROLE_NAME[u.role]||u.role)}）`}
       <button id="tolegacy">← 従来のポータルへ</button>
       <button id="lout">ログアウト</button>
     </div>
   </aside>`;
 }
-
-function homeHtml(u){
-  const cards=MENU.flatMap(grp=>grp.items.filter(it=>it.type!=="home"&&!it.soon&&itemVisible(it,grp,u)))
-    .map(it=>`<button class="qcard" data-key="${it.key}"><div class="ico">${it.ico}</div><b>${esc(it.label)}</b>${it.external?"<span>新しいタブで開く</span>":""}</button>`)
-    .join("");
-  return `<div class="home">
-    <h2>ようこそ、${esc(u.name)}さん</h2>
-    <p class="lead">左のメニューから各システムを開けます（準備中バッジのある項目は近日公開予定です）。</p>
-    <div class="qgrid">${cards}</div>
+function mobilebarHtml(u){
+  const prefer=["keiei-dash","hqtasks","nippo-daily","expenses"];
+  const picks=[];
+  prefer.forEach(k=>{ if(picks.length>=3) return; const f=findItem(k); if(f&&itemVisible(f.it,f.grp,u)) picks.push(f.it); });
+  const btns=[{key:"home",ico:"🏠",label:"ホーム"}].concat(picks.map(it=>({key:it.key,ico:it.ico,label:it.label.replace(/(ダッシュボード|メール|申請)$/,"")})));
+  return `<div class="mobilebar" id="mobilebar">
+    ${btns.map(b=>`<button data-key="${b.key}" class="${(VIEW==="home"?"home":CUR)===b.key?"active":""}">${b.ico}<br>${esc(b.label)}</button>`).join("")}
+    <button id="moreBtn">•••<br>その他</button>
   </div>`;
 }
-
+function moreSheetHtml(u){
+  const items=visibleLeafItems(u);
+  return `<div class="mobile-more" id="mobileMore">
+    <div class="mobile-more-panel">
+      <div class="mobile-more-head"><b>すべての機能</b><button id="moreClose">×</button></div>
+      <div class="mobile-system-grid">
+        ${items.map(it=>`<button class="mobile-system-btn" data-key="${it.key}"><span class="icon">${it.ico}</span><strong>${esc(it.label)}</strong></button>`).join("")}
+      </div>
+    </div>
+  </div>`;
+}
+function topActionsHtml(){
+  return `<div class="top-actions" id="topactions">
+    <label style="position:relative;display:block"><input class="search" id="q" type="search" placeholder="🔍 タスク・お知らせ・機能を検索"><div class="searchdrop" id="qdrop" style="display:none"></div></label>
+    <span id="bellwrap">${bellHtml()}</span>
+  </div>`;
+}
 function shellHtml(u){
   return `<div class="app" id="app">
-    <div class="ov" id="ov"></div>
     ${sidebarHtml(u)}
-    <main>
-      <div class="topbar">
-        <button class="hamb" id="hamb">☰</button>
-        <h1 id="pagetitle">概要（ホーム）</h1>
-        <div class="topactions" id="topactions"></div>
-      </div>
-      <div class="framewrap" id="framewrap">${homeHtml(u)}</div>
+    <main class="main">
+      <header class="topbar">
+        <div><h1 id="pagetitle">おはようございます、${esc((u.name||"").replace(/(さん|様)$/,""))}さん</h1><div class="meta" id="pagemeta">N-Styleグループ / 統合ポータル</div></div>
+        ${topActionsHtml()}
+      </header>
+      <div class="content" id="viewarea" style="flex:1;display:flex;flex-direction:column;padding:0"><div class="spin">読み込み中…</div></div>
     </main>
+    ${mobilebarHtml(u)}
+    ${moreSheetHtml(u)}
   </div>`;
-}
-
-function findItem(key){
-  for(const grp of MENU) for(const it of grp.items) if(it.key===key) return {it,grp};
-  return null;
 }
 
 function openItem(key,u){
@@ -362,42 +840,209 @@ function openItem(key,u){
   if(it.sso){ openJohoSso(); return; }
   VIEW="frame"; CUR=key;
   $("pagetitle").textContent=it.label;
-  $("topactions").innerHTML=it.external
-    ? `<a href="${esc(it.url)}" target="_blank" rel="noopener">↗ 新しいタブで開く</a>`
-    : `<a href="${esc(it.url)}" target="_blank" rel="noopener">↗ 新しいタブで開く</a><button id="refreshframe">🔄 再読み込み</button>`;
-  $("framewrap").innerHTML=`<iframe src="${esc(it.url)}" allow="clipboard-write" title="${esc(it.label)}"></iframe>`;
-  if($("refreshframe")) $("refreshframe").onclick=()=>{ const f=$("framewrap").querySelector("iframe"); if(f) f.src=f.src; };
-  closeMobileNav();
-  refreshNavActive();
+  $("pagemeta").textContent=it.external?"新しいタブで開きます":"";
+  const area=$("viewarea");
+  area.style.padding="0";
+  area.innerHTML=`<div class="framewrap"><iframe src="${esc(it.url)}" allow="clipboard-write" title="${esc(it.label)}"></iframe></div>`;
+  closeMobileMore();
+  refreshNavActive(u);
 }
-
-function refreshNavActive(){
-  document.querySelectorAll(".navitem[data-key]").forEach(b=>{
-    b.classList.toggle("active", VIEW==="home" ? b.dataset.key==="home" : b.dataset.key===CUR);
-  });
+function refreshNavActive(u){
+  // サイドバー・下部ナビ・ページ全体を作り直さず、活性状態だけ更新する
+  const sb=$("sidebar"); if(sb) sb.outerHTML=sidebarHtml(u);
+  const mb=$("mobilebar"); if(mb) mb.outerHTML=mobilebarHtml(u);
+  wireNav(u);
 }
+function closeMobileMore(){ $("mobileMore")?.classList.remove("open"); }
 
-function closeMobileNav(){ $("side")?.classList.remove("open"); $("ov")?.classList.remove("show"); }
-
-function wireShell(u){
-  document.querySelectorAll(".navitem[data-soon]").forEach(b=>{ b.onclick=()=>toast("準備中です"); });
-  document.querySelectorAll(".navitem[data-key],.qcard[data-key]").forEach(b=>{
+function wireNav(u){
+  document.querySelectorAll("[data-key]").forEach(b=>{
     b.onclick=()=>openItem(b.dataset.key,u);
   });
-  $("hamb").onclick=()=>{ $("side").classList.toggle("open"); $("ov").classList.toggle("show"); };
-  $("ov").onclick=closeMobileNav;
-  $("tolegacy").onclick=()=>{ location.href="index.html"; };
-  $("lout").onclick=async()=>{
+  document.querySelectorAll("[data-soon]").forEach(b=>{ b.onclick=()=>toast("準備中です"); });
+  document.querySelectorAll(".nav-group-head").forEach(b=>{
+    b.onclick=()=>b.parentElement.classList.toggle("open");
+  });
+  const more=$("moreBtn"); if(more) more.onclick=()=>$("mobileMore")?.classList.add("open");
+  const moreClose=$("moreClose"); if(moreClose) moreClose.onclick=closeMobileMore;
+  const mm=$("mobileMore"); if(mm) mm.onclick=e=>{ if(e.target===mm) closeMobileMore(); };
+  const tolegacy=$("tolegacy"); if(tolegacy) tolegacy.onclick=()=>{ location.href="index.html"; };
+  const lout=$("lout"); if(lout) lout.onclick=async()=>{
     if(!confirm("ログアウトしますか？"))return;
     const s=sess.get(); if(s)await api("/auth/v1/logout",{method:"POST"},s.at).catch(()=>{});
     sess.clear(); renderLogin();
   };
+  wireBell();
+  wireSearch(u);
+}
+
+/* ============================================================
+   検索（MENU項目＋お知らせタイトルの単純一致検索）
+   ============================================================ */
+function searchAll(qs,u){
+  const q=qs.trim().toLowerCase();
+  if(!q) return "";
+  const hits=[];
+  visibleLeafItems(u).forEach(it=>{
+    if(it.label.toLowerCase().includes(q)) hits.push(`<button type="button" data-key="${it.key}">${it.ico} ${esc(it.label)}</button>`);
+  });
+  (POSTS||[]).forEach(p=>{
+    if((p.title+" "+(p.body||"")).toLowerCase().includes(q)) hits.push(`<button type="button" data-key="notice">📣 ${esc(p.title)}<span style="color:var(--muted);font-size:11px;margin-left:6px">お知らせ</span></button>`);
+  });
+  return hits.length?hits.slice(0,8).join(""):`<button type="button" disabled>該当なし — 本部までお問い合わせください</button>`;
+}
+function wireSearch(u){
+  const box=$("q"); if(!box) return;
+  const drop=$("qdrop");
+  box.oninput=()=>{
+    if(!box.value.trim()){ drop.style.display="none"; drop.innerHTML=""; return; }
+    drop.innerHTML=searchAll(box.value,u); drop.style.display="block";
+    drop.querySelectorAll("[data-key]").forEach(b=>{ b.onclick=()=>{ drop.style.display="none"; box.value=""; openItem(b.dataset.key,u); }; });
+  };
+}
+document.addEventListener("click",e=>{
+  const drop=$("qdrop");
+  if(drop&&drop.style.display!=="none"&&!e.target.closest(".top-actions")) drop.style.display="none";
+  if(BELL_OPEN&&!e.target.closest(".top-actions")&&ME){ BELL_OPEN=false; refreshBell(); }
+});
+
+/* ============================================================
+   ホーム画面（デスクトップ=KPI+チャート+要対応+簡易クイック／
+   モバイル=売上ヒーロー+KPI2x2+カテゴリ別クイックタイル）
+   ============================================================ */
+function quickTilesHtml(items,cls){
+  return items.map(it=>`<button class="${cls}" data-key="${it.key}">${cls==="mobile-system-btn"?`<span class="icon">${it.ico}</span>`:""}<strong>${it.ico} ${esc(it.label)}</strong>${cls==="mobile-system-btn"?"":`<small></small>`}</button>`).join("");
+}
+function salesHeroHtml(ctx){
+  const st=ctx.tori;
+  if(st.status==="loading"&&!st.daily.length) return `<div class="mobile-home-summary"><small>今月の売上（全店）</small><div class="sales">取得中…</div></div>`;
+  if(st.status==="error"&&!st.daily.length) return `<div class="mobile-home-summary"><small>今月の売上（全店）</small><div class="sales">—</div><div class="delta">経営Dに接続できません</div></div>`;
+  const scoped=myStoreScope(ctx.u);
+  if(scoped){
+    const yday=new Date(Date.now()-86400000);
+    const rows=st.daily.filter(r=>scoped.includes(r.store)&&sameDay(r.t,yday));
+    const sum=rows.reduce((s,r)=>s+r.sales,0);
+    return `<div class="mobile-home-summary"><small>自店の昨日売上</small><div class="sales">${yen(sum)}</div></div>`;
+  }
+  const now=new Date();
+  const rows=st.daily.filter(r=>{ const d=new Date(r.t); return d.getFullYear()===now.getFullYear()&&d.getMonth()===now.getMonth()&&d.getDate()<=now.getDate(); });
+  const sum=rows.reduce((s,r)=>s+r.sales,0);
+  const prevRows=st.daily.filter(r=>{ const d=new Date(r.t); return d.getFullYear()===now.getFullYear()-1&&d.getMonth()===now.getMonth()&&d.getDate()<=now.getDate(); });
+  const psum=prevRows.reduce((s,r)=>s+r.sales,0);
+  const yoy=psum>0?Math.round((sum/psum-1)*1000)/10:null;
+  return `<div class="mobile-home-summary"><small>今月の売上（全店）</small><div class="sales">${yen(sum)}</div>${yoy!=null?`<div class="delta">▲ 前年比 ${yoy>0?"+":""}${yoy}%</div>`:""}</div>`;
+}
+function homeQuickGroups(u){
+  const grpByCap=cap=>GROUPS.find(g=>g.cap===cap);
+  const keiei=grpByCap("経営管理").items.filter(it=>!it.soon&&itemVisible(it,grpByCap("経営管理"),u));
+  const gyomu=[]; // 業務（現場・本部）
+  ["hqtasks","invoices"].forEach(k=>{ const f=findItem(k); if(f&&itemVisible(f.it,f.grp,u)) gyomu.push(f.it); });
+  const nippoGrp=grpByCap("現場・日報");
+  ["nippo-daily","nippo-shift"].forEach(k=>{ const it=nippoGrp.items.find(x=>x.key===k); if(it&&itemVisible(it,nippoGrp,u)) gyomu.push(it); });
+  const exp=findItem("expenses"); if(exp&&itemVisible(exp.it,exp.grp,u)) gyomu.push(exp.it);
+  return {keiei,gyomu};
+}
+async function renderHomeArea(u){
+  const area=$("viewarea"); if(!area) return;
+  area.style.padding="";
+  area.innerHTML=`<div class="desktop-home"><div class="spin">読み込み中…</div></div>`;
+  const layout=layoutFor(u);
+  const needsTori=layout.kpi.includes("kpi_sales")||layout.main==="panel_chart";
+  const needsChecklist=layout.kpi.includes("kpi_check");
+  const needsReports=layout.kpi.includes("kpi_nippo");
+  const jobs=[fetchMyStores(),fetchHqTasks()];
+  if(needsChecklist) jobs.push(fetchStores(),fetchChecklistToday());
+  if(needsReports) jobs.push(fetchReportsYesterday());
+  await Promise.all(jobs);
+
+  let toriState={status:"idle",daily:[],error:null};
+  const draw=(alerts)=>{
+    const ctx={u,tori:toriState,alerts:alerts||[]};
+    if(myStoreScope(u)){ /* hqNippoMineは下のジョブで別途セット */ }
+    const kpiHtml=layout.kpi.map(k=>WIDGETS[k]?WIDGETS[k].render(ctx):"").join("");
+    const mainW=WIDGETS[layout.main], sideW=WIDGETS[layout.side];
+    const {keiei,gyomu}=homeQuickGroups(u);
+    area.innerHTML=`
+      <div class="mobile-home">
+        ${salesHeroHtml(ctx)}
+        <div class="mobile-kpi-row">${kpiHtml}</div>
+        ${keiei.length?`<div class="mobile-section-title"><b>経営</b><span>よく使う画面</span></div><div class="mobile-system-grid">${keiei.map(it=>`<button class="mobile-system-btn" data-key="${it.key}"><span class="icon">${it.ico}</span><strong>${esc(it.label)}</strong></button>`).join("")}</div>`:""}
+        ${gyomu.length?`<div class="mobile-section-title"><b>業務</b><span>現場・本部</span></div><div class="mobile-system-grid">${gyomu.map(it=>`<button class="mobile-system-btn" data-key="${it.key}"><span class="icon">${it.ico}</span><strong>${esc(it.label)}</strong></button>`).join("")}</div>`:""}
+      </div>
+      <div class="desktop-home">
+        <div class="summary">${kpiHtml}</div>
+        <div class="two">
+          <div>${mainW?mainW.render(ctx):""}</div>
+          <div>${sideW?sideW.render(ctx):""}</div>
+        </div>
+        <div class="panel" style="margin-top:16px"><div class="phead"><h2>よく使う機能</h2><span class="sub2">30秒で完了する導線を優先</span></div>
+          <div class="quick">
+            <button data-key="nippo-daily"><strong>📝 日報を書く</strong><small>今日の営業報告</small></button>
+            <button data-key="nippo-shift"><strong>📅 シフトを確認</strong><small>提出・希望休・公開</small></button>
+            <button data-key="expenses"><strong>🧾 経費を申請</strong><small>レシート→用途→送信</small></button>
+          </div>
+        </div>
+      </div>`;
+    if(mainW&&mainW.after) mainW.after(ctx);
+    document.querySelectorAll("[data-key]").forEach(b=>{ if(!b.onclick) b.onclick=()=>openItem(b.dataset.key,u); });
+    const gotoNotice=area.querySelector("[data-goto-notice]"); if(gotoNotice) gotoNotice.onclick=()=>openItem("notice",u);
+  };
+  draw([]);
+  if(needsTori) toriState=await ensureToriData(false);
+
+  let hqNippoMine=null;
+  if(myStoreScope(u)){
+    try{
+      const yday=addDaysStr(todayStr(),-1);
+      const r=await authed(`/rest/v1/reports?kind=eq.daily&report_date=eq.${yday}&author_id=eq.${u.id}&select=id`);
+      hqNippoMine=r.ok&&Array.isArray(r.body)?r.body.length>0:null;
+    }catch(e){ hqNippoMine=null; }
+  }
+  NAV_HQ_CNT=(HUB.hqTasks||[]).filter(t=>{ const cur=currentStep(t); return cur&&cur.assignee_id===u.id; }).length;
+  const alerts=await buildAlerts(u);
+  const ctxFinal={u,tori:toriState,alerts,hqNippoMine};
+  const kpiHtml2=layout.kpi.map(k=>WIDGETS[k]?WIDGETS[k].render(ctxFinal):"").join("");
+  const mainW2=WIDGETS[layout.main], sideW2=WIDGETS[layout.side];
+  const {keiei,gyomu}=homeQuickGroups(u);
+  area.innerHTML=`
+    <div class="mobile-home">
+      ${salesHeroHtml(ctxFinal)}
+      <div class="mobile-kpi-row">${kpiHtml2}</div>
+      ${keiei.length?`<div class="mobile-section-title"><b>経営</b><span>よく使う画面</span></div><div class="mobile-system-grid">${keiei.map(it=>`<button class="mobile-system-btn" data-key="${it.key}"><span class="icon">${it.ico}</span><strong>${esc(it.label)}</strong></button>`).join("")}</div>`:""}
+      ${gyomu.length?`<div class="mobile-section-title"><b>業務</b><span>現場・本部</span></div><div class="mobile-system-grid">${gyomu.map(it=>`<button class="mobile-system-btn" data-key="${it.key}"><span class="icon">${it.ico}</span><strong>${esc(it.label)}</strong></button>`).join("")}</div>`:""}
+    </div>
+    <div class="desktop-home">
+      <div class="summary">${kpiHtml2}</div>
+      <div class="two">
+        <div>${mainW2?mainW2.render(ctxFinal):""}</div>
+        <div>${sideW2?sideW2.render(ctxFinal):""}</div>
+      </div>
+      <div class="panel" style="margin-top:16px"><div class="phead"><h2>よく使う機能</h2><span class="sub2">30秒で完了する導線を優先</span></div>
+        <div class="quick">
+          <button data-key="nippo-daily"><strong>📝 日報を書く</strong><small>今日の営業報告</small></button>
+          <button data-key="nippo-shift"><strong>📅 シフトを確認</strong><small>提出・希望休・公開</small></button>
+          <button data-key="expenses"><strong>🧾 経費を申請</strong><small>レシート→用途→送信</small></button>
+        </div>
+      </div>
+    </div>`;
+  if(mainW2&&mainW2.after) mainW2.after(ctxFinal);
+  document.querySelectorAll("[data-key]").forEach(b=>{ b.onclick=()=>openItem(b.dataset.key,u); });
+  const gotoNotice2=area.querySelector("[data-goto-notice]"); if(gotoNotice2) gotoNotice2.onclick=()=>openItem("notice",u);
+
+  // サイドバー・下部ナビのバッジ更新
+  if(canSeeKey("invoices",u)){
+    try{
+      const invR=await authed(`/rest/v1/invoice_emails?mail_status=in.(unread,read)&select=id`);
+      NAV_INV_CNT=(invR.ok&&Array.isArray(invR.body))?invR.body.length:0;
+    }catch(e){ NAV_INV_CNT=0; }
+  }
+  refreshNavActive(u);
 }
 
 function renderShellBody(u){
-  // ホームへ戻る/再描画のたびにサイドバー全体は作り直さず、フレーム部分だけ入れ替える
   document.getElementById("root").innerHTML=shellHtml(u);
-  wireShell(u);
+  wireNav(u);
+  if(VIEW==="home") renderHomeArea(u);
 }
 
 /* ============================================================
@@ -409,7 +1054,7 @@ async function main(){
   if(!u){sess.clear();renderLogin("セッションが切れました。もう一度ログインしてください。");return}
   if(u.is_active===false){sess.clear();renderLogin("このアカウントは無効化されています。本部までお問い合わせください。");return}
   ME=u;
-  await fetchPerms();
+  await Promise.all([fetchPerms(),fetchPosts(),fetchNotifs()]);
   VIEW="home"; CUR=null;
   renderShellBody(u);
 }
