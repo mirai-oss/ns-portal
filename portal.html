@@ -175,6 +175,16 @@ canvas{width:100%;height:100%;display:block}
 .toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:10px 18px;border-radius:99px;font-size:13px;box-shadow:var(--shadow);z-index:80;opacity:0;pointer-events:none;transition:opacity .2s}
 .toast.show{opacity:1}
 @media(max-width:760px){.toast{bottom:78px}}
+
+.modal-bg{position:fixed;inset:0;background:rgba(20,15,8,.5);z-index:90;display:flex;align-items:center;justify-content:center;padding:20px}
+.modal{background:var(--panel);border-radius:16px;padding:22px;max-width:420px;width:100%;box-shadow:var(--shadow);max-height:80vh;overflow-y:auto}
+.modal h3{margin:0 0 6px;font-size:16px}
+.modal p.desc{color:var(--muted);font-size:12.5px;margin:0 0 16px;line-height:1.6}
+.modal .row{display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid var(--line)}
+.modal .row:last-of-type{border-bottom:0}
+.modal .row input[type=checkbox]{width:18px;height:18px;accent-color:var(--accent)}
+.modal .empty{color:var(--muted);font-size:12.5px;padding:10px 0}
+.modal .close{margin-top:16px;width:100%;padding:10px;border:1px solid var(--line);border-radius:10px;text-align:center}
 </style>
 </head>
 <body>
@@ -253,6 +263,12 @@ const SYS_ROLES={
   expenses:["AL","SHAIN","TENCHO","TEAM","HQ","CEO"],
   invoices:["HQ","CEO"],
   hqtasks: ["TEAM","HQ","CEO"],
+  // nippoの「管理」「設定」（アカウント無効化・外部連携キー等の重い機能）用。
+  // 既定は誰にも見せず、マスターと「マスターが個別に許可した本部の人」だけに
+  // 見せる（ユーザー指示・2026-08-24）。既存の仕組み（portal_user_overrides）
+  // をそのまま流用し、付与UIはportal.html内に自前で用意する
+  // （index.htmlの設定画面はこのキーを知らないため編集不可＝index.htmlは無変更のまま）
+  nippo_admin: [],
 };
 let PERMS=null, MY_OVR={};
 async function fetchPerms(){
@@ -695,9 +711,19 @@ const GROUPS=[
   {cap:"現場・日報",ico:"📝", items:[
     {key:"nippo-daily",  sysKey:"nippo", ico:"📝", label:"日報",     url:nippoPage("write")},
     {key:"nippo-weekly", sysKey:"nippo", ico:"🗓️", label:"週報",     url:nippoPage("weekly")},
+    {key:"nippo-list",   sysKey:"nippo", ico:"📋", label:"一覧",     url:nippoPage("list")},
     {key:"nippo-check",  sysKey:"nippo", ico:"✅", label:"チェック", url:nippoPage("check")},
     {key:"nippo-shift",  sysKey:"nippo", ico:"📅", label:"シフト",   url:nippoPage("shift")},
+    {key:"nippo-tasks",  sysKey:"nippo", ico:"✅", label:"タスク（現場）", url:nippoPage("tasks")},
+    {key:"nippo-chat",   sysKey:"nippo", ico:"💬", label:"チャット", url:nippoPage("chat")},
     {key:"nippo-manual", sysKey:"nippo", ico:"📘", label:"マニュアル", url:nippoPage("manuals")},
+    // nippo内の「利用ダッシュボード」（提出率・既読・チャット利用の集計）。
+    // nippo側のcan("dash")既定値=TENCHO/TEAM/SHAIN/HQ/CEO（バイト・外販は対象外）に合わせた
+    {key:"nippo-dash", sysKey:"nippo", roles:["TENCHO","TEAM","SHAIN","HQ","CEO"], ico:"📈", label:"利用ダッシュボード", url:nippoPage("dash")},
+    // 「管理」「設定」はアカウント無効化・外部連携キーなど重い機能のため、
+    // 既定は誰にも見せずマスターと個別許可された人だけに見せる（nippo_admin）
+    {key:"nippo-admin",    sysKey:"nippo_admin", ico:"👥", label:"管理（アカウント）", url:nippoPage("admin")},
+    {key:"nippo-settings", sysKey:"nippo_admin", ico:"⚙️", label:"設定（連携キー）", url:nippoPage("settings")},
   ]},
   {cap:"採用管理",ico:"👥", roles:["TEAM","HQ","CEO"], items:[
     {key:"recruit",             sysKey:"nippo", ico:"🧑‍💼", label:"応募者・採用管理", url:nippoPage("recruit")},
@@ -714,6 +740,7 @@ const GROUPS=[
 function itemVisible(it,grp,u){
   if(u.is_master) return true;
   if(it.sysKey && !canSeeKey(it.sysKey,u)) return false;
+  if(it.roles && !it.roles.includes(u.role)) return false; // 項目単位の追加ロール制限（グループ内の一部だけ絞りたい時）
   if(grp&&grp.roles && !grp.roles.includes(u.role)) return false;
   return true;
 }
@@ -750,6 +777,48 @@ let toastTimer=null;
 function toast(msg){
   const t=$("toast"); t.textContent=msg; t.classList.add("show");
   clearTimeout(toastTimer); toastTimer=setTimeout(()=>t.classList.remove("show"),2200);
+}
+
+/* ============================================================
+   マスター専用: 「管理（アカウント）」「設定（連携キー）」を見せる人の設定
+   （system_key="nippo_admin"の portal_user_overrides を直接編集。
+   既存の index.html 設定画面はこのキーを知らないため、ここに専用UIを用意した。
+   新しい権限の"仕組み"は作らず、既存テーブルへの行の出し入れのみ行う）
+   ============================================================ */
+async function openAdminOverrideModal(){
+  const bg=document.createElement("div");
+  bg.className="modal-bg";
+  bg.innerHTML=`<div class="modal">
+    <h3>⚙️ 管理項目を見せる人を設定</h3>
+    <p class="desc">nippoの「管理（アカウント）」「設定（連携キー）」は、マスターと下でチェックした本部の人だけに表示されます。</p>
+    <div id="ovrlist"><div class="empty">読み込み中…</div></div>
+    <button class="close" id="ovrclose">閉じる</button>
+  </div>`;
+  document.body.appendChild(bg);
+  bg.onclick=e=>{ if(e.target===bg) bg.remove(); };
+  $("ovrclose").onclick=()=>bg.remove();
+
+  const [usersR,ovrR]=await Promise.all([
+    authed("/rest/v1/users?role=eq.HQ&is_active=eq.true&select=id,name&order=name"),
+    authed(`/rest/v1/portal_user_overrides?system_key=eq.nippo_admin&select=user_id,allowed`),
+  ]);
+  const users=(usersR.ok&&Array.isArray(usersR.body))?usersR.body:[];
+  const ovrMap={};
+  if(ovrR.ok&&Array.isArray(ovrR.body)) ovrR.body.forEach(r=>{ ovrMap[r.user_id]=r.allowed; });
+  const list=$("ovrlist");
+  if(!users.length){ list.innerHTML=`<div class="empty">本部（HQ）ロールの人がいません</div>`; return; }
+  list.innerHTML=users.map(x=>`<label class="row"><input type="checkbox" data-uid="${x.id}" ${ovrMap[x.id]?"checked":""}>${esc(x.name)}</label>`).join("");
+  list.querySelectorAll("input[type=checkbox]").forEach(cb=>{
+    cb.onchange=async()=>{
+      const uid=cb.dataset.uid, allowed=cb.checked;
+      cb.disabled=true;
+      const r=allowed
+        ? await authed("/rest/v1/portal_user_overrides",{method:"POST",headers:{Prefer:"resolution=merge-duplicates,return=minimal"},body:JSON.stringify({user_id:uid,system_key:"nippo_admin",allowed:true})})
+        : await authed(`/rest/v1/portal_user_overrides?user_id=eq.${uid}&system_key=eq.nippo_admin`,{method:"DELETE"});
+      cb.disabled=false;
+      if(!r.ok){ cb.checked=!allowed; toast("保存できませんでした（"+r.status+"）"); }
+    };
+  });
 }
 
 /* ============================================================
@@ -805,6 +874,7 @@ function sidebarHtml(u){
     ${groupsHtml}
     <div class="userbox">
       👤 ${esc(u.name)}${u.is_master?"（マスター）":`（${esc(ROLE_NAME[u.role]||u.role)}）`}
+      ${u.is_master?'<button id="adminovr">⚙️ 管理項目を見せる人を設定</button>':""}
       <button id="tolegacy">← 従来のポータルへ</button>
       <button id="lout">ログアウト</button>
     </div>
@@ -894,6 +964,7 @@ function wireNav(u){
   const more=$("moreBtn"); if(more) more.onclick=()=>$("mobileMore")?.classList.add("open");
   const moreClose=$("moreClose"); if(moreClose) moreClose.onclick=closeMobileMore;
   const mm=$("mobileMore"); if(mm) mm.onclick=e=>{ if(e.target===mm) closeMobileMore(); };
+  const adminovr=$("adminovr"); if(adminovr) adminovr.onclick=()=>openAdminOverrideModal();
   const tolegacy=$("tolegacy"); if(tolegacy) tolegacy.onclick=()=>{ location.href="index.html"; };
   const lout=$("lout"); if(lout) lout.onclick=async()=>{
     if(!confirm("ログアウトしますか？"))return;
