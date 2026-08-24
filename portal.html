@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>N-Styleグループ 統合ポータル</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🐔</text></svg>">
+<style>
+/* ============================================================
+   配色は請求書メール管理(invoices.html)・UIプロトタイプに準拠。
+   このファイルは「担当F: 統合ポータルシェル」専用の新規ファイル。
+   既存index.htmlは無変更のまま並行公開する（実装指示書_統合ポータルシェル_2026-08-24.md）。
+   ============================================================ */
+:root{
+  --bg:#f4f1eb; --panel:#fff; --ink:#231f1a; --muted:#7d756d; --line:#e4ddd4;
+  --accent:#c94728; --accent-soft:#fce9e3;
+  --green:#2f8f63; --green-soft:#e7f5ed;
+  --amber:#b77b13; --amber-soft:#fff3d8;
+  --blue:#2f6fb7; --blue-soft:#e8f0fb;
+  --shadow:0 8px 28px rgba(35,31,26,.08); --radius:16px;
+  --nav:#211d18; --nav-line:rgba(255,255,255,.1); --nav-ink:#ddd6cf;
+}
+@media(prefers-color-scheme:dark){
+  :root{--bg:#211d18; --panel:#2b2620; --ink:#f2ede6; --muted:#b3aa9f; --line:#433c33; --accent-soft:#4a2c22; --green-soft:#1f3a2c; --amber-soft:#3d3018; --blue-soft:#1e3049;}
+}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;background:var(--bg);color:var(--ink);font-size:14px;font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Noto Sans JP",sans-serif}
+button,input{font:inherit}
+button{border:0;cursor:pointer;background:none;color:inherit}
+a{color:inherit}
+.spin{text-align:center;color:var(--muted);padding:60px 0}
+
+/* ---------- ログイン画面（index.htmlと同一実装。認証ロジックは変更禁止） ---------- */
+.authwrap{max-width:420px;margin:0 auto;padding:52px 20px 60px}
+.authwrap header{text-align:center;margin-bottom:26px}
+.authwrap header .logo{font-size:40px}
+.authwrap header h1{font-size:21px;margin-top:6px;letter-spacing:.03em}
+.authwrap header p{color:var(--muted);font-size:13px;margin-top:4px}
+.acard{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:24px;box-shadow:var(--shadow)}
+.acard label{display:block;font-size:13px;color:var(--muted);margin:14px 0 4px}
+.acard input{width:100%;padding:12px 14px;font-size:16px;border:1px solid var(--line);border-radius:10px;background:var(--bg);color:var(--ink)}
+.acard input:focus{outline:2px solid var(--accent);border-color:transparent}
+.abtn{display:block;width:100%;margin-top:20px;padding:13px;font-size:16px;font-weight:600;color:#fff;background:var(--accent);border-radius:10px}
+.abtn:disabled{opacity:.5}
+.anote{font-size:12px;color:var(--muted);text-align:center;margin-top:18px;line-height:1.7}
+.aerr{color:#c62828;font-size:13px;margin-top:12px;text-align:center;min-height:1em}
+
+/* ---------- シェル本体 ---------- */
+.app{display:grid;grid-template-columns:260px minmax(0,1fr);min-height:100vh}
+.ov{display:none;position:fixed;inset:0;background:rgba(20,15,8,.5);z-index:19}
+.ov.show{display:block}
+.side{background:var(--nav);color:var(--nav-ink);padding:18px 14px;display:flex;flex-direction:column;gap:6px;position:sticky;top:0;height:100vh;overflow-y:auto;z-index:20}
+.brand{display:flex;align-items:center;gap:11px;padding:2px 8px 14px;border-bottom:1px solid var(--nav-line);margin-bottom:8px}
+.brand .mark{width:36px;height:36px;border-radius:9px;display:grid;place-items:center;background:#f0c24f;font-size:19px;flex:0 0 auto}
+.brand strong{display:block;font-size:14.5px;line-height:1.25;color:#fff}
+.brand span{color:#a89c88;font-size:11px}
+.navcap{font-size:10.5px;letter-spacing:.12em;color:#8f887f;text-transform:uppercase;padding:12px 10px 5px}
+.navgrp{display:flex;flex-direction:column;gap:2px;margin-bottom:2px}
+.navitem{width:100%;min-height:38px;border-radius:8px;color:var(--nav-ink);display:flex;align-items:center;gap:9px;padding:0 10px;text-align:left;text-decoration:none;font-size:13.5px}
+.navitem:hover{background:rgba(255,255,255,.07);color:#fff}
+.navitem.active{background:#3a342e;color:#fff;font-weight:700}
+.navitem.soon{opacity:.5;cursor:default}
+.navitem .badge-soon{margin-left:auto;background:rgba(255,255,255,.12);color:#cfc7bd;font-size:9.5px;font-weight:700;border-radius:99px;padding:2px 7px;white-space:nowrap}
+.navitem .ext{margin-left:auto;font-size:11px;color:#8d8271}
+.side-foot{margin-top:auto;font-size:11px;color:#a89c88;padding:12px 8px 0;border-top:1px solid var(--nav-line)}
+.side-foot .sfname{color:#efe7da;font-size:13px;margin-bottom:6px}
+.side-foot button{color:var(--nav-ink);text-decoration:underline;font-size:11px;padding:2px 0;display:block}
+.side-foot button:hover{color:#fff}
+
+main{min-width:0;display:flex;flex-direction:column;height:100vh}
+.topbar{min-height:58px;display:flex;align-items:center;gap:12px;padding:0 20px;background:var(--panel);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:5}
+.hamb{display:none;font-size:20px;width:36px;height:36px;border-radius:8px}
+.hamb:hover{background:var(--bg)}
+.topbar h1{margin:0;font-size:16.5px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.topactions{display:flex;gap:8px;align-items:center}
+.topactions a,.topactions button{font-size:12px;color:var(--muted);border:1px solid var(--line);border-radius:8px;padding:7px 11px;white-space:nowrap;text-decoration:none}
+.topactions a:hover,.topactions button:hover{color:var(--ink);background:var(--bg)}
+.framewrap{flex:1;min-height:0;display:flex;flex-direction:column}
+.framewrap iframe{flex:1;width:100%;border:0;background:var(--panel)}
+
+/* ホームパネル */
+.home{padding:26px 30px 46px;max-width:1100px;margin:0 auto;width:100%;overflow-y:auto}
+.home h2{margin:0 0 4px;font-size:22px}
+.home p.lead{color:var(--muted);margin:0 0 22px}
+.qgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px}
+.qcard{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px;text-align:left;box-shadow:var(--shadow)}
+.qcard:hover{border-color:#cfc5ba}
+.qcard .ico{font-size:22px}
+.qcard b{display:block;font-size:14px;margin-top:8px}
+.qcard span{color:var(--muted);font-size:11.5px}
+.toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:10px 18px;border-radius:99px;font-size:13px;box-shadow:var(--shadow);z-index:50;opacity:0;pointer-events:none;transition:opacity .2s}
+.toast.show{opacity:1}
+
+@media(max-width:900px){
+  .app{grid-template-columns:1fr}
+  .side{position:fixed;left:0;top:0;width:260px;transform:translateX(-100%);transition:transform .2s}
+  .side.open{transform:translateX(0)}
+  .hamb{display:grid;place-items:center}
+  .home{padding:18px}
+}
+</style>
+</head>
+<body>
+<div id="root"><div class="spin">読み込み中…</div></div>
+<div class="toast" id="toast"></div>
+<script>
+/* ============================================================
+   認証・セッション（index.htmlと完全に同一・変更禁止部分）
+   nsportal_session_v1 のキー名・{at,rt,uid}の形式は
+   tori/seisanダッシュボードの自動ログインが直接読みに来るため絶対に変えない。
+   ============================================================ */
+const SUPA_URL="https://uuvsxzhpxtghojoubjcc.supabase.co";
+const SUPA_KEY="sb_publishable_MrwPJAx_Ws_fdRutprKCiQ_dg3wCiTr"; // 公開用キー（秘密情報ではない）
+const LS_KEY="nsportal_session_v1";
+const ROLE_NAME={CEO:"社長",HQ:"本部",TEAM:"チーム長",TENCHO:"店長",SHAIN:"社員",AL:"アルバイト"};
+
+const $=id=>document.getElementById(id);
+const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const sess={get:()=>{try{return JSON.parse(localStorage.getItem(LS_KEY))}catch(e){return null}},
+            set:v=>localStorage.setItem(LS_KEY,JSON.stringify(v)),
+            clear:()=>localStorage.removeItem(LS_KEY)};
+
+async function api(path,opt={},token){
+  const r=await fetch(SUPA_URL+path,{...opt,headers:{
+    "apikey":SUPA_KEY,"Content-Type":"application/json",
+    ...(token?{"Authorization":"Bearer "+token}:{}),...(opt.headers||{})}});
+  let body=null; const tx=await r.text(); try{body=tx?JSON.parse(tx):null}catch(e){}
+  return {ok:r.ok,status:r.status,body};
+}
+async function authed(path,opt={}){
+  const s=sess.get(); if(!s) return {ok:false,status:401,body:null};
+  let r=await api(path,opt,s.at);
+  if(r.status===401){ if(!await refresh()) return r; r=await api(path,opt,sess.get().at); }
+  return r;
+}
+async function login(email,pw){
+  const r=await api("/auth/v1/token?grant_type=password",{method:"POST",body:JSON.stringify({email,password:pw})});
+  if(!r.ok) throw new Error(r.body?.error_code==="invalid_credentials"?"メールアドレスまたはパスワードが違います":"ログインエラー: "+(r.body?.msg||r.status));
+  sess.set({at:r.body.access_token,rt:r.body.refresh_token,uid:r.body.user.id});
+  return r.body;
+}
+async function refresh(){
+  const s=sess.get(); if(!s?.rt) return false;
+  const r=await api("/auth/v1/token?grant_type=refresh_token",{method:"POST",body:JSON.stringify({refresh_token:s.rt})});
+  if(!r.ok){sess.clear();return false}
+  sess.set({at:r.body.access_token,rt:r.body.refresh_token,uid:r.body.user.id});
+  return true;
+}
+async function fetchMe(){
+  const s=sess.get(); if(!s) return null;
+  const r=await authed(`/rest/v1/users?id=eq.${s.uid}&select=*`);
+  if(!r.ok||!Array.isArray(r.body)||!r.body[0]) return null;
+  return r.body[0];
+}
+
+/* ============================================================
+   権限（既存 portal_permissions / portal_user_overrides をそのまま読む。
+   キーは index.html の SYSTEMS と同じ7種のみ使用＝新しい権限の仕組みは作らない）
+   ============================================================ */
+const SYS_ROLES={
+  nippo:   ["AL","SHAIN","TENCHO","TEAM","HQ","CEO"],
+  keiei:   ["TENCHO","TEAM","HQ","CEO"],
+  seisan:  ["HQ","CEO"],
+  joho:    ["TEAM","HQ","CEO"],
+  expenses:["AL","SHAIN","TENCHO","TEAM","HQ","CEO"],
+  invoices:["HQ","CEO"],
+  hqtasks: ["TEAM","HQ","CEO"],
+};
+let PERMS=null, MY_OVR={};
+async function fetchPerms(){
+  const s=sess.get(); if(!s) return;
+  const [p,o]=await Promise.all([
+    authed("/rest/v1/portal_permissions?select=role,system_key,allowed"),
+    authed(`/rest/v1/portal_user_overrides?user_id=eq.${s.uid}&select=system_key,allowed`)
+  ]);
+  if(p.ok&&Array.isArray(p.body)&&p.body.length){
+    PERMS={};
+    p.body.forEach(r=>{ (PERMS[r.role]=PERMS[r.role]||{})[r.system_key]=r.allowed; });
+  }
+  MY_OVR={};
+  if(o.ok&&Array.isArray(o.body)) o.body.forEach(r=>{ MY_OVR[r.system_key]=r.allowed; });
+}
+function canSeeKey(key,u){
+  if(u.is_master) return true;
+  if(key in MY_OVR) return MY_OVR[key];
+  if(PERMS&&PERMS[u.role]&&(key in PERMS[u.role])) return PERMS[u.role][key];
+  return (SYS_ROLES[key]||[]).includes(u.role);
+}
+
+/* ============================================================
+   メニュー構成（実装指示書_統合ポータルシェル_2026-08-24.md F-1の表に準拠）
+   深リンク調査（コードを読むだけ・変更なし）:
+   - nippo(index.html)・tori-dashboard(app.js)ともにURLハッシュ/クエリで
+     タブを直接指定する仕組みは無い（invite/apply/a/debug等の個別パラメータのみ）。
+   - そのため「現場・日報」「採用管理」「経営管理」配下の項目は、現時点では
+     どれをクリックしても同じiframe（同じ埋め込み先）を開く暫定実装。
+     タブ直リンク化は担当A・担当BへWORKLOGで依頼済み（F-3）。
+   ============================================================ */
+const NIPPO_URL="https://mirai-oss.github.io/nippo/";
+const KEIEI_URL="https://mirai-oss.github.io/tori-dashboard/";
+const SEISAN_URL="https://mirai-oss.github.io/seisan-dashboard/";
+const JOHO_URL="https://ns-info-system.vercel.app";
+
+const MENU=[
+  {items:[{key:"home",ico:"🏠",label:"概要（ホーム）",type:"home"}]},
+  {cap:"📝 現場・日報", items:[
+    {key:"nippo-daily",  sysKey:"nippo", ico:"📝", label:"日報",     url:NIPPO_URL},
+    {key:"nippo-weekly", sysKey:"nippo", ico:"🗓️", label:"週報",     url:NIPPO_URL},
+    {key:"nippo-check",  sysKey:"nippo", ico:"✅", label:"チェック", url:NIPPO_URL},
+    {key:"nippo-shift",  sysKey:"nippo", ico:"📅", label:"シフト",   url:NIPPO_URL},
+    {key:"nippo-manual", sysKey:"nippo", ico:"📘", label:"マニュアル", url:NIPPO_URL},
+  ]},
+  {cap:"👥 採用管理", roles:["TEAM","HQ","CEO"], items:[
+    {key:"recruit-dash",        ico:"📈", label:"採用ダッシュボード", soon:true},
+    {key:"recruit-applicants",  sysKey:"nippo", ico:"🧑‍💼", label:"応募者一覧", url:NIPPO_URL},
+    {key:"recruit-jobs",        sysKey:"nippo", ico:"📋", label:"求人一覧",   url:NIPPO_URL},
+    {key:"recruit-media",       sysKey:"nippo", ico:"📊", label:"媒体分析",   url:NIPPO_URL},
+    {key:"recruit-personality", ico:"🧠", label:"性格診断", soon:true},
+  ]},
+  {cap:"📊 経営管理", items:[
+    {key:"keiei-dash",    sysKey:"keiei", ico:"📊", label:"経営ダッシュボード", url:KEIEI_URL},
+    {key:"keiei-pl",      sysKey:"keiei", ico:"📑", label:"PL管理",     url:KEIEI_URL},
+    {key:"keiei-ads",     sysKey:"keiei", ico:"📣", label:"広告管理",   url:KEIEI_URL},
+    {key:"keiei-deposit", sysKey:"keiei", ico:"💰", label:"入金管理",   url:KEIEI_URL},
+  ]},
+  {cap:"🧮 精算管理", items:[
+    {key:"seisan", sysKey:"seisan", ico:"🧮", label:"精算ダッシュボード", url:SEISAN_URL},
+  ]},
+  {cap:"💴 経費申請", items:[
+    {key:"expenses", sysKey:"expenses", ico:"💴", label:"申請・承認", url:"expenses.html"},
+  ]},
+  {cap:"🧾 請求書", items:[
+    {key:"invoices", sysKey:"invoices", ico:"🧾", label:"メール管理", url:"invoices.html"},
+  ]},
+  {cap:"✅ タスク", items:[
+    {key:"hqtasks", sysKey:"hqtasks", ico:"✅", label:"本部タスクボード", url:"tasks.html"},
+  ]},
+  {cap:"🔐 社内情報", items:[
+    // 別オリジン(Vercel)のためiframeにしない＝新しいタブ＋SSOハンドオフ（F-2）
+    {key:"joho", sysKey:"joho", ico:"🔐", label:"社内情報管理", url:JOHO_URL, external:true, sso:true},
+  ]},
+  {cap:"📢 お知らせ・検索", items:[
+    // 既存index.htmlをそのままiframe流用（index.html自体は無変更）
+    {key:"notice", ico:"📢", label:"お知らせ・検索", url:"index.html"},
+  ]},
+];
+
+function itemVisible(it,grp,u){
+  if(u.is_master) return true;
+  if(it.sysKey && !canSeeKey(it.sysKey,u)) return false;
+  if(grp.roles && !grp.roles.includes(u.role)) return false;
+  return true;
+}
+
+let ME=null, VIEW="home", CUR=null;
+
+/* ============================================================
+   F-2: 社内情報管理へのSSOハンドオフ
+   現在のSupabaseセッション(access_token/refresh_token)をURLフラグメント
+   （#以降＝サーバーに送信されない）に載せて新しいタブで開く。
+   ns-info-system側は /sso が受け口（setSession→hash削除→ホームへ）。
+   MFA(TOTP)は ns-info-system 側のミドルウェアがそのまま維持する。
+   ============================================================ */
+function openJohoSso(){
+  const s=sess.get();
+  if(!s?.at||!s?.rt){ toast("ログイン情報が見つかりません"); return; }
+  const frag="access_token="+encodeURIComponent(s.at)+"&refresh_token="+encodeURIComponent(s.rt);
+  window.open(JOHO_URL+"/sso#"+frag,"_blank","noopener");
+}
+
+let toastTimer=null;
+function toast(msg){
+  const t=$("toast"); t.textContent=msg; t.classList.add("show");
+  clearTimeout(toastTimer); toastTimer=setTimeout(()=>t.classList.remove("show"),2200);
+}
+
+/* ============================================================
+   画面: ログイン（index.htmlと同一デザイン）
+   ============================================================ */
+function renderLogin(err){
+  document.getElementById("root").innerHTML=`
+  <div class="authwrap">
+    <header><div class="logo">🐔</div><h1>N-Styleグループ 統合ポータル</h1><p>統合アカウントで各システムへ</p></header>
+    <div class="acard">
+      <label>メールアドレス</label><input type="email" id="lemail" autocomplete="username" inputmode="email">
+      <label>パスワード</label><input type="password" id="lpw" autocomplete="current-password">
+      <button class="abtn" id="lbtn">ログイン</button>
+      <div class="aerr">${esc(err||"")}</div>
+      <div class="anote">日報・週報システムと同じメールアドレス＋パスワードです。<br>アカウントが無い方は本部までご連絡ください。</div>
+    </div>
+  </div>`;
+  const go=async()=>{
+    $("lbtn").disabled=true;$("lbtn").textContent="ログイン中…";
+    try{await login($("lemail").value.trim(),$("lpw").value);await main()}
+    catch(e){renderLogin(e.message)}
+  };
+  $("lbtn").onclick=go;
+  $("lpw").onkeydown=e=>{if(e.key==="Enter")go()};
+}
+
+/* ============================================================
+   シェル本体
+   ============================================================ */
+function sidebarHtml(u){
+  const groups=MENU.map(grp=>{
+    const items=grp.items.filter(it=>it.type==="home"||itemVisible(it,grp,u));
+    if(!items.length) return "";
+    const rows=items.map(it=>{
+      if(it.type==="home") return `<button class="navitem${VIEW==="home"?" active":""}" data-key="${it.key}">${it.ico} ${esc(it.label)}</button>`;
+      if(it.soon) return `<button class="navitem soon" data-soon="1">${it.ico} ${esc(it.label)}<span class="badge-soon">🚧 準備中</span></button>`;
+      return `<button class="navitem${CUR===it.key?" active":""}" data-key="${it.key}">${it.ico} ${esc(it.label)}${it.external?'<span class="ext">↗</span>':""}</button>`;
+    }).join("");
+    return `${grp.cap?`<div class="navcap">${esc(grp.cap)}</div>`:""}<div class="navgrp">${rows}</div>`;
+  }).join("");
+  return `<aside class="side" id="side">
+    <div class="brand"><div class="mark">🐔</div><div><strong>N-Styleグループ</strong><span>統合ポータル</span></div></div>
+    <nav>${groups}</nav>
+    <div class="side-foot">
+      <div class="sfname">👤 ${esc(u.name)}${u.is_master?"（マスター）":`（${esc(ROLE_NAME[u.role]||u.role)}）`}</div>
+      <button id="tolegacy">← 従来のポータルへ</button>
+      <button id="lout">ログアウト</button>
+    </div>
+  </aside>`;
+}
+
+function homeHtml(u){
+  const cards=MENU.flatMap(grp=>grp.items.filter(it=>it.type!=="home"&&!it.soon&&itemVisible(it,grp,u)))
+    .map(it=>`<button class="qcard" data-key="${it.key}"><div class="ico">${it.ico}</div><b>${esc(it.label)}</b>${it.external?"<span>新しいタブで開く</span>":""}</button>`)
+    .join("");
+  return `<div class="home">
+    <h2>ようこそ、${esc(u.name)}さん</h2>
+    <p class="lead">左のメニューから各システムを開けます（準備中バッジのある項目は近日公開予定です）。</p>
+    <div class="qgrid">${cards}</div>
+  </div>`;
+}
+
+function shellHtml(u){
+  return `<div class="app" id="app">
+    <div class="ov" id="ov"></div>
+    ${sidebarHtml(u)}
+    <main>
+      <div class="topbar">
+        <button class="hamb" id="hamb">☰</button>
+        <h1 id="pagetitle">概要（ホーム）</h1>
+        <div class="topactions" id="topactions"></div>
+      </div>
+      <div class="framewrap" id="framewrap">${homeHtml(u)}</div>
+    </main>
+  </div>`;
+}
+
+function findItem(key){
+  for(const grp of MENU) for(const it of grp.items) if(it.key===key) return {it,grp};
+  return null;
+}
+
+function openItem(key,u){
+  const found=findItem(key); if(!found) return;
+  const {it}=found;
+  if(it.type==="home"){ VIEW="home"; CUR=null; renderShellBody(u); return; }
+  if(it.soon){ toast("準備中です"); return; }
+  if(it.sso){ openJohoSso(); return; }
+  VIEW="frame"; CUR=key;
+  $("pagetitle").textContent=it.label;
+  $("topactions").innerHTML=it.external
+    ? `<a href="${esc(it.url)}" target="_blank" rel="noopener">↗ 新しいタブで開く</a>`
+    : `<a href="${esc(it.url)}" target="_blank" rel="noopener">↗ 新しいタブで開く</a><button id="refreshframe">🔄 再読み込み</button>`;
+  $("framewrap").innerHTML=`<iframe src="${esc(it.url)}" allow="clipboard-write" title="${esc(it.label)}"></iframe>`;
+  if($("refreshframe")) $("refreshframe").onclick=()=>{ const f=$("framewrap").querySelector("iframe"); if(f) f.src=f.src; };
+  closeMobileNav();
+  refreshNavActive();
+}
+
+function refreshNavActive(){
+  document.querySelectorAll(".navitem[data-key]").forEach(b=>{
+    b.classList.toggle("active", VIEW==="home" ? b.dataset.key==="home" : b.dataset.key===CUR);
+  });
+}
+
+function closeMobileNav(){ $("side")?.classList.remove("open"); $("ov")?.classList.remove("show"); }
+
+function wireShell(u){
+  document.querySelectorAll(".navitem[data-soon]").forEach(b=>{ b.onclick=()=>toast("準備中です"); });
+  document.querySelectorAll(".navitem[data-key],.qcard[data-key]").forEach(b=>{
+    b.onclick=()=>openItem(b.dataset.key,u);
+  });
+  $("hamb").onclick=()=>{ $("side").classList.toggle("open"); $("ov").classList.toggle("show"); };
+  $("ov").onclick=closeMobileNav;
+  $("tolegacy").onclick=()=>{ location.href="index.html"; };
+  $("lout").onclick=async()=>{
+    if(!confirm("ログアウトしますか？"))return;
+    const s=sess.get(); if(s)await api("/auth/v1/logout",{method:"POST"},s.at).catch(()=>{});
+    sess.clear(); renderLogin();
+  };
+}
+
+function renderShellBody(u){
+  // ホームへ戻る/再描画のたびにサイドバー全体は作り直さず、フレーム部分だけ入れ替える
+  document.getElementById("root").innerHTML=shellHtml(u);
+  wireShell(u);
+}
+
+/* ============================================================
+   起動
+   ============================================================ */
+async function main(){
+  if(!sess.get()){renderLogin();return}
+  const u=await fetchMe();
+  if(!u){sess.clear();renderLogin("セッションが切れました。もう一度ログインしてください。");return}
+  if(u.is_active===false){sess.clear();renderLogin("このアカウントは無効化されています。本部までお問い合わせください。");return}
+  ME=u;
+  await fetchPerms();
+  VIEW="home"; CUR=null;
+  renderShellBody(u);
+}
+main();
+</script>
+</body>
+</html>
