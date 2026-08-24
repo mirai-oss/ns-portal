@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>N-Style 開発ステータスボード 2026-08-24</title>
+<style>
+:root{--bg:#f4f1eb;--panel:#fff;--ink:#231f1a;--muted:#7d756d;--line:#e4ddd4;--nav:#211d18;
+--accent:#c94728;--red:#c93f2b;--redsoft:#fde9e4;--green:#2f8f63;--greensoft:#e8f5ee;
+--amber:#b77b13;--ambersoft:#fff3d8;--blue:#2f6fb7;--bluesoft:#e8f0fb;--purple:#6849a8;--purplesoft:#f1ebff;
+--shadow:0 8px 24px rgba(35,31,26,.06)}
+*{box-sizing:border-box}
+body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans JP",sans-serif;background:var(--bg);color:var(--ink)}
+.hero{background:var(--nav);color:#fff;padding:28px 24px}
+.hero h1{margin:0;font-size:22px}.hero p{margin:6px 0 0;color:#bdb6ad;font-size:13px}
+.wrap{max-width:1100px;margin:0 auto;padding:20px 16px 60px}
+.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:-30px 0 22px}
+.kpi{background:#fff;border:1px solid var(--line);border-radius:14px;padding:14px;box-shadow:var(--shadow)}
+.kpi small{display:block;color:var(--muted);font-size:11px}.kpi b{font-size:26px}
+h2{font-size:17px;margin:28px 0 10px;display:flex;align-items:center;gap:8px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:10px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px;box-shadow:var(--shadow)}
+.card h3{margin:0 0 6px;font-size:14px}
+.card p{margin:0;font-size:12px;color:#5f574f;line-height:1.7}
+.badge{display:inline-block;padding:3px 9px;border-radius:999px;font-size:10px;font-weight:800;vertical-align:middle;margin-left:6px}
+.b-done{background:var(--greensoft);color:var(--green)}.b-run{background:var(--bluesoft);color:var(--blue)}
+.b-wait{background:var(--ambersoft);color:var(--amber)}.b-next{background:var(--purplesoft);color:var(--purple)}
+.b-new{background:var(--redsoft);color:var(--red)}
+.left-done{border-left:5px solid var(--green)}.left-run{border-left:5px solid var(--blue)}
+.left-next{border-left:5px solid var(--purple)}.left-wait{border-left:5px solid var(--amber)}
+ul.tight{margin:6px 0 0;padding-left:18px;font-size:12px;color:#5f574f;line-height:1.9}
+.mockrow{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:10px}
+.mock{background:#fff;border:1px solid var(--line);border-radius:14px;overflow:hidden;box-shadow:var(--shadow)}
+.mock .scr{background:var(--bg);padding:10px;min-height:120px}
+.mock .cap{padding:10px 12px;font-size:11px;color:#5f574f;border-top:1px solid var(--line)}
+.mock .cap b{display:block;font-size:12px;color:var(--ink)}
+.mrow{background:#fff;border:1px solid var(--line);border-radius:8px;padding:6px 8px;margin-bottom:5px;font-size:10px;display:flex;justify-content:space-between;align-items:center}
+.pill{font-size:8px;padding:2px 6px;border-radius:99px;font-weight:800}
+.mbar{height:8px;border-radius:99px;margin:4px 0}
+.steps{display:grid;grid-template-columns:repeat(4,1fr);gap:4px}
+.steps div{background:#fff;border:1px solid var(--line);border-radius:8px;padding:6px 4px;font-size:8.5px;text-align:center;font-weight:700}
+.steps div.on{background:var(--nav);color:#fff}
+.trow{display:flex;justify-content:space-between;font-size:10px;background:#fff;border:1px solid var(--line);border-radius:8px;padding:6px 8px;margin-bottom:4px}
+.note{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:12px 14px;font-size:12px;color:#5f574f;margin-top:10px}
+.foot{margin-top:34px;font-size:11px;color:var(--muted)}
+@media(max-width:760px){.kpis{grid-template-columns:repeat(2,1fr)}}
+</style>
+</head>
+<body>
+<div class="hero"><h1>🐔 N-Styleグループ 開発ステータスボード</h1><p>2026-08-24時点 ／ 詳細の正はns-portal/WORKLOG.md・各引継ぎ書</p></div>
+<div class="wrap">
+
+<div class="kpis">
+<div class="kpi"><small>✅ 完成・稼働中の大物</small><b style="color:var(--green)">10</b></div>
+<div class="kpi"><small>🔨 実装済み・デプロイ待ち</small><b style="color:var(--blue)">2</b></div>
+<div class="kpi"><small>📋 次にやる（順番決定済み）</small><b style="color:var(--purple)">6</b></div>
+<div class="kpi"><small>🙋 あなたの判断・作業待ち</small><b style="color:var(--amber)">6</b></div>
+</div>
+
+<h2>✅ 完成して本番で動いているもの</h2>
+<div class="grid">
+<div class="card left-done"><h3>🧾 請求書メール管理 Phase 1 <span class="badge b-new">NEW 8/24完成</span></h3><p>info@宛メールを5分おき自動取込→一覧・詳細・添付（非公開保存）→処理ロック（二重処理をDBで防止）→完了/取消→返信・新規作成（差出人info@固定・確認画面必須）→重要フラグ・除外ルール・一括操作・未処理バッジ・スマホ対応</p></div>
+<div class="card left-done"><h3>📅 シフト提出（従業員側の土台）</h3><p>提出・公開・スマレジ双方向同期・LINE未提出リマインド・代理入力。実機E2E済み</p></div>
+<div class="card left-done"><h3>🏗 データ基盤 Day1〜6</h3><p>GAS全バックアップ／従業員ID一本化／勤怠API自動取込＋給与突合＋異常検知（毎日自動）／売上BigQuery化（全履歴突合一致）／店舗追加の1箇所化（店舗管理画面＋自動配信）</p></div>
+<div class="card left-done"><h3>⚡ ダッシュボード高速化</h3><p>データ鮮度表示／朝8:45反映の前倒し／10分キャッシュ／BQ失敗時の自動フォールバック／Lark日報のBigQuery直読み化（ブラウザ操作全廃）</p></div>
+<div class="card left-done"><h3>📊 PL機能（第1弾）</h3><p>運営委託費の自動連携（精算書→PL・毎週）／複数店舗の自由合算表示</p></div>
+<div class="card left-done"><h3>💴 経費申請</h3><p>3タップ申請・承認フロー・タスク自動生成・管理タブ</p></div>
+<div class="card left-done"><h3>🔐 社内情報管理</h3><p>ハブ移設・本番切替済み。給与金庫・ID/PW金庫・Excel入出力</p></div>
+<div class="card left-done"><h3>🏠 ポータル＋本部タスクボード</h3><p>アカウント1本化・SSO・掲示板・かんばん・通知・権限設定</p></div>
+<div class="card left-done"><h3>🚑 障害対応（2件とも解決）</h3><p>Mac mini再起動による取込全停止→復旧・データ損失ゼロ／BigQuery未同期→原因特定・修復・診断ツール整備</p></div>
+<div class="card left-done"><h3>📋 設計・調査ドキュメント</h3><p>データ基盤監査／要件定義書v3.4／設計仕様書／スマレジAPI調査／シフトUIデザイン確定（従業員側・店長側とも）</p></div>
+</div>
+
+<h2>🔨 実装済み・あとはデプロイだけ</h2>
+<div class="grid">
+<div class="card left-run"><h3>📂 PL補助科目 <span class="badge b-run">デプロイ待ち</span></h3><p>勘定科目の下に電気/ガス/水道のような内訳。合計表示＋▶で開閉。コード完成・手順書あり（GAS貼り替え）</p></div>
+<div class="card left-run"><h3>⏱ スポット人件費 <span class="badge b-run">デプロイ待ち</span></h3><p>タイミー等を日付単位で入力→日別の人件費率・PLに自動反映。コード完成・手順書あり</p></div>
+</div>
+
+<h2>📋 次にやる（優先順）</h2>
+<div class="grid">
+<div class="card left-next"><h3>1️⃣ PL仕上げ</h3><p>補助科目・スポットのデプロイ→<b>MF試算表CSV取込</b>の実装（2〜3日。実CSVで仕様検証済み・設計確定）</p></div>
+<div class="card left-next"><h3>2️⃣ BQモードを全員の既定に</h3><p>ダッシュボード高速化の最後の一手。下ごしらえ完了・<b>あなたのOK待ち</b>（社長・本部→全役職の段階展開）</p></div>
+<div class="card left-next"><h3>3️⃣ シフト管理UI v5（店長・本部側）</h3><p>①希望確認→②調整グリッド→③確定→④実績・叶え率の4ステップ画面（デザイン採用済み・約2週間）</p></div>
+<div class="card left-next"><h3>4️⃣ 朝の見張り番</h3><p>昨日分データの有無を毎朝自動チェック→無い時だけLark警告（「無通知障害」の再発防止・0.5日）</p></div>
+<div class="card left-next"><h3>5️⃣ 請求書 Phase 1.5</h3><p>検索強化・金額/期限ソート・コメント（実運用の要望を見て着手）</p></div>
+<div class="card left-next"><h3>6️⃣ データ基盤 Day 7仕上げ</h3><p>シート停止テスト（半日・要日程調整)・手順書3点の整備</p></div>
+</div>
+
+<h2>🖼 これから作る画面のイメージ</h2>
+<div class="mockrow">
+<div class="mock"><div class="scr">
+<div class="mrow"><span><b>水道光熱費</b> ▼</span><span><b>842,300円</b></span></div>
+<div class="mrow" style="margin-left:14px"><span>└ 電気料金</span><span>512,000円</span></div>
+<div class="mrow" style="margin-left:14px"><span>└ ガス料金</span><span>218,300円</span></div>
+<div class="mrow"><span><b>通信費</b> ▶</span><span><b>96,800円</b></span></div>
+</div><div class="cap"><b>PL補助科目（デプロイ待ち）</b>合計表示＋開閉式の内訳。会計ソフトと同じ感覚</div></div>
+
+<div class="mock"><div class="scr">
+<div class="mrow"><span>8/23 鳥一代本店</span><span class="pill" style="background:var(--ambersoft);color:var(--amber)">タイミー</span><span><b>9,800円</b></span></div>
+<div class="mrow"><span>人件費率</span><span>27.9% → <b style="color:var(--red)">28.3%</b></span></div>
+<div class="mbar" style="background:linear-gradient(90deg,var(--green) 70%,var(--amber) 70%)"></div>
+</div><div class="cap"><b>スポット人件費（デプロイ待ち）</b>日付単位で入力→その日の人件費率に即反映</div></div>
+
+<div class="mock"><div class="scr">
+<div class="mrow"><span>登録 <b>34</b></span><span>除外 <b>128</b></span><span style="color:var(--amber)">要選択 <b>3</b></span></div>
+<div class="mrow"><span>水道光熱費/電気</span><span class="pill" style="background:var(--greensoft);color:var(--green)">登録</span></div>
+<div class="mrow"><span>地代家賃</span><span class="pill" style="background:var(--ambersoft);color:var(--amber)">残す/上書き?</span></div>
+</div><div class="cap"><b>MF試算表CSV取込（次の実装）</b>12ヶ月分を一括照合。既存は除外・差分だけ登録</div></div>
+
+<div class="mock"><div class="scr">
+<div class="steps"><div class="on">①希望確認</div><div>②調整</div><div>③確定</div><div>④実績</div></div>
+<div class="mrow" style="margin-top:6px"><span>9/4 金</span><span style="color:var(--red)"><b>1人不足</b></span><span class="pill" style="background:var(--purplesoft);color:var(--purple)">ヘルプ候補2</span></div>
+<div class="mrow"><span>想定人件費率</span><span><b>28.4%</b> <span class="pill" style="background:var(--greensoft);color:var(--green)">基準内</span></span></div>
+</div><div class="cap"><b>シフト管理UI v5（週2〜着手）</b>店長・本部側の4ステップ画面。叶え率・実績差分まで</div></div>
+
+<div class="mock"><div class="scr">
+<div class="trow"><span>データ最新日: 8/23</span><span style="color:var(--green)">✅ 最新</span></div>
+<div class="trow"><span>朝8:45反映</span><span style="color:var(--green)">稼働中</span></div>
+<div class="trow"><span>見張り番</span><span style="color:var(--amber)">これから</span></div>
+</div><div class="cap"><b>朝の見張り番（0.5日）</b>取込が止まった朝に自動でLark警告</div></div>
+</div>
+
+<h2>🙋 あなたの判断・作業待ち</h2>
+<div class="grid">
+<div class="card left-wait"><h3>承認するだけ</h3><ul class="tight"><li><b>BQモードの既定化</b>のGO（まず社長・本部のみ→2営業日後に全員）</li><li><b>シート停止テスト</b>の日程（半日・データ基盤の卒業検定）</li></ul></div>
+<div class="card left-wait"><h3>5分の設定作業</h3><ul class="tight"><li><b>Mac miniの自動ログインON</b>（再起動しても取込が自動復帰するように）</li><li><b>GAS幽霊トリガー2つの削除</b>（エラー通知のノイズ消し・手順書あり）</li></ul></div>
+<div class="card left-wait"><h3>決めたら動くもの</h3><ul class="tight"><li><b>Chatwork配信グループ</b>のルームID</li><li><b>LINE公式の月間送信上限</b>の対応方針（シフトリマインド等と共用）</li></ul></div>
+</div>
+
+<h2>🔭 その先のロードマップ（要件定義書v3.4より）</h2>
+<div class="note">シフト独自機能（🔥出勤強化日＋特別時給・休み希望の理由・ヘルプ可否・AIシフト提案）→ ⑤打刻（GPS）→ ⑭役職テスト → ⑪評価制度 → ⑮AI窓口エージェント → ③発注管理 → 請求書のOCR/AI読取（Phase 3）→ マネーフォワード連携・支払消込（Phase 4）→ ⑦カレンダー・独自ドメイン</div>
+
+<p class="foot">作成: Claude（MacBook側メインセッション）／ソース: WORKLOG.md・引継ぎ書_2026-08-24_請求書メール管理Phase1完了・引継ぎ書_2026-08-23_ダッシュボード高速化とデータ基盤_続き・実装スケジュール_最短計画</p>
+</div>
+</body>
+</html>
