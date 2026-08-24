@@ -1422,6 +1422,13 @@ GitHubで新しいPAT（`repo`・`workflow`スコープ）を再生成し、cron
 - **`tori-dashboard`に`?embed=1`（ヘッダー/ナビ非表示）・`?tab=`または`#tab=`（ログイン後の初期タブ直接指定）を実装・デプロイ完了**（コミット`d9dd5c9`・`3538e95`、`app.js?v=121`）。`init()`でURLパラメータを保持→`afterLogin()`で`myTabs()`許可リストと突合のうえ適用。権限外・存在しないキーは既定タブへフォールバック。ローカルデモモードで4パターン確認済み。GAS変更なし
 - **担当Fへ**: portal.htmlのiframe src（`KEIEI_URL`）に`?embed=1&tab=xxx`を付与すれば深リンクが有効になります。xxxのキー一覧は`tori-dashboard/HANDOFF.md`本日付エントリ「F-3依頼対応」参照（`dash`/`target`/`analysis`/`detail`/`pl`/`deposit`/`ad`/`review`/`weekly`/`weeklyAdmin`/`ai`/`accounts`）。対応してもらえたら、統合済みの「経営管理」項目を元のサブ項目一覧に戻していただけます
 - nippo側（担当B宛の同種依頼）は担当A範囲外のため未対応・担当Bへの依頼のまま
+
+## 2026-08-24（担当A実行スレッド・続き3） 担当Fの実機報告（?tab=がセッション復元で無視される）を修正
+
+- ユーザーから「担当Fから指示が来ているはず」と再度指示を受け、コミット`21ee5c7`（担当F実行スレッド・続き7）の「② tori-dashboard（担当A）」を確認・着手
+- **原因**: F-3対応で実装した`?tab=`反映は`afterLogin()`内でのみ行っており、`afterLogin()`は新規ログイン時にしか呼ばれない。ブラウザ保存済みセッションでの自動復元経路（2回目以降のアクセス・実際の利用シーンそのもの）では呼ばれておらず、`?tab=`が無視されていた（担当Fが原因箇所まで特定済みだったため調査はスムーズ）
+- **修正**（`tori-dashboard`コミット`2a8eb2b`・`a65a2e7`、`app.js?v=122`。GAS変更なし）: 復元経路2分岐とも`afterLogin()`を呼ぶよう変更。ローカルでセッション事前設定→`?tab=ad`アクセスし、修正前なら`'dash'`のままのところ`S.tab==='ad'`になることを確認
+- 担当Fへ: 修正済みです。再度実機（portal.html本番URL）で経営管理グループの各項目切替をご確認いただけると助かります
 - 骨子: **ファイル所有権マトリクス**（tori-dashboard/app.js+GASデプロイ=A専任、nippo/index.html=B専任、invoices系=C専任、smaregi系workflow/EdgeFn=D専任、tasks.html=E専任、ポータルindex.htmlは原則凍結）＋WORKLOG競合は両方残す＋SQLは日付入り新規ファイルのみ＋Edge Functionは自分の分だけデプロイ
 - 担当間の受け渡しはSync2点のみ（BQ既定化のユーザーOK／給与按分のD→A引き継ぎ）。AI面接・書類承認AIはユーザー回答待ちのため対象外と明記
 - ステータスボードの「次にやる」冒頭に担当分けへの導線を追加
