@@ -1386,3 +1386,4 @@ GitHubで新しいPAT（`repo`・`workflow`スコープ）を再生成し、cron
 ## 2026-08-24（MacBook側・続き） Anthropic API費用の自動レポートを担当D/Fに追加
 - ユーザー要望: API利用額を月次でLark配信＋管理システム内のダッシュボード表示。公式Usage & Cost Admin API（/v1/organizations/cost_report・Admin APIキー必須・USDセント・日次粒度）の仕様を確認のうえ、**D-4**（日次取得→Supabase `api_cost_daily`→Lark月次/週次/しきい値配信）と**F-1.5**（ポータルシェルのAI利用料ウィジェット）として担当分けに追加
 - ユーザー作業: Admin APIキーの発行（個人アカウント不可・Console→Settings→Organizationで組織設定が前提・スコープは読み取り限定）→GitHub Secret登録。ステータスボードの判断待ちに追記済み
+- 追記（同日）: API費用レポートは**その日のUSD/JPYレートで円換算して保存・円主表示（ドル併記）**とユーザー確定（レート取得は無料の為替API・キー不要のFrankfurter等。換算時レートも保存し後から再現可能に）。D-4/F-1.5の仕様に反映
