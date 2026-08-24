@@ -286,16 +286,31 @@ window.addEventListener("popstate",e=>{
    受信トレイ（一覧マスタ）
    ============================================================ */
 async function loadInboxMaster(){
-  const r=await authed(`/rest/v1/invoice_emails?select=id,from_address,subject,body_text,received_at,mail_status,duplicate_suspected,is_important,processing_user_id,completed_at,updated_at,processor:users!invoice_emails_processing_user_id_fkey(name),atts:invoice_attachments(id)&order=received_at.desc&limit=500`);
+  // 2026-08-24: limitが500件のままだと総件数がそれを超えたときに古いメールが
+  // 一覧・絞り込みから欠落する（KPIバッジとの件数不一致の指摘で発覚）。
+  // 実運用の総件数(1000件強)を見込んで余裕を持たせた
+  const r=await authed(`/rest/v1/invoice_emails?select=id,from_address,subject,body_text,received_at,mail_status,duplicate_suspected,is_important,processing_user_id,completed_at,updated_at,processor:users!invoice_emails_processing_user_id_fkey(name),atts:invoice_attachments(id)&order=received_at.desc&limit=5000`);
   MASTER_MAILS=(r.ok&&Array.isArray(r.body))?r.body:[];
 }
-function kpiCounts(){
+// KPIカード（未処理・処理中・今月完了）は、MASTER_MAILSがlimitで切り詰められる可能性を
+// 考慮せず常に正確な値を出すため、一覧とは別にDBへ直接件数を問い合わせて求める
+// （ポータル側の未処理件数バッジと同じ方式に統一＝表示がズレていた問題への対応）
+let KPI_COUNTS={unprocessed:0,processing:0,completedThisMonth:0};
+async function loadKpiCounts(){
   const now=new Date();
-  const unprocessed=MASTER_MAILS.filter(m=>m.mail_status==="unread"||m.mail_status==="read").length;
-  const processing=MASTER_MAILS.filter(m=>m.mail_status==="processing").length;
-  const completedThisMonth=MASTER_MAILS.filter(m=>m.mail_status==="completed"&&m.completed_at&&new Date(m.completed_at).getMonth()===now.getMonth()&&new Date(m.completed_at).getFullYear()===now.getFullYear()).length;
-  return {unprocessed,processing,completedThisMonth};
+  const startOfMonth=new Date(now.getFullYear(),now.getMonth(),1).toISOString();
+  const [unprocR,procR,doneR]=await Promise.all([
+    authed(`/rest/v1/invoice_emails?mail_status=in.(unread,read)&select=id`),
+    authed(`/rest/v1/invoice_emails?mail_status=eq.processing&select=id`),
+    authed(`/rest/v1/invoice_emails?mail_status=eq.completed&completed_at=gte.${startOfMonth}&select=id`),
+  ]);
+  KPI_COUNTS={
+    unprocessed:(unprocR.ok&&Array.isArray(unprocR.body))?unprocR.body.length:0,
+    processing:(procR.ok&&Array.isArray(procR.body))?procR.body.length:0,
+    completedThisMonth:(doneR.ok&&Array.isArray(doneR.body))?doneR.body.length:0,
+  };
 }
+function kpiCounts(){ return KPI_COUNTS; }
 function filteredMails(){
   let list=MASTER_MAILS;
   if(CHIP==="unprocessed") list=list.filter(m=>m.mail_status==="unread"||m.mail_status==="read");
@@ -520,7 +535,7 @@ async function runBulkAction(u,action,confirmMsg){
   msg.className="err msg-ok";
   msg.textContent=`${r.body.success_count}件完了`+(skipped.length?`／${skipped.length}件スキップ（他の人が処理中等）`:"");
   BULK_SELECTED.clear();
-  await loadInboxMaster(); await loadWaitingPaymentCount();
+  await loadInboxMaster(); await loadWaitingPaymentCount(); await loadKpiCounts();
   const k=kpiCounts();
   document.querySelector(".mail-summary").outerHTML=`<div class="mail-summary">
       <div class="card mail-kpi"><small>未処理メール</small><b style="color:var(--accent)">${k.unprocessed}</b></div>
@@ -759,7 +774,7 @@ function wireDetailActions(u){
     history.back();
   };
   const reloadDetail=async()=>{
-    await loadInboxMaster(); await loadWaitingPaymentCount();
+    await loadInboxMaster(); await loadWaitingPaymentCount(); await loadKpiCounts();
     // 受信トレイのタブを表示中のときだけ左の一覧も更新する（他タブから開いたモーダル経由の
     // 場合は#mailListScrollが存在せず、ここでwireMailListClicksすると他タブの行のクリック
     // 処理まで上書きしてしまうため呼ばない）
@@ -997,7 +1012,7 @@ async function renderNotApplicableTab(u){
     el.disabled=true;
     const r2=await authed("/rest/v1/rpc/invoice_restore_from_archive",{method:"POST",body:JSON.stringify({p_email_id:el.dataset.restore})});
     if(!r2.ok){ alert((r2.body&&r2.body.message)||"解除できませんでした"); el.disabled=false; return; }
-    await loadInboxMaster(); await loadWaitingPaymentCount();
+    await loadInboxMaster(); await loadWaitingPaymentCount(); await loadKpiCounts();
     await renderNotApplicableTab(u);
   });
 }
@@ -1120,7 +1135,7 @@ async function main(){
   if(u.is_active===false){renderLogin();return}
   ME=u;
   history.replaceState({tab:"inbox"},"");
-  await Promise.all([loadInboxMaster(), loadWaitingPaymentCount()]);
+  await Promise.all([loadInboxMaster(), loadWaitingPaymentCount(), loadKpiCounts()]);
   $("app").innerHTML=shellHtml(u);
   wireShell(u);
   await renderTabBody(u);
