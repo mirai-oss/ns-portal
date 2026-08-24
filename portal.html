@@ -652,14 +652,20 @@ async function fetchPosts(){
 
 /* ============================================================
    メニュー構成（実装指示書_統合ポータルシェル_2026-08-24.md F-1準拠）
-   深リンク調査（コードを読むだけ・変更なし）: nippo・tori-dashboardとも
-   URLハッシュ/クエリでタブを直接指定する仕組みが無いため、グループ配下の
-   項目はどれをクリックしても同じiframeを開く暫定実装（担当A/BへF-3で依頼済み）。
+   深リンク調査（コードを読むだけ・変更なし）: 当初nippo・tori-dashboardとも
+   URLでタブを直接指定する仕組みが無く、担当A・担当Bへ実装を依頼していた
+   （経緯はWORKLOG参照）。**担当Bが対応済み**（nippoコミットc345911・
+   `?page=<key>`パラメータ新設。使えるkey: home/write/weekly/list/check/
+   shift/tasks/chat/manuals/recruit/admin/settings/dash。権限的に見えない
+   ページ・未知のキーはホームへ安全にフォールバックする設計）。
+   tori-dashboard側（担当A宛の依頼）は本稿時点でまだ未対応のため、経営管理は
+   引き続き1グループ1項目のまま（対応が来たらここを同様に分割する）。
    ============================================================ */
 const NIPPO_URL="https://mirai-oss.github.io/nippo/";
 const KEIEI_URL="https://mirai-oss.github.io/tori-dashboard/";
 const SEISAN_URL="https://mirai-oss.github.io/seisan-dashboard/";
 const JOHO_URL="https://ns-info-system.vercel.app";
+const nippoPage=p=>NIPPO_URL+"?page="+p;
 
 const TOP_ITEMS=[
   {key:"home",ico:"🏠",label:"概要（ホーム）",type:"home"},
@@ -668,22 +674,28 @@ const TOP_ITEMS=[
   {key:"invoices",sysKey:"invoices",ico:"✉️",label:"請求書メール",url:"invoices.html",countKey:"inv"},
   {key:"expenses",sysKey:"expenses",ico:"🧾",label:"経費申請",url:"expenses.html"},
 ];
-/* 現場・日報／経営管理／精算管理／社内情報は、実際のアプリ（nippo・
-   tori-dashboard）がURLで内部タブを指定する仕組みを持っていない（担当F調査済み・
-   担当A/Bへ実装依頼済み＝下記WORKLOG参照）ため、複数のサブ項目を並べても
+/* 経営管理・精算管理・社内情報は、実際のアプリ（tori-dashboard等）が
+   URLで内部タブを指定する仕組みをまだ持っていない（tori-dashboardは担当A
+   へ実装依頼済み・上記コメント参照）ため、複数のサブ項目を並べても
    結局すべて同じページが開くだけで意味が無い。それを避けるため、サブ項目に
    分けず1グループ=1項目（クリックすると迷わずアプリが開く）にしている。
-   採用管理だけは「実装済み1項目＋準備中バッジ2項目」という異なる意味の
-   項目が混在するため、引き続きグループ（開閉式）のままにしている。 */
+   現場・日報／採用管理はnippo側の対応（?page=）が入ったため、実際に別の
+   ページへ飛ぶ開閉グループとして下のGROUPSに分けている。 */
 const SYS_ITEMS=[
-  {key:"nippo",  sysKey:"nippo",  ico:"📝", label:"日報・週報・シフト", url:NIPPO_URL},
   {key:"keiei",  sysKey:"keiei",  ico:"📊", label:"経営ダッシュボード", url:KEIEI_URL},
   {key:"seisan", sysKey:"seisan", ico:"🧮", label:"精算ダッシュボード", url:SEISAN_URL},
   {key:"joho",   sysKey:"joho",   ico:"🔐", label:"社内情報管理", url:JOHO_URL, external:true, sso:true},
 ];
 const GROUPS=[
+  {cap:"現場・日報",ico:"📝", items:[
+    {key:"nippo-daily",  sysKey:"nippo", ico:"📝", label:"日報",     url:nippoPage("write")},
+    {key:"nippo-weekly", sysKey:"nippo", ico:"🗓️", label:"週報",     url:nippoPage("weekly")},
+    {key:"nippo-check",  sysKey:"nippo", ico:"✅", label:"チェック", url:nippoPage("check")},
+    {key:"nippo-shift",  sysKey:"nippo", ico:"📅", label:"シフト",   url:nippoPage("shift")},
+    {key:"nippo-manual", sysKey:"nippo", ico:"📘", label:"マニュアル", url:nippoPage("manuals")},
+  ]},
   {cap:"採用管理",ico:"👥", roles:["TEAM","HQ","CEO"], items:[
-    {key:"recruit",             sysKey:"nippo", ico:"🧑‍💼", label:"応募者・採用管理", url:NIPPO_URL},
+    {key:"recruit",             sysKey:"nippo", ico:"🧑‍💼", label:"応募者・採用管理", url:nippoPage("recruit")},
     {key:"recruit-dash",        ico:"📈", label:"採用ダッシュボード", soon:true},
     {key:"recruit-personality", ico:"🧠", label:"性格診断", soon:true},
   ]},
@@ -709,7 +721,7 @@ function visibleLeafItems(u){
 }
 
 let ME=null, VIEW="home", CUR=null;
-let OPEN_GROUP=null; // アコーディオン式に開いているグループは常に1つだけ（下のwireNav参照）
+let OPEN_GROUP="現場・日報"; // アコーディオン式に開いているグループは常に1つだけ（下のwireNav参照）
 let NAV_HQ_CNT=0, NAV_INV_CNT=0;
 
 /* ============================================================
@@ -788,7 +800,7 @@ function sidebarHtml(u){
   </aside>`;
 }
 function mobilebarHtml(u){
-  const prefer=["keiei","hqtasks","nippo","expenses"];
+  const prefer=["keiei","hqtasks","nippo-daily","expenses"];
   const picks=[];
   prefer.forEach(k=>{ if(picks.length>=3) return; const f=findItem(k); if(f&&itemVisible(f.it,f.grp,u)) picks.push(f.it); });
   const btns=[{key:"home",ico:"🏠",label:"ホーム"}].concat(picks.map(it=>({key:it.key,ico:it.ico,label:it.label.replace(/(ダッシュボード|メール|申請)$/,"")})));
@@ -941,14 +953,14 @@ function homeQuickGroups(u){
   const keieiItem=SYS_ITEMS.find(it=>it.key==="keiei");
   const keiei=(keieiItem&&itemVisible(keieiItem,null,u))?[keieiItem]:[];
   const gyomu=[]; // 業務（現場・本部）
-  ["hqtasks","invoices","nippo","expenses"].forEach(k=>{ const f=findItem(k); if(f&&itemVisible(f.it,f.grp,u)) gyomu.push(f.it); });
+  ["hqtasks","invoices","nippo-daily","expenses"].forEach(k=>{ const f=findItem(k); if(f&&itemVisible(f.it,f.grp,u)) gyomu.push(f.it); });
   return {keiei,gyomu};
 }
 // デスクトップホームの「よく使う機能」3ボタン。権限が無い項目は飛ばして
 // 次点候補を繰り上げる（例: バイトには本部タスクを見せない）
 function quickActionsHtml(u){
   const candidates=[
-    {key:"nippo",   ico:"📝", label:"日報を書く",       sub:"日報・週報・シフト"},
+    {key:"nippo-daily", ico:"📝", label:"日報を書く", sub:"日報・週報・シフト"},
     {key:"hqtasks", ico:"📌", label:"本部タスクを確認", sub:"今日・期限超過・工程"},
     {key:"invoices",ico:"✉️", label:"請求書メールを確認", sub:"受信・処理状況"},
     {key:"expenses",ico:"🧾", label:"経費を申請",       sub:"レシート→用途→送信"},
