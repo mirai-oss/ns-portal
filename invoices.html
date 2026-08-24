@@ -164,6 +164,9 @@ button,input,select,textarea{font:inherit}
 .empty{padding:34px 10px;text-align:center;color:var(--muted);font-size:13px}
 .hq-tablewrap{overflow:auto}
 
+.mail-tabs-row{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:12px}
+.mail-tabs-row .mail-tabs{margin-bottom:0}
+body.embed-mode .wrap{padding-top:16px}
 .mobile-back{display:none}
 .modal .mobile-back{display:none!important} /* モーダル内では「一覧へ戻る」は不要（閉じるボタンで戻る） */
 @media(max-width:900px){
@@ -211,6 +214,10 @@ const SUPA_URL="https://uuvsxzhpxtghojoubjcc.supabase.co";
 const SUPA_KEY="sb_publishable_MrwPJAx_Ws_fdRutprKCiQ_dg3wCiTr";
 const LS_KEY="nsportal_session_v1";
 const BUCKET="invoice-files";
+// 統合ポータルシェル(portal.html)からiframe埋め込みされる際、自前のヘッダー（タイトル・
+// 「←ポータルへ」リンク）を隠す＝担当F(F-3)からの依頼対応。同一オリジンのためログイン
+// セッション(localStorage)はportal.htmlと共有され、埋め込み時も自動ログインされる想定
+const EMBED=new URLSearchParams(location.search).get("embed")==="1";
 
 const MAIL_STATUS_LABEL={unread:"未処理",read:"未処理",processing:"処理中",completed:"完了",archived:"対象外"};
 const MAIL_STATUS_PILL={unread:"red",read:"red",processing:"blue",completed:"green",archived:"gray"};
@@ -373,13 +380,13 @@ async function loadWaitingPaymentCount(){
 function shellHtml(u){
   const k=kpiCounts();
   return `
-  <div class="topbar">
+  ${EMBED?"":`<div class="topbar">
     <h1>📨 請求書メール</h1>
     <div class="who" style="display:flex;align-items:center;gap:10px">
       <button class="hq-btn primary" id="compose-open">✏️ 新規作成</button>
       <span>👤 ${esc(u.name)} ／ <a href="index.html">← ポータルへ</a></span>
     </div>
-  </div>
+  </div>`}
   <div class="mail-shell">
     <div class="mail-summary">
       <div class="card mail-kpi"><small>未処理メール</small><b style="color:var(--accent)">${k.unprocessed}</b></div>
@@ -387,14 +394,17 @@ function shellHtml(u){
       <div class="card mail-kpi"><small>支払待ち請求書</small><b>${WAITING_PAYMENT_COUNT}</b></div>
       <div class="card mail-kpi"><small>今月完了</small><b style="color:var(--green)">${k.completedThisMonth}</b></div>
     </div>
-    <div class="mail-tabs">
-      <button class="mail-tab ${TAB==='inbox'?'active':''}" data-tab="inbox">受信トレイ</button>
-      <button class="mail-tab ${TAB==='invoiceList'?'active':''}" data-tab="invoiceList">請求書一覧</button>
-      <button class="mail-tab ${TAB==='history'?'active':''}" data-tab="history">処理履歴</button>
-      <button class="mail-tab ${TAB==='sent'?'active':''}" data-tab="sent">送信済み</button>
-      <button class="mail-tab ${TAB==='notApplicable'?'active':''}" data-tab="notApplicable">対象外</button>
-      <button class="mail-tab ${TAB==='important'?'active':''}" data-tab="important">⭐ 重要</button>
-      <button class="mail-tab ${TAB==='settings'?'active':''}" data-tab="settings">⚙️ 設定</button>
+    <div class="mail-tabs-row">
+      <div class="mail-tabs">
+        <button class="mail-tab ${TAB==='inbox'?'active':''}" data-tab="inbox">受信トレイ</button>
+        <button class="mail-tab ${TAB==='invoiceList'?'active':''}" data-tab="invoiceList">請求書一覧</button>
+        <button class="mail-tab ${TAB==='history'?'active':''}" data-tab="history">処理履歴</button>
+        <button class="mail-tab ${TAB==='sent'?'active':''}" data-tab="sent">送信済み</button>
+        <button class="mail-tab ${TAB==='notApplicable'?'active':''}" data-tab="notApplicable">対象外</button>
+        <button class="mail-tab ${TAB==='important'?'active':''}" data-tab="important">⭐ 重要</button>
+        <button class="mail-tab ${TAB==='settings'?'active':''}" data-tab="settings">⚙️ 設定</button>
+      </div>
+      ${EMBED?'<button class="hq-btn primary" id="compose-open-embed">✏️ 新規作成</button>':''}
     </div>
     <div id="tabbody"></div>
   </div>`;
@@ -406,7 +416,8 @@ function wireShell(u){
     document.querySelectorAll(".mail-tab").forEach(x=>x.classList.toggle("active",x.dataset.tab===TAB));
     await renderTabBody(u);
   });
-  $("compose-open").onclick=()=>openComposeModal(u);
+  if($("compose-open")) $("compose-open").onclick=()=>openComposeModal(u);
+  if($("compose-open-embed")) $("compose-open-embed").onclick=()=>openComposeModal(u);
 }
 
 /* ============================================================
@@ -1317,10 +1328,11 @@ async function renderSettingsTab(u){
 function renderLogin(){
   $("app").innerHTML=`<div class="card" style="padding:20px;margin-top:20px">
     <p style="margin-bottom:10px">ログインが必要です。ポータルからアクセスしてください。</p>
-    <a class="hq-btn primary" href="index.html" style="text-decoration:none;display:inline-block">← ポータルへ</a>
+    ${EMBED?"":'<a class="hq-btn primary" href="index.html" style="text-decoration:none;display:inline-block">← ポータルへ</a>'}
   </div>`;
 }
 async function main(){
+  if(EMBED) document.body.classList.add("embed-mode");
   if(!sess.get()){renderLogin();return}
   const u=await fetchMe();
   if(!u){sess.clear();renderLogin();return}
