@@ -57,7 +57,7 @@
   8. Day7（総合検証・完成判定）: 未着手。**本番影響のある検証（シート停止テスト等）を含むため、8/22障害が落ち着いてから着手すること**
 
 **直近のコミット（この時点。鵜呑みにせず必ず`git fetch origin && git log --oneline -1 origin/main`で照合すること）**:
-- `ns-portal`: `7829b3b`（請求書メール管理Phase1実装・UI刷新・新規メール作成機能・社長個人アドレス除外等）
+- `ns-portal`: `1db43ff`（請求書メール管理Phase1実装・UI刷新・新規メール作成機能実機確認済・タブ間ナビゲーション修正等）
 - `nippo`: `9cdca2b`（店舗管理画面拡張）
 - `NStyle-AI`: `94db5a0`（bqDailyStore追加の記録）
 - `ns-daily-import`: `0139ff3`（bq-sales-reconcileタスク追加）
@@ -1306,3 +1306,5 @@ GitHubで新しいPAT（`repo`・`workflow`スコープ）を再生成し、cron
 - **D5（返信機能）実地テスト完了を確認**: ユーザーがinfo@宛・本人宛の両方にテストメールを送信→どちらも正しく返信送信されたことをDB(`invoice_email_outbox.status='sent'`・`invoice_audit_logs`のaction='reply_sent')で確認
 - **新規メール作成機能を追加**（コミット`a954666`）: 返信専用だった`invoice_email_outbox`を新規送信にも対応拡張（`email_id`をnullable化・`to_address`/`subject`/`send_mode`列追加）。`invoice_queue_compose`・`invoice_recipient_suggestions`（過去に送信成功した宛先一覧）RPCを追加、`invoice-send`Edge Function・GAS `Code.gs`をreply/compose両対応に拡張（compose側は`GmailApp.createDraft().send()`で新規スレッドを起こす）。invoices.htmlに「✏️ 新規作成」ボタン＋確認画面付きモーダル、宛先はdatalistで過去の送信先を自動補完。**実機での送信テストは次回セッションで要確認**（コード実装・push・GitHub Pages反映までは完了）
 - **shunji.nakayama@ns0314.com（社長個人）宛メールを取込対象から除外**（コミット`7829b3b`）: 「このアドレスはシステムに入れない・返信/新規作成でもこのアドレスからは送れないように」とのユーザー指示。GAS SEARCH_QUERYに`-to:shunji.nakayama@ns0314.com`を追加（CCに入っている正規の請求書スレッドは引き続き対象）。既に取り込み済みだった該当51件（CCにinfo@を含まず社長個人のみ宛・添付34ファイル含む）は中身を確認の上、本番から削除済み。差出人は元々`FROM_ALIAS`固定でUIにも差出人欄が無いため、送信元がshunji.nakayama@になることは構造的に無い（確認のみ・変更なし）
+- 新規メール作成機能をユーザーが実機テストし送信成功を確認
+- **他タブからのメール表示をモーダル化**（コミット`1db43ff`）: 請求書一覧・対象外・送信済みタブからメールを開くと受信トレイへ強制的にタブ切替されていたため「戻ると元のタブ（フィルタ・スクロール位置）を見失う」との指摘。タブ切替をやめてモーダル表示に変更し閉じれば元のタブへそのまま戻れるように。送信済みタブもクリックで開けるようにした（返信は同じモーダルで元メール詳細、新規作成メールはinvoice_emailsに紐付かないため専用の簡易表示モーダル）。あわせて、モーダル経由の操作後に他タブの行のクリック処理を誤って受信トレイ用に上書きしてしまうバグも発見・修正
