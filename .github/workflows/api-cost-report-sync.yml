@@ -2,7 +2,12 @@ name: Anthropic API費用の日次同期
 
 # D-4（docs/実装指示書_担当D_勤怠給与監視_2026-08-24.md）。
 # 毎日、Anthropicの公式Usage & Cost Admin APIから直近の利用料を取得し、
-# api_cost_dailyへ円換算とともに保存する（表示・Lark配信は別workflowの想定）。
+# api_cost_dailyへ円換算とともに保存する。続けて、JST基準で条件に合う日だけ
+# Larkへ配信する（毎月1日=先月合計／毎月曜=今月累計／閾値超過=今月はじめて超えた時のみ）。
+#
+# しきい値アラートの金額は「vars.API_COST_ALERT_THRESHOLD_USD」（リポジトリ変数・Secretsではない
+# 通常のvariables）で設定する。未設定ならしきい値チェック自体をスキップする（2026-08-24時点で
+# ユーザーから具体的な金額の確認がまだのため、設定するまでは安全側に倒す）。
 #
 # 発火は他のcron系workflowと同じく外部cron（cron-job.org）からworkflow_dispatch APIを叩く。
 #   POST https://api.github.com/repos/mirai-oss/ns-portal/actions/workflows/api-cost-report-sync.yml/dispatches
@@ -57,4 +62,26 @@ jobs:
           if [ "$OK" != "true" ]; then
             echo "::error::同期処理がエラーを返しました"
             exit 1
+          fi
+
+      - name: api-cost-report-notifyを呼び出す（Lark配信・該当日のみ送信）
+        env:
+          SR_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          THRESHOLD: ${{ vars.API_COST_ALERT_THRESHOLD_USD }}
+        run: |
+          BODY="{}"
+          if [ -n "$THRESHOLD" ]; then
+            BODY=$(node -e "console.log(JSON.stringify({thresholdUsd: Number(process.env.THRESHOLD)}))")
+          fi
+          RES=$(curl -s -w "\n%{http_code}" -X POST \
+            "https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/api-cost-report-notify" \
+            -H "Authorization: Bearer $SR_KEY" \
+            -H "Content-Type: application/json" \
+            -d "$BODY")
+          HTTP_CODE=$(echo "$RES" | tail -1)
+          BODY_TEXT=$(echo "$RES" | sed '$d')
+          echo "$BODY_TEXT"
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "::warning::api-cost-report-notifyが失敗しました（HTTP $HTTP_CODE）。同期自体は成功しているのでジョブは失敗にしない"
+            exit 0
           fi
