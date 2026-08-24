@@ -258,6 +258,31 @@ let SELECTED=null;         // 選択中メールの詳細一式
 const canManage=u=>!!(u&&(u.is_master||u.role==="CEO"||u.role==="HQ"));
 
 /* ============================================================
+   画面遷移の履歴管理（ブラウザの「戻る」・トラックパッドのスワイプ戻る対応）
+   これまで一切history.pushStateしていなかったため、詳細モーダルやスマホの
+   全画面詳細を開いた状態で「戻る」を押すと、アプリ内の一つ前の画面ではなく
+   ポータルのトップ（index.html）まで一気に戻ってしまっていた。タブ切替・
+   モーダル表示のたびに履歴を1件積み、popstateで「モーダルを閉じる／
+   一つ前のタブに戻す」という形に統一する
+   ============================================================ */
+function pushNav(extra){ history.pushState(Object.assign({tab:TAB},extra||{}),""); }
+window.addEventListener("popstate",e=>{
+  if(!ME) return;
+  const st=e.state||{tab:"inbox"};
+  const modal=document.querySelector(".modal-bg");
+  if(modal) modal.remove();
+  if(MOBILE_VIEW==="detail"){
+    MOBILE_VIEW="list";
+    const layout=$("mailLayout"); if(layout) layout.classList.remove("mobile-detail");
+  }
+  if(st.tab && st.tab!==TAB){
+    TAB=st.tab;
+    document.querySelectorAll(".mail-tab").forEach(x=>x.classList.toggle("active",x.dataset.tab===TAB));
+    renderTabBody(ME);
+  }
+});
+
+/* ============================================================
    受信トレイ（一覧マスタ）
    ============================================================ */
 async function loadInboxMaster(){
@@ -322,6 +347,7 @@ function shellHtml(u){
 function wireShell(u){
   document.querySelectorAll("[data-tab]").forEach(b=>b.onclick=async()=>{
     TAB=b.dataset.tab;
+    pushNav();
     document.querySelectorAll(".mail-tab").forEach(x=>x.classList.toggle("active",x.dataset.tab===TAB));
     await renderTabBody(u);
   });
@@ -359,8 +385,9 @@ async function openComposeModal(u){
     <div class="err" id="cp-msg" style="margin-top:8px"></div>
   </div>`;
   document.body.appendChild(modal);
-  modal.onclick=e=>{ if(e.target===modal) modal.remove(); };
-  $("composeClose").onclick=()=>modal.remove();
+  pushNav({modal:true});
+  modal.onclick=e=>{ if(e.target===modal) history.back(); };
+  $("composeClose").onclick=()=>history.back();
 
   $("cp-confirm-btn").onclick=()=>{
     const to=$("cp-to").value.trim(), subject=$("cp-subject").value.trim(), body=$("cp-body").value.trim();
@@ -384,7 +411,7 @@ async function openComposeModal(u){
     const sj=await sr.json().catch(()=>({}));
     $("cp-msg").className="err msg-ok";
     $("cp-msg").textContent=(sr.ok&&sj.success)?"送信しました":"送信予約は完了しました。数分以内に自動で再送されます。";
-    setTimeout(()=>modal.remove(),1200);
+    setTimeout(()=>history.back(),1200);
   };
 }
 async function renderTabBody(u){
@@ -552,8 +579,11 @@ async function openMailDetail(u,emailId,skipHighlight){
   renderMailDetail(u);
 
   // スマホ幅では一覧を隠して詳細だけ全画面表示にする（下スクロールしないと詳細が
-  // 見えない問題への対応）。PC幅では常に左右並びのまま何もしない
+  // 見えない問題への対応）。PC幅では常に左右並びのまま何もしない。
+  // skipHighlight=trueのとき（モーダル経由・再描画時の復元）は既にpushNav済みか
+  // 単なる再描画なので、ここでは新規クリック（skipHighlight=false）のときだけ積む
   if(isMobileWidth()){
+    if(!skipHighlight) pushNav({modal:false});
     MOBILE_VIEW="detail";
     const layout=$("mailLayout"); if(layout) layout.classList.add("mobile-detail");
     window.scrollTo({top:0,behavior:"instant"});
@@ -573,8 +603,9 @@ async function openMailDetailModal(u,emailId){
     <div class="card mail-detail" id="mailDetail" style="border:none;box-shadow:none;padding:0"><div class="spin">読み込み中…</div></div>
   </div>`;
   document.body.appendChild(modal);
-  modal.onclick=e=>{ if(e.target===modal) modal.remove(); };
-  $("mailDetailModalClose").onclick=()=>modal.remove();
+  pushNav({modal:true});
+  modal.onclick=e=>{ if(e.target===modal) history.back(); };
+  $("mailDetailModalClose").onclick=()=>history.back();
   await openMailDetail(u,emailId,true);
 }
 
@@ -589,8 +620,9 @@ function openComposeSentModal(row){
     <div class="mail-body" style="padding:0"><pre style="white-space:pre-wrap;font-family:inherit;font-size:13px;line-height:1.7">${esc(row.body_text||"")}</pre></div>
   </div>`;
   document.body.appendChild(modal);
-  modal.onclick=e=>{ if(e.target===modal) modal.remove(); };
-  document.getElementById("composeSentClose").onclick=()=>modal.remove();
+  pushNav({modal:true});
+  modal.onclick=e=>{ if(e.target===modal) history.back(); };
+  document.getElementById("composeSentClose").onclick=()=>history.back();
 }
 
 function renderMailDetail(u){
@@ -716,9 +748,9 @@ function wireDetailActions(u){
   const {mail}=SELECTED;
   const emailId=mail.id;
   if($("mobile-back-btn")) $("mobile-back-btn").onclick=()=>{
-    MOBILE_VIEW="list";
-    const layout=$("mailLayout"); if(layout) layout.classList.remove("mobile-detail");
-    window.scrollTo({top:0,behavior:"instant"});
+    // history.back()に統一＝トラックパッドのスワイプ戻る等と同じpopstateの
+    // 経路を通すことで、ボタン操作とジェスチャー操作の挙動を一致させる
+    history.back();
   };
   const reloadDetail=async()=>{
     await loadInboxMaster(); await loadWaitingPaymentCount();
@@ -1042,6 +1074,7 @@ async function main(){
   if(!u){sess.clear();renderLogin();return}
   if(u.is_active===false){renderLogin();return}
   ME=u;
+  history.replaceState({tab:"inbox"},"");
   await Promise.all([loadInboxMaster(), loadWaitingPaymentCount()]);
   $("app").innerHTML=shellHtml(u);
   wireShell(u);
