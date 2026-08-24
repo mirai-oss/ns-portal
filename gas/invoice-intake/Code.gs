@@ -41,7 +41,10 @@ const PROCESSED_LABEL_NAME = "請求書取込済"; // 取込済みの印（こ�
 // 「請求書」ラベルはそれに加えて拾いたい場合の追加ルートとして残す（OR条件）。
 // ラベル・宛先のみで判定＝実際の受信箱で既読にする・アーカイブするなど（is:unread/in:inbox等）は
 // 一切条件に含めない。取込・表示は本人のメール操作（既読/アーカイブ）と完全に無関係
-const SEARCH_QUERY = '(to:info@ns0314.com OR cc:info@ns0314.com OR label:' + SOURCE_LABEL_NAME + ') -label:' + PROCESSED_LABEL_NAME;
+// 2026-08-24再々変更: shunji.nakayama@ns0314.com（社長個人宛）は本システムの対象外と
+// ユーザー確認。To欄に直接指定されているメールは除外する（CCに入っているだけの
+// 実際の請求書メールまでは除外しない＝-to:のみでCCは対象にしたまま）
+const SEARCH_QUERY = '(to:info@ns0314.com OR cc:info@ns0314.com OR label:' + SOURCE_LABEL_NAME + ') -to:shunji.nakayama@ns0314.com -label:' + PROCESSED_LABEL_NAME;
 const FROM_ALIAS = "info@ns0314.com";
 const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024; // invoice-filesバケットの上限(20MB)に合わせる
 
