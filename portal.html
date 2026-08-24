@@ -668,32 +668,24 @@ const TOP_ITEMS=[
   {key:"invoices",sysKey:"invoices",ico:"✉️",label:"請求書メール",url:"invoices.html",countKey:"inv"},
   {key:"expenses",sysKey:"expenses",ico:"🧾",label:"経費申請",url:"expenses.html"},
 ];
+/* 現場・日報／経営管理／精算管理／社内情報は、実際のアプリ（nippo・
+   tori-dashboard）がURLで内部タブを指定する仕組みを持っていない（担当F調査済み・
+   担当A/Bへ実装依頼済み＝下記WORKLOG参照）ため、複数のサブ項目を並べても
+   結局すべて同じページが開くだけで意味が無い。それを避けるため、サブ項目に
+   分けず1グループ=1項目（クリックすると迷わずアプリが開く）にしている。
+   採用管理だけは「実装済み1項目＋準備中バッジ2項目」という異なる意味の
+   項目が混在するため、引き続きグループ（開閉式）のままにしている。 */
+const SYS_ITEMS=[
+  {key:"nippo",  sysKey:"nippo",  ico:"📝", label:"日報・週報・シフト", url:NIPPO_URL},
+  {key:"keiei",  sysKey:"keiei",  ico:"📊", label:"経営ダッシュボード", url:KEIEI_URL},
+  {key:"seisan", sysKey:"seisan", ico:"🧮", label:"精算ダッシュボード", url:SEISAN_URL},
+  {key:"joho",   sysKey:"joho",   ico:"🔐", label:"社内情報管理", url:JOHO_URL, external:true, sso:true},
+];
 const GROUPS=[
-  {cap:"現場・日報",ico:"📝",open:true, items:[
-    {key:"nippo-daily",  sysKey:"nippo", ico:"📝", label:"日報",     url:NIPPO_URL},
-    {key:"nippo-weekly", sysKey:"nippo", ico:"🗓️", label:"週報",     url:NIPPO_URL},
-    {key:"nippo-check",  sysKey:"nippo", ico:"✅", label:"チェック", url:NIPPO_URL},
-    {key:"nippo-shift",  sysKey:"nippo", ico:"📅", label:"シフト",   url:NIPPO_URL},
-    {key:"nippo-manual", sysKey:"nippo", ico:"📘", label:"マニュアル", url:NIPPO_URL},
-  ]},
   {cap:"採用管理",ico:"👥", roles:["TEAM","HQ","CEO"], items:[
+    {key:"recruit",             sysKey:"nippo", ico:"🧑‍💼", label:"応募者・採用管理", url:NIPPO_URL},
     {key:"recruit-dash",        ico:"📈", label:"採用ダッシュボード", soon:true},
-    {key:"recruit-applicants",  sysKey:"nippo", ico:"🧑‍💼", label:"応募者一覧", url:NIPPO_URL},
-    {key:"recruit-jobs",        sysKey:"nippo", ico:"📋", label:"求人一覧",   url:NIPPO_URL},
-    {key:"recruit-media",       sysKey:"nippo", ico:"📊", label:"媒体分析",   url:NIPPO_URL},
     {key:"recruit-personality", ico:"🧠", label:"性格診断", soon:true},
-  ]},
-  {cap:"経営管理",ico:"📊", items:[
-    {key:"keiei-dash",    sysKey:"keiei", ico:"📊", label:"経営ダッシュボード", url:KEIEI_URL},
-    {key:"keiei-pl",      sysKey:"keiei", ico:"📑", label:"PL管理",     url:KEIEI_URL},
-    {key:"keiei-ads",     sysKey:"keiei", ico:"📣", label:"広告管理",   url:KEIEI_URL},
-    {key:"keiei-deposit", sysKey:"keiei", ico:"💰", label:"入金管理",   url:KEIEI_URL},
-  ]},
-  {cap:"精算管理",ico:"💴", items:[
-    {key:"seisan", sysKey:"seisan", ico:"🧮", label:"精算ダッシュボード", url:SEISAN_URL},
-  ]},
-  {cap:"社内情報",ico:"🔐", items:[
-    {key:"joho", sysKey:"joho", ico:"🔐", label:"社内情報管理", url:JOHO_URL, external:true, sso:true},
   ]},
 ];
 function itemVisible(it,grp,u){
@@ -704,17 +696,20 @@ function itemVisible(it,grp,u){
 }
 function findItem(key){
   for(const it of TOP_ITEMS) if(it.key===key) return {it,grp:null};
+  for(const it of SYS_ITEMS) if(it.key===key) return {it,grp:null};
   for(const grp of GROUPS) for(const it of grp.items) if(it.key===key) return {it,grp};
   return null;
 }
 function visibleLeafItems(u){
   const out=[];
   TOP_ITEMS.forEach(it=>{ if(it.type!=="home"&&itemVisible(it,null,u)) out.push(it); });
+  SYS_ITEMS.forEach(it=>{ if(itemVisible(it,null,u)) out.push(it); });
   GROUPS.forEach(grp=>grp.items.forEach(it=>{ if(!it.soon&&itemVisible(it,grp,u)) out.push(it); }));
   return out;
 }
 
 let ME=null, VIEW="home", CUR=null;
+let OPEN_GROUP=null; // アコーディオン式に開いているグループは常に1つだけ（下のwireNav参照）
 let NAV_HQ_CNT=0, NAV_INV_CNT=0;
 
 /* ============================================================
@@ -769,10 +764,11 @@ function navItemHtml(it,activeKey){
 function sidebarHtml(u){
   const activeKey=VIEW==="home"?"home":CUR;
   const topHtml=TOP_ITEMS.filter(it=>it.type==="home"||itemVisible(it,null,u)).map(it=>navItemHtml(it,activeKey)).join("");
+  const sysHtml=SYS_ITEMS.filter(it=>itemVisible(it,null,u)).map(it=>navItemHtml(it,activeKey)).join("");
   const groupsHtml=GROUPS.map(grp=>{
     const items=grp.items.filter(it=>itemVisible(it,grp,u));
     if(!items.length) return "";
-    const isOpen=grp.open||items.some(it=>it.key===CUR);
+    const isOpen=grp.cap===OPEN_GROUP;
     return `<div class="nav-group${isOpen?" open":""}" data-group="${esc(grp.cap)}">
       <button class="nav-group-head"><span>${grp.ico}</span><span>${esc(grp.cap)}</span><span class="chev">›</span></button>
       <div class="subnav">${items.map(it=>navItemHtml(it,activeKey)).join("")}</div>
@@ -782,6 +778,7 @@ function sidebarHtml(u){
     <div class="brand"><div class="brand-badge">🐔</div><div><strong>N-Styleグループ</strong><small>統合ポータル</small></div></div>
     ${topHtml}
     <div class="section-title">各システム</div>
+    ${sysHtml}
     ${groupsHtml}
     <div class="userbox">
       👤 ${esc(u.name)}${u.is_master?"（マスター）":`（${esc(ROLE_NAME[u.role]||u.role)}）`}
@@ -791,7 +788,7 @@ function sidebarHtml(u){
   </aside>`;
 }
 function mobilebarHtml(u){
-  const prefer=["keiei-dash","hqtasks","nippo-daily","expenses"];
+  const prefer=["keiei","hqtasks","nippo","expenses"];
   const picks=[];
   prefer.forEach(k=>{ if(picks.length>=3) return; const f=findItem(k); if(f&&itemVisible(f.it,f.grp,u)) picks.push(f.it); });
   const btns=[{key:"home",ico:"🏠",label:"ホーム"}].concat(picks.map(it=>({key:it.key,ico:it.ico,label:it.label.replace(/(ダッシュボード|メール|申請)$/,"")})));
@@ -834,10 +831,11 @@ function shellHtml(u){
 
 function openItem(key,u){
   const found=findItem(key); if(!found) return;
-  const {it}=found;
+  const {it,grp}=found;
   if(it.type==="home"){ VIEW="home"; CUR=null; renderShellBody(u); return; }
   if(it.soon){ toast("準備中です"); return; }
   if(it.sso){ openJohoSso(); return; }
+  if(grp) OPEN_GROUP=grp.cap; // クリックした項目のグループだけを開いた状態にする
   VIEW="frame"; CUR=key;
   $("pagetitle").textContent=it.label;
   $("pagemeta").textContent=it.external?"新しいタブで開きます":"";
@@ -861,7 +859,14 @@ function wireNav(u){
   });
   document.querySelectorAll("[data-soon]").forEach(b=>{ b.onclick=()=>toast("準備中です"); });
   document.querySelectorAll(".nav-group-head").forEach(b=>{
-    b.onclick=()=>b.parentElement.classList.toggle("open");
+    b.onclick=()=>{
+      const grp=b.parentElement, willOpen=!grp.classList.contains("open");
+      // アコーディオン: 開くときは他のグループを全部閉じる（複数同時展開で
+      // 見づらくなるのを防ぐ）。すでに開いているグループを押した時は単純に閉じる
+      document.querySelectorAll(".nav-group").forEach(g=>g.classList.remove("open"));
+      OPEN_GROUP=willOpen?grp.dataset.group:null;
+      if(willOpen) grp.classList.add("open");
+    };
   });
   const more=$("moreBtn"); if(more) more.onclick=()=>$("mobileMore")?.classList.add("open");
   const moreClose=$("moreClose"); if(moreClose) moreClose.onclick=closeMobileMore;
@@ -933,14 +938,23 @@ function salesHeroHtml(ctx){
   return `<div class="mobile-home-summary"><small>今月の売上（全店）</small><div class="sales">${yen(sum)}</div>${yoy!=null?`<div class="delta">▲ 前年比 ${yoy>0?"+":""}${yoy}%</div>`:""}</div>`;
 }
 function homeQuickGroups(u){
-  const grpByCap=cap=>GROUPS.find(g=>g.cap===cap);
-  const keiei=grpByCap("経営管理").items.filter(it=>!it.soon&&itemVisible(it,grpByCap("経営管理"),u));
+  const keieiItem=SYS_ITEMS.find(it=>it.key==="keiei");
+  const keiei=(keieiItem&&itemVisible(keieiItem,null,u))?[keieiItem]:[];
   const gyomu=[]; // 業務（現場・本部）
-  ["hqtasks","invoices"].forEach(k=>{ const f=findItem(k); if(f&&itemVisible(f.it,f.grp,u)) gyomu.push(f.it); });
-  const nippoGrp=grpByCap("現場・日報");
-  ["nippo-daily","nippo-shift"].forEach(k=>{ const it=nippoGrp.items.find(x=>x.key===k); if(it&&itemVisible(it,nippoGrp,u)) gyomu.push(it); });
-  const exp=findItem("expenses"); if(exp&&itemVisible(exp.it,exp.grp,u)) gyomu.push(exp.it);
+  ["hqtasks","invoices","nippo","expenses"].forEach(k=>{ const f=findItem(k); if(f&&itemVisible(f.it,f.grp,u)) gyomu.push(f.it); });
   return {keiei,gyomu};
+}
+// デスクトップホームの「よく使う機能」3ボタン。権限が無い項目は飛ばして
+// 次点候補を繰り上げる（例: バイトには本部タスクを見せない）
+function quickActionsHtml(u){
+  const candidates=[
+    {key:"nippo",   ico:"📝", label:"日報を書く",       sub:"日報・週報・シフト"},
+    {key:"hqtasks", ico:"📌", label:"本部タスクを確認", sub:"今日・期限超過・工程"},
+    {key:"invoices",ico:"✉️", label:"請求書メールを確認", sub:"受信・処理状況"},
+    {key:"expenses",ico:"🧾", label:"経費を申請",       sub:"レシート→用途→送信"},
+  ];
+  const picks=candidates.filter(c=>{ const f=findItem(c.key); return f&&itemVisible(f.it,f.grp,u); }).slice(0,3);
+  return picks.map(c=>`<button data-key="${c.key}"><strong>${c.ico} ${esc(c.label)}</strong><small>${esc(c.sub)}</small></button>`).join("");
 }
 async function renderHomeArea(u){
   const area=$("viewarea"); if(!area) return;
@@ -977,9 +991,7 @@ async function renderHomeArea(u){
         </div>
         <div class="panel" style="margin-top:16px"><div class="phead"><h2>よく使う機能</h2><span class="sub2">30秒で完了する導線を優先</span></div>
           <div class="quick">
-            <button data-key="nippo-daily"><strong>📝 日報を書く</strong><small>今日の営業報告</small></button>
-            <button data-key="nippo-shift"><strong>📅 シフトを確認</strong><small>提出・希望休・公開</small></button>
-            <button data-key="expenses"><strong>🧾 経費を申請</strong><small>レシート→用途→送信</small></button>
+            ${quickActionsHtml(u)}
           </div>
         </div>
       </div>`;
@@ -1019,9 +1031,7 @@ async function renderHomeArea(u){
       </div>
       <div class="panel" style="margin-top:16px"><div class="phead"><h2>よく使う機能</h2><span class="sub2">30秒で完了する導線を優先</span></div>
         <div class="quick">
-          <button data-key="nippo-daily"><strong>📝 日報を書く</strong><small>今日の営業報告</small></button>
-          <button data-key="nippo-shift"><strong>📅 シフトを確認</strong><small>提出・希望休・公開</small></button>
-          <button data-key="expenses"><strong>🧾 経費を申請</strong><small>レシート→用途→送信</small></button>
+          ${quickActionsHtml(u)}
         </div>
       </div>
     </div>`;
