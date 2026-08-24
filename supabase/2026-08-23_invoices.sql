@@ -655,6 +655,49 @@ create policy invoice_files_insert on storage.objects for insert
   with check (bucket_id = 'invoice-files' and invoice_can_access());
 -- update/deleteの直接policyは無し＝Edge Function(service_role)のみ
 
+-- ============================================================
+-- Phase 1.5（担当C・2026-08-24追加）
+-- C-2: 検索・絞り込み強化／金額・期限のソート表示／コメント機能
+-- 検索・絞り込みは既存パターン踏襲でクライアント側フィルタのまま（実運用件数が
+-- 数千件規模のためDB全文検索インデックスまでは不要と判断）。ソート用に
+-- invoices(amount)/invoices(due_date)へインデックスのみ追加
+-- ============================================================
+create index if not exists invoices_amount_idx on invoices (amount);
+create index if not exists invoices_duedate_idx on invoices (due_date);
+
+-- ---- コメント（メール単位のコメントスレッド。処理担当者の判断メモ用途） ----
+create table if not exists invoice_comments (
+  id uuid primary key default gen_random_uuid(),
+  email_id uuid not null references invoice_emails(id) on delete cascade,
+  user_id uuid not null references users(id),
+  body text not null,
+  created_at timestamptz not null default now()
+);
+create index if not exists invoice_comments_email_idx on invoice_comments (email_id, created_at asc);
+
+alter table invoice_comments enable row level security;
+drop policy if exists inv_comments_read on invoice_comments;
+create policy inv_comments_read on invoice_comments for select using (invoice_can_access());
+-- insertは直接policyを設けない＝invoice_add_comment RPC経由のみ（監査ログとの同時記録を保証するため）
+
+create or replace function invoice_add_comment(p_email_id uuid, p_body text) returns uuid
+language plpgsql security definer set search_path = public as $$
+declare v_comment_id uuid;
+begin
+  if not invoice_can_access() then raise exception '権限がありません'; end if;
+  if p_body is null or length(trim(p_body)) = 0 then raise exception 'コメントを入力してください'; end if;
+  if not exists(select 1 from invoice_emails where id = p_email_id) then raise exception '対象が見つかりません'; end if;
+
+  insert into invoice_comments(email_id, user_id, body) values (p_email_id, auth.uid(), trim(p_body))
+  returning id into v_comment_id;
+
+  insert into invoice_audit_logs(entity_type, entity_id, action, user_id, note)
+  values ('invoice_email', p_email_id, 'comment_added', auth.uid(), left(trim(p_body), 500));
+
+  return v_comment_id;
+end;
+$$;
+
 -- 確認用（本番適用後、SQL Editorで実行して構造・初期値を確認）:
 -- select role, system_key, allowed from portal_permissions where system_key = 'invoices';
 -- select key, length(value) from app_secrets where key = 'invoice_intake_secret';

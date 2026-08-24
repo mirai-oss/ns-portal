@@ -124,6 +124,27 @@ button,input,select,textarea{font:inherit}
 .mail-history-row{display:grid;grid-template-columns:12px 1fr;gap:8px;padding:7px 0;font-size:11px;color:var(--muted)}
 .mail-history-row span:first-child{width:8px;height:8px;background:#cfc6bc;border-radius:50%;margin-top:4px}
 .mail-history-row.done span:first-child{background:var(--green)}
+.comment-section{margin-top:14px;border-top:1px solid var(--m-line);padding-top:12px}
+.comment-row{padding:8px 0;border-bottom:1px solid var(--m-line);font-size:12px}
+.comment-row:last-child{border-bottom:none}
+.comment-row .cmeta{color:var(--muted);font-size:10px;margin-bottom:3px}
+.comment-row .cbody{white-space:pre-wrap}
+.comment-form{margin-top:8px;display:flex;gap:8px;align-items:flex-start}
+.comment-form textarea{flex:1;border:1px solid var(--m-line);border-radius:8px;padding:8px;min-height:44px;background:var(--panel);color:var(--ink);resize:vertical}
+.due-badge{padding:2px 7px;border-radius:999px;font-size:10px;font-weight:800;display:inline-block}
+.due-badge.overdue{background:var(--accent-soft);color:var(--accent)}
+.due-badge.soon{background:var(--amber-soft);color:var(--amber)}
+.iv-filterbar{padding:12px;border-bottom:1px solid var(--m-line);display:flex;gap:8px;flex-wrap:wrap;align-items:end}
+.iv-filterbar .ivf{display:flex;flex-direction:column;gap:3px}
+.iv-filterbar .ivf small{font-size:10px;color:var(--muted)}
+.iv-filterbar input,.iv-filterbar select{border:1px solid var(--m-line);border-radius:8px;padding:7px 8px;background:var(--panel);color:var(--ink);font-size:12px}
+.iv-filterbar input[type=search]{width:200px}
+.iv-filterbar input[type=number]{width:90px}
+.invoice-table th[data-sort]{cursor:pointer;user-select:none}
+.invoice-table th[data-sort]:hover{color:var(--ink)}
+.mail-toolbar{flex-wrap:wrap}
+.mail-toolbar .toolbar-dates{display:flex;gap:6px;align-items:center;font-size:11px;color:var(--muted)}
+.mail-toolbar .toolbar-dates input{flex:0 0 auto;width:auto;border:1px solid var(--m-line);border-radius:8px;padding:8px;background:var(--panel);color:var(--ink);font-size:12px}
 .replybox{margin-top:14px;border-top:1px solid var(--m-line);padding-top:12px;display:none}
 .replybox.open{display:block}
 .replybox textarea{width:100%;border:1px solid var(--m-line);border-radius:10px;padding:10px;min-height:100px;background:var(--panel);color:var(--ink)}
@@ -260,9 +281,14 @@ let ME=null;
 let MASTER_MAILS=[];      // 受信トレイの全件（KPI・フィルタの元データ）
 let CHIP="unprocessed";   // unprocessed | processing | completed | all
 let SEARCH_Q="";
+let DATE_FROM="", DATE_TO=""; // 受信日の絞り込み（yyyy-mm-dd）
 let TAB="inbox";           // inbox | invoiceList | history | sent
 let SELECTED_ID=null;
 let SELECTED=null;         // 選択中メールの詳細一式
+// 請求書一覧タブ（金額・期限のソート表示／検索・絞り込み。2026-08-24 Phase1.5 C-2）
+let IV_ROWS=[];
+let IV_SEARCH_Q="", IV_STATUS="", IV_AMOUNT_MIN="", IV_AMOUNT_MAX="", IV_DUE_FROM="", IV_DUE_TO="";
+let IV_SORT_COL="", IV_SORT_DIR="asc"; // col: amount | due_date
 const canManage=u=>!!(u&&(u.is_master||u.role==="CEO"||u.role==="HQ"));
 
 /* ============================================================
@@ -325,9 +351,14 @@ function filteredMails(){
   else if(CHIP==="processing") list=list.filter(m=>m.mail_status==="processing");
   else if(CHIP==="completed") list=list.filter(m=>m.mail_status==="completed");
   if(SEARCH_Q.trim()){
+    // 2026-08-24 Phase1.5: 件名・送信元に加え本文も検索対象にする（フリーワード検索強化）
     const q=SEARCH_Q.trim().toLowerCase();
-    list=list.filter(m=>(m.from_address||"").toLowerCase().includes(q)||(m.subject||"").toLowerCase().includes(q));
+    list=list.filter(m=>(m.from_address||"").toLowerCase().includes(q)
+      ||(m.subject||"").toLowerCase().includes(q)
+      ||(m.body_text||"").toLowerCase().includes(q));
   }
+  if(DATE_FROM) list=list.filter(m=>m.received_at && m.received_at.slice(0,10)>=DATE_FROM);
+  if(DATE_TO) list=list.filter(m=>m.received_at && m.received_at.slice(0,10)<=DATE_TO);
   return list;
 }
 
@@ -463,7 +494,14 @@ function renderInbox(u){
     <section class="mail-inbox active">
       <div class="mail-layout" id="mailLayout">
         <div class="card mail-list-card">
-          <div class="mail-toolbar"><input id="mailSearch" placeholder="🔎 送信元・件名を検索" value="${esc(SEARCH_Q)}"></div>
+          <div class="mail-toolbar">
+            <input id="mailSearch" placeholder="🔎 送信元・件名・本文を検索" value="${esc(SEARCH_Q)}">
+            <div class="toolbar-dates">
+              <input type="date" id="mailDateFrom" value="${esc(DATE_FROM)}" title="受信日（開始）">〜
+              <input type="date" id="mailDateTo" value="${esc(DATE_TO)}" title="受信日（終了）">
+              ${(DATE_FROM||DATE_TO)?'<button class="hq-btn" id="mailDateClear" style="padding:6px 9px;font-size:11px">×</button>':''}
+            </div>
+          </div>
           <div class="mail-chips">
             ${[["unprocessed","未処理"],["processing","処理中"],["completed","完了"],["all","すべて"]].map(([k,l])=>
               `<button class="mail-chip ${CHIP===k?'active':''}" data-chip="${k}">${l}</button>`).join("")}
@@ -490,6 +528,9 @@ function renderInbox(u){
       </div>
     </section>`;
   $("mailSearch").oninput=e=>{ SEARCH_Q=e.target.value; renderMailListOnly(); };
+  $("mailDateFrom").onchange=e=>{ DATE_FROM=e.target.value; renderInbox(u); };
+  $("mailDateTo").onchange=e=>{ DATE_TO=e.target.value; renderInbox(u); };
+  if($("mailDateClear")) $("mailDateClear").onclick=()=>{ DATE_FROM=""; DATE_TO=""; renderInbox(u); };
   document.querySelectorAll("[data-chip]").forEach(b=>b.onclick=()=>{ CHIP=b.dataset.chip; renderInbox(u); });
   wireMailListClicks(u);
   wireBulkBar(u);
@@ -582,12 +623,13 @@ async function openMailDetail(u,emailId,skipHighlight){
   }
   $("mailDetail").innerHTML='<div class="spin">読み込み中…</div>';
 
-  const [mr,ar,rr,lr,ivr]=await Promise.all([
+  const [mr,ar,rr,lr,ivr,cr]=await Promise.all([
     authed(`/rest/v1/invoice_emails?id=eq.${emailId}&select=*,processor:users!invoice_emails_processing_user_id_fkey(name),completer:users!invoice_emails_completed_by_fkey(name)`),
     authed(`/rest/v1/invoice_attachments?email_id=eq.${emailId}&select=*&order=created_at`),
     authed(`/rest/v1/invoice_email_reads?email_id=eq.${emailId}&select=opened_at,reader:users(name)&order=opened_at.asc&limit=1`),
     authed(`/rest/v1/invoice_audit_logs?entity_id=eq.${emailId}&select=*,actor:users(name)&order=created_at.asc&limit=50`),
     authed(`/rest/v1/invoices?email_id=eq.${emailId}&select=*&limit=1`),
+    authed(`/rest/v1/invoice_comments?email_id=eq.${emailId}&select=*,author:users(name)&order=created_at.asc`),
   ]);
   if(!mr.ok||!mr.body||!mr.body[0]){ $("mailDetail").innerHTML='<div class="empty">読み込みに失敗しました</div>'; return; }
   const mail=mr.body[0];
@@ -595,7 +637,8 @@ async function openMailDetail(u,emailId,skipHighlight){
   const firstRead=(rr.ok&&Array.isArray(rr.body)&&rr.body[0])?rr.body[0]:null;
   const logs=(lr.ok&&Array.isArray(lr.body))?lr.body:[];
   const invoice=(ivr.ok&&Array.isArray(ivr.body)&&ivr.body[0])?ivr.body[0]:null;
-  SELECTED={mail,atts,firstRead,logs,invoice};
+  const comments=(cr.ok&&Array.isArray(cr.body))?cr.body:[];
+  SELECTED={mail,atts,firstRead,logs,invoice,comments};
 
   // 開封記録（unread→readの遷移のみ。何度呼んでも安全）
   authed("/rest/v1/rpc/invoice_record_read",{method:"POST",body:JSON.stringify({p_email_id:emailId})}).then(()=>{
@@ -653,7 +696,7 @@ function openComposeSentModal(row){
 }
 
 function renderMailDetail(u){
-  const {mail,atts,firstRead,logs,invoice}=SELECTED;
+  const {mail,atts,firstRead,logs,invoice,comments}=SELECTED;
   const canStart=(mail.mail_status==="unread"||mail.mail_status==="read")&&!mail.processing_user_id;
   const isHolder=mail.processing_user_id===ME.id;
   const canRelease=!!mail.processing_user_id&&(isHolder||canManage(ME));
@@ -770,6 +813,19 @@ function renderMailDetail(u){
         <b style="font-size:12px">処理履歴</b>
         <div id="mailHistory">${logs.length?logs.map(x=>`<div class="mail-history-row done"><span></span><div>${fmtDT(x.created_at)}　${esc(x.actor&&x.actor.name||"—")}が${logLabel(x.action)}${x.note?"（"+esc(x.note)+"）":""}</div></div>`).join(""):'<div class="mail-history-row"><span></span><div>まだ履歴はありません</div></div>'}</div>
       </div>
+
+      <div class="comment-section">
+        <b style="font-size:12px">💬 コメント（処理担当者間の判断メモ）</b>
+        <div id="commentList">${comments.length?comments.map(c=>`<div class="comment-row">
+          <div class="cmeta">${fmtDT(c.created_at)}　${esc(c.author&&c.author.name||"—")}</div>
+          <div class="cbody">${esc(c.body)}</div>
+        </div>`).join(""):'<div class="comment-row"><div class="cmeta">まだコメントはありません</div></div>'}</div>
+        <div class="comment-form">
+          <textarea id="comment-body" placeholder="コメントを入力…"></textarea>
+          <button class="hq-btn" id="comment-add">追加</button>
+        </div>
+        <div class="err" id="comment-msg" style="margin-top:6px"></div>
+      </div>
     </div>
   `;
 
@@ -788,7 +844,7 @@ function renderMailDetail(u){
   wireDetailActions(u);
 }
 function logLabel(action){
-  return {intake:"取込",open:"開封",start_processing:"処理を開始",release_lock:"ロックを解除",complete:"処理を完了",reply_queued:"返信を予約",reply_sent:"返信を送信",manual_attach:"ファイルを手動で追加",invoice_status_set:"請求書の状態を変更",reopen:"未処理に戻す",mark_not_applicable:"対象外に設定",unmark_not_applicable:"対象外を解除",compose_queued:"新規メールを予約",compose_sent:"新規メールを送信",mark_important:"重要に設定",unmark_important:"重要を解除"}[action]||action;
+  return {intake:"取込",open:"開封",start_processing:"処理を開始",release_lock:"ロックを解除",complete:"処理を完了",reply_queued:"返信を予約",reply_sent:"返信を送信",manual_attach:"ファイルを手動で追加",invoice_status_set:"請求書の状態を変更",reopen:"未処理に戻す",mark_not_applicable:"対象外に設定",unmark_not_applicable:"対象外を解除",compose_queued:"新規メールを予約",compose_sent:"新規メールを送信",mark_important:"重要に設定",unmark_important:"重要を解除",comment_added:"コメントを追加"}[action]||action;
 }
 function wireDetailActions(u){
   const {mail}=SELECTED;
@@ -936,6 +992,16 @@ function wireDetailActions(u){
     }
   };
 
+  $("comment-add").onclick=async()=>{
+    const body=$("comment-body").value.trim();
+    const msg=$("comment-msg");
+    if(!body){ msg.textContent="コメントを入力してください"; return; }
+    $("comment-add").disabled=true; msg.className="err"; msg.textContent="追加中…";
+    const r=await authed("/rest/v1/rpc/invoice_add_comment",{method:"POST",body:JSON.stringify({p_email_id:emailId,p_body:body})});
+    if(!r.ok){ msg.textContent=(r.body&&r.body.message)||"追加できませんでした"; $("comment-add").disabled=false; return; }
+    await reloadDetail();
+  };
+
   $("reply-open").onclick=()=>{ $("replybox").classList.toggle("open"); };
   $("reply-confirm").onclick=()=>{
     const body=$("reply-body").value.trim();
@@ -960,30 +1026,112 @@ function wireDetailActions(u){
 }
 
 /* ============================================================
-   請求書一覧タブ
+   請求書一覧タブ（検索・絞り込み・ソート・期限バッジ＝2026-08-24 Phase1.5 C-2）
    ============================================================ */
+function dueBadgeHtml(row){
+  const label=fmtD(row.due_date);
+  if(!row.due_date||["paid","cancelled"].includes(row.invoice_status)) return esc(label);
+  const today=new Date(); today.setHours(0,0,0,0);
+  const due=new Date(row.due_date+"T00:00:00");
+  const diffDays=Math.round((due-today)/86400000);
+  if(diffDays<0) return `<span class="due-badge overdue">⚠️ ${esc(label)}（超過）</span>`;
+  if(diffDays<=7) return `<span class="due-badge soon">${esc(label)}（あと${diffDays}日）</span>`;
+  return esc(label);
+}
+function filteredSortedInvoiceRows(){
+  let list=IV_ROWS;
+  if(IV_STATUS) list=list.filter(r=>r.invoice_status===IV_STATUS);
+  if(IV_AMOUNT_MIN!=="") list=list.filter(r=>r.amount!=null&&r.amount>=+IV_AMOUNT_MIN);
+  if(IV_AMOUNT_MAX!=="") list=list.filter(r=>r.amount!=null&&r.amount<=+IV_AMOUNT_MAX);
+  if(IV_DUE_FROM) list=list.filter(r=>r.due_date&&r.due_date>=IV_DUE_FROM);
+  if(IV_DUE_TO) list=list.filter(r=>r.due_date&&r.due_date<=IV_DUE_TO);
+  if(IV_SEARCH_Q.trim()){
+    const q=IV_SEARCH_Q.trim().toLowerCase();
+    list=list.filter(r=>(r.vendor_name||"").toLowerCase().includes(q)
+      ||(r.invoice_number||"").toLowerCase().includes(q)
+      ||(r.email&&r.email.subject||"").toLowerCase().includes(q)
+      ||(r.email&&r.email.from_address||"").toLowerCase().includes(q));
+  }
+  if(IV_SORT_COL){
+    // amountはPostgRESTがnumericを文字列で返す場合があるため数値化してから比較
+    const norm=v=>{ if(v==null) return null; return IV_SORT_COL==="amount"?Number(v):v; };
+    list=[...list].sort((a,b)=>{
+      const av=norm(a[IV_SORT_COL]), bv=norm(b[IV_SORT_COL]);
+      if(av==null&&bv==null) return 0;
+      if(av==null) return 1; // nullは常に末尾
+      if(bv==null) return -1;
+      if(av<bv) return IV_SORT_DIR==="asc"?-1:1;
+      if(av>bv) return IV_SORT_DIR==="asc"?1:-1;
+      return 0;
+    });
+  }
+  return list;
+}
+function invoiceListBodyHtml(){
+  const list=filteredSortedInvoiceRows();
+  const arrow=col=>IV_SORT_COL===col?(IV_SORT_DIR==="asc"?" ▲":" ▼"):"";
+  return `<table class="invoice-table">
+    <thead><tr>
+      <th>請求元</th><th>請求番号</th>
+      <th data-sort="amount">金額${arrow("amount")}</th>
+      <th data-sort="due_date">期限${arrow("due_date")}</th>
+      <th>担当</th><th>状態</th>
+    </tr></thead>
+    <tbody>
+      ${list.map(row=>`<tr data-openmail="${row.email_id}">
+        <td><b>${esc(row.vendor_name||(row.email&&row.email.from_address)||"—")}</b></td>
+        <td>${esc(row.invoice_number||"—")}</td>
+        <td>${yen(row.amount)}</td>
+        <td>${dueBadgeHtml(row)}</td>
+        <td>${esc(row.email&&row.email.processor&&row.email.processor.name||"—")}</td>
+        <td><span class="invoice-status ${INVOICE_STATUS_CLASS[row.invoice_status]||'gray'}">${INVOICE_STATUS_LABEL[row.invoice_status]||row.invoice_status}</span></td>
+      </tr>`).join("")||'<tr><td colspan="6">該当する請求書はありません</td></tr>'}
+    </tbody>
+  </table>`;
+}
+function wireInvoiceListTable(u){
+  document.querySelectorAll("[data-openmail]").forEach(el=>el.onclick=()=>openMailDetailModal(u,el.dataset.openmail));
+  document.querySelectorAll("[data-sort]").forEach(el=>el.onclick=()=>{
+    const col=el.dataset.sort;
+    if(IV_SORT_COL===col) IV_SORT_DIR=IV_SORT_DIR==="asc"?"desc":"asc";
+    else { IV_SORT_COL=col; IV_SORT_DIR="asc"; }
+    $("ivTableWrap").innerHTML=invoiceListBodyHtml();
+    wireInvoiceListTable(u);
+  });
+}
 async function renderInvoiceListTab(u){
   const r=await authed(`/rest/v1/invoices?select=*,email:invoice_emails(subject,from_address,processing_user_id,processor:users!invoice_emails_processing_user_id_fkey(name))&order=created_at.desc&limit=300`);
-  const rows=(r.ok&&Array.isArray(r.body))?r.body:[];
+  IV_ROWS=(r.ok&&Array.isArray(r.body))?r.body:[];
   $("tabbody").innerHTML=`
     <section class="invoice-list active">
-      <div class="card hq-tablewrap">
-        <table class="invoice-table">
-          <thead><tr><th>請求元</th><th>請求番号</th><th>金額</th><th>期限</th><th>担当</th><th>状態</th></tr></thead>
-          <tbody>
-            ${rows.map(row=>`<tr data-openmail="${row.email_id}">
-              <td><b>${esc(row.vendor_name||(row.email&&row.email.from_address)||"—")}</b></td>
-              <td>${esc(row.invoice_number||"—")}</td>
-              <td>${yen(row.amount)}</td>
-              <td>${fmtD(row.due_date)}</td>
-              <td>${esc(row.email&&row.email.processor&&row.email.processor.name||"—")}</td>
-              <td><span class="invoice-status ${INVOICE_STATUS_CLASS[row.invoice_status]||'gray'}">${INVOICE_STATUS_LABEL[row.invoice_status]||row.invoice_status}</span></td>
-            </tr>`).join("")||'<tr><td colspan="6">まだ登録された請求書はありません</td></tr>'}
-          </tbody>
-        </table>
+      <div class="card" style="margin-bottom:12px">
+        <div class="iv-filterbar">
+          <div class="ivf"><small>検索</small><input type="search" id="iv-f-search" placeholder="🔎 請求元・番号・件名" value="${esc(IV_SEARCH_Q)}"></div>
+          <div class="ivf"><small>金額（下限）</small><input type="number" id="iv-f-amtmin" value="${esc(IV_AMOUNT_MIN)}"></div>
+          <div class="ivf"><small>金額（上限）</small><input type="number" id="iv-f-amtmax" value="${esc(IV_AMOUNT_MAX)}"></div>
+          <div class="ivf"><small>期限（開始）</small><input type="date" id="iv-f-duefrom" value="${esc(IV_DUE_FROM)}"></div>
+          <div class="ivf"><small>期限（終了）</small><input type="date" id="iv-f-dueto" value="${esc(IV_DUE_TO)}"></div>
+          <div class="ivf"><small>状態</small><select id="iv-f-status"><option value="">すべて</option>${Object.entries(INVOICE_STATUS_LABEL).map(([k,l])=>`<option value="${k}" ${IV_STATUS===k?"selected":""}>${l}</option>`).join("")}</select></div>
+          <button class="hq-btn" id="iv-f-clear">絞り込み解除</button>
+        </div>
       </div>
+      <div class="card hq-tablewrap" id="ivTableWrap">${invoiceListBodyHtml()}</div>
     </section>`;
-  document.querySelectorAll("[data-openmail]").forEach(el=>el.onclick=()=>openMailDetailModal(u,el.dataset.openmail));
+  wireInvoiceListTable(u);
+  const applyFilters=()=>{
+    IV_SEARCH_Q=$("iv-f-search").value; IV_AMOUNT_MIN=$("iv-f-amtmin").value; IV_AMOUNT_MAX=$("iv-f-amtmax").value;
+    IV_DUE_FROM=$("iv-f-duefrom").value; IV_DUE_TO=$("iv-f-dueto").value; IV_STATUS=$("iv-f-status").value;
+    $("ivTableWrap").innerHTML=invoiceListBodyHtml();
+    wireInvoiceListTable(u);
+  };
+  $("iv-f-search").oninput=applyFilters;
+  $("iv-f-amtmin").oninput=applyFilters; $("iv-f-amtmax").oninput=applyFilters;
+  $("iv-f-duefrom").onchange=applyFilters; $("iv-f-dueto").onchange=applyFilters;
+  $("iv-f-status").onchange=applyFilters;
+  $("iv-f-clear").onclick=()=>{
+    IV_SEARCH_Q=""; IV_AMOUNT_MIN=""; IV_AMOUNT_MAX=""; IV_DUE_FROM=""; IV_DUE_TO=""; IV_STATUS="";
+    renderInvoiceListTab(u);
+  };
 }
 
 /* ============================================================
