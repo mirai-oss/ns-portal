@@ -58,7 +58,7 @@ table.simple tr:nth-child(even) td{background:#fbf9f6}
 <div class="kpi"><small>✅ 完成・稼働中の大物</small><b style="color:var(--green)">13</b></div>
 <div class="kpi"><small>🔨 対応中の改善</small><b style="color:var(--blue)">4</b></div>
 <div class="kpi"><small>📋 次にやる（順番決定済み）</small><b style="color:var(--purple)">7</b></div>
-<div class="kpi"><small>📦 新規に出た要望（未着手）</small><b style="color:var(--red)">18</b></div>
+<div class="kpi"><small>📦 新規に出た要望（未着手）</small><b style="color:var(--red)">23</b></div>
 </div>
 
 <h2 id="done">✅ 完成して本番で動いているもの</h2>
@@ -107,8 +107,10 @@ table.simple tr:nth-child(even) td{background:#fbf9f6}
 <tr><td>📅 シフト</td><td>0件（すべて設計済み・実装待ち）</td><td>ランチ/ディナー分割・出勤強化日・スマレジ連携はいずれも設計完了</td></tr>
 <tr><td>⭐ 評価制度</td><td>2件</td><td>毎月/3ヶ月/6ヶ月のカデンス設計、KPI手動＋自動判定のハイブリッド入力</td></tr>
 <tr><td>📊 売上ダッシュボード・PL・広告管理</td><td>4件</td><td>小銭残高通知、広告管理画面の整理、社員人件費・交通費・法定福利費のスマレジ自動計算</td></tr>
+<tr><td>🎓 AI面接・労務・勤怠・書類承認AI<span class="badge b-new">NEW 8/24</span></td><td>5件</td><td>AI面接（Anthropic API・性格診断も検討）、労務ワークフロー（入社時労働条件通知書の自動発行・送信・保管）、書類承認フローのAI自動判定</td></tr>
 </table>
-<div class="note"><b>優先度が高そうなもの</b>: ①MF試算表CSV取込（実装済み・デプロイのみ＝上の「次にやる1️⃣」）② 本部タスクのURL保存不具合・日報の採用単価修正不可、は先に再現確認 ③ タスク詳細で担当者・期限をその場変更できない、は影響小さく効果大</div>
+<div class="warn"><b>⚠️今回追加で判明した実装済み機能の不具合</b>: スマレジ勤怠の日次自動取込（`smaregi-attendance-sync`）は「昨日1日分」のみを対象にしており、<b>月をまたいだ際に前月分を再チェックする仕組みが無い</b>ことをコード確認で発見。旧CSV取込にあった「月初10日は前月分も再実行」という安全装置が、API移行時に引き継がれていなかった（要修正・詳細はG4）</div>
+<div class="note"><b>優先度が高そうなもの</b>: ①MF試算表CSV取込（実装済み・デプロイのみ＝上の「次にやる1️⃣」）②スマレジ勤怠の月またぎ再チェック漏れ（上記⚠️・データの信頼性に関わるため早めが望ましい）③本部タスクのURL保存不具合・日報の採用単価修正不可、は先に再現確認 ④タスク詳細で担当者・期限をその場変更できない、は影響小さく効果大</div>
 
 <h2 id="roadmap">🔭 その先の将来ロードマップ（要件定義書v3.4より・まだ設計に入っていない大きな構想）</h2>
 <div class="note">シフト独自機能（🔥出勤強化日＋特別時給・休み希望の理由・ヘルプ可否・AIシフト提案）→ ⑤打刻（GPS）→ ⑭役職テスト → ⑪評価制度（本体） → ⑮AI窓口エージェント（Hermes Agent候補・§18） → ③発注管理 → 請求書のOCR<span class="badge b-done" style="margin-left:4px">一部着手済み</span> → マネーフォワード連携・支払消込（請求書Phase 4） → ⑦カレンダー・独自ドメイン</div>
