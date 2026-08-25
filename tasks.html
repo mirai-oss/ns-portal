@@ -350,6 +350,8 @@ let STEP_ATT_OPEN=new Set();  // 工程ごとの添付欄の開閉（B4と同じ
 let CHK_ADD_OPEN=new Set();   // 工程ごとのチェックリスト「＋追加」入力欄の開閉（同上）
 let PROC_EDIT_OPEN=new Set(); // 2026-08-26: 工程ごとの「📘手順書」編集欄の開閉（テンプレート編集時しか
                                // 手順書を書けず、タスク側で作成・修正できないという実機フィードバック対応）
+let STEP_ADD_OPEN=false;      // 2026-08-26: 既存タスクへ「＋工程を追加」する入力欄の開閉
+                               // （生成済みタスクに後から工程を足せないという実機フィードバック対応）
 let NOTIFICATIONS=[];     // アプリ内通知（自分宛）
 let NOTIF_UNREAD=0;
 let BELL_OPEN=false;
@@ -749,7 +751,7 @@ function renderRepeat(u){
 /* ---------- タスク詳細 ---------- */
 async function openDetail(id){
   pushNav("tasks.html?task="+id);
-  VIEW="detail"; OPEN_STEP=null; STEP_ATT_OPEN=new Set(); CHK_ADD_OPEN=new Set(); PROC_EDIT_OPEN=new Set(); // 開くたびに工程の添付一覧は既定=閉に戻す
+  VIEW="detail"; OPEN_STEP=null; STEP_ATT_OPEN=new Set(); CHK_ADD_OPEN=new Set(); PROC_EDIT_OPEN=new Set(); STEP_ADD_OPEN=false; // 開くたびに工程の添付一覧は既定=閉に戻す
   $("app").innerHTML=`<div class="spin">読み込み中…</div>`;
   CUR_TASK=await fetchTaskDetail(id);
   renderDetail(ME);
@@ -834,6 +836,7 @@ function renderDetail(u){
       <div class="meta">工程 ${doneCount} / ${steps.length} 完了 ／ 対象日 ${fmtD(t.target_date)} ／ 期限 ${fmtDD(t.due_date,t.due_time)}${t.status==="done"?" ／ "+fmtDT(t.completed_at)+" 完了":""}</div>
       <div style="margin-top:8px">
         ${t.status==="done"?`<button class="linkbtn" id="undotask">↩️ 完了を取り消す</button>`:""}
+        ${canFeature(u,"templates")?`<button class="linkbtn" id="totemplate">📋 テンプレートに登録</button>`:""}
         ${t.created_by===u.id?`<button class="linkbtn" id="deltask">🗑 タスクを削除</button>`:""}
       </div>
       <div class="err" id="taskactmsg"></div>
@@ -850,7 +853,7 @@ function renderDetail(u){
     <div>
       <div class="dcard">
         <div class="head"><b>① 工程（サブタスク）</b><span class="meta">担当・期限・チェック・手順・資料</span></div>
-        <div class="body" id="steplist" style="padding:12px">${groupStoreSteps(steps).map(g=>stepOrGroupHtml(t,g,u)).join("")||'<div class="meta">工程がありません</div>'}</div>
+        <div class="body" id="steplist" style="padding:12px">${groupStoreSteps(steps).map(g=>stepOrGroupHtml(t,g,u)).join("")||'<div class="meta">工程がありません</div>'}${canEdit?stepAddHtml():""}</div>
       </div>
       <div class="completebar">
         <div><b>タスク全体の完了</b><div class="meta">${t.status==="done"?"すべての工程が完了しました":"すべての工程が完了すると自動的に「完了」になります"}</div></div>
@@ -1016,6 +1019,23 @@ function stepHtml(t,s,u){
           <button class="btn sm" data-complete="${s.id}">この工程を完了</button>
         </div>`:""}
     </div>`:""}
+  </div>`;
+}
+/* 2026-08-26: 既存タスクへの工程追加（生成済みタスクに後から工程を足せないという
+   実機フィードバック対応）。テンプレート側の工程ひな形とは別物のシンプルな追加フォーム
+   （このタスクだけの工程を1つ追加する。担当・期限は任意） */
+function stepAddHtml(){
+  if(!STEP_ADD_OPEN) return `<button class="linkbtn" id="stepaddopen" style="margin-top:10px">＋ 工程を追加</button>`;
+  return `<div class="resource-add" style="margin-top:10px" onclick="event.stopPropagation()">
+    <label>工程名</label><input id="sa-title" placeholder="例: 見積回収">
+    <label>担当（空欄=未定）</label><select id="sa-assignee"><option value="">未定</option>${assignableUsers().map(x=>`<option value="${x.id}">${esc(x.name)}</option>`).join("")}</select>
+    <label>期限日（任意）</label><input id="sa-due" type="date">
+    <label>期限時刻（任意）</label><input id="sa-duetime" type="time">
+    <div style="display:flex;gap:8px;margin-top:8px">
+      <button class="btn sm" id="stepaddsave">＋ 追加する</button>
+      <button class="linkbtn" id="stepaddcancel">キャンセル</button>
+    </div>
+    <div class="err" id="stepaddmsg"></div>
   </div>`;
 }
 /* 店舗別チェックの一括完了ボタン。
@@ -1342,6 +1362,55 @@ function wireCommentBox(t,u){
     };
   });
 }
+/* 2026-08-26: 「これをテンプレートに登録」（単発タスク→繰り返しテンプレート化）。
+   実機フィードバック対応：都度作成している単発タスクを、あとから「よく使うので繰り返しにしたい」
+   となったときに一から作り直さなくて済むように、工程・チェックリストごと複製してテンプレート化する。
+   添付ファイル（写真・URL・マニュアル）は引き継がない（テンプレート編集画面で個別に追加してもらう想定）。
+   頻度（毎日/毎週/毎月）はタスク単体には無い情報のため対象日から妥当な既定値（毎月・その日）を
+   入れておき、保存後に開く編集画面（openTplEdit）でユーザーに確認・調整してもらう流れにする */
+async function registerTaskAsTemplate(t,u){
+  const steps=sortedSteps(t);
+  if(!steps.length){ alert("工程が1つもないタスクはテンプレートに登録できません"); return; }
+  if(steps.some(s=>s.store_id)){ alert("店舗別に分かれた工程を含むタスクは、いまのところこの機能でテンプレート化できません（店舗ごとに別々の工程として登録されてしまいます）。既存のテンプレートを編集してご利用ください。"); return; }
+  if(!confirm(`「${t.title}」の内容（工程・チェックリスト）をもとに新しいテンプレートを作成します。\n添付ファイル（写真・URL）は引き継がれません。よろしいですか？`)) return;
+  const msg=$("taskactmsg"); if(msg){ msg.className="err"; msg.textContent="テンプレートを作成中…"; }
+  const base=t.target_date||todayStr();
+  const baseDate=new Date(base+"T00:00:00");
+  const rawOffset=t.due_date?diffDaysStr(base,t.due_date):0;
+  const payload={
+    title:t.title, corp:t.corp, freq:"monthly", weekly_dow:null, monthly_dom:baseDate.getDate(),
+    due_offset_days:Math.max(0,rawOffset), due_time:t.due_time||null,
+    notes:t.notes||"", description:t.description||null, visibility:t.visibility||"all",
+    alert_before3:true, alert_before1:true, alert_due:true, alert_overdue_daily:true,
+    created_by:ME.id,
+  };
+  const tr=await authed("/rest/v1/hq_task_templates",{method:"POST",headers:{Prefer:"return=representation"},body:JSON.stringify(payload)});
+  if(!tr.ok||!tr.body||!tr.body[0]){ if(msg) msg.textContent="テンプレートを作成できませんでした（"+tr.status+"）"; return; }
+  const tpl=tr.body[0];
+  for(let i=0;i<steps.length;i++){
+    const s=steps[i];
+    const rawStepOffset=s.due_date?diffDaysStr(base,s.due_date):0;
+    const stepBody={
+      template_id:tpl.id, title:s.title, assignee_id:s.assignee_id||null,
+      offset_days:Math.max(0,rawStepOffset), due_time:s.due_time||null,
+      sort_order:(i+1)*10, kind:s.kind||"step",
+      is_binary:!!s.is_binary, requires_photo:!!s.requires_photo,
+      procedure_note:s.procedure_note||null,
+    };
+    const sr=await authed("/rest/v1/hq_task_template_steps",{method:"POST",headers:{Prefer:"return=representation"},body:JSON.stringify(stepBody)});
+    const newStep=sr.ok&&sr.body&&sr.body[0];
+    if(!newStep) continue;
+    const items=stepChecklistFor(t,s.id);
+    if(items.length){
+      await authed("/rest/v1/hq_step_checklist_items",{method:"POST",headers:{Prefer:"return=minimal"},body:JSON.stringify(
+        items.map((it,ci)=>({template_step_id:newStep.id,title:it.title,sort_order:(ci+1)*10}))
+      )});
+    }
+  }
+  await fetchTemplates();
+  alert("テンプレートを作成しました。頻度（毎日・毎週・毎月）など足りない項目を確認・入力して保存してください。");
+  await openTplEdit(u,tpl);
+}
 async function uploadPhoto(file){
   const s=sess.get();
   const ext=(file.name.split(".").pop()||"jpg").toLowerCase().replace(/[^a-z0-9]/g,"")||"jpg";
@@ -1372,6 +1441,7 @@ function wireDetail(t,u){
     await logActivity(t.id,"step_reopen",`工程「${last.title}」の完了を取り消し`,last.id);
     CUR_TASK=await fetchTaskDetail(t.id); renderDetail(u);
   };
+  if($("totemplate")) $("totemplate").onclick=()=>registerTaskAsTemplate(t,u);
   if($("deltask")) $("deltask").onclick=async()=>{
     if(!confirm("このタスクを削除しますか？工程・写真・履歴もすべて削除され、元に戻せません。"))return;
     const msg=$("taskactmsg"); msg.textContent="削除中…";
@@ -1514,6 +1584,22 @@ function wireDetail(t,u){
       renderDetail(u);
     };
   });
+  /* 2026-08-26: 既存タスクへの工程追加 */
+  if($("stepaddopen")) $("stepaddopen").onclick=()=>{ STEP_ADD_OPEN=true; renderDetail(u); };
+  if($("stepaddcancel")) $("stepaddcancel").onclick=()=>{ STEP_ADD_OPEN=false; renderDetail(u); };
+  if($("stepaddsave")) $("stepaddsave").onclick=async()=>{
+    const title=$("sa-title").value.trim();
+    const msg=$("stepaddmsg"); msg.textContent="";
+    if(!title){ msg.textContent="工程名を入力してください"; return; }
+    const maxSort=Math.max(0,...sortedSteps(t).map(s=>s.sort_order||0));
+    const body={task_id:t.id,title,assignee_id:$("sa-assignee").value||null,due_date:$("sa-due").value||null,due_time:$("sa-duetime").value||null,sort_order:maxSort+10,kind:"step"};
+    $("stepaddsave").disabled=true; msg.textContent="追加中…";
+    const r=await authed("/rest/v1/hq_task_steps",{method:"POST",headers:{Prefer:"return=minimal"},body:JSON.stringify(body)});
+    if(!r.ok){ msg.textContent="追加できませんでした"; $("stepaddsave").disabled=false; return; }
+    await logActivity(t.id,"comment",`工程「${title}」を追加`);
+    STEP_ADD_OPEN=false;
+    CUR_TASK=await fetchTaskDetail(t.id); renderDetail(u);
+  };
   document.querySelectorAll("select[id^='judge-']").forEach(sel=>{
     sel.onchange=()=>{ const sid=sel.id.replace("judge-",""); const w=$("issuewrap-"+sid); if(w)w.style.display=sel.value==="issue"?"block":"none"; };
   });
