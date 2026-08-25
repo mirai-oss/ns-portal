@@ -240,7 +240,10 @@ async function api(path,opt={},token){
 async function authed(path,opt={}){
   const s=sess.get(); if(!s) return {ok:false,status:401,body:null};
   let r=await api(path,opt,s.at);
-  if(r.status===401){ if(!await refresh()) return r; r=await api(path,opt,sess.get().at); }
+  // Supabase Storage API（例: 添付ファイルの署名URL発行）はトークン期限切れ時、
+  // PostgREST/authと違い401ではなく400+code:"InvalidJWT"を返すため、その場合も再試行する
+  // （2026-08-25 担当B調査→担当C対応: 添付が開けない不具合）
+  if(r.status===401 || (r.status===400 && r.body?.code==="InvalidJWT")){ if(!await refresh()) return r; r=await api(path,opt,sess.get().at); }
   return r;
 }
 async function refresh(){
