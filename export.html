@@ -110,11 +110,14 @@ async function fn(name,payload){
 }
 
 let ME=null, ALLOWED_STORE_IDS=[], STORES=[], CORPS=[];
-const SEL={report_key:"pl_monthly",store_ids:[],period_from:"",period_to:"",format:"excel"};
+const SEL={category:"経営・売上",report_key:"pl_monthly",store_ids:[],period_from:"",period_to:"",format:"excel"};
 const REPORTS=[
   {key:"pl_monthly",name:"月次PL",category:"経営・売上"},
   {key:"pl_annual_trend",name:"年間推移PL",category:"経営・売上"},
+  {key:"ad_media",name:"媒体別広告実績",category:"マーケティング"},
 ];
+const CATEGORIES=[...new Set(REPORTS.map(r=>r.category))];
+const reportsInCategory=cat=>REPORTS.filter(r=>r.category===cat);
 
 function renderLogin(err){
   $("app").innerHTML=`<div class="card">
@@ -172,13 +175,15 @@ function renderMain(u){
       <div class="section-title">出力する帳票</div>
       <label>カテゴリー</label>
       <select id="f-category">
-        <option value="経営・売上">経営・売上</option>
+        ${CATEGORIES.map(c=>`<option value="${esc(c)}" ${SEL.category===c?"selected":""}>${esc(c)}</option>`).join("")}
       </select>
       <label>出力データ</label>
       <select id="f-report">
-        ${REPORTS.map(r=>`<option value="${r.key}" ${SEL.report_key===r.key?"selected":""}>${esc(r.name)}</option>`).join("")}
+        ${reportsInCategory(SEL.category).map(r=>`<option value="${r.key}" ${SEL.report_key===r.key?"selected":""}>${esc(r.name)}</option>`).join("")}
       </select>
-      <div class="note">月次PL＝原則1ヶ月を選んで単月の損益を確認。年間推移PL＝複数ヶ月を選んで月別の推移を確認（同じデータをもとに構成が異なります）</div>
+      <div class="note">${SEL.report_key==="ad_media"
+        ?"媒体別広告実績＝広告費（広告DBシート）と売上（媒体別売上）を媒体ごとに突合してROASを確認"
+        :"月次PL＝原則1ヶ月を選んで単月の損益を確認。年間推移PL＝複数ヶ月を選んで月別の推移を確認（同じデータをもとに構成が異なります）"}</div>
 
       <div class="row2">
         <div>
@@ -227,6 +232,13 @@ function renderMain(u){
       else { SEL.store_ids=SEL.store_ids.filter(x=>x!==id); }
     };
   });
+  $("f-category").onchange=e=>{
+    SEL.category=e.target.value;
+    SEL.report_key=reportsInCategory(SEL.category)[0].key;
+    const d=defaultPeriod(SEL.report_key);
+    SEL.period_from=d.from; SEL.period_to=d.to;
+    renderMain(u);
+  };
   $("f-report").onchange=e=>{
     SEL.report_key=e.target.value;
     const d=defaultPeriod(SEL.report_key);
@@ -257,11 +269,16 @@ async function runPreview(){
     return;
   }
   const b=r.body;
+  const adLines=b.report_key==="ad_media"?`
+    対象媒体数: ${b.media_count}媒体<br>
+    広告費合計: ${fmtYen(b.ad_cost_total)}<br>
+    売上合計（媒体経由・目安）: ${fmtYen(b.sales_total)}<br>
+    ROAS（目安）: ${b.roas!=null?(b.roas*100).toFixed(0)+"%":"—"}`:`
+    売上高合計（目安）: ${fmtYen(b.sales_total)}`;
   $("preview-result").innerHTML=`<div class="preview-box">
     対象期間: ${esc(b.period.from)} 〜 ${esc(b.period.to)}（${b.period.months}ヶ月分）<br>
     対象店舗数: ${b.store_count}店舗（${esc(b.store_names.join("・"))}）<br>
-    対象データ件数: ${b.row_count}件<br>
-    売上高合計（目安）: ${fmtYen(b.sales_total)}
+    対象データ件数: ${b.row_count}件${adLines}
     ${b.note?`<br><span style="color:var(--warn)">${esc(b.note)}</span>`:""}
   </div>`;
 }

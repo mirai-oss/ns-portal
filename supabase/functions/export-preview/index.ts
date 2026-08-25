@@ -103,6 +103,69 @@ async function fetchDailyNetSales(token: string): Promise<DailyAgg[]> {
   return [...map.values()];
 }
 
+// 媒体名の正規化（export-run/index.tsのcanonMedia()と同じ。tori-dashboard/app.js 3196行目を移植）
+function canonMedia(m: unknown): string {
+  const s = String(m ?? "").trim();
+  if (!s) return "";
+  const u = s.toUpperCase();
+  if (u.indexOf("RETTY") >= 0 || /RT$/.test(u)) return "Retty";
+  if (u.indexOf("ホットペッパー") >= 0 || u.indexOf("HP") >= 0) return "ホットペッパー";
+  if (u.indexOf("ぐるなび") >= 0 || u.indexOf("GN") >= 0) return "ぐるなび";
+  if (u.indexOf("食べログ") >= 0 || u.indexOf("TL") >= 0) return "食べログ";
+  if (u.indexOf("LP") >= 0) return "自社LP";
+  if (u.indexOf("インスタ") >= 0 || u.indexOf("INSTAGRAM") >= 0) return "Instagram";
+  if (u.indexOf("GOOGLE") >= 0 || u.indexOf("グーグル") >= 0 || u.indexOf("マップ") >= 0) return "Google";
+  return s;
+}
+type AdCostRow = { ym: string; storeName: string; media: string; cost: number };
+function colIndexOf(header: string[], name: string): number {
+  return header.findIndex((h) => String(h ?? "").indexOf(name) >= 0);
+}
+async function fetchAdCostRows(token: string): Promise<AdCostRow[]> {
+  const res = await dashCall({ action: "data", token, keys: "ad" });
+  if (!res.ok) throw new Error("広告DB取得に失敗: " + (res.error ?? ""));
+  const rows: any[][] = res.sheets?.ad ?? [];
+  if (!rows.length) return [];
+  let hi = -1;
+  for (let i = 0; i < Math.min(rows.length, 12); i++) {
+    const line = rows[i].map((x) => String(x ?? "")).join(",");
+    if (/広告費|広告|費用|金額/.test(line) && /年月|日付|店舗/.test(line)) { hi = i; break; }
+  }
+  if (hi < 0) hi = 0;
+  const header = rows[hi].map((h) => String(h ?? "").trim());
+  const iD = colIndexOf(header, "日付") >= 0 ? colIndexOf(header, "日付") : colIndexOf(header, "年月");
+  const iS = colIndexOf(header, "店舗");
+  const iM = colIndexOf(header, "媒体");
+  let iC = colIndexOf(header, "広告費");
+  if (iC < 0) iC = colIndexOf(header, "広告");
+  if (iC < 0) iC = colIndexOf(header, "費用");
+  if (iC < 0) iC = colIndexOf(header, "金額");
+  if (iD < 0 || iC < 0) return [];
+  const out: AdCostRow[] = [];
+  for (let i = hi + 1; i < rows.length; i++) {
+    const r = rows[i];
+    const ym = normalizeYm(r[iD]);
+    if (!ym) continue;
+    const cost = Number(r[iC] ?? 0);
+    if (!cost) continue;
+    out.push({ ym, storeName: String(iS >= 0 ? r[iS] ?? "" : "").trim(), media: canonMedia(iM >= 0 ? r[iM] : ""), cost });
+  }
+  return out;
+}
+type AdSalesRow = { ym: string; storeName: string; media: string; netSales: number };
+async function fetchMediaSales(token: string): Promise<AdSalesRow[]> {
+  const res = await dashCall({ action: "bqGetMedia", token });
+  if (!res.ok) throw new Error("bqGetMedia取得に失敗: " + (res.error ?? ""));
+  const rows: any[] = (res.sheets?.media ?? []).slice(1);
+  const out: AdSalesRow[] = [];
+  for (const r of rows) {
+    const ym = normalizeYm(r[1]);
+    if (!ym) continue;
+    out.push({ ym, storeName: String(r[0] ?? "").trim(), media: canonMedia(r[2]), netSales: Number(r[5] ?? 0) });
+  }
+  return out;
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
   try {
@@ -122,9 +185,11 @@ Deno.serve(async (req) => {
     if (!canAccess) return json({ ok: false, error: "データ出力センターへのアクセス権限がありません" }, 403);
 
     const reportKey = String(body.report_key ?? "");
-    if (!["pl_monthly", "pl_annual_trend"].includes(reportKey)) {
-      return json({ ok: false, error: "report_keyはpl_monthly/pl_annual_trendのいずれかです" }, 400);
+    const VALID_KEYS = ["pl_monthly", "pl_annual_trend", "ad_media"];
+    if (!VALID_KEYS.includes(reportKey)) {
+      return json({ ok: false, error: `report_keyは${VALID_KEYS.join("/")}のいずれかです` }, 400);
     }
+    const isAd = reportKey === "ad_media";
 
     const periodFrom = String(body.period_from ?? "").slice(0, 7);
     const periodTo = String(body.period_to ?? "").slice(0, 7);
@@ -155,9 +220,33 @@ Deno.serve(async (req) => {
       return json({ ok: false, error: "店舗名を解決できませんでした" }, 500);
     }
 
-    // --- GASブリッジ経由でBQ(stg_pl・fact_daily_store)を取得しフィルタ ---
+    // --- GASブリッジ経由でBQ(stg_pl・fact_daily_store・stg_media)/広告DBを取得しフィルタ ---
     const login = await dashLogin(sb);
     if (!login.ok) return json({ ok: false, error: login.error }, 500);
+
+    if (isAd) {
+      const [allCost, allSales] = await Promise.all([fetchAdCostRows(login.token!), fetchMediaSales(login.token!)]);
+      const costMatched = allCost.filter((r) => r.ym >= periodFrom && r.ym <= periodTo && targetNames.has(r.storeName));
+      const salesMatched = allSales.filter((r) => r.ym >= periodFrom && r.ym <= periodTo && targetNames.has(r.storeName));
+      const costTotal = costMatched.reduce((s, r) => s + r.cost, 0);
+      const salesTotal = costMatched.length || salesMatched.length ? salesMatched.reduce((s, r) => s + r.netSales, 0) : 0;
+      const mediaSet = new Set([...costMatched.map((r) => r.media), ...salesMatched.map((r) => r.media)]);
+      const yms = new Set([...costMatched.map((r) => r.ym), ...salesMatched.map((r) => r.ym)]);
+      return json({
+        ok: true,
+        report_key: reportKey,
+        period: { from: periodFrom, to: periodTo, months: yms.size },
+        store_count: targetNames.size,
+        store_names: [...targetNames],
+        row_count: costMatched.length + salesMatched.length,
+        media_count: mediaSet.size,
+        ad_cost_total: costTotal,
+        sales_total: salesTotal,
+        roas: costTotal > 0 ? salesTotal / costTotal : null,
+        note: (costMatched.length === 0 && salesMatched.length === 0) ? "指定条件に一致するデータがありません（広告DB未設定、またはBQミラー未反映の可能性）" : undefined,
+      });
+    }
+
     const [allRows, allDaily] = await Promise.all([fetchPlRows(login.token!), fetchDailyNetSales(login.token!)]);
 
     const matched = allRows.filter((r) => r.ym >= periodFrom && r.ym <= periodTo && targetNames.has(r.storeName));

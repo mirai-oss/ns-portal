@@ -30,7 +30,9 @@ import { createClient } from "npm:@supabase/supabase-js@2";
 const ExcelJS = (await import("npm:exceljs@4.4.0")).default;
 
 const DASH_API_URL = "https://script.google.com/macros/s/AKfycbz9rd37EZa6X8WRMVEBrXobN8DbYWkHRlhFNYU5rd1UZ0V8j0-6shMQjEeoi4HDWZ0B/exec";
-const REPORT_TITLE: Record<string, string> = { pl_monthly: "月次PL", pl_annual_trend: "年間推移PL" };
+const REPORT_TITLE: Record<string, string> = { pl_monthly: "月次PL", pl_annual_trend: "年間推移PL", ad_media: "媒体別広告実績" };
+const PL_REPORT_KEYS = ["pl_monthly", "pl_annual_trend"];
+const AD_REPORT_KEYS = ["ad_media"];
 
 const cors: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -124,6 +126,127 @@ async function fetchDailyAgg(token: string): Promise<DailyAgg[]> {
 // stg_plの区分コード → PLの区分（表示名）
 const SECTION_BY_CODE: Record<string, string> = { F: "原価", L: "人件費", A: "広告費", R: "家賃", O: "その他経費" };
 const SECTION_ORDER = ["売上", "原価", "人件費", "広告費", "家賃", "その他経費"];
+
+// ---------------- 広告媒体データ取得（2026-08-25追加） ----------------
+// 媒体名の正規化: tori-dashboard/app.js の canonMedia()（3196行目）と同じロジックをそのまま移植。
+// 広告DB（費用）とstg_media（売上）で表記が違っても自動で突合できるようにする（例: 鶏HP・黒HP→ホットペッパー）。
+function canonMedia(m: unknown): string {
+  const s = String(m ?? "").trim();
+  if (!s) return "";
+  const u = s.toUpperCase();
+  if (u.indexOf("RETTY") >= 0 || /RT$/.test(u)) return "Retty";
+  if (u.indexOf("ホットペッパー") >= 0 || u.indexOf("HP") >= 0) return "ホットペッパー";
+  if (u.indexOf("ぐるなび") >= 0 || u.indexOf("GN") >= 0) return "ぐるなび";
+  if (u.indexOf("食べログ") >= 0 || u.indexOf("TL") >= 0) return "食べログ";
+  if (u.indexOf("LP") >= 0) return "自社LP";
+  if (u.indexOf("インスタ") >= 0 || u.indexOf("INSTAGRAM") >= 0) return "Instagram";
+  if (u.indexOf("GOOGLE") >= 0 || u.indexOf("グーグル") >= 0 || u.indexOf("マップ") >= 0) return "Google";
+  return s;
+}
+
+// 広告費（広告DBシート。BQ未収容のためGASの汎用action:'data'で取得）。
+// tori-dashboard/app.js の ingestAd()（470行目）と同じヘッダー自動検出ロジックを移植
+// （タイトル行が上にあってもズレないよう先頭12行から見出し行を探す）。
+type AdCostRow = { ym: string; storeName: string; media: string; cost: number };
+
+function colIndexOf(header: string[], name: string): number {
+  return header.findIndex((h) => String(h ?? "").indexOf(name) >= 0);
+}
+async function fetchAdCostRows(token: string): Promise<AdCostRow[]> {
+  const res = await dashCall({ action: "data", token, keys: "ad" });
+  if (!res.ok) throw new Error("広告DB取得に失敗: " + (res.error ?? ""));
+  const rows: any[][] = res.sheets?.ad ?? [];
+  if (!rows.length) return [];
+  let hi = -1;
+  for (let i = 0; i < Math.min(rows.length, 12); i++) {
+    const line = rows[i].map((x) => String(x ?? "")).join(",");
+    if (/広告費|広告|費用|金額/.test(line) && /年月|日付|店舗/.test(line)) { hi = i; break; }
+  }
+  if (hi < 0) hi = 0;
+  const header = rows[hi].map((h) => String(h ?? "").trim());
+  const iD = colIndexOf(header, "日付") >= 0 ? colIndexOf(header, "日付") : colIndexOf(header, "年月");
+  const iS = colIndexOf(header, "店舗");
+  const iM = colIndexOf(header, "媒体");
+  let iC = colIndexOf(header, "広告費");
+  if (iC < 0) iC = colIndexOf(header, "広告");
+  if (iC < 0) iC = colIndexOf(header, "費用");
+  if (iC < 0) iC = colIndexOf(header, "金額");
+  if (iD < 0 || iC < 0) return []; // 列が見つからない＝広告DB未設定（app.js側と同じ扱い）
+  const out: AdCostRow[] = [];
+  for (let i = hi + 1; i < rows.length; i++) {
+    const r = rows[i];
+    const ym = normalizeYm(r[iD]);
+    if (!ym) continue;
+    const cost = Number(r[iC] ?? 0);
+    if (!cost) continue;
+    out.push({
+      ym,
+      storeName: String(iS >= 0 ? r[iS] ?? "" : "").trim(),
+      media: canonMedia(iM >= 0 ? r[iM] : ""),
+      cost,
+    });
+  }
+  return out;
+}
+
+// 媒体別売上（BigQuery stg_media・bqGetMedia）。既存アクション・変更なし。
+type AdSalesRow = { ym: string; storeName: string; media: string; guests: number; parties: number; netSales: number };
+async function fetchMediaSales(token: string): Promise<AdSalesRow[]> {
+  const res = await dashCall({ action: "bqGetMedia", token });
+  if (!res.ok) throw new Error("bqGetMedia取得に失敗: " + (res.error ?? ""));
+  const rows: any[] = (res.sheets?.media ?? []).slice(1); // header: 店舗名,営業日,媒体名,客数,客組数,純売上
+  const out: AdSalesRow[] = [];
+  for (const r of rows) {
+    const ym = normalizeYm(r[1]);
+    if (!ym) continue;
+    out.push({
+      ym,
+      storeName: String(r[0] ?? "").trim(),
+      media: canonMedia(r[2]),
+      guests: Number(r[3] ?? 0),
+      parties: Number(r[4] ?? 0),
+      netSales: Number(r[5] ?? 0),
+    });
+  }
+  return out;
+}
+
+type AdMediaRow = { media: string; cost: number; sales: number; guests: number; parties: number };
+
+// 対象期間・対象店舗（複数選択可）に絞った上で、媒体（正規化後）ごとに費用・売上・客数・客組数を合算する。
+// scopeStoreNames=null は「選択店舗すべて合算」を意味する（呼び出し側で既に対象店舗だけに絞った配列を渡す）。
+function buildAdMediaRows(costRows: AdCostRow[], salesRows: AdSalesRow[], scopeStoreNames: Set<string> | null): AdMediaRow[] {
+  const cScoped = scopeStoreNames ? costRows.filter((r) => scopeStoreNames.has(r.storeName)) : costRows;
+  const sScoped = scopeStoreNames ? salesRows.filter((r) => scopeStoreNames.has(r.storeName)) : salesRows;
+  const map = new Map<string, AdMediaRow>();
+  const get = (media: string) => {
+    const key = media || "（媒体未設定）";
+    if (!map.has(key)) map.set(key, { media: key, cost: 0, sales: 0, guests: 0, parties: 0 });
+    return map.get(key)!;
+  };
+  for (const c of cScoped) get(c.media).cost += c.cost;
+  for (const s of sScoped) { const r = get(s.media); r.sales += s.netSales; r.guests += s.guests; r.parties += s.parties; }
+  return [...map.values()].sort((a, b) => b.cost - a.cost || b.sales - a.sales);
+}
+
+// ---------------- CSV（広告媒体別） ----------------
+function buildCsvAdMedia(costRows: AdCostRow[], salesRows: AdSalesRow[], storeNamesInOrder: string[]): Uint8Array {
+  const headers = ["対象店舗", "年月", "店舗名", "媒体", "区分", "金額/件数"];
+  const lines = [headers.map(csvEscape).join(",")];
+  const scopeLabel = storeNamesInOrder.length > 1 ? "個別" : storeNamesInOrder[0] ?? "";
+  for (const c of costRows) lines.push([scopeLabel, c.ym, c.storeName, c.media, "広告費", c.cost].map(csvEscape).join(","));
+  for (const s of salesRows) {
+    lines.push([scopeLabel, s.ym, s.storeName, s.media, "売上", s.netSales].map(csvEscape).join(","));
+    lines.push([scopeLabel, s.ym, s.storeName, s.media, "客数", s.guests].map(csvEscape).join(","));
+    lines.push([scopeLabel, s.ym, s.storeName, s.media, "客組数", s.parties].map(csvEscape).join(","));
+  }
+  const text = lines.join("\r\n");
+  const bom = new Uint8Array([0xef, 0xbb, 0xbf]);
+  const body = new TextEncoder().encode(text);
+  const out = new Uint8Array(bom.length + body.length);
+  out.set(bom); out.set(body, bom.length);
+  return out;
+}
 
 // ---------------- CSV（長形式・自然な符号（費用も正の値）。区分・出所を明示） ----------------
 function csvEscape(v: unknown): string {
@@ -354,6 +477,82 @@ async function buildExcel(
   return buf as unknown as ArrayBuffer;
 }
 
+// 媒体別広告実績シート（PLより単純な「媒体×指標」の一覧表。テンプレートファイルは未登録のため
+// 既定書式で出力されるが、後日export-templatesでテンプレートをアップロードすればloadStyleProfile()が
+// 自動的にそのデザインを読みに行く＝コード変更なしでテンプレート方式に切り替わる設計）
+function writeAdSheet(wb: any, sheetName: string, title: string, style: StyleProfile, rows: AdMediaRow[]) {
+  const sheet = wb.addWorksheet(sheetName.slice(0, 31));
+  sheet.getCell("A1").value = title;
+  sheet.getCell("A1").font = style.titleFont;
+  sheet.getColumn(1).width = style.labelColWidth;
+
+  const headerRowIdx = 3;
+  const dataStartRow = 4;
+  const headers = ["媒体", "広告費", "売上", "客数", "客組数", "ROAS"];
+  headers.forEach((h, i) => {
+    const c = sheet.getCell(headerRowIdx, i + 1);
+    c.value = h; c.font = style.headerFont; c.fill = style.headerFill; c.border = style.dataBorder;
+    sheet.getColumn(i + 1).width = i === 0 ? style.labelColWidth : style.valueColWidth;
+  });
+
+  rows.forEach((r, idx) => {
+    const rowIdx = dataStartRow + idx;
+    sheet.getCell(rowIdx, 1).value = r.media;
+    sheet.getCell(rowIdx, 2).value = r.cost;
+    sheet.getCell(rowIdx, 3).value = r.sales;
+    sheet.getCell(rowIdx, 4).value = r.guests;
+    sheet.getCell(rowIdx, 5).value = r.parties;
+    const c2 = colLetter(sheet, rowIdx, 2), c3 = colLetter(sheet, rowIdx, 3);
+    sheet.getCell(rowIdx, 6).value = { formula: `IF(${c2}${rowIdx}=0,"—",${c3}${rowIdx}/${c2}${rowIdx})` };
+    for (let c = 1; c <= 6; c++) {
+      const cell = sheet.getCell(rowIdx, c);
+      cell.border = style.dataBorder;
+      if (c >= 2 && c <= 5) cell.numFmt = style.numFmt;
+      if (c === 6) cell.numFmt = "0%;;\"—\"";
+    }
+  });
+
+  const totalRowIdx = dataStartRow + rows.length;
+  sheet.getCell(totalRowIdx, 1).value = "合計";
+  sheet.getCell(totalRowIdx, 1).font = style.totalFont;
+  for (let c = 2; c <= 5; c++) {
+    const colL = colLetter(sheet, dataStartRow, c);
+    const cell = sheet.getCell(totalRowIdx, c);
+    cell.value = rows.length ? { formula: `SUM(${colL}${dataStartRow}:${colL}${totalRowIdx - 1})` } : 0;
+    cell.numFmt = style.numFmt; cell.font = style.totalFont; cell.border = style.totalBorder;
+  }
+  const c2t = colLetter(sheet, totalRowIdx, 2), c3t = colLetter(sheet, totalRowIdx, 3);
+  const roasCell = sheet.getCell(totalRowIdx, 6);
+  roasCell.value = { formula: `IF(${c2t}${totalRowIdx}=0,"—",${c3t}${totalRowIdx}/${c2t}${totalRowIdx})` };
+  roasCell.numFmt = "0%;;\"—\""; roasCell.font = style.totalFont; roasCell.border = style.totalBorder;
+  sheet.getCell(totalRowIdx, 1).border = style.totalBorder;
+
+  sheet.views = [{ state: "frozen", ySplit: headerRowIdx, xSplit: 1 }];
+}
+
+async function buildAdExcel(
+  sb: any, reportKey: string, layout: any,
+  costRows: AdCostRow[], salesRows: AdSalesRow[],
+  storeNamesInOrder: string[], periodFrom: string, periodTo: string,
+): Promise<ArrayBuffer> {
+  const style = await loadStyleProfile(sb, reportKey, layout);
+  const wb = new ExcelJS.Workbook();
+  wb.creator = "N-Style データ出力センター";
+  wb.created = new Date();
+  const title = REPORT_TITLE[reportKey] ?? "広告実績";
+
+  if (storeNamesInOrder.length > 1) {
+    const combined = buildAdMediaRows(costRows, salesRows, null);
+    writeAdSheet(wb, "合計", `${title} 合計（${periodFrom}〜${periodTo}）`, style, combined);
+  }
+  for (const name of storeNamesInOrder) {
+    const scoped = buildAdMediaRows(costRows, salesRows, new Set([name]));
+    writeAdSheet(wb, name, `${title} ${name}（${periodFrom}〜${periodTo}）`, style, scoped);
+  }
+  const buf = await wb.xlsx.writeBuffer();
+  return buf as unknown as ArrayBuffer;
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
   const startedAt = Date.now();
@@ -373,9 +572,10 @@ Deno.serve(async (req) => {
     if (!canAccess) return json({ ok: false, error: "データ出力センターへのアクセス権限がありません" }, 403);
 
     const reportKey = String(body.report_key ?? "");
-    if (!["pl_monthly", "pl_annual_trend"].includes(reportKey)) {
-      return json({ ok: false, error: "report_keyはpl_monthly/pl_annual_trendのいずれかです" }, 400);
+    if (![...PL_REPORT_KEYS, ...AD_REPORT_KEYS].includes(reportKey)) {
+      return json({ ok: false, error: `report_keyは${[...PL_REPORT_KEYS, ...AD_REPORT_KEYS].join("/")}のいずれかです` }, 400);
     }
+    const isAd = AD_REPORT_KEYS.includes(reportKey);
     const format = String(body.format ?? "");
     if (!["excel", "csv"].includes(format)) return json({ ok: false, error: "formatはexcel/csvのいずれかです（Google Sheetsは後追い予定）" }, 400);
 
@@ -417,31 +617,53 @@ Deno.serve(async (req) => {
 
     const login = await dashLogin(sb);
     if (!login.ok) throw new Error(login.error);
-    const [allPlRows, allDailyRows] = await Promise.all([fetchPlRows(login.token!), fetchDailyAgg(login.token!)]);
-
-    const plMatched = allPlRows.filter((r) => r.ym >= periodFrom && r.ym <= periodTo && targetNames.has(r.storeName));
-    const plCompanyWide = allPlRows.filter((r) => r.ym >= periodFrom && r.ym <= periodTo && r.storeName === "");
-    const dailyMatched = allDailyRows.filter((r) => r.ym >= periodFrom && r.ym <= periodTo && targetNames.has(r.storeName));
-
-    if (plMatched.length === 0 && dailyMatched.length === 0) {
-      await sb.from("export_history").update({
-        status: "failed", error_message: "対象条件に一致するデータがありません", completed_at: new Date().toISOString(),
-      }).eq("id", historyId);
-      return json({ ok: false, error: "対象条件に一致するデータがありません（BQミラー未反映の可能性）" }, 200);
-    }
 
     const { data: tpl } = await sb.from("tpl_templates").select("id,layout").eq("template_code", reportKey).maybeSingle();
     const layout = tpl?.layout ?? { header_row: 3, data_start_row: 4, label_col: 1, value_start_col: 2 };
-    const rowCount = plMatched.length + dailyMatched.length * 3; // 売上高・原価・人件費の3行/月店舗 相当
 
     let fileBuf: Uint8Array | ArrayBuffer;
     let ext: string; let contentType: string;
-    if (format === "excel") {
-      fileBuf = await buildExcel(sb, reportKey, layout, dailyMatched, plMatched, plCompanyWide, storeNamesInOrder, periodFrom, periodTo);
-      ext = "xlsx"; contentType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+    let rowCount: number;
+
+    if (isAd) {
+      const [allCostRows, allSalesRows] = await Promise.all([fetchAdCostRows(login.token!), fetchMediaSales(login.token!)]);
+      const costMatched = allCostRows.filter((r) => r.ym >= periodFrom && r.ym <= periodTo && targetNames.has(r.storeName));
+      const salesMatched = allSalesRows.filter((r) => r.ym >= periodFrom && r.ym <= periodTo && targetNames.has(r.storeName));
+
+      if (costMatched.length === 0 && salesMatched.length === 0) {
+        await sb.from("export_history").update({
+          status: "failed", error_message: "対象条件に一致するデータがありません", completed_at: new Date().toISOString(),
+        }).eq("id", historyId);
+        return json({ ok: false, error: "対象条件に一致するデータがありません（広告DB未設定、またはBQミラー未反映の可能性）" }, 200);
+      }
+      rowCount = costMatched.length + salesMatched.length;
+      if (format === "excel") {
+        fileBuf = await buildAdExcel(sb, reportKey, layout, costMatched, salesMatched, storeNamesInOrder, periodFrom, periodTo);
+        ext = "xlsx"; contentType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+      } else {
+        fileBuf = buildCsvAdMedia(costMatched, salesMatched, storeNamesInOrder);
+        ext = "csv"; contentType = "text/csv";
+      }
     } else {
-      fileBuf = buildCsv(dailyMatched, [...plMatched, ...plCompanyWide]);
-      ext = "csv"; contentType = "text/csv";
+      const [allPlRows, allDailyRows] = await Promise.all([fetchPlRows(login.token!), fetchDailyAgg(login.token!)]);
+      const plMatched = allPlRows.filter((r) => r.ym >= periodFrom && r.ym <= periodTo && targetNames.has(r.storeName));
+      const plCompanyWide = allPlRows.filter((r) => r.ym >= periodFrom && r.ym <= periodTo && r.storeName === "");
+      const dailyMatched = allDailyRows.filter((r) => r.ym >= periodFrom && r.ym <= periodTo && targetNames.has(r.storeName));
+
+      if (plMatched.length === 0 && dailyMatched.length === 0) {
+        await sb.from("export_history").update({
+          status: "failed", error_message: "対象条件に一致するデータがありません", completed_at: new Date().toISOString(),
+        }).eq("id", historyId);
+        return json({ ok: false, error: "対象条件に一致するデータがありません（BQミラー未反映の可能性）" }, 200);
+      }
+      rowCount = plMatched.length + dailyMatched.length * 3; // 売上高・原価・人件費の3行/月店舗 相当
+      if (format === "excel") {
+        fileBuf = await buildExcel(sb, reportKey, layout, dailyMatched, plMatched, plCompanyWide, storeNamesInOrder, periodFrom, periodTo);
+        ext = "xlsx"; contentType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+      } else {
+        fileBuf = buildCsv(dailyMatched, [...plMatched, ...plCompanyWide]);
+        ext = "csv"; contentType = "text/csv";
+      }
     }
 
     // 保存キーはASCIIのみ（過去事故: Storageキーに日本語ファイル名を直接使うと Invalid key で失敗。
