@@ -2543,3 +2543,12 @@ Phase 1実装・本番デプロイ・実機E2E完了後、ユーザーが実際�
 - **B-7 面接カレンダー＋当日通知**: 応募者管理に「📅 面接カレンダー」ボタン→月表示カレンダー（面接がある日に件数バッジ）→日クリックで当日の面接一覧（時刻・氏名・担当者）。面接当日の朝に画面を開いた担当者（マスター/CEO/HQ/TEAM/TENCHO）がいれば、その日`interview_at`かつ選考中(`interview_set`/`interviewed`)の応募者を担当者(`assignee_id`)ごとに集計し、`notifications`へinsert（アプリ内通知）。同日同宛先への重複送信はDB側の既存レコード確認でガード（`sf_reminder_targets`と同じ「画面起点チェック」方式）。**Lark配信は既存の`lark_routes`/`trg_lark_notify`の仕組みにそのまま乗せる設計**（`LARK_EVENTS`に`interview_today`を追加しただけ）なので、実際にLarkへ飛ばすには管理者が設定→⚙️Lark通知→通知先設定で`interview_today`のルートを追加登録する必要あり（他のイベント種別と同じ運用）。`applicants.assignee_id`/`interview_at`など既存列のみ使用、SQL変更なし
 
 **担当Bの今回ラウンドの作業はすべて完了**。次の任務待ち。
+
+## 2026-08-26（担当E実行スレッド・続き22）添付にPDFを許可＋一般添付はカメラロール/ファイル選択も可能に（コミット`2969520`）
+
+ユーザーから実機確認で2件の指摘。「①タスクの添付できる写真がPDFが添付できない　②スマホから添付しようとするとカメラが起動して、その場で撮ったカメラの写真しかアップロードできない（カメラロールやファイルから選べるようにしてほしい）」。**※チェック（現場での報告＝`requires_photo`の必須写真）は今まで通りリアルタイム撮影のみで問題なしとの指示あり**。
+
+- 一般の添付（タスク写真・工程の添付ボックス・テンプレート添付、いずれも`attachBoxHtml()`と`taskphoto`）のfile input から`capture="environment"`を除去し、`accept`に`application/pdf`を追加。**現場確認用の必須写真（`stepphoto-`/`dphoto-`）は指示どおり変更していない**（引き続き`capture="environment"`・`image/*`のまま）
+- PDFは`<img>`で表示できないため、`photoOrDocHtml()`を新設し拡張子で判定して📄PDFチップ表示に切り替え（サムネイル一覧・タスク写真・工程添付・テンプレート添付の全箇所で共通利用）
+- 本番反映前にStorageバケット`report-photos`の`allowed_mime_types`をManagement API経由で確認→`null`（無制限）だったため、DB/バケット側の追加設定は不要と判断（過去に`invoice-files`等で`allowed_mime_types`不一致によりPDF添付が弾かれた教訓があったための確認）
+- 自前ブラウザ検証（jpg1件・pdf1件のモックデータ）で、通常写真はサムネイル表示・PDFは📄チップ表示になることを確認してから本番反映
