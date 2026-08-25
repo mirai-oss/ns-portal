@@ -777,11 +777,15 @@ function stepHtml(t,s,u){
   // パネルへ統合。開閉は1つの状態（STEP_ATT_OPEN）に一本化し、行全体のクリックでも
   // 「📎添付・マニュアル」ボタンのクリックでも同じパネルが開く
   const canComplete=!s.completed_at&&canTouch;
+  // 2026-08-25(続き): 判定(is_binary)も必須写真(requires_photo)も無い単純な工程は、
+  // 開かなくてもその場で完了できるよう行のメタ行に「✅完了にする」を追加してほしいとの
+  // 実機フィードバック対応。判定・写真が要る工程は入力が要るため従来どおりパネルを開く
+  const canQuickComplete=canComplete&&!s.is_binary&&!s.requires_photo;
   const hasPanel=links.length||photos.length||attCanEdit||canComplete;
   const panelOpen=STEP_ATT_OPEN.has(s.id);
   return `<div class="step ${s._isCurrent?'cur':''}">
     <div class="row1" ${hasPanel?`data-stepattopen="${s.id}"`:""}><span class="ic">${stepIcon(s)}</span>
-      <div class="st">${esc(s.title)}<div class="meta">${metaLine}${canEditAssign?` ／ <button class="linkbtn" data-stepeditopen="${s.id}" onclick="event.stopPropagation()">✏️ 編集</button>`:""}${s.completed_at&&canTouch?` ／ <button class="linkbtn" data-stepundo="${s.id}" onclick="event.stopPropagation()">↩️ 取り消す</button>`:""}</div>
+      <div class="st">${esc(s.title)}<div class="meta">${metaLine}${canEditAssign?` ／ <button class="linkbtn" data-stepeditopen="${s.id}" onclick="event.stopPropagation()">✏️ 編集</button>`:""}${canQuickComplete?` ／ <button class="linkbtn" data-quickcomplete="${s.id}" onclick="event.stopPropagation()">✅ 完了にする</button>`:""}${s.completed_at&&canTouch?` ／ <button class="linkbtn" data-stepundo="${s.id}" onclick="event.stopPropagation()">↩️ 取り消す</button>`:""}</div>
       </div>
       ${hasPanel?`<span>${panelOpen?"▲":"▼"}</span>`:""}
     </div>
@@ -1174,6 +1178,21 @@ function wireDetail(t,u){
   });
   document.querySelectorAll("[data-stepeditcancel]").forEach(btn=>{
     btn.onclick=()=>{ EDIT_STEP=null; renderDetail(u); };
+  });
+  /* 2026-08-25(続き): 判定・必須写真の無い工程は行から直接ワンクリックで完了（実機フィードバック対応） */
+  document.querySelectorAll("[data-quickcomplete]").forEach(btn=>{
+    btn.onclick=async(e)=>{
+      e.stopPropagation();
+      const sid=btn.dataset.quickcomplete;
+      const step=sortedSteps(t).find(s=>s.id===sid);
+      btn.disabled=true; btn.textContent="処理中…";
+      const r=await authed(`/rest/v1/hq_task_steps?id=eq.${sid}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({completed_at:new Date().toISOString()})});
+      if(!r.ok){ alert("完了にできませんでした（権限を確認してください）"); btn.disabled=false; btn.textContent="✅ 完了にする"; return; }
+      await logActivity(t.id,"step_complete",`工程「${step.title}」完了`,sid);
+      await notifyStepEvent(sid,"step_complete");
+      STEP_ATT_OPEN.delete(sid);
+      CUR_TASK=await fetchTaskDetail(t.id); renderDetail(u);
+    };
   });
   document.querySelectorAll("[data-stepeditsave]").forEach(btn=>{
     btn.onclick=async()=>{
