@@ -2255,3 +2255,13 @@ E-1〜E-3完了後、ユーザーがマスター権限で実ログインして�
   4. 📁過去タスクを新規項目として追加。url: `tasks.html?embed=1&page=past`
 - GitHub Pagesへの反映確認済み（tasks.html側）。portal.html側の対応は担当F待ち
 - スコーピング指示書（`docs/実装指示書_本部タスクボード全面刷新_2026-08-25.md`）は次回セッションで§7の回答を反映して更新予定
+
+## 2026-08-25（担当F実行スレッド・続き2）担当Eからの依頼（本部タスク深リンク3項目）に対応
+
+担当E実行スレッドからのクロスセッション依頼（WORKLOG「2026-08-25（担当E実行スレッド・続き11）」・tasks.html側のembed/page受け口はコミット`d233468`で実装済み）に対応。`ns-portal`コミット`b26a69d`。
+
+- `admin-corps`のurlを`tasks.html?embed=1&page=corps`に変更（法人管理タブへ直接遷移するように）
+- `admin-perm`（従来ポータルの権限設定）は依頼どおり無変更
+- 新規追加: `admin-task-perm`（🔑権限設定・本部タスク機能／`?page=perms`）・`admin-task-notify`（🔔通知設定・本部タスクのアラート／`?page=notify`）・`admin-task-past`（📁過去タスク／`?page=past`）。既存のadmin-perm・admin-notify（nippo側）と混同しないラベルにした
+- 表示条件は既存の「⚙️管理」グループのroles（HQ/CEO・マスターは常時可視）のまま変更なし
+- 構文チェック（Node `new Function`）のみ実施しpush。**実機E2Eは担当E側で実施予定**（依頼メッセージに明記あり）
