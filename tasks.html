@@ -262,6 +262,7 @@ function sortTasks(list){
 }
 let CUR_TASK=null;        // 詳細表示中のタスク（工程・リンク・写真・履歴込み）
 let OPEN_STEP=null;       // 詳細画面で開いている工程id
+let EDIT_STEP=null;       // 詳細画面で担当・期限を編集中の工程id（E-2）
 let NOTIFICATIONS=[];     // アプリ内通知（自分宛）
 let NOTIF_UNREAD=0;
 let BELL_OPEN=false;
@@ -684,7 +685,9 @@ function renderDetail(u){
 }
 function stepHtml(t,s,u){
   const canTouch=canManage(u)||s.assignee_id===u.id||(!s.assignee_id);
+  const canEditAssign=canManage(u); // E-2: 担当・期限のその場変更はhq_can_manage系（マスター/社長/本部）のみ
   const open=OPEN_STEP===s.id;
+  const editOpen=EDIT_STEP===s.id;
   let metaLine="";
   if(s.completed_at) metaLine=`担当: ${esc(userName(s.assignee_id)||"—")} ／ 期限 ${fmtDD(s.due_date,s.due_time)} → ${fmtDT(s.completed_at)} 完了${esc(userName(s.completed_by)?" ("+userName(s.completed_by)+")":"")}`;
   else if(s._isCurrent) metaLine=`<span class="now-tag">いまここ${s.due_date?"":""}</span> ／ 担当: ${esc(userName(s.assignee_id)||"未定")} ／ 期限 ${fmtDD(s.due_date,s.due_time)}`;
@@ -694,10 +697,18 @@ function stepHtml(t,s,u){
   const attCanEdit=canManage(u);
   return `<div class="step ${s._isCurrent?'cur':''}">
     <div class="row1" data-stepopen="${s.id}"><span class="ic">${stepIcon(s)}</span>
-      <div class="st">${esc(s.title)}<div class="meta">${metaLine}${s.completed_at&&canTouch?` ／ <button class="linkbtn" data-stepundo="${s.id}" onclick="event.stopPropagation()">↩️ 取り消す</button>`:""}</div>
+      <div class="st">${esc(s.title)}<div class="meta">${metaLine}${canEditAssign?` ／ <button class="linkbtn" data-stepeditopen="${s.id}" onclick="event.stopPropagation()">✏️ 編集</button>`:""}${s.completed_at&&canTouch?` ／ <button class="linkbtn" data-stepundo="${s.id}" onclick="event.stopPropagation()">↩️ 取り消す</button>`:""}</div>
       </div>
       ${!s.completed_at&&canTouch?`<span>${open?"▲":"▼"}</span>`:""}
     </div>
+    ${editOpen?`<div class="step-body" onclick="event.stopPropagation()">
+      <label>担当</label><select id="stepedit-assignee-${s.id}"><option value="">未定</option>${assignableUsers().map(x=>`<option value="${x.id}" ${s.assignee_id===x.id?"selected":""}>${esc(x.name)}</option>`).join("")}</select>
+      <label>期限日</label><input type="date" id="stepedit-due-${s.id}" value="${esc(s.due_date||"")}">
+      <label>期限時刻（任意）</label><input type="time" id="stepedit-duetime-${s.id}" value="${esc(s.due_time||"")}">
+      <button class="btn sm" style="margin-top:8px" data-stepeditsave="${s.id}">保存</button>
+      <button class="linkbtn" style="margin-top:8px" data-stepeditcancel="${s.id}">キャンセル</button>
+      <div class="err" id="stepeditmsg-${s.id}"></div>
+    </div>`:""}
     ${!s.completed_at&&canTouch&&open?`<div class="step-body">
       ${s.is_binary?`<label>判定</label>
         <select id="judge-${s.id}"><option value="">選択してください</option><option value="ok">OK</option><option value="issue">異常あり</option></select>
@@ -1027,8 +1038,35 @@ function wireDetail(t,u){
       CUR_TASK=await fetchTaskDetail(t.id); renderDetail(u);
     };
   });
+  /* E-2: タスク詳細から工程の担当・期限をその場変更（保存時にhq_task_activityへ履歴を残す） */
+  document.querySelectorAll("[data-stepeditopen]").forEach(btn=>{
+    btn.onclick=()=>{ const id=btn.dataset.stepeditopen; EDIT_STEP=EDIT_STEP===id?null:id; OPEN_STEP=null; renderDetail(u); };
+  });
+  document.querySelectorAll("[data-stepeditcancel]").forEach(btn=>{
+    btn.onclick=()=>{ EDIT_STEP=null; renderDetail(u); };
+  });
+  document.querySelectorAll("[data-stepeditsave]").forEach(btn=>{
+    btn.onclick=async()=>{
+      const sid=btn.dataset.stepeditsave;
+      const step=sortedSteps(t).find(s=>s.id===sid);
+      const msg=$("stepeditmsg-"+sid); msg.className="err"; msg.textContent="保存中…";
+      const newAssignee=$("stepedit-assignee-"+sid).value||null;
+      const newDue=$("stepedit-due-"+sid).value||null;
+      const newDueTime=$("stepedit-duetime-"+sid).value||null;
+      btn.disabled=true;
+      const r=await authed(`/rest/v1/hq_task_steps?id=eq.${sid}`,{method:"PATCH",headers:{Prefer:"return=minimal"},
+        body:JSON.stringify({assignee_id:newAssignee,due_date:newDue,due_time:newDueTime})});
+      if(!r.ok){ msg.textContent="保存できませんでした"; btn.disabled=false; return; }
+      const changes=[];
+      if((step.assignee_id||null)!==newAssignee) changes.push(`担当: ${userName(step.assignee_id)||"未定"}→${userName(newAssignee)||"未定"}`);
+      if((step.due_date||null)!==newDue||(step.due_time||null)!==newDueTime) changes.push(`期限: ${fmtDD(step.due_date,step.due_time)}→${fmtDD(newDue,newDueTime)}`);
+      await logActivity(t.id,"comment",`工程「${step.title}」を編集${changes.length?"（"+changes.join("・")+"）":""}`,sid);
+      EDIT_STEP=null;
+      CUR_TASK=await fetchTaskDetail(t.id); renderDetail(u);
+    };
+  });
   document.querySelectorAll("[data-stepopen]").forEach(el=>{
-    el.onclick=()=>{ const id=el.dataset.stepopen; OPEN_STEP=OPEN_STEP===id?null:id; renderDetail(u); };
+    el.onclick=()=>{ const id=el.dataset.stepopen; OPEN_STEP=OPEN_STEP===id?null:id; EDIT_STEP=null; renderDetail(u); };
   });
   document.querySelectorAll("select[id^='judge-']").forEach(sel=>{
     sel.onchange=()=>{ const sid=sel.id.replace("judge-",""); const w=$("issuewrap-"+sid); if(w)w.style.display=sel.value==="issue"?"block":"none"; };
