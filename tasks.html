@@ -373,13 +373,15 @@ async function fetchTaskDetail(id){
   // 工程ごとの写真・リンク（step_id指定）もまとめて取得
   const stepIds=sortedSteps(task).map(s=>s.id);
   if(stepIds.length){
-    const [sp,sl]=await Promise.all([
+    const [sp,sl,scl]=await Promise.all([
       authed(`/rest/v1/hq_task_photos?step_id=in.(${stepIds.join(",")})&order=created_at`),
       authed(`/rest/v1/hq_task_links?step_id=in.(${stepIds.join(",")})&order=created_at`),
+      authed(`/rest/v1/hq_step_checklist_items?step_id=in.(${stepIds.join(",")})&order=sort_order`),
     ]);
     task._stepPhotos=sp.ok?sp.body:[];
     task._stepLinks=sl.ok?sl.body:[];
-  } else { task._stepPhotos=[]; task._stepLinks=[]; }
+    task._stepChecklist=scl.ok?scl.body:[];
+  } else { task._stepPhotos=[]; task._stepLinks=[]; task._stepChecklist=[]; }
   return task;
 }
 
@@ -621,6 +623,7 @@ function stalledInfo(t){
 function stepIcon(s){ return s.completed_at?"✓":(s._isCurrent?"▶":"○"); }
 function stepPhotosFor(t,stepId){ return (t._stepPhotos||[]).filter(p=>p.step_id===stepId); }
 function stepLinksFor(t,stepId){ return (t._stepLinks||[]).filter(l=>l.step_id===stepId); }
+function stepChecklistFor(t,stepId){ return (t._stepChecklist||[]).filter(c=>c.step_id===stepId); }
 // 2026-08-21 データ基盤Day2: report-photosバケット非公開化に伴い署名URL方式へ変更。
 // photoUrl()は直接は使わず、レンダリング側は data-photo-path 属性で埋め込み、
 // resolveLazyPhotos()がDOM挿入後にまとめて署名URLを取得してsrc/hrefへ反映する
@@ -733,6 +736,22 @@ function renderDetail(u){
   if($("linktoggle")) $("linktoggle").onclick=()=>{ LINKS_OPEN=!LINKS_OPEN; renderDetail(u); };
   wireDetail(t,u);
 }
+/* E-3(B7): 工程内チェックリスト（タスク側＝手順のチェックオン/オフ＋その場で追加）
+   店舗別チェック展開（stepOrGroupHtml）には既存の添付機能と同様に組み込んでいない（対象外）。 */
+function checklistStepHtml(s,items,canTouch){
+  const rows=(items||[]).map(it=>`<label class="optchk" style="display:flex;align-items:center;gap:6px;padding:3px 0">
+      <input type="checkbox" data-chkitem="${it.id}" ${it.checked_at?"checked":""} ${canTouch?"":"disabled"} onclick="event.stopPropagation()">
+      <span style="${it.checked_at?"text-decoration:line-through;color:var(--muted)":""}">${esc(it.title)}</span>
+    </label>`).join("");
+  return `<div style="padding:8px 12px 4px" onclick="event.stopPropagation()">
+    <div class="meta" style="margin-bottom:2px">✅ 手順チェックリスト</div>
+    ${rows||'<div class="meta" style="color:var(--muted)">項目はありません</div>'}
+    ${canTouch?`<div style="margin-top:6px;display:flex;gap:6px">
+      <input data-chknew="${s.id}" placeholder="手順を追加" style="flex:1">
+      <button class="linkbtn" data-chkadd="${s.id}">追加</button>
+    </div>`:""}
+  </div>`;
+}
 function stepHtml(t,s,u){
   const canTouch=canManage(u)||s.assignee_id===u.id||(!s.assignee_id);
   const canEditAssign=canManage(u); // E-2: 担当・期限のその場変更はhq_can_manage系（マスター/社長/本部）のみ
@@ -744,6 +763,7 @@ function stepHtml(t,s,u){
   else metaLine=`担当: ${esc(userName(s.assignee_id)||"未定")} ／ 期限 ${fmtDD(s.due_date,s.due_time)}`;
   const photos=stepPhotosFor(t,s.id);
   const links=stepLinksFor(t,s.id);
+  const checklist=stepChecklistFor(t,s.id);
   const attCanEdit=canManage(u);
   return `<div class="step ${s._isCurrent?'cur':''}">
     <div class="row1" data-stepopen="${s.id}"><span class="ic">${stepIcon(s)}</span>
@@ -751,6 +771,7 @@ function stepHtml(t,s,u){
       </div>
       ${!s.completed_at&&canTouch?`<span>${open?"▲":"▼"}</span>`:""}
     </div>
+    ${(checklist.length||canTouch)?checklistStepHtml(s,checklist,canTouch):""}
     ${editOpen?`<div class="step-body" onclick="event.stopPropagation()">
       <label>担当</label><select id="stepedit-assignee-${s.id}"><option value="">未定</option>${assignableUsers().map(x=>`<option value="${x.id}" ${s.assignee_id===x.id?"selected":""}>${esc(x.name)}</option>`).join("")}</select>
       <label>期限日</label><input type="date" id="stepedit-due-${s.id}" value="${esc(s.due_date||"")}">
@@ -943,6 +964,39 @@ function wireAttachBox(prefix,owner,canEdit,onSaved){
     }catch(err){ msg.textContent="アップロードできませんでした"; }
   };
 }
+/* E-3(B7): 工程内チェックリスト（テンプレ側＝ひな形の追加・並び順は登録順のみ・削除のみ可） */
+function checklistBoxHtml(prefix,items){
+  const rows=(items||[]).map(it=>`<div class="link-row"><span>✅</span><div style="flex:1">${esc(it.title)}</div><button class="linkbtn" data-delchecklist="${it.id}">削除</button></div>`).join("");
+  return `<div class="attach-box" style="margin-top:10px;padding-top:10px;border-top:1px dashed var(--line)">
+    <label>✅ チェックリスト（手順）</label>
+    <div id="${prefix}-list">${rows||'<div class="meta" style="color:var(--muted)">チェック項目はまだありません</div>'}</div>
+    <input id="${prefix}-title" placeholder="例: 冷蔵庫の温度を確認">
+    <button class="linkbtn" id="${prefix}-add" style="margin-top:6px">＋ チェック項目を追加</button>
+    <div class="err" id="${prefix}-msg"></div>
+  </div>`;
+}
+function wireChecklistBox(prefix,templateStepId,onSaved){
+  const list=$(`${prefix}-list`);
+  if(list) list.querySelectorAll("[data-delchecklist]").forEach(b=>{
+    b.onclick=async()=>{
+      if(!confirm("このチェック項目を削除しますか？"))return;
+      await authed(`/rest/v1/hq_step_checklist_items?id=eq.${b.dataset.delchecklist}`,{method:"DELETE"});
+      await onSaved();
+    };
+  });
+  const addBtn=$(`${prefix}-add`);
+  if(!addBtn) return;
+  addBtn.onclick=async()=>{
+    const input=$(`${prefix}-title`); const title=input.value.trim();
+    const msg=$(`${prefix}-msg`); msg.textContent="";
+    if(!title){ msg.textContent="チェック項目名を入力してください"; return; }
+    msg.textContent="追加中…";
+    const r=await authed("/rest/v1/hq_step_checklist_items",{method:"POST",headers:{Prefer:"return=minimal"},
+      body:JSON.stringify({template_step_id:templateStepId,title,sort_order:100})});
+    if(!r.ok){ msg.textContent="追加できませんでした"; return; }
+    await onSaved();
+  };
+}
 /* 店舗別チェックの一括完了。詳細画面と「今日の毎日タスク」画面の両方から使う
    （同じロジックを2箇所に書くと片方だけ直し忘れるため1本にまとめている）。
    onDone は完了後の再取得＆再描画。 */
@@ -1117,6 +1171,30 @@ function wireDetail(t,u){
   });
   document.querySelectorAll("[data-stepopen]").forEach(el=>{
     el.onclick=()=>{ const id=el.dataset.stepopen; OPEN_STEP=OPEN_STEP===id?null:id; EDIT_STEP=null; renderDetail(u); };
+  });
+  /* E-3(B7): 工程内チェックリストのチェックオン/オフ・追加 */
+  document.querySelectorAll("[data-chkitem]").forEach(cb=>{
+    cb.onchange=async()=>{
+      const id=cb.dataset.chkitem, checked=cb.checked;
+      cb.disabled=true;
+      const r=await authed(`/rest/v1/hq_step_checklist_items?id=eq.${id}`,{method:"PATCH",headers:{Prefer:"return=minimal"},
+        body:JSON.stringify(checked?{checked_at:new Date().toISOString(),checked_by:ME.id}:{checked_at:null,checked_by:null})});
+      if(!r.ok){ alert("更新できませんでした"); cb.disabled=false; cb.checked=!checked; return; }
+      CUR_TASK=await fetchTaskDetail(t.id); renderDetail(u);
+    };
+  });
+  document.querySelectorAll("[data-chkadd]").forEach(btn=>{
+    btn.onclick=async()=>{
+      const sid=btn.dataset.chkadd;
+      const input=document.querySelector(`[data-chknew="${sid}"]`);
+      const title=(input.value||"").trim();
+      if(!title) return;
+      btn.disabled=true;
+      const r=await authed("/rest/v1/hq_step_checklist_items",{method:"POST",headers:{Prefer:"return=minimal"},
+        body:JSON.stringify({step_id:sid,title,sort_order:100})});
+      if(!r.ok){ alert("追加できませんでした"); btn.disabled=false; return; }
+      CUR_TASK=await fetchTaskDetail(t.id); renderDetail(u);
+    };
   });
   document.querySelectorAll("select[id^='judge-']").forEach(sel=>{
     sel.onchange=()=>{ const sid=sel.id.replace("judge-",""); const w=$("issuewrap-"+sid); if(w)w.style.display=sel.value==="issue"?"block":"none"; };
@@ -1734,13 +1812,15 @@ async function openTplEdit(u,tpl){
     TPL_EDIT._photos=(pr.ok&&Array.isArray(pr.body))?pr.body:[];
     const stepIds=TPL_STEPS.map(s=>s.id).filter(Boolean);
     if(stepIds.length){
-      const [slr,spr]=await Promise.all([
+      const [slr,spr,sclr]=await Promise.all([
         authed(`/rest/v1/hq_task_links?template_step_id=in.(${stepIds.join(",")})`),
         authed(`/rest/v1/hq_task_photos?template_step_id=in.(${stepIds.join(",")})`),
+        authed(`/rest/v1/hq_step_checklist_items?template_step_id=in.(${stepIds.join(",")})&order=sort_order`),
       ]);
       const stepLinks=(slr.ok&&Array.isArray(slr.body))?slr.body:[];
       const stepPhotos=(spr.ok&&Array.isArray(spr.body))?spr.body:[];
-      TPL_STEPS.forEach(s=>{ s._links=stepLinks.filter(l=>l.template_step_id===s.id); s._photos=stepPhotos.filter(p=>p.template_step_id===s.id); });
+      const stepChecklist=(sclr.ok&&Array.isArray(sclr.body))?sclr.body:[];
+      TPL_STEPS.forEach(s=>{ s._links=stepLinks.filter(l=>l.template_step_id===s.id); s._photos=stepPhotos.filter(p=>p.template_step_id===s.id); s._checklist=stepChecklist.filter(c=>c.template_step_id===s.id); });
     }
   } else {
     TPL_STEPS=[{title:"",assignee_id:"",offset_days:0,due_time:"",kind:"step",store_scope:"",is_binary:false,requires_photo:false}];
@@ -1771,6 +1851,12 @@ async function refreshTplStepAttach(stepId){
   ]);
   const step=TPL_STEPS.find(s=>s.id===stepId);
   if(step){ step._links=(lr.ok&&Array.isArray(lr.body))?lr.body:[]; step._photos=(pr.ok&&Array.isArray(pr.body))?pr.body:[]; }
+  renderTplSteps();
+}
+async function refreshTplStepChecklist(stepId){
+  const r=await authed(`/rest/v1/hq_step_checklist_items?template_step_id=eq.${stepId}&order=sort_order`);
+  const step=TPL_STEPS.find(s=>s.id===stepId);
+  if(step) step._checklist=(r.ok&&Array.isArray(r.body))?r.body:[];
   renderTplSteps();
 }
 function renderTplEdit(u){
@@ -1911,6 +1997,7 @@ function renderTplSteps(){
         ${STORES.map(store=>`<label class="optchk" style="padding:3px 0"><input type="checkbox" class="ts-storeid" value="${store.id}" ${(s.store_ids||[]).includes(store.id)?"checked":""}> ${esc(store.name)}${store.is_active?"":"（委託）"}</label>`).join("")||'<div class="meta">店舗マスタが登録されていません</div>'}
       </div>
       ${s.id?attachBoxHtml(`tstep-att-${s.id}`,s._links,s._photos,true):'<div class="meta" style="color:var(--muted);margin-top:8px">保存すると工程ごとにマニュアル・写真を追加できます</div>'}
+      ${s.id?checklistBoxHtml(`tstep-chk-${s.id}`,s._checklist):""}
     </div>`).join("");
   document.querySelectorAll("#tp-steps [data-tidx]").forEach(row=>{
     const i=+row.dataset.tidx;
@@ -1945,6 +2032,7 @@ function renderTplSteps(){
   TPL_STEPS.forEach(s=>{
     if(!s.id) return;
     wireAttachBox(`tstep-att-${s.id}`,{template_step_id:s.id},true,()=>refreshTplStepAttach(s.id));
+    wireChecklistBox(`tstep-chk-${s.id}`,s.id,()=>refreshTplStepChecklist(s.id));
   });
   refreshTplDueDates();
 }
