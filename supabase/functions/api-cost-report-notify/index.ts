@@ -111,10 +111,11 @@ Deno.serve(async (req) => {
     if ((thresholdUsd > 0) || force.includes("threshold")) {
       const ym = `${jstYear}-${String(jstMonth + 1).padStart(2, "0")}`;
       const monthStart = `${ym}-01`;
-      const { data: rows } = await sb.from("api_cost_daily").select("date,amount_cents")
+      const { data: rows } = await sb.from("api_cost_daily").select("date,amount_cents,amount_jpy")
         .gte("date", monthStart).order("date", { ascending: true });
       const all = rows ?? [];
       const totalCentsAll = all.reduce((s, r: any) => s + Number(r.amount_cents ?? 0), 0);
+      const totalJpyAll = all.reduce((s, r: any) => s + Number(r.amount_jpy ?? 0), 0);
       const lastRow = all[all.length - 1];
       const totalCentsBeforeLast = lastRow
         ? totalCentsAll - Number(lastRow.amount_cents ?? 0)
@@ -122,10 +123,10 @@ Deno.serve(async (req) => {
       const thresholdCents = thresholdUsd * 100;
       const crossedToday = totalCentsBeforeLast < thresholdCents && totalCentsAll >= thresholdCents;
       if (crossedToday || force.includes("threshold")) {
-        const text = `⚠️ 今月のAI利用料が閾値（$${thresholdUsd || "?"}）を超えました: ${usd(totalCentsAll / 100)}`;
+        const text = `⚠️ 今月のAI利用料が閾値（$${thresholdUsd || "?"}）を超えました: ${yen(totalJpyAll)}（${usd(totalCentsAll / 100)}）`;
         sent.threshold = { text, result: await sendLark(sb, text) };
       } else {
-        sent.threshold = { skipped: true, totalUsd: totalCentsAll / 100, thresholdUsd };
+        sent.threshold = { skipped: true, totalUsd: totalCentsAll / 100, totalJpy: totalJpyAll, thresholdUsd };
       }
     }
 
