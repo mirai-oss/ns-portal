@@ -2265,3 +2265,12 @@ E-1〜E-3完了後、ユーザーがマスター権限で実ログインして�
 - 新規追加: `admin-task-perm`（🔑権限設定・本部タスク機能／`?page=perms`）・`admin-task-notify`（🔔通知設定・本部タスクのアラート／`?page=notify`）・`admin-task-past`（📁過去タスク／`?page=past`）。既存のadmin-perm・admin-notify（nippo側）と混同しないラベルにした
 - 表示条件は既存の「⚙️管理」グループのroles（HQ/CEO・マスターは常時可視）のまま変更なし
 - 構文チェック（Node `new Function`）のみ実施しpush。**実機E2Eは担当E側で実施予定**（依頼メッセージに明記あり）
+
+## 2026-08-25（担当E実行スレッド・続き12）担当Fの対応をコードレベルで確認・GitHub Pages反映確認
+
+担当Fから対応完了の連絡を受け（コミット`b26a69d`）、Claude間の直接メッセージ（同一マシン上の別セッション）でやり取りして確認した。
+
+- **コード確認**: `tasksPage=p=>"tasks.html?embed=1&page="+p`ヘルパーが正しく`?embed=1&page=corps/perms/notify/past`を生成することを確認。`admin-corps`が深リンク化・`admin-perm`は無変更・新規3項目（`admin-task-perm`/`admin-task-notify`/`admin-task-past`）もURL・ラベルとも依頼どおり。iframe埋め込み(`<iframe src="${it.url}">`)は既存のnippo/keiei項目と同じ方式で、tasks.htmlはportal.htmlと同一オリジンのためセッションも自然に共有される
+- **GitHub Pages反映確認**: `portal.html`に`admin-task-perm`等が反映されていることを確認済み
+- **実機E2Eの制約を担当Fへ共有**: この環境にテストユーザーのログイン情報が無いため、役割別（HQ/CEO/マスター）の実ログインE2Eはできない旨をFへ伝達。最終確認はユーザー本人にお願いする流れになる見込み
+- 次はユーザーに実ログインで「⚙️管理」→4項目（法人管理・権限設定・通知設定・過去タスク）が正しく開くか確認してもらう
