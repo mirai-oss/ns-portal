@@ -147,6 +147,10 @@ textarea{resize:vertical}
   .hero{grid-template-columns:1fr}
   .layout{grid-template-columns:1fr}
 }
+/* ✅ワンクリック完了はデザイン案に無い機能のため、PCではデザイン案どおり隠し、
+   モバイルだけの利便機能として残す（ユーザー指示: PCはデザイン案どおり、
+   スマホは多少変えてよい） */
+@media(min-width:641px){ [data-quickcomplete]{display:none} }
 .notes-box{background:#fff8e1;border:1px solid #e6c74e;border-radius:10px;padding:12px 14px;font-size:14px;line-height:1.6;color:#5a4a00}
 @media(prefers-color-scheme:dark){.notes-box{background:#3a3110;border-color:#6b5a1e;color:#f0dd8a}}
 .step{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px 14px;margin-bottom:10px;overflow:hidden}
@@ -936,10 +940,8 @@ function stepHtml(t,s,u){
       </div>
       ${hasPanel?`<span>${panelOpen?"▲":"▼"}</span>`:""}
     </div>
-    ${hasPanel?`<div style="padding:8px 12px 4px" onclick="event.stopPropagation()">
-      <button class="linkbtn" data-stepattopen="${s.id}">📎 添付・マニュアル（${links.length+photos.length}件） ${panelOpen?"▲ 閉じる":"▼ 開く"}</button>
-      ${panelOpen?`
-        ${canEditAssign?`<div class="ownerline" style="margin-top:10px">
+    ${hasPanel&&panelOpen?`<div style="padding:8px 12px 4px" onclick="event.stopPropagation()">
+        ${canEditAssign?`<div class="ownerline">
           <div class="fieldbox"><label>担当</label><select data-stepowner="${s.id}"><option value="">未定</option>${assignableUsers().map(x=>`<option value="${x.id}" ${s.assignee_id===x.id?"selected":""}>${esc(x.name)}</option>`).join("")}</select></div>
           <div class="fieldbox"><label>工程期限</label><div style="display:flex;gap:6px"><input type="date" data-stepdue="${s.id}" value="${esc(s.due_date||"")}" style="flex:1"><input type="time" data-steptime="${s.id}" value="${esc(s.due_time||"")}" style="flex:1"></div></div>
         </div>
@@ -958,7 +960,6 @@ function stepHtml(t,s,u){
           ${canEditAssign?`<button class="btn sm" data-stepsavemeta="${s.id}">担当・期限を保存</button>`:""}
           <button class="btn sm" data-complete="${s.id}">この工程を完了</button>
         </div>`:""}
-      `:""}
     </div>`:""}
   </div>`;
 }
