@@ -286,7 +286,6 @@ function sortTasks(list){
 }
 let CUR_TASK=null;        // 詳細表示中のタスク（工程・リンク・写真・履歴込み）
 let OPEN_STEP=null;       // 詳細画面で開いている工程id
-let EDIT_STEP=null;       // 詳細画面で担当・期限を編集中の工程id（E-2）
 let LINKS_OPEN=false;     // 詳細画面「③添付・リンク」の開閉（B4・既定=閉）
 let STEP_ATT_OPEN=new Set();  // 工程ごとの添付欄の開閉（B4と同じ既定=閉に統一。2026-08-25追記）
 let CHK_ADD_OPEN=new Set();   // 工程ごとのチェックリスト「＋追加」入力欄の開閉（同上）
@@ -836,11 +835,13 @@ function checklistStepHtml(s,items,canTouch){
 }
 function stepHtml(t,s,u){
   const canTouch=canManage(u)||s.assignee_id===u.id||(!s.assignee_id);
-  const canEditAssign=canManage(u); // E-2: 担当・期限のその場変更はhq_can_manage系（マスター/社長/本部）のみ
-  const editOpen=EDIT_STEP===s.id;
+  // Phase3(全面刷新): 担当・期限は✏️編集での開閉式をやめ、デザイン案どおり常時表示の
+  // プルダウン＋日付/時刻入力＋保存ボタンに戻す（ユーザー指示）。対象は完了前の工程のみ
+  const canEditAssign=canManage(u)&&!s.completed_at;
   let metaLine="";
   if(s.completed_at) metaLine=`担当: ${esc(userName(s.assignee_id)||"—")} ／ 期限 ${fmtDD(s.due_date,s.due_time)} → ${fmtDT(s.completed_at)} 完了${esc(userName(s.completed_by)?" ("+userName(s.completed_by)+")":"")}`;
-  else if(s._isCurrent) metaLine=`<span class="now-tag">いまここ${s.due_date?"":""}</span> ／ 担当: ${esc(userName(s.assignee_id)||"未定")} ／ 期限 ${fmtDD(s.due_date,s.due_time)}`;
+  else if(canEditAssign) metaLine=s._isCurrent?`<span class="now-tag">いまここ</span>`:""; // 担当・期限は下の常時表示フォームに表示するのでここでは重複させない
+  else if(s._isCurrent) metaLine=`<span class="now-tag">いまここ</span> ／ 担当: ${esc(userName(s.assignee_id)||"未定")} ／ 期限 ${fmtDD(s.due_date,s.due_time)}`;
   else metaLine=`担当: ${esc(userName(s.assignee_id)||"未定")} ／ 期限 ${fmtDD(s.due_date,s.due_time)}`;
   const photos=stepPhotosFor(t,s.id);
   const links=stepLinksFor(t,s.id);
@@ -859,19 +860,20 @@ function stepHtml(t,s,u){
   const panelOpen=STEP_ATT_OPEN.has(s.id);
   return `<div class="step ${s._isCurrent?'cur':''}">
     <div class="row1" ${hasPanel?`data-stepattopen="${s.id}"`:""}><span class="ic">${stepIcon(s)}</span>
-      <div class="st">${esc(s.title)}<div class="meta">${metaLine}${canEditAssign?` ／ <button class="linkbtn" data-stepeditopen="${s.id}" onclick="event.stopPropagation()">✏️ 編集</button>`:""}${s.completed_at&&canTouch?` ／ <button class="linkbtn" data-stepundo="${s.id}" onclick="event.stopPropagation()">↩️ 取り消す</button>`:""}${canQuickComplete?`<button class="btn sm" data-quickcomplete="${s.id}" style="margin-left:8px;vertical-align:middle" onclick="event.stopPropagation()">✅ 完了にする</button>`:""}</div>
+      <div class="st">${esc(s.title)}${metaLine?`<div class="meta">${metaLine}</div>`:""}
+        ${canEditAssign?`<div class="stepform-row" style="margin:6px 0 0" onclick="event.stopPropagation()">
+          <div class="f"><label>担当</label><select data-stepowner="${s.id}"><option value="">未定</option>${assignableUsers().map(x=>`<option value="${x.id}" ${s.assignee_id===x.id?"selected":""}>${esc(x.name)}</option>`).join("")}</select></div>
+          <div class="f"><label>期限日</label><input type="date" data-stepdue="${s.id}" value="${esc(s.due_date||"")}"></div>
+          <div class="f"><label>期限時刻（任意）</label><input type="time" data-steptime="${s.id}" value="${esc(s.due_time||"")}"></div>
+          <div class="f" style="flex:0 0 auto;min-width:0"><label>&nbsp;</label><button class="btn sm" data-stepsavemeta="${s.id}">保存</button></div>
+        </div>
+        <div class="err" id="stepmetamsg-${s.id}"></div>`:""}
+        ${s.completed_at&&canTouch?`<div class="meta"><button class="linkbtn" data-stepundo="${s.id}" onclick="event.stopPropagation()">↩️ 取り消す</button></div>`:""}
+        ${canQuickComplete?`<button class="btn sm" data-quickcomplete="${s.id}" style="margin-top:6px" onclick="event.stopPropagation()">✅ 完了にする</button>`:""}
       </div>
       ${hasPanel?`<span>${panelOpen?"▲":"▼"}</span>`:""}
     </div>
     ${(checklist.length||canTouch)?checklistStepHtml(s,checklist,canTouch):""}
-    ${editOpen?`<div class="step-body" onclick="event.stopPropagation()">
-      <label>担当</label><select id="stepedit-assignee-${s.id}"><option value="">未定</option>${assignableUsers().map(x=>`<option value="${x.id}" ${s.assignee_id===x.id?"selected":""}>${esc(x.name)}</option>`).join("")}</select>
-      <label>期限日</label><input type="date" id="stepedit-due-${s.id}" value="${esc(s.due_date||"")}">
-      <label>期限時刻（任意）</label><input type="time" id="stepedit-duetime-${s.id}" value="${esc(s.due_time||"")}">
-      <button class="btn sm" style="margin-top:8px" data-stepeditsave="${s.id}">保存</button>
-      <button class="linkbtn" style="margin-top:8px" data-stepeditcancel="${s.id}">キャンセル</button>
-      <div class="err" id="stepeditmsg-${s.id}"></div>
-    </div>`:""}
     ${hasPanel?`<div style="padding:8px 12px 4px" onclick="event.stopPropagation()">
       <button class="linkbtn" data-stepattopen="${s.id}">📎 添付・マニュアル（${links.length+photos.length}件） ${panelOpen?"▲ 閉じる":"▼ 開く"}</button>
       ${panelOpen?`
@@ -1243,15 +1245,28 @@ function wireDetail(t,u){
       CUR_TASK=await fetchTaskDetail(t.id); renderDetail(u);
     };
   });
-  /* E-2: タスク詳細から工程の担当・期限をその場変更（保存時にhq_task_activityへ履歴を残す） */
-  document.querySelectorAll("[data-stepeditopen]").forEach(btn=>{
-    btn.onclick=(e)=>{
-      e.stopPropagation(); // 同上（btn.onclick=...でHTML属性のstopPropagationが上書きされていたバグの修正）
-      const id=btn.dataset.stepeditopen; EDIT_STEP=EDIT_STEP===id?null:id; STEP_ATT_OPEN.delete(id); renderDetail(u);
+  /* Phase3(全面刷新): タスク詳細から工程の担当・期限を常時表示フォームでその場変更
+     （保存時にhq_task_activityへ履歴を残す。E-2の✏️編集開閉式から、デザイン案どおりの
+     常時表示＋保存ボタン方式へ変更） */
+  document.querySelectorAll("[data-stepsavemeta]").forEach(btn=>{
+    btn.onclick=async(e)=>{
+      e.stopPropagation();
+      const sid=btn.dataset.stepsavemeta;
+      const step=sortedSteps(t).find(s=>s.id===sid);
+      const msg=$("stepmetamsg-"+sid); if(msg){ msg.className="err"; msg.textContent="保存中…"; }
+      const newAssignee=document.querySelector(`[data-stepowner="${sid}"]`).value||null;
+      const newDue=document.querySelector(`[data-stepdue="${sid}"]`).value||null;
+      const newDueTime=document.querySelector(`[data-steptime="${sid}"]`).value||null;
+      btn.disabled=true;
+      const r=await authed(`/rest/v1/hq_task_steps?id=eq.${sid}`,{method:"PATCH",headers:{Prefer:"return=minimal"},
+        body:JSON.stringify({assignee_id:newAssignee,due_date:newDue,due_time:newDueTime})});
+      if(!r.ok){ if(msg) msg.textContent="保存できませんでした"; btn.disabled=false; return; }
+      const changes=[];
+      if((step.assignee_id||null)!==newAssignee) changes.push(`担当: ${userName(step.assignee_id)||"未定"}→${userName(newAssignee)||"未定"}`);
+      if((step.due_date||null)!==newDue||(step.due_time||null)!==newDueTime) changes.push(`期限: ${fmtDD(step.due_date,step.due_time)}→${fmtDD(newDue,newDueTime)}`);
+      if(changes.length) await logActivity(t.id,"comment",`工程「${step.title}」を編集（${changes.join("・")}）`,sid);
+      CUR_TASK=await fetchTaskDetail(t.id); renderDetail(u);
     };
-  });
-  document.querySelectorAll("[data-stepeditcancel]").forEach(btn=>{
-    btn.onclick=()=>{ EDIT_STEP=null; renderDetail(u); };
   });
   /* 2026-08-25(続き): 判定・必須写真の無い工程は行から直接ワンクリックで完了（実機フィードバック対応） */
   document.querySelectorAll("[data-quickcomplete]").forEach(btn=>{
@@ -1268,28 +1283,8 @@ function wireDetail(t,u){
       CUR_TASK=await fetchTaskDetail(t.id); renderDetail(u);
     };
   });
-  document.querySelectorAll("[data-stepeditsave]").forEach(btn=>{
-    btn.onclick=async()=>{
-      const sid=btn.dataset.stepeditsave;
-      const step=sortedSteps(t).find(s=>s.id===sid);
-      const msg=$("stepeditmsg-"+sid); msg.className="err"; msg.textContent="保存中…";
-      const newAssignee=$("stepedit-assignee-"+sid).value||null;
-      const newDue=$("stepedit-due-"+sid).value||null;
-      const newDueTime=$("stepedit-duetime-"+sid).value||null;
-      btn.disabled=true;
-      const r=await authed(`/rest/v1/hq_task_steps?id=eq.${sid}`,{method:"PATCH",headers:{Prefer:"return=minimal"},
-        body:JSON.stringify({assignee_id:newAssignee,due_date:newDue,due_time:newDueTime})});
-      if(!r.ok){ msg.textContent="保存できませんでした"; btn.disabled=false; return; }
-      const changes=[];
-      if((step.assignee_id||null)!==newAssignee) changes.push(`担当: ${userName(step.assignee_id)||"未定"}→${userName(newAssignee)||"未定"}`);
-      if((step.due_date||null)!==newDue||(step.due_time||null)!==newDueTime) changes.push(`期限: ${fmtDD(step.due_date,step.due_time)}→${fmtDD(newDue,newDueTime)}`);
-      await logActivity(t.id,"comment",`工程「${step.title}」を編集${changes.length?"（"+changes.join("・")+"）":""}`,sid);
-      EDIT_STEP=null;
-      CUR_TASK=await fetchTaskDetail(t.id); renderDetail(u);
-    };
-  });
   document.querySelectorAll("[data-stepopen]").forEach(el=>{
-    el.onclick=()=>{ const id=el.dataset.stepopen; OPEN_STEP=OPEN_STEP===id?null:id; EDIT_STEP=null; renderDetail(u); };
+    el.onclick=()=>{ const id=el.dataset.stepopen; OPEN_STEP=OPEN_STEP===id?null:id; renderDetail(u); };
   });
   /* E-3(B7): 工程内チェックリストのチェックオン/オフ・追加 */
   document.querySelectorAll("[data-chkitem]").forEach(cb=>{
