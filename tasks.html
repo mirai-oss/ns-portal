@@ -42,7 +42,7 @@ textarea{resize:vertical}
 .sig{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 10px;text-align:center;cursor:pointer;transition:box-shadow .1s}
 .sig:hover{box-shadow:0 2px 8px rgba(0,0,0,.08)}
 .sig.active{outline:2px solid var(--accent)}
-.sig .n{font-size:24px;font-weight:700}
+.sig .n{font-size:28px;font-weight:800}
 .sig.overdue .n{color:var(--stall)}
 .sig.today .n{color:var(--warn)}
 .sig.stall .n{color:var(--stall)}
@@ -89,6 +89,27 @@ textarea{resize:vertical}
 .tcard .now{font-size:12px;margin-top:4px}
 .tcard .memo-line{font-size:12px;margin-top:4px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .empty-col{font-size:12px;color:var(--muted);padding:10px 4px}
+
+/* 全面刷新Phase2: ボードのカレンダー表示 */
+.cal-wrap{margin-top:14px}
+.cal-nav{display:flex;align-items:center;gap:10px;margin-bottom:10px}
+.cal-nav b{font-size:15px}
+.cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:6px}
+.cal-head{margin-bottom:4px;font-size:12px;color:var(--muted);text-align:center}
+.cal-day{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:6px;min-height:88px;overflow:hidden}
+.cal-day.empty{background:transparent;border:none;min-height:0}
+.cal-day.today{border-color:var(--accent);border-width:2px}
+.cal-date{font-size:11px;color:var(--muted);margin-bottom:4px}
+.cal-day.today .cal-date{color:var(--accent);font-weight:700}
+.cal-task{font-size:11px;padding:3px 5px;border-radius:6px;margin-bottom:3px;background:var(--bg);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer}
+.cal-task.overdue{background:var(--stall);color:#fff}
+.cal-task.warn{background:var(--warn);color:#fff}
+.cal-task.done{background:var(--ok);color:#fff}
+.cal-more{font-size:10px;color:var(--muted)}
+@media(max-width:640px){
+  .cal-day{min-height:60px;font-size:10px}
+  .cal-head{font-size:10px}
+}
 
 /* 繰り返しタブ */
 .rp-table{width:100%;border-collapse:collapse;font-size:13px}
@@ -248,8 +269,9 @@ let SEARCH_RESULTS=null;  // 検索中はこちらを表示
 let FILTER={corp:null,freq:null,assignee:null,creator:null,signal:null};
 let SORT_MODE=localStorage.getItem("hq_sort")||"due";  // due | created | stalled（このブラウザだけに効く。DB保存なし）
 const SORT_LABEL={due:"期限が近い順（既定）",created:"作成が新しい順",stalled:"停滞が長い順"};
-let BOARD_VIEW=localStorage.getItem("hq_boardview")||"kanban"; // kanban | list（B6・ブラウザだけに効く）
+let BOARD_VIEW=localStorage.getItem("hq_boardview")||"kanban"; // kanban | list | calendar（B6・全面刷新Phase2でカレンダー追加・ブラウザだけに効く）
 let LIST_SORT={col:"due",dir:"asc"}; // リスト表示の列ソート状態（保存はしない）
+let CAL_MONTH=todayStr().slice(0,7); // カレンダー表示中の年月（YYYY-MM・保存はしない＝毎回今月から）
 function sortTasks(list){
   const arr=list.slice();
   if(SORT_MODE==="created"){
@@ -474,6 +496,45 @@ function listViewHtml(list){
     }).join("")||`<tr><td colspan="${LIST_COLS.length}">該当するタスクがありません</td></tr>`}</tbody>
   </table></div>`;
 }
+/* 全面刷新Phase2: ボードのカレンダー表示（かんばん・リストと同じ絞り込み結果を月表示で見る）
+   日付は due_date が無ければ target_date を使う。完了/期限超過/本日期限で色分け。
+   過去に完了したタスクは今月分しか読み込んでいない(fetchBoard)ため、他月は未完了分のみ表示される点は
+   仕様として許容（過去の完了実績は既存の📁過去タスク画面が担当） */
+function calendarDateOf(t){ return t.due_date||t.target_date||null; }
+function calendarViewHtml(list){
+  const [y,m]=CAL_MONTH.split("-").map(Number);
+  const daysInMonth=new Date(y,m,0).getDate();
+  const startDow=new Date(y,m-1,1).getDay();
+  const todayS=todayStr();
+  const byDate={};
+  list.forEach(t=>{ const d=calendarDateOf(t); if(d) (byDate[d]=byDate[d]||[]).push(t); });
+  Object.values(byDate).forEach(arr=>arr.sort((a,b)=>(a.due_time||"")<(b.due_time||"")?-1:1));
+  const cells=[];
+  for(let i=0;i<startDow;i++) cells.push('<div class="cal-day empty"></div>');
+  for(let d=1; d<=daysInMonth; d++){
+    const dateStr=`${y}-${String(m).padStart(2,"0")}-${String(d).padStart(2,"0")}`;
+    const dayTasks=byDate[dateStr]||[];
+    const shown=dayTasks.slice(0,4);
+    cells.push(`<div class="cal-day${dateStr===todayS?" today":""}">
+      <div class="cal-date">${d}${dateStr===todayS?" (今日)":""}</div>
+      ${shown.map(t=>{
+        const cls=t.status==="done"?"done":(dateStr<todayS?"overdue":(dateStr===todayS?"warn":""));
+        return `<div class="cal-task ${cls}" data-open="${t.id}" title="${esc(t.title)}">${esc(t.title)}</div>`;
+      }).join("")}
+      ${dayTasks.length>4?`<div class="cal-more">+${dayTasks.length-4}件</div>`:""}
+    </div>`);
+  }
+  return `<div class="cal-wrap">
+    <div class="cal-nav">
+      <button class="linkbtn" data-calnav="-1">← 前月</button>
+      <b>${y}年${m}月</b>
+      <button class="linkbtn" data-calnav="0">今月</button>
+      <button class="linkbtn" data-calnav="1">次月 →</button>
+    </div>
+    <div class="cal-grid cal-head">${["日","月","火","水","木","金","土"].map(d=>`<div>${d}</div>`).join("")}</div>
+    <div class="cal-grid">${cells.join("")}</div>
+  </div>`;
+}
 function renderBoard(u){
   CURRENT_RENDER=()=>renderBoard(u);
   const src=SEARCH_RESULTS!==null?SEARCH_RESULTS:TASKS;
@@ -531,6 +592,7 @@ function renderBoard(u){
       <span>表示: <select id="boardviewsel" style="width:auto;display:inline-block;padding:5px 10px;font-size:12px;border-radius:99px">
         <option value="kanban" ${BOARD_VIEW==="kanban"?"selected":""}>🗂 かんばん</option>
         <option value="list" ${BOARD_VIEW==="list"?"selected":""}>📋 リスト</option>
+        <option value="calendar" ${BOARD_VIEW==="calendar"?"selected":""}>📅 カレンダー</option>
       </select></span>
     </div>
     <div>
@@ -545,7 +607,7 @@ function renderBoard(u){
     </div>
   </div>
   ${SEARCH_RESULTS!==null?`<div class="card" style="margin:10px 0"><b>検索結果: ${list.length}件</b> <button class="linkbtn" id="clearsearch">検索をやめる</button></div>`:""}
-  ${BOARD_VIEW==="list"?listViewHtml(list):`<div class="board">
+  ${BOARD_VIEW==="list"?listViewHtml(list):BOARD_VIEW==="calendar"?calendarViewHtml(list):`<div class="board">
     <div class="col"><h2>未着手 <b>(${cols.todo.length})</b></h2>${cols.todo.map(taskCardHtml).join("")||'<div class="empty-col">なし</div>'}</div>
     <div class="col"><h2>進行中 <b>(${cols.doing.length})</b></h2>${cols.doing.map(taskCardHtml).join("")||'<div class="empty-col">なし</div>'}</div>
     <div class="col"><h2>完了 <b>(${cols.done.length})</b></h2>${cols.done.map(taskCardHtml).join("")||'<div class="empty-col">なし</div>'}</div>
@@ -580,6 +642,16 @@ function wireBoard(u){
   document.querySelectorAll("[data-listsort]").forEach(th=>th.onclick=()=>{
     const k=th.dataset.listsort;
     if(LIST_SORT.col===k) LIST_SORT.dir=LIST_SORT.dir==="asc"?"desc":"asc"; else LIST_SORT={col:k,dir:"asc"};
+    renderBoard(u);
+  });
+  document.querySelectorAll("[data-calnav]").forEach(btn=>btn.onclick=()=>{
+    const dir=+btn.dataset.calnav;
+    if(dir===0){ CAL_MONTH=todayStr().slice(0,7); }
+    else{
+      const [y,m]=CAL_MONTH.split("-").map(Number);
+      const d=new Date(y,m-1+dir,1);
+      CAL_MONTH=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
+    }
     renderBoard(u);
   });
   document.querySelectorAll("[data-sig]").forEach(c=>c.onclick=()=>{
