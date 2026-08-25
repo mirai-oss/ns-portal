@@ -116,13 +116,37 @@ textarea{resize:vertical}
 .rp-table th,.rp-table td{border-bottom:1px solid var(--line);padding:8px 6px;text-align:left}
 .rp-table th{color:var(--muted);font-weight:600;font-size:12px}
 
-/* 詳細画面 */
+/* 詳細画面（全面刷新Phase3: デザイン案のhero/summary/layout/completebar/auditを再現） */
 .dh{margin-bottom:14px}
 .dh .badges{display:flex;gap:6px;margin-bottom:6px;flex-wrap:wrap}
 .dh h1{font-size:20px;margin-top:4px}
 .sec{margin-top:20px}
 .sec h3{font-size:14px;margin-bottom:8px}
 .sec-sub{font-size:12px;color:var(--muted)}
+.hero{display:grid;grid-template-columns:1.25fr .75fr;gap:14px}
+.hero .pad{padding:18px}
+.hero .title{font-size:24px;font-weight:800;margin:10px 0 6px;text-wrap:balance}
+.hero .desc{color:var(--muted);line-height:1.7;font-size:14px}
+.progress{height:9px;background:var(--bg);border-radius:99px;overflow:hidden;margin:12px 0 6px}
+.progress span{display:block;height:100%;background:var(--accent)}
+.summary{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}
+.mini{border:1px solid var(--line);border-radius:12px;padding:12px}
+.mini small{display:block;color:var(--muted);margin-bottom:4px;font-size:11px}
+.mini b{font-size:15px}
+.layout{display:grid;grid-template-columns:1.2fr .8fr;gap:14px;margin-top:14px;align-items:start}
+.dcard{background:var(--card);border:1px solid var(--line);border-radius:14px;margin-bottom:14px}
+.dcard .head{padding:14px 16px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap}
+.dcard .head b{font-size:14px}
+.dcard .body{padding:16px}
+.completebar{display:flex;justify-content:space-between;align-items:center;gap:12px;margin:0 0 14px;padding:14px 16px;border:1px solid var(--line);border-radius:14px;background:var(--card)}
+.audit .activity-row{display:grid;grid-template-columns:9px 1fr;gap:10px;padding:8px 0;border-bottom:1px solid var(--line);align-items:baseline}
+.audit .activity-row:last-child{border-bottom:none}
+.audit .dot{width:8px;height:8px;border-radius:50%;background:var(--line);margin-top:5px}
+.audit .dot.green{background:var(--ok)}
+@media(max-width:860px){
+  .hero{grid-template-columns:1fr}
+  .layout{grid-template-columns:1fr}
+}
 .notes-box{background:#fff8e1;border:1px solid #e6c74e;border-radius:10px;padding:12px 14px;font-size:14px;line-height:1.6;color:#5a4a00}
 @media(prefers-color-scheme:dark){.notes-box{background:#3a3110;border-color:#6b5a1e;color:#f0dd8a}}
 .step{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px 14px;margin-bottom:10px;overflow:hidden}
@@ -305,7 +329,6 @@ function sortTasks(list){
 }
 let CUR_TASK=null;        // 詳細表示中のタスク（工程・リンク・写真・履歴込み）
 let OPEN_STEP=null;       // 詳細画面で開いている工程id
-let LINKS_OPEN=false;     // 詳細画面「③添付・リンク」の開閉（B4・既定=閉）
 let STEP_ATT_OPEN=new Set();  // 工程ごとの添付欄の開閉（B4と同じ既定=閉に統一。2026-08-25追記）
 let CHK_ADD_OPEN=new Set();   // 工程ごとのチェックリスト「＋追加」入力欄の開閉（同上）
 let NOTIFICATIONS=[];     // アプリ内通知（自分宛）
@@ -707,7 +730,7 @@ function renderRepeat(u){
 /* ---------- タスク詳細 ---------- */
 async function openDetail(id){
   pushNav("tasks.html?task="+id);
-  VIEW="detail"; OPEN_STEP=null; LINKS_OPEN=false; STEP_ATT_OPEN=new Set(); CHK_ADD_OPEN=new Set(); // B4: 開くたびリンク・添付一覧は既定=閉に戻す
+  VIEW="detail"; OPEN_STEP=null; STEP_ATT_OPEN=new Set(); CHK_ADD_OPEN=new Set(); // 開くたびに工程の添付一覧は既定=閉に戻す
   $("app").innerHTML=`<div class="spin">読み込み中…</div>`;
   CUR_TASK=await fetchTaskDetail(id);
   renderDetail(ME);
@@ -763,73 +786,99 @@ function renderDetail(u){
   const curId=sig.cur?sig.cur.id:null;
   steps.forEach(s=>s._isCurrent=(s.id===curId));
   const doneCount=steps.filter(s=>s.completed_at).length;
+  const pct=steps.length?Math.round(doneCount/steps.length*100):0;
+  const uncheckedCount=(t._stepChecklist||[]).filter(c=>!c.checked_at).length;
   const canEdit=canManage(u);
+  const links=t._links||[], photos=t._photos||[];
 
+  // 全面刷新Phase3: デザイン案どおりhero(概要+進捗)／summary(全体担当・期限・現在工程・未完了チェック)／
+  // 2カラムlayout(左=工程・完了バー・注意事項・コメント／右=このタスクで使うもの・写真・メモ)／
+  // 下部に編集履歴、という構成に全面的に組み替えた
   $("app").innerHTML=`
   <div class="topbar"><div></div><div class="who"><button class="linkbtn" id="back">← 戻る</button></div></div>
-  <div class="dh">
-    <div class="badges"><span class="tag">${esc(t.corp)}</span><span class="tag freq">${t.freq!=="once"?"🔁 "+FREQ_LABEL[t.freq]:"単発"}</span><span class="tag">${STATUS_LABEL[t.status]}</span>
-    ${sig.level==="stall"?`<span class="stall-badge">⏸ ${sig.stalledDays}日停止</span>`:""}</div>
-    <h1>${esc(t.title)}</h1>
-    <div class="meta" style="font-size:13px;color:var(--muted);margin-top:4px">対象日 ${fmtD(t.target_date)} ／ 期限 ${fmtDD(t.due_date,t.due_time)}${t.status==="done"?" ／ "+fmtDT(t.completed_at)+" 完了":""}</div>
-    <div style="margin-top:8px">
-      ${t.status==="done"?`<button class="linkbtn" id="undotask">↩️ 完了を取り消す</button>`:""}
-      ${t.created_by===u.id?`<button class="linkbtn" id="deltask">🗑 タスクを削除</button>`:""}
+
+  <div class="hero">
+    <div class="card pad">
+      <div class="badges"><span class="tag">${esc(t.corp)}</span><span class="tag freq">${t.freq!=="once"?"🔁 "+FREQ_LABEL[t.freq]:"単発"}</span><span class="tag">${STATUS_LABEL[t.status]}</span>
+      ${sig.level==="stall"?`<span class="stall-badge">⏸ ${sig.stalledDays}日停止</span>`:""}</div>
+      <div class="title">${esc(t.title)}</div>
+      ${t.description?`<div class="desc">${esc(t.description).replace(/\n/g,"<br>")}</div>`:""}
+      <div class="progress"><span style="width:${pct}%"></span></div>
+      <div class="meta">工程 ${doneCount} / ${steps.length} 完了 ／ 対象日 ${fmtD(t.target_date)} ／ 期限 ${fmtDD(t.due_date,t.due_time)}${t.status==="done"?" ／ "+fmtDT(t.completed_at)+" 完了":""}</div>
+      <div style="margin-top:8px">
+        ${t.status==="done"?`<button class="linkbtn" id="undotask">↩️ 完了を取り消す</button>`:""}
+        ${t.created_by===u.id?`<button class="linkbtn" id="deltask">🗑 タスクを削除</button>`:""}
+      </div>
+      <div class="err" id="taskactmsg"></div>
     </div>
-    <div class="err" id="taskactmsg"></div>
+    <div class="card pad"><div class="summary">
+      <div class="mini"><small>現在の担当</small><b>${esc(userName(sig.cur?.assignee_id)||"—")}</b></div>
+      <div class="mini"><small>全体期限</small><b>${fmtDD(t.due_date,t.due_time)}</b></div>
+      <div class="mini"><small>現在工程</small><b>${sig.cur?esc(sig.cur.title):"—"}</b></div>
+      <div class="mini"><small>未完了チェック</small><b style="${uncheckedCount?"color:var(--stall)":""}">${uncheckedCount}件</b></div>
+    </div></div>
   </div>
 
-  <div class="sec"><h3>📝 メモ</h3>
-    <div class="card">
-      ${canEdit?`<textarea id="taskmemo" rows="2" placeholder="例: 先方の返事待ち">${esc(t.memo||"")}</textarea>
-        <button class="btn sm" style="margin-top:8px" id="memosave">保存</button>
-        <div class="err" id="memomsg"></div>`
-        :`<div class="meta">${t.memo?esc(t.memo).replace(/\n/g,"<br>"):"まだありません"}</div>`}
+  <div class="layout">
+    <div>
+      <div class="dcard">
+        <div class="head"><b>① 工程（サブタスク）</b><span class="meta">担当・期限・チェック・手順・資料</span></div>
+        <div class="body" id="steplist" style="padding:12px">${groupStoreSteps(steps).map(g=>stepOrGroupHtml(t,g,u)).join("")||'<div class="meta">工程がありません</div>'}</div>
+      </div>
+      <div class="completebar">
+        <div><b>タスク全体の完了</b><div class="meta">${t.status==="done"?"すべての工程が完了しました":"すべての工程が完了すると自動的に「完了」になります"}</div></div>
+        <button class="btn ${t.status==="done"?"":"sub"}" disabled>${t.status==="done"?"✓ 完了":"完了待ち"}</button>
+      </div>
+      ${t.notes?`<div class="dcard"><div class="head"><b>② ⚠️ 注意事項</b></div><div class="body"><div class="notes-box">${esc(t.notes).replace(/\n/g,"<br>")}</div></div></div>`:""}
+      <div class="dcard">
+        <div class="head"><b>💬 コメント</b><span class="meta">${(t._comments||[]).length}件</span></div>
+        <div class="body">
+          <div id="commentlist">${(t._comments||[]).map(c=>commentHtml(c)).join("")||'<div class="meta">まだコメントはありません</div>'}</div>
+          <div style="margin-top:12px;padding-top:10px;border-top:1px dashed var(--line);position:relative">
+            <label>コメントを追加（@で本部メンバーをメンション）</label>
+            <textarea id="comment-body" rows="2" placeholder="コメントを入力…　@で本部メンバーをメンション"></textarea>
+            <div id="mention-dropdown" style="display:none;position:absolute;z-index:10;background:var(--card);border:1px solid var(--line);border-radius:8px;box-shadow:0 4px 14px rgba(0,0,0,.12);max-height:180px;overflow-y:auto;width:calc(100% - 4px)"></div>
+            <button class="btn sm" style="margin-top:8px" id="comment-send">投稿</button>
+            <div class="err" id="comment-msg"></div>
+          </div>
+        </div>
+      </div>
     </div>
-  </div>
 
-  <div class="sec"><h3>① 工程（サブタスク）— ${doneCount}/${steps.length}</h3>
-    <div id="steplist">${groupStoreSteps(steps).map(g=>stepOrGroupHtml(t,g,u)).join("")||'<div class="card">工程がありません</div>'}</div>
-  </div>
-
-  ${t.description?`<div class="sec"><h3>📄 概要</h3><div class="card"><div class="meta">${esc(t.description).replace(/\n/g,"<br>")}</div></div></div>`:""}
-
-  ${t.notes?`<div class="sec"><h3>② ⚠️ 注意事項</h3><div class="notes-box">${esc(t.notes).replace(/\\n/g,"<br>")}</div></div>`:""}
-
-  <div class="sec"><h3>③ 添付・リンク（${(t._links||[]).length}件） <button class="linkbtn" id="linktoggle">${LINKS_OPEN?"▲ 閉じる":"▼ 開く"}</button></h3>
-    ${LINKS_OPEN?`<div class="card">
-      <div id="linklist">${(t._links||[]).length?`<div class="resources">${(t._links||[]).map(l=>linkHtml(l,canEdit)).join("")}</div>`:'<div class="meta" style="color:var(--muted)">まだありません</div>'}</div>
-      ${canEdit?linkFormHtml():""}
-    </div>`:""}
-  </div>
-
-  <div class="sec"><h3>📷 タスク写真</h3>
-    <div class="card">
-      <div class="photo-grid">${(t._photos||[]).map(p=>`<a ${photoTag(p.storage_path)} href="#" target="_blank"><img ${photoTag(p.storage_path)} src=""></a>`).join("")||'<div class="meta" style="color:var(--muted)">まだありません</div>'}</div>
-      <label style="margin-top:10px">写真を追加</label><input type="file" accept="image/*" capture="environment" id="taskphoto">
-      <div class="err" id="taskphotomsg"></div>
-    </div>
-  </div>
-
-  <div class="sec"><h3>💬 コメント</h3>
-    <div class="card">
-      <div id="commentlist">${(t._comments||[]).map(c=>commentHtml(c)).join("")||'<div class="meta">まだコメントはありません</div>'}</div>
-      <div style="margin-top:12px;padding-top:10px;border-top:1px dashed var(--line);position:relative">
-        <label>コメントを追加（@で本部メンバーをメンション）</label>
-        <textarea id="comment-body" rows="2" placeholder="コメントを入力…　@で本部メンバーをメンション"></textarea>
-        <div id="mention-dropdown" style="display:none;position:absolute;z-index:10;background:var(--card);border:1px solid var(--line);border-radius:8px;box-shadow:0 4px 14px rgba(0,0,0,.12);max-height:180px;overflow-y:auto;width:calc(100% - 4px)"></div>
-        <button class="btn sm" style="margin-top:8px" id="comment-send">投稿</button>
-        <div class="err" id="comment-msg"></div>
+    <div>
+      <div class="dcard">
+        <div class="head"><b>③ このタスクで使うもの</b><span class="meta">${links.length}件</span></div>
+        <div class="body">
+          <div id="linklist">${links.length?`<div class="resources">${links.map(l=>linkHtml(l,canEdit)).join("")}</div>`:'<div class="meta" style="color:var(--muted)">まだありません</div>'}</div>
+          ${canEdit?linkFormHtml():""}
+        </div>
+      </div>
+      <div class="dcard">
+        <div class="head"><b>📷 タスク写真</b><span class="meta">${photos.length}件</span></div>
+        <div class="body">
+          <div class="photo-grid">${photos.map(p=>`<a ${photoTag(p.storage_path)} href="#" target="_blank"><img ${photoTag(p.storage_path)} src=""></a>`).join("")||'<div class="meta" style="color:var(--muted)">まだありません</div>'}</div>
+          <label style="margin-top:10px">写真を追加</label><input type="file" accept="image/*" capture="environment" id="taskphoto">
+          <div class="err" id="taskphotomsg"></div>
+        </div>
+      </div>
+      <div class="dcard">
+        <div class="head"><b>📝 メモ</b></div>
+        <div class="body">
+          ${canEdit?`<textarea id="taskmemo" rows="3" placeholder="例: 先方の返事待ち">${esc(t.memo||"")}</textarea>
+            <button class="btn sm" style="margin-top:8px" id="memosave">保存</button>
+            <div class="err" id="memomsg"></div>`
+            :`<div class="meta">${t.memo?esc(t.memo).replace(/\n/g,"<br>"):"まだありません"}</div>`}
+        </div>
       </div>
     </div>
   </div>
 
-  <div class="sec"><h3>履歴</h3>
-    <div class="card">${(t._activity||[]).map(a=>`<div class="act-row"><b>${fmtDT(a.created_at)}</b> ${esc(a.actor_id?userName(a.actor_id):"自動")} — ${esc(a.detail)}</div>`).join("")||'<div class="meta">履歴はまだありません</div>'}</div>
+  <div class="dcard audit" style="margin-top:14px">
+    <div class="head"><b>編集履歴</b><span class="meta">誰が・何を・いつ変更したか</span></div>
+    <div class="body">${(t._activity||[]).map(a=>`<div class="activity-row"><span class="dot ${a.actor_id?'':'green'}"></span><div><b>${esc(a.actor_id?userName(a.actor_id):"自動")}</b> — ${esc(a.detail)} <span class="meta">${fmtDT(a.created_at)}</span></div></div>`).join("")||'<div class="meta">履歴はまだありません</div>'}</div>
   </div>`;
 
   $("back").onclick=()=>goBack(u);
-  if($("linktoggle")) $("linktoggle").onclick=()=>{ LINKS_OPEN=!LINKS_OPEN; renderDetail(u); };
   wireDetail(t,u);
 }
 /* E-3(B7): 工程内チェックリスト（タスク側＝手順のチェックオン/オフ＋その場で追加）
