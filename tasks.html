@@ -274,6 +274,8 @@ let BELL_OPEN=false;
 let MY_CHATWORK=null;      // 自分のChatwork設定 {account_id, room_id}（登録済みなら）
 let FEATURE_PERMS={};      // hq_feature_permissions {feature: min_level}（マスターが権限設定画面で変更）
 const qs=new URLSearchParams(location.search);
+const EMBED=qs.get("embed")==="1"; // 全面刷新Phase1: ポータルシェル(portal.html)のiframeから開かれた時は自リンクを隠す
+const PAGE=qs.get("page");         // 同上: ?page=perms|corps|notify|past で該当画面へ直接遷移（「⚙️管理」サブメニュー用）
 
 const isMaster=u=>!!(u&&u.is_master);
 const canManage=u=>!!(u&&(u.is_master||u.role==="CEO"||u.role==="HQ"));
@@ -485,7 +487,7 @@ function renderBoard(u){
     <div class="who">
       <button class="linkbtn" id="bellbtn" style="position:relative">🔔${NOTIF_UNREAD?` <span class="tag" style="background:var(--accent);color:#fff;border-color:var(--accent)">${NOTIF_UNREAD}</span>`:""}</button>
       ${ASSIGNABLE_ROLES.includes(u.role)?`<button class="linkbtn" id="mycwbtn">🟢 Chatwork ID</button>`:""}
-      👤 ${esc(u.name)} ／ <a href="index.html">← ポータルへ</a>
+      👤 ${esc(u.name)}${EMBED?"":` ／ <a href="index.html">← ポータルへ</a>`}
     </div>
   </div>
   <div id="bellpanel" class="card" style="display:${BELL_OPEN?'block':'none'};margin-bottom:14px">
@@ -2677,6 +2679,12 @@ async function main(){
   try{ history.replaceState({hqNav:0},"","tasks.html"); }catch(e){}
   const openId=qs.get("task");
   if(openId){ openDetail(openId); return; }
+  // 全面刷新Phase1: ポータルシェルの「⚙️管理」サブメニューから ?page=perms|corps|notify|past で直接開けるようにする
+  // （NAV_STACKへは積まない＝「戻る」を押すと素直にボードへ戻る設計。権限が無ければ静かにボードへフォールバック）
+  if(PAGE==="perms"&&isMaster(u)){ VIEW="perms"; renderPerms(u); return; }
+  if(PAGE==="corps"&&canFeature(u,"corps")){ VIEW="corps"; renderCorps(u); return; }
+  if(PAGE==="notify"&&canFeature(u,"notify")){ VIEW="notify"; $("app").innerHTML='<div class="spin">読み込み中…</div>'; await fetchNotifySettings(); renderNotify(u); return; }
+  if(PAGE==="past"){ VIEW="past"; $("app").innerHTML='<div class="spin">読み込み中…</div>'; await fetchPastMonths(); renderPast(u); return; }
   renderBoard(u);
 }
 main();
