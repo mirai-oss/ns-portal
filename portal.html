@@ -633,6 +633,46 @@ function syncStatusHtml(row){
     <div class="empty" style="text-align:left;padding:6px 17px 14px">スマレジ勤怠・売上突合など他の連携状況は今後追加予定です</div>
   </section>`;
 }
+
+/* ============================================================
+   F-6「⚙️管理」＞システム利用状況（F-1.5）
+   D-4が保存している api_cost_daily（Anthropic API利用料。date列は
+   Cost Report APIのbucket仕様どおりUTC暦日）を読むだけの表示専用ビュー。
+   円額(amount_jpy)は取得時点のレートで固定済みなので、ここでは再換算しない。
+   ============================================================ */
+async function fetchApiCostDaily(){
+  try{
+    const r=await authed("/rest/v1/api_cost_daily?select=date,amount_cents,amount_jpy&order=date.desc&limit=95");
+    return (r.ok&&Array.isArray(r.body))?r.body:[];
+  }catch(e){ return []; }
+}
+const monthKeyOf=dateStr=>String(dateStr||"").slice(0,7); // "YYYY-MM"（UTC暦日ベース。JSTと数日ズレる可能性がある前提で月次目安として使用）
+async function renderSysUsageArea(u){
+  const area=$("viewarea"); if(!area||VIEW!=="frame"||CUR!=="admin-usage") return;
+  const rows=await fetchApiCostDaily();
+  if(VIEW!=="frame"||CUR!=="admin-usage") return; // 読み込み中に他画面へ移動していたら上書きしない
+  const now=new Date();
+  const thisM=monthKeyOf(now.toISOString());
+  const prevD=new Date(now.getFullYear(),now.getMonth()-1,1);
+  const prevM=monthKeyOf(prevD.toISOString());
+  const sumRows=arr=>({cents:arr.reduce((s,r)=>s+Number(r.amount_cents||0),0), jpy:arr.reduce((s,r)=>s+Number(r.amount_jpy||0),0)});
+  const cur=sumRows(rows.filter(r=>monthKeyOf(r.date)===thisM));
+  const prev=sumRows(rows.filter(r=>monthKeyOf(r.date)===prevM));
+  const fmtJpy=v=>"¥"+Math.round(v).toLocaleString();
+  const fmtUsd=cents=>"$"+(cents/100).toFixed(2);
+  const last7=rows.slice(0,7).reverse();
+  area.innerHTML=`
+    <div class="summary">
+      ${kpiCard("今月のAI利用料（累計・円主表示）",fmtJpy(cur.jpy),"",fmtUsd(cur.cents)+"（"+esc(thisM)+"・UTC暦日ベース）")}
+      ${kpiCard("先月のAI利用料（実績）",fmtJpy(prev.jpy),"",fmtUsd(prev.cents)+"（"+esc(prevM)+"）")}
+    </div>
+    <section class="panel" style="margin-top:16px"><div class="phead"><h2>直近7日</h2><span class="sub2">Anthropic Cost Report API（D-4）</span></div>
+      <div>${last7.length?last7.map(r=>`<div class="item"><span class="av">🤖</span><span><strong>${esc(r.date)}</strong><span>${fmtUsd(Number(r.amount_cents||0))}</span></span><span>${fmtJpy(Number(r.amount_jpy||0))}</span></div>`).join(""):'<div class="empty">データがまだありません（同期は毎日1回・cron-job.org設定待ちの場合があります）</div>'}</div>
+    </section>
+    <section class="panel" style="margin-top:16px"><div class="phead"><h2>📱 LINE配信数・残高</h2></div>
+      <div class="empty" style="text-align:left;padding:16px 17px">🚧 準備中：LINE公式アカウントの残量API連携にはSupabase Edge Functionの新規実装が必要なため、今回のF-6では枠のみです（WORKLOG参照）</div>
+    </section>`;
+}
 const DEFAULT_LAYOUT={
   MASTER:{kpi:["kpi_sales","kpi_nippo","kpi_tasks","kpi_check"],main:"panel_chart",side:"panel_alerts"},
   CEO:   {kpi:["kpi_sales","kpi_nippo","kpi_tasks","kpi_check"],main:"panel_chart",side:"panel_alerts"},
@@ -788,6 +828,19 @@ const GROUPS=[
     // 週報管理・アカウント管理は社長・本部のみ（tori-dashboard ROLE_TABS準拠）
     {key:"keiei-weeklyadmin", sysKey:"keiei", roles:["HQ","CEO"], ico:"🗂️", label:"週報管理",     url:keieiTab("weeklyAdmin")},
     {key:"keiei-accounts",    sysKey:"keiei", roles:["HQ","CEO"], ico:"👤", label:"アカウント管理", url:keieiTab("accounts")},
+  ]},
+  // F-6（実装指示書_担当F追加_返済表と管理画面_2026-08-25.md）: 散らばっていた
+  // 管理系機能を1グループに集約する「タブ集約方式」の実装。別サイトは作らず、
+  // 既存のサイドバーグループ機構（開閉サブメニュー＝実質的なタブ）をそのまま使い、
+  // 各項目は既存画面をiframe/リンクで再利用（作り直さない）。マスター・社長・本部のみ表示
+  {cap:"⚙️ 管理",ico:"⚙️", roles:["HQ","CEO"], items:[
+    {key:"admin-accounts", ico:"👤", label:"アカウント管理（nippo）", url:nippoPage("admin")},
+    {key:"admin-perm",     ico:"🔑", label:"権限設定（従来ポータル）", legacyLink:true},
+    {key:"admin-notify",   ico:"🔔", label:"通知先（配信グループ管理）", url:nippoPage("admin")},
+    {key:"admin-stores",   ico:"🏢", label:"マスタ：店舗管理", url:nippoPage("admin")},
+    {key:"admin-corps",    ico:"🏢", label:"マスタ：法人管理", url:"tasks.html"},
+    {key:"admin-exporttpl",ico:"📄", label:"出力テンプレート管理", soon:true},
+    {key:"admin-usage",    ico:"📊", label:"システム利用状況", type:"sysusage"},
   ]},
 ];
 function itemVisible(it,grp,u){
@@ -985,11 +1038,20 @@ function openItem(key,u){
   if(it.type==="home"){ VIEW="home"; CUR=null; renderShellBody(u); return; }
   if(it.soon){ toast("準備中です"); return; }
   if(it.sso){ openJohoSso(); return; }
+  if(it.legacyLink){ location.href="index.html"; return; } // F-6: 従来ポータルの権限設定タブへそのまま遷移（iframeにしない）
   if(grp) OPEN_GROUP=grp.cap; // クリックした項目のグループだけを開いた状態にする
   VIEW="frame"; CUR=key;
   $("pagetitle").textContent=it.label;
   $("pagemeta").textContent=it.external?"新しいタブで開きます":"";
   const area=$("viewarea");
+  if(it.type==="sysusage"){ // F-6/F-1.5: iframeではなくポータル内で直接描画するビュー
+    area.style.padding="";
+    area.innerHTML=`<div class="spin">読み込み中…</div>`;
+    renderSysUsageArea(u);
+    closeMobileMore();
+    refreshNavActive(u);
+    return;
+  }
   area.style.padding="0";
   area.innerHTML=`<div class="framewrap"><iframe src="${esc(it.url)}" allow="clipboard-write" title="${esc(it.label)}"></iframe></div>`;
   closeMobileMore();
