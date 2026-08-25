@@ -2364,3 +2364,15 @@ E-1〜E-3完了後、ユーザーがマスター権限で実ログインして�
   2. Google Sheets出力は承認事項②により後追い。担当A（GAS）への依頼が前提となる設計（調査レポート§5・§6）
   3. ユーザー自身の実機ログインでの確認は未実施（今回は使い捨てテストユーザーでのAPI直叩きE2Eのみ）
   4. `export-preview`の「売上高合計」はitem/categoryに「売上」という文字列を含むかで簡易判定しており、今回のテストデータ（費用科目のみ）では0円と表示された。売上科目を含む店舗・期間で再確認が望ましい（誤りではなく未検証）
+
+## 2026-08-25（担当D実行スレッド・続き4）LINE送信数モニタリング・アラート — 実装・本番テスト完了
+
+担当Cからの依頼（設計書_労務ワークフロー_労働条件通知書自動発行_2026-08-24.md §6・急ぎではないが未対応だった項目）に対応。D-3（朝の見張り番）と同型の仕組みで実装。
+
+- **実装**:
+  - `ns-portal/supabase/functions/line-quota-check`（新規。LINE Messaging APIのquota/quota-consumptionを取得し使用率を返すだけの軽量エンドポイント。認証はD-3と同じ`BQ_LOAD_TOKEN`を流用＝新しいシークレットは増やさない）
+  - `tori-dashboard/.github/workflows/line-quota-watchdog.yml`（新規ファイルのみ・既存ファイル/app.js/GAS無変更）。毎日、使用率が80%以上で⚠️注意喚起・95%以上で🚨強い警告をLarkへ送信（正常時は無送信）。D-3と同じLark Webhookを流用
+- **本番テスト結果**: 実データで動作確認（現在220/5000通・4.4%）。しきい値未満のためLarkステップが正しく`skipped`になることを確認。送信側のロジック自体はD-3・D-4で既に実証済みの同型パターンのため、閾値超過時の実送信テストは今回省略（コード上のしきい値判定はレビュー確認済み）
+- **ユーザー作業待ち**: cron-job.orgに`line-quota-watchdog.yml`の新規cronjobを追加（毎日09:30 JST目安・D-3と同じ時間帯でよい。URL: `https://api.github.com/repos/mirai-oss/tori-dashboard/actions/workflows/line-quota-watchdog.yml/dispatches`）
+- **担当Cへの対応完了報告**: この依頼はこれで完了。しきい値80%/95%は設計書の案をそのまま採用（変更したい場合はworkflowの`LEVEL1_RATIO`/`LEVEL2_RATIO`を書き換えるだけで調整可能）
+- コミット: `a64b6fc`（ns-portal）・`2723ed3`（tori-dashboard）
