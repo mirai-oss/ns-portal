@@ -785,7 +785,7 @@ function stepHtml(t,s,u){
   const panelOpen=STEP_ATT_OPEN.has(s.id);
   return `<div class="step ${s._isCurrent?'cur':''}">
     <div class="row1" ${hasPanel?`data-stepattopen="${s.id}"`:""}><span class="ic">${stepIcon(s)}</span>
-      <div class="st">${esc(s.title)}<div class="meta">${metaLine}${canEditAssign?` ／ <button class="linkbtn" data-stepeditopen="${s.id}" onclick="event.stopPropagation()">✏️ 編集</button>`:""}${canQuickComplete?` ／ <button class="linkbtn" data-quickcomplete="${s.id}" onclick="event.stopPropagation()">✅ 完了にする</button>`:""}${s.completed_at&&canTouch?` ／ <button class="linkbtn" data-stepundo="${s.id}" onclick="event.stopPropagation()">↩️ 取り消す</button>`:""}</div>
+      <div class="st">${esc(s.title)}<div class="meta">${metaLine}${canEditAssign?` ／ <button class="linkbtn" data-stepeditopen="${s.id}" onclick="event.stopPropagation()">✏️ 編集</button>`:""}${s.completed_at&&canTouch?` ／ <button class="linkbtn" data-stepundo="${s.id}" onclick="event.stopPropagation()">↩️ 取り消す</button>`:""}${canQuickComplete?`<button class="btn sm" data-quickcomplete="${s.id}" style="margin-left:8px;vertical-align:middle" onclick="event.stopPropagation()">✅ 完了にする</button>`:""}</div>
       </div>
       ${hasPanel?`<span>${panelOpen?"▲":"▼"}</span>`:""}
     </div>
