@@ -110,8 +110,11 @@ async function fn(name,payload){
 }
 
 let ME=null, ALLOWED_STORE_IDS=[], STORES=[], CORPS=[];
-const SEL={store_ids:[],period_from:"",period_to:"",format:"excel"};
-const REPORTS=[{key:"pl_monthly",name:"月次PL／年間推移PL",category:"経営・売上"}];
+const SEL={report_key:"pl_monthly",store_ids:[],period_from:"",period_to:"",format:"excel"};
+const REPORTS=[
+  {key:"pl_monthly",name:"月次PL",category:"経営・売上"},
+  {key:"pl_annual_trend",name:"年間推移PL",category:"経営・売上"},
+];
 
 function renderLogin(err){
   $("app").innerHTML=`<div class="card">
@@ -127,12 +130,16 @@ function renderForbidden(){
   </div>`;
 }
 
-function defaultPeriod(){
+function ymOf(d){ return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`; }
+// 月次PL＝直近1ヶ月（単月）／年間推移PL＝直近12ヶ月、を既定値にする
+function defaultPeriod(reportKey){
   const now=new Date();
-  const to=`${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,"0")}`;
-  const fromD=new Date(now.getFullYear(),now.getMonth()-2,1);
-  const from=`${fromD.getFullYear()}-${String(fromD.getMonth()+1).padStart(2,"0")}`;
-  return {from,to};
+  const to=ymOf(now);
+  if(reportKey==="pl_annual_trend"){
+    const fromD=new Date(now.getFullYear(),now.getMonth()-11,1);
+    return {from:ymOf(fromD),to};
+  }
+  return {from:to,to};
 }
 
 function storeListHtml(){
@@ -154,8 +161,7 @@ function storeListHtml(){
 }
 
 function renderMain(u){
-  const period=SEL.period_from?SEL:Object.assign(SEL,defaultPeriod(),{period_from:defaultPeriod().from,period_to:defaultPeriod().to});
-  if(!SEL.period_from){ const d=defaultPeriod(); SEL.period_from=d.from; SEL.period_to=d.to; }
+  if(!SEL.period_from){ const d=defaultPeriod(SEL.report_key); SEL.period_from=d.from; SEL.period_to=d.to; }
   $("app").innerHTML=`
     <div class="topbar">
       <h1>📤 データ出力センター</h1>
@@ -170,8 +176,9 @@ function renderMain(u){
       </select>
       <label>出力データ</label>
       <select id="f-report">
-        ${REPORTS.map(r=>`<option value="${r.key}">${esc(r.name)}</option>`).join("")}
+        ${REPORTS.map(r=>`<option value="${r.key}" ${SEL.report_key===r.key?"selected":""}>${esc(r.name)}</option>`).join("")}
       </select>
+      <div class="note">月次PL＝原則1ヶ月を選んで単月の損益を確認。年間推移PL＝複数ヶ月を選んで月別の推移を確認（同じデータをもとに構成が異なります）</div>
 
       <div class="row2">
         <div>
@@ -220,6 +227,12 @@ function renderMain(u){
       else { SEL.store_ids=SEL.store_ids.filter(x=>x!==id); }
     };
   });
+  $("f-report").onchange=e=>{
+    SEL.report_key=e.target.value;
+    const d=defaultPeriod(SEL.report_key);
+    SEL.period_from=d.from; SEL.period_to=d.to;
+    renderMain(u);
+  };
   $("f-from").onchange=e=>{ SEL.period_from=e.target.value; };
   $("f-to").onchange=e=>{ SEL.period_to=e.target.value; };
   $("app").querySelectorAll(".fmt-opt[data-fmt]").forEach(el=>{
@@ -236,7 +249,7 @@ async function runPreview(){
   $("preview-result").innerHTML=`<div class="spin">プレビュー取得中…</div>`;
   $("run-result").innerHTML="";
   const r=await fn("export-preview",{
-    report_key:$("f-report").value, store_ids:SEL.store_ids,
+    report_key:SEL.report_key, store_ids:SEL.store_ids,
     period_from:SEL.period_from, period_to:SEL.period_to,
   });
   if(!r.ok||!r.body?.ok){
@@ -256,7 +269,7 @@ async function runPreview(){
 async function runExport(){
   $("run-result").innerHTML=`<div class="spin">出力中…（データ量により数十秒かかることがあります）</div>`;
   const r=await fn("export-run",{
-    report_key:$("f-report").value, store_ids:SEL.store_ids,
+    report_key:SEL.report_key, store_ids:SEL.store_ids,
     period_from:SEL.period_from, period_to:SEL.period_to, format:SEL.format,
   });
   if(!r.ok||!r.body?.ok){

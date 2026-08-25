@@ -83,6 +83,26 @@ async function fetchPlRows(token: string): Promise<PlRow[]> {
   return out;
 }
 
+// 売上高・原価（自動）はstg_pl（bqGetPL）には無くfact_daily_store（bqDailyStore）側にある
+// （2026-08-25ユーザー指摘で判明。export-run/index.tsと同じ理由）。プレビューの「売上高合計」用に取得。
+type DailyAgg = { ym: string; storeName: string; netSales: number };
+async function fetchDailyNetSales(token: string): Promise<DailyAgg[]> {
+  const res = await dashCall({ action: "bqDailyStore", token });
+  if (!res.ok) throw new Error("bqDailyStore取得に失敗: " + (res.error ?? ""));
+  const rows: any[] = (res.sheets?.daily ?? []).slice(1);
+  const map = new Map<string, DailyAgg>();
+  for (const r of rows) {
+    const ym = normalizeYm(r[0]);
+    if (!ym) continue;
+    const storeName = String(r[1] ?? "").trim();
+    const key = `${ym}__${storeName}`;
+    const cur = map.get(key) ?? { ym, storeName, netSales: 0 };
+    cur.netSales += Number(r[2] ?? 0);
+    map.set(key, cur);
+  }
+  return [...map.values()];
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
   try {
@@ -102,8 +122,8 @@ Deno.serve(async (req) => {
     if (!canAccess) return json({ ok: false, error: "データ出力センターへのアクセス権限がありません" }, 403);
 
     const reportKey = String(body.report_key ?? "");
-    if (reportKey !== "pl_monthly") {
-      return json({ ok: false, error: "Phase 1では report_key='pl_monthly' のみ対応しています" }, 400);
+    if (!["pl_monthly", "pl_annual_trend"].includes(reportKey)) {
+      return json({ ok: false, error: "report_keyはpl_monthly/pl_annual_trendのいずれかです" }, 400);
     }
 
     const periodFrom = String(body.period_from ?? "").slice(0, 7);
@@ -135,19 +155,17 @@ Deno.serve(async (req) => {
       return json({ ok: false, error: "店舗名を解決できませんでした" }, 500);
     }
 
-    // --- GASブリッジ経由でBQ(stg_pl)を取得しフィルタ ---
+    // --- GASブリッジ経由でBQ(stg_pl・fact_daily_store)を取得しフィルタ ---
     const login = await dashLogin(sb);
     if (!login.ok) return json({ ok: false, error: login.error }, 500);
-    const allRows = await fetchPlRows(login.token!);
+    const [allRows, allDaily] = await Promise.all([fetchPlRows(login.token!), fetchDailyNetSales(login.token!)]);
 
     const matched = allRows.filter((r) => r.ym >= periodFrom && r.ym <= periodTo && targetNames.has(r.storeName));
     const companyWide = allRows.filter((r) => r.ym >= periodFrom && r.ym <= periodTo && r.storeName === "");
+    const dailyMatched = allDaily.filter((d) => d.ym >= periodFrom && d.ym <= periodTo && targetNames.has(d.storeName));
 
-    let salesTotal = 0;
-    for (const r of matched) {
-      if (r.item.includes("売上") || r.category.includes("売上")) salesTotal += r.amount;
-    }
-    const yms = new Set(matched.map((r) => r.ym));
+    const salesTotal = dailyMatched.reduce((s, d) => s + d.netSales, 0);
+    const yms = new Set([...matched.map((r) => r.ym), ...dailyMatched.map((d) => d.ym)]);
 
     return json({
       ok: true,
@@ -155,10 +173,10 @@ Deno.serve(async (req) => {
       period: { from: periodFrom, to: periodTo, months: yms.size },
       store_count: targetNames.size,
       store_names: [...targetNames],
-      row_count: matched.length,
+      row_count: matched.length + dailyMatched.length,
       company_wide_row_count: companyWide.length,
       sales_total: salesTotal,
-      note: matched.length === 0 ? "指定条件に一致するデータがありません（BQミラー未反映の可能性）" : undefined,
+      note: (matched.length === 0 && dailyMatched.length === 0) ? "指定条件に一致するデータがありません（BQミラー未反映の可能性）" : undefined,
     });
   } catch (e) {
     return json({ ok: false, error: String(e) }, 500);
