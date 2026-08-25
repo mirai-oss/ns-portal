@@ -266,6 +266,8 @@ let CUR_TASK=null;        // 詳細表示中のタスク（工程・リンク・
 let OPEN_STEP=null;       // 詳細画面で開いている工程id
 let EDIT_STEP=null;       // 詳細画面で担当・期限を編集中の工程id（E-2）
 let LINKS_OPEN=false;     // 詳細画面「③添付・リンク」の開閉（B4・既定=閉）
+let STEP_ATT_OPEN=new Set();  // 工程ごとの添付欄の開閉（B4と同じ既定=閉に統一。2026-08-25追記）
+let CHK_ADD_OPEN=new Set();   // 工程ごとのチェックリスト「＋追加」入力欄の開閉（同上）
 let NOTIFICATIONS=[];     // アプリ内通知（自分宛）
 let NOTIF_UNREAD=0;
 let BELL_OPEN=false;
@@ -524,8 +526,10 @@ function renderBoard(u){
       <span>並び替え: <select id="sortsel" style="width:auto;display:inline-block;padding:5px 10px;font-size:12px;border-radius:99px">
         ${Object.entries(SORT_LABEL).map(([k,v])=>`<option value="${k}" ${SORT_MODE===k?"selected":""}>${esc(v)}</option>`).join("")}
       </select></span>
-      <span class="chip ${BOARD_VIEW==='kanban'?'active':''}" data-boardview="kanban">🗂 かんばん</span>
-      <span class="chip ${BOARD_VIEW==='list'?'active':''}" data-boardview="list">📋 リスト</span>
+      <span>表示: <select id="boardviewsel" style="width:auto;display:inline-block;padding:5px 10px;font-size:12px;border-radius:99px">
+        <option value="kanban" ${BOARD_VIEW==="kanban"?"selected":""}>🗂 かんばん</option>
+        <option value="list" ${BOARD_VIEW==="list"?"selected":""}>📋 リスト</option>
+      </select></span>
     </div>
     <div>
       <button class="linkbtn" id="godaily">📆 今日の毎日タスク →</button>
@@ -568,9 +572,9 @@ function wireBoard(u){
   $("assigneesel").onchange=e=>{FILTER.assignee=e.target.value||null;renderBoard(u);};
   $("creatorsel").onchange=e=>{FILTER.creator=e.target.value||null;renderBoard(u);};
   $("sortsel").onchange=e=>{SORT_MODE=e.target.value; localStorage.setItem("hq_sort",SORT_MODE); renderBoard(u);};
-  document.querySelectorAll("[data-boardview]").forEach(c=>c.onclick=()=>{
-    BOARD_VIEW=c.dataset.boardview; localStorage.setItem("hq_boardview",BOARD_VIEW); renderBoard(u);
-  });
+  $("boardviewsel").onchange=e=>{
+    BOARD_VIEW=e.target.value; localStorage.setItem("hq_boardview",BOARD_VIEW); renderBoard(u);
+  };
   document.querySelectorAll("[data-listsort]").forEach(th=>th.onclick=()=>{
     const k=th.dataset.listsort;
     if(LIST_SORT.col===k) LIST_SORT.dir=LIST_SORT.dir==="asc"?"desc":"asc"; else LIST_SORT={col:k,dir:"asc"};
@@ -611,7 +615,7 @@ function renderRepeat(u){
 /* ---------- タスク詳細 ---------- */
 async function openDetail(id){
   pushNav("tasks.html?task="+id);
-  VIEW="detail"; OPEN_STEP=null; LINKS_OPEN=false; // B4: 開くたびリンク一覧は既定=閉に戻す
+  VIEW="detail"; OPEN_STEP=null; LINKS_OPEN=false; STEP_ATT_OPEN=new Set(); CHK_ADD_OPEN=new Set(); // B4: 開くたびリンク・添付一覧は既定=閉に戻す
   $("app").innerHTML=`<div class="spin">読み込み中…</div>`;
   CUR_TASK=await fetchTaskDetail(id);
   renderDetail(ME);
@@ -739,17 +743,20 @@ function renderDetail(u){
 /* E-3(B7): 工程内チェックリスト（タスク側＝手順のチェックオン/オフ＋その場で追加）
    店舗別チェック展開（stepOrGroupHtml）には既存の添付機能と同様に組み込んでいない（対象外）。 */
 function checklistStepHtml(s,items,canTouch){
+  // 2026-08-25: 項目が無い工程にまで「追加」フォームを常時出すとURL添付欄と同様に画面が
+  // 埋まってしまうという実機フィードバックを受け、既存項目が無いときは「＋」リンクの奥に隠すよう調整
+  if(!items.length && !canTouch) return "";
   const rows=(items||[]).map(it=>`<label class="optchk" style="display:flex;align-items:center;gap:6px;padding:3px 0">
       <input type="checkbox" data-chkitem="${it.id}" ${it.checked_at?"checked":""} ${canTouch?"":"disabled"} onclick="event.stopPropagation()">
       <span style="${it.checked_at?"text-decoration:line-through;color:var(--muted)":""}">${esc(it.title)}</span>
     </label>`).join("");
+  const addOpen=CHK_ADD_OPEN.has(s.id);
   return `<div style="padding:8px 12px 4px" onclick="event.stopPropagation()">
-    <div class="meta" style="margin-bottom:2px">✅ 手順チェックリスト</div>
-    ${rows||'<div class="meta" style="color:var(--muted)">項目はありません</div>'}
-    ${canTouch?`<div style="margin-top:6px;display:flex;gap:6px">
+    ${items.length?`<div class="meta" style="margin-bottom:2px">✅ 手順チェックリスト</div>${rows}`:""}
+    ${canTouch?(addOpen?`<div style="margin-top:6px;display:flex;gap:6px">
       <input data-chknew="${s.id}" placeholder="手順を追加" style="flex:1">
       <button class="linkbtn" data-chkadd="${s.id}">追加</button>
-    </div>`:""}
+    </div>`:`<button class="linkbtn" data-chkaddopen="${s.id}" style="margin-top:${items.length?"6px":"0"}">＋ 手順チェックリストを追加</button>`):""}
   </div>`;
 }
 function stepHtml(t,s,u){
@@ -789,7 +796,10 @@ function stepHtml(t,s,u){
       <button class="btn sm" style="margin-top:8px" data-complete="${s.id}">この工程を完了にする</button>
       <div class="err" id="stepmsg-${s.id}"></div>
     </div>`:""}
-    ${(links.length||photos.length||attCanEdit)?attachBoxHtml(`tsatt-${s.id}`,links,photos,attCanEdit):""}
+    ${(links.length||photos.length||attCanEdit)?`<div style="padding:8px 12px 4px" onclick="event.stopPropagation()">
+      <button class="linkbtn" data-stepattopen="${s.id}">📎 添付・マニュアル（${links.length+photos.length}件） ${STEP_ATT_OPEN.has(s.id)?"▲ 閉じる":"▼ 開く"}</button>
+      ${STEP_ATT_OPEN.has(s.id)?attachBoxHtml(`tsatt-${s.id}`,links,photos,attCanEdit):""}
+    </div>`:""}
   </div>`;
 }
 /* 店舗別チェックの一括完了ボタン。
@@ -1133,7 +1143,8 @@ function wireDetail(t,u){
     await fetchBoard(); goBack(u);
   };
   document.querySelectorAll("[data-stepundo]").forEach(btn=>{
-    btn.onclick=async()=>{
+    btn.onclick=async(e)=>{
+      e.stopPropagation(); // btn.onclick=... はHTML側のonclick="event.stopPropagation()"属性を上書きしてしまうため、ここで改めて止める（バグ修正・2026-08-25）
       const sid=btn.dataset.stepundo;
       const step=sortedSteps(t).find(s=>s.id===sid);
       const r=await authed(`/rest/v1/hq_task_steps?id=eq.${sid}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({completed_at:null,judgement:null,issue_note:null})});
@@ -1144,7 +1155,10 @@ function wireDetail(t,u){
   });
   /* E-2: タスク詳細から工程の担当・期限をその場変更（保存時にhq_task_activityへ履歴を残す） */
   document.querySelectorAll("[data-stepeditopen]").forEach(btn=>{
-    btn.onclick=()=>{ const id=btn.dataset.stepeditopen; EDIT_STEP=EDIT_STEP===id?null:id; OPEN_STEP=null; renderDetail(u); };
+    btn.onclick=(e)=>{
+      e.stopPropagation(); // 同上（btn.onclick=...でHTML属性のstopPropagationが上書きされていたバグの修正）
+      const id=btn.dataset.stepeditopen; EDIT_STEP=EDIT_STEP===id?null:id; OPEN_STEP=null; renderDetail(u);
+    };
   });
   document.querySelectorAll("[data-stepeditcancel]").forEach(btn=>{
     btn.onclick=()=>{ EDIT_STEP=null; renderDetail(u); };
@@ -1194,6 +1208,17 @@ function wireDetail(t,u){
         body:JSON.stringify({step_id:sid,title,sort_order:100})});
       if(!r.ok){ alert("追加できませんでした"); btn.disabled=false; return; }
       CUR_TASK=await fetchTaskDetail(t.id); renderDetail(u);
+    };
+  });
+  document.querySelectorAll("[data-chkaddopen]").forEach(btn=>{
+    btn.onclick=()=>{ CHK_ADD_OPEN.add(btn.dataset.chkaddopen); renderDetail(u); };
+  });
+  /* 2026-08-25: 工程ごとの添付欄をB4と同じ「件数表示＋既定=閉」に統一（実機フィードバック対応） */
+  document.querySelectorAll("[data-stepattopen]").forEach(btn=>{
+    btn.onclick=()=>{
+      const id=btn.dataset.stepattopen;
+      if(STEP_ATT_OPEN.has(id)) STEP_ATT_OPEN.delete(id); else STEP_ATT_OPEN.add(id);
+      renderDetail(u);
     };
   });
   document.querySelectorAll("select[id^='judge-']").forEach(sel=>{
