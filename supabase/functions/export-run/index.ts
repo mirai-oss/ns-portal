@@ -153,9 +153,9 @@ function colIndexOf(header: string[], name: string): number {
   return header.findIndex((h) => String(h ?? "").indexOf(name) >= 0);
 }
 async function fetchAdCostRows(token: string): Promise<AdCostRow[]> {
-  const res = await dashCall({ action: "data", token, keys: "ad" });
+  const res = await dashCall({ action: "data", token, keys: "広告" });
   if (!res.ok) throw new Error("広告DB取得に失敗: " + (res.error ?? ""));
-  const rows: any[][] = res.sheets?.ad ?? [];
+  const rows: any[][] = res.sheets?.["広告"] ?? [];
   if (!rows.length) return [];
   let hi = -1;
   for (let i = 0; i < Math.min(rows.length, 12); i++) {
@@ -595,11 +595,36 @@ Deno.serve(async (req) => {
     const { data: storeRows } = await sb.from("stores").select("id,name,dash_store_name").in("id", targetIds);
     const storeNamesInOrder: string[] = [];
     const targetNames = new Set<string>();
+    const canonicalByStoreId = new Map<string, string>();
     (storeRows ?? []).forEach((s: any) => {
       const n = String(s.dash_store_name || s.name).trim();
+      canonicalByStoreId.set(s.id, n);
       if (!targetNames.has(n)) { targetNames.add(n); storeNamesInOrder.push(n); }
     });
     if (targetNames.size === 0) return json({ ok: false, error: "店舗名を解決できませんでした" }, 500);
+
+    // 広告DB（媒体別広告実績）は店舗名がサブブランド表記（例:「匠味（新横浜）」）のことがあり、
+    // stores.name/dash_store_nameと直接一致しない。store_aliasesで正規化して解決する
+    // （2026-08-25実機調査で判明。tori-dashboard/app.jsのresolveStoreEx()相当の簡易版）。
+    const normalizeStoreName = (s: string) => s.trim().replace(/[\s()（）]/g, "");
+    const normToCanonical = new Map<string, string>();
+    (storeRows ?? []).forEach((s: any) => {
+      const canon = canonicalByStoreId.get(s.id)!;
+      normToCanonical.set(normalizeStoreName(canon), canon);
+      normToCanonical.set(normalizeStoreName(String(s.name)), canon);
+    });
+    if (isAd) {
+      const { data: aliasRows } = await sb.from("store_aliases").select("alias,store_id").in("store_id", targetIds);
+      (aliasRows ?? []).forEach((a: any) => {
+        const canon = canonicalByStoreId.get(a.store_id);
+        if (canon) normToCanonical.set(normalizeStoreName(String(a.alias)), canon);
+      });
+    }
+    function resolveAdStoreName(raw: string): string | null {
+      const direct = String(raw ?? "").trim();
+      if (targetNames.has(direct)) return direct;
+      return normToCanonical.get(normalizeStoreName(direct)) ?? null;
+    }
 
     // --- 出力履歴を先に作成（pending）。この時点でIDを持っておき失敗時もfailedとして残す ---
     const { data: hist, error: histErr } = await sb.from("export_history").insert({
@@ -627,8 +652,13 @@ Deno.serve(async (req) => {
 
     if (isAd) {
       const [allCostRows, allSalesRows] = await Promise.all([fetchAdCostRows(login.token!), fetchMediaSales(login.token!)]);
-      const costMatched = allCostRows.filter((r) => r.ym >= periodFrom && r.ym <= periodTo && targetNames.has(r.storeName));
-      const salesMatched = allSalesRows.filter((r) => r.ym >= periodFrom && r.ym <= periodTo && targetNames.has(r.storeName));
+      // 広告DBの店舗名（サブブランド表記あり）をresolveAdStoreName()で正規化してから対象期間・対象店舗に絞る
+      const costMatched = allCostRows
+        .map((r) => ({ ...r, storeName: resolveAdStoreName(r.storeName) ?? "" }))
+        .filter((r) => r.ym >= periodFrom && r.ym <= periodTo && targetNames.has(r.storeName));
+      const salesMatched = allSalesRows
+        .map((r) => ({ ...r, storeName: resolveAdStoreName(r.storeName) ?? "" }))
+        .filter((r) => r.ym >= periodFrom && r.ym <= periodTo && targetNames.has(r.storeName));
 
       if (costMatched.length === 0 && salesMatched.length === 0) {
         await sb.from("export_history").update({
