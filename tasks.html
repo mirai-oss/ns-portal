@@ -187,6 +187,12 @@ textarea{resize:vertical}
 .resource .del{position:absolute;top:8px;right:8px;padding:2px}
 .resource-add{border:1px solid var(--line);border-radius:12px;padding:12px;background:var(--bg);margin-top:10px}
 .resource-add label{margin-top:8px}
+.richbar{display:flex;gap:6px;align-items:center;margin:4px 0 2px;flex-wrap:wrap}
+.richbar button{border:1px solid var(--line);border-radius:6px;padding:3px 12px;background:var(--card);cursor:pointer;font-size:13px}
+.richbar select{width:auto;flex:0 0 auto;font-size:12px;padding:3px 6px;border-radius:6px}
+.richbar input[type=color]{width:32px;height:28px;padding:0;border:1px solid var(--line);border-radius:6px;cursor:pointer;background:none}
+.rich-preview{border:1px dashed var(--line);border-radius:8px;padding:8px 10px;margin-top:4px;font-size:13.5px;color:var(--ink);background:var(--bg);min-height:18px}
+.rich-preview:empty::before{content:"（プレビュー：入力すると表示されます）";color:var(--muted)}
 .resource-add label:first-child{margin-top:0}
 /* デザイン案の.checklist/.checkitemを再現（文字サイズ・チェックボックスを大きく、行区切り線つき） */
 .checklist-hd{font-weight:700;font-size:14px;margin-bottom:2px;display:flex;align-items:center;gap:6px}
@@ -263,6 +269,56 @@ const ROLE_NAME={CEO:"社長",HQ:"本部",TEAM:"チーム長",TENCHO:"店長",SH
 
 const $=id=>document.getElementById(id);
 const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+/* 2026-08-26: 本部タスクにもB-4相当（太字・文字サイズ・文字色）の装飾を追加してほしいという
+   ユーザー依頼（担当B→担当EへのWORKLOG申し送り）。description/notes/procedure_noteは
+   nippoのマニュアルと違いプレーンな1本のtext列のため、部品配列化はせず「選択範囲を軽量マーカーで
+   囲んで保存する」方式にした（**太字**／[color=#xxxxxx]…[/color]／[size=s|m|l|xl]…[/size]）。
+   表示は必ずesc()で丸ごとエスケープしてから、マーカーだけを正規表現で安全な固定タグへ置換する
+   （置換先はホワイトリストのタグ・値のみ・任意のHTML/属性が混ざる余地はない＝XSS対策）。 */
+const RICH_SIZE_PX={s:"12px",m:"14px",l:"18px",xl:"24px"};
+function richTextHtml(raw){
+  let s=esc(raw||"").replace(/\n/g,"<br>");
+  s=s.replace(/\*\*([^*]+)\*\*/g,"<b>$1</b>");
+  s=s.replace(/\[color=(#[0-9a-fA-F]{3,8})\]([\s\S]*?)\[\/color\]/g,'<span style="color:$1">$2</span>');
+  s=s.replace(/\[size=(s|m|l|xl)\]([\s\S]*?)\[\/size\]/g,(m,sz,inner)=>`<span style="font-size:${RICH_SIZE_PX[sz]}">${inner}</span>`);
+  return s;
+}
+function richToolbarHtml(id){
+  return `<div class="richbar" onclick="event.stopPropagation()">
+    <button type="button" data-richb="${id}"><b>B</b> 太字</button>
+    <select data-richsize="${id}">
+      <option value="">サイズ…</option>
+      <option value="s">小</option><option value="m">標準</option><option value="l">大</option><option value="xl">特大</option>
+    </select>
+    <input type="color" data-richcolor="${id}" value="#d63b3b" title="選択した文字の色">
+  </div>`;
+}
+function richFieldHtml(id,label,value,rows,placeholder,extraAttrs){
+  return `<label>${esc(label)}</label>
+  ${richToolbarHtml(id)}
+  <textarea id="${id}" rows="${rows||3}" ${placeholder?`placeholder="${esc(placeholder).replace(/\n/g,"&#10;")}"`:""} ${extraAttrs||""}>${esc(value||"")}</textarea>
+  <div class="rich-preview" id="${id}-preview">${richTextHtml(value||"")}</div>`;
+}
+function wireRichField(id,onInput){
+  const ta=document.getElementById(id); if(!ta) return;
+  const preview=document.getElementById(id+"-preview");
+  const sync=()=>{ if(preview) preview.innerHTML=richTextHtml(ta.value); if(onInput) onInput(ta.value); };
+  ta.oninput=sync;
+  const wrapSel=(before,after)=>{
+    const s=ta.selectionStart, e=ta.selectionEnd;
+    if(s===e){ alert("先に装飾したい文字をドラッグして選択してから押してください"); return; }
+    const v=ta.value;
+    ta.value=v.slice(0,s)+before+v.slice(s,e)+after+v.slice(e);
+    ta.focus(); ta.setSelectionRange(s+before.length,e+before.length);
+    sync();
+  };
+  const btn=document.querySelector(`[data-richb="${id}"]`);
+  if(btn) btn.onclick=()=>wrapSel("**","**");
+  const sizeSel=document.querySelector(`[data-richsize="${id}"]`);
+  if(sizeSel) sizeSel.onchange=()=>{ if(sizeSel.value) wrapSel(`[size=${sizeSel.value}]`,"[/size]"); sizeSel.value=""; };
+  const colorInput=document.querySelector(`[data-richcolor="${id}"]`);
+  if(colorInput) colorInput.onchange=()=>wrapSel(`[color=${colorInput.value}]`,"[/color]");
+}
 const sess={get:()=>{try{return JSON.parse(localStorage.getItem(LS_KEY))}catch(e){return null}},
             set:v=>localStorage.setItem(LS_KEY,JSON.stringify(v)),
             clear:()=>localStorage.removeItem(LS_KEY)};
@@ -508,7 +564,7 @@ function taskCardHtml(t){
     <div class="badges"><span class="tag">${esc(t.corp)}</span><span class="tag freq">${t.freq!=="once"?"🔁 "+FREQ_LABEL[t.freq]:"単発"}</span>${dueBadgeHtml(sig)}</div>
     ${sig.level==="stall"?`<div class="stall-badge">⏸ ${sig.stalledDays}日停止</div>`:""}
     <div class="ti">${esc(t.title)}</div>
-    <div class="meta">対象日 ${fmtD(t.target_date)} ／ 期限 ${fmtDD(t.due_date,t.due_time)}${t.status==="done"?" ／ "+fmtD((t.completed_at||"").slice(0,10))+" 完了 ✓":""}</div>
+    <div class="meta">作成日 ${fmtD((t.created_at||"").slice(0,10))} ／ 期限 ${fmtDD(t.due_date,t.due_time)}${t.status==="done"?" ／ "+fmtD((t.completed_at||"").slice(0,10))+" 完了 ✓":""}</div>
     ${steps.length?`<div class="meta">工程 ${doneCount}/${steps.length} 完了</div>`:""}
     ${t.memo?`<div class="memo-line">📝 ${esc((t.memo.split("\n")[0]||"").slice(0,60))}</div>`:""}
     ${sig.cur?`<div class="now">いま: ${esc(sig.cur.title)}（${esc(userName(sig.cur.assignee_id)||"未定")}）${sig.cur.due_date?` ／ 期限 ${fmtDD(sig.cur.due_date,sig.cur.due_time)}`:""}</div>`:""}
@@ -831,7 +887,7 @@ function renderDetail(u){
       <div class="badges"><span class="tag">${esc(t.corp)}</span><span class="tag freq">${t.freq!=="once"?"🔁 "+FREQ_LABEL[t.freq]:"単発"}</span><span class="tag">${STATUS_LABEL[t.status]}</span>
       ${sig.level==="stall"?`<span class="stall-badge">⏸ ${sig.stalledDays}日停止</span>`:""}</div>
       <div class="title">${esc(t.title)}</div>
-      ${t.description?`<div class="desc">${esc(t.description).replace(/\n/g,"<br>")}</div>`:""}
+      ${t.description?`<div class="desc">${richTextHtml(t.description)}</div>`:""}
       <div class="progress"><span style="width:${pct}%"></span></div>
       <div class="meta">工程 ${doneCount} / ${steps.length} 完了 ／ 対象日 ${fmtD(t.target_date)} ／ 期限 ${fmtDD(t.due_date,t.due_time)}${t.status==="done"?" ／ "+fmtDT(t.completed_at)+" 完了":""}</div>
       <div style="margin-top:8px">
@@ -859,7 +915,7 @@ function renderDetail(u){
         <div><b>タスク全体の完了</b><div class="meta">${t.status==="done"?"すべての工程が完了しました":"すべての工程が完了すると自動的に「完了」になります"}</div></div>
         <button class="btn ${t.status==="done"?"":"sub"}" disabled>${t.status==="done"?"✓ 完了":"完了待ち"}</button>
       </div>
-      ${t.notes?`<div class="dcard"><div class="head"><b>② ⚠️ 注意事項</b></div><div class="body"><div class="notes-box">${esc(t.notes).replace(/\n/g,"<br>")}</div></div></div>`:""}
+      ${t.notes?`<div class="dcard"><div class="head"><b>② ⚠️ 注意事項</b></div><div class="body"><div class="notes-box">${richTextHtml(t.notes)}</div></div></div>`:""}
       <div class="dcard">
         <div class="head"><b>💬 コメント</b><span class="meta">${(t._comments||[]).length}件</span></div>
         <div class="body">
@@ -924,8 +980,7 @@ function procedureHtml(s,canTouch){
   // できるようにした（PROC_EDIT_OPENで開閉。保存はhq_task_steps.procedure_noteへPATCH）
   if(canTouch&&PROC_EDIT_OPEN.has(s.id)){
     return `<div class="resource-add" onclick="event.stopPropagation()">
-      <label>📘 手順書（任意・1行1手順で改行区切り。チェックはしない読み物用の説明文）</label>
-      <textarea data-procedit="${s.id}" rows="4" placeholder="例:&#10;スマレジ勤怠データを確認する&#10;時給・交通費設定に差異がないか確認する">${esc(note)}</textarea>
+      ${richFieldHtml(`procedit-${s.id}`,"📘 手順書（任意・1行1手順で改行区切り。チェックはしない読み物用の説明文）",note,4,"例:\nスマレジ勤怠データを確認する\n時給・交通費設定に差異がないか確認する",`data-procedit="${s.id}"`)}
       <div style="display:flex;gap:8px;margin-top:8px">
         <button class="btn sm" data-procsave="${s.id}">保存する</button>
         <button class="linkbtn" data-proccancel="${s.id}">キャンセル</button>
@@ -937,7 +992,7 @@ function procedureHtml(s,canTouch){
   }
   return `<div style="margin-top:10px" onclick="event.stopPropagation()">
     <div class="checklist-hd">📘 手順書${canTouch?`<button class="linkbtn" data-procopen="${s.id}" style="margin-left:8px">✏️ 編集</button>`:""}</div>
-    <ol style="padding-left:20px;line-height:1.8;color:var(--muted);font-size:13.5px">${lines.map(l=>`<li>${esc(l)}</li>`).join("")}</ol>
+    <ol style="padding-left:20px;line-height:1.8;color:var(--muted);font-size:13.5px">${lines.map(l=>`<li>${richTextHtml(l)}</li>`).join("")}</ol>
   </div>`;
 }
 function checklistStepHtml(s,items,canTouch){
@@ -1558,6 +1613,7 @@ function wireDetail(t,u){
   document.querySelectorAll("[data-procopen]").forEach(btn=>{
     btn.onclick=(e)=>{ e.stopPropagation(); PROC_EDIT_OPEN.add(btn.dataset.procopen); renderDetail(u); };
   });
+  document.querySelectorAll("[data-procedit]").forEach(ta=>wireRichField(ta.id));
   document.querySelectorAll("[data-proccancel]").forEach(btn=>{
     btn.onclick=(e)=>{ e.stopPropagation(); PROC_EDIT_OPEN.delete(btn.dataset.proccancel); renderDetail(u); };
   });
@@ -1772,8 +1828,8 @@ function renderNew(u){
     <label>タイトル</label><input id="nt-title" placeholder="例: 恵比寿 冷蔵庫の入替 見積比較">
     <label>法人</label><select id="nt-corp">${activeCorps().map(c=>`<option value="${esc(c.name)}">${esc(c.name)}</option>`).join("")}</select>
     <div class="meta" style="margin-top:10px">対象日は自動で今日（${fmtD(todayStr())}）になります。</div>
-    <label>概要（説明文・任意）</label><textarea id="nt-desc" rows="2"></textarea>
-    <label>⚠️ 注意事項（任意）</label><textarea id="nt-notes" rows="2"></textarea>
+    ${richFieldHtml("nt-desc","概要（説明文・任意）","",3)}
+    ${richFieldHtml("nt-notes","⚠️ 注意事項（任意）","",3)}
     <label>公開範囲</label>
     <select id="nt-vis"><option value="all">本部全員に公開（既定）</option><option value="members">指定した人だけ</option></select>
     <div id="nt-memberswrap" style="display:none">
@@ -1788,6 +1844,7 @@ function renderNew(u){
   </div>`;
   $("back").onclick=()=>goBack(u);
   $("nt-vis").onchange=e=>{$("nt-memberswrap").style.display=e.target.value==="members"?"block":"none";};
+  wireRichField("nt-desc"); wireRichField("nt-notes");
   renderNewSteps();
   $("nt-addstep").onclick=()=>{NEW_STEPS.push({title:"",assignee_id:"",due_date:"",due_time:""});renderNewSteps();};
   $("nt-send").onclick=()=>submitNewTask(u);
@@ -1900,7 +1957,7 @@ function dailyRowHtml(t,u,isPast){
       <span>${open?"▲":"▼"}</span>
     </div>
     ${open?`<div class="step-body">
-      ${t.notes?`<div class="notes-box" style="margin-bottom:10px">📖 ${esc(t.notes)}</div>`:""}
+      ${t.notes?`<div class="notes-box" style="margin-bottom:10px">📖 ${richTextHtml(t.notes)}</div>`:""}
       ${(t._links||[]).length?`<div class="resources">${(t._links||[]).map(l=>linkHtml(l,false)).join("")}</div>`:""}
       ${groups.map(g=>dailyGroupHtml(g,u)).join("")}
     </div>`:""}
@@ -2270,7 +2327,7 @@ function renderTplEdit(u){
   <div class="topbar"><h1>${tpl.id?"テンプレートを編集":"新しいテンプレート"}</h1><div class="who"><button class="linkbtn" id="back">← 戻る</button></div></div>
   <div class="card">
     <label>タイトル</label><input id="tp-title" value="${esc(tpl.title||"")}" placeholder="例: 業務委託 精算処理">
-    <label>概要（説明文・任意）</label><textarea id="tp-desc" rows="2" placeholder="このタスクの目的や進め方など">${esc(tpl.description||"")}</textarea>
+    ${richFieldHtml("tp-desc","概要（説明文・任意）",tpl.description,3,"このタスクの目的や進め方など")}
     <label>法人</label><select id="tp-corp">${activeCorps().map(c=>`<option value="${esc(c.name)}" ${tpl.corp===c.name?"selected":""}>${esc(c.name)}</option>`).join("")}</select>
     <label>頻度</label>
     <select id="tp-freq">
@@ -2291,7 +2348,7 @@ function renderTplEdit(u){
     <div class="meta" id="tp-basehint"></div>
     <label>期限の時刻（任意・未設定なら日付のみ）</label>
     <input id="tp-duetime" type="time" value="${esc(tpl.due_time||"")}">
-    <label>⚠️ 注意事項（既定）</label><textarea id="tp-notes" rows="2">${esc(tpl.notes||"")}</textarea>
+    ${richFieldHtml("tp-notes","⚠️ 注意事項（既定）",tpl.notes,3)}
     <label>公開範囲</label>
     <select id="tp-vis"><option value="all" ${(!tpl.visibility||tpl.visibility==="all")?"selected":""}>本部全員に公開（既定）</option><option value="members" ${tpl.visibility==="members"?"selected":""}>指定した人だけ</option></select>
     <div id="tp-memberswrap" style="display:${tpl.visibility==="members"?"block":"none"}">
@@ -2323,6 +2380,7 @@ function renderTplEdit(u){
   </div>`;
   $("back").onclick=()=>goBack(u);
   $("tp-preview").onclick=()=>openTplPreview();
+  wireRichField("tp-desc"); wireRichField("tp-notes");
   $("tp-freq").onchange=e=>{
     $("tp-weeklywrap").style.display=e.target.value==="weekly"?"block":"none";
     $("tp-monthlywrap").style.display=e.target.value==="monthly"?"block":"none";
@@ -2400,15 +2458,14 @@ function renderTplSteps(){
       <div class="ts-storelist" style="display:${s.store_scope==="custom"?"block":"none"};width:100%;margin-top:6px;max-height:180px;overflow-y:auto;border:1px solid var(--line);border-radius:8px;padding:8px">
         ${STORES.map(store=>`<label class="optchk" style="padding:3px 0"><input type="checkbox" class="ts-storeid" value="${store.id}" ${(s.store_ids||[]).includes(store.id)?"checked":""}> ${esc(store.name)}${store.is_active?"":"（委託）"}</label>`).join("")||'<div class="meta">店舗マスタが登録されていません</div>'}
       </div>
-      <label style="margin-top:8px">📘 手順書（任意・チェックリストとは別の説明文。1行1手順で改行区切り）</label>
-      <textarea class="ts-procedure" rows="3" placeholder="例:&#10;スマレジ勤怠データを確認する&#10;時給・交通費設定に差異がないか確認する">${esc(s.procedure_note||"")}</textarea>
+      <div style="margin-top:8px">${richFieldHtml(`ts-procedure-${i}`,"📘 手順書（任意・チェックリストとは別の説明文。1行1手順で改行区切り）",s.procedure_note,3,"例:\nスマレジ勤怠データを確認する\n時給・交通費設定に差異がないか確認する")}</div>
       ${s.id?attachBoxHtml(`tstep-att-${s.id}`,s._links,s._photos,true):'<div class="meta" style="color:var(--muted);margin-top:8px">保存すると工程ごとにマニュアル・写真を追加できます</div>'}
       ${s.id?checklistBoxHtml(`tstep-chk-${s.id}`,s._checklist):""}
     </div>`).join("");
   document.querySelectorAll("#tp-steps [data-tidx]").forEach(row=>{
     const i=+row.dataset.tidx;
     row.querySelector(".ts-title").oninput=e=>TPL_STEPS[i].title=e.target.value;
-    row.querySelector(".ts-procedure").oninput=e=>TPL_STEPS[i].procedure_note=e.target.value;
+    wireRichField(`ts-procedure-${i}`,val=>{TPL_STEPS[i].procedure_note=val;});
     row.querySelector(".ts-assignee").onchange=e=>TPL_STEPS[i].assignee_id=e.target.value;
     row.querySelector(".ts-due").onchange=e=>{
       const base=tplBaseDate();
@@ -2719,7 +2776,7 @@ function openTplPreview(){
     <h3 style="margin-bottom:8px">ボードでのカード表示</h3>
     <div style="max-width:320px">${taskCardHtml(dummy)}</div>
     <h3 style="margin:20px 0 8px">詳細画面での工程表示</h3>
-    ${dummy.notes?`<div class="notes-box" style="margin-bottom:12px">${esc(dummy.notes)}</div>`:""}
+    ${dummy.notes?`<div class="notes-box" style="margin-bottom:12px">${richTextHtml(dummy.notes)}</div>`:""}
     <div>${groups.map(g=>stepOrGroupHtml(dummy,g,ME)).join("")||'<div class="card">工程がありません</div>'}</div>
   </div>`;
   document.body.appendChild(modal);
