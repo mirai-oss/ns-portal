@@ -763,7 +763,6 @@ function checklistStepHtml(s,items,canTouch){
 function stepHtml(t,s,u){
   const canTouch=canManage(u)||s.assignee_id===u.id||(!s.assignee_id);
   const canEditAssign=canManage(u); // E-2: 担当・期限のその場変更はhq_can_manage系（マスター/社長/本部）のみ
-  const open=OPEN_STEP===s.id;
   const editOpen=EDIT_STEP===s.id;
   let metaLine="";
   if(s.completed_at) metaLine=`担当: ${esc(userName(s.assignee_id)||"—")} ／ 期限 ${fmtDD(s.due_date,s.due_time)} → ${fmtDT(s.completed_at)} 完了${esc(userName(s.completed_by)?" ("+userName(s.completed_by)+")":"")}`;
@@ -773,17 +772,20 @@ function stepHtml(t,s,u){
   const links=stepLinksFor(t,s.id);
   const checklist=stepChecklistFor(t,s.id);
   const attCanEdit=canManage(u);
+  // 2026-08-25: 実機フィードバックで「工程を開く」「添付・マニュアルを開く」の2回クリックが
+  // 手間だと指摘を受け、完了操作（判定・必須写真・完了ボタン）を添付・マニュアル欄と同じ
+  // パネルへ統合。開閉は1つの状態（STEP_ATT_OPEN）に一本化し、行全体のクリックでも
+  // 「📎添付・マニュアル」ボタンのクリックでも同じパネルが開く
+  const canComplete=!s.completed_at&&canTouch;
+  const hasPanel=links.length||photos.length||attCanEdit||canComplete;
+  const panelOpen=STEP_ATT_OPEN.has(s.id);
   return `<div class="step ${s._isCurrent?'cur':''}">
-    <div class="row1" data-stepopen="${s.id}"><span class="ic">${stepIcon(s)}</span>
+    <div class="row1" ${hasPanel?`data-stepattopen="${s.id}"`:""}><span class="ic">${stepIcon(s)}</span>
       <div class="st">${esc(s.title)}<div class="meta">${metaLine}${canEditAssign?` ／ <button class="linkbtn" data-stepeditopen="${s.id}" onclick="event.stopPropagation()">✏️ 編集</button>`:""}${s.completed_at&&canTouch?` ／ <button class="linkbtn" data-stepundo="${s.id}" onclick="event.stopPropagation()">↩️ 取り消す</button>`:""}</div>
       </div>
-      ${!s.completed_at&&canTouch?`<span>${open?"▲":"▼"}</span>`:""}
+      ${hasPanel?`<span>${panelOpen?"▲":"▼"}</span>`:""}
     </div>
     ${(checklist.length||canTouch)?checklistStepHtml(s,checklist,canTouch):""}
-    ${(links.length||photos.length||attCanEdit)?`<div style="padding:8px 12px 4px" onclick="event.stopPropagation()">
-      <button class="linkbtn" data-stepattopen="${s.id}">📎 添付・マニュアル（${links.length+photos.length}件） ${STEP_ATT_OPEN.has(s.id)?"▲ 閉じる":"▼ 開く"}</button>
-      ${STEP_ATT_OPEN.has(s.id)?attachBoxHtml(`tsatt-${s.id}`,links,photos,attCanEdit):""}
-    </div>`:""}
     ${editOpen?`<div class="step-body" onclick="event.stopPropagation()">
       <label>担当</label><select id="stepedit-assignee-${s.id}"><option value="">未定</option>${assignableUsers().map(x=>`<option value="${x.id}" ${s.assignee_id===x.id?"selected":""}>${esc(x.name)}</option>`).join("")}</select>
       <label>期限日</label><input type="date" id="stepedit-due-${s.id}" value="${esc(s.due_date||"")}">
@@ -792,14 +794,20 @@ function stepHtml(t,s,u){
       <button class="linkbtn" style="margin-top:8px" data-stepeditcancel="${s.id}">キャンセル</button>
       <div class="err" id="stepeditmsg-${s.id}"></div>
     </div>`:""}
-    ${!s.completed_at&&canTouch&&open?`<div class="step-body">
-      ${s.is_binary?`<label>判定</label>
-        <select id="judge-${s.id}"><option value="">選択してください</option><option value="ok">OK</option><option value="issue">異常あり</option></select>
-        <div id="issuewrap-${s.id}" style="display:none"><label>異常メモ（必須）</label><textarea id="issuenote-${s.id}" rows="2" placeholder="内容を記入"></textarea></div>`:""}
-      ${s.requires_photo?`<label>写真（必須）</label><input type="file" accept="image/*" capture="environment" id="stepphoto-${s.id}">
-        <div class="photo-grid">${photos.map(p=>`<a ${photoTag(p.storage_path)} href="#" target="_blank"><img ${photoTag(p.storage_path)} src=""></a>`).join("")}</div>`:""}
-      <button class="btn sm" style="margin-top:8px" data-complete="${s.id}">この工程を完了にする</button>
-      <div class="err" id="stepmsg-${s.id}"></div>
+    ${hasPanel?`<div style="padding:8px 12px 4px" onclick="event.stopPropagation()">
+      <button class="linkbtn" data-stepattopen="${s.id}">📎 添付・マニュアル（${links.length+photos.length}件） ${panelOpen?"▲ 閉じる":"▼ 開く"}</button>
+      ${panelOpen?`
+        ${canComplete?`<div class="step-body" style="border:0;padding:10px 0 0">
+          ${s.is_binary?`<label>判定</label>
+            <select id="judge-${s.id}"><option value="">選択してください</option><option value="ok">OK</option><option value="issue">異常あり</option></select>
+            <div id="issuewrap-${s.id}" style="display:none"><label>異常メモ（必須）</label><textarea id="issuenote-${s.id}" rows="2" placeholder="内容を記入"></textarea></div>`:""}
+          ${s.requires_photo?`<label>写真（必須）</label><input type="file" accept="image/*" capture="environment" id="stepphoto-${s.id}">
+            <div class="photo-grid">${photos.map(p=>`<a ${photoTag(p.storage_path)} href="#" target="_blank"><img ${photoTag(p.storage_path)} src=""></a>`).join("")}</div>`:""}
+          <button class="btn sm" style="margin-top:8px" data-complete="${s.id}">この工程を完了にする</button>
+          <div class="err" id="stepmsg-${s.id}"></div>
+        </div>`:""}
+        ${attachBoxHtml(`tsatt-${s.id}`,links,photos,attCanEdit)}
+      `:""}
     </div>`:""}
   </div>`;
 }
@@ -1161,7 +1169,7 @@ function wireDetail(t,u){
   document.querySelectorAll("[data-stepeditopen]").forEach(btn=>{
     btn.onclick=(e)=>{
       e.stopPropagation(); // 同上（btn.onclick=...でHTML属性のstopPropagationが上書きされていたバグの修正）
-      const id=btn.dataset.stepeditopen; EDIT_STEP=EDIT_STEP===id?null:id; OPEN_STEP=null; renderDetail(u);
+      const id=btn.dataset.stepeditopen; EDIT_STEP=EDIT_STEP===id?null:id; STEP_ATT_OPEN.delete(id); renderDetail(u);
     };
   });
   document.querySelectorAll("[data-stepeditcancel]").forEach(btn=>{
@@ -1217,7 +1225,9 @@ function wireDetail(t,u){
   document.querySelectorAll("[data-chkaddopen]").forEach(btn=>{
     btn.onclick=()=>{ CHK_ADD_OPEN.add(btn.dataset.chkaddopen); renderDetail(u); };
   });
-  /* 2026-08-25: 工程ごとの添付欄をB4と同じ「件数表示＋既定=閉」に統一（実機フィードバック対応） */
+  /* 2026-08-25: 工程ごとの添付・完了操作パネルの開閉。行全体(row1)と「📎添付・マニュアル」
+     ボタンの両方にdata-stepattopenを付け、どちらを押しても同じ1つの状態を開閉する
+     （「開く操作を1回にしてほしい」という実機フィードバックへの対応） */
   document.querySelectorAll("[data-stepattopen]").forEach(btn=>{
     btn.onclick=()=>{
       const id=btn.dataset.stepattopen;
@@ -1255,7 +1265,7 @@ function wireDetail(t,u){
         await notifyStepEvent(sid,"step_complete");
         if(payload.judgement==="issue") await notifyStepEvent(sid,"issue_reported");
       }catch(e){ msg.textContent="エラー: "+e.message; btn.disabled=false; return; }
-      OPEN_STEP=null; CUR_TASK=await fetchTaskDetail(t.id); renderDetail(u);
+      OPEN_STEP=null; STEP_ATT_OPEN.delete(sid); CUR_TASK=await fetchTaskDetail(t.id); renderDetail(u);
     };
   });
   const kindSel=$("lk-kind");
