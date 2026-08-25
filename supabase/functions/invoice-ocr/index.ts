@@ -1,11 +1,16 @@
-// 請求書AI自動読み取り Edge Function（Phase1.5・2026-08-24追加）
+// 請求書AI自動読み取り Edge Function（Phase1.5・2026-08-24追加／Phase1.6・2026-08-25でmail_kind対応）
 //
 // invoices.html「🤖 AIで自動入力」ボタンから呼ばれる。指定emailの添付（PDF/画像）を
 // Anthropic Claude APIへ渡し、請求元・請求書番号・金額・支払期限を抽出して返す。
 // DBへの書き込みは行わない（あくまで提案。ユーザーが内容を確認・修正してから
 // 既存の「請求書情報を保存」ボタンで保存する＝invoices.htmlのフォームに入力するだけ）。
 //
-// 入力(JSON): { email_id }
+// mail_kind='sales'のときは同じフィールド名のまま意味を反転させる
+// （vendor_name=入金元・amount=入金額・due_date=入金予定日）。フィールド名を共通にすることで
+// フロント側のパース・保存先(invoicesテーブル)を一切変えずに済ませている。
+// mail_kind='contract'はフロント側でそもそもこの関数を呼ばない想定（保管のみのため）
+//
+// 入力(JSON): { email_id, mail_kind? }  ※mail_kind省略時は'invoice'として扱う（後方互換）
 // 出力(JSON): { success:true, fields:{ vendor_name, invoice_number, amount, due_date, is_invoice, note } }
 //
 // 認証: 呼び出し元のJWTをそのまま転送しinvoice_emailsをRLS越しに読めるか確認（invoice_can_access()）。
@@ -43,22 +48,28 @@ function bytesToBase64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
-const TOOL = {
-  name: "extract_invoice_fields",
-  description: "添付から読み取った請求書情報を返す。読み取れない項目はnullにする。",
-  input_schema: {
-    type: "object",
-    properties: {
-      is_invoice: { type: "boolean", description: "添付の中に実際の請求書と判断できるものがあったか" },
-      vendor_name: { type: ["string", "null"], description: "請求元（発行元）の会社名・屋号" },
-      invoice_number: { type: ["string", "null"], description: "請求書番号・伝票番号" },
-      amount: { type: ["number", "null"], description: "請求金額。税込の合計金額を円単位の整数で（カンマ・円記号は含めない）" },
-      due_date: { type: ["string", "null"], description: "支払期限。YYYY-MM-DD形式（西暦・ゼロ埋め）" },
-      note: { type: ["string", "null"], description: "抽出結果について不確実な点や補足があれば日本語で短く。なければnull" },
+// mail_kind別のツール定義（フィールド名は共通・説明文だけ意味を切り替える）
+function toolFor(kind: string) {
+  const isSales = kind === "sales";
+  return {
+    name: "extract_invoice_fields",
+    description: isSales
+      ? "添付から読み取った入金・送金情報を返す。読み取れない項目はnullにする。"
+      : "添付から読み取った請求書情報を返す。読み取れない項目はnullにする。",
+    input_schema: {
+      type: "object",
+      properties: {
+        is_invoice: { type: "boolean", description: isSales ? "添付の中に実際の入金明細・送金明細と判断できるものがあったか" : "添付の中に実際の請求書と判断できるものがあったか" },
+        vendor_name: { type: ["string", "null"], description: isSales ? "入金元（送金してくる側）の会社名・屋号" : "請求元（発行元）の会社名・屋号" },
+        invoice_number: { type: ["string", "null"], description: isSales ? "明細番号・管理番号（無ければnull）" : "請求書番号・伝票番号" },
+        amount: { type: ["number", "null"], description: isSales ? "入金額（送金額）。税込の金額を円単位の整数で（カンマ・円記号は含めない）" : "請求金額。税込の合計金額を円単位の整数で（カンマ・円記号は含めない）" },
+        due_date: { type: ["string", "null"], description: isSales ? "入金予定日・送金予定日。YYYY-MM-DD形式（西暦・ゼロ埋め）" : "支払期限。YYYY-MM-DD形式（西暦・ゼロ埋め）" },
+        note: { type: ["string", "null"], description: "抽出結果について不確実な点や補足があれば日本語で短く。なければnull" },
+      },
+      required: ["is_invoice"],
     },
-    required: ["is_invoice"],
-  },
-};
+  };
+}
 
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: cors });
@@ -75,6 +86,8 @@ Deno.serve(async (req: Request) => {
   }
   const emailId = body?.email_id;
   if (!emailId) return json({ error: "email_idは必須です" }, 400);
+  const mailKind = ["invoice", "sales"].includes(body?.mail_kind) ? body.mail_kind : "invoice";
+  const isSales = mailKind === "sales";
 
   // 呼び出し元がこのメールにアクセスできるか（=invoice_can_access()）をRLS越しに確認
   const uc = userClient(req);
@@ -101,7 +114,9 @@ Deno.serve(async (req: Request) => {
   }
 
   const content: any[] = [
-    { type: "text", text: `件名: ${emailRow.subject ?? "(件名なし)"}\n添付ファイルから請求書情報を読み取ってください。複数ある場合は実際の請求書らしきものを優先してください。` },
+    { type: "text", text: isSales
+      ? `件名: ${emailRow.subject ?? "(件名なし)"}\n添付ファイルから入金・送金明細の情報を読み取ってください。複数ある場合は実際の入金明細らしきものを優先してください。`
+      : `件名: ${emailRow.subject ?? "(件名なし)"}\n添付ファイルから請求書情報を読み取ってください。複数ある場合は実際の請求書らしきものを優先してください。` },
   ];
   for (const a of candidates) {
     const { data: fileData, error: dlErr } = await db.storage.from(BUCKET).download(a.storage_path);
@@ -129,8 +144,10 @@ Deno.serve(async (req: Request) => {
       body: JSON.stringify({
         model: MODEL,
         max_tokens: 1024,
-        system: "あなたは日本企業の経理担当者向けに、メール添付の請求書PDF・画像から項目を抽出するアシスタントです。抽出結果は必ずextract_invoice_fieldsツールの呼び出しのみで返してください。",
-        tools: [TOOL],
+        system: isSales
+          ? "あなたは日本企業の経理担当者向けに、メール添付の入金明細・送金明細PDF・画像から項目を抽出するアシスタントです。お金が『出ていく』請求書ではなく『入ってくる』側の情報として読み取ってください。抽出結果は必ずextract_invoice_fieldsツールの呼び出しのみで返してください。"
+          : "あなたは日本企業の経理担当者向けに、メール添付の請求書PDF・画像から項目を抽出するアシスタントです。抽出結果は必ずextract_invoice_fieldsツールの呼び出しのみで返してください。",
+        tools: [toolFor(mailKind)],
         tool_choice: { type: "tool", name: "extract_invoice_fields" },
         messages: [{ role: "user", content }],
       }),
@@ -155,7 +172,7 @@ Deno.serve(async (req: Request) => {
     action: "ocr_extract",
     actor_type: "ai",
     new_value: fields,
-    note: `AI自動読み取り（対象添付${candidates.length}件）`,
+    note: `AI自動読み取り（${isSales ? "入金明細" : "請求書"}・対象添付${candidates.length}件）`,
   });
 
   return json({ success: true, fields });

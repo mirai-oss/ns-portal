@@ -223,6 +223,12 @@ const MAIL_STATUS_LABEL={unread:"未処理",read:"未処理",processing:"処理�
 const MAIL_STATUS_PILL={unread:"red",read:"red",processing:"blue",completed:"green",archived:"gray"};
 const INVOICE_STATUS_LABEL={draft:"下書き",registered:"確認中",duplicate_suspected:"重複疑い",waiting_payment:"支払待ち",paid:"完了",cancelled:"取消"};
 const INVOICE_STATUS_CLASS={draft:"gray",registered:"check",duplicate_suspected:"wait",waiting_payment:"wait",paid:"done",cancelled:"gray"};
+// 2026-08-25 Phase1.6: メール種類（請求書/売上/契約書）。手動分類（自動判定はしない）。
+// mail_kindがnull=未分類（新規取込メールの初期状態）
+const MAIL_KIND_LABEL={invoice:"📄請求書",sales:"💰売上",contract:"📃契約書"};
+const MAIL_KIND_ORDER=["invoice","sales","contract"];
+// 売上（入金明細）は請求書と同じinvoicesテーブル・同じstatus値を使うが表示ラベルだけ変える
+const SALES_STATUS_LABEL={draft:"下書き",registered:"確認中",duplicate_suspected:"重複疑い",waiting_payment:"入金待ち",paid:"入金済み",cancelled:"取消"};
 
 const $=id=>document.getElementById(id);
 const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -290,6 +296,7 @@ function linkifyText(text){
 let ME=null;
 let MASTER_MAILS=[];      // 受信トレイの全件（KPI・フィルタの元データ）
 let CHIP="unprocessed";   // unprocessed | processing | completed | all
+let KIND_FILTER="all";    // all | unclassified | invoice | sales | contract（2026-08-25 Phase1.6）
 let SEARCH_Q="";
 let DATE_FROM="", DATE_TO=""; // 受信日の絞り込み（yyyy-mm-dd）
 let TAB="inbox";           // inbox | invoiceList | history | sent
@@ -333,7 +340,7 @@ async function loadInboxMaster(){
   // 2026-08-24: limitが500件のままだと総件数がそれを超えたときに古いメールが
   // 一覧・絞り込みから欠落する（KPIバッジとの件数不一致の指摘で発覚）。
   // 実運用の総件数(1000件強)を見込んで余裕を持たせた
-  const r=await authed(`/rest/v1/invoice_emails?select=id,from_address,subject,body_text,received_at,mail_status,duplicate_suspected,is_important,processing_user_id,completed_at,updated_at,processor:users!invoice_emails_processing_user_id_fkey(name),atts:invoice_attachments(id)&order=received_at.desc&limit=5000`);
+  const r=await authed(`/rest/v1/invoice_emails?select=id,from_address,subject,body_text,received_at,mail_status,mail_kind,duplicate_suspected,is_important,processing_user_id,completed_at,updated_at,processor:users!invoice_emails_processing_user_id_fkey(name),atts:invoice_attachments(id)&order=received_at.desc&limit=5000`);
   MASTER_MAILS=(r.ok&&Array.isArray(r.body))?r.body:[];
 }
 // KPIカード（未処理・処理中・今月完了）は、MASTER_MAILSがlimitで切り詰められる可能性を
@@ -360,6 +367,8 @@ function filteredMails(){
   if(CHIP==="unprocessed") list=list.filter(m=>m.mail_status==="unread"||m.mail_status==="read");
   else if(CHIP==="processing") list=list.filter(m=>m.mail_status==="processing");
   else if(CHIP==="completed") list=list.filter(m=>m.mail_status==="completed");
+  if(KIND_FILTER==="unclassified") list=list.filter(m=>!m.mail_kind);
+  else if(KIND_FILTER!=="all") list=list.filter(m=>m.mail_kind===KIND_FILTER);
   if(SEARCH_Q.trim()){
     // 2026-08-24 Phase1.5: 件名・送信元に加え本文も検索対象にする（フリーワード検索強化）
     const q=SEARCH_Q.trim().toLowerCase();
@@ -520,6 +529,10 @@ function renderInbox(u){
             ${[["unprocessed","未処理"],["processing","処理中"],["completed","完了"],["all","すべて"]].map(([k,l])=>
               `<button class="mail-chip ${CHIP===k?'active':''}" data-chip="${k}">${l}</button>`).join("")}
           </div>
+          <div class="mail-chips">
+            ${[["all","種類：すべて"],["unclassified","❔未分類"],["invoice","📄請求書"],["sales","💰売上"],["contract","📃契約書"]].map(([k,l])=>
+              `<button class="mail-chip ${KIND_FILTER===k?'active':''}" data-kindchip="${k}">${l}</button>`).join("")}
+          </div>
           <div class="bulkbar" id="bulkbar">
             <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)"><input type="checkbox" id="bulk-selectall">全選択</label>
             <span id="bulk-count" style="font-size:12px;color:var(--muted)"></span>
@@ -546,6 +559,7 @@ function renderInbox(u){
   $("mailDateTo").onchange=e=>{ DATE_TO=e.target.value; renderInbox(u); };
   if($("mailDateClear")) $("mailDateClear").onclick=()=>{ DATE_FROM=""; DATE_TO=""; renderInbox(u); };
   document.querySelectorAll("[data-chip]").forEach(b=>b.onclick=()=>{ CHIP=b.dataset.chip; renderInbox(u); });
+  document.querySelectorAll("[data-kindchip]").forEach(b=>b.onclick=()=>{ KIND_FILTER=b.dataset.kindchip; renderInbox(u); });
   wireMailListClicks(u);
   wireBulkBar(u);
   if(SELECTED_ID && list.some(m=>m.id===SELECTED_ID)) openMailDetail(u,SELECTED_ID,true);
@@ -621,7 +635,7 @@ function mailItemHtml(m){
   return `<div class="${cls.join(' ')}" data-openmail="${m.id}">
     <label class="mail-checkwrap"><input type="checkbox" data-bulkcheck="${m.id}" ${BULK_SELECTED.has(m.id)?"checked":""}></label>
     <div class="mail-from">${esc(m.from_address||"—")}</div>
-    <div class="mail-subject">${m.is_important?"⭐ ":""}${esc(m.subject||"（件名なし）")}</div>
+    <div class="mail-subject">${m.mail_kind?MAIL_KIND_LABEL[m.mail_kind]+" ":"❔ "}${m.is_important?"⭐ ":""}${esc(m.subject||"（件名なし）")}</div>
     <div class="mail-preview">${esc(preview)}</div>
     <div class="mail-meta"><span>${metaLeft}</span><span>${fmtDT(m.received_at)}</span></div>
   </div>`;
@@ -711,6 +725,10 @@ function openComposeSentModal(row){
 
 function renderMailDetail(u){
   const {mail,atts,firstRead,logs,invoice,comments}=SELECTED;
+  // 2026-08-25 Phase1.6: メール種類（請求書/売上/契約書）。未分類はinvoice扱いで表示（後方互換）
+  const kind=mail.mail_kind||"invoice";
+  const isSales=kind==="sales";
+  const isContract=kind==="contract";
   const canStart=(mail.mail_status==="unread"||mail.mail_status==="read")&&!mail.processing_user_id;
   const isHolder=mail.processing_user_id===ME.id;
   const canRelease=!!mail.processing_user_id&&(isHolder||canManage(ME));
@@ -731,6 +749,10 @@ function renderMailDetail(u){
       </div>
       <h2>${esc(mail.subject||"（件名なし）")}</h2>
       <div class="meta">${esc(mail.from_address||"—")} 　→　 ${esc(mail.to_address||"—")}</div>
+      <div class="mail-ownerbar" style="margin-top:10px">
+        <span style="font-size:11px;color:var(--muted);align-self:center">種類：${mail.mail_kind?"":"（未分類）"}</span>
+        ${MAIL_KIND_ORDER.map(k=>`<button class="hq-btn ${mail.mail_kind===k?'primary':''}" data-setkind="${k}">${MAIL_KIND_LABEL[k]}</button>`).join("")}
+      </div>
       <div class="mail-detail-grid">
         <div class="mail-mini"><small>受信</small><b>${fmtDT(mail.received_at)}</b></div>
         <div class="mail-mini"><small>最初に開いた人</small><b>${firstRead?esc(firstRead.reader&&firstRead.reader.name||"—"):"未開封"}</b></div>
@@ -791,21 +813,24 @@ function renderMailDetail(u){
         </div>
       </div>
 
-      <div class="ai-box">
-        <h3>🧾 請求書情報（AI自動入力 or 手動入力・任意）</h3>
+      ${isContract?'':`<div class="ai-box">
+        <h3>${isSales?"💰 入金情報（AI自動入力 or 手動入力・任意）":"🧾 請求書情報（AI自動入力 or 手動入力・任意）"}</h3>
         <div class="ai-grid">
-          <div class="ai-field"><small>請求元</small><input id="iv-vendor" value="${esc(invoice&&invoice.vendor_name||"")}"></div>
-          <div class="ai-field"><small>請求書番号</small><input id="iv-number" value="${esc(invoice&&invoice.invoice_number||"")}"></div>
-          <div class="ai-field"><small>金額</small><input id="iv-amount" type="number" value="${invoice&&invoice.amount!=null?invoice.amount:""}"></div>
-          <div class="ai-field"><small>支払期限</small><input id="iv-duedate" type="date" value="${invoice&&invoice.due_date||""}"></div>
-          <div class="ai-field"><small>状態</small><select id="iv-status">${Object.entries(INVOICE_STATUS_LABEL).map(([k,l])=>`<option value="${k}" ${(invoice?invoice.invoice_status:"draft")===k?"selected":""}>${l}</option>`).join("")}</select></div>
+          <div class="ai-field"><small>${isSales?"入金元":"請求元"}</small><input id="iv-vendor" value="${esc(invoice&&invoice.vendor_name||"")}"></div>
+          <div class="ai-field"><small>${isSales?"明細番号":"請求書番号"}</small><input id="iv-number" value="${esc(invoice&&invoice.invoice_number||"")}"></div>
+          <div class="ai-field"><small>${isSales?"入金額":"金額"}</small><input id="iv-amount" type="number" value="${invoice&&invoice.amount!=null?invoice.amount:""}"></div>
+          <div class="ai-field"><small>${isSales?"入金予定日":"支払期限"}</small><input id="iv-duedate" type="date" value="${invoice&&invoice.due_date||""}"></div>
+          <div class="ai-field"><small>状態</small><select id="iv-status">${Object.entries(isSales?SALES_STATUS_LABEL:INVOICE_STATUS_LABEL).map(([k,l])=>`<option value="${k}" ${(invoice?invoice.invoice_status:"draft")===k?"selected":""}>${l}</option>`).join("")}</select></div>
         </div>
         <div class="mail-actions">
-          ${atts.length?'<button id="iv-ai-fill">🤖 AIで自動入力</button>':""}
-          <button id="iv-save">💾 請求書情報を保存</button>
-          <button id="reply-open">↩ 返信</button>
+          ${atts.length?`<button id="iv-ai-fill">🤖 AIで${isSales?"入金情報":"請求書情報"}を自動入力</button>`:""}
+          <button id="iv-save">💾 ${isSales?"入金情報":"請求書情報"}を保存</button>
         </div>
         <div class="err" id="iv-msg" style="margin-top:6px"></div>
+      </div>`}
+
+      <div class="mail-actions" style="margin-top:14px">
+        <button id="reply-open">↩ 返信</button>
       </div>
 
       <div class="replybox" id="replybox">
@@ -829,13 +854,13 @@ function renderMailDetail(u){
       </div>
 
       <div class="comment-section">
-        <b style="font-size:12px">💬 コメント（処理担当者間の判断メモ）</b>
+        <b style="font-size:12px">${isSales?"💬 コメント（この入金元の仕訳・入力方法のメモにも使えます）":"💬 コメント（処理担当者間の判断メモ）"}</b>
         <div id="commentList">${comments.length?comments.map(c=>`<div class="comment-row">
           <div class="cmeta">${fmtDT(c.created_at)}　${esc(c.author&&c.author.name||"—")}</div>
           <div class="cbody">${esc(c.body)}</div>
         </div>`).join(""):'<div class="comment-row"><div class="cmeta">まだコメントはありません</div></div>'}</div>
         <div class="comment-form">
-          <textarea id="comment-body" placeholder="コメントを入力…"></textarea>
+          <textarea id="comment-body" placeholder="${isSales?"例：この入金元はマネーフォワードで『雑収入／◯◯様』として仕訳する…":"コメントを入力…"}"></textarea>
           <button class="hq-btn" id="comment-add">追加</button>
         </div>
         <div class="err" id="comment-msg" style="margin-top:6px"></div>
@@ -858,7 +883,7 @@ function renderMailDetail(u){
   wireDetailActions(u);
 }
 function logLabel(action){
-  return {intake:"取込",open:"開封",start_processing:"処理を開始",release_lock:"ロックを解除",complete:"処理を完了",reply_queued:"返信を予約",reply_sent:"返信を送信",manual_attach:"ファイルを手動で追加",invoice_status_set:"請求書の状態を変更",reopen:"未処理に戻す",mark_not_applicable:"対象外に設定",unmark_not_applicable:"対象外を解除",compose_queued:"新規メールを予約",compose_sent:"新規メールを送信",mark_important:"重要に設定",unmark_important:"重要を解除",comment_added:"コメントを追加"}[action]||action;
+  return {intake:"取込",open:"開封",start_processing:"処理を開始",release_lock:"ロックを解除",complete:"処理を完了",reply_queued:"返信を予約",reply_sent:"返信を送信",manual_attach:"ファイルを手動で追加",invoice_status_set:"請求書の状態を変更",reopen:"未処理に戻す",mark_not_applicable:"対象外に設定",unmark_not_applicable:"対象外を解除",compose_queued:"新規メールを予約",compose_sent:"新規メールを送信",mark_important:"重要に設定",unmark_important:"重要を解除",comment_added:"コメントを追加",kind_set:"種類を変更"}[action]||action;
 }
 function wireDetailActions(u){
   const {mail}=SELECTED;
@@ -935,27 +960,34 @@ function wireDetailActions(u){
     if(!r.ok){ $("act-msg").textContent=(r.body&&r.body.message)||"変更できませんでした"; $("act-toggle-important").disabled=false; return; }
     await reloadDetail();
   };
+  document.querySelectorAll("[data-setkind]").forEach(el=>el.onclick=async()=>{
+    document.querySelectorAll("[data-setkind]").forEach(b=>b.disabled=true);
+    $("act-msg").textContent="処理中…";
+    const r=await authed("/rest/v1/rpc/invoice_set_kind",{method:"POST",body:JSON.stringify({p_email_id:emailId,p_kind:el.dataset.setkind})});
+    if(!r.ok){ $("act-msg").textContent=(r.body&&r.body.message)||"変更できませんでした"; document.querySelectorAll("[data-setkind]").forEach(b=>b.disabled=false); return; }
+    await reloadDetail();
+  });
 
   if($("iv-ai-fill")) $("iv-ai-fill").onclick=async()=>{
     const btn=$("iv-ai-fill"), msg=$("iv-msg");
     btn.disabled=true; msg.className="err"; msg.textContent="AIが添付を読み取っています…（数十秒かかることがあります）";
     try{
       const s=sess.get();
-      const fr=await fetch(SUPA_URL+"/functions/v1/invoice-ocr",{method:"POST",headers:{"Content-Type":"application/json","apikey":SUPA_KEY,"Authorization":"Bearer "+(s?s.at:"")},body:JSON.stringify({email_id:emailId})});
+      const fr=await fetch(SUPA_URL+"/functions/v1/invoice-ocr",{method:"POST",headers:{"Content-Type":"application/json","apikey":SUPA_KEY,"Authorization":"Bearer "+(s?s.at:"")},body:JSON.stringify({email_id:emailId,mail_kind:kind})});
       const fj=await fr.json().catch(()=>({}));
       if(!fr.ok||!fj.success){ msg.textContent=fj.error||"AI読み取りに失敗しました"; btn.disabled=false; return; }
       const f=fj.fields||{};
-      if(!f.is_invoice){ msg.textContent="請求書らしき添付が見つかりませんでした。内容を確認して手入力してください"; btn.disabled=false; return; }
+      if(!f.is_invoice){ msg.textContent=(isSales?"入金明細らしき添付が見つかりませんでした":"請求書らしき添付が見つかりませんでした")+"。内容を確認して手入力してください"; btn.disabled=false; return; }
       if(f.vendor_name) $("iv-vendor").value=f.vendor_name;
       if(f.invoice_number) $("iv-number").value=f.invoice_number;
       if(f.amount!=null) $("iv-amount").value=f.amount;
       if(f.due_date) $("iv-duedate").value=f.due_date;
       msg.className="err msg-ok";
-      msg.textContent="AIが読み取りました。内容を確認して「請求書情報を保存」を押してください"+(f.note?"（"+f.note+"）":"");
+      msg.textContent=`AIが読み取りました。内容を確認して「${isSales?"入金情報":"請求書情報"}を保存」を押してください`+(f.note?"（"+f.note+"）":"");
     }catch(e){ msg.textContent="AI読み取り中にエラーが発生しました"; }
     btn.disabled=false;
   };
-  $("iv-save").onclick=async()=>{
+  if($("iv-save")) $("iv-save").onclick=async()=>{
     const msg=$("iv-msg"); msg.textContent="保存中…";
     const payload={
       vendor_name:$("iv-vendor").value.trim()||null,
@@ -1114,7 +1146,8 @@ function wireInvoiceListTable(u){
   });
 }
 async function renderInvoiceListTab(u){
-  const r=await authed(`/rest/v1/invoices?select=*,email:invoice_emails(subject,from_address,processing_user_id,processor:users!invoice_emails_processing_user_id_fkey(name))&order=created_at.desc&limit=300`);
+  // 2026-08-25 Phase1.6: mail_kind='invoice'（請求書）のみ対象。売上（入金情報）は別種類のため混在させない
+  const r=await authed(`/rest/v1/invoices?select=*,email:invoice_emails!inner(subject,from_address,mail_kind,processing_user_id,processor:users!invoice_emails_processing_user_id_fkey(name))&email.mail_kind=eq.invoice&order=created_at.desc&limit=300`);
   IV_ROWS=(r.ok&&Array.isArray(r.body))?r.body:[];
   $("tabbody").innerHTML=`
     <section class="invoice-list active">

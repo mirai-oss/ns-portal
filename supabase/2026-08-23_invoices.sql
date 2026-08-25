@@ -698,6 +698,39 @@ begin
 end;
 $$;
 
+-- ============================================================
+-- Phase 1.6（担当C・2026-08-25追加）
+-- メール種類の分類（請求書/売上/契約書）。ユーザー確認済み方針:
+-- ①売上＝入金明細・送金明細系（家賃送金明細等） ②分類は手動（自動判定はしない）
+-- ③契約書は今は保管のみでよい（処理ワークフロー不要） ④仕訳メモは既存のコメント機能を流用
+-- ============================================================
+-- mail_kindはNULL=未分類（新規取込メールの初期状態）。既存の取込済みメールは
+-- 実質すべて請求書として扱われてきたためinvoiceへバックフィルする（1回限りのUPDATE）
+alter table invoice_emails add column if not exists mail_kind text check (mail_kind in ('invoice','sales','contract'));
+update invoice_emails set mail_kind = 'invoice' where mail_kind is null;
+create index if not exists invoice_emails_kind_idx on invoice_emails (mail_kind);
+
+-- 種類の手動分類（本部担当者がメール詳細画面のボタンで選ぶ）
+create or replace function invoice_set_kind(p_email_id uuid, p_kind text) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare v_old text;
+begin
+  if not invoice_can_access() then raise exception '権限がありません'; end if;
+  if p_kind not in ('invoice','sales','contract') then raise exception '不正な種類です'; end if;
+  select mail_kind into v_old from invoice_emails where id = p_email_id;
+  if v_old is null and not exists(select 1 from invoice_emails where id = p_email_id) then
+    raise exception '対象が見つかりません';
+  end if;
+
+  update invoice_emails set mail_kind = p_kind, updated_at = now() where id = p_email_id;
+
+  insert into invoice_audit_logs(entity_type, entity_id, action, user_id, old_value, new_value)
+  values ('invoice_email', p_email_id, 'kind_set', auth.uid(), jsonb_build_object('mail_kind', v_old), jsonb_build_object('mail_kind', p_kind));
+
+  return jsonb_build_object('success', true);
+end;
+$$;
+
 -- 確認用（本番適用後、SQL Editorで実行して構造・初期値を確認）:
 -- select role, system_key, allowed from portal_permissions where system_key = 'invoices';
 -- select key, length(value) from app_secrets where key = 'invoice_intake_secret';
