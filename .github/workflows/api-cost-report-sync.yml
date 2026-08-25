@@ -23,6 +23,11 @@ on:
         required: false
         default: ''
         type: string
+      force:
+        description: '動作確認用: 月次/週次/しきい値を強制送信（カンマ区切り。例: threshold）'
+        required: false
+        default: ''
+        type: string
 
 jobs:
   sync:
@@ -68,11 +73,13 @@ jobs:
         env:
           SR_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           THRESHOLD: ${{ vars.API_COST_ALERT_THRESHOLD_USD }}
+          FORCE: ${{ github.event.inputs.force }}
         run: |
-          BODY="{}"
-          if [ -n "$THRESHOLD" ]; then
-            BODY=$(node -e "console.log(JSON.stringify({thresholdUsd: Number(process.env.THRESHOLD)}))")
-          fi
+          BODY=$(node -e "
+            const threshold = process.env.THRESHOLD ? Number(process.env.THRESHOLD) : undefined;
+            const force = process.env.FORCE ? process.env.FORCE.split(',').map(s=>s.trim()).filter(Boolean) : undefined;
+            console.log(JSON.stringify({thresholdUsd: threshold, force}));
+          ")
           RES=$(curl -s -w "\n%{http_code}" -X POST \
             "https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/api-cost-report-notify" \
             -H "Authorization: Bearer $SR_KEY" \
