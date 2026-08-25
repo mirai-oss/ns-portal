@@ -190,10 +190,12 @@ textarea{resize:vertical}
 .resource-add label:first-child{margin-top:0}
 /* デザイン案の.checklist/.checkitemを再現（文字サイズ・チェックボックスを大きく、行区切り線つき） */
 .checklist-hd{font-weight:700;font-size:14px;margin-bottom:2px;display:flex;align-items:center;gap:6px}
-.checkitem{display:flex;align-items:center;gap:10px;padding:9px 2px;border-bottom:1px solid var(--line);font-size:14px;cursor:pointer}
+.checkitem{display:flex;align-items:center;gap:6px;padding:9px 2px;border-bottom:1px solid var(--line);font-size:14px}
 .checkitem:last-of-type{border-bottom:none}
+.checkitem label{display:flex;align-items:center;gap:10px;flex:1;min-width:0;cursor:pointer}
 .checkitem input{width:18px;height:18px;flex:none}
 .checkitem .done{color:var(--muted);text-decoration:line-through}
+.checkitem span{overflow-wrap:anywhere}
 .photo-grid img{width:80px;height:80px;object-fit:cover;border-radius:8px;border:1px solid var(--line)}
 .act-row{font-size:12px;color:var(--muted);padding:5px 0;border-bottom:1px solid var(--line)}
 .act-row:last-child{border-bottom:none}
@@ -896,14 +898,28 @@ function renderDetail(u){
 }
 /* E-3(B7): 工程内チェックリスト（タスク側＝手順のチェックオン/オフ＋その場で追加）
    店舗別チェック展開（stepOrGroupHtml）には既存の添付機能と同様に組み込んでいない（対象外）。 */
+/* 全面刷新Phase3: 「📘手順書」＝チェックリストとは別の読み物の手順テキスト（デザイン案の
+   process-body内<b>📘手順書</b><ol>...を再現）。1行1手順として改行で区切って番号付きリスト表示。
+   チェックはしない・完了操作とは無関係の参照情報 */
+function procedureHtml(note){
+  const lines=(note||"").split("\n").map(x=>x.trim()).filter(Boolean);
+  if(!lines.length) return "";
+  return `<div style="margin-top:10px">
+    <div class="checklist-hd">📘 手順書</div>
+    <ol style="padding-left:20px;line-height:1.8;color:var(--muted);font-size:13.5px">${lines.map(l=>`<li>${esc(l)}</li>`).join("")}</ol>
+  </div>`;
+}
 function checklistStepHtml(s,items,canTouch){
   // 2026-08-25: 項目が無い工程にまで「追加」フォームを常時出すとURL添付欄と同様に画面が
   // 埋まってしまうという実機フィードバックを受け、既存項目が無いときは「＋」リンクの奥に隠すよう調整
   if(!items.length && !canTouch) return "";
-  const rows=(items||[]).map(it=>`<label class="checkitem">
-      <input type="checkbox" data-chkitem="${it.id}" ${it.checked_at?"checked":""} ${canTouch?"":"disabled"} onclick="event.stopPropagation()">
-      <span class="${it.checked_at?"done":""}">${esc(it.title)}</span>
-    </label>`).join("");
+  const rows=(items||[]).map(it=>`<div class="checkitem">
+      <label>
+        <input type="checkbox" data-chkitem="${it.id}" ${it.checked_at?"checked":""} ${canTouch?"":"disabled"} onclick="event.stopPropagation()">
+        <span class="${it.checked_at?"done":""}">${esc(it.title)}</span>
+      </label>
+      ${canTouch?`<button class="linkbtn" data-chkedit="${it.id}" onclick="event.stopPropagation()">✏️</button><button class="linkbtn" data-chkdel="${it.id}" onclick="event.stopPropagation()">🗑</button>`:""}
+    </div>`).join("");
   const addOpen=CHK_ADD_OPEN.has(s.id);
   return `<div style="padding:8px 2px 4px" onclick="event.stopPropagation()">
     ${items.length?`<div class="checklist-hd">✅ チェック</div>${rows}`:""}
@@ -957,6 +973,7 @@ function stepHtml(t,s,u){
         </div>
         <div class="err" id="stepmetamsg-${s.id}"></div>`:""}
         ${(checklist.length||canTouch)?checklistStepHtml(s,checklist,canTouch):""}
+        ${procedureHtml(s.procedure_note)}
         ${(s.is_binary||s.requires_photo)&&canComplete?`<div class="step-body" style="border:0;padding:10px 0 0">
           ${s.is_binary?`<label>判定</label>
             <select id="judge-${s.id}"><option value="">選択してください</option><option value="ok">OK</option><option value="issue">異常あり</option></select>
@@ -1396,6 +1413,30 @@ function wireDetail(t,u){
   });
   document.querySelectorAll("[data-chkaddopen]").forEach(btn=>{
     btn.onclick=()=>{ CHK_ADD_OPEN.add(btn.dataset.chkaddopen); renderDetail(u); };
+  });
+  /* 2026-08-26: チェック項目の修正・削除（実機フィードバック対応。追加とチェックのオン/オフしか
+     できず、間違えた項目名を直したり不要な項目を消したりできなかったため追加） */
+  document.querySelectorAll("[data-chkedit]").forEach(btn=>{
+    btn.onclick=async()=>{
+      const id=btn.dataset.chkedit;
+      const item=(t._stepChecklist||[]).find(c=>c.id===id);
+      const newTitle=prompt("チェック項目名を編集", item?item.title:"");
+      if(newTitle===null) return;
+      const trimmed=newTitle.trim();
+      if(!trimmed) return;
+      const r=await authed(`/rest/v1/hq_step_checklist_items?id=eq.${id}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({title:trimmed})});
+      if(!r.ok){ alert("更新できませんでした"); return; }
+      CUR_TASK=await fetchTaskDetail(t.id); renderDetail(u);
+    };
+  });
+  document.querySelectorAll("[data-chkdel]").forEach(btn=>{
+    btn.onclick=async()=>{
+      if(!confirm("このチェック項目を削除しますか？"))return;
+      const id=btn.dataset.chkdel;
+      const r=await authed(`/rest/v1/hq_step_checklist_items?id=eq.${id}`,{method:"DELETE"});
+      if(!r.ok){ alert("削除できませんでした"); return; }
+      CUR_TASK=await fetchTaskDetail(t.id); renderDetail(u);
+    };
   });
   /* 2026-08-25: 工程ごとの添付・完了操作パネルの開閉。行全体(row1)と「📎添付・マニュアル」
      ボタンの両方にdata-stepattopenを付け、どちらを押しても同じ1つの状態を開閉する
@@ -2034,7 +2075,7 @@ async function openTplEdit(u,tpl){
       TPL_STEPS.forEach(s=>{ s._links=stepLinks.filter(l=>l.template_step_id===s.id); s._photos=stepPhotos.filter(p=>p.template_step_id===s.id); s._checklist=stepChecklist.filter(c=>c.template_step_id===s.id); });
     }
   } else {
-    TPL_STEPS=[{title:"",assignee_id:"",offset_days:0,due_time:"",kind:"step",store_scope:"",is_binary:false,requires_photo:false}];
+    TPL_STEPS=[{title:"",assignee_id:"",offset_days:0,due_time:"",kind:"step",store_scope:"",is_binary:false,requires_photo:false,procedure_note:""}];
   }
   renderTplEdit(u);
 }
@@ -2146,7 +2187,7 @@ function renderTplEdit(u){
   };
   $("tp-vis").onchange=e=>{$("tp-memberswrap").style.display=e.target.value==="members"?"block":"none";};
   renderTplSteps();
-  $("tp-addstep").onclick=()=>{TPL_STEPS.push({title:"",assignee_id:"",offset_days:0,due_time:"",kind:"step",store_scope:"",is_binary:false,requires_photo:false});renderTplSteps();};
+  $("tp-addstep").onclick=()=>{TPL_STEPS.push({title:"",assignee_id:"",offset_days:0,due_time:"",kind:"step",store_scope:"",is_binary:false,requires_photo:false,procedure_note:""});renderTplSteps();};
   $("tp-save").onclick=()=>saveTemplate(u);
   if(tpl.id) wireAttachBox("tpl-att",{template_id:tpl.id},true,refreshTplAttach);
   refreshTplDueDates();
@@ -2207,12 +2248,15 @@ function renderTplSteps(){
       <div class="ts-storelist" style="display:${s.store_scope==="custom"?"block":"none"};width:100%;margin-top:6px;max-height:180px;overflow-y:auto;border:1px solid var(--line);border-radius:8px;padding:8px">
         ${STORES.map(store=>`<label class="optchk" style="padding:3px 0"><input type="checkbox" class="ts-storeid" value="${store.id}" ${(s.store_ids||[]).includes(store.id)?"checked":""}> ${esc(store.name)}${store.is_active?"":"（委託）"}</label>`).join("")||'<div class="meta">店舗マスタが登録されていません</div>'}
       </div>
+      <label style="margin-top:8px">📘 手順書（任意・チェックリストとは別の説明文。1行1手順で改行区切り）</label>
+      <textarea class="ts-procedure" rows="3" placeholder="例:&#10;スマレジ勤怠データを確認する&#10;時給・交通費設定に差異がないか確認する">${esc(s.procedure_note||"")}</textarea>
       ${s.id?attachBoxHtml(`tstep-att-${s.id}`,s._links,s._photos,true):'<div class="meta" style="color:var(--muted);margin-top:8px">保存すると工程ごとにマニュアル・写真を追加できます</div>'}
       ${s.id?checklistBoxHtml(`tstep-chk-${s.id}`,s._checklist):""}
     </div>`).join("");
   document.querySelectorAll("#tp-steps [data-tidx]").forEach(row=>{
     const i=+row.dataset.tidx;
     row.querySelector(".ts-title").oninput=e=>TPL_STEPS[i].title=e.target.value;
+    row.querySelector(".ts-procedure").oninput=e=>TPL_STEPS[i].procedure_note=e.target.value;
     row.querySelector(".ts-assignee").onchange=e=>TPL_STEPS[i].assignee_id=e.target.value;
     row.querySelector(".ts-due").onchange=e=>{
       const base=tplBaseDate();
@@ -2286,7 +2330,7 @@ async function saveTemplate(u){
   }
   for(let i=0;i<steps.length;i++){
     const s=steps[i];
-    const body={template_id:tplId,title:s.title.trim(),assignee_id:s.assignee_id||null,offset_days:s.offset_days||0,due_time:s.due_time||null,sort_order:(i+1)*10,kind:s.kind||"step",store_scope:s.store_scope||null,store_ids:(s.store_scope==="custom"&&s.store_ids&&s.store_ids.length)?s.store_ids:null,is_binary:!!s.is_binary,requires_photo:!!s.requires_photo};
+    const body={template_id:tplId,title:s.title.trim(),assignee_id:s.assignee_id||null,offset_days:s.offset_days||0,due_time:s.due_time||null,sort_order:(i+1)*10,kind:s.kind||"step",store_scope:s.store_scope||null,store_ids:(s.store_scope==="custom"&&s.store_ids&&s.store_ids.length)?s.store_ids:null,is_binary:!!s.is_binary,requires_photo:!!s.requires_photo,procedure_note:(s.procedure_note||"").trim()||null};
     if(s.id){
       await authed(`/rest/v1/hq_task_template_steps?id=eq.${s.id}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify(body)});
     } else {
