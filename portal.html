@@ -833,7 +833,7 @@ const GROUPS=[
   // 管理系機能を1グループに集約する「タブ集約方式」の実装。別サイトは作らず、
   // 既存のサイドバーグループ機構（開閉サブメニュー＝実質的なタブ）をそのまま使い、
   // 各項目は既存画面をiframe/リンクで再利用（作り直さない）。マスター・社長・本部のみ表示
-  {cap:"⚙️ 管理",ico:"⚙️", roles:["HQ","CEO"], items:[
+  {cap:"管理",ico:"⚙️", roles:["HQ","CEO"], items:[
     {key:"admin-accounts", ico:"👤", label:"アカウント管理（nippo）", url:nippoPage("admin")},
     {key:"admin-perm",     ico:"🔑", label:"権限設定（従来ポータル）", legacyLink:true},
     {key:"admin-notify",   ico:"🔔", label:"通知先（配信グループ管理）", url:nippoPage("admin")},
