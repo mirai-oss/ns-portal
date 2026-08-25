@@ -346,6 +346,8 @@ let CUR_TASK=null;        // 詳細表示中のタスク（工程・リンク・
 let OPEN_STEP=null;       // 詳細画面で開いている工程id
 let STEP_ATT_OPEN=new Set();  // 工程ごとの添付欄の開閉（B4と同じ既定=閉に統一。2026-08-25追記）
 let CHK_ADD_OPEN=new Set();   // 工程ごとのチェックリスト「＋追加」入力欄の開閉（同上）
+let PROC_EDIT_OPEN=new Set(); // 2026-08-26: 工程ごとの「📘手順書」編集欄の開閉（テンプレート編集時しか
+                               // 手順書を書けず、タスク側で作成・修正できないという実機フィードバック対応）
 let NOTIFICATIONS=[];     // アプリ内通知（自分宛）
 let NOTIF_UNREAD=0;
 let BELL_OPEN=false;
@@ -745,7 +747,7 @@ function renderRepeat(u){
 /* ---------- タスク詳細 ---------- */
 async function openDetail(id){
   pushNav("tasks.html?task="+id);
-  VIEW="detail"; OPEN_STEP=null; STEP_ATT_OPEN=new Set(); CHK_ADD_OPEN=new Set(); // 開くたびに工程の添付一覧は既定=閉に戻す
+  VIEW="detail"; OPEN_STEP=null; STEP_ATT_OPEN=new Set(); CHK_ADD_OPEN=new Set(); PROC_EDIT_OPEN=new Set(); // 開くたびに工程の添付一覧は既定=閉に戻す
   $("app").innerHTML=`<div class="spin">読み込み中…</div>`;
   CUR_TASK=await fetchTaskDetail(id);
   renderDetail(ME);
@@ -901,11 +903,27 @@ function renderDetail(u){
 /* 全面刷新Phase3: 「📘手順書」＝チェックリストとは別の読み物の手順テキスト（デザイン案の
    process-body内<b>📘手順書</b><ol>...を再現）。1行1手順として改行で区切って番号付きリスト表示。
    チェックはしない・完了操作とは無関係の参照情報 */
-function procedureHtml(note){
-  const lines=(note||"").split("\n").map(x=>x.trim()).filter(Boolean);
-  if(!lines.length) return "";
-  return `<div style="margin-top:10px">
-    <div class="checklist-hd">📘 手順書</div>
+function procedureHtml(s,canTouch){
+  const note=s.procedure_note||"";
+  const lines=note.split("\n").map(x=>x.trim()).filter(Boolean);
+  // 2026-08-26: テンプレート編集画面でしか手順書を書けず、タスク側で新規作成も修正も
+  // できないという実機フィードバックを受け、チェックリストと同様にその場で作成・編集
+  // できるようにした（PROC_EDIT_OPENで開閉。保存はhq_task_steps.procedure_noteへPATCH）
+  if(canTouch&&PROC_EDIT_OPEN.has(s.id)){
+    return `<div class="resource-add" onclick="event.stopPropagation()">
+      <label>📘 手順書（任意・1行1手順で改行区切り。チェックはしない読み物用の説明文）</label>
+      <textarea data-procedit="${s.id}" rows="4" placeholder="例:&#10;スマレジ勤怠データを確認する&#10;時給・交通費設定に差異がないか確認する">${esc(note)}</textarea>
+      <div style="display:flex;gap:8px;margin-top:8px">
+        <button class="btn sm" data-procsave="${s.id}">保存する</button>
+        <button class="linkbtn" data-proccancel="${s.id}">キャンセル</button>
+      </div>
+    </div>`;
+  }
+  if(!lines.length){
+    return canTouch?`<button class="linkbtn" data-procopen="${s.id}" style="margin-top:6px">＋ 手順書を作成</button>`:"";
+  }
+  return `<div style="margin-top:10px" onclick="event.stopPropagation()">
+    <div class="checklist-hd">📘 手順書${canTouch?`<button class="linkbtn" data-procopen="${s.id}" style="margin-left:8px">✏️ 編集</button>`:""}</div>
     <ol style="padding-left:20px;line-height:1.8;color:var(--muted);font-size:13.5px">${lines.map(l=>`<li>${esc(l)}</li>`).join("")}</ol>
   </div>`;
 }
@@ -973,7 +991,7 @@ function stepHtml(t,s,u){
         </div>
         <div class="err" id="stepmetamsg-${s.id}"></div>`:""}
         ${(checklist.length||canTouch)?checklistStepHtml(s,checklist,canTouch):""}
-        ${procedureHtml(s.procedure_note)}
+        ${procedureHtml(s,canTouch)}
         ${(s.is_binary||s.requires_photo)&&canComplete?`<div class="step-body" style="border:0;padding:10px 0 0">
           ${s.is_binary?`<label>判定</label>
             <select id="judge-${s.id}"><option value="">選択してください</option><option value="ok">OK</option><option value="issue">異常あり</option></select>
@@ -1241,9 +1259,14 @@ function highlightMentions(body){
   return html.replace(/\n/g,"<br>");
 }
 function commentHtml(c){
+  // 2026-08-26: 「返信」ボタン＝相手の名前を@メンション付きで自動入力（毎回手で@入力しないと
+  // 通知が飛ばないという実機フィードバック対応。押すだけで通知される設計にする）
   return `<div class="act-row" style="padding:8px 0">
     <b>${esc(userName(c.created_by))}</b> <span class="meta">${fmtDT(c.created_at)}</span>
-    ${c.created_by===ME.id?`<button class="linkbtn" data-delcomment="${c.id}" style="float:right">削除</button>`:""}
+    <span style="float:right">
+      <button class="linkbtn" data-replycomment="${c.created_by}">↩️ 返信</button>
+      ${c.created_by===ME.id?`<button class="linkbtn" data-delcomment="${c.id}">削除</button>`:""}
+    </span>
     <div style="margin-top:4px;font-size:14px">${highlightMentions(c.body)}</div>
   </div>`;
 }
@@ -1294,6 +1317,18 @@ function wireCommentBox(t,u){
       if(!confirm("このコメントを削除しますか？"))return;
       await authed(`/rest/v1/hq_task_comments?id=eq.${b.dataset.delcomment}`,{method:"DELETE"});
       CUR_TASK=await fetchTaskDetail(t.id); renderDetail(u);
+    };
+  });
+  document.querySelectorAll("[data-replycomment]").forEach(b=>{
+    b.onclick=()=>{
+      const name=userName(b.dataset.replycomment);
+      if(!name||name==="—") return;
+      const tag="@"+name+" ";
+      if(!ta.value.startsWith(tag)) ta.value=tag+ta.value;
+      ta.focus();
+      const pos=ta.value.length;
+      ta.setSelectionRange(pos,pos);
+      ta.scrollIntoView({behavior:"smooth",block:"center"});
     };
   });
 }
@@ -1435,6 +1470,27 @@ function wireDetail(t,u){
       const id=btn.dataset.chkdel;
       const r=await authed(`/rest/v1/hq_step_checklist_items?id=eq.${id}`,{method:"DELETE"});
       if(!r.ok){ alert("削除できませんでした"); return; }
+      CUR_TASK=await fetchTaskDetail(t.id); renderDetail(u);
+    };
+  });
+  /* 2026-08-26: 工程ごとの「📘手順書」をタスク側でも作成・編集できるように
+     （テンプレート編集画面でしか書けなかったという実機フィードバック対応） */
+  document.querySelectorAll("[data-procopen]").forEach(btn=>{
+    btn.onclick=(e)=>{ e.stopPropagation(); PROC_EDIT_OPEN.add(btn.dataset.procopen); renderDetail(u); };
+  });
+  document.querySelectorAll("[data-proccancel]").forEach(btn=>{
+    btn.onclick=(e)=>{ e.stopPropagation(); PROC_EDIT_OPEN.delete(btn.dataset.proccancel); renderDetail(u); };
+  });
+  document.querySelectorAll("[data-procsave]").forEach(btn=>{
+    btn.onclick=async(e)=>{
+      e.stopPropagation();
+      const sid=btn.dataset.procsave;
+      const ta=document.querySelector(`[data-procedit="${sid}"]`);
+      const note=(ta.value||"").trim()||null;
+      btn.disabled=true;
+      const r=await authed(`/rest/v1/hq_task_steps?id=eq.${sid}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({procedure_note:note})});
+      if(!r.ok){ alert("保存できませんでした"); btn.disabled=false; return; }
+      PROC_EDIT_OPEN.delete(sid);
       CUR_TASK=await fetchTaskDetail(t.id); renderDetail(u);
     };
   });
