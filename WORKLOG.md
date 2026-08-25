@@ -6,7 +6,16 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
-**★2026-08-25 追記・最新（担当G実行スレッド・データ出力センター＝新設）**: `実装指示書_担当G_データ出力センター_2026-08-25.md`の§0ルール（いきなり実装しない）に従い、§17の12項目調査を実施し`docs/調査レポート_担当G_データ出力センター_2026-08-25.md`にまとめ済み（コミット`fd5346e`）。**コード実装はまだ一切行っていない＝ユーザー承認待ち**。調査で判明した主要ポイント: ①要件定義書§16の正本表（2026-08-17時点）とBQ実装（`tori-analytics.sales`データセット、08-23時点）にズレがあり、BQは`fact_daily_store`/`stg_pl`/`stg_deposit`/`stg_media`等を持つが**正本はまだシート側**②Google Sheets出力（Edge Function＋サービスアカウント方式）は組織ポリシー`iam.disableServiceAccountKeyCreation`で過去に断念した前例と同じ壁に当たる可能性が高く、**GAS方式（担当A依頼）を推奨**③BQデータ取得は新規サービスアカウントを作らず、労務按分（D-2）の`labor-allocation-compare`と同じく既存GAS WebApp（`bqGetPL`等）をHTTP fetchで呼ぶ方式を推奨④ハブ本体（`public`スキーマ）には法人単位でデータを絞るRLSの前例が無く新規整備が必要⑤給与関連データ（`info.employee_salaries`）はRLSに法人チェックが無い既知リスク（R11）があり、Phase 1の出力対象からは除外を推奨。レポート末尾に承認をお願いしたい論点6点を明記。**次のアクション: ユーザーからの承認・回答を待ってPhase 1（Export Service設計→テンプレート管理設計→権限・監査ログ設計→UI→PoC「月次PL」1帳票実装→実機テスト）に着手**。作業中、担当Cのものと思われる未コミット変更（`invoices.html`等）を見つけたため、破棄せず`git stash`で退避→pull→復元済み（担当Cの作業に影響なし、コミットもしていない）。詳細は本日付エントリ「2026-08-25（担当G実行スレッド）」参照
+**★★2026-08-25 追記・最新（担当G実行スレッド・データ出力センター）Phase 1 PoC実装・本番デプロイ・実機E2E完了**: 調査レポート（コミット`fd5346e`）の承認事項6点をユーザーから受領（PoC=月次PL／年間推移PL・期間指定＋複数店舗選択で店舗別PL＋合算PLを出力・Google Sheets出力は後追い可・exceljsテンプレート方式で実証してよい・テンプレートマッピングはハイブリッド方式・Phase1メニューは9項目に絞ってよい・法人単位RLSは新規整備の理解でよい、の全6点）。実装・本番デプロイ・実機E2Eまで完了（コミット`feadac3`）。
+- **実装したもの**: `supabase/2026-08-25_export_service.sql`（`tpl_templates`/`export_history`/法人・店舗単位の権限判定関数`export_allowed_store_ids`等/非公開Storageバケット`export-templates`・`export-outputs`）、Edge Function3本（`export-preview`/`export-run`/`export-templates`）、`export.html`
+- **BQデータ取得は調査レポート§6の方針どおり**、新規サービスアカウントを作らず既存tori-dashboard GAS WebApp（`bqGetPL`）をHTTP fetchで呼ぶ方式（`labor-allocation-compare`と同じ）で実装・実機で本物のPLデータ取得を確認済み
+- **実装前検証で技術的懸念（Deno Edge RuntimeでexceljsのDeno互換性）を解消**: exceljsが依存する`archiver`が import時に`process.umask()`を呼びDeno既定権限だと`NotCapable`で落ちる問題を発見。`process.umask`を動的import前にシムする回避策を確立（ローカルDeno実機・本番Edge Functionとも動作確認済み）。テンプレートの罫線・色・数式・列幅がすべて保持されることも実機確認済み
+- **実装中に本番投入前に発見・修正した2件のバグ**: ①権限チェックRPC（`export_can_access`等）をservice_roleクライアントから呼ぶと`auth.uid()`が解決せず常に拒否される設計ミス→Edge Function内でロール判定を直接行う方式に修正 ②Storage保存キーに日本語ファイル名を直接使うと請求書機能と同じ`Invalid key`事故を再現するところだった→ASCII安全なキー＋ダウンロード時のみ日本語ファイル名を付与する方式に修正
+- **実機E2E（使い捨てテストユーザーで実施・完全削除済み）**: TENCHO役・店舗1つのみ権限を持つユーザーで①`export_can_access`/`export_allowed_store_ids`が正しく解決②未許可店舗を含めて要求しても自動フィルタされ許可店舗のみ返る③未許可店舗のみでの要求はAPI直叩きで403拒否④Excel/CSVとも実データ（鶏武者 新横浜の実PL、14件）で出力成功・書式（フォント色・ヘッダー色・罫線・数値書式・SUM数式）を実ファイルで確認⑤2店舗合算テスト: 合計シートの家賃(788,880+775,550=1,564,430)が店舗別シートの合計と完全一致⑥同条件で2回出力（Excel/CSV）しても履歴が2件残り上書き事故なしを確認。テスト後、Storage出力ファイル・`export_history`・`user_stores`・`users`・`auth.users`をすべて削除し0件を確認済み
+- **本番反映**: SQL適用済み・Edge Function3本デプロイ済み（`verify_jwt=true`確認済み）・PLテンプレート（Excel）をStorageへアップロード済み・`export.html`をGitHub Pagesへpush済み（https://mirai-oss.github.io/ns-portal/export.html ・ポータルにログイン後にアクセス）
+- **残作業**: ①ポータルメニューへの「データ出力」リンク追加は担当F専任のためWORKLOG依頼中（下記参照）②Google Sheets出力（GAS経由・担当A依頼が前提）は後追い③ユーザー自身の実機確認（社長・本部等の実アカウントでの動作確認）が未実施
+- **担当Fへの依頼**: `export.html`（iframeで埋め込み想定・`?embed=1`対応済み）を⚙️管理グループのメニューに追加してください。権限は`export_can_access()`相当（マスター/CEO/HQ/TEAM/TENCHO）で画面側は自動判定するため、メニュー表示条件も同じ役職に合わせていただくと二重管理を避けられます
+- 詳細は本日付エントリ「2026-08-25（担当G実行スレッド）Phase 1実装・本番デプロイ・実機E2E」参照
 
 **★2026-08-24 追記（担当A実行スレッド・ダッシュボード）**: 並行開発の担当分け（`docs/実装指示書_並行開発の担当分け_2026-08-24.md`）の担当Aを実行。A-1（MF試算表CSV取込）は実測の結果**既に本番デプロイ・実機E2E完了済み**と判明（指示書の「未デプロイ」記述は古かった・`tori-dashboard/HANDOFF.md`訂正済み）。A-2（BQモード読込中ガード）・A-3第1段階（社長・本部のみBQ既定ON）とも実装・デプロイ完了（`tori-dashboard`・`app.js?v=120`）。**A-3着手前にns-daily-import`morning-refresh`がMac mini未反映と判明しユーザー許可のうえgit pull実施**（詳細下記）。2営業日様子見のうえ全役職展開の判断待ち。A-4は担当Dの給与按分レポート承認待ち（**承認が出たら担当DからA担当スレッドへメッセージで連携する運用**とユーザー指示済み）。担当Fからの依頼（`?embed=1`・`?tab=`深リンク対応）も実装・デプロイ済み（`app.js?v=121`）。詳細は本日付エントリ「2026-08-24（担当A実行スレッド）」参照
 
@@ -2321,3 +2330,37 @@ E-1〜E-3完了後、ユーザーがマスター権限で実ログインして�
 - **維持したもの**: ✅ワンクリック完了ボタンはデザイン案には無い追加の利便機能だが、既存動作を削るものではないため維持（ユーザーの「スマホは多少変えてよい」方針にも合致）
 - 構文チェック実施・push・rebase時に担当Gの並行コミット(`feadac3`・export.html関連で無関係)と衝突なく統合
 - **今後の全Phase共通方針としてスコーピング指示書に記録済み**: 明確な理由がない限りデザイン案どおりに実装する。実機E2Eは引き続きこの環境では未実施
+
+## 2026-08-25（担当G実行スレッド）Phase 1実装・本番デプロイ・実機E2E
+
+`実装指示書_担当G_データ出力センター_2026-08-25.md`のPhase 1。調査レポート（`docs/調査レポート_担当G_データ出力センター_2026-08-25.md`）承認事項6点の受領後、以下を実施。
+
+- **DBスキーマ**（`supabase/2026-08-25_export_service.sql`・本番適用済み）:
+  - `export_can_access()`/`export_can_manage_templates()`（役職ベース。`is_master or role in ('CEO','HQ','TEAM','TENCHO')`が出力センターへのアクセス可否）
+  - `export_allowed_store_ids(p_uid)`（is_master/CEO/HQ=全店舗・TEAM=`team_stores`経由・TENCHO=`user_stores`経由・それ以外=空配列）。**ハブ本体に法人単位RLSの前例が無かったため今回新規整備**（調査レポート§8で指摘済みの穴を埋めた）
+  - `tpl_templates`/`tpl_template_versions`（テンプレート管理・バージョン履歴）、`export_history`（監査ログ。`actor_type`列は`invoice_audit_logs`の前例を踏襲し将来のAI/Hermes連携に備える）
+  - Storage非公開バケット`export-templates`/`export-outputs`（`invoice-files`と同じ非公開＋署名URL方式。`report-photos`の教訓を踏襲）
+  - `pl_monthly`テンプレート行を1件登録（PoC帳票）
+- **Edge Function3本**（本番デプロイ済み・`verify_jwt=true`確認済み）:
+  - `export-preview`: 出力前プレビュー（対象店舗数・件数・売上高合計）
+  - `export-run`: Excel（exceljs）/CSV出力の実行。BQデータは新規サービスアカウントを作らず既存tori-dashboard GAS WebApp（`bqGetPL`）をHTTP fetchで呼ぶ方式（`labor-allocation-compare`と同じ・`app_secrets`の`dash_id`/`dash_pw`を流用）。店舗別シート＋合算「合計」シートを自動生成（ユーザー要望の「複数選択時は店舗ごと＋合算」を実装）
+  - `export-templates`: テンプレート一覧・差し替えアップロード（マスター/CEO/HQのみ）
+- **exceljsのDeno互換性を実機検証で解消**: `npm:exceljs`が依存する`archiver`パッケージがimport時に`process.umask()`を呼び、Deno既定権限では`NotCapable`エラーで落ちることを発見。対策として`process.umask`をダミー関数へ差し替えるシムを、**exceljsの動的import（`await import(...)`）より前に**実行する方式を確立（静的importだとシムより先にexceljsが評価され失敗することも実機で確認済み・重要な落とし穴）。テンプレート往復（読込→データ差し込み→保存→再読込）で罫線・フォント色・塗り色・数値書式・SUM数式・列幅がすべて保持されることをローカルDeno実機・本番Edge Functionの両方で確認
+- **実装中に本番投入前に発見・修正したバグ2件**（いずれもコードレビューではなく実機テストで発覚）:
+  1. `export_can_access()`等のSQL関数は`auth.uid()`前提だが、Edge Function内でservice_roleクライアントから呼ぶと`auth.uid()`が解決せず常に`false`を返す（正規ユーザーも含め全員拒否される）設計ミス。修正: Edge Function内では`sb.from("users")`で取得済みの`role`/`is_master`を使い、ロール判定をTypeScript側で直接行う方式に変更（`export_allowed_store_ids`は`p_uid`を明示的に渡しているため元から問題なし）
+  2. Storage保存キーに`月次PL_...`のような日本語ファイル名をそのまま使うと、請求書メール管理システムで過去に発生した`Invalid key`エラーを再現するところだった。修正: 保存キーは`pl_monthly_2026-06_2026-08.xlsx`のようなASCIIのみにし、`createSignedUrl`の`download`オプションで見た目の良い日本語ファイル名（`月次PL_2026-06_2026-08.xlsx`）をダウンロード時にだけ付与
+- **フロントエンド**（`export.html`・GitHub Pages公開済み）: カテゴリー→出力データ→対象期間（開始月・終了月）→対象法人での絞り込み→対象店舗（複数選択チェックボックス、法人ごとにグルーピング表示）→出力形式（Excel/CSV。Googleスプレッドシートは「準備中」表示）→プレビュー→出力する、の流れ。出力履歴（直近10件・状態バッジ）とテンプレート一覧も同一画面に表示。既存ページ（`tasks.html`等）と同じセッション共有パターン（`localStorage`の`nsportal_session_v1`）・`?embed=1`対応済み
+- **実機E2E**（使い捨てテストユーザー`export-test-<timestamp>@example.com`をSupabase Auth Admin APIで作成、role=TENCHO・実店舗1店→2店へ`user_stores`で権限付与、テスト後に完全削除。実データを使わない・作業後削除確認のCLAUDE.mdルール準拠）:
+  1. `export_can_access`/`export_allowed_store_ids`をユーザー自身のJWTで直接叩き正しい値が返ることを確認
+  2. `export-preview`に許可店舗のみ指定→正常。未許可店舗を混ぜて指定→自動的に許可店舗のみへフィルタされ結果が変わらないことを確認（権限のない店舗のデータが一切含まれない）
+  3. `export-preview`/`export-run`に未許可店舗のみを指定→両方ともAPI直叩きで403拒否を確認（指示書の完了条件「権限テスト: API直叩きでも確認」を満たす）
+  4. `export-run`でExcel/CSVとも実データ（鶏武者 新横浜のPL、14件）を出力成功。Excelファイルを実際にダウンロードしexceljsで再読込し、タイトル書式（太字・青文字）・ヘッダー背景色・数値書式・罫線・合計行のSUM数式（`SUM(C4:C13)`）まですべて実ファイルで検証
+  5. 2店舗（鶏武者 新横浜＋鶏武者 川崎店）を選択して出力→「合計」シート＋店舗別シート2枚が生成され、合計シートの家賃（2026-06）= 788,880 + 775,550 = 1,564,430で店舗別シートの合計と完全一致することを確認（ユーザー承認事項①の「店舗ごと＋合算」要件を実データで検証）
+  6. 同条件でExcel/CSVそれぞれ出力→`export_history`に2件（別々のfile_path）が残り上書き事故が起きないことを確認（指示書の完了条件を満たす）
+  7. テスト後: Storage出力ファイル3件・`export_history`・`user_stores`・`public.users`・`auth.users`をすべて削除し、各テーブルで0件・auth.usersで404（削除済み）を確認
+- **本番反映の状態**: SQL適用済み・Edge Function3本デプロイ済み（`verify_jwt=true`）・PLテンプレート（`export-templates/pl_monthly/v1.xlsx`）アップロード済み・`export.html`push済み・GitHub Pages反映確認済み。コミット`feadac3`
+- **未完了・引き継ぎ**:
+  1. ポータルメニューへの「データ出力」リンク追加は担当F専任のためWORKLOG依頼（📍参照）。それまでは`https://mirai-oss.github.io/ns-portal/export.html`へ直接アクセスして確認可能（要ポータルログイン済み）
+  2. Google Sheets出力は承認事項②により後追い。担当A（GAS）への依頼が前提となる設計（調査レポート§5・§6）
+  3. ユーザー自身の実機ログインでの確認は未実施（今回は使い捨てテストユーザーでのAPI直叩きE2Eのみ）
+  4. `export-preview`の「売上高合計」はitem/categoryに「売上」という文字列を含むかで簡易判定しており、今回のテストデータ（費用科目のみ）では0円と表示された。売上科目を含む店舗・期間で再確認が望ましい（誤りではなく未検証）
