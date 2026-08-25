@@ -127,12 +127,17 @@ async function fetchDailyAgg(token: string): Promise<DailyAgg[]> {
 const SECTION_BY_CODE: Record<string, string> = { F: "原価", L: "人件費", A: "広告費", R: "家賃", O: "その他経費" };
 const SECTION_ORDER = ["売上", "原価", "人件費", "広告費", "家賃", "その他経費"];
 
-// ---------------- 広告媒体データ取得（2026-08-25追加） ----------------
+// ---------------- 広告媒体データ取得（2026-08-25追加・同日ユーザー要望でサブブランド分離／媒体名手動マッピング対応） ----------------
 // 媒体名の正規化: tori-dashboard/app.js の canonMedia()（3196行目）と同じロジックをそのまま移植。
 // 広告DB（費用）とstg_media（売上）で表記が違っても自動で突合できるようにする（例: 鶏HP・黒HP→ホットペッパー）。
-function canonMedia(m: unknown): string {
+// aliasMapが与えられればハードコードのルールより優先する（tpl_media_aliasテーブル・管理者が自己登録できる）。
+function canonMedia(m: unknown, aliasMap?: Map<string, string>): string {
   const s = String(m ?? "").trim();
   if (!s) return "";
+  if (aliasMap) {
+    const hit = aliasMap.get(s.toUpperCase());
+    if (hit) return hit;
+  }
   const u = s.toUpperCase();
   if (u.indexOf("RETTY") >= 0 || /RT$/.test(u)) return "Retty";
   if (u.indexOf("ホットペッパー") >= 0 || u.indexOf("HP") >= 0) return "ホットペッパー";
@@ -144,9 +149,17 @@ function canonMedia(m: unknown): string {
   return s;
 }
 
+async function fetchMediaAliasMap(sb: any): Promise<Map<string, string>> {
+  const { data } = await sb.from("tpl_media_alias").select("raw_media,canonical_media");
+  const map = new Map<string, string>();
+  (data ?? []).forEach((r: any) => map.set(String(r.raw_media).trim().toUpperCase(), String(r.canonical_media).trim()));
+  return map;
+}
+
 // 広告費（広告DBシート。BQ未収容のためGASの汎用action:'data'で取得）。
 // tori-dashboard/app.js の ingestAd()（470行目）と同じヘッダー自動検出ロジックを移植
 // （タイトル行が上にあってもズレないよう先頭12行から見出し行を探す）。
+// media は生の表記のまま返す（canonMedia適用はaliasMap確定後に呼び出し側で行う）。
 type AdCostRow = { ym: string; storeName: string; media: string; cost: number };
 
 function colIndexOf(header: string[], name: string): number {
@@ -182,14 +195,14 @@ async function fetchAdCostRows(token: string): Promise<AdCostRow[]> {
     out.push({
       ym,
       storeName: String(iS >= 0 ? r[iS] ?? "" : "").trim(),
-      media: canonMedia(iM >= 0 ? r[iM] : ""),
+      media: String(iM >= 0 ? r[iM] ?? "" : "").trim(),
       cost,
     });
   }
   return out;
 }
 
-// 媒体別売上（BigQuery stg_media・bqGetMedia）。既存アクション・変更なし。
+// 媒体別売上（BigQuery stg_media・bqGetMedia）。既存アクション・変更なし。media は生の表記のまま返す。
 type AdSalesRow = { ym: string; storeName: string; media: string; guests: number; parties: number; netSales: number };
 async function fetchMediaSales(token: string): Promise<AdSalesRow[]> {
   const res = await dashCall({ action: "bqGetMedia", token });
@@ -202,7 +215,7 @@ async function fetchMediaSales(token: string): Promise<AdSalesRow[]> {
     out.push({
       ym,
       storeName: String(r[0] ?? "").trim(),
-      media: canonMedia(r[2]),
+      media: String(r[2] ?? "").trim(),
       guests: Number(r[3] ?? 0),
       parties: Number(r[4] ?? 0),
       netSales: Number(r[5] ?? 0),
@@ -212,33 +225,47 @@ async function fetchMediaSales(token: string): Promise<AdSalesRow[]> {
 }
 
 type AdMediaRow = { media: string; cost: number; sales: number; guests: number; parties: number };
+type AdBrandBlock = { brand: string; rows: AdMediaRow[] };
 
-// 対象期間・対象店舗（複数選択可）に絞った上で、媒体（正規化後）ごとに費用・売上・客数・客組数を合算する。
-// scopeStoreNames=null は「選択店舗すべて合算」を意味する（呼び出し側で既に対象店舗だけに絞った配列を渡す）。
-function buildAdMediaRows(costRows: AdCostRow[], salesRows: AdSalesRow[], scopeStoreNames: Set<string> | null): AdMediaRow[] {
+// 対象期間・対象店舗（複数選択可）に絞った上で、ブランド（本体／サブブランド）×媒体ごとに
+// 費用・売上・客数・客組数を合算する。scopeStoreNames=null は「選択店舗すべて合算」を意味する
+// （その場合はブランド区別をせず単一ブロックにまとめる＝合算シートは店舗横断の全体像を見る用途のため）。
+function buildAdMediaRows(costRows: (AdCostRow & { brand: string })[], salesRows: (AdSalesRow & { brand: string })[], scopeStoreNames: Set<string> | null): AdBrandBlock[] {
   const cScoped = scopeStoreNames ? costRows.filter((r) => scopeStoreNames.has(r.storeName)) : costRows;
   const sScoped = scopeStoreNames ? salesRows.filter((r) => scopeStoreNames.has(r.storeName)) : salesRows;
-  const map = new Map<string, AdMediaRow>();
-  const get = (media: string) => {
+  const brandKey = (b: string) => (scopeStoreNames ? b : "__all__");
+  const blocks = new Map<string, Map<string, AdMediaRow>>();
+  const get = (brand: string, media: string) => {
+    const bKey = brandKey(brand);
+    if (!blocks.has(bKey)) blocks.set(bKey, new Map());
+    const m = blocks.get(bKey)!;
     const key = media || "（媒体未設定）";
-    if (!map.has(key)) map.set(key, { media: key, cost: 0, sales: 0, guests: 0, parties: 0 });
-    return map.get(key)!;
+    if (!m.has(key)) m.set(key, { media: key, cost: 0, sales: 0, guests: 0, parties: 0 });
+    return m.get(key)!;
   };
-  for (const c of cScoped) get(c.media).cost += c.cost;
-  for (const s of sScoped) { const r = get(s.media); r.sales += s.netSales; r.guests += s.guests; r.parties += s.parties; }
-  return [...map.values()].sort((a, b) => b.cost - a.cost || b.sales - a.sales);
+  for (const c of cScoped) get(c.brand, c.media).cost += c.cost;
+  for (const s of sScoped) { const r = get(s.brand, s.media); r.sales += s.netSales; r.guests += s.guests; r.parties += s.parties; }
+  // ブロック順: ブランド名でソート（本体を先に出したいので費用+売上合計の降順）
+  const brandTotal = new Map<string, number>();
+  for (const [b, m] of blocks) brandTotal.set(b, [...m.values()].reduce((s, r) => s + r.cost + r.sales, 0));
+  return [...blocks.entries()]
+    .sort((a, b) => (brandTotal.get(b[0]) ?? 0) - (brandTotal.get(a[0]) ?? 0))
+    .map(([brand, m]) => ({
+      brand: scopeStoreNames ? brand : "",
+      rows: [...m.values()].sort((a, b) => b.cost - a.cost || b.sales - a.sales),
+    }));
 }
 
 // ---------------- CSV（広告媒体別） ----------------
-function buildCsvAdMedia(costRows: AdCostRow[], salesRows: AdSalesRow[], storeNamesInOrder: string[]): Uint8Array {
-  const headers = ["対象店舗", "年月", "店舗名", "媒体", "区分", "金額/件数"];
+function buildCsvAdMedia(costRows: (AdCostRow & { brand: string })[], salesRows: (AdSalesRow & { brand: string })[], storeNamesInOrder: string[]): Uint8Array {
+  const headers = ["対象店舗", "年月", "店舗名", "ブランド", "媒体", "区分", "金額/件数"];
   const lines = [headers.map(csvEscape).join(",")];
   const scopeLabel = storeNamesInOrder.length > 1 ? "個別" : storeNamesInOrder[0] ?? "";
-  for (const c of costRows) lines.push([scopeLabel, c.ym, c.storeName, c.media, "広告費", c.cost].map(csvEscape).join(","));
+  for (const c of costRows) lines.push([scopeLabel, c.ym, c.storeName, c.brand, c.media, "広告費", c.cost].map(csvEscape).join(","));
   for (const s of salesRows) {
-    lines.push([scopeLabel, s.ym, s.storeName, s.media, "売上", s.netSales].map(csvEscape).join(","));
-    lines.push([scopeLabel, s.ym, s.storeName, s.media, "客数", s.guests].map(csvEscape).join(","));
-    lines.push([scopeLabel, s.ym, s.storeName, s.media, "客組数", s.parties].map(csvEscape).join(","));
+    lines.push([scopeLabel, s.ym, s.storeName, s.brand, s.media, "売上", s.netSales].map(csvEscape).join(","));
+    lines.push([scopeLabel, s.ym, s.storeName, s.brand, s.media, "客数", s.guests].map(csvEscape).join(","));
+    lines.push([scopeLabel, s.ym, s.storeName, s.brand, s.media, "客組数", s.parties].map(csvEscape).join(","));
   }
   const text = lines.join("\r\n");
   const bom = new Uint8Array([0xef, 0xbb, 0xbf]);
@@ -480,59 +507,72 @@ async function buildExcel(
 // 媒体別広告実績シート（PLより単純な「媒体×指標」の一覧表。テンプレートファイルは未登録のため
 // 既定書式で出力されるが、後日export-templatesでテンプレートをアップロードすればloadStyleProfile()が
 // 自動的にそのデザインを読みに行く＝コード変更なしでテンプレート方式に切り替わる設計）
-function writeAdSheet(wb: any, sheetName: string, title: string, style: StyleProfile, rows: AdMediaRow[]) {
+// blocks.length>1（サブブランドあり）の場合はブランドごとに見出し行を挟んで区切って表示する
+// （2026-08-25ユーザー要望: メインブランドとサブブランドの費用対効果を分けて見たい）。
+function writeAdSheet(wb: any, sheetName: string, title: string, style: StyleProfile, blocks: AdBrandBlock[]) {
   const sheet = wb.addWorksheet(sheetName.slice(0, 31));
   sheet.getCell("A1").value = title;
   sheet.getCell("A1").font = style.titleFont;
   sheet.getColumn(1).width = style.labelColWidth;
 
-  const headerRowIdx = 3;
-  const dataStartRow = 4;
   const headers = ["媒体", "広告費", "売上", "客数", "客組数", "ROAS"];
-  headers.forEach((h, i) => {
-    const c = sheet.getCell(headerRowIdx, i + 1);
-    c.value = h; c.font = style.headerFont; c.fill = style.headerFill; c.border = style.dataBorder;
-    sheet.getColumn(i + 1).width = i === 0 ? style.labelColWidth : style.valueColWidth;
-  });
+  const showBrandHeading = blocks.length > 1;
+  let r = 3;
 
-  rows.forEach((r, idx) => {
-    const rowIdx = dataStartRow + idx;
-    sheet.getCell(rowIdx, 1).value = r.media;
-    sheet.getCell(rowIdx, 2).value = r.cost;
-    sheet.getCell(rowIdx, 3).value = r.sales;
-    sheet.getCell(rowIdx, 4).value = r.guests;
-    sheet.getCell(rowIdx, 5).value = r.parties;
-    const c2 = colLetter(sheet, rowIdx, 2), c3 = colLetter(sheet, rowIdx, 3);
-    sheet.getCell(rowIdx, 6).value = { formula: `IF(${c2}${rowIdx}=0,"—",${c3}${rowIdx}/${c2}${rowIdx})` };
-    for (let c = 1; c <= 6; c++) {
-      const cell = sheet.getCell(rowIdx, c);
-      cell.border = style.dataBorder;
-      if (c >= 2 && c <= 5) cell.numFmt = style.numFmt;
-      if (c === 6) cell.numFmt = "0%;;\"—\"";
+  for (const block of blocks) {
+    if (showBrandHeading) {
+      sheet.getCell(r, 1).value = `▼ ${block.brand}`;
+      sheet.getCell(r, 1).font = { bold: true, italic: true };
+      r++;
     }
-  });
-
-  const totalRowIdx = dataStartRow + rows.length;
-  sheet.getCell(totalRowIdx, 1).value = "合計";
-  sheet.getCell(totalRowIdx, 1).font = style.totalFont;
-  for (let c = 2; c <= 5; c++) {
-    const colL = colLetter(sheet, dataStartRow, c);
-    const cell = sheet.getCell(totalRowIdx, c);
-    cell.value = rows.length ? { formula: `SUM(${colL}${dataStartRow}:${colL}${totalRowIdx - 1})` } : 0;
-    cell.numFmt = style.numFmt; cell.font = style.totalFont; cell.border = style.totalBorder;
+    const headerRowIdx = r;
+    headers.forEach((h, i) => {
+      const c = sheet.getCell(headerRowIdx, i + 1);
+      c.value = h; c.font = style.headerFont; c.fill = style.headerFill; c.border = style.dataBorder;
+      sheet.getColumn(i + 1).width = i === 0 ? style.labelColWidth : style.valueColWidth;
+    });
+    r++;
+    const dataStartRow = r;
+    block.rows.forEach((row) => {
+      const rowIdx = r;
+      sheet.getCell(rowIdx, 1).value = row.media;
+      sheet.getCell(rowIdx, 2).value = row.cost;
+      sheet.getCell(rowIdx, 3).value = row.sales;
+      sheet.getCell(rowIdx, 4).value = row.guests;
+      sheet.getCell(rowIdx, 5).value = row.parties;
+      const c2 = colLetter(sheet, rowIdx, 2), c3 = colLetter(sheet, rowIdx, 3);
+      sheet.getCell(rowIdx, 6).value = { formula: `IF(${c2}${rowIdx}=0,"—",${c3}${rowIdx}/${c2}${rowIdx})` };
+      for (let c = 1; c <= 6; c++) {
+        const cell = sheet.getCell(rowIdx, c);
+        cell.border = style.dataBorder;
+        if (c >= 2 && c <= 5) cell.numFmt = style.numFmt;
+        if (c === 6) cell.numFmt = "0%;;\"—\"";
+      }
+      r++;
+    });
+    const totalRowIdx = r;
+    sheet.getCell(totalRowIdx, 1).value = "小計";
+    sheet.getCell(totalRowIdx, 1).font = style.totalFont;
+    for (let c = 2; c <= 5; c++) {
+      const colL = colLetter(sheet, dataStartRow, c);
+      const cell = sheet.getCell(totalRowIdx, c);
+      cell.value = block.rows.length ? { formula: `SUM(${colL}${dataStartRow}:${colL}${totalRowIdx - 1})` } : 0;
+      cell.numFmt = style.numFmt; cell.font = style.totalFont; cell.border = style.totalBorder;
+    }
+    const c2t = colLetter(sheet, totalRowIdx, 2), c3t = colLetter(sheet, totalRowIdx, 3);
+    const roasCell = sheet.getCell(totalRowIdx, 6);
+    roasCell.value = { formula: `IF(${c2t}${totalRowIdx}=0,"—",${c3t}${totalRowIdx}/${c2t}${totalRowIdx})` };
+    roasCell.numFmt = "0%;;\"—\""; roasCell.font = style.totalFont; roasCell.border = style.totalBorder;
+    sheet.getCell(totalRowIdx, 1).border = style.totalBorder;
+    r += 2; // ブロック間の空行
   }
-  const c2t = colLetter(sheet, totalRowIdx, 2), c3t = colLetter(sheet, totalRowIdx, 3);
-  const roasCell = sheet.getCell(totalRowIdx, 6);
-  roasCell.value = { formula: `IF(${c2t}${totalRowIdx}=0,"—",${c3t}${totalRowIdx}/${c2t}${totalRowIdx})` };
-  roasCell.numFmt = "0%;;\"—\""; roasCell.font = style.totalFont; roasCell.border = style.totalBorder;
-  sheet.getCell(totalRowIdx, 1).border = style.totalBorder;
 
-  sheet.views = [{ state: "frozen", ySplit: headerRowIdx, xSplit: 1 }];
+  sheet.views = [{ state: "frozen", ySplit: 3, xSplit: 1 }];
 }
 
 async function buildAdExcel(
   sb: any, reportKey: string, layout: any,
-  costRows: AdCostRow[], salesRows: AdSalesRow[],
+  costRows: (AdCostRow & { brand: string })[], salesRows: (AdSalesRow & { brand: string })[],
   storeNamesInOrder: string[], periodFrom: string, periodTo: string,
 ): Promise<ArrayBuffer> {
   const style = await loadStyleProfile(sb, reportKey, layout);
@@ -606,24 +646,33 @@ Deno.serve(async (req) => {
     // 広告DB（媒体別広告実績）は店舗名がサブブランド表記（例:「匠味（新横浜）」）のことがあり、
     // stores.name/dash_store_nameと直接一致しない。store_aliasesで正規化して解決する
     // （2026-08-25実機調査で判明。tori-dashboard/app.jsのresolveStoreEx()相当の簡易版）。
+    // 2026-08-25追記（同日ユーザー要望）: store_aliases.source='2枚看板'のものは「別ブランドとして
+    // 費用対効果を分けて見たい」対象なので、正準名へ丸めつつも brandLabel は元のブランド名を保持する。
     const normalizeStoreName = (s: string) => s.trim().replace(/[\s()（）]/g, "");
     const normToCanonical = new Map<string, string>();
+    const normToBrandLabel = new Map<string, string>(); // 2枚看板のみ登録（サブブランドの表示名）
     (storeRows ?? []).forEach((s: any) => {
       const canon = canonicalByStoreId.get(s.id)!;
       normToCanonical.set(normalizeStoreName(canon), canon);
       normToCanonical.set(normalizeStoreName(String(s.name)), canon);
     });
     if (isAd) {
-      const { data: aliasRows } = await sb.from("store_aliases").select("alias,store_id").in("store_id", targetIds);
+      const { data: aliasRows } = await sb.from("store_aliases").select("alias,store_id,source").in("store_id", targetIds);
       (aliasRows ?? []).forEach((a: any) => {
         const canon = canonicalByStoreId.get(a.store_id);
-        if (canon) normToCanonical.set(normalizeStoreName(String(a.alias)), canon);
+        if (!canon) return;
+        const norm = normalizeStoreName(String(a.alias));
+        normToCanonical.set(norm, canon);
+        if (String(a.source) === "2枚看板") normToBrandLabel.set(norm, String(a.alias).trim());
       });
     }
-    function resolveAdStoreName(raw: string): string | null {
+    function resolveAdStore(raw: string): { canonicalName: string; brandLabel: string } | null {
       const direct = String(raw ?? "").trim();
-      if (targetNames.has(direct)) return direct;
-      return normToCanonical.get(normalizeStoreName(direct)) ?? null;
+      const norm = normalizeStoreName(direct);
+      if (targetNames.has(direct)) return { canonicalName: direct, brandLabel: direct };
+      const canon = normToCanonical.get(norm);
+      if (!canon) return null;
+      return { canonicalName: canon, brandLabel: normToBrandLabel.get(norm) ?? canon };
     }
 
     // --- 出力履歴を先に作成（pending）。この時点でIDを持っておき失敗時もfailedとして残す ---
@@ -651,13 +700,22 @@ Deno.serve(async (req) => {
     let rowCount: number;
 
     if (isAd) {
-      const [allCostRows, allSalesRows] = await Promise.all([fetchAdCostRows(login.token!), fetchMediaSales(login.token!)]);
-      // 広告DBの店舗名（サブブランド表記あり）をresolveAdStoreName()で正規化してから対象期間・対象店舗に絞る
+      const [allCostRows, allSalesRows, mediaAliasMap] = await Promise.all([
+        fetchAdCostRows(login.token!), fetchMediaSales(login.token!), fetchMediaAliasMap(sb),
+      ]);
+      // 広告DBの店舗名（サブブランド表記あり）をresolveAdStore()で正規化してから対象期間・対象店舗に絞る。
+      // 媒体名はtpl_media_aliasの手動登録を優先しつつcanonMedia()で正規化する。
       const costMatched = allCostRows
-        .map((r) => ({ ...r, storeName: resolveAdStoreName(r.storeName) ?? "" }))
+        .map((r) => {
+          const resolved = resolveAdStore(r.storeName);
+          return { ...r, storeName: resolved?.canonicalName ?? "", brand: resolved?.brandLabel ?? "", media: canonMedia(r.media, mediaAliasMap) };
+        })
         .filter((r) => r.ym >= periodFrom && r.ym <= periodTo && targetNames.has(r.storeName));
       const salesMatched = allSalesRows
-        .map((r) => ({ ...r, storeName: resolveAdStoreName(r.storeName) ?? "" }))
+        .map((r) => {
+          const resolved = resolveAdStore(r.storeName);
+          return { ...r, storeName: resolved?.canonicalName ?? "", brand: resolved?.brandLabel ?? "", media: canonMedia(r.media, mediaAliasMap) };
+        })
         .filter((r) => r.ym >= periodFrom && r.ym <= periodTo && targetNames.has(r.storeName));
 
       if (costMatched.length === 0 && salesMatched.length === 0) {

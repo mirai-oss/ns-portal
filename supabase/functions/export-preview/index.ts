@@ -103,10 +103,15 @@ async function fetchDailyNetSales(token: string): Promise<DailyAgg[]> {
   return [...map.values()];
 }
 
-// 媒体名の正規化（export-run/index.tsのcanonMedia()と同じ。tori-dashboard/app.js 3196行目を移植）
-function canonMedia(m: unknown): string {
+// 媒体名の正規化（export-run/index.tsのcanonMedia()と同じ。tori-dashboard/app.js 3196行目を移植）。
+// aliasMapが与えられればハードコードのルールより優先する（tpl_media_aliasテーブル・管理者が自己登録できる）。
+function canonMedia(m: unknown, aliasMap?: Map<string, string>): string {
   const s = String(m ?? "").trim();
   if (!s) return "";
+  if (aliasMap) {
+    const hit = aliasMap.get(s.toUpperCase());
+    if (hit) return hit;
+  }
   const u = s.toUpperCase();
   if (u.indexOf("RETTY") >= 0 || /RT$/.test(u)) return "Retty";
   if (u.indexOf("ホットペッパー") >= 0 || u.indexOf("HP") >= 0) return "ホットペッパー";
@@ -116,6 +121,12 @@ function canonMedia(m: unknown): string {
   if (u.indexOf("インスタ") >= 0 || u.indexOf("INSTAGRAM") >= 0) return "Instagram";
   if (u.indexOf("GOOGLE") >= 0 || u.indexOf("グーグル") >= 0 || u.indexOf("マップ") >= 0) return "Google";
   return s;
+}
+async function fetchMediaAliasMap(sb: any): Promise<Map<string, string>> {
+  const { data } = await sb.from("tpl_media_alias").select("raw_media,canonical_media");
+  const map = new Map<string, string>();
+  (data ?? []).forEach((r: any) => map.set(String(r.raw_media).trim().toUpperCase(), String(r.canonical_media).trim()));
+  return map;
 }
 type AdCostRow = { ym: string; storeName: string; media: string; cost: number };
 function colIndexOf(header: string[], name: string): number {
@@ -148,7 +159,7 @@ async function fetchAdCostRows(token: string): Promise<AdCostRow[]> {
     if (!ym) continue;
     const cost = Number(r[iC] ?? 0);
     if (!cost) continue;
-    out.push({ ym, storeName: String(iS >= 0 ? r[iS] ?? "" : "").trim(), media: canonMedia(iM >= 0 ? r[iM] : ""), cost });
+    out.push({ ym, storeName: String(iS >= 0 ? r[iS] ?? "" : "").trim(), media: String(iM >= 0 ? r[iM] ?? "" : "").trim(), cost });
   }
   return out;
 }
@@ -161,7 +172,7 @@ async function fetchMediaSales(token: string): Promise<AdSalesRow[]> {
   for (const r of rows) {
     const ym = normalizeYm(r[1]);
     if (!ym) continue;
-    out.push({ ym, storeName: String(r[0] ?? "").trim(), media: canonMedia(r[2]), netSales: Number(r[5] ?? 0) });
+    out.push({ ym, storeName: String(r[0] ?? "").trim(), media: String(r[2] ?? "").trim(), netSales: Number(r[5] ?? 0) });
   }
   return out;
 }
@@ -250,12 +261,14 @@ Deno.serve(async (req) => {
     if (!login.ok) return json({ ok: false, error: login.error }, 500);
 
     if (isAd) {
-      const [allCost, allSales] = await Promise.all([fetchAdCostRows(login.token!), fetchMediaSales(login.token!)]);
+      const [allCost, allSales, mediaAliasMap] = await Promise.all([
+        fetchAdCostRows(login.token!), fetchMediaSales(login.token!), fetchMediaAliasMap(sb),
+      ]);
       const costMatched = allCost
-        .map((r) => ({ ...r, storeName: resolveAdStoreName(r.storeName) ?? "" }))
+        .map((r) => ({ ...r, storeName: resolveAdStoreName(r.storeName) ?? "", media: canonMedia(r.media, mediaAliasMap) }))
         .filter((r) => r.ym >= periodFrom && r.ym <= periodTo && targetNames.has(r.storeName));
       const salesMatched = allSales
-        .map((r) => ({ ...r, storeName: resolveAdStoreName(r.storeName) ?? "" }))
+        .map((r) => ({ ...r, storeName: resolveAdStoreName(r.storeName) ?? "", media: canonMedia(r.media, mediaAliasMap) }))
         .filter((r) => r.ym >= periodFrom && r.ym <= periodTo && targetNames.has(r.storeName));
       const costTotal = costMatched.reduce((s, r) => s + r.cost, 0);
       const salesTotal = costMatched.length || salesMatched.length ? salesMatched.reduce((s, r) => s + r.netSales, 0) : 0;

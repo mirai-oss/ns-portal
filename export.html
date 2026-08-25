@@ -223,6 +223,11 @@ function renderMain(u){
       <div class="section-title">⚙️ 出力テンプレート管理</div>
       <div id="templates-box" class="spin">読み込み中…</div>
     </div>
+
+    <div class="card">
+      <div class="section-title">⚙️ 媒体名マッピング（広告費と売上の媒体名が違う場合の対応表）</div>
+      <div id="media-alias-box" class="spin">読み込み中…</div>
+    </div>
   `;
 
   $("f-stores").querySelectorAll("input[type=checkbox]").forEach(cb=>{
@@ -255,6 +260,7 @@ function renderMain(u){
 
   loadHistory();
   loadTemplates(u);
+  loadMediaAliases(u);
 }
 
 async function runPreview(){
@@ -320,21 +326,85 @@ async function loadHistory(){
   </tbody></table>`;
 }
 
+let TEMPLATES_CACHE=[];
 async function loadTemplates(u){
   const r=await fn("export-templates",{action:"list"});
   if(!r.ok||!r.body?.ok){ $("templates-box").innerHTML=`<div class="note">テンプレート一覧を取得できませんでした</div>`; return; }
+  TEMPLATES_CACHE=r.body.templates||[];
   const canManage=u.is_master||["CEO","HQ"].includes(u.role);
   $("templates-box").innerHTML=`<table class="hist-table"><thead><tr>
     <th>コード</th><th>名称</th><th>カテゴリー</th><th>バージョン</th><th>状態</th>
   </tr></thead><tbody>
-    ${(r.body.templates||[]).map(t=>`<tr>
+    ${TEMPLATES_CACHE.map(t=>`<tr>
       <td>${esc(t.template_code)}</td><td>${esc(t.template_name)}</td><td>${esc(t.category)}</td>
       <td>v${t.version}${t.file_path?"":"（未登録・既定書式で出力）"}</td>
       <td>${t.is_active?'<span class="badge ok">有効</span>':'<span class="badge">無効</span>'}</td>
     </tr>`).join("")}
   </tbody></table>
-  ${canManage?'<div class="note">テンプレートファイルの差し替えは現在Claude Codeでの対応が必要です（次フェーズでアップロードUIを追加予定）。</div>':""}
+  ${canManage?`
+  <div style="margin-top:12px">
+    <label>差し替えるテンプレート</label>
+    <select id="tpl-upload-target">${TEMPLATES_CACHE.map(t=>`<option value="${esc(t.template_code)}">${esc(t.template_name)}（${esc(t.template_code)}）</option>`).join("")}</select>
+    <label>テンプレートファイル（.xlsx）</label>
+    <input type="file" id="tpl-upload-file" accept=".xlsx">
+    <button class="btn sm" id="tpl-upload-btn" style="margin-top:8px">アップロードして差し替え</button>
+    <div id="tpl-upload-result"></div>
+    <div class="note">アップロードしたExcelファイルの書式（フォント・色・罫線・数式・列幅）が、次回以降の出力にそのまま使われます。データはこのシステムが差し込むので、テンプレート側は見た目だけ整えてください（1行目=タイトル・3行目=見出し行・4行目=データのサンプル行、という配置を目安にしてください）。`:""}
+  </div>
   `;
+  if(canManage){
+    $("tpl-upload-btn").onclick=async()=>{
+      const f=$("tpl-upload-file").files[0];
+      if(!f){ $("tpl-upload-result").innerHTML=`<div class="err">ファイルを選択してください</div>`; return; }
+      $("tpl-upload-result").innerHTML=`<div class="spin">アップロード中…</div>`;
+      const base64=await new Promise((resolve,reject)=>{
+        const reader=new FileReader();
+        reader.onload=()=>resolve(String(reader.result).split(",")[1]||"");
+        reader.onerror=reject;
+        reader.readAsDataURL(f);
+      });
+      const r2=await fn("export-templates",{action:"upload",template_code:$("tpl-upload-target").value,file_base64:base64,note:"export.htmlから管理者がアップロード"});
+      if(!r2.ok||!r2.body?.ok){ $("tpl-upload-result").innerHTML=`<div class="err">${esc(r2.body?.error||"アップロードに失敗しました")}</div>`; return; }
+      $("tpl-upload-result").innerHTML=`<div class="msg-ok">v${r2.body.version}として反映しました。次回の出力から適用されます。</div>`;
+      loadTemplates(u);
+    };
+  }
+}
+
+async function loadMediaAliases(u){
+  const canManage=u.is_master||["CEO","HQ"].includes(u.role);
+  const r=await authed(`/rest/v1/tpl_media_alias?select=*&order=raw_media`);
+  if(!r.ok||!Array.isArray(r.body)){ $("media-alias-box").innerHTML=`<div class="note">媒体名マッピングを取得できませんでした</div>`; return; }
+  $("media-alias-box").innerHTML=`
+    <div class="note">広告費側と売上側で媒体名の表記が異なる場合（例:「HP」→「ホットペッパー」）に、ここへ追加登録すると次回以降の出力で自動的に統一されます。</div>
+    <table class="hist-table"><thead><tr><th>元の表記</th><th>→統一後の表記</th>${canManage?"<th></th>":""}</tr></thead><tbody>
+      ${r.body.map(a=>`<tr><td>${esc(a.raw_media)}</td><td>${esc(a.canonical_media)}</td>${canManage?`<td><button class="linkbtn" data-id="${a.id}">削除</button></td>`:""}</tr>`).join("")}
+      ${!r.body.length?'<tr><td colspan="3" class="note">まだ登録がありません</td></tr>':""}
+    </tbody></table>
+    ${canManage?`
+    <div class="row2" style="margin-top:10px">
+      <div><label>元の表記（広告費または売上シートの実際の値）</label><input type="text" id="media-alias-raw" placeholder="例: HP"></div>
+      <div><label>統一後の表記</label><input type="text" id="media-alias-canon" placeholder="例: ホットペッパー"></div>
+    </div>
+    <button class="btn sm" id="media-alias-add" style="margin-top:8px">追加</button>
+    <div id="media-alias-result"></div>
+    `:""}
+  `;
+  if(canManage){
+    $("media-alias-add").onclick=async()=>{
+      const raw=$("media-alias-raw").value.trim(), canon=$("media-alias-canon").value.trim();
+      if(!raw||!canon){ $("media-alias-result").innerHTML=`<div class="err">両方入力してください</div>`; return; }
+      const r2=await authed(`/rest/v1/tpl_media_alias`,{method:"POST",headers:{Prefer:"return=minimal"},body:JSON.stringify({raw_media:raw,canonical_media:canon,created_by:ME.id})});
+      if(!r2.ok){ $("media-alias-result").innerHTML=`<div class="err">追加に失敗しました（同じ表記が既に登録済みの可能性があります）</div>`; return; }
+      loadMediaAliases(u);
+    };
+    $("media-alias-box").querySelectorAll("button[data-id]").forEach(btn=>{
+      btn.onclick=async()=>{
+        await authed(`/rest/v1/tpl_media_alias?id=eq.${btn.dataset.id}`,{method:"DELETE"});
+        loadMediaAliases(u);
+      };
+    });
+  }
 }
 
 async function main(){
