@@ -125,10 +125,16 @@ textarea{resize:vertical}
 .sec-sub{font-size:12px;color:var(--muted)}
 .notes-box{background:#fff8e1;border:1px solid #e6c74e;border-radius:10px;padding:12px 14px;font-size:14px;line-height:1.6;color:#5a4a00}
 @media(prefers-color-scheme:dark){.notes-box{background:#3a3110;border-color:#6b5a1e;color:#f0dd8a}}
-.step{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-bottom:8px}
-.step.cur{border-color:var(--accent);border-width:2px}
-.step .row1{display:flex;align-items:center;gap:8px;cursor:pointer}
-.step .ic{font-size:16px;width:20px;text-align:center}
+.step{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px 14px;margin-bottom:10px;overflow:hidden}
+.step.cur{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent) inset}
+.step.done{background:#fbfefc;border-color:#b9ddca}
+@media(prefers-color-scheme:dark){.step.done{background:#16241c;border-color:#2f5c43}}
+.step .row1{display:grid;grid-template-columns:34px 1fr auto;gap:10px;align-items:center;cursor:pointer}
+.step .ic{font-size:16px;text-align:center}
+.step-num{width:34px;height:34px;border-radius:10px;background:var(--bg);display:grid;place-items:center;font-weight:800;font-size:14px;color:var(--muted)}
+.step.cur .step-num{background:var(--accent);color:#fff}
+.step.done .step-num{background:#b9ddca;color:#1f6b45}
+@media(prefers-color-scheme:dark){.step.done .step-num{background:#2f5c43;color:#8fd6ac}}
 .step .st{flex:1;font-size:14px}
 .step .meta{font-size:12px;color:var(--muted);margin-top:2px}
 .step .now-tag{color:var(--stall);font-weight:600}
@@ -138,6 +144,19 @@ textarea{resize:vertical}
 .link-row{display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--line);font-size:13px}
 .link-row:last-child{border-bottom:none}
 .photo-grid{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+/* 全面刷新Phase3: デザイン案のownerline(担当・期限)／resources(添付カード)を再現 */
+.ownerline{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:10px}
+.fieldbox{border:1px solid var(--line);border-radius:10px;padding:9px 11px;background:var(--bg)}
+.fieldbox label{display:block;color:var(--muted);font-size:11px;margin:0 0 4px}
+.fieldbox select,.fieldbox input{width:100%;border:0;background:transparent;outline:none;font-weight:700;padding:0;font-size:14px;color:var(--ink)}
+.proc-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:12px;flex-wrap:wrap}
+.resources{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}
+.resource{border:1px solid var(--line);border-radius:12px;padding:11px 12px;background:var(--bg);position:relative}
+.resource a{color:inherit;text-decoration:none;display:block;padding-right:18px}
+.resource a:hover b{text-decoration:underline}
+.resource b{display:block;font-size:13px;font-weight:600}
+.resource small{color:var(--muted);font-size:11px}
+.resource .del{position:absolute;top:8px;right:8px;padding:2px}
 .photo-grid img{width:80px;height:80px;object-fit:cover;border-radius:8px;border:1px solid var(--line)}
 .act-row{font-size:12px;color:var(--muted);padding:5px 0;border-bottom:1px solid var(--line)}
 .act-row:last-child{border-bottom:none}
@@ -779,7 +798,7 @@ function renderDetail(u){
 
   <div class="sec"><h3>③ 添付・リンク（${(t._links||[]).length}件） <button class="linkbtn" id="linktoggle">${LINKS_OPEN?"▲ 閉じる":"▼ 開く"}</button></h3>
     ${LINKS_OPEN?`<div class="card">
-      <div id="linklist">${(t._links||[]).map(l=>linkHtml(l,canEdit)).join("")||'<div class="meta" style="color:var(--muted)">まだありません</div>'}</div>
+      <div id="linklist">${(t._links||[]).length?`<div class="resources">${(t._links||[]).map(l=>linkHtml(l,canEdit)).join("")}</div>`:'<div class="meta" style="color:var(--muted)">まだありません</div>'}</div>
       ${canEdit?linkFormHtml():""}
     </div>`:""}
   </div>
@@ -859,33 +878,37 @@ function stepHtml(t,s,u){
   const canQuickComplete=canComplete&&!s.is_binary&&!s.requires_photo;
   const hasPanel=links.length||photos.length||attCanEdit||canComplete;
   const panelOpen=STEP_ATT_OPEN.has(s.id);
-  return `<div class="step ${s._isCurrent?'cur':''}">
-    <div class="row1" ${hasPanel?`data-stepattopen="${s.id}"`:""}><span class="ic">${stepIcon(s)}</span>
-      <div class="st">${esc(s.title)}<div class="meta">${metaLine}${s.completed_at&&canTouch?` ／ <button class="linkbtn" data-stepundo="${s.id}" onclick="event.stopPropagation()">↩️ 取り消す</button>`:""}${canQuickComplete?`<button class="btn sm" data-quickcomplete="${s.id}" style="margin-left:8px;vertical-align:middle" onclick="event.stopPropagation()">✅ 完了にする</button>`:""}</div>
+  const stepNum=sortedSteps(t).indexOf(s)+1;
+  const checkedCount=checklist.filter(c=>c.checked_at).length;
+  return `<div class="step ${s._isCurrent?'cur':''} ${s.completed_at?'done':''}">
+    <div class="row1" ${hasPanel?`data-stepattopen="${s.id}"`:""}>
+      <span class="step-num">${s.completed_at?"✓":stepNum}</span>
+      <div class="st">${esc(s.title)}<div class="meta">${metaLine}${checklist.length?` ／ チェック ${checkedCount}/${checklist.length}`:""}${s.completed_at&&canTouch?` ／ <button class="linkbtn" data-stepundo="${s.id}" onclick="event.stopPropagation()">↩️ 取り消す</button>`:""}${canQuickComplete?`<button class="btn sm" data-quickcomplete="${s.id}" style="margin-left:8px;vertical-align:middle" onclick="event.stopPropagation()">✅ 完了にする</button>`:""}</div>
       </div>
       ${hasPanel?`<span>${panelOpen?"▲":"▼"}</span>`:""}
     </div>
-    ${(checklist.length||canTouch)?checklistStepHtml(s,checklist,canTouch):""}
     ${hasPanel?`<div style="padding:8px 12px 4px" onclick="event.stopPropagation()">
       <button class="linkbtn" data-stepattopen="${s.id}">📎 添付・マニュアル（${links.length+photos.length}件） ${panelOpen?"▲ 閉じる":"▼ 開く"}</button>
       ${panelOpen?`
-        ${canEditAssign?`<div class="stepform-row" style="margin-top:10px">
-          <div class="f"><label>担当</label><select data-stepowner="${s.id}"><option value="">未定</option>${assignableUsers().map(x=>`<option value="${x.id}" ${s.assignee_id===x.id?"selected":""}>${esc(x.name)}</option>`).join("")}</select></div>
-          <div class="f"><label>期限日</label><input type="date" data-stepdue="${s.id}" value="${esc(s.due_date||"")}"></div>
-          <div class="f"><label>期限時刻（任意）</label><input type="time" data-steptime="${s.id}" value="${esc(s.due_time||"")}"></div>
-          <div class="f" style="flex:0 0 auto;min-width:0"><label>&nbsp;</label><button class="btn sm" data-stepsavemeta="${s.id}">保存</button></div>
+        ${canEditAssign?`<div class="ownerline" style="margin-top:10px">
+          <div class="fieldbox"><label>担当</label><select data-stepowner="${s.id}"><option value="">未定</option>${assignableUsers().map(x=>`<option value="${x.id}" ${s.assignee_id===x.id?"selected":""}>${esc(x.name)}</option>`).join("")}</select></div>
+          <div class="fieldbox"><label>工程期限</label><div style="display:flex;gap:6px"><input type="date" data-stepdue="${s.id}" value="${esc(s.due_date||"")}" style="flex:1"><input type="time" data-steptime="${s.id}" value="${esc(s.due_time||"")}" style="flex:1"></div></div>
         </div>
         <div class="err" id="stepmetamsg-${s.id}"></div>`:""}
-        ${canComplete?`<div class="step-body" style="border:0;padding:10px 0 0">
+        ${(checklist.length||canTouch)?checklistStepHtml(s,checklist,canTouch):""}
+        ${(s.is_binary||s.requires_photo)&&canComplete?`<div class="step-body" style="border:0;padding:10px 0 0">
           ${s.is_binary?`<label>判定</label>
             <select id="judge-${s.id}"><option value="">選択してください</option><option value="ok">OK</option><option value="issue">異常あり</option></select>
             <div id="issuewrap-${s.id}" style="display:none"><label>異常メモ（必須）</label><textarea id="issuenote-${s.id}" rows="2" placeholder="内容を記入"></textarea></div>`:""}
           ${s.requires_photo?`<label>写真（必須）</label><input type="file" accept="image/*" capture="environment" id="stepphoto-${s.id}">
             <div class="photo-grid">${photos.map(p=>`<a ${photoTag(p.storage_path)} href="#" target="_blank"><img ${photoTag(p.storage_path)} src=""></a>`).join("")}</div>`:""}
-          <button class="btn sm" style="margin-top:8px" data-complete="${s.id}">この工程を完了にする</button>
-          <div class="err" id="stepmsg-${s.id}"></div>
         </div>`:""}
         ${attachBoxHtml(`tsatt-${s.id}`,links,photos,attCanEdit)}
+        ${canComplete?`<div class="err" id="stepmsg-${s.id}"></div>
+        <div class="proc-actions">
+          ${canEditAssign?`<button class="btn sm" data-stepsavemeta="${s.id}">担当・期限を保存</button>`:""}
+          <button class="btn sm" data-complete="${s.id}">この工程を完了</button>
+        </div>`:""}
       `:""}
     </div>`:""}
   </div>`;
@@ -949,11 +972,13 @@ function stepOrGroupHtml(t,g,u){
   </div>`;
 }
 function linkHtml(l,canEdit){
+  // 全面刷新Phase3: デザイン案の「リソースカード」表示に合わせ、フラットな一覧行(.link-row)から
+  // カード形式(.resource)へ変更
   const ico=l.kind==="url"?"🔗":(l.kind==="manual"?"📘":"🔐");
-  const body=l.kind==="credential"?`${esc(l.label)} <span class="meta">→ 社内情報管理で開く</span>`
-    :l.url?`<a href="${esc(l.url)}" target="_blank" rel="noopener">${esc(l.label)}</a>`
-    :`${esc(l.label)}${l.manual_ref?` <span class="meta">(${esc(l.manual_ref)})</span>`:""}`;
-  return `<div class="link-row"><span>${ico}</span><div style="flex:1">${body}</div>${canEdit?`<button class="linkbtn" data-dellink="${l.id}">削除</button>`:""}</div>`;
+  const sub=l.kind==="credential"?"社内情報管理で開く":(l.kind==="manual"?`マニュアル${l.manual_ref?" ／ "+esc(l.manual_ref):""}`:"URL");
+  const inner=`<b>${ico} ${esc(l.label)}</b><small>${sub}</small>`;
+  const body=(l.kind!=="credential"&&l.url)?`<a href="${esc(l.url)}" target="_blank" rel="noopener">${inner}</a>`:inner;
+  return `<div class="resource">${body}${canEdit?`<button class="linkbtn del" data-dellink="${l.id}">削除</button>`:""}</div>`;
 }
 function linkFormHtml(){
   return `<div style="margin-top:12px;padding-top:10px;border-top:1px dashed var(--line)">
@@ -993,7 +1018,7 @@ function attachBoxHtml(prefix,links,photos,canEdit){
   const photosHtml=(photos||[]).map(p=>`<a ${photoTag(p.storage_path)} href="#" target="_blank"><img ${photoTag(p.storage_path)} src=""></a>`).join("");
   return `<div class="attach-box" style="margin-top:10px;padding-top:10px;border-top:1px dashed var(--line)">
     <div id="${prefix}-list">
-      ${linksHtml}${photosHtml?`<div class="photo-grid">${photosHtml}</div>`:""}
+      ${linksHtml?`<div class="resources">${linksHtml}</div>`:""}${photosHtml?`<div class="photo-grid">${photosHtml}</div>`:""}
       ${(!linksHtml&&!photosHtml)?'<div class="meta" style="color:var(--muted)">添付はまだありません</div>':""}
     </div>
     ${canEdit?`
@@ -1623,7 +1648,7 @@ function dailyRowHtml(t,u,isPast){
     </div>
     ${open?`<div class="step-body">
       ${t.notes?`<div class="notes-box" style="margin-bottom:10px">📖 ${esc(t.notes)}</div>`:""}
-      ${(t._links||[]).map(l=>linkHtml(l,false)).join("")}
+      ${(t._links||[]).length?`<div class="resources">${(t._links||[]).map(l=>linkHtml(l,false)).join("")}</div>`:""}
       ${groups.map(g=>dailyGroupHtml(g,u)).join("")}
     </div>`:""}
   </div>`;
@@ -1964,7 +1989,7 @@ async function refreshTplAttach(){
   if(list){
     const linksHtml=TPL_EDIT._links.map(l=>linkHtml(l,true)).join("");
     const photosHtml=TPL_EDIT._photos.map(p=>`<a ${photoTag(p.storage_path)} href="#" target="_blank"><img ${photoTag(p.storage_path)} src=""></a>`).join("");
-    list.innerHTML=`${linksHtml}${photosHtml?`<div class="photo-grid">${photosHtml}</div>`:""}${(!linksHtml&&!photosHtml)?'<div class="meta" style="color:var(--muted)">添付はまだありません</div>':""}`;
+    list.innerHTML=`${linksHtml?`<div class="resources">${linksHtml}</div>`:""}${photosHtml?`<div class="photo-grid">${photosHtml}</div>`:""}${(!linksHtml&&!photosHtml)?'<div class="meta" style="color:var(--muted)">添付はまだありません</div>':""}`;
     wireDelLinkButtonsIn("tpl-att",refreshTplAttach);
   }
   if($("tpl-att-label")) $("tpl-att-label").value="";
