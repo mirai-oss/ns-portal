@@ -787,6 +787,10 @@ const TOP_ITEMS=[
 const SYS_ITEMS=[
   {key:"seisan", sysKey:"seisan", ico:"🧮", label:"精算ダッシュボード", url:SEISAN_URL},
   {key:"joho",   sysKey:"joho",   ico:"🔐", label:"社内情報管理", url:JOHO_URL, external:true, sso:true},
+  // 担当G「データ出力センター」Phase1（コミットfeadac3・WORKLOG「2026-08-25（担当G実行スレッド）
+  // Phase 1実装・本番デプロイ・実機E2E」担当Fへの依頼）。export.html側のexport_can_access()と
+  // 同じ役職（マスター・CEO・HQ・TEAM・TENCHO）に合わせ、二重管理を避けている
+  {key:"export", ico:"📤", label:"データ出力", url:"export.html?embed=1", roles:["TENCHO","TEAM","HQ","CEO"]},
 ];
 const GROUPS=[
   {cap:"現場・日報",ico:"📝", items:[
@@ -849,7 +853,8 @@ const GROUPS=[
     {key:"admin-task-perm",   ico:"🔑", label:"権限設定（本部タスク機能）", url:tasksPage("perms")},
     {key:"admin-task-notify", ico:"🔔", label:"通知設定（本部タスクのアラート）", url:tasksPage("notify")},
     {key:"admin-task-past",   ico:"📁", label:"過去タスク", url:tasksPage("past")},
-    {key:"admin-exporttpl",ico:"📄", label:"出力テンプレート管理", soon:true},
+    // 出力テンプレート管理は「データ出力」（SYS_ITEMS・export.html）に統合済み
+    // （担当Gがテンプレート一覧・出力履歴も同一画面に実装したため、別項目は置かない）
     {key:"admin-usage",    ico:"📊", label:"システム利用状況", type:"sysusage"},
   ]},
 ];
