@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>📤 データ出力センター — N-Styleグループ ポータル</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📤</text></svg>">
+<style>
+:root{
+  --bg:#f5f4f1; --card:#ffffff; --ink:#26221e; --muted:#8a8377;
+  --accent:#1f5fbf; --accent2:#184a99; --line:#e7e3dc; --ok:#2e7d32;
+  --warn:#b58a00; --err:#c62828;
+}
+@media(prefers-color-scheme:dark){
+  :root{--bg:#1d1b18; --card:#282521; --ink:#f0ece5; --muted:#a29a8c; --line:#3a362f;}
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Noto Sans JP",sans-serif;background:var(--bg);color:var(--ink);min-height:100vh}
+.wrap{max-width:900px;margin:0 auto;padding:20px 16px 60px}
+body.embed-mode .wrap{padding-top:16px}
+a{color:inherit}
+.spin{text-align:center;color:var(--muted);padding:60px 0}
+.err{color:var(--err);font-size:13px;margin-top:6px}
+.msg-ok{color:var(--ok);font-size:13px;margin-top:6px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px 18px;box-shadow:0 1px 4px rgba(0,0,0,.04);margin-bottom:16px}
+label{display:block;font-size:13px;color:var(--muted);margin:12px 0 4px}
+input,select,textarea{width:100%;padding:10px 12px;font-size:15px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);font-family:inherit}
+.btn{display:inline-block;padding:10px 18px;font-size:14px;font-weight:600;color:#fff;background:var(--accent);border:none;border-radius:8px;cursor:pointer}
+.btn:hover{background:var(--accent2)}
+.btn:disabled{opacity:.5;cursor:default}
+.btn.sub{background:transparent;color:var(--muted);border:1px dashed var(--muted);font-weight:400}
+.btn.sm{padding:6px 12px;font-size:13px}
+.topbar{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:16px;flex-wrap:wrap}
+.topbar h1{font-size:19px}
+.topbar .who{font-size:13px;color:var(--muted)}
+.row2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+@media(max-width:600px){.row2{grid-template-columns:1fr}}
+.storelist{max-height:220px;overflow-y:auto;border:1px solid var(--line);border-radius:8px;padding:8px;margin-top:4px}
+.storelist label{display:flex;align-items:center;gap:8px;font-size:14px;color:var(--ink);margin:6px 0;cursor:pointer}
+.storelist input[type=checkbox]{width:auto;accent-color:var(--accent)}
+.storelist .corp-head{font-size:12px;color:var(--muted);margin:10px 0 2px;font-weight:600}
+.fmt-row{display:flex;gap:10px;margin-top:6px;flex-wrap:wrap}
+.fmt-opt{flex:1;min-width:120px;border:1px solid var(--line);border-radius:8px;padding:10px 12px;cursor:pointer;text-align:center;font-size:13px}
+.fmt-opt.active{border-color:var(--accent);background:rgba(31,95,191,.08);font-weight:600}
+.fmt-opt.disabled{opacity:.45;cursor:not-allowed}
+.preview-box{background:var(--bg);border:1px dashed var(--line);border-radius:8px;padding:12px 14px;margin-top:10px;font-size:13px;line-height:1.8}
+.hist-table{width:100%;border-collapse:collapse;font-size:13px;margin-top:8px}
+.hist-table th,.hist-table td{border-bottom:1px solid var(--line);padding:6px 4px;text-align:left}
+.hist-table th{color:var(--muted);font-weight:600;font-size:12px}
+.badge{display:inline-block;font-size:11px;padding:2px 8px;border-radius:99px;border:1px solid var(--line);color:var(--muted)}
+.badge.ok{color:var(--ok);border-color:var(--ok)}
+.badge.fail{color:var(--err);border-color:var(--err)}
+.badge.proc{color:var(--warn);border-color:var(--warn)}
+.section-title{font-size:15px;font-weight:600;margin-bottom:8px}
+.note{font-size:12px;color:var(--muted);margin-top:6px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<div id="app"><div class="spin">読み込み中…</div></div>
+</div>
+<script>
+const SUPA_URL="https://uuvsxzhpxtghojoubjcc.supabase.co";
+const SUPA_KEY="sb_publishable_MrwPJAx_Ws_fdRutprKCiQ_dg3wCiTr";
+const LS_KEY="nsportal_session_v1";
+const EMBED=new URLSearchParams(location.search).get("embed")==="1";
+if(EMBED) document.body.classList.add("embed-mode");
+
+const $=id=>document.getElementById(id);
+const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const fmtYen=n=>"¥"+Math.round(Number(n)||0).toLocaleString("ja-JP");
+const sess={get:()=>{try{return JSON.parse(localStorage.getItem(LS_KEY))}catch(e){return null}},
+            set:v=>localStorage.setItem(LS_KEY,JSON.stringify(v)),
+            clear:()=>localStorage.removeItem(LS_KEY)};
+
+async function api(path,opt={},token){
+  const r=await fetch(SUPA_URL+path,{...opt,headers:{
+    "apikey":SUPA_KEY,"Content-Type":"application/json",
+    ...(token?{"Authorization":"Bearer "+token}:{}),...(opt.headers||{})}});
+  let body=null;
+  const tx=await r.text(); try{body=tx?JSON.parse(tx):null}catch(e){}
+  return {ok:r.ok,status:r.status,body};
+}
+async function authed(path,opt={}){
+  const s=sess.get(); if(!s) return {ok:false,status:401,body:null};
+  let r=await api(path,opt,s.at);
+  if(r.status===401){ if(!await refresh()) return r; r=await api(path,opt,sess.get().at); }
+  return r;
+}
+async function refresh(){
+  const s=sess.get(); if(!s?.rt) return false;
+  const r=await api("/auth/v1/token?grant_type=refresh_token",{method:"POST",body:JSON.stringify({refresh_token:s.rt})});
+  if(!r.ok){sess.clear();return false}
+  sess.set({at:r.body.access_token,rt:r.body.refresh_token,uid:r.body.user.id});
+  return true;
+}
+async function fetchMe(){
+  const s=sess.get(); if(!s) return null;
+  const r=await authed(`/rest/v1/users?id=eq.${s.uid}&select=*`);
+  if(!r.ok||!Array.isArray(r.body)||!r.body[0]) return null;
+  return r.body[0];
+}
+async function fn(name,payload){
+  const s=sess.get();
+  const r=await fetch(SUPA_URL+"/functions/v1/"+name,{method:"POST",
+    headers:{"Content-Type":"application/json","apikey":SUPA_KEY,"Authorization":"Bearer "+(s?s.at:"")},
+    body:JSON.stringify(payload||{})});
+  const tx=await r.text(); let body=null; try{body=tx?JSON.parse(tx):null}catch(e){}
+  return {ok:r.ok,status:r.status,body};
+}
+
+let ME=null, ALLOWED_STORE_IDS=[], STORES=[], CORPS=[];
+const SEL={store_ids:[],period_from:"",period_to:"",format:"excel"};
+const REPORTS=[{key:"pl_monthly",name:"月次PL／年間推移PL",category:"経営・売上"}];
+
+function renderLogin(err){
+  $("app").innerHTML=`<div class="card">
+    <p style="margin-bottom:10px">ログインが必要です。ポータルからアクセスしてください。</p>
+    <a class="btn" href="index.html">← ポータルへ</a>
+    <div class="err">${esc(err||"")}</div>
+  </div>`;
+}
+function renderForbidden(){
+  $("app").innerHTML=`<div class="card">
+    <p>データ出力センターへのアクセス権限がありません（対象: マスター／社長／本部／チーム長／店長）。</p>
+    <a class="btn" href="index.html">← ポータルへ</a>
+  </div>`;
+}
+
+function defaultPeriod(){
+  const now=new Date();
+  const to=`${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,"0")}`;
+  const fromD=new Date(now.getFullYear(),now.getMonth()-2,1);
+  const from=`${fromD.getFullYear()}-${String(fromD.getMonth()+1).padStart(2,"0")}`;
+  return {from,to};
+}
+
+function storeListHtml(){
+  const byCorp=new Map();
+  STORES.forEach(s=>{
+    const key=s.corporation_id||"__none__";
+    if(!byCorp.has(key)) byCorp.set(key,[]);
+    byCorp.get(key).push(s);
+  });
+  let html="";
+  const corpName=id=>{ const c=CORPS.find(c=>c.id===id); return c?c.name:"法人未設定"; };
+  for(const [corpId,list] of byCorp){
+    html+=`<div class="corp-head">${esc(corpName(corpId))}</div>`;
+    list.sort((a,b)=>(a.sort_order||0)-(b.sort_order||0)).forEach(s=>{
+      html+=`<label><input type="checkbox" data-store="${s.id}" ${SEL.store_ids.includes(s.id)?"checked":""}> ${esc(s.name)}</label>`;
+    });
+  }
+  return html||`<div class="note">出力可能な店舗がありません</div>`;
+}
+
+function renderMain(u){
+  const period=SEL.period_from?SEL:Object.assign(SEL,defaultPeriod(),{period_from:defaultPeriod().from,period_to:defaultPeriod().to});
+  if(!SEL.period_from){ const d=defaultPeriod(); SEL.period_from=d.from; SEL.period_to=d.to; }
+  $("app").innerHTML=`
+    <div class="topbar">
+      <h1>📤 データ出力センター</h1>
+      <div class="who">👤 ${esc(u.name)} ${EMBED?"":'／ <a href="index.html">← ポータルへ</a>'}</div>
+    </div>
+
+    <div class="card">
+      <div class="section-title">出力する帳票</div>
+      <label>カテゴリー</label>
+      <select id="f-category">
+        <option value="経営・売上">経営・売上</option>
+      </select>
+      <label>出力データ</label>
+      <select id="f-report">
+        ${REPORTS.map(r=>`<option value="${r.key}">${esc(r.name)}</option>`).join("")}
+      </select>
+
+      <div class="row2">
+        <div>
+          <label>対象期間（開始月）</label>
+          <input type="month" id="f-from" value="${esc(SEL.period_from)}">
+        </div>
+        <div>
+          <label>対象期間（終了月）</label>
+          <input type="month" id="f-to" value="${esc(SEL.period_to)}">
+        </div>
+      </div>
+
+      <label>対象店舗（複数選択可。未選択の場合は自分が出力可能な全店舗）</label>
+      <div class="storelist" id="f-stores">${storeListHtml()}</div>
+
+      <label>出力形式</label>
+      <div class="fmt-row">
+        <div class="fmt-opt ${SEL.format==="excel"?"active":""}" data-fmt="excel">Excel</div>
+        <div class="fmt-opt ${SEL.format==="csv"?"active":""}" data-fmt="csv">CSV</div>
+        <div class="fmt-opt disabled" title="Phase 1では未対応（後追い予定）">Googleスプレッドシート（準備中）</div>
+      </div>
+
+      <div style="margin-top:16px;display:flex;gap:10px;flex-wrap:wrap">
+        <button class="btn sub" id="btn-preview">プレビュー</button>
+        <button class="btn" id="btn-run">出力する</button>
+      </div>
+      <div id="preview-result"></div>
+      <div id="run-result"></div>
+    </div>
+
+    <div class="card">
+      <div class="section-title">出力履歴</div>
+      <div id="history-box" class="spin">読み込み中…</div>
+    </div>
+
+    <div class="card">
+      <div class="section-title">⚙️ 出力テンプレート管理</div>
+      <div id="templates-box" class="spin">読み込み中…</div>
+    </div>
+  `;
+
+  $("f-stores").querySelectorAll("input[type=checkbox]").forEach(cb=>{
+    cb.onchange=()=>{
+      const id=cb.dataset.store;
+      if(cb.checked){ if(!SEL.store_ids.includes(id)) SEL.store_ids.push(id); }
+      else { SEL.store_ids=SEL.store_ids.filter(x=>x!==id); }
+    };
+  });
+  $("f-from").onchange=e=>{ SEL.period_from=e.target.value; };
+  $("f-to").onchange=e=>{ SEL.period_to=e.target.value; };
+  $("app").querySelectorAll(".fmt-opt[data-fmt]").forEach(el=>{
+    el.onclick=()=>{ SEL.format=el.dataset.fmt; $("app").querySelectorAll(".fmt-opt[data-fmt]").forEach(x=>x.classList.remove("active")); el.classList.add("active"); };
+  });
+  $("btn-preview").onclick=runPreview;
+  $("btn-run").onclick=runExport;
+
+  loadHistory();
+  loadTemplates(u);
+}
+
+async function runPreview(){
+  $("preview-result").innerHTML=`<div class="spin">プレビュー取得中…</div>`;
+  $("run-result").innerHTML="";
+  const r=await fn("export-preview",{
+    report_key:$("f-report").value, store_ids:SEL.store_ids,
+    period_from:SEL.period_from, period_to:SEL.period_to,
+  });
+  if(!r.ok||!r.body?.ok){
+    $("preview-result").innerHTML=`<div class="err">${esc(r.body?.error||"プレビューに失敗しました")}</div>`;
+    return;
+  }
+  const b=r.body;
+  $("preview-result").innerHTML=`<div class="preview-box">
+    対象期間: ${esc(b.period.from)} 〜 ${esc(b.period.to)}（${b.period.months}ヶ月分）<br>
+    対象店舗数: ${b.store_count}店舗（${esc(b.store_names.join("・"))}）<br>
+    対象データ件数: ${b.row_count}件<br>
+    売上高合計（目安）: ${fmtYen(b.sales_total)}
+    ${b.note?`<br><span style="color:var(--warn)">${esc(b.note)}</span>`:""}
+  </div>`;
+}
+
+async function runExport(){
+  $("run-result").innerHTML=`<div class="spin">出力中…（データ量により数十秒かかることがあります）</div>`;
+  const r=await fn("export-run",{
+    report_key:$("f-report").value, store_ids:SEL.store_ids,
+    period_from:SEL.period_from, period_to:SEL.period_to, format:SEL.format,
+  });
+  if(!r.ok||!r.body?.ok){
+    $("run-result").innerHTML=`<div class="err">${esc(r.body?.error||"出力に失敗しました")}</div>`;
+    return;
+  }
+  const b=r.body;
+  $("run-result").innerHTML=`<div class="msg-ok">
+    出力が完了しました（${b.row_count}件・${b.store_count}店舗）。
+    <a class="btn sm" href="${esc(b.signed_url)}" target="_blank" rel="noopener">⬇ ダウンロード</a>
+    <div class="note">このリンクは10分間のみ有効です。時間切れの場合は出力履歴から再取得してください。</div>
+  </div>`;
+  loadHistory();
+}
+
+async function loadHistory(){
+  const s=sess.get();
+  const r=await authed(`/rest/v1/export_history?user_id=eq.${s.uid}&order=created_at.desc&limit=10&select=id,report_key,export_type,period_from,period_to,status,row_count,created_at,file_path`);
+  if(!r.ok||!Array.isArray(r.body)){ $("history-box").innerHTML=`<div class="note">履歴を取得できませんでした</div>`; return; }
+  if(!r.body.length){ $("history-box").innerHTML=`<div class="note">まだ出力履歴がありません</div>`; return; }
+  const statusBadge=st=>st==="completed"?'<span class="badge ok">完了</span>':st==="failed"?'<span class="badge fail">失敗</span>':'<span class="badge proc">処理中</span>';
+  $("history-box").innerHTML=`<table class="hist-table"><thead><tr>
+    <th>日時</th><th>帳票</th><th>形式</th><th>期間</th><th>件数</th><th>状態</th>
+  </tr></thead><tbody>
+    ${r.body.map(h=>`<tr>
+      <td>${esc(new Date(h.created_at).toLocaleString("ja-JP",{month:"numeric",day:"numeric",hour:"2-digit",minute:"2-digit"}))}</td>
+      <td>${esc(h.report_key)}</td><td>${esc(h.export_type)}</td>
+      <td>${esc(h.period_from||"")}〜${esc(h.period_to||"")}</td>
+      <td>${h.row_count??"-"}</td><td>${statusBadge(h.status)}</td>
+    </tr>`).join("")}
+  </tbody></table>`;
+}
+
+async function loadTemplates(u){
+  const r=await fn("export-templates",{action:"list"});
+  if(!r.ok||!r.body?.ok){ $("templates-box").innerHTML=`<div class="note">テンプレート一覧を取得できませんでした</div>`; return; }
+  const canManage=u.is_master||["CEO","HQ"].includes(u.role);
+  $("templates-box").innerHTML=`<table class="hist-table"><thead><tr>
+    <th>コード</th><th>名称</th><th>カテゴリー</th><th>バージョン</th><th>状態</th>
+  </tr></thead><tbody>
+    ${(r.body.templates||[]).map(t=>`<tr>
+      <td>${esc(t.template_code)}</td><td>${esc(t.template_name)}</td><td>${esc(t.category)}</td>
+      <td>v${t.version}${t.file_path?"":"（未登録・既定書式で出力）"}</td>
+      <td>${t.is_active?'<span class="badge ok">有効</span>':'<span class="badge">無効</span>'}</td>
+    </tr>`).join("")}
+  </tbody></table>
+  ${canManage?'<div class="note">テンプレートファイルの差し替えは現在Claude Codeでの対応が必要です（次フェーズでアップロードUIを追加予定）。</div>':""}
+  `;
+}
+
+async function main(){
+  if(!sess.get()){renderLogin();return}
+  const u=await fetchMe();
+  if(!u){sess.clear();renderLogin("セッションが切れました。ポータルから再度ログインしてください。");return}
+  if(u.is_active===false){renderLogin("このアカウントは無効化されています。");return}
+  ME=u;
+
+  const s=sess.get();
+  const canR=await authed(`/rest/v1/rpc/export_can_access`,{method:"POST",body:JSON.stringify({})});
+  if(!canR.ok||canR.body!==true){ renderForbidden(); return; }
+
+  const idsR=await authed(`/rest/v1/rpc/export_allowed_store_ids`,{method:"POST",body:JSON.stringify({p_uid:s.uid})});
+  ALLOWED_STORE_IDS=Array.isArray(idsR.body)?idsR.body:[];
+  if(!ALLOWED_STORE_IDS.length){ renderForbidden(); return; }
+
+  const [storesR,corpsR]=await Promise.all([
+    authed(`/rest/v1/stores?id=in.(${ALLOWED_STORE_IDS.join(",")})&is_active=eq.true&select=id,name,corporation_id,sort_order`),
+    authed(`/rest/v1/corporations?is_active=eq.true&select=id,name,sort_order&order=sort_order`),
+  ]);
+  STORES=Array.isArray(storesR.body)?storesR.body:[];
+  CORPS=Array.isArray(corpsR.body)?corpsR.body:[];
+
+  renderMain(u);
+}
+main();
+</script>
+</body>
+</html>
