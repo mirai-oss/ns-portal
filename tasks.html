@@ -753,9 +753,10 @@ function checklistStepHtml(s,items,canTouch){
   const addOpen=CHK_ADD_OPEN.has(s.id);
   return `<div style="padding:8px 12px 4px" onclick="event.stopPropagation()">
     ${items.length?`<div class="meta" style="margin-bottom:2px">✅ 手順チェックリスト</div>${rows}`:""}
-    ${canTouch?(addOpen?`<div style="margin-top:6px;display:flex;gap:6px">
-      <input data-chknew="${s.id}" placeholder="手順を追加" style="flex:1">
-      <button class="linkbtn" data-chkadd="${s.id}">追加</button>
+    ${canTouch?(addOpen?`<div style="margin-top:6px">
+      <input data-chknew="${s.id}" placeholder="手順を追加">
+      <button class="btn sm" data-chkadd="${s.id}" style="margin-top:6px">＋ 追加して保存する</button>
+      <div class="meta" style="margin-top:4px">↑ このボタンを押すと保存されます</div>
     </div>`:`<button class="linkbtn" data-chkaddopen="${s.id}" style="margin-top:${items.length?"6px":"0"}">＋ 手順チェックリストを追加</button>`):""}
   </div>`;
 }
@@ -879,7 +880,8 @@ function linkFormHtml(){
       <label>または任意のURL</label><input id="lk-manualurl" type="url" placeholder="https://…（任意）">
     </div>
     <div id="lk-refwrap" style="display:none"><label>参照メモ（任意・金庫キーなど）</label><input id="lk-ref"></div>
-    <button class="btn sm" style="margin-top:8px" id="lk-add">追加</button>
+    <button class="btn sm" style="margin-top:8px" id="lk-add">＋ 追加して保存する</button>
+    <div class="meta" style="margin-top:4px">↑ このボタンを押すと保存されます（別に「保存」ボタンはありません）</div>
     <div class="err" id="lk-msg"></div>
   </div>`;
 }
@@ -916,7 +918,8 @@ function attachBoxHtml(prefix,links,photos,canEdit){
         <select id="${prefix}-manualsel"><option value="">選択してください</option></select>
         <div class="meta" id="${prefix}-manualempty" style="display:none">本部マニュアルにまだ登録がありません（日報アプリのマニュアルで登録）</div>
       </div>
-      <button class="linkbtn" id="${prefix}-lkadd" style="margin-top:6px">＋リンク追加</button>
+      <button class="btn sm" id="${prefix}-lkadd" style="margin-top:6px">＋ 追加して保存する</button>
+      <div class="meta" style="margin-top:4px">↑ このボタンを押すと保存されます（別に「保存」ボタンはありません。押さずに戻ると入力は消えます）</div>
       <div style="margin-top:6px"><label>📷 写真を追加</label><input type="file" accept="image/*" id="${prefix}-photo"></div>
       <div class="err" id="${prefix}-msg"></div>
     `:""}
@@ -981,7 +984,8 @@ function checklistBoxHtml(prefix,items){
     <label>✅ チェックリスト（手順）</label>
     <div id="${prefix}-list">${rows||'<div class="meta" style="color:var(--muted)">チェック項目はまだありません</div>'}</div>
     <input id="${prefix}-title" placeholder="例: 冷蔵庫の温度を確認">
-    <button class="linkbtn" id="${prefix}-add" style="margin-top:6px">＋ チェック項目を追加</button>
+    <button class="btn sm" id="${prefix}-add" style="margin-top:6px">＋ 追加して保存する</button>
+    <div class="meta" style="margin-top:4px">↑ このボタンを押すと保存されます</div>
     <div class="err" id="${prefix}-msg"></div>
   </div>`;
 }
