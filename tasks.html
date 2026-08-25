@@ -780,6 +780,10 @@ function stepHtml(t,s,u){
       ${!s.completed_at&&canTouch?`<span>${open?"▲":"▼"}</span>`:""}
     </div>
     ${(checklist.length||canTouch)?checklistStepHtml(s,checklist,canTouch):""}
+    ${(links.length||photos.length||attCanEdit)?`<div style="padding:8px 12px 4px" onclick="event.stopPropagation()">
+      <button class="linkbtn" data-stepattopen="${s.id}">📎 添付・マニュアル（${links.length+photos.length}件） ${STEP_ATT_OPEN.has(s.id)?"▲ 閉じる":"▼ 開く"}</button>
+      ${STEP_ATT_OPEN.has(s.id)?attachBoxHtml(`tsatt-${s.id}`,links,photos,attCanEdit):""}
+    </div>`:""}
     ${editOpen?`<div class="step-body" onclick="event.stopPropagation()">
       <label>担当</label><select id="stepedit-assignee-${s.id}"><option value="">未定</option>${assignableUsers().map(x=>`<option value="${x.id}" ${s.assignee_id===x.id?"selected":""}>${esc(x.name)}</option>`).join("")}</select>
       <label>期限日</label><input type="date" id="stepedit-due-${s.id}" value="${esc(s.due_date||"")}">
@@ -796,10 +800,6 @@ function stepHtml(t,s,u){
         <div class="photo-grid">${photos.map(p=>`<a ${photoTag(p.storage_path)} href="#" target="_blank"><img ${photoTag(p.storage_path)} src=""></a>`).join("")}</div>`:""}
       <button class="btn sm" style="margin-top:8px" data-complete="${s.id}">この工程を完了にする</button>
       <div class="err" id="stepmsg-${s.id}"></div>
-    </div>`:""}
-    ${(links.length||photos.length||attCanEdit)?`<div style="padding:8px 12px 4px" onclick="event.stopPropagation()">
-      <button class="linkbtn" data-stepattopen="${s.id}">📎 添付・マニュアル（${links.length+photos.length}件） ${STEP_ATT_OPEN.has(s.id)?"▲ 閉じる":"▼ 開く"}</button>
-      ${STEP_ATT_OPEN.has(s.id)?attachBoxHtml(`tsatt-${s.id}`,links,photos,attCanEdit):""}
     </div>`:""}
   </div>`;
 }
