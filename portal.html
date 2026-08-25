@@ -767,6 +767,10 @@ const JOHO_URL="https://ns-info-system.vercel.app";
 // nippoが対応した瞬間、portal.html側は無改修でヘッダー二重表示が消える
 const nippoPage=p=>NIPPO_URL+"?page="+p+"&embed=1";
 const keieiTab=t=>KEIEI_URL+"?embed=1&tab="+t;
+// 本部タスクボード全面刷新Phase1（担当E・コミットd233468）の受け口。
+// tasks.htmlは元々embed/pageパラメータに対応していなかったため、
+// 担当Eが先行してtasks.html側に実装・依頼をWORKLOG経由で受けて追加
+const tasksPage=p=>"tasks.html?embed=1&page="+p;
 
 const TOP_ITEMS=[
   {key:"home",ico:"🏠",label:"概要（ホーム）",type:"home"},
@@ -838,7 +842,13 @@ const GROUPS=[
     {key:"admin-perm",     ico:"🔑", label:"権限設定（従来ポータル）", legacyLink:true},
     {key:"admin-notify",   ico:"🔔", label:"通知先（配信グループ管理）", url:nippoPage("admin")},
     {key:"admin-stores",   ico:"🏢", label:"マスタ：店舗管理", url:nippoPage("admin")},
-    {key:"admin-corps",    ico:"🏢", label:"マスタ：法人管理", url:"tasks.html"},
+    {key:"admin-corps",    ico:"🏢", label:"マスタ：法人管理", url:tasksPage("corps")},
+    // 本部タスクボード（tasks.html）自身の管理機能。従来ポータルのadmin-perm・
+    // nippoの配信グループ管理admin-notifyとは別物のため、混同しないラベルにしている
+    // （担当Eからの依頼・WORKLOG「2026-08-25（担当E実行スレッド・続き11）」）
+    {key:"admin-task-perm",   ico:"🔑", label:"権限設定（本部タスク機能）", url:tasksPage("perms")},
+    {key:"admin-task-notify", ico:"🔔", label:"通知設定（本部タスクのアラート）", url:tasksPage("notify")},
+    {key:"admin-task-past",   ico:"📁", label:"過去タスク", url:tasksPage("past")},
     {key:"admin-exporttpl",ico:"📄", label:"出力テンプレート管理", soon:true},
     {key:"admin-usage",    ico:"📊", label:"システム利用状況", type:"sysusage"},
   ]},
