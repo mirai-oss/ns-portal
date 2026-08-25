@@ -1594,6 +1594,7 @@ function renderTemplates(u){
   <div class="topbar"><h1>⚙️ テンプレート管理</h1><div class="who"><button class="linkbtn" id="back">← 戻る</button></div></div>
   <button class="btn sm" id="tpl-new" style="margin-bottom:14px">＋ 新しいテンプレート</button>
   <button class="linkbtn" id="tpl-csv" style="margin-bottom:14px;margin-left:8px">📤 CSV一括登録</button>
+  <button class="linkbtn" id="tpl-csvexport" style="margin-bottom:14px;margin-left:8px">📥 登録済み一覧をCSVダウンロード</button>
   <div class="card" style="margin-bottom:12px">
     <div class="chiprow" style="margin-bottom:0;align-items:center">
       <span>🔁 <select id="tf-freq" style="width:auto;display:inline-block;padding:5px 10px;font-size:12px;border-radius:99px">
@@ -1615,6 +1616,7 @@ function renderTemplates(u){
   $("back").onclick=()=>goBack(u);
   $("tpl-new").onclick=()=>openTplEdit(u,null);
   $("tpl-csv").onclick=()=>{pushNav(); VIEW="csvimport";renderCsvImport(u);};
+  $("tpl-csvexport").onclick=()=>exportTemplatesCsv();
   $("tf-freq").onchange=e=>{TPL_FILTER.freq=e.target.value;refreshTplList(u);};
   $("tf-corp").onchange=e=>{TPL_FILTER.corp=e.target.value;refreshTplList(u);};
   let tq=null;
@@ -1980,6 +1982,27 @@ function downloadTextFile(filename,text,mime){
   const a=document.createElement("a");
   a.href=url; a.download=filename; document.body.appendChild(a); a.click();
   document.body.removeChild(a); URL.revokeObjectURL(url);
+}
+/* E-3(B2): 登録済みテンプレ一覧のCSVエクスポート（列は雛形DLと同形式＝そのまま再アップロード可能） */
+const CSV_FREQ_REV={daily:"毎日",weekly:"毎週",monthly:"毎月"};
+const CSV_WEEKDOW_REV=["日","月","火","水","木","金","土"];
+async function exportTemplatesCsv(){
+  const list=filteredTemplates();
+  if(!list.length){ alert("エクスポート対象のテンプレートがありません（絞り込みを確認してください）"); return; }
+  const ids=list.map(t=>t.id);
+  const sr=await authed(`/rest/v1/hq_task_template_steps?template_id=in.(${ids.join(",")})&order=template_id,sort_order`);
+  const stepsByTpl={};
+  if(sr.ok&&Array.isArray(sr.body)) sr.body.forEach(s=>{ (stepsByTpl[s.template_id]=stepsByTpl[s.template_id]||[]).push(s); });
+  const rows=[CSV_HEADERS];
+  list.forEach(tpl=>{
+    const dow=tpl.freq==="weekly"?(CSV_WEEKDOW_REV[tpl.weekly_dow]||""):(tpl.freq==="monthly"?String(tpl.monthly_dom||""):"");
+    rows.push(["template",tpl.title,CSV_FREQ_REV[tpl.freq]||tpl.freq,dow,tpl.corp,"",String(tpl.due_offset_days||0),(tpl.due_time||"").slice(0,5),tpl.notes||"",tpl.visibility==="members"?"指定":"全員"]);
+    (stepsByTpl[tpl.id]||[]).forEach(s=>{
+      const email=s.assignee_id?((USERS.find(x=>x.id===s.assignee_id)||{}).email||""):"";
+      rows.push(["step",s.title,"","","",email,String(s.offset_days||0),(s.due_time||"").slice(0,5),"",""]);
+    });
+  });
+  downloadTextFile(`hq_template_export_${todayStr()}.csv`,rows.map(r=>r.map(csvEscape).join(",")).join("\r\n"));
 }
 function parseCsv(text){
   const rows=[]; let row=[]; let field=""; let inQuotes=false;
