@@ -835,12 +835,13 @@ function checklistStepHtml(s,items,canTouch){
 }
 function stepHtml(t,s,u){
   const canTouch=canManage(u)||s.assignee_id===u.id||(!s.assignee_id);
-  // Phase3(全面刷新): 担当・期限は✏️編集での開閉式をやめ、デザイン案どおり常時表示の
-  // プルダウン＋日付/時刻入力＋保存ボタンに戻す（ユーザー指示）。対象は完了前の工程のみ
+  // Phase3(全面刷新・修正版): デザイン案を見直すと、担当・期限の編集フォーム(ownerline)は
+  // 常時表示ではなく process-body ＝工程を開いたときに出てくる折りたたみパネルの中にある
+  // （行の見出しには担当・期限の「summary」テキストだけが常時出ている）。PCはデザイン案の
+  // この構造どおりに合わせ、添付・チェックリストと同じ1つのパネル(STEP_ATT_OPEN)へ統合する
   const canEditAssign=canManage(u)&&!s.completed_at;
   let metaLine="";
   if(s.completed_at) metaLine=`担当: ${esc(userName(s.assignee_id)||"—")} ／ 期限 ${fmtDD(s.due_date,s.due_time)} → ${fmtDT(s.completed_at)} 完了${esc(userName(s.completed_by)?" ("+userName(s.completed_by)+")":"")}`;
-  else if(canEditAssign) metaLine=s._isCurrent?`<span class="now-tag">いまここ</span>`:""; // 担当・期限は下の常時表示フォームに表示するのでここでは重複させない
   else if(s._isCurrent) metaLine=`<span class="now-tag">いまここ</span> ／ 担当: ${esc(userName(s.assignee_id)||"未定")} ／ 期限 ${fmtDD(s.due_date,s.due_time)}`;
   else metaLine=`担当: ${esc(userName(s.assignee_id)||"未定")} ／ 期限 ${fmtDD(s.due_date,s.due_time)}`;
   const photos=stepPhotosFor(t,s.id);
@@ -860,16 +861,7 @@ function stepHtml(t,s,u){
   const panelOpen=STEP_ATT_OPEN.has(s.id);
   return `<div class="step ${s._isCurrent?'cur':''}">
     <div class="row1" ${hasPanel?`data-stepattopen="${s.id}"`:""}><span class="ic">${stepIcon(s)}</span>
-      <div class="st">${esc(s.title)}${metaLine?`<div class="meta">${metaLine}</div>`:""}
-        ${canEditAssign?`<div class="stepform-row" style="margin:6px 0 0" onclick="event.stopPropagation()">
-          <div class="f"><label>担当</label><select data-stepowner="${s.id}"><option value="">未定</option>${assignableUsers().map(x=>`<option value="${x.id}" ${s.assignee_id===x.id?"selected":""}>${esc(x.name)}</option>`).join("")}</select></div>
-          <div class="f"><label>期限日</label><input type="date" data-stepdue="${s.id}" value="${esc(s.due_date||"")}"></div>
-          <div class="f"><label>期限時刻（任意）</label><input type="time" data-steptime="${s.id}" value="${esc(s.due_time||"")}"></div>
-          <div class="f" style="flex:0 0 auto;min-width:0"><label>&nbsp;</label><button class="btn sm" data-stepsavemeta="${s.id}">保存</button></div>
-        </div>
-        <div class="err" id="stepmetamsg-${s.id}"></div>`:""}
-        ${s.completed_at&&canTouch?`<div class="meta"><button class="linkbtn" data-stepundo="${s.id}" onclick="event.stopPropagation()">↩️ 取り消す</button></div>`:""}
-        ${canQuickComplete?`<button class="btn sm" data-quickcomplete="${s.id}" style="margin-top:6px" onclick="event.stopPropagation()">✅ 完了にする</button>`:""}
+      <div class="st">${esc(s.title)}<div class="meta">${metaLine}${s.completed_at&&canTouch?` ／ <button class="linkbtn" data-stepundo="${s.id}" onclick="event.stopPropagation()">↩️ 取り消す</button>`:""}${canQuickComplete?`<button class="btn sm" data-quickcomplete="${s.id}" style="margin-left:8px;vertical-align:middle" onclick="event.stopPropagation()">✅ 完了にする</button>`:""}</div>
       </div>
       ${hasPanel?`<span>${panelOpen?"▲":"▼"}</span>`:""}
     </div>
@@ -877,6 +869,13 @@ function stepHtml(t,s,u){
     ${hasPanel?`<div style="padding:8px 12px 4px" onclick="event.stopPropagation()">
       <button class="linkbtn" data-stepattopen="${s.id}">📎 添付・マニュアル（${links.length+photos.length}件） ${panelOpen?"▲ 閉じる":"▼ 開く"}</button>
       ${panelOpen?`
+        ${canEditAssign?`<div class="stepform-row" style="margin-top:10px">
+          <div class="f"><label>担当</label><select data-stepowner="${s.id}"><option value="">未定</option>${assignableUsers().map(x=>`<option value="${x.id}" ${s.assignee_id===x.id?"selected":""}>${esc(x.name)}</option>`).join("")}</select></div>
+          <div class="f"><label>期限日</label><input type="date" data-stepdue="${s.id}" value="${esc(s.due_date||"")}"></div>
+          <div class="f"><label>期限時刻（任意）</label><input type="time" data-steptime="${s.id}" value="${esc(s.due_time||"")}"></div>
+          <div class="f" style="flex:0 0 auto;min-width:0"><label>&nbsp;</label><button class="btn sm" data-stepsavemeta="${s.id}">保存</button></div>
+        </div>
+        <div class="err" id="stepmetamsg-${s.id}"></div>`:""}
         ${canComplete?`<div class="step-body" style="border:0;padding:10px 0 0">
           ${s.is_binary?`<label>判定</label>
             <select id="judge-${s.id}"><option value="">選択してください</option><option value="ok">OK</option><option value="issue">異常あり</option></select>
