@@ -1,0 +1,317 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>N-Style 本部タスク 完成版プロトタイプ</title>
+<style>
+:root{
+  --bg:#f4f1eb;--panel:#fff;--ink:#231f1a;--muted:#7d756d;--line:#e4ddd4;--nav:#211d18;
+  --accent:#c94728;--red:#c93f2b;--redsoft:#fde9e4;--green:#2f8f63;--greensoft:#e8f5ee;
+  --amber:#b77b13;--ambersoft:#fff3d8;--blue:#2f6fb7;--bluesoft:#e8f0fb;--shadow:0 8px 24px #231f1a10;
+}
+*{box-sizing:border-box}
+body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans JP",sans-serif;background:var(--bg);color:var(--ink)}
+button,input,select,textarea{font:inherit}
+button{cursor:pointer}
+.app{display:grid;grid-template-columns:250px 1fr;min-height:100vh}
+.side{background:var(--nav);color:#fff;padding:22px 18px;position:sticky;top:0;height:100vh}
+.brand{font-size:18px;font-weight:900;padding-bottom:18px;border-bottom:1px solid #ffffff20}.brand small{display:block;color:#bdb6ad;font-size:12px;margin-top:4px}
+.nav{margin-top:18px}.nav button{width:100%;border:0;background:transparent;color:#d8d1c9;padding:12px;border-radius:10px;text-align:left;margin:3px 0}.nav .active{background:#3a342e;color:#fff;font-weight:800}
+.top{height:76px;background:#fff;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center;padding:0 28px;position:sticky;top:0;z-index:10}
+.top h1{margin:0;font-size:22px}.meta{font-size:13px;color:var(--muted);margin-top:4px}
+.content{padding:26px 30px 50px;max-width:1500px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:16px;box-shadow:var(--shadow)}
+.btn{border:1px solid var(--line);background:#fff;border-radius:10px;padding:9px 12px}.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}.btn.green{background:var(--green);border-color:var(--green);color:#fff}.btn:disabled{opacity:.45;cursor:not-allowed}
+.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:14px}.metric{padding:18px}.metric .l{font-size:13px;color:var(--muted)}.metric .v{font-size:32px;font-weight:900;margin-top:7px}.metric .s{font-size:12px;color:var(--muted);margin-top:4px}
+.toolbar{margin-top:16px;padding:16px}.toolbar-top{display:grid;grid-template-columns:1fr auto auto;gap:10px;align-items:center}.search{width:100%;border:1px solid var(--line);border-radius:10px;padding:11px 13px}.actions{display:flex;gap:8px;flex-wrap:wrap}.chips{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}.chip{border:1px solid var(--line);background:#fff;border-radius:999px;padding:8px 12px}.chip.active{background:var(--nav);color:#fff;border-color:var(--nav)}
+.views{display:flex;border:1px solid var(--line);border-radius:12px;overflow:hidden}.views button{border:0;background:#fff;padding:10px 12px}.views .active{background:var(--nav);color:#fff}
+.area{margin-top:16px}.board{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}.colhead{display:flex;justify-content:space-between;margin:0 2px 10px}.count{font-size:12px;color:var(--muted)}
+.task{padding:15px;margin-bottom:12px;transition:.15s}.task:hover{transform:translateY(-1px);box-shadow:0 10px 26px #231f1a16}.task.overdue{border-color:#e49a8c;box-shadow:0 0 0 1px #e49a8c inset}
+.badges{display:flex;gap:6px;flex-wrap:wrap}.pill{padding:4px 8px;border-radius:999px;font-size:11px;font-weight:800}.red{background:var(--redsoft);color:var(--red)}.amber{background:var(--ambersoft);color:var(--amber)}.green{background:var(--greensoft);color:var(--green)}.blue{background:var(--bluesoft);color:var(--blue)}.gray{background:#f2efeb;color:#736b63}
+.task h3{margin:10px 0 6px;font-size:16px}.task p{margin:4px 0;font-size:13px;color:#655d55}.important{color:var(--red);font-weight:800}.foot{display:flex;justify-content:space-between;margin-top:12px;font-size:12px;color:var(--muted)}
+.list,.calendar,.templateList{display:none}.listhead,.listrow{display:grid;grid-template-columns:2fr .8fr .8fr .8fr .9fr .7fr;gap:10px;align-items:center}.listhead{padding:0 14px 8px;color:var(--muted);font-size:12px}.listrow{background:#fff;padding:14px;border-top:1px solid var(--line)}
+.calendargrid{display:grid;grid-template-columns:repeat(7,1fr);gap:8px}.day{min-height:128px;background:#fff;border:1px solid var(--line);border-radius:12px;padding:10px}.day.today{box-shadow:0 0 0 2px var(--accent) inset}.date{font-size:12px;color:var(--muted);margin-bottom:8px}.ctask{font-size:11px;padding:7px 8px;border-radius:8px;margin-bottom:6px;background:#f7f3ee}.ctask.red{background:var(--redsoft);color:#9f2f20}.ctask.blue{background:var(--bluesoft);color:#245b94}.ctask.green{background:var(--greensoft);color:#246d4d}
+.hidden{display:none!important}
+.hero{display:grid;grid-template-columns:1.25fr .75fr;gap:16px}.pad{padding:20px}.title{font-size:26px;font-weight:900;margin:12px 0 8px}.desc{color:#655d55;line-height:1.7}.progress{height:10px;background:#eee8e0;border-radius:999px;overflow:hidden;margin:12px 0 6px}.progress span{display:block;height:100%;background:var(--accent)}
+.summary{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}.mini{border:1px solid var(--line);border-radius:12px;padding:13px}.mini small{display:block;color:var(--muted);margin-bottom:4px}.mini b{font-size:16px}
+.layout{display:grid;grid-template-columns:1.2fr .8fr;gap:16px;margin-top:16px}.head{padding:16px 18px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center}.body{padding:18px}
+.process{border:1px solid var(--line);border-radius:14px;margin-bottom:12px;overflow:hidden;background:#fff}.process.current{border-color:#e7a093;box-shadow:0 0 0 1px #e7a093 inset}.process.completed{border-color:#b9ddca;background:#fbfefc}
+.process-head{display:grid;grid-template-columns:38px 1fr auto;gap:10px;align-items:center;padding:14px}.num{width:34px;height:34px;border-radius:10px;background:#f4efe9;display:grid;place-items:center;font-weight:900}.process.current .num{background:var(--redsoft);color:var(--red)}.process.completed .num{background:var(--greensoft);color:var(--green)}
+.process-meta{display:flex;gap:8px;flex-wrap:wrap;margin-top:5px;font-size:12px;color:var(--muted)}.process-body{display:none;padding:0 14px 14px}.process.open .process-body{display:block}
+.ownerline{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:12px 0}.fieldbox{border:1px solid var(--line);border-radius:10px;padding:10px;background:#faf8f5}.fieldbox small{display:block;color:var(--muted);font-size:11px;margin-bottom:5px}.fieldbox select,.fieldbox input{width:100%;border:0;background:transparent;outline:none;font-weight:700}
+.checklist{margin-top:12px;border-top:1px solid var(--line);padding-top:10px}.checkitem{display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid #eee8e0}.checkitem input{width:18px;height:18px}
+.resources{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-top:12px}.resource{border:1px solid var(--line);border-radius:12px;padding:12px;background:#faf8f5}.resource b{display:block;font-size:13px}.resource small{color:var(--muted)}
+.proc-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:14px}.completebar{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-top:16px;padding:14px 16px;border:1px solid var(--line);border-radius:14px;background:#fff}
+.audit{margin-top:18px}.activity{font-size:12px;color:var(--muted)}.activity-row{display:grid;grid-template-columns:22px 1fr;gap:8px;padding:9px 0;border-bottom:1px solid var(--line)}.dot{width:9px;height:9px;border-radius:50%;background:#cfc6bc;margin-top:5px}.dot.green{background:var(--green)}
+.template{display:grid;grid-template-columns:1fr 340px;gap:16px}.form-card{padding:18px}.field{margin-bottom:14px}.field label{display:block;font-size:12px;color:var(--muted);font-weight:700;margin-bottom:6px}.field input,.field textarea,.field select{width:100%;border:1px solid var(--line);border-radius:10px;padding:10px;background:#fff}.field textarea{min-height:82px}
+.step-block{border:1px solid var(--line);border-radius:14px;padding:14px;margin-bottom:12px;background:#fff}.step-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.checkbuilder .row{display:grid;grid-template-columns:1fr auto;gap:8px;margin-bottom:8px}.addrow{display:grid;grid-template-columns:repeat(6,1fr);gap:8px;margin-top:12px}.addrow button{border:1px solid var(--line);background:#fff;border-radius:9px;padding:9px;font-size:12px}.preview{position:sticky;top:92px;height:max-content}.preview .pstep{border-left:3px solid #ddd2c7;padding:8px 0 8px 12px;margin:8px 0}.preview .pstep.current{border-left-color:var(--accent)}
+.tablewrap{overflow:auto}.templateTable{width:100%;border-collapse:collapse}.templateTable th,.templateTable td{padding:12px 14px;border-bottom:1px solid var(--line);text-align:left;font-size:13px}.templateTable th{background:#faf8f5;color:var(--muted)}
+.printsheet{display:none}
+.modal{position:fixed;inset:0;background:#14110e66;display:none;align-items:center;justify-content:center;padding:20px;z-index:30}.modal.open{display:flex}.modalbox{width:min(720px,96vw);background:#fff;border-radius:18px;box-shadow:0 30px 100px #0004}.modalhead{padding:16px 18px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between}.modalbody{padding:18px}
+@media print{
+  body *{visibility:hidden!important}
+  #printSheet,#printSheet *{visibility:visible!important}
+  #printSheet{display:block!important;position:absolute;left:0;top:0;width:100%;background:#fff;color:#000;padding:24px}
+  #printSheet h1{font-size:22px}.printTask{margin:0 0 18px;border:1px solid #ccc;padding:14px;border-radius:8px}.printCheck{margin:7px 0}
+}
+@media(max-width:1050px){.app{grid-template-columns:82px 1fr}.side span,.brand small{display:none}.board{grid-template-columns:1fr}.hero,.layout,.template{grid-template-columns:1fr}.metrics{grid-template-columns:repeat(2,1fr)}.preview{position:static}.addrow{grid-template-columns:repeat(3,1fr)}}
+@media(max-width:720px){.app{display:block}.side{display:none}.content{padding:16px 12px}.toolbar-top{grid-template-columns:1fr}.metrics,.summary,.ownerline,.step-grid,.resources,.addrow{grid-template-columns:1fr}.calendargrid{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="app">
+<aside class="side">
+  <div class="brand">🐔 <span>N-Styleグループ</span><small>社内ポータル</small></div>
+  <div class="nav">
+    <button>🏠 <span>ホーム</span></button>
+    <button class="active" onclick="goList()">📌 <span>本部タスク</span></button>
+    <button onclick="showTemplateList()">🗂️ <span>テンプレート</span></button>
+    <button>🧾 <span>経費申請</span></button>
+    <button>📊 <span>経営管理</span></button>
+  </div>
+</aside>
+
+<section>
+<header class="top">
+  <div><h1 id="pageTitle">本部タスク</h1><div class="meta" id="pageMeta">カード・リスト・カレンダー・テンプレートを一元管理</div></div>
+  <div><button class="btn">🔔</button></div>
+</header>
+
+<div class="content">
+
+<section id="listPage">
+  <div class="metrics">
+    <div class="card metric"><div class="l">期限超過</div><div class="v" style="color:var(--red)">3</div><div class="s">すぐ確認が必要</div></div>
+    <div class="card metric"><div class="l">今日の自分タスク</div><div class="v">4</div><div class="s">チェックシート印刷可</div></div>
+    <div class="card metric"><div class="l">3日以上停止</div><div class="v" style="color:var(--red)">4</div><div class="s">停滞タスク</div></div>
+    <div class="card metric"><div class="l">今月完了</div><div class="v">13</div><div class="s">完了済み</div></div>
+  </div>
+
+  <div class="card toolbar">
+    <div class="toolbar-top">
+      <input id="search" class="search" placeholder="🔎 タイトル・担当者・コメントを検索">
+      <div class="views">
+        <button class="active" data-view="board">▦ カード</button>
+        <button data-view="list">☷ リスト</button>
+        <button data-view="calendar">▣ カレンダー</button>
+      </div>
+      <div class="actions">
+        <button class="btn primary" onclick="openSingleTaskModal()">＋ 単発タスク追加</button>
+        <button class="btn" onclick="printToday()">🖨 今日の自分タスク</button>
+      </div>
+    </div>
+    <div class="chips">
+      <button class="chip active" data-filter="all">すべて</button>
+      <button class="chip" data-filter="mine">自分の担当</button>
+      <button class="chip" data-filter="assignedByMe">自分が依頼</button>
+      <button class="chip" data-filter="today">今日</button>
+      <button class="chip" data-filter="overdue">期限超過</button>
+      <button class="chip" data-filter="monthly">毎月</button>
+      <button class="chip" data-filter="single">単発</button>
+      <button class="chip" data-filter="nstyle">N-Style</button>
+      <button class="chip" data-filter="livegate">LiveGate</button>
+    </div>
+  </div>
+
+  <div class="area">
+    <div id="board" class="board">
+      <div><div class="colhead"><b>未着手</b><span class="count">6件</span></div>
+        <div class="card task overdue" data-tags="overdue monthly livegate mine today" onclick="openTask('J-center point')"><div class="badges"><span class="pill gray">LiveGate</span><span class="pill blue">毎月</span><span class="pill red">期限超過</span></div><h3>J-center point</h3><p>対象日 8/20 ／ 期限 8/20</p><p class="important">いま：請求書ダウンロード（メール）</p><div class="foot"><span>工程 0/3 完了</span><span>原 美香</span></div></div>
+        <div class="card task" data-tags="monthly nstyle mine today" onclick="openTask('8月度 給与計算')"><div class="badges"><span class="pill gray">N-Style</span><span class="pill blue">毎月</span><span class="pill amber">今日</span></div><h3>8月度 給与計算</h3><p>期限 9/10</p><p>いま：時給・交通費・勤怠確認</p><div class="foot"><span>工程 1/3</span><span>原 美香</span></div></div>
+      </div>
+      <div><div class="colhead"><b>進行中</b><span class="count">2件</span></div>
+        <div class="card task" data-tags="single assignedByMe" onclick="openTask('ゴイステック Uber登録')"><div class="badges"><span class="pill gray">トーホー</span><span class="pill amber">単発</span><span class="pill blue">あと5日</span></div><h3>ゴイステック Uber登録</h3><p>対象日 8/19 ／ 期限 8/27</p><p><b>いま：</b>写真撮影のスケジュール調整</p><div class="foot"><span>工程 2/4</span><span>坂本</span></div></div>
+      </div>
+      <div><div class="colhead"><b>完了</b><span class="count">13件</span></div>
+        <div class="card task" data-tags="monthly nstyle mine" onclick="openTask('入金確認')"><div class="badges"><span class="pill gray">N-Style</span><span class="pill blue">毎月</span><span class="pill green">完了</span></div><h3>入金確認</h3><p>対象日 8/12 ／ 8/12完了</p><div class="foot"><span>工程 12/12</span><span>齋藤</span></div></div>
+      </div>
+    </div>
+
+    <div id="list" class="list card">
+      <div class="listhead"><div>タスク</div><div>法人</div><div>担当</div><div>期限</div><div>状態</div><div>工程</div></div>
+      <div class="listrow" onclick="openTask('8月度 給与計算')"><div><b>8月度 給与計算</b><div class="meta">時給・交通費・勤怠確認</div></div><div>N-Style</div><div>原</div><div>9/10</div><div>進行中</div><div>1/3</div></div>
+      <div class="listrow" onclick="openTask('J-center point')"><div><b>J-center point</b><div class="meta">請求書ダウンロード</div></div><div>LiveGate</div><div>原</div><div style="color:var(--red);font-weight:800">8/20</div><div>期限超過</div><div>0/3</div></div>
+      <div class="listrow" onclick="openTask('ゴイステック Uber登録')"><div><b>Uber登録</b></div><div>トーホー</div><div>坂本</div><div>8/27</div><div>進行中</div><div>2/4</div></div>
+    </div>
+
+    <div id="calendar" class="calendar"><div class="calendargrid">
+      <div class="day"><div class="date">8/18</div><div class="ctask green">入金確認 ✓</div></div>
+      <div class="day"><div class="date">8/19</div><div class="ctask blue">Uber登録 開始</div></div>
+      <div class="day"><div class="date">8/20</div><div class="ctask red" onclick="openTask('J-center point')">J-center point</div></div>
+      <div class="day"><div class="date">8/21</div><div class="ctask">仕訳日記帳</div></div>
+      <div class="day today"><div class="date">8/22 今日</div><div class="ctask red">期限超過 3件確認</div><div class="ctask blue" onclick="openTask('8月度 給与計算')">給与計算</div></div>
+      <div class="day"><div class="date">9/5</div><div class="ctask blue">給与計算 工程1期限</div></div>
+      <div class="day"><div class="date">9/10</div><div class="ctask">給与計算 全体期限</div></div>
+    </div></div>
+  </div>
+</section>
+
+<section id="templateListPage" class="hidden">
+  <div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:14px">
+    <div><h2 style="margin:0">テンプレート一覧</h2><div class="meta">CSV一括出力・アップロード・編集</div></div>
+    <div class="actions">
+      <button class="btn primary" onclick="showTemplate()">＋ テンプレート作成</button>
+      <button class="btn" onclick="downloadTemplatesCSV()">⬇ CSV一括ダウンロード</button>
+      <label class="btn">⬆ CSV一括アップロード<input type="file" accept=".csv" style="display:none" onchange="uploadCSV(this)"></label>
+    </div>
+  </div>
+  <div class="card tablewrap">
+    <table class="templateTable">
+      <thead><tr><th>テンプレート名</th><th>法人</th><th>頻度</th><th>工程</th><th>担当</th><th>更新日</th><th></th></tr></thead>
+      <tbody id="templateRows">
+        <tr><td><b>月次 給与計算</b></td><td>N-Style</td><td>毎月</td><td>3</td><td>原 美香</td><td>8/22</td><td><button class="btn" onclick="showTemplate()">編集</button></td></tr>
+        <tr><td><b>J-center point</b></td><td>LiveGate</td><td>毎月</td><td>3</td><td>原 美香</td><td>8/20</td><td><button class="btn">編集</button></td></tr>
+        <tr><td><b>入金確認</b></td><td>N-Style</td><td>毎月</td><td>12</td><td>齋藤</td><td>8/18</td><td><button class="btn">編集</button></td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section id="taskPage" class="hidden">
+  <div style="margin-bottom:14px"><button class="btn" onclick="goList()">← 本部タスク一覧へ戻る</button> <button class="btn" onclick="showTemplate()">テンプレート編集</button></div>
+
+  <div class="hero">
+    <div class="card pad">
+      <div class="badges"><span class="pill gray">N-Style</span><span class="pill blue">毎月</span><span class="pill amber">進行中</span></div>
+      <div class="title" id="taskTitle">8月度 給与計算</div>
+      <div class="desc">全従業員の勤怠・時給・交通費を確認し、給与計算を確定するタスク。</div>
+      <div class="progress"><span id="overallProgress" style="width:0%"></span></div>
+      <div class="meta" id="overallText">工程 0 / 3 完了</div>
+    </div>
+    <div class="card pad"><div class="summary">
+      <div class="mini"><small>全体担当</small><b>原 美香</b></div>
+      <div class="mini"><small>全体期限</small><b>9/10 17:00</b></div>
+      <div class="mini"><small>現在工程</small><b>計算</b></div>
+      <div class="mini"><small>未完了チェック</small><b id="remainingChecks" style="color:var(--red)">5件</b></div>
+    </div></div>
+  </div>
+
+  <div class="layout">
+    <div>
+      <div class="card"><div class="head"><b>工程</b><span class="meta">担当・期限・時間・チェック・手順・資料</span></div><div class="body" id="processes">
+        <div class="process current open" data-process="1">
+          <div class="process-head" onclick="toggleProcess(this)"><div class="num">1</div><div><b>計算</b><div class="process-meta"><span>担当：原 美香</span><span>期限：9/5 17:00</span><span class="checkCount">チェック 1/3</span></div></div><span>⌄</span></div>
+          <div class="process-body">
+            <div class="ownerline">
+              <div class="fieldbox"><small>担当者</small><select class="ownerSelect"><option>原 美香</option><option>齋藤</option><option>中山</option><option>佐藤</option><option>坂本</option></select></div>
+              <div class="fieldbox"><small>工程期限</small><div style="display:flex;gap:8px"><input type="date" class="dueDate" value="2026-09-05"><input type="time" class="dueTime" value="17:00"></div></div>
+            </div>
+            <div class="checklist"><b>✅ チェック</b>
+              <label class="checkitem"><input type="checkbox" checked onchange="updateProgress()"><span>時給確認</span></label>
+              <label class="checkitem"><input type="checkbox" onchange="updateProgress()"><span>交通費確認</span></label>
+              <label class="checkitem"><input type="checkbox" onchange="updateProgress()"><span>勤怠情報確認</span></label>
+            </div>
+            <div style="margin-top:14px"><b>📘 手順書</b><ol style="line-height:1.8;color:#5f574f;padding-left:22px"><li>スマレジ勤怠データを確認する</li><li>時給・交通費設定に差異がないか確認する</li><li>深夜・残業時間を確認して給与計算を実行する</li></ol></div>
+            <div class="resources"><div class="resource"><b>📄 給与計算マニュアル</b><small>PDF / 最新版</small></div><div class="resource"><b>🎥 操作動画</b><small>4分20秒</small></div><div class="resource"><b>🔗 スマレジタイムカード</b><small>勤怠確認</small></div><div class="resource"><b>🔐 ID / PW</b><small>社内情報システムを開く</small></div></div>
+            <div class="proc-actions"><button class="btn" onclick="saveProcessMeta(1)">担当・期限を保存</button><button class="btn green processCompleteBtn" onclick="completeProcess(1)">この工程を完了</button></div>
+          </div>
+        </div>
+
+        <div class="process" data-process="2">
+          <div class="process-head" onclick="toggleProcess(this)"><div class="num">2</div><div><b>確認</b><div class="process-meta"><span>担当：齋藤</span><span>期限：9/8 15:00</span><span class="checkCount">チェック 0/2</span></div></div><span>⌄</span></div>
+          <div class="process-body">
+            <div class="ownerline"><div class="fieldbox"><small>担当者</small><select class="ownerSelect"><option>齋藤</option><option>原 美香</option><option>中山</option></select></div><div class="fieldbox"><small>工程期限</small><div style="display:flex;gap:8px"><input type="date" class="dueDate" value="2026-09-08"><input type="time" class="dueTime" value="15:00"></div></div></div>
+            <div class="checklist"><b>✅ チェック</b><label class="checkitem"><input type="checkbox" onchange="updateProgress()"><span>給与総額確認</span></label><label class="checkitem"><input type="checkbox" onchange="updateProgress()"><span>振込データ確認</span></label></div>
+            <div class="proc-actions"><button class="btn" onclick="saveProcessMeta(2)">担当・期限を保存</button><button class="btn green processCompleteBtn" onclick="completeProcess(2)">この工程を完了</button></div>
+          </div>
+        </div>
+
+        <div class="process" data-process="3">
+          <div class="process-head" onclick="toggleProcess(this)"><div class="num">3</div><div><b>確定・振込</b><div class="process-meta"><span>担当：中山</span><span>期限：9/10 17:00</span><span class="checkCount">チェック 0/1</span></div></div><span>⌄</span></div>
+          <div class="process-body">
+            <div class="ownerline"><div class="fieldbox"><small>担当者</small><select class="ownerSelect"><option>中山</option><option>原 美香</option><option>齋藤</option></select></div><div class="fieldbox"><small>工程期限</small><div style="display:flex;gap:8px"><input type="date" class="dueDate" value="2026-09-10"><input type="time" class="dueTime" value="17:00"></div></div></div>
+            <div class="checklist"><b>✅ チェック</b><label class="checkitem"><input type="checkbox" onchange="updateProgress()"><span>最終承認</span></label></div>
+            <div class="proc-actions"><button class="btn" onclick="saveProcessMeta(3)">担当・期限を保存</button><button class="btn green processCompleteBtn" onclick="completeProcess(3)">この工程を完了</button></div>
+          </div>
+        </div>
+      </div></div>
+      <div class="completebar"><div><b>タスク全体の完了</b><div class="meta" id="completeHint">すべての工程が完了すると押せます</div></div><button class="btn green" id="taskCompleteBtn" disabled onclick="completeTask()">タスクを完了</button></div>
+    </div>
+
+    <div>
+      <div class="card"><div class="head"><b>このタスクで使うもの</b></div><div class="body">
+        <div class="resource"><b>📘 給与計算マニュアル</b><small>最新版</small></div>
+        <div class="resource" style="margin-top:8px"><b>🔐 MoneyForward給与</b><small>ID/PW参照</small></div>
+        <div class="resource" style="margin-top:8px"><b>🔗 スマレジタイムカード</b><small>勤怠データ</small></div>
+      </div></div>
+      <div class="card" style="margin-top:16px"><div class="head"><b>メモ</b></div><div class="body"><textarea style="width:100%;min-height:100px;border:1px solid var(--line);border-radius:10px;padding:10px" placeholder="例：佐藤さんの交通費確認待ち"></textarea><button class="btn primary" style="margin-top:8px">保存</button></div></div>
+    </div>
+  </div>
+
+  <div class="card audit"><div class="head"><b>編集履歴</b><span class="meta">誰が・何を・いつ変更したか</span></div><div class="body"><div class="activity" id="auditLog">
+    <div class="activity-row"><span class="dot green"></span><div><b>中山</b> が「勤怠情報確認」をチェック項目に追加 <span class="meta">8/22 13:05</span></div></div>
+    <div class="activity-row"><span class="dot"></span><div><b>齋藤</b> が工程2の期限を 9/7 → 9/8 に変更 <span class="meta">8/22 14:18</span></div></div>
+  </div></div></div>
+</section>
+
+<section id="templatePage" class="hidden">
+  <div style="margin-bottom:14px"><button class="btn" onclick="showTemplateList()">← テンプレート一覧へ戻る</button></div>
+  <div class="template">
+    <div>
+      <div class="card form-card"><div class="field"><label>テンプレート名</label><input value="月次 給与計算"></div><div class="field"><label>概要</label><textarea>全従業員の勤怠・時給・交通費を確認し、給与計算を確定する。</textarea></div><div class="step-grid"><div class="field"><label>法人</label><select><option>N-Style</option></select></div><div class="field"><label>頻度</label><select><option>毎月</option><option>毎週</option><option>単発</option></select></div></div></div>
+      <div class="card form-card" style="margin-top:16px"><div class="head" style="padding:0 0 16px;border:0"><div><b>工程・手順</b><div class="meta">工程ごとに担当・期限・チェック・資料を設定</div></div><button class="btn primary" onclick="addTemplateStep()">＋ 工程追加</button></div>
+        <div id="templateBuilder">
+          <div class="step-block"><div style="display:flex;justify-content:space-between"><b>工程1：計算</b><span class="pill blue">工程</span></div><div class="step-grid" style="margin-top:10px"><div class="field"><label>担当者</label><select><option>原 美香</option><option>齋藤</option><option>中山</option></select></div><div class="field"><label>期限</label><div style="display:flex;gap:8px"><input type="date" value="2026-09-05"><input type="time" value="17:00"></div></div></div><div class="field"><label>手順</label><textarea>スマレジ勤怠確認 → 時給/交通費確認 → 給与計算実行</textarea></div><div class="checkbuilder"><div class="row"><input value="時給確認"><button class="btn" onclick="this.parentElement.remove()">削除</button></div><div class="row"><input value="交通費確認"><button class="btn" onclick="this.parentElement.remove()">削除</button></div><div class="row"><input value="勤怠情報確認"><button class="btn" onclick="this.parentElement.remove()">削除</button></div><button class="btn" onclick="addCheck(this)">＋ チェック追加</button></div><div class="addrow"><button onclick="addResource(this,'📄 マニュアル')">📄 マニュアル</button><button onclick="addResource(this,'🎥 動画')">🎥 動画</button><button onclick="addResource(this,'🖼️ 写真')">🖼️ 写真</button><button onclick="addResource(this,'🔗 URL')">🔗 URL</button><button onclick="addResource(this,'🔐 ID/PW')">🔐 ID/PW</button><button onclick="addResource(this,'📁 Drive')">📁 Drive</button></div><div class="resource-list"></div></div>
+        </div>
+        <div style="display:flex;gap:8px;margin-top:16px"><button class="btn primary">テンプレート保存</button><button class="btn">下書き保存</button></div>
+      </div>
+      <div class="card audit"><div class="head"><b>テンプレート編集履歴</b><span class="meta">誰が何を変えたか</span></div><div class="body"><div class="activity"><div class="activity-row"><span class="dot green"></span><div><b>中山</b> が工程1に「交通費確認」を追加 <span class="meta">8/22 16:02</span></div></div></div></div></div>
+    </div>
+    <div class="card preview"><div class="head"><b>従業員側プレビュー</b></div><div class="body"><div class="badges"><span class="pill gray">N-Style</span><span class="pill blue">毎月</span></div><h3>月次 給与計算</h3><div class="pstep current"><b>1. 計算</b><span class="meta">担当：原 美香 / 期限：9/5 17:00</span><br><span class="meta">チェック3件・マニュアル・動画・URL・ID/PW</span></div><div class="pstep"><b>2. 確認</b><span class="meta">必要な情報だけ展開</span></div></div></div>
+  </div>
+</section>
+
+</div>
+</section>
+</div>
+
+<div class="modal" id="singleTaskModal">
+  <div class="modalbox">
+    <div class="modalhead"><b>単発タスク追加</b><button class="btn" onclick="closeSingleTaskModal()">×</button></div>
+    <div class="modalbody">
+      <div class="field"><label>タスク名</label><input id="singleTitle" placeholder="例：新橋店 冷蔵庫修理確認"></div>
+      <div class="step-grid"><div class="field"><label>担当者</label><select><option>原 美香</option><option>齋藤</option><option>中山</option><option>佐藤</option><option>坂本</option></select></div><div class="field"><label>期限</label><div style="display:flex;gap:8px"><input type="date"><input type="time"></div></div></div>
+      <div class="field"><label>内容</label><textarea placeholder="必要な内容だけ"></textarea></div>
+      <button class="btn primary" onclick="createSingleTask()">追加する</button>
+    </div>
+  </div>
+</div>
+
+<section id="printSheet" class="printsheet">
+  <h1>今日の自分のタスク</h1>
+  <p>担当：原 美香　2026/08/22</p>
+  <div class="printTask"><h3>8月度 給与計算</h3><div class="printCheck">□ 時給確認</div><div class="printCheck">□ 交通費確認</div><div class="printCheck">□ 勤怠情報確認</div></div>
+  <div class="printTask"><h3>J-center point</h3><div class="printCheck">□ 請求書ダウンロード</div><div class="printCheck">□ 金額確認</div><div class="printCheck">□ 保存先確認</div></div>
+</section>
+
+<script>
+function showOnly(id){['listPage','templateListPage','taskPage','templatePage'].forEach(x=>document.getElementById(x).classList.add('hidden'));document.getElementById(id).classList.remove('hidden');window.scrollTo(0,0)}
+function goList(){showOnly('listPage');setHead('本部タスク','カード・リスト・カレンダー・テンプレートを一元管理')}
+function showTemplateList(){showOnly('templateListPage');setHead('テンプレート一覧','CSV一括出力・アップロード・編集')}
+function openTask(name){showOnly('taskPage');document.getElementById('taskTitle').textContent=name;setHead('タスク詳細','工程・チェック・担当・期限・資料・履歴を一元管理')}
+function showTemplate(){showOnly('templatePage');setHead('テンプレート編集','工程ごとに担当・期限・チェック・資料を設計')}
+function setHead(a,b){document.getElementById('pageTitle').textContent=a;document.getElementById('pageMeta').textContent=b}
+document.querySelectorAll('.views button').forEach(b=>b.onclick=()=>{document.querySelectorAll('.views button').forEach(x=>x.classList.remove('active'));b.classList.add('active');['board','list','calendar'].forEach(id=>document.getElementById(id).style.display='none');document.getElementById(b.dataset.view).style.display=b.dataset.view==='board'?'grid':'block'});
+document.querySelectorAll('.chip').forEach(b=>b.onclick=()=>{document.querySelectorAll('.chip').forEach(x=>x.classList.remove('active'));b.classList.add('active');filterTasks()});
+document.getElementById('search').oninput=filterTasks;
+function filterTasks(){let q=document.getElementById('search').value.toLowerCase(),f=document.querySelector('.chip.active').dataset.filter;document.querySelectorAll('.task').forEach(t=>t.style.display=((f==='all'||t.dataset.tags.includes(f))&&t.innerText.toLowerCase().includes(q))?'block':'none')}
+function toggleProcess(el){el.parentElement.classList.toggle('open')}
+function saveProcessMeta(n){const p=document.querySelector(`.process[data-process="${n}"]`),o=p.querySelector('.ownerSelect').value,d=p.querySelector('.dueDate').value,t=p.querySelector('.dueTime').value,s=p.querySelectorAll('.process-meta span');s[0].textContent='担当：'+o;s[1].textContent='期限：'+d.slice(5).replace('-','/')+' '+t;addAudit('中山','工程'+n+'の担当・期限を変更')}
+function completeProcess(n){const p=document.querySelector(`.process[data-process="${n}"]`),checks=[...p.querySelectorAll('.checkitem input')];if(checks.some(c=>!c.checked)){alert('未完了のチェック項目があります。');return}p.classList.add('completed');p.classList.remove('current');p.querySelector('.processCompleteBtn').disabled=true;p.querySelector('.processCompleteBtn').textContent='工程完了 ✓';const next=document.querySelector(`.process[data-process="${n+1}"]`);if(next)next.classList.add('current','open');addAudit('中山','工程'+n+'を完了');updateProgress()}
+function updateProgress(){document.querySelectorAll('.process').forEach(p=>{const c=[...p.querySelectorAll('.checkitem input')],d=c.filter(x=>x.checked).length,x=p.querySelector('.checkCount');if(x)x.textContent=`チェック ${d}/${c.length}`});const all=[...document.querySelectorAll('.checkitem input')];document.getElementById('remainingChecks').textContent=all.filter(c=>!c.checked).length+'件';const ps=[...document.querySelectorAll('.process')],done=ps.filter(p=>p.classList.contains('completed')).length;document.getElementById('overallProgress').style.width=(done/ps.length*100)+'%';document.getElementById('overallText').textContent=`工程 ${done} / ${ps.length} 完了`;const btn=document.getElementById('taskCompleteBtn');btn.disabled=done!==ps.length;document.getElementById('completeHint').textContent=done===ps.length?'すべての工程が完了しました':'すべての工程が完了すると押せます'}
+function completeTask(){alert('タスクを完了しました。');addAudit('中山','タスク全体を完了');document.getElementById('completeHint').textContent='完了済み';document.getElementById('taskCompleteBtn').textContent='完了 ✓';document.getElementById('taskCompleteBtn').disabled=true}
+function addAudit(user,text){const log=document.getElementById('auditLog'),d=document.createElement('div');d.className='activity-row';d.innerHTML=`<span class="dot green"></span><div><b>${user}</b> が${text} <span class="meta">いま</span></div>`;log.prepend(d)}
+function addCheck(btn){const h=btn.parentElement,r=document.createElement('div');r.className='row';r.innerHTML='<input placeholder="チェック項目"><button class="btn" onclick="this.parentElement.remove()">削除</button>';h.insertBefore(r,btn)}
+function addResource(btn,type){const list=btn.closest('.step-block').querySelector('.resource-list'),d=document.createElement('div');d.className='resource';d.style.marginTop='8px';d.innerHTML=`<b>${type}</b><small>タイトル・URL・参照先を設定</small>`;list.appendChild(d)}
+function addTemplateStep(){const w=document.getElementById('templateBuilder'),n=w.children.length+1,d=document.createElement('div');d.className='step-block';d.innerHTML=`<div style="display:flex;justify-content:space-between"><b>工程${n}：新しい工程</b><span class="pill blue">工程</span></div><div class="step-grid" style="margin-top:10px"><div class="field"><label>担当者</label><select><option>未設定</option><option>原 美香</option><option>齋藤</option><option>中山</option></select></div><div class="field"><label>期限</label><div style="display:flex;gap:8px"><input type="date"><input type="time"></div></div></div><div class="field"><label>手順</label><textarea placeholder="手順を入力"></textarea></div><div class="checkbuilder"><button class="btn" onclick="addCheck(this)">＋ チェック追加</button></div><div class="addrow"><button onclick="addResource(this,'📄 マニュアル')">📄 マニュアル</button><button onclick="addResource(this,'🎥 動画')">🎥 動画</button><button onclick="addResource(this,'🖼️ 写真')">🖼️ 写真</button><button onclick="addResource(this,'🔗 URL')">🔗 URL</button><button onclick="addResource(this,'🔐 ID/PW')">🔐 ID/PW</button><button onclick="addResource(this,'📁 Drive')">📁 Drive</button></div><div class="resource-list"></div>`;w.appendChild(d)}
+function downloadTemplatesCSV(){const csv='template_name,corporation,frequency,steps,owner\n月次 給与計算,N-Style,monthly,3,原 美香\nJ-center point,LiveGate,monthly,3,原 美香\n入金確認,N-Style,monthly,12,齋藤';const blob=new Blob([csv],{type:'text/csv;charset=utf-8'}),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='task_templates.csv';a.click();URL.revokeObjectURL(a.href)}
+function uploadCSV(input){if(!input.files[0])return;alert('CSVを読み込みました（プロトタイプ）。本番では内容を検証して一括登録します。')}
+function openSingleTaskModal(){document.getElementById('singleTaskModal').classList.add('open')}
+function closeSingleTaskModal(){document.getElementById('singleTaskModal').classList.remove('open')}
+function createSingleTask(){const title=document.getElementById('singleTitle').value||'新しい単発タスク';alert('「'+title+'」を追加しました（プロトタイプ）');closeSingleTaskModal()}
+function printToday(){window.print()}
+updateProgress()
+</script>
+</body>
+</html>
