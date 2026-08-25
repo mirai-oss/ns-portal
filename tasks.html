@@ -248,6 +248,8 @@ let SEARCH_RESULTS=null;  // 検索中はこちらを表示
 let FILTER={corp:null,freq:null,assignee:null,creator:null,signal:null};
 let SORT_MODE=localStorage.getItem("hq_sort")||"due";  // due | created | stalled（このブラウザだけに効く。DB保存なし）
 const SORT_LABEL={due:"期限が近い順（既定）",created:"作成が新しい順",stalled:"停滞が長い順"};
+let BOARD_VIEW=localStorage.getItem("hq_boardview")||"kanban"; // kanban | list（B6・ブラウザだけに効く）
+let LIST_SORT={col:"due",dir:"asc"}; // リスト表示の列ソート状態（保存はしない）
 function sortTasks(list){
   const arr=list.slice();
   if(SORT_MODE==="created"){
@@ -430,6 +432,42 @@ function dueBadgeHtml(sig){
   if(diffDays>0 && diffDays<=7) return `<span class="tag due-badge">あと${diffDays}日</span>`;
   return "";
 }
+/* E-3(B6): かんばんに加えてリスト（テーブル）表示・列ソート */
+const LIST_COLS=[{key:"title",label:"タイトル"},{key:"corp",label:"法人"},{key:"freq",label:"頻度"},{key:"status",label:"状態"},{key:"due",label:"期限"},{key:"progress",label:"進捗"}];
+function listSortValue(t,col){
+  const steps=sortedSteps(t);
+  switch(col){
+    case "title": return t.title||"";
+    case "corp": return t.corp||"";
+    case "freq": return t.freq||"";
+    case "status": return {todo:0,doing:1,done:2}[t.status]??9;
+    case "due": return (t.due_date||"9999")+(t.due_time||"99:99");
+    case "progress": return steps.length?steps.filter(s=>s.completed_at).length/steps.length:-1;
+  }
+  return "";
+}
+function listViewHtml(list){
+  const sorted=list.slice().sort((a,b)=>{
+    const va=listSortValue(a,LIST_SORT.col), vb=listSortValue(b,LIST_SORT.col);
+    const c=va<vb?-1:(va>vb?1:0);
+    return LIST_SORT.dir==="asc"?c:-c;
+  });
+  const arrow=k=>LIST_SORT.col===k?(LIST_SORT.dir==="asc"?" ▲":" ▼"):"";
+  return `<div style="overflow-x:auto;margin-top:14px"><table class="rp-table">
+    <thead><tr>${LIST_COLS.map(c=>`<th data-listsort="${c.key}" style="cursor:pointer;white-space:nowrap">${c.label}${arrow(c.key)}</th>`).join("")}</tr></thead>
+    <tbody>${sorted.map(t=>{
+      const steps=sortedSteps(t), total=steps.length, done=steps.filter(s=>s.completed_at).length;
+      return `<tr data-open="${t.id}" style="cursor:pointer">
+        <td>${esc(t.title)}</td>
+        <td>${esc(t.corp)}</td>
+        <td>${t.freq!=="once"?esc(FREQ_LABEL[t.freq]):"単発"}</td>
+        <td>${STATUS_LABEL[t.status]}</td>
+        <td>${fmtDD(t.due_date,t.due_time)}</td>
+        <td>${total?`${done}/${total}`:"—"}</td>
+      </tr>`;
+    }).join("")||`<tr><td colspan="${LIST_COLS.length}">該当するタスクがありません</td></tr>`}</tbody>
+  </table></div>`;
+}
 function renderBoard(u){
   CURRENT_RENDER=()=>renderBoard(u);
   const src=SEARCH_RESULTS!==null?SEARCH_RESULTS:TASKS;
@@ -484,6 +522,8 @@ function renderBoard(u){
       <span>並び替え: <select id="sortsel" style="width:auto;display:inline-block;padding:5px 10px;font-size:12px;border-radius:99px">
         ${Object.entries(SORT_LABEL).map(([k,v])=>`<option value="${k}" ${SORT_MODE===k?"selected":""}>${esc(v)}</option>`).join("")}
       </select></span>
+      <span class="chip ${BOARD_VIEW==='kanban'?'active':''}" data-boardview="kanban">🗂 かんばん</span>
+      <span class="chip ${BOARD_VIEW==='list'?'active':''}" data-boardview="list">📋 リスト</span>
     </div>
     <div>
       <button class="linkbtn" id="godaily">📆 今日の毎日タスク →</button>
@@ -497,11 +537,11 @@ function renderBoard(u){
     </div>
   </div>
   ${SEARCH_RESULTS!==null?`<div class="card" style="margin:10px 0"><b>検索結果: ${list.length}件</b> <button class="linkbtn" id="clearsearch">検索をやめる</button></div>`:""}
-  <div class="board">
+  ${BOARD_VIEW==="list"?listViewHtml(list):`<div class="board">
     <div class="col"><h2>未着手 <b>(${cols.todo.length})</b></h2>${cols.todo.map(taskCardHtml).join("")||'<div class="empty-col">なし</div>'}</div>
     <div class="col"><h2>進行中 <b>(${cols.doing.length})</b></h2>${cols.doing.map(taskCardHtml).join("")||'<div class="empty-col">なし</div>'}</div>
     <div class="col"><h2>完了 <b>(${cols.done.length})</b></h2>${cols.done.map(taskCardHtml).join("")||'<div class="empty-col">なし</div>'}</div>
-  </div>`;
+  </div>`}`;
   wireBoard(u);
 }
 function wireBoard(u){
@@ -526,6 +566,14 @@ function wireBoard(u){
   $("assigneesel").onchange=e=>{FILTER.assignee=e.target.value||null;renderBoard(u);};
   $("creatorsel").onchange=e=>{FILTER.creator=e.target.value||null;renderBoard(u);};
   $("sortsel").onchange=e=>{SORT_MODE=e.target.value; localStorage.setItem("hq_sort",SORT_MODE); renderBoard(u);};
+  document.querySelectorAll("[data-boardview]").forEach(c=>c.onclick=()=>{
+    BOARD_VIEW=c.dataset.boardview; localStorage.setItem("hq_boardview",BOARD_VIEW); renderBoard(u);
+  });
+  document.querySelectorAll("[data-listsort]").forEach(th=>th.onclick=()=>{
+    const k=th.dataset.listsort;
+    if(LIST_SORT.col===k) LIST_SORT.dir=LIST_SORT.dir==="asc"?"desc":"asc"; else LIST_SORT={col:k,dir:"asc"};
+    renderBoard(u);
+  });
   document.querySelectorAll("[data-sig]").forEach(c=>c.onclick=()=>{
     const v=c.dataset.sig; FILTER.signal=FILTER.signal===v?null:v; renderBoard(u);
   });
