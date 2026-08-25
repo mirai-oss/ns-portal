@@ -263,6 +263,7 @@ function sortTasks(list){
 let CUR_TASK=null;        // 詳細表示中のタスク（工程・リンク・写真・履歴込み）
 let OPEN_STEP=null;       // 詳細画面で開いている工程id
 let EDIT_STEP=null;       // 詳細画面で担当・期限を編集中の工程id（E-2）
+let LINKS_OPEN=false;     // 詳細画面「③添付・リンク」の開閉（B4・既定=閉）
 let NOTIFICATIONS=[];     // アプリ内通知（自分宛）
 let NOTIF_UNREAD=0;
 let BELL_OPEN=false;
@@ -560,7 +561,7 @@ function renderRepeat(u){
 /* ---------- タスク詳細 ---------- */
 async function openDetail(id){
   pushNav("tasks.html?task="+id);
-  VIEW="detail"; OPEN_STEP=null;
+  VIEW="detail"; OPEN_STEP=null; LINKS_OPEN=false; // B4: 開くたびリンク一覧は既定=閉に戻す
   $("app").innerHTML=`<div class="spin">読み込み中…</div>`;
   CUR_TASK=await fetchTaskDetail(id);
   renderDetail(ME);
@@ -648,11 +649,11 @@ function renderDetail(u){
 
   ${t.notes?`<div class="sec"><h3>② ⚠️ 注意事項</h3><div class="notes-box">${esc(t.notes).replace(/\\n/g,"<br>")}</div></div>`:""}
 
-  <div class="sec"><h3>③ 添付・リンク</h3>
-    <div class="card">
+  <div class="sec"><h3>③ 添付・リンク（${(t._links||[]).length}件） <button class="linkbtn" id="linktoggle">${LINKS_OPEN?"▲ 閉じる":"▼ 開く"}</button></h3>
+    ${LINKS_OPEN?`<div class="card">
       <div id="linklist">${(t._links||[]).map(l=>linkHtml(l,canEdit)).join("")||'<div class="meta" style="color:var(--muted)">まだありません</div>'}</div>
       ${canEdit?linkFormHtml():""}
-    </div>
+    </div>`:""}
   </div>
 
   <div class="sec"><h3>📷 タスク写真</h3>
@@ -681,6 +682,7 @@ function renderDetail(u){
   </div>`;
 
   $("back").onclick=()=>goBack(u);
+  if($("linktoggle")) $("linktoggle").onclick=()=>{ LINKS_OPEN=!LINKS_OPEN; renderDetail(u); };
   wireDetail(t,u);
 }
 function stepHtml(t,s,u){
@@ -1579,6 +1581,7 @@ function refreshTplList(u){
   $("tpl-count").textContent=`${list.length}/${TEMPLATES.length}件`;
   $("tpl-list").innerHTML=list.map(tplRowHtml).join("")||`<div class="card">${TEMPLATES.length?"条件に合うテンプレートはありません":"テンプレートはまだありません"}</div>`;
   document.querySelectorAll("[data-tpledit]").forEach(b=>b.onclick=()=>openTplEdit(u,TEMPLATES.find(x=>x.id===b.dataset.tpledit)));
+  document.querySelectorAll("[data-tplcopy]").forEach(b=>b.onclick=()=>duplicateTemplate(u,TEMPLATES.find(x=>x.id===b.dataset.tplcopy)));
   document.querySelectorAll("[data-tpldel]").forEach(b=>b.onclick=async()=>{
     if(!confirm("このテンプレートを削除しますか？（生成済みのタスクは残ります）"))return;
     await authed(`/rest/v1/hq_task_templates?id=eq.${b.dataset.tpldel}`,{method:"DELETE"});
@@ -1625,8 +1628,42 @@ function tplRowHtml(tpl){
     <div style="font-weight:600;margin:4px 0">${esc(tpl.title)}</div>
     <div class="meta">期限: 対象日${tpl.due_offset_days?"の"+tpl.due_offset_days+"日後":"の当日"}${tpl.due_time?" "+tpl.due_time.slice(0,5):""} ／ 公開範囲: ${tpl.visibility==="all"?"本部全員":"指定した人だけ"}</div>
     <button class="linkbtn" data-tpledit="${tpl.id}">編集</button>
+    <button class="linkbtn" data-tplcopy="${tpl.id}">複製</button>
     <button class="linkbtn" data-tpldel="${tpl.id}">削除</button>
   </div>`;
+}
+/* E-3(B1): テンプレートの複製（工程・通知設定ごと。複製後は内容確認のため停止中で作成） */
+async function duplicateTemplate(u,tpl){
+  if(!confirm(`「${tpl.title}」を複製します。工程・通知設定もまるごとコピーし、複製後は内容を確認できるよう停止中の状態で作成されます。よろしいですか？`)) return;
+  const stepsR=await authed(`/rest/v1/hq_task_template_steps?template_id=eq.${tpl.id}&order=sort_order`);
+  const srcSteps=(stepsR.ok&&Array.isArray(stepsR.body))?stepsR.body:[];
+  let memberIds=[];
+  if(tpl.visibility==="members"){
+    const mr=await authed(`/rest/v1/hq_task_members?template_id=eq.${tpl.id}&select=user_id`);
+    memberIds=(mr.ok&&Array.isArray(mr.body))?mr.body.map(x=>x.user_id):[];
+  }
+  const payload={
+    title:tpl.title+"のコピー", corp:tpl.corp, freq:tpl.freq,
+    weekly_dow:tpl.weekly_dow, monthly_dom:tpl.monthly_dom,
+    due_offset_days:tpl.due_offset_days||0, due_time:tpl.due_time||null,
+    notes:tpl.notes||"", description:tpl.description||null,
+    visibility:tpl.visibility,
+    alert_before3:tpl.alert_before3, alert_before1:tpl.alert_before1, alert_due:tpl.alert_due, alert_overdue_daily:tpl.alert_overdue_daily,
+    alert_recipient:tpl.alert_recipient, alert_extra_user_ids:tpl.alert_extra_user_ids, alert_channels:tpl.alert_channels,
+    is_active:false, created_by:u.id,
+  };
+  const r=await authed("/rest/v1/hq_task_templates",{method:"POST",headers:{Prefer:"return=representation"},body:JSON.stringify(payload)});
+  if(!r.ok||!r.body||!r.body[0]){ alert("複製できませんでした"); return; }
+  const newId=r.body[0].id;
+  if(srcSteps.length){
+    await authed("/rest/v1/hq_task_template_steps",{method:"POST",headers:{Prefer:"return=minimal"},body:JSON.stringify(
+      srcSteps.map(s=>({template_id:newId,title:s.title,assignee_id:s.assignee_id||null,offset_days:s.offset_days||0,due_time:s.due_time||null,sort_order:s.sort_order,kind:s.kind||"step",store_scope:s.store_scope||null,store_ids:s.store_ids||null,is_binary:!!s.is_binary,requires_photo:!!s.requires_photo}))
+    )});
+  }
+  if(memberIds.length){
+    await authed("/rest/v1/hq_task_members",{method:"POST",headers:{Prefer:"return=minimal"},body:JSON.stringify(memberIds.map(uid=>({template_id:newId,user_id:uid})))});
+  }
+  await fetchTemplates(); refreshTplList(u);
 }
 async function openTplEdit(u,tpl){
   pushNav();
