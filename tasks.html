@@ -185,6 +185,15 @@ textarea{resize:vertical}
 .resource b{display:block;font-size:13px;font-weight:600}
 .resource small{color:var(--muted);font-size:11px}
 .resource .del{position:absolute;top:8px;right:8px;padding:2px}
+.resource-add{border:1px solid var(--line);border-radius:12px;padding:12px;background:var(--bg);margin-top:10px}
+.resource-add label{margin-top:8px}
+.resource-add label:first-child{margin-top:0}
+/* デザイン案の.checklist/.checkitemを再現（文字サイズ・チェックボックスを大きく、行区切り線つき） */
+.checklist-hd{font-weight:700;font-size:14px;margin-bottom:2px;display:flex;align-items:center;gap:6px}
+.checkitem{display:flex;align-items:center;gap:10px;padding:9px 2px;border-bottom:1px solid var(--line);font-size:14px;cursor:pointer}
+.checkitem:last-of-type{border-bottom:none}
+.checkitem input{width:18px;height:18px;flex:none}
+.checkitem .done{color:var(--muted);text-decoration:line-through}
 .photo-grid img{width:80px;height:80px;object-fit:cover;border-radius:8px;border:1px solid var(--line)}
 .act-row{font-size:12px;color:var(--muted);padding:5px 0;border-bottom:1px solid var(--line)}
 .act-row:last-child{border-bottom:none}
@@ -891,16 +900,17 @@ function checklistStepHtml(s,items,canTouch){
   // 2026-08-25: 項目が無い工程にまで「追加」フォームを常時出すとURL添付欄と同様に画面が
   // 埋まってしまうという実機フィードバックを受け、既存項目が無いときは「＋」リンクの奥に隠すよう調整
   if(!items.length && !canTouch) return "";
-  const rows=(items||[]).map(it=>`<label class="optchk" style="display:flex;align-items:center;gap:6px;padding:3px 0">
+  const rows=(items||[]).map(it=>`<label class="checkitem">
       <input type="checkbox" data-chkitem="${it.id}" ${it.checked_at?"checked":""} ${canTouch?"":"disabled"} onclick="event.stopPropagation()">
-      <span style="${it.checked_at?"text-decoration:line-through;color:var(--muted)":""}">${esc(it.title)}</span>
+      <span class="${it.checked_at?"done":""}">${esc(it.title)}</span>
     </label>`).join("");
   const addOpen=CHK_ADD_OPEN.has(s.id);
-  return `<div style="padding:8px 12px 4px" onclick="event.stopPropagation()">
-    ${items.length?`<div class="meta" style="margin-bottom:2px">✅ 手順チェックリスト</div>${rows}`:""}
-    ${canTouch?(addOpen?`<div style="margin-top:6px">
-      <input data-chknew="${s.id}" placeholder="手順を追加">
-      <button class="btn sm" data-chkadd="${s.id}" style="margin-top:6px">＋ 追加して保存する</button>
+  return `<div style="padding:8px 2px 4px" onclick="event.stopPropagation()">
+    ${items.length?`<div class="checklist-hd">✅ チェック</div>${rows}`:""}
+    ${canTouch?(addOpen?`<div class="resource-add">
+      <label>手順を追加</label>
+      <input data-chknew="${s.id}" placeholder="例: 金額を確認">
+      <button class="btn sm" data-chkadd="${s.id}" style="margin-top:8px">＋ 追加して保存する</button>
       <div class="meta" style="margin-top:4px">↑ このボタンを押すと保存されます</div>
     </div>`:`<button class="linkbtn" data-chkaddopen="${s.id}" style="margin-top:${items.length?"6px":"0"}">＋ 手順チェックリストを追加</button>`):""}
   </div>`;
@@ -1031,7 +1041,7 @@ function linkHtml(l,canEdit){
   return `<div class="resource">${body}${canEdit?`<button class="linkbtn del" data-dellink="${l.id}">削除</button>`:""}</div>`;
 }
 function linkFormHtml(){
-  return `<div style="margin-top:12px;padding-top:10px;border-top:1px dashed var(--line)">
+  return `<div class="resource-add" style="margin-top:12px">
     <label>種類</label><select id="lk-kind"><option value="url">🔗 URL</option><option value="manual">📘 マニュアル</option><option value="credential">🔐 ID/PW（社内情報管理）</option></select>
     <label>ラベル（任意）</label><input id="lk-label" placeholder="例: 精算ダッシュボード">
     <div id="lk-urlwrap"><label>URL</label><input id="lk-url" type="url" placeholder="https://…"></div>
@@ -1071,8 +1081,8 @@ function attachBoxHtml(prefix,links,photos,canEdit){
       ${linksHtml?`<div class="resources">${linksHtml}</div>`:""}${photosHtml?`<div class="photo-grid">${photosHtml}</div>`:""}
       ${(!linksHtml&&!photosHtml)?'<div class="meta" style="color:var(--muted)">添付はまだありません</div>':""}
     </div>
-    ${canEdit?`
-      <label style="margin-top:8px">📎 マニュアル・URLを追加</label>
+    ${canEdit?`<div class="resource-add">
+      <label>📎 マニュアル・URLを追加</label>
       <select id="${prefix}-kind"><option value="url">🔗 URL</option><option value="manual">📘 マニュアル</option></select>
       <input id="${prefix}-label" placeholder="ラベル（任意）">
       <div id="${prefix}-urlwrap"><input id="${prefix}-url" type="url" placeholder="https://…"></div>
@@ -1080,11 +1090,11 @@ function attachBoxHtml(prefix,links,photos,canEdit){
         <select id="${prefix}-manualsel"><option value="">選択してください</option></select>
         <div class="meta" id="${prefix}-manualempty" style="display:none">本部マニュアルにまだ登録がありません（日報アプリのマニュアルで登録）</div>
       </div>
-      <button class="btn sm" id="${prefix}-lkadd" style="margin-top:6px">＋ 追加して保存する</button>
+      <button class="btn sm" id="${prefix}-lkadd" style="margin-top:8px">＋ 追加して保存する</button>
       <div class="meta" style="margin-top:4px">↑ このボタンを押すと保存されます（別に「保存」ボタンはありません。押さずに戻ると入力は消えます）</div>
-      <div style="margin-top:6px"><label>📷 写真を追加</label><input type="file" accept="image/*" id="${prefix}-photo"></div>
+      <label>📷 写真を追加</label><input type="file" accept="image/*" id="${prefix}-photo">
       <div class="err" id="${prefix}-msg"></div>
-    `:""}
+    </div>`:""}
   </div>`;
 }
 function wireDelLinkButtonsIn(prefix,onSaved){
