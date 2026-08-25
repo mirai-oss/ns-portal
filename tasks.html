@@ -197,6 +197,8 @@ textarea{resize:vertical}
 .checkitem .done{color:var(--muted);text-decoration:line-through}
 .checkitem span{overflow-wrap:anywhere}
 .photo-grid img{width:80px;height:80px;object-fit:cover;border-radius:8px;border:1px solid var(--line)}
+.doc-chip{width:80px;height:80px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;border-radius:8px;border:1px solid var(--line);background:var(--bg);font-size:22px;color:var(--muted);text-decoration:none}
+.doc-chip span{font-size:11px}
 .act-row{font-size:12px;color:var(--muted);padding:5px 0;border-bottom:1px solid var(--line)}
 .act-row:last-child{border-bottom:none}
 .act-row b{color:var(--ink);font-weight:600}
@@ -793,6 +795,14 @@ async function resolveLazyPhotos(){
 function applyPhotoUrl(el,url){ if(el.tagName==="IMG") el.src=url; else el.href=url; }
 new MutationObserver(schedulePhotoResolve).observe(document.body,{childList:true,subtree:true});
 function photoTag(path){ const p=esc(path); return `data-photo-path="${p}"`; } // imgのsrc/aのhrefは空のまま、後でresolveLazyPhotosが埋める
+// 2026-08-26: 「写真」欄にPDFも添付できるようにしてほしいという実機フィードバック対応。
+// PDFは<img>で読み込めない（サムネイル化されない）ため、拡張子で見分けて📄チップ表示に切り替える
+function isPdfPath(path){ return /\.pdf(\?|$)/i.test(path||""); }
+function photoOrDocHtml(p){
+  const path=p.storage_path;
+  if(isPdfPath(path)) return `<a ${photoTag(path)} href="#" target="_blank" class="doc-chip">📄<span>PDF</span></a>`;
+  return `<a ${photoTag(path)} href="#" target="_blank"><img ${photoTag(path)} src=""></a>`;
+}
 
 function renderDetail(u){
   const t=CUR_TASK;
@@ -873,8 +883,8 @@ function renderDetail(u){
       <div class="dcard">
         <div class="head"><b>📷 タスク写真</b><span class="meta">${photos.length}件</span></div>
         <div class="body">
-          <div class="photo-grid">${photos.map(p=>`<a ${photoTag(p.storage_path)} href="#" target="_blank"><img ${photoTag(p.storage_path)} src=""></a>`).join("")||'<div class="meta" style="color:var(--muted)">まだありません</div>'}</div>
-          <label style="margin-top:10px">写真を追加</label><input type="file" accept="image/*" capture="environment" id="taskphoto">
+          <div class="photo-grid">${photos.map(photoOrDocHtml).join("")||'<div class="meta" style="color:var(--muted)">まだありません</div>'}</div>
+          <label style="margin-top:10px">写真・PDFを追加</label><input type="file" accept="image/*,application/pdf" id="taskphoto">
           <div class="err" id="taskphotomsg"></div>
         </div>
       </div>
@@ -1110,7 +1120,7 @@ function fillManualSelect(selEl,emptyEl){
 }
 function attachBoxHtml(prefix,links,photos,canEdit){
   const linksHtml=(links||[]).map(l=>linkHtml(l,canEdit)).join("");
-  const photosHtml=(photos||[]).map(p=>`<a ${photoTag(p.storage_path)} href="#" target="_blank"><img ${photoTag(p.storage_path)} src=""></a>`).join("");
+  const photosHtml=(photos||[]).map(photoOrDocHtml).join("");
   return `<div class="attach-box" style="margin-top:10px;padding-top:10px;border-top:1px dashed var(--line)">
     <div id="${prefix}-list">
       ${linksHtml?`<div class="resources">${linksHtml}</div>`:""}${photosHtml?`<div class="photo-grid">${photosHtml}</div>`:""}
@@ -1127,7 +1137,7 @@ function attachBoxHtml(prefix,links,photos,canEdit){
       </div>
       <button class="btn sm" id="${prefix}-lkadd" style="margin-top:8px">＋ 追加して保存する</button>
       <div class="meta" style="margin-top:4px">↑ このボタンを押すと保存されます（別に「保存」ボタンはありません。押さずに戻ると入力は消えます）</div>
-      <label>📷 写真を追加</label><input type="file" accept="image/*" id="${prefix}-photo">
+      <label>📷 写真・PDFを追加</label><input type="file" accept="image/*,application/pdf" id="${prefix}-photo">
       <div class="err" id="${prefix}-msg"></div>
     </div>`:""}
   </div>`;
@@ -2145,7 +2155,7 @@ async function refreshTplAttach(){
   const list=$("tpl-att-list");
   if(list){
     const linksHtml=TPL_EDIT._links.map(l=>linkHtml(l,true)).join("");
-    const photosHtml=TPL_EDIT._photos.map(p=>`<a ${photoTag(p.storage_path)} href="#" target="_blank"><img ${photoTag(p.storage_path)} src=""></a>`).join("");
+    const photosHtml=TPL_EDIT._photos.map(photoOrDocHtml).join("");
     list.innerHTML=`${linksHtml?`<div class="resources">${linksHtml}</div>`:""}${photosHtml?`<div class="photo-grid">${photosHtml}</div>`:""}${(!linksHtml&&!photosHtml)?'<div class="meta" style="color:var(--muted)">添付はまだありません</div>':""}`;
     wireDelLinkButtonsIn("tpl-att",refreshTplAttach);
   }
