@@ -20,6 +20,14 @@ const json = (o: unknown, status = 200) =>
 
 const svc = () => createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
 
+// 日をまたぐシフト（終了時刻が開始時刻より前＝翌日側の時刻）に対応するため、
+// 'YYYY-MM-DD' を1日進める（2026-08-25 担当Bからの依頼で発見・修正）。
+function addOneDay(dateStr: string): string {
+  const d = new Date(dateStr + "T00:00:00Z");
+  d.setUTCDate(d.getUTCDate() + 1);
+  return d.toISOString().slice(0, 10);
+}
+
 function jwtUid(req: Request): string {
   try {
     const jwt = (req.headers.get("Authorization") ?? "").replace(/^Bearer\s+/i, "");
@@ -251,11 +259,16 @@ Deno.serve(async (req) => {
         continue;
       }
       try {
+        // 日またぎシフト（終了時刻が開始時刻より前）は退勤日を翌日にする
+        // （2026-08-25 担当Bから発見・依頼。以前は退勤日=出勤日のままでスマレジ側がエラーになっていた）
+        const startHm = s.start_time.slice(0, 5);
+        const endHm = s.end_time.slice(0, 5);
+        const leavingDate = endHm < startHm ? addOneDay(s.work_date) : s.work_date;
         const payload = {
           shiftDate: s.work_date,
           division: "schedule",
-          attendance: `${s.work_date}T${s.start_time.slice(0, 5)}:00+09:00`,
-          leaving: `${s.work_date}T${s.end_time.slice(0, 5)}:00+09:00`,
+          attendance: `${s.work_date}T${startHm}:00+09:00`,
+          leaving: `${leavingDate}T${endHm}:00+09:00`,
         };
         let res: Response;
         if (s.smaregi_shift_result_id) {
