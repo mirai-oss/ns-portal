@@ -409,7 +409,9 @@ function shellHtml(u){
     <div class="mail-tabs-row">
       <div class="mail-tabs">
         <button class="mail-tab ${TAB==='inbox'?'active':''}" data-tab="inbox">受信トレイ</button>
-        <button class="mail-tab ${TAB==='invoiceList'?'active':''}" data-tab="invoiceList">請求書一覧</button>
+        <button class="mail-tab ${TAB==='invoiceList'?'active':''}" data-tab="invoiceList">📄 請求書一覧</button>
+        <button class="mail-tab ${TAB==='salesList'?'active':''}" data-tab="salesList">💰 売上一覧</button>
+        <button class="mail-tab ${TAB==='contractList'?'active':''}" data-tab="contractList">📃 契約書一覧</button>
         <button class="mail-tab ${TAB==='history'?'active':''}" data-tab="history">処理履歴</button>
         <button class="mail-tab ${TAB==='sent'?'active':''}" data-tab="sent">送信済み</button>
         <button class="mail-tab ${TAB==='notApplicable'?'active':''}" data-tab="notApplicable">対象外</button>
@@ -496,6 +498,8 @@ async function renderTabBody(u){
   $("tabbody").innerHTML='<div class="spin">読み込み中…</div>';
   if(TAB==="inbox") renderInbox(u);
   else if(TAB==="invoiceList") await renderInvoiceListTab(u);
+  else if(TAB==="salesList") await renderSalesListTab(u);
+  else if(TAB==="contractList") await renderContractListTab(u);
   else if(TAB==="history") await renderHistoryTab(u);
   else if(TAB==="sent") await renderSentTab(u);
   else if(TAB==="notApplicable") await renderNotApplicableTab(u);
@@ -1072,8 +1076,14 @@ function wireDetailActions(u){
 }
 
 /* ============================================================
-   請求書一覧タブ（検索・絞り込み・ソート・期限バッジ＝2026-08-24 Phase1.5 C-2）
+   請求書一覧／売上一覧タブ（検索・絞り込み・ソート・期限バッジ＝2026-08-24 Phase1.5 C-2）
+   2026-08-25 Phase1.6: mail_kind別（invoice/sales）に共通ロジックを流用できるようパラメータ化
    ============================================================ */
+let LIST_KIND="invoice"; // invoice | sales（今どちらの一覧タブを描画中か）
+const LIST_KIND_CONFIG={
+  invoice:{statusLabel:INVOICE_STATUS_LABEL,vendorLabel:"請求元",numberLabel:"請求番号",amountLabel:"金額",dateLabel:"期限",searchPlaceholder:"🔎 請求元・番号・件名",emptyLabel:"該当する請求書はありません"},
+  sales:{statusLabel:SALES_STATUS_LABEL,vendorLabel:"入金元",numberLabel:"明細番号",amountLabel:"入金額",dateLabel:"入金予定日",searchPlaceholder:"🔎 入金元・明細番号・件名",emptyLabel:"該当する入金明細はありません"},
+};
 function dueBadgeHtml(row){
   const label=fmtD(row.due_date);
   if(!row.due_date||["paid","cancelled"].includes(row.invoice_status)) return esc(label);
@@ -1114,13 +1124,14 @@ function filteredSortedInvoiceRows(){
   return list;
 }
 function invoiceListBodyHtml(){
+  const cfg=LIST_KIND_CONFIG[LIST_KIND];
   const list=filteredSortedInvoiceRows();
   const arrow=col=>IV_SORT_COL===col?(IV_SORT_DIR==="asc"?" ▲":" ▼"):"";
   return `<table class="invoice-table">
     <thead><tr>
-      <th>請求元</th><th>請求番号</th>
-      <th data-sort="amount">金額${arrow("amount")}</th>
-      <th data-sort="due_date">期限${arrow("due_date")}</th>
+      <th>${cfg.vendorLabel}</th><th>${cfg.numberLabel}</th>
+      <th data-sort="amount">${cfg.amountLabel}${arrow("amount")}</th>
+      <th data-sort="due_date">${cfg.dateLabel}${arrow("due_date")}</th>
       <th>担当</th><th>状態</th>
     </tr></thead>
     <tbody>
@@ -1130,8 +1141,8 @@ function invoiceListBodyHtml(){
         <td>${yen(row.amount)}</td>
         <td>${dueBadgeHtml(row)}</td>
         <td>${esc(row.email&&row.email.processor&&row.email.processor.name||"—")}</td>
-        <td><span class="invoice-status ${INVOICE_STATUS_CLASS[row.invoice_status]||'gray'}">${INVOICE_STATUS_LABEL[row.invoice_status]||row.invoice_status}</span></td>
-      </tr>`).join("")||'<tr><td colspan="6">該当する請求書はありません</td></tr>'}
+        <td><span class="invoice-status ${INVOICE_STATUS_CLASS[row.invoice_status]||'gray'}">${cfg.statusLabel[row.invoice_status]||row.invoice_status}</span></td>
+      </tr>`).join("")||`<tr><td colspan="6">${cfg.emptyLabel}</td></tr>`}
     </tbody>
   </table>`;
 }
@@ -1145,20 +1156,23 @@ function wireInvoiceListTable(u){
     wireInvoiceListTable(u);
   });
 }
-async function renderInvoiceListTab(u){
-  // 2026-08-25 Phase1.6: mail_kind='invoice'（請求書）のみ対象。売上（入金情報）は別種類のため混在させない
-  const r=await authed(`/rest/v1/invoices?select=*,email:invoice_emails!inner(subject,from_address,mail_kind,processing_user_id,processor:users!invoice_emails_processing_user_id_fkey(name))&email.mail_kind=eq.invoice&order=created_at.desc&limit=300`);
+async function renderFinancialListTab(u,kind){
+  // mail_kind別（invoice=請求書一覧／sales=売上一覧）に絞り込み。両者を混在させない
+  LIST_KIND=kind;
+  const cfg=LIST_KIND_CONFIG[kind];
+  IV_SEARCH_Q=""; IV_STATUS=""; IV_AMOUNT_MIN=""; IV_AMOUNT_MAX=""; IV_DUE_FROM=""; IV_DUE_TO=""; IV_SORT_COL=""; IV_SORT_DIR="asc";
+  const r=await authed(`/rest/v1/invoices?select=*,email:invoice_emails!inner(subject,from_address,mail_kind,processing_user_id,processor:users!invoice_emails_processing_user_id_fkey(name))&email.mail_kind=eq.${kind}&order=created_at.desc&limit=300`);
   IV_ROWS=(r.ok&&Array.isArray(r.body))?r.body:[];
   $("tabbody").innerHTML=`
     <section class="invoice-list active">
       <div class="card" style="margin-bottom:12px">
         <div class="iv-filterbar">
-          <div class="ivf"><small>検索</small><input type="search" id="iv-f-search" placeholder="🔎 請求元・番号・件名" value="${esc(IV_SEARCH_Q)}"></div>
-          <div class="ivf"><small>金額（下限）</small><input type="number" id="iv-f-amtmin" value="${esc(IV_AMOUNT_MIN)}"></div>
-          <div class="ivf"><small>金額（上限）</small><input type="number" id="iv-f-amtmax" value="${esc(IV_AMOUNT_MAX)}"></div>
-          <div class="ivf"><small>期限（開始）</small><input type="date" id="iv-f-duefrom" value="${esc(IV_DUE_FROM)}"></div>
-          <div class="ivf"><small>期限（終了）</small><input type="date" id="iv-f-dueto" value="${esc(IV_DUE_TO)}"></div>
-          <div class="ivf"><small>状態</small><select id="iv-f-status"><option value="">すべて</option>${Object.entries(INVOICE_STATUS_LABEL).map(([k,l])=>`<option value="${k}" ${IV_STATUS===k?"selected":""}>${l}</option>`).join("")}</select></div>
+          <div class="ivf"><small>検索</small><input type="search" id="iv-f-search" placeholder="${cfg.searchPlaceholder}" value="${esc(IV_SEARCH_Q)}"></div>
+          <div class="ivf"><small>${cfg.amountLabel}（下限）</small><input type="number" id="iv-f-amtmin" value="${esc(IV_AMOUNT_MIN)}"></div>
+          <div class="ivf"><small>${cfg.amountLabel}（上限）</small><input type="number" id="iv-f-amtmax" value="${esc(IV_AMOUNT_MAX)}"></div>
+          <div class="ivf"><small>${cfg.dateLabel}（開始）</small><input type="date" id="iv-f-duefrom" value="${esc(IV_DUE_FROM)}"></div>
+          <div class="ivf"><small>${cfg.dateLabel}（終了）</small><input type="date" id="iv-f-dueto" value="${esc(IV_DUE_TO)}"></div>
+          <div class="ivf"><small>状態</small><select id="iv-f-status"><option value="">すべて</option>${Object.entries(cfg.statusLabel).map(([k,l])=>`<option value="${k}" ${IV_STATUS===k?"selected":""}>${l}</option>`).join("")}</select></div>
           <button class="hq-btn" id="iv-f-clear">絞り込み解除</button>
         </div>
       </div>
@@ -1175,10 +1189,34 @@ async function renderInvoiceListTab(u){
   $("iv-f-amtmin").oninput=applyFilters; $("iv-f-amtmax").oninput=applyFilters;
   $("iv-f-duefrom").onchange=applyFilters; $("iv-f-dueto").onchange=applyFilters;
   $("iv-f-status").onchange=applyFilters;
-  $("iv-f-clear").onclick=()=>{
-    IV_SEARCH_Q=""; IV_AMOUNT_MIN=""; IV_AMOUNT_MAX=""; IV_DUE_FROM=""; IV_DUE_TO=""; IV_STATUS="";
-    renderInvoiceListTab(u);
-  };
+  $("iv-f-clear").onclick=()=>renderFinancialListTab(u,kind);
+}
+async function renderInvoiceListTab(u){ await renderFinancialListTab(u,"invoice"); }
+async function renderSalesListTab(u){ await renderFinancialListTab(u,"sales"); }
+
+/* ============================================================
+   契約書一覧タブ（2026-08-25 Phase1.6・保管のみ＝処理履歴のような単純な一覧）
+   ============================================================ */
+async function renderContractListTab(u){
+  const r=await authed(`/rest/v1/invoice_emails?mail_kind=eq.contract&select=id,from_address,subject,received_at,mail_status&order=received_at.desc&limit=300`);
+  const rows=(r.ok&&Array.isArray(r.body))?r.body:[];
+  $("tabbody").innerHTML=`
+    <section class="invoice-list active">
+      <div class="card hq-tablewrap">
+        <table class="invoice-table">
+          <thead><tr><th>送信元</th><th>件名</th><th>状態</th><th>受信日時</th></tr></thead>
+          <tbody>
+            ${rows.map(m=>`<tr data-openmail="${m.id}" style="cursor:pointer">
+              <td>${esc(m.from_address||"—")}</td>
+              <td>${esc(m.subject||"（件名なし）")}</td>
+              <td><span class="hq-pill ${MAIL_STATUS_PILL[m.mail_status]||'gray'}">${MAIL_STATUS_LABEL[m.mail_status]||m.mail_status}</span></td>
+              <td>${fmtDT(m.received_at)}</td>
+            </tr>`).join("")||'<tr><td colspan="4">契約書に分類されたメールはありません</td></tr>'}
+          </tbody>
+        </table>
+      </div>
+    </section>`;
+  document.querySelectorAll("[data-openmail]").forEach(el=>el.onclick=()=>openMailDetailModal(u,el.dataset.openmail));
 }
 
 /* ============================================================
