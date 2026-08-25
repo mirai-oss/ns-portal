@@ -121,6 +121,23 @@ a{color:inherit}
 .skel{opacity:.5}
 .skel .value{background:var(--bg);border-radius:6px;color:transparent}
 .two{display:grid;grid-template-columns:1.5fr .9fr;gap:16px;margin-top:16px;align-items:start}
+
+/* F-7: ホーム画面のウィジェット編集（WP/ブログ風。サイズ=小1/中2/大4カラム分） */
+.home-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-top:16px;align-items:start}
+.home-grid>*{min-width:0}
+.hw-small{grid-column:span 1}
+.hw-medium{grid-column:span 2}
+.hw-large{grid-column:span 4}
+@media(max-width:1100px){.hw-small,.hw-medium{grid-column:span 2}}
+.hedit-topbtn{display:flex;justify-content:flex-end;margin-top:-4px}
+.hedit-role{display:flex;gap:7px;flex-wrap:wrap;margin-bottom:14px}
+.hedit-role button{border:1px solid var(--line);background:var(--panel);border-radius:99px;padding:7px 14px;font-size:13px}
+.hedit-role button.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+.hedit-row{display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid var(--line);border-radius:12px;margin-bottom:8px;background:var(--panel)}
+.hedit-row label{display:flex;align-items:center;gap:8px;flex:1;min-width:0;font-size:14px}
+.hedit-row select{border:1px solid var(--line);border-radius:8px;padding:5px 8px;background:var(--bg);color:var(--ink);font-size:12.5px}
+.hedit-updn button{border:1px solid var(--line);background:var(--bg);border-radius:8px;padding:5px 9px;margin-left:3px}
+.hedit-updn button:disabled{opacity:.3}
 .phead{min-height:52px;display:flex;align-items:center;justify-content:space-between;gap:10px;padding:13px 17px;border-bottom:1px solid var(--line)}
 .phead h2{margin:0;font-size:15px}
 .phead .sub2{color:var(--muted);font-size:12px}
@@ -673,17 +690,131 @@ async function renderSysUsageArea(u){
       <div class="empty" style="text-align:left;padding:16px 17px">🚧 準備中：LINE公式アカウントの残量API連携にはSupabase Edge Functionの新規実装が必要なため、今回のF-6では枠のみです（WORKLOG参照）</div>
     </section>`;
 }
-const DEFAULT_LAYOUT={
-  MASTER:{kpi:["kpi_sales","kpi_nippo","kpi_tasks","kpi_check"],main:"panel_chart",side:"panel_alerts"},
-  CEO:   {kpi:["kpi_sales","kpi_nippo","kpi_tasks","kpi_check"],main:"panel_chart",side:"panel_alerts"},
-  HQ:    {kpi:["kpi_sales","kpi_nippo","kpi_tasks","kpi_check"],main:"panel_chart",side:"panel_alerts"},
-  TEAM:  {kpi:["kpi_sales","kpi_nippo","kpi_tasks","kpi_check"],main:"panel_chart",side:"panel_alerts"},
-  TENCHO:{kpi:["kpi_sales","kpi_check","kpi_mytasks","kpi_nippo"],main:"panel_posts",side:"panel_mytasks"},
-  SHAIN: {kpi:["kpi_check","kpi_mytasks","kpi_nippo"],main:"panel_posts",side:"panel_mytasks"},
-  AL:    {kpi:["kpi_check","kpi_mytasks","kpi_nippo"],main:"panel_posts",side:"panel_mytasks"},
+/* ============================================================
+   F-7: ホーム画面のウィジェット編集（WP/ブログ風・サイズ選択付き）
+   実装指示書_ラウンド3_2026-08-26.md F-7準拠。既存index.htmlの
+   portal_layouts機構（role×area×widget_key×position×enabled）を
+   新シェルへ移植・流用しつつ、area="home"の1本の並び順リストに
+   まとめ、新設のsize列（small=1枠/medium=2枠/large=横幅いっぱい＝
+   4カラムグリッドのspan）を追加した。index.htmlは従来どおり
+   area in (kpi/main/side/wide) の行を使い続けるため、area="home"は
+   衝突しない新しい領域として共存する（index.html側は無変更）。
+   ============================================================ */
+const HOME_WIDGET_CATALOG=[
+  {key:"kpi_sales",   label:"今月の売上",             defaultSize:"small"},
+  {key:"kpi_nippo",   label:"日報の提出状況",         defaultSize:"small"},
+  {key:"kpi_tasks",   label:"本部タスク",             defaultSize:"small"},
+  {key:"kpi_check",   label:"チェックシート",         defaultSize:"small"},
+  {key:"kpi_mytasks", label:"自分のタスク",           defaultSize:"small"},
+  {key:"panel_chart", label:"売上推移グラフ",         defaultSize:"large"},
+  {key:"panel_alerts",label:"⚠️ 要対応（全システム横断）",defaultSize:"medium"},
+  {key:"panel_mytasks",label:"✅ 今日の自分のタスク",  defaultSize:"medium"},
+  {key:"panel_posts", label:"📢 お知らせ",             defaultSize:"medium"},
+];
+function homeCatalogLabel(key){ const c=HOME_WIDGET_CATALOG.find(w=>w.key===key); return c?c.label:key; }
+// 「モックのホーム構成を初期レイアウトとして登録」（F-7）: 現行の実装済みの並び（KPI4枚→
+// グラフ+要対応 横並び、店長以下はお知らせ+自分のタスク 横並び）をそのまま初期値にする
+const DEFAULT_HOME_LAYOUT={
+  MASTER:[{key:"kpi_sales",size:"small"},{key:"kpi_nippo",size:"small"},{key:"kpi_tasks",size:"small"},{key:"kpi_check",size:"small"},{key:"panel_chart",size:"medium"},{key:"panel_alerts",size:"medium"}],
+  CEO:   [{key:"kpi_sales",size:"small"},{key:"kpi_nippo",size:"small"},{key:"kpi_tasks",size:"small"},{key:"kpi_check",size:"small"},{key:"panel_chart",size:"medium"},{key:"panel_alerts",size:"medium"}],
+  HQ:    [{key:"kpi_sales",size:"small"},{key:"kpi_nippo",size:"small"},{key:"kpi_tasks",size:"small"},{key:"kpi_check",size:"small"},{key:"panel_chart",size:"medium"},{key:"panel_alerts",size:"medium"}],
+  TEAM:  [{key:"kpi_sales",size:"small"},{key:"kpi_nippo",size:"small"},{key:"kpi_tasks",size:"small"},{key:"kpi_check",size:"small"},{key:"panel_chart",size:"medium"},{key:"panel_alerts",size:"medium"}],
+  TENCHO:[{key:"kpi_sales",size:"small"},{key:"kpi_check",size:"small"},{key:"kpi_mytasks",size:"small"},{key:"kpi_nippo",size:"small"},{key:"panel_posts",size:"medium"},{key:"panel_mytasks",size:"medium"}],
+  SHAIN: [{key:"kpi_check",size:"small"},{key:"kpi_mytasks",size:"small"},{key:"kpi_nippo",size:"small"},{key:"panel_posts",size:"medium"},{key:"panel_mytasks",size:"medium"}],
+  AL:    [{key:"kpi_check",size:"small"},{key:"kpi_mytasks",size:"small"},{key:"kpi_nippo",size:"small"},{key:"panel_posts",size:"medium"},{key:"panel_mytasks",size:"medium"}],
 };
 function roleKeyOf(u){ return u.is_master?"MASTER":u.role; }
-function layoutFor(u){ return DEFAULT_LAYOUT[roleKeyOf(u)]||DEFAULT_LAYOUT.AL; }
+let HOME_LAYOUTS=null; // {role:[{widget_key,position,enabled,size}]}（portal_layouts area="home"）
+async function fetchHomeLayouts(){
+  try{
+    const r=await authed("/rest/v1/portal_layouts?area=eq.home&select=role,widget_key,position,enabled,size&order=position");
+    HOME_LAYOUTS={};
+    if(r.ok&&Array.isArray(r.body)) r.body.forEach(row=>{ (HOME_LAYOUTS[row.role]=HOME_LAYOUTS[row.role]||[]).push(row); });
+  }catch(e){ HOME_LAYOUTS={}; }
+}
+function homeLayoutFor(roleKey){
+  const custom=HOME_LAYOUTS&&HOME_LAYOUTS[roleKey];
+  if(custom&&custom.length){
+    return custom.slice().sort((a,b)=>a.position-b.position).filter(x=>x.enabled&&WIDGETS[x.widget_key])
+      .map(x=>({key:x.widget_key,size:x.size||"medium"}));
+  }
+  return (DEFAULT_HOME_LAYOUT[roleKey]||DEFAULT_HOME_LAYOUT.AL).filter(w=>WIDGETS[w.key]);
+}
+// 編集用: 未使用ウィジェットも含めて全カタログを並べる（enabled=falseで保持）
+function homeLayoutForEdit(roleKey){
+  const cur=homeLayoutFor(roleKey).map(w=>({key:w.key,size:w.size,enabled:true}));
+  const usedKeys=cur.map(w=>w.key);
+  const others=HOME_WIDGET_CATALOG.filter(w=>!usedKeys.includes(w.key)).map(w=>({key:w.key,size:w.defaultSize,enabled:false}));
+  return [...cur,...others];
+}
+
+/* ---- F-7: ホーム画面編集（WP/ブログ風エディタ。マスター専用） ---- */
+const HEDIT_ROLES=["MASTER","CEO","HQ","TEAM","TENCHO","SHAIN","AL"];
+const HEDIT_ROLE_LABEL={MASTER:"マスター",CEO:"社長",HQ:"本部",TEAM:"チーム長",TENCHO:"店長",SHAIN:"社員",AL:"アルバイト"};
+const HEDIT_SIZE_LABEL={small:"小（1枠）",medium:"中（2枠）",large:"大（横幅いっぱい）"};
+let HEDIT_ROLE="MASTER", HEDIT_DRAFT=null;
+function homeEditTabHtml(){
+  return `<div class="panel" style="padding:16px">
+    <p class="sub" style="margin:0 0 12px">役割を選び、ホーム画面に出すウィジェットのチェック・サイズ・並び順を編集して保存します。並び順の変更・保存はマスターのみ有効です。</p>
+    <div class="hedit-role">${HEDIT_ROLES.map(r=>`<button data-r="${r}" class="${HEDIT_ROLE===r?"active":""}">${HEDIT_ROLE_LABEL[r]}</button>`).join("")}</div>
+    <div id="hedit-list">${homeEditListHtml()}</div>
+    <div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap">
+      <button class="abtn" id="heditsave" style="width:auto;padding:10px 18px;margin-top:0">保存する</button>
+      <button class="iconbtn" id="heditreset">既定に戻す</button>
+    </div>
+    <div id="heditmsg" class="sub" style="margin-top:8px"></div>
+  </div>`;
+}
+function homeEditListHtml(){
+  return HEDIT_DRAFT.map((w,i)=>`
+    <div class="hedit-row" data-idx="${i}">
+      <label><input type="checkbox" class="hedit-en" ${w.enabled?"checked":""}> ${esc(homeCatalogLabel(w.key))}</label>
+      <select class="hedit-size">
+        ${["small","medium","large"].map(s=>`<option value="${s}" ${w.size===s?"selected":""}>${HEDIT_SIZE_LABEL[s]}</option>`).join("")}
+      </select>
+      <span class="hedit-updn">
+        <button class="hedit-up" ${i===0?"disabled":""}>↑</button>
+        <button class="hedit-dn" ${i===HEDIT_DRAFT.length-1?"disabled":""}>↓</button>
+      </span>
+    </div>`).join("");
+}
+async function renderHomeEditArea(u){
+  const area=$("viewarea"); if(!area) return;
+  area.style.padding="";
+  area.innerHTML=`<div class="spin">読み込み中…</div>`;
+  await fetchHomeLayouts();
+  if(VIEW!=="frame"||CUR!=="admin-homeedit") return;
+  HEDIT_DRAFT=homeLayoutForEdit(HEDIT_ROLE);
+  area.innerHTML=homeEditTabHtml();
+  wireHomeEditTab(u);
+}
+function wireHomeEditTab(u){
+  document.querySelectorAll(".hedit-role button").forEach(b=>{
+    b.onclick=()=>{ HEDIT_ROLE=b.dataset.r; HEDIT_DRAFT=homeLayoutForEdit(HEDIT_ROLE); $("viewarea").innerHTML=homeEditTabHtml(); wireHomeEditTab(u); };
+  });
+  document.querySelectorAll(".hedit-row").forEach(row=>{
+    const i=+row.dataset.idx;
+    row.querySelector(".hedit-en").onchange=e=>{ HEDIT_DRAFT[i].enabled=e.target.checked; };
+    row.querySelector(".hedit-size").onchange=e=>{ HEDIT_DRAFT[i].size=e.target.value; };
+    const up=row.querySelector(".hedit-up"), dn=row.querySelector(".hedit-dn");
+    if(up) up.onclick=()=>{ if(i>0){ [HEDIT_DRAFT[i-1],HEDIT_DRAFT[i]]=[HEDIT_DRAFT[i],HEDIT_DRAFT[i-1]]; $("viewarea").innerHTML=homeEditTabHtml(); wireHomeEditTab(u); } };
+    if(dn) dn.onclick=()=>{ if(i<HEDIT_DRAFT.length-1){ [HEDIT_DRAFT[i+1],HEDIT_DRAFT[i]]=[HEDIT_DRAFT[i],HEDIT_DRAFT[i+1]]; $("viewarea").innerHTML=homeEditTabHtml(); wireHomeEditTab(u); } };
+  });
+  $("heditsave").onclick=async()=>{
+    const m=$("heditmsg"); m.textContent="保存中…";
+    const rows=HEDIT_DRAFT.map((w,i)=>({role:HEDIT_ROLE,area:"home",widget_key:w.key,position:(i+1)*10,enabled:w.enabled,size:w.size,updated_at:new Date().toISOString()}));
+    const r=await authed("/rest/v1/portal_layouts",{method:"POST",headers:{Prefer:"resolution=merge-duplicates,return=minimal"},body:JSON.stringify(rows)});
+    m.textContent=r.ok?"保存しました":"保存できませんでした（マスターアカウントのみ変更できます）";
+    if(r.ok) await fetchHomeLayouts();
+  };
+  $("heditreset").onclick=async()=>{
+    if(!confirm(`「${HEDIT_ROLE_LABEL[HEDIT_ROLE]}」のホーム画面設定を既定に戻します。よろしいですか？`)) return;
+    const m=$("heditmsg"); m.textContent="処理中…";
+    const r=await authed(`/rest/v1/portal_layouts?role=eq.${HEDIT_ROLE}&area=eq.home`,{method:"DELETE"});
+    m.textContent=r.ok?"既定に戻しました":"失敗しました";
+    if(r.ok){ await fetchHomeLayouts(); HEDIT_DRAFT=homeLayoutForEdit(HEDIT_ROLE); $("viewarea").innerHTML=homeEditTabHtml(); wireHomeEditTab(u); }
+  };
+}
 function drawTrendChart(daily,metric){
   const cv=$("trendcv"); if(!cv) return; const ctx=cv.getContext("2d");
   const rect=cv.getBoundingClientRect(), r=window.devicePixelRatio||1;
@@ -856,6 +987,9 @@ const GROUPS=[
     // 出力テンプレート管理は「データ出力」（SYS_ITEMS・export.html）に統合済み
     // （担当Gがテンプレート一覧・出力履歴も同一画面に実装したため、別項目は置かない）
     {key:"admin-usage",    ico:"📊", label:"システム利用状況", type:"sysusage"},
+    // F-7: ホーム画面編集（WP/ブログ風）。roles:[]は「マスターのみ」を表す慣用（itemVisible
+    // は空配列に対してどのroleでもfalseを返す一方、u.is_masterは冒頭で無条件trueに短絡する）
+    {key:"admin-homeedit", ico:"🎛️", label:"ホーム画面編集", type:"homeedit", roles:[]},
   ]},
 ];
 function itemVisible(it,grp,u){
@@ -1067,6 +1201,12 @@ function openItem(key,u){
     refreshNavActive(u);
     return;
   }
+  if(it.type==="homeedit"){ // F-7: ホーム画面編集（同上・ポータル内で直接描画）
+    renderHomeEditArea(u);
+    closeMobileMore();
+    refreshNavActive(u);
+    return;
+  }
   area.style.padding="0";
   area.innerHTML=`<div class="framewrap"><iframe src="${esc(it.url)}" allow="clipboard-write" title="${esc(it.label)}"></iframe></div>`;
   closeMobileMore();
@@ -1192,14 +1332,25 @@ function quickActionsHtml(u){
   const picks=candidates.filter(c=>{ const f=findItem(c.key); return f&&itemVisible(f.it,f.grp,u); }).slice(0,3);
   return picks.map(c=>`<button data-key="${c.key}"><strong>${c.ico} ${esc(c.label)}</strong><small>${esc(c.sub)}</small></button>`).join("");
 }
+// F-7: 単一の並び順リスト（items=[{key,size}]）をKPI行のHTML（モバイル用）と
+// 4カラムグリッドのHTML（デスクトップ用）に変換する
+function homeKpiHtml(items,ctx){ return items.filter(w=>w.key.indexOf("kpi_")===0).map(w=>WIDGETS[w.key]?WIDGETS[w.key].render(ctx):"").join(""); }
+function homeGridHtml(items,ctx){
+  return items.map(w=>{
+    if(!WIDGETS[w.key]) return "";
+    return `<div class="hw-${w.size||"medium"}">${WIDGETS[w.key].render(ctx)}</div>`;
+  }).join("");
+}
+function homeGridAfter(items,ctx){ items.forEach(w=>{ if(WIDGETS[w.key]&&WIDGETS[w.key].after) WIDGETS[w.key].after(ctx); }); }
+
 async function renderHomeArea(u){
   const area=$("viewarea"); if(!area) return;
   area.style.padding="";
   area.innerHTML=`<div class="desktop-home"><div class="spin">読み込み中…</div></div>`;
-  const layout=layoutFor(u);
-  const needsTori=layout.kpi.includes("kpi_sales")||layout.main==="panel_chart";
-  const needsChecklist=layout.kpi.includes("kpi_check");
-  const needsReports=layout.kpi.includes("kpi_nippo");
+  const items=homeLayoutFor(roleKeyOf(u));
+  const needsTori=items.some(w=>w.key==="kpi_sales"||w.key==="panel_chart");
+  const needsChecklist=items.some(w=>w.key==="kpi_check");
+  const needsReports=items.some(w=>w.key==="kpi_nippo");
   const jobs=[fetchMyStores(),fetchHqTasks()];
   if(needsChecklist) jobs.push(fetchStores(),fetchChecklistToday());
   if(needsReports) jobs.push(fetchReportsYesterday());
@@ -1210,8 +1361,7 @@ async function renderHomeArea(u){
     if(VIEW!=="home") return; // 読み込み中に他の画面へ移動していたら、後から来た結果で上書きしない
     const ctx={u,tori:toriState,alerts:alerts||[]};
     if(myStoreScope(u)){ /* hqNippoMineは下のジョブで別途セット */ }
-    const kpiHtml=layout.kpi.map(k=>WIDGETS[k]?WIDGETS[k].render(ctx):"").join("");
-    const mainW=WIDGETS[layout.main], sideW=WIDGETS[layout.side];
+    const kpiHtml=homeKpiHtml(items,ctx);
     const {keiei,gyomu}=homeQuickGroups(u);
     area.innerHTML=`
       <div class="mobile-home">
@@ -1221,18 +1371,14 @@ async function renderHomeArea(u){
         ${gyomu.length?`<div class="mobile-section-title"><b>業務</b><span>現場・本部</span></div><div class="mobile-system-grid">${gyomu.map(it=>`<button class="mobile-system-btn" data-key="${it.key}"><span class="icon">${it.ico}</span><strong>${esc(it.label)}</strong></button>`).join("")}</div>`:""}
       </div>
       <div class="desktop-home">
-        <div class="summary">${kpiHtml}</div>
-        <div class="two">
-          <div>${mainW?mainW.render(ctx):""}</div>
-          <div>${sideW?sideW.render(ctx):""}</div>
-        </div>
+        <div class="home-grid">${homeGridHtml(items,ctx)}</div>
         <div class="panel" style="margin-top:16px"><div class="phead"><h2>よく使う機能</h2><span class="sub2">30秒で完了する導線を優先</span></div>
           <div class="quick">
             ${quickActionsHtml(u)}
           </div>
         </div>
       </div>`;
-    if(mainW&&mainW.after) mainW.after(ctx);
+    homeGridAfter(items,ctx);
     document.querySelectorAll("[data-key]").forEach(b=>{ if(!b.onclick) b.onclick=()=>openItem(b.dataset.key,u); });
     const gotoNotice=area.querySelector("[data-goto-notice]"); if(gotoNotice) gotoNotice.onclick=()=>openItem("notice",u);
   };
@@ -1253,8 +1399,7 @@ async function renderHomeArea(u){
   const syncRow=showSync?await fetchSyncStatus():null;
   if(VIEW!=="home") return; // 読み込み中に他の画面へ移動していたら、後から来た結果で上書きしない
   const ctxFinal={u,tori:toriState,alerts,hqNippoMine};
-  const kpiHtml2=layout.kpi.map(k=>WIDGETS[k]?WIDGETS[k].render(ctxFinal):"").join("");
-  const mainW2=WIDGETS[layout.main], sideW2=WIDGETS[layout.side];
+  const kpiHtml2=homeKpiHtml(items,ctxFinal);
   const {keiei,gyomu}=homeQuickGroups(u);
   area.innerHTML=`
     <div class="mobile-home">
@@ -1264,11 +1409,7 @@ async function renderHomeArea(u){
       ${gyomu.length?`<div class="mobile-section-title"><b>業務</b><span>現場・本部</span></div><div class="mobile-system-grid">${gyomu.map(it=>`<button class="mobile-system-btn" data-key="${it.key}"><span class="icon">${it.ico}</span><strong>${esc(it.label)}</strong></button>`).join("")}</div>`:""}
     </div>
     <div class="desktop-home">
-      <div class="summary">${kpiHtml2}</div>
-      <div class="two">
-        <div>${mainW2?mainW2.render(ctxFinal):""}</div>
-        <div>${sideW2?sideW2.render(ctxFinal):""}</div>
-      </div>
+      <div class="home-grid">${homeGridHtml(items,ctxFinal)}</div>
       <div class="panel" style="margin-top:16px"><div class="phead"><h2>よく使う機能</h2><span class="sub2">30秒で完了する導線を優先</span></div>
         <div class="quick">
           ${quickActionsHtml(u)}
@@ -1276,7 +1417,7 @@ async function renderHomeArea(u){
       </div>
       ${showSync?syncStatusHtml(syncRow):""}
     </div>`;
-  if(mainW2&&mainW2.after) mainW2.after(ctxFinal);
+  homeGridAfter(items,ctxFinal);
   document.querySelectorAll("[data-key]").forEach(b=>{ b.onclick=()=>openItem(b.dataset.key,u); });
   const gotoNotice2=area.querySelector("[data-goto-notice]"); if(gotoNotice2) gotoNotice2.onclick=()=>openItem("notice",u);
 
@@ -1305,7 +1446,7 @@ async function main(){
   if(!u){sess.clear();renderLogin("セッションが切れました。もう一度ログインしてください。");return}
   if(u.is_active===false){sess.clear();renderLogin("このアカウントは無効化されています。本部までお問い合わせください。");return}
   ME=u;
-  await Promise.all([fetchPerms(),fetchPosts(),fetchNotifs()]);
+  await Promise.all([fetchPerms(),fetchPosts(),fetchNotifs(),fetchHomeLayouts()]);
   VIEW="home"; CUR=null;
   renderShellBody(u);
 }
