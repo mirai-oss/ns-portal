@@ -16,7 +16,11 @@
 }
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Noto Sans JP",sans-serif;background:var(--bg);color:var(--ink);min-height:100vh}
-.wrap{max-width:980px;margin:0 auto;padding:20px 16px 60px}
+/* 2026-08-26: ポータルシェル(portal.html)埋め込み時、サイドバー分を除いた残り幅いっぱいに
+   iframeが渡されるにもかかわらずここが980pxで頭打ちになり、幅が広い画面ほど左右に大きな
+   空白ができてしまうという実機フィードバック対応。デザイン案のcontent領域（サイドバー以外は
+   幅いっぱいに使う）に合わせ、実用的な上限まで大きく引き上げた */
+.wrap{max-width:1600px;margin:0 auto;padding:20px 16px 60px}
 a{color:inherit}
 .spin{text-align:center;color:var(--muted);padding:60px 0}
 .err{color:#c62828;font-size:13px}
@@ -58,6 +62,9 @@ textarea{resize:vertical}
 .chipcheck{display:inline-flex;align-items:center;gap:6px;padding:5px 12px;font-size:12px;border-radius:99px;border:1px solid var(--line);background:var(--card);cursor:pointer;white-space:nowrap;margin:0}
 .chipcheck input{width:auto;margin:0;accent-color:var(--accent);cursor:pointer}
 .toprow{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px}
+/* 2026-08-26: デザイン案のtoolbar-top（検索＋表示切替＋主要アクションを1行に並べる構成）に合わせた */
+.toolbar-top{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.toolbar-top .searchbox{flex:1;min-width:220px;margin-bottom:0}
 
 /* かんばん */
 .board{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:14px}
@@ -687,20 +694,34 @@ function renderBoard(u){
     <div class="sig stall ${FILTER.signal==='stall'?'active':''}" data-sig="stall"><div class="n">${cnt.stall}</div><div class="l">3日以上停止</div></div>
     <div class="sig"><div class="n">${cnt.doneCount}</div><div class="l">今月完了</div></div>
   </div>
-  <div class="searchbox"><span class="mag">🔍</span><input id="q" type="search" placeholder="タイトル・注意事項・工程名・コメントを検索（過去分含む）" value="${esc(SEARCHQ)}"></div>
-  <div class="toprow">
-    <div class="chiprow" id="corpchips">
+  <!-- 2026-08-26: デザイン案のtoolbar-top（検索＋表示切替＋主要アクションを1行に）に合わせて再構成。
+       機能は一切削らず、既存の担当者/依頼者/並び替えの完全選択セレクトはchips行の続きに残した
+       （デザイン案の「自分の担当」「自分が依頼」チップは“自分”固定のショートカットとして追加し、
+       任意の相手で絞り込みたい場合は従来どおりセレクトを使う） -->
+  <div class="card" style="padding:14px;margin-top:14px">
+    <div class="toolbar-top">
+      <div class="searchbox" style="margin:0"><span class="mag">🔍</span><input id="q" type="search" placeholder="タイトル・注意事項・工程名・コメントを検索（過去分含む）" value="${esc(SEARCHQ)}"></div>
+      <div class="chiprow" id="viewtoggle" style="margin:0">
+        <span class="chip ${BOARD_VIEW==="kanban"?"active":""}" data-view="kanban">🗂 かんばん</span>
+        <span class="chip ${BOARD_VIEW==="list"?"active":""}" data-view="list">📋 リスト</span>
+        <span class="chip ${BOARD_VIEW==="calendar"?"active":""}" data-view="calendar">📅 カレンダー</span>
+      </div>
+      ${canFeature(u,"newtask")?`<button class="btn sm" id="newtask">＋ タスク追加</button>`:""}
+    </div>
+    <div class="chiprow" id="corpchips" style="margin-top:10px">
       <span class="chip ${!FILTER.corp?'active':''}" data-corp="">すべての法人</span>
       ${CORPS.map(c=>`<span class="chip ${FILTER.corp===c.name?'active':''}" data-corp="${esc(c.name)}">${esc(c.name)}${c.is_active?"":" (非表示)"}</span>`).join("")}
     </div>
-  </div>
-  <div class="toprow">
-    <div class="chiprow" id="freqchips">
+    <div class="chiprow" id="freqchips" style="margin-top:10px">
       <span class="chip ${!FILTER.freq?'active':''}" data-freq="">🔁 すべて</span>
       <span class="chip ${FILTER.freq==='daily'?'active':''}" data-freq="daily">毎日</span>
       <span class="chip ${FILTER.freq==='weekly'?'active':''}" data-freq="weekly">毎週</span>
       <span class="chip ${FILTER.freq==='monthly'?'active':''}" data-freq="monthly">毎月</span>
       <span class="chip ${FILTER.freq==='once'?'active':''}" data-freq="once">単発</span>
+      <span class="chip ${FILTER.assignee===u.id?'active':''}" id="chipmine">自分の担当</span>
+      <span class="chip ${FILTER.creator===u.id?'active':''}" id="chipmineasked">自分が依頼</span>
+    </div>
+    <div class="chiprow" style="margin-top:10px">
       <span>👤 <select id="assigneesel" style="width:auto;display:inline-block;padding:5px 10px;font-size:12px;border-radius:99px">
         <option value="">担当者ですべて表示</option>
         <option value="${u.id}" ${FILTER.assignee===u.id?"selected":""}>自分（${esc(u.name)}）</option>
@@ -714,12 +735,10 @@ function renderBoard(u){
       <span>並び替え: <select id="sortsel" style="width:auto;display:inline-block;padding:5px 10px;font-size:12px;border-radius:99px">
         ${Object.entries(SORT_LABEL).map(([k,v])=>`<option value="${k}" ${SORT_MODE===k?"selected":""}>${esc(v)}</option>`).join("")}
       </select></span>
-      <span>表示: <select id="boardviewsel" style="width:auto;display:inline-block;padding:5px 10px;font-size:12px;border-radius:99px">
-        <option value="kanban" ${BOARD_VIEW==="kanban"?"selected":""}>🗂 かんばん</option>
-        <option value="list" ${BOARD_VIEW==="list"?"selected":""}>📋 リスト</option>
-        <option value="calendar" ${BOARD_VIEW==="calendar"?"selected":""}>📅 カレンダー</option>
-      </select></span>
     </div>
+  </div>
+  <div class="toprow" style="margin-top:10px">
+    <div></div>
     <div>
       <button class="linkbtn" id="godaily">📆 今日の毎日タスク →</button>
       <button class="linkbtn" id="gorepeat">🔁 繰り返しタブ →</button>
@@ -728,7 +747,6 @@ function renderBoard(u){
       ${canFeature(u,"notify")?`<button class="linkbtn" id="gonotify">🔔 通知設定</button>`:""}
       ${canFeature(u,"corps")?`<button class="linkbtn" id="gocorps">🏢 法人管理</button>`:""}
       ${isMaster(u)?`<button class="linkbtn" id="goperms">🔑 権限設定</button>`:""}
-      ${canFeature(u,"newtask")?`<button class="btn sm" id="newtask">＋ タスク追加</button>`:""}
     </div>
   </div>
   ${SEARCH_RESULTS!==null?`<div class="card" style="margin:10px 0"><b>検索結果: ${list.length}件</b> <button class="linkbtn" id="clearsearch">検索をやめる</button></div>`:""}
@@ -761,9 +779,15 @@ function wireBoard(u){
   $("assigneesel").onchange=e=>{FILTER.assignee=e.target.value||null;renderBoard(u);};
   $("creatorsel").onchange=e=>{FILTER.creator=e.target.value||null;renderBoard(u);};
   $("sortsel").onchange=e=>{SORT_MODE=e.target.value; localStorage.setItem("hq_sort",SORT_MODE); renderBoard(u);};
-  $("boardviewsel").onchange=e=>{
-    BOARD_VIEW=e.target.value; localStorage.setItem("hq_boardview",BOARD_VIEW); renderBoard(u);
-  };
+  // 2026-08-26(トップ画面をデザイン案に近づける): 表示切替をセレクトからチップ（デザイン案の
+  // カード/リスト/カレンダーの見た目）へ変更。状態(BOARD_VIEW)・保存先は変えていない
+  document.querySelectorAll("[data-view]").forEach(c=>c.onclick=()=>{
+    BOARD_VIEW=c.dataset.view; localStorage.setItem("hq_boardview",BOARD_VIEW); renderBoard(u);
+  });
+  // 「自分の担当」「自分が依頼」＝デザイン案のチップ相当。既存のセレクト（担当者ですべて表示／
+  // 依頼者ですべて表示）はそのまま残し、他人で絞り込みたい場合はそちらを使う
+  $("chipmine").onclick=()=>{ FILTER.assignee=FILTER.assignee===u.id?null:u.id; renderBoard(u); };
+  $("chipmineasked").onclick=()=>{ FILTER.creator=FILTER.creator===u.id?null:u.id; renderBoard(u); };
   document.querySelectorAll("[data-listsort]").forEach(th=>th.onclick=()=>{
     const k=th.dataset.listsort;
     if(LIST_SORT.col===k) LIST_SORT.dir=LIST_SORT.dir==="asc"?"desc":"asc"; else LIST_SORT={col:k,dir:"asc"};
