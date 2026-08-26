@@ -1080,9 +1080,13 @@ function wireDetailActions(u){
    2026-08-25 Phase1.6: mail_kind別（invoice/sales）に共通ロジックを流用できるようパラメータ化
    ============================================================ */
 let LIST_KIND="invoice"; // invoice | sales（今どちらの一覧タブを描画中か）
+// 2026-08-26 C-6: primarySource="invoice_emails"のkindは、invoicesテーブルへの保存(💾)が
+// まだでも「種類を選んだ時点」で一覧に出す（未入力行はvendor_name等がnullのまま表示）。
+// invoiceは既存どおりinvoicesテーブル起点（登録済みのみ表示）を維持＝851件中850件が未保存の
+// 現状で挙動を変えると請求書一覧の意味が激変してしまうため、売上のみ変更する
 const LIST_KIND_CONFIG={
-  invoice:{statusLabel:INVOICE_STATUS_LABEL,vendorLabel:"請求元",numberLabel:"請求番号",amountLabel:"金額",dateLabel:"期限",searchPlaceholder:"🔎 請求元・番号・件名",emptyLabel:"該当する請求書はありません"},
-  sales:{statusLabel:SALES_STATUS_LABEL,vendorLabel:"入金元",numberLabel:"明細番号",amountLabel:"入金額",dateLabel:"入金予定日",searchPlaceholder:"🔎 入金元・明細番号・件名",emptyLabel:"該当する入金明細はありません"},
+  invoice:{statusLabel:INVOICE_STATUS_LABEL,vendorLabel:"請求元",numberLabel:"請求番号",amountLabel:"金額",dateLabel:"期限",searchPlaceholder:"🔎 請求元・番号・件名",emptyLabel:"該当する請求書はありません",primarySource:"invoices"},
+  sales:{statusLabel:SALES_STATUS_LABEL,vendorLabel:"入金元",numberLabel:"明細番号",amountLabel:"入金額",dateLabel:"入金予定日",searchPlaceholder:"🔎 入金元・明細番号・件名",emptyLabel:"種類が「売上」のメールはありません",primarySource:"invoice_emails"},
 };
 function dueBadgeHtml(row){
   const label=fmtD(row.due_date);
@@ -1161,8 +1165,22 @@ async function renderFinancialListTab(u,kind){
   LIST_KIND=kind;
   const cfg=LIST_KIND_CONFIG[kind];
   IV_SEARCH_Q=""; IV_STATUS=""; IV_AMOUNT_MIN=""; IV_AMOUNT_MAX=""; IV_DUE_FROM=""; IV_DUE_TO=""; IV_SORT_COL=""; IV_SORT_DIR="asc";
-  const r=await authed(`/rest/v1/invoices?select=*,email:invoice_emails!inner(subject,from_address,mail_kind,processing_user_id,processor:users!invoice_emails_processing_user_id_fkey(name))&email.mail_kind=eq.${kind}&order=created_at.desc&limit=300`);
-  IV_ROWS=(r.ok&&Array.isArray(r.body))?r.body:[];
+  if(cfg.primarySource==="invoice_emails"){
+    // invoice_emails起点：invoicesへの保存が無くても種類分類だけで一覧に出す（C-6）
+    const r=await authed(`/rest/v1/invoice_emails?mail_kind=eq.${kind}&select=id,subject,from_address,processing_user_id,processor:users!invoice_emails_processing_user_id_fkey(name),invoices(id,vendor_name,invoice_number,amount,due_date,invoice_status)&order=received_at.desc&limit=300`);
+    const raw=(r.ok&&Array.isArray(r.body))?r.body:[];
+    IV_ROWS=raw.map(e=>{
+      const iv=(e.invoices&&e.invoices[0])||{};
+      return {
+        email_id:e.id, vendor_name:iv.vendor_name??null, invoice_number:iv.invoice_number??null,
+        amount:iv.amount??null, due_date:iv.due_date??null, invoice_status:iv.invoice_status||"draft",
+        email:{subject:e.subject, from_address:e.from_address, processor:e.processor},
+      };
+    });
+  }else{
+    const r=await authed(`/rest/v1/invoices?select=*,email:invoice_emails!inner(subject,from_address,mail_kind,processing_user_id,processor:users!invoice_emails_processing_user_id_fkey(name))&email.mail_kind=eq.${kind}&order=created_at.desc&limit=300`);
+    IV_ROWS=(r.ok&&Array.isArray(r.body))?r.body:[];
+  }
   $("tabbody").innerHTML=`
     <section class="invoice-list active">
       <div class="card" style="margin-bottom:12px">
