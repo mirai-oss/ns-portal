@@ -115,9 +115,11 @@ const REPORTS=[
   {key:"pl_monthly",name:"月次PL",category:"経営・売上"},
   {key:"pl_annual_trend",name:"年間推移PL",category:"経営・売上"},
   {key:"ad_media",name:"媒体別広告実績",category:"マーケティング"},
+  {key:"loan_repayment",name:"銀行返済予定表",category:"経理",noStoreSelect:true},
 ];
 const CATEGORIES=[...new Set(REPORTS.map(r=>r.category))];
 const reportsInCategory=cat=>REPORTS.filter(r=>r.category===cat);
+const currentReport=()=>REPORTS.find(r=>r.key===SEL.report_key)||REPORTS[0];
 
 function renderLogin(err){
   $("app").innerHTML=`<div class="card">
@@ -141,6 +143,11 @@ function defaultPeriod(reportKey){
   if(reportKey==="pl_annual_trend"){
     const fromD=new Date(now.getFullYear(),now.getMonth()-11,1);
     return {from:ymOf(fromD),to};
+  }
+  if(reportKey==="loan_repayment"){
+    // 返済「予定」表なので、今後1年分を既定にする（今月〜11ヶ月先）
+    const toD=new Date(now.getFullYear(),now.getMonth()+11,1);
+    return {from:to,to:ymOf(toD)};
   }
   return {from:to,to};
 }
@@ -183,6 +190,8 @@ function renderMain(u){
       </select>
       <div class="note">${SEL.report_key==="ad_media"
         ?"媒体別広告実績＝広告費（広告DBシート）と売上（媒体別売上）を媒体ごとに突合してROASを確認"
+        :SEL.report_key==="loan_repayment"
+        ?"銀行返済予定表＝法人×店舗×年月の支払利息・返済元金を出力（財務データのためマスター/CEO/HQのみ利用可）"
         :"月次PL＝原則1ヶ月を選んで単月の損益を確認。年間推移PL＝複数ヶ月を選んで月別の推移を確認（同じデータをもとに構成が異なります）"}</div>
 
       <div class="row2">
@@ -196,8 +205,10 @@ function renderMain(u){
         </div>
       </div>
 
+      ${currentReport().noStoreSelect?"":`
       <label>対象店舗（複数選択可。未選択の場合は自分が出力可能な全店舗）</label>
       <div class="storelist" id="f-stores">${storeListHtml()}</div>
+      `}
 
       <label>出力形式</label>
       <div class="fmt-row">
@@ -230,7 +241,7 @@ function renderMain(u){
     </div>
   `;
 
-  $("f-stores").querySelectorAll("input[type=checkbox]").forEach(cb=>{
+  if($("f-stores")) $("f-stores").querySelectorAll("input[type=checkbox]").forEach(cb=>{
     cb.onchange=()=>{
       const id=cb.dataset.store;
       if(cb.checked){ if(!SEL.store_ids.includes(id)) SEL.store_ids.push(id); }
@@ -275,16 +286,21 @@ async function runPreview(){
     return;
   }
   const b=r.body;
-  const adLines=b.report_key==="ad_media"?`
+  const extraLines=b.report_key==="ad_media"?`
     対象媒体数: ${b.media_count}媒体<br>
     広告費合計: ${fmtYen(b.ad_cost_total)}<br>
     売上合計（媒体経由・目安）: ${fmtYen(b.sales_total)}<br>
-    ROAS（目安）: ${b.roas!=null?(b.roas*100).toFixed(0)+"%":"—"}`:`
+    ROAS（目安）: ${b.roas!=null?(b.roas*100).toFixed(0)+"%":"—"}`
+    :b.report_key==="loan_repayment"?`
+    対象法人数: ${b.corporation_count}法人<br>
+    支払利息合計: ${fmtYen(b.interest_total)}<br>
+    返済元金合計: ${fmtYen(b.principal_total)}`
+    :`
     売上高合計（目安）: ${fmtYen(b.sales_total)}`;
   $("preview-result").innerHTML=`<div class="preview-box">
     対象期間: ${esc(b.period.from)} 〜 ${esc(b.period.to)}（${b.period.months}ヶ月分）<br>
     対象店舗数: ${b.store_count}店舗（${esc(b.store_names.join("・"))}）<br>
-    対象データ件数: ${b.row_count}件${adLines}
+    対象データ件数: ${b.row_count}件${extraLines}
     ${b.note?`<br><span style="color:var(--warn)">${esc(b.note)}</span>`:""}
   </div>`;
 }

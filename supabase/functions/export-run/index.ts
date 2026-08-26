@@ -30,9 +30,12 @@ import { createClient } from "npm:@supabase/supabase-js@2";
 const ExcelJS = (await import("npm:exceljs@4.4.0")).default;
 
 const DASH_API_URL = "https://script.google.com/macros/s/AKfycbz9rd37EZa6X8WRMVEBrXobN8DbYWkHRlhFNYU5rd1UZ0V8j0-6shMQjEeoi4HDWZ0B/exec";
-const REPORT_TITLE: Record<string, string> = { pl_monthly: "月次PL", pl_annual_trend: "年間推移PL", ad_media: "媒体別広告実績" };
+const REPORT_TITLE: Record<string, string> = {
+  pl_monthly: "月次PL", pl_annual_trend: "年間推移PL", ad_media: "媒体別広告実績", loan_repayment: "銀行返済予定表",
+};
 const PL_REPORT_KEYS = ["pl_monthly", "pl_annual_trend"];
 const AD_REPORT_KEYS = ["ad_media"];
+const LOAN_REPORT_KEYS = ["loan_repayment"];
 
 const cors: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -593,6 +596,161 @@ async function buildAdExcel(
   return buf as unknown as ArrayBuffer;
 }
 
+// ---------------- 銀行返済予定表（G-2・2026-08-26追加） ----------------
+// データ源: ns-info-system /api/loan-repayment-feed（F-8・実装指示書_ラウンド3_2026-08-26.md）。
+// 借入ごとの店舗按分は同APIで計算済み（storeId=nullは全社共通）。財務データのため
+// 出力可否はexport_can_access()より厳しくmaster/CEO/HQのみに限定する（Deno.serve側で判定）。
+const LOAN_REPAYMENT_FEED_URL = "https://ns-info-system.vercel.app/api/loan-repayment-feed";
+type LoanFeedRow = { corporationId: string; corporationName: string; storeId: string | null; storeName: string | null; yearMonth: string; interestAmount: number; principalAmount: number };
+
+async function fetchLoanRepayment(sb: any, periodFrom: string, periodTo: string): Promise<LoanFeedRow[]> {
+  const { data: sec } = await sb.from("app_secrets").select("value").eq("key", "loan_repayment_feed_token").maybeSingle();
+  const token = (sec?.value ?? "").trim();
+  if (!token) throw new Error("app_secretsにloan_repayment_feed_tokenが未設定です");
+  const url = `${LOAN_REPAYMENT_FEED_URL}?from=${periodFrom}&to=${periodTo}`;
+  const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+  if (!res.ok) throw new Error(`loan-repayment-feed取得に失敗: HTTP ${res.status}`);
+  const body = await res.json();
+  return (body.rows ?? []) as LoanFeedRow[];
+}
+
+type LoanMatrixRow = { corpName: string; storeLabel: string; kind: "支払利息" | "返済元金"; byMonth: Map<string, number> };
+
+function buildLoanMatrix(rows: LoanFeedRow[]): { rows: LoanMatrixRow[]; months: string[] } {
+  const monthSet = new Set<string>();
+  const order: string[] = [];
+  const map = new Map<string, LoanMatrixRow>();
+  const upsert = (corpName: string, storeLabel: string, kind: "支払利息" | "返済元金", ym: string, amount: number) => {
+    monthSet.add(ym);
+    const key = `${corpName}__${storeLabel}__${kind}`;
+    if (!map.has(key)) { map.set(key, { corpName, storeLabel, kind, byMonth: new Map() }); order.push(key); }
+    const r = map.get(key)!;
+    r.byMonth.set(ym, (r.byMonth.get(ym) ?? 0) + amount);
+  };
+  for (const r of rows) {
+    const storeLabel = r.storeName ?? "（全社共通）";
+    upsert(r.corporationName, storeLabel, "支払利息", r.yearMonth.slice(0, 7), r.interestAmount);
+    upsert(r.corporationName, storeLabel, "返済元金", r.yearMonth.slice(0, 7), r.principalAmount);
+  }
+  order.sort((ka, kb) => {
+    const a = map.get(ka)!, b = map.get(kb)!;
+    return a.corpName !== b.corpName ? a.corpName.localeCompare(b.corpName, "ja")
+      : a.storeLabel !== b.storeLabel ? a.storeLabel.localeCompare(b.storeLabel, "ja")
+      : a.kind === b.kind ? 0 : a.kind === "支払利息" ? -1 : 1;
+  });
+  const months = [...monthSet].sort();
+  return { rows: order.map((k) => map.get(k)!), months };
+}
+
+function writeLoanSheet(wb: any, sheetName: string, title: string, style: StyleProfile, data: { rows: LoanMatrixRow[]; months: string[] }) {
+  const sheet = wb.addWorksheet(sheetName.slice(0, 31));
+  sheet.getCell("A1").value = title;
+  sheet.getCell("A1").font = style.titleFont;
+  sheet.getColumn(1).width = style.labelColWidth;
+  sheet.getColumn(2).width = style.labelColWidth;
+
+  const headerRowIdx = 3, dataStartRow = 4;
+  sheet.getCell(headerRowIdx, 1).value = "法人／店舗";
+  sheet.getCell(headerRowIdx, 2).value = "区分";
+  data.months.forEach((ym, i) => { sheet.getCell(headerRowIdx, 3 + i).value = ym; sheet.getColumn(3 + i).width = style.valueColWidth; });
+  const totalColIdx = 3 + data.months.length;
+  sheet.getCell(headerRowIdx, totalColIdx).value = "合計";
+  sheet.getColumn(totalColIdx).width = style.valueColWidth;
+  for (let c = 1; c <= totalColIdx; c++) {
+    const cell = sheet.getCell(headerRowIdx, c);
+    cell.font = style.headerFont; cell.fill = style.headerFill; cell.border = style.dataBorder;
+  }
+
+  data.rows.forEach((r, idx) => {
+    const rowIdx = dataStartRow + idx;
+    sheet.getCell(rowIdx, 1).value = `${r.corpName} / ${r.storeLabel}`;
+    sheet.getCell(rowIdx, 2).value = r.kind;
+    data.months.forEach((ym, i) => {
+      const cell = sheet.getCell(rowIdx, 3 + i);
+      cell.value = r.byMonth.get(ym) ?? 0;
+      cell.numFmt = style.numFmt; cell.border = style.dataBorder;
+    });
+    const totalCell = sheet.getCell(rowIdx, totalColIdx);
+    const c1 = colLetter(sheet, rowIdx, 3), c2 = colLetter(sheet, rowIdx, totalColIdx - 1);
+    totalCell.value = data.months.length ? { formula: `SUM(${c1}${rowIdx}:${c2}${rowIdx})` } : 0;
+    totalCell.numFmt = style.numFmt; totalCell.border = style.dataBorder;
+    sheet.getCell(rowIdx, 1).border = style.dataBorder;
+    sheet.getCell(rowIdx, 2).border = style.dataBorder;
+  });
+
+  const totalRowIdx = dataStartRow + data.rows.length;
+  sheet.getCell(totalRowIdx, 2).value = "合計";
+  sheet.getCell(totalRowIdx, 2).font = style.totalFont;
+  for (let c = 3; c <= totalColIdx; c++) {
+    const colL = colLetter(sheet, dataStartRow, c);
+    const cell = sheet.getCell(totalRowIdx, c);
+    cell.value = data.rows.length ? { formula: `SUM(${colL}${dataStartRow}:${colL}${totalRowIdx - 1})` } : 0;
+    cell.numFmt = style.numFmt; cell.font = style.totalFont; cell.border = style.totalBorder;
+  }
+  sheet.views = [{ state: "frozen", ySplit: headerRowIdx, xSplit: 2 }];
+}
+
+function writeLoanSummarySheet(wb: any, style: StyleProfile, rows: LoanFeedRow[], periodFrom: string, periodTo: string) {
+  const sheet = wb.addWorksheet("法人サマリー");
+  sheet.getCell("A1").value = `銀行返済予定表 法人サマリー（${periodFrom}〜${periodTo}）`;
+  sheet.getCell("A1").font = style.titleFont;
+  sheet.getColumn(1).width = style.labelColWidth;
+  const headers = ["法人", "支払利息合計", "返済元金合計", "合計"];
+  headers.forEach((h, i) => {
+    const c = sheet.getCell(3, i + 1);
+    c.value = h; c.font = style.headerFont; c.fill = style.headerFill; c.border = style.dataBorder;
+    sheet.getColumn(i + 1).width = i === 0 ? style.labelColWidth : style.valueColWidth;
+  });
+  const byCorp = new Map<string, { interest: number; principal: number }>();
+  for (const r of rows) {
+    const cur = byCorp.get(r.corporationName) ?? { interest: 0, principal: 0 };
+    cur.interest += r.interestAmount; cur.principal += r.principalAmount;
+    byCorp.set(r.corporationName, cur);
+  }
+  let rowIdx = 4;
+  for (const [corp, v] of [...byCorp.entries()].sort((a, b) => a[0].localeCompare(b[0], "ja"))) {
+    sheet.getCell(rowIdx, 1).value = corp;
+    sheet.getCell(rowIdx, 2).value = v.interest;
+    sheet.getCell(rowIdx, 3).value = v.principal;
+    const c2 = colLetter(sheet, rowIdx, 2), c3 = colLetter(sheet, rowIdx, 3);
+    sheet.getCell(rowIdx, 4).value = { formula: `${c2}${rowIdx}+${c3}${rowIdx}` };
+    for (let c = 1; c <= 4; c++) {
+      const cell = sheet.getCell(rowIdx, c);
+      cell.border = style.dataBorder;
+      if (c >= 2) cell.numFmt = style.numFmt;
+    }
+    rowIdx++;
+  }
+}
+
+async function buildLoanExcel(sb: any, reportKey: string, layout: any, rows: LoanFeedRow[], periodFrom: string, periodTo: string): Promise<ArrayBuffer> {
+  const style = await loadStyleProfile(sb, reportKey, layout);
+  const wb = new ExcelJS.Workbook();
+  wb.creator = "N-Style データ出力センター";
+  wb.created = new Date();
+  const matrix = buildLoanMatrix(rows);
+  writeLoanSheet(wb, "返済予定表", `銀行返済予定表（${periodFrom}〜${periodTo}）`, style, matrix);
+  writeLoanSummarySheet(wb, style, rows, periodFrom, periodTo);
+  const buf = await wb.xlsx.writeBuffer();
+  return buf as unknown as ArrayBuffer;
+}
+
+function buildCsvLoan(rows: LoanFeedRow[]): Uint8Array {
+  const headers = ["年月", "法人", "店舗", "支払利息", "返済元金", "合計"];
+  const lines = [headers.map(csvEscape).join(",")];
+  for (const r of rows) {
+    const storeLabel = r.storeName ?? "（全社共通）";
+    const total = r.interestAmount + r.principalAmount;
+    lines.push([r.yearMonth.slice(0, 7), r.corporationName, storeLabel, r.interestAmount, r.principalAmount, total].map(csvEscape).join(","));
+  }
+  const text = lines.join("\r\n");
+  const bom = new Uint8Array([0xef, 0xbb, 0xbf]);
+  const body = new TextEncoder().encode(text);
+  const out = new Uint8Array(bom.length + body.length);
+  out.set(bom); out.set(body, bom.length);
+  return out;
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
   const startedAt = Date.now();
@@ -612,10 +770,16 @@ Deno.serve(async (req) => {
     if (!canAccess) return json({ ok: false, error: "データ出力センターへのアクセス権限がありません" }, 403);
 
     const reportKey = String(body.report_key ?? "");
-    if (![...PL_REPORT_KEYS, ...AD_REPORT_KEYS].includes(reportKey)) {
-      return json({ ok: false, error: `report_keyは${[...PL_REPORT_KEYS, ...AD_REPORT_KEYS].join("/")}のいずれかです` }, 400);
+    const ALL_REPORT_KEYS = [...PL_REPORT_KEYS, ...AD_REPORT_KEYS, ...LOAN_REPORT_KEYS];
+    if (!ALL_REPORT_KEYS.includes(reportKey)) {
+      return json({ ok: false, error: `report_keyは${ALL_REPORT_KEYS.join("/")}のいずれかです` }, 400);
     }
     const isAd = AD_REPORT_KEYS.includes(reportKey);
+    const isLoan = LOAN_REPORT_KEYS.includes(reportKey);
+    // 銀行返済予定表は財務データのため一般のexport_can_access()より厳しくマスター/CEO/HQのみに限定する
+    if (isLoan && !(u.is_master || ["CEO", "HQ"].includes(u.role))) {
+      return json({ ok: false, error: "この帳票の出力権限がありません（マスター/CEO/HQのみ）" }, 403);
+    }
     const format = String(body.format ?? "");
     if (!["excel", "csv"].includes(format)) return json({ ok: false, error: "formatはexcel/csvのいずれかです（Google Sheetsは後追い予定）" }, 400);
 
@@ -699,7 +863,23 @@ Deno.serve(async (req) => {
     let ext: string; let contentType: string;
     let rowCount: number;
 
-    if (isAd) {
+    if (isLoan) {
+      const loanRows = await fetchLoanRepayment(sb, periodFrom, periodTo);
+      if (loanRows.length === 0) {
+        await sb.from("export_history").update({
+          status: "failed", error_message: "対象条件に一致するデータがありません", completed_at: new Date().toISOString(),
+        }).eq("id", historyId);
+        return json({ ok: false, error: "対象期間に一致する返済データがありません" }, 200);
+      }
+      rowCount = loanRows.length;
+      if (format === "excel") {
+        fileBuf = await buildLoanExcel(sb, reportKey, layout, loanRows, periodFrom, periodTo);
+        ext = "xlsx"; contentType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+      } else {
+        fileBuf = buildCsvLoan(loanRows);
+        ext = "csv"; contentType = "text/csv";
+      }
+    } else if (isAd) {
       const [allCostRows, allSalesRows, mediaAliasMap] = await Promise.all([
         fetchAdCostRows(login.token!), fetchMediaSales(login.token!), fetchMediaAliasMap(sb),
       ]);

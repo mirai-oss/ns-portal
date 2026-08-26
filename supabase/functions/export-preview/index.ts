@@ -177,6 +177,20 @@ async function fetchMediaSales(token: string): Promise<AdSalesRow[]> {
   return out;
 }
 
+// 銀行返済予定表（G-2・2026-08-26追加）。データ源はns-info-system /api/loan-repayment-feed（F-8）。
+const LOAN_REPAYMENT_FEED_URL = "https://ns-info-system.vercel.app/api/loan-repayment-feed";
+type LoanFeedRow = { corporationId: string; corporationName: string; storeId: string | null; storeName: string | null; yearMonth: string; interestAmount: number; principalAmount: number };
+async function fetchLoanRepayment(sb: any, periodFrom: string, periodTo: string): Promise<LoanFeedRow[]> {
+  const { data: sec } = await sb.from("app_secrets").select("value").eq("key", "loan_repayment_feed_token").maybeSingle();
+  const token = (sec?.value ?? "").trim();
+  if (!token) throw new Error("app_secretsにloan_repayment_feed_tokenが未設定です");
+  const url = `${LOAN_REPAYMENT_FEED_URL}?from=${periodFrom}&to=${periodTo}`;
+  const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+  if (!res.ok) throw new Error(`loan-repayment-feed取得に失敗: HTTP ${res.status}`);
+  const jsonBody = await res.json();
+  return (jsonBody.rows ?? []) as LoanFeedRow[];
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
   try {
@@ -196,11 +210,15 @@ Deno.serve(async (req) => {
     if (!canAccess) return json({ ok: false, error: "データ出力センターへのアクセス権限がありません" }, 403);
 
     const reportKey = String(body.report_key ?? "");
-    const VALID_KEYS = ["pl_monthly", "pl_annual_trend", "ad_media"];
+    const VALID_KEYS = ["pl_monthly", "pl_annual_trend", "ad_media", "loan_repayment"];
     if (!VALID_KEYS.includes(reportKey)) {
       return json({ ok: false, error: `report_keyは${VALID_KEYS.join("/")}のいずれかです` }, 400);
     }
     const isAd = reportKey === "ad_media";
+    const isLoan = reportKey === "loan_repayment";
+    if (isLoan && !(u.is_master || ["CEO", "HQ"].includes(u.role))) {
+      return json({ ok: false, error: "この帳票の出力権限がありません（マスター/CEO/HQのみ）" }, 403);
+    }
 
     const periodFrom = String(body.period_from ?? "").slice(0, 7);
     const periodTo = String(body.period_to ?? "").slice(0, 7);
@@ -254,6 +272,29 @@ Deno.serve(async (req) => {
       const direct = String(raw ?? "").trim();
       if (targetNames.has(direct)) return direct;
       return normToCanonical.get(normalizeStoreName(direct)) ?? null;
+    }
+
+    // 銀行返済予定表はGASブリッジを使わずns-info-systemの/api/loan-repayment-feedを直接呼ぶ
+    // （F-8・店舗選択の概念が無い財務データのためtargetIds/dashLoginは不要）
+    if (isLoan) {
+      const loanRows = await fetchLoanRepayment(sb, periodFrom, periodTo);
+      const interestTotal = loanRows.reduce((s, r) => s + r.interestAmount, 0);
+      const principalTotal = loanRows.reduce((s, r) => s + r.principalAmount, 0);
+      const corpSet = new Set(loanRows.map((r) => r.corporationName));
+      const storeSet = new Set(loanRows.map((r) => r.storeName ?? "（全社共通）"));
+      const yms = new Set(loanRows.map((r) => r.yearMonth.slice(0, 7)));
+      return json({
+        ok: true,
+        report_key: reportKey,
+        period: { from: periodFrom, to: periodTo, months: yms.size },
+        store_count: storeSet.size,
+        store_names: [...storeSet],
+        row_count: loanRows.length,
+        corporation_count: corpSet.size,
+        interest_total: interestTotal,
+        principal_total: principalTotal,
+        note: loanRows.length === 0 ? "対象期間に一致する返済データがありません" : undefined,
+      });
     }
 
     // --- GASブリッジ経由でBQ(stg_pl・fact_daily_store・stg_media)/広告DBを取得しフィルタ ---
