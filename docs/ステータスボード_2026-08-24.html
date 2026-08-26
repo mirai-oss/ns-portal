@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>N-Style 開発ステータスボード 2026-08-24（更新版）</title>
+<title>N-Style 開発ステータスボード 2026-08-26（更新版）</title>
 <style>
 :root{--bg:#f4f1eb;--panel:#fff;--ink:#231f1a;--muted:#7d756d;--line:#e4ddd4;--nav:#211d18;
 --accent:#c94728;--red:#c93f2b;--redsoft:#fde9e4;--green:#2f8f63;--greensoft:#e8f5ee;
@@ -46,92 +46,94 @@ table.simple tr:nth-child(even) td{background:#fbf9f6}
 <body>
 <div class="hero">
 <h1>🐔 N-Styleグループ 開発ステータスボード</h1>
-<p>2026-08-24 更新版（この1枚だけ見れば全体が分かる） ／ 詳細の正は各docsファイル・WORKLOG.md</p>
+<p>2026-08-26 更新版（この1枚だけ見れば全体が分かる） ／ 詳細の正は各docsファイル・WORKLOG.md／並行開発の体制は docs/引継ぎ書_司令塔_2026-08-26.md・docs/実装指示書_ラウンド3_2026-08-26.md 参照</p>
 <div class="toc">
-<a href="#done">✅完成</a><a href="#run">🔨対応中</a><a href="#next">📋次にやる</a>
-<a href="#backlog">📦新規要望</a><a href="#roadmap">🔭将来</a><a href="#wait">🙋判断待ち</a><a href="#fix">⚠️訂正</a>
+<a href="#lanes">🏁レーン一覧</a><a href="#done">✅完成</a><a href="#run">🔨対応中</a><a href="#next">📋次にやる</a>
+<a href="#backlog">📦新規要望</a><a href="#wait">🙋判断待ち</a><a href="#fix">⚠️訂正</a>
 </div>
 </div>
 <div class="wrap">
 
 <div class="kpis">
-<div class="kpi"><small>✅ 完成・稼働中の大物</small><b style="color:var(--green)">13</b></div>
-<div class="kpi"><small>🔨 対応中の改善</small><b style="color:var(--blue)">4</b></div>
-<div class="kpi"><small>📋 次にやる（順番決定済み）</small><b style="color:var(--purple)">7</b></div>
-<div class="kpi"><small>📦 新規に出た要望（未着手）</small><b style="color:var(--red)">23</b></div>
+<div class="kpi"><small>並行開発レーン（A〜G）</small><b style="color:var(--green)">7</b></div>
+<div class="kpi"><small>🔨 現在進行中の項目</small><b style="color:var(--blue)">9</b></div>
+<div class="kpi"><small>📋 ラウンド3で新規割当</small><b style="color:var(--purple)">10</b></div>
+<div class="kpi"><small>🙋 ユーザー確認・作業待ち</small><b style="color:var(--red)">9</b></div>
 </div>
 
-<h2 id="done">✅ 完成して本番で動いているもの</h2>
+<h2 id="lanes">🏁 並行開発レーン一覧（2026-08-26時点・ラウンド3）</h2>
+<table class="simple">
+<tr><th>レーン</th><th>縄張り</th><th>状態</th></tr>
+<tr><td>A ダッシュボード</td><td>tori-dashboard全部＋GASデプロイ独占</td><td>待機中（A-3全役職展開はユーザーOK待ち／A-5＝銀行利息PL反映はSync3完了により着手可・未着手）</td></tr>
+<tr><td>B nippo</td><td>nippo/index.html＋sf_系</td><td>シフトUI v5完了。ラウンド3新任務B-4〜B-7（リッチテキスト・日報週報バグ3件・シフト連動・面接カレンダー）着手中</td></tr>
+<tr><td>C 請求書</td><td>invoices系＋GAS invoice-intake</td><td>Phase1.5完了・C-6（売上一覧バグ）完了。<b>C-5はこのMacのclaspが未ログインでブロック中</b>（ユーザー作業待ち）。OCR実運用確認済み</td></tr>
+<tr><td>D 勤怠・給与・監視</td><td>smaregi系＋BQ勤怠＋api_</td><td><b>全完了</b>（D-1〜D-4・LINE送信数モニタリング含む）。残はユーザーのcron-job.org設定2点の確認のみ</td></tr>
+<tr><td>E 本部タスク</td><td>tasks.html＋hq_追加SQL</td><td>E-1〜E-3完了→本部タスクボード全面刷新（デザイン案準拠）を継続中。ユーザーのスクショフィードバック往復中</td></tr>
+<tr><td>F 統合ポータル</td><td>portal.html＋ns-info-system全部</td><td>シェル・SSO・⚙️管理・給与体系入力に続き<b>F-7（ホームウィジェット編集）・F-8（銀行返済データビュー）完了・Sync3宣言済み</b>。新たに店舗・法人マスタ統一の調査レポートを作成（実装はまだ・要ユーザー承認）</td></tr>
+<tr><td>G データ出力センター</td><td>export.html＋export-*＋export_/tpl_</td><td>Phase1本番稼働（月次PL・年間推移PL・媒体別広告実績・ROAS・サブブランド分離・テンプレート自己登録UI・媒体名マッピング自己管理）。<b>G-2（銀行返済予定表）実装・本番反映済み・トークン設定待ちで最終確認中</b></td></tr>
+</table>
+
+<h2 id="done">✅ 完成して本番で動いているもの（ラウンド1〜2の主なもの・抜粋）</h2>
 <div class="grid">
-<div class="card left-done"><h3>🧾 請求書メール管理 Phase 1</h3><p>info@宛メールを5分おき自動取込→一覧・詳細・添付プレビュー→処理ロック（二重処理をDBで防止）→完了/取消→返信・新規作成（差出人info@固定・確認画面必須）→重要フラグ・除外ルール・一括操作・未処理バッジ・スマホ対応</p></div>
-<div class="card left-done"><h3>📅 シフト提出（従業員側の土台）</h3><p>提出・公開・スマレジ双方向同期・LINE未提出リマインド・代理入力。実機E2E済み</p></div>
-<div class="card left-done"><h3>🏗 データ基盤 Day1〜6</h3><p>GAS全バックアップ／従業員ID一本化／勤怠API自動取込＋給与突合＋異常検知（毎日自動）／売上BigQuery化（全履歴突合一致）／店舗追加の1箇所化（店舗管理画面＋自動配信）</p></div>
-<div class="card left-done"><h3>⚡ ダッシュボード高速化</h3><p>データ鮮度表示／朝8:45反映の前倒し／10分キャッシュ／BQ失敗時の自動フォールバック／Lark日報のBigQuery直読み化（ブラウザ操作全廃）</p></div>
-<div class="card left-done"><h3>📊 PL機能（第1弾）</h3><p>運営委託費の自動連携（精算書→PL・毎週）／複数店舗の自由合算表示</p></div>
-<div class="card left-done"><h3>📂 PL補助科目・スポット人件費</h3><p>補助科目（開閉式内訳）／スポット人件費（日付単位→人件費率・PL自動反映）を実機デプロイ・実データ確認済み（<b>MF試算表CSV取込は別カード「対応中」参照＝まだ本番未デプロイ</b>）</p></div>
-<div class="card left-done"><h3>💴 経費申請</h3><p>3タップ申請・承認フロー・タスク自動生成・管理タブ</p></div>
-<div class="card left-done"><h3>🔐 社内情報管理</h3><p>給与金庫・ID/PW金庫・Excel入出力。データベースは共通ハブへ移設済み（2026-08-18）。<b>ただしログイン画面は今も別サイト（独自Vercel）のまま</b>＝ポータルとログインが共有されていない（詳細は「⚠️訂正」参照）</p></div>
-<div class="card left-done"><h3>🧮 精算書発行</h3><p>店舗ごとの精算書作成・発行。重複していた旧バージョンのコードを削除し現行版（v5.11）のみに整理済み。既知の不具合なし</p></div>
-<div class="card left-done"><h3>🏠 ポータル＋本部タスクボード</h3><p>アカウント1本化・SSO・掲示板・かんばん・通知・権限設定</p></div>
-<div class="card left-done"><h3>🚑 障害対応（2件とも解決・クローズ済み）</h3><p>Mac mini再起動による取込全停止→復旧・データ損失ゼロ（8/23解決）／BigQuery未同期→原因特定・修復・診断ツール整備</p></div>
-<div class="card left-done"><h3>⚙️ 自動取込バッチ（ns-daily-import）</h3><p>売上・媒体・入金・イベント等、<b>14本</b>のジョブが自動実行中（当初6本から拡張）</p></div>
-<div class="card left-done"><h3>📋 設計・調査ドキュメント</h3><p>データ基盤監査／要件定義書v3.4／設計仕様書／スマレジAPI調査／シフトUIデザイン確定（従業員側・店長側とも）</p></div>
+<div class="card left-done"><h3>🏠 統合ポータルシェル<span class="badge b-new">NEW</span></h3><p>サイドバー型UIで全システムをポータル内に統合（iframe埋め込み）。社内情報管理システムとのSSOハンドオフ・役割別メニュー・⚙️管理グループ・ホームウィジェットの追加/削除/並べ替え/サイズ選択（マスター専用エディタ）</p></div>
+<div class="card left-done"><h3>📤 データ出力センター<span class="badge b-new">NEW</span></h3><p>月次PL／年間推移PL（売上高・原価・人件費を自動集計し手入力の販管費と合成、営業利益まで数式で算出）／媒体別広告実績（広告費・売上・ROAS、サブブランド別に分離表示）／銀行返済予定表。テンプレートはExcelファイルをアップロードするだけで見た目を差し替えられる自己完結設計</p></div>
+<div class="card left-done"><h3>📅 シフト管理UI v5</h3><p>①希望確認→②調整グリッド→③確定シフト→④実績・叶え率の4ステップが完成。スマレジ双方向同期・LINEリマインド・実機E2E済み</p></div>
+<div class="card left-done"><h3>🧾 請求書メール管理 Phase 1〜1.5</h3><p>自動取込・一覧・処理ロック・返信・AI自動読み取り(OCR、実運用22件でミス0)・検索/絞り込み強化・コメント機能まで完了</p></div>
+<div class="card left-done"><h3>💰 勤怠・給与・API費用監視</h3><p>月またぎ再取込・勤務日ベース給与按分（比較レポート）・朝の見張り番（異常時Lark通知）・Anthropic API費用の自動レポート（円換算・しきい値アラート）まで全実装・本番確認済み</p></div>
+<div class="card left-done"><h3>📌 本部タスクボード改善</h3><p>テンプレ複製・CSV一括登録/出力・URL折りたたみ・担当者/期限その場変更・チェックリスト・完了ボタン統合など多数改善。現在は全面デザイン刷新を継続中（下記「対応中」参照）</p></div>
+<div class="card left-done"><h3>🏗 データ基盤 Day1〜7</h3><p>GAS全バックアップ／従業員ID一本化／勤怠API自動取込／売上BigQuery化／店舗追加の1箇所化まで完了</p></div>
 </div>
 
 <h2 id="run">🔨 対応中（動いているが仕上げ待ち）</h2>
 <div class="grid">
-<div class="card left-run"><h3>🧾 請求書AI自動読み取り（OCR）<span class="badge b-new">NEW 8/24</span></h3><p>添付から請求元・金額・期限をAIが読み取りフォームへ提案する機能。コード実装・本番デプロイまで完了。<b>あなたにAPIキーを発行していただくのを待っている状態</b>（console.anthropic.com）</p></div>
-<div class="card left-run"><h3>💰 MF試算表CSV取込（PL第2弾の最後の1つ）</h3><p>コード実装は完了しているが<b>本番デプロイがまだ</b>（過去の作業記録が見落とされていたのを本日発見）。デプロイと実機テストをすれば使える状態</p></div>
-<div class="card left-run"><h3>⏳ BQモード読み込み中のガード表示</h3><p>開いた直後の数秒間、壊れた暫定数字（人件費率116%等）が出る問題。データ自体は正常と確認済み。読込中プレースホルダを出す小改修（指示書あり）</p></div>
-<div class="card left-run"><h3>👔 社員固定給の店舗按分・再設計</h3><p>現状は手入力表の店舗名が正（スマレジ無関係）と判明。勤務実績ベースの自動按分へ移行する設計済み（比較突合→切替）。<b>日割り方式を「勤務日ベース」に確定</b>（2026-08-24・店舗按分と同じ勤怠データで一本化・打刻ゼロ月のみ暦日にフォールバック）</p></div>
+<div class="card left-run"><h3>📌 本部タスクボード全面刷新</h3><p>ユーザー確定のデザイン案に合わせて2カラムレイアウトへ全面組み替え中。スクリーンショット往復でフィードバック対応中</p></div>
+<div class="card left-run"><h3>📤 データ出力センターG-2（銀行返済予定表）</h3><p>コード・本番反映は完了。<b>`app_secrets.loan_repayment_feed_token`の値をユーザーに確認してから実機E2Eを行う段階</b></p></div>
+<div class="card left-run"><h3>💴 銀行利息・元金のPL反映（A-5）</h3><p>データ源（F-8）は完成・Sync3宣言済みで着手可能な状態。まだ未着手（担当Aの次の作業）</p></div>
+<div class="card left-run"><h3>🧾 C-5: toho.info@宛メールの取込対象追加</h3><p>コード変更案は用意済みだが、<b>このMacのGAS CLI（clasp）が未ログインでデプロイ不可</b>。ユーザーに①同一アカウントか実機確認②clasp loginの実行、を依頼中</p></div>
+<div class="card left-run"><h3>📱 nippoラウンド3（B-4〜B-7）</h3><p>マニュアルのリッチテキスト編集・日報週報の不具合3件（週報1店舗問題等）・未提出のシフト連動・面接カレンダー、着手中</p></div>
+<div class="card left-run"><h3>🏢 店舗・法人マスタの統一<span class="badge b-new">NEW 8/26</span></h3><p>ユーザー指摘により調査（担当F主担当）。`info.stores`と`public.stores`が別物で不一致があると判明。実装はまだ・要ユーザー承認（docs/調査レポート_店舗法人マスタ統一_2026-08-26.md）</p></div>
+<div class="card left-run"><h3>📢 広告の予想売上表示・媒体マスタ統一<span class="badge b-new">NEW 8/25</span></h3><p>データ出力センターの追加要望。設計は完了・次ラウンドで着手予定（docs/設計メモ_担当G_広告予想売上と媒体マスタ統一_2026-08-25.md）</p></div>
 </div>
-<div class="note">✅ テストのスポット人件費（8/1・鶏武者新横浜・タイミー・¥1,000,000）は削除確認済み（2026-08-24）。元データ・PL自動計上とも0件に戻っています（画面上のBQキャッシュ表示は最大10分で自然に消えます）</div>
 
-<h2 id="next">📋 次にやる予定（順番決定済み・近いうちに着手）</h2>
-<div class="note"><b>🚦並行開発の担当分けを確定（2026-08-24）</b>: 以下の項目は担当A〜Eの5レーンに分割済み。各スレッドへの貼り付け文と衝突防止ルールは <b>docs/実装指示書_並行開発の担当分け_2026-08-24.md</b> 参照（<b>F=統合ポータルシェル（ユーザー最優先・8/24追加。サイドバー型UIで全システムをポータル内表示＋社内情報SSO統合）</b>、A=ダッシュボード/MF取込/BQ既定化、B=シフトUI v5、C=請求書1.5+OCR、D=勤怠月またぎ/給与按分/見張り番、E=本部タスク改善）</div>
+<h2 id="next">📋 ラウンド3で新規に割り当てられたタスク</h2>
+<div class="note"><b>体制の詳細</b>: docs/実装指示書_ラウンド3_2026-08-26.md（新規タスク・再開表・Sync条件・全レーン貼り付け文）／docs/引継ぎ書_司令塔_2026-08-26.md（体制の全体像・確定済み設計判断）</div>
 <div class="grid">
-<div class="card left-next"><h3>1️⃣ MF試算表CSV取込のデプロイ・確認</h3><p>実装済みなので投資対効果が高い。デプロイ→ユーザー実機E2Eテストのみ</p></div>
-<div class="card left-next"><h3>2️⃣ BQ表示ガード＋社員給与按分</h3><p>docs/実装指示書_BQ表示改善と社員給与按分_2026-08-24.md</p></div>
-<div class="card left-next"><h3>3️⃣ BQモードを全員の既定に</h3><p>ダッシュボード高速化の最後の一手。下ごしらえ完了・<b>あなたのOK待ち</b>（社長・本部→全役職の段階展開）</p></div>
-<div class="card left-next"><h3>4️⃣ シフト管理UI v5（店長・本部側）</h3><p>①希望確認→②調整グリッド→③確定→④実績・叶え率の4ステップ画面（デザイン採用済み・約2週間）</p></div>
-<div class="card left-next"><h3>5️⃣ 朝の見張り番</h3><p>昨日分データの有無を毎朝自動チェック→無い時だけLark警告（「無通知障害」の再発防止・0.5日）</p></div>
-<div class="card left-next"><h3>6️⃣ 請求書 Phase 1.5</h3><p>検索強化・金額/期限ソート・コメント（実運用の要望を見て着手）</p></div>
-<div class="card left-next"><h3>7️⃣ データ基盤 Day 7仕上げ</h3><p>シート停止テスト（半日・要日程調整)・手順書3点の整備</p></div>
+<div class="card left-next"><h3>F-7 ホームウィジェット編集</h3><p>✅完了・本番E2E確認済み</p></div>
+<div class="card left-next"><h3>F-8 銀行返済データの共有ビュー</h3><p>✅完了・Sync3宣言済み（A-5・G-2が着手可能に）</p></div>
+<div class="card left-next"><h3>A-5 銀行利息・元金のPL反映＋簡易CF</h3><p>着手可能（Sync3完了）・未着手</p></div>
+<div class="card left-next"><h3>G-2 銀行返済予定表の出力</h3><p>実装・本番反映済み・トークン設定待ち</p></div>
+<div class="card left-next"><h3>B-4〜B-7 nippo新任務4件</h3><p>着手中</p></div>
+<div class="card left-next"><h3>C-5・C-6 請求書の新任務2件</h3><p>C-6完了・C-5はユーザー作業待ちでブロック</p></div>
 </div>
 
-<h2 id="backlog">📦 新規に出た要望（2026-08-24ヒアリング・棚卸し済み・未着手）<span class="sub">全項目の詳細は docs/要望まとめ_2026-08-24_複数システム.md</span></h2>
+<h2 id="backlog">📦 未発進バックログ・保留中のテーマ</h2>
 <table class="simple">
-<tr><th>系統</th><th>件数</th><th>代表的な内容</th></tr>
-<tr><td>🤖 Hermes Agent・外部AI連携（ns-portal）</td><td>4件</td><td>Googleビジネス投稿・口コミ返信、広告請求書自動取込、Gmail本部メール全般対応、アプリ化＋通知</td></tr>
-<tr><td>✅ 本部タスク管理</td><td>6件</td><td>テンプレコピー、CSV出力、URL折りたたみ、担当者/期限のその場変更、表示切替、チェックリスト</td></tr>
-<tr><td>📱 日報システム</td><td>5件</td><td>制服天引き自動化、労働条件通知書の自動作成フロー、面接カレンダー・前日通知、応募者管理の画面分割</td></tr>
-<tr><td>📅 シフト</td><td>0件（すべて設計済み・実装待ち）</td><td>ランチ/ディナー分割・出勤強化日・スマレジ連携はいずれも設計完了</td></tr>
-<tr><td>⭐ 評価制度</td><td>2件</td><td>毎月/3ヶ月/6ヶ月のカデンス設計、KPI手動＋自動判定のハイブリッド入力</td></tr>
-<tr><td>📊 売上ダッシュボード・PL・広告管理</td><td>4件</td><td>小銭残高通知、広告管理画面の整理、社員人件費・交通費・法定福利費のスマレジ自動計算</td></tr>
-<tr><td>🎓 AI面接・労務・勤怠・書類承認AI<span class="badge b-new">NEW 8/24</span></td><td>5件</td><td>AI面接（Anthropic API・性格診断も検討）、労務ワークフロー（入社時労働条件通知書の自動発行・送信・保管）、書類承認フローのAI自動判定</td></tr>
+<tr><th>テーマ</th><th>状況</th></tr>
+<tr><td>AI面接（G1/G2）・書類承認AI（G5）</td><td>未発進。確認事項の回答待ち</td></tr>
+<tr><td>PWA/プッシュ通知（F-4）</td><td>未発進</td></tr>
+<tr><td>AI自由レポート（データ出力センター別Phase）</td><td>未発進。定型出力（Phase1）を優先</td></tr>
+<tr><td>広告の予想売上表示・媒体マスタ統一（担当G）</td><td>設計完了・次ラウンド着手予定</td></tr>
+<tr><td>店舗・法人マスタの統一（担当F主担当）</td><td>調査完了・要ユーザー承認</td></tr>
+<tr><td>GBP投稿・口コミ返信×AI</td><td>API利用申請というユーザー作業が前提</td></tr>
+<tr><td>リスティング広告請求書→MF連携</td><td>支払方法の回答待ちでブロック</td></tr>
 </table>
-<div class="warn"><b>⚠️今回追加で判明した実装済み機能の不具合</b>: スマレジ勤怠の日次自動取込（`smaregi-attendance-sync`）は「昨日1日分」のみを対象にしており、<b>月をまたいだ際に前月分を再チェックする仕組みが無い</b>ことをコード確認で発見。旧CSV取込にあった「月初10日は前月分も再実行」という安全装置が、API移行時に引き継がれていなかった（要修正・詳細はG4）</div>
-<div class="note"><b>優先度が高そうなもの</b>: ①MF試算表CSV取込（実装済み・デプロイのみ＝上の「次にやる1️⃣」）②スマレジ勤怠の月またぎ再チェック漏れ（上記⚠️・データの信頼性に関わるため早めが望ましい）③本部タスクのURL保存不具合・日報の採用単価修正不可、は先に再現確認 ④タスク詳細で担当者・期限をその場変更できない、は影響小さく効果大</div>
 
-<h2 id="roadmap">🔭 その先の将来ロードマップ（要件定義書v3.4より・まだ設計に入っていない大きな構想）</h2>
-<div class="note">シフト独自機能（🔥出勤強化日＋特別時給・休み希望の理由・ヘルプ可否・AIシフト提案）→ ⑤打刻（GPS）→ ⑭役職テスト → ⑪評価制度（本体） → ⑮AI窓口エージェント（Hermes Agent候補・§18） → ③発注管理 → 請求書のOCR<span class="badge b-done" style="margin-left:4px">一部着手済み</span> → マネーフォワード連携・支払消込（請求書Phase 4） → ⑦カレンダー・独自ドメイン</div>
-
-<h2 id="wait">🙋 あなたの判断・作業待ち</h2>
+<h2 id="wait">🙋 あなたの判断・作業待ち一覧</h2>
 <div class="grid">
-<div class="card left-wait"><h3>今すぐできる作業</h3><ul class="tight"><li><b>Anthropic APIキーの発行</b>（請求書AI自動読み取りに必要・console.anthropic.com）</li><li><b>Anthropic Admin APIキーの発行</b>（API費用の自動レポートD-4に必要。通常キーとは別物・組織設定が前提。手順は担当分け指示書D-4参照）</li></ul></div>
-<div class="card left-wait"><h3>承認するだけ</h3><ul class="tight"><li><b>BQモードの既定化</b>のGO（まず社長・本部のみ→2営業日後に全員）</li><li><b>MF試算表CSV取込のデプロイ</b>のGO</li><li><b>シート停止テスト</b>の日程（半日・データ基盤の卒業検定）</li></ul></div>
-<div class="card left-wait"><h3>5分の設定作業</h3><ul class="tight"><li><b>Mac miniの自動ログインON</b>（再起動しても取込が自動復帰するように）</li><li><b>GAS幽霊トリガー2つの削除</b>（エラー通知のノイズ消し・手順書あり）</li></ul></div>
-<div class="card left-wait"><h3>決めたら動くもの</h3><ul class="tight"><li><b>Chatwork配信グループ</b>のルームID</li><li><b>LINE公式の月間送信上限</b>の対応方針（シフトリマインド等と共用）</li><li><b>26件のバックログ</b>の優先順位・仕様の詳細</li></ul></div>
+<div class="card left-wait"><h3>すぐできる確認・設定</h3><ul class="tight"><li><b>cron-job.org設定2点</b>（見張り番09:30／api-cost-report-sync日次）の完了確認</li><li><b>`loan_repayment_feed_token`の値</b>を担当Gへ共有（銀行返済予定表の最終確認に必要）</li><li><b>このMacで`clasp login`</b>を一度実行（C-5のデプロイに必要）</li></ul></div>
+<div class="card left-wait"><h3>承認するだけ</h3><ul class="tight"><li><b>BQモードの全役職展開</b>のGO（Sync1）</li><li><b>店舗・法人マスタ統一</b>の実装方針（調査レポート参照）</li><li><b>広告の予想売上表示・媒体マスタ統一</b>の着手方針</li></ul></div>
+<div class="card left-wait"><h3>回答が必要な確認事項</h3><ul class="tight"><li>Google Ads支払方法（リスティング請求書→MF連携）</li><li>C-3労務ワークフローの確認事項（通知書テンプレ・送信経路・電子交付同意）</li><li>toho.info@が同一アカウントのエイリアスか（Gmail検索で確認）</li></ul></div>
+<div class="card left-wait"><h3>ユーザー側の登録作業</h3><ul class="tight"><li>店長・社員のスマレジ連携登録（D-2ブロック解消→Sync2）</li><li>GBP APIの利用申請（レーンH発進の前提）</li></ul></div>
 </div>
 
-<h2 id="fix">⚠️ 今回の確認で見つかった「古い情報・思い違い」の訂正</h2>
+<h2 id="fix">⚠️ このボード更新時に確認した重要な事実</h2>
 <div class="warn">
-<b>①社内情報管理のSSOは未完了</b>: データベースはハブへ移設済みで「本番切替済み」と言えるが、<b>ログイン画面はまだ別サイト（独自Vercel）のまま</b>。「システムを切り替えるたびにID/PWを求められる」という体感は、主にこれが原因。ポータルと同じログインにする作業（残タスク）が未着手<br><br>
-<b>②MF試算表CSV取込はまだ本番デプロイされていない</b>: 以前の資料に「デプロイ済み」という記載が一部あったが、実際は「コードは完成・デプロイ待ち」が正しい状態（tori-dashboardの作業記録で確認）<br><br>
-<b>③8/22の売上取込停止は解決済み（8/23クローズ）</b>: WORKLOG.mdの冒頭サマリーだけを見ると「今も対応中の緊急事態」に見えていたが、実際は原因（Mac mini再起動）を特定し8/23に解決済み。この記事の公開に合わせてWORKLOG冒頭も最新化した
+<b>①データ出力センター（担当G）はゼロから新設した機能</b>: 2026-08-24以前は存在せず、ラウンド2で新設・ラウンド3のG-2まで本番稼働。PL・広告実績とも既存のGAS/BigQueryの資産をそのまま活用し、新しいデータ経路は作っていない<br><br>
+<b>②統合ポータルシェル（担当F）が本番稼働中</b>: 各システムはこのシェルのiframe経由でアクセスするのが正式な入口になった（個別URLへの直接アクセスも引き続き可能）<br><br>
+<b>③店舗・法人マスタの不一致が新たに発覚</b>: 社内情報管理システム側の店舗マスタ（`info.stores`）とハブ側の正本（`public.stores`）が別物で、一部データがずれている。実装はまだだが、今後複数のレーンに影響しうるため優先度高めで判断待ち
 </div>
 
-<p class="foot">作成: Claude（2026-08-24・複数リポジトリ横断調査のうえ更新）／ 元になった資料: WORKLOG.md・要件定義書.md・要望まとめ_2026-08-24_複数システム.md・各リポジトリのHANDOFF/README／本ページ自体もdocs/配下にコミットされているため、次回はこのファイルを更新する形で最新化すること（新しいファイルを増やさない）</p>
+<p class="foot">作成: Claude（2026-08-24・複数リポジトリ横断調査のうえ更新）／更新: Claude 担当Gスレッド（2026-08-26・司令塔の引継ぎ書・ラウンド3指示書・WORKLOGをもとに全体を最新化）／元になった資料: WORKLOG.md・docs/引継ぎ書_司令塔_2026-08-26.md・docs/実装指示書_ラウンド3_2026-08-26.md・要件定義書.md／本ページ自体もdocs/配下にコミットされているため、次回もこのファイルを更新する形で最新化すること（新しいファイルを増やさない）</p>
 </div>
 </body>
 </html>
