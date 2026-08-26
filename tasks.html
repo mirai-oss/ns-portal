@@ -193,6 +193,13 @@ textarea{resize:vertical}
 .richbar input[type=color]{width:32px;height:28px;padding:0;border:1px solid var(--line);border-radius:6px;cursor:pointer;background:none}
 .rich-preview{border:1px dashed var(--line);border-radius:8px;padding:8px 10px;margin-top:4px;font-size:13.5px;color:var(--ink);background:var(--bg);min-height:18px}
 .rich-preview:empty::before{content:"（プレビュー：入力すると表示されます）";color:var(--muted)}
+/* 2026-08-26(Phase4): テンプレート編集画面をデザイン案の2カラム（編集フォーム＋右側に
+   「従業員側プレビュー」を常時表示）へ合わせた */
+.tpl-edit-layout{display:grid;grid-template-columns:1fr 340px;gap:16px;align-items:start}
+.tpl-preview-panel{position:sticky;top:16px}
+.pstep{border-left:3px solid var(--line);padding:8px 0 8px 12px;margin:10px 0}
+.pstep.current{border-left-color:var(--accent)}
+@media(max-width:1050px){.tpl-edit-layout{grid-template-columns:1fr}.tpl-preview-panel{position:static}}
 .resource-add label:first-child{margin-top:0}
 /* デザイン案の.checklist/.checkitemを再現（文字サイズ・チェックボックスを大きく、行区切り線つき） */
 .checklist-hd{font-weight:700;font-size:14px;margin-bottom:2px;display:flex;align-items:center;gap:6px}
@@ -2149,9 +2156,12 @@ let TEMPLATES=[];
 let TPL_EDIT=null;
 let TPL_STEPS=[];
 async function fetchTemplates(){
-  const r=await authed("/rest/v1/hq_task_templates?select=*&order=created_at.desc");
+  // 2026-08-26(Phase4): デザイン案のテンプレート一覧（表形式・工程数列あり）に合わせるため、
+  // 件数だけをPostgRESTの埋め込みcountで取得する（工程本体は編集画面を開いたときだけ取得のまま）
+  const r=await authed("/rest/v1/hq_task_templates?select=*,hq_task_template_steps(count)&order=created_at.desc");
   TEMPLATES=(r.ok&&Array.isArray(r.body))?r.body:[];
 }
+function tplStepCount(tpl){ return tpl.hq_task_template_steps?.[0]?.count??0; }
 let TPL_FILTER={freq:"",corp:"",q:""};
 function filteredTemplates(){
   const q=TPL_FILTER.q.trim().toLowerCase();
@@ -2166,7 +2176,12 @@ function filteredTemplates(){
 function refreshTplList(u){
   const list=filteredTemplates();
   $("tpl-count").textContent=`${list.length}/${TEMPLATES.length}件`;
-  $("tpl-list").innerHTML=list.map(tplRowHtml).join("")||`<div class="card">${TEMPLATES.length?"条件に合うテンプレートはありません":"テンプレートはまだありません"}</div>`;
+  // 2026-08-26(Phase4): デザイン案の「テンプレート一覧」は表形式（テンプレート名/法人/頻度/工程数/
+  // 作成者/更新日/編集）なので、既存のカード列挙から表へレイアウトを合わせた（項目・機能は維持）
+  $("tpl-list").innerHTML=list.length?`<div class="card tablewrap" style="overflow-x:auto">
+    <table class="rp-table"><thead><tr><th>テンプレート名</th><th>法人</th><th>頻度</th><th>工程</th><th>作成者</th><th>更新日</th><th></th></tr></thead>
+    <tbody>${list.map(tplRowHtml).join("")}</tbody></table>
+  </div>`:`<div class="card">${TEMPLATES.length?"条件に合うテンプレートはありません":"テンプレートはまだありません"}</div>`;
   document.querySelectorAll("[data-tpledit]").forEach(b=>b.onclick=()=>openTplEdit(u,TEMPLATES.find(x=>x.id===b.dataset.tpledit)));
   document.querySelectorAll("[data-tplcopy]").forEach(b=>b.onclick=()=>duplicateTemplate(u,TEMPLATES.find(x=>x.id===b.dataset.tplcopy)));
   document.querySelectorAll("[data-tpldel]").forEach(b=>b.onclick=async()=>{
@@ -2212,14 +2227,19 @@ function renderTemplates(u){
   refreshTplList(u);
 }
 function tplRowHtml(tpl){
-  return `<div class="card" style="margin-bottom:10px">
-    <div class="badges"><span class="tag">${esc(tpl.corp)}</span><span class="tag freq">🔁 ${esc(tplFreqLabel(tpl))}</span>${tpl.is_active?"":'<span class="tag">停止中</span>'}</div>
-    <div style="font-weight:600;margin:4px 0">${esc(tpl.title)}</div>
-    <div class="meta">期限: 対象日${tpl.due_offset_days?"の"+tpl.due_offset_days+"日後":"の当日"}${tpl.due_time?" "+tpl.due_time.slice(0,5):""} ／ 公開範囲: ${tpl.visibility==="all"?"本部全員":"指定した人だけ"}</div>
-    <button class="linkbtn" data-tpledit="${tpl.id}">編集</button>
-    <button class="linkbtn" data-tplcopy="${tpl.id}">複製</button>
-    <button class="linkbtn" data-tpldel="${tpl.id}">削除</button>
-  </div>`;
+  return `<tr>
+    <td><b>${esc(tpl.title)}</b>${tpl.is_active?"":' <span class="tag">停止中</span>'}<div class="meta">期限: 対象日${tpl.due_offset_days?"の"+tpl.due_offset_days+"日後":"の当日"}${tpl.due_time?" "+tpl.due_time.slice(0,5):""} ／ 公開範囲: ${tpl.visibility==="all"?"本部全員":"指定した人だけ"}</div></td>
+    <td>${esc(tpl.corp)}</td>
+    <td>${esc(tplFreqLabel(tpl))}</td>
+    <td>${tplStepCount(tpl)}</td>
+    <td>${esc(userName(tpl.created_by))}</td>
+    <td>${fmtD((tpl.updated_at||"").slice(0,10))}</td>
+    <td style="white-space:nowrap">
+      <button class="linkbtn" data-tpledit="${tpl.id}">編集</button>
+      <button class="linkbtn" data-tplcopy="${tpl.id}">複製</button>
+      <button class="linkbtn" data-tpldel="${tpl.id}">削除</button>
+    </td>
+  </tr>`;
 }
 /* E-3(B1): テンプレートの複製（工程・通知設定ごと。複製後は内容確認のため停止中で作成） */
 async function duplicateTemplate(u,tpl){
@@ -2325,6 +2345,7 @@ function renderTplEdit(u){
   CURRENT_RENDER=((snapTpl,snapSteps,snapOffset)=>()=>{ TPL_EDIT=snapTpl; TPL_STEPS=snapSteps; TPL_DUE_OFFSET=snapOffset; renderTplEdit(u); })(TPL_EDIT,TPL_STEPS,TPL_DUE_OFFSET);
   $("app").innerHTML=`
   <div class="topbar"><h1>${tpl.id?"テンプレートを編集":"新しいテンプレート"}</h1><div class="who"><button class="linkbtn" id="back">← 戻る</button></div></div>
+  <div class="tpl-edit-layout">
   <div class="card">
     <label>タイトル</label><input id="tp-title" value="${esc(tpl.title||"")}" placeholder="例: 業務委託 精算処理">
     ${richFieldHtml("tp-desc","概要（説明文・任意）",tpl.description,3,"このタスクの目的や進め方など")}
@@ -2377,10 +2398,17 @@ function renderTplEdit(u){
     <button class="btn sub" id="tp-preview" style="margin-top:16px">👁 プレビュー</button>
     <button class="btn" id="tp-save" style="margin-top:16px">保存する</button>
     <div class="err" id="tp-msg"></div>
+  </div>
+  <div class="card tpl-preview-panel">
+    <div class="head" style="border:0;padding:0 0 10px"><b>従業員側プレビュー</b></div>
+    <div id="tpl-preview-body"></div>
+  </div>
   </div>`;
   $("back").onclick=()=>goBack(u);
   $("tp-preview").onclick=()=>openTplPreview();
   wireRichField("tp-desc"); wireRichField("tp-notes");
+  $("tp-title").oninput=renderTplPreviewPanel;
+  $("tp-corp").onchange=renderTplPreviewPanel;
   $("tp-freq").onchange=e=>{
     $("tp-weeklywrap").style.display=e.target.value==="weekly"?"block":"none";
     $("tp-monthlywrap").style.display=e.target.value==="monthly"?"block":"none";
@@ -2401,6 +2429,35 @@ function renderTplEdit(u){
   $("tp-save").onclick=()=>saveTemplate(u);
   if(tpl.id) wireAttachBox("tpl-att",{template_id:tpl.id},true,refreshTplAttach);
   refreshTplDueDates();
+}
+/* 2026-08-26(Phase4): デザイン案の「従業員側プレビュー」＝右側に常時表示する簡易プレビュー。
+   保存せず、いま編集中の内容（TPL_STEPS・フォームの値）からその場で組み立てる。
+   renderTplSteps()・refreshTplDueDates()・タイトル/法人の変更のたびに呼び直して追従させる */
+function renderTplPreviewPanel(){
+  const panel=$("tpl-preview-body"); if(!panel) return;
+  const title=($("tp-title")?.value||"").trim()||"（無題）";
+  const corp=$("tp-corp")?.value||"";
+  const freq=$("tp-freq")?.value||"daily";
+  const freqLabel=freq==="weekly"?`毎週${["日","月","火","水","木","金","土"][+(($("tp-dow")&&$("tp-dow").value)||0)]}曜`
+    :freq==="monthly"?`毎月${($("tp-dom")&&$("tp-dom").value)||1}日`:FREQ_LABEL[freq];
+  const base=tplBaseDate();
+  const steps=TPL_STEPS.filter(s=>(s.title||"").trim());
+  panel.innerHTML=`
+    <div class="badges"><span class="tag">${esc(corp)}</span><span class="tag freq">🔁 ${esc(freqLabel)}</span></div>
+    <div style="font-weight:700;font-size:16px;margin:8px 0">${esc(title)}</div>
+    ${steps.length?steps.map((s,i)=>{
+      const bits=[];
+      const chk=(s._checklist||[]).length; if(chk) bits.push(`チェック${chk}件`);
+      if((s.procedure_note||"").trim()) bits.push("手順書あり");
+      const att=(s._links||[]).length+(s._photos||[]).length; if(att) bits.push(`添付${att}件`);
+      const due=addDaysStr(base,s.offset_days||0);
+      return `<div class="pstep ${i===0?"current":""}">
+        <b>${i+1}. ${esc(s.title)}</b>
+        <div class="meta">担当：${esc(userName(s.assignee_id)||"未定")} ／ 期限：${fmtD(due)}${s.due_time?" "+s.due_time.slice(0,5):""}</div>
+        ${bits.length?`<div class="meta">${bits.join("・")}</div>`:""}
+      </div>`;
+    }).join(""):`<div class="meta">工程を追加すると、ここにプレビューが表示されます</div>`}
+  `;
 }
 /* 期限は「対象日から何日後か」で保存する（毎回の対象日を基準に自動計算されるため）。
    ただしオフセットの数字は分かりにくいので、画面上は必ず実日付で見せる。
@@ -2433,6 +2490,7 @@ function refreshTplDueDates(){
     const hint=document.querySelector(`#tp-steps [data-tidx="${i}"] .ts-duehint`);
     if(hint) hint.textContent=(s.offset_days||0)===0?"対象日の当日":`対象日の${s.offset_days}日後`;
   });
+  renderTplPreviewPanel();
 }
 function renderTplSteps(){
   $("tp-steps").innerHTML=TPL_STEPS.map((s,i)=>`
@@ -2464,9 +2522,9 @@ function renderTplSteps(){
     </div>`).join("");
   document.querySelectorAll("#tp-steps [data-tidx]").forEach(row=>{
     const i=+row.dataset.tidx;
-    row.querySelector(".ts-title").oninput=e=>TPL_STEPS[i].title=e.target.value;
+    row.querySelector(".ts-title").oninput=e=>{TPL_STEPS[i].title=e.target.value; renderTplPreviewPanel();};
     wireRichField(`ts-procedure-${i}`,val=>{TPL_STEPS[i].procedure_note=val;});
-    row.querySelector(".ts-assignee").onchange=e=>TPL_STEPS[i].assignee_id=e.target.value;
+    row.querySelector(".ts-assignee").onchange=e=>{TPL_STEPS[i].assignee_id=e.target.value; renderTplPreviewPanel();};
     row.querySelector(".ts-due").onchange=e=>{
       const base=tplBaseDate();
       const n=e.target.value?diffDaysStr(base,e.target.value):0;
