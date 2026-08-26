@@ -12,6 +12,7 @@
 //
 // 入力(JSON):
 //   { secret, gmail_message_id, gmail_thread_id?, from_address?, to_address?, delivered_to?, cc_address?,
+//     target_alias?（2026-08-26 C-5追加。省略時はDBデフォルト値'info@ns0314.com'を使用＝後方互換）,
 //     subject?, received_at?(ISO8601), body_text?, body_html?,
 //     attachments?: [{ file_name, mime_type?, size_bytes?, base64 }] }
 import { createClient } from "npm:@supabase/supabase-js@2";
@@ -109,6 +110,9 @@ Deno.serve(async (req: Request) => {
       to_address: body.to_address ?? null,
       delivered_to: body.delivered_to ?? null,
       cc_address: body.cc_address ?? null,
+      // 2026-08-26 C-5: 実際に届いたエイリアス（info@/toho.info@）を記録。GAS側が未対応の
+      // 古いペイロードではtarget_aliasが無いため、その場合はDBのdefault('info@ns0314.com')に任せる
+      ...(body.target_alias ? { target_alias: body.target_alias } : {}),
       subject: body.subject ?? null,
       body_text: body.body_text ?? null,
       body_html: body.body_html ?? null,

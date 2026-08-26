@@ -24,9 +24,11 @@
 //   5. Gmail設定「アカウントとインポート」→「名前を付けて送信」に info@ns0314.com の
 //      エイリアスが登録済みであること（差出人をinfo@にするために必須・ユーザー確認1分）
 //
-// 【取込の判定基準（2026-08-24確定・ユーザー確認済み）】
-//   info@ns0314.com宛（To/CC）のメールは件名・ラベルに関わらずすべて取込対象。
-//   「請求書」ラベルが付いたメールも（info@宛でなくても）追加で拾う。
+// 【取込の判定基準（2026-08-24確定・ユーザー確認済み／2026-08-26 C-5でエイリアス追加）】
+//   info@ns0314.com・toho.info@ns0314.com宛（To/CC。ともにshunji.nakayama@ns0314.com
+//   アカウントの同一エイリアス・実機確認済み）のメールは件名・ラベルに関わらずすべて取込対象。
+//   どちらのエイリアス宛だったかはinvoice_emails.target_aliasに記録する（ALIASES配列参照）。
+//   「請求書」ラベルが付いたメールも（上記エイリアス宛でなくても）追加で拾う。
 //   ただしshunji.nakayama@ns0314.com（社長個人）がToに直接指定されているメールは対象外
 //   （CCに入っているだけの正規の請求書スレッドまでは除外しない）。
 //   ラベル・宛先のみで判定＝実際の受信箱で既読にする・アーカイブするなど（is:unread/
@@ -40,8 +42,24 @@ const SUPA_ANON = "sb_publishable_MrwPJAx_Ws_fdRutprKCiQ_dg3wCiTr";
 const INTAKE_FN_URL = SUPA_URL + "/functions/v1/invoice-intake";
 const SOURCE_LABEL_NAME = "請求書";       // 付いていれば追加で取込対象にするラベル（必須ではない）
 const PROCESSED_LABEL_NAME = "請求書取込済"; // 取込済みの印（このスクリプトが付ける・重複防止）
-const SEARCH_QUERY = '(to:info@ns0314.com OR cc:info@ns0314.com OR label:' + SOURCE_LABEL_NAME + ') -to:shunji.nakayama@ns0314.com -label:' + PROCESSED_LABEL_NAME;
+// 2026-08-26 C-5追加: toho.info@ns0314.com宛も取込対象に追加（同一アカウントのエイリアス、
+// 実機確認済み）。ALIASESに追加すればSEARCH_QUERY・target_alias判定とも自動的に対応する
+const ALIASES = ["info@ns0314.com", "toho.info@ns0314.com"];
+const SEARCH_QUERY = '(' + ALIASES.map(function (a) { return 'to:' + a + ' OR cc:' + a; }).join(' OR ')
+  + ' OR label:' + SOURCE_LABEL_NAME + ') -to:shunji.nakayama@ns0314.com -label:' + PROCESSED_LABEL_NAME;
 const FROM_ALIAS = "info@ns0314.com";
+
+// 実際にどのエイリアス宛だったかをinvoice_emails.target_aliasへ記録するための判定
+// （複数該当する場合はALIASESの先頭を優先＝info@を既定として扱う）
+function resolveTargetAlias_(msg) {
+  var to = (msg.getTo() || "").toLowerCase();
+  var cc = (msg.getCc() || "").toLowerCase();
+  for (var i = 0; i < ALIASES.length; i++) {
+    var a = ALIASES[i].toLowerCase();
+    if (to.indexOf(a) >= 0 || cc.indexOf(a) >= 0) return ALIASES[i];
+  }
+  return ALIASES[0]; // 「請求書」ラベル経由等、いずれのエイリアスにも一致しない場合の既定値
+}
 const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024; // invoice-filesバケットの上限(20MB)に合わせる
 
 function getSecret_() {
@@ -138,6 +156,7 @@ function postMessage_(thread, msg) {
     to_address: msg.getTo(),
     delivered_to: (msg.getHeader && msg.getHeader("Delivered-To")) || "",
     cc_address: msg.getCc(),
+    target_alias: resolveTargetAlias_(msg), // 2026-08-26 C-5追加
     subject: msg.getSubject(),
     received_at: msg.getDate().toISOString(),
     body_text: msg.getPlainBody(),
