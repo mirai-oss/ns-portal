@@ -41,16 +41,18 @@ textarea{resize:vertical}
 .topbar .who{font-size:13px;color:var(--muted)}
 
 /* サマリー信号 */
-.sig-row{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:14px}
+/* 2026-08-26: デザイン案の.metrics/.metric（左揃え・見出し→数字→補足の3段）に合わせて刷新 */
+.sig-row{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:14px}
 @media(max-width:600px){.sig-row{grid-template-columns:repeat(2,1fr)}}
-.sig{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 10px;text-align:center;cursor:pointer;transition:box-shadow .1s}
+.sig{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:18px;text-align:left;cursor:pointer;transition:box-shadow .1s}
 .sig:hover{box-shadow:0 2px 8px rgba(0,0,0,.08)}
 .sig.active{outline:2px solid var(--accent)}
-.sig .n{font-size:28px;font-weight:800}
+.sig .l{font-size:13px;color:var(--muted)}
+.sig .n{font-size:32px;font-weight:900;margin-top:7px}
 .sig.overdue .n{color:var(--stall)}
 .sig.today .n{color:var(--warn)}
 .sig.stall .n{color:var(--stall)}
-.sig .l{font-size:11px;color:var(--muted);margin-top:2px}
+.sig .s{font-size:12px;color:var(--muted);margin-top:4px}
 
 /* 検索・絞り込み */
 .searchbox{position:relative;margin-bottom:12px}
@@ -62,9 +64,23 @@ textarea{resize:vertical}
 .chipcheck{display:inline-flex;align-items:center;gap:6px;padding:5px 12px;font-size:12px;border-radius:99px;border:1px solid var(--line);background:var(--card);cursor:pointer;white-space:nowrap;margin:0}
 .chipcheck input{width:auto;margin:0;accent-color:var(--accent);cursor:pointer}
 .toprow{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px}
-/* 2026-08-26: デザイン案のtoolbar-top（検索＋表示切替＋主要アクションを1行に並べる構成）に合わせた */
-.toolbar-top{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
-.toolbar-top .searchbox{flex:1;min-width:220px;margin-bottom:0}
+/* 2026-08-26: デザイン案のtoolbar-top（検索＝1fr／表示切替／主要アクションの3列グリッド）に
+   文字サイズ・ボタンサイズ・配置を合わせた。720px未満は1列に積む（デザイン案のブレークポイントを踏襲） */
+.toolbar-top{display:grid;grid-template-columns:1fr auto auto;gap:10px;align-items:center}
+.toolbar-top .searchbox{margin-bottom:0}
+@media(max-width:720px){.toolbar-top{grid-template-columns:1fr}}
+/* 表示切替＝セグメントコントロール（デザイン案の.views相当。枠を共有し境界線だけで区切る） */
+#viewtoggle{display:flex;gap:0;margin:0;border:1px solid var(--line);border-radius:12px;overflow:hidden}
+#viewtoggle .chip{border:0;border-radius:0;padding:10px 14px;font-size:14px}
+#viewtoggle .chip:not(:last-child){border-right:1px solid var(--line)}
+#viewtoggle .chip.active{background:var(--ink);color:#fff;border-color:var(--ink)}
+/* 絞り込みチップ＝デザイン案の.chip相当のサイズに拡大し、選択中は黒系（--ink）に
+   （この画面の絞り込みチップだけに限定。他画面の.chip.activeの見た目は変えない） */
+#corpchips .chip,#freqchips .chip{padding:8px 12px;font-size:14px}
+#corpchips .chip.active,#freqchips .chip.active{background:var(--ink);border-color:var(--ink)}
+/* プルダウン（担当者・依頼者・並び替え）はチップ列と混ぜず専用の行にまとめ、見た目も統一する */
+.board-selects{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.board-selects select{width:auto;padding:7px 12px;font-size:13px;border-radius:99px}
 
 /* かんばん */
 .board{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:14px}
@@ -689,10 +705,10 @@ function renderBoard(u){
     </div>`).join(""):'<div class="meta">通知はありません</div>'}
   </div>
   <div class="sig-row">
-    <div class="sig overdue ${FILTER.signal==='overdue'?'active':''}" data-sig="overdue"><div class="n">${cnt.overdue}</div><div class="l">期限超過</div></div>
-    <div class="sig today ${FILTER.signal==='today'?'active':''}" data-sig="today"><div class="n">${cnt.today}</div><div class="l">今日が期限</div></div>
-    <div class="sig stall ${FILTER.signal==='stall'?'active':''}" data-sig="stall"><div class="n">${cnt.stall}</div><div class="l">3日以上停止</div></div>
-    <div class="sig"><div class="n">${cnt.doneCount}</div><div class="l">今月完了</div></div>
+    <div class="sig overdue ${FILTER.signal==='overdue'?'active':''}" data-sig="overdue"><div class="l">期限超過</div><div class="n">${cnt.overdue}</div><div class="s">すぐ確認が必要</div></div>
+    <div class="sig today ${FILTER.signal==='today'?'active':''}" data-sig="today"><div class="l">今日が期限</div><div class="n">${cnt.today}</div><div class="s">本日中に対応</div></div>
+    <div class="sig stall ${FILTER.signal==='stall'?'active':''}" data-sig="stall"><div class="l">3日以上停止</div><div class="n">${cnt.stall}</div><div class="s">停滞タスク</div></div>
+    <div class="sig"><div class="l">今月完了</div><div class="n">${cnt.doneCount}</div><div class="s">完了済み</div></div>
   </div>
   <!-- 2026-08-26: デザイン案のtoolbar-top（検索＋表示切替＋主要アクションを1行に）に合わせて再構成。
        機能は一切削らず、既存の担当者/依頼者/並び替えの完全選択セレクトはchips行の続きに残した
@@ -706,7 +722,7 @@ function renderBoard(u){
         <span class="chip ${BOARD_VIEW==="list"?"active":""}" data-view="list">📋 リスト</span>
         <span class="chip ${BOARD_VIEW==="calendar"?"active":""}" data-view="calendar">📅 カレンダー</span>
       </div>
-      ${canFeature(u,"newtask")?`<button class="btn sm" id="newtask">＋ タスク追加</button>`:""}
+      ${canFeature(u,"newtask")?`<button class="btn" id="newtask">＋ タスク追加</button>`:""}
     </div>
     <div class="chiprow" id="corpchips" style="margin-top:10px">
       <span class="chip ${!FILTER.corp?'active':''}" data-corp="">すべての法人</span>
@@ -721,18 +737,18 @@ function renderBoard(u){
       <span class="chip ${FILTER.assignee===u.id?'active':''}" id="chipmine">自分の担当</span>
       <span class="chip ${FILTER.creator===u.id?'active':''}" id="chipmineasked">自分が依頼</span>
     </div>
-    <div class="chiprow" style="margin-top:10px">
-      <span>👤 <select id="assigneesel" style="width:auto;display:inline-block;padding:5px 10px;font-size:12px;border-radius:99px">
+    <div class="board-selects" style="margin-top:10px">
+      <span>👤 <select id="assigneesel">
         <option value="">担当者ですべて表示</option>
         <option value="${u.id}" ${FILTER.assignee===u.id?"selected":""}>自分（${esc(u.name)}）</option>
         ${assignableUsers().filter(x=>x.id!==u.id).map(x=>`<option value="${x.id}" ${FILTER.assignee===x.id?"selected":""}>${esc(x.name)}</option>`).join("")}
       </select></span>
-      <span>📤 <select id="creatorsel" style="width:auto;display:inline-block;padding:5px 10px;font-size:12px;border-radius:99px">
+      <span>📤 <select id="creatorsel">
         <option value="">依頼者ですべて表示</option>
         <option value="${u.id}" ${FILTER.creator===u.id?"selected":""}>自分が依頼（${esc(u.name)}）</option>
         ${assignableUsers().filter(x=>x.id!==u.id).map(x=>`<option value="${x.id}" ${FILTER.creator===x.id?"selected":""}>${esc(x.name)}</option>`).join("")}
       </select></span>
-      <span>並び替え: <select id="sortsel" style="width:auto;display:inline-block;padding:5px 10px;font-size:12px;border-radius:99px">
+      <span>並び替え: <select id="sortsel">
         ${Object.entries(SORT_LABEL).map(([k,v])=>`<option value="${k}" ${SORT_MODE===k?"selected":""}>${esc(v)}</option>`).join("")}
       </select></span>
     </div>
