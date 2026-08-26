@@ -2626,3 +2626,19 @@ Phase 1実装・本番デプロイ・実機E2E完了後、ユーザーが実際�
 - 実機ログイン手段が無いため、構文チェックとローカルサーバでの表示確認（コンソールエラー無し）まで。スクロール挙動そのものの実機確認は次にログインできる方にお願いしたい
 
 **担当Bのラウンド3タスクおよび既知の残タスクはすべて対応済み**。次の任務の指示待ち。
+
+## 2026-08-26（担当F実行スレッド・続き2）店舗・法人マスタ統一 実装・本番反映完了
+
+`docs/調査レポート_店舗法人マスタ統一_2026-08-26.md`のユーザー承認を得て実装（`ns-info-system`コミット`33a8411`ほか）。
+
+- **診断API**（`/api/admin/store-mapping-audit`・トークン認証・読み取り専用）を新設し、`info.stores`/`corporations`と`public.stores`/`corporations`を店舗名一致で機械的に突き合わせ
+- **結果**: 法人4社は完全一致（既存の`legacy_info_id`が正しかった）。店舗はinfo側6件中5件が名前完全一致、「本社」だけ要確認（ユーザー回答: タイムカード上の「本部」と同一）
+- ユーザーから重要な追加情報: ①黒霧屋 新横浜は賃貸借契約=N-Style名義・運営=トーホー（グループ運営のため運営委託費を引いていない。将来「トーホー側PL・N-Style側PL・店舗単体PL」に分けて両法人PLに表示する案あり→**担当A（A-5）への申し送りとして記録**。今回は実装しない）②秋葉原肉寿司／じんべぇ川崎／じんべぇ新横浜／エース本厚木の4店舗は**実際は営業中なのに`is_active=false`のまま**というデータ不整合を発見・修正
+- **実装**（`supabase/2026-08-26_store_corp_master_unify.sql`・`_store_is_active_fix.sql`、ユーザーがSupabase SQL Editorで適用済み）:
+  - `info.stores.hub_store_id`（uuid・unique・`public.stores(id)`参照）を新設し、6店舗すべて対応付け完了
+  - `public.corporations.legacy_info_id`を正式な外部キー制約に格上げ
+  - `public.stores.corporation_id`の欠落4件（N-Style所属）を補完
+  - `public.stores.is_active`の誤り4件を`true`に修正
+- **本番確認済み**: 診断APIを再実行し、6店舗全件が`hub_store_id`経由で正しく紐付いていること、4店舗の`is_active`/`corporation_id`が修正されていることを確認
+- **正本の方針（ユーザー確定・重要原則）**: 「店舗の正本マスターはスプレッドシートにしない」。ハブの`public.stores`/`corporations`＝データベースのテーブルを正本とし、`info`側は外部キー参照する構成で確定。今後この分野で別の設計判断をする際もこの原則を踏襲すること
+- **残作業**（急ぎではない・backlog）: 新規店舗・法人追加時の手順書更新（`docs/手順書_新店舗追加_Day7.md`）、ハブ側のエイリアス列（`dash_store_name`/`seisan_store_name`）整理方針の検討
