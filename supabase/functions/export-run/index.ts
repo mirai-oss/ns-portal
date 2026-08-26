@@ -862,6 +862,7 @@ Deno.serve(async (req) => {
     let fileBuf: Uint8Array | ArrayBuffer;
     let ext: string; let contentType: string;
     let rowCount: number;
+    let storeCountForResponse = targetNames.size;
 
     if (isLoan) {
       const loanRows = await fetchLoanRepayment(sb, periodFrom, periodTo);
@@ -872,6 +873,7 @@ Deno.serve(async (req) => {
         return json({ ok: false, error: "対象期間に一致する返済データがありません" }, 200);
       }
       rowCount = loanRows.length;
+      storeCountForResponse = new Set(loanRows.map((r) => r.storeName ?? "（全社共通）")).size;
       if (format === "excel") {
         fileBuf = await buildLoanExcel(sb, reportKey, layout, loanRows, periodFrom, periodTo);
         ext = "xlsx"; contentType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
@@ -961,7 +963,7 @@ Deno.serve(async (req) => {
       file_path: filePath,
       signed_url: signed?.signedUrl ?? null,
       row_count: rowCount,
-      store_count: targetNames.size,
+      store_count: storeCountForResponse,
     });
   } catch (e) {
     if (historyId) {
