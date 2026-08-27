@@ -1,0 +1,71 @@
+name: 週次オフサイトバックアップ（Google Drive）
+
+# D-5b（docs/設計書_全社バックアップと復旧_2026-08-27.md§6）。
+# ハブSupabase（DB全テーブル＋Storage）を、書き込み専用サービスアカウント経由で
+# 専用の共有ドライブへ週次コピーする。認証は鍵ファイルを使わないWorkload Identity連携
+# （組織ポリシーiam.disableServiceAccountKeyCreationのため鍵方式は使えない。詳細は
+# docs/手順書_バックアップ用Driveセットアップ.md参照）。
+#
+# 発火は他のworkflowと同じく外部cron（cron-job.org 等）からworkflow_dispatch APIを叩いて行う
+# （GitHub内蔵のschedule:は時刻が数十分〜数時間ずれるため使わない・既存ルールどおり）。
+#   POST https://api.github.com/repos/mirai-oss/ns-portal/actions/workflows/weekly-drive-backup.yml/dispatches
+#   body: {"ref":"main"}
+#   Schedule: 毎週日曜 15:00 JST（日曜深夜案。月曜0時前後の営業データ更新と被らない時間帯）
+#
+# 手動実行: GitHubの Actions タブ → 本workflow → Run workflow でも実行可能
+# （dry_run=trueにするとDrive書き込みを一切せず件数・容量だけ確認できる。使い捨てテストルール対応として
+#  初回は必ずdry_run=trueで1回確認してからfalseで本番実行すること）
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'true=Driveに書き込まず件数・容量だけ確認（初回は必ずtrueで）'
+        required: false
+        default: 'true'
+        type: string
+
+permissions:
+  id-token: write   # Workload Identity連携（OIDC）に必須
+  contents: read
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: 設定チェック（未設定ならスキップ）
+        run: |
+          if [ -z "${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" ]; then
+            echo "::error::SUPABASE_SERVICE_ROLE_KEY が未設定です（Settings → Secrets and variables → Actions）"
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+
+      - name: Google Cloud認証（鍵ファイルなし・Workload Identity連携）
+        id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          # プロジェクト番号・プール・プロバイダは秘密情報ではない（このリポジトリから実行しない限り
+          # 何もできないため）。手順書_バックアップ用Driveセットアップ.md 手順3で作成したもの。
+          workload_identity_provider: 'projects/678255347143/locations/global/workloadIdentityPools/github-actions-pool/providers/github-actions'
+          service_account: 'nstyle-backup-writer@gmbkutikomi.iam.gserviceaccount.com'
+          token_format: 'access_token'
+
+      - name: バックアップ実行
+        env:
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          GDRIVE_ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
+          BACKUP_DRIVE_ID: '0ADY-upc2a8LcUk9PVA' # 共有ドライブ「NStyle-バックアップ」のID（秘密情報ではない）
+          DRY_RUN: ${{ github.event.inputs.dry_run == 'true' && '1' || '' }}
+        run: node .github/scripts/backup-drive.js | tee backup.log
+
+      - name: 失敗時にLark通知
+        if: failure()
+        env:
+          LARK_WEBHOOK_URL: ${{ secrets.LARK_WEBHOOK_URL }}
+        run: |
+          if [ -z "$LARK_WEBHOOK_URL" ]; then echo "LARK_WEBHOOK_URL未設定のため通知スキップ"; exit 0; fi
+          SUMMARY=$(tail -c 1500 backup.log 2>/dev/null | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>console.log(JSON.stringify(d)))")
+          curl -s -X POST "$LARK_WEBHOOK_URL" -H "Content-Type: application/json" \
+            -d "{\"msg_type\":\"text\",\"content\":{\"text\":\"❌ [週次Driveバックアップ] 失敗しました\\n${SUMMARY}\"}}" || true
