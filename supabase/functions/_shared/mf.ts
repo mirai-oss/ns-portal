@@ -15,11 +15,11 @@ function svc() {
   return createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
 }
 
-export async function getValidAccessToken(): Promise<{ accessToken: string; officeId: string | null }> {
+export async function getValidAccessToken(tenantId = "default"): Promise<{ accessToken: string; officeId: string | null }> {
   const db = svc();
-  const { data: row, error } = await db.from("mf_oauth_tokens").select("*").eq("id", "default").maybeSingle();
+  const { data: row, error } = await db.from("mf_oauth_tokens").select("*").eq("id", tenantId).maybeSingle();
   if (error) throw new Error("mf_oauth_tokens読み取りエラー: " + error.message);
-  if (!row) throw new Error("マネーフォワード未連携です。管理者が一度 /functions/v1/mf-oauth-callback 経由の認可を完了する必要があります。");
+  if (!row) throw new Error(`マネーフォワード未連携です（事業者:${tenantId}）。管理者が一度 /functions/v1/mf-oauth-callback 経由の認可を完了する必要があります。`);
 
   const expiresAt = new Date(row.expires_at).getTime();
   const bufferMs = 5 * 60 * 1000; // 期限5分前から更新する
@@ -44,7 +44,7 @@ export async function getValidAccessToken(): Promise<{ accessToken: string; offi
     // その場合は少し待ってDBを再読み込みし、もう一方が更新した最新トークンがあればそれを使う
     // （自分では再リフレッシュしない＝refresh_tokenをさらに消費して悪化させない）
     await new Promise((r) => setTimeout(r, 400));
-    const { data: freshRow } = await db.from("mf_oauth_tokens").select("*").eq("id", "default").maybeSingle();
+    const { data: freshRow } = await db.from("mf_oauth_tokens").select("*").eq("id", tenantId).maybeSingle();
     if (freshRow && new Date(freshRow.updated_at).getTime() > new Date(row.updated_at).getTime()) {
       return { accessToken: freshRow.access_token, officeId: freshRow.office_id };
     }
@@ -61,8 +61,8 @@ export async function getValidAccessToken(): Promise<{ accessToken: string; offi
     scope: tok.scope ?? row.scope,
     expires_at: newExpiresAt,
     updated_at: new Date().toISOString(),
-  }).eq("id", "default");
-  await db.from("mf_sync_logs").insert({ action: "oauth_refreshed", actor_type: "system", detail: null });
+  }).eq("id", tenantId);
+  await db.from("mf_sync_logs").insert({ action: "oauth_refreshed", actor_type: "system", detail: { tenant_id: tenantId } });
 
   return { accessToken: tok.access_token, officeId: row.office_id };
 }

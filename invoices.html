@@ -751,6 +751,7 @@ function renderMailDetail(u){
         ${atts.length?'<span class="hq-pill gray">添付あり</span>':''}
         ${mail.duplicate_suspected?'<span class="hq-pill red">重複疑い</span>':''}
         ${mail.is_important?'<span class="hq-pill amber">⭐ 重要</span>':''}
+        ${invoice&&invoice.mf_journal_id?'<span class="hq-pill green">💰 会計処理済み</span>':''}
       </div>
       <h2>${esc(mail.subject||"（件名なし）")}</h2>
       <div class="meta">${esc(mail.from_address||"—")} 　→　 ${esc(mail.to_address||"—")}</div>
@@ -1097,15 +1098,32 @@ function wireDetailActions(u){
 
   async function mfjRenderInitial(){
     const body=$("mfj-body");
+    body.innerHTML="読み込み中…（連携先の事業者を確認しています）";
+    const tRes=await mfjCall("list_tenants");
+    const tenants=(tRes.ok&&tRes.body.tenants)||[];
+    if(tenants.length>1){
+      body.innerHTML=`<div class="ai-field"><small>登録先の事業者を選んでください</small>
+        <div class="mail-actions" style="margin-top:6px">${tenants.map(t=>`<button data-mfjtenant="${esc(t.id)}">${esc(t.label)}</button>`).join("")}</div>
+      </div>`;
+      document.querySelectorAll("[data-mfjtenant]").forEach(btn=>btn.onclick=()=>mfjLoadForTenant(btn.dataset.mfjtenant,tenants));
+      return;
+    }
+    mfjLoadForTenant(tenants[0]?tenants[0].id:"default",tenants);
+  }
+
+  async function mfjLoadForTenant(tenantId,tenants){
+    const body=$("mfj-body");
     body.innerHTML="読み込み中…（勘定科目・過去の仕訳を確認しています）";
     const inv=SELECTED.invoice;
     const vendorName=(inv&&inv.vendor_name)||"";
     // 同時に呼ぶとマネーフォワード側のトークン更新が競合することがあるため直列で呼ぶ
-    const accRes=await mfjCall("accounts");
+    const accRes=await mfjCall("accounts",{tenant_id:tenantId});
     if(!accRes.ok){ body.innerHTML=`<div class="err">勘定科目の取得に失敗しました: ${esc(accRes.body.error||"")}${accRes.body.detail?"（詳細: "+esc(JSON.stringify(accRes.body.detail))+"）":""}<br><button id="mfj-retry" style="margin-top:8px">🔄 もう一度試す</button></div>`; if($("mfj-retry")) $("mfj-retry").onclick=mfjRenderInitial; return; }
-    const sugRes=await mfjCall("suggest",{vendor_name:vendorName});
-    const listRes=await mfjCall("list_journals",{keyword:vendorName});
+    const sugRes=await mfjCall("suggest",{vendor_name:vendorName,tenant_id:tenantId});
+    const listRes=await mfjCall("list_journals",{keyword:vendorName,tenant_id:tenantId});
+    const tenantLabel=(tenants||[]).find(t=>t.id===tenantId)?.label||tenantId;
     MFJ_STATE={
+      tenantId, tenantLabel, tenants: tenants||[],
       mode:"journal", // 既定は①仕訳日記帳から選ぶ。候補が無ければ②勘定科目から直接選ぶへ切替
       accounts: accRes.body.accounts||[],
       departments: (sugRes.ok&&sugRes.body.departments)||[],
@@ -1150,7 +1168,7 @@ function wireDetailActions(u){
 
   async function mfjRunJournalSearch(kw){
     $("mfj-journal-results").innerHTML="検索中…";
-    const r=await mfjCall("list_journals",{keyword:kw});
+    const r=await mfjCall("list_journals",{keyword:kw,tenant_id:MFJ_STATE.tenantId});
     MFJ_STATE.journalResults=(r.ok&&r.body.results)||[];
     MFJ_STATE.journalKeyword=kw;
     mfjRenderJournalResults();
@@ -1178,6 +1196,7 @@ function wireDetailActions(u){
     const isJournalMode=MFJ_STATE.mode==="journal";
     body.innerHTML=`
       <datalist id="mfj-acc-datalist">${MFJ_STATE.accountDatalistHtml||""}</datalist>
+      ${MFJ_STATE.tenants&&MFJ_STATE.tenants.length>1?`<div style="font-size:11px;color:var(--muted);margin-bottom:6px">登録先: <b>${esc(MFJ_STATE.tenantLabel||"")}</b> <button id="mfj-change-tenant" style="font-size:10px">変更</button></div>`:""}
       <div class="mail-actions" style="margin-bottom:8px">
         <button data-mfjmode="journal" ${isJournalMode?'class="primary"':""}>📖 過去の仕訳から選ぶ</button>
         <button data-mfjmode="manual" ${!isJournalMode?'class="primary"':""}>🔧 勘定科目から直接選ぶ</button>
@@ -1207,6 +1226,7 @@ function wireDetailActions(u){
       if(MFJ_STATE.mode==="manual"&&!MFJ_STATE.branches.length) mfjAddBranchRow();
       mfjRenderForm();
     });
+    if($("mfj-change-tenant")) $("mfj-change-tenant").onclick=mfjRenderInitial;
     if(isJournalMode){
       mfjRenderJournalResults();
       let t=null;
@@ -1232,6 +1252,7 @@ function wireDetailActions(u){
       }
       const payload={
         invoice_id: SELECTED.invoice.id,
+        tenant_id: MFJ_STATE.tenantId,
         branches: branchesPayload,
         transaction_date: $("mfj-date").value,
         remark: $("mfj-remark").value,
@@ -1384,7 +1405,7 @@ function invoiceListBodyHtml(){
         <td>${yen(row.amount)}</td>
         <td>${dueBadgeHtml(row)}</td>
         <td>${esc(row.email&&row.email.processor&&row.email.processor.name||"—")}</td>
-        <td><span class="invoice-status ${INVOICE_STATUS_CLASS[row.invoice_status]||'gray'}">${cfg.statusLabel[row.invoice_status]||row.invoice_status}</span></td>
+        <td><span class="invoice-status ${INVOICE_STATUS_CLASS[row.invoice_status]||'gray'}">${cfg.statusLabel[row.invoice_status]||row.invoice_status}</span>${row.mf_journal_id?' <span class="hq-pill green" style="margin-left:4px">💰会計処理済み</span>':''}</td>
       </tr>`).join("")||`<tr><td colspan="6">${cfg.emptyLabel}</td></tr>`}
     </tbody>
   </table>`;

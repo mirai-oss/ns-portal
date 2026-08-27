@@ -1,9 +1,13 @@
-// マネーフォワード クラウド会計 OAuth連携コールバック（2026-08-27新規）
+// マネーフォワード クラウド会計 OAuth連携コールバック（2026-08-27新規・同日中に複数事業者対応へ拡張）
 //
 // 役割: MoneyForwardの認可画面（https://api.biz.moneyforward.com/authorize）で
 // ユーザーが「許可する」を押した後、ブラウザがこのURLへリダイレクトされてくる。
 // ここで受け取った認可コード(code)をアクセストークン・リフレッシュトークンに交換し、
-// mf_oauth_tokens テーブル（id='default'の1行のみ・service_roleしか読めない）へ保存する。
+// mf_oauth_tokens テーブル（service_roleしか読めない）へ保存する。
+//
+// 複数事業者対応: 認可URLのstateパラメータに `tenant|<id>|<表示名>` の形式で事業者情報を
+// 埋め込んでおくと、その内容でmf_oauth_tokensの行（1事業者=1行）を保存する。
+// state省略時（後方互換）はid='default'（最初に連携した有限会社トーホーエージェンシー）として扱う。
 //
 // これは「一度だけ手動で開く」画面。以後のトークン更新（リフレッシュ）は
 // 各消費側Edge Function（mf-pl-sync・mf-journal-create等、今後追加予定）が
@@ -35,6 +39,11 @@ Deno.serve(async (req: Request) => {
   const url = new URL(req.url);
   const code = url.searchParams.get("code");
   const err = url.searchParams.get("error");
+  const stateParam = url.searchParams.get("state") ?? "";
+  let tenantId = "default";
+  let tenantLabel: string | null = null;
+  const m = stateParam.match(/^tenant\|([^|]+)\|(.+)$/);
+  if (m) { tenantId = m[1]; tenantLabel = decodeURIComponent(m[2]); }
 
   if (err) {
     return html(`<h1>❌ 連携が許可されませんでした</h1><p>MoneyForward側の応答: ${err}</p>`, 400);
@@ -75,14 +84,16 @@ Deno.serve(async (req: Request) => {
 
     const db = svc();
     const expiresAt = new Date(Date.now() + tok.expires_in * 1000).toISOString();
+    const { data: existing } = await db.from("mf_oauth_tokens").select("label").eq("id", tenantId).maybeSingle();
     const { error: upErr } = await db.from("mf_oauth_tokens").upsert({
-      id: "default",
+      id: tenantId,
       access_token: tok.access_token,
       refresh_token: tok.refresh_token,
       scope: tok.scope ?? null,
       token_type: tok.token_type ?? "Bearer",
       expires_at: expiresAt,
       updated_at: new Date().toISOString(),
+      label: tenantLabel ?? existing?.label ?? tenantId,
     });
     if (upErr) {
       return html(`<h1>❌ 保存に失敗しました</h1><p>${esc(upErr.message)}</p>`, 500);
@@ -91,10 +102,10 @@ Deno.serve(async (req: Request) => {
     await db.from("mf_sync_logs").insert({
       action: "oauth_connected",
       actor_type: "human",
-      detail: { scope: tok.scope ?? null },
+      detail: { scope: tok.scope ?? null, tenant_id: tenantId },
     });
 
-    return html(`<h1>✅ マネーフォワードとの連携が完了しました</h1><p>このタブは閉じて大丈夫です。<br>今後1時間ごとの自動更新（リフレッシュ）も裏側で行われます。</p>`);
+    return html(`<h1>✅ マネーフォワード（${esc(tenantLabel ?? existing?.label ?? tenantId)}）との連携が完了しました</h1><p>このタブは閉じて大丈夫です。<br>今後1時間ごとの自動更新（リフレッシュ）も裏側で行われます。</p>`);
   } catch (e) {
     return html(`<h1>❌ エラーが発生しました</h1><p>${esc(String(e))}</p>`, 500);
   }

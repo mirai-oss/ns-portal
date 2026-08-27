@@ -10,6 +10,11 @@
 //                 invoice_audit_logsへ記録。invoices.linked_hq_step_idが設定されていれば、その本部タスクの
 //                 工程も呼び出しユーザー自身のJWTで完了させる（hq_task_stepsのRLS/トリガーをそのまま経由）
 //   - "search_hq_steps": 本部タスクの工程をキーワード検索する（紐付け選択用。未完了のみ）
+//   - "list_tenants": 連携済みの事業者（テナント）一覧を返す（mf_oauth_tokensの行一覧。トークン自体は含めない）
+//
+// 複数事業者対応（2026-08-27）: accounts/suggest/list_journals/createはbody.tenant_idで
+// どの事業者（有限会社トーホーエージェンシー='default'、株式会社N-Style='nstyle'等）かを指定できる。
+// 省略時は'default'（後方互換）。事業者ごとにmf_oauth_tokensの行が分かれている。
 //
 // 認証: userClient(req)でinvoice_can_access()を満たすか確認してから処理する（他の請求書系Function共通）
 // マネーフォワードのアクセストークンは_shared/mf.tsのgetValidAccessToken()で取得（自動リフレッシュ込み）
@@ -75,9 +80,39 @@ Deno.serve(async (req: Request) => {
   if (accessErr || canAccess !== true) return json({ error: "権限がありません" }, 403);
 
   try {
+    // マネーフォワードへの問い合わせを伴わないactionは先に処理する（MF未連携でも動くように）
+    if (action === "list_tenants") {
+      const db = svc();
+      const { data, error } = await db.from("mf_oauth_tokens").select("id, label, updated_at").order("label");
+      if (error) return json({ error: "事業者一覧の取得に失敗しました: " + error.message }, 500);
+      return json({ success: true, tenants: (data ?? []).map((t) => ({ id: t.id, label: t.label || t.id })) });
+    }
+
+    if (action === "search_hq_steps") {
+      const keyword: string = (body?.keyword ?? "").trim();
+      if (!keyword) return json({ success: true, results: [] });
+      // 工程タイトル一致・親タスクタイトル一致の両方を探して統合する（会社名がどちら側の
+      // タイトルに入っているか分からないため）。工程が未完了、かつ親タスクが未着手/進行中
+      // （status in todo,doing）のものだけ対象＝完了済みタスクの中の工程は候補に出さない
+      const [byStep, byTask] = await Promise.all([
+        uc.from("hq_task_steps")
+          .select("id, title, due_date, task:hq_tasks!inner(id, title, corp, target_date, status)")
+          .ilike("title", `%${keyword}%`).is("completed_at", null).in("task.status", ["todo", "doing"]).limit(20),
+        uc.from("hq_task_steps")
+          .select("id, title, due_date, task:hq_tasks!inner(id, title, corp, target_date, status)")
+          .ilike("task.title", `%${keyword}%`).is("completed_at", null).in("task.status", ["todo", "doing"]).limit(20),
+      ]);
+      const merged = new Map<string, any>();
+      for (const r of [...(byStep.data ?? []), ...(byTask.data ?? [])]) merged.set(r.id, r);
+      return json({ success: true, results: Array.from(merged.values()) });
+    }
+
+    // 以降のactionはマネーフォワードへ問い合わせる。どの事業者（テナント）かをtenant_idで指定
+    // （省略時は最初に連携した'default'＝有限会社トーホーエージェンシー）
+    const tenantId: string = body?.tenant_id || "default";
     let accessToken: string;
     try {
-      ({ accessToken } = await getValidAccessToken());
+      ({ accessToken } = await getValidAccessToken(tenantId));
     } catch (e) {
       return json({ error: "マネーフォワード未連携、またはトークン更新に失敗しました: " + String(e) }, 502);
     }
@@ -139,25 +174,6 @@ Deno.serve(async (req: Request) => {
       });
     }
 
-    if (action === "search_hq_steps") {
-      const keyword: string = (body?.keyword ?? "").trim();
-      if (!keyword) return json({ success: true, results: [] });
-      // 工程タイトル一致・親タスクタイトル一致の両方を探して統合する（会社名がどちら側の
-      // タイトルに入っているか分からないため）。工程が未完了、かつ親タスクが未着手/進行中
-      // （status in todo,doing）のものだけ対象＝完了済みタスクの中の工程は候補に出さない
-      const [byStep, byTask] = await Promise.all([
-        uc.from("hq_task_steps")
-          .select("id, title, due_date, task:hq_tasks!inner(id, title, corp, target_date, status)")
-          .ilike("title", `%${keyword}%`).is("completed_at", null).in("task.status", ["todo", "doing"]).limit(20),
-        uc.from("hq_task_steps")
-          .select("id, title, due_date, task:hq_tasks!inner(id, title, corp, target_date, status)")
-          .ilike("task.title", `%${keyword}%`).is("completed_at", null).in("task.status", ["todo", "doing"]).limit(20),
-      ]);
-      const merged = new Map<string, any>();
-      for (const r of [...(byStep.data ?? []), ...(byTask.data ?? [])]) merged.set(r.id, r);
-      return json({ success: true, results: Array.from(merged.values()) });
-    }
-
     if (action === "create") {
       const invoiceId = body?.invoice_id;
       const transactionDate = body?.transaction_date || todayStr();
@@ -214,7 +230,7 @@ Deno.serve(async (req: Request) => {
 
       const db = svc();
       await db.from("invoices").update({
-        mf_journal_id: journalId, mf_journal_number: journalNumber, mf_journal_created_at: new Date().toISOString(),
+        mf_journal_id: journalId, mf_journal_number: journalNumber, mf_journal_created_at: new Date().toISOString(), mf_tenant_id: tenantId,
         ...(linkedHqStepId !== inv.linked_hq_step_id ? { linked_hq_step_id: linkedHqStepId } : {}), // 未保存の選択を反映
       }).eq("id", invoiceId);
       await db.from("mf_sync_logs").insert({ action: "journal_create", actor_type: "human", detail: { invoice_id: invoiceId, journal_id: journalId } });
