@@ -987,6 +987,10 @@ const GROUPS=[
     // 出力テンプレート管理は「データ出力」（SYS_ITEMS・export.html）に統合済み
     // （担当Gがテンプレート一覧・出力履歴も同一画面に実装したため、別項目は置かない）
     {key:"admin-usage",    ico:"📊", label:"システム利用状況", type:"sysusage"},
+    // D-5a（担当Dからの依頼・WORKLOG「2026-08-27夜（担当D実行スレッド）」）。
+    // 「壊れたらまずここを開く」文書のため、あえてiframeにせず新しいタブで直接開く
+    // （portal.html自体が壊れている状況でも辿り着けるように独立させる設計）
+    {key:"admin-recovery", ico:"🆘", label:"復旧の入口", url:"https://mirai-oss.github.io/ns-portal/docs/復旧の入口.md", externalPlain:true},
     // F-7: ホーム画面編集（WP/ブログ風）。roles:[]は「マスターのみ」を表す慣用（itemVisible
     // は空配列に対してどのroleでもfalseを返す一方、u.is_masterは冒頭で無条件trueに短絡する）
     {key:"admin-homeedit", ico:"🎛️", label:"ホーム画面編集", type:"homeedit", roles:[]},
@@ -1201,6 +1205,7 @@ function openItem(key,u){
   if(it.soon){ toast("準備中です"); return; }
   if(it.sso){ openJohoSso(); return; }
   if(it.legacyLink){ location.href="index.html"; return; } // F-6: 従来ポータルの権限設定タブへそのまま遷移（iframeにしない）
+  if(it.externalPlain){ window.open(it.url,"_blank","noopener"); closeMobileMore(); return; } // D-5a: 独立した静的ページを新しいタブでそのまま開く（iframeにしない）
   if(grp) OPEN_GROUP=grp.cap; // クリックした項目のグループだけを開いた状態にする
 
   // 高速切替: 同じsysKeyのiframeが既に表示中で、対応済みシステムなら
