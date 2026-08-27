@@ -114,22 +114,39 @@ async function driveCreateFolder(name, parentId) {
   return (await res.json()).id;
 }
 
-// 空メタデータ作成→中身をmedia uploadで書き込む（multipartを避けたシンプルな2段階方式）
+// multipart(1リクエストでメタデータ+中身を送る)。2026-08-27の本番初回実行が
+// 「1ファイルにつき2リクエストを順番に」で650回近くかかり30分タイムアウトしたため、
+// リクエスト数半減＋並列化(mapPool)の両方で対応する。
 async function driveUploadFile(name, parentId, buffer, mimeType = 'application/octet-stream') {
-  const createRes = await fetch('https://www.googleapis.com/drive/v3/files?supportsAllDrives=true', {
+  const boundary = `nstylebackup${Math.random().toString(16).slice(2)}`;
+  const metadata = JSON.stringify({ name, parents: [parentId] });
+  const body = Buffer.concat([
+    Buffer.from(`--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${metadata}\r\n--${boundary}\r\nContent-Type: ${mimeType}\r\n\r\n`),
+    buffer,
+    Buffer.from(`\r\n--${boundary}--`),
+  ]);
+  const res = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&supportsAllDrives=true', {
     method: 'POST',
-    headers: gHeaders({ 'Content-Type': 'application/json' }),
-    body: JSON.stringify({ name, parents: [parentId] }),
+    headers: gHeaders({ 'Content-Type': `multipart/related; boundary=${boundary}` }),
+    body,
   });
-  if (!createRes.ok) throw new Error(`Driveファイル作成失敗 [${name}] ${createRes.status}: ${(await createRes.text()).slice(0, 300)}`);
-  const fileId = (await createRes.json()).id;
-  const upRes = await fetch(`https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=media&supportsAllDrives=true`, {
-    method: 'PATCH',
-    headers: gHeaders({ 'Content-Type': mimeType }),
-    body: buffer,
-  });
-  if (!upRes.ok) throw new Error(`Drive内容アップロード失敗 [${name}] ${upRes.status}: ${(await upRes.text()).slice(0, 300)}`);
-  return fileId;
+  if (!res.ok) throw new Error(`Driveアップロード失敗 [${name}] ${res.status}: ${(await res.text()).slice(0, 300)}`);
+  return (await res.json()).id;
+}
+
+// 同時実行数を絞った並列マップ（Drive/Supabase APIへの負荷とタイムアウト対策のバランス）
+async function mapPool(items, concurrency, fn) {
+  const results = new Array(items.length);
+  let next = 0;
+  async function worker() {
+    for (;;) {
+      const i = next++;
+      if (i >= items.length) return;
+      results[i] = await fn(items[i], i);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, worker));
+  return results;
 }
 
 async function driveListChildren(parentId) {
@@ -169,15 +186,22 @@ async function main() {
   const rootName = todayFolderName();
   console.log(`バックアップ開始: ${rootName}（DRY_RUN=${DRY_RUN}）`);
 
+  // 同じ日付のフォルダが既にあれば削除してから作る（前回が失敗・タイムアウトで
+  // 中途半端に残っていても、再実行すればきれいに作り直される＝冪等）
+  if (!DRY_RUN) {
+    const existing = (await driveListChildren(DRIVE_ID)).filter((f) => f.name === rootName);
+    for (const f of existing) { console.log(`同名フォルダ${rootName}が既存のため削除して作り直す`); await driveDeleteFile(f.id); }
+  }
   const rootId = DRY_RUN ? '(dry-run)' : await driveCreateFolder(rootName, DRIVE_ID);
   const dbFolderId = DRY_RUN ? '(dry-run)' : await driveCreateFolder('db-export', rootId);
+  const CONCURRENCY = 8; // Drive/Supabase双方への同時リクエスト数（速度とレート制限のバランス）
 
-  // 1. DB全テーブル
+  // 1. DB全テーブル（テーブル単位で並列）
   for (const schema of DB_SCHEMAS) {
     let tables;
     try { tables = await listTables(schema); }
     catch (e) { summary.errors.push(`テーブル一覧[${schema}]: ${e.message}`); continue; }
-    for (const table of tables) {
+    await mapPool(tables, CONCURRENCY, async (table) => {
       try {
         const rows = await fetchAllRows(schema, table);
         const buf = Buffer.from(JSON.stringify(rows));
@@ -186,11 +210,11 @@ async function main() {
       } catch (e) {
         summary.errors.push(`テーブル[${schema}.${table}]: ${e.message}`);
       }
-    }
+    });
     console.log(`DBエクスポート完了: ${schema}（${tables.length}テーブル）`);
   }
 
-  // 2. Storage全バケット
+  // 2. Storage全バケット（バケット内はファイル単位で並列）
   const storageFolderId = DRY_RUN ? '(dry-run)' : await driveCreateFolder('storage', rootId);
   const cutoffByAge = (days) => days ? Date.now() - days * 86400000 : null;
   for (const { name: bucket, maxAgeDays } of STORAGE_BUCKETS) {
@@ -202,7 +226,7 @@ async function main() {
     if (!targets.length) { console.log(`Storage[${bucket}]: 対象0件`); continue; }
     const bucketFolderId = DRY_RUN ? '(dry-run)' : await driveCreateFolder(bucket, storageFolderId);
     // サブフォルダ構造は平坦化せずファイル名にパスを埋め込む（Drive側フォルダ階層を都度作るコストを避ける）
-    for (const obj of targets) {
+    await mapPool(targets, CONCURRENCY, async (obj) => {
       try {
         const buf = await downloadStorageObject(bucket, obj.path);
         summary.files++; summary.bytes += buf.length;
@@ -210,7 +234,7 @@ async function main() {
       } catch (e) {
         summary.errors.push(`Storageファイル[${bucket}/${obj.path}]: ${e.message}`);
       }
-    }
+    });
     console.log(`Storageコピー完了: ${bucket}（${targets.length}/${objects.length}件。maxAgeDays=${maxAgeDays || '無制限'}）`);
   }
 
