@@ -1028,7 +1028,7 @@ let NAV_HQ_CNT=0, NAV_INV_CNT=0;
    nippo（sysKey:"nippo"）は担当Bと連携のうえ追加予定（2026-08-26時点は未追加）
    ============================================================ */
 const SYS_TAB_PARAM={keiei:"tab",nippo:"page"}; // その システムの「タブ」がURLのどのクエリパラメータで表されるか
-const FAST_SWITCH_SYSKEYS=new Set(["keiei"]);
+const FAST_SWITCH_SYSKEYS=new Set(["keiei","nippo"]); // nippo側の受け口は担当Bが実装・デプロイ済み（コミットbe020d2・2026-08-27確認）
 let CUR_IFRAME=null, CUR_IFRAME_SYSKEY=null, CUR_IFRAME_ORIGIN=null;
 
 /* ============================================================
