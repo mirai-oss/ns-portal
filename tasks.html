@@ -210,6 +210,10 @@ textarea{resize:vertical}
 .resource .del{position:absolute;top:8px;right:8px;padding:2px}
 .resource-add{border:1px solid var(--line);border-radius:12px;padding:12px;background:var(--bg);margin-top:10px}
 .resource-add label{margin-top:8px}
+/* 2026-08-27: 担当Cからの共有（invoices.htmlで同様の指摘あり）。.resource-add自体と
+   中の入力欄が同じ--bgのため境界線でしか区別できず見づらいという指摘を受け、先回りして対応。
+   入力欄だけ--card（カード面の色）にして.resource-addの中で浮き上がって見えるようにする */
+.resource-add input,.resource-add select,.resource-add textarea{background:var(--card)}
 .richbar{display:flex;gap:6px;align-items:center;margin:4px 0 2px;flex-wrap:wrap}
 .richbar button{border:1px solid var(--line);border-radius:6px;padding:3px 12px;background:var(--card);cursor:pointer;font-size:13px}
 .richbar select{width:auto;flex:0 0 auto;font-size:12px;padding:3px 6px;border-radius:6px}
