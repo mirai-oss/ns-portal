@@ -223,6 +223,44 @@ Deno.serve(async (req: Request) => {
         note: `マネーフォワードへ仕訳登録（伝票番号: ${journalNumber ?? "-"}）`,
       });
 
+      // メールの添付（PDF/画像）を証憑としてマネーフォワードへ添付（2026-08-27・voucher.writeスコープ追加後に対応）
+      // POST /api/v3/vouchers { journal_id, voucher_files:[{file_name, file_data(base64)}] }
+      // attach_filesがfalse明示のときはスキップ（デフォルトは添付する）
+      let voucherAttached = 0, voucherError: string | null = null;
+      if (journalId && body?.attach_files !== false) {
+        const { data: atts } = await db.from("invoice_attachments").select("file_name, storage_path, mime_type, size_bytes").eq("email_id", inv.email_id).order("created_at").limit(5);
+        const files: { file_name: string; file_data: string }[] = [];
+        for (const a of atts ?? []) {
+          if ((a.size_bytes ?? 0) > 15 * 1024 * 1024) continue; // 大きすぎるものはスキップ（413対策）
+          const { data: blob, error: dlErr } = await db.storage.from("invoice-files").download(a.storage_path);
+          if (dlErr || !blob) continue;
+          const bytes = new Uint8Array(await blob.arrayBuffer());
+          let binary = "";
+          const chunkSize = 0x8000;
+          for (let i = 0; i < bytes.length; i += chunkSize) binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+          files.push({ file_name: (a.file_name || "attachment").slice(0, 255), file_data: btoa(binary) });
+        }
+        if (files.length) {
+          const vRes = await mfFetch("/api/v3/vouchers", accessToken, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ journal_id: journalId, voucher_files: files }),
+          });
+          const vData = await vRes.json().catch(() => ({}));
+          if (vRes.ok) {
+            voucherAttached = (vData.voucher_file_ids ?? []).length;
+          } else {
+            voucherError = vRes.status === 401 || vRes.status === 403
+              ? "証憑添付の権限がありません（voucher.writeスコープでの再連携が必要です）"
+              : `証憑の添付に失敗しました: ${JSON.stringify(vData)}`;
+          }
+          await db.from("invoice_audit_logs").insert({
+            entity_type: "invoice_email", entity_id: inv.email_id, action: "mf_voucher_attach", actor_type: "human",
+            note: voucherError ?? `マネーフォワードへ証憑を${voucherAttached}件添付しました`,
+          });
+        }
+      }
+
       // 紐付けた本部タスクの工程があれば、呼び出しユーザー自身のJWTで完了させる
       // （hq_task_stepsのRLS/完了トリガーをそのまま経由＝完了者・通知等は既存ロジック任せ）
       let hqStepCompleted = false, hqStepError: string | null = null;
@@ -239,7 +277,7 @@ Deno.serve(async (req: Request) => {
         });
       }
 
-      return json({ success: true, journal_id: journalId, journal_number: journalNumber, hq_step_completed: hqStepCompleted, hq_step_error: hqStepError });
+      return json({ success: true, journal_id: journalId, journal_number: journalNumber, hq_step_completed: hqStepCompleted, hq_step_error: hqStepError, voucher_attached: voucherAttached, voucher_error: voucherError });
     }
 
     return json({ error: "不明なactionです" }, 400);

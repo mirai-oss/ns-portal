@@ -1192,6 +1192,7 @@ function wireDetailActions(u){
         <div class="ai-field"><small>日付（会計計上日・自由に変更可）</small><input id="mfj-date" type="date" value="${esc(MFJ_STATE.date)}"></div>
         <div class="ai-field"><small>摘要</small><input id="mfj-remark" value="${esc(MFJ_STATE.remark)}"></div>
       </div>
+      ${(SELECTED.atts&&SELECTED.atts.length)?`<div class="ai-field" style="margin-top:8px"><label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="mfj-attach-files" checked>📎 メールの添付ファイル（${SELECTED.atts.length}件）もマネーフォワードへ証憑として添付する</label></div>`:""}
       <div class="mail-actions" style="margin-top:8px">
         <button id="mfj-confirm">確認画面へ</button>
       </div>
@@ -1235,11 +1236,13 @@ function wireDetailActions(u){
         transaction_date: $("mfj-date").value,
         remark: $("mfj-remark").value,
         linked_hq_step_id: LINKED_HQ_STEP?LINKED_HQ_STEP.id:null, // 保存前でも画面上の選択を優先させる（DB保存漏れ対策）
+        attach_files: $("mfj-attach-files")?$("mfj-attach-files").checked:false,
       };
       const {ok,body:j}=await mfjCall("create",payload);
       if(!ok){ msg.textContent=j.error||"登録に失敗しました"; $("mfj-submit").disabled=false; return; }
       msg.className="err msg-ok";
       msg.textContent=`登録しました（伝票番号: ${j.journal_number??"-"}）`
+        +(j.voucher_attached?`。添付ファイルも${j.voucher_attached}件添付しました`:j.voucher_error?`（添付: ${j.voucher_error}）`:"")
         +(LINKED_HQ_STEP?(j.hq_step_completed?"。紐付けた本部タスクの工程も完了にしました":j.hq_step_error?`（本部タスクの自動完了には失敗: ${j.hq_step_error}）`:""):"")
         +"。画面を更新します…";
       setTimeout(()=>{ reloadDetail(); },900);
