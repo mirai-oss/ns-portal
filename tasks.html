@@ -1094,10 +1094,10 @@ function invoiceSectionHtml(t,s,u){
     } else {
       head=`<div class="checklist-hd">🧾 請求書・会計</div>
         <div class="meta">${esc(inv.vendor_name||"取引先未設定")} ／ ${amountStr}（未登録）</div>
-        ${open?"":`<button class="linkbtn" data-mfjopen="${s.id}" style="margin-top:4px">🧾 仕訳を作成</button>`}`;
+        ${open?"":`<button class="btn sm" data-mfjopen="${s.id}" style="margin-top:6px">🧾 仕訳を作成</button>`}`;
     }
   } else {
-    head=open?"":`<button class="linkbtn" data-mfjopen="${s.id}" style="margin-top:6px">＋ 請求書をアップロードして仕訳登録</button>`;
+    head=open?"":`<button class="btn sm" data-mfjopen="${s.id}" style="margin-top:6px">＋ 請求書をアップロードして仕訳登録</button>`;
   }
   const form=open?`<div class="resource-add" onclick="event.stopPropagation()">${hqmfjFormHtml(s.id)}</div>`:"";
   return `<div style="margin-top:10px" onclick="event.stopPropagation()">${head}${form}</div>`;
