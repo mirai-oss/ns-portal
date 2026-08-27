@@ -2917,3 +2917,10 @@ WORKLOG「担当Fへの依頼（画面切替の高速化）」に対応（`ns-po
 - 担当Fから「nippoへの拡張もportal.html側は対応済み（`SYS_TAB_PARAM.nippo="page"`実装済み・`FAST_SWITCH_SYSKEYS`に`"nippo"`を追加するだけで有効化可）。契約は`postMessage({type:"nsPortalSetTab", tab:"<pageキー>"}, origin)`・origin検証は`https://mirai-oss.github.io`」と連絡あり
 - **入れ違いで、nippo側の受け口は直前のエントリ（コミット`be020d2`）ですでに実装・本番デプロイ済みだった**。契約（メッセージ形・origin・tabキー）が完全一致していたため追加対応は不要と判断し、担当Fへその旨を返信（本番`index.html`に`nsPortalSetTab`/`goToPage`が入っていることをcurlで確認済み）
 - **次のアクションは担当F**: `FAST_SWITCH_SYSKEYS`に`"nippo"`を追加して有効化→実機確認。結果待ち
+
+## 2026-08-27（担当F実行スレッド・続き）画面切替高速化をnippoにも有効化・本番E2E完了
+
+担当Bがnippo側の受け口を先行実装・デプロイ済み（`nippo`コミット`be020d2`）と連絡があり、契約（`{type:'nsPortalSetTab', tab:...}`・origin検証・`DEEPLINK_PAGES`）が完全一致することを確認。`ns-portal`側は`FAST_SWITCH_SYSKEYS`に`"nippo"`を追加するだけで対応完了（コミット`99f7078`）。
+
+- **本番E2E完了**（社長=マスター）: 「日報」表示中のiframeにマーカーを仕込み、「週報」（同じsysKey内の別ページ）へ切替→**iframeが作り直されず同じDOM要素のまま週報フォームに切り替わる**ことを確認（フルリロード無し）
+- これで`keiei`（tori-dashboard）・`nippo`の両方で画面切替の高速化が本番稼働。担当Aからの依頼と担当Bからの提案、両方クローズ
