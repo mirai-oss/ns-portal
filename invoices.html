@@ -901,6 +901,12 @@ function logLabel(action){
 function wireDetailActions(u){
   const {mail}=SELECTED;
   const emailId=mail.id;
+  // renderMailDetail()と同じ判定をこちらでも持つ（別関数のためスコープが分かれておりここでは未定義だった。
+  // iv-ai-fillハンドラがkind/isSalesを参照してReferenceErrorになり「AI読み取り中にエラーが発生しました」
+  // と表示される不具合の原因＝2026-08-27ユーザー報告で発覚・修正）
+  const kind=mail.mail_kind||"invoice";
+  const isSales=kind==="sales";
+  const isContract=kind==="contract";
   let LINKED_HQ_STEP=SELECTED.invoice&&SELECTED.invoice.linked_step?{id:SELECTED.invoice.linked_step.id,title:SELECTED.invoice.linked_step.title,task:SELECTED.invoice.linked_step.task}:null;
   function renderHqLinkBox(){
     const box=$("hqlink-box");
