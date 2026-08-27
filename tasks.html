@@ -516,15 +516,19 @@ async function fetchBoard(){
 async function runSearch(q){
   if(!q||!q.trim()){ SEARCH_RESULTS=null; renderBoard(ME); return; }
   const like=`*${q.trim()}*`;
-  const [byTask,byStep,byAct]=await Promise.all([
+  // 2026-08-27: hq_task_activity.detail（工程完了/追加/再開などの自動生成ログ文言）は
+  // 定型の工程名がそのまま埋め込まれており、検索語が偶然それと一致すると無関係な過去タスクまで
+  // 大量にヒットしてしまうため検索対象から除外。代わりに人間が実際に書いたコメント本文
+  // （hq_task_comments.body）を対象に追加する（プレースホルダ「コメントを検索」と実装を一致させる）
+  const [byTask,byStep,byComment]=await Promise.all([
     authed(`/rest/v1/hq_tasks?or=(title.ilike.${encodeURIComponent(like)},notes.ilike.${encodeURIComponent(like)})&select=id`),
     authed(`/rest/v1/hq_task_steps?or=(title.ilike.${encodeURIComponent(like)},issue_note.ilike.${encodeURIComponent(like)})&select=task_id`),
-    authed(`/rest/v1/hq_task_activity?detail.ilike.${encodeURIComponent(like)}&select=task_id`),
+    authed(`/rest/v1/hq_task_comments?body.ilike.${encodeURIComponent(like)}&select=task_id`),
   ]);
   const ids=new Set();
   (byTask.body||[]).forEach(x=>ids.add(x.id));
   (byStep.body||[]).forEach(x=>ids.add(x.task_id));
-  (byAct.body||[]).forEach(x=>ids.add(x.task_id));
+  (byComment.body||[]).forEach(x=>ids.add(x.task_id));
   if(!ids.size){ SEARCH_RESULTS=[]; renderBoard(ME); return; }
   const r=await authed(`/rest/v1/hq_tasks?id=in.(${[...ids].join(",")})&select=*,hq_task_steps(*)&order=target_date.desc`);
   SEARCH_RESULTS=(r.ok&&Array.isArray(r.body))?r.body:[];
