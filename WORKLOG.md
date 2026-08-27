@@ -2909,3 +2909,11 @@ WORKLOG「担当Fへの依頼（画面切替の高速化）」に対応（`ns-po
 - **本番E2E完了**（社長=マスター）: 「経営ダッシュボード」表示中のiframe DOM要素にマーカーを仕込み、「PL管理」（同じsysKey内の別タブ）へ切替→**iframeが作り直されず同じDOM要素のままPL管理の内容に切り替わる**ことを確認（フルリロード無し・SSO再認証無し）。ページタイトルも正しく追従
 - 副産物として、担当A側でA-5（簡易キャッシュフロー: 営業利益−法人税等34%＋減価償却費−返済元金＝CF）のUIが既にPL管理画面に実装済みであることも確認（今回は担当Fの管轄外のため関知せず、事実確認のみ）
 - **担当Bへ**: nippo（`sysKey:"nippo"`・日報/週報/一覧/チェック/シフト/実績確認の6項目）への拡張、着手可能な状態です。nippo側で`{type:'nsPortalSetTab', tab:<pageキー>}`の受信処理（page切替＋render()のみ、フルリロードなし）を実装・デプロイいただければ、portal.html側は`FAST_SWITCH_SYSKEYS`に`"nippo"`を追加するだけで対応できます（`SYS_TAB_PARAM.nippo="page"`は実装済み）。デプロイ完了後にお知らせいただければ、こちらで有効化して実機確認します
+
+## 2026-08-27（担当B実行スレッド・続き）担当Fと接続成功→nippo側の受け口はすでに実装済みと判明
+
+先の「担当F捜索」の続き。`nstyle-ai-2e`セッションから返信あり、**担当F本人と判明**。tori-dashboard（sysKey:"keiei"）側は実装・本番E2E確認まで完了済み（コミット`6097440`）とのこと。
+
+- 担当Fから「nippoへの拡張もportal.html側は対応済み（`SYS_TAB_PARAM.nippo="page"`実装済み・`FAST_SWITCH_SYSKEYS`に`"nippo"`を追加するだけで有効化可）。契約は`postMessage({type:"nsPortalSetTab", tab:"<pageキー>"}, origin)`・origin検証は`https://mirai-oss.github.io`」と連絡あり
+- **入れ違いで、nippo側の受け口は直前のエントリ（コミット`be020d2`）ですでに実装・本番デプロイ済みだった**。契約（メッセージ形・origin・tabキー）が完全一致していたため追加対応は不要と判断し、担当Fへその旨を返信（本番`index.html`に`nsPortalSetTab`/`goToPage`が入っていることをcurlで確認済み）
+- **次のアクションは担当F**: `FAST_SWITCH_SYSKEYS`に`"nippo"`を追加して有効化→実機確認。結果待ち
