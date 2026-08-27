@@ -1053,8 +1053,13 @@ function wireDetailActions(u){
     }else{
       r=await authed("/rest/v1/invoices",{method:"POST",headers:{Prefer:"return=minimal"},body:JSON.stringify({...payload,email_id:emailId})});
     }
-    msg.className=r.ok?"err msg-ok":"err"; msg.textContent=r.ok?"保存しました":"保存できませんでした";
-    if(r.ok) await loadWaitingPaymentCount();
+    if(!r.ok){ msg.className="err"; msg.textContent="保存できませんでした"; return; }
+    // 2026-08-27: 保存成功後にSELECTED.invoiceを更新しないまま同じ画面でもう一度保存すると、
+    // SELECTED.invoiceが古い（nullの）ままPOST（新規行）が再度走り、同じメールに請求書情報が
+    // 2行できてしまう不具合があったため、保存のたびに詳細を再読込してSELECTED.invoiceを最新化する
+    await reloadDetail();
+    const freshMsg=$("iv-msg"); if(freshMsg){ freshMsg.className="err msg-ok"; freshMsg.textContent="保存しました"; }
+    await loadWaitingPaymentCount();
   };
 
   if($("mfj-open")) $("mfj-open").onclick=async()=>{
