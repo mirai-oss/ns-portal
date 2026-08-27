@@ -6,8 +6,10 @@
 //   refresh_tokenは使うたびにローテートされる仕様のため、リフレッシュのたびにDBを上書きする。
 import { createClient } from "npm:@supabase/supabase-js@2";
 
-const TOKEN_URL = "https://api.biz.moneyforward.com/token";
-const API_BASE = "https://api.biz.moneyforward.com"; // 会計APIの実エンドポイントパスは機能追加時に個別確認する
+const TOKEN_URL = "https://api.biz.moneyforward.com/token"; // OAuth専用サーバー（認可・トークン交換のみ）
+const API_BASE = "https://api-accounting.moneyforward.com"; // 会計リソースAPI本体（勘定科目・仕訳等）はこちら別ホスト。
+// 2026-08-27に実アクセストークンでの直接probeで確定。当初api.biz.moneyforward.comのまま
+// 書いてしまいNOT_FOUNDが出続ける不具合になっていた（ユーザー実機報告で発覚・修正）
 
 function svc() {
   return createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
