@@ -293,6 +293,10 @@ let CORPS=[];              // corporations（法人マスタの正本）から�
 let MANUAL_ITEMS=null;     // manual_items（category='本部マニュアル'・読取専用）を遅延取得しキャッシュ
 const activeCorps=()=>CORPS.filter(c=>c.is_active);
 const ASSIGNABLE_ROLES=["HQ","CEO","TEAM"];
+// 2026-08-27: タスクの法人(hq_tasks.corp)と仕訳登録先のマネーフォワード事業者が食い違っている
+// ことに気づかず登録してしまう事故を防ぐため、担当Cからの依頼で確認画面に警告を出す用の対応表。
+// LiveGate/SKはマネーフォワード未連携のため対象外（invoices.html側の運用と揃えてある）
+const CORP_TO_MF_TENANT={"トーホー":"default","N-Style":"nstyle"};
 const FREQ_LABEL={daily:"毎日",weekly:"毎週",monthly:"毎月",once:"単発"};
 const STATUS_LABEL={todo:"未着手",doing:"進行中",done:"完了"};
 const ROLE_NAME={CEO:"社長",HQ:"本部",TEAM:"チーム長",TENCHO:"店長",SHAIN:"社員",AL:"アルバイト"};
@@ -1236,12 +1240,18 @@ function hqmfjFormHtml(stepId){
     <button class="linkbtn" data-mfjcancel="1" style="margin-top:4px">キャンセル</button>
   `;
 }
-function hqmfjConfirm(u){
+function hqmfjConfirm(t,u){
   const S=HQMFJ_STATE;
   S.date=$("hqmfj-date")?$("hqmfj-date").value:S.date;
   S.remark=$("hqmfj-remark")?$("hqmfj-remark").value:S.remark;
   const lines=S.branches.map(b=>`${esc(b.debitLabel||"?")} ／ ${esc(b.creditLabel||"?")}${b.department_id?"（部門あり）":""}　${Number(b.amount||0).toLocaleString()}円`);
   S.confirmText=lines.join("<br>")+`<br>日付: <b>${esc(S.date)}</b><br>摘要: <b>${esc(S.remark)}</b>`;
+  // 2026-08-27(担当Cからの依頼): タスクの法人と選択中のマネーフォワード事業者が食い違って
+  // いないか確認画面で警告する（登録自体はブロックしない・気づかせるだけ）
+  const expectedTenant=CORP_TO_MF_TENANT[t.corp];
+  if(expectedTenant&&S.tenantId!==expectedTenant){
+    S.confirmText=`<div style="color:var(--stall);font-weight:700;margin-bottom:8px">⚠️ このタスクの法人は「${esc(t.corp)}」ですが、選択中の事業者は「${esc(S.tenantLabel)}」です。<br>本当にこの事業者で登録してよろしいですか？</div>`+S.confirmText;
+  }
   S.showConfirm=true;
   renderDetail(u);
 }
@@ -1964,7 +1974,7 @@ function wireDetail(t,u){
       if(f){ HQMFJ_FILE=f; HQMFJ_STATE.fileName=f.name; renderDetail(u); }
     });
   }
-  document.querySelectorAll("[data-mfjconfirm]").forEach(btn=>{ btn.onclick=(e)=>{ e.stopPropagation(); hqmfjConfirm(u); }; });
+  document.querySelectorAll("[data-mfjconfirm]").forEach(btn=>{ btn.onclick=(e)=>{ e.stopPropagation(); hqmfjConfirm(t,u); }; });
   document.querySelectorAll("[data-mfjsubmit]").forEach(btn=>{ btn.onclick=(e)=>{ e.stopPropagation(); btn.disabled=true; hqmfjSubmit(t,u,HQMFJ_STATE.stepId); }; });
   /* 2026-08-25: 工程ごとの添付・完了操作パネルの開閉。行全体(row1)と「📎添付・マニュアル」
      ボタンの両方にdata-stepattopenを付け、どちらを押しても同じ1つの状態を開閉する
