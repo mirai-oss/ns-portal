@@ -11,6 +11,13 @@
 //                 工程も呼び出しユーザー自身のJWTで完了させる（hq_task_stepsのRLS/トリガーをそのまま経由）
 //   - "search_hq_steps": 本部タスクの工程をキーワード検索する（紐付け選択用。未完了のみ）
 //   - "list_tenants": 連携済みの事業者（テナント）一覧を返す（mf_oauth_tokensの行一覧。トークン自体は含めない）
+//   - "linked_invoices": body.step_idsの配列を渡すと、メールから紐付けられた請求書（存在すれば）を
+//                 まとめて返す。tasks.html（本部タスクボード）が工程一覧描画時にN+1にならないよう
+//                 一括問い合わせする想定（2026-08-27・担当Eからの連携依頼に対応）
+//   - "create_standalone": メールに紐付かない請求書（本部タスクから直接アップロードした写真等）の
+//                 仕訳登録。body: {tenant_id, linked_hq_step_id(必須), vendor_name, branches, transaction_date,
+//                 remark, voucher_files:[{file_name,file_data(base64)}]}。invoicesに新規行(email_id=null)を
+//                 作成し、通常のcreateと同じくMFへ仕訳登録→証憑添付→工程を自動完了する
 //
 // 複数事業者対応（2026-08-27）: accounts/suggest/list_journals/createはbody.tenant_idで
 // どの事業者（有限会社トーホーエージェンシー='default'、株式会社N-Style='nstyle'等）かを指定できる。
@@ -86,6 +93,19 @@ Deno.serve(async (req: Request) => {
       const { data, error } = await db.from("mf_oauth_tokens").select("id, label, updated_at").order("label");
       if (error) return json({ error: "事業者一覧の取得に失敗しました: " + error.message }, 500);
       return json({ success: true, tenants: (data ?? []).map((t) => ({ id: t.id, label: t.label || t.id })) });
+    }
+
+    if (action === "linked_invoices") {
+      // 本部タスクの工程IDの配列を受け取り、メールから紐付けられた請求書（invoices.linked_hq_step_id）が
+      // あればその内容（仕訳登録済みかどうか含む）を返す。tasks.htmlが工程一覧を描画するときに
+      // まとめて1回で問い合わせる想定（1件ずつ問い合わせるとN+1になるため）
+      const stepIds: string[] = Array.isArray(body?.step_ids) ? body.step_ids : [];
+      if (!stepIds.length) return json({ success: true, invoices: [] });
+      const { data, error } = await uc.from("invoices")
+        .select("id, linked_hq_step_id, vendor_name, amount, invoice_status, mf_journal_id, mf_journal_number, mf_tenant_id, email_id")
+        .in("linked_hq_step_id", stepIds);
+      if (error) return json({ error: "取得に失敗しました: " + error.message }, 500);
+      return json({ success: true, invoices: data ?? [] });
     }
 
     if (action === "search_hq_steps") {
@@ -294,6 +314,88 @@ Deno.serve(async (req: Request) => {
       }
 
       return json({ success: true, journal_id: journalId, journal_number: journalNumber, hq_step_completed: hqStepCompleted, hq_step_error: hqStepError, voucher_attached: voucherAttached, voucher_error: voucherError });
+    }
+
+    if (action === "create_standalone") {
+      // メールに紐付かない請求書（本部タスクから直接アップロードした写真等）の仕訳登録。
+      // invoicesテーブルに新規行（email_id=null）を作ってから通常のcreateと同じ流れで登録する。
+      // 証憑ファイルはStorage/invoice_attachmentsを経由せず、リクエストのvoucher_filesに
+      // 直接base64で埋め込んで渡してもらう（呼び出し元のブラウザで読み込んだファイルをそのまま送る想定）
+      const linkedHqStepId: string | null = body?.linked_hq_step_id || null;
+      const vendorName: string = (body?.vendor_name ?? "").trim() || null;
+      const transactionDate = body?.transaction_date || todayStr();
+      const defaultRemark = (body?.remark ?? "").slice(0, 100);
+      const rawBranches: any[] = Array.isArray(body?.branches) ? body.branches : [];
+      if (!linkedHqStepId) return json({ error: "紐付ける本部タスクの工程が必要です" }, 400);
+      if (!rawBranches.length) return json({ error: "明細行が0件です" }, 400);
+      for (const b of rawBranches) {
+        const amt = Number(b.amount);
+        if (!b.debit?.account_id || !b.credit?.account_id || !Number.isFinite(amt) || amt <= 0) {
+          return json({ error: "各行に借方・貸方の勘定科目と金額を入力してください" }, 400);
+        }
+      }
+      // 呼び出し元がこの工程を見れるか（RLS経由で）確認
+      const { data: step, error: stepErr } = await uc.from("hq_task_steps").select("id").eq("id", linkedHqStepId).maybeSingle();
+      if (stepErr) return json({ error: "確認に失敗しました: " + stepErr.message }, 500);
+      if (!step) return json({ error: "対象の工程が見つからないか権限がありません" }, 403);
+
+      const totalAmount = rawBranches.reduce((s, b) => s + Math.round(Number(b.amount) || 0), 0);
+      const branches = rawBranches.map((b: any) => {
+        const amt = Math.round(Number(b.amount));
+        const departmentId = b.department_id || null;
+        return {
+          debitor: { account_id: b.debit.account_id, value: amt, ...(b.debit.sub_account_id ? { sub_account_id: b.debit.sub_account_id } : {}), ...(departmentId ? { department_id: departmentId } : {}) },
+          creditor: { account_id: b.credit.account_id, value: amt, ...(b.credit.sub_account_id ? { sub_account_id: b.credit.sub_account_id } : {}) },
+          remark: (b.remark || defaultRemark || vendorName || "").slice(0, 100),
+        };
+      });
+      const mfBody = { journal: { transaction_date: transactionDate, journal_type: "journal_entry", branches } };
+
+      const res = await mfFetch("/api/v3/journals", accessToken, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(mfBody),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        const db = svc();
+        await db.from("mf_sync_logs").insert({ action: "journal_create_failed", actor_type: "human", detail: { linked_hq_step_id: linkedHqStepId, response: data } });
+        return json({ error: "マネーフォワードへの登録に失敗しました", detail: data }, 502);
+      }
+      const journalId = data?.id ?? data?.journal?.id ?? null;
+      const journalNumber = data?.number ?? data?.journal?.number ?? null;
+
+      const db = svc();
+      const { data: newInv, error: insErr } = await db.from("invoices").insert({
+        email_id: null, linked_hq_step_id: linkedHqStepId, vendor_name: vendorName,
+        amount: totalAmount, invoice_status: "paid",
+        mf_journal_id: journalId, mf_journal_number: journalNumber, mf_journal_created_at: new Date().toISOString(), mf_tenant_id: tenantId,
+      }).select("id").single();
+      if (insErr) return json({ error: "マネーフォワードへの登録はできましたが記録の保存に失敗しました: " + insErr.message, journal_id: journalId, journal_number: journalNumber }, 500);
+      await db.from("mf_sync_logs").insert({ action: "journal_create", actor_type: "human", detail: { invoice_id: newInv.id, journal_id: journalId, standalone: true } });
+
+      // 証憑（リクエストに直接入っているbase64ファイル。最大5件）
+      let voucherAttached = 0, voucherError: string | null = null;
+      const inlineFiles: { file_name: string; file_data: string }[] = Array.isArray(body?.voucher_files) ? body.voucher_files.slice(0, 5) : [];
+      if (journalId && inlineFiles.length) {
+        const vRes = await mfFetch("/api/v3/vouchers", accessToken, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ journal_id: journalId, voucher_files: inlineFiles }),
+        });
+        const vData = await vRes.json().catch(() => ({}));
+        if (vRes.ok) voucherAttached = (vData.voucher_file_ids ?? []).length;
+        else voucherError = vRes.status === 401 || vRes.status === 403 ? "証憑添付の権限がありません" : `証憑の添付に失敗しました: ${JSON.stringify(vData)}`;
+      }
+
+      // 紐付けた工程を完了させる（呼び出しユーザー自身のJWTで＝completed_byが正しく記録される）
+      const { error: hqErr } = await uc.from("hq_task_steps")
+        .update({ completed_at: new Date().toISOString() })
+        .eq("id", linkedHqStepId)
+        .is("completed_at", null);
+      const hqStepCompleted = !hqErr;
+
+      return json({ success: true, invoice_id: newInv.id, journal_id: journalId, journal_number: journalNumber, hq_step_completed: hqStepCompleted, hq_step_error: hqErr?.message ?? null, voucher_attached: voucherAttached, voucher_error: voucherError });
     }
 
     return json({ error: "不明なactionです" }, 400);

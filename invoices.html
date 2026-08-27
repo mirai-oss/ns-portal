@@ -812,8 +812,11 @@ function renderMailDetail(u){
           </div>`;
         }).join("")||'<div class="meta" style="color:var(--muted);font-size:12px">添付はありません</div>'}</div>
         <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--m-line)">
-          <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:6px">ダウンロードリンク式の請求書はここから追加できます（ダウンロード→ここでアップロード）</label>
-          <input type="file" id="manual-att-file" style="font-size:12px">
+          <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:6px">ダウンロードリンク式の請求書はここから追加できます（ダウンロード→ここでアップロード、またはドラッグ＆ドロップ）</label>
+          <div id="manual-att-drop" style="border:2px dashed var(--m-line);border-radius:10px;padding:14px;text-align:center;font-size:12px;color:var(--muted)">
+            ここにファイルをドラッグ＆ドロップ、または<br>
+            <input type="file" id="manual-att-file" style="font-size:12px;margin-top:6px">
+          </div>
           <button class="hq-btn" style="margin-top:6px" id="manual-att-upload">＋ このメールに紐付けて追加</button>
           <div class="err" id="manual-att-msg" style="margin-top:6px"></div>
         </div>
@@ -832,7 +835,7 @@ function renderMailDetail(u){
         <div class="mail-actions">
           ${atts.length?`<button id="iv-ai-fill">🤖 AIで${isSales?"入金情報":"請求書情報"}を自動入力</button>`:""}
           <button id="iv-save">💾 ${isSales?"入金情報":"請求書情報"}を保存</button>
-          ${(!isSales&&invoice&&invoice.amount!=null)?(invoice.mf_journal_id
+          ${(invoice&&invoice.amount!=null)?(invoice.mf_journal_id
             ?`<button disabled style="opacity:.7">✅ 仕訳登録済み（伝票番号: ${esc(String(invoice.mf_journal_number??"-"))}）</button>`
             :`<button id="mfj-open">🧾 仕訳を作成</button>`):""}
         </div>
@@ -1273,6 +1276,16 @@ function wireDetailActions(u){
   // ダウンロードリンク＋パスワード式などメールに直接添付がない請求書を、ダウンロード後に
   // 手動でアップロードしてこのメールへ紐付ける（ファイルはユーザー自身のJWTでstorageへ直接
   // アップロードし、invoice_attach_manual_file RPCでメタデータ登録＋監査ログに記録）
+  if($("manual-att-drop")){
+    const drop=$("manual-att-drop");
+    ["dragover","dragenter"].forEach(ev=>drop.addEventListener(ev,e=>{ e.preventDefault(); drop.style.background="var(--m-bg,#f4f1eb)"; drop.style.borderColor="var(--accent)"; }));
+    ["dragleave","dragend"].forEach(ev=>drop.addEventListener(ev,e=>{ e.preventDefault(); drop.style.background=""; drop.style.borderColor=""; }));
+    drop.addEventListener("drop",e=>{
+      e.preventDefault(); drop.style.background=""; drop.style.borderColor="";
+      const f=e.dataTransfer.files&&e.dataTransfer.files[0];
+      if(f) $("manual-att-file").files=e.dataTransfer.files;
+    });
+  }
   $("manual-att-upload").onclick=async()=>{
     const msg=$("manual-att-msg");
     const f=$("manual-att-file").files[0];
