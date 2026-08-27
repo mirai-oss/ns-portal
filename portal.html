@@ -1019,6 +1019,19 @@ let SIDEBAR_COLLAPSED=(()=>{ try{ return localStorage.getItem("portal_sidebar_co
 let NAV_HQ_CNT=0, NAV_INV_CNT=0;
 
 /* ============================================================
+   画面切替の高速化（担当Aからの依頼・WORKLOG「担当Fへの依頼（画面切替の高速化）」）
+   同じsysKey内でのタブ/ページ切替は、iframeを作り直さずpostMessageで
+   埋め込み先に伝える。対応済みシステムのみFAST_SWITCH_SYSKEYSに入れる
+   （受け口が無いシステムに送っても実際には切り替わらず表示が固まってしまう
+   ため、必ず担当側の受け口デプロイを確認してから追加すること）。
+   tori-dashboard（sysKey:"keiei"）はapp.js側の受け口デプロイ済み・確認済み。
+   nippo（sysKey:"nippo"）は担当Bと連携のうえ追加予定（2026-08-26時点は未追加）
+   ============================================================ */
+const SYS_TAB_PARAM={keiei:"tab",nippo:"page"}; // その システムの「タブ」がURLのどのクエリパラメータで表されるか
+const FAST_SWITCH_SYSKEYS=new Set(["keiei"]);
+let CUR_IFRAME=null, CUR_IFRAME_SYSKEY=null, CUR_IFRAME_ORIGIN=null;
+
+/* ============================================================
    F-2: 社内情報管理へのSSOハンドオフ（現在のセッションをURLフラグメントに
    載せて新しいタブで開く。ns-info-system側の受け口=/sso。MFAは維持される）
    ============================================================ */
@@ -1184,11 +1197,29 @@ function shellHtml(u){
 function openItem(key,u){
   const found=findItem(key); if(!found) return;
   const {it,grp}=found;
-  if(it.type==="home"){ VIEW="home"; CUR=null; renderShellBody(u); return; }
+  if(it.type==="home"){ VIEW="home"; CUR=null; CUR_IFRAME=null; CUR_IFRAME_SYSKEY=null; renderShellBody(u); return; }
   if(it.soon){ toast("準備中です"); return; }
   if(it.sso){ openJohoSso(); return; }
   if(it.legacyLink){ location.href="index.html"; return; } // F-6: 従来ポータルの権限設定タブへそのまま遷移（iframeにしない）
   if(grp) OPEN_GROUP=grp.cap; // クリックした項目のグループだけを開いた状態にする
+
+  // 高速切替: 同じsysKeyのiframeが既に表示中で、対応済みシステムなら
+  // iframeを作り直さずpostMessageでタブ/ページだけ切り替える
+  if(it.sysKey && it.sysKey===CUR_IFRAME_SYSKEY && FAST_SWITCH_SYSKEYS.has(it.sysKey) && CUR_IFRAME){
+    const paramName=SYS_TAB_PARAM[it.sysKey];
+    const tabValue=paramName?new URL(it.url,location.href).searchParams.get(paramName):null;
+    if(tabValue){
+      try{
+        CUR_IFRAME.contentWindow.postMessage({type:"nsPortalSetTab",tab:tabValue},CUR_IFRAME_ORIGIN);
+        VIEW="frame"; CUR=key;
+        $("pagetitle").textContent=it.label;
+        closeMobileMore();
+        refreshNavActive(u);
+        return;
+      }catch(e){ /* 失敗したら下の通常経路（作り直し）にフォールバック */ }
+    }
+  }
+
   VIEW="frame"; CUR=key;
   $("pagetitle").textContent=it.label;
   $("pagemeta").textContent=it.external?"新しいタブで開きます":"";
@@ -1196,19 +1227,26 @@ function openItem(key,u){
   if(it.type==="sysusage"){ // F-6/F-1.5: iframeではなくポータル内で直接描画するビュー
     area.style.padding="";
     area.innerHTML=`<div class="spin">読み込み中…</div>`;
+    CUR_IFRAME=null; CUR_IFRAME_SYSKEY=null;
     renderSysUsageArea(u);
     closeMobileMore();
     refreshNavActive(u);
     return;
   }
   if(it.type==="homeedit"){ // F-7: ホーム画面編集（同上・ポータル内で直接描画）
+    CUR_IFRAME=null; CUR_IFRAME_SYSKEY=null;
     renderHomeEditArea(u);
     closeMobileMore();
     refreshNavActive(u);
     return;
   }
   area.style.padding="0";
-  area.innerHTML=`<div class="framewrap"><iframe src="${esc(it.url)}" allow="clipboard-write" title="${esc(it.label)}"></iframe></div>`;
+  area.innerHTML=`<div class="framewrap"></div>`;
+  const iframeEl=document.createElement("iframe");
+  iframeEl.src=it.url; iframeEl.setAttribute("allow","clipboard-write"); iframeEl.title=it.label;
+  area.querySelector(".framewrap").appendChild(iframeEl);
+  CUR_IFRAME=iframeEl; CUR_IFRAME_SYSKEY=it.sysKey||null;
+  try{ CUR_IFRAME_ORIGIN=new URL(it.url,location.href).origin; }catch(e){ CUR_IFRAME_ORIGIN=null; }
   closeMobileMore();
   refreshNavActive(u);
 }
