@@ -51,6 +51,9 @@ jobs:
           workload_identity_provider: 'projects/678255347143/locations/global/workloadIdentityPools/github-actions-pool/providers/github-actions'
           service_account: 'nstyle-backup-writer@gmbkutikomi.iam.gserviceaccount.com'
           token_format: 'access_token'
+          # 【重要】token_formatのデフォルトscopeはcloud-platformのみでDrive APIには足りない
+          # （初回本番実行で403 insufficientPermissionsが発生・2026-08-27に判明）。明示的に指定する。
+          access_token_scopes: 'https://www.googleapis.com/auth/drive'
 
       - name: バックアップ実行
         env:
@@ -58,7 +61,12 @@ jobs:
           GDRIVE_ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
           BACKUP_DRIVE_ID: '0ADY-upc2a8LcUk9PVA' # 共有ドライブ「NStyle-バックアップ」のID（秘密情報ではない）
           DRY_RUN: ${{ github.event.inputs.dry_run == 'true' && '1' || '' }}
-        run: node .github/scripts/backup-drive.js | tee backup.log
+        # 【重要】`node ... | tee` だけだとtee自身の終了コード(0)で上書きされ、node側の失敗が
+        # 「成功」と誤表示される（2026-08-27の本番初回実行で発生・見落としの原因になった）。
+        # pipefailで、パイプの中で最初に失敗したコマンドの終了コードを使うようにする。
+        run: |
+          set -o pipefail
+          node .github/scripts/backup-drive.js | tee backup.log
 
       - name: 失敗時にLark通知
         if: failure()
