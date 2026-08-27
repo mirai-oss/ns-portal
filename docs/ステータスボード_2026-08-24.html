@@ -67,7 +67,7 @@ table.simple tr:nth-child(even) td{background:#fbf9f6}
 <tr><td>A ダッシュボード</td><td>tori-dashboard全部＋GASデプロイ独占</td><td><b>待機</b>。A-3（BQ既定化）全役職展開完了・A-5（銀行利息PL反映＋簡易CF）本番稼働・媒体別前年比修正済み（実機確認待ち）・画面切替高速化完了。残=A-4のみ（Sync2待ち）</td></tr>
 <tr><td>B nippo</td><td>nippo/index.html＋sf_系</td><td>ラウンド3のB-4〜B-7完了。<b>ラウンド4新任務B-8〜B-14</b>（日報週報の修正5件・応募管理2件）に着手</td></tr>
 <tr><td>C 請求書</td><td>invoices系＋GAS invoice-intake</td><td><b>待機</b>。C-5（toho.infoエイリアス）・C-6（売上一覧バグ）完了。C-3実装=回答＋担当調整待ち／リスティング=Google Ads請求メール確認待ち</td></tr>
-<tr><td>D 勤怠・給与・監視</td><td>smaregi系＋BQ勤怠＋api_</td><td>既存タスク全完了。<b>ラウンド4新任務D-5（全社バックアップ/DR）</b>に着手。D-2はユーザーのスマレジ連携登録待ち</td></tr>
+<tr><td>D 勤怠・給与・監視＋レーンI兼任</td><td>smaregi系＋BQ勤怠＋api_＋rsv_（予約）</td><td>既存タスク全完了。<b>ラウンド4新任務: I-1（予約データ取込基盤）→D-5（全社バックアップ/DR）</b>に着手。D-2はユーザーのスマレジ連携登録待ち</td></tr>
 <tr><td>E 本部タスク</td><td>tasks.html＋hq_追加SQL</td><td>全面刷新Phase1〜4実装済み・検索ノイズ修正済み。ユーザーのスクショフィードバック往復を継続中</td></tr>
 <tr><td>F 統合ポータル</td><td>portal.html＋ns-info-system全部</td><td><b>待機</b>。F-7（ウィジェット編集）・F-8（返済ビュー）・データ出力メニュー・画面切替高速化（keiei/nippo）完了。店舗法人マスタ統一=承認待ち</td></tr>
 <tr><td>G データ出力センター</td><td>export.html＋export-*＋export_/tpl_</td><td><b>待機</b>。Phase1本番稼働＋G-2（銀行返済予定表）実機E2E完了。持ち越し2件（広告予想売上・媒体マスタ統一）=方針待ち</td></tr>
@@ -87,7 +87,8 @@ table.simple tr:nth-child(even) td{background:#fbf9f6}
 <h2 id="run">🔨 対応中（いま動いているもの）</h2>
 <div class="grid">
 <div class="card left-run"><h3>📱 nippoラウンド4（B-8〜B-14）<span class="badge b-new">NEW 8/27</span></h3><p>日報の前日売上表示を削除／週報の次週目標・PA時間引き継ぎバグ／PA達成率の式（少ないほど良い向きに）／未達の強調＋理由・改善策欄／面接のオンライン・対面選択／やりとり欄からのLINE返信／明日の天気予報</p></div>
-<div class="card left-run"><h3>🧯 全社バックアップ/DR（D-5）<span class="badge b-new">NEW 8/27</span></h3><p>「ここを見れば全データが回収できる」復旧の入口ページ＋週次の自動オフサイトバックアップ（DB＋写真・添付ファイル）。<b>写真・添付は現状バックアップ皆無＝最大の穴</b>を塞ぐ</p></div>
+<div class="card left-run"><h3>🧯 全社バックアップ/DR（D-5）<span class="badge b-new">NEW 8/27</span></h3><p>「ここを見れば全データが回収できる」復旧の入口ページ＋週次の自動オフサイトバックアップ（Google Drive・DB＋写真・添付）。<b>写真・添付は現状バックアップ皆無＝最大の穴</b>を塞ぐ。設計確定済み</p></div>
+<div class="card left-run"><h3>🍽 予約データ取込基盤（I-1）<span class="badge b-new">NEW 8/27</span></h3><p>食べログノート＋ダイニー台帳のCSVを毎朝10時に自動取込（月次洗い替え・過去分バックフィル・キャンセル分析つき）。完了後に経営ダッシュボードの予約タブ（A-6）と日報の「明日の予約状況」（B-15）が動き出す</p></div>
 <div class="card left-run"><h3>📌 本部タスクボード全面刷新</h3><p>デザイン案準拠の2カラム化・Phase1〜4実装済み。スクショ往復でフィードバック対応中</p></div>
 <div class="card left-run"><h3>🏢 店舗・法人マスタの統一</h3><p>調査完了（担当F）。実装方針のユーザー承認待ち</p></div>
 <div class="card left-run"><h3>📢 広告の予想売上・媒体マスタ統一</h3><p>設計完了（担当G持ち越し）。着手GOと3案からの方針選択待ち</p></div>
@@ -105,9 +106,9 @@ table.simple tr:nth-child(even) td{background:#fbf9f6}
 <h2 id="design">📐 新規要望4テーマ（設計→あなたの回答→着手の順で進める）</h2>
 <table class="simple">
 <tr><th>テーマ</th><th>状態</th><th>あなたにお願いしたいこと</th></tr>
-<tr><td>🍽 予約データ基盤（食べログノートCSVを毎朝10時取込・店舗ごとの予約状況）</td><td>設計書ドラフト済み</td><td>docs/設計書_予約データ基盤_食べログノート_2026-08-27.md の質問Q1〜Q7に回答</td></tr>
-<tr><td>🧯 全社バックアップ/DR（2段階認証は社内情報に導入済み・データの逃がし先づくり）</td><td>設計書ドラフト済み・一部着手可</td><td>docs/設計書_全社バックアップと復旧_2026-08-27.md の質問Q1〜Q4に回答</td></tr>
-<tr><td>📷 店舗カメラ人流分析（人流→看板→入店・提供時間・リピーター・5分アラート印刷）</td><td>質問段階（dinii先行案を提案中）</td><td>docs/設計メモ_店舗カメラ人流分析_2026-08-27.md の質問Q1〜Q6に回答</td></tr>
+<tr><td>🍽 予約データ基盤（食べログノート＋ダイニー台帳・毎朝10時取込・予約状況＋キャンセル分析）</td><td><b>✅設計確定・I-1として実装着手（担当D兼任）</b></td><td>残り3点: どの店舗がどちらの台帳か一覧／ダイニー台帳CSVの自動DL可否／名前表示の要否 ＋ ログインID/PWの共有</td></tr>
+<tr><td>🧯 全社バックアップ/DR（Google Drive・週次・書類全量/日報写真1年。2段階認証追加は不要でクローズ）</td><td><b>✅設計確定・D-5着手可</b></td><td>なし（実装時にDrive初回セットアップだけ一緒にお願いします）</td></tr>
+<tr><td>📷 店舗カメラ人流分析（推奨: Reolink PoE×5台＋店内ミニPC・月額ゼロ・約9万円/店・PoC=鳥一代本店）</td><td>推奨構成を提示中</td><td>残り4点: 5分アラートは案A（diniiで提供済みを押す運用）か案Bか／店頭にカメラを付けられるか／回線の種類／既設カメラの機種名</td></tr>
 <tr><td>🤖 Hermes Agent連携（チャットからタスク指示・情報取得）</td><td>候補調査済み（要件定義書§18）</td><td>窓口チャネル／最初にやらせたい仕事2つ／ホスト先はMac miniでよいか、の3点に回答</td></tr>
 </table>
 
