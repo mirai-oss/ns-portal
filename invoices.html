@@ -1036,8 +1036,9 @@ function wireDetailActions(u){
       if(f.invoice_number) $("iv-number").value=f.invoice_number;
       if(f.amount!=null) $("iv-amount").value=f.amount;
       if(f.due_date) $("iv-duedate").value=f.due_date;
+      SELECTED._aiAddressee=f.addressee_company||null; // 宛先会社名。仕訳作成時のMF事業者自動選択のヒントに使う
       msg.className="err msg-ok";
-      msg.textContent=`AIが読み取りました。内容を確認して「${isSales?"入金情報":"請求書情報"}を保存」を押してください`+(f.note?"（"+f.note+"）":"");
+      msg.textContent=`AIが読み取りました。内容を確認して「${isSales?"入金情報":"請求書情報"}を保存」を押してください`+(f.note?"（"+f.note+"）":"")+(f.addressee_company?`（宛先: ${f.addressee_company}）`:"");
     }catch(e){ msg.textContent="AI読み取り中にエラーが発生しました"; }
     btn.disabled=false;
   };
@@ -1099,22 +1100,45 @@ function wireDetailActions(u){
     return side.sub_account_name?`${side.account_name}/${side.sub_account_name}`:side.account_name;
   }
 
+  // 会社名の表記ゆれを吸収して比較するための正規化（法人格・全角/半角スペース等を除去）
+  function mfjNormCompanyName(s){
+    return String(s||"").replace(/株式会社|有限会社|合同会社|（株）|（有）|\(株\)|\(有\)|御中|様/g,"").replace(/\s+/g,"").toLowerCase();
+  }
+  function mfjMatchTenant(addressee,tenants){
+    const norm=mfjNormCompanyName(addressee);
+    if(!norm) return null;
+    const hits=tenants.filter(t=>{
+      const tn=mfjNormCompanyName(t.label);
+      return tn&&(norm.includes(tn)||tn.includes(norm));
+    });
+    return hits.length===1?hits[0]:null; // 複数/0件は自動選択しない（誤登録防止）
+  }
+
+  function mfjShowTenantPicker(tenants){
+    const body=$("mfj-body");
+    body.innerHTML=`<div class="ai-field"><small>登録先の事業者を選んでください</small>
+      <div class="mail-actions" style="margin-top:6px">${tenants.map(t=>`<button data-mfjtenant="${esc(t.id)}">${esc(t.label)}</button>`).join("")}</div>
+    </div>`;
+    document.querySelectorAll("[data-mfjtenant]").forEach(btn=>btn.onclick=()=>mfjLoadForTenant(btn.dataset.mfjtenant,tenants));
+  }
+
   async function mfjRenderInitial(){
     const body=$("mfj-body");
     body.innerHTML="読み込み中…（連携先の事業者を確認しています）";
     const tRes=await mfjCall("list_tenants");
     const tenants=(tRes.ok&&tRes.body.tenants)||[];
     if(tenants.length>1){
-      body.innerHTML=`<div class="ai-field"><small>登録先の事業者を選んでください</small>
-        <div class="mail-actions" style="margin-top:6px">${tenants.map(t=>`<button data-mfjtenant="${esc(t.id)}">${esc(t.label)}</button>`).join("")}</div>
-      </div>`;
-      document.querySelectorAll("[data-mfjtenant]").forEach(btn=>btn.onclick=()=>mfjLoadForTenant(btn.dataset.mfjtenant,tenants));
+      // AI自動入力で宛先会社名が読み取れていれば、事業者ラベルと突き合わせて自動選択を試みる
+      // （読み取り違いのリスクがあるため、選んだ後も画面に「自動選択」の旨と変更ボタンを必ず出す）
+      const autoMatch=mfjMatchTenant(SELECTED._aiAddressee,tenants);
+      if(autoMatch){ mfjLoadForTenant(autoMatch.id,tenants,SELECTED._aiAddressee); return; }
+      mfjShowTenantPicker(tenants);
       return;
     }
     mfjLoadForTenant(tenants[0]?tenants[0].id:"default",tenants);
   }
 
-  async function mfjLoadForTenant(tenantId,tenants){
+  async function mfjLoadForTenant(tenantId,tenants,autoMatchedFrom){
     const body=$("mfj-body");
     body.innerHTML="読み込み中…（勘定科目・過去の仕訳を確認しています）";
     const inv=SELECTED.invoice;
@@ -1126,7 +1150,7 @@ function wireDetailActions(u){
     const listRes=await mfjCall("list_journals",{keyword:vendorName,tenant_id:tenantId});
     const tenantLabel=(tenants||[]).find(t=>t.id===tenantId)?.label||tenantId;
     MFJ_STATE={
-      tenantId, tenantLabel, tenants: tenants||[],
+      tenantId, tenantLabel, tenants: tenants||[], autoMatchedFrom: autoMatchedFrom||null,
       mode:"journal", // 既定は①仕訳日記帳から選ぶ。候補が無ければ②勘定科目から直接選ぶへ切替
       accounts: accRes.body.accounts||[],
       departments: (sugRes.ok&&sugRes.body.departments)||[],
@@ -1199,7 +1223,7 @@ function wireDetailActions(u){
     const isJournalMode=MFJ_STATE.mode==="journal";
     body.innerHTML=`
       <datalist id="mfj-acc-datalist">${MFJ_STATE.accountDatalistHtml||""}</datalist>
-      ${MFJ_STATE.tenants&&MFJ_STATE.tenants.length>1?`<div style="font-size:11px;color:var(--muted);margin-bottom:6px">登録先: <b>${esc(MFJ_STATE.tenantLabel||"")}</b> <button id="mfj-change-tenant" style="font-size:10px">変更</button></div>`:""}
+      ${MFJ_STATE.tenants&&MFJ_STATE.tenants.length>1?`<div class="ai-field" style="margin-bottom:6px;font-size:11px;color:${MFJ_STATE.autoMatchedFrom?"var(--accent)":"var(--muted)"}">登録先: <b>${esc(MFJ_STATE.tenantLabel||"")}</b> <button id="mfj-change-tenant" style="font-size:10px">変更</button>${MFJ_STATE.autoMatchedFrom?`<br>⚠️ 宛先「${esc(MFJ_STATE.autoMatchedFrom)}」から自動選択しました。<b>本当にこの事業者で合っていますか？</b>違う場合は「変更」から選び直してください`:""}</div>`:""}
       <div class="mail-actions" style="margin-bottom:8px">
         <button data-mfjmode="journal" ${isJournalMode?'class="primary"':""}>📖 過去の仕訳から選ぶ</button>
         <button data-mfjmode="manual" ${!isJournalMode?'class="primary"':""}>🔧 勘定科目から直接選ぶ</button>
@@ -1229,7 +1253,7 @@ function wireDetailActions(u){
       if(MFJ_STATE.mode==="manual"&&!MFJ_STATE.branches.length) mfjAddBranchRow();
       mfjRenderForm();
     });
-    if($("mfj-change-tenant")) $("mfj-change-tenant").onclick=mfjRenderInitial;
+    if($("mfj-change-tenant")) $("mfj-change-tenant").onclick=()=>mfjShowTenantPicker(MFJ_STATE.tenants);
     if(isJournalMode){
       mfjRenderJournalResults();
       let t=null;

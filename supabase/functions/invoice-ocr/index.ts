@@ -11,7 +11,10 @@
 // mail_kind='contract'はフロント側でそもそもこの関数を呼ばない想定（保管のみのため）
 //
 // 入力(JSON): { email_id, mail_kind? }  ※mail_kind省略時は'invoice'として扱う（後方互換）
-// 出力(JSON): { success:true, fields:{ vendor_name, invoice_number, amount, due_date, is_invoice, note } }
+// 出力(JSON): { success:true, fields:{ vendor_name, invoice_number, amount, due_date, addressee_company, is_invoice, note } }
+// addressee_company（2026-08-27追加）: 宛先・宛名の会社名（自社側）。invoices.htmlはこれを
+// マネーフォワードの事業者（トーホー/N-Style等）ラベルと突き合わせ、一致すれば仕訳作成時の
+// 事業者選択を自動で行う（間違いを防ぐため、自動選択した旨と確認は必ず画面に表示する）
 //
 // 認証: 呼び出し元のJWTをそのまま転送しinvoice_emailsをRLS越しに読めるか確認（invoice_can_access()）。
 //   読めなければ権限なしとして403（他の請求書系Edge Functionと同じuserClient(req)パターン）。
@@ -64,6 +67,7 @@ function toolFor(kind: string) {
         invoice_number: { type: ["string", "null"], description: isSales ? "明細番号・管理番号（無ければnull）" : "請求書番号・伝票番号" },
         amount: { type: ["number", "null"], description: isSales ? "入金額（送金額）。税込の金額を円単位の整数で（カンマ・円記号は含めない）" : "請求金額。税込の合計金額を円単位の整数で（カンマ・円記号は含めない）" },
         due_date: { type: ["string", "null"], description: isSales ? "入金予定日・送金予定日。YYYY-MM-DD形式（西暦・ゼロ埋め）" : "支払期限。YYYY-MM-DD形式（西暦・ゼロ埋め）" },
+        addressee_company: { type: ["string", "null"], description: "宛先・宛名として書かれている会社名（「〇〇御中」「〇〇様」の〇〇部分。請求元/入金元とは別の、受け取る側＝自社の名前）。読み取れなければnull" },
         note: { type: ["string", "null"], description: "抽出結果について不確実な点や補足があれば日本語で短く。なければnull" },
       },
       required: ["is_invoice"],
