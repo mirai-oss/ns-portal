@@ -438,6 +438,9 @@ let PROC_EDIT_OPEN=new Set(); // 2026-08-26: 工程ごとの「📘手順書」�
                                // 手順書を書けず、タスク側で作成・修正できないという実機フィードバック対応）
 let STEP_ADD_OPEN=false;      // 2026-08-26: 既存タスクへ「＋工程を追加」する入力欄の開閉
                                // （生成済みタスクに後から工程を足せないという実機フィードバック対応）
+let HQMFJ_OPEN_STEP=null;     // 2026-08-27: 請求書仕訳フォームを開いている工程id（1つだけ開く想定）
+let HQMFJ_STATE=null;
+let HQMFJ_FILE=null;          // 標準アップロード（メール未紐付け）で選んだFile本体（再描画で消えないよう保持）
 let NOTIFICATIONS=[];     // アプリ内通知（自分宛）
 let NOTIF_UNREAD=0;
 let BELL_OPEN=false;
@@ -551,15 +554,20 @@ async function fetchTaskDetail(id){
   // 工程ごとの写真・リンク（step_id指定）もまとめて取得
   const stepIds=sortedSteps(task).map(s=>s.id);
   if(stepIds.length){
-    const [sp,sl,scl]=await Promise.all([
+    // 2026-08-27: 請求書メール連携（担当Cのmf-journal Edge Function）。会計データのため
+    // invoice_can_access()と同条件のcanManageユーザーのときだけ、工程一覧描画のN+1を避けて
+    // まとめて1回で問い合わせる（action:"linked_invoices"）
+    const [sp,sl,scl,li]=await Promise.all([
       authed(`/rest/v1/hq_task_photos?step_id=in.(${stepIds.join(",")})&order=created_at`),
       authed(`/rest/v1/hq_task_links?step_id=in.(${stepIds.join(",")})&order=created_at`),
       authed(`/rest/v1/hq_step_checklist_items?step_id=in.(${stepIds.join(",")})&order=sort_order`),
+      canManage(ME)?hqmfjCall("linked_invoices",{step_ids:stepIds}):Promise.resolve(null),
     ]);
     task._stepPhotos=sp.ok?sp.body:[];
     task._stepLinks=sl.ok?sl.body:[];
     task._stepChecklist=scl.ok?scl.body:[];
-  } else { task._stepPhotos=[]; task._stepLinks=[]; task._stepChecklist=[]; }
+    task._invoiceLinks=(li&&li.ok&&Array.isArray(li.body.invoices))?li.body.invoices:[];
+  } else { task._stepPhotos=[]; task._stepLinks=[]; task._stepChecklist=[]; task._invoiceLinks=[]; }
   return task;
 }
 
@@ -858,7 +866,7 @@ function renderRepeat(u){
 /* ---------- タスク詳細 ---------- */
 async function openDetail(id){
   pushNav("tasks.html?task="+id);
-  VIEW="detail"; OPEN_STEP=null; STEP_ATT_OPEN=new Set(); CHK_ADD_OPEN=new Set(); PROC_EDIT_OPEN=new Set(); STEP_ADD_OPEN=false; // 開くたびに工程の添付一覧は既定=閉に戻す
+  VIEW="detail"; OPEN_STEP=null; STEP_ATT_OPEN=new Set(); CHK_ADD_OPEN=new Set(); PROC_EDIT_OPEN=new Set(); STEP_ADD_OPEN=false; HQMFJ_OPEN_STEP=null; HQMFJ_STATE=null; HQMFJ_FILE=null; // 開くたびに工程の添付一覧は既定=閉に戻す
   $("app").innerHTML=`<div class="spin">読み込み中…</div>`;
   CUR_TASK=await fetchTaskDetail(id);
   renderDetail(ME);
@@ -1046,6 +1054,227 @@ function procedureHtml(s,canTouch){
     <ol style="padding-left:20px;line-height:1.8;color:var(--muted);font-size:13.5px">${lines.map(l=>`<li>${richTextHtml(l)}</li>`).join("")}</ol>
   </div>`;
 }
+/* 2026-08-27: 請求書メール管理（invoices.html・担当C）との連携。工程にメールから紐付いた
+   請求書があれば表示し、その場でマネーフォワードへ仕訳登録できるようにする（メール経由=
+   action:"create"）。メールに紐付かない請求書（手渡し・現金精算など）は工程からアップロード
+   した写真・PDFを証憑としてaction:"create_standalone"で登録する。共有Edge Function
+   `mf-journal`は担当Cが用意・本番デプロイ済み（WORKLOG「担当C→担当Eへの依頼」参照）。
+   請求書は経理データのため、閲覧・操作ともinvoice_can_access()と同じ条件（canManage）に限定する。
+   UIはinvoices.htmlのmfjRenderForm等の考え方を移植しつつ、tasks.htmlの既存クラス
+   （.resource-add/.btn/.linkbtn/.err）に合わせて作り直した。 */
+async function hqmfjCall(action,extra={}){
+  const s=sess.get();
+  const r=await fetch(SUPA_URL+"/functions/v1/mf-journal",{method:"POST",headers:{"Content-Type":"application/json","apikey":SUPA_KEY,"Authorization":"Bearer "+(s?s.at:"")},body:JSON.stringify({action,...extra})});
+  const j=await r.json().catch(()=>({}));
+  return {ok:r.ok,body:j};
+}
+function invoiceLinkFor(t,stepId){ return (t._invoiceLinks||[]).find(x=>x.linked_hq_step_id===stepId)||null; }
+function fileToBase64(file){
+  return new Promise((resolve,reject)=>{
+    const r=new FileReader();
+    r.onload=()=>resolve(String(r.result).split(",")[1]||"");
+    r.onerror=()=>reject(new Error("ファイルの読み込みに失敗しました"));
+    r.readAsDataURL(file);
+  });
+}
+function invoiceSectionHtml(t,s,u){
+  if(!canManage(u)) return ""; // invoice_can_access()と同じ条件（会計操作のため一般閲覧者には見せない）
+  const inv=invoiceLinkFor(t,s.id);
+  const open=HQMFJ_OPEN_STEP===s.id;
+  let head;
+  if(inv){
+    const amountStr=inv.amount!=null?`¥${Number(inv.amount).toLocaleString()}`:"金額未設定";
+    if(inv.mf_journal_id){
+      head=`<div class="checklist-hd">🧾 請求書・会計</div>
+        <div class="meta">${esc(inv.vendor_name||"取引先未設定")} ／ ${amountStr} ／ <span style="color:var(--ok)">✅ 会計処理済み（伝票番号: ${esc(inv.mf_journal_number??"-")}）</span></div>`;
+    } else {
+      head=`<div class="checklist-hd">🧾 請求書・会計</div>
+        <div class="meta">${esc(inv.vendor_name||"取引先未設定")} ／ ${amountStr}（未登録）</div>
+        ${open?"":`<button class="linkbtn" data-mfjopen="${s.id}" style="margin-top:4px">🧾 仕訳を作成</button>`}`;
+    }
+  } else {
+    head=open?"":`<button class="linkbtn" data-mfjopen="${s.id}" style="margin-top:6px">＋ 請求書をアップロードして仕訳登録</button>`;
+  }
+  const form=open?`<div class="resource-add" onclick="event.stopPropagation()">${hqmfjFormHtml(s.id)}</div>`:"";
+  return `<div style="margin-top:10px" onclick="event.stopPropagation()">${head}${form}</div>`;
+}
+async function hqmfjOpen(t,u,stepId,inv){
+  HQMFJ_OPEN_STEP=stepId;
+  HQMFJ_FILE=null;
+  HQMFJ_STATE={
+    stepId, invoiceId:inv?inv.id:null, vendorName:(inv&&inv.vendor_name)||"", amount:(inv&&inv.amount)||0,
+    loading:true, needTenantPick:false, loadError:null,
+    tenants:[], tenantId:null, tenantLabel:"",
+    mode:"journal", accounts:[], accountLabelMap:new Map(), accountDatalistHtml:"",
+    departments:[], journalResults:[], journalKeyword:(inv&&inv.vendor_name)||"",
+    branches:[], date:todayStr(), remark:(inv&&inv.vendor_name)||"",
+    fileName:"", showConfirm:false, confirmText:"", msg:"", msgOk:false,
+  };
+  renderDetail(u);
+  const tRes=await hqmfjCall("list_tenants");
+  if(HQMFJ_OPEN_STEP!==stepId) return; // 読み込み中に閉じられた／別の工程を開いた
+  const tenants=(tRes.ok&&tRes.body.tenants)||[];
+  if(!tenants.length){ HQMFJ_STATE.loading=false; HQMFJ_STATE.loadError="マネーフォワードと連携済みの事業者がありません"; renderDetail(u); return; }
+  if(tenants.length>1){ HQMFJ_STATE.loading=false; HQMFJ_STATE.needTenantPick=true; HQMFJ_STATE.tenants=tenants; renderDetail(u); return; }
+  await hqmfjLoadForTenant(t,u,tenants[0].id,tenants);
+}
+async function hqmfjLoadForTenant(t,u,tenantId,tenants){
+  const stepId=HQMFJ_STATE.stepId;
+  HQMFJ_STATE.loading=true; HQMFJ_STATE.needTenantPick=false; HQMFJ_STATE.loadError=null;
+  renderDetail(u);
+  const accRes=await hqmfjCall("accounts",{tenant_id:tenantId});
+  if(HQMFJ_OPEN_STEP!==stepId) return;
+  if(!accRes.ok){ HQMFJ_STATE.loading=false; HQMFJ_STATE.loadError="勘定科目の取得に失敗しました: "+(accRes.body.error||""); renderDetail(u); return; }
+  // MF側のトークン更新が競合しないよう直列で呼ぶ（invoices.htmlと同じ配慮）
+  const sugRes=await hqmfjCall("suggest",{vendor_name:HQMFJ_STATE.vendorName,tenant_id:tenantId});
+  const listRes=await hqmfjCall("list_journals",{keyword:HQMFJ_STATE.vendorName,tenant_id:tenantId});
+  if(HQMFJ_OPEN_STEP!==stepId) return;
+  HQMFJ_STATE.tenantId=tenantId;
+  HQMFJ_STATE.tenantLabel=(tenants||[]).find(x=>x.id===tenantId)?.label||tenantId;
+  HQMFJ_STATE.tenants=tenants||[];
+  HQMFJ_STATE.accounts=accRes.body.accounts||[];
+  HQMFJ_STATE.departments=(sugRes.ok&&sugRes.body.departments)||[];
+  HQMFJ_STATE.journalResults=(listRes.ok&&listRes.body.results)||[];
+  HQMFJ_STATE.journalKeyword=HQMFJ_STATE.vendorName;
+  hqmfjBuildAccountIndex();
+  if(!HQMFJ_STATE.journalResults.length) HQMFJ_STATE.mode="manual";
+  if(HQMFJ_STATE.mode==="manual"&&!HQMFJ_STATE.branches.length) hqmfjAddBranchRow();
+  HQMFJ_STATE.loading=false;
+  renderDetail(u);
+}
+function hqmfjBuildAccountIndex(){
+  const map=new Map(); let dl="";
+  for(const a of (HQMFJ_STATE.accounts||[])){
+    map.set(a.name,{account_id:a.id,sub_account_id:null});
+    dl+=`<option value="${esc(a.name)}">`;
+    for(const sa of (a.sub_accounts||[])){
+      const label=`${a.name}/${sa.name}`;
+      map.set(label,{account_id:a.id,sub_account_id:sa.id});
+      dl+=`<option value="${esc(label)}">`;
+    }
+  }
+  HQMFJ_STATE.accountLabelMap=map;
+  HQMFJ_STATE.accountDatalistHtml=dl;
+}
+function hqmfjLabelOf(side){ if(!side||!side.account_name) return ""; return side.sub_account_name?`${side.account_name}/${side.sub_account_name}`:side.account_name; }
+function hqmfjAddBranchRow(){
+  HQMFJ_STATE.branches.push({debitLabel:"",creditLabel:"",department_id:"",amount:HQMFJ_STATE.branches.length?"":(HQMFJ_STATE.amount||"")});
+}
+function hqmfjBranchRowHtml(br,idx){
+  const S=HQMFJ_STATE;
+  const deptOptions=`<option value="">（指定なし）</option>`+S.departments.map(d=>`<option value="${esc(d.id)}" ${br.department_id===d.id?"selected":""}>${esc(d.name)}</option>`).join("");
+  return `<div class="resource-add" style="margin-bottom:8px">
+    <div style="display:flex;justify-content:space-between;align-items:center"><b style="font-size:13px">明細行${idx+1}</b>${S.branches.length>1?`<button class="linkbtn" data-mfjrm="${idx}">✕ この行を削除</button>`:""}</div>
+    <label>借方勘定科目（検索可）</label><input list="hqmfj-acc-datalist" class="hqmfj-debit" data-idx="${idx}" value="${esc(br.debitLabel||"")}">
+    <label>貸方勘定科目（検索可）</label><input list="hqmfj-acc-datalist" class="hqmfj-credit" data-idx="${idx}" value="${esc(br.creditLabel||"")}">
+    <label>部門（店舗・任意）</label><select class="hqmfj-dept" data-idx="${idx}">${deptOptions}</select>
+    <label>金額</label><input type="number" class="hqmfj-amount" data-idx="${idx}" value="${esc(String(br.amount??""))}">
+  </div>`;
+}
+function hqmfjWireBranchRows(){
+  document.querySelectorAll(".hqmfj-debit").forEach(el=>el.oninput=()=>{HQMFJ_STATE.branches[+el.dataset.idx].debitLabel=el.value;});
+  document.querySelectorAll(".hqmfj-credit").forEach(el=>el.oninput=()=>{HQMFJ_STATE.branches[+el.dataset.idx].creditLabel=el.value;});
+  document.querySelectorAll(".hqmfj-dept").forEach(el=>el.onchange=()=>{HQMFJ_STATE.branches[+el.dataset.idx].department_id=el.value;});
+  document.querySelectorAll(".hqmfj-amount").forEach(el=>el.oninput=()=>{HQMFJ_STATE.branches[+el.dataset.idx].amount=el.value;});
+}
+async function hqmfjRunJournalSearch(u,kw){
+  const S=HQMFJ_STATE, stepId=S.stepId;
+  S.journalKeyword=kw;
+  const r=await hqmfjCall("list_journals",{keyword:kw,tenant_id:S.tenantId});
+  if(HQMFJ_OPEN_STEP!==stepId) return;
+  S.journalResults=(r.ok&&r.body.results)||[];
+  renderDetail(u);
+}
+function hqmfjJournalResultsHtml(){
+  const S=HQMFJ_STATE, rs=S.journalResults;
+  if(!rs.length) return `<div class="meta">${S.journalKeyword?"該当する過去の仕訳が見つかりませんでした":"キーワードを入力して検索してください"}</div>`;
+  return rs.map((r,i)=>`<div class="resource-add" style="margin-bottom:6px">
+    <div class="meta">${esc(r.transaction_date||"")}</div>
+    <div>${esc(r.summary)}</div>
+    <button class="linkbtn" data-mfjpick="${i}" style="margin-top:4px">この仕訳を使う</button>
+  </div>`).join("");
+}
+function hqmfjFormHtml(stepId){
+  const S=HQMFJ_STATE;
+  if(!S||S.stepId!==stepId) return `<div class="meta">読み込み中…</div>`;
+  if(S.loading) return `<div class="meta">読み込み中…（連携先の事業者・勘定科目を確認しています）</div><button class="linkbtn" data-mfjcancel="1" style="margin-top:6px">キャンセル</button>`;
+  if(S.loadError) return `<div class="err">${esc(S.loadError)}</div><button class="linkbtn" data-mfjretry="1">🔄 もう一度試す</button> <button class="linkbtn" data-mfjcancel="1">閉じる</button>`;
+  if(S.needTenantPick){
+    return `<div class="meta">登録先の事業者を選んでください</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px">${S.tenants.map(t2=>`<button class="btn sm" data-mfjtenant="${esc(t2.id)}">${esc(t2.label)}</button>`).join("")}</div>
+      <button class="linkbtn" data-mfjcancel="1" style="margin-top:8px">キャンセル</button>`;
+  }
+  const isJournalMode=S.mode==="journal";
+  const isStandalone=!S.invoiceId;
+  return `
+    <datalist id="hqmfj-acc-datalist">${S.accountDatalistHtml||""}</datalist>
+    ${S.tenants&&S.tenants.length>1?`<div class="meta">登録先: <b>${esc(S.tenantLabel||"")}</b> <button class="linkbtn" data-mfjchangetenant="1">変更</button></div>`:""}
+    ${isStandalone?`<label>取引先名（任意）</label><input id="hqmfj-vendor" value="${esc(S.vendorName||"")}" placeholder="例: ○○商店">
+      <label style="margin-top:8px">請求書の写真・PDF（任意・証憑として添付されます）</label>
+      <div id="hqmfj-drop" style="border:2px dashed var(--line);border-radius:10px;padding:14px;text-align:center;cursor:pointer;font-size:13px;color:var(--muted)">
+        <input type="file" id="hqmfj-file" accept="image/*,application/pdf" style="display:none">
+        ${S.fileName?esc(S.fileName):"クリック、またはドラッグ＆ドロップでファイルを選択"}
+      </div>`:""}
+    <div style="display:flex;gap:8px;margin:10px 0 6px">
+      <button class="btn sm ${isJournalMode?"":"sub"}" data-mfjmode="journal">📖 過去の仕訳から選ぶ</button>
+      <button class="btn sm ${isJournalMode?"sub":""}" data-mfjmode="manual">🔧 勘定科目から直接選ぶ</button>
+    </div>
+    ${isJournalMode?`
+      <input id="hqmfj-journal-search" placeholder="会社名や勘定科目名で検索" value="${esc(S.journalKeyword||"")}">
+      <div id="hqmfj-journal-results" style="margin-top:6px">${hqmfjJournalResultsHtml()}</div>
+    `:`
+      <div id="hqmfj-branch-rows">${S.branches.map((br,i)=>hqmfjBranchRowHtml(br,i)).join("")}</div>
+      <button class="linkbtn" data-mfjaddrow="1">＋ 明細行を追加（振替伝票・複合仕訳の場合）</button>
+      <label style="margin-top:8px">日付（会計計上日）</label><input id="hqmfj-date" type="date" value="${esc(S.date)}">
+      <label>摘要</label><input id="hqmfj-remark" value="${esc(S.remark)}">
+      ${S.showConfirm?`<div style="margin-top:8px;padding:10px;border:1px solid var(--line);border-radius:8px">
+        <div class="meta">${S.confirmText||""}</div>
+        <button class="btn sm" data-mfjsubmit="1" style="margin-top:8px">この内容で登録する</button>
+      </div>`:`<button class="btn sm" data-mfjconfirm="1" style="margin-top:8px">確認画面へ</button>`}
+    `}
+    <div class="err ${S.msgOk?"msg-ok":""}" style="margin-top:6px">${esc(S.msg||"")}</div>
+    <button class="linkbtn" data-mfjcancel="1" style="margin-top:4px">キャンセル</button>
+  `;
+}
+function hqmfjConfirm(u){
+  const S=HQMFJ_STATE;
+  S.date=$("hqmfj-date")?$("hqmfj-date").value:S.date;
+  S.remark=$("hqmfj-remark")?$("hqmfj-remark").value:S.remark;
+  const lines=S.branches.map(b=>`${esc(b.debitLabel||"?")} ／ ${esc(b.creditLabel||"?")}${b.department_id?"（部門あり）":""}　${Number(b.amount||0).toLocaleString()}円`);
+  S.confirmText=lines.join("<br>")+`<br>日付: <b>${esc(S.date)}</b><br>摘要: <b>${esc(S.remark)}</b>`;
+  S.showConfirm=true;
+  renderDetail(u);
+}
+async function hqmfjSubmit(t,u,stepId){
+  const S=HQMFJ_STATE;
+  const branchesPayload=[];
+  for(const b of S.branches){
+    const debit=S.accountLabelMap.get(b.debitLabel);
+    const credit=S.accountLabelMap.get(b.creditLabel);
+    if(!debit||!credit){ S.msg="借方・貸方はプルダウンの候補から選択してください（自由入力のままだと登録できません）"; S.msgOk=false; renderDetail(u); return; }
+    if(!b.amount||+b.amount<=0){ S.msg="各行に金額を入力してください"; S.msgOk=false; renderDetail(u); return; }
+    branchesPayload.push({debit:{account_id:debit.account_id,sub_account_id:debit.sub_account_id||undefined},credit:{account_id:credit.account_id,sub_account_id:credit.sub_account_id||undefined},department_id:b.department_id||null,amount:+b.amount});
+  }
+  S.msg="登録中…"; S.msgOk=false; renderDetail(u);
+  let payload,action;
+  if(S.invoiceId){
+    action="create";
+    payload={invoice_id:S.invoiceId,tenant_id:S.tenantId,branches:branchesPayload,transaction_date:S.date,remark:S.remark,linked_hq_step_id:stepId};
+  } else {
+    action="create_standalone";
+    let voucher_files=[];
+    if(HQMFJ_FILE){
+      try{ voucher_files=[{file_name:HQMFJ_FILE.name,file_data:await fileToBase64(HQMFJ_FILE)}]; }catch(e){}
+    }
+    payload={tenant_id:S.tenantId,linked_hq_step_id:stepId,vendor_name:S.vendorName||null,branches:branchesPayload,transaction_date:S.date,remark:S.remark,voucher_files};
+  }
+  const {ok,body:j}=await hqmfjCall(action,payload);
+  if(HQMFJ_OPEN_STEP!==stepId) return; // 登録中に閉じられていたら画面には反映しない
+  if(!ok){ S.msg=j.error||"登録できませんでした"; S.msgOk=false; renderDetail(u); return; }
+  HQMFJ_OPEN_STEP=null; HQMFJ_STATE=null; HQMFJ_FILE=null;
+  await logActivity(t.id,"comment",`請求書の仕訳をマネーフォワードへ登録しました（伝票番号: ${j.journal_number??"-"}）`,stepId);
+  CUR_TASK=await fetchTaskDetail(t.id); renderDetail(u);
+}
 function checklistStepHtml(s,items,canTouch){
   // 2026-08-25: 項目が無い工程にまで「追加」フォームを常時出すとURL添付欄と同様に画面が
   // 埋まってしまうという実機フィードバックを受け、既存項目が無いときは「＋」リンクの奥に隠すよう調整
@@ -1111,6 +1340,7 @@ function stepHtml(t,s,u){
         <div class="err" id="stepmetamsg-${s.id}"></div>`:""}
         ${(checklist.length||canTouch)?checklistStepHtml(s,checklist,canTouch):""}
         ${procedureHtml(s,canTouch)}
+        ${invoiceSectionHtml(t,s,u)}
         ${(s.is_binary||s.requires_photo)&&canComplete?`<div class="step-body" style="border:0;padding:10px 0 0">
           ${s.is_binary?`<label>判定</label>
             <select id="judge-${s.id}"><option value="">選択してください</option><option value="ok">OK</option><option value="issue">異常あり</option></select>
@@ -1681,6 +1911,61 @@ function wireDetail(t,u){
       CUR_TASK=await fetchTaskDetail(t.id); renderDetail(u);
     };
   });
+  /* 2026-08-27: 請求書メール連携（担当Cのmf-journal Edge Function）のワイヤリング。
+     canManage(u)のときだけレンダリングされるため、要素が無くても安全なようforEach/if($())で守る */
+  document.querySelectorAll("[data-mfjopen]").forEach(btn=>{
+    btn.onclick=(e)=>{ e.stopPropagation(); const sid=btn.dataset.mfjopen; hqmfjOpen(t,u,sid,invoiceLinkFor(t,sid)); };
+  });
+  document.querySelectorAll("[data-mfjcancel]").forEach(btn=>{
+    btn.onclick=(e)=>{ e.stopPropagation(); HQMFJ_OPEN_STEP=null; HQMFJ_STATE=null; HQMFJ_FILE=null; renderDetail(u); };
+  });
+  document.querySelectorAll("[data-mfjretry]").forEach(btn=>{
+    btn.onclick=(e)=>{ e.stopPropagation(); const sid=HQMFJ_STATE.stepId; hqmfjOpen(t,u,sid,invoiceLinkFor(t,sid)); };
+  });
+  document.querySelectorAll("[data-mfjtenant]").forEach(btn=>{
+    btn.onclick=(e)=>{ e.stopPropagation(); hqmfjLoadForTenant(t,u,btn.dataset.mfjtenant,HQMFJ_STATE.tenants); };
+  });
+  document.querySelectorAll("[data-mfjchangetenant]").forEach(btn=>{
+    btn.onclick=(e)=>{ e.stopPropagation(); HQMFJ_STATE.needTenantPick=true; renderDetail(u); };
+  });
+  document.querySelectorAll("[data-mfjmode]").forEach(btn=>{
+    btn.onclick=(e)=>{ e.stopPropagation(); HQMFJ_STATE.mode=btn.dataset.mfjmode; if(HQMFJ_STATE.mode==="manual"&&!HQMFJ_STATE.branches.length) hqmfjAddBranchRow(); renderDetail(u); };
+  });
+  if($("hqmfj-journal-search")){
+    let mfjT=null;
+    $("hqmfj-journal-search").oninput=()=>{ const kw=$("hqmfj-journal-search").value.trim(); clearTimeout(mfjT); mfjT=setTimeout(()=>hqmfjRunJournalSearch(u,kw),350); };
+  }
+  document.querySelectorAll("[data-mfjpick]").forEach(btn=>{
+    btn.onclick=(e)=>{
+      e.stopPropagation();
+      const r=HQMFJ_STATE.journalResults[+btn.dataset.mfjpick];
+      HQMFJ_STATE.branches=[{
+        debitLabel:hqmfjLabelOf(r.template.debit), creditLabel:hqmfjLabelOf(r.template.credit),
+        department_id:(r.template.debit&&r.template.debit.department_id)||(r.template.credit&&r.template.credit.department_id)||"",
+        amount:HQMFJ_STATE.amount||(r.template.debit&&r.template.debit.value)||"",
+      }];
+      HQMFJ_STATE.mode="manual";
+      renderDetail(u);
+    };
+  });
+  hqmfjWireBranchRows();
+  document.querySelectorAll("[data-mfjaddrow]").forEach(btn=>{ btn.onclick=(e)=>{ e.stopPropagation(); hqmfjAddBranchRow(); renderDetail(u); }; });
+  document.querySelectorAll("[data-mfjrm]").forEach(btn=>{ btn.onclick=(e)=>{ e.stopPropagation(); HQMFJ_STATE.branches.splice(+btn.dataset.mfjrm,1); renderDetail(u); }; });
+  if($("hqmfj-vendor")) $("hqmfj-vendor").oninput=e=>{ HQMFJ_STATE.vendorName=e.target.value; };
+  if($("hqmfj-drop")){
+    const mfjDrop=$("hqmfj-drop"), mfjFileInput=$("hqmfj-file");
+    mfjDrop.onclick=(e)=>{ e.stopPropagation(); mfjFileInput.click(); };
+    mfjFileInput.onchange=(e)=>{ const f=e.target.files[0]; if(f){ HQMFJ_FILE=f; HQMFJ_STATE.fileName=f.name; renderDetail(u); } };
+    ["dragover","dragenter"].forEach(ev=>mfjDrop.addEventListener(ev,e=>{ e.preventDefault(); e.stopPropagation(); mfjDrop.style.borderColor="var(--accent)"; }));
+    ["dragleave","dragend"].forEach(ev=>mfjDrop.addEventListener(ev,e=>{ e.preventDefault(); e.stopPropagation(); mfjDrop.style.borderColor=""; }));
+    mfjDrop.addEventListener("drop",e=>{
+      e.preventDefault(); e.stopPropagation(); mfjDrop.style.borderColor="";
+      const f=e.dataTransfer.files&&e.dataTransfer.files[0];
+      if(f){ HQMFJ_FILE=f; HQMFJ_STATE.fileName=f.name; renderDetail(u); }
+    });
+  }
+  document.querySelectorAll("[data-mfjconfirm]").forEach(btn=>{ btn.onclick=(e)=>{ e.stopPropagation(); hqmfjConfirm(u); }; });
+  document.querySelectorAll("[data-mfjsubmit]").forEach(btn=>{ btn.onclick=(e)=>{ e.stopPropagation(); btn.disabled=true; hqmfjSubmit(t,u,HQMFJ_STATE.stepId); }; });
   /* 2026-08-25: 工程ごとの添付・完了操作パネルの開閉。行全体(row1)と「📎添付・マニュアル」
      ボタンの両方にdata-stepattopenを付け、どちらを押しても同じ1つの状態を開閉する
      （「開く操作を1回にしてほしい」という実機フィードバックへの対応） */
