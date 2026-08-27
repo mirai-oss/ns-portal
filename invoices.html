@@ -1085,8 +1085,11 @@ function wireDetailActions(u){
     body.innerHTML="読み込み中…（過去の仕訳から自動提案を探しています）";
     const inv=SELECTED.invoice;
     const vendorName=(inv&&inv.vendor_name)||"";
-    const [sugRes,accRes]=await Promise.all([mfjCall("suggest",{vendor_name:vendorName}),mfjCall("accounts")]);
-    if(!accRes.ok){ body.innerHTML=`<div class="err">勘定科目の取得に失敗しました: ${esc(accRes.body.error||"")}</div>`; return; }
+    // suggest→accountsを直列で呼ぶ（同時に呼ぶとマネーフォワード側のトークン更新が競合し
+    // 片方が失敗することがあったため2026-08-27に直列化。多少遅くなるが確実性を優先）
+    const sugRes=await mfjCall("suggest",{vendor_name:vendorName});
+    const accRes=await mfjCall("accounts");
+    if(!accRes.ok){ body.innerHTML=`<div class="err">勘定科目の取得に失敗しました: ${esc(accRes.body.error||"")}${accRes.body.detail?"（詳細: "+esc(JSON.stringify(accRes.body.detail))+"）":""}<br><button id="mfj-retry" style="margin-top:8px">🔄 もう一度試す</button></div>`; if($("mfj-retry")) $("mfj-retry").onclick=mfjRenderInitial; return; }
     MFJ_STATE={
       accounts: accRes.body.accounts||[],
       departments: (sugRes.ok&&sugRes.body.departments)||[],

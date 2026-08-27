@@ -36,8 +36,20 @@ export async function getValidAccessToken(): Promise<{ accessToken: string; offi
     headers: { Authorization: `Basic ${basic}`, "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: row.refresh_token }),
   });
+  if (!res.ok) {
+    // refresh_tokenは使い捨て（ローテート）のため、ほぼ同時に2つのリクエストが両方
+    // リフレッシュを試みると片方は「既に使われたrefresh_token」として失敗する。
+    // その場合は少し待ってDBを再読み込みし、もう一方が更新した最新トークンがあればそれを使う
+    // （自分では再リフレッシュしない＝refresh_tokenをさらに消費して悪化させない）
+    await new Promise((r) => setTimeout(r, 400));
+    const { data: freshRow } = await db.from("mf_oauth_tokens").select("*").eq("id", "default").maybeSingle();
+    if (freshRow && new Date(freshRow.updated_at).getTime() > new Date(row.updated_at).getTime()) {
+      return { accessToken: freshRow.access_token, officeId: freshRow.office_id };
+    }
+    const text = await res.text();
+    throw new Error(`トークン更新に失敗しました(${res.status}): ${text}`);
+  }
   const text = await res.text();
-  if (!res.ok) throw new Error(`トークン更新に失敗しました(${res.status}): ${text}`);
   const tok = JSON.parse(text) as { access_token: string; refresh_token: string; scope?: string; token_type?: string; expires_in: number };
 
   const newExpiresAt = new Date(Date.now() + tok.expires_in * 1000).toISOString();
