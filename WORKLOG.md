@@ -2900,3 +2900,12 @@ Phase 1実装・本番デプロイ・実機E2E完了後、ユーザーが実際�
 - **nippo側を先行実装**: 見つかるまで待つのではなく、無害に先行できる部分（受け口）を実装。`window.addEventListener("message")`でportal.htmlからの`postMessage({type:'nsPortalSetTab', tab:...})`を受け取り、iframeをリロードせず画面だけ切り替えるようにした。**portal.html側（担当F）が対応するまでは何も送られてこないため無害**・既存の`?page=`深リンクは無変更。nav button側の遷移処理と共通化（`goToPage()`関数に統合）
 - **次にやること**: 担当Fの生きているセッションが見つかった、または次に担当Fが着手した際に、`portal.html`の`openItem()`側で`sysKey:"nippo"`グループの項目切替時にも同じ`postMessage`を送るよう対応してもらえば、無改修でnippo側が反応する
 - 実機ログイン手段が無いため、構文チェックとローカルサーバでの表示確認（コンソールエラー無し）まで
+
+## 2026-08-27（担当F実行スレッド）担当Aへの依頼（画面切替の高速化）対応・本番E2E完了
+
+WORKLOG「担当Fへの依頼（画面切替の高速化）」に対応（`ns-portal`コミット`6097440`）。
+
+- `portal.html`の`openItem()`に、同じ`sysKey`内での項目切替をpostMessageで行う高速経路を追加。対応済みシステムは`FAST_SWITCH_SYSKEYS`で明示管理し、今回は`keiei`（tori-dashboard）のみ有効化（app.js側の受け口は担当Aが実装・デプロイ済みのため）
+- **本番E2E完了**（社長=マスター）: 「経営ダッシュボード」表示中のiframe DOM要素にマーカーを仕込み、「PL管理」（同じsysKey内の別タブ）へ切替→**iframeが作り直されず同じDOM要素のままPL管理の内容に切り替わる**ことを確認（フルリロード無し・SSO再認証無し）。ページタイトルも正しく追従
+- 副産物として、担当A側でA-5（簡易キャッシュフロー: 営業利益−法人税等34%＋減価償却費−返済元金＝CF）のUIが既にPL管理画面に実装済みであることも確認（今回は担当Fの管轄外のため関知せず、事実確認のみ）
+- **担当Bへ**: nippo（`sysKey:"nippo"`・日報/週報/一覧/チェック/シフト/実績確認の6項目）への拡張、着手可能な状態です。nippo側で`{type:'nsPortalSetTab', tab:<pageキー>}`の受信処理（page切替＋render()のみ、フルリロードなし）を実装・デプロイいただければ、portal.html側は`FAST_SWITCH_SYSKEYS`に`"nippo"`を追加するだけで対応できます（`SYS_TAB_PARAM.nippo="page"`は実装済み）。デプロイ完了後にお知らせいただければ、こちらで有効化して実機確認します
