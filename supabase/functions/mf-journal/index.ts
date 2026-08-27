@@ -1,15 +1,14 @@
 // 請求書 → マネーフォワード仕訳登録（2026-08-27新規）
 //
-// invoices.html「🧾 仕訳を作成」ボタンから呼ばれる。3つのactionを持つ:
-//   - "accounts": 勘定科目一覧（GET /api/v3/accounts）をそのまま返す（プルダウン用）
-//   - "suggest" : 過去の仕訳（当期分）からvendor_nameに一致するものを探し、
-//                 借方/貸方の勘定科目・部門を提案する（見つからなければ全部null）。
-//                 副産物として、見つかった範囲内のユニークな部門一覧も返す（部門プルダウンの代用。
-//                 部門一覧専用エンドポイントは今回付与したスコープでは403のため使わない）
-//   - "create"  : 実際に仕訳を登録する（POST /api/v3/journals）。呼び出し前にinvoice_can_access()で
-//                 権限確認。成功したらinvoices.mf_journal_id等を更新しinvoice_audit_logsへ記録。
-//                 invoices.linked_hq_step_idが設定されていれば、その本部タスクの工程も
-//                 呼び出しユーザー自身のJWTで完了させる（hq_task_stepsのRLS/トリガーをそのまま経由）
+// invoices.html「🧾 仕訳を作成」ボタンから呼ばれる。以下のactionを持つ:
+//   - "accounts": 勘定科目一覧（GET /api/v3/accounts）をそのまま返す（②勘定科目から直接選ぶ場合用）
+//   - "suggest" : 過去の仕訳（当期分）からvendor_nameに一致する最有力候補を1件だけ返す（初期表示用）
+//   - "list_journals": 過去の仕訳（当期＋前期）をキーワード検索し、複数件を一覧で返す
+//                 （①「仕訳日記帳から選ぶ」モード用。空欄なら直近の仕訳を新しい順に返す）
+//   - "create"  : 実際に仕訳を登録する（POST /api/v3/journals）。branchesは複数行（複合仕訳/振替伝票）に対応。
+//                 呼び出し前にinvoice_can_access()で権限確認。成功したらinvoices.mf_journal_id等を更新し
+//                 invoice_audit_logsへ記録。invoices.linked_hq_step_idが設定されていれば、その本部タスクの
+//                 工程も呼び出しユーザー自身のJWTで完了させる（hq_task_stepsのRLS/トリガーをそのまま経由）
 //   - "search_hq_steps": 本部タスクの工程をキーワード検索する（紐付け選択用。未完了のみ）
 //
 // 認証: userClient(req)でinvoice_can_access()を満たすか確認してから処理する（他の請求書系Function共通）
@@ -36,8 +35,30 @@ function fiscalYearStart(): string {
   const y = now.getUTCMonth() >= 3 ? now.getUTCFullYear() : now.getUTCFullYear() - 1; // UTC基準の簡易判定（JST運用のみのため実用上問題なし）
   return `${y}-04-01`;
 }
+// 前期首。当期分だけだと検索範囲が狭いため、履歴検索(list_journals/suggest)は前期も含めて探す
+// （2026-04-01〜が当期・2025-04-01〜2026-03-31が前期と実データで確認済み。2期分あれば実用上十分）
+function prevFiscalYearStart(): string {
+  const now = new Date();
+  const y = (now.getUTCMonth() >= 3 ? now.getUTCFullYear() : now.getUTCFullYear() - 1) - 1;
+  return `${y}-04-01`;
+}
 function todayStr(): string {
   return new Date().toISOString().slice(0, 10);
+}
+
+function branchSummary(br: any): string {
+  const d = br.debitor, c = br.creditor;
+  const side = (s: any) => s ? `${s.account_name ?? "?"}${s.sub_account_name ? "/" + s.sub_account_name : ""} ${(s.value ?? 0).toLocaleString()}円${s.department_name ? "（" + s.department_name + "）" : ""}` : "?";
+  return `${side(d)} ／ ${side(c)}`;
+}
+function branchToTemplate(br: any) {
+  const side = (s: any) => s ? {
+    account_id: s.account_id, account_name: s.account_name,
+    sub_account_id: s.sub_account_id, sub_account_name: s.sub_account_name,
+    department_id: s.department_id, department_name: s.department_name,
+    value: s.value,
+  } : null;
+  return { debit: side(br.debitor), credit: side(br.creditor), remark: br.remark };
 }
 
 Deno.serve(async (req: Request) => {
@@ -68,19 +89,22 @@ Deno.serve(async (req: Request) => {
       return json({ success: true, accounts: data.accounts ?? [] });
     }
 
-    if (action === "suggest") {
-      const vendorName: string = (body?.vendor_name ?? "").trim();
-      if (!vendorName) return json({ success: true, match: null, departments: [] });
+    if (action === "suggest" || action === "list_journals") {
+      const keyword: string = (body?.vendor_name ?? body?.keyword ?? "").trim();
+      if (action === "suggest" && !keyword) return json({ success: true, match: null, departments: [] });
 
-      const res = await mfFetch(
-        `/api/v3/journals?start_date=${fiscalYearStart()}&end_date=${todayStr()}&per_page=500&page=1`,
-        accessToken,
-      );
-      const data = await res.json();
-      if (!res.ok) return json({ error: "仕訳履歴の取得に失敗しました", detail: data }, 502);
+      // 前期＋当期の2期分をまとめて検索（前期・当期をまたいで1回のGETで取れる範囲か未確認のため
+      // 念のため2回に分けて取得しマージする。件数が多い場合はper_pageの上限に注意）
+      const [resCur, resPrev] = await Promise.all([
+        mfFetch(`/api/v3/journals?start_date=${fiscalYearStart()}&end_date=${todayStr()}&per_page=500&page=1`, accessToken),
+        mfFetch(`/api/v3/journals?start_date=${prevFiscalYearStart()}&end_date=${fiscalYearStart()}&per_page=500&page=1`, accessToken),
+      ]);
+      const [dataCur, dataPrev] = await Promise.all([resCur.json(), resPrev.json()]);
+      if (!resCur.ok) return json({ error: "仕訳履歴の取得に失敗しました", detail: dataCur }, 502);
+      const journals: any[] = [...(dataCur.journals ?? []), ...(resPrev.ok ? (dataPrev.journals ?? []) : [])];
 
-      const journals: any[] = data.journals ?? [];
       const deptMap = new Map<string, string>(); // id -> name
+      const matches: any[] = [];
       let best: any = null;
       for (const j of journals) {
         for (const br of j.branches ?? []) {
@@ -90,20 +114,23 @@ Deno.serve(async (req: Request) => {
           const hay = [
             br.remark, br.debitor?.trade_partner_name, br.creditor?.trade_partner_name,
             br.debitor?.sub_account_name, br.creditor?.sub_account_name,
+            br.debitor?.account_name, br.creditor?.account_name,
           ].filter(Boolean).join(" ");
-          if (hay.includes(vendorName)) {
-            // transaction_dateが新しいものを優先（journalsは概ね登録順=昇順で返るため単純比較で十分）
-            if (!best || (j.transaction_date ?? "") >= (best._date ?? "")) {
-              best = {
-                debit: { account_id: br.debitor?.account_id, account_name: br.debitor?.account_name, sub_account_id: br.debitor?.sub_account_id, sub_account_name: br.debitor?.sub_account_name, department_id: br.debitor?.department_id, department_name: br.debitor?.department_name },
-                credit: { account_id: br.creditor?.account_id, account_name: br.creditor?.account_name, sub_account_id: br.creditor?.sub_account_id, sub_account_name: br.creditor?.sub_account_name, department_id: br.creditor?.department_id, department_name: br.creditor?.department_name },
-                remark: br.remark, _date: j.transaction_date,
-              };
+          if (!keyword || hay.includes(keyword)) {
+            const tmpl = branchToTemplate(br);
+            if (!best || (j.transaction_date ?? "") >= (best._date ?? "")) best = { ...tmpl, _date: j.transaction_date };
+            if (action === "list_journals") {
+              matches.push({ journal_id: j.id, transaction_date: j.transaction_date, summary: branchSummary(br), template: tmpl });
             }
           }
         }
       }
       if (best) delete best._date;
+
+      if (action === "list_journals") {
+        matches.sort((a, b) => (a.transaction_date < b.transaction_date ? 1 : -1)); // 新しい順
+        return json({ success: true, results: matches.slice(0, 30), searched_count: journals.length });
+      }
       return json({
         success: true,
         match: best,
@@ -116,14 +143,15 @@ Deno.serve(async (req: Request) => {
       const keyword: string = (body?.keyword ?? "").trim();
       if (!keyword) return json({ success: true, results: [] });
       // 工程タイトル一致・親タスクタイトル一致の両方を探して統合する（会社名がどちら側の
-      // タイトルに入っているか分からないため）。どちらも未完了のものだけ対象。
+      // タイトルに入っているか分からないため）。工程が未完了、かつ親タスクが未着手/進行中
+      // （status in todo,doing）のものだけ対象＝完了済みタスクの中の工程は候補に出さない
       const [byStep, byTask] = await Promise.all([
         uc.from("hq_task_steps")
-          .select("id, title, due_date, task:hq_tasks(id, title, corp, target_date)")
-          .ilike("title", `%${keyword}%`).is("completed_at", null).limit(20),
+          .select("id, title, due_date, task:hq_tasks!inner(id, title, corp, target_date, status)")
+          .ilike("title", `%${keyword}%`).is("completed_at", null).in("task.status", ["todo", "doing"]).limit(20),
         uc.from("hq_task_steps")
-          .select("id, title, due_date, task:hq_tasks!inner(id, title, corp, target_date)")
-          .ilike("task.title", `%${keyword}%`).is("completed_at", null).limit(20),
+          .select("id, title, due_date, task:hq_tasks!inner(id, title, corp, target_date, status)")
+          .ilike("task.title", `%${keyword}%`).is("completed_at", null).in("task.status", ["todo", "doing"]).limit(20),
       ]);
       const merged = new Map<string, any>();
       for (const r of [...(byStep.data ?? []), ...(byTask.data ?? [])]) merged.set(r.id, r);
@@ -132,15 +160,22 @@ Deno.serve(async (req: Request) => {
 
     if (action === "create") {
       const invoiceId = body?.invoice_id;
-      const debit = body?.debit; // { account_id, sub_account_id? }
-      const credit = body?.credit; // { account_id, sub_account_id? }
-      const departmentId = body?.department_id || null;
-      const amount = Number(body?.amount);
       const transactionDate = body?.transaction_date || todayStr();
-      const remark = (body?.remark ?? "").slice(0, 100);
+      const defaultRemark = (body?.remark ?? "").slice(0, 100);
+      // branches: [{debit:{account_id,sub_account_id?,department_id?}, credit:{...}, amount, remark?}, ...]
+      // 複数行を渡せば複合仕訳（振替伝票）になる。後方互換: 旧形式(debit/credit/amount直下)も1行として受け付ける
+      const rawBranches: any[] = Array.isArray(body?.branches) && body.branches.length
+        ? body.branches
+        : (body?.debit && body?.credit ? [{ debit: body.debit, credit: body.credit, amount: body.amount, department_id: body.department_id }] : []);
 
-      if (!invoiceId || !debit?.account_id || !credit?.account_id || !Number.isFinite(amount) || amount <= 0) {
-        return json({ error: "必要な項目が不足しています（借方/貸方の勘定科目・金額）" }, 400);
+      if (!invoiceId || !rawBranches.length) {
+        return json({ error: "必要な項目が不足しています（明細行が0件です）" }, 400);
+      }
+      for (const b of rawBranches) {
+        const amt = Number(b.amount);
+        if (!b.debit?.account_id || !b.credit?.account_id || !Number.isFinite(amt) || amt <= 0) {
+          return json({ error: "各行に借方・貸方の勘定科目と金額を入力してください" }, 400);
+        }
       }
 
       // 呼び出し元が本当にこの請求書を見れるか（RLS経由で）確認してからemail_idを取得
@@ -151,12 +186,16 @@ Deno.serve(async (req: Request) => {
       // 画面上で選んだが「保存」を押す前に「仕訳を作成」した場合に備え、リクエストの値を優先する
       const linkedHqStepId: string | null = (body?.linked_hq_step_id !== undefined ? body.linked_hq_step_id : inv.linked_hq_step_id) || null;
 
-      const branch: Record<string, unknown> = {
-        debitor: { account_id: debit.account_id, value: Math.round(amount), ...(debit.sub_account_id ? { sub_account_id: debit.sub_account_id } : {}), ...(departmentId ? { department_id: departmentId } : {}) },
-        creditor: { account_id: credit.account_id, value: Math.round(amount), ...(credit.sub_account_id ? { sub_account_id: credit.sub_account_id } : {}) },
-        remark: remark || inv.vendor_name || "",
-      };
-      const mfBody = { journal: { transaction_date: transactionDate, journal_type: "journal_entry", branches: [branch] } };
+      const branches = rawBranches.map((b) => {
+        const amt = Math.round(Number(b.amount));
+        const departmentId = b.department_id || null;
+        return {
+          debitor: { account_id: b.debit.account_id, value: amt, ...(b.debit.sub_account_id ? { sub_account_id: b.debit.sub_account_id } : {}), ...(departmentId ? { department_id: departmentId } : {}) },
+          creditor: { account_id: b.credit.account_id, value: amt, ...(b.credit.sub_account_id ? { sub_account_id: b.credit.sub_account_id } : {}) },
+          remark: (b.remark || defaultRemark || inv.vendor_name || "").slice(0, 100),
+        };
+      });
+      const mfBody = { journal: { transaction_date: transactionDate, journal_type: "journal_entry", branches } };
 
       const res = await mfFetch("/api/v3/journals", accessToken, {
         method: "POST",
