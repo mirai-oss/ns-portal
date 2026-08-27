@@ -7,7 +7,10 @@
 //                 副産物として、見つかった範囲内のユニークな部門一覧も返す（部門プルダウンの代用。
 //                 部門一覧専用エンドポイントは今回付与したスコープでは403のため使わない）
 //   - "create"  : 実際に仕訳を登録する（POST /api/v3/journals）。呼び出し前にinvoice_can_access()で
-//                 権限確認。成功したらinvoices.mf_journal_id等を更新しinvoice_audit_logsへ記録
+//                 権限確認。成功したらinvoices.mf_journal_id等を更新しinvoice_audit_logsへ記録。
+//                 invoices.linked_hq_step_idが設定されていれば、その本部タスクの工程も
+//                 呼び出しユーザー自身のJWTで完了させる（hq_task_stepsのRLS/トリガーをそのまま経由）
+//   - "search_hq_steps": 本部タスクの工程をキーワード検索する（紐付け選択用。未完了のみ）
 //
 // 認証: userClient(req)でinvoice_can_access()を満たすか確認してから処理する（他の請求書系Function共通）
 // マネーフォワードのアクセストークンは_shared/mf.tsのgetValidAccessToken()で取得（自動リフレッシュ込み）
@@ -109,6 +112,24 @@ Deno.serve(async (req: Request) => {
       });
     }
 
+    if (action === "search_hq_steps") {
+      const keyword: string = (body?.keyword ?? "").trim();
+      if (!keyword) return json({ success: true, results: [] });
+      // 工程タイトル一致・親タスクタイトル一致の両方を探して統合する（会社名がどちら側の
+      // タイトルに入っているか分からないため）。どちらも未完了のものだけ対象。
+      const [byStep, byTask] = await Promise.all([
+        uc.from("hq_task_steps")
+          .select("id, title, due_date, task:hq_tasks(id, title, corp, target_date)")
+          .ilike("title", `%${keyword}%`).is("completed_at", null).limit(20),
+        uc.from("hq_task_steps")
+          .select("id, title, due_date, task:hq_tasks!inner(id, title, corp, target_date)")
+          .ilike("task.title", `%${keyword}%`).is("completed_at", null).limit(20),
+      ]);
+      const merged = new Map<string, any>();
+      for (const r of [...(byStep.data ?? []), ...(byTask.data ?? [])]) merged.set(r.id, r);
+      return json({ success: true, results: Array.from(merged.values()) });
+    }
+
     if (action === "create") {
       const invoiceId = body?.invoice_id;
       const debit = body?.debit; // { account_id, sub_account_id? }
@@ -123,10 +144,12 @@ Deno.serve(async (req: Request) => {
       }
 
       // 呼び出し元が本当にこの請求書を見れるか（RLS経由で）確認してからemail_idを取得
-      const { data: inv, error: invErr } = await uc.from("invoices").select("id, email_id, mf_journal_id, vendor_name").eq("id", invoiceId).maybeSingle();
+      const { data: inv, error: invErr } = await uc.from("invoices").select("id, email_id, mf_journal_id, vendor_name, linked_hq_step_id").eq("id", invoiceId).maybeSingle();
       if (invErr) return json({ error: "確認に失敗しました: " + invErr.message }, 500);
       if (!inv) return json({ error: "対象が見つからないか権限がありません" }, 403);
       if (inv.mf_journal_id) return json({ error: "この請求書は既に仕訳登録済みです（重複登録防止）" }, 409);
+      // 画面上で選んだが「保存」を押す前に「仕訳を作成」した場合に備え、リクエストの値を優先する
+      const linkedHqStepId: string | null = (body?.linked_hq_step_id !== undefined ? body.linked_hq_step_id : inv.linked_hq_step_id) || null;
 
       const branch: Record<string, unknown> = {
         debitor: { account_id: debit.account_id, value: Math.round(amount), ...(debit.sub_account_id ? { sub_account_id: debit.sub_account_id } : {}), ...(departmentId ? { department_id: departmentId } : {}) },
@@ -153,6 +176,7 @@ Deno.serve(async (req: Request) => {
       const db = svc();
       await db.from("invoices").update({
         mf_journal_id: journalId, mf_journal_number: journalNumber, mf_journal_created_at: new Date().toISOString(),
+        ...(linkedHqStepId !== inv.linked_hq_step_id ? { linked_hq_step_id: linkedHqStepId } : {}), // 未保存の選択を反映
       }).eq("id", invoiceId);
       await db.from("mf_sync_logs").insert({ action: "journal_create", actor_type: "human", detail: { invoice_id: invoiceId, journal_id: journalId } });
       await db.from("invoice_audit_logs").insert({
@@ -160,7 +184,23 @@ Deno.serve(async (req: Request) => {
         note: `マネーフォワードへ仕訳登録（伝票番号: ${journalNumber ?? "-"}）`,
       });
 
-      return json({ success: true, journal_id: journalId, journal_number: journalNumber });
+      // 紐付けた本部タスクの工程があれば、呼び出しユーザー自身のJWTで完了させる
+      // （hq_task_stepsのRLS/完了トリガーをそのまま経由＝完了者・通知等は既存ロジック任せ）
+      let hqStepCompleted = false, hqStepError: string | null = null;
+      if (linkedHqStepId) {
+        const { error: hqErr } = await uc.from("hq_task_steps")
+          .update({ completed_at: new Date().toISOString() })
+          .eq("id", linkedHqStepId)
+          .is("completed_at", null); // 既に完了済みなら触らない（他の人が先に完了させたケース）
+        if (hqErr) { hqStepError = hqErr.message; }
+        else { hqStepCompleted = true; }
+        await db.from("invoice_audit_logs").insert({
+          entity_type: "invoice_email", entity_id: inv.email_id, action: "mf_journal_hq_step_link", actor_type: "human",
+          note: hqStepError ? `紐付けタスクの自動完了に失敗: ${hqStepError}` : "紐付けた本部タスクの工程を自動完了しました",
+        });
+      }
+
+      return json({ success: true, journal_id: journalId, journal_number: journalNumber, hq_step_completed: hqStepCompleted, hq_step_error: hqStepError });
     }
 
     return json({ error: "不明なactionです" }, 400);

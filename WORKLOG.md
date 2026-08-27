@@ -2814,3 +2814,25 @@ Phase 1実装・本番デプロイ・実機E2E完了後、ユーザーが実際�
   2. **広告費用データの自動取得**（担当G領域・新規バックログ）: 現在の`ad_media`帳票は広告DBシート（手入力）経由。将来Google Ads APIから直接広告費実績を取得できれば手入力を省略できる可能性があるが、**今回は未着手**（同じ理由でOAuth基盤が必要）
 - **次に進めるための前提条件**（司令塔／担当C／担当Gいずれかが着手する際に必要）: Google Cloud ConsoleでOAuthクライアント（Web/デスクトップ）を作成し、Google Ads API有効化＋開発者トークン申請＋一度だけ人間が同意画面を通ってリフレッシュトークンを取得する、という初期セットアップがユーザー作業として必要。これが揃うまでは自動連携に着手できない
 - **今回は実装なし**。次にこのトークンの話が出たときのために、上記の制約と前提条件をここに残す
+
+## 2026-08-27 マネーフォワードAPI連携（OAuth2）＋請求書の仕訳自動登録・完成
+
+**Google Adsとは異なりMoneyForward側は正式なOAuth2登録まで完了・実データでの動作確認済み**。担当C領域（invoices系）で完結。
+
+- **OAuth連携基盤**: `supabase/2026-08-27_moneyforward_integration.sql`（`mf_oauth_tokens`＝トークン保管の1行シングルトン・`mf_sync_logs`＝連携操作の監査ログ）／`supabase/functions/mf-oauth-callback`（認可コード↔トークン交換。`--no-verify-jwt`でデプロイ）／`supabase/functions/_shared/mf.ts`（`getValidAccessToken()`＝期限5分前に自動リフレッシュ、他のMF系Functionから共通import）
+  - クライアントID/シークレットは`MF_CLIENT_ID`/`MF_CLIENT_SECRET`としてEdge Function環境変数のみに保存（ユーザーがMFアプリポータルの「アプリ開発」→新規登録で発行）
+  - **ハマった点**: ①MFのOAuth登録は`developers.biz.moneyforward.com`ではなく、ログイン済みの「アプリポータル」内の「アプリ開発」画面で行う（ドキュメントサイトはただの説明ページでログイン機能自体が無い）②認可画面で「事業者情報」等の権限が「以下のリンクから権限を付与してください」と出ることがあるが、`mfc/admin/tenant.read`スコープを認可リクエストから外せば回避できる（事業所IDが必須でなければ不要なスコープ）③**APIの実ホストは`api.biz.moneyforward.com`（OAuth専用）と`api-accounting.moneyforward.com`（会計リソースAPI本体）で別**。ドキュメントサイト（developers.biz.moneyforward.com・developers.api-accounting.moneyforward.com）がJS描画のSPAでWebFetchツールが中身を取得できず、実際に有効なアクセストークンでエンドポイントを直接probeして仕様を確定した（`GET /api/v3/accounts`＝勘定科目一覧、`GET /api/v3/journals?start_date&end_date&per_page&page`＝仕訳一覧・現在の会計期間内の日付のみ指定可、`POST /api/v3/journals`＝仕訳登録・body`{journal:{transaction_date,journal_type,branches:[{debitor:{account_id,value,...},creditor:{...},remark}]}}`）。**検証は実登録せず必須項目エラーの中身だけを見る方法で行い、本番の仕訳データを一切汚していない**
+  - 事業所は「有限会社トーホーエージェンシー」を選択して連携済み（`toho.info@`宛のメールを扱う法人＝C-5のtoho.info@対応と同じ法人）
+- **請求書の仕訳自動登録機能**: `invoices.html`の請求書情報欄に「🧾 仕訳を作成」ボタン追加（`invoice.amount`が入っている・入金明細=isSales以外の場合のみ表示）。押すと`mf-journal`Edge Function（新規）の`suggest`アクションが今期（4/1〜）の仕訳を検索し、同じ請求元名を含む過去の仕訳から借方・貸方・部門を自動提案（見つからなければ`accounts`アクションで取得した勘定科目一覧から手動選択）。確認画面→実行で`create`アクションが`POST /api/v3/journals`を呼び、成功したら`invoices.mf_journal_id`/`mf_journal_number`/`mf_journal_created_at`（新規列。`2026-08-27_invoice_mf_journal.sql`）を更新し二重登録を防止、`invoice_audit_logs`（`entity_type='invoice_email'`）にも記録
+  - 部門一覧の専用エンドポイント（`/api/v3/departments`）は付与したスコープでは403だったため、`suggest`が仕訳履歴から拾ったユニークな部門をプルダウンの代用にしている
+- **未着手・今後**: ①PLデータの自動取得（試算表→既存のMF CSV取込フローと合流、担当A領域）②`journal_type`が単純な`journal_entry`以外のケース（振替以外の複雑な仕訳）は今回未対応③連携解除・再認可のUIは無し（切れたらSupabase側で`mf_oauth_tokens`を手動で入れ直す想定）
+- **会計日はユーザーが自由に指定可能（要望確認済み）**: 「仕訳を作成」画面の日付欄は請求書の支払期限とは独立した入力欄で、登録時にそのまま`transaction_date`として使われる。**決算をまたぐ日付を指定した場合の期の自動判定**は、実登録はせず検証エラーの中身だけを見る安全な方法で確認: 現在の会計期間外（2025-01-01）を指定してもPOSTは日付エラーを一切出さず、無関係な項目（勘定科目ID）のエラーのみが返った＝**サーバー側がtransaction_dateから自動でその期に振り分けている可能性が高い**（GETの仕訳一覧は期間外の日付だと明確にエラーになるのとは対照的）。100%の確証は実登録でしか得られないため、決算またぎのケースが実際に出たら初回だけユーザー確認のうえ実地検証する方針とした
+
+## 2026-08-27（続き） 請求書の仕訳登録 → 本部タスクの工程を自動完了
+
+- **ユーザー要望**: 「株式会社Aの請求書を処理したら、本部タスクにある株式会社Aのマネーフォワード入力の工程が自動で完了になるように。メールの中でどのタスクと紐付いているか選択できるように」
+- **実装**: `invoices`に`linked_hq_step_id`列を追加（`2026-08-27_invoice_hq_task_link.sql`。`hq_task_steps`への参照。列追加のみでレーンE（本部タスク）側のテーブル・RLS・トリガーは一切変更していない）。`invoices.html`の請求書情報欄に「🔗 紐付ける本部タスクの工程」欄を新設：キーワード入力→`mf-journal`Edge Function新設アクション`search_hq_steps`が工程タイトル・親タスクタイトルの両方をILIKE検索（未完了のみ）→候補から選んで紐付け。保存すると`invoices.linked_hq_step_id`に記録される
+- **自動完了の仕組み**: `mf-journal`の`create`（仕訳登録）成功時に、紐付けられた`hq_task_steps`を**呼び出しユーザー自身のJWT**（service_roleではない）で`completed_at`更新。理由: `hq_task_step_before_update`トリガーが`completed_by`を`auth.uid()`から自動セットする設計のため、service_role経由だと完了者が記録されない。RLS（`hqs_update`ポリシー：`hq_can_manage() or assignee_id=auth.uid()`）もCEO/HQなら通る前提（`hq_can_manage()`の条件は`invoice_can_access()`とほぼ同一のため、請求書を触れるユーザーは基本的に本部タスクの完了操作もできる）
+- **保存忘れ対策**: 「紐付ける」を選んだ直後に保存せず「仕訳を作成」まで進めても反映されるよう、`create`アクションのリクエストボディで`linked_hq_step_id`を渡せるようにし、DB保存済みの値より優先。成功時にinvoices側にも書き戻す
+- **失敗時の扱い**: 本部タスク側の完了に失敗しても仕訳登録自体は成功として扱う（`hq_step_completed`/`hq_step_error`をレスポンスに含め画面にメッセージ表示・`invoice_audit_logs`にも記録）。二重完了防止のため対象工程が既に完了済みなら何もしない
+- **未着手**: 紐付け解除後の完了取り消し（仕訳を後から削除した場合に工程の完了を戻す機能）は無い

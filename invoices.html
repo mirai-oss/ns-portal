@@ -661,7 +661,7 @@ async function openMailDetail(u,emailId,skipHighlight){
     authed(`/rest/v1/invoice_attachments?email_id=eq.${emailId}&select=*&order=created_at`),
     authed(`/rest/v1/invoice_email_reads?email_id=eq.${emailId}&select=opened_at,reader:users(name)&order=opened_at.asc&limit=1`),
     authed(`/rest/v1/invoice_audit_logs?entity_id=eq.${emailId}&select=*,actor:users(name)&order=created_at.asc&limit=50`),
-    authed(`/rest/v1/invoices?email_id=eq.${emailId}&select=*&limit=1`),
+    authed(`/rest/v1/invoices?email_id=eq.${emailId}&select=*,linked_step:hq_task_steps(id,title,task:hq_tasks(title,corp))&limit=1`),
     authed(`/rest/v1/invoice_comments?email_id=eq.${emailId}&select=*,author:users(name)&order=created_at.asc`),
   ]);
   if(!mr.ok||!mr.body||!mr.body[0]){ $("mailDetail").innerHTML='<div class="empty">読み込みに失敗しました</div>'; return; }
@@ -827,6 +827,7 @@ function renderMailDetail(u){
           <div class="ai-field"><small>${isSales?"入金予定日":"支払期限"}</small><input id="iv-duedate" type="date" value="${invoice&&invoice.due_date||""}"></div>
           <div class="ai-field"><small>状態</small><select id="iv-status">${Object.entries(isSales?SALES_STATUS_LABEL:INVOICE_STATUS_LABEL).map(([k,l])=>`<option value="${k}" ${(invoice?invoice.invoice_status:"draft")===k?"selected":""}>${l}</option>`).join("")}</select></div>
         </div>
+        ${isSales?"":`<div class="ai-field" style="margin-top:8px"><small>🔗 紐付ける本部タスクの工程（任意・仕訳登録時に自動で完了にします）</small><div id="hqlink-box"></div></div>`}
         <div class="mail-actions">
           ${atts.length?`<button id="iv-ai-fill">🤖 AIで${isSales?"入金情報":"請求書情報"}を自動入力</button>`:""}
           <button id="iv-save">💾 ${isSales?"入金情報":"請求書情報"}を保存</button>
@@ -900,6 +901,37 @@ function logLabel(action){
 function wireDetailActions(u){
   const {mail}=SELECTED;
   const emailId=mail.id;
+  let LINKED_HQ_STEP=SELECTED.invoice&&SELECTED.invoice.linked_step?{id:SELECTED.invoice.linked_step.id,title:SELECTED.invoice.linked_step.title,task:SELECTED.invoice.linked_step.task}:null;
+  function renderHqLinkBox(){
+    const box=$("hqlink-box");
+    if(!box) return;
+    if(LINKED_HQ_STEP){
+      box.innerHTML=`<div class="ai-field"><small>紐付け中</small>✅ ${esc((LINKED_HQ_STEP.task&&LINKED_HQ_STEP.task.corp)||"")} ${esc((LINKED_HQ_STEP.task&&LINKED_HQ_STEP.task.title)||"")} ／ ${esc(LINKED_HQ_STEP.title)} <button id="hqlink-clear" style="margin-left:8px">解除</button></div>`;
+      $("hqlink-clear").onclick=()=>{ LINKED_HQ_STEP=null; renderHqLinkBox(); };
+      return;
+    }
+    box.innerHTML=`<input id="hqlink-search" placeholder="会社名や工程名で検索（例: マネーフォワード）"><div id="hqlink-results" style="margin-top:4px;font-size:12px"></div>`;
+    let t=null;
+    $("hqlink-search").oninput=()=>{
+      clearTimeout(t);
+      const kw=$("hqlink-search").value.trim();
+      if(!kw){ $("hqlink-results").innerHTML=""; return; }
+      t=setTimeout(async()=>{
+        $("hqlink-results").innerHTML="検索中…";
+        const s=sess.get();
+        const r=await fetch(SUPA_URL+"/functions/v1/mf-journal",{method:"POST",headers:{"Content-Type":"application/json","apikey":SUPA_KEY,"Authorization":"Bearer "+(s?s.at:"")},body:JSON.stringify({action:"search_hq_steps",keyword:kw})});
+        const j=await r.json().catch(()=>({}));
+        const results=(r.ok&&j.results)||[];
+        $("hqlink-results").innerHTML=results.length?results.map(res=>`<div class="ai-field" style="margin-bottom:4px;cursor:pointer" data-pick="${esc(res.id)}">${esc((res.task&&res.task.corp)||"")} ${esc((res.task&&res.task.title)||"")} ／ ${esc(res.title)}</div>`).join(""):"該当なし";
+        $("hqlink-results").querySelectorAll("[data-pick]").forEach(el=>el.onclick=()=>{
+          const res=results.find(x=>x.id===el.dataset.pick);
+          LINKED_HQ_STEP=res?{id:res.id,title:res.title,task:res.task}:null;
+          renderHqLinkBox();
+        });
+      },350);
+    };
+  }
+  renderHqLinkBox();
   if($("mobile-back-btn")) $("mobile-back-btn").onclick=()=>{
     // history.back()に統一＝トラックパッドのスワイプ戻る等と同じpopstateの
     // 経路を通すことで、ボタン操作とジェスチャー操作の挙動を一致させる
@@ -1007,6 +1039,7 @@ function wireDetailActions(u){
       amount:$("iv-amount").value?+$("iv-amount").value:null,
       due_date:$("iv-duedate").value||null,
       invoice_status:$("iv-status").value,
+      ...(isSales?{}:{linked_hq_step_id:LINKED_HQ_STEP?LINKED_HQ_STEP.id:null}),
     };
     let r;
     if(SELECTED.invoice){
@@ -1106,10 +1139,14 @@ function wireDetailActions(u){
         amount: +$("mfj-amount").value,
         transaction_date: $("mfj-date").value,
         remark: $("mfj-remark").value,
+        linked_hq_step_id: LINKED_HQ_STEP?LINKED_HQ_STEP.id:null, // 保存前でも画面上の選択を優先させる（DB保存漏れ対策）
       };
       const {ok,body:j}=await mfjCall("create",payload);
       if(!ok){ msg.textContent=j.error||"登録に失敗しました"; $("mfj-submit").disabled=false; return; }
-      msg.className="err msg-ok"; msg.textContent=`登録しました（伝票番号: ${j.journal_number??"-"}）。画面を更新します…`;
+      msg.className="err msg-ok";
+      msg.textContent=`登録しました（伝票番号: ${j.journal_number??"-"}）`
+        +(LINKED_HQ_STEP?(j.hq_step_completed?"。紐付けた本部タスクの工程も完了にしました":j.hq_step_error?`（本部タスクの自動完了には失敗: ${j.hq_step_error}）`:""):"")
+        +"。画面を更新します…";
       setTimeout(()=>{ reloadDetail(); },900);
     };
   }
