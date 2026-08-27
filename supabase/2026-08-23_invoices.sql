@@ -731,6 +731,17 @@ begin
 end;
 $$;
 
+-- ============================================================
+-- 不具合修正（2026-08-27・担当C）
+-- 請求書一覧・売上一覧に同じメールの請求書情報が2行出る不具合を修正。
+-- 原因: invoices.htmlのiv-save処理が、保存成功後にSELECTED.invoiceを更新していなかったため、
+-- 詳細画面を開いたまま2回目の保存をするとPATCHではなくPOST（新規行）になっていた。
+-- JS側の修正（保存後にreloadDetailする）に加え、DB側にも二重発生防止のユニーク制約を追加する
+-- （1メール=1請求書情報を保証。既存の重複2件はユーザー確認のうえ「更新日時が新しい方」を残して削除済み）
+-- ============================================================
+alter table invoices drop constraint if exists invoices_email_id_key;
+alter table invoices add constraint invoices_email_id_key unique (email_id);
+
 -- 確認用（本番適用後、SQL Editorで実行して構造・初期値を確認）:
 -- select role, system_key, allowed from portal_permissions where system_key = 'invoices';
 -- select key, length(value) from app_secrets where key = 'invoice_intake_secret';
