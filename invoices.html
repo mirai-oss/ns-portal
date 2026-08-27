@@ -115,7 +115,8 @@ button,input,select,textarea{font:inherit}
 .ai-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
 .ai-field{padding:9px;border:1px solid var(--m-line);border-radius:9px;background:var(--bg)}
 .ai-field small{display:block;color:var(--m-muted);font-size:10px;margin-bottom:4px}
-.ai-field input,.ai-field select{width:100%;border:none;background:transparent;font-size:13px;font-weight:700;color:var(--ink)}
+.ai-field input,.ai-field select{width:100%;border:1px solid var(--m-line);border-radius:6px;background:var(--panel);font-size:13px;font-weight:700;color:var(--ink);padding:7px 8px;margin-top:2px;-webkit-appearance:auto;appearance:auto}
+.ai-field input:focus,.ai-field select:focus{outline:2px solid var(--m-red);outline-offset:1px;border-color:var(--m-red)}
 .mail-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
 .mail-actions button{border:1px solid var(--m-line);background:var(--panel);border-radius:10px;padding:9px 12px;cursor:pointer;color:var(--ink)}
 .mail-actions .primary{background:var(--accent);color:#fff;border-color:var(--accent)}
