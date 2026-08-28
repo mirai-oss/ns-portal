@@ -1626,6 +1626,19 @@ async function logActivity(taskId,kind,detail,stepId){
   await authed("/rest/v1/hq_task_activity",{method:"POST",headers:{Prefer:"return=minimal"},
     body:JSON.stringify({task_id:taskId,step_id:stepId||null,actor_id:ME.id,kind,detail})});
 }
+/* 2026-08-27: 担当Dからの指摘に対応。新規タスク作成時（submitNewTask）は「全工程の中でいちばん
+   遅い期限」を全体期限にする仕組みが既にあるが、作成後に工程の期限を編集・追加しても
+   再計算されず全体期限が古いまま残ってしまう不具合があった。同じロジックを共通化し、
+   工程編集・工程追加のたびにも全体期限を同期するようにした（tは最新のCUR_TASKを渡すこと） */
+async function syncTaskDueDate(t){
+  const dueSorted=sortedSteps(t).filter(s=>s.due_date).sort((a,b)=>(a.due_date+(a.due_time||"23:59")).localeCompare(b.due_date+(b.due_time||"23:59")));
+  const last=dueSorted[dueSorted.length-1]||null;
+  if(!last) return;
+  const due_date=last.due_date, due_time=last.due_time||null;
+  if(due_date!==t.due_date||due_time!==(t.due_time||null)){
+    await authed(`/rest/v1/hq_tasks?id=eq.${t.id}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({due_date,due_time})});
+  }
+}
 
 /* ---------- C-1: コメント＋@メンション ---------- */
 function highlightMentions(body){
@@ -1831,6 +1844,8 @@ function wireDetail(t,u){
       if((step.assignee_id||null)!==newAssignee) changes.push(`担当: ${userName(step.assignee_id)||"未定"}→${userName(newAssignee)||"未定"}`);
       if((step.due_date||null)!==newDue||(step.due_time||null)!==newDueTime) changes.push(`期限: ${fmtDD(step.due_date,step.due_time)}→${fmtDD(newDue,newDueTime)}`);
       if(changes.length) await logActivity(t.id,"comment",`工程「${step.title}」を編集（${changes.join("・")}）`,sid);
+      CUR_TASK=await fetchTaskDetail(t.id);
+      await syncTaskDueDate(CUR_TASK); // 工程の期限を編集したら全体期限（最終工程の期限）も同期する
       CUR_TASK=await fetchTaskDetail(t.id); renderDetail(u);
     };
   });
@@ -2004,6 +2019,8 @@ function wireDetail(t,u){
     if(!r.ok){ msg.textContent="追加できませんでした"; $("stepaddsave").disabled=false; return; }
     await logActivity(t.id,"comment",`工程「${title}」を追加`);
     STEP_ADD_OPEN=false;
+    CUR_TASK=await fetchTaskDetail(t.id);
+    await syncTaskDueDate(CUR_TASK); // 工程を追加したら全体期限（最終工程の期限）も同期する
     CUR_TASK=await fetchTaskDetail(t.id); renderDetail(u);
   };
   document.querySelectorAll("select[id^='judge-']").forEach(sel=>{
