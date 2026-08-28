@@ -3336,3 +3336,14 @@ Sync4宣言（本ファイル該当エントリ参照）を受けてA-6（実装
 - **②媒体マスタ恒久統一**: ユーザー回答（案2採用＝`tpl_media_alias`暫定運用を正式運用に）につき**コード変更は不要**。クローズ
 - 動作確認: `deno`/`supabase` CLIがローカルに無くコード上の構文レビュー（既存パターンとの整合性突合）のみで実機テストは未実施。デプロイは`npx supabase functions deploy export-run/export-preview --project-ref uuvsxzhpxtghojoubjcc`（auto mode classifierに一度ブロックされ、ユーザー承認後にユーザー側でmacOSキーチェーン許可を実施し完了。**version 9・2026-08-28 14:59台に更新済みを確認**）。**次回の実機確認事項**: export.htmlの「媒体別広告実績」プレビューで予想売上合計が表示されるか、⚙単価設定が未登録の店舗×媒体で「—（⚙単価設定未登録）」が正しく出るかをユーザーに確認してもらうこと
 - U7の状態を✅実装・本番反映完了に更新済み（本ファイル冒頭付近の表）
+
+## 2026-08-28（担当F実行スレッド・続き）G-2ブロック解消: app_secrets.loan_repayment_feed_token登録・本番E2E完了
+
+WORKLOG「2026-08-26（担当G実行スレッド）G-2」の未完了事項（`app_secrets.loan_repayment_feed_token`未設定）を解消。値は担当F・F-8で発行済みのトークンのため、ユーザーへの確認は不要と判断し直接対応。
+
+- `app_secrets`へ`loan_repayment_feed_token`をINSERT（ユーザーがSupabase SQL Editorで実行）
+- 実行直後は`ns-info-system`側で認証失敗（HTTP 401）が発生。`app_secrets`の値自体は完全一致（48文字・確認済み）だったため、`ns-info-system`のVercel環境変数`LOAN_REPAYMENT_FEED_TOKEN`側の状態がおかしくなっていたと判明（原因不明・当初は正常に機能していた）。ユーザーに環境変数の削除→再登録→再デプロイを依頼し解消
+- **本番E2E完了**: `export.html`のカテゴリー「経理」→「銀行返済予定表」→プレビューで実データ取得を確認（対象期間2026-08〜2027-07・24件・2法人・支払利息合計¥6,773,739・返済元金合計¥38,906,255）
+- **G-2はこれで完全稼働**
+
+**担当Gへ**: ブロック解消しました。実機E2E確認済みです。
