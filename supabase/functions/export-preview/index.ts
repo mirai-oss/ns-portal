@@ -177,6 +177,89 @@ async function fetchMediaSales(token: string): Promise<AdSalesRow[]> {
   return out;
 }
 
+// 予想売上（ネット予約ベース。2026-08-28追加。export-run/index.tsと同じ計算式・データソース。
+// プレビューでは媒体別内訳までは出さず合計だけ返す＝設計メモ§①の「実売上と並べて表示」をここでも反映）。
+type UnitPriceRow = { storeName: string; media: string; unitPrice: number; avgParty: number; phoneCv: number };
+async function fetchUnitPriceSettings(token: string): Promise<UnitPriceRow[]> {
+  const res = await dashCall({ action: "data", token, keys: "単価設定" });
+  if (!res.ok) return [];
+  const rows: any[][] = res.sheets?.["単価設定"] ?? [];
+  if (!rows.length) return [];
+  const header = rows[0].map((h: any) => String(h ?? "").trim());
+  let iS = colIndexOf(header, "店舗"), iM = colIndexOf(header, "媒体");
+  let iV = colIndexOf(header, "設定単価");
+  if (iV < 0) iV = colIndexOf(header, "客単価");
+  if (iV < 0) iV = colIndexOf(header, "単価");
+  let iAvg = colIndexOf(header, "平均1組人数");
+  if (iAvg < 0) iAvg = colIndexOf(header, "組人数");
+  let iCv = colIndexOf(header, "電話CV");
+  if (iCv < 0) iCv = colIndexOf(header, "電話成約");
+  let start = 1;
+  if (iV < 0) { iS = 0; iM = 1; iV = 2; start = 0; iAvg = -1; iCv = -1; }
+  const out: UnitPriceRow[] = [];
+  for (let i = start; i < rows.length; i++) {
+    const r = rows[i];
+    const unitPrice = Number(r[iV] ?? 0);
+    if (!(unitPrice > 0)) continue;
+    let phoneCv = iCv >= 0 ? Number(r[iCv] ?? 0) : 0;
+    if (phoneCv >= 1) phoneCv = phoneCv / 100;
+    out.push({
+      storeName: String(iS >= 0 ? r[iS] ?? "" : "").trim(), media: String(iM >= 0 ? r[iM] ?? "" : "").trim(),
+      unitPrice, avgParty: iAvg >= 0 ? Number(r[iAvg] ?? 0) : 0, phoneCv,
+    });
+  }
+  return out;
+}
+type AdEffectRow = { ym: string; storeName: string; media: string; ppl: number; tel: number };
+async function fetchAdEffect(token: string): Promise<AdEffectRow[]> {
+  const res = await dashCall({ action: "data", token, keys: "広告効果" });
+  if (!res.ok) return [];
+  const rows: any[][] = res.sheets?.["広告効果"] ?? [];
+  if (!rows.length) return [];
+  let hi = -1;
+  for (let i = 0; i < Math.min(rows.length, 12); i++) {
+    const line = rows[i].map((x) => String(x ?? "")).join(",");
+    if (/アクセス/.test(line) && /予約|組数/.test(line)) { hi = i; break; }
+  }
+  if (hi < 0) hi = 0;
+  const header = rows[hi].map((h) => String(h ?? "").trim());
+  const iD = colIndexOf(header, "年月") >= 0 ? colIndexOf(header, "年月") : colIndexOf(header, "日付");
+  const iS = colIndexOf(header, "店舗");
+  const iM = colIndexOf(header, "媒体");
+  let iG = -1;
+  for (const c of ["ネット予約組数", "予約組数", "NET件数", "NET組数", "ネット予約件数", "予約件数", "組数"]) { iG = colIndexOf(header, c); if (iG >= 0) break; }
+  let iP = -1;
+  for (const c of ["ネット予約人数", "予約人数", "NET人数"]) { iP = colIndexOf(header, c); if (iP >= 0) break; }
+  if (iP < 0) { const x = colIndexOf(header, "人数"); if (x >= 0 && x !== iG) iP = x; }
+  let iT = -1;
+  for (const c of ["電話数", "電話"]) { iT = colIndexOf(header, c); if (iT >= 0) break; }
+  if (iD < 0) return [];
+  const out: AdEffectRow[] = [];
+  for (let i = hi + 1; i < rows.length; i++) {
+    const r = rows[i];
+    const ym = normalizeYm(r[iD]);
+    if (!ym) continue;
+    const ppl = iP >= 0 ? Number(r[iP] ?? 0) : 0, tel = iT >= 0 ? Number(r[iT] ?? 0) : 0;
+    if (!ppl && !tel) continue;
+    out.push({ ym, storeName: String(iS >= 0 ? r[iS] ?? "" : "").trim(), media: String(iM >= 0 ? r[iM] ?? "" : "").trim(), ppl, tel });
+  }
+  return out;
+}
+function lookupPriority(m: Map<string, number>, storeName: string, media: string): number {
+  return m.get(`${storeName}|${media}`) ?? m.get(`${storeName}|`) ?? m.get(`|${media}`) ?? m.get(`|`) ?? 0;
+}
+function buildPriceLookup(rows: UnitPriceRow[], mediaAliasMap: Map<string, string>) {
+  const price = new Map<string, number>(), avg = new Map<string, number>(), cv = new Map<string, number>();
+  for (const r of rows) {
+    const media = canonMedia(r.media, mediaAliasMap);
+    const key = `${r.storeName}|${media}`;
+    if (r.unitPrice > 0) price.set(key, r.unitPrice);
+    if (r.avgParty > 0) avg.set(key, r.avgParty);
+    if (r.phoneCv > 0) cv.set(key, r.phoneCv);
+  }
+  return { price, avg, cv };
+}
+
 // 銀行返済予定表（G-2・2026-08-26追加）。データ源はns-info-system /api/loan-repayment-feed（F-8）。
 const LOAN_REPAYMENT_FEED_URL = "https://ns-info-system.vercel.app/api/loan-repayment-feed";
 type LoanFeedRow = { corporationId: string; corporationName: string; storeId: string | null; storeName: string | null; yearMonth: string; interestAmount: number; principalAmount: number };
@@ -302,8 +385,9 @@ Deno.serve(async (req) => {
     if (!login.ok) return json({ ok: false, error: login.error }, 500);
 
     if (isAd) {
-      const [allCost, allSales, mediaAliasMap] = await Promise.all([
+      const [allCost, allSales, mediaAliasMap, allUnitPrice, allEffect] = await Promise.all([
         fetchAdCostRows(login.token!), fetchMediaSales(login.token!), fetchMediaAliasMap(sb),
+        fetchUnitPriceSettings(login.token!), fetchAdEffect(login.token!),
       ]);
       const costMatched = allCost
         .map((r) => ({ ...r, storeName: resolveAdStoreName(r.storeName) ?? "", media: canonMedia(r.media, mediaAliasMap) }))
@@ -311,6 +395,17 @@ Deno.serve(async (req) => {
       const salesMatched = allSales
         .map((r) => ({ ...r, storeName: resolveAdStoreName(r.storeName) ?? "", media: canonMedia(r.media, mediaAliasMap) }))
         .filter((r) => r.ym >= periodFrom && r.ym <= periodTo && targetNames.has(r.storeName));
+      // 予想売上（見込み・ネット予約ベース）: 実売上（sales_total）とは別指標として合計だけ返す（2026-08-28追加）
+      const priceLookup = buildPriceLookup(allUnitPrice, mediaAliasMap);
+      const effectMatched = allEffect
+        .map((r) => ({ ...r, storeName: resolveAdStoreName(r.storeName) ?? "", media: canonMedia(r.media, mediaAliasMap) }))
+        .filter((r) => r.ym >= periodFrom && r.ym <= periodTo && targetNames.has(r.storeName));
+      const forecastTotal = effectMatched.reduce((s, r) => {
+        const tk = lookupPriority(priceLookup.price, r.storeName, r.media);
+        const cv2 = lookupPriority(priceLookup.cv, r.storeName, r.media);
+        const avg2 = lookupPriority(priceLookup.avg, r.storeName, r.media);
+        return s + (r.ppl + r.tel * cv2 * avg2) * tk;
+      }, 0);
       const costTotal = costMatched.reduce((s, r) => s + r.cost, 0);
       const salesTotal = costMatched.length || salesMatched.length ? salesMatched.reduce((s, r) => s + r.netSales, 0) : 0;
       const mediaSet = new Set([...costMatched.map((r) => r.media), ...salesMatched.map((r) => r.media)]);
@@ -325,6 +420,7 @@ Deno.serve(async (req) => {
         media_count: mediaSet.size,
         ad_cost_total: costTotal,
         sales_total: salesTotal,
+        forecast_sales_total: effectMatched.length ? Math.round(forecastTotal) : null,
         roas: costTotal > 0 ? salesTotal / costTotal : null,
         note: (costMatched.length === 0 && salesMatched.length === 0) ? "指定条件に一致するデータがありません（広告DB未設定、またはBQミラー未反映の可能性）" : undefined,
       });

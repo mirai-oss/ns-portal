@@ -227,15 +227,126 @@ async function fetchMediaSales(token: string): Promise<AdSalesRow[]> {
   return out;
 }
 
-type AdMediaRow = { media: string; cost: number; sales: number; guests: number; parties: number };
+// ---------------- 予想売上（ネット予約ベース。2026-08-28追加） ----------------
+// 設計メモ_担当G_広告予想売上と媒体マスタ統一_2026-08-25.md §① のとおり、実売上（stg_media）とは
+// 別の指標として「ネット予約人数・電話数から見込む予想売上」を並べて表示する。
+// 計算式・データソースは tori-dashboard/app.js の adFxAgg()/ingestTanka()/ingestAdFx() をそのまま移植。
+// ⚙単価設定（店舗×媒体の設定単価・平均1組人数・電話CV）
+type UnitPriceRow = { storeName: string; media: string; unitPrice: number; avgParty: number; phoneCv: number };
+
+async function fetchUnitPriceSettings(token: string): Promise<UnitPriceRow[]> {
+  const res = await dashCall({ action: "data", token, keys: "単価設定" });
+  if (!res.ok) return []; // 未設定（タブ未作成等）でも予想売上=0として広告実績の出力自体は続行する
+  const rows: any[][] = res.sheets?.["単価設定"] ?? [];
+  if (!rows.length) return [];
+  let header = rows[0].map((h: any) => String(h ?? "").trim());
+  let iS = colIndexOf(header, "店舗"), iM = colIndexOf(header, "媒体");
+  let iV = colIndexOf(header, "設定単価");
+  if (iV < 0) iV = colIndexOf(header, "客単価");
+  if (iV < 0) iV = colIndexOf(header, "単価");
+  let iAvg = colIndexOf(header, "平均1組人数");
+  if (iAvg < 0) iAvg = colIndexOf(header, "組人数");
+  let iCv = colIndexOf(header, "電話CV");
+  if (iCv < 0) iCv = colIndexOf(header, "電話成約");
+  let start = 1;
+  if (iV < 0) { iS = 0; iM = 1; iV = 2; start = 0; iAvg = -1; iCv = -1; } // 見出しなし＝A:店舗 B:媒体 C:単価とみなす（既存運用と同じ）
+  const out: UnitPriceRow[] = [];
+  for (let i = start; i < rows.length; i++) {
+    const r = rows[i];
+    const unitPrice = Number(r[iV] ?? 0);
+    if (!(unitPrice > 0)) continue;
+    let phoneCv = iCv >= 0 ? Number(r[iCv] ?? 0) : 0;
+    if (phoneCv >= 1) phoneCv = phoneCv / 100; // 「30%」でも「0.3」でもOK（既存の運用ルール）
+    out.push({
+      storeName: String(iS >= 0 ? r[iS] ?? "" : "").trim(),
+      media: String(iM >= 0 ? r[iM] ?? "" : "").trim(),
+      unitPrice,
+      avgParty: iAvg >= 0 ? Number(r[iAvg] ?? 0) : 0,
+      phoneCv,
+    });
+  }
+  return out;
+}
+
+// 広告効果（💾売上DB／広告効果タブ）: 年月×店舗×媒体のアクセス数・ネット予約組数/人数・電話数
+type AdEffectRow = { ym: string; storeName: string; media: string; ppl: number; tel: number };
+
+async function fetchAdEffect(token: string): Promise<AdEffectRow[]> {
+  const res = await dashCall({ action: "data", token, keys: "広告効果" });
+  if (!res.ok) return [];
+  const rows: any[][] = res.sheets?.["広告効果"] ?? [];
+  if (!rows.length) return [];
+  let hi = -1;
+  for (let i = 0; i < Math.min(rows.length, 12); i++) {
+    const line = rows[i].map((x) => String(x ?? "")).join(",");
+    if (/アクセス/.test(line) && /予約|組数/.test(line)) { hi = i; break; }
+  }
+  if (hi < 0) hi = 0;
+  const header = rows[hi].map((h) => String(h ?? "").trim());
+  const iD = colIndexOf(header, "年月") >= 0 ? colIndexOf(header, "年月") : colIndexOf(header, "日付");
+  const iS = colIndexOf(header, "店舗");
+  const iM = colIndexOf(header, "媒体");
+  let iG = -1;
+  for (const c of ["ネット予約組数", "予約組数", "NET件数", "NET組数", "ネット予約件数", "予約件数", "組数"]) { iG = colIndexOf(header, c); if (iG >= 0) break; }
+  let iP = -1;
+  for (const c of ["ネット予約人数", "予約人数", "NET人数"]) { iP = colIndexOf(header, c); if (iP >= 0) break; }
+  if (iP < 0) { const x = colIndexOf(header, "人数"); if (x >= 0 && x !== iG) iP = x; }
+  let iT = -1;
+  for (const c of ["電話数", "電話"]) { iT = colIndexOf(header, c); if (iT >= 0) break; }
+  if (iD < 0) return [];
+  const out: AdEffectRow[] = [];
+  for (let i = hi + 1; i < rows.length; i++) {
+    const r = rows[i];
+    const ym = normalizeYm(r[iD]);
+    if (!ym) continue;
+    const ppl = iP >= 0 ? Number(r[iP] ?? 0) : 0, tel = iT >= 0 ? Number(r[iT] ?? 0) : 0;
+    if (!ppl && !tel) continue; // 予想売上の算出に使わない行（アクセス・組数のみ）は不要
+    out.push({ ym, storeName: String(iS >= 0 ? r[iS] ?? "" : "").trim(), media: String(iM >= 0 ? r[iM] ?? "" : "").trim(), ppl, tel });
+  }
+  return out;
+}
+
+// 設定単価を引く：店舗×媒体 → 店舗のみ → 全店×媒体 → 全店共通 の順（tankaOf()と同じ優先順位）
+function lookupPriority(m: Map<string, number>, storeName: string, media: string): number {
+  return m.get(`${storeName}|${media}`) ?? m.get(`${storeName}|`) ?? m.get(`|${media}`) ?? m.get(`|`) ?? 0;
+}
+function buildPriceLookup(rows: UnitPriceRow[], mediaAliasMap: Map<string, string>) {
+  const price = new Map<string, number>(), avg = new Map<string, number>(), cv = new Map<string, number>();
+  for (const r of rows) {
+    const media = canonMedia(r.media, mediaAliasMap);
+    const key = `${r.storeName}|${media}`;
+    if (r.unitPrice > 0) price.set(key, r.unitPrice);
+    if (r.avgParty > 0) avg.set(key, r.avgParty);
+    if (r.phoneCv > 0) cv.set(key, r.phoneCv);
+  }
+  return { price, avg, cv };
+}
+// 予想売上＝(ネット予約人数＋電話由来人数)×設定単価、電話由来人数＝電話数×電話CV×平均1組人数
+function buildAdForecastRows(
+  effectRows: (AdEffectRow & { brand: string })[], priceLookup: ReturnType<typeof buildPriceLookup>,
+): (AdEffectRow & { brand: string; forecastSales: number })[] {
+  return effectRows.map((r) => {
+    const tk = lookupPriority(priceLookup.price, r.brand, r.media);
+    const cv2 = lookupPriority(priceLookup.cv, r.brand, r.media);
+    const avg2 = lookupPriority(priceLookup.avg, r.brand, r.media);
+    const telPpl = r.tel * cv2 * avg2;
+    return { ...r, forecastSales: (r.ppl + telPpl) * tk };
+  });
+}
+
+type AdMediaRow = { media: string; cost: number; sales: number; guests: number; parties: number; forecastSales: number };
 type AdBrandBlock = { brand: string; rows: AdMediaRow[] };
 
 // 対象期間・対象店舗（複数選択可）に絞った上で、ブランド（本体／サブブランド）×媒体ごとに
-// 費用・売上・客数・客組数を合算する。scopeStoreNames=null は「選択店舗すべて合算」を意味する
+// 費用・売上・客数・客組数・予想売上を合算する。scopeStoreNames=null は「選択店舗すべて合算」を意味する
 // （その場合はブランド区別をせず単一ブロックにまとめる＝合算シートは店舗横断の全体像を見る用途のため）。
-function buildAdMediaRows(costRows: (AdCostRow & { brand: string })[], salesRows: (AdSalesRow & { brand: string })[], scopeStoreNames: Set<string> | null): AdBrandBlock[] {
+function buildAdMediaRows(
+  costRows: (AdCostRow & { brand: string })[], salesRows: (AdSalesRow & { brand: string })[],
+  forecastRows: (AdEffectRow & { brand: string; forecastSales: number })[], scopeStoreNames: Set<string> | null,
+): AdBrandBlock[] {
   const cScoped = scopeStoreNames ? costRows.filter((r) => scopeStoreNames.has(r.storeName)) : costRows;
   const sScoped = scopeStoreNames ? salesRows.filter((r) => scopeStoreNames.has(r.storeName)) : salesRows;
+  const fScoped = scopeStoreNames ? forecastRows.filter((r) => scopeStoreNames.has(r.storeName)) : forecastRows;
   const brandKey = (b: string) => (scopeStoreNames ? b : "__all__");
   const blocks = new Map<string, Map<string, AdMediaRow>>();
   const get = (brand: string, media: string) => {
@@ -243,11 +354,12 @@ function buildAdMediaRows(costRows: (AdCostRow & { brand: string })[], salesRows
     if (!blocks.has(bKey)) blocks.set(bKey, new Map());
     const m = blocks.get(bKey)!;
     const key = media || "（媒体未設定）";
-    if (!m.has(key)) m.set(key, { media: key, cost: 0, sales: 0, guests: 0, parties: 0 });
+    if (!m.has(key)) m.set(key, { media: key, cost: 0, sales: 0, guests: 0, parties: 0, forecastSales: 0 });
     return m.get(key)!;
   };
   for (const c of cScoped) get(c.brand, c.media).cost += c.cost;
   for (const s of sScoped) { const r = get(s.brand, s.media); r.sales += s.netSales; r.guests += s.guests; r.parties += s.parties; }
+  for (const f of fScoped) get(f.brand, f.media).forecastSales += f.forecastSales;
   // ブロック順: ブランド名でソート（本体を先に出したいので費用+売上合計の降順）
   const brandTotal = new Map<string, number>();
   for (const [b, m] of blocks) brandTotal.set(b, [...m.values()].reduce((s, r) => s + r.cost + r.sales, 0));
@@ -260,15 +372,22 @@ function buildAdMediaRows(costRows: (AdCostRow & { brand: string })[], salesRows
 }
 
 // ---------------- CSV（広告媒体別） ----------------
-function buildCsvAdMedia(costRows: (AdCostRow & { brand: string })[], salesRows: (AdSalesRow & { brand: string })[], storeNamesInOrder: string[]): Uint8Array {
+function buildCsvAdMedia(
+  costRows: (AdCostRow & { brand: string })[], salesRows: (AdSalesRow & { brand: string })[],
+  forecastRows: (AdEffectRow & { brand: string; forecastSales: number })[], storeNamesInOrder: string[],
+): Uint8Array {
   const headers = ["対象店舗", "年月", "店舗名", "ブランド", "媒体", "区分", "金額/件数"];
   const lines = [headers.map(csvEscape).join(",")];
   const scopeLabel = storeNamesInOrder.length > 1 ? "個別" : storeNamesInOrder[0] ?? "";
   for (const c of costRows) lines.push([scopeLabel, c.ym, c.storeName, c.brand, c.media, "広告費", c.cost].map(csvEscape).join(","));
   for (const s of salesRows) {
-    lines.push([scopeLabel, s.ym, s.storeName, s.brand, s.media, "売上", s.netSales].map(csvEscape).join(","));
+    lines.push([scopeLabel, s.ym, s.storeName, s.brand, s.media, "売上（実績）", s.netSales].map(csvEscape).join(","));
     lines.push([scopeLabel, s.ym, s.storeName, s.brand, s.media, "客数", s.guests].map(csvEscape).join(","));
     lines.push([scopeLabel, s.ym, s.storeName, s.brand, s.media, "客組数", s.parties].map(csvEscape).join(","));
+  }
+  for (const f of forecastRows) {
+    if (!(f.forecastSales > 0)) continue;
+    lines.push([scopeLabel, f.ym, f.storeName, f.brand, f.media, "予想売上（見込み・ネット予約ベース）", Math.round(f.forecastSales)].map(csvEscape).join(","));
   }
   const text = lines.join("\r\n");
   const bom = new Uint8Array([0xef, 0xbb, 0xbf]);
@@ -518,7 +637,10 @@ function writeAdSheet(wb: any, sheetName: string, title: string, style: StylePro
   sheet.getCell("A1").font = style.titleFont;
   sheet.getColumn(1).width = style.labelColWidth;
 
-  const headers = ["媒体", "広告費", "売上", "客数", "客組数", "ROAS"];
+  // 「売上」は実績（stg_media・POS由来の確定売上）、「予想売上（見込み）」はネット予約人数×設定単価から
+  // 見込む別指標（2026-08-28追加）。混同されないよう見出しを明示し、列も塗り分ける（設計メモ§①）。
+  const headers = ["媒体", "広告費", "売上（実績）", "客数", "客組数", "ROAS", "予想売上（見込み）"];
+  const forecastFill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFDF3D9" } };
   const showBrandHeading = blocks.length > 1;
   let r = 3;
 
@@ -531,7 +653,9 @@ function writeAdSheet(wb: any, sheetName: string, title: string, style: StylePro
     const headerRowIdx = r;
     headers.forEach((h, i) => {
       const c = sheet.getCell(headerRowIdx, i + 1);
-      c.value = h; c.font = style.headerFont; c.fill = style.headerFill; c.border = style.dataBorder;
+      c.value = h; c.font = style.headerFont; c.border = style.dataBorder;
+      c.fill = i === 6 ? forecastFill : style.headerFill;
+      if (i === 6) c.font = { ...style.headerFont, color: { argb: "FF6B4B00" } };
       sheet.getColumn(i + 1).width = i === 0 ? style.labelColWidth : style.valueColWidth;
     });
     r++;
@@ -545,11 +669,13 @@ function writeAdSheet(wb: any, sheetName: string, title: string, style: StylePro
       sheet.getCell(rowIdx, 5).value = row.parties;
       const c2 = colLetter(sheet, rowIdx, 2), c3 = colLetter(sheet, rowIdx, 3);
       sheet.getCell(rowIdx, 6).value = { formula: `IF(${c2}${rowIdx}=0,"—",${c3}${rowIdx}/${c2}${rowIdx})` };
-      for (let c = 1; c <= 6; c++) {
+      sheet.getCell(rowIdx, 7).value = row.forecastSales > 0 ? Math.round(row.forecastSales) : null;
+      for (let c = 1; c <= 7; c++) {
         const cell = sheet.getCell(rowIdx, c);
         cell.border = style.dataBorder;
         if (c >= 2 && c <= 5) cell.numFmt = style.numFmt;
         if (c === 6) cell.numFmt = "0%;;\"—\"";
+        if (c === 7) { cell.numFmt = "#,##0;;\"—\""; cell.fill = forecastFill; }
       }
       r++;
     });
@@ -566,6 +692,10 @@ function writeAdSheet(wb: any, sheetName: string, title: string, style: StylePro
     const roasCell = sheet.getCell(totalRowIdx, 6);
     roasCell.value = { formula: `IF(${c2t}${totalRowIdx}=0,"—",${c3t}${totalRowIdx}/${c2t}${totalRowIdx})` };
     roasCell.numFmt = "0%;;\"—\""; roasCell.font = style.totalFont; roasCell.border = style.totalBorder;
+    const colL7 = colLetter(sheet, dataStartRow, 7);
+    const fcTotalCell = sheet.getCell(totalRowIdx, 7);
+    fcTotalCell.value = block.rows.length ? { formula: `SUM(${colL7}${dataStartRow}:${colL7}${totalRowIdx - 1})` } : 0;
+    fcTotalCell.numFmt = "#,##0;;\"—\""; fcTotalCell.font = style.totalFont; fcTotalCell.border = style.totalBorder; fcTotalCell.fill = forecastFill;
     sheet.getCell(totalRowIdx, 1).border = style.totalBorder;
     r += 2; // ブロック間の空行
   }
@@ -576,6 +706,7 @@ function writeAdSheet(wb: any, sheetName: string, title: string, style: StylePro
 async function buildAdExcel(
   sb: any, reportKey: string, layout: any,
   costRows: (AdCostRow & { brand: string })[], salesRows: (AdSalesRow & { brand: string })[],
+  forecastRows: (AdEffectRow & { brand: string; forecastSales: number })[],
   storeNamesInOrder: string[], periodFrom: string, periodTo: string,
 ): Promise<ArrayBuffer> {
   const style = await loadStyleProfile(sb, reportKey, layout);
@@ -585,11 +716,11 @@ async function buildAdExcel(
   const title = REPORT_TITLE[reportKey] ?? "広告実績";
 
   if (storeNamesInOrder.length > 1) {
-    const combined = buildAdMediaRows(costRows, salesRows, null);
+    const combined = buildAdMediaRows(costRows, salesRows, forecastRows, null);
     writeAdSheet(wb, "合計", `${title} 合計（${periodFrom}〜${periodTo}）`, style, combined);
   }
   for (const name of storeNamesInOrder) {
-    const scoped = buildAdMediaRows(costRows, salesRows, new Set([name]));
+    const scoped = buildAdMediaRows(costRows, salesRows, forecastRows, new Set([name]));
     writeAdSheet(wb, name, `${title} ${name}（${periodFrom}〜${periodTo}）`, style, scoped);
   }
   const buf = await wb.xlsx.writeBuffer();
@@ -882,8 +1013,9 @@ Deno.serve(async (req) => {
         ext = "csv"; contentType = "text/csv";
       }
     } else if (isAd) {
-      const [allCostRows, allSalesRows, mediaAliasMap] = await Promise.all([
+      const [allCostRows, allSalesRows, mediaAliasMap, allUnitPriceRows, allEffectRows] = await Promise.all([
         fetchAdCostRows(login.token!), fetchMediaSales(login.token!), fetchMediaAliasMap(sb),
+        fetchUnitPriceSettings(login.token!), fetchAdEffect(login.token!),
       ]);
       // 広告DBの店舗名（サブブランド表記あり）をresolveAdStore()で正規化してから対象期間・対象店舗に絞る。
       // 媒体名はtpl_media_aliasの手動登録を優先しつつcanonMedia()で正規化する。
@@ -899,6 +1031,16 @@ Deno.serve(async (req) => {
           return { ...r, storeName: resolved?.canonicalName ?? "", brand: resolved?.brandLabel ?? "", media: canonMedia(r.media, mediaAliasMap) };
         })
         .filter((r) => r.ym >= periodFrom && r.ym <= periodTo && targetNames.has(r.storeName));
+      // 予想売上（2026-08-28追加・設計メモ§①）: 広告効果（ネット予約人数・電話数）×設定単価（⚙単価設定）。
+      // 単価設定の店舗名は既存運用どおり無加工（ブランド表記そのまま入力される前提。tori-dashboard/app.jsと同じ扱い）。
+      const priceLookup = buildPriceLookup(allUnitPriceRows, mediaAliasMap);
+      const effectMatched = allEffectRows
+        .map((r) => {
+          const resolved = resolveAdStore(r.storeName);
+          return { ...r, storeName: resolved?.canonicalName ?? "", brand: resolved?.brandLabel ?? "", media: canonMedia(r.media, mediaAliasMap) };
+        })
+        .filter((r) => r.ym >= periodFrom && r.ym <= periodTo && targetNames.has(r.storeName));
+      const forecastMatched = buildAdForecastRows(effectMatched, priceLookup);
 
       if (costMatched.length === 0 && salesMatched.length === 0) {
         await sb.from("export_history").update({
@@ -906,12 +1048,12 @@ Deno.serve(async (req) => {
         }).eq("id", historyId);
         return json({ ok: false, error: "対象条件に一致するデータがありません（広告DB未設定、またはBQミラー未反映の可能性）" }, 200);
       }
-      rowCount = costMatched.length + salesMatched.length;
+      rowCount = costMatched.length + salesMatched.length + forecastMatched.length;
       if (format === "excel") {
-        fileBuf = await buildAdExcel(sb, reportKey, layout, costMatched, salesMatched, storeNamesInOrder, periodFrom, periodTo);
+        fileBuf = await buildAdExcel(sb, reportKey, layout, costMatched, salesMatched, forecastMatched, storeNamesInOrder, periodFrom, periodTo);
         ext = "xlsx"; contentType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
       } else {
-        fileBuf = buildCsvAdMedia(costMatched, salesMatched, storeNamesInOrder);
+        fileBuf = buildCsvAdMedia(costMatched, salesMatched, forecastMatched, storeNamesInOrder);
         ext = "csv"; contentType = "text/csv";
       }
     } else {

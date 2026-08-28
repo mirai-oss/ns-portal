@@ -8,6 +8,10 @@
 
 **★★★★★★★★★2026-08-28 最新（担当Aスレッド）A-6 経営ダッシュボード「予約」タブ Phase1: 本番デプロイ・データ投入まで完了**: Sync4を受けてA-6着手（段階的実装で合意・第1弾=予約帳＋予約分析の基本機能）。`tori-dashboard/gas/Code.gs`に`bqSyncReservation`（Supabase `rsv_reservations`→BQ `stg_reservation`ミラー）・`bqGetReservation`（読取）を追加、`app.js`に「予約」タブ（予約帳=タイムライン/カレンダー/リスト、予約分析=曜日別・当日予約時刻）を実装。既存`viewAd()`内の旧予約分析ブロックは並行稼働のため無変更で維持。**ユーザーとの協働で本番反映まで完了**: clasp再ログイン→`clasp push`→`clasp deploy -i <本番デプロイID>`で本番反映（v138→v139。ping=`token-336h-v1-rsv`で確認）、Script PropertiesにSUPABASE_URL/SUPABASE_SERVICE_KEYを登録（**ハマりポイント**: Supabaseの新形式キー`sb_secret_...`はGAS UrlFetchAppからの呼び出しを「ブラウザからの利用」と誤検知し401で拒否される。**旧形式の`service_role`キー（`eyJ...`のJWT。「Legacy anon, service_role API keys」タブ）を使うこと**）、`bqSyncReservation`初回実行で`stg_reservation`に4,650件投入済み（食べログノート3,688件＋ダイニー962件、I-1の実績と完全一致）。**ダッシュボードで実データ表示を確認できる状態**。担当Dが並行して日次同期呼び出し（`bq-reservation-sync.js`毎朝10:15）を追加済み（下記「④に対応」エントリ参照。本番デプロイ完了によりこちらも動く状態になったはず）。残作業: ①数日分データが溜まってから新旧の予約分析の数字を突き合わせ②`tori-dashboard`の git commit/push（作業ツリーに変更が残っている）③Phase2（キャンセル分析・媒体手数料設定・前年比較・お客様名表示）。詳細は本日付エントリ「A-6 経営ダッシュボード『予約』タブ Phase1実装」参照
 
+**★追記（2026-08-28・担当D実行スレッド）accounting_chatwork実機テスト送信成功・担当Bが配信グループ管理UIを改善**:
+- `tori-dashboard/.github/workflows/lark-report.yml`を`only_group=accounting_chatwork`指定で手動実行し、他グループ（group1〜3）へは送らずこの新チャンネルだけをテスト。**結果: 成功12件/失敗0件**（全12店舗の日報がChatworkルーム446080909へ実送信されたことを確認）。`CHATWORK_API_TOKEN`・`BQ_LOAD_TOKEN`とも既存のGitHub Secretsで動作（追加登録不要）
+- 担当Bが「配信グループ管理」UI改善に対応済み（[nippo commit 1f252ee](https://github.com/mirai-oss/nippo/commit/1f252ee)）: 各グループカードに対象店舗一覧・件数・重複警告を表示するようになった
+
 **★追記（2026-08-28・担当D実行スレッド）U13完了: 経理向けChatwork配信を登録・担当F/Gへ着手依頼をSendMessageで送付**:
 - **Chatwork配信**: ユーザー確認の結果「全12店舗（本部除く）」に決定。`report_channels`へ新規行を追加（`name='accounting_chatwork'`・`kind='chatwork'`・`secret_name='CHATWORK_API_TOKEN'`・`chatwork_room_id='446080909'`・`report_kinds=['daily','weekly','monthly']`・`is_active=true`）、`report_channel_stores`に本部を除く全12店舗を紐付け済み。既存のLark配信の仕組み（`scripts/lark-report.mjs`）がチャネル非依存で作られているため、追加のコード変更は不要（データ追加のみ）
 - **担当Fへの依頼**（エイリアス列整理の方針決定・詳細は上記エントリ）・**担当Gへの依頼**（広告予想売上=着手GO／媒体マスタ統一=現行の暫定運用を正式化）を、担当がどのセッションか特定できなかったため生きている全セッション（`nstyle-ai-44`/`nstyle-ai-47`/`nstyle-ai-fa`/`nstyle-ai-f9`）へSendMessageで送付（該当しなければ読み飛ばす形式）。あわせて`nstyle-ai-44`（担当Bと過去に自己申告済み）へnippoの「配信グループ管理」UI改善（各配信グループのカードに対象店舗の一覧・件数を表示し、どのチャンネルに何が送られるか一目で分かるようにする。ユーザー要望）も依頼
@@ -232,7 +236,7 @@
 | U4 | Google Ads支払方法の回答＋請求メールが届いているかの確認 | リスティング請求書→MF連携（担当C） |
 | U5 | C-3労務ワークフロー設計書§9の確認事項（テンプレ雛形・送信経路・電子交付同意・しきい値・運用主体）＋実装時の担当調整（置き場所がF専任のns-info-system） | C-3実装着手 |
 | U6 | 店舗・法人マスタ統一の実装方針承認（`docs/調査レポート_店舗法人マスタ統一_2026-08-26.md`） | 担当F実装 |
-| U7 | ✅**2026-08-28回答済み**: 広告予想売上表示=着手GO／媒体マスタ統一=今の`tpl_media_alias`暫定運用を正式運用にする（恒久統一はしない） | 担当G次ラウンドで①実装 |
+| U7 | ✅**2026-08-28回答済み**: 広告予想売上表示=着手GO／媒体マスタ統一=今の`tpl_media_alias`暫定運用を正式運用にする（恒久統一はしない） | ✅**①実装・本番反映完了**（担当G実行スレッド参照）。②はコード変更不要でクローズ |
 | U8 | 媒体別売上「前年比」修正の実機確認（PLタブ・ダッシュボードで数値が出るか） | クローズ判定 |
 | U9 | ✅**2026-08-28完了**: PL管理システム`⚙設定`シートB16〜B18の店舗名表記ゆれを担当Dが修正済み（`EXACT()`で完全一致確認済み） | クローズ |
 | U10 | GBP APIの利用申請 | レーンH（GBP投稿・口コミ返信×AI）発進 |
@@ -3322,3 +3326,13 @@ Sync4宣言（本ファイル該当エントリ参照）を受けてA-6（実装
 - あわせて、同じ店舗が同種（Lark/Chatwork）の別グループにも所属している場合は赤字で重複警告を表示するようにした
 - これで担当Dが今回追加した`accounting_chatwork`（経理向けChatwork・全12店舗）のような新規配信グループも、店舗管理画面を開けばひと目で対象店舗と配信先が確認できる
 - SQL・Edge Function変更なし・`nippo/index.html`のみ。構文チェック・ローカルサーバでのコンソールエラー無し確認済み。ログインが必要なためE2E未実施。担当Dへ対応完了をSendMessageで報告済み
+
+## 2026-08-28（担当G実行スレッド）U7①広告予想売上表示を実装・本番反映完了
+
+担当Dから直接連携依頼（SendMessage）でユーザー回答（U7）を受け着手。`設計メモ_担当G_広告予想売上と媒体マスタ統一_2026-08-25.md`§①の実装方針どおり進めた。
+
+- **①広告予想売上（ネット予約人数から計算する見込み）を実売上と並べて表示**: `⚙単価設定`（店舗×媒体の設定単価・平均1組人数・電話CV）と`💾売上DB`（アクセス数・ネット予約組数/人数・電話数）をGASの`action:'data'`（既存`fetchAdCostRows`と同じ経路・`keys:'単価設定'`/`keys:'広告効果'`）で取得し、`予想売上＝ネット予約人数×設定単価＋電話数×電話CV×平均1組人数×設定単価`を計算。**計算式・列検出・優先順位ロジック（店舗×媒体→店舗のみ→媒体のみ→全社共通）は`tori-dashboard/app.js`の`adFxAgg()`/`ingestTanka()`/`ingestAdFx()`をそのまま移植**（数字が本家の広告管理タブとズレない）
+- 実装箇所: `supabase/functions/export-run/index.ts`（Excel/CSV出力。Excelは「予想売上（見込み）」列を追加し色分け、CSVは区分行を追加）／`supabase/functions/export-preview/index.ts`（プレビューJSONに`forecast_sales_total`を追加）／`export.html`（プレビュー表示に予想売上合計の行を追加）。**設計メモの要望どおり「売上（実績）」と「予想売上（見込み）」を別指標として明示・混同しない表記**にした
+- **②媒体マスタ恒久統一**: ユーザー回答（案2採用＝`tpl_media_alias`暫定運用を正式運用に）につき**コード変更は不要**。クローズ
+- 動作確認: `deno`/`supabase` CLIがローカルに無くコード上の構文レビュー（既存パターンとの整合性突合）のみで実機テストは未実施。デプロイは`npx supabase functions deploy export-run/export-preview --project-ref uuvsxzhpxtghojoubjcc`（auto mode classifierに一度ブロックされ、ユーザー承認後にユーザー側でmacOSキーチェーン許可を実施し完了。**version 9・2026-08-28 14:59台に更新済みを確認**）。**次回の実機確認事項**: export.htmlの「媒体別広告実績」プレビューで予想売上合計が表示されるか、⚙単価設定が未登録の店舗×媒体で「—（⚙単価設定未登録）」が正しく出るかをユーザーに確認してもらうこと
+- U7の状態を✅実装・本番反映完了に更新済み（本ファイル冒頭付近の表）

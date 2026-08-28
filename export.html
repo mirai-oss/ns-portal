@@ -289,7 +289,8 @@ async function runPreview(){
   const extraLines=b.report_key==="ad_media"?`
     対象媒体数: ${b.media_count}媒体<br>
     広告費合計: ${fmtYen(b.ad_cost_total)}<br>
-    売上合計（媒体経由・目安）: ${fmtYen(b.sales_total)}<br>
+    売上合計（媒体経由・実績）: ${fmtYen(b.sales_total)}<br>
+    予想売上合計（見込み・ネット予約ベース）: ${b.forecast_sales_total!=null?fmtYen(b.forecast_sales_total):"—（⚙単価設定未登録）"}<br>
     ROAS（目安）: ${b.roas!=null?(b.roas*100).toFixed(0)+"%":"—"}`
     :b.report_key==="loan_repayment"?`
     対象法人数: ${b.corporation_count}法人<br>
