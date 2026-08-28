@@ -6,7 +6,7 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
-**★★★★★★★★★2026-08-28 最新（担当Aスレッド）A-6 経営ダッシュボード「予約」タブ Phase1: コード完了・デプロイ待ち**: Sync4を受けてA-6着手（段階的実装で合意・第1弾=予約帳＋予約分析の基本機能）。`tori-dashboard/gas/Code.gs`に`bqSyncReservation`（Supabase `rsv_reservations`→BQ `stg_reservation`ミラー）・`bqGetReservation`（読取）を追加、`app.js`に「予約」タブ（予約帳=タイムライン/カレンダー/リスト、予約分析=曜日別・当日予約時刻）を実装。既存`viewAd()`内の旧予約分析ブロックは並行稼働のため無変更で維持。ローカル実機確認済み（render正常・コンソールエラー無し）。**次に必要（担当Aからは実施不可・要ユーザー対応）**: ①Script PropertiesへSupabase接続情報を登録②本番デプロイ（`.clasp.json`が無いため要セットアップ）③`bqSyncReservation`初回手動実行④担当Dへ日次同期呼び出しの追加を依頼。詳細は本日付エントリ「A-6 経営ダッシュボード『予約』タブ Phase1実装」参照
+**★★★★★★★★★2026-08-28 最新（担当Aスレッド）A-6 経営ダッシュボード「予約」タブ Phase1: 本番デプロイ・データ投入まで完了**: Sync4を受けてA-6着手（段階的実装で合意・第1弾=予約帳＋予約分析の基本機能）。`tori-dashboard/gas/Code.gs`に`bqSyncReservation`（Supabase `rsv_reservations`→BQ `stg_reservation`ミラー）・`bqGetReservation`（読取）を追加、`app.js`に「予約」タブ（予約帳=タイムライン/カレンダー/リスト、予約分析=曜日別・当日予約時刻）を実装。既存`viewAd()`内の旧予約分析ブロックは並行稼働のため無変更で維持。**ユーザーとの協働で本番反映まで完了**: clasp再ログイン→`clasp push`→`clasp deploy -i <本番デプロイID>`で本番反映（v138→v139。ping=`token-336h-v1-rsv`で確認）、Script PropertiesにSUPABASE_URL/SUPABASE_SERVICE_KEYを登録（**ハマりポイント**: Supabaseの新形式キー`sb_secret_...`はGAS UrlFetchAppからの呼び出しを「ブラウザからの利用」と誤検知し401で拒否される。**旧形式の`service_role`キー（`eyJ...`のJWT。「Legacy anon, service_role API keys」タブ）を使うこと**）、`bqSyncReservation`初回実行で`stg_reservation`に4,650件投入済み（食べログノート3,688件＋ダイニー962件、I-1の実績と完全一致）。**ダッシュボードで実データ表示を確認できる状態**。担当Dが並行して日次同期呼び出し（`bq-reservation-sync.js`毎朝10:15）を追加済み（下記「④に対応」エントリ参照。本番デプロイ完了によりこちらも動く状態になったはず）。残作業: ①数日分データが溜まってから新旧の予約分析の数字を突き合わせ②`tori-dashboard`の git commit/push（作業ツリーに変更が残っている）③Phase2（キャンセル分析・媒体手数料設定・前年比較・お客様名表示）。詳細は本日付エントリ「A-6 経営ダッシュボード『予約』タブ Phase1実装」参照
 
 **★追記（2026-08-28・担当D実行スレッド）④に対応: 予約データBQ同期の日次呼び出しを追加（コミット`f6d5934` ns-daily-import）**: 担当Aからの依頼どおり`lib/gas.js`に`bqSyncReservation()`（`bqSyncSales()`と同型）を追加し、新規タスク`tasks/bq-reservation-sync.js`を毎朝10:15（予約取込2本の後）に実行するよう`DAILY_INDEPENDENT`へ登録。GAS側の本体ロジックは担当A実装済みのため、Node側はトリガーするだけ。**①②のユーザー作業（Script Properties登録・本番デプロイ）が終わるまではaction不明エラーで失敗する想定**（`docs/手順書_A-6_予約タブ本番反映.md`参照・ユーザー作業待ち）。
 
@@ -3289,3 +3289,13 @@ Sync4宣言（本ファイル該当エントリ参照）を受けてA-6（実装
 6. Phase2（キャンセル分析パネル・媒体手数料設定モーダル・前年同週比較・お客様名表示）は別途着手
 
 上記1〜4のユーザー作業手順は `docs/手順書_A-6_予約タブ本番反映.md` に整理済み（Apps Scriptエディタ・Supabaseダッシュボードへの直リンク、コピペするコード・curlコマンド付き）。
+
+### 追記（同日）1〜3完了・本番反映まで完了
+
+ユーザーと協働して1〜3を実施:
+- **デプロイ方法を手順書の「手動コピペ」から`clasp`に変更**: グローバルの`~/.clasprc.json`ログインが期限切れ（`invalid_grant`）だったため、ユーザーに`clasp login`（ブラウザOAuth）を実施してもらい再ログイン成功。その後`clasp clone <scriptId>`で本番ファイル一式（`連携本番.js`ほか）を取得→ローカルの更新済み`Code.gs`の内容で`連携本番.js`を上書き→`clasp push`（内容更新のみ・本番URLはまだ古いまま）→`clasp deploy -i <本番デプロイID>`で既存デプロイをv138→v139に切替（**この最終ステップは本番影響があるためユーザーに実行可否を確認してから実施**。auto mode classifierにも一度ブロックされ、ユーザー承認後に再実行して成功）。`?action=ping`で`ver:"token-336h-v1-rsv"`を確認（**ping確認用にversion文字列へ`-rsv`サフィックスを追加**したのが効いた）
+- **Script Properties登録でハマった点（重要・次回の参考に）**: SupabaseのAPI Keysページが新UI（「Publishable and secret API keys」タブが既定）になっており、そこで見える`sb_secret_...`形式のキーをSUPABASE_SERVICE_KEYに設定したところ、`bqSyncReservation`実行時にSupabase側から`401 Forbidden use of secret API key in browser`（新形式キーの誤検知と思われる。GASのUrlFetchAppからの呼び出しなのに「ブラウザ利用」と判定された）。**「Legacy anon, service_role API keys」タブの`service_role`（`eyJ...`のJWT形式）に切り替えたら解決**。今後Supabaseの秘密鍵をどこかへ設定する際は、新形式キーではなく素直に旧形式`service_role`を使うこと
+- **初回データ投入**: `bqSyncReservation`をユーザーがブラウザから直接実行（tokenは本人のみが把握・チャットには一切含めない運用で実施）→`{"ok":true,"table":"stg_reservation","rows":4650}`で成功。I-1実績（食べログノート3,688件＋ダイニー962件＝4,650件）と完全一致
+- ユーザーには一貫して「秘密情報（トークン・APIキーの値そのもの）はチャットに貼らず、プレースホルダ付きのURL/手順だけ渡してブラウザ側で実行してもらう」運用を徹底
+
+**残るのは**: ①`tori-dashboard`のgit commit/push（作業ツリーに変更が残っている。ユーザー確認待ち）②数日分データが溜まってからの新旧予約分析の数字突き合わせ③Phase2。担当Dの日次同期フック（`bq-reservation-sync.js`）はデプロイ完了により正常に動くはず（次回実行を要ウォッチ）。
