@@ -3347,3 +3347,20 @@ WORKLOG「2026-08-26（担当G実行スレッド）G-2」の未完了事項（`a
 - **G-2はこれで完全稼働**
 
 **担当Gへ**: ブロック解消しました。実機E2E確認済みです。
+
+## 2026-08-28（担当F実行スレッド）エイリアス列統合: データ移行完了・読み替え切替を各担当へ依頼
+
+担当Dからの申し送り（本WORKLOG「担当Fへ」・調査レポート_店舗法人マスタ統一_2026-08-26.md③）を受け、ユーザーへ具体案を提示・承認済み。データ移行を実施（`supabase/2026-08-28_store_alias_consolidation.sql`・ユーザーが本番適用済み）。
+
+- `stores.dash_store_name`が入っている店舗を`store_aliases`へコピー（`source='tori-dashboard'`）
+- `stores.seisan_store_name`が入っている店舗を`store_aliases`へコピー（`source='精算システム'`）
+- **既存の`dash_store_name`/`seisan_store_name`列は消していない**（今動いているコードへの影響ゼロ）。`store_directory_v`（tori-dashboard GASが読む公開ビュー）の`aliases`列は`store_aliases`から動的集計しているため、**GAS側は無改修で新しい別名も自動的に受け取れる状態**になっている
+
+**読み替えの切替は担当外のため実装せず、以下を依頼として書き残す**（急ぎではない・次回各担当が手すきのタイミングで対応でよい）:
+
+- **担当A/D「dash-sync」**: `supabase/functions/dash-sync/index.ts:89,92`の`nameMap`構築が`stores.dash_store_name`を直接読んでいる。`store_aliases`（`source='tori-dashboard'`、または全件）を読む方式に切替可能（データは移行済み）
+- **担当D「labor-allocation-compare」**: 同様のパターンで`stores.dash_store_name`を参照している箇所あり（同じ切替が可能）
+- **担当G「export-run/export-preview」**: `export-run/index.ts:930,935`・`export-preview/index.ts:326,330`で`s.dash_store_name || s.name`のフォールバック方式を使っている。同ファイル内で別目的（広告媒体名の正規化）に`store_aliases`を既に読んでいるため、統合すれば1つの解決ロジックにまとめられる
+- **担当A「tori-dashboard GAS」**: 現状`store_directory_v`経由で`seisan_store_name`列を個別にも読んでいる（`gas/Code.gs:1835`付近）が、移行後は`aliases`だけで足りるようになるはずなので、余裕があれば整理可（緊急性なし）
+
+**次のアクション**: 上記4件は各担当のタイミングで対応。既存の`dash_store_name`/`seisan_store_name`列は、全ての読み替えが完了したことを確認してから削除を検討する（今回はまだ削除しない）。
