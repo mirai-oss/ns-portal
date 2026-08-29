@@ -6,6 +6,17 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
+**★★★2026-08-30（担当D実行スレッド）担当Aからの依頼に対応: I-1予約取込を当月＋翌月＋月初は前月も取り込む構造に拡張（サイト側の月指定操作はMac mini実機確認待ち）**
+
+担当Aから「ユーザー要望で予約取込を当月＋翌月に、月初は前月も」との依頼を受け対応（`~/ns-daily-import`。このマシン=MacBookにはログイン情報が無いため、実サイトでの月指定CSV出力方法の確認は保留し、コード側の構造整備のみユーザー確認のうえ実施）。
+
+- **新規共通関数**: `lib/dates.js`に`monthDash(offset)`（当月からoffset月ずらした`YYYY-MM-01`）・`targetReservationMonths(backfillUntilDay=3)`（当月＋翌月。月初backfillUntilDay日目までは前月も追加）を追加。`node -e`で年またぎ含め動作確認済み（純粋関数）
+- **`tasks/tabelog-note-reservation.js`・`tasks/dinii-reservation.js`を書き換え**: `run()`が単月チェックではなく`targetReservationMonths()`の配列をループする構造に変更。各タスクに`downloadCsvForMonth(page, targetMonth, isCurrentMonth)`を新設し、当月は既存の実機確認済みフローへ委譲、当月以外は明示的に`NOT_IMPLEMENTED`（黙って誤動作しない）。**未実装月はその月だけスキップし、当月分の取込は止めない**設計（`skippedMonths`として結果に記録）
+- **重要な発見**: `dinii-reservation.js`のバックフィル調査（2026-08-28付・別セッションのWORKLOG記録、commit`c0f61d4`）で、ダイニー予約台帳の日付ピッカー（Ant Design RangePicker）は前月/次月ボタンで任意の月へ移動可能・セルの`title`属性がISO形式`YYYY-MM-DD`であることが既に実機確認済みと判明。この情報を`downloadCsvForMonth()`のTODOコメントに反映し、次にMac miniで実装する人が再調査せずに済むようにした（既知の落とし穴＝開始日クリック後にパネル表示月が戻る点も記載）
+- **食べログノート側**は同種の実機調査がまだ無いため、TODOコメントに確認すべき観点（分析タブに「翌月の予約情報CSV出力」ボタンが並んでいないか、月選択UIの有無）を明記するに留めた
+- `node --check`で両タスクファイル・`lib/dates.js`とも構文確認済み。commit `ea750a5`・`42390e9`（`ns-daily-import`）・push済み
+- **未完了（次のアクション）**: 両サイトの月指定CSV出力方法をMac miniで実機確認し、`downloadCsvForMonth()`のNOT_IMPLEMENTED分岐を実装に置き換えること。それまでは日次実行時、翌月・前月分は「未実装スキップ」として記録されるだけで実害は無い（当月分の取込は従来どおり継続）
+
 **★★★★★2026-08-30（担当B実行スレッド）給与・インセンティブ配分の管理画面を実機フィードバックで全面改訂（nippoコミット`364e5d1`）**
 
 昨日作った管理画面（店舗を選んでから半月ごとに入力する形）に実機フィードバック4点をもらい改訂:
