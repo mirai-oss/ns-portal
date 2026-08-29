@@ -1,0 +1,376 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>N-Style 予約管理 UI v1</title>
+<style>
+:root{
+  --bg:#f4f1eb;--panel:#fff;--ink:#231f1a;--muted:#7d756d;--line:#e4ddd4;--nav:#211d18;
+  --accent:#c94728;--red:#c93f2b;--redsoft:#fde9e4;--green:#2f8f63;--greensoft:#e8f5ee;
+  --amber:#b77b13;--ambersoft:#fff3d8;--blue:#2f6fb7;--bluesoft:#e8f0fb;--purple:#6849a8;--purplesoft:#f1ebff;
+  --gray:#736b63;--graysoft:#f2efeb;
+  --shadow:0 8px 24px rgba(35,31,26,.06);
+}
+*{box-sizing:border-box}
+body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans JP",sans-serif;background:var(--bg);color:var(--ink)}
+button,input,select{font:inherit}
+button{cursor:pointer}
+.wrap{max-width:1650px;margin:0 auto;padding:20px 26px 60px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:16px;box-shadow:var(--shadow)}
+.btn{border:1px solid var(--line);background:#fff;border-radius:10px;padding:9px 14px;font-size:13px}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:800}
+.select{border:1px solid var(--line);background:#fff;border-radius:10px;padding:9px 10px;font-size:13px}
+.badge{display:inline-block;padding:4px 8px;border-radius:999px;font-size:11px;font-weight:800}
+.green{background:var(--greensoft);color:var(--green)}
+.red{background:var(--redsoft);color:var(--red)}
+.amber{background:var(--ambersoft);color:var(--amber)}
+.blue{background:var(--bluesoft);color:var(--blue)}
+.gray{background:var(--graysoft);color:var(--gray)}
+
+/* ===== ヘッダー ===== */
+.pagehead{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;padding:18px 0 6px}
+.pagehead h1{margin:0;font-size:24px}
+.pagehead .sub{color:var(--muted);font-size:13px;margin-top:4px}
+.headright{display:flex;gap:10px;align-items:center}
+.searchbox{border:1px solid var(--line);background:#fff;border-radius:12px;padding:10px 14px;font-size:13px;color:var(--muted);min-width:260px}
+.bell{width:40px;height:40px;border-radius:50%;background:#fff;border:1px solid var(--line);display:flex;align-items:center;justify-content:center}
+
+/* ===== ツールバー ===== */
+.toolbar{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:center;padding:14px 0}
+.toolbar-left,.toolbar-right{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+
+/* ===== サブタブ ===== */
+.subtabs{display:flex;gap:8px;margin:6px 0 14px}
+.subtab{border:1px solid var(--line);background:#fff;border-radius:999px;padding:10px 16px;font-size:13px;font-weight:700}
+.subtab.active{background:#211d18;color:#fff;border-color:#211d18}
+
+/* ===== 案内バナー ===== */
+.note-banner{background:var(--ambersoft);border:1px solid #efd9a4;border-radius:12px;padding:12px 16px;font-size:12.5px;color:#7a5a1a;margin-bottom:16px}
+
+/* ===== KPIカード ===== */
+.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px}
+.kpi{padding:16px}
+.kpi small{display:block;color:var(--muted);font-size:11.5px}
+.kpi b{display:block;font-size:24px;margin-top:6px}
+.kpi .foot{font-size:11px;color:var(--muted);margin-top:4px}
+.kpi.highlight{border-color:#efb9ae;background:var(--redsoft)}
+.kpi.highlight b{color:var(--red)}
+
+/* ===== 2カラムパネル ===== */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px}
+.panel{padding:16px}
+.panel h3{margin:0;font-size:15px}
+.panel .desc{color:var(--muted);font-size:11.5px;margin-top:3px;margin-bottom:12px}
+.tbl{width:100%;border-collapse:collapse;font-size:12.5px}
+.tbl th,.tbl td{padding:9px 8px;border-bottom:1px solid var(--line);text-align:left}
+.tbl th{color:var(--muted);font-weight:700;font-size:11px}
+.tbl td.num{text-align:right;font-variant-numeric:tabular-nums}
+.tbl tr.hi td{color:var(--red);font-weight:800}
+
+/* ===== 前年比較パネル ===== */
+.yoy-panel{padding:16px;margin-bottom:14px}
+.yoy-panel h3{margin:0;font-size:15px}
+.yoy-panel .desc{color:var(--muted);font-size:11.5px;margin:3px 0 12px}
+.yoy-mini{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+.mini{border:1px solid var(--line);border-radius:10px;padding:12px;background:#faf8f5}
+.mini small{display:block;color:var(--muted);font-size:11px}
+.mini b{font-size:18px;display:block;margin-top:4px}
+.mini .delta{font-size:11px;font-weight:800;margin-top:3px}
+.mini .delta.up{color:var(--green)}
+.mini .delta.down{color:var(--red)}
+
+/* ===== フィルタ行 ===== */
+.filters{display:grid;grid-template-columns:repeat(6,1fr);gap:8px;margin-bottom:14px}
+.filters label{display:block;font-size:10.5px;color:var(--muted);margin-bottom:4px}
+.filters .select,.filters input{width:100%}
+
+/* ===== 表示切替 ===== */
+.viewtoggle{display:flex;gap:8px;margin-bottom:14px}
+.viewtoggle button{border:1px solid var(--line);background:#fff;border-radius:10px;padding:9px 14px;font-size:13px;font-weight:700}
+.viewtoggle button.active{background:#211d18;color:#fff;border-color:#211d18}
+
+/* ===== 日付ヘッダー ===== */
+.daybar{display:flex;justify-content:space-between;align-items:center;padding:16px 18px;margin-bottom:14px}
+.daybar b{font-size:16px}
+.daybar .meta{color:var(--muted);font-size:12px;margin-top:3px}
+
+/* ===== タイムライン(ガント) ===== */
+.gantt-card{padding:0;overflow:hidden}
+.gantt-wrap{overflow:auto}
+.gantt{min-width:1400px}
+.grow{display:grid;grid-template-columns:150px repeat(13,1fr);position:relative;border-top:1px solid var(--line)}
+.ghead{display:grid;grid-template-columns:150px repeat(13,1fr);background:#faf8f5;border-bottom:1px solid var(--line);position:sticky;top:0}
+.ghead div,.gcell{padding:10px 6px;font-size:11px;color:var(--muted);text-align:center;border-left:1px solid var(--line)}
+.ghead div:first-child,.grow>.gname{border-left:0;text-align:left}
+.gname{padding:14px 12px;font-size:12px;background:#fff;position:sticky;left:0}
+.gname b{display:block;font-size:12.5px}
+.gname small{color:var(--muted);font-size:10.5px}
+.gcell{min-height:56px;position:relative}
+.gblock{position:absolute;top:4px;height:calc(100% - 8px);border-radius:8px;padding:6px 8px;color:#fff;font-size:11px;box-shadow:0 2px 6px rgba(0,0,0,.12);overflow:hidden;white-space:nowrap}
+.gblock b{display:block;font-size:12px}
+.gblock .tag{font-size:9.5px;opacity:.9;display:block;margin-top:2px}
+.gblock .chip{display:inline-block;background:rgba(255,255,255,.28);border-radius:999px;padding:1px 6px;font-size:9px;margin-left:4px;vertical-align:middle}
+.gblock.c-today{background:var(--accent)}
+.gblock.c-normal{background:#b7973f}
+.gblock.c-walkin{background:#9a9186}
+.gblock.c-highlight{background:var(--blue);outline:2px solid #1c4d85}
+.gblock.c-vip{background:var(--purple)}
+.gblock.c-alert{background:#c0522f}
+.nowline{position:absolute;top:0;bottom:0;width:2px;background:var(--red);z-index:5}
+.nowline::before{content:"現在";position:absolute;top:-2px;left:-10px;font-size:9px;color:var(--red);writing-mode:vertical-rl}
+
+@media(max-width:1100px){
+  .kpis,.yoy-mini{grid-template-columns:repeat(2,1fr)}
+  .grid2{grid-template-columns:1fr}
+  .filters{grid-template-columns:repeat(3,1fr)}
+}
+@media(max-width:760px){
+  .wrap{padding:12px 12px 60px}
+  .pagehead{flex-direction:column}
+  .kpis,.yoy-mini{grid-template-columns:1fr 1fr}
+  .filters{grid-template-columns:1fr 1fr}
+  .toolbar-left,.toolbar-right{width:100%}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="pagehead">
+    <div>
+      <h1>予約管理</h1>
+      <div class="sub">予約帳・広告費・媒体手数料を一元管理</div>
+    </div>
+    <div class="headright">
+      <div class="searchbox">🔍 タスク・お知らせ・機能を検索</div>
+      <div class="bell">🔔</div>
+    </div>
+  </div>
+
+  <div class="toolbar">
+    <div class="toolbar-left">
+      <select class="select"><option>全店舗</option><option>鳥一代 恵比寿</option><option>鳥一代 新橋</option></select>
+      <input class="select" type="date" value="2026-08-27">
+      <button class="btn">📅 日付選択</button>
+    </div>
+    <div class="toolbar-right">
+      <button class="btn" onclick="manualSync()">🔄 最新データ取得</button>
+      <button class="btn" onclick="downloadCSV()">CSV</button>
+      <button class="btn primary">媒体・手数料設定</button>
+    </div>
+  </div>
+
+  <div class="subtabs">
+    <button class="subtab" data-page="book" onclick="showPage('book')">予約帳</button>
+    <button class="subtab active" data-page="analysis" onclick="showPage('analysis')">予約分析</button>
+    <button class="subtab" onclick="alert('経営ダッシュボードへ遷移（デモ）')">広告費用対効果 → 経営ダッシュボード</button>
+  </div>
+
+  <!-- ============ 予約分析ページ ============ -->
+  <section id="analysis" class="page">
+    <div class="note-banner">広告費・媒体手数料を含む費用対効果は「経営ダッシュボード」に集約。予約分析では、予約構成・当日予約・媒体・コース・時間帯を確認します。</div>
+
+    <div class="kpis">
+      <div class="card kpi"><small>予約件数</small><b>1,284件</b></div>
+      <div class="card kpi"><small>予約人数</small><b>4,862人</b></div>
+      <div class="card kpi highlight"><small>当日予約</small><b>291件</b><div class="foot">予約の 22.7%</div></div>
+      <div class="card kpi"><small>ウォークイン</small><b>486組</b><div class="foot">予約外・フリー</div></div>
+    </div>
+
+    <div class="grid2">
+      <div class="card panel">
+        <h3>当日予約分析</h3>
+        <div class="desc">当日予約がいつ・どの媒体から入っているか</div>
+        <table class="tbl">
+          <thead><tr><th>時間帯</th><th class="num">当日予約</th><th class="num">全予約</th><th class="num">当日比率</th></tr></thead>
+          <tbody>
+            <tr><td>11:00〜14:00</td><td class="num">46件</td><td class="num">224件</td><td class="num">20.5%</td></tr>
+            <tr><td>17:00〜19:00</td><td class="num">69件</td><td class="num">338件</td><td class="num">20.4%</td></tr>
+            <tr class="hi"><td>19:00〜21:00</td><td class="num">132件</td><td class="num">512件</td><td class="num">25.8%</td></tr>
+            <tr><td>21:00以降</td><td class="num">44件</td><td class="num">210件</td><td class="num">21.0%</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="card panel">
+        <h3>当日予約×媒体</h3>
+        <div class="desc">媒体ごとの当日予約比率</div>
+        <table class="tbl">
+          <thead><tr><th>媒体</th><th class="num">当日予約</th><th class="num">全予約</th><th class="num">比率</th></tr></thead>
+          <tbody>
+            <tr><td>ホットペッパー</td><td class="num">104</td><td class="num">386</td><td class="num">26.9%</td></tr>
+            <tr><td>食べログ</td><td class="num">61</td><td class="num">281</td><td class="num">21.7%</td></tr>
+            <tr><td>Google / GBP</td><td class="num">54</td><td class="num">195</td><td class="num">27.7%</td></tr>
+            <tr><td>ぐるなび</td><td class="num">27</td><td class="num">142</td><td class="num">19.0%</td></tr>
+            <tr><td>自社・電話</td><td class="num">45</td><td class="num">280</td><td class="num">16.1%</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="grid2">
+      <div class="card panel">
+        <h3>コース別</h3>
+        <div class="desc">予約件数・人数・売上構成</div>
+        <table class="tbl">
+          <thead><tr><th>コース</th><th class="num">件数</th><th class="num">人数</th><th class="num">構成比</th></tr></thead>
+          <tbody>
+            <tr><td>宴会コース</td><td class="num">412</td><td class="num">2,180</td><td class="num">44.8%</td></tr>
+            <tr><td>飲み放題付き</td><td class="num">298</td><td class="num">1,340</td><td class="num">27.6%</td></tr>
+            <tr><td>お一人様・少人数</td><td class="num">574</td><td class="num">1,342</td><td class="num">27.6%</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="card panel">
+        <h3>予約目的・キーワード</h3>
+        <div class="desc">特別対応が必要な予約</div>
+        <table class="tbl">
+          <thead><tr><th>キーワード</th><th class="num">件数</th><th class="num">前月比</th></tr></thead>
+          <tbody>
+            <tr><td>🎂 誕生日</td><td class="num">38</td><td class="num">+12%</td></tr>
+            <tr><td>💍 記念日</td><td class="num">21</td><td class="num">+4%</td></tr>
+            <tr><td>⭐ VIP</td><td class="num">9</td><td class="num">±0%</td></tr>
+            <tr><td>⚠ アレルギー</td><td class="num">17</td><td class="num">+30%</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 予約帳ページ ============ -->
+  <section id="book" class="page" style="display:none">
+    <div class="kpis">
+      <div class="card kpi"><small>今日の予約</small><b>84件 / 326名</b><div class="foot">事前予約＋当日予約</div></div>
+      <div class="card kpi highlight"><small>当日予約</small><b>19件 / 71名</b><div class="foot">予約全体の 22.6%</div></div>
+      <div class="card kpi"><small>ウォークイン</small><b>32組 / 78名</b><div class="foot">予約ではなく「フリー」扱い</div></div>
+      <div class="card kpi"><small>予約売上見込</small><b>¥2.14M</b><div class="foot">予約分のみ</div></div>
+    </div>
+
+    <div class="card yoy-panel">
+      <h3>前年同週・同曜日 比較</h3>
+      <div class="desc">予約画面を邪魔しないよう、判断用サマリーを上部に分離</div>
+      <div class="yoy-mini">
+        <div class="mini"><small>前年同曜日 売上</small><b>¥1,960,000</b><div class="delta up">今回 +9.2%</div></div>
+        <div class="mini"><small>前年同曜日 予約人数</small><b>298名</b><div class="delta up">今回 +9.4%</div></div>
+        <div class="mini"><small>前年同週 売上</small><b>¥13.82M</b><div class="delta up">今週 +6.8%</div></div>
+        <div class="mini"><small>前年同週 予約人数</small><b>2,104名</b><div class="delta down">今週 -1.9%</div></div>
+      </div>
+    </div>
+
+    <div class="filters">
+      <div><label>日付</label><input class="select" type="date" value="2026-08-27"></div>
+      <div><label>時間帯</label><select class="select"><option>すべて</option></select></div>
+      <div><label>媒体</label><select class="select"><option>すべて</option></select></div>
+      <div><label>コース</label><select class="select"><option>すべて</option></select></div>
+      <div><label>キーワード</label><select class="select"><option>すべて</option></select></div>
+      <div><label>人数</label><select class="select"><option>すべて</option></select></div>
+    </div>
+
+    <div class="viewtoggle">
+      <button class="active" onclick="switchView('timeline',this)">▦ 日別タイムライン</button>
+      <button onclick="switchView('calendar',this)">📅 カレンダー</button>
+      <button onclick="switchView('list',this)">☰ リスト</button>
+    </div>
+
+    <div class="card daybar">
+      <div>
+        <b>2026年8月27日（木）｜鳥一代 恵比寿</b>
+        <div class="meta">予約 16組60名 / フリー 8組21名 / 当日予約 4組15名</div>
+      </div>
+      <div style="display:flex;gap:10px;align-items:center">
+        <span class="badge green">● 予約受付中</span>
+        <button class="btn primary">＋ 予約作成</button>
+      </div>
+    </div>
+
+    <div class="card gantt-card">
+      <div class="gantt-wrap">
+        <div class="gantt" id="ganttRoot"></div>
+      </div>
+    </div>
+  </section>
+
+</div>
+
+<script>
+function showPage(id){
+  document.querySelectorAll('.page').forEach(p=>p.style.display='none');
+  document.getElementById(id).style.display='block';
+  document.querySelectorAll('.subtab[data-page]').forEach(b=>b.classList.toggle('active',b.dataset.page===id));
+}
+function switchView(v,btn){
+  document.querySelectorAll('.viewtoggle button').forEach(b=>b.classList.remove('active'));
+  btn.classList.add('active');
+  if(v!=='timeline') alert(v+'表示は今回のUIモックでは省略（デモ）');
+}
+function manualSync(){ alert('最新データを取得しました（デモ）'); }
+function downloadCSV(){
+  const rows=[['画面','店舗','日付'],['予約管理','鳥一代 恵比寿','2026-08-27']];
+  const csv='﻿'+rows.map(r=>r.join(',')).join('\n');
+  const blob=new Blob([csv],{type:'text/csv;charset=utf-8'});
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(blob);
+  a.download='reservation.csv';
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+/* ---- タイムライン(ガント)の描画 ---- */
+const HOURS=['17:00','18:00','19:00','20:00','21:00','22:00','23:00','24:00','25:00','26:00','27:00','28:00','29:00'];
+const SEATS=[
+  {name:'未配席',cap:''},
+  {name:'A1',cap:'4席'},
+  {name:'A2',cap:'4席'},
+  {name:'A3',cap:'4席'},
+  {name:'B1',cap:'6席'},
+  {name:'B2',cap:'4席'},
+  {name:'C1',cap:'4席'},
+];
+// col = HOURS配列のインデックス(小数可・17:00=0起点、1h=1col)、span=占有時間(h)
+const BLOCKS=[
+  {seat:'未配席',name:'山田様 4名',tag:'HP / 参鶏湯 / 🎂誕生日',chip:'当日',cls:'c-today',   col:1.0, span:2.0},
+  {seat:'A1',   name:'佐々木様 2名',tag:'食べログ / 💍記念日',   chip:'',     cls:'c-normal',  col:2.0, span:1.5},
+  {seat:'A2',   name:'フリー 2名',  tag:'ウォークイン',          chip:'予約外',cls:'c-walkin',  col:1.0, span:1.3},
+  {seat:'A3',   name:'鈴木様 3名',  tag:'Google / 🏮個室',        chip:'当日', cls:'c-highlight',col:4.7, span:1.6},
+  {seat:'B1',   name:'高橋様 6名',  tag:'電話 / 宴会 / ⭐VIP',    chip:'',     cls:'c-vip',      col:5.2, span:1.6},
+  {seat:'B2',   name:'木村様 4名',  tag:'HP / ⚠アレルギー',      chip:'',     cls:'c-alert',    col:7.0, span:1.5},
+  {seat:'C1',   name:'フリー 3名',  tag:'ウォークイン',           chip:'予約外',cls:'c-walkin',  col:0.6, span:1.4},
+];
+function renderGantt(){
+  const root=document.getElementById('ganttRoot');
+  let h='<div class="ghead"><div>席 / テーブル</div>'+HOURS.map(t=>`<div>${t}</div>`).join('')+'</div>';
+  SEATS.forEach(s=>{
+    h+=`<div class="grow"><div class="gname"><b>${s.name}</b>${s.cap?`<small>${s.cap}</small>`:''}</div>`;
+    for(let i=0;i<HOURS.length;i++) h+='<div class="gcell" data-seat="'+s.name+'" data-i="'+i+'"></div>';
+    h+='</div>';
+  });
+  root.innerHTML=h;
+  // ブロックを絶対配置で重ねる（各行のgcell位置を基準に%で計算）
+  const colw=100/HOURS.length;
+  BLOCKS.forEach(b=>{
+    const row=[...root.querySelectorAll('.grow')].find(r=>r.querySelector('.gname b').textContent===b.seat);
+    if(!row) return;
+    const el=document.createElement('div');
+    el.className='gblock '+b.cls;
+    el.style.left=`calc(150px + ${b.col*colw}% * (100% - 150px) / 100%)`;
+    el.style.width=`calc(${b.span*colw}% * (100% - 150px) / 100%)`;
+    el.innerHTML=`<b>${b.name}${b.chip?`<span class="chip">${b.chip}</span>`:''}</b><span class="tag">${b.tag}</span>`;
+    row.style.position='relative';
+    row.appendChild(el);
+  });
+  // 現在時刻ライン（19:40想定でデモ固定）
+  const nowRow=root.querySelector('.grow');
+  if(nowRow){
+    const nowCol=2.67; // 19:40相当
+    const line=document.createElement('div');
+    line.className='nowline';
+    line.style.left=`calc(150px + ${nowCol*colw}% * (100% - 150px) / 100%)`;
+    line.style.height=(SEATS.length*72+40)+'px';
+    root.style.position='relative';
+    root.appendChild(line);
+  }
+}
+renderGantt();
+</script>
+</body>
+</html>
