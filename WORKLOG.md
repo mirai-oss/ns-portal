@@ -3484,3 +3484,29 @@ WORKLOG「2026-08-26（担当G実行スレッド）G-2」の未完了事項（`a
 構文チェック・ローカルサーバでのコンソールエラー無し確認済み。ログインが必要なため役割別（一般従業員/店長/本部）の実機E2Eは未実施。
 
 **シフト仕上げと機能追加（実装指示書_担当B_シフト仕上げと機能追加_2026-08-29.md）は、パートA・パートBとも全項目実装完了**。残るのは①4件のSQL（`2026-08-29_sf_help_availability.sql`／`sf_attendance_correction.sql`／`sf_boost_days.sql`／`sf_time_presets_slot_kind.sql`）の本番適用（未実施・ユーザー確認後）②`labor_cost_daily`の既存RLSがTENCHOを含んでいない件の確認（前エントリ参照）③実機E2E（ログイン手段が無いため）。次にログインできる方の確認をお願いします。
+
+## 2026-08-29（担当B実行スレッド・続き）①シフト仕上げSQL4件を本番反映 ②権限設定の管理画面対応を準備＋担当Dへ依頼
+
+ユーザーから「①SQLを反映して」「②勤怠実績等の閲覧権限を、SQL変更ではなく細かく設定できる管理画面に入れてほしい。担当に実装指示して」との指示を受け対応。
+
+### ① SQL4件を本番反映（完了）
+Supabase Management API（`~/.config/ns-portal/supabase_pat`・`POST /v1/projects/{ref}/database/query`）で以下を適用し、テーブル・列の存在を`information_schema`で確認済み:
+- `supabase/2026-08-29_sf_help_availability.sql` → `sf_help_availability`作成確認
+- `supabase/2026-08-29_sf_attendance_correction.sql` → `sf_attendance_correction_requests`作成確認
+- `supabase/2026-08-29_sf_boost_days.sql` → `sf_boost_days`作成確認
+- `supabase/2026-08-29_sf_time_presets_slot_kind.sql` → `sf_time_presets.slot_kind`列の追加確認
+既存データへの影響なし（新規テーブル・列追加のみ）。これでシフト仕上げの新機能（A-6ヘルプ・B-1修正申請・B-3出勤強化日・B-2ランチディナー分割）が本番で動作する状態になった。
+
+### ② 権限設定を管理画面から設定できるように（nippo側は完了・担当Dへ依頼）
+`labor_cost_daily`のRLS（`2026-08-21_labor_cost_daily.sql`）が`role in ('CEO','HQ','TEAM') or is_master`という**ハードコード**で、TENCHOが含まれていなかった件（前々回エントリで発見）について、ユーザーから「SQLを直すだけでなく、管理画面（設定→権限設定）から誰でも調整できるようにしてほしい」との要望。
+
+- **nippo側（担当B・実施済み・コミット`48bb4e1`）**: 既存の権限設定の仕組み（`role_features`/`user_features`テーブル＋`FEATURES`定義に追加するだけで役職×機能マトリクスに自動で出る、既存のUI）に`labor_cost_view`を追加。既定値はCEO/HQ/TEAM+TENCHO（現状のRLSにTENCHOを加えたもの）。これで管理画面上のトグルはもう動く状態
+- **担当Dへの依頼（未実施）**: `labor_cost_daily`のread RLSポリシーを、ハードコードされた役職リストから`has_feature(auth.uid(), 'labor_cost_view')`（既存関数。`apply_submit`等で使用実績あり）を使う形に変更してほしい。具体案:
+  ```sql
+  drop policy if exists labor_cost_daily_read on labor_cost_daily;
+  create policy labor_cost_daily_read on labor_cost_daily for select using (
+    exists(select 1 from users u where u.id = auth.uid() and u.is_active and u.is_master)
+    or has_feature(auth.uid(), 'labor_cost_view')
+  );
+  ```
+  同種の「ハードコードされた役職リストでRLSしている」既存テーブルが他にもあれば、同じ考え方（`has_feature`＋nippo権限設定マトリクス）で統一していただけると、今後同じ問題（新しい役職を追加したのに一部の画面だけ見えない、等）を防げると思います。テーブルは担当D管轄のため担当Bでは変更していません。
