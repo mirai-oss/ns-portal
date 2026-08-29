@@ -950,9 +950,10 @@ const SYS_ITEMS=[
   // A-6「予約管理」（実装指示書_ラウンド4_2026-08-27.md §2.6）。参照デザイン
   // docs/mockups/NStyle_統合ポータル_予約管理_UI_v3_日別タイムライン対応.htmlでは
   // 経営管理グループのサブ項目ではなく独立したトップ項目として置かれているため、
-  // それに合わせた。データ基盤（I-1・Sync4）待ちのため今は準備中バッジのみ。
-  // Sync4後にtori-dashboard側の実装が済んだらurlを設定してsoonを外す
-  {key:"reservations", ico:"📅", label:"予約管理", soon:true, roles:["TENCHO","TEAM","HQ","CEO"]},
+  // それに合わせた。Sync4（担当D・予約データ取込基盤）・A-6実装（担当A・app.jsの
+  // reservationタブ）とも本番反映済みを確認したため、2026-08-29に実URLへ差し替え。
+  // sysKey:"keiei"にしたことで経営管理グループ内の他タブとの高速切替（postMessage）も効く
+  {key:"reservations", sysKey:"keiei", ico:"📅", label:"予約管理", url:keieiTab("reservation"), roles:["TENCHO","TEAM","HQ","CEO"]},
 ];
 const GROUPS=[
   {cap:"現場・日報",ico:"📝", items:[
