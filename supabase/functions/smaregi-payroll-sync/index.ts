@@ -11,10 +11,13 @@
 //   こちらは計画用の参考値なので今月分もリアルタイムに欲しいという要望のため今月をデフォルトにする）
 // 認可: CEO/HQ/マスターのユーザーJWT、またはservice_role直呼び（smaregi-payroll-reconcileと同じ方針）
 //
-// 2026-08-29追記（ユーザー確認済み）: regularWage（基本給のみ）だけでは固定残業代等が漏れる
-//   （青山純さんの実例で確認: regularWage=22万円だが実際は固定残業代6万円が別についていた）。
-//   人件費として使う主要な値は totalTaxable（課税対象額・切上げ）にする。
-//   通勤手当は allowanceWage.transportation を自動取得（手入力の上乗せはsf_payroll_allocations側）。
+// 2026-08-29追記（ユーザー確認・再訂正）: regularWage（基本給のみ）だけでは固定残業代等が漏れる
+//   （青山純さんの実例: regularWage=22万円だが実際は固定残業代6万円が別についていた）。
+//   人件費として使う主要な値は「支給額合計（totalAllowance・切上げ）から通勤手当を差し引いた額」
+//   ＝本来の固定給（fixed_salary_amount）にする。当初totalTaxable（課税対象額）にしていたが、
+//   これは所得税計算用の額（社会保険料控除後）でありユーザーの意図と異なると判明したため修正。
+//   実データ検証済み: 青山純さん totalAllowance(293984)-transportation(13480)-交通費allowance(504)
+//   =280,000円=regularWage(220,000)+fixedOvertimeWage(60,000)と完全一致
 import { createClient } from "npm:@supabase/supabase-js@2";
 
 const IS_PROD = Deno.env.get("SMAREGI_ENV") === "prod";
@@ -65,14 +68,25 @@ async function fetchMonthlyBudget(token: string, staffId: string, year: number, 
     throw new Error(`給与明細API error (staff ${staffId} ${year}-${month}): ${res.status} ${t}`);
   }
   const bodyJson = await res.json();
+  const totalAllowance = Math.ceil(Number(bodyJson?.totalAllowance ?? 0));
+  const commuteAllowance = Number(bodyJson?.allowanceWage?.transportation ?? 0);
+  // 支給額合計から「交通費」「通勤」を含む名前の手当（allowance[]内）もあわせて差し引く
+  // （transportation列だけでは拾えない、別建ての通勤関連手当が入っているケースがあるため）
+  const allowanceListCommute = (bodyJson?.allowanceWage?.allowance ?? [])
+    .filter((a: any) => /交通|通勤/.test(String(a?.label ?? "")))
+    .reduce((s: number, a: any) => s + Number(a?.resultAmount ?? 0), 0);
+  const fixedSalaryAmount = totalAllowance - commuteAllowance - allowanceListCommute;
   return {
     regularWage: Number(bodyJson?.allowanceWage?.regularWage ?? 0),
     workingDayCount: Number(bodyJson?.shiftTime?.workingDayCount ?? 0),
     totalWorkingTime: Number(bodyJson?.shiftTime?.totalWorkingTime ?? 0),
-    // 2026-08-29追加: 課税対象額（切上げ）を人件費の主要な値として使う。通勤手当・固定残業代は参考値として別保存
+    // 2026-08-29追加・訂正: 支給額合計(切上げ)−通勤手当＝本来の固定給を人件費の主要な値として使う。
+    // 課税対象額(taxableAmount)は参考値として残すのみ（社会保険料控除後の額で意図と異なるため）
     taxableAmount: Math.ceil(Number(bodyJson?.totalTaxable ?? 0)),
+    totalAllowance,
+    fixedSalaryAmount,
     fixedOvertimeWage: Number(bodyJson?.allowanceWage?.fixedOvertimeWage ?? 0),
-    commuteAllowance: Number(bodyJson?.allowanceWage?.transportation ?? 0),
+    commuteAllowance,
     raw: bodyJson,
   };
 }
@@ -122,13 +136,15 @@ Deno.serve(async (req) => {
           working_day_count: budget.workingDayCount,
           total_working_minutes: budget.totalWorkingTime,
           taxable_amount: budget.taxableAmount,
+          total_allowance: budget.totalAllowance,
+          fixed_salary_amount: budget.fixedSalaryAmount,
           fixed_overtime_wage: budget.fixedOvertimeWage,
           commute_allowance: budget.commuteAllowance,
           raw: budget.raw,
           synced_at: new Date().toISOString(),
         }, { onConflict: "user_id,year_month" });
         if (error) { errors.push(`${name}: 保存エラー ${error.message}`); continue; }
-        synced.push({ name, staffId, taxableAmount: budget.taxableAmount, regularWage: budget.regularWage, fixedOvertimeWage: budget.fixedOvertimeWage, commuteAllowance: budget.commuteAllowance, workingDayCount: budget.workingDayCount });
+        synced.push({ name, staffId, fixedSalaryAmount: budget.fixedSalaryAmount, totalAllowance: budget.totalAllowance, regularWage: budget.regularWage, fixedOvertimeWage: budget.fixedOvertimeWage, commuteAllowance: budget.commuteAllowance, workingDayCount: budget.workingDayCount });
       } catch (e) {
         errors.push(`${name} (staff ${staffId}): ${String(e)}`);
       }
