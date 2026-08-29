@@ -664,9 +664,34 @@ async function fetchApiCostDaily(){
   }catch(e){ return []; }
 }
 const monthKeyOf=dateStr=>String(dateStr||"").slice(0,7); // "YYYY-MM"（UTC暦日ベース。JSTと数日ズレる可能性がある前提で月次目安として使用）
+
+// F-1.5（続き・2026-08-28着手）: LINE配信数・残高。新設のportal-line-usage
+// Edge Function（ログイン中ユーザーのJWTで認証・マスター/HQ/CEOのみ許可）を呼ぶ
+async function fetchLineUsage(){
+  const s=sess.get(); if(!s?.at) return {ok:false,error:"未ログイン"};
+  try{
+    const r=await fetch(SUPA_URL+"/functions/v1/portal-line-usage",{
+      headers:{apikey:SUPA_KEY,Authorization:"Bearer "+s.at}
+    });
+    const body=await r.json().catch(()=>null);
+    if(!body) return {ok:false,error:"応答を読めませんでした"};
+    return body;
+  }catch(e){ return {ok:false,error:e.message||"通信エラー"}; }
+}
+function lineUsageHtml(res){
+  if(!res.ok){
+    return `<div class="empty" style="text-align:left;padding:16px 17px">取得できません（${esc(res.error||"不明なエラー")}）</div>`;
+  }
+  if(res.limitType!=="limited"||res.limit==null){
+    return `<div class="item"><span class="av">📱</span><span><strong>今月の送信数</strong><span>${res.used.toLocaleString()}通（上限なしプラン）</span></span><span></span></div>`;
+  }
+  const pct=Math.round((res.ratio||0)*1000)/10;
+  const tone=pct>=95?"b-bad":pct>=80?"b-warn":"b-up";
+  return `<div class="item"><span class="av">📱</span><span><strong>今月の送信数</strong><span>${res.used.toLocaleString()} / ${res.limit.toLocaleString()}通（残り${(res.limit-res.used).toLocaleString()}通）</span></span><span class="badge ${tone}">${pct}%</span></div>`;
+}
 async function renderSysUsageArea(u){
   const area=$("viewarea"); if(!area||VIEW!=="frame"||CUR!=="admin-usage") return;
-  const rows=await fetchApiCostDaily();
+  const [rows,lineUsage]=await Promise.all([fetchApiCostDaily(),fetchLineUsage()]);
   if(VIEW!=="frame"||CUR!=="admin-usage") return; // 読み込み中に他画面へ移動していたら上書きしない
   const now=new Date();
   const thisM=monthKeyOf(now.toISOString());
@@ -686,8 +711,8 @@ async function renderSysUsageArea(u){
     <section class="panel" style="margin-top:16px"><div class="phead"><h2>直近7日</h2><span class="sub2">Anthropic Cost Report API（D-4）</span></div>
       <div>${last7.length?last7.map(r=>`<div class="item"><span class="av">🤖</span><span><strong>${esc(r.date)}</strong><span>${fmtUsd(Number(r.amount_cents||0))}</span></span><span>${fmtJpy(Number(r.amount_jpy||0))}</span></div>`).join(""):'<div class="empty">データがまだありません（同期は毎日1回・cron-job.org設定待ちの場合があります）</div>'}</div>
     </section>
-    <section class="panel" style="margin-top:16px"><div class="phead"><h2>📱 LINE配信数・残高</h2></div>
-      <div class="empty" style="text-align:left;padding:16px 17px">🚧 準備中：LINE公式アカウントの残量API連携にはSupabase Edge Functionの新規実装が必要なため、今回のF-6では枠のみです（WORKLOG参照）</div>
+    <section class="panel" style="margin-top:16px"><div class="phead"><h2>📱 LINE配信数・残高</h2><span class="sub2">LINE Messaging API</span></div>
+      <div>${lineUsageHtml(lineUsage)}</div>
     </section>`;
 }
 /* ============================================================
