@@ -6,6 +6,16 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
+**★★★2026-08-29 担当D→担当Aへ依頼（未着手・担当Aの対応待ち）: ポータル埋め込み時にCSV/PDFボタンと連携ステータスが消える**
+
+ユーザー指摘：「新しく作ったポータルサイトのほうのタブから開いた経営ダッシュボードのところにもCSV、PDFでダウンロードできる機能はつけたままにしておいて欲しい！あとちゃんと連携されてるかどうか、右上にスプレッドシート連携とか目立つようにあったと思うけど、それもなくなってるから見づらいからそれも入れておいてください」
+
+**原因（`tori-dashboard/app.js`調査済み）**: `ns-portal/portal.html`は経営ダッシュボードを`?embed=1&tab=dash`のURLで開く（[portal.html:900](../ns-portal/portal.html#L900) `keieiTab`関数）。`app.js`側は`?embed=1`が付くと`S.embed=true`になり（app.js:7434）、`root.innerHTML`組み立て時に`viewHeader()`全体を丸ごと非表示にする（**app.js:1852** `${S.embed?'':viewHeader()}`）。ところが`viewHeader()`（app.js:1913-1936）の中に、CSV/PDFボタン（**app.js:1937-1938** `<button onclick="App.csv()">⬇ CSV</button>` / `<button onclick="App.pdf()">🖨 PDF</button>`）と、右上の連携ステータス表示`connBadge()`（**app.js:1893-1899**「● スプレッドシート連携中（自動更新）／最終同期◯◯」）が両方含まれているため、embed時（＝ポータル経由で開いたとき）はこの2つも道連れで消えていた。F-3（2026-08-24・ポータル統合シェル対応）でヘッダー全体を非表示にした際、ロゴ/タイトル/ロールチップ/ログアウトだけでなくCSV/PDF・連携ステータスまで一緒に消してしまったのが原因（意図的な仕様ではなくF-3実装時の副作用と推測）。
+
+**提案する修正**: `viewHeader()`を「embed時は非表示でよい部分（ロゴ・タイトル・ロールチップ・ログアウトボタン）」と「embed時も表示すべき部分（CSV/PDFボタン・`connBadge()`＋`freshnessLine()`の連携ステータス）」に分割し、`root.innerHTML`組み立て側で後者はembedの真偽に関わらず常に描画するようにする。具体的な表示場所（embed時は右上に小さくバー表示、など）は担当Aの画面設計に一任。
+
+**担当・優先度**: `app.js`は担当Aの専管ファイルのため担当Dは直接編集していない。担当Aへこのメッセージ内容をSendMessage送信済み（本エントリ執筆と同時）。対応後、本エントリの上に完了報告を追記してください。
+
 **★★★★★★★★★★2026-08-28 最新（担当Aスレッド）店舗名表記ゆれの修正・実装＆本番デプロイ完了**: 担当Dの依頼（下記「accounting_chatworkテストで発見」エントリ）に対応。**当初提案（`STORE_CANONICAL_BY_NOSPACE_`と同じ3件ハードコード辞書）より丈夫な方式に変更**: 調査の結果、この3件はSupabase`store_aliases`（`store_directory_v`）に**既に**`kind:'name', source:'売上シート'`として登録済みと判明（`じんべえ 新横浜店`→`じんべぇ 新横浜`等）。つまり辞書が足りないのではなく、`bqSyncAllSales`（分析_日別店舗ほかをBigQueryへミラーする処理）がこの既存の別名辞書を一切参照していなかったのが真因。**対応**: `bqStoreNameIndex_`/`bqResolveStoreName_`を新設し、`resolveAdStore_`と同じSupabase別名データを使ってBQミラー対象8テーブル（fact_daily_store・stg_payment・stg_media・stg_siire・stg_jinken・stg_deposit・stg_spot・stg_loan_principal）すべての店舗名を正規化するよう`bqSheetToCsv_`を拡張。**ユーザーからの追加要望**（「今後もCSVデータによって表記ゆれが起こりうるので継続的に確認・提案してほしい」）に対応し、**診断action`storeNameAudit`を新設**（8テーブル全部のDISTINCT店舗名をstore_aliasesと突合し未登録表記だけを返す。現時点で他に未登録の候補は無いことを確認済み）。今後は新しい表記ゆれが見つかり次第store_aliasesへ登録するだけで（コード変更なしで）自動的に吸収される。**本番反映済み**: コミット[cae28a7](https://github.com/mirai-oss/tori-dashboard/commit/cae28a7)・clasp deploy済み（デプロイID`AKfycbz9rd37EZa6X8WRMVEBrXobN8DbYWkHRlhFNYU5rd1UZ0V8j0-6shMQjEeoi4HDWZ0B`が`@151`「店舗名表記ゆれ正規化(store_aliases連携)」を指していることを`clasp deployments`で確認）。**このコミット・デプロイ作業自体は同一ローカル環境で並行していた別セッションが実施**（本セッションはgas/Code.gsを編集してユーザー承認を得た後、確認したところ既に別セッションによりcommit・push・デプロイまで完了していた）。詳細は本日付エントリ「担当Aによる店舗名表記ゆれ修正・本番反映」参照
 
 **★追記（2026-08-28・担当D実行スレッド）担当Eへの依頼: 工程期限の変更が全体期限に反映されない**: ユーザー要望「本部タスクの工程の最後の期限と、最初に設定した期限が一致してない場合、そのタスクの最終工程の期限に変更されるようにしてほしい（例: 全体期限が8/27のまま、最終工程が9/4になっているタスクが期限切れ表示になってしまい見づらい）」。
