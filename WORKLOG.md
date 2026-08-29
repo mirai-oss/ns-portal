@@ -6,6 +6,34 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
+**★★★★2026-08-29 担当D→担当Aへ依頼（未着手・担当Aの対応待ち）: PL画面のresolveStore()別名フォールバックが逆向きで、今月分のPLがほぼ全店未突合になっている**
+
+ユーザーがPL管理画面で「じんべえ 川崎店 ¥840,000」「じんべえ 新横浜店 ¥798,670」が「⚠売上店舗と一致しなかったPL店舗名」に出ているのを発見し、「この売上の数字がおかしい」と報告（当期の人件費・広告費・家賃・その他経費が全部「ー」で、営業利益＝売上高というあり得ない数字になっていた）。
+
+- **調査結果（`tori-dashboard/app.js`読み取りのみ）**: これはSupabase側の別名データ不足ではなく、**`resolveStore()`（app.js:118-144）のstore_aliases経由フォールバック（2026-08-23追加分）の実装が逆向きになっているバグ**と判明。`store_aliases`には既に`じんべえ 川崎店→じんべぇ 川崎`・`じんべえ 新横浜店→じんべぇ 新横浜`（kind='name', source='売上シート'）が正しく登録済みであることをSupabaseで確認済み
+- **バグの中身**: `app.js:132` `const rec=D.storeDirectory.find(s=>s.name===target);` は「`target`（表記ゆれの生の店舗名。例:じんべえ 川崎店）と**正式名(`s.name`)が完全一致する**店舗」を探しており、そんな店舗はそもそも存在しない（`target`が正式名と一致するなら、その前段の`all.includes(target)`で既にヒットしているはず）ので、このフォールバックは実質的に一度も発火しない死んだコードになっていた。**正しくは「別名(`aliases`)の中に`target`と一致するものを持つ店舗」を探す必要がある**。同じファイルの口コミ関連コード（app.js:76）`D.storeDirectory.find(s=>(s.aliases||[]).some(a=>a.kind==='listing'&&a.alias===name))`が正しい書き方の実例としてすでに存在している（`kind`が`'listing'`か`'name'`かの違いだけ）
+- **提案する修正**（app.js:131-142を置き換え）:
+  ```js
+  if(D.storeDirectory){
+    const rec=D.storeDirectory.find(s=>(s.aliases||[]).some(a=>a.kind==='name'&&a.alias===target));
+    if(rec){
+      if(all.includes(rec.name)) return rec.name;
+      const rn=_norm(rec.name);
+      const h2=all.find(s=>_norm(s)===rn || (rn.length>=2 && (_norm(s).includes(rn)||rn.includes(_norm(s)))));
+      if(h2) return h2;
+      for(const a of rec.aliases||[]){
+        if(a.kind!=='name'||a.alias===target) continue;
+        if(all.includes(a.alias)) return a.alias;
+        const an=_norm(a.alias);
+        const h3=all.find(s=>_norm(s)===an || (an.length>=2 && (_norm(s).includes(an)||an.includes(_norm(s)))));
+        if(h3) return h3;
+      }
+    }
+  }
+  ```
+- **影響範囲**: `resolveStore()`は`resolveStoreEx()`経由でPL画面（`plAgg`）・広告画面（`adAgg`）の両方が使っている共通関数のため、店舗名の表記ゆれが起きている全店舗・全画面に影響しうる（今回ユーザーが気づいたのはPL画面のじんべえ2店舗だが、広告画面や他の表記ゆれ店舗でも同様に未突合になっている可能性が高い）
+- **担当・優先度**: `app.js`は担当A専管のため担当Dは直接編集していない。実際の財務数値（営業利益）が誤表示される実害が出ているため優先度は高いと判断し、担当Aへ本エントリ執筆と同時にSendMessage送信済み。対応後、本エントリの上に完了報告を追記してください
+
 **★★★2026-08-29（担当F実行スレッド・続き）予約管理メニューを実URLへ差し替え完了**: 2026-08-29の前回スレッド引き継ぎ時点で残っていた申し送り②「予約管理はSync4（I-1完了）後にA-6の実URLへ差し替え」に対応。Sync4（担当D・完了済み）・A-6（担当A・`tori-dashboard`の`app.js`に`reservation`タブとして本番デプロイ済み。直近も座席マップ等の機能追加コミットが続いている）とも本番反映済みであることを確認したうえで、`portal.html`の`SYS_ITEMS`内「📅予約管理」の`soon:true`を外し`url:keieiTab("reservation")`に差し替え（あわせて`sysKey:"keiei"`を付与し経営管理グループ内の他タブとの高速切替=postMessageも効くようにした）。ローカルhttp.serverでブラウザ実機確認（ログイン画面まで正常render・コンソールエラー無し。**ログイン後の実際の表示・データはこの環境にログイン手段が無く未確認**）。コミット[4ce1982](https://github.com/mirai-oss/ns-portal/commit/4ce1982)・push済み。**本番URL**: `https://mirai-oss.github.io/ns-portal/portal.html`（並行公開中。正式切替=index.html反映はユーザー検証OK後）。次にログインできる方に、経営管理グループの「予約管理」を開いて予約帳・予約分析が表示されるかの実機確認をお願いしたい。
 
 **★★★2026-08-29（担当D実行スレッド）担当Bからの依頼に対応完了: labor_cost_dailyの閲覧権限をhas_feature()判定へ切替（TENCHOが人件費データを見られなかった件の恒久対応）**
