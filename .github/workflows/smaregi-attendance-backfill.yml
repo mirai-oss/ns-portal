@@ -1,0 +1,90 @@
+name: スマレジ勤怠実績の新規登録者バックフィル
+
+# 発火は「外部cron（cron-job.org 等）」から workflow_dispatch API を叩いて行う。
+#   POST https://api.github.com/repos/mirai-oss/ns-portal/actions/workflows/smaregi-attendance-backfill.yml/dispatches
+#   body: {"ref":"main"}
+# GitHub内蔵の schedule: は時刻が数十分〜数時間ずれる（無料/publicの仕様）ため使わない
+# （smaregi-attendance-sync.yml と同じ方針）。
+#
+# セットアップ手順（ユーザー作業・1回のみ。他のジョブと同じcron-job.orgアカウントでOK）:
+#   1. https://cron-job.org にログイン →「Create cronjob」
+#   2. URL に上記のdispatches APIエンドポイントを設定
+#      - Method: POST / Headers: Authorization・Accept・Content-Type は他のジョブと同じ
+#      - Body: {"ref":"main"}
+#      - Schedule: 毎日 08:45 JST（smaregi-attendance-sync=08:00の後）
+#
+# 手動実行: GitHubの Actions タブ → 本workflow → Run workflow でも実行可能
+#
+# 2026-08-30 担当B新設。仕組み:
+#   ①smaregi-attendance-backfill-checkで「まだバックフィルしていない人（＝新しく
+#     employee_profiles.smaregi_staff_idを登録された人）」がいるか確認（軽い・スマレジAPI不要）
+#   ②いなければ即終了（ほとんどの日はここで終わる）
+#   ③いれば、既存のsmaregi-attendance-sync（date_from/date_to対応済み・無変更）を
+#     半年ごとのチャンクに分けて繰り返し呼び出し、EARLIEST_DATE〜今日まで全員ぶん再取得する
+#     （新規の人だけを狙い撃ちする仕組みはsmaregi-attendance-sync側に無いため、全員分を
+#     再実行する。既存分はupsertで冪等なので実害はない）
+#   ④終わったら smaregi-attendance-backfill-check に mark:true を送り、全員を「済み」にする
+#   EARLIEST_DATE=2024-01-01（2026-08-30の調査で「現状登録済みの全員、実際のデータは
+#     2025-09が最古」と確認済みだが、将来もっと古くから使っている人が登録される可能性に
+#     備え、安全マージンを取って2024-01からにしている）
+on:
+  workflow_dispatch: {}
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: 設定チェック
+        run: |
+          if [ -z "${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" ]; then
+            echo "::error::SUPABASE_SERVICE_ROLE_KEY が未設定です"
+            exit 1
+          fi
+
+      - name: 新規登録者の有無を確認
+        id: check
+        env:
+          SR_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          RES=$(curl -s -X POST "https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/smaregi-attendance-backfill-check" \
+            -H "Authorization: Bearer $SR_KEY" -H "Content-Type: application/json" -d '{}')
+          echo "$RES"
+          PENDING=$(echo "$RES" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{console.log(JSON.parse(d).pendingCount||0)}catch(e){console.log(0)}})")
+          echo "新規登録者数: $PENDING"
+          echo "pending=$PENDING" >> "$GITHUB_OUTPUT"
+
+      - name: 過去分をチャンクに分けて取得（新規登録者がいる場合のみ）
+        if: steps.check.outputs.pending != '0'
+        env:
+          SR_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          set -e
+          EARLIEST="2024-01-01"
+          TODAY=$(TZ=Asia/Tokyo date +%Y-%m-%d)
+          FROM="$EARLIEST"
+          while [ "$FROM" \< "$TODAY" ]; do
+            TO=$(date -d "$FROM +5 months" +%Y-%m-%d 2>/dev/null || date -j -v+5m -f "%Y-%m-%d" "$FROM" +%Y-%m-%d)
+            if [ "$TO" \> "$TODAY" ]; then TO="$TODAY"; fi
+            echo "=== $FROM 〜 $TO ==="
+            BODY=$(FROM="$FROM" TO="$TO" node -e "console.log(JSON.stringify({date_from:process.env.FROM,date_to:process.env.TO}))")
+            RES=$(curl -s -w "\n%{http_code}" -X POST \
+              "https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/smaregi-attendance-sync" \
+              -H "Authorization: Bearer $SR_KEY" -H "Content-Type: application/json" -d "$BODY")
+            HTTP_CODE=$(echo "$RES" | tail -1)
+            BODY_TEXT=$(echo "$RES" | sed '$d')
+            echo "$BODY_TEXT"
+            if [ "$HTTP_CODE" != "200" ]; then
+              echo "::warning::$FROM〜$TOの取得が失敗しました（HTTP $HTTP_CODE）。翌日以降の再実行に期待する"
+            fi
+            FROM=$(date -d "$TO +1 day" +%Y-%m-%d 2>/dev/null || date -j -v+1d -f "%Y-%m-%d" "$TO" +%Y-%m-%d)
+          done
+
+      - name: 完了マーク（新規登録者がいた場合のみ）
+        if: steps.check.outputs.pending != '0'
+        env:
+          SR_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          RES=$(curl -s -X POST "https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/smaregi-attendance-backfill-check" \
+            -H "Authorization: Bearer $SR_KEY" -H "Content-Type: application/json" -d '{"mark":true}')
+          echo "$RES"
