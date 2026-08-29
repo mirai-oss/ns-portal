@@ -11,9 +11,10 @@
 //   こちらは計画用の参考値なので今月分もリアルタイムに欲しいという要望のため今月をデフォルトにする）
 // 認可: CEO/HQ/マスターのユーザーJWT、またはservice_role直呼び（smaregi-payroll-reconcileと同じ方針）
 //
-// 注意（2026-08-22の調査で判明・未解決の既知の懸念）: 月給制の一部従業員（例: 青山純さん）は、
-//   このAPIのregularWageが実際の総支給額と一致しない可能性がある（固定残業代等が別体系の疑い）。
-//   raw列に生レスポンスを残しているので、疑わしい場合はそちらで確認できるようにしている。
+// 2026-08-29追記（ユーザー確認済み）: regularWage（基本給のみ）だけでは固定残業代等が漏れる
+//   （青山純さんの実例で確認: regularWage=22万円だが実際は固定残業代6万円が別についていた）。
+//   人件費として使う主要な値は totalTaxable（課税対象額・切上げ）にする。
+//   通勤手当は allowanceWage.transportation を自動取得（手入力の上乗せはsf_payroll_allocations側）。
 import { createClient } from "npm:@supabase/supabase-js@2";
 
 const IS_PROD = Deno.env.get("SMAREGI_ENV") === "prod";
@@ -68,6 +69,10 @@ async function fetchMonthlyBudget(token: string, staffId: string, year: number, 
     regularWage: Number(bodyJson?.allowanceWage?.regularWage ?? 0),
     workingDayCount: Number(bodyJson?.shiftTime?.workingDayCount ?? 0),
     totalWorkingTime: Number(bodyJson?.shiftTime?.totalWorkingTime ?? 0),
+    // 2026-08-29追加: 課税対象額（切上げ）を人件費の主要な値として使う。通勤手当・固定残業代は参考値として別保存
+    taxableAmount: Math.ceil(Number(bodyJson?.totalTaxable ?? 0)),
+    fixedOvertimeWage: Number(bodyJson?.allowanceWage?.fixedOvertimeWage ?? 0),
+    commuteAllowance: Number(bodyJson?.allowanceWage?.transportation ?? 0),
     raw: bodyJson,
   };
 }
@@ -116,11 +121,14 @@ Deno.serve(async (req) => {
           regular_wage: budget.regularWage,
           working_day_count: budget.workingDayCount,
           total_working_minutes: budget.totalWorkingTime,
+          taxable_amount: budget.taxableAmount,
+          fixed_overtime_wage: budget.fixedOvertimeWage,
+          commute_allowance: budget.commuteAllowance,
           raw: budget.raw,
           synced_at: new Date().toISOString(),
         }, { onConflict: "user_id,year_month" });
         if (error) { errors.push(`${name}: 保存エラー ${error.message}`); continue; }
-        synced.push({ name, staffId, regularWage: budget.regularWage, workingDayCount: budget.workingDayCount });
+        synced.push({ name, staffId, taxableAmount: budget.taxableAmount, regularWage: budget.regularWage, fixedOvertimeWage: budget.fixedOvertimeWage, commuteAllowance: budget.commuteAllowance, workingDayCount: budget.workingDayCount });
       } catch (e) {
         errors.push(`${name} (staff ${staffId}): ${String(e)}`);
       }
