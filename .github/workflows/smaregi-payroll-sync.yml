@@ -1,0 +1,114 @@
+name: スマレジ給与明細の日次取込
+
+# 発火は「外部cron（cron-job.org 等）」から workflow_dispatch API を叩いて行う。
+#   POST https://api.github.com/repos/mirai-oss/ns-portal/actions/workflows/smaregi-payroll-sync.yml/dispatches
+#   body: {"ref":"main"}
+# GitHub内蔵の schedule: は時刻が数十分〜数時間ずれる（無料/publicの仕様）ため使わない
+# （smaregi-attendance-sync.yml と同じ方針）。
+#
+# セットアップ手順（ユーザー作業・1回のみ。cron-job.orgは既に他のジョブ用にアカウント
+# 作成済みのはずなので、ジョブを1つ追加するだけでよい）:
+#   1. https://cron-job.org にログイン →「Create cronjob」
+#   2. URL に上記のdispatches APIエンドポイントを設定
+#      - Method: POST
+#      - Headers: Authorization: Bearer <GitHubのPersonal Access Token（workflow権限）>
+#                 Accept: application/vnd.github+json
+#                 Content-Type: application/json
+#      - Body: {"ref":"main"}
+#      - Schedule: 毎日 08:30 JST（smaregi-attendance-sync=08:00の後に）
+#   3. トークンは他のジョブ設定時に発行したものをそのまま使い回してよい
+#
+# 手動実行: GitHubの Actions タブ → 本workflow → Run workflow（year/monthを指定すれば
+#   過去月の取得・再取得もできる。空欄なら「今月分」を取得する）
+#
+# 2026-08-30 担当B新設。目的: 月給制の社員（例: 青山純さん）の人件費が、実績打刻からの
+#   逆算では0円になってしまう問題への対応（sf_payroll_sync/sf_payroll_allocations参照）。
+#   今月分は日々確定額が変わりうる（打刻が積み上がる）ため日次で取り直す。月初1〜3日は
+#   前月分もまだ確定していないことがあるため追加で再取得する（smaregi-attendance-syncの
+#   月またぎ再取込と同じ考え方）。既存のsmaregi-payroll-reconcile（毎月5日・前月分の
+#   差額アラート専用）は無変更。
+on:
+  workflow_dispatch:
+    inputs:
+      year:
+        description: '対象年（例: 2026。空欄なら今月の年）'
+        required: false
+        default: ''
+        type: string
+      month:
+        description: '対象月（例: 8。空欄なら今月）'
+        required: false
+        default: ''
+        type: string
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: 設定チェック（未設定ならスキップ）
+        run: |
+          if [ -z "${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" ]; then
+            echo "::error::SUPABASE_SERVICE_ROLE_KEY が未設定です（Settings → Secrets and variables → Actions）"
+            exit 1
+          fi
+
+      - name: smaregi-payroll-syncを呼び出す（今月分、またはyear/month指定分）
+        env:
+          SR_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          YEAR: ${{ github.event.inputs.year }}
+          MONTH: ${{ github.event.inputs.month }}
+        run: |
+          BODY="{}"
+          if [ -n "$YEAR" ] || [ -n "$MONTH" ]; then
+            BODY=$(node -e "console.log(JSON.stringify({year: process.env.YEAR?Number(process.env.YEAR):undefined, month: process.env.MONTH?Number(process.env.MONTH):undefined}))")
+          fi
+          echo "リクエストボディ: $BODY"
+          RES=$(curl -s -w "\n%{http_code}" -X POST \
+            "https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/smaregi-payroll-sync" \
+            -H "Authorization: Bearer $SR_KEY" \
+            -H "Content-Type: application/json" \
+            -d "$BODY")
+          HTTP_CODE=$(echo "$RES" | tail -1)
+          BODY_TEXT=$(echo "$RES" | sed '$d')
+          echo "$BODY_TEXT"
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "::error::smaregi-payroll-syncが失敗しました（HTTP $HTTP_CODE）"
+            exit 1
+          fi
+          OK=$(echo "$BODY_TEXT" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{console.log(JSON.parse(d).ok)}catch(e){console.log('false')}})")
+          if [ "$OK" != "true" ]; then
+            echo "::error::同期処理がエラーを返しました"
+            exit 1
+          fi
+          ERR_COUNT=$(echo "$BODY_TEXT" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{console.log(JSON.parse(d).errorCount||0)}catch(e){console.log(0)}})")
+          if [ "$ERR_COUNT" -gt "0" ]; then
+            echo "::warning::$ERR_COUNT 件のエラーがありました（未対応のstaff_idなど。ログ参照）"
+          fi
+
+      - name: 月またぎ再取込（JST当月1〜3日のみ・手動指定時はスキップ）
+        if: ${{ github.event.inputs.year == '' && github.event.inputs.month == '' }}
+        env:
+          SR_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          DAY=$(TZ=Asia/Tokyo date +%-d)
+          if [ "$DAY" -gt 3 ]; then
+            echo "本日はJST${DAY}日のため月またぎ再取込はスキップ（対象は1〜3日）"
+            exit 0
+          fi
+          PREV_YEAR=$(TZ=Asia/Tokyo date -d "$(TZ=Asia/Tokyo date +%Y-%m-01) -1 month" +%Y)
+          PREV_MONTH=$(TZ=Asia/Tokyo date -d "$(TZ=Asia/Tokyo date +%Y-%m-01) -1 month" +%-m)
+          echo "JST${DAY}日のため前月分（${PREV_YEAR}-${PREV_MONTH}）も再取得"
+          BODY=$(PREV_YEAR="$PREV_YEAR" PREV_MONTH="$PREV_MONTH" node -e "console.log(JSON.stringify({year: Number(process.env.PREV_YEAR), month: Number(process.env.PREV_MONTH)}))")
+          RES=$(curl -s -w "\n%{http_code}" -X POST \
+            "https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/smaregi-payroll-sync" \
+            -H "Authorization: Bearer $SR_KEY" \
+            -H "Content-Type: application/json" \
+            -d "$BODY")
+          HTTP_CODE=$(echo "$RES" | tail -1)
+          BODY_TEXT=$(echo "$RES" | sed '$d')
+          echo "$BODY_TEXT"
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "::warning::月またぎ再取込が失敗しました（HTTP $HTTP_CODE）。翌日以降の再実行に期待する"
+            exit 0
+          fi
