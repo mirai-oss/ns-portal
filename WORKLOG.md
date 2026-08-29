@@ -3510,3 +3510,15 @@ Supabase Management API（`~/.config/ns-portal/supabase_pat`・`POST /v1/project
   );
   ```
   同種の「ハードコードされた役職リストでRLSしている」既存テーブルが他にもあれば、同じ考え方（`has_feature`＋nippo権限設定マトリクス）で統一していただけると、今後同じ問題（新しい役職を追加したのに一部の画面だけ見えない、等）を防げると思います。テーブルは担当D管轄のため担当Bでは変更していません。
+
+## 2026-08-29（担当F実行スレッド）F-1.5完了: LINE配信数・残高ウィジェット・本番E2E完了
+
+ユーザー指示「今すぐ着手してください」を受け、F-1.5の残り（LINE配信数・残高）を実装・本番反映（`ns-portal`コミット`04235c0`）。
+
+- 新規Edge Function`supabase/functions/portal-line-usage`をデプロイ（`verify_jwt=true`）。ログイン中ユーザーのJWTで認証し、マスター/HQ/CEOのみ許可。`app_secrets.line_channel_token`を使いLINE Messaging APIのquota/quota-consumptionを取得して返す
+- 既存の`line-quota-check`（担当C依頼・BQ_LOAD_TOKEN認証・GitHub Actions見張り番向け）とは別経路にした。共有の秘密（BQ_LOAD_TOKEN）をブラウザに渡さないための設計判断
+- `portal.html`の「システム利用状況」の準備中プレースホルダーを実データ表示に置き換え（上限ありプランは使用数/上限/残数と割合バッジ、無制限プランはその旨を表示）
+- **本番E2E完了**: 「今月の送信数 265/5,000通（残り4,735通）・5.3%」と実データが正しく表示されることを確認
+- Supabase Edge Functionsのデプロイは`npx supabase functions deploy`が本環境から直接実行可能だったため、ユーザー作業を挟まず完結
+
+**これでF-1.5は完全に完了です。**
