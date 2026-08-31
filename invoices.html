@@ -491,13 +491,13 @@ function shellHtml(u){
     </div>
     <div class="mail-tabs-row">
       <div class="mail-tabs">
-        <button class="mail-tab ${TAB==='dashboard'?'active':''}" data-tab="dashboard">📊 会計ダッシュボード</button>
+        ${EMBED?"":`<button class="mail-tab ${TAB==='dashboard'?'active':''}" data-tab="dashboard">📊 会計ダッシュボード</button>`}
         <button class="mail-tab ${TAB==='inbox'?'active':''}" data-tab="inbox">受信トレイ</button>
         <button class="mail-tab ${TAB==='invoiceList'?'active':''}" data-tab="invoiceList">📄 請求書一覧</button>
         <button class="mail-tab ${TAB==='salesList'?'active':''}" data-tab="salesList">💰 売上一覧</button>
         <button class="mail-tab ${TAB==='contractList'?'active':''}" data-tab="contractList">📃 契約書一覧</button>
-        <button class="mail-tab ${TAB==='upload'?'active':''}" data-tab="upload">📤 アップロード請求書</button>
-        <button class="mail-tab ${TAB==='payroll'?'active':''}" data-tab="payroll">💴 給与仕訳</button>
+        ${EMBED?"":`<button class="mail-tab ${TAB==='upload'?'active':''}" data-tab="upload">📤 アップロード請求書</button>`}
+        ${EMBED?"":`<button class="mail-tab ${TAB==='payroll'?'active':''}" data-tab="payroll">💴 給与仕訳</button>`}
         <button class="mail-tab ${TAB==='history'?'active':''}" data-tab="history">処理履歴</button>
         <button class="mail-tab ${TAB==='sent'?'active':''}" data-tab="sent">送信済み</button>
         <button class="mail-tab ${TAB==='notApplicable'?'active':''}" data-tab="notApplicable">対象外</button>
