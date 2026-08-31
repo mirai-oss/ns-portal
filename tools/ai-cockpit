@@ -12,6 +12,8 @@
 #   ai-cockpit list                                 # 未完了タスク一覧（TK番号の確認用）
 #   ai-cockpit add --title "…" --agent 担当A [--priority high] [--desc "…"] [--status ready]
 #                                                   # タスク登録（AIが新しい作業を積むとき）
+#   ai-cockpit watch [--once]                       # 全リポジトリの作業を自動検知してhb送信
+#                                                   # （常駐: LaunchAgent経由。--once=1回だけスキャン）
 #
 # 運用ルール: ユーザー（中山さん）が自分のタスクを済ませたと報告してきたら、
 #   受けたセッションが list で番号を確認し done で代理完了する（本人に画面操作をさせない）
@@ -91,6 +93,7 @@ CMDS = {
     "error":    dict(event_type="error"),
     "list":     dict(),
     "add":      dict(),
+    "watch":    dict(),
     "hb":       dict(status="running"),
     "idle":     dict(status="idle"),
     "approval-request": dict(status="waiting", event_type="approval_request"),
@@ -128,6 +131,44 @@ def main():
         except Exception as e:
             print(f"ai-cockpit: 取得失敗: {e}", file=sys.stderr)
         return 0
+
+    # 全リポジトリ監視: 直近3分以内に変更のあったリポジトリぶんhbを送る
+    # （フック未導入の実行中セッションやVS Code等の作業も拾う「見える化の保険」）
+    if cmd == "watch":
+        WATCH_REPOS = ["ns-portal", "tori-dashboard", "nippo", "ns-daily-import", "NStyle-AI", "ns-info-system"]
+        WINDOW = 180
+        home = os.path.expanduser("~")
+        me = os.path.abspath(__file__)
+        def repo_active(path):
+            newest = 0.0
+            try:
+                newest = os.path.getmtime(os.path.join(path, ".git", "index"))
+            except OSError:
+                pass
+            try:
+                out = subprocess.run(["git", "-C", path, "status", "--porcelain"],
+                                     capture_output=True, text=True, timeout=10).stdout
+                for line in out.splitlines()[:50]:
+                    try:
+                        newest = max(newest, os.path.getmtime(os.path.join(path, line[3:].strip())))
+                    except OSError:
+                        pass
+            except Exception:
+                pass
+            return (time.time() - newest) < WINDOW
+        while True:
+            for name in WATCH_REPOS:
+                rp = os.path.join(home, name)
+                if not os.path.isdir(os.path.join(rp, ".git")):
+                    continue
+                try:
+                    if repo_active(rp):
+                        subprocess.run([sys.executable, me, "hb"], cwd=rp, timeout=30)
+                except Exception:
+                    pass
+            if "once" in flags:
+                return 0
+            time.sleep(30)
 
     g = git_info()
     agent = flags.get("agent") or os.environ.get("AI_COCKPIT_AGENT", "")
