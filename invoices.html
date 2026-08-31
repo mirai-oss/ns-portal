@@ -382,7 +382,12 @@ let CHIP="unprocessed";   // unprocessed | processing | completed | all
 let KIND_FILTER="all";    // all | unclassified | invoice | sales | contract（2026-08-25 Phase1.6）
 let SEARCH_Q="";
 let DATE_FROM="", DATE_TO=""; // 受信日の絞り込み（yyyy-mm-dd）
-let TAB="inbox";           // inbox | invoiceList | history | sent
+// TAB初期値: URLの?tab=を見る（例: invoices.html?embed=1&tab=upload。portal.htmlのサイドバーが
+// この形でリンクする。2026-08-31・担当Fからの緊急報告=.mail-tabボタンをembed時に隠した結果、
+// サイドバー経由でdashboard/upload/payrollへ一切たどり着けなくなっていた不具合の修正）
+const TAB_WHITELIST=["dashboard","inbox","invoiceList","salesList","contractList","upload","payroll","history","sent","notApplicable","important","settings"];
+const TAB_FROM_URL=new URLSearchParams(location.search).get("tab");
+let TAB=(TAB_FROM_URL&&TAB_WHITELIST.includes(TAB_FROM_URL))?TAB_FROM_URL:"inbox";           // inbox | invoiceList | history | sent
 let SELECTED_ID=null;
 let SELECTED=null;         // 選択中メールの詳細一式
 // 請求書一覧タブ（金額・期限のソート表示／検索・絞り込み。2026-08-24 Phase1.5 C-2）
@@ -2694,13 +2699,14 @@ async function renderPayrollTab(u){
 }
 async function payrollLoad(){
   const ym=PAYROLL_STATE.yearMonth;
-  const [syncR,recR,asgR,tplR,deptR,allocR]=await Promise.all([
+  const [syncR,recR,asgR,tplR,deptR,allocR,bankR]=await Promise.all([
     authed(`/rest/v1/sf_payroll_sync?year_month=eq.${ym}&select=*,user:users(name,role,is_active)&order=user(name)`),
     authed(`/rest/v1/payroll_journal_records?year_month=eq.${ym}&select=*`),
     authed(`/rest/v1/payroll_journal_assignments?select=*`),
     authed(`/rest/v1/mf_journal_templates?tenant_id=eq.default&select=id,label,branches&order=label`),
     mfCall("list_departments",{tenant_id:"default"}),
     authed(`/rest/v1/sf_payroll_allocations?period_key=like.${ym}*&select=user_id,store_id,kind`),
+    authed(`/rest/v1/payroll_bank_accounts?select=*`),
   ]);
   PAYROLL_STATE.rows=(syncR.ok&&Array.isArray(syncR.body))?syncR.body:[];
   PAYROLL_STATE.records=(recR.ok&&Array.isArray(recR.body))?recR.body:[];
@@ -2708,6 +2714,7 @@ async function payrollLoad(){
   PAYROLL_STATE.templates=(tplR.ok&&Array.isArray(tplR.body))?tplR.body:[];
   PAYROLL_STATE.departments=(deptR.ok&&deptR.body.departments)||[];
   PAYROLL_STATE.allocations=(allocR.ok&&Array.isArray(allocR.body))?allocR.body:[];
+  PAYROLL_STATE.bankAccounts=(bankR.ok&&Array.isArray(bankR.body))?bankR.body:[];
   if(!PAYROLL_STATE.stores){
     const r=await authed("/rest/v1/stores?select=id,name&order=name");
     PAYROLL_STATE.stores=(r.ok&&Array.isArray(r.body))?r.body:[];
@@ -2784,6 +2791,7 @@ function payrollComputeBranches(row,template){
     return {debit:b.debit||null,credit:b.credit||null,debitAmount,creditAmount,department_id:useDept,purpose:b.purpose||null,remark:b.remark||null};
   }).filter(b=>(b.debit&&b.debitAmount>0)||(b.credit&&b.creditAmount>0));
 }
+function payrollBankFor(userId){ return (PAYROLL_STATE.bankAccounts||[]).find(b=>b.user_id===userId); }
 function payrollRowHtml(row){
   const asg=payrollAssignmentFor(row.user_id);
   const rec=payrollRecordFor(row.user_id);
@@ -2791,6 +2799,8 @@ function payrollRowHtml(row){
   const options=`<option value="">（未設定）</option>`+PAYROLL_STATE.templates.map(t=>`<option value="${esc(t.id)}" ${asg&&asg.template_id===t.id?"selected":""}>${esc(t.label)}</option>`).join("");
   const status=rec?`<span class="invoice-status done">✅登録済み（伝票番号:${esc(String(rec.mf_journal_number??"-"))}）</span>`:(asg&&asg.template_id?`<span class="invoice-status wait">未登録</span>`:`<span class="invoice-status gray">パターン未設定</span>`);
   const pdfBadge=row._hasPdf?`<span title="給与明細PDFあり（登録時に証憑として添付されます）">📎</span>`:`<span style="color:var(--muted)" title="給与明細PDF未アップロード">－</span>`;
+  const bank=payrollBankFor(row.user_id);
+  const bankBtn=`<button class="hq-btn" style="font-size:11px;padding:6px 9px" data-payroll-bank="${esc(row.user_id)}">${bank?"🏦登録済み":"🏦未登録"}</button>`;
   return `<tr>
     <td><b>${esc(name)}</b></td>
     <td style="text-align:right">${yen(row.fixed_salary_amount)}</td>
@@ -2799,6 +2809,7 @@ function payrollRowHtml(row){
     <td style="text-align:right">${yen(row.net_pay)}</td>
     <td><select data-payroll-pattern="${esc(row.user_id)}" ${rec?"disabled":""}>${options}</select></td>
     <td style="text-align:center">${pdfBadge}</td>
+    <td>${bankBtn}</td>
     <td>${status}</td>
     <td>${(!rec&&asg&&asg.template_id)?`<button class="hq-btn" style="font-size:11px;padding:6px 9px" data-payroll-preview="${esc(row.user_id)}">プレビュー・登録</button>`:""}</td>
   </tr>`;
@@ -2819,9 +2830,15 @@ function payrollRender(){
         <div class="mail-actions" style="margin-top:8px"><button id="payroll-pdf-match">従業員を推定する</button></div>
         <div id="payroll-pdf-match-area" style="margin-top:10px"></div>
       </div>
+      <div class="card" style="padding:16px;margin-bottom:14px">
+        <h3 style="font-size:14px;margin-bottom:6px">🏦 PayPay銀行振込CSVを出力（${esc(PAYROLL_STATE.yearMonth)}分・差引支給額）</h3>
+        <div style="font-size:12px;color:var(--muted);margin-bottom:10px">下の一覧で各従業員の「🏦」ボタンから振込先口座を登録すると、その人の差引支給額をPayPay銀行の「WEB総振（総合振込）」指定フォーマット（CSV）で書き出せます。振込の実行はしません（生成したCSVを確認のうえ、ご自身でPayPay銀行の画面からアップロードしてください）。口座未登録の人は自動でスキップし、一覧で知らせます。</div>
+        <div class="mail-actions"><button class="primary" id="payroll-csv-export">📥 振込CSVを出力</button></div>
+        <div class="err" id="payroll-csv-msg" style="margin-top:6px"></div>
+      </div>
       <div class="card hq-tablewrap">
         ${rows.length?`<table class="invoice-table">
-          <thead><tr><th>氏名</th><th style="text-align:right">固定給</th><th style="text-align:right">通勤</th><th style="text-align:right">控除</th><th style="text-align:right">差引支給</th><th>仕訳辞書パターン</th><th>PDF</th><th>状態</th><th></th></tr></thead>
+          <thead><tr><th>氏名</th><th style="text-align:right">固定給</th><th style="text-align:right">通勤</th><th style="text-align:right">控除</th><th style="text-align:right">差引支給</th><th>仕訳辞書パターン</th><th>PDF</th><th>振込先</th><th>状態</th><th></th></tr></thead>
           <tbody>${rows.map(payrollRowHtml).join("")}</tbody>
         </table>`:`<div class="empty">${esc(PAYROLL_STATE.yearMonth)}のデータがまだありません（スマレジ給与明細の同期後に表示されます）</div>`}
       </div>
@@ -2840,6 +2857,8 @@ function payrollRender(){
     payrollRender();
   });
   document.querySelectorAll("[data-payroll-preview]").forEach(el=>el.onclick=()=>payrollOpenPreview(el.dataset.payrollPreview));
+  document.querySelectorAll("[data-payroll-bank]").forEach(el=>el.onclick=()=>payrollOpenBankModal(el.dataset.payrollBank));
+  $("payroll-csv-export").onclick=payrollExportCsv;
   $("payroll-pdf-match").onclick=()=>{
     const files=Array.from($("payroll-pdf-files").files||[]);
     if(!files.length){ alert("PDFファイルを選択してください"); return; }
@@ -2894,6 +2913,114 @@ async function payrollUploadPdfs(){
   msg.textContent=`アップロード完了: ${okCount}件成功`+(fail.length?`／失敗: ${fail.join("、")}`:"")+"。一覧を更新します…";
   $("payroll-pdf-upload").disabled=false;
   setTimeout(async()=>{ await payrollLoad(); payrollRender(); },900);
+}
+
+/* ----------------------------------------------------------
+   給与振込先口座の登録（C-7④・2026-08-31）
+   PayPay銀行振込CSV出力の土台。info.employees/employee_salariesには銀行口座列が無いため、
+   担当C側の新規テーブルpayroll_bank_accountsに保存する（センシティブ情報のためmaster/HQのみ）
+   ---------------------------------------------------------- */
+function payrollOpenBankModal(userId){
+  const row=PAYROLL_STATE.rows.find(r=>r.user_id===userId);
+  const bank=payrollBankFor(userId)||{};
+  const name=(row&&row.user&&row.user.name)||"—";
+  const modal=document.createElement("div");
+  modal.className="modal-bg"; modal.id="payrollBankModal";
+  modal.innerHTML=`<div class="modal" style="max-width:480px">
+    <div class="mhead"><h2>🏦 振込先口座 — ${esc(name)}</h2><button class="linkbtn" id="payrollBankClose" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:13px">閉じる ×</button></div>
+    <label>銀行コード（4桁の数字。通帳・キャッシュカードに記載）</label>
+    <input id="pb-bankcode" value="${esc(bank.bank_code||"")}" placeholder="例: 0033" maxlength="4">
+    <label>銀行名（任意・表示用）</label>
+    <input id="pb-bankname" value="${esc(bank.bank_name||"")}" placeholder="例: PayPay銀行">
+    <label>支店コード（3桁の数字）</label>
+    <input id="pb-branchcode" value="${esc(bank.branch_code||"")}" placeholder="例: 003" maxlength="3">
+    <label>支店名（任意・表示用）</label>
+    <input id="pb-branchname" value="${esc(bank.branch_name||"")}" placeholder="例: 本店営業部">
+    <label>預金種目</label>
+    <select id="pb-accounttype">
+      <option value="1" ${(bank.account_type||"1")==="1"?"selected":""}>普通</option>
+      <option value="2" ${bank.account_type==="2"?"selected":""}>当座</option>
+      <option value="4" ${bank.account_type==="4"?"selected":""}>貯蓄</option>
+    </select>
+    <label>口座番号（数字のみ）</label>
+    <input id="pb-accountnumber" value="${esc(bank.account_number||"")}" placeholder="例: 1234567" maxlength="7">
+    <label>口座名義（半角カタカナ。通帳記載のとおり）</label>
+    <input id="pb-holderkana" value="${esc(bank.account_holder_kana||"")}" placeholder="例: ﾀﾛｳ ﾔﾏﾀﾞ">
+    <div class="err" id="pb-msg" style="margin-top:8px"></div>
+    <div style="display:flex;gap:8px;margin-top:12px">
+      <button class="hq-btn primary" style="flex:1" id="pb-save">保存</button>
+      ${bank.user_id?`<button class="hq-btn" id="pb-delete">削除</button>`:""}
+    </div>
+  </div>`;
+  document.body.appendChild(modal);
+  pushNav({modal:true});
+  modal.onclick=e=>{ if(e.target===modal) history.back(); };
+  $("payrollBankClose").onclick=()=>history.back();
+  $("pb-save").onclick=async()=>{
+    const msg=$("pb-msg"); msg.className="err";
+    const bankCode=$("pb-bankcode").value.trim(), branchCode=$("pb-branchcode").value.trim();
+    const accountNumber=$("pb-accountnumber").value.trim(), holderKana=$("pb-holderkana").value.trim();
+    if(!/^\d{1,4}$/.test(bankCode)){ msg.textContent="銀行コードは数字4桁以内で入力してください"; return; }
+    if(!/^\d{1,3}$/.test(branchCode)){ msg.textContent="支店コードは数字3桁以内で入力してください"; return; }
+    if(!/^\d{1,7}$/.test(accountNumber)){ msg.textContent="口座番号は数字7桁以内で入力してください"; return; }
+    if(!holderKana){ msg.textContent="口座名義（半角カタカナ）を入力してください"; return; }
+    $("pb-save").disabled=true; msg.textContent="保存中…";
+    const payload={
+      user_id:userId, bank_code:bankCode, bank_name:$("pb-bankname").value.trim()||null,
+      branch_code:branchCode, branch_name:$("pb-branchname").value.trim()||null,
+      account_type:$("pb-accounttype").value, account_number:accountNumber, account_holder_kana:holderKana,
+      updated_by:ME.id, updated_at:new Date().toISOString(),
+    };
+    const r=await authed("/rest/v1/payroll_bank_accounts",{method:"POST",headers:{Prefer:"resolution=merge-duplicates,return=minimal"},body:JSON.stringify(payload)});
+    if(!r.ok){ msg.textContent="保存に失敗しました"; $("pb-save").disabled=false; return; }
+    msg.className="err msg-ok"; msg.textContent="保存しました。画面を更新します…";
+    setTimeout(async()=>{ history.back(); await payrollLoad(); payrollRender(); },700);
+  };
+  if($("pb-delete")) $("pb-delete").onclick=async()=>{
+    if(!confirm(`${name}さんの振込先口座を削除しますか？`)) return;
+    await authed(`/rest/v1/payroll_bank_accounts?user_id=eq.${userId}`,{method:"DELETE"});
+    history.back(); payrollLoad().then(payrollRender);
+  };
+}
+
+// PayPay銀行「使用許容文字」ルールの自動変換（長音→ハイフン・中黒→ピリオド・小文字カナ→大文字化）。
+// それ以外の使用不可文字（&や!等）はそのまま残すため、出力前に一覧で確認できるようにしてある
+function paypayCleanKana(s){
+  let t=String(s||"").toUpperCase();
+  t=t.replace(/ー/g,"-").replace(/･/g,".").replace(/・/g,".");
+  const smallMap={"ｧ":"ｱ","ｨ":"ｲ","ｩ":"ｳ","ｪ":"ｴ","ｫ":"ｵ","ｯ":"ﾂ","ｬ":"ﾔ","ｭ":"ﾕ","ｮ":"ﾖ","ァ":"ｱ","ィ":"ｲ","ゥ":"ｳ","ェ":"ｴ","ォ":"ｵ","ッ":"ﾂ","ャ":"ﾔ","ュ":"ﾕ","ョ":"ﾖ"};
+  t=t.replace(/[ｧｨｩｪｫｯｬｭｮァィゥェォッャュョ]/g,c=>smallMap[c]||c);
+  return t;
+}
+// PayPay銀行指定フォーマット（CSV）どおりに振込データを組み立てて出力する。
+// 実フォーマットはdocs/フォーマット登録_PayPay銀行WEB総振_2026-08-31.md参照（公式PDFから取得済み）。
+// 振込の実行はしない＝生成したCSVをダウンロードするだけ（人が確認してPayPay銀行の画面で実行する）
+function payrollExportCsv(){
+  const msg=$("payroll-csv-msg"); msg.className="err"; msg.textContent="";
+  const skipped=[];
+  const dataLines=[];
+  let total=0, count=0;
+  for(const row of PAYROLL_STATE.rows){
+    const name=(row.user&&row.user.name)||row.user_id;
+    const amount=Math.round(Number(row.net_pay)||0);
+    if(!amount||amount<=0){ skipped.push(`${name}（差引支給額が0円）`); continue; }
+    const bank=payrollBankFor(row.user_id);
+    if(!bank){ skipped.push(`${name}（振込先口座が未登録）`); continue; }
+    const cols=["1", bank.bank_code, bank.branch_code, bank.account_type, bank.account_number, paypayCleanKana(bank.account_holder_kana), String(amount), ""];
+    dataLines.push(cols.join(","));
+    total+=amount; count++;
+  }
+  if(!count){ msg.textContent="出力できる従業員がいません（振込先口座の登録状況を確認してください）"; return; }
+  const trailer=["2","","","","",String(count),String(total),""].join(",");
+  const csv=[...dataLines, trailer].join("\r\n")+"\r\n";
+  const blob=new Blob([csv],{type:"text/csv"});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement("a");
+  a.href=url; a.download=`paypay_furikomi_${PAYROLL_STATE.yearMonth}.csv`;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url),2000);
+  msg.className="err msg-ok";
+  msg.textContent=`${count}件・合計${yen(total)}のCSVをダウンロードしました。`+(skipped.length?`スキップ: ${skipped.join("、")}`:"");
 }
 async function payrollOpenPreview(userId){
   const row=PAYROLL_STATE.rows.find(r=>r.user_id===userId);
@@ -3061,7 +3188,7 @@ async function main(){
   if(!u){sess.clear();renderLogin();return}
   if(u.is_active===false){renderLogin();return}
   ME=u;
-  history.replaceState({tab:"inbox"},"");
+  history.replaceState({tab:TAB},"");
   await Promise.all([loadInboxMaster(), loadWaitingPaymentCount(), loadKpiCounts()]);
   $("app").innerHTML=shellHtml(u);
   wireShell(u);
