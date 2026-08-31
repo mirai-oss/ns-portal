@@ -1377,7 +1377,7 @@ function stepHtml(t,s,u){
         ${attachBoxHtml(`tsatt-${s.id}`,links,photos,attCanEdit)}
         ${canComplete?`<div class="err" id="stepmsg-${s.id}"></div>
         <div class="proc-actions">
-          ${canEditAssign?`<button class="btn sm" data-stepsavemeta="${s.id}">担当・期限を保存</button>`:""}
+          ${canEditAssign?`<button class="btn sm" data-stepsavemeta="${s.id}">担当・期限を保存</button><button class="linkbtn" data-stepdel="${s.id}" style="color:var(--stall)">🗑 工程を削除</button>`:""}
           <button class="btn sm" data-complete="${s.id}">この工程を完了</button>
         </div>`:""}
     </div>`:""}
@@ -1864,6 +1864,24 @@ function wireDetail(t,u){
       if(changes.length) await logActivity(t.id,"comment",`工程「${step.title}」を編集（${changes.join("・")}）`,sid);
       CUR_TASK=await fetchTaskDetail(t.id);
       await syncTaskDueDate(CUR_TASK); // 工程の期限を編集したら全体期限（最終工程の期限）も同期する
+      CUR_TASK=await fetchTaskDetail(t.id); renderDetail(u);
+    };
+  });
+  /* 2026-08-31: 工程自体の削除（間違えて作った工程を消したい・数を減らしたいという実機
+     フィードバック対応）。canEditAssign（canManage(u)&&未完了）と同じ条件でのみ表示・
+     権限はhqs_delete（hq_can_manage()）と一致するため新規SQL不要 */
+  document.querySelectorAll("[data-stepdel]").forEach(btn=>{
+    btn.onclick=async(e)=>{
+      e.stopPropagation();
+      const sid=btn.dataset.stepdel;
+      const step=sortedSteps(t).find(s=>s.id===sid);
+      if(!confirm(`工程「${step.title}」を削除しますか？元に戻せません。`))return;
+      btn.disabled=true;
+      const r=await authed(`/rest/v1/hq_task_steps?id=eq.${sid}`,{method:"DELETE"});
+      if(!r.ok){ alert("削除できませんでした"); btn.disabled=false; return; }
+      await logActivity(t.id,"comment",`工程「${step.title}」を削除`);
+      CUR_TASK=await fetchTaskDetail(t.id);
+      await syncTaskDueDate(CUR_TASK); // 工程を削除したら全体期限（最終工程の期限）も同期する
       CUR_TASK=await fetchTaskDetail(t.id); renderDetail(u);
     };
   });
