@@ -6,6 +6,13 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
+**★★★★★2026-09-01（担当F実行スレッド・続き3）変更申請をポータル内で完結する方式へ変更（ns-info-systemへのリンクを廃止）**: ユーザーから「そもそも社内情報管理システムへリンクで飛ばす必要が無い。経費申請と同じようにその画面で申請できるようにしてほしい。承認は本部/マスターが後でns-info-system側で行うのだから、申請の段階でリンクを飛ばす必要は無い」と明確な指摘を受け、SSOハンドオフ方式をやめて新規`ns-portal/requests.html`（担当F管轄の新規ファイル）を作成・`portal.html`の「🔁申請」グループへ経費申請と同じ「同一オリジンiframeで直接embed」方式で組み込んだ（コミット[0d1a21f](https://github.com/mirai-oss/ns-portal/commit/0d1a21f)）。
+- **技術的なポイント**: `requests.html`はns-info-system（Vercelの別アプリ）とは完全に別ファイルだが、**同じSupabaseプロジェクト・同じSupabase Auth**（`info`/`public`は同一DB内の別スキーマ）のため、`Accept-Profile`/`Content-Profile: info`ヘッダーを付けるだけで`info`スキーマの関数・テーブルへ直接読み書きできる。ns-info-system側に前スレッドで作った関数群（`get_my_employee_summary`/`am_credential_eligible`/`submit_employee_change_request`/`list_credentials_for_request`/`submit_credential_change_request`/`submit_credential_new_request`）はそのまま無変更で流用（RPCはスキーマを問わずSupabaseプロジェクト単位で呼べるため）
+- ns-info-system側のReact版（`/requests`）と同等の機能をvanilla JSで再実装（個人情報6カテゴリ・添付ファイル・社内システム申請の新規登録/変更申請・自分の申請履歴）。認証は`expenses.html`と同じ`nsportal_session_v1`直読みパターンを踏襲（新規の認証コードなし）
+- **承認側（本部/マスターが実際に処理する画面）は引き続きns-info-system**（`employees`/`credentials`画面）のまま変更なし。変わったのは「申請する」側の入口だけ
+- ns-info-system側の`/requests`（React版）はそのまま残置（削除の必要はないため）。今後の主な入口は`ns-portal/requests.html`になる
+- ローカルで未ログイン時のフォールバック表示・偽トークンでの401/400ハンドリングを確認済み。**実機E2E（実際のログイン状態での申請〜承認の一連の動作）は未実施**（この環境にログイン手段が無いため）。ユーザーに実機確認をお願いしたい
+
 **★★2026-09-01（担当C実行スレッド）給与仕訳タブのKPIバーを給与用に出し分け＋振込先に「現金手渡し」を追加**: ユーザー報告「給与仕訳タブなのに請求書メールのKPI（未処理メール等）が上に出ている」に対応。KPIバーのHTML生成を`mailSummaryDefaultHtml()`（従来の受信トレイ用4項目）と`payrollSummaryHtml()`（給与支払い人数／振込件数／現金支払い件数・合計金額／完了数の4項目）に分離し、`updateMailSummaryBar()`でTABに応じて出し分け（`renderTabBody()`の先頭・給与データ読込後・口座保存/削除後・受信トレイの一括操作後・メール詳細操作後、それぞれで呼び出し）。あわせて振込先登録モーダルに支払方法セレクト（銀行振込／現金手渡し）を追加し、現金手渡しを選ぶと銀行口座欄が不要になる（新規SQL`2026-09-01_payroll_payment_method.sql`で`payroll_bank_accounts.payment_method`列を追加・銀行系4列のNOT NULL制約を解除。本番Supabaseへ適用済み）。CSV出力（PayPay銀行振込）は現金手渡しの人を自動スキップし明示表示。構文チェック済み・push予定。詳細は本日付エントリ参照
 
 **★★★★★2026-09-01（担当F実行スレッド・続き2）実機フィードバック対応: 「変更申請」を押すと社内情報管理システムのトップに飛ぶ不具合を修正＋サイドバーを「申請」グループに再編**: ユーザーが実機スクリーンショットで報告。**原因（バグ）**: `ns-info-system`の`sso/page.tsx`が、URLフラグメント（トークン本体）を消す際に`window.location.pathname`だけで`history.replaceState`しており、クエリ文字列`?to=/requests`ごと消してしまっていた（読み取りはその後の行だったため、`to`は常に`null`になり毎回既定のホームへ遷移していた）。**修正**: `?to`をハッシュを消す前に先に読んでおき、`replaceState`には`pathname+search`を渡すよう変更（ハッシュだけを消してクエリ文字列は残す）。コミット[71734b8](https://github.com/mirai-oss/ns-info-system/commit/71734b8)・本番反映確認済み（`/requests?tab=system`が`/login?tab=system`へ307リダイレクトすることを確認＝クエリが生き残っている）。
