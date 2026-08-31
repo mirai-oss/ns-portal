@@ -932,9 +932,20 @@ const TOP_ITEMS=[
   {key:"home",ico:"🏠",label:"概要（ホーム）",type:"home"},
   {key:"notice",ico:"📣",label:"お知らせ",url:"index.html",countKey:"posts"},
   {key:"hqtasks",sysKey:"hqtasks",ico:"📌",label:"本部タスク",url:"tasks.html",countKey:"hq"},
-  {key:"invoices",sysKey:"invoices",ico:"✉️",label:"請求書メール",url:"invoices.html",countKey:"inv"},
   {key:"expenses",sysKey:"expenses",ico:"🧾",label:"経費申請",url:"expenses.html"},
 ];
+// F-10（ラウンド5・Sync5・設計書_会計自動化_給与明細とインフォマート支払_2026-08-31.md §5 Q6）:
+// 請求書メールをTOP_ITEMSから「🧾会計」グループへ移動し、会計ダッシュボード／給与仕訳／支払いの
+// メニュー枠を追加。key/sysKey/countKeyは既存の"invoices"のまま据え置く（homeQuickGroups・
+// quickActionsHtml・canSeeKey("invoices",...)がこのkeyをハードコードで参照しているため変更禁止）。
+// 会計ダッシュボード・給与仕訳・支払いは中身が担当C-7でまだ実装されていないため、予約管理(A-6)の
+// ときと同じパターンで準備中バッジにしておき、Cの画面ができ次第urlを設定してsoonを外す
+const KAIKEI_GROUP={cap:"会計",ico:"🧾", items:[
+  {key:"invoices",sysKey:"invoices",ico:"✉️",label:"請求書メール",url:"invoices.html",countKey:"inv"},
+  {key:"kaikei-dashboard",ico:"📊",label:"会計ダッシュボード",soon:true},
+  {key:"kaikei-payroll",  ico:"🧾",label:"給与仕訳",soon:true},
+  {key:"kaikei-payment",  ico:"💸",label:"支払い（インフォマート・振込）",soon:true},
+]};
 /* 精算管理・社内情報は、実際のアプリがURLで内部タブを指定する仕組みを
    持っていない（もともと1画面のアプリのため元々複数タブが無い）ため
    1グループ=1項目のまま。現場・日報／採用管理／経営管理は、nippo・
@@ -1000,6 +1011,7 @@ const GROUPS=[
     {key:"keiei-weeklyadmin", sysKey:"keiei", roles:["HQ","CEO"], ico:"🗂️", label:"週報管理",     url:keieiTab("weeklyAdmin")},
     {key:"keiei-accounts",    sysKey:"keiei", roles:["HQ","CEO"], ico:"👤", label:"アカウント管理", url:keieiTab("accounts")},
   ]},
+  KAIKEI_GROUP,
   // F-6（実装指示書_担当F追加_返済表と管理画面_2026-08-25.md）: 散らばっていた
   // 管理系機能を1グループに集約する「タブ集約方式」の実装。別サイトは作らず、
   // 既存のサイドバーグループ機構（開閉サブメニュー＝実質的なタブ）をそのまま使い、
