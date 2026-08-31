@@ -504,10 +504,23 @@ function payrollSummaryHtml(){
     <div class="card mail-kpi"><small>完了数</small><b style="color:var(--green)">${doneCount}</b></div>
   `;
 }
+// portal.html組込(EMBED)時にサイドバーの「会計」グループから開く3タブ（会計ダッシュボード／
+// アップロード請求書／給与仕訳）。ポータル側に別途「請求書メール」の専用リンクがあるため、
+// この3タブでは請求書メール向けの項目（KPIバー・受信トレイ等のタブ切替行）を表示しない
+const ACCOUNTING_ONLY_TABS=["dashboard","upload","payroll"];
+// 画面上部のKPIバーと、その下のタブ切替行（受信トレイ／請求書一覧／…／新規作成）をタブに応じて
+// 出し分ける。ユーザー報告「そのタブに合わない請求書メールの項目が混じっている」に対応
+// （2026-09-01: 会計ダッシュボード・アップロード請求書・給与仕訳では請求書メール向けの項目を隠す）
 function updateMailSummaryBar(){
   const el=$("mailSummaryBar");
-  if(!el) return;
-  el.innerHTML = TAB==="payroll" ? payrollSummaryHtml() : mailSummaryDefaultHtml();
+  if(el){
+    const hideForTab=EMBED&&(TAB==="dashboard"||TAB==="upload");
+    el.style.display=hideForTab?"none":"";
+    if(TAB==="payroll") el.innerHTML=payrollSummaryHtml();
+    else if(!hideForTab) el.innerHTML=mailSummaryDefaultHtml();
+  }
+  const tabsRow=document.querySelector(".mail-tabs-row");
+  if(tabsRow) tabsRow.style.display=(EMBED&&ACCOUNTING_ONLY_TABS.includes(TAB))?"none":"";
 }
 function shellHtml(u){
   return `
@@ -2295,19 +2308,8 @@ async function renderAccountingDashboardTab(u){
     })),
   ]);
   const standaloneInvoices=(standaloneR.ok&&Array.isArray(standaloneR.body))?standaloneR.body:[];
-  const k=kpiCounts();
   $("tabbody").innerHTML=`
     <section class="invoice-list active">
-      <div class="card" style="padding:16px;margin-bottom:14px">
-        <h3 style="font-size:14px;margin-bottom:10px">📧 請求書メール（受信トレイの処理状況）</h3>
-        <div class="mail-summary" style="margin-bottom:0">
-          <div class="card mail-kpi"><small>未処理</small><b style="color:var(--accent)">${k.unprocessed}</b></div>
-          <div class="card mail-kpi"><small>処理中</small><b style="color:var(--blue)">${k.processing}</b></div>
-          <div class="card mail-kpi"><small>支払待ち請求書</small><b>${WAITING_PAYMENT_COUNT}</b></div>
-          <div class="card mail-kpi"><small>今月完了</small><b style="color:var(--green)">${k.completedThisMonth}</b></div>
-        </div>
-      </div>
-
       <div class="card" style="padding:16px;margin-bottom:14px">
         <h3 style="font-size:14px;margin-bottom:10px">🔗 マネーフォワード連携状況（事業者別）</h3>
         ${tenants.length?`<div class="hq-tablewrap"><table class="invoice-table"><thead><tr><th>事業者</th><th>今月のMF仕訳登録件数</th><th>登録済み仕訳辞書</th></tr></thead><tbody>
