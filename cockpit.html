@@ -34,6 +34,10 @@ button,input,select,textarea{font:inherit}.app{display:grid;grid-template-column
 .toast{position:fixed;bottom:18px;right:18px;background:#26221d;color:#fff;border-radius:10px;padding:10px 14px;font-size:11px;z-index:300;display:none;max-width:70vw}
 .setupbar{background:#eef6ff;border:1px solid #c4dcf5;border-radius:10px;padding:12px 14px;margin:12px 0;font-size:11px;color:#2b5c92;display:none}
 .mobnav{display:none;gap:6px;overflow-x:auto;padding:10px 12px;background:var(--nav)}.mobnav button{border:0;border-radius:999px;background:#3a342e;color:#d5cec6;padding:7px 12px;white-space:nowrap;font-size:11px}.mobnav button.active{background:#efc34b;color:#26221d;font-weight:700}
+/* 埋め込み（ポータル内iframe）時は内部サイドバー・モバイルナビを隠す。
+   画面切替はポータルのサブメニュー（nsPortalSetTabメッセージ・?page=パラメータ）から行う（2026-08-31ユーザー指示） */
+body.embed-mode .sidebar,body.embed-mode .mobnav{display:none}
+body.embed-mode .app{display:block}
 @media(max-width:1100px){.kpis{grid-template-columns:repeat(3,1fr)}.live{grid-template-columns:1fr 1fr}.people{grid-template-columns:1fr 1fr}}
 @media(max-width:760px){.app{display:block}.sidebar{display:none}.mobnav{display:flex}.content{padding:12px}.kpis,.live,.grid2,.people{grid-template-columns:1fr 1fr}.prompt{grid-template-columns:1fr}.form{border-right:0;border-bottom:1px solid var(--line)}.event{grid-template-columns:80px minmax(0,1fr) 70px}.event span:nth-child(2){display:none}}
 </style>
@@ -172,6 +176,7 @@ const SUPA_URL="https://uuvsxzhpxtghojoubjcc.supabase.co";
 const SUPA_KEY="sb_publishable_MrwPJAx_Ws_fdRutprKCiQ_dg3wCiTr"; // 公開用キー（秘密情報ではない）
 const LS_KEY="nsportal_session_v1";
 const EMBED=new URLSearchParams(location.search).get("embed")==="1";
+if(EMBED) document.body.classList.add("embed-mode");
 const $=id=>document.getElementById(id);
 const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const sess={get:()=>{try{return JSON.parse(localStorage.getItem(LS_KEY))}catch(e){return null}},
@@ -553,6 +558,16 @@ function openPortalAdminOverrides(){
   alert("この設定はポータルに埋め込んだ状態で使います。\nポータル → 管理 → 🛠️AI開発コックピット から開き直してください");
 }
 function openLegacyPerm(){ window.open("index.html","_blank","noopener"); }
+
+/* 初期表示ページ（?page=）とポータルからの高速切替（nsPortalSetTab）に対応 */
+const PAGE_IDS=new Set(["dashboard","tasks","agents","prompts","history","owners","settings"]);
+const initPage=new URLSearchParams(location.search).get("page");
+if(initPage&&PAGE_IDS.has(initPage)) show(initPage);
+window.addEventListener("message",e=>{
+  if(e.origin!==location.origin) return;
+  const d=e.data||{};
+  if(d.type==="nsPortalSetTab"&&PAGE_IDS.has(d.tab)) show(d.tab);
+});
 
 /* ====== 起動 ====== */
 function gateMsg(html){ $("gate").style.display="flex"; $("gatebox").innerHTML=html; }

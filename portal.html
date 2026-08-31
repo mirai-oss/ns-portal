@@ -1029,9 +1029,21 @@ const GROUPS=[
     // 2026-08-29担当B: 給与・インセンティブ配分（マスターが店舗×半月ごとに金額を確定させる画面）。
     // nippo側にadminMode="payroll"として実装済み・ここでは既存の admin-accounts と同じ経路でリンクするだけ
     {key:"admin-payroll", ico:"💴", label:"給与・インセンティブ配分", url:nippoPage("admin"), roles:[]},
-    // 2026-08-31 AI開発コックピット（担当H新設・司令塔スレッドが一括実装）。roles:[]=マスターのみ。
-    // 「誰が・どのPCで・どのタスクをどこまで」の開発可視化ダッシュボード（cockpit.html・ck_系テーブル）
-    {key:"admin-cockpit", ico:"🛠️", label:"AI開発コックピット", url:"cockpit.html?embed=1", roles:[]},
+  ]},
+  // 2026-08-31 ユーザー指示: AI開発コックピットは独立グループにして各画面をサブメニューで直接開く
+  // （cockpit.html側はembed=1のとき内部サイドバーを隠す。切替はsysKey"cockpit"のFAST_SWITCHで
+  //   iframeを作り直さずnsPortalSetTabメッセージ→cockpit側showに渡す）。roles:[]=マスターのみ。
+  // 「管理項目を見せる人を設定」「権限・画面設定」もユーザー指示でこのグループ内に置く
+  {cap:"AI開発コックピット", ico:"🛠️", items:[
+    {key:"ck-dashboard", ico:"📊", label:"開発ダッシュボード", url:"cockpit.html?embed=1&page=dashboard", sysKey:"cockpit", roles:[]},
+    {key:"ck-tasks",     ico:"📋", label:"全タスク",           url:"cockpit.html?embed=1&page=tasks",     sysKey:"cockpit", roles:[]},
+    {key:"ck-agents",    ico:"🖥️", label:"AI / PC稼働状況",    url:"cockpit.html?embed=1&page=agents",    sysKey:"cockpit", roles:[]},
+    {key:"ck-prompts",   ico:"📝", label:"指示書作成",         url:"cockpit.html?embed=1&page=prompts",   sysKey:"cockpit", roles:[]},
+    {key:"ck-history",   ico:"🕘", label:"実行・変更履歴",     url:"cockpit.html?embed=1&page=history",   sysKey:"cockpit", roles:[]},
+    {key:"ck-owners",    ico:"👥", label:"担当別",             url:"cockpit.html?embed=1&page=owners",    sysKey:"cockpit", roles:[]},
+    {key:"ck-settings",  ico:"⚙️", label:"接続・設定",         url:"cockpit.html?embed=1&page=settings",  sysKey:"cockpit", roles:[]},
+    {key:"ck-adminovr",  ico:"🎛️", label:"管理項目を見せる人を設定", type:"adminovr", roles:[]},
+    {key:"ck-permlink",  ico:"🔑", label:"権限・画面設定（従来ポータル）", legacyLink:true, roles:[]},
   ]},
 ];
 function itemVisible(it,grp,u){
@@ -1069,8 +1081,8 @@ let NAV_HQ_CNT=0, NAV_INV_CNT=0;
    tori-dashboard（sysKey:"keiei"）はapp.js側の受け口デプロイ済み・確認済み。
    nippo（sysKey:"nippo"）は担当Bと連携のうえ追加予定（2026-08-26時点は未追加）
    ============================================================ */
-const SYS_TAB_PARAM={keiei:"tab",nippo:"page"}; // その システムの「タブ」がURLのどのクエリパラメータで表されるか
-const FAST_SWITCH_SYSKEYS=new Set(["keiei","nippo"]); // nippo側の受け口は担当Bが実装・デプロイ済み（コミットbe020d2・2026-08-27確認）
+const SYS_TAB_PARAM={keiei:"tab",nippo:"page",cockpit:"page"}; // その システムの「タブ」がURLのどのクエリパラメータで表されるか
+const FAST_SWITCH_SYSKEYS=new Set(["keiei","nippo","cockpit"]); // nippo側の受け口は担当Bが実装・デプロイ済み（コミットbe020d2・2026-08-27確認）。cockpit側は2026-08-31実装
 let CUR_IFRAME=null, CUR_IFRAME_SYSKEY=null, CUR_IFRAME_ORIGIN=null;
 
 /* ============================================================
@@ -1243,6 +1255,7 @@ function openItem(key,u){
   if(it.soon){ toast("準備中です"); return; }
   if(it.sso){ openJohoSso(); return; }
   if(it.legacyLink){ location.href="index.html"; return; } // F-6: 従来ポータルの権限設定タブへそのまま遷移（iframeにしない）
+  if(it.type==="adminovr"){ openAdminOverrideModal(); return; } // 2026-08-31: AI開発コックピットグループ内から従来の設定モーダルを開く
   if(it.externalPlain){ window.open(it.url,"_blank","noopener"); closeMobileMore(); return; } // D-5a: 独立した静的ページを新しいタブでそのまま開く（iframeにしない）
   if(grp) OPEN_GROUP=grp.cap; // クリックした項目のグループだけを開いた状態にする
 
