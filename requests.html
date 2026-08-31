@@ -1,0 +1,481 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>🔁 変更申請 — N-Styleグループ ポータル</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔁</text></svg>">
+<style>
+:root{
+  --bg:#f5f4f1; --card:#ffffff; --ink:#26221e; --muted:#8a8377;
+  --accent:#1f5fbf; --accent2:#184c99; --line:#e7e3dc; --ok:#2e7d32;
+  --warn:#b58a00; --bad:#c62828; --soft:#f1f5f9;
+}
+@media(prefers-color-scheme:dark){
+  :root{--bg:#1d1b18; --card:#282521; --ink:#f0ece5; --muted:#a29a8c; --line:#3a362f; --soft:#33302a;}
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Noto Sans JP",sans-serif;background:var(--bg);color:var(--ink);min-height:100vh}
+.wrap{max-width:640px;margin:0 auto;padding:20px 16px 60px}
+a{color:inherit}
+.spin{text-align:center;color:var(--muted);padding:60px 0}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px 18px;box-shadow:0 1px 4px rgba(0,0,0,.04);margin-bottom:14px}
+label{display:block;font-size:13px;color:var(--muted);margin:12px 0 4px;font-weight:600}
+label:first-child{margin-top:0}
+.req{background:var(--bad);color:#fff;font-size:10px;font-weight:700;border-radius:4px;padding:1px 6px;margin-left:4px;vertical-align:middle}
+input,select,textarea{width:100%;padding:10px 12px;font-size:15px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);font-family:inherit}
+textarea{resize:vertical}
+input[type=file]{padding:8px;font-size:12px;border-style:dashed;background:var(--card)}
+.btn{display:inline-block;padding:12px 20px;font-size:15px;font-weight:600;color:#fff;background:var(--accent);border:none;border-radius:10px;cursor:pointer;width:100%}
+.btn:hover{background:var(--accent2)}
+.btn:disabled{opacity:.5;cursor:default}
+.topbar h1{font-size:19px}
+.topbar .who{font-size:13px;color:var(--muted);margin-top:2px}
+.tabrow{display:flex;border-bottom:2px solid var(--line);margin:-16px -18px 14px;border-radius:14px 14px 0 0;overflow:hidden}
+.tabrow button{flex:1;padding:13px 8px;text-align:center;font-size:14px;font-weight:700;border:none;background:var(--soft);color:var(--muted);cursor:pointer}
+.tabrow button.active{background:var(--card);color:var(--accent);border-bottom:3px solid var(--accent);margin-bottom:-2px}
+.dyn{background:var(--soft);border-radius:10px;padding:14px;margin-top:10px}
+.row2{display:flex;gap:8px}
+.row2>div{flex:1}
+.msg-err{color:var(--bad);font-size:13px;background:rgba(198,40,40,.08);border-radius:8px;padding:8px 10px;margin-top:10px}
+.msg-ok{color:var(--ok);font-size:13px;background:rgba(46,125,50,.08);border-radius:8px;padding:8px 10px;margin-top:10px}
+.note{font-size:11px;color:var(--muted);margin-top:4px;line-height:1.5}
+.pill{display:inline-block;border-radius:99px;padding:2px 9px;font-size:11px}
+.pill.pending{background:#fdf5e0;color:var(--warn)}
+.pill.approved,.pill.done{background:#e9f6ef;color:var(--ok)}
+.pill.rejected{background:#fdecec;color:var(--bad)}
+.hist-row{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 0;border-bottom:1px solid var(--line);font-size:13px}
+.hist-row:last-child{border-bottom:none}
+.hist-meta{color:var(--muted);font-size:11px;white-space:nowrap}
+.chipbar{display:flex;gap:6px;flex-wrap:wrap;margin-top:4px}
+.chipbar button{width:auto;padding:6px 12px;font-size:12px;border-radius:99px;border:1px solid var(--line);background:var(--card);color:var(--muted);cursor:pointer}
+.chipbar button.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+.radiorow{display:flex;gap:18px;padding:4px 0}
+.radiorow label{display:flex;align-items:center;gap:6px;font-weight:400;color:var(--ink);font-size:14px;margin:0}
+.pwwrap{position:relative}
+.pwwrap button{position:absolute;right:8px;top:8px;width:auto;padding:4px 8px;font-size:11px;background:none;color:var(--accent);border:none;font-weight:600}
+.sec-title{font-size:15px;font-weight:700;margin-bottom:4px}
+.sec-sub{font-size:12px;color:var(--muted);line-height:1.6;margin-bottom:10px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<div id="app"><div class="spin">読み込み中…</div></div>
+</div>
+<script>
+/* ============================================================
+   認証・セッション（index.html / expenses.html と同一実装。
+   nsportal_session_v1 の形式は変更しない）
+   ============================================================ */
+const SUPA_URL="https://uuvsxzhpxtghojoubjcc.supabase.co";
+const SUPA_KEY="sb_publishable_MrwPJAx_Ws_fdRutprKCiQ_dg3wCiTr";
+const LS_KEY="nsportal_session_v1";
+const ATT_BUCKET="employee-request-attachments";
+const $=id=>document.getElementById(id);
+const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const sess={get:()=>{try{return JSON.parse(localStorage.getItem(LS_KEY))}catch(e){return null}},
+            set:v=>localStorage.setItem(LS_KEY,JSON.stringify(v)),
+            clear:()=>localStorage.removeItem(LS_KEY)};
+
+async function api(path,opt={},token){
+  const r=await fetch(SUPA_URL+path,{...opt,headers:{
+    "apikey":SUPA_KEY,...(opt.isBinary?{}:{"Content-Type":"application/json"}),
+    ...(token?{"Authorization":"Bearer "+token}:{}),...(opt.headers||{})}});
+  let body=null; const tx=await r.text(); try{body=tx?JSON.parse(tx):null}catch(e){}
+  return {ok:r.ok,status:r.status,body};
+}
+async function authed(path,opt={}){
+  const s=sess.get(); if(!s) return {ok:false,status:401,body:null};
+  let r=await api(path,opt,s.at);
+  if(r.status===401){ if(!await refresh()) return r; r=await api(path,opt,sess.get().at); }
+  return r;
+}
+async function refresh(){
+  const s=sess.get(); if(!s?.rt) return false;
+  const r=await api("/auth/v1/token?grant_type=refresh_token",{method:"POST",body:JSON.stringify({refresh_token:s.rt})});
+  if(!r.ok){sess.clear();return false}
+  sess.set({at:r.body.access_token,rt:r.body.refresh_token,uid:r.body.user.id});
+  return true;
+}
+async function fetchMe(){
+  const s=sess.get(); if(!s) return null;
+  const r=await authed(`/rest/v1/users?id=eq.${s.uid}&select=*`);
+  if(!r.ok||!Array.isArray(r.body)||!r.body[0]) return null;
+  return r.body[0];
+}
+// 2026-09-01: 変更申請の実体（info.employee_change_requests等）は社内情報管理システム
+// （ns-info-system）と同一Supabaseプロジェクトの別スキーマ"info"にある。同じプロジェクト・
+// 同じSupabase Authのため、ns-portal側からAccept-Profile/Content-Profileヘッダーで
+// スキーマを指定するだけで直接読み書きできる（ユーザー要望により、社内情報管理システムへ
+// リンクで飛ばさずこの画面内で完結させるためにこの方式を採用）
+async function infoAuthed(path,opt={}){
+  return authed(path,{...opt,headers:{"Accept-Profile":"info","Content-Profile":"info",...(opt.headers||{})}});
+}
+async function uploadAttachment(file){
+  const s=sess.get();
+  const path=`${s.uid}/${Date.now()}_${file.name}`;
+  const buf=await file.arrayBuffer();
+  const r=await api(`/storage/v1/object/${ATT_BUCKET}/${path}`,{method:"POST",isBinary:true,headers:{"Content-Type":file.type||"application/octet-stream"},body:buf},s.at);
+  if(!r.ok) throw new Error("添付ファイルのアップロードに失敗しました");
+  return path;
+}
+
+/* ============================================================
+   状態
+   ============================================================ */
+let ME=null, MY_SUMMARY=null, CRED_ELIGIBLE=false, CORPS=[];
+// portal.htmlの「申請」グループから?tab=personal/systemで初期タブを直接指定できる
+let TAB=new URLSearchParams(location.search).get("tab")==="system"?"system":"personal";
+let P_CATEGORY="", C_KIND="new", C_CORP="", C_LIST=null, C_CATFILTER="すべて", C_Q="", C_CREDID="", C_FIELD="secret";
+const ROLE_NAME={CEO:"社長",HQ:"本部",TEAM:"チーム長",TENCHO:"店長",SHAIN:"社員",AL:"アルバイト"};
+
+const P_CATEGORIES=[
+  {v:"phone",l:"電話番号の変更"},
+  {v:"name",l:"氏名の変更（結婚・改姓等）"},
+  {v:"address",l:"住所の変更"},
+  {v:"contact_email",l:"連絡用メールアドレスの変更"},
+  {v:"bank_account",l:"振込口座情報の変更・登録"},
+  {v:"id_document",l:"身分証明書の提出"},
+];
+const ACCOUNT_TYPES=[{v:"1",l:"普通"},{v:"2",l:"当座"},{v:"4",l:"貯蓄"}];
+const ID_DOC_TYPES=["運転免許証","マイナンバーカード（表面）","健康保険証","在留カード / 特別永住者証明書"];
+const CRED_FIELDS=[{v:"username",l:"ID（ログインID）"},{v:"secret",l:"パスワード"},{v:"login_url",l:"ログインURL"},{v:"status",l:"状態"},{v:"memo",l:"メモ"}];
+const CRED_STATUS_VALUES=["使用中","要確認","解約済"];
+const NEW_CATEGORIES=["レジ・決済","広告媒体","通信・Wi-Fi","クラウド","銀行","その他"];
+const EMP_FIELD_LABELS={name:"氏名",kana:"フリガナ",phone:"電話番号",address:"住所",bank_account:"給与振込口座",contact_email:"連絡用メールアドレス",id_document:"身分証明書の提出"};
+const CRED_FIELD_LABELS={username:"ID",secret:"パスワード",login_url:"ログインURL",status:"状態",memo:"メモ"};
+const STATUS_PILL={pending:["承認待ち","pending"],approved:["承認済み","approved"],rejected:["却下","rejected"],done:["対応済み","done"]};
+
+/* ============================================================
+   起動
+   ============================================================ */
+function renderLogin(){
+  $("app").innerHTML=`<div class="card">
+    <p style="margin-bottom:10px">ログインが必要です。ポータルからアクセスしてください。</p>
+    <a class="btn" href="index.html">← ポータルへ</a>
+  </div>`;
+}
+async function main(){
+  if(!sess.get()){renderLogin();return}
+  const u=await fetchMe();
+  if(!u){sess.clear();renderLogin();return}
+  if(u.is_active===false){renderLogin();return}
+  ME=u;
+  const [{body:summaryBody},{body:eligBody},{body:corpsBody}]=await Promise.all([
+    infoAuthed("/rest/v1/rpc/get_my_employee_summary",{method:"POST",body:"{}"}),
+    infoAuthed("/rest/v1/rpc/am_credential_eligible",{method:"POST",body:"{}"}),
+    infoAuthed("/rest/v1/corporations?select=id,code,name&order=code"),
+  ]);
+  MY_SUMMARY=(Array.isArray(summaryBody)&&summaryBody[0])?summaryBody[0]:null;
+  CRED_ELIGIBLE=eligBody===true;
+  if(TAB==="system"&&!CRED_ELIGIBLE) TAB="personal"; // 権限が無い人が?tab=systemで来た場合のフォールバック
+  CORPS=Array.isArray(corpsBody)?corpsBody:[];
+  if(CORPS[0]) C_CORP=CORPS[0].id;
+  renderApp();
+}
+main();
+
+/* ============================================================
+   画面全体
+   ============================================================ */
+function renderApp(){
+  $("app").innerHTML=`
+    <div class="topbar" style="margin-bottom:14px">
+      <h1>🔁 変更申請</h1>
+      <div class="who">${esc(ME.name)}さん・申請した内容は本部の承認後に反映されます</div>
+    </div>
+    <div class="card" style="padding:0;overflow:hidden">
+      <div class="tabrow">
+        <button id="tabPersonal" class="${TAB==='personal'?'active':''}" onclick="switchTab('personal')">自分の情報変更</button>
+        ${CRED_ELIGIBLE?`<button id="tabSystem" class="${TAB==='system'?'active':''}" onclick="switchTab('system')">社内システム情報申請</button>`:""}
+      </div>
+      <div style="padding:16px 18px" id="tabBody"></div>
+    </div>
+    <div class="card">
+      <div class="sec-title">📜 自分の申請履歴</div>
+      <div id="histBody"><p style="color:var(--muted);font-size:13px">読み込み中…</p></div>
+    </div>
+  `;
+  renderTabBody();
+  loadHistory();
+}
+function switchTab(t){ TAB=t; renderApp(); }
+
+/* ============================================================
+   タブ1: 自分の情報変更
+   ============================================================ */
+function renderTabBody(){
+  if(TAB==="personal") renderPersonalTab(); else renderSystemTab();
+}
+function renderPersonalTab(){
+  const body=$("tabBody");
+  if(!MY_SUMMARY){
+    body.innerHTML=`<div class="sec-title">自分の情報変更申請</div>
+      <div class="sec-sub">変更したい項目を選択してください。今の登録内容はここには表示されません（新しい値だけ入力してください）。承認されると反映されます。</div>
+      <div class="msg-err" style="background:#fdf5e0;color:var(--warn)">あなたのポータルアカウントに紐づく従業員情報が見つかりませんでした。お手数ですが本部にご連絡ください（従業員情報側でポータルアカウントの連携が必要です）。</div>`;
+    return;
+  }
+  body.innerHTML=`<div class="sec-title">自分の情報変更申請</div>
+    <div class="sec-sub">変更したい項目を選択してください。今の登録内容はここには表示されません（新しい値だけ入力してください）。承認されると反映されます。</div>
+    <div class="msg-ok" style="background:#e8f0fd;color:var(--accent)">「${esc(MY_SUMMARY.employee_name)}」さんとして申請します</div>
+    <label>変更するカテゴリ<span class="req">必須</span></label>
+    <select id="pCategory" onchange="onPCategoryChange(this.value)">
+      <option value="">選択してください</option>
+      ${P_CATEGORIES.map(c=>`<option value="${c.v}" ${P_CATEGORY===c.v?"selected":""}>${esc(c.l)}</option>`).join("")}
+    </select>
+    <div id="pDyn"></div>
+    <div id="pMsg"></div>
+    <button class="btn" style="margin-top:14px" onclick="submitPersonal()" ${P_CATEGORY?"":"disabled"} id="pSubmitBtn">変更申請を送信する</button>`;
+  renderPDyn();
+}
+function onPCategoryChange(v){ P_CATEGORY=v; $("pSubmitBtn").disabled=!v; renderPDyn(); }
+function renderPDyn(){
+  const el=$("pDyn"); if(!P_CATEGORY){ el.innerHTML=""; return; }
+  let html="";
+  if(P_CATEGORY==="phone"){
+    html=`<label>新しい電話番号<span class="req">必須</span></label>
+      <input type="tel" id="f_phone" placeholder="09012345678（ハイフンなし数字のみ）">`;
+  } else if(P_CATEGORY==="name"){
+    html=`<label>新しい氏名<span class="req">必須</span></label>
+      <div class="row2"><input type="text" id="f_lastName" placeholder="姓（例: 山田）">
+        <input type="text" id="f_firstName" placeholder="名（例: 太郎）"></div>
+      <label>フリガナ<span class="req">必須</span></label>
+      <div class="row2"><input type="text" id="f_lastKana" placeholder="セイ（例: ヤマダ）">
+        <input type="text" id="f_firstKana" placeholder="メイ（例: タロウ）"></div>`;
+  } else if(P_CATEGORY==="address"){
+    html=`<label>郵便番号<span class="req">必須</span></label>
+      <input type="text" id="f_zip" placeholder="1234567（ハイフンなし7桁）" style="max-width:200px">
+      <label>新しい住所<span class="req">必須</span></label>
+      <input type="text" id="f_address" placeholder="東京都目黒区〇〇 1-2-3 〇〇マンション101">`;
+  } else if(P_CATEGORY==="contact_email"){
+    html=`<label>新しいメールアドレス<span class="req">必須</span></label>
+      <input type="email" id="f_email" placeholder="example@domain.com">
+      <div class="note">※ポータル/日報のログイン用メールとは別の、連絡先としてのメールアドレスです</div>`;
+  } else if(P_CATEGORY==="bank_account"){
+    html=`${MY_SUMMARY.has_bank_account?'<div class="note" style="margin-bottom:8px">すでに口座が登録されています。変更する項目だけでなく、口座情報はすべて入力し直してください（一部だけの上書きはできません）。</div>':""}
+      <div class="row2"><div><label>銀行コード（4桁）<span class="req">必須</span></label><input type="text" inputmode="numeric" maxlength="4" id="f_bankCode"></div>
+      <div><label>銀行名（任意）</label><input type="text" id="f_bankName"></div></div>
+      <div class="row2"><div><label>支店コード（3桁）<span class="req">必須</span></label><input type="text" inputmode="numeric" maxlength="3" id="f_branchCode"></div>
+      <div><label>支店名（任意）</label><input type="text" id="f_branchName"></div></div>
+      <div class="row2"><div><label>口座種別<span class="req">必須</span></label><select id="f_acctType">${ACCOUNT_TYPES.map(t=>`<option value="${t.v}">${t.l}</option>`).join("")}</select></div>
+      <div><label>口座番号（7桁）<span class="req">必須</span></label><input type="text" inputmode="numeric" maxlength="7" id="f_acctNum"></div></div>
+      <label>受取人名（半角カタカナ）<span class="req">必須</span></label>
+      <input type="text" id="f_acctKana" placeholder="例: ﾆｼﾞｽﾀｲﾙ ﾀﾛｳ">
+      <label>通帳・キャッシュカードの写真（確認用添付・任意）</label>
+      <input type="file" accept="image/*,.pdf" id="f_bankProof">
+      <div class="note">※口座名義と番号が確認できる画像があれば添付してください</div>`;
+  } else if(P_CATEGORY==="id_document"){
+    html=`<label>提出する身分証明書の種類<span class="req">必須</span></label>
+      <select id="f_idDocType"><option value="">選択してください</option>${ID_DOC_TYPES.map(t=>`<option value="${esc(t)}">${esc(t)}</option>`).join("")}</select>
+      <label>身分証明書の画像・PDF添付<span class="req">必須</span></label>
+      <input type="file" accept="image/*,.pdf" id="f_idDocFile">
+      <div class="note">※表面・裏面がある場合は1つのPDFか画像にまとめて添付してください</div>`;
+  }
+  el.innerHTML=`<div class="dyn">${html}</div>`;
+}
+async function submitPersonal(){
+  const msg=$("pMsg"); msg.innerHTML=""; const btn=$("pSubmitBtn");
+  try{
+    let field="", value="";
+    if(P_CATEGORY==="phone"){
+      value=$("f_phone").value.trim(); if(!value) throw new Error("新しい電話番号を入力してください");
+      field="phone";
+    } else if(P_CATEGORY==="name"){
+      const ln=$("f_lastName").value.trim(),fn=$("f_firstName").value.trim(),lk=$("f_lastKana").value.trim(),fk=$("f_firstKana").value.trim();
+      if(!ln||!fn||!lk||!fk) throw new Error("氏名・フリガナはすべて入力してください");
+      btn.disabled=true; btn.textContent="送信中…";
+      await submitEmployeeChange("name",`${ln} ${fn}`);
+      await submitEmployeeChange("kana",`${lk} ${fk}`);
+      afterPersonalSubmit(); return;
+    } else if(P_CATEGORY==="address"){
+      const zip=$("f_zip").value.trim(), addr=$("f_address").value.trim();
+      if(!addr) throw new Error("新しい住所を入力してください");
+      field="address"; value=zip?`〒${zip} ${addr}`:addr;
+    } else if(P_CATEGORY==="contact_email"){
+      value=$("f_email").value.trim(); if(!value) throw new Error("新しいメールアドレスを入力してください");
+      field="contact_email";
+    } else if(P_CATEGORY==="bank_account"){
+      const bankCode=$("f_bankCode").value.trim(), branchCode=$("f_branchCode").value.trim(),
+        acctNum=$("f_acctNum").value.trim(), acctKana=$("f_acctKana").value.trim();
+      if(!bankCode||!branchCode||!acctNum||!acctKana) throw new Error("銀行コード・支店コード・口座番号・受取人名（カナ）は必須です");
+      btn.disabled=true; btn.textContent="送信中…";
+      const proofFile=$("f_bankProof").files[0];
+      let proofPath=""; if(proofFile) proofPath=await uploadAttachment(proofFile);
+      const bank={bank_code:bankCode,bank_name:$("f_bankName").value.trim(),branch_code:branchCode,
+        branch_name:$("f_branchName").value.trim(),account_type:$("f_acctType").value,
+        account_number:acctNum,account_holder_kana:acctKana,proof_file_path:proofPath||undefined};
+      await submitEmployeeChange("bank_account",JSON.stringify(bank));
+      afterPersonalSubmit(); return;
+    } else if(P_CATEGORY==="id_document"){
+      const docType=$("f_idDocType").value; const file=$("f_idDocFile").files[0];
+      if(!docType) throw new Error("身分証明書の種類を選択してください");
+      if(!file) throw new Error("身分証明書の画像・PDFを添付してください");
+      btn.disabled=true; btn.textContent="送信中…";
+      const filePath=await uploadAttachment(file);
+      await submitEmployeeChange("id_document",JSON.stringify({doc_type:docType,file_path:filePath}));
+      afterPersonalSubmit(); return;
+    } else {
+      throw new Error("変更するカテゴリを選択してください");
+    }
+    btn.disabled=true; btn.textContent="送信中…";
+    await submitEmployeeChange(field,value);
+    afterPersonalSubmit();
+  }catch(e){
+    msg.innerHTML=`<div class="msg-err">${esc(e.message||"申請できませんでした")}</div>`;
+    btn.disabled=false; btn.textContent="変更申請を送信する";
+  }
+}
+async function submitEmployeeChange(field,value){
+  const r=await infoAuthed("/rest/v1/rpc/submit_employee_change_request",{method:"POST",
+    body:JSON.stringify({p_employee_id:MY_SUMMARY.employee_id,p_field:field,p_new_value:value})});
+  if(!r.ok) throw new Error(r.body?.message||"申請できませんでした");
+}
+function afterPersonalSubmit(){
+  P_CATEGORY=""; renderTabBody(); loadHistory();
+  $("tabBody").insertAdjacentHTML("afterbegin",'<div class="msg-ok">申請しました。本部が承認すると反映されます。</div>');
+}
+
+/* ============================================================
+   タブ2: 社内システム情報申請
+   ============================================================ */
+function renderSystemTab(){
+  const body=$("tabBody");
+  body.innerHTML=`<div class="sec-title">社内システム情報申請（社員用）</div>
+    <div class="sec-sub">社内ツール・サービスのID/パスワードの新規登録または変更申請を行います。現在のID・パスワードの値はここには表示されません。</div>
+    <label>申請区分<span class="req">必須</span></label>
+    <div class="radiorow">
+      <label><input type="radio" name="ckind" ${C_KIND==="new"?"checked":""} onchange="setCKind('new')"> 新規登録</label>
+      <label><input type="radio" name="ckind" ${C_KIND==="change"?"checked":""} onchange="setCKind('change')"> 変更申請</label>
+    </div>
+    <label>法人<span class="req">必須</span></label>
+    <select id="cCorp" onchange="setCCorp(this.value)">
+      ${CORPS.map(c=>`<option value="${c.id}" ${C_CORP===c.id?"selected":""}>${esc(c.name)}</option>`).join("")}
+    </select>
+    <div id="cDyn"></div>
+    <div id="cMsg"></div>
+    <button class="btn" style="margin-top:14px" onclick="submitSystem()" id="cSubmitBtn">${C_KIND==="new"?"新規登録を申請する":"この内容で申請する"}</button>`;
+  renderCDyn();
+}
+function setCKind(k){ C_KIND=k; C_CREDID=""; renderSystemTab(); }
+function setCCorp(v){ C_CORP=v; C_LIST=null; C_CREDID=""; renderCDyn(); if(C_KIND==="change") loadCredList(); }
+function renderCDyn(){
+  const el=$("cDyn");
+  if(C_KIND==="new"){
+    el.innerHTML=`<div class="dyn">
+      <label>カテゴリー<span class="req">必須</span></label>
+      <select id="nCategory">${NEW_CATEGORIES.map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join("")}</select>
+      <label>対象サービス・システム名<span class="req">必須</span></label>
+      <input type="text" id="nService" placeholder="例: 社内Slack、Google 広告、東京電力 など">
+      <label>希望するID / ユーザー名</label>
+      <input type="text" id="nUser" placeholder="例: admin_tokyo@example.com">
+      <label>希望するパスワード</label>
+      <div class="pwwrap"><input type="password" id="nSecret"><button type="button" onclick="togglePw('nSecret',this)">表示</button></div>
+      <label>補足（任意）</label>
+      <input type="text" id="nNote" placeholder="用途や利用店舗など">
+      <div class="note">※新規登録は本部が内容を確認のうえ、社内システム一覧へ手動で登録します</div>
+    </div>`;
+    return;
+  }
+  el.innerHTML=`<div class="dyn" id="cDynChange">
+    <p style="font-size:12px;color:var(--muted)">読み込み中…</p>
+  </div>`;
+  loadCredList();
+}
+function togglePw(id,btn){ const i=$(id); if(i.type==="password"){i.type="text";btn.textContent="隠す"}else{i.type="password";btn.textContent="表示"} }
+async function loadCredList(){
+  C_CATFILTER="すべて"; C_Q=""; C_CREDID="";
+  const r=await infoAuthed("/rest/v1/rpc/list_credentials_for_request",{method:"POST",body:JSON.stringify({p_corp:C_CORP})});
+  C_LIST=(r.ok&&Array.isArray(r.body))?r.body:[];
+  if(!r.ok) C_LOAD_ERR=r.body?.message||"一覧を取得できませんでした"; else C_LOAD_ERR="";
+  renderCChangeArea();
+}
+function renderCChangeArea(){
+  const el=$("cDynChange"); if(!el) return;
+  const cats=["すべて",...Array.from(new Set((C_LIST||[]).map(c=>c.category))).sort()];
+  const filtered=(C_LIST||[]).filter(c=>(C_CATFILTER==="すべて"||c.category===C_CATFILTER)&&(!C_Q||c.service_name.toLowerCase().includes(C_Q.toLowerCase())));
+  const selected=(C_LIST||[]).find(c=>c.id===C_CREDID)||null;
+  el.innerHTML=`
+    ${C_LOAD_ERR?`<div class="msg-err">${esc(C_LOAD_ERR)}</div>`:""}
+    <label>カテゴリで絞り込み</label>
+    <div class="chipbar">${cats.map(c=>`<button class="${C_CATFILTER===c?"active":""}" onclick="setCCatFilter('${esc(c).replace(/'/g,"\\'")}')">${esc(c)}</button>`).join("")}</div>
+    <label>サービス名で検索</label>
+    <input type="search" id="cQ" value="${esc(C_Q)}" oninput="setCQ(this.value)" placeholder="例: 食べログ">
+    <label>変更したい対象<span class="req">必須</span></label>
+    <select id="cCredId" onchange="setCCredId(this.value)">
+      <option value="">選択してください（${filtered.length}件）</option>
+      ${filtered.map(c=>`<option value="${c.id}" ${C_CREDID===c.id?"selected":""}>[${esc(c.category)}] ${esc(c.service_name)}</option>`).join("")}
+    </select>
+    ${selected?`
+    <label>変更したい項目<span class="req">必須</span></label>
+    <select id="cField" onchange="setCField(this.value)">
+      ${CRED_FIELDS.map(f=>`<option value="${f.v}" ${C_FIELD===f.v?"selected":""}>${f.l}</option>`).join("")}
+    </select>
+    <label>新しい値<span class="req">必須</span></label>
+    ${C_FIELD==="status"?
+      `<select id="cValue"><option value="">選択してください</option>${CRED_STATUS_VALUES.map(s=>`<option value="${s}">${s}</option>`).join("")}</select>`:
+      `<input type="text" id="cValue" autocomplete="off">`}
+    `:""}
+  `;
+}
+function setCCatFilter(c){ C_CATFILTER=c; renderCChangeArea(); }
+function setCQ(v){ C_Q=v; renderCChangeArea(); const i=$("cQ"); if(i){i.focus(); i.setSelectionRange(v.length,v.length);} }
+function setCCredId(v){ C_CREDID=v; renderCChangeArea(); }
+function setCField(v){ C_FIELD=v; renderCChangeArea(); }
+let C_LOAD_ERR="";
+async function submitSystem(){
+  const msg=$("cMsg"); msg.innerHTML=""; const btn=$("cSubmitBtn");
+  try{
+    if(C_KIND==="new"){
+      const service=$("nService").value.trim();
+      if(!service) throw new Error("対象サービス・システム名を入力してください");
+      btn.disabled=true; btn.textContent="送信中…";
+      const r=await infoAuthed("/rest/v1/rpc/submit_credential_new_request",{method:"POST",body:JSON.stringify({
+        p_corp:C_CORP,p_category:$("nCategory").value,p_service_name:service,
+        p_desired_username:$("nUser").value.trim()||null,p_desired_secret:$("nSecret").value.trim()||null,
+        p_note:$("nNote").value.trim()||null})});
+      if(!r.ok) throw new Error(r.body?.message||"申請できませんでした");
+    } else {
+      if(!C_CREDID) throw new Error("変更したい対象を選んでください");
+      const value=$("cValue").value.trim();
+      if(!value) throw new Error("新しい値を入力してください");
+      btn.disabled=true; btn.textContent="送信中…";
+      const r=await infoAuthed("/rest/v1/rpc/submit_credential_change_request",{method:"POST",body:JSON.stringify({
+        cred_id:C_CREDID,p_field:C_FIELD,p_new_value:value})});
+      if(!r.ok) throw new Error(r.body?.message||"申請できませんでした");
+    }
+    C_CREDID=""; renderSystemTab(); loadHistory();
+    $("tabBody").insertAdjacentHTML("afterbegin",'<div class="msg-ok">申請しました。本部が承認すると反映されます。</div>');
+  }catch(e){
+    msg.innerHTML=`<div class="msg-err">${esc(e.message||"申請できませんでした")}</div>`;
+    btn.disabled=false; btn.textContent=C_KIND==="new"?"新規登録を申請する":"この内容で申請する";
+  }
+}
+
+/* ============================================================
+   自分の申請履歴（3種類まとめて新しい順）
+   ============================================================ */
+async function loadHistory(){
+  const jobs=[
+    MY_SUMMARY?infoAuthed(`/rest/v1/employee_change_requests?employee_id=eq.${MY_SUMMARY.employee_id}&select=id,field,status,requested_at,reject_reason&order=requested_at.desc&limit=20`):Promise.resolve({ok:true,body:[]}),
+    infoAuthed("/rest/v1/credential_change_requests?select=id,field,status,requested_at,reject_reason&order=requested_at.desc&limit=20"),
+    infoAuthed("/rest/v1/credential_new_requests?select=id,service_name,status,requested_at,reject_reason&order=requested_at.desc&limit=20"),
+  ];
+  const [pr,cr,nr]=await Promise.all(jobs);
+  const rows=[
+    ...(Array.isArray(pr.body)?pr.body:[]).map(r=>({kind:"📋",label:EMP_FIELD_LABELS[r.field]||r.field,status:r.status,at:r.requested_at,reason:r.reject_reason})),
+    ...(Array.isArray(cr.body)?cr.body:[]).map(r=>({kind:"🔐",label:CRED_FIELD_LABELS[r.field]||r.field,status:r.status,at:r.requested_at,reason:r.reject_reason})),
+    ...(Array.isArray(nr.body)?nr.body:[]).map(r=>({kind:"➕",label:"新規登録: "+r.service_name,status:r.status,at:r.requested_at,reason:r.reject_reason})),
+  ].sort((a,b)=>a.at<b.at?1:-1);
+  const el=$("histBody"); if(!el) return;
+  if(rows.length===0){ el.innerHTML='<p style="color:var(--muted);font-size:13px">申請履歴はまだありません</p>'; return; }
+  el.innerHTML=rows.map(r=>{
+    const p=STATUS_PILL[r.status]||[r.status,""];
+    return `<div class="hist-row">
+      <span>${r.kind} ${esc(r.label)}${r.reason?` <span style="color:var(--bad)">（${esc(r.reason)}）</span>`:""}</span>
+      <span class="hist-meta">${new Date(r.at).toLocaleDateString("ja-JP")} <span class="pill ${p[1]}">${p[0]}</span></span>
+    </div>`;
+  }).join("");
+}
+</script>
+</body>
+</html>
