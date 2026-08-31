@@ -160,6 +160,8 @@ body.embed-mode .app{display:block}
 <div class="field"><label>期限</label><input id="tDue" type="date"></div>
 </div>
 <div class="field"><label>ブロック理由（あれば）</label><input id="tBlocker"></div>
+<div class="field"><label>完了したら次に何が起きるか（Lark通知に載るメモ）</label><input id="tDoneNote" placeholder="例: 担当Cの実装が着手可能になります"></div>
+<div class="field"><label>完了で「着手可」に自動で動かすタスク（TK番号・カンマ区切り）</label><input id="tUnblocks" placeholder="例: TK-3, TK-7"></div>
 <div id="tMeta" style="font-size:10px;color:var(--muted);margin-bottom:10px"></div>
 <div style="display:flex;gap:6px;justify-content:space-between">
 <button class="btn red" id="tCancelBtn" style="display:none" onclick="cancelTask()">中止にする</button>
@@ -450,6 +452,7 @@ function openTask(id){
   $("tRepo").value=CUR?.repository||""; $("tBranch").value=CUR?.branch||"";
   $("tProject").value=CUR?.project||""; $("tDue").value=CUR?.due_at?jstDay(CUR.due_at):"";
   $("tBlocker").value=CUR?.blocker||"";
+  $("tDoneNote").value=CUR?.on_done_note||""; $("tUnblocks").value=CUR?.unblocks||"";
   $("tMeta").textContent=CUR?`作成 ${fmtDT(CUR.created_at)} / 更新 ${fmtDT(CUR.updated_at)}${CUR.completed_at?" / 完了 "+fmtDT(CUR.completed_at):""}`:"";
   $("tCancelBtn").style.display=CUR&&CUR.status!=="cancelled"?"block":"none";
   $("taskModal").classList.add("open");
@@ -463,6 +466,7 @@ async function saveTask(){
     priority:$("tPriority").value,status:$("tStatus").value,progress_percent:Number($("tProgress").value)||0,
     repository:$("tRepo").value.trim(),branch:$("tBranch").value.trim(),project:$("tProject").value.trim(),
     blocker:$("tBlocker").value.trim(),due_at:$("tDue").value?$("tDue").value+"T00:00:00+09:00":null,
+    on_done_note:$("tDoneNote").value.trim(),unblocks:$("tUnblocks").value.trim(),
     updated_at:new Date().toISOString()};
   if(body.status==="done"&&(!CUR||CUR.status!=="done")) body.completed_at=new Date().toISOString();
   if(body.status!=="done"&&CUR&&CUR.status==="done") body.completed_at=null;
@@ -476,6 +480,13 @@ async function saveTask(){
   if(!r.ok){ toast("保存できませんでした（"+r.status+"）"); return; }
   const saved=Array.isArray(r.body)?r.body[0]:null;
   await postEvent({task_id:saved?.id||CUR?.id||null,event_type:CUR?"task_update":"task_create",message:msg,metadata:{agent:"中山（画面操作）"}});
+  // 状態が動いたらLark通知＋完了時は後続タスクを自動で着手可へ（cockpit-notifyがサーバー側で実施）
+  const prev=CUR?.status, next=body.status, tid=saved?.id||CUR?.id;
+  if(tid){
+    if(next==="done"&&prev!=="done") await fn("cockpit-notify",{kind:"task_done",task_id:tid});
+    else if(next==="blocked"&&prev!=="blocked") await fn("cockpit-notify",{kind:"blocked",task_id:tid,message:body.blocker||""});
+    else if(prev==="done"&&next!=="done") await fn("cockpit-notify",{kind:"reopened",task_id:tid,message:`状態を「${ST_LABEL[next]}」に戻しました`});
+  }
   closeTask(); toast("保存しました"); loadAll();
 }
 async function cancelTask(){
@@ -491,6 +502,7 @@ async function decideApproval(id,decision){
   const r=await authed(`/rest/v1/ck_approvals?id=eq.${id}`,{method:"PATCH",body:JSON.stringify({status:decision,decided_at:new Date().toISOString(),decided_by:ME.id})});
   if(!r.ok){ toast("更新できませんでした"); return; }
   await postEvent({task_id:a.task_id,event_type:decision,message:`${a.title} を${decision==="approved"?"承認":"却下"}`,metadata:{agent:"中山（画面操作）"}});
+  await fn("cockpit-notify",{kind:decision,task_id:a.task_id||null,message:a.title});
   toast(decision==="approved"?"承認しました":"却下しました"); loadAll();
 }
 

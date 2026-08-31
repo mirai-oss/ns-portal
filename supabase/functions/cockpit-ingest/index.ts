@@ -7,6 +7,7 @@
 //   （独自トークン認証のためJWT検証は使わない。トークン不一致は401で拒否）
 // =============================================================
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { notifyTaskEvent } from "../_shared/cockpit.ts";
 
 const cors = {
   "Access-Control-Allow-Origin": "*",
@@ -47,7 +48,7 @@ Deno.serve(async (req) => {
   let task: any = null;
   const taskNo = b.task_no != null ? String(b.task_no).replace(/^TK-?/i, "").trim() : "";
   if (taskNo && /^\d+$/.test(taskNo)) {
-    const { data: t } = await sb.from("ck_tasks").select("id,task_no,status,title").eq("task_no", Number(taskNo)).maybeSingle();
+    const { data: t } = await sb.from("ck_tasks").select("*").eq("task_no", Number(taskNo)).maybeSingle();
     task = t;
   }
 
@@ -72,6 +73,15 @@ Deno.serve(async (req) => {
     if (b.progress_percent !== undefined && b.progress_percent !== null) tp.progress_percent = b.progress_percent;
     if (b.blocker !== undefined && b.blocker !== null) tp.blocker = b.blocker;
     await sb.from("ck_tasks").update(tp).eq("id", task.id);
+    // 完了/ブロック/エラーはLark通知（完了時はunblocksの後続タスクを自動で着手可へ）
+    if (b.task_status === "done" || b.task_status === "blocked") {
+      await notifyTaskEvent(sb, b.task_status === "done" ? "task_done" : "blocked",
+        { ...task, status: b.task_status },
+        { actor: b.agent_name ?? "", message: b.message ?? "", deviceKey });
+    }
+  }
+  if (b.event_type === "error") {
+    await notifyTaskEvent(sb, "error", task, { actor: b.agent_name ?? "", message: b.message ?? "", deviceKey });
   }
 
   // 履歴（event_typeかmessageがあるときだけ。純粋なheartbeatは記録せずノイズを防ぐ）
@@ -93,6 +103,8 @@ Deno.serve(async (req) => {
       kind: b.approval_kind ?? "other", title: b.approval_title, detail: b.approval_detail ?? "",
     });
     if (task) await sb.from("ck_tasks").update({ status: "waiting_human", updated_at: now }).eq("id", task.id);
+    await notifyTaskEvent(sb, "approval_request", task,
+      { actor: b.agent_name ?? "", message: b.approval_title + (b.approval_detail ? "\n" + b.approval_detail : ""), deviceKey });
   }
 
   // 承認状態の問い合わせ（approval_check=承認ID or タスクのpending有無）

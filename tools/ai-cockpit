@@ -8,6 +8,7 @@
 #   ai-cockpit blocked  --task TK-5 --message "OAuth権限不足"
 #   ai-cockpit done     --task TK-5 --message "実装・テスト完了"
 #   ai-cockpit note     --message "メモ"           # 履歴に一行残す
+#   ai-cockpit error    --task TK-5 --message "…"  # エラー報告（Larkにも通知される）
 #   ai-cockpit hb                                   # heartbeatのみ（フック用・20秒間引き）
 #   ai-cockpit idle                                 # セッションを待機に
 #   ai-cockpit approval-request --task TK-5 --kind prod_deploy --message "本番デプロイの承認をください"
@@ -81,6 +82,7 @@ CMDS = {
     "blocked":  dict(status="blocked", task_status="blocked", event_type="blocked"),
     "done":     dict(status="idle", task_status="done", event_type="task_done"),
     "note":     dict(event_type="note"),
+    "error":    dict(event_type="error"),
     "hb":       dict(status="running"),
     "idle":     dict(status="idle"),
     "approval-request": dict(status="waiting", event_type="approval_request"),
