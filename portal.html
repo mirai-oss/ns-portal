@@ -938,12 +938,16 @@ const TOP_ITEMS=[
 // 請求書メールをTOP_ITEMSから「🧾会計」グループへ移動し、会計ダッシュボード／給与仕訳／支払いの
 // メニュー枠を追加。key/sysKey/countKeyは既存の"invoices"のまま据え置く（homeQuickGroups・
 // quickActionsHtml・canSeeKey("invoices",...)がこのkeyをハードコードで参照しているため変更禁止）。
-// 会計ダッシュボード・給与仕訳・支払いは中身が担当C-7でまだ実装されていないため、予約管理(A-6)の
-// ときと同じパターンで準備中バッジにしておき、Cの画面ができ次第urlを設定してsoonを外す
+// 2026-08-31時点でC-7①③（会計ダッシュボード・給与仕訳）が本番反映済みと確認できたため、
+// invoices.html内の新設タブへurlを設定してsoonを外した（担当C実装、いずれもinvoices.html自身の
+// タブ切替。tab=はinvoices.html側がまだ読んでいないため今は無効だが、他システム(keieiTab等)と
+// 同じ「未対応でも無視されるだけで実害無し」の先付けパターンで付けている。担当Cへの依頼は
+// WORKLOG参照）。支払い（インフォマート・振込）はD-9（インフォマート発注データ）待ちで
+// 担当C-7④が未着手のため、予約管理(A-6)のときと同じパターンで引き続き準備中バッジのまま
 const KAIKEI_GROUP={cap:"会計",ico:"🧾", items:[
-  {key:"invoices",sysKey:"invoices",ico:"✉️",label:"請求書メール",url:"invoices.html",countKey:"inv"},
-  {key:"kaikei-dashboard",ico:"📊",label:"会計ダッシュボード",soon:true},
-  {key:"kaikei-payroll",  ico:"🧾",label:"給与仕訳",soon:true},
+  {key:"invoices",sysKey:"invoices",ico:"✉️",label:"請求書メール",url:"invoices.html?embed=1",countKey:"inv"},
+  {key:"kaikei-dashboard",sysKey:"invoices",ico:"📊",label:"会計ダッシュボード",url:"invoices.html?embed=1&tab=dashboard"},
+  {key:"kaikei-payroll",  sysKey:"invoices",ico:"💴",label:"給与仕訳",url:"invoices.html?embed=1&tab=payroll"},
   {key:"kaikei-payment",  ico:"💸",label:"支払い（インフォマート・振込）",soon:true},
 ]};
 /* 精算管理・社内情報は、実際のアプリがURLで内部タブを指定する仕組みを
