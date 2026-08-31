@@ -52,6 +52,7 @@ body.embed-mode .app{display:block}
 <button class="nav-btn" data-page="agents">🖥 AI / PC稼働状況</button>
 <button class="nav-btn" data-page="prompts">📝 指示書作成</button>
 <button class="nav-btn" data-page="history">🕘 実行・変更履歴</button>
+<button class="nav-btn" data-page="jobs">⏰ 定期ジョブ</button>
 <div class="nav-title">MANAGEMENT</div>
 <button class="nav-btn" data-page="owners">👥 担当別</button>
 <button class="nav-btn" data-page="settings">⚙ 接続・設定</button>
@@ -127,6 +128,12 @@ body.embed-mode .app{display:block}
 <div class="section"><div><h2>実行・変更履歴</h2><p>端末・セッション・タスク操作を時系列保存（最新200件）</p></div>
 <select id="fEvent" onchange="renderHistory()"><option value="">すべての種類</option><option value="task_start">開始</option><option value="progress">進捗</option><option value="blocked">ブロック</option><option value="task_done">完了</option><option value="task_create">タスク作成</option><option value="task_update">タスク更新</option><option value="approval_request">承認依頼</option><option value="approved">承認</option><option value="rejected">却下</option><option value="note">メモ</option></select></div>
 <div class="card activity" id="eventList"></div>
+</section>
+
+<section id="jobs" class="page">
+<div class="section"><div><h2>定期ジョブ</h2><p>Mac miniの日次/月次取込・GitHub Actionsの自動同期（何を・どの頻度で・どれだけ時間をかけて・成功したか）</p></div><button class="btn" onclick="loadAll(true)">↻同期</button></div>
+<div class="kpis" id="jobKpis" style="grid-template-columns:repeat(4,1fr)"></div>
+<div id="jobTables"></div>
 </section>
 
 <section id="owners" class="page">
@@ -228,7 +235,11 @@ const EV_LABEL={task_start:"開始",progress:"進捗",blocked:"ブロック",tas
 const OPEN_ST=["backlog","ready","in_progress","review","waiting_human","blocked"];
 
 let ME=null, CUR=null, TIMER=null;
-let DB={devices:[],sessions:[],tasks:[],events:[],approvals:[],instructions:[]};
+let DB={devices:[],sessions:[],tasks:[],events:[],approvals:[],instructions:[],jobRuns:[]};
+
+/* 定期ジョブの台帳（表示名と頻度。実行実体はMac mini dispatch.js / GitHub Actions） */
+const JOB_LABEL={"zeroregi-akihabara":"ZeroRegi売上(秋葉原)","infomart-siire":"インフォマート仕入","smaregi-payroll":"スマレジ人件費","dinii-media":"Dinii媒体別CSV","dinii-orders":"Dinii注文明細","dinii-questionnaire":"Diniiアンケート","dinii-payment-ns":"Dinii支払(NS 8店舗)","dinii-payment-nstyle":"Dinii支払(N-Style 3店舗)","arena-events":"横浜アリーナ イベント予定","nissan-stadium-events":"日産スタジアム イベント予定","paypay-bank":"PayPay入金(NS)","paypay-bank-b":"PayPay入金(NS-B)","morning-refresh":"朝の分析再生成→BQ同期","bq-sales-reconcile":"売上BQミラー突合","tabelog-note-reservation":"食べログノート予約取込","dinii-reservation":"ダイニー予約台帳取込","bq-reservation-sync":"予約BQ同期"};
+const JOB_FREQ={"zeroregi-akihabara":"毎日 06:30","infomart-siire":"毎日 06:45","smaregi-payroll":"毎日 07:00","dinii-media":"毎日 07:30","dinii-orders":"毎日 07:35","dinii-questionnaire":"毎日 07:45","dinii-payment-ns":"毎日 08:00","dinii-payment-nstyle":"毎日 08:30","arena-events":"毎月1・15日 08:40","nissan-stadium-events":"毎月1・15日 08:45","paypay-bank":"毎日 13:00","paypay-bank-b":"毎日 13:15","morning-refresh":"毎日 08:45","bq-sales-reconcile":"毎日 11:00","tabelog-note-reservation":"毎日 10:00","dinii-reservation":"毎日 10:05","bq-reservation-sync":"毎日 10:15"};
 
 const fmtDT=iso=>iso?new Date(iso).toLocaleString("ja-JP",{timeZone:"Asia/Tokyo",month:"numeric",day:"numeric",hour:"2-digit",minute:"2-digit"}):"—";
 const jstDay=iso=>iso?new Date(iso).toLocaleDateString("sv-SE",{timeZone:"Asia/Tokyo"}):"";
@@ -250,13 +261,14 @@ const isFresh=s=>["running","waiting","blocked"].includes(liveState(s));
 /* ====== データ読み込み ====== */
 async function loadAll(manual){
   const q=(p)=>authed("/rest/v1/"+p);
-  const [dv,ss,tk,ev,ap,inst]=await Promise.all([
+  const [dv,ss,tk,ev,ap,inst,jr]=await Promise.all([
     q("ck_devices?select=*&order=device_key"),
     q("ck_sessions?select=*&order=last_heartbeat_at.desc&limit=100"),
     q("ck_tasks?select=*&order=task_no.asc&limit=1000"),
-    q("ck_events?select=*&order=created_at.desc&limit=200"),
+    q("ck_events?select=*&event_type=neq.job_run&order=created_at.desc&limit=200"),
     q("ck_approvals?select=*&order=requested_at.desc&limit=100"),
-    q("ck_instructions?select=*&order=created_at.desc&limit=50")
+    q("ck_instructions?select=*&order=created_at.desc&limit=50"),
+    q("ck_events?select=*&event_type=eq.job_run&order=created_at.desc&limit=400")
   ]);
   if(!tk.ok){
     $("setupbar").style.display="block";
@@ -267,6 +279,7 @@ async function loadAll(manual){
   $("setupbar").style.display="none";
   DB.devices=dv.body||[]; DB.sessions=ss.body||[]; DB.tasks=tk.body||[];
   DB.events=ev.body||[]; DB.approvals=ap.body||[]; DB.instructions=inst.body||[];
+  DB.jobRuns=jr.body||[];
   renderAll();
   $("syncText").textContent="最終同期: "+new Date().toLocaleTimeString("ja-JP",{timeZone:"Asia/Tokyo"})+"（15秒ごと自動更新・どのPCから見ても同じ状態）";
   if(manual) toast("同期しました");
@@ -300,11 +313,58 @@ function gitWarnings(){
     if(set.size>1){ const f=k.split(":").slice(1).join(":");
       w.push(`同じファイルを複数セッションが変更中: ${k.split(":")[0]} の ${f}${/supabase\/.*\.sql/.test(f)?"（⚠️migration同時変更）":""}`); }
   }
+  const dayAgo=Date.now()-24*3600*1000;
+  DB.jobRuns.filter(e=>e.metadata?.status==="failure"&&new Date(e.created_at)>dayAgo)
+    .forEach(e=>w.push(`定期ジョブ失敗（24h以内）: ${JOB_LABEL[e.metadata.job]||e.metadata.job}`));
   return [...new Set(w)];
 }
 
 /* ====== 描画 ====== */
-function renderAll(){ renderKpis(); renderWarn(); renderLive(); renderPrio(); renderWait(); renderKanban(); renderRecent(); renderTasksPage(); renderAgentsPage(); renderHistory(); renderOwners(); renderInstrList(); renderSettings(); }
+function renderAll(){ renderKpis(); renderWarn(); renderLive(); renderPrio(); renderWait(); renderKanban(); renderRecent(); renderTasksPage(); renderAgentsPage(); renderHistory(); renderJobs(); renderOwners(); renderInstrList(); renderSettings(); }
+
+/* ====== 定期ジョブ ====== */
+function jobGroups(){
+  const g={};
+  DB.jobRuns.forEach(e=>{ const m=e.metadata||{}; if(!m.job) return;
+    const k=(m.source||"")+"|"+m.job; (g[k]=g[k]||{job:m.job,source:m.source||"",runs:[]}).runs.push(e); });
+  return Object.values(g); // runsは新しい順（クエリ順）
+}
+const jobDur=s=>s==null?"−":(s>=60?Math.floor(s/60)+"分"+(s%60)+"秒":s+"秒");
+function renderJobs(){
+  const groups=jobGroups();
+  const dayAgo=Date.now()-24*3600*1000;
+  const last24=DB.jobRuns.filter(e=>new Date(e.created_at)>dayAgo);
+  const ok24=last24.filter(e=>e.metadata?.status==="success").length;
+  const ng24=last24.filter(e=>e.metadata?.status==="failure").length;
+  $("jobKpis").innerHTML=`
+    <div class="card kpi"><small>登録ジョブ</small><b>${groups.length}本</b></div>
+    <div class="card kpi"><small>直近24hの実行</small><b>${last24.length}回</b></div>
+    <div class="card kpi"><small>成功（24h）</small><b style="color:var(--green)">${ok24}回</b></div>
+    <div class="card kpi"><small>失敗（24h）</small><b style="color:var(--red)">${ng24}回</b></div>`;
+  const srcName={"mac-mini":"🖥 Mac mini 日次・月次取込（ns-daily-import）","github-actions":"⚙️ GitHub Actions 自動同期（勤怠・給与・バックアップ等）"};
+  const bySrc={};
+  groups.forEach(x=>{(bySrc[x.source]=bySrc[x.source]||[]).push(x)});
+  let html="";
+  for(const [src,list] of Object.entries(bySrc)){
+    list.sort((a,b)=>{ const fa=a.runs[0].metadata.status==="failure"?0:1, fb=b.runs[0].metadata.status==="failure"?0:1;
+      return fa-fb || (a.job>b.job?1:-1); });
+    html+=`<div class="section"><div><h2 style="font-size:14px">${esc(srcName[src]||src)}</h2></div></div>
+    <div class="card" style="overflow:auto;margin-bottom:8px"><table class="tbl"><thead><tr><th>ジョブ</th><th>頻度</th><th>直近の結果</th><th>所要時間</th><th>直近7回</th><th>最終実行</th></tr></thead><tbody>`;
+    for(const x of list){
+      const last=x.runs[0], lm=last.metadata||{};
+      const badge=lm.status==="success"?'<span class="badge green">成功</span>':lm.status==="skipped"?'<span class="badge gray">スキップ</span>':'<span class="badge red">失敗</span>';
+      const dots=x.runs.slice(0,7).map(r=>{const s=r.metadata?.status;return `<span title="${esc(fmtDT(r.created_at))}" style="color:${s==="success"?"var(--green)":s==="skipped"?"#b7b0a8":"var(--red)"}">●</span>`}).join("");
+      const fail=lm.status==="failure"&&last.message?`<br><span style="color:#a83232;font-size:9px">${esc(String(last.message).slice(0,80))}</span>`:"";
+      html+=`<tr><td><b>${esc(JOB_LABEL[x.job]||x.job)}</b><br><span style="color:var(--muted);font-size:9px">${esc(x.job)}</span></td>
+        <td>${esc(JOB_FREQ[x.job]||(src==="github-actions"?"自動":"—"))}</td>
+        <td>${badge}${fail}</td><td>${jobDur(lm.duration_sec)}</td>
+        <td style="font-size:13px;letter-spacing:2px">${dots}</td><td>${esc(lm.at?fmtDT(lm.at):fmtDT(last.created_at))}（${ago(lm.at||last.created_at)}）</td></tr>`;
+    }
+    html+=`</tbody></table></div>`;
+  }
+  if(!groups.length) html=`<div class="card" style="padding:16px;font-size:11px;color:var(--muted)">実行記録はまだありません。Mac mini側のジョブはセットアップ手順④（フック＋ウォッチャー）実行後、約10分以内に流れてきます。</div>`;
+  $("jobTables").innerHTML=html;
+}
 
 function renderKpis(){ const k=kpiData();
   $("kpis").innerHTML=`
@@ -572,7 +632,7 @@ function openPortalAdminOverrides(){
 function openLegacyPerm(){ window.open("index.html","_blank","noopener"); }
 
 /* 初期表示ページ（?page=）とポータルからの高速切替（nsPortalSetTab）に対応 */
-const PAGE_IDS=new Set(["dashboard","tasks","agents","prompts","history","owners","settings"]);
+const PAGE_IDS=new Set(["dashboard","tasks","agents","prompts","history","jobs","owners","settings"]);
 const initPage=new URLSearchParams(location.search).get("page");
 if(initPage&&PAGE_IDS.has(initPage)) show(initPage);
 window.addEventListener("message",e=>{

@@ -7,7 +7,7 @@
 //   （独自トークン認証のためJWT検証は使わない。トークン不一致は401で拒否）
 // =============================================================
 import { createClient } from "npm:@supabase/supabase-js@2";
-import { notifyTaskEvent } from "../_shared/cockpit.ts";
+import { larkPost, notifyTaskEvent } from "../_shared/cockpit.ts";
 
 const cors = {
   "Access-Control-Allow-Origin": "*",
@@ -75,6 +75,32 @@ Deno.serve(async (req) => {
   if (b.os) devPatch.os = b.os;
   const { data: dev, error: devErr } = await sb.from("ck_devices").upsert(devPatch, { onConflict: "device_key" }).select().single();
   if (devErr || !dev) return json({ ok: false, error: "端末を登録できません: " + (devErr?.message ?? "") }, 500);
+
+  // 定期ジョブの実行記録（watchのジョブ収集から呼ばれる。run_keyで重複防止・失敗のみLark通知）
+  if (Array.isArray(b.job_runs)) {
+    let inserted = 0, skipped = 0;
+    for (const jr of b.job_runs.slice(0, 50)) {
+      const key = String(jr.run_key ?? "");
+      if (!key) continue;
+      const { data: dup } = await sb.from("ck_events").select("id")
+        .eq("event_type", "job_run").eq("metadata->>run_key", key).limit(1);
+      if (dup && dup.length) { skipped++; continue; }
+      const d = jr.duration_sec;
+      const durTxt = d != null ? (d >= 60 ? `${Math.floor(d / 60)}分${d % 60}秒` : `${d}秒`) : "-";
+      const mark = jr.status === "success" ? "✅" : jr.status === "skipped" ? "⏭" : "❌";
+      await sb.from("ck_events").insert({
+        device_id: dev.id, event_type: "job_run",
+        message: `${mark} ${jr.job ?? "job"}（${durTxt}）${jr.status !== "success" && jr.message ? " " + String(jr.message).slice(0, 200) : ""}`,
+        metadata: { run_key: key, job: jr.job ?? "", source: jr.source ?? "", status: jr.status ?? "",
+                    duration_sec: d ?? null, at: jr.at ?? "", agent: "job-watch" },
+      });
+      inserted++;
+      if (jr.status === "failure") {
+        await larkPost(sb, `【AI開発コックピット】🚨 定期ジョブ失敗: ${jr.job ?? ""}（${jr.source ?? ""}）\n${String(jr.message ?? "").slice(0, 300)}\nhttps://mirai-oss.github.io/ns-portal/portal.html`);
+      }
+    }
+    return json({ ok: true, inserted, skipped });
+  }
 
   // タスク解決（task_no = 'TK-12' でも '12' でもOK）
   let task: any = null;

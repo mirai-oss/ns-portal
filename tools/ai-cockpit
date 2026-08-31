@@ -29,7 +29,7 @@
 #
 # 方針: 送信失敗・設定なしでも exit 0（開発作業を止めない）。git情報は自動採取。
 # =============================================================
-import json, os, sys, time, platform, socket, subprocess, urllib.request
+import datetime, json, os, sys, time, platform, socket, subprocess, urllib.request
 
 CONF_DIR = os.path.expanduser("~/.ns-cockpit")
 CONF_PATH = os.path.join(CONF_DIR, "config")
@@ -68,6 +68,101 @@ def git_info():
         "changed_files_count": len(porcelain.splitlines()),
         "changed_files": files,
     }
+
+# --- 定期ジョブ収集（watchが呼ぶ・すべて読み取り専用） -----------------
+JOBS_SEEN_PATH = os.path.join(CONF_DIR, "jobs_seen.json")
+JOB_WINDOW_H = 48  # 直近48時間ぶんだけ報告（初回の過去分洪水を防ぐ）
+
+def jobs_seen_load():
+    try:
+        with open(JOBS_SEEN_PATH) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+def jobs_seen_save(seen):
+    try:
+        if len(seen) > 3000:
+            seen = dict(list(seen.items())[-1500:])
+        with open(JOBS_SEEN_PATH, "w") as f:
+            json.dump(seen, f)
+    except OSError:
+        pass
+
+def collect_local_jobs(seen):
+    """Mac miniの日次取込(ns-daily-import)の完了マーカー(.done-<task>-YYYYMMDD)を読む"""
+    logs = os.path.expanduser("~/ns-daily-import/logs")
+    if not os.path.isdir(logs):
+        return []
+    days = {(datetime.date.today() - datetime.timedelta(days=d)).strftime("%Y%m%d") for d in (0, 1)}
+    runs = []
+    for fn in os.listdir(logs):
+        if not fn.startswith(".done-") or len(fn) < 16:
+            continue
+        task, date = fn[6:-9], fn[-8:]
+        if date not in days or not task:
+            continue
+        key = f"mini:{task}:{date}"
+        if key in seen:
+            continue
+        try:
+            with open(os.path.join(logs, fn)) as f:
+                info = json.load(f)
+        except Exception:
+            info = {}
+        st = str(info.get("status", "成功"))
+        runs.append({"run_key": key, "job": task, "source": "mac-mini",
+                     "status": "success" if st.startswith("成功") else "failure",
+                     "duration_sec": info.get("durationSec"), "at": info.get("at", ""),
+                     "message": (info.get("error") or st)[:300]})
+    return runs
+
+def collect_gha(seen):
+    """GitHub Actionsの完了済みワークフロー実行を gh api で読む（直近48hのみ）"""
+    runs = []
+    cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=JOB_WINDOW_H)
+    for repo in ("mirai-oss/ns-portal", "mirai-oss/tori-dashboard"):
+        try:
+            out = subprocess.run(["gh", "api", f"repos/{repo}/actions/runs?per_page=30&status=completed"],
+                                 capture_output=True, text=True, timeout=30)
+            if out.returncode != 0:
+                continue
+            data = json.loads(out.stdout)
+        except Exception:
+            continue
+        for r in data.get("workflow_runs", []):
+            key = f"gha:{r.get('id')}"
+            if key in seen:
+                continue
+            started = r.get("run_started_at", "")
+            try:
+                t0 = datetime.datetime.fromisoformat(started.replace("Z", "+00:00"))
+                if t0 < cutoff:
+                    continue
+                t1 = datetime.datetime.fromisoformat(str(r.get("updated_at")).replace("Z", "+00:00"))
+                dur = max(0, int((t1 - t0).total_seconds()))
+            except Exception:
+                dur = None
+            concl = r.get("conclusion") or ""
+            status = "success" if concl == "success" else ("skipped" if concl in ("skipped", "cancelled", "neutral") else "failure")
+            runs.append({"run_key": key, "job": r.get("name") or "workflow", "source": "github-actions",
+                         "status": status, "duration_sec": dur, "at": started, "message": concl})
+    return runs
+
+def report_jobs(conf):
+    seen = jobs_seen_load()
+    runs = collect_local_jobs(seen) + collect_gha(seen)
+    if not runs:
+        return 0
+    payload = {"token": conf["TOKEN"], "device_key": conf["DEVICE_KEY"], "job_runs": runs[:50]}
+    req = urllib.request.Request(conf["INGEST_URL"], data=json.dumps(payload).encode("utf-8"),
+                                 headers={"Content-Type": "application/json"}, method="POST")
+    with urllib.request.urlopen(req, timeout=20) as res:
+        res.read()
+    for r in runs[:50]:
+        seen[r["run_key"]] = 1
+    jobs_seen_save(seen)
+    return len(runs[:50])
 
 def parse_args(argv):
     flags, i = {}, 0
@@ -156,6 +251,7 @@ def main():
             except Exception:
                 pass
             return (time.time() - newest) < WINDOW
+        cycle = 0
         while True:
             for name in WATCH_REPOS:
                 rp = os.path.join(home, name)
@@ -166,6 +262,15 @@ def main():
                         subprocess.run([sys.executable, me, "hb"], cwd=rp, timeout=30)
                 except Exception:
                     pass
+            # 定期ジョブ収集: 初回すぐ・以後は約10分おき（Mac miniマーカー＋GitHub Actions）
+            if cycle % 20 == 0:
+                try:
+                    n = report_jobs(conf)
+                    if n and "once" in flags:
+                        print(f"job_runs {n}件送信")
+                except Exception:
+                    pass
+            cycle += 1
             if "once" in flags:
                 return 0
             time.sleep(30)
