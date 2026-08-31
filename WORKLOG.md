@@ -4199,3 +4199,10 @@ Supabase Management API（`~/.config/ns-portal/supabase_pat`・`POST /v1/project
 - `mf-journal`: version14にデプロイ済み
 - `invoices.html`: コミット`a4af64a`・push済み
 - SQL変更なし（既存の`mf_journal_templates.branches`（jsonb）のデータ形式を変えただけ）
+
+## 2026-08-31 D-8: Hermes Agent試用 — LINE窓口が本稼働（設計スレッド＋ユーザー共同作業）
+- Mac miniにHermes Agent v0.20.6（デスクトップアプリ経由・~/.hermes）。LINE Messaging APIチャンネル（NSグループ）＋Cloudflare quickトンネル＋`hermes gateway`でLINE窓口を開通。ユーザーのLINE ID（U1c19…acc8）のみ許可リスト化済み
+- モデル=anthropic/claude-sonnet-5（デスクトップアプリが2回fable-5/opus-4.6に書き換え→都度sonnet-5へ戻した。**アプリのオンボーディングがmodel.defaultを上書きする点に注意**）。APIキーは専用ワークスペース（NStyle-AI-Madoguchi・月$30上限）で発行しhermes auth＋~/.hermes/.envに設定
+- **常駐化・自己復旧を実装**: launchd `com.nstyle.hermes-line`（KeepAlive）→ `~/.hermes/start-line-stack.sh` がトンネル起動→URL取得→.env更新→**LINE Webhook URLをAPIで自動再登録**（PUT /v2/bot/channel/webhook/endpoint。発行直後はDNS未浸透で400になるため10秒×12回リトライ）→gateway起動。**再起動してもWebhook再登録作業は不要**
+- 実機E2E: LINEで日本語応答・gateway再起動後のセッション復旧・許可外拒否を確認。データ接続は未実施（エージェントは「売上データはどこ？」と聞いてくる状態が正常）
+- 次: フェーズC=社内データ接続（要件§18準拠のRead Only専用Edge Function＋監査ログ。計画をユーザーに提示予定）
