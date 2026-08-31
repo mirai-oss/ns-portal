@@ -6,6 +6,8 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
+**★★★★★★★2026-08-31（担当Aスレッド）ラウンド5 A-7完了・A-8完了（担当Cからの依頼を優先対応）**: `実装指示書_ラウンド5_2026-08-31.md`§0の順序どおり①PL人件費API切替（2026-09以降・完了済み）に続けてA-7に着手中、担当Cから来ていたA-8依頼（本エントリ冒頭の「続き2」参照）に気づき優先対応→完了。**A-7（精算ダッシュボードUI刷新）**: `seisan-dashboard`リポジトリの`index.html`をモックアップ（`NStyle_統合ポータル_精算ダッシュボード_UI_v3`）準拠に総入れ替え・GAS新規4関数（ロイヤリティ率編集・定期費目状態切替・自動処理権限設定）追加、本番デプロイ・push済み（GitHub Pages反映確認済み）。**A-8（広告費DB書き込みaction）**: `tori-dashboard/gas/Code.gs`に`writeAdCost`（専用トークン`AD_COST_WRITE_TOKEN`認証）・`bqSyncAdCost`（BQ新テーブル`stg_ad_cost`へミラー）を追加・本番デプロイ済み、Supabase Edge Function秘密変数にも同じトークンを登録済み（担当Cの`ad-cost-reflect`が有効化されたはず・実機E2Eは担当C側での確認待ち）。次はA-9（精算書の勘定科目→PL連携）に着手。詳細は本日付エントリ「2026-08-31（担当Aスレッド）A-7」「2026-08-31（担当Aスレッド）A-8」参照
+
 **★★★★★★2026-08-31（担当C実行スレッド・続き4）不具合対応: 会計入力の部門プルダウンに一部の部門が出ない**: ユーザー報告（スクショ2枚）。原因＝部門一覧取得API（`GET /api/v3/departments`）に必要な`departments.read`スコープが連携に無く403のため、代わりに「過去の仕訳履歴で実際に使われた部門をスキャン」する代用実装だった（一度もMF側の仕訳で使われていない部門は出ない）。対応: ①新規Edge Function`mf-oauth-authorize`＝MF_CLIENT_ID等を一切見せずに正しいscope（既存5つ+`departments.read`）で認可画面へリダイレクトするリンクを新設②`mf-journal`の部門取得を「まず直接API→ダメなら従来のスキャンへフォールバック」に変更（再認可が済んだ事業者から自動で全部門が出るようになる・追加デプロイ不要）。**本番デプロイ済み（コミット`a936570`）**。**ユーザー作業が必要**: 下記2つのリンクを開いて再認可してください（既存の連携を上書きするだけで、他の設定への影響はありません）。
 - 有限会社トーホーエージェンシー: https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/mf-oauth-authorize?tenant_id=default&label=%E6%9C%89%E9%99%90%E4%BC%9A%E7%A4%BE%E3%83%88%E3%83%BC%E3%83%9B%E3%83%BC%E3%82%A8%E3%83%BC%E3%82%B8%E3%82%A7%E3%83%B3%E3%82%B7%E3%83%BC
 - 株式会社N-Style: https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/mf-oauth-authorize?tenant_id=nstyle&label=%E6%A0%AA%E5%BC%8F%E4%BC%9A%E7%A4%BEN-Style
@@ -357,6 +359,51 @@
 **★追記（2026-08-28・担当D実行スレッド）accounting_chatwork実機テスト送信成功・担当Bが配信グループ管理UIを改善**:
 - `tori-dashboard/.github/workflows/lark-report.yml`を`only_group=accounting_chatwork`指定で手動実行し、他グループ（group1〜3）へは送らずこの新チャンネルだけをテスト。**結果: 成功12件/失敗0件**（全12店舗の日報がChatworkルーム446080909へ実送信されたことを確認）。`CHATWORK_API_TOKEN`・`BQ_LOAD_TOKEN`とも既存のGitHub Secretsで動作（追加登録不要）
 - 担当Bが「配信グループ管理」UI改善に対応済み（[nippo commit 1f252ee](https://github.com/mirai-oss/nippo/commit/1f252ee)）: 各グループカードに対象店舗一覧・件数・重複警告を表示するようになった
+
+## 2026-08-31（担当Aスレッド）A-7: 精算ダッシュボードUI刷新
+
+`実装指示書_ラウンド5_2026-08-31.md`§1のA-7。着手前調査で、編集対象が当初想定していた`NStyle-AI/gas-backup/seisan/`ではなく**別リポジトリ`github.com/mirai-oss/seisan-dashboard`**（GitHub Pages配信の`index.html`＋`gas/SeisanDashboard.gs`）であることが判明（GAS内蔵HtmlServiceの`dashboard.html`は「Google Workspace管理者のApps Script制限でスマホから開けない」問題を理由に廃止済みの死んだファイル）。モックアップ（`docs/mockups/NStyle_統合ポータル_精算ダッシュボード_UI_v3_プレビューPDFメール対応.html`）は必ずブラウザで開いて確認する共通ルールどおり、ローカルhttp.serverで実機確認したうえで実装。
+
+**設計方針**: PCはモックのCSS変数・`.settle-*`クラス体系に厳密一致、データ取得・書き込みロジック（`api()`/`apiAuth()`・全`sd_*`呼び出し）は現行から移植。モックにあるがバックエンド未実装の3機能（ロイヤリティ率編集・定期費目の毎月/停止・振込済み後の編集権限設定）はバックエンドも新規実装、モックに無いが現行にある機能（アカウント管理・添付・推移グラフ・店舗×月マトリクス）は温存という方針をユーザーに確認・承認を得たうえで実行。
+
+### GAS側（`gas/SeisanDashboard.gs`。scriptId `1DlXuQhs3e7WgRhcxvt1cABrW66Md0TlKkHBtcF8uvWOgwKK_xNR7CU9H`）
+- 新規関数4つ: `sd_saveStoreRate`（店舗設定マスターのロイヤリティ率列を直接書換）・`sd_saveRecurStatus`（`定期費目_精算ダッシュボード`シートに「状態」列を新設し毎月/停止を切替）・`sd_saveOpsSettings`/`sd_getOpsSettings`（Script Properties `SD_LOCK_LEVEL`/`SD_AUTOSEND_MODE`の軽量設定）
+- `sd_requireUnlocked_`を`SD_LOCK_LEVEL`対応に拡張（既定=マスターのみ・`admin`設定で本部以上も振込済み後の編集可。マスター昇格やロック解除そのものは従来どおりマスター限定のまま=権限昇格の抜け道にしない）
+- `sd_getSettings`が定期費目一覧・自動処理設定も返すよう拡張
+- バージョン`v5.14-plsync-paid`→`v5.15-settings-api`。`clasp push`+`deploy`で本番反映済み（@42→@43）・`?action=ping`で確認済み
+
+### フロント側（`index.html`・`preview.html`。GitHub Pages）
+- モックのCSS変数（`--bg`/`--nav`/`--accent`等）と`.settle-*`クラス体系（`.settle-shell`/`.settle-tab`/`.settle-storecard`/`.settle-corp`/`.settle-setting`等）・汎用モーダル（`.info-modal`）に全面刷新。5タブ（店舗チェック・法人別振込・年間推移・明細入力・設定）すべて刷新
+- 精算書アクションを4種に整理: 👁プレビュー=`sd_pdfPreview`（Drive保存なし）／📄PDF発行=`sd_issueAndSend(...,sendMail=false)`（Drive保存のみ・メールなし）／✉メール送信=`sd_issueAndSend(...,true)`／🕘送信履歴=既存の単発`sent`情報のみ表示（履歴ログAPIが無いため複数件を捏造しない）
+- 法人別タブに👁一括プレビュー/📄PDF一括発行/✉一括メール送信を追加（法人配下の各店舗へ既存の単店舗API=`sd_pdfPreview`/`sd_issueAndSend`を順次呼ぶだけ・新規バックエンド不要）
+- 設定タブ4項目: 🏦振込先口座（既存`sd_saveCorp`）／💹ロイヤリティ設定（新`sd_saveStoreRate`・値変更で即保存）／🔁定期費目（新`sd_saveRecurStatus`・セレクト変更で即保存）／⚙自動処理・権限（新`sd_saveOpsSettings`・マスターのみ編集可・本部はセレクト無効化＋注記表示）
+- モックに無い既存機能（👤アカウント管理・📎添付・📈推移グラフ・店舗×月マトリクス）は店舗カード内ボタン・設定タブ内カードとして自然な形で配置し温存
+- `.claude/launch.json`を新規追加（`preview.html`をローカル確認するためのpython http.server設定。引き継ぎ書.md記載のpreview.html再生成コマンドは実行済み）
+
+### 検証・デプロイ
+- `node --check`でGAS・フロントJSとも構文確認、Python `html.parser`でタグ対応も確認
+- ローカルhttp.serverで`preview.html`（サンプルデータのfetchモック入り）を実機確認: 全5タブ・KPIサマリー・添付モーダル・スマホ表示（375px）とも正常表示・コンソールエラーなしを確認
+- GAS: `clasp push`+`deploy`で本番反映（ユーザー確認後）。`?action=ping`でv5.15-settings-api確認・新規4関数を無効トークンで呼び「許可されていない呼び出し」ではなく`AUTH`（＝正しくホワイトリスト登録されている）が返ることを確認
+- フロント: `git push`→GitHub Pages反映を`settle-shell`等の新クラス名が本番HTMLに出現することで確認（コミット`c4a75d0`）
+- **実機E2Eは未実施**（本部/マスター/委託先アカウントでの実ログインはユーザー確認が必要）
+
+## 2026-08-31（担当Aスレッド）A-8: 広告費DB書き込みaction（担当Cからの依頼を優先対応）
+
+WORKLOGに担当CからA-8の依頼（「2026-08-31（担当C実行スレッド・続き2）C-7②」参照）が来ていたため、ユーザー指示どおり優先対応。
+
+### 実装（`tori-dashboard/gas/Code.gs`）
+- **`writeAdCost(p)`**: 専用トークン`AD_COST_WRITE_TOKEN`認証（`BQ_LOAD_TOKEN`とは別・使い回さない。担当Cの依頼どおり）・ログイン不要。invoices側`ad-cost-reflect`から`{action:"writeAdCost", token, year_month, media, allocations:[{store_name, amount}], source_invoice_id, vendor_name}`で呼ばれ、複数店舗ぶんをまとめて`💾広告費DB`シートへupsert（既存の`saveAdFee`と同じシート・同じキー方式=年月×店舗×媒体×プランだが、1回で複数店舗を書ける点が異なる新規関数として実装。既存`saveAdFee`は無変更）
+- **`bqSyncAdCost(p)`**: `💾広告費DB`シート全体をBigQuery新テーブル`stg_ad_cost`へミラー（`WRITE_TRUNCATE`。既存の`bqSyncPL`と全く同じ方式）。`writeAdCost`から毎回自動で呼ばれ、設計書§4 Q1確定仕様の「シートとBQへの二重書き」を満たす（単独でも呼び出し可能）
+- `handle()`へ両action登録。ping版数を`token-336h-v1-adcost`に更新
+
+### トークン設定・Supabase連携
+- ランダムトークンを生成し、一時的な使い捨てaction（`setupAdCostToken_`・onceKey保護）でGAS Script Propertiesの`AD_COST_WRITE_TOKEN`へリモート設定→使用後は関数ごと削除して再デプロイ（このセッション確立済みの手順）
+- 同じトークンをSupabase側Edge Function秘密変数`AD_COST_WRITE_TOKEN`として、Management API（`~/.config/ns-portal/supabase_pat`のPAT）経由で本番登録済み（`POST /v1/projects/{ref}/secrets`）。**担当Cが実装済みの`ad-cost-reflect`はこれで有効化されたはず**（当該Edge Functionは`AD_COST_WRITE_TOKEN`未設定時に明確なエラーを返す設計と担当Cが記載済みのため、エラーが出なくなれば有効化の確認になる）
+
+### 検証
+- `TEST_ADCOST_*`という明白なテスト値でGAS側`writeAdCost`を直接呼び出し、シートへの書き込み・`bqSyncAdCost`によるBQミラー反映（行数増加）を確認 → 一時的な使い捨てaction（`cleanupAdCostTest_`・onceKey保護）でテスト行を削除・BQミラーも元の行数に戻ったことを確認 → 一時action2つとも削除してクリーンな状態で再デプロイ済み
+- **注意点（記録）**: `curl -X POST`でApps Script WebアプリのURLを叩くと、302リダイレクト先の`script.googleusercontent.com`エコーURLがPOSTを受け付けず（`allow: HEAD, GET`）失敗することがある。`curl`に`-X POST`を明示せず`--data`だけでPOSTを発行すると、curlのデフォルト動作でリダイレクト時に自動的にGETへ切り替わり正常に動作する（`-X POST`を付けるとリダイレクト先へもPOSTを強制してしまい失敗する）。**次回以降GASのWebアプリをcurlでPOSTテストする際はこの点に注意**
+- `ad-cost-reflect`自体の呼び出し（invoices側からの実際の請求書処理）による実機E2Eは未実施（Supabase側はユーザーJWT認証が必要なためこの環境からは直接テストできない・担当Cまたはユーザーの実機確認が必要）
 
 ## 2026-08-30（担当Aスレッド）担当D（I-1）への依頼: 予約取込の対象月を当月＋翌月、月初は前月も
 
