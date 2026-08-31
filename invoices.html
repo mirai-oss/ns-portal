@@ -497,6 +497,7 @@ function shellHtml(u){
         <button class="mail-tab ${TAB==='salesList'?'active':''}" data-tab="salesList">💰 売上一覧</button>
         <button class="mail-tab ${TAB==='contractList'?'active':''}" data-tab="contractList">📃 契約書一覧</button>
         <button class="mail-tab ${TAB==='upload'?'active':''}" data-tab="upload">📤 アップロード請求書</button>
+        <button class="mail-tab ${TAB==='payroll'?'active':''}" data-tab="payroll">💴 給与仕訳</button>
         <button class="mail-tab ${TAB==='history'?'active':''}" data-tab="history">処理履歴</button>
         <button class="mail-tab ${TAB==='sent'?'active':''}" data-tab="sent">送信済み</button>
         <button class="mail-tab ${TAB==='notApplicable'?'active':''}" data-tab="notApplicable">対象外</button>
@@ -587,6 +588,7 @@ async function renderTabBody(u){
   else if(TAB==="salesList") await renderSalesListTab(u);
   else if(TAB==="contractList") await renderContractListTab(u);
   else if(TAB==="upload") await renderUploadInvoiceTab(u);
+  else if(TAB==="payroll") await renderPayrollTab(u);
   else if(TAB==="history") await renderHistoryTab(u);
   else if(TAB==="sent") await renderSentTab(u);
   else if(TAB==="notApplicable") await renderNotApplicableTab(u);
@@ -2119,7 +2121,7 @@ function mftOpenEditor(tpl){
   MFT_STATE.editing={
     id: tpl?tpl.id:null,
     label: tpl?tpl.label:"",
-    branches: tpl?(tpl.branches||[]).map(b=>({debitLabel:mftLabelOf(b.debit),creditLabel:mftLabelOf(b.credit),department_id:b.department_id||"",amount:b.amount||"",remark:b.remark||""})):[{debitLabel:"",creditLabel:"",department_id:"",amount:"",remark:""}],
+    branches: tpl?(tpl.branches||[]).map(b=>({debitLabel:mftLabelOf(b.debit),creditLabel:mftLabelOf(b.credit),department_id:b.department_id||"",amount:b.amount||"",remark:b.remark||"",purpose:b.purpose||""})):[{debitLabel:"",creditLabel:"",department_id:"",amount:"",remark:"",purpose:""}],
   };
   mftRenderEditor();
 }
@@ -2135,13 +2137,13 @@ function mftRenderEditor(){
       <div class="mfj-gridwrap" style="margin-top:8px">
         <table class="mfj-grid">
           <thead>
-            <tr><th rowspan="2" style="width:26px"></th><th colspan="2" class="side">借方</th><th colspan="2" class="side" style="background:var(--m-greensoft);color:var(--m-green)">貸方</th><th rowspan="2">摘要（行ごと・任意）</th></tr>
+            <tr><th rowspan="2" style="width:26px"></th><th colspan="2" class="side">借方</th><th colspan="2" class="side" style="background:var(--m-greensoft);color:var(--m-green)">貸方</th><th rowspan="2">摘要（行ごと・任意）</th><th rowspan="2">給与仕訳での用途（任意）</th></tr>
             <tr><th>勘定科目・部門</th><th>金額（任意・空欄可）</th><th>勘定科目</th><th>金額</th></tr>
           </thead>
           <tbody id="mft-branch-rows">${ed.branches.map((br,i)=>mftBranchRowHtml(br,i)).join("")}</tbody>
         </table>
       </div>
-      <div style="font-size:10px;color:var(--muted);margin-top:4px">💡 金額は空欄のまま登録できます（実際に使うときに毎回入力する想定の場合）</div>
+      <div style="font-size:10px;color:var(--muted);margin-top:4px">💡 金額は空欄のまま登録できます（実際に使うときに毎回入力する想定の場合）。「給与仕訳での用途」を設定すると、💴給与仕訳タブでこのテンプレートを従業員に割り当てたときに、その行の金額を実際の給与データ（固定給・通勤手当・控除・差引支給額）へ自動で置き換えます</div>
       <div class="mail-actions" style="margin-top:6px"><button id="mft-add-row">＋ 明細行を追加</button></div>
       <div class="mail-actions" style="margin-top:10px">
         <button class="primary" id="mft-save">💾 保存</button>
@@ -2160,6 +2162,13 @@ function mftBranchRowHtml(br,idx){
     <td><input list="mft-acc-datalist" class="mft-credit" data-idx="${idx}" value="${esc(br.creditLabel||"")}" placeholder="貸方勘定科目"></td>
     <td><input type="number" value="${br.amount}" disabled style="opacity:.65"></td>
     <td><textarea class="mft-remark" data-idx="${idx}">${esc(br.remark||"")}</textarea></td>
+    <td><select class="mft-purpose" data-idx="${idx}">
+      <option value="" ${!br.purpose?"selected":""}>（手入力のまま）</option>
+      <option value="base_salary" ${br.purpose==="base_salary"?"selected":""}>基本給・固定給</option>
+      <option value="commute" ${br.purpose==="commute"?"selected":""}>通勤手当</option>
+      <option value="deduction" ${br.purpose==="deduction"?"selected":""}>控除・預り金</option>
+      <option value="net_pay" ${br.purpose==="net_pay"?"selected":""}>差引支給額</option>
+    </select></td>
   </tr>`;
 }
 function mftWireEditor(){
@@ -2168,13 +2177,14 @@ function mftWireEditor(){
   document.querySelectorAll(".mft-credit").forEach(elx=>elx.oninput=()=>{ ed.branches[+elx.dataset.idx].creditLabel=elx.value; });
   document.querySelectorAll(".mft-dept").forEach(elx=>elx.onchange=()=>{ ed.branches[+elx.dataset.idx].department_id=elx.value; });
   document.querySelectorAll(".mft-remark").forEach(elx=>elx.oninput=()=>{ ed.branches[+elx.dataset.idx].remark=elx.value; });
+  document.querySelectorAll(".mft-purpose").forEach(elx=>elx.onchange=()=>{ ed.branches[+elx.dataset.idx].purpose=elx.value; });
   document.querySelectorAll(".mft-amount").forEach(elx=>elx.oninput=()=>{
     ed.branches[+elx.dataset.idx].amount=elx.value;
     const mirror=elx.closest("tr").querySelector("input[disabled]");
     if(mirror) mirror.value=elx.value;
   });
   document.querySelectorAll("[data-mftrm]").forEach(elx=>elx.onclick=()=>{ ed.branches.splice(+elx.dataset.mftrm,1); mftRenderEditor(); });
-  $("mft-add-row").onclick=()=>{ ed.branches.push({debitLabel:"",creditLabel:"",department_id:"",amount:"",remark:""}); mftRenderEditor(); };
+  $("mft-add-row").onclick=()=>{ ed.branches.push({debitLabel:"",creditLabel:"",department_id:"",amount:"",remark:"",purpose:""}); mftRenderEditor(); };
   $("mft-cancel").onclick=()=>{ MFT_STATE.editing=null; mftRenderEditor(); };
   $("mft-save").onclick=mftSaveEditor;
 }
@@ -2187,7 +2197,7 @@ async function mftSaveEditor(){
     const debit=MFT_STATE.accountLabelMap.get(b.debitLabel);
     const credit=MFT_STATE.accountLabelMap.get(b.creditLabel);
     if(!debit||!credit){ alert("借方・貸方はプルダウンの候補から選んでください"); return; }
-    structured.push({debit,credit,department_id:b.department_id||null,department_name:(MFT_STATE.departments.find(d=>d.id===b.department_id)||{}).name||null,amount:Number(b.amount)||null,remark:b.remark||null});
+    structured.push({debit,credit,department_id:b.department_id||null,department_name:(MFT_STATE.departments.find(d=>d.id===b.department_id)||{}).name||null,amount:Number(b.amount)||null,remark:b.remark||null,purpose:b.purpose||null});
   }
   if(!structured.length){ alert("明細行がありません"); return; }
   $("mft-save").disabled=true;
@@ -2599,6 +2609,191 @@ function mfuOpenPreview(){
       +(j.voucher_attached?`。添付ファイルも${j.voucher_attached}件添付しました`:j.voucher_error?`（添付: ${j.voucher_error}）`:"")
       +"。画面を更新します…";
     setTimeout(()=>{ history.back(); renderUploadInvoiceTab(); },900);
+  };
+}
+
+/* ============================================================
+   給与仕訳（C-7③・2026-08-31）
+   設計書_会計自動化_給与明細とインフォマート支払_2026-08-31.md §1・§5(Q2)のとおり。
+   `sf_payroll_sync`（担当B・nippoの所有。「読み取りは他システムも可」と明記されているテーブル）
+   から月次の確定給与を読み、仕訳辞書（設定タブで「給与仕訳での用途」を設定したテンプレート）を
+   従業員ごとに割り当てて、下書き作成→内容確認→MF登録する。登録はmf-journalの既存
+   create_standalone actionをそのまま使う（本部タスクとは無関係なのでlinked_hq_step_idは渡さない）。
+   進捗・伝票番号はこちら（担当C）側の新規テーブルpayroll_journal_records/_assignmentsで管理する
+   （sf_payroll_sync自体には列を追加しない＝他担当のテーブルには書き込まない）。
+   【現時点の制約】スマレジのタイムカードは法人ごとに2アカウント（トーホー/SK）あるが、
+   sf_payroll_syncには現状トーホー分しか同期されておらず（SK側の取込は未実装）、SKのMF連携
+   （OAuth）自体もまだ無い。そのためこの画面は事業者='default'（トーホー）固定で動く
+   ============================================================ */
+let PAYROLL_STATE={};
+function payrollYmDefault(){
+  const d=new Date();
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
+}
+async function renderPayrollTab(u){
+  $("tabbody").innerHTML=`<section class="invoice-list active"><div class="card" style="padding:16px"><div class="spin" style="padding:20px 0">読み込み中…</div></div></section>`;
+  if(!PAYROLL_STATE.yearMonth) PAYROLL_STATE.yearMonth=payrollYmDefault();
+  await payrollLoad();
+  payrollRender();
+}
+async function payrollLoad(){
+  const ym=PAYROLL_STATE.yearMonth;
+  const [syncR,recR,asgR,tplR,deptR,allocR]=await Promise.all([
+    authed(`/rest/v1/sf_payroll_sync?year_month=eq.${ym}&select=*,user:users(name,role,is_active)&order=user(name)`),
+    authed(`/rest/v1/payroll_journal_records?year_month=eq.${ym}&select=*`),
+    authed(`/rest/v1/payroll_journal_assignments?select=*`),
+    authed(`/rest/v1/mf_journal_templates?tenant_id=eq.default&select=id,label,branches&order=label`),
+    mfCall("list_departments",{tenant_id:"default"}),
+    authed(`/rest/v1/sf_payroll_allocations?period_key=like.${ym}*&select=user_id,store_id,kind`),
+  ]);
+  PAYROLL_STATE.rows=(syncR.ok&&Array.isArray(syncR.body))?syncR.body:[];
+  PAYROLL_STATE.records=(recR.ok&&Array.isArray(recR.body))?recR.body:[];
+  PAYROLL_STATE.assignments=(asgR.ok&&Array.isArray(asgR.body))?asgR.body:[];
+  PAYROLL_STATE.templates=(tplR.ok&&Array.isArray(tplR.body))?tplR.body:[];
+  PAYROLL_STATE.departments=(deptR.ok&&deptR.body.departments)||[];
+  PAYROLL_STATE.allocations=(allocR.ok&&Array.isArray(allocR.body))?allocR.body:[];
+  if(!PAYROLL_STATE.stores){
+    const r=await authed("/rest/v1/stores?select=id,name&order=name");
+    PAYROLL_STATE.stores=(r.ok&&Array.isArray(r.body))?r.body:[];
+  }
+}
+function payrollAssignmentFor(userId){ return PAYROLL_STATE.assignments.find(a=>a.user_id===userId); }
+function payrollRecordFor(userId){ return PAYROLL_STATE.records.find(r=>r.user_id===userId); }
+function payrollFindDeptForUser(userId){
+  const alloc=(PAYROLL_STATE.allocations||[]).find(a=>a.user_id===userId&&a.store_id);
+  if(!alloc) return null;
+  const store=PAYROLL_STATE.stores.find(s=>s.id===alloc.store_id);
+  if(!store) return null;
+  const norm=s=>String(s||"").replace(/\s+/g,"");
+  const n=norm(store.name);
+  const dept=PAYROLL_STATE.departments.find(d=>norm(d.name)===n) || PAYROLL_STATE.departments.find(d=>n.includes(norm(d.name))||norm(d.name).includes(n));
+  return dept||null;
+}
+// テンプレートの各行に「給与仕訳での用途」タグが付いていれば、その行の金額を実際の給与データへ
+// 差し替える（付いていなければテンプレートの固定金額のまま＝0円の行は除外）
+function payrollComputeBranches(row,template){
+  const dept=payrollFindDeptForUser(row.user_id);
+  const amountFor=purpose=>{
+    if(purpose==="base_salary") return Math.round(Number(row.fixed_salary_amount)||0);
+    if(purpose==="commute") return Math.round(Number(row.commute_allowance)||0);
+    if(purpose==="deduction") return Math.round(Number(row.deduction_total)||0);
+    if(purpose==="net_pay") return Math.round(Number(row.net_pay)||0);
+    return null;
+  };
+  return (template.branches||[]).map(b=>{
+    const overridden=amountFor(b.purpose);
+    const amount=overridden!=null?overridden:(Number(b.amount)||0);
+    const useDept=(b.purpose==="base_salary"||b.purpose==="commute")&&dept?dept.id:(b.department_id||null);
+    return {debit:b.debit,credit:b.credit,department_id:useDept,amount,purpose:b.purpose||null,remark:b.remark||null};
+  }).filter(b=>b.amount>0);
+}
+function payrollRowHtml(row){
+  const asg=payrollAssignmentFor(row.user_id);
+  const rec=payrollRecordFor(row.user_id);
+  const name=(row.user&&row.user.name)||"—";
+  const options=`<option value="">（未設定）</option>`+PAYROLL_STATE.templates.map(t=>`<option value="${esc(t.id)}" ${asg&&asg.template_id===t.id?"selected":""}>${esc(t.label)}</option>`).join("");
+  const status=rec?`<span class="invoice-status done">✅登録済み（伝票番号:${esc(String(rec.mf_journal_number??"-"))}）</span>`:(asg&&asg.template_id?`<span class="invoice-status wait">未登録</span>`:`<span class="invoice-status gray">パターン未設定</span>`);
+  return `<tr>
+    <td><b>${esc(name)}</b></td>
+    <td style="text-align:right">${yen(row.fixed_salary_amount)}</td>
+    <td style="text-align:right">${yen(row.commute_allowance)}</td>
+    <td style="text-align:right">${yen(row.deduction_total)}</td>
+    <td style="text-align:right">${yen(row.net_pay)}</td>
+    <td><select data-payroll-pattern="${esc(row.user_id)}" ${rec?"disabled":""}>${options}</select></td>
+    <td>${status}</td>
+    <td>${(!rec&&asg&&asg.template_id)?`<button class="hq-btn" style="font-size:11px;padding:6px 9px" data-payroll-preview="${esc(row.user_id)}">プレビュー・登録</button>`:""}</td>
+  </tr>`;
+}
+function payrollRender(){
+  const rows=PAYROLL_STATE.rows;
+  $("tabbody").innerHTML=`
+    <section class="invoice-list active">
+      <div class="card" style="padding:16px;margin-bottom:14px">
+        <h3 style="font-size:14px;margin-bottom:6px">💴 給与仕訳</h3>
+        <div style="font-size:12px;color:var(--muted);margin-bottom:12px">スマレジ給与明細（確定給与）から、月次の給与仕訳を作成します。まだ<b>有限会社トーホーエージェンシー分のみ</b>対応しています（SK側は別事業者としてマネーフォワード連携・スマレジ取込がまだのため未対応）。「仕訳辞書パターン」は設定タブで「給与仕訳での用途」を設定したテンプレートだけが選べます。</div>
+        <div class="ai-field" style="max-width:220px"><small>対象年月</small><input id="payroll-ym" type="month" value="${esc(PAYROLL_STATE.yearMonth)}"></div>
+      </div>
+      <div class="card hq-tablewrap">
+        ${rows.length?`<table class="invoice-table">
+          <thead><tr><th>氏名</th><th style="text-align:right">固定給</th><th style="text-align:right">通勤</th><th style="text-align:right">控除</th><th style="text-align:right">差引支給</th><th>仕訳辞書パターン</th><th>状態</th><th></th></tr></thead>
+          <tbody>${rows.map(payrollRowHtml).join("")}</tbody>
+        </table>`:`<div class="empty">${esc(PAYROLL_STATE.yearMonth)}のデータがまだありません（スマレジ給与明細の同期後に表示されます）</div>`}
+      </div>
+    </section>`;
+  $("payroll-ym").onchange=async()=>{
+    PAYROLL_STATE.yearMonth=$("payroll-ym").value;
+    $("tabbody").innerHTML=`<section class="invoice-list active"><div class="card" style="padding:16px"><div class="spin" style="padding:20px 0">読み込み中…</div></div></section>`;
+    await payrollLoad(); payrollRender();
+  };
+  document.querySelectorAll("[data-payroll-pattern]").forEach(el=>el.onchange=async()=>{
+    const userId=el.dataset.payrollPattern;
+    const templateId=el.value||null;
+    await authed("/rest/v1/payroll_journal_assignments",{method:"POST",headers:{Prefer:"resolution=merge-duplicates,return=minimal"},body:JSON.stringify({user_id:userId,tenant_id:"default",template_id:templateId,updated_by:ME.id,updated_at:new Date().toISOString()})});
+    const existing=payrollAssignmentFor(userId);
+    if(existing) existing.template_id=templateId; else PAYROLL_STATE.assignments.push({user_id:userId,tenant_id:"default",template_id:templateId});
+    payrollRender();
+  });
+  document.querySelectorAll("[data-payroll-preview]").forEach(el=>el.onclick=()=>payrollOpenPreview(el.dataset.payrollPreview));
+}
+function payrollOpenPreview(userId){
+  const row=PAYROLL_STATE.rows.find(r=>r.user_id===userId);
+  const asg=payrollAssignmentFor(userId);
+  const template=asg&&PAYROLL_STATE.templates.find(t=>t.id===asg.template_id);
+  if(!row||!template) return;
+  const branches=payrollComputeBranches(row,template);
+  if(!branches.length){ alert("金額が計算できませんでした（給与データを確認してください）"); return; }
+  const name=(row.user&&row.user.name)||"—";
+  const entries=branches.map(b=>{
+    const deptName=b.department_id?((PAYROLL_STATE.departments.find(d=>d.id===b.department_id)||{}).name||""):"";
+    return `<div class="mfj-preview-entry">
+      <div class="mfj-preview-head"><div>借方</div><div>貸方</div></div>
+      <div class="mfj-preview-body">
+        <div class="mfj-preview-side"><div class="acc">${esc(mftLabelOf(b.debit))}</div><div class="sub">${esc(deptName)}</div><div class="money">${yen(b.amount)}</div></div>
+        <div class="mfj-preview-side"><div class="acc">${esc(mftLabelOf(b.credit))}</div><div class="sub"></div><div class="money">${yen(b.amount)}</div></div>
+      </div>
+      ${b.remark?`<div class="mfj-preview-remark">${esc(b.remark)}</div>`:""}
+    </div>`;
+  }).join("");
+
+  const modal=document.createElement("div");
+  modal.className="modal-bg"; modal.id="payrollPreviewModal";
+  modal.innerHTML=`<div class="modal" style="max-width:820px">
+    <div class="mhead"><h2>🧾 給与仕訳プレビュー — ${esc(name)}</h2><button class="linkbtn" id="payrollPreviewClose" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:13px">閉じる ×</button></div>
+    <div class="ai-field" style="max-width:220px;margin-bottom:10px"><small>会計計上日</small><input id="payroll-date" type="date" value="${new Date().toISOString().slice(0,10)}"></div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:8px">対象年月: <b>${esc(PAYROLL_STATE.yearMonth)}</b>　テンプレート: <b>${esc(template.label)}</b></div>
+    ${entries}
+    <div class="err" id="payrollPreviewMsg" style="margin-top:6px"></div>
+    <div class="mail-actions" style="margin-top:12px">
+      <button id="payrollPreviewBack">← 閉じる</button>
+      <button class="primary" id="payrollPreviewSubmit">✅ この内容で登録</button>
+    </div>
+  </div>`;
+  document.body.appendChild(modal);
+  pushNav({modal:true});
+  modal.onclick=e=>{ if(e.target===modal) history.back(); };
+  $("payrollPreviewClose").onclick=()=>history.back();
+  $("payrollPreviewBack").onclick=()=>history.back();
+  $("payrollPreviewSubmit").onclick=async()=>{
+    $("payrollPreviewSubmit").disabled=true;
+    const pmsg=$("payrollPreviewMsg"); pmsg.className="err"; pmsg.textContent="登録中…";
+    const payload={
+      tenant_id:"default", vendor_name:`給与：${name}（${PAYROLL_STATE.yearMonth}）`,
+      branches: branches.map(b=>({debit:{account_id:b.debit.account_id,sub_account_id:b.debit.sub_account_id||undefined},credit:{account_id:b.credit.account_id,sub_account_id:b.credit.sub_account_id||undefined},department_id:b.department_id||null,amount:b.amount,remark:b.remark||`${PAYROLL_STATE.yearMonth}分給与`})),
+      transaction_date: $("payroll-date").value,
+      remark:`${PAYROLL_STATE.yearMonth}分給与（${name}）`,
+    };
+    const {ok,body:j}=await mfCall("create_standalone",payload);
+    if(!ok){ pmsg.textContent=j.error||"登録に失敗しました"; $("payrollPreviewSubmit").disabled=false; return; }
+    const recR=await authed("/rest/v1/payroll_journal_records",{method:"POST",headers:{Prefer:"return=minimal"},body:JSON.stringify({
+      user_id:userId, year_month:PAYROLL_STATE.yearMonth, tenant_id:"default", template_id:template.id,
+      mf_journal_id:j.journal_id, mf_journal_number:j.journal_number, mf_journal_created_at:new Date().toISOString(),
+      invoice_id:j.invoice_id, created_by:ME.id,
+    })});
+    pmsg.className="err msg-ok";
+    pmsg.textContent=recR.ok
+      ?`登録しました（伝票番号: ${j.journal_number??"-"}）。画面を更新します…`
+      :`マネーフォワードへの登録は成功しました（伝票番号: ${j.journal_number??"-"}）が、進捗の記録に失敗しました。再度この従業員を登録しようとすると重複する可能性があるため、マネーフォワード側の実際の登録状況を確認してください。`;
+    setTimeout(async()=>{ history.back(); await payrollLoad(); payrollRender(); },1400);
   };
 }
 
