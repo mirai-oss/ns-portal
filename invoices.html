@@ -496,12 +496,14 @@ function payrollSummaryHtml(){
   const cashRows=payable.filter(r=>{ const b=payrollBankFor(r.user_id); return b&&b.payment_method==="cash"; });
   const transferCount=payable.filter(r=>{ const b=payrollBankFor(r.user_id); return b&&b.payment_method!=="cash"; }).length;
   const cashTotal=cashRows.reduce((s,r)=>s+(Number(r.net_pay)||0),0);
-  const doneCount=payable.filter(r=>payrollRecordFor(r.user_id)).length;
+  // 「完了数」は仕訳登録だけでなく振込（現金の場合は手渡し）まで完了した人数
+  // （2026-09-01: 会計計上済みだが振込はまだ、という状態と区別するため）
+  const doneCount=payable.filter(r=>{ const rec=payrollRecordFor(r.user_id); return rec&&rec.paid_at; }).length;
   return `
     <div class="card mail-kpi"><small>給与支払い人数</small><b>${payable.length}</b></div>
     <div class="card mail-kpi"><small>振込件数</small><b style="color:var(--blue)">${transferCount}</b></div>
     <div class="card mail-kpi"><small>現金支払い件数・合計</small><b style="color:var(--amber)">${cashRows.length}件 / ${yen(cashTotal)}</b></div>
-    <div class="card mail-kpi"><small>完了数</small><b style="color:var(--green)">${doneCount}</b></div>
+    <div class="card mail-kpi"><small>完了数（振込済み）</small><b style="color:var(--green)">${doneCount}</b></div>
   `;
 }
 // portal.html組込(EMBED)時にサイドバーの「会計」グループから開く3タブ（会計ダッシュボード／
@@ -2840,18 +2842,50 @@ function payrollComputeBranches(row,template){
   }).filter(b=>(b.debit&&b.debitAmount>0)||(b.credit&&b.creditAmount>0));
 }
 function payrollBankFor(userId){ return (PAYROLL_STATE.bankAccounts||[]).find(b=>b.user_id===userId); }
+// 一覧の並び替え・絞り込み（2026-09-01: ユーザー要望「振込済みが1番下に行くように・絞れるように」）
+function payrollSortedRows(){
+  let rows=[...(PAYROLL_STATE.rows||[])];
+  if(PAYROLL_STATE.hidePaid){
+    rows=rows.filter(r=>{ const rec=payrollRecordFor(r.user_id); return !(rec&&rec.paid_at); });
+  }
+  if(PAYROLL_STATE.sortMode!=="default"){
+    const isPaid=r=>{ const rec=payrollRecordFor(r.user_id); return rec&&rec.paid_at?1:0; };
+    rows=rows.map((r,i)=>({r,i})).sort((a,b)=>(isPaid(a.r)-isPaid(b.r))||(a.i-b.i)).map(x=>x.r); // 振込完了だけ末尾へ（安定ソート）
+  }
+  return rows;
+}
 function payrollRowHtml(row){
   const asg=payrollAssignmentFor(row.user_id);
   const rec=payrollRecordFor(row.user_id);
   const name=(row.user&&row.user.name)||"—";
   const options=`<option value="">（未設定）</option>`+PAYROLL_STATE.templates.map(t=>`<option value="${esc(t.id)}" ${asg&&asg.template_id===t.id?"selected":""}>${esc(t.label)}</option>`).join("");
-  const status=rec?`<span class="invoice-status done">✅登録済み（伝票番号:${esc(String(rec.mf_journal_number??"-"))}）</span>`:(asg&&asg.template_id?`<span class="invoice-status wait">未登録</span>`:`<span class="invoice-status gray">パターン未設定</span>`);
+  // 状態は「パターン未設定→未登録（会計未計上）→仕訳登録済み・振込待ち→振込完了」の4段階。
+  // 2026-09-01: 会計計上（MF仕訳登録）と実際の振込は別のタイミングで完了するため、区別して表示する
+  let status;
+  if(rec&&rec.paid_at){ status=`<span class="invoice-status done">🎉振込完了（伝票番号:${esc(String(rec.mf_journal_number??"-"))}）</span>`; }
+  else if(rec){ status=`<span class="invoice-status check">💰仕訳登録済み・振込待ち（伝票番号:${esc(String(rec.mf_journal_number??"-"))}）</span>`; }
+  else if(asg&&asg.template_id){ status=`<span class="invoice-status wait">未登録</span>`; }
+  else{ status=`<span class="invoice-status gray">パターン未設定</span>`; }
   const pdfBadge=row._hasPdf
     ?`<span title="給与明細PDFあり（登録時に証憑として添付されます）">📎</span> <button class="linkbtn" style="color:var(--accent);font-size:11px;background:none;border:none;cursor:pointer;padding:0" data-payroll-pdf-delete="${esc(row.user_id)}" title="添付を間違えたPDFを削除">削除</button>`
     :`<span style="color:var(--muted)" title="給与明細PDF未アップロード">－</span>`;
   const bank=payrollBankFor(row.user_id);
   const bankLabel=!bank?"未登録":(bank.payment_method==="cash"?"💴現金手渡し":"🏦振込");
   const bankBtn=`<button class="hq-btn" style="font-size:11px;padding:6px 9px" data-payroll-bank="${esc(row.user_id)}">${bankLabel}</button>`;
+  // 操作欄: 未登録なら「プレビュー・登録」、登録済みなら振込完了ボタン＋登録解除リンクを出す
+  // （2026-09-01: ユーザー要望「間違えて登録した可能性もあるので解除できるように」「振込完了も手動で押せるように」）
+  let actionCell;
+  if(rec){
+    const payBtn=rec.paid_at
+      ?`<button class="linkbtn" style="font-size:11px;background:none;border:none;color:var(--muted);cursor:pointer;padding:0;text-align:left" data-payroll-unpay="${esc(row.user_id)}">振込完了を取り消す</button>`
+      :`<button class="hq-btn primary" style="font-size:11px;padding:6px 9px" data-payroll-pay="${esc(row.user_id)}">💰振込完了にする</button>`;
+    const unregBtn=`<button class="linkbtn" style="font-size:11px;background:none;border:none;color:var(--accent);cursor:pointer;padding:0;text-align:left" data-payroll-unregister="${esc(row.user_id)}">仕訳登録を解除</button>`;
+    actionCell=`<div style="display:flex;flex-direction:column;gap:5px;align-items:flex-start">${payBtn}${unregBtn}</div>`;
+  }else if(asg&&asg.template_id){
+    actionCell=`<button class="hq-btn" style="font-size:11px;padding:6px 9px" data-payroll-preview="${esc(row.user_id)}">プレビュー・登録</button>`;
+  }else{
+    actionCell="";
+  }
   return `<tr>
     <td><b>${esc(name)}</b></td>
     <td style="text-align:right">${yen(row.fixed_salary_amount)}</td>
@@ -2862,11 +2896,12 @@ function payrollRowHtml(row){
     <td style="text-align:center">${pdfBadge}</td>
     <td>${bankBtn}</td>
     <td>${status}</td>
-    <td>${(!rec&&asg&&asg.template_id)?`<button class="hq-btn" style="font-size:11px;padding:6px 9px" data-payroll-preview="${esc(row.user_id)}">プレビュー・登録</button>`:""}</td>
+    <td>${actionCell}</td>
   </tr>`;
 }
 function payrollRender(){
-  const rows=PAYROLL_STATE.rows;
+  if(!PAYROLL_STATE.sortMode) PAYROLL_STATE.sortMode="pendingFirst"; // 既定で振込完了は下へ
+  const rows=payrollSortedRows();
   $("tabbody").innerHTML=`
     <section class="invoice-list active">
       ${PAYROLL_STATE.loadError?`<div class="card err" style="padding:12px 16px;margin-bottom:14px;display:flex;align-items:center;justify-content:space-between;gap:10px">
@@ -2892,10 +2927,21 @@ function payrollRender(){
         <div class="err" id="payroll-csv-msg" style="margin-top:6px"></div>
       </div>
       <div class="card hq-tablewrap">
+        <div style="display:flex;align-items:center;gap:16px;padding:12px 16px;border-bottom:1px solid var(--line);flex-wrap:wrap">
+          <label style="font-size:12px;display:flex;align-items:center;gap:6px">並び替え
+            <select id="payroll-sort" style="font-size:12px">
+              <option value="pendingFirst" ${PAYROLL_STATE.sortMode==="pendingFirst"?"selected":""}>振込完了を下へ</option>
+              <option value="default" ${PAYROLL_STATE.sortMode==="default"?"selected":""}>通常（一覧順）</option>
+            </select>
+          </label>
+          <label style="font-size:12px;display:flex;align-items:center;gap:6px;cursor:pointer">
+            <input type="checkbox" id="payroll-hide-paid" ${PAYROLL_STATE.hidePaid?"checked":""}>振込完了は表示しない
+          </label>
+        </div>
         ${rows.length?`<table class="invoice-table">
           <thead><tr><th>氏名</th><th style="text-align:right">固定給</th><th style="text-align:right">通勤</th><th style="text-align:right">控除</th><th style="text-align:right">差引支給</th><th>仕訳辞書パターン</th><th>PDF</th><th>振込先</th><th>状態</th><th></th></tr></thead>
           <tbody>${rows.map(payrollRowHtml).join("")}</tbody>
-        </table>`:`<div class="empty">${esc(PAYROLL_STATE.yearMonth)}のデータがまだありません（スマレジ給与明細の同期後に表示されます）</div>`}
+        </table>`:`<div class="empty">${PAYROLL_STATE.hidePaid?"振込完了以外は残っていません（絞り込み中）":`${esc(PAYROLL_STATE.yearMonth)}のデータがまだありません（スマレジ給与明細の同期後に表示されます）`}</div>`}
       </div>
     </section>`;
   $("payroll-ym").onchange=async()=>{
@@ -2907,6 +2953,41 @@ function payrollRender(){
     $("tabbody").innerHTML=`<section class="invoice-list active"><div class="card" style="padding:16px"><div class="spin" style="padding:20px 0">読み込み中…</div></div></section>`;
     await payrollLoad(); payrollRender(); updateMailSummaryBar();
   };
+  $("payroll-sort").onchange=()=>{ PAYROLL_STATE.sortMode=$("payroll-sort").value; payrollRender(); };
+  $("payroll-hide-paid").onchange=()=>{ PAYROLL_STATE.hidePaid=$("payroll-hide-paid").checked; payrollRender(); };
+  document.querySelectorAll("[data-payroll-pay]").forEach(el=>el.onclick=async()=>{
+    const userId=el.dataset.payrollPay;
+    el.disabled=true;
+    const r=await authed(`/rest/v1/payroll_journal_records?user_id=eq.${userId}&year_month=eq.${PAYROLL_STATE.yearMonth}`,{
+      method:"PATCH",headers:{Prefer:"return=minimal"},
+      body:JSON.stringify({paid_at:new Date().toISOString(),paid_by:ME.id}),
+    });
+    if(!r.ok){ alert("振込完了の記録に失敗しました"); el.disabled=false; return; }
+    const rec=payrollRecordFor(userId); if(rec){ rec.paid_at=new Date().toISOString(); rec.paid_by=ME.id; }
+    payrollRender(); updateMailSummaryBar();
+  });
+  document.querySelectorAll("[data-payroll-unpay]").forEach(el=>el.onclick=async()=>{
+    const userId=el.dataset.payrollUnpay;
+    if(!confirm("振込完了を取り消しますか？（誤って押した場合の取り消し用）")) return;
+    const r=await authed(`/rest/v1/payroll_journal_records?user_id=eq.${userId}&year_month=eq.${PAYROLL_STATE.yearMonth}`,{
+      method:"PATCH",headers:{Prefer:"return=minimal"},
+      body:JSON.stringify({paid_at:null,paid_by:null}),
+    });
+    if(!r.ok){ alert("取り消しに失敗しました"); return; }
+    const rec=payrollRecordFor(userId); if(rec){ rec.paid_at=null; rec.paid_by=null; }
+    payrollRender(); updateMailSummaryBar();
+  });
+  document.querySelectorAll("[data-payroll-unregister]").forEach(el=>el.onclick=async()=>{
+    const userId=el.dataset.payrollUnregister;
+    const row=(PAYROLL_STATE.rows||[]).find(r=>r.user_id===userId);
+    const name=(row&&row.user&&row.user.name)||"この従業員";
+    if(!confirm(`${name}さんの${PAYROLL_STATE.yearMonth}分の仕訳登録をこの画面上で解除しますか？\n\n※マネーフォワード側に登録済みの仕訳自体はこの操作では削除されません。間違えて登録した場合は、マネーフォワードの画面から該当の仕訳も別途削除・修正してください。解除するとこの一覧では「未登録」に戻り、もう一度登録し直せるようになります。`)) return;
+    el.disabled=true;
+    const r=await authed(`/rest/v1/payroll_journal_records?user_id=eq.${userId}&year_month=eq.${PAYROLL_STATE.yearMonth}`,{method:"DELETE"});
+    if(!r.ok){ alert("解除に失敗しました"); el.disabled=false; return; }
+    PAYROLL_STATE.records=(PAYROLL_STATE.records||[]).filter(rc=>!(rc.user_id===userId&&rc.year_month===PAYROLL_STATE.yearMonth));
+    payrollRender(); updateMailSummaryBar();
+  });
   document.querySelectorAll("[data-payroll-pdf-delete]").forEach(el=>el.onclick=async()=>{
     const userId=el.dataset.payrollPdfDelete;
     const row=(PAYROLL_STATE.rows||[]).find(r=>r.user_id===userId);
