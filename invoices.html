@@ -183,6 +183,26 @@ button,input,select,textarea{font:inherit}
 .mfj-tpl-item .lbl{font-size:12px;font-weight:700}
 .mfj-tpl-item .sum{font-size:10px;color:var(--m-muted);margin-top:2px}
 
+/* ---- 広告費として反映（C-7②・2026-08-31） ---- */
+.adcost-box{border:1px solid var(--m-line);border-radius:12px;background:var(--panel);padding:14px;margin-top:14px}
+.adcost-box h3{margin:0 0 4px;font-size:14px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.adcost-sub{font-size:11px;color:var(--m-muted);margin-bottom:10px;line-height:1.6}
+.adcost-source{font-size:10px;color:var(--m-muted);margin:6px 0;line-height:1.6}
+.adcost-table{width:100%;border-collapse:collapse;margin-top:4px;font-size:12px}
+.adcost-table th,.adcost-table td{border-bottom:1px solid var(--m-line);padding:8px 6px;text-align:left;vertical-align:middle}
+.adcost-table th{font-size:10px;color:var(--m-muted);font-weight:700}
+.adcost-table td.amt{text-align:right}
+.adcost-table input,.adcost-table select{border:1px solid var(--m-line);border-radius:6px;padding:6px 8px;background:var(--bg);color:var(--ink);font-size:12px}
+.adcost-table input{width:112px;text-align:right;font-variant-numeric:tabular-nums}
+.adcost-table td.rm{width:26px;text-align:center}
+.adcost-table td.rm button{border:0;background:#8f99a5;color:#fff;border-radius:50%;width:20px;height:20px;cursor:pointer;font-size:12px}
+.adcost-total{display:flex;justify-content:flex-end;gap:16px;margin-top:10px;font-size:12px;padding-top:10px;border-top:1px solid var(--m-line);font-variant-numeric:tabular-nums;flex-wrap:wrap}
+.adcost-total b{font-size:15px}
+.adcost-diff-ok{color:var(--m-green)}
+.adcost-diff-ng{color:var(--m-red)}
+.adcost-hint{font-size:10px;color:var(--m-muted);margin-top:8px;line-height:1.6}
+.adcost-badge-row{font-size:11px;color:var(--m-muted);margin-top:4px}
+
 .invoice-list{display:none}.invoice-list.active{display:block}
 .mail-inbox{display:none}.mail-inbox.active{display:block}
 .invoice-table{width:100%;border-collapse:collapse}
@@ -308,6 +328,28 @@ async function signAttachmentUrls(paths){
 function fmtDT(t){ if(!t) return "—"; const d=new Date(t); return `${d.getMonth()+1}/${d.getDate()} ${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`; }
 function fmtD(t){ if(!t) return "—"; const d=new Date(t); return `${d.getMonth()+1}/${d.getDate()}`; }
 function yen(n){ return n==null?"—":"¥"+Number(n).toLocaleString(); }
+// 広告費として反映（C-7②・2026-08-31）: 送信元アドレスの一部から媒体名を推定するための対応表。
+// ここに無い媒体の請求書が来るようになったら、この対応表に追記すれば拾えるようになる
+// （担当Cに「〇〇からの請求書も広告費として認識してほしい」と伝えてもらえれば追記対応する）
+const AD_MEDIA_DOMAIN_MAP=[
+  {domain:"tabelog.com",media:"食べログ"},
+  {domain:"kakaku.co.jp",media:"食べログ"},
+  {domain:"gnavi.co.jp",media:"ぐるなび"},
+  {domain:"hotpepper.jp",media:"ホットペッパー"},
+  {domain:"recruit.co.jp",media:"ホットペッパー"},
+  {domain:"retty.me",media:"Retty"},
+  {domain:"google.com",media:"Google広告"},
+  {domain:"line.me",media:"LINE広告"},
+];
+function adcostGuessMedia(fromAddress,subject){
+  const from=(fromAddress||"").toLowerCase();
+  const hit=AD_MEDIA_DOMAIN_MAP.find(m=>from.includes(m.domain));
+  if(hit) return hit.media;
+  // ドメインで拾えない場合は件名からのゆるい推測（サブブランド・別ドメインからの請求も拾う保険）
+  const subj=(subject||"");
+  for(const m of AD_MEDIA_DOMAIN_MAP){ if(subj.includes(m.media)) return m.media; }
+  return null;
+}
 // マネーフォワード連携Edge Function（mf-journal）への共通呼び出し。仕訳作成モーダル（openMailDetail内）と
 // 設定タブの仕訳辞書管理の両方から使うため、トップレベルに置く（2026-08-31）
 async function mfCall(action,extra={}){
@@ -885,6 +927,7 @@ function renderMailDetail(u){
             :`<button id="mfj-open">🧾 仕訳を作成</button>`):""}
         </div>
         <div class="err" id="iv-msg" style="margin-top:6px"></div>
+        ${(!isSales&&invoice&&invoice.amount!=null)?`<div id="adcostbox"></div>`:""}
         <div class="replybox" id="mfjournalbox">
           <b style="font-size:12px">🧾 マネーフォワードへ仕訳を登録</b>
           <div id="mfj-body" style="margin-top:8px;font-size:12px;color:var(--muted)">読み込み中…</div>
@@ -987,6 +1030,189 @@ function wireDetailActions(u){
     };
   }
   renderHqLinkBox();
+
+  /* ----------------------------------------------------------
+     広告費として反映（C-7②・2026-08-31）
+     設計書_広告費自動連携と精算書PL科目連携_2026-08-31.md §4のとおり:
+     店舗×金額の割り振りは a)今組んでいる仕訳の部門別金額 → b)前月・同媒体の店舗比率 → c)手入力、の優先順。
+     確定はEdge Function「ad-cost-reflect」のconfirm actionへ。GAS側の書き込みaction（担当A・A-8）は
+     まだ無いため、その間は「Supabase側には記録済み・シートへの反映は未完了」を正直に表示する
+     ---------------------------------------------------------- */
+  let ADCOST_STATE={};
+  async function adcostInit(){
+    if(isSales||!invoice||invoice.amount==null) return; // 入金メール・請求書情報未保存のときは対象外
+    const box=$("adcostbox");
+    if(!box) return;
+    if(invoice.ad_cost_reflected_at){ adcostRenderReflected(); return; }
+    const guessed=adcostGuessMedia(mail.from_address,mail.subject);
+    if(!guessed){
+      box.innerHTML=`<div class="mail-actions" style="margin-top:14px"><button id="adcost-manual-open">📢 広告費として反映する（媒体を自動推定できませんでした）</button></div>`;
+      $("adcost-manual-open").onclick=async()=>{ ADCOST_STATE.media=""; await adcostRenderPanel(); };
+      return;
+    }
+    ADCOST_STATE.media=guessed;
+    await adcostRenderPanel();
+  }
+  function adcostRenderReflected(){
+    const box=$("adcostbox");
+    const a=invoice.ad_cost_allocations||[];
+    const ym=(invoice.ad_cost_year_month||"").slice(0,7);
+    box.innerHTML=`<div class="adcost-box">
+      <h3>📢 広告費 <span class="hq-pill green">✅ 反映済み（${esc(ym)}・${esc(invoice.ad_cost_media||"")}）</span></h3>
+      <div class="adcost-badge-row">${fmtDT(invoice.ad_cost_reflected_at)}　${a.length}店舗に按分　合計${yen(a.reduce((s,x)=>s+(Number(x.amount)||0),0))}${invoice.ad_cost_sheet_synced_at?"　✅シート反映済み":"　⚠️シートへの反映は未完了（担当Aの対応待ち）"}</div>
+    </div>`;
+  }
+  async function adcostRenderPanel(){
+    const box=$("adcostbox");
+    box.innerHTML=`<div class="adcost-box"><div style="font-size:12px;color:var(--muted)">読み込み中…</div></div>`;
+    if(!ADCOST_STATE.stores){
+      const r=await authed("/rest/v1/stores?select=id,name&order=name");
+      ADCOST_STATE.stores=(r.ok&&Array.isArray(r.body))?r.body:[];
+    }
+    if(!ADCOST_STATE.yearMonth){
+      const d=invoice.due_date?new Date(invoice.due_date):new Date();
+      ADCOST_STATE.yearMonth=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-01`;
+    }
+    if(!ADCOST_STATE.rows) await adcostComputeAllocation();
+    adcostRenderForm();
+  }
+  function adcostFindStoreByName(name){
+    if(!name||!ADCOST_STATE.stores) return null;
+    const norm=s=>String(s||"").replace(/\s+/g,"");
+    const n=norm(name);
+    return ADCOST_STATE.stores.find(s=>norm(s.name)===n)
+      || ADCOST_STATE.stores.find(s=>n.includes(norm(s.name))||norm(s.name).includes(n))
+      || null;
+  }
+  async function adcostComputeAllocation(){
+    const total=Number(invoice.amount)||0;
+    // a) 今組んでいる仕訳（🧾仕訳を作成）の明細行に部門（店舗）が設定されていれば、それをそのまま使う
+    const branchesWithDept=(MFJ_STATE.branches||[]).filter(b=>b.department_id&&Number(b.amount)>0);
+    if(branchesWithDept.length){
+      const rows=[];
+      for(const b of branchesWithDept){
+        const dept=(MFJ_STATE.departments||[]).find(d=>d.id===b.department_id);
+        const store=dept?adcostFindStoreByName(dept.name):null;
+        if(store) rows.push({store_id:store.id,store_name:store.name,amount:Math.round(Number(b.amount))});
+      }
+      if(rows.length){ ADCOST_STATE.rows=rows; ADCOST_STATE.source="mf_department"; return; }
+    }
+    // b) 前月・同媒体で反映済みの請求書があれば、その店舗比率で今回の金額を按分する
+    if(ADCOST_STATE.media){
+      const cur=new Date(ADCOST_STATE.yearMonth);
+      const prev=new Date(cur.getFullYear(),cur.getMonth()-1,1);
+      const prevYm=`${prev.getFullYear()}-${String(prev.getMonth()+1).padStart(2,"0")}-01`;
+      const r=await authed(`/rest/v1/invoices?ad_cost_reflected_at=not.is.null&ad_cost_media=eq.${encodeURIComponent(ADCOST_STATE.media)}&ad_cost_year_month=eq.${prevYm}&select=ad_cost_allocations`);
+      const prevRows=(r.ok&&Array.isArray(r.body))?r.body:[];
+      const sums=new Map(); let grand=0;
+      for(const row of prevRows) for(const a of (row.ad_cost_allocations||[])){
+        const amt=Number(a.amount)||0; grand+=amt;
+        const c=sums.get(a.store_id)||{store_name:a.store_name,amount:0}; c.amount+=amt; sums.set(a.store_id,c);
+      }
+      if(grand>0){
+        const rows=Array.from(sums,([store_id,v])=>({store_id,store_name:v.store_name,amount:Math.round(total*(v.amount/grand))}));
+        const sum=rows.reduce((s,x)=>s+x.amount,0);
+        if(rows.length) rows[rows.length-1].amount+=(total-sum); // 端数調整
+        ADCOST_STATE.rows=rows; ADCOST_STATE.source="prev_month_ratio";
+        return;
+      }
+    }
+    // c) 参考になる情報が無ければ、店舗を手で選んでもらう1行だけ用意する
+    ADCOST_STATE.rows=[{store_id:"",store_name:"",amount:total}];
+    ADCOST_STATE.source="manual";
+  }
+  function adcostSourceLabel(){
+    return {
+      mf_department:"📊 今組んでいる仕訳（🧾仕訳を作成）の部門（店舗）別金額から自動で割り振りました。",
+      prev_month_ratio:"📊 店舗別の内訳が請求書に無かったため、前月の同媒体の店舗比率から按分しています。",
+      manual:"📊 参考にできる情報が無かったため、店舗を選んで金額を入力してください。",
+    }[ADCOST_STATE.source]||"";
+  }
+  function adcostRowHtml(row,idx){
+    const opts=`<option value="">（店舗を選択）</option>`+ADCOST_STATE.stores.map(s=>`<option value="${esc(s.id)}" ${row.store_id===s.id?"selected":""}>${esc(s.name)}</option>`).join("");
+    return `<tr data-idx="${idx}">
+      <td><select class="adcost-store" data-idx="${idx}">${opts}</select></td>
+      <td class="amt"><input type="number" class="adcost-amount" data-idx="${idx}" value="${row.amount}"></td>
+      <td class="rm">${ADCOST_STATE.rows.length>1?`<button data-adcostrm="${idx}" title="この行を削除">−</button>`:""}</td>
+    </tr>`;
+  }
+  function adcostUpdateTotals(){
+    const total=ADCOST_STATE.rows.reduce((s,r)=>s+(Number(r.amount)||0),0);
+    const invAmt=Number(invoice.amount)||0;
+    const diff=invAmt-total;
+    if($("adcost-total-sum")) $("adcost-total-sum").textContent=yen(total);
+    const diffBox=$("adcost-diff-box");
+    if(diffBox){ diffBox.className=diff===0?"adcost-diff-ok":"adcost-diff-ng"; diffBox.innerHTML=`差額 <b>${yen(diff)}</b> ${diff===0?"✓":""}`; }
+  }
+  function adcostRenderForm(){
+    const box=$("adcostbox");
+    const total=ADCOST_STATE.rows.reduce((s,r)=>s+(Number(r.amount)||0),0);
+    const invAmt=Number(invoice.amount)||0;
+    const diff=invAmt-total;
+    const mediaOptions=["食べログ","ぐるなび","ホットペッパー","Retty","Google広告","LINE広告","その他"];
+    if(ADCOST_STATE.media&&!mediaOptions.includes(ADCOST_STATE.media)) mediaOptions.unshift(ADCOST_STATE.media);
+    box.innerHTML=`<div class="adcost-box">
+      <h3>📢 広告費として反映 ${ADCOST_STATE.media?`<span class="hq-pill amber">媒体を推定：${esc(ADCOST_STATE.media)}</span>`:""}</h3>
+      <div class="adcost-sub">${ADCOST_STATE.media?`送信元・件名から「${esc(ADCOST_STATE.media)}」の広告費と推定しました。違う場合は下のプルダウンで修正してください。`:"媒体を選んでください。"}</div>
+      <div class="ai-grid">
+        <div class="ai-field"><small>媒体</small><select id="adcost-media">${mediaOptions.map(m=>`<option ${ADCOST_STATE.media===m?"selected":""}>${esc(m)}</option>`).join("")}</select></div>
+        <div class="ai-field"><small>対象年月</small><input id="adcost-ym" type="month" value="${ADCOST_STATE.yearMonth.slice(0,7)}"></div>
+      </div>
+      <div class="adcost-source">${adcostSourceLabel()}</div>
+      <table class="adcost-table">
+        <thead><tr><th>店舗</th><th style="text-align:right">金額</th><th></th></tr></thead>
+        <tbody id="adcost-rows">${ADCOST_STATE.rows.map((r,i)=>adcostRowHtml(r,i)).join("")}</tbody>
+      </table>
+      <div class="mail-actions" style="margin-top:6px">
+        <button id="adcost-add-row">＋ 店舗を追加</button>
+        <button id="adcost-recalc">🔄 割り振りを再計算</button>
+      </div>
+      <div class="adcost-total">
+        <span>請求書合計 <b>${yen(invAmt)}</b></span>
+        <span>割り振り合計 <b id="adcost-total-sum">${yen(total)}</b></span>
+        <span id="adcost-diff-box" class="${diff===0?"adcost-diff-ok":"adcost-diff-ng"}">差額 <b>${yen(diff)}</b> ${diff===0?"✓":""}</span>
+      </div>
+      <div class="mail-actions" style="margin-top:10px"><button class="primary" id="adcost-confirm">📢 この内容で広告費に反映</button></div>
+      <div class="adcost-hint">💡 反映は「🧾仕訳を作成」で仕訳登録するのと同時に行うのが基本ですが、先にこちらだけ確定しても構いません。広告費用対効果_管理シートとBigQueryへの実際の書き込みは担当Aの対応が完了してから有効になります（それまでは反映内容の記録のみです）。</div>
+      <div class="err" id="adcost-msg" style="margin-top:6px"></div>
+    </div>`;
+    $("adcost-media").onchange=()=>{ ADCOST_STATE.media=$("adcost-media").value; };
+    $("adcost-ym").onchange=()=>{ ADCOST_STATE.yearMonth=$("adcost-ym").value+"-01"; };
+    document.querySelectorAll(".adcost-store").forEach(el=>el.onchange=()=>{
+      const idx=+el.dataset.idx, s=ADCOST_STATE.stores.find(x=>x.id===el.value);
+      ADCOST_STATE.rows[idx].store_id=el.value; ADCOST_STATE.rows[idx].store_name=s?s.name:"";
+    });
+    document.querySelectorAll(".adcost-amount").forEach(el=>el.oninput=()=>{
+      ADCOST_STATE.rows[+el.dataset.idx].amount=el.value; adcostUpdateTotals();
+    });
+    document.querySelectorAll("[data-adcostrm]").forEach(el=>el.onclick=()=>{ ADCOST_STATE.rows.splice(+el.dataset.adcostrm,1); adcostRenderForm(); });
+    $("adcost-add-row").onclick=()=>{ ADCOST_STATE.rows.push({store_id:"",store_name:"",amount:0}); adcostRenderForm(); };
+    $("adcost-recalc").onclick=async()=>{ ADCOST_STATE.rows=null; await adcostComputeAllocation(); adcostRenderForm(); };
+    $("adcost-confirm").onclick=adcostConfirm;
+  }
+  async function adcostConfirm(){
+    const msg=$("adcost-msg"); msg.className="err"; msg.textContent="";
+    const media=($("adcost-media")?.value||"").trim();
+    if(!media){ msg.textContent="媒体を選んでください"; return; }
+    const rows=ADCOST_STATE.rows.filter(r=>r.store_id&&Number(r.amount)>0);
+    if(!rows.length){ msg.textContent="店舗と金額を入力してください"; return; }
+    const total=rows.reduce((s,r)=>s+Number(r.amount),0);
+    const invAmt=Number(invoice.amount)||0;
+    if(total!==invAmt && !confirm(`割り振り合計（${yen(total)}）が請求書合計（${yen(invAmt)}）と一致していません。このまま反映しますか？`)) return;
+    $("adcost-confirm").disabled=true; msg.textContent="反映中…";
+    const s=sess.get();
+    const r=await fetch(SUPA_URL+"/functions/v1/ad-cost-reflect",{method:"POST",headers:{"Content-Type":"application/json","apikey":SUPA_KEY,"Authorization":"Bearer "+(s?s.at:"")},body:JSON.stringify({
+      action:"confirm", invoice_id:invoice.id, media, year_month:ADCOST_STATE.yearMonth,
+      allocations:rows.map(r=>({store_id:r.store_id,store_name:r.store_name,amount:Number(r.amount)})),
+    })});
+    const j=await r.json().catch(()=>({}));
+    if(!r.ok){ msg.textContent=j.error||"反映に失敗しました"; $("adcost-confirm").disabled=false; return; }
+    msg.className="err msg-ok";
+    msg.textContent=j.sheet_synced?"広告費に反映しました（スプレッドシート・BigQueryにも書き込み済みです）":"反映内容を記録しました。スプレッドシートへの書き込みは担当Aの対応後に有効になります（今は記録のみです）";
+    setTimeout(()=>{ reloadDetail(); },1200);
+  }
+  adcostInit();
+
   if($("mobile-back-btn")) $("mobile-back-btn").onclick=()=>{
     // history.back()に統一＝トラックパッドのスワイプ戻る等と同じpopstateの
     // 経路を通すことで、ボタン操作とジェスチャー操作の挙動を一致させる
