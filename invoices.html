@@ -2718,8 +2718,9 @@ async function renderPayrollTab(u){
 }
 async function payrollLoad(){
   const ym=PAYROLL_STATE.yearMonth;
-  const [syncR,recR,asgR,tplR,deptR,allocR,bankR]=await Promise.all([
-    authed(`/rest/v1/sf_payroll_sync?year_month=eq.${ym}&select=*,user:users(name,role,is_active)&order=user(name)`),
+  const fetchSync=()=>authed(`/rest/v1/sf_payroll_sync?year_month=eq.${ym}&select=*,user:users(name,role,is_active)&order=user(name)`);
+  let [syncR,recR,asgR,tplR,deptR,allocR,bankR]=await Promise.all([
+    fetchSync(),
     authed(`/rest/v1/payroll_journal_records?year_month=eq.${ym}&select=*`),
     authed(`/rest/v1/payroll_journal_assignments?select=*`),
     authed(`/rest/v1/mf_journal_templates?tenant_id=eq.default&select=id,label,branches&order=label`),
@@ -2727,7 +2728,25 @@ async function payrollLoad(){
     authed(`/rest/v1/sf_payroll_allocations?period_key=like.${ym}*&select=user_id,store_id,kind`),
     authed(`/rest/v1/payroll_bank_accounts?select=*`),
   ]);
-  PAYROLL_STATE.rows=(syncR.ok&&Array.isArray(syncR.body))?syncR.body:[];
+  // 給与データの取得に失敗した場合（トークン更新タイミング等による一時的な失敗を想定）、少し待って
+  // 1回だけ自動で再試行する。ユーザー報告「タブを開き直すとKPIが0にリセットされて見づらい」対策
+  if(!(syncR.ok&&Array.isArray(syncR.body))){
+    await new Promise(res=>setTimeout(res,800));
+    syncR=await fetchSync();
+  }
+  const syncOk=syncR.ok&&Array.isArray(syncR.body);
+  if(syncOk){
+    PAYROLL_STATE.rows=syncR.body;
+    PAYROLL_STATE.loadedYearMonth=ym;
+    PAYROLL_STATE.loadError=false;
+  }else if(PAYROLL_STATE.loadedYearMonth!==ym){
+    // この年月のデータをまだ一度も正常取得できていない場合だけ空扱いにする
+    // （直前に正常取得できていた別のタイミングのデータをむやみに0で上書きしない）
+    PAYROLL_STATE.rows=[];
+    PAYROLL_STATE.loadError=true;
+  }else{
+    PAYROLL_STATE.loadError=true; // 同じ年月の直前データはそのまま維持し、失敗した旨だけ画面に出す
+  }
   PAYROLL_STATE.records=(recR.ok&&Array.isArray(recR.body))?recR.body:[];
   PAYROLL_STATE.assignments=(asgR.ok&&Array.isArray(asgR.body))?asgR.body:[];
   PAYROLL_STATE.templates=(tplR.ok&&Array.isArray(tplR.body))?tplR.body:[];
@@ -2838,6 +2857,10 @@ function payrollRender(){
   const rows=PAYROLL_STATE.rows;
   $("tabbody").innerHTML=`
     <section class="invoice-list active">
+      ${PAYROLL_STATE.loadError?`<div class="card err" style="padding:12px 16px;margin-bottom:14px;display:flex;align-items:center;justify-content:space-between;gap:10px">
+        <span>⚠️ 給与データの取得に失敗しました。表示されている内容が古い可能性があります。</span>
+        <button id="payroll-retry">再読み込み</button>
+      </div>`:""}
       <div class="card" style="padding:16px;margin-bottom:14px">
         <h3 style="font-size:14px;margin-bottom:6px">💴 給与仕訳</h3>
         <div style="font-size:12px;color:var(--muted);margin-bottom:12px">スマレジ給与明細（確定給与）から、月次の給与仕訳を作成します。まだ<b>有限会社トーホーエージェンシー分のみ</b>対応しています（SK側は別事業者としてマネーフォワード連携・スマレジ取込がまだのため未対応）。「仕訳辞書パターン」は設定タブで「給与仕訳での用途」を設定したテンプレートだけが選べます。</div>
@@ -2866,7 +2889,11 @@ function payrollRender(){
   $("payroll-ym").onchange=async()=>{
     PAYROLL_STATE.yearMonth=$("payroll-ym").value;
     $("tabbody").innerHTML=`<section class="invoice-list active"><div class="card" style="padding:16px"><div class="spin" style="padding:20px 0">読み込み中…</div></div></section>`;
-    await payrollLoad(); payrollRender();
+    await payrollLoad(); payrollRender(); updateMailSummaryBar();
+  };
+  if($("payroll-retry")) $("payroll-retry").onclick=async()=>{
+    $("tabbody").innerHTML=`<section class="invoice-list active"><div class="card" style="padding:16px"><div class="spin" style="padding:20px 0">読み込み中…</div></div></section>`;
+    await payrollLoad(); payrollRender(); updateMailSummaryBar();
   };
   document.querySelectorAll("[data-payroll-pattern]").forEach(el=>el.onchange=async()=>{
     const userId=el.dataset.payrollPattern;
