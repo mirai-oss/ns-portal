@@ -8,7 +8,7 @@
 
 **★★★★★★★★2026-08-31（担当C実行スレッド・続き5）不具合対応: 仕訳作成で借方複数行→貸方1行にまとめられなかった問題を修正**: ユーザー報告「借方が複数行あるとき、貸方も毎回全部入れないといけない。買掛金2000円のように1行にまとめたい」。原因＝「1行=借方1つ＋貸方1つ＋共通金額」に固定していた設計。マネーフォワードの公式OpenAPI仕様（`CRUDJournalLine`）を確認しcreditor/debitorがどちらもrequiredでないことを確認→`mf-journal`の明細行検証・組み立てを共通関数`buildFlexibleBranches()`に統一し、各行が借方・貸方どちらか片方だけでもよい形に拡張（貸借バランスは行ごとではなく全体合計で検証）。invoices.html側は仕訳作成(mfj)・仕訳辞書編集(mft)・アップロード請求書(mfu)・給与仕訳(payroll)の4画面すべてで借方金額・貸方金額を独立入力欄に変更。仕訳辞書の保存形式も辺ごとにvalueを持つ形へ移行（既存1件は旧形式のまま読み込めるようフォールバック実装済み・データ移行不要）。**本番デプロイ・push済み（mf-journal version14・コミット`a4af64a`）**。ついでに別報告（会計入力の部門プルダウンに一部の部門が出ない）にも対応済み（`departments.read`スコープ不足が原因→再認可用リンク`mf-oauth-authorize`を新設・ユーザーの再認可待ち）。実機E2Eは未実施。詳細は本日付エントリ「2026-08-31（担当C実行スレッド・続き5）借方貸方まとめ書き対応」参照
 
-**★★★★★★★2026-08-31（担当Aスレッド）ラウンド5 A-7完了・A-8完了（担当Cからの依頼を優先対応）**: `実装指示書_ラウンド5_2026-08-31.md`§0の順序どおり①PL人件費API切替（2026-09以降・完了済み）に続けてA-7に着手中、担当Cから来ていたA-8依頼（本エントリ冒頭の「続き2」参照）に気づき優先対応→完了。**A-7（精算ダッシュボードUI刷新）**: `seisan-dashboard`リポジトリの`index.html`をモックアップ（`NStyle_統合ポータル_精算ダッシュボード_UI_v3`）準拠に総入れ替え・GAS新規4関数（ロイヤリティ率編集・定期費目状態切替・自動処理権限設定）追加、本番デプロイ・push済み（GitHub Pages反映確認済み）。**A-8（広告費DB書き込みaction）**: `tori-dashboard/gas/Code.gs`に`writeAdCost`（専用トークン`AD_COST_WRITE_TOKEN`認証）・`bqSyncAdCost`（BQ新テーブル`stg_ad_cost`へミラー）を追加・本番デプロイ済み、Supabase Edge Function秘密変数にも同じトークンを登録済み（担当Cの`ad-cost-reflect`が有効化されたはず・実機E2Eは担当C側での確認待ち）。次はA-9（精算書の勘定科目→PL連携）に着手。詳細は本日付エントリ「2026-08-31（担当Aスレッド）A-7」「2026-08-31（担当Aスレッド）A-8」参照
+**★★★★★★★★2026-08-31（担当Aスレッド）ラウンド5 A-7・A-8・A-9すべて完了**: `実装指示書_ラウンド5_2026-08-31.md`§0の順序どおり①PL人件費API切替（2026-09以降・完了済み）→A-7→（担当Cからの依頼A-8を優先対応）→A-9の順で完了。**A-7（精算ダッシュボードUI刷新）**: `seisan-dashboard`の`index.html`をモックアップ準拠に総入れ替え・GAS新規4関数（ロイヤリティ率編集・定期費目状態切替・自動処理権限設定）追加、本番デプロイ・push済み。**A-8（広告費DB書き込みaction）**: `tori-dashboard/gas/Code.gs`に`writeAdCost`/`bqSyncAdCost`追加・本番デプロイ済み、Supabase Edge Function秘密変数`AD_COST_WRITE_TOKEN`も登録済み（担当Cの`ad-cost-reflect`が有効化されたはず）。**A-9（精算書の勘定科目→PL連携）**: 精算ダッシュボードの明細入力に勘定科目・補助科目列を追加（既定値の自動提案＋さかのぼり付与モードつき）、`tori-dashboard`に`syncSeisanCategoriesToPl`を新設しDB_PLへ「自動｜精算書」として自動計上（既存の運営委託費連携`syncSeisanFeeToPl`とは別メモで独立・二重計上なし）、GitHub Actionsで毎週自動同期。三者ともGAS本番デプロイ・GitHub Pages反映まで確認済み。**いずれも実機E2Eは未実施**（本部/マスターアカウントでの実ログイン確認はユーザー側にお願いする必要あり）。次はA-6 Phase2（キャンセル分析パネル・媒体手数料設定モーダル・お客様名表示）に着手。詳細は本日付エントリ「2026-08-31（担当Aスレッド）A-7」「A-8」「A-9」参照
 
 **★★★★★★2026-08-31（担当C実行スレッド・続き4）不具合対応: 会計入力の部門プルダウンに一部の部門が出ない**: ユーザー報告（スクショ2枚）。原因＝部門一覧取得API（`GET /api/v3/departments`）に必要な`departments.read`スコープが連携に無く403のため、代わりに「過去の仕訳履歴で実際に使われた部門をスキャン」する代用実装だった（一度もMF側の仕訳で使われていない部門は出ない）。対応: ①新規Edge Function`mf-oauth-authorize`＝MF_CLIENT_ID等を一切見せずに正しいscope（既存5つ+`departments.read`）で認可画面へリダイレクトするリンクを新設②`mf-journal`の部門取得を「まず直接API→ダメなら従来のスキャンへフォールバック」に変更（再認可が済んだ事業者から自動で全部門が出るようになる・追加デプロイ不要）。**本番デプロイ済み（コミット`a936570`）**。**ユーザー作業が必要**: 下記2つのリンクを開いて再認可してください（既存の連携を上書きするだけで、他の設定への影響はありません）。
 - 有限会社トーホーエージェンシー: https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/mf-oauth-authorize?tenant_id=default&label=%E6%9C%89%E9%99%90%E4%BC%9A%E7%A4%BE%E3%83%88%E3%83%BC%E3%83%9B%E3%83%BC%E3%82%A8%E3%83%BC%E3%82%B8%E3%82%A7%E3%83%B3%E3%82%B7%E3%83%BC
@@ -406,6 +406,35 @@ WORKLOGに担当CからA-8の依頼（「2026-08-31（担当C実行スレッド�
 - `TEST_ADCOST_*`という明白なテスト値でGAS側`writeAdCost`を直接呼び出し、シートへの書き込み・`bqSyncAdCost`によるBQミラー反映（行数増加）を確認 → 一時的な使い捨てaction（`cleanupAdCostTest_`・onceKey保護）でテスト行を削除・BQミラーも元の行数に戻ったことを確認 → 一時action2つとも削除してクリーンな状態で再デプロイ済み
 - **注意点（記録）**: `curl -X POST`でApps Script WebアプリのURLを叩くと、302リダイレクト先の`script.googleusercontent.com`エコーURLがPOSTを受け付けず（`allow: HEAD, GET`）失敗することがある。`curl`に`-X POST`を明示せず`--data`だけでPOSTを発行すると、curlのデフォルト動作でリダイレクト時に自動的にGETへ切り替わり正常に動作する（`-X POST`を付けるとリダイレクト先へもPOSTを強制してしまい失敗する）。**次回以降GASのWebアプリをcurlでPOSTテストする際はこの点に注意**
 - `ad-cost-reflect`自体の呼び出し（invoices側からの実際の請求書処理）による実機E2Eは未実施（Supabase側はユーザーJWT認証が必要なためこの環境からは直接テストできない・担当Cまたはユーザーの実機確認が必要）
+
+## 2026-08-31（担当Aスレッド）A-9: 精算書の勘定科目・補助科目→PL自動連携
+
+`設計書_広告費自動連携と精算書PL科目連携_2026-08-31.md`§2・§4の確定仕様どおり実装。A-7完了後に着手（設計書に明記の推奨順どおり）。
+
+### 精算ダッシュボード側（`seisan-dashboard`リポジトリ）
+- 各店舗のDBシートに「勘定科目」「補助科目」列を追加。既存シートには自動でヘッダー列を作成する自己修復パターン（`sd_ensureCategoryCols_`。既存の`sd_updateRow`の「修正日列が無ければ自動作成」ロジックと同じ考え方）
+- 科目リストは`SD_ACCOUNT_LIST`（34科目＋「対象外」）。PL管理システムの科目マスタ（`tori-dashboard/app.js`の`PL_ITEM_CAT`）と同じ名前で揃えた
+- 既定値の自動提案（Q3）: ①費目名のキーワード推定（`sd_guessAccount_`）②その店舗でその費目名に前回選んだ科目を優先引き継ぎ（`sd_suggestAccount`。「前月」限定ではなく「一番新しい」を採用＝より頑健）。費目名の入力完了時にフロントから自動で呼ばれ、未選択なら候補をセット（強制はしない＝いつでも選び直せる）
+- さかのぼり付与モード（Q4）: `sd_bulkCategorize`（設定タブの「🔙 過去の精算書に勘定科目をまとめて付与」ボタンから、店舗・期間を指定して実行）。期間内の「科目が空の行」だけに、履歴引き継ぎ→キーワード推定の順で自動セット。判定できない行は空欄のまま残し、人が「明細を入力」タブの✏修正から確認・修正する設計（全自動で確定させない）
+- `sd_apiCategorizedLines`: tori-dashboard側の新連携から呼ばれる専用API（`PL_SYNC_TOKEN`認証・既存`sd_apiTransferEx`と同方式）。指定店舗・月の明細を勘定科目×補助科目で集計し税抜換算して返す。「対象外」「運営委託費」は除外（運営委託費は既存の`syncSeisanFeeToPl`連携と役割が重複するため）。未確定（振込未済）の月はデータを返さない（`sd_apiTransferEx`と同じ安全策）
+- `sd_getDashboard`のバグ修正: `sd_readRows_`にはaccount/subAccountを追加していたが、`curRows`（クライアントへ返す整形済み行）へ渡す際に落としていた（実装中に気付いて修正）
+- バージョン`v5.15-settings-api`→`v5.16-pl-category`
+
+### 経営ダッシュボード側（`tori-dashboard`リポジトリ）
+- `syncSeisanCategoriesToPl(p)`: `BQ_LOAD_TOKEN`認証。精算対象の各店舗について`sd_apiCategorizedLines`を呼び、店舗×年月×勘定科目×補助科目でDB_PL（＋PL管理システム`✍販管費入力`）へ「自動｜精算書」（`PL_SEISAN_CAT_MEMO`）として計上。既存の`syncSeisanFeeToPl`（「運営委託費（自動計上）」メモ）とは完全に別メモで独立しており、精算ダッシュボード側が対象外・運営委託費を除外して送ってくるため二重計上にはならない
+- `PL_SEISAN_ACCOUNT_CAT_`: 勘定科目名→区分（S/F/L/A/R/O/X）。`app.js`の`PL_ITEM_CAT`と同じ内容をバックエンド用に複製（フロントJSからGAS側で直接参照できないため。**この一覧を変更する場合は`app.js`のPL_ITEM_CAT・SeisanDashboard.gsのSD_ACCOUNT_LISTも合わせて直すこと**＝変更頻度が低い固定リストのため3箇所自動同期の仕組みは作っていない）
+- 単月指定（`ym`）のほか、さかのぼり一括反映用に期間指定（`ymFrom`〜`ymTo`・最大36ヶ月）にも対応
+- 新規補助科目は`ensureSubItemMaster_`で`DB_補助科目`マスタへ自動学習（既存の`savePlBulk`等と同じ挙動）
+- `SEISAN_WEBAPP_URL`/`PL_SYNC_TOKEN`は既存の`syncSeisanFeeToPl`用のものをそのまま再利用（新規シークレット不要）
+- 新規GitHub Actions `.github/workflows/seisan-category-pl-sync.yml`（`seisan-fee-sync.yml`と同じ設計。毎週月曜9:10 JST自動実行＝直近3ヶ月を再同期。手動実行時は単月指定 or 期間指定＝さかのぼり反映用）
+- ping版数を`token-336h-v1-plcat`に更新
+
+### 検証・デプロイ
+- `node --check`で両GASファイルとも構文確認
+- GAS: `clasp push`+`deploy`で両方とも本番反映（ユーザー確認後）。`?action=ping`で双方の新バージョン文字列を確認
+- 新規3関数（精算ダッシュボード側`sd_suggestAccount`/`sd_bulkCategorize`/`sd_apiCategorizedLines`、経営ダッシュボード側`syncSeisanCategoriesToPl`）を無効なトークンで呼び、「許可されていない呼び出し」ではなく`AUTH`/`unauthorized`（＝正しくホワイトリスト登録・トークンチェックまで到達している）ことを確認
+- フロント: `git push`→GitHub Pages反映を`f-account`クラスが本番HTMLに出現することで確認
+- **実機E2Eは未実施**（実際に明細へ科目を付けて振込済みにし、`syncSeisanCategoriesToPl`を実行してPLタブに反映されるかの一連の流れは、ユーザーの実ログイン環境での確認が必要）。さかのぼり範囲は設計書の提案どおりまず今期（2026年度）分から実行することを想定しているが、実際の実行はユーザーへの確認後に行う
 
 ## 2026-08-30（担当Aスレッド）担当D（I-1）への依頼: 予約取込の対象月を当月＋翌月、月初は前月も
 
