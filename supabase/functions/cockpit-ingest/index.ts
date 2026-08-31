@@ -32,6 +32,16 @@ Deno.serve(async (req) => {
   const expected = (sec?.value ?? "").trim();
   if (!expected || (b.token ?? "").trim() !== expected) return json({ ok: false, error: "認証エラー" }, 401);
 
+  // タスク一覧（読み取り専用）: AIセッションが「ユーザーの完了報告を代理完了する」際に
+  // TK番号を確認するためのアクション（2026-08-31追加。ai-cockpit list から呼ばれる）
+  if (b.list_tasks) {
+    const { data: rows } = await sb.from("ck_tasks")
+      .select("task_no,title,status,assignee_name,priority,blocker")
+      .not("status", "in", "(done,cancelled)")
+      .order("task_no");
+    return json({ ok: true, tasks: rows ?? [] });
+  }
+
   const deviceKey = (b.device_key ?? "").trim();
   if (!deviceKey) return json({ ok: false, error: "device_keyが必要です" }, 400);
   const now = new Date().toISOString();
@@ -73,8 +83,9 @@ Deno.serve(async (req) => {
     if (b.progress_percent !== undefined && b.progress_percent !== null) tp.progress_percent = b.progress_percent;
     if (b.blocker !== undefined && b.blocker !== null) tp.blocker = b.blocker;
     await sb.from("ck_tasks").update(tp).eq("id", task.id);
-    // 完了/ブロック/エラーはLark通知（完了時はunblocksの後続タスクを自動で着手可へ）
-    if (b.task_status === "done" || b.task_status === "blocked") {
+    // 完了/ブロック/エラーはLark通知（完了時はunblocksの後続タスクを自動で着手可へ）。
+    // すでに同じ状態なら通知しない（AI代理完了→画面で再度完了などの二重通知を防ぐ）
+    if ((b.task_status === "done" || b.task_status === "blocked") && task.status !== b.task_status) {
       await notifyTaskEvent(sb, b.task_status === "done" ? "task_done" : "blocked",
         { ...task, status: b.task_status },
         { actor: b.agent_name ?? "", message: b.message ?? "", deviceKey });
