@@ -83,6 +83,50 @@ function branchToTemplate(br: any) {
 // 呼び出し側は、nullなら従来どおり仕訳履歴から実際に使われた部門をスキャンする方式にフォールバックする
 // （ユーザー報告「会計入力の部門プルダウンに一部の部門が出ない」＝一度もMF側の仕訳で使われたことのない
 // 部門がスキャン方式では拾えないのが原因だったための対応。再認可すれば自動でこちらが使われるようになる）
+// 明細行（branches）の組み立て＋検証（2026-08-31拡張）。
+// これまでは1行=借方1つ＋貸方1つを必ずペアで持ち、同額しか組めなかった（「手数料1900+手数料100→
+// 買掛金2000」のような、借方複数行を貸方1行にまとめる書き方ができなかった＝ユーザー報告により発覚）。
+// MoneyForwardの公式OpenAPI仕様（CRUDJournalLineスキーマ）を確認したところ、1行の中でcreditor/debitorは
+// どちらもrequired指定が無く、借方だけ・貸方だけの行を作れる構造だったため、それに合わせて拡張した。
+// 後方互換: 呼び出し側が旧形式（{debit,credit,amount}=借方貸方同額のペア行）を送ってきても、
+// 各サイドのvalueが無ければ b.amount を使うフォールバックでそのまま動く。
+// 全体の貸借バランス（借方合計=貸方合計）は行ごとではなくbranches全体で検証する
+function buildFlexibleBranches(rawBranches: any[], defaultRemark: string, fallbackRemark: string):
+  { ok: true; branches: any[]; totalDebit: number; totalCredit: number } | { ok: false; error: string } {
+  if (!rawBranches.length) return { ok: false, error: "明細行が0件です" };
+  let totalDebit = 0, totalCredit = 0;
+  const branches: any[] = [];
+  for (const b of rawBranches) {
+    const hasDebit = !!b?.debit;
+    const hasCredit = !!b?.credit;
+    if (!hasDebit && !hasCredit) return { ok: false, error: "各行に借方または貸方の少なくとも一方を入力してください" };
+    const dAmt = hasDebit ? Number(b.debit.value ?? b.amount) : null;
+    const cAmt = hasCredit ? Number(b.credit.value ?? b.amount) : null;
+    if (hasDebit && (!b.debit.account_id || !Number.isFinite(dAmt) || (dAmt as number) <= 0)) {
+      return { ok: false, error: "借方の勘定科目・金額を正しく入力してください" };
+    }
+    if (hasCredit && (!b.credit.account_id || !Number.isFinite(cAmt) || (cAmt as number) <= 0)) {
+      return { ok: false, error: "貸方の勘定科目・金額を正しく入力してください" };
+    }
+    const departmentId = b.department_id || null;
+    const remark = (b.remark || defaultRemark || fallbackRemark || "").slice(0, 100);
+    const out: any = { remark };
+    if (hasDebit) {
+      out.debitor = { account_id: b.debit.account_id, value: Math.round(dAmt as number), ...(b.debit.sub_account_id ? { sub_account_id: b.debit.sub_account_id } : {}), ...(departmentId ? { department_id: departmentId } : {}) };
+      totalDebit += Math.round(dAmt as number);
+    }
+    if (hasCredit) {
+      out.creditor = { account_id: b.credit.account_id, value: Math.round(cAmt as number), ...(b.credit.sub_account_id ? { sub_account_id: b.credit.sub_account_id } : {}) };
+      totalCredit += Math.round(cAmt as number);
+    }
+    branches.push(out);
+  }
+  if (Math.round(totalDebit) !== Math.round(totalCredit)) {
+    return { ok: false, error: `借方合計（${totalDebit.toLocaleString()}円）と貸方合計（${totalCredit.toLocaleString()}円）が一致していません` };
+  }
+  return { ok: true, branches, totalDebit, totalCredit };
+}
+
 async function fetchDepartmentsDirect(accessToken: string): Promise<{ id: string; name: string }[] | null> {
   try {
     const res = await mfFetch("/api/v3/departments", accessToken);
@@ -245,12 +289,6 @@ Deno.serve(async (req: Request) => {
       if (!invoiceId || !rawBranches.length) {
         return json({ error: "必要な項目が不足しています（明細行が0件です）" }, 400);
       }
-      for (const b of rawBranches) {
-        const amt = Number(b.amount);
-        if (!b.debit?.account_id || !b.credit?.account_id || !Number.isFinite(amt) || amt <= 0) {
-          return json({ error: "各行に借方・貸方の勘定科目と金額を入力してください" }, 400);
-        }
-      }
 
       // 呼び出し元が本当にこの請求書を見れるか（RLS経由で）確認してからemail_idを取得
       const { data: inv, error: invErr } = await uc.from("invoices").select("id, email_id, mf_journal_id, vendor_name, linked_hq_step_id").eq("id", invoiceId).maybeSingle();
@@ -260,15 +298,9 @@ Deno.serve(async (req: Request) => {
       // 画面上で選んだが「保存」を押す前に「仕訳を作成」した場合に備え、リクエストの値を優先する
       const linkedHqStepId: string | null = (body?.linked_hq_step_id !== undefined ? body.linked_hq_step_id : inv.linked_hq_step_id) || null;
 
-      const branches = rawBranches.map((b) => {
-        const amt = Math.round(Number(b.amount));
-        const departmentId = b.department_id || null;
-        return {
-          debitor: { account_id: b.debit.account_id, value: amt, ...(b.debit.sub_account_id ? { sub_account_id: b.debit.sub_account_id } : {}), ...(departmentId ? { department_id: departmentId } : {}) },
-          creditor: { account_id: b.credit.account_id, value: amt, ...(b.credit.sub_account_id ? { sub_account_id: b.credit.sub_account_id } : {}) },
-          remark: (b.remark || defaultRemark || inv.vendor_name || "").slice(0, 100),
-        };
-      });
+      const built = buildFlexibleBranches(rawBranches, defaultRemark, inv.vendor_name || "");
+      if (!built.ok) return json({ error: built.error }, 400);
+      const { branches } = built;
       const mfBody = { journal: { transaction_date: transactionDate, journal_type: "journal_entry", branches } };
 
       const res = await mfFetch("/api/v3/journals", accessToken, {
@@ -366,13 +398,6 @@ Deno.serve(async (req: Request) => {
       const transactionDate = body?.transaction_date || todayStr();
       const defaultRemark = (body?.remark ?? "").slice(0, 100);
       const rawBranches: any[] = Array.isArray(body?.branches) ? body.branches : [];
-      if (!rawBranches.length) return json({ error: "明細行が0件です" }, 400);
-      for (const b of rawBranches) {
-        const amt = Number(b.amount);
-        if (!b.debit?.account_id || !b.credit?.account_id || !Number.isFinite(amt) || amt <= 0) {
-          return json({ error: "各行に借方・貸方の勘定科目と金額を入力してください" }, 400);
-        }
-      }
       if (linkedHqStepId) {
         // 呼び出し元がこの工程を見れるか（RLS経由で）確認
         const { data: step, error: stepErr } = await uc.from("hq_task_steps").select("id").eq("id", linkedHqStepId).maybeSingle();
@@ -380,16 +405,9 @@ Deno.serve(async (req: Request) => {
         if (!step) return json({ error: "対象の工程が見つからないか権限がありません" }, 403);
       }
 
-      const totalAmount = rawBranches.reduce((s, b) => s + Math.round(Number(b.amount) || 0), 0);
-      const branches = rawBranches.map((b: any) => {
-        const amt = Math.round(Number(b.amount));
-        const departmentId = b.department_id || null;
-        return {
-          debitor: { account_id: b.debit.account_id, value: amt, ...(b.debit.sub_account_id ? { sub_account_id: b.debit.sub_account_id } : {}), ...(departmentId ? { department_id: departmentId } : {}) },
-          creditor: { account_id: b.credit.account_id, value: amt, ...(b.credit.sub_account_id ? { sub_account_id: b.credit.sub_account_id } : {}) },
-          remark: (b.remark || defaultRemark || vendorName || "").slice(0, 100),
-        };
-      });
+      const built = buildFlexibleBranches(rawBranches, defaultRemark, vendorName || "");
+      if (!built.ok) return json({ error: built.error }, 400);
+      const { branches, totalDebit: totalAmount } = built;
       const mfBody = { journal: { transaction_date: transactionDate, journal_type: "journal_entry", branches } };
 
       const res = await mfFetch("/api/v3/journals", accessToken, {
