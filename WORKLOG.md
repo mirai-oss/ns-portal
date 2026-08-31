@@ -6,6 +6,11 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
+**★★★★2026-08-31（担当F実行スレッド）ラウンド5 F-9・F-10 完了**: `docs/実装指示書_ラウンド5_2026-08-31.md`§1のF-9（ID/PW変更申請・承認・履歴）と、Sync5で解禁されたF-10（🧾会計グループ新設）を実施。
+- **F-9（`ns-info-system`）**: `info`スキーマに新規テーブル`credential_change_requests`＋関数3本（`is_credential_approver`／`submit_credential_change_request`／`review_credential_change_request`）をSupabase Management API経由で本番適用済み（`supabase/2026-08-31_credential_change_requests.sql`）。**承認者はユーザーに確認のうえ「マスター＋役職『本部』」に決定**（現状すでにID/PWを直接編集できる人と同じ範囲。本部役職5名・マスター1名が対象）。編集権限が無い人（例: 店長）向けにcredentials画面へ🔁変更申請ボタン、承認者向けに承認待ちパネル（その場で承認/却下）と申請履歴ボタンを追加。既存の直接編集フロー・既存の秘密情報の仕組み（`reveal_secret`等）には一切手を入れていない。コミット[4d21e67](https://github.com/mirai-oss/ns-info-system/commit/4d21e67)・push済み・`npm run build`成功確認済み。**実機E2Eは未実施**（ログイン手段が無いため）。
+- **F-10（`ns-portal/portal.html`）**: 請求書メールをTOP_ITEMSから新設「🧾会計」グループへ移動。会計ダッシュボード／給与仕訳／支払い（インフォマート・振込）は担当C-7の実装待ちのため準備中バッジで枠のみ用意（予約管理(A-6)のときと同じ差し替えパターン。Cの画面ができ次第urlを設定してsoonを外す）。コミット[90773d4](https://github.com/mirai-oss/ns-portal/commit/90773d4)・push済み。ローカルhttp.serverでコンソールエラー無しを確認済み（ログイン後の実際の表示は未確認）。
+- **次スレッドへの申し送り**: ①F-9はユーザーの実機確認（店長役職の人が変更申請→本部/マスターが承認→実際に値が書き換わるか）が未実施②F-10は担当C-7（会計ダッシュボード・給与仕訳・PayPay銀行振込CSV）の完成を待って各メニューのurlを設定する作業が残っている③作業ツリーに`ns-portal/supabase/2026-08-23_seisan_store_name.sql`という未コミットファイルが残っている（担当F外・おそらく担当A/Gの領域。前スレッドから引き続き未対応）
+
 **★★★★★2026-08-31（担当Aスレッド）ラウンド5①PL人件費のAPI切替 完了・本番反映済み。②A-7に着手中**
 
 ラウンド5指示書§0①（担当B依頼・ユーザー承認済み）。`fact_daily_store`の社員人件費・アルバイト人件費を、2026年8月分からAPI連携値（`sf_payroll_sync`/`sf_payroll_allocations`/`labor_cost_daily`）に切替。それより前は従来どおりスプレッドシート値のまま。
