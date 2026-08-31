@@ -76,6 +76,9 @@ async function fetchMonthlyBudget(token: string, staffId: string, year: number, 
     .filter((a: any) => /交通|通勤/.test(String(a?.label ?? "")))
     .reduce((s: number, a: any) => s + Number(a?.resultAmount ?? 0), 0);
   const fixedSalaryAmount = totalAllowance - commuteAllowance - allowanceListCommute;
+  // 2026-08-31追加（B-16調査）: 控除内訳・差引支給額・有給関連もあわせて取り出す
+  const deductions = bodyJson?.deductionWage ?? [];
+  const deductionTotal = deductions.reduce((s: number, d: any) => s + Number(d?.resultAmount ?? 0), 0);
   return {
     regularWage: Number(bodyJson?.allowanceWage?.regularWage ?? 0),
     workingDayCount: Number(bodyJson?.shiftTime?.workingDayCount ?? 0),
@@ -87,6 +90,11 @@ async function fetchMonthlyBudget(token: string, staffId: string, year: number, 
     fixedSalaryAmount,
     fixedOvertimeWage: Number(bodyJson?.allowanceWage?.fixedOvertimeWage ?? 0),
     commuteAllowance,
+    deductions,
+    deductionTotal,
+    netPay: Number(bodyJson?.netPay ?? 0),
+    paidHolidayUsedDays: Number(bodyJson?.shiftTime?.paidHolidayCount ?? 0),
+    remainingPaidHolidayDays: Number(bodyJson?.shiftTime?.remainingPaidHoliday ?? 0),
     raw: bodyJson,
   };
 }
@@ -140,6 +148,11 @@ Deno.serve(async (req) => {
           fixed_salary_amount: budget.fixedSalaryAmount,
           fixed_overtime_wage: budget.fixedOvertimeWage,
           commute_allowance: budget.commuteAllowance,
+          deduction_total: budget.deductionTotal,
+          deductions: budget.deductions,
+          net_pay: budget.netPay,
+          paid_holiday_used_days: budget.paidHolidayUsedDays,
+          remaining_paid_holiday_days: budget.remainingPaidHolidayDays,
           raw: budget.raw,
           synced_at: new Date().toISOString(),
         }, { onConflict: "user_id,year_month" });
