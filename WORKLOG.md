@@ -6,6 +6,13 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
+**★★★★★2026-09-01（担当F実行スレッド・続き）ユーザー提示のHTMLモックに合わせ`/requests`を全面刷新＋機能追加（コミット[55d0749](https://github.com/mirai-oss/ns-info-system/commit/55d0749)）**: ユーザーから申請フォームのHTMLモック（タブ切替＋カテゴリ選択で入力欄が動的に変わる構成）を受領し、見た目・導線をこれに合わせて作り直した。あわせてモックから判明した機能ギャップ3件にも対応:
+- **対象カテゴリを拡張**: 氏名は姓名+フリガナを分割入力（送信時に結合）／住所は郵便番号を分けて入力／**連絡用メールアドレス**（ポータルのログイン用メールとは別物。`employees.contact_email`列を新設）／**振込口座に通帳・キャッシュカード写真の添付**（任意）／**身分証明書の提出**（種類選択＋画像・PDF添付、反映先の列は無く申請の行自体が証跡）
+- **非公開Storageバケット`employee-request-attachments`を新設**（パスは`{auth.uid()}/...`で本人分離、読めるのは本人と承認者のみ）。承認パネル・履歴に「📎添付を見る」ボタン（署名付きURLを都度発行）を追加
+- **社内システム情報申請に「新規登録」を追加**（既存`credentials`に紐付けない自由記述の依頼票。新規テーブル`credential_new_requests`＋関数`submit_credential_new_request`/`close_credential_new_request`。承認しても自動登録はせず、承認者が内容を見て`credentials`画面から手動登録→「対応済みにする」で閉じる運用。`credentials`画面に新設の承認パネルを追加）
+- 新規SQL`supabase/2026-09-01_employee_requests_v2.sql`（前日の`2026-08-31_employee_self_service_requests.sql`は既存SQL編集禁止のため無変更・列1本追加＋関数のcreate or replaceのみ）を本番Supabaseへ適用済み・`npm run build`成功確認済み・Vercelデプロイ確認済み
+- **実機E2E未実施**（この環境にログイン手段が無いため）。ユーザーに実機確認をお願いしたい
+
 **★★★★★2026-09-01（担当F実行スレッド）担当Cからの依頼「従業員の個人情報変更申請＋本部承認フロー」を実装・本番反映完了**: 前スレッドで担当Cから受けた依頼（氏名・フリガナ・電話番号・住所・銀行口座の変更申請＋本部承認）に対応。着手前にユーザーへ2点確認（①「本人」の範囲＝アルバイト含む全従業員に決定②承認者＝F-9と同じマスター＋役職「本部」）。ユーザー回答で追加要望も判明: **F-9（ID/PW変更申請）の申請できる範囲を「社員以上全員」（役員・正社員。アルバイト除く）へ拡大**してほしいとのこと（現在のID/PWの値は見せない前提でOK）。
 - **ns-info-system**（コミット[b8d45bd](https://github.com/mirai-oss/ns-info-system/commit/b8d45bd)）: 新規ページ`/requests`（本人セルフサービス画面）を追加。**`info.profiles`（役職）を一切前提にしない設計**が最大のポイント＝アルバイトを含め、ポータル/日報と同じログインさえできれば誰でも開ける（既存の他画面はほぼ全て店長以上の管理職想定だったため、ここだけ設計方針を分けた）。①個人情報変更申請（新規テーブル`employee_change_requests`＋関数`get_my_employee_summary`/`submit_employee_change_request`/`review_employee_change_request`。銀行口座は承認時にハブの`public.payroll_bank_accounts`へ直接upsert＝info/publicは同一DB内の別スキーマなのでクロススキーマ書き込み可能）②ID/PW変更申請（既存`submit_credential_change_request`を`create or replace`で申請可能範囲だけ拡大＋対象を選ぶ最小限一覧`list_credentials_for_request`＝サービス名とカテゴリのみでID/PW自体は一切含めない）。承認は`employees`画面に新設した承認パネル・履歴ボタンから（`credentials`画面の既存F-9パターンを踏襲）。`sso/page.tsx`に`?to=`パラメータを追加し`/requests`への深いリンクに対応。**本番Supabaseへ適用済み（新規追加のみ・既存オブジェクト無変更）・Vercelデプロイ確認済み**（`https://ns-info-system.vercel.app/requests`が未ログイン時に`/login`へ307リダイレクトすることを確認）
 - **ns-portal**（コミット[8663415](https://github.com/mirai-oss/ns-portal/commit/8663415)）: `portal.html`のサイドバーに全従業員向け「🔁変更申請」を追加（`sysKey`をあえて設定せず、`notice`等と同じ「全員に見える」扱い。`joho`と同じ`sysKey`にすると社内情報管理と同じ役職ベースの出し分けを継承しアルバイトに見えなくなるため）。SSOハンドオフ経由（`openJohoSso("/requests")`）で再ログイン不要
