@@ -71,6 +71,7 @@ const SUPA_URL="https://uuvsxzhpxtghojoubjcc.supabase.co";
 const SUPA_KEY="sb_publishable_MrwPJAx_Ws_fdRutprKCiQ_dg3wCiTr";
 const LS_KEY="nsportal_session_v1";
 const ATT_BUCKET="employee-request-attachments";
+const CHATWORK_FN_URL=SUPA_URL+"/functions/v1/notify-chatwork"; // expenses.htmlと同じ既存Edge Function
 const $=id=>document.getElementById(id);
 const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const sess={get:()=>{try{return JSON.parse(localStorage.getItem(LS_KEY))}catch(e){return null}},
@@ -118,6 +119,21 @@ async function uploadAttachment(file){
   const r=await api(`/storage/v1/object/${ATT_BUCKET}/${path}`,{method:"POST",isBinary:true,headers:{"Content-Type":file.type||"application/octet-stream"},body:buf},s.at);
   if(!r.ok) throw new Error("添付ファイルのアップロードに失敗しました");
   return path;
+}
+// 2026-09-01 ユーザー要望: 申請が入ったら承認者（マスター・役職「本部」）の個人Chatwork
+// ルームへ通知する。ルームIDは既存の本部タスクボード通知基盤(hq_user_chatwork)に
+// 登録済みのものをそのまま使う（info.get_approver_chatwork_rooms()がRLSを気にせず
+// ルームIDだけを返す）。通知の送信に失敗しても申請自体は成立済みなので握りつぶす
+async function notifyApprovers(text){
+  try{
+    const r=await infoAuthed("/rest/v1/rpc/get_approver_chatwork_rooms",{method:"POST",body:"{}"});
+    if(!r.ok||!Array.isArray(r.body)) return;
+    const s=sess.get();
+    for(const row of r.body){
+      if(!row.room_id) continue;
+      await fetch(CHATWORK_FN_URL,{method:"POST",headers:{"Content-Type":"application/json","Authorization":"Bearer "+(s?s.at:"")},body:JSON.stringify({room_id:row.room_id,body:text})});
+    }
+  }catch(e){ /* 通知の失敗は握りつぶす（申請自体は既に保存済み） */ }
 }
 
 /* ============================================================
@@ -331,6 +347,8 @@ async function submitEmployeeChange(field,value){
   if(!r.ok) throw new Error(r.body?.message||"申請できませんでした");
 }
 function afterPersonalSubmit(){
+  const catLabel=P_CATEGORIES.find(c=>c.v===P_CATEGORY)?.l||P_CATEGORY;
+  notifyApprovers(`🔁 変更申請: ${MY_SUMMARY.employee_name}さんが「${catLabel}」を申請しました\nポータル→社内情報管理→従業員情報 の承認待ちからご確認ください`);
   P_CATEGORY=""; renderTabBody(); loadHistory();
   $("tabBody").insertAdjacentHTML("afterbegin",'<div class="msg-ok">申請しました。本部が承認すると反映されます。</div>');
 }
@@ -437,6 +455,7 @@ let C_LOAD_ERR="";
 async function submitSystem(){
   const msg=$("cMsg"); msg.innerHTML=""; const btn=$("cSubmitBtn");
   try{
+    let notifyText="";
     if(C_KIND==="new"){
       const service=$("nService").value.trim();
       if(!service) throw new Error("対象サービス・システム名を入力してください");
@@ -446,6 +465,7 @@ async function submitSystem(){
         p_desired_username:$("nUser").value.trim()||null,p_desired_secret:$("nSecret").value.trim()||null,
         p_note:$("nNote").value.trim()||null})});
       if(!r.ok) throw new Error(r.body?.message||"申請できませんでした");
+      notifyText=`🔁 変更申請: ${ME.name}さんが社内システムの新規登録「${service}」を申請しました\nポータル→社内情報管理→ID・パスワード管理 の承認待ちからご確認ください`;
     } else {
       if(!C_CREDID) throw new Error("変更したい対象を選んでください");
       const value=$("cValue").value.trim();
@@ -454,7 +474,10 @@ async function submitSystem(){
       const r=await infoAuthed("/rest/v1/rpc/submit_credential_change_request",{method:"POST",body:JSON.stringify({
         cred_id:C_CREDID,p_field:C_FIELD,p_new_value:value})});
       if(!r.ok) throw new Error(r.body?.message||"申請できませんでした");
+      const selected=(C_LIST||[]).find(c=>c.id===C_CREDID);
+      notifyText=`🔁 変更申請: ${ME.name}さんが「${selected?selected.service_name:"社内システム"}」の${CRED_FIELD_LABELS[C_FIELD]||C_FIELD}変更を申請しました\nポータル→社内情報管理→ID・パスワード管理 の承認待ちからご確認ください`;
     }
+    notifyApprovers(notifyText);
     C_CREDID=""; renderSystemTab(); loadHistory();
     $("tabBody").insertAdjacentHTML("afterbegin",'<div class="msg-ok">申請しました。本部が承認すると反映されます。</div>');
   }catch(e){
