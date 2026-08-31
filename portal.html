@@ -939,6 +939,14 @@ const TOP_ITEMS=[
   // 方式へ戻した（ユーザーが提示した2案のうち採用したほう）。key/sysKey/countKeyは不変
   {key:"invoices",sysKey:"invoices",ico:"✉️",label:"請求書メール",url:"invoices.html?embed=1",countKey:"inv"},
   {key:"expenses",sysKey:"expenses",ico:"🧾",label:"経費申請",url:"expenses.html"},
+  // 2026-08-31 担当Cからの依頼（WORKLOG「担当Fへ依頼: 従業員の個人情報変更申請＋本部承認フロー」）:
+  // 氏名・フリガナ・電話番号・住所・給与振込口座の変更申請＋社内システムのID/PW変更申請
+  // （役員・正社員以上）を、アルバイト含む全従業員が使えるセルフサービス画面。
+  // ns-info-system側は`info.profiles`（役職）を前提にしない新規ページ`/requests`のため、
+  // sysKeyは設定しない（設定すると「社内情報管理」と同じ役職ベースの出し分けを継承してしまい、
+  // アルバイト等に見えなくなる。notice等と同じ「sysKeyなし＝全員に見える」パターン）。
+  // SSOハンドオフ(F-2のopenJohoSso)経由で開くため再ログイン不要
+  {key:"myrequests",ico:"🔁",label:"変更申請",sso:true,ssoTo:"/requests",external:true},
 ];
 // F-10（ラウンド5・Sync5・設計書_会計自動化_給与明細とインフォマート支払_2026-08-31.md §5 Q6）:
 // 「🧾会計」グループには会計ダッシュボード／アップロード請求書／給与仕訳／支払いのメニュー枠を
@@ -1110,12 +1118,15 @@ let CUR_IFRAME=null, CUR_IFRAME_SYSKEY=null, CUR_IFRAME_ORIGIN=null;
 /* ============================================================
    F-2: 社内情報管理へのSSOハンドオフ（現在のセッションをURLフラグメントに
    載せて新しいタブで開く。ns-info-system側の受け口=/sso。MFAは維持される）
+   2026-08-31追記: 遷移先を省略可の引数で指定できるようにした（既定はホーム）。
+   従業員の個人情報変更申請セルフサービス画面（/requests）への深いリンクに使う
    ============================================================ */
-function openJohoSso(){
+function openJohoSso(to){
   const s=sess.get();
   if(!s?.at||!s?.rt){ toast("ログイン情報が見つかりません"); return; }
   const frag="access_token="+encodeURIComponent(s.at)+"&refresh_token="+encodeURIComponent(s.rt);
-  window.open(JOHO_URL+"/sso#"+frag,"_blank","noopener");
+  const toQs=to?("?to="+encodeURIComponent(to)):"";
+  window.open(JOHO_URL+"/sso"+toQs+"#"+frag,"_blank","noopener");
 }
 
 let toastTimer=null;
@@ -1275,7 +1286,7 @@ function openItem(key,u){
   const {it,grp}=found;
   if(it.type==="home"){ VIEW="home"; CUR=null; CUR_IFRAME=null; CUR_IFRAME_SYSKEY=null; renderShellBody(u); return; }
   if(it.soon){ toast("準備中です"); return; }
-  if(it.sso){ openJohoSso(); return; }
+  if(it.sso){ openJohoSso(it.ssoTo); return; }
   if(it.legacyLink){ location.href="index.html"; return; } // F-6: 従来ポータルの権限設定タブへそのまま遷移（iframeにしない）
   if(it.type==="adminovr"){ openAdminOverrideModal(); return; } // 2026-08-31: AI開発コックピットグループ内から従来の設定モーダルを開く
   if(it.externalPlain){ window.open(it.url,"_blank","noopener"); closeMobileMore(); return; } // D-5a: 独立した静的ページを新しいタブでそのまま開く（iframeにしない）
