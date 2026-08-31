@@ -932,20 +932,25 @@ const TOP_ITEMS=[
   {key:"home",ico:"🏠",label:"概要（ホーム）",type:"home"},
   {key:"notice",ico:"📣",label:"お知らせ",url:"index.html",countKey:"posts"},
   {key:"hqtasks",sysKey:"hqtasks",ico:"📌",label:"本部タスク",url:"tasks.html",countKey:"hq"},
+  // 2026-08-31 ユーザーからの実機フィードバック: F-10でこの項目を「🧾会計」グループの中に
+  // 移したところ、未読件数バッジ(countKey:"inv")がグループを開かないと見えなくなり、新着の
+  // 請求書メールに気づけなくなった。nav-group-head（グループの見出しボタン）は現状バッジを
+  // 集計表示しない作りのため、対策として「請求書メールだけは今まで通りトップレベルに表示する」
+  // 方式へ戻した（ユーザーが提示した2案のうち採用したほう）。key/sysKey/countKeyは不変
+  {key:"invoices",sysKey:"invoices",ico:"✉️",label:"請求書メール",url:"invoices.html?embed=1",countKey:"inv"},
   {key:"expenses",sysKey:"expenses",ico:"🧾",label:"経費申請",url:"expenses.html"},
 ];
 // F-10（ラウンド5・Sync5・設計書_会計自動化_給与明細とインフォマート支払_2026-08-31.md §5 Q6）:
-// 請求書メールをTOP_ITEMSから「🧾会計」グループへ移動し、会計ダッシュボード／給与仕訳／支払いの
-// メニュー枠を追加。key/sysKey/countKeyは既存の"invoices"のまま据え置く（homeQuickGroups・
-// quickActionsHtml・canSeeKey("invoices",...)がこのkeyをハードコードで参照しているため変更禁止）。
+// 「🧾会計」グループには会計ダッシュボード／給与仕訳／支払いのメニュー枠を用意（中身は
+// invoices.html内の新設タブをiframeで埋める。担当C-7実装）。請求書メール自体は上記の理由で
+// TOP_ITEMSへ戻したため、このグループには含めない。
 // 2026-08-31時点でC-7①③（会計ダッシュボード・給与仕訳）が本番反映済みと確認できたため、
-// invoices.html内の新設タブへurlを設定してsoonを外した（担当C実装、いずれもinvoices.html自身の
-// タブ切替。tab=はinvoices.html側がまだ読んでいないため今は無効だが、他システム(keieiTab等)と
-// 同じ「未対応でも無視されるだけで実害無し」の先付けパターンで付けている。担当Cへの依頼は
-// WORKLOG参照）。支払い（インフォマート・振込）はD-9（インフォマート発注データ）待ちで
-// 担当C-7④が未着手のため、予約管理(A-6)のときと同じパターンで引き続き準備中バッジのまま
+// invoices.html内の新設タブへurlを設定してsoonを外した。tab=はinvoices.html側がまだ読んで
+// いないため今は無効だが、他システム(keieiTab等)と同じ「未対応でも無視されるだけで実害無し」の
+// 先付けパターンで付けている（担当Cへの依頼はWORKLOG参照）。支払い（インフォマート・振込）は
+// D-9（インフォマート発注データ）待ちで担当C-7④が未着手のため、予約管理(A-6)のときと同じ
+// パターンで引き続き準備中バッジのまま
 const KAIKEI_GROUP={cap:"会計",ico:"🧾", items:[
-  {key:"invoices",sysKey:"invoices",ico:"✉️",label:"請求書メール",url:"invoices.html?embed=1",countKey:"inv"},
   {key:"kaikei-dashboard",sysKey:"invoices",ico:"📊",label:"会計ダッシュボード",url:"invoices.html?embed=1&tab=dashboard"},
   {key:"kaikei-payroll",  sysKey:"invoices",ico:"💴",label:"給与仕訳",url:"invoices.html?embed=1&tab=payroll"},
   {key:"kaikei-payment",  ico:"💸",label:"支払い（インフォマート・振込）",soon:true},
