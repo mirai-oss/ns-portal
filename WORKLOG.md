@@ -4163,3 +4163,10 @@ Supabase Management API（`~/.config/ns-portal/supabase_pat`・`POST /v1/project
 - **アプリ内通知（🔔ベル・`hq_notifications`テーブル）は変更していない**（元々`task_id`列を持ち、クリックで`openDetail()`によりそのタスクへ遷移する仕組みが既にあったため）。今回は外部通知（Lark/Chatwork）の本文だけの変更
 - 誰に・いつ・どのイベントで送るかという既存ロジックは一切変更していない。本番の`pg_get_functiondef`で現行定義を取得し、それをベースに本文末尾へのURL追記のみ追加する形で新規SQL`supabase/2026-08-31_hq_notify_task_link.sql`を作成・Management API経由で適用
 - **検証**: 適用後に3関数とも`prosrc`に`tasks.html?task=`が含まれることを確認。文字列連結（`E'\n'`+URL）が実際に改行付きのURLになることをサンプルクエリで確認済み。`hq_check_alerts()`を実行しても新規アラートが0件だった（当日分は既に通知済みのため）ので、実際の本番タスクでの通知本文そのものの目視確認はできていないが、ロジック自体は既存の動作実績のある関数への最小限の追記であり信頼度は高いと判断。**実際にLark/Chatworkへ届く見た目は次回の期限アラート発火時にユーザー確認をお願いしたい**
+
+## 2026-08-31 D-8: Hermes Agent試用 — LINE窓口が本稼働（設計スレッド＋ユーザー共同作業）
+- Mac miniにHermes Agent v0.20.6（デスクトップアプリ経由・~/.hermes）。LINE Messaging APIチャンネル（NSグループ）＋Cloudflare quickトンネル＋`hermes gateway`でLINE窓口を開通。ユーザーのLINE ID（U1c19…acc8）のみ許可リスト化済み
+- モデル=anthropic/claude-sonnet-5（デスクトップアプリが2回fable-5/opus-4.6に書き換え→都度sonnet-5へ戻した。**アプリのオンボーディングがmodel.defaultを上書きする点に注意**）。APIキーは専用ワークスペース（NStyle-AI-Madoguchi・月$30上限）で発行しhermes auth＋~/.hermes/.envに設定
+- **常駐化・自己復旧を実装**: launchd `com.nstyle.hermes-line`（KeepAlive）→ `~/.hermes/start-line-stack.sh` がトンネル起動→URL取得→.env更新→**LINE Webhook URLをAPIで自動再登録**（PUT /v2/bot/channel/webhook/endpoint。発行直後はDNS未浸透で400になるため10秒×12回リトライ）→gateway起動。**再起動してもWebhook再登録作業は不要**
+- 実機E2E: LINEで日本語応答・gateway再起動後のセッション復旧・許可外拒否を確認。データ接続は未実施（エージェントは「売上データはどこ？」と聞いてくる状態が正常）
+- 次: フェーズC=社内データ接続（要件§18準拠のRead Only専用Edge Function＋監査ログ。計画をユーザーに提示予定）
