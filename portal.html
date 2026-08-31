@@ -941,17 +941,18 @@ const TOP_ITEMS=[
   {key:"expenses",sysKey:"expenses",ico:"🧾",label:"経費申請",url:"expenses.html"},
 ];
 // F-10（ラウンド5・Sync5・設計書_会計自動化_給与明細とインフォマート支払_2026-08-31.md §5 Q6）:
-// 「🧾会計」グループには会計ダッシュボード／給与仕訳／支払いのメニュー枠を用意（中身は
-// invoices.html内の新設タブをiframeで埋める。担当C-7実装）。請求書メール自体は上記の理由で
-// TOP_ITEMSへ戻したため、このグループには含めない。
-// 2026-08-31時点でC-7①③（会計ダッシュボード・給与仕訳）が本番反映済みと確認できたため、
-// invoices.html内の新設タブへurlを設定してsoonを外した。tab=はinvoices.html側がまだ読んで
-// いないため今は無効だが、他システム(keieiTab等)と同じ「未対応でも無視されるだけで実害無し」の
-// 先付けパターンで付けている（担当Cへの依頼はWORKLOG参照）。支払い（インフォマート・振込）は
-// D-9（インフォマート発注データ）待ちで担当C-7④が未着手のため、予約管理(A-6)のときと同じ
-// パターンで引き続き準備中バッジのまま
+// 「🧾会計」グループには会計ダッシュボード／アップロード請求書／給与仕訳／支払いのメニュー枠を
+// 用意（中身はinvoices.html内の新設タブをiframeで埋める。担当C-7実装）。請求書メール自体は
+// 上記の理由でTOP_ITEMSへ戻したため、このグループには含めない。
+// 2026-08-31時点でC-7①③（会計ダッシュボード・アップロード請求書・給与仕訳）が本番反映済みと
+// 確認できたため、invoices.html内の新設タブへurlを設定してsoonを外した。tab=はinvoices.html側が
+// まだ読んでいないため今は無効だが、他システム(keieiTab等)と同じ「未対応でも無視されるだけで
+// 実害無し」の先付けパターンで付けている（担当Cへの依頼はWORKLOG参照）。支払い（インフォマート・
+// 振込）はD-9（インフォマート発注データ）待ちで担当C-7④が未着手のため、予約管理(A-6)のときと
+// 同じパターンで引き続き準備中バッジのまま
 const KAIKEI_GROUP={cap:"会計",ico:"🧾", items:[
   {key:"kaikei-dashboard",sysKey:"invoices",ico:"📊",label:"会計ダッシュボード",url:"invoices.html?embed=1&tab=dashboard"},
+  {key:"kaikei-upload",   sysKey:"invoices",ico:"📤",label:"アップロード請求書",url:"invoices.html?embed=1&tab=upload"},
   {key:"kaikei-payroll",  sysKey:"invoices",ico:"💴",label:"給与仕訳",url:"invoices.html?embed=1&tab=payroll"},
   {key:"kaikei-payment",  ico:"💸",label:"支払い（インフォマート・振込）",soon:true},
 ]};
