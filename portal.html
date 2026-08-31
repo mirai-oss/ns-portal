@@ -980,7 +980,7 @@ const KAIKEI_GROUP={cap:"会計",ico:"🧾", items:[
    グループとして下のGROUPSに分けている。 */
 const SYS_ITEMS=[
   {key:"seisan", sysKey:"seisan", ico:"🧮", label:"精算ダッシュボード", url:SEISAN_URL},
-  {key:"joho",   sysKey:"joho",   ico:"🔐", label:"社内情報管理", url:JOHO_URL, external:true, sso:true},
+  {key:"joho",   sysKey:"joho",   ico:"🔐", label:"社内情報管理", url:JOHO_URL, external:true, sso:true, countKey:"approval"},
   // 担当G「データ出力センター」Phase1（コミットfeadac3・WORKLOG「2026-08-25（担当G実行スレッド）
   // Phase 1実装・本番デプロイ・実機E2E」担当Fへの依頼）。export.html側のexport_can_access()と
   // 同じ役職（マスター・CEO・HQ・TEAM・TENCHO）に合わせ、二重管理を避けている
@@ -1110,7 +1110,7 @@ function visibleLeafItems(u){
 let ME=null, VIEW="home", CUR=null;
 let OPEN_GROUP="現場・日報"; // アコーディオン式に開いているグループは常に1つだけ（下のwireNav参照）
 let SIDEBAR_COLLAPSED=(()=>{ try{ return localStorage.getItem("portal_sidebar_collapsed")==="1"; }catch(e){ return false; } })();
-let NAV_HQ_CNT=0, NAV_INV_CNT=0;
+let NAV_HQ_CNT=0, NAV_INV_CNT=0, NAV_APPROVAL_CNT=0;
 
 /* ============================================================
    画面切替の高速化（担当Aからの依頼・WORKLOG「担当Fへの依頼（画面切替の高速化）」）
@@ -1216,7 +1216,7 @@ function renderLogin(err){
    ============================================================ */
 function navItemHtml(it,activeKey){
   if(it.soon) return `<button class="nav-item soon" data-soon="1"><span>${it.ico}</span><span>${esc(it.label)}</span><span class="badge-soon">🚧 準備中</span></button>`;
-  const cnt=it.countKey==="posts"?(POSTS?POSTS.length:0):it.countKey==="hq"?NAV_HQ_CNT:it.countKey==="inv"?NAV_INV_CNT:0;
+  const cnt=it.countKey==="posts"?(POSTS?POSTS.length:0):it.countKey==="hq"?NAV_HQ_CNT:it.countKey==="inv"?NAV_INV_CNT:it.countKey==="approval"?NAV_APPROVAL_CNT:0;
   return `<button class="nav-item${activeKey===it.key?" active":""}" data-key="${it.key}"><span>${it.ico}</span><span>${esc(it.label)}</span>${cnt?`<span class="count">${cnt}</span>`:""}${it.external?'<span class="ext">↗</span>':""}</button>`;
 }
 function sidebarHtml(u){
@@ -1564,6 +1564,22 @@ async function renderHomeArea(u){
       NAV_INV_CNT=(invR.ok&&Array.isArray(invR.body))?invR.body.length:0;
     }catch(e){ NAV_INV_CNT=0; }
   }
+  // 2026-09-01 ユーザー要望: 変更申請（requests.html）の承認待ちに気づけるよう、
+  // 「社内情報管理」にバッジを追加。ns-info-system側と同じ承認者判定
+  // (info.is_credential_approver=マスター or 役職「本部」)をそのままRPCで呼ぶ
+  // （ポータル側のu.is_master/u.role==='HQ'は判定基準が別物のため使わない）
+  try{
+    const elig=await authed(`/rest/v1/rpc/is_credential_approver`,{method:"POST",body:"{}",headers:{"Accept-Profile":"info","Content-Profile":"info"}});
+    if(elig.ok&&elig.body===true){
+      const infoHeaders={headers:{"Accept-Profile":"info"}};
+      const [er,cr,nr]=await Promise.all([
+        authed(`/rest/v1/employee_change_requests?status=eq.pending&select=id`,infoHeaders),
+        authed(`/rest/v1/credential_change_requests?status=eq.pending&select=id`,infoHeaders),
+        authed(`/rest/v1/credential_new_requests?status=eq.pending&select=id`,infoHeaders),
+      ]);
+      NAV_APPROVAL_CNT=[er,cr,nr].reduce((s,r)=>s+((r.ok&&Array.isArray(r.body))?r.body.length:0),0);
+    } else { NAV_APPROVAL_CNT=0; }
+  }catch(e){ NAV_APPROVAL_CNT=0; }
   refreshNavActive(u);
 }
 
