@@ -1029,6 +1029,9 @@ const GROUPS=[
     // 2026-08-29担当B: 給与・インセンティブ配分（マスターが店舗×半月ごとに金額を確定させる画面）。
     // nippo側にadminMode="payroll"として実装済み・ここでは既存の admin-accounts と同じ経路でリンクするだけ
     {key:"admin-payroll", ico:"💴", label:"給与・インセンティブ配分", url:nippoPage("admin"), roles:[]},
+    // 2026-08-31 AI開発コックピット（担当H新設・司令塔スレッドが一括実装）。roles:[]=マスターのみ。
+    // 「誰が・どのPCで・どのタスクをどこまで」の開発可視化ダッシュボード（cockpit.html・ck_系テーブル）
+    {key:"admin-cockpit", ico:"🛠️", label:"AI開発コックピット", url:"cockpit.html?embed=1", roles:[]},
   ]},
 ];
 function itemVisible(it,grp,u){

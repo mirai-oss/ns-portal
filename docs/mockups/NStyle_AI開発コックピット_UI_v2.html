@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>N-Style AI開発コックピット</title>
+<style>
+:root{--bg:#f5f3ef;--panel:#fff;--ink:#332f2b;--muted:#857d76;--line:#e6e1db;--nav:#26221d;--blue:#2f6fb7;--green:#4ca173;--red:#d94f4f;--orange:#d98836;--shadow:0 4px 20px rgba(40,35,30,.06)}
+*{box-sizing:border-box}body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans JP",sans-serif;background:var(--bg);color:var(--ink)}
+button,input,select,textarea{font:inherit}.app{display:grid;grid-template-columns:250px minmax(0,1fr);min-height:100vh}.sidebar{background:var(--nav);color:#fff;padding:22px 14px;position:sticky;top:0;height:100vh}
+.brand{display:flex;gap:10px;align-items:center;padding:0 8px 18px;border-bottom:1px solid #ffffff18}.brand i{width:40px;height:40px;border-radius:10px;background:#efc34b;display:grid;place-items:center;font-style:normal}.brand small{display:block;color:#aaa198;margin-top:3px}
+.nav-title{font-size:10px;color:#827a72;margin:18px 10px 6px}.nav-btn{width:100%;border:0;background:transparent;color:#d5cec6;padding:11px 12px;border-radius:8px;text-align:left;margin:3px 0}.nav-btn.active,.nav-btn:hover{background:#3a342e;color:#fff;font-weight:700}
+.main{min-width:0}.header{height:72px;background:#fff;border-bottom:1px solid var(--line);padding:0 28px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:10}.header h1{margin:0;font-size:20px}.header p{margin:4px 0 0;color:var(--muted);font-size:11px}
+.btn{border:1px solid var(--line);background:#fff;border-radius:8px;padding:8px 11px;cursor:pointer}.btn.primary{background:var(--ink);color:#fff;border-color:var(--ink)}.btn.blue{background:var(--blue);color:#fff;border-color:var(--blue)}.btn.green{background:var(--green);color:#fff;border-color:var(--green)}
+.content{padding:24px 28px;max-width:1500px}.page{display:none}.page.active{display:block}.card{background:#fff;border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow)}.section{display:flex;justify-content:space-between;align-items:end;margin:18px 0 10px}.section h2{font-size:17px;margin:0}.section p{font-size:10px;color:var(--muted);margin:4px 0 0}
+.kpis{display:grid;grid-template-columns:repeat(6,1fr);gap:10px}.kpi{padding:13px}.kpi small{color:var(--muted);font-size:9px}.kpi b{display:block;font-size:22px;margin-top:4px}
+.live{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}.agent{padding:14px;border-top:4px solid var(--blue)}.agent.human{border-top-color:var(--green)}.agent.blocked{border-top-color:var(--orange)}.agent-head{display:flex;justify-content:space-between;gap:8px}.agent h3{font-size:13px;margin:0}.device{font-size:9px;color:var(--muted);margin-top:3px}.badge{padding:4px 7px;border-radius:999px;font-size:9px;font-weight:800;background:#eef6ff;color:var(--blue)}.badge.green{background:#eef7f2;color:var(--green)}.badge.orange{background:#fff4e7;color:#9c621f}.taskbox{margin-top:10px;background:#faf8f5;border:1px solid var(--line);border-radius:8px;padding:9px;font-size:10px;line-height:1.5}.progress{height:7px;background:#ece7e2;border-radius:999px;margin-top:9px;overflow:hidden}.progress span{height:100%;display:block;background:var(--blue)}
+.grid2{display:grid;grid-template-columns:1.2fr .8fr;gap:14px}.roadmap,.priority{padding:14px}.row{display:grid;grid-template-columns:75px minmax(0,1fr) 85px;gap:8px;align-items:center;padding:9px 0;border-bottom:1px solid var(--line)}.row:last-child{border:0}.row strong{font-size:10px}.row small{display:block;color:var(--muted);font-size:9px;margin-top:2px}
+.kanban{display:flex;gap:12px;overflow:auto}.col{min-width:275px;flex:1;background:#ffffff70;border:1px dashed var(--line);border-radius:12px;padding:12px}.colhead{display:flex;justify-content:space-between;font-size:11px;font-weight:800;margin-bottom:9px}.count{background:#e8e3de;border-radius:999px;padding:2px 7px}.task{background:#fff;border:1px solid var(--line);border-radius:9px;padding:11px;margin-bottom:8px;cursor:pointer}.tags{display:flex;gap:4px;margin-bottom:6px}.tag{font-size:8px;font-weight:800;padding:3px 6px;border-radius:5px}.tag.high{background:var(--red);color:#fff}.tag.ai{background:var(--blue);color:#fff}.tag.me{background:var(--green);color:#fff}.task h4{margin:0;font-size:11px}.task p{font-size:9px;color:var(--muted);margin:5px 0}.foot{display:flex;justify-content:space-between;border-top:1px solid var(--line);padding-top:6px;font-size:8px;color:var(--muted)}
+.activity{overflow:hidden}.event{display:grid;grid-template-columns:80px 120px minmax(0,1fr) 90px;gap:8px;padding:10px 13px;border-bottom:1px solid var(--line);font-size:9px}
+.prompt{display:grid;grid-template-columns:1fr 1fr;overflow:hidden}.form,.out{padding:16px}.form{border-right:1px solid var(--line)}.out{background:#faf8f5}.field{margin-bottom:10px}.field label{display:block;font-size:9px;color:var(--muted);margin-bottom:4px}.field input,.field select,.field textarea{width:100%;border:1px solid var(--line);border-radius:8px;padding:8px}.field textarea{min-height:95px}.code{background:#26221d;color:#ded7cf;border-radius:8px;padding:12px;min-height:300px;white-space:pre-wrap;font:10px/1.6 monospace}
+.people{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}.person{padding:12px}.person h3{font-size:12px;margin:0}.person p,.person li{font-size:9px;color:var(--muted)}
+.modal{position:fixed;inset:0;background:#211d1870;display:none;align-items:center;justify-content:center;padding:20px;z-index:100}.modal.open{display:flex}.modalbox{width:min(720px,96vw);background:#fff;border-radius:14px}.modalhead{padding:14px 16px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between}.modalbody{padding:16px}
+@media(max-width:1100px){.kpis{grid-template-columns:repeat(3,1fr)}.live{grid-template-columns:1fr 1fr}.people{grid-template-columns:1fr 1fr}}@media(max-width:760px){.app{display:block}.sidebar{display:none}.content{padding:12px}.kpis,.live,.grid2,.people{grid-template-columns:1fr 1fr}.prompt{grid-template-columns:1fr}.form{border-right:0;border-bottom:1px solid var(--line)}}
+</style>
+</head>
+<body>
+<div class="app">
+<aside class="sidebar">
+<div class="brand"><i>🤖</i><div><b>N-Style</b><small>AI開発コックピット</small></div></div>
+<div class="nav-title">CONTROL</div>
+<button class="nav-btn active" onclick="show('dashboard',this)">📊 開発ダッシュボード</button>
+<button class="nav-btn" onclick="show('tasks',this)">📋 全タスク</button>
+<button class="nav-btn" onclick="show('agents',this)">🖥 AI / PC稼働状況</button>
+<button class="nav-btn" onclick="show('prompts',this)">📝 指示書作成</button>
+<button class="nav-btn" onclick="show('history',this)">🕘 実行・変更履歴</button>
+<div class="nav-title">MANAGEMENT</div>
+<button class="nav-btn" onclick="show('owners',this)">👥 担当別</button>
+<button class="nav-btn" onclick="alert('接続・権限・heartbeat設定画面を置く想定です')">⚙ 接続・設定</button>
+</aside>
+
+<main class="main">
+<header class="header"><div><h1>AI開発マネジメント</h1><p id="syncText">Claude Code・複数PC・人間の作業を1画面で管理</p></div><div><span class="badge">● LIVE同期</span> <button class="btn" onclick="sync()">↻ 同期</button> <button class="btn primary" onclick="openTask()">＋ 指示を出す</button></div></header>
+<div class="content">
+
+<section id="dashboard" class="page active">
+<div class="kpis">
+<div class="card kpi"><small>今進めている</small><b>6件</b></div><div class="card kpi"><small>残タスク</small><b>23件</b></div><div class="card kpi"><small>確認待ち</small><b style="color:var(--orange)">4件</b></div><div class="card kpi"><small>今日完了</small><b style="color:var(--green)">9件</b></div><div class="card kpi"><small>稼働端末</small><b>3台</b></div><div class="card kpi"><small>ブロック中</small><b style="color:var(--red)">2件</b></div>
+</div>
+
+<div class="section"><div><h2>LIVE｜今、誰がどこを動かしているか</h2><p>別PCを含むClaude Codeセッションを見える化</p></div></div>
+<div class="live">
+<div class="card agent"><div class="agent-head"><div><h3>🤖 Claude Code #1</h3><div class="device">Mac mini / ns-portal / feature/settlement</div></div><span class="badge">実装中</span></div><div class="taskbox">精算ダッシュボード<br>PDF・メール本実装</div><div class="progress"><span style="width:72%"></span></div></div>
+<div class="card agent"><div class="agent-head"><div><h3>🤖 Claude Code #2</h3><div class="device">MacBook / feature/reservation</div></div><span class="badge">実装中</span></div><div class="taskbox">予約管理<br>タイムライン・当日予約分析</div><div class="progress"><span style="width:48%"></span></div></div>
+<div class="card agent blocked"><div class="agent-head"><div><h3>🤖 Claude Code #3</h3><div class="device">Office-PC / feature/gbp</div></div><span class="badge orange">確認待ち</span></div><div class="taskbox">GBP OAuth権限不足<br>403で停止中</div><div class="progress"><span style="width:31%;background:var(--orange)"></span></div></div>
+<div class="card agent human"><div class="agent-head"><div><h3>👤 中山</h3><div class="device">優先順位・承認</div></div><span class="badge green">レビュー</span></div><div class="taskbox">・GBP API申請確認<br>・精算UI最終承認</div></div>
+</div>
+
+<div class="grid2">
+<div><div class="section"><div><h2>ロードマップ</h2><p>今 → 次 → 今後</p></div></div><div class="card roadmap">
+<div class="row"><b>NOW</b><div><strong>統合ポータル UI・機能統合</strong><small>精算 / 予約 / マニュアル / GBP</small></div><b>78%</b></div>
+<div class="row"><b>NEXT</b><div><strong>API・データ基盤本番化</strong><small>Supabase / BigQuery / Gmail / Google</small></div><b>42%</b></div>
+<div class="row"><b>AFTER</b><div><strong>Mirai / Hermes Agent</strong><small>指示・取得・承認・実行</small></div><b>15%</b></div>
+<div class="row"><b>FUTURE</b><div><strong>全社オペレーション自動化</strong><small>会計・採用・店舗改善</small></div><b>5%</b></div>
+</div></div>
+<div><div class="section"><div><h2>優先順位</h2><p>次に何を動かすか</p></div></div><div class="card priority">
+<div class="row"><b>1</b><div><strong>共通マスタ統一</strong><small>店舗・従業員・法人ID</small></div><span class="tag high">最優先</span></div>
+<div class="row"><b>2</b><div><strong>二重処理防止</strong><small>精算・請求・振込</small></div><span class="tag high">High</span></div>
+<div class="row"><b>3</b><div><strong>予約帳本実装</strong><small>外部予約・前年比較</small></div><span>Mid</span></div>
+</div></div>
+</div>
+
+<div class="section"><div><h2>タスク進捗</h2><p>残タスク・進行中・確認待ち・完了</p></div></div>
+<div class="kanban">
+<div class="col"><div class="colhead">これから進める <span class="count">8</span></div><div class="task"><div class="tags"><span class="tag high">High</span><span class="tag ai">AI</span></div><h4>共通店舗マスタ統一</h4><p>Supabase正本</p><div class="foot"><span>Claude Code</span><span>指示書あり</span></div></div><div class="task"><div class="tags"><span class="tag me">私</span></div><h4>Google Ads API申請確認</h4></div></div>
+<div class="col"><div class="colhead">進行中 <span class="count">6</span></div><div class="task"><div class="tags"><span class="tag high">High</span><span class="tag ai">AI</span></div><h4>精算PDF・メール本実装</h4><p>Mac mini / 72%</p></div><div class="task"><div class="tags"><span class="tag ai">AI</span></div><h4>予約タイムライン本実装</h4><p>MacBook / 48%</p></div></div>
+<div class="col"><div class="colhead">あなたの確認待ち <span class="count">4</span></div><div class="task"><div class="tags"><span class="tag high">High</span><span class="tag me">私</span></div><h4>GBP OAuth権限</h4><p>要アクション</p></div><div class="task"><div class="tags"><span class="tag me">私</span></div><h4>精算UI v3承認</h4></div></div>
+<div class="col"><div class="colhead">完了 <span class="count">9</span></div><div class="task"><div class="tags"><span class="tag ai">AI</span></div><h4>マニュアルUI</h4></div><div class="task"><div class="tags"><span class="tag ai">AI</span></div><h4>GBP UI</h4></div></div>
+</div>
+
+<div class="section"><div><h2>直近の実行・変更</h2><p>どの端末が何を変更したか</p></div></div>
+<div class="card activity"><div class="event"><b>14:51</b><span>Mac mini</span><span>settlement/pdf-service.ts 更新</span><span class="badge">Claude</span></div><div class="event"><b>14:47</b><span>MacBook</span><span>reservation/timeline.tsx 更新</span><span class="badge">Claude</span></div><div class="event"><b>14:42</b><span>Office-PC</span><span>GBP OAuth 403で停止</span><span class="badge orange">BLOCKED</span></div></div>
+</section>
+
+<section id="tasks" class="page"><div class="section"><div><h2>全タスク</h2><p>担当・優先順位・状態で管理</p></div><button class="btn primary" onclick="openTask()">＋追加</button></div><div class="kanban"><div class="col"><div class="colhead">Backlog <span class="count">8</span></div><div class="task"><h4>共通店舗マスタ統一</h4></div></div><div class="col"><div class="colhead">In Progress <span class="count">6</span></div><div class="task"><h4>精算PDF本実装</h4></div></div><div class="col"><div class="colhead">Review <span class="count">4</span></div><div class="task"><h4>GBP API申請確認</h4></div></div><div class="col"><div class="colhead">Done <span class="count">31</span></div><div class="task"><h4>予約UI v3</h4></div></div></div></section>
+
+<section id="agents" class="page"><div class="section"><div><h2>AI / PC稼働状況</h2><p>session_id / device / repo / branch / heartbeat</p></div><button class="btn" onclick="sync()">↻同期</button></div><div class="live"><div class="card agent"><h3>Mac mini</h3><div class="taskbox">session-01<br>feature/settlement<br>heartbeat 4秒前</div></div><div class="card agent"><h3>MacBook</h3><div class="taskbox">session-02<br>feature/reservation<br>heartbeat 8秒前</div></div><div class="card agent blocked"><h3>Office-PC</h3><div class="taskbox">session-03<br>feature/gbp<br>blocked 11分</div></div><div class="card agent human"><h3>Mirai</h3><div class="taskbox">scheduled worker<br>次回15:00</div></div></div></section>
+
+<section id="prompts" class="page"><div class="section"><div><h2>指示書ジェネレーター</h2><p>Claude Code用Markdownを生成</p></div></div><div class="card prompt"><div class="form">
+<div class="field"><label>対象</label><select id="target"><option>Claude Code / Mac mini</option><option>Claude Code / MacBook</option><option>Claude Code / Office-PC</option></select></div>
+<div class="field"><label>Repository / branch</label><input id="repo" value="ns-portal / feature/ai-cockpit"></div>
+<div class="field"><label>目的</label><input id="goal" value="AI開発コックピットを実装する"></div>
+<div class="field"><label>必須条件</label><textarea id="rules">複数PCとClaude Codeセッションを識別する
+進行中・残タスク・優先順位・担当・確認待ちを表示
+実行履歴を保存
+ダッシュボードから指示書を作成</textarea></div>
+<button class="btn blue" style="width:100%" onclick="gen()">指示書を生成</button></div><div class="out"><div class="code" id="output"></div><div style="margin-top:8px"><button class="btn primary" onclick="copyPrompt()">コピー</button> <button class="btn" onclick="downloadPrompt()">Markdown保存</button> <button class="btn green" onclick="alert('本番では対象セッションへキュー投入')">AIへ送信</button></div></div></div></section>
+
+<section id="history" class="page"><div class="section"><div><h2>実行・変更履歴</h2><p>端末・セッション・Git変更を時系列保存</p></div></div><div class="card activity"><div class="event"><b>14:51</b><span>Mac mini</span><span>pdf-service.ts更新 / TK-203</span><span>RUNNING</span></div><div class="event"><b>14:47</b><span>MacBook</span><span>timeline.tsx更新 / TK-211</span><span>RUNNING</span></div><div class="event"><b>14:42</b><span>Office-PC</span><span>GBP OAuth 403 / TK-219</span><span>BLOCKED</span></div></div></section>
+
+<section id="owners" class="page"><div class="section"><div><h2>担当別</h2><p>AI・人・端末ごとの責任範囲</p></div></div><div class="people"><div class="card person"><h3>👤 中山</h3><p>判断・優先順位・承認</p><ul><li>GBP API確認</li><li>UI承認</li></ul></div><div class="card person"><h3>🤖 Mac mini</h3><p>本番実装・DB・API</p></div><div class="card person"><h3>🤖 MacBook</h3><p>予約・フロント</p></div><div class="card person"><h3>🧠 Mirai</h3><p>運用・定期処理</p></div></div></section>
+</div></main></div>
+
+<div class="modal" id="taskModal"><div class="modalbox"><div class="modalhead"><b>新しい指示 / タスク</b><button class="btn" onclick="closeTask()">×</button></div><div class="modalbody"><div class="field"><label>タスク名</label><input value="新しい開発タスク"></div><div class="field"><label>担当</label><select><option>Claude Code / Mac mini</option><option>Claude Code / MacBook</option><option>中山</option><option>Mirai</option></select></div><div class="field"><label>内容</label><textarea></textarea></div><button class="btn blue" onclick="alert('タスクを作成しました（UIデモ）');closeTask()">作成</button></div></div></div>
+
+<script>
+function show(id,b){document.querySelectorAll('.page').forEach(x=>x.classList.remove('active'));document.getElementById(id).classList.add('active');document.querySelectorAll('.nav-btn').forEach(x=>x.classList.remove('active'));b.classList.add('active');window.scrollTo({top:0})}
+function sync(){document.getElementById('syncText').textContent='最終同期: たった今 / 全セッション正常';alert('同期しました（UIデモ）')}
+function openTask(){document.getElementById('taskModal').classList.add('open')}function closeTask(){document.getElementById('taskModal').classList.remove('open')}
+function gen(){let t=document.getElementById('target').value,r=document.getElementById('repo').value,g=document.getElementById('goal').value,u=document.getElementById('rules').value;document.getElementById('output').textContent=`# Claude Code 実装指示書
+
+## 対象
+${t}
+
+## Repository
+${r}
+
+## 目的
+${g}
+
+## 必須条件
+${u}
+
+## 実行ルール
+1. 既存コードを監査してから変更
+2. task_id / session_id / device_id を記録
+3. 進捗・変更ファイル・blockerを更新
+4. 大きな破壊変更は承認待ち
+5. 完了時にテスト結果と残課題を記録`}
+function copyPrompt(){navigator.clipboard?.writeText(document.getElementById('output').textContent);alert('コピーしました')}
+function downloadPrompt(){let b=new Blob([document.getElementById('output').textContent],{type:'text/markdown'}),a=document.createElement('a');a.href=URL.createObjectURL(b);a.download='claude-code-instruction.md';a.click()}
+gen()
+</script>
+</body></html>

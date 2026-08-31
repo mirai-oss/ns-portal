@@ -1,0 +1,570 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>N-Style AI開発コックピット</title>
+<!-- =============================================================
+  AI開発コックピット（担当H専任・2026-08-31）
+  マスターアカウント専用。データはハブSupabaseの ck_ テーブル（RLS=portal_is_master()）。
+  認証ブロックは export.html と同一（nsportal_session_v1 は変更禁止）。
+  デザイン基準: docs/mockups/NStyle_AI開発コックピット_UI_v2.html
+  仕様: docs/実装指示書_AI開発コックピット_担当別_2026-08-31.md
+============================================================== -->
+<style>
+:root{--bg:#f5f3ef;--panel:#fff;--ink:#332f2b;--muted:#857d76;--line:#e6e1db;--nav:#26221d;--blue:#2f6fb7;--green:#4ca173;--red:#d94f4f;--orange:#d98836;--shadow:0 4px 20px rgba(40,35,30,.06)}
+*{box-sizing:border-box}body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans JP",sans-serif;background:var(--bg);color:var(--ink)}
+button,input,select,textarea{font:inherit}.app{display:grid;grid-template-columns:250px minmax(0,1fr);min-height:100vh}.sidebar{background:var(--nav);color:#fff;padding:22px 14px;position:sticky;top:0;height:100vh}
+.brand{display:flex;gap:10px;align-items:center;padding:0 8px 18px;border-bottom:1px solid #ffffff18}.brand i{width:40px;height:40px;border-radius:10px;background:#efc34b;display:grid;place-items:center;font-style:normal}.brand small{display:block;color:#aaa198;margin-top:3px}
+.nav-title{font-size:10px;color:#827a72;margin:18px 10px 6px}.nav-btn{width:100%;border:0;background:transparent;color:#d5cec6;padding:11px 12px;border-radius:8px;text-align:left;margin:3px 0;cursor:pointer}.nav-btn.active,.nav-btn:hover{background:#3a342e;color:#fff;font-weight:700}
+.main{min-width:0}.header{min-height:72px;background:#fff;border-bottom:1px solid var(--line);padding:10px 28px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:10;gap:10px;flex-wrap:wrap}.header h1{margin:0;font-size:20px}.header p{margin:4px 0 0;color:var(--muted);font-size:11px}
+.btn{border:1px solid var(--line);background:#fff;border-radius:8px;padding:8px 11px;cursor:pointer}.btn.primary{background:var(--ink);color:#fff;border-color:var(--ink)}.btn.blue{background:var(--blue);color:#fff;border-color:var(--blue)}.btn.green{background:var(--green);color:#fff;border-color:var(--green)}.btn.red{background:var(--red);color:#fff;border-color:var(--red)}.btn.sm{padding:4px 8px;font-size:11px}
+.content{padding:24px 28px;max-width:1500px}.page{display:none}.page.active{display:block}.card{background:#fff;border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow)}.section{display:flex;justify-content:space-between;align-items:end;margin:18px 0 10px;gap:8px;flex-wrap:wrap}.section h2{font-size:17px;margin:0}.section p{font-size:10px;color:var(--muted);margin:4px 0 0}
+.kpis{display:grid;grid-template-columns:repeat(6,1fr);gap:10px}.kpi{padding:13px}.kpi small{color:var(--muted);font-size:9px}.kpi b{display:block;font-size:22px;margin-top:4px}
+.live{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}.agent{padding:14px;border-top:4px solid var(--blue)}.agent.human{border-top-color:var(--green)}.agent.blocked{border-top-color:var(--orange)}.agent.dead{border-top-color:#9a938c;opacity:.75}.agent-head{display:flex;justify-content:space-between;gap:8px}.agent h3{font-size:13px;margin:0}.device{font-size:9px;color:var(--muted);margin-top:3px;word-break:break-all}.badge{padding:4px 7px;border-radius:999px;font-size:9px;font-weight:800;background:#eef6ff;color:var(--blue);white-space:nowrap}.badge.green{background:#eef7f2;color:var(--green)}.badge.orange{background:#fff4e7;color:#9c621f}.badge.gray{background:#eeeae5;color:#6f6862}.badge.red{background:#fdecec;color:#a83232}.taskbox{margin-top:10px;background:#faf8f5;border:1px solid var(--line);border-radius:8px;padding:9px;font-size:10px;line-height:1.5}.progress{height:7px;background:#ece7e2;border-radius:999px;margin-top:9px;overflow:hidden}.progress span{height:100%;display:block;background:var(--blue)}
+.grid2{display:grid;grid-template-columns:1.2fr .8fr;gap:14px}.roadmap,.priority{padding:14px}.row{display:grid;grid-template-columns:75px minmax(0,1fr) 85px;gap:8px;align-items:center;padding:9px 0;border-bottom:1px solid var(--line);cursor:pointer}.row:last-child{border:0}.row strong{font-size:10px}.row small{display:block;color:var(--muted);font-size:9px;margin-top:2px}
+.kanban{display:flex;gap:12px;overflow:auto;align-items:flex-start}.col{min-width:275px;flex:1;background:#ffffff70;border:1px dashed var(--line);border-radius:12px;padding:12px}.colhead{display:flex;justify-content:space-between;font-size:11px;font-weight:800;margin-bottom:9px}.count{background:#e8e3de;border-radius:999px;padding:2px 7px}.task{background:#fff;border:1px solid var(--line);border-radius:9px;padding:11px;margin-bottom:8px;cursor:pointer}.tags{display:flex;gap:4px;margin-bottom:6px;flex-wrap:wrap}.tag{font-size:8px;font-weight:800;padding:3px 6px;border-radius:5px;background:#eeeae5;color:#6f6862}.tag.high{background:var(--red);color:#fff}.tag.ai{background:var(--blue);color:#fff}.tag.me{background:var(--green);color:#fff}.tag.orange{background:var(--orange);color:#fff}.task h4{margin:0;font-size:11px}.task p{font-size:9px;color:var(--muted);margin:5px 0}.foot{display:flex;justify-content:space-between;border-top:1px solid var(--line);padding-top:6px;font-size:8px;color:var(--muted);gap:6px}
+.activity{overflow:hidden}.event{display:grid;grid-template-columns:110px 110px minmax(0,1fr) 90px;gap:8px;padding:10px 13px;border-bottom:1px solid var(--line);font-size:9px;align-items:center}.event:last-child{border:0}
+.prompt{display:grid;grid-template-columns:1fr 1fr;overflow:hidden}.form,.out{padding:16px}.form{border-right:1px solid var(--line)}.out{background:#faf8f5}.field{margin-bottom:10px}.field label{display:block;font-size:9px;color:var(--muted);margin-bottom:4px}.field input,.field select,.field textarea{width:100%;border:1px solid var(--line);border-radius:8px;padding:8px;background:#fff}.field textarea{min-height:95px}.code{background:#26221d;color:#ded7cf;border-radius:8px;padding:12px;min-height:300px;white-space:pre-wrap;font:10px/1.6 monospace;word-break:break-all}
+.people{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}.person{padding:12px}.person h3{font-size:12px;margin:0}.person p,.person li{font-size:9px;color:var(--muted)}.person ul{padding-left:16px;margin:6px 0}
+.modal{position:fixed;inset:0;background:#211d1870;display:none;align-items:center;justify-content:center;padding:20px;z-index:100}.modal.open{display:flex}.modalbox{width:min(720px,96vw);background:#fff;border-radius:14px;max-height:92vh;overflow:auto}.modalhead{padding:14px 16px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center;position:sticky;top:0;background:#fff}.modalbody{padding:16px}
+.warnbar{background:#fff4e7;border:1px solid #efd2ac;border-radius:10px;padding:10px 14px;margin:12px 0;font-size:11px;color:#8a5a1d;display:none}.warnbar ul{margin:4px 0 0;padding-left:18px}
+.tbl{width:100%;border-collapse:collapse;font-size:11px}.tbl th{font-size:9px;color:var(--muted);text-align:left;padding:8px 10px;border-bottom:1px solid var(--line)}.tbl td{padding:9px 10px;border-bottom:1px solid var(--line)}.tbl tr:hover td{background:#faf8f5;cursor:pointer}
+.filters{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px}.filters select,.filters input{border:1px solid var(--line);border-radius:8px;padding:7px 9px;background:#fff}
+.gate{position:fixed;inset:0;background:var(--bg);display:flex;align-items:center;justify-content:center;z-index:200;padding:20px}.gatebox{width:min(380px,94vw);background:#fff;border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow);padding:24px}.gatebox h2{margin:0 0 6px;font-size:16px}.gatebox p{font-size:11px;color:var(--muted)}
+.toast{position:fixed;bottom:18px;right:18px;background:#26221d;color:#fff;border-radius:10px;padding:10px 14px;font-size:11px;z-index:300;display:none;max-width:70vw}
+.setupbar{background:#eef6ff;border:1px solid #c4dcf5;border-radius:10px;padding:12px 14px;margin:12px 0;font-size:11px;color:#2b5c92;display:none}
+.mobnav{display:none;gap:6px;overflow-x:auto;padding:10px 12px;background:var(--nav)}.mobnav button{border:0;border-radius:999px;background:#3a342e;color:#d5cec6;padding:7px 12px;white-space:nowrap;font-size:11px}.mobnav button.active{background:#efc34b;color:#26221d;font-weight:700}
+@media(max-width:1100px){.kpis{grid-template-columns:repeat(3,1fr)}.live{grid-template-columns:1fr 1fr}.people{grid-template-columns:1fr 1fr}}
+@media(max-width:760px){.app{display:block}.sidebar{display:none}.mobnav{display:flex}.content{padding:12px}.kpis,.live,.grid2,.people{grid-template-columns:1fr 1fr}.prompt{grid-template-columns:1fr}.form{border-right:0;border-bottom:1px solid var(--line)}.event{grid-template-columns:80px minmax(0,1fr) 70px}.event span:nth-child(2){display:none}}
+</style>
+</head>
+<body>
+<div class="app">
+<aside class="sidebar">
+<div class="brand"><i>🤖</i><div><b>N-Style</b><small>AI開発コックピット</small></div></div>
+<div class="nav-title">CONTROL</div>
+<button class="nav-btn active" data-page="dashboard">📊 開発ダッシュボード</button>
+<button class="nav-btn" data-page="tasks">📋 全タスク</button>
+<button class="nav-btn" data-page="agents">🖥 AI / PC稼働状況</button>
+<button class="nav-btn" data-page="prompts">📝 指示書作成</button>
+<button class="nav-btn" data-page="history">🕘 実行・変更履歴</button>
+<div class="nav-title">MANAGEMENT</div>
+<button class="nav-btn" data-page="owners">👥 担当別</button>
+<button class="nav-btn" data-page="settings">⚙ 接続・設定</button>
+</aside>
+
+<main class="main">
+<div class="mobnav" id="mobnav"></div>
+<header class="header"><div><h1>AI開発マネジメント</h1><p id="syncText">読み込み中…</p></div>
+<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+<span class="badge" id="liveBadge">● LIVE同期</span>
+<a class="btn" href="https://github.com/mirai-oss/ns-portal/blob/main/WORKLOG.md" target="_blank" rel="noopener">📖 WORKLOG</a>
+<button class="btn" onclick="loadAll(true)">↻ 同期</button>
+<button class="btn primary" onclick="openTask(null)">＋ 指示を出す</button>
+</div></header>
+<div class="content">
+<div class="setupbar" id="setupbar"></div>
+<div class="warnbar" id="warnbar"></div>
+
+<section id="dashboard" class="page active">
+<div class="kpis" id="kpis"></div>
+<div class="section"><div><h2>LIVE｜今、誰がどこを動かしているか</h2><p>別PCを含むClaude Codeセッションを見える化（90秒応答なし=応答なし・10分=切断）</p></div></div>
+<div class="live" id="liveCards"></div>
+<div class="grid2">
+<div><div class="section"><div><h2>優先順位</h2><p>次に何を動かすか（未完了タスクを優先度順）</p></div></div><div class="card priority" id="prioList"></div></div>
+<div><div class="section"><div><h2>あなたの確認待ち</h2><p>中山さんの判断・作業を待っているもの</p></div></div><div class="card priority" id="waitList"></div></div>
+</div>
+<div class="section"><div><h2>タスク進捗</h2><p>これから・進行中・確認待ち・完了（今日）</p></div><button class="btn primary" onclick="openTask(null)">＋追加</button></div>
+<div class="kanban" id="kanban"></div>
+<div class="section"><div><h2>直近の実行・変更</h2><p>どの端末・誰が何をしたか（最新15件）</p></div></div>
+<div class="card activity" id="recentEvents"></div>
+</section>
+
+<section id="tasks" class="page">
+<div class="section"><div><h2>全タスク</h2><p>担当・優先順位・状態で管理</p></div><button class="btn primary" onclick="openTask(null)">＋追加</button></div>
+<div class="filters">
+<select id="fStatus" onchange="renderTasksPage()"><option value="open">未完了すべて</option><option value="all">すべて</option><option value="backlog">これから</option><option value="ready">着手可</option><option value="in_progress">進行中</option><option value="review">レビュー</option><option value="waiting_human">確認待ち</option><option value="blocked">ブロック</option><option value="done">完了</option><option value="cancelled">中止</option></select>
+<select id="fAssignee" onchange="renderTasksPage()"><option value="">担当: 全員</option></select>
+<input id="fText" placeholder="検索…" oninput="renderTasksPage()">
+</div>
+<div class="card" style="overflow:auto"><table class="tbl"><thead><tr><th>TK</th><th>タスク</th><th>担当</th><th>優先</th><th>状態</th><th>進捗</th><th>更新</th></tr></thead><tbody id="taskRows"></tbody></table></div>
+</section>
+
+<section id="agents" class="page">
+<div class="section"><div><h2>AI / PC稼働状況</h2><p>session / device / repo / branch / heartbeat</p></div><button class="btn" onclick="loadAll(true)">↻同期</button></div>
+<div class="live" id="agentCards"></div>
+<div class="section"><div><h2>端末</h2><p>登録済みのPC</p></div></div>
+<div class="card" style="overflow:auto"><table class="tbl"><thead><tr><th>端末</th><th>hostname</th><th>OS</th><th>状態</th><th>最終応答</th></tr></thead><tbody id="deviceRows"></tbody></table></div>
+</section>
+
+<section id="prompts" class="page">
+<div class="section"><div><h2>指示書ジェネレーター</h2><p>Claude Code用Markdownを生成して保存（貼り付け文つき）</p></div></div>
+<div class="card prompt"><div class="form">
+<div class="field"><label>対象（担当）</label><select id="gTarget"></select></div>
+<div class="field"><label>対象PC</label><select id="gDevice"><option value="">指定なし（どちらでも）</option></select></div>
+<div class="field"><label>Repository / branch</label><input id="gRepo" value="ns-portal / main"></div>
+<div class="field"><label>目的（何をしてほしいか）</label><input id="gGoal" placeholder="例: 精算ダッシュボードのUIを刷新する"></div>
+<div class="field"><label>必須条件・注意</label><textarea id="gRules">作業前に git fetch / git pull --rebase
+自分の担当ファイル以外は編集しない（所有権マトリクス厳守）
+節目ごとに ai-cockpit で進捗を送る
+破壊的変更（本番SQL・deploy等）は承認待ちにする
+完了時はWORKLOG 4ステップ（push→追記→📍更新→再push）</textarea></div>
+<div style="display:flex;gap:6px"><button class="btn blue" style="flex:1" onclick="genInstr()">指示書を生成</button><button class="btn green" style="flex:1" onclick="saveInstr()">保存（タスクも作成）</button></div>
+</div><div class="out"><div class="code" id="gOut"></div><div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap"><button class="btn primary" onclick="copyText(document.getElementById('gOut').textContent,'指示書をコピーしました')">コピー</button><button class="btn" onclick="downloadInstr()">Markdown保存</button></div></div></div>
+<div class="section"><div><h2>保存済み指示書</h2><p>クリックでコピー</p></div></div>
+<div class="card activity" id="instrList"></div>
+</section>
+
+<section id="history" class="page">
+<div class="section"><div><h2>実行・変更履歴</h2><p>端末・セッション・タスク操作を時系列保存（最新200件）</p></div>
+<select id="fEvent" onchange="renderHistory()"><option value="">すべての種類</option><option value="task_start">開始</option><option value="progress">進捗</option><option value="blocked">ブロック</option><option value="task_done">完了</option><option value="task_create">タスク作成</option><option value="task_update">タスク更新</option><option value="approval_request">承認依頼</option><option value="approved">承認</option><option value="rejected">却下</option><option value="note">メモ</option></select></div>
+<div class="card activity" id="eventList"></div>
+</section>
+
+<section id="owners" class="page">
+<div class="section"><div><h2>担当別</h2><p>AI・人ごとの持ちタスク（クリックで詳細）</p></div></div>
+<div class="people" id="ownerCards"></div>
+</section>
+
+<section id="settings" class="page">
+<div class="section"><div><h2>接続・設定</h2><p>heartbeatの仕組みとセットアップ</p></div></div>
+<div class="card" style="padding:16px;font-size:12px;line-height:1.9">
+<b>データの流れ</b><br>
+各PCのClaude Code → <code>ai-cockpit</code> CLI（ns-portal/tools/）→ Edge Function <code>cockpit-ingest</code> → Supabase（ck_テーブル）→ この画面（30秒ごと自動更新）<br><br>
+<b>セットアップ（PC1台につき1回）</b>: <a href="https://github.com/mirai-oss/ns-portal/blob/main/docs/手順書_コックピット_セットアップ_2026-08-31.md" target="_blank" rel="noopener">手順書_コックピット_セットアップ_2026-08-31.md</a> を参照。トークンは <code>~/.ns-cockpit/config</code> にのみ置く（リポジトリ・文書に書かない）<br><br>
+<b>送信例</b>: <code>ai-cockpit start --task TK-5 --agent 担当A --message "実装開始"</code> ／ <code>ai-cockpit progress --task TK-5 --percent 60</code> ／ <code>ai-cockpit done --task TK-5</code><br><br>
+<b>正本の役割分担</b>: このコックピット=「今この瞬間」／ <a href="https://github.com/mirai-oss/ns-portal/blob/main/WORKLOG.md" target="_blank" rel="noopener">WORKLOG.md</a>=「経緯・詳細」
+</div>
+</section>
+</div></main></div>
+
+<div class="modal" id="taskModal"><div class="modalbox"><div class="modalhead"><b id="tmTitle">新しい指示 / タスク</b><button class="btn" onclick="closeTask()">×</button></div><div class="modalbody">
+<div class="field"><label>タスク名 *</label><input id="tTitle"></div>
+<div class="field"><label>内容</label><textarea id="tDesc"></textarea></div>
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+<div class="field"><label>担当</label><select id="tAssignee"></select></div>
+<div class="field"><label>優先度</label><select id="tPriority"><option value="highest">最優先</option><option value="high">High</option><option value="mid" selected>Mid</option><option value="low">Low</option></select></div>
+<div class="field"><label>状態</label><select id="tStatus"><option value="backlog">これから（backlog）</option><option value="ready">着手可（ready）</option><option value="in_progress">進行中</option><option value="review">レビュー</option><option value="waiting_human">確認待ち（中山）</option><option value="blocked">ブロック</option><option value="done">完了</option><option value="cancelled">中止</option></select></div>
+<div class="field"><label>進捗（%）</label><input id="tProgress" type="number" min="0" max="100" value="0"></div>
+<div class="field"><label>Repository</label><input id="tRepo" placeholder="ns-portal など"></div>
+<div class="field"><label>Branch</label><input id="tBranch" placeholder="main など"></div>
+<div class="field"><label>プロジェクト</label><input id="tProject" placeholder="ns-portal / 横断 など"></div>
+<div class="field"><label>期限</label><input id="tDue" type="date"></div>
+</div>
+<div class="field"><label>ブロック理由（あれば）</label><input id="tBlocker"></div>
+<div id="tMeta" style="font-size:10px;color:var(--muted);margin-bottom:10px"></div>
+<div style="display:flex;gap:6px;justify-content:space-between">
+<button class="btn red" id="tCancelBtn" style="display:none" onclick="cancelTask()">中止にする</button>
+<div style="display:flex;gap:6px;margin-left:auto"><button class="btn" onclick="closeTask()">閉じる</button><button class="btn blue" onclick="saveTask()">保存</button></div>
+</div>
+</div></div></div>
+
+<div class="gate" id="gate"><div class="gatebox" id="gatebox">読み込み中…</div></div>
+<div class="toast" id="toast"></div>
+
+<script>
+/* ====== 認証・セッション（export.html/index.htmlと完全に同一・変更禁止部分）====== */
+const SUPA_URL="https://uuvsxzhpxtghojoubjcc.supabase.co";
+const SUPA_KEY="sb_publishable_MrwPJAx_Ws_fdRutprKCiQ_dg3wCiTr"; // 公開用キー（秘密情報ではない）
+const LS_KEY="nsportal_session_v1";
+const EMBED=new URLSearchParams(location.search).get("embed")==="1";
+const $=id=>document.getElementById(id);
+const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const sess={get:()=>{try{return JSON.parse(localStorage.getItem(LS_KEY))}catch(e){return null}},
+            set:v=>localStorage.setItem(LS_KEY,JSON.stringify(v)),
+            clear:()=>localStorage.removeItem(LS_KEY)};
+async function api(path,opt={},token){
+  const r=await fetch(SUPA_URL+path,{...opt,headers:{
+    "apikey":SUPA_KEY,"Content-Type":"application/json",
+    ...(token?{"Authorization":"Bearer "+token}:{}),...(opt.headers||{})}});
+  let body=null; const tx=await r.text(); try{body=tx?JSON.parse(tx):null}catch(e){}
+  return {ok:r.ok,status:r.status,body};
+}
+async function authed(path,opt={}){
+  const s=sess.get(); if(!s) return {ok:false,status:401,body:null};
+  let r=await api(path,opt,s.at);
+  if(r.status===401){ if(!await refresh()) return r; r=await api(path,opt,sess.get().at); }
+  return r;
+}
+async function refresh(){
+  const s=sess.get(); if(!s?.rt) return false;
+  const r=await api("/auth/v1/token?grant_type=refresh_token",{method:"POST",body:JSON.stringify({refresh_token:s.rt})});
+  if(!r.ok){sess.clear();return false}
+  sess.set({at:r.body.access_token,rt:r.body.refresh_token,uid:r.body.user.id});
+  return true;
+}
+async function login(email,pw){
+  const r=await api("/auth/v1/token?grant_type=password",{method:"POST",body:JSON.stringify({email,password:pw})});
+  if(!r.ok) return false;
+  sess.set({at:r.body.access_token,rt:r.body.refresh_token,uid:r.body.user.id});
+  return true;
+}
+async function fetchMe(){
+  const s=sess.get(); if(!s) return null;
+  const r=await authed(`/rest/v1/users?id=eq.${s.uid}&select=*`);
+  if(!r.ok||!Array.isArray(r.body)||!r.body[0]) return null;
+  return r.body[0];
+}
+/* ====== ここまで共通部分 ====== */
+
+const ASSIGNEES=["担当A","担当B","担当C","担当D","担当E","担当F","担当G","担当H","司令塔","Mirai","中山"];
+const AI_NAMES=new Set(ASSIGNEES.filter(a=>a!=="中山"));
+const ST_LABEL={backlog:"これから",ready:"着手可",in_progress:"進行中",review:"レビュー",waiting_human:"確認待ち",blocked:"ブロック",done:"完了",cancelled:"中止"};
+const PR_LABEL={highest:"最優先",high:"High",mid:"Mid",low:"Low"};
+const PR_ORDER={highest:0,high:1,mid:2,low:3};
+const SS_LABEL={running:"実装中",waiting:"待機",blocked:"ブロック",idle:"待機",stopped:"停止",stale:"応答なし",disconnected:"切断"};
+const EV_LABEL={task_start:"開始",progress:"進捗",blocked:"ブロック",task_done:"完了",task_create:"タスク作成",task_update:"タスク更新",approval_request:"承認依頼",approved:"承認",rejected:"却下",note:"メモ",session_start:"セッション開始"};
+const OPEN_ST=["backlog","ready","in_progress","review","waiting_human","blocked"];
+
+let ME=null, CUR=null, TIMER=null;
+let DB={devices:[],sessions:[],tasks:[],events:[],approvals:[],instructions:[]};
+
+const fmtDT=iso=>iso?new Date(iso).toLocaleString("ja-JP",{timeZone:"Asia/Tokyo",month:"numeric",day:"numeric",hour:"2-digit",minute:"2-digit"}):"—";
+const jstDay=iso=>iso?new Date(iso).toLocaleDateString("sv-SE",{timeZone:"Asia/Tokyo"}):"";
+const todayJst=()=>new Date().toLocaleDateString("sv-SE",{timeZone:"Asia/Tokyo"});
+function ago(iso){ if(!iso) return "—"; const d=(Date.now()-new Date(iso).getTime())/1000;
+  if(d<0) return "たった今"; if(d<60) return Math.floor(d)+"秒前"; if(d<3600) return Math.floor(d/60)+"分前";
+  if(d<86400) return Math.floor(d/3600)+"時間前"; return Math.floor(d/86400)+"日前"; }
+function toast(msg){ const t=$("toast"); t.textContent=msg; t.style.display="block"; clearTimeout(t._h); t._h=setTimeout(()=>t.style.display="none",2600); }
+function copyText(tx,msg){ navigator.clipboard?.writeText(tx).then(()=>toast(msg||"コピーしました")).catch(()=>toast("コピーできませんでした")); }
+const tkNo=t=>"TK-"+t.task_no;
+const taskById=id=>DB.tasks.find(t=>t.id===id);
+const deviceName=id=>{const d=DB.devices.find(x=>x.id===id);return d?(d.device_name||d.device_key):"—";};
+
+/* セッションの実効状態（heartbeat鮮度で上書き） */
+function liveState(s){ const diff=Date.now()-new Date(s.last_heartbeat_at).getTime();
+  if(diff>10*60*1000) return "disconnected"; if(diff>90*1000) return "stale"; return s.status; }
+const isFresh=s=>["running","waiting","blocked"].includes(liveState(s));
+
+/* ====== データ読み込み ====== */
+async function loadAll(manual){
+  const q=(p)=>authed("/rest/v1/"+p);
+  const [dv,ss,tk,ev,ap,inst]=await Promise.all([
+    q("ck_devices?select=*&order=device_key"),
+    q("ck_sessions?select=*&order=last_heartbeat_at.desc&limit=100"),
+    q("ck_tasks?select=*&order=task_no.asc&limit=1000"),
+    q("ck_events?select=*&order=created_at.desc&limit=200"),
+    q("ck_approvals?select=*&order=requested_at.desc&limit=100"),
+    q("ck_instructions?select=*&order=created_at.desc&limit=50")
+  ]);
+  if(!tk.ok){
+    $("setupbar").style.display="block";
+    $("setupbar").innerHTML="🔧 <b>データベースがまだ準備できていません。</b> Supabaseで <code>2026-08-31_cockpit.sql</code> → <code>2026-08-31_cockpit_seed.sql</code> を実行してください（<a href='https://github.com/mirai-oss/ns-portal/blob/main/docs/手順書_コックピット_セットアップ_2026-08-31.md' target='_blank' rel='noopener'>手順書</a>）";
+    $("syncText").textContent="テーブル未作成（手順書のSQLを実行すると表示されます）";
+    return;
+  }
+  $("setupbar").style.display="none";
+  DB.devices=dv.body||[]; DB.sessions=ss.body||[]; DB.tasks=tk.body||[];
+  DB.events=ev.body||[]; DB.approvals=ap.body||[]; DB.instructions=inst.body||[];
+  renderAll();
+  $("syncText").textContent="最終同期: "+new Date().toLocaleTimeString("ja-JP",{timeZone:"Asia/Tokyo"})+"（30秒ごと自動更新・どのPCから見ても同じ状態）";
+  if(manual) toast("同期しました");
+}
+
+/* ====== 集計・警告 ====== */
+function kpiData(){
+  const open=DB.tasks.filter(t=>OPEN_ST.includes(t.status));
+  const waiting=DB.tasks.filter(t=>["waiting_human","review"].includes(t.status)).length + DB.approvals.filter(a=>a.status==="pending").length;
+  const doneToday=DB.tasks.filter(t=>t.status==="done"&&jstDay(t.completed_at||t.updated_at)===todayJst()).length;
+  const activeDev=new Set(DB.sessions.filter(isFresh).map(s=>s.device_id).filter(Boolean)).size;
+  const blocked=DB.tasks.filter(t=>t.status==="blocked").length;
+  return {now:open.filter(t=>t.status==="in_progress").length, open:open.length, waiting, doneToday, activeDev, blocked};
+}
+function gitWarnings(){
+  const w=[]; const fresh=DB.sessions.filter(isFresh);
+  const byBranch={};
+  fresh.forEach(s=>{ if(!s.repository||!s.branch) return; const k=s.repository+" / "+s.branch;(byBranch[k]=byBranch[k]||[]).push(s); });
+  for(const [k,arr] of Object.entries(byBranch)){
+    if(arr.length>1) w.push(`同じブランチを複数セッションが編集中: ${k}（${arr.map(s=>s.agent_name||s.session_key).join("・")}）`);
+    arr.forEach(s=>{ if(["main","master"].includes(s.branch)&&s.changed_files_count>0) w.push(`mainブランチを直接編集中: ${s.repository}（${s.agent_name||s.session_key}・変更${s.changed_files_count}件）`); });
+  }
+  const byTask={};
+  fresh.forEach(s=>{ if(!s.current_task_id) return;(byTask[s.current_task_id]=byTask[s.current_task_id]||[]).push(s); });
+  for(const [tid,arr] of Object.entries(byTask)){
+    if(arr.length>1){ const t=taskById(tid); w.push(`同じタスクを複数セッションが実行中: ${t?tkNo(t)+" "+t.title:tid}`); }
+  }
+  const byFile={};
+  fresh.forEach(s=>{ (Array.isArray(s.changed_files)?s.changed_files:[]).forEach(f=>{ const k=s.repository+":"+f;(byFile[k]=byFile[k]||new Set()).add(s.session_key); }); });
+  for(const [k,set] of Object.entries(byFile)){
+    if(set.size>1){ const f=k.split(":").slice(1).join(":");
+      w.push(`同じファイルを複数セッションが変更中: ${k.split(":")[0]} の ${f}${/supabase\/.*\.sql/.test(f)?"（⚠️migration同時変更）":""}`); }
+  }
+  return [...new Set(w)];
+}
+
+/* ====== 描画 ====== */
+function renderAll(){ renderKpis(); renderWarn(); renderLive(); renderPrio(); renderWait(); renderKanban(); renderRecent(); renderTasksPage(); renderAgentsPage(); renderHistory(); renderOwners(); renderInstrList(); renderSettings(); }
+
+function renderKpis(){ const k=kpiData();
+  $("kpis").innerHTML=`
+  <div class="card kpi"><small>今進めている</small><b>${k.now}件</b></div>
+  <div class="card kpi"><small>残タスク</small><b>${k.open}件</b></div>
+  <div class="card kpi"><small>確認待ち</small><b style="color:var(--orange)">${k.waiting}件</b></div>
+  <div class="card kpi"><small>今日完了</small><b style="color:var(--green)">${k.doneToday}件</b></div>
+  <div class="card kpi"><small>稼働端末</small><b>${k.activeDev}台</b></div>
+  <div class="card kpi"><small>ブロック中</small><b style="color:var(--red)">${k.blocked}件</b></div>`;
+}
+function renderWarn(){ const w=gitWarnings(); const el=$("warnbar");
+  if(!w.length){ el.style.display="none"; $("liveBadge").textContent="● LIVE同期"; $("liveBadge").className="badge green"; return; }
+  el.style.display="block"; el.innerHTML="<b>⚠️ 競合の可能性</b><ul>"+w.map(x=>`<li>${esc(x)}</li>`).join("")+"</ul>";
+  $("liveBadge").textContent="⚠ 警告 "+w.length+"件"; $("liveBadge").className="badge orange";
+}
+function sessionCard(s){
+  const st=liveState(s); const dead=["stale","disconnected","stopped"].includes(st);
+  const cls=st==="blocked"?"agent blocked":dead?"agent dead":"agent";
+  const badge=st==="blocked"?"badge orange":st==="running"?"badge":dead?"badge gray":"badge gray";
+  const icon=s.agent_type==="human"?"👤":s.agent_type==="scheduled"?"⏰":"🤖";
+  const t=s.current_task_id?taskById(s.current_task_id):null;
+  const box=[t?`<b>${esc(tkNo(t))}</b> ${esc(t.title)}`:null, s.current_file?esc(s.current_file):null, s.blocker?`⛔ ${esc(s.blocker)}`:null].filter(Boolean).join("<br>")||"（タスク未設定）";
+  return `<div class="card ${cls}"><div class="agent-head"><div><h3>${icon} ${esc(s.agent_name||s.session_key)}</h3>
+    <div class="device">${esc(deviceName(s.device_id))} / ${esc(s.repository||"—")}${s.branch?" / "+esc(s.branch):""}${s.git_head?" @"+esc(s.git_head):""}${s.changed_files_count?` / 変更${s.changed_files_count}件`:""}</div></div>
+    <span class="${badge}">${SS_LABEL[st]||st}</span></div>
+    <div class="taskbox">${box}</div>
+    <div class="progress"><span style="width:${s.progress_percent||0}%${st==="blocked"?";background:var(--orange)":""}"></span></div>
+    <div style="font-size:8px;color:var(--muted);margin-top:6px">heartbeat ${ago(s.last_heartbeat_at)}</div></div>`;
+}
+function humanCard(){
+  const items=DB.tasks.filter(t=>t.status==="waiting_human").sort((a,b)=>PR_ORDER[a.priority]-PR_ORDER[b.priority]).slice(0,4);
+  const ap=DB.approvals.filter(a=>a.status==="pending").length;
+  return `<div class="card agent human"><div class="agent-head"><div><h3>👤 中山</h3><div class="device">優先順位・承認・判断</div></div><span class="badge green">確認待ち ${items.length+ap}件</span></div>
+  <div class="taskbox">${items.length?items.map(t=>"・"+esc(t.title)).join("<br>"):"確認待ちはありません 🎉"}${ap?`<br>・承認依頼 ${ap}件`:""}</div></div>`;
+}
+function renderLive(){
+  const ss=[...DB.sessions].sort((a,b)=>new Date(b.last_heartbeat_at)-new Date(a.last_heartbeat_at));
+  const cards=ss.slice(0,7).map(sessionCard);
+  cards.push(humanCard());
+  if(!ss.length) cards.unshift(`<div class="card agent"><div class="agent-head"><div><h3>🤖 セッション未接続</h3><div class="device">heartbeatが届くとここに表示されます</div></div><span class="badge gray">準備中</span></div><div class="taskbox">各PCで <code>ai-cockpit</code> のセットアップをすると、Claude Codeの動きがここに出ます（接続・設定タブ参照）</div></div>`);
+  $("liveCards").innerHTML=cards.join("");
+}
+function renderPrio(){
+  const open=DB.tasks.filter(t=>OPEN_ST.includes(t.status)&&t.status!=="waiting_human")
+    .sort((a,b)=>(PR_ORDER[a.priority]-PR_ORDER[b.priority])||(a.task_no-b.task_no)).slice(0,6);
+  $("prioList").innerHTML=open.map((t,i)=>`<div class="row" onclick="openTask('${t.id}')"><b>${i+1}</b>
+    <div><strong>${esc(tkNo(t))} ${esc(t.title)}</strong><small>${esc(t.assignee_name||"未割当")} / ${ST_LABEL[t.status]}${t.progress_percent?` / ${t.progress_percent}%`:""}</small></div>
+    <span class="tag ${["highest","high"].includes(t.priority)?"high":""}">${PR_LABEL[t.priority]}</span></div>`).join("")||`<div style="padding:14px;font-size:11px;color:var(--muted)">未完了タスクがありません</div>`;
+}
+function renderWait(){
+  const w=DB.tasks.filter(t=>t.status==="waiting_human").sort((a,b)=>PR_ORDER[a.priority]-PR_ORDER[b.priority]).slice(0,6);
+  $("waitList").innerHTML=w.map(t=>`<div class="row" onclick="openTask('${t.id}')"><b>🙋</b>
+    <div><strong>${esc(t.title)}</strong><small>${esc(t.category||"確認待ち")}</small></div>
+    <span class="tag me">私</span></div>`).join("")||`<div style="padding:14px;font-size:11px;color:var(--muted)">確認待ちはありません 🎉</div>`;
+}
+function taskCard(t){
+  const pr=["highest","high"].includes(t.priority)?`<span class="tag high">${PR_LABEL[t.priority]}</span>`:`<span class="tag">${PR_LABEL[t.priority]}</span>`;
+  const who=t.assignee_type==="human"?`<span class="tag me">${esc(t.assignee_name||"私")}</span>`:`<span class="tag ai">${esc(t.assignee_name||"AI")}</span>`;
+  const bl=t.status==="blocked"?`<span class="tag orange">ブロック</span>`:"";
+  return `<div class="task" onclick="openTask('${t.id}')"><div class="tags">${pr}${who}${bl}</div>
+    <h4>${esc(t.title)}</h4>${t.blocker?`<p>⛔ ${esc(t.blocker)}</p>`:t.description?`<p>${esc(t.description.slice(0,60))}${t.description.length>60?"…":""}</p>`:""}
+    <div class="foot"><span>${esc(tkNo(t))}</span><span>${t.progress_percent?t.progress_percent+"%":""} ${ago(t.updated_at)}</span></div></div>`;
+}
+function approvalCard(a){
+  return `<div class="task" style="border-color:#efd2ac"><div class="tags"><span class="tag orange">承認依頼</span></div>
+    <h4>${esc(a.title)}</h4><p>${esc(a.detail.slice(0,80))}</p>
+    <div style="display:flex;gap:6px;margin-top:6px"><button class="btn green sm" onclick="event.stopPropagation();decideApproval('${a.id}','approved')">承認</button>
+    <button class="btn red sm" onclick="event.stopPropagation();decideApproval('${a.id}','rejected')">却下</button></div></div>`;
+}
+function renderKanban(){
+  const col=(title,cards)=>`<div class="col"><div class="colhead">${title} <span class="count">${cards.length}</span></div>${cards.join("")||'<div style="font-size:10px;color:var(--muted);padding:6px">なし</div>'}</div>`;
+  const srt=a=>a.sort((x,y)=>(PR_ORDER[x.priority]-PR_ORDER[y.priority])||(x.task_no-y.task_no));
+  const todo=srt(DB.tasks.filter(t=>["backlog","ready"].includes(t.status))).map(taskCard);
+  const doing=srt(DB.tasks.filter(t=>t.status==="in_progress")).map(taskCard);
+  const wait=[...DB.approvals.filter(a=>a.status==="pending").map(approvalCard),
+              ...srt(DB.tasks.filter(t=>["waiting_human","review","blocked"].includes(t.status))).map(taskCard)];
+  const doneT=DB.tasks.filter(t=>t.status==="done").sort((a,b)=>new Date(b.completed_at||b.updated_at)-new Date(a.completed_at||a.updated_at));
+  const doneToday=doneT.filter(t=>jstDay(t.completed_at||t.updated_at)===todayJst());
+  const done=(doneToday.length?doneToday:doneT.slice(0,5)).map(taskCard);
+  $("kanban").innerHTML=col("これから進める",todo)+col("進行中",doing)+col("あなたの確認待ち",wait)+col(doneToday.length?"完了（今日）":"完了（直近）",done);
+}
+function eventRow(e){
+  const dev=e.device_id?deviceName(e.device_id):"—";
+  const t=e.task_id?taskById(e.task_id):null;
+  const who=e.metadata?.agent||"";
+  const badgeCls=e.event_type==="blocked"||e.event_type==="approval_request"?"badge orange":["task_done","approved"].includes(e.event_type)?"badge green":e.event_type==="rejected"?"badge red":"badge";
+  return `<div class="event"><b>${fmtDT(e.created_at)}</b><span>${esc(dev)}${who?" / "+esc(who):""}</span>
+    <span>${t?`<b>${esc(tkNo(t))}</b> `:""}${esc(e.message||EV_LABEL[e.event_type]||e.event_type)}</span>
+    <span class="${badgeCls}">${EV_LABEL[e.event_type]||e.event_type}</span></div>`;
+}
+function renderRecent(){ $("recentEvents").innerHTML=DB.events.slice(0,15).map(eventRow).join("")||'<div style="padding:14px;font-size:11px;color:var(--muted)">履歴はまだありません</div>'; }
+function renderHistory(){ const f=$("fEvent").value;
+  $("eventList").innerHTML=DB.events.filter(e=>!f||e.event_type===f).map(eventRow).join("")||'<div style="padding:14px;font-size:11px;color:var(--muted)">履歴はまだありません</div>'; }
+function renderTasksPage(){
+  const st=$("fStatus").value, asg=$("fAssignee").value, tx=($("fText").value||"").toLowerCase();
+  let list=[...DB.tasks];
+  if(st==="open") list=list.filter(t=>OPEN_ST.includes(t.status));
+  else if(st!=="all") list=list.filter(t=>t.status===st);
+  if(asg) list=list.filter(t=>t.assignee_name===asg);
+  if(tx) list=list.filter(t=>(t.title+t.description+t.assignee_name).toLowerCase().includes(tx));
+  list.sort((a,b)=>(PR_ORDER[a.priority]-PR_ORDER[b.priority])||(a.task_no-b.task_no));
+  $("taskRows").innerHTML=list.map(t=>`<tr onclick="openTask('${t.id}')"><td>${esc(tkNo(t))}</td><td><b>${esc(t.title)}</b>${t.blocker?`<br><span style="color:#9c621f;font-size:9px">⛔ ${esc(t.blocker)}</span>`:""}</td>
+    <td>${esc(t.assignee_name||"—")}</td><td>${PR_LABEL[t.priority]}</td><td>${ST_LABEL[t.status]}</td><td>${t.progress_percent||0}%</td><td>${ago(t.updated_at)}</td></tr>`).join("")||'<tr><td colspan="7" style="color:var(--muted)">該当なし</td></tr>';
+}
+function renderAgentsPage(){
+  const ss=[...DB.sessions].sort((a,b)=>new Date(b.last_heartbeat_at)-new Date(a.last_heartbeat_at));
+  $("agentCards").innerHTML=ss.map(sessionCard).join("")||'<div class="card" style="padding:16px;font-size:11px;color:var(--muted)">セッションはまだありません（接続・設定タブ参照）</div>';
+  $("deviceRows").innerHTML=DB.devices.map(d=>{
+    const fresh=d.last_seen_at&&(Date.now()-new Date(d.last_seen_at).getTime())<10*60*1000;
+    return `<tr onclick=""><td><b>${esc(d.device_name||d.device_key)}</b></td><td>${esc(d.hostname||"—")}</td><td>${esc(d.os||"—")}</td>
+    <td><span class="badge ${fresh?"green":"gray"}">${fresh?"オンライン":"オフライン"}</span></td><td>${ago(d.last_seen_at)}</td></tr>`;}).join("");
+}
+function renderOwners(){
+  const names=[...new Set([...ASSIGNEES,...DB.tasks.map(t=>t.assignee_name).filter(Boolean)])];
+  $("ownerCards").innerHTML=names.map(n=>{
+    const mine=DB.tasks.filter(t=>t.assignee_name===n);
+    const open=mine.filter(t=>OPEN_ST.includes(t.status));
+    if(!mine.length) return "";
+    const icon=n==="中山"?"👤":n==="司令塔"?"🧭":n==="Mirai"?"🧠":"🤖";
+    const sess7=DB.sessions.find(s=>s.agent_name===n&&isFresh(s));
+    return `<div class="card person"><h3>${icon} ${esc(n)} ${sess7?'<span class="badge green">稼働中</span>':""}</h3>
+      <p>未完了 ${open.length}件 / 進行中 ${open.filter(t=>t.status==="in_progress").length}件</p>
+      <ul>${open.sort((a,b)=>PR_ORDER[a.priority]-PR_ORDER[b.priority]).slice(0,5).map(t=>`<li style="cursor:pointer" onclick="openTask('${t.id}')">${esc(tkNo(t))} ${esc(t.title)}（${ST_LABEL[t.status]}）</li>`).join("")||"<li>なし</li>"}</ul></div>`;
+  }).join("");
+}
+function renderInstrList(){
+  $("instrList").innerHTML=DB.instructions.map(i=>`<div class="event" style="cursor:pointer" onclick="copyText(${JSON.stringify(i.markdown).replace(/"/g,"&quot;")},'指示書をコピーしました')">
+    <b>${fmtDT(i.created_at)}</b><span>${esc(i.target_agent||"—")}</span><span><b>${esc(i.title)}</b></span><span class="badge">コピー</span></div>`).join("")||'<div style="padding:14px;font-size:11px;color:var(--muted)">保存済み指示書はまだありません</div>';
+}
+function renderSettings(){}
+
+/* ====== タスクCRUD ====== */
+function fillSelectors(){
+  const opts=ASSIGNEES.map(a=>`<option>${a}</option>`).join("");
+  $("tAssignee").innerHTML=opts; $("gTarget").innerHTML=opts;
+  $("fAssignee").innerHTML='<option value="">担当: 全員</option>'+opts;
+  $("gDevice").innerHTML='<option value="">指定なし（どちらでも）</option>'+DB.devices.map(d=>`<option>${esc(d.device_name||d.device_key)}</option>`).join("");
+}
+function openTask(id){
+  CUR=id?taskById(id):null;
+  $("tmTitle").textContent=CUR?`${tkNo(CUR)} を編集`:"新しい指示 / タスク";
+  $("tTitle").value=CUR?.title||""; $("tDesc").value=CUR?.description||"";
+  $("tAssignee").value=CUR?.assignee_name||"担当H"; $("tPriority").value=CUR?.priority||"mid";
+  $("tStatus").value=CUR?.status||"backlog"; $("tProgress").value=CUR?.progress_percent??0;
+  $("tRepo").value=CUR?.repository||""; $("tBranch").value=CUR?.branch||"";
+  $("tProject").value=CUR?.project||""; $("tDue").value=CUR?.due_at?jstDay(CUR.due_at):"";
+  $("tBlocker").value=CUR?.blocker||"";
+  $("tMeta").textContent=CUR?`作成 ${fmtDT(CUR.created_at)} / 更新 ${fmtDT(CUR.updated_at)}${CUR.completed_at?" / 完了 "+fmtDT(CUR.completed_at):""}`:"";
+  $("tCancelBtn").style.display=CUR&&CUR.status!=="cancelled"?"block":"none";
+  $("taskModal").classList.add("open");
+}
+function closeTask(){ $("taskModal").classList.remove("open"); CUR=null; }
+async function postEvent(p){ await authed("/rest/v1/ck_events",{method:"POST",body:JSON.stringify(p)}); }
+async function saveTask(){
+  const title=$("tTitle").value.trim(); if(!title){toast("タスク名を入れてください");return;}
+  const name=$("tAssignee").value;
+  const body={title,description:$("tDesc").value,assignee_name:name,assignee_type:AI_NAMES.has(name)?"ai":"human",
+    priority:$("tPriority").value,status:$("tStatus").value,progress_percent:Number($("tProgress").value)||0,
+    repository:$("tRepo").value.trim(),branch:$("tBranch").value.trim(),project:$("tProject").value.trim(),
+    blocker:$("tBlocker").value.trim(),due_at:$("tDue").value?$("tDue").value+"T00:00:00+09:00":null,
+    updated_at:new Date().toISOString()};
+  if(body.status==="done"&&(!CUR||CUR.status!=="done")) body.completed_at=new Date().toISOString();
+  if(body.status!=="done"&&CUR&&CUR.status==="done") body.completed_at=null;
+  let r,msg;
+  if(CUR){ r=await authed(`/rest/v1/ck_tasks?id=eq.${CUR.id}`,{method:"PATCH",body:JSON.stringify(body),headers:{Prefer:"return=representation"}});
+    msg=CUR.status!==body.status?`${tkNo(CUR)} ${title}: ${ST_LABEL[CUR.status]}→${ST_LABEL[body.status]}`:`${tkNo(CUR)} ${title} を更新`;
+  }else{ body.created_by=ME.id;
+    r=await authed("/rest/v1/ck_tasks",{method:"POST",body:JSON.stringify(body),headers:{Prefer:"return=representation"}});
+    msg=`新規タスク: ${title}（${name}）`;
+  }
+  if(!r.ok){ toast("保存できませんでした（"+r.status+"）"); return; }
+  const saved=Array.isArray(r.body)?r.body[0]:null;
+  await postEvent({task_id:saved?.id||CUR?.id||null,event_type:CUR?"task_update":"task_create",message:msg,metadata:{agent:"中山（画面操作）"}});
+  closeTask(); toast("保存しました"); loadAll();
+}
+async function cancelTask(){
+  if(!CUR) return; if(!confirm(`${tkNo(CUR)}「${CUR.title}」を中止にしますか？（削除ではなく履歴は残ります）`)) return;
+  const r=await authed(`/rest/v1/ck_tasks?id=eq.${CUR.id}`,{method:"PATCH",body:JSON.stringify({status:"cancelled",updated_at:new Date().toISOString()})});
+  if(!r.ok){ toast("変更できませんでした"); return; }
+  await postEvent({task_id:CUR.id,event_type:"task_update",message:`${tkNo(CUR)} ${CUR.title} を中止`,metadata:{agent:"中山（画面操作）"}});
+  closeTask(); loadAll();
+}
+async function decideApproval(id,decision){
+  const a=DB.approvals.find(x=>x.id===id); if(!a) return;
+  if(!confirm(`「${a.title}」を${decision==="approved"?"承認":"却下"}しますか？`)) return;
+  const r=await authed(`/rest/v1/ck_approvals?id=eq.${id}`,{method:"PATCH",body:JSON.stringify({status:decision,decided_at:new Date().toISOString(),decided_by:ME.id})});
+  if(!r.ok){ toast("更新できませんでした"); return; }
+  await postEvent({task_id:a.task_id,event_type:decision,message:`${a.title} を${decision==="approved"?"承認":"却下"}`,metadata:{agent:"中山（画面操作）"}});
+  toast(decision==="approved"?"承認しました":"却下しました"); loadAll();
+}
+
+/* ====== 指示書ジェネレーター ====== */
+function instrText(){
+  const t=$("gTarget").value,d=$("gDevice").value,r=$("gRepo").value,g=$("gGoal").value,u=$("gRules").value;
+  const md=`# Claude Code 実装指示書
+
+## 対象
+${t}${d?`（${d}）`:""}
+
+## Repository / branch
+${r}
+
+## 目的
+${g||"（目的を入力してください）"}
+
+## 必須条件
+${u}
+
+## 実行ルール
+1. 既存コードを監査してから変更する
+2. 所有権マトリクス（実装指示書_並行開発の担当分け_2026-08-24.md）を厳守
+3. 節目ごとに ai-cockpit で進捗・blockerを更新
+4. 破壊的変更（本番SQL・deploy・main merge等）は承認待ちにしてユーザー確認
+5. 完了時にWORKLOG 4ステップ＋テスト結果と残課題を記録
+
+## 貼り付け文（これをClaude Codeに貼る）
+あなたは${t}です。上記の指示書に従い「${g||"（目的）"}」を実行してください。対象は ${r} です。節目ごとにai-cockpitで進捗を送信し、破壊的変更は承認待ちにしてください。`;
+  return {t,d,r,g,md};
+}
+function genInstr(){ $("gOut").textContent=instrText().md; }
+async function saveInstr(){
+  const {t,d,r,g,md}=instrText(); if(!g){toast("目的を入力してください");return;}
+  genInstr();
+  const [repo,branch]=r.split("/").map(s=>s.trim());
+  const tr=await authed("/rest/v1/ck_tasks",{method:"POST",headers:{Prefer:"return=representation"},
+    body:JSON.stringify({title:g,description:"指示書ジェネレーターから作成",assignee_name:t,assignee_type:AI_NAMES.has(t)?"ai":"human",
+      priority:"high",status:"ready",repository:repo||"",branch:branch||"",created_by:ME.id})});
+  const task=tr.ok&&Array.isArray(tr.body)?tr.body[0]:null;
+  const ir=await authed("/rest/v1/ck_instructions",{method:"POST",headers:{Prefer:"return=representation"},
+    body:JSON.stringify({title:g,markdown:md,target_agent:t,target_device:d,repository:repo||"",branch:branch||"",task_id:task?.id||null,created_by:ME.id})});
+  if(!ir.ok){ toast("保存できませんでした"); return; }
+  await postEvent({task_id:task?.id||null,event_type:"task_create",message:`指示書を作成: ${g}（${t}）`,metadata:{agent:"中山（画面操作）"}});
+  toast("指示書とタスクを保存しました"); loadAll();
+}
+function downloadInstr(){ const b=new Blob([$("gOut").textContent],{type:"text/markdown"}),a=document.createElement("a");
+  a.href=URL.createObjectURL(b); a.download="claude-code-instruction.md"; a.click(); }
+
+/* ====== ナビ ====== */
+function show(id,btn){ document.querySelectorAll(".page").forEach(x=>x.classList.remove("active")); $(id).classList.add("active");
+  document.querySelectorAll(".nav-btn").forEach(x=>x.classList.toggle("active",x.dataset.page===id));
+  document.querySelectorAll("#mobnav button").forEach(x=>x.classList.toggle("active",x.dataset.page===id));
+  window.scrollTo({top:0}); }
+document.querySelectorAll(".nav-btn").forEach(b=>b.onclick=()=>show(b.dataset.page,b));
+$("mobnav").innerHTML=[...document.querySelectorAll(".nav-btn")].map(b=>`<button data-page="${b.dataset.page}" ${b.dataset.page==="dashboard"?'class="active"':""}>${b.textContent.trim()}</button>`).join("");
+document.querySelectorAll("#mobnav button").forEach(b=>b.onclick=()=>show(b.dataset.page,b));
+
+/* ====== 起動 ====== */
+function gateMsg(html){ $("gate").style.display="flex"; $("gatebox").innerHTML=html; }
+function gateLogin(msg){
+  gateMsg(`<h2>🤖 AI開発コックピット</h2><p>${esc(msg||"マスターアカウントでログインしてください")}</p>
+  <div class="field"><label>メールアドレス</label><input id="lgEmail" type="email" autocomplete="username"></div>
+  <div class="field"><label>パスワード</label><input id="lgPw" type="password" autocomplete="current-password"></div>
+  <button class="btn primary" style="width:100%" onclick="doLogin()">ログイン</button>
+  <p style="margin-top:10px"><a href="portal.html">← ポータルへ戻る</a></p>`);
+}
+async function doLogin(){
+  const ok=await login($("lgEmail").value.trim(),$("lgPw").value);
+  if(!ok){ gateLogin("メールアドレスかパスワードが違います"); return; }
+  main();
+}
+async function main(){
+  if(!sess.get()){ gateLogin(); return; }
+  const u=await fetchMe();
+  if(!u){ sess.clear(); gateLogin("セッションが切れました。もう一度ログインしてください"); return; }
+  if(u.is_active===false){ gateLogin("このアカウントは無効化されています"); return; }
+  if(!u.is_master){ gateMsg(`<h2>🔒 マスター専用</h2><p>このページはマスター管理者だけが見られます。</p><p><a href="portal.html">← ポータルへ戻る</a></p>`); return; }
+  ME=u; $("gate").style.display="none";
+  fillSelectors(); genInstr();
+  await loadAll();
+  clearInterval(TIMER); TIMER=setInterval(()=>{ if(!document.hidden) loadAll(); },30000);
+}
+main();
+</script>
+</body></html>

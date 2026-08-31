@@ -1,0 +1,175 @@
+#!/usr/bin/env python3
+# =============================================================
+# ai-cockpit — AI開発コックピットへの状態送信CLI（担当H専任・2026-08-31）
+#
+# 使い方:
+#   ai-cockpit start    --task TK-5 --agent 担当A --message "実装開始"
+#   ai-cockpit progress --task TK-5 --percent 60 --message "PDF生成実装中"
+#   ai-cockpit blocked  --task TK-5 --message "OAuth権限不足"
+#   ai-cockpit done     --task TK-5 --message "実装・テスト完了"
+#   ai-cockpit note     --message "メモ"           # 履歴に一行残す
+#   ai-cockpit hb                                   # heartbeatのみ（フック用・20秒間引き）
+#   ai-cockpit idle                                 # セッションを待機に
+#   ai-cockpit approval-request --task TK-5 --kind prod_deploy --message "本番デプロイの承認をください"
+#   ai-cockpit approval-status  --task TK-5         # 承認されたか確認
+#
+# 設定: ~/.ns-cockpit/config（KEY=VALUE形式・リポジトリにコミットしない）
+#   INGEST_URL=https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/cockpit-ingest
+#   TOKEN=（app_secretsのcockpit_ingest_tokenと同じ値）
+#   DEVICE_KEY=macbook   （Mac miniなら mac-mini）
+#
+# 方針: 送信失敗・設定なしでも exit 0（開発作業を止めない）。git情報は自動採取。
+# =============================================================
+import json, os, sys, time, platform, socket, subprocess, urllib.request
+
+CONF_DIR = os.path.expanduser("~/.ns-cockpit")
+CONF_PATH = os.path.join(CONF_DIR, "config")
+THROTTLE_PATH = os.path.join(CONF_DIR, "last_hb")
+THROTTLE_SEC = 20
+
+def read_conf():
+    conf = {}
+    try:
+        with open(CONF_PATH) as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    k, v = line.split("=", 1)
+                    conf[k.strip()] = v.strip()
+    except OSError:
+        pass
+    return conf
+
+def sh(*args):
+    try:
+        return subprocess.run(args, capture_output=True, text=True, timeout=5).stdout.strip()
+    except Exception:
+        return ""
+
+def git_info():
+    top = sh("git", "rev-parse", "--show-toplevel")
+    if not top:
+        return {}
+    porcelain = sh("git", "status", "--porcelain")
+    files = [l[3:].strip() for l in porcelain.splitlines() if len(l) > 3][:20]
+    return {
+        "repository": os.path.basename(top),
+        "branch": sh("git", "rev-parse", "--abbrev-ref", "HEAD"),
+        "git_head": sh("git", "rev-parse", "--short", "HEAD"),
+        "changed_files_count": len(porcelain.splitlines()),
+        "changed_files": files,
+    }
+
+def parse_args(argv):
+    flags, i = {}, 0
+    while i < len(argv):
+        a = argv[i]
+        if a.startswith("--"):
+            if i + 1 < len(argv) and not argv[i + 1].startswith("--"):
+                flags[a[2:]] = argv[i + 1]
+                i += 2
+            else:
+                flags[a[2:]] = "1"
+                i += 1
+        else:
+            i += 1
+    return flags
+
+CMDS = {
+    "start":    dict(status="running", task_status="in_progress", event_type="task_start"),
+    "progress": dict(status="running", event_type="progress"),
+    "blocked":  dict(status="blocked", task_status="blocked", event_type="blocked"),
+    "done":     dict(status="idle", task_status="done", event_type="task_done"),
+    "note":     dict(event_type="note"),
+    "hb":       dict(status="running"),
+    "idle":     dict(status="idle"),
+    "approval-request": dict(status="waiting", event_type="approval_request"),
+    "approval-status":  dict(),
+}
+
+def main():
+    if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help") or sys.argv[1] not in CMDS:
+        print(__doc__ or "使い方はスクリプト冒頭のコメント参照")
+        print("コマンド: " + " / ".join(CMDS))
+        return 0
+    cmd = sys.argv[1]
+    flags = parse_args(sys.argv[2:])
+    conf = read_conf()
+    if not conf.get("INGEST_URL") or not conf.get("TOKEN") or not conf.get("DEVICE_KEY"):
+        # 未設定でも作業を止めない（手順書_コックピット_セットアップ_2026-08-31.md参照）
+        if cmd != "hb":
+            print("ai-cockpit: ~/.ns-cockpit/config が未設定のため送信をスキップしました", file=sys.stderr)
+        return 0
+
+    # hbは20秒間引き
+    if cmd == "hb":
+        try:
+            if time.time() - os.path.getmtime(THROTTLE_PATH) < THROTTLE_SEC:
+                return 0
+        except OSError:
+            pass
+        try:
+            os.makedirs(CONF_DIR, exist_ok=True)
+            with open(THROTTLE_PATH, "w") as f:
+                f.write(str(time.time()))
+        except OSError:
+            pass
+
+    g = git_info()
+    agent = flags.get("agent") or os.environ.get("AI_COCKPIT_AGENT", "")
+    session_key = conf["DEVICE_KEY"] + ":" + (agent or g.get("repository") or "session")
+
+    payload = {
+        "token": conf["TOKEN"],
+        "device_key": conf["DEVICE_KEY"],
+        "hostname": socket.gethostname(),
+        "os": "macOS " + platform.mac_ver()[0] if sys.platform == "darwin" else platform.system(),
+        "session_key": session_key,
+        "agent_type": "claude_code",
+        **g,
+    }
+    payload.update(CMDS[cmd])
+    if agent: payload["agent_name"] = agent
+    if flags.get("task"): payload["task_no"] = flags["task"]
+    if flags.get("percent"):
+        try: payload["progress_percent"] = max(0, min(100, int(flags["percent"])))
+        except ValueError: pass
+    if flags.get("message"):
+        payload["message"] = flags["message"]
+        if cmd == "blocked": payload["blocker"] = flags["message"]
+    if cmd == "done": payload.setdefault("progress_percent", 100)
+    if cmd == "approval-request":
+        payload["approval_title"] = flags.get("message", "承認をお願いします")
+        payload["approval_kind"] = flags.get("kind", "other")
+        payload["approval_detail"] = flags.get("detail", "")
+    if cmd == "approval-status":
+        payload["approval_check"] = "1"
+        if not flags.get("task"):
+            print("--task TK-xx を指定してください", file=sys.stderr)
+            return 0
+
+    req = urllib.request.Request(
+        conf["INGEST_URL"],
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=8) as res:
+            body = json.loads(res.read().decode("utf-8"))
+            if cmd == "approval-status":
+                for a in body.get("approvals", []):
+                    mark = {"approved": "✅承認済み", "rejected": "❌却下", "pending": "⏳待ち"}.get(a["status"], a["status"])
+                    print(f'{mark}: {a["title"]}')
+                if not body.get("approvals"):
+                    print("承認依頼はありません")
+            elif cmd != "hb":
+                print("ai-cockpit: 送信OK " + json.dumps({k: body.get(k) for k in ("session", "task")}, ensure_ascii=False))
+    except Exception as e:
+        # 送信失敗で開発を止めない
+        if cmd != "hb":
+            print(f"ai-cockpit: 送信失敗（無視して続行）: {e}", file=sys.stderr)
+    return 0
+
+if __name__ == "__main__":
+    sys.exit(main())
