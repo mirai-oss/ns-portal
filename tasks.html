@@ -433,7 +433,8 @@ function sortTasks(list){
   } else if(SORT_MODE==="stalled"){
     arr.sort((a,b)=>computeSignal(b).stalledDays-computeSignal(a).stalledDays);
   } else {
-    const key=t=>t.due_date?new Date(t.due_date+"T"+(t.due_time?t.due_time.slice(0,8):"23:59:59")).getTime():Infinity;
+    // 2026-08-31(E-5): 「期限が近い順」は全体期限ではなく、いま止まっている工程の期日で並べる
+    const key=t=>{ const d=currentDueOf(t); return d.due_date?new Date(d.due_date+"T"+(d.due_time?d.due_time.slice(0,8):"23:59:59")).getTime():Infinity; };
     arr.sort((a,b)=>key(a)-key(b));
   }
   return arr;
@@ -521,7 +522,7 @@ async function fetchFeaturePerms(){
 }
 async function fetchBoard(){
   const ms=monthStartStr();
-  const r=await authed(`/rest/v1/hq_tasks?select=*,hq_task_steps(*)&or=(status.neq.done,and(status.eq.done,completed_at.gte.${ms}))&order=target_date.desc`);
+  const r=await authed(`/rest/v1/hq_tasks?select=*,hq_task_steps(*)&or=(status.neq.done,and(status.eq.done,completed_at.gte.${ms}))&deleted_at=is.null&order=target_date.desc`);
   TASKS=(r.ok&&Array.isArray(r.body))?r.body:[];
 }
 async function runSearch(q){
@@ -532,7 +533,7 @@ async function runSearch(q){
   // 大量にヒットしてしまうため検索対象から除外。代わりに人間が実際に書いたコメント本文
   // （hq_task_comments.body）を対象に追加する（プレースホルダ「コメントを検索」と実装を一致させる）
   const [byTask,byStep,byComment]=await Promise.all([
-    authed(`/rest/v1/hq_tasks?or=(title.ilike.${encodeURIComponent(like)},notes.ilike.${encodeURIComponent(like)})&select=id`),
+    authed(`/rest/v1/hq_tasks?or=(title.ilike.${encodeURIComponent(like)},notes.ilike.${encodeURIComponent(like)})&deleted_at=is.null&select=id`),
     authed(`/rest/v1/hq_task_steps?or=(title.ilike.${encodeURIComponent(like)},issue_note.ilike.${encodeURIComponent(like)})&select=task_id`),
     authed(`/rest/v1/hq_task_comments?body.ilike.${encodeURIComponent(like)}&select=task_id`),
   ]);
@@ -541,7 +542,7 @@ async function runSearch(q){
   (byStep.body||[]).forEach(x=>ids.add(x.task_id));
   (byComment.body||[]).forEach(x=>ids.add(x.task_id));
   if(!ids.size){ SEARCH_RESULTS=[]; renderBoard(ME); return; }
-  const r=await authed(`/rest/v1/hq_tasks?id=in.(${[...ids].join(",")})&select=*,hq_task_steps(*)&order=target_date.desc`);
+  const r=await authed(`/rest/v1/hq_tasks?id=in.(${[...ids].join(",")})&select=*,hq_task_steps(*)&deleted_at=is.null&order=target_date.desc`);
   SEARCH_RESULTS=(r.ok&&Array.isArray(r.body))?r.body:[];
   renderBoard(ME);
 }
@@ -614,10 +615,13 @@ function taskCardHtml(t){
     <div class="badges"><span class="tag">${esc(t.corp)}</span><span class="tag freq">${t.freq!=="once"?"🔁 "+FREQ_LABEL[t.freq]:"単発"}</span>${dueBadgeHtml(sig)}</div>
     ${sig.level==="stall"?`<div class="stall-badge">⏸ ${sig.stalledDays}日停止</div>`:""}
     <div class="ti">${esc(t.title)}</div>
-    <div class="meta">作成日 ${fmtD((t.created_at||"").slice(0,10))} ／ 期限 ${fmtDD(t.due_date,t.due_time)}${t.status==="done"?" ／ "+fmtD((t.completed_at||"").slice(0,10))+" 完了 ✓":""}</div>
+    <div class="meta">作成日 ${fmtD((t.created_at||"").slice(0,10))}${t.status==="done"?" ／ "+fmtD((t.completed_at||"").slice(0,10))+" 完了 ✓":""}</div>
+    <!-- 2026-08-31(E-5): 全体期限だけだと「いま止まっている工程」の期日が分からず期限切れ表示が
+         見づらいという要望のため、工程期日（バッジ・並び替えと同じ基準）を主役にして全体は添える -->
+    ${sig.cur?`<div class="meta"><b>工程期日 ${fmtDD(sig.cur.due_date,sig.cur.due_time)}</b> ／ 全体 ${fmtDD(t.due_date,t.due_time)}</div>`:`<div class="meta">期限 ${fmtDD(t.due_date,t.due_time)}</div>`}
     ${steps.length?`<div class="meta">工程 ${doneCount}/${steps.length} 完了</div>`:""}
     ${t.memo?`<div class="memo-line">📝 ${esc((t.memo.split("\n")[0]||"").slice(0,60))}</div>`:""}
-    ${sig.cur?`<div class="now">いま: ${esc(sig.cur.title)}（${esc(userName(sig.cur.assignee_id)||"未定")}）${sig.cur.due_date?` ／ 期限 ${fmtDD(sig.cur.due_date,sig.cur.due_time)}`:""}</div>`:""}
+    ${sig.cur?`<div class="now">いま: ${esc(sig.cur.title)}（${esc(userName(sig.cur.assignee_id)||"未定")}）</div>`:""}
   </div>`;
 }
 function dueBadgeHtml(sig){
@@ -629,7 +633,14 @@ function dueBadgeHtml(sig){
   return "";
 }
 /* E-3(B6): かんばんに加えてリスト（テーブル）表示・列ソート */
-const LIST_COLS=[{key:"title",label:"タイトル"},{key:"corp",label:"法人"},{key:"freq",label:"頻度"},{key:"status",label:"状態"},{key:"due",label:"期限"},{key:"progress",label:"進捗"}];
+const LIST_COLS=[{key:"title",label:"タイトル"},{key:"corp",label:"法人"},{key:"freq",label:"頻度"},{key:"status",label:"状態"},{key:"due",label:"工程期日"},{key:"progress",label:"進捗"}];
+// 2026-08-31(E-5): 「期限が近い順」や一覧の期日は、全体期限ではなく「いま止まっている
+// 工程（未完了のうち最初）の期日」を使う（全工程完了時はcomputeSignal().curがnullになる
+// ので、その場合だけ全体期限にフォールバックする）
+function currentDueOf(t){
+  const cur=computeSignal(t).cur;
+  return cur?{due_date:cur.due_date,due_time:cur.due_time}:{due_date:t.due_date,due_time:t.due_time};
+}
 function listSortValue(t,col){
   const steps=sortedSteps(t);
   switch(col){
@@ -637,7 +648,7 @@ function listSortValue(t,col){
     case "corp": return t.corp||"";
     case "freq": return t.freq||"";
     case "status": return {todo:0,doing:1,done:2}[t.status]??9;
-    case "due": return (t.due_date||"9999")+(t.due_time||"99:99");
+    case "due": { const d=currentDueOf(t); return (d.due_date||"9999")+(d.due_time||"99:99"); }
     case "progress": return steps.length?steps.filter(s=>s.completed_at).length/steps.length:-1;
   }
   return "";
@@ -658,7 +669,7 @@ function listViewHtml(list){
         <td>${esc(t.corp)}</td>
         <td>${t.freq!=="once"?esc(FREQ_LABEL[t.freq]):"単発"}</td>
         <td>${STATUS_LABEL[t.status]}</td>
-        <td>${fmtDD(t.due_date,t.due_time)}</td>
+        <td>${(()=>{const d=currentDueOf(t);return fmtDD(d.due_date,d.due_time);})()}</td>
         <td>${total?`${done}/${total}`:"—"}</td>
       </tr>`;
     }).join("")||`<tr><td colspan="${LIST_COLS.length}">該当するタスクがありません</td></tr>`}</tbody>
@@ -668,7 +679,7 @@ function listViewHtml(list){
    日付は due_date が無ければ target_date を使う。完了/期限超過/本日期限で色分け。
    過去に完了したタスクは今月分しか読み込んでいない(fetchBoard)ため、他月は未完了分のみ表示される点は
    仕様として許容（過去の完了実績は既存の📁過去タスク画面が担当） */
-function calendarDateOf(t){ return t.due_date||t.target_date||null; }
+function calendarDateOf(t){ const d=currentDueOf(t); return d.due_date||t.due_date||t.target_date||null; }
 function calendarViewHtml(list){
   const [y,m]=CAL_MONTH.split("-").map(Number);
   const daysInMonth=new Date(y,m,0).getDate();
@@ -960,14 +971,14 @@ function renderDetail(u){
       <div style="margin-top:8px">
         ${t.status==="done"?`<button class="linkbtn" id="undotask">↩️ 完了を取り消す</button>`:""}
         ${canFeature(u,"templates")?`<button class="linkbtn" id="totemplate">📋 テンプレートに登録</button>`:""}
-        ${t.created_by===u.id?`<button class="linkbtn" id="deltask">🗑 タスクを削除</button>`:""}
+        ${canManage(u)?`<button class="linkbtn" id="deltask">🗑 タスクを削除</button>`:""}
       </div>
       <div class="err" id="taskactmsg"></div>
     </div>
     <div class="card pad"><div class="summary">
       <div class="mini"><small>現在の担当</small><b>${esc(userName(sig.cur?.assignee_id)||"—")}</b></div>
       <div class="mini"><small>全体期限</small><b>${fmtDD(t.due_date,t.due_time)}</b></div>
-      <div class="mini"><small>現在工程</small><b>${sig.cur?esc(sig.cur.title):"—"}</b></div>
+      <div class="mini"><small>現在工程</small><b>${sig.cur?esc(sig.cur.title):"—"}</b>${sig.cur?.due_date?`<div class="meta" style="margin-top:2px">工程期日 ${fmtDD(sig.cur.due_date,sig.cur.due_time)}</div>`:""}</div>
       <div class="mini"><small>未完了チェック</small><b style="${uncheckedCount?"color:var(--stall)":""}">${uncheckedCount}件</b></div>
     </div></div>
   </div>
@@ -1348,6 +1359,7 @@ function stepHtml(t,s,u){
     </div>
     ${hasPanel&&panelOpen?`<div style="padding:8px 12px 4px" onclick="event.stopPropagation()">
         ${canEditAssign?`<div class="ownerline">
+          <div class="fieldbox"><label>工程名</label><input data-steptitle="${s.id}" value="${esc(s.title)}"></div>
           <div class="fieldbox"><label>担当</label><select data-stepowner="${s.id}"><option value="">未定</option>${assignableUsers().map(x=>`<option value="${x.id}" ${s.assignee_id===x.id?"selected":""}>${esc(x.name)}</option>`).join("")}</select></div>
           <div class="fieldbox"><label>工程期限</label><div style="display:flex;gap:6px"><input type="date" data-stepdue="${s.id}" value="${esc(s.due_date||"")}" style="flex:1"><input type="time" data-steptime="${s.id}" value="${esc(s.due_time||"")}" style="flex:1"></div></div>
         </div>
@@ -1806,10 +1818,13 @@ function wireDetail(t,u){
   };
   if($("totemplate")) $("totemplate").onclick=()=>registerTaskAsTemplate(t,u);
   if($("deltask")) $("deltask").onclick=async()=>{
-    if(!confirm("このタスクを削除しますか？工程・写真・履歴もすべて削除され、元に戻せません。"))return;
+    // 2026-08-31(E-4): 誤削除防止のため確認ダイアログ＋論理削除（deleted_at）に変更。
+    // 一覧・検索・かんばん・過去タスクからは消えるが、DB上のデータ自体は残るため復旧可能
+    if(!confirm(`「${t.title}」を削除しますか？一覧から見えなくなります（工程・履歴のデータ自体は残ります）。よろしいですか？`))return;
     const msg=$("taskactmsg"); msg.textContent="削除中…";
-    const r=await authed(`/rest/v1/hq_tasks?id=eq.${t.id}`,{method:"DELETE"});
-    if(!r.ok){ msg.textContent="削除できませんでした（作成者のみ削除できます）"; return; }
+    const r=await authed(`/rest/v1/hq_tasks?id=eq.${t.id}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({deleted_at:new Date().toISOString()})});
+    if(!r.ok){ msg.textContent="削除できませんでした"; return; }
+    await logActivity(t.id,"comment",`タスク「${t.title}」を削除`);
     CUR_TASK=null;
     await fetchBoard(); goBack(u);
   };
@@ -1833,14 +1848,17 @@ function wireDetail(t,u){
       const sid=btn.dataset.stepsavemeta;
       const step=sortedSteps(t).find(s=>s.id===sid);
       const msg=$("stepmetamsg-"+sid); if(msg){ msg.className="err"; msg.textContent="保存中…"; }
+      const newTitle=document.querySelector(`[data-steptitle="${sid}"]`).value.trim();
       const newAssignee=document.querySelector(`[data-stepowner="${sid}"]`).value||null;
       const newDue=document.querySelector(`[data-stepdue="${sid}"]`).value||null;
       const newDueTime=document.querySelector(`[data-steptime="${sid}"]`).value||null;
+      if(!newTitle){ if(msg) msg.textContent="工程名を入力してください"; return; }
       btn.disabled=true;
       const r=await authed(`/rest/v1/hq_task_steps?id=eq.${sid}`,{method:"PATCH",headers:{Prefer:"return=minimal"},
-        body:JSON.stringify({assignee_id:newAssignee,due_date:newDue,due_time:newDueTime})});
+        body:JSON.stringify({title:newTitle,assignee_id:newAssignee,due_date:newDue,due_time:newDueTime})});
       if(!r.ok){ if(msg) msg.textContent="保存できませんでした"; btn.disabled=false; return; }
       const changes=[];
+      if(step.title!==newTitle) changes.push(`工程名: ${step.title}→${newTitle}`);
       if((step.assignee_id||null)!==newAssignee) changes.push(`担当: ${userName(step.assignee_id)||"未定"}→${userName(newAssignee)||"未定"}`);
       if((step.due_date||null)!==newDue||(step.due_time||null)!==newDueTime) changes.push(`期限: ${fmtDD(step.due_date,step.due_time)}→${fmtDD(newDue,newDueTime)}`);
       if(changes.length) await logActivity(t.id,"comment",`工程「${step.title}」を編集（${changes.join("・")}）`,sid);
@@ -2269,7 +2287,7 @@ let OPEN_DAILY=null;
 let DAILY_MINE=false;
 async function fetchDaily(){
   const today=todayStr();
-  const r=await authed(`/rest/v1/hq_tasks?freq=eq.daily&or=(target_date.eq.${today},status.neq.done)&select=*,hq_task_steps(*)&order=target_date.asc`);
+  const r=await authed(`/rest/v1/hq_tasks?freq=eq.daily&or=(target_date.eq.${today},status.neq.done)&deleted_at=is.null&select=*,hq_task_steps(*)&order=target_date.asc`);
   DAILY_TASKS=(r.ok&&Array.isArray(r.body))?r.body:[];
 }
 function groupStoreSteps(steps){
@@ -3386,7 +3404,7 @@ let PAST_MONTH=null;
 let PAST_TASKS=[];
 async function fetchPastMonths(){
   const monthStart=monthStartStr();
-  const r=await authed(`/rest/v1/hq_tasks?status=eq.done&completed_at=lt.${monthStart}&select=completed_at&order=completed_at.desc&limit=1000`);
+  const r=await authed(`/rest/v1/hq_tasks?status=eq.done&completed_at=lt.${monthStart}&deleted_at=is.null&select=completed_at&order=completed_at.desc&limit=1000`);
   const set=new Set();
   if(r.ok&&Array.isArray(r.body)) r.body.forEach(t=>{ set.add(t.completed_at.slice(0,7)); });
   PAST_MONTHS=[...set].sort().reverse();
@@ -3397,7 +3415,7 @@ async function fetchPastTasks(ym){
   const start=ym+"-01";
   const d=new Date(start+"T00:00:00"); d.setMonth(d.getMonth()+1);
   const next=d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-01";
-  const r=await authed(`/rest/v1/hq_tasks?status=eq.done&completed_at=gte.${start}&completed_at=lt.${next}&select=*,hq_task_steps(*)&order=completed_at.desc`);
+  const r=await authed(`/rest/v1/hq_tasks?status=eq.done&completed_at=gte.${start}&completed_at=lt.${next}&deleted_at=is.null&select=*,hq_task_steps(*)&order=completed_at.desc`);
   PAST_TASKS=(r.ok&&Array.isArray(r.body))?r.body:[];
 }
 function renderPast(u){
