@@ -10,6 +10,8 @@
 #   ai-cockpit note     --message "メモ"           # 履歴に一行残す
 #   ai-cockpit error    --task TK-5 --message "…"  # エラー報告（Larkにも通知される）
 #   ai-cockpit list                                 # 未完了タスク一覧（TK番号の確認用）
+#   ai-cockpit add --title "…" --agent 担当A [--priority high] [--desc "…"] [--status ready]
+#                                                   # タスク登録（AIが新しい作業を積むとき）
 #
 # 運用ルール: ユーザー（中山さん）が自分のタスクを済ませたと報告してきたら、
 #   受けたセッションが list で番号を確認し done で代理完了する（本人に画面操作をさせない）
@@ -88,6 +90,7 @@ CMDS = {
     "note":     dict(event_type="note"),
     "error":    dict(event_type="error"),
     "list":     dict(),
+    "add":      dict(),
     "hb":       dict(status="running"),
     "idle":     dict(status="idle"),
     "approval-request": dict(status="waiting", event_type="approval_request"),
@@ -126,23 +129,44 @@ def main():
             print(f"ai-cockpit: 取得失敗: {e}", file=sys.stderr)
         return 0
 
-    # hbは20秒間引き
-    if cmd == "hb":
+    g = git_info()
+    agent = flags.get("agent") or os.environ.get("AI_COCKPIT_AGENT", "")
+    session_key = conf["DEVICE_KEY"] + ":" + (agent or g.get("repository") or "session")
+
+    # タスク登録
+    if cmd == "add":
+        if not flags.get("title"):
+            print("--title を指定してください", file=sys.stderr)
+            return 0
+        payload = {"token": conf["TOKEN"], "agent_name": agent or g.get("repository", ""),
+                   "create_task": {"title": flags["title"], "description": flags.get("desc", ""),
+                                   "assignee_name": agent or "", "priority": flags.get("priority", "mid"),
+                                   "status": flags.get("status", "backlog"),
+                                   "repository": g.get("repository", "")}}
+        req = urllib.request.Request(conf["INGEST_URL"], data=json.dumps(payload).encode("utf-8"),
+                                     headers={"Content-Type": "application/json"}, method="POST")
         try:
-            if time.time() - os.path.getmtime(THROTTLE_PATH) < THROTTLE_SEC:
+            with urllib.request.urlopen(req, timeout=8) as res:
+                body = json.loads(res.read().decode("utf-8"))
+                print("ai-cockpit: 登録OK " + str(body.get("task")))
+        except Exception as e:
+            print(f"ai-cockpit: 登録失敗: {e}", file=sys.stderr)
+        return 0
+
+    # hbは20秒間引き（セッション単位＝リポジトリ/担当ごとに別カウント）
+    if cmd == "hb":
+        tpath = THROTTLE_PATH + "_" + "".join(c for c in session_key if c.isalnum() or c in "-_")
+        try:
+            if time.time() - os.path.getmtime(tpath) < THROTTLE_SEC:
                 return 0
         except OSError:
             pass
         try:
             os.makedirs(CONF_DIR, exist_ok=True)
-            with open(THROTTLE_PATH, "w") as f:
+            with open(tpath, "w") as f:
                 f.write(str(time.time()))
         except OSError:
             pass
-
-    g = git_info()
-    agent = flags.get("agent") or os.environ.get("AI_COCKPIT_AGENT", "")
-    session_key = conf["DEVICE_KEY"] + ":" + (agent or g.get("repository") or "session")
 
     payload = {
         "token": conf["TOKEN"],
@@ -154,7 +178,8 @@ def main():
         **g,
     }
     payload.update(CMDS[cmd])
-    if agent: payload["agent_name"] = agent
+    # 担当名未指定でもリポジトリ名で名乗る（自動フック経由でもLIVEカードに名前が出るように）
+    payload["agent_name"] = agent or g.get("repository") or conf["DEVICE_KEY"]
     if flags.get("task"): payload["task_no"] = flags["task"]
     if flags.get("percent"):
         try: payload["progress_percent"] = max(0, min(100, int(flags["percent"])))

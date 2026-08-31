@@ -42,6 +42,28 @@ Deno.serve(async (req) => {
     return json({ ok: true, tasks: rows ?? [] });
   }
 
+  // タスク登録（AIセッションが新しい作業を積むためのアクション。ai-cockpit add から呼ばれる）
+  if (b.create_task) {
+    const ct = b.create_task;
+    if (!ct.title) return json({ ok: false, error: "titleが必要です" }, 400);
+    const ins = {
+      title: String(ct.title), description: String(ct.description ?? ""),
+      priority: ["highest", "high", "mid", "low"].includes(ct.priority) ? ct.priority : "mid",
+      assignee_name: String(ct.assignee_name ?? ""),
+      assignee_type: ct.assignee_name === "中山" ? "human" : "ai",
+      repository: String(ct.repository ?? ""), project: String(ct.project ?? ""),
+      status: ["backlog", "ready", "in_progress", "waiting_human"].includes(ct.status) ? ct.status : "backlog",
+    };
+    const { data: t, error } = await sb.from("ck_tasks").insert(ins).select().single();
+    if (error) return json({ ok: false, error: error.message }, 500);
+    await sb.from("ck_events").insert({
+      task_id: t.id, event_type: "task_create",
+      message: `${b.agent_name || "AI"}がタスク作成: ${t.title}`,
+      metadata: { agent: b.agent_name ?? "" },
+    });
+    return json({ ok: true, task: "TK-" + t.task_no });
+  }
+
   const deviceKey = (b.device_key ?? "").trim();
   if (!deviceKey) return json({ ok: false, error: "device_keyが必要です" }, 400);
   const now = new Date().toISOString();

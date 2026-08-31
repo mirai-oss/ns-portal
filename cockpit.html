@@ -268,7 +268,7 @@ async function loadAll(manual){
   DB.devices=dv.body||[]; DB.sessions=ss.body||[]; DB.tasks=tk.body||[];
   DB.events=ev.body||[]; DB.approvals=ap.body||[]; DB.instructions=inst.body||[];
   renderAll();
-  $("syncText").textContent="最終同期: "+new Date().toLocaleTimeString("ja-JP",{timeZone:"Asia/Tokyo"})+"（30秒ごと自動更新・どのPCから見ても同じ状態）";
+  $("syncText").textContent="最終同期: "+new Date().toLocaleTimeString("ja-JP",{timeZone:"Asia/Tokyo"})+"（15秒ごと自動更新・どのPCから見ても同じ状態）";
   if(manual) toast("同期しました");
 }
 
@@ -604,7 +604,9 @@ async function main(){
   ME=u; $("gate").style.display="none";
   fillSelectors(); genInstr();
   await loadAll();
-  clearInterval(TIMER); TIMER=setInterval(()=>{ if(!document.hidden) loadAll(); },30000);
+  clearInterval(TIMER); TIMER=setInterval(()=>{ if(!document.hidden) loadAll(); },15000);
+  document.addEventListener("visibilitychange",()=>{ if(!document.hidden&&ME) loadAll(); });
+  window.addEventListener("focus",()=>{ if(ME) loadAll(); });
 }
 main();
 </script>
