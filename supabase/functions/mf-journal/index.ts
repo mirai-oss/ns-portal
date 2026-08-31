@@ -5,6 +5,9 @@
 //   - "suggest" : 過去の仕訳（当期分）からvendor_nameに一致する最有力候補を1件だけ返す（初期表示用）
 //   - "list_journals": 過去の仕訳（当期＋前期）をキーワード検索し、複数件を一覧で返す
 //                 （①「仕訳日記帳から選ぶ」モード用。空欄なら直近の仕訳を新しい順に返す）
+//   - "list_departments"（2026-08-31追加）: キーワードを問わず、過去の仕訳に登場した部門一覧だけを返す。
+//                 マネーフォワードには部門マスタ取得APIが無いため代用。仕訳辞書（テンプレート）を
+//                 特定の請求書と無関係に作成・編集する画面（invoices.html設定タブ）で使う
 //   - "create"  : 実際に仕訳を登録する（POST /api/v3/journals）。branchesは複数行（複合仕訳/振替伝票）に対応。
 //                 呼び出し前にinvoice_can_access()で権限確認。成功したらinvoices.mf_journal_id等を更新し
 //                 invoice_audit_logsへ記録。invoices.linked_hq_step_idが設定されていれば、その本部タスクの
@@ -144,7 +147,11 @@ Deno.serve(async (req: Request) => {
       return json({ success: true, accounts: data.accounts ?? [] });
     }
 
-    if (action === "suggest" || action === "list_journals") {
+    if (action === "suggest" || action === "list_journals" || action === "list_departments") {
+      // list_departments（2026-08-31追加）: キーワードに関係なく、過去の仕訳に登場した部門一覧だけを返す。
+      // マネーフォワードには部門マスタを直接取得するAPIが無いため、履歴から集めて代用。
+      // 仕訳辞書（invoices.html設定タブ）でテンプレートを作るとき、特定の請求書に紐づかない
+      // 状態でも部門を選べるようにするために追加した
       const keyword: string = (body?.vendor_name ?? body?.keyword ?? "").trim();
       if (action === "suggest" && !keyword) return json({ success: true, match: null, departments: [] });
 
@@ -182,6 +189,9 @@ Deno.serve(async (req: Request) => {
       }
       if (best) delete best._date;
 
+      if (action === "list_departments") {
+        return json({ success: true, departments: Array.from(deptMap, ([id, name]) => ({ id, name })), searched_count: journals.length });
+      }
       if (action === "list_journals") {
         matches.sort((a, b) => (a.transaction_date < b.transaction_date ? 1 : -1)); // 新しい順
         return json({ success: true, results: matches.slice(0, 30), searched_count: journals.length });

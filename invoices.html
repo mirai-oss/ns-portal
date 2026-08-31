@@ -151,6 +151,38 @@ button,input,select,textarea{font:inherit}
 .replybox textarea{width:100%;border:1px solid var(--m-line);border-radius:10px;padding:10px;min-height:100px;background:var(--panel);color:var(--ink)}
 .confirmbox{background:var(--bg);border:1px solid var(--m-line);border-radius:10px;padding:12px;margin-top:10px;font-size:13px;white-space:pre-wrap}
 
+/* ---- 仕訳作成（振替伝票入力）: マネーフォワードの入力画面に近いテーブル形式 2026-08-31 ---- */
+.mfj-balance{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin:10px 0}
+.mfj-balance .box{padding:10px;border-radius:10px;border:1px solid var(--m-line);background:var(--bg)}
+.mfj-balance .box small{display:block;color:var(--m-muted);font-size:10px}
+.mfj-balance .box b{display:block;font-size:17px;margin-top:3px}
+.mfj-balance .box.ok{background:var(--m-greensoft);border-color:var(--m-green)}
+.mfj-balance .box.ng{background:var(--m-redsoft);border-color:var(--m-red)}
+.mfj-gridwrap{overflow-x:auto;margin-top:4px;border:1px solid var(--m-line);border-radius:10px}
+.mfj-grid{width:100%;border-collapse:collapse;min-width:820px;font-size:11px}
+.mfj-grid th,.mfj-grid td{border-bottom:1px solid var(--m-line);border-right:1px solid var(--m-line);padding:6px;vertical-align:top}
+.mfj-grid th:last-child,.mfj-grid td:last-child{border-right:none}
+.mfj-grid th{background:var(--bg);font-size:10px;color:var(--m-muted);font-weight:700;text-align:left}
+.mfj-grid th.side{font-size:12px;background:var(--m-bluesoft);color:var(--m-blue);text-align:center}
+.mfj-grid select,.mfj-grid input,.mfj-grid textarea{width:100%;border:1px solid var(--m-line);border-radius:6px;padding:6px;background:var(--panel);color:var(--ink);font-size:11px}
+.mfj-grid textarea{min-height:40px;resize:vertical}
+.mfj-grid input.mfj-amt{text-align:right;font-weight:800;background:var(--m-bluesoft)}
+.mfj-grid td.mfj-rmcell{width:30px;text-align:center;vertical-align:middle}
+.mfj-grid td.mfj-rmcell button{border:0;background:#8f99a5;color:#fff;border-radius:50%;width:22px;height:22px;cursor:pointer}
+.mfj-preview-entry{border:1px solid var(--m-line);border-radius:10px;overflow:hidden;margin-bottom:8px}
+.mfj-preview-head{display:grid;grid-template-columns:1fr 1fr;background:var(--bg)}
+.mfj-preview-head div{padding:6px 9px;font-size:10px;font-weight:700;color:var(--m-muted)}
+.mfj-preview-body{display:grid;grid-template-columns:1fr 1fr;border-top:1px solid var(--m-line)}
+.mfj-preview-side{padding:9px;border-right:1px solid var(--m-line)}
+.mfj-preview-side:last-child{border-right:none}
+.mfj-preview-side .acc{font-weight:800;font-size:13px}
+.mfj-preview-side .sub{font-size:10px;color:var(--m-muted);margin-top:2px}
+.mfj-preview-side .money{font-size:15px;font-weight:800;text-align:right;margin-top:6px}
+.mfj-preview-remark{padding:7px 9px;background:var(--bg);font-size:11px;border-top:1px solid var(--m-line);color:var(--muted)}
+.mfj-tpl-item{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:9px;border:1px solid var(--m-line);border-radius:9px;margin-bottom:6px;background:var(--bg)}
+.mfj-tpl-item .lbl{font-size:12px;font-weight:700}
+.mfj-tpl-item .sum{font-size:10px;color:var(--m-muted);margin-top:2px}
+
 .invoice-list{display:none}.invoice-list.active{display:block}
 .mail-inbox{display:none}.mail-inbox.active{display:block}
 .invoice-table{width:100%;border-collapse:collapse}
@@ -276,6 +308,14 @@ async function signAttachmentUrls(paths){
 function fmtDT(t){ if(!t) return "—"; const d=new Date(t); return `${d.getMonth()+1}/${d.getDate()} ${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`; }
 function fmtD(t){ if(!t) return "—"; const d=new Date(t); return `${d.getMonth()+1}/${d.getDate()}`; }
 function yen(n){ return n==null?"—":"¥"+Number(n).toLocaleString(); }
+// マネーフォワード連携Edge Function（mf-journal）への共通呼び出し。仕訳作成モーダル（openMailDetail内）と
+// 設定タブの仕訳辞書管理の両方から使うため、トップレベルに置く（2026-08-31）
+async function mfCall(action,extra={}){
+  const s=sess.get();
+  const r=await fetch(SUPA_URL+"/functions/v1/mf-journal",{method:"POST",headers:{"Content-Type":"application/json","apikey":SUPA_KEY,"Authorization":"Bearer "+(s?s.at:"")},body:JSON.stringify({action,...extra})});
+  const j=await r.json().catch(()=>({}));
+  return {ok:r.ok,body:j};
+}
 
 // 本文中のリンクをクリックできるようにする（スクリプトは実行させない=XSS対策は維持）。
 // iframeはsandbox="allow-popups allow-popups-to-escape-sandbox"のみ許可＝
@@ -1073,12 +1113,7 @@ function wireDetailActions(u){
     if(box.classList.contains("open")) await mfjRenderInitial();
   };
 
-  async function mfjCall(action,extra={}){
-    const s=sess.get();
-    const r=await fetch(SUPA_URL+"/functions/v1/mf-journal",{method:"POST",headers:{"Content-Type":"application/json","apikey":SUPA_KEY,"Authorization":"Bearer "+(s?s.at:"")},body:JSON.stringify({action,...extra})});
-    const j=await r.json().catch(()=>({}));
-    return {ok:r.ok,body:j};
-  }
+  const mfjCall=mfCall; // 設定タブと共通化（2026-08-31。トップレベルのmfCall()を参照するだけ）
 
   // 勘定科目の検索用インデックスを構築（datalistの表示名→id の逆引き用）
   function mfjBuildAccountIndex(){
@@ -1139,9 +1174,15 @@ function wireDetailActions(u){
     mfjLoadForTenant(tenants[0]?tenants[0].id:"default",tenants);
   }
 
+  // 仕訳辞書（事業者ごとに登録した仕訳テンプレート。設定タブでも管理できる）を取得
+  async function mfjFetchTemplates(tenantId){
+    const r=await authed(`/rest/v1/mf_journal_templates?tenant_id=eq.${encodeURIComponent(tenantId)}&select=id,label,branches&order=label`);
+    return (r.ok&&Array.isArray(r.body))?r.body:[];
+  }
+
   async function mfjLoadForTenant(tenantId,tenants,autoMatchedFrom){
     const body=$("mfj-body");
-    body.innerHTML="読み込み中…（勘定科目・過去の仕訳を確認しています）";
+    body.innerHTML="読み込み中…（勘定科目・過去の仕訳・仕訳辞書を確認しています）";
     const inv=SELECTED.invoice;
     const vendorName=(inv&&inv.vendor_name)||"";
     // 同時に呼ぶとマネーフォワード側のトークン更新が競合することがあるため直列で呼ぶ
@@ -1149,48 +1190,74 @@ function wireDetailActions(u){
     if(!accRes.ok){ body.innerHTML=`<div class="err">勘定科目の取得に失敗しました: ${esc(accRes.body.error||"")}${accRes.body.detail?"（詳細: "+esc(JSON.stringify(accRes.body.detail))+"）":""}<br><button id="mfj-retry" style="margin-top:8px">🔄 もう一度試す</button></div>`; if($("mfj-retry")) $("mfj-retry").onclick=mfjRenderInitial; return; }
     const sugRes=await mfjCall("suggest",{vendor_name:vendorName,tenant_id:tenantId});
     const listRes=await mfjCall("list_journals",{keyword:vendorName,tenant_id:tenantId});
+    // suggestが（vendor_name空欄等で）部門を返せなかった場合は、部門専用の問い合わせで代用する
+    const deptRes=(sugRes.ok&&sugRes.body.departments&&sugRes.body.departments.length)?sugRes:await mfjCall("list_departments",{tenant_id:tenantId});
+    const templates=await mfjFetchTemplates(tenantId);
     const tenantLabel=(tenants||[]).find(t=>t.id===tenantId)?.label||tenantId;
     MFJ_STATE={
       tenantId, tenantLabel, tenants: tenants||[], autoMatchedFrom: autoMatchedFrom||null,
-      mode:"journal", // 既定は①仕訳日記帳から選ぶ。候補が無ければ②勘定科目から直接選ぶへ切替
+      mode:"journal", // 既定は①仕訳日記帳から選ぶ。候補が無ければ②仕訳辞書→③直接入力の順で切替
       accounts: accRes.body.accounts||[],
-      departments: (sugRes.ok&&sugRes.body.departments)||[],
+      departments: (deptRes.ok&&deptRes.body.departments)||[],
       journalResults: (listRes.ok&&listRes.body.results)||[],
       journalKeyword: vendorName,
+      templates,
       branches: [], // 確定した明細行（複数行=複合仕訳/振替伝票）
       amount: (inv&&inv.amount!=null)?inv.amount:0,
       remark: vendorName,
       date: (inv&&inv.due_date)||new Date().toISOString().slice(0,10),
     };
     mfjBuildAccountIndex();
-    // 候補が1件も無ければ最初から②へ
-    if(!MFJ_STATE.journalResults.length) MFJ_STATE.mode="manual";
+    // 過去の仕訳の候補が1件も無ければ、仕訳辞書があればそちらを優先→どちらも無ければ直接入力へ
+    if(!MFJ_STATE.journalResults.length) MFJ_STATE.mode=MFJ_STATE.templates.length?"dict":"manual";
     if(MFJ_STATE.mode==="manual") mfjAddBranchRow();
     mfjRenderForm();
   }
 
   function mfjAddBranchRow(){
-    MFJ_STATE.branches.push({debitLabel:"",creditLabel:"",department_id:"",amount:MFJ_STATE.branches.length?"":MFJ_STATE.amount});
+    MFJ_STATE.branches.push({debitLabel:"",creditLabel:"",department_id:"",amount:MFJ_STATE.branches.length?"":MFJ_STATE.amount,remark:""});
+  }
+  // 仕訳辞書・過去の仕訳の複数行をまとめて明細行エディタへ反映し、直接入力モードへ切り替える
+  function mfjApplyBranches(branches){
+    MFJ_STATE.branches=branches.length?branches:[{debitLabel:"",creditLabel:"",department_id:"",amount:MFJ_STATE.amount||"",remark:""}];
+    MFJ_STATE.mode="manual";
+    mfjRenderForm();
   }
 
+  // 振替伝票入力（マネーフォワードの入力画面と同じ、借方/貸方を横に並べた表形式）の1行分
   function mfjBranchRowHtml(br,idx){
     const deptOptions=`<option value="">（指定なし）</option>`+MFJ_STATE.departments.map(d=>`<option value="${esc(d.id)}" ${br.department_id===d.id?"selected":""}>${esc(d.name)}</option>`).join("");
-    return `<div class="ai-field mfj-branch-row" style="margin-bottom:8px" data-idx="${idx}">
-      <div style="display:flex;justify-content:space-between;align-items:center"><small>明細行${idx+1}</small>${MFJ_STATE.branches.length>1?`<button data-mfjrm="${idx}" style="font-size:11px">✕ この行を削除</button>`:""}</div>
-      <div class="ai-grid" style="margin-top:4px">
-        <div class="ai-field"><small>借方勘定科目（検索可）</small><input list="mfj-acc-datalist" class="mfj-branch-debit" data-idx="${idx}" value="${esc(br.debitLabel||"")}"></div>
-        <div class="ai-field"><small>貸方勘定科目・相手勘定（検索可）</small><input list="mfj-acc-datalist" class="mfj-branch-credit" data-idx="${idx}" value="${esc(br.creditLabel||"")}"></div>
-        <div class="ai-field"><small>部門（店舗・任意）</small><select class="mfj-branch-dept" data-idx="${idx}">${deptOptions}</select></div>
-        <div class="ai-field"><small>金額</small><input type="number" class="mfj-branch-amount" data-idx="${idx}" value="${br.amount}"></div>
-      </div>
-    </div>`;
+    const amt=br.amount===""||br.amount==null?"":br.amount;
+    return `<tr class="mfj-branch-row" data-idx="${idx}">
+      <td class="mfj-rmcell">${MFJ_STATE.branches.length>1?`<button data-mfjrm="${idx}" title="この行を削除">−</button>`:""}</td>
+      <td>
+        <input list="mfj-acc-datalist" class="mfj-branch-debit" data-idx="${idx}" value="${esc(br.debitLabel||"")}" placeholder="借方勘定科目（検索可）">
+        <select class="mfj-branch-dept" data-idx="${idx}" style="margin-top:4px">${deptOptions}</select>
+      </td>
+      <td><input type="number" class="mfj-branch-amount mfj-amt" data-idx="${idx}" value="${amt}"></td>
+      <td><input list="mfj-acc-datalist" class="mfj-branch-credit" data-idx="${idx}" value="${esc(br.creditLabel||"")}" placeholder="貸方勘定科目（検索可）"></td>
+      <td><input type="number" class="mfj-amt" value="${amt}" disabled style="opacity:.65" title="借方と同額で登録されます"></td>
+      <td><textarea class="mfj-branch-remark" data-idx="${idx}" placeholder="行ごとの摘要（空欄なら全体の摘要を使用）">${esc(br.remark||"")}</textarea></td>
+    </tr>`;
+  }
+
+  function mfjUpdateBalance(){
+    const total=MFJ_STATE.branches.reduce((s,b)=>s+(Number(b.amount)||0),0);
+    if($("mfj-debit-total")) $("mfj-debit-total").textContent=yen(total);
+    if($("mfj-credit-total")) $("mfj-credit-total").textContent=yen(total);
   }
 
   function mfjWireBranchRows(){
     document.querySelectorAll(".mfj-branch-debit").forEach(el=>el.oninput=()=>{ MFJ_STATE.branches[+el.dataset.idx].debitLabel=el.value; });
     document.querySelectorAll(".mfj-branch-credit").forEach(el=>el.oninput=()=>{ MFJ_STATE.branches[+el.dataset.idx].creditLabel=el.value; });
     document.querySelectorAll(".mfj-branch-dept").forEach(el=>el.onchange=()=>{ MFJ_STATE.branches[+el.dataset.idx].department_id=el.value; });
-    document.querySelectorAll(".mfj-branch-amount").forEach(el=>el.oninput=()=>{ MFJ_STATE.branches[+el.dataset.idx].amount=el.value; });
+    document.querySelectorAll(".mfj-branch-remark").forEach(el=>el.oninput=()=>{ MFJ_STATE.branches[+el.dataset.idx].remark=el.value; });
+    document.querySelectorAll(".mfj-branch-amount").forEach(el=>el.oninput=()=>{
+      MFJ_STATE.branches[+el.dataset.idx].amount=el.value;
+      const mirror=el.closest("tr").querySelectorAll(".mfj-amt")[1];
+      if(mirror) mirror.value=el.value;
+      mfjUpdateBalance();
+    });
     document.querySelectorAll("[data-mfjrm]").forEach(el=>el.onclick=()=>{ MFJ_STATE.branches.splice(+el.dataset.mfjrm,1); mfjRenderForm(); });
   }
 
@@ -1209,43 +1276,98 @@ function wireDetailActions(u){
       :`<div style="font-size:12px;color:var(--muted)">${MFJ_STATE.journalKeyword?"該当する過去の仕訳が見つかりませんでした":"キーワードを入力して検索してください"}</div>`;
     document.querySelectorAll("[data-mfjpick]").forEach(btn=>btn.onclick=()=>{
       const r=MFJ_STATE.journalResults[+btn.dataset.mfjpick];
-      MFJ_STATE.branches=[{
+      mfjApplyBranches([{
         debitLabel:mfjLabelOf(r.template.debit), creditLabel:mfjLabelOf(r.template.credit),
         department_id:(r.template.debit&&r.template.debit.department_id)||(r.template.credit&&r.template.credit.department_id)||"",
         amount:MFJ_STATE.amount||(r.template.debit&&r.template.debit.value)||"",
-      }];
-      MFJ_STATE.mode="manual"; // 選んだ後は明細行エディタで最終確認・金額調整させる
-      mfjRenderForm();
+        remark:r.template.remark||"",
+      }]);
     });
+  }
+
+  // 仕訳辞書（管理システム内で登録したテンプレート。1件で複数の明細行を持てる＝振替伝票まるごと保存できる）
+  function mfjRenderTemplateResults(){
+    const el=$("mfj-tpl-results");
+    if(!el) return;
+    const tpls=MFJ_STATE.templates||[];
+    el.innerHTML=tpls.length?tpls.map((t,i)=>{
+      const sum=(t.branches||[]).map(b=>`${mfjLabelOf(b.debit)||"?"}／${mfjLabelOf(b.credit)||"?"}`).join("、");
+      return `<div class="mfj-tpl-item"><div><div class="lbl">${esc(t.label)}</div><div class="sum">${esc(sum)}（${(t.branches||[]).length}行）</div></div><button data-mfjtpluse="${i}" style="font-size:12px;white-space:nowrap">この仕訳辞書を使う</button></div>`;
+    }).join("")
+      :`<div style="font-size:12px;color:var(--muted)">この事業者にはまだ仕訳辞書が登録されていません。「🔧 直接入力」で内容を作ってから「💾 仕訳辞書に登録」で追加できます（設定タブでも管理できます）。</div>`;
+    document.querySelectorAll("[data-mfjtpluse]").forEach(btn=>btn.onclick=()=>{
+      const t=MFJ_STATE.templates[+btn.dataset.mfjtpluse];
+      const branches=(t.branches||[]).map(b=>({
+        debitLabel:mfjLabelOf(b.debit), creditLabel:mfjLabelOf(b.credit),
+        department_id:b.department_id||"", amount:b.amount||MFJ_STATE.amount||"", remark:b.remark||"",
+      }));
+      mfjApplyBranches(branches);
+    });
+  }
+
+  // 今組んでいる明細行を仕訳辞書として保存（次回から「📗 仕訳辞書から選ぶ」に出てくる）
+  async function mfjSaveAsTemplate(){
+    const label=(prompt("仕訳辞書として登録する名前を入力してください（例: 【未払金】アルバイト給与）")||"").trim();
+    if(!label) return;
+    const structured=[];
+    for(const b of MFJ_STATE.branches){
+      const debit=MFJ_STATE.accountLabelMap.get(b.debitLabel);
+      const credit=MFJ_STATE.accountLabelMap.get(b.creditLabel);
+      if(!debit||!credit){ alert("借方・貸方をプルダウンの候補から選んでから登録してください"); return; }
+      structured.push({debit,credit,department_id:b.department_id||null,department_name:(MFJ_STATE.departments.find(d=>d.id===b.department_id)||{}).name||null,amount:Number(b.amount)||null,remark:b.remark||null});
+    }
+    if(!structured.length){ alert("明細行がありません"); return; }
+    const msg=$("mfj-msg");
+    const r=await authed("/rest/v1/mf_journal_templates",{method:"POST",headers:{Prefer:"return=minimal"},body:JSON.stringify({tenant_id:MFJ_STATE.tenantId,label,branches:structured,created_by:ME.id})});
+    if(!r.ok){ msg.className="err"; msg.textContent="仕訳辞書への登録に失敗しました"; return; }
+    msg.className="err msg-ok"; msg.textContent=`仕訳辞書「${label}」に登録しました`;
+    MFJ_STATE.templates=await mfjFetchTemplates(MFJ_STATE.tenantId);
   }
 
   function mfjRenderForm(){
     const body=$("mfj-body");
-    const isJournalMode=MFJ_STATE.mode==="journal";
+    const mode=MFJ_STATE.mode;
+    const totalNow=MFJ_STATE.branches.reduce((s,b)=>s+(Number(b.amount)||0),0);
     body.innerHTML=`
       <datalist id="mfj-acc-datalist">${MFJ_STATE.accountDatalistHtml||""}</datalist>
       ${MFJ_STATE.tenants&&MFJ_STATE.tenants.length>1?`<div class="ai-field" style="margin-bottom:6px;font-size:11px;color:${MFJ_STATE.autoMatchedFrom?"var(--accent)":"var(--muted)"}">登録先: <b>${esc(MFJ_STATE.tenantLabel||"")}</b> <button id="mfj-change-tenant" style="font-size:10px">変更</button>${MFJ_STATE.autoMatchedFrom?`<br>⚠️ 宛先「${esc(MFJ_STATE.autoMatchedFrom)}」から自動選択しました。<b>本当にこの事業者で合っていますか？</b>違う場合は「変更」から選び直してください`:""}</div>`:""}
       <div class="mail-actions" style="margin-bottom:8px">
-        <button data-mfjmode="journal" ${isJournalMode?'class="primary"':""}>📖 過去の仕訳から選ぶ</button>
-        <button data-mfjmode="manual" ${!isJournalMode?'class="primary"':""}>🔧 勘定科目から直接選ぶ</button>
+        <button data-mfjmode="journal" ${mode==="journal"?'class="primary"':""}>📖 過去の仕訳から選ぶ</button>
+        <button data-mfjmode="dict" ${mode==="dict"?'class="primary"':""}>📗 仕訳辞書から選ぶ${MFJ_STATE.templates.length?`（${MFJ_STATE.templates.length}）`:""}</button>
+        <button data-mfjmode="manual" ${mode==="manual"?'class="primary"':""}>🔧 直接入力</button>
       </div>
-      ${isJournalMode?`<div id="mfj-journal-picker">
+      ${mode==="journal"?`<div id="mfj-journal-picker">
         <input id="mfj-journal-search" placeholder="会社名や勘定科目名で検索" value="${esc(MFJ_STATE.journalKeyword||"")}">
         <div id="mfj-journal-results" style="margin-top:6px"></div>
+      </div>`:mode==="dict"?`<div id="mfj-tpl-picker">
+        <div id="mfj-tpl-results"></div>
       </div>`:`
-      <div id="mfj-branch-rows">${MFJ_STATE.branches.map((br,i)=>mfjBranchRowHtml(br,i)).join("")}</div>
-      <div class="mail-actions" style="margin-top:4px"><button id="mfj-add-row">＋ 明細行を追加（振替伝票・複合仕訳の場合）</button></div>
+      <div class="mfj-balance">
+        <div class="box"><small>借方合計</small><b id="mfj-debit-total">${yen(totalNow)}</b></div>
+        <div class="box"><small>貸方合計</small><b id="mfj-credit-total">${yen(totalNow)}</b></div>
+        <div class="box ok"><small>差額</small><b>¥0</b></div>
+      </div>
+      <div class="mfj-gridwrap">
+        <table class="mfj-grid">
+          <thead>
+            <tr><th rowspan="2" style="width:26px"></th><th colspan="2" class="side">借方</th><th colspan="2" class="side" style="background:var(--m-greensoft);color:var(--m-green)">貸方</th><th rowspan="2">摘要（行ごと・任意）</th></tr>
+            <tr><th>勘定科目・部門</th><th>金額</th><th>勘定科目</th><th>金額</th></tr>
+          </thead>
+          <tbody id="mfj-branch-rows">${MFJ_STATE.branches.map((br,i)=>mfjBranchRowHtml(br,i)).join("")}</tbody>
+        </table>
+      </div>
+      <div style="font-size:10px;color:var(--muted);margin-top:4px">💡 各行は借方・貸方が同額の組として登録されます（差額は常に¥0。複数行を組み合わせれば振替伝票・複合仕訳になります）</div>
+      <div class="mail-actions" style="margin-top:6px">
+        <button id="mfj-add-row">＋ 明細行を追加（振替伝票・複合仕訳の場合）</button>
+        <button id="mfj-save-template">💾 この内容を仕訳辞書に登録</button>
+      </div>
       <div class="ai-grid" style="margin-top:8px">
         <div class="ai-field"><small>日付（会計計上日・自由に変更可）</small><input id="mfj-date" type="date" value="${esc(MFJ_STATE.date)}"></div>
-        <div class="ai-field"><small>摘要</small><input id="mfj-remark" value="${esc(MFJ_STATE.remark)}"></div>
+        <div class="ai-field"><small>摘要（全体・行ごとの摘要が空の場合に使われます）</small><input id="mfj-remark" value="${esc(MFJ_STATE.remark)}"></div>
       </div>
       ${(SELECTED.atts&&SELECTED.atts.length)?`<div class="ai-field" style="margin-top:8px"><label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="mfj-attach-files" checked>📎 メールの添付ファイル（${SELECTED.atts.length}件）もマネーフォワードへ証憑として添付する</label></div>`:""}
       <div class="mail-actions" style="margin-top:8px">
-        <button id="mfj-confirm">確認画面へ</button>
-      </div>
-      <div id="mfjconfirm" style="display:none;margin-top:8px">
-        <div class="ai-field" id="mfj-confirm-text" style="margin-bottom:8px"></div>
-        <div class="mail-actions"><button class="primary" id="mfj-submit">この内容で登録</button></div>
+        <button class="primary" id="mfj-confirm">👁 プレビュー・確認画面へ</button>
       </div>`}
       <div class="err" id="mfj-msg" style="margin-top:6px"></div>
     `;
@@ -1255,46 +1377,91 @@ function wireDetailActions(u){
       mfjRenderForm();
     });
     if($("mfj-change-tenant")) $("mfj-change-tenant").onclick=()=>mfjShowTenantPicker(MFJ_STATE.tenants);
-    if(isJournalMode){
+    if(mode==="journal"){
       mfjRenderJournalResults();
       let t=null;
       $("mfj-journal-search").oninput=()=>{ clearTimeout(t); const kw=$("mfj-journal-search").value.trim(); t=setTimeout(()=>mfjRunJournalSearch(kw),350); };
       return;
     }
+    if(mode==="dict"){
+      mfjRenderTemplateResults();
+      return;
+    }
     mfjWireBranchRows();
     $("mfj-add-row").onclick=()=>{ mfjAddBranchRow(); mfjRenderForm(); };
-    $("mfj-confirm").onclick=()=>{
-      const lines=MFJ_STATE.branches.map(b=>`${esc(b.debitLabel||"?")} ／ ${esc(b.creditLabel||"?")}${b.department_id?"（部門あり）":""}　${Number(b.amount||0).toLocaleString()}円`);
-      $("mfj-confirm-text").innerHTML=lines.join("<br>")+`<br>日付: <b>${esc($("mfj-date").value)}</b><br>摘要: <b>${esc($("mfj-remark").value)}</b>`;
-      $("mfjconfirm").style.display="block";
-    };
-    $("mfj-submit").onclick=async()=>{
-      $("mfj-submit").disabled=true;
-      const msg=$("mfj-msg"); msg.className="err"; msg.textContent="登録中…";
-      const branchesPayload=[];
-      for(const b of MFJ_STATE.branches){
-        const debit=MFJ_STATE.accountLabelMap.get(b.debitLabel);
-        const credit=MFJ_STATE.accountLabelMap.get(b.creditLabel);
-        if(!debit||!credit){ msg.textContent="借方・貸方はプルダウンの候補から選択してください（自由入力のままだと登録できません）"; $("mfj-submit").disabled=false; return; }
-        branchesPayload.push({debit:{account_id:debit.account_id,sub_account_id:debit.sub_account_id||undefined},credit:{account_id:credit.account_id,sub_account_id:credit.sub_account_id||undefined},department_id:b.department_id||null,amount:+b.amount});
-      }
+    $("mfj-save-template").onclick=mfjSaveAsTemplate;
+    $("mfj-confirm").onclick=()=>mfjOpenPreview();
+  }
+
+  // プレビュー（マネーフォワード入力画面の振替伝票プレビューと同じ見た目：借方/貸方を並べたカード＋貸借バランス）
+  function mfjOpenPreview(){
+    const msg=$("mfj-msg"); msg.className="err"; msg.textContent="";
+    const branchesPayload=[];
+    for(const b of MFJ_STATE.branches){
+      const debit=MFJ_STATE.accountLabelMap.get(b.debitLabel);
+      const credit=MFJ_STATE.accountLabelMap.get(b.creditLabel);
+      if(!debit||!credit){ msg.textContent="借方・貸方はプルダウンの候補から選択してください（自由入力のままだと登録できません）"; return; }
+      const amt=Number(b.amount);
+      if(!amt||amt<=0){ msg.textContent="金額が未入力（0円）の行があります"; return; }
+      branchesPayload.push({debit,credit,department_id:b.department_id||null,amount:amt,remark:b.remark||""});
+    }
+    if(!branchesPayload.length){ msg.textContent="明細行がありません"; return; }
+    const date=$("mfj-date").value, remark=$("mfj-remark").value;
+    const total=branchesPayload.reduce((s,b)=>s+b.amount,0);
+    const entries=branchesPayload.map(b=>{
+      const deptName=(MFJ_STATE.departments.find(d=>d.id===b.department_id)||{}).name||"";
+      return `<div class="mfj-preview-entry">
+        <div class="mfj-preview-head"><div>借方</div><div>貸方</div></div>
+        <div class="mfj-preview-body">
+          <div class="mfj-preview-side"><div class="acc">${esc(mfjLabelOf(b.debit))}</div><div class="sub">${esc(deptName)}</div><div class="money">${yen(b.amount)}</div></div>
+          <div class="mfj-preview-side"><div class="acc">${esc(mfjLabelOf(b.credit))}</div><div class="sub"></div><div class="money">${yen(b.amount)}</div></div>
+        </div>
+        ${b.remark?`<div class="mfj-preview-remark">${esc(b.remark)}</div>`:""}
+      </div>`;
+    }).join("");
+
+    const modal=document.createElement("div");
+    modal.className="modal-bg"; modal.id="mfjPreviewModal";
+    modal.innerHTML=`<div class="modal" style="max-width:820px">
+      <div class="mhead"><h2>🧾 振替伝票プレビュー</h2><button class="linkbtn" id="mfjPreviewClose" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:13px">閉じる ×</button></div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:8px">登録先: <b>${esc(MFJ_STATE.tenantLabel||MFJ_STATE.tenantId)}</b>　日付: <b>${esc(date)}</b>　全体の摘要: <b>${esc(remark||"（なし）")}</b></div>
+      <div class="mfj-balance" style="margin:0 0 10px">
+        <div class="box"><small>借方合計</small><b>${yen(total)}</b></div>
+        <div class="box"><small>貸方合計</small><b>${yen(total)}</b></div>
+        <div class="box ok"><small>差額</small><b>¥0</b></div>
+      </div>
+      ${entries}
+      <div class="err" id="mfjPreviewMsg" style="margin-top:6px"></div>
+      <div class="mail-actions" style="margin-top:12px">
+        <button id="mfjPreviewBack">← 戻って修正</button>
+        <button class="primary" id="mfjPreviewSubmit">✅ この内容で登録</button>
+      </div>
+    </div>`;
+    document.body.appendChild(modal);
+    pushNav({modal:true});
+    modal.onclick=e=>{ if(e.target===modal) history.back(); };
+    $("mfjPreviewClose").onclick=()=>history.back();
+    $("mfjPreviewBack").onclick=()=>history.back();
+    $("mfjPreviewSubmit").onclick=async()=>{
+      $("mfjPreviewSubmit").disabled=true;
+      const pmsg=$("mfjPreviewMsg"); pmsg.className="err"; pmsg.textContent="登録中…";
       const payload={
         invoice_id: SELECTED.invoice.id,
         tenant_id: MFJ_STATE.tenantId,
-        branches: branchesPayload,
-        transaction_date: $("mfj-date").value,
-        remark: $("mfj-remark").value,
+        branches: branchesPayload.map(b=>({debit:{account_id:b.debit.account_id,sub_account_id:b.debit.sub_account_id||undefined},credit:{account_id:b.credit.account_id,sub_account_id:b.credit.sub_account_id||undefined},department_id:b.department_id||null,amount:b.amount,remark:b.remark||undefined})),
+        transaction_date: date,
+        remark,
         linked_hq_step_id: LINKED_HQ_STEP?LINKED_HQ_STEP.id:null, // 保存前でも画面上の選択を優先させる（DB保存漏れ対策）
         attach_files: $("mfj-attach-files")?$("mfj-attach-files").checked:false,
       };
       const {ok,body:j}=await mfjCall("create",payload);
-      if(!ok){ msg.textContent=j.error||"登録に失敗しました"; $("mfj-submit").disabled=false; return; }
-      msg.className="err msg-ok";
-      msg.textContent=`登録しました（伝票番号: ${j.journal_number??"-"}）`
+      if(!ok){ pmsg.textContent=j.error||"登録に失敗しました"; $("mfjPreviewSubmit").disabled=false; return; }
+      pmsg.className="err msg-ok";
+      pmsg.textContent=`登録しました（伝票番号: ${j.journal_number??"-"}）`
         +(j.voucher_attached?`。添付ファイルも${j.voucher_attached}件添付しました`:j.voucher_error?`（添付: ${j.voucher_error}）`:"")
         +(LINKED_HQ_STEP?(j.hq_step_completed?"。紐付けた本部タスクの工程も完了にしました":j.hq_step_error?`（本部タスクの自動完了には失敗: ${j.hq_step_error}）`:""):"")
         +"。画面を更新します…";
-      setTimeout(()=>{ reloadDetail(); },900);
+      setTimeout(()=>{ history.back(); reloadDetail(); },900);
     };
   }
 
@@ -1647,6 +1814,161 @@ async function renderImportantTab(u){
    設定タブ（取込除外ルール）
    ============================================================ */
 const RULE_TYPE_LABEL={subject_contains:"件名に含む（部分一致）",from_contains:"送信元に含む（部分一致）",subject_exact:"件名が完全一致",from_exact:"送信元アドレスが完全一致"};
+/* ============================================================
+   設定タブ: 仕訳辞書の管理（登録・編集・削除）2026-08-31
+   マネーフォワードの正式な外部連携APIには仕訳辞書を取得する機能が無いため
+   （2026-08-31にユーザーへ確認済み・内部非公式APIは規約違反リスクがあり不採用）、
+   管理システム自身のDB（mf_journal_templates）に登録して代用する。
+   invoices.htmlの仕訳作成モーダル（openMailDetail内のmfj*関数群）とは別の、
+   このタブ専用の状態（MFT_STATE）・関数群（mft*）。
+   ============================================================ */
+let MFT_STATE={};
+async function mftLoadAccountsAndDepts(tenantId){
+  const [accRes,deptRes]=await Promise.all([mfCall("accounts",{tenant_id:tenantId}),mfCall("list_departments",{tenant_id:tenantId})]);
+  return {accounts:(accRes.ok&&accRes.body.accounts)||[], departments:(deptRes.ok&&deptRes.body.departments)||[], accountsOk:accRes.ok, accountsError:accRes.body&&accRes.body.error};
+}
+function mftBuildAccountIndex(accounts){
+  const map=new Map(); let dl="";
+  for(const a of accounts){
+    map.set(a.name,{account_id:a.id,sub_account_id:null,account_name:a.name,sub_account_name:null});
+    dl+=`<option value="${esc(a.name)}">`;
+    for(const sa of (a.sub_accounts||[])){
+      const label=`${a.name}/${sa.name}`;
+      map.set(label,{account_id:a.id,sub_account_id:sa.id,account_name:a.name,sub_account_name:sa.name});
+      dl+=`<option value="${esc(label)}">`;
+    }
+  }
+  return {map,dl};
+}
+function mftLabelOf(side){ if(!side||!side.account_name) return ""; return side.sub_account_name?`${side.account_name}/${side.sub_account_name}`:side.account_name; }
+
+async function renderMftSection(tenantId){
+  const box=$("mft-box");
+  if(!box) return;
+  box.innerHTML="読み込み中…（連携先の事業者を確認しています）";
+  const tRes=await mfCall("list_tenants");
+  const tenants=(tRes.ok&&tRes.body.tenants)||[];
+  const activeTenantId=tenantId||(tenants[0]&&tenants[0].id)||"default";
+  MFT_STATE.tenants=tenants; MFT_STATE.activeTenantId=activeTenantId;
+  box.innerHTML="読み込み中…（勘定科目・仕訳辞書を確認しています）";
+  const {accounts,departments,accountsOk,accountsError}=await mftLoadAccountsAndDepts(activeTenantId);
+  const {map,dl}=mftBuildAccountIndex(accounts);
+  MFT_STATE.accountLabelMap=map; MFT_STATE.accountDatalistHtml=dl; MFT_STATE.departments=departments;
+  const tplRes=await authed(`/rest/v1/mf_journal_templates?tenant_id=eq.${encodeURIComponent(activeTenantId)}&select=*&order=label`);
+  MFT_STATE.templates=(tplRes.ok&&Array.isArray(tplRes.body))?tplRes.body:[];
+  MFT_STATE.editing=null;
+  box.innerHTML=`
+    ${tenants.length>1?`<div style="margin-bottom:10px"><label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">事業者</label>
+      <select id="mft-tenant">${tenants.map(t=>`<option value="${esc(t.id)}" ${t.id===activeTenantId?"selected":""}>${esc(t.label)}</option>`).join("")}</select></div>`:""}
+    ${!accountsOk?`<div class="err">勘定科目の取得に失敗しました（マネーフォワード未連携の可能性）: ${esc(accountsError||"")}</div>`:`
+    <div id="mft-list">${mftListHtml()}</div>
+    <button class="hq-btn" id="mft-new" style="margin-top:8px">＋ 新しい仕訳辞書を追加</button>
+    <div id="mft-editor" style="margin-top:10px"></div>`}
+  `;
+  if(tenants.length>1) $("mft-tenant").onchange=e=>renderMftSection(e.target.value);
+  if(!accountsOk) return;
+  document.querySelectorAll("[data-mft-edit]").forEach(el=>el.onclick=()=>mftOpenEditor(MFT_STATE.templates.find(t=>t.id===el.dataset.mftEdit)));
+  document.querySelectorAll("[data-mft-del]").forEach(el=>el.onclick=async()=>{
+    if(!confirm(`仕訳辞書「${el.dataset.mftLabel}」を削除しますか？`)) return;
+    await authed(`/rest/v1/mf_journal_templates?id=eq.${el.dataset.mftDel}`,{method:"DELETE"});
+    renderMftSection(activeTenantId);
+  });
+  $("mft-new").onclick=()=>mftOpenEditor(null);
+}
+function mftListHtml(){
+  const tpls=MFT_STATE.templates||[];
+  if(!tpls.length) return `<div style="font-size:12px;color:var(--muted)">この事業者にはまだ仕訳辞書が登録されていません。</div>`;
+  return tpls.map(t=>{
+    const sum=(t.branches||[]).map(b=>`${mftLabelOf(b.debit)||"?"}／${mftLabelOf(b.credit)||"?"}`).join("、");
+    return `<div class="mfj-tpl-item"><div><div class="lbl">${esc(t.label)}</div><div class="sum">${esc(sum)}（${(t.branches||[]).length}行）</div></div>
+      <div style="display:flex;gap:6px"><button class="hq-btn" style="font-size:11px;padding:6px 9px" data-mft-edit="${t.id}">編集</button><button class="hq-btn" style="font-size:11px;padding:6px 9px" data-mft-del="${t.id}" data-mft-label="${esc(t.label)}">削除</button></div>
+    </div>`;
+  }).join("");
+}
+function mftOpenEditor(tpl){
+  MFT_STATE.editing={
+    id: tpl?tpl.id:null,
+    label: tpl?tpl.label:"",
+    branches: tpl?(tpl.branches||[]).map(b=>({debitLabel:mftLabelOf(b.debit),creditLabel:mftLabelOf(b.credit),department_id:b.department_id||"",amount:b.amount||"",remark:b.remark||""})):[{debitLabel:"",creditLabel:"",department_id:"",amount:"",remark:""}],
+  };
+  mftRenderEditor();
+}
+function mftRenderEditor(){
+  const el=$("mft-editor");
+  if(!el) return;
+  const ed=MFT_STATE.editing;
+  if(!ed){ el.innerHTML=""; return; }
+  el.innerHTML=`
+    <div class="card" style="padding:12px;border-color:var(--m-blue)">
+      <div class="ai-field"><small>仕訳辞書の名前</small><input id="mft-label" value="${esc(ed.label)}" placeholder="例:【未払金】アルバイト給与（川崎）"></div>
+      <datalist id="mft-acc-datalist">${MFT_STATE.accountDatalistHtml||""}</datalist>
+      <div class="mfj-gridwrap" style="margin-top:8px">
+        <table class="mfj-grid">
+          <thead>
+            <tr><th rowspan="2" style="width:26px"></th><th colspan="2" class="side">借方</th><th colspan="2" class="side" style="background:var(--m-greensoft);color:var(--m-green)">貸方</th><th rowspan="2">摘要（行ごと・任意）</th></tr>
+            <tr><th>勘定科目・部門</th><th>金額（任意・空欄可）</th><th>勘定科目</th><th>金額</th></tr>
+          </thead>
+          <tbody id="mft-branch-rows">${ed.branches.map((br,i)=>mftBranchRowHtml(br,i)).join("")}</tbody>
+        </table>
+      </div>
+      <div style="font-size:10px;color:var(--muted);margin-top:4px">💡 金額は空欄のまま登録できます（実際に使うときに毎回入力する想定の場合）</div>
+      <div class="mail-actions" style="margin-top:6px"><button id="mft-add-row">＋ 明細行を追加</button></div>
+      <div class="mail-actions" style="margin-top:10px">
+        <button class="primary" id="mft-save">💾 保存</button>
+        <button id="mft-cancel">キャンセル</button>
+      </div>
+    </div>
+  `;
+  mftWireEditor();
+}
+function mftBranchRowHtml(br,idx){
+  const deptOptions=`<option value="">（指定なし）</option>`+(MFT_STATE.departments||[]).map(d=>`<option value="${esc(d.id)}" ${br.department_id===d.id?"selected":""}>${esc(d.name)}</option>`).join("");
+  return `<tr data-idx="${idx}">
+    <td class="mfj-rmcell">${MFT_STATE.editing.branches.length>1?`<button data-mftrm="${idx}" title="この行を削除">−</button>`:""}</td>
+    <td><input list="mft-acc-datalist" class="mft-debit" data-idx="${idx}" value="${esc(br.debitLabel||"")}" placeholder="借方勘定科目"><select class="mft-dept" data-idx="${idx}" style="margin-top:4px">${deptOptions}</select></td>
+    <td><input type="number" class="mft-amount" data-idx="${idx}" value="${br.amount}" placeholder="任意"></td>
+    <td><input list="mft-acc-datalist" class="mft-credit" data-idx="${idx}" value="${esc(br.creditLabel||"")}" placeholder="貸方勘定科目"></td>
+    <td><input type="number" value="${br.amount}" disabled style="opacity:.65"></td>
+    <td><textarea class="mft-remark" data-idx="${idx}">${esc(br.remark||"")}</textarea></td>
+  </tr>`;
+}
+function mftWireEditor(){
+  const ed=MFT_STATE.editing;
+  document.querySelectorAll(".mft-debit").forEach(elx=>elx.oninput=()=>{ ed.branches[+elx.dataset.idx].debitLabel=elx.value; });
+  document.querySelectorAll(".mft-credit").forEach(elx=>elx.oninput=()=>{ ed.branches[+elx.dataset.idx].creditLabel=elx.value; });
+  document.querySelectorAll(".mft-dept").forEach(elx=>elx.onchange=()=>{ ed.branches[+elx.dataset.idx].department_id=elx.value; });
+  document.querySelectorAll(".mft-remark").forEach(elx=>elx.oninput=()=>{ ed.branches[+elx.dataset.idx].remark=elx.value; });
+  document.querySelectorAll(".mft-amount").forEach(elx=>elx.oninput=()=>{
+    ed.branches[+elx.dataset.idx].amount=elx.value;
+    const mirror=elx.closest("tr").querySelector("input[disabled]");
+    if(mirror) mirror.value=elx.value;
+  });
+  document.querySelectorAll("[data-mftrm]").forEach(elx=>elx.onclick=()=>{ ed.branches.splice(+elx.dataset.mftrm,1); mftRenderEditor(); });
+  $("mft-add-row").onclick=()=>{ ed.branches.push({debitLabel:"",creditLabel:"",department_id:"",amount:"",remark:""}); mftRenderEditor(); };
+  $("mft-cancel").onclick=()=>{ MFT_STATE.editing=null; mftRenderEditor(); };
+  $("mft-save").onclick=mftSaveEditor;
+}
+async function mftSaveEditor(){
+  const ed=MFT_STATE.editing;
+  const label=$("mft-label").value.trim();
+  if(!label){ alert("名前を入力してください"); return; }
+  const structured=[];
+  for(const b of ed.branches){
+    const debit=MFT_STATE.accountLabelMap.get(b.debitLabel);
+    const credit=MFT_STATE.accountLabelMap.get(b.creditLabel);
+    if(!debit||!credit){ alert("借方・貸方はプルダウンの候補から選んでください"); return; }
+    structured.push({debit,credit,department_id:b.department_id||null,department_name:(MFT_STATE.departments.find(d=>d.id===b.department_id)||{}).name||null,amount:Number(b.amount)||null,remark:b.remark||null});
+  }
+  if(!structured.length){ alert("明細行がありません"); return; }
+  $("mft-save").disabled=true;
+  const payload={tenant_id:MFT_STATE.activeTenantId,label,branches:structured};
+  const r=ed.id
+    ?await authed(`/rest/v1/mf_journal_templates?id=eq.${ed.id}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({...payload,updated_at:new Date().toISOString()})})
+    :await authed("/rest/v1/mf_journal_templates",{method:"POST",headers:{Prefer:"return=minimal"},body:JSON.stringify({...payload,created_by:ME.id})});
+  if(!r.ok){ if($("mft-save")) $("mft-save").disabled=false; alert("保存に失敗しました"); return; }
+  renderMftSection(MFT_STATE.activeTenantId);
+}
+
 async function renderSettingsTab(u){
   const r=await authed(`/rest/v1/invoice_intake_exclusion_rules?select=*&order=created_at.desc`);
   const rows=(r.ok&&Array.isArray(r.body))?r.body:[];
@@ -1687,7 +2009,13 @@ async function renderSettingsTab(u){
           </tbody>
         </table>
       </div>
+      <div class="card" style="padding:16px;margin-top:14px">
+        <h3 style="font-size:14px;margin-bottom:6px">📗 仕訳辞書（よく使う仕訳パターン）</h3>
+        <div class="meta" style="color:var(--muted);font-size:12px;margin-bottom:10px">請求書メールの「🧾 仕訳を作成」画面で選べる、自社専用の仕訳テンプレートです（マネーフォワード本体の仕訳辞書とは別の、この管理システム内だけの機能です）。ここで登録・編集・削除できます。</div>
+        <div id="mft-box">読み込み中…</div>
+      </div>
     </section>`;
+  renderMftSection();
   const RULE_PLACEHOLDER={subject_contains:"例: 応募",from_contains:"例: example.com",subject_exact:"例: ATMお預け入れのご確認",from_exact:"例: info@example.com"};
   $("rule-type").onchange=e=>{ $("rule-pattern").placeholder=RULE_PLACEHOLDER[e.target.value]||""; };
   $("rule-pattern").placeholder=RULE_PLACEHOLDER[$("rule-type").value]||"";
