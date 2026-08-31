@@ -389,17 +389,29 @@ async function loadCredList(){
   if(!r.ok) C_LOAD_ERR=r.body?.message||"一覧を取得できませんでした"; else C_LOAD_ERR="";
   renderCChangeArea();
 }
+// 2026-09-01実機フィードバック対応: 検索入力のたびにこの領域全体を作り直していたため、
+// 入力中の<input>要素自体が壊れて日本語IME入力が崩れる不具合があった（最初の1文字だけ
+// ローマ字のまま残る等）。検索ボックス・カテゴリチップは「一覧を読み込んだ時」だけ作り、
+// 検索・カテゴリ絞り込み・対象選択のたびに更新するのは中の#cPickAreaだけにして、
+// 入力中の<input>要素そのものは触らないようにした
 function renderCChangeArea(){
   const el=$("cDynChange"); if(!el) return;
   const cats=["すべて",...Array.from(new Set((C_LIST||[]).map(c=>c.category))).sort()];
-  const filtered=(C_LIST||[]).filter(c=>(C_CATFILTER==="すべて"||c.category===C_CATFILTER)&&(!C_Q||c.service_name.toLowerCase().includes(C_Q.toLowerCase())));
-  const selected=(C_LIST||[]).find(c=>c.id===C_CREDID)||null;
   el.innerHTML=`
     ${C_LOAD_ERR?`<div class="msg-err">${esc(C_LOAD_ERR)}</div>`:""}
     <label>カテゴリで絞り込み</label>
     <div class="chipbar">${cats.map(c=>`<button class="${C_CATFILTER===c?"active":""}" onclick="setCCatFilter('${esc(c).replace(/'/g,"\\'")}')">${esc(c)}</button>`).join("")}</div>
     <label>サービス名で検索</label>
     <input type="search" id="cQ" value="${esc(C_Q)}" oninput="setCQ(this.value)" placeholder="例: 食べログ">
+    <div id="cPickArea"></div>
+  `;
+  updateCPickArea();
+}
+function updateCPickArea(){
+  const el=$("cPickArea"); if(!el) return;
+  const filtered=(C_LIST||[]).filter(c=>(C_CATFILTER==="すべて"||c.category===C_CATFILTER)&&(!C_Q||c.service_name.toLowerCase().includes(C_Q.toLowerCase())));
+  const selected=(C_LIST||[]).find(c=>c.id===C_CREDID)||null;
+  el.innerHTML=`
     <label>変更したい対象<span class="req">必須</span></label>
     <select id="cCredId" onchange="setCCredId(this.value)">
       <option value="">選択してください（${filtered.length}件）</option>
@@ -417,10 +429,10 @@ function renderCChangeArea(){
     `:""}
   `;
 }
-function setCCatFilter(c){ C_CATFILTER=c; renderCChangeArea(); }
-function setCQ(v){ C_Q=v; renderCChangeArea(); const i=$("cQ"); if(i){i.focus(); i.setSelectionRange(v.length,v.length);} }
-function setCCredId(v){ C_CREDID=v; renderCChangeArea(); }
-function setCField(v){ C_FIELD=v; renderCChangeArea(); }
+function setCCatFilter(c){ C_CATFILTER=c; renderCChangeArea(); } // チップはボタンなのでIMEの心配はなく全体再描画でよい
+function setCQ(v){ C_Q=v; updateCPickArea(); } // 検索input自体は再描画しない（IME入力中に壊れるため）
+function setCCredId(v){ C_CREDID=v; updateCPickArea(); }
+function setCField(v){ C_FIELD=v; updateCPickArea(); }
 let C_LOAD_ERR="";
 async function submitSystem(){
   const msg=$("cMsg"); msg.innerHTML=""; const btn=$("cSubmitBtn");
