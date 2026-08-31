@@ -477,7 +477,7 @@ async function saveTask(){
     r=await authed("/rest/v1/ck_tasks",{method:"POST",body:JSON.stringify(body),headers:{Prefer:"return=representation"}});
     msg=`新規タスク: ${title}（${name}）`;
   }
-  if(!r.ok){ toast("保存できませんでした（"+r.status+"）"); return; }
+  if(!r.ok){ toast("保存できませんでした（"+r.status+(r.body&&r.body.message?"・"+r.body.message:"")+"）。少し待ってからもう一度お試しください"); return; }
   const saved=Array.isArray(r.body)?r.body[0]:null;
   await postEvent({task_id:saved?.id||CUR?.id||null,event_type:CUR?"task_update":"task_create",message:msg,metadata:{agent:"中山（画面操作）"}});
   // 状態が動いたらLark通知＋完了時は後続タスクを自動で着手可へ（cockpit-notifyがサーバー側で実施）
@@ -492,7 +492,7 @@ async function saveTask(){
 async function cancelTask(){
   if(!CUR) return; if(!confirm(`${tkNo(CUR)}「${CUR.title}」を中止にしますか？（削除ではなく履歴は残ります）`)) return;
   const r=await authed(`/rest/v1/ck_tasks?id=eq.${CUR.id}`,{method:"PATCH",body:JSON.stringify({status:"cancelled",updated_at:new Date().toISOString()})});
-  if(!r.ok){ toast("変更できませんでした"); return; }
+  if(!r.ok){ toast("変更できませんでした（"+r.status+(r.body&&r.body.message?"・"+r.body.message:"")+"）"); return; }
   await postEvent({task_id:CUR.id,event_type:"task_update",message:`${tkNo(CUR)} ${CUR.title} を中止`,metadata:{agent:"中山（画面操作）"}});
   closeTask(); loadAll();
 }
