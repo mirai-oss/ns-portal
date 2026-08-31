@@ -17,10 +17,12 @@
 //   - "linked_invoices": body.step_idsの配列を渡すと、メールから紐付けられた請求書（存在すれば）を
 //                 まとめて返す。tasks.html（本部タスクボード）が工程一覧描画時にN+1にならないよう
 //                 一括問い合わせする想定（2026-08-27・担当Eからの連携依頼に対応）
-//   - "create_standalone": メールに紐付かない請求書（本部タスクから直接アップロードした写真等）の
-//                 仕訳登録。body: {tenant_id, linked_hq_step_id(必須), vendor_name, branches, transaction_date,
-//                 remark, voucher_files:[{file_name,file_data(base64)}]}。invoicesに新規行(email_id=null)を
-//                 作成し、通常のcreateと同じくMFへ仕訳登録→証憑添付→工程を自動完了する
+//   - "create_standalone": メールに紐付かない請求書（本部タスクから直接アップロードした写真等・
+//                 会計タブの「アップロード請求書」単独利用の両方）の仕訳登録。
+//                 body: {tenant_id, linked_hq_step_id(任意・2026-08-31から必須ではない), vendor_name,
+//                 branches, transaction_date, remark, voucher_files:[{file_name,file_data(base64)}]}。
+//                 invoicesに新規行(email_id=null)を作成し、通常のcreateと同じくMFへ仕訳登録→証憑添付。
+//                 linked_hq_step_idを渡した場合のみ、その本部タスクの工程も自動完了する
 //
 // 複数事業者対応（2026-08-27）: accounts/suggest/list_journals/createはbody.tenant_idで
 // どの事業者（有限会社トーホーエージェンシー='default'、株式会社N-Style='nstyle'等）かを指定できる。
@@ -331,12 +333,13 @@ Deno.serve(async (req: Request) => {
       // invoicesテーブルに新規行（email_id=null）を作ってから通常のcreateと同じ流れで登録する。
       // 証憑ファイルはStorage/invoice_attachmentsを経由せず、リクエストのvoucher_filesに
       // 直接base64で埋め込んで渡してもらう（呼び出し元のブラウザで読み込んだファイルをそのまま送る想定）
+      // linked_hq_step_id は2026-08-31から任意化（会計タブの「アップロード請求書」は本部タスクと
+      // 無関係に単独で使うため）。指定された場合のみ、その工程が見えるか確認したうえで完了させる
       const linkedHqStepId: string | null = body?.linked_hq_step_id || null;
       const vendorName: string = (body?.vendor_name ?? "").trim() || null;
       const transactionDate = body?.transaction_date || todayStr();
       const defaultRemark = (body?.remark ?? "").slice(0, 100);
       const rawBranches: any[] = Array.isArray(body?.branches) ? body.branches : [];
-      if (!linkedHqStepId) return json({ error: "紐付ける本部タスクの工程が必要です" }, 400);
       if (!rawBranches.length) return json({ error: "明細行が0件です" }, 400);
       for (const b of rawBranches) {
         const amt = Number(b.amount);
@@ -344,10 +347,12 @@ Deno.serve(async (req: Request) => {
           return json({ error: "各行に借方・貸方の勘定科目と金額を入力してください" }, 400);
         }
       }
-      // 呼び出し元がこの工程を見れるか（RLS経由で）確認
-      const { data: step, error: stepErr } = await uc.from("hq_task_steps").select("id").eq("id", linkedHqStepId).maybeSingle();
-      if (stepErr) return json({ error: "確認に失敗しました: " + stepErr.message }, 500);
-      if (!step) return json({ error: "対象の工程が見つからないか権限がありません" }, 403);
+      if (linkedHqStepId) {
+        // 呼び出し元がこの工程を見れるか（RLS経由で）確認
+        const { data: step, error: stepErr } = await uc.from("hq_task_steps").select("id").eq("id", linkedHqStepId).maybeSingle();
+        if (stepErr) return json({ error: "確認に失敗しました: " + stepErr.message }, 500);
+        if (!step) return json({ error: "対象の工程が見つからないか権限がありません" }, 403);
+      }
 
       const totalAmount = rawBranches.reduce((s, b) => s + Math.round(Number(b.amount) || 0), 0);
       const branches = rawBranches.map((b: any) => {
@@ -398,12 +403,16 @@ Deno.serve(async (req: Request) => {
         else voucherError = vRes.status === 401 || vRes.status === 403 ? "証憑添付の権限がありません" : `証憑の添付に失敗しました: ${JSON.stringify(vData)}`;
       }
 
-      // 紐付けた工程を完了させる（呼び出しユーザー自身のJWTで＝completed_byが正しく記録される）
-      const { error: hqErr } = await uc.from("hq_task_steps")
-        .update({ completed_at: new Date().toISOString() })
-        .eq("id", linkedHqStepId)
-        .is("completed_at", null);
-      const hqStepCompleted = !hqErr;
+      // 紐付けた工程があれば完了させる（呼び出しユーザー自身のJWTで＝completed_byが正しく記録される）。
+      // linked_hq_step_idが無い場合（会計タブ単独のアップロード請求書）は何もしない
+      let hqStepCompleted = false, hqErr: { message: string } | null = null;
+      if (linkedHqStepId) {
+        const { error } = await uc.from("hq_task_steps")
+          .update({ completed_at: new Date().toISOString() })
+          .eq("id", linkedHqStepId)
+          .is("completed_at", null);
+        hqErr = error; hqStepCompleted = !error;
+      }
 
       return json({ success: true, invoice_id: newInv.id, journal_id: journalId, journal_number: journalNumber, hq_step_completed: hqStepCompleted, hq_step_error: hqErr?.message ?? null, voucher_attached: voucherAttached, voucher_error: voucherError });
     }

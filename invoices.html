@@ -449,10 +449,12 @@ function shellHtml(u){
     </div>
     <div class="mail-tabs-row">
       <div class="mail-tabs">
+        <button class="mail-tab ${TAB==='dashboard'?'active':''}" data-tab="dashboard">📊 会計ダッシュボード</button>
         <button class="mail-tab ${TAB==='inbox'?'active':''}" data-tab="inbox">受信トレイ</button>
         <button class="mail-tab ${TAB==='invoiceList'?'active':''}" data-tab="invoiceList">📄 請求書一覧</button>
         <button class="mail-tab ${TAB==='salesList'?'active':''}" data-tab="salesList">💰 売上一覧</button>
         <button class="mail-tab ${TAB==='contractList'?'active':''}" data-tab="contractList">📃 契約書一覧</button>
+        <button class="mail-tab ${TAB==='upload'?'active':''}" data-tab="upload">📤 アップロード請求書</button>
         <button class="mail-tab ${TAB==='history'?'active':''}" data-tab="history">処理履歴</button>
         <button class="mail-tab ${TAB==='sent'?'active':''}" data-tab="sent">送信済み</button>
         <button class="mail-tab ${TAB==='notApplicable'?'active':''}" data-tab="notApplicable">対象外</button>
@@ -537,10 +539,12 @@ async function openComposeModal(u){
 }
 async function renderTabBody(u){
   $("tabbody").innerHTML='<div class="spin">読み込み中…</div>';
-  if(TAB==="inbox") renderInbox(u);
+  if(TAB==="dashboard") await renderAccountingDashboardTab(u);
+  else if(TAB==="inbox") renderInbox(u);
   else if(TAB==="invoiceList") await renderInvoiceListTab(u);
   else if(TAB==="salesList") await renderSalesListTab(u);
   else if(TAB==="contractList") await renderContractListTab(u);
+  else if(TAB==="upload") await renderUploadInvoiceTab(u);
   else if(TAB==="history") await renderHistoryTab(u);
   else if(TAB==="sent") await renderSentTab(u);
   else if(TAB==="notApplicable") await renderNotApplicableTab(u);
@@ -1967,6 +1971,409 @@ async function mftSaveEditor(){
     :await authed("/rest/v1/mf_journal_templates",{method:"POST",headers:{Prefer:"return=minimal"},body:JSON.stringify({...payload,created_by:ME.id})});
   if(!r.ok){ if($("mft-save")) $("mft-save").disabled=false; alert("保存に失敗しました"); return; }
   renderMftSection(MFT_STATE.activeTenantId);
+}
+
+/* ============================================================
+   会計ダッシュボード（C-7①・2026-08-31）
+   「どの法人の・何の処理が未登録か」が一目で分かるホーム画面。
+   設計書_会計自動化_2026-08-31.md §5 Q6の確定仕様どおり、
+   請求書メール・インフォマート発注・スマレジ給与仕訳を法人×処理種別で見せる想定だが、
+   インフォマート（D-9）・給与仕訳の自動化（本体）はまだ実装していないため、
+   その2行は「準備中」の正直な表示にとどめ、今すでに存在するデータ
+   （請求書メールの処理状況・事業者ごとのMF連携状況・仕訳辞書の登録数）だけ実数を出す。
+   ============================================================ */
+async function renderAccountingDashboardTab(u){
+  const now=new Date();
+  const startOfMonth=new Date(now.getFullYear(),now.getMonth(),1).toISOString();
+  const tRes=await mfCall("list_tenants");
+  const tenants=(tRes.ok&&tRes.body.tenants)||[];
+  const [standaloneR, tenantStatsR]=await Promise.all([
+    authed(`/rest/v1/invoices?email_id=is.null&select=id,created_at&order=created_at.desc&limit=500`),
+    Promise.all(tenants.map(async t=>{
+      const [journalR,tplR]=await Promise.all([
+        authed(`/rest/v1/invoices?mf_tenant_id=eq.${encodeURIComponent(t.id)}&mf_journal_created_at=gte.${startOfMonth}&select=id`),
+        authed(`/rest/v1/mf_journal_templates?tenant_id=eq.${encodeURIComponent(t.id)}&select=id`),
+      ]);
+      return {
+        tenant:t,
+        journalThisMonth:(journalR.ok&&Array.isArray(journalR.body))?journalR.body.length:0,
+        templateCount:(tplR.ok&&Array.isArray(tplR.body))?tplR.body.length:0,
+      };
+    })),
+  ]);
+  const standaloneInvoices=(standaloneR.ok&&Array.isArray(standaloneR.body))?standaloneR.body:[];
+  const k=kpiCounts();
+  $("tabbody").innerHTML=`
+    <section class="invoice-list active">
+      <div class="card" style="padding:16px;margin-bottom:14px">
+        <h3 style="font-size:14px;margin-bottom:10px">📧 請求書メール（受信トレイの処理状況）</h3>
+        <div class="mail-summary" style="margin-bottom:0">
+          <div class="card mail-kpi"><small>未処理</small><b style="color:var(--accent)">${k.unprocessed}</b></div>
+          <div class="card mail-kpi"><small>処理中</small><b style="color:var(--blue)">${k.processing}</b></div>
+          <div class="card mail-kpi"><small>支払待ち請求書</small><b>${WAITING_PAYMENT_COUNT}</b></div>
+          <div class="card mail-kpi"><small>今月完了</small><b style="color:var(--green)">${k.completedThisMonth}</b></div>
+        </div>
+      </div>
+
+      <div class="card" style="padding:16px;margin-bottom:14px">
+        <h3 style="font-size:14px;margin-bottom:10px">🔗 マネーフォワード連携状況（事業者別）</h3>
+        ${tenants.length?`<div class="hq-tablewrap"><table class="invoice-table"><thead><tr><th>事業者</th><th>今月のMF仕訳登録件数</th><th>登録済み仕訳辞書</th></tr></thead><tbody>
+          ${tenantStatsR.map(s=>`<tr><td><b>${esc(s.tenant.label||s.tenant.id)}</b></td><td>${s.journalThisMonth}件</td><td>${s.templateCount}件${s.templateCount?"":' <span style="color:var(--muted);font-size:11px">（設定タブから登録できます）</span>'}</td></tr>`).join("")}
+        </tbody></table></div>`:`<div style="font-size:12px;color:var(--muted)">まだマネーフォワードと連携している事業者がありません</div>`}
+      </div>
+
+      <div class="card" style="padding:16px;margin-bottom:14px">
+        <h3 style="font-size:14px;margin-bottom:10px">📤 アップロード請求書（メールに来ない請求書）</h3>
+        <div style="font-size:12px;color:var(--muted);margin-bottom:8px">これまでに登録した件数: <b style="color:var(--ink)">${standaloneInvoices.length}</b>件</div>
+        <button class="hq-btn primary" id="dash-go-upload">📤 アップロード請求書タブへ</button>
+      </div>
+
+      <div class="card" style="padding:16px;margin-bottom:14px;opacity:.75">
+        <h3 style="font-size:14px;margin-bottom:6px">📦 インフォマート発注（準備中）</h3>
+        <div style="font-size:12px;color:var(--muted)">D-9（インフォマートAPI連携・担当D）が完了すると、ここに発注明細の仕訳・支払状況が表示される予定です。現状は未実装です。</div>
+      </div>
+
+      <div class="card" style="padding:16px;opacity:.75">
+        <h3 style="font-size:14px;margin-bottom:6px">💴 スマレジ給与仕訳（準備中）</h3>
+        <div style="font-size:12px;color:var(--muted)">仕訳辞書3パターン（社員／アルバイト／アルバイト社保加入）の登録と、控除内訳・明細PDFの取得可否調査（担当B・B-16）が済み次第、毎月の給与仕訳ドラフトをここから確認・登録できるようにする予定です。上の「マネーフォワード連携状況」で仕訳辞書の登録数だけ先に確認できます。</div>
+      </div>
+    </section>`;
+  if($("dash-go-upload")) $("dash-go-upload").onclick=()=>{
+    TAB="upload"; pushNav();
+    document.querySelectorAll(".mail-tab").forEach(x=>x.classList.toggle("active",x.dataset.tab===TAB));
+    renderTabBody(u);
+  };
+}
+
+/* ============================================================
+   アップロード請求書（C-7①・2026-08-31）
+   メールに来ない請求書（手渡し・現金精算・郵送のPDF等）を、メールを介さず
+   直接アップロードして仕訳登録する単独画面。設計書_会計自動化_2026-08-31.md §5 Q6の
+   追加要望①に対応。本部タスク連携（tasks.html・2026-08-27実装）で作った
+   mf-journalの「create_standalone」actionをそのまま使うが、あちらは本部タスクの工程に
+   紐付けることが必須だった。この画面は工程と無関係に単独で使うため、
+   linked_hq_step_idを渡さない（Edge Function側は2026-08-31から任意化済み）。
+   仕訳作成モーダル（openMailDetail内のmfj*）・仕訳辞書管理（設定タブのmft*）とは
+   独立した状態（MFU_STATE）・関数群（mfu*）。表の見た目は共通のmfj-grid CSSを再利用。
+   ============================================================ */
+let MFU_STATE={};
+async function mfuCallTenants(){
+  const r=await mfCall("list_tenants");
+  return (r.ok&&r.body.tenants)||[];
+}
+function mfuLabelOf(side){ if(!side||!side.account_name) return ""; return side.sub_account_name?`${side.account_name}/${side.sub_account_name}`:side.account_name; }
+function mfuBuildAccountIndex(accounts){
+  const map=new Map(); let dl="";
+  for(const a of accounts){
+    map.set(a.name,{account_id:a.id,sub_account_id:null,account_name:a.name,sub_account_name:null});
+    dl+=`<option value="${esc(a.name)}">`;
+    for(const sa of (a.sub_accounts||[])){
+      const label=`${a.name}/${sa.name}`;
+      map.set(label,{account_id:a.id,sub_account_id:sa.id,account_name:a.name,sub_account_name:sa.name});
+      dl+=`<option value="${esc(label)}">`;
+    }
+  }
+  return {map,dl};
+}
+
+async function renderUploadInvoiceTab(u){
+  $("tabbody").innerHTML=`<section class="invoice-list active"><div class="card" style="padding:16px"><div class="spin" style="padding:20px 0">読み込み中…</div></div></section>`;
+  const tenants=await mfuCallTenants();
+  const recentR=await authed(`/rest/v1/invoices?email_id=is.null&select=*&order=created_at.desc&limit=30`);
+  MFU_STATE={tenants, recent:(recentR.ok&&Array.isArray(recentR.body))?recentR.body:[]};
+  $("tabbody").innerHTML=`
+    <section class="invoice-list active">
+      <div class="card" style="padding:16px;margin-bottom:14px">
+        <h3 style="font-size:14px;margin-bottom:6px">📤 アップロード請求書</h3>
+        <div style="font-size:12px;color:var(--muted);margin-bottom:12px">メールに来ない請求書（手渡し・現金精算・郵送のPDF等）を、ここから直接マネーフォワードへ仕訳登録できます。</div>
+        <div id="mfu-box">${tenants.length?"":'<div class="err">マネーフォワードと連携している事業者がありません（設定タブ・引継ぎ書を確認してください）</div>'}</div>
+      </div>
+      <div class="card hq-tablewrap" style="padding:0">
+        <div style="padding:12px 16px 0"><h3 style="font-size:14px">最近アップロードした請求書</h3></div>
+        <table class="invoice-table">
+          <thead><tr><th>登録日</th><th>取引先</th><th>金額</th><th>伝票番号</th></tr></thead>
+          <tbody>${MFU_STATE.recent.length?MFU_STATE.recent.map(x=>`<tr><td>${fmtD(x.created_at)}</td><td>${esc(x.vendor_name||"—")}</td><td>${yen(x.amount)}</td><td>${esc(x.mf_journal_number!=null?String(x.mf_journal_number):"—")}</td></tr>`).join(""):'<tr><td colspan="4">まだアップロードした請求書はありません</td></tr>'}</tbody>
+        </table>
+      </div>
+    </section>`;
+  if(!tenants.length) return;
+  await mfuLoadForTenant(tenants[0].id,tenants);
+}
+
+async function mfuLoadForTenant(tenantId,tenants){
+  const box=$("mfu-box");
+  box.innerHTML="読み込み中…（勘定科目・仕訳辞書を確認しています）";
+  const [accRes,deptRes,tplR]=await Promise.all([
+    mfCall("accounts",{tenant_id:tenantId}),
+    mfCall("list_departments",{tenant_id:tenantId}),
+    authed(`/rest/v1/mf_journal_templates?tenant_id=eq.${encodeURIComponent(tenantId)}&select=id,label,branches&order=label`),
+  ]);
+  if(!accRes.ok){ box.innerHTML=`<div class="err">勘定科目の取得に失敗しました: ${esc(accRes.body.error||"")}</div>`; return; }
+  const {map,dl}=mfuBuildAccountIndex(accRes.body.accounts||[]);
+  const tenantLabel=(tenants||[]).find(t=>t.id===tenantId)?.label||tenantId;
+  MFU_STATE={
+    ...MFU_STATE,
+    tenantId, tenantLabel, tenants: tenants||[],
+    accounts: accRes.body.accounts||[], accountLabelMap:map, accountDatalistHtml:dl,
+    departments: (deptRes.ok&&deptRes.body.departments)||[],
+    templates: (tplR.ok&&Array.isArray(tplR.body))?tplR.body:[],
+    mode:"manual",
+    branches: [{debitLabel:"",creditLabel:"",department_id:"",amount:"",remark:""}],
+    vendorName:"", date:new Date().toISOString().slice(0,10), remark:"",
+    journalResults:[], journalKeyword:"",
+  };
+  mfuRenderForm();
+}
+
+function mfuAddBranchRow(){ MFU_STATE.branches.push({debitLabel:"",creditLabel:"",department_id:"",amount:"",remark:""}); }
+function mfuApplyBranches(branches){
+  MFU_STATE.branches=branches.length?branches:[{debitLabel:"",creditLabel:"",department_id:"",amount:"",remark:""}];
+  MFU_STATE.mode="manual";
+  mfuRenderForm();
+}
+function mfuBranchRowHtml(br,idx){
+  const deptOptions=`<option value="">（指定なし）</option>`+(MFU_STATE.departments||[]).map(d=>`<option value="${esc(d.id)}" ${br.department_id===d.id?"selected":""}>${esc(d.name)}</option>`).join("");
+  const amt=br.amount===""||br.amount==null?"":br.amount;
+  return `<tr data-idx="${idx}">
+    <td class="mfj-rmcell">${MFU_STATE.branches.length>1?`<button data-mfurm="${idx}" title="この行を削除">−</button>`:""}</td>
+    <td>
+      <input list="mfu-acc-datalist" class="mfu-debit" data-idx="${idx}" value="${esc(br.debitLabel||"")}" placeholder="借方勘定科目（検索可）">
+      <select class="mfu-dept" data-idx="${idx}" style="margin-top:4px">${deptOptions}</select>
+    </td>
+    <td><input type="number" class="mfu-amount mfj-amt" data-idx="${idx}" value="${amt}"></td>
+    <td><input list="mfu-acc-datalist" class="mfu-credit" data-idx="${idx}" value="${esc(br.creditLabel||"")}" placeholder="貸方勘定科目（検索可）"></td>
+    <td><input type="number" class="mfj-amt" value="${amt}" disabled style="opacity:.65" title="借方と同額で登録されます"></td>
+    <td><textarea class="mfu-remark" data-idx="${idx}" placeholder="行ごとの摘要（空欄なら全体の摘要を使用）">${esc(br.remark||"")}</textarea></td>
+  </tr>`;
+}
+function mfuUpdateBalance(){
+  const total=MFU_STATE.branches.reduce((s,b)=>s+(Number(b.amount)||0),0);
+  if($("mfu-debit-total")) $("mfu-debit-total").textContent=yen(total);
+  if($("mfu-credit-total")) $("mfu-credit-total").textContent=yen(total);
+}
+function mfuWireBranchRows(){
+  document.querySelectorAll(".mfu-debit").forEach(el=>el.oninput=()=>{ MFU_STATE.branches[+el.dataset.idx].debitLabel=el.value; });
+  document.querySelectorAll(".mfu-credit").forEach(el=>el.oninput=()=>{ MFU_STATE.branches[+el.dataset.idx].creditLabel=el.value; });
+  document.querySelectorAll(".mfu-dept").forEach(el=>el.onchange=()=>{ MFU_STATE.branches[+el.dataset.idx].department_id=el.value; });
+  document.querySelectorAll(".mfu-remark").forEach(el=>el.oninput=()=>{ MFU_STATE.branches[+el.dataset.idx].remark=el.value; });
+  document.querySelectorAll(".mfu-amount").forEach(el=>el.oninput=()=>{
+    MFU_STATE.branches[+el.dataset.idx].amount=el.value;
+    const mirror=el.closest("tr").querySelectorAll(".mfj-amt")[1];
+    if(mirror) mirror.value=el.value;
+    mfuUpdateBalance();
+  });
+  document.querySelectorAll("[data-mfurm]").forEach(el=>el.onclick=()=>{ MFU_STATE.branches.splice(+el.dataset.mfurm,1); mfuRenderForm(); });
+}
+
+async function mfuRunJournalSearch(kw){
+  $("mfu-journal-results").innerHTML="検索中…";
+  const r=await mfCall("list_journals",{keyword:kw,tenant_id:MFU_STATE.tenantId});
+  MFU_STATE.journalResults=(r.ok&&r.body.results)||[];
+  MFU_STATE.journalKeyword=kw;
+  mfuRenderJournalResults();
+}
+function mfuRenderJournalResults(){
+  const el=$("mfu-journal-results");
+  if(!el) return;
+  const rs=MFU_STATE.journalResults;
+  el.innerHTML=rs.length?rs.map((r,i)=>`<div class="ai-field" style="margin-bottom:4px"><small>${esc(r.transaction_date||"")}</small>${esc(r.summary)}<div class="mail-actions" style="margin-top:4px"><button data-mfupick="${i}" style="font-size:12px">この仕訳を使う</button></div></div>`).join("")
+    :`<div style="font-size:12px;color:var(--muted)">${MFU_STATE.journalKeyword?"該当する過去の仕訳が見つかりませんでした":"キーワードを入力して検索してください"}</div>`;
+  document.querySelectorAll("[data-mfupick]").forEach(btn=>btn.onclick=()=>{
+    const r=MFU_STATE.journalResults[+btn.dataset.mfupick];
+    mfuApplyBranches([{
+      debitLabel:mfuLabelOf(r.template.debit), creditLabel:mfuLabelOf(r.template.credit),
+      department_id:(r.template.debit&&r.template.debit.department_id)||(r.template.credit&&r.template.credit.department_id)||"",
+      amount:"", remark:r.template.remark||"",
+    }]);
+  });
+}
+function mfuRenderTemplateResults(){
+  const el=$("mfu-tpl-results");
+  if(!el) return;
+  const tpls=MFU_STATE.templates||[];
+  el.innerHTML=tpls.length?tpls.map((t,i)=>{
+    const sum=(t.branches||[]).map(b=>`${mfuLabelOf(b.debit)||"?"}／${mfuLabelOf(b.credit)||"?"}`).join("、");
+    return `<div class="mfj-tpl-item"><div><div class="lbl">${esc(t.label)}</div><div class="sum">${esc(sum)}（${(t.branches||[]).length}行）</div></div><button data-mfutpluse="${i}" style="font-size:12px;white-space:nowrap">この仕訳辞書を使う</button></div>`;
+  }).join("")
+    :`<div style="font-size:12px;color:var(--muted)">この事業者にはまだ仕訳辞書が登録されていません（設定タブから登録できます）。</div>`;
+  document.querySelectorAll("[data-mfutpluse]").forEach(btn=>btn.onclick=()=>{
+    const t=MFU_STATE.templates[+btn.dataset.mfutpluse];
+    const branches=(t.branches||[]).map(b=>({
+      debitLabel:mfuLabelOf(b.debit), creditLabel:mfuLabelOf(b.credit),
+      department_id:b.department_id||"", amount:b.amount||"", remark:b.remark||"",
+    }));
+    mfuApplyBranches(branches);
+  });
+}
+
+function mfuRenderForm(){
+  const box=$("mfu-box");
+  const mode=MFU_STATE.mode;
+  const totalNow=MFU_STATE.branches.reduce((s,b)=>s+(Number(b.amount)||0),0);
+  box.innerHTML=`
+    <datalist id="mfu-acc-datalist">${MFU_STATE.accountDatalistHtml||""}</datalist>
+    <div class="ai-grid">
+      ${MFU_STATE.tenants.length>1?`<div class="ai-field"><small>登録先の事業者</small><select id="mfu-tenant">${MFU_STATE.tenants.map(t=>`<option value="${esc(t.id)}" ${t.id===MFU_STATE.tenantId?"selected":""}>${esc(t.label)}</option>`).join("")}</select></div>`:""}
+      <div class="ai-field"><small>取引先名</small><input id="mfu-vendor" value="${esc(MFU_STATE.vendorName||"")}" placeholder="例: ○○商店"></div>
+      <div class="ai-field"><small>日付（会計計上日）</small><input id="mfu-date" type="date" value="${esc(MFU_STATE.date)}"></div>
+      <div class="ai-field"><small>摘要（全体）</small><input id="mfu-remark" value="${esc(MFU_STATE.remark||"")}"></div>
+    </div>
+    <div class="ai-field" style="margin-top:8px"><small>証憑ファイル（写真・PDF。複数可・任意）</small><input id="mfu-files" type="file" accept="application/pdf,image/*" multiple></div>
+
+    <div class="mail-actions" style="margin:10px 0 8px">
+      <button data-mfumode="journal" ${mode==="journal"?'class="primary"':""}>📖 過去の仕訳から選ぶ</button>
+      <button data-mfumode="dict" ${mode==="dict"?'class="primary"':""}>📗 仕訳辞書から選ぶ${MFU_STATE.templates.length?`（${MFU_STATE.templates.length}）`:""}</button>
+      <button data-mfumode="manual" ${mode==="manual"?'class="primary"':""}>🔧 直接入力</button>
+    </div>
+    ${mode==="journal"?`<div id="mfu-journal-picker">
+      <input id="mfu-journal-search" placeholder="会社名や勘定科目名で検索" value="${esc(MFU_STATE.journalKeyword||"")}">
+      <div id="mfu-journal-results" style="margin-top:6px"></div>
+    </div>`:mode==="dict"?`<div id="mfu-tpl-picker"><div id="mfu-tpl-results"></div></div>`:`
+    <div class="mfj-balance">
+      <div class="box"><small>借方合計</small><b id="mfu-debit-total">${yen(totalNow)}</b></div>
+      <div class="box"><small>貸方合計</small><b id="mfu-credit-total">${yen(totalNow)}</b></div>
+      <div class="box ok"><small>差額</small><b>¥0</b></div>
+    </div>
+    <div class="mfj-gridwrap">
+      <table class="mfj-grid">
+        <thead>
+          <tr><th rowspan="2" style="width:26px"></th><th colspan="2" class="side">借方</th><th colspan="2" class="side" style="background:var(--m-greensoft);color:var(--m-green)">貸方</th><th rowspan="2">摘要（行ごと・任意）</th></tr>
+          <tr><th>勘定科目・部門</th><th>金額</th><th>勘定科目</th><th>金額</th></tr>
+        </thead>
+        <tbody id="mfu-branch-rows">${MFU_STATE.branches.map((br,i)=>mfuBranchRowHtml(br,i)).join("")}</tbody>
+      </table>
+    </div>
+    <div class="mail-actions" style="margin-top:6px">
+      <button id="mfu-add-row">＋ 明細行を追加（振替伝票・複合仕訳の場合）</button>
+      <button id="mfu-save-template">💾 この内容を仕訳辞書に登録</button>
+    </div>
+    <div class="mail-actions" style="margin-top:10px">
+      <button class="primary" id="mfu-confirm">👁 プレビュー・確認画面へ</button>
+    </div>`}
+    <div class="err" id="mfu-msg" style="margin-top:6px"></div>
+  `;
+  if(MFU_STATE.tenants.length>1) $("mfu-tenant").onchange=e=>mfuLoadForTenant(e.target.value,MFU_STATE.tenants);
+  $("mfu-vendor").oninput=()=>{ MFU_STATE.vendorName=$("mfu-vendor").value; };
+  $("mfu-date").onchange=()=>{ MFU_STATE.date=$("mfu-date").value; };
+  $("mfu-remark").oninput=()=>{ MFU_STATE.remark=$("mfu-remark").value; };
+  document.querySelectorAll("[data-mfumode]").forEach(btn=>btn.onclick=()=>{
+    MFU_STATE.mode=btn.dataset.mfumode;
+    mfuRenderForm();
+  });
+  if(mode==="journal"){
+    mfuRenderJournalResults();
+    let t=null;
+    $("mfu-journal-search").oninput=()=>{ clearTimeout(t); const kw=$("mfu-journal-search").value.trim(); t=setTimeout(()=>mfuRunJournalSearch(kw),350); };
+    return;
+  }
+  if(mode==="dict"){ mfuRenderTemplateResults(); return; }
+  mfuWireBranchRows();
+  $("mfu-add-row").onclick=()=>{ mfuAddBranchRow(); mfuRenderForm(); };
+  $("mfu-save-template").onclick=mfuSaveAsTemplate;
+  $("mfu-confirm").onclick=()=>mfuOpenPreview();
+}
+
+async function mfuSaveAsTemplate(){
+  const label=(prompt("仕訳辞書として登録する名前を入力してください（例: 【未払金】アルバイト給与）")||"").trim();
+  if(!label) return;
+  const structured=[];
+  for(const b of MFU_STATE.branches){
+    const debit=MFU_STATE.accountLabelMap.get(b.debitLabel);
+    const credit=MFU_STATE.accountLabelMap.get(b.creditLabel);
+    if(!debit||!credit){ alert("借方・貸方をプルダウンの候補から選んでから登録してください"); return; }
+    structured.push({debit,credit,department_id:b.department_id||null,department_name:(MFU_STATE.departments.find(d=>d.id===b.department_id)||{}).name||null,amount:Number(b.amount)||null,remark:b.remark||null});
+  }
+  if(!structured.length){ alert("明細行がありません"); return; }
+  const r=await authed("/rest/v1/mf_journal_templates",{method:"POST",headers:{Prefer:"return=minimal"},body:JSON.stringify({tenant_id:MFU_STATE.tenantId,label,branches:structured,created_by:ME.id})});
+  const msg=$("mfu-msg");
+  if(!r.ok){ msg.className="err"; msg.textContent="仕訳辞書への登録に失敗しました"; return; }
+  msg.className="err msg-ok"; msg.textContent=`仕訳辞書「${label}」に登録しました`;
+  MFU_STATE.templates=(await authed(`/rest/v1/mf_journal_templates?tenant_id=eq.${encodeURIComponent(MFU_STATE.tenantId)}&select=id,label,branches&order=label`)).body||[];
+}
+
+function mfuFileToBase64(file){
+  return new Promise((resolve,reject)=>{
+    const reader=new FileReader();
+    reader.onload=()=>resolve(String(reader.result).split(",")[1]||"");
+    reader.onerror=reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+function mfuOpenPreview(){
+  const msg=$("mfu-msg"); msg.className="err"; msg.textContent="";
+  const vendorName=($("mfu-vendor")?.value||"").trim();
+  if(!vendorName){ msg.textContent="取引先名を入力してください"; return; }
+  const branchesPayload=[];
+  for(const b of MFU_STATE.branches){
+    const debit=MFU_STATE.accountLabelMap.get(b.debitLabel);
+    const credit=MFU_STATE.accountLabelMap.get(b.creditLabel);
+    if(!debit||!credit){ msg.textContent="借方・貸方はプルダウンの候補から選択してください（自由入力のままだと登録できません）"; return; }
+    const amt=Number(b.amount);
+    if(!amt||amt<=0){ msg.textContent="金額が未入力（0円）の行があります"; return; }
+    branchesPayload.push({debit,credit,department_id:b.department_id||null,amount:amt,remark:b.remark||""});
+  }
+  if(!branchesPayload.length){ msg.textContent="明細行がありません"; return; }
+  const date=$("mfu-date").value, remark=$("mfu-remark").value;
+  const files=Array.from($("mfu-files").files||[]);
+  const total=branchesPayload.reduce((s,b)=>s+b.amount,0);
+  const entries=branchesPayload.map(b=>{
+    const deptName=(MFU_STATE.departments.find(d=>d.id===b.department_id)||{}).name||"";
+    return `<div class="mfj-preview-entry">
+      <div class="mfj-preview-head"><div>借方</div><div>貸方</div></div>
+      <div class="mfj-preview-body">
+        <div class="mfj-preview-side"><div class="acc">${esc(mfuLabelOf(b.debit))}</div><div class="sub">${esc(deptName)}</div><div class="money">${yen(b.amount)}</div></div>
+        <div class="mfj-preview-side"><div class="acc">${esc(mfuLabelOf(b.credit))}</div><div class="sub"></div><div class="money">${yen(b.amount)}</div></div>
+      </div>
+      ${b.remark?`<div class="mfj-preview-remark">${esc(b.remark)}</div>`:""}
+    </div>`;
+  }).join("");
+
+  const modal=document.createElement("div");
+  modal.className="modal-bg"; modal.id="mfuPreviewModal";
+  modal.innerHTML=`<div class="modal" style="max-width:820px">
+    <div class="mhead"><h2>🧾 振替伝票プレビュー</h2><button class="linkbtn" id="mfuPreviewClose" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:13px">閉じる ×</button></div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:8px">登録先: <b>${esc(MFU_STATE.tenantLabel||MFU_STATE.tenantId)}</b>　取引先: <b>${esc(vendorName)}</b>　日付: <b>${esc(date)}</b>　全体の摘要: <b>${esc(remark||"（なし）")}</b>${files.length?`　添付: <b>${files.length}件</b>`:""}</div>
+    <div class="mfj-balance" style="margin:0 0 10px">
+      <div class="box"><small>借方合計</small><b>${yen(total)}</b></div>
+      <div class="box"><small>貸方合計</small><b>${yen(total)}</b></div>
+      <div class="box ok"><small>差額</small><b>¥0</b></div>
+    </div>
+    ${entries}
+    <div class="err" id="mfuPreviewMsg" style="margin-top:6px"></div>
+    <div class="mail-actions" style="margin-top:12px">
+      <button id="mfuPreviewBack">← 戻って修正</button>
+      <button class="primary" id="mfuPreviewSubmit">✅ この内容で登録</button>
+    </div>
+  </div>`;
+  document.body.appendChild(modal);
+  pushNav({modal:true});
+  modal.onclick=e=>{ if(e.target===modal) history.back(); };
+  $("mfuPreviewClose").onclick=()=>history.back();
+  $("mfuPreviewBack").onclick=()=>history.back();
+  $("mfuPreviewSubmit").onclick=async()=>{
+    $("mfuPreviewSubmit").disabled=true;
+    const pmsg=$("mfuPreviewMsg"); pmsg.className="err"; pmsg.textContent="登録中…";
+    let voucherFiles=[];
+    try{
+      voucherFiles=await Promise.all(files.slice(0,5).map(async f=>({file_name:f.name.slice(0,255),file_data:await mfuFileToBase64(f)})));
+    }catch(e){ pmsg.textContent="添付ファイルの読み込みに失敗しました: "+e.message; $("mfuPreviewSubmit").disabled=false; return; }
+    const payload={
+      tenant_id: MFU_STATE.tenantId,
+      vendor_name: vendorName,
+      branches: branchesPayload.map(b=>({debit:{account_id:b.debit.account_id,sub_account_id:b.debit.sub_account_id||undefined},credit:{account_id:b.credit.account_id,sub_account_id:b.credit.sub_account_id||undefined},department_id:b.department_id||null,amount:b.amount,remark:b.remark||undefined})),
+      transaction_date: date,
+      remark,
+      voucher_files: voucherFiles,
+    };
+    const {ok,body:j}=await mfCall("create_standalone",payload);
+    if(!ok){ pmsg.textContent=j.error||"登録に失敗しました"; $("mfuPreviewSubmit").disabled=false; return; }
+    pmsg.className="err msg-ok";
+    pmsg.textContent=`登録しました（伝票番号: ${j.journal_number??"-"}）`
+      +(j.voucher_attached?`。添付ファイルも${j.voucher_attached}件添付しました`:j.voucher_error?`（添付: ${j.voucher_error}）`:"")
+      +"。画面を更新します…";
+    setTimeout(()=>{ history.back(); renderUploadInvoiceTab(); },900);
+  };
 }
 
 async function renderSettingsTab(u){
