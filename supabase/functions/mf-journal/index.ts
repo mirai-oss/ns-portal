@@ -78,6 +78,24 @@ function branchToTemplate(br: any) {
   return { debit: side(br.debitor), credit: side(br.creditor), remark: br.remark };
 }
 
+// 部門一覧を直接取得（2026-08-31追加）。GET /api/v3/departmentsには departments.read スコープが必要で、
+// 従来の連携（mf-oauth-authorize経由の再認可がまだの事業者）には無いため、その場合はnullを返す。
+// 呼び出し側は、nullなら従来どおり仕訳履歴から実際に使われた部門をスキャンする方式にフォールバックする
+// （ユーザー報告「会計入力の部門プルダウンに一部の部門が出ない」＝一度もMF側の仕訳で使われたことのない
+// 部門がスキャン方式では拾えないのが原因だったための対応。再認可すれば自動でこちらが使われるようになる）
+async function fetchDepartmentsDirect(accessToken: string): Promise<{ id: string; name: string }[] | null> {
+  try {
+    const res = await mfFetch("/api/v3/departments", accessToken);
+    if (!res.ok) return null;
+    const data = await res.json();
+    const list = data.departments ?? (Array.isArray(data) ? data : []);
+    if (!Array.isArray(list)) return null;
+    return list.map((d: any) => ({ id: d.id, name: d.name })).filter((d: any) => d.id && d.name);
+  } catch (_e) {
+    return null;
+  }
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: cors });
   if (req.method !== "POST") return json({ error: "POSTのみ対応" }, 405);
@@ -158,10 +176,12 @@ Deno.serve(async (req: Request) => {
       if (action === "suggest" && !keyword) return json({ success: true, match: null, departments: [] });
 
       // 前期＋当期の2期分をまとめて検索（前期・当期をまたいで1回のGETで取れる範囲か未確認のため
-      // 念のため2回に分けて取得しマージする。件数が多い場合はper_pageの上限に注意）
-      const [resCur, resPrev] = await Promise.all([
+      // 念のため2回に分けて取得しマージする。件数が多い場合はper_pageの上限に注意）。
+      // 部門一覧の直接取得（成功すればこちらを優先＝全部門が確実に出る）も並行して試す
+      const [resCur, resPrev, directDepartments] = await Promise.all([
         mfFetch(`/api/v3/journals?start_date=${fiscalYearStart()}&end_date=${todayStr()}&per_page=500&page=1`, accessToken),
         mfFetch(`/api/v3/journals?start_date=${prevFiscalYearStart()}&end_date=${fiscalYearStart()}&per_page=500&page=1`, accessToken),
+        fetchDepartmentsDirect(accessToken),
       ]);
       const [dataCur, dataPrev] = await Promise.all([resCur.json(), resPrev.json()]);
       if (!resCur.ok) return json({ error: "仕訳履歴の取得に失敗しました", detail: dataCur }, 502);
@@ -191,8 +211,14 @@ Deno.serve(async (req: Request) => {
       }
       if (best) delete best._date;
 
+      // 部門一覧: 直接取得（departments.readスコープ）が成功していればそちらを優先（全部門が確実に出る）。
+      // 未認可でnullだった場合のみ、従来どおり仕訳履歴から実際に使われた部門をスキャンした結果を使う
+      const departments = (directDepartments && directDepartments.length)
+        ? directDepartments
+        : Array.from(deptMap, ([id, name]) => ({ id, name }));
+
       if (action === "list_departments") {
-        return json({ success: true, departments: Array.from(deptMap, ([id, name]) => ({ id, name })), searched_count: journals.length });
+        return json({ success: true, departments, searched_count: journals.length });
       }
       if (action === "list_journals") {
         matches.sort((a, b) => (a.transaction_date < b.transaction_date ? 1 : -1)); // 新しい順
@@ -201,7 +227,7 @@ Deno.serve(async (req: Request) => {
       return json({
         success: true,
         match: best,
-        departments: Array.from(deptMap, ([id, name]) => ({ id, name })),
+        departments,
         searched_count: journals.length,
       });
     }
