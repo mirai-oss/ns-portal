@@ -2787,6 +2787,16 @@ async function payrollFetchPdfBase64(userId,yearMonth){
   for(let i=0;i<bytes.length;i+=chunk) binary+=String.fromCharCode(...bytes.subarray(i,i+chunk));
   return btoa(binary);
 }
+// payroll-pdfsから証憑を削除（添付間違い等の取り消し用。2026-09-01）
+async function payrollDeletePdf(userId,yearMonth){
+  const s=sess.get();
+  const r=await fetch(`${SUPA_URL}/storage/v1/object/payroll-pdfs`,{
+    method:"DELETE",
+    headers:{apikey:SUPA_KEY,Authorization:"Bearer "+(s?s.at:""),"Content-Type":"application/json"},
+    body:JSON.stringify({prefixes:[`${userId}/${yearMonth}.pdf`]}),
+  });
+  return r.ok;
+}
 // PDFファイル名から従業員を推定（氏名の空白除去・部分一致。完全な自動判定はせず、必ず人が確認・修正できる形で使う）
 function payrollGuessEmployeeByFilename(filename){
   const norm=s=>String(s||"").replace(/[\s　]/g,"");
@@ -2836,7 +2846,9 @@ function payrollRowHtml(row){
   const name=(row.user&&row.user.name)||"—";
   const options=`<option value="">（未設定）</option>`+PAYROLL_STATE.templates.map(t=>`<option value="${esc(t.id)}" ${asg&&asg.template_id===t.id?"selected":""}>${esc(t.label)}</option>`).join("");
   const status=rec?`<span class="invoice-status done">✅登録済み（伝票番号:${esc(String(rec.mf_journal_number??"-"))}）</span>`:(asg&&asg.template_id?`<span class="invoice-status wait">未登録</span>`:`<span class="invoice-status gray">パターン未設定</span>`);
-  const pdfBadge=row._hasPdf?`<span title="給与明細PDFあり（登録時に証憑として添付されます）">📎</span>`:`<span style="color:var(--muted)" title="給与明細PDF未アップロード">－</span>`;
+  const pdfBadge=row._hasPdf
+    ?`<span title="給与明細PDFあり（登録時に証憑として添付されます）">📎</span> <button class="linkbtn" style="color:var(--accent);font-size:11px;background:none;border:none;cursor:pointer;padding:0" data-payroll-pdf-delete="${esc(row.user_id)}" title="添付を間違えたPDFを削除">削除</button>`
+    :`<span style="color:var(--muted)" title="給与明細PDF未アップロード">－</span>`;
   const bank=payrollBankFor(row.user_id);
   const bankLabel=!bank?"未登録":(bank.payment_method==="cash"?"💴現金手渡し":"🏦振込");
   const bankBtn=`<button class="hq-btn" style="font-size:11px;padding:6px 9px" data-payroll-bank="${esc(row.user_id)}">${bankLabel}</button>`;
@@ -2895,6 +2907,16 @@ function payrollRender(){
     $("tabbody").innerHTML=`<section class="invoice-list active"><div class="card" style="padding:16px"><div class="spin" style="padding:20px 0">読み込み中…</div></div></section>`;
     await payrollLoad(); payrollRender(); updateMailSummaryBar();
   };
+  document.querySelectorAll("[data-payroll-pdf-delete]").forEach(el=>el.onclick=async()=>{
+    const userId=el.dataset.payrollPdfDelete;
+    const row=(PAYROLL_STATE.rows||[]).find(r=>r.user_id===userId);
+    const name=(row&&row.user&&row.user.name)||"この従業員";
+    if(!confirm(`${name}さんの${PAYROLL_STATE.yearMonth}分の給与明細PDFを削除しますか？（添付間違い等の取り消し用。削除後は未アップロード扱いに戻ります）`)) return;
+    el.disabled=true;
+    await payrollDeletePdf(userId,PAYROLL_STATE.yearMonth);
+    if(row) row._hasPdf=false;
+    payrollRender();
+  });
   document.querySelectorAll("[data-payroll-pattern]").forEach(el=>el.onchange=async()=>{
     const userId=el.dataset.payrollPattern;
     const templateId=el.value||null;
