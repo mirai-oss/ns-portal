@@ -4235,3 +4235,11 @@ Supabase Management API（`~/.config/ns-portal/supabase_pat`・`POST /v1/project
 - **常駐化・自己復旧を実装**: launchd `com.nstyle.hermes-line`（KeepAlive）→ `~/.hermes/start-line-stack.sh` がトンネル起動→URL取得→.env更新→**LINE Webhook URLをAPIで自動再登録**（PUT /v2/bot/channel/webhook/endpoint。発行直後はDNS未浸透で400になるため10秒×12回リトライ）→gateway起動。**再起動してもWebhook再登録作業は不要**
 - 実機E2E: LINEで日本語応答・gateway再起動後のセッション復旧・許可外拒否を確認。データ接続は未実施（エージェントは「売上データはどこ？」と聞いてくる状態が正常）
 - 次: フェーズC=社内データ接続（要件§18準拠のRead Only専用Edge Function＋監査ログ。計画をユーザーに提示予定）
+
+## 2026-08-31 D-8フェーズC-1: AI窓口の社内データ接続（読み取り専用・完了）
+- ユーザー承認済み（「C-1進めてOK・売上は軽い方・お任せ」）。**二重実装の回避が最重要判断**: 売上同期は新設せず、既存の`dash-sync`→`dash_sales_daily`（毎日更新・当日分まで）を活用。不足していた履歴だけを`ai-gateway`の管理アクション`sales_backfill`でGAS `bqDailyStoreForSync`(months=26)経由バックフィル→**6,309行・2024-07-01〜本日・店舗名不一致0**
+- **Edge Function `ai-gateway` 新設（v2稼働・supabase/functions/ai-gateway/index.ts）**: §18準拠のAI専用読み取り経路。専用トークン(AI_GATEWAY_TOKEN・Supabase秘密変数＋~/.config/ns-portal/ai_gateway_token)のみで認証（service_roleはAIに渡さない）／照会カタログ7種（sales_summary・nippo_status・checklist_status・tasks_status[visibility=allのみ]・posts_latest・expenses_status・store_directory）＋管理用sales_backfill／**全呼び出しをai_audit_logsに記録**（読み=portal_is_master()のみ。SQL=supabase/2026-08-31_ai_gateway.sql）／infoスキーマ（給与・口座・金庫）へのアクセスコードなし
+- **ハマった点**: sales_summaryをPostgREST直で書いたらmax_rows=1000上限で今月分が欠落（limit(20000)は効かない）→DB側RPC `ai_sales_summary`（security definer・anon/authenticatedからrevoke）に集計を移して解決。今月9,618万円・前年比153.9%・24ヶ月推移が正しく返ることを確認
+- **Hermes側**: スキル`~/.hermes/skills/nstyle/nstyle-data/`（SKILL.md＋query.sh。トークンはスクリプト内・chmod700）。`hermes -z`実機テストで「今月の売上・前年比・店舗別トップ3」を実データで正答。ゲートウェイ再起動でLINE側にも反映（再起動時のWebhook自動再登録リトライが本番で機能: 400→200）
+- checklist_statusのper_store空は正常（active_items=0=現場の項目未登録。テンプレ2件はあるが項目なし）。nippo_statusの対象者は「有効ユーザー・社長除く」の近似（連携用等のシステムアカウントも混ざる。精緻化は必要になったら）
+- 未対応: Phase 2（Draft/実行系）・LINE以外への展開・ai_audit_logsのポータル閲覧UI
