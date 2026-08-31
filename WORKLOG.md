@@ -6,6 +6,8 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
+**★★★2026-09-01（担当F実行スレッド・続き4）実機フィードバック対応: 社内システム申請の検索ボックスで日本語IME入力が壊れる不具合を修正**: ユーザーが実機スクリーンショットで報告（検索欄に「dあ」と表示＝日本語入力の1文字目がローマ字のまま化けていた）。**原因**: サービス名検索の`<input>`が`oninput`のたびに周囲の領域ごと`innerHTML`で作り直されており、入力中の`<input>`要素自体を毎回破棄・再生成していたため、ブラウザのIME変換状態が壊れていた。**修正**: カテゴリチップ・検索inputを含む枠は一覧読み込み時に1回だけ作り、検索・絞り込み・対象選択のたびに更新するのは中の`#cPickArea`（対象選択のプルダウンと選択後の項目/値フォーム）だけにした（コミット[bffabb1](https://github.com/mirai-oss/ns-portal/commit/bffabb1)）。ローカルで検証: 入力イベント発火の前後で`<input>`要素が同一ノードのまま・フォーカスも保持されることを確認済み。**あわせて報告のあった「UI崩れ（青いバナー）」は再現できず**（ローカルでの単体レンダリングでは発生せず、ちょうどpush直後だったためGitHub Pagesの反映タイミングによる一時的な表示だった可能性が高い。再発する場合は再度スクリーンショットをお願いしたい）。
+
 **★★★★★2026-09-01（担当F実行スレッド・続き3）変更申請をポータル内で完結する方式へ変更（ns-info-systemへのリンクを廃止）**: ユーザーから「そもそも社内情報管理システムへリンクで飛ばす必要が無い。経費申請と同じようにその画面で申請できるようにしてほしい。承認は本部/マスターが後でns-info-system側で行うのだから、申請の段階でリンクを飛ばす必要は無い」と明確な指摘を受け、SSOハンドオフ方式をやめて新規`ns-portal/requests.html`（担当F管轄の新規ファイル）を作成・`portal.html`の「🔁申請」グループへ経費申請と同じ「同一オリジンiframeで直接embed」方式で組み込んだ（コミット[0d1a21f](https://github.com/mirai-oss/ns-portal/commit/0d1a21f)）。
 - **技術的なポイント**: `requests.html`はns-info-system（Vercelの別アプリ）とは完全に別ファイルだが、**同じSupabaseプロジェクト・同じSupabase Auth**（`info`/`public`は同一DB内の別スキーマ）のため、`Accept-Profile`/`Content-Profile: info`ヘッダーを付けるだけで`info`スキーマの関数・テーブルへ直接読み書きできる。ns-info-system側に前スレッドで作った関数群（`get_my_employee_summary`/`am_credential_eligible`/`submit_employee_change_request`/`list_credentials_for_request`/`submit_credential_change_request`/`submit_credential_new_request`）はそのまま無変更で流用（RPCはスキーマを問わずSupabaseプロジェクト単位で呼べるため）
 - ns-info-system側のReact版（`/requests`）と同等の機能をvanilla JSで再実装（個人情報6カテゴリ・添付ファイル・社内システム申請の新規登録/変更申請・自分の申請履歴）。認証は`expenses.html`と同じ`nsportal_session_v1`直読みパターンを踏襲（新規の認証コードなし）
