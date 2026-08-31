@@ -2712,6 +2712,44 @@ async function payrollLoad(){
     const r=await authed("/rest/v1/stores?select=id,name&order=name");
     PAYROLL_STATE.stores=(r.ok&&Array.isArray(r.body))?r.body:[];
   }
+  // 給与明細PDF（担当Bが用意したStorageバケット payroll-pdfs・{user_id}/{year_month}.pdf規約）が
+  // この月・この従業員分に既にあるかを一括で確認し、一覧に📎バッジを出せるようにする
+  const pdfChecks=await Promise.all(PAYROLL_STATE.rows.map(row=>payrollCheckPdfExists(row.user_id,ym)));
+  PAYROLL_STATE.rows.forEach((row,i)=>{ row._hasPdf=pdfChecks[i]; });
+}
+// payroll-pdfsバケット内に{userId}/{yearMonth}.pdfが存在するか（一覧表示用の軽い存在確認）
+async function payrollCheckPdfExists(userId,yearMonth){
+  const s=sess.get();
+  const r=await fetch(`${SUPA_URL}/storage/v1/object/list/payroll-pdfs`,{
+    method:"POST",
+    headers:{apikey:SUPA_KEY,Authorization:"Bearer "+(s?s.at:""),"Content-Type":"application/json"},
+    body:JSON.stringify({prefix:`${userId}/`,search:`${yearMonth}.pdf`}),
+  });
+  if(!r.ok) return false;
+  const list=await r.json().catch(()=>[]);
+  return Array.isArray(list)&&list.some(x=>x.name===`${yearMonth}.pdf`);
+}
+// payroll-pdfsから実際のPDFをbase64で取得（登録直前の証憑添付用。無ければnull）
+async function payrollFetchPdfBase64(userId,yearMonth){
+  const s=sess.get();
+  const r=await fetch(`${SUPA_URL}/storage/v1/object/payroll-pdfs/${userId}/${yearMonth}.pdf`,{
+    headers:{apikey:SUPA_KEY,Authorization:"Bearer "+(s?s.at:"")},
+  });
+  if(!r.ok) return null;
+  const buf=await r.arrayBuffer();
+  const bytes=new Uint8Array(buf);
+  let binary=""; const chunk=0x8000;
+  for(let i=0;i<bytes.length;i+=chunk) binary+=String.fromCharCode(...bytes.subarray(i,i+chunk));
+  return btoa(binary);
+}
+// PDFファイル名から従業員を推定（氏名の空白除去・部分一致。完全な自動判定はせず、必ず人が確認・修正できる形で使う）
+function payrollGuessEmployeeByFilename(filename){
+  const norm=s=>String(s||"").replace(/[\s　]/g,"");
+  const n=norm(filename);
+  return (PAYROLL_STATE.rows||[]).find(r=>{
+    const name=norm(r.user&&r.user.name);
+    return name&&n.includes(name);
+  })||null;
 }
 function payrollAssignmentFor(userId){ return PAYROLL_STATE.assignments.find(a=>a.user_id===userId); }
 function payrollRecordFor(userId){ return PAYROLL_STATE.records.find(r=>r.user_id===userId); }
@@ -2752,6 +2790,7 @@ function payrollRowHtml(row){
   const name=(row.user&&row.user.name)||"—";
   const options=`<option value="">（未設定）</option>`+PAYROLL_STATE.templates.map(t=>`<option value="${esc(t.id)}" ${asg&&asg.template_id===t.id?"selected":""}>${esc(t.label)}</option>`).join("");
   const status=rec?`<span class="invoice-status done">✅登録済み（伝票番号:${esc(String(rec.mf_journal_number??"-"))}）</span>`:(asg&&asg.template_id?`<span class="invoice-status wait">未登録</span>`:`<span class="invoice-status gray">パターン未設定</span>`);
+  const pdfBadge=row._hasPdf?`<span title="給与明細PDFあり（登録時に証憑として添付されます）">📎</span>`:`<span style="color:var(--muted)" title="給与明細PDF未アップロード">－</span>`;
   return `<tr>
     <td><b>${esc(name)}</b></td>
     <td style="text-align:right">${yen(row.fixed_salary_amount)}</td>
@@ -2759,6 +2798,7 @@ function payrollRowHtml(row){
     <td style="text-align:right">${yen(row.deduction_total)}</td>
     <td style="text-align:right">${yen(row.net_pay)}</td>
     <td><select data-payroll-pattern="${esc(row.user_id)}" ${rec?"disabled":""}>${options}</select></td>
+    <td style="text-align:center">${pdfBadge}</td>
     <td>${status}</td>
     <td>${(!rec&&asg&&asg.template_id)?`<button class="hq-btn" style="font-size:11px;padding:6px 9px" data-payroll-preview="${esc(row.user_id)}">プレビュー・登録</button>`:""}</td>
   </tr>`;
@@ -2772,9 +2812,16 @@ function payrollRender(){
         <div style="font-size:12px;color:var(--muted);margin-bottom:12px">スマレジ給与明細（確定給与）から、月次の給与仕訳を作成します。まだ<b>有限会社トーホーエージェンシー分のみ</b>対応しています（SK側は別事業者としてマネーフォワード連携・スマレジ取込がまだのため未対応）。「仕訳辞書パターン」は設定タブで「給与仕訳での用途」を設定したテンプレートだけが選べます。</div>
         <div class="ai-field" style="max-width:220px"><small>対象年月</small><input id="payroll-ym" type="month" value="${esc(PAYROLL_STATE.yearMonth)}"></div>
       </div>
+      <div class="card" style="padding:16px;margin-bottom:14px">
+        <h3 style="font-size:14px;margin-bottom:6px">📎 給与明細PDFをまとめてアップロード（${esc(PAYROLL_STATE.yearMonth)}分）</h3>
+        <div style="font-size:12px;color:var(--muted);margin-bottom:10px">スマレジの給与明細一括ダウンロード（ZIP）を解凍して、複数のPDFを一度に選んでください。ファイル名から従業員を自動で推定します（間違っていたら選び直せます）。アップロードした明細は、下の一覧の📎マークで確認できます。仕訳を登録するときに自動でマネーフォワードの証憑として添付されます。</div>
+        <input id="payroll-pdf-files" type="file" accept="application/pdf" multiple>
+        <div class="mail-actions" style="margin-top:8px"><button id="payroll-pdf-match">従業員を推定する</button></div>
+        <div id="payroll-pdf-match-area" style="margin-top:10px"></div>
+      </div>
       <div class="card hq-tablewrap">
         ${rows.length?`<table class="invoice-table">
-          <thead><tr><th>氏名</th><th style="text-align:right">固定給</th><th style="text-align:right">通勤</th><th style="text-align:right">控除</th><th style="text-align:right">差引支給</th><th>仕訳辞書パターン</th><th>状態</th><th></th></tr></thead>
+          <thead><tr><th>氏名</th><th style="text-align:right">固定給</th><th style="text-align:right">通勤</th><th style="text-align:right">控除</th><th style="text-align:right">差引支給</th><th>仕訳辞書パターン</th><th>PDF</th><th>状態</th><th></th></tr></thead>
           <tbody>${rows.map(payrollRowHtml).join("")}</tbody>
         </table>`:`<div class="empty">${esc(PAYROLL_STATE.yearMonth)}のデータがまだありません（スマレジ給与明細の同期後に表示されます）</div>`}
       </div>
@@ -2793,8 +2840,62 @@ function payrollRender(){
     payrollRender();
   });
   document.querySelectorAll("[data-payroll-preview]").forEach(el=>el.onclick=()=>payrollOpenPreview(el.dataset.payrollPreview));
+  $("payroll-pdf-match").onclick=()=>{
+    const files=Array.from($("payroll-pdf-files").files||[]);
+    if(!files.length){ alert("PDFファイルを選択してください"); return; }
+    PAYROLL_STATE.pdfMatches=files.map(f=>{
+      const guess=payrollGuessEmployeeByFilename(f.name);
+      return {file:f, userId:guess?guess.user_id:""};
+    });
+    payrollRenderPdfMatchArea();
+  };
 }
-function payrollOpenPreview(userId){
+function payrollPdfOptionsHtml(selectedUserId){
+  let html=`<option value="">（対応する従業員なし・スキップ）</option>`;
+  for(const r of PAYROLL_STATE.rows){
+    html+=`<option value="${esc(r.user_id)}" ${r.user_id===selectedUserId?"selected":""}>${esc((r.user&&r.user.name)||r.user_id)}</option>`;
+  }
+  return html;
+}
+function payrollRenderPdfMatchArea(){
+  const el=$("payroll-pdf-match-area");
+  const matches=PAYROLL_STATE.pdfMatches||[];
+  if(!el) return;
+  if(!matches.length){ el.innerHTML=""; return; }
+  el.innerHTML=`
+    <table class="adcost-table">
+      <thead><tr><th>ファイル名</th><th>従業員（自動推定・修正可）</th></tr></thead>
+      <tbody>${matches.map((m,i)=>`<tr><td>${esc(m.file.name)}</td><td><select data-pdfmatch="${i}">${payrollPdfOptionsHtml(m.userId)}</select></td></tr>`).join("")}</tbody>
+    </table>
+    <div class="mail-actions" style="margin-top:8px"><button class="primary" id="payroll-pdf-upload">この内容でアップロード</button></div>
+    <div class="err" id="payroll-pdf-msg" style="margin-top:6px"></div>
+  `;
+  document.querySelectorAll("[data-pdfmatch]").forEach(elx=>elx.onchange=()=>{ PAYROLL_STATE.pdfMatches[+elx.dataset.pdfmatch].userId=elx.value; });
+  $("payroll-pdf-upload").onclick=payrollUploadPdfs;
+}
+async function payrollUploadPdfs(){
+  const msg=$("payroll-pdf-msg"); msg.className="err"; msg.textContent="アップロード中…";
+  $("payroll-pdf-upload").disabled=true;
+  const matches=(PAYROLL_STATE.pdfMatches||[]).filter(m=>m.userId);
+  if(!matches.length){ msg.textContent="対応付けられたファイルがありません（従業員を選んでください）"; $("payroll-pdf-upload").disabled=false; return; }
+  const s=sess.get();
+  let okCount=0; const fail=[];
+  for(const m of matches){
+    const path=`${m.userId}/${PAYROLL_STATE.yearMonth}.pdf`;
+    const buf=await m.file.arrayBuffer();
+    const r=await fetch(`${SUPA_URL}/storage/v1/object/payroll-pdfs/${path}`,{
+      method:"POST",
+      headers:{apikey:SUPA_KEY,Authorization:"Bearer "+(s?s.at:""),"Content-Type":"application/pdf","x-upsert":"true"},
+      body:buf,
+    });
+    if(r.ok) okCount++; else fail.push(m.file.name);
+  }
+  msg.className=fail.length?"err":"err msg-ok";
+  msg.textContent=`アップロード完了: ${okCount}件成功`+(fail.length?`／失敗: ${fail.join("、")}`:"")+"。一覧を更新します…";
+  $("payroll-pdf-upload").disabled=false;
+  setTimeout(async()=>{ await payrollLoad(); payrollRender(); },900);
+}
+async function payrollOpenPreview(userId){
   const row=PAYROLL_STATE.rows.find(r=>r.user_id===userId);
   const asg=payrollAssignmentFor(userId);
   const template=asg&&PAYROLL_STATE.templates.find(t=>t.id===asg.template_id);
@@ -2802,6 +2903,7 @@ function payrollOpenPreview(userId){
   const branches=payrollComputeBranches(row,template);
   if(!branches.length){ alert("金額が計算できませんでした（給与データを確認してください）"); return; }
   const name=(row.user&&row.user.name)||"—";
+  const pdfBase64=await payrollFetchPdfBase64(userId,PAYROLL_STATE.yearMonth);
   const totalDebit=branches.reduce((s,b)=>s+(b.debit?Number(b.debitAmount)||0:0),0);
   const totalCredit=branches.reduce((s,b)=>s+(b.credit?Number(b.creditAmount)||0:0),0);
   const entries=branches.map(b=>{
@@ -2822,6 +2924,7 @@ function payrollOpenPreview(userId){
     <div class="mhead"><h2>🧾 給与仕訳プレビュー — ${esc(name)}</h2><button class="linkbtn" id="payrollPreviewClose" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:13px">閉じる ×</button></div>
     <div class="ai-field" style="max-width:220px;margin-bottom:10px"><small>会計計上日</small><input id="payroll-date" type="date" value="${new Date().toISOString().slice(0,10)}"></div>
     <div style="font-size:12px;color:var(--muted);margin-bottom:8px">対象年月: <b>${esc(PAYROLL_STATE.yearMonth)}</b>　テンプレート: <b>${esc(template.label)}</b></div>
+    <div style="font-size:12px;margin-bottom:8px;color:${pdfBase64?"var(--m-green)":"var(--m-amber)"}">${pdfBase64?"📎 給与明細PDFが見つかりました。登録と同時にマネーフォワードの証憑として添付します":"⚠️ この従業員・この月の給与明細PDFが見つかりません（未アップロード）。証憑添付なしで登録します。上の「まとめてアップロード」から追加できます"}</div>
     <div class="mfj-balance" style="margin:0 0 10px">
       <div class="box"><small>借方合計</small><b>${yen(totalDebit)}</b></div>
       <div class="box"><small>貸方合計</small><b>${yen(totalCredit)}</b></div>
@@ -2853,6 +2956,7 @@ function payrollOpenPreview(userId){
       })),
       transaction_date: $("payroll-date").value,
       remark:`${PAYROLL_STATE.yearMonth}分給与（${name}）`,
+      voucher_files: pdfBase64?[{file_name:`給与明細_${name}_${PAYROLL_STATE.yearMonth}.pdf`,file_data:pdfBase64}]:[],
     };
     const {ok,body:j}=await mfCall("create_standalone",payload);
     if(!ok){ pmsg.textContent=j.error||"登録に失敗しました"; $("payrollPreviewSubmit").disabled=false; return; }
@@ -2862,9 +2966,10 @@ function payrollOpenPreview(userId){
       invoice_id:j.invoice_id, created_by:ME.id,
     })});
     pmsg.className="err msg-ok";
+    const voucherNote=j.voucher_attached?`。証憑PDFも添付しました`:(j.voucher_error?`（証憑添付: ${j.voucher_error}）`:"");
     pmsg.textContent=recR.ok
-      ?`登録しました（伝票番号: ${j.journal_number??"-"}）。画面を更新します…`
-      :`マネーフォワードへの登録は成功しました（伝票番号: ${j.journal_number??"-"}）が、進捗の記録に失敗しました。再度この従業員を登録しようとすると重複する可能性があるため、マネーフォワード側の実際の登録状況を確認してください。`;
+      ?`登録しました（伝票番号: ${j.journal_number??"-"}）${voucherNote}。画面を更新します…`
+      :`マネーフォワードへの登録は成功しました（伝票番号: ${j.journal_number??"-"}）${voucherNote}が、進捗の記録に失敗しました。再度この従業員を登録しようとすると重複する可能性があるため、マネーフォワード側の実際の登録状況を確認してください。`;
     setTimeout(async()=>{ history.back(); await payrollLoad(); payrollRender(); },1400);
   };
 }
