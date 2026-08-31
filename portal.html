@@ -1183,9 +1183,9 @@ function sidebarHtml(u){
     <div class="section-title">各システム</div>
     ${sysHtml}
     ${groupsHtml}
-    ${u.is_master?`<div class="section-title">管理</div>
-    <button class="nav-item" id="adminovr"><span>⚙️</span><span>管理項目を見せる人を設定</span></button>
-    <button class="nav-item" id="permlink"><span>🔑</span><span>権限・画面設定（従来ポータル）</span></button>`:""}
+    <!-- 2026-08-31 ユーザー指示: 「管理項目を見せる人を設定」「権限・画面設定（従来ポータル）」は
+         AI開発コックピット（cockpit.html）のサイドメニューへ移動。cockpit側は同一オリジンiframeのため
+         window.parent.openAdminOverrideModal() を直接呼ぶ（関数はこのファイルに残置・削除しないこと） -->
     <div class="userbox">
       👤 ${esc(u.name)}${u.is_master?"（マスター）":`（${esc(ROLE_NAME[u.role]||u.role)}）`}
       <button id="tolegacy">← 従来のポータルへ</button>
@@ -1319,8 +1319,7 @@ function wireNav(u){
   const more=$("moreBtn"); if(more) more.onclick=()=>$("mobileMore")?.classList.add("open");
   const moreClose=$("moreClose"); if(moreClose) moreClose.onclick=closeMobileMore;
   const mm=$("mobileMore"); if(mm) mm.onclick=e=>{ if(e.target===mm) closeMobileMore(); };
-  const adminovr=$("adminovr"); if(adminovr) adminovr.onclick=()=>openAdminOverrideModal();
-  const permlink=$("permlink"); if(permlink) permlink.onclick=()=>{ location.href="index.html"; };
+  // adminovr/permlinkボタンは2026-08-31にAI開発コックピット内へ移動（openAdminOverrideModalはcockpit.htmlが親経由で呼ぶ）
   const setCollapsed=v=>{
     SIDEBAR_COLLAPSED=v;
     try{ localStorage.setItem("portal_sidebar_collapsed", v?"1":"0"); }catch(e){}

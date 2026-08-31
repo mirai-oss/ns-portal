@@ -51,6 +51,10 @@ button,input,select,textarea{font:inherit}.app{display:grid;grid-template-column
 <div class="nav-title">MANAGEMENT</div>
 <button class="nav-btn" data-page="owners">👥 担当別</button>
 <button class="nav-btn" data-page="settings">⚙ 接続・設定</button>
+<div class="nav-title">ポータル管理</div>
+<!-- 2026-08-31 ユーザー指示でポータル左下からここへ移動（portal.html側のボタンは撤去済み） -->
+<button class="nav-btn" onclick="openPortalAdminOverrides()">⚙️ 管理項目を見せる人を設定</button>
+<button class="nav-btn" onclick="openLegacyPerm()">🔑 権限・画面設定（従来ポータル）</button>
 </aside>
 
 <main class="main">
@@ -536,9 +540,19 @@ function show(id,btn){ document.querySelectorAll(".page").forEach(x=>x.classList
   document.querySelectorAll(".nav-btn").forEach(x=>x.classList.toggle("active",x.dataset.page===id));
   document.querySelectorAll("#mobnav button").forEach(x=>x.classList.toggle("active",x.dataset.page===id));
   window.scrollTo({top:0}); }
-document.querySelectorAll(".nav-btn").forEach(b=>b.onclick=()=>show(b.dataset.page,b));
-$("mobnav").innerHTML=[...document.querySelectorAll(".nav-btn")].map(b=>`<button data-page="${b.dataset.page}" ${b.dataset.page==="dashboard"?'class="active"':""}>${b.textContent.trim()}</button>`).join("");
-document.querySelectorAll("#mobnav button").forEach(b=>b.onclick=()=>show(b.dataset.page,b));
+document.querySelectorAll(".nav-btn[data-page]").forEach(b=>b.onclick=()=>show(b.dataset.page,b));
+$("mobnav").innerHTML=[...document.querySelectorAll(".nav-btn[data-page]")].map(b=>`<button data-page="${b.dataset.page}" ${b.dataset.page==="dashboard"?'class="active"':""}>${b.textContent.trim()}</button>`).join("")
+  +`<button onclick="openPortalAdminOverrides()">⚙️ 見せる人設定</button><button onclick="openLegacyPerm()">🔑 権限・画面設定</button>`;
+document.querySelectorAll("#mobnav button[data-page]").forEach(b=>b.onclick=()=>show(b.dataset.page,b));
+
+/* ポータル管理（2026-08-31 ポータル左下から移設。埋め込み時は親portal.htmlの関数を直接呼ぶ=同一オリジン） */
+function openPortalAdminOverrides(){
+  try{
+    if(window.parent&&window.parent!==window&&typeof window.parent.openAdminOverrideModal==="function"){ window.parent.openAdminOverrideModal(); return; }
+  }catch(e){}
+  alert("この設定はポータルに埋め込んだ状態で使います。\nポータル → 管理 → 🛠️AI開発コックピット から開き直してください");
+}
+function openLegacyPerm(){ window.open("index.html","_blank","noopener"); }
 
 /* ====== 起動 ====== */
 function gateMsg(html){ $("gate").style.display="flex"; $("gatebox").innerHTML=html; }
