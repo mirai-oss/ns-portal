@@ -4154,3 +4154,12 @@ Supabase Management API（`~/.config/ns-portal/supabase_pat`・`POST /v1/project
 ### 検証
 - `mf-oauth-authorize`の実際のリダイレクト先URLをcurlで確認し、scopeに`departments.read`が正しく含まれていること・stateにテナント情報が正しくエンコードされていることを確認済み
 - **実際の再認可・部門一覧が全件表示されるようになることの確認は未実施**（ユーザーの再認可作業が必要なため）
+
+## 2026-08-31（担当E実行スレッド）通知メッセージにタスクの直接リンクを追加（コミット`10cee28`）
+
+ユーザー要望「本部タスクの期限前通知にそのタスクのURLが付いていないのですぐ確認できない。通知のリンクを開けばそのタスクへ行けるようにしてほしい」に対応。
+
+- **対象**: `hq_check_alerts()`（期限アラート3日前/前日/当日/超過・3日以上停止）・`hq_notify_step_event()`（工程完了・異常あり）・`hq_notify_comment()`（@メンション）の3つ、いずれもLark Webhook/Chatworkへ送る外部通知メッセージの本文末尾に`https://mirai-oss.github.io/ns-portal/tasks.html?task=<タスクID>`を1行追加した
+- **アプリ内通知（🔔ベル・`hq_notifications`テーブル）は変更していない**（元々`task_id`列を持ち、クリックで`openDetail()`によりそのタスクへ遷移する仕組みが既にあったため）。今回は外部通知（Lark/Chatwork）の本文だけの変更
+- 誰に・いつ・どのイベントで送るかという既存ロジックは一切変更していない。本番の`pg_get_functiondef`で現行定義を取得し、それをベースに本文末尾へのURL追記のみ追加する形で新規SQL`supabase/2026-08-31_hq_notify_task_link.sql`を作成・Management API経由で適用
+- **検証**: 適用後に3関数とも`prosrc`に`tasks.html?task=`が含まれることを確認。文字列連結（`E'\n'`+URL）が実際に改行付きのURLになることをサンプルクエリで確認済み。`hq_check_alerts()`を実行しても新規アラートが0件だった（当日分は既に通知済みのため）ので、実際の本番タスクでの通知本文そのものの目視確認はできていないが、ロジック自体は既存の動作実績のある関数への最小限の追記であり信頼度は高いと判断。**実際にLark/Chatworkへ届く見た目は次回の期限アラート発火時にユーザー確認をお願いしたい**
