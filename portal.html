@@ -938,16 +938,25 @@ const TOP_ITEMS=[
   // 集計表示しない作りのため、対策として「請求書メールだけは今まで通りトップレベルに表示する」
   // 方式へ戻した（ユーザーが提示した2案のうち採用したほう）。key/sysKey/countKeyは不変
   {key:"invoices",sysKey:"invoices",ico:"✉️",label:"請求書メール",url:"invoices.html?embed=1",countKey:"inv"},
+];
+// 2026-09-01 ユーザー実機フィードバック: 「変更申請」を単独のトップ項目にしたところ、
+// クリックすると社内情報管理システムのトップ画面（/requests ではなく/）に飛んでしまう
+// 不具合が発覚（原因＝ns-info-system側sso/page.tsxが?toクエリをハッシュと一緒に消して
+// しまっていたバグ。担当F側で修正・push済み）。あわせて「経費申請・個人情報変更・
+// 社内情報変更を1つの申請グループの子タブにしてほしい」との要望を受け、TOP_ITEMSに
+// あった経費申請もこちらへ移動し、個人情報変更／社内情報変更を別々の項目に分割した
+// （/requestsのタブを直接指定できる?tab=personal/systemにも対応済み）
+const SHINSEI_GROUP={cap:"申請",ico:"🔁", items:[
   {key:"expenses",sysKey:"expenses",ico:"🧾",label:"経費申請",url:"expenses.html"},
-  // 2026-08-31 担当Cからの依頼（WORKLOG「担当Fへ依頼: 従業員の個人情報変更申請＋本部承認フロー」）:
-  // 氏名・フリガナ・電話番号・住所・給与振込口座の変更申請＋社内システムのID/PW変更申請
-  // （役員・正社員以上）を、アルバイト含む全従業員が使えるセルフサービス画面。
   // ns-info-system側は`info.profiles`（役職）を前提にしない新規ページ`/requests`のため、
   // sysKeyは設定しない（設定すると「社内情報管理」と同じ役職ベースの出し分けを継承してしまい、
   // アルバイト等に見えなくなる。notice等と同じ「sysKeyなし＝全員に見える」パターン）。
   // SSOハンドオフ(F-2のopenJohoSso)経由で開くため再ログイン不要
-  {key:"myrequests",ico:"🔁",label:"変更申請",sso:true,ssoTo:"/requests",external:true},
-];
+  {key:"myrequests-personal",ico:"📋",label:"個人情報変更",sso:true,ssoTo:"/requests?tab=personal",external:true},
+  // 社内情報変更（ID/PW）は権限が無い人が開いても/requests側が「権限がありません」を
+  // 出すだけなので、ここでの出し分けはしない（他のsysKey系と違い動的なDB権限判定のため）
+  {key:"myrequests-system",  ico:"🔐",label:"社内情報変更",sso:true,ssoTo:"/requests?tab=system",external:true},
+]};
 // F-10（ラウンド5・Sync5・設計書_会計自動化_給与明細とインフォマート支払_2026-08-31.md §5 Q6）:
 // 「🧾会計」グループには会計ダッシュボード／アップロード請求書／給与仕訳／支払いのメニュー枠を
 // 用意（中身はinvoices.html内の新設タブをiframeで埋める。担当C-7実装）。請求書メール自体は
@@ -985,6 +994,7 @@ const SYS_ITEMS=[
   {key:"reservations", sysKey:"keiei", ico:"📅", label:"予約管理", url:keieiTab("reservation"), roles:["TENCHO","TEAM","HQ","CEO"]},
 ];
 const GROUPS=[
+  SHINSEI_GROUP,
   {cap:"現場・日報",ico:"📝", items:[
     {key:"nippo-daily",  sysKey:"nippo", ico:"📝", label:"日報",     url:nippoPage("write")},
     {key:"nippo-weekly", sysKey:"nippo", ico:"🗓️", label:"週報",     url:nippoPage("weekly")},
