@@ -6,6 +6,8 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
+**★★★★★2026-08-31（担当C実行スレッド・続き2）C-7②: 広告費自動反映パネルをinvoices側に追加**: ユーザーへArtifactでモック提示→承認を得て実装。請求書メールの処理画面に「📢広告費として反映」パネルを追加（媒体推定・店舗×金額の自動割り振り=仕訳の部門別金額→前月同媒体比率→手入力の優先順・差額チェック）。新規Edge Function`ad-cost-reflect`（confirm action）・invoicesに`ad_cost_*`列7つ追加、いずれも本番反映済み。**担当Aへ依頼あり**: 広告費用対効果_管理シートとBigQuery(`stg_ad_cost`)への実書き込み（A-8）がまだ無いため、現状は「Supabase側に記録は残るがシートへの反映は未完了」を正直に表示する暫定状態。詳細は本日付エントリ「2026-08-31（担当C実行スレッド・続き2）C-7②」参照（**⚠️注記**: コミットは他セッションと同時多発しGitの索引が競合し、実際のコード変更は別セッションの`1f1bacb`コミットに相乗りする形で入っている。中身は正しく本番反映・pushされていることをコミット差分で確認済み）
+
 **★★★★2026-08-31（担当D実行スレッド）D-9続き: ユーザーがインフォマートAPI申込みフォーム入力中にCallBackURLを緊急整備・本番投入**
 
 ユーザーが手順書どおり「API連携設定申込み」Googleフォームを入力中、必須項目「CallBackURL」の値を求められたため、フォームの実際の質問文（OAuth認可コード受け取り用のURL）を`Claude_Browser`で直接確認し、即座に用意した。
@@ -3997,3 +3999,41 @@ Supabase Management API（`~/.config/ns-portal/supabase_pat`・`POST /v1/project
 
 ### 検証
 自前ブラウザ検証（バックエンド不要な純粋ロジック検証）で、①工程名編集の保存・空欄バリデーション（未接続のためPATCH自体はエラーになるがハンドラの分岐・エラーメッセージは正しく動作することを確認）②削除ボタンの新しい確認文言・論理削除PATCHへの切り替え③かんばんカードの2段期日表示（工程期日9/5・全体8/27のような不整合ケースで正しく2段表示されること）④リスト表示の列見出し変更と「期限が近い順」ソート、いずれも意図通り動作することを確認。GitHub Pages反映も確認済み。**実機E2Eは未実施**（ログイン手段が無いため）。
+
+## 2026-08-31（担当C実行スレッド・続き2）C-7② 広告費自動反映パネルをinvoices側に追加
+
+`実装指示書_ラウンド5_2026-08-31.md`の推奨順どおり①（会計ダッシュボード・完了済み）の次に②広告費自動反映へ着手。着手前にユーザーへ「請求書処理画面に確認パネルを追加する内容だが、着手前に画面イメージを見せてから進めたい」と伝え、ArtifactでUIモック（`docs/mockups/`には保存せずArtifact限定公開）を提示→**ユーザー承認（「OK」）を得てから実装**。
+
+### 実装内容
+`設計書_広告費自動連携と精算書PL科目連携_2026-08-31.md`§4の確定仕様（Q1〜Q4）どおり:
+- **媒体推定**: 送信元アドレスのドメイン（`tabelog.com`→食べログ 等）・件名キーワードから媒体を推定。対応表はコード内の`AD_MEDIA_DOMAIN_MAP`（未対応の媒体は「担当Cに伝えれば追記」の運用）
+- **店舗×金額の割り振り**（設計書§1実装案2の優先順どおり）:
+  a) 今組んでいる仕訳（🧾仕訳を作成）の明細行に部門（店舗）が設定されていれば、その部門別金額をそのまま使う（`MFJ_STATE.branches`から取得。部門名↔`stores.name`は表記ゆれを許容する緩いマッチング）
+  b) 無ければ、前月・同媒体で反映済みの請求書（`invoices.ad_cost_allocations`）から店舗比率を計算し、今回の金額を按分（端数は最後の行に寄せる）
+  c) どちらも無ければ、店舗を手で選んでもらう1行を用意
+  いずれの場合も画面上で金額・店舗を自由に修正でき、請求書合計との差額をリアルタイム表示
+- **確定**: 「📢この内容で広告費に反映」→新規Edge Function`ad-cost-reflect`のconfirm actionを呼ぶ。媒体名は`tpl_media_alias`（担当G・export系の既存の表記ゆれ正規化表）で正規化してから保存（設計書「媒体名は既存のtpl_media_alias正規化を通す」の指示どおり）
+- **反映タイミング**: 設計書Q2「仕訳登録した時点で確定」を基本としつつ、UIの都合上「先に広告費だけ確定」も可能にした（ヒント文で仕訳登録と同時に行うのが基本である旨を明記）
+- **重複防止**: `invoices.ad_cost_reflected_at`が既にあれば409エラーで拒否（`mf_journal_id`の重複防止と同じパターン）
+
+### 新規SQL・Edge Function
+- `supabase/2026-08-31_invoice_ad_cost.sql`: `invoices`に`ad_cost_media`/`ad_cost_year_month`/`ad_cost_allocations`(jsonb)/`ad_cost_reflected_at`/`ad_cost_reflected_by`/`ad_cost_sheet_synced_at`/`ad_cost_sheet_sync_error`を追加。**Management API経由で本番適用・`information_schema`で7列とも確認済み**
+- `supabase/functions/ad-cost-reflect/index.ts`（新規）: confirm actionのみ。Supabase側の確定記録（①②）と、GAS側書き込みaction呼び出し（③）を1つのactionにまとめている。**本番デプロイ済み（version1・verify_jwt=true）**
+
+### 【担当Aへの依頼・A-8】GAS書き込みactionがまだ無い
+設計書の分担どおり「GAS側の書き込みactionは担当A（A-8）」のため、今回はSupabase側（①②）のみ実装し、③（GAS呼び出し）は**コードとしては用意したが、まだ動かない状態**。具体的に必要なもの:
+- **tori-dashboardのGAS Web App**（`dash-sync/index.ts`と同じURL: `https://script.google.com/macros/s/AKfycbz9rd37EZa6X8WRMVEBrXobN8DbYWkHRlhFNYU5rd1UZ0V8j0-6shMQjEeoi4HDWZ0B/exec`）に、新規action **`writeAdCost`** を追加してほしい
+- リクエスト形式（`ad-cost-reflect`から送る内容・変更可）: `{action:"writeAdCost", token:"<共有トークン>", year_month:"2026-08", media:"食べログ", allocations:[{store_name, amount}], source_invoice_id, vendor_name}`
+- 認証は`bqDailyStoreForSync`と同じ「専用トークン方式」を推奨（ログイン不要・`AD_COST_WRITE_TOKEN`という名前でSupabase Edge Functionの秘密変数に登録する想定。中身は担当Aが決めてよい）
+- 処理内容: 広告費用対効果_管理シートの💾広告費DBへ書き込み＋BigQuery `stg_ad_cost`（新設）へ同じ内容を二重書き（設計書§4 Q1確定仕様）
+- 応答形式: `{ok:true}` または `{ok:false, error:"..."}`
+- **A-8が完了しSupabase秘密変数に`AD_COST_WRITE_TOKEN`を登録すれば、invoices側のコード変更なしでそのまま有効になる設計**（`ad-cost-reflect`はトークン未設定時に明確なエラーメッセージを返す実装済み）
+- それまでの間、画面上は「反映内容を記録しました。スプレッドシートへの書き込みは担当Aの対応後に有効になります」と正直に表示する（実際にシートに反映されていないのに反映済みと偽らないため）
+
+### 検証
+- `node --check`で構文チェック（エラーなし）。`adcostGuessMedia()`をNode上で単体実行し4パターン（食べログ/ぐるなび/ホットペッパー/該当なし）とも期待どおりの結果を確認
+- Edge Functionは認証エラーが正しく返ることを確認（クラッシュしないことを確認。実際のconfirm動作は未確認）
+- **実機E2Eは未実施**（ログイン手段が無いため）。ユーザーに見せたモック（Artifact）と実装後の見た目の細部（CSSクラス）は共通のため大きなズレは無い想定だが、実機確認が必要
+
+### ⚠️コミットの経緯（記録目的）
+`git add`で自分のファイルだけをステージした直後、ほぼ同時刻に別セッション（給与明細PDF格納用Storageバケットの作業）が同じ`~/ns-portal`の作業ディレクトリで`git commit`を実行し、こちらが用意していたコミットメッセージを書く前にインデックスが消費されてしまった。結果、実際のコード変更（`invoices.html`・`supabase/2026-08-31_invoice_ad_cost.sql`・`supabase/functions/ad-cost-reflect/`）は正しく本番反映・pushされている（コミット`1f1bacb`の差分で確認済み）が、**コミットメッセージは給与明細PDFの内容のみを記載**しており、広告費反映の変更が含まれていることが分からない状態になっている。複数セッションが同じ作業ディレクトリを共有する現行体制の構造的なリスクとして記録しておく（対応策は特に無し・気づいた側がWORKLOGで補記するのが現実的）。
