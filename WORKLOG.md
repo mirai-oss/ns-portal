@@ -4452,3 +4452,12 @@ Supabase Management API（`~/.config/ns-portal/supabase_pat`・`POST /v1/project
 - コミット`1494061`・push済み
 - SQL: `payroll_bank_accounts`をManagement API経由で本番適用・確認済み
 - Edge Function変更なし（`create_standalone`の既存`voucher_files`対応をそのまま利用）
+
+## 2026-08-31（担当E実行スレッド）工程自体の削除機能を追加（コミット`b9f4dad`）
+
+ユーザー要望「本部タスクの工程が削除できないから、工程自体も削除できるようにしてほしい。間違えて工程を作成した場合とか、減らしたい場合とかもあるから」に対応。
+
+- 工程の担当・期限その場編集パネル（`canEditAssign`＝`canManage(u)`かつ未完了、と同じ表示条件）に「🗑 工程を削除」ボタンを追加。確認ダイアログ→`hq_task_steps`をDELETE→活動ログに記録→`syncTaskDueDate()`で全体期限も再同期（削除した工程が最終工程だった場合に古い期限が残らないように）
+- 権限は既存の`hqs_delete`ポリシー（`hq_can_manage()`）と表示条件`canEditAssign`が一致しているため新規SQL不要
+- 完了済みの工程には削除ボタンを出していない（既存のownerline編集と同じ制約。完了済み工程を消したい場合の要望が来たら別途対応検討）
+- 自前ブラウザ検証で、削除ボタンの表示条件（未完了の工程のみ）とクリック時の削除フロー（確認→DELETE呼び出し）が意図通り動作することを確認。GitHub Pages反映も確認済み
