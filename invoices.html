@@ -477,8 +477,39 @@ async function loadWaitingPaymentCount(){
   const r=await authed(`/rest/v1/invoices?invoice_status=eq.waiting_payment&select=id`);
   WAITING_PAYMENT_COUNT=(r.ok&&Array.isArray(r.body))?r.body.length:0;
 }
-function shellHtml(u){
+// 画面上部のKPIバー（2026-09-01: タブ切替時にタブの内容に合わせて出し分ける。
+// ユーザー報告「給与仕訳タブなのに請求書メールの件数が出ている」に対応。
+// mail-summaryはshellHtml()の初回描画時に一度だけ作られ、その後はタブ切替のたびに
+// #mailSummaryBarの中身だけをupdateMailSummaryBar()で差し替える）
+function mailSummaryDefaultHtml(){
   const k=kpiCounts();
+  return `
+    <div class="card mail-kpi"><small>未処理メール</small><b style="color:var(--accent)">${k.unprocessed}</b></div>
+    <div class="card mail-kpi"><small>処理中</small><b style="color:var(--blue)">${k.processing}</b></div>
+    <div class="card mail-kpi"><small>支払待ち請求書</small><b>${WAITING_PAYMENT_COUNT}</b></div>
+    <div class="card mail-kpi"><small>今月完了</small><b style="color:var(--green)">${k.completedThisMonth}</b></div>
+  `;
+}
+function payrollSummaryHtml(){
+  const rows=(PAYROLL_STATE&&PAYROLL_STATE.rows)||[];
+  const payable=rows.filter(r=>Number(r.net_pay)>0);
+  const cashRows=payable.filter(r=>{ const b=payrollBankFor(r.user_id); return b&&b.payment_method==="cash"; });
+  const transferCount=payable.filter(r=>{ const b=payrollBankFor(r.user_id); return b&&b.payment_method!=="cash"; }).length;
+  const cashTotal=cashRows.reduce((s,r)=>s+(Number(r.net_pay)||0),0);
+  const doneCount=payable.filter(r=>payrollRecordFor(r.user_id)).length;
+  return `
+    <div class="card mail-kpi"><small>給与支払い人数</small><b>${payable.length}</b></div>
+    <div class="card mail-kpi"><small>振込件数</small><b style="color:var(--blue)">${transferCount}</b></div>
+    <div class="card mail-kpi"><small>現金支払い件数・合計</small><b style="color:var(--amber)">${cashRows.length}件 / ${yen(cashTotal)}</b></div>
+    <div class="card mail-kpi"><small>完了数</small><b style="color:var(--green)">${doneCount}</b></div>
+  `;
+}
+function updateMailSummaryBar(){
+  const el=$("mailSummaryBar");
+  if(!el) return;
+  el.innerHTML = TAB==="payroll" ? payrollSummaryHtml() : mailSummaryDefaultHtml();
+}
+function shellHtml(u){
   return `
   ${EMBED?"":`<div class="topbar">
     <h1>📨 請求書メール</h1>
@@ -488,12 +519,7 @@ function shellHtml(u){
     </div>
   </div>`}
   <div class="mail-shell">
-    <div class="mail-summary">
-      <div class="card mail-kpi"><small>未処理メール</small><b style="color:var(--accent)">${k.unprocessed}</b></div>
-      <div class="card mail-kpi"><small>処理中</small><b style="color:var(--blue)">${k.processing}</b></div>
-      <div class="card mail-kpi"><small>支払待ち請求書</small><b>${WAITING_PAYMENT_COUNT}</b></div>
-      <div class="card mail-kpi"><small>今月完了</small><b style="color:var(--green)">${k.completedThisMonth}</b></div>
-    </div>
+    <div class="mail-summary" id="mailSummaryBar">${mailSummaryDefaultHtml()}</div>
     <div class="mail-tabs-row">
       <div class="mail-tabs">
         ${EMBED?"":`<button class="mail-tab ${TAB==='dashboard'?'active':''}" data-tab="dashboard">📊 会計ダッシュボード</button>`}
@@ -587,6 +613,7 @@ async function openComposeModal(u){
 }
 async function renderTabBody(u){
   $("tabbody").innerHTML='<div class="spin">読み込み中…</div>';
+  updateMailSummaryBar();
   if(TAB==="dashboard") await renderAccountingDashboardTab(u);
   else if(TAB==="inbox") renderInbox(u);
   else if(TAB==="invoiceList") await renderInvoiceListTab(u);
@@ -712,13 +739,7 @@ async function runBulkAction(u,action,confirmMsg){
   msg.textContent=`${r.body.success_count}件完了`+(skipped.length?`／${skipped.length}件スキップ（他の人が処理中等）`:"");
   BULK_SELECTED.clear();
   await loadInboxMaster(); await loadWaitingPaymentCount(); await loadKpiCounts();
-  const k=kpiCounts();
-  document.querySelector(".mail-summary").outerHTML=`<div class="mail-summary">
-      <div class="card mail-kpi"><small>未処理メール</small><b style="color:var(--accent)">${k.unprocessed}</b></div>
-      <div class="card mail-kpi"><small>処理中</small><b style="color:var(--blue)">${k.processing}</b></div>
-      <div class="card mail-kpi"><small>支払待ち請求書</small><b>${WAITING_PAYMENT_COUNT}</b></div>
-      <div class="card mail-kpi"><small>今月完了</small><b style="color:var(--green)">${k.completedThisMonth}</b></div>
-    </div>`;
+  updateMailSummaryBar();
   renderMailListOnly();
 }
 function mailItemHtml(m){
@@ -1237,12 +1258,7 @@ function wireDetailActions(u){
       $("mailListScroll").innerHTML=list.length?list.map(mailItemHtml).join(""):'<div class="empty">該当するメールはありません</div>';
       wireMailListClicks(u);
     }
-    document.querySelector(".mail-summary").outerHTML=(()=>{const k=kpiCounts();return `<div class="mail-summary">
-      <div class="card mail-kpi"><small>未処理メール</small><b style="color:var(--accent)">${k.unprocessed}</b></div>
-      <div class="card mail-kpi"><small>処理中</small><b style="color:var(--blue)">${k.processing}</b></div>
-      <div class="card mail-kpi"><small>支払待ち請求書</small><b>${WAITING_PAYMENT_COUNT}</b></div>
-      <div class="card mail-kpi"><small>今月完了</small><b style="color:var(--green)">${k.completedThisMonth}</b></div>
-    </div>`;})(); await openMailDetail(u,emailId,true); };
+    updateMailSummaryBar(); await openMailDetail(u,emailId,true); };
 
   if($("act-start")) $("act-start").onclick=async()=>{
     $("act-start").disabled=true; $("act-msg").textContent="処理中…";
@@ -2696,6 +2712,7 @@ async function renderPayrollTab(u){
   if(!PAYROLL_STATE.yearMonth) PAYROLL_STATE.yearMonth=payrollYmDefault();
   await payrollLoad();
   payrollRender();
+  updateMailSummaryBar(); // データ読込後に人数・件数が確定するので再描画
 }
 async function payrollLoad(){
   const ym=PAYROLL_STATE.yearMonth;
@@ -2800,7 +2817,8 @@ function payrollRowHtml(row){
   const status=rec?`<span class="invoice-status done">✅登録済み（伝票番号:${esc(String(rec.mf_journal_number??"-"))}）</span>`:(asg&&asg.template_id?`<span class="invoice-status wait">未登録</span>`:`<span class="invoice-status gray">パターン未設定</span>`);
   const pdfBadge=row._hasPdf?`<span title="給与明細PDFあり（登録時に証憑として添付されます）">📎</span>`:`<span style="color:var(--muted)" title="給与明細PDF未アップロード">－</span>`;
   const bank=payrollBankFor(row.user_id);
-  const bankBtn=`<button class="hq-btn" style="font-size:11px;padding:6px 9px" data-payroll-bank="${esc(row.user_id)}">${bank?"🏦登録済み":"🏦未登録"}</button>`;
+  const bankLabel=!bank?"未登録":(bank.payment_method==="cash"?"💴現金手渡し":"🏦振込");
+  const bankBtn=`<button class="hq-btn" style="font-size:11px;padding:6px 9px" data-payroll-bank="${esc(row.user_id)}">${bankLabel}</button>`;
   return `<tr>
     <td><b>${esc(name)}</b></td>
     <td style="text-align:right">${yen(row.fixed_salary_amount)}</td>
@@ -2924,28 +2942,36 @@ function payrollOpenBankModal(userId){
   const row=PAYROLL_STATE.rows.find(r=>r.user_id===userId);
   const bank=payrollBankFor(userId)||{};
   const name=(row&&row.user&&row.user.name)||"—";
+  const method=bank.payment_method||"bank_transfer";
   const modal=document.createElement("div");
   modal.className="modal-bg"; modal.id="payrollBankModal";
   modal.innerHTML=`<div class="modal" style="max-width:480px">
-    <div class="mhead"><h2>🏦 振込先口座 — ${esc(name)}</h2><button class="linkbtn" id="payrollBankClose" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:13px">閉じる ×</button></div>
-    <label>銀行コード（4桁の数字。通帳・キャッシュカードに記載）</label>
-    <input id="pb-bankcode" value="${esc(bank.bank_code||"")}" placeholder="例: 0033" maxlength="4">
-    <label>銀行名（任意・表示用）</label>
-    <input id="pb-bankname" value="${esc(bank.bank_name||"")}" placeholder="例: PayPay銀行">
-    <label>支店コード（3桁の数字）</label>
-    <input id="pb-branchcode" value="${esc(bank.branch_code||"")}" placeholder="例: 003" maxlength="3">
-    <label>支店名（任意・表示用）</label>
-    <input id="pb-branchname" value="${esc(bank.branch_name||"")}" placeholder="例: 本店営業部">
-    <label>預金種目</label>
-    <select id="pb-accounttype">
-      <option value="1" ${(bank.account_type||"1")==="1"?"selected":""}>普通</option>
-      <option value="2" ${bank.account_type==="2"?"selected":""}>当座</option>
-      <option value="4" ${bank.account_type==="4"?"selected":""}>貯蓄</option>
+    <div class="mhead"><h2>🏦 支払方法 — ${esc(name)}</h2><button class="linkbtn" id="payrollBankClose" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:13px">閉じる ×</button></div>
+    <label>支払方法</label>
+    <select id="pb-method">
+      <option value="bank_transfer" ${method==="bank_transfer"?"selected":""}>銀行振込（PayPay銀行CSVの対象になります）</option>
+      <option value="cash" ${method==="cash"?"selected":""}>現金手渡し（銀行口座は不要です）</option>
     </select>
-    <label>口座番号（数字のみ）</label>
-    <input id="pb-accountnumber" value="${esc(bank.account_number||"")}" placeholder="例: 1234567" maxlength="7">
-    <label>口座名義（半角カタカナ。通帳記載のとおり）</label>
-    <input id="pb-holderkana" value="${esc(bank.account_holder_kana||"")}" placeholder="例: ﾀﾛｳ ﾔﾏﾀﾞ">
+    <div id="pb-bank-fields">
+      <label>銀行コード（4桁の数字。通帳・キャッシュカードに記載）</label>
+      <input id="pb-bankcode" value="${esc(bank.bank_code||"")}" placeholder="例: 0033" maxlength="4">
+      <label>銀行名（任意・表示用）</label>
+      <input id="pb-bankname" value="${esc(bank.bank_name||"")}" placeholder="例: PayPay銀行">
+      <label>支店コード（3桁の数字）</label>
+      <input id="pb-branchcode" value="${esc(bank.branch_code||"")}" placeholder="例: 003" maxlength="3">
+      <label>支店名（任意・表示用）</label>
+      <input id="pb-branchname" value="${esc(bank.branch_name||"")}" placeholder="例: 本店営業部">
+      <label>預金種目</label>
+      <select id="pb-accounttype">
+        <option value="1" ${(bank.account_type||"1")==="1"?"selected":""}>普通</option>
+        <option value="2" ${bank.account_type==="2"?"selected":""}>当座</option>
+        <option value="4" ${bank.account_type==="4"?"selected":""}>貯蓄</option>
+      </select>
+      <label>口座番号（数字のみ）</label>
+      <input id="pb-accountnumber" value="${esc(bank.account_number||"")}" placeholder="例: 1234567" maxlength="7">
+      <label>口座名義（半角カタカナ。通帳記載のとおり）</label>
+      <input id="pb-holderkana" value="${esc(bank.account_holder_kana||"")}" placeholder="例: ﾀﾛｳ ﾔﾏﾀﾞ">
+    </div>
     <div class="err" id="pb-msg" style="margin-top:8px"></div>
     <div style="display:flex;gap:8px;margin-top:12px">
       <button class="hq-btn primary" style="flex:1" id="pb-save">保存</button>
@@ -2956,30 +2982,39 @@ function payrollOpenBankModal(userId){
   pushNav({modal:true});
   modal.onclick=e=>{ if(e.target===modal) history.back(); };
   $("payrollBankClose").onclick=()=>history.back();
+  const toggleBankFields=()=>{ $("pb-bank-fields").style.display=$("pb-method").value==="cash"?"none":"block"; };
+  toggleBankFields();
+  $("pb-method").onchange=toggleBankFields;
   $("pb-save").onclick=async()=>{
     const msg=$("pb-msg"); msg.className="err";
-    const bankCode=$("pb-bankcode").value.trim(), branchCode=$("pb-branchcode").value.trim();
-    const accountNumber=$("pb-accountnumber").value.trim(), holderKana=$("pb-holderkana").value.trim();
-    if(!/^\d{1,4}$/.test(bankCode)){ msg.textContent="銀行コードは数字4桁以内で入力してください"; return; }
-    if(!/^\d{1,3}$/.test(branchCode)){ msg.textContent="支店コードは数字3桁以内で入力してください"; return; }
-    if(!/^\d{1,7}$/.test(accountNumber)){ msg.textContent="口座番号は数字7桁以内で入力してください"; return; }
-    if(!holderKana){ msg.textContent="口座名義（半角カタカナ）を入力してください"; return; }
+    const isCash=$("pb-method").value==="cash";
+    let payload;
+    if(isCash){
+      payload={ user_id:userId, payment_method:"cash", bank_code:null,bank_name:null,branch_code:null,branch_name:null,account_number:null,account_holder_kana:null, account_type:"1", updated_by:ME.id, updated_at:new Date().toISOString() };
+    }else{
+      const bankCode=$("pb-bankcode").value.trim(), branchCode=$("pb-branchcode").value.trim();
+      const accountNumber=$("pb-accountnumber").value.trim(), holderKana=$("pb-holderkana").value.trim();
+      if(!/^\d{1,4}$/.test(bankCode)){ msg.textContent="銀行コードは数字4桁以内で入力してください"; return; }
+      if(!/^\d{1,3}$/.test(branchCode)){ msg.textContent="支店コードは数字3桁以内で入力してください"; return; }
+      if(!/^\d{1,7}$/.test(accountNumber)){ msg.textContent="口座番号は数字7桁以内で入力してください"; return; }
+      if(!holderKana){ msg.textContent="口座名義（半角カタカナ）を入力してください"; return; }
+      payload={
+        user_id:userId, payment_method:"bank_transfer", bank_code:bankCode, bank_name:$("pb-bankname").value.trim()||null,
+        branch_code:branchCode, branch_name:$("pb-branchname").value.trim()||null,
+        account_type:$("pb-accounttype").value, account_number:accountNumber, account_holder_kana:holderKana,
+        updated_by:ME.id, updated_at:new Date().toISOString(),
+      };
+    }
     $("pb-save").disabled=true; msg.textContent="保存中…";
-    const payload={
-      user_id:userId, bank_code:bankCode, bank_name:$("pb-bankname").value.trim()||null,
-      branch_code:branchCode, branch_name:$("pb-branchname").value.trim()||null,
-      account_type:$("pb-accounttype").value, account_number:accountNumber, account_holder_kana:holderKana,
-      updated_by:ME.id, updated_at:new Date().toISOString(),
-    };
     const r=await authed("/rest/v1/payroll_bank_accounts",{method:"POST",headers:{Prefer:"resolution=merge-duplicates,return=minimal"},body:JSON.stringify(payload)});
     if(!r.ok){ msg.textContent="保存に失敗しました"; $("pb-save").disabled=false; return; }
     msg.className="err msg-ok"; msg.textContent="保存しました。画面を更新します…";
-    setTimeout(async()=>{ history.back(); await payrollLoad(); payrollRender(); },700);
+    setTimeout(async()=>{ history.back(); await payrollLoad(); payrollRender(); updateMailSummaryBar(); },700);
   };
   if($("pb-delete")) $("pb-delete").onclick=async()=>{
-    if(!confirm(`${name}さんの振込先口座を削除しますか？`)) return;
+    if(!confirm(`${name}さんの支払方法の登録を削除しますか？`)) return;
     await authed(`/rest/v1/payroll_bank_accounts?user_id=eq.${userId}`,{method:"DELETE"});
-    history.back(); payrollLoad().then(payrollRender);
+    history.back(); payrollLoad().then(()=>{ payrollRender(); updateMailSummaryBar(); });
   };
 }
 
@@ -3005,7 +3040,8 @@ function payrollExportCsv(){
     const amount=Math.round(Number(row.net_pay)||0);
     if(!amount||amount<=0){ skipped.push(`${name}（差引支給額が0円）`); continue; }
     const bank=payrollBankFor(row.user_id);
-    if(!bank){ skipped.push(`${name}（振込先口座が未登録）`); continue; }
+    if(!bank){ skipped.push(`${name}（支払方法が未登録）`); continue; }
+    if(bank.payment_method==="cash"){ skipped.push(`${name}（現金手渡し・CSV対象外）`); continue; }
     const cols=["1", bank.bank_code, bank.branch_code, bank.account_type, bank.account_number, paypayCleanKana(bank.account_holder_kana), String(amount), ""];
     dataLines.push(cols.join(","));
     total+=amount; count++;
