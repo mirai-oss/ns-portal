@@ -1096,6 +1096,25 @@ function fileToBase64(file){
     r.readAsDataURL(file);
   });
 }
+/* 2026-09-01(E-6): 入社登録完了→本部タスク自動作成（実装指示書_ラウンド5§6.1）の受け皿。
+   nippo側フック（B-18）がhq_create_onboarding_task()を呼んで作った工程4（action_kind=
+   'onboarding_line_guide'）だけに、LINE案内を送るボタンを表示する。実際のLINE送信は
+   担当Bが用意するEdge Function「onboarding-line-guide」を呼ぶだけ（契約はWORKLOG参照）。
+   未連携者向けの「文言をコピー」フォールバックはEdge Function側の応答(copy_text)に従う */
+function onboardingLineSectionHtml(s,canTouch){
+  if(s.action_kind!=="onboarding_line_guide") return "";
+  const payload=s.action_payload||{};
+  return `<div style="margin-top:10px" onclick="event.stopPropagation()">
+    <div class="checklist-hd">📱 LINEで登録案内を送る</div>
+    <div class="meta">対象: ${esc(payload.name||"—")}${payload.email?`（${esc(payload.email)}）`:""}</div>
+    ${canTouch?`<button class="btn sm" data-onblinesend="${s.id}" style="margin-top:6px">📱 LINEで案内を送る</button>`:""}
+    <div class="err" id="onbline-msg-${s.id}" style="margin-top:6px"></div>
+    <div id="onbline-copywrap-${s.id}" style="display:none;margin-top:6px">
+      <label>LINE未連携のため、下の文言をコピーして手動で送ってください</label>
+      <textarea readonly rows="4" id="onbline-copytext-${s.id}"></textarea>
+    </div>
+  </div>`;
+}
 function invoiceSectionHtml(t,s,u){
   if(!canManage(u)) return ""; // invoice_can_access()と同じ条件（会計操作のため一般閲覧者には見せない）
   const inv=invoiceLinkFor(t,s.id);
@@ -1367,6 +1386,7 @@ function stepHtml(t,s,u){
         ${(checklist.length||canTouch)?checklistStepHtml(s,checklist,canTouch):""}
         ${procedureHtml(s,canTouch)}
         ${invoiceSectionHtml(t,s,u)}
+        ${onboardingLineSectionHtml(s,canTouch)}
         ${(s.is_binary||s.requires_photo)&&canComplete?`<div class="step-body" style="border:0;padding:10px 0 0">
           ${s.is_binary?`<label>判定</label>
             <select id="judge-${s.id}"><option value="">選択してください</option><option value="ok">OK</option><option value="issue">異常あり</option></select>
@@ -2031,6 +2051,34 @@ function wireDetail(t,u){
   }
   document.querySelectorAll("[data-mfjconfirm]").forEach(btn=>{ btn.onclick=(e)=>{ e.stopPropagation(); hqmfjConfirm(t,u); }; });
   document.querySelectorAll("[data-mfjsubmit]").forEach(btn=>{ btn.onclick=(e)=>{ e.stopPropagation(); btn.disabled=true; hqmfjSubmit(t,u,HQMFJ_STATE.stepId); }; });
+  /* 2026-09-01(E-6): 入社登録のLINE案内ボタン。実際の送信は担当Bの
+     onboarding-line-guide Edge Function任せ（未実装の間は失敗するのが正常＝
+     担当C連携時と同じ「先に呼び側だけ作っておく」パターン） */
+  document.querySelectorAll("[data-onblinesend]").forEach(btn=>{
+    btn.onclick=async(e)=>{
+      e.stopPropagation();
+      const sid=btn.dataset.onblinesend;
+      const step=sortedSteps(t).find(s=>s.id===sid);
+      const payload=step?.action_payload||{};
+      const msg=$("onbline-msg-"+sid);
+      btn.disabled=true; if(msg){ msg.className="err"; msg.textContent="送信中…"; }
+      try{
+        const s2=sess.get();
+        const r=await fetch(SUPA_URL+"/functions/v1/onboarding-line-guide",{method:"POST",headers:{"Content-Type":"application/json","apikey":SUPA_KEY,"Authorization":"Bearer "+(s2?s2.at:"")},body:JSON.stringify({task_id:t.id,step_id:sid,name:payload.name||"",email:payload.email||""})});
+        const j=await r.json().catch(()=>({}));
+        if(!r.ok||j.error){ if(msg){ msg.className="err"; msg.textContent=j.error||"送信できませんでした"; } btn.disabled=false; return; }
+        if(j.sent){
+          if(msg){ msg.className="err msg-ok"; msg.textContent="LINEで登録案内を送信しました"; }
+          await logActivity(t.id,"comment","LINEで入社登録案内を送信",sid);
+        } else if(j.copy_text){
+          if(msg){ msg.className="err"; msg.textContent="LINE未連携のため、下の文言をコピーして手動で送ってください"; }
+          const wrap=$("onbline-copywrap-"+sid), ta=$("onbline-copytext-"+sid);
+          if(wrap&&ta){ wrap.style.display="block"; ta.value=j.copy_text; }
+        }
+        btn.disabled=false;
+      }catch(err){ if(msg){ msg.className="err"; msg.textContent="送信中にエラーが発生しました"; } btn.disabled=false; }
+    };
+  });
   /* 2026-08-25: 工程ごとの添付・完了操作パネルの開閉。行全体(row1)と「📎添付・マニュアル」
      ボタンの両方にdata-stepattopenを付け、どちらを押しても同じ1つの状態を開閉する
      （「開く操作を1回にしてほしい」という実機フィードバックへの対応） */
