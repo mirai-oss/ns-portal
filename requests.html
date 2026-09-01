@@ -120,26 +120,45 @@ async function uploadAttachment(file){
   if(!r.ok) throw new Error("添付ファイルのアップロードに失敗しました");
   return path;
 }
-// 2026-09-01 ユーザー要望: 申請が入ったら承認者（マスター・役職「本部」）の個人Chatwork
-// ルームへ通知する。ルームIDは既存の本部タスクボード通知基盤(hq_user_chatwork)に
-// 登録済みのものをそのまま使う（info.get_approver_chatwork_rooms()がRLSを気にせず
-// ルームIDだけを返す）。通知の送信に失敗しても申請自体は成立済みなので握りつぶす
-async function notifyApprovers(text){
+// 2026-09-01 ユーザー要望: 申請が入ったら承認者の個人Chatworkルームへ通知する。
+// ルームIDは既存の本部タスクボード通知基盤(hq_user_chatwork)に登録済みのものを
+// そのまま使う。通知の送信に失敗しても申請自体は成立済みなので握りつぶす。
+// 2026-09-02: 個人情報変更（public.profile_change_requests）とID/PW変更申請
+// （info.credential_change_requests）は承認者の定義元が違う（後者はns-info-system側の
+// info.profiles/roles）ため、通知先の取得経路を分けている
+async function sendChatworkToRooms(roomIds,text){
+  const s=sess.get();
+  for(const roomId of roomIds){
+    if(!roomId) continue;
+    try{
+      await fetch(CHATWORK_FN_URL,{method:"POST",headers:{"Content-Type":"application/json","Authorization":"Bearer "+(s?s.at:"")},body:JSON.stringify({room_id:roomId,body:text})});
+    }catch(e){ /* 握りつぶす */ }
+  }
+}
+// 個人情報変更の承認者＝public.users.is_master or role='HQ'（ポータル自身の役職で統一）
+async function notifyProfileApprovers(text){
+  try{
+    const ur=await authed(`/rest/v1/users?select=id&is_active=eq.true&or=(is_master.eq.true,role.eq.HQ)`);
+    if(!ur.ok||!Array.isArray(ur.body)||ur.body.length===0) return;
+    const ids=ur.body.map(u=>u.id);
+    const cr=await authed(`/rest/v1/hq_user_chatwork?user_id=in.(${ids.join(",")})&select=room_id`);
+    if(!cr.ok||!Array.isArray(cr.body)) return;
+    await sendChatworkToRooms(cr.body.map(r=>r.room_id),text);
+  }catch(e){ /* 握りつぶす */ }
+}
+// ID/PW変更申請の承認者＝ns-info-system側info.profiles/roles（マスター・役職「本部」）
+async function notifyCredentialApprovers(text){
   try{
     const r=await infoAuthed("/rest/v1/rpc/get_approver_chatwork_rooms",{method:"POST",body:"{}"});
     if(!r.ok||!Array.isArray(r.body)) return;
-    const s=sess.get();
-    for(const row of r.body){
-      if(!row.room_id) continue;
-      await fetch(CHATWORK_FN_URL,{method:"POST",headers:{"Content-Type":"application/json","Authorization":"Bearer "+(s?s.at:"")},body:JSON.stringify({room_id:row.room_id,body:text})});
-    }
-  }catch(e){ /* 通知の失敗は握りつぶす（申請自体は既に保存済み） */ }
+    await sendChatworkToRooms(r.body.map(row=>row.room_id),text);
+  }catch(e){ /* 握りつぶす */ }
 }
 
 /* ============================================================
    状態
    ============================================================ */
-let ME=null, MY_SUMMARY=null, CRED_ELIGIBLE=false, CORPS=[];
+let ME=null, HAS_BANK=false, CRED_ELIGIBLE=false, CORPS=[], PROFILE_APPROVER=false, PENDING_PROFILE=null;
 // portal.htmlの「申請」グループから?tab=personal/systemで初期タブを直接指定できる
 let TAB=new URLSearchParams(location.search).get("tab")==="system"?"system":"personal";
 let P_CATEGORY="", C_KIND="new", C_CORP="", C_LIST=null, C_CATFILTER="すべて", C_Q="", C_CREDID="", C_FIELD="secret";
@@ -177,13 +196,18 @@ async function main(){
   if(!u){sess.clear();renderLogin();return}
   if(u.is_active===false){renderLogin();return}
   ME=u;
-  const [{body:summaryBody},{body:eligBody},{body:corpsBody}]=await Promise.all([
-    infoAuthed("/rest/v1/rpc/get_my_employee_summary",{method:"POST",body:"{}"}),
+  // 2026-09-02バグ修正: 個人情報はハブのpublic.employee_profiles/usersが実体
+  // （旧: info.employeesは役員名簿的な別の小さなテーブルで、一般社員は誰も
+  // 紐付いておらず「従業員情報が見つかりません」になっていた）
+  const [{body:bankBody},{body:eligBody},{body:corpsBody},{body:approverBody}]=await Promise.all([
+    authed("/rest/v1/rpc/has_my_bank_account",{method:"POST",body:"{}"}),
     infoAuthed("/rest/v1/rpc/am_credential_eligible",{method:"POST",body:"{}"}),
     infoAuthed("/rest/v1/corporations?select=id,code,name&order=code"),
+    authed("/rest/v1/rpc/is_profile_approver",{method:"POST",body:"{}"}),
   ]);
-  MY_SUMMARY=(Array.isArray(summaryBody)&&summaryBody[0])?summaryBody[0]:null;
+  HAS_BANK=bankBody===true;
   CRED_ELIGIBLE=eligBody===true;
+  PROFILE_APPROVER=approverBody===true;
   if(TAB==="system"&&!CRED_ELIGIBLE) TAB="personal"; // 権限が無い人が?tab=systemで来た場合のフォールバック
   CORPS=Array.isArray(corpsBody)?corpsBody:[];
   if(CORPS[0]) C_CORP=CORPS[0].id;
@@ -200,6 +224,7 @@ function renderApp(){
       <h1>🔁 変更申請</h1>
       <div class="who">${esc(ME.name)}さん・申請した内容は本部の承認後に反映されます</div>
     </div>
+    <div id="approvePanel"></div>
     <div class="card" style="padding:0;overflow:hidden">
       <div class="tabrow">
         <button id="tabPersonal" class="${TAB==='personal'?'active':''}" onclick="switchTab('personal')">自分の情報変更</button>
@@ -214,8 +239,79 @@ function renderApp(){
   `;
   renderTabBody();
   loadHistory();
+  if(PROFILE_APPROVER) loadApprovePanel();
 }
 function switchTab(t){ TAB=t; renderApp(); }
+
+/* ============================================================
+   承認パネル（本部/マスター用。個人情報変更の承認待ちをここから処理する）
+   ============================================================ */
+function formatFieldValue(field,value){
+  if(value==null) return "（空）";
+  if(field==="bank_account"){
+    try{
+      const b=JSON.parse(value);
+      const typeLabel=({"1":"普通","2":"当座","4":"貯蓄"})[b.account_type]||b.account_type||"";
+      return `${b.bank_name||b.bank_code||""} ${b.branch_name||b.branch_code||""} ${typeLabel} ${b.account_number||""}（${b.account_holder_kana||""}）`.replace(/\s+/g," ").trim();
+    }catch(e){ return value; }
+  }
+  if(field==="id_document"){
+    try{ return JSON.parse(value).doc_type||value; }catch(e){ return value; }
+  }
+  return value;
+}
+function bankAttachmentPath(field,value){
+  if(field!=="bank_account"&&field!=="id_document") return null;
+  try{
+    const v=JSON.parse(value);
+    return v.proof_file_path||v.file_path||null;
+  }catch(e){ return null; }
+}
+async function loadApprovePanel(){
+  const r=await authed(`/rest/v1/profile_change_requests?status=eq.pending&order=requested_at.asc&select=id,user_id,field,old_value,new_value,requested_at,target:users!profile_change_requests_user_id_fkey(name)`);
+  PENDING_PROFILE=(r.ok&&Array.isArray(r.body))?r.body:[];
+  renderApprovePanel();
+}
+function renderApprovePanel(){
+  const el=$("approvePanel"); if(!el) return;
+  if(!PENDING_PROFILE||PENDING_PROFILE.length===0){ el.innerHTML=""; return; }
+  el.innerHTML=`<div class="card" style="border:2px solid var(--warn);background:#fdf5e0">
+    <div class="sec-title" style="color:var(--warn)">🔁 承認待ちの個人情報変更申請（${PENDING_PROFILE.length}件）</div>
+    <div id="approveMsg"></div>
+    ${PENDING_PROFILE.map(r=>{
+      const path=bankAttachmentPath(r.field,r.new_value);
+      return `<div class="card" style="margin-top:10px">
+        <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap">
+          <b>${esc(r.target?.name||"（不明）")}</b>
+          <span class="hist-meta">${EMP_FIELD_LABELS[r.field]||r.field}｜${new Date(r.requested_at).toLocaleString("ja-JP")}</span>
+        </div>
+        <div style="margin-top:4px;font-size:13px">
+          <span style="color:var(--muted);text-decoration:line-through">${esc(formatFieldValue(r.field,r.old_value))}</span>
+          → <span>${esc(formatFieldValue(r.field,r.new_value))}</span>
+          ${path?`<button type="button" onclick="viewAttachment('${path.replace(/'/g,"\\'")}')" style="width:auto;padding:3px 8px;font-size:11px;border-radius:6px;border:1px solid var(--accent);color:var(--accent);background:none;margin-left:6px">📎添付を見る</button>`:""}
+        </div>
+        <div style="margin-top:8px;display:flex;gap:8px">
+          <button class="btn" style="width:auto;padding:8px 16px;background:var(--ok)" onclick="reviewProfileRequest('${r.id}',true)">✅ 承認する</button>
+          <button class="btn" style="width:auto;padding:8px 16px;background:none;color:var(--bad);border:1px solid var(--bad)" onclick="reviewProfileRequest('${r.id}',false)">却下する</button>
+        </div>
+      </div>`;
+    }).join("")}
+  </div>`;
+}
+async function viewAttachment(path){
+  const r=await authed(`/storage/v1/object/sign/${ATT_BUCKET}/${encodeURIComponent(path)}`,{method:"POST",body:JSON.stringify({expiresIn:60})});
+  if(r.ok&&r.body?.signedURL) window.open(SUPA_URL+"/storage/v1"+r.body.signedURL,"_blank","noopener");
+  else alert("添付を開けませんでした");
+}
+async function reviewProfileRequest(id,approve){
+  if(approve&&!confirm("この内容で承認し、実際の値を書き換えますか？")) return;
+  let reason=null;
+  if(!approve){ reason=prompt("却下理由（任意）")||""; }
+  const r=await authed("/rest/v1/rpc/review_profile_change_request",{method:"POST",body:JSON.stringify({p_request_id:id,p_approve:approve,p_reason:reason||null})});
+  const msg=$("approveMsg");
+  if(!r.ok){ if(msg) msg.innerHTML=`<div class="msg-err">${esc(r.body?.message||"処理できませんでした")}</div>`; return; }
+  await loadApprovePanel();
+}
 
 /* ============================================================
    タブ1: 自分の情報変更
@@ -225,15 +321,9 @@ function renderTabBody(){
 }
 function renderPersonalTab(){
   const body=$("tabBody");
-  if(!MY_SUMMARY){
-    body.innerHTML=`<div class="sec-title">自分の情報変更申請</div>
-      <div class="sec-sub">変更したい項目を選択してください。今の登録内容はここには表示されません（新しい値だけ入力してください）。承認されると反映されます。</div>
-      <div class="msg-err" style="background:#fdf5e0;color:var(--warn)">あなたのポータルアカウントに紐づく従業員情報が見つかりませんでした。お手数ですが本部にご連絡ください（従業員情報側でポータルアカウントの連携が必要です）。</div>`;
-    return;
-  }
   body.innerHTML=`<div class="sec-title">自分の情報変更申請</div>
     <div class="sec-sub">変更したい項目を選択してください。今の登録内容はここには表示されません（新しい値だけ入力してください）。承認されると反映されます。</div>
-    <div class="msg-ok" style="background:#e8f0fd;color:var(--accent)">「${esc(MY_SUMMARY.employee_name)}」さんとして申請します</div>
+    <div class="msg-ok" style="background:#e8f0fd;color:var(--accent)">「${esc(ME.name)}」さんとして申請します</div>
     <label>変更するカテゴリ<span class="req">必須</span></label>
     <select id="pCategory" onchange="onPCategoryChange(this.value)">
       <option value="">選択してください</option>
@@ -268,7 +358,7 @@ function renderPDyn(){
       <input type="email" id="f_email" placeholder="example@domain.com">
       <div class="note">※ポータル/日報のログイン用メールとは別の、連絡先としてのメールアドレスです</div>`;
   } else if(P_CATEGORY==="bank_account"){
-    html=`${MY_SUMMARY.has_bank_account?'<div class="note" style="margin-bottom:8px">すでに口座が登録されています。変更する項目だけでなく、口座情報はすべて入力し直してください（一部だけの上書きはできません）。</div>':""}
+    html=`${HAS_BANK?'<div class="note" style="margin-bottom:8px">すでに口座が登録されています。変更する項目だけでなく、口座情報はすべて入力し直してください（一部だけの上書きはできません）。</div>':""}
       <div class="row2"><div><label>銀行コード（4桁）<span class="req">必須</span></label><input type="text" inputmode="numeric" maxlength="4" id="f_bankCode"></div>
       <div><label>銀行名（任意）</label><input type="text" id="f_bankName"></div></div>
       <div class="row2"><div><label>支店コード（3桁）<span class="req">必須</span></label><input type="text" inputmode="numeric" maxlength="3" id="f_branchCode"></div>
@@ -342,13 +432,13 @@ async function submitPersonal(){
   }
 }
 async function submitEmployeeChange(field,value){
-  const r=await infoAuthed("/rest/v1/rpc/submit_employee_change_request",{method:"POST",
-    body:JSON.stringify({p_employee_id:MY_SUMMARY.employee_id,p_field:field,p_new_value:value})});
+  const r=await authed("/rest/v1/rpc/submit_profile_change_request",{method:"POST",
+    body:JSON.stringify({p_field:field,p_new_value:value})});
   if(!r.ok) throw new Error(r.body?.message||"申請できませんでした");
 }
 function afterPersonalSubmit(){
   const catLabel=P_CATEGORIES.find(c=>c.v===P_CATEGORY)?.l||P_CATEGORY;
-  notifyApprovers(`🔁 変更申請: ${MY_SUMMARY.employee_name}さんが「${catLabel}」を申請しました\nポータル→社内情報管理→従業員情報 の承認待ちからご確認ください`);
+  notifyProfileApprovers(`🔁 変更申請: ${ME.name}さんが「${catLabel}」を申請しました\nポータル→🔁申請→個人情報変更 の承認パネルからご確認ください`);
   P_CATEGORY=""; renderTabBody(); loadHistory();
   $("tabBody").insertAdjacentHTML("afterbegin",'<div class="msg-ok">申請しました。本部が承認すると反映されます。</div>');
 }
@@ -477,7 +567,7 @@ async function submitSystem(){
       const selected=(C_LIST||[]).find(c=>c.id===C_CREDID);
       notifyText=`🔁 変更申請: ${ME.name}さんが「${selected?selected.service_name:"社内システム"}」の${CRED_FIELD_LABELS[C_FIELD]||C_FIELD}変更を申請しました\nポータル→社内情報管理→ID・パスワード管理 の承認待ちからご確認ください`;
     }
-    notifyApprovers(notifyText);
+    notifyCredentialApprovers(notifyText);
     C_CREDID=""; renderSystemTab(); loadHistory();
     $("tabBody").insertAdjacentHTML("afterbegin",'<div class="msg-ok">申請しました。本部が承認すると反映されます。</div>');
   }catch(e){
@@ -491,7 +581,7 @@ async function submitSystem(){
    ============================================================ */
 async function loadHistory(){
   const jobs=[
-    MY_SUMMARY?infoAuthed(`/rest/v1/employee_change_requests?employee_id=eq.${MY_SUMMARY.employee_id}&select=id,field,status,requested_at,reject_reason&order=requested_at.desc&limit=20`):Promise.resolve({ok:true,body:[]}),
+    authed(`/rest/v1/profile_change_requests?user_id=eq.${ME.id}&select=id,field,status,requested_at,reject_reason&order=requested_at.desc&limit=20`),
     infoAuthed("/rest/v1/credential_change_requests?select=id,field,status,requested_at,reject_reason&order=requested_at.desc&limit=20"),
     infoAuthed("/rest/v1/credential_new_requests?select=id,service_name,status,requested_at,reject_reason&order=requested_at.desc&limit=20"),
   ];
