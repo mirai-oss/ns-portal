@@ -4759,3 +4759,13 @@ info.credential_change_requests:
 
 ### 検証
 自前ブラウザ検証（モックデータ）で、工程1/2のタイトル自動反映・工程3のチェックリスト4件・工程4のLINEボタン表示とクリック時の動作（Edge Function未実装のため想定通りエラー表示）を確認。SQL側は文字列組み立て（タイトル・action_payload）を直接クエリで検証し意図通りであることを確認、認証ガードが正しく機能する（Management API経由の匿名呼び出しを拒否）ことも確認済み。**RPCの本当の呼び出し（nippo側フックからの実行）はB-18実装後にユーザー確認をお願いしたい**
+
+## 2026-09-01（担当E実行スレッド・続き）担当BのB-18実装（実際の契約）に合わせてLINE案内ボタンを修正（コミット`f48c1bb`）
+
+上記のE-6実装後、担当BがB-18を完了（コミット`10b7759`・WORKLOG「担当B実行スレッド」参照）。想定していた新規Edge Function `onboarding-line-guide`ではなく、**既存`line-webhook`に`onboarding_invite`アクションとして実装**されていたため、`tasks.html`側の呼び出しを実際の契約に合わせて修正した。
+
+- URL: `functions/v1/onboarding-line-guide`（存在しない）→ `functions/v1/line-webhook`
+- リクエスト: `{task_id,step_id,name,email}` → `{action:"onboarding_invite",email}`（line-webhook側はemailで`users`を検索する仕様のため、name/task_id/step_idは不要と判明）
+- レスポンス判定: `success`/`sent`/`copy_text`（当初の想定）→ `ok`/`error`/`fallback_text`（担当Bの実際の実装に合わせて分岐し直した）
+- 自前ブラウザ検証（fetchをモック化）で、①送信成功時（`ok:true`）②LINE未連携時（`ok:false`+`fallback_text`→コピー欄に表示）の両方が実際の契約どおりに動作することを確認
+- **教訓**: 担当Bも同種の教訓を記録していたとおり（本日付「担当B実行スレッド」参照）、WORKLOG宣言だけでは契約の食い違いを防ぎきれない。今回は担当Bが先にE-6の実装ファイルを直接確認して合わせてくれたが、逆にこちらもB-18の実装コミットを直接読んで確認する必要があった。GitHub Pages反映も確認済み
