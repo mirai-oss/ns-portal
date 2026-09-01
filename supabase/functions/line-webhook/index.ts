@@ -144,6 +144,11 @@ Deno.serve(async (req)=>{
             p_text: String(ev.message.text ?? "")
           });
           if (ur?.linked && ur?.reply) await lineReply(token, ev.replyToken, String(ur.reply));
+          // 2026-09-01追加: 応募者経由でない入社（スマレジ既存→管理システムだけ新規登録）は
+          // register_via_invite時点でLINE未連携のため入社案内が送れていなかった。ここでLINE連携が
+          // 初めて成立した瞬間に、line_intake_user側が組み立てたwelcome_textをプッシュで送る
+          // （replyTokenは連携確認メッセージで既に使っているのでプッシュ送信を使う）
+          if (ur?.linked && ur?.welcome_text) await linePush(token, uid, String(ur.welcome_text));
         }
       }
       return json({
@@ -218,10 +223,38 @@ Deno.serve(async (req)=>{
         error: "招待トークンがありません"
       }, 400);
       const { data: ap } = await sb.from("applicants").select("id,name,line_user_id,join_msg_sent_at").eq("invite_token", tk).maybeSingle();
-      if (!ap) return json({
-        ok: false,
-        error: "応募者が見つかりません"
-      }, 404);
+      if (!ap) {
+        // 2026-09-01追加: 応募者経由でない入社登録（スマレジ既存→管理システムだけ新規登録）は
+        // applicants行が無いのでここに来る。「応募者が見つかりません」という誤解を招くエラーは返さず、
+        // 対象ユーザーがLINE連携済みならその場で入社案内を送り、未連携ならスキップ扱いにする
+        // （未連携の場合は line_intake_user 側で、後からLINE連携が完了した瞬間に送られる）
+        const { data: inv } = await sb.from("invitations").select("used_by").eq("token", tk).maybeSingle();
+        if (!inv?.used_by) return json({
+          ok: true,
+          skipped: "対象が見つかりません（応募者経由でない登録）"
+        });
+        const { data: u } = await sb.from("users").select("id,name,line_user_id").eq("id", inv.used_by).maybeSingle();
+        const { data: ep } = await sb.from("employee_profiles").select("join_welcome_sent_at").eq("user_id", inv.used_by).maybeSingle();
+        if (!u || ep?.join_welcome_sent_at) return json({
+          ok: true,
+          skipped: "対象なし、または送信済み"
+        });
+        if (!u.line_user_id || !token) return json({
+          ok: true,
+          skipped: "LINE未連携（連携完了時に自動送信されます）"
+        });
+        const { data: usRows } = await sb.from("user_stores").select("stores(name)").eq("user_id", u.id);
+        const storeNames = (usRows ?? []).map((r) => r.stores?.name).filter(Boolean).join("・") || "所属未設定";
+        const text2 = `🐔 ${u.name}さん\n\n入社登録が完了しました！\n所属店舗: ${storeNames}\n\nこれからよろしくお願いいたします。シフト提出の締切が近いときなどにこちらへお知らせします。`;
+        const sent2 = await linePush(token, u.line_user_id, text2);
+        if (sent2.ok) await sb.from("employee_profiles").update({
+          join_welcome_sent_at: new Date().toISOString()
+        }).eq("user_id", u.id);
+        return json({
+          ok: sent2.ok,
+          error: sent2.ok ? undefined : `LINEの応答: ${sent2.status} ${sent2.body}`
+        });
+      }
       if (ap.join_msg_sent_at) return json({
         ok: true,
         skipped: "送信済み"
