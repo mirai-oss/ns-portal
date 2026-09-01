@@ -358,6 +358,196 @@ async function mfCall(action,extra={}){
   const j=await r.json().catch(()=>({}));
   return {ok:r.ok,body:j};
 }
+// MF仕訳→PL自動反映（手数料等・ラウンド5指示書§6.1）。pl-fee-reflect Edge Functionの薄いラッパー
+async function plFeeCall(action,extra={}){
+  const s=sess.get();
+  const r=await fetch(SUPA_URL+"/functions/v1/pl-fee-reflect",{method:"POST",headers:{"Content-Type":"application/json","apikey":SUPA_KEY,"Authorization":"Bearer "+(s?s.at:"")},body:JSON.stringify({action,...extra})});
+  const j=await r.json().catch(()=>({}));
+  return {ok:r.ok,body:j};
+}
+let PL_FEE_TARGET_ACCOUNTS=null; // PL連携対象科目のキャッシュ（設定タブで増減したらnullに戻して再取得する）
+async function plFeeTargetAccounts(){
+  if(PL_FEE_TARGET_ACCOUNTS) return PL_FEE_TARGET_ACCOUNTS;
+  const r=await plFeeCall("list_target_accounts");
+  PL_FEE_TARGET_ACCOUNTS=(r.ok&&r.body.accounts)||[];
+  return PL_FEE_TARGET_ACCOUNTS;
+}
+function plfeeFindStoreByName(stores,name){
+  if(!name||!stores) return null;
+  const norm=s=>String(s||"").replace(/\s+/g,"");
+  const n=norm(name);
+  return stores.find(s=>norm(s.name)===n) || stores.find(s=>n.includes(norm(s.name))||norm(s.name).includes(n)) || null;
+}
+/* ============================================================
+   手数料等→PL自動反映パネル（ラウンド5指示書§6.1／設計書_広告費自動連携_§5・2026-09-01）
+   広告費（adcostbox系）と同じ骨組みの科目汎用版。mfj（メール請求書の仕訳作成）・mfu
+   （アップロード請求書＝会計タブ）の両方の画面から共通で呼べるよう、呼び出し元に依存する情報は
+   すべてctxで受け取るトップレベル関数として実装する（クロージャに閉じ込めない）。
+   ctx: {boxId, invoiceId, debitAccountNames, fallbackAmount, deptBranches, departments, reflected, onDone}
+   ============================================================ */
+let PLFEE_STATE={};
+async function plfeeInit(ctx){
+  const box=$(ctx.boxId);
+  if(!box) return;
+  if(ctx.reflected){ plfeeRenderReflected(ctx); return; }
+  const targets=await plFeeTargetAccounts();
+  // 補助科目つき（例:「支払手数料/カード決済」）でも親科目名で一致判定できるよう、"/"より前だけでも比較する
+  const matched=(ctx.debitAccountNames||[]).find(name=>targets.some(t=>t.account_name===name||t.account_name===name.split("/")[0]));
+  if(!matched){ box.innerHTML=""; return; } // PL連携対象科目でなければ何も出さない
+  PLFEE_STATE={ctx,account:matched};
+  await plfeeRenderPanel();
+}
+function plfeeRenderReflected(ctx){
+  const box=$(ctx.boxId);
+  const a=ctx.reflected.allocations||[];
+  const ym=(ctx.reflected.yearMonth||"").slice(0,7);
+  box.innerHTML=`<div class="adcost-box">
+    <h3>📊 PL反映 <span class="hq-pill green">✅ 反映済み（${esc(ym)}・${esc(ctx.reflected.account||"")}）</span></h3>
+    <div class="adcost-badge-row">${fmtDT(ctx.reflected.reflectedAt)}　${a.length}店舗に按分　合計${yen(a.reduce((s,x)=>s+(Number(x.amount)||0),0))}${ctx.reflected.sheetSynced?"　✅PL反映済み":"　⚠️PLへの反映は未完了（担当Aの対応待ち）"}</div>
+  </div>`;
+}
+async function plfeeRenderPanel(){
+  const box=$(PLFEE_STATE.ctx.boxId);
+  box.innerHTML=`<div class="adcost-box"><div style="font-size:12px;color:var(--muted)">読み込み中…</div></div>`;
+  if(!PLFEE_STATE.stores){
+    const r=await authed("/rest/v1/stores?select=id,name&order=name");
+    PLFEE_STATE.stores=(r.ok&&Array.isArray(r.body))?r.body:[];
+  }
+  if(!PLFEE_STATE.yearMonth){
+    const d=new Date();
+    PLFEE_STATE.yearMonth=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-01`;
+  }
+  if(!PLFEE_STATE.rows) await plfeeComputeAllocation();
+  plfeeRenderForm();
+}
+async function plfeeComputeAllocation(){
+  const ctx=PLFEE_STATE.ctx;
+  const accountName=PLFEE_STATE.account;
+  // 対象科目の借方合計金額をベースにする（複合仕訳で対象科目以外の借方が混ざっている場合、
+  // 請求書合計とは一致しないことがあるため、対象科目の借方だけをctx.deptBranchesから合算する。
+  // 取得できなければctx.fallbackAmountにフォールバック）
+  // ctx.deptBranchesはmfu（アップロード請求書）では解決済みオブジェクト（b.debit={account_name,...}）、
+  // mfj（メール請求書）では入力途中の生ラベル（b.debitLabel=文字列）のことがあるため両対応で照合する
+  const matchingBranches=(ctx.deptBranches||[]).filter(b=>{
+    const label=b.debit?mfuLabelOf(b.debit):(b.debitLabel||"");
+    return label===accountName&&Number(b.debitAmount)>0;
+  });
+  const total=matchingBranches.length?matchingBranches.reduce((s,b)=>s+Number(b.debitAmount),0):(Number(ctx.fallbackAmount)||0);
+  PLFEE_STATE.total=total;
+  const branchesWithDept=matchingBranches.filter(b=>b.department_id);
+  if(branchesWithDept.length){
+    const rows=[];
+    for(const b of branchesWithDept){
+      const dept=(ctx.departments||[]).find(d=>d.id===b.department_id);
+      const store=dept?plfeeFindStoreByName(PLFEE_STATE.stores,dept.name):null;
+      if(store&&Number(b.debitAmount)>0) rows.push({store_id:store.id,store_name:store.name,amount:Math.round(Number(b.debitAmount))});
+    }
+    if(rows.length){ PLFEE_STATE.rows=rows; PLFEE_STATE.source="mf_department"; return; }
+  }
+  // 前月・同科目で反映済みの請求書があれば、その店舗比率で今回の金額を按分する
+  const cur=new Date(PLFEE_STATE.yearMonth);
+  const prev=new Date(cur.getFullYear(),cur.getMonth()-1,1);
+  const prevYm=`${prev.getFullYear()}-${String(prev.getMonth()+1).padStart(2,"0")}-01`;
+  const r=await authed(`/rest/v1/invoices?pl_fee_reflected_at=not.is.null&pl_fee_account=eq.${encodeURIComponent(accountName)}&pl_fee_year_month=eq.${prevYm}&select=pl_fee_allocations`);
+  const prevRows=(r.ok&&Array.isArray(r.body))?r.body:[];
+  const sums=new Map(); let grand=0;
+  for(const row of prevRows) for(const a of (row.pl_fee_allocations||[])){
+    const amt=Number(a.amount)||0; grand+=amt;
+    const c=sums.get(a.store_id)||{store_name:a.store_name,amount:0}; c.amount+=amt; sums.set(a.store_id,c);
+  }
+  if(grand>0){
+    const rows=Array.from(sums,([store_id,v])=>({store_id,store_name:v.store_name,amount:Math.round(total*(v.amount/grand))}));
+    const sum=rows.reduce((s,x)=>s+x.amount,0);
+    if(rows.length) rows[rows.length-1].amount+=(total-sum); // 端数調整
+    PLFEE_STATE.rows=rows; PLFEE_STATE.source="prev_month_ratio";
+    return;
+  }
+  PLFEE_STATE.rows=[{store_id:"",store_name:"",amount:total}];
+  PLFEE_STATE.source="manual";
+}
+function plfeeSourceLabel(){
+  return {
+    mf_department:"📊 今回登録した仕訳の部門（店舗）別金額から自動で割り振りました。",
+    prev_month_ratio:"📊 店舗別の内訳が仕訳に無かったため、前月の同科目の店舗比率から按分しています。",
+    manual:"📊 参考にできる情報が無かったため、店舗を選んで金額を入力してください。",
+  }[PLFEE_STATE.source]||"";
+}
+function plfeeRowHtml(row,idx){
+  const opts=`<option value="">（店舗を選択）</option>`+PLFEE_STATE.stores.map(s=>`<option value="${esc(s.id)}" ${row.store_id===s.id?"selected":""}>${esc(s.name)}</option>`).join("");
+  return `<tr data-idx="${idx}">
+    <td><select class="plfee-store" data-idx="${idx}">${opts}</select></td>
+    <td class="amt"><input type="number" class="plfee-amount" data-idx="${idx}" value="${row.amount}"></td>
+    <td class="rm">${PLFEE_STATE.rows.length>1?`<button data-plfeerm="${idx}" title="この行を削除">−</button>`:""}</td>
+  </tr>`;
+}
+function plfeeUpdateTotals(){
+  const total=PLFEE_STATE.rows.reduce((s,r)=>s+(Number(r.amount)||0),0);
+  const baseAmt=Number(PLFEE_STATE.total)||0;
+  const diff=baseAmt-total;
+  if($("plfee-total-sum")) $("plfee-total-sum").textContent=yen(total);
+  const diffBox=$("plfee-diff-box");
+  if(diffBox){ diffBox.className=diff===0?"adcost-diff-ok":"adcost-diff-ng"; diffBox.innerHTML=`差額 <b>${yen(diff)}</b> ${diff===0?"✓":""}`; }
+}
+function plfeeRenderForm(){
+  const box=$(PLFEE_STATE.ctx.boxId);
+  const total=PLFEE_STATE.rows.reduce((s,r)=>s+(Number(r.amount)||0),0);
+  const baseAmt=Number(PLFEE_STATE.total)||0;
+  const diff=baseAmt-total;
+  box.innerHTML=`<div class="adcost-box">
+    <h3>📊 PLへ反映 <span class="hq-pill amber">対象科目：${esc(PLFEE_STATE.account)}</span></h3>
+    <div class="adcost-sub">この仕訳の借方に登録済みの「${esc(PLFEE_STATE.account)}」を、店舗ごとのPL（＋精算対象店舗は精算書）へ自動反映します。</div>
+    <div class="ai-grid">
+      <div class="ai-field"><small>対象年月</small><input id="plfee-ym" type="month" value="${PLFEE_STATE.yearMonth.slice(0,7)}"></div>
+    </div>
+    <div class="adcost-source">${plfeeSourceLabel()}</div>
+    <table class="adcost-table">
+      <thead><tr><th>店舗</th><th style="text-align:right">金額</th><th></th></tr></thead>
+      <tbody id="plfee-rows">${PLFEE_STATE.rows.map((r,i)=>plfeeRowHtml(r,i)).join("")}</tbody>
+    </table>
+    <div class="mail-actions" style="margin-top:6px">
+      <button id="plfee-add-row">＋ 店舗を追加</button>
+      <button id="plfee-recalc">🔄 割り振りを再計算</button>
+    </div>
+    <div class="adcost-total">
+      <span>対象科目の合計 <b>${yen(baseAmt)}</b></span>
+      <span>割り振り合計 <b id="plfee-total-sum">${yen(total)}</b></span>
+      <span id="plfee-diff-box" class="${diff===0?"adcost-diff-ok":"adcost-diff-ng"}">差額 <b>${yen(diff)}</b> ${diff===0?"✓":""}</span>
+    </div>
+    <div class="mail-actions" style="margin-top:10px"><button class="primary" id="plfee-confirm">📊 この内容でPLに反映</button></div>
+    <div class="adcost-hint">💡 精算対象店舗（精算書を作っている店舗）は、精算書の明細にも同じ内容が自動で追加されます（担当A対応後）。DB_PL・BigQueryへの実際の書き込みも担当Aの対応が完了してから有効になります（それまでは反映内容の記録のみです）。</div>
+    <div class="err" id="plfee-msg" style="margin-top:6px"></div>
+  </div>`;
+  $("plfee-ym").onchange=()=>{ PLFEE_STATE.yearMonth=$("plfee-ym").value+"-01"; };
+  document.querySelectorAll(".plfee-store").forEach(el=>el.onchange=()=>{
+    const idx=+el.dataset.idx, s=PLFEE_STATE.stores.find(x=>x.id===el.value);
+    PLFEE_STATE.rows[idx].store_id=el.value; PLFEE_STATE.rows[idx].store_name=s?s.name:"";
+  });
+  document.querySelectorAll(".plfee-amount").forEach(el=>el.oninput=()=>{
+    PLFEE_STATE.rows[+el.dataset.idx].amount=el.value; plfeeUpdateTotals();
+  });
+  document.querySelectorAll("[data-plfeerm]").forEach(el=>el.onclick=()=>{ PLFEE_STATE.rows.splice(+el.dataset.plfeerm,1); plfeeRenderForm(); });
+  $("plfee-add-row").onclick=()=>{ PLFEE_STATE.rows.push({store_id:"",store_name:"",amount:0}); plfeeRenderForm(); };
+  $("plfee-recalc").onclick=async()=>{ PLFEE_STATE.rows=null; await plfeeComputeAllocation(); plfeeRenderForm(); };
+  $("plfee-confirm").onclick=plfeeConfirm;
+}
+async function plfeeConfirm(){
+  const ctx=PLFEE_STATE.ctx;
+  const msg=$("plfee-msg"); msg.className="err"; msg.textContent="";
+  const rows=PLFEE_STATE.rows.filter(r=>r.store_id&&Number(r.amount)>0);
+  if(!rows.length){ msg.textContent="店舗と金額を入力してください"; return; }
+  const total=rows.reduce((s,r)=>s+Number(r.amount),0);
+  const baseAmt=Number(PLFEE_STATE.total)||0;
+  if(total!==baseAmt && !confirm(`割り振り合計（${yen(total)}）が対象科目の合計（${yen(baseAmt)}）と一致していません。このまま反映しますか？`)) return;
+  $("plfee-confirm").disabled=true; msg.textContent="反映中…";
+  const r=await plFeeCall("confirm",{
+    invoice_id:ctx.invoiceId, account_name:PLFEE_STATE.account, year_month:PLFEE_STATE.yearMonth,
+    allocations:rows.map(r=>({store_id:r.store_id,store_name:r.store_name,amount:Number(r.amount)})),
+  });
+  if(!r.ok){ msg.textContent=r.body.error||"反映に失敗しました"; $("plfee-confirm").disabled=false; return; }
+  msg.className="err msg-ok";
+  msg.textContent=r.body.sheet_synced?"PLに反映しました（精算書・BigQueryにも書き込み済みです）":"反映内容を記録しました。PL・精算書への書き込みは担当Aの対応後に有効になります（今は記録のみです）";
+  if(ctx.onDone) setTimeout(()=>{ ctx.onDone(); },1200);
+}
 
 // 本文中のリンクをクリックできるようにする（スクリプトは実行させない=XSS対策は維持）。
 // iframeはsandbox="allow-popups allow-popups-to-escape-sandbox"のみ許可＝
@@ -971,6 +1161,7 @@ function renderMailDetail(u){
         </div>
         <div class="err" id="iv-msg" style="margin-top:6px"></div>
         ${(!isSales&&invoice&&invoice.amount!=null)?`<div id="adcostbox"></div>`:""}
+        ${(!isSales&&invoice&&invoice.mf_journal_id)?`<div id="plfeebox"></div>`:""}
         <div class="replybox" id="mfjournalbox">
           <b style="font-size:12px">🧾 マネーフォワードへ仕訳を登録</b>
           <div id="mfj-body" style="margin-top:8px;font-size:12px;color:var(--muted)">読み込み中…</div>
@@ -1257,6 +1448,18 @@ function wireDetailActions(u){
     setTimeout(()=>{ reloadDetail(); },1200);
   }
   adcostInit();
+
+  // 手数料等→PL自動反映（ラウンド5指示書§6.1／設計書_広告費自動連携_§5・2026-09-01）
+  // 実体は共通関数plfeeInit()（トップレベル・mfu=アップロード請求書側とも共用）。
+  // 仕訳登録済み・借方にPL連携対象科目（設定タブで管理・初期値=支払手数料）が含まれる場合だけパネルを出す。
+  if(!isSales&&invoice&&invoice.mf_journal_id){
+    plfeeInit({
+      boxId:"plfeebox", invoiceId:invoice.id, debitAccountNames:invoice.mf_debit_accounts||[],
+      fallbackAmount:Number(invoice.amount)||0, deptBranches:MFJ_STATE.branches||[], departments:MFJ_STATE.departments||[],
+      reflected: invoice.pl_fee_reflected_at?{account:invoice.pl_fee_account,yearMonth:invoice.pl_fee_year_month,allocations:invoice.pl_fee_allocations,reflectedAt:invoice.pl_fee_reflected_at,sheetSynced:!!invoice.pl_fee_sheet_synced_at}:null,
+      onDone:reloadDetail,
+    });
+  }
 
   if($("mobile-back-btn")) $("mobile-back-btn").onclick=()=>{
     // history.back()に統一＝トラックパッドのスワイプ戻る等と同じpopstateの
@@ -1748,6 +1951,8 @@ function wireDetailActions(u){
         remark,
         linked_hq_step_id: LINKED_HQ_STEP?LINKED_HQ_STEP.id:null, // 保存前でも画面上の選択を優先させる（DB保存漏れ対策）
         attach_files: $("mfj-attach-files")?$("mfj-attach-files").checked:false,
+        // PL連携対象科目かどうかの判定用（手数料等→PL自動反映・ラウンド5指示書§6.1）。MF送信には使わない
+        debit_account_names: branchesPayload.filter(b=>b.debit).map(b=>mfjLabelOf(b.debit)),
       };
       const {ok,body:j}=await mfjCall("create",payload);
       if(!ok){ pmsg.textContent=j.error||"登録に失敗しました"; $("mfjPreviewSubmit").disabled=false; return; }
@@ -2290,12 +2495,106 @@ async function mftSaveEditor(){
    その2行は「準備中」の正直な表示にとどめ、今すでに存在するデータ
    （請求書メールの処理状況・事業者ごとのMF連携状況・仕訳辞書の登録数）だけ実数を出す。
    ============================================================ */
+let DASH_STATE={};
+function dashYmDefault(){ const d=new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`; }
+function dashGoTab(u,tab){
+  TAB=tab; pushNav();
+  document.querySelectorAll(".mail-tab").forEach(x=>x.classList.toggle("active",x.dataset.tab===TAB));
+  renderTabBody(u);
+}
+// C-7拡張（ラウンド5指示書§6.1・2026-09-01）: 会計ダッシュボードに月ごとの処理一覧を追加。
+// 請求書（メール/アップロード）・給与仕訳を月単位で横断し、各件の状態（未処理／仕訳済み／
+// 振込待ち／振込完了 等）を一覧化する。並び替え・行/列の表示非表示に対応。
+// インフォマートはD-9（担当D）のデータ連携が完了するまで対象外（プレースホルダーのみ表示）
+async function dashLoadMonthlyList(ym){
+  const start=`${ym}-01`;
+  const endDate=new Date(ym+"-01"); endDate.setMonth(endDate.getMonth()+1);
+  const end=endDate.toISOString().slice(0,10);
+  const [mailR,uploadR,syncR,recR]=await Promise.all([
+    authed(`/rest/v1/invoices?email_id=not.is.null&created_at=gte.${start}&created_at=lt.${end}&select=id,vendor_name,amount,invoice_status,mf_journal_created_at,mf_journal_number,created_at,pl_fee_reflected_at,pl_fee_sheet_synced_at,pl_fee_seisan_synced_at,email:invoice_emails(mail_kind)&order=created_at.desc&limit=300`),
+    authed(`/rest/v1/invoices?email_id=is.null&created_at=gte.${start}&created_at=lt.${end}&select=id,vendor_name,amount,invoice_status,mf_journal_created_at,mf_journal_number,created_at,pl_fee_reflected_at,pl_fee_sheet_synced_at,pl_fee_seisan_synced_at&order=created_at.desc&limit=300`),
+    authed(`/rest/v1/sf_payroll_sync?year_month=eq.${ym}&select=user_id,net_pay,user:users(name)`),
+    authed(`/rest/v1/payroll_journal_records?year_month=eq.${ym}&select=user_id,paid_at,mf_journal_number`),
+  ]);
+  // 手数料等→PL自動反映の状態バッジ（ラウンド5指示書§6.1・§5）。反映済みでもPL・精算書への
+  // 実書き込み（担当A対応）が未完了なら、正直にその旨がわかる表示にする
+  const plBadgeFor=r=>{
+    if(!r.pl_fee_reflected_at) return "";
+    return r.pl_fee_sheet_synced_at?"　📊PL反映済み":"　📊PL反映（書込待ち）";
+  };
+  const items=[];
+  const mailRows=(mailR.ok&&Array.isArray(mailR.body))?mailR.body:[];
+  for(const r of mailRows){
+    if(r.email&&r.email.mail_kind&&r.email.mail_kind!=="invoice") continue; // 入金明細(sales)等はここでは対象外
+    const done=!!r.mf_journal_created_at;
+    items.push({type:"mail",typeLabel:"📧請求書メール",name:r.vendor_name||"（未入力）",amount:r.amount,createdAt:r.created_at,
+      status:done?{label:"✅仕訳済み"+plBadgeFor(r),cls:"done"}:{label:INVOICE_STATUS_LABEL[r.invoice_status]||"未処理",cls:INVOICE_STATUS_CLASS[r.invoice_status]||"gray"},
+      rank:done?2:0});
+  }
+  const uploadRows=(uploadR.ok&&Array.isArray(uploadR.body))?uploadR.body:[];
+  for(const r of uploadRows){
+    const done=!!r.mf_journal_created_at;
+    items.push({type:"upload",typeLabel:"📤アップロード請求書",name:r.vendor_name||"（未入力）",amount:r.amount,createdAt:r.created_at,
+      status:done?{label:"✅仕訳済み"+plBadgeFor(r),cls:"done"}:{label:"未仕訳",cls:"wait"},
+      rank:done?2:0});
+  }
+  const payrollRows=(syncR.ok&&Array.isArray(syncR.body))?syncR.body:[];
+  const payrollRecs=(recR.ok&&Array.isArray(recR.body))?recR.body:[];
+  for(const r of payrollRows.filter(x=>Number(x.net_pay)>0)){
+    const rec=payrollRecs.find(rc=>rc.user_id===r.user_id);
+    let status,rank;
+    if(rec&&rec.paid_at){ status={label:"🎉振込完了",cls:"done"}; rank=3; }
+    else if(rec){ status={label:"💰仕訳登録済み・振込待ち",cls:"check"}; rank=1; }
+    else{ status={label:"未登録",cls:"wait"}; rank=0; }
+    items.push({type:"payroll",typeLabel:"💴給与仕訳",name:(r.user&&r.user.name)||"—",amount:r.net_pay,createdAt:`${ym}-01`,status,rank});
+  }
+  return items;
+}
+function dashMonthlyListHtml(items){
+  const filter=DASH_STATE.rowFilter||{mail:true,upload:true,payroll:true};
+  let rows=items.filter(it=>filter[it.type]);
+  if(DASH_STATE.sortMode==="statusFirst"){
+    rows=rows.map((r,i)=>({r,i})).sort((a,b)=>(a.r.rank-b.r.rank)||(a.i-b.i)).map(x=>x.r);
+  }else if(DASH_STATE.sortMode==="amountDesc"){
+    rows=[...rows].sort((a,b)=>(Number(b.amount)||0)-(Number(a.amount)||0));
+  } // default: 新しい順（クエリのorderのまま。種別ごとにまとめて連結された順）
+  const showAmount=DASH_STATE.showAmount!==false;
+  return `
+    <div class="card hq-tablewrap">
+      <div style="display:flex;align-items:center;gap:16px;padding:12px 16px;border-bottom:1px solid var(--line);flex-wrap:wrap">
+        <label style="font-size:12px;display:flex;align-items:center;gap:6px">対象年月
+          <input id="dash-ym" type="month" value="${esc(DASH_STATE.yearMonth)}" style="font-size:12px">
+        </label>
+        <label style="font-size:12px;display:flex;align-items:center;gap:6px">並び替え
+          <select id="dash-sort" style="font-size:12px">
+            <option value="default" ${(!DASH_STATE.sortMode||DASH_STATE.sortMode==="default")?"selected":""}>新しい順</option>
+            <option value="statusFirst" ${DASH_STATE.sortMode==="statusFirst"?"selected":""}>未処理を上に</option>
+            <option value="amountDesc" ${DASH_STATE.sortMode==="amountDesc"?"selected":""}>金額が大きい順</option>
+          </select>
+        </label>
+        <label style="font-size:12px;display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="dash-f-mail" ${filter.mail?"checked":""}>📧請求書メール</label>
+        <label style="font-size:12px;display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="dash-f-upload" ${filter.upload?"checked":""}>📤アップロード請求書</label>
+        <label style="font-size:12px;display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="dash-f-payroll" ${filter.payroll?"checked":""}>💴給与仕訳</label>
+        <label style="font-size:12px;display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="dash-show-amount" ${showAmount?"checked":""}>金額を表示</label>
+      </div>
+      ${rows.length?`<table class="invoice-table">
+        <thead><tr><th>種別</th><th>相手先／従業員</th>${showAmount?'<th style="text-align:right">金額</th>':''}<th>状態</th></tr></thead>
+        <tbody>${rows.map(it=>`<tr>
+          <td style="font-size:11px;color:var(--muted);white-space:nowrap">${it.typeLabel}</td>
+          <td><b>${esc(it.name)}</b></td>
+          ${showAmount?`<td style="text-align:right">${yen(it.amount)}</td>`:''}
+          <td><span class="invoice-status ${it.status.cls}">${it.status.label}</span></td>
+        </tr>`).join("")}</tbody>
+      </table>`:`<div class="empty">該当する処理はありません（対象年月・絞り込み条件を確認してください）</div>`}
+    </div>`;
+}
 async function renderAccountingDashboardTab(u){
+  if(!DASH_STATE.yearMonth) DASH_STATE.yearMonth=dashYmDefault();
   const now=new Date();
   const startOfMonth=new Date(now.getFullYear(),now.getMonth(),1).toISOString();
   const tRes=await mfCall("list_tenants");
   const tenants=(tRes.ok&&tRes.body.tenants)||[];
-  const [standaloneR, tenantStatsR]=await Promise.all([
+  const [standaloneR, tenantStatsR, monthlyItems]=await Promise.all([
     authed(`/rest/v1/invoices?email_id=is.null&select=id,created_at&order=created_at.desc&limit=500`),
     Promise.all(tenants.map(async t=>{
       const [journalR,tplR]=await Promise.all([
@@ -2308,10 +2607,17 @@ async function renderAccountingDashboardTab(u){
         templateCount:(tplR.ok&&Array.isArray(tplR.body))?tplR.body.length:0,
       };
     })),
+    dashLoadMonthlyList(DASH_STATE.yearMonth),
   ]);
   const standaloneInvoices=(standaloneR.ok&&Array.isArray(standaloneR.body))?standaloneR.body:[];
   $("tabbody").innerHTML=`
     <section class="invoice-list active">
+      <div class="card" style="padding:16px;margin-bottom:14px">
+        <h3 style="font-size:14px;margin-bottom:10px">📋 月別処理一覧</h3>
+        <div style="font-size:12px;color:var(--muted);margin-bottom:12px">請求書（メール・アップロード）・給与仕訳を月単位で横断して、それぞれの処理状況を確認できます。インフォマート発注はD-9（担当D）のデータ連携が完了次第この一覧に加わります。</div>
+      </div>
+      <div id="dash-monthly-list" style="margin-bottom:14px">${dashMonthlyListHtml(monthlyItems)}</div>
+
       <div class="card" style="padding:16px;margin-bottom:14px">
         <h3 style="font-size:14px;margin-bottom:10px">🔗 マネーフォワード連携状況（事業者別）</h3>
         ${tenants.length?`<div class="hq-tablewrap"><table class="invoice-table"><thead><tr><th>事業者</th><th>今月のMF仕訳登録件数</th><th>登録済み仕訳辞書</th></tr></thead><tbody>
@@ -2325,21 +2631,36 @@ async function renderAccountingDashboardTab(u){
         <button class="hq-btn primary" id="dash-go-upload">📤 アップロード請求書タブへ</button>
       </div>
 
-      <div class="card" style="padding:16px;margin-bottom:14px;opacity:.75">
-        <h3 style="font-size:14px;margin-bottom:6px">📦 インフォマート発注（準備中）</h3>
-        <div style="font-size:12px;color:var(--muted)">D-9（インフォマートAPI連携・担当D）が完了すると、ここに発注明細の仕訳・支払状況が表示される予定です。現状は未実装です。</div>
+      <div class="card" style="padding:16px;margin-bottom:14px">
+        <h3 style="font-size:14px;margin-bottom:10px">💴 給与仕訳</h3>
+        <div style="font-size:12px;color:var(--muted);margin-bottom:8px">スマレジ給与明細から月次の給与仕訳を作成できます（有限会社トーホーエージェンシー分のみ対応）。上の月別処理一覧にも状況が表示されます。</div>
+        <button class="hq-btn primary" id="dash-go-payroll">💴 給与仕訳タブへ</button>
       </div>
 
       <div class="card" style="padding:16px;opacity:.75">
-        <h3 style="font-size:14px;margin-bottom:6px">💴 スマレジ給与仕訳（準備中）</h3>
-        <div style="font-size:12px;color:var(--muted)">仕訳辞書3パターン（社員／アルバイト／アルバイト社保加入）の登録と、控除内訳・明細PDFの取得可否調査（担当B・B-16）が済み次第、毎月の給与仕訳ドラフトをここから確認・登録できるようにする予定です。上の「マネーフォワード連携状況」で仕訳辞書の登録数だけ先に確認できます。</div>
+        <h3 style="font-size:14px;margin-bottom:6px">📦 インフォマート発注（準備中）</h3>
+        <div style="font-size:12px;color:var(--muted)">D-9（インフォマートAPI連携・担当D）が完了すると、ここに発注明細の仕訳・支払状況が表示される予定です。現状は未実装です。</div>
       </div>
     </section>`;
-  if($("dash-go-upload")) $("dash-go-upload").onclick=()=>{
-    TAB="upload"; pushNav();
-    document.querySelectorAll(".mail-tab").forEach(x=>x.classList.toggle("active",x.dataset.tab===TAB));
-    renderTabBody(u);
+  if($("dash-go-upload")) $("dash-go-upload").onclick=()=>dashGoTab(u,"upload");
+  if($("dash-go-payroll")) $("dash-go-payroll").onclick=()=>dashGoTab(u,"payroll");
+  const rerenderList=async()=>{
+    const el=$("dash-monthly-list");
+    el.innerHTML=`<div class="card" style="padding:16px"><div class="spin" style="padding:10px 0">読み込み中…</div></div>`;
+    const items=await dashLoadMonthlyList(DASH_STATE.yearMonth);
+    el.innerHTML=dashMonthlyListHtml(items);
+    wireMonthlyList(items);
   };
+  function wireMonthlyList(items){
+    $("dash-ym").onchange=()=>{ DASH_STATE.yearMonth=$("dash-ym").value; rerenderList(); };
+    $("dash-sort").onchange=()=>{ DASH_STATE.sortMode=$("dash-sort").value; $("dash-monthly-list").innerHTML=dashMonthlyListHtml(items); wireMonthlyList(items); };
+    const toggleFilter=(key,el)=>{ DASH_STATE.rowFilter=Object.assign({mail:true,upload:true,payroll:true},DASH_STATE.rowFilter,{[key]:el.checked}); $("dash-monthly-list").innerHTML=dashMonthlyListHtml(items); wireMonthlyList(items); };
+    $("dash-f-mail").onchange=e=>toggleFilter("mail",e.target);
+    $("dash-f-upload").onchange=e=>toggleFilter("upload",e.target);
+    $("dash-f-payroll").onchange=e=>toggleFilter("payroll",e.target);
+    $("dash-show-amount").onchange=e=>{ DASH_STATE.showAmount=e.target.checked; $("dash-monthly-list").innerHTML=dashMonthlyListHtml(items); wireMonthlyList(items); };
+  }
+  wireMonthlyList(monthlyItems);
 }
 
 /* ============================================================
@@ -2658,6 +2979,7 @@ function mfuOpenPreview(){
       <button id="mfuPreviewBack">← 戻って修正</button>
       <button class="primary" id="mfuPreviewSubmit">✅ この内容で登録</button>
     </div>
+    <div id="plfeebox-mfu"></div>
   </div>`;
   document.body.appendChild(modal);
   pushNav({modal:true});
@@ -2671,6 +2993,7 @@ function mfuOpenPreview(){
     try{
       voucherFiles=await Promise.all(files.slice(0,5).map(async f=>({file_name:f.name.slice(0,255),file_data:await mfuFileToBase64(f)})));
     }catch(e){ pmsg.textContent="添付ファイルの読み込みに失敗しました: "+e.message; $("mfuPreviewSubmit").disabled=false; return; }
+    const debitAccountNames=branchesPayload.filter(b=>b.debit).map(b=>mfuLabelOf(b.debit));
     const payload={
       tenant_id: MFU_STATE.tenantId,
       vendor_name: vendorName,
@@ -2682,14 +3005,29 @@ function mfuOpenPreview(){
       transaction_date: date,
       remark,
       voucher_files: voucherFiles,
+      // PL連携対象科目かどうかの判定用（手数料等→PL自動反映・ラウンド5指示書§6.1）。MF送信には使わない
+      debit_account_names: debitAccountNames,
     };
     const {ok,body:j}=await mfCall("create_standalone",payload);
     if(!ok){ pmsg.textContent=j.error||"登録に失敗しました"; $("mfuPreviewSubmit").disabled=false; return; }
     pmsg.className="err msg-ok";
     pmsg.textContent=`登録しました（伝票番号: ${j.journal_number??"-"}）`
-      +(j.voucher_attached?`。添付ファイルも${j.voucher_attached}件添付しました`:j.voucher_error?`（添付: ${j.voucher_error}）`:"")
-      +"。画面を更新します…";
-    setTimeout(()=>{ history.back(); renderUploadInvoiceTab(); },900);
+      +(j.voucher_attached?`。添付ファイルも${j.voucher_attached}件添付しました`:j.voucher_error?`（添付: ${j.voucher_error}）`:"");
+    // PL連携対象科目が含まれる場合は自動で閉じず、この場で📊PLへ反映パネルを出す
+    // （ユーザー要望「会計アップロードのところで入力した手数料を店舗ごとにPLへ自動反映したい」）
+    const targets=await plFeeTargetAccounts();
+    const matched=debitAccountNames.find(name=>targets.some(t=>t.account_name===name||t.account_name===name.split("/")[0]));
+    if(matched&&j.invoice_id){
+      pmsg.textContent+="。この仕訳の借方に「"+matched+"」（PL連携対象科目）が含まれています。下のパネルで店舗ごとの割り振りを確認してください";
+      plfeeInit({
+        boxId:"plfeebox-mfu", invoiceId:j.invoice_id, debitAccountNames,
+        fallbackAmount:totalDebit, deptBranches:branchesPayload, departments:MFU_STATE.departments||[],
+        reflected:null, onDone:()=>{ history.back(); renderUploadInvoiceTab(); },
+      });
+    }else{
+      pmsg.textContent+="。画面を更新します…";
+      setTimeout(()=>{ history.back(); renderUploadInvoiceTab(); },900);
+    }
   };
 }
 
@@ -3269,6 +3607,48 @@ async function payrollOpenPreview(userId){
   };
 }
 
+// PL連携対象科目のCRUD（設定タブ・ラウンド5指示書§6.1／設計書_広告費自動連携_§5・2026-09-01）
+async function renderPlFeeAccountsSection(){
+  const box=$("plfee-accounts-box");
+  if(!box) return;
+  box.innerHTML=`<div style="font-size:12px;color:var(--muted)">読み込み中…</div>`;
+  PL_FEE_TARGET_ACCOUNTS=null; // 設定タブを開くたびに最新を取り直す
+  const accounts=await plFeeTargetAccounts();
+  box.innerHTML=`
+    <div style="display:grid;grid-template-columns:1fr 1fr auto;gap:8px;align-items:end;margin-bottom:10px">
+      <div><label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">勘定科目名（MFと完全一致）</label>
+        <input id="plfee-acc-name" placeholder="例: 支払手数料"></div>
+      <div><label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">PL上での表示名（任意）</label>
+        <input id="plfee-acc-label" placeholder="省略時は科目名と同じ"></div>
+      <button class="hq-btn primary" id="plfee-acc-add">＋ 追加</button>
+    </div>
+    <div class="err" id="plfee-acc-msg" style="margin-bottom:8px"></div>
+    <div class="hq-tablewrap">
+      <table class="invoice-table">
+        <thead><tr><th>勘定科目名</th><th>PL表示名</th><th></th></tr></thead>
+        <tbody>${accounts.map(a=>`<tr>
+          <td><b>${esc(a.account_name)}</b></td>
+          <td>${esc(a.pl_label||a.account_name)}</td>
+          <td><button class="hq-btn" style="font-size:11px;padding:6px 9px" data-plfee-acc-del="${esc(a.id)}">削除</button></td>
+        </tr>`).join("")||'<tr><td colspan="3">登録されていません</td></tr>'}</tbody>
+      </table>
+    </div>`;
+  $("plfee-acc-add").onclick=async()=>{
+    const name=$("plfee-acc-name").value.trim();
+    const label=$("plfee-acc-label").value.trim();
+    const msg=$("plfee-acc-msg");
+    if(!name){ msg.textContent="勘定科目名を入力してください"; return; }
+    msg.className="err"; msg.textContent="追加中…";
+    const r=await plFeeCall("add_target_account",{account_name:name,pl_label:label});
+    if(!r.ok){ msg.textContent=r.body.error||"追加できませんでした"; return; }
+    await renderPlFeeAccountsSection();
+  };
+  document.querySelectorAll("[data-plfee-acc-del]").forEach(el=>el.onclick=async()=>{
+    if(!confirm("この科目をPL連携対象から外しますか？（過去に反映済みの記録は消えません）")) return;
+    await plFeeCall("remove_target_account",{id:el.dataset.plfeeAccDel});
+    await renderPlFeeAccountsSection();
+  });
+}
 async function renderSettingsTab(u){
   const r=await authed(`/rest/v1/invoice_intake_exclusion_rules?select=*&order=created_at.desc`);
   const rows=(r.ok&&Array.isArray(r.body))?r.body:[];
@@ -3314,8 +3694,14 @@ async function renderSettingsTab(u){
         <div class="meta" style="color:var(--muted);font-size:12px;margin-bottom:10px">請求書メールの「🧾 仕訳を作成」画面で選べる、自社専用の仕訳テンプレートです（マネーフォワード本体の仕訳辞書とは別の、この管理システム内だけの機能です）。ここで登録・編集・削除できます。</div>
         <div id="mft-box">読み込み中…</div>
       </div>
+      <div class="card" style="padding:16px;margin-top:14px">
+        <h3 style="font-size:14px;margin-bottom:6px">📊 PL連携対象科目（手数料等→PL自動反映）</h3>
+        <div class="meta" style="color:var(--muted);font-size:12px;margin-bottom:10px">ここに登録した勘定科目を借方に使って仕訳登録すると、請求書メール・アップロード請求書の画面に「📊 PLへ反映」パネルが自動で出るようになります（カード手数料・PayPay手数料など）。科目名はマネーフォワードの勘定科目名と完全に一致させてください。</div>
+        <div id="plfee-accounts-box">読み込み中…</div>
+      </div>
     </section>`;
   renderMftSection();
+  renderPlFeeAccountsSection();
   const RULE_PLACEHOLDER={subject_contains:"例: 応募",from_contains:"例: example.com",subject_exact:"例: ATMお預け入れのご確認",from_exact:"例: info@example.com"};
   $("rule-type").onchange=e=>{ $("rule-pattern").placeholder=RULE_PLACEHOLDER[e.target.value]||""; };
   $("rule-pattern").placeholder=RULE_PLACEHOLDER[$("rule-type").value]||"";

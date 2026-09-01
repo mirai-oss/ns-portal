@@ -319,8 +319,14 @@ Deno.serve(async (req: Request) => {
       const journalNumber = data?.number ?? data?.journal?.number ?? null;
 
       const db = svc();
+      // 借方に使った勘定科目名（PL連携対象科目かどうかの判定用メタ情報。フロントのアカウント一覧から
+      // 送ってもらう＝MF側への送信には使わない。ラウンド5指示書§6.1・手数料→PL連携）
+      const debitAccountNames: string[] = Array.isArray(body?.debit_account_names)
+        ? body.debit_account_names.filter((x: any) => typeof x === "string" && x)
+        : [];
       await db.from("invoices").update({
         mf_journal_id: journalId, mf_journal_number: journalNumber, mf_journal_created_at: new Date().toISOString(), mf_tenant_id: tenantId,
+        ...(debitAccountNames.length ? { mf_debit_accounts: debitAccountNames } : {}),
         ...(linkedHqStepId !== inv.linked_hq_step_id ? { linked_hq_step_id: linkedHqStepId } : {}), // 未保存の選択を反映
       }).eq("id", invoiceId);
       await db.from("mf_sync_logs").insert({ action: "journal_create", actor_type: "human", detail: { invoice_id: invoiceId, journal_id: journalId } });
@@ -425,10 +431,14 @@ Deno.serve(async (req: Request) => {
       const journalNumber = data?.number ?? data?.journal?.number ?? null;
 
       const db = svc();
+      const debitAccountNames: string[] = Array.isArray(body?.debit_account_names)
+        ? body.debit_account_names.filter((x: any) => typeof x === "string" && x)
+        : [];
       const { data: newInv, error: insErr } = await db.from("invoices").insert({
         email_id: null, linked_hq_step_id: linkedHqStepId, vendor_name: vendorName,
         amount: totalAmount, invoice_status: "paid",
         mf_journal_id: journalId, mf_journal_number: journalNumber, mf_journal_created_at: new Date().toISOString(), mf_tenant_id: tenantId,
+        ...(debitAccountNames.length ? { mf_debit_accounts: debitAccountNames } : {}),
       }).select("id").single();
       if (insErr) return json({ error: "マネーフォワードへの登録はできましたが記録の保存に失敗しました: " + insErr.message, journal_id: journalId, journal_number: journalNumber }, 500);
       await db.from("mf_sync_logs").insert({ action: "journal_create", actor_type: "human", detail: { invoice_id: newInv.id, journal_id: journalId, standalone: true } });
