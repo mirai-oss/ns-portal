@@ -301,6 +301,73 @@ Deno.serve(async (req)=>{
         ok: true
       });
     }
+    // ---------------- 2.8) 入社オンボーディング案内（B-18・2026-09-01）----------------
+    // 実装指示書_ラウンド5_2026-08-31.md §6.1「E-6＋B-18」。本部タスクボード（E-6が作成する
+    // 「入社登録（○○さん）」タスク）の工程4「LINEで登録案内を送る」ボタンから呼ばれる想定。
+    // 担当E実装（2026-09-01_hq_onboarding_task.sql）のhq_task_steps.action_payloadは
+    // {name, email}（user_idは持たない）なので、emailで対象ユーザーを引く（user_id指定にも対応）。
+    // push_userと違い、本文はこちら側で組み立てる（notify_join_resendの文面ロジックを、
+    // 管理者向け→本人向け（2人称）に書き換えたもの）。未連携の場合は400ではなく
+    // ok:false + fallback_textを返す（呼び出し側はこれを見て文面をコピー表示する想定）
+    if (body.action === "onboarding_invite") {
+      const puid = jwtUid(req);
+      if (!puid) return json({
+        ok: false,
+        error: "ログインが必要です"
+      }, 401);
+      const { data: caller } = await sb.from("users").select("role,is_active,is_master").eq("id", puid).single();
+      const allowed = !!caller?.is_active && (caller.is_master || [
+        "CEO",
+        "HQ",
+        "TEAM",
+        "TENCHO"
+      ].includes(caller.role));
+      if (!allowed) return json({
+        ok: false,
+        error: "権限がありません"
+      }, 403);
+      if (!token) return json({
+        ok: false,
+        error: "チャネルアクセストークンが未設定です"
+      }, 400);
+      const uid = String(body.user_id ?? "").trim();
+      const emailQ = String(body.email ?? "").trim();
+      let targetQuery = sb.from("users").select("id,name,role,line_user_id,email");
+      targetQuery = uid ? targetQuery.eq("id", uid) : targetQuery.eq("email", emailQ);
+      const { data: target } = await targetQuery.maybeSingle();
+      if (!target) return json({
+        ok: false,
+        error: "対象の従業員が見つかりません（メールアドレスがまだ本登録されていない可能性があります）"
+      }, 404);
+      const { data: prof } = await sb.from("employee_profiles").select("smaregi_staff_id").eq("user_id", target.id).maybeSingle();
+      const { data: tplRow } = await sb.from("app_secrets").select("value").eq("key", "smaregi_staff_url").maybeSingle();
+      const tpl = (tplRow?.value ?? "").trim();
+      const { data: usRows } = await sb.from("user_stores").select("stores(name)").eq("user_id", target.id);
+      const storeNames = (usRows ?? []).map((r) => r.stores?.name).filter(Boolean).join("・") || "所属未設定";
+      let text = `🐔 ${target.name}さん\n\nご入社ありがとうございます！勤怠・給与管理のため、スマレジ・タイムカードのご登録をお願いいたします。\n\n所属店舗: ${storeNames}`;
+      if (prof?.smaregi_staff_id) {
+        text += tpl ? `\n\n▼ こちらからご登録ください\n${tpl.replace("{ID}", prof.smaregi_staff_id)}` : `\n\n（従業員ID: ${prof.smaregi_staff_id}）`;
+      } else {
+        text += `\n\n※スマレジ側の登録がまだのため、準備ができ次第あらためてご案内します`;
+      }
+      text += `\n\nご不明な点があれば、本部までお気軽にご連絡ください。`;
+      if (!target.line_user_id) {
+        return json({
+          ok: false,
+          error: "この方はまだLINEが連携されていません",
+          fallback_text: text
+        }, 400);
+      }
+      const sent = await linePush(token, target.line_user_id, text);
+      if (!sent.ok) return json({
+        ok: false,
+        error: `LINEの応答: ${sent.status} ${sent.body}`,
+        fallback_text: text
+      }, 400);
+      return json({
+        ok: true
+      });
+    }
     // ---------------- 3) アプリからの操作（ログイン必須） ----------------
     const uid = jwtUid(req);
     if (!uid) return json({
