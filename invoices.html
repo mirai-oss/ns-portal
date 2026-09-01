@@ -1424,7 +1424,10 @@ function wireDetailActions(u){
   const kind=mail.mail_kind||"invoice";
   const isSales=kind==="sales";
   const isContract=kind==="contract";
-  let LINKED_HQ_STEP=SELECTED.invoice&&SELECTED.invoice.linked_step?{id:SELECTED.invoice.linked_step.id,title:SELECTED.invoice.linked_step.title,task:SELECTED.invoice.linked_step.task}:null;
+  // 2026-09-01追加: adcostInit等が参照する`invoice`もここで宣言しておく（同じ理由の再発防止。
+  // 宣言し忘れると「対象外・重要ボタン等の配線が一切実行されない」不具合になる＝今回のユーザー報告の原因）
+  const invoice=SELECTED.invoice;
+  let LINKED_HQ_STEP=invoice&&invoice.linked_step?{id:invoice.linked_step.id,title:invoice.linked_step.title,task:invoice.linked_step.task}:null;
   function renderHqLinkBox(){
     const box=$("hqlink-box");
     if(!box) return;
@@ -1643,12 +1646,14 @@ function wireDetailActions(u){
   // 手数料等→PL自動反映（ラウンド5指示書§6.1／設計書_広告費自動連携_§5・2026-09-01）
   // 実体は共通関数plfeeInit()（トップレベル・mfu=アップロード請求書側とも共用）。
   // 仕訳登録済み・借方にPL連携対象科目（設定タブで管理・初期値=支払手数料）が含まれる場合だけパネルを出す。
+  // 【2026-09-01緊急修正】reloadDetailはこの時点ではまだ宣言前（TDZ）のため遅延参照にした
+  // （直接参照するとReferenceErrorで以降の配線が一切実行されなくなる不具合になっていた＝ユーザー報告で発覚）
   if(!isSales&&invoice&&invoice.mf_journal_id){
     plfeeInit({
       boxId:"plfeebox", invoiceId:invoice.id, debitAccountNames:invoice.mf_debit_accounts||[],
       fallbackAmount:Number(invoice.amount)||0, deptBranches:MFJ_STATE.branches||[], departments:MFJ_STATE.departments||[],
       reflected: invoice.pl_fee_reflected_at?{account:invoice.pl_fee_account,yearMonth:invoice.pl_fee_year_month,allocations:invoice.pl_fee_allocations,reflectedAt:invoice.pl_fee_reflected_at,sheetSynced:!!invoice.pl_fee_sheet_synced_at}:null,
-      onDone:reloadDetail,
+      onDone:()=>reloadDetail(),
     });
   }
 
@@ -1780,9 +1785,11 @@ function wireDetailActions(u){
     await loadWaitingPaymentCount();
   };
   // C-8: ➕他の請求書セクションの配線（2026-09-01）
+  // 2026-09-01緊急修正: ここは`invoices`（複数形）ではなくSELECTED.invoicesを参照する必要があった
+  // （renderMailDetail()とwireDetailActions()のスコープ違い。上のinvoice単数形と同じ原因）
   if($("iv-extra-add")) $("iv-extra-add").onclick=()=>ivOpenExtraInvoiceModal(emailId,null);
   document.querySelectorAll("[data-iv-extra-edit]").forEach(el=>el.onclick=()=>{
-    const iv=(invoices||[]).find(x=>x.id===el.dataset.ivExtraEdit);
+    const iv=(SELECTED.invoices||[]).find(x=>x.id===el.dataset.ivExtraEdit);
     ivOpenExtraInvoiceModal(emailId,iv);
   });
 
