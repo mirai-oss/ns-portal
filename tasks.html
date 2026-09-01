@@ -78,6 +78,13 @@ textarea{resize:vertical}
    （この画面の絞り込みチップだけに限定。他画面の.chip.activeの見た目は変えない） */
 #corpchips .chip,#freqchips .chip{padding:8px 12px;font-size:14px}
 #corpchips .chip.active,#freqchips .chip.active{background:var(--ink);border-color:var(--ink)}
+/* 2026-09-01: 種別タブ（入社登録ほか）＝docs/設計書_不動産SK事業システムのUI見本に合わせ、
+   他の絞り込みチップより一回り大きい角丸ボックスにし、選択中は赤枠＋赤字にする（塗りつぶさない）。
+   件数バッジは右上に重ねる丸バッジ（送金タブの「急ぎN」・請求書タブの件数バッジと同じ位置） */
+#typechips{gap:14px;margin-bottom:0}
+#typechips .chip{position:relative;padding:16px 26px;font-size:15px;font-weight:700;border:2px solid var(--line);border-radius:12px;background:#fff;color:#222}
+#typechips .chip.active{background:#fff;color:var(--stall);border-color:var(--stall)}
+#typechips .chip .badge-dot{position:absolute;top:-10px;right:-10px;min-width:22px;height:22px;padding:0 6px;border-radius:999px;background:var(--stall);color:#fff;font-size:12px;font-weight:700;display:inline-flex;align-items:center;justify-content:center;box-shadow:0 0 0 2px #fff}
 /* プルダウン（担当者・依頼者・並び替え）はチップ列と混ぜず専用の行にまとめ、見た目も統一する */
 .board-selects{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
 .board-selects select{width:auto;padding:7px 12px;font-size:13px;border-radius:99px}
@@ -796,7 +803,7 @@ function renderBoard(u){
   </div>
   <div class="chiprow" id="typechips" style="margin-top:14px">
     <span class="chip ${!FILTER.type?'active':''}" data-type="">すべて</span>
-    <span class="chip ${FILTER.type==='onboarding'?'active':''}" data-type="onboarding">📋 入社登録${onboardingOpenCount()?` <span class="tag" style="background:var(--stall);color:#fff;border-color:var(--stall);border-radius:999px">${onboardingOpenCount()}</span>`:""}</span>
+    <span class="chip ${FILTER.type==='onboarding'?'active':''}" data-type="onboarding">📋 入社登録${onboardingOpenCount()?`<span class="badge-dot">${onboardingOpenCount()}</span>`:""}</span>
   </div>
   <div class="toprow" style="margin-top:10px">
     <div></div>
