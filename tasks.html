@@ -420,7 +420,7 @@ window.addEventListener("popstate",e=>{
 let TASKS=[];             // ボード表示範囲のタスク（工程埋め込み）
 let SEARCHQ="";
 let SEARCH_RESULTS=null;  // 検索中はこちらを表示
-let FILTER={corp:null,freq:null,assignee:null,creator:null,signal:null};
+let FILTER={corp:null,freq:null,assignee:null,creator:null,signal:null,type:null};
 let SORT_MODE=localStorage.getItem("hq_sort")||"due";  // due | created | stalled（このブラウザだけに効く。DB保存なし）
 const SORT_LABEL={due:"期限が近い順（既定）",created:"作成が新しい順",stalled:"停滞が長い順"};
 let BOARD_VIEW=localStorage.getItem("hq_boardview")||"kanban"; // kanban | list | calendar（B6・全面刷新Phase2でカレンダー追加・ブラウザだけに効く）
@@ -581,10 +581,16 @@ async function fetchTaskDetail(id){
 }
 
 /* ---------- ボード ---------- */
+// 2026-09-01: 種別タブ（入社登録）。docs/設計書_不動産SK事業システム_2026-09-01.md の
+// 「本部タスクに種別軸（入金/送金/請求書/入社登録）を追加する」案のうち、入社登録タブだけ先取りして実装
+// （送金/入金/請求書は§5の質問回答待ちのため未着手）。種別の判定はこの1関数に集約しておき、
+// SK設計確定後に他の種別を追加するときはここへ足す
+function isOnboardingTask(t){ return (t.title||"").indexOf("入社登録（")===0; }
 function applyFilters(list){
   return list.filter(t=>{
     if(FILTER.corp && t.corp!==FILTER.corp) return false;
     if(FILTER.freq && t.freq!==FILTER.freq) return false;
+    if(FILTER.type==="onboarding" && !isOnboardingTask(t)) return false;
     if(FILTER.assignee){
       const match=sortedSteps(t).some(s=>s.assignee_id===FILTER.assignee);
       if(!match) return false;
@@ -605,6 +611,10 @@ function summaryCounts(){
   base.forEach(t=>{ const s=computeSignal(t); if(s.overdue)overdue++; if(s.dueToday)today++; if(s.level==="stall")stall++; });
   const doneCount=TASKS.filter(t=>t.status==="done").length;
   return {overdue,today,stall,doneCount};
+}
+// 種別タブの赤バッジ用（現在のフィルタに関係なく、未完了の入社登録タスク数を出す＝KPIカードと同じ考え方）
+function onboardingOpenCount(){
+  return TASKS.filter(t=>t.status!=="done" && isOnboardingTask(t)).length;
 }
 function taskCardHtml(t){
   const sig=computeSignal(t);
@@ -784,6 +794,10 @@ function renderBoard(u){
       </select></span>
     </div>
   </div>
+  <div class="chiprow" id="typechips" style="margin-top:14px">
+    <span class="chip ${!FILTER.type?'active':''}" data-type="">すべて</span>
+    <span class="chip ${FILTER.type==='onboarding'?'active':''}" data-type="onboarding">📋 入社登録${onboardingOpenCount()?` <span class="tag" style="background:var(--stall);color:#fff;border-color:var(--stall);border-radius:999px">${onboardingOpenCount()}</span>`:""}</span>
+  </div>
   <div class="toprow" style="margin-top:10px">
     <div></div>
     <div>
@@ -823,6 +837,7 @@ function wireBoard(u){
   if($("mycwbtn"))$("mycwbtn").onclick=()=>openMyChatworkModal(u);
   document.querySelectorAll("[data-corp]").forEach(c=>c.onclick=()=>{FILTER.corp=c.dataset.corp||null;renderBoard(u);});
   document.querySelectorAll("[data-freq]").forEach(c=>c.onclick=()=>{FILTER.freq=c.dataset.freq||null;renderBoard(u);});
+  document.querySelectorAll("[data-type]").forEach(c=>c.onclick=()=>{FILTER.type=c.dataset.type||null;renderBoard(u);});
   $("assigneesel").onchange=e=>{FILTER.assignee=e.target.value||null;renderBoard(u);};
   $("creatorsel").onchange=e=>{FILTER.creator=e.target.value||null;renderBoard(u);};
   $("sortsel").onchange=e=>{SORT_MODE=e.target.value; localStorage.setItem("hq_sort",SORT_MODE); renderBoard(u);};
