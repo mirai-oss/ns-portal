@@ -6,6 +6,8 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
+**★★★★2026-09-01（担当Aスレッド）A-8拡張（設計書§5・科目汎用のPL自動計上）完了・A-10をキュー登録**: ラウンド5指示書§6.1の貼り付け文どおり着手。**A-8拡張**: `tori-dashboard`に新規action`writePlFee`（AD_COST_WRITE_TOKEN認証・担当Cの`pl-fee-reflect`Edge Functionから呼ばれる）を追加。カード手数料・PayPay手数料など任意の勘定科目でDB_PL（＋PL管理システム）へ自動計上し、精算対象店舗（`stores.seisan_target`）には`seisan-dashboard`の新規action`sd_apiAddExternalLine`を呼んで精算書の明細にも同じ内容を自動追加する。1回の呼び出し=1件の仕訳という増分呼び出しの性質上、月全体を洗い替える既存のPL自動連携群とは違い「この月×このメモ×この仕訳IDの行だけ」を店舗単位でupsertする方式にし、二重計上を防ぎつつ同じ科目・同じ月に複数の別々の仕訳が積み上がっても正しく合算されるようにした。**実装中に発覚した重要な食い違い**: 当初`writeAdCost`に`p.account`引数を足すだけの設計で組んだが、担当Cが既に本番デプロイ済みの`pl-fee-reflect`は`action:"writePlFee"`・`account_name`フィールドで呼ぶ契約になっていたため、実際の呼び出し方に合わせてaction名・フィールド名を修正（担当C側は無変更で連携できる状態）。実機テスト（テスト専用の店舗・科目名＋一時使い捨てaction、使用後削除）で新規追加・冪等更新（同じ仕訳IDの再送で行が増えない）・別仕訳の積み上げ（別IDなら別行で合算）・振込済み月での精算書側拒否（DB_PLは計上されるが精算書は確定済みのため拒否）をすべて確認、テストデータも削除してクリーン。本番デプロイ・push済み。**A-10**（店舗×月のPL目標＋配信レポートKPI月累計・アラート）はai-cockpitへ`TK-28`として登録済み（優先順は既存キューの後・次のタスク）。詳細は本日付エントリ「2026-09-01（担当Aスレッド）A-8拡張」参照。**注意（他セッションへ）**: このエントリを書く直前、`~/ns-portal`が同一マシン上の別セッションによってローカル未コミット編集ごと上書きされる事象が発生した（詳細は本エントリ末尾）。複数セッションが同じ作業ディレクトリを共有している場合、編集後は間を空けずすぐcommit/pushすること
+
 **★★★2026-09-01（担当Bスレッド・続き）応募者⇔従業員のLINE連携を一本化**: ユーザーから「応募者のLINE連携と入社後のLINE連携が別々になっている」との指摘。調査の結果、`applicants.line_user_id`（応募者フロー）と`users.line_user_id`（従業員フロー）は完全に独立した仕組みで、応募者としてLINE連携済みでも入社登録時に引き継がれず、逆にスマレジ既存→管理システムだけ新規登録する人（応募者レコードが無い人）はLINE連携する導線自体が登録画面に無かったことを確認。3点を修正: **①`register_via_invite`**（`supabase/2026-09-01_line_link_unify.sql`）に、招待が応募者(`invitations.applicant_id`)に紐づく場合は`applicants.line_user_id`/`line_linked_at`をそのまま新規`users`行へコピーする処理を追加（再連携不要に）。**②nippo登録完了フロー**（`index.html`）: 登録直後に`users.line_user_id`が未設定なら（＝①で引き継がれなかった＝応募者経由でない新規登録者）、ホーム画面の前に「💚 最後にLINE連携をお願いします」という専用画面（`lineJoinPromptView`）を挟むようにした。既存の合言葉連携（`user_issue_line_code`）を流用し、スキップも可能。**③入社案内LINEの送信**: `line_intake_user`（応募者経由でない人が後からLINEの合言葉を送って連携した瞬間に呼ばれるRPC）が、まだ入社案内を送っていなければ（`employee_profiles.join_welcome_sent_at`で判定）その場でwelcome_textを返すよう修正し、`line-webhook`のwebhookループ側でそれをプッシュ送信するよう追加。また`join_done`アクション（応募者経由の入社完了合図）も、応募者レコードが無い場合に「応募者が見つかりません」という誤解を招くエラーを返していたのを、対象ユーザーがその時点でLINE連携済みなら即送信・未連携ならスキップ（後で③のパスで送られる）という扱いに修正。SQL適用済み・Edge Functionデプロイ済み（`npx supabase functions deploy line-webhook`）。nippo側は構文チェック（`node --check`）のみ・実機E2E未実施（新規登録者を用意しての本番動作確認は次回以降）。
 
 **★★★2026-09-01（担当C実行スレッド・続き6）C-8: 1メールに複数請求書がある場合の対応を実装（C-7・§5とあわせて司令塔指示3件すべて完了）**: 前エントリで持ち越したC-8に着手。既存の単一請求書フロー（メール詳細画面の「請求書情報」フォーム＝1件目）は一切変更せず、2件目以降を「➕他の請求書」という新設セクション＋専用モーダルで追加登録する**加算方式**で実装（コア処理画面＝会計処理の一番使われる画面を大きく作り替えるリスクを避けるため。`company/rules.md`の「勝手に大きな変更をしない」方針に沿った判断）。①`invoice-ocr`のAI抽出結果を単数`fields`から`invoices`配列に変更（添付内に複数の請求書が見つかった場合は全件返す。同じ請求書の別ページは1件にまとめるよう指示）②`openMailDetail`の取得を`.limit(1)`から全件取得に変更（`SELECTED.invoice`は1件目のエイリアスとして維持し既存コードとの後方互換を保つ）③OCR検出の2件目以降は人が確認して「＋追加」を押した分だけ下書き保存（AI=下書き提案・人=確定の原則を維持）④追加請求書は借方・貸方1科目ずつの簡易仕訳登録に対応（複数科目にまたがる場合はメール本体側の仕訳作成機能を使う運用。効率と安全性のバランスを取った初版のスコープ）。**請求書一覧タブは調査の結果、元々`invoices`テーブルを直接クエリしており1メール複数請求書に対応済みだったため変更不要だった**（`e.invoices[0]`の制限は入金明細一覧＝別機能にのみ存在し、C-8のスコープ外）。本番デプロイ・push済み（コミット[568144c](https://github.com/mirai-oss/ns-portal/commit/568144c)）。構文チェック済み・実機E2E未実施。詳細は本日付エントリ参照
@@ -456,6 +458,48 @@
 **★追記（2026-08-28・担当D実行スレッド）accounting_chatwork実機テスト送信成功・担当Bが配信グループ管理UIを改善**:
 - `tori-dashboard/.github/workflows/lark-report.yml`を`only_group=accounting_chatwork`指定で手動実行し、他グループ（group1〜3）へは送らずこの新チャンネルだけをテスト。**結果: 成功12件/失敗0件**（全12店舗の日報がChatworkルーム446080909へ実送信されたことを確認）。`CHATWORK_API_TOKEN`・`BQ_LOAD_TOKEN`とも既存のGitHub Secretsで動作（追加登録不要）
 - 担当Bが「配信グループ管理」UI改善に対応済み（[nippo commit 1f252ee](https://github.com/mirai-oss/nippo/commit/1f252ee)）: 各グループカードに対象店舗一覧・件数・重複警告を表示するようになった
+
+## 2026-09-01（担当Aスレッド）A-8拡張：勘定科目汎用のPL自動計上（設計書§5）
+
+ラウンド5指示書§6.1の貼り付け文「A-10を既存キューの後に追加・A-8は設計書§5のとおり科目汎用（手数料対応）で実装」を受けて着手。
+
+### 設計確認
+`設計書_広告費自動連携と精算書PL科目連携_2026-08-31.md`§5を読み、要件を確認:
+1. カード手数料・PayPay手数料などMF会計仕訳で確定した経費を店舗別にPLへ自動反映
+2. 精算対象店舗（`stores.seisan_target`）は精算書にも自動反映
+3. 二重計上ガード（同じ仕訳からは1回だけ）
+
+既存の`syncSeisanCategoriesToPl`（精算書→PLの逆方向）・`syncSpotLaborToPl_`のコードを読み、「対象月×このメモの行だけ差し替え」というPL自動連携の共通パターンと、`plSeisanGuessCat_`（勘定科目名→区分S/F/L/A/R/O/X）を再利用できることを確認。
+
+### 実装
+1. **tori-dashboard**: `writeAccountCostToPl_(p)`を新設。DB_PL・PL管理システム（✍販管費入力）へ「自動｜◯◯（科目名）」行を店舗単位でupsert。既存の月次一括差し替え方式と違い、この処理は「invoices側が仕訳を処理するたびに都度呼ぶ」増分呼び出しのため、月全体を洗い替えず「この月×このメモ×このsource_invoice_idの行だけ」を対象にした（他の仕訳の行に一切触れない・同じ科目で複数の別仕訳が積み上がっても正しく合算される設計）
+2. **seisan-dashboard**: `sd_apiAddExternalLine(token, store, monthKey, line)`を新設。PL_SYNC_TOKEN認証（`sd_apiCategorizedLines`と同じ）で、ログイン不要のサーバー間呼び出しから精算書明細を追加/更新できるようにした。`sourceKey`（noteに保存）で冪等・振込済み（ロック中）の月は`sd_requireUnlocked_`と同じ考え方で拒否
+3. tori-dashboard側から、精算対象店舗（Supabase`store_directory_v`の`seisan_target`）については`sd_apiAddExternalLine`を自動で呼ぶよう連携
+
+### 実装中に発覚した重要な食い違い（設計とのズレ）
+当初「`writeAdCost`に`p.account`が来たら分岐する」という設計で実装したが、`ns-portal/supabase/functions/pl-fee-reflect/index.ts`（担当Cが同日中に既に本番デプロイ済み）を確認したところ、実際の呼び出しは**`action:"writePlFee"`という別アクション名・`account_name`というフィールド名**だった（`account`ではない）。担当C側は既に本番稼働中で変更できないため、こちらの実装をその契約に合わせて修正（`writePlFee(p)`という新規エントリ関数を追加してdispatcherに登録、フィールド名も`account_name`優先で読むよう修正）。**教訓**: 相手側の実装が既に存在する場合は、設計書の記述だけでなく実際のコード（Edge Function等）を必ず確認してから実装すること。
+
+### 検証
+一時的な使い捨てaction（`writePlFeeTestOnce_`・`cleanupPlFeeTestOnce_`・`cleanupExternalLineTestOnce_`、いずれもonceKey保護）を追加し、テスト専用の店舗（じんべぇ 川崎）・明白なテスト科目名（`TEST_FEE_ACCOUNT`）・未来の月（2026-12、振込済みロックの影響を受けない）で実際に呼び出して確認:
+- 新規追加: DB_PL・PL管理システム・精算書すべてに反映、BQ`stg_pl`も件数が1件増加
+- 冪等更新（同じsource_invoice_idで再送）: 新しい行が増えず、既存行の金額だけ更新（BQ件数は変化なし）
+- 別仕訳の積み上げ（同じ店舗・科目・月で別のsource_invoice_id）: 新しい行として追加（BQ件数が1件増加）＝正しく合算される設計を確認
+- 振込済み月（2026-07・じんべぇ川崎は確定済み）: DB_PLへの計上は成功するが、精算書側は`sd_apiAddExternalLine`が`locked:true`で正しく拒否することを確認
+
+すべて確認後、一時action3つで作ったテストデータ（DB_PL 3行・PL管理システム3行・精算書2行）を削除し、BQ再同期で元の行数（508件）に戻ったことを確認。一時action3つとも削除・クリーンな状態で再デプロイ済み。
+
+### 本番デプロイ
+- seisan-dashboard: GASデプロイ`AKfycbzwYN9uSEtcJHSKSVQCoQOrllhO7G6gR-E4dvP-V4o_VdGXr9VQx2mbYYPNyNEFSQCiKg` @55〜@57（テスト用含む・最終@57がクリーンな状態）、コミット`18b34ef`・push済み
+- tori-dashboard: GASデプロイ`AKfycbz9rd37EZa6X8WRMVEBrXobN8DbYWkHRlhFNYU5rd1UZ0V8j0-6shMQjEeoi4HDWZ0B` @181〜@185（テスト用含む・最終@185がクリーンな状態）、コミット`cf32a0b`・push済み
+
+### 途中経過（作業中に発生した別件）
+1. clasp（GAS操作ツール）の認証が`invalid_rapt`エラーで切れており、デプロイ前にユーザーへ`clasp login`での再ログインを依頼・完了してもらった。
+2. **本エントリを`ns-portal/WORKLOG.md`へ書き込もうとした際、ローカル未コミットの編集が消失する事象が発生**（`git add`→`git commit`が「変更なし」を返し、`git diff HEAD`も差分ゼロ＝別セッションの`git pull`等によって上書きされたとみられる）。`~/ns-portal`は複数セッションが同一マシン上で共有している可能性が高く、編集直後すぐにcommit/pushしないとこの種の消失が起きうることが分かった。本エントリは再度書き直して即座にcommit/pushしている。
+
+### 残課題
+- 手数料Q1（PLへ自動反映したい科目の最終リスト）はユーザー回答待ちのまま（暫定値「支払手数料」で担当C側が`mf_pl_fee_accounts`テーブルを用意済み・設定タブでいつでも追加/削除可）。実装自体は科目名を問わず汎用に動くため、Q1の回答を待たずに先行運用できる
+- 実機E2E（担当Cのinvoices画面から実際に📊PLへ反映ボタンを押して確認）は未実施。ユーザー側での確認をお願いする必要あり
+- ai-cockpit`TK-29`をdoneに更新済み。次は`TK-28`（A-10）に着手予定
 
 ## 2026-08-31（担当Aスレッド）A-7: 精算ダッシュボードUI刷新
 
