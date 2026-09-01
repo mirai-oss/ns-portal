@@ -1099,8 +1099,9 @@ function fileToBase64(file){
 /* 2026-09-01(E-6): 入社登録完了→本部タスク自動作成（実装指示書_ラウンド5§6.1）の受け皿。
    nippo側フック（B-18）がhq_create_onboarding_task()を呼んで作った工程4（action_kind=
    'onboarding_line_guide'）だけに、LINE案内を送るボタンを表示する。実際のLINE送信は
-   担当Bが用意するEdge Function「onboarding-line-guide」を呼ぶだけ（契約はWORKLOG参照）。
-   未連携者向けの「文言をコピー」フォールバックはEdge Function側の応答(copy_text)に従う */
+   担当Bが実装済みのline-webhookのonboarding_inviteアクションを呼ぶ（新規Edge Function
+   ではなく既存のLINE基盤を流用。コミット10b7759・契約はWORKLOG参照）。未連携者向けの
+   「文言をコピー」フォールバックは応答のfallback_textに従う */
 function onboardingLineSectionHtml(s,canTouch){
   if(s.action_kind!=="onboarding_line_guide") return "";
   const payload=s.action_payload||{};
@@ -2051,9 +2052,10 @@ function wireDetail(t,u){
   }
   document.querySelectorAll("[data-mfjconfirm]").forEach(btn=>{ btn.onclick=(e)=>{ e.stopPropagation(); hqmfjConfirm(t,u); }; });
   document.querySelectorAll("[data-mfjsubmit]").forEach(btn=>{ btn.onclick=(e)=>{ e.stopPropagation(); btn.disabled=true; hqmfjSubmit(t,u,HQMFJ_STATE.stepId); }; });
-  /* 2026-09-01(E-6): 入社登録のLINE案内ボタン。実際の送信は担当Bの
-     onboarding-line-guide Edge Function任せ（未実装の間は失敗するのが正常＝
-     担当C連携時と同じ「先に呼び側だけ作っておく」パターン） */
+  /* 2026-09-01(E-6): 入社登録のLINE案内ボタン。担当Bが実装済みのB-18（line-webhookの
+     onboarding_inviteアクション。コミット10b7759）を呼ぶ。契約はWORKLOGで担当Bが確定・
+     報告済み: {ok:true}=送信成功／{ok:false,fallback_text:...}=LINE未連携等で送れない
+     （文言をコピー表示）／{ok:false,error:...}=それ以外の失敗。emailで対象者を検索する */
   document.querySelectorAll("[data-onblinesend]").forEach(btn=>{
     btn.onclick=async(e)=>{
       e.stopPropagation();
@@ -2064,16 +2066,17 @@ function wireDetail(t,u){
       btn.disabled=true; if(msg){ msg.className="err"; msg.textContent="送信中…"; }
       try{
         const s2=sess.get();
-        const r=await fetch(SUPA_URL+"/functions/v1/onboarding-line-guide",{method:"POST",headers:{"Content-Type":"application/json","apikey":SUPA_KEY,"Authorization":"Bearer "+(s2?s2.at:"")},body:JSON.stringify({task_id:t.id,step_id:sid,name:payload.name||"",email:payload.email||""})});
+        const r=await fetch(SUPA_URL+"/functions/v1/line-webhook",{method:"POST",headers:{"Content-Type":"application/json","apikey":SUPA_KEY,"Authorization":"Bearer "+(s2?s2.at:"")},body:JSON.stringify({action:"onboarding_invite",email:payload.email||""})});
         const j=await r.json().catch(()=>({}));
-        if(!r.ok||j.error){ if(msg){ msg.className="err"; msg.textContent=j.error||"送信できませんでした"; } btn.disabled=false; return; }
-        if(j.sent){
+        if(j.ok){
           if(msg){ msg.className="err msg-ok"; msg.textContent="LINEで登録案内を送信しました"; }
           await logActivity(t.id,"comment","LINEで入社登録案内を送信",sid);
-        } else if(j.copy_text){
-          if(msg){ msg.className="err"; msg.textContent="LINE未連携のため、下の文言をコピーして手動で送ってください"; }
+        } else if(j.fallback_text){
+          if(msg){ msg.className="err"; msg.textContent=(j.error?j.error+"。":"")+"下の文言をコピーして手動で送ってください"; }
           const wrap=$("onbline-copywrap-"+sid), ta=$("onbline-copytext-"+sid);
-          if(wrap&&ta){ wrap.style.display="block"; ta.value=j.copy_text; }
+          if(wrap&&ta){ wrap.style.display="block"; ta.value=j.fallback_text; }
+        } else {
+          if(msg){ msg.className="err"; msg.textContent=j.error||"送信できませんでした"; }
         }
         btn.disabled=false;
       }catch(err){ if(msg){ msg.className="err"; msg.textContent="送信中にエラーが発生しました"; } btn.disabled=false; }
