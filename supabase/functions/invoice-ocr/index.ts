@@ -54,23 +54,40 @@ function bytesToBase64(bytes: Uint8Array): string {
 // mail_kind別のツール定義（フィールド名は共通・説明文だけ意味を切り替える）
 function toolFor(kind: string) {
   const isSales = kind === "sales";
+  // C-8（ラウンド5指示書§6.1・2026-09-01）: 1メールの添付に複数の請求書（または入金明細）が
+  // 含まれる場合があるため、1件ずつの配列で返す。同じ請求書の別ページ（例:表紙+明細の2枚）は
+  // 1件にまとめ、実際に別々の取引・別々の請求書だと判断できるものだけを別項目にするよう指示する
+  const itemSchema = {
+    type: "object",
+    properties: {
+      vendor_name: { type: ["string", "null"], description: isSales ? "入金元（送金してくる側）の会社名・屋号" : "請求元（発行元）の会社名・屋号" },
+      invoice_number: { type: ["string", "null"], description: isSales ? "明細番号・管理番号（無ければnull）" : "請求書番号・伝票番号" },
+      amount: { type: ["number", "null"], description: isSales ? "入金額（送金額）。税込の金額を円単位の整数で（カンマ・円記号は含めない）" : "請求金額。税込の合計金額を円単位の整数で（カンマ・円記号は含めない）" },
+      due_date: { type: ["string", "null"], description: isSales ? "入金予定日・送金予定日。YYYY-MM-DD形式（西暦・ゼロ埋め）" : "支払期限。YYYY-MM-DD形式（西暦・ゼロ埋め）" },
+      addressee_company: { type: ["string", "null"], description: "宛先・宛名として書かれている会社名（「〇〇御中」「〇〇様」の〇〇部分。請求元/入金元とは別の、受け取る側＝自社の名前）。読み取れなければnull" },
+      source_hint: { type: ["string", "null"], description: "この請求書がどの添付ファイル（ファイル名）由来かの手がかり。分かれば記入" },
+      note: { type: ["string", "null"], description: "この1件について不確実な点や補足があれば日本語で短く。なければnull" },
+    },
+    required: [],
+  };
   return {
     name: "extract_invoice_fields",
     description: isSales
-      ? "添付から読み取った入金・送金情報を返す。読み取れない項目はnullにする。"
-      : "添付から読み取った請求書情報を返す。読み取れない項目はnullにする。",
+      ? "添付から読み取った入金・送金情報を、1件ごとの配列で返す。読み取れない項目はnullにする。"
+      : "添付から読み取った請求書情報を、1件ごとの配列で返す。読み取れない項目はnullにする。",
     input_schema: {
       type: "object",
       properties: {
-        is_invoice: { type: "boolean", description: isSales ? "添付の中に実際の入金明細・送金明細と判断できるものがあったか" : "添付の中に実際の請求書と判断できるものがあったか" },
-        vendor_name: { type: ["string", "null"], description: isSales ? "入金元（送金してくる側）の会社名・屋号" : "請求元（発行元）の会社名・屋号" },
-        invoice_number: { type: ["string", "null"], description: isSales ? "明細番号・管理番号（無ければnull）" : "請求書番号・伝票番号" },
-        amount: { type: ["number", "null"], description: isSales ? "入金額（送金額）。税込の金額を円単位の整数で（カンマ・円記号は含めない）" : "請求金額。税込の合計金額を円単位の整数で（カンマ・円記号は含めない）" },
-        due_date: { type: ["string", "null"], description: isSales ? "入金予定日・送金予定日。YYYY-MM-DD形式（西暦・ゼロ埋め）" : "支払期限。YYYY-MM-DD形式（西暦・ゼロ埋め）" },
-        addressee_company: { type: ["string", "null"], description: "宛先・宛名として書かれている会社名（「〇〇御中」「〇〇様」の〇〇部分。請求元/入金元とは別の、受け取る側＝自社の名前）。読み取れなければnull" },
-        note: { type: ["string", "null"], description: "抽出結果について不確実な点や補足があれば日本語で短く。なければnull" },
+        is_invoice: { type: "boolean", description: isSales ? "添付の中に実際の入金明細・送金明細と判断できるものが1件以上あったか" : "添付の中に実際の請求書と判断できるものが1件以上あったか" },
+        invoices: {
+          type: "array",
+          description: isSales
+            ? "見つかった入金・送金明細のリスト（1件ずつ）。同じ明細の別ページ（表紙+内訳等）は1件にまとめ、実際に別々の入金・送金だと判断できるものだけを別項目にする"
+            : "見つかった請求書のリスト（1件ずつ）。同じ請求書の別ページ（表紙+明細等）は1件にまとめ、実際に別々の請求書だと判断できるものだけを別項目にする",
+          items: itemSchema,
+        },
       },
-      required: ["is_invoice"],
+      required: ["is_invoice", "invoices"],
     },
   };
 }
@@ -114,13 +131,13 @@ Deno.serve(async (req: Request) => {
   }).slice(0, MAX_ATTACHMENTS);
 
   if (!candidates.length) {
-    return json({ success: true, fields: { is_invoice: false, vendor_name: null, invoice_number: null, amount: null, due_date: null, note: "PDF・画像の添付が見つかりませんでした" } });
+    return json({ success: true, invoices: [], note: "PDF・画像の添付が見つかりませんでした" });
   }
 
   const content: any[] = [
     { type: "text", text: isSales
-      ? `件名: ${emailRow.subject ?? "(件名なし)"}\n添付ファイルから入金・送金明細の情報を読み取ってください。複数ある場合は実際の入金明細らしきものを優先してください。`
-      : `件名: ${emailRow.subject ?? "(件名なし)"}\n添付ファイルから請求書情報を読み取ってください。複数ある場合は実際の請求書らしきものを優先してください。` },
+      ? `件名: ${emailRow.subject ?? "(件名なし)"}\n添付ファイルから入金・送金明細の情報を読み取ってください。添付の中に複数件の入金・送金明細（別々の取引）が含まれる場合は、それぞれ別項目として全件返してください（同じ明細の別ページは1件にまとめる）。`
+      : `件名: ${emailRow.subject ?? "(件名なし)"}\n添付ファイルから請求書情報を読み取ってください。添付の中に複数件の請求書（別々の取引先・別々の請求書番号等）が含まれる場合は、それぞれ別項目として全件返してください（同じ請求書の別ページ=表紙+明細等は1件にまとめる）。` },
   ];
   for (const a of candidates) {
     const { data: fileData, error: dlErr } = await db.storage.from(BUCKET).download(a.storage_path);
@@ -168,16 +185,17 @@ Deno.serve(async (req: Request) => {
   const aiJson: any = await aiRes.json();
   const toolBlock = (aiJson.content ?? []).find((c: any) => c.type === "tool_use" && c.name === "extract_invoice_fields");
   if (!toolBlock) return json({ error: "AIの応答を解釈できませんでした" }, 502);
-  const fields = toolBlock.input ?? {};
+  const result = toolBlock.input ?? {};
+  const invoices: any[] = result.is_invoice && Array.isArray(result.invoices) ? result.invoices : [];
 
   await db.from("invoice_audit_logs").insert({
     entity_type: "invoice_email",
     entity_id: emailId,
     action: "ocr_extract",
     actor_type: "ai",
-    new_value: fields,
-    note: `AI自動読み取り（${isSales ? "入金明細" : "請求書"}・対象添付${candidates.length}件）`,
+    new_value: result,
+    note: `AI自動読み取り（${isSales ? "入金明細" : "請求書"}・対象添付${candidates.length}件・検出${invoices.length}件）`,
   });
 
-  return json({ success: true, fields });
+  return json({ success: true, invoices });
 });

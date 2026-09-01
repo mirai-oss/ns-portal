@@ -20,9 +20,11 @@
 //   - "create_standalone": メールに紐付かない請求書（本部タスクから直接アップロードした写真等・
 //                 会計タブの「アップロード請求書」単独利用の両方）の仕訳登録。
 //                 body: {tenant_id, linked_hq_step_id(任意・2026-08-31から必須ではない), vendor_name,
-//                 branches, transaction_date, remark, voucher_files:[{file_name,file_data(base64)}]}。
-//                 invoicesに新規行(email_id=null)を作成し、通常のcreateと同じくMFへ仕訳登録→証憑添付。
-//                 linked_hq_step_idを渡した場合のみ、その本部タスクの工程も自動完了する
+//                 branches, transaction_date, remark, voucher_files:[{file_name,file_data(base64)}],
+//                 email_id(任意・2026-09-01のC-8から。1メールに複数請求書がある場合、2件目以降を
+//                 このactionで登録しつつ元のメールにも紐付けたいときに渡す)}。
+//                 invoicesに新規行(email_idは指定が無ければnull)を作成し、通常のcreateと同じく
+//                 MFへ仕訳登録→証憑添付。linked_hq_step_idを渡した場合のみ、その本部タスクの工程も自動完了する
 //
 // 複数事業者対応（2026-08-27）: accounts/suggest/list_journals/createはbody.tenant_idで
 // どの事業者（有限会社トーホーエージェンシー='default'、株式会社N-Style='nstyle'等）かを指定できる。
@@ -410,6 +412,15 @@ Deno.serve(async (req: Request) => {
         if (stepErr) return json({ error: "確認に失敗しました: " + stepErr.message }, 500);
         if (!step) return json({ error: "対象の工程が見つからないか権限がありません" }, 403);
       }
+      // C-8（ラウンド5指示書§6.1・2026-09-01）: 1メールに複数請求書がある場合、2件目以降を
+      // このactionで登録できるよう、任意でemail_idを受け取れるようにする（省略時は従来どおりnull=
+      // メールに紐付かない単独請求書）。渡された場合は呼び出し元がそのメールを見れるか確認する
+      const linkedEmailId: string | null = body?.email_id || null;
+      if (linkedEmailId) {
+        const { data: em, error: emErr } = await uc.from("invoice_emails").select("id").eq("id", linkedEmailId).maybeSingle();
+        if (emErr) return json({ error: "確認に失敗しました: " + emErr.message }, 500);
+        if (!em) return json({ error: "対象のメールが見つからないか権限がありません" }, 403);
+      }
 
       const built = buildFlexibleBranches(rawBranches, defaultRemark, vendorName || "");
       if (!built.ok) return json({ error: built.error }, 400);
@@ -435,7 +446,7 @@ Deno.serve(async (req: Request) => {
         ? body.debit_account_names.filter((x: any) => typeof x === "string" && x)
         : [];
       const { data: newInv, error: insErr } = await db.from("invoices").insert({
-        email_id: null, linked_hq_step_id: linkedHqStepId, vendor_name: vendorName,
+        email_id: linkedEmailId, linked_hq_step_id: linkedHqStepId, vendor_name: vendorName,
         amount: totalAmount, invoice_status: "paid",
         mf_journal_id: journalId, mf_journal_number: journalNumber, mf_journal_created_at: new Date().toISOString(), mf_tenant_id: tenantId,
         ...(debitAccountNames.length ? { mf_debit_accounts: debitAccountNames } : {}),
