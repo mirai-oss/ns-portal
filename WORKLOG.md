@@ -6,6 +6,13 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
+**★★★★★★2026-09-02（レーンPスレッド・続き）P-0a・P-2a 本番SQL実行＋デプロイ完了（ユーザー承認済み・レーンP代理実行）。P-0aは稼働開始直後から実データ着弾を確認**: 下のエントリのコード・SQLに対し、ユーザーから「代理でやってもらえるなら代理で」と承認をもらい実行した。
+- `supabase/2026-09-02_kd_perf_log.sql`を`npx supabase db query --linked -f`で本番実行→`kd_perf_log`テーブル作成を確認
+- `keiei-api-perflog`・`keiei-api-reservation`とも`npx supabase functions deploy --no-verify-jwt --project-ref uuvsxzhpxtghojoubjcc`でデプロイ完了（`keiei-api-reservation`は1回目だけ環境側の許可待ちで弾かれ、リトライで成功）
+- **動作確認**: `keiei-api-perflog`へ使い捨てのテストペイロード（`app:'test-verify'`）を送信→`kd_perf_log`に着弾を確認→**削除して0件に戻した**（本番データを直接テストに使わない鉄則どおり）。`keiei-api-reservation`は無認証アクセスに`401 ログインが必要です`を返すことを確認（権限チェックが機能）
+- **🔥重要な発見（テスト送信の直前に、app.js側の本番稼働から既に4件着弾していた）**: デプロイ直後の実データで、`bqGetReservation`（予約タブ・GAS経由の現行実装）が**128秒・145秒・57秒**かかった上に**すべて`ok:false`（失敗）**だったことを確認。「取得エラー」が体感の思い過ごしではなく実測で裏付けられ、P-2a（Supabase直読み化）の必要性がデータで証明された形。この4件はP-0bの本格レポート（2〜3日分溜まってから）の対象として残してある
+- **残作業**: cron-job.orgへの日次workflow登録（外部サービスの認証情報が必要なためユーザー作業のまま。手順は下のエントリに記載）。A担当は`keiei-api-reservation`・`keiei-api-perflog`とも本番稼働中なので、予約タブ差し替え作業（設計書§9の新旧突合〜切替）にいつでも着手可能。ai-cockpit `TK-49`/`TK-50`をdoneに更新予定
+
 **★★★★★★2026-09-02（レーンPスレッド）P-0a・P-2a実装完了（コード＋SQL＋workflow。本番SQL実行/デプロイはユーザー承認待ち）→P-0bは着手保留（データ蓄積待ち）**: 貼り付け文どおり`実装指示書_脱GAS移行_Phase0-1_2026-09-02.md`§0（縄張り）§1のP-0a→P-2a→P-0bの順で着手。**tori-dashboardのapp.js・GASは一切変更していない**（読むだけ・調査のみ）。ai-cockpit `TK-49`/`TK-50`にstart/approval-request送信済み。
 
 - **P-0a（計測の受け皿）**: 新規SQL[`supabase/2026-09-02_kd_perf_log.sql`](https://github.com/mirai-oss/ns-portal/blob/main/supabase/2026-09-02_kd_perf_log.sql)（`kd_perf_log`テーブル。RLS有効・ポリシー無し=service_role専用）＋新規Edge Function[`keiei-api-perflog`](https://github.com/mirai-oss/ns-portal/tree/main/supabase/functions/keiei-api-perflog)を実装。**app.js側が既に実装済みのペイロード（`app.js:1487 logApiPerf_()`＝`{app,action,ms,ok,errType,t}`をnavigator.sendBeaconで`?apikey=`付きURLへ送信）にそのまま合わせた**（app.js/GASの変更は不要・現状の「受け皿未完成で黙って失敗」から「記録される」に切り替わるだけ）。無認証ingest（レート制限=同一IP10秒間40件まで）＋`op:'notify'`（前日分の遅い/失敗actionトップ10をLarkへ配信。app_secrets.`lark_webhook_url`=D-3/D-4と同じWebhookを流用）＋`op:'cleanup'`（14日超を削除。いずれもservice_role限定）の3系統。日次実行用に[`​.github/workflows/keiei-perflog-daily.yml`](https://github.com/mirai-oss/ns-portal/blob/main/.github/workflows/keiei-perflog-daily.yml)も追加（api-cost-report-sync.ymlと同じ「外部cron-job.orgからworkflow_dispatch」方式・09:10 JST目安）。**⚠️中山さんへの作業依頼（手動・リンク付き）**:
