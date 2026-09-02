@@ -6,6 +6,12 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
+**★★★2026-09-02（担当Aスレッド）TK-62完了: 精算ダッシュボードのpostMessage化＋キャッシュ適用（W2-A）**: `設計書_表示集計層kdと高速化実行計画_2026-09-02.md`§10.1 W2。tori-dashboard(app.js)のF-3（embed/tab/postMessage）と全く同じパターンをseisan-dashboardにも実装:
+- **seisan-dashboard/index.html**: `?embed=1`で自画面の見出しを非表示、`?view=`（check/corp/annual/input/settings）でログイン後に開く画面を直接指定。`window.addEventListener('message')`で`{type:'nsPortalSetTab',tab:'corp'}`を受け取りiframeを作り直さず`showView()`で切替（オリジンは`https://mirai-oss.github.io`限定）。4箇所あったログイン成功処理を`enterApp_()`に統一。コミット[2d53008](https://github.com/mirai-oss/seisan-dashboard/commit/2d53008)
+- **ns-portal/portal.html**: 「精算ダッシュボード」を単一項目（SYS_ITEMS）から「精算管理」開閉グループ（店舗チェック／法人別・振込／年間推移の3項目・GROUPS）へ変更し、経営管理と同じ高速切替（`FAST_SWITCH_SYSKEYS`に`seisan`追加）を有効化。可視性（HQ/CEOのみ）は既存の`SYS_ROLES.seisan`をそのまま踏襲・変更なし。コミット[9413bef](https://github.com/mirai-oss/ns-portal/commit/9413bef)
+- **効果**: 精算管理グループ内でのタブ切替はiframeを作り直さなくなったため、既存の`dashCache`（月別キャッシュ・cache-first+裏更新・前後月先読み）が画面間の行き来をまたいで生き続ける。再訪問時も瞬時に表示される
+- 構文チェック済み・GitHub Pagesデプロイ確認済み。**実機E2E（ns-portal経由での実際の切替動作）は未実施**——HQ/CEO権限アカウントでの実機確認をお願いしたい
+
 **★★★2026-09-02（担当D実行スレッド）D-check完了確認＋kd_unresolved_names連携＋見張り番拡張＋運用監視説明書を作成**
 
 `実装指示書_脱GAS移行_Phase0-1_2026-09-02.md`①②の続き。`設計書_表示集計層kdと高速化実行計画_2026-09-02.md`§5・§10.2-5対応。
