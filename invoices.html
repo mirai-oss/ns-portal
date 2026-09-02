@@ -3423,13 +3423,24 @@ async function payrollDeletePdf(userId,yearMonth){
   return r.ok;
 }
 // PDFファイル名から従業員を推定（氏名の空白除去・部分一致。完全な自動判定はせず、必ず人が確認・修正できる形で使う）
+// PDFファイル名から従業員を推定（2026-09-02: ユーザー報告「スペースが入ったりしていて完全一致しない
+// と推定されない」に対応し2段階に強化）。①区切り文字（半角/全角スペースに加えハイフン・アンダー
+// スコア・中黒・ドットも除去）を取り除いた上での部分一致②それでも見つからなければ、氏名を姓・名に
+// 分割し、それぞれの部分が（区切り文字の有無を問わず）ファイル名に全部含まれていれば一致とみなす
+// （姓名の間に別の文字が挟まっている・順序が姓名逆等のケースに対応）
 function payrollGuessEmployeeByFilename(filename){
-  const norm=s=>String(s||"").replace(/[\s　]/g,"");
-  const n=norm(filename);
-  return (PAYROLL_STATE.rows||[]).find(r=>{
-    const name=norm(r.user&&r.user.name);
+  const stripSep=s=>String(s||"").replace(/[\s　\-_・.]/g,"");
+  const n=stripSep(filename);
+  let hit=(PAYROLL_STATE.rows||[]).find(r=>{
+    const name=stripSep(r.user&&r.user.name);
     return name&&n.includes(name);
-  })||null;
+  });
+  if(hit) return hit;
+  hit=(PAYROLL_STATE.rows||[]).find(r=>{
+    const parts=String((r.user&&r.user.name)||"").split(/[\s　]+/).filter(Boolean).map(stripSep).filter(Boolean);
+    return parts.length>=2&&parts.every(p=>n.includes(p));
+  });
+  return hit||null;
 }
 function payrollAssignmentFor(userId){ return PAYROLL_STATE.assignments.find(a=>a.user_id===userId); }
 function payrollRecordFor(userId){ return PAYROLL_STATE.records.find(r=>r.user_id===userId); }
@@ -3487,7 +3498,11 @@ function payrollRowHtml(row){
   const asg=payrollAssignmentFor(row.user_id);
   const rec=payrollRecordFor(row.user_id);
   const name=(row.user&&row.user.name)||"—";
-  const options=`<option value="">（未設定）</option>`+PAYROLL_STATE.templates.map(t=>`<option value="${esc(t.id)}" ${asg&&asg.template_id===t.id?"selected":""}>${esc(t.label)}</option>`).join("");
+  // 2026-09-02: ユーザー要望「仕分辞書は"給料"の文字が入っているものだけ表示・プルダウンではなく
+  // 勘定科目のように検索できるように」に対応。既に割り当て済みのテンプレートが万一「給料」を
+  // 含まない古いものだった場合でも、選択中の表示が消えて空欄に見えてしまわないよう現在値だけは例外的に残す
+  const currentTpl=asg&&PAYROLL_STATE.templates.find(t=>t.id===asg.template_id);
+  const patternInput=`<input list="payroll-template-datalist" class="payroll-pattern-input" data-payroll-pattern="${esc(row.user_id)}" value="${esc(currentTpl?currentTpl.label:"")}" placeholder="🔍 給料の仕訳辞書を検索" ${rec?"disabled":""}>`;
   // 状態は「パターン未設定→未登録（会計未計上）→仕訳登録済み・振込待ち→振込完了」の4段階。
   // 2026-09-01: 会計計上（MF仕訳登録）と実際の振込は別のタイミングで完了するため、区別して表示する
   let status;
@@ -3524,7 +3539,7 @@ function payrollRowHtml(row){
     <td style="text-align:right">${yen(row.commute_allowance)}</td>
     <td style="text-align:right">${yen(row.deduction_total)}</td>
     <td style="text-align:right">${yen(row.net_pay)}</td>
-    <td><select data-payroll-pattern="${esc(row.user_id)}" ${rec?"disabled":""}>${options}</select></td>
+    <td>${patternInput}</td>
     <td style="text-align:center">${pdfBadge}</td>
     <td>${bankBtn}</td>
     <td>${status}</td>
@@ -3576,6 +3591,7 @@ function payrollRender(){
         </details>`;
       })()}
       <div class="card hq-tablewrap">
+        <datalist id="payroll-template-datalist">${payrollTemplateDatalistHtml()}</datalist>
         <div style="display:flex;align-items:center;gap:16px;padding:12px 16px;border-bottom:1px solid var(--line);flex-wrap:wrap">
           <input id="payroll-search" placeholder="🔍 氏名で検索" value="${esc(PAYROLL_STATE.searchQuery||"")}" style="font-size:12px;max-width:180px">
           <label style="font-size:12px;display:flex;align-items:center;gap:6px">並び替え
@@ -3736,9 +3752,20 @@ function wirePayrollRowActions(){
     if(row) row._hasPdf=false;
     payrollRender();
   });
+  // 2026-09-02: プルダウン(select)から検索入力(input+datalist)に変更したため、値の受け渡しを
+  // テンプレートIDではなくラベルの完全一致検索に変更（勘定科目入力欄と同じ方式）
   document.querySelectorAll("[data-payroll-pattern]").forEach(el=>el.onchange=async()=>{
     const userId=el.dataset.payrollPattern;
-    const templateId=el.value||null;
+    const label=el.value.trim();
+    const tpl=label?(PAYROLL_STATE.templates||[]).find(t=>t.label===label):null;
+    if(label&&!tpl){
+      alert("一覧の候補から仕訳辞書を選んでください（該当する名前が見つかりません）");
+      const prevAsg=payrollAssignmentFor(userId);
+      const prevTpl=prevAsg&&(PAYROLL_STATE.templates||[]).find(t=>t.id===prevAsg.template_id);
+      el.value=prevTpl?prevTpl.label:"";
+      return;
+    }
+    const templateId=tpl?tpl.id:null;
     await authed("/rest/v1/payroll_journal_assignments",{method:"POST",headers:{Prefer:"resolution=merge-duplicates,return=minimal"},body:JSON.stringify({user_id:userId,tenant_id:"default",template_id:templateId,updated_by:ME.id,updated_at:new Date().toISOString()})});
     const existing=payrollAssignmentFor(userId);
     if(existing) existing.template_id=templateId; else PAYROLL_STATE.assignments.push({user_id:userId,tenant_id:"default",template_id:templateId});
@@ -3753,6 +3780,11 @@ function payrollEmployeeDatalistHtml(){
   return (PAYROLL_STATE.rows||[]).map(r=>`<option value="${esc((r.user&&r.user.name)||"")}">`).join("");
 }
 function payrollNameOf(userId){ const r=(PAYROLL_STATE.rows||[]).find(x=>x.user_id===userId); return r?((r.user&&r.user.name)||""):""; }
+// 仕訳辞書パターンの入力補完用datalist（2026-09-02: ユーザー要望「給料の文字が入っている仕訳辞書
+// だけ表示・プルダウンではなく勘定科目のように検索できるように」に対応）
+function payrollTemplateDatalistHtml(){
+  return (PAYROLL_STATE.templates||[]).filter(t=>(t.label||"").includes("給料")).map(t=>`<option value="${esc(t.label)}">`).join("");
+}
 function payrollRenderPdfMatchArea(){
   const el=$("payroll-pdf-match-area");
   const matches=PAYROLL_STATE.pdfMatches||[];
