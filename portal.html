@@ -659,11 +659,20 @@ function syncStatusHtml(row){
    ============================================================ */
 async function fetchApiCostDaily(){
   try{
-    const r=await authed("/rest/v1/api_cost_daily?select=date,amount_cents,amount_jpy&order=date.desc&limit=95");
+    // 2026-09-02 年間切替対応のため取得件数を拡大（1日1行の小さな表なので負荷は軽微）
+    const r=await authed("/rest/v1/api_cost_daily?select=date,amount_cents,amount_jpy&order=date.desc&limit=3660");
     return (r.ok&&Array.isArray(r.body))?r.body:[];
   }catch(e){ return []; }
 }
 const monthKeyOf=dateStr=>String(dateStr||"").slice(0,7); // "YYYY-MM"（UTC暦日ベース。JSTと数日ズレる可能性がある前提で月次目安として使用）
+// 2026-09-02バグ修正: 従来は new Date(y,m-1,1).toISOString() で前月キーを作っていたが、
+// JSTで月初の00:00は前日15:00 UTCになるため、常に「前々月」のキーになってしまっていた
+// （例: 9月に開くと先月が"2026-07"と表示される不具合）。文字列のまま計算して回避する
+function prevMonthKey(mk){
+  let [y,m]=mk.split("-").map(Number);
+  m--; if(m<1){ m=12; y--; }
+  return y+"-"+String(m).padStart(2,"0");
+}
 
 // F-1.5（続き・2026-08-28着手）: LINE配信数・残高。新設のportal-line-usage
 // Edge Function（ログイン中ユーザーのJWTで認証・マスター/HQ/CEOのみ許可）を呼ぶ
@@ -689,27 +698,68 @@ function lineUsageHtml(res){
   const tone=pct>=95?"b-bad":pct>=80?"b-warn":"b-up";
   return `<div class="item"><span class="av">📱</span><span><strong>今月の送信数</strong><span>${res.used.toLocaleString()} / ${res.limit.toLocaleString()}通（残り${(res.limit-res.used).toLocaleString()}通）</span></span><span class="badge ${tone}">${pct}%</span></div>`;
 }
+const fmtJpy=v=>"¥"+Math.round(v).toLocaleString();
+const fmtUsd=cents=>"$"+(cents/100).toFixed(2);
+const sumCostRows=arr=>({cents:arr.reduce((s,r)=>s+Number(r.amount_cents||0),0), jpy:arr.reduce((s,r)=>s+Number(r.amount_jpy||0),0)});
+// 2026-09-02 ユーザー要望: 年月をプルダウンで切り替えられるように（月間=選んだ月の日別内訳、
+// 年間=選んだ年の月別集計）。データは初回取得済みのものをUSAGE_ROWSに保持し、
+// セレクタ操作のたびに再取得はしない（1日1行の小さな表なので手元で集計するだけで十分）
+let USAGE_ROWS=null, USAGE_MODE="month", USAGE_YM="", USAGE_YEAR="";
+function usageBreakdownHtml(){
+  const rows=USAGE_ROWS||[];
+  const months=Array.from(new Set(rows.map(r=>monthKeyOf(r.date)))).sort().reverse();
+  const years=Array.from(new Set(months.map(m=>m.slice(0,4)))).sort().reverse();
+  if(!months.includes(USAGE_YM)) USAGE_YM=months[0]||monthKeyOf(new Date().toISOString());
+  if(!years.includes(USAGE_YEAR)) USAGE_YEAR=years[0]||String(new Date().getFullYear());
+  const selectorHtml=`
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px">
+      <div class="seg" style="display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden">
+        <button onclick="setUsageMode('month')" style="padding:6px 14px;border:none;cursor:pointer;font-size:13px;background:${USAGE_MODE==='month'?'var(--accent)':'transparent'};color:${USAGE_MODE==='month'?'#fff':'inherit'}">月間</button>
+        <button onclick="setUsageMode('year')" style="padding:6px 14px;border:none;cursor:pointer;font-size:13px;background:${USAGE_MODE==='year'?'var(--accent)':'transparent'};color:${USAGE_MODE==='year'?'#fff':'inherit'}">年間</button>
+      </div>
+      ${USAGE_MODE==="month"?
+        `<select onchange="setUsageYm(this.value)" style="padding:6px 10px;border:1px solid var(--line);border-radius:8px;font-size:13px">${months.map(m=>{const[y,mo]=m.split("-");return `<option value="${m}" ${m===USAGE_YM?"selected":""}>${y}年${Number(mo)}月</option>`}).join("")}</select>`:
+        `<select onchange="setUsageYear(this.value)" style="padding:6px 10px;border:1px solid var(--line);border-radius:8px;font-size:13px">${years.map(y=>`<option value="${y}" ${y===USAGE_YEAR?"selected":""}>${y}年</option>`).join("")}</select>`
+      }
+    </div>`;
+  let bodyHtml="";
+  if(USAGE_MODE==="month"){
+    const dayRows=rows.filter(r=>monthKeyOf(r.date)===USAGE_YM).sort((a,b)=>a.date<b.date?-1:1);
+    const total=sumCostRows(dayRows);
+    bodyHtml=`<div class="item" style="border-bottom:2px solid var(--line)"><span class="av">Σ</span><span><strong>${esc(USAGE_YM)}の合計</strong><span>${fmtUsd(total.cents)}</span></span><span>${fmtJpy(total.jpy)}</span></div>
+      ${dayRows.length?dayRows.map(r=>`<div class="item"><span class="av">🤖</span><span><strong>${esc(r.date)}</strong><span>${fmtUsd(Number(r.amount_cents||0))}</span></span><span>${fmtJpy(Number(r.amount_jpy||0))}</span></div>`).join(""):'<div class="empty">この月のデータはまだありません</div>'}`;
+  } else {
+    const monthsInYear=months.filter(m=>m.startsWith(USAGE_YEAR)).sort();
+    const monthSums=monthsInYear.map(m=>({m,...sumCostRows(rows.filter(r=>monthKeyOf(r.date)===m))}));
+    const total=sumCostRows(rows.filter(r=>monthKeyOf(r.date).startsWith(USAGE_YEAR)));
+    bodyHtml=`<div class="item" style="border-bottom:2px solid var(--line)"><span class="av">Σ</span><span><strong>${esc(USAGE_YEAR)}年の合計</strong><span>${fmtUsd(total.cents)}</span></span><span>${fmtJpy(total.jpy)}</span></div>
+      ${monthSums.length?monthSums.map(r=>`<div class="item"><span class="av">🤖</span><span><strong>${esc(r.m)}</strong><span>${fmtUsd(r.cents)}</span></span><span>${fmtJpy(r.jpy)}</span></div>`).join(""):'<div class="empty">この年のデータはまだありません</div>'}`;
+  }
+  return selectorHtml+bodyHtml;
+}
+function setUsageMode(mode){ USAGE_MODE=mode; rerenderUsageBreakdown(); }
+function setUsageYm(v){ USAGE_YM=v; rerenderUsageBreakdown(); }
+function setUsageYear(v){ USAGE_YEAR=v; rerenderUsageBreakdown(); }
+function rerenderUsageBreakdown(){
+  const el=$("usageBreakdown"); if(el) el.innerHTML=usageBreakdownHtml();
+}
 async function renderSysUsageArea(u){
   const area=$("viewarea"); if(!area||VIEW!=="frame"||CUR!=="admin-usage") return;
   const [rows,lineUsage]=await Promise.all([fetchApiCostDaily(),fetchLineUsage()]);
   if(VIEW!=="frame"||CUR!=="admin-usage") return; // 読み込み中に他画面へ移動していたら上書きしない
+  USAGE_ROWS=rows; USAGE_MODE="month"; USAGE_YM=""; USAGE_YEAR=""; // 画面を開き直すたびに既定（最新月）へ戻す
   const now=new Date();
   const thisM=monthKeyOf(now.toISOString());
-  const prevD=new Date(now.getFullYear(),now.getMonth()-1,1);
-  const prevM=monthKeyOf(prevD.toISOString());
-  const sumRows=arr=>({cents:arr.reduce((s,r)=>s+Number(r.amount_cents||0),0), jpy:arr.reduce((s,r)=>s+Number(r.amount_jpy||0),0)});
-  const cur=sumRows(rows.filter(r=>monthKeyOf(r.date)===thisM));
-  const prev=sumRows(rows.filter(r=>monthKeyOf(r.date)===prevM));
-  const fmtJpy=v=>"¥"+Math.round(v).toLocaleString();
-  const fmtUsd=cents=>"$"+(cents/100).toFixed(2);
-  const last7=rows.slice(0,7).reverse();
+  const prevM=prevMonthKey(thisM);
+  const cur=sumCostRows(rows.filter(r=>monthKeyOf(r.date)===thisM));
+  const prev=sumCostRows(rows.filter(r=>monthKeyOf(r.date)===prevM));
   area.innerHTML=`
     <div class="summary">
       ${kpiCard("今月のAI利用料（累計・円主表示）",fmtJpy(cur.jpy),"",fmtUsd(cur.cents)+"（"+esc(thisM)+"・UTC暦日ベース）")}
       ${kpiCard("先月のAI利用料（実績）",fmtJpy(prev.jpy),"",fmtUsd(prev.cents)+"（"+esc(prevM)+"）")}
     </div>
-    <section class="panel" style="margin-top:16px"><div class="phead"><h2>直近7日</h2><span class="sub2">Anthropic Cost Report API（D-4）</span></div>
-      <div>${last7.length?last7.map(r=>`<div class="item"><span class="av">🤖</span><span><strong>${esc(r.date)}</strong><span>${fmtUsd(Number(r.amount_cents||0))}</span></span><span>${fmtJpy(Number(r.amount_jpy||0))}</span></div>`).join(""):'<div class="empty">データがまだありません（同期は毎日1回・cron-job.org設定待ちの場合があります）</div>'}</div>
+    <section class="panel" style="margin-top:16px"><div class="phead"><h2>月別・年別の内訳</h2><span class="sub2">Anthropic Cost Report API（D-4）</span></div>
+      <div id="usageBreakdown" style="padding:12px 17px">${usageBreakdownHtml()}</div>
     </section>
     <section class="panel" style="margin-top:16px"><div class="phead"><h2>📱 LINE配信数・残高</h2><span class="sub2">LINE Messaging API</span></div>
       <div>${lineUsageHtml(lineUsage)}</div>
