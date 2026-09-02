@@ -179,6 +179,12 @@ button,input,select,textarea{font:inherit}
 .mfj-preview-side .sub{font-size:10px;color:var(--m-muted);margin-top:2px}
 .mfj-preview-side .money{font-size:15px;font-weight:800;text-align:right;margin-top:6px}
 .mfj-preview-remark{padding:7px 9px;background:var(--bg);font-size:11px;border-top:1px solid var(--m-line);color:var(--muted)}
+/* 2026-09-02: 給与仕訳プレビュー専用の見出し（ユーザー要望「文字を大きく、色分けか枠をつける」）。
+   mfj/mfuの汎用プレビューには影響させないよう、給与仕訳専用のクラス名にしてある */
+.payroll-preview-head{display:grid;grid-template-columns:1fr 1fr}
+.payroll-preview-head div{padding:8px 10px;font-size:13px;font-weight:800}
+.payroll-preview-head div:first-child{background:var(--blue-soft);color:var(--blue)}
+.payroll-preview-head div:last-child{background:var(--green-soft);color:var(--green)}
 .mfj-tpl-item{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:9px;border:1px solid var(--m-line);border-radius:9px;margin-bottom:6px;background:var(--bg)}
 .mfj-tpl-item .lbl{font-size:12px;font-weight:700}
 .mfj-tpl-item .sum{font-size:10px;color:var(--m-muted);margin-top:2px}
@@ -3340,7 +3346,7 @@ async function renderPayrollTab(u){
 async function payrollLoad(){
   const ym=PAYROLL_STATE.yearMonth;
   const fetchSync=()=>authed(`/rest/v1/sf_payroll_sync?year_month=eq.${ym}&select=*,user:users(name,role,is_active)&order=user(name)`);
-  let [syncR,recR,asgR,tplR,deptR,allocR,bankR,hiddenR,accR]=await Promise.all([
+  let [syncR,recR,asgR,tplR,deptR,allocR,bankR,hiddenR,accR,draftR]=await Promise.all([
     fetchSync(),
     authed(`/rest/v1/payroll_journal_records?year_month=eq.${ym}&select=*`),
     authed(`/rest/v1/payroll_journal_assignments?select=*`),
@@ -3353,6 +3359,8 @@ async function payrollLoad(){
     authed(`/rest/v1/sf_payroll_hidden?year_month=eq.${ym}&select=user_id`),
     // 2026-09-02: 給与仕訳プレビューで明細行を追加できるように、勘定科目一覧も取得しておく
     mfCall("accounts",{tenant_id:"default"}),
+    // 2026-09-02: 一時保存（下書き）機能。「途中で消えてしまう」対策
+    authed(`/rest/v1/payroll_journal_drafts?year_month=eq.${ym}&select=*`),
   ]);
   // 給与データの取得に失敗した場合（トークン更新タイミング等による一時的な失敗を想定）、少し待って
   // 1回だけ自動で再試行する。ユーザー報告「タブを開き直すとKPIが0にリセットされて見づらい」対策
@@ -3381,6 +3389,7 @@ async function payrollLoad(){
   PAYROLL_STATE.allocations=(allocR.ok&&Array.isArray(allocR.body))?allocR.body:[];
   PAYROLL_STATE.bankAccounts=(bankR.ok&&Array.isArray(bankR.body))?bankR.body:[];
   PAYROLL_STATE.hiddenUserIds=new Set((hiddenR.ok&&Array.isArray(hiddenR.body))?hiddenR.body.map(h=>h.user_id):[]);
+  PAYROLL_STATE.drafts=(draftR.ok&&Array.isArray(draftR.body))?draftR.body:[];
   {
     const {map,dl}=mftBuildAccountIndex((accR.ok&&accR.body.accounts)||[]);
     PAYROLL_STATE.accountLabelMap=map; PAYROLL_STATE.accountDatalistHtml=dl;
@@ -3488,6 +3497,7 @@ function payrollGuessEmployeeByFilename(filename){
 }
 function payrollAssignmentFor(userId){ return PAYROLL_STATE.assignments.find(a=>a.user_id===userId); }
 function payrollRecordFor(userId){ return PAYROLL_STATE.records.find(r=>r.user_id===userId); }
+function payrollDraftFor(userId){ return (PAYROLL_STATE.drafts||[]).find(d=>d.user_id===userId); }
 function payrollFindDeptForUser(userId){
   const alloc=(PAYROLL_STATE.allocations||[]).find(a=>a.user_id===userId&&a.store_id);
   if(!alloc) return null;
@@ -3547,11 +3557,14 @@ function payrollRowHtml(row){
   // 含まない古いものだった場合でも、選択中の表示が消えて空欄に見えてしまわないよう現在値だけは例外的に残す
   const currentTpl=asg&&PAYROLL_STATE.templates.find(t=>t.id===asg.template_id);
   const patternInput=`<input list="payroll-template-datalist" class="payroll-pattern-input" data-payroll-pattern="${esc(row.user_id)}" value="${esc(currentTpl?currentTpl.label:"")}" placeholder="🔍 給料の仕訳辞書を検索" ${rec?"disabled":""}>`;
-  // 状態は「パターン未設定→未登録（会計未計上）→仕訳登録済み・振込待ち→振込完了」の4段階。
-  // 2026-09-01: 会計計上（MF仕訳登録）と実際の振込は別のタイミングで完了するため、区別して表示する
+  // 状態は「パターン未設定→未登録（会計未計上）→📝下書き保存中→仕訳登録済み・振込待ち→振込完了」の
+  // 5段階。2026-09-01: 会計計上（MF仕訳登録）と実際の振込は別のタイミングで完了するため区別して表示。
+  // 2026-09-02: 一時保存（下書き）は登録が完了するまで「完了」扱いにしない（ユーザー要望どおり）
+  const draft=payrollDraftFor(row.user_id);
   let status;
   if(rec&&rec.paid_at){ status=`<span class="invoice-status done">🎉振込完了（伝票番号:${esc(String(rec.mf_journal_number??"-"))}）</span>`; }
   else if(rec){ status=`<span class="invoice-status check">💰仕訳登録済み・振込待ち（伝票番号:${esc(String(rec.mf_journal_number??"-"))}）</span>`; }
+  else if(draft){ status=`<span class="invoice-status wait" title="一時保存済み。編集を再開するには「プレビュー・登録」から開いてください">📝下書き保存中</span>`; }
   else if(asg&&asg.template_id){ status=`<span class="invoice-status wait">未登録</span>`; }
   else{ status=`<span class="invoice-status gray">パターン未設定</span>`; }
   const pdfBadge=row._hasPdf
@@ -4022,42 +4035,42 @@ async function payrollOpenPreview(userId){
   const asg=payrollAssignmentFor(userId);
   const template=asg&&PAYROLL_STATE.templates.find(t=>t.id===asg.template_id);
   if(!row||!template) return;
-  const branches=payrollComputeBranches(row,template);
+  let branches=payrollComputeBranches(row,template);
   if(!branches.length){ alert("金額が計算できませんでした（給与データを確認してください）"); return; }
+  // 2026-09-02: 一時保存（下書き）があれば、テンプレートからの再計算ではなくその続きから開く
+  // （ユーザー要望「途中で消えてしまうこともあるから一時保存を」に対応）
+  const draft=payrollDraftFor(userId);
+  const usingDraft=!!(draft&&Array.isArray(draft.branches)&&draft.branches.length);
+  if(usingDraft) branches=draft.branches.map(b=>({...b}));
   const name=(row.user&&row.user.name)||"—";
   const pdfBase64=await payrollFetchPdfBase64(userId,PAYROLL_STATE.yearMonth);
   // 2026-09-02: PDFを見ながら金額を修正できるよう、以降は毎回branchesから合計を計算し直す
   // （固定のtotalDebit/totalCredit定数にはしない＝編集後に古い値のまま参照してしまう事故を防ぐ）
+  // debitLabel/creditLabel（入力欄の文字列）を基準に集計する。b.debit/b.creditは登録直前の
+  // 解決処理でしか埋まらないため（下書きから開いたときは特に）、これらでは判定しない
   const calcTotals=()=>({
-    debit: branches.reduce((s,b)=>s+(b.debit?Number(b.debitAmount)||0:0),0),
-    credit: branches.reduce((s,b)=>s+(b.credit?Number(b.creditAmount)||0:0),0),
+    debit: branches.reduce((s,b)=>s+(b.debitLabel?Number(b.debitAmount)||0:0),0),
+    credit: branches.reduce((s,b)=>s+(b.creditLabel?Number(b.creditAmount)||0:0),0),
   });
-  // 2026-09-02: ユーザー要望「給与仕訳の入力するときに、明細を追加できるようにもしてほしい」に対応。
-  // テンプレート由来の行（b.debit/b.credit が既に解決済みの勘定科目オブジェクト）は勘定科目名を
-  // そのまま表示し金額だけ編集可能。「＋明細行を追加」で足した新規行（b.isNew=true）は勘定科目名
-  // 自体も入力補完（勘定科目入力欄と同じ<input list>方式）で選べるようにする
+  // 2026-09-02: ユーザー要望「勘定科目もここで編集できるように」「入力欄が小さくて見づらい」に対応。
+  // 従来はテンプレート由来の行（b.debit/b.creditが既に解決済み）は勘定科目名を固定表示にしていたが、
+  // ここも他の欄と同じく入力補完（勘定科目入力欄と同じ<input list>方式）で編集できるように統一した
+  // （初期値としてテンプレートが決めた科目名をそのまま入れておく＝何もしなければ従来どおりの科目で登録される）
   const deptOptionsHtml=(selectedId)=>`<option value="">（指定なし）</option>`+(PAYROLL_STATE.departments||[]).map(d=>`<option value="${esc(d.id)}" ${selectedId===d.id?"selected":""}>${esc(d.name)}</option>`).join("");
-  const taxOptionsHtml=(selectedId)=>(PAYROLL_STATE.taxes&&PAYROLL_STATE.taxes.length)?`<select class="payroll-preview-tax" style="width:100%;box-sizing:border-box;margin-top:4px;font-size:11px">${`<option value="">（既定）</option>`+PAYROLL_STATE.taxes.map(t=>`<option value="${esc(t.id)}" ${selectedId===t.id?"selected":""}>${esc(t.name)}</option>`).join("")}</select>`:"";
+  const taxOptionsHtml=(selectedId)=>(PAYROLL_STATE.taxes&&PAYROLL_STATE.taxes.length)?`<select class="payroll-preview-tax" style="width:100%;box-sizing:border-box;margin-top:5px;font-size:13px;padding:4px">${`<option value="">（既定の税区分）</option>`+PAYROLL_STATE.taxes.map(t=>`<option value="${esc(t.id)}" ${selectedId===t.id?"selected":""}>${esc(t.name)}</option>`).join("")}</select>`:"";
   const entryHtml=(b,idx)=>{
-    const deptName=b.department_id?((PAYROLL_STATE.departments.find(d=>d.id===b.department_id)||{}).name||""):"";
-    const creditDeptName=b.credit_department_id?((PAYROLL_STATE.departments.find(d=>d.id===b.credit_department_id)||{}).name||""):"";
-    const amtInput=(side)=>`<input type="number" class="payroll-preview-amt" data-idx="${idx}" data-side="${side}" value="${side==="debit"?b.debitAmount:b.creditAmount}" style="width:100%;box-sizing:border-box;margin-top:6px;text-align:right;font-weight:700;font-size:15px;border:1px solid var(--line);border-radius:6px;padding:5px 8px;font-variant-numeric:tabular-nums">`;
-    const debitCell=b.isNew
-      ?`<input list="payroll-preview-acc-datalist" class="payroll-preview-acclabel" data-idx="${idx}" data-side="debit" value="${esc(b.debitLabel||"")}" placeholder="借方勘定科目" style="width:100%;box-sizing:border-box">
-         <select class="payroll-preview-dept" data-idx="${idx}" data-side="debit" style="width:100%;box-sizing:border-box;margin-top:4px;font-size:11px">${deptOptionsHtml(b.department_id)}</select>
-         ${taxOptionsHtml(b.tax_id).replace('class="payroll-preview-tax"',`class="payroll-preview-tax" data-idx="${idx}" data-side="debit"`)}`
-      :`<div class="acc">${b.debit?esc(mftLabelOf(b.debit)):"—"}</div><div class="sub">${esc(deptName)}</div>`;
-    const creditCell=b.isNew
-      ?`<input list="payroll-preview-acc-datalist" class="payroll-preview-acclabel" data-idx="${idx}" data-side="credit" value="${esc(b.creditLabel||"")}" placeholder="貸方勘定科目" style="width:100%;box-sizing:border-box">
-         <select class="payroll-preview-dept" data-idx="${idx}" data-side="credit" style="width:100%;box-sizing:border-box;margin-top:4px;font-size:11px">${deptOptionsHtml(b.credit_department_id)}</select>
-         ${taxOptionsHtml(b.credit_tax_id).replace('class="payroll-preview-tax"',`class="payroll-preview-tax" data-idx="${idx}" data-side="credit"`)}`
-      :`<div class="acc">${b.credit?esc(mftLabelOf(b.credit)):"—"}</div><div class="sub">${esc(creditDeptName)}</div>`;
-    const hasDebit=b.isNew?true:!!b.debit, hasCredit=b.isNew?true:!!b.credit;
+    // 表示用ラベル（初回描画時のみ）: まだ編集用ラベルが無ければ、テンプレート由来の解決済み科目名で初期化する
+    if(b.debitLabel==null) b.debitLabel=b.debit?mftLabelOf(b.debit):"";
+    if(b.creditLabel==null) b.creditLabel=b.credit?mftLabelOf(b.credit):"";
+    const accInput=(side)=>`<input list="payroll-preview-acc-datalist" class="payroll-preview-acclabel" data-idx="${idx}" data-side="${side}" value="${esc(side==="debit"?b.debitLabel:b.creditLabel)}" placeholder="${side==="debit"?"借方":"貸方"}勘定科目（空欄可）" style="width:100%;box-sizing:border-box;font-size:14px;font-weight:700;padding:6px 8px;border:1px solid var(--line);border-radius:6px">`;
+    const deptSelect=(side)=>`<select class="payroll-preview-dept" data-idx="${idx}" data-side="${side}" style="width:100%;box-sizing:border-box;margin-top:5px;font-size:13px;padding:4px">${deptOptionsHtml(side==="debit"?b.department_id:b.credit_department_id)}</select>`;
+    const amtInput=(side)=>`<input type="number" class="payroll-preview-amt" data-idx="${idx}" data-side="${side}" value="${side==="debit"?b.debitAmount:b.creditAmount}" style="width:100%;box-sizing:border-box;margin-top:8px;text-align:right;font-weight:700;font-size:17px;border:1px solid var(--line);border-radius:6px;padding:6px 9px;font-variant-numeric:tabular-nums">`;
+    const hasDebit=!!b.debitLabel, hasCredit=!!b.creditLabel;
     return `<div class="mfj-preview-entry" data-row-idx="${idx}">
-      <div class="mfj-preview-head"><div>借方</div><div>貸方</div></div>
+      <div class="payroll-preview-head"><div>借方</div><div>貸方</div></div>
       <div class="mfj-preview-body">
-        <div class="mfj-preview-side">${debitCell}${hasDebit?amtInput("debit"):`<div class="money">—</div>`}</div>
-        <div class="mfj-preview-side">${creditCell}${hasCredit?amtInput("credit"):`<div class="money">—</div>`}</div>
+        <div class="mfj-preview-side">${accInput("debit")}${deptSelect("debit")}${taxOptionsHtml(b.tax_id).replace('class="payroll-preview-tax"',`class="payroll-preview-tax" data-idx="${idx}" data-side="debit"`)}${amtInput("debit")}</div>
+        <div class="mfj-preview-side">${accInput("credit")}${deptSelect("credit")}${taxOptionsHtml(b.credit_tax_id).replace('class="payroll-preview-tax"',`class="payroll-preview-tax" data-idx="${idx}" data-side="credit"`)}${amtInput("credit")}</div>
       </div>
       ${b.remark?`<div class="mfj-preview-remark">${esc(b.remark)}</div>`:""}
       ${branches.length>1?`<div style="text-align:right;padding:4px 9px 6px"><button data-payroll-preview-rm="${idx}" title="この行を削除" style="background:none;border:none;color:var(--accent);font-size:11px;cursor:pointer;padding:0">✕ この行を削除</button></div>`:""}
@@ -4072,7 +4085,8 @@ async function payrollOpenPreview(userId){
   const pdfUrl=pdfBase64?payrollPdfBlobUrl(pdfBase64):null;
   const {debit:initDebit,credit:initCredit}=calcTotals();
   const bodyContent=`
-    <div class="ai-field" style="max-width:220px;margin-bottom:10px"><small>会計計上日</small><input id="payroll-date" type="date" value="${payrollLastDayOfMonth(PAYROLL_STATE.yearMonth)}"></div>
+    ${usingDraft?`<div class="err msg-ok" style="margin-bottom:8px">📝 一時保存していた下書きから再開しました（${fmtDT(draft.updated_at)}保存分）</div>`:""}
+    <div class="ai-field" style="max-width:220px;margin-bottom:10px"><small>会計計上日</small><input id="payroll-date" type="date" value="${(usingDraft&&draft.transaction_date)?draft.transaction_date:payrollLastDayOfMonth(PAYROLL_STATE.yearMonth)}"></div>
     <div style="font-size:12px;color:var(--muted);margin-bottom:8px">対象年月: <b>${esc(PAYROLL_STATE.yearMonth)}</b>　テンプレート: <b>${esc(template.label)}</b></div>
     <div style="font-size:12px;margin-bottom:8px;color:${pdfBase64?"var(--m-green)":"var(--m-amber)"}">${pdfBase64?"📎 給与明細PDFが見つかりました。登録と同時にマネーフォワードの証憑として添付します":"⚠️ この従業員・この月の給与明細PDFが見つかりません（未アップロード）。証憑添付なしで登録します。上の「まとめてアップロード」から追加できます"}</div>
     <div class="mfj-balance" style="margin:0 0 10px">
@@ -4087,6 +4101,7 @@ async function payrollOpenPreview(userId){
     <div class="err" id="payrollPreviewMsg" style="margin-top:6px"></div>
     <div class="mail-actions" style="margin-top:12px">
       <button id="payrollPreviewBack">← 閉じる</button>
+      <button id="payrollPreviewSaveDraft">💾 一時保存</button>
       <button class="primary" id="payrollPreviewSubmit">✅ この内容で登録</button>
     </div>
   `;
@@ -4136,10 +4151,11 @@ async function payrollOpenPreview(userId){
       if(side==="debit") branches[idx].debitAmount=val; else branches[idx].creditAmount=val;
       refreshTotals();
     });
-    // 追加した明細行（isNew）の勘定科目名・部門・税区分の入力
+    // 勘定科目名の入力（空欄にするとその側は合計から除外される＝refreshTotals()で反映）
     document.querySelectorAll(".payroll-preview-acclabel").forEach(el=>el.oninput=()=>{
       const idx=+el.dataset.idx, side=el.dataset.side;
       if(side==="debit") branches[idx].debitLabel=el.value; else branches[idx].creditLabel=el.value;
+      refreshTotals();
     });
     document.querySelectorAll(".payroll-preview-dept").forEach(el=>el.onchange=()=>{
       const idx=+el.dataset.idx, side=el.dataset.side;
@@ -4174,26 +4190,48 @@ async function payrollOpenPreview(userId){
   // 2026-09-02: ユーザー要望「明細を追加できるようにしてほしい」に対応。空の行を追加し、
   // 借方・貸方どちらの勘定科目も入力補完（既に取得済みのPAYROLL_STATE.accountLabelMap）から選べる
   $("payroll-preview-addrow").onclick=()=>{
-    branches.push({isNew:true,debit:null,credit:null,debitLabel:"",creditLabel:"",debitAmount:0,creditAmount:0,department_id:null,tax_id:null,credit_department_id:null,credit_tax_id:null,remark:""});
+    branches.push({debit:null,credit:null,debitLabel:"",creditLabel:"",debitAmount:0,creditAmount:0,department_id:null,tax_id:null,credit_department_id:null,credit_tax_id:null,remark:""});
     rerenderEntries();
+  };
+  // 2026-09-02: ユーザー要望「途中で消えてしまうこともあるから一時保存を」に対応。
+  // 編集中のbranches（勘定科目名・金額・部門・税区分等すべて）をそのままJSONで保存する。
+  // マネーフォワードへの実登録（payroll_journal_records）はしないため、状態は「下書き」のまま
+  $("payrollPreviewSaveDraft").onclick=async()=>{
+    const pmsg=$("payrollPreviewMsg");
+    $("payrollPreviewSaveDraft").disabled=true;
+    pmsg.className="err"; pmsg.textContent="一時保存中…";
+    const draftPayload={
+      user_id:userId, year_month:PAYROLL_STATE.yearMonth, template_id:template.id,
+      branches: branches.map(({debit,credit,...rest})=>rest), // 解決済みaccountオブジェクトは保存せず、ラベル等の入力値だけ保存（次回開いたときに再解決する）
+      transaction_date: $("payroll-date").value||null,
+      updated_by:ME.id, updated_at:new Date().toISOString(),
+    };
+    const r=await authed("/rest/v1/payroll_journal_drafts",{method:"POST",headers:{Prefer:"resolution=merge-duplicates,return=minimal"},body:JSON.stringify(draftPayload)});
+    $("payrollPreviewSaveDraft").disabled=false;
+    if(!r.ok){ pmsg.textContent="一時保存に失敗しました"; return; }
+    pmsg.className="err msg-ok"; pmsg.textContent="一時保存しました。閉じても内容は残ります（次にこの従業員のプレビューを開くと続きから編集できます）";
+    const existing=PAYROLL_STATE.drafts.find(d=>d.user_id===userId);
+    if(existing) Object.assign(existing,draftPayload); else PAYROLL_STATE.drafts.push(draftPayload);
+    payrollRender(); // 一覧の状態表示（下書き保存中）を更新
   };
   $("payrollPreviewSubmit").onclick=async()=>{
     const pmsg=$("payrollPreviewMsg");
-    // 2026-09-02: ＋明細行を追加で足した行は、勘定科目名（テキスト）をプルダウンの候補から
-    // 選んだ勘定科目オブジェクトへ解決してから送信する（mft/mfjの仕訳辞書エディタと同じ方式）
-    for(const b of branches){
-      if(!b.isNew) continue;
-      if(b.debitLabel){
-        const acc=PAYROLL_STATE.accountLabelMap.get(b.debitLabel);
-        if(!acc){ pmsg.className="err"; pmsg.textContent=`借方の勘定科目「${b.debitLabel}」が候補にありません。一覧から選び直してください`; return; }
+    // 2026-09-02: 勘定科目名（テキスト）をプルダウンの候補から選んだ勘定科目オブジェクトへ解決してから
+    // 送信する（mft/mfjの仕訳辞書エディタと同じ方式）。テンプレート由来の行も含め全行が編集可能なため、
+    // 全行について毎回この解決をやり直す
+    for(const [i,b] of branches.entries()){
+      const debitLabel=(b.debitLabel||"").trim(), creditLabel=(b.creditLabel||"").trim();
+      if(debitLabel){
+        const acc=PAYROLL_STATE.accountLabelMap.get(debitLabel);
+        if(!acc){ pmsg.className="err"; pmsg.textContent=`${i+1}行目・借方の勘定科目「${debitLabel}」が候補にありません。一覧から選び直してください`; return; }
         b.debit=acc;
-      }
-      if(b.creditLabel){
-        const acc=PAYROLL_STATE.accountLabelMap.get(b.creditLabel);
-        if(!acc){ pmsg.className="err"; pmsg.textContent=`貸方の勘定科目「${b.creditLabel}」が候補にありません。一覧から選び直してください`; return; }
+      }else{ b.debit=null; }
+      if(creditLabel){
+        const acc=PAYROLL_STATE.accountLabelMap.get(creditLabel);
+        if(!acc){ pmsg.className="err"; pmsg.textContent=`${i+1}行目・貸方の勘定科目「${creditLabel}」が候補にありません。一覧から選び直してください`; return; }
         b.credit=acc;
-      }
-      if(!b.debit&&!b.credit){ pmsg.className="err"; pmsg.textContent="追加した明細行に借方・貸方どちらも入力されていない行があります"; return; }
+      }else{ b.credit=null; }
+      if(!b.debit&&!b.credit){ pmsg.className="err"; pmsg.textContent=`${i+1}行目に借方・貸方どちらも入力されていません（不要ならこの行を削除してください）`; return; }
     }
     const {debit:totalDebit,credit:totalCredit}=calcTotals();
     if(totalDebit!==totalCredit){ pmsg.className="err"; pmsg.textContent=`借方合計（${yen(totalDebit)}）と貸方合計（${yen(totalCredit)}）が一致していません。金額を確認してください`; return; }
@@ -4219,6 +4257,9 @@ async function payrollOpenPreview(userId){
       mf_journal_id:j.journal_id, mf_journal_number:j.journal_number, mf_journal_created_at:new Date().toISOString(),
       invoice_id:j.invoice_id, created_by:ME.id,
     })});
+    // 2026-09-02: 実際に登録できたら一時保存の下書きは不要になるため削除する（「登録になるまで
+    // 完了にならない」＝逆に言えば登録できたら下書き扱いのままにしない、という要望に対応）
+    await authed(`/rest/v1/payroll_journal_drafts?user_id=eq.${userId}&year_month=eq.${PAYROLL_STATE.yearMonth}`,{method:"DELETE"});
     pmsg.className="err msg-ok";
     const voucherNote=j.voucher_attached?`。証憑PDFも添付しました`:(j.voucher_error?`（証憑添付: ${j.voucher_error}）`:"");
     pmsg.textContent=recR.ok
