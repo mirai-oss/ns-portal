@@ -241,6 +241,23 @@ Deno.serve(async (req: Request) => {
       return json({ success: true, accounts: data.accounts ?? [] });
     }
 
+    // get_journal（2026-09-03追加）: 既に登録済みの仕訳を、実際にマネーフォワード側でどう登録されたか
+    // 確認できるようにクリックしたら開けるプレビュー用。GET /api/v3/journals/{id}（公式OpenAPI仕様で
+    // 確認済み・journal.writeスコープで利用可）をそのまま呼び、既存のbranchToTemplate()で
+    // 借方/貸方の表示用データに整形する（仕訳辞書のプレビューと同じ形式なので画面側の表示ロジックを流用できる）
+    if (action === "get_journal") {
+      const journalId = body?.journal_id;
+      if (!journalId) return json({ error: "journal_idは必須です" }, 400);
+      // 注意: マネーフォワードのIDは既にパーセントエンコード済みの文字列がそのまま返ってくる仕様
+      // （実データで確認済み）のため、encodeURIComponent()で二重エンコードしない。そのままパスに埋め込む
+      const res = await mfFetch(`/api/v3/journals/${journalId}`, accessToken);
+      const data = await res.json();
+      if (!res.ok) return json({ error: "仕訳の取得に失敗しました", detail: data }, 502);
+      const j = data.journal ?? {};
+      const branches = (j.branches ?? []).map(branchToTemplate);
+      return json({ success: true, branches, transaction_date: j.transaction_date ?? null, journal_number: j.number ?? null, memo: j.memo ?? null });
+    }
+
     if (action === "suggest" || action === "list_journals" || action === "list_departments") {
       // list_departments（2026-08-31追加）: キーワードに関係なく、過去の仕訳に登場した部門一覧だけを返す。
       // マネーフォワードには部門マスタを直接取得するAPIが無いため、履歴から集めて代用。
