@@ -75,6 +75,7 @@ function branchToTemplate(br: any) {
     account_id: s.account_id, account_name: s.account_name,
     sub_account_id: s.sub_account_id, sub_account_name: s.sub_account_name,
     department_id: s.department_id, department_name: s.department_name,
+    tax_id: s.tax_id, tax_name: s.tax_name, // 2026-09-02追加（税率のAPI連携）
     value: s.value,
   } : null;
   return { debit: side(br.debitor), credit: side(br.creditor), remark: br.remark };
@@ -111,10 +112,15 @@ function buildFlexibleBranches(rawBranches: any[], defaultRemark: string, fallba
       return { ok: false, error: "貸方の勘定科目・金額を正しく入力してください" };
     }
     const departmentId = b.department_id || null;
+    // 2026-09-02追加: 税区分（tax_id）のAPI連携。department_idと同じく明細行（branch）の階層に
+    // 置く設計にした（invoices.html側の既存の部門選択と全く同じデータの流れ方に揃えるため）。
+    // CRUDJournalLineDetailsのtax_idフィールド（公式OpenAPI仕様で確認済み）にそのまま渡す。
+    // 未指定なら従来どおり勘定科目の既定税区分がMF側で適用される。department_idと同じく借方側にのみ適用
+    const taxId = b.tax_id || null;
     const remark = (b.remark || defaultRemark || fallbackRemark || "").slice(0, 100);
     const out: any = { remark };
     if (hasDebit) {
-      out.debitor = { account_id: b.debit.account_id, value: Math.round(dAmt as number), ...(b.debit.sub_account_id ? { sub_account_id: b.debit.sub_account_id } : {}), ...(departmentId ? { department_id: departmentId } : {}) };
+      out.debitor = { account_id: b.debit.account_id, value: Math.round(dAmt as number), ...(b.debit.sub_account_id ? { sub_account_id: b.debit.sub_account_id } : {}), ...(departmentId ? { department_id: departmentId } : {}), ...(taxId ? { tax_id: taxId } : {}) };
       totalDebit += Math.round(dAmt as number);
     }
     if (hasCredit) {
@@ -137,6 +143,22 @@ async function fetchDepartmentsDirect(accessToken: string): Promise<{ id: string
     const list = data.departments ?? (Array.isArray(data) ? data : []);
     if (!Array.isArray(list)) return null;
     return list.map((d: any) => ({ id: d.id, name: d.name })).filter((d: any) => d.id && d.name);
+  } catch (_e) {
+    return null;
+  }
+}
+// 税区分一覧を取得（2026-09-02追加。ユーザー報告「仕訳辞書で税率の設定が無い」に対応）。
+// GET /api/v3/taxes には departments.read と同様に専用スコープ mfc/accounting/taxes.read が必要
+// （公式OpenAPI仕様で確認済み）。未認可の連携（再認可がまだの事業者）の場合はnullを返し、
+// 呼び出し側は税区分選択欄そのものを出さない（部門一覧のような代用手段がAPI上に無いため）
+async function fetchTaxesDirect(accessToken: string): Promise<{ id: string; name: string; tax_rate: number | null }[] | null> {
+  try {
+    const res = await mfFetch("/api/v3/taxes?available=true", accessToken);
+    if (!res.ok) return null;
+    const data = await res.json();
+    const list = data.taxes ?? (Array.isArray(data) ? data : []);
+    if (!Array.isArray(list)) return null;
+    return list.map((t: any) => ({ id: t.id, name: t.name, tax_rate: t.tax_rate ?? null })).filter((t: any) => t.id && t.name);
   } catch (_e) {
     return null;
   }
@@ -223,11 +245,13 @@ Deno.serve(async (req: Request) => {
 
       // 前期＋当期の2期分をまとめて検索（前期・当期をまたいで1回のGETで取れる範囲か未確認のため
       // 念のため2回に分けて取得しマージする。件数が多い場合はper_pageの上限に注意）。
-      // 部門一覧の直接取得（成功すればこちらを優先＝全部門が確実に出る）も並行して試す
-      const [resCur, resPrev, directDepartments] = await Promise.all([
+      // 部門一覧・税区分一覧の直接取得（成功すればこちらを優先。税区分は代用手段が無いため
+      // 未認可ならそのまま空配列＝2026-09-02追加）も並行して試す
+      const [resCur, resPrev, directDepartments, directTaxes] = await Promise.all([
         mfFetch(`/api/v3/journals?start_date=${fiscalYearStart()}&end_date=${todayStr()}&per_page=500&page=1`, accessToken),
         mfFetch(`/api/v3/journals?start_date=${prevFiscalYearStart()}&end_date=${fiscalYearStart()}&per_page=500&page=1`, accessToken),
         fetchDepartmentsDirect(accessToken),
+        fetchTaxesDirect(accessToken),
       ]);
       const [dataCur, dataPrev] = await Promise.all([resCur.json(), resPrev.json()]);
       if (!resCur.ok) return json({ error: "仕訳履歴の取得に失敗しました", detail: dataCur }, 502);
@@ -262,9 +286,12 @@ Deno.serve(async (req: Request) => {
       const departments = (directDepartments && directDepartments.length)
         ? directDepartments
         : Array.from(deptMap, ([id, name]) => ({ id, name }));
+      // 税区分一覧: 部門と違い代用手段（仕訳履歴からのスキャン）が無いため、未認可（taxes.read無し）なら
+      // そのまま空配列（呼び出し側は「まだ税率の連携ができていません」と案内する。2026-09-02追加）
+      const taxes = directTaxes ?? [];
 
       if (action === "list_departments") {
-        return json({ success: true, departments, searched_count: journals.length });
+        return json({ success: true, departments, taxes, searched_count: journals.length });
       }
       if (action === "list_journals") {
         matches.sort((a, b) => (a.transaction_date < b.transaction_date ? 1 : -1)); // 新しい順
@@ -274,6 +301,7 @@ Deno.serve(async (req: Request) => {
         success: true,
         match: best,
         departments,
+        taxes,
         searched_count: journals.length,
       });
     }

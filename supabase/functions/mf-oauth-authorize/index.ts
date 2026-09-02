@@ -21,6 +21,9 @@
 // 使われたことのない部門（新規出店直後の店舗等）が候補に出てこないのが原因だった。
 // departments.readが取得できれば、mf-journal側もGET /api/v3/departmentsを直接呼ぶ実装に切り替え、
 // 全部門が確実に出るようにする（このEdge Functionでの再認可が済んでからの作業）。
+// 2026-09-02追加: 同じくユーザー報告「仕訳辞書で税率の設定が無い」に対応するため taxes.read を追加。
+// GET /api/v3/taxes（税区分一覧）専用のスコープで、部門と違い過去仕訳からの代用手段が無いため
+// このスコープでの再認可が済むまでは税区分の選択欄自体を出さない設計にしてある。
 //
 // デプロイ: supabase functions deploy mf-oauth-authorize --no-verify-jwt
 //   （ユーザーがブラウザで直接開くリンクのため。JWT検証はしない）
@@ -34,6 +37,7 @@ const SCOPES = [
   "mfc/accounting/report.read",
   "mfc/accounting/journal.read",
   "mfc/accounting/departments.read", // 2026-08-31追加（部門一覧が一部欠けていた不具合の対応）
+  "mfc/accounting/taxes.read", // 2026-09-02追加（ユーザー報告「仕訳辞書で税率の設定が無い」の対応）
 ].join(" ");
 
 const html = (body: string, status = 200) =>
