@@ -6,6 +6,8 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
+**★★★2026-09-02（担当C実行スレッド）税率(税区分)のAPI連携・仕訳辞書の編集位置修正・検索機能を追加**: ユーザー報告4件に対応。①「N-Styleの仕訳辞書で部門の登録が無い」→MF本番APIを直接調査した結果、N-Style・トーホーとも`departments.read`スコープは既に付与済み（直近で再認可が完了していた模様）・実データ取得も正常（N-Style16件）を確認、コード側の問題は見当たらず。ユーザーに実機再確認を依頼したい②「税率の設定が無い」→MF公式OpenAPI仕様書（`https://developers.api-accounting.moneyforward.com/v3/openapi.yaml`）を取得し`GET /api/v3/taxes`（専用スコープ`mfc/accounting/taxes.read`）を特定・実装。仕訳辞書エディタ（設定タブ）に税区分選択を追加し、請求書メール仕訳作成・アップロード請求書・給与仕訳の各適用経路までtax_idが引き継がれるよう`mf-journal`Edge Functionと`invoices.html`両方を更新。**taxes.readスコープでの再認可がユーザー作業として必要**（department_idと同じくAPI直接取得のみで代用手段が無いため）③「編集画面が一覧の下に出るので対象項目のすぐ下に出してほしい」→仕訳辞書一覧を`mftRenderBox()`で丸ごと再描画する方式に変更し、編集フォームを対象行の直後に差し込むよう修正④「仕訳辞書・給与仕訳の従業員選択に検索機能がほしい」→仕訳辞書一覧（設定タブ／請求書メール仕訳作成／アップロード請求書）に検索ボックスを追加、給与仕訳のPDF従業員マッチング欄はプルダウンから入力補完（datalist）方式に変更。`mf-journal`・`mf-oauth-authorize`とも本番デプロイ済み・push済み（コミット[d6d23a8](https://github.com/mirai-oss/ns-portal/commit/d6d23a8)）。構文チェック済み・実機E2E未実施。詳細は本日付エントリ参照
+
 **★★★2026-09-02（担当D実行スレッド）D-check調査完了＋店舗名ゲートウェイ原則をns-daily-importへ実装**
 
 `実装指示書_脱GAS移行_Phase0-1_2026-09-02.md`§1のD-check・§🛡に着手（詳細はns-daily-import/WORKLOG.md 2026-09-02付エントリ参照）。
@@ -5132,3 +5134,54 @@ E-6実装直後、`git diff WORKLOG.md`が空になっていることに気づ�
 - **A-hf⑤（入金二重計上）**: 経路整理=銀行CSV（ns-daily-import paypay-bank系・口座→店舗対応）→入金DBシート→stg_deposit→入金管理タブ。8/28のbqResolveStoreName_はミラー時のみで**シート書き込み時と重複判定キーが未正規化の可能性が高い**と司令塔が仮説を明記。手順=実害一覧化→原因確定→恒久対策（書込時正規化・正規名の重複キー・口座対応表の正式名化・storeNameAudit日次化）→**重複削除はユーザー承認後**
 - **D-check格上げ（予約取込復旧）**: ユーザー確認により現在停止中。fail-fast（不明店舗名で全体中止）設計が原因候補。復旧＋「1店舗失敗で全体を止めない」「失敗当日Lark通知」を恒久対策として実装
 - **🛡店舗名ゲートウェイ原則（新設・全レーン必須）**: 全取込は書き込み前にstore_aliases必須経由／未知店舗名は書き込まずLarkへ／重複キーは正規名／storeNameAudit毎日。計画書「数字が狂わない4原則」②の具体化として、今後の新規取込にも適用
+
+---
+
+## 2026-09-02（担当C実行スレッド）税率(税区分)のAPI連携・仕訳辞書の編集位置修正・検索機能を追加
+
+ユーザー報告:
+1. 「会計のN-Styleの仕訳辞書で部門の登録が無いのでAPI連携で追加お願いします。」
+2. 「N-Style、トーホー仕訳辞書で税率の設定が無いのでこちらもAPI連携で追加お願いします。」
+3. 「添付写真の編集を押すと1番下のほうに編集画面が出てくるので、編集したいタスクのすぐ下に編集画面を出して欲しい」
+4. 「仕分辞書も検索機能つけて検索できるようにしてほしい（請求書メールから仕訳辞書を使って入力する時も／給料仕訳の従業員プルダウンも検索できるように）」
+
+### ①N-Styleの部門登録について（調査結果・コード変更なし）
+
+`mf_oauth_tokens`テーブルを確認したところ、有限会社トーホーエージェンシー・株式会社N-Styleとも`departments.read`スコープが既に付与済み（直近で再認可が完了していた模様）だった。念のため本番のアクセストークンでMoneyForward本体の`GET /api/v3/departments`を直接叩いて確認したところ、N-Style側も16件の部門データが正常に返ってくることを確認した（コンサル部門・不動産収益・飲食部配下の各店舗等）。コード側（`mf-journal`の`fetchDepartmentsDirect`・`invoices.html`の`mftLoadAccountsAndDepts`）も、スコープ付与済みの事業者では直接取得を優先する設計で問題なく動く実装になっている。**現時点でコード側に不具合は見当たらず**、実機で設定タブ→N-Styleを選んだ状態で仕訳辞書の部門プルダウンをもう一度ご確認いただきたい（もし依然として出ない場合は、ブラウザのキャッシュや再ログインが必要な可能性があるため、その旨と実機の様子を教えてもらえると助かる）。
+
+### ②税率（税区分）のAPI連携
+
+MoneyForward公式のOpenAPI仕様書（`https://developers.api-accounting.moneyforward.com/`のダウンロードリンクから取得: `https://developers.api-accounting.moneyforward.com/v3/openapi.yaml`）を直接取得して調査。
+
+- `GET /api/v3/taxes`（税区分一覧取得）: `{taxes:[{id,name,abbreviation,tax_rate,search_key,available}]}`を返す。専用スコープ`mfc/accounting/taxes.read`が必要（部門と同様、代用の取得手段は無い）
+- 仕訳の明細行（`CRUDJournalLineDetails`）には`tax_id`フィールドがあり、`account_id`・`department_id`と同じ階層で指定する（未指定なら勘定科目の既定税区分がMF側で適用される）
+
+**バックエンド（`supabase/functions/mf-journal/index.ts`）**:
+- `fetchTaxesDirect()`を新設（`fetchDepartmentsDirect()`と同じ構造）。`list_departments`/`suggest`/`list_journals`のレスポンスに`taxes`配列を追加
+- `buildFlexibleBranches()`が`tax_id`（明細行の階層。department_idと全く同じ置き場所）を読み取り、借方（debitor）側にのみ適用するようにした（部門と同じ考え方＝経費側の税区分を管理する用途を想定）
+- `branchToTemplate()`（過去の仕訳から仕訳辞書形式へ変換する処理）にも`tax_id`/`tax_name`を追加
+
+**OAuthスコープ（`supabase/functions/mf-oauth-authorize/index.ts`）**: `mfc/accounting/taxes.read`を追加。**現在連携中の2事業者（トーホー・N-Style）は、このスコープ追加前に認可されたものなので、税区分を使うには再認可が必要**。以下のリンクをブラウザで開くだけで完了する（ユーザー作業）:
+  - トーホー: `https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/mf-oauth-authorize?tenant_id=default&label=有限会社トーホーエージェンシー`
+  - N-Style: `https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/mf-oauth-authorize?tenant_id=nstyle&label=株式会社N-Style`
+
+**フロントエンド（`invoices.html`）**: 仕訳辞書エディタ（設定タブ・`mft`）の借方欄に税区分選択を追加（部門選択の下）。`taxes`が空（未再認可）の場合は選択欄の代わりに案内文を表示。仕訳辞書に保存したtax_idは、①請求書メールからの仕訳作成（`mfj`）②アップロード請求書（`mfu`）③給与仕訳（`payrollComputeBranches`）のいずれで適用しても最終送信ペイロードまで引き継がれるよう、テンプレート適用・保存・過去仕訳からの選択、各経路のデータの流れを`department_id`と同じ形（明細行の階層に持たせる）に揃えて実装した。
+
+### ③仕訳辞書エディタの編集フォームの表示位置
+
+`renderMftSection()`が組み立てていたHTML（一覧＋「＋新しい仕訳辞書を追加」ボタン＋固定位置の編集欄）を、`mftRenderBox()`という再利用可能な関数に切り出した。既存テンプレートを編集するときは、一覧を`mftListHtml()`で丸ごと再描画し、編集対象の項目の直後に編集フォームの差込先（`<div id="mft-editor">`）を配置する。新規追加のとき（対象行が無い）は従来どおり一覧の下の固定位置に出す。編集を開くと自動でその位置までスクロールするようにもした。
+
+### ④検索機能
+
+- 仕訳辞書一覧（設定タブ）: 一覧の上に氏名ならぬラベル検索ボックスを追加（部分一致）
+- 請求書メールからの仕訳作成（`mfj`）・アップロード請求書（`mfu`）の「📗仕訳辞書から選ぶ」パネル: 同様に検索ボックスを追加。あわせて、これまで配列のインデックスでテンプレートを参照していたのを`id`ベースの参照に変更（検索で絞り込んでもボタンの動作がずれないようにするため）
+- 給与仕訳のPDF従業員マッチング欄: 従業員数が多いと探しにくいプルダウン方式から、`<input list>`（datalist）による入力補完方式に変更。名前を入力すると絞り込め、確定した名前で該当する従業員に自動的に紐付ける
+
+### 動作確認
+
+`<script>`内容を抽出して`node --check`によるJS構文チェックを実施し、エラーなし。`mf-journal`・`mf-oauth-authorize`とも本番Supabaseへデプロイ済み・確認済み。実機ブラウザでの動作確認（特に税区分の再認可後の表示・給与仕訳PDF欄の入力補完・仕訳辞書検索）は未実施のため、次回ログイン時にご確認をお願いしたい。
+
+### 次スレッドへの申し送り
+
+- 税率を使うには**ユーザーに上記2件の再認可リンクを開いてもらう必要がある**（クリックするだけで完了する。手順書は不要なほど単純だが、リンクをそのまま案内すること）
+- N-Styleの部門は調査上コード問題が見当たらなかったため、実機で解消していなければ改めて詳細な状況（どの画面のどの操作か）を確認する必要がある
