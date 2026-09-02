@@ -6,6 +6,10 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
+**★★★★2026-09-02（担当F実行スレッド）担当Cからの依頼「アカウント管理の従業員情報画面に振込口座表示」に対応（実装場所を変更）**: WORKLOG「担当Fへ依頼: アカウント管理の従業員情報画面に振込先口座を表示する機能が未実装」を受け対応。**依頼どおりns-info-system側`employees`ページ（`info.employees`）への追加を検討したが、直前の緊急バグ修正で判明した通り`info.employees`は`portal_user_id`紐付けがほぼ0件の別目的の小さなテーブルのため、そちらに追加しても実質誰も表示されないと判断**（同じ原因の二番煎じになるところだった）。`payroll_bank_accounts`は元々`public.users.id`（ポータルの実アカウント）で管理されているため、実データと正しく結びつく`ns-portal/requests.html`（本部/マスター向け承認パネルと同じ場所・直前のバグ修正で新設済み）に一覧を追加した（コミット[b4a74f7](https://github.com/mirai-oss/ns-portal/commit/b4a74f7)）。
+- 全登録者を氏名検索付きで一覧表示（`is_profile_approver()`＝マスター/HQのみ閲覧可）。給与仕訳タブでの直接登録・本人の変更申請承認、どちらの経路で登録された口座も同じテーブルに集約されているため両方表示される。現金手渡し（`payment_method='cash'`）は口座情報の代わりにその旨を表示
+- ローカルで表示確認済み（ダミーデータ）。**実機E2E未実施**。ユーザーに本部/マスターアカウントで`requests.html`を開き、登録済みの口座一覧が見えるか確認をお願いしたい
+
 **★★★2026-09-02（担当Aスレッド）TK-62完了: 精算ダッシュボードのpostMessage化＋キャッシュ適用（W2-A）**: `設計書_表示集計層kdと高速化実行計画_2026-09-02.md`§10.1 W2。tori-dashboard(app.js)のF-3（embed/tab/postMessage）と全く同じパターンをseisan-dashboardにも実装:
 - **seisan-dashboard/index.html**: `?embed=1`で自画面の見出しを非表示、`?view=`（check/corp/annual/input/settings）でログイン後に開く画面を直接指定。`window.addEventListener('message')`で`{type:'nsPortalSetTab',tab:'corp'}`を受け取りiframeを作り直さず`showView()`で切替（オリジンは`https://mirai-oss.github.io`限定）。4箇所あったログイン成功処理を`enterApp_()`に統一。コミット[2d53008](https://github.com/mirai-oss/seisan-dashboard/commit/2d53008)
 - **ns-portal/portal.html**: 「精算ダッシュボード」を単一項目（SYS_ITEMS）から「精算管理」開閉グループ（店舗チェック／法人別・振込／年間推移の3項目・GROUPS）へ変更し、経営管理と同じ高速切替（`FAST_SWITCH_SYSKEYS`に`seisan`追加）を有効化。可視性（HQ/CEOのみ）は既存の`SYS_ROLES.seisan`をそのまま踏襲・変更なし。コミット[9413bef](https://github.com/mirai-oss/ns-portal/commit/9413bef)
