@@ -1,8 +1,10 @@
-name: 経営D計測ログ(kd_perf_log)の日次配信とお掃除
+name: 経営D計測ログ(kd_perf_log)の日次配信とお掃除+kd_の日次リフレッシュ
 
-# P-0a（docs/実装指示書_脱GAS移行_Phase0-1_2026-09-02.md §1 P側）。
-# 毎日、前日(JST)分のkd_perf_logを集計して「遅いaction/失敗actionトップ10」をLarkへ配信し（notify）、
-# 続けて14日より古い行を削除する（cleanup）。他の日次workflowと同じく、実際の発火は外部cron
+# P-0a（docs/実装指示書_脱GAS移行_Phase0-1_2026-09-02.md §1 P側）＋
+# W2（docs/設計書_表示集計層kdと高速化実行計画_2026-09-02.md §10.1）。
+# 毎日、①前日(JST)分のkd_perf_logを集計して「遅いaction/失敗actionトップ10」をLarkへ配信(notify)
+# ②14日より古いkd_perf_logを削除(cleanup) ③kd_reservation_daily_summaryを日次リフレッシュ
+# ④kd_unresolved_namesの未解決件数をLarkへ配信。他の日次workflowと同じく、実際の発火は外部cron
 # （cron-job.org）からworkflow_dispatch APIを叩く。
 #   POST https://api.github.com/repos/mirai-oss/ns-portal/actions/workflows/keiei-perflog-daily.yml/dispatches
 #   body: {"ref":"main"}
@@ -64,5 +66,39 @@ jobs:
           echo "$BODY_TEXT"
           if [ "$HTTP_CODE" != "200" ]; then
             echo "::warning::cleanupが失敗しました（HTTP $HTTP_CODE）。notifyは成功しているのでジョブは失敗にしない"
+            exit 0
+          fi
+
+      - name: keiei-kd-refreshを呼ぶ（reservation_daily・kd_reservation_daily_summaryの日次リフレッシュ）
+        env:
+          SR_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          RES=$(curl -s -w "\n%{http_code}" -X POST \
+            "https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/keiei-kd-refresh" \
+            -H "Authorization: Bearer $SR_KEY" \
+            -H "Content-Type: application/json" \
+            -d '{"op":"reservation_daily"}')
+          HTTP_CODE=$(echo "$RES" | tail -1)
+          BODY_TEXT=$(echo "$RES" | sed '$d')
+          echo "$BODY_TEXT"
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "::error::reservation_dailyが失敗しました（HTTP $HTTP_CODE）"
+            exit 1
+          fi
+
+      - name: keiei-kd-refreshを呼ぶ（unresolved_notify・kd_unresolved_namesの日次Lark配信）
+        env:
+          SR_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          RES=$(curl -s -w "\n%{http_code}" -X POST \
+            "https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/keiei-kd-refresh" \
+            -H "Authorization: Bearer $SR_KEY" \
+            -H "Content-Type: application/json" \
+            -d '{"op":"unresolved_notify"}')
+          HTTP_CODE=$(echo "$RES" | tail -1)
+          BODY_TEXT=$(echo "$RES" | sed '$d')
+          echo "$BODY_TEXT"
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "::warning::unresolved_notifyが失敗しました（HTTP $HTTP_CODE）。ジョブは失敗にしない"
             exit 0
           fi

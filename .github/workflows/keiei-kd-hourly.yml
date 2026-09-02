@@ -1,0 +1,62 @@
+name: kd_ダッシュボード集計の毎時リフレッシュ
+
+# W2④（docs/設計書_表示集計層kdと高速化実行計画_2026-09-02.md §10.1）。
+# 日中の間、kd_dashboard_daily_summary（店舗×日の売上・客数等）とkd_home_kpi_snapshot
+# （ホームKPI・当日実績/月累計/予算達成率/本部タスク滞留数）を毎時リフレッシュする。
+# dashboard_dailyを先に呼んでからhome_kpiを呼ぶこと（home_kpiは当日分のkd_dashboard_daily_summaryを
+# 読むため。順序を変えるとhome_kpiのtoday_sales等が1つ前の値のままになる）。
+#
+# 実際の発火は他の日次workflowと同じく外部cron（cron-job.org）からworkflow_dispatch APIを叩く。
+#   POST https://api.github.com/repos/mirai-oss/ns-portal/actions/workflows/keiei-kd-hourly.yml/dispatches
+#   body: {"ref":"main"}
+#   Schedule: 毎時0分・08:00〜23:00 JST目安（深夜は数字が動かないため対象外でよい）
+#
+# 手動実行: GitHubの Actions タブ → 本workflow → Run workflow でも実行可能
+on:
+  workflow_dispatch: {}
+
+jobs:
+  hourly:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: 設定チェック（未設定ならスキップ）
+        run: |
+          if [ -z "${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" ]; then
+            echo "::error::SUPABASE_SERVICE_ROLE_KEY が未設定です"
+            exit 1
+          fi
+
+      - name: keiei-kd-refreshを呼ぶ（dashboard_daily）
+        env:
+          SR_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          RES=$(curl -s -w "\n%{http_code}" -X POST \
+            "https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/keiei-kd-refresh" \
+            -H "Authorization: Bearer $SR_KEY" \
+            -H "Content-Type: application/json" \
+            -d '{"op":"dashboard_daily"}')
+          HTTP_CODE=$(echo "$RES" | tail -1)
+          BODY_TEXT=$(echo "$RES" | sed '$d')
+          echo "$BODY_TEXT"
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "::error::dashboard_dailyが失敗しました（HTTP $HTTP_CODE）"
+            exit 1
+          fi
+
+      - name: keiei-kd-refreshを呼ぶ（home_kpi）
+        env:
+          SR_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          RES=$(curl -s -w "\n%{http_code}" -X POST \
+            "https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/keiei-kd-refresh" \
+            -H "Authorization: Bearer $SR_KEY" \
+            -H "Content-Type: application/json" \
+            -d '{"op":"home_kpi"}')
+          HTTP_CODE=$(echo "$RES" | tail -1)
+          BODY_TEXT=$(echo "$RES" | sed '$d')
+          echo "$BODY_TEXT"
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "::error::home_kpiが失敗しました（HTTP $HTTP_CODE）"
+            exit 1
+          fi

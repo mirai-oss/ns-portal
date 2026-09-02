@@ -1,32 +1,27 @@
-// P-2a: 予約読み取りAPI（脱GAS Phase 2 先行第1号・レーンP専任・2026-09-02新設）
-// docs/実装指示書_脱GAS移行_Phase0-1_2026-09-02.md §1 P側 / 設計書_予約データ基盤_食べログノート_2026-08-27.md §9
+// P-2a→W2②: 予約読み取りAPI（脱GAS Phase 2 先行第1号・レーンP専任）
+// docs/実装指示書_脱GAS移行_Phase0-1_2026-09-02.md §1 P側
+// docs/設計書_表示集計層kdと高速化実行計画_2026-09-02.md §3/§6/§10.1（W2②・本書が現在の正本）
+// docs/設計書_予約データ基盤_食べログノート_2026-08-27.md §9
 //
-// 目的: 予約帳・予約分析タブの読み取りを「ブラウザ→GAS→BigQuery」の2ホップから
-//   「ブラウザ→Supabase直読み」へ差し替える。予約の正本はもともとSupabase(rsv_reservations)に
-//   あるため、GAS・BQを表示経路から完全に外す（BQミラーは分析専用として引き続き残る）。
+// 【2026-09-02 W2で3分割に書き換え（P-2aの`mode:'both'`は廃止）】軽量化ルール（§6）に従い、
+// 「一覧」は期間・limitを必須にして全件返しを禁止。「キャンセル集計」「月次サマリ」は毎回
+// rsv_reservationsの明細を全件スキャンする代わりに、事前集計テーブル`kd_reservation_daily_summary`
+// （keiei-kd-refresh op=reservation_dailyが日次で作る）を読むことでSupabase側の負荷も下げた。
+// A側はまだこのAPIに接続していないため、破壊的変更（mode必須化・both廃止）を行って問題ない
+// （WORKLOGで宣言済みの旧仕様はまだ誰も使っていない）。
 //
-// 【権限チェック】経営D(dash-sync)と同じ判定基準を使う: hub Supabaseのusers.role∈{CEO,HQ,TEAM,TENCHO}
-//   または is_master。TENCHOは自店舗のみ（user_storesで判定。smaregi-shift-sync callerAllowed()と同じ
-//   パターン）。認証はSupabase AuthのJWT（Authorization: Bearer <access_token>）。
-//   【重要・A差し替え時の注意】tori-dashboardは独自のGASセッション(login/supalogin)を持つが、
-//   supalogin採用済みの統合アカウントであれば、app.js側に既にある portalAccessToken()
-//   （app.js:1831〜。ポータルSupabaseログインのaccess_token取得・失効時リフレッシュ込み）を
-//   そのままAuthorizationヘッダーに使える＝GAS/app.jsを一切変更せずに繋げる想定。
-//   まだ統合アカウント化していないダッシュボード専用アカウント（GAS独自ID/PW）はこのAPIを直接
-//   呼べない。予約タブ差し替え時にA側で対象アカウントの統合ログイン移行が必要な場合はWORKLOGで
-//   相談してください（このAPI自体はGAS非依存の設計を優先し、旧セッション方式には合わせていません）。
+// 【権限チェック】経営D(dash-sync)と同じ判定基準: hub Supabaseのusers.role∈{CEO,HQ,TEAM}または
+//   is_master。TENCHOは自店舗のみ（user_storesで判定。smaregi-shift-sync callerAllowed()と同じ
+//   パターン）。認証はSupabase AuthのJWT（app.js側は既存のportalAccessToken()を流用できる想定。
+//   詳細はWORKLOG「P-2a」エントリ参照）。
 //
-// 【一時的な絞り込み】GAS側bqGetReservation()と同じ「サブブランド重複除外」を踏襲（設計書§8.8 R1
-//   「初回突合必須」がまだ未実施のため）。新旧の数字を突合してから外す想定＝includeSubBrand=trueで
-//   一時的に含める切替も用意。EXCLUDE_ACCOUNTSの値はGAS側と必ず同期させること（tori-dashboard/
-//   gas/Code.gs bqGetReservation()参照。ここを変えるときはA側にも同じ変更を依頼する）。
-//
-// 呼び出し方: POST
-//   { from: 'YYYY-MM-DD', to: 'YYYY-MM-DD',
-//     store_id?: string(uuid), store?: string(表示名。store_idが無い時のみ使う),
-//     includeCancelled?: boolean(既定false), includeSubBrand?: boolean(既定false),
-//     mode?: 'list' | 'cancel_summary' | 'both'(既定) }
-// 返り値: { ok:true, rows?, cancelSummary?, scope:{ role, restrictedStoreIds? } }
+// 呼び出し方: POST { mode: 'list'|'cancel_summary'|'monthly_summary', ... }（mode必須）
+//   ①list: { mode:'list', from, to, limit(必須・最大1000), offset?, store_id?, store?, includeCancelled?, includeSubBrand? }
+//      → rsv_reservationsの明細行を1件ずつ返す（予約帳UI用）。期間・limitを必ず指定すること
+//   ②cancel_summary: { mode:'cancel_summary', from, to, store_id?, store?, includeSubBrand? }
+//      → kd_reservation_daily_summaryのcancel_breakdown/channel_breakdownを店舗×期間で合算して返す
+//   ③monthly_summary: { mode:'monthly_summary', year_month:'YYYY-MM', store_id?, store?, includeSubBrand? }
+//      → kd_reservation_daily_summaryのその月ぶんを店舗ごとに合算して返す（予約件数・当日率等）
 import { createClient } from "npm:@supabase/supabase-js@2";
 
 const cors: Record<string, string> = {
@@ -48,19 +43,14 @@ function jwtUid(req: Request): string {
 // GAS bqGetReservation()と同じ一時的サブブランド除外（設計書§8.8 R1・初回突合が済むまでの措置）。
 // 変更する場合はtori-dashboard/gas/Code.gs側の同名リストとA担当を通じて必ず同期させること。
 const EXCLUDE_ACCOUNTS_TEMP = ["鶏武者 川崎店", "鶏武者 新横浜", "黒霧屋 新横浜"];
-
-const CANCELLED_PREFIX = "cancelled";
-const RESERVATION_COLS = [
-  "reservation_key", "store_id", "source", "store_account", "source_month",
-  "visit_date", "visit_time", "stay_duration_min", "party_size", "child_count",
-  "status_raw", "status_normalized", "channel_raw", "channel_normalized",
-  "table_no", "course", "menu", "attribute", "tag", "memo",
-  "customer_no", "customer_name", "customer_name_kana",
-  "created_at_source", "cancel_at", "cancel_detected_at",
-];
+const LIST_MAX_LIMIT = 1000;
+const LIST_DEFAULT_LIMIT = 200;
 
 function isDateStr(s: unknown): s is string {
   return typeof s === "string" && /^\d{4}-\d{2}-\d{2}$/.test(s);
+}
+function isYearMonth(s: unknown): s is string {
+  return typeof s === "string" && /^\d{4}-\d{2}$/.test(s);
 }
 
 async function resolveScope(sb: ReturnType<typeof createClient>, uid: string) {
@@ -71,17 +61,20 @@ async function resolveScope(sb: ReturnType<typeof createClient>, uid: string) {
   }
   if (u.role === "TENCHO") {
     const { data: us } = await sb.from("user_stores").select("store_id").eq("user_id", uid);
-    const ids = (us ?? []).map((r: any) => r.store_id);
-    return { allowed: true as const, role: u.role, restrictedStoreIds: ids };
+    return { allowed: true as const, role: u.role, restrictedStoreIds: (us ?? []).map((r: any) => r.store_id) };
   }
   return { allowed: false as const, error: "権限がありません（社長・本部・チーム長・店長のみ。経営Dと同じ判定）" };
 }
 
-function daysBetween(fromIso: string | null, toIso: string | null): number | null {
-  if (!fromIso || !toIso) return null;
-  const a = new Date(fromIso).getTime(), b = new Date(toIso).getTime();
-  if (!Number.isFinite(a) || !Number.isFinite(b)) return null;
-  return Math.max(0, (b - a) / 86400000);
+async function resolveStoreId(sb: ReturnType<typeof createClient>, body: any): Promise<{ storeId: string | null } | { error: string }> {
+  if (typeof body.store_id === "string" && body.store_id) return { storeId: body.store_id };
+  if (typeof body.store === "string" && body.store.trim()) {
+    const name = body.store.trim();
+    const { data: s } = await sb.from("stores").select("id").or(`name.eq.${name},dash_store_name.eq.${name}`).maybeSingle();
+    if (!s) return { error: `店舗が見つかりません: ${name}` };
+    return { storeId: s.id };
+  }
+  return { storeId: null };
 }
 
 Deno.serve(async (req) => {
@@ -89,9 +82,9 @@ Deno.serve(async (req) => {
   try {
     const sb = svc();
     let body: any = {};
-    try { body = await req.json(); } catch { /* ボディなしは400にする（GET未対応） */ }
+    try { body = await req.json(); } catch { return json({ ok: false, error: "リクエストボディが不正です" }, 400); }
 
-    // ---------------- 権限チェック（service_role直呼びは内部ツール/バッチ用に許可。他の関数と同じ方針） ----------------
+    // ---------------- 権限チェック（service_role直呼びは内部ツール/バッチ用に許可） ----------------
     const authHeader = req.headers.get("Authorization") ?? "";
     const isServiceRole = authHeader.includes(Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? " ");
     let restrictedStoreIds: string[] | null = null;
@@ -103,117 +96,154 @@ Deno.serve(async (req) => {
       if (!scope.allowed) return json({ ok: false, error: scope.error }, 403);
       role = scope.role;
       restrictedStoreIds = scope.restrictedStoreIds;
-      if (restrictedStoreIds && restrictedStoreIds.length === 0) {
-        return json({ ok: true, rows: [], cancelSummary: [], scope: { role, restrictedStoreIds } }); // 担当店舗未設定
-      }
     }
 
-    // ---------------- パラメータ ----------------
-    const from = body.from, to = body.to;
-    if (!isDateStr(from) || !isDateStr(to)) return json({ ok: false, error: "from/toはYYYY-MM-DD形式で必須です" }, 400);
-    const includeCancelled = body.includeCancelled === true;
-    const includeSubBrand = body.includeSubBrand === true;
-    const mode = ["list", "cancel_summary", "both"].includes(body.mode) ? body.mode : "both";
-
-    // store指定の解決（store_id優先。無ければstore=表示名をstoresから引く）
-    let storeId: string | null = typeof body.store_id === "string" && body.store_id ? body.store_id : null;
-    if (!storeId && typeof body.store === "string" && body.store.trim()) {
-      const name = body.store.trim();
-      const { data: s } = await sb.from("stores").select("id,name,dash_store_name")
-        .or(`name.eq.${name},dash_store_name.eq.${name}`).maybeSingle();
-      if (!s) return json({ ok: false, error: `店舗が見つかりません: ${name}` }, 400);
-      storeId = s.id;
+    const mode = body.mode;
+    if (!["list", "cancel_summary", "monthly_summary"].includes(mode)) {
+      return json({ ok: false, error: "modeは'list'|'cancel_summary'|'monthly_summary'のいずれかが必須です" }, 400);
     }
+
+    const storeResolved = await resolveStoreId(sb, body);
+    if ("error" in storeResolved) return json({ ok: false, error: storeResolved.error }, 400);
+    const storeId = storeResolved.storeId;
     if (storeId && restrictedStoreIds && !restrictedStoreIds.includes(storeId)) {
       return json({ ok: false, error: "この店舗の予約を閲覧する権限がありません" }, 403);
     }
-    // 有効な店舗スコープ（絞り込み用）: 個別指定があればそれ1件、無ければTENCHOの担当店舗すべて
+    if (!storeId && restrictedStoreIds && restrictedStoreIds.length === 0) {
+      return json({ ok: true, mode, rows: [], scope: { role, restrictedStoreIds } });
+    }
     const scopeStoreIds = storeId ? [storeId] : restrictedStoreIds;
+    const includeSubBrand = body.includeSubBrand === true;
 
-    // 店舗名解決用マップ（表示名はdash_store_name優先。labor-allocation-compare/dash-syncと同じ考え方）
-    const { data: storeRows } = await sb.from("stores").select("id,name,dash_store_name");
-    const storeNameOf = new Map<string, string>();
-    (storeRows ?? []).forEach((s: any) => storeNameOf.set(s.id, (s.dash_store_name || s.name || s.id)));
+    // ---------------- ①list: rsv_reservations明細（期間・limit必須） ----------------
+    if (mode === "list") {
+      if (!isDateStr(body.from) || !isDateStr(body.to)) {
+        return json({ ok: false, error: "from/toはYYYY-MM-DD形式で必須です（軽量化ルール: 全件返し禁止）" }, 400);
+      }
+      const limitNum = Number(body.limit);
+      if (!Number.isFinite(limitNum) || limitNum <= 0) {
+        return json({ ok: false, error: "limitは1以上の数値で必須です（軽量化ルール: 全件返し禁止）" }, 400);
+      }
+      const limit = Math.min(LIST_MAX_LIMIT, Math.floor(limitNum) || LIST_DEFAULT_LIMIT);
+      const offset = Math.max(0, Math.floor(Number(body.offset)) || 0);
+      const includeCancelled = body.includeCancelled === true;
 
-    function applyCommonFilters(q: any, forSummary: boolean) {
-      q = q.gte("visit_date", from).lte("visit_date", to);
+      const cols = [
+        "reservation_key", "store_id", "source", "store_account", "visit_date", "visit_time",
+        "stay_duration_min", "party_size", "child_count", "status_raw", "status_normalized",
+        "channel_raw", "channel_normalized", "table_no", "course", "menu", "attribute", "tag",
+        "customer_no", "customer_name", "customer_name_kana", "created_at_source", "cancel_at",
+      ];
+      let q = sb.from("rsv_reservations").select(cols.join(","), { count: "exact" })
+        .gte("visit_date", body.from).lte("visit_date", body.to);
       if (scopeStoreIds) q = q.in("store_id", scopeStoreIds);
       if (!includeSubBrand) q = q.not("store_account", "in", `(${EXCLUDE_ACCOUNTS_TEMP.map((n) => `"${n}"`).join(",")})`);
-      if (!forSummary && !includeCancelled) q = q.not("status_normalized", "ilike", `${CANCELLED_PREFIX}%`);
-      return q;
-    }
+      if (!includeCancelled) q = q.not("status_normalized", "ilike", "cancelled%");
+      q = q.order("visit_date", { ascending: true }).order("visit_time", { ascending: true }).range(offset, offset + limit - 1);
 
-    const out: any = { ok: true, scope: { role, restrictedStoreIds, storeId } };
-
-    if (mode === "list" || mode === "both") {
-      let q = sb.from("rsv_reservations").select(RESERVATION_COLS.join(","));
-      q = applyCommonFilters(q, false);
-      q = q.order("visit_date", { ascending: true }).order("visit_time", { ascending: true });
-      const { data, error } = await q;
+      const { data, error, count } = await q;
       if (error) return json({ ok: false, error: "予約データの取得に失敗しました: " + error.message }, 500);
-      out.rows = (data ?? []).map((r: any) => ({
+      const { data: storeRows } = await sb.from("stores").select("id,name,dash_store_name");
+      const storeNameOf = new Map<string, string>();
+      (storeRows ?? []).forEach((s: any) => storeNameOf.set(s.id, s.dash_store_name || s.name || s.id));
+      const rows = (data ?? []).map((r: any) => ({
         ...r,
         store_name: storeNameOf.get(r.store_id) || r.store_id,
-        // ダイニー台帳(source='dinii')以外は元データに氏名列が無いため常にnull（設計書§8.4・§8.7・§8.8 R3）
         customer_name: r.source === "dinii" ? (r.customer_name || "") : null,
         customer_name_kana: r.source === "dinii" ? (r.customer_name_kana || "") : null,
       }));
+      return json({ ok: true, mode, rows, limit, offset, totalCount: count ?? null, scope: { role, restrictedStoreIds } });
     }
 
-    if (mode === "cancel_summary" || mode === "both") {
-      // キャンセル分析は常に全ステータス（キャンセル含む）を対象にする（設計書§8.6）
-      let q = sb.from("rsv_reservations").select(
-        "store_id,source_month,channel_raw,status_normalized,party_size,created_at_source,cancel_at,cancel_detected_at",
-      );
-      q = applyCommonFilters(q, true);
-      const { data, error } = await q;
-      if (error) return json({ ok: false, error: "キャンセル分析データの取得に失敗しました: " + error.message }, 500);
-
-      type Agg = {
-        store_id: string; store_name: string; ym: string; channel: string;
-        total: number; totalParty: number;
-        cancelled_user: number; cancelled_other: number; cancelled_store: number; cancelled_noshow: number;
-        cancelDaySum: number; cancelDayCount: number;
-      };
-      const byKey = new Map<string, Agg>();
-      for (const r of (data ?? []) as any[]) {
-        const ym = String(r.source_month || "").slice(0, 7); // 'YYYY-MM-01' -> 'YYYY-MM'
-        const key = `${r.store_id}|${ym}|${r.channel_raw || ""}`;
-        const a = byKey.get(key) ?? {
-          store_id: r.store_id, store_name: storeNameOf.get(r.store_id) || r.store_id, ym, channel: r.channel_raw || "",
-          total: 0, totalParty: 0, cancelled_user: 0, cancelled_other: 0, cancelled_store: 0, cancelled_noshow: 0,
-          cancelDaySum: 0, cancelDayCount: 0,
-        };
-        a.total++;
-        a.totalParty += Number(r.party_size) || 0;
-        const status = String(r.status_normalized || "");
-        if (status === "cancelled_user") a.cancelled_user++;
-        else if (status === "cancelled_other") a.cancelled_other++;
-        else if (status === "cancelled_store") a.cancelled_store++;
-        else if (status === "cancelled_noshow") a.cancelled_noshow++;
-        if (status.startsWith(CANCELLED_PREFIX)) {
-          // 正確な値(cancel_at)があればそれを優先、無ければ日次検知(cancel_detected_at)を使う（設計書§8.3-4・§8.7）
-          const cancelAt = r.cancel_at || r.cancel_detected_at;
-          const days = daysBetween(r.created_at_source, cancelAt);
-          if (days != null) { a.cancelDaySum += days; a.cancelDayCount++; }
-        }
-        byKey.set(key, a);
+    // ---------------- ②cancel_summary: kd_reservation_daily_summaryの合算（期間必須） ----------------
+    if (mode === "cancel_summary") {
+      if (!isDateStr(body.from) || !isDateStr(body.to)) {
+        return json({ ok: false, error: "from/toはYYYY-MM-DD形式で必須です" }, 400);
       }
-      out.cancelSummary = [...byKey.values()].map((a) => {
-        const cancelledTotal = a.cancelled_user + a.cancelled_other + a.cancelled_store + a.cancelled_noshow;
-        return {
-          store_id: a.store_id, store_name: a.store_name, ym: a.ym, channel: a.channel,
-          totalReservations: a.total, totalParty: a.totalParty,
-          cancelledUser: a.cancelled_user, cancelledOther: a.cancelled_other,
-          cancelledStore: a.cancelled_store, cancelledNoshow: a.cancelled_noshow,
-          cancelRate: a.total ? cancelledTotal / a.total : 0,
-          noshowRate: a.total ? a.cancelled_noshow / a.total : 0,
-          avgDaysToCancel: a.cancelDayCount ? a.cancelDaySum / a.cancelDayCount : null,
+      let q = sb.from("kd_reservation_daily_summary")
+        .select("store_id,period_date,reservation_count,cancel_breakdown,channel_breakdown")
+        .gte("period_date", body.from).lte("period_date", body.to);
+      if (scopeStoreIds) q = q.in("store_id", scopeStoreIds);
+      const { data, error } = await q;
+      if (error) return json({ ok: false, error: "キャンセル集計の取得に失敗しました: " + error.message }, 500);
+
+      const { data: storeRows } = await sb.from("stores").select("id,name,dash_store_name");
+      const storeNameOf = new Map<string, string>();
+      (storeRows ?? []).forEach((s: any) => storeNameOf.set(s.id, s.dash_store_name || s.name || s.id));
+
+      type Agg = { store_id: string; store_name: string; totalReservations: number; cancel: Record<string, { count: number; party: number }>; channel: Record<string, { count: number; party: number }> };
+      const byStore = new Map<string, Agg>();
+      for (const r of (data ?? []) as any[]) {
+        const a = byStore.get(r.store_id) ?? {
+          store_id: r.store_id, store_name: storeNameOf.get(r.store_id) || r.store_id,
+          totalReservations: 0, cancel: {}, channel: {},
         };
-      }).sort((a, b) => a.ym.localeCompare(b.ym) || a.store_name.localeCompare(b.store_name));
+        a.totalReservations += Number(r.reservation_count) || 0;
+        for (const [k, v] of Object.entries((r.cancel_breakdown ?? {}) as Record<string, any>)) {
+          const cur = a.cancel[k] ?? { count: 0, party: 0 };
+          cur.count += Number(v?.count) || 0; cur.party += Number(v?.party) || 0;
+          a.cancel[k] = cur;
+        }
+        for (const [k, v] of Object.entries((r.channel_breakdown ?? {}) as Record<string, any>)) {
+          const cur = a.channel[k] ?? { count: 0, party: 0 };
+          cur.count += Number(v?.count) || 0; cur.party += Number(v?.party) || 0;
+          a.channel[k] = cur;
+        }
+        byStore.set(r.store_id, a);
+      }
+      const rows = [...byStore.values()].map((a) => {
+        const cancelTotal = Object.values(a.cancel).reduce((s, v) => s + v.count, 0);
+        const denom = a.totalReservations + cancelTotal; // 母数=非キャンセル+キャンセル
+        return {
+          store_id: a.store_id, store_name: a.store_name,
+          totalReservations: a.totalReservations,
+          cancelBreakdown: a.cancel, channelBreakdown: a.channel,
+          cancelCount: cancelTotal,
+          cancelRate: denom ? cancelTotal / denom : 0,
+          noshowRate: denom ? (a.cancel["noshow"]?.count ?? 0) / denom : 0,
+        };
+      });
+      return json({ ok: true, mode, rows, scope: { role, restrictedStoreIds } });
     }
 
-    return json(out);
+    // ---------------- ③monthly_summary: kd_reservation_daily_summaryの月合算 ----------------
+    if (!isYearMonth(body.year_month)) return json({ ok: false, error: "year_monthはYYYY-MM形式で必須です" }, 400);
+    const monthFrom = `${body.year_month}-01`;
+    const [yy, mm] = body.year_month.split("-").map(Number);
+    const lastDay = new Date(yy, mm, 0).getDate();
+    const monthTo = `${body.year_month}-${String(lastDay).padStart(2, "0")}`;
+
+    let q2 = sb.from("kd_reservation_daily_summary")
+      .select("store_id,reservation_count,party_size_sum,same_day_count,same_day_party,walkin_count,walkin_party,expected_sales")
+      .gte("period_date", monthFrom).lte("period_date", monthTo);
+    if (scopeStoreIds) q2 = q2.in("store_id", scopeStoreIds);
+    const { data: mdata, error: merr } = await q2;
+    if (merr) return json({ ok: false, error: "月次サマリの取得に失敗しました: " + merr.message }, 500);
+
+    const { data: storeRows2 } = await sb.from("stores").select("id,name,dash_store_name");
+    const storeNameOf2 = new Map<string, string>();
+    (storeRows2 ?? []).forEach((s: any) => storeNameOf2.set(s.id, s.dash_store_name || s.name || s.id));
+
+    type MAgg = { store_id: string; store_name: string; reservationCount: number; partySum: number; sameDayCount: number; sameDayParty: number; walkinCount: number; walkinParty: number; expectedSales: number };
+    const byStore2 = new Map<string, MAgg>();
+    for (const r of (mdata ?? []) as any[]) {
+      const a = byStore2.get(r.store_id) ?? {
+        store_id: r.store_id, store_name: storeNameOf2.get(r.store_id) || r.store_id,
+        reservationCount: 0, partySum: 0, sameDayCount: 0, sameDayParty: 0, walkinCount: 0, walkinParty: 0, expectedSales: 0,
+      };
+      a.reservationCount += Number(r.reservation_count) || 0;
+      a.partySum += Number(r.party_size_sum) || 0;
+      a.sameDayCount += Number(r.same_day_count) || 0;
+      a.sameDayParty += Number(r.same_day_party) || 0;
+      a.walkinCount += Number(r.walkin_count) || 0;
+      a.walkinParty += Number(r.walkin_party) || 0;
+      a.expectedSales += Number(r.expected_sales) || 0;
+      byStore2.set(r.store_id, a);
+    }
+    const rows2 = [...byStore2.values()].map((a) => ({
+      ...a, sameDayRate: a.reservationCount ? a.sameDayCount / a.reservationCount : 0,
+    }));
+    return json({ ok: true, mode, year_month: body.year_month, rows: rows2, scope: { role, restrictedStoreIds } });
   } catch (e) {
     return json({ ok: false, error: String(e) }, 500);
   }
