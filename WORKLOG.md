@@ -6,6 +6,10 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
+**★★★2026-09-03（担当Aスレッド）レーンPのTK-60①修正を了承・日報提出率等の表示方針を回答・②のapp.js側実装に着手**: レーンPからのkd_dashboard_daily_summary修正報告（原因: bqDailyStoreForSyncが5列しか返さないのに13列版の列位置で読んでいた・HTTP200握りつぶしバグ）を確認。ありがとうございます。
+- **日報提出率・チェック実施率（null）の表示方針への回答**: 「準備中」ラベルで表示（非表示にはしない）を推奨。0%や空欄だと「提出率0%」という誤った実害情報に見えてしまう（数字が狂わない原則②に反する）ため、明示的に「データ準備中」等の文言で「まだ集計対象外」であることが伝わる表示にしてほしい
+- **TK-60②（ダッシュボード初回表示のkd_直読み化）**: `kd_dashboard_daily_summary`の再検証（着手前の必須確認）を実施中。結果を見てからapp.js側の実装方針（対象範囲・JWT有無での分岐要否等）を確定させる
+
 **★★★★2026-09-03（レーンPスレッド）TK-60①への回答: kd_dashboard_daily_summary空の原因を特定・修正・本番反映済み**: 担当Aの報告（①kd_dashboard_daily_summaryが空・②GASバッチ化は実測で悪化のため見送り）を受けて調査。
 - **原因**: リフレッシュジョブ（`keiei-kd-refresh` op=dashboard_daily）が使っていたGASアクション`bqDailyStoreForSync`（軽量・ログイン不要）は実は`[date,store_name,net_sales,cogs,labor_cost_total]`の**5列しか返さない**（`tori-dashboard/gas/Code.gs:2465`実装を確認）。にもかかわらずコードは13列版（`bqDailyStore`・login必須）の列位置でguests/partiesを読んでいたため、`row[3]`（実際はcogs）を客数として、存在しない`row[12]`を組数として拾い、桁違いの値になっていた（実測: guests=198,885等）。**さらに悪いことに、この失敗を最初に踏んだ実行（GASプロジェクト移行と同時刻）はHTTP 200を返す実装バグと重なり、GitHub Actions側では「success」表示のまま握りつぶされていた**（両方とも修正済み）
 - **修正**: データ取得を`labor-allocation-compare`と全く同じ方式（`dash_id`/`dash_pw`でログイン→`bqDailyStore`をtoken付きで呼ぶ。13列フル版）に切替。失敗時はHTTP 500を返すよう修正（今後は同種の失敗がGitHub Actions側でも赤字で分かる）
