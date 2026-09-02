@@ -254,10 +254,6 @@ body.embed-mode .wrap{padding-top:16px}
 }
 @media(max-width:390px){.mail-summary,.mail-detail-grid,.ai-grid{grid-template-columns:1fr}}
 </style>
-<!-- 2026-09-02追加: 給与明細PDFから事業所別の金額・交通費を参考値として読み取るために使用（pdf.js）。
-     PDFはテキスト埋め込み型（スマレジ出力）のため実際の画像OCRではなく、テキスト抽出＋パターン照合で行う -->
-<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
-<script>if(window.pdfjsLib) pdfjsLib.GlobalWorkerOptions.workerSrc="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";</script>
 </head>
 <body>
 <div class="wrap">
@@ -3435,42 +3431,30 @@ function base64ToBytes(base64){
 function payrollPdfBlobUrl(base64){
   return URL.createObjectURL(new Blob([base64ToBytes(base64)],{type:"application/pdf"}));
 }
-// 給与明細PDFから「事業所ごとの金額・交通費」を参考値として読み取る（2026-09-02追加。
-// ユーザー要望「事業所ごとの金額と交通費だけでもOCRで読み込んで表示させることはできないか」に対応）。
-// スマレジの給与明細PDFはテキストがそのまま埋め込まれた形式（画像スキャンではない）のため、
-// 実際の画像OCRではなくpdf.jsによるテキスト抽出＋勤務詳細表のパターン照合で行う。
-// あくまで「参考値の表示」に留め（自動で仕訳金額へ反映はしない）、読み取れなかった場合は
-// その旨を明示する（誤った金額を無言で仕訳に使ってしまう事故を避けるため）
+// 給与明細PDFから「事業所ごとの金額・交通費」を参考値として読み取る（2026-09-02追加・同日中に
+// AI読み取り方式へ切替）。
+// 当初はpdf.js＋正規表現でテキスト抽出→パターン照合していたが、実機テストで店舗名の表記ゆれ等に
+// より「勤務詳細の表を読み取れませんでした」と失敗した。ユーザーから「請求書メールの請求書読み取りと
+// 同じ理屈で、AIでつないでできないものなのか」との提案を受け、既存のinvoice-ocr Edge Function
+// （Claude APIへPDFを直接渡して構造化抽出する方式）と全く同じ設計のpayroll-pdf-ocrへ切り替えた。
+// あくまで「参考値の表示」に留め（自動で仕訳金額へ反映はしない）、読み取れなかった場合はその旨を
+// 明示する（誤った金額を無言で仕訳に使ってしまう事故を避けるため）
 async function payrollExtractStoreBreakdown(base64){
-  if(!window.pdfjsLib) return {ok:false,error:"PDF読み取り機能の読み込みに失敗しました"};
+  const s=sess.get();
+  let r;
   try{
-    const pdf=await pdfjsLib.getDocument({data:base64ToBytes(base64)}).promise;
-    let fullText="";
-    for(let p=1;p<=pdf.numPages;p++){
-      const page=await pdf.getPage(p);
-      const content=await page.getTextContent();
-      fullText+=content.items.map(it=>it.str).join(" ")+"\n";
-    }
-    const storeNames=[...new Set((PAYROLL_STATE.stores||[]).map(s=>(s.name||"").trim()).filter(Boolean))]
-      .sort((a,b)=>b.length-a.length); // 長い店舗名を先に試す（短い名前が別店舗名の一部として誤爆するのを防ぐ）
-    if(!storeNames.length) return {ok:false,error:"店舗一覧が取得できていません"};
-    const escRe=s=>s.replace(/[.*+?^${}()|[\]\\]/g,"\\$&");
-    const timeRange=`[\\d:]+\\s*[~\\-～]\\s*[\\d:]+`;
-    const re=new RegExp(`(${storeNames.map(escRe).join("|")})\\s*${timeRange}\\s*(?:-|${timeRange})\\s*[\\d,]+\\s*円\\s*\\d+時間\\d+分\\s*([\\d,.]+)\\s*円\\s*([\\d,]+)\\s*円`,"g");
-    const totals=new Map(); // store -> {amount,commute,count}
-    let m; let matchCount=0;
-    while((m=re.exec(fullText))){
-      matchCount++;
-      const store=m[1], amount=Number(m[2].replace(/,/g,""))||0, commute=Number(m[3].replace(/,/g,""))||0;
-      const t=totals.get(store)||{amount:0,commute:0,count:0};
-      t.amount+=amount; t.commute+=commute; t.count++;
-      totals.set(store,t);
-    }
-    if(!matchCount) return {ok:false,error:"勤務詳細の表を読み取れませんでした（PDFのフォーマットが対応外の可能性があります）"};
-    return {ok:true,totals:Array.from(totals,([store,t])=>({store,...t}))};
+    r=await fetch(`${SUPA_URL}/functions/v1/payroll-pdf-ocr`,{
+      method:"POST",headers:{apikey:SUPA_KEY,Authorization:"Bearer "+(s?s.at:""),"Content-Type":"application/json"},
+      body:JSON.stringify({pdf_base64:base64}),
+    });
   }catch(e){
-    return {ok:false,error:"PDFの読み取り中にエラーが発生しました: "+String(e&&e.message||e)};
+    return {ok:false,error:"AI読み取りサービスへの接続に失敗しました"};
   }
+  const j=await r.json().catch(()=>({}));
+  if(!r.ok||!j.success) return {ok:false,error:j.error||"読み取りに失敗しました"};
+  const stores=Array.isArray(j.stores)?j.stores:[];
+  if(!stores.length) return {ok:false,error:j.note||"勤務詳細の表が見つかりませんでした"};
+  return {ok:true,totals:stores.map(st=>({store:st.store_name,amount:Number(st.amount_total)||0,commute:Number(st.commute_total)||0,count:Number(st.days_count)||0})),note:j.note};
 }
 // payroll-pdfsから証憑を削除（添付間違い等の取り消し用。2026-09-01）
 async function payrollDeletePdf(userId,yearMonth){
@@ -4114,7 +4098,7 @@ async function payrollOpenPreview(userId){
       <div>
         <div style="font-size:11px;color:var(--muted);margin-bottom:4px">📎 給与明細PDF（見ながら金額を確認できます）</div>
         <iframe src="${esc(pdfUrl)}" title="給与明細PDF" style="width:100%;height:82vh;border:1px solid var(--line);border-radius:8px"></iframe>
-        <div style="margin-top:8px"><button id="payroll-preview-ocr">📊 PDFから事業所別の金額・交通費を読み取る（参考値）</button></div>
+        <div style="margin-top:8px"><button id="payroll-preview-ocr">🤖 AIで事業所別の金額・交通費を読み取る（参考値）</button></div>
         <div id="payroll-preview-ocr-result" style="margin-top:6px"></div>
       </div>
       <div>${bodyContent}</div>
@@ -4177,7 +4161,7 @@ async function payrollOpenPreview(userId){
     const btn=$("payroll-preview-ocr"), el=$("payroll-preview-ocr-result");
     btn.disabled=true; btn.textContent="読み取り中…";
     const res=await payrollExtractStoreBreakdown(pdfBase64);
-    btn.disabled=false; btn.textContent="📊 PDFから事業所別の金額・交通費を読み取る（参考値）";
+    btn.disabled=false; btn.textContent="🤖 AIで事業所別の金額・交通費を読み取る（参考値）";
     if(!res.ok){ el.innerHTML=`<div class="err">⚠️ ${esc(res.error)}</div>`; return; }
     el.innerHTML=`<div class="card" style="padding:8px 10px">
       <div style="font-size:10px;color:var(--muted);margin-bottom:6px">📊 PDFから読み取った参考値です（勤務詳細表の合計）。実際の仕訳金額とは自動連携していません。ご自身で確認のうえ、必要なら上の金額欄を修正してください</div>
