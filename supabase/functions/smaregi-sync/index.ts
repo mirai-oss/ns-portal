@@ -99,6 +99,33 @@ async function fetchAllStaffs(token: string) {
   return staffs;
 }
 
+// 2026-09-02追加: スタッフがスマレジ・タイムカード上でどの事業所（店舗）に所属しているかを取得。
+// /staffs のスタッフ一覧レスポンス自体には所属店舗の項目が無いため、クエリパラメータ
+// store_id で店舗ごとに絞り込んだ一覧を店舗の数だけ呼び、staffId→所属店舗(複数可)の対応表を作る。
+// ユーザー要望「事業所で分かれるようにできない？」（一括招待でどの店舗を選べばいいか分からない）への対応。
+// storeList: [{ id: 内部store UUID, smaregiStoreId: スマレジ側のstore_id(文字列) }]
+async function fetchStaffStoreMap(token: string, storeList: { id: string; smaregiStoreId: string }[]) {
+  const map: Record<string, string[]> = {}; // staffId -> [内部store UUID, ...]
+  for (const st of storeList) {
+    if (!st.smaregiStoreId) continue;
+    try {
+      for (let page = 1; page <= 5; page++) {
+        const r = await api(token, `/staffs?store_id=${encodeURIComponent(st.smaregiStoreId)}&limit=100&page=${page}`);
+        const raw = await r.json().catch(() => null);
+        if (!r.ok) break;
+        const arr = Array.isArray(raw) ? raw : (raw?.staffs ?? []);
+        for (const s of arr) {
+          const sid = String(s.staffId);
+          (map[sid] = map[sid] ?? []).push(st.id);
+        }
+        const pageCount = Array.isArray(raw) ? (arr.length < 100 ? page : page + 1) : (raw?.pageCount ?? page);
+        if (page >= Number(pageCount) || arr.length === 0) break;
+      }
+    } catch (_) { /* この店舗だけ取得できなくても他の店舗は続行 */ }
+  }
+  return map;
+}
+
 // v2.6.14: スマレジ側で使用中の社員番号を集める（重複を避けるため。退職者も含める）
 async function fetchStaffCodes(token: string): Promise<Set<string>> {
   const set = new Set<string>();
@@ -156,7 +183,16 @@ Deno.serve(async (req) => {
     if (body.action === "staffs") {
       if (!isAdmin) return json({ ok: false, error: caller.uid ? "forbidden" : "unauthorized" }, caller.uid ? 403 : 401);
       const token = await getToken();
-      const staffs = await fetchAllStaffs(token);
+      const [staffs, { data: storeRows }] = await Promise.all([
+        fetchAllStaffs(token),
+        svc().from("stores").select("id,smaregi_store_id").not("smaregi_store_id", "is", null),
+      ]);
+      // 2026-09-02追加: 店舗（事業所）ごとの所属を付与（一括招待画面での絞り込み用）
+      const storeMap = await fetchStaffStoreMap(
+        token,
+        (storeRows ?? []).map((s: any) => ({ id: s.id, smaregiStoreId: String(s.smaregi_store_id) })),
+      );
+      for (const s of staffs) s.storeIds = storeMap[s.staffId] ?? [];
       return json({ ok: true, staffs });
     }
 
