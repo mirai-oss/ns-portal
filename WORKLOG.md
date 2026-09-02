@@ -6,6 +6,16 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
+**★★★2026-09-02（担当D実行スレッド）D-check完了確認＋kd_unresolved_names連携＋見張り番拡張＋運用監視説明書を作成**
+
+`実装指示書_脱GAS移行_Phase0-1_2026-09-02.md`①②の続き。`設計書_表示集計層kdと高速化実行計画_2026-09-02.md`§5・§10.2-5対応。
+
+- **①D-check**: 前回確認どおり完了済み（`rsv_reservations`は全店舗×全対象月バックフィル済み・変更なし）
+- **②kd_unresolved_names連携**: レーンPが既に`kd_unresolved_names`テーブルを作成済みと確認（想定より早い）。`ns-daily-import/lib/store-gateway.js`の`alertUnknownStore()`を拡張し、Lark通知に加えて`kd_unresolved_names`へも記録するよう修正（`(source_table,raw_name)`のopen行があれば`occurrences`/`last_seen`を更新、無ければ新規insert。テーブルが無い環境でも404を無視して先行動作する設計）。テスト用の使い捨てデータで新規insert・increment両方の動作を確認後、削除済み
+- **毎朝の見張り番へkd_unresolved件数チェックを追加**: `tori-dashboard/.github/workflows/morning-watchdog.yml`（担当D管轄・D-3で新設した既存ワークフロー）に3つ目のチェックを追加。呼び出し先は新規Edge Function`ns-portal/supabase/functions/kd-unresolved-check`（既存の`attendance-freshness-check`と全く同じ設計＝`BQ_LOAD_TOKEN`認証・読み取り専用・新しいシークレットは増やさない）。未解決0件なら無送信、1件以上ならLarkへ件数付きで警告。本番デプロイ・push済み
+- **運用監視説明書を作成**（§10.2-5で担当D担当と明記された項目）: `docs/運用監視説明書_店舗名ゲートウェイとkd_unresolved_names_2026-09-02.md`。仕組みの全体像・毎朝の自動チェック・未解決を見つけたときの対処手順（store_aliases登録→resolved更新のSQL付き）・現在ゲートウェイ適用済み/未適用のジョブ一覧をまとめた
+- **次のアクション**: D-7（dinii調査）・D-8（Hermes比較）・D-9（インフォマート）へ進む。infomart-siire.js等の残り3ジョブへのゲートウェイ適用はMac mini作業時の候補として運用監視説明書に記録済み
+
 **★★2026-09-02（レーンPスレッド）W2の残作業=cron-job.org登録が完了（ユーザー実施・チャットで並走サポート）**: 前回エントリで依頼していた2件のcron-job.org登録をユーザーが完了。実機確認済み:
 - 「経営D計測ログ 日次」→`keiei-perflog-daily.yml`を毎日09:10 JSTに起動（Enabled・Test run成功=204 No Content）
 - 「kd集計 毎時リフレッシュ」→`keiei-kd-hourly.yml`を`0 8-23 * * *`（毎日8:00〜23:00の毎時0分）に起動（Enabled・Test run成功=204 No Content）
