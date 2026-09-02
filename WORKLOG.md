@@ -6,6 +6,12 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
+**★★★★★★★★🚨2026-09-02（担当Aスレッド）真因発見: ユーザーの予約管理「何をしても変わらない」問題は、実は今日のGASプロジェクト移行そのものが1ブラウザで反映されていなかっただけだった**: ユーザーからブラウザコンソールのスクリーンショットを受領し即座に真因判明。`Access to fetch at '...AKfycbz9rd37EZa6X8WRMVEBrXobN8DbYWkHRlhFNYU5rd1UZ0V8j0-6shMQjEeoi4HDWZ0B...' from origin 'https://mirai-oss.github.io' has been blocked by CORS policy`＋`net::ERR_FAILED`——これは**本日の「GASプロジェクト移行」（旧プロジェクトがバージョン上限200到達）で置き換えたはずの、まさにその旧URL**。
+- **根本原因**: `app.js`の`apiUrl()`は`localStorage.toriApiUrl`（マスター専用「接続設定」モーダルで保存できるカスタムURL）を`DEFAULT_API_URL`（ソースコード内の既定値）より優先する設計。**このブラウザは移行前のどこかの時点で接続設定に旧URLを保存していた**ため、今日`DEFAULT_API_URL`を新URLへ何度更新・再デプロイしても、このブラウザだけは永遠に旧URL（今はもう動かない）を使い続けていた
+- **重大な影響範囲の訂正**: これまで「予約管理タブだけの不具合」として調査・対応していたが、実際には**このブラウザからのGAS呼び出しが全て失敗していた**（`dataFreshness`が「取得に失敗」と出ていたのも同じ理由）。今日行った①stg_reservation再ミラー②bqGetReservationの90日絞り込み③keiei-api-reservationのキルスイッチ、はいずれも技術的には正しい対応だったが、**そもそもこのブラウザが新デプロイに一度も到達していなかったため効果を確認できなかった**
+- **対応**: `app.js`起動時に、既知の旧URL（上記）がlocalStorageに保存されていたら自動的に削除しDEFAULT_API_URLへフォールバックさせる一時移行コードを追加。他のカスタム接続設定には影響しない。`app.js?v=169`本番デプロイ済み・push済み（コミット[aa8ed0a](https://github.com/mirai-oss/tori-dashboard/commit/aa8ed0a)）
+- **教訓**: GASプロジェクト移行のような「デプロイURL自体を変える」変更では、`DEFAULT_API_URL`更新だけでなく、**localStorageに個別保存されたURLの移行チェックも同時に入れるべきだった**（今回は原因特定まで数時間を要した）。今後同種の移行があれば同じ移行コードパターンを使う
+
 **★★★★★★2026-09-02（レーンPスレッド）W2完了: kd_サマリ3系統+keiei-kd-refreshを本番構築・A担当へ差し替え宣言済み**: `設計書_表示集計層kdと高速化実行計画_2026-09-02.md`§10.1のW2（①〜④）を実行。ユーザー承認（前回同様「代理でできるなら代理で」）のもとSQL実行・デプロイまで完了。**tori-dashboardのapp.js・GASは無変更**（既存の読み取り専用GASアクション`bqDailyStoreForSync`を呼ぶのみ）。
 
 - **①kd_sync_runs・kd_unresolved_names**: 新設・稼働中。`kd_sync_runs`はリフレッシュ実行台帳（RLSで全ログインユーザーに読み取り許可＝画面はfinished_atの変化だけ見ればよい）。`kd_unresolved_names`は隔離テーブル＋RPC2本（`kd_report_unresolved_name`=取込ジョブ用service_role専用／`kd_resolve_unresolved_name`=CEO/HQ/マスター用）。ns-daily-import側の接続（担当D）はまだ未実施（Pがテーブル用意完了の段階）
