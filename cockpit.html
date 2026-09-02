@@ -225,7 +225,7 @@ async function fetchMe(){
 }
 /* ====== ここまで共通部分 ====== */
 
-const ASSIGNEES=["担当A","担当B","担当C","担当D","担当E","担当F","担当G","担当H","司令塔","Mirai","中山"];
+const ASSIGNEES=["担当A","担当B","担当C","担当D","担当E","担当F","担当G","担当H","レーンP","司令塔","Mirai","中山"];
 const AI_NAMES=new Set(ASSIGNEES.filter(a=>a!=="中山"));
 const ST_LABEL={backlog:"これから",ready:"着手可",in_progress:"進行中",review:"レビュー",waiting_human:"確認待ち",blocked:"ブロック",done:"完了",cancelled:"中止"};
 const PR_LABEL={highest:"最優先",high:"High",mid:"Mid",low:"Low"};

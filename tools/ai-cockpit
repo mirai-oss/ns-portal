@@ -188,6 +188,7 @@ CMDS = {
     "error":    dict(event_type="error"),
     "list":     dict(),
     "add":      dict(),
+    "update":   dict(),
     "watch":    dict(),
     "hb":       dict(status="running"),
     "idle":     dict(status="idle"),
@@ -209,11 +210,12 @@ def main():
             print("ai-cockpit: ~/.ns-cockpit/config が未設定のため送信をスキップしました", file=sys.stderr)
         return 0
 
-    # 未完了タスク一覧（TK番号確認用・git情報等は送らない）
+    # 未完了タスク一覧（TK番号確認用・git情報等は送らない）。--all で完了含む全件
     if cmd == "list":
         req = urllib.request.Request(
             conf["INGEST_URL"],
-            data=json.dumps({"token": conf["TOKEN"], "list_tasks": 1}).encode("utf-8"),
+            data=json.dumps({"token": conf["TOKEN"], "list_tasks": 1,
+                             "include_done": 1 if "all" in flags else 0}).encode("utf-8"),
             headers={"Content-Type": "application/json"}, method="POST")
         try:
             with urllib.request.urlopen(req, timeout=8) as res:
@@ -288,6 +290,7 @@ def main():
                    "create_task": {"title": flags["title"], "description": flags.get("desc", ""),
                                    "assignee_name": agent or "", "priority": flags.get("priority", "mid"),
                                    "status": flags.get("status", "backlog"),
+                                   "on_done_note": flags.get("note", ""), "unblocks": flags.get("unblocks", ""),
                                    "repository": g.get("repository", "")}}
         req = urllib.request.Request(conf["INGEST_URL"], data=json.dumps(payload).encode("utf-8"),
                                      headers={"Content-Type": "application/json"}, method="POST")
@@ -334,6 +337,9 @@ def main():
         payload["message"] = flags["message"]
         if cmd == "blocked": payload["blocker"] = flags["message"]
     if cmd == "done": payload.setdefault("progress_percent", 100)
+    if cmd == "update":  # 台帳整備用: ai-cockpit update --task TK-42 --to 担当B --status ready
+        if flags.get("status"): payload["task_status"] = flags["status"]
+        if flags.get("to"): payload["task_assignee"] = flags["to"]
     if cmd == "approval-request":
         payload["approval_title"] = flags.get("message", "承認をお願いします")
         payload["approval_kind"] = flags.get("kind", "other")

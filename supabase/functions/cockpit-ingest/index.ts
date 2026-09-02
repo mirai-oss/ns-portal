@@ -35,10 +35,9 @@ Deno.serve(async (req) => {
   // タスク一覧（読み取り専用）: AIセッションが「ユーザーの完了報告を代理完了する」際に
   // TK番号を確認するためのアクション（2026-08-31追加。ai-cockpit list から呼ばれる）
   if (b.list_tasks) {
-    const { data: rows } = await sb.from("ck_tasks")
-      .select("task_no,title,status,assignee_name,priority,blocker")
-      .not("status", "in", "(done,cancelled)")
-      .order("task_no");
+    let q = sb.from("ck_tasks").select("task_no,title,status,assignee_name,priority,blocker").order("task_no");
+    if (!b.include_done) q = q.not("status", "in", "(done,cancelled)");
+    const { data: rows } = await q;
     return json({ ok: true, tasks: rows ?? [] });
   }
 
@@ -53,6 +52,7 @@ Deno.serve(async (req) => {
       assignee_type: ct.assignee_name === "中山" ? "human" : "ai",
       repository: String(ct.repository ?? ""), project: String(ct.project ?? ""),
       status: ["backlog", "ready", "in_progress", "waiting_human"].includes(ct.status) ? ct.status : "backlog",
+      on_done_note: String(ct.on_done_note ?? ""), unblocks: String(ct.unblocks ?? ""),
     };
     const { data: t, error } = await sb.from("ck_tasks").insert(ins).select().single();
     if (error) return json({ ok: false, error: error.message }, 500);
@@ -125,8 +125,9 @@ Deno.serve(async (req) => {
   }
 
   // タスク更新（task_status / progress_percent / blocker が来たときだけ）
-  if (task && (b.task_status || b.progress_percent !== undefined || b.blocker !== undefined)) {
+  if (task && (b.task_status || b.task_assignee || b.progress_percent !== undefined || b.blocker !== undefined)) {
     const tp: Record<string, unknown> = { updated_at: now };
+    if (b.task_assignee) { tp.assignee_name = String(b.task_assignee); tp.assignee_type = b.task_assignee === "中山" ? "human" : "ai"; }
     if (b.task_status) { tp.status = b.task_status; if (b.task_status === "done") { tp.completed_at = now; tp.progress_percent = 100; } }
     if (b.progress_percent !== undefined && b.progress_percent !== null) tp.progress_percent = b.progress_percent;
     if (b.blocker !== undefined && b.blocker !== null) tp.blocker = b.blocker;
