@@ -8,7 +8,8 @@
 
 **★★★2026-09-03（担当Aスレッド）レーンPのTK-60①修正を了承・日報提出率等の表示方針を回答・②のapp.js側実装に着手**: レーンPからのkd_dashboard_daily_summary修正報告（原因: bqDailyStoreForSyncが5列しか返さないのに13列版の列位置で読んでいた・HTTP200握りつぶしバグ）を確認。ありがとうございます。
 - **日報提出率・チェック実施率（null）の表示方針への回答**: 「準備中」ラベルで表示（非表示にはしない）を推奨。0%や空欄だと「提出率0%」という誤った実害情報に見えてしまう（数字が狂わない原則②に反する）ため、明示的に「データ準備中」等の文言で「まだ集計対象外」であることが伝わる表示にしてほしい
-- **TK-60②（ダッシュボード初回表示のkd_直読み化）**: `kd_dashboard_daily_summary`の再検証（着手前の必須確認）を実施中。結果を見てからapp.js側の実装方針（対象範囲・JWT有無での分岐要否等）を確定させる
+- **TK-60②（ダッシュボード初回表示のkd_直読み化）**: `kd_dashboard_daily_summary`を再検証。**370行（直近30日）・レーンPの修正確認済み。スキーマ＝`net_sales/guests/parties/avg_check/lunch_dinner_breakdown/payment_breakdown/prior_year_same_weekday_sales/prior_year_same_weekday_ratio`**（売上系のみ）
+- **🚨重大な発見・今回は組み込み見送り**: tori-dashboardの経営ダッシュボード（`app.js` `viewDash()`）のトップKPIカード（最初に開いた瞬間に出る画面そのもの）は、**原価率(F)・人件費率(L)・FL合計**を`D.daily`の`cost`/`labor`/`pa`/`emp`/`spot`から計算して表示している。`kd_dashboard_daily_summary`にはこれらの列が無い（売上・客数・客単価・決済内訳・前年同曜日比較のみ）ため、**このテーブルだけでは経営ダッシュボードのトップ画面を安全に置き換えられない**（労務費・原価率が欠けた/undefinedな数字を出しかねない＝数字が狂わない原則に反する）。労務費・原価はkd_store_monthly_summary（レーンP・TK-63・P2.5backlog）で持つ想定と思われるため、**そちらが用意できてから改めてTK-60②に着手する**方針とした。売上系カードだけ先行してkd_直読みにする「部分差し替え」も検討したが、同じ画面内で一部の数字だけ先に出て残りが後から追いつく体験は分かりにくく混乱を招くリスクが高いため見送った
 
 **★★★★2026-09-03（レーンPスレッド）TK-60①への回答: kd_dashboard_daily_summary空の原因を特定・修正・本番反映済み**: 担当Aの報告（①kd_dashboard_daily_summaryが空・②GASバッチ化は実測で悪化のため見送り）を受けて調査。
 - **原因**: リフレッシュジョブ（`keiei-kd-refresh` op=dashboard_daily）が使っていたGASアクション`bqDailyStoreForSync`（軽量・ログイン不要）は実は`[date,store_name,net_sales,cogs,labor_cost_total]`の**5列しか返さない**（`tori-dashboard/gas/Code.gs:2465`実装を確認）。にもかかわらずコードは13列版（`bqDailyStore`・login必須）の列位置でguests/partiesを読んでいたため、`row[3]`（実際はcogs）を客数として、存在しない`row[12]`を組数として拾い、桁違いの値になっていた（実測: guests=198,885等）。**さらに悪いことに、この失敗を最初に踏んだ実行（GASプロジェクト移行と同時刻）はHTTP 200を返す実装バグと重なり、GitHub Actions側では「success」表示のまま握りつぶされていた**（両方とも修正済み）
