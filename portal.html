@@ -73,6 +73,9 @@ a{color:inherit}
 .nav-item.active{background:#3a342e;color:#fff;font-weight:700}
 .nav-item.soon{opacity:.55;cursor:default}
 .nav-item .count,.nav-item .badge-soon{margin-left:auto;background:var(--accent);color:#fff;border-radius:99px;padding:2px 7px;font-size:10.5px;font-weight:700;white-space:nowrap}
+.grp-trail{margin-left:auto;display:flex;align-items:center;gap:6px}
+.grp-trail .count{background:var(--accent);color:#fff;border-radius:99px;padding:2px 7px;font-size:10.5px;font-weight:700;white-space:nowrap}
+.grp-trail .chev{margin-left:0}
 .nav-item .badge-soon{background:rgba(255,255,255,.14);color:#cfc7bd}
 .nav-item .ext{margin-left:auto;font-size:11px;color:#8d8271}
 .nav-group-head{font-weight:700;color:#fff}
@@ -999,14 +1002,17 @@ const TOP_ITEMS=[
 // （同じSupabase Auth・info/publicは同一DB内の別スキーマ）に対しAccept-Profile/
 // Content-Profileヘッダーで直接読み書きする（詳細はrequests.html冒頭コメント参照）。
 // 承認（本部/マスターがemployees・credentials画面で処理する部分）は引き続きns-info-system側
+// 2026-09-03 ユーザー要望: 「自分宛の承認待ち等が残っている数」を各項目・グループ見出し
+// 双方にバッジ表示（countOf()参照）。全員共通のロジックで、誰のアカウントで開いても
+// そのアカウント自身の承認待ち件数になる（ログイン中ユーザー基準で都度計算するため）
 const SHINSEI_GROUP={cap:"申請",ico:"🔁", items:[
-  {key:"expenses",sysKey:"expenses",ico:"🧾",label:"経費申請",url:"expenses.html"},
+  {key:"expenses",sysKey:"expenses",ico:"🧾",label:"経費申請",url:"expenses.html",countKey:"expense"},
   // sysKeyは設定しない（notice等と同じ「sysKeyなし＝全員に見える」パターン。
   // アルバイトも含め全従業員が使える機能のため）
-  {key:"myrequests-personal",ico:"📋",label:"個人情報変更",url:"requests.html?tab=personal"},
+  {key:"myrequests-personal",ico:"📋",label:"個人情報変更",url:"requests.html?tab=personal",countKey:"profileApproval"},
   // 社内情報変更（ID/PW）は権限が無い人が開いてもrequests.html側が権限チェック済みの
   // タブ切替で自然に「変更申請」タブが無い状態になるだけなので、ここでの出し分けはしない
-  {key:"myrequests-system",  ico:"🔐",label:"社内情報変更",url:"requests.html?tab=system"},
+  {key:"myrequests-system",  ico:"🔐",label:"社内情報変更",url:"requests.html?tab=system",countKey:"credApproval"},
 ]};
 // F-10（ラウンド5・Sync5・設計書_会計自動化_給与明細とインフォマート支払_2026-08-31.md §5 Q6）:
 // 「🧾会計」グループには会計ダッシュボード／アップロード請求書／給与仕訳／支払いのメニュー枠を
@@ -1046,7 +1052,7 @@ const SYS_ITEMS=[
 const GROUPS=[
   SHINSEI_GROUP,
   {cap:"現場・日報",ico:"📝", items:[
-    {key:"nippo-daily",  sysKey:"nippo", ico:"📝", label:"日報",     url:nippoPage("write")},
+    {key:"nippo-daily",  sysKey:"nippo", ico:"📝", label:"日報",     url:nippoPage("write"), countKey:"reportFeedback"},
     {key:"nippo-weekly", sysKey:"nippo", ico:"🗓️", label:"週報",     url:nippoPage("weekly")},
     {key:"nippo-list",   sysKey:"nippo", ico:"📋", label:"一覧",     url:nippoPage("list")},
     {key:"nippo-check",  sysKey:"nippo", ico:"✅", label:"チェック", url:nippoPage("check")},
@@ -1170,6 +1176,9 @@ let ME=null, VIEW="home", CUR=null;
 let OPEN_GROUP="現場・日報"; // アコーディオン式に開いているグループは常に1つだけ（下のwireNav参照）
 let SIDEBAR_COLLAPSED=(()=>{ try{ return localStorage.getItem("portal_sidebar_collapsed")==="1"; }catch(e){ return false; } })();
 let NAV_HQ_CNT=0, NAV_INV_CNT=0, NAV_APPROVAL_CNT=0;
+// 2026-09-03 ユーザー要望: 経費申請の自分宛承認待ち／個人情報・社内システム変更申請の
+// 承認待ち（従来のNAV_APPROVAL_CNTを内訳ごとに分割）／自分の日報へのいいね・コメント通知
+let NAV_EXPENSE_CNT=0, NAV_PROFILE_APPROVAL_CNT=0, NAV_CRED_APPROVAL_CNT=0, NAV_REPORT_FEEDBACK_CNT=0;
 
 /* ============================================================
    画面切替の高速化（担当Aからの依頼・WORKLOG「担当Fへの依頼（画面切替の高速化）」）
@@ -1273,9 +1282,24 @@ function renderLogin(err){
 /* ============================================================
    シェル本体（サイドバー・topbar・モバイル下部ナビ）
    ============================================================ */
+// 2026-09-03 ユーザー要望: グループを開かなくても、グループの見出し自体に
+// 中の項目の合計件数が見えるようにしたい（請求書メールのときと同じ「開かないと
+// 見えない」問題を、今度はグループを維持したまま解消する）。countOf()を
+// navItemHtml()と共通化し、グループ側の合計計算にも使う
+function countOf(it){
+  if(it.countKey==="posts") return POSTS?POSTS.length:0;
+  if(it.countKey==="hq") return NAV_HQ_CNT;
+  if(it.countKey==="inv") return NAV_INV_CNT;
+  if(it.countKey==="approval") return NAV_APPROVAL_CNT;
+  if(it.countKey==="expense") return NAV_EXPENSE_CNT;
+  if(it.countKey==="profileApproval") return NAV_PROFILE_APPROVAL_CNT;
+  if(it.countKey==="credApproval") return NAV_CRED_APPROVAL_CNT;
+  if(it.countKey==="reportFeedback") return NAV_REPORT_FEEDBACK_CNT;
+  return 0;
+}
 function navItemHtml(it,activeKey){
   if(it.soon) return `<button class="nav-item soon" data-soon="1"><span>${it.ico}</span><span>${esc(it.label)}</span><span class="badge-soon">🚧 準備中</span></button>`;
-  const cnt=it.countKey==="posts"?(POSTS?POSTS.length:0):it.countKey==="hq"?NAV_HQ_CNT:it.countKey==="inv"?NAV_INV_CNT:it.countKey==="approval"?NAV_APPROVAL_CNT:0;
+  const cnt=countOf(it);
   return `<button class="nav-item${activeKey===it.key?" active":""}" data-key="${it.key}"><span>${it.ico}</span><span>${esc(it.label)}</span>${cnt?`<span class="count">${cnt}</span>`:""}${it.external?'<span class="ext">↗</span>':""}</button>`;
 }
 function sidebarHtml(u){
@@ -1286,8 +1310,9 @@ function sidebarHtml(u){
     const items=grp.items.filter(it=>itemVisible(it,grp,u));
     if(!items.length) return "";
     const isOpen=grp.cap===OPEN_GROUP;
+    const grpCnt=items.filter(it=>!it.soon).reduce((s,it)=>s+countOf(it),0);
     return `<div class="nav-group${isOpen?" open":""}" data-group="${esc(grp.cap)}">
-      <button class="nav-group-head"><span>${grp.ico}</span><span>${esc(grp.cap)}</span><span class="chev">›</span></button>
+      <button class="nav-group-head"><span>${grp.ico}</span><span>${esc(grp.cap)}</span><span class="grp-trail">${grpCnt?`<span class="count">${grpCnt}</span>`:""}<span class="chev">›</span></span></button>
       <div class="subnav">${items.map(it=>navItemHtml(it,activeKey)).join("")}</div>
     </div>`;
   }).join("");
@@ -1360,6 +1385,8 @@ function openItem(key,u){
   if(it.type==="adminovr"){ openAdminOverrideModal(); return; } // 2026-08-31: AI開発コックピットグループ内から従来の設定モーダルを開く
   if(it.externalPlain){ window.open(it.url,"_blank","noopener"); closeMobileMore(); return; } // D-5a: 独立した静的ページを新しいタブでそのまま開く（iframeにしない）
   if(grp) OPEN_GROUP=grp.cap; // クリックした項目のグループだけを開いた状態にする
+  // 2026-09-03: nippo系メニューを開いたら「日報へのいいね・コメントを見た」とみなしバッジを消す
+  if(it.sysKey==="nippo" && NAV_REPORT_FEEDBACK_CNT>0) markReportFeedbackSeen(u);
 
   // 高速切替: 同じsysKeyのiframeが既に表示中で、対応済みシステムなら
   // iframeを作り直さずpostMessageでタブ/ページだけ切り替える
@@ -1623,23 +1650,61 @@ async function renderHomeArea(u){
       NAV_INV_CNT=(invR.ok&&Array.isArray(invR.body))?invR.body.length:0;
     }catch(e){ NAV_INV_CNT=0; }
   }
-  // 2026-09-01 ユーザー要望: 変更申請（requests.html）の承認待ちに気づけるよう、
-  // 「社内情報管理」にバッジを追加。ns-info-system側と同じ承認者判定
-  // (info.is_credential_approver=マスター or 役職「本部」)をそのままRPCで呼ぶ
-  // （ポータル側のu.is_master/u.role==='HQ'は判定基準が別物のため使わない）
+  // 2026-09-01/03 ユーザー要望: 変更申請（requests.html）の承認待ちに気づけるよう、
+  // 「社内情報管理」・「申請」グループ配下にバッジを追加。
+  // ID/PW変更申請・新規登録＝ns-info-system側と同じ承認者判定（info.is_credential_approver）。
+  // 個人情報変更＝2026-09-02のバグ修正でpublic.profile_change_requests／
+  // public.is_profile_approver()（ポータル自身のis_master/role='HQ'）に切り替え済みのため、
+  // バッジ側も同じ判定に合わせる（旧info.employee_change_requestsはもう誰も書き込まないため
+  // 参照しない）
   try{
-    const elig=await authed(`/rest/v1/rpc/is_credential_approver`,{method:"POST",body:"{}",headers:{"Accept-Profile":"info","Content-Profile":"info"}});
+    const [elig,profileElig]=await Promise.all([
+      authed(`/rest/v1/rpc/is_credential_approver`,{method:"POST",body:"{}",headers:{"Accept-Profile":"info","Content-Profile":"info"}}),
+      authed(`/rest/v1/rpc/is_profile_approver`,{method:"POST",body:"{}"}),
+    ]);
     if(elig.ok&&elig.body===true){
       const infoHeaders={headers:{"Accept-Profile":"info"}};
-      const [er,cr,nr]=await Promise.all([
-        authed(`/rest/v1/employee_change_requests?status=eq.pending&select=id`,infoHeaders),
+      const [cr,nr]=await Promise.all([
         authed(`/rest/v1/credential_change_requests?status=eq.pending&select=id`,infoHeaders),
         authed(`/rest/v1/credential_new_requests?status=eq.pending&select=id`,infoHeaders),
       ]);
-      NAV_APPROVAL_CNT=[er,cr,nr].reduce((s,r)=>s+((r.ok&&Array.isArray(r.body))?r.body.length:0),0);
-    } else { NAV_APPROVAL_CNT=0; }
-  }catch(e){ NAV_APPROVAL_CNT=0; }
+      NAV_CRED_APPROVAL_CNT=[cr,nr].reduce((s,r)=>s+((r.ok&&Array.isArray(r.body))?r.body.length:0),0);
+    } else { NAV_CRED_APPROVAL_CNT=0; }
+    if(profileElig.ok&&profileElig.body===true){
+      const pr=await authed(`/rest/v1/profile_change_requests?status=eq.pending&select=id`);
+      NAV_PROFILE_APPROVAL_CNT=(pr.ok&&Array.isArray(pr.body))?pr.body.length:0;
+    } else { NAV_PROFILE_APPROVAL_CNT=0; }
+    NAV_APPROVAL_CNT=NAV_CRED_APPROVAL_CNT+NAV_PROFILE_APPROVAL_CNT;
+  }catch(e){ NAV_CRED_APPROVAL_CNT=0; NAV_PROFILE_APPROVAL_CNT=0; NAV_APPROVAL_CNT=0; }
+  // 2026-09-03 ユーザー要望: 経費申請（自分宛の承認待ち）
+  try{
+    const exR=await authed(`/rest/v1/expense_requests?approver_id=eq.${u.id}&status=eq.pending&select=id`);
+    NAV_EXPENSE_CNT=(exR.ok&&Array.isArray(exR.body))?exR.body.length:0;
+  }catch(e){ NAV_EXPENSE_CNT=0; }
+  // 2026-09-03 ユーザー要望: 自分の日報へのいいね・コメントで、前回確認した時刻より
+  // 新しいもの（自分自身によるものは除く）の件数。report_feedback_seenの時刻は
+  // nippo系メニューを開いたタイミングでmarkReportFeedbackSeen()が更新する
+  try{
+    const seenR=await authed(`/rest/v1/report_feedback_seen?user_id=eq.${u.id}&select=seen_at`);
+    const seenAt=(seenR.ok&&Array.isArray(seenR.body)&&seenR.body[0])?seenR.body[0].seen_at:"1970-01-01T00:00:00Z";
+    const myReportsR=await authed(`/rest/v1/reports?author_id=eq.${u.id}&submitted_at=gte.${addDaysStr(todayStr(),-90)}&select=id`);
+    const myReportIds=(myReportsR.ok&&Array.isArray(myReportsR.body))?myReportsR.body.map(r=>r.id):[];
+    if(myReportIds.length){
+      const idList=myReportIds.join(",");
+      const [likesR,commentsR]=await Promise.all([
+        authed(`/rest/v1/report_likes?report_id=in.(${idList})&created_at=gt.${encodeURIComponent(seenAt)}&user_id=neq.${u.id}&select=report_id`),
+        authed(`/rest/v1/report_comments?report_id=in.(${idList})&created_at=gt.${encodeURIComponent(seenAt)}&author_id=neq.${u.id}&select=id`),
+      ]);
+      NAV_REPORT_FEEDBACK_CNT=((likesR.ok&&Array.isArray(likesR.body))?likesR.body.length:0)+((commentsR.ok&&Array.isArray(commentsR.body))?commentsR.body.length:0);
+    } else { NAV_REPORT_FEEDBACK_CNT=0; }
+  }catch(e){ NAV_REPORT_FEEDBACK_CNT=0; }
   refreshNavActive(u);
+}
+// nippo系メニューを開いたら「いいね・コメントを見た」とみなし、次回のバッジ計算の
+// 基準時刻を更新する（失敗しても無視。バッジが多少遅れて消えるだけで実害は無い）
+async function markReportFeedbackSeen(u){
+  try{ await authed(`/rest/v1/report_feedback_seen`,{method:"POST",headers:{Prefer:"resolution=merge-duplicates"},body:JSON.stringify({user_id:u.id,seen_at:new Date().toISOString()})}); }catch(e){}
+  NAV_REPORT_FEEDBACK_CNT=0; refreshNavActive(u);
 }
 
 function renderShellBody(u){
