@@ -30,7 +30,7 @@ const userClient = (req: Request) =>
   });
 
 // tori-dashboardのGAS Web App URL（dash-sync/index.tsと同じ値。公開リポジトリのapp.jsにも同じ値がある＝秘密情報ではない）
-const DASH_API_URL = "https://script.google.com/macros/s/AKfycbz9rd37EZa6X8WRMVEBrXobN8DbYWkHRlhFNYU5rd1UZ0V8j0-6shMQjEeoi4HDWZ0B/exec";
+const DASH_API_URL = "https://script.google.com/macros/s/AKfycbwW0qhyEr0-uQWTaLg7MkQhurHq6wMoaOKL7uCCnI_bgnAsGB5-auqG_dm_Q9uJc3Kc/exec";
 
 async function normalizeMedia(db: any, raw: string): Promise<string> {
   const trimmed = (raw || "").trim();

@@ -14,7 +14,7 @@
 //   共有アカウント(dash_id)のものなので、GAS側の店舗制限は信用しない。
 import { createClient } from "npm:@supabase/supabase-js@2";
 
-const DASH_API_URL = "https://script.google.com/macros/s/AKfycbz9rd37EZa6X8WRMVEBrXobN8DbYWkHRlhFNYU5rd1UZ0V8j0-6shMQjEeoi4HDWZ0B/exec";
+const DASH_API_URL = "https://script.google.com/macros/s/AKfycbwW0qhyEr0-uQWTaLg7MkQhurHq6wMoaOKL7uCCnI_bgnAsGB5-auqG_dm_Q9uJc3Kc/exec";
 
 const cors: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",

@@ -21,7 +21,7 @@
 //   認可: CEO/HQ/マスターのユーザーJWT、またはservice_role直呼び（他のD担当関数と同じ方針）
 import { createClient } from "npm:@supabase/supabase-js@2";
 
-const DASH_API_URL = "https://script.google.com/macros/s/AKfycbz9rd37EZa6X8WRMVEBrXobN8DbYWkHRlhFNYU5rd1UZ0V8j0-6shMQjEeoi4HDWZ0B/exec";
+const DASH_API_URL = "https://script.google.com/macros/s/AKfycbwW0qhyEr0-uQWTaLg7MkQhurHq6wMoaOKL7uCCnI_bgnAsGB5-auqG_dm_Q9uJc3Kc/exec";
 
 const cors: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",

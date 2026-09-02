@@ -484,7 +484,7 @@ function refreshBell(u){
    取得失敗（メール未登録・GAS落ち）は静かに劣化＝カード側で「経営Dに接続できません」を出すだけで、
    画面全体はブロックしない。
    ============================================================ */
-const TORI_GAS_URL="https://script.google.com/macros/s/AKfycbz9rd37EZa6X8WRMVEBrXobN8DbYWkHRlhFNYU5rd1UZ0V8j0-6shMQjEeoi4HDWZ0B/exec";
+const TORI_GAS_URL="https://script.google.com/macros/s/AKfycbwW0qhyEr0-uQWTaLg7MkQhurHq6wMoaOKL7uCCnI_bgnAsGB5-auqG_dm_Q9uJc3Kc/exec";
 const TORI_CACHE_KEY="portal_tori_cache";
 async function toriApi(params){
   const r=await fetch(TORI_GAS_URL,{method:"POST",headers:{"Content-Type":"text/plain;charset=utf-8"},body:JSON.stringify(params)});
