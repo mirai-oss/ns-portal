@@ -25,8 +25,13 @@ jobs:
             -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY"
           echo ''
           echo '--- rsv_reservations: 全体からcourse/channel_rawに一致する行があるか ---'
-          curl -sL "https://uuvsxzhpxtghojoubjcc.supabase.co/rest/v1/rsv_reservations?or=(course.ilike.*Ring-style*,channel_raw.ilike.*Ring-style*,attribute.ilike.*Ring-style*,memo.ilike.*Ring-style*)&select=store_account,attribute,course,channel_raw,memo&limit=10" \
+          curl -sL "https://uuvsxzhpxtghojoubjcc.supabase.co/rest/v1/rsv_reservations?or=(course.ilike.*Ring-style*,channel_raw.ilike.*Ring-style*,attribute.ilike.*Ring-style*,memo.ilike.*Ring-style*)&select=store_account,attribute,course,channel_raw,channel_normalized,status_normalized,visit_date,created_at_source&limit=10" \
             -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY"
           echo ''
-          curl -sL "https://uuvsxzhpxtghojoubjcc.supabase.co/rest/v1/rsv_reservations?or=(course.ilike.*%E3%81%84%E3%81%A1%E3%81%94%E5%B1%8B*,channel_raw.ilike.*%E3%81%84%E3%81%A1%E3%81%94%E5%B1%8B*,attribute.ilike.*%E3%81%84%E3%81%A1%E3%81%94%E5%B1%8B*,memo.ilike.*%E3%81%84%E3%81%A1%E3%81%94%E5%B1%8B*)&select=store_account,attribute,course,channel_raw,memo&limit=10" \
+          curl -sL "https://uuvsxzhpxtghojoubjcc.supabase.co/rest/v1/rsv_reservations?or=(course.ilike.*%E3%81%84%E3%81%A1%E3%81%94%E5%B1%8B*,channel_raw.ilike.*%E3%81%84%E3%81%A1%E3%81%94%E5%B1%8B*,attribute.ilike.*%E3%81%84%E3%81%A1%E3%81%94%E5%B1%8B*,memo.ilike.*%E3%81%84%E3%81%A1%E3%81%94%E5%B1%8B*)&select=store_account,attribute,course,channel_raw,channel_normalized,status_normalized,visit_date,created_at_source&limit=10" \
             -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY"
+          echo ''
+          echo '--- channel_normalizedの全パターン(うお蔵 新横浜) ---'
+          curl -sL "https://uuvsxzhpxtghojoubjcc.supabase.co/rest/v1/rsv_reservations?store_account=ilike.*%E3%81%86%E3%81%8A%E8%94%B5*&select=channel_raw,channel_normalized&limit=1000" \
+            -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
+            | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{const a=JSON.parse(d);const m={};a.forEach(r=>{const k=r.channel_raw+' -> '+r.channel_normalized;m[k]=(m[k]||0)+1;});console.log(JSON.stringify(m,null,2));})"
