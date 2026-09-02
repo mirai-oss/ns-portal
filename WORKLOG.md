@@ -6,6 +6,26 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
+**★★★★★★2026-09-02（レーンPスレッド）P-0a・P-2a実装完了（コード＋SQL＋workflow。本番SQL実行/デプロイはユーザー承認待ち）→P-0bは着手保留（データ蓄積待ち）**: 貼り付け文どおり`実装指示書_脱GAS移行_Phase0-1_2026-09-02.md`§0（縄張り）§1のP-0a→P-2a→P-0bの順で着手。**tori-dashboardのapp.js・GASは一切変更していない**（読むだけ・調査のみ）。ai-cockpit `TK-49`/`TK-50`にstart/approval-request送信済み。
+
+- **P-0a（計測の受け皿）**: 新規SQL[`supabase/2026-09-02_kd_perf_log.sql`](https://github.com/mirai-oss/ns-portal/blob/main/supabase/2026-09-02_kd_perf_log.sql)（`kd_perf_log`テーブル。RLS有効・ポリシー無し=service_role専用）＋新規Edge Function[`keiei-api-perflog`](https://github.com/mirai-oss/ns-portal/tree/main/supabase/functions/keiei-api-perflog)を実装。**app.js側が既に実装済みのペイロード（`app.js:1487 logApiPerf_()`＝`{app,action,ms,ok,errType,t}`をnavigator.sendBeaconで`?apikey=`付きURLへ送信）にそのまま合わせた**（app.js/GASの変更は不要・現状の「受け皿未完成で黙って失敗」から「記録される」に切り替わるだけ）。無認証ingest（レート制限=同一IP10秒間40件まで）＋`op:'notify'`（前日分の遅い/失敗actionトップ10をLarkへ配信。app_secrets.`lark_webhook_url`=D-3/D-4と同じWebhookを流用）＋`op:'cleanup'`（14日超を削除。いずれもservice_role限定）の3系統。日次実行用に[`​.github/workflows/keiei-perflog-daily.yml`](https://github.com/mirai-oss/ns-portal/blob/main/.github/workflows/keiei-perflog-daily.yml)も追加（api-cost-report-sync.ymlと同じ「外部cron-job.orgからworkflow_dispatch」方式・09:10 JST目安）。**⚠️中山さんへの作業依頼（手動・リンク付き）**:
+  1. SQL実行: [Supabase SQL Editor](https://supabase.com/dashboard/project/uuvsxzhpxtghojoubjcc/sql/new)で`supabase/2026-09-02_kd_perf_log.sql`の中身を貼り付けて実行
+  2. Edge Functionデプロイ: ターミナルで`cd ~/ns-portal && npx supabase functions deploy keiei-api-perflog --no-verify-jwt --project-ref uuvsxzhpxtghojoubjcc`
+  3. cron-job.orgに新規ジョブ追加: URL `https://api.github.com/repos/mirai-oss/ns-portal/actions/workflows/keiei-perflog-daily.yml/dispatches`・POST・body `{"ref":"main"}`・ヘッダーは既存の他ジョブ（api-cost-report-sync等）と同じGitHub PAT・毎日09:10 JST目安
+  （ai-cockpitに`approval-request`済み。承認され次第、次スレッドが代行実行してもOK）
+
+- **P-2a（予約読み取りAPI）**: 新規Edge Function[`keiei-api-reservation`](https://github.com/mirai-oss/ns-portal/tree/main/supabase/functions/keiei-api-reservation)を実装（SQL変更なし・既存`rsv_reservations`/`users`/`user_stores`/`stores`を読むだけ）。設計書_予約データ基盤_食べログノート_2026-08-27.md§9・上のA-hf④知見（GASの`bqCachePut_`20チャンク上限でキャッシュされず毎回BQフルスキャンしていた問題）を踏まえた設計:
+  - **権限**: 経営D(dash-sync)と同じ基準＝`users.role∈{CEO,HQ,TEAM}`または`is_master`は無制限、`TENCHO`は`user_stores`で自店舗のみ（smaregi-shift-sync `callerAllowed()`と同じパターン）。認証はSupabase AuthのJWT
+  - **🔑重要（A差し替え時の設計判断・要確認）**: tori-dashboard独自のGASセッション(login/supalogin)とは別に、app.jsには既に`portalAccessToken()`（app.js:1831〜・ポータルSupabaseログインのaccess_token取得＋失効時リフレッシュ）が実装済み。**統合アカウント（supalogin採用済み）ならこれをそのまま`Authorization: Bearer`に使え、GAS/app.jsの追加変更なしで繋げられる想定**。まだGAS独自ID/PWのみのダッシュボード専用アカウントはこのAPIを直接呼べないため、対象アカウントが残っている場合は統合ログインへの移行が必要（差し替え前にAで対象アカウント数を確認してほしい）
+  - **一時的な絞り込みをGAS側`bqGetReservation()`と揃えた**: サブブランド重複除外（`EXCLUDE_ACCOUNTS_TEMP`=鶏武者川崎店/鶏武者新横浜/黒霧屋新横浜。設計書§8.8 R1の初回突合が済むまでの措置）。**この値を変えるときはGAS側と必ず同期**（片方だけ変えると新旧突合が合わなくなる）
+  - パラメータ: `{from,to,store_id?,store?,includeCancelled?,includeSubBrand?,mode?}`。`mode:'cancel_summary'`（既定は`'both'`）は設計書§8.6のキャンセル分析集計（店舗×年月×受付窓口×ステータス別の組数・キャンセル率・平均キャンセルまで日数）を**BQビューを新設せずrsv_reservationsから都度集計**する設計に変更（表示経路からBQを完全に外す本来の目的に沿わせた・司令塔確認歓迎）
+  - お客様名（`customer_name`/`customer_name_kana`）はダイニー台帳(`source='dinii'`)のみ返す（設計書§8.7・§8.8 R3どおり。食べログノート分は列自体が無いため常にnull）
+  - **⚠️中山さんへの作業依頼**: Edge Functionデプロイ`cd ~/ns-portal && npx supabase functions deploy keiei-api-reservation --no-verify-jwt --project-ref uuvsxzhpxtghojoubjcc`（ai-cockpitに`approval-request`済み）。SQL変更は無し
+
+- **A担当への引き継ぎ**: 上2つのデプロイ完了後、予約タブ・予約分析タブの読み取りを`keiei-api-reservation`へ差し替え可能（旧GAS `bqGetReservation`/`bqGetReservationNames`はそのまま残し、新旧突合してから停止する設計書§9の手順どおり）。計測フック(`keiei-api-perflog`)は既存の`logApiPerf_()`がそのまま使うため、A側の追加作業は不要
+- **P-0b（遅さの内訳レポート）**: **未着手（意図的に保留）**。P-0aのデータ収集がまだ0件（本番未デプロイ）のため、「遅さの内訳」「定期的なエラーの正体」を数字で語れる状態になるのは**デプロイ後2〜3日分のkd_perf_logが溜まってから**（設計書どおり）。デプロイ承認・実行後、日数を置いて改めてレポートする（ai-cockpit `TK-47`は`backlog`のまま）
+- 構文チェック: Deno CLIがこの環境に無くローカル型チェック未実施（他の類似関数との突き合わせによる目視レビューのみ）。**本番SQL実行・Edge Functionデプロイはユーザー承認後に実施**（このリポジトリの鉄則どおり）
+
 **★★★★★2026-09-02（担当Aスレッド）A-hf④予約管理の取得エラー: §9復旧手順②③（応急）完了・重要な技術的知見をレーンPへ共有・恒久はP-2a待ち**: `実装指示書_脱GAS移行_Phase0-1_2026-09-02.md`§1の6項目再確認指示を受け着手。①②③⑤⑥は既にデプロイ済みコードで健在と再確認済み（回帰なし）。**④の対応**:
 - **①D-check復旧の前提確認**: 担当Dが既に確認済み（`rsvDateRangeDiag`で9/2分もrsv_reservations/stg_reservation両方に正常取込を確認・ns-daily-import側の復旧作業は元々不要だった）。今回`rsvDateRangeDiag`を再実行し8店舗合計**91,801件**（前回把握値と完全一致・肥大化や偏りなし）を再確認
 - **②`stg_reservation`全削除→再ミラー**: `bqSyncReservation`自体が元からWRITE_TRUNCATE（全置換）設計のため、1回叩くだけで「全削除→再ミラー」に相当すると確認。一時ワークフロー（`rsv-remirror-once.yml`・用済み後削除）経由で実行→**結果`rows:91801`（再ミラー前と完全一致）**。肥大化・重複は無かったと確定

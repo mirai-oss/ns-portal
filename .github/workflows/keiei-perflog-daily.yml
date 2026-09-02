@@ -1,0 +1,68 @@
+name: 経営D計測ログ(kd_perf_log)の日次配信とお掃除
+
+# P-0a（docs/実装指示書_脱GAS移行_Phase0-1_2026-09-02.md §1 P側）。
+# 毎日、前日(JST)分のkd_perf_logを集計して「遅いaction/失敗actionトップ10」をLarkへ配信し（notify）、
+# 続けて14日より古い行を削除する（cleanup）。他の日次workflowと同じく、実際の発火は外部cron
+# （cron-job.org）からworkflow_dispatch APIを叩く。
+#   POST https://api.github.com/repos/mirai-oss/ns-portal/actions/workflows/keiei-perflog-daily.yml/dispatches
+#   body: {"ref":"main"}
+#   Schedule: 毎日 09:10 JST 目安（api-cost-report-sync=09:00と時間を分散。cron-job.org登録はユーザー作業
+#   ＝WORKLOGに手順を記載）
+#
+# 手動実行: GitHubの Actions タブ → 本workflow → Run workflow でも実行可能（forceで当日分の即時確認可）
+on:
+  workflow_dispatch:
+    inputs:
+      force:
+        description: '動作確認用: 当日(JST)分を即時集計して送信する（通常は空欄のまま）'
+        required: false
+        default: ''
+        type: string
+
+jobs:
+  daily:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: 設定チェック（未設定ならスキップ）
+        run: |
+          if [ -z "${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" ]; then
+            echo "::error::SUPABASE_SERVICE_ROLE_KEY が未設定です"
+            exit 1
+          fi
+
+      - name: keiei-api-perflogを呼ぶ（notify）
+        env:
+          SR_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          FORCE: ${{ github.event.inputs.force }}
+        run: |
+          BODY=$(node -e "console.log(JSON.stringify({op:'notify', force: process.env.FORCE==='true'}))")
+          RES=$(curl -s -w "\n%{http_code}" -X POST \
+            "https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/keiei-api-perflog" \
+            -H "Authorization: Bearer $SR_KEY" \
+            -H "Content-Type: application/json" \
+            -d "$BODY")
+          HTTP_CODE=$(echo "$RES" | tail -1)
+          BODY_TEXT=$(echo "$RES" | sed '$d')
+          echo "$BODY_TEXT"
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "::error::notifyが失敗しました（HTTP $HTTP_CODE）"
+            exit 1
+          fi
+
+      - name: keiei-api-perflogを呼ぶ（cleanup・14日より古い行を削除）
+        env:
+          SR_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          RES=$(curl -s -w "\n%{http_code}" -X POST \
+            "https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/keiei-api-perflog" \
+            -H "Authorization: Bearer $SR_KEY" \
+            -H "Content-Type: application/json" \
+            -d '{"op":"cleanup"}')
+          HTTP_CODE=$(echo "$RES" | tail -1)
+          BODY_TEXT=$(echo "$RES" | sed '$d')
+          echo "$BODY_TEXT"
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "::warning::cleanupが失敗しました（HTTP $HTTP_CODE）。notifyは成功しているのでジョブは失敗にしない"
+            exit 0
+          fi
