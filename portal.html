@@ -141,6 +141,23 @@ a{color:inherit}
 .hedit-row select{border:1px solid var(--line);border-radius:8px;padding:5px 8px;background:var(--bg);color:var(--ink);font-size:12.5px}
 .hedit-updn button{border:1px solid var(--line);background:var(--bg);border-radius:8px;padding:5px 9px;margin-left:3px}
 .hedit-updn button:disabled{opacity:.3}
+/* 2026-09-03 ユーザー要望: 実際のホーム画面を模した見た目でドラッグ移動・
+   サイズ変更・追加ができる編集UI（従来のチェックリスト方式から刷新） */
+.hedit-preview{background:var(--bg);border:1px dashed var(--line);border-radius:14px;padding:14px;margin-top:10px}
+.hedit-preview .home-grid{margin-top:0;min-height:60px}
+.hedit-card{position:relative;background:var(--panel);border:1.5px solid var(--line);border-radius:12px;padding:14px 12px 10px;cursor:grab;user-select:none;transition:box-shadow .15s,opacity .15s}
+.hedit-card:active{cursor:grabbing}
+.hedit-card.dragging{opacity:.35}
+.hedit-card.dragover{box-shadow:0 0 0 2px var(--accent) inset}
+.hedit-card .hc-label{font-size:13px;font-weight:600;display:flex;align-items:center;gap:6px}
+.hedit-card .hc-actions{position:absolute;top:6px;right:6px;display:flex;gap:4px}
+.hedit-card .hc-actions button{border:1px solid var(--line);background:var(--bg);border-radius:6px;width:22px;height:22px;font-size:11px;line-height:1;padding:0;cursor:pointer}
+.hedit-card .hc-size{font-size:10.5px;color:var(--muted);margin-top:6px}
+.hedit-palette{margin-top:16px;padding-top:14px;border-top:1px solid var(--line)}
+.hedit-palette h3{font-size:13px;color:var(--muted);margin-bottom:8px;font-weight:600}
+.hedit-chip{display:inline-flex;align-items:center;gap:6px;border:1px dashed var(--line);background:var(--panel);border-radius:99px;padding:6px 12px 6px 14px;font-size:12.5px;margin:0 6px 6px 0;cursor:pointer}
+.hedit-chip:hover{border-color:var(--accent);color:var(--accent)}
+.hedit-empty{grid-column:1/-1;text-align:center;color:var(--muted);font-size:13px;padding:24px 0}
 .phead{min-height:52px;display:flex;align-items:center;justify-content:space-between;gap:10px;padding:13px 17px;border-bottom:1px solid var(--line)}
 .phead h2{margin:0;font-size:15px}
 .phead .sub2{color:var(--muted);font-size:12px}
@@ -779,17 +796,18 @@ async function renderSysUsageArea(u){
    衝突しない新しい領域として共存する（index.html側は無変更）。
    ============================================================ */
 const HOME_WIDGET_CATALOG=[
-  {key:"kpi_sales",   label:"今月の売上",             defaultSize:"small"},
-  {key:"kpi_nippo",   label:"日報の提出状況",         defaultSize:"small"},
-  {key:"kpi_tasks",   label:"本部タスク",             defaultSize:"small"},
-  {key:"kpi_check",   label:"チェックシート",         defaultSize:"small"},
-  {key:"kpi_mytasks", label:"自分のタスク",           defaultSize:"small"},
-  {key:"panel_chart", label:"売上推移グラフ",         defaultSize:"large"},
-  {key:"panel_alerts",label:"⚠️ 要対応（全システム横断）",defaultSize:"medium"},
-  {key:"panel_mytasks",label:"✅ 今日の自分のタスク",  defaultSize:"medium"},
-  {key:"panel_posts", label:"📢 お知らせ",             defaultSize:"medium"},
+  {key:"kpi_sales",   label:"今月の売上",             defaultSize:"small",  ico:"💰"},
+  {key:"kpi_nippo",   label:"日報の提出状況",         defaultSize:"small",  ico:"📝"},
+  {key:"kpi_tasks",   label:"本部タスク",             defaultSize:"small",  ico:"📌"},
+  {key:"kpi_check",   label:"チェックシート",         defaultSize:"small",  ico:"✅"},
+  {key:"kpi_mytasks", label:"自分のタスク",           defaultSize:"small",  ico:"🙋"},
+  {key:"panel_chart", label:"売上推移グラフ",         defaultSize:"large",  ico:"📈"},
+  {key:"panel_alerts",label:"⚠️ 要対応（全システム横断）",defaultSize:"medium",ico:"⚠️"},
+  {key:"panel_mytasks",label:"✅ 今日の自分のタスク",  defaultSize:"medium", ico:"✅"},
+  {key:"panel_posts", label:"📢 お知らせ",             defaultSize:"medium", ico:"📢"},
 ];
 function homeCatalogLabel(key){ const c=HOME_WIDGET_CATALOG.find(w=>w.key===key); return c?c.label:key; }
+function homeCatalogIco(key){ const c=HOME_WIDGET_CATALOG.find(w=>w.key===key); return c?c.ico:"🧩"; }
 // 「モックのホーム構成を初期レイアウトとして登録」（F-7）: 現行の実装済みの並び（KPI4枚→
 // グラフ+要対応 横並び、店長以下はお知らせ+自分のタスク 横並び）をそのまま初期値にする
 const DEFAULT_HOME_LAYOUT={
@@ -831,11 +849,18 @@ const HEDIT_ROLES=["MASTER","CEO","HQ","TEAM","TENCHO","SHAIN","AL"];
 const HEDIT_ROLE_LABEL={MASTER:"マスター",CEO:"社長",HQ:"本部",TEAM:"チーム長",TENCHO:"店長",SHAIN:"社員",AL:"アルバイト"};
 const HEDIT_SIZE_LABEL={small:"小（1枠）",medium:"中（2枠）",large:"大（横幅いっぱい）"};
 let HEDIT_ROLE="MASTER", HEDIT_DRAFT=null;
+// 2026-09-03 ユーザー要望: 「実際のホーム画面を映し出して編集できるように。マウスで
+// 自由に移動・サイズ変更・追加したいものをボタンで押して好きな位置に配置したい」に対応し、
+// チェックリスト方式から実物大の視覚的なグリッドプレビュー＋ドラッグ編集に作り直した。
+// データの持ち方（portal_layouts・{key,size,enabled}の並び順配列）は無変更なので、
+// 保存・読み込み・実際のホーム画面側の描画（homeGridHtml）とは完全互換
+const HEDIT_SIZE_NEXT={small:"medium",medium:"large",large:"small"}; // サイズ変更ボタンで順に循環
+let HEDIT_DRAG_IDX=null;
 function homeEditTabHtml(){
   return `<div class="panel" style="padding:16px">
-    <p class="sub" style="margin:0 0 12px">役割を選び、ホーム画面に出すウィジェットのチェック・サイズ・並び順を編集して保存します。並び順の変更・保存はマスターのみ有効です。</p>
+    <p class="sub" style="margin:0 0 12px">役割を選び、下のプレビューでウィジェットをドラッグして並び替え・□ボタンでサイズ変更・×で削除できます。追加はパレットのチップをクリック。並び順の変更・保存はマスターのみ有効です。</p>
     <div class="hedit-role">${HEDIT_ROLES.map(r=>`<button data-r="${r}" class="${HEDIT_ROLE===r?"active":""}">${HEDIT_ROLE_LABEL[r]}</button>`).join("")}</div>
-    <div id="hedit-list">${homeEditListHtml()}</div>
+    <div id="hedit-list">${homeEditGridHtml()}</div>
     <div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap">
       <button class="abtn" id="heditsave" style="width:auto;padding:10px 18px;margin-top:0">保存する</button>
       <button class="iconbtn" id="heditreset">既定に戻す</button>
@@ -843,18 +868,21 @@ function homeEditTabHtml(){
     <div id="heditmsg" class="sub" style="margin-top:8px"></div>
   </div>`;
 }
-function homeEditListHtml(){
-  return HEDIT_DRAFT.map((w,i)=>`
-    <div class="hedit-row" data-idx="${i}">
-      <label><input type="checkbox" class="hedit-en" ${w.enabled?"checked":""}> ${esc(homeCatalogLabel(w.key))}</label>
-      <select class="hedit-size">
-        ${["small","medium","large"].map(s=>`<option value="${s}" ${w.size===s?"selected":""}>${HEDIT_SIZE_LABEL[s]}</option>`).join("")}
-      </select>
-      <span class="hedit-updn">
-        <button class="hedit-up" ${i===0?"disabled":""}>↑</button>
-        <button class="hedit-dn" ${i===HEDIT_DRAFT.length-1?"disabled":""}>↓</button>
-      </span>
+function homeEditGridHtml(){
+  const enabled=HEDIT_DRAFT.map((w,i)=>({...w,i})).filter(w=>w.enabled);
+  const disabled=HEDIT_DRAFT.map((w,i)=>({...w,i})).filter(w=>!w.enabled);
+  const cards=enabled.map(w=>`
+    <div class="hedit-card hw-${w.size}" draggable="true" data-idx="${w.i}">
+      <div class="hc-actions">
+        <button class="hc-size" title="サイズを変える（小→中→大）">□</button>
+        <button class="hc-remove" title="このウィジェットを外す">×</button>
+      </div>
+      <div class="hc-label">${homeCatalogIco(w.key)} ${esc(homeCatalogLabel(w.key))}</div>
+      <div class="hc-size">${HEDIT_SIZE_LABEL[w.size]}・ドラッグで並び替え</div>
     </div>`).join("");
+  const chips=disabled.map(w=>`<button class="hedit-chip" data-idx="${w.i}">＋ ${homeCatalogIco(w.key)} ${esc(homeCatalogLabel(w.key))}</button>`).join("");
+  return `<div class="hedit-preview"><div class="home-grid">${cards||'<div class="hedit-empty">まだウィジェットがありません。下のパレットから追加してください</div>'}</div></div>
+    <div class="hedit-palette"><h3>追加できるウィジェット</h3>${chips||'<span class="sub" style="font-size:12.5px">すべて配置済みです</span>'}</div>`;
 }
 async function renderHomeEditArea(u){
   const area=$("viewarea"); if(!area) return;
@@ -866,18 +894,12 @@ async function renderHomeEditArea(u){
   area.innerHTML=homeEditTabHtml();
   wireHomeEditTab(u);
 }
+function hedditRerender(u){ const el=$("hedit-list"); if(el) el.innerHTML=homeEditGridHtml(); wireHomeEditGrid(u); }
 function wireHomeEditTab(u){
   document.querySelectorAll(".hedit-role button").forEach(b=>{
     b.onclick=()=>{ HEDIT_ROLE=b.dataset.r; HEDIT_DRAFT=homeLayoutForEdit(HEDIT_ROLE); $("viewarea").innerHTML=homeEditTabHtml(); wireHomeEditTab(u); };
   });
-  document.querySelectorAll(".hedit-row").forEach(row=>{
-    const i=+row.dataset.idx;
-    row.querySelector(".hedit-en").onchange=e=>{ HEDIT_DRAFT[i].enabled=e.target.checked; };
-    row.querySelector(".hedit-size").onchange=e=>{ HEDIT_DRAFT[i].size=e.target.value; };
-    const up=row.querySelector(".hedit-up"), dn=row.querySelector(".hedit-dn");
-    if(up) up.onclick=()=>{ if(i>0){ [HEDIT_DRAFT[i-1],HEDIT_DRAFT[i]]=[HEDIT_DRAFT[i],HEDIT_DRAFT[i-1]]; $("viewarea").innerHTML=homeEditTabHtml(); wireHomeEditTab(u); } };
-    if(dn) dn.onclick=()=>{ if(i<HEDIT_DRAFT.length-1){ [HEDIT_DRAFT[i+1],HEDIT_DRAFT[i]]=[HEDIT_DRAFT[i],HEDIT_DRAFT[i+1]]; $("viewarea").innerHTML=homeEditTabHtml(); wireHomeEditTab(u); } };
-  });
+  wireHomeEditGrid(u);
   $("heditsave").onclick=async()=>{
     const m=$("heditmsg"); m.textContent="保存中…";
     const rows=HEDIT_DRAFT.map((w,i)=>({role:HEDIT_ROLE,area:"home",widget_key:w.key,position:(i+1)*10,enabled:w.enabled,size:w.size,updated_at:new Date().toISOString()}));
@@ -892,6 +914,39 @@ function wireHomeEditTab(u){
     m.textContent=r.ok?"既定に戻しました":"失敗しました";
     if(r.ok){ await fetchHomeLayouts(); HEDIT_DRAFT=homeLayoutForEdit(HEDIT_ROLE); $("viewarea").innerHTML=homeEditTabHtml(); wireHomeEditTab(u); }
   };
+}
+// プレビューグリッド内のドラッグ並び替え・サイズ変更・削除・追加チップの配線
+// （役割切替・保存等でグリッドだけ作り直す時もこれだけ呼び直せばよいようにhomeEditGridHtml側とは分離）
+function wireHomeEditGrid(u){
+  const cards=document.querySelectorAll(".hedit-card");
+  cards.forEach(card=>{
+    const i=+card.dataset.idx;
+    card.ondragstart=e=>{ HEDIT_DRAG_IDX=i; card.classList.add("dragging"); e.dataTransfer.effectAllowed="move"; };
+    card.ondragend=()=>{ card.classList.remove("dragging"); document.querySelectorAll(".hedit-card.dragover").forEach(c=>c.classList.remove("dragover")); };
+    card.ondragover=e=>{ e.preventDefault(); if(HEDIT_DRAG_IDX!==null&&HEDIT_DRAG_IDX!==i) card.classList.add("dragover"); };
+    card.ondragleave=()=>card.classList.remove("dragover");
+    card.ondrop=e=>{
+      e.preventDefault(); card.classList.remove("dragover");
+      const from=HEDIT_DRAG_IDX; let to=i;
+      if(from===null||from===to) return;
+      const [moved]=HEDIT_DRAFT.splice(from,1);
+      if(from<to) to--; // 削除で後ろの項目が1つ前にずれた分を補正してから挿入
+      HEDIT_DRAFT.splice(to,0,moved);
+      HEDIT_DRAG_IDX=null;
+      hedditRerender(u);
+    };
+    card.querySelector(".hc-size").onclick=()=>{ HEDIT_DRAFT[i].size=HEDIT_SIZE_NEXT[HEDIT_DRAFT[i].size]||"small"; hedditRerender(u); };
+    card.querySelector(".hc-remove").onclick=()=>{ HEDIT_DRAFT[i].enabled=false; hedditRerender(u); };
+  });
+  document.querySelectorAll(".hedit-chip").forEach(chip=>{
+    chip.onclick=()=>{
+      const i=+chip.dataset.idx;
+      const [item]=HEDIT_DRAFT.splice(i,1);
+      item.enabled=true;
+      HEDIT_DRAFT.push(item); // 末尾に追加＝あとはドラッグで好きな位置へ
+      hedditRerender(u);
+    };
+  });
 }
 function drawTrendChart(daily,metric){
   const cv=$("trendcv"); if(!cv) return; const ctx=cv.getContext("2d");
