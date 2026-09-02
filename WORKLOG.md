@@ -6,6 +6,21 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
+**★★★★★★2026-09-02（レーンPスレッド）W2完了: kd_サマリ3系統+keiei-kd-refreshを本番構築・A担当へ差し替え宣言済み**: `設計書_表示集計層kdと高速化実行計画_2026-09-02.md`§10.1のW2（①〜④）を実行。ユーザー承認（前回同様「代理でできるなら代理で」）のもとSQL実行・デプロイまで完了。**tori-dashboardのapp.js・GASは無変更**（既存の読み取り専用GASアクション`bqDailyStoreForSync`を呼ぶのみ）。
+
+- **①kd_sync_runs・kd_unresolved_names**: 新設・稼働中。`kd_sync_runs`はリフレッシュ実行台帳（RLSで全ログインユーザーに読み取り許可＝画面はfinished_atの変化だけ見ればよい）。`kd_unresolved_names`は隔離テーブル＋RPC2本（`kd_report_unresolved_name`=取込ジョブ用service_role専用／`kd_resolve_unresolved_name`=CEO/HQ/マスター用）。ns-daily-import側の接続（担当D）はまだ未実施（Pがテーブル用意完了の段階）
+- **②③kd_reservation_daily_summary＋予約API3分割**: `keiei-api-reservation`を`mode:'list'|'cancel_summary'|'monthly_summary'`の3モードへ書き換え（旧`mode:'both'`は廃止＝A未接続のため破壊的変更OK）。listは期間・limit必須（最大1000件・全件返し禁止）。cancel_summary/monthly_summaryは明細を毎回全件スキャンする代わりに新設の事前集計テーブルを読む。既存`rsv_reservations`（レーンI所有）へは`(store_id,visit_date)`のインデックス追加のみ（データ・書込経路は無変更）
+- **④kd_home_kpi_snapshot・kd_dashboard_daily_summary**: 新設・稼働中。**RLSでCEO/HQ/TEAM/マスター無制限・TENCHOはuser_storesで自店舗のみ**に絞ってあり、**app.jsから直接PostgREST読み取り可**（Edge Function経由より速い。keiei-api-reservationのresolveScope()と同じ判定基準をSQLポリシーとしても実装）。データ出典は`bqDailyStoreForSync`（既存の軽量GASアクション・ログイン不要・GAS変更なし）。**⚠️未実装のまま残した2列**: `daily_report_submission_rate`（日報提出率）・`checklist_completion_rate`（チェック実施率）は出典テーブル未特定のためnull固定。nippo/checklist_checks側の調査が必要（司令塔確認待ち）。ランチ/ディナー内訳・決済別内訳も同様に列だけ用意し未実装
+- **keiei-kd-refresh（新規Edge Function・service_role限定）**: op=`reservation_daily`/`dashboard_daily`/`home_kpi`/`unresolved_notify`。実行順は`dashboard_daily`→`home_kpi`の順が必須（home_kpiが当日分のdashboard_daily集計を読むため）。運用: `.github/workflows/keiei-kd-hourly.yml`（新規・dashboard_daily→home_kpiを日中毎時想定）＋`keiei-perflog-daily.yml`に`reservation_daily`・`unresolved_notify`を追加（日次）
+- **動作確認**: 両Edge Functionとも無認証/JWTなしアクセスに401/403を返すことを確認（権限ゲート機能）。実際のリフレッシュ実行（service_role呼び出し）は`gh workflow run`が環境の自動承認クラシファイアにブロックされたため未実施——**cron-job.orgへのworkflow登録（下記）後の初回実行、またはGitHub Actionsタブから手動「Run workflow」で確認をお願いしたい**
+- **⚠️中山さんへの作業依頼（未登録ぶん）**: cron-job.orgに2件追加
+  1. `keiei-perflog-daily.yml`（既存依頼のまま・未登録なら）: 毎日09:10 JST目安
+  2. `keiei-kd-hourly.yml`（新規）: `https://api.github.com/repos/mirai-oss/ns-portal/actions/workflows/keiei-kd-hourly.yml/dispatches`・POST・body`{"ref":"main"}`・毎時0分・08:00〜23:00 JST目安
+- **A担当への宣言**: SendMessageで「【担当A】経営ダッシュボード「予約」タブ」セッションへ直接連絡済み（新旧突合→旧GAS `bqGetReservation`停止の手順は変更なし。ロールバックは旧経路を残しているのでいつでも可）
+- ai-cockpit: TK-57/58/59を登録・完了報告済み
+
+
+
 **★★★★★★🚨2026-09-02（担当Aスレッド）予約管理タブが読み込み中のまま止まる不具合を実測で特定・応急修正完了**: ユーザー報告「予約管理タブがずっと読み込み中で止まっている」を受け、`rsvPerfDiag_`（BQ_LOAD_TOKEN認証の一時診断・調査後削除済み）で旧GAS `bqGetReservation`の実際の挙動を計測。**判明した真因**: 全店・キャンセル込み・無期間クエリ（91,801件）は、BigQueryの`getQueryResults`ページ取得を約92回繰り返す必要があり、実測**約114秒**かかった末に**Google Apps Script側のインフラ自体がタイムアウトし、JSONではなくGoogleのエラーHTMLページを返す**ことを直接確認（`SyntaxError: Unexpected token '<'`で判明）。これは今日別件で見つけた`bqRows_()`のページネーション欠落バグとは別物（あちらは「データが一部しか返らない」バグ、こちらは「行数が多いと処理自体が完走しない」タイムアウト）。
 - **段階的な実測で切り分け**: 14ヶ月前〜3ヶ月先（約35,000件）でも無期間と同じ約114秒で失敗→**ボトルネックは行数ではなく行数に比例するページ取得回数**と判明。±30日（4,742件）=16.2秒で成功。**90日前〜90日先（13,430件）=31.4秒で成功・安全マージンあり**として採用
 - **対応**: `bqGetReservation`に`from`/`to`（YYYY-MM-DD）の任意パラメータを追加（未指定なら従来どおり無期間＝後方互換）。`app.js`のフォールバック経路（統合アカウント未対応の7アカウント含む全員が使う経路）にこの90日窓を適用。予約分析の「前年同月比較」は対象期間外になり表示できなくなるが、既存の「前年同月の予約データがまだありません」という穏当な表示に自然にフォールバックする（エラーにはならない）。`app.js?v=168`・GAS@28、コミット[82cd5fd](https://github.com/mirai-oss/tori-dashboard/commit/82cd5fd)
