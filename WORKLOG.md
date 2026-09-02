@@ -6,6 +6,12 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
+**★★2026-09-02（レーンPスレッド）W2の残作業=cron-job.org登録が完了（ユーザー実施・チャットで並走サポート）**: 前回エントリで依頼していた2件のcron-job.org登録をユーザーが完了。実機確認済み:
+- 「経営D計測ログ 日次」→`keiei-perflog-daily.yml`を毎日09:10 JSTに起動（Enabled・Test run成功=204 No Content）
+- 「kd集計 毎時リフレッシュ」→`keiei-kd-hourly.yml`を`0 8-23 * * *`（毎日8:00〜23:00の毎時0分）に起動（Enabled・Test run成功=204 No Content）
+- 認証はユーザーが新規発行したGitHub PAT（classic・repo+workflowスコープ）をHeaders(`Authorization: Bearer ...`)に設定（2ジョブで共用）
+これでW2（`設計書_表示集計層kdと高速化実行計画_2026-09-02.md`§10.1）は完全に運用開始。次回セッションはkd_サマリの実データ蓄積状況（kd_sync_runsのfinished_at・status）を確認してから、担当Aの予約タブ差し替え・ダッシュボード初回表示の切替を後押しするとよい。
+
 **★★★★★★★★🚨2026-09-02（担当Aスレッド）真因発見: ユーザーの予約管理「何をしても変わらない」問題は、実は今日のGASプロジェクト移行そのものが1ブラウザで反映されていなかっただけだった**: ユーザーからブラウザコンソールのスクリーンショットを受領し即座に真因判明。`Access to fetch at '...AKfycbz9rd37EZa6X8WRMVEBrXobN8DbYWkHRlhFNYU5rd1UZ0V8j0-6shMQjEeoi4HDWZ0B...' from origin 'https://mirai-oss.github.io' has been blocked by CORS policy`＋`net::ERR_FAILED`——これは**本日の「GASプロジェクト移行」（旧プロジェクトがバージョン上限200到達）で置き換えたはずの、まさにその旧URL**。
 - **根本原因**: `app.js`の`apiUrl()`は`localStorage.toriApiUrl`（マスター専用「接続設定」モーダルで保存できるカスタムURL）を`DEFAULT_API_URL`（ソースコード内の既定値）より優先する設計。**このブラウザは移行前のどこかの時点で接続設定に旧URLを保存していた**ため、今日`DEFAULT_API_URL`を新URLへ何度更新・再デプロイしても、このブラウザだけは永遠に旧URL（今はもう動かない）を使い続けていた
 - **重大な影響範囲の訂正**: これまで「予約管理タブだけの不具合」として調査・対応していたが、実際には**このブラウザからのGAS呼び出しが全て失敗していた**（`dataFreshness`が「取得に失敗」と出ていたのも同じ理由）。今日行った①stg_reservation再ミラー②bqGetReservationの90日絞り込み③keiei-api-reservationのキルスイッチ、はいずれも技術的には正しい対応だったが、**そもそもこのブラウザが新デプロイに一度も到達していなかったため効果を確認できなかった**
