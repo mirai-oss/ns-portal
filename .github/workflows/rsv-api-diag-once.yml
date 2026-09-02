@@ -1,0 +1,28 @@
+name: keiei-api-reservation疎通確認（service_role・送信なし・一時的）
+# ユーザー報告「自動取込された予約(BigQuery側)が予約帳に表示されない・手動取込分の恵比寿だけ出ている」
+# の調査用。service_roleでkeiei-api-reservationを直接叩き、実際に何件返るか確認する。用が済んだら削除する。
+on:
+  workflow_dispatch: {}
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: keiei-api-reservationを実行(全店・直近1年)
+        env:
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          curl -sL -X POST "https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/keiei-api-reservation" \
+            -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
+            -H "Content-Type: application/json" \
+            -d '{"from":"2023-01-01","to":"2027-01-01","includeCancelled":true,"includeSubBrand":false,"mode":"list"}' \
+            -o /tmp/resp.json
+          node -e "
+            const d=JSON.parse(require('fs').readFileSync('/tmp/resp.json','utf8'));
+            console.log('ok:', d.ok, 'error:', d.error, 'scope:', JSON.stringify(d.scope));
+            console.log('rows count:', (d.rows||[]).length);
+            const byStore={};
+            (d.rows||[]).forEach(r=>{ byStore[r.store_name]=(byStore[r.store_name]||0)+1; });
+            console.log('by store:', JSON.stringify(byStore,null,2));
+            console.log('sample row:', JSON.stringify((d.rows||[])[0],null,2));
+          "
