@@ -867,7 +867,9 @@ function mailSummaryDefaultHtml(){
 }
 function payrollSummaryHtml(){
   const rows=(PAYROLL_STATE&&PAYROLL_STATE.rows)||[];
-  const payable=rows.filter(r=>Number(r.net_pay)>0);
+  const hidden=(PAYROLL_STATE&&PAYROLL_STATE.hiddenUserIds)||new Set();
+  // この月は対象外にした人（2026-09-02）はKPIの人数・件数にも数えない
+  const payable=rows.filter(r=>Number(r.net_pay)>0&&!hidden.has(r.user_id));
   const cashRows=payable.filter(r=>{ const b=payrollBankFor(r.user_id); return b&&b.payment_method==="cash"; });
   const transferCount=payable.filter(r=>{ const b=payrollBankFor(r.user_id); return b&&b.payment_method!=="cash"; }).length;
   const cashTotal=cashRows.reduce((s,r)=>s+(Number(r.net_pay)||0),0);
@@ -3271,7 +3273,7 @@ async function renderPayrollTab(u){
 async function payrollLoad(){
   const ym=PAYROLL_STATE.yearMonth;
   const fetchSync=()=>authed(`/rest/v1/sf_payroll_sync?year_month=eq.${ym}&select=*,user:users(name,role,is_active)&order=user(name)`);
-  let [syncR,recR,asgR,tplR,deptR,allocR,bankR]=await Promise.all([
+  let [syncR,recR,asgR,tplR,deptR,allocR,bankR,hiddenR]=await Promise.all([
     fetchSync(),
     authed(`/rest/v1/payroll_journal_records?year_month=eq.${ym}&select=*`),
     authed(`/rest/v1/payroll_journal_assignments?select=*`),
@@ -3279,6 +3281,9 @@ async function payrollLoad(){
     mfCall("list_departments",{tenant_id:"default"}),
     authed(`/rest/v1/sf_payroll_allocations?period_key=like.${ym}*&select=user_id,store_id,kind`),
     authed(`/rest/v1/payroll_bank_accounts?select=*`),
+    // nippo「給与・インセンティブ配分」画面が使っているsf_payroll_hidden（この月は対象外にした人）を
+    // こちらでも参照する（2026-09-02・担当Bからの依頼②。表側の実体は共有のためテーブル新設不要）
+    authed(`/rest/v1/sf_payroll_hidden?year_month=eq.${ym}&select=user_id`),
   ]);
   // 給与データの取得に失敗した場合（トークン更新タイミング等による一時的な失敗を想定）、少し待って
   // 1回だけ自動で再試行する。ユーザー報告「タブを開き直すとKPIが0にリセットされて見づらい」対策
@@ -3305,6 +3310,7 @@ async function payrollLoad(){
   PAYROLL_STATE.departments=(deptR.ok&&deptR.body.departments)||[];
   PAYROLL_STATE.allocations=(allocR.ok&&Array.isArray(allocR.body))?allocR.body:[];
   PAYROLL_STATE.bankAccounts=(bankR.ok&&Array.isArray(bankR.body))?bankR.body:[];
+  PAYROLL_STATE.hiddenUserIds=new Set((hiddenR.ok&&Array.isArray(hiddenR.body))?hiddenR.body.map(h=>h.user_id):[]);
   if(!PAYROLL_STATE.stores){
     const r=await authed("/rest/v1/stores?select=id,name&order=name");
     PAYROLL_STATE.stores=(r.ok&&Array.isArray(r.body))?r.body:[];
@@ -3393,8 +3399,14 @@ function payrollComputeBranches(row,template){
 }
 function payrollBankFor(userId){ return (PAYROLL_STATE.bankAccounts||[]).find(b=>b.user_id===userId); }
 // 一覧の並び替え・絞り込み（2026-09-01: ユーザー要望「振込済みが1番下に行くように・絞れるように」）
+// 2026-09-02: この月は対象外にした人（sf_payroll_hidden・担当Bからの依頼②）は一覧から常に除外し、
+// 検索キーワード（氏名の部分一致・依頼③）も同時にここで反映する
 function payrollSortedRows(){
   let rows=[...(PAYROLL_STATE.rows||[])];
+  const hidden=PAYROLL_STATE.hiddenUserIds||new Set();
+  rows=rows.filter(r=>!hidden.has(r.user_id));
+  const q=(PAYROLL_STATE.searchQuery||"").trim();
+  if(q) rows=rows.filter(r=>((r.user&&r.user.name)||"").includes(q));
   if(PAYROLL_STATE.hidePaid){
     rows=rows.filter(r=>{ const rec=payrollRecordFor(r.user_id); return !(rec&&rec.paid_at); });
   }
@@ -3424,17 +3436,20 @@ function payrollRowHtml(row){
   const bankBtn=`<button class="hq-btn" style="font-size:11px;padding:6px 9px" data-payroll-bank="${esc(row.user_id)}">${bankLabel}</button>`;
   // 操作欄: 未登録なら「プレビュー・登録」、登録済みなら振込完了ボタン＋登録解除リンクを出す
   // （2026-09-01: ユーザー要望「間違えて登録した可能性もあるので解除できるように」「振込完了も手動で押せるように」）
+  // 2026-09-02: どの状態でも「この月は非表示」リンクを併設（担当Bからの依頼②。まだ仕訳未登録の人でも
+  // 今月は支払い不要と分かっている場合に使う想定のため状態を問わず出す）
+  const hideBtn=`<button class="linkbtn" style="font-size:11px;background:none;border:none;color:var(--muted);cursor:pointer;padding:0;text-align:left" data-payroll-hide="${esc(row.user_id)}">🚫この月は非表示</button>`;
   let actionCell;
   if(rec){
     const payBtn=rec.paid_at
       ?`<button class="linkbtn" style="font-size:11px;background:none;border:none;color:var(--muted);cursor:pointer;padding:0;text-align:left" data-payroll-unpay="${esc(row.user_id)}">振込完了を取り消す</button>`
       :`<button class="hq-btn primary" style="font-size:11px;padding:6px 9px" data-payroll-pay="${esc(row.user_id)}">💰振込完了にする</button>`;
     const unregBtn=`<button class="linkbtn" style="font-size:11px;background:none;border:none;color:var(--accent);cursor:pointer;padding:0;text-align:left" data-payroll-unregister="${esc(row.user_id)}">仕訳登録を解除</button>`;
-    actionCell=`<div style="display:flex;flex-direction:column;gap:5px;align-items:flex-start">${payBtn}${unregBtn}</div>`;
+    actionCell=`<div style="display:flex;flex-direction:column;gap:5px;align-items:flex-start">${payBtn}${unregBtn}${hideBtn}</div>`;
   }else if(asg&&asg.template_id){
-    actionCell=`<button class="hq-btn" style="font-size:11px;padding:6px 9px" data-payroll-preview="${esc(row.user_id)}">プレビュー・登録</button>`;
+    actionCell=`<div style="display:flex;flex-direction:column;gap:5px;align-items:flex-start"><button class="hq-btn" style="font-size:11px;padding:6px 9px" data-payroll-preview="${esc(row.user_id)}">プレビュー・登録</button>${hideBtn}</div>`;
   }else{
-    actionCell="";
+    actionCell=`<div style="display:flex;flex-direction:column;gap:5px;align-items:flex-start">${hideBtn}</div>`;
   }
   return `<tr>
     <td><b>${esc(name)}</b></td>
@@ -3461,7 +3476,11 @@ function payrollRender(){
       <div class="card" style="padding:16px;margin-bottom:14px">
         <h3 style="font-size:14px;margin-bottom:6px">💴 給与仕訳</h3>
         <div style="font-size:12px;color:var(--muted);margin-bottom:12px">スマレジ給与明細（確定給与）から、月次の給与仕訳を作成します。まだ<b>有限会社トーホーエージェンシー分のみ</b>対応しています（SK側は別事業者としてマネーフォワード連携・スマレジ取込がまだのため未対応）。「仕訳辞書パターン」は設定タブで「給与仕訳での用途」を設定したテンプレートだけが選べます。</div>
-        <div class="ai-field" style="max-width:220px"><small>対象年月</small><input id="payroll-ym" type="month" value="${esc(PAYROLL_STATE.yearMonth)}"></div>
+        <div style="display:flex;align-items:end;gap:12px;flex-wrap:wrap">
+          <div class="ai-field" style="max-width:220px;margin-bottom:0"><small>対象年月</small><input id="payroll-ym" type="month" value="${esc(PAYROLL_STATE.yearMonth)}"></div>
+          <button id="payroll-sync-now">🔄 スマレジから今すぐ取得</button>
+        </div>
+        <div class="err" id="payroll-sync-msg" style="margin-top:6px"></div>
       </div>
       <div class="card" style="padding:16px;margin-bottom:14px">
         <h3 style="font-size:14px;margin-bottom:6px">📎 給与明細PDFをまとめてアップロード（${esc(PAYROLL_STATE.yearMonth)}分）</h3>
@@ -3476,8 +3495,22 @@ function payrollRender(){
         <div class="mail-actions"><button class="primary" id="payroll-csv-export">📥 振込CSVを出力</button></div>
         <div class="err" id="payroll-csv-msg" style="margin-top:6px"></div>
       </div>
+      ${(()=>{
+        // この月は対象外にした人（sf_payroll_hidden・2026-09-02）を一覧の外に折りたたんで表示
+        const hiddenIds=PAYROLL_STATE.hiddenUserIds||new Set();
+        const hiddenRows=(PAYROLL_STATE.rows||[]).filter(r=>hiddenIds.has(r.user_id));
+        if(!hiddenRows.length) return "";
+        return `<details class="card" style="padding:16px;margin-bottom:14px">
+          <summary style="cursor:pointer;font-size:13px">🚫 この月は非表示にしている人（${hiddenRows.length}名）</summary>
+          <div style="margin-top:8px">${hiddenRows.map(r=>`<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-top:1px solid var(--line)">
+            <span>${esc((r.user&&r.user.name)||"—")}</span>
+            <button class="hq-btn" style="font-size:11px;padding:6px 9px" data-payroll-show="${esc(r.user_id)}">復活する</button>
+          </div>`).join("")}</div>
+        </details>`;
+      })()}
       <div class="card hq-tablewrap">
         <div style="display:flex;align-items:center;gap:16px;padding:12px 16px;border-bottom:1px solid var(--line);flex-wrap:wrap">
+          <input id="payroll-search" placeholder="🔍 氏名で検索" value="${esc(PAYROLL_STATE.searchQuery||"")}" style="font-size:12px;max-width:180px">
           <label style="font-size:12px;display:flex;align-items:center;gap:6px">並び替え
             <select id="payroll-sort" style="font-size:12px">
               <option value="pendingFirst" ${PAYROLL_STATE.sortMode==="pendingFirst"?"selected":""}>振込完了を下へ</option>
@@ -3487,11 +3520,12 @@ function payrollRender(){
           <label style="font-size:12px;display:flex;align-items:center;gap:6px;cursor:pointer">
             <input type="checkbox" id="payroll-hide-paid" ${PAYROLL_STATE.hidePaid?"checked":""}>振込完了は表示しない
           </label>
+          <button id="payroll-csv-download" style="margin-left:auto;font-size:12px">📥 一覧をCSVでダウンロード</button>
         </div>
         ${rows.length?`<table class="invoice-table">
           <thead><tr><th>氏名</th><th style="text-align:right">固定給</th><th style="text-align:right">通勤</th><th style="text-align:right">控除</th><th style="text-align:right">差引支給</th><th>仕訳辞書パターン</th><th>PDF</th><th>振込先</th><th>状態</th><th></th></tr></thead>
           <tbody>${rows.map(payrollRowHtml).join("")}</tbody>
-        </table>`:`<div class="empty">${PAYROLL_STATE.hidePaid?"振込完了以外は残っていません（絞り込み中）":`${esc(PAYROLL_STATE.yearMonth)}のデータがまだありません（スマレジ給与明細の同期後に表示されます）`}</div>`}
+        </table>`:`<div class="empty">${PAYROLL_STATE.searchQuery?"該当する氏名の人が見つかりません":(PAYROLL_STATE.hidePaid?"振込完了以外は残っていません（絞り込み中）":`${esc(PAYROLL_STATE.yearMonth)}のデータがまだありません（スマレジ給与明細の同期後に表示されます）`)}</div>`}
       </div>
     </section>`;
   $("payroll-ym").onchange=async()=>{
@@ -3505,6 +3539,93 @@ function payrollRender(){
   };
   $("payroll-sort").onchange=()=>{ PAYROLL_STATE.sortMode=$("payroll-sort").value; payrollRender(); };
   $("payroll-hide-paid").onchange=()=>{ PAYROLL_STATE.hidePaid=$("payroll-hide-paid").checked; payrollRender(); };
+  // 2026-09-02: 検索（氏名の部分一致・依頼③）。入力のたびに全部を作り直すとIME入力が壊れるため
+  // （2026-08-31に別画面で実際に起きた不具合＝同じ轍を踏まないよう、テーブル部分だけを差し替える）
+  let payrollSearchTimer=null;
+  $("payroll-search").oninput=()=>{
+    clearTimeout(payrollSearchTimer);
+    const val=$("payroll-search").value;
+    payrollSearchTimer=setTimeout(()=>{
+      PAYROLL_STATE.searchQuery=val;
+      const wrap=$("payroll-search").closest(".card.hq-tablewrap");
+      const rows2=payrollSortedRows();
+      wrap.querySelector("table,.empty").outerHTML=rows2.length?`<table class="invoice-table">
+        <thead><tr><th>氏名</th><th style="text-align:right">固定給</th><th style="text-align:right">通勤</th><th style="text-align:right">控除</th><th style="text-align:right">差引支給</th><th>仕訳辞書パターン</th><th>PDF</th><th>振込先</th><th>状態</th><th></th></tr></thead>
+        <tbody>${rows2.map(payrollRowHtml).join("")}</tbody>
+      </table>`:`<div class="empty">該当する氏名の人が見つかりません</div>`;
+      wirePayrollRowActions();
+    },250);
+  };
+  // 2026-09-02: スマレジ再取得ボタン（依頼①。nippo「給与・インセンティブ配分」画面の
+  // smaregi-payroll-sync呼び出しと同じパターン）
+  $("payroll-sync-now").onclick=async()=>{
+    const btn=$("payroll-sync-now"), msg=$("payroll-sync-msg");
+    const [y,m]=PAYROLL_STATE.yearMonth.split("-").map(Number);
+    btn.disabled=true; btn.textContent="取得中…"; msg.className="err"; msg.textContent="";
+    try{
+      const s=sess.get();
+      const r=await fetch(`${SUPA_URL}/functions/v1/smaregi-payroll-sync`,{
+        method:"POST",headers:{apikey:SUPA_KEY,Authorization:"Bearer "+(s?s.at:""),"Content-Type":"application/json"},
+        body:JSON.stringify({year:y,month:m}),
+      });
+      const j=await r.json().catch(()=>null);
+      if(!j||!j.ok){ msg.textContent="取得エラー: "+((j&&j.error)||"不明なエラー"); return; }
+      msg.className="err msg-ok"; msg.textContent=`取得しました（${j.syncedCount}名ぶん更新）。画面を更新します…`;
+      await payrollLoad(); payrollRender(); updateMailSummaryBar();
+    }catch(e){ msg.textContent="通信エラーが発生しました"; }
+    finally{ btn.disabled=false; btn.textContent="🔄 スマレジから今すぐ取得"; }
+  };
+  // 2026-09-02: 一覧をCSVでダウンロード（依頼③。記録・確認用。PayPay振込CSVとは別物）
+  $("payroll-csv-download").onclick=()=>{
+    const statusText=r=>{ const rec=payrollRecordFor(r.user_id); const asg=payrollAssignmentFor(r.user_id);
+      if(rec&&rec.paid_at) return "振込完了"; if(rec) return "仕訳登録済み・振込待ち"; if(asg&&asg.template_id) return "未登録"; return "パターン未設定"; };
+    const bankText=r=>{ const b=payrollBankFor(r.user_id); return !b?"未登録":(b.payment_method==="cash"?"現金手渡し":"振込"); };
+    const esc2=s=>`"${String(s??"").replace(/"/g,'""')}"`;
+    const header=["氏名","固定給","通勤","控除","差引支給","振込先","状態"];
+    const lines=[header.join(",")];
+    payrollSortedRows().forEach(r=>{
+      lines.push([r.user&&r.user.name,r.fixed_salary_amount,r.commute_allowance,r.deduction_total,r.net_pay,bankText(r),statusText(r)].map(esc2).join(","));
+    });
+    const blob=new Blob(["﻿"+lines.join("\r\n")],{type:"text/csv"});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement("a");
+    a.href=url; a.download=`給与仕訳一覧_${PAYROLL_STATE.yearMonth}.csv`; a.click();
+    setTimeout(()=>URL.revokeObjectURL(url),1000);
+  };
+  wirePayrollRowActions();
+  $("payroll-csv-export").onclick=payrollExportCsv;
+  $("payroll-pdf-match").onclick=()=>{
+    const files=Array.from($("payroll-pdf-files").files||[]);
+    if(!files.length){ alert("PDFファイルを選択してください"); return; }
+    PAYROLL_STATE.pdfMatches=files.map(f=>{
+      const guess=payrollGuessEmployeeByFilename(f.name);
+      return {file:f, userId:guess?guess.user_id:""};
+    });
+    payrollRenderPdfMatchArea();
+  };
+}
+// 一覧の各行にあるボタン（振込完了・仕訳登録解除・非表示・PDF削除・パターン選択・プレビュー・振込先）の配線。
+// payrollRender()の全体再描画後だけでなく、検索の部分差し替え後（テーブルだけ作り直したとき）にも
+// 呼び直せるよう独立した関数にしてある（2026-09-02）
+function wirePayrollRowActions(){
+  // 2026-09-02: この月は非表示にする／復活する（依頼②。sf_payroll_hidden。書き込みはmasterのみ
+  // 許可のRLSのため、master以外が押すとエラーになる＝nippo側と同じ仕様）
+  document.querySelectorAll("[data-payroll-hide]").forEach(el=>el.onclick=async()=>{
+    const userId=el.dataset.payrollHide;
+    el.disabled=true;
+    const r=await authed("/rest/v1/sf_payroll_hidden",{method:"POST",headers:{Prefer:"resolution=merge-duplicates,return=minimal"},body:JSON.stringify({user_id:userId,year_month:PAYROLL_STATE.yearMonth,hidden_by:ME.id})});
+    if(!r.ok){ alert("非表示にできませんでした（マスター権限が必要です）"); el.disabled=false; return; }
+    PAYROLL_STATE.hiddenUserIds.add(userId);
+    payrollRender(); updateMailSummaryBar();
+  });
+  document.querySelectorAll("[data-payroll-show]").forEach(el=>el.onclick=async()=>{
+    const userId=el.dataset.payrollShow;
+    el.disabled=true;
+    const r=await authed(`/rest/v1/sf_payroll_hidden?user_id=eq.${userId}&year_month=eq.${PAYROLL_STATE.yearMonth}`,{method:"DELETE"});
+    if(!r.ok){ alert("復活できませんでした（マスター権限が必要です）"); el.disabled=false; return; }
+    PAYROLL_STATE.hiddenUserIds.delete(userId);
+    payrollRender(); updateMailSummaryBar();
+  });
   document.querySelectorAll("[data-payroll-pay]").forEach(el=>el.onclick=async()=>{
     const userId=el.dataset.payrollPay;
     el.disabled=true;
@@ -3558,16 +3679,6 @@ function payrollRender(){
   });
   document.querySelectorAll("[data-payroll-preview]").forEach(el=>el.onclick=()=>payrollOpenPreview(el.dataset.payrollPreview));
   document.querySelectorAll("[data-payroll-bank]").forEach(el=>el.onclick=()=>payrollOpenBankModal(el.dataset.payrollBank));
-  $("payroll-csv-export").onclick=payrollExportCsv;
-  $("payroll-pdf-match").onclick=()=>{
-    const files=Array.from($("payroll-pdf-files").files||[]);
-    if(!files.length){ alert("PDFファイルを選択してください"); return; }
-    PAYROLL_STATE.pdfMatches=files.map(f=>{
-      const guess=payrollGuessEmployeeByFilename(f.name);
-      return {file:f, userId:guess?guess.user_id:""};
-    });
-    payrollRenderPdfMatchArea();
-  };
 }
 function payrollPdfOptionsHtml(selectedUserId){
   let html=`<option value="">（対応する従業員なし・スキップ）</option>`;
@@ -3717,8 +3828,10 @@ function payrollExportCsv(){
   const skipped=[];
   const dataLines=[];
   let total=0, count=0;
+  const hidden=PAYROLL_STATE.hiddenUserIds||new Set();
   for(const row of PAYROLL_STATE.rows){
     const name=(row.user&&row.user.name)||row.user_id;
+    if(hidden.has(row.user_id)) continue; // この月は対象外にした人は振込CSVにも含めない（2026-09-02）
     const amount=Math.round(Number(row.net_pay)||0);
     if(!amount||amount<=0){ skipped.push(`${name}（差引支給額が0円）`); continue; }
     const bank=payrollBankFor(row.user_id);
