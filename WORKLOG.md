@@ -6,6 +6,10 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
+**★★★2026-09-02（担当Aスレッド）新しい正本`設計書_表示集計層kdと高速化実行計画_2026-09-02.md`を確認・予約タブの根本原因を再整理**: ユーザー指示によりこの文書が今後のPhase1〜2.5作業仕様の正本と確認。§10.1の予約関連タスク（`kd_reservation_daily_summary`＋予約API3分割＝一覧は期間必須/キャンセル集計/月次。担当P→A、W2）が、今日発覚した`keiei-api-reservation`のページネーション欠落バグ＋旧GAS `bqGetReservation`の遅さ（実測128〜145秒・時々失敗）**両方を構造的に解消する正式な計画**であると確認。この2つを場当たり的にこれ以上パッチせず、W2の`kd_reservation_daily_summary`を待つ方針とする（§11「すべての切替でロールバック(旧経路へ戻すフラグ)を残す」どおり、今の`RSV_API_ENABLED_=false`キルスイッチはこの原則に合致）。
+- ユーザーから「予約管理タブがずっと読み込み中で止まっている」と報告あり、`rsvPerfDiag_`（一時診断・BQ_LOAD_TOKEN認証・調査後削除予定）で旧GAS`bqGetReservation`（全店・キャンセル込み＝クライアントと同条件）の実際の所要時間を計測中（結果は次のエントリで追記）
+- **W1（担当A側の残タスク）を本書§10.1に照らして再確認**: ホットフィックス6件・A-p0計測フックは完了済み。**「GASバッチ化」（BQ系6actionを1回のbootstrap actionに統合）は未着手**——これまで実施したA-p1a/A-p1b（キャッシュ優先・予約管理先読み）とは別物で、次に着手すべき項目
+
 **★★★★★★★★★★2026-09-02 最新5（司令塔スレッド・続き5）表示集計層kd_の詳細設計と高速化実行計画を発行（Phase1〜2.5の作業仕様の正本）**: ユーザーの最優先指示「レジ管理画面並みのサクサク表示」を受け、コード実査に基づく`設計書_表示集計層kdと高速化実行計画_2026-09-02.md`を発行。**実査で確定した根拠**=①初期表示はGAS往復約10回（fetchDataFast=data＋BQ系6action＋freshness＋version＋裏読み）②行データ全件返し→画面側集計（実測コメント: media12秒/dinii6.3秒/deposit5.4秒/予約3.3秒）③Code.gsのstore_name依存59箇所・BQミラー8テーブル全てstore_nameキー・app.js resolveStore25箇所。**設計**=kd_サマリ7テーブル（home_kpi/dashboard_daily/store_monthly/pl_monthly/media_monthly/deposit_monthly/reservation_daily。全てstore_id/corporation_id/期間/source_updated_at/computed_at/source_count/sync_run_id必須・store_name列は持たない）＋kd_unresolved_names（未解決名の隔離＋Lark通知）＋kd_sync_runs（sync_run_idでキャッシュ無効化）＋インデックス案。**規約**=初期表示に明細禁止・一覧はlimit+期間必須・select=*禁止・集計はDB側・SWRキャッシュ・sync_status見える化。**タスク**=2週間の高速化（W1: GASバッチ化=往復10→2〜3回・SWR・perflog／W2: 予約API3分割差し替え・ダッシュボード初回をkd_読みへ=2〜3秒実測確認・精算DpostMessage化）＋1ヶ月のデータ整理（残りkd_4本・store_id化4段階・sync_status・手入力Web化第1弾）。P→A→旧経路停止の順・全切替にロールバック維持
 
 
