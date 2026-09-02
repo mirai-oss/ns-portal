@@ -593,6 +593,21 @@ async function fetchTaskDetail(id){
 // （送金/入金/請求書は§5の質問回答待ちのため未着手）。種別の判定はこの1関数に集約しておき、
 // SK設計確定後に他の種別を追加するときはここへ足す
 function isOnboardingTask(t){ return (t.title||"").indexOf("入社登録（")===0; }
+// 2026-09-02(担当Aからの指摘・改善提案への対応): 工程完了・チェック操作などタスク詳細側の
+// 変更後はCUR_TASK（詳細パネル）だけ再取得しており、ボード側の一覧配列TASKS/SEARCH_RESULTSは
+// 古いままだった（例: 最後の工程を完了してもかんばんの「処理中/完了」列がページ再読み込みまで
+// 切り替わらない）。全件再取得はせず、該当タスク1件分だけ軽量に置き換える
+// （fetchTaskDetailの戻り値はfetchBoardと同じhq_tasks.*+hq_task_steps(*)に加えて
+// _links等の詳細用フィールドを持つ上位互換なので、丸ごと差し替えて問題ない）
+function syncTaskIntoBoardList(task){
+  if(!task) return;
+  const idx=TASKS.findIndex(x=>x.id===task.id);
+  if(idx>=0) TASKS[idx]=task;
+  if(SEARCH_RESULTS){
+    const sidx=SEARCH_RESULTS.findIndex(x=>x.id===task.id);
+    if(sidx>=0) SEARCH_RESULTS[sidx]=task;
+  }
+}
 function applyFilters(list){
   return list.filter(t=>{
     if(FILTER.corp && t.corp!==FILTER.corp) return false;
@@ -910,6 +925,7 @@ async function openDetail(id){
   VIEW="detail"; OPEN_STEP=null; STEP_ATT_OPEN=new Set(); CHK_ADD_OPEN=new Set(); PROC_EDIT_OPEN=new Set(); STEP_ADD_OPEN=false; HQMFJ_OPEN_STEP=null; HQMFJ_STATE=null; HQMFJ_FILE=null; // 開くたびに工程の添付一覧は既定=閉に戻す
   $("app").innerHTML=`<div class="spin">読み込み中…</div>`;
   CUR_TASK=await fetchTaskDetail(id);
+  syncTaskIntoBoardList(CUR_TASK);
   renderDetail(ME);
 }
 function stalledInfo(t){
@@ -1340,7 +1356,7 @@ async function hqmfjSubmit(t,u,stepId){
   if(!ok){ S.msg=j.error||"登録できませんでした"; S.msgOk=false; renderDetail(u); return; }
   HQMFJ_OPEN_STEP=null; HQMFJ_STATE=null; HQMFJ_FILE=null;
   await logActivity(t.id,"comment",`請求書の仕訳をマネーフォワードへ登録しました（伝票番号: ${j.journal_number??"-"}）`,stepId);
-  CUR_TASK=await fetchTaskDetail(t.id); renderDetail(u);
+  CUR_TASK=await fetchTaskDetail(t.id); syncTaskIntoBoardList(CUR_TASK); renderDetail(u);
 }
 function checklistStepHtml(s,items,canTouch){
   // 2026-08-25: 項目が無い工程にまで「追加」フォームを常時出すとURL添付欄と同様に画面が
@@ -1758,13 +1774,13 @@ function wireCommentBox(t,u){
       const nr=await authed("/rest/v1/rpc/hq_notify_comment",{method:"POST",body:JSON.stringify({p_comment_id:r.body[0].id})});
       if(nr.ok&&Array.isArray(nr.body)) await sendNotifications(nr.body);
     }
-    CUR_TASK=await fetchTaskDetail(t.id); renderDetail(u);
+    CUR_TASK=await fetchTaskDetail(t.id); syncTaskIntoBoardList(CUR_TASK); renderDetail(u);
   };
   document.querySelectorAll("[data-delcomment]").forEach(b=>{
     b.onclick=async()=>{
       if(!confirm("このコメントを削除しますか？"))return;
       await authed(`/rest/v1/hq_task_comments?id=eq.${b.dataset.delcomment}`,{method:"DELETE"});
-      CUR_TASK=await fetchTaskDetail(t.id); renderDetail(u);
+      CUR_TASK=await fetchTaskDetail(t.id); syncTaskIntoBoardList(CUR_TASK); renderDetail(u);
     };
   });
   document.querySelectorAll("[data-replycomment]").forEach(b=>{
@@ -1840,7 +1856,7 @@ async function uploadPhoto(file){
 }
 function wireDetail(t,u){
   wireCommentBox(t,u);
-  wireBulkDone(()=>t.id,async()=>{ OPEN_STEP=null; CUR_TASK=await fetchTaskDetail(t.id); renderDetail(u); });
+  wireBulkDone(()=>t.id,async()=>{ OPEN_STEP=null; CUR_TASK=await fetchTaskDetail(t.id); syncTaskIntoBoardList(CUR_TASK); renderDetail(u); });
   if($("memosave")) $("memosave").onclick=async()=>{
     const msg=$("memomsg"); msg.textContent="保存中…";
     const memo=$("taskmemo").value;
@@ -1857,7 +1873,7 @@ function wireDetail(t,u){
     const r=await authed(`/rest/v1/hq_task_steps?id=eq.${last.id}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({completed_at:null,judgement:null,issue_note:null})});
     if(!r.ok){ msg.textContent="取り消せませんでした（権限がない可能性があります）"; return; }
     await logActivity(t.id,"step_reopen",`工程「${last.title}」の完了を取り消し`,last.id);
-    CUR_TASK=await fetchTaskDetail(t.id); renderDetail(u);
+    CUR_TASK=await fetchTaskDetail(t.id); syncTaskIntoBoardList(CUR_TASK); renderDetail(u);
   };
   if($("totemplate")) $("totemplate").onclick=()=>registerTaskAsTemplate(t,u);
   if($("deltask")) $("deltask").onclick=async()=>{
@@ -1879,7 +1895,7 @@ function wireDetail(t,u){
       const r=await authed(`/rest/v1/hq_task_steps?id=eq.${sid}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({completed_at:null,judgement:null,issue_note:null})});
       if(!r.ok){ alert("取り消せませんでした（権限がない可能性があります）"); return; }
       await logActivity(t.id,"step_reopen",`工程「${step.title}」の完了を取り消し`,sid);
-      CUR_TASK=await fetchTaskDetail(t.id); renderDetail(u);
+      CUR_TASK=await fetchTaskDetail(t.id); syncTaskIntoBoardList(CUR_TASK); renderDetail(u);
     };
   });
   /* Phase3(全面刷新): タスク詳細から工程の担当・期限を常時表示フォームでその場変更
@@ -1907,7 +1923,7 @@ function wireDetail(t,u){
       if(changes.length) await logActivity(t.id,"comment",`工程「${step.title}」を編集（${changes.join("・")}）`,sid);
       CUR_TASK=await fetchTaskDetail(t.id);
       await syncTaskDueDate(CUR_TASK); // 工程の期限を編集したら全体期限（最終工程の期限）も同期する
-      CUR_TASK=await fetchTaskDetail(t.id); renderDetail(u);
+      CUR_TASK=await fetchTaskDetail(t.id); syncTaskIntoBoardList(CUR_TASK); renderDetail(u);
     };
   });
   /* 2026-08-31: 工程自体の削除（間違えて作った工程を消したい・数を減らしたいという実機
@@ -1925,7 +1941,7 @@ function wireDetail(t,u){
       await logActivity(t.id,"comment",`工程「${step.title}」を削除`);
       CUR_TASK=await fetchTaskDetail(t.id);
       await syncTaskDueDate(CUR_TASK); // 工程を削除したら全体期限（最終工程の期限）も同期する
-      CUR_TASK=await fetchTaskDetail(t.id); renderDetail(u);
+      CUR_TASK=await fetchTaskDetail(t.id); syncTaskIntoBoardList(CUR_TASK); renderDetail(u);
     };
   });
   /* 2026-08-25(続き): 判定・必須写真の無い工程は行から直接ワンクリックで完了（実機フィードバック対応） */
@@ -1940,7 +1956,7 @@ function wireDetail(t,u){
       await logActivity(t.id,"step_complete",`工程「${step.title}」完了`,sid);
       await notifyStepEvent(sid,"step_complete");
       STEP_ATT_OPEN.delete(sid);
-      CUR_TASK=await fetchTaskDetail(t.id); renderDetail(u);
+      CUR_TASK=await fetchTaskDetail(t.id); syncTaskIntoBoardList(CUR_TASK); renderDetail(u);
     };
   });
   document.querySelectorAll("[data-stepopen]").forEach(el=>{
@@ -1954,7 +1970,7 @@ function wireDetail(t,u){
       const r=await authed(`/rest/v1/hq_step_checklist_items?id=eq.${id}`,{method:"PATCH",headers:{Prefer:"return=minimal"},
         body:JSON.stringify(checked?{checked_at:new Date().toISOString(),checked_by:ME.id}:{checked_at:null,checked_by:null})});
       if(!r.ok){ alert("更新できませんでした"); cb.disabled=false; cb.checked=!checked; return; }
-      CUR_TASK=await fetchTaskDetail(t.id); renderDetail(u);
+      CUR_TASK=await fetchTaskDetail(t.id); syncTaskIntoBoardList(CUR_TASK); renderDetail(u);
     };
   });
   document.querySelectorAll("[data-chkadd]").forEach(btn=>{
@@ -1967,7 +1983,7 @@ function wireDetail(t,u){
       const r=await authed("/rest/v1/hq_step_checklist_items",{method:"POST",headers:{Prefer:"return=minimal"},
         body:JSON.stringify({step_id:sid,title,sort_order:100})});
       if(!r.ok){ alert("追加できませんでした"); btn.disabled=false; return; }
-      CUR_TASK=await fetchTaskDetail(t.id); renderDetail(u);
+      CUR_TASK=await fetchTaskDetail(t.id); syncTaskIntoBoardList(CUR_TASK); renderDetail(u);
     };
   });
   document.querySelectorAll("[data-chkaddopen]").forEach(btn=>{
@@ -1985,7 +2001,7 @@ function wireDetail(t,u){
       if(!trimmed) return;
       const r=await authed(`/rest/v1/hq_step_checklist_items?id=eq.${id}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({title:trimmed})});
       if(!r.ok){ alert("更新できませんでした"); return; }
-      CUR_TASK=await fetchTaskDetail(t.id); renderDetail(u);
+      CUR_TASK=await fetchTaskDetail(t.id); syncTaskIntoBoardList(CUR_TASK); renderDetail(u);
     };
   });
   document.querySelectorAll("[data-chkdel]").forEach(btn=>{
@@ -1994,7 +2010,7 @@ function wireDetail(t,u){
       const id=btn.dataset.chkdel;
       const r=await authed(`/rest/v1/hq_step_checklist_items?id=eq.${id}`,{method:"DELETE"});
       if(!r.ok){ alert("削除できませんでした"); return; }
-      CUR_TASK=await fetchTaskDetail(t.id); renderDetail(u);
+      CUR_TASK=await fetchTaskDetail(t.id); syncTaskIntoBoardList(CUR_TASK); renderDetail(u);
     };
   });
   /* 2026-08-26: 工程ごとの「📘手順書」をタスク側でも作成・編集できるように
@@ -2016,7 +2032,7 @@ function wireDetail(t,u){
       const r=await authed(`/rest/v1/hq_task_steps?id=eq.${sid}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({procedure_note:note})});
       if(!r.ok){ alert("保存できませんでした"); btn.disabled=false; return; }
       PROC_EDIT_OPEN.delete(sid);
-      CUR_TASK=await fetchTaskDetail(t.id); renderDetail(u);
+      CUR_TASK=await fetchTaskDetail(t.id); syncTaskIntoBoardList(CUR_TASK); renderDetail(u);
     };
   });
   /* 2026-08-27: 請求書メール連携（担当Cのmf-journal Edge Function）のワイヤリング。
@@ -2130,7 +2146,7 @@ function wireDetail(t,u){
     STEP_ADD_OPEN=false;
     CUR_TASK=await fetchTaskDetail(t.id);
     await syncTaskDueDate(CUR_TASK); // 工程を追加したら全体期限（最終工程の期限）も同期する
-    CUR_TASK=await fetchTaskDetail(t.id); renderDetail(u);
+    CUR_TASK=await fetchTaskDetail(t.id); syncTaskIntoBoardList(CUR_TASK); renderDetail(u);
   };
   document.querySelectorAll("select[id^='judge-']").forEach(sel=>{
     sel.onchange=()=>{ const sid=sel.id.replace("judge-",""); const w=$("issuewrap-"+sid); if(w)w.style.display=sel.value==="issue"?"block":"none"; };
@@ -2162,7 +2178,7 @@ function wireDetail(t,u){
         await notifyStepEvent(sid,"step_complete");
         if(payload.judgement==="issue") await notifyStepEvent(sid,"issue_reported");
       }catch(e){ msg.textContent="エラー: "+e.message; btn.disabled=false; return; }
-      OPEN_STEP=null; STEP_ATT_OPEN.delete(sid); CUR_TASK=await fetchTaskDetail(t.id); renderDetail(u);
+      OPEN_STEP=null; STEP_ATT_OPEN.delete(sid); CUR_TASK=await fetchTaskDetail(t.id); syncTaskIntoBoardList(CUR_TASK); renderDetail(u);
     };
   });
   const kindSel=$("lk-kind");
@@ -2199,15 +2215,15 @@ function wireDetail(t,u){
     const r=await authed("/rest/v1/hq_task_links",{method:"POST",headers:{Prefer:"return=minimal"},body:JSON.stringify(payload)});
     if(!r.ok){$("lk-msg").textContent="追加できませんでした";return}
     await logActivity(t.id,"comment",`リンク追加: ${payload.label}`);
-    CUR_TASK=await fetchTaskDetail(t.id); renderDetail(u);
+    CUR_TASK=await fetchTaskDetail(t.id); syncTaskIntoBoardList(CUR_TASK); renderDetail(u);
   };
   document.querySelectorAll("[data-dellink]").forEach(b=>b.onclick=async()=>{
     if(!confirm("このリンクを削除しますか？"))return;
     await authed(`/rest/v1/hq_task_links?id=eq.${b.dataset.dellink}`,{method:"DELETE"});
-    CUR_TASK=await fetchTaskDetail(t.id); renderDetail(u);
+    CUR_TASK=await fetchTaskDetail(t.id); syncTaskIntoBoardList(CUR_TASK); renderDetail(u);
   });
   sortedSteps(t).forEach(s=>{
-    wireAttachBox(`tsatt-${s.id}`,{step_id:s.id},canManage(u),async()=>{ CUR_TASK=await fetchTaskDetail(t.id); renderDetail(u); });
+    wireAttachBox(`tsatt-${s.id}`,{step_id:s.id},canManage(u),async()=>{ CUR_TASK=await fetchTaskDetail(t.id); syncTaskIntoBoardList(CUR_TASK); renderDetail(u); });
   });
   if($("taskphoto")) $("taskphoto").onchange=async e=>{
     const f=e.target.files[0]; if(!f)return;
@@ -2217,7 +2233,7 @@ function wireDetail(t,u){
       const r=await authed("/rest/v1/hq_task_photos",{method:"POST",headers:{Prefer:"return=minimal"},body:JSON.stringify({task_id:t.id,storage_path:path,uploaded_by:ME.id})});
       if(!r.ok){msg.textContent="登録に失敗しました";return}
       await logActivity(t.id,"photo","写真を追加");
-      CUR_TASK=await fetchTaskDetail(t.id); renderDetail(u);
+      CUR_TASK=await fetchTaskDetail(t.id); syncTaskIntoBoardList(CUR_TASK); renderDetail(u);
     }catch(err){ msg.textContent="エラー: "+err.message; }
   };
 }
