@@ -6,6 +6,12 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
+**★★★★2026-09-03（レーンPスレッド）TK-60①への回答: kd_dashboard_daily_summary空の原因を特定・修正・本番反映済み**: 担当Aの報告（①kd_dashboard_daily_summaryが空・②GASバッチ化は実測で悪化のため見送り）を受けて調査。
+- **原因**: リフレッシュジョブ（`keiei-kd-refresh` op=dashboard_daily）が使っていたGASアクション`bqDailyStoreForSync`（軽量・ログイン不要）は実は`[date,store_name,net_sales,cogs,labor_cost_total]`の**5列しか返さない**（`tori-dashboard/gas/Code.gs:2465`実装を確認）。にもかかわらずコードは13列版（`bqDailyStore`・login必須）の列位置でguests/partiesを読んでいたため、`row[3]`（実際はcogs）を客数として、存在しない`row[12]`を組数として拾い、桁違いの値になっていた（実測: guests=198,885等）。**さらに悪いことに、この失敗を最初に踏んだ実行（GASプロジェクト移行と同時刻）はHTTP 200を返す実装バグと重なり、GitHub Actions側では「success」表示のまま握りつぶされていた**（両方とも修正済み）
+- **修正**: データ取得を`labor-allocation-compare`と全く同じ方式（`dash_id`/`dash_pw`でログイン→`bqDailyStore`をtoken付きで呼ぶ。13列フル版）に切替。失敗時はHTTP 500を返すよう修正（今後は同種の失敗がGitHub Actions側でも赤字で分かる）
+- **確認**: 本番再デプロイ→手動実行で実測。`kd_dashboard_daily_summary`1,102行・客単価¥2,217〜¥4,876・客数53〜147人など**妥当な値**になったことを確認。`kd_home_kpi_snapshot`も連動して正常化（本日分は営業時間の関係でまだ数店舗のみ数字が入っている状態＝正常な遅延）
+- **tori-dashboardのapp.js・GASは無変更**（既存のlogin/bqDailyStoreアクションを呼んでいるだけ）。コミット[fc8b27c](https://github.com/mirai-oss/ns-portal/commit/fc8b27c)。担当Aへ返信済み（SendMessage）。これでTK-60②のダッシュボード初回表示kd_直読み化に進める状態
+
 **★2026-09-03（担当C実行スレッド）請求書一覧タブにもPL反映済みバッジを追加（短縮表示）**: 前エントリ（仕訳プレビュー＋詳細画面PLバッジ）の続きで、ユーザーから「請求書一覧のところにも、PL反映されたことがわかりやすいようにしてほしい！会計入力処理済み、PL反映済みとかだと長くなってしまうから、会計、PLみたいに略して」と追加要望。請求書一覧タブの状態列で「💰会計処理済み」→「💰会計」に短縮し、`invoice.pl_fee_reflected_at`がある行に新規「📊PL」バッジを追加（詳細はタイトルツールチップで補足）。データ取得側は元々`select=*`のため変更不要。コミット[3026afa](https://github.com/mirai-oss/ns-portal/commit/3026afa)・push済み・構文チェック済み・実機E2E未実施
 
 **★★★★★2026-09-02（担当Aスレッド）TK-60着手→実測に基づき方針転換。GASバッチ化(bootstrap)は組み込み見送り・真因はkd_側の未反映と判明→レーンPへ確認依頼**: `設計書_表示集計層kdと高速化実行計画_2026-09-02.md`§10.1 W1「GASバッチ化」から着手。
