@@ -923,6 +923,7 @@ const JOHO_URL="https://ns-info-system.vercel.app";
 // nippoが対応した瞬間、portal.html側は無改修でヘッダー二重表示が消える
 const nippoPage=p=>NIPPO_URL+"?page="+p+"&embed=1";
 const keieiTab=t=>KEIEI_URL+"?embed=1&tab="+t;
+const seisanTab=v=>SEISAN_URL+"?embed=1&view="+v; // W2-A（2026-09-02）: seisan-dashboard側がembed/view/postMessage対応済み
 // 本部タスクボード全面刷新Phase1（担当E・コミットd233468）の受け口。
 // tasks.htmlは元々embed/pageパラメータに対応していなかったため、
 // 担当Eが先行してtasks.html側に実装・依頼をWORKLOG経由で受けて追加
@@ -973,13 +974,12 @@ const KAIKEI_GROUP={cap:"会計",ico:"🧾", items:[
   {key:"kaikei-payroll",  sysKey:"invoices",ico:"💴",label:"給与仕訳",url:"invoices.html?embed=1&tab=payroll"},
   {key:"kaikei-payment",  ico:"💸",label:"支払い（インフォマート・振込）",soon:true},
 ]};
-/* 精算管理・社内情報は、実際のアプリがURLで内部タブを指定する仕組みを
-   持っていない（もともと1画面のアプリのため元々複数タブが無い）ため
-   1グループ=1項目のまま。現場・日報／採用管理／経営管理は、nippo・
-   tori-dashboard双方の対応が入ったため、実際に別のページへ飛ぶ開閉
-   グループとして下のGROUPSに分けている。 */
+/* 社内情報管理は、実際のアプリがURLで内部タブを指定する仕組みを持っていない
+   （別オリジンのSSO外部リンクのため、そもそも埋め込みiframeではない）ため
+   1項目のまま。精算ダッシュボードはW2-A（2026-09-02）でseisan-dashboard側に
+   embed/view/postMessage対応が入ったため、経営管理と同じ開閉グループ方式に
+   変更した（下のGROUPS内「精算管理」参照）。 */
 const SYS_ITEMS=[
-  {key:"seisan", sysKey:"seisan", ico:"🧮", label:"精算ダッシュボード", url:SEISAN_URL},
   {key:"joho",   sysKey:"joho",   ico:"🔐", label:"社内情報管理", url:JOHO_URL, external:true, sso:true, countKey:"approval"},
   // 担当G「データ出力センター」Phase1（コミットfeadac3・WORKLOG「2026-08-25（担当G実行スレッド）
   // Phase 1実装・本番デプロイ・実機E2E」担当Fへの依頼）。export.html側のexport_can_access()と
@@ -1038,6 +1038,14 @@ const GROUPS=[
     // 週報管理・アカウント管理は社長・本部のみ（tori-dashboard ROLE_TABS準拠）
     {key:"keiei-weeklyadmin", sysKey:"keiei", roles:["HQ","CEO"], ico:"🗂️", label:"週報管理",     url:keieiTab("weeklyAdmin")},
     {key:"keiei-accounts",    sysKey:"keiei", roles:["HQ","CEO"], ico:"👤", label:"アカウント管理", url:keieiTab("accounts")},
+  ]},
+  // W2-A（2026-09-02）: 精算ダッシュボードのタブをURLで直接指定できるようになった
+  // （seisan-dashboard側の?embed=1&view=X対応）ため、経営管理と同じ開閉グループ方式に変更。
+  // 従来は単一項目（1グループ=1画面）だったため権限のroles指定は無し＝そのまま踏襲
+  {cap:"精算管理",ico:"🧮", items:[
+    {key:"seisan-check",  sysKey:"seisan", ico:"✅", label:"店舗チェック",   url:seisanTab("check")},
+    {key:"seisan-corp",   sysKey:"seisan", ico:"🏢", label:"法人別・振込",   url:seisanTab("corp")},
+    {key:"seisan-annual", sysKey:"seisan", ico:"📊", label:"年間推移",       url:seisanTab("annual")},
   ]},
   KAIKEI_GROUP,
   // F-6（実装指示書_担当F追加_返済表と管理画面_2026-08-25.md）: 散らばっていた
@@ -1122,8 +1130,8 @@ let NAV_HQ_CNT=0, NAV_INV_CNT=0, NAV_APPROVAL_CNT=0;
    tori-dashboard（sysKey:"keiei"）はapp.js側の受け口デプロイ済み・確認済み。
    nippo（sysKey:"nippo"）は担当Bと連携のうえ追加予定（2026-08-26時点は未追加）
    ============================================================ */
-const SYS_TAB_PARAM={keiei:"tab",nippo:"page",cockpit:"page"}; // その システムの「タブ」がURLのどのクエリパラメータで表されるか
-const FAST_SWITCH_SYSKEYS=new Set(["keiei","nippo","cockpit"]); // nippo側の受け口は担当Bが実装・デプロイ済み（コミットbe020d2・2026-08-27確認）。cockpit側は2026-08-31実装
+const SYS_TAB_PARAM={keiei:"tab",nippo:"page",cockpit:"page",seisan:"view"}; // その システムの「タブ」がURLのどのクエリパラメータで表されるか
+const FAST_SWITCH_SYSKEYS=new Set(["keiei","nippo","cockpit","seisan"]); // nippo側の受け口は担当Bが実装・デプロイ済み（コミットbe020d2・2026-08-27確認）。cockpit側は2026-08-31実装。seisan側はW2-A（2026-09-02）実装
 let CUR_IFRAME=null, CUR_IFRAME_SYSKEY=null, CUR_IFRAME_ORIGIN=null;
 
 /* ============================================================
