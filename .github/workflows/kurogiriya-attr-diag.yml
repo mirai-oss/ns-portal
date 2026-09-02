@@ -6,24 +6,27 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: rsv_reservationsの全列を確認(Ring-style/いちご屋がどこにあるか)
+      - name: Ring-style/いちご屋を全店舗・全テーブルから横断検索
         env:
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: |
-          curl -sL "https://uuvsxzhpxtghojoubjcc.supabase.co/rest/v1/rsv_reservations?store_account=ilike.*%E9%BB%92%E9%9C%A7%E5%B1%8B*&select=*&limit=1000" \
-            -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
-            -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
-            -o /tmp/kg.json
-          node -e "
-            const d=JSON.parse(require('fs').readFileSync('/tmp/kg.json','utf8'));
-            console.log('rows:', d.length);
-            if(d[0]) console.log('columns:', Object.keys(d[0]));
-            ['channel_raw','channel_normalized','course','menu','tag','store_account','source'].forEach(col=>{
-              const counts={};
-              d.forEach(r=>{ const v=JSON.stringify(r[col]); counts[v]=(counts[v]||0)+1; });
-              console.log(col+':', JSON.stringify(counts));
-            });
-            const hit=d.filter(r=>JSON.stringify(r).includes('Ring-style')||JSON.stringify(r).includes('いちご屋'));
-            console.log('rows containing Ring-style/いちご屋 anywhere:', hit.length);
-            if(hit[0]) console.log('sample match:', JSON.stringify(hit[0],null,2));
-          "
+          echo '--- rsv_reservations: store_account に一致する行があるか ---'
+          curl -sL "https://uuvsxzhpxtghojoubjcc.supabase.co/rest/v1/rsv_reservations?store_account=ilike.*Ring-style*&select=store_account,attribute,course,channel_raw&limit=5" \
+            -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY"
+          echo ''
+          curl -sL "https://uuvsxzhpxtghojoubjcc.supabase.co/rest/v1/rsv_reservations?store_account=ilike.*%E3%81%84%E3%81%A1%E3%81%94%E5%B1%8B*&select=store_account,attribute,course,channel_raw&limit=5" \
+            -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY"
+          echo ''
+          echo '--- stores/store_aliasesテーブルに一致する行があるか ---'
+          curl -sL "https://uuvsxzhpxtghojoubjcc.supabase.co/rest/v1/stores?or=(name.ilike.*Ring-style*,dash_store_name.ilike.*Ring-style*,name.ilike.*%E3%81%84%E3%81%A1%E3%81%94%E5%B1%8B*,dash_store_name.ilike.*%E3%81%84%E3%81%A1%E3%81%94%E5%B1%8B*)&select=*" \
+            -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY"
+          echo ''
+          curl -sL "https://uuvsxzhpxtghojoubjcc.supabase.co/rest/v1/store_aliases?or=(alias.ilike.*Ring-style*,alias.ilike.*%E3%81%84%E3%81%A1%E3%81%94%E5%B1%8B*)&select=*" \
+            -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY"
+          echo ''
+          echo '--- rsv_reservations: 全体からcourse/channel_rawに一致する行があるか ---'
+          curl -sL "https://uuvsxzhpxtghojoubjcc.supabase.co/rest/v1/rsv_reservations?or=(course.ilike.*Ring-style*,channel_raw.ilike.*Ring-style*,attribute.ilike.*Ring-style*,memo.ilike.*Ring-style*)&select=store_account,attribute,course,channel_raw,memo&limit=10" \
+            -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY"
+          echo ''
+          curl -sL "https://uuvsxzhpxtghojoubjcc.supabase.co/rest/v1/rsv_reservations?or=(course.ilike.*%E3%81%84%E3%81%A1%E3%81%94%E5%B1%8B*,channel_raw.ilike.*%E3%81%84%E3%81%A1%E3%81%94%E5%B1%8B*,attribute.ilike.*%E3%81%84%E3%81%A1%E3%81%94%E5%B1%8B*,memo.ilike.*%E3%81%84%E3%81%A1%E3%81%94%E5%B1%8B*)&select=store_account,attribute,course,channel_raw,memo&limit=10" \
+            -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY"
