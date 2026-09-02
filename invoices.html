@@ -2345,7 +2345,7 @@ function invoiceListBodyHtml(){
         <td>${yen(row.amount)}</td>
         <td>${dueBadgeHtml(row)}</td>
         <td>${esc(row.email&&row.email.processor&&row.email.processor.name||"—")}</td>
-        <td><span class="invoice-status ${INVOICE_STATUS_CLASS[row.invoice_status]||'gray'}">${cfg.statusLabel[row.invoice_status]||row.invoice_status}</span>${row.mf_journal_id?' <span class="hq-pill green" style="margin-left:4px">💰会計処理済み</span>':''}</td>
+        <td><span class="invoice-status ${INVOICE_STATUS_CLASS[row.invoice_status]||'gray'}">${cfg.statusLabel[row.invoice_status]||row.invoice_status}</span>${row.mf_journal_id?' <span class="hq-pill green" style="margin-left:4px" title="会計（マネーフォワード）に仕訳登録済み">💰会計</span>':''}${row.pl_fee_reflected_at?' <span class="hq-pill green" style="margin-left:4px" title="損益（PL）に反映済み">📊PL</span>':''}</td>
       </tr>`).join("")||`<tr><td colspan="6">${cfg.emptyLabel}</td></tr>`}
     </tbody>
   </table>`;
