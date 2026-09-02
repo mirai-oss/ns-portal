@@ -8,9 +8,16 @@
 // 各opの実行内容はkd_sync_runsに記録する（start→success/failed）。画面側（app.js）はkd_sync_runsの
 // 最新finished_atが変わった時だけ再取得すればよい設計（§7）。
 //
-// 【データ出典についての注記】net_sales/guests/parties等はtori-dashboard GASの軽量アクション
-// `bqDailyStoreForSync`（BQ_LOAD_TOKEN認証・ログイン不要。dash-sync/labor-allocation-compare等が
-// 既に使っている既存の読み取り専用エンドポイント。GASコード自体は無変更）から取得する。
+// 【データ出典についての注記・2026-09-03修正】net_sales/guests/parties等はtori-dashboard GASの
+// `bqDailyStore`アクション（login必須・labor-allocation-compareと全く同じ呼び出し方=dash_id/dash_pw
+// でログイン→token付きで呼ぶ。GASコード自体は無変更）から取得する。
+// 【誤りの記録】初版では軽量アクション`bqDailyStoreForSync`（dash-syncが使う、ログイン不要・
+// BQ_LOAD_TOKEN認証）を使っていたが、このアクションは[date,store_name,net_sales,cogs,labor_cost_total]
+// の5列しか返さない（tori-dashboard/gas/Code.gs:2465 bqDailyStoreForSync()参照）。guests_total/
+// parties_total列が存在しないため、実際にはrow[3]=cogsをguestsとして、存在しないrow[12]を
+// partiesとして読んでいて0/桁違いの値になっていた（担当AのTK-60報告=kd_dashboard_daily_summaryが
+// 空、を受けたレーンPの調査で発覚。あわせて、失敗時にHTTP 200を返してしまいkd_sync_runsの
+// failedがGitHub Actions側から見えなくなるバグも同時発見・修正済み）。
 import { createClient } from "npm:@supabase/supabase-js@2";
 
 const cors: Record<string, string> = {
@@ -168,17 +175,30 @@ async function refreshReservationDaily(sb: any, body: any) {
 }
 
 // ============== op=dashboard_daily: kd_dashboard_daily_summary ==============
-async function bqDailyStoreForSync(months: number) {
-  const tk = Deno.env.get("BQ_LOAD_TOKEN");
-  if (!tk) throw new Error("BQ_LOAD_TOKENが未設定です（Supabaseのシークレットに登録してください）");
-  const url = new URL(DASH_API_URL);
-  url.searchParams.set("action", "bqDailyStoreForSync");
-  url.searchParams.set("token", tk);
-  url.searchParams.set("months", String(months));
-  const res = await fetch(url.toString());
-  const j = await res.json();
-  if (!j.ok) throw new Error("BigQuery問い合わせに失敗しました: " + (j.error ?? JSON.stringify(j)));
-  return (j.sheets?.daily ?? []) as any[][];
+// dash_id/dash_pw（app_secrets）でログイン→token付きでbqDailyStoreを呼ぶ。labor-allocation-compareの
+// dashSecrets()/dashCall()と全く同じ方式（GAS変更なし・既存のログイン経由アクションを叩くだけ）。
+async function dashSecrets(sb: any) {
+  const { data } = await sb.from("app_secrets").select("key,value").in("key", ["dash_id", "dash_pw"]);
+  const m: Record<string, string> = {};
+  (data ?? []).forEach((r: any) => { m[r.key] = (r.value ?? "").trim(); });
+  return { id: m.dash_id ?? "", pw: m.dash_pw ?? "" };
+}
+async function dashCall(body: unknown) {
+  const res = await fetch(DASH_API_URL, {
+    method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" }, body: JSON.stringify(body),
+  });
+  const text = await res.text();
+  try { return JSON.parse(text); }
+  catch (_) { return { ok: false, error: "ダッシュボードの応答を読めませんでした: " + text.slice(0, 200) }; }
+}
+async function bqDailyStoreFull(sb: any, months: number) {
+  const { id, pw } = await dashSecrets(sb);
+  if (!id || !pw) throw new Error("app_secretsにdash_id/dash_pwが未設定です");
+  const login = await dashCall({ action: "login", id, pw });
+  if (!login.ok) throw new Error("ダッシュボードへのログインに失敗: " + (login.error ?? ""));
+  const res = await dashCall({ action: "bqDailyStore", token: login.token, months: months + 1 });
+  if (!res.ok) throw new Error("bqDailyStore取得に失敗: " + (res.error ?? ""));
+  return (res.sheets?.daily ?? []) as any[][];
 }
 
 async function refreshDashboardDaily(sb: any, body: any) {
@@ -186,7 +206,7 @@ async function refreshDashboardDaily(sb: any, body: any) {
   const runId = await startRun(sb, "kd_dashboard_daily_summary");
   try {
     const { idByName, corpByStoreId } = await loadStoreMaps(sb);
-    const rawRows = await bqDailyStoreForSync(months);
+    const rawRows = await bqDailyStoreFull(sb, months);
     const unmatched = new Set<string>();
     type Row = { store_id: string; period_date: string; net_sales: number; guests: number; parties: number };
     const parsed: Row[] = [];
@@ -197,8 +217,9 @@ async function refreshDashboardDaily(sb: any, body: any) {
       if (!storeName || !dateStr) continue;
       const storeId = idByName.get(storeName);
       if (!storeId) { unmatched.add(storeName); continue; }
-      // 列順: date,store_name,net_sales,guests_total,parttime_labor,fulltime_labor,labor_total,cogs,cash,
-      //       employee_salary_bonus,statutory_welfare,commute_allowance,parties_total
+      // 列順（bqDailyStore・tori-dashboard/gas/Code.gs:1523 BQ_DAILY_STORE_HEADER参照）: date,store_name,
+      // net_sales,guests_total,parttime_labor,fulltime_labor,labor_total,cogs,cash,employee_salary_bonus,
+      // statutory_welfare,commute_allowance,parties_total
       parsed.push({ store_id: storeId, period_date: dateStr, net_sales: num(row[2]), guests: num(row[3]), parties: num(row[12]) });
     }
 
@@ -326,13 +347,18 @@ Deno.serve(async (req) => {
     let body: any = {};
     try { body = await req.json(); } catch { /* ボディなし */ }
 
+    let result: any;
     switch (body.op) {
-      case "reservation_daily": return json(await refreshReservationDaily(sb, body));
-      case "dashboard_daily": return json(await refreshDashboardDaily(sb, body));
-      case "home_kpi": return json(await refreshHomeKpi(sb));
-      case "unresolved_notify": return json(await notifyUnresolved(sb));
+      case "reservation_daily": result = await refreshReservationDaily(sb, body); break;
+      case "dashboard_daily": result = await refreshDashboardDaily(sb, body); break;
+      case "home_kpi": result = await refreshHomeKpi(sb); break;
+      case "unresolved_notify": result = await notifyUnresolved(sb); break;
       default: return json({ ok: false, error: "opは'reservation_daily'|'dashboard_daily'|'home_kpi'|'unresolved_notify'のいずれかが必須です" }, 400);
     }
+    // 2026-09-03修正: ok:falseの結果をHTTP 200で返してしまうとGitHub Actions側のHTTP_CODEチェックを
+    // すり抜けて「success」表示のまま失敗が握りつぶされる（実際にdashboard_dailyの失敗がこれで見逃されていた）。
+    // 失敗時は必ず500を返す。
+    return json(result, result?.ok ? 200 : 500);
   } catch (e) {
     return json({ ok: false, error: String(e) }, 500);
   }
