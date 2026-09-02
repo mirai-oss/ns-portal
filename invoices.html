@@ -1973,8 +1973,8 @@ function wireDetailActions(u){
       mfjApplyBranches([{
         debitLabel:mfjLabelOf(r.template.debit), debitAmount:r.template.debit?amt:"",
         creditLabel:mfjLabelOf(r.template.credit), creditAmount:r.template.credit?amt:"",
-        department_id:(r.template.debit&&r.template.debit.department_id)||(r.template.credit&&r.template.credit.department_id)||"",
-        tax_id:(r.template.debit&&r.template.debit.tax_id)||(r.template.credit&&r.template.credit.tax_id)||"",
+        department_id:(r.template.debit&&r.template.debit.department_id)||"", tax_id:(r.template.debit&&r.template.debit.tax_id)||"",
+        credit_department_id:(r.template.credit&&r.template.credit.department_id)||"", credit_tax_id:(r.template.credit&&r.template.credit.tax_id)||"",
         remark:r.template.remark||"",
       }]);
     });
@@ -1999,7 +1999,9 @@ function wireDetailActions(u){
       const branches=(t.branches||[]).map(b=>({
         debitLabel:mfjLabelOf(b.debit), debitAmount:b.debit?(b.debit.value??b.amount??MFJ_STATE.amount??""):"",
         creditLabel:mfjLabelOf(b.credit), creditAmount:b.credit?(b.credit.value??b.amount??MFJ_STATE.amount??""):"",
-        department_id:b.department_id||"", tax_id:b.tax_id||"", remark:b.remark||"",
+        department_id:b.department_id||"", tax_id:b.tax_id||"",
+        credit_department_id:b.credit_department_id||"", credit_tax_id:b.credit_tax_id||"",
+        remark:b.remark||"",
       }));
       mfjApplyBranches(branches);
     });
@@ -2021,6 +2023,8 @@ function wireDetailActions(u){
         credit:credit?{...credit,value:Number(b.creditAmount)||null}:null,
         department_id:b.department_id||null, department_name:(MFJ_STATE.departments.find(d=>d.id===b.department_id)||{}).name||null,
         tax_id:b.tax_id||null, tax_name:(MFJ_STATE.taxes.find(t=>t.id===b.tax_id)||{}).name||null,
+        credit_department_id:b.credit_department_id||null, credit_department_name:(MFJ_STATE.departments.find(d=>d.id===b.credit_department_id)||{}).name||null,
+        credit_tax_id:b.credit_tax_id||null, credit_tax_name:(MFJ_STATE.taxes.find(t=>t.id===b.credit_tax_id)||{}).name||null,
         remark:b.remark||null,
       });
     }
@@ -2118,7 +2122,7 @@ function wireDetailActions(u){
       if(debit&&(!dAmt||dAmt<=0)){ msg.textContent="借方の金額が未入力（0円）の行があります"; return; }
       if(credit&&(!cAmt||cAmt<=0)){ msg.textContent="貸方の金額が未入力（0円）の行があります"; return; }
       if(debit) totalDebit+=dAmt; if(credit) totalCredit+=cAmt;
-      branchesPayload.push({debit,debitAmount:dAmt,credit,creditAmount:cAmt,department_id:b.department_id||null,tax_id:b.tax_id||null,remark:b.remark||""});
+      branchesPayload.push({debit,debitAmount:dAmt,credit,creditAmount:cAmt,department_id:b.department_id||null,tax_id:b.tax_id||null,credit_department_id:b.credit_department_id||null,credit_tax_id:b.credit_tax_id||null,remark:b.remark||""});
     }
     if(!branchesPayload.length){ msg.textContent="明細行がありません"; return; }
     if(totalDebit!==totalCredit){ msg.textContent=`借方合計（${yen(totalDebit)}）と貸方合計（${yen(totalCredit)}）が一致していません`; return; }
@@ -2166,7 +2170,9 @@ function wireDetailActions(u){
         branches: branchesPayload.map(b=>({
           debit:b.debit?{account_id:b.debit.account_id,sub_account_id:b.debit.sub_account_id||undefined,value:b.debitAmount}:undefined,
           credit:b.credit?{account_id:b.credit.account_id,sub_account_id:b.credit.sub_account_id||undefined,value:b.creditAmount}:undefined,
-          department_id:b.department_id||null, tax_id:b.tax_id||null, remark:b.remark||undefined,
+          department_id:b.department_id||null, tax_id:b.tax_id||null,
+          credit_department_id:b.credit_department_id||null, credit_tax_id:b.credit_tax_id||null,
+          remark:b.remark||undefined,
         })),
         transaction_date: date,
         remark,
@@ -2637,8 +2643,10 @@ function mftOpenEditor(tpl){
     branches: tpl?(tpl.branches||[]).map(b=>({
       debitLabel:mftLabelOf(b.debit), debitAmount:b.debit?(b.debit.value??b.amount??""):"",
       creditLabel:mftLabelOf(b.credit), creditAmount:b.credit?(b.credit.value??b.amount??""):"",
-      department_id:b.department_id||"", tax_id:b.tax_id||"", remark:b.remark||"", purpose:b.purpose||"",
-    })):[{debitLabel:"",debitAmount:"",creditLabel:"",creditAmount:"",department_id:"",tax_id:"",remark:"",purpose:""}],
+      department_id:b.department_id||"", tax_id:b.tax_id||"",
+      credit_department_id:b.credit_department_id||"", credit_tax_id:b.credit_tax_id||"",
+      remark:b.remark||"", purpose:b.purpose||"",
+    })):[{debitLabel:"",debitAmount:"",creditLabel:"",creditAmount:"",department_id:"",tax_id:"",credit_department_id:"",credit_tax_id:"",remark:"",purpose:""}],
   };
   mftRenderBox(); // 一覧を編集状態つきで再描画（編集フォームを対象行のすぐ下に差し込むため）
   const el=$("mft-editor");
@@ -2657,7 +2665,7 @@ function mftRenderEditor(){
         <table class="mfj-grid">
           <thead>
             <tr><th rowspan="2" style="width:26px"></th><th colspan="2" class="side">借方</th><th colspan="2" class="side" style="background:var(--m-greensoft);color:var(--m-green)">貸方</th><th rowspan="2">摘要（行ごと・任意）</th><th rowspan="2">給与仕訳での用途（任意）</th></tr>
-            <tr><th>勘定科目・部門・税区分</th><th>金額（任意・空欄可）</th><th>勘定科目</th><th>金額</th></tr>
+            <tr><th>勘定科目・部門・税区分</th><th>金額（任意・空欄可）</th><th>勘定科目・部門・税区分</th><th>金額</th></tr>
           </thead>
           <tbody id="mft-branch-rows">${ed.branches.map((br,i)=>mftBranchRowHtml(br,i)).join("")}</tbody>
         </table>
@@ -2674,16 +2682,21 @@ function mftRenderEditor(){
 }
 function mftBranchRowHtml(br,idx){
   const deptOptions=`<option value="">（指定なし）</option>`+(MFT_STATE.departments||[]).map(d=>`<option value="${esc(d.id)}" ${br.department_id===d.id?"selected":""}>${esc(d.name)}</option>`).join("");
-  // 税区分（借方側のみ・部門と同じ考え方。2026-09-02追加）: taxes.readスコープでの再認可がまだの
+  const creditDeptOptions=`<option value="">（指定なし）</option>`+(MFT_STATE.departments||[]).map(d=>`<option value="${esc(d.id)}" ${br.credit_department_id===d.id?"selected":""}>${esc(d.name)}</option>`).join("");
+  // 税区分（2026-09-02追加。2026-09-02追記: 貸方側にも同様に追加＝ユーザー報告
+  // 「貸方のほうは部門とか税率とか出てこない」に対応）: taxes.readスコープでの再認可がまだの
   // 事業者はMFT_STATE.taxesが空になるため、その場合はプルダウンの代わりに案内文を出す
   const taxCell=(MFT_STATE.taxes&&MFT_STATE.taxes.length)
     ?`<select class="mft-tax" data-idx="${idx}" style="margin-top:4px"><option value="">（勘定科目の既定のまま）</option>${MFT_STATE.taxes.map(t=>`<option value="${esc(t.id)}" ${br.tax_id===t.id?"selected":""}>${esc(t.name)}${t.tax_rate!=null?`（${Math.round(t.tax_rate*100)}%）`:""}</option>`).join("")}</select>`
     :`<div style="font-size:10px;color:var(--muted);margin-top:4px">税率連携が未完了です（設定タブ下部の再認可リンクから）</div>`;
+  const creditTaxCell=(MFT_STATE.taxes&&MFT_STATE.taxes.length)
+    ?`<select class="mft-credit-tax" data-idx="${idx}" style="margin-top:4px"><option value="">（勘定科目の既定のまま）</option>${MFT_STATE.taxes.map(t=>`<option value="${esc(t.id)}" ${br.credit_tax_id===t.id?"selected":""}>${esc(t.name)}${t.tax_rate!=null?`（${Math.round(t.tax_rate*100)}%）`:""}</option>`).join("")}</select>`
+    :`<div style="font-size:10px;color:var(--muted);margin-top:4px">税率連携が未完了です</div>`;
   return `<tr data-idx="${idx}">
     <td class="mfj-rmcell">${MFT_STATE.editing.branches.length>1?`<button data-mftrm="${idx}" title="この行を削除">−</button>`:""}</td>
     <td><input list="mft-acc-datalist" class="mft-debit" data-idx="${idx}" value="${esc(br.debitLabel||"")}" placeholder="借方勘定科目（空欄可）"><select class="mft-dept" data-idx="${idx}" style="margin-top:4px">${deptOptions}</select>${taxCell}</td>
     <td><input type="number" class="mft-debit-amount" data-idx="${idx}" value="${br.debitAmount??""}" placeholder="任意"></td>
-    <td><input list="mft-acc-datalist" class="mft-credit" data-idx="${idx}" value="${esc(br.creditLabel||"")}" placeholder="貸方勘定科目（空欄可）"></td>
+    <td><input list="mft-acc-datalist" class="mft-credit" data-idx="${idx}" value="${esc(br.creditLabel||"")}" placeholder="貸方勘定科目（空欄可）"><select class="mft-credit-dept" data-idx="${idx}" style="margin-top:4px">${creditDeptOptions}</select>${creditTaxCell}</td>
     <td><input type="number" class="mft-credit-amount" data-idx="${idx}" value="${br.creditAmount??""}" placeholder="任意"></td>
     <td><textarea class="mft-remark" data-idx="${idx}">${esc(br.remark||"")}</textarea></td>
     <td><select class="mft-purpose" data-idx="${idx}">
@@ -2701,12 +2714,14 @@ function mftWireEditor(){
   document.querySelectorAll(".mft-credit").forEach(elx=>elx.oninput=()=>{ ed.branches[+elx.dataset.idx].creditLabel=elx.value; });
   document.querySelectorAll(".mft-dept").forEach(elx=>elx.onchange=()=>{ ed.branches[+elx.dataset.idx].department_id=elx.value; });
   document.querySelectorAll(".mft-tax").forEach(elx=>elx.onchange=()=>{ ed.branches[+elx.dataset.idx].tax_id=elx.value; });
+  document.querySelectorAll(".mft-credit-dept").forEach(elx=>elx.onchange=()=>{ ed.branches[+elx.dataset.idx].credit_department_id=elx.value; });
+  document.querySelectorAll(".mft-credit-tax").forEach(elx=>elx.onchange=()=>{ ed.branches[+elx.dataset.idx].credit_tax_id=elx.value; });
   document.querySelectorAll(".mft-remark").forEach(elx=>elx.oninput=()=>{ ed.branches[+elx.dataset.idx].remark=elx.value; });
   document.querySelectorAll(".mft-purpose").forEach(elx=>elx.onchange=()=>{ ed.branches[+elx.dataset.idx].purpose=elx.value; });
   document.querySelectorAll(".mft-debit-amount").forEach(elx=>elx.oninput=()=>{ ed.branches[+elx.dataset.idx].debitAmount=elx.value; });
   document.querySelectorAll(".mft-credit-amount").forEach(elx=>elx.oninput=()=>{ ed.branches[+elx.dataset.idx].creditAmount=elx.value; });
   document.querySelectorAll("[data-mftrm]").forEach(elx=>elx.onclick=()=>{ ed.branches.splice(+elx.dataset.mftrm,1); mftRenderEditor(); });
-  $("mft-add-row").onclick=()=>{ ed.branches.push({debitLabel:"",debitAmount:"",creditLabel:"",creditAmount:"",department_id:"",remark:"",purpose:""}); mftRenderEditor(); };
+  $("mft-add-row").onclick=()=>{ ed.branches.push({debitLabel:"",debitAmount:"",creditLabel:"",creditAmount:"",department_id:"",tax_id:"",credit_department_id:"",credit_tax_id:"",remark:"",purpose:""}); mftRenderEditor(); };
   $("mft-cancel").onclick=()=>{ MFT_STATE.editing=null; mftRenderBox(); };
   $("mft-save").onclick=mftSaveEditor;
 }
@@ -2726,6 +2741,8 @@ async function mftSaveEditor(){
       credit:credit?{...credit,value:Number(b.creditAmount)||null}:null,
       department_id:b.department_id||null, department_name:(MFT_STATE.departments.find(d=>d.id===b.department_id)||{}).name||null,
       tax_id:b.tax_id||null, tax_name:(MFT_STATE.taxes.find(t=>t.id===b.tax_id)||{}).name||null,
+      credit_department_id:b.credit_department_id||null, credit_department_name:(MFT_STATE.departments.find(d=>d.id===b.credit_department_id)||{}).name||null,
+      credit_tax_id:b.credit_tax_id||null, credit_tax_name:(MFT_STATE.taxes.find(t=>t.id===b.credit_tax_id)||{}).name||null,
       remark:b.remark||null, purpose:b.purpose||null,
     });
   }
@@ -3054,8 +3071,8 @@ function mfuRenderJournalResults(){
     mfuApplyBranches([{
       debitLabel:mfuLabelOf(r.template.debit), debitAmount:r.template.debit?amt:"",
       creditLabel:mfuLabelOf(r.template.credit), creditAmount:r.template.credit?amt:"",
-      department_id:(r.template.debit&&r.template.debit.department_id)||(r.template.credit&&r.template.credit.department_id)||"",
-      tax_id:(r.template.debit&&r.template.debit.tax_id)||(r.template.credit&&r.template.credit.tax_id)||"",
+      department_id:(r.template.debit&&r.template.debit.department_id)||"", tax_id:(r.template.debit&&r.template.debit.tax_id)||"",
+      credit_department_id:(r.template.credit&&r.template.credit.department_id)||"", credit_tax_id:(r.template.credit&&r.template.credit.tax_id)||"",
       remark:r.template.remark||"",
     }]);
   });
@@ -3077,7 +3094,9 @@ function mfuRenderTemplateResults(){
     const branches=(t.branches||[]).map(b=>({
       debitLabel:mfuLabelOf(b.debit), debitAmount:b.debit?(b.debit.value??b.amount??""):"",
       creditLabel:mfuLabelOf(b.credit), creditAmount:b.credit?(b.credit.value??b.amount??""):"",
-      department_id:b.department_id||"", tax_id:b.tax_id||"", remark:b.remark||"",
+      department_id:b.department_id||"", tax_id:b.tax_id||"",
+      credit_department_id:b.credit_department_id||"", credit_tax_id:b.credit_tax_id||"",
+      remark:b.remark||"",
     }));
     mfuApplyBranches(branches);
   });
@@ -3167,6 +3186,8 @@ async function mfuSaveAsTemplate(){
       credit:credit?{...credit,value:Number(b.creditAmount)||null}:null,
       department_id:b.department_id||null, department_name:(MFU_STATE.departments.find(d=>d.id===b.department_id)||{}).name||null,
       tax_id:b.tax_id||null, tax_name:(MFU_STATE.taxes.find(t=>t.id===b.tax_id)||{}).name||null,
+      credit_department_id:b.credit_department_id||null, credit_department_name:(MFU_STATE.departments.find(d=>d.id===b.credit_department_id)||{}).name||null,
+      credit_tax_id:b.credit_tax_id||null, credit_tax_name:(MFU_STATE.taxes.find(t=>t.id===b.credit_tax_id)||{}).name||null,
       remark:b.remark||null,
     });
   }
@@ -3203,7 +3224,7 @@ function mfuOpenPreview(){
     if(debit&&(!dAmt||dAmt<=0)){ msg.textContent="借方の金額が未入力（0円）の行があります"; return; }
     if(credit&&(!cAmt||cAmt<=0)){ msg.textContent="貸方の金額が未入力（0円）の行があります"; return; }
     if(debit) totalDebit+=dAmt; if(credit) totalCredit+=cAmt;
-    branchesPayload.push({debit,debitAmount:dAmt,credit,creditAmount:cAmt,department_id:b.department_id||null,tax_id:b.tax_id||null,remark:b.remark||""});
+    branchesPayload.push({debit,debitAmount:dAmt,credit,creditAmount:cAmt,department_id:b.department_id||null,tax_id:b.tax_id||null,credit_department_id:b.credit_department_id||null,credit_tax_id:b.credit_tax_id||null,remark:b.remark||""});
   }
   if(!branchesPayload.length){ msg.textContent="明細行がありません"; return; }
   if(totalDebit!==totalCredit){ msg.textContent=`借方合計（${yen(totalDebit)}）と貸方合計（${yen(totalCredit)}）が一致していません`; return; }
@@ -3258,7 +3279,9 @@ function mfuOpenPreview(){
       branches: branchesPayload.map(b=>({
         debit:b.debit?{account_id:b.debit.account_id,sub_account_id:b.debit.sub_account_id||undefined,value:b.debitAmount}:undefined,
         credit:b.credit?{account_id:b.credit.account_id,sub_account_id:b.credit.sub_account_id||undefined,value:b.creditAmount}:undefined,
-        department_id:b.department_id||null, tax_id:b.tax_id||null, remark:b.remark||undefined,
+        department_id:b.department_id||null, tax_id:b.tax_id||null,
+        credit_department_id:b.credit_department_id||null, credit_tax_id:b.credit_tax_id||null,
+        remark:b.remark||undefined,
       })),
       transaction_date: date,
       remark,
@@ -3438,7 +3461,7 @@ function payrollComputeBranches(row,template){
     const useDept=(b.purpose==="base_salary"||b.purpose==="commute")&&dept?dept.id:(b.department_id||null);
     const debitAmount=b.debit?(overridden!=null?overridden:(b.debit.value??b.amount??0)):null;
     const creditAmount=b.credit?(overridden!=null?overridden:(b.credit.value??b.amount??0)):null;
-    return {debit:b.debit||null,credit:b.credit||null,debitAmount,creditAmount,department_id:useDept,tax_id:b.tax_id||null,purpose:b.purpose||null,remark:b.remark||null};
+    return {debit:b.debit||null,credit:b.credit||null,debitAmount,creditAmount,department_id:useDept,tax_id:b.tax_id||null,credit_department_id:b.credit_department_id||null,credit_tax_id:b.credit_tax_id||null,purpose:b.purpose||null,remark:b.remark||null};
   }).filter(b=>(b.debit&&b.debitAmount>0)||(b.credit&&b.creditAmount>0));
 }
 function payrollBankFor(userId){ return (PAYROLL_STATE.bankAccounts||[]).find(b=>b.user_id===userId); }
@@ -3958,7 +3981,9 @@ async function payrollOpenPreview(userId){
       branches: branches.map(b=>({
         debit:b.debit?{account_id:b.debit.account_id,sub_account_id:b.debit.sub_account_id||undefined,value:b.debitAmount}:undefined,
         credit:b.credit?{account_id:b.credit.account_id,sub_account_id:b.credit.sub_account_id||undefined,value:b.creditAmount}:undefined,
-        department_id:b.department_id||null, tax_id:b.tax_id||null, remark:b.remark||`${PAYROLL_STATE.yearMonth}分給与`,
+        department_id:b.department_id||null, tax_id:b.tax_id||null,
+        credit_department_id:b.credit_department_id||null, credit_tax_id:b.credit_tax_id||null,
+        remark:b.remark||`${PAYROLL_STATE.yearMonth}分給与`,
       })),
       transaction_date: $("payroll-date").value,
       remark:`${PAYROLL_STATE.yearMonth}分給与（${name}）`,

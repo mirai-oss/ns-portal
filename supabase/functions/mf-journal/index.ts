@@ -115,8 +115,14 @@ function buildFlexibleBranches(rawBranches: any[], defaultRemark: string, fallba
     // 2026-09-02追加: 税区分（tax_id）のAPI連携。department_idと同じく明細行（branch）の階層に
     // 置く設計にした（invoices.html側の既存の部門選択と全く同じデータの流れ方に揃えるため）。
     // CRUDJournalLineDetailsのtax_idフィールド（公式OpenAPI仕様で確認済み）にそのまま渡す。
-    // 未指定なら従来どおり勘定科目の既定税区分がMF側で適用される。department_idと同じく借方側にのみ適用
+    // 未指定なら従来どおり勘定科目の既定税区分がMF側で適用される。
     const taxId = b.tax_id || null;
+    // 2026-09-02追加: 貸方側にも部門・税区分を持てるように（ユーザー報告「貸方のほうは部門とか
+    // 税率とか出てこない」に対応）。department_id/tax_idは従来どおり借方用、貸方用は別の
+    // credit_department_id/credit_tax_idで独立して指定できる（CRUDJournalLineDetailsは
+    // debitor/creditorそれぞれが自分のdepartment_id/tax_idを持てる構造のため）
+    const creditDepartmentId = b.credit_department_id || null;
+    const creditTaxId = b.credit_tax_id || null;
     const remark = (b.remark || defaultRemark || fallbackRemark || "").slice(0, 100);
     const out: any = { remark };
     if (hasDebit) {
@@ -124,7 +130,7 @@ function buildFlexibleBranches(rawBranches: any[], defaultRemark: string, fallba
       totalDebit += Math.round(dAmt as number);
     }
     if (hasCredit) {
-      out.creditor = { account_id: b.credit.account_id, value: Math.round(cAmt as number), ...(b.credit.sub_account_id ? { sub_account_id: b.credit.sub_account_id } : {}) };
+      out.creditor = { account_id: b.credit.account_id, value: Math.round(cAmt as number), ...(b.credit.sub_account_id ? { sub_account_id: b.credit.sub_account_id } : {}), ...(creditDepartmentId ? { department_id: creditDepartmentId } : {}), ...(creditTaxId ? { tax_id: creditTaxId } : {}) };
       totalCredit += Math.round(cAmt as number);
     }
     branches.push(out);
