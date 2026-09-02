@@ -243,19 +243,32 @@ Deno.serve(async (req: Request) => {
       const keyword: string = (body?.vendor_name ?? body?.keyword ?? "").trim();
       if (action === "suggest" && !keyword) return json({ success: true, match: null, departments: [] });
 
-      // 前期＋当期の2期分をまとめて検索（前期・当期をまたいで1回のGETで取れる範囲か未確認のため
-      // 念のため2回に分けて取得しマージする。件数が多い場合はper_pageの上限に注意）。
-      // 部門一覧・税区分一覧の直接取得（成功すればこちらを優先。税区分は代用手段が無いため
-      // 未認可ならそのまま空配列＝2026-09-02追加）も並行して試す
-      const [resCur, resPrev, directDepartments, directTaxes] = await Promise.all([
-        mfFetch(`/api/v3/journals?start_date=${fiscalYearStart()}&end_date=${todayStr()}&per_page=500&page=1`, accessToken),
-        mfFetch(`/api/v3/journals?start_date=${prevFiscalYearStart()}&end_date=${fiscalYearStart()}&per_page=500&page=1`, accessToken),
+      // 部門一覧・税区分一覧の直接取得を先に試す（成功すればこちらを優先＝全件確実に出る）
+      const [directDepartments, directTaxes] = await Promise.all([
         fetchDepartmentsDirect(accessToken),
         fetchTaxesDirect(accessToken),
       ]);
-      const [dataCur, dataPrev] = await Promise.all([resCur.json(), resPrev.json()]);
-      if (!resCur.ok) return json({ error: "仕訳履歴の取得に失敗しました", detail: dataCur }, 502);
-      const journals: any[] = [...(dataCur.journals ?? []), ...(resPrev.ok ? (dataPrev.journals ?? []) : [])];
+      // 2026-09-02緊急修正: list_departmentsアクションは本来ここから先の仕訳履歴（journals）取得を
+      // 一切必要としない（部門一覧の直接取得が失敗した場合の代用スキャン用だけに使っていた）にも
+      // 関わらず、これまで無条件で「前期＋当期の2期分・per_page=500」という重い仕訳履歴取得を
+      // 直列で必須にしていたため、その取得がマネーフォワード側で偶発的に失敗する（タイムアウト等）
+      // たびに、既に取得済みの部門・税区分データもろとも502エラーで丸ごと失われていた。
+      // これが「N-Styleで部門・税率が反映されない（実際は間欠的に失敗していた）」の実際の原因
+      // だったため、list_departmentsで直接取得が両方とも成功した場合は仕訳履歴の取得自体を
+      // スキップするようにした（suggest/list_journalsは仕訳検索そのものが目的のため従来どおり必須）
+      const needJournals = action !== "list_departments" || !(directDepartments && directDepartments.length);
+      let journals: any[] = [];
+      if (needJournals) {
+        // 前期＋当期の2期分をまとめて検索（前期・当期をまたいで1回のGETで取れる範囲か未確認のため
+        // 念のため2回に分けて取得しマージする。件数が多い場合はper_pageの上限に注意）
+        const [resCur, resPrev] = await Promise.all([
+          mfFetch(`/api/v3/journals?start_date=${fiscalYearStart()}&end_date=${todayStr()}&per_page=500&page=1`, accessToken),
+          mfFetch(`/api/v3/journals?start_date=${prevFiscalYearStart()}&end_date=${fiscalYearStart()}&per_page=500&page=1`, accessToken),
+        ]);
+        const [dataCur, dataPrev] = await Promise.all([resCur.json(), resPrev.json()]);
+        if (!resCur.ok) return json({ error: "仕訳履歴の取得に失敗しました", detail: dataCur }, 502);
+        journals = [...(dataCur.journals ?? []), ...(resPrev.ok ? (dataPrev.journals ?? []) : [])];
+      }
 
       const deptMap = new Map<string, string>(); // id -> name
       const matches: any[] = [];
