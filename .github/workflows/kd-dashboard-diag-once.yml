@@ -1,0 +1,51 @@
+name: kd_dashboard_daily_summary疎通確認（service_role・送信なし・一時的）
+# TK-60着手前の事前検証。実際にデータが入っているか・スキーマ・鮮度を確認する。
+# 用が済んだら削除する。
+on:
+  workflow_dispatch: {}
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: kd_dashboard_daily_summaryを直接SELECT(直近7日・PostgREST)
+        env:
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          FROM=$(date -u -d '-7 days' +%Y-%m-%d)
+          echo "from: $FROM"
+          time curl -sL "https://uuvsxzhpxtghojoubjcc.supabase.co/rest/v1/kd_dashboard_daily_summary?period_date=gte.$FROM&select=*&order=period_date.desc&limit=20" \
+            -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
+            -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
+            -o /tmp/kdd.json
+          node -e "
+            const d=JSON.parse(require('fs').readFileSync('/tmp/kdd.json','utf8'));
+            if(!Array.isArray(d)){ console.log('NOT ARRAY:', JSON.stringify(d)); process.exit(0); }
+            console.log('rows:', d.length);
+            console.log('sample:', JSON.stringify(d[0],null,2));
+            const dates=[...new Set(d.map(r=>r.period_date))].sort();
+            console.log('dates present:', dates);
+          "
+      - name: kd_home_kpi_snapshotを直接SELECT(今日)
+        env:
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          TODAY=$(date -u +%Y-%m-%d)
+          time curl -sL "https://uuvsxzhpxtghojoubjcc.supabase.co/rest/v1/kd_home_kpi_snapshot?period_date=eq.$TODAY&select=*&limit=20" \
+            -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
+            -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
+            -o /tmp/kdh.json
+          node -e "
+            const d=JSON.parse(require('fs').readFileSync('/tmp/kdh.json','utf8'));
+            if(!Array.isArray(d)){ console.log('NOT ARRAY:', JSON.stringify(d)); process.exit(0); }
+            console.log('rows:', d.length);
+            console.log('sample:', JSON.stringify(d[0],null,2));
+          "
+      - name: kd_sync_runsを直接SELECT(直近5件)
+        env:
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          curl -sL "https://uuvsxzhpxtghojoubjcc.supabase.co/rest/v1/kd_sync_runs?select=*&order=started_at.desc&limit=5" \
+            -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
+            -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
+            | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>console.log(JSON.stringify(JSON.parse(d),null,2)));"
