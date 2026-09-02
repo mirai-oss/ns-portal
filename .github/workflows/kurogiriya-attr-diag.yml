@@ -1,0 +1,25 @@
+name: 黒霧屋の予約属性の実値を確認（送信なし・一時的）
+on:
+  workflow_dispatch: {}
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: rsv_reservationsのattribute列を確認
+        env:
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          curl -sL "https://uuvsxzhpxtghojoubjcc.supabase.co/rest/v1/rsv_reservations?store_account=ilike.*%E9%BB%92%E9%9C%A7%E5%B1%8B*&select=store_account,attribute,status_normalized&limit=1000" \
+            -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
+            -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
+            -o /tmp/kg.json
+          node -e "
+            const d=JSON.parse(require('fs').readFileSync('/tmp/kg.json','utf8'));
+            console.log('rows:', d.length);
+            const stores=[...new Set(d.map(r=>r.store_account))];
+            console.log('store_account values:', stores);
+            const counts={};
+            d.forEach(r=>{ const a=JSON.stringify(r.attribute); counts[a]=(counts[a]||0)+1; });
+            console.log('attribute value counts:', JSON.stringify(counts,null,2));
+          "
