@@ -1,6 +1,8 @@
 -- 統合請求書一覧・自動判定・振込一覧のための列追加（会計・請求書処理の全面刷新 フェーズA-6・2026-09-03）
 alter table invoices add column if not exists intake_source text check (intake_source in ('mail','paper','pdf','infomart','api','manual'));
 alter table invoices add column if not exists corporation_id uuid references corporations(id);
+alter table invoices add column if not exists store_id uuid references stores(id);
+create index if not exists invoices_store_id_idx on invoices(store_id);
 alter table invoices add column if not exists vendor_id uuid references vendors(id);
 alter table invoices add column if not exists ai_match_status text check (ai_match_status in ('auto','review','error'));
 alter table invoices add column if not exists ai_match_reasons text[];

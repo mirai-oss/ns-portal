@@ -12,6 +12,12 @@
 //
 // 入力(JSON): { email_id, mail_kind? }  ※mail_kind省略時は'invoice'として扱う（後方互換）
 // 出力(JSON): { success:true, fields:{ vendor_name, invoice_number, amount, due_date, addressee_company, is_invoice, note } }
+//
+// 【2026-09-03追加】会計・請求書処理の全面刷新（振込先口座変更の自動検知）のため、請求書に
+// 振込先口座が記載されていれば併せて抽出する（bank_name/branch_name/account_type/
+// account_number/account_holder_kana。すべてnullable・後方互換のため既存フィールドは変更なし）。
+// 呼び出し側（invoice-auto-match）が、これを取引先マスタの登録済み口座と突き合わせ、
+// 異なる場合は自動更新せず「振込先口座変更」として要確認に回す。読み取れなければ全てnullでよい
 // addressee_company（2026-08-27追加）: 宛先・宛名の会社名（自社側）。invoices.htmlはこれを
 // マネーフォワードの事業者（トーホー/N-Style等）ラベルと突き合わせ、一致すれば仕訳作成時の
 // 事業者選択を自動で行う（間違いを防ぐため、自動選択した旨と確認は必ず画面に表示する）
@@ -66,6 +72,11 @@ function toolFor(kind: string) {
       due_date: { type: ["string", "null"], description: isSales ? "入金予定日・送金予定日。YYYY-MM-DD形式（西暦・ゼロ埋め）" : "支払期限。YYYY-MM-DD形式（西暦・ゼロ埋め）" },
       addressee_company: { type: ["string", "null"], description: "宛先・宛名として書かれている会社名（「〇〇御中」「〇〇様」の〇〇部分。請求元/入金元とは別の、受け取る側＝自社の名前）。読み取れなければnull" },
       source_hint: { type: ["string", "null"], description: "この請求書がどの添付ファイル（ファイル名）由来かの手がかり。分かれば記入" },
+      bank_name: { type: ["string", "null"], description: "振込先の銀行名（記載があれば）。「〇〇銀行」まで含める" },
+      bank_branch_name: { type: ["string", "null"], description: "振込先の支店名（記載があれば）。「〇〇支店」まで含める" },
+      bank_account_type: { type: ["string", "null"], description: "振込先の口座種別。「普通」「当座」「貯蓄」のいずれか（記載があれば）" },
+      bank_account_number: { type: ["string", "null"], description: "振込先の口座番号（記載があれば・数字のみ）" },
+      bank_account_holder: { type: ["string", "null"], description: "振込先の口座名義（カナ表記、記載があれば）" },
       note: { type: ["string", "null"], description: "この1件について不確実な点や補足があれば日本語で短く。なければnull" },
     },
     required: [],
