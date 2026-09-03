@@ -371,6 +371,19 @@ async function plFeeCall(action,extra={}){
   const j=await r.json().catch(()=>({}));
   return {ok:r.ok,body:j};
 }
+// 取引先マスタ・銀行口座・自動判定（会計・請求書処理の全面刷新・2026-09-03）のEdge Function呼び出し
+async function vendorCall(action,extra={}){
+  const s=sess.get();
+  const r=await fetch(SUPA_URL+"/functions/v1/vendor-master",{method:"POST",headers:{"Content-Type":"application/json","apikey":SUPA_KEY,"Authorization":"Bearer "+(s?s.at:"")},body:JSON.stringify({action,...extra})});
+  const j=await r.json().catch(()=>({}));
+  return {ok:r.ok,body:j};
+}
+async function autoMatchCall(extra={}){
+  const s=sess.get();
+  const r=await fetch(SUPA_URL+"/functions/v1/invoice-auto-match",{method:"POST",headers:{"Content-Type":"application/json","apikey":SUPA_KEY,"Authorization":"Bearer "+(s?s.at:"")},body:JSON.stringify(extra)});
+  const j=await r.json().catch(()=>({}));
+  return {ok:r.ok,body:j};
+}
 let PL_FEE_TARGET_ACCOUNTS=null; // PL連携対象科目のキャッシュ（設定タブで増減したらnullに戻して再取得する）
 async function plFeeTargetAccounts(){
   if(PL_FEE_TARGET_ACCOUNTS) return PL_FEE_TARGET_ACCOUNTS;
@@ -2777,6 +2790,15 @@ async function renderMftSection(tenantId){
   const {accounts,departments,taxes,accountsOk,accountsError}=await mftLoadAccountsAndDepts(activeTenantId);
   const {map,dl}=mftBuildAccountIndex(accounts);
   MFT_STATE.accountLabelMap=map; MFT_STATE.accountDatalistHtml=dl; MFT_STATE.departments=departments; MFT_STATE.taxes=taxes;
+  // 判定条件（取引先・対象法人・対象店舗）のプルダウン用に取得（2026-09-03・仕訳辞書の拡張）
+  const [vendorsRes,corpRes,storesRes]=await Promise.all([
+    vendorCall("list_vendors"),
+    authed("/rest/v1/corporations?select=id,name&order=name"),
+    authed("/rest/v1/stores?select=id,name&order=name"),
+  ]);
+  MFT_STATE.vendors=(vendorsRes.ok&&vendorsRes.body.vendors)||[];
+  MFT_STATE.corporations=(corpRes.ok&&Array.isArray(corpRes.body))?corpRes.body:[];
+  MFT_STATE.storesAll=(storesRes.ok&&Array.isArray(storesRes.body))?storesRes.body:[];
   const tplRes=await authed(`/rest/v1/mf_journal_templates?tenant_id=eq.${encodeURIComponent(activeTenantId)}&select=*&order=label`);
   MFT_STATE.templates=(tplRes.ok&&Array.isArray(tplRes.body))?tplRes.body:[];
   MFT_STATE.editing=null;
@@ -2836,6 +2858,22 @@ function mftOpenEditor(tpl){
   MFT_STATE.editing={
     id: tpl?tpl.id:null,
     label: tpl?tpl.label:"",
+    // 判定条件・連携先・自動化設定（2026-09-03追加。会計・請求書処理の全面刷新＝自動照合の実体）
+    vendorId: tpl?(tpl.vendor_id||""):"",
+    matchKeywords: tpl?((tpl.match_keywords||[]).join("、")):"",
+    matchFromAddresses: tpl?((tpl.match_from_addresses||[]).join("、")):"",
+    targetCorporationId: tpl?(tpl.target_corporation_id||""):"",
+    targetStoreId: tpl?(tpl.target_store_id||""):"",
+    amountMin: tpl?(tpl.amount_min??""):"",
+    amountMax: tpl?(tpl.amount_max??""):"",
+    sourceFilter: tpl?(tpl.source_filter||[]):[],
+    plAccount: tpl?(tpl.pl_account||""):"",
+    adTarget: tpl?!!tpl.ad_target:false,
+    settlementTarget: tpl?!!tpl.settlement_target:false,
+    paymentMethod: tpl?(tpl.payment_method||"bank_transfer"):"bank_transfer",
+    autoApply: tpl?!!tpl.auto_apply:false,
+    requireHumanReview: tpl?(tpl.require_human_review!==false):true,
+    priority: tpl?(tpl.priority??100):100,
     branches: tpl?(tpl.branches||[]).map(b=>({
       debitLabel:mftLabelOf(b.debit), debitAmount:b.debit?(b.debit.value??b.amount??""):"",
       creditLabel:mftLabelOf(b.credit), creditAmount:b.credit?(b.credit.value??b.amount??""):"",
@@ -2853,10 +2891,46 @@ function mftRenderEditor(){
   if(!el) return;
   const ed=MFT_STATE.editing;
   if(!ed){ el.innerHTML=""; return; }
+  const sourceOptions=[["mail","メール"],["paper","紙"],["pdf","PDF"],["infomart","Infomart"],["api","API"],["manual","手動"]];
   el.innerHTML=`
     <div class="card" style="padding:12px;border-color:var(--m-blue)">
       <div class="ai-field"><small>仕訳辞書の名前</small><input id="mft-label" value="${esc(ed.label)}" placeholder="例:【未払金】アルバイト給与（川崎）"></div>
       <datalist id="mft-acc-datalist">${MFT_STATE.accountDatalistHtml||""}</datalist>
+
+      <div class="card" style="padding:10px;margin-top:10px;background:var(--m-bluesoft)">
+        <b style="font-size:11px">🔎 判定条件（この条件に一致した請求書に、この仕訳辞書を自動で提案します。空欄のままなら「よく使う仕訳」としてプリセット選択にのみ使われ、自動照合の対象にはなりません）</b>
+        <div class="ai-grid" style="margin-top:8px">
+          <div class="ai-field"><small>取引先（取引先マスタ）</small><select id="mft-vendor"><option value="">（指定なし）</option>${(MFT_STATE.vendors||[]).map(v=>`<option value="${esc(v.id)}" ${ed.vendorId===v.id?"selected":""}>${esc(v.name)}</option>`).join("")}</select></div>
+          <div class="ai-field"><small>優先度（数字が小さいほど優先。複数一致時に使用）</small><input type="number" id="mft-priority" value="${ed.priority}"></div>
+          <div class="ai-field full"><small>判定キーワード（件名・取引先名に部分一致。読点「、」区切りで複数可）</small><input id="mft-keywords" value="${esc(ed.matchKeywords)}" placeholder="例: 西原商会、仕入"></div>
+          <div class="ai-field full"><small>差出人メールアドレス（部分一致。読点「、」区切りで複数可）</small><input id="mft-from" value="${esc(ed.matchFromAddresses)}" placeholder="例: info@nishihara.co.jp"></div>
+          <div class="ai-field"><small>金額（下限・任意）</small><input type="number" id="mft-amt-min" value="${ed.amountMin}"></div>
+          <div class="ai-field"><small>金額（上限・任意）</small><input type="number" id="mft-amt-max" value="${ed.amountMax}"></div>
+          <div class="ai-field full"><small>取得元（絞る場合のみチェック。未選択なら全ての取得元が対象）</small>
+            <div style="display:flex;gap:10px;flex-wrap:wrap;font-size:11px">${sourceOptions.map(([k,l])=>`<label style="display:flex;gap:4px;align-items:center"><input type="checkbox" class="mft-source" value="${k}" ${ed.sourceFilter.includes(k)?"checked":""}>${l}</label>`).join("")}</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card" style="padding:10px;margin-top:8px;background:var(--m-greensoft)">
+        <b style="font-size:11px">🔗 連携先</b>
+        <div class="ai-grid" style="margin-top:8px">
+          <div class="ai-field"><small>対象法人</small><select id="mft-corp"><option value="">（指定なし）</option>${(MFT_STATE.corporations||[]).map(c=>`<option value="${esc(c.id)}" ${ed.targetCorporationId===c.id?"selected":""}>${esc(c.name)}</option>`).join("")}</select></div>
+          <div class="ai-field"><small>対象店舗</small><select id="mft-store"><option value="">（指定なし）</option>${(MFT_STATE.storesAll||[]).map(s=>`<option value="${esc(s.id)}" ${ed.targetStoreId===s.id?"selected":""}>${esc(s.name)}</option>`).join("")}</select></div>
+          <div class="ai-field"><small>PL科目（表示用ラベル）</small><input id="mft-pl-account" value="${esc(ed.plAccount)}" placeholder="例: 食材原価"></div>
+          <div class="ai-field"><small>支払方法</small><select id="mft-payment-method"><option value="bank_transfer" ${ed.paymentMethod==="bank_transfer"?"selected":""}>銀行振込</option><option value="cash" ${ed.paymentMethod==="cash"?"selected":""}>現金</option></select></div>
+          <div class="ai-field"><label style="display:flex;gap:6px;align-items:center;font-size:12px"><input type="checkbox" id="mft-ad-target" ${ed.adTarget?"checked":""}>広告費として広告管理にも反映する</label></div>
+          <div class="ai-field"><label style="display:flex;gap:6px;align-items:center;font-size:12px"><input type="checkbox" id="mft-settlement-target" ${ed.settlementTarget?"checked":""}>精算書対象（業務委託店舗）</label></div>
+        </div>
+      </div>
+
+      <div class="card" style="padding:10px;margin-top:8px;background:var(--m-ambersoft)">
+        <b style="font-size:11px">🤖 自動化設定</b>
+        <div class="ai-grid" style="margin-top:8px">
+          <div class="ai-field"><label style="display:flex;gap:6px;align-items:center;font-size:12px"><input type="checkbox" id="mft-auto-apply" ${ed.autoApply?"checked":""}>この条件に完全一致したら自動処理候補にする（一覧の一括登録チェックが事前ONになります）</label></div>
+          <div class="ai-field"><label style="display:flex;gap:6px;align-items:center;font-size:12px"><input type="checkbox" id="mft-require-review" ${ed.requireHumanReview?"checked":""}>それでも必ず人間確認を必須にする（安全のため既定でON）</label></div>
+        </div>
+      </div>
       <div class="mfj-gridwrap" style="margin-top:8px">
         <table class="mfj-grid">
           <thead>
@@ -2920,6 +2994,24 @@ function mftWireEditor(){
   $("mft-add-row").onclick=()=>{ ed.branches.push({debitLabel:"",debitAmount:"",creditLabel:"",creditAmount:"",department_id:"",tax_id:"",credit_department_id:"",credit_tax_id:"",remark:"",purpose:""}); mftRenderEditor(); };
   $("mft-cancel").onclick=()=>{ MFT_STATE.editing=null; mftRenderBox(); };
   $("mft-save").onclick=mftSaveEditor;
+  // 判定条件・連携先・自動化設定の配線（2026-09-03追加）
+  $("mft-vendor").onchange=()=>{ ed.vendorId=$("mft-vendor").value; };
+  $("mft-priority").oninput=()=>{ ed.priority=$("mft-priority").value; };
+  $("mft-keywords").oninput=()=>{ ed.matchKeywords=$("mft-keywords").value; };
+  $("mft-from").oninput=()=>{ ed.matchFromAddresses=$("mft-from").value; };
+  $("mft-amt-min").oninput=()=>{ ed.amountMin=$("mft-amt-min").value; };
+  $("mft-amt-max").oninput=()=>{ ed.amountMax=$("mft-amt-max").value; };
+  document.querySelectorAll(".mft-source").forEach(elx=>elx.onchange=()=>{
+    ed.sourceFilter=[...document.querySelectorAll(".mft-source:checked")].map(x=>x.value);
+  });
+  $("mft-corp").onchange=()=>{ ed.targetCorporationId=$("mft-corp").value; };
+  $("mft-store").onchange=()=>{ ed.targetStoreId=$("mft-store").value; };
+  $("mft-pl-account").oninput=()=>{ ed.plAccount=$("mft-pl-account").value; };
+  $("mft-payment-method").onchange=()=>{ ed.paymentMethod=$("mft-payment-method").value; };
+  $("mft-ad-target").onchange=()=>{ ed.adTarget=$("mft-ad-target").checked; };
+  $("mft-settlement-target").onchange=()=>{ ed.settlementTarget=$("mft-settlement-target").checked; };
+  $("mft-auto-apply").onchange=()=>{ ed.autoApply=$("mft-auto-apply").checked; };
+  $("mft-require-review").onchange=()=>{ ed.requireHumanReview=$("mft-require-review").checked; };
 }
 async function mftSaveEditor(){
   const ed=MFT_STATE.editing;
@@ -2944,7 +3036,25 @@ async function mftSaveEditor(){
   }
   if(!structured.length){ alert("明細行がありません"); return; }
   $("mft-save").disabled=true;
-  const payload={tenant_id:MFT_STATE.activeTenantId,label,branches:structured};
+  const splitList=s=>String(s||"").split(/[、,]/).map(x=>x.trim()).filter(Boolean);
+  const payload={
+    tenant_id:MFT_STATE.activeTenantId, label, branches:structured,
+    vendor_id: ed.vendorId||null,
+    match_keywords: splitList(ed.matchKeywords),
+    match_from_addresses: splitList(ed.matchFromAddresses),
+    target_corporation_id: ed.targetCorporationId||null,
+    target_store_id: ed.targetStoreId||null,
+    amount_min: ed.amountMin===""?null:Number(ed.amountMin),
+    amount_max: ed.amountMax===""?null:Number(ed.amountMax),
+    source_filter: ed.sourceFilter,
+    pl_account: ed.plAccount||null,
+    ad_target: ed.adTarget,
+    settlement_target: ed.settlementTarget,
+    payment_method: ed.paymentMethod,
+    auto_apply: ed.autoApply,
+    require_human_review: ed.requireHumanReview,
+    priority: Number(ed.priority)||100,
+  };
   const r=ed.id
     ?await authed(`/rest/v1/mf_journal_templates?id=eq.${ed.id}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({...payload,updated_at:new Date().toISOString()})})
     :await authed("/rest/v1/mf_journal_templates",{method:"POST",headers:{Prefer:"return=minimal"},body:JSON.stringify({...payload,created_by:ME.id})});
@@ -4500,11 +4610,67 @@ async function renderPlFeeAccountsSection(){
     await renderPlFeeAccountsSection();
   });
 }
-async function renderSettingsTab(u){
-  const r=await authed(`/rest/v1/invoice_intake_exclusion_rules?select=*&order=created_at.desc`);
-  const rows=(r.ok&&Array.isArray(r.body))?r.body:[];
+/* ============================================================
+   設定タブの再編（会計・請求書処理の全面刷新・2026-09-03）
+   ユーザー要望「日常業務と設定業務を明確に分離してほしい。設定を一度正しく作れば、
+   日常業務では設定画面をほとんど触らなくていい設計にしてほしい」に対応。
+   従来は縦に全部並んでいた「除外ルール／仕訳辞書／PL連携対象科目」を、サブタブで
+   切り替える形に再編し、新規に取引先マスタ・勘定科目マッピング・法人店舗部門マッピング・
+   支払先/銀行口座・自動処理ルールを追加した。
+   ============================================================ */
+let SETTINGS_TAB="journalRules";
+const SETTINGS_SUBTABS=[
+  ["journalRules","📗 仕訳辞書"],
+  ["vendors","🏢 取引先マスタ"],
+  ["accounts","💹 勘定科目マッピング"],
+  ["mapping","🏬 法人・店舗・部門マッピング"],
+  ["pl","📊 PLマッピング"],
+  ["bankAccounts","🏦 支払先・銀行口座"],
+  ["automation","🤖 自動処理ルール"],
+  ["exclusion","🚫 メール除外設定"],
+];
+async function renderSettingsTab(u,subTab){
+  if(subTab) SETTINGS_TAB=subTab;
   $("tabbody").innerHTML=`
     <section class="invoice-list active">
+      <div class="mail-tabs" style="margin-bottom:14px">
+        ${SETTINGS_SUBTABS.map(([k,l])=>`<button class="mail-tab ${SETTINGS_TAB===k?"active":""}" data-settings-tab="${k}">${l}</button>`).join("")}
+      </div>
+      <div id="settingsBody"><div class="spin">読み込み中…</div></div>
+    </section>`;
+  document.querySelectorAll("[data-settings-tab]").forEach(b=>b.onclick=()=>renderSettingsTab(u,b.dataset.settingsTab));
+  if(SETTINGS_TAB==="journalRules") await renderSettingsJournalRules();
+  else if(SETTINGS_TAB==="vendors") await renderSettingsVendors();
+  else if(SETTINGS_TAB==="accounts") await renderSettingsAccounts();
+  else if(SETTINGS_TAB==="mapping") await renderSettingsMapping();
+  else if(SETTINGS_TAB==="pl") await renderSettingsPl();
+  else if(SETTINGS_TAB==="bankAccounts") await renderSettingsBankAccounts();
+  else if(SETTINGS_TAB==="automation") await renderSettingsAutomation();
+  else if(SETTINGS_TAB==="exclusion") await renderSettingsExclusion(u);
+}
+
+async function renderSettingsJournalRules(){
+  $("settingsBody").innerHTML=`<div class="card" style="padding:16px">
+    <h3 style="font-size:14px;margin-bottom:6px">📗 仕訳辞書</h3>
+    <div class="meta" style="color:var(--muted);font-size:12px;margin-bottom:10px">請求書処理の「🧾 仕訳を作成」画面で選べる自社専用の仕訳テンプレートです。判定条件（取引先・キーワード・金額条件など）を設定すると、条件に合う請求書が届いたときに自動でこのテンプレートが提案され、自動処理ルールの設定次第で一括処理の候補にもなります（判定条件を空欄のままにすれば、従来どおり「よく使う仕訳」のプリセット選択としてだけ使えます）。</div>
+    <div id="mft-box">読み込み中…</div>
+  </div>`;
+  renderMftSection();
+}
+
+async function renderSettingsPl(){
+  $("settingsBody").innerHTML=`<div class="card" style="padding:16px">
+    <h3 style="font-size:14px;margin-bottom:6px">📊 PL連携対象科目（PL科目の定義）</h3>
+    <div class="meta" style="color:var(--muted);font-size:12px;margin-bottom:10px">仕訳登録済みの請求書は自動で「📊 PLへ反映」パネルが出ますが、実際にPLへ反映できるのは<b>ここに登録した勘定科目だけ</b>です（前払費用・仮払金などPLの費用科目ではない勘定科目を誤って計上してしまわないようにするための一覧です）。水道光熱費・支払手数料など、実際にPLの費用科目として使うものを登録してください。科目名はマネーフォワードの勘定科目名と完全に一致させてください。</div>
+    <div id="plfee-accounts-box">読み込み中…</div>
+  </div>`;
+  renderPlFeeAccountsSection();
+}
+
+async function renderSettingsExclusion(u){
+  const r=await authed(`/rest/v1/invoice_intake_exclusion_rules?select=*&order=created_at.desc`);
+  const rows=(r.ok&&Array.isArray(r.body))?r.body:[];
+  $("settingsBody").innerHTML=`
       <div class="card" style="padding:16px;margin-bottom:14px">
         <h3 style="font-size:14px;margin-bottom:10px">🚫 今後取り込みしないメールの設定</h3>
         <div class="meta" style="color:var(--muted);font-size:12px;margin-bottom:10px">ここで設定した条件に一致するメールは、今後は取込自体を行いません（既に取り込み済みのものには影響しません）。「対象外にする」ボタンとは別の仕組みです。</div>
@@ -4539,20 +4705,7 @@ async function renderSettingsTab(u){
             </tr>`).join("")||'<tr><td colspan="5">除外ルールは登録されていません</td></tr>'}
           </tbody>
         </table>
-      </div>
-      <div class="card" style="padding:16px;margin-top:14px">
-        <h3 style="font-size:14px;margin-bottom:6px">📗 仕訳辞書（よく使う仕訳パターン）</h3>
-        <div class="meta" style="color:var(--muted);font-size:12px;margin-bottom:10px">請求書メールの「🧾 仕訳を作成」画面で選べる、自社専用の仕訳テンプレートです（マネーフォワード本体の仕訳辞書とは別の、この管理システム内だけの機能です）。ここで登録・編集・削除できます。</div>
-        <div id="mft-box">読み込み中…</div>
-      </div>
-      <div class="card" style="padding:16px;margin-top:14px">
-        <h3 style="font-size:14px;margin-bottom:6px">📊 PL連携対象科目（PL科目の定義）</h3>
-        <div class="meta" style="color:var(--muted);font-size:12px;margin-bottom:10px">仕訳登録済みの請求書は自動で「📊 PLへ反映」パネルが出ますが、実際にPLへ反映できるのは<b>ここに登録した勘定科目だけ</b>です（前払費用・仮払金などPLの費用科目ではない勘定科目を誤って計上してしまわないようにするための一覧です）。水道光熱費・支払手数料など、実際にPLの費用科目として使うものを登録してください。科目名はマネーフォワードの勘定科目名と完全に一致させてください。</div>
-        <div id="plfee-accounts-box">読み込み中…</div>
-      </div>
-    </section>`;
-  renderMftSection();
-  renderPlFeeAccountsSection();
+      </div>`;
   const RULE_PLACEHOLDER={subject_contains:"例: 応募",from_contains:"例: example.com",subject_exact:"例: ATMお預け入れのご確認",from_exact:"例: info@example.com"};
   $("rule-type").onchange=e=>{ $("rule-pattern").placeholder=RULE_PLACEHOLDER[e.target.value]||""; };
   $("rule-pattern").placeholder=RULE_PLACEHOLDER[$("rule-type").value]||"";
@@ -4563,17 +4716,298 @@ async function renderSettingsTab(u){
     msg.className="err"; msg.textContent="追加中…";
     const r2=await authed("/rest/v1/invoice_intake_exclusion_rules",{method:"POST",headers:{Prefer:"return=minimal"},body:JSON.stringify({rule_type:$("rule-type").value,pattern,created_by:ME.id})});
     if(!r2.ok){ msg.textContent="追加できませんでした"; return; }
-    await renderSettingsTab(u);
+    await renderSettingsTab(u,"exclusion");
   };
   document.querySelectorAll("[data-toggle-rule]").forEach(el=>el.onclick=async()=>{
     const active=el.dataset.active==="true";
     await authed(`/rest/v1/invoice_intake_exclusion_rules?id=eq.${el.dataset.toggleRule}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({is_active:!active})});
-    await renderSettingsTab(u);
+    await renderSettingsTab(u,"exclusion");
   });
   document.querySelectorAll("[data-del-rule]").forEach(el=>el.onclick=async()=>{
     if(!confirm("このルールを削除しますか？")) return;
     await authed(`/rest/v1/invoice_intake_exclusion_rules?id=eq.${el.dataset.delRule}`,{method:"DELETE"});
-    await renderSettingsTab(u);
+    await renderSettingsTab(u,"exclusion");
+  });
+}
+
+/* ---- 取引先マスタ（2026-09-03新規） ---- */
+let VENDOR_STATE={};
+async function renderSettingsVendors(){
+  $("settingsBody").innerHTML=`<div class="spin">読み込み中…</div>`;
+  const [vr,corpRes,storeRes]=await Promise.all([
+    vendorCall("list_vendors"),
+    authed("/rest/v1/corporations?select=id,name&order=name"),
+    authed("/rest/v1/stores?select=id,name&order=name"),
+  ]);
+  VENDOR_STATE.vendors=(vr.ok&&vr.body.vendors)||[];
+  VENDOR_STATE.corporations=(corpRes.ok&&Array.isArray(corpRes.body))?corpRes.body:[];
+  VENDOR_STATE.stores=(storeRes.ok&&Array.isArray(storeRes.body))?storeRes.body:[];
+  VENDOR_STATE.editing=null;
+  vendorRenderBox();
+}
+function vendorRenderBox(){
+  const box=$("settingsBody");
+  const editing=VENDOR_STATE.editing;
+  box.innerHTML=`<div class="card" style="padding:16px">
+    <h3 style="font-size:14px;margin-bottom:6px">🏢 取引先マスタ</h3>
+    <div class="meta" style="color:var(--muted);font-size:12px;margin-bottom:10px">請求書の取引先を正規化して管理します（仕訳辞書とは別物です）。表記ゆれ（別名）をまとめておくと、仕訳辞書・自動判定・銀行口座の紐付けが正しく効くようになります。</div>
+    <button class="hq-btn primary" id="vendor-new" style="margin-bottom:10px">＋ 取引先を追加</button>
+    ${editing&&!editing.id?`<div id="vendor-editor" style="margin-bottom:12px"></div>`:""}
+    <div class="hq-tablewrap"><table class="invoice-table">
+      <thead><tr><th>正式名称</th><th>別名</th><th>既定法人</th><th>既定店舗</th><th>状態</th><th></th></tr></thead>
+      <tbody>${(VENDOR_STATE.vendors||[]).map(v=>{
+        const corpName=(VENDOR_STATE.corporations.find(c=>c.id===v.default_corporation_id)||{}).name||"—";
+        const storeName=(VENDOR_STATE.stores.find(s=>s.id===v.default_store_id)||{}).name||"—";
+        const row=`<tr>
+          <td><b>${esc(v.name)}</b></td>
+          <td>${esc((v.name_aliases||[]).join("、")||"—")}</td>
+          <td>${esc(corpName)}</td>
+          <td>${esc(storeName)}</td>
+          <td>${v.is_active?'<span class="invoice-status done">有効</span>':'<span class="invoice-status gray">無効</span>'}</td>
+          <td><button class="hq-btn" style="font-size:11px;padding:6px 9px" data-vendor-edit="${v.id}">編集</button></td>
+        </tr>`;
+        return row+((editing&&editing.id===v.id)?`<tr><td colspan="6"><div id="vendor-editor"></div></td></tr>`:"");
+      }).join("")||'<tr><td colspan="6">取引先はまだ登録されていません</td></tr>'}</tbody>
+    </table></div>
+  </div>`;
+  $("vendor-new").onclick=()=>vendorOpenEditor(null);
+  document.querySelectorAll("[data-vendor-edit]").forEach(el=>el.onclick=()=>vendorOpenEditor(VENDOR_STATE.vendors.find(v=>v.id===el.dataset.vendorEdit)));
+  if(editing) vendorRenderEditor();
+}
+function vendorOpenEditor(v){
+  VENDOR_STATE.editing={
+    id: v?v.id:null, name: v?v.name:"", nameAliases: v?((v.name_aliases||[]).join("、")):"",
+    corporationNumber: v?(v.corporation_number||""):"", contactEmail: v?(v.contact_email||""):"",
+    contactPhone: v?(v.contact_phone||""):"", defaultCorporationId: v?(v.default_corporation_id||""):"",
+    defaultStoreId: v?(v.default_store_id||""):"", mfPartnerName: v?(v.mf_partner_name||""):"",
+    notes: v?(v.notes||""):"", isActive: v?v.is_active!==false:true,
+  };
+  vendorRenderBox();
+  const el=$("vendor-editor"); if(el) el.scrollIntoView({behavior:"smooth",block:"center"});
+}
+function vendorRenderEditor(){
+  const el=$("vendor-editor"); if(!el) return;
+  const ed=VENDOR_STATE.editing;
+  el.innerHTML=`<div class="card" style="padding:12px;border-color:var(--m-blue)">
+    <div class="ai-grid">
+      <div class="ai-field"><small>正式名称</small><input id="vendor-name" value="${esc(ed.name)}"></div>
+      <div class="ai-field"><small>別名（表記ゆれ・読点区切り）</small><input id="vendor-aliases" value="${esc(ed.nameAliases)}" placeholder="例: (株)西原商会、ニシハラ"></div>
+      <div class="ai-field"><small>法人番号</small><input id="vendor-corpnum" value="${esc(ed.corporationNumber)}"></div>
+      <div class="ai-field"><small>連絡先メール</small><input id="vendor-email" value="${esc(ed.contactEmail)}"></div>
+      <div class="ai-field"><small>連絡先電話</small><input id="vendor-phone" value="${esc(ed.contactPhone)}"></div>
+      <div class="ai-field"><small>マネーフォワード取引先名（あれば）</small><input id="vendor-mfname" value="${esc(ed.mfPartnerName)}"></div>
+      <div class="ai-field"><small>既定法人</small><select id="vendor-defcorp"><option value="">（指定なし）</option>${VENDOR_STATE.corporations.map(c=>`<option value="${esc(c.id)}" ${ed.defaultCorporationId===c.id?"selected":""}>${esc(c.name)}</option>`).join("")}</select></div>
+      <div class="ai-field"><small>既定店舗</small><select id="vendor-defstore"><option value="">（指定なし）</option>${VENDOR_STATE.stores.map(s=>`<option value="${esc(s.id)}" ${ed.defaultStoreId===s.id?"selected":""}>${esc(s.name)}</option>`).join("")}</select></div>
+      <div class="ai-field full"><small>メモ</small><textarea id="vendor-notes">${esc(ed.notes)}</textarea></div>
+      <div class="ai-field"><label style="display:flex;gap:6px;align-items:center;font-size:12px"><input type="checkbox" id="vendor-active" ${ed.isActive?"checked":""}>有効</label></div>
+    </div>
+    <div class="mail-actions" style="margin-top:10px"><button class="primary" id="vendor-save">💾 保存</button><button id="vendor-cancel">キャンセル</button></div>
+    <div class="err" id="vendor-msg" style="margin-top:6px"></div>
+  </div>`;
+  $("vendor-cancel").onclick=()=>{ VENDOR_STATE.editing=null; vendorRenderBox(); };
+  $("vendor-save").onclick=async()=>{
+    const name=$("vendor-name").value.trim();
+    const msg=$("vendor-msg");
+    if(!name){ msg.textContent="正式名称を入力してください"; return; }
+    msg.className="err"; msg.textContent="保存中…";
+    const vendor={
+      id: ed.id, name,
+      name_aliases: $("vendor-aliases").value.split(/[、,]/).map(x=>x.trim()).filter(Boolean),
+      corporation_number: $("vendor-corpnum").value.trim(),
+      contact_email: $("vendor-email").value.trim(),
+      contact_phone: $("vendor-phone").value.trim(),
+      mf_partner_name: $("vendor-mfname").value.trim(),
+      default_corporation_id: $("vendor-defcorp").value||null,
+      default_store_id: $("vendor-defstore").value||null,
+      notes: $("vendor-notes").value.trim(),
+      is_active: $("vendor-active").checked,
+    };
+    const r=await vendorCall("upsert_vendor",{vendor});
+    if(!r.ok){ msg.textContent=r.body.error||"保存に失敗しました"; return; }
+    VENDOR_STATE.editing=null;
+    await renderSettingsVendors();
+  };
+}
+
+/* ---- 勘定科目マッピング（マネーフォワード本体の一覧の参照のみ・2026-09-03新規） ---- */
+let ACCOUNTS_STATE={};
+async function renderSettingsAccounts(){
+  $("settingsBody").innerHTML=`<div class="spin">読み込み中…</div>`;
+  const tRes=await mfCall("list_tenants");
+  const tenants=(tRes.ok&&tRes.body.tenants)||[];
+  if(!tenants.length){ $("settingsBody").innerHTML=`<div class="card" style="padding:16px"><div class="err">マネーフォワードと連携している事業者がありません</div></div>`; return; }
+  const tenantId=ACCOUNTS_STATE.tenantId||tenants[0].id;
+  ACCOUNTS_STATE.tenantId=tenantId;
+  const accRes=await mfCall("accounts",{tenant_id:tenantId});
+  const accounts=(accRes.ok&&accRes.body.accounts)||[];
+  $("settingsBody").innerHTML=`<div class="card" style="padding:16px">
+    <h3 style="font-size:14px;margin-bottom:6px">💹 勘定科目マッピング</h3>
+    <div class="meta" style="color:var(--muted);font-size:12px;margin-bottom:10px">マネーフォワード本体に登録されている勘定科目・補助科目の一覧です（参照のみ。追加・変更はマネーフォワード本体で行ってください。ここでの反映は次回このタブを開いたときです）。</div>
+    ${tenants.length>1?`<select id="accounts-tenant" style="margin-bottom:10px">${tenants.map(t=>`<option value="${esc(t.id)}" ${t.id===tenantId?"selected":""}>${esc(t.label)}</option>`).join("")}</select>`:""}
+    <div class="hq-tablewrap"><table class="invoice-table">
+      <thead><tr><th>勘定科目</th><th>補助科目</th></tr></thead>
+      <tbody>${accounts.length?accounts.map(a=>`<tr><td><b>${esc(a.name)}</b></td><td>${esc((a.sub_accounts||[]).map(s=>s.name).join("、")||"—")}</td></tr>`).join(""):'<tr><td colspan="2">取得できませんでした</td></tr>'}</tbody>
+    </table></div>
+  </div>`;
+  if(tenants.length>1) $("accounts-tenant").onchange=e=>{ ACCOUNTS_STATE.tenantId=e.target.value; renderSettingsAccounts(); };
+}
+
+/* ---- 法人・店舗・部門マッピング（2026-09-03新規。店舗↔MF部門名の紐付けのみ編集可） ---- */
+async function renderSettingsMapping(){
+  $("settingsBody").innerHTML=`<div class="spin">読み込み中…</div>`;
+  const [storeRes,corpRes]=await Promise.all([
+    authed("/rest/v1/stores?select=id,name,corporation_id,mf_department_name&order=name"),
+    authed("/rest/v1/corporations?select=id,name&order=name"),
+  ]);
+  const stores=(storeRes.ok&&Array.isArray(storeRes.body))?storeRes.body:[];
+  const corps=(corpRes.ok&&Array.isArray(corpRes.body))?corpRes.body:[];
+  $("settingsBody").innerHTML=`<div class="card" style="padding:16px">
+    <h3 style="font-size:14px;margin-bottom:6px">🏬 法人・店舗・部門マッピング</h3>
+    <div class="meta" style="color:var(--muted);font-size:12px;margin-bottom:10px">法人・店舗そのものの登録・編集は社内情報管理システム側で行います。ここでは各店舗に対応するマネーフォワードの「部門」名だけを紐付けます（仕訳の店舗別金額を自動集計するときに使う参照情報です）。</div>
+    <div class="hq-tablewrap"><table class="invoice-table">
+      <thead><tr><th>店舗</th><th>法人</th><th>マネーフォワード部門名</th><th></th></tr></thead>
+      <tbody>${stores.map(s=>{
+        const corpName=(corps.find(c=>c.id===s.corporation_id)||{}).name||"—";
+        return `<tr>
+          <td><b>${esc(s.name)}</b></td>
+          <td>${esc(corpName)}</td>
+          <td><input class="mapping-dept" data-store="${s.id}" value="${esc(s.mf_department_name||"")}" placeholder="MF側の部門名と完全一致させてください"></td>
+          <td><button class="hq-btn" style="font-size:11px;padding:6px 9px" data-mapping-save="${s.id}">保存</button></td>
+        </tr>`;
+      }).join("")||'<tr><td colspan="4">店舗が登録されていません</td></tr>'}</tbody>
+    </table></div>
+  </div>`;
+  document.querySelectorAll("[data-mapping-save]").forEach(el=>el.onclick=async()=>{
+    const storeId=el.dataset.mappingSave;
+    const val=document.querySelector(`.mapping-dept[data-store="${storeId}"]`).value.trim();
+    el.disabled=true; el.textContent="保存中…";
+    await authed(`/rest/v1/stores?id=eq.${storeId}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({mf_department_name:val||null})});
+    el.disabled=false; el.textContent="✓ 保存済み";
+    setTimeout(()=>{ if(el) el.textContent="保存"; },1500);
+  });
+}
+
+/* ---- 支払先・銀行口座（取引先の口座＋口座変更申請の承認・却下・2026-09-03新規） ---- */
+let BANK_STATE={};
+async function renderSettingsBankAccounts(){
+  $("settingsBody").innerHTML=`<div class="spin">読み込み中…</div>`;
+  const [reqRes,vendorRes]=await Promise.all([
+    vendorCall("list_change_requests",{status:"pending"}),
+    vendorCall("list_vendors"),
+  ]);
+  BANK_STATE.pending=(reqRes.ok&&reqRes.body.requests)||[];
+  BANK_STATE.vendors=(vendorRes.ok&&vendorRes.body.vendors)||[];
+  bankRenderBox();
+}
+function bankRenderBox(){
+  const box=$("settingsBody");
+  const pending=BANK_STATE.pending||[];
+  box.innerHTML=`<div class="card" style="padding:16px;margin-bottom:14px">
+    <h3 style="font-size:14px;margin-bottom:6px">⚠️ 振込先口座変更（未確認）</h3>
+    <div class="meta" style="color:var(--muted);font-size:12px;margin-bottom:10px">請求書から読み取った振込先口座が、登録済みの口座と異なっていたものです。自動更新はせず、内容を確認してから承認または却下してください。</div>
+    ${pending.length?pending.map(r=>`<div class="card" style="padding:10px;margin-bottom:8px;border-color:var(--m-amber)">
+      <div style="font-size:12px"><b>${esc((r.vendor&&r.vendor.name)||"—")}</b>（元請求書: ${esc((r.invoice&&r.invoice.vendor_name)||"—")}・${yen(r.invoice&&r.invoice.amount)}）</div>
+      <div style="font-size:11px;color:var(--muted);margin-top:4px">申請内容: ${esc(r.proposed_bank_name||"—")} ${esc(r.proposed_branch_name||"")} ${r.proposed_account_type==="2"?"当座":r.proposed_account_type==="4"?"貯蓄":"普通"} ${esc(r.proposed_account_number||"—")}（${esc(r.proposed_account_holder_kana||"—")}）</div>
+      <div class="mail-actions" style="margin-top:8px"><button class="hq-btn primary" data-bank-approve="${r.id}">承認する</button><button class="hq-btn" data-bank-reject="${r.id}">却下する</button></div>
+    </div>`).join(""):'<div style="font-size:12px;color:var(--muted)">未確認の口座変更はありません</div>'}
+  </div>
+  <div class="card" style="padding:16px">
+    <h3 style="font-size:14px;margin-bottom:6px">🏦 取引先ごとの銀行口座</h3>
+    <div class="ai-field" style="max-width:320px;margin-bottom:10px"><small>取引先を選択</small><select id="bank-vendor-select"><option value="">（選択してください）</option>${(BANK_STATE.vendors||[]).map(v=>`<option value="${esc(v.id)}" ${BANK_STATE.selectedVendorId===v.id?"selected":""}>${esc(v.name)}</option>`).join("")}</select></div>
+    <div id="bank-accounts-box">${BANK_STATE.selectedVendorId?"":'<div style="font-size:12px;color:var(--muted)">取引先を選ぶと登録済みの口座が表示されます</div>'}</div>
+  </div>`;
+  document.querySelectorAll("[data-bank-approve]").forEach(el=>el.onclick=async()=>{
+    if(!confirm("この振込先口座変更を承認します。今後この取引先への振込はこの新しい口座になります。よろしいですか？")) return;
+    const r=await vendorCall("approve_change_request",{id:el.dataset.bankApprove});
+    if(!r.ok){ alert(r.body.error||"承認に失敗しました"); return; }
+    await renderSettingsBankAccounts();
+  });
+  document.querySelectorAll("[data-bank-reject]").forEach(el=>el.onclick=async()=>{
+    if(!confirm("この振込先口座変更を却下します。口座は変更されません。よろしいですか？")) return;
+    const r=await vendorCall("reject_change_request",{id:el.dataset.bankReject});
+    if(!r.ok){ alert(r.body.error||"却下に失敗しました"); return; }
+    await renderSettingsBankAccounts();
+  });
+  if($("bank-vendor-select")) $("bank-vendor-select").onchange=async()=>{
+    BANK_STATE.selectedVendorId=$("bank-vendor-select").value;
+    if(!BANK_STATE.selectedVendorId){ $("bank-accounts-box").innerHTML=""; return; }
+    await bankLoadAccountsForVendor();
+  };
+  if(BANK_STATE.selectedVendorId) bankLoadAccountsForVendor();
+}
+async function bankLoadAccountsForVendor(){
+  const box=$("bank-accounts-box");
+  box.innerHTML="読み込み中…";
+  const r=await vendorCall("list_bank_accounts",{vendor_id:BANK_STATE.selectedVendorId});
+  const accounts=(r.ok&&r.body.accounts)||[];
+  box.innerHTML=`<div class="hq-tablewrap"><table class="invoice-table">
+    <thead><tr><th>銀行</th><th>支店</th><th>種別</th><th>口座番号</th><th>名義</th><th>状態</th><th>最終確認日</th></tr></thead>
+    <tbody>${accounts.length?accounts.map(a=>`<tr>
+      <td>${esc(a.bank_name||"—")}</td><td>${esc(a.branch_name||"—")}</td>
+      <td>${a.account_type==="2"?"当座":a.account_type==="4"?"貯蓄":"普通"}</td>
+      <td>${esc(a.account_number||"—")}</td><td>${esc(a.account_holder_kana||"—")}</td>
+      <td>${a.is_current?'<span class="invoice-status done">現在有効</span>':'<span class="invoice-status gray">過去口座</span>'}</td>
+      <td>${a.confirmed_at?fmtD(a.confirmed_at):"—"}</td>
+    </tr>`).join(""):'<tr><td colspan="7">登録済みの口座はありません</td></tr>'}</tbody>
+  </table></div>
+  <div class="mail-actions" style="margin-top:10px"><button class="hq-btn primary" id="bank-add">＋ 口座を追加（現在有効な口座として登録）</button></div>
+  <div id="bank-editor" style="margin-top:10px"></div>`;
+  $("bank-add").onclick=()=>{
+    $("bank-editor").innerHTML=`<div class="card" style="padding:12px;border-color:var(--m-blue)">
+      <div class="ai-grid">
+        <div class="ai-field"><small>銀行名</small><input id="bank-name"></div>
+        <div class="ai-field"><small>支店名</small><input id="bank-branch"></div>
+        <div class="ai-field"><small>口座種別</small><select id="bank-type"><option value="1">普通</option><option value="2">当座</option><option value="4">貯蓄</option></select></div>
+        <div class="ai-field"><small>口座番号</small><input id="bank-number"></div>
+        <div class="ai-field full"><small>名義（カナ）</small><input id="bank-holder"></div>
+      </div>
+      <div class="mail-actions" style="margin-top:8px"><button class="primary" id="bank-save">💾 保存</button><button id="bank-cancel">キャンセル</button></div>
+      <div class="err" id="bank-msg" style="margin-top:6px"></div>
+    </div>`;
+    $("bank-cancel").onclick=()=>{ $("bank-editor").innerHTML=""; };
+    $("bank-save").onclick=async()=>{
+      const msg=$("bank-msg"); msg.className="err"; msg.textContent="保存中…";
+      const account={
+        vendor_id: BANK_STATE.selectedVendorId, bank_name: $("bank-name").value.trim(),
+        branch_name: $("bank-branch").value.trim(), account_type: $("bank-type").value,
+        account_number: $("bank-number").value.trim(), account_holder_kana: $("bank-holder").value.trim(),
+      };
+      const r=await vendorCall("upsert_bank_account",{account});
+      if(!r.ok){ msg.textContent=r.body.error||"保存に失敗しました"; return; }
+      await bankLoadAccountsForVendor();
+    };
+  };
+}
+
+/* ---- 自動処理ルール（2026-09-03新規） ---- */
+async function renderSettingsAutomation(){
+  $("settingsBody").innerHTML=`<div class="spin">読み込み中…</div>`;
+  const r=await authed("/rest/v1/automation_rule_settings?select=*&order=key");
+  const rules=(r.ok&&Array.isArray(r.body))?r.body:[];
+  const actionLabel={auto_candidate:"✅ 自動処理候補にする",require_review:"👀 人間確認を必須にする",block:"🚫 自動処理を停止する"};
+  $("settingsBody").innerHTML=`<div class="card" style="padding:16px">
+    <h3 style="font-size:14px;margin-bottom:6px">🤖 自動処理ルール</h3>
+    <div class="meta" style="color:var(--muted);font-size:12px;margin-bottom:10px">AIの判断ではなく、システムとして決めるルールです。ここで有効/無効・動作を切り替えられます。実際にマネーフォワードへ登録するのは、必ず一覧画面で人間がボタンを押したときだけです（このルールで自動になっても勝手には登録されません）。</div>
+    <div class="hq-tablewrap"><table class="invoice-table">
+      <thead><tr><th>ルール</th><th>説明</th><th>有効</th><th>動作</th><th></th></tr></thead>
+      <tbody>${rules.map(x=>`<tr>
+        <td><b>${esc(x.label)}</b></td>
+        <td style="white-space:normal;max-width:280px">${esc(x.description||"")}</td>
+        <td><input type="checkbox" class="rule-enabled" data-key="${esc(x.key)}" ${x.enabled?"checked":""}></td>
+        <td><select class="rule-action" data-key="${esc(x.key)}">${Object.entries(actionLabel).map(([k,l])=>`<option value="${k}" ${x.action===k?"selected":""}>${l}</option>`).join("")}</select></td>
+        <td><button class="hq-btn" style="font-size:11px;padding:6px 9px" data-rule-save="${esc(x.key)}">保存</button></td>
+      </tr>`).join("")}</tbody>
+    </table></div>
+    <div class="err" id="automation-msg" style="margin-top:8px"></div>
+  </div>`;
+  document.querySelectorAll("[data-rule-save]").forEach(el=>el.onclick=async()=>{
+    const key=el.dataset.ruleSave;
+    const enabled=document.querySelector(`.rule-enabled[data-key="${key}"]`).checked;
+    const action=document.querySelector(`.rule-action[data-key="${key}"]`).value;
+    const msg=$("automation-msg"); msg.className="err"; msg.textContent="保存中…";
+    const rr=await authed(`/rest/v1/automation_rule_settings?key=eq.${encodeURIComponent(key)}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({enabled,action,updated_by:ME.id,updated_at:new Date().toISOString()})});
+    if(!rr.ok){ msg.textContent="保存に失敗しました"; return; }
+    msg.className="err msg-ok"; msg.textContent="保存しました";
   });
 }
 
