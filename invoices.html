@@ -220,6 +220,7 @@ button,input,select,textarea{font:inherit}
 .invoice-status.done{background:var(--green-soft);color:var(--green)}
 .invoice-status.check{background:var(--blue-soft);color:var(--blue)}
 .invoice-status.gray{background:var(--bg);color:var(--muted)}
+.invoice-status.err{background:var(--m-redsoft);color:var(--m-red)}
 .empty{padding:34px 10px;text-align:center;color:var(--muted);font-size:13px}
 .hq-tablewrap{overflow:auto}
 
@@ -925,7 +926,7 @@ let DATE_FROM="", DATE_TO=""; // 受信日の絞り込み（yyyy-mm-dd）
 // TAB初期値: URLの?tab=を見る（例: invoices.html?embed=1&tab=upload。portal.htmlのサイドバーが
 // この形でリンクする。2026-08-31・担当Fからの緊急報告=.mail-tabボタンをembed時に隠した結果、
 // サイドバー経由でdashboard/upload/payrollへ一切たどり着けなくなっていた不具合の修正）
-const TAB_WHITELIST=["dashboard","inbox","invoiceList","salesList","contractList","upload","payroll","history","sent","notApplicable","important","settings"];
+const TAB_WHITELIST=["dashboard","unified","inbox","invoiceList","salesList","contractList","upload","payroll","transfers","history","sent","notApplicable","important","settings"];
 const TAB_FROM_URL=new URLSearchParams(location.search).get("tab");
 let TAB=(TAB_FROM_URL&&TAB_WHITELIST.includes(TAB_FROM_URL))?TAB_FROM_URL:"inbox";           // inbox | invoiceList | history | sent
 let SELECTED_ID=null;
@@ -1051,14 +1052,14 @@ function payrollSummaryHtml(){
 // portal.html組込(EMBED)時にサイドバーの「会計」グループから開く3タブ（会計ダッシュボード／
 // アップロード請求書／給与仕訳）。ポータル側に別途「請求書メール」の専用リンクがあるため、
 // この3タブでは請求書メール向けの項目（KPIバー・受信トレイ等のタブ切替行）を表示しない
-const ACCOUNTING_ONLY_TABS=["dashboard","upload","payroll"];
+const ACCOUNTING_ONLY_TABS=["dashboard","upload","payroll","unified","transfers"];
 // 画面上部のKPIバーと、その下のタブ切替行（受信トレイ／請求書一覧／…／新規作成）をタブに応じて
 // 出し分ける。ユーザー報告「そのタブに合わない請求書メールの項目が混じっている」に対応
 // （2026-09-01: 会計ダッシュボード・アップロード請求書・給与仕訳では請求書メール向けの項目を隠す）
 function updateMailSummaryBar(){
   const el=$("mailSummaryBar");
   if(el){
-    const hideForTab=EMBED&&(TAB==="dashboard"||TAB==="upload");
+    const hideForTab=EMBED&&(TAB==="dashboard"||TAB==="upload"||TAB==="unified"||TAB==="transfers");
     el.style.display=hideForTab?"none":"";
     if(TAB==="payroll") el.innerHTML=payrollSummaryHtml();
     else if(!hideForTab) el.innerHTML=mailSummaryDefaultHtml();
@@ -1080,12 +1081,14 @@ function shellHtml(u){
     <div class="mail-tabs-row">
       <div class="mail-tabs">
         ${EMBED?"":`<button class="mail-tab ${TAB==='dashboard'?'active':''}" data-tab="dashboard">📊 会計ダッシュボード</button>`}
+        ${EMBED?"":`<button class="mail-tab ${TAB==='unified'?'active':''}" data-tab="unified">🧾 請求書</button>`}
         <button class="mail-tab ${TAB==='inbox'?'active':''}" data-tab="inbox">受信トレイ</button>
         <button class="mail-tab ${TAB==='invoiceList'?'active':''}" data-tab="invoiceList">📄 請求書一覧</button>
         <button class="mail-tab ${TAB==='salesList'?'active':''}" data-tab="salesList">💰 売上一覧</button>
         <button class="mail-tab ${TAB==='contractList'?'active':''}" data-tab="contractList">📃 契約書一覧</button>
         ${EMBED?"":`<button class="mail-tab ${TAB==='upload'?'active':''}" data-tab="upload">📤 アップロード請求書</button>`}
         ${EMBED?"":`<button class="mail-tab ${TAB==='payroll'?'active':''}" data-tab="payroll">💴 給与仕訳</button>`}
+        ${EMBED?"":`<button class="mail-tab ${TAB==='transfers'?'active':''}" data-tab="transfers">🏦 振込一覧</button>`}
         <button class="mail-tab ${TAB==='history'?'active':''}" data-tab="history">処理履歴</button>
         <button class="mail-tab ${TAB==='sent'?'active':''}" data-tab="sent">送信済み</button>
         <button class="mail-tab ${TAB==='notApplicable'?'active':''}" data-tab="notApplicable">対象外</button>
@@ -1172,6 +1175,8 @@ async function renderTabBody(u){
   $("tabbody").innerHTML='<div class="spin">読み込み中…</div>';
   updateMailSummaryBar();
   if(TAB==="dashboard") await renderAccountingDashboardTab(u);
+  else if(TAB==="unified") await renderUnifiedInvoiceTab(u);
+  else if(TAB==="transfers") await renderTransfersTab(u);
   else if(TAB==="inbox") renderInbox(u);
   else if(TAB==="invoiceList") await renderInvoiceListTab(u);
   else if(TAB==="salesList") await renderSalesListTab(u);
@@ -1938,11 +1943,12 @@ function wireDetailActions(u){
       invoice_status:$("iv-status").value,
       ...(isSales?{}:{linked_hq_step_id:LINKED_HQ_STEP?LINKED_HQ_STEP.id:null}),
     };
+    const isNew=!SELECTED.invoice;
     let r;
     if(SELECTED.invoice){
       r=await authed(`/rest/v1/invoices?id=eq.${SELECTED.invoice.id}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({...payload,updated_at:new Date().toISOString()})});
     }else{
-      r=await authed("/rest/v1/invoices",{method:"POST",headers:{Prefer:"return=minimal"},body:JSON.stringify({...payload,email_id:emailId})});
+      r=await authed("/rest/v1/invoices",{method:"POST",headers:{Prefer:"return=minimal"},body:JSON.stringify({...payload,email_id:emailId,intake_source:"mail"})});
     }
     if(!r.ok){ msg.className="err"; msg.textContent="保存できませんでした"; return; }
     // 2026-08-27: 保存成功後にSELECTED.invoiceを更新しないまま同じ画面でもう一度保存すると、
@@ -1951,6 +1957,10 @@ function wireDetailActions(u){
     await reloadDetail();
     const freshMsg=$("iv-msg"); if(freshMsg){ freshMsg.className="err msg-ok"; freshMsg.textContent="保存しました"; }
     await loadWaitingPaymentCount();
+    // 新規作成のときだけ自動判定を実行（会計・請求書処理の全面刷新・2026-09-03）。取引先マッチ・
+    // 仕訳辞書の自動照合・重複/口座変更等のリスク判定を行い、統合請求書一覧のAI判定バッジに反映する。
+    // 完了を待たずに進める（失敗しても保存自体は成功しているため、ユーザーの作業を止めない）
+    if(isNew&&!isSales&&SELECTED.invoice&&SELECTED.invoice.id) autoMatchCall({invoice_id:SELECTED.invoice.id}).catch(()=>{});
   };
   // C-8: ➕他の請求書セクションの配線（2026-09-01）
   // 2026-09-01緊急修正: ここは`invoices`（複数形）ではなくSELECTED.invoicesを参照する必要があった
@@ -2570,6 +2580,250 @@ async function renderFinancialListTab(u,kind){
 }
 async function renderInvoiceListTab(u){ await renderFinancialListTab(u,"invoice"); }
 async function renderSalesListTab(u){ await renderFinancialListTab(u,"sales"); }
+
+/* ============================================================
+   🧾 請求書（統合請求書一覧・2026-09-03新規）
+   会計・請求書処理の全面刷新。従来「請求書一覧」（メール起点のみ）と「アップロード請求書」の
+   最近アップロード一覧に分かれていたものを、取得元を問わず1つの一覧に統合した。
+   要確認/会計待ち/振込待ち/完了のサブタブ・AI自動判定バッジ・重複疑い/口座変更のリスク表示・
+   安全な請求書だけを選ぶ一括処理を持つ。
+   【一括処理の安全設計】マネーフォワードへの実際の登録には「どの事業者（テナント）に
+   登録するか」の情報が必要だが、請求書には登録前の時点でテナント情報を持たせる仕組みが
+   まだ無い（テナントは仕訳登録の実行時に選ぶ設計のため）。この状態で「1クリックで全部
+   自動登録」を作ると、誤ったテナント・誤った金額配分で登録してしまう事故のリスクがある。
+   そのため一括処理は「安全な候補を選んで、1件ずつ確認しながら開く」アシスト機能とし、
+   実際のマネーフォワード登録は必ず既存の単票登録フロー（人間が内容を見て登録ボタンを押す）
+   を通す。将来テナント自動判定の基盤が整えば、真の一括登録に拡張できる設計にしてある。
+   ============================================================ */
+let UNIFIED_STATE={subTab:"all", search:"", rows:[], selected:new Set()};
+const UNIFIED_SUBTABS=[["all","すべて"],["review","要確認"],["accounting","会計待ち"],["payment","振込待ち"],["done","完了"]];
+const AI_STATUS_LABEL={auto:["自動判定済","check"],review:["要確認","wait"],error:["エラー","err"]};
+const PAYMENT_STATUS_LABEL={not_ready:["—","gray"],wait:["振込待ち","wait"],csv:["CSV出力済","check"],processing:["振込処理中","wait"],paid:["振込済","done"],blocked:["確認停止","err"]};
+function unifiedIsHighRisk(r){ return !!(r.duplicate_suspected||r.bank_account_change_detected||r.ai_match_status==="review"||r.ai_match_status==="error"); }
+function unifiedMatchesSubTab(r,tab){
+  if(tab==="all") return true;
+  if(tab==="review") return r.ai_match_status==="review"||r.ai_match_status==="error"||r.duplicate_suspected||r.bank_account_change_detected;
+  if(tab==="accounting") return !r.mf_journal_id;
+  if(tab==="payment") return !!r.mf_journal_id&&["wait","csv","processing"].includes(r.payment_status);
+  if(tab==="done") return r.payment_status==="paid";
+  return true;
+}
+function unifiedStageOf(r){
+  if(!r.mf_journal_id) return "内容確認・会計待ち";
+  if(r.payment_status==="paid") return "完了";
+  if(["wait","csv","processing"].includes(r.payment_status)) return "振込準備";
+  return "会計済み";
+}
+async function renderUnifiedInvoiceTab(u){
+  $("tabbody").innerHTML=`<div class="spin">読み込み中…</div>`;
+  const r=await authed(`/rest/v1/invoices?select=*,email:invoice_emails(subject,from_address,mail_kind),vendor:vendors(name),corp:corporations(name),store:stores(name),linked_step:hq_task_steps(title)&order=created_at.desc&limit=500`);
+  const raw=(r.ok&&Array.isArray(r.body))?r.body:[];
+  // メール起点は種類=請求書のみ。アップロード（email無し）は全て対象
+  UNIFIED_STATE.rows=raw.filter(row=>!row.email||row.email.mail_kind==="invoice");
+  UNIFIED_STATE.selected=new Set([...UNIFIED_STATE.selected].filter(id=>UNIFIED_STATE.rows.some(r2=>r2.id===id)));
+  unifiedRender(u);
+}
+function unifiedFilteredRows(){
+  let list=UNIFIED_STATE.rows.filter(r=>unifiedMatchesSubTab(r,UNIFIED_STATE.subTab));
+  const q=(UNIFIED_STATE.search||"").trim().toLowerCase();
+  if(q) list=list.filter(r=>[r.vendor_name,r.invoice_number,(r.vendor&&r.vendor.name),(r.corp&&r.corp.name),(r.store&&r.store.name)].filter(Boolean).join(" ").toLowerCase().includes(q));
+  return list;
+}
+const INTAKE_SOURCE_LABEL={mail:"メール",paper:"紙",pdf:"PDF",infomart:"Infomart",api:"API",manual:"手動"};
+function unifiedRowHtml(r){
+  const risky=unifiedIsHighRisk(r);
+  const ai=AI_STATUS_LABEL[r.ai_match_status]||["—","gray"];
+  const pay=PAYMENT_STATUS_LABEL[r.payment_status]||PAYMENT_STATUS_LABEL.not_ready;
+  const riskNote=[r.duplicate_suspected?"重複疑い":"",r.bank_account_change_detected?"口座変更":""].filter(Boolean).join("・");
+  return `<tr data-openmail="${r.email_id||""}" data-invoice-id="${r.id}">
+    <td><input type="checkbox" class="unified-check" data-id="${r.id}" ${UNIFIED_STATE.selected.has(r.id)?"checked":""} ${risky||r.mf_journal_id?'disabled title="高リスク、または既に会計登録済みのため選択できません"':""}></td>
+    <td>${fmtD(r.created_at)}</td>
+    <td>${dueBadgeHtml(r)}</td>
+    <td>${esc((r.corp&&r.corp.name)||"—")}</td>
+    <td>${esc((r.store&&r.store.name)||"—")}</td>
+    <td><b>${esc((r.vendor&&r.vendor.name)||r.vendor_name||"—")}</b>${riskNote?`<div class="danger-text" style="color:var(--m-red);font-size:10px;font-weight:800">${esc(riskNote)}</div>`:""}</td>
+    <td>${esc(r.invoice_number||"—")}</td>
+    <td>${yen(r.amount)}</td>
+    <td><span class="invoice-status gray">${esc(INTAKE_SOURCE_LABEL[r.intake_source]||(r.email_id?"メール":"手動"))}</span></td>
+    <td><span class="invoice-status ${ai[1]}">${esc(ai[0])}</span></td>
+    <td>${r.mf_journal_id?'<span class="invoice-status done">済</span>':'<span class="invoice-status wait">未</span>'}</td>
+    <td>${r.pl_fee_reflected_at?'<span class="invoice-status done">済</span>':"—"}</td>
+    <td>${r.ad_cost_reflected_at?'<span class="invoice-status done">済</span>':"—"}</td>
+    <td>${r.pl_fee_seisan_synced_at?'<span class="invoice-status done">済</span>':"—"}</td>
+    <td><span class="invoice-status ${pay[1]}">${esc(pay[0])}</span></td>
+    <td>${esc((r.linked_step&&r.linked_step.title)||"—")}</td>
+    <td>${esc(unifiedStageOf(r))}</td>
+    <td><button class="hq-btn blue" data-open-invoice="${r.id}" data-email="${r.email_id||""}">${risky?"確認する":"処理する"}</button></td>
+  </tr>`;
+}
+function unifiedRender(u){
+  const list=unifiedFilteredRows();
+  const counts={};
+  UNIFIED_SUBTABS.forEach(([k])=>{ counts[k]=UNIFIED_STATE.rows.filter(r=>unifiedMatchesSubTab(r,k)).length; });
+  $("tabbody").innerHTML=`
+    <section class="invoice-list active">
+      <div class="mail-tabs" style="margin-bottom:10px">
+        ${UNIFIED_SUBTABS.map(([k,l])=>`<button class="mail-tab ${UNIFIED_STATE.subTab===k?"active":""}" data-unified-tab="${k}">${l}（${counts[k]}）</button>`).join("")}
+      </div>
+      <div class="card" style="padding:12px;margin-bottom:10px">
+        <input id="unified-search" placeholder="🔎 取引先・請求書番号・法人・店舗で検索" value="${esc(UNIFIED_STATE.search)}" style="max-width:340px">
+      </div>
+      <div class="batchbar" style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px 12px;background:var(--m-bluesoft);border-radius:10px;margin-bottom:10px;font-size:12px">
+        <div><b id="unified-selected-count">${UNIFIED_STATE.selected.size}件選択</b>　重複疑い・口座変更・要確認中・登録済みの行は選択できません（安全のため自動除外）</div>
+        <div style="display:flex;gap:8px">
+          <button class="hq-btn" id="unified-select-safe">安全な請求書を選択</button>
+          <button class="hq-btn primary" id="unified-open-selected" ${UNIFIED_STATE.selected.size?"":"disabled"}>選択した請求書を順番に確認する</button>
+        </div>
+      </div>
+      <div class="card hq-tablewrap">
+        <table class="invoice-table" style="min-width:1500px">
+          <thead><tr><th></th><th>受領日</th><th>支払期限</th><th>法人</th><th>店舗</th><th>取引先</th><th>請求書番号</th><th>金額</th><th>取得元</th><th>AI判定</th><th>会計</th><th>PL</th><th>広告</th><th>精算書</th><th>振込</th><th>本部タスク</th><th>現在工程</th><th></th></tr></thead>
+          <tbody>${list.length?list.map(unifiedRowHtml).join(""):'<tr><td colspan="17">該当する請求書はありません</td></tr>'}</tbody>
+        </table>
+      </div>
+    </section>`;
+  document.querySelectorAll("[data-unified-tab]").forEach(b=>b.onclick=()=>{ UNIFIED_STATE.subTab=b.dataset.unifiedTab; unifiedRender(u); });
+  $("unified-search").oninput=()=>{ UNIFIED_STATE.search=$("unified-search").value; unifiedRender(u); };
+  document.querySelectorAll(".unified-check").forEach(el=>el.onchange=()=>{
+    if(el.checked) UNIFIED_STATE.selected.add(el.dataset.id); else UNIFIED_STATE.selected.delete(el.dataset.id);
+    $("unified-selected-count").textContent=UNIFIED_STATE.selected.size+"件選択";
+    $("unified-open-selected").disabled=!UNIFIED_STATE.selected.size;
+  });
+  $("unified-select-safe").onclick=()=>{
+    UNIFIED_STATE.selected=new Set(list.filter(r=>!unifiedIsHighRisk(r)&&!r.mf_journal_id).map(r=>r.id));
+    unifiedRender(u);
+  };
+  $("unified-open-selected").onclick=()=>{
+    const firstId=[...UNIFIED_STATE.selected][0];
+    const row=UNIFIED_STATE.rows.find(r=>r.id===firstId);
+    if(!row) return;
+    if(row.email_id) openMailDetailModal(u,row.email_id);
+    else openStandaloneInvoiceModal(u,row.id);
+  };
+  document.querySelectorAll("[data-open-invoice]").forEach(el=>el.onclick=()=>{
+    const emailId=el.dataset.email;
+    if(emailId) openMailDetailModal(u,emailId);
+    else openStandaloneInvoiceModal(u,el.dataset.openInvoice);
+  });
+}
+// アップロード請求書（email_idが無い＝メールに紐付かない請求書）を統合一覧から開くための
+// 軽量モーダル。既存のmail-detailと同じ見た目のパネル群（会計・PL反映等）は再利用せず、
+// 最小限の情報表示＋アップロード請求書タブへの導線に留める（フル編集は当該タブで行う）
+async function openStandaloneInvoiceModal(u,invoiceId){
+  const r=await authed(`/rest/v1/invoices?id=eq.${invoiceId}&select=*,vendor:vendors(name)`);
+  const inv=(r.ok&&Array.isArray(r.body)&&r.body[0])||null;
+  const modal=document.createElement("div");
+  modal.className="modal-bg";
+  modal.innerHTML=`<div class="modal">
+    <div class="mhead"><h2>🧾 ${esc((inv&&((inv.vendor&&inv.vendor.name)||inv.vendor_name))||"請求書")}</h2><button class="linkbtn" id="standaloneClose" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:13px">閉じる ×</button></div>
+    ${inv?`<div class="sum" style="border:1px solid var(--m-line);border-radius:10px;overflow:hidden">
+      <div class="sr" style="display:grid;grid-template-columns:120px 1fr;gap:8px;padding:9px 11px;border-bottom:1px solid var(--m-line);font-size:12px"><small style="color:var(--muted)">請求書番号</small><b>${esc(inv.invoice_number||"—")}</b></div>
+      <div class="sr" style="display:grid;grid-template-columns:120px 1fr;gap:8px;padding:9px 11px;border-bottom:1px solid var(--m-line);font-size:12px"><small style="color:var(--muted)">金額</small><b>${yen(inv.amount)}</b></div>
+      <div class="sr" style="display:grid;grid-template-columns:120px 1fr;gap:8px;padding:9px 11px;font-size:12px"><small style="color:var(--muted)">会計登録</small><b>${inv.mf_journal_id?`済（伝票番号: ${esc(String(inv.mf_journal_number??"-"))}）`:"未登録"}</b></div>
+    </div>
+    <div class="meta" style="color:var(--muted);font-size:11px;margin-top:8px">アップロード請求書の詳しい編集・会計登録は「📤 アップロード請求書」タブから行ってください。</div>`
+    :`<div class="err">読み込みに失敗しました</div>`}
+  </div>`;
+  document.body.appendChild(modal);
+  pushNav({modal:true});
+  modal.onclick=e=>{ if(e.target===modal) history.back(); };
+  $("standaloneClose").onclick=()=>history.back();
+}
+
+/* ============================================================
+   🏦 振込一覧（会計・請求書処理の全面刷新・2026-09-03新規）
+   従来は給与仕訳タブの中だけにあった「振込先口座CSV出力・振込完了」の仕組みを、
+   給与に限らず全ての取引先請求書にも一般化した。既存のpayrollExportCsv/paypayCleanKanaの
+   ロジックは変更せず、CSVの整形部分だけbuildPaypayCsv()として共通化して使う。
+   ============================================================ */
+async function renderTransfersTab(u){
+  $("tabbody").innerHTML=`<div class="spin">読み込み中…</div>`;
+  const r=await authed(`/rest/v1/invoices?mf_journal_id=not.is.null&payment_status=in.(wait,csv,processing)&select=*,vendor:vendors(name)&order=due_date.asc.nullslast&limit=300`);
+  const rows=(r.ok&&Array.isArray(r.body))?r.body:[];
+  const vendorIds=[...new Set(rows.map(r2=>r2.vendor_id).filter(Boolean))];
+  let accountsByVendor=new Map();
+  if(vendorIds.length){
+    const ar=await authed(`/rest/v1/vendor_bank_accounts?vendor_id=in.(${vendorIds.join(",")})&is_current=eq.true&select=*`);
+    if(ar.ok&&Array.isArray(ar.body)) for(const a of ar.body) accountsByVendor.set(a.vendor_id,a);
+  }
+  TRANSFERS_STATE={rows,accountsByVendor,selected:new Set()};
+  transferRender(u);
+}
+let TRANSFERS_STATE={rows:[],accountsByVendor:new Map(),selected:new Set()};
+function transferRowHtml(r){
+  const acc=TRANSFERS_STATE.accountsByVendor.get(r.vendor_id);
+  const blocked=r.bank_account_change_detected;
+  const pay=PAYMENT_STATUS_LABEL[r.payment_status]||PAYMENT_STATUS_LABEL.not_ready;
+  return `<tr>
+    <td><input type="checkbox" class="transfer-check" data-id="${r.id}" ${TRANSFERS_STATE.selected.has(r.id)?"checked":""} ${blocked||!acc?"disabled":""}></td>
+    <td>${fmtD(r.due_date)}</td>
+    <td>${esc((r.vendor&&r.vendor.name)||r.vendor_name||"—")}</td>
+    <td>${yen(r.amount)}</td>
+    <td>${acc?esc(acc.bank_name||"—"):(blocked?'<span class="invoice-status err">口座変更未承認</span>':'<span class="invoice-status gray">未登録</span>')}</td>
+    <td>${acc?esc(acc.branch_name||"—"):"—"}</td>
+    <td>${acc?esc(acc.account_number||"—"):"—"}</td>
+    <td>${r.mf_journal_id?'<span class="invoice-status done">済</span>':'<span class="invoice-status wait">未</span>'}</td>
+    <td><span class="invoice-status ${pay[1]}">${esc(pay[0])}</span></td>
+    <td><button class="hq-btn" data-transfer-open="${r.id}" data-email="${r.email_id||""}">詳細</button></td>
+  </tr>`;
+}
+function transferRender(u){
+  const rows=TRANSFERS_STATE.rows;
+  $("tabbody").innerHTML=`
+    <section class="invoice-list active">
+      <div class="kpis" style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:14px">
+        <div class="card kpi" style="padding:14px"><small style="color:var(--muted);font-size:9px;display:block">振込待ち</small><b style="font-size:24px;display:block;margin-top:5px">${rows.length}</b></div>
+        <div class="card kpi" style="padding:14px"><small style="color:var(--muted);font-size:9px;display:block">合計金額</small><b style="font-size:24px;display:block;margin-top:5px">${yen(rows.reduce((s,r)=>s+(Number(r.amount)||0),0))}</b></div>
+        <div class="card kpi" style="padding:14px"><small style="color:var(--muted);font-size:9px;display:block">口座変更未承認</small><b style="font-size:24px;display:block;margin-top:5px;color:var(--m-red)">${rows.filter(r=>r.bank_account_change_detected).length}</b></div>
+      </div>
+      <div class="card" style="padding:16px">
+        <div class="meta" style="color:var(--muted);font-size:12px;margin-bottom:10px">会計登録済み（仕訳登録済み）で、まだ振込が完了していない請求書の一覧です。振込先口座変更が未承認の請求書は選択できません（設定タブ「支払先・銀行口座」で確認してください）。給与の振込は「💴給与仕訳」タブでこれまでどおり行えます。</div>
+        <div class="hq-tablewrap"><table class="invoice-table">
+          <thead><tr><th></th><th>支払期限</th><th>取引先</th><th>金額</th><th>銀行</th><th>支店</th><th>口座番号</th><th>会計</th><th>振込状態</th><th></th></tr></thead>
+          <tbody>${rows.length?rows.map(transferRowHtml).join(""):'<tr><td colspan="10">振込待ちの請求書はありません</td></tr>'}</tbody>
+        </table></div>
+        <div class="mail-actions" style="margin-top:10px">
+          <button class="hq-btn blue" id="transfer-export-csv">📥 PayPay銀行CSVを出力</button>
+          <button class="hq-btn primary" id="transfer-mark-paid">✅ 選択を振込済みにする</button>
+        </div>
+        <div class="err" id="transfer-msg" style="margin-top:8px"></div>
+      </div>
+    </section>`;
+  document.querySelectorAll(".transfer-check").forEach(el=>el.onchange=()=>{
+    if(el.checked) TRANSFERS_STATE.selected.add(el.dataset.id); else TRANSFERS_STATE.selected.delete(el.dataset.id);
+  });
+  document.querySelectorAll("[data-transfer-open]").forEach(el=>el.onclick=()=>{
+    const emailId=el.dataset.email;
+    if(emailId) openMailDetailModal(u,emailId); else openStandaloneInvoiceModal(u,el.dataset.transferOpen);
+  });
+  $("transfer-export-csv").onclick=()=>transferExportCsv(u);
+  $("transfer-mark-paid").onclick=()=>transferMarkPaid(u);
+}
+function rows_for_transfer_selection(){
+  return TRANSFERS_STATE.rows.filter(r=>TRANSFERS_STATE.selected.has(r.id));
+}
+async function transferExportCsv(u){
+  const selected=rows_for_transfer_selection();
+  if(!selected.length){ $("transfer-msg").textContent="対象を選択してください"; return; }
+  const withAccount=selected.filter(r=>TRANSFERS_STATE.accountsByVendor.has(r.vendor_id));
+  if(!withAccount.length){ $("transfer-msg").textContent="選択した請求書に振込先口座の登録がありません（設定タブで登録してください）"; return; }
+  const csv=buildPaypayCsv(withAccount.map(r=>{
+    const acc=TRANSFERS_STATE.accountsByVendor.get(r.vendor_id);
+    return { bankCode:acc.bank_code||"", branchCode:acc.branch_code||"", accountType:acc.account_type||"1", accountNumber:acc.account_number||"", holderKana:acc.account_holder_kana||"", amount:Number(r.amount)||0 };
+  }));
+  const blob=new Blob([csv],{type:"text/csv"});
+  const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download=`paypay_transfer_${new Date().toISOString().slice(0,10)}.csv`; a.click();
+  await authed(`/rest/v1/invoices?id=in.(${withAccount.map(r=>r.id).join(",")})`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({payment_status:"csv",transfer_csv_exported_at:new Date().toISOString()})});
+  await renderTransfersTab(u);
+}
+async function transferMarkPaid(u){
+  const selected=rows_for_transfer_selection();
+  if(!selected.length){ $("transfer-msg").textContent="対象を選択してください"; return; }
+  if(!confirm(`${selected.length}件を振込済みにします。よろしいですか？`)) return;
+  const nowIso=new Date().toISOString();
+  await authed(`/rest/v1/invoices?id=in.(${selected.map(r=>r.id).join(",")})`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({payment_status:"paid",paid_at:nowIso,paid_by:ME.id})});
+  await renderTransfersTab(u);
+}
 
 /* ============================================================
    契約書一覧タブ（2026-08-25 Phase1.6・保管のみ＝処理履歴のような単純な一覧）
@@ -4288,14 +4542,28 @@ function paypayCleanKana(s){
   t=t.replace(/[ｧｨｩｪｫｯｬｭｮァィゥェォッャュョ]/g,c=>smallMap[c]||c);
   return t;
 }
+// PayPay銀行指定フォーマット（CSV）どおりに振込データを組み立てる共通ヘルパー（2026-09-03・
+// 会計・請求書処理の全面刷新でrenderTransfersTab（一般の取引先向け振込一覧）からも使うため、
+// 元payrollExportCsv内にあった整形ロジック部分だけを切り出した。ロジック自体は変更していない。
+// rows: [{bankCode,branchCode,accountType,accountNumber,holderKana,amount}]
+function buildPaypayCsv(rows){
+  const dataLines=[]; let total=0, count=0;
+  for(const r of rows){
+    const amount=Math.round(Number(r.amount)||0);
+    if(!amount||amount<=0) continue;
+    dataLines.push(["1", r.bankCode, r.branchCode, r.accountType, r.accountNumber, paypayCleanKana(r.holderKana), String(amount), ""].join(","));
+    total+=amount; count++;
+  }
+  const trailer=["2","","","","",String(count),String(total),""].join(",");
+  return [...dataLines, trailer].join("\r\n")+"\r\n";
+}
 // PayPay銀行指定フォーマット（CSV）どおりに振込データを組み立てて出力する。
 // 実フォーマットはdocs/フォーマット登録_PayPay銀行WEB総振_2026-08-31.md参照（公式PDFから取得済み）。
 // 振込の実行はしない＝生成したCSVをダウンロードするだけ（人が確認してPayPay銀行の画面で実行する）
 function payrollExportCsv(){
   const msg=$("payroll-csv-msg"); msg.className="err"; msg.textContent="";
   const skipped=[];
-  const dataLines=[];
-  let total=0, count=0;
+  const csvRows=[];
   const hidden=PAYROLL_STATE.hiddenUserIds||new Set();
   for(const row of PAYROLL_STATE.rows){
     const name=(row.user&&row.user.name)||row.user_id;
@@ -4305,13 +4573,11 @@ function payrollExportCsv(){
     const bank=payrollBankFor(row.user_id);
     if(!bank){ skipped.push(`${name}（支払方法が未登録）`); continue; }
     if(bank.payment_method==="cash"){ skipped.push(`${name}（現金手渡し・CSV対象外）`); continue; }
-    const cols=["1", bank.bank_code, bank.branch_code, bank.account_type, bank.account_number, paypayCleanKana(bank.account_holder_kana), String(amount), ""];
-    dataLines.push(cols.join(","));
-    total+=amount; count++;
+    csvRows.push({bankCode:bank.bank_code, branchCode:bank.branch_code, accountType:bank.account_type, accountNumber:bank.account_number, holderKana:bank.account_holder_kana, amount});
   }
+  const count=csvRows.length, total=csvRows.reduce((s,r)=>s+Math.round(Number(r.amount)||0),0);
   if(!count){ msg.textContent="出力できる従業員がいません（振込先口座の登録状況を確認してください）"; return; }
-  const trailer=["2","","","","",String(count),String(total),""].join(",");
-  const csv=[...dataLines, trailer].join("\r\n")+"\r\n";
+  const csv=buildPaypayCsv(csvRows);
   const blob=new Blob([csv],{type:"text/csv"});
   const url=URL.createObjectURL(blob);
   const a=document.createElement("a");
