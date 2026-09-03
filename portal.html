@@ -1079,11 +1079,17 @@ const SHINSEI_GROUP={cap:"申請",ico:"🔁", items:[
 // 実害無し」の先付けパターンで付けている（担当Cへの依頼はWORKLOG参照）。支払い（インフォマート・
 // 振込）はD-9（インフォマート発注データ）待ちで担当C-7④が未着手のため、予約管理(A-6)のときと
 // 同じパターンで引き続き準備中バッジのまま
+// 2026-09-03 担当C: 「会計・請求書処理の全面刷新」で統合請求書一覧・振込一覧タブを新設したため、
+// このグループへの導線を追加。従来「支払い（インフォマート・振込）」はsoon:trueのプレースホルダー
+// だった（インフォマート発注データ連携=D-9待ちの部分は引き続き未着手）が、振込一覧そのものは
+// 今回実装済みのためsoonを外してurlを設定した（ラベルはインフォマート対応も見据えて維持）
 const KAIKEI_GROUP={cap:"会計",ico:"🧾", items:[
   {key:"kaikei-dashboard",sysKey:"invoices",ico:"📊",label:"会計ダッシュボード",url:"invoices.html?embed=1&tab=dashboard"},
+  {key:"kaikei-unified",  sysKey:"invoices",ico:"🧾",label:"請求書",url:"invoices.html?embed=1&tab=unified"},
   {key:"kaikei-upload",   sysKey:"invoices",ico:"📤",label:"アップロード請求書",url:"invoices.html?embed=1&tab=upload"},
   {key:"kaikei-payroll",  sysKey:"invoices",ico:"💴",label:"給与仕訳",url:"invoices.html?embed=1&tab=payroll"},
-  {key:"kaikei-payment",  ico:"💸",label:"支払い（インフォマート・振込）",soon:true},
+  {key:"kaikei-payment",  sysKey:"invoices",ico:"💸",label:"支払い（インフォマート・振込）",url:"invoices.html?embed=1&tab=transfers"},
+  {key:"kaikei-settings", sysKey:"invoices",ico:"⚙️",label:"会計設定",url:"invoices.html?embed=1&tab=settings"},
 ]};
 /* 社内情報管理は、実際のアプリがURLで内部タブを指定する仕組みを持っていない
    （別オリジンのSSO外部リンクのため、そもそも埋め込みiframeではない）ため

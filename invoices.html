@@ -1052,14 +1052,14 @@ function payrollSummaryHtml(){
 // portal.html組込(EMBED)時にサイドバーの「会計」グループから開く3タブ（会計ダッシュボード／
 // アップロード請求書／給与仕訳）。ポータル側に別途「請求書メール」の専用リンクがあるため、
 // この3タブでは請求書メール向けの項目（KPIバー・受信トレイ等のタブ切替行）を表示しない
-const ACCOUNTING_ONLY_TABS=["dashboard","upload","payroll","unified","transfers"];
+const ACCOUNTING_ONLY_TABS=["dashboard","upload","payroll","unified","transfers","settings"];
 // 画面上部のKPIバーと、その下のタブ切替行（受信トレイ／請求書一覧／…／新規作成）をタブに応じて
 // 出し分ける。ユーザー報告「そのタブに合わない請求書メールの項目が混じっている」に対応
 // （2026-09-01: 会計ダッシュボード・アップロード請求書・給与仕訳では請求書メール向けの項目を隠す）
 function updateMailSummaryBar(){
   const el=$("mailSummaryBar");
   if(el){
-    const hideForTab=EMBED&&(TAB==="dashboard"||TAB==="upload"||TAB==="unified"||TAB==="transfers");
+    const hideForTab=EMBED&&ACCOUNTING_ONLY_TABS.includes(TAB);
     el.style.display=hideForTab?"none":"";
     if(TAB==="payroll") el.innerHTML=payrollSummaryHtml();
     else if(!hideForTab) el.innerHTML=mailSummaryDefaultHtml();
