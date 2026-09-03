@@ -1196,6 +1196,21 @@ async function renderTabBody(u){
 let BULK_SELECTED=new Set();
 let MOBILE_VIEW="list"; // list | detail（スマホ幅でどちらを表示するか）
 let MFJ_STATE={}; // マネーフォワード仕訳作成モーダルの一時状態（勘定科目一覧・部門一覧・提案内容など）
+// 法人・店舗一覧のキャッシュ（2026-09-03新規。請求書情報パネルの対象法人・対象店舗選択で使う。
+// ほぼ変わらないデータのため一度取得したら使い回す）
+let CORP_STORE_CACHE=null;
+async function ensureCorpStoreCache(){
+  if(CORP_STORE_CACHE) return CORP_STORE_CACHE;
+  const [corpRes,storeRes]=await Promise.all([
+    authed("/rest/v1/corporations?select=id,name&order=name"),
+    authed("/rest/v1/stores?select=id,name,corporation_id&order=name"),
+  ]);
+  CORP_STORE_CACHE={
+    corporations:(corpRes.ok&&Array.isArray(corpRes.body))?corpRes.body:[],
+    stores:(storeRes.ok&&Array.isArray(storeRes.body))?storeRes.body:[],
+  };
+  return CORP_STORE_CACHE;
+}
 function isMobileWidth(){ return window.matchMedia("(max-width:900px)").matches; }
 function renderInbox(u){
   const list=filteredMails();
@@ -1360,6 +1375,12 @@ async function openMailDetail(u,emailId,skipHighlight){
     if(m&&m.mail_status==="unread"){ m.mail_status="read"; }
   });
 
+  // ユーザー要望「今のままだとどこの法人の処理かがわからない」（2026-09-03）に対応するため、
+  // 請求書情報パネルで対象法人・対象店舗を直接選べるようにする。法人・店舗一覧は
+  // ほぼ変わらないため、初回だけ取得してキャッシュする（renderMailDetailは同期関数のため、
+  // renderMailDetailを呼ぶ前にここで取得を終わらせておく必要がある）
+  await ensureCorpStoreCache();
+
   renderMailDetail(u);
 
   // スマホ幅では一覧を隠して詳細だけ全画面表示にする（下スクロールしないと詳細が
@@ -1512,7 +1533,10 @@ function renderMailDetail(u){
           <div class="ai-field"><small>${isSales?"入金額":"金額"}</small><input id="iv-amount" type="number" value="${invoice&&invoice.amount!=null?invoice.amount:""}"></div>
           <div class="ai-field"><small>${isSales?"入金予定日":"支払期限"}</small><input id="iv-duedate" type="date" value="${invoice&&invoice.due_date||""}"></div>
           <div class="ai-field"><small>状態</small><select id="iv-status">${Object.entries(isSales?SALES_STATUS_LABEL:INVOICE_STATUS_LABEL).map(([k,l])=>`<option value="${k}" ${(invoice?invoice.invoice_status:"draft")===k?"selected":""}>${l}</option>`).join("")}</select></div>
+          <div class="ai-field"><small>対象法人</small><select id="iv-corp"><option value="">（未設定）</option>${(CORP_STORE_CACHE&&CORP_STORE_CACHE.corporations||[]).map(c=>`<option value="${esc(c.id)}" ${invoice&&invoice.corporation_id===c.id?"selected":""}>${esc(c.name)}</option>`).join("")}</select></div>
+          <div class="ai-field"><small>対象店舗</small><select id="iv-store"><option value="">（未設定）</option>${(CORP_STORE_CACHE&&CORP_STORE_CACHE.stores||[]).map(s=>`<option value="${esc(s.id)}" ${invoice&&invoice.store_id===s.id?"selected":""}>${esc(s.name)}</option>`).join("")}</select></div>
         </div>
+        <div class="meta" style="color:var(--muted);font-size:11px;margin-top:4px">💡 対象法人・対象店舗を設定すると、「🧾請求書」一覧で法人ごとに絞り込めるようになります（未設定でも仕訳登録自体は今までどおり行えます）。</div>
         ${isSales?"":`<div class="ai-field" style="margin-top:8px"><small>🔗 紐付ける本部タスクの工程（任意・仕訳登録時に自動で完了にします）</small><div id="hqlink-box"></div></div>`}
         <div class="mail-actions">
           ${atts.length?`<button id="iv-ai-fill">🤖 AIで${isSales?"入金情報":"請求書情報"}を自動入力</button>`:""}
@@ -1941,6 +1965,8 @@ function wireDetailActions(u){
       amount:$("iv-amount").value?+$("iv-amount").value:null,
       due_date:$("iv-duedate").value||null,
       invoice_status:$("iv-status").value,
+      corporation_id:$("iv-corp").value||null,
+      store_id:$("iv-store").value||null,
       ...(isSales?{}:{linked_hq_step_id:LINKED_HQ_STEP?LINKED_HQ_STEP.id:null}),
     };
     const isNew=!SELECTED.invoice;
@@ -2616,11 +2642,27 @@ function unifiedStageOf(r){
 }
 async function renderUnifiedInvoiceTab(u){
   $("tabbody").innerHTML=`<div class="spin">読み込み中…</div>`;
-  const r=await authed(`/rest/v1/invoices?select=*,email:invoice_emails(subject,from_address,mail_kind),vendor:vendors(name),corp:corporations(name),store:stores(name),linked_step:hq_task_steps(title)&order=created_at.desc&limit=500`);
+  const [r,corpCache]=await Promise.all([
+    authed(`/rest/v1/invoices?select=*,email:invoice_emails(subject,from_address,mail_kind),vendor:vendors(name),corp:corporations(name),store:stores(name),linked_step:hq_task_steps(title)&order=created_at.desc&limit=500`),
+    ensureCorpStoreCache(),
+  ]);
   const raw=(r.ok&&Array.isArray(r.body))?r.body:[];
   // メール起点は種類=請求書のみ。アップロード（email無し）は全て対象
   UNIFIED_STATE.rows=raw.filter(row=>!row.email||row.email.mail_kind==="invoice");
   UNIFIED_STATE.selected=new Set([...UNIFIED_STATE.selected].filter(id=>UNIFIED_STATE.rows.some(r2=>r2.id===id)));
+  UNIFIED_STATE.corporations=corpCache.corporations;
+  unifiedRender(u);
+}
+// 一覧の「法人」列をその場で選べるようにする（2026-09-03追加。ユーザー報告
+// 「今のままだとどこの法人の処理かわからない」に対応。過去分をモーダルを開かずに
+// まとめてタグ付けできるようにするため、行の中で直接編集できるようにした）
+async function unifiedSetCorporation(u,invoiceId,corporationId){
+  const row=UNIFIED_STATE.rows.find(r=>r.id===invoiceId);
+  if(!row) return;
+  const corp=(UNIFIED_STATE.corporations||[]).find(c=>c.id===corporationId);
+  await authed(`/rest/v1/invoices?id=eq.${invoiceId}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({corporation_id:corporationId||null,updated_at:new Date().toISOString()})});
+  row.corporation_id=corporationId||null;
+  row.corp=corp?{name:corp.name}:null;
   unifiedRender(u);
 }
 function unifiedFilteredRows(){
@@ -2639,7 +2681,7 @@ function unifiedRowHtml(r){
     <td><input type="checkbox" class="unified-check" data-id="${r.id}" ${UNIFIED_STATE.selected.has(r.id)?"checked":""} ${risky||r.mf_journal_id?'disabled title="高リスク、または既に会計登録済みのため選択できません"':""}></td>
     <td>${fmtD(r.created_at)}</td>
     <td>${dueBadgeHtml(r)}</td>
-    <td>${esc((r.corp&&r.corp.name)||"—")}</td>
+    <td><select class="unified-corp" data-id="${r.id}" style="font-size:11px;${r.corporation_id?"":"color:var(--m-amber)"}"><option value="">（未設定）</option>${(UNIFIED_STATE.corporations||[]).map(c=>`<option value="${esc(c.id)}" ${r.corporation_id===c.id?"selected":""}>${esc(c.name)}</option>`).join("")}</select></td>
     <td>${esc((r.store&&r.store.name)||"—")}</td>
     <td><b>${esc((r.vendor&&r.vendor.name)||r.vendor_name||"—")}</b>${riskNote?`<div class="danger-text" style="color:var(--m-red);font-size:10px;font-weight:800">${esc(riskNote)}</div>`:""}</td>
     <td>${esc(r.invoice_number||"—")}</td>
@@ -2705,6 +2747,7 @@ function unifiedRender(u){
     if(emailId) openMailDetailModal(u,emailId);
     else openStandaloneInvoiceModal(u,el.dataset.openInvoice);
   });
+  document.querySelectorAll(".unified-corp").forEach(el=>el.onchange=()=>unifiedSetCorporation(u,el.dataset.id,el.value));
 }
 // アップロード請求書（email_idが無い＝メールに紐付かない請求書）を統合一覧から開くための
 // 軽量モーダル。既存のmail-detailと同じ見た目のパネル群（会計・PL反映等）は再利用せず、
@@ -4835,16 +4878,36 @@ async function payrollOpenPreview(userId){
 }
 
 // PL連携対象科目のCRUD（設定タブ・ラウンド5指示書§6.1／設計書_広告費自動連携_§5・2026-09-01）
+// 2026-09-03追加: 「勘定科目名」が自由入力だとMFの実際の科目名と1文字でも違えば静かに一致しなくなる
+// （ユーザー指摘: 「自由入力だと間違えてしまう恐れがあるので、選択できるように。検索して候補が
+// 表示されるように」）。マネーフォワードの実際の勘定科目一覧を取得し、datalist（入力しながら
+// 絞り込める・自由入力欄と同じ見た目のまま候補選択もできる）で候補を出す。仕訳辞書編集の
+// mft-acc-datalistと同じ仕組み。PL上での表示名は選ぶ元データが無い（ユーザーが自由に決める
+// ラベルのため）ので従来どおり自由入力のまま
 async function renderPlFeeAccountsSection(){
   const box=$("plfee-accounts-box");
   if(!box) return;
   box.innerHTML=`<div style="font-size:12px;color:var(--muted)">読み込み中…</div>`;
   PL_FEE_TARGET_ACCOUNTS=null; // 設定タブを開くたびに最新を取り直す
-  const accounts=await plFeeTargetAccounts();
+  const [accounts,tRes]=await Promise.all([plFeeTargetAccounts(), mfCall("list_tenants")]);
+  const tenants=(tRes.ok&&tRes.body.tenants)||[];
+  const tenantId=PLFEE_ACC_STATE.tenantId||(tenants[0]&&tenants[0].id)||"default";
+  PLFEE_ACC_STATE.tenantId=tenantId; PLFEE_ACC_STATE.tenants=tenants;
+  const accRes=await mfCall("accounts",{tenant_id:tenantId});
+  const mfAccounts=(accRes.ok&&accRes.body.accounts)||[];
+  const dl=mfAccounts.map(a=>{
+    let opts=`<option value="${esc(a.name)}">`;
+    for(const sa of (a.sub_accounts||[])) opts+=`<option value="${esc(a.name)}/${esc(sa.name)}">`;
+    return opts;
+  }).join("");
   box.innerHTML=`
+    ${tenants.length>1?`<div style="margin-bottom:10px"><label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">事業者</label>
+      <select id="plfee-acc-tenant">${tenants.map(t=>`<option value="${esc(t.id)}" ${t.id===tenantId?"selected":""}>${esc(t.label)}</option>`).join("")}</select></div>`:""}
+    ${!accRes.ok?`<div class="err" style="margin-bottom:8px">勘定科目の取得に失敗しました（マネーフォワード未連携の可能性）: ${esc((accRes.body&&accRes.body.error)||"")}。下の欄は手入力になります（MFの表記と完全に一致させてください）</div>`:""}
+    <datalist id="plfee-acc-datalist">${dl}</datalist>
     <div style="display:grid;grid-template-columns:1fr 1fr auto;gap:8px;align-items:end;margin-bottom:10px">
-      <div><label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">勘定科目名（MFと完全一致）</label>
-        <input id="plfee-acc-name" placeholder="例: 支払手数料"></div>
+      <div><label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">勘定科目名（候補から選択・入力すると絞り込めます）</label>
+        <input id="plfee-acc-name" list="plfee-acc-datalist" placeholder="例: 支払手数料"></div>
       <div><label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">PL上での表示名（任意）</label>
         <input id="plfee-acc-label" placeholder="省略時は科目名と同じ"></div>
       <button class="hq-btn primary" id="plfee-acc-add">＋ 追加</button>
@@ -4860,11 +4923,14 @@ async function renderPlFeeAccountsSection(){
         </tr>`).join("")||'<tr><td colspan="3">登録されていません</td></tr>'}</tbody>
       </table>
     </div>`;
+  if(tenants.length>1) $("plfee-acc-tenant").onchange=e=>{ PLFEE_ACC_STATE.tenantId=e.target.value; renderPlFeeAccountsSection(); };
+  const accountNameSet=new Set(mfAccounts.flatMap(a=>[a.name, ...(a.sub_accounts||[]).map(sa=>`${a.name}/${sa.name}`)]));
   $("plfee-acc-add").onclick=async()=>{
     const name=$("plfee-acc-name").value.trim();
     const label=$("plfee-acc-label").value.trim();
     const msg=$("plfee-acc-msg");
-    if(!name){ msg.textContent="勘定科目名を入力してください"; return; }
+    if(!name){ msg.textContent="勘定科目名を選択してください"; return; }
+    if(accRes.ok&&!accountNameSet.has(name)){ msg.textContent="候補一覧に無い科目名です。候補から選び直してください（誤字防止のため）"; return; }
     msg.className="err"; msg.textContent="追加中…";
     const r=await plFeeCall("add_target_account",{account_name:name,pl_label:label});
     if(!r.ok){ msg.textContent=r.body.error||"追加できませんでした"; return; }
@@ -4876,6 +4942,7 @@ async function renderPlFeeAccountsSection(){
     await renderPlFeeAccountsSection();
   });
 }
+let PLFEE_ACC_STATE={};
 /* ============================================================
    設定タブの再編（会計・請求書処理の全面刷新・2026-09-03）
    ユーザー要望「日常業務と設定業務を明確に分離してほしい。設定を一度正しく作れば、
