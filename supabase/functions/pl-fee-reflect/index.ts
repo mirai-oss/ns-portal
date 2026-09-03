@@ -1,20 +1,40 @@
 // MF仕訳 → PL自動反映（C-7拡張・ラウンド5指示書§6.1／設計書_広告費自動連携_§5・2026-09-01）
+// 【2026-09-03拡張】ユーザー要望「会計入力したものを全てPL反映させるかどうかの欄を作ってほしい。
+// 店舗・勘定科目・補助科目は会計仕訳から拾って、PL連携前に内容を確認で出してほしい」を受け、
+// 従来の「事前登録した科目だけ対象」から「仕訳登録済みの請求書すべてが対象」に拡張。
+// 1請求書の仕訳に複数の勘定科目が混ざっていても科目ごとに個別反映できるよう、実績を
+// invoice_pl_reflections（1行=1請求書×1科目×1補助科目）に複数行持てるようにした
+// （invoices.pl_fee_*列は「最初にPLへ反映した日時」等の簡易フラグとして引き続き使う。
+// invoices.htmlの「📊 PLへ反映」パネルから呼ばれる）。
 //
-// ad-cost-reflect（請求書→広告費）と同じ骨組みの科目汎用版。invoices.htmlの
-// 「📊 PLへ反映」パネル（仕訳登録済みで、借方に mf_pl_fee_accounts 掲載の勘定科目が
-// 含まれる請求書に表示）から呼ばれる。actionは1つ:
-//   - "confirm": 勘定科目・対象年月・店舗×金額の割り振りを確定する。
-//     body: {invoice_id, account_name, year_month(YYYY-MM-01), allocations:[{store_id,store_name,amount,source}]}
-//     呼び出し前にinvoice_can_access()で権限確認。
-//     ①invoicesのpl_fee_*列へ確定内容を保存（pl_fee_reflected_atがすでにあれば重複反映として拒否）
+// 【同日・追加の重要な制約2点（ユーザー指摘）】
+// ①「PL科目に限定」: 会計仕訳の借方科目を無条件に全部PLへ載せるのではなく、mf_pl_fee_accounts
+//   に登録済みの科目（＝実際にPLの費用科目として使うもの）だけを対象にする。例:
+//   家賃＋電気代がまとめて来る請求書で仕訳が「前払費用／水道光熱費」に分かれている場合、
+//   水道光熱費だけがPL反映の対象になり、前払費用（資産科目）は対象に出さない
+//   （mf_pl_fee_accountsは元は「PL反映パネルを出すかどうかのゲート」だったが、今回から
+//   「どの科目がPL科目として有効か」の定義そのものとして使う＝設定タブの位置づけが変わった）。
+// ②「精算書経由の店舗との二重計上防止」: 精算対象店舗（stores.seisan_target）の経費は、
+//   精算書に入力すればA-9の自動連携（syncSeisanCategoriesToPl）で既にPLへ反映される仕組みが
+//   別途あるため、この経路（invoice_pl_reflections→writePlFee→DB_PL直接書き込み）で
+//   精算対象店舗を対象にすると同じ経費がDB_PLに2行できてしまう。そのため精算対象店舗は
+//   このconfirmで明確に拒否し、精算書側で入力するよう案内する（フロント側でも選択肢から除外）。
+//
+// actionは6つ:
+//   - "status": {invoice_id} → その請求書の対象外フラグ＋反映済み科目一覧を返す
+//   - "confirm": 勘定科目・補助科目・対象年月・店舗×金額の割り振りを確定する。
+//     body: {invoice_id, account_name, sub_account_name?, year_month(YYYY-MM-01), allocations:[{store_id,store_name,amount}]}
+//     呼び出し前にinvoice_can_access()で権限確認。account_nameがmf_pl_fee_accounts未登録、または
+//     allocationsに精算対象店舗が含まれる場合は拒否する（①②の制約）。
+//     ①invoice_pl_reflectionsへ1行追加（同じ請求書×同じ科目×同じ補助科目が既にあれば重複反映として拒否）
+//       ＋invoicesのpl_fee_reflected_atを（未設定なら）記録
 //     ②経営ダッシュボードGAS（tori-dashboard・DASH_API_URL）の書き込みaction「writePlFee」を呼び、
-//       DB_PL（＋BigQuery）への計上を依頼する。精算対象店舗（stores.seisan_target）の分は
-//       GAS側で精算書の明細にも自動追加する想定（A-9の科目機構と同じ入れ物・担当A側の実装）
-//
-// 【2026-09-01時点の既知の制約】②のGAS側action「writePlFee」はまだ存在しない（担当A・A-8の
-// 科目汎用化で実装予定。ラウンド5指示書§6.1の担当A貼り付け文で依頼済み・WORKLOGにも記録）。
-// 存在しない間はGAS呼び出しが失敗し、pl_fee_sheet_sync_errorにその旨を記録するが、
-// ①（Supabase側の確定記録）自体は正常に完了する＝ad-cost-reflectと同じ「正直な状態」の設計を踏襲する。
+//       DB_PL（＋BigQuery）への計上を依頼する（精算対象店舗は上記の理由でここには含まれない）。
+//       sub_accountは既にGAS側で受け取り可能（DB_PL・PL管理システムのシートには現状まだ
+//       補助科目の列が無いため書き込まれない＝担当Aへ別途依頼予定）
+//   - "exclude"/"unexclude": 「この請求書はPLに反映しない」という明示的な決定を記録／取り消す
+//   - "list_target_accounts"/"add_target_account"/"remove_target_account": 設定タブ用。
+//     今後はここに登録した科目＝実際にPLへ反映できる科目そのもの（上記①）
 import { createClient } from "npm:@supabase/supabase-js@2";
 
 const cors: Record<string, string> = {
@@ -74,9 +94,37 @@ Deno.serve(async (req: Request) => {
       return json({ success: true });
     }
 
+    if (action === "status") {
+      const invoiceId = body?.invoice_id;
+      if (!invoiceId) return json({ error: "invoice_idは必須です" }, 400);
+      const { data: inv, error: invErr } = await uc.from("invoices")
+        .select("id, pl_fee_excluded_at, pl_fee_excluded_by").eq("id", invoiceId).maybeSingle();
+      if (invErr) return json({ error: "確認に失敗しました: " + invErr.message }, 500);
+      if (!inv) return json({ error: "対象が見つからないか権限がありません" }, 403);
+      const { data: refl, error: reflErr } = await uc.from("invoice_pl_reflections")
+        .select("id, account_name, sub_account_name, year_month, allocations, reflected_at, sheet_synced_at, sheet_sync_error")
+        .eq("invoice_id", invoiceId).order("reflected_at", { ascending: true });
+      if (reflErr) return json({ error: "確認に失敗しました: " + reflErr.message }, 500);
+      return json({ success: true, excluded_at: inv.pl_fee_excluded_at, reflections: refl ?? [] });
+    }
+
+    if (action === "exclude" || action === "unexclude") {
+      const invoiceId = body?.invoice_id;
+      if (!invoiceId) return json({ error: "invoice_idは必須です" }, 400);
+      const rawToken = (req.headers.get("Authorization") ?? "").replace(/^Bearer\s+/i, "");
+      const { data: userData } = rawToken ? await uc.auth.getUser(rawToken) : { data: { user: null } } as any;
+      const patch = action === "exclude"
+        ? { pl_fee_excluded_at: new Date().toISOString(), pl_fee_excluded_by: userData?.user?.id ?? null }
+        : { pl_fee_excluded_at: null, pl_fee_excluded_by: null };
+      const { error } = await uc.from("invoices").update(patch).eq("id", invoiceId);
+      if (error) return json({ error: "保存に失敗しました: " + error.message }, 500);
+      return json({ success: true });
+    }
+
     if (action === "confirm") {
       const invoiceId = body?.invoice_id;
       const accountName: string = (body?.account_name ?? "").trim();
+      const subAccountName: string = (body?.sub_account_name ?? "").trim();
       const yearMonth: string = body?.year_month || "";
       const allocations: any[] = Array.isArray(body?.allocations) ? body.allocations : [];
       if (!invoiceId || !accountName || !/^\d{4}-\d{2}-01$/.test(yearMonth)) {
@@ -93,40 +141,67 @@ Deno.serve(async (req: Request) => {
       }
 
       const { data: inv, error: invErr } = await uc.from("invoices")
-        .select("id, email_id, vendor_name, pl_fee_reflected_at").eq("id", invoiceId).maybeSingle();
+        .select("id, email_id, vendor_name").eq("id", invoiceId).maybeSingle();
       if (invErr) return json({ error: "確認に失敗しました: " + invErr.message }, 500);
       if (!inv) return json({ error: "対象が見つからないか権限がありません" }, 403);
-      if (inv.pl_fee_reflected_at) return json({ error: "この請求書は既にPLへ反映済みです（重複反映防止）" }, 409);
+
+      // ①PL科目に限定: mf_pl_fee_accounts未登録の科目はPLへ反映させない（前払費用等の資産科目を
+      // 誤ってPLに載せてしまう事故防止）
+      const { data: plAcc, error: plAccErr } = await uc.from("mf_pl_fee_accounts")
+        .select("id").eq("account_name", accountName).maybeSingle();
+      if (plAccErr) return json({ error: "PL科目の確認に失敗しました: " + plAccErr.message }, 500);
+      if (!plAcc) return json({ error: `「${accountName}」はPL科目として登録されていません。設定タブの「PL連携対象科目」で先に登録してください（資産科目等をPLに載せてしまうミスを防ぐための確認です）` }, 400);
+
+      // ②精算対象店舗との二重計上防止: 精算対象店舗は精算書側で入力すれば別途PLへ自動連携されるため、
+      // この経路（DB_PL直接書き込み）の対象には含めない
+      const storeIds = allocations.map((a) => a.store_id).filter(Boolean);
+      if (storeIds.length) {
+        const { data: seisanStores, error: seisanErr } = await uc.from("stores")
+          .select("id, name").in("id", storeIds).eq("seisan_target", true);
+        if (seisanErr) return json({ error: "店舗の確認に失敗しました: " + seisanErr.message }, 500);
+        if (seisanStores && seisanStores.length) {
+          const names = seisanStores.map((s: any) => s.name).join("・");
+          return json({ error: `${names}は精算対象店舗のため、ここではPLに反映できません（精算書に入力すると自動でPLにも反映されるため、二重計上になってしまいます）。精算書側で入力してください` }, 400);
+        }
+      }
+
+      // 重複反映防止は「請求書×勘定科目×補助科目」単位（同じ請求書でも別の科目なら別枠として反映できる）
+      let dupQuery = uc.from("invoice_pl_reflections").select("id").eq("invoice_id", invoiceId).eq("account_name", accountName);
+      dupQuery = subAccountName ? dupQuery.eq("sub_account_name", subAccountName) : dupQuery.is("sub_account_name", null);
+      const { data: dup, error: dupErr } = await dupQuery.maybeSingle();
+      if (dupErr) return json({ error: "確認に失敗しました: " + dupErr.message }, 500);
+      if (dup) return json({ error: `この科目（${accountName}${subAccountName ? "/" + subAccountName : ""}）は既にPLへ反映済みです（重複反映防止）` }, 409);
 
       const db = svc();
       const nowIso = new Date().toISOString();
       const rawToken = (req.headers.get("Authorization") ?? "").replace(/^Bearer\s+/i, "");
       const { data: userData } = rawToken ? await uc.auth.getUser(rawToken) : { data: { user: null } } as any;
 
-      const { error: updErr } = await uc.from("invoices").update({
-        pl_fee_account: accountName,
-        pl_fee_year_month: yearMonth,
-        pl_fee_allocations: allocations,
-        pl_fee_reflected_at: nowIso,
-        pl_fee_reflected_by: userData?.user?.id ?? null,
-        updated_at: nowIso,
-      }).eq("id", invoiceId);
-      if (updErr) return json({ error: "反映内容の保存に失敗しました: " + updErr.message }, 500);
+      const { data: reflRow, error: insErr } = await uc.from("invoice_pl_reflections").insert({
+        invoice_id: invoiceId, account_name: accountName, sub_account_name: subAccountName || null,
+        year_month: yearMonth, allocations, reflected_by: userData?.user?.id ?? null,
+      }).select("id").maybeSingle();
+      if (insErr) return json({ error: "反映内容の保存に失敗しました: " + insErr.message }, 500);
+
+      // 一覧・ダッシュボードのバッジ表示用に「最初にPLへ反映した日時」だけ簡易フラグとして記録（未設定時のみ）
+      await uc.from("invoices").update({ pl_fee_reflected_at: nowIso, updated_at: nowIso })
+        .eq("id", invoiceId).is("pl_fee_reflected_at", null);
+
       await db.from("invoice_audit_logs").insert({
         entity_type: "invoice_email", entity_id: inv.email_id, action: "pl_fee_reflected", actor_type: "human",
-        note: `PLへ反映（科目: ${accountName}／対象: ${yearMonth.slice(0, 7)}／合計: ${total.toLocaleString()}円／${allocations.length}店舗）`,
+        note: `PLへ反映（科目: ${accountName}${subAccountName ? "/" + subAccountName : ""}／対象: ${yearMonth.slice(0, 7)}／合計: ${total.toLocaleString()}円／${allocations.length}店舗）`,
       });
 
       let sheetSynced = false, sheetError: string | null = null;
       try {
-        const tk = Deno.env.get("AD_COST_WRITE_TOKEN"); // writeAdCostと同じ共有トークン（担当A・A-8の科目汎用action用に流用予定）
+        const tk = Deno.env.get("AD_COST_WRITE_TOKEN"); // writeAdCostと同じ共有トークン（担当AのwritePlFee action用）
         if (!tk) throw new Error("AD_COST_WRITE_TOKEN が未設定です");
         const res = await fetch(DASH_API_URL, {
           method: "POST",
           headers: { "Content-Type": "text/plain;charset=utf-8" },
           body: JSON.stringify({
             action: "writePlFee", token: tk,
-            year_month: yearMonth.slice(0, 7), account_name: accountName,
+            year_month: yearMonth.slice(0, 7), account_name: accountName, sub_account: subAccountName || undefined,
             allocations: allocations.map((a) => ({ store_name: a.store_name, amount: Number(a.amount) })),
             source_invoice_id: invoiceId, vendor_name: inv.vendor_name,
           }),
@@ -140,13 +215,12 @@ Deno.serve(async (req: Request) => {
         sheetError = String((e as Error)?.message ?? e);
       }
 
-      if (sheetSynced) {
-        await db.from("invoices").update({ pl_fee_sheet_synced_at: new Date().toISOString(), pl_fee_sheet_sync_error: null }).eq("id", invoiceId);
-      } else {
-        await db.from("invoices").update({ pl_fee_sheet_sync_error: sheetError }).eq("id", invoiceId);
-      }
+      await db.from("invoice_pl_reflections").update({
+        sheet_synced_at: sheetSynced ? new Date().toISOString() : null,
+        sheet_sync_error: sheetError,
+      }).eq("id", reflRow?.id);
 
-      return json({ success: true, account_name: accountName, year_month: yearMonth, total, sheet_synced: sheetSynced, sheet_error: sheetError });
+      return json({ success: true, account_name: accountName, sub_account_name: subAccountName || null, year_month: yearMonth, total, sheet_synced: sheetSynced, sheet_error: sheetError });
     }
 
     return json({ error: "不明なactionです" }, 400);

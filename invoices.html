@@ -385,79 +385,93 @@ function plfeeFindStoreByName(stores,name){
   return stores.find(s=>norm(s.name)===n) || stores.find(s=>n.includes(norm(s.name))||norm(s.name).includes(n)) || null;
 }
 /* ============================================================
-   手数料等→PL自動反映パネル（ラウンド5指示書§6.1／設計書_広告費自動連携_§5・2026-09-01）
-   広告費（adcostbox系）と同じ骨組みの科目汎用版。mfj（メール請求書の仕訳作成）・mfu
+   会計仕訳→PL自動反映パネル（ラウンド5指示書§6.1／設計書_広告費自動連携_§5・2026-09-01
+   →2026-09-03拡張: 「事前登録した科目だけ」から「仕訳登録済みの請求書すべて」が対象に）
+   広告費（adcostbox系）と同じ骨組み。mfj（メール請求書の仕訳作成）・mfu
    （アップロード請求書＝会計タブ）の両方の画面から共通で呼べるよう、呼び出し元に依存する情報は
    すべてctxで受け取るトップレベル関数として実装する（クロージャに閉じ込めない）。
-   ctx: {boxId, invoiceId, debitAccountNames, fallbackAmount, deptBranches, departments, reflected, onDone}
+   店舗・勘定科目・補助科目は、その場の入力状態ではなく実際に登録済みの仕訳（get_journal＝
+   マネーフォワード本体の内容そのもの）から毎回読み直す＝再度この画面を開いたときも正しく出る。
+   ctx: {boxId, invoiceId, journalId, tenantId, fallbackAmount, onDone}
    ============================================================ */
 let PLFEE_STATE={};
 async function plfeeInit(ctx){
   const box=$(ctx.boxId);
   if(!box) return;
-  if(ctx.reflected){ plfeeRenderReflected(ctx); return; }
-  const targets=await plFeeTargetAccounts();
-  // 補助科目つき（例:「支払手数料/カード決済」）でも親科目名で一致判定できるよう、"/"より前だけでも比較する
-  const matched=(ctx.debitAccountNames||[]).find(name=>targets.some(t=>t.account_name===name||t.account_name===name.split("/")[0]));
-  if(!matched){ box.innerHTML=""; return; } // PL連携対象科目でなければ何も出さない
-  PLFEE_STATE={ctx,account:matched};
-  await plfeeRenderPanel();
-}
-function plfeeRenderReflected(ctx){
-  const box=$(ctx.boxId);
-  const a=ctx.reflected.allocations||[];
-  const ym=(ctx.reflected.yearMonth||"").slice(0,7);
-  box.innerHTML=`<div class="adcost-box">
-    <h3>📊 PL反映 <span class="hq-pill green">✅ 反映済み（${esc(ym)}・${esc(ctx.reflected.account||"")}）</span></h3>
-    <div class="adcost-badge-row">${fmtDT(ctx.reflected.reflectedAt)}　${a.length}店舗に按分　合計${yen(a.reduce((s,x)=>s+(Number(x.amount)||0),0))}${ctx.reflected.sheetSynced?"　✅PL反映済み":"　⚠️PLへの反映は未完了（担当Aの対応待ち）"}</div>
-  </div>`;
-}
-async function plfeeRenderPanel(){
-  const box=$(PLFEE_STATE.ctx.boxId);
+  const keepStores=PLFEE_STATE.stores; // 店舗一覧だけは使い回す（毎回引き直す必要はないため）
+  PLFEE_STATE={ctx, stores:keepStores};
   box.innerHTML=`<div class="adcost-box"><div style="font-size:12px;color:var(--muted)">読み込み中…</div></div>`;
+  const st=await plFeeCall("status",{invoice_id:ctx.invoiceId});
+  if(!st.ok){ box.innerHTML=`<div class="adcost-box"><div class="err">PL反映状況の取得に失敗しました: ${esc(st.body.error||"")}</div></div>`; return; }
+  PLFEE_STATE.excludedAt=st.body.excluded_at||null;
+  PLFEE_STATE.reflections=Array.isArray(st.body.reflections)?st.body.reflections:[];
   if(!PLFEE_STATE.stores){
-    const r=await authed("/rest/v1/stores?select=id,name&order=name");
+    // seisan_target=精算対象店舗。精算書に入力すれば別途PLへ自動連携される仕組みが既にあるため、
+    // ここ（請求書仕訳→PL直接反映）の対象からは外す＝二重計上防止（ユーザー指摘・2026-09-03）
+    const r=await authed("/rest/v1/stores?select=id,name,seisan_target&order=name");
     PLFEE_STATE.stores=(r.ok&&Array.isArray(r.body))?r.body:[];
   }
   if(!PLFEE_STATE.yearMonth){
     const d=new Date();
     PLFEE_STATE.yearMonth=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-01`;
   }
-  if(!PLFEE_STATE.rows) await plfeeComputeAllocation();
-  plfeeRenderForm();
+  PLFEE_STATE.groups=null; PLFEE_STATE.selectedGroupIdx=0; PLFEE_STATE.manualGroup=false; PLFEE_STATE.rows=null; PLFEE_STATE.skippedSeisan=null;
+  if(!PLFEE_STATE.excludedAt) await plfeeLoadJournalGroups();
+  plfeeRenderPanel();
 }
-async function plfeeComputeAllocation(){
+// 実際に登録済みの仕訳（get_journal）を読み直し、借方科目ごと（勘定科目×補助科目）にグループ化する。
+// PL科目に限定（設定タブ「PL連携対象科目」に登録済みの科目のみ）し、既にPL反映済みの科目
+// （PLFEE_STATE.reflections）も候補から除外する（ユーザー指摘・2026-09-03: 前払費用等の
+// 資産科目まで無条件にPLへ載せてしまわないようにするため）
+async function plfeeLoadJournalGroups(){
   const ctx=PLFEE_STATE.ctx;
-  const accountName=PLFEE_STATE.account;
-  // 対象科目の借方合計金額をベースにする（複合仕訳で対象科目以外の借方が混ざっている場合、
-  // 請求書合計とは一致しないことがあるため、対象科目の借方だけをctx.deptBranchesから合算する。
-  // 取得できなければctx.fallbackAmountにフォールバック）
-  // ctx.deptBranchesはmfu（アップロード請求書）では解決済みオブジェクト（b.debit={account_name,...}）、
-  // mfj（メール請求書）では入力途中の生ラベル（b.debitLabel=文字列）のことがあるため両対応で照合する
-  const matchingBranches=(ctx.deptBranches||[]).filter(b=>{
-    const label=b.debit?mfuLabelOf(b.debit):(b.debitLabel||"");
-    return label===accountName&&Number(b.debitAmount)>0;
-  });
-  const total=matchingBranches.length?matchingBranches.reduce((s,b)=>s+Number(b.debitAmount),0):(Number(ctx.fallbackAmount)||0);
-  PLFEE_STATE.total=total;
-  const branchesWithDept=matchingBranches.filter(b=>b.department_id);
-  if(branchesWithDept.length){
-    const rows=[];
-    for(const b of branchesWithDept){
-      const dept=(ctx.departments||[]).find(d=>d.id===b.department_id);
-      const store=dept?plfeeFindStoreByName(PLFEE_STATE.stores,dept.name):null;
-      if(store&&Number(b.debitAmount)>0) rows.push({store_id:store.id,store_name:store.name,amount:Math.round(Number(b.debitAmount))});
-    }
-    if(rows.length){ PLFEE_STATE.rows=rows; PLFEE_STATE.source="mf_department"; return; }
+  if(!ctx.journalId){ PLFEE_STATE.groups=[]; return; }
+  const [r,targets]=await Promise.all([
+    mfCall("get_journal",{journal_id:ctx.journalId, tenant_id:ctx.tenantId||"default"}),
+    plFeeTargetAccounts(),
+  ]);
+  const branches=(r.ok&&Array.isArray(r.body.branches))?r.body.branches:[];
+  const already=new Set((PLFEE_STATE.reflections||[]).map(x=>(x.account_name||"")+""+(x.sub_account_name||"")));
+  const map=new Map();
+  for(const b of branches){
+    const d=b.debit;
+    if(!d||!d.account_name||!(Number(d.value)>0)) continue;
+    if(!targets.some(t=>t.account_name===d.account_name)) continue; // PL科目として未登録の科目は対象外
+    const key=d.account_name+""+(d.sub_account_name||"");
+    if(already.has(key)) continue;
+    if(!map.has(key)) map.set(key,{accountName:d.account_name, subAccountName:d.sub_account_name||"", branches:[]});
+    map.get(key).branches.push(d);
   }
-  // 前月・同科目で反映済みの請求書があれば、その店舗比率で今回の金額を按分する
+  PLFEE_STATE.groups=Array.from(map.values());
+}
+async function plfeeComputeAllocation(group){
+  const total=group.branches.reduce((s,d)=>s+Number(d.value),0);
+  PLFEE_STATE.total=total;
+  const withDept=group.branches.filter(d=>d.department_name);
+  if(withDept.length){
+    // 精算対象店舗（stores.seisan_target）は精算書経由で別途PLへ自動連携される仕組みが既にあるため、
+    // ここでは選ばせない＝二重計上防止（ユーザー指摘・2026-09-03）。skippedに理由つきで記録しておき、
+    // パネルに案内を出す
+    const rows=[]; const skipped=[];
+    for(const d of withDept){
+      const store=plfeeFindStoreByName(PLFEE_STATE.stores,d.department_name);
+      if(!store||!(Number(d.value)>0)) continue;
+      if(store.seisan_target){ skipped.push({name:store.name,amount:Math.round(Number(d.value))}); continue; }
+      rows.push({store_id:store.id,store_name:store.name,amount:Math.round(Number(d.value))});
+    }
+    PLFEE_STATE.skippedSeisan=skipped.length?skipped:null;
+    if(rows.length){ PLFEE_STATE.rows=rows; PLFEE_STATE.source="mf_department"; return; }
+    if(skipped.length){ PLFEE_STATE.rows=[]; PLFEE_STATE.source="all_seisan"; return; } // 全て精算対象店舗だった
+  }
+  // 前月・同科目（補助科目まで一致）で反映済みの実績があれば、その店舗比率で今回の金額を按分する
   const cur=new Date(PLFEE_STATE.yearMonth);
   const prev=new Date(cur.getFullYear(),cur.getMonth()-1,1);
   const prevYm=`${prev.getFullYear()}-${String(prev.getMonth()+1).padStart(2,"0")}-01`;
-  const r=await authed(`/rest/v1/invoices?pl_fee_reflected_at=not.is.null&pl_fee_account=eq.${encodeURIComponent(accountName)}&pl_fee_year_month=eq.${prevYm}&select=pl_fee_allocations`);
+  const subFilter=group.subAccountName?`&sub_account_name=eq.${encodeURIComponent(group.subAccountName)}`:`&sub_account_name=is.null`;
+  const r=await authed(`/rest/v1/invoice_pl_reflections?account_name=eq.${encodeURIComponent(group.accountName)}${subFilter}&year_month=eq.${prevYm}&select=allocations`);
   const prevRows=(r.ok&&Array.isArray(r.body))?r.body:[];
   const sums=new Map(); let grand=0;
-  for(const row of prevRows) for(const a of (row.pl_fee_allocations||[])){
+  for(const row of prevRows) for(const a of (row.allocations||[])){
     const amt=Number(a.amount)||0; grand+=amt;
     const c=sums.get(a.store_id)||{store_name:a.store_name,amount:0}; c.amount+=amt; sums.set(a.store_id,c);
   }
@@ -471,6 +485,20 @@ async function plfeeComputeAllocation(){
   PLFEE_STATE.rows=[{store_id:"",store_name:"",amount:total}];
   PLFEE_STATE.source="manual";
 }
+async function plfeeSelectGroup(idx,manual){
+  PLFEE_STATE.selectedGroupIdx=idx; PLFEE_STATE.manualGroup=!!manual; PLFEE_STATE.rows=null;
+  if(manual){
+    PLFEE_STATE.currentAccount=""; PLFEE_STATE.currentSubAccount="";
+    PLFEE_STATE.total=Number(PLFEE_STATE.ctx.fallbackAmount)||0;
+    PLFEE_STATE.rows=[{store_id:"",store_name:"",amount:PLFEE_STATE.total}];
+    PLFEE_STATE.source="manual";
+  }else{
+    const g=PLFEE_STATE.groups[idx];
+    PLFEE_STATE.currentAccount=g.accountName; PLFEE_STATE.currentSubAccount=g.subAccountName;
+    await plfeeComputeAllocation(g);
+  }
+  plfeeRenderPanel();
+}
 function plfeeSourceLabel(){
   return {
     mf_department:"📊 今回登録した仕訳の部門（店舗）別金額から自動で割り振りました。",
@@ -478,8 +506,26 @@ function plfeeSourceLabel(){
     manual:"📊 参考にできる情報が無かったため、店舗を選んで金額を入力してください。",
   }[PLFEE_STATE.source]||"";
 }
+function plfeeSkippedSeisanHtml(){
+  const skipped=PLFEE_STATE.skippedSeisan;
+  if(!skipped||!skipped.length) return "";
+  const list=skipped.map(s=>`${esc(s.name)}（${yen(s.amount)}）`).join("・");
+  return `<div class="adcost-source" style="color:var(--amber)">⚠️ ${list}は精算対象店舗のため、ここでは反映していません。精算書に入力してください（自動でPLにも反映されます・二重計上防止のため）。</div>`;
+}
+function plfeeReflectedCardHtml(row){
+  const a=row.allocations||[];
+  const ym=(row.year_month||"").slice(0,7);
+  const label=row.account_name+(row.sub_account_name?"/"+row.sub_account_name:"");
+  const total=a.reduce((s,x)=>s+(Number(x.amount)||0),0);
+  return `<div class="adcost-badge-row" style="margin-bottom:6px">
+    <span class="hq-pill green">✅ ${esc(label)}</span>
+    　${esc(ym)}　${a.length}店舗に按分　合計${yen(total)}
+    ${row.sheet_synced_at?"　✅PL反映済み":row.sheet_sync_error?"　⚠️PLへの書き込みが未完了":"　⏳PLへの書き込み待ち"}
+  </div>`;
+}
 function plfeeRowHtml(row,idx){
-  const opts=`<option value="">（店舗を選択）</option>`+PLFEE_STATE.stores.map(s=>`<option value="${esc(s.id)}" ${row.store_id===s.id?"selected":""}>${esc(s.name)}</option>`).join("");
+  // 精算対象店舗は精算書経由で別途PLへ自動連携されるため、選択肢から除外する（二重計上防止）
+  const opts=`<option value="">（店舗を選択）</option>`+PLFEE_STATE.stores.filter(s=>!s.seisan_target).map(s=>`<option value="${esc(s.id)}" ${row.store_id===s.id?"selected":""}>${esc(s.name)}</option>`).join("");
   return `<tr data-idx="${idx}">
     <td><select class="plfee-store" data-idx="${idx}">${opts}</select></td>
     <td class="amt"><input type="number" class="plfee-amount" data-idx="${idx}" value="${row.amount}"></td>
@@ -494,36 +540,118 @@ function plfeeUpdateTotals(){
   const diffBox=$("plfee-diff-box");
   if(diffBox){ diffBox.className=diff===0?"adcost-diff-ok":"adcost-diff-ng"; diffBox.innerHTML=`差額 <b>${yen(diff)}</b> ${diff===0?"✓":""}`; }
 }
-function plfeeRenderForm(){
+function plfeeGroupPickerHtml(){
+  const groups=PLFEE_STATE.groups||[];
+  const opts=groups.map((g,i)=>`<option value="${i}" ${!PLFEE_STATE.manualGroup&&PLFEE_STATE.selectedGroupIdx===i?"selected":""}>${esc(g.accountName)}${g.subAccountName?"/"+esc(g.subAccountName):""}</option>`).join("");
+  return `<div class="ai-field"><small>科目（今回登録した仕訳の借方から検出）</small>
+    <select id="plfee-group-pick">${opts}<option value="manual" ${PLFEE_STATE.manualGroup?"selected":""}>✏️ 手動で科目を指定する</option></select>
+  </div>`;
+}
+function plfeeManualAccountHtml(){
+  if(!PLFEE_STATE.manualGroup) return "";
+  // 反映できるのはPL科目（設定タブ登録済み）のみのため、候補をdatalistで提示する（自由入力も可だが、
+  // 未登録の科目名を入力するとconfirm時にサーバー側で拒否される）
+  const dl=(PL_FEE_TARGET_ACCOUNTS||[]).map(a=>`<option value="${esc(a.account_name)}">`).join("");
+  return `<div class="ai-grid">
+    <div class="ai-field"><small>勘定科目（PL科目として登録済みのものだけ反映できます）</small><input id="plfee-acc-name" type="text" list="plfee-acc-dl" value="${esc(PLFEE_STATE.currentAccount||"")}" placeholder="例: 支払手数料"><datalist id="plfee-acc-dl">${dl}</datalist></div>
+    <div class="ai-field"><small>補助科目（あれば）</small><input id="plfee-sub-name" type="text" value="${esc(PLFEE_STATE.currentSubAccount||"")}" placeholder="例: カード決済"></div>
+  </div>`;
+}
+function plfeeRenderPanel(){
   const box=$(PLFEE_STATE.ctx.boxId);
+  if(!box) return;
+  const reflections=PLFEE_STATE.reflections||[];
+  const reflectedHtml=reflections.length?`<div style="margin-bottom:8px">${reflections.map(plfeeReflectedCardHtml).join("")}</div>`:"";
+
+  if(PLFEE_STATE.excludedAt){
+    box.innerHTML=`<div class="adcost-box">
+      <h3>📊 PL反映</h3>
+      ${reflectedHtml}
+      <div class="adcost-badge-row">🚫 対象外にしました（この請求書はPLに反映しません）　${fmtDT(PLFEE_STATE.excludedAt)}</div>
+      <div class="mail-actions" style="margin-top:8px"><button id="plfee-unexclude">🔄 取り消してPLに反映する</button></div>
+    </div>`;
+    $("plfee-unexclude").onclick=plfeeUnexclude;
+    return;
+  }
+
+  const groups=PLFEE_STATE.groups||[];
+  if(!groups.length && !PLFEE_STATE.manualGroup){
+    box.innerHTML=`<div class="adcost-box">
+      <h3>📊 PLへ反映しますか？</h3>
+      ${reflectedHtml}
+      <div class="adcost-sub">${reflections.length?"この仕訳から他に自動検出できる科目はありませんでした。":"この仕訳の借方からPLに反映できる科目を自動検出できませんでした。"}</div>
+      <div class="mail-actions" style="margin-top:8px">
+        <button id="plfee-manual-start">✏️ 手動で科目を指定して反映する</button>
+        <button id="plfee-exclude">🚫 この請求書はPLに反映しない（対象外にする）</button>
+      </div>
+      <div class="err" id="plfee-msg" style="margin-top:6px"></div>
+    </div>`;
+    $("plfee-manual-start").onclick=()=>plfeeSelectGroup(0,true);
+    $("plfee-exclude").onclick=plfeeExclude;
+    return;
+  }
+
+  if(PLFEE_STATE.rows==null){ plfeeSelectGroup(0,false); return; } // 初回は先頭の候補を自動選択
+
+  if(PLFEE_STATE.source==="all_seisan"){
+    // この科目は検出できた店舗が全て精算対象店舗だった＝ここでは反映できない
+    box.innerHTML=`<div class="adcost-box">
+      <h3>📊 PLへ反映しますか？</h3>
+      ${reflectedHtml}
+      ${plfeeSkippedSeisanHtml()}
+      <div class="adcost-sub">この科目（${esc(PLFEE_STATE.currentAccount)}${PLFEE_STATE.currentSubAccount?"/"+esc(PLFEE_STATE.currentSubAccount):""}）は精算対象店舗のみだったため、この画面では反映できません。精算書側で入力してください。</div>
+      <div class="mail-actions" style="margin-top:8px">
+        ${groups.length>1?plfeeGroupPickerHtml():""}
+        <button id="plfee-exclude">🚫 この請求書はこれ以上PLに反映しない（対象外にする）</button>
+      </div>
+      <div class="err" id="plfee-msg" style="margin-top:6px"></div>
+    </div>`;
+    const picker0=$("plfee-group-pick");
+    if(picker0) picker0.onchange=()=>{ picker0.value==="manual"?plfeeSelectGroup(0,true):plfeeSelectGroup(+picker0.value,false); };
+    $("plfee-exclude").onclick=plfeeExclude;
+    return;
+  }
+
   const total=PLFEE_STATE.rows.reduce((s,r)=>s+(Number(r.amount)||0),0);
   const baseAmt=Number(PLFEE_STATE.total)||0;
   const diff=baseAmt-total;
+  const accLabel=PLFEE_STATE.manualGroup?"（手動指定）":esc(PLFEE_STATE.currentAccount)+(PLFEE_STATE.currentSubAccount?"/"+esc(PLFEE_STATE.currentSubAccount):"");
   box.innerHTML=`<div class="adcost-box">
-    <h3>📊 PLへ反映 <span class="hq-pill amber">対象科目：${esc(PLFEE_STATE.account)}</span></h3>
-    <div class="adcost-sub">この仕訳の借方に登録済みの「${esc(PLFEE_STATE.account)}」を、店舗ごとのPL（＋精算対象店舗は精算書）へ自動反映します。</div>
+    <h3>📊 PLへ反映しますか？ <span class="hq-pill amber">対象科目：${accLabel}</span></h3>
+    ${reflectedHtml}
+    <div class="adcost-sub">今回登録した仕訳の内容から、店舗ごとのPLへ反映します。内容をご確認のうえ「この内容でPLに反映」を押してください。</div>
+    ${groups.length>1||PLFEE_STATE.manualGroup?plfeeGroupPickerHtml():""}
+    ${plfeeManualAccountHtml()}
     <div class="ai-grid">
       <div class="ai-field"><small>対象年月</small><input id="plfee-ym" type="month" value="${PLFEE_STATE.yearMonth.slice(0,7)}"></div>
     </div>
     <div class="adcost-source">${plfeeSourceLabel()}</div>
+    ${plfeeSkippedSeisanHtml()}
     <table class="adcost-table">
       <thead><tr><th>店舗</th><th style="text-align:right">金額</th><th></th></tr></thead>
       <tbody id="plfee-rows">${PLFEE_STATE.rows.map((r,i)=>plfeeRowHtml(r,i)).join("")}</tbody>
     </table>
     <div class="mail-actions" style="margin-top:6px">
       <button id="plfee-add-row">＋ 店舗を追加</button>
-      <button id="plfee-recalc">🔄 割り振りを再計算</button>
+      ${PLFEE_STATE.manualGroup?"":`<button id="plfee-recalc">🔄 割り振りを再計算</button>`}
     </div>
     <div class="adcost-total">
       <span>対象科目の合計 <b>${yen(baseAmt)}</b></span>
       <span>割り振り合計 <b id="plfee-total-sum">${yen(total)}</b></span>
       <span id="plfee-diff-box" class="${diff===0?"adcost-diff-ok":"adcost-diff-ng"}">差額 <b>${yen(diff)}</b> ${diff===0?"✓":""}</span>
     </div>
-    <div class="mail-actions" style="margin-top:10px"><button class="primary" id="plfee-confirm">📊 この内容でPLに反映</button></div>
-    <div class="adcost-hint">💡 精算対象店舗（精算書を作っている店舗）は、精算書の明細にも同じ内容が自動で追加されます（担当A対応後）。DB_PL・BigQueryへの実際の書き込みも担当Aの対応が完了してから有効になります（それまでは反映内容の記録のみです）。</div>
+    <div class="mail-actions" style="margin-top:10px">
+      <button class="primary" id="plfee-confirm">📊 この内容でPLに反映</button>
+      <button id="plfee-exclude">🚫 これ以上は反映しない（対象外にする）</button>
+    </div>
+    <div class="adcost-hint">💡 ここに反映できるのはPL科目（設定タブ「PL連携対象科目」に登録済みの科目）のみです。精算対象店舗は選べません（精算書に入力すると自動でPLにも反映されるため、二重計上防止でここでは除外しています）。反映すると取り消せないため、内容をよくご確認のうえ反映してください。</div>
     <div class="err" id="plfee-msg" style="margin-top:6px"></div>
   </div>`;
   $("plfee-ym").onchange=()=>{ PLFEE_STATE.yearMonth=$("plfee-ym").value+"-01"; };
+  const picker=$("plfee-group-pick");
+  if(picker) picker.onchange=()=>{ picker.value==="manual"?plfeeSelectGroup(0,true):plfeeSelectGroup(+picker.value,false); };
+  if($("plfee-acc-name")) $("plfee-acc-name").oninput=()=>{ PLFEE_STATE.currentAccount=$("plfee-acc-name").value; };
+  if($("plfee-sub-name")) $("plfee-sub-name").oninput=()=>{ PLFEE_STATE.currentSubAccount=$("plfee-sub-name").value; };
   document.querySelectorAll(".plfee-store").forEach(el=>el.onchange=()=>{
     const idx=+el.dataset.idx, s=PLFEE_STATE.stores.find(x=>x.id===el.value);
     PLFEE_STATE.rows[idx].store_id=el.value; PLFEE_STATE.rows[idx].store_name=s?s.name:"";
@@ -531,28 +659,46 @@ function plfeeRenderForm(){
   document.querySelectorAll(".plfee-amount").forEach(el=>el.oninput=()=>{
     PLFEE_STATE.rows[+el.dataset.idx].amount=el.value; plfeeUpdateTotals();
   });
-  document.querySelectorAll("[data-plfeerm]").forEach(el=>el.onclick=()=>{ PLFEE_STATE.rows.splice(+el.dataset.plfeerm,1); plfeeRenderForm(); });
-  $("plfee-add-row").onclick=()=>{ PLFEE_STATE.rows.push({store_id:"",store_name:"",amount:0}); plfeeRenderForm(); };
-  $("plfee-recalc").onclick=async()=>{ PLFEE_STATE.rows=null; await plfeeComputeAllocation(); plfeeRenderForm(); };
+  document.querySelectorAll("[data-plfeerm]").forEach(el=>el.onclick=()=>{ PLFEE_STATE.rows.splice(+el.dataset.plfeerm,1); plfeeRenderPanel(); });
+  $("plfee-add-row").onclick=()=>{ PLFEE_STATE.rows.push({store_id:"",store_name:"",amount:0}); plfeeRenderPanel(); };
+  if($("plfee-recalc")) $("plfee-recalc").onclick=async()=>{ PLFEE_STATE.rows=null; await plfeeComputeAllocation(PLFEE_STATE.groups[PLFEE_STATE.selectedGroupIdx]); plfeeRenderPanel(); };
   $("plfee-confirm").onclick=plfeeConfirm;
+  $("plfee-exclude").onclick=plfeeExclude;
+}
+async function plfeeExclude(){
+  if(!confirm("この請求書はPLに反映しない、という記録を残します。よろしいですか？（あとで取り消せます）")) return;
+  const r=await plFeeCall("exclude",{invoice_id:PLFEE_STATE.ctx.invoiceId});
+  if(!r.ok){ alert(r.body.error||"処理に失敗しました"); return; }
+  await plfeeInit(PLFEE_STATE.ctx);
+}
+async function plfeeUnexclude(){
+  const r=await plFeeCall("unexclude",{invoice_id:PLFEE_STATE.ctx.invoiceId});
+  if(!r.ok){ alert(r.body.error||"処理に失敗しました"); return; }
+  await plfeeInit(PLFEE_STATE.ctx);
 }
 async function plfeeConfirm(){
   const ctx=PLFEE_STATE.ctx;
   const msg=$("plfee-msg"); msg.className="err"; msg.textContent="";
+  const accountName=(PLFEE_STATE.currentAccount||"").trim();
+  const subAccountName=(PLFEE_STATE.currentSubAccount||"").trim();
+  if(!accountName){ msg.textContent="勘定科目を入力してください"; return; }
   const rows=PLFEE_STATE.rows.filter(r=>r.store_id&&Number(r.amount)>0);
   if(!rows.length){ msg.textContent="店舗と金額を入力してください"; return; }
   const total=rows.reduce((s,r)=>s+Number(r.amount),0);
   const baseAmt=Number(PLFEE_STATE.total)||0;
-  if(total!==baseAmt && !confirm(`割り振り合計（${yen(total)}）が対象科目の合計（${yen(baseAmt)}）と一致していません。このまま反映しますか？`)) return;
+  if(baseAmt>0 && total!==baseAmt && !confirm(`割り振り合計（${yen(total)}）が対象科目の合計（${yen(baseAmt)}）と一致していません。このまま反映しますか？`)) return;
   $("plfee-confirm").disabled=true; msg.textContent="反映中…";
   const r=await plFeeCall("confirm",{
-    invoice_id:ctx.invoiceId, account_name:PLFEE_STATE.account, year_month:PLFEE_STATE.yearMonth,
+    invoice_id:ctx.invoiceId, account_name:accountName, sub_account_name:subAccountName||undefined, year_month:PLFEE_STATE.yearMonth,
     allocations:rows.map(r=>({store_id:r.store_id,store_name:r.store_name,amount:Number(r.amount)})),
   });
   if(!r.ok){ msg.textContent=r.body.error||"反映に失敗しました"; $("plfee-confirm").disabled=false; return; }
   msg.className="err msg-ok";
-  msg.textContent=r.body.sheet_synced?"PLに反映しました（精算書・BigQueryにも書き込み済みです）":"反映内容を記録しました。PL・精算書への書き込みは担当Aの対応後に有効になります（今は記録のみです）";
-  if(ctx.onDone) setTimeout(()=>{ ctx.onDone(); },1200);
+  msg.textContent=r.body.sheet_synced?"PLに反映しました（BigQueryにも書き込み済みです）":"反映内容を記録しました。PLへの書き込みでエラーが出ています："+(r.body.sheet_error||"");
+  setTimeout(async()=>{
+    await plfeeInit(ctx);
+    if(!(PLFEE_STATE.groups||[]).length && ctx.onDone) ctx.onDone(); // もう反映できる科目が無ければ呼び出し元の後処理へ
+  },1200);
 }
 
 /* ============================================================
@@ -1652,16 +1798,16 @@ function wireDetailActions(u){
   }
   adcostInit();
 
-  // 手数料等→PL自動反映（ラウンド5指示書§6.1／設計書_広告費自動連携_§5・2026-09-01）
+  // 会計仕訳→PL自動反映（ラウンド5指示書§6.1／設計書_広告費自動連携_§5・2026-09-01
+  // →2026-09-03拡張: 仕訳登録済みの請求書すべてが対象。実際に登録済みの仕訳（get_journal）を
+  // 毎回読み直すため、事前の状態（MFJ_STATE等）に依存しない＝再度開いたときも正しく出る。
   // 実体は共通関数plfeeInit()（トップレベル・mfu=アップロード請求書側とも共用）。
-  // 仕訳登録済み・借方にPL連携対象科目（設定タブで管理・初期値=支払手数料）が含まれる場合だけパネルを出す。
   // 【2026-09-01緊急修正】reloadDetailはこの時点ではまだ宣言前（TDZ）のため遅延参照にした
   // （直接参照するとReferenceErrorで以降の配線が一切実行されなくなる不具合になっていた＝ユーザー報告で発覚）
   if(!isSales&&invoice&&invoice.mf_journal_id){
     plfeeInit({
-      boxId:"plfeebox", invoiceId:invoice.id, debitAccountNames:invoice.mf_debit_accounts||[],
-      fallbackAmount:Number(invoice.amount)||0, deptBranches:MFJ_STATE.branches||[], departments:MFJ_STATE.departments||[],
-      reflected: invoice.pl_fee_reflected_at?{account:invoice.pl_fee_account,yearMonth:invoice.pl_fee_year_month,allocations:invoice.pl_fee_allocations,reflectedAt:invoice.pl_fee_reflected_at,sheetSynced:!!invoice.pl_fee_sheet_synced_at}:null,
+      boxId:"plfeebox", invoiceId:invoice.id, journalId:invoice.mf_journal_id, tenantId:invoice.mf_tenant_id||"default",
+      fallbackAmount:Number(invoice.amount)||0,
       onDone:()=>reloadDetail(),
     });
   }
@@ -3344,16 +3490,13 @@ function mfuOpenPreview(){
     pmsg.className="err msg-ok";
     pmsg.textContent=`登録しました（伝票番号: ${j.journal_number??"-"}）`
       +(j.voucher_attached?`。添付ファイルも${j.voucher_attached}件添付しました`:j.voucher_error?`（添付: ${j.voucher_error}）`:"");
-    // PL連携対象科目が含まれる場合は自動で閉じず、この場で📊PLへ反映パネルを出す
-    // （ユーザー要望「会計アップロードのところで入力した手数料を店舗ごとにPLへ自動反映したい」）
-    const targets=await plFeeTargetAccounts();
-    const matched=debitAccountNames.find(name=>targets.some(t=>t.account_name===name||t.account_name===name.split("/")[0]));
-    if(matched&&j.invoice_id){
-      pmsg.textContent+="。この仕訳の借方に「"+matched+"」（PL連携対象科目）が含まれています。下のパネルで店舗ごとの割り振りを確認してください";
+    // 登録直後は自動で閉じず、この場で📊PLへ反映パネルを出す（2026-09-03拡張・対象科目は
+    // パネル側が実際の仕訳＋PL連携対象科目の登録状況から自動判定するため、ここでの絞り込みは不要）
+    if(j.invoice_id&&j.journal_id){
+      pmsg.textContent+="。下のパネルでPLへの反映内容を確認してください（反映しない場合は「対象外にする」を選べます）";
       plfeeInit({
-        boxId:"plfeebox-mfu", invoiceId:j.invoice_id, debitAccountNames,
-        fallbackAmount:totalDebit, deptBranches:branchesPayload, departments:MFU_STATE.departments||[],
-        reflected:null, onDone:()=>{ history.back(); renderUploadInvoiceTab(); },
+        boxId:"plfeebox-mfu", invoiceId:j.invoice_id, journalId:j.journal_id, tenantId:MFU_STATE.tenantId||"default",
+        fallbackAmount:totalDebit, onDone:()=>{ history.back(); renderUploadInvoiceTab(); },
       });
     }else{
       pmsg.textContent+="。画面を更新します…";
@@ -4403,8 +4546,8 @@ async function renderSettingsTab(u){
         <div id="mft-box">読み込み中…</div>
       </div>
       <div class="card" style="padding:16px;margin-top:14px">
-        <h3 style="font-size:14px;margin-bottom:6px">📊 PL連携対象科目（手数料等→PL自動反映）</h3>
-        <div class="meta" style="color:var(--muted);font-size:12px;margin-bottom:10px">ここに登録した勘定科目を借方に使って仕訳登録すると、請求書メール・アップロード請求書の画面に「📊 PLへ反映」パネルが自動で出るようになります（カード手数料・PayPay手数料など）。科目名はマネーフォワードの勘定科目名と完全に一致させてください。</div>
+        <h3 style="font-size:14px;margin-bottom:6px">📊 PL連携対象科目（PL科目の定義）</h3>
+        <div class="meta" style="color:var(--muted);font-size:12px;margin-bottom:10px">仕訳登録済みの請求書は自動で「📊 PLへ反映」パネルが出ますが、実際にPLへ反映できるのは<b>ここに登録した勘定科目だけ</b>です（前払費用・仮払金などPLの費用科目ではない勘定科目を誤って計上してしまわないようにするための一覧です）。水道光熱費・支払手数料など、実際にPLの費用科目として使うものを登録してください。科目名はマネーフォワードの勘定科目名と完全に一致させてください。</div>
         <div id="plfee-accounts-box">読み込み中…</div>
       </div>
     </section>`;
