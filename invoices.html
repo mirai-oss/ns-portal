@@ -2782,7 +2782,7 @@ async function renderSalesListTab(u){ await renderFinancialListTab(u,"sales"); }
    実際のマネーフォワード登録は必ず既存の単票登録フロー（人間が内容を見て登録ボタンを押す）
    を通す。将来テナント自動判定の基盤が整えば、真の一括登録に拡張できる設計にしてある。
    ============================================================ */
-let UNIFIED_STATE={subTab:"all", search:"", rows:[], selected:new Set()};
+let UNIFIED_STATE={subTab:"all", search:"", yearMonth:"", sortCol:"", sortDir:"desc", rows:[], selected:new Set()};
 const UNIFIED_SUBTABS=[["all","すべて"],["review","要確認"],["accounting","会計待ち"],["payment","振込待ち"],["done","完了"]];
 const AI_STATUS_LABEL={auto:["自動判定済","check"],review:["要確認","wait"],error:["エラー","err"]};
 const PAYMENT_STATUS_LABEL={not_ready:["—","gray"],wait:["振込待ち","wait"],csv:["CSV出力済","check"],processing:["振込処理中","wait"],paid:["振込済","done"],blocked:["確認停止","err"]};
@@ -2830,6 +2830,26 @@ function unifiedFilteredRows(){
   let list=UNIFIED_STATE.rows.filter(r=>unifiedMatchesSubTab(r,UNIFIED_STATE.subTab));
   const q=(UNIFIED_STATE.search||"").trim().toLowerCase();
   if(q) list=list.filter(r=>[r.vendor_name,r.invoice_number,(r.vendor&&r.vendor.name),(r.corp&&r.corp.name),(r.store&&r.store.name)].filter(Boolean).join(" ").toLowerCase().includes(q));
+  if(UNIFIED_STATE.yearMonth){
+    // 支払期限があればそちらを、無ければ受領日（created_at）を対象年月として扱う
+    list=list.filter(r=>{
+      const d=r.due_date||r.created_at;
+      return d&&String(d).slice(0,7)===UNIFIED_STATE.yearMonth;
+    });
+  }
+  if(UNIFIED_STATE.sortCol){
+    const col=UNIFIED_STATE.sortCol;
+    const norm=v=>{ if(v==null) return null; return col==="amount"?Number(v):v; };
+    list=[...list].sort((a,b)=>{
+      const av=norm(a[col]), bv=norm(b[col]);
+      if(av==null&&bv==null) return 0;
+      if(av==null) return 1;
+      if(bv==null) return -1;
+      if(av<bv) return UNIFIED_STATE.sortDir==="asc"?-1:1;
+      if(av>bv) return UNIFIED_STATE.sortDir==="asc"?1:-1;
+      return 0;
+    });
+  }
   return list;
 }
 const INTAKE_SOURCE_LABEL={mail:"メール",paper:"紙",pdf:"PDF",infomart:"Infomart",api:"API",manual:"手動"};
@@ -2868,25 +2888,44 @@ function unifiedRender(u){
       <div class="mail-tabs" style="margin-bottom:10px">
         ${UNIFIED_SUBTABS.map(([k,l])=>`<button class="mail-tab ${UNIFIED_STATE.subTab===k?"active":""}" data-unified-tab="${k}">${l}（${counts[k]}）</button>`).join("")}
       </div>
-      <div class="card" style="padding:12px;margin-bottom:10px">
-        <input id="unified-search" placeholder="🔎 取引先・請求書番号・法人・店舗で検索" value="${esc(UNIFIED_STATE.search)}" style="max-width:340px">
+      <div class="card" style="padding:12px;margin-bottom:10px;display:flex;gap:10px;flex-wrap:wrap;align-items:end">
+        <div><label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">検索</label><input id="unified-search" placeholder="🔎 取引先・請求書番号・法人・店舗" value="${esc(UNIFIED_STATE.search)}" style="max-width:280px"></div>
+        <div><label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">対象年月（支払期限、無ければ受領日）</label><input type="month" id="unified-ym" value="${esc(UNIFIED_STATE.yearMonth)}"></div>
+        ${(UNIFIED_STATE.search||UNIFIED_STATE.yearMonth)?'<button class="hq-btn" id="unified-filter-clear">絞り込み解除</button>':''}
       </div>
       <div class="batchbar" style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px 12px;background:var(--m-bluesoft);border-radius:10px;margin-bottom:10px;font-size:12px">
-        <div><b id="unified-selected-count">${UNIFIED_STATE.selected.size}件選択</b>　重複疑い・口座変更・要確認中・登録済みの行は選択できません（安全のため自動除外）</div>
-        <div style="display:flex;gap:8px">
+        <div><b id="unified-selected-count">${UNIFIED_STATE.selected.size}件選択</b>
+          <div style="color:var(--muted);font-size:11px;margin-top:2px">「安全な請求書を選択」＝重複疑い・口座変更検知・要確認中・すでに会計登録済み、のどれにも当てはまらない行だけを自動でチェック（選べない行はチェック欄にマウスを乗せると理由が出ます）。「処理する」を押すと、その1件の詳細（工程バー＋タブ）が開きます。</div>
+        </div>
+        <div style="display:flex;gap:8px;flex-shrink:0">
           <button class="hq-btn" id="unified-select-safe">安全な請求書を選択</button>
           <button class="hq-btn primary" id="unified-open-selected" ${UNIFIED_STATE.selected.size?"":"disabled"}>選択した請求書を順番に確認する</button>
         </div>
       </div>
       <div class="card hq-tablewrap">
         <table class="invoice-table" style="min-width:1500px">
-          <thead><tr><th></th><th>受領日</th><th>支払期限</th><th>法人</th><th>店舗</th><th>取引先</th><th>請求書番号</th><th>金額</th><th>取得元</th><th>AI判定</th><th>会計</th><th>PL</th><th>広告</th><th>精算書</th><th>振込</th><th>本部タスク</th><th>現在工程</th><th></th></tr></thead>
+          <thead><tr>
+            <th></th>
+            <th data-usort="created_at" style="cursor:pointer">受領日${UNIFIED_STATE.sortCol==="created_at"?(UNIFIED_STATE.sortDir==="asc"?" ▲":" ▼"):""}</th>
+            <th data-usort="due_date" style="cursor:pointer">支払期限${UNIFIED_STATE.sortCol==="due_date"?(UNIFIED_STATE.sortDir==="asc"?" ▲":" ▼"):""}</th>
+            <th>法人</th><th>店舗</th><th>取引先</th><th>請求書番号</th>
+            <th data-usort="amount" style="cursor:pointer">金額${UNIFIED_STATE.sortCol==="amount"?(UNIFIED_STATE.sortDir==="asc"?" ▲":" ▼"):""}</th>
+            <th>取得元</th><th>AI判定</th><th>会計</th><th>PL</th><th>広告</th><th>精算書</th><th>振込</th><th>本部タスク</th><th>現在工程</th><th></th>
+          </tr></thead>
           <tbody>${list.length?list.map(unifiedRowHtml).join(""):'<tr><td colspan="17">該当する請求書はありません</td></tr>'}</tbody>
         </table>
       </div>
     </section>`;
   document.querySelectorAll("[data-unified-tab]").forEach(b=>b.onclick=()=>{ UNIFIED_STATE.subTab=b.dataset.unifiedTab; unifiedRender(u); });
+  document.querySelectorAll("[data-usort]").forEach(el=>el.onclick=()=>{
+    const col=el.dataset.usort;
+    if(UNIFIED_STATE.sortCol===col) UNIFIED_STATE.sortDir=UNIFIED_STATE.sortDir==="asc"?"desc":"asc";
+    else { UNIFIED_STATE.sortCol=col; UNIFIED_STATE.sortDir="asc"; }
+    unifiedRender(u);
+  });
   $("unified-search").oninput=()=>{ UNIFIED_STATE.search=$("unified-search").value; unifiedRender(u); };
+  $("unified-ym").onchange=()=>{ UNIFIED_STATE.yearMonth=$("unified-ym").value; unifiedRender(u); };
+  if($("unified-filter-clear")) $("unified-filter-clear").onclick=()=>{ UNIFIED_STATE.search=""; UNIFIED_STATE.yearMonth=""; unifiedRender(u); };
   document.querySelectorAll(".unified-check").forEach(el=>el.onchange=()=>{
     if(el.checked) UNIFIED_STATE.selected.add(el.dataset.id); else UNIFIED_STATE.selected.delete(el.dataset.id);
     $("unified-selected-count").textContent=UNIFIED_STATE.selected.size+"件選択";
@@ -2910,28 +2949,106 @@ function unifiedRender(u){
   });
   document.querySelectorAll(".unified-corp").forEach(el=>el.onchange=()=>unifiedSetCorporation(u,el.dataset.id,el.value));
 }
-// アップロード請求書（email_idが無い＝メールに紐付かない請求書）を統合一覧から開くための
-// 軽量モーダル。既存のmail-detailと同じ見た目のパネル群（会計・PL反映等）は再利用せず、
-// 最小限の情報表示＋アップロード請求書タブへの導線に留める（フル編集は当該タブで行う）
+// アップロード請求書（email_idが無い＝メールに紐付かない請求書）を統合一覧・振込一覧から
+// 開く処理モーダル（2026-09-03全面書き換え）。ユーザー指摘「メールのフォーマットと
+// アップロード請求書のフォーマットが処理するときに違う」に対応し、メール起点
+// （renderMailDetail）と全く同じ工程バー・タブ構成（invoiceWorkflowSteps/invoiceAiTabHtml/
+// invoicePaymentTabHtml/taskPanelHtml・すべて共通のトップレベル関数）で統一した。
+// アップロード請求書は登録と同時に仕訳登録まで完了する設計のため、「会計・仕訳」タブは
+// 確認のみ（メール起点のような仕訳作成フォームは無い）。広告費反映は媒体の自動推定に
+// メール情報を使う設計のため、今回はメール起点の請求書のみ対応のまま（アップロード請求書
+// 側は「PL・広告・精算書」タブのPL反映のみ対応）。処理履歴・コメントはinvoice_commentsが
+// email_id必須の設計のため、アップロード請求書では非対応の案内を表示する
 async function openStandaloneInvoiceModal(u,invoiceId){
-  const r=await authed(`/rest/v1/invoices?id=eq.${invoiceId}&select=*,vendor:vendors(name)`);
+  await ensureCorpStoreCache();
+  const r=await authed(`/rest/v1/invoices?id=eq.${invoiceId}&select=*,vendor:vendors(name),linked_step:hq_task_steps(id,title,task:hq_tasks(title,corp))`);
   const inv=(r.ok&&Array.isArray(r.body)&&r.body[0])||null;
   const modal=document.createElement("div");
-  modal.className="modal-bg";
-  modal.innerHTML=`<div class="modal">
-    <div class="mhead"><h2>🧾 ${esc((inv&&((inv.vendor&&inv.vendor.name)||inv.vendor_name))||"請求書")}</h2><button class="linkbtn" id="standaloneClose" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:13px">閉じる ×</button></div>
-    ${inv?`<div class="sum" style="border:1px solid var(--m-line);border-radius:10px;overflow:hidden">
-      <div class="sr" style="display:grid;grid-template-columns:120px 1fr;gap:8px;padding:9px 11px;border-bottom:1px solid var(--m-line);font-size:12px"><small style="color:var(--muted)">請求書番号</small><b>${esc(inv.invoice_number||"—")}</b></div>
-      <div class="sr" style="display:grid;grid-template-columns:120px 1fr;gap:8px;padding:9px 11px;border-bottom:1px solid var(--m-line);font-size:12px"><small style="color:var(--muted)">金額</small><b>${yen(inv.amount)}</b></div>
-      <div class="sr" style="display:grid;grid-template-columns:120px 1fr;gap:8px;padding:9px 11px;font-size:12px"><small style="color:var(--muted)">会計登録</small><b>${inv.mf_journal_id?`済（伝票番号: ${esc(String(inv.mf_journal_number??"-"))}）`:"未登録"}</b></div>
+  modal.className="modal-bg"; modal.id="standaloneInvoiceModal";
+  if(!inv){
+    modal.innerHTML=`<div class="modal"><div class="mhead"><h2>請求書</h2><button class="linkbtn" id="standaloneClose" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:13px">閉じる ×</button></div><div class="err">読み込みに失敗しました</div></div>`;
+    document.body.appendChild(modal); pushNav({modal:true});
+    modal.onclick=e=>{ if(e.target===modal) history.back(); };
+    $("standaloneClose").onclick=()=>history.back();
+    return;
+  }
+  // 「完了確認」工程の判定に使うmail_status相当（メールが無いためpayment_status=paidを代用）
+  const steps=invoiceWorkflowSteps(inv,{mail_status:inv.payment_status==="paid"?"completed":"processing"});
+  modal.innerHTML=`<div class="modal" style="max-width:1100px">
+    <div class="mhead"><h2>🧾 ${esc((inv.vendor&&inv.vendor.name)||inv.vendor_name||"請求書")}</h2><button class="linkbtn" id="standaloneClose" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:13px">閉じる ×</button></div>
+    <div class="meta" style="color:var(--muted);font-size:11px;margin-bottom:8px">取得元: アップロード請求書</div>
+    <div class="workflow-steps">${steps.map(s=>`<div class="wf-step ${s.done?"done":s.current?"current":""}"><small>${s.done?"✓":s.current?"●":"○"}</small><b>${esc(s.label)}</b></div>`).join("")}</div>
+    <div class="detail-layout">
+      <div>
+        <div class="detail-tabs">
+          <button class="active" data-sdtab="info">請求情報</button>
+          <button data-sdtab="ai">AI判定${(inv.duplicate_suspected||inv.bank_account_change_detected)?" ⚠️":""}</button>
+          <button data-sdtab="accounting">会計・仕訳</button>
+          <button data-sdtab="pl">PL・広告・精算書</button>
+          <button data-sdtab="payment">振込</button>
+          <button data-sdtab="audit">履歴・監査</button>
+        </div>
+        <div class="dtab active" id="sdtab-info">
+          <div class="ai-grid">
+            <div class="ai-field"><small>請求元</small><input id="siv-vendor" value="${esc(inv.vendor_name||"")}"></div>
+            <div class="ai-field"><small>請求書番号</small><input id="siv-number" value="${esc(inv.invoice_number||"")}"></div>
+            <div class="ai-field"><small>金額</small><input id="siv-amount" type="number" value="${inv.amount!=null?inv.amount:""}"></div>
+            <div class="ai-field"><small>支払期限</small><input id="siv-duedate" type="date" value="${inv.due_date||""}"></div>
+            <div class="ai-field"><small>対象法人</small><select id="siv-corp"><option value="">（未設定）</option>${(CORP_STORE_CACHE&&CORP_STORE_CACHE.corporations||[]).map(c=>`<option value="${esc(c.id)}" ${inv.corporation_id===c.id?"selected":""}>${esc(c.name)}</option>`).join("")}</select></div>
+            <div class="ai-field"><small>対象店舗</small><select id="siv-store"><option value="">（未設定）</option>${(CORP_STORE_CACHE&&CORP_STORE_CACHE.stores||[]).map(s=>`<option value="${esc(s.id)}" ${inv.store_id===s.id?"selected":""}>${esc(s.name)}</option>`).join("")}</select></div>
+          </div>
+          <div class="mail-actions"><button id="siv-save">💾 保存</button></div>
+          <div class="err" id="siv-msg" style="margin-top:6px"></div>
+        </div>
+        <div class="dtab" id="sdtab-ai">${invoiceAiTabHtml(inv)}</div>
+        <div class="dtab" id="sdtab-accounting">
+          <div class="mail-actions" style="margin-top:0">
+            ${inv.mf_journal_id
+              ?`<button data-journal-view="${esc(inv.mf_journal_id)}" data-journal-tenant="${esc(inv.mf_tenant_id||"default")}" title="クリックすると登録した仕訳の内容を確認できます">✅ 仕訳登録済み（伝票番号: ${esc(String(inv.mf_journal_number??"-"))}）🔍</button>`
+              :`<div class="meta" style="color:var(--muted);font-size:12px">アップロード請求書は登録と同時に仕訳を作成する仕組みのため、まだ登録されていない場合は「📤アップロード請求書」タブからやり直してください。</div>`}
+          </div>
+        </div>
+        <div class="dtab" id="sdtab-pl">
+          ${inv.mf_journal_id?`<div id="plfeebox"></div>`:`<div class="meta" style="color:var(--muted);font-size:12px">PLへの反映は会計・仕訳の登録後に行えます</div>`}
+          <div class="meta" style="color:var(--muted);font-size:11px;margin-top:10px">💡 広告費への反映は、現在は請求書メールから登録した請求書のみ対応しています。</div>
+        </div>
+        <div class="dtab" id="sdtab-payment">${invoicePaymentTabHtml(inv)}</div>
+        <div class="dtab" id="sdtab-audit"><div class="meta" style="color:var(--muted);font-size:12px">アップロード請求書はメールに紐付いていないため、処理履歴・コメント機能は現在対応していません。</div></div>
+      </div>
+      <div class="task-panel">${taskPanelHtml(inv,steps)}</div>
     </div>
-    <div class="meta" style="color:var(--muted);font-size:11px;margin-top:8px">アップロード請求書の詳しい編集・会計登録は「📤 アップロード請求書」タブから行ってください。</div>`
-    :`<div class="err">読み込みに失敗しました</div>`}
   </div>`;
   document.body.appendChild(modal);
   pushNav({modal:true});
   modal.onclick=e=>{ if(e.target===modal) history.back(); };
   $("standaloneClose").onclick=()=>history.back();
+  document.querySelectorAll("[data-sdtab]").forEach(b=>b.onclick=()=>{
+    document.querySelectorAll("#standaloneInvoiceModal .dtab").forEach(d=>d.classList.remove("active"));
+    document.querySelectorAll("[data-sdtab]").forEach(x=>x.classList.remove("active"));
+    const el=$("sdtab-"+b.dataset.sdtab); if(el) el.classList.add("active");
+    b.classList.add("active");
+  });
+  wireJournalViewButtons();
+  const reload=()=>{ history.back(); openStandaloneInvoiceModal(u,invoiceId); };
+  $("siv-save").onclick=async()=>{
+    const msg=$("siv-msg"); msg.className="err"; msg.textContent="保存中…";
+    const payload={
+      vendor_name:$("siv-vendor").value.trim()||null,
+      invoice_number:$("siv-number").value.trim()||null,
+      amount:$("siv-amount").value?+$("siv-amount").value:null,
+      due_date:$("siv-duedate").value||null,
+      corporation_id:$("siv-corp").value||null,
+      store_id:$("siv-store").value||null,
+      updated_at:new Date().toISOString(),
+    };
+    const r2=await authed(`/rest/v1/invoices?id=eq.${invoiceId}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify(payload)});
+    if(!r2.ok){ msg.textContent="保存できませんでした"; return; }
+    msg.className="err msg-ok"; msg.textContent="保存しました";
+    setTimeout(reload,700);
+  };
+  if(inv.mf_journal_id){
+    plfeeInit({boxId:"plfeebox",invoiceId:inv.id,journalId:inv.mf_journal_id,tenantId:inv.mf_tenant_id||"default",fallbackAmount:Number(inv.amount)||0,onDone:reload});
+  }
 }
 
 /* ============================================================
