@@ -1819,15 +1819,42 @@ function renderMailDetail(u){
           </div>`;
         if(isContract) return historyCommentsHtml;
         if(slimMail){
+          // 2026-09-04緊急修正：ユーザー報告「請求書として取込み中のまま完了しない」に対応。
+          // 原因は、このメール向け簡易表示に請求情報の入力欄（iv-vendor等）自体が
+          // 存在しなかったこと。invoice作成は自動バックグラウンド処理ではなく、AI自動入力＋
+          // 保存という「人間の操作」で行う設計（このアプリに元々自動OCRパイプラインは無い）。
+          // それにも関わらず簡易表示には「自動抽出が完了すると表示されます」という、実際には
+          // 起きないことを約束する文言だけがあり、保存する手段が無いため永久に完了しなかった。
+          // 対応：invoiceが未作成の間は、請求情報の入力欄（＝1invoice=1レコードへ正規化する
+          // ための最小限の「入口」操作）をこの簡易表示にも表示する。ただし会計・仕訳／PL／
+          // 広告／精算書／振込の各カードは引き続き出さない（処理は🧾請求書一覧からのみ）
+          const intakeFormHtml=invoice?"":`<div class="step-card" id="step-info">
+              <div class="step-card-head"><h3 class="step-title">請求情報の入力</h3></div>
+              <div class="meta" style="color:var(--muted);font-size:11px;margin-bottom:8px">💡 自動で内容が抽出されるわけではありません。「🤖AIで自動入力」を押すか、下の欄に直接入力して保存すると、請求書として取り込まれます。</div>
+              <div class="ai-grid">
+                <div class="ai-field"><small>${isSales?"入金元":"請求元"}</small><input id="iv-vendor" value="${esc(invoice&&invoice.vendor_name||"")}"></div>
+                <div class="ai-field"><small>${isSales?"明細番号":"請求書番号"}</small><input id="iv-number" value="${esc(invoice&&invoice.invoice_number||"")}"></div>
+                <div class="ai-field"><small>${isSales?"入金額":"金額"}</small><input id="iv-amount" type="number" value="${invoice&&invoice.amount!=null?invoice.amount:""}"></div>
+                <div class="ai-field"><small>${isSales?"入金予定日":"支払期限"}</small><input id="iv-duedate" type="date" value="${invoice&&invoice.due_date||""}"></div>
+                <div class="ai-field"><small>状態</small><select id="iv-status">${Object.entries(isSales?SALES_STATUS_LABEL:INVOICE_STATUS_LABEL).map(([k,l])=>`<option value="${k}" ${(invoice?invoice.invoice_status:"draft")===k?"selected":""}>${l}</option>`).join("")}</select></div>
+                <div class="ai-field"><small>対象法人</small><select id="iv-corp"><option value="">（未設定）</option>${(CORP_STORE_CACHE&&CORP_STORE_CACHE.corporations||[]).map(c=>`<option value="${esc(c.id)}" ${invoice&&invoice.corporation_id===c.id?"selected":""}>${esc(c.name)}</option>`).join("")}</select></div>
+                <div class="ai-field"><small>対象店舗</small><select id="iv-store"><option value="">（未設定）</option>${(CORP_STORE_CACHE&&CORP_STORE_CACHE.stores||[]).map(s=>`<option value="${esc(s.id)}" ${invoice&&invoice.store_id===s.id?"selected":""}>${esc(s.name)}</option>`).join("")}</select></div>
+              </div>
+              <div class="mail-actions">
+                ${atts.length?`<button id="iv-ai-fill">🤖 AIで${isSales?"入金情報":"請求書情報"}を自動入力</button>`:""}
+                <button id="iv-save">💾 ${isSales?"入金情報":"請求書情報"}を保存（請求書として取込む）</button>
+              </div>
+              <div class="err" id="iv-msg" style="margin-top:6px"></div>
+              <div id="iv-ocr-extras"></div>
+              ${isSales?"":ivExtraSectionHtml(invoices,mail.id)}
+            </div>`;
           const ctaHtml=invoice
             ?`<div class="task-link-box"><b style="font-size:13px">🧾 請求書として取込みました</b>
                 <div class="meta" style="color:var(--muted);font-size:12px;margin-top:4px">会計登録・PL反映・広告費反映・精算書連携・振込などの処理は、すべて「🧾請求書」一覧から行います。ここ（受信トレイ）では、内容の確認・添付ファイルの確認・種類の分類のみを行ってください。</div>
                 <button class="hq-btn primary" style="margin-top:10px" id="goto-invoice-process">🧾 請求書一覧で確認・処理する →</button>
               </div>`
-            :`<div class="task-link-box"><b style="font-size:13px">請求書として取込み中です</b>
-                <div class="meta" style="color:var(--muted);font-size:12px;margin-top:4px">内容の自動抽出が完了すると、「🧾請求書」一覧に表示され、そこから会計・PL・振込などの処理ができるようになります（少し時間がかかる場合があります）。</div>
-              </div>`;
-          return ctaHtml+historyCommentsHtml;
+            :"";
+          return intakeFormHtml+ctaHtml+historyCommentsHtml;
         }
         // 2026-09-03新規: ユーザー要望「請求書一覧で選んだら、手順が出てきて1個ずつ処理して
         // チェックをつけていく形にしたい」に対応。工程バー＋タブ（請求情報/AI判定/会計・仕訳/
