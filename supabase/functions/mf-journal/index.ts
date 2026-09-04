@@ -25,6 +25,13 @@
 //                 このactionで登録しつつ元のメールにも紐付けたいときに渡す)}。
 //                 invoicesに新規行(email_idは指定が無ければnull)を作成し、通常のcreateと同じく
 //                 MFへ仕訳登録→証憑添付。linked_hq_step_idを渡した場合のみ、その本部タスクの工程も自動完了する
+//                 【2026-09-04時点】このactionは請求書処理タブからは呼ばれなくなった（下記
+//                 intake_uploadに置き換え）。給与仕訳（payrollPreviewSubmit）専用として残置。
+//   - "intake_upload"（2026-09-04新規）: 「共通請求書詳細への完全統合」指示書対応。アップロード
+//                 請求書タブの取込専用action。invoices行の作成＋証憑保存のみを行い、マネーフォワード
+//                 への仕訳登録は一切行わない（登録は共通invoice詳細のcreateアクションのみで行う）。
+//                 body: {vendor_name?, invoice_number?, amount?, due_date?, corporation_id?, store_id?,
+//                 voucher_files:[{file_name,file_data(base64)}]（1件以上必須）}
 //
 // 複数事業者対応（2026-08-27）: accounts/suggest/list_journals/createはbody.tenant_idで
 // どの事業者（有限会社トーホーエージェンシー='default'、株式会社N-Style='nstyle'等）かを指定できる。
@@ -575,6 +582,55 @@ Deno.serve(async (req: Request) => {
       }
 
       return json({ success: true, invoice_id: newInv.id, journal_id: journalId, journal_number: journalNumber, hq_step_completed: hqStepCompleted, hq_step_error: hqErr?.message ?? null, voucher_attached: voucherAttached, voucher_error: voucherError });
+    }
+
+    if (action === "intake_upload") {
+      // 2026-09-04新規：「共通請求書詳細への完全統合」指示書STEP対応。
+      // アップロード請求書タブは、この指示書により「会計登録できる入口」から「取込専用」に
+      // 変更された（会計・仕訳の登録は共通invoice詳細＝createアクションのみで行う）。
+      // ここではinvoices行の作成と証憑ファイルの保存だけを行い、マネーフォワードへは一切
+      // 何も送信しない（create_standaloneと違い、journalsへのPOSTが無い）。
+      // 【注意】create_standaloneアクション自体は削除していない＝給与仕訳
+      // （payrollPreviewSubmit）が「登録済みの給与データから、確認済みの仕訳をその場で登録する」
+      // 目的で今も使っている。あちらは請求書の取込ではないためこの指示書のスコープ外
+      const vendorName: string = (body?.vendor_name ?? "").trim() || null;
+      const invoiceNumber: string = (body?.invoice_number ?? "").trim() || null;
+      const amount = body?.amount != null && body.amount !== "" ? Number(body.amount) : null;
+      const dueDate: string | null = body?.due_date || null;
+      const corporationId: string | null = body?.corporation_id || null;
+      const storeId: string | null = body?.store_id || null;
+      const inlineFiles: { file_name: string; file_data: string }[] = Array.isArray(body?.voucher_files) ? body.voucher_files.slice(0, 5) : [];
+      if (!inlineFiles.length) return json({ error: "証憑ファイルを1件以上選択してください" }, 400);
+
+      const db = svc();
+      const { data: newInv, error: insErr } = await db.from("invoices").insert({
+        email_id: null, vendor_name: vendorName, invoice_number: invoiceNumber, amount, due_date: dueDate,
+        corporation_id: corporationId, store_id: storeId, invoice_status: "draft", intake_source: "manual",
+      }).select("id").single();
+      if (insErr) return json({ error: "請求書の作成に失敗しました: " + insErr.message }, 500);
+
+      let attached = 0;
+      for (const f of inlineFiles) {
+        try {
+          const bytes = Uint8Array.from(atob(f.file_data), (c) => c.charCodeAt(0));
+          const ext = (f.file_name.split(".").pop() || "").toLowerCase();
+          const mimeType = ext === "pdf" ? "application/pdf" : ext === "png" ? "image/png" : (ext === "jpg" || ext === "jpeg") ? "image/jpeg" : undefined;
+          const hashBuf = await crypto.subtle.digest("SHA-256", bytes);
+          const fileHash = Array.from(new Uint8Array(hashBuf)).map((b) => b.toString(16).padStart(2, "0")).join("");
+          const storagePath = `standalone/${newInv.id}/${crypto.randomUUID()}_${f.file_name}`;
+          const { error: upErr } = await db.storage.from("invoice-files").upload(storagePath, bytes, { contentType: mimeType });
+          if (!upErr) {
+            await db.from("invoice_attachments").insert({
+              invoice_id: newInv.id, file_name: f.file_name, mime_type: mimeType ?? null,
+              storage_path: storagePath, file_hash: fileHash, size_bytes: bytes.length,
+            });
+            attached++;
+          }
+        } catch (_e) { /* 1件失敗しても他のファイルは続行し、取込自体は成立させる */ }
+      }
+      await db.from("mf_sync_logs").insert({ action: "invoice_intake_upload", actor_type: "human", detail: { invoice_id: newInv.id, files_attached: attached } });
+
+      return json({ success: true, invoice_id: newInv.id, files_attached: attached });
     }
 
     return json({ error: "不明なactionです" }, 400);

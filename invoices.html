@@ -823,7 +823,8 @@ function ivRenderOcrExtras(extras,emailId){
     await openMailDetail(ME,emailId,true);
   });
 }
-function ivxLabelOf(side){ return mfuLabelOf(side); }
+// 2026-09-04: 旧mfuLabelOf（アップロード請求書タブの仕訳ビルダー・削除済み）を直接インライン化
+function ivxLabelOf(side){ if(!side||!side.account_name) return ""; return side.sub_account_name?`${side.account_name}/${side.sub_account_name}`:side.account_name; }
 async function ivxLoadForTenant(tenantId,state){
   state.tenantId=tenantId;
   const [aRes,dRes]=await Promise.all([mfCall("accounts",{tenant_id:tenantId}),mfCall("list_departments",{tenant_id:tenantId})]);
@@ -1467,7 +1468,10 @@ async function openMailDetail(u,emailId,skipHighlight){
    タブ切替を伴わないため、閉じれば元のタブ・スクロール位置にそのまま戻れる
    （以前は受信トレイへ強制切替していて「戻ると迷子になる」との指摘があった）
    ============================================================ */
-async function openMailDetailModal(u,emailId){
+// モーダルの外枠（ヘッダー＋#mailDetail用の空箱）だけを作る。中身はopenMailDetail（メール由来）
+// またはloadStandaloneIntoSelected（アップロード等・メールに紐付かない請求書）が埋める。
+// 2026-09-04・共通invoice詳細への統合にあたり、外枠の生成だけを共通部品として切り出した
+function createMailDetailModalShell(){
   const modal=document.createElement("div");
   modal.className="modal-bg"; modal.id="mailDetailModalBg";
   modal.innerHTML=`<div class="modal" style="max-width:1180px">
@@ -1478,7 +1482,52 @@ async function openMailDetailModal(u,emailId){
   pushNav({modal:true});
   modal.onclick=e=>{ if(e.target===modal) history.back(); };
   $("mailDetailModalClose").onclick=()=>history.back();
+}
+async function openMailDetailModal(u,emailId){
+  createMailDetailModalShell();
   await openMailDetail(u,emailId,true);
+}
+// 2026-09-04新規：共通請求書詳細への統合（指示書「共通請求書詳細への完全統合」）。
+// メール／アップロード／Infomart/API／手動、どの入口から作られたinvoiceでも、この1つの
+// 入口関数からinvoice_idだけで開けるようにする。中身はrenderMailDetail/wireDetailActions
+// （メール由来のときは実在のmailオブジェクト、それ以外は疑似mailオブジェクト）を
+// そのまま使うため、会計・仕訳／PL・広告・精算書／振込／本部タスク連携のロジックは完全に共通
+async function openInvoiceDetail(u,invoiceId){
+  DETAIL_MODE="process";
+  await ensureCorpStoreCache();
+  const ivr=await authed(`/rest/v1/invoices?id=eq.${invoiceId}&select=*,vendor:vendors(name),linked_step:hq_task_steps(id,title,task:hq_tasks(title,corp))`);
+  const inv=(ivr.ok&&Array.isArray(ivr.body)&&ivr.body[0])||null;
+  if(!inv){ alert("請求書が見つかりませんでした（削除された可能性があります）"); return; }
+  if(inv.email_id){
+    // メール由来はメールモーダルをそのまま使う（実在のmailオブジェクトが読み込まれる）
+    await openMailDetailModal(u,inv.email_id);
+    return;
+  }
+  createMailDetailModalShell();
+  await loadStandaloneIntoSelected(u,inv);
+  renderMailDetail(u);
+}
+// メールに紐付かない請求書（アップロード等）のSELECTED構築。openMailDetail（メール由来）と
+// 対になる関数。実在のメールが無い代わりに、必要最小限を埋めた疑似mailオブジェクトを使う
+// ことで、renderMailDetail/wireDetailActionsの分岐（mail.xxx参照）をそのまま動かす
+async function loadStandaloneIntoSelected(u,inv){
+  const [attR,cmR,logR]=await Promise.all([
+    authed(`/rest/v1/invoice_attachments?invoice_id=eq.${inv.id}&select=*&order=created_at`),
+    authed(`/rest/v1/invoice_comments?invoice_id=eq.${inv.id}&select=*,author:users(name)&order=created_at.asc`),
+    authed(`/rest/v1/invoice_audit_logs?entity_id=eq.${inv.id}&select=*,actor:users(name)&order=created_at.asc&limit=50`),
+  ]);
+  const atts=(attR.ok&&Array.isArray(attR.body))?attR.body:[];
+  const comments=(cmR.ok&&Array.isArray(cmR.body))?cmR.body:[];
+  const logs=(logR.ok&&Array.isArray(logR.body))?logR.body:[];
+  const syntheticMail={
+    id:null, subject:(inv.vendor_name?inv.vendor_name+"の請求書":"アップロード請求書"),
+    from_address:"（アップロード）", to_address:"", mail_kind:"invoice",
+    mail_status:"standalone", processing_user_id:null, processor:null, is_important:false,
+    duplicate_suspected:!!inv.duplicate_suspected, received_at:inv.created_at,
+    body_text:"アップロードされた請求書です（メール本文はありません）。内容は右の「請求情報」や証憑プレビューで確認してください。",
+    body_html:null,
+  };
+  SELECTED={mail:syntheticMail,atts,firstRead:null,logs,invoice:inv,invoices:[inv],comments};
 }
 
 // 送信済み・新規作成メールの内容だけを表示する軽量モーダル（invoice_emailsに紐付かないため）
@@ -1581,12 +1630,16 @@ function renderMailDetail(u){
   // 出さず、内容確認・添付確認・種類分類までの簡易表示にとどめる（売上・契約書メールは対象外＝
   // 従来どおり。契約書は元々簡易表示のみのため実質的に変更なし）
   const slimMail=DETAIL_MODE==="mail"&&!isSales&&!isContract;
-  const canStart=(mail.mail_status==="unread"||mail.mail_status==="read")&&!mail.processing_user_id;
+  // 2026-09-04新規：共通invoice詳細への統合。mail.idが無い（アップロード等・メールに紐付かない
+  // 請求書）場合、メール種類の分類・処理担当（誰が処理中か）・返信など「メールそのもの」に
+  // しか意味のない機能は表示しない（対象のinvoice_emails行が存在しないため操作しても失敗する）
+  const isStandalone=!mail.id;
+  const canStart=!isStandalone&&(mail.mail_status==="unread"||mail.mail_status==="read")&&!mail.processing_user_id;
   const isHolder=mail.processing_user_id===ME.id;
   const canRelease=!!mail.processing_user_id&&(isHolder||canManage(ME));
   const canComplete=isHolder&&mail.mail_status==="processing";
-  const canReopen=mail.mail_status==="completed";
-  const canMarkNA=mail.mail_status!=="archived"&&mail.mail_status!=="completed";
+  const canReopen=!isStandalone&&mail.mail_status==="completed";
+  const canMarkNA=!isStandalone&&mail.mail_status!=="archived"&&mail.mail_status!=="completed";
   const canUnmarkNA=mail.mail_status==="archived";
   const pillKind=MAIL_STATUS_PILL[mail.mail_status]||"gray";
 
@@ -1603,6 +1656,10 @@ function renderMailDetail(u){
       </div>
       <h2>${esc(mail.subject||"（件名なし）")}</h2>
       <div class="meta">${esc(mail.from_address||"—")} 　→　 ${esc(mail.to_address||"—")}</div>
+      ${isStandalone?`<div class="mail-detail-grid">
+        <div class="mail-mini"><small>取込日</small><b>${fmtDT(mail.received_at)}</b></div>
+        <div class="mail-mini"><small>取込元</small><b>${esc(INTAKE_SOURCE_LABEL[invoice&&invoice.intake_source]||"アップロード")}</b></div>
+      </div>`:`
       <div class="mail-ownerbar" style="margin-top:10px">
         <span style="font-size:11px;color:var(--muted);align-self:center">種類：${mail.mail_kind?"":"（未分類）"}</span>
         ${MAIL_KIND_ORDER.map(k=>`<button class="hq-btn ${mail.mail_kind===k?'primary':''}" data-setkind="${k}">${MAIL_KIND_LABEL[k]}</button>`).join("")}
@@ -1632,7 +1689,7 @@ function renderMailDetail(u){
         <textarea id="release-reason" rows="2" style="width:100%;border:1px solid var(--line);border-radius:8px;padding:8px;margin-top:4px"></textarea>
         <button class="hq-btn" style="margin-top:8px;background:var(--accent);color:#fff;border-color:var(--accent)" id="release-send">解除する</button>
       </div>
-      <div class="err" id="act-msg" style="margin-top:6px"></div>
+      <div class="err" id="act-msg" style="margin-top:6px"></div>`}
     </div>
 
     ${mail.mail_status==="processing"&&!isHolder?`<div class="mail-lock">🔒 <b>${esc(mail.processor?mail.processor.name:"担当者")}さんが処理中です。</b> 他の人は処理を開始できません。</div>`:""}
@@ -1805,7 +1862,7 @@ function renderMailDetail(u){
         </div>`;
       })()}
 
-      <div class="mail-actions" style="margin-top:14px">
+      ${isStandalone?'':`<div class="mail-actions" style="margin-top:14px">
         <button id="reply-open">↩ 返信</button>
       </div>
 
@@ -1822,7 +1879,7 @@ function renderMailDetail(u){
           <button class="hq-btn" style="margin-top:8px" id="reply-cancel">戻る</button>
         </div>
         <div class="err" id="reply-msg" style="margin-top:6px"></div>
-      </div>
+      </div>`}
     </div>
   `;
   wireDetailTabs();
@@ -2105,7 +2162,18 @@ function wireDetailActions(u){
       $("mailListScroll").innerHTML=list.length?list.map(mailItemHtml).join(""):'<div class="empty">該当するメールはありません</div>';
       wireMailListClicks(u);
     }
-    updateMailSummaryBar(); await openMailDetail(u,emailId,true); };
+    updateMailSummaryBar();
+    // 2026-09-04: 共通invoice詳細への統合。メールが実在すれば従来どおりopenMailDetailで再読込、
+    // メールに紐付かない請求書（アップロード等）は最新のinvoice行を取り直してSELECTEDを作り直す
+    if(emailId){ await openMailDetail(u,emailId,true); return; }
+    const freshId=invoice&&invoice.id;
+    if(!freshId) return;
+    const ivr2=await authed(`/rest/v1/invoices?id=eq.${freshId}&select=*,vendor:vendors(name),linked_step:hq_task_steps(id,title,task:hq_tasks(title,corp))`);
+    const freshInv=(ivr2.ok&&Array.isArray(ivr2.body)&&ivr2.body[0])||null;
+    if(!freshInv){ $("mailDetail").innerHTML='<div class="empty">この請求書は削除されました</div>'; return; }
+    await loadStandaloneIntoSelected(u,freshInv);
+    renderMailDetail(u);
+  };
 
   // AI判定タブ・振込タブの配線（2026-09-03新規）
   if($("ai-resolve-dup")) $("ai-resolve-dup").onclick=async()=>{
@@ -2179,7 +2247,9 @@ function wireDetailActions(u){
     if(!r.ok){ $("act-msg").textContent=(r.body&&r.body.message)||"解除できませんでした"; $("act-unmark-notapplicable").disabled=false; return; }
     await reloadDetail();
   };
-  $("act-toggle-important").onclick=async()=>{
+  // 2026-09-04: 「重要」トグルもメールが実在する場合のみ描画される（isStandaloneでは
+  // ボタン自体が出ないため、ここもガードして以降のコメント/証憑追加/仕訳配線を止めないようにする）
+  if($("act-toggle-important")) $("act-toggle-important").onclick=async()=>{
     $("act-toggle-important").disabled=true; $("act-msg").textContent="処理中…";
     const r=await authed("/rest/v1/rpc/invoice_toggle_important",{method:"POST",body:JSON.stringify({p_email_id:emailId,p_important:!mail.is_important})});
     if(!r.ok){ $("act-msg").textContent=(r.body&&r.body.message)||"変更できませんでした"; $("act-toggle-important").disabled=false; return; }
@@ -2198,7 +2268,7 @@ function wireDetailActions(u){
     btn.disabled=true; msg.className="err"; msg.textContent="AIが添付を読み取っています…（数十秒かかることがあります）";
     try{
       const s=sess.get();
-      const fr=await fetch(SUPA_URL+"/functions/v1/invoice-ocr",{method:"POST",headers:{"Content-Type":"application/json","apikey":SUPA_KEY,"Authorization":"Bearer "+(s?s.at:"")},body:JSON.stringify({email_id:emailId,mail_kind:kind})});
+      const fr=await fetch(SUPA_URL+"/functions/v1/invoice-ocr",{method:"POST",headers:{"Content-Type":"application/json","apikey":SUPA_KEY,"Authorization":"Bearer "+(s?s.at:"")},body:JSON.stringify({email_id:emailId||null,invoice_id:emailId?null:(invoice&&invoice.id),mail_kind:kind})});
       const fj=await fr.json().catch(()=>({}));
       if(!fr.ok||!fj.success){ msg.textContent=fj.error||"AI読み取りに失敗しました"; btn.disabled=false; return; }
       // C-8（2026-09-01）: invoice-ocrは1件ずつの配列で返す。1件目は既存の「請求書情報」フォームに
@@ -2681,7 +2751,9 @@ function wireDetailActions(u){
       const hashBuf=await crypto.subtle.digest("SHA-256",buf);
       const hash=Array.from(new Uint8Array(hashBuf)).map(b=>b.toString(16).padStart(2,"0")).join("");
       const ext=(f.name.split(".").pop()||"").toLowerCase().replace(/[^a-z0-9]/g,"");
-      const path=`${emailId}/manual_${Date.now()}${ext?"."+ext:""}`;
+      // 2026-09-04: 共通invoice詳細への統合。メールが実在しない（アップロード等）場合は
+      // invoice.idを使ったパス・紐付けにする（emailIdはnull）
+      const path=emailId?`${emailId}/manual_${Date.now()}${ext?"."+ext:""}`:`standalone/${invoice.id}/manual_${Date.now()}${ext?"."+ext:""}`;
       const s=sess.get();
       const upRes=await fetch(`${SUPA_URL}/storage/v1/object/${BUCKET}/${path}`,{
         method:"POST",
@@ -2690,35 +2762,37 @@ function wireDetailActions(u){
       });
       if(!upRes.ok) throw new Error("アップロードに失敗しました");
       const r=await authed("/rest/v1/rpc/invoice_attach_manual_file",{method:"POST",body:JSON.stringify({
-        p_email_id:emailId, p_file_name:f.name, p_mime_type:f.type||null, p_storage_path:path, p_file_hash:hash, p_size_bytes:f.size
+        p_email_id:emailId||null, p_invoice_id:emailId?null:invoice.id, p_file_name:f.name, p_mime_type:f.type||null, p_storage_path:path, p_file_hash:hash, p_size_bytes:f.size
       })});
       if(!r.ok) throw new Error((r.body&&r.body.message)||"登録に失敗しました");
       msg.className="err msg-ok"; msg.textContent="追加しました";
-      await openMailDetail(u,emailId,true);
+      await reloadDetail();
     }catch(e){
       msg.textContent="エラー: "+e.message; $("manual-att-upload").disabled=false;
     }
   };
 
-  $("comment-add").onclick=async()=>{
+  if($("comment-add")) $("comment-add").onclick=async()=>{
     const body=$("comment-body").value.trim();
     const msg=$("comment-msg");
     if(!body){ msg.textContent="コメントを入力してください"; return; }
     $("comment-add").disabled=true; msg.className="err"; msg.textContent="追加中…";
-    const r=await authed("/rest/v1/rpc/invoice_add_comment",{method:"POST",body:JSON.stringify({p_email_id:emailId,p_body:body})});
+    const r=await authed("/rest/v1/rpc/invoice_add_comment",{method:"POST",body:JSON.stringify({p_email_id:emailId||null,p_invoice_id:emailId?null:(invoice&&invoice.id),p_body:body})});
     if(!r.ok){ msg.textContent=(r.body&&r.body.message)||"追加できませんでした"; $("comment-add").disabled=false; return; }
     await reloadDetail();
   };
 
-  $("reply-open").onclick=()=>{ $("replybox").classList.toggle("open"); };
-  $("reply-confirm").onclick=()=>{
+  // 2026-09-04: 返信機能はメールが実在する場合のみ（isStandalone＝アップロード等では
+  // #reply-openなどのDOM自体がrenderMailDetail側で出力されないため、ここもガードする）
+  if($("reply-open")) $("reply-open").onclick=()=>{ $("replybox").classList.toggle("open"); };
+  if($("reply-confirm")) $("reply-confirm").onclick=()=>{
     const body=$("reply-body").value.trim();
     if(!body){ $("reply-msg").textContent="本文を入力してください"; return; }
     $("reply-preview").textContent=body;
     $("replyconfirm").style.display="block";
   };
-  $("reply-cancel").onclick=()=>{ $("replyconfirm").style.display="none"; };
-  $("reply-send").onclick=async()=>{
+  if($("reply-cancel")) $("reply-cancel").onclick=()=>{ $("replyconfirm").style.display="none"; };
+  if($("reply-send")) $("reply-send").onclick=async()=>{
     $("reply-send").disabled=true; $("reply-msg").textContent="送信中…";
     const body=$("reply-body").value.trim();
     const qr=await authed("/rest/v1/rpc/invoice_queue_reply",{method:"POST",body:JSON.stringify({p_email_id:emailId,p_body:body})});
@@ -3069,205 +3143,20 @@ function unifiedRender(u){
     const firstId=[...UNIFIED_STATE.selected][0];
     const row=UNIFIED_STATE.rows.find(r=>r.id===firstId);
     if(!row) return;
-    DETAIL_MODE="process";
-    if(row.email_id) openMailDetailModal(u,row.email_id);
-    else openStandaloneInvoiceModal(u,row.id);
+    openInvoiceDetail(u,row.id); // 共通invoice詳細：メール由来/アップロード由来を問わずinvoice_idだけで開く
   };
   document.querySelectorAll("[data-open-invoice]").forEach(el=>el.onclick=()=>{
-    DETAIL_MODE="process";
-    const emailId=el.dataset.email;
-    if(emailId) openMailDetailModal(u,emailId);
-    else openStandaloneInvoiceModal(u,el.dataset.openInvoice);
+    openInvoiceDetail(u,el.dataset.openInvoice);
   });
   document.querySelectorAll(".unified-corp").forEach(el=>el.onchange=()=>unifiedSetCorporation(u,el.dataset.id,el.value));
   document.querySelectorAll("[data-delete-invoice]").forEach(el=>el.onclick=()=>unifiedDeleteInvoice(u,el.dataset.deleteInvoice));
 }
-// アップロード請求書（email_idが無い＝メールに紐付かない請求書）を統合一覧・振込一覧から
-// 開く処理モーダル（2026-09-03全面書き換え）。ユーザー指摘「メールのフォーマットと
-// アップロード請求書のフォーマットが処理するときに違う」に対応し、メール起点
-// （renderMailDetail）と全く同じ工程バー・タブ構成（invoiceWorkflowSteps/invoiceAiTabHtml/
-// invoicePaymentTabHtml/taskPanelHtml・すべて共通のトップレベル関数）で統一した。
-// アップロード請求書は登録と同時に仕訳登録まで完了する設計のため、「会計・仕訳」タブは
-// 確認のみ（メール起点のような仕訳作成フォームは無い）。広告費反映は媒体の自動推定に
-// メール情報を使う設計のため、今回はメール起点の請求書のみ対応のまま（アップロード請求書
-// 側は「PL・広告・精算書」タブのPL反映のみ対応）。処理履歴・コメントはinvoice_commentsが
-// email_id必須の設計のため、アップロード請求書では非対応の案内を表示する
-// アップロード請求書の本部タスク紐付け（2026-09-04新規。ユーザー報告「本部タスクとの
-// 紐付けはどこでやるの？」に対応。メール起点の請求書と同じ検索UIだが、選んだ瞬間に
-// invoices.linked_hq_step_idを直接保存する（メール起点のような「後で仕訳登録時にまとめて
-// 保存」ではなく、この画面では既に登録済みの請求書を編集しているだけのため即時保存にした）
-function renderStandaloneHqLinkBox(inv){
-  const box=$("siv-hqlink-box");
-  if(!box) return;
-  if(inv.linked_step){
-    const step=inv.linked_step;
-    box.innerHTML=`<div class="ai-field"><small>紐付け中</small>✅ ${esc((step.task&&step.task.corp)||"")} ${esc((step.task&&step.task.title)||"")} ／ ${esc(step.title)} <button id="siv-hqlink-clear" style="margin-left:8px">解除</button></div>`;
-    $("siv-hqlink-clear").onclick=async()=>{
-      await authed(`/rest/v1/invoices?id=eq.${inv.id}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({linked_hq_step_id:null})});
-      inv.linked_step=null; inv.linked_hq_step_id=null;
-      renderStandaloneHqLinkBox(inv);
-    };
-    return;
-  }
-  box.innerHTML=`<input id="siv-hqlink-search" placeholder="会社名や工程名で検索（例: マネーフォワード）"><div id="siv-hqlink-results" style="margin-top:4px;font-size:12px"></div>`;
-  let t=null;
-  $("siv-hqlink-search").oninput=()=>{
-    clearTimeout(t);
-    const kw=$("siv-hqlink-search").value.trim();
-    if(!kw){ $("siv-hqlink-results").innerHTML=""; return; }
-    t=setTimeout(async()=>{
-      $("siv-hqlink-results").innerHTML="検索中…";
-      const {ok,body:j}=await mfCall("search_hq_steps",{keyword:kw});
-      const results=(ok&&j.results)||[];
-      $("siv-hqlink-results").innerHTML=results.length?results.map(res=>`<div class="ai-field" style="margin-bottom:4px;cursor:pointer" data-pick="${esc(res.id)}">${esc((res.task&&res.task.corp)||"")} ${esc((res.task&&res.task.title)||"")} ／ ${esc(res.title)}</div>`).join(""):"該当なし";
-      $("siv-hqlink-results").querySelectorAll("[data-pick]").forEach(el=>el.onclick=async()=>{
-        const res=results.find(x=>x.id===el.dataset.pick);
-        if(!res) return;
-        await authed(`/rest/v1/invoices?id=eq.${inv.id}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({linked_hq_step_id:res.id})});
-        inv.linked_step={id:res.id,title:res.title,task:res.task}; inv.linked_hq_step_id=res.id;
-        renderStandaloneHqLinkBox(inv);
-      });
-    },350);
-  };
-}
-async function openStandaloneInvoiceModal(u,invoiceId){
-  // アップロード請求書はメール経由の「入口」を持たないため、開いたときは常に処理画面
-  // （工程バー＋会計・仕訳等のタブ）として表示する＝DETAIL_MODEの"mail"（簡易表示）は無関係
-  DETAIL_MODE="process";
-  await ensureCorpStoreCache();
-  const [r,attRes]=await Promise.all([
-    authed(`/rest/v1/invoices?id=eq.${invoiceId}&select=*,vendor:vendors(name),linked_step:hq_task_steps(id,title,task:hq_tasks(title,corp))`),
-    authed(`/rest/v1/invoice_attachments?invoice_id=eq.${invoiceId}&select=*&order=created_at`),
-  ]);
-  const inv=(r.ok&&Array.isArray(r.body)&&r.body[0])||null;
-  const atts=(attRes.ok&&Array.isArray(attRes.body))?attRes.body:[];
-  const modal=document.createElement("div");
-  modal.className="modal-bg"; modal.id="standaloneInvoiceModal";
-  if(!inv){
-    modal.innerHTML=`<div class="modal"><div class="mhead"><h2>請求書</h2><button class="linkbtn" id="standaloneClose" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:13px">閉じる ×</button></div><div class="err">読み込みに失敗しました</div></div>`;
-    document.body.appendChild(modal); pushNav({modal:true});
-    modal.onclick=e=>{ if(e.target===modal) history.back(); };
-    $("standaloneClose").onclick=()=>history.back();
-    return;
-  }
-  // 「完了確認」工程の判定に使うmail_status相当（メールが無いためpayment_status=paidを代用）
-  const steps=invoiceWorkflowSteps(inv,{mail_status:inv.payment_status==="paid"?"completed":"processing"});
-  const riskBannerHtml=(inv.duplicate_suspected||inv.bank_account_change_detected)?invoiceAiTabHtml(inv):"";
-  const aiConfidenceBadge=inv.ai_match_status?`<span class="step-badge ${inv.ai_match_status==="auto"?"done":"current"}">🤖 ${({auto:"自動判定済",review:"要確認",error:"エラー"})[inv.ai_match_status]||inv.ai_match_status}</span>`:"";
-  let stepNo=0;
-  modal.innerHTML=`<div class="modal" style="max-width:1180px">
-    <div class="mhead"><h2>🧾 ${esc((inv.vendor&&inv.vendor.name)||inv.vendor_name||"請求書")}</h2><button class="linkbtn" id="standaloneClose" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:13px">閉じる ×</button></div>
-    <div class="meta" style="color:var(--muted);font-size:11px;margin-bottom:8px">取得元: アップロード請求書</div>
-    <div class="workflow-steps">${steps.map(s=>`<div class="wf-step ${s.done?"done":s.current?"current":""}"><small>${s.done?"✓":s.current?"●":"○"}</small><b>${esc(s.label)}</b></div>`).join("")}</div>
-    <div class="detail-layout">
-      <div class="evidence-panel">
-        <div class="ep-head"><span>📄 証憑プレビュー</span><span>${atts.length}ファイル</span></div>
-        <div class="ep-body">
-          <div class="attgrid" id="siv-attlist">${atts.map(a=>{
-            const isPdf=a.mime_type==="application/pdf";
-            const isImg=(a.mime_type||"").indexOf("image/")===0;
-            const preview=isPdf
-              ? `<iframe data-attpreview="${esc(a.storage_path)}" title="${esc(a.file_name)}"></iframe>`
-              : isImg
-                ? `<img data-attpreview="${esc(a.storage_path)}" alt="${esc(a.file_name)}">`
-                : `<div class="noprev"><span class="ico">📄</span>プレビュー非対応<br>（開いて確認してください）</div>`;
-            return `<div class="attcard">
-              <div class="attcard-preview">${preview}</div>
-              <div class="attcard-foot">
-                <span class="fname">${esc(a.file_name)}</span>
-                <a data-attpath="${esc(a.storage_path)}" download="${esc(a.file_name)}" href="#" target="_blank" rel="noopener">開く</a>
-              </div>
-            </div>`;
-          }).join("")||'<div class="meta" style="color:var(--muted);font-size:12px;padding-top:16px">証憑ファイルはありません（2026年9月4日より前にアップロードした請求書は、この保存に対応する前のため表示されません）</div>'}</div>
-        </div>
-      </div>
-      <div>
-        ${riskBannerHtml}
-
-        <div class="step-card" id="step-info">
-          <div class="step-card-head"><div class="step-num">${++stepNo}</div><h3 class="step-title">請求情報</h3>${aiConfidenceBadge}</div>
-          <div class="ai-grid">
-            <div class="ai-field"><small>請求元</small><input id="siv-vendor" value="${esc(inv.vendor_name||"")}"></div>
-            <div class="ai-field"><small>請求書番号</small><input id="siv-number" value="${esc(inv.invoice_number||"")}"></div>
-            <div class="ai-field"><small>金額</small><input id="siv-amount" type="number" value="${inv.amount!=null?inv.amount:""}"></div>
-            <div class="ai-field"><small>支払期限</small><input id="siv-duedate" type="date" value="${inv.due_date||""}"></div>
-            <div class="ai-field"><small>対象法人</small><select id="siv-corp"><option value="">（未設定）</option>${(CORP_STORE_CACHE&&CORP_STORE_CACHE.corporations||[]).map(c=>`<option value="${esc(c.id)}" ${inv.corporation_id===c.id?"selected":""}>${esc(c.name)}</option>`).join("")}</select></div>
-            <div class="ai-field"><small>対象店舗</small><select id="siv-store"><option value="">（未設定）</option>${(CORP_STORE_CACHE&&CORP_STORE_CACHE.stores||[]).map(s=>`<option value="${esc(s.id)}" ${inv.store_id===s.id?"selected":""}>${esc(s.name)}</option>`).join("")}</select></div>
-          </div>
-          <div class="task-link-box" style="margin-top:12px"><small>🔗 紐付ける本部タスクの工程（任意・完了操作はこの画面からは行いません。タスク側で個別に完了させてください）</small><div id="siv-hqlink-box"></div></div>
-          <div class="mail-actions"><button id="siv-save">💾 保存</button><button id="siv-delete" style="margin-left:auto;color:var(--m-red)">🗑 この請求書を削除</button></div>
-          <div class="err" id="siv-msg" style="margin-top:6px"></div>
-        </div>
-
-        <div class="step-card" id="step-accounting">
-          <div class="step-card-head"><div class="step-num">${++stepNo}</div><h3 class="step-title">会計・仕訳</h3>${inv.mf_journal_id?'<span class="step-badge done">✓ 登録済み</span>':''}</div>
-          <div class="mail-actions" style="margin-top:0">
-            ${inv.mf_journal_id
-              ?`<button data-journal-view="${esc(inv.mf_journal_id)}" data-journal-tenant="${esc(inv.mf_tenant_id||"default")}" title="クリックすると登録した仕訳の内容を確認できます">✅ 仕訳登録済み（伝票番号: ${esc(String(inv.mf_journal_number??"-"))}）🔍</button>`
-              :`<div class="meta" style="color:var(--muted);font-size:12px">アップロード請求書は登録と同時に仕訳を作成する仕組みのため、まだ登録されていない場合は「📤アップロード請求書」タブからやり直してください。</div>`}
-          </div>
-        </div>
-
-        <div class="step-card" id="step-pl">
-          <div class="step-card-head"><div class="step-num">${++stepNo}</div><h3 class="step-title">PL・広告・精算書</h3>${inv.pl_fee_reflected_at||inv.pl_fee_excluded_at?'<span class="step-badge done">✓ 対応済み</span>':''}</div>
-          ${inv.mf_journal_id?`<div id="plfeebox"></div>`:`<div class="meta" style="color:var(--muted);font-size:12px">PLへの反映は会計・仕訳の登録後に行えます</div>`}
-          <div class="meta" style="color:var(--muted);font-size:11px;margin-top:10px">💡 広告費への反映は、現在は請求書メールから登録した請求書のみ対応しています。</div>
-          <div class="task-link-box" style="margin-top:12px"><small>🧮 業務委託精算書への反映はどこでする？</small><div style="font-size:12px;color:var(--m-blue)">精算対象店舗（業務委託店舗）の経費は、<b>精算書に入力すれば自動でPLにも反映されます</b>（このためこの画面のPL反映の候補には出てきません＝二重計上防止）。精算書はサイドメニュー「精算管理」から開いてください。</div></div>
-        </div>
-
-        <div class="step-card" id="step-payment">
-          <div class="step-card-head"><div class="step-num">${++stepNo}</div><h3 class="step-title">振込</h3>${inv.payment_status==="paid"?'<span class="step-badge done">✓ 振込済み</span>':''}</div>
-          ${invoicePaymentTabHtml(inv)}
-        </div>
-
-        <div class="step-card" id="step-audit">
-          <div class="step-card-head"><div class="step-num">${++stepNo}</div><h3 class="step-title">履歴・監査</h3></div>
-          <div class="meta" style="color:var(--muted);font-size:12px">アップロード請求書はメールに紐付いていないため、処理履歴・コメント機能は現在対応していません。</div>
-        </div>
-      </div>
-    </div>
-  </div>`;
-  document.body.appendChild(modal);
-  pushNav({modal:true});
-  modal.onclick=e=>{ if(e.target===modal) history.back(); };
-  $("standaloneClose").onclick=()=>history.back();
-  wireJournalViewButtons();
-  if(atts.length){
-    signAttachmentUrls(atts.map(a=>a.storage_path)).then(map=>{
-      document.querySelectorAll("#siv-attlist [data-attpath]").forEach(el=>{ const url=map[el.dataset.attpath]; if(url) el.href=url; });
-      document.querySelectorAll("#siv-attlist [data-attpreview]").forEach(el=>{ const url=map[el.dataset.attpreview]; if(url) el.src=url; });
-    });
-  }
-  renderStandaloneHqLinkBox(inv);
-  const reload=()=>{ history.back(); openStandaloneInvoiceModal(u,invoiceId); };
-  $("siv-save").onclick=async()=>{
-    const msg=$("siv-msg"); msg.className="err"; msg.textContent="保存中…";
-    const payload={
-      vendor_name:$("siv-vendor").value.trim()||null,
-      invoice_number:$("siv-number").value.trim()||null,
-      amount:$("siv-amount").value?+$("siv-amount").value:null,
-      due_date:$("siv-duedate").value||null,
-      corporation_id:$("siv-corp").value||null,
-      store_id:$("siv-store").value||null,
-      updated_at:new Date().toISOString(),
-    };
-    const r2=await authed(`/rest/v1/invoices?id=eq.${invoiceId}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify(payload)});
-    if(!r2.ok){ msg.textContent="保存できませんでした"; return; }
-    msg.className="err msg-ok"; msg.textContent="保存しました";
-    setTimeout(reload,700);
-  };
-  $("siv-delete").onclick=async()=>{
-    let msg2=`「${esc(inv.vendor_name||"この請求書")}」を削除します。よろしいですか？`;
-    if(inv.mf_journal_id) msg2=`⚠️既にマネーフォワードへ仕訳登録済み（伝票番号: ${inv.mf_journal_number??"-"}）です。この削除ではマネーフォワード側の仕訳は取り消されません（ローカルの記録だけが消え、追跡できなくなります）。テスト登録の後片付け以外では使わないでください。本当に削除しますか？`;
-    if(!confirm(msg2)) return;
-    const r3=await deleteInvoiceRecord(invoiceId);
-    if(!r3.ok){ alert("削除に失敗しました"); return; }
-    history.back();
-  };
-  if(inv.mf_journal_id){
-    plfeeInit({boxId:"plfeebox",invoiceId:inv.id,journalId:inv.mf_journal_id,tenantId:inv.mf_tenant_id||"default",fallbackAmount:Number(inv.amount)||0,onDone:reload});
-  }
-}
+// 2026-09-04削除: renderStandaloneHqLinkBox / openStandaloneInvoiceModal は
+// 「共通請求書詳細への完全統合」指示書対応により廃止。アップロード等メールに紐付かない
+// 請求書も、いまはopenInvoiceDetail()経由でrenderMailDetail/wireDetailActions（疑似mail
+// オブジェクトを合成してSELECTEDへセット＝loadStandaloneIntoSelected）が処理する。
+// 会計・仕訳（MFJ_STATE）／PL・広告（plfeeInit/adcostInit）／本部タスク紐付け
+// （renderHqLinkBox）／コメント／証憑追加は、メール由来と完全に同じ実装・同じUIを使う
 
 /* ============================================================
    🏦 振込一覧（会計・請求書処理の全面刷新・2026-09-03新規）
@@ -3332,9 +3221,7 @@ function transferRender(u){
     if(el.checked) TRANSFERS_STATE.selected.add(el.dataset.id); else TRANSFERS_STATE.selected.delete(el.dataset.id);
   });
   document.querySelectorAll("[data-transfer-open]").forEach(el=>el.onclick=()=>{
-    DETAIL_MODE="process";
-    const emailId=el.dataset.email;
-    if(emailId) openMailDetailModal(u,emailId); else openStandaloneInvoiceModal(u,el.dataset.transferOpen);
+    openInvoiceDetail(u,el.dataset.transferOpen);
   });
   $("transfer-export-csv").onclick=()=>transferExportCsv(u);
   $("transfer-mark-paid").onclick=()=>transferMarkPaid(u);
@@ -4034,384 +3921,101 @@ async function renderAccountingDashboardTab(u){
 }
 
 /* ============================================================
-   アップロード請求書（C-7①・2026-08-31）
-   メールに来ない請求書（手渡し・現金精算・郵送のPDF等）を、メールを介さず
-   直接アップロードして仕訳登録する単独画面。設計書_会計自動化_2026-08-31.md §5 Q6の
-   追加要望①に対応。本部タスク連携（tasks.html・2026-08-27実装）で作った
-   mf-journalの「create_standalone」actionをそのまま使うが、あちらは本部タスクの工程に
-   紐付けることが必須だった。この画面は工程と無関係に単独で使うため、
-   linked_hq_step_idを渡さない（Edge Function側は2026-08-31から任意化済み）。
-   仕訳作成モーダル（openMailDetail内のmfj*）・仕訳辞書管理（設定タブのmft*）とは
-   独立した状態（MFU_STATE）・関数群（mfu*）。表の見た目は共通のmfj-grid CSSを再利用。
+   アップロード請求書（2026-09-04・「共通請求書詳細への完全統合」指示書で全面刷新）
+   旧実装（MFU_STATE・mfu*関数群）は、アップロードと同時にマネーフォワードへ仕訳登録まで
+   行っていた（＝入口なのに会計処理をしてしまっていた）。指示書により
+   「入口は取込専用、会計・仕訳・PL・広告・精算書・振込の処理は共通invoice詳細（🧾請求書）
+   だけで行う」という構造に統一されたため、旧実装は全て削除した。
+   この画面の役割はこれだけ：ファイル選択 → invoice作成＋証憑保存（intake_uploadアクション。
+   マネーフォワードへは何も送信しない）→ 取込完了 →「🧾請求書一覧で確認」で共通invoice詳細へ
    ============================================================ */
-let MFU_STATE={};
-async function mfuCallTenants(){
-  const r=await mfCall("list_tenants");
-  return (r.ok&&r.body.tenants)||[];
-}
-function mfuLabelOf(side){ if(!side||!side.account_name) return ""; return side.sub_account_name?`${side.account_name}/${side.sub_account_name}`:side.account_name; }
-function mfuBuildAccountIndex(accounts){
-  const map=new Map(); let dl="";
-  for(const a of accounts){
-    map.set(a.name,{account_id:a.id,sub_account_id:null,account_name:a.name,sub_account_name:null});
-    dl+=`<option value="${esc(a.name)}">`;
-    for(const sa of (a.sub_accounts||[])){
-      const label=`${a.name}/${sa.name}`;
-      map.set(label,{account_id:a.id,sub_account_id:sa.id,account_name:a.name,sub_account_name:sa.name});
-      dl+=`<option value="${esc(label)}">`;
-    }
-  }
-  return {map,dl};
-}
-
+let UPLOAD_STATE={files:[],recent:[]};
 async function renderUploadInvoiceTab(u){
   $("tabbody").innerHTML=`<section class="invoice-list active"><div class="card" style="padding:16px"><div class="spin" style="padding:20px 0">読み込み中…</div></div></section>`;
-  const tenants=await mfuCallTenants();
+  await ensureCorpStoreCache();
   const recentR=await authed(`/rest/v1/invoices?email_id=is.null&select=*&order=created_at.desc&limit=30`);
-  MFU_STATE={tenants, recent:(recentR.ok&&Array.isArray(recentR.body))?recentR.body:[]};
+  UPLOAD_STATE={files:[],recent:(recentR.ok&&Array.isArray(recentR.body))?recentR.body:[]};
   $("tabbody").innerHTML=`
     <section class="invoice-list active">
       <div class="card" style="padding:16px;margin-bottom:14px">
-        <h3 style="font-size:14px;margin-bottom:6px">📤 アップロード請求書</h3>
-        <div style="font-size:12px;color:var(--muted);margin-bottom:12px">メールに来ない請求書（手渡し・現金精算・郵送のPDF等）を、ここから直接マネーフォワードへ仕訳登録できます。</div>
-        <div id="mfu-box">${tenants.length?"":'<div class="err">マネーフォワードと連携している事業者がありません（設定タブ・引継ぎ書を確認してください）</div>'}</div>
+        <h3 style="font-size:14px;margin-bottom:6px">📤 アップロード請求書（取込専用）</h3>
+        <div style="font-size:12px;color:var(--muted);margin-bottom:12px">メールに来ない請求書（手渡し・現金精算・郵送のPDF等）を取り込みます。<b>ここでは取込だけを行います。</b>会計登録・PL反映・広告費反映・精算書連携・振込などの処理は、取込後に「🧾請求書」一覧から行ってください。</div>
+        <div class="ai-grid">
+          <div class="ai-field"><small>請求元（分かれば・後からでも入力できます）</small><input id="up-vendor"></div>
+          <div class="ai-field"><small>対象法人</small><select id="up-corp"><option value="">（未設定）</option>${(CORP_STORE_CACHE&&CORP_STORE_CACHE.corporations||[]).map(c=>`<option value="${esc(c.id)}">${esc(c.name)}</option>`).join("")}</select></div>
+          <div class="ai-field"><small>対象店舗</small><select id="up-store"><option value="">（未設定）</option>${(CORP_STORE_CACHE&&CORP_STORE_CACHE.stores||[]).map(s=>`<option value="${esc(s.id)}">${esc(s.name)}</option>`).join("")}</select></div>
+        </div>
+        <div id="up-drop" style="border:2px dashed var(--m-line);border-radius:10px;padding:20px;text-align:center;font-size:12px;color:var(--muted);margin-top:12px">
+          請求書のファイル（PDF・画像。複数可）をここにドラッグ＆ドロップ、または<br>
+          <input type="file" id="up-file" multiple style="margin-top:8px">
+        </div>
+        <div id="up-filelist" style="margin-top:8px;font-size:12px"></div>
+        <button class="hq-btn primary" style="margin-top:10px" id="up-submit">🧾 請求書として取込</button>
+        <div class="err" id="up-msg" style="margin-top:6px"></div>
       </div>
       <div class="card hq-tablewrap" style="padding:0">
-        <div style="padding:12px 16px 0"><h3 style="font-size:14px">最近アップロードした請求書</h3></div>
+        <div style="padding:12px 16px 0"><h3 style="font-size:14px">最近取り込んだ請求書</h3></div>
         <table class="invoice-table">
-          <thead><tr><th>登録日</th><th>取引先</th><th>金額</th><th>伝票番号</th></tr></thead>
-          <tbody>${MFU_STATE.recent.length?MFU_STATE.recent.map(x=>`<tr><td>${fmtD(x.created_at)}</td><td>${esc(x.vendor_name||"—")}</td><td>${yen(x.amount)}</td><td>${esc(x.mf_journal_number!=null?String(x.mf_journal_number):"—")}</td></tr>`).join(""):'<tr><td colspan="4">まだアップロードした請求書はありません</td></tr>'}</tbody>
+          <thead><tr><th>取込日</th><th>取引先</th><th>金額</th><th>会計状態</th><th></th></tr></thead>
+          <tbody>${UPLOAD_STATE.recent.length?UPLOAD_STATE.recent.map(x=>`<tr>
+            <td>${fmtD(x.created_at)}</td><td>${esc(x.vendor_name||"—")}</td><td>${yen(x.amount)}</td>
+            <td>${x.mf_journal_id?'<span class="invoice-status done">会計済</span>':'<span class="invoice-status wait">未会計</span>'}</td>
+            <td><button class="hq-btn" style="font-size:11px;padding:6px 9px" data-open-invoice="${esc(x.id)}">🧾請求書一覧で確認</button></td>
+          </tr>`).join(""):'<tr><td colspan="5">まだ取り込んだ請求書はありません</td></tr>'}</tbody>
         </table>
       </div>
     </section>`;
-  if(!tenants.length) return;
-  await mfuLoadForTenant(tenants[0].id,tenants);
+  wireUploadInvoiceTab(u);
 }
-
-async function mfuLoadForTenant(tenantId,tenants){
-  const box=$("mfu-box");
-  box.innerHTML="読み込み中…（勘定科目・仕訳辞書を確認しています）";
-  const [accRes,deptRes,tplR]=await Promise.all([
-    mfCall("accounts",{tenant_id:tenantId}),
-    mfCall("list_departments",{tenant_id:tenantId}),
-    authed(`/rest/v1/mf_journal_templates?tenant_id=eq.${encodeURIComponent(tenantId)}&select=id,label,branches&order=label`),
-  ]);
-  if(!accRes.ok){ box.innerHTML=`<div class="err">勘定科目の取得に失敗しました: ${esc(accRes.body.error||"")}</div>`; return; }
-  const {map,dl}=mfuBuildAccountIndex(accRes.body.accounts||[]);
-  const tenantLabel=(tenants||[]).find(t=>t.id===tenantId)?.label||tenantId;
-  MFU_STATE={
-    ...MFU_STATE,
-    tenantId, tenantLabel, tenants: tenants||[],
-    accounts: accRes.body.accounts||[], accountLabelMap:map, accountDatalistHtml:dl,
-    departments: (deptRes.ok&&deptRes.body.departments)||[], taxes: (deptRes.ok&&deptRes.body.taxes)||[],
-    templates: (tplR.ok&&Array.isArray(tplR.body))?tplR.body:[],
-    mode:"manual",
-    branches: [{debitLabel:"",creditLabel:"",department_id:"",amount:"",remark:""}],
-    vendorName:"", date:new Date().toISOString().slice(0,10), remark:"",
-    journalResults:[], journalKeyword:"",
-  };
-  mfuRenderForm();
-}
-
-function mfuAddBranchRow(){ MFU_STATE.branches.push({debitLabel:"",debitAmount:"",creditLabel:"",creditAmount:"",department_id:"",remark:""}); }
-function mfuApplyBranches(branches){
-  MFU_STATE.branches=branches.length?branches:[{debitLabel:"",debitAmount:"",creditLabel:"",creditAmount:"",department_id:"",remark:""}];
-  MFU_STATE.mode="manual";
-  mfuRenderForm();
-}
-// 2026-08-31: 借方・貸方どちらか片方だけの行にも対応（mfjと同じ拡張。詳細はmfj側のコメント参照）
-function mfuBranchRowHtml(br,idx){
-  const deptOptions=`<option value="">（指定なし）</option>`+(MFU_STATE.departments||[]).map(d=>`<option value="${esc(d.id)}" ${br.department_id===d.id?"selected":""}>${esc(d.name)}</option>`).join("");
-  return `<tr data-idx="${idx}">
-    <td class="mfj-rmcell">${MFU_STATE.branches.length>1?`<button data-mfurm="${idx}" title="この行を削除">−</button>`:""}</td>
-    <td>
-      <input list="mfu-acc-datalist" class="mfu-debit" data-idx="${idx}" value="${esc(br.debitLabel||"")}" placeholder="借方勘定科目（空欄可）">
-      <select class="mfu-dept" data-idx="${idx}" style="margin-top:4px">${deptOptions}</select>
-    </td>
-    <td><input type="number" class="mfu-debit-amount mfj-amt" data-idx="${idx}" value="${br.debitAmount??""}" placeholder="金額"></td>
-    <td><input list="mfu-acc-datalist" class="mfu-credit" data-idx="${idx}" value="${esc(br.creditLabel||"")}" placeholder="貸方勘定科目（空欄可）"></td>
-    <td><input type="number" class="mfu-credit-amount mfj-amt" data-idx="${idx}" value="${br.creditAmount??""}" placeholder="金額"></td>
-    <td><textarea class="mfu-remark" data-idx="${idx}" placeholder="行ごとの摘要（空欄なら全体の摘要を使用）">${esc(br.remark||"")}</textarea></td>
-  </tr>`;
-}
-function mfuUpdateBalance(){
-  const totalDebit=MFU_STATE.branches.reduce((s,b)=>s+(Number(b.debitAmount)||0),0);
-  const totalCredit=MFU_STATE.branches.reduce((s,b)=>s+(Number(b.creditAmount)||0),0);
-  if($("mfu-debit-total")) $("mfu-debit-total").textContent=yen(totalDebit);
-  if($("mfu-credit-total")) $("mfu-credit-total").textContent=yen(totalCredit);
-  if($("mfu-diff-amt")) $("mfu-diff-amt").textContent=yen(totalDebit-totalCredit);
-  if($("mfu-diff-box")) $("mfu-diff-box").className="box "+(totalDebit===totalCredit?"ok":"ng");
-}
-function mfuWireBranchRows(){
-  document.querySelectorAll(".mfu-debit").forEach(el=>el.oninput=()=>{ MFU_STATE.branches[+el.dataset.idx].debitLabel=el.value; });
-  document.querySelectorAll(".mfu-credit").forEach(el=>el.oninput=()=>{ MFU_STATE.branches[+el.dataset.idx].creditLabel=el.value; });
-  document.querySelectorAll(".mfu-dept").forEach(el=>el.onchange=()=>{ MFU_STATE.branches[+el.dataset.idx].department_id=el.value; });
-  document.querySelectorAll(".mfu-remark").forEach(el=>el.oninput=()=>{ MFU_STATE.branches[+el.dataset.idx].remark=el.value; });
-  document.querySelectorAll(".mfu-debit-amount").forEach(el=>el.oninput=()=>{ MFU_STATE.branches[+el.dataset.idx].debitAmount=el.value; mfuUpdateBalance(); });
-  document.querySelectorAll(".mfu-credit-amount").forEach(el=>el.oninput=()=>{ MFU_STATE.branches[+el.dataset.idx].creditAmount=el.value; mfuUpdateBalance(); });
-  document.querySelectorAll("[data-mfurm]").forEach(el=>el.onclick=()=>{ MFU_STATE.branches.splice(+el.dataset.mfurm,1); mfuRenderForm(); });
-}
-
-async function mfuRunJournalSearch(kw){
-  $("mfu-journal-results").innerHTML="検索中…";
-  const r=await mfCall("list_journals",{keyword:kw,tenant_id:MFU_STATE.tenantId});
-  MFU_STATE.journalResults=(r.ok&&r.body.results)||[];
-  MFU_STATE.journalKeyword=kw;
-  mfuRenderJournalResults();
-}
-function mfuRenderJournalResults(){
-  const el=$("mfu-journal-results");
-  if(!el) return;
-  const rs=MFU_STATE.journalResults;
-  el.innerHTML=rs.length?rs.map((r,i)=>`<div class="ai-field" style="margin-bottom:4px"><small>${esc(r.transaction_date||"")}</small>${esc(r.summary)}<div class="mail-actions" style="margin-top:4px"><button data-mfupick="${i}" style="font-size:12px">この仕訳を使う</button></div></div>`).join("")
-    :`<div style="font-size:12px;color:var(--muted)">${MFU_STATE.journalKeyword?"該当する過去の仕訳が見つかりませんでした":"キーワードを入力して検索してください"}</div>`;
-  document.querySelectorAll("[data-mfupick]").forEach(btn=>btn.onclick=()=>{
-    const r=MFU_STATE.journalResults[+btn.dataset.mfupick];
-    const amt=(r.template.debit&&r.template.debit.value)||(r.template.credit&&r.template.credit.value)||"";
-    mfuApplyBranches([{
-      debitLabel:mfuLabelOf(r.template.debit), debitAmount:r.template.debit?amt:"",
-      creditLabel:mfuLabelOf(r.template.credit), creditAmount:r.template.credit?amt:"",
-      department_id:(r.template.debit&&r.template.debit.department_id)||"", tax_id:(r.template.debit&&r.template.debit.tax_id)||"",
-      credit_department_id:(r.template.credit&&r.template.credit.department_id)||"", credit_tax_id:(r.template.credit&&r.template.credit.tax_id)||"",
-      remark:r.template.remark||"",
-    }]);
-  });
-}
-function mfuRenderTemplateResults(){
-  const el=$("mfu-tpl-results");
-  if(!el) return;
-  const all=MFU_STATE.templates||[];
-  const q=(MFU_STATE.tplSearchQuery||"").trim();
-  const tpls=q?all.filter(t=>(t.label||"").includes(q)):all;
-  el.innerHTML=tpls.length?tpls.map(t=>{
-    const sum=(t.branches||[]).map(b=>`${mfuLabelOf(b.debit)||"?"}／${mfuLabelOf(b.credit)||"?"}`).join("、");
-    return `<div class="mfj-tpl-item"><div><div class="lbl">${esc(t.label)}</div><div class="sum">${esc(sum)}（${(t.branches||[]).length}行）</div></div><button data-mfutpluse="${esc(t.id)}" style="font-size:12px;white-space:nowrap">この仕訳辞書を使う</button></div>`;
-  }).join("")
-    :(q?`<div style="font-size:12px;color:var(--muted)">該当する仕訳辞書が見つかりません</div>`:`<div style="font-size:12px;color:var(--muted)">この事業者にはまだ仕訳辞書が登録されていません（設定タブから登録できます）。</div>`);
-  if($("mfu-tpl-search")) $("mfu-tpl-search").oninput=()=>{ MFU_STATE.tplSearchQuery=$("mfu-tpl-search").value; mfuRenderTemplateResults(); };
-  document.querySelectorAll("[data-mfutpluse]").forEach(btn=>btn.onclick=()=>{
-    const t=MFU_STATE.templates.find(x=>x.id===btn.dataset.mfutpluse);
-    const branches=(t.branches||[]).map(b=>({
-      debitLabel:mfuLabelOf(b.debit), debitAmount:b.debit?(b.debit.value??b.amount??""):"",
-      creditLabel:mfuLabelOf(b.credit), creditAmount:b.credit?(b.credit.value??b.amount??""):"",
-      department_id:b.department_id||"", tax_id:b.tax_id||"",
-      credit_department_id:b.credit_department_id||"", credit_tax_id:b.credit_tax_id||"",
-      remark:b.remark||"",
-    }));
-    mfuApplyBranches(branches);
-  });
-}
-
-function mfuRenderForm(){
-  const box=$("mfu-box");
-  const mode=MFU_STATE.mode;
-  const totalDebit=MFU_STATE.branches.reduce((s,b)=>s+(Number(b.debitAmount)||0),0);
-  const totalCredit=MFU_STATE.branches.reduce((s,b)=>s+(Number(b.creditAmount)||0),0);
-  box.innerHTML=`
-    <datalist id="mfu-acc-datalist">${MFU_STATE.accountDatalistHtml||""}</datalist>
-    <div class="ai-grid">
-      ${MFU_STATE.tenants.length>1?`<div class="ai-field"><small>登録先の事業者</small><select id="mfu-tenant">${MFU_STATE.tenants.map(t=>`<option value="${esc(t.id)}" ${t.id===MFU_STATE.tenantId?"selected":""}>${esc(t.label)}</option>`).join("")}</select></div>`:""}
-      <div class="ai-field"><small>取引先名</small><input id="mfu-vendor" value="${esc(MFU_STATE.vendorName||"")}" placeholder="例: ○○商店"></div>
-      <div class="ai-field"><small>日付（会計計上日）</small><input id="mfu-date" type="date" value="${esc(MFU_STATE.date)}"></div>
-      <div class="ai-field"><small>摘要（全体）</small><input id="mfu-remark" value="${esc(MFU_STATE.remark||"")}"></div>
-    </div>
-    <div class="ai-field" style="margin-top:8px"><small>証憑ファイル（写真・PDF。複数可・任意）</small><input id="mfu-files" type="file" accept="application/pdf,image/*" multiple></div>
-
-    <div class="mail-actions" style="margin:10px 0 8px">
-      <button data-mfumode="journal" ${mode==="journal"?'class="primary"':""}>📖 過去の仕訳から選ぶ</button>
-      <button data-mfumode="dict" ${mode==="dict"?'class="primary"':""}>📗 仕訳辞書から選ぶ${MFU_STATE.templates.length?`（${MFU_STATE.templates.length}）`:""}</button>
-      <button data-mfumode="manual" ${mode==="manual"?'class="primary"':""}>🔧 直接入力</button>
-    </div>
-    ${mode==="journal"?`<div id="mfu-journal-picker">
-      <input id="mfu-journal-search" placeholder="会社名や勘定科目名で検索" value="${esc(MFU_STATE.journalKeyword||"")}">
-      <div id="mfu-journal-results" style="margin-top:6px"></div>
-    </div>`:mode==="dict"?`<div id="mfu-tpl-picker"><input id="mfu-tpl-search" placeholder="🔍 仕訳辞書の名前で検索" value="${esc(MFU_STATE.tplSearchQuery||"")}" style="max-width:240px;margin-bottom:8px"><div id="mfu-tpl-results"></div></div>`:`
-    <div class="mfj-balance">
-      <div class="box"><small>借方合計</small><b id="mfu-debit-total">${yen(totalDebit)}</b></div>
-      <div class="box"><small>貸方合計</small><b id="mfu-credit-total">${yen(totalCredit)}</b></div>
-      <div class="box ${totalDebit===totalCredit?"ok":"ng"}" id="mfu-diff-box"><small>差額</small><b id="mfu-diff-amt">${yen(totalDebit-totalCredit)}</b></div>
-    </div>
-    <div class="mfj-gridwrap">
-      <table class="mfj-grid">
-        <thead>
-          <tr><th rowspan="2" style="width:26px"></th><th colspan="2" class="side">借方</th><th colspan="2" class="side" style="background:var(--m-greensoft);color:var(--m-green)">貸方</th><th rowspan="2">摘要（行ごと・任意）</th></tr>
-          <tr><th>勘定科目・部門</th><th>金額</th><th>勘定科目</th><th>金額</th></tr>
-        </thead>
-        <tbody id="mfu-branch-rows">${MFU_STATE.branches.map((br,i)=>mfuBranchRowHtml(br,i)).join("")}</tbody>
-      </table>
-    </div>
-    <div style="font-size:10px;color:var(--muted);margin-top:4px">💡 借方・貸方はどちらか片方だけの行も作れます（例: 借方2行を貸方1行にまとめる）。借方合計と貸方合計さえ一致していれば登録できます</div>
-    <div class="mail-actions" style="margin-top:6px">
-      <button id="mfu-add-row">＋ 明細行を追加（振替伝票・複合仕訳の場合）</button>
-      <button id="mfu-save-template">💾 この内容を仕訳辞書に登録</button>
-    </div>
-    <div class="mail-actions" style="margin-top:10px">
-      <button class="primary" id="mfu-confirm">👁 プレビュー・確認画面へ</button>
-    </div>`}
-    <div class="err" id="mfu-msg" style="margin-top:6px"></div>
-  `;
-  if(MFU_STATE.tenants.length>1) $("mfu-tenant").onchange=e=>mfuLoadForTenant(e.target.value,MFU_STATE.tenants);
-  $("mfu-vendor").oninput=()=>{ MFU_STATE.vendorName=$("mfu-vendor").value; };
-  $("mfu-date").onchange=()=>{ MFU_STATE.date=$("mfu-date").value; };
-  $("mfu-remark").oninput=()=>{ MFU_STATE.remark=$("mfu-remark").value; };
-  document.querySelectorAll("[data-mfumode]").forEach(btn=>btn.onclick=()=>{
-    MFU_STATE.mode=btn.dataset.mfumode;
-    mfuRenderForm();
-  });
-  if(mode==="journal"){
-    mfuRenderJournalResults();
-    let t=null;
-    $("mfu-journal-search").oninput=()=>{ clearTimeout(t); const kw=$("mfu-journal-search").value.trim(); t=setTimeout(()=>mfuRunJournalSearch(kw),350); };
-    return;
-  }
-  if(mode==="dict"){ mfuRenderTemplateResults(); return; }
-  mfuWireBranchRows();
-  $("mfu-add-row").onclick=()=>{ mfuAddBranchRow(); mfuRenderForm(); };
-  $("mfu-save-template").onclick=mfuSaveAsTemplate;
-  $("mfu-confirm").onclick=()=>mfuOpenPreview();
-}
-
-async function mfuSaveAsTemplate(){
-  const label=(prompt("仕訳辞書として登録する名前を入力してください（例: 【未払金】アルバイト給与）")||"").trim();
-  if(!label) return;
-  const structured=[];
-  for(const b of MFU_STATE.branches){
-    const debit=b.debitLabel?MFU_STATE.accountLabelMap.get(b.debitLabel):null;
-    const credit=b.creditLabel?MFU_STATE.accountLabelMap.get(b.creditLabel):null;
-    if(b.debitLabel&&!debit){ alert("借方をプルダウンの候補から選んでから登録してください"); return; }
-    if(b.creditLabel&&!credit){ alert("貸方をプルダウンの候補から選んでから登録してください"); return; }
-    if(!debit&&!credit) continue;
-    structured.push({
-      debit:debit?{...debit,value:Number(b.debitAmount)||null}:null,
-      credit:credit?{...credit,value:Number(b.creditAmount)||null}:null,
-      department_id:b.department_id||null, department_name:(MFU_STATE.departments.find(d=>d.id===b.department_id)||{}).name||null,
-      tax_id:b.tax_id||null, tax_name:(MFU_STATE.taxes.find(t=>t.id===b.tax_id)||{}).name||null,
-      credit_department_id:b.credit_department_id||null, credit_department_name:(MFU_STATE.departments.find(d=>d.id===b.credit_department_id)||{}).name||null,
-      credit_tax_id:b.credit_tax_id||null, credit_tax_name:(MFU_STATE.taxes.find(t=>t.id===b.credit_tax_id)||{}).name||null,
-      remark:b.remark||null,
-    });
-  }
-  if(!structured.length){ alert("明細行がありません"); return; }
-  const r=await authed("/rest/v1/mf_journal_templates",{method:"POST",headers:{Prefer:"return=minimal"},body:JSON.stringify({tenant_id:MFU_STATE.tenantId,label,branches:structured,created_by:ME.id})});
-  const msg=$("mfu-msg");
-  if(!r.ok){ msg.className="err"; msg.textContent="仕訳辞書への登録に失敗しました"; return; }
-  msg.className="err msg-ok"; msg.textContent=`仕訳辞書「${label}」に登録しました`;
-  MFU_STATE.templates=(await authed(`/rest/v1/mf_journal_templates?tenant_id=eq.${encodeURIComponent(MFU_STATE.tenantId)}&select=id,label,branches&order=label`)).body||[];
-}
-
-function mfuFileToBase64(file){
+function uploadFileToBase64(file){
   return new Promise((resolve,reject)=>{
     const reader=new FileReader();
-    reader.onload=()=>resolve(String(reader.result).split(",")[1]||"");
-    reader.onerror=reject;
+    reader.onload=()=>{ const s=String(reader.result||""); resolve(s.substring(s.indexOf(",")+1)); };
+    reader.onerror=()=>reject(new Error("ファイルの読み込みに失敗しました"));
     reader.readAsDataURL(file);
   });
 }
-
-function mfuOpenPreview(){
-  const msg=$("mfu-msg"); msg.className="err"; msg.textContent="";
-  const vendorName=($("mfu-vendor")?.value||"").trim();
-  if(!vendorName){ msg.textContent="取引先名を入力してください"; return; }
-  const branchesPayload=[];
-  let totalDebit=0, totalCredit=0;
-  for(const b of MFU_STATE.branches){
-    const debit=b.debitLabel?MFU_STATE.accountLabelMap.get(b.debitLabel):null;
-    const credit=b.creditLabel?MFU_STATE.accountLabelMap.get(b.creditLabel):null;
-    if(b.debitLabel&&!debit){ msg.textContent="借方はプルダウンの候補から選択してください（自由入力のままだと登録できません）"; return; }
-    if(b.creditLabel&&!credit){ msg.textContent="貸方はプルダウンの候補から選択してください（自由入力のままだと登録できません）"; return; }
-    if(!debit&&!credit) continue;
-    const dAmt=debit?Number(b.debitAmount):null, cAmt=credit?Number(b.creditAmount):null;
-    if(debit&&(!dAmt||dAmt<=0)){ msg.textContent="借方の金額が未入力（0円）の行があります"; return; }
-    if(credit&&(!cAmt||cAmt<=0)){ msg.textContent="貸方の金額が未入力（0円）の行があります"; return; }
-    if(debit) totalDebit+=dAmt; if(credit) totalCredit+=cAmt;
-    branchesPayload.push({debit,debitAmount:dAmt,credit,creditAmount:cAmt,department_id:b.department_id||null,tax_id:b.tax_id||null,credit_department_id:b.credit_department_id||null,credit_tax_id:b.credit_tax_id||null,remark:b.remark||""});
-  }
-  if(!branchesPayload.length){ msg.textContent="明細行がありません"; return; }
-  if(totalDebit!==totalCredit){ msg.textContent=`借方合計（${yen(totalDebit)}）と貸方合計（${yen(totalCredit)}）が一致していません`; return; }
-  const date=$("mfu-date").value, remark=$("mfu-remark").value;
-  const files=Array.from($("mfu-files").files||[]);
-  const entries=branchesPayload.map(b=>{
-    const deptName=(MFU_STATE.departments.find(d=>d.id===b.department_id)||{}).name||"";
-    return `<div class="mfj-preview-entry">
-      <div class="mfj-preview-head"><div>借方</div><div>貸方</div></div>
-      <div class="mfj-preview-body">
-        <div class="mfj-preview-side"><div class="acc">${b.debit?esc(mfuLabelOf(b.debit)):"—"}</div><div class="sub">${esc(deptName)}</div><div class="money">${b.debit?yen(b.debitAmount):"—"}</div></div>
-        <div class="mfj-preview-side"><div class="acc">${b.credit?esc(mfuLabelOf(b.credit)):"—"}</div><div class="sub"></div><div class="money">${b.credit?yen(b.creditAmount):"—"}</div></div>
-      </div>
-      ${b.remark?`<div class="mfj-preview-remark">${esc(b.remark)}</div>`:""}
-    </div>`;
-  }).join("");
-
-  const modal=document.createElement("div");
-  modal.className="modal-bg"; modal.id="mfuPreviewModal";
-  modal.innerHTML=`<div class="modal" style="max-width:820px">
-    <div class="mhead"><h2>🧾 振替伝票プレビュー</h2><button class="linkbtn" id="mfuPreviewClose" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:13px">閉じる ×</button></div>
-    <div style="font-size:12px;color:var(--muted);margin-bottom:8px">登録先: <b>${esc(MFU_STATE.tenantLabel||MFU_STATE.tenantId)}</b>　取引先: <b>${esc(vendorName)}</b>　日付: <b>${esc(date)}</b>　全体の摘要: <b>${esc(remark||"（なし）")}</b>${files.length?`　添付: <b>${files.length}件</b>`:""}</div>
-    <div class="mfj-balance" style="margin:0 0 10px">
-      <div class="box"><small>借方合計</small><b>${yen(totalDebit)}</b></div>
-      <div class="box"><small>貸方合計</small><b>${yen(totalCredit)}</b></div>
-      <div class="box ok"><small>差額</small><b>¥0</b></div>
-    </div>
-    ${entries}
-    <div class="err" id="mfuPreviewMsg" style="margin-top:6px"></div>
-    <div class="mail-actions" style="margin-top:12px">
-      <button id="mfuPreviewBack">← 戻って修正</button>
-      <button class="primary" id="mfuPreviewSubmit">✅ この内容で登録</button>
-    </div>
-    <div id="plfeebox-mfu"></div>
-  </div>`;
-  document.body.appendChild(modal);
-  pushNav({modal:true});
-  modal.onclick=e=>{ if(e.target===modal) history.back(); };
-  $("mfuPreviewClose").onclick=()=>history.back();
-  $("mfuPreviewBack").onclick=()=>history.back();
-  $("mfuPreviewSubmit").onclick=async()=>{
-    $("mfuPreviewSubmit").disabled=true;
-    const pmsg=$("mfuPreviewMsg"); pmsg.className="err"; pmsg.textContent="登録中…";
-    let voucherFiles=[];
-    try{
-      voucherFiles=await Promise.all(files.slice(0,5).map(async f=>({file_name:f.name.slice(0,255),file_data:await mfuFileToBase64(f)})));
-    }catch(e){ pmsg.textContent="添付ファイルの読み込みに失敗しました: "+e.message; $("mfuPreviewSubmit").disabled=false; return; }
-    const debitAccountNames=branchesPayload.filter(b=>b.debit).map(b=>mfuLabelOf(b.debit));
-    const payload={
-      tenant_id: MFU_STATE.tenantId,
-      vendor_name: vendorName,
-      branches: branchesPayload.map(b=>({
-        debit:b.debit?{account_id:b.debit.account_id,sub_account_id:b.debit.sub_account_id||undefined,value:b.debitAmount}:undefined,
-        credit:b.credit?{account_id:b.credit.account_id,sub_account_id:b.credit.sub_account_id||undefined,value:b.creditAmount}:undefined,
-        department_id:b.department_id||null, tax_id:b.tax_id||null,
-        credit_department_id:b.credit_department_id||null, credit_tax_id:b.credit_tax_id||null,
-        remark:b.remark||undefined,
-      })),
-      transaction_date: date,
-      remark,
-      voucher_files: voucherFiles,
-      // PL連携対象科目かどうかの判定用（手数料等→PL自動反映・ラウンド5指示書§6.1）。MF送信には使わない
-      debit_account_names: debitAccountNames,
-    };
-    const {ok,body:j}=await mfCall("create_standalone",payload);
-    if(!ok){ pmsg.textContent=j.error||"登録に失敗しました"; $("mfuPreviewSubmit").disabled=false; return; }
-    pmsg.className="err msg-ok";
-    pmsg.textContent=`登録しました（伝票番号: ${j.journal_number??"-"}）`
-      +(j.voucher_attached?`。添付ファイルも${j.voucher_attached}件添付しました`:j.voucher_error?`（添付: ${j.voucher_error}）`:"");
-    // 2026-09-03変更: ユーザー要望「アップロード請求書のタブも入口でしかないから、アップロード
-    // したら請求書一覧のほうに飛んで、そこから処理する流れにしてほしい」に対応。登録直後にこの場で
-    // PL反映まで済ませようとせず、統合請求書一覧タブへ切り替えたうえで、その場で新しい請求書の
-    // 処理画面（openStandaloneInvoiceModal＝会計・仕訳/PL・広告・精算書/振込等の工程カード）を
-    // 続けて開く（一覧に戻るだけでなく、続きの処理へそのまま入れるようにするため）
-    if(j.invoice_id){
-      pmsg.textContent+="。続けて処理画面を開きます…";
-      setTimeout(async()=>{
-        history.back(); // アップロードモーダルを閉じる
-        TAB="unified";
-        await renderTabBody(u);
-        await openStandaloneInvoiceModal(u,j.invoice_id);
-      },700);
-    }else{
-      pmsg.textContent+="。画面を更新します…";
-      setTimeout(()=>{ history.back(); renderUploadInvoiceTab(); },900);
-    }
+function wireUploadInvoiceTab(u){
+  const drop=$("up-drop");
+  const renderFileList=()=>{
+    $("up-filelist").innerHTML=UPLOAD_STATE.files.length
+      ? UPLOAD_STATE.files.map((f,i)=>`<div>📎 ${esc(f.name)} <button data-rmfile="${i}" style="margin-left:6px;font-size:11px">✕ 外す</button></div>`).join("")
+      : "";
+    document.querySelectorAll("[data-rmfile]").forEach(el=>el.onclick=()=>{ UPLOAD_STATE.files.splice(+el.dataset.rmfile,1); renderFileList(); });
   };
+  const addFiles=(fileList)=>{ for(const f of fileList) UPLOAD_STATE.files.push(f); renderFileList(); };
+  $("up-file").onchange=e=>addFiles(e.target.files);
+  ["dragover","dragenter"].forEach(ev=>drop.addEventListener(ev,e=>{ e.preventDefault(); drop.style.background="var(--m-bg,#f4f1eb)"; drop.style.borderColor="var(--accent)"; }));
+  ["dragleave","dragend"].forEach(ev=>drop.addEventListener(ev,e=>{ e.preventDefault(); drop.style.background=""; drop.style.borderColor=""; }));
+  drop.addEventListener("drop",e=>{
+    e.preventDefault(); drop.style.background=""; drop.style.borderColor="";
+    if(e.dataTransfer.files&&e.dataTransfer.files.length) addFiles(e.dataTransfer.files);
+  });
+  $("up-submit").onclick=async()=>{
+    const msg=$("up-msg");
+    if(!UPLOAD_STATE.files.length){ msg.textContent="ファイルを選択してください"; return; }
+    $("up-submit").disabled=true; msg.className="err"; msg.textContent="取込中…";
+    try{
+      const voucherFiles=[];
+      for(const f of UPLOAD_STATE.files) voucherFiles.push({file_name:f.name, file_data:await uploadFileToBase64(f)});
+      const payload={
+        vendor_name:$("up-vendor").value.trim()||null,
+        corporation_id:$("up-corp").value||null,
+        store_id:$("up-store").value||null,
+        voucher_files:voucherFiles,
+      };
+      const {ok,body:j}=await mfCall("intake_upload",payload);
+      if(!ok){ msg.textContent=j.error||"取込に失敗しました"; $("up-submit").disabled=false; return; }
+      msg.className="err msg-ok"; msg.textContent="取り込みました。続けて請求書一覧を開きます…";
+      // 新規取込時のみ自動判定を実行（iv-saveの新規保存時と同じ流儀）。完了を待たずに進める
+      if(j.invoice_id) autoMatchCall({invoice_id:j.invoice_id}).catch(()=>{});
+      setTimeout(async()=>{
+        TAB="unified"; await renderTabBody(u);
+        if(j.invoice_id) await openInvoiceDetail(u,j.invoice_id);
+      },600);
+    }catch(e){ msg.textContent="取込中にエラーが発生しました: "+e.message; $("up-submit").disabled=false; }
+  };
+  document.querySelectorAll("[data-open-invoice]").forEach(el=>el.onclick=()=>openInvoiceDetail(u,el.dataset.openInvoice));
 }
 
 /* ============================================================

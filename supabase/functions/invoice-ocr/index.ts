@@ -116,24 +116,38 @@ Deno.serve(async (req: Request) => {
   } catch (_) {
     return json({ error: "JSONの読み取りに失敗しました" }, 400);
   }
-  const emailId = body?.email_id;
-  if (!emailId) return json({ error: "email_idは必須です" }, 400);
+  const emailId = body?.email_id || null;
+  // 2026-09-04追加: 共通invoice詳細への統合により、メールに紐付かない請求書（アップロード等）
+  // からも同じ「🤖 AIで自動入力」ボタンが使えるよう、invoice_idでも呼び出せるようにした
+  const invoiceId = body?.invoice_id || null;
+  if (!emailId && !invoiceId) return json({ error: "email_idまたはinvoice_idが必要です" }, 400);
   const mailKind = ["invoice", "sales"].includes(body?.mail_kind) ? body.mail_kind : "invoice";
   const isSales = mailKind === "sales";
 
-  // 呼び出し元がこのメールにアクセスできるか（=invoice_can_access()）をRLS越しに確認
+  // 呼び出し元がこのメール／請求書にアクセスできるか（=invoice_can_access()）をRLS越しに確認
   const uc = userClient(req);
-  const { data: emailRow, error: emailErr } = await uc
-    .from("invoice_emails").select("id, subject").eq("id", emailId).maybeSingle();
-  if (emailErr) return json({ error: "確認に失敗しました: " + emailErr.message }, 500);
-  if (!emailRow) return json({ error: "対象が見つからないか権限がありません" }, 403);
+  let subjectForPrompt = "(件名なし)";
+  if (emailId) {
+    const { data: emailRow, error: emailErr } = await uc
+      .from("invoice_emails").select("id, subject").eq("id", emailId).maybeSingle();
+    if (emailErr) return json({ error: "確認に失敗しました: " + emailErr.message }, 500);
+    if (!emailRow) return json({ error: "対象が見つからないか権限がありません" }, 403);
+    subjectForPrompt = emailRow.subject ?? subjectForPrompt;
+  } else {
+    const { data: invRow, error: invErr } = await uc
+      .from("invoices").select("id, vendor_name").eq("id", invoiceId).maybeSingle();
+    if (invErr) return json({ error: "確認に失敗しました: " + invErr.message }, 500);
+    if (!invRow) return json({ error: "対象が見つからないか権限がありません" }, 403);
+    subjectForPrompt = invRow.vendor_name ? `${invRow.vendor_name}（アップロード請求書）` : "（アップロード請求書）";
+  }
 
   const db = svc();
-  const { data: attachments, error: attErr } = await db
+  let attQuery = db
     .from("invoice_attachments")
     .select("id, file_name, mime_type, storage_path, size_bytes")
-    .eq("email_id", emailId)
     .order("created_at", { ascending: true });
+  attQuery = emailId ? attQuery.eq("email_id", emailId) : attQuery.eq("invoice_id", invoiceId);
+  const { data: attachments, error: attErr } = await attQuery;
   if (attErr) return json({ error: "添付の取得に失敗しました: " + attErr.message }, 500);
 
   const candidates = (attachments ?? []).filter((a: any) => {
@@ -147,8 +161,8 @@ Deno.serve(async (req: Request) => {
 
   const content: any[] = [
     { type: "text", text: isSales
-      ? `件名: ${emailRow.subject ?? "(件名なし)"}\n添付ファイルから入金・送金明細の情報を読み取ってください。添付の中に複数件の入金・送金明細（別々の取引）が含まれる場合は、それぞれ別項目として全件返してください（同じ明細の別ページは1件にまとめる）。`
-      : `件名: ${emailRow.subject ?? "(件名なし)"}\n添付ファイルから請求書情報を読み取ってください。添付の中に複数件の請求書（別々の取引先・別々の請求書番号等）が含まれる場合は、それぞれ別項目として全件返してください（同じ請求書の別ページ=表紙+明細等は1件にまとめる）。` },
+      ? `件名: ${subjectForPrompt}\n添付ファイルから入金・送金明細の情報を読み取ってください。添付の中に複数件の入金・送金明細（別々の取引）が含まれる場合は、それぞれ別項目として全件返してください（同じ明細の別ページは1件にまとめる）。`
+      : `件名: ${subjectForPrompt}\n添付ファイルから請求書情報を読み取ってください。添付の中に複数件の請求書（別々の取引先・別々の請求書番号等）が含まれる場合は、それぞれ別項目として全件返してください（同じ請求書の別ページ=表紙+明細等は1件にまとめる）。` },
   ];
   for (const a of candidates) {
     const { data: fileData, error: dlErr } = await db.storage.from(BUCKET).download(a.storage_path);
