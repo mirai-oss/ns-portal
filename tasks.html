@@ -480,6 +480,20 @@ function canFeature(u,key){
   return canManage(u);
 }
 const userName=id=>{const u=USERS.find(x=>x.id===id);return u?u.name:"—";};
+// 2026-09-04: 工程の担当者を複数人選べるようにする対応。DBはassignee_ids（配列・新設）と
+// assignee_id（単数・旧列。ポータル側index.html/portal.htmlの「自分のタスク」バッジが
+// 単数比較のまま参照しているため後方互換で残す＝配列の先頭とDBトリガーが常に同期）の
+// 両方を持つ。クライアント側はこの2関数だけを通して読み書きし、配列の有無を毎回気にしなくて
+// 済むようにする
+function stepAssigneeIds(s){
+  if(s.assignee_ids&&s.assignee_ids.length) return s.assignee_ids;
+  return s.assignee_id?[s.assignee_id]:[];
+}
+function stepAssigneeNames(s){
+  const ids=stepAssigneeIds(s);
+  return ids.length?ids.map(id=>userName(id)).join("・"):"未定";
+}
+function isStepAssignee(s,userId){ return stepAssigneeIds(s).includes(userId); }
 function todayStr(){const d=new Date();return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0");}
 function monthStartStr(){const d=new Date();return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-01";}
 function fmtD(d){ if(!d) return "—"; const t=new Date(d+"T00:00:00"); return `${t.getMonth()+1}/${t.getDate()}`; }
@@ -614,7 +628,7 @@ function applyFilters(list){
     if(FILTER.freq && t.freq!==FILTER.freq) return false;
     if(FILTER.type==="onboarding" && !isOnboardingTask(t)) return false;
     if(FILTER.assignee){
-      const match=sortedSteps(t).some(s=>s.assignee_id===FILTER.assignee);
+      const match=sortedSteps(t).some(s=>isStepAssignee(s,FILTER.assignee));
       if(!match) return false;
     }
     if(FILTER.creator && t.created_by!==FILTER.creator) return false;
@@ -653,7 +667,7 @@ function taskCardHtml(t){
     ${sig.cur?`<div class="meta"><b>工程期日 ${fmtDD(sig.cur.due_date,sig.cur.due_time)}</b> ／ 全体 ${fmtDD(t.due_date,t.due_time)}</div>`:`<div class="meta">期限 ${fmtDD(t.due_date,t.due_time)}</div>`}
     ${steps.length?`<div class="meta">工程 ${doneCount}/${steps.length} 完了</div>`:""}
     ${t.memo?`<div class="memo-line">📝 ${esc((t.memo.split("\n")[0]||"").slice(0,60))}</div>`:""}
-    ${sig.cur?`<div class="now">いま: ${esc(sig.cur.title)}（${esc(userName(sig.cur.assignee_id)||"未定")}）</div>`:""}
+    ${sig.cur?`<div class="now">いま: ${esc(sig.cur.title)}（${esc(stepAssigneeNames(sig.cur))}）</div>`:""}
   </div>`;
 }
 function dueBadgeHtml(sig){
@@ -911,7 +925,7 @@ function renderRepeat(u){
     const stateLabel=t.status==="done"?"✓ 完了":(sig.level==="stall"?`⏸ ${sig.stalledDays}日停止`:(sig.overdue?"超過":(t.status==="todo"?"未着手":"進行中")));
     return `<tr data-open="${t.id}" style="cursor:pointer">
       <td>${esc(t.title)}</td><td>${esc(t.corp)}</td><td>${fmtD(t.target_date)}</td><td>${done}/${steps.length}</td>
-      <td>${sig.cur?esc(userName(sig.cur.assignee_id)||"—")+"（"+esc(sig.cur.title)+"）":"—"}</td>
+      <td>${sig.cur?esc(stepAssigneeNames(sig.cur))+"（"+esc(sig.cur.title)+"）":"—"}</td>
       <td>${fmtDD(t.due_date,t.due_time)}</td><td>${stateLabel}</td></tr>`;
   }).join("")||`<tr><td colspan="7">繰り返しタスクはありません</td></tr>`}
   </table></div></div>`;
@@ -1014,7 +1028,7 @@ function renderDetail(u){
       <div class="err" id="taskactmsg"></div>
     </div>
     <div class="card pad"><div class="summary">
-      <div class="mini"><small>現在の担当</small><b>${esc(userName(sig.cur?.assignee_id)||"—")}</b></div>
+      <div class="mini"><small>現在の担当</small><b>${esc(sig.cur?stepAssigneeNames(sig.cur):"—")}</b></div>
       <div class="mini"><small>全体期限</small><b>${fmtDD(t.due_date,t.due_time)}</b></div>
       <div class="mini"><small>現在工程</small><b>${sig.cur?esc(sig.cur.title):"—"}</b>${sig.cur?.due_date?`<div class="meta" style="margin-top:2px">工程期日 ${fmtDD(sig.cur.due_date,sig.cur.due_time)}</div>`:""}</div>
       <div class="mini"><small>未完了チェック</small><b style="${uncheckedCount?"color:var(--stall)":""}">${uncheckedCount}件</b></div>
@@ -1381,16 +1395,16 @@ function checklistStepHtml(s,items,canTouch){
   </div>`;
 }
 function stepHtml(t,s,u){
-  const canTouch=canManage(u)||s.assignee_id===u.id||(!s.assignee_id);
+  const canTouch=canManage(u)||isStepAssignee(s,u.id)||(!stepAssigneeIds(s).length);
   // Phase3(全面刷新・修正版): デザイン案を見直すと、担当・期限の編集フォーム(ownerline)は
   // 常時表示ではなく process-body ＝工程を開いたときに出てくる折りたたみパネルの中にある
   // （行の見出しには担当・期限の「summary」テキストだけが常時出ている）。PCはデザイン案の
   // この構造どおりに合わせ、添付・チェックリストと同じ1つのパネル(STEP_ATT_OPEN)へ統合する
   const canEditAssign=canManage(u)&&!s.completed_at;
   let metaLine="";
-  if(s.completed_at) metaLine=`担当: ${esc(userName(s.assignee_id)||"—")} ／ 期限 ${fmtDD(s.due_date,s.due_time)} → ${fmtDT(s.completed_at)} 完了${esc(userName(s.completed_by)?" ("+userName(s.completed_by)+")":"")}`;
-  else if(s._isCurrent) metaLine=`<span class="now-tag">いまここ</span> ／ 担当: ${esc(userName(s.assignee_id)||"未定")} ／ 期限 ${fmtDD(s.due_date,s.due_time)}`;
-  else metaLine=`担当: ${esc(userName(s.assignee_id)||"未定")} ／ 期限 ${fmtDD(s.due_date,s.due_time)}`;
+  if(s.completed_at) metaLine=`担当: ${esc(stepAssigneeNames(s))} ／ 期限 ${fmtDD(s.due_date,s.due_time)} → ${fmtDT(s.completed_at)} 完了${esc(userName(s.completed_by)?" ("+userName(s.completed_by)+")":"")}`;
+  else if(s._isCurrent) metaLine=`<span class="now-tag">いまここ</span> ／ 担当: ${esc(stepAssigneeNames(s))} ／ 期限 ${fmtDD(s.due_date,s.due_time)}`;
+  else metaLine=`担当: ${esc(stepAssigneeNames(s))} ／ 期限 ${fmtDD(s.due_date,s.due_time)}`;
   const photos=stepPhotosFor(t,s.id);
   const links=stepLinksFor(t,s.id);
   const checklist=stepChecklistFor(t,s.id);
@@ -1418,7 +1432,7 @@ function stepHtml(t,s,u){
     ${hasPanel&&panelOpen?`<div style="padding:8px 12px 4px" onclick="event.stopPropagation()">
         ${canEditAssign?`<div class="ownerline">
           <div class="fieldbox"><label>工程名</label><input data-steptitle="${s.id}" value="${esc(s.title)}"></div>
-          <div class="fieldbox"><label>担当</label><select data-stepowner="${s.id}"><option value="">未定</option>${assignableUsers().map(x=>`<option value="${x.id}" ${s.assignee_id===x.id?"selected":""}>${esc(x.name)}</option>`).join("")}</select></div>
+          <div class="fieldbox" style="grid-column:1/-1"><label>担当（複数選択可・誰でも完了操作できます）</label><div class="chiprow" style="margin:6px 0 0" data-stepowners="${s.id}">${assignableUsers().map(x=>`<label class="chipcheck"><input type="checkbox" value="${x.id}" ${stepAssigneeIds(s).includes(x.id)?"checked":""}>${esc(x.name)}</label>`).join("")}</div></div>
           <div class="fieldbox"><label>工程期限</label><div style="display:flex;gap:6px"><input type="date" data-stepdue="${s.id}" value="${esc(s.due_date||"")}" style="flex:1"><input type="time" data-steptime="${s.id}" value="${esc(s.due_time||"")}" style="flex:1"></div></div>
         </div>
         <div class="err" id="stepmetamsg-${s.id}"></div>`:""}
@@ -1449,7 +1463,7 @@ function stepAddHtml(){
   if(!STEP_ADD_OPEN) return `<button class="linkbtn" id="stepaddopen" style="margin-top:10px">＋ 工程を追加</button>`;
   return `<div class="resource-add" style="margin-top:10px" onclick="event.stopPropagation()">
     <label>工程名</label><input id="sa-title" placeholder="例: 見積回収">
-    <label>担当（空欄=未定）</label><select id="sa-assignee"><option value="">未定</option>${assignableUsers().map(x=>`<option value="${x.id}">${esc(x.name)}</option>`).join("")}</select>
+    <label>担当（複数選択可・空欄=未定）</label><div class="chiprow" id="sa-assignee">${assignableUsers().map(x=>`<label class="chipcheck"><input type="checkbox" value="${x.id}">${esc(x.name)}</label>`).join("")}</div>
     <label>期限日（任意）</label><input id="sa-due" type="date">
     <label>期限時刻（任意）</label><input id="sa-duetime" type="time">
     <div style="display:flex;gap:8px;margin-top:8px">
@@ -1469,7 +1483,7 @@ function bulkDoneBtnHtml(rows,u){
   const rest=rows.filter(s=>!s.completed_at);
   if(rest.length<2) return "";
   if(rest.some(s=>s.requires_photo)) return `<div class="meta" style="padding:0 12px 6px">※ 写真必須のため一括完了はできません（店舗ごとに写真を添付してください）</div>`;
-  const canDo=s=>canManage(u)||s.assignee_id===u.id||!s.assignee_id;
+  const canDo=s=>canManage(u)||isStepAssignee(s,u.id)||!stepAssigneeIds(s).length;
   if(!rest.every(canDo)) return "";
   const binary=rest.some(s=>s.is_binary);
   return `<div style="padding:0 12px 8px">
@@ -1492,17 +1506,17 @@ function stepOrGroupHtml(t,g,u){
     <div style="padding:0 12px 10px">
     ${sorted.map(s=>{
       const store=STORES.find(x=>x.id===s.store_id); const name=store?store.name:"店舗";
-      const canTouch=canManage(u)||s.assignee_id===u.id||(!s.assignee_id);
+      const canTouch=canManage(u)||isStepAssignee(s,u.id)||(!stepAssigneeIds(s).length);
       const photos=stepPhotosFor(t,s.id);
       if(s.completed_at){
         const badge=s.judgement==="issue"?`<span style="color:var(--stall)">⚠ 異常あり</span>`:(s.is_binary?`<span style="color:var(--ok)">✓ OK</span>`:"✓");
         return `<div class="storecheck-row"><span style="flex:1">${esc(name)}</span>${badge}<span class="meta">${esc(s.issue_note||"—")}</span>${canTouch?`<button class="linkbtn" data-stepundo="${s.id}">↩️</button>`:""}</div>`;
       }
-      if(!canTouch) return `<div class="storecheck-row"><span style="flex:1">${esc(name)}<div class="meta">担当: ${esc(userName(s.assignee_id)||"未定")} ／ 期限 ${fmtDD(s.due_date,s.due_time)}</div></span></div>`;
+      if(!canTouch) return `<div class="storecheck-row"><span style="flex:1">${esc(name)}<div class="meta">担当: ${esc(stepAssigneeNames(s))} ／ 期限 ${fmtDD(s.due_date,s.due_time)}</div></span></div>`;
       const open=OPEN_STEP===s.id;
       return `<div style="border-bottom:1px solid var(--line)">
         <div class="storecheck-row" data-stepopen="${s.id}" style="cursor:pointer">
-          <span style="flex:1">${esc(name)}<div class="meta">担当: ${esc(userName(s.assignee_id)||"未定")} ／ 期限 ${fmtDD(s.due_date,s.due_time)}</div></span><span>${open?"▲":"▼"}</span>
+          <span style="flex:1">${esc(name)}<div class="meta">担当: ${esc(stepAssigneeNames(s))} ／ 期限 ${fmtDD(s.due_date,s.due_time)}</div></span><span>${open?"▲":"▼"}</span>
         </div>
         ${open?`<div class="step-body" style="padding-bottom:10px">
           ${s.is_binary?`<label>判定</label><select id="judge-${s.id}"><option value="">選択してください</option><option value="ok">OK</option><option value="issue">異常あり</option></select>
@@ -1824,8 +1838,9 @@ async function registerTaskAsTemplate(t,u){
   for(let i=0;i<steps.length;i++){
     const s=steps[i];
     const rawStepOffset=s.due_date?diffDaysStr(base,s.due_date):0;
+    const sAssignees=stepAssigneeIds(s);
     const stepBody={
-      template_id:tpl.id, title:s.title, assignee_id:s.assignee_id||null,
+      template_id:tpl.id, title:s.title, assignee_id:sAssignees[0]||null, assignee_ids:sAssignees.length?sAssignees:null,
       offset_days:Math.max(0,rawStepOffset), due_time:s.due_time||null,
       sort_order:(i+1)*10, kind:s.kind||"step",
       is_binary:!!s.is_binary, requires_photo:!!s.requires_photo,
@@ -1908,17 +1923,18 @@ function wireDetail(t,u){
       const step=sortedSteps(t).find(s=>s.id===sid);
       const msg=$("stepmetamsg-"+sid); if(msg){ msg.className="err"; msg.textContent="保存中…"; }
       const newTitle=document.querySelector(`[data-steptitle="${sid}"]`).value.trim();
-      const newAssignee=document.querySelector(`[data-stepowner="${sid}"]`).value||null;
+      const newAssignees=[...document.querySelectorAll(`[data-stepowners="${sid}"] input:checked`)].map(el=>el.value);
       const newDue=document.querySelector(`[data-stepdue="${sid}"]`).value||null;
       const newDueTime=document.querySelector(`[data-steptime="${sid}"]`).value||null;
       if(!newTitle){ if(msg) msg.textContent="工程名を入力してください"; return; }
       btn.disabled=true;
       const r=await authed(`/rest/v1/hq_task_steps?id=eq.${sid}`,{method:"PATCH",headers:{Prefer:"return=minimal"},
-        body:JSON.stringify({title:newTitle,assignee_id:newAssignee,due_date:newDue,due_time:newDueTime})});
+        body:JSON.stringify({title:newTitle,assignee_ids:newAssignees.length?newAssignees:null,due_date:newDue,due_time:newDueTime})});
       if(!r.ok){ if(msg) msg.textContent="保存できませんでした"; btn.disabled=false; return; }
       const changes=[];
       if(step.title!==newTitle) changes.push(`工程名: ${step.title}→${newTitle}`);
-      if((step.assignee_id||null)!==newAssignee) changes.push(`担当: ${userName(step.assignee_id)||"未定"}→${userName(newAssignee)||"未定"}`);
+      const oldAssignees=stepAssigneeIds(step);
+      if(oldAssignees.join(",")!==newAssignees.join(",")) changes.push(`担当: ${oldAssignees.length?oldAssignees.map(userName).join("・"):"未定"}→${newAssignees.length?newAssignees.map(userName).join("・"):"未定"}`);
       if((step.due_date||null)!==newDue||(step.due_time||null)!==newDueTime) changes.push(`期限: ${fmtDD(step.due_date,step.due_time)}→${fmtDD(newDue,newDueTime)}`);
       if(changes.length) await logActivity(t.id,"comment",`工程「${step.title}」を編集（${changes.join("・")}）`,sid);
       CUR_TASK=await fetchTaskDetail(t.id);
@@ -2138,7 +2154,8 @@ function wireDetail(t,u){
     const msg=$("stepaddmsg"); msg.textContent="";
     if(!title){ msg.textContent="工程名を入力してください"; return; }
     const maxSort=Math.max(0,...sortedSteps(t).map(s=>s.sort_order||0));
-    const body={task_id:t.id,title,assignee_id:$("sa-assignee").value||null,due_date:$("sa-due").value||null,due_time:$("sa-duetime").value||null,sort_order:maxSort+10,kind:"step"};
+    const newAssignees=[...document.querySelectorAll("#sa-assignee input:checked")].map(el=>el.value);
+    const body={task_id:t.id,title,assignee_ids:newAssignees.length?newAssignees:null,due_date:$("sa-due").value||null,due_time:$("sa-duetime").value||null,sort_order:maxSort+10,kind:"step"};
     $("stepaddsave").disabled=true; msg.textContent="追加中…";
     const r=await authed("/rest/v1/hq_task_steps",{method:"POST",headers:{Prefer:"return=minimal"},body:JSON.stringify(body)});
     if(!r.ok){ msg.textContent="追加できませんでした"; $("stepaddsave").disabled=false; return; }
@@ -2310,9 +2327,9 @@ function renderTplPick(u){
 }
 
 /* ---------- 単発タスク作成 ---------- */
-let NEW_STEPS=[{title:"",assignee_id:"",due_date:"",due_time:""}];
+let NEW_STEPS=[{title:"",assignee_ids:[],due_date:"",due_time:""}];
 function renderNew(u){
-  NEW_STEPS=[{title:"",assignee_id:"",due_date:"",due_time:""}];
+  NEW_STEPS=[{title:"",assignee_ids:[],due_date:"",due_time:""}];
   CURRENT_RENDER=()=>renderNew(u);
   $("app").innerHTML=`
   <div class="topbar"><h1>＋ 単発タスクを作成</h1><div class="who"><button class="linkbtn" id="back">← 戻る</button></div></div>
@@ -2338,14 +2355,14 @@ function renderNew(u){
   $("nt-vis").onchange=e=>{$("nt-memberswrap").style.display=e.target.value==="members"?"block":"none";};
   wireRichField("nt-desc"); wireRichField("nt-notes");
   renderNewSteps();
-  $("nt-addstep").onclick=()=>{NEW_STEPS.push({title:"",assignee_id:"",due_date:"",due_time:""});renderNewSteps();};
+  $("nt-addstep").onclick=()=>{NEW_STEPS.push({title:"",assignee_ids:[],due_date:"",due_time:""});renderNewSteps();};
   $("nt-send").onclick=()=>submitNewTask(u);
 }
 function renderNewSteps(){
   $("nt-steps").innerHTML=NEW_STEPS.map((s,i)=>`
     <div class="stepform-row" data-idx="${i}">
       <div class="f"><label>工程名</label><input class="ns-title" value="${esc(s.title)}" placeholder="例: 見積回収"></div>
-      <div class="f"><label>担当</label><select class="ns-assignee"><option value="">未定</option>${assignableUsers().map(x=>`<option value="${x.id}" ${s.assignee_id===x.id?"selected":""}>${esc(x.name)}</option>`).join("")}</select></div>
+      <div class="f" style="flex:1 1 100%"><label>担当（複数選択可）</label><div class="chiprow ns-assignee" style="margin:0">${assignableUsers().map(x=>`<label class="chipcheck"><input type="checkbox" value="${x.id}" ${stepAssigneeIds(s).includes(x.id)?"checked":""}>${esc(x.name)}</label>`).join("")}</div></div>
       <div class="f"><label>期限日</label><input class="ns-due" type="date" value="${esc(s.due_date)}"></div>
       <div class="f"><label>期限時刻（任意）</label><input class="ns-duetime" type="time" value="${esc(s.due_time)}"></div>
       ${NEW_STEPS.length>1?`<button class="linkbtn" data-rmstep="${i}">削除</button>`:""}
@@ -2353,7 +2370,9 @@ function renderNewSteps(){
   document.querySelectorAll("#nt-steps [data-idx]").forEach(row=>{
     const i=+row.dataset.idx;
     row.querySelector(".ns-title").oninput=e=>NEW_STEPS[i].title=e.target.value;
-    row.querySelector(".ns-assignee").onchange=e=>NEW_STEPS[i].assignee_id=e.target.value;
+    row.querySelectorAll(".ns-assignee input").forEach(cb=>{
+      cb.onchange=()=>{ NEW_STEPS[i].assignee_ids=[...row.querySelectorAll(".ns-assignee input:checked")].map(el=>el.value); };
+    });
     row.querySelector(".ns-due").onchange=e=>NEW_STEPS[i].due_date=e.target.value;
     row.querySelector(".ns-duetime").onchange=e=>NEW_STEPS[i].due_time=e.target.value;
   });
@@ -2377,7 +2396,7 @@ async function submitNewTask(u){
   if(!tr.ok||!tr.body||!tr.body[0]){ msg.textContent="作成できませんでした（"+tr.status+"）"; $("nt-send").disabled=false; return; }
   const taskId=tr.body[0].id;
   await authed("/rest/v1/hq_task_steps",{method:"POST",headers:{Prefer:"return=minimal"},body:JSON.stringify(
-    steps.map((s,i)=>({task_id:taskId,title:s.title.trim(),assignee_id:s.assignee_id||null,due_date:s.due_date||null,due_time:s.due_time||null,sort_order:(i+1)*10,kind:"step"}))
+    steps.map((s,i)=>{const sAssignees=stepAssigneeIds(s); return {task_id:taskId,title:s.title.trim(),assignee_ids:sAssignees.length?sAssignees:null,due_date:s.due_date||null,due_time:s.due_time||null,sort_order:(i+1)*10,kind:"step"};})
   )});
   if(visibility==="members"){
     const sel=[...$("nt-members").selectedOptions].map(o=>o.value);
@@ -2414,7 +2433,7 @@ function renderDaily(u){
   const today=todayStr();
   const todays=DAILY_TASKS.filter(t=>t.target_date===today);
   const pastDue=DAILY_TASKS.filter(t=>t.target_date<today && t.status!=="done");
-  const visible=t=>!DAILY_MINE || sortedSteps(t).some(s=>s.assignee_id===u.id);
+  const visible=t=>!DAILY_MINE || sortedSteps(t).some(s=>isStepAssignee(s,u.id));
   const todaysV=todays.filter(visible), pastV=pastDue.filter(visible);
   const doneCount=todaysV.filter(t=>t.status==="done").length;
   const d=new Date(today+"T00:00:00");
@@ -2456,13 +2475,13 @@ function dailyRowHtml(t,u,isPast){
   </div>`;
 }
 function dailyGroupHtml(g,u){
-  const canDo=s=>canManage(u)||s.assignee_id===u.id||!s.assignee_id;
+  const canDo=s=>canManage(u)||isStepAssignee(s,u.id)||!stepAssigneeIds(s).length;
   if(!g.isGroup){
     const s=g.rows[0];
     if(s.completed_at){
       return `<div class="storecheck-row"><span>✓</span><span style="flex:1">${esc(s.title)}</span><span class="meta">${esc(userName(s.completed_by))} ／ ${fmtDT(s.completed_at)}</span>${canDo(s)?`<button class="linkbtn" data-stepundo="${s.id}">↩️ 取り消す</button>`:""}</div>`;
     }
-    if(!canDo(s)) return `<div class="storecheck-row"><span>○</span><span style="flex:1">${esc(s.title)}</span><span class="meta">担当: ${esc(userName(s.assignee_id)||"未定")}</span></div>`;
+    if(!canDo(s)) return `<div class="storecheck-row"><span>○</span><span style="flex:1">${esc(s.title)}</span><span class="meta">担当: ${esc(stepAssigneeNames(s))}</span></div>`;
     return `<div class="card" style="margin:8px 0">
       <div style="margin-bottom:6px">${esc(s.title)}${s.due_date?` <span class="meta">期限 ${fmtDD(s.due_date,s.due_time)}</span>`:""}</div>
       ${s.is_binary?`<label>判定</label><select id="djudge-${s.id}"><option value="">選択してください</option><option value="ok">OK</option><option value="issue">異常あり</option></select>
@@ -2604,7 +2623,7 @@ function renderPrintSelect(u){
 function printStepRowsHtml(g){
   if(!g.isGroup){
     const s=g.rows[0];
-    return `<tr><td>${esc(s.title)}</td><td>${esc(userName(s.assignee_id)||"—")}</td><td>${fmtDD(s.due_date,s.due_time)}</td><td class="chk">□</td></tr>`;
+    return `<tr><td>${esc(s.title)}</td><td>${esc(stepAssigneeNames(s))}</td><td>${fmtDD(s.due_date,s.due_time)}</td><td class="chk">□</td></tr>`;
   }
   const sorted=g.rows.slice().sort((a,b)=>{
     const sa=STORES.find(x=>x.id===a.store_id), sb=STORES.find(x=>x.id===b.store_id);
@@ -2612,7 +2631,7 @@ function printStepRowsHtml(g){
   });
   return sorted.map(s=>{
     const store=STORES.find(x=>x.id===s.store_id); const name=store?store.name:"店舗";
-    return `<tr><td>${esc(s.title)}（${esc(name)}）</td><td>${esc(userName(s.assignee_id)||"—")}</td><td>${fmtDD(s.due_date,s.due_time)}</td><td class="chk">□</td></tr>`;
+    return `<tr><td>${esc(s.title)}（${esc(name)}）</td><td>${esc(stepAssigneeNames(s))}</td><td>${fmtDD(s.due_date,s.due_time)}</td><td class="chk">□</td></tr>`;
   }).join("");
 }
 function renderPrintPreview(u){
@@ -2751,7 +2770,7 @@ async function duplicateTemplate(u,tpl){
   const newId=r.body[0].id;
   if(srcSteps.length){
     await authed("/rest/v1/hq_task_template_steps",{method:"POST",headers:{Prefer:"return=minimal"},body:JSON.stringify(
-      srcSteps.map(s=>({template_id:newId,title:s.title,assignee_id:s.assignee_id||null,offset_days:s.offset_days||0,due_time:s.due_time||null,sort_order:s.sort_order,kind:s.kind||"step",store_scope:s.store_scope||null,store_ids:s.store_ids||null,is_binary:!!s.is_binary,requires_photo:!!s.requires_photo}))
+      srcSteps.map(s=>({template_id:newId,title:s.title,assignee_id:s.assignee_id||null,assignee_ids:s.assignee_ids||null,offset_days:s.offset_days||0,due_time:s.due_time||null,sort_order:s.sort_order,kind:s.kind||"step",store_scope:s.store_scope||null,store_ids:s.store_ids||null,is_binary:!!s.is_binary,requires_photo:!!s.requires_photo}))
     )});
   }
   if(memberIds.length){
@@ -2789,7 +2808,7 @@ async function openTplEdit(u,tpl){
       TPL_STEPS.forEach(s=>{ s._links=stepLinks.filter(l=>l.template_step_id===s.id); s._photos=stepPhotos.filter(p=>p.template_step_id===s.id); s._checklist=stepChecklist.filter(c=>c.template_step_id===s.id); });
     }
   } else {
-    TPL_STEPS=[{title:"",assignee_id:"",offset_days:0,due_time:"",kind:"step",store_scope:"",is_binary:false,requires_photo:false,procedure_note:""}];
+    TPL_STEPS=[{title:"",assignee_ids:[],offset_days:0,due_time:"",kind:"step",store_scope:"",is_binary:false,requires_photo:false,procedure_note:""}];
   }
   renderTplEdit(u);
 }
@@ -2910,7 +2929,7 @@ function renderTplEdit(u){
   };
   $("tp-vis").onchange=e=>{$("tp-memberswrap").style.display=e.target.value==="members"?"block":"none";};
   renderTplSteps();
-  $("tp-addstep").onclick=()=>{TPL_STEPS.push({title:"",assignee_id:"",offset_days:0,due_time:"",kind:"step",store_scope:"",is_binary:false,requires_photo:false,procedure_note:""});renderTplSteps();};
+  $("tp-addstep").onclick=()=>{TPL_STEPS.push({title:"",assignee_ids:[],offset_days:0,due_time:"",kind:"step",store_scope:"",is_binary:false,requires_photo:false,procedure_note:""});renderTplSteps();};
   $("tp-save").onclick=()=>saveTemplate(u);
   if(tpl.id) wireAttachBox("tpl-att",{template_id:tpl.id},true,refreshTplAttach);
   refreshTplDueDates();
@@ -2938,7 +2957,7 @@ function renderTplPreviewPanel(){
       const due=addDaysStr(base,s.offset_days||0);
       return `<div class="pstep ${i===0?"current":""}">
         <b>${i+1}. ${esc(s.title)}</b>
-        <div class="meta">担当：${esc(userName(s.assignee_id)||"未定")} ／ 期限：${fmtD(due)}${s.due_time?" "+s.due_time.slice(0,5):""}</div>
+        <div class="meta">担当：${esc(stepAssigneeNames(s))} ／ 期限：${fmtD(due)}${s.due_time?" "+s.due_time.slice(0,5):""}</div>
         ${bits.length?`<div class="meta">${bits.join("・")}</div>`:""}
       </div>`;
     }).join(""):`<div class="meta">工程を追加すると、ここにプレビューが表示されます</div>`}
@@ -2982,7 +3001,7 @@ function renderTplSteps(){
     <div class="card" style="margin-bottom:8px" data-tidx="${i}">
       <div class="stepform-row">
         <div class="f"><label>工程名</label><input class="ts-title" value="${esc(s.title)}" placeholder="例: 入力チェック"></div>
-        <div class="f"><label>担当（空欄=誰でも可）</label><select class="ts-assignee"><option value="">未定</option>${assignableUsers().map(x=>`<option value="${x.id}" ${s.assignee_id===x.id?"selected":""}>${esc(x.name)}</option>`).join("")}</select></div>
+        <div class="f" style="flex:1 1 100%"><label>担当（複数選択可・空欄=誰でも可）</label><div class="chiprow ts-assignee" style="margin:0">${assignableUsers().map(x=>`<label class="chipcheck"><input type="checkbox" value="${x.id}" ${stepAssigneeIds(s).includes(x.id)?"checked":""}>${esc(x.name)}</label>`).join("")}</div></div>
         <div class="f"><label>工程の期限日</label><input class="ts-due" type="date" value="${addDaysStr(tplBaseDate(),s.offset_days||0)}"><div class="meta ts-duehint"></div></div>
         <div class="f"><label>期限の時刻（任意）</label><input class="ts-duetime" type="time" value="${esc(s.due_time||"")}"></div>
         ${TPL_STEPS.length>1?`<button class="linkbtn" data-rmtstep="${i}">削除</button>`:""}
@@ -3009,7 +3028,9 @@ function renderTplSteps(){
     const i=+row.dataset.tidx;
     row.querySelector(".ts-title").oninput=e=>{TPL_STEPS[i].title=e.target.value; renderTplPreviewPanel();};
     wireRichField(`ts-procedure-${i}`,val=>{TPL_STEPS[i].procedure_note=val;});
-    row.querySelector(".ts-assignee").onchange=e=>{TPL_STEPS[i].assignee_id=e.target.value; renderTplPreviewPanel();};
+    row.querySelectorAll(".ts-assignee input").forEach(cb=>{
+      cb.onchange=()=>{ TPL_STEPS[i].assignee_ids=[...row.querySelectorAll(".ts-assignee input:checked")].map(el=>el.value); renderTplPreviewPanel(); };
+    });
     row.querySelector(".ts-due").onchange=e=>{
       const base=tplBaseDate();
       const n=e.target.value?diffDaysStr(base,e.target.value):0;
@@ -3082,7 +3103,8 @@ async function saveTemplate(u){
   }
   for(let i=0;i<steps.length;i++){
     const s=steps[i];
-    const body={template_id:tplId,title:s.title.trim(),assignee_id:s.assignee_id||null,offset_days:s.offset_days||0,due_time:s.due_time||null,sort_order:(i+1)*10,kind:s.kind||"step",store_scope:s.store_scope||null,store_ids:(s.store_scope==="custom"&&s.store_ids&&s.store_ids.length)?s.store_ids:null,is_binary:!!s.is_binary,requires_photo:!!s.requires_photo,procedure_note:(s.procedure_note||"").trim()||null};
+    const sAssignees=stepAssigneeIds(s);
+    const body={template_id:tplId,title:s.title.trim(),assignee_id:sAssignees[0]||null,assignee_ids:sAssignees.length?sAssignees:null,offset_days:s.offset_days||0,due_time:s.due_time||null,sort_order:(i+1)*10,kind:s.kind||"step",store_scope:s.store_scope||null,store_ids:(s.store_scope==="custom"&&s.store_ids&&s.store_ids.length)?s.store_ids:null,is_binary:!!s.is_binary,requires_photo:!!s.requires_photo,procedure_note:(s.procedure_note||"").trim()||null};
     if(s.id){
       await authed(`/rest/v1/hq_task_template_steps?id=eq.${s.id}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify(body)});
     } else {
@@ -3299,9 +3321,9 @@ function buildPreviewTask(){
     const step_due=addDays(today,s.offset_days||0);
     if(s.kind==="check" && s.store_scope){
       const list=(s.store_scope==="custom"?STORES.filter(x=>(s.store_ids||[]).includes(x.id)):(s.store_scope==="all"?STORES:STORES.filter(x=>x.is_active)));
-      return list.map((store,j)=>({id:`preview-${i}-${j}`,template_step_id:`preview-tpl-${i}`,title:s.title,assignee_id:s.assignee_id||null,due_date:step_due,due_time:s.due_time||null,sort_order:(i+1)*10,kind:s.kind,is_binary:!!s.is_binary,requires_photo:!!s.requires_photo,store_id:store.id,completed_at:null}));
+      return list.map((store,j)=>({id:`preview-${i}-${j}`,template_step_id:`preview-tpl-${i}`,title:s.title,assignee_id:s.assignee_id||null,assignee_ids:s.assignee_ids||null,due_date:step_due,due_time:s.due_time||null,sort_order:(i+1)*10,kind:s.kind,is_binary:!!s.is_binary,requires_photo:!!s.requires_photo,store_id:store.id,completed_at:null}));
     }
-    return [{id:`preview-${i}`,template_step_id:null,title:s.title,assignee_id:s.assignee_id||null,due_date:step_due,due_time:s.due_time||null,sort_order:(i+1)*10,kind:s.kind||"step",is_binary:!!s.is_binary,requires_photo:!!s.requires_photo,store_id:null,completed_at:null}];
+    return [{id:`preview-${i}`,template_step_id:null,title:s.title,assignee_id:s.assignee_id||null,assignee_ids:s.assignee_ids||null,due_date:step_due,due_time:s.due_time||null,sort_order:(i+1)*10,kind:s.kind||"step",is_binary:!!s.is_binary,requires_photo:!!s.requires_photo,store_id:null,completed_at:null}];
   }).flat();
   return {id:"preview-task",template_id:null,title,corp,freq,target_date:today,due_date,due_time,status:"todo",notes,
     visibility:$("tp-vis")?.value||"all",completed_at:null,created_by:ME.id,created_at:new Date().toISOString(),
