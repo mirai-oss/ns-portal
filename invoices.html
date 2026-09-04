@@ -3017,9 +3017,28 @@ const UNIFIED_SUBTABS=[["review","要対応"],["all","すべて"],["accounting",
 const AI_STATUS_LABEL={auto:["自動判定済","check"],review:["要確認","wait"],error:["エラー","err"]};
 const PAYMENT_STATUS_LABEL={not_ready:["—","gray"],wait:["振込待ち","wait"],csv:["CSV出力済","check"],processing:["振込処理中","wait"],paid:["振込済","done"],blocked:["確認停止","err"]};
 function unifiedIsHighRisk(r){ return !!(r.duplicate_suspected||r.bank_account_change_detected||r.ai_match_status==="review"||r.ai_match_status==="error"); }
+// 2026-09-04緊急修正：「要対応」タブを既定表示にした直後、ユーザーから「今までの請求書が
+// 全て消えてしまった」と報告あり。原因調査の結果、データは消えていない（DBには17件現存）が、
+// 旧来のinvoice-auto-match未実施の請求書はai_match_statusがnull（"review"/"error"どちらでもない）
+// のため、旧いunifiedMatchesSubTab("review")の条件に一切当てはまらず、既定タブが空に見えて
+// いたことが判明。ユーザー指示「重複疑い・取込エラー・法人不明・店舗/部門不明・仕訳不明
+// （未判定）・口座変更・支払期限超過なども要対応に集約」に沿って条件を拡張し、この不具合も
+// 同時に解消する（未判定＝ai_match_statusがnullも要対応に含めることで、旧データも正しく拾う）
+function unifiedNeedsAttention(r){
+  if(r.payment_status==="paid") return false; // 完了済みは対象外（今さら指摘しても仕方ないため）
+  const today=new Date().toISOString().slice(0,10);
+  return !!(
+    r.duplicate_suspected ||
+    r.bank_account_change_detected ||
+    r.ai_match_status==="review" || r.ai_match_status==="error" || !r.ai_match_status ||
+    !r.corporation_id ||
+    !r.store_id ||
+    (r.due_date && r.due_date<today && r.payment_status!=="paid")
+  );
+}
 function unifiedMatchesSubTab(r,tab){
   if(tab==="all") return true;
-  if(tab==="review") return r.ai_match_status==="review"||r.ai_match_status==="error"||r.duplicate_suspected||r.bank_account_change_detected;
+  if(tab==="review") return unifiedNeedsAttention(r);
   if(tab==="accounting") return !r.mf_journal_id;
   if(tab==="payment") return !!r.mf_journal_id&&["wait","csv","processing"].includes(r.payment_status);
   if(tab==="done") return r.payment_status==="paid";
