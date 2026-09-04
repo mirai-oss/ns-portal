@@ -339,8 +339,8 @@ const BUCKET="invoice-files";
 // セッション(localStorage)はportal.htmlと共有され、埋め込み時も自動ログインされる想定
 const EMBED=new URLSearchParams(location.search).get("embed")==="1";
 
-const MAIL_STATUS_LABEL={unread:"未処理",read:"未処理",processing:"処理中",completed:"完了",archived:"対象外"};
-const MAIL_STATUS_PILL={unread:"red",read:"red",processing:"blue",completed:"green",archived:"gray"};
+const MAIL_STATUS_LABEL={unread:"未処理",read:"未処理",processing:"処理中",completed:"完了",archived:"対象外",standalone:"取込済み"};
+const MAIL_STATUS_PILL={unread:"red",read:"red",processing:"blue",completed:"green",archived:"gray",standalone:"gray"};
 const INVOICE_STATUS_LABEL={draft:"下書き",registered:"確認中",duplicate_suspected:"重複疑い",waiting_payment:"支払待ち",paid:"完了",cancelled:"取消"};
 const INVOICE_STATUS_CLASS={draft:"gray",registered:"check",duplicate_suspected:"wait",waiting_payment:"wait",paid:"done",cancelled:"gray"};
 // 2026-08-25 Phase1.6: メール種類（請求書/売上/契約書）。手動分類（自動判定はしない）。
@@ -1584,7 +1584,10 @@ function invoiceWorkflowSteps(invoice,mail){
     {key:"pl",label:"PL等反映",done:!!(invoice&&invoice.mf_journal_id&&(invoice.pl_fee_reflected_at||invoice.pl_fee_excluded_at||invoice.ad_cost_reflected_at))},
     {key:"payment_prep",label:"振込準備",done:!!(invoice&&invoice.payment_status&&invoice.payment_status!=="not_ready")},
     {key:"payment",label:"振込",done:!!(invoice&&invoice.payment_status==="paid")},
-    {key:"final",label:"完了確認",done:mail.mail_status==="completed"},
+    // 2026-09-04: メールに紐付かない請求書（mail.idが無い＝アップロード等）は「メールを完了に
+    // する」操作自体が無い（act-completeボタンを出していない）ため、代わりに振込済みかどうかで
+    // 完了扱いにする（そうしないと共通invoice詳細に統合した後、永久に5/6のまま進捗が進まなくなる）
+    {key:"final",label:"完了確認",done:mail.id?mail.mail_status==="completed":!!(invoice&&invoice.payment_status==="paid")},
   ];
   let currentSet=false;
   for(const s of steps){ if(!s.done&&!currentSet){ s.current=true; currentSet=true; } }
