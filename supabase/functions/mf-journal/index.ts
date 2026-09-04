@@ -532,6 +532,30 @@ Deno.serve(async (req: Request) => {
         else voucherError = vRes.status === 401 || vRes.status === 403 ? "証憑添付の権限がありません" : `証憑の添付に失敗しました: ${JSON.stringify(vData)}`;
       }
 
+      // 2026-09-04追加: 上記はマネーフォワード側へ送るだけで、これまでSupabase側
+      // （invoice_attachments）には一切保存していなかった。ユーザー報告「アップロード請求書から
+      // 入力すると、請求書一覧の処理画面でプレビューが表示されない」に対応するため、同じファイルを
+      // invoice-filesバケット＋invoice_attachments（invoice_id紐付け）にも保存する。
+      // マネーフォワードへの送信が失敗していてもこちらの保存は独立して試みる（証憑を見返せることの
+      // 方が重要なため）
+      for (const f of inlineFiles) {
+        try {
+          const bytes = Uint8Array.from(atob(f.file_data), (c) => c.charCodeAt(0));
+          const ext = (f.file_name.split(".").pop() || "").toLowerCase();
+          const mimeType = ext === "pdf" ? "application/pdf" : ext === "png" ? "image/png" : (ext === "jpg" || ext === "jpeg") ? "image/jpeg" : undefined;
+          const hashBuf = await crypto.subtle.digest("SHA-256", bytes);
+          const fileHash = Array.from(new Uint8Array(hashBuf)).map((b) => b.toString(16).padStart(2, "0")).join("");
+          const storagePath = `standalone/${newInv.id}/${crypto.randomUUID()}_${f.file_name}`;
+          const { error: upErr } = await db.storage.from("invoice-files").upload(storagePath, bytes, { contentType: mimeType });
+          if (!upErr) {
+            await db.from("invoice_attachments").insert({
+              invoice_id: newInv.id, file_name: f.file_name, mime_type: mimeType ?? null,
+              storage_path: storagePath, file_hash: fileHash, size_bytes: bytes.length,
+            });
+          }
+        } catch (_e) { /* 証憑プレビューの保存に失敗しても登録自体は成立させる（正直な部分成功として扱う） */ }
+      }
+
       // 紐付けた工程があれば完了させる（呼び出しユーザー自身のJWTで＝completed_byが正しく記録される）。
       // linked_hq_step_idが無い場合（会計タブ単独のアップロード請求書）は何もしない
       let hqStepCompleted = false, hqErr: { message: string } | null = null;

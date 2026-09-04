@@ -1766,6 +1766,7 @@ function renderMailDetail(u){
               <div class="step-card-head"><div class="step-num">${++stepNo}</div><h3 class="step-title">PL・広告・精算書</h3>${invoice&&(invoice.pl_fee_reflected_at||invoice.pl_fee_excluded_at)?'<span class="step-badge done">✓ 対応済み</span>':''}</div>
               ${(invoice&&invoice.amount!=null)?`<div id="adcostbox"></div>`:`<div class="meta" style="color:var(--muted);font-size:12px">先に上の「請求情報」で金額を保存してください</div>`}
               ${(invoice&&invoice.mf_journal_id)?`<div id="plfeebox"></div>`:`<div class="meta" style="color:var(--muted);font-size:12px;margin-top:8px">PLへの反映は会計・仕訳の登録後に行えます</div>`}
+              <div class="task-link-box" style="margin-top:12px"><small>🧮 業務委託精算書への反映はどこでする？</small><div style="font-size:12px;color:var(--m-blue)">精算対象店舗（業務委託店舗）の経費は、<b>精算書に入力すれば自動でPLにも反映されます</b>（このためこの画面のPL反映の候補には出てきません＝二重計上防止）。精算書はサイドメニュー「精算管理」から開いてください。</div></div>
             </div>`}
 
             ${isSales?"":`<div class="step-card" id="step-payment">
@@ -3059,10 +3060,52 @@ function unifiedRender(u){
 // メール情報を使う設計のため、今回はメール起点の請求書のみ対応のまま（アップロード請求書
 // 側は「PL・広告・精算書」タブのPL反映のみ対応）。処理履歴・コメントはinvoice_commentsが
 // email_id必須の設計のため、アップロード請求書では非対応の案内を表示する
+// アップロード請求書の本部タスク紐付け（2026-09-04新規。ユーザー報告「本部タスクとの
+// 紐付けはどこでやるの？」に対応。メール起点の請求書と同じ検索UIだが、選んだ瞬間に
+// invoices.linked_hq_step_idを直接保存する（メール起点のような「後で仕訳登録時にまとめて
+// 保存」ではなく、この画面では既に登録済みの請求書を編集しているだけのため即時保存にした）
+function renderStandaloneHqLinkBox(inv){
+  const box=$("siv-hqlink-box");
+  if(!box) return;
+  if(inv.linked_step){
+    const step=inv.linked_step;
+    box.innerHTML=`<div class="ai-field"><small>紐付け中</small>✅ ${esc((step.task&&step.task.corp)||"")} ${esc((step.task&&step.task.title)||"")} ／ ${esc(step.title)} <button id="siv-hqlink-clear" style="margin-left:8px">解除</button></div>`;
+    $("siv-hqlink-clear").onclick=async()=>{
+      await authed(`/rest/v1/invoices?id=eq.${inv.id}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({linked_hq_step_id:null})});
+      inv.linked_step=null; inv.linked_hq_step_id=null;
+      renderStandaloneHqLinkBox(inv);
+    };
+    return;
+  }
+  box.innerHTML=`<input id="siv-hqlink-search" placeholder="会社名や工程名で検索（例: マネーフォワード）"><div id="siv-hqlink-results" style="margin-top:4px;font-size:12px"></div>`;
+  let t=null;
+  $("siv-hqlink-search").oninput=()=>{
+    clearTimeout(t);
+    const kw=$("siv-hqlink-search").value.trim();
+    if(!kw){ $("siv-hqlink-results").innerHTML=""; return; }
+    t=setTimeout(async()=>{
+      $("siv-hqlink-results").innerHTML="検索中…";
+      const {ok,body:j}=await mfCall("search_hq_steps",{keyword:kw});
+      const results=(ok&&j.results)||[];
+      $("siv-hqlink-results").innerHTML=results.length?results.map(res=>`<div class="ai-field" style="margin-bottom:4px;cursor:pointer" data-pick="${esc(res.id)}">${esc((res.task&&res.task.corp)||"")} ${esc((res.task&&res.task.title)||"")} ／ ${esc(res.title)}</div>`).join(""):"該当なし";
+      $("siv-hqlink-results").querySelectorAll("[data-pick]").forEach(el=>el.onclick=async()=>{
+        const res=results.find(x=>x.id===el.dataset.pick);
+        if(!res) return;
+        await authed(`/rest/v1/invoices?id=eq.${inv.id}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({linked_hq_step_id:res.id})});
+        inv.linked_step={id:res.id,title:res.title,task:res.task}; inv.linked_hq_step_id=res.id;
+        renderStandaloneHqLinkBox(inv);
+      });
+    },350);
+  };
+}
 async function openStandaloneInvoiceModal(u,invoiceId){
   await ensureCorpStoreCache();
-  const r=await authed(`/rest/v1/invoices?id=eq.${invoiceId}&select=*,vendor:vendors(name),linked_step:hq_task_steps(id,title,task:hq_tasks(title,corp))`);
+  const [r,attRes]=await Promise.all([
+    authed(`/rest/v1/invoices?id=eq.${invoiceId}&select=*,vendor:vendors(name),linked_step:hq_task_steps(id,title,task:hq_tasks(title,corp))`),
+    authed(`/rest/v1/invoice_attachments?invoice_id=eq.${invoiceId}&select=*&order=created_at`),
+  ]);
   const inv=(r.ok&&Array.isArray(r.body)&&r.body[0])||null;
+  const atts=(attRes.ok&&Array.isArray(attRes.body))?attRes.body:[];
   const modal=document.createElement("div");
   modal.className="modal-bg"; modal.id="standaloneInvoiceModal";
   if(!inv){
@@ -3083,8 +3126,25 @@ async function openStandaloneInvoiceModal(u,invoiceId){
     <div class="workflow-steps">${steps.map(s=>`<div class="wf-step ${s.done?"done":s.current?"current":""}"><small>${s.done?"✓":s.current?"●":"○"}</small><b>${esc(s.label)}</b></div>`).join("")}</div>
     <div class="detail-layout">
       <div class="evidence-panel">
-        <div class="ep-head"><span>📄 証憑プレビュー</span></div>
-        <div class="ep-body"><div class="meta" style="color:var(--muted);font-size:12px">アップロード請求書の証憑は、登録済みの仕訳にマネーフォワード側の添付ファイルとして保存されています（この画面には表示されません）。</div></div>
+        <div class="ep-head"><span>📄 証憑プレビュー</span><span>${atts.length}ファイル</span></div>
+        <div class="ep-body">
+          <div class="attgrid" id="siv-attlist">${atts.map(a=>{
+            const isPdf=a.mime_type==="application/pdf";
+            const isImg=(a.mime_type||"").indexOf("image/")===0;
+            const preview=isPdf
+              ? `<iframe data-attpreview="${esc(a.storage_path)}" title="${esc(a.file_name)}"></iframe>`
+              : isImg
+                ? `<img data-attpreview="${esc(a.storage_path)}" alt="${esc(a.file_name)}">`
+                : `<div class="noprev"><span class="ico">📄</span>プレビュー非対応<br>（開いて確認してください）</div>`;
+            return `<div class="attcard">
+              <div class="attcard-preview">${preview}</div>
+              <div class="attcard-foot">
+                <span class="fname">${esc(a.file_name)}</span>
+                <a data-attpath="${esc(a.storage_path)}" download="${esc(a.file_name)}" href="#" target="_blank" rel="noopener">開く</a>
+              </div>
+            </div>`;
+          }).join("")||'<div class="meta" style="color:var(--muted);font-size:12px;padding-top:16px">証憑ファイルはありません（2026年9月4日より前にアップロードした請求書は、この保存に対応する前のため表示されません）</div>'}</div>
+        </div>
       </div>
       <div>
         ${riskBannerHtml}
@@ -3099,6 +3159,7 @@ async function openStandaloneInvoiceModal(u,invoiceId){
             <div class="ai-field"><small>対象法人</small><select id="siv-corp"><option value="">（未設定）</option>${(CORP_STORE_CACHE&&CORP_STORE_CACHE.corporations||[]).map(c=>`<option value="${esc(c.id)}" ${inv.corporation_id===c.id?"selected":""}>${esc(c.name)}</option>`).join("")}</select></div>
             <div class="ai-field"><small>対象店舗</small><select id="siv-store"><option value="">（未設定）</option>${(CORP_STORE_CACHE&&CORP_STORE_CACHE.stores||[]).map(s=>`<option value="${esc(s.id)}" ${inv.store_id===s.id?"selected":""}>${esc(s.name)}</option>`).join("")}</select></div>
           </div>
+          <div class="task-link-box" style="margin-top:12px"><small>🔗 紐付ける本部タスクの工程（任意・完了操作はこの画面からは行いません。タスク側で個別に完了させてください）</small><div id="siv-hqlink-box"></div></div>
           <div class="mail-actions"><button id="siv-save">💾 保存</button><button id="siv-delete" style="margin-left:auto;color:var(--m-red)">🗑 この請求書を削除</button></div>
           <div class="err" id="siv-msg" style="margin-top:6px"></div>
         </div>
@@ -3116,6 +3177,7 @@ async function openStandaloneInvoiceModal(u,invoiceId){
           <div class="step-card-head"><div class="step-num">${++stepNo}</div><h3 class="step-title">PL・広告・精算書</h3>${inv.pl_fee_reflected_at||inv.pl_fee_excluded_at?'<span class="step-badge done">✓ 対応済み</span>':''}</div>
           ${inv.mf_journal_id?`<div id="plfeebox"></div>`:`<div class="meta" style="color:var(--muted);font-size:12px">PLへの反映は会計・仕訳の登録後に行えます</div>`}
           <div class="meta" style="color:var(--muted);font-size:11px;margin-top:10px">💡 広告費への反映は、現在は請求書メールから登録した請求書のみ対応しています。</div>
+          <div class="task-link-box" style="margin-top:12px"><small>🧮 業務委託精算書への反映はどこでする？</small><div style="font-size:12px;color:var(--m-blue)">精算対象店舗（業務委託店舗）の経費は、<b>精算書に入力すれば自動でPLにも反映されます</b>（このためこの画面のPL反映の候補には出てきません＝二重計上防止）。精算書はサイドメニュー「精算管理」から開いてください。</div></div>
         </div>
 
         <div class="step-card" id="step-payment">
@@ -3135,6 +3197,13 @@ async function openStandaloneInvoiceModal(u,invoiceId){
   modal.onclick=e=>{ if(e.target===modal) history.back(); };
   $("standaloneClose").onclick=()=>history.back();
   wireJournalViewButtons();
+  if(atts.length){
+    signAttachmentUrls(atts.map(a=>a.storage_path)).then(map=>{
+      document.querySelectorAll("#siv-attlist [data-attpath]").forEach(el=>{ const url=map[el.dataset.attpath]; if(url) el.href=url; });
+      document.querySelectorAll("#siv-attlist [data-attpreview]").forEach(el=>{ const url=map[el.dataset.attpreview]; if(url) el.src=url; });
+    });
+  }
+  renderStandaloneHqLinkBox(inv);
   const reload=()=>{ history.back(); openStandaloneInvoiceModal(u,invoiceId); };
   $("siv-save").onclick=async()=>{
     const msg=$("siv-msg"); msg.className="err"; msg.textContent="保存中…";
