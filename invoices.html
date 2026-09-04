@@ -229,6 +229,77 @@ button,input,select,textarea{font:inherit}
 .event-map-table th{text-align:left;color:var(--muted);font-weight:600;padding:6px 8px;border-bottom:1px solid var(--m-line)}
 .event-map-table td{padding:8px;border-bottom:1px solid var(--m-line);vertical-align:top}
 .event-map-table tr:last-child td{border-bottom:none}
+
+/* 2026-09-04新規：給与振込タブ（ユーザー提供モックアップ準拠）。色は新規トークンを増やさず
+   既存の--bg/--panel/--ink/--muted/--line/--accent/--green/--blue/--amber等をそのまま使う */
+.pr-hero{display:grid;grid-template-columns:1.35fr .65fr;gap:12px;margin-bottom:14px}
+.pr-hero-main{padding:18px 20px;border-left:5px solid var(--accent)}
+.pr-hero-main .eyebrow{font-size:10px;color:var(--muted);font-weight:700}
+.pr-hero-title{display:flex;align-items:center;gap:11px;flex-wrap:wrap;margin-top:5px}
+.pr-hero-title .month{font-size:32px;font-weight:900;letter-spacing:-.03em}
+.pr-hero-title .label{padding:6px 10px;border-radius:999px;background:var(--accent-soft);color:var(--accent);font-size:10px;font-weight:800}
+.pr-hero-main p{font-size:10px;color:var(--muted);margin:9px 0 0}
+.pr-hero-side{padding:16px}
+.pr-hero-side label{display:block;font-size:9px;color:var(--muted);margin-bottom:5px}
+.pr-hero-side select,.pr-hero-side input{width:100%;padding:10px;border:1px solid var(--line);border-radius:9px;background:#fff}
+.pr-sync-box{margin-top:10px;padding:10px;border-radius:9px;background:var(--blue-soft);border:1px solid var(--blue);color:var(--blue);font-size:9px;display:flex;justify-content:space-between;gap:8px;align-items:center}
+.pr-alert-panel{padding:15px;margin-bottom:14px;border-left:5px solid var(--accent)}
+.pr-alert-head{display:flex;justify-content:space-between;gap:10px;align-items:center;margin-bottom:10px}
+.pr-alert-head h2{font-size:16px;margin:0}
+.pr-alert-total{font-size:24px;font-weight:900;color:var(--accent)}
+.pr-alert-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
+.pr-alert-item{border:1px solid var(--line);border-radius:10px;padding:11px;background:#fff;cursor:pointer;transition:.15s}
+.pr-alert-item:hover{transform:translateY(-1px);box-shadow:var(--shadow)}
+.pr-alert-item .name{font-size:9px;color:var(--muted)}
+.pr-alert-item b{display:block;font-size:18px;margin-top:4px}
+.pr-alert-item.zero{background:var(--bg);color:#aaa}
+.pr-ok-banner{padding:13px;border-radius:10px;background:var(--green-soft);border:1px solid var(--green);color:var(--green);font-size:10px;margin-bottom:14px}
+.pr-progress-card{padding:15px;margin-bottom:14px}
+.pr-progress-head{display:flex;justify-content:space-between;align-items:end;gap:10px;margin-bottom:12px}
+.pr-progress-head h2{margin:0;font-size:16px}
+.pr-progress-head p{margin:4px 0 0;color:var(--muted);font-size:9px}
+.pr-progress-flow{display:grid;grid-template-columns:repeat(5,1fr);gap:8px}
+.pr-pstep{border:1px solid var(--line);border-radius:10px;padding:11px;background:var(--bg)}
+.pr-pstep.done{background:var(--green-soft);border-color:var(--green)}
+.pr-pstep.warn{background:var(--amber-soft);border-color:var(--amber)}
+.pr-pstep.current{background:var(--blue-soft);border-color:var(--blue)}
+.pr-pstep small{display:block;color:var(--muted);font-size:8px}
+.pr-pstep b{display:block;font-size:13px;margin-top:3px}
+.pr-pstep .count{font-size:19px;font-weight:900;margin-top:6px}
+.pr-pstep .bar{height:7px;background:var(--line);border-radius:999px;overflow:hidden;margin-top:8px}
+.pr-pstep .bar span{display:block;height:100%;background:var(--blue)}
+.pr-kpis{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px;margin-bottom:14px}
+.pr-kpi{padding:14px;cursor:pointer}
+.pr-kpi small{display:block;color:var(--muted);font-size:9px}
+.pr-kpi b{display:block;font-size:24px;margin-top:5px}
+.pr-kpi .amount{font-size:12px;font-weight:700;margin-top:3px}
+.pr-kpi .sub{font-size:8px;color:var(--muted);margin-top:4px}
+.pr-kpi.total{border-top:4px solid var(--blue)}
+.pr-kpi.prep{border-top:4px solid var(--amber)}
+.pr-kpi.csv{border-top:4px solid #7d68bd}
+.pr-kpi.paid{border-top:4px solid var(--green)}
+.pr-kpi.cash{border-top:4px solid #9a7a49}
+.pr-filters{padding:14px;margin-bottom:12px}
+.pr-filter-row{display:grid;grid-template-columns:repeat(6,1fr);gap:8px}
+.pr-filter-row select,.pr-filter-row input{width:100%;border:1px solid var(--line);border-radius:8px;padding:8px;background:#fff;font-size:10px}
+.pr-quick-filters{display:flex;gap:7px;flex-wrap:wrap;margin-top:10px}
+.pr-chip{border:1px solid var(--line);background:#fff;border-radius:999px;padding:7px 10px;font-size:10px}
+.pr-chip.active{background:var(--ink);color:#fff;border-color:var(--ink)}
+.pr-chip.attn{border-color:var(--accent);color:var(--accent)}
+.pr-batchbar{display:flex;justify-content:space-between;gap:10px;align-items:center;padding:11px 12px;border:1px solid var(--blue);background:var(--blue-soft);border-radius:10px;margin-bottom:10px;font-size:10px}
+.pr-table th,.pr-table td{padding:9px;border-bottom:1px solid var(--line);font-size:10px;text-align:left;vertical-align:middle}
+.pr-table th{background:var(--bg);color:var(--muted)}
+.pr-status{display:inline-flex;align-items:center;gap:4px;padding:4px 7px;border-radius:999px;font-size:9px;font-weight:800}
+.pr-status.ok{background:var(--green-soft);color:var(--green)}
+.pr-status.wait{background:var(--blue-soft);color:var(--blue)}
+.pr-status.warn{background:var(--amber-soft);color:var(--amber)}
+.pr-status.err{background:var(--accent-soft);color:var(--accent)}
+.pr-status.na{background:var(--bg);color:var(--muted)}
+.pr-reason{display:block;color:var(--accent);font-size:9px;margin-top:4px;max-width:210px;white-space:normal;line-height:1.35}
+.pr-footer-actions{display:flex;justify-content:space-between;gap:10px;align-items:center;padding:13px 14px;background:var(--bg);border-top:1px solid var(--line)}
+.pr-footer-actions small{font-size:9px;color:var(--muted)}
+@media(max-width:1200px){.pr-alert-grid,.pr-kpis,.pr-progress-flow{grid-template-columns:repeat(3,1fr)}.pr-filter-row{grid-template-columns:repeat(3,1fr)}}
+@media(max-width:700px){.pr-hero,.pr-alert-grid,.pr-kpis,.pr-progress-flow,.pr-filter-row{grid-template-columns:1fr}}
 .dash-section-title{font-size:13px;font-weight:700;color:var(--muted);margin:0 0 10px 2px}
 .dash-grid-4{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:26px}
 .dash-action-card{background:var(--accent-soft);border:1px solid var(--accent);border-left:5px solid var(--accent);border-radius:10px;padding:14px;cursor:pointer;transition:.15s}
@@ -4826,17 +4897,17 @@ function payrollRowHtml(row){
   const draft=payrollDraftFor(row.user_id);
   let status;
   const journalViewAttr=rec&&rec.mf_journal_id?` style="cursor:pointer" data-journal-view="${esc(rec.mf_journal_id)}" data-journal-tenant="default" title="クリックすると登録した仕訳の内容を確認できます"`:"";
-  if(rec&&rec.paid_at){ status=`<span class="invoice-status done"${journalViewAttr}>🎉振込完了（伝票番号:${esc(String(rec.mf_journal_number??"-"))}）${rec.mf_journal_id?"🔍":""}</span>`; }
-  else if(rec){ status=`<span class="invoice-status check"${journalViewAttr}>💰仕訳登録済み・振込待ち（伝票番号:${esc(String(rec.mf_journal_number??"-"))}）${rec.mf_journal_id?"🔍":""}</span>`; }
-  else if(draft){ status=`<span class="invoice-status wait" title="一時保存済み。編集を再開するには「プレビュー・登録」から開いてください">📝下書き保存中</span>`; }
-  else if(asg&&asg.template_id){ status=`<span class="invoice-status wait">未登録</span>`; }
-  else{ status=`<span class="invoice-status gray">パターン未設定</span>`; }
+  if(rec&&rec.paid_at){ status=`<span class="pr-status ok"${journalViewAttr}>✓ 振込済（伝票番号:${esc(String(rec.mf_journal_number??"-"))}）${rec.mf_journal_id?"🔍":""}</span>`; }
+  else if(rec){ status=`<span class="pr-status wait"${journalViewAttr}>● 仕訳登録済み・振込待ち（伝票番号:${esc(String(rec.mf_journal_number??"-"))}）${rec.mf_journal_id?"🔍":""}</span>`; }
+  else if(draft){ status=`<span class="pr-status warn" title="一時保存済み。編集を再開するには「プレビュー・登録」から開いてください">📝下書き保存中</span>`; }
+  else if(asg&&asg.template_id){ status=`<span class="pr-status wait">● パターン設定済み・未登録</span>`; }
+  else{ status=`<span class="pr-status na">－ パターン未設定</span>`; }
   const pdfBadge=row._hasPdf
     ?`<span title="給与明細PDFあり（登録時に証憑として添付されます）">📎</span> <button class="linkbtn" style="color:var(--blue);font-size:11px;background:none;border:none;cursor:pointer;padding:0" data-payroll-pdf-open="${esc(row.user_id)}" title="PDFを開いて内容を確認">開く</button> <button class="linkbtn" style="color:var(--accent);font-size:11px;background:none;border:none;cursor:pointer;padding:0" data-payroll-pdf-delete="${esc(row.user_id)}" title="添付を間違えたPDFを削除">削除</button>`
     :`<span style="color:var(--muted)" title="給与明細PDF未アップロード">－</span>`;
   const bank=payrollBankFor(row.user_id);
-  const bankLabel=!bank?"未登録":(bank.payment_method==="cash"?"💴現金手渡し":"🏦振込");
-  const bankBtn=`<button class="hq-btn" style="font-size:11px;padding:6px 9px" data-payroll-bank="${esc(row.user_id)}">${bankLabel}</button>`;
+  const bankPill=payrollBankPill(row);
+  const bankBtn=`${bankPill}<br><button class="linkbtn" style="font-size:10px;background:none;border:none;color:var(--blue);cursor:pointer;padding:0;margin-top:3px" data-payroll-bank="${esc(row.user_id)}">${bank?"編集":"登録"}</button>`;
   // 操作欄: 未登録なら「プレビュー・登録」、登録済みなら振込完了ボタン＋登録解除リンクを出す
   // （2026-09-01: ユーザー要望「間違えて登録した可能性もあるので解除できるように」「振込完了も手動で押せるように」）
   // 2026-09-02: どの状態でも「この月は非表示」リンクを併設（担当Bからの依頼②。まだ仕訳未登録の人でも
@@ -4867,24 +4938,135 @@ function payrollRowHtml(row){
     <td>${actionCell}</td>
   </tr>`;
 }
+// 2026-09-04全面書き換え：ユーザー提供モックアップ（給与振込 完成版UIモック）準拠のUIへ刷新。
+// 見た目・文字サイズ・表現をモックアップに合わせつつ、データはすべて既存のPAYROLL_STATE
+// （sf_payroll_sync・payroll_journal_records・payroll_journal_assignments・
+// payroll_bank_accounts等）から算出する（新しい別データ構造は作っていない）。
+// 【正直な簡略化】モックアップの「給与状態（給与未確定）」「口座変更確認」「支払確認」
+// 「CSV作成履歴」「法人/事業所列」に対応する実データはこのアプリに存在しないため、
+// 前者3つは常に0名（該当なし）、支払確認は振込完了と同じ扱い、CSV履歴・法人/事業所列は
+// 今回表示していない（正直に省略。実装完了報告に記載）
+function payrollAlertCounts(rows){
+  const bankMissing=rows.filter(r=>!payrollBankFor(r.user_id)).length;
+  const patternMissing=rows.filter(r=>{
+    const asg=payrollAssignmentFor(r.user_id), rec=payrollRecordFor(r.user_id);
+    return !rec&&!(asg&&asg.template_id);
+  }).length;
+  return {bankMissing,patternMissing};
+}
+function payrollKpiCounts(rows){
+  const registered=rows.filter(r=>payrollRecordFor(r.user_id));
+  const paid=registered.filter(r=>{const rec=payrollRecordFor(r.user_id);return rec&&rec.paid_at;});
+  const cash=rows.filter(r=>{const b=payrollBankFor(r.user_id);return b&&b.payment_method==="cash";});
+  const sum=list=>list.reduce((s,r)=>s+(Number(r.net_pay)||0),0);
+  return {
+    total:{n:rows.length,amt:sum(rows)},
+    prep:{n:rows.length-registered.length,amt:sum(rows.filter(r=>!payrollRecordFor(r.user_id)))},
+    registered:{n:registered.length-paid.length,amt:sum(registered.filter(r=>{const rec=payrollRecordFor(r.user_id);return!rec.paid_at;}))},
+    paid:{n:paid.length,amt:sum(paid)},
+    cash:{n:cash.length,amt:sum(cash)},
+  };
+}
+function payrollStatusPill(r){
+  const rec=payrollRecordFor(r.user_id), asg=payrollAssignmentFor(r.user_id), draft=payrollDraftFor(r.user_id);
+  if(rec&&rec.paid_at) return '<span class="pr-status ok">✓ 振込済</span>';
+  if(rec) return '<span class="pr-status wait">● 仕訳登録済み・振込待ち</span>';
+  if(draft) return '<span class="pr-status warn">📝下書き保存中</span>';
+  if(asg&&asg.template_id) return '<span class="pr-status wait">● パターン設定済み・未登録</span>';
+  return '<span class="pr-status na">－ パターン未設定</span>';
+}
+function payrollBankPill(r){
+  const b=payrollBankFor(r.user_id);
+  if(!b) return '<span class="pr-status err">！口座未登録</span>';
+  if(b.payment_method==="cash") return '<span class="pr-status na">－ 現金（口座不要）</span>';
+  return '<span class="pr-status ok">✓ 口座登録済</span>';
+}
+function payrollMatchesQuick(r,q){
+  const rec=payrollRecordFor(r.user_id), b=payrollBankFor(r.user_id);
+  if(q==="all") return true;
+  if(q==="attention") return !b || !(payrollAssignmentFor(r.user_id)&&payrollAssignmentFor(r.user_id).template_id) && !rec;
+  if(q==="prep-wait") return !rec;
+  if(q==="registered") return rec&&!rec.paid_at;
+  if(q==="paid") return rec&&rec.paid_at;
+  if(q==="cash") return b&&b.payment_method==="cash";
+  return true;
+}
 function payrollRender(){
   if(!PAYROLL_STATE.sortMode) PAYROLL_STATE.sortMode="pendingFirst"; // 既定で振込完了は下へ
-  const rows=payrollSortedRows();
+  if(!PAYROLL_STATE.quickFilter) PAYROLL_STATE.quickFilter="all";
+  const hiddenIds=PAYROLL_STATE.hiddenUserIds||new Set();
+  const allRows=(PAYROLL_STATE.rows||[]).filter(r=>!hiddenIds.has(r.user_id));
+  const alerts=payrollAlertCounts(allRows);
+  const alertTotal=alerts.bankMissing+alerts.patternMissing;
+  const kpi=payrollKpiCounts(allRows);
+  const rows=payrollSortedRows().filter(r=>payrollMatchesQuick(r,PAYROLL_STATE.quickFilter));
   $("tabbody").innerHTML=`
     <section class="invoice-list active">
       ${PAYROLL_STATE.loadError?`<div class="card err" style="padding:12px 16px;margin-bottom:14px;display:flex;align-items:center;justify-content:space-between;gap:10px">
         <span>⚠️ 給与データの取得に失敗しました。表示されている内容が古い可能性があります。</span>
         <button id="payroll-retry">再読み込み</button>
       </div>`:""}
-      <div class="card" style="padding:16px;margin-bottom:14px">
-        <h3 style="font-size:14px;margin-bottom:6px">💴 給与仕訳</h3>
-        <div style="font-size:12px;color:var(--muted);margin-bottom:12px">スマレジ給与明細（確定給与）から、月次の給与仕訳を作成します。まだ<b>有限会社トーホーエージェンシー分のみ</b>対応しています（SK側は別事業者としてマネーフォワード連携・スマレジ取込がまだのため未対応）。「仕訳辞書パターン」は設定タブで「給与仕訳での用途」を設定したテンプレートだけが選べます。</div>
-        <div style="display:flex;align-items:end;gap:12px;flex-wrap:wrap">
-          <div class="ai-field" style="max-width:220px;margin-bottom:0"><small>対象年月</small><input id="payroll-ym" type="month" value="${esc(PAYROLL_STATE.yearMonth)}"></div>
-          <button id="payroll-sync-now">🔄 スマレジから今すぐ取得</button>
+      <div class="pr-hero">
+        <div class="card pr-hero-main">
+          <div class="eyebrow">現在処理している対象月</div>
+          <div class="pr-hero-title"><div class="month">${esc(PAYROLL_STATE.yearMonth.replace("-","年"))}月</div><div class="label">給与振込</div></div>
+          <p>まだ<b>有限会社トーホーエージェンシー分のみ</b>対応しています（SK側は未対応）。「仕訳辞書パターン」は設定タブで「給与仕訳での用途」を設定したテンプレートだけが選べます。</p>
         </div>
-        <div class="err" id="payroll-sync-msg" style="margin-top:6px"></div>
+        <div class="card pr-hero-side">
+          <label>対象月を変更</label>
+          <input id="payroll-ym" type="month" value="${esc(PAYROLL_STATE.yearMonth)}">
+          <div class="pr-sync-box"><span>給与データ<br><b>✓ 取得済み</b></span><button class="btn" id="payroll-sync-now">🔄 スマレジから今すぐ取得</button></div>
+          <div class="err" id="payroll-sync-msg" style="margin-top:6px"></div>
+        </div>
       </div>
+
+      ${alertTotal>0?`<div class="card pr-alert-panel">
+        <div class="pr-alert-head"><div><h2>⚠ 要対応</h2><div style="font-size:9px;color:var(--muted)">今、人間が対応する必要があるもの</div></div><div class="pr-alert-total">${alertTotal}名</div></div>
+        <div class="pr-alert-grid">
+          <div class="pr-alert-item" data-pr-quick="attention"><div class="name">口座未登録</div><b>${alerts.bankMissing}名</b></div>
+          <div class="pr-alert-item zero"><div class="name">給与未確定</div><b>0名</b></div>
+          <div class="pr-alert-item zero"><div class="name">口座変更確認</div><b>0名</b></div>
+          <div class="pr-alert-item" data-pr-quick="attention"><div class="name">パターン未設定</div><b>${alerts.patternMissing}名</b></div>
+        </div>
+      </div>`:`<div class="pr-ok-banner">✓ 現在、優先対応が必要な項目はありません</div>`}
+
+      <div class="card pr-progress-card">
+        <div class="pr-progress-head"><div><h2>今月の処理進捗</h2><p>今月の給与振込がどこで止まっているかを確認</p></div></div>
+        <div class="pr-progress-flow">
+          <div class="pr-pstep done"><small>STEP 1</small><b>給与確定</b><div class="count">${allRows.length} / ${allRows.length}</div><div class="bar"><span style="width:100%"></span></div></div>
+          <div class="pr-pstep ${alerts.bankMissing?"warn":"done"}"><small>STEP 2</small><b>口座確認</b><div class="count">${allRows.length-alerts.bankMissing} / ${allRows.length}</div><div class="bar"><span style="width:${allRows.length?Math.round((allRows.length-alerts.bankMissing)/allRows.length*100):0}%"></span></div></div>
+          <div class="pr-pstep current"><small>STEP 3</small><b>振込データ作成</b><div class="count">${kpi.registered.n+kpi.paid.n} / ${allRows.length}</div><div class="bar"><span style="width:${allRows.length?Math.round((kpi.registered.n+kpi.paid.n)/allRows.length*100):0}%"></span></div></div>
+          <div class="pr-pstep current"><small>STEP 4</small><b>振込</b><div class="count">${kpi.paid.n} / ${allRows.length}</div><div class="bar"><span style="width:${allRows.length?Math.round(kpi.paid.n/allRows.length*100):0}%"></span></div></div>
+          <div class="pr-pstep"><small>STEP 5</small><b>支払確認</b><div class="count">${kpi.paid.n} / ${allRows.length}</div><div class="bar"><span style="width:${allRows.length?Math.round(kpi.paid.n/allRows.length*100):0}%"></span></div></div>
+        </div>
+      </div>
+
+      <div class="pr-kpis">
+        <div class="card pr-kpi total" data-pr-quick="all"><small>振込対象</small><b>${kpi.total.n}名</b><div class="amount">${yen(kpi.total.amt)}</div><div class="sub">現金支払を含む全対象</div></div>
+        <div class="card pr-kpi prep" data-pr-quick="prep-wait"><small>振込データ作成待ち</small><b>${kpi.prep.n}名</b><div class="amount">${yen(kpi.prep.amt)}</div><div class="sub">仕訳未登録</div></div>
+        <div class="card pr-kpi csv" data-pr-quick="registered"><small>仕訳登録済み・振込待ち</small><b>${kpi.registered.n}名</b><div class="amount">${yen(kpi.registered.amt)}</div><div class="sub">CSV出力の対象</div></div>
+        <div class="card pr-kpi paid" data-pr-quick="paid"><small>振込済</small><b>${kpi.paid.n}名</b><div class="amount">${yen(kpi.paid.amt)}</div><div class="sub">振込処理を実行済</div></div>
+        <div class="card pr-kpi cash" data-pr-quick="cash"><small>現金支払</small><b>${kpi.cash.n}名</b><div class="amount">${yen(kpi.cash.amt)}</div><div class="sub">口座不要</div></div>
+      </div>
+
+      <div class="card pr-filters">
+        <div class="pr-filter-row">
+          <input id="payroll-search" placeholder="🔍 氏名で検索" value="${esc(PAYROLL_STATE.searchQuery||"")}">
+          <select id="payroll-sort">
+            <option value="pendingFirst" ${PAYROLL_STATE.sortMode==="pendingFirst"?"selected":""}>振込完了を下へ</option>
+            <option value="default" ${PAYROLL_STATE.sortMode==="default"?"selected":""}>通常（一覧順）</option>
+          </select>
+        </div>
+        <div class="pr-quick-filters">
+          <button class="pr-chip ${PAYROLL_STATE.quickFilter==="all"?"active":""}" data-pr-quick="all">すべて</button>
+          <button class="pr-chip attn ${PAYROLL_STATE.quickFilter==="attention"?"active":""}" data-pr-quick="attention">要対応</button>
+          <button class="pr-chip ${PAYROLL_STATE.quickFilter==="prep-wait"?"active":""}" data-pr-quick="prep-wait">振込データ作成待ち</button>
+          <button class="pr-chip ${PAYROLL_STATE.quickFilter==="registered"?"active":""}" data-pr-quick="registered">仕訳登録済み</button>
+          <button class="pr-chip ${PAYROLL_STATE.quickFilter==="paid"?"active":""}" data-pr-quick="paid">振込済</button>
+          <button class="pr-chip ${PAYROLL_STATE.quickFilter==="cash"?"active":""}" data-pr-quick="cash">現金支払</button>
+        </div>
+      </div>
+
       <div class="card" style="padding:16px;margin-bottom:14px">
         <h3 style="font-size:14px;margin-bottom:6px">📎 給与明細PDFをまとめてアップロード（${esc(PAYROLL_STATE.yearMonth)}分）</h3>
         <div style="font-size:12px;color:var(--muted);margin-bottom:10px">スマレジの給与明細一括ダウンロード（ZIP）を解凍して、複数のPDFを一度に選んでください。ファイル名から従業員を自動で推定します（間違っていたら選び直せます）。アップロードした明細は、下の一覧の📎マークで確認できます。仕訳を登録するときに自動でマネーフォワードの証憑として添付されます。</div>
@@ -4892,15 +5074,8 @@ function payrollRender(){
         <div class="mail-actions" style="margin-top:8px"><button id="payroll-pdf-match">従業員を推定する</button></div>
         <div id="payroll-pdf-match-area" style="margin-top:10px"></div>
       </div>
-      <div class="card" style="padding:16px;margin-bottom:14px">
-        <h3 style="font-size:14px;margin-bottom:6px">🏦 PayPay銀行振込CSVを出力（${esc(PAYROLL_STATE.yearMonth)}分・差引支給額）</h3>
-        <div style="font-size:12px;color:var(--muted);margin-bottom:10px">下の一覧で各従業員の「🏦」ボタンから振込先口座を登録すると、その人の差引支給額をPayPay銀行の「WEB総振（総合振込）」指定フォーマット（CSV）で書き出せます。振込の実行はしません（生成したCSVを確認のうえ、ご自身でPayPay銀行の画面からアップロードしてください）。口座未登録の人は自動でスキップし、一覧で知らせます。</div>
-        <div class="mail-actions"><button class="primary" id="payroll-csv-export">📥 振込CSVを出力</button></div>
-        <div class="err" id="payroll-csv-msg" style="margin-top:6px"></div>
-      </div>
+
       ${(()=>{
-        // この月は対象外にした人（sf_payroll_hidden・2026-09-02）を一覧の外に折りたたんで表示
-        const hiddenIds=PAYROLL_STATE.hiddenUserIds||new Set();
         const hiddenRows=(PAYROLL_STATE.rows||[]).filter(r=>hiddenIds.has(r.user_id));
         if(!hiddenRows.length) return "";
         return `<details class="card" style="padding:16px;margin-bottom:14px">
@@ -4911,25 +5086,20 @@ function payrollRender(){
           </div>`).join("")}</div>
         </details>`;
       })()}
+
+      <div class="section" style="display:flex;justify-content:space-between;align-items:end;gap:10px;margin:0 0 10px">
+        <div><h2 style="margin:0;font-size:16px">給与振込一覧</h2><p style="font-size:9px;color:var(--muted);margin:4px 0 0">${esc(PAYROLL_STATE.yearMonth)} / ${rows.length}名表示</p></div>
+        <div class="actionbar" style="display:flex;gap:8px"><button class="btn" id="payroll-csv-download">📥 一覧をCSVでダウンロード</button><button class="btn primary" id="payroll-csv-export">🏦 PayPay銀行CSV出力</button></div>
+      </div>
+      <div class="err" id="payroll-csv-msg" style="margin-bottom:8px"></div>
+
       <div class="card hq-tablewrap">
         <datalist id="payroll-template-datalist">${payrollTemplateDatalistHtml()}</datalist>
-        <div style="display:flex;align-items:center;gap:16px;padding:12px 16px;border-bottom:1px solid var(--line);flex-wrap:wrap">
-          <input id="payroll-search" placeholder="🔍 氏名で検索" value="${esc(PAYROLL_STATE.searchQuery||"")}" style="font-size:12px;max-width:180px">
-          <label style="font-size:12px;display:flex;align-items:center;gap:6px">並び替え
-            <select id="payroll-sort" style="font-size:12px">
-              <option value="pendingFirst" ${PAYROLL_STATE.sortMode==="pendingFirst"?"selected":""}>振込完了を下へ</option>
-              <option value="default" ${PAYROLL_STATE.sortMode==="default"?"selected":""}>通常（一覧順）</option>
-            </select>
-          </label>
-          <label style="font-size:12px;display:flex;align-items:center;gap:6px;cursor:pointer">
-            <input type="checkbox" id="payroll-hide-paid" ${PAYROLL_STATE.hidePaid?"checked":""}>振込完了は表示しない
-          </label>
-          <button id="payroll-csv-download" style="margin-left:auto;font-size:12px">📥 一覧をCSVでダウンロード</button>
-        </div>
-        ${rows.length?`<table class="invoice-table">
-          <thead><tr><th>氏名</th><th style="text-align:right">固定給</th><th style="text-align:right">通勤</th><th style="text-align:right">控除</th><th style="text-align:right">差引支給</th><th>仕訳辞書パターン</th><th>PDF</th><th>振込先</th><th>状態</th><th></th></tr></thead>
+        ${rows.length?`<table class="pr-table" style="width:100%;border-collapse:collapse">
+          <thead><tr><th>氏名</th><th style="text-align:right">固定給</th><th style="text-align:right">通勤</th><th style="text-align:right">控除</th><th style="text-align:right">差引支給額</th><th>仕訳辞書パターン</th><th>PDF</th><th>口座状態</th><th>状態</th><th></th></tr></thead>
           <tbody>${rows.map(payrollRowHtml).join("")}</tbody>
         </table>`:`<div class="empty">${PAYROLL_STATE.searchQuery?"該当する氏名の人が見つかりません":(PAYROLL_STATE.hidePaid?"振込完了以外は残っていません（絞り込み中）":`${esc(PAYROLL_STATE.yearMonth)}のデータがまだありません（スマレジ給与明細の同期後に表示されます）`)}</div>`}
+        <div class="pr-footer-actions"><small>絞り込み条件に応じて自動更新</small><button class="btn" id="payroll-reset-filter">絞り込みをリセット</button></div>
       </div>
     </section>`;
   $("payroll-ym").onchange=async()=>{
@@ -4942,8 +5112,9 @@ function payrollRender(){
     await payrollLoad(); payrollRender(); updateMailSummaryBar();
   };
   $("payroll-sort").onchange=()=>{ PAYROLL_STATE.sortMode=$("payroll-sort").value; payrollRender(); };
-  $("payroll-hide-paid").onchange=()=>{ PAYROLL_STATE.hidePaid=$("payroll-hide-paid").checked; payrollRender(); };
-  // 2026-09-02: 検索（氏名の部分一致・依頼③）。入力のたびに全部を作り直すとIME入力が壊れるため
+  document.querySelectorAll("[data-pr-quick]").forEach(el=>el.onclick=()=>{ PAYROLL_STATE.quickFilter=el.dataset.prQuick; payrollRender(); });
+  if($("payroll-reset-filter")) $("payroll-reset-filter").onclick=()=>{ PAYROLL_STATE.quickFilter="all"; PAYROLL_STATE.searchQuery=""; payrollRender(); };
+  // 2026-09-02: 検索（氏名の部分一致）。入力のたびに全部を作り直すとIME入力が壊れるため
   // （2026-08-31に別画面で実際に起きた不具合＝同じ轍を踏まないよう、テーブル部分だけを差し替える）
   let payrollSearchTimer=null;
   $("payroll-search").oninput=()=>{
@@ -4951,17 +5122,17 @@ function payrollRender(){
     const val=$("payroll-search").value;
     payrollSearchTimer=setTimeout(()=>{
       PAYROLL_STATE.searchQuery=val;
-      const wrap=$("payroll-search").closest(".card.hq-tablewrap");
-      const rows2=payrollSortedRows();
-      wrap.querySelector("table,.empty").outerHTML=rows2.length?`<table class="invoice-table">
-        <thead><tr><th>氏名</th><th style="text-align:right">固定給</th><th style="text-align:right">通勤</th><th style="text-align:right">控除</th><th style="text-align:right">差引支給</th><th>仕訳辞書パターン</th><th>PDF</th><th>振込先</th><th>状態</th><th></th></tr></thead>
+      const wrap=$("payroll-search").closest("section").querySelector(".card.hq-tablewrap");
+      const rows2=payrollSortedRows().filter(r=>payrollMatchesQuick(r,PAYROLL_STATE.quickFilter));
+      const target=wrap.querySelector("table,.empty");
+      if(target) target.outerHTML=rows2.length?`<table class="pr-table" style="width:100%;border-collapse:collapse">
+        <thead><tr><th>氏名</th><th style="text-align:right">固定給</th><th style="text-align:right">通勤</th><th style="text-align:right">控除</th><th style="text-align:right">差引支給額</th><th>仕訳辞書パターン</th><th>PDF</th><th>口座状態</th><th>状態</th><th></th></tr></thead>
         <tbody>${rows2.map(payrollRowHtml).join("")}</tbody>
       </table>`:`<div class="empty">該当する氏名の人が見つかりません</div>`;
       wirePayrollRowActions();
     },250);
   };
-  // 2026-09-02: スマレジ再取得ボタン（依頼①。nippo「給与・インセンティブ配分」画面の
-  // smaregi-payroll-sync呼び出しと同じパターン）
+  // 2026-09-02: スマレジ再取得ボタン（nippo「給与・インセンティブ配分」画面のsmaregi-payroll-sync呼び出しと同じパターン）
   $("payroll-sync-now").onclick=async()=>{
     const btn=$("payroll-sync-now"), msg=$("payroll-sync-msg");
     const [y,m]=PAYROLL_STATE.yearMonth.split("-").map(Number);
@@ -4979,7 +5150,7 @@ function payrollRender(){
     }catch(e){ msg.textContent="通信エラーが発生しました"; }
     finally{ btn.disabled=false; btn.textContent="🔄 スマレジから今すぐ取得"; }
   };
-  // 2026-09-02: 一覧をCSVでダウンロード（依頼③。記録・確認用。PayPay振込CSVとは別物）
+  // 一覧をCSVでダウンロード（記録・確認用。PayPay振込CSVとは別物）
   $("payroll-csv-download").onclick=()=>{
     const statusText=r=>{ const rec=payrollRecordFor(r.user_id); const asg=payrollAssignmentFor(r.user_id);
       if(rec&&rec.paid_at) return "振込完了"; if(rec) return "仕訳登録済み・振込待ち"; if(asg&&asg.template_id) return "未登録"; return "パターン未設定"; };
