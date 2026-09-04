@@ -117,6 +117,35 @@ button,input,select,textarea{font:inherit}
 .ai-field small{display:block;color:var(--m-muted);font-size:10px;margin-bottom:4px}
 .ai-field input,.ai-field select{width:100%;border:1px solid var(--m-line);border-radius:6px;background:var(--panel);font-size:13px;font-weight:700;color:var(--ink);padding:7px 8px;margin-top:2px;-webkit-appearance:auto;appearance:auto}
 .ai-field input:focus,.ai-field select:focus{outline:2px solid var(--m-red);outline-offset:1px;border-color:var(--m-red)}
+/* 統合詳細モーダルの工程バー・タブ・本部タスクパネル（2026-09-03新規。ユーザー要望
+   「請求書一覧で選んだら、手順が出てきて1個ずつ処理してチェックをつけていく形にしたい」） */
+.workflow-steps{display:grid;grid-template-columns:repeat(6,1fr);gap:6px;margin:12px 0}
+.wf-step{padding:8px;border:1px solid var(--m-line);border-radius:9px;background:var(--bg);font-size:10px;text-align:center}
+.wf-step small{display:block;color:var(--m-muted);font-size:8px}
+.wf-step b{display:block;margin-top:3px;font-size:10px}
+.wf-step.done{background:var(--m-greensoft);border-color:var(--m-green);color:var(--m-green)}
+.wf-step.current{background:var(--m-bluesoft);border-color:var(--m-blue);color:var(--m-blue)}
+.detail-layout{display:grid;grid-template-columns:1fr 260px;gap:12px;align-items:start}
+.detail-tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px}
+.detail-tabs button{border:1px solid var(--m-line);background:var(--panel);border-radius:999px;padding:7px 11px;font-size:11px;cursor:pointer;color:var(--ink)}
+.detail-tabs button.active{background:var(--ink);color:var(--bg)}
+.dtab{display:none}
+.dtab.active{display:block}
+.task-panel{border:1px solid var(--m-line);border-radius:12px;background:var(--panel);padding:12px;position:sticky;top:0}
+.task-panel h4{margin:0 0 8px;font-size:12px}
+.task-progress-num{font-size:22px;font-weight:900;margin:4px 0 8px}
+.task-step{display:flex;gap:8px;padding:7px 0;border-bottom:1px solid var(--m-line);font-size:10px}
+.task-step:last-child{border-bottom:0}
+.task-step .icon{width:18px;height:18px;border-radius:50%;display:grid;place-items:center;background:var(--bg);flex:0 0 auto;font-size:9px;color:var(--m-muted)}
+.task-step.done .icon{background:var(--m-green);color:#fff}
+.task-step.current .icon{background:var(--m-blue);color:#fff}
+.risk-card{padding:10px;border-radius:9px;margin-bottom:8px;font-size:11px}
+.risk-card.danger{background:var(--m-redsoft);border:1px solid var(--m-red)}
+.risk-card h5{font-size:11px;margin:0 0 4px}
+.conf-row{display:grid;grid-template-columns:80px 1fr 36px;gap:8px;align-items:center;padding:4px 0;font-size:10px}
+.conf-bar{height:6px;background:var(--m-line);border-radius:999px;overflow:hidden}
+.conf-bar span{display:block;height:100%;background:var(--m-green)}
+@media(max-width:900px){.detail-layout{grid-template-columns:1fr}.workflow-steps{grid-template-columns:repeat(3,1fr)}}
 .mail-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
 .mail-actions button{border:1px solid var(--m-line);background:var(--panel);border-radius:10px;padding:9px 12px;cursor:pointer;color:var(--ink)}
 .mail-actions .primary{background:var(--accent);color:#fff;border-color:var(--accent)}
@@ -1430,6 +1459,79 @@ function openComposeSentModal(row){
   document.getElementById("composeSentClose").onclick=()=>history.back();
 }
 
+/* ============================================================
+   統合詳細モーダルの工程バー・タブ・本部タスクパネル（2026-09-03新規）
+   ユーザー要望「請求書一覧で処理した請求書を選択したら、手順が出てきて1個ずつ処理して
+   チェックをつけていく形にしたい」に対応。既存のrenderMailDetail/wireDetailActionsの
+   中身（AI自動入力・仕訳作成・PL反映・広告費反映等）は無改修のまま、HTML上の配置だけを
+   工程バー＋タブ＋本部タスクパネルの構成に変える（各パネルのbox idはそのまま維持）
+   ============================================================ */
+function invoiceWorkflowSteps(invoice,mail){
+  const steps=[
+    {key:"info",label:"請求情報",done:!!(invoice&&invoice.amount!=null)},
+    {key:"accounting",label:"会計・仕訳",done:!!(invoice&&invoice.mf_journal_id)},
+    {key:"pl",label:"PL等反映",done:!!(invoice&&invoice.mf_journal_id&&(invoice.pl_fee_reflected_at||invoice.pl_fee_excluded_at||invoice.ad_cost_reflected_at))},
+    {key:"payment_prep",label:"振込準備",done:!!(invoice&&invoice.payment_status&&invoice.payment_status!=="not_ready")},
+    {key:"payment",label:"振込",done:!!(invoice&&invoice.payment_status==="paid")},
+    {key:"final",label:"完了確認",done:mail.mail_status==="completed"},
+  ];
+  let currentSet=false;
+  for(const s of steps){ if(!s.done&&!currentSet){ s.current=true; currentSet=true; } }
+  return steps;
+}
+function invoiceAiTabHtml(invoice){
+  if(!invoice) return `<div class="meta" style="color:var(--muted);font-size:12px">請求情報を保存すると自動判定が行われます</div>`;
+  const conf=invoice.ai_confidence||{};
+  const statusLabel={auto:"✅ 自動判定済（自動処理候補）",review:"👀 要確認",error:"⚠️ エラー"}[invoice.ai_match_status]||"— 未判定";
+  let html=`<div class="ai-field" style="margin-bottom:10px"><small>判定結果</small><b>${esc(statusLabel)}</b></div>`;
+  if(invoice.duplicate_suspected){
+    html+=`<div class="risk-card danger"><h5>🚨 重複請求の可能性</h5><p>取引先・金額・請求日などが過去の登録と一致しています。内容を確認し、重複でなければ下のボタンで解除してください。</p><button class="hq-btn" id="ai-resolve-dup" style="margin-top:6px">重複でないと確認する</button></div>`;
+  }
+  if(invoice.bank_account_change_detected){
+    html+=`<div class="risk-card danger"><h5>⚠️ 振込先口座変更を検知</h5><p>請求書に記載の口座が、登録済みの口座と異なります。設定タブ「支払先・銀行口座」で承認するまで振込一覧には追加できません。</p><button class="hq-btn" id="ai-goto-bank" style="margin-top:6px">設定タブで確認する</button></div>`;
+  }
+  if(invoice.ai_match_reasons&&invoice.ai_match_reasons.length){
+    html+=`<div class="ai-field" style="margin-bottom:10px"><small>判定理由</small>${invoice.ai_match_reasons.map(r=>esc(r)).join("・")}</div>`;
+  }
+  const confRows=[["取引先",conf.vendor],["法人",conf.corporation],["店舗",conf.store],["仕訳辞書",conf.account]].filter(([,v])=>v!=null);
+  if(confRows.length) html+=confRows.map(([l,v])=>`<div class="conf-row"><span>${esc(l)}</span><div class="conf-bar"><span style="width:${v}%"></span></div><b>${v}%</b></div>`).join("");
+  if(!invoice.duplicate_suspected&&!invoice.bank_account_change_detected&&!(invoice.ai_match_reasons&&invoice.ai_match_reasons.length)&&!confRows.length){
+    html+=`<div class="meta" style="color:var(--muted);font-size:12px">まだ自動判定が実行されていません（新規作成時のみ自動実行されます）</div>`;
+  }
+  return html;
+}
+function invoicePaymentTabHtml(invoice){
+  if(!invoice||!invoice.mf_journal_id) return `<div class="meta" style="color:var(--muted);font-size:12px">会計・仕訳の登録後、振込の準備ができます</div>`;
+  const payLabel={not_ready:"未準備",wait:"振込待ち",csv:"CSV出力済み",processing:"振込処理中",paid:"振込済み",blocked:"確認停止"}[invoice.payment_status]||"—";
+  let html=`<div class="ai-field" style="margin-bottom:10px"><small>振込状態</small><b>${esc(payLabel)}</b></div>`;
+  if(invoice.bank_account_change_detected){
+    html+=`<div class="risk-card danger"><h5>⚠️ 口座変更未承認</h5><p>振込先口座の変更が未承認のため、振込一覧に追加できません。設定タブ「支払先・銀行口座」で確認してください。</p></div>`;
+  }else if(invoice.payment_status==="not_ready"){
+    html+=`<div class="mail-actions"><button id="payment-add-transfer">🏦 振込一覧へ追加</button></div>`;
+  }else{
+    html+=`<div class="meta" style="color:var(--muted);font-size:12px">🏦「振込一覧」タブからCSV出力・振込済みにするの操作ができます。</div>`;
+  }
+  return html;
+}
+function taskPanelHtml(invoice,steps){
+  const doneCount=steps.filter(s=>s.done).length;
+  const step=invoice&&invoice.linked_step;
+  return `<h4>📌 本部タスク連携</h4>
+    <div class="task-progress-num">${doneCount}/${steps.length}</div>
+    ${steps.map(s=>`<div class="task-step ${s.done?"done":s.current?"current":""}"><div class="icon">${s.done?"✓":""}</div><div><b>${esc(s.label)}</b></div></div>`).join("")}
+    ${step?`<div class="meta" style="color:var(--muted);font-size:11px;margin-top:8px">${esc((step.task&&step.task.corp)||"")} ${esc((step.task&&step.task.title)||"")} ／ ${esc(step.title)}</div><a class="hq-btn" style="display:block;text-align:center;margin-top:8px;text-decoration:none" href="tasks.html" target="_blank">本部タスクを開く</a>`
+      :`<div class="meta" style="color:var(--muted);font-size:11px;margin-top:8px">紐付けられた本部タスクはありません（請求情報タブから紐付けできます）</div>`}
+  `;
+}
+function wireDetailTabs(){
+  document.querySelectorAll("[data-dtab]").forEach(b=>b.onclick=()=>{
+    document.querySelectorAll(".dtab").forEach(d=>d.classList.remove("active"));
+    document.querySelectorAll("[data-dtab]").forEach(x=>x.classList.remove("active"));
+    const el=$("dtab-"+b.dataset.dtab); if(el) el.classList.add("active");
+    b.classList.add("active");
+  });
+}
+
 function renderMailDetail(u){
   const {mail,atts,firstRead,logs,invoice,invoices,comments}=SELECTED;
   // 2026-08-25 Phase1.6: メール種類（請求書/売上/契約書）。未分類はinvoice扱いで表示（後方互換）
@@ -1525,36 +1627,92 @@ function renderMailDetail(u){
         </div>
       </div>
 
-      ${isContract?'':`<div class="ai-box">
-        <h3>${isSales?"💰 入金情報（AI自動入力 or 手動入力・任意）":"🧾 請求書情報（AI自動入力 or 手動入力・任意）"}</h3>
-        <div class="ai-grid">
-          <div class="ai-field"><small>${isSales?"入金元":"請求元"}</small><input id="iv-vendor" value="${esc(invoice&&invoice.vendor_name||"")}"></div>
-          <div class="ai-field"><small>${isSales?"明細番号":"請求書番号"}</small><input id="iv-number" value="${esc(invoice&&invoice.invoice_number||"")}"></div>
-          <div class="ai-field"><small>${isSales?"入金額":"金額"}</small><input id="iv-amount" type="number" value="${invoice&&invoice.amount!=null?invoice.amount:""}"></div>
-          <div class="ai-field"><small>${isSales?"入金予定日":"支払期限"}</small><input id="iv-duedate" type="date" value="${invoice&&invoice.due_date||""}"></div>
-          <div class="ai-field"><small>状態</small><select id="iv-status">${Object.entries(isSales?SALES_STATUS_LABEL:INVOICE_STATUS_LABEL).map(([k,l])=>`<option value="${k}" ${(invoice?invoice.invoice_status:"draft")===k?"selected":""}>${l}</option>`).join("")}</select></div>
-          <div class="ai-field"><small>対象法人</small><select id="iv-corp"><option value="">（未設定）</option>${(CORP_STORE_CACHE&&CORP_STORE_CACHE.corporations||[]).map(c=>`<option value="${esc(c.id)}" ${invoice&&invoice.corporation_id===c.id?"selected":""}>${esc(c.name)}</option>`).join("")}</select></div>
-          <div class="ai-field"><small>対象店舗</small><select id="iv-store"><option value="">（未設定）</option>${(CORP_STORE_CACHE&&CORP_STORE_CACHE.stores||[]).map(s=>`<option value="${esc(s.id)}" ${invoice&&invoice.store_id===s.id?"selected":""}>${esc(s.name)}</option>`).join("")}</select></div>
-        </div>
-        <div class="meta" style="color:var(--muted);font-size:11px;margin-top:4px">💡 対象法人・対象店舗を設定すると、「🧾請求書」一覧で法人ごとに絞り込めるようになります（未設定でも仕訳登録自体は今までどおり行えます）。</div>
-        ${isSales?"":`<div class="ai-field" style="margin-top:8px"><small>🔗 紐付ける本部タスクの工程（任意・仕訳登録時に自動で完了にします）</small><div id="hqlink-box"></div></div>`}
-        <div class="mail-actions">
-          ${atts.length?`<button id="iv-ai-fill">🤖 AIで${isSales?"入金情報":"請求書情報"}を自動入力</button>`:""}
-          <button id="iv-save">💾 ${isSales?"入金情報":"請求書情報"}を保存</button>
-          ${(invoice&&invoice.amount!=null)?(invoice.mf_journal_id
-            ?`<button data-journal-view="${esc(invoice.mf_journal_id)}" data-journal-tenant="${esc(invoice.mf_tenant_id||"default")}" title="クリックすると登録した仕訳の内容を確認できます">✅ 仕訳登録済み（伝票番号: ${esc(String(invoice.mf_journal_number??"-"))}）🔍</button>`
-            :`<button id="mfj-open">🧾 仕訳を作成</button>`):""}
-        </div>
-        <div class="err" id="iv-msg" style="margin-top:6px"></div>
-        <div id="iv-ocr-extras"></div>
-        ${(!isSales&&invoice&&invoice.amount!=null)?`<div id="adcostbox"></div>`:""}
-        ${(!isSales&&invoice&&invoice.mf_journal_id)?`<div id="plfeebox"></div>`:""}
-        <div class="replybox" id="mfjournalbox">
-          <b style="font-size:12px">🧾 マネーフォワードへ仕訳を登録</b>
-          <div id="mfj-body" style="margin-top:8px;font-size:12px;color:var(--muted)">読み込み中…</div>
-        </div>
-        ${isSales?"":ivExtraSectionHtml(invoices,mail.id)}
-      </div>`}
+      ${(()=>{
+        // 履歴・監査（処理履歴＋コメント）。isContractのときは従来どおりタブの外に単独表示、
+        // それ以外は下の「履歴・監査」タブの中身として使う（2026-09-03・タブ化にあたり内容は変更なし）
+        const historyCommentsHtml=`
+          <div class="mail-history">
+            <b style="font-size:12px">処理履歴</b>
+            <div id="mailHistory">${logs.length?logs.map(x=>`<div class="mail-history-row done"><span></span><div>${fmtDT(x.created_at)}　${esc(x.actor&&x.actor.name||"—")}が${logLabel(x.action)}${x.note?"（"+esc(x.note)+"）":""}</div></div>`).join(""):'<div class="mail-history-row"><span></span><div>まだ履歴はありません</div></div>'}</div>
+          </div>
+          <div class="comment-section">
+            <b style="font-size:12px">${isSales?"💬 コメント（この入金元の仕訳・入力方法のメモにも使えます）":"💬 コメント（処理担当者間の判断メモ）"}</b>
+            <div id="commentList">${comments.length?comments.map(c=>`<div class="comment-row">
+              <div class="cmeta">${fmtDT(c.created_at)}　${esc(c.author&&c.author.name||"—")}</div>
+              <div class="cbody">${esc(c.body)}</div>
+            </div>`).join(""):'<div class="comment-row"><div class="cmeta">まだコメントはありません</div></div>'}</div>
+            <div class="comment-form">
+              <textarea id="comment-body" placeholder="${isSales?"例：この入金元はマネーフォワードで『雑収入／◯◯様』として仕訳する…":"コメントを入力…"}"></textarea>
+              <button class="hq-btn" id="comment-add">追加</button>
+            </div>
+            <div class="err" id="comment-msg" style="margin-top:6px"></div>
+          </div>`;
+        if(isContract) return historyCommentsHtml;
+        // 2026-09-03新規: ユーザー要望「請求書一覧で選んだら、手順が出てきて1個ずつ処理して
+        // チェックをつけていく形にしたい」に対応。工程バー＋タブ（請求情報/AI判定/会計・仕訳/
+        // PL・広告・精算書/振込/履歴・監査）＋本部タスク進捗パネルの3点セット。
+        // 既存のai-box内の各ボックス（adcostbox/plfeebox/mfjournalbox等）はIDをそのまま維持し、
+        // タブの中に配置場所を移しただけ＝wireDetailActions側のロジックは無改修で動く
+        const steps=invoiceWorkflowSteps(invoice,mail);
+        return `<div class="workflow-steps">${steps.map(s=>`<div class="wf-step ${s.done?"done":s.current?"current":""}"><small>${s.done?"✓":s.current?"●":"○"}</small><b>${esc(s.label)}</b></div>`).join("")}</div>
+        <div class="detail-layout">
+          <div>
+            <div class="detail-tabs">
+              <button class="active" data-dtab="info">請求情報</button>
+              <button data-dtab="ai">AI判定${(invoice&&(invoice.duplicate_suspected||invoice.bank_account_change_detected))?" ⚠️":""}</button>
+              <button data-dtab="accounting">会計・仕訳</button>
+              ${isSales?"":'<button data-dtab="pl">PL・広告・精算書</button>'}
+              ${isSales?"":'<button data-dtab="payment">振込</button>'}
+              <button data-dtab="audit">履歴・監査</button>
+            </div>
+
+            <div class="dtab active" id="dtab-info">
+              <div class="ai-grid">
+                <div class="ai-field"><small>${isSales?"入金元":"請求元"}</small><input id="iv-vendor" value="${esc(invoice&&invoice.vendor_name||"")}"></div>
+                <div class="ai-field"><small>${isSales?"明細番号":"請求書番号"}</small><input id="iv-number" value="${esc(invoice&&invoice.invoice_number||"")}"></div>
+                <div class="ai-field"><small>${isSales?"入金額":"金額"}</small><input id="iv-amount" type="number" value="${invoice&&invoice.amount!=null?invoice.amount:""}"></div>
+                <div class="ai-field"><small>${isSales?"入金予定日":"支払期限"}</small><input id="iv-duedate" type="date" value="${invoice&&invoice.due_date||""}"></div>
+                <div class="ai-field"><small>状態</small><select id="iv-status">${Object.entries(isSales?SALES_STATUS_LABEL:INVOICE_STATUS_LABEL).map(([k,l])=>`<option value="${k}" ${(invoice?invoice.invoice_status:"draft")===k?"selected":""}>${l}</option>`).join("")}</select></div>
+                <div class="ai-field"><small>対象法人</small><select id="iv-corp"><option value="">（未設定）</option>${(CORP_STORE_CACHE&&CORP_STORE_CACHE.corporations||[]).map(c=>`<option value="${esc(c.id)}" ${invoice&&invoice.corporation_id===c.id?"selected":""}>${esc(c.name)}</option>`).join("")}</select></div>
+                <div class="ai-field"><small>対象店舗</small><select id="iv-store"><option value="">（未設定）</option>${(CORP_STORE_CACHE&&CORP_STORE_CACHE.stores||[]).map(s=>`<option value="${esc(s.id)}" ${invoice&&invoice.store_id===s.id?"selected":""}>${esc(s.name)}</option>`).join("")}</select></div>
+              </div>
+              <div class="meta" style="color:var(--muted);font-size:11px;margin-top:4px">💡 対象法人・対象店舗を設定すると、「🧾請求書」一覧で法人ごとに絞り込めるようになります（未設定でも仕訳登録自体は今までどおり行えます）。</div>
+              ${isSales?"":`<div class="ai-field" style="margin-top:8px"><small>🔗 紐付ける本部タスクの工程（任意・仕訳登録時に自動で完了にします）</small><div id="hqlink-box"></div></div>`}
+              <div class="mail-actions">
+                ${atts.length?`<button id="iv-ai-fill">🤖 AIで${isSales?"入金情報":"請求書情報"}を自動入力</button>`:""}
+                <button id="iv-save">💾 ${isSales?"入金情報":"請求書情報"}を保存</button>
+              </div>
+              <div class="err" id="iv-msg" style="margin-top:6px"></div>
+              <div id="iv-ocr-extras"></div>
+              ${isSales?"":ivExtraSectionHtml(invoices,mail.id)}
+            </div>
+
+            <div class="dtab" id="dtab-ai">${invoiceAiTabHtml(invoice)}</div>
+
+            <div class="dtab" id="dtab-accounting">
+              <div class="mail-actions" style="margin-top:0">
+                ${(invoice&&invoice.amount!=null)?(invoice.mf_journal_id
+                  ?`<button data-journal-view="${esc(invoice.mf_journal_id)}" data-journal-tenant="${esc(invoice.mf_tenant_id||"default")}" title="クリックすると登録した仕訳の内容を確認できます">✅ 仕訳登録済み（伝票番号: ${esc(String(invoice.mf_journal_number??"-"))}）🔍</button>`
+                  :`<button id="mfj-open">🧾 仕訳を作成</button>`):`<div class="meta" style="color:var(--muted);font-size:12px">先に「請求情報」タブで金額を保存してください</div>`}
+              </div>
+              <div class="replybox" id="mfjournalbox">
+                <b style="font-size:12px">🧾 マネーフォワードへ仕訳を登録</b>
+                <div id="mfj-body" style="margin-top:8px;font-size:12px;color:var(--muted)">読み込み中…</div>
+              </div>
+            </div>
+
+            ${isSales?"":`<div class="dtab" id="dtab-pl">
+              ${(invoice&&invoice.amount!=null)?`<div id="adcostbox"></div>`:`<div class="meta" style="color:var(--muted);font-size:12px">先に「請求情報」タブで金額を保存してください</div>`}
+              ${(invoice&&invoice.mf_journal_id)?`<div id="plfeebox"></div>`:`<div class="meta" style="color:var(--muted);font-size:12px;margin-top:8px">PLへの反映は会計・仕訳の登録後に行えます</div>`}
+            </div>`}
+
+            ${isSales?"":`<div class="dtab" id="dtab-payment">${invoicePaymentTabHtml(invoice)}</div>`}
+
+            <div class="dtab" id="dtab-audit">${historyCommentsHtml}</div>
+          </div>
+          <div class="task-panel">${taskPanelHtml(invoice,steps)}</div>
+        </div>`;
+      })()}
 
       <div class="mail-actions" style="margin-top:14px">
         <button id="reply-open">↩ 返信</button>
@@ -1574,26 +1732,9 @@ function renderMailDetail(u){
         </div>
         <div class="err" id="reply-msg" style="margin-top:6px"></div>
       </div>
-
-      <div class="mail-history">
-        <b style="font-size:12px">処理履歴</b>
-        <div id="mailHistory">${logs.length?logs.map(x=>`<div class="mail-history-row done"><span></span><div>${fmtDT(x.created_at)}　${esc(x.actor&&x.actor.name||"—")}が${logLabel(x.action)}${x.note?"（"+esc(x.note)+"）":""}</div></div>`).join(""):'<div class="mail-history-row"><span></span><div>まだ履歴はありません</div></div>'}</div>
-      </div>
-
-      <div class="comment-section">
-        <b style="font-size:12px">${isSales?"💬 コメント（この入金元の仕訳・入力方法のメモにも使えます）":"💬 コメント（処理担当者間の判断メモ）"}</b>
-        <div id="commentList">${comments.length?comments.map(c=>`<div class="comment-row">
-          <div class="cmeta">${fmtDT(c.created_at)}　${esc(c.author&&c.author.name||"—")}</div>
-          <div class="cbody">${esc(c.body)}</div>
-        </div>`).join(""):'<div class="comment-row"><div class="cmeta">まだコメントはありません</div></div>'}</div>
-        <div class="comment-form">
-          <textarea id="comment-body" placeholder="${isSales?"例：この入金元はマネーフォワードで『雑収入／◯◯様』として仕訳する…":"コメントを入力…"}"></textarea>
-          <button class="hq-btn" id="comment-add">追加</button>
-        </div>
-        <div class="err" id="comment-msg" style="margin-top:6px"></div>
-      </div>
     </div>
   `;
+  wireDetailTabs();
 
   // 本文はsrcdoc（DOMプロパティで直接セット）。sandboxはallow-popupsのみ＝
   // リンクは新規タブで開けるがスクリプト実行・トップ遷移は不可のまま
@@ -1870,6 +2011,26 @@ function wireDetailActions(u){
       wireMailListClicks(u);
     }
     updateMailSummaryBar(); await openMailDetail(u,emailId,true); };
+
+  // AI判定タブ・振込タブの配線（2026-09-03新規）
+  if($("ai-resolve-dup")) $("ai-resolve-dup").onclick=async()=>{
+    if(!confirm("この請求書は重複ではないと確認します。よろしいですか？")) return;
+    await authed(`/rest/v1/invoices?id=eq.${invoice.id}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({duplicate_suspected:false,updated_at:new Date().toISOString()})});
+    await authed(`/rest/v1/invoice_emails?id=eq.${emailId}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({duplicate_suspected:false})});
+    // 処理履歴（invoice_audit_logs）への記録はservice role専用のRPC/Edge Function経由でしか
+    // 書き込めない設計（クライアントからの直接INSERTポリシーが無い）。記録を残したい場合は
+    // 別途RPCの新設が必要なため、今回はステータス変更のみ行い、監査ログへの追記は行わない
+    await reloadDetail();
+  };
+  if($("ai-goto-bank")) $("ai-goto-bank").onclick=()=>{
+    history.back();
+    TAB="settings";
+    renderTabBody(u).then(()=>renderSettingsTab(u,"bankAccounts"));
+  };
+  if($("payment-add-transfer")) $("payment-add-transfer").onclick=async()=>{
+    await authed(`/rest/v1/invoices?id=eq.${invoice.id}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({payment_status:"wait",updated_at:new Date().toISOString()})});
+    await reloadDetail();
+  };
 
   if($("act-start")) $("act-start").onclick=async()=>{
     $("act-start").disabled=true; $("act-msg").textContent="処理中…";
