@@ -1,0 +1,12 @@
+-- 振込完了と本部タスク工程の紐付け用の列を追加（2026-09-04・統合改修指示書【確定版】STEP9）
+-- 「N-Style 会計・請求書フロー 統合改修指示書」は、会計登録イベント（既存のlinked_hq_step_id）と
+-- 振込完了イベントを別々の本部タスク工程に紐付けられるようにすることを求めている
+-- （event_type→hq_task_step_idの明示マッピング。工程名の文字列推測は使わない）。
+-- 会計登録イベント用は既存のinvoices.linked_hq_step_idをそのまま使う（mf-journalのcreate/
+-- create_standaloneが既に仕訳登録時に自動完了させている＝再利用）。
+-- このマイグレーションは振込完了イベント用の新しい紐付け先を1列だけ追加する。
+--
+-- 正直な注記（2026-09-04時点）：この列はSupabase側には反映済みだが、フロント側の
+-- 「振込」ステップカードに選択UI・振込済み操作時の自動完了ロジックはまだ実装していない
+-- （指示書STEP9の完了報告としては現時点でFAIL。次のセッションでの実装が必要）
+alter table invoices add column if not exists linked_hq_step_id_payment uuid references hq_task_steps(id);

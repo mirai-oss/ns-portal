@@ -406,7 +406,14 @@ Deno.serve(async (req: Request) => {
       // attach_filesがfalse明示のときはスキップ（デフォルトは添付する）
       let voucherAttached = 0, voucherError: string | null = null;
       if (journalId && body?.attach_files !== false) {
-        const { data: atts } = await db.from("invoice_attachments").select("file_name, storage_path, mime_type, size_bytes").eq("email_id", inv.email_id).order("created_at").limit(5);
+        // 2026-09-04修正: アップロード請求書（email_id=null）の場合、従来
+        // .eq("email_id", inv.email_id) は email_id=eq.null となり0件しか返らず、
+        // 証憑が自動添付されない不具合があった。invoice_idでも紐付けられるようになった
+        // ため（invoice_attachments.invoice_id）、email_idが無ければinvoice_idで探す
+        const attQuery = db.from("invoice_attachments").select("file_name, storage_path, mime_type, size_bytes").order("created_at").limit(5);
+        const { data: atts } = inv.email_id
+          ? await attQuery.eq("email_id", inv.email_id)
+          : await attQuery.eq("invoice_id", invoiceId);
         const files: { file_name: string; file_data: string }[] = [];
         for (const a of atts ?? []) {
           if ((a.size_bytes ?? 0) > 15 * 1024 * 1024) continue; // 大きすぎるものはスキップ（413対策）

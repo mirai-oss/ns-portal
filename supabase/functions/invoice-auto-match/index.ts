@@ -88,7 +88,7 @@ Deno.serve(async (req: Request) => {
 
   try {
     const { data: inv, error: invErr } = await uc.from("invoices")
-      .select("id, vendor_name, amount, intake_source, vendor_id, corporation_id, store_id, duplicate_suspected, email:invoice_emails(subject, from_address)")
+      .select("id, vendor_name, invoice_number, due_date, amount, intake_source, vendor_id, corporation_id, store_id, duplicate_suspected, email:invoice_emails(subject, from_address)")
       .eq("id", invoiceId).maybeSingle();
     if (invErr) return json({ error: "請求書の取得に失敗しました: " + invErr.message }, 500);
     if (!inv) return json({ error: "対象が見つからないか権限がありません" }, 403);
@@ -122,8 +122,30 @@ Deno.serve(async (req: Request) => {
     const corporationId = matchedRule?.target_corporation_id ?? vendor?.default_corporation_id ?? inv.corporation_id ?? null;
     const storeId = matchedRule?.target_store_id ?? vendor?.default_store_id ?? inv.store_id ?? null;
 
-    // ④重複疑い（既存フラグをそのまま利用。ハッシュ照合自体はこのFunctionの範囲外）
-    const duplicateSuspected = !!inv.duplicate_suspected;
+    // ④重複請求の検知（2026-09-04・指示書STEP10。従来は外部で立てられたduplicate_suspected
+    // フラグの表示のみだったが、ここで実際にビジネスキー（取引先＋金額＋（請求書番号 or 支払期限の
+    // 年月））による重複判定を行う。添付ファイルのハッシュ一致とは別の観点＝請求書番号や日付を
+    // 変えて再送されたような「見た目は違うが実質同じ請求」も拾える）
+    let businessKeyDuplicate = false;
+    {
+      let q = uc.from("invoices").select("id, invoice_number, due_date")
+        .neq("id", invoiceId)
+        .eq("amount", inv.amount)
+        .limit(20);
+      if (vendorId) q = q.eq("vendor_id", vendorId);
+      else if (inv.vendor_name) q = q.eq("vendor_name", inv.vendor_name);
+      else q = q.eq("id", invoiceId); // 取引先も金額の手がかりも無ければ照合しない（0件になる）
+      const { data: candidates } = await q;
+      const dueYm = inv.due_date ? String(inv.due_date).slice(0, 7) : null;
+      const invNumber = String(inv.invoice_number ?? "").trim();
+      for (const c of candidates ?? []) {
+        const cNumber = String(c.invoice_number ?? "").trim();
+        const cYm = c.due_date ? String(c.due_date).slice(0, 7) : null;
+        if (invNumber && cNumber && invNumber === cNumber) { businessKeyDuplicate = true; break; }
+        if (dueYm && cYm && dueYm === cYm) { businessKeyDuplicate = true; break; }
+      }
+    }
+    const duplicateSuspected = !!inv.duplicate_suspected || businessKeyDuplicate;
 
     // ⑤振込先口座変更検知
     let bankChangeDetected = false;
@@ -203,6 +225,9 @@ Deno.serve(async (req: Request) => {
     if (!inv.vendor_id && vendorId) updatePatch.vendor_id = vendorId;
     if (!inv.corporation_id && corporationId) updatePatch.corporation_id = corporationId;
     if (!inv.store_id && storeId) updatePatch.store_id = storeId;
+    // 新たにビジネスキー重複を検知した場合のみ書き込む（既存フラグがtrueなのにここでfalseの
+    // 場合は上書きしない＝他の仕組みが立てたduplicate_suspectedを消さない）
+    if (businessKeyDuplicate && !inv.duplicate_suspected) updatePatch.duplicate_suspected = true;
 
     const { error: updErr } = await uc.from("invoices").update(updatePatch).eq("id", invoiceId);
     if (updErr) return json({ error: "判定結果の保存に失敗しました: " + updErr.message }, 500);
@@ -211,6 +236,7 @@ Deno.serve(async (req: Request) => {
       success: true, ai_match_status: aiMatchStatus, ai_match_reasons: reasons, ai_confidence: confidence,
       vendor_id: vendorId, corporation_id: corporationId, store_id: storeId,
       matched_rule_id: matchedRule?.id ?? null, bank_account_change_detected: bankChangeDetected,
+      duplicate_suspected: duplicateSuspected,
     });
   } catch (e) {
     return json({ error: "予期しないエラー: " + String(e) }, 500);
