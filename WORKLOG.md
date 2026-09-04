@@ -6,6 +6,15 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
+**★★★★★2026-09-04（担当C実行スレッド・続き14）会計ダッシュボードを確定UIへ全面置換（コミット[2d60fde](https://github.com/mirai-oss/ns-portal/commit/2d60fde)）**: ユーザーから確定UIのHTML（Gemini生成モック）が届き、「新しいダッシュボードを別に作るのではなく、現行の会計ダッシュボードを確定UIベースへ置換・既存invoice/認証/権限等を壊さず正式統合せよ」との指示書。旧「月別処理一覧」中心のUI（DASH_STATE.rowFilter・dashLoadMonthlyList/dashMonthlyListHtml・給与仕訳/インフォマートのクイックリンクカード）を全削除し、①今日やること②今月の処理状況③今月の処理進捗④今月の支払状況⑤支払予定⑥要対応の内訳⑦最近の処理、の7ブロック構成へ全面置換。同じ「📊会計ダッシュボード」ルートから開く（新ルートは作らず、旧UIとの二重構造にもしていない）。
+- **新しい別集計基盤は作らず既存invoicesをこの画面用に集計するだけのViewとして実装**（指示書§4・§39-40）。🧾請求書一覧と要対応判定を完全共通化するため`unifiedNeedsAttention()`を`unifiedAttentionReasons()`（理由付き配列を返す）の薄いラッパーへリファクタし、ダッシュボードの「要対応の内訳」もこの同じ関数から集計（指示書§36「要対応ロジックの二重実装禁止」対応）
+- **正直に不足を特定して最小限の追加実装**：「MFエラー」が実データで判定できなかったため（従来mf_sync_logsにしか残らず一覧から見えなかった）、`invoices.mf_registration_error`列を新規追加し、mf-journalの仕訳登録失敗時に記録・成功時にクリアするようにした（モック値148件/¥12,840,000等の固定値は一切残していないことを確認済み）
+- **カード→請求書一覧への遷移**：`UNIFIED_STATE.reasonFilter`を新設し`openUnifiedFiltered()`で🧾請求書一覧へ絞り込み付き遷移（overdue/bank_change/duplicate/mf_error/unknown_journal/unknown_company/unknown_store/import_errorの8キー）。最近の処理→`openInvoiceDetail(invoice_id)`（既存の共通詳細をそのまま使用）
+- **対象年月・法人セレクタ**：固定値ではなく、既存法人マスタ（`CORP_STORE_CACHE`）・実データの年月から動的生成
+- **正直な簡略化（未実装・簡略化した点）**：会計処理進捗の分母は「会計対象外」を判別するフラグが無いため全件、振込処理進捗の分母は「会計登録済み全件」（payment_methodによる除外は未実装）、支払予定4区分は選択中の対象年月スコープ内のみで計算。左サイドバーのグループ化（取込/支払いのセクション分け）は今回は未着手（タブ名「📤アップロード」への改称のみ実施）
+- 最終コード監査済み：旧月別処理一覧・モック固定値・法人ハードコード・要対応判定の重複、いずれも残存無し
+- 構文チェック済み・Edge Functionデプロイ済み・SQL適用済み・GitHub Pages反映確認済み（ブラウザでコンソールエラー無し）。**実機ログイン確認は引き続き未実施（ユーザー依頼）**
+
 **★★★★★2026-09-04（担当C実行スレッド・続き13）event_type6種類完成＋緊急バグ修正（コミット[55a7da6](https://github.com/mirai-oss/ns-portal/commit/55a7da6), [95e4245](https://github.com/mirai-oss/ns-portal/commit/95e4245)）**: 続き12の報告直後、ユーザーから緊急報告「請求書のところが今までのものも全て消えてしまってる」。**調査の結果データ損失ではなく表示バグ**と判明（DBを直接確認し17件現存を確認）。原因は続き11で🧾請求書一覧の既定タブを「要対応」に変更した際、その判定条件がinvoice-auto-match未実施の古い請求書（ai_match_statusがnull）を一切拾えず、既定タブが実質空に見えていたこと。ユーザーからの続く12項目の追加指示（event_type完成・振込状態表示・要対応への例外集約等、ZIP自動化は不要と明言）に沿って対応:
 - **緊急修正（最優先）**: `unifiedNeedsAttention()`を新設し、要対応の判定条件を拡張（ai_match_status未設定も対象・法人/店舗未設定も対象・支払期限超過も対象・完了済みは除外）。これにより17件の旧請求書が正しく「要対応」に再表示されるようになった
 - **本部タスクevent_type 6種類フル対応**: 新規RPC`invoice_fire_task_event`（invoice_id×event_typeのunique制約による真の冪等性）＋`invoice_task_events`監査ログテーブルを新設。mf_journal_created/payment_completedは既存列を後方互換で継続使用、残り4イベント（invoice_created/invoice_review_completed/payment_ready/payment_verified）は新規jsonb列＋専用パネルで個別マッピング可能に。発火ポイントを全て実装（新規保存時・自動判定クリーン時・重複解除時・振込追加時・振込済み時・支払確認ボタン新設）
