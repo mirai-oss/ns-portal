@@ -112,11 +112,15 @@ button,input,select,textarea{font:inherit}
 .attcard-foot .fname{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink)}
 .ai-box{border:1px solid var(--m-line);border-radius:12px;background:var(--panel);padding:12px;margin-top:14px}
 .ai-box h3{margin:0 0 8px;font-size:14px}
-.ai-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
-.ai-field{padding:9px;border:1px solid var(--m-line);border-radius:9px;background:var(--bg)}
-.ai-field small{display:block;color:var(--m-muted);font-size:10px;margin-bottom:4px}
-.ai-field input,.ai-field select{width:100%;border:1px solid var(--m-line);border-radius:6px;background:var(--panel);font-size:13px;font-weight:700;color:var(--ink);padding:7px 8px;margin-top:2px;-webkit-appearance:auto;appearance:auto}
-.ai-field input:focus,.ai-field select:focus{outline:2px solid var(--m-red);outline-offset:1px;border-color:var(--m-red)}
+/* 2026-09-03再調整: 参考モックアップ準拠でラベル+枠線入力のフラットな見た目に統一
+   （二重枠になっていた入力欄の外枠を廃止。ai-field/ai-gridはこのアプリ全体（設定タブ・
+   広告費/PL反映パネル・仕訳辞書編集等）で共通に使っている部品のため、ここを変えると
+   アプリ全体の入力欄の見た目が揃って軽くなる） */
+.ai-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.ai-field{padding:0;border:0;background:transparent}
+.ai-field small{display:block;color:var(--m-muted);font-size:11px;margin-bottom:6px;font-weight:700;letter-spacing:.01em}
+.ai-field input,.ai-field select,.ai-field textarea{width:100%;border:1px solid var(--m-line);border-radius:8px;background:var(--panel);font-size:13px;font-weight:500;color:var(--ink);padding:10px;margin-top:0;-webkit-appearance:auto;appearance:auto}
+.ai-field input:focus,.ai-field select:focus,.ai-field textarea:focus{outline:none;border-color:var(--m-blue);box-shadow:0 0 0 3px var(--m-bluesoft)}
 /* 統合詳細モーダルの工程バー・3カラムレイアウト（証憑プレビュー／タブ／本部タスク）
    （2026-09-03新規・ユーザー要望「請求書一覧で選んだら、手順が出てきて1個ずつ処理して
    チェックをつけていく形にしたい」＋参考モックアップ準拠でUIを統一。実データが少なくても
@@ -129,23 +133,30 @@ button,input,select,textarea{font:inherit}
 .wf-step.done small{color:#fff}
 .wf-step.current{background:var(--m-blue);border-color:var(--m-blue);color:#fff}
 .wf-step.current small{color:#fff}
-.detail-layout{display:grid;grid-template-columns:minmax(280px,.8fr) minmax(440px,1.2fr);gap:16px;align-items:start}
-/* 処理フローの各工程カード（2026-09-03再設計。タブ切替をやめ、参考モックアップ準拠で
-   「証憑を見ながら上から順に全工程が見えて埋めていく」1本の流れに変更） */
-.step-card{background:var(--panel);border:1px solid var(--m-line);border-radius:12px;padding:16px;margin-bottom:14px}
-.step-card-head{display:flex;align-items:center;gap:10px;margin-bottom:14px;border-bottom:1px dashed var(--m-line);padding-bottom:10px}
-.step-num{background:var(--ink);color:var(--bg);width:26px;height:26px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:800;flex:0 0 auto}
-.step-title{font-size:14px;font-weight:800;margin:0;flex:1}
-.step-badge{font-size:10px;font-weight:800;padding:3px 8px;border-radius:999px;background:var(--bg);color:var(--m-muted)}
+.detail-layout{display:grid;grid-template-columns:1fr 1fr;gap:24px;align-items:start}
+/* 処理フローの各工程カード（2026-09-03再設計→再調整。ユーザー提供の参考HTMLの枠・文字サイズ・
+   色合いに合わせた：カードにうっすら影をつけて浮かせ、余白を広めに、番号は濃い円形バッジ） */
+.step-card{background:var(--panel);border:1px solid var(--m-line);border-radius:12px;padding:24px;margin-bottom:16px;box-shadow:var(--shadow)}
+.step-card-head{display:flex;align-items:center;gap:12px;margin-bottom:16px;border-bottom:1px dashed var(--m-line);padding-bottom:12px}
+.step-num{background:var(--ink);color:var(--panel);width:24px;height:24px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:800;flex:0 0 auto}
+.step-title{font-size:15px;font-weight:800;margin:0;flex:1}
+.step-badge{font-size:10px;font-weight:800;padding:4px 9px;border-radius:999px;background:var(--m-line);color:var(--m-muted)}
 .step-badge.done{background:var(--m-greensoft);color:var(--m-green)}
 .step-badge.current{background:var(--m-bluesoft);color:var(--m-blue)}
-.evidence-panel{border:1px solid var(--m-line);border-radius:12px;background:var(--panel);overflow:hidden}
-.evidence-panel .ep-head{padding:10px 12px;border-bottom:1px solid var(--m-line);font-size:12px;font-weight:800;display:flex;justify-content:space-between;align-items:center}
-.evidence-panel .ep-body{padding:12px;max-height:560px;overflow:auto}
-.evidence-panel .ep-tabs{display:flex;gap:5px;padding:8px;border-top:1px solid var(--m-line);overflow:auto}
-.evidence-panel .ep-tabs button{border:1px solid var(--m-line);background:var(--bg);border-radius:7px;padding:6px 8px;font-size:10px;white-space:nowrap;cursor:pointer;color:var(--ink)}
-.evidence-panel .ep-tabs button.active{background:var(--ink);color:var(--bg)}
+/* 本部タスク紐付け欄（参考HTMLの.checkbox-wrap＝淡い青の枠つきボックス準拠） */
+.task-link-box{background:var(--m-bluesoft);border:1px solid var(--m-blue);border-radius:8px;padding:12px}
+.task-link-box>small{color:var(--m-blue)!important;font-weight:800!important}
+.evidence-panel{background:#e5e0d8;border:1px solid var(--m-line);border-radius:12px;overflow:hidden;box-shadow:var(--shadow);display:flex;flex-direction:column;min-height:600px}
+.evidence-panel .ep-head{padding:12px 16px;font-size:12px;font-weight:800;display:flex;justify-content:space-between;align-items:center;color:var(--m-muted)}
+.evidence-panel .ep-body{padding:0 16px 16px;flex:1;overflow:auto}
+.evidence-panel .ep-tabs{display:flex;gap:5px;padding:0 16px 16px;overflow:auto}
+.evidence-panel .ep-tabs button{border:1px solid var(--m-line);background:var(--panel);border-radius:7px;padding:6px 8px;font-size:10px;white-space:nowrap;cursor:pointer;color:var(--ink)}
+.evidence-panel .ep-tabs button.active{background:var(--ink);color:var(--panel)}
 .ep-preview iframe,.ep-preview img{width:100%;min-height:420px;border:0;background:#fff;border-radius:8px}
+/* 証憑プレビュー内の添付カードは「紙」らしく1枚ずつ大きく・影つきで見せる（参考HTML準拠） */
+.evidence-panel .attgrid{grid-template-columns:1fr;padding-top:16px}
+.evidence-panel .attcard{box-shadow:0 10px 30px rgba(0,0,0,.12);border:1px solid #ddd}
+.evidence-panel .attcard-preview{height:480px}
 .detail-tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px}
 .detail-tabs button{border:1px solid var(--m-line);background:var(--panel);border-radius:999px;padding:8px 12px;font-size:12px;cursor:pointer;color:var(--ink);font-weight:700}
 .detail-tabs button.active{background:var(--ink);color:var(--bg);border-color:var(--ink)}
@@ -1727,7 +1738,7 @@ function renderMailDetail(u){
                 <div class="ai-field"><small>対象店舗</small><select id="iv-store"><option value="">（未設定）</option>${(CORP_STORE_CACHE&&CORP_STORE_CACHE.stores||[]).map(s=>`<option value="${esc(s.id)}" ${invoice&&invoice.store_id===s.id?"selected":""}>${esc(s.name)}</option>`).join("")}</select></div>
               </div>
               <div class="meta" style="color:var(--muted);font-size:11px;margin-top:4px">💡 対象法人・対象店舗を設定すると、「🧾請求書」一覧で法人ごとに絞り込めるようになります（未設定でも仕訳登録自体は今までどおり行えます）。</div>
-              ${isSales?"":`<div class="ai-field" style="margin-top:8px"><small>🔗 紐付ける本部タスクの工程（任意・仕訳登録時に自動で完了にします）</small><div id="hqlink-box"></div></div>`}
+              ${isSales?"":`<div class="task-link-box" style="margin-top:12px"><small>🔗 紐付ける本部タスクの工程（任意・仕訳登録時に自動で完了にします）</small><div id="hqlink-box"></div></div>`}
               <div class="mail-actions">
                 ${atts.length?`<button id="iv-ai-fill">🤖 AIで${isSales?"入金情報":"請求書情報"}を自動入力</button>`:""}
                 <button id="iv-save">💾 ${isSales?"入金情報":"請求書情報"}を保存</button>
@@ -4236,14 +4247,19 @@ function mfuOpenPreview(){
     pmsg.className="err msg-ok";
     pmsg.textContent=`登録しました（伝票番号: ${j.journal_number??"-"}）`
       +(j.voucher_attached?`。添付ファイルも${j.voucher_attached}件添付しました`:j.voucher_error?`（添付: ${j.voucher_error}）`:"");
-    // 登録直後は自動で閉じず、この場で📊PLへ反映パネルを出す（2026-09-03拡張・対象科目は
-    // パネル側が実際の仕訳＋PL連携対象科目の登録状況から自動判定するため、ここでの絞り込みは不要）
-    if(j.invoice_id&&j.journal_id){
-      pmsg.textContent+="。下のパネルでPLへの反映内容を確認してください（反映しない場合は「対象外にする」を選べます）";
-      plfeeInit({
-        boxId:"plfeebox-mfu", invoiceId:j.invoice_id, journalId:j.journal_id, tenantId:MFU_STATE.tenantId||"default",
-        fallbackAmount:totalDebit, onDone:()=>{ history.back(); renderUploadInvoiceTab(); },
-      });
+    // 2026-09-03変更: ユーザー要望「アップロード請求書のタブも入口でしかないから、アップロード
+    // したら請求書一覧のほうに飛んで、そこから処理する流れにしてほしい」に対応。登録直後にこの場で
+    // PL反映まで済ませようとせず、統合請求書一覧タブへ切り替えたうえで、その場で新しい請求書の
+    // 処理画面（openStandaloneInvoiceModal＝会計・仕訳/PL・広告・精算書/振込等の工程カード）を
+    // 続けて開く（一覧に戻るだけでなく、続きの処理へそのまま入れるようにするため）
+    if(j.invoice_id){
+      pmsg.textContent+="。続けて処理画面を開きます…";
+      setTimeout(async()=>{
+        history.back(); // アップロードモーダルを閉じる
+        TAB="unified";
+        await renderTabBody(u);
+        await openStandaloneInvoiceModal(u,j.invoice_id);
+      },700);
     }else{
       pmsg.textContent+="。画面を更新します…";
       setTimeout(()=>{ history.back(); renderUploadInvoiceTab(); },900);
