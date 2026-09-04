@@ -207,6 +207,13 @@ textarea{resize:vertical}
 .fieldbox{border:1px solid var(--line);border-radius:10px;padding:9px 11px;background:var(--bg)}
 .fieldbox label{display:block;color:var(--muted);font-size:11px;margin:0 0 4px}
 .fieldbox select,.fieldbox input{width:100%;border:0;background:transparent;outline:none;font-weight:700;padding:0;font-size:14px;color:var(--ink)}
+/* 2026-09-04: 担当の複数選択＝ownerline(3列グリッド)の1マス分に収まる「プルダウン風ボタン＋
+   開いたときだけ出る縦並びチェックリスト」。常時展開のchiprowにすると隣のマスが崩れたため変更 */
+.assignee-pick-btn{width:100%;text-align:left;border:0;background:transparent;outline:none;font-weight:700;padding:0;font-size:14px;color:var(--ink);cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.assignee-pick-panel{position:absolute;top:100%;left:0;z-index:20;background:var(--card);border:1px solid var(--line);border-radius:10px;box-shadow:0 4px 16px rgba(0,0,0,.15);padding:8px;margin-top:4px;min-width:180px;max-height:220px;overflow-y:auto;flex-direction:column;gap:2px}
+.assignee-pick-panel .pick-row{display:flex;align-items:center;gap:6px;font-size:13px;font-weight:400;padding:5px 6px;border-radius:6px;cursor:pointer;white-space:nowrap;color:var(--ink)}
+.assignee-pick-panel .pick-row:hover{background:var(--bg)}
+.assignee-pick-panel .pick-row input{width:auto;accent-color:var(--accent);cursor:pointer}
 .proc-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:12px;flex-wrap:wrap}
 .resources{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}
 .resource{border:1px solid var(--line);border-radius:12px;padding:11px 12px;background:var(--bg);position:relative}
@@ -449,6 +456,11 @@ function sortTasks(list){
 let CUR_TASK=null;        // 詳細表示中のタスク（工程・リンク・写真・履歴込み）
 let OPEN_STEP=null;       // 詳細画面で開いている工程id
 let STEP_ATT_OPEN=new Set();  // 工程ごとの添付欄の開閉（B4と同じ既定=閉に統一。2026-08-25追記）
+// 2026-09-04(続き): 担当者の複数選択チェックボックスを常時展開(chiprow)にしたところ、
+// ownerlineのCSSグリッド(3列)がその1マスだけ全幅になり隣のマス目が余って崩れるとの
+// 実機フィードバックを受け、元どおり1マス分の「プルダウン風ボタン＋開いたときだけ縦に並ぶ
+// チェックリストのポップアップ」に変更。工程ごとの開閉状態をここで持つ
+let ASSIGNEE_PICK_OPEN=new Set();
 let CHK_ADD_OPEN=new Set();   // 工程ごとのチェックリスト「＋追加」入力欄の開閉（同上）
 let PROC_EDIT_OPEN=new Set(); // 2026-08-26: 工程ごとの「📘手順書」編集欄の開閉（テンプレート編集時しか
                                // 手順書を書けず、タスク側で作成・修正できないという実機フィードバック対応）
@@ -936,7 +948,7 @@ function renderRepeat(u){
 /* ---------- タスク詳細 ---------- */
 async function openDetail(id){
   pushNav("tasks.html?task="+id);
-  VIEW="detail"; OPEN_STEP=null; STEP_ATT_OPEN=new Set(); CHK_ADD_OPEN=new Set(); PROC_EDIT_OPEN=new Set(); STEP_ADD_OPEN=false; HQMFJ_OPEN_STEP=null; HQMFJ_STATE=null; HQMFJ_FILE=null; // 開くたびに工程の添付一覧は既定=閉に戻す
+  VIEW="detail"; OPEN_STEP=null; STEP_ATT_OPEN=new Set(); CHK_ADD_OPEN=new Set(); PROC_EDIT_OPEN=new Set(); STEP_ADD_OPEN=false; HQMFJ_OPEN_STEP=null; HQMFJ_STATE=null; HQMFJ_FILE=null; ASSIGNEE_PICK_OPEN=new Set(); // 開くたびに工程の添付一覧は既定=閉に戻す
   $("app").innerHTML=`<div class="spin">読み込み中…</div>`;
   CUR_TASK=await fetchTaskDetail(id);
   syncTaskIntoBoardList(CUR_TASK);
@@ -1432,7 +1444,13 @@ function stepHtml(t,s,u){
     ${hasPanel&&panelOpen?`<div style="padding:8px 12px 4px" onclick="event.stopPropagation()">
         ${canEditAssign?`<div class="ownerline">
           <div class="fieldbox"><label>工程名</label><input data-steptitle="${s.id}" value="${esc(s.title)}"></div>
-          <div class="fieldbox" style="grid-column:1/-1"><label>担当（複数選択可・誰でも完了操作できます）</label><div class="chiprow" style="margin:6px 0 0" data-stepowners="${s.id}">${assignableUsers().map(x=>`<label class="chipcheck"><input type="checkbox" value="${x.id}" ${stepAssigneeIds(s).includes(x.id)?"checked":""}>${esc(x.name)}</label>`).join("")}</div></div>
+          <div class="fieldbox" style="position:relative">
+            <label>担当（複数選択可）</label>
+            <button type="button" class="assignee-pick-btn" data-assigneepickopen="${s.id}">${esc(stepAssigneeNames(s))} ▾</button>
+            <div class="assignee-pick-panel" data-stepowners="${s.id}" style="display:${ASSIGNEE_PICK_OPEN.has(s.id)?"flex":"none"}">
+              ${assignableUsers().map(x=>`<label class="pick-row"><input type="checkbox" value="${x.id}" ${stepAssigneeIds(s).includes(x.id)?"checked":""}>${esc(x.name)}</label>`).join("")}
+            </div>
+          </div>
           <div class="fieldbox"><label>工程期限</label><div style="display:flex;gap:6px"><input type="date" data-stepdue="${s.id}" value="${esc(s.due_date||"")}" style="flex:1"><input type="time" data-steptime="${s.id}" value="${esc(s.due_time||"")}" style="flex:1"></div></div>
         </div>
         <div class="err" id="stepmetamsg-${s.id}"></div>`:""}
@@ -2145,6 +2163,28 @@ function wireDetail(t,u){
       if(STEP_ATT_OPEN.has(id)) STEP_ATT_OPEN.delete(id); else STEP_ATT_OPEN.add(id);
       renderDetail(u);
     };
+  });
+  /* 2026-09-04: 担当の複数選択プルダウン（ボタンを押すと縦並びチェックリストが開く）。
+     チェックの変更自体はボタンの表示ラベルだけその場で書き換え（開いたまま連続で
+     チェックできるよう、わざわざ毎回renderDetailはしない） */
+  document.querySelectorAll("[data-assigneepickopen]").forEach(btn=>{
+    btn.onclick=(e)=>{
+      e.stopPropagation();
+      const id=btn.dataset.assigneepickopen;
+      if(ASSIGNEE_PICK_OPEN.has(id)) ASSIGNEE_PICK_OPEN.delete(id); else ASSIGNEE_PICK_OPEN.add(id);
+      renderDetail(u);
+    };
+  });
+  document.querySelectorAll("[data-stepowners]").forEach(panel=>{
+    panel.onclick=e=>e.stopPropagation();
+    const sid=panel.dataset.stepowners;
+    const btn=document.querySelector(`[data-assigneepickopen="${sid}"]`);
+    panel.querySelectorAll("input").forEach(cb=>{
+      cb.onchange=()=>{
+        const names=[...panel.querySelectorAll("input:checked")].map(el=>userName(el.value));
+        if(btn) btn.textContent=(names.length?names.join("・"):"未定")+" ▾";
+      };
+    });
   });
   /* 2026-08-26: 既存タスクへの工程追加 */
   if($("stepaddopen")) $("stepaddopen").onclick=()=>{ STEP_ADD_OPEN=true; renderDetail(u); };
