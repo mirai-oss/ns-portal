@@ -385,6 +385,9 @@ Deno.serve(async (req: Request) => {
       if (!res.ok) {
         const db = svc();
         await db.from("mf_sync_logs").insert({ action: "journal_create_failed", actor_type: "human", detail: { invoice_id: invoiceId, response: data } });
+        // 2026-09-04追加：会計ダッシュボードの「MFエラー」カードが実データで判定できるよう、
+        // invoices側にもエラー内容を記録する（従来はmf_sync_logsのみで一覧からは見えなかった）
+        await db.from("invoices").update({ mf_registration_error: JSON.stringify(data).slice(0, 500), mf_registration_error_at: new Date().toISOString() }).eq("id", invoiceId);
         return json({ error: "マネーフォワードへの登録に失敗しました", detail: data }, 502);
       }
 
@@ -399,6 +402,7 @@ Deno.serve(async (req: Request) => {
         : [];
       await db.from("invoices").update({
         mf_journal_id: journalId, mf_journal_number: journalNumber, mf_journal_created_at: new Date().toISOString(), mf_tenant_id: tenantId,
+        mf_registration_error: null, mf_registration_error_at: null, // 登録成功。過去のエラー記録があればクリアする
         ...(debitAccountNames.length ? { mf_debit_accounts: debitAccountNames } : {}),
         ...(linkedHqStepId !== inv.linked_hq_step_id ? { linked_hq_step_id: linkedHqStepId } : {}), // 未保存の選択を反映
       }).eq("id", invoiceId);

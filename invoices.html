@@ -195,6 +195,47 @@ button,input,select,textarea{font:inherit}
 .due-badge{padding:2px 7px;border-radius:999px;font-size:10px;font-weight:800;display:inline-block}
 .due-badge.overdue{background:var(--accent-soft);color:var(--accent)}
 .due-badge.soon{background:var(--amber-soft);color:var(--amber)}
+
+/* 2026-09-04新規：会計ダッシュボード（確定UI版）。既存の色トークン（--accent/--green/--amber/
+   --blue等）をそのまま使い、新しい配色を増やさない＝既存デザインシステムへの統合(指示書§30-31) */
+.select-box{border:1px solid var(--line);border-radius:6px;padding:6px 12px;font-size:13px;background:var(--panel);color:var(--ink)}
+.dash-section-title{font-size:13px;font-weight:700;color:var(--muted);margin:0 0 10px 2px}
+.dash-grid-4{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:26px}
+.dash-action-card{background:var(--accent-soft);border:1px solid var(--accent);border-left:5px solid var(--accent);border-radius:10px;padding:14px;cursor:pointer;transition:.15s}
+.dash-action-card:hover{transform:translateY(-2px)}
+.dash-action-card.warning{background:var(--amber-soft);border-color:var(--amber);border-left-color:var(--amber)}
+.dash-action-card .dtitle{font-size:13px;font-weight:700;display:flex;justify-content:space-between;margin-bottom:3px}
+.dash-action-card .dcount{font-size:17px;font-weight:800;color:var(--accent)}
+.dash-action-card.warning .dcount{color:var(--amber)}
+.dash-action-card .ddesc{font-size:11px;color:var(--muted)}
+.dash-action-empty{background:var(--green-soft);border:1px solid var(--green);border-radius:10px;padding:14px;font-size:13px;font-weight:700;color:var(--green);grid-column:1/-1;text-align:center}
+.dash-kpi-card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px;cursor:pointer;transition:.15s}
+.dash-kpi-card:hover{background:var(--bg)}
+.dash-kpi-card.alert{border-color:var(--accent);background:var(--accent-soft)}
+.dash-kpi-label{font-size:11px;color:var(--muted);font-weight:600;margin-bottom:4px}
+.dash-kpi-val{font-size:22px;font-weight:800}
+.dash-kpi-card.alert .dash-kpi-label,.dash-kpi-card.alert .dash-kpi-val{color:var(--accent)}
+.dash-two-col{display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:26px}
+.dash-progress-row{margin-bottom:14px}
+.dash-progress-row:last-child{margin-bottom:0}
+.dash-p-head{display:flex;justify-content:space-between;font-size:13px;font-weight:600;margin-bottom:5px}
+.dash-p-meta{color:var(--muted);font-size:11px;font-weight:normal}
+.dash-p-bar-bg{background:var(--line);height:7px;border-radius:4px;overflow:hidden}
+.dash-p-bar-fill{background:var(--blue);height:100%;border-radius:4px}
+.dash-money-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:18px;border-bottom:1px solid var(--line);padding-bottom:18px}
+.dash-money-item{display:flex;flex-direction:column}
+.dash-m-label{font-size:11px;color:var(--muted);margin-bottom:3px}
+.dash-m-val{font-size:18px;font-weight:700}
+.dash-schedule-row{display:flex;justify-content:space-between;font-size:12px;padding:7px 0;border-bottom:1px dashed var(--line);cursor:pointer}
+.dash-schedule-row:hover{background:var(--bg)}
+.dash-schedule-row:last-child{border:none;padding-bottom:0}
+.dash-schedule-row.alert{color:var(--accent);font-weight:700}
+.dash-reason-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:26px}
+.dash-reason-card{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:10px 14px;display:flex;justify-content:space-between;align-items:center;cursor:pointer;font-size:12px;font-weight:600;transition:.15s}
+.dash-reason-card:hover{background:var(--amber-soft);border-color:var(--amber)}
+.dash-reason-badge{background:var(--amber-soft);color:var(--amber);padding:2px 8px;border-radius:12px;font-size:11px;font-weight:800}
+@media(max-width:900px){.dash-grid-4,.dash-two-col,.dash-reason-grid{grid-template-columns:1fr 1fr}}
+@media(max-width:600px){.dash-grid-4,.dash-two-col,.dash-reason-grid{grid-template-columns:1fr}}
 .iv-filterbar{padding:12px;border-bottom:1px solid var(--m-line);display:flex;gap:8px;flex-wrap:wrap;align-items:end}
 .iv-filterbar .ivf{display:flex;flex-direction:column;gap:3px}
 .iv-filterbar .ivf small{font-size:10px;color:var(--muted)}
@@ -1162,7 +1203,7 @@ function shellHtml(u){
              引き続き使うため関数・TAB_WHITELISTは残す -->
         <button class="mail-tab ${TAB==='salesList'?'active':''}" data-tab="salesList">💰 売上一覧</button>
         <button class="mail-tab ${TAB==='contractList'?'active':''}" data-tab="contractList">📃 契約書一覧</button>
-        ${EMBED?"":`<button class="mail-tab ${TAB==='upload'?'active':''}" data-tab="upload">📤 アップロード請求書</button>`}
+        ${EMBED?"":`<button class="mail-tab ${TAB==='upload'?'active':''}" data-tab="upload" title="アップロードはinvoiceの入口です（請求書の種類ではありません）">📤 アップロード</button>`}
         ${EMBED?"":`<button class="mail-tab ${TAB==='payroll'?'active':''}" data-tab="payroll">💴 給与仕訳</button>`}
         ${EMBED?"":`<button class="mail-tab ${TAB==='transfers'?'active':''}" data-tab="transfers">🏦 振込一覧</button>`}
         <button class="mail-tab ${TAB==='history'?'active':''}" data-tab="history">処理履歴</button>
@@ -3103,8 +3144,24 @@ async function renderSalesListTab(u){ await renderFinancialListTab(u,"sales"); }
 // 2026-09-04: 既定タブを「要対応」に変更し先頭へ（指示書§12・42「開いたときにまず対応が
 // 必要なものが目に入るように」）。ラベルも「要確認」→「要対応」に変更（内容は変わらず、
 // unifiedMatchesSubTab側の"review"キー判定はそのまま）
-let UNIFIED_STATE={subTab:"review", search:"", yearMonth:"", sortCol:"", sortDir:"desc", rows:[], selected:new Set()};
+let UNIFIED_STATE={subTab:"review", search:"", yearMonth:"", reasonFilter:"", sortCol:"", sortDir:"desc", rows:[], selected:new Set()};
 const UNIFIED_SUBTABS=[["review","要対応"],["all","すべて"],["accounting","会計待ち"],["payment","振込待ち"],["done","完了"]];
+const REASON_FILTER_LABELS={
+  overdue:"支払期限超過", bank_change:"振込先口座変更", duplicate:"重複疑い", mf_error:"MF登録エラー",
+  unknown_journal:"仕訳不明（未判定）", unknown_company:"法人不明", unknown_store:"店舗・部門不明", import_error:"取込エラー",
+};
+// 2026-09-04新規：会計ダッシュボードのカード・要対応内訳から🧾請求書一覧へ絞り込み付きで
+// 遷移するための共通関数（指示書§20-21）。ダッシュボード側は判定ロジックを一切持たず、
+// ここでUNIFIED_STATEを設定して🧾請求書一覧を開くだけにする
+async function openUnifiedFiltered(u,{subTab,reasonFilter,yearMonth}={}){
+  TAB="unified";
+  await renderTabBody(u);
+  UNIFIED_STATE.subTab=subTab||"all";
+  UNIFIED_STATE.reasonFilter=reasonFilter||"";
+  UNIFIED_STATE.yearMonth=yearMonth||"";
+  UNIFIED_STATE.search="";
+  unifiedRender(u);
+}
 const AI_STATUS_LABEL={auto:["自動判定済","check"],review:["要確認","wait"],error:["エラー","err"]};
 const PAYMENT_STATUS_LABEL={not_ready:["—","gray"],wait:["振込待ち","wait"],csv:["CSV出力済","check"],processing:["振込処理中","wait"],paid:["振込済","done"],blocked:["確認停止","err"]};
 // 2026-09-04新規：🧾請求書一覧の振込状態を分かりやすい6段階にする（指示書⑥）。新しい別管理は
@@ -3126,18 +3183,25 @@ function unifiedIsHighRisk(r){ return !!(r.duplicate_suspected||r.bank_account_c
 // いたことが判明。ユーザー指示「重複疑い・取込エラー・法人不明・店舗/部門不明・仕訳不明
 // （未判定）・口座変更・支払期限超過なども要対応に集約」に沿って条件を拡張し、この不具合も
 // 同時に解消する（未判定＝ai_match_statusがnullも要対応に含めることで、旧データも正しく拾う）
-function unifiedNeedsAttention(r){
-  if(r.payment_status==="paid") return false; // 完了済みは対象外（今さら指摘しても仕方ないため）
+// 2026-09-04拡張：要対応の「理由」を配列で返す共通関数にした（会計ダッシュボードの
+// 「要対応の内訳」カードが、ここと全く同じ判定・同じ理由分類を再利用するため＝指示書§36
+// 「要対応ロジックを二重実装しない」に対応。🧾請求書一覧側は従来どおりunifiedNeedsAttention()
+// （真偽値だけ）を使い続けられるよう、その関数はunifiedAttentionReasons()の薄いラッパーにした）
+function unifiedAttentionReasons(r){
+  if(r.payment_status==="paid") return []; // 完了済みは対象外（今さら指摘しても仕方ないため）
   const today=new Date().toISOString().slice(0,10);
-  return !!(
-    r.duplicate_suspected ||
-    r.bank_account_change_detected ||
-    r.ai_match_status==="review" || r.ai_match_status==="error" || !r.ai_match_status ||
-    !r.corporation_id ||
-    !r.store_id ||
-    (r.due_date && r.due_date<today && r.payment_status!=="paid")
-  );
+  const reasons=[];
+  if(r.duplicate_suspected) reasons.push("duplicate");
+  if(r.bank_account_change_detected) reasons.push("bank_change");
+  if(r.mf_registration_error) reasons.push("mf_error");
+  if(r.ai_match_status==="error") reasons.push("import_error");
+  else if(!r.ai_match_status) reasons.push("unknown_journal"); // 自動判定が未実施＝仕訳の当たりが付いていない
+  if(!r.corporation_id) reasons.push("unknown_company");
+  if(!r.store_id) reasons.push("unknown_store");
+  if(r.due_date && r.due_date<today && r.payment_status!=="paid") reasons.push("overdue");
+  return reasons;
 }
+function unifiedNeedsAttention(r){ return unifiedAttentionReasons(r).length>0; }
 function unifiedMatchesSubTab(r,tab){
   if(tab==="all") return true;
   if(tab==="review") return unifiedNeedsAttention(r);
@@ -3179,6 +3243,9 @@ async function unifiedSetCorporation(u,invoiceId,corporationId){
 }
 function unifiedFilteredRows(){
   let list=UNIFIED_STATE.rows.filter(r=>unifiedMatchesSubTab(r,UNIFIED_STATE.subTab));
+  // 2026-09-04新規：会計ダッシュボードのカード・要対応内訳からの絞り込み遷移用
+  // （overdue/bank_change/duplicate/mf_error/unknown_journal/unknown_company/unknown_store/import_error）
+  if(UNIFIED_STATE.reasonFilter) list=list.filter(r=>unifiedAttentionReasons(r).includes(UNIFIED_STATE.reasonFilter));
   const q=(UNIFIED_STATE.search||"").trim().toLowerCase();
   if(q) list=list.filter(r=>[r.vendor_name,r.invoice_number,(r.vendor&&r.vendor.name),(r.corp&&r.corp.name),(r.store&&r.store.name)].filter(Boolean).join(" ").toLowerCase().includes(q));
   if(UNIFIED_STATE.yearMonth){
@@ -3266,7 +3333,8 @@ function unifiedRender(u){
       <div class="card" style="padding:12px;margin-bottom:10px;display:flex;gap:10px;flex-wrap:wrap;align-items:end">
         <div><label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">検索</label><input id="unified-search" placeholder="🔎 取引先・請求書番号・法人・店舗" value="${esc(UNIFIED_STATE.search)}" style="max-width:280px"></div>
         <div><label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">対象年月（支払期限、無ければ受領日）</label><input type="month" id="unified-ym" value="${esc(UNIFIED_STATE.yearMonth)}"></div>
-        ${(UNIFIED_STATE.search||UNIFIED_STATE.yearMonth)?'<button class="hq-btn" id="unified-filter-clear">絞り込み解除</button>':''}
+        ${UNIFIED_STATE.reasonFilter?`<span class="hq-pill amber" style="align-self:center">絞り込み中: ${esc(REASON_FILTER_LABELS[UNIFIED_STATE.reasonFilter]||UNIFIED_STATE.reasonFilter)}</span>`:''}
+        ${(UNIFIED_STATE.search||UNIFIED_STATE.yearMonth||UNIFIED_STATE.reasonFilter)?'<button class="hq-btn" id="unified-filter-clear">絞り込み解除</button>':''}
       </div>
       <div class="batchbar" style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px 12px;background:var(--m-bluesoft);border-radius:10px;margin-bottom:10px;font-size:12px">
         <div><b id="unified-selected-count">${UNIFIED_STATE.selected.size}件選択</b>
@@ -3300,7 +3368,7 @@ function unifiedRender(u){
   });
   $("unified-search").oninput=()=>{ UNIFIED_STATE.search=$("unified-search").value; unifiedRender(u); };
   $("unified-ym").onchange=()=>{ UNIFIED_STATE.yearMonth=$("unified-ym").value; unifiedRender(u); };
-  if($("unified-filter-clear")) $("unified-filter-clear").onclick=()=>{ UNIFIED_STATE.search=""; UNIFIED_STATE.yearMonth=""; unifiedRender(u); };
+  if($("unified-filter-clear")) $("unified-filter-clear").onclick=()=>{ UNIFIED_STATE.search=""; UNIFIED_STATE.yearMonth=""; UNIFIED_STATE.reasonFilter=""; unifiedRender(u); };
   document.querySelectorAll(".unified-check").forEach(el=>el.onchange=()=>{
     if(el.checked) UNIFIED_STATE.selected.add(el.dataset.id); else UNIFIED_STATE.selected.delete(el.dataset.id);
     $("unified-selected-count").textContent=UNIFIED_STATE.selected.size+"件選択";
@@ -3918,180 +3986,220 @@ async function mftSaveEditor(){
 }
 
 /* ============================================================
-   会計ダッシュボード（C-7①・2026-08-31）
-   「どの法人の・何の処理が未登録か」が一目で分かるホーム画面。
-   設計書_会計自動化_2026-08-31.md §5 Q6の確定仕様どおり、
-   請求書メール・インフォマート発注・スマレジ給与仕訳を法人×処理種別で見せる想定だが、
-   インフォマート（D-9）・給与仕訳の自動化（本体）はまだ実装していないため、
-   その2行は「準備中」の正直な表示にとどめ、今すでに存在するデータ
-   （請求書メールの処理状況・事業者ごとのMF連携状況・仕訳辞書の登録数）だけ実数を出す。
+   会計ダッシュボード（2026-09-04・確定UI版に全面置換）
+   指示書「N-Style 会計ダッシュボード 確定UIへの実装指示書」対応。
+   旧「月別処理一覧」中心のUI（DASH_STATE.rowFilter等・dashLoadMonthlyList/dashMonthlyListHtml、
+   給与仕訳・インフォマートのクイックリンクカード）は全て削除し、確定UI（今日やること／今月の
+   処理状況／今月の処理進捗／今月の支払状況／支払予定／要対応の内訳／最近の処理）に置き換えた。
+   新しい別テーブル・別集計基盤は作らず、既存のinvoices（+要対応判定unifiedAttentionReasons・
+   振込状態unifiedPaymentStageLabel）をこの画面用に集計するだけのView（指示書§4・§39-40）。
+   日付基準は🧾請求書一覧と統一：支払期限(due_date)があればそちら、無ければ取込日(created_at)
+   （invoicesのスキーマには請求日・計上日という独立列が無いため。指示書§28への回答）
    ============================================================ */
-let DASH_STATE={};
+let DASH_STATE={corpId:"", yearMonth:"", allRows:null, error:null};
 function dashYmDefault(){ const d=new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`; }
-function dashGoTab(u,tab){
-  TAB=tab; pushNav();
-  document.querySelectorAll(".mail-tab").forEach(x=>x.classList.toggle("active",x.dataset.tab===TAB));
-  renderTabBody(u);
+function dashDateBasis(r){ return r.due_date||r.created_at; }
+function dashYmCandidates(rows){
+  const set=new Set([dashYmDefault()]);
+  rows.forEach(r=>{ const d=dashDateBasis(r); if(d) set.add(String(d).slice(0,7)); });
+  return [...set].sort().reverse();
 }
-// C-7拡張（ラウンド5指示書§6.1・2026-09-01）: 会計ダッシュボードに月ごとの処理一覧を追加。
-// 請求書（メール/アップロード）・給与仕訳を月単位で横断し、各件の状態（未処理／仕訳済み／
-// 振込待ち／振込完了 等）を一覧化する。並び替え・行/列の表示非表示に対応。
-// インフォマートはD-9（担当D）のデータ連携が完了するまで対象外（プレースホルダーのみ表示）
-async function dashLoadMonthlyList(ym){
-  const start=`${ym}-01`;
-  const endDate=new Date(ym+"-01"); endDate.setMonth(endDate.getMonth()+1);
-  const end=endDate.toISOString().slice(0,10);
-  const [mailR,uploadR,syncR,recR]=await Promise.all([
-    authed(`/rest/v1/invoices?email_id=not.is.null&created_at=gte.${start}&created_at=lt.${end}&select=id,vendor_name,amount,invoice_status,mf_journal_created_at,mf_journal_number,created_at,pl_fee_reflected_at,pl_fee_sheet_synced_at,pl_fee_seisan_synced_at,email:invoice_emails(mail_kind)&order=created_at.desc&limit=300`),
-    authed(`/rest/v1/invoices?email_id=is.null&created_at=gte.${start}&created_at=lt.${end}&select=id,vendor_name,amount,invoice_status,mf_journal_created_at,mf_journal_number,created_at,pl_fee_reflected_at,pl_fee_sheet_synced_at,pl_fee_seisan_synced_at&order=created_at.desc&limit=300`),
-    authed(`/rest/v1/sf_payroll_sync?year_month=eq.${ym}&select=user_id,net_pay,user:users(name)`),
-    authed(`/rest/v1/payroll_journal_records?year_month=eq.${ym}&select=user_id,paid_at,mf_journal_number`),
-  ]);
-  // 手数料等→PL自動反映の状態バッジ（ラウンド5指示書§6.1・§5）。反映済みでもPL・精算書への
-  // 実書き込み（担当A対応）が未完了なら、正直にその旨がわかる表示にする
-  const plBadgeFor=r=>{
-    if(!r.pl_fee_reflected_at) return "";
-    return r.pl_fee_sheet_synced_at?"　📊PL反映済み":"　📊PL反映（書込待ち）";
-  };
-  const items=[];
-  const mailRows=(mailR.ok&&Array.isArray(mailR.body))?mailR.body:[];
-  for(const r of mailRows){
-    if(r.email&&r.email.mail_kind&&r.email.mail_kind!=="invoice") continue; // 入金明細(sales)等はここでは対象外
-    const done=!!r.mf_journal_created_at;
-    items.push({type:"mail",typeLabel:"📧請求書メール",name:r.vendor_name||"（未入力）",amount:r.amount,createdAt:r.created_at,
-      status:done?{label:"✅仕訳済み"+plBadgeFor(r),cls:"done"}:{label:INVOICE_STATUS_LABEL[r.invoice_status]||"未処理",cls:INVOICE_STATUS_CLASS[r.invoice_status]||"gray"},
-      rank:done?2:0});
-  }
-  const uploadRows=(uploadR.ok&&Array.isArray(uploadR.body))?uploadR.body:[];
-  for(const r of uploadRows){
-    const done=!!r.mf_journal_created_at;
-    items.push({type:"upload",typeLabel:"📤アップロード請求書",name:r.vendor_name||"（未入力）",amount:r.amount,createdAt:r.created_at,
-      status:done?{label:"✅仕訳済み"+plBadgeFor(r),cls:"done"}:{label:"未仕訳",cls:"wait"},
-      rank:done?2:0});
-  }
-  const payrollRows=(syncR.ok&&Array.isArray(syncR.body))?syncR.body:[];
-  const payrollRecs=(recR.ok&&Array.isArray(recR.body))?recR.body:[];
-  for(const r of payrollRows.filter(x=>Number(x.net_pay)>0)){
-    const rec=payrollRecs.find(rc=>rc.user_id===r.user_id);
-    let status,rank;
-    if(rec&&rec.paid_at){ status={label:"🎉振込完了",cls:"done"}; rank=3; }
-    else if(rec){ status={label:"💰仕訳登録済み・振込待ち",cls:"check"}; rank=1; }
-    else{ status={label:"未登録",cls:"wait"}; rank=0; }
-    items.push({type:"payroll",typeLabel:"💴給与仕訳",name:(r.user&&r.user.name)||"—",amount:r.net_pay,createdAt:`${ym}-01`,status,rank});
-  }
-  return items;
+function dashScopedRows(allRows){
+  let rows=allRows;
+  if(DASH_STATE.corpId) rows=rows.filter(r=>r.corporation_id===DASH_STATE.corpId);
+  if(DASH_STATE.yearMonth) rows=rows.filter(r=>{ const d=dashDateBasis(r); return d&&String(d).slice(0,7)===DASH_STATE.yearMonth; });
+  return rows;
 }
-function dashMonthlyListHtml(items){
-  const filter=DASH_STATE.rowFilter||{mail:true,upload:true,payroll:true};
-  let rows=items.filter(it=>filter[it.type]);
-  if(DASH_STATE.sortMode==="statusFirst"){
-    rows=rows.map((r,i)=>({r,i})).sort((a,b)=>(a.r.rank-b.r.rank)||(a.i-b.i)).map(x=>x.r);
-  }else if(DASH_STATE.sortMode==="amountDesc"){
-    rows=[...rows].sort((a,b)=>(Number(b.amount)||0)-(Number(a.amount)||0));
-  } // default: 新しい順（クエリのorderのまま。種別ごとにまとめて連結された順）
-  const showAmount=DASH_STATE.showAmount!==false;
-  return `
-    <div class="card hq-tablewrap">
-      <div style="display:flex;align-items:center;gap:16px;padding:12px 16px;border-bottom:1px solid var(--line);flex-wrap:wrap">
-        <label style="font-size:12px;display:flex;align-items:center;gap:6px">対象年月
-          <input id="dash-ym" type="month" value="${esc(DASH_STATE.yearMonth)}" style="font-size:12px">
-        </label>
-        <label style="font-size:12px;display:flex;align-items:center;gap:6px">並び替え
-          <select id="dash-sort" style="font-size:12px">
-            <option value="default" ${(!DASH_STATE.sortMode||DASH_STATE.sortMode==="default")?"selected":""}>新しい順</option>
-            <option value="statusFirst" ${DASH_STATE.sortMode==="statusFirst"?"selected":""}>未処理を上に</option>
-            <option value="amountDesc" ${DASH_STATE.sortMode==="amountDesc"?"selected":""}>金額が大きい順</option>
-          </select>
-        </label>
-        <label style="font-size:12px;display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="dash-f-mail" ${filter.mail?"checked":""}>📧請求書メール</label>
-        <label style="font-size:12px;display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="dash-f-upload" ${filter.upload?"checked":""}>📤アップロード請求書</label>
-        <label style="font-size:12px;display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="dash-f-payroll" ${filter.payroll?"checked":""}>💴給与仕訳</label>
-        <label style="font-size:12px;display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="dash-show-amount" ${showAmount?"checked":""}>金額を表示</label>
-      </div>
-      ${rows.length?`<table class="invoice-table">
-        <thead><tr><th>種別</th><th>相手先／従業員</th>${showAmount?'<th style="text-align:right">金額</th>':''}<th>状態</th></tr></thead>
-        <tbody>${rows.map(it=>`<tr>
-          <td style="font-size:11px;color:var(--muted);white-space:nowrap">${it.typeLabel}</td>
-          <td><b>${esc(it.name)}</b></td>
-          ${showAmount?`<td style="text-align:right">${yen(it.amount)}</td>`:''}
-          <td><span class="invoice-status ${it.status.cls}">${it.status.label}</span></td>
-        </tr>`).join("")}</tbody>
-      </table>`:`<div class="empty">該当する処理はありません（対象年月・絞り込み条件を確認してください）</div>`}
-    </div>`;
+function dashAttentionCounts(rows){
+  const map={};
+  rows.forEach(r=>unifiedAttentionReasons(r).forEach(reason=>{ map[reason]=(map[reason]||0)+1; }));
+  return map;
 }
 async function renderAccountingDashboardTab(u){
-  if(!DASH_STATE.yearMonth) DASH_STATE.yearMonth=dashYmDefault();
-  const now=new Date();
-  const startOfMonth=new Date(now.getFullYear(),now.getMonth(),1).toISOString();
-  const tRes=await mfCall("list_tenants");
-  const tenants=(tRes.ok&&tRes.body.tenants)||[];
-  const [standaloneR, tenantStatsR, monthlyItems]=await Promise.all([
-    authed(`/rest/v1/invoices?email_id=is.null&select=id,created_at&order=created_at.desc&limit=500`),
-    Promise.all(tenants.map(async t=>{
-      const [journalR,tplR]=await Promise.all([
-        authed(`/rest/v1/invoices?mf_tenant_id=eq.${encodeURIComponent(t.id)}&mf_journal_created_at=gte.${startOfMonth}&select=id`),
-        authed(`/rest/v1/mf_journal_templates?tenant_id=eq.${encodeURIComponent(t.id)}&select=id`),
-      ]);
-      return {
-        tenant:t,
-        journalThisMonth:(journalR.ok&&Array.isArray(journalR.body))?journalR.body.length:0,
-        templateCount:(tplR.ok&&Array.isArray(tplR.body))?tplR.body.length:0,
-      };
-    })),
-    dashLoadMonthlyList(DASH_STATE.yearMonth),
+  $("tabbody").innerHTML=`<section class="invoice-list active"><div class="card" style="padding:16px"><div class="spin" style="padding:40px 0">最新のデータを集計しています…</div></div></section>`;
+  const [r]=await Promise.all([
+    authed(`/rest/v1/invoices?select=*,email:invoice_emails(mail_kind),corp:corporations(name),store:stores(name),vendor:vendors(name)&order=created_at.desc&limit=1000`),
+    ensureCorpStoreCache(),
   ]);
-  const standaloneInvoices=(standaloneR.ok&&Array.isArray(standaloneR.body))?standaloneR.body:[];
+  if(!r.ok){
+    DASH_STATE.error="取得に失敗しました";
+    $("tabbody").innerHTML=`<section class="invoice-list active"><div class="card" style="padding:16px"><div class="err">データの取得に失敗しました。時間をおいて再度お試しください。</div></div></section>`;
+    return;
+  }
+  // 🧾請求書一覧（renderUnifiedInvoiceTab）と全く同じ対象定義（メール起点は種類=請求書のみ・
+  // アップロード等は全て対象）。ここが違うと「請求書一覧は7件・ダッシュボードは6件」のような
+  // 不整合（指示書§36が最も懸念している事態）が起きるため、意図的に同じフィルタにしている
+  DASH_STATE.allRows=(r.body||[]).filter(row=>!row.email||row.email.mail_kind==="invoice");
+  DASH_STATE.error=null;
+  if(!DASH_STATE.yearMonth) DASH_STATE.yearMonth=dashYmDefault();
+  dashRenderBody(u);
+}
+function dashRenderBody(u){
+  const allRows=DASH_STATE.allRows||[];
+  const corporations=(CORP_STORE_CACHE&&CORP_STORE_CACHE.corporations)||[];
+  const ymCandidates=dashYmCandidates(allRows);
+  const rows=dashScopedRows(allRows); // 法人・対象年月で絞り込んだ後の対象＝これが以降の全KPIの母集団
+  const today=new Date().toISOString().slice(0,10);
+  const reasonCounts=dashAttentionCounts(rows);
+
+  // ---- ①今日やること：緊急性の高い例外だけ ----
+  const todoDefs=[
+    ["overdue","期限超過","支払期限を確認",false],
+    ["bank_change","口座変更","承認が必要です",true],
+    ["duplicate","重複疑い","内容を確認してください",false],
+    ["mf_error","MFエラー","再登録が必要です",true],
+  ];
+  const todoCards=todoDefs.filter(([k])=>reasonCounts[k]>0);
+
+  // ---- ②今月の処理状況（4KPI。要対応はユニークinvoice数） ----
+  const totalCount=rows.length;
+  const needsAttentionCount=rows.filter(unifiedNeedsAttention).length;
+  const accountingWaitingCount=rows.filter(r=>!r.mf_journal_id).length;
+  const paymentWaitingCount=rows.filter(r=>r.mf_journal_id&&["wait","csv","processing"].includes(r.payment_status)).length;
+  const overdueCount=reasonCounts.overdue||0;
+
+  // ---- ③今月の処理進捗（3項目。分母は各工程の対象invoice。指示書§9-12） ----
+  const reviewDoneCount=rows.filter(r=>!unifiedNeedsAttention(r)).length; // 内容確認＝要対応でない
+  const accountingDoneCount=rows.filter(r=>r.mf_journal_id).length; // 会計対象外フラグが現状無いため、対象＝全件（正直な簡略化）
+  const paymentTargetRows=rows.filter(r=>r.mf_journal_id); // 振込は会計登録済みのものだけが対象（payment_method等の除外は未実装）
+  const paymentDoneCount=paymentTargetRows.filter(r=>r.payment_status==="paid").length;
+
+  // ---- ④今月の支払状況（金額4項目） ----
+  const totalAmount=rows.reduce((s,r)=>s+(Number(r.amount)||0),0);
+  const paidAmount=rows.filter(r=>r.payment_status==="paid").reduce((s,r)=>s+(Number(r.amount)||0),0);
+  const upcomingAmount=paymentTargetRows.filter(r=>r.payment_status!=="paid").reduce((s,r)=>s+(Number(r.amount)||0),0);
+  const overdueAmount=rows.filter(r=>r.due_date&&r.due_date<today&&r.payment_status!=="paid").reduce((s,r)=>s+(Number(r.amount)||0),0);
+
+  // ---- ⑤支払予定（4区分・排他。振込対象＝会計登録済かつ未払、支払期限があるもの） ----
+  const in7=new Date(); in7.setDate(in7.getDate()+7); const in7Str=in7.toISOString().slice(0,10);
+  const monthEndDate=new Date(today.slice(0,7)+"-01"); monthEndDate.setMonth(monthEndDate.getMonth()+1); monthEndDate.setDate(0);
+  const monthEndStr=monthEndDate.toISOString().slice(0,10);
+  const unpaidDue=paymentTargetRows.filter(r=>r.payment_status!=="paid"&&r.due_date);
+  const schedule=[
+    ["overdue","期限超過",unpaidDue.filter(r=>r.due_date<today),true],
+    ["today","今日",unpaidDue.filter(r=>r.due_date===today),false],
+    ["in7","明日〜7日以内",unpaidDue.filter(r=>r.due_date>today&&r.due_date<=in7Str),false],
+    ["restOfMonth","8日後〜月末",unpaidDue.filter(r=>r.due_date>in7Str&&r.due_date<=monthEndStr),false],
+  ].filter(([,,list])=>list.length||true); // 0件でも行としては出す（confirmed UIどおり）
+
+  // ---- ⑥要対応の内訳（1件以上のみ表示） ----
+  const reasonRows=Object.entries(reasonCounts).filter(([,c])=>c>0).sort((a,b)=>b[1]-a[1]);
+
+  // ---- ⑦最近の処理（直近5件） ----
+  const recent=[...rows].sort((a,b)=>new Date(b.updated_at||b.created_at)-new Date(a.updated_at||a.created_at)).slice(0,5);
+
+  const pct=(num,den)=>den>0?Math.round(num/den*100):null;
+  const progressHtml=(label,num,den)=>{
+    const p=pct(num,den);
+    return `<div class="dash-progress-row">
+      <div class="dash-p-head"><span>${esc(label)}</span><span class="dash-p-meta">${den>0?`${num} / ${den}（${p}%）`:"対象なし"}</span></div>
+      <div class="dash-p-bar-bg"><div class="dash-p-bar-fill" style="width:${den>0?p:0}%;${p===100?"background:var(--green)":""}"></div></div>
+    </div>`;
+  };
+
   $("tabbody").innerHTML=`
     <section class="invoice-list active">
-      <div class="card" style="padding:16px;margin-bottom:14px">
-        <h3 style="font-size:14px;margin-bottom:10px">📋 月別処理一覧</h3>
-        <div style="font-size:12px;color:var(--muted);margin-bottom:12px">請求書（メール・アップロード）・給与仕訳を月単位で横断して、それぞれの処理状況を確認できます。インフォマート発注はD-9（担当D）のデータ連携が完了次第この一覧に加わります。</div>
-      </div>
-      <div id="dash-monthly-list" style="margin-bottom:14px">${dashMonthlyListHtml(monthlyItems)}</div>
-
-      <div class="card" style="padding:16px;margin-bottom:14px">
-        <h3 style="font-size:14px;margin-bottom:10px">🔗 マネーフォワード連携状況（事業者別）</h3>
-        ${tenants.length?`<div class="hq-tablewrap"><table class="invoice-table"><thead><tr><th>事業者</th><th>今月のMF仕訳登録件数</th><th>登録済み仕訳辞書</th></tr></thead><tbody>
-          ${tenantStatsR.map(s=>`<tr><td><b>${esc(s.tenant.label||s.tenant.id)}</b></td><td>${s.journalThisMonth}件</td><td>${s.templateCount}件${s.templateCount?"":' <span style="color:var(--muted);font-size:11px">（設定タブから登録できます）</span>'}</td></tr>`).join("")}
-        </tbody></table></div>`:`<div style="font-size:12px;color:var(--muted)">まだマネーフォワードと連携している事業者がありません</div>`}
-      </div>
-
-      <div class="card" style="padding:16px;margin-bottom:14px">
-        <h3 style="font-size:14px;margin-bottom:10px">📤 アップロード請求書（メールに来ない請求書）</h3>
-        <div style="font-size:12px;color:var(--muted);margin-bottom:8px">これまでに登録した件数: <b style="color:var(--ink)">${standaloneInvoices.length}</b>件</div>
-        <button class="hq-btn primary" id="dash-go-upload">📤 アップロード請求書タブへ</button>
+      <div class="card" style="padding:14px 16px;margin-bottom:16px;display:flex;gap:12px;flex-wrap:wrap;align-items:end;justify-content:space-between">
+        <div style="font-size:12px;color:var(--muted)">会計・請求・支払の状況を確認できます。数字はすべて🧾請求書一覧と同じデータ・同じ判定ロジックから計算しています。</div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap">
+          <div><label style="font-size:11px;color:var(--muted);display:block;margin-bottom:3px">法人</label>
+            <select id="dash-corp" class="select-box">
+              <option value="">全法人表示</option>
+              ${corporations.map(c=>`<option value="${esc(c.id)}" ${DASH_STATE.corpId===c.id?"selected":""}>${esc(c.name)}</option>`).join("")}
+            </select>
+          </div>
+          <div><label style="font-size:11px;color:var(--muted);display:block;margin-bottom:3px">対象年月</label>
+            <select id="dash-ym" class="select-box">
+              ${ymCandidates.map(ym=>`<option value="${ym}" ${DASH_STATE.yearMonth===ym?"selected":""}>${ym.replace("-","年")}月</option>`).join("")}
+            </select>
+          </div>
+        </div>
       </div>
 
-      <div class="card" style="padding:16px;margin-bottom:14px">
-        <h3 style="font-size:14px;margin-bottom:10px">💴 給与仕訳</h3>
-        <div style="font-size:12px;color:var(--muted);margin-bottom:8px">スマレジ給与明細から月次の給与仕訳を作成できます（有限会社トーホーエージェンシー分のみ対応）。上の月別処理一覧にも状況が表示されます。</div>
-        <button class="hq-btn primary" id="dash-go-payroll">💴 給与仕訳タブへ</button>
+      <div class="dash-section-title">① 今日やること（要対応アクション）</div>
+      ${todoCards.length?`<div class="dash-grid-4">${todoCards.map(([key,label,desc,warn])=>`
+        <div class="dash-action-card${warn?" warning":""}" data-dash-goto="${key}">
+          <div class="dtitle"><span>${esc(label)}</span><span class="dcount">${reasonCounts[key]}件</span></div>
+          <div class="ddesc">${esc(desc)} →</div>
+        </div>`).join("")}</div>`
+        :`<div class="dash-action-empty" style="margin-bottom:26px">✓ 現在、優先対応が必要な項目はありません</div>`}
+
+      <div class="dash-section-title">② 今月の処理状況</div>
+      <div class="dash-grid-4">
+        <div class="dash-kpi-card" data-dash-goto="__review"><div class="dash-kpi-label">要対応</div><div class="dash-kpi-val">${needsAttentionCount}<span style="font-size:12px;font-weight:normal;color:var(--muted)"> 件</span></div></div>
+        <div class="dash-kpi-card" data-dash-goto="__accounting"><div class="dash-kpi-label">会計待ち</div><div class="dash-kpi-val">${accountingWaitingCount}<span style="font-size:12px;font-weight:normal;color:var(--muted)"> 件</span></div></div>
+        <div class="dash-kpi-card" data-dash-goto="__payment"><div class="dash-kpi-label">振込待ち</div><div class="dash-kpi-val">${paymentWaitingCount}<span style="font-size:12px;font-weight:normal;color:var(--muted)"> 件</span></div></div>
+        <div class="dash-kpi-card${overdueCount?" alert":""}" data-dash-goto="overdue"><div class="dash-kpi-label">期限超過</div><div class="dash-kpi-val">${overdueCount}<span style="font-size:12px;font-weight:normal"> 件</span></div></div>
       </div>
 
-      <div class="card" style="padding:16px;opacity:.75">
-        <h3 style="font-size:14px;margin-bottom:6px">📦 インフォマート発注（準備中）</h3>
-        <div style="font-size:12px;color:var(--muted)">D-9（インフォマートAPI連携・担当D）が完了すると、ここに発注明細の仕訳・支払状況が表示される予定です。現状は未実装です。</div>
+      <div class="dash-two-col">
+        <div class="card" style="padding:18px">
+          <div class="dash-section-title">③ 今月の処理進捗</div>
+          <div class="meta" style="color:var(--muted);font-size:10px;margin-bottom:10px">請求書総数（取込）を基準に、各工程の対象件数のうち完了した割合を表示しています</div>
+          ${progressHtml("請求書取込",totalCount,totalCount)}
+          ${progressHtml("内容確認",reviewDoneCount,totalCount)}
+          ${progressHtml("会計処理",accountingDoneCount,totalCount)}
+          ${progressHtml("振込処理",paymentDoneCount,paymentTargetRows.length)}
+        </div>
+        <div class="card" style="padding:18px">
+          <div class="dash-section-title">④ 今月の支払状況・⑤ 支払予定</div>
+          <div class="dash-money-grid">
+            <div class="dash-money-item"><span class="dash-m-label">今月請求総額</span><span class="dash-m-val">${yen(totalAmount)}</span></div>
+            <div class="dash-money-item"><span class="dash-m-label">支払済</span><span class="dash-m-val">${yen(paidAmount)}</span></div>
+            <div class="dash-money-item"><span class="dash-m-label">これから支払う額</span><span class="dash-m-val">${yen(upcomingAmount)}</span></div>
+            <div class="dash-money-item"><span class="dash-m-label" style="color:${overdueAmount?"var(--accent)":"var(--muted)"}">期限超過額</span><span class="dash-m-val" style="color:${overdueAmount?"var(--accent)":"var(--ink)"}">${yen(overdueAmount)}</span></div>
+          </div>
+          <div>
+            ${schedule.map(([key,label,list,alert])=>`
+              <div class="dash-schedule-row${alert&&list.length?" alert":""}" data-dash-sched="${key}">
+                <span>${esc(label)}（${list.length}件）</span><span>${yen(list.reduce((s,r)=>s+(Number(r.amount)||0),0))}</span>
+              </div>`).join("")}
+          </div>
+        </div>
+      </div>
+
+      ${reasonRows.length?`<div class="dash-section-title">⑥ 要対応の内訳（クリックで絞り込み）</div>
+      <div class="dash-reason-grid">
+        ${reasonRows.map(([key,count])=>`<div class="dash-reason-card" data-dash-goto="${key}">${esc(REASON_FILTER_LABELS[key]||key)} <span class="dash-reason-badge">${count}件</span></div>`).join("")}
+      </div>`:""}
+
+      <div class="dash-section-title">⑦ 最近の処理（直近5件） <button class="hq-btn" style="font-size:11px;padding:5px 10px;margin-left:8px" id="dash-go-all">請求書一覧を見る →</button></div>
+      <div class="card hq-tablewrap">
+        <table class="invoice-table">
+          <thead><tr><th>日時</th><th>取得元</th><th>請求元</th><th>金額</th><th>ステータス</th><th></th></tr></thead>
+          <tbody>${recent.length?recent.map(r=>{
+            const src=INTAKE_SOURCE_LABEL[r.intake_source]||(r.email_id?"メール":"手動");
+            const reasons=unifiedAttentionReasons(r);
+            const statusLabel=reasons.length?`要対応：${esc(REASON_FILTER_LABELS[reasons[0]]||reasons[0])}`:unifiedStageOf(r);
+            return `<tr>
+              <td>${fmtDT(r.updated_at||r.created_at)}</td>
+              <td><span class="invoice-status gray">${esc(src)}</span></td>
+              <td>${esc((r.vendor&&r.vendor.name)||r.vendor_name||"—")}</td>
+              <td>${yen(r.amount)}</td>
+              <td>${reasons.length?`<span style="color:var(--amber);font-weight:700">${statusLabel}</span>`:esc(statusLabel)}</td>
+              <td><button class="hq-btn" style="font-size:11px;padding:6px 9px" data-dash-open="${r.id}">詳細</button></td>
+            </tr>`;
+          }).join(""):'<tr><td colspan="6">対象データ0件</td></tr>'}</tbody>
+        </table>
       </div>
     </section>`;
-  if($("dash-go-upload")) $("dash-go-upload").onclick=()=>dashGoTab(u,"upload");
-  if($("dash-go-payroll")) $("dash-go-payroll").onclick=()=>dashGoTab(u,"payroll");
-  const rerenderList=async()=>{
-    const el=$("dash-monthly-list");
-    el.innerHTML=`<div class="card" style="padding:16px"><div class="spin" style="padding:10px 0">読み込み中…</div></div>`;
-    const items=await dashLoadMonthlyList(DASH_STATE.yearMonth);
-    el.innerHTML=dashMonthlyListHtml(items);
-    wireMonthlyList(items);
-  };
-  function wireMonthlyList(items){
-    $("dash-ym").onchange=()=>{ DASH_STATE.yearMonth=$("dash-ym").value; rerenderList(); };
-    $("dash-sort").onchange=()=>{ DASH_STATE.sortMode=$("dash-sort").value; $("dash-monthly-list").innerHTML=dashMonthlyListHtml(items); wireMonthlyList(items); };
-    const toggleFilter=(key,el)=>{ DASH_STATE.rowFilter=Object.assign({mail:true,upload:true,payroll:true},DASH_STATE.rowFilter,{[key]:el.checked}); $("dash-monthly-list").innerHTML=dashMonthlyListHtml(items); wireMonthlyList(items); };
-    $("dash-f-mail").onchange=e=>toggleFilter("mail",e.target);
-    $("dash-f-upload").onchange=e=>toggleFilter("upload",e.target);
-    $("dash-f-payroll").onchange=e=>toggleFilter("payroll",e.target);
-    $("dash-show-amount").onchange=e=>{ DASH_STATE.showAmount=e.target.checked; $("dash-monthly-list").innerHTML=dashMonthlyListHtml(items); wireMonthlyList(items); };
-  }
-  wireMonthlyList(monthlyItems);
+
+  $("dash-corp").onchange=()=>{ DASH_STATE.corpId=$("dash-corp").value; dashRenderBody(u); };
+  $("dash-ym").onchange=()=>{ DASH_STATE.yearMonth=$("dash-ym").value; dashRenderBody(u); };
+  if($("dash-go-all")) $("dash-go-all").onclick=()=>openUnifiedFiltered(u,{subTab:"all"});
+  document.querySelectorAll("[data-dash-open]").forEach(el=>el.onclick=()=>openInvoiceDetail(u,el.dataset.dashOpen));
+  document.querySelectorAll("[data-dash-sched]").forEach(el=>el.onclick=()=>{
+    // 支払予定の各区分は「振込待ち（会計登録済み・未払い）」の絞り込みへ飛ばす（区分自体の
+    // 絞り込みキーは🧾請求書一覧に無いため、一番近い既存フィルタ=payment待ちタブへ誘導する）
+    openUnifiedFiltered(u,{subTab:"payment"});
+  });
+  document.querySelectorAll("[data-dash-goto]").forEach(el=>el.onclick=()=>{
+    const key=el.dataset.dashGoto;
+    if(key==="__review") return openUnifiedFiltered(u,{subTab:"review"});
+    if(key==="__accounting") return openUnifiedFiltered(u,{subTab:"accounting"});
+    if(key==="__payment") return openUnifiedFiltered(u,{subTab:"payment"});
+    openUnifiedFiltered(u,{subTab:"review",reasonFilter:key});
+  });
 }
 
 /* ============================================================
