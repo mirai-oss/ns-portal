@@ -1470,7 +1470,7 @@ async function openMailDetail(u,emailId,skipHighlight){
     authed(`/rest/v1/invoice_attachments?email_id=eq.${emailId}&select=*&order=created_at`),
     authed(`/rest/v1/invoice_email_reads?email_id=eq.${emailId}&select=opened_at,reader:users(name)&order=opened_at.asc&limit=1`),
     authed(`/rest/v1/invoice_audit_logs?entity_id=eq.${emailId}&select=*,actor:users(name)&order=created_at.asc&limit=50`),
-    authed(`/rest/v1/invoices?email_id=eq.${emailId}&select=*,linked_step:hq_task_steps(id,title,task:hq_tasks(title,corp)),linked_step_payment:hq_task_steps!linked_hq_step_id_payment(id,title,task:hq_tasks(title,corp))&order=created_at`),
+    authed(`/rest/v1/invoices?email_id=eq.${emailId}&select=*,linked_step:hq_task_steps!linked_hq_step_id(id,title,task:hq_tasks(title,corp)),linked_step_payment:hq_task_steps!linked_hq_step_id_payment(id,title,task:hq_tasks(title,corp))&order=created_at`),
     authed(`/rest/v1/invoice_comments?email_id=eq.${emailId}&select=*,author:users(name)&order=created_at.asc`),
   ]);
   if(!mr.ok||!mr.body||!mr.body[0]){ $("mailDetail").innerHTML='<div class="empty">読み込みに失敗しました</div>'; return; }
@@ -1544,7 +1544,7 @@ async function openMailDetailModal(u,emailId){
 async function openInvoiceDetail(u,invoiceId){
   DETAIL_MODE="process";
   await ensureCorpStoreCache();
-  const ivr=await authed(`/rest/v1/invoices?id=eq.${invoiceId}&select=*,vendor:vendors(name),linked_step:hq_task_steps(id,title,task:hq_tasks(title,corp)),linked_step_payment:hq_task_steps!linked_hq_step_id_payment(id,title,task:hq_tasks(title,corp))`);
+  const ivr=await authed(`/rest/v1/invoices?id=eq.${invoiceId}&select=*,vendor:vendors(name),linked_step:hq_task_steps!linked_hq_step_id(id,title,task:hq_tasks(title,corp)),linked_step_payment:hq_task_steps!linked_hq_step_id_payment(id,title,task:hq_tasks(title,corp))`);
   const inv=(ivr.ok&&Array.isArray(ivr.body)&&ivr.body[0])||null;
   if(!inv){ alert("請求書が見つかりませんでした（削除された可能性があります）"); return; }
   if(inv.email_id){
@@ -2345,7 +2345,7 @@ function wireDetailActions(u){
     if(emailId){ await openMailDetail(u,emailId,true); return; }
     const freshId=invoice&&invoice.id;
     if(!freshId) return;
-    const ivr2=await authed(`/rest/v1/invoices?id=eq.${freshId}&select=*,vendor:vendors(name),linked_step:hq_task_steps(id,title,task:hq_tasks(title,corp)),linked_step_payment:hq_task_steps!linked_hq_step_id_payment(id,title,task:hq_tasks(title,corp))`);
+    const ivr2=await authed(`/rest/v1/invoices?id=eq.${freshId}&select=*,vendor:vendors(name),linked_step:hq_task_steps!linked_hq_step_id(id,title,task:hq_tasks(title,corp)),linked_step_payment:hq_task_steps!linked_hq_step_id_payment(id,title,task:hq_tasks(title,corp))`);
     const freshInv=(ivr2.ok&&Array.isArray(ivr2.body)&&ivr2.body[0])||null;
     if(!freshInv){ $("mailDetail").innerHTML='<div class="empty">この請求書は削除されました</div>'; return; }
     await loadStandaloneIntoSelected(u,freshInv);
@@ -3246,7 +3246,7 @@ function unifiedStageOf(r){
 async function renderUnifiedInvoiceTab(u){
   $("tabbody").innerHTML=`<div class="spin">読み込み中…</div>`;
   const [r,corpCache]=await Promise.all([
-    authed(`/rest/v1/invoices?select=*,email:invoice_emails(subject,from_address,mail_kind),vendor:vendors(name),corp:corporations(name),store:stores(name),linked_step:hq_task_steps(title)&order=created_at.desc&limit=500`),
+    authed(`/rest/v1/invoices?select=*,email:invoice_emails(subject,from_address,mail_kind),vendor:vendors(name),corp:corporations(name),store:stores(name),linked_step:hq_task_steps!linked_hq_step_id(title)&order=created_at.desc&limit=500`),
     ensureCorpStoreCache(),
   ]);
   const raw=(r.ok&&Array.isArray(r.body))?r.body:[];
