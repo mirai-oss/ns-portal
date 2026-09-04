@@ -199,6 +199,15 @@ button,input,select,textarea{font:inherit}
 /* 2026-09-04新規：会計ダッシュボード（確定UI版）。既存の色トークン（--accent/--green/--amber/
    --blue等）をそのまま使い、新しい配色を増やさない＝既存デザインシステムへの統合(指示書§30-31) */
 .select-box{border:1px solid var(--line);border-radius:6px;padding:6px 12px;font-size:13px;background:var(--panel);color:var(--ink)}
+/* 2026-09-04新規：請求書「対象店舗」の複数選択ドロップダウン */
+.store-ms{position:relative}
+.store-ms-toggle{width:100%;text-align:left;border:1px solid var(--line);border-radius:8px;padding:9px 10px;background:var(--panel);color:var(--ink);cursor:pointer;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.store-ms-panel{position:absolute;top:100%;left:0;right:0;z-index:20;background:var(--panel);border:1px solid var(--line);border-radius:8px;box-shadow:var(--shadow);margin-top:4px;max-height:220px;overflow-y:auto;padding:6px}
+.store-ms-panel label{display:flex;align-items:center;gap:8px;padding:6px 8px;font-size:13px;cursor:pointer;border-radius:6px}
+.store-ms-panel label:hover{background:var(--bg)}
+.store-ms-panel hr{border:none;border-top:1px solid var(--line);margin:4px 0}
+.store-tags{display:flex;flex-wrap:wrap;gap:5px}
+.store-tag{background:var(--blue-soft);color:var(--blue);border-radius:999px;padding:2px 9px;font-size:11px;font-weight:700}
 .dash-section-title{font-size:13px;font-weight:700;color:var(--muted);margin:0 0 10px 2px}
 .dash-grid-4{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:26px}
 .dash-action-card{background:var(--accent-soft);border:1px solid var(--accent);border-left:5px solid var(--accent);border-radius:10px;padding:14px;cursor:pointer;transition:.15s}
@@ -1046,6 +1055,8 @@ let SELECTED=null;         // 選択中メールの詳細一式
 // 等から開いたときの本来の処理画面（工程バー＋会計・仕訳・PL・振込タブ一式）。既定はprocess＝
 // 呼び出し元で明示的に"mail"にしない限り、これまでどおりの挙動のまま安全側に倒す
 let DETAIL_MODE="process";
+// 2026-09-04新規：請求書詳細の「対象店舗」複数選択の一時状態（編集中のみ・保存時にinvoice_set_stores RPCへ渡す）
+let STORE_MS_STATE={corpId:"",selected:new Set()};
 // 請求書一覧タブ（金額・期限のソート表示／検索・絞り込み。2026-08-24 Phase1.5 C-2）
 let IV_ROWS=[];
 let IV_SEARCH_Q="", IV_STATUS="", IV_AMOUNT_MIN="", IV_AMOUNT_MAX="", IV_DUE_FROM="", IV_DUE_TO="";
@@ -1470,7 +1481,7 @@ async function openMailDetail(u,emailId,skipHighlight){
     authed(`/rest/v1/invoice_attachments?email_id=eq.${emailId}&select=*&order=created_at`),
     authed(`/rest/v1/invoice_email_reads?email_id=eq.${emailId}&select=opened_at,reader:users(name)&order=opened_at.asc&limit=1`),
     authed(`/rest/v1/invoice_audit_logs?entity_id=eq.${emailId}&select=*,actor:users(name)&order=created_at.asc&limit=50`),
-    authed(`/rest/v1/invoices?email_id=eq.${emailId}&select=*,linked_step:hq_task_steps!linked_hq_step_id(id,title,task:hq_tasks(title,corp)),linked_step_payment:hq_task_steps!linked_hq_step_id_payment(id,title,task:hq_tasks(title,corp))&order=created_at`),
+    authed(`/rest/v1/invoices?email_id=eq.${emailId}&select=*,linked_step:hq_task_steps!linked_hq_step_id(id,title,task:hq_tasks(title,corp)),linked_step_payment:hq_task_steps!linked_hq_step_id_payment(id,title,task:hq_tasks(title,corp)),invoice_stores(store_id)&order=created_at`),
     authed(`/rest/v1/invoice_comments?email_id=eq.${emailId}&select=*,author:users(name)&order=created_at.asc`),
   ]);
   if(!mr.ok||!mr.body||!mr.body[0]){ $("mailDetail").innerHTML='<div class="empty">読み込みに失敗しました</div>'; return; }
@@ -1544,7 +1555,7 @@ async function openMailDetailModal(u,emailId){
 async function openInvoiceDetail(u,invoiceId){
   DETAIL_MODE="process";
   await ensureCorpStoreCache();
-  const ivr=await authed(`/rest/v1/invoices?id=eq.${invoiceId}&select=*,vendor:vendors(name),linked_step:hq_task_steps!linked_hq_step_id(id,title,task:hq_tasks(title,corp)),linked_step_payment:hq_task_steps!linked_hq_step_id_payment(id,title,task:hq_tasks(title,corp))`);
+  const ivr=await authed(`/rest/v1/invoices?id=eq.${invoiceId}&select=*,vendor:vendors(name),linked_step:hq_task_steps!linked_hq_step_id(id,title,task:hq_tasks(title,corp)),linked_step_payment:hq_task_steps!linked_hq_step_id_payment(id,title,task:hq_tasks(title,corp)),invoice_stores(store_id)`);
   const inv=(ivr.ok&&Array.isArray(ivr.body)&&ivr.body[0])||null;
   if(!inv){ alert("請求書が見つかりませんでした（削除された可能性があります）"); return; }
   if(inv.email_id){
@@ -1838,7 +1849,12 @@ function renderMailDetail(u){
                 <div class="ai-field"><small>${isSales?"入金予定日":"支払期限"}</small><input id="iv-duedate" type="date" value="${invoice&&invoice.due_date||""}"></div>
                 <div class="ai-field"><small>状態</small><select id="iv-status">${Object.entries(isSales?SALES_STATUS_LABEL:INVOICE_STATUS_LABEL).map(([k,l])=>`<option value="${k}" ${(invoice?invoice.invoice_status:"draft")===k?"selected":""}>${l}</option>`).join("")}</select></div>
                 <div class="ai-field"><small>対象法人</small><select id="iv-corp"><option value="">（未設定）</option>${(CORP_STORE_CACHE&&CORP_STORE_CACHE.corporations||[]).map(c=>`<option value="${esc(c.id)}" ${invoice&&invoice.corporation_id===c.id?"selected":""}>${esc(c.name)}</option>`).join("")}</select></div>
-                <div class="ai-field"><small>対象店舗</small><select id="iv-store"><option value="">（未設定）</option>${(CORP_STORE_CACHE&&CORP_STORE_CACHE.stores||[]).map(s=>`<option value="${esc(s.id)}" ${invoice&&invoice.store_id===s.id?"selected":""}>${esc(s.name)}</option>`).join("")}</select></div>
+                <div class="ai-field"><small>対象店舗（複数選択可）</small>
+                  <div class="store-ms" id="iv-store-ms">
+                    <button type="button" class="store-ms-toggle" id="iv-store-toggle">店舗を選択</button>
+                    <div class="store-ms-panel" id="iv-store-panel" hidden></div>
+                  </div>
+                </div>
               </div>
               <div class="mail-actions">
                 ${atts.length?`<button id="iv-ai-fill">🤖 AIで${isSales?"入金情報":"請求書情報"}を自動入力</button>`:""}
@@ -1897,7 +1913,12 @@ function renderMailDetail(u){
                 <div class="ai-field"><small>${isSales?"入金予定日":"支払期限"}</small><input id="iv-duedate" type="date" value="${invoice&&invoice.due_date||""}"></div>
                 <div class="ai-field"><small>状態</small><select id="iv-status">${Object.entries(isSales?SALES_STATUS_LABEL:INVOICE_STATUS_LABEL).map(([k,l])=>`<option value="${k}" ${(invoice?invoice.invoice_status:"draft")===k?"selected":""}>${l}</option>`).join("")}</select></div>
                 <div class="ai-field"><small>対象法人</small><select id="iv-corp"><option value="">（未設定）</option>${(CORP_STORE_CACHE&&CORP_STORE_CACHE.corporations||[]).map(c=>`<option value="${esc(c.id)}" ${invoice&&invoice.corporation_id===c.id?"selected":""}>${esc(c.name)}</option>`).join("")}</select></div>
-                <div class="ai-field"><small>対象店舗</small><select id="iv-store"><option value="">（未設定）</option>${(CORP_STORE_CACHE&&CORP_STORE_CACHE.stores||[]).map(s=>`<option value="${esc(s.id)}" ${invoice&&invoice.store_id===s.id?"selected":""}>${esc(s.name)}</option>`).join("")}</select></div>
+                <div class="ai-field"><small>対象店舗（複数選択可）</small>
+                  <div class="store-ms" id="iv-store-ms">
+                    <button type="button" class="store-ms-toggle" id="iv-store-toggle">店舗を選択</button>
+                    <div class="store-ms-panel" id="iv-store-panel" hidden></div>
+                  </div>
+                </div>
               </div>
               <div class="meta" style="color:var(--muted);font-size:11px;margin-top:4px">💡 対象法人・対象店舗を設定すると、「🧾請求書」一覧で法人ごとに絞り込めるようになります（未設定でも仕訳登録自体は今までどおり行えます）。</div>
               ${isSales?"":`<div class="task-link-box" style="margin-top:12px"><small>🔗 紐付ける本部タスクの工程（任意・仕訳登録時に自動で完了にします）</small><div id="hqlink-box"></div></div>`}
@@ -2031,6 +2052,56 @@ function wireDetailActions(u){
       },350);
     };
   }
+  // 2026-09-04新規：対象店舗の複数選択（指示書「請求書『対象店舗』複数選択対応」）。
+  // Source of Truthはinvoice_stores（保存はinvoice_set_stores RPCで1トランザクションに）。
+  // invoice.store_id（従来の単一列）は保存時にRPC側が自動でミラーしてくれるため、
+  // ここでは一切参照・更新しない
+  (function wireStoreMultiSelect(){
+    const toggle=$("iv-store-toggle"), panel=$("iv-store-panel");
+    if(!toggle||!panel) return;
+    STORE_MS_STATE={
+      corpId:(invoice&&invoice.corporation_id)||($("iv-corp")?$("iv-corp").value:"")||"",
+      selected:new Set(((invoice&&invoice.invoice_stores)||[]).map(x=>x.store_id)),
+    };
+    const currentStores=()=>((CORP_STORE_CACHE&&CORP_STORE_CACHE.stores)||[]).filter(s=>!STORE_MS_STATE.corpId||s.corporation_id===STORE_MS_STATE.corpId);
+    const renderLabel=()=>{
+      const n=STORE_MS_STATE.selected.size;
+      const all=(CORP_STORE_CACHE&&CORP_STORE_CACHE.stores)||[];
+      if(n===0) toggle.textContent="対象店舗を選択";
+      else if(n<=2) toggle.textContent=[...STORE_MS_STATE.selected].map(id=>{const s=all.find(x=>x.id===id); return s?s.name:"?";}).join(" / ");
+      else toggle.textContent=`${n}店舗選択中`;
+    };
+    const renderPanel=()=>{
+      const stores=currentStores();
+      const allChecked=stores.length>0&&stores.every(s=>STORE_MS_STATE.selected.has(s.id));
+      panel.innerHTML=`
+        <label><input type="checkbox" id="iv-store-all" ${allChecked?"checked":""}> <b>全店舗</b></label>
+        <hr>
+        ${stores.length?stores.map(s=>`<label><input type="checkbox" class="iv-store-item" data-id="${esc(s.id)}" ${STORE_MS_STATE.selected.has(s.id)?"checked":""}> ${esc(s.name)}</label>`).join(""):'<div class="meta" style="color:var(--muted);font-size:12px;padding:6px">先に対象法人を選択してください</div>'}
+      `;
+      if($("iv-store-all")) $("iv-store-all").onchange=e=>{
+        if(e.target.checked) stores.forEach(s=>STORE_MS_STATE.selected.add(s.id));
+        else stores.forEach(s=>STORE_MS_STATE.selected.delete(s.id));
+        renderPanel(); renderLabel();
+      };
+      panel.querySelectorAll(".iv-store-item").forEach(cb=>cb.onchange=()=>{
+        if(cb.checked) STORE_MS_STATE.selected.add(cb.dataset.id); else STORE_MS_STATE.selected.delete(cb.dataset.id);
+        renderPanel(); renderLabel();
+      });
+    };
+    toggle.onclick=e=>{ e.stopPropagation(); panel.hidden=!panel.hidden; if(!panel.hidden) renderPanel(); };
+    document.addEventListener("click",e=>{ if(!panel.hidden&&!panel.contains(e.target)&&e.target!==toggle) panel.hidden=true; });
+    // 対象法人を変えたら、他法人の店舗は選択肢から外し、既存の選択も新しい法人のものだけに絞り込む
+    // （指示書§15。DB上の既存データを消すわけではなく、あくまでこの編集セッション中の選択の話）
+    if($("iv-corp")) $("iv-corp").addEventListener("change",()=>{
+      STORE_MS_STATE.corpId=$("iv-corp").value;
+      const allowed=new Set(currentStores().map(s=>s.id));
+      STORE_MS_STATE.selected=new Set([...STORE_MS_STATE.selected].filter(id=>allowed.has(id)));
+      renderLabel();
+      if(!panel.hidden) renderPanel();
+    });
+    renderLabel();
+  })();
   renderHqLinkBox();
   // 2026-09-04新規：振込完了イベント専用の本部タスク工程紐付け（指示書§9）。会計・仕訳の
   // renderHqLinkBox/LINKED_HQ_STEPとは別枠（別のinvoices列=linked_hq_step_id_payment）。
@@ -2345,7 +2416,7 @@ function wireDetailActions(u){
     if(emailId){ await openMailDetail(u,emailId,true); return; }
     const freshId=invoice&&invoice.id;
     if(!freshId) return;
-    const ivr2=await authed(`/rest/v1/invoices?id=eq.${freshId}&select=*,vendor:vendors(name),linked_step:hq_task_steps!linked_hq_step_id(id,title,task:hq_tasks(title,corp)),linked_step_payment:hq_task_steps!linked_hq_step_id_payment(id,title,task:hq_tasks(title,corp))`);
+    const ivr2=await authed(`/rest/v1/invoices?id=eq.${freshId}&select=*,vendor:vendors(name),linked_step:hq_task_steps!linked_hq_step_id(id,title,task:hq_tasks(title,corp)),linked_step_payment:hq_task_steps!linked_hq_step_id_payment(id,title,task:hq_tasks(title,corp)),invoice_stores(store_id)`);
     const freshInv=(ivr2.ok&&Array.isArray(ivr2.body)&&ivr2.body[0])||null;
     if(!freshInv){ $("mailDetail").innerHTML='<div class="empty">この請求書は削除されました</div>'; return; }
     await loadStandaloneIntoSelected(u,freshInv);
@@ -2497,7 +2568,8 @@ function wireDetailActions(u){
       due_date:$("iv-duedate").value||null,
       invoice_status:$("iv-status").value,
       corporation_id:$("iv-corp").value||null,
-      store_id:$("iv-store").value||null,
+      // 2026-09-04変更：store_idは対象店舗複数選択の導入により、ここでは直接設定しない
+      // （invoice_set_stores RPCが、保存後にinvoice_storesの内容から自動でミラーする）
       ...(isSales?{}:{linked_hq_step_id:LINKED_HQ_STEP?LINKED_HQ_STEP.id:null}),
     };
     const isNew=!SELECTED.invoice;
@@ -2505,7 +2577,10 @@ function wireDetailActions(u){
     if(SELECTED.invoice){
       r=await authed(`/rest/v1/invoices?id=eq.${SELECTED.invoice.id}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({...payload,updated_at:new Date().toISOString()})});
     }else{
-      r=await authed("/rest/v1/invoices",{method:"POST",headers:{Prefer:"return=minimal"},body:JSON.stringify({...payload,email_id:emailId,intake_source:"mail"})});
+      // 2026-09-04変更：新規作成時はreturn=representationにし、直後にinvoice_set_stores RPCを
+      // 呼ぶための新規invoice.idをここで受け取れるようにした（従来はreturn=minimalで、
+      // 新規IDが分かるのはreloadDetail()後だけだった）
+      r=await authed("/rest/v1/invoices",{method:"POST",headers:{Prefer:"return=representation"},body:JSON.stringify({...payload,email_id:emailId,intake_source:"mail"})});
     }
     if(!r.ok){
       // 2026-09-04追加：原因調査用に詳細をブラウザのコンソールへ残す（一般ユーザーには出さない）。
@@ -2517,6 +2592,15 @@ function wireDetailActions(u){
     // 2026-08-27: 保存成功後にSELECTED.invoiceを更新しないまま同じ画面でもう一度保存すると、
     // SELECTED.invoiceが古い（nullの）ままPOST（新規行）が再度走り、同じメールに請求書情報が
     // 2行できてしまう不具合があったため、保存のたびに詳細を再読込してSELECTED.invoiceを最新化する
+    // 2026-09-04追加：対象店舗（複数）をinvoice_set_stores RPCで保存する。invoice本体の保存
+    // （上のPATCH/POST）とは別のリクエストになるが、RPC内部はDELETE+INSERT+store_idミラーを
+    // 1トランザクションで行うため、少なくとも「invoice_storesだけ中途半端に更新される」ことはない
+    // （指示書§16）。保存後にreloadDetail()で最新のinvoice.idを確定させてから呼ぶ
+    const savedInvoiceId=(SELECTED.invoice&&SELECTED.invoice.id)||(isNew&&Array.isArray(r.body)&&r.body[0]&&r.body[0].id);
+    if(savedInvoiceId){
+      const sr=await authed("/rest/v1/rpc/invoice_set_stores",{method:"POST",body:JSON.stringify({p_invoice_id:savedInvoiceId,p_store_ids:[...STORE_MS_STATE.selected]})});
+      if(!sr.ok) console.error("[invoice_set_stores失敗]",{invoice_id:savedInvoiceId,status:sr.status,body:sr.body});
+    }
     await reloadDetail();
     const freshMsg=$("iv-msg"); if(freshMsg){ freshMsg.className="err msg-ok"; freshMsg.textContent="保存しました"; }
     await loadWaitingPaymentCount();
@@ -3231,6 +3315,21 @@ function unifiedIsHighRisk(r){ return !!(r.duplicate_suspected||r.bank_account_c
 // 「要対応の内訳」カードが、ここと全く同じ判定・同じ理由分類を再利用するため＝指示書§36
 // 「要対応ロジックを二重実装しない」に対応。🧾請求書一覧側は従来どおりunifiedNeedsAttention()
 // （真偽値だけ）を使い続けられるよう、その関数はunifiedAttentionReasons()の薄いラッパーにした）
+// 2026-09-04新規：対象店舗の複数選択対応。invoice_storesを正データとして件数・表示名を扱う
+// （rowにinvoice_storesが含まれない古いクエリ結果に対しては、後方互換でstore_idを1件として扱う）
+function unifiedStoreCount(r){
+  if(Array.isArray(r.invoice_stores)) return r.invoice_stores.length;
+  return r.store_id?1:0;
+}
+function unifiedStoreLabel(r){
+  if(Array.isArray(r.invoice_stores)&&r.invoice_stores.length){
+    const names=r.invoice_stores.map(x=>x.store&&x.store.name).filter(Boolean);
+    if(!names.length) return "—";
+    if(names.length===1) return esc(names[0]);
+    return `${esc(names[0])} 他${names.length-1}店舗`;
+  }
+  return esc((r.store&&r.store.name)||"—");
+}
 function unifiedAttentionReasons(r){
   if(r.payment_status==="paid") return []; // 完了済みは対象外（今さら指摘しても仕方ないため）
   const today=new Date().toISOString().slice(0,10);
@@ -3241,7 +3340,7 @@ function unifiedAttentionReasons(r){
   if(r.ai_match_status==="error") reasons.push("import_error");
   else if(!r.ai_match_status) reasons.push("unknown_journal"); // 自動判定が未実施＝仕訳の当たりが付いていない
   if(!r.corporation_id) reasons.push("unknown_company");
-  if(!r.store_id) reasons.push("unknown_store");
+  if(unifiedStoreCount(r)===0) reasons.push("unknown_store");
   if(r.due_date && r.due_date<today && r.payment_status!=="paid") reasons.push("overdue");
   return reasons;
 }
@@ -3263,7 +3362,7 @@ function unifiedStageOf(r){
 async function renderUnifiedInvoiceTab(u){
   $("tabbody").innerHTML=`<div class="spin">読み込み中…</div>`;
   const [r,corpCache]=await Promise.all([
-    authed(`/rest/v1/invoices?select=*,email:invoice_emails(subject,from_address,mail_kind),vendor:vendors(name),corp:corporations(name),store:stores(name),linked_step:hq_task_steps!linked_hq_step_id(title)&order=created_at.desc&limit=500`),
+    authed(`/rest/v1/invoices?select=*,email:invoice_emails(subject,from_address,mail_kind),vendor:vendors(name),corp:corporations(name),store:stores!invoices_store_id_fkey(name),invoice_stores(store:stores(name)),linked_step:hq_task_steps!linked_hq_step_id(title)&order=created_at.desc&limit=500`),
     ensureCorpStoreCache(),
   ]);
   const raw=(r.ok&&Array.isArray(r.body))?r.body:[];
@@ -3291,7 +3390,7 @@ function unifiedFilteredRows(){
   // （overdue/bank_change/duplicate/mf_error/unknown_journal/unknown_company/unknown_store/import_error）
   if(UNIFIED_STATE.reasonFilter) list=list.filter(r=>unifiedAttentionReasons(r).includes(UNIFIED_STATE.reasonFilter));
   const q=(UNIFIED_STATE.search||"").trim().toLowerCase();
-  if(q) list=list.filter(r=>[r.vendor_name,r.invoice_number,(r.vendor&&r.vendor.name),(r.corp&&r.corp.name),(r.store&&r.store.name)].filter(Boolean).join(" ").toLowerCase().includes(q));
+  if(q) list=list.filter(r=>[r.vendor_name,r.invoice_number,(r.vendor&&r.vendor.name),(r.corp&&r.corp.name),(r.store&&r.store.name),...(Array.isArray(r.invoice_stores)?r.invoice_stores.map(x=>x.store&&x.store.name):[])].filter(Boolean).join(" ").toLowerCase().includes(q));
   if(UNIFIED_STATE.yearMonth){
     // 支払期限があればそちらを、無ければ受領日（created_at）を対象年月として扱う
     list=list.filter(r=>{
@@ -3325,7 +3424,7 @@ function unifiedRowHtml(r){
     <td>${fmtD(r.created_at)}</td>
     <td>${dueBadgeHtml(r)}</td>
     <td><select class="unified-corp" data-id="${r.id}" style="font-size:11px;${r.corporation_id?"":"color:var(--m-amber)"}"><option value="">（未設定）</option>${(UNIFIED_STATE.corporations||[]).map(c=>`<option value="${esc(c.id)}" ${r.corporation_id===c.id?"selected":""}>${esc(c.name)}</option>`).join("")}</select></td>
-    <td>${esc((r.store&&r.store.name)||"—")}</td>
+    <td>${unifiedStoreLabel(r)}</td>
     <td><b>${esc((r.vendor&&r.vendor.name)||r.vendor_name||"—")}</b>${riskNote?`<div class="danger-text" style="color:var(--m-red);font-size:10px;font-weight:800">${esc(riskNote)}</div>`:""}</td>
     <td>${esc(r.invoice_number||"—")}</td>
     <td>${yen(r.amount)}</td>
@@ -4062,7 +4161,7 @@ function dashAttentionCounts(rows){
 async function renderAccountingDashboardTab(u){
   $("tabbody").innerHTML=`<section class="invoice-list active"><div class="card" style="padding:16px"><div class="spin" style="padding:40px 0">最新のデータを集計しています…</div></div></section>`;
   const [r]=await Promise.all([
-    authed(`/rest/v1/invoices?select=*,email:invoice_emails(mail_kind),corp:corporations(name),store:stores(name),vendor:vendors(name)&order=created_at.desc&limit=1000`),
+    authed(`/rest/v1/invoices?select=*,email:invoice_emails(mail_kind),corp:corporations(name),store:stores!invoices_store_id_fkey(name),invoice_stores(store:stores(name)),vendor:vendors(name)&order=created_at.desc&limit=1000`),
     ensureCorpStoreCache(),
   ]);
   if(!r.ok){

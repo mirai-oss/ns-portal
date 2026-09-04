@@ -231,6 +231,15 @@ Deno.serve(async (req: Request) => {
 
     const { error: updErr } = await uc.from("invoices").update(updatePatch).eq("id", invoiceId);
     if (updErr) return json({ error: "判定結果の保存に失敗しました: " + updErr.message }, 500);
+    // 2026-09-04追加：対象店舗の複数選択対応（invoice_storesが正データ）に伴い、ここで
+    // store_idを自動設定した場合はinvoice_storesにも同じ内容を反映し、二重管理で食い違わない
+    // ようにする（invoice_storesが既に何かある場合は自動判定で上書きしない＝人間の選択を優先）
+    if (updatePatch.store_id) {
+      const { count } = await db.from("invoice_stores").select("*", { count: "exact", head: true }).eq("invoice_id", invoiceId);
+      if (!count) {
+        await db.from("invoice_stores").insert({ invoice_id: invoiceId, store_id: updatePatch.store_id as string }).then(() => {}, () => {});
+      }
+    }
 
     return json({
       success: true, ai_match_status: aiMatchStatus, ai_match_reasons: reasons, ai_confidence: confidence,

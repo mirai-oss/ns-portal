@@ -622,6 +622,12 @@ Deno.serve(async (req: Request) => {
         corporation_id: corporationId, store_id: storeId, invoice_status: "draft", intake_source: "manual",
       }).select("id").single();
       if (insErr) return json({ error: "請求書の作成に失敗しました: " + insErr.message }, 500);
+      // 2026-09-04追加：対象店舗の複数選択対応（invoice_storesが正データ）。取込時に1店舗
+      // 指定された場合はinvoice_storesにも同じ内容を反映しておく（後から共通詳細で複数店舗へ
+      // 変更する場合はinvoice_set_stores RPCがstore_idごと正しく更新する）
+      if (storeId) {
+        await db.from("invoice_stores").insert({ invoice_id: newInv.id, store_id: storeId }).then(() => {}, () => {});
+      }
 
       let attached = 0;
       for (const f of inlineFiles) {
