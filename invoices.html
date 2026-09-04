@@ -2413,7 +2413,18 @@ function wireDetailActions(u){
     await reloadDetail();
   };
   if($("act-reopen")) $("act-reopen").onclick=async()=>{
-    if(!confirm("このメールを未処理に戻します。担当・完了情報はクリアされます。よろしいですか？")) return;
+    // 2026-09-04追加：invoice lifecycleの安全策。「未処理に戻す」はメールの処理状態を戻す
+    // だけでinvoice本体には触れないが、既に会計登録・振込まで進んだ請求書を気軽に未処理へ
+    // 戻すのは危険なため、進捗に応じて警告・禁止する（指示書§6）
+    if(invoice&&(invoice.payment_status==="paid"||invoice.payment_verified_at)){
+      alert("この請求書は既に振込済み（または支払確認済み）です。誤って内容を変更すると振込・会計の記録と食い違う恐れがあるため、この操作では未処理に戻せません。どうしても必要な場合は、まず🧾請求書一覧の詳細から内容を確認してください。");
+      return;
+    }
+    let confirmMsg="このメールを未処理に戻します。担当・完了情報はクリアされます。よろしいですか？";
+    if(invoice&&invoice.mf_journal_id){
+      confirmMsg="⚠️この請求書は既にマネーフォワードへ仕訳登録済みです。未処理に戻して内容を変更しても、登録済みの仕訳は自動では変わりません（別途手動での修正が必要になる場合があります）。それでも未処理に戻しますか？";
+    }
+    if(!confirm(confirmMsg)) return;
     $("act-reopen").disabled=true; $("act-msg").textContent="処理中…";
     const reason=prompt("戻す理由（任意）")||null;
     const r=await authed("/rest/v1/rpc/invoice_reopen",{method:"POST",body:JSON.stringify({p_email_id:emailId,p_reason:reason})});
@@ -2496,7 +2507,13 @@ function wireDetailActions(u){
     }else{
       r=await authed("/rest/v1/invoices",{method:"POST",headers:{Prefer:"return=minimal"},body:JSON.stringify({...payload,email_id:emailId,intake_source:"mail"})});
     }
-    if(!r.ok){ msg.className="err"; msg.textContent="保存できませんでした"; return; }
+    if(!r.ok){
+      // 2026-09-04追加：原因調査用に詳細をブラウザのコンソールへ残す（一般ユーザーには出さない）。
+      // ユーザー向けメッセージも「再読み込みして試す」という具体的な次の一手を添える
+      console.error("[iv-save失敗]",{mail_id:emailId,invoice_id:SELECTED.invoice&&SELECTED.invoice.id,isNew,status:r.status,body:r.body});
+      msg.className="err"; msg.textContent="保存できませんでした。ページを再読み込みしてもう一度お試しください（続く場合は開発担当へご連絡ください）";
+      return;
+    }
     // 2026-08-27: 保存成功後にSELECTED.invoiceを更新しないまま同じ画面でもう一度保存すると、
     // SELECTED.invoiceが古い（nullの）ままPOST（新規行）が再度走り、同じメールに請求書情報が
     // 2行できてしまう不具合があったため、保存のたびに詳細を再読込してSELECTED.invoiceを最新化する
