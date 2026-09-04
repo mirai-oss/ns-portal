@@ -125,14 +125,19 @@ button,input,select,textarea{font:inherit}
    （2026-09-03新規・ユーザー要望「請求書一覧で選んだら、手順が出てきて1個ずつ処理して
    チェックをつけていく形にしたい」＋参考モックアップ準拠でUIを統一。実データが少なくても
    一目で工程・状態が分かるよう、色と太さをはっきりさせた） */
-.workflow-steps{display:grid;grid-template-columns:repeat(6,1fr);gap:8px;margin:14px 0}
-.wf-step{padding:10px 8px;border:1px solid var(--m-line);border-radius:10px;background:var(--panel);font-size:11px;text-align:center;font-weight:700}
+/* 2026-09-04刷新：請求書詳細UX整理指示書対応。3秒で「どこまで完了・次に何をすべきか」が
+   分かることを目標に、現在工程を大きく強調し、「現在：◯◯」の見出しを併記する構成に変更 */
+.workflow-steps{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin:14px 0 8px;align-items:stretch}
+.wf-step{padding:10px 8px;border:1px solid var(--m-line);border-radius:10px;background:var(--panel);font-size:11px;text-align:center;font-weight:700;transition:.15s}
 .wf-step small{display:block;color:var(--m-muted);font-size:9px;font-weight:800;letter-spacing:.03em}
 .wf-step b{display:block;margin-top:4px;font-size:11px}
 .wf-step.done{background:var(--m-green);border-color:var(--m-green);color:#fff}
 .wf-step.done small{color:#fff}
-.wf-step.current{background:var(--m-blue);border-color:var(--m-blue);color:#fff}
+.wf-step.current{background:var(--m-blue);border-color:var(--m-blue);color:#fff;transform:scale(1.06);box-shadow:0 4px 14px rgba(47,111,183,.35);z-index:1}
 .wf-step.current small{color:#fff}
+.wf-current-banner{display:flex;align-items:center;gap:10px;padding:10px 14px;background:var(--m-bluesoft);border-radius:10px;margin-bottom:14px;font-size:13px}
+.wf-current-banner b{font-size:15px}
+.wf-current-banner.wf-all-done{background:var(--m-greensoft)}
 .detail-layout{display:grid;grid-template-columns:1fr 1fr;gap:24px;align-items:start}
 /* 処理フローの各工程カード（2026-09-03再設計→再調整。ユーザー提供の参考HTMLの枠・文字サイズ・
    色合いに合わせた：カードにうっすら影をつけて浮かせ、余白を広めに、番号は濃い円形バッジ） */
@@ -208,6 +213,22 @@ button,input,select,textarea{font:inherit}
 .store-ms-panel hr{border:none;border-top:1px solid var(--line);margin:4px 0}
 .store-tags{display:flex;flex-wrap:wrap;gap:5px}
 .store-tag{background:var(--blue-soft);color:var(--blue);border-radius:999px;padding:2px 9px;font-size:11px;font-weight:700}
+/* 2026-09-04新規：請求書詳細UX整理指示書対応。折りたたみカード・単一状態バッジ・現在工程バナー */
+.step-card-head{position:relative;padding-right:28px}
+.step-chevron{position:absolute;right:0;top:50%;transform:translateY(-50%);font-size:11px;color:var(--muted);cursor:pointer}
+.step-summary{font-size:12px;color:var(--muted);padding:4px 0 2px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.step-summary-edit{background:none;border:none;color:var(--blue);cursor:pointer;font-size:11px;font-weight:700;padding:0}
+.step-badge.current{background:var(--amber-soft);color:var(--amber)}
+.step-badge.wait{background:var(--bg);color:var(--muted)}
+.pl-state{display:inline-block;font-size:13px;font-weight:800;padding:2px 0}
+.pl-state.done{color:var(--green)}
+.pl-state.wait{color:var(--blue)}
+.pl-state.excluded{color:var(--muted)}
+.pl-state.seisan{color:var(--amber)}
+.event-map-table{width:100%;border-collapse:collapse;font-size:12px}
+.event-map-table th{text-align:left;color:var(--muted);font-weight:600;padding:6px 8px;border-bottom:1px solid var(--m-line)}
+.event-map-table td{padding:8px;border-bottom:1px solid var(--m-line);vertical-align:top}
+.event-map-table tr:last-child td{border-bottom:none}
 .dash-section-title{font-size:13px;font-weight:700;color:var(--muted);margin:0 0 10px 2px}
 .dash-grid-4{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:26px}
 .dash-action-card{background:var(--accent-soft);border:1px solid var(--accent);border-left:5px solid var(--accent);border-radius:10px;padding:14px;cursor:pointer;transition:.15s}
@@ -692,8 +713,11 @@ function plfeeManualAccountHtml(){
 function plfeeRenderPanel(){
   const box=$(PLFEE_STATE.ctx.boxId);
   if(!box) return;
+  // 2026-09-04：請求書詳細UX整理指示書対応。「現在の状態」と「過去の反映履歴」が混在して
+  // 矛盾して見える（指示書の指摘）ため、履歴は折りたたみの別枠にし、現在の状態・操作と
+  // 混ぜて表示しないようにした
   const reflections=PLFEE_STATE.reflections||[];
-  const reflectedHtml=reflections.length?`<div style="margin-bottom:8px">${reflections.map(plfeeReflectedCardHtml).join("")}</div>`:"";
+  const reflectedHtml=reflections.length?`<details style="margin-bottom:10px"><summary style="cursor:pointer;font-size:12px;color:var(--muted);font-weight:700">▼ 反映履歴（${reflections.length}件）</summary><div style="margin-top:6px">${reflections.map(plfeeReflectedCardHtml).join("")}</div></details>`:"";
 
   if(PLFEE_STATE.excludedAt){
     box.innerHTML=`<div class="adcost-box">
@@ -1331,7 +1355,7 @@ async function ensureCorpStoreCache(){
   if(CORP_STORE_CACHE) return CORP_STORE_CACHE;
   const [corpRes,storeRes]=await Promise.all([
     authed("/rest/v1/corporations?select=id,name&order=name"),
-    authed("/rest/v1/stores?select=id,name,corporation_id&order=name"),
+    authed("/rest/v1/stores?select=id,name,corporation_id,seisan_target&order=name"),
   ]);
   CORP_STORE_CACHE={
     corporations:(corpRes.ok&&Array.isArray(corpRes.body))?corpRes.body:[],
@@ -1637,17 +1661,26 @@ function attCardHtml(a){
       :""}
   </div>`;
 }
+// 2026-09-04新規：この請求書の対象店舗（invoice_stores）のうち、業務委託精算対象店舗
+// （stores.seisan_target）を返す。空配列なら通常の請求書→PL直接反映のルート
+function invoiceSeisanStores(invoice){
+  if(!invoice||!Array.isArray(invoice.invoice_stores)) return [];
+  const allStores=(CORP_STORE_CACHE&&CORP_STORE_CACHE.stores)||[];
+  const ids=new Set(invoice.invoice_stores.map(x=>x.store_id));
+  return allStores.filter(s=>ids.has(s.id)&&s.seisan_target);
+}
+// 「現在：◯◯」バナー用の次アクション文言（工程キー→表示文言）
+const STAGE_NEXT_ACTION={info:"請求情報の入力待ち",accounting:"会計・仕訳の登録待ち",pl:"PL・広告・精算の確認待ち",payment:"振込待ち",verified:"支払確認待ち"};
+// 2026-09-04全面書き換え：請求書詳細UX整理指示書対応。5工程（①請求情報→②会計・仕訳→
+// ③PL・広告・業務委託精算→④振込→⑤支払確認）に統一。旧「振込準備」「完了確認」（メールの
+// 完了操作に依存していた）は廃止し、振込・支払確認の2段階だけにする（指示書の基本工程定義）
 function invoiceWorkflowSteps(invoice,mail){
   const steps=[
     {key:"info",label:"請求情報",done:!!(invoice&&invoice.amount!=null)},
     {key:"accounting",label:"会計・仕訳",done:!!(invoice&&invoice.mf_journal_id)},
-    {key:"pl",label:"PL等反映",done:!!(invoice&&invoice.mf_journal_id&&(invoice.pl_fee_reflected_at||invoice.pl_fee_excluded_at||invoice.ad_cost_reflected_at))},
-    {key:"payment_prep",label:"振込準備",done:!!(invoice&&invoice.payment_status&&invoice.payment_status!=="not_ready")},
+    {key:"pl",label:"PL・精算",done:!!(invoice&&invoice.mf_journal_id&&(invoice.pl_fee_reflected_at||invoice.pl_fee_excluded_at||invoice.ad_cost_reflected_at||invoice.pl_fee_seisan_synced_at))},
     {key:"payment",label:"振込",done:!!(invoice&&invoice.payment_status==="paid")},
-    // 2026-09-04: メールに紐付かない請求書（mail.idが無い＝アップロード等）は「メールを完了に
-    // する」操作自体が無い（act-completeボタンを出していない）ため、代わりに振込済みかどうかで
-    // 完了扱いにする（そうしないと共通invoice詳細に統合した後、永久に5/6のまま進捗が進まなくなる）
-    {key:"final",label:"完了確認",done:mail.id?mail.mail_status==="completed":!!(invoice&&invoice.payment_status==="paid")},
+    {key:"verified",label:"支払確認",done:!!(invoice&&invoice.payment_verified_at)},
   ];
   let currentSet=false;
   for(const s of steps){ if(!s.done&&!currentSet){ s.current=true; currentSet=true; } }
@@ -1674,26 +1707,34 @@ function invoiceAiTabHtml(invoice){
   }
   return html;
 }
+// 2026-09-04書き換え：請求書詳細UX整理指示書対応。「状態」と「次アクション」を分離して表示する。
+// 本部タスク連携の設定UIは⑤本部タスク連携カードへ集約したため、ここには連携有無の一言だけ残す
 function invoicePaymentTabHtml(invoice){
   if(!invoice||!invoice.mf_journal_id) return `<div class="meta" style="color:var(--muted);font-size:12px">会計・仕訳の登録後、振込の準備ができます</div>`;
-  const payLabel={not_ready:"未準備",wait:"振込待ち",csv:"CSV出力済み",processing:"振込処理中",paid:"振込済み",blocked:"確認停止"}[invoice.payment_status]||"—";
-  let html=`<div class="ai-field" style="margin-bottom:10px"><small>振込状態</small><b>${esc(payLabel)}</b></div>`;
+  const dueLabel=invoice.due_date?`／支払期限${esc(fmtD(invoice.due_date))}`:"";
+  const amtLabel=`／金額${yen(invoice.amount)}`;
+  let stateLine, actionHtml;
   if(invoice.bank_account_change_detected){
-    html+=`<div class="risk-card danger"><h5>⚠️ 口座変更未承認</h5><p>振込先口座の変更が未承認のため、振込一覧に追加できません。設定タブ「支払先・銀行口座」で確認してください。</p></div>`;
+    stateLine=`<span class="pl-state excluded">！口座変更未承認</span>`;
+    actionHtml=`<div class="risk-card danger"><h5>⚠️ 口座変更未承認</h5><p>振込先口座の変更が未承認のため、振込一覧に追加できません。設定タブ「支払先・銀行口座」で確認してください。</p></div>`;
   }else if(invoice.payment_status==="not_ready"){
-    html+=`<div class="mail-actions"><button id="payment-add-transfer">🏦 振込一覧へ追加</button></div>`;
+    stateLine=`<span class="pl-state wait">●振込待ち</span>`;
+    actionHtml=`<div class="mail-actions"><button id="payment-add-transfer">🏦 振込一覧へ追加</button></div>`;
   }else if(invoice.payment_status==="paid"&&!invoice.payment_verified_at){
-    html+=`<div class="meta" style="color:var(--muted);font-size:12px;margin-bottom:8px">🏦 振込は完了しています。実際の着金・支払完了を確認できたら、下のボタンを押してください。</div>
+    stateLine=`<span class="pl-state done">✓振込済み</span>`;
+    actionHtml=`<div class="meta" style="color:var(--muted);font-size:12px;margin-bottom:8px">実際の着金・支払完了を確認できたら、下のボタンを押してください。</div>
       <div class="mail-actions"><button id="payment-verify">✅ 支払を確認済みにする</button></div>`;
   }else if(invoice.payment_verified_at){
-    html+=`<div class="meta" style="color:var(--muted);font-size:12px">✅ ${fmtDT(invoice.payment_verified_at)}に支払確認済みにしました。</div>`;
+    stateLine=`<span class="pl-state done">✓支払確認済み</span>`;
+    actionHtml=`<div class="meta" style="color:var(--muted);font-size:12px">${fmtDT(invoice.payment_verified_at)}に確認済みにしました。</div>`;
   }else{
-    html+=`<div class="meta" style="color:var(--muted);font-size:12px">🏦「振込一覧」タブからCSV出力・振込済みにするの操作ができます。</div>`;
+    stateLine=`<span class="pl-state wait">●振込準備完了／振込一覧に登録済み</span>`;
+    actionHtml=`<div class="mail-actions"><button id="dash-go-transfers-from-invoice">🏦 振込一覧を開く →</button></div>`;
   }
-  // 2026-09-04新規：振込完了イベント専用の本部タスク工程紐付け（指示書§9・event_type→
-  // hq_task_step_idの明示マッピング。工程名の文字列推測は使わない）。会計・仕訳の完了は
-  // 既存のlinked_hq_step_id（工程バーの請求情報カード）が担当、こちらは振込完了専用の別枠
-  html+=`<div class="task-link-box" style="margin-top:12px"><small>🔗 振込完了時に自動完了させる本部タスクの工程（任意）</small><div id="pay-hqlink-box"></div></div>`;
+  let html=`<div class="ai-field" style="margin-bottom:10px"><small>現在の状態</small>${stateLine}<div class="meta" style="color:var(--muted);font-size:11px;margin-top:2px">${amtLabel.slice(1)}${dueLabel}</div></div>${actionHtml}`;
+  if(invoice.linked_step_payment){
+    html+=`<div class="meta" style="color:var(--muted);font-size:11px;margin-top:10px">🔗 振込完了時の本部タスク連携あり（設定は⑤本部タスク連携カードで確認できます）</div>`;
+  }
   return html;
 }
 function taskPanelHtml(invoice,steps){
@@ -1898,14 +1939,25 @@ function renderMailDetail(u){
         const riskBannerHtml=(invoice&&(invoice.duplicate_suspected||invoice.bank_account_change_detected))?invoiceAiTabHtml(invoice):"";
         const aiConfidenceBadge=invoice&&invoice.ai_match_status?`<span class="step-badge ${invoice.ai_match_status==="auto"?"done":"current"}">🤖 ${({auto:"自動判定済",review:"要確認",error:"エラー"})[invoice.ai_match_status]||invoice.ai_match_status}</span>`:"";
         let stepNo=0;
-        return `<div class="workflow-steps">${steps.map(s=>`<div class="wf-step ${s.done?"done":s.current?"current":""}"><small>${s.done?"✓":s.current?"●":"○"}</small><b>${esc(s.label)}</b></div>`).join("")}</div>
+        const currentStep=steps.find(s=>s.current);
+        const currentText=currentStep?`現在：${STAGE_NEXT_ACTION[currentStep.key]||currentStep.label+"待ち"}`:"すべて完了しています";
+        const circled=["①","②","③","④","⑤"];
+        return `<div class="workflow-steps">${steps.map((s,i)=>`<div class="wf-step ${s.done?"done":s.current?"current":""}"><small>${s.done?"✓完了":s.current?"● 現在":"○ 未処理"}</small><b>${circled[i]||""}${esc(s.label)}</b></div>`).join("")}</div>
+        <div class="wf-current-banner${currentStep?"":" wf-all-done"}">${currentStep?"👉":"✅"} <b>${esc(currentText)}</b></div>
         <div class="detail-layout">
           ${evidenceHtml}
           <div>
             ${riskBannerHtml}
 
             <div class="step-card" id="step-info">
-              <div class="step-card-head"><div class="step-num">${++stepNo}</div><h3 class="step-title">${isSales?"入金情報":"請求情報"}</h3>${aiConfidenceBadge}</div>
+              <div class="step-card-head" data-cardtoggle="info"><div class="step-num">${++stepNo}</div><h3 class="step-title">${isSales?"入金情報":"請求情報"}</h3>${invoice&&invoice.amount!=null?'<span class="step-badge done">✓ 対応完了</span>':'<span class="step-badge current">！要対応</span>'}${aiConfidenceBadge}<span class="step-chevron" id="chev-info">${(invoice&&invoice.amount!=null)?"▼":"▲"}</span></div>
+              ${(invoice&&invoice.amount!=null)?(()=>{
+                // corp:corporations(name)埋め込みが無いクエリ経由でも法人名が出るよう、
+                // CORP_STORE_CACHE（常に事前ロード済み）からも引けるようにする
+                const corpName=(invoice.corp&&invoice.corp.name)||((CORP_STORE_CACHE&&CORP_STORE_CACHE.corporations||[]).find(c=>c.id===invoice.corporation_id)||{}).name;
+                return `<div class="step-summary" id="summary-info">${esc((invoice.vendor&&invoice.vendor.name)||invoice.vendor_name||"（請求元未入力）")}｜${yen(invoice.amount)}${invoice.due_date?"｜支払期限"+esc(fmtD(invoice.due_date)):""}${corpName?"｜"+esc(corpName):""}${Array.isArray(invoice.invoice_stores)&&invoice.invoice_stores.length?"｜"+unifiedStoreLabel(invoice):""} <button class="step-summary-edit" data-cardtoggle="info">詳細を見る▼</button></div>`;
+              })():""}
+              <div class="step-card-body" id="body-info" ${(invoice&&invoice.amount!=null)?"hidden":""}>
               <div class="ai-grid">
                 <div class="ai-field"><small>${isSales?"入金元":"請求元"}</small><input id="iv-vendor" value="${esc(invoice&&invoice.vendor_name||"")}"></div>
                 <div class="ai-field"><small>${isSales?"明細番号":"請求書番号"}</small><input id="iv-number" value="${esc(invoice&&invoice.invoice_number||"")}"></div>
@@ -1921,7 +1973,7 @@ function renderMailDetail(u){
                 </div>
               </div>
               <div class="meta" style="color:var(--muted);font-size:11px;margin-top:4px">💡 対象法人・対象店舗を設定すると、「🧾請求書」一覧で法人ごとに絞り込めるようになります（未設定でも仕訳登録自体は今までどおり行えます）。</div>
-              ${isSales?"":`<div class="task-link-box" style="margin-top:12px"><small>🔗 紐付ける本部タスクの工程（任意・仕訳登録時に自動で完了にします）</small><div id="hqlink-box"></div></div>`}
+              ${isSales?"":`<div class="meta" style="color:var(--muted);font-size:11px;margin-top:8px">🔗 本部タスクとの連携設定は⑤本部タスク連携カードにまとめました${invoice&&invoice.linked_step?"（設定あり）":""}。</div>`}
               <div class="mail-actions">
                 ${atts.length?`<button id="iv-ai-fill">🤖 AIで${isSales?"入金情報":"請求書情報"}を自動入力</button>`:""}
                 <button id="iv-save">💾 ${isSales?"入金情報":"請求書情報"}を保存</button>
@@ -1930,10 +1982,13 @@ function renderMailDetail(u){
               <div class="err" id="iv-msg" style="margin-top:6px"></div>
               <div id="iv-ocr-extras"></div>
               ${isSales?"":ivExtraSectionHtml(invoices,mail.id)}
+              </div>
             </div>
 
             <div class="step-card" id="step-accounting">
-              <div class="step-card-head"><div class="step-num">${++stepNo}</div><h3 class="step-title">会計・仕訳</h3>${invoice&&invoice.mf_journal_id?'<span class="step-badge done">✓ 登録済み</span>':''}</div>
+              <div class="step-card-head" data-cardtoggle="accounting"><div class="step-num">${++stepNo}</div><h3 class="step-title">会計・仕訳</h3>${invoice&&invoice.mf_journal_id?'<span class="step-badge done">✓ 対応完了</span>':(invoice&&invoice.amount!=null?'<span class="step-badge current">！要対応</span>':'<span class="step-badge wait">○未処理</span>')}<span class="step-chevron" id="chev-accounting">${(invoice&&invoice.mf_journal_id)?"▼":"▲"}</span></div>
+              ${(invoice&&invoice.mf_journal_id)?`<div class="step-summary" id="summary-accounting">伝票番号: ${esc(String(invoice.mf_journal_number??"-"))} <button class="step-summary-edit" data-cardtoggle="accounting">詳細を見る▼</button></div>`:""}
+              <div class="step-card-body" id="body-accounting" ${(invoice&&invoice.mf_journal_id)?"hidden":""}>
               <div class="mail-actions" style="margin-top:0">
                 ${(invoice&&invoice.amount!=null)?(invoice.mf_journal_id
                   ?`<button data-journal-view="${esc(invoice.mf_journal_id)}" data-journal-tenant="${esc(invoice.mf_tenant_id||"default")}" title="クリックすると登録した仕訳の内容を確認できます">✅ 仕訳登録済み（伝票番号: ${esc(String(invoice.mf_journal_number??"-"))}）🔍</button>`
@@ -1943,25 +1998,74 @@ function renderMailDetail(u){
                 <b style="font-size:12px">🧾 マネーフォワードへ仕訳を登録</b>
                 <div id="mfj-body" style="margin-top:8px;font-size:12px;color:var(--muted)">読み込み中…</div>
               </div>
+              </div>
             </div>
 
-            ${isSales?"":`<div class="step-card" id="step-pl">
-              <div class="step-card-head"><div class="step-num">${++stepNo}</div><h3 class="step-title">PL・広告・精算書</h3>${invoice&&(invoice.pl_fee_reflected_at||invoice.pl_fee_excluded_at)?'<span class="step-badge done">✓ 対応済み</span>':''}</div>
+            ${isSales?"":(()=>{
+              const seisanStores=invoiceSeisanStores(invoice);
+              const plDone=!!(invoice&&(invoice.pl_fee_reflected_at||invoice.pl_fee_excluded_at));
+              // 「現在状態は必ず一つだけ」（指示書）：優先順位を決めて1行に確定する
+              let plStateHtml;
+              if(!invoice||invoice.mf_journal_id==null) plStateHtml=`<span class="pl-state wait">○ 会計登録後に判断</span>`;
+              else if(invoice.pl_fee_excluded_at) plStateHtml=`<span class="pl-state excluded">－ PL対象外</span>`;
+              else if(invoice.pl_fee_reflected_at) plStateHtml=`<span class="pl-state done">✓ PL反映済み</span>`;
+              else if(seisanStores.length) plStateHtml=`<span class="pl-state seisan">🧮 業務委託精算対象</span>`;
+              else plStateHtml=`<span class="pl-state wait">○ PL反映待ち</span>`;
+              const cardDone=plDone||seisanStores.length>0;
+              return `<div class="step-card" id="step-pl">
+              <div class="step-card-head" data-cardtoggle="pl"><div class="step-num">${++stepNo}</div><h3 class="step-title">PL・広告・業務委託精算</h3>${cardDone?'<span class="step-badge done">✓ 対応完了</span>':'<span class="step-badge current">！要対応</span>'}<span class="step-chevron" id="chev-pl">${cardDone?"▼":"▲"}</span></div>
+              ${cardDone?`<div class="step-summary" id="summary-pl">${plStateHtml} <button class="step-summary-edit" data-cardtoggle="pl">詳細を見る▼</button></div>`:""}
+              <div class="step-card-body" id="body-pl" ${cardDone?"hidden":""}>
+              <div class="ai-field" style="margin-bottom:10px"><small>現在の状態</small>${plStateHtml}</div>
+              ${seisanStores.length?`<div class="task-link-box" style="margin-top:0;margin-bottom:12px"><small>🧮 業務委託精算対象店舗：${seisanStores.map(s=>esc(s.name)).join("・")}</small>
+                <div style="font-size:12px;color:var(--m-blue);margin-top:4px">この請求書は業務委託精算書経由でPLへ反映するルートです（請求書から直接のPL反映はできません＝二重計上防止のため選択肢から除外されます）。以下の内容を「精算管理」の店舗チェック／業務委託精算書の入力画面へ転記してください：</div>
+                <div class="ai-grid" style="margin-top:8px">
+                  <div class="ai-field"><small>店舗</small><b>${seisanStores.map(s=>esc(s.name)).join("・")}</b></div>
+                  <div class="ai-field"><small>対象月</small><b>${esc((invoice.due_date||invoice.created_at||"").slice(0,7))}</b></div>
+                  <div class="ai-field"><small>金額（税込）</small><b>${yen(invoice.amount)}</b></div>
+                  <div class="ai-field"><small>取引先</small><b>${esc((invoice.vendor&&invoice.vendor.name)||invoice.vendor_name||"—")}</b></div>
+                </div>
+                <div class="meta" style="color:var(--muted);font-size:11px;margin-top:8px">⚠️ 正直な注記：現在このアプリ（ns-portal）から精算書（別システム・別リポジトリseisan-dashboard）へ自動で明細を書き込む仕組みはまだありません。上記の内容を精算書側の画面で入力してください。振込済み確定後に精算書側からPLへ自動反映されます（既存の仕組み・変更していません）。</div>
+              </div>`:`
               ${(invoice&&invoice.amount!=null)?`<div id="adcostbox"></div>`:`<div class="meta" style="color:var(--muted);font-size:12px">先に上の「請求情報」で金額を保存してください</div>`}
               ${(invoice&&invoice.mf_journal_id)?`<div id="plfeebox"></div>`:`<div class="meta" style="color:var(--muted);font-size:12px;margin-top:8px">PLへの反映は会計・仕訳の登録後に行えます</div>`}
-              <div class="task-link-box" style="margin-top:12px"><small>🧮 業務委託精算書への反映はどこでする？</small><div style="font-size:12px;color:var(--m-blue)">精算対象店舗（業務委託店舗）の経費は、<b>精算書に入力すれば自動でPLにも反映されます</b>（このためこの画面のPL反映の候補には出てきません＝二重計上防止）。精算書はサイドメニュー「精算管理」から開いてください。</div></div>
-            </div>`}
+              `}
+              </div>
+            </div>`;
+            })()}
 
-            ${isSales?"":`<div class="step-card" id="step-payment">
-              <div class="step-card-head"><div class="step-num">${++stepNo}</div><h3 class="step-title">振込</h3>${invoice&&invoice.payment_status==="paid"?'<span class="step-badge done">✓ 振込済み</span>':''}</div>
+            ${isSales?"":(()=>{
+              const payDone=!!(invoice&&invoice.payment_verified_at);
+              const payBadge=invoice&&invoice.payment_verified_at?'<span class="step-badge done">✓ 対応完了</span>':(invoice&&invoice.payment_status==="paid"?'<span class="step-badge current">！要対応</span>':(invoice&&invoice.mf_journal_id?'<span class="step-badge wait">●振込待ち</span>':'<span class="step-badge wait">○未処理</span>'));
+              return `<div class="step-card" id="step-payment">
+              <div class="step-card-head" data-cardtoggle="payment"><div class="step-num">${++stepNo}</div><h3 class="step-title">振込</h3>${payBadge}<span class="step-chevron" id="chev-payment">${payDone?"▼":"▲"}</span></div>
+              ${payDone?`<div class="step-summary" id="summary-payment">${yen(invoice.amount)}｜${fmtDT(invoice.payment_verified_at)}支払確認済み <button class="step-summary-edit" data-cardtoggle="payment">詳細を見る▼</button></div>`:""}
+              <div class="step-card-body" id="body-payment" ${payDone?"hidden":""}>
               ${invoicePaymentTabHtml(invoice)}
-            </div>`}
+              </div>
+            </div>`;
+            })()}
 
-            ${isSales?"":`<div class="step-card" id="step-events">
-              <div class="step-card-head"><div class="step-num">${++stepNo}</div><h3 class="step-title">本部タスク連携（詳細）</h3></div>
-              <div class="meta" style="color:var(--muted);font-size:11px;margin-bottom:10px">会計登録・振込完了は上のカードで設定した工程が自動完了します。ここでは、それ以外のタイミング（取込完了・確認完了・振込準備完了・支払確認済）でも本部タスクの工程を自動完了させたい場合にだけ設定してください（任意・設定しなくても他の処理には影響しません）。</div>
-              <div id="event-links-box"></div>
-            </div>`}
+            ${isSales?"":(()=>{
+              const hasAnyLink=!!(invoice&&(invoice.linked_step||invoice.linked_step_payment||(invoice.event_task_links&&Object.keys(invoice.event_task_links).length)));
+              return `<div class="step-card" id="step-events">
+              <div class="step-card-head" data-cardtoggle="events"><div class="step-num">${++stepNo}</div><h3 class="step-title">本部タスク連携</h3>${hasAnyLink?'<span class="step-badge done">✓ 設定あり</span>':'<span class="step-badge wait">連携なし</span>'}<span class="step-chevron" id="chev-events">▲</span></div>
+              <div class="step-card-body" id="body-events">
+              <div class="meta" style="color:var(--muted);font-size:11px;margin-bottom:10px">この請求書の処理イベントが起きたとき、どの本部タスク工程を自動完了させるかの設定です。ここは「①〜④のこの請求書自体の処理状態」とは別物＝「このinvoiceのイベントで、別の本部タスク工程を自動完了させる設定」です。未設定のイベントは何も完了させません。</div>
+              <div class="hq-tablewrap"><table class="event-map-table">
+                <thead><tr><th>N-Styleイベント</th><th>連携する本部タスク工程</th><th>実際の完了状況</th></tr></thead>
+                <tbody id="event-map-tbody">
+                  <tr><td>請求書取込</td><td colspan="2" id="evrow-invoice_created">読み込み中…</td></tr>
+                  <tr><td>内容確認</td><td colspan="2" id="evrow-invoice_review_completed">読み込み中…</td></tr>
+                  <tr><td>会計登録</td><td id="evrow-mf_journal_created"><div id="hqlink-box"></div></td><td id="evstatus-mf_journal_created">—</td></tr>
+                  <tr><td>振込準備</td><td colspan="2" id="evrow-payment_ready">読み込み中…</td></tr>
+                  <tr><td>振込完了</td><td id="evrow-payment_completed"><div id="pay-hqlink-box"></div></td><td id="evstatus-payment_completed">—</td></tr>
+                  <tr><td>支払確認</td><td colspan="2" id="evrow-payment_verified">読み込み中…</td></tr>
+                </tbody>
+              </table></div>
+              </div>
+            </div>`;
+            })()}
 
             <div class="step-card" id="step-audit">
               <div class="step-card-head"><div class="step-num">${++stepNo}</div><h3 class="step-title">履歴・監査</h3></div>
@@ -2139,29 +2243,36 @@ function wireDetailActions(u){
     };
   }
   renderPaymentHqLinkBox();
-  // 2026-09-04新規：残り4イベント（invoice_created/invoice_review_completed/payment_ready/
-  // payment_verified）の本部タスク工程紐付け（指示書②③）。1つのパネルに4行並べる汎用実装
+  // 2026-09-04新規：折りたたみカードの開閉トグル（請求書詳細UX整理指示書）。カード見出しを
+  // クリックすると本文表示/要約表示を切り替える。ボタン等の操作要素のクリックまでは奪わない
+  document.querySelectorAll("[data-cardtoggle]").forEach(el=>el.onclick=(e)=>{
+    if(e.target.closest("select,input,button")&&!e.target.closest("[data-cardtoggle]")) return;
+    const id=el.dataset.cardtoggle;
+    const body=$("body-"+id), summary=$("summary-"+id), chev=$("chev-"+id);
+    if(!body) return;
+    body.hidden=!body.hidden;
+    if(summary) summary.hidden=!body.hidden; // bodyが見えているときはsummary（要約行）を隠す
+    if(chev) chev.textContent=body.hidden?"▼":"▲";
+  });
+  if($("dash-go-transfers-from-invoice")) $("dash-go-transfers-from-invoice").onclick=async()=>{
+    history.back(); TAB="transfers"; await renderTabBody(u);
+  };
+  // 2026-09-04新規：⑤本部タスク連携カード（請求書詳細UX整理指示書）。6イベント
+  // （invoice_created/invoice_review_completed/mf_journal_created/payment_ready/
+  // payment_completed/payment_verified）を1つの対応表にまとめ、設定内容と実際の
+  // 完了状況（invoice_task_events）の両方を表示する。会計登録・振込完了は既存列
+  // （linked_hq_step_id/_payment）、残り4つはevent_task_links(jsonb)が保存先
   const EVENT_LINK_DEFS=[
     ["invoice_created","取込完了"],["invoice_review_completed","確認完了"],
     ["payment_ready","振込準備完了"],["payment_verified","支払確認済"],
   ];
-  function renderEventLinksBox(){
-    const box=$("event-links-box");
-    if(!box||!invoice) return;
-    const links=invoice.event_task_links||{};
-    box.innerHTML=EVENT_LINK_DEFS.map(([key,label])=>`
-      <div style="margin-bottom:10px;padding-bottom:10px;border-bottom:1px solid var(--m-line)">
-        <small style="font-size:11px;color:var(--muted)">${esc(label)}</small>
-        <div id="evlink-${key}" style="margin-top:2px"></div>
-      </div>`).join("");
-    EVENT_LINK_DEFS.forEach(([key])=>renderOneEventLink(key,links[key]||null));
-  }
+  const EVENT_ALL_KEYS=["invoice_created","invoice_review_completed","mf_journal_created","payment_ready","payment_completed","payment_verified"];
   function renderOneEventLink(key,currentStepId){
-    const el=$("evlink-"+key);
+    const el=$("evrow-"+key);
     if(!el) return;
     if(currentStepId){
       // タイトルは検索結果から得られないため簡易表示（工程IDのみ分かる状態）。解除は可能
-      el.innerHTML=`<div class="ai-field">✅ 紐付け済み <button data-evunlink="${key}" style="margin-left:8px">解除</button></div>`;
+      el.innerHTML=`✅ 紐付け済み <button data-evunlink="${key}" style="margin-left:8px;font-size:11px">解除</button>`;
       const btn=el.querySelector("[data-evunlink]");
       if(btn) btn.onclick=async()=>{
         await authed("/rest/v1/rpc/invoice_set_event_task_link",{method:"POST",body:JSON.stringify({p_invoice_id:invoice.id,p_event_type:key,p_hq_task_step_id:null})});
@@ -2170,7 +2281,7 @@ function wireDetailActions(u){
       };
       return;
     }
-    el.innerHTML=`<input id="evsearch-${key}" placeholder="工程名で検索"><div id="evresults-${key}" style="margin-top:4px;font-size:12px"></div>`;
+    el.innerHTML=`<input id="evsearch-${key}" placeholder="工程名で検索" style="font-size:12px"><div id="evresults-${key}" style="margin-top:4px;font-size:12px"></div>`;
     let t3=null;
     const input=$("evsearch-"+key);
     if(input) input.oninput=()=>{
@@ -2191,7 +2302,26 @@ function wireDetailActions(u){
       },350);
     };
   }
-  renderEventLinksBox();
+  async function renderEventMapTable(){
+    if(!invoice) return;
+    const links=invoice.event_task_links||{};
+    EVENT_LINK_DEFS.forEach(([key])=>renderOneEventLink(key,links[key]||null));
+    // 実際の完了状況（invoice_task_events。無ければ「未発生」）
+    EVENT_ALL_KEYS.forEach(key=>{ const el=$("evstatus-"+key); if(el) el.textContent="—"; });
+    const r=await authed(`/rest/v1/invoice_task_events?invoice_id=eq.${invoice.id}&select=event_type,result,created_at`);
+    const events=(r.ok&&Array.isArray(r.body))?r.body:[];
+    EVENT_ALL_KEYS.forEach(key=>{
+      const ev=events.find(e=>e.event_type===key);
+      const el=$("evstatus-"+key);
+      if(!el) return;
+      if(!ev){ el.innerHTML=`<span style="color:var(--muted)">○ 未発生</span>`; return; }
+      if(ev.result==="completed") el.innerHTML=`<span style="color:var(--green);font-weight:700">✓ 自動完了済み</span><br><small style="color:var(--muted)">${fmtDT(ev.created_at)}</small>`;
+      else if(ev.result==="skipped_no_mapping") el.innerHTML=`<span style="color:var(--muted)">○ 連携未設定</span>`;
+      else if(ev.result==="skipped_already_completed") el.innerHTML=`<span style="color:var(--muted)">✓ 既に完了済み</span>`;
+      else el.innerHTML=`<span style="color:var(--accent)">⚠️ ${esc(ev.result)}</span>`;
+    });
+  }
+  renderEventMapTable();
   // 2026-09-04新規：受信トレイの簡易表示（メールは入口）から「🧾請求書一覧で確認・処理する」を
   // 押したときの遷移。同じメールをDETAIL_MODE="process"で開き直すだけ＝処理ロジック自体は
   // 既存のrenderMailDetail／wireDetailActionsをそのまま再利用する
