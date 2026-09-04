@@ -117,33 +117,53 @@ button,input,select,textarea{font:inherit}
 .ai-field small{display:block;color:var(--m-muted);font-size:10px;margin-bottom:4px}
 .ai-field input,.ai-field select{width:100%;border:1px solid var(--m-line);border-radius:6px;background:var(--panel);font-size:13px;font-weight:700;color:var(--ink);padding:7px 8px;margin-top:2px;-webkit-appearance:auto;appearance:auto}
 .ai-field input:focus,.ai-field select:focus{outline:2px solid var(--m-red);outline-offset:1px;border-color:var(--m-red)}
-/* 統合詳細モーダルの工程バー・タブ・本部タスクパネル（2026-09-03新規。ユーザー要望
-   「請求書一覧で選んだら、手順が出てきて1個ずつ処理してチェックをつけていく形にしたい」） */
-.workflow-steps{display:grid;grid-template-columns:repeat(6,1fr);gap:6px;margin:12px 0}
-.wf-step{padding:8px;border:1px solid var(--m-line);border-radius:9px;background:var(--bg);font-size:10px;text-align:center}
-.wf-step small{display:block;color:var(--m-muted);font-size:8px}
-.wf-step b{display:block;margin-top:3px;font-size:10px}
-.wf-step.done{background:var(--m-greensoft);border-color:var(--m-green);color:var(--m-green)}
-.wf-step.current{background:var(--m-bluesoft);border-color:var(--m-blue);color:var(--m-blue)}
-.detail-layout{display:grid;grid-template-columns:1fr 260px;gap:12px;align-items:start}
+/* 統合詳細モーダルの工程バー・3カラムレイアウト（証憑プレビュー／タブ／本部タスク）
+   （2026-09-03新規・ユーザー要望「請求書一覧で選んだら、手順が出てきて1個ずつ処理して
+   チェックをつけていく形にしたい」＋参考モックアップ準拠でUIを統一。実データが少なくても
+   一目で工程・状態が分かるよう、色と太さをはっきりさせた） */
+.workflow-steps{display:grid;grid-template-columns:repeat(6,1fr);gap:8px;margin:14px 0}
+.wf-step{padding:10px 8px;border:1px solid var(--m-line);border-radius:10px;background:var(--panel);font-size:11px;text-align:center;font-weight:700}
+.wf-step small{display:block;color:var(--m-muted);font-size:9px;font-weight:800;letter-spacing:.03em}
+.wf-step b{display:block;margin-top:4px;font-size:11px}
+.wf-step.done{background:var(--m-green);border-color:var(--m-green);color:#fff}
+.wf-step.done small{color:#fff}
+.wf-step.current{background:var(--m-blue);border-color:var(--m-blue);color:#fff}
+.wf-step.current small{color:#fff}
+.detail-layout{display:grid;grid-template-columns:minmax(280px,.8fr) minmax(440px,1.2fr);gap:16px;align-items:start}
+/* 処理フローの各工程カード（2026-09-03再設計。タブ切替をやめ、参考モックアップ準拠で
+   「証憑を見ながら上から順に全工程が見えて埋めていく」1本の流れに変更） */
+.step-card{background:var(--panel);border:1px solid var(--m-line);border-radius:12px;padding:16px;margin-bottom:14px}
+.step-card-head{display:flex;align-items:center;gap:10px;margin-bottom:14px;border-bottom:1px dashed var(--m-line);padding-bottom:10px}
+.step-num{background:var(--ink);color:var(--bg);width:26px;height:26px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:800;flex:0 0 auto}
+.step-title{font-size:14px;font-weight:800;margin:0;flex:1}
+.step-badge{font-size:10px;font-weight:800;padding:3px 8px;border-radius:999px;background:var(--bg);color:var(--m-muted)}
+.step-badge.done{background:var(--m-greensoft);color:var(--m-green)}
+.step-badge.current{background:var(--m-bluesoft);color:var(--m-blue)}
+.evidence-panel{border:1px solid var(--m-line);border-radius:12px;background:var(--panel);overflow:hidden}
+.evidence-panel .ep-head{padding:10px 12px;border-bottom:1px solid var(--m-line);font-size:12px;font-weight:800;display:flex;justify-content:space-between;align-items:center}
+.evidence-panel .ep-body{padding:12px;max-height:560px;overflow:auto}
+.evidence-panel .ep-tabs{display:flex;gap:5px;padding:8px;border-top:1px solid var(--m-line);overflow:auto}
+.evidence-panel .ep-tabs button{border:1px solid var(--m-line);background:var(--bg);border-radius:7px;padding:6px 8px;font-size:10px;white-space:nowrap;cursor:pointer;color:var(--ink)}
+.evidence-panel .ep-tabs button.active{background:var(--ink);color:var(--bg)}
+.ep-preview iframe,.ep-preview img{width:100%;min-height:420px;border:0;background:#fff;border-radius:8px}
 .detail-tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px}
-.detail-tabs button{border:1px solid var(--m-line);background:var(--panel);border-radius:999px;padding:7px 11px;font-size:11px;cursor:pointer;color:var(--ink)}
-.detail-tabs button.active{background:var(--ink);color:var(--bg)}
+.detail-tabs button{border:1px solid var(--m-line);background:var(--panel);border-radius:999px;padding:8px 12px;font-size:12px;cursor:pointer;color:var(--ink);font-weight:700}
+.detail-tabs button.active{background:var(--ink);color:var(--bg);border-color:var(--ink)}
 .dtab{display:none}
 .dtab.active{display:block}
-.task-panel{border:1px solid var(--m-line);border-radius:12px;background:var(--panel);padding:12px;position:sticky;top:0}
-.task-panel h4{margin:0 0 8px;font-size:12px}
-.task-progress-num{font-size:22px;font-weight:900;margin:4px 0 8px}
-.task-step{display:flex;gap:8px;padding:7px 0;border-bottom:1px solid var(--m-line);font-size:10px}
+.task-panel{border:1px solid var(--m-line);border-radius:12px;background:var(--panel);padding:14px;position:sticky;top:0}
+.task-panel h4{margin:0 0 6px;font-size:13px}
+.task-progress-num{font-size:26px;font-weight:900;margin:2px 0 10px}
+.task-step{display:flex;gap:9px;padding:8px 0;border-bottom:1px solid var(--m-line);font-size:11px;align-items:center}
 .task-step:last-child{border-bottom:0}
-.task-step .icon{width:18px;height:18px;border-radius:50%;display:grid;place-items:center;background:var(--bg);flex:0 0 auto;font-size:9px;color:var(--m-muted)}
-.task-step.done .icon{background:var(--m-green);color:#fff}
-.task-step.current .icon{background:var(--m-blue);color:#fff}
-.risk-card{padding:10px;border-radius:9px;margin-bottom:8px;font-size:11px}
+.task-step .icon{width:22px;height:22px;border-radius:50%;display:grid;place-items:center;background:var(--bg);border:1px solid var(--m-line);flex:0 0 auto;font-size:10px;font-weight:800;color:var(--m-muted)}
+.task-step.done .icon{background:var(--m-green);border-color:var(--m-green);color:#fff}
+.task-step.current .icon{background:var(--m-blue);border-color:var(--m-blue);color:#fff}
+.risk-card{padding:11px;border-radius:9px;margin-bottom:8px;font-size:12px}
 .risk-card.danger{background:var(--m-redsoft);border:1px solid var(--m-red)}
-.risk-card h5{font-size:11px;margin:0 0 4px}
-.conf-row{display:grid;grid-template-columns:80px 1fr 36px;gap:8px;align-items:center;padding:4px 0;font-size:10px}
-.conf-bar{height:6px;background:var(--m-line);border-radius:999px;overflow:hidden}
+.risk-card h5{font-size:12px;margin:0 0 4px;font-weight:800}
+.conf-row{display:grid;grid-template-columns:80px 1fr 36px;gap:8px;align-items:center;padding:4px 0;font-size:11px}
+.conf-bar{height:7px;background:var(--m-line);border-radius:999px;overflow:hidden}
 .conf-bar span{display:block;height:100%;background:var(--m-green)}
 @media(max-width:900px){.detail-layout{grid-template-columns:1fr}.workflow-steps{grid-template-columns:repeat(3,1fr)}}
 .mail-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
@@ -1432,7 +1452,7 @@ async function openMailDetail(u,emailId,skipHighlight){
 async function openMailDetailModal(u,emailId){
   const modal=document.createElement("div");
   modal.className="modal-bg"; modal.id="mailDetailModalBg";
-  modal.innerHTML=`<div class="modal" style="max-width:760px">
+  modal.innerHTML=`<div class="modal" style="max-width:1180px">
     <div class="mhead"><h2>メール詳細</h2><button class="linkbtn" id="mailDetailModalClose" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:13px">閉じる ×</button></div>
     <div class="card mail-detail" id="mailDetail" style="border:none;box-shadow:none;padding:0"><div class="spin">読み込み中…</div></div>
   </div>`;
@@ -1518,7 +1538,7 @@ function taskPanelHtml(invoice,steps){
   const step=invoice&&invoice.linked_step;
   return `<h4>📌 本部タスク連携</h4>
     <div class="task-progress-num">${doneCount}/${steps.length}</div>
-    ${steps.map(s=>`<div class="task-step ${s.done?"done":s.current?"current":""}"><div class="icon">${s.done?"✓":""}</div><div><b>${esc(s.label)}</b></div></div>`).join("")}
+    ${steps.map((s,i)=>`<div class="task-step ${s.done?"done":s.current?"current":""}"><div class="icon">${s.done?"✓":i+1}</div><div><b>${esc(s.label)}</b></div></div>`).join("")}
     ${step?`<div class="meta" style="color:var(--muted);font-size:11px;margin-top:8px">${esc((step.task&&step.task.corp)||"")} ${esc((step.task&&step.task.title)||"")} ／ ${esc(step.title)}</div><a class="hq-btn" style="display:block;text-align:center;margin-top:8px;text-decoration:none" href="tasks.html" target="_blank">本部タスクを開く</a>`
       :`<div class="meta" style="color:var(--muted);font-size:11px;margin-top:8px">紐付けられた本部タスクはありません（請求情報タブから紐付けできます）</div>`}
   `;
@@ -1598,7 +1618,7 @@ function renderMailDetail(u){
     <div class="mail-body">
       <iframe class="mail-body-frame" id="mailBodyFrame" sandbox="allow-popups allow-popups-to-escape-sandbox"></iframe>
 
-      <div class="invoice-attach">
+      ${isContract?`<div class="invoice-attach">
         <h3>📎 添付（${atts.length}件）</h3>
         <div class="attgrid" id="attlist">${atts.map(a=>{
           const isPdf=a.mime_type==="application/pdf";
@@ -1625,7 +1645,7 @@ function renderMailDetail(u){
           <button class="hq-btn" style="margin-top:6px" id="manual-att-upload">＋ このメールに紐付けて追加</button>
           <div class="err" id="manual-att-msg" style="margin-top:6px"></div>
         </div>
-      </div>
+      </div>`:""}
 
       ${(()=>{
         // 履歴・監査（処理履歴＋コメント）。isContractのときは従来どおりタブの外に単独表示、
@@ -1654,19 +1674,49 @@ function renderMailDetail(u){
         // 既存のai-box内の各ボックス（adcostbox/plfeebox/mfjournalbox等）はIDをそのまま維持し、
         // タブの中に配置場所を移しただけ＝wireDetailActions側のロジックは無改修で動く
         const steps=invoiceWorkflowSteps(invoice,mail);
+        const evidenceHtml=`<div class="evidence-panel">
+          <div class="ep-head"><span>📄 証憑プレビュー</span><span>${atts.length}ファイル</span></div>
+          <div class="ep-body">
+            <div class="attgrid" id="attlist">${atts.map(a=>{
+              const isPdf=a.mime_type==="application/pdf";
+              const isImg=(a.mime_type||"").indexOf("image/")===0;
+              const preview=isPdf
+                ? `<iframe data-attpreview="${esc(a.storage_path)}" title="${esc(a.file_name)}"></iframe>`
+                : isImg
+                  ? `<img data-attpreview="${esc(a.storage_path)}" alt="${esc(a.file_name)}">`
+                  : `<div class="noprev"><span class="ico">📄</span>プレビュー非対応<br>（開いて確認してください）</div>`;
+              return `<div class="attcard">
+                <div class="attcard-preview">${preview}</div>
+                <div class="attcard-foot">
+                  <span class="fname">${esc(a.file_name)}</span>
+                  <a data-attpath="${esc(a.storage_path)}" download="${esc(a.file_name)}" href="#" target="_blank" rel="noopener">開く</a>
+                </div>
+              </div>`;
+            }).join("")||'<div class="meta" style="color:var(--muted);font-size:12px">添付はありません</div>'}</div>
+            <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--m-line)">
+              <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:6px">ダウンロードリンク式の請求書はここから追加できます</label>
+              <div id="manual-att-drop" style="border:2px dashed var(--m-line);border-radius:10px;padding:12px;text-align:center;font-size:11px;color:var(--muted)">
+                ここにファイルをドラッグ＆ドロップ、または<br>
+                <input type="file" id="manual-att-file" style="font-size:11px;margin-top:6px">
+              </div>
+              <button class="hq-btn" style="margin-top:6px;width:100%" id="manual-att-upload">＋ このメールに紐付けて追加</button>
+              <div class="err" id="manual-att-msg" style="margin-top:6px"></div>
+            </div>
+          </div>
+        </div>`;
+        // AI判定のリスク（重複・口座変更）だけは、見落とし防止のため独立タブではなく
+        // 工程カードの一番上に警告バナーとして常時表示する（参考モックアップ準拠）
+        const riskBannerHtml=(invoice&&(invoice.duplicate_suspected||invoice.bank_account_change_detected))?invoiceAiTabHtml(invoice):"";
+        const aiConfidenceBadge=invoice&&invoice.ai_match_status?`<span class="step-badge ${invoice.ai_match_status==="auto"?"done":"current"}">🤖 ${({auto:"自動判定済",review:"要確認",error:"エラー"})[invoice.ai_match_status]||invoice.ai_match_status}</span>`:"";
+        let stepNo=0;
         return `<div class="workflow-steps">${steps.map(s=>`<div class="wf-step ${s.done?"done":s.current?"current":""}"><small>${s.done?"✓":s.current?"●":"○"}</small><b>${esc(s.label)}</b></div>`).join("")}</div>
         <div class="detail-layout">
+          ${evidenceHtml}
           <div>
-            <div class="detail-tabs">
-              <button class="active" data-dtab="info">請求情報</button>
-              <button data-dtab="ai">AI判定${(invoice&&(invoice.duplicate_suspected||invoice.bank_account_change_detected))?" ⚠️":""}</button>
-              <button data-dtab="accounting">会計・仕訳</button>
-              ${isSales?"":'<button data-dtab="pl">PL・広告・精算書</button>'}
-              ${isSales?"":'<button data-dtab="payment">振込</button>'}
-              <button data-dtab="audit">履歴・監査</button>
-            </div>
+            ${riskBannerHtml}
 
-            <div class="dtab active" id="dtab-info">
+            <div class="step-card" id="step-info">
+              <div class="step-card-head"><div class="step-num">${++stepNo}</div><h3 class="step-title">${isSales?"入金情報":"請求情報"}</h3>${aiConfidenceBadge}</div>
               <div class="ai-grid">
                 <div class="ai-field"><small>${isSales?"入金元":"請求元"}</small><input id="iv-vendor" value="${esc(invoice&&invoice.vendor_name||"")}"></div>
                 <div class="ai-field"><small>${isSales?"明細番号":"請求書番号"}</small><input id="iv-number" value="${esc(invoice&&invoice.invoice_number||"")}"></div>
@@ -1687,13 +1737,12 @@ function renderMailDetail(u){
               ${isSales?"":ivExtraSectionHtml(invoices,mail.id)}
             </div>
 
-            <div class="dtab" id="dtab-ai">${invoiceAiTabHtml(invoice)}</div>
-
-            <div class="dtab" id="dtab-accounting">
+            <div class="step-card" id="step-accounting">
+              <div class="step-card-head"><div class="step-num">${++stepNo}</div><h3 class="step-title">会計・仕訳</h3>${invoice&&invoice.mf_journal_id?'<span class="step-badge done">✓ 登録済み</span>':''}</div>
               <div class="mail-actions" style="margin-top:0">
                 ${(invoice&&invoice.amount!=null)?(invoice.mf_journal_id
                   ?`<button data-journal-view="${esc(invoice.mf_journal_id)}" data-journal-tenant="${esc(invoice.mf_tenant_id||"default")}" title="クリックすると登録した仕訳の内容を確認できます">✅ 仕訳登録済み（伝票番号: ${esc(String(invoice.mf_journal_number??"-"))}）🔍</button>`
-                  :`<button id="mfj-open">🧾 仕訳を作成</button>`):`<div class="meta" style="color:var(--muted);font-size:12px">先に「請求情報」タブで金額を保存してください</div>`}
+                  :`<button id="mfj-open">🧾 仕訳を作成</button>`):`<div class="meta" style="color:var(--muted);font-size:12px">先に上の「請求情報」で金額を保存してください</div>`}
               </div>
               <div class="replybox" id="mfjournalbox">
                 <b style="font-size:12px">🧾 マネーフォワードへ仕訳を登録</b>
@@ -1701,16 +1750,22 @@ function renderMailDetail(u){
               </div>
             </div>
 
-            ${isSales?"":`<div class="dtab" id="dtab-pl">
-              ${(invoice&&invoice.amount!=null)?`<div id="adcostbox"></div>`:`<div class="meta" style="color:var(--muted);font-size:12px">先に「請求情報」タブで金額を保存してください</div>`}
+            ${isSales?"":`<div class="step-card" id="step-pl">
+              <div class="step-card-head"><div class="step-num">${++stepNo}</div><h3 class="step-title">PL・広告・精算書</h3>${invoice&&(invoice.pl_fee_reflected_at||invoice.pl_fee_excluded_at)?'<span class="step-badge done">✓ 対応済み</span>':''}</div>
+              ${(invoice&&invoice.amount!=null)?`<div id="adcostbox"></div>`:`<div class="meta" style="color:var(--muted);font-size:12px">先に上の「請求情報」で金額を保存してください</div>`}
               ${(invoice&&invoice.mf_journal_id)?`<div id="plfeebox"></div>`:`<div class="meta" style="color:var(--muted);font-size:12px;margin-top:8px">PLへの反映は会計・仕訳の登録後に行えます</div>`}
             </div>`}
 
-            ${isSales?"":`<div class="dtab" id="dtab-payment">${invoicePaymentTabHtml(invoice)}</div>`}
+            ${isSales?"":`<div class="step-card" id="step-payment">
+              <div class="step-card-head"><div class="step-num">${++stepNo}</div><h3 class="step-title">振込</h3>${invoice&&invoice.payment_status==="paid"?'<span class="step-badge done">✓ 振込済み</span>':''}</div>
+              ${invoicePaymentTabHtml(invoice)}
+            </div>`}
 
-            <div class="dtab" id="dtab-audit">${historyCommentsHtml}</div>
+            <div class="step-card" id="step-audit">
+              <div class="step-card-head"><div class="step-num">${++stepNo}</div><h3 class="step-title">履歴・監査</h3></div>
+              ${historyCommentsHtml}
+            </div>
           </div>
-          <div class="task-panel">${taskPanelHtml(invoice,steps)}</div>
         </div>`;
       })()}
 
@@ -2974,21 +3029,23 @@ async function openStandaloneInvoiceModal(u,invoiceId){
   }
   // 「完了確認」工程の判定に使うmail_status相当（メールが無いためpayment_status=paidを代用）
   const steps=invoiceWorkflowSteps(inv,{mail_status:inv.payment_status==="paid"?"completed":"processing"});
-  modal.innerHTML=`<div class="modal" style="max-width:1100px">
+  const riskBannerHtml=(inv.duplicate_suspected||inv.bank_account_change_detected)?invoiceAiTabHtml(inv):"";
+  const aiConfidenceBadge=inv.ai_match_status?`<span class="step-badge ${inv.ai_match_status==="auto"?"done":"current"}">🤖 ${({auto:"自動判定済",review:"要確認",error:"エラー"})[inv.ai_match_status]||inv.ai_match_status}</span>`:"";
+  let stepNo=0;
+  modal.innerHTML=`<div class="modal" style="max-width:1180px">
     <div class="mhead"><h2>🧾 ${esc((inv.vendor&&inv.vendor.name)||inv.vendor_name||"請求書")}</h2><button class="linkbtn" id="standaloneClose" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:13px">閉じる ×</button></div>
     <div class="meta" style="color:var(--muted);font-size:11px;margin-bottom:8px">取得元: アップロード請求書</div>
     <div class="workflow-steps">${steps.map(s=>`<div class="wf-step ${s.done?"done":s.current?"current":""}"><small>${s.done?"✓":s.current?"●":"○"}</small><b>${esc(s.label)}</b></div>`).join("")}</div>
     <div class="detail-layout">
+      <div class="evidence-panel">
+        <div class="ep-head"><span>📄 証憑プレビュー</span></div>
+        <div class="ep-body"><div class="meta" style="color:var(--muted);font-size:12px">アップロード請求書の証憑は、登録済みの仕訳にマネーフォワード側の添付ファイルとして保存されています（この画面には表示されません）。</div></div>
+      </div>
       <div>
-        <div class="detail-tabs">
-          <button class="active" data-sdtab="info">請求情報</button>
-          <button data-sdtab="ai">AI判定${(inv.duplicate_suspected||inv.bank_account_change_detected)?" ⚠️":""}</button>
-          <button data-sdtab="accounting">会計・仕訳</button>
-          <button data-sdtab="pl">PL・広告・精算書</button>
-          <button data-sdtab="payment">振込</button>
-          <button data-sdtab="audit">履歴・監査</button>
-        </div>
-        <div class="dtab active" id="sdtab-info">
+        ${riskBannerHtml}
+
+        <div class="step-card" id="step-info">
+          <div class="step-card-head"><div class="step-num">${++stepNo}</div><h3 class="step-title">請求情報</h3>${aiConfidenceBadge}</div>
           <div class="ai-grid">
             <div class="ai-field"><small>請求元</small><input id="siv-vendor" value="${esc(inv.vendor_name||"")}"></div>
             <div class="ai-field"><small>請求書番号</small><input id="siv-number" value="${esc(inv.invoice_number||"")}"></div>
@@ -3000,34 +3057,38 @@ async function openStandaloneInvoiceModal(u,invoiceId){
           <div class="mail-actions"><button id="siv-save">💾 保存</button></div>
           <div class="err" id="siv-msg" style="margin-top:6px"></div>
         </div>
-        <div class="dtab" id="sdtab-ai">${invoiceAiTabHtml(inv)}</div>
-        <div class="dtab" id="sdtab-accounting">
+
+        <div class="step-card" id="step-accounting">
+          <div class="step-card-head"><div class="step-num">${++stepNo}</div><h3 class="step-title">会計・仕訳</h3>${inv.mf_journal_id?'<span class="step-badge done">✓ 登録済み</span>':''}</div>
           <div class="mail-actions" style="margin-top:0">
             ${inv.mf_journal_id
               ?`<button data-journal-view="${esc(inv.mf_journal_id)}" data-journal-tenant="${esc(inv.mf_tenant_id||"default")}" title="クリックすると登録した仕訳の内容を確認できます">✅ 仕訳登録済み（伝票番号: ${esc(String(inv.mf_journal_number??"-"))}）🔍</button>`
               :`<div class="meta" style="color:var(--muted);font-size:12px">アップロード請求書は登録と同時に仕訳を作成する仕組みのため、まだ登録されていない場合は「📤アップロード請求書」タブからやり直してください。</div>`}
           </div>
         </div>
-        <div class="dtab" id="sdtab-pl">
+
+        <div class="step-card" id="step-pl">
+          <div class="step-card-head"><div class="step-num">${++stepNo}</div><h3 class="step-title">PL・広告・精算書</h3>${inv.pl_fee_reflected_at||inv.pl_fee_excluded_at?'<span class="step-badge done">✓ 対応済み</span>':''}</div>
           ${inv.mf_journal_id?`<div id="plfeebox"></div>`:`<div class="meta" style="color:var(--muted);font-size:12px">PLへの反映は会計・仕訳の登録後に行えます</div>`}
           <div class="meta" style="color:var(--muted);font-size:11px;margin-top:10px">💡 広告費への反映は、現在は請求書メールから登録した請求書のみ対応しています。</div>
         </div>
-        <div class="dtab" id="sdtab-payment">${invoicePaymentTabHtml(inv)}</div>
-        <div class="dtab" id="sdtab-audit"><div class="meta" style="color:var(--muted);font-size:12px">アップロード請求書はメールに紐付いていないため、処理履歴・コメント機能は現在対応していません。</div></div>
+
+        <div class="step-card" id="step-payment">
+          <div class="step-card-head"><div class="step-num">${++stepNo}</div><h3 class="step-title">振込</h3>${inv.payment_status==="paid"?'<span class="step-badge done">✓ 振込済み</span>':''}</div>
+          ${invoicePaymentTabHtml(inv)}
+        </div>
+
+        <div class="step-card" id="step-audit">
+          <div class="step-card-head"><div class="step-num">${++stepNo}</div><h3 class="step-title">履歴・監査</h3></div>
+          <div class="meta" style="color:var(--muted);font-size:12px">アップロード請求書はメールに紐付いていないため、処理履歴・コメント機能は現在対応していません。</div>
+        </div>
       </div>
-      <div class="task-panel">${taskPanelHtml(inv,steps)}</div>
     </div>
   </div>`;
   document.body.appendChild(modal);
   pushNav({modal:true});
   modal.onclick=e=>{ if(e.target===modal) history.back(); };
   $("standaloneClose").onclick=()=>history.back();
-  document.querySelectorAll("[data-sdtab]").forEach(b=>b.onclick=()=>{
-    document.querySelectorAll("#standaloneInvoiceModal .dtab").forEach(d=>d.classList.remove("active"));
-    document.querySelectorAll("[data-sdtab]").forEach(x=>x.classList.remove("active"));
-    const el=$("sdtab-"+b.dataset.sdtab); if(el) el.classList.add("active");
-    b.classList.add("active");
-  });
   wireJournalViewButtons();
   const reload=()=>{ history.back(); openStandaloneInvoiceModal(u,invoiceId); };
   $("siv-save").onclick=async()=>{
