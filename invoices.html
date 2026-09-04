@@ -5418,13 +5418,56 @@ function payrollOpenBankModal(userId){
   };
 }
 
-// PayPay銀行「使用許容文字」ルールの自動変換（長音→ハイフン・中黒→ピリオド・小文字カナ→大文字化）。
-// それ以外の使用不可文字（&や!等）はそのまま残すため、出力前に一覧で確認できるようにしてある
+// 2026-09-04追加：全角カタカナ→半角カタカナの変換テーブル。
+// 「振込依頼人名を入力して下さい」エラーが依頼人名を入力しても解消しなかった件を調査したところ、
+// 従来のpaypayCleanKanaは全角カタカナを一切変換していなかったことが判明（濁点・半濁点を含む
+// 全角カタカナはtoShiftJisBytesの対象範囲(半角カナ0xFF61-0xFF9F)に入らず、"?"に置換されて
+// しまい、PayPay銀行側からは実質空欄と同じ扱いになっていたと考えられる）。ユーザーが
+// 「口座に載っているカタカナをそのままコピーした」場合、多くの銀行画面は全角カタカナで
+// 表示するため、これが今回のエラーの直接原因である可能性が高い。
+function buildZenkakuToHankakuKanaMap(){
+  const FULL="ヲァィゥェォャュョッアイウエオカキクケコサシスセソタチツテトナニヌネノハヒフヘホマミムメモヤユヨラリルレロワン";
+  const HALF="ｦｧｨｩｪｫｬｭｮｯｱｲｳｴｵｶｷｸｹｺｻｼｽｾｿﾀﾁﾂﾃﾄﾅﾆﾇﾈﾉﾊﾋﾌﾍﾎﾏﾐﾑﾒﾓﾔﾕﾖﾗﾘﾙﾚﾛﾜﾝ";
+  const DAK_FULL="ガギグゲゴザジズゼゾダヂヅデドバビブベボヴ"; // 濁点つき
+  const DAK_BASE="カキクケコサシスセソタチツテトハヒフヘホウ"; // ↑の清音（濁点なし）版
+  const HDAK_FULL="パピプペポ"; // 半濁点つき
+  const HDAK_BASE="ハヒフヘホ";
+  const baseMap={};
+  for(let i=0;i<FULL.length;i++) baseMap[FULL[i]]=HALF[i];
+  const map={};
+  for(let i=0;i<FULL.length;i++) map[FULL[i]]=HALF[i];
+  for(let i=0;i<DAK_FULL.length;i++) map[DAK_FULL[i]]=baseMap[DAK_BASE[i]]+"ﾞ"; // 例:ガ→ｶﾞ（2文字）
+  for(let i=0;i<HDAK_FULL.length;i++) map[HDAK_FULL[i]]=baseMap[HDAK_BASE[i]]+"ﾟ"; // 例:パ→ﾊﾟ（2文字）
+  return map;
+}
+const ZENKAKU_KANA_MAP=buildZenkakuToHankakuKanaMap();
+function zenkakuToHankaku(str){
+  let out="";
+  for(const ch of String(str)){
+    if(ZENKAKU_KANA_MAP[ch]!==undefined){ out+=ZENKAKU_KANA_MAP[ch]; continue; }
+    const cp=ch.codePointAt(0);
+    if(cp===0x3000){ out+=" "; continue; } // 全角スペース→半角スペース
+    if(cp>=0xFF01&&cp<=0xFF5E){ out+=String.fromCodePoint(cp-0xFEE0); continue; } // 全角英数記号→半角(例:Ａ→A,１→1,－→-)
+    out+=ch;
+  }
+  return out;
+}
+// PayPay銀行が受け付ける文字（半角英数字・半角カタカナ・ハイフン/ピリオド/スペース等）だけに
+// なっているかを判定する。これに合わないと「入力して下さい」エラーの原因になりうるため、
+// paypayRemitterNameで入力時に警告できるようにしてある
+const PAYPAY_SAFE_CHARS_RE=/^[\x20-\x7E｡-ﾟ]*$/;
+function paypayHasUnsafeChars(cleaned){
+  return !PAYPAY_SAFE_CHARS_RE.test(cleaned);
+}
+// PayPay銀行「使用許容文字」ルールの自動変換（全角カナ→半角カナ・長音→ハイフン・中黒→ピリオド・
+// 小文字カナ→大文字化）。それ以外の使用不可文字（漢字・ひらがな・&や!等）はそのまま残すため、
+// 出力前に一覧で確認できるようにしてある
 function paypayCleanKana(s){
-  let t=String(s||"").toUpperCase();
-  t=t.replace(/ー/g,"-").replace(/･/g,".").replace(/・/g,".");
-  const smallMap={"ｧ":"ｱ","ｨ":"ｲ","ｩ":"ｳ","ｪ":"ｴ","ｫ":"ｵ","ｯ":"ﾂ","ｬ":"ﾔ","ｭ":"ﾕ","ｮ":"ﾖ","ァ":"ｱ","ィ":"ｲ","ゥ":"ｳ","ェ":"ｴ","ォ":"ｵ","ッ":"ﾂ","ャ":"ﾔ","ュ":"ﾕ","ョ":"ﾖ"};
-  t=t.replace(/[ｧｨｩｪｫｯｬｭｮァィゥェォッャュョ]/g,c=>smallMap[c]||c);
+  let t=zenkakuToHankaku(String(s||""));
+  t=t.toUpperCase();
+  t=t.replace(/[ーｰ]/g,"-").replace(/[･・]/g,".");
+  const smallMap={"ｧ":"ｱ","ｨ":"ｲ","ｩ":"ｳ","ｪ":"ｴ","ｫ":"ｵ","ｯ":"ﾂ","ｬ":"ﾔ","ｭ":"ﾕ","ｮ":"ﾖ"};
+  t=t.replace(/[ｧｨｩｪｫｯｬｭｮ]/g,c=>smallMap[c]||c);
   return t;
 }
 // 2026-09-04緊急修正：PayPay銀行アップロード時「受取人名を正しく入力して下さい」
@@ -5459,12 +5502,23 @@ function paypayCsvToBlob(csvString){
 // 挙動としては必須である前提に変更し、各行へ同じ依頼人名を入れるようにした。前回入力した内容を
 // ブラウザに記憶しておき、次回から手間なく使えるようにする
 function paypayRemitterName(){
-  const saved=localStorage.getItem("ns_paypay_remitter_name")||"";
-  const input=prompt("振込依頼人名（半角カタカナ・振込元の名義）を入力してください。\n例：ユウゲンガイシヤト-ホ-エ-ジエンシ-\n\n一度入力すると次回から自動で入力された状態になります（変更したい場合はここで書き換えてください）。",saved);
-  if(input===null) return null; // キャンセル
-  const cleaned=paypayCleanKana(input.trim());
-  if(cleaned) localStorage.setItem("ns_paypay_remitter_name",cleaned);
-  return cleaned;
+  let saved=localStorage.getItem("ns_paypay_remitter_name")||"";
+  for(let attempt=0;attempt<5;attempt++){
+    const input=prompt("振込依頼人名（半角カタカナ・振込元の名義）を入力してください。\n例：ユウゲンガイシヤト-ホ-エ-ジエンシ-\n\n全角カタカナで入力・貼り付けしても自動で半角に変換されます。\n一度入力すると次回から自動で入力された状態になります（変更したい場合はここで書き換えてください）。",saved);
+    if(input===null) return null; // キャンセル
+    const cleaned=paypayCleanKana(input.trim());
+    // 2026-09-04追加：全角カナ変換後もPayPay銀行が受け付けない文字（漢字・ひらがな等）が
+    // 残っていると「振込依頼人名を入力して下さい」エラーが再発するため、ここで検知して
+    // 入力し直してもらう（無言で"?"に化けて分からなくなる事態を防ぐ）
+    if(cleaned && paypayHasUnsafeChars(cleaned)){
+      alert("「"+cleaned+"」には半角カタカナ・半角英数字以外の文字（漢字・ひらがな等）が含まれています。\nお手数ですが、口座名義に使われているカタカナ部分だけを半角または全角カタカナで入力し直してください。");
+      saved=cleaned; // 直せるように直前の入力を次回のプロンプトへ引き継ぐ
+      continue;
+    }
+    if(cleaned) localStorage.setItem("ns_paypay_remitter_name",cleaned);
+    return cleaned;
+  }
+  return null;
 }
 // PayPay銀行指定フォーマット（CSV）どおりに振込データを組み立てる共通ヘルパー（2026-09-03・
 // 会計・請求書処理の全面刷新でrenderTransfersTab（一般の取引先向け振込一覧）からも使うため、
