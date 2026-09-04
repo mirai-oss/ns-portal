@@ -468,6 +468,16 @@ Deno.serve(async (req: Request) => {
           note: hqStepError ? `紐付けタスクの自動完了に失敗: ${hqStepError}` : "紐付けた本部タスクの工程を自動完了しました",
         });
       }
+      // 2026-09-04追加：本部タスクevent_type連携の統一監査ログ（invoice_task_events）にも記録する。
+      // 完了処理自体は上のuc経由（既存・変更なし）のまま、event_typeベースの監査ログとしての
+      // 一貫性のためにここで追記する（invoice_fire_task_event RPCと同じ形の記録を残すだけ）。
+      // unique(invoice_id,event_type)違反（同じ請求書への2回目の呼び出し等）が起きても
+      // 本来の仕訳登録処理自体は既に成功しているため、ここのエラーは無視してよい
+      await db.from("invoice_task_events").insert({
+        invoice_id: invoiceId, event_type: "mf_journal_created", hq_task_step_id: linkedHqStepId || null,
+        result: !linkedHqStepId ? "skipped_no_mapping" : hqStepCompleted ? "completed" : (hqStepError ? "error" : "skipped_already_completed"),
+        detail: hqStepError || null, triggered_by: null,
+      });
 
       return json({ success: true, journal_id: journalId, journal_number: journalNumber, hq_step_completed: hqStepCompleted, hq_step_error: hqStepError, voucher_attached: voucherAttached, voucher_error: voucherError });
     }

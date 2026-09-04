@@ -445,6 +445,14 @@ async function autoMatchCall(extra={}){
   const j=await r.json().catch(()=>({}));
   return {ok:r.ok,body:j};
 }
+// 2026-09-04新規：本部タスクevent_type連携（指示書②③④⑤）。invoice_id×event_typeで
+// 冪等に発火するRPCの薄いラッパー。マッピングが無ければ何も完了させずskipped_no_mappingが
+// 返るだけ＝呼ぶだけなら常に安全（結果を確認して画面に反映するかは呼び出し元の任意）
+async function fireInvoiceEvent(invoiceId,eventType){
+  if(!invoiceId) return {ok:false,body:{error:"invoice_idがありません"}};
+  const r=await authed("/rest/v1/rpc/invoice_fire_task_event",{method:"POST",body:JSON.stringify({p_invoice_id:invoiceId,p_event_type:eventType})});
+  return {ok:r.ok,body:r.body};
+}
 let PL_FEE_TARGET_ACCOUNTS=null; // PL連携対象科目のキャッシュ（設定タブで増減したらnullに戻して再取得する）
 async function plFeeTargetAccounts(){
   if(PL_FEE_TARGET_ACCOUNTS) return PL_FEE_TARGET_ACCOUNTS;
@@ -1622,6 +1630,11 @@ function invoicePaymentTabHtml(invoice){
     html+=`<div class="risk-card danger"><h5>⚠️ 口座変更未承認</h5><p>振込先口座の変更が未承認のため、振込一覧に追加できません。設定タブ「支払先・銀行口座」で確認してください。</p></div>`;
   }else if(invoice.payment_status==="not_ready"){
     html+=`<div class="mail-actions"><button id="payment-add-transfer">🏦 振込一覧へ追加</button></div>`;
+  }else if(invoice.payment_status==="paid"&&!invoice.payment_verified_at){
+    html+=`<div class="meta" style="color:var(--muted);font-size:12px;margin-bottom:8px">🏦 振込は完了しています。実際の着金・支払完了を確認できたら、下のボタンを押してください。</div>
+      <div class="mail-actions"><button id="payment-verify">✅ 支払を確認済みにする</button></div>`;
+  }else if(invoice.payment_verified_at){
+    html+=`<div class="meta" style="color:var(--muted);font-size:12px">✅ ${fmtDT(invoice.payment_verified_at)}に支払確認済みにしました。</div>`;
   }else{
     html+=`<div class="meta" style="color:var(--muted);font-size:12px">🏦「振込一覧」タブからCSV出力・振込済みにするの操作ができます。</div>`;
   }
@@ -1855,6 +1868,12 @@ function renderMailDetail(u){
               ${invoicePaymentTabHtml(invoice)}
             </div>`}
 
+            ${isSales?"":`<div class="step-card" id="step-events">
+              <div class="step-card-head"><div class="step-num">${++stepNo}</div><h3 class="step-title">本部タスク連携（詳細）</h3></div>
+              <div class="meta" style="color:var(--muted);font-size:11px;margin-bottom:10px">会計登録・振込完了は上のカードで設定した工程が自動完了します。ここでは、それ以外のタイミング（取込完了・確認完了・振込準備完了・支払確認済）でも本部タスクの工程を自動完了させたい場合にだけ設定してください（任意・設定しなくても他の処理には影響しません）。</div>
+              <div id="event-links-box"></div>
+            </div>`}
+
             <div class="step-card" id="step-audit">
               <div class="step-card-head"><div class="step-num">${++stepNo}</div><h3 class="step-title">履歴・監査</h3></div>
               ${historyCommentsHtml}
@@ -1981,6 +2000,59 @@ function wireDetailActions(u){
     };
   }
   renderPaymentHqLinkBox();
+  // 2026-09-04新規：残り4イベント（invoice_created/invoice_review_completed/payment_ready/
+  // payment_verified）の本部タスク工程紐付け（指示書②③）。1つのパネルに4行並べる汎用実装
+  const EVENT_LINK_DEFS=[
+    ["invoice_created","取込完了"],["invoice_review_completed","確認完了"],
+    ["payment_ready","振込準備完了"],["payment_verified","支払確認済"],
+  ];
+  function renderEventLinksBox(){
+    const box=$("event-links-box");
+    if(!box||!invoice) return;
+    const links=invoice.event_task_links||{};
+    box.innerHTML=EVENT_LINK_DEFS.map(([key,label])=>`
+      <div style="margin-bottom:10px;padding-bottom:10px;border-bottom:1px solid var(--m-line)">
+        <small style="font-size:11px;color:var(--muted)">${esc(label)}</small>
+        <div id="evlink-${key}" style="margin-top:2px"></div>
+      </div>`).join("");
+    EVENT_LINK_DEFS.forEach(([key])=>renderOneEventLink(key,links[key]||null));
+  }
+  function renderOneEventLink(key,currentStepId){
+    const el=$("evlink-"+key);
+    if(!el) return;
+    if(currentStepId){
+      // タイトルは検索結果から得られないため簡易表示（工程IDのみ分かる状態）。解除は可能
+      el.innerHTML=`<div class="ai-field">✅ 紐付け済み <button data-evunlink="${key}" style="margin-left:8px">解除</button></div>`;
+      const btn=el.querySelector("[data-evunlink]");
+      if(btn) btn.onclick=async()=>{
+        await authed("/rest/v1/rpc/invoice_set_event_task_link",{method:"POST",body:JSON.stringify({p_invoice_id:invoice.id,p_event_type:key,p_hq_task_step_id:null})});
+        invoice.event_task_links={...(invoice.event_task_links||{})}; delete invoice.event_task_links[key];
+        renderOneEventLink(key,null);
+      };
+      return;
+    }
+    el.innerHTML=`<input id="evsearch-${key}" placeholder="工程名で検索"><div id="evresults-${key}" style="margin-top:4px;font-size:12px"></div>`;
+    let t3=null;
+    const input=$("evsearch-"+key);
+    if(input) input.oninput=()=>{
+      clearTimeout(t3);
+      const kw=input.value.trim();
+      const results=$("evresults-"+key);
+      if(!kw){ results.innerHTML=""; return; }
+      t3=setTimeout(async()=>{
+        results.innerHTML="検索中…";
+        const {ok,body:j}=await mfCall("search_hq_steps",{keyword:kw});
+        const list=(ok&&j.results)||[];
+        results.innerHTML=list.length?list.map(res=>`<div class="ai-field" style="margin-bottom:4px;cursor:pointer" data-evpick="${esc(res.id)}">${esc((res.task&&res.task.corp)||"")} ${esc((res.task&&res.task.title)||"")} ／ ${esc(res.title)}</div>`).join(""):"該当なし";
+        results.querySelectorAll("[data-evpick]").forEach(pel=>pel.onclick=async()=>{
+          await authed("/rest/v1/rpc/invoice_set_event_task_link",{method:"POST",body:JSON.stringify({p_invoice_id:invoice.id,p_event_type:key,p_hq_task_step_id:pel.dataset.evpick})});
+          invoice.event_task_links={...(invoice.event_task_links||{}),[key]:pel.dataset.evpick};
+          renderOneEventLink(key,pel.dataset.evpick);
+        });
+      },350);
+    };
+  }
+  renderEventLinksBox();
   // 2026-09-04新規：受信トレイの簡易表示（メールは入口）から「🧾請求書一覧で確認・処理する」を
   // 押したときの遷移。同じメールをDETAIL_MODE="process"で開き直すだけ＝処理ロジック自体は
   // 既存のrenderMailDetail／wireDetailActionsをそのまま再利用する
@@ -2216,10 +2288,11 @@ function wireDetailActions(u){
   if($("ai-resolve-dup")) $("ai-resolve-dup").onclick=async()=>{
     if(!confirm("この請求書は重複ではないと確認します。よろしいですか？")) return;
     await authed(`/rest/v1/invoices?id=eq.${invoice.id}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({duplicate_suspected:false,updated_at:new Date().toISOString()})});
-    await authed(`/rest/v1/invoice_emails?id=eq.${emailId}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({duplicate_suspected:false})});
-    // 処理履歴（invoice_audit_logs）への記録はservice role専用のRPC/Edge Function経由でしか
-    // 書き込めない設計（クライアントからの直接INSERTポリシーが無い）。記録を残したい場合は
-    // 別途RPCの新設が必要なため、今回はステータス変更のみ行い、監査ログへの追記は行わない
+    if(emailId) await authed(`/rest/v1/invoice_emails?id=eq.${emailId}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({duplicate_suspected:false})});
+    // 2026-09-04：重複解除は明示的な人間確認による「確認完了」なので、invoice_review_completed
+    // イベントを発火する（invoice_fire_task_eventがinvoice_task_eventsへ監査記録も残す＝
+    // 旧invoice_audit_logsへ直接書き込めない制約への対応にもなっている）
+    if(invoice&&invoice.id) fireInvoiceEvent(invoice.id,"invoice_review_completed").catch(()=>{});
     await reloadDetail();
   };
   if($("ai-goto-bank")) $("ai-goto-bank").onclick=()=>{
@@ -2229,6 +2302,14 @@ function wireDetailActions(u){
   };
   if($("payment-add-transfer")) $("payment-add-transfer").onclick=async()=>{
     await authed(`/rest/v1/invoices?id=eq.${invoice.id}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({payment_status:"wait",updated_at:new Date().toISOString()})});
+    // 2026-09-04：振込一覧への追加＝振込準備完了なのでpayment_readyイベントを発火
+    fireInvoiceEvent(invoice.id,"payment_ready").catch(()=>{});
+    await reloadDetail();
+  };
+  if($("payment-verify")) $("payment-verify").onclick=async()=>{
+    if(!confirm("実際の着金・支払完了を確認しましたか？よろしければ「支払確認済み」にします。")) return;
+    await authed(`/rest/v1/invoices?id=eq.${invoice.id}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({payment_verified_at:new Date().toISOString(),payment_verified_by:ME.id})});
+    fireInvoiceEvent(invoice.id,"payment_verified").catch(()=>{});
     await reloadDetail();
   };
   if($("iv-delete")) $("iv-delete").onclick=async()=>{
@@ -2357,7 +2438,17 @@ function wireDetailActions(u){
     // 新規作成のときだけ自動判定を実行（会計・請求書処理の全面刷新・2026-09-03）。取引先マッチ・
     // 仕訳辞書の自動照合・重複/口座変更等のリスク判定を行い、統合請求書一覧のAI判定バッジに反映する。
     // 完了を待たずに進める（失敗しても保存自体は成功しているため、ユーザーの作業を止めない）
-    if(isNew&&!isSales&&SELECTED.invoice&&SELECTED.invoice.id) autoMatchCall({invoice_id:SELECTED.invoice.id}).catch(()=>{});
+    if(isNew&&!isSales&&SELECTED.invoice&&SELECTED.invoice.id){
+      const newId=SELECTED.invoice.id;
+      // 2026-09-04追加：invoice_created（取込完了）イベントを発火。自動判定の結果、
+      // リスクが何も無ければinvoice_review_completed（確認完了）も続けて発火する
+      fireInvoiceEvent(newId,"invoice_created").catch(()=>{});
+      autoMatchCall({invoice_id:newId}).then(({ok,body:mj})=>{
+        if(ok&&mj&&mj.ai_match_status&&mj.ai_match_status!=="review"&&mj.ai_match_status!=="error"&&!mj.bank_account_change_detected&&!mj.duplicate_suspected){
+          fireInvoiceEvent(newId,"invoice_review_completed").catch(()=>{});
+        }
+      }).catch(()=>{});
+    }
   };
   // C-8: ➕他の請求書セクションの配線（2026-09-01）
   // 2026-09-01緊急修正: ここは`invoices`（複数形）ではなくSELECTED.invoicesを参照する必要があった
@@ -3016,6 +3107,17 @@ let UNIFIED_STATE={subTab:"review", search:"", yearMonth:"", sortCol:"", sortDir
 const UNIFIED_SUBTABS=[["review","要対応"],["all","すべて"],["accounting","会計待ち"],["payment","振込待ち"],["done","完了"]];
 const AI_STATUS_LABEL={auto:["自動判定済","check"],review:["要確認","wait"],error:["エラー","err"]};
 const PAYMENT_STATUS_LABEL={not_ready:["—","gray"],wait:["振込待ち","wait"],csv:["CSV出力済","check"],processing:["振込処理中","wait"],paid:["振込済","done"],blocked:["確認停止","err"]};
+// 2026-09-04新規：🧾請求書一覧の振込状態を分かりやすい6段階にする（指示書⑥）。新しい別管理は
+// 作らず、既存のmf_journal_id/payment_status/bank_account_change_detected/payment_verified_at
+// から判定するだけ（共通ロジック）
+function unifiedPaymentStageLabel(r){
+  if(r.bank_account_change_detected) return ["要確認（口座変更）","err"];
+  if(!r.mf_journal_id) return ["振込対象外","gray"];
+  if(r.payment_verified_at) return ["支払確認済","done"];
+  if(r.payment_status==="paid") return ["振込済","done"];
+  if(["wait","csv","processing"].includes(r.payment_status)) return ["振込準備完了","check"];
+  return ["振込準備前","wait"];
+}
 function unifiedIsHighRisk(r){ return !!(r.duplicate_suspected||r.bank_account_change_detected||r.ai_match_status==="review"||r.ai_match_status==="error"); }
 // 2026-09-04緊急修正：「要対応」タブを既定表示にした直後、ユーザーから「今までの請求書が
 // 全て消えてしまった」と報告あり。原因調査の結果、データは消えていない（DBには17件現存）が、
@@ -3105,7 +3207,7 @@ const INTAKE_SOURCE_LABEL={mail:"メール",paper:"紙",pdf:"PDF",infomart:"Info
 function unifiedRowHtml(r){
   const risky=unifiedIsHighRisk(r);
   const ai=AI_STATUS_LABEL[r.ai_match_status]||["—","gray"];
-  const pay=PAYMENT_STATUS_LABEL[r.payment_status]||PAYMENT_STATUS_LABEL.not_ready;
+  const pay=unifiedPaymentStageLabel(r);
   const riskNote=[r.duplicate_suspected?"重複疑い":"",r.bank_account_change_detected?"口座変更":""].filter(Boolean).join("・");
   return `<tr data-openmail="${r.email_id||""}" data-invoice-id="${r.id}">
     <td><input type="checkbox" class="unified-check" data-id="${r.id}" ${UNIFIED_STATE.selected.has(r.id)?"checked":""} ${risky||r.mf_journal_id?'disabled title="高リスク、または既に会計登録済みのため選択できません"':""}></td>
@@ -3318,12 +3420,9 @@ async function transferMarkPaid(u){
   if(!confirm(`${selected.length}件を振込済みにします。よろしいですか？`)) return;
   const nowIso=new Date().toISOString();
   await authed(`/rest/v1/invoices?id=in.(${selected.map(r=>r.id).join(",")})`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({payment_status:"paid",paid_at:nowIso,paid_by:ME.id})});
-  // 2026-09-04新規：振込完了イベント→本部タスク工程の自動完了（指示書§9。invoice_id×event_type
-  // が再実行されても安全なよう.is("completed_at",null)で既に完了済みならスキップする）
-  const stepIds=[...new Set(selected.map(r=>r.linked_hq_step_id_payment).filter(Boolean))];
-  for(const stepId of stepIds){
-    await authed(`/rest/v1/hq_task_steps?id=eq.${stepId}&completed_at=is.null`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({completed_at:nowIso})}).catch(()=>{});
-  }
+  // 2026-09-04：振込完了イベント→本部タスク工程の自動完了。invoice_fire_task_event RPC経由に
+  // 統一（invoice_id×event_typeの冪等性＋invoice_task_eventsへの監査記録がRPC側で保証される）
+  await Promise.all(selected.map(r=>fireInvoiceEvent(r.id,"payment_completed").catch(()=>{})));
   await renderTransfersTab(u);
 }
 
@@ -4083,7 +4182,15 @@ function wireUploadInvoiceTab(u){
       if(!ok){ msg.textContent=j.error||"取込に失敗しました"; $("up-submit").disabled=false; return; }
       msg.className="err msg-ok"; msg.textContent="取り込みました。続けて請求書一覧を開きます…";
       // 新規取込時のみ自動判定を実行（iv-saveの新規保存時と同じ流儀）。完了を待たずに進める
-      if(j.invoice_id) autoMatchCall({invoice_id:j.invoice_id}).catch(()=>{});
+      if(j.invoice_id){
+        const newId=j.invoice_id;
+        fireInvoiceEvent(newId,"invoice_created").catch(()=>{});
+        autoMatchCall({invoice_id:newId}).then(({ok:ok2,body:mj})=>{
+          if(ok2&&mj&&mj.ai_match_status&&mj.ai_match_status!=="review"&&mj.ai_match_status!=="error"&&!mj.bank_account_change_detected&&!mj.duplicate_suspected){
+            fireInvoiceEvent(newId,"invoice_review_completed").catch(()=>{});
+          }
+        }).catch(()=>{});
+      }
       setTimeout(async()=>{
         TAB="unified"; await renderTabBody(u);
         if(j.invoice_id) await openInvoiceDetail(u,j.invoice_id);
