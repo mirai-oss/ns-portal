@@ -991,6 +991,11 @@ const TAB_FROM_URL=new URLSearchParams(location.search).get("tab");
 let TAB=(TAB_FROM_URL&&TAB_WHITELIST.includes(TAB_FROM_URL))?TAB_FROM_URL:"inbox";           // inbox | invoiceList | history | sent
 let SELECTED_ID=null;
 let SELECTED=null;         // 選択中メールの詳細一式
+// 2026-09-04新規: 「メールは入口、会計・仕訳などの処理は請求書一覧から」の分離指示書に対応。
+// "mail"＝受信トレイ等での閲覧（会計処理UIを出さない簡易表示）／"process"＝🧾請求書一覧・振込一覧
+// 等から開いたときの本来の処理画面（工程バー＋会計・仕訳・PL・振込タブ一式）。既定はprocess＝
+// 呼び出し元で明示的に"mail"にしない限り、これまでどおりの挙動のまま安全側に倒す
+let DETAIL_MODE="process";
 // 請求書一覧タブ（金額・期限のソート表示／検索・絞り込み。2026-08-24 Phase1.5 C-2）
 let IV_ROWS=[];
 let IV_SEARCH_Q="", IV_STATUS="", IV_AMOUNT_MIN="", IV_AMOUNT_MAX="", IV_DUE_FROM="", IV_DUE_TO="";
@@ -1143,7 +1148,9 @@ function shellHtml(u){
         ${EMBED?"":`<button class="mail-tab ${TAB==='dashboard'?'active':''}" data-tab="dashboard">📊 会計ダッシュボード</button>`}
         ${EMBED?"":`<button class="mail-tab ${TAB==='unified'?'active':''}" data-tab="unified">🧾 請求書</button>`}
         <button class="mail-tab ${TAB==='inbox'?'active':''}" data-tab="inbox">受信トレイ</button>
-        <button class="mail-tab ${TAB==='invoiceList'?'active':''}" data-tab="invoiceList">📄 請求書一覧</button>
+        <!-- 2026-09-04: 旧「📄請求書一覧」タブはナビゲーションから削除（🧾請求書一覧に統合済み・
+             指示書§13）。renderInvoiceListTab自体は💰売上一覧（renderFinancialListTab共用）が
+             引き続き使うため関数・TAB_WHITELISTは残す -->
         <button class="mail-tab ${TAB==='salesList'?'active':''}" data-tab="salesList">💰 売上一覧</button>
         <button class="mail-tab ${TAB==='contractList'?'active':''}" data-tab="contractList">📃 契約書一覧</button>
         ${EMBED?"":`<button class="mail-tab ${TAB==='upload'?'active':''}" data-tab="upload">📤 アップロード請求書</button>`}
@@ -1325,7 +1332,7 @@ function renderInbox(u){
   document.querySelectorAll("[data-kindchip]").forEach(b=>b.onclick=()=>{ KIND_FILTER=b.dataset.kindchip; renderInbox(u); });
   wireMailListClicks(u);
   wireBulkBar(u);
-  if(SELECTED_ID && list.some(m=>m.id===SELECTED_ID)) openMailDetail(u,SELECTED_ID,true);
+  if(SELECTED_ID && list.some(m=>m.id===SELECTED_ID)){ DETAIL_MODE="mail"; openMailDetail(u,SELECTED_ID,true); }
 }
 function renderMailListOnly(){
   const list=filteredMails();
@@ -1335,7 +1342,7 @@ function renderMailListOnly(){
   updateBulkBar();
 }
 function wireMailListClicks(u){
-  document.querySelectorAll("[data-openmail]").forEach(el=>el.onclick=()=>openMailDetail(u,el.dataset.openmail,false));
+  document.querySelectorAll("[data-openmail]").forEach(el=>el.onclick=()=>{ DETAIL_MODE="mail"; openMailDetail(u,el.dataset.openmail,false); });
   document.querySelectorAll("[data-bulkcheck]").forEach(el=>{
     el.onclick=e=>e.stopPropagation();
     el.onchange=e=>{
@@ -1569,6 +1576,11 @@ function renderMailDetail(u){
   const kind=mail.mail_kind||"invoice";
   const isSales=kind==="sales";
   const isContract=kind==="contract";
+  // 2026-09-04新規：「メールは入口、会計・仕訳等の処理は請求書一覧から」の分離指示書に対応。
+  // 受信トレイ等（DETAIL_MODE="mail"）で開いた請求書メールは、会計処理の工程バー・タブ一式を
+  // 出さず、内容確認・添付確認・種類分類までの簡易表示にとどめる（売上・契約書メールは対象外＝
+  // 従来どおり。契約書は元々簡易表示のみのため実質的に変更なし）
+  const slimMail=DETAIL_MODE==="mail"&&!isSales&&!isContract;
   const canStart=(mail.mail_status==="unread"||mail.mail_status==="read")&&!mail.processing_user_id;
   const isHolder=mail.processing_user_id===ME.id;
   const canRelease=!!mail.processing_user_id&&(isHolder||canManage(ME));
@@ -1629,7 +1641,7 @@ function renderMailDetail(u){
     <div class="mail-body">
       <iframe class="mail-body-frame" id="mailBodyFrame" sandbox="allow-popups allow-popups-to-escape-sandbox"></iframe>
 
-      ${isContract?`<div class="invoice-attach">
+      ${(isContract||slimMail)?`<div class="invoice-attach">
         <h3>📎 添付（${atts.length}件）</h3>
         <div class="attgrid" id="attlist">${atts.map(a=>{
           const isPdf=a.mime_type==="application/pdf";
@@ -1679,6 +1691,17 @@ function renderMailDetail(u){
             <div class="err" id="comment-msg" style="margin-top:6px"></div>
           </div>`;
         if(isContract) return historyCommentsHtml;
+        if(slimMail){
+          const ctaHtml=invoice
+            ?`<div class="task-link-box"><b style="font-size:13px">🧾 請求書として取込みました</b>
+                <div class="meta" style="color:var(--muted);font-size:12px;margin-top:4px">会計登録・PL反映・広告費反映・精算書連携・振込などの処理は、すべて「🧾請求書」一覧から行います。ここ（受信トレイ）では、内容の確認・添付ファイルの確認・種類の分類のみを行ってください。</div>
+                <button class="hq-btn primary" style="margin-top:10px" id="goto-invoice-process">🧾 請求書一覧で確認・処理する →</button>
+              </div>`
+            :`<div class="task-link-box"><b style="font-size:13px">請求書として取込み中です</b>
+                <div class="meta" style="color:var(--muted);font-size:12px;margin-top:4px">内容の自動抽出が完了すると、「🧾請求書」一覧に表示され、そこから会計・PL・振込などの処理ができるようになります（少し時間がかかる場合があります）。</div>
+              </div>`;
+          return ctaHtml+historyCommentsHtml;
+        }
         // 2026-09-03新規: ユーザー要望「請求書一覧で選んだら、手順が出てきて1個ずつ処理して
         // チェックをつけていく形にしたい」に対応。工程バー＋タブ（請求情報/AI判定/会計・仕訳/
         // PL・広告・精算書/振込/履歴・監査）＋本部タスク進捗パネルの3点セット。
@@ -1864,6 +1887,10 @@ function wireDetailActions(u){
     };
   }
   renderHqLinkBox();
+  // 2026-09-04新規：受信トレイの簡易表示（メールは入口）から「🧾請求書一覧で確認・処理する」を
+  // 押したときの遷移。同じメールをDETAIL_MODE="process"で開き直すだけ＝処理ロジック自体は
+  // 既存のrenderMailDetail／wireDetailActionsをそのまま再利用する
+  if($("goto-invoice-process")) $("goto-invoice-process").onclick=()=>{ DETAIL_MODE="process"; openMailDetailModal(u,emailId); };
 
   /* ----------------------------------------------------------
      広告費として反映（C-7②・2026-08-31）
@@ -2783,7 +2810,7 @@ function invoiceListBodyHtml(){
   </table>`;
 }
 function wireInvoiceListTable(u){
-  document.querySelectorAll("[data-openmail]").forEach(el=>el.onclick=()=>openMailDetailModal(u,el.dataset.openmail));
+  document.querySelectorAll("[data-openmail]").forEach(el=>el.onclick=()=>{ DETAIL_MODE="process"; openMailDetailModal(u,el.dataset.openmail); });
   document.querySelectorAll("[data-sort]").forEach(el=>el.onclick=()=>{
     const col=el.dataset.sort;
     if(IV_SORT_COL===col) IV_SORT_DIR=IV_SORT_DIR==="asc"?"desc":"asc";
@@ -2858,8 +2885,11 @@ async function renderSalesListTab(u){ await renderFinancialListTab(u,"sales"); }
    実際のマネーフォワード登録は必ず既存の単票登録フロー（人間が内容を見て登録ボタンを押す）
    を通す。将来テナント自動判定の基盤が整えば、真の一括登録に拡張できる設計にしてある。
    ============================================================ */
-let UNIFIED_STATE={subTab:"all", search:"", yearMonth:"", sortCol:"", sortDir:"desc", rows:[], selected:new Set()};
-const UNIFIED_SUBTABS=[["all","すべて"],["review","要確認"],["accounting","会計待ち"],["payment","振込待ち"],["done","完了"]];
+// 2026-09-04: 既定タブを「要対応」に変更し先頭へ（指示書§12・42「開いたときにまず対応が
+// 必要なものが目に入るように」）。ラベルも「要確認」→「要対応」に変更（内容は変わらず、
+// unifiedMatchesSubTab側の"review"キー判定はそのまま）
+let UNIFIED_STATE={subTab:"review", search:"", yearMonth:"", sortCol:"", sortDir:"desc", rows:[], selected:new Set()};
+const UNIFIED_SUBTABS=[["review","要対応"],["all","すべて"],["accounting","会計待ち"],["payment","振込待ち"],["done","完了"]];
 const AI_STATUS_LABEL={auto:["自動判定済","check"],review:["要確認","wait"],error:["エラー","err"]};
 const PAYMENT_STATUS_LABEL={not_ready:["—","gray"],wait:["振込待ち","wait"],csv:["CSV出力済","check"],processing:["振込処理中","wait"],paid:["振込済","done"],blocked:["確認停止","err"]};
 function unifiedIsHighRisk(r){ return !!(r.duplicate_suspected||r.bank_account_change_detected||r.ai_match_status==="review"||r.ai_match_status==="error"); }
@@ -3039,10 +3069,12 @@ function unifiedRender(u){
     const firstId=[...UNIFIED_STATE.selected][0];
     const row=UNIFIED_STATE.rows.find(r=>r.id===firstId);
     if(!row) return;
+    DETAIL_MODE="process";
     if(row.email_id) openMailDetailModal(u,row.email_id);
     else openStandaloneInvoiceModal(u,row.id);
   };
   document.querySelectorAll("[data-open-invoice]").forEach(el=>el.onclick=()=>{
+    DETAIL_MODE="process";
     const emailId=el.dataset.email;
     if(emailId) openMailDetailModal(u,emailId);
     else openStandaloneInvoiceModal(u,el.dataset.openInvoice);
@@ -3099,6 +3131,9 @@ function renderStandaloneHqLinkBox(inv){
   };
 }
 async function openStandaloneInvoiceModal(u,invoiceId){
+  // アップロード請求書はメール経由の「入口」を持たないため、開いたときは常に処理画面
+  // （工程バー＋会計・仕訳等のタブ）として表示する＝DETAIL_MODEの"mail"（簡易表示）は無関係
+  DETAIL_MODE="process";
   await ensureCorpStoreCache();
   const [r,attRes]=await Promise.all([
     authed(`/rest/v1/invoices?id=eq.${invoiceId}&select=*,vendor:vendors(name),linked_step:hq_task_steps(id,title,task:hq_tasks(title,corp))`),
@@ -3297,6 +3332,7 @@ function transferRender(u){
     if(el.checked) TRANSFERS_STATE.selected.add(el.dataset.id); else TRANSFERS_STATE.selected.delete(el.dataset.id);
   });
   document.querySelectorAll("[data-transfer-open]").forEach(el=>el.onclick=()=>{
+    DETAIL_MODE="process";
     const emailId=el.dataset.email;
     if(emailId) openMailDetailModal(u,emailId); else openStandaloneInvoiceModal(u,el.dataset.transferOpen);
   });
@@ -3351,7 +3387,7 @@ async function renderContractListTab(u){
         </table>
       </div>
     </section>`;
-  document.querySelectorAll("[data-openmail]").forEach(el=>el.onclick=()=>openMailDetailModal(u,el.dataset.openmail));
+  document.querySelectorAll("[data-openmail]").forEach(el=>el.onclick=()=>{ DETAIL_MODE="mail"; openMailDetailModal(u,el.dataset.openmail); });
 }
 
 /* ============================================================
@@ -3390,7 +3426,7 @@ async function renderSentTab(u){
         }).join("")||'<tr><td colspan="2">送信済みのメールはありません</td></tr>'}
       </tbody></table></div>
     </section>`;
-  document.querySelectorAll("[data-openmail]").forEach(el=>el.onclick=()=>openMailDetailModal(u,el.dataset.openmail));
+  document.querySelectorAll("[data-openmail]").forEach(el=>el.onclick=()=>{ DETAIL_MODE="mail"; openMailDetailModal(u,el.dataset.openmail); });
   document.querySelectorAll("[data-viewcompose]").forEach(el=>el.onclick=()=>{
     const row=SENT_ROWS.find(x=>x.id===el.dataset.viewcompose);
     if(row) openComposeSentModal(row);
@@ -3419,7 +3455,7 @@ async function renderNotApplicableTab(u){
         </table>
       </div>
     </section>`;
-  document.querySelectorAll("[data-openmail]").forEach(el=>el.onclick=()=>openMailDetailModal(u,el.dataset.openmail));
+  document.querySelectorAll("[data-openmail]").forEach(el=>el.onclick=()=>{ DETAIL_MODE="mail"; openMailDetailModal(u,el.dataset.openmail); });
   document.querySelectorAll("[data-restore]").forEach(el=>el.onclick=async()=>{
     el.disabled=true;
     const r2=await authed("/rest/v1/rpc/invoice_restore_from_archive",{method:"POST",body:JSON.stringify({p_email_id:el.dataset.restore})});
@@ -3453,7 +3489,7 @@ async function renderImportantTab(u){
         </table>
       </div>
     </section>`;
-  document.querySelectorAll("[data-openmail]").forEach(el=>el.onclick=()=>openMailDetailModal(u,el.dataset.openmail));
+  document.querySelectorAll("[data-openmail]").forEach(el=>el.onclick=()=>{ DETAIL_MODE="mail"; openMailDetailModal(u,el.dataset.openmail); });
   document.querySelectorAll("[data-unimportant]").forEach(el=>el.onclick=async()=>{
     el.disabled=true;
     const r2=await authed("/rest/v1/rpc/invoice_toggle_important",{method:"POST",body:JSON.stringify({p_email_id:el.dataset.unimportant,p_important:false})});
