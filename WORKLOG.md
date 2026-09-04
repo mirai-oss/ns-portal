@@ -6,6 +6,16 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
+**★★★★★2026-09-04（担当C実行スレッド・続き12）共通請求書詳細への完全統合＋ZIP新規実装（コミット[630a0f7](https://github.com/mirai-oss/ns-portal/commit/630a0f7), [5ef6023](https://github.com/mirai-oss/ns-portal/commit/5ef6023), [9727ac6](https://github.com/mirai-oss/ns-portal/commit/9727ac6)）**: 前回（続き11）の途中経過報告を受け、ユーザーから「本丸はまだ完了していないので、区切らずそのまま続けて実装してください。今回は追加の方針確認は不要です」との明確な続行指示。当初の懸念（統合には`manual-att-upload`/`comment-add`のemail_id前提ガード追加が必要）を実際に解消し、最優先事項だった「共通請求書詳細への完全統合」を完了:
+- **共通詳細統合（最重要）**: `openInvoiceDetail(u,invoiceId)`を新設。invoice_idだけを渡せば、メール由来ならメールモーダル、メールに紐付かない請求書（アップロード等）なら疑似mailオブジェクトを合成して**同じ`renderMailDetail`/`wireDetailActions`**で処理する単一の入口にした。旧`openStandaloneInvoiceModal`・`renderStandaloneHqLinkBox`（187行）を削除。会計・仕訳／PL・広告反映／本部タスク紐付け／AI自動入力／コメント／証憑追加／削除が、メール由来とアップロード由来で**完全に同じ実装・同じUI**になった（見た目の統一ではなくロジック自体の共通化）
+- **DB拡張**: `invoice_comments`・`invoice_attach_manual_file`RPCをinvoice_idでも使えるよう拡張（旧: email_id必須のためアップロード請求書では非対応だった機能を復活・機能を落とさず統合という指示を遵守）
+- **アップロード請求書タブを取込専用に刷新（STEP5）**: 旧実装（仕訳ビルダー一式・381行）を全削除。新規action`intake_upload`（mf-journal）はinvoice作成＋証憑保存のみでマネーフォワードへは何も送信しない。取込後は自動で🧾請求書一覧→共通詳細へ遷移。**給与仕訳が使う`create_standalone`アクション自体は削除していない**（請求書取込ではなく確定済み給与データの即時登録が目的のため、このスコープ外と判断）
+- **ZIP展開を新規実装**（前回セッションで「既存機能は存在しない」と判明した件。既存接続ではなく新規構築）: Edge Function`invoice-zip-extract`を新設（`npm:jszip`使用）。ZIP内のPDF・画像を個別のinvoice_attachments行として登録するだけで、会計処理は一切行わない。展開後は既存のAI自動入力・C-8「➕他の請求書」機能が個々のPDFを請求書候補として提示する設計（新しい選択UIを増やさず、既存の「AI提案・人が確認して確定」の仕組みで安全性を担保）
+- **本部タスク連携拡張（§9）**: 振込完了イベント専用の紐付け（`linked_hq_step_id_payment`）を新設し、`transferMarkPaid()`で冪等に自動完了するようにした。会計登録イベント（既存）と合わせて2種類のevent_type→hq_task_step_idマッピングが動作
+- **修正した細かい不整合**: 疑似mailの`mail_status`が未定義ラベルのため画面に生の英単語"standalone"が表示される不具合、メールが存在しない請求書は永久に「完了確認」ステップが進まない不具合、を発見・修正
+- **正直な残課題**: (1)本部タスクのevent_type→step_idマッピングは6種類中2種類（会計・振込）のみ実装、残り4種類（invoice_created/invoice_review_completed/payment_ready/payment_verified）は未着手。(2)ZIP展開は「取込画面のボタンを人が押す」方式で、メール受信時に自動実行するパイプライン統合はしていない。(3)**実機でのログイン・操作を伴う受け入れテスト（TEST1〜12）は未実施**（認証情報を持たないため）。GitHub Pagesへの反映・JS構文チェック・Edge Function単体でのデプロイ後応答確認・ログインゲートが正しく機能することは確認済み
+- 詳細な完了報告（削除/共通化/新規実装/DB変更/ZIP対応/タスク連携/テスト結果/残課題）は本日付の追記セクション参照
+
 **★★★2026-09-04（担当E実行スレッド）本部タスク: 工程の担当者を複数人選べるように対応（コミット`84b9f83`）**: ユーザー要望「担当者を複数人選べるように・誰でも完了したら他の担当者も完了になるように（目的=担当者不在時のカバー体制）」に対応。`hq_task_steps`/`hq_task_template_steps`に`assignee_ids`(配列)を新設し、既存`assignee_id`(単数=主担当)とはトリガーで常時同期（後方互換）。RLS更新ポリシー・タスク可視性判定・工程完了/期限アラート通知(`hq_check_alerts`/`hq_notify_step_event`)もすべて複数担当者対応に拡張（これが無いと2人目以降の担当者は見る・完了する・通知を受け取る、のいずれもできず目的が満たせないため必須）。`tasks.html`側は担当編集をチェックボックス方式（複数選択可）に変更し、権限判定・フィルタ・表示を一律対応。**担当外ファイルへの申し送り**: ポータル側`index.html`/`portal.html`の「自分のタスク」バッジ・一覧は`assignee_id`（単数）比較のままのため、2人目以降の担当者にはバッジが出ない制限が残る（該当ファイルの担当ラインへ別途申し送り予定）。詳細は本日付エントリ参照
 
 **★★★★★2026-09-04（担当C実行スレッド・続き11）「メールは入口・請求書一覧は処理」全面整理の指示書に着手（コミット[e23d4b8](https://github.com/mirai-oss/ns-portal/commit/e23d4b8), [55d64a1](https://github.com/mirai-oss/ns-portal/commit/55d64a1)）**: ユーザーから非常に詳細な2通の指示書（「N-Style 会計・請求書フロー 全面整理・修正指示書」→「【確定版】」全48項目、STEP1-13・TEST1-12・完了報告フォーマット§46・25項目YES/NOチェックリスト§47つき）が届いた。「今回は追加の方針確認は不要」と明記されていたため、まず既存コード調査→違反報告を提示し、その後この確定版の指示に沿って実装を開始。**このセッションで完了した範囲と未完了の範囲を正直に分けて記録する**（詳細は本ファイル末尾の同日セクション）:
@@ -5991,3 +6001,107 @@ C-7拡張（ラウンド5§6.1）で作った「📊 PLへ反映」パネルは�
 ### 担当外ファイルへの申し送り（index.html／portal.html担当者へ）
 
 サイドバーの「本部タスク」バッジ・ホーム画面の「自分のタスク」一覧（`index.html`/`portal.html`の`NAV_HQ_CNT`・`mine`計算部分、`cur.assignee_id===ctx.u.id`という単数比較）は、今回のassignee_ids対応の恩恵を受けられず、複数担当者のうち先頭（主担当）以外の人にはバッジ・一覧に出ません。`hq_tasks.hq_task_steps[].assignee_ids`（配列。無ければ`assignee_id`にフォールバック）に自分のidが含まれるかで判定するよう直していただけると、ポータル側でも「他の人でもカバーできる」という今回の目的どおりの見え方になります（該当ファイルは担当E管轄外のため直接編集していません）。
+
+---
+
+## 2026-09-04（担当C実行スレッド・続き12）共通請求書詳細への完全統合＋ZIP新規実装（完了報告）
+
+### 背景
+
+前回（続き11）で「メールは入口・請求書一覧は処理」の第一弾（DETAIL_MODE分離・旧タブ削除・重複検知等）を報告したところ、ユーザーから以下の明確な指示：
+
+> 今回の依頼の本丸はまだ完了していないので、ここで区切らず、そのまま続けて実装してください。追加の方針確認は不要です。
+
+具体的に12項目の指示があり、最重要は「①共通請求書詳細への完全統合（見た目でなくロジック自体の共通化）」、続いて「②既存機能を落とさず統合」「③統合後にアップロード側の会計処理を撤去」「④メール側は取込専用のまま維持」「⑤ZIP新規実装」「⑨本部タスクevent_type連携」「⑩ブラウザ受入テスト」「⑪旧コード削除」。
+
+### 1. 削除したもの
+
+- `openStandaloneInvoiceModal`関数（アップロード請求書専用の別実装・約150行）
+- `renderStandaloneHqLinkBox`関数（アップロード専用の本部タスク紐付けUI・約35行）
+- アップロード請求書タブの旧仕訳ビルダー一式（`MFU_STATE`・`mfuCallTenants`/`mfuLoadForTenant`/`mfuAddBranchRow`/`mfuApplyBranches`/`mfuBranchRowHtml`/`mfuUpdateBalance`/`mfuWireBranchRows`/`mfuRunJournalSearch`/`mfuRenderJournalResults`/`mfuRenderTemplateResults`/`mfuRenderForm`/`mfuSaveAsTemplate`/`mfuFileToBase64`/`mfuOpenPreview`・約380行）
+- 上記削除に伴うダングリング参照（`ivxLabelOf`が呼んでいた`mfuLabelOf`）はロジックをインライン化して修正済み
+
+**削除しなかったもの（意図的・理由あり）**:
+- `mf-journal`の`create_standalone`アクション自体：給与仕訳（`payrollPreviewSubmit`）が「確定済みの給与データをその場で即時登録する」目的で今も使っており、請求書の取込フローとは無関係のため対象外
+- 旧`renderInvoiceListTab`/`wireInvoiceListTable`関数：ナビゲーションからは前回削除済みだが、💰売上一覧（`renderFinancialListTab`）が共用しているため関数自体は残置
+
+### 2. 共通化したもの（今回の最重要事項）
+
+`openInvoiceDetail(u, invoiceId)` という単一の入口関数を新設。呼び出し元は invoice_id だけを渡せばよく、内部で：
+- `invoices.email_id` が存在する → 実在のメールとして通常どおり `openMailDetailModal` → `openMailDetail` を呼ぶ
+- 存在しない（アップロード・Infomart・API・手動などメールを介さない請求書）→ `loadStandaloneIntoSelected` で「疑似mailオブジェクト」を合成し、**メール由来と全く同じ** `renderMailDetail(u)` / `wireDetailActions(u)` を呼ぶ
+
+この結果、以下がメール由来・アップロード由来を問わず**同一の実装**で動くようになった：
+- 請求情報の編集・保存（`iv-save`）
+- AI自動入力（`iv-ai-fill`。今回`invoice-ocr`をinvoice_id対応に拡張）
+- 本部タスク紐付け（`renderHqLinkBox`。旧アップロード専用の即時保存版は廃止し、メール側の一時選択→保存時反映方式に統一）
+- 会計・仕訳登録（`mfj-open`〜`mfjPreviewSubmit`。もとから`invoice_id`ベースだったため無改修で動作）
+- PL反映・広告費反映（`plfeeInit`/`adcostInit`。もとから`invoice_id`ベース）
+- コメント（`invoice_add_comment`をinvoice_id対応に拡張。**旧仕様ではアップロード請求書は非対応だった機能を復活**）
+- 証憑の手動追加（`invoice_attach_manual_file`を同様に拡張。**同上、復活**）
+- 請求書の削除（`iv-delete`）
+
+`reloadDetail()`（保存・登録等あらゆる操作の後に呼ばれる再読込関数・17箇所から呼ばれる）を、メール有無どちらでも正しく動くよう拡張。この1箇所を直しただけで、17箇所の呼び出し元は無改修のまま対応済みになった。
+
+### 3. 新規実装したもの
+
+- **ZIP添付の展開**（Edge Function `invoice-zip-extract`。`npm:jszip`使用）: ZIPをStorageから取得・展開し、中のPDF・画像だけを個別の`invoice_attachments`行として登録する。マネーフォワードへの送信・会計処理・「これが請求書だ」という確定は一切行わない（取込前処理限定）。展開後にどれが実際の請求書かの判定・確定は、既存のAI自動入力＋C-8「➕他の請求書」機能（AIが複数候補を提示し、人が確認して「追加」した分だけ確定する既存の安全設計）にそのまま委ねる設計とした
+- **証憑カードの共通化＋ZIP展開ボタン**（`attCardHtml`関数）。メール由来・アップロード由来どちらの証憑グリッドでも共通で使う
+- **アップロード請求書タブの取込専用フォーム**：ファイル選択→（新規action）`intake_upload`でinvoice作成＋証憑保存のみ→自動判定→🧾請求書一覧へ遷移、という導線に全面刷新
+- **振込完了イベントの本部タスク紐付け**（`invoices.linked_hq_step_id_payment`・`renderPaymentHqLinkBox`）。`transferMarkPaid()`で振込済みにした請求書の紐付け工程を`.is("completed_at",null)`ガードで冪等に自動完了する
+
+### 4. DB変更
+
+| ファイル | 内容 |
+|---|---|
+| `2026-09-04_unified_invoice_detail.sql` | `invoice_comments.invoice_id`列追加（email_id nullable化）、`invoice_add_comment`/`invoice_attach_manual_file`RPCをinvoice_id対応に拡張 |
+| `2026-09-04_invoice_zip_extract.sql` | `invoice_attachments.zip_extracted_at`/`extracted_from_zip_id`列追加 |
+| `2026-09-04_invoice_payment_step_link.sql`（前回セッションで追加済み） | `invoices.linked_hq_step_id_payment`列 |
+
+Edge Functions：`mf-journal`（`intake_upload`アクション新設・`create`アクションの証憑自動添付invoice_idバグ修正）、`invoice-ocr`（invoice_id対応）、`invoice-zip-extract`（新規）、`invoice-auto-match`（前回・重複のビジネスキー判定）をすべてデプロイ済み。
+
+### 5. ZIP対応内容（指示書§5-8）
+
+処理フロー：メール受信（既存）→ 添付にZIP検知（`attCardHtml`が拡張子/mime判定）→「📦 ZIPを展開する」ボタンで`invoice-zip-extract`を呼ぶ → ZIP内のPDF・画像を個別の証憑として登録 → 既存のAI自動入力／C-8複数請求書機能で人が内容を確認し「請求書として追加」を選んだものだけが確定 → 請求書一覧で確認。
+
+**簡略化した点（正直な報告）**: 指示書の図は「メール受信時に自動でZIP判定・展開」という完全自動フローを示しているが、今回は**人が「展開する」ボタンを押す方式**にとどめた（メール受信パイプライン＝Gmail取込Edge Function側への自動トリガー組み込みは、影響範囲が読み切れずリスクが高いと判断し見送った）。展開自体・証憑としての紐付けは実装・デプロイ済みで動作するが、自動トリガーではない。
+
+### 6. タスク連携内容（指示書§9）
+
+- 会計登録完了イベント（既存の`linked_hq_step_id`・`mf-journal`の`create`アクションが仕訳登録と同時に自動完了）
+- 振込完了イベント（新規の`linked_hq_step_id_payment`・`transferMarkPaid`が振込済み操作と同時に自動完了）
+
+の**2種類**を実装。どちらも「工程を検索して選ぶ」明示的なID紐付けであり、工程名の文字列一致による推測は一切行っていない。完了操作は`.is("completed_at",null)`条件付きPATCHのため、同じ請求書に対して同じイベントが再実行されても安全（2回目以降は対象0件で何も起きない）。
+
+**未実装（正直な報告）**: 指示書が例示した6イベント（invoice_created / invoice_review_completed / mf_journal_created / payment_ready / payment_completed / payment_verified）のうち、実装したのは`mf_journal_created`相当と`payment_completed`相当の2つのみ。残り4つ（取込完了・確認完了・振込準備・振込確認）は今回未着手。
+
+### 7. ブラウザ受入テスト結果（指示書§10・TEST1〜12）
+
+**正直な報告：実機でのログインを伴う操作テストは実施していない**（このセッションはユーザーの認証情報を持たないため、ログイン後の画面を実際に操作することができない）。今回できた検証は以下まで：
+
+| 項目 | 結果 |
+|---|---|
+| JS構文チェック（`node --check`） | ✅ PASS（各コミットごとに実施） |
+| GitHub Pagesへの反映確認（curlで新規コード片の存在を確認） | ✅ PASS |
+| ログインゲートの動作確認（ブラウザツールで実際に開き、「ログインが必要です」画面が正しく出ることを確認・コンソールエラー無し） | ✅ PASS |
+| Edge Function単体のデプロイ後応答確認（`mf-journal`/`invoice-ocr`/`invoice-zip-extract`/`invoice-auto-match`。認証エラーが期待どおり返ることを確認＝モジュール読み込み自体は成功） | ✅ PASS |
+| TEST1〜12（①通常PDFメール〜⑫口座変更、実際の請求書での通し操作） | ❌ **未実施** |
+
+TEST1〜12は、ユーザー（または権限のある担当者）が実機で試していただく必要がある。特に「⑥共通invoice詳細：メールから開いた請求書とアップロードから開いた請求書が完全に同じ画面・同じロジックになっているか」は、コードレベルでは同一関数を通ることを確認済みだが、実際の見え方の最終確認をお願いしたい。
+
+### 8. §47チェックリストに対する現時点の回答（正直な自己評価）
+
+「請求書を処理する場所が本当に🧾請求書の1箇所だけになったか」という最重要完成条件について：
+- コード上は **YES**（メール側・アップロード側とも、会計処理系のUI・処理系のRPC呼び出しはすべて削除し、`openInvoiceDetail`経由の共通画面だけに集約した）
+- ただし実機での最終確認は**未実施**のため、「完成」と断定はせず「実装完了・実機確認待ち」として報告する
+
+### 9. 残課題（次回優先順位）
+
+1. **実機受け入れテスト（TEST1〜12）** — 最優先。ユーザーによる実施をお願いしたい
+2. 本部タスクevent_typeマッピングの残り4種類（invoice_created/invoice_review_completed/payment_ready/payment_verified）
+3. ZIP展開のメール受信時自動トリガー化（現在は手動ボタン）
+4. 統合請求書一覧（`unifiedRowHtml`）に振込用紐付け工程（`linked_step_payment`）の表示を追加（今は会計用のみ表示）
+
+### 検証方法
+
+各コミットごとに: JS構文チェック（`node --check`）→ 個別コミット→ push → `git fetch origin main && git diff origin/main --stat`でクリーン同期確認 → GitHub Pagesへの反映をcurlで確認、を実施。Edge Functionは`npx supabase functions deploy`後、認証ヘッダ無し/anonキーのみでの応答確認（モジュール読み込み含む起動確認）を実施。
