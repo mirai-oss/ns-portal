@@ -3817,10 +3817,12 @@ async function transferExportCsv(u){
   if(!selected.length){ $("transfer-msg").textContent="対象を選択してください"; return; }
   const withAccount=selected.filter(r=>TRANSFERS_STATE.accountsByVendor.has(r.vendor_id));
   if(!withAccount.length){ $("transfer-msg").textContent="選択した請求書に振込先口座の登録がありません（設定タブで登録してください）"; return; }
+  const remitterName=paypayRemitterName(); // 2026-09-04追加：PayPay銀行が振込依頼人名を必須としていたため確認する
+  if(remitterName===null) return; // キャンセル
   const csv=buildPaypayCsv(withAccount.map(r=>{
     const acc=TRANSFERS_STATE.accountsByVendor.get(r.vendor_id);
     return { bankCode:acc.bank_code||"", branchCode:acc.branch_code||"", accountType:acc.account_type||"1", accountNumber:acc.account_number||"", holderKana:acc.account_holder_kana||"", amount:Number(r.amount)||0 };
-  }));
+  }),remitterName);
   const blob=paypayCsvToBlob(csv); // 2026-09-04：Shift-JISでエンコード（PayPay銀行アップロードエラー対応）
   const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download=`paypay_transfer_${new Date().toISOString().slice(0,10)}.csv`; a.click();
   await authed(`/rest/v1/invoices?id=in.(${withAccount.map(r=>r.id).join(",")})`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({payment_status:"csv",transfer_csv_exported_at:new Date().toISOString()})});
@@ -5451,16 +5453,31 @@ function toShiftJisBytes(str){
 function paypayCsvToBlob(csvString){
   return new Blob([toShiftJisBytes(csvString)],{type:"text/csv"});
 }
+// 2026-09-04追加：振込依頼人名（データレコード8項目め）。フォーマット仕様書PDFには「任意・
+// 省略時はPayPay銀行アップロード画面側で一律指定する運用」と書かれていたが、実際にユーザーが
+// アップロードしたところ全件「振込依頼人名を入力して下さい」となったため、実際のPayPay銀行の
+// 挙動としては必須である前提に変更し、各行へ同じ依頼人名を入れるようにした。前回入力した内容を
+// ブラウザに記憶しておき、次回から手間なく使えるようにする
+function paypayRemitterName(){
+  const saved=localStorage.getItem("ns_paypay_remitter_name")||"";
+  const input=prompt("振込依頼人名（半角カタカナ・振込元の名義）を入力してください。\n例：ユウゲンガイシヤト-ホ-エ-ジエンシ-\n\n一度入力すると次回から自動で入力された状態になります（変更したい場合はここで書き換えてください）。",saved);
+  if(input===null) return null; // キャンセル
+  const cleaned=paypayCleanKana(input.trim());
+  if(cleaned) localStorage.setItem("ns_paypay_remitter_name",cleaned);
+  return cleaned;
+}
 // PayPay銀行指定フォーマット（CSV）どおりに振込データを組み立てる共通ヘルパー（2026-09-03・
 // 会計・請求書処理の全面刷新でrenderTransfersTab（一般の取引先向け振込一覧）からも使うため、
-// 元payrollExportCsv内にあった整形ロジック部分だけを切り出した。ロジック自体は変更していない。
+// 元payrollExportCsv内にあった整形ロジック部分だけを切り出した。
 // rows: [{bankCode,branchCode,accountType,accountNumber,holderKana,amount}]
-function buildPaypayCsv(rows){
+// remitterName: 振込依頼人名（半角カナ・2026-09-04追加。未指定なら従来どおり空欄のまま）
+function buildPaypayCsv(rows,remitterName){
+  const remitter=remitterName?paypayCleanKana(remitterName):"";
   const dataLines=[]; let total=0, count=0;
   for(const r of rows){
     const amount=Math.round(Number(r.amount)||0);
     if(!amount||amount<=0) continue;
-    dataLines.push(["1", r.bankCode, r.branchCode, r.accountType, r.accountNumber, paypayCleanKana(r.holderKana), String(amount), ""].join(","));
+    dataLines.push(["1", r.bankCode, r.branchCode, r.accountType, r.accountNumber, paypayCleanKana(r.holderKana), String(amount), remitter].join(","));
     total+=amount; count++;
   }
   const trailer=["2","","","","",String(count),String(total),""].join(",");
@@ -5486,7 +5503,9 @@ function payrollExportCsv(){
   }
   const count=csvRows.length, total=csvRows.reduce((s,r)=>s+Math.round(Number(r.amount)||0),0);
   if(!count){ msg.textContent="出力できる従業員がいません（振込先口座の登録状況を確認してください）"; return; }
-  const csv=buildPaypayCsv(csvRows);
+  const remitterName=paypayRemitterName(); // 2026-09-04追加：PayPay銀行が振込依頼人名を必須としていたため確認する
+  if(remitterName===null) return; // キャンセル
+  const csv=buildPaypayCsv(csvRows,remitterName);
   const blob=paypayCsvToBlob(csv); // 2026-09-04：Shift-JISでエンコード（PayPay銀行アップロードエラー対応）
   const url=URL.createObjectURL(blob);
   const a=document.createElement("a");
