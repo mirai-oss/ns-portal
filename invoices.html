@@ -91,7 +91,7 @@ button,input,select,textarea{font:inherit}
 .hq-pill.green{background:var(--m-greensoft);color:var(--m-green)}
 .hq-pill.blue{background:var(--m-bluesoft);color:var(--m-blue)}
 .hq-pill.gray{background:var(--bg);color:var(--muted)}
-.hq-btn{border:1px solid var(--m-line);background:var(--panel);border-radius:10px;padding:9px 13px;cursor:pointer;color:var(--ink)}
+.hq-btn{border:1px solid var(--m-line);background:var(--panel);border-radius:8px;padding:10px 16px;cursor:pointer;color:var(--ink);font-size:13px;font-weight:700}
 .hq-btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
 .hq-btn.green{background:var(--green);border-color:var(--green);color:#fff}
 .hq-btn:disabled{opacity:.45;cursor:not-allowed}
@@ -178,7 +178,7 @@ button,input,select,textarea{font:inherit}
 .conf-bar span{display:block;height:100%;background:var(--m-green)}
 @media(max-width:900px){.detail-layout{grid-template-columns:1fr}.workflow-steps{grid-template-columns:repeat(3,1fr)}}
 .mail-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
-.mail-actions button{border:1px solid var(--m-line);background:var(--panel);border-radius:10px;padding:9px 12px;cursor:pointer;color:var(--ink)}
+.mail-actions button{border:1px solid var(--m-line);background:var(--panel);border-radius:8px;padding:10px 16px;cursor:pointer;color:var(--ink);font-size:13px;font-weight:700}
 .mail-actions .primary{background:var(--accent);color:#fff;border-color:var(--accent)}
 .mail-actions .green{background:var(--green);color:#fff;border-color:var(--green)}
 .mail-history{margin-top:14px;border-top:1px solid var(--m-line);padding-top:12px}
@@ -1742,6 +1742,7 @@ function renderMailDetail(u){
               <div class="mail-actions">
                 ${atts.length?`<button id="iv-ai-fill">🤖 AIで${isSales?"入金情報":"請求書情報"}を自動入力</button>`:""}
                 <button id="iv-save">💾 ${isSales?"入金情報":"請求書情報"}を保存</button>
+                ${invoice?`<button id="iv-delete" style="margin-left:auto;color:var(--m-red)">🗑 この請求書を削除</button>`:""}
               </div>
               <div class="err" id="iv-msg" style="margin-top:6px"></div>
               <div id="iv-ocr-extras"></div>
@@ -2096,6 +2097,14 @@ function wireDetailActions(u){
   if($("payment-add-transfer")) $("payment-add-transfer").onclick=async()=>{
     await authed(`/rest/v1/invoices?id=eq.${invoice.id}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({payment_status:"wait",updated_at:new Date().toISOString()})});
     await reloadDetail();
+  };
+  if($("iv-delete")) $("iv-delete").onclick=async()=>{
+    let msg=`「${esc(invoice.vendor_name||"この請求書")}」を削除します。元のメール・添付は削除されません（メールはまた「未処理」として残ります）。よろしいですか？`;
+    if(invoice.mf_journal_id) msg=`⚠️既にマネーフォワードへ仕訳登録済み（伝票番号: ${invoice.mf_journal_number??"-"}）です。この削除ではマネーフォワード側の仕訳は取り消されません（ローカルの記録だけが消え、追跡できなくなります）。テスト登録の後片付け以外では使わないでください。本当に削除しますか？`;
+    if(!confirm(msg)) return;
+    const r=await deleteInvoiceRecord(invoice.id);
+    if(!r.ok){ alert("削除に失敗しました"); return; }
+    history.back();
   };
 
   if($("act-start")) $("act-start").onclick=async()=>{
@@ -2942,8 +2951,32 @@ function unifiedRowHtml(r){
     <td><span class="invoice-status ${pay[1]}">${esc(pay[0])}</span></td>
     <td>${esc((r.linked_step&&r.linked_step.title)||"—")}</td>
     <td>${esc(unifiedStageOf(r))}</td>
-    <td><button class="hq-btn blue" data-open-invoice="${r.id}" data-email="${r.email_id||""}">${risky?"確認する":"処理する"}</button></td>
+    <td style="display:flex;gap:4px">
+      <button class="hq-btn blue" data-open-invoice="${r.id}" data-email="${r.email_id||""}">${risky?"確認する":"処理する"}</button>
+      <button class="hq-btn" style="padding:9px 10px" data-delete-invoice="${r.id}" title="この請求書を削除（テストデータの削除等に）">🗑</button>
+    </td>
   </tr>`;
+}
+// 請求書の削除（2026-09-04新規。ユーザー要望「テストで入力してる請求書を削除できるように」に
+// 対応）。ローカルの記録（invoicesレコード）を削除するだけで、既にマネーフォワードへ登録済みの
+// 仕訳自体は取り消さない（実際の会計取消は人が確認して行う既存方針のため）。関連する
+// invoice_pl_reflections（PL反映実績）・vendor_bank_account_change_requests（口座変更申請）は
+// 外部キー制約で先に削除する必要があるため、ベストエフォートで先に消してからinvoicesを消す
+async function deleteInvoiceRecord(invoiceId,opts){
+  await authed(`/rest/v1/invoice_pl_reflections?invoice_id=eq.${invoiceId}`,{method:"DELETE",headers:{Prefer:"return=minimal"}}).catch(()=>{});
+  await authed(`/rest/v1/vendor_bank_account_change_requests?invoice_id=eq.${invoiceId}`,{method:"DELETE",headers:{Prefer:"return=minimal"}}).catch(()=>{});
+  const r=await authed(`/rest/v1/invoices?id=eq.${invoiceId}`,{method:"DELETE",headers:{Prefer:"return=minimal"}});
+  return r;
+}
+async function unifiedDeleteInvoice(u,invoiceId){
+  const row=UNIFIED_STATE.rows.find(r=>r.id===invoiceId);
+  const name=(row&&((row.vendor&&row.vendor.name)||row.vendor_name))||"この請求書";
+  let msg=`「${esc(name)}」を削除します。元のメール・添付は削除されません（メールはまた「未処理」として残ります）。よろしいですか？`;
+  if(row&&row.mf_journal_id) msg=`⚠️「${esc(name)}」は既にマネーフォワードへ仕訳登録済み（伝票番号: ${row.mf_journal_number??"-"}）です。この削除ではマネーフォワード側の仕訳は取り消されません（ローカルの記録だけが消え、追跡できなくなります）。テスト登録の後片付け以外では使わないでください。本当に削除しますか？`;
+  if(!confirm(msg)) return;
+  const r=await deleteInvoiceRecord(invoiceId);
+  if(!r.ok){ alert("削除に失敗しました"); return; }
+  await renderUnifiedInvoiceTab(u);
 }
 function unifiedRender(u){
   const list=unifiedFilteredRows();
@@ -3014,6 +3047,7 @@ function unifiedRender(u){
     else openStandaloneInvoiceModal(u,el.dataset.openInvoice);
   });
   document.querySelectorAll(".unified-corp").forEach(el=>el.onchange=()=>unifiedSetCorporation(u,el.dataset.id,el.value));
+  document.querySelectorAll("[data-delete-invoice]").forEach(el=>el.onclick=()=>unifiedDeleteInvoice(u,el.dataset.deleteInvoice));
 }
 // アップロード請求書（email_idが無い＝メールに紐付かない請求書）を統合一覧・振込一覧から
 // 開く処理モーダル（2026-09-03全面書き換え）。ユーザー指摘「メールのフォーマットと
@@ -3065,7 +3099,7 @@ async function openStandaloneInvoiceModal(u,invoiceId){
             <div class="ai-field"><small>対象法人</small><select id="siv-corp"><option value="">（未設定）</option>${(CORP_STORE_CACHE&&CORP_STORE_CACHE.corporations||[]).map(c=>`<option value="${esc(c.id)}" ${inv.corporation_id===c.id?"selected":""}>${esc(c.name)}</option>`).join("")}</select></div>
             <div class="ai-field"><small>対象店舗</small><select id="siv-store"><option value="">（未設定）</option>${(CORP_STORE_CACHE&&CORP_STORE_CACHE.stores||[]).map(s=>`<option value="${esc(s.id)}" ${inv.store_id===s.id?"selected":""}>${esc(s.name)}</option>`).join("")}</select></div>
           </div>
-          <div class="mail-actions"><button id="siv-save">💾 保存</button></div>
+          <div class="mail-actions"><button id="siv-save">💾 保存</button><button id="siv-delete" style="margin-left:auto;color:var(--m-red)">🗑 この請求書を削除</button></div>
           <div class="err" id="siv-msg" style="margin-top:6px"></div>
         </div>
 
@@ -3117,6 +3151,14 @@ async function openStandaloneInvoiceModal(u,invoiceId){
     if(!r2.ok){ msg.textContent="保存できませんでした"; return; }
     msg.className="err msg-ok"; msg.textContent="保存しました";
     setTimeout(reload,700);
+  };
+  $("siv-delete").onclick=async()=>{
+    let msg2=`「${esc(inv.vendor_name||"この請求書")}」を削除します。よろしいですか？`;
+    if(inv.mf_journal_id) msg2=`⚠️既にマネーフォワードへ仕訳登録済み（伝票番号: ${inv.mf_journal_number??"-"}）です。この削除ではマネーフォワード側の仕訳は取り消されません（ローカルの記録だけが消え、追跡できなくなります）。テスト登録の後片付け以外では使わないでください。本当に削除しますか？`;
+    if(!confirm(msg2)) return;
+    const r3=await deleteInvoiceRecord(invoiceId);
+    if(!r3.ok){ alert("削除に失敗しました"); return; }
+    history.back();
   };
   if(inv.mf_journal_id){
     plfeeInit({boxId:"plfeebox",invoiceId:inv.id,journalId:inv.mf_journal_id,tenantId:inv.mf_tenant_id||"default",fallbackAmount:Number(inv.amount)||0,onDone:reload});
