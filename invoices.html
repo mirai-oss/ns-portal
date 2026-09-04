@@ -3821,7 +3821,7 @@ async function transferExportCsv(u){
     const acc=TRANSFERS_STATE.accountsByVendor.get(r.vendor_id);
     return { bankCode:acc.bank_code||"", branchCode:acc.branch_code||"", accountType:acc.account_type||"1", accountNumber:acc.account_number||"", holderKana:acc.account_holder_kana||"", amount:Number(r.amount)||0 };
   }));
-  const blob=new Blob([csv],{type:"text/csv"});
+  const blob=paypayCsvToBlob(csv); // 2026-09-04：Shift-JISでエンコード（PayPay銀行アップロードエラー対応）
   const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download=`paypay_transfer_${new Date().toISOString().slice(0,10)}.csv`; a.click();
   await authed(`/rest/v1/invoices?id=in.(${withAccount.map(r=>r.id).join(",")})`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({payment_status:"csv",transfer_csv_exported_at:new Date().toISOString()})});
   await renderTransfersTab(u);
@@ -5425,6 +5425,32 @@ function paypayCleanKana(s){
   t=t.replace(/[ｧｨｩｪｫｯｬｭｮァィゥェォッャュョ]/g,c=>smallMap[c]||c);
   return t;
 }
+// 2026-09-04緊急修正：PayPay銀行アップロード時「受取人名を正しく入力して下さい」
+// 「振込依頼人名を入力して下さい」が全件（78件）で発生した不具合の原因調査・対応。
+// DBのaccount_holder_kanaを直接確認したところ、半角カタカナで正しく保存されていた
+// （例:"ﾀﾏﾝﾚｽﾏｶﾗ"）ため、データの中身（全角/半角の間違い）が原因ではないと判明。
+// PayPay銀行のWEB総振アップロードは、日本の銀行系CSVで一般的なShift-JISエンコーディングを
+// 前提にしていると推測されるが、これまでBlobをUTF-8で作成していたため、半角カタカナ
+// （UTF-8では3バイトの文字）がShift-JIS前提でバイト単位に誤読され、受取人名が壊れ、
+// その影響で行内の項目区切りまでずれて末尾の振込依頼人名欄の扱いにも影響していたと考えられる。
+// このアプリで実際に使う文字は「数字・半角英字・半角カタカナ・ハイフン/ピリオド」に
+// 限定されており（paypayCleanKana側で変換済み）、この範囲はJIS X0201とASCIIの範囲へ
+// 単純に1対1対応できるため、外部ライブラリ無しでShift-JISへ変換して出力するようにした
+function toShiftJisBytes(str){
+  const bytes=[];
+  for(const ch of String(str)){
+    const cp=ch.codePointAt(0);
+    if(cp===0x00A5){ bytes.push(0x5C); } // ¥（円記号）→JIS X0201では0x5C
+    else if(cp<=0x7F){ bytes.push(cp); } // ASCII（数字・英字・カンマ・CR/LF等）
+    else if(cp>=0xFF61&&cp<=0xFF9F){ bytes.push(cp-0xFF61+0xA1); } // 半角カタカナ（1対1対応）
+    else{ bytes.push(0x3F); } // 想定外の文字（全角等）は?に置き換える（本来ここに来ないはず）
+  }
+  return new Uint8Array(bytes);
+}
+// PayPay銀行フォーマットのCSV文字列を、正しくShift-JISでエンコードしたBlobに変換する
+function paypayCsvToBlob(csvString){
+  return new Blob([toShiftJisBytes(csvString)],{type:"text/csv"});
+}
 // PayPay銀行指定フォーマット（CSV）どおりに振込データを組み立てる共通ヘルパー（2026-09-03・
 // 会計・請求書処理の全面刷新でrenderTransfersTab（一般の取引先向け振込一覧）からも使うため、
 // 元payrollExportCsv内にあった整形ロジック部分だけを切り出した。ロジック自体は変更していない。
@@ -5461,7 +5487,7 @@ function payrollExportCsv(){
   const count=csvRows.length, total=csvRows.reduce((s,r)=>s+Math.round(Number(r.amount)||0),0);
   if(!count){ msg.textContent="出力できる従業員がいません（振込先口座の登録状況を確認してください）"; return; }
   const csv=buildPaypayCsv(csvRows);
-  const blob=new Blob([csv],{type:"text/csv"});
+  const blob=paypayCsvToBlob(csv); // 2026-09-04：Shift-JISでエンコード（PayPay銀行アップロードエラー対応）
   const url=URL.createObjectURL(blob);
   const a=document.createElement("a");
   a.href=url; a.download=`paypay_furikomi_${PAYROLL_STATE.yearMonth}.csv`;
