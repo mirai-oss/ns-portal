@@ -2324,7 +2324,7 @@ function renderMailDetail(u){
                 ここにファイルをドラッグ＆ドロップ、または<br>
                 <input type="file" id="manual-att-file" style="font-size:11px;margin-top:6px">
               </div>
-              <button class="hq-btn" style="margin-top:6px;width:100%" id="manual-att-upload">＋ このメールに紐付けて追加</button>
+              <button class="hq-btn" style="margin-top:6px;width:100%" id="manual-att-upload">＋ この請求書に証憑を追加</button>
               <div class="err" id="manual-att-msg" style="margin-top:6px"></div>
             </div>
           </div>
@@ -3705,11 +3705,23 @@ function wireDetailActions(u){
     });
   }
   $("manual-att-upload").onclick=async()=>{
+    // 2026-09-05修正：ユーザー報告「PDFを選択して追加すると『エラー: アップロードに失敗しました』
+    // としか出ず、本当の原因が分からない」に対応。
+    // 従来はSupabase StorageへのアップロードをsessionのアクセストークンでR生fetchしており、
+    // ①authed()が持つ「トークン期限切れ時（401 or 400+InvalidJWT）に自動でリフレッシュして
+    // 再試行する」仕組みが効いていなかった（他のAPI呼び出しは全てauthed()経由で自動リフレッシュ
+    // されるため、この画面を開いたまま長時間経つとこのアップロードだけが401で落ちる、という
+    // 再現しにくい不具合になっていた可能性が高い）②失敗時にSupabaseから返ってきた実際の
+    // ステータスコード・エラー内容を握りつぶし「アップロードに失敗しました」で固定していたため、
+    // 本当の原因（RLS拒否／トークン切れ／サイズ超過等）が全く分からなかった。
+    // authed()経由に変更して自動リフレッシュを効かせ、失敗時は実際のstatus/bodyをコンソールに
+    // 残した上で、画面にも詳細を表示するようにする
     const msg=$("manual-att-msg");
-    const f=$("manual-att-file").files[0];
-    if(!f){ msg.textContent="ファイルを選択してください"; return; }
-    $("manual-att-upload").disabled=true; msg.className="err"; msg.textContent="アップロード中…";
+    const btn=$("manual-att-upload");
     try{
+      const f=$("manual-att-file").files[0];
+      if(!f){ msg.className="err"; msg.textContent="ファイルを選択してください"; return; }
+      btn.disabled=true; msg.className="err"; msg.textContent="アップロード中…";
       const buf=await f.arrayBuffer();
       const hashBuf=await crypto.subtle.digest("SHA-256",buf);
       const hash=Array.from(new Uint8Array(hashBuf)).map(b=>b.toString(16).padStart(2,"0")).join("");
@@ -3717,21 +3729,27 @@ function wireDetailActions(u){
       // 2026-09-04: 共通invoice詳細への統合。メールが実在しない（アップロード等）場合は
       // invoice.idを使ったパス・紐付けにする（emailIdはnull）
       const path=emailId?`${emailId}/manual_${Date.now()}${ext?"."+ext:""}`:`standalone/${invoice.id}/manual_${Date.now()}${ext?"."+ext:""}`;
-      const s=sess.get();
-      const upRes=await fetch(`${SUPA_URL}/storage/v1/object/${BUCKET}/${path}`,{
-        method:"POST",
-        headers:{"apikey":SUPA_KEY,"Authorization":"Bearer "+(s?s.at:""),"Content-Type":f.type||"application/octet-stream"},
-        body:buf
+      console.log("[証憑アップロード] 開始",{bucket:BUCKET,path,name:f.name,type:f.type,size:f.size});
+      const upRes=await authed(`/storage/v1/object/${BUCKET}/${path}`,{
+        method:"POST", isBinary:true, headers:{"Content-Type":f.type||"application/octet-stream"}, body:buf,
       });
-      if(!upRes.ok) throw new Error("アップロードに失敗しました");
+      console.log("[証憑アップロード] Storage応答",{status:upRes.status,ok:upRes.ok,body:upRes.body});
+      if(!upRes.ok){
+        const detail=(upRes.body&&(upRes.body.message||upRes.body.error))||`status ${upRes.status}`;
+        throw new Error(`Storageへの保存に失敗しました（${detail}）`);
+      }
       const r=await authed("/rest/v1/rpc/invoice_attach_manual_file",{method:"POST",body:JSON.stringify({
         p_email_id:emailId||null, p_invoice_id:emailId?null:invoice.id, p_file_name:f.name, p_mime_type:f.type||null, p_storage_path:path, p_file_hash:hash, p_size_bytes:f.size
       })});
-      if(!r.ok) throw new Error((r.body&&r.body.message)||"登録に失敗しました");
+      console.log("[証憑アップロード] invoice_attach_manual_file応答",{status:r.status,ok:r.ok,body:r.body});
+      if(!r.ok) throw new Error(`証憑の記録に失敗しました（${(r.body&&(r.body.message||r.body.error))||`status ${r.status}`}）`);
       msg.className="err msg-ok"; msg.textContent="追加しました";
       await reloadDetail();
     }catch(e){
-      msg.textContent="エラー: "+e.message; $("manual-att-upload").disabled=false;
+      console.error("[証憑アップロード] 例外",e);
+      msg.className="err"; msg.textContent="エラー: "+(e&&e.message?e.message:String(e));
+    }finally{
+      btn.disabled=false;
     }
   };
 
