@@ -1434,6 +1434,16 @@ async function ensureCorpStoreCache(){
   };
   return CORP_STORE_CACHE;
 }
+// 2026-09-05新規：取引先マスタ一覧のキャッシュ。ユーザー報告「振込一覧に送った後、どこから
+// 銀行口座を登録し直せばいいか分からない」に対応するため、請求書詳細から取引先マスタへの
+// 紐付け（新規登録も含む）ができるようにする。CORP_STORE_CACHEと同じ使い回しパターン
+let VENDOR_CACHE=null;
+async function ensureVendorCache(force){
+  if(VENDOR_CACHE&&!force) return VENDOR_CACHE;
+  const r=await vendorCall("list_vendors");
+  VENDOR_CACHE=(r.ok&&Array.isArray(r.body.vendors))?r.body.vendors:[];
+  return VENDOR_CACHE;
+}
 function isMobileWidth(){ return window.matchMedia("(max-width:900px)").matches; }
 function renderInbox(u){
   const list=filteredMails();
@@ -1601,8 +1611,9 @@ async function openMailDetail(u,emailId,skipHighlight){
   // ユーザー要望「今のままだとどこの法人の処理かがわからない」（2026-09-03）に対応するため、
   // 請求書情報パネルで対象法人・対象店舗を直接選べるようにする。法人・店舗一覧は
   // ほぼ変わらないため、初回だけ取得してキャッシュする（renderMailDetailは同期関数のため、
-  // renderMailDetailを呼ぶ前にここで取得を終わらせておく必要がある）
-  await ensureCorpStoreCache();
+  // renderMailDetailを呼ぶ前にここで取得を終わらせておく必要がある）。
+  // 取引先マスタ一覧（VENDOR_CACHE）も同じ理由で事前取得しておく（2026-09-05・取引先紐付け機能）
+  await Promise.all([ensureCorpStoreCache(),ensureVendorCache()]);
 
   renderMailDetail(u);
 
@@ -1649,7 +1660,7 @@ async function openMailDetailModal(u,emailId){
 // そのまま使うため、会計・仕訳／PL・広告・精算書／振込／本部タスク連携のロジックは完全に共通
 async function openInvoiceDetail(u,invoiceId){
   DETAIL_MODE="process";
-  await ensureCorpStoreCache();
+  await Promise.all([ensureCorpStoreCache(),ensureVendorCache()]);
   const ivr=await authed(`/rest/v1/invoices?id=eq.${invoiceId}&select=*,vendor:vendors(name),linked_step:hq_task_steps!linked_hq_step_id(id,title,task:hq_tasks(title,corp)),linked_step_payment:hq_task_steps!linked_hq_step_id_payment(id,title,task:hq_tasks(title,corp)),invoice_stores(store_id)`);
   const inv=(ivr.ok&&Array.isArray(ivr.body)&&ivr.body[0])||null;
   if(!inv){ alert("請求書が見つかりませんでした（削除された可能性があります）"); return; }
@@ -1756,6 +1767,51 @@ function invoiceWorkflowSteps(invoice,mail){
   let currentSet=false;
   for(const s of steps){ if(!s.done&&!currentSet){ s.current=true; currentSet=true; } }
   return steps;
+}
+// 2026-09-05新規：ユーザー報告「振込先口座を登録する前に振込一覧へ送ってしまった。
+// どこから登録し直せばいいか分からない」に対応。原因はvendor_idが未設定の請求書は、
+// 設定タブ「支払先・銀行口座」の取引先プルダウンにそもそも出てこず、口座を登録する
+// 手段が請求書詳細側に一切無かったこと（invoice-auto-matchは新規作成時にしか動かない
+// ため、後から取引先マスタを直しても既存の請求書には反映されない）。
+// ここで①既存の取引先を選んで紐付け、②未登録ならその場で取引先マスタへ新規登録して
+// 紐付け（＋任意で銀行口座も一緒に登録）、をできるようにする。
+// 「ここで登録した口座情報は会計設定の取引先マスタの支払い情報と連携してほしい」との
+// 追加要望に対応するため、新しいテーブルは作らず、設定タブ「支払先・銀行口座」と全く同じ
+// vendor_bank_accounts／upsert_bank_account（vendor-master Edge Function）を再利用する。
+// これにより、ここで登録した口座は設定タブ側にもそのまま同じものとして表示される
+// （二重管理・別データ構造にはならない）
+function ivVendorLinkHtml(invoice){
+  if(!invoice) return "";
+  const vendors=VENDOR_CACHE||[];
+  const linkedName=(invoice.vendor&&invoice.vendor.name)||"";
+  return `<div class="ai-field full" id="iv-vendorlink-field">
+    <small>取引先マスタとの紐付け（振込先口座の登録・自動判定に使います）</small>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:4px">
+      <select id="iv-vendor-link" style="flex:1;min-width:180px">
+        <option value="">（未登録・紐付けなし）</option>
+        ${vendors.map(v=>`<option value="${esc(v.id)}" ${invoice.vendor_id===v.id?"selected":""}>${esc(v.name)}</option>`).join("")}
+      </select>
+      <button type="button" class="hq-btn" id="iv-vendor-link-newtoggle">＋ 新規登録して紐付ける</button>
+    </div>
+    ${linkedName?`<div class="meta" style="color:var(--muted);font-size:11px;margin-top:4px">✅ 現在の紐付け先：${esc(linkedName)}（口座は設定タブ「支払先・銀行口座」で登録・確認できます）</div>`
+      :`<div class="meta" style="color:var(--muted);font-size:11px;margin-top:4px">⚠️ 取引先マスタに未登録のため、振込先口座を登録できません（設定タブのプルダウンにも出てきません）。</div>`}
+    <div id="iv-vendorlink-newbox" style="margin-top:8px"></div>
+    <div class="err" id="iv-vendorlink-msg" style="margin-top:4px"></div>
+  </div>`;
+}
+function ivVendorLinkNewFormHtml(defaultName){
+  return `<div class="card" style="padding:10px;border-color:var(--m-blue)">
+    <div class="meta" style="color:var(--muted);font-size:11px;margin-bottom:6px">取引先マスタへ新規登録します。銀行口座も入力すれば、そのまま設定タブ「支払先・銀行口座」にも同じ口座として登録されます（未入力でも構いません。後から設定タブで登録できます）。</div>
+    <div class="ai-grid">
+      <div class="ai-field full"><small>取引先の正式名称</small><input id="ivvl-name" value="${esc(defaultName||"")}"></div>
+      <div class="ai-field"><small>銀行名（任意）</small><input id="ivvl-bank"></div>
+      <div class="ai-field"><small>支店名（任意）</small><input id="ivvl-branch"></div>
+      <div class="ai-field"><small>口座種別</small><select id="ivvl-type"><option value="1">普通</option><option value="2">当座</option><option value="4">貯蓄</option></select></div>
+      <div class="ai-field"><small>口座番号（任意）</small><input id="ivvl-number"></div>
+      <div class="ai-field full"><small>名義（半角カナ・任意）</small><input id="ivvl-holder"></div>
+    </div>
+    <div class="mail-actions" style="margin-top:8px"><button class="primary" id="ivvl-save">💾 登録して紐付ける</button><button id="ivvl-cancel">キャンセル</button></div>
+  </div>`;
 }
 function invoiceAiTabHtml(invoice){
   if(!invoice) return `<div class="meta" style="color:var(--muted);font-size:12px">請求情報を保存すると自動判定が行われます</div>`;
@@ -2045,6 +2101,7 @@ function renderMailDetail(u){
               </div>
               <div class="meta" style="color:var(--muted);font-size:11px;margin-top:4px">💡 対象法人・対象店舗を設定すると、「🧾請求書」一覧で法人ごとに絞り込めるようになります（未設定でも仕訳登録自体は今までどおり行えます）。</div>
               ${isSales?"":`<div class="meta" style="color:var(--muted);font-size:11px;margin-top:8px">🔗 本部タスクとの連携設定は⑤本部タスク連携カードにまとめました${invoice&&invoice.linked_step?"（設定あり）":""}。</div>`}
+              ${isSales?"":`<div id="iv-vendorlink-wrap">${ivVendorLinkHtml(invoice)}</div>`}
               <div class="mail-actions">
                 ${atts.length?`<button id="iv-ai-fill">🤖 AIで${isSales?"入金情報":"請求書情報"}を自動入力</button>`:""}
                 <button id="iv-save">💾 ${isSales?"入金情報":"請求書情報"}を保存</button>
@@ -2277,6 +2334,39 @@ function wireDetailActions(u){
     });
     renderLabel();
   })();
+  // 2026-09-05新規：取引先マスタとの紐付け（既存を選ぶ／その場で新規登録＋任意で口座も登録）。
+  // 口座はvendor-master Edge Functionのupsert_bank_account（設定タブ「支払先・銀行口座」と
+  // 完全に同じ処理・同じvendor_bank_accountsテーブル）を呼ぶだけなので、別データにはならない
+  if($("iv-vendor-link")) $("iv-vendor-link").onchange=async()=>{
+    const msg=$("iv-vendorlink-msg"); if(msg){ msg.className="err"; msg.textContent="保存中…"; }
+    const vendorId=$("iv-vendor-link").value||null;
+    await authed(`/rest/v1/invoices?id=eq.${invoice.id}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({vendor_id:vendorId})});
+    await reloadDetail();
+  };
+  if($("iv-vendor-link-newtoggle")) $("iv-vendor-link-newtoggle").onclick=()=>{
+    const box=$("iv-vendorlink-newbox");
+    const defaultName=(invoice&&invoice.vendor_name)||($("iv-vendor")?$("iv-vendor").value:"");
+    box.innerHTML=ivVendorLinkNewFormHtml(defaultName);
+    $("ivvl-cancel").onclick=()=>{ box.innerHTML=""; };
+    $("ivvl-save").onclick=async()=>{
+      const msg=$("iv-vendorlink-msg"); msg.className="err"; msg.textContent="";
+      const name=$("ivvl-name").value.trim();
+      if(!name){ msg.textContent="取引先の正式名称を入力してください"; return; }
+      $("ivvl-save").disabled=true; $("ivvl-save").textContent="登録中…";
+      const vr=await vendorCall("upsert_vendor",{vendor:{name}});
+      if(!vr.ok||!vr.body.id){ msg.textContent=vr.body.error||"取引先の登録に失敗しました"; $("ivvl-save").disabled=false; $("ivvl-save").textContent="💾 登録して紐付ける"; return; }
+      const vendorId=vr.body.id;
+      // 銀行情報が何か入力されていれば、設定タブと同じupsert_bank_accountで口座も一緒に登録する
+      const bankName=$("ivvl-bank").value.trim(), branchName=$("ivvl-branch").value.trim(), accNumber=$("ivvl-number").value.trim(), holder=$("ivvl-holder").value.trim();
+      if(bankName||branchName||accNumber||holder){
+        const ar=await vendorCall("upsert_bank_account",{account:{vendor_id:vendorId,bank_name:bankName,branch_name:branchName,account_type:$("ivvl-type").value,account_number:accNumber,account_holder_kana:holder}});
+        if(!ar.ok){ msg.textContent="取引先は登録できましたが、口座の登録に失敗しました："+(ar.body.error||""); }
+      }
+      await authed(`/rest/v1/invoices?id=eq.${invoice.id}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({vendor_id:vendorId})});
+      await ensureVendorCache(true); // 新規追加した取引先をキャッシュに反映
+      await reloadDetail();
+    };
+  };
   renderHqLinkBox();
   // 2026-09-04新規：振込完了イベント専用の本部タスク工程紐付け（指示書§9）。会計・仕訳の
   // renderHqLinkBox/LINKED_HQ_STEPとは別枠（別のinvoices列=linked_hq_step_id_payment）。
