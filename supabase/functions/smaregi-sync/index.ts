@@ -13,8 +13,10 @@
 //   { action: "invite_staffs", invite_token }
 //                                    → 未連携スタッフの名前一覧（有効な招待トークン必須・未ログイン可）
 //   { action: "pull_profiles", user_id? } → 2026-09-05追加。スマレジ側の住所・生年月日・電話番号・
-//     郵便番号・性別・入社日をemployee_profilesへ取り込む（プル方向。sync actionの逆）。
+//     郵便番号・性別・入社日をemployee_profilesへ取り込む（プル方向。push_profileの逆）。
 //     user_id省略時は連携済み全員が対象（CEO/HQのみ）。既に入力済みの項目は上書きしない
+//   { action: "push_profile", user_id } → 2026-09-05追加。nippo側のemployee_profilesの内容を
+//     連携済みのスマレジへ反映（プッシュ方向。既に連携済みの人が対象。本人 or CEO/HQ）
 import { createClient } from "npm:@supabase/supabase-js@2";
 
 const IS_PROD = Deno.env.get("SMAREGI_ENV") === "prod";
@@ -213,7 +215,10 @@ Deno.serve(async (req) => {
     //   安全のため「現在空欄の項目だけ埋める」方式（既に入力済みの値は絶対に上書きしない）。
     //   body: { action:"pull_profiles", user_id? }  user_id省略時は連携済み全員（CEO/HQのみ）
     if (body.action === "pull_profiles") {
-      if (!isAdmin) return json({ ok: false, error: caller.uid ? "forbidden" : "unauthorized" }, caller.uid ? 403 : 401);
+      // 2026-09-05追加: 日次の自動実行（GitHub Actions・smaregi-payroll-sync.ymlと同じ方式）から
+      // service_roleキーで呼べるようにする（このアクションだけの限定的なバイパス）
+      const isServiceRole = (req.headers.get("Authorization") ?? "").includes(Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? " ");
+      if (!isAdmin && !isServiceRole) return json({ ok: false, error: caller.uid ? "forbidden" : "unauthorized" }, caller.uid ? 403 : 401);
       const sb = svc();
       const uid = body.user_id ? String(body.user_id) : null;
       let profQuery = sb.from("employee_profiles").select("user_id,smaregi_staff_id,name_kana,birth_date,phone,postal_code,address,gender,hire_date").not("smaregi_staff_id", "is", null);
@@ -398,6 +403,36 @@ Deno.serve(async (req) => {
       return json({ ok: true, staffId, terminationDate: date, active: activeResult });
     }
 
+    // 2026-09-05追加: nippo側で住所・生年月日・電話番号等を編集したら、既に連携済みの
+    // スマレジ側にもその場で反映する（nippo→スマレジのpush。pull_profilesの逆方向）。
+    // ユーザー要望「どちらかを修正したら同期されるようにしたい」への対応（の半分）。
+    // 既に連携済みの人が対象（未連携なら"sync"で新規登録する側の役目のため何もしない）
+    if (body.action === "push_profile") {
+      const uid = String(body.user_id ?? "");
+      if (!uid) return json({ ok: false, error: "user_id required" }, 400);
+      if (!caller.uid || (caller.uid !== uid && !isAdmin)) return json({ ok: false, error: "forbidden" }, 403);
+      const sb = svc();
+      const { data: prof } = await sb.from("employee_profiles").select("*").eq("user_id", uid).maybeSingle();
+      if (!prof || !prof.smaregi_staff_id) return json({ ok: true, skipped: "スマレジ未連携のためスキップ" });
+
+      const patch: Record<string, unknown> = {};
+      if (prof.name_kana) patch.staffKana = String(prof.name_kana).slice(0, 50);
+      if (prof.birth_date) patch.birthday = prof.birth_date;
+      if (prof.phone) patch.phone = String(prof.phone).replace(/[^0-9+-]/g, "").slice(0, 15);
+      if (prof.postal_code) patch.postCode = String(prof.postal_code).slice(0, 10);
+      if (prof.address) patch.address = String(prof.address).slice(0, 200);
+      if (prof.hire_date) patch.hireDate = prof.hire_date;
+      const genderMap: Record<string, string> = { male: "0", female: "1", none: "9" };
+      if (prof.gender && genderMap[prof.gender]) patch.gender = genderMap[prof.gender];
+      if (!Object.keys(patch).length) return json({ ok: true, skipped: "反映する項目がありません" });
+
+      const token = await getToken();
+      const res = await api(token, `/staffs/${prof.smaregi_staff_id}`, { method: "PATCH", body: JSON.stringify(patch) });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) return json({ ok: false, status: res.status, error: j }, 500);
+      return json({ ok: true, staffId: prof.smaregi_staff_id, pushed: Object.keys(patch) });
+    }
+
     if (body.action === "sync") {
       const uid = body.user_id;
       if (!uid) return json({ ok: false, error: "user_id required" }, 400);
@@ -409,7 +444,9 @@ Deno.serve(async (req) => {
       const { data: prof } = await sb.from("employee_profiles").select("*").eq("user_id", uid).single();
       const { data: user } = await sb.from("users").select("name, role").eq("id", uid).single();
       if (!prof || !user) return json({ ok: false, error: "profile not found" }, 404);
-      // 既に連携済みなら二重登録しない
+      // 既に連携済みなら二重登録しない（v2.6.14まではここで終わっていたが、2026-09-05追記:
+      // 個人情報の更新は上のaction:"push_profile"が担当するようになったため、ここでの役割は
+      // 「初回のスマレジ新規登録」のみに変更なし）
       if (prof.smaregi_sync_status === "synced" && prof.smaregi_staff_id) {
         return json({ ok: true, staffId: prof.smaregi_staff_id, already: true });
       }

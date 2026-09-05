@@ -1,0 +1,57 @@
+name: スマレジ個人情報の日次取込
+
+# 発火は「外部cron（cron-job.org 等）」から workflow_dispatch API を叩いて行う。
+#   POST https://api.github.com/repos/mirai-oss/ns-portal/actions/workflows/smaregi-profile-pull.yml/dispatches
+#   body: {"ref":"main"}
+# GitHub内蔵の schedule: は時刻が数十分〜数時間ずれる（無料/publicの仕様）ため使わない
+# （smaregi-attendance-sync.yml / smaregi-payroll-sync.yml と同じ方針）。
+#
+# セットアップ手順（ユーザー作業・1回のみ。cron-job.orgは既に他のジョブ用にアカウント
+# 作成済みのはずなので、ジョブを1つ追加するだけでよい）:
+#   1. https://cron-job.org にログイン →「Create cronjob」
+#   2. URL に上記のdispatches APIエンドポイントを設定
+#      - Method: POST
+#      - Headers: Authorization: Bearer <GitHubのPersonal Access Token（workflow権限）>
+#                 Accept: application/vnd.github+json
+#                 Content-Type: application/json
+#      - Body: {"ref":"main"}
+#      - Schedule: 毎日 09:00 JST（他のスマレジ日次ジョブの後）
+#   3. トークンは他のジョブ設定時に発行したものをそのまま使い回してよい
+#
+# 2026-09-05 担当B新設。目的: ユーザー要望「管理システムとスマレジ、どちらかを修正したら
+#   同期されるようにしたい」の片方（スマレジ側で編集された住所・生年月日・電話番号等を、
+#   nippo側employee_profilesが空欄のままなら埋める）を自動化する。逆方向（nippo編集時に
+#   スマレジへ反映）は保存の都度、nippo側から即座にaction:"push_profile"を呼んでいるため
+#   バッチ化不要。この日次ジョブは「現在空欄の項目だけ埋める」安全設計（pull_profiles）を
+#   毎日流すだけなので、既にnippo側で入力済みの項目を上書きすることはない。
+on:
+  workflow_dispatch:
+
+jobs:
+  pull:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: 設定チェック（未設定ならスキップ）
+        run: |
+          if [ -z "${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" ]; then
+            echo "::error::SUPABASE_SERVICE_ROLE_KEY が未設定です（Settings → Secrets and variables → Actions）"
+            exit 1
+          fi
+
+      - name: smaregi-syncのpull_profilesを呼び出す（連携済み全員）
+        env:
+          SR_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          RES=$(curl -s -w "\n%{http_code}" -X POST \
+            "https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/smaregi-sync" \
+            -H "Authorization: Bearer $SR_KEY" \
+            -H "Content-Type: application/json" \
+            -d '{"action":"pull_profiles"}')
+          HTTP_CODE=$(echo "$RES" | tail -1)
+          BODY_TEXT=$(echo "$RES" | sed '$d')
+          echo "$BODY_TEXT"
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "::error::pull_profilesが失敗しました（HTTP $HTTP_CODE）"
+            exit 1
+          fi
