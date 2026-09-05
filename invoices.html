@@ -443,7 +443,7 @@ button,input,select,textarea{font:inherit}
 .invoice-table th,.invoice-table td{padding:11px 12px;border-bottom:1px solid var(--line);text-align:left;font-size:12px}
 .invoice-table th{color:var(--muted);background:var(--bg)}
 .invoice-table tr[data-openmail]{cursor:pointer}
-.invoice-status{padding:4px 7px;border-radius:999px;font-size:10px;font-weight:800;display:inline-block}
+.invoice-status{padding:4px 7px;border-radius:999px;font-size:10px;font-weight:800;display:inline-block;white-space:nowrap}
 .invoice-status.wait{background:var(--amber-soft);color:var(--amber)}
 .invoice-status.done{background:var(--green-soft);color:var(--green)}
 .invoice-status.check{background:var(--blue-soft);color:var(--blue)}
@@ -3759,7 +3759,7 @@ async function renderSalesListTab(u){ await renderFinancialListTab(u,"sales"); }
 // 2026-09-04: 既定タブを「要対応」に変更し先頭へ（指示書§12・42「開いたときにまず対応が
 // 必要なものが目に入るように」）。ラベルも「要確認」→「要対応」に変更（内容は変わらず、
 // unifiedMatchesSubTab側の"review"キー判定はそのまま）
-let UNIFIED_STATE={subTab:"review", search:"", yearMonth:"", reasonFilter:"", sortCol:"", sortDir:"desc", rows:[], selected:new Set()};
+let UNIFIED_STATE={subTab:"review", search:"", yearMonth:"", reasonFilter:"", sortCol:"", sortDir:"desc", rows:[]};
 const UNIFIED_SUBTABS=[["review","要対応"],["all","すべて"],["accounting","会計待ち"],["payment","振込待ち"],["done","完了"]];
 const REASON_FILTER_LABELS={
   overdue:"支払期限超過", bank_change:"振込先口座変更", duplicate:"重複疑い", mf_error:"MF登録エラー",
@@ -3855,7 +3855,6 @@ async function renderUnifiedInvoiceTab(u){
   const raw=(r.ok&&Array.isArray(r.body))?r.body:[];
   // メール起点は種類=請求書のみ。アップロード（email無し）は全て対象
   UNIFIED_STATE.rows=raw.filter(row=>!row.email||row.email.mail_kind==="invoice");
-  UNIFIED_STATE.selected=new Set([...UNIFIED_STATE.selected].filter(id=>UNIFIED_STATE.rows.some(r2=>r2.id===id)));
   UNIFIED_STATE.corporations=corpCache.corporations;
   unifiedRender(u);
 }
@@ -3902,12 +3901,15 @@ function unifiedFilteredRows(){
 }
 const INTAKE_SOURCE_LABEL={mail:"メール",paper:"紙",pdf:"PDF",infomart:"Infomart",api:"API",manual:"手動"};
 function unifiedRowHtml(r){
-  const risky=unifiedIsHighRisk(r);
   const ai=AI_STATUS_LABEL[r.ai_match_status]||["—","gray"];
   const pay=unifiedPaymentStageLabel(r);
   const riskNote=[r.duplicate_suspected?"重複疑い":"",r.bank_account_change_detected?"口座変更":""].filter(Boolean).join("・");
-  return `<tr data-openmail="${r.email_id||""}" data-invoice-id="${r.id}">
-    <td><input type="checkbox" class="unified-check" data-id="${r.id}" ${UNIFIED_STATE.selected.has(r.id)?"checked":""} ${risky||r.mf_journal_id?'disabled title="高リスク、または既に会計登録済みのため選択できません"':""}></td>
+  // 2026-09-05書き換え：ユーザー指摘「一括選択バーが分かりにくい・必要か疑問」「詳細を開くのに
+  // 右端のボタンを押すのが面倒」に対応。一括選択（チェックボックス・安全な請求書を選択・
+  // 順番に確認する）は、1件ずつ開くのが今より簡単になれば実質的に不要と判断し廃止。
+  // その代わり、行のどこをクリックしても詳細が開くようにした（法人プルダウン・削除ボタンは
+  // 従来どおりクリックしても行が開かないよう除外している＝unifiedRender側でガード）
+  return `<tr data-openmail="${r.email_id||""}" data-invoice-id="${r.id}" class="unified-row">
     <td>${fmtD(r.created_at)}</td>
     <td>${dueBadgeHtml(r)}</td>
     <td><select class="unified-corp" data-id="${r.id}" style="font-size:11px;${r.corporation_id?"":"color:var(--m-amber)"}"><option value="">（未設定）</option>${(UNIFIED_STATE.corporations||[]).map(c=>`<option value="${esc(c.id)}" ${r.corporation_id===c.id?"selected":""}>${esc(c.name)}</option>`).join("")}</select></td>
@@ -3924,10 +3926,7 @@ function unifiedRowHtml(r){
     <td><span class="invoice-status ${pay[1]}">${esc(pay[0])}</span></td>
     <td>${esc((r.linked_step&&r.linked_step.title)||"—")}</td>
     <td>${esc(unifiedStageOf(r))}</td>
-    <td style="display:flex;gap:4px">
-      <button class="hq-btn blue" data-open-invoice="${r.id}" data-email="${r.email_id||""}">${risky?"確認する":"処理する"}</button>
-      <button class="hq-btn" style="padding:9px 10px" data-delete-invoice="${r.id}" title="この請求書を削除（テストデータの削除等に）">🗑</button>
-    </td>
+    <td><button class="hq-btn" style="padding:9px 10px" data-delete-invoice="${r.id}" title="この請求書を削除（テストデータの削除等に）">🗑</button></td>
   </tr>`;
 }
 // 請求書の削除（2026-09-04新規。ユーザー要望「テストで入力してる請求書を削除できるように」に
@@ -3966,24 +3965,14 @@ function unifiedRender(u){
         ${UNIFIED_STATE.reasonFilter?`<span class="hq-pill amber" style="align-self:center">絞り込み中: ${esc(REASON_FILTER_LABELS[UNIFIED_STATE.reasonFilter]||UNIFIED_STATE.reasonFilter)}</span>`:''}
         ${(UNIFIED_STATE.search||UNIFIED_STATE.yearMonth||UNIFIED_STATE.reasonFilter)?'<button class="hq-btn" id="unified-filter-clear">絞り込み解除</button>':''}
       </div>
-      <div class="batchbar" style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px 12px;background:var(--m-bluesoft);border-radius:10px;margin-bottom:10px;font-size:12px">
-        <div><b id="unified-selected-count">${UNIFIED_STATE.selected.size}件選択</b>
-          <div style="color:var(--muted);font-size:11px;margin-top:2px">「安全な請求書を選択」＝重複疑い・口座変更検知・要確認中・すでに会計登録済み、のどれにも当てはまらない行だけを自動でチェック（選べない行はチェック欄にマウスを乗せると理由が出ます）。「処理する」を押すと、その1件の詳細（工程バー＋タブ）が開きます。</div>
-        </div>
-        <div style="display:flex;gap:8px;flex-shrink:0">
-          <button class="hq-btn" id="unified-select-safe">安全な請求書を選択</button>
-          <button class="hq-btn primary" id="unified-open-selected" ${UNIFIED_STATE.selected.size?"":"disabled"}>選択した請求書を順番に確認する</button>
-        </div>
-      </div>
       <div class="card hq-tablewrap">
-        <table class="invoice-table" style="min-width:1500px">
+        <table class="invoice-table" style="min-width:1400px">
           <thead><tr>
-            <th></th>
-            <th data-usort="created_at" style="cursor:pointer">受領日${UNIFIED_STATE.sortCol==="created_at"?(UNIFIED_STATE.sortDir==="asc"?" ▲":" ▼"):""}</th>
-            <th data-usort="due_date" style="cursor:pointer">支払期限${UNIFIED_STATE.sortCol==="due_date"?(UNIFIED_STATE.sortDir==="asc"?" ▲":" ▼"):""}</th>
-            <th>法人</th><th>店舗</th><th>取引先</th><th>請求書番号</th>
-            <th data-usort="amount" style="cursor:pointer">金額${UNIFIED_STATE.sortCol==="amount"?(UNIFIED_STATE.sortDir==="asc"?" ▲":" ▼"):""}</th>
-            <th>取得元</th><th>AI判定</th><th>会計</th><th>PL</th><th>広告</th><th>精算書</th><th>振込</th><th>本部タスク</th><th>現在工程</th><th></th>
+            <th style="white-space:nowrap;cursor:pointer" data-usort="created_at">受領日${UNIFIED_STATE.sortCol==="created_at"?(UNIFIED_STATE.sortDir==="asc"?" ▲":" ▼"):""}</th>
+            <th style="white-space:nowrap;cursor:pointer" data-usort="due_date">支払期限${UNIFIED_STATE.sortCol==="due_date"?(UNIFIED_STATE.sortDir==="asc"?" ▲":" ▼"):""}</th>
+            <th style="white-space:nowrap">法人</th><th style="white-space:nowrap">店舗</th><th style="white-space:nowrap">取引先</th><th style="white-space:nowrap">請求書番号</th>
+            <th style="white-space:nowrap;cursor:pointer" data-usort="amount">金額${UNIFIED_STATE.sortCol==="amount"?(UNIFIED_STATE.sortDir==="asc"?" ▲":" ▼"):""}</th>
+            <th style="white-space:nowrap">取得元</th><th style="white-space:nowrap">AI判定</th><th style="white-space:nowrap">会計</th><th style="white-space:nowrap">PL</th><th style="white-space:nowrap">広告</th><th style="white-space:nowrap">精算書</th><th style="white-space:nowrap">振込</th><th style="white-space:nowrap">本部タスク</th><th style="white-space:nowrap">現在工程</th><th></th>
           </tr></thead>
           <tbody>${list.length?list.map(unifiedRowHtml).join(""):'<tr><td colspan="17">該当する請求書はありません</td></tr>'}</tbody>
         </table>
@@ -3999,26 +3988,14 @@ function unifiedRender(u){
   $("unified-search").oninput=()=>{ UNIFIED_STATE.search=$("unified-search").value; unifiedRender(u); };
   $("unified-ym").onchange=()=>{ UNIFIED_STATE.yearMonth=$("unified-ym").value; unifiedRender(u); };
   if($("unified-filter-clear")) $("unified-filter-clear").onclick=()=>{ UNIFIED_STATE.search=""; UNIFIED_STATE.yearMonth=""; UNIFIED_STATE.reasonFilter=""; unifiedRender(u); };
-  document.querySelectorAll(".unified-check").forEach(el=>el.onchange=()=>{
-    if(el.checked) UNIFIED_STATE.selected.add(el.dataset.id); else UNIFIED_STATE.selected.delete(el.dataset.id);
-    $("unified-selected-count").textContent=UNIFIED_STATE.selected.size+"件選択";
-    $("unified-open-selected").disabled=!UNIFIED_STATE.selected.size;
-  });
-  $("unified-select-safe").onclick=()=>{
-    UNIFIED_STATE.selected=new Set(list.filter(r=>!unifiedIsHighRisk(r)&&!r.mf_journal_id).map(r=>r.id));
-    unifiedRender(u);
-  };
-  $("unified-open-selected").onclick=()=>{
-    const firstId=[...UNIFIED_STATE.selected][0];
-    const row=UNIFIED_STATE.rows.find(r=>r.id===firstId);
-    if(!row) return;
-    openInvoiceDetail(u,row.id); // 共通invoice詳細：メール由来/アップロード由来を問わずinvoice_idだけで開く
-  };
-  document.querySelectorAll("[data-open-invoice]").forEach(el=>el.onclick=()=>{
-    openInvoiceDetail(u,el.dataset.openInvoice);
+  // 2026-09-05新規：行のどこをクリックしても詳細が開くようにする（一括選択バー廃止に伴う対応）。
+  // 法人プルダウン・削除ボタンをクリックしたときだけは行を開かないよう除外する
+  document.querySelectorAll(".unified-row").forEach(tr=>tr.onclick=e=>{
+    if(e.target.closest("select,button")) return;
+    openInvoiceDetail(u,tr.dataset.invoiceId);
   });
   document.querySelectorAll(".unified-corp").forEach(el=>el.onchange=()=>unifiedSetCorporation(u,el.dataset.id,el.value));
-  document.querySelectorAll("[data-delete-invoice]").forEach(el=>el.onclick=()=>unifiedDeleteInvoice(u,el.dataset.deleteInvoice));
+  document.querySelectorAll("[data-delete-invoice]").forEach(el=>el.onclick=e=>{ e.stopPropagation(); unifiedDeleteInvoice(u,el.dataset.deleteInvoice); });
 }
 // 2026-09-04削除: renderStandaloneHqLinkBox / openStandaloneInvoiceModal は
 // 「共通請求書詳細への完全統合」指示書対応により廃止。アップロード等メールに紐付かない
