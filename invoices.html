@@ -823,6 +823,7 @@ function plfeeSeisanSectionHtml(){
     <div class="adcost-sub">この科目・この金額のうち、精算対象店舗の分はPLへ直接ではなく業務委託精算書（別システム）へ登録します（精算書側で振込確定した後、既存の自動連携でPLへ反映されます。二重計上防止のためここでは選べません）。</div>
     ${missingName.length?`<div class="adcost-source" style="color:var(--m-red)">⚠️ ${missingName.map(r=>esc(r.store_name||"—")).join("・")}は「精算書店舗名」が店舗マスタに未設定のため登録できません。設定タブ「法人・店舗・部門マッピング」から設定してください。</div>`:""}
     <div class="ai-grid">
+      <div class="ai-field"><small>勘定科目（精算書の「勘定科目」列）</small><input id="plfee-seisan-account" value="${esc(PLFEE_STATE.currentAccount||"")}" placeholder="例: 水道光熱費"></div>
       <div class="ai-field"><small>費目名（精算書の「費目名」列）</small><input id="plfee-seisan-item" value="${esc(PLFEE_STATE.seisanItemName??PLFEE_STATE.currentAccount??"")}" placeholder="例: 電気代"></div>
       <div class="ai-field"><small>税率</small><select id="plfee-seisan-tax">${["10%","8%","非課税"].map(t=>`<option value="${t}" ${(PLFEE_STATE.seisanTaxRate||"10%")===t?"selected":""}>${t}</option>`).join("")}</select></div>
     </div>
@@ -843,6 +844,9 @@ function plfeeWireSeisanSection(){
     if($("plfee-seisan-add-row")) $("plfee-seisan-add-row").onclick=()=>{ PLFEE_STATE.seisanRows.push({store_id:"",store_name:"",amount:0}); plfeeRenderPanel(); };
     return;
   }
+  // 2026-09-05追加：グループ自動検出が0件（PL科目未登録の科目のみ等）でこの欄を開いた場合に
+  // 備え、勘定科目を直接入力できるようにした（グループ選択済みならその値を初期値に使う）
+  if($("plfee-seisan-account")) $("plfee-seisan-account").oninput=()=>{ PLFEE_STATE.currentAccount=$("plfee-seisan-account").value; };
   document.querySelectorAll(".plfee-seisan-store").forEach(el=>el.onchange=()=>{
     const idx=+el.dataset.idx, s=PLFEE_STATE.stores.find(x=>x.id===el.value);
     PLFEE_STATE.seisanRows[idx].store_id=el.value; PLFEE_STATE.seisanRows[idx].store_name=s?s.name:"";
@@ -998,6 +1002,9 @@ function plfeeRenderPanel(){
 
   const groups=PLFEE_STATE.groups||[];
   if(!groups.length && !PLFEE_STATE.manualGroup){
+    // 2026-09-05修正：グループが1件も自動検出できない場合（今回のテスト請求書のように、
+    // 仕訳の科目がまだmf_pl_fee_accountsに登録されていない等）でも、精算対象店舗が
+    // あるなら業務委託精算書への登録だけは行えるようにする（直接のPL反映とは別枠のため）
     box.innerHTML=`<div class="adcost-box">
       <h3>📊 PLへ反映しますか？</h3>
       ${reflectedHtml}
@@ -1007,9 +1014,11 @@ function plfeeRenderPanel(){
         <button id="plfee-exclude">🚫 この請求書はPLに反映しない（対象外にする）</button>
       </div>
       <div class="err" id="plfee-msg" style="margin-top:6px"></div>
+      ${plfeeSeisanSectionHtml()}
     </div>`;
     $("plfee-manual-start").onclick=()=>plfeeSelectGroup(0,true);
     $("plfee-exclude").onclick=plfeeExclude;
+    plfeeWireSeisanSection();
     return;
   }
 
