@@ -685,16 +685,18 @@ async function plfeeInit(ctx){
   PLFEE_STATE.excludedAt=st.body.excluded_at||null;
   PLFEE_STATE.reflections=Array.isArray(st.body.reflections)?st.body.reflections:[];
   if(!PLFEE_STATE.stores){
-    // seisan_target=精算対象店舗。精算書に入力すれば別途PLへ自動連携される仕組みが既にあるため、
-    // ここ（請求書仕訳→PL直接反映）の対象からは外す＝二重計上防止（ユーザー指摘・2026-09-03）
-    const r=await authed("/rest/v1/stores?select=id,name,seisan_target&order=name");
+    // seisan_target/seisan_pl_categories_target=精算対象店舗。精算書に入力すれば別途PLへ自動連携
+    // される仕組みが既にあるため、ここ（請求書仕訳→PL直接反映）の対象からは外す＝二重計上防止
+    // （ユーザー指摘・2026-09-03。2026-09-05: 業務委託精算書自動連携により、この対象店舗は
+    // 「精算書へ登録」ボタンで実際に登録できるようになった＝plfeeSeisanRowHtml等）
+    const r=await authed("/rest/v1/stores?select=id,name,seisan_target,seisan_pl_categories_target,seisan_store_name&order=name");
     PLFEE_STATE.stores=(r.ok&&Array.isArray(r.body))?r.body:[];
   }
   if(!PLFEE_STATE.yearMonth){
     const d=new Date();
     PLFEE_STATE.yearMonth=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-01`;
   }
-  PLFEE_STATE.groups=null; PLFEE_STATE.selectedGroupIdx=0; PLFEE_STATE.manualGroup=false; PLFEE_STATE.rows=null; PLFEE_STATE.skippedSeisan=null;
+  PLFEE_STATE.groups=null; PLFEE_STATE.selectedGroupIdx=0; PLFEE_STATE.manualGroup=false; PLFEE_STATE.rows=null; PLFEE_STATE.seisanRows=[];
   if(!PLFEE_STATE.excludedAt) await plfeeLoadJournalGroups();
   plfeeRenderPanel();
 }
@@ -727,20 +729,22 @@ async function plfeeComputeAllocation(group){
   const total=group.branches.reduce((s,d)=>s+Number(d.value),0);
   PLFEE_STATE.total=total;
   const withDept=group.branches.filter(d=>d.department_name);
+  PLFEE_STATE.seisanRows=[]; // 業務委託精算書へ登録する店舗（このgroupを選び直すたびに作り直す）
   if(withDept.length){
-    // 精算対象店舗（stores.seisan_target）は精算書経由で別途PLへ自動連携される仕組みが既にあるため、
-    // ここでは選ばせない＝二重計上防止（ユーザー指摘・2026-09-03）。skippedに理由つきで記録しておき、
-    // パネルに案内を出す
-    const rows=[]; const skipped=[];
+    // 精算対象店舗（stores.seisan_target/seisan_pl_categories_target）は精算書経由で別途PLへ
+    // 自動連携される仕組みが既にあるため、直接のPL反映（rows）には選ばせない＝二重計上防止
+    // （ユーザー指摘・2026-09-03）。2026-09-05: 従来は警告表示のみだったが、業務委託精算書
+    // 自動連携の実装により、代わりにseisanRowsとして「精算書へ登録」できるようにした
+    const rows=[]; const seisanRows=[];
     for(const d of withDept){
       const store=plfeeFindStoreByName(PLFEE_STATE.stores,d.department_name);
       if(!store||!(Number(d.value)>0)) continue;
-      if(store.seisan_target){ skipped.push({name:store.name,amount:Math.round(Number(d.value))}); continue; }
+      if(store.seisan_target||store.seisan_pl_categories_target){ seisanRows.push({store_id:store.id,store_name:store.name,amount:Math.round(Number(d.value))}); continue; }
       rows.push({store_id:store.id,store_name:store.name,amount:Math.round(Number(d.value))});
     }
-    PLFEE_STATE.skippedSeisan=skipped.length?skipped:null;
+    PLFEE_STATE.seisanRows=seisanRows;
     if(rows.length){ PLFEE_STATE.rows=rows; PLFEE_STATE.source="mf_department"; return; }
-    if(skipped.length){ PLFEE_STATE.rows=[]; PLFEE_STATE.source="all_seisan"; return; } // 全て精算対象店舗だった
+    if(seisanRows.length){ PLFEE_STATE.rows=[]; PLFEE_STATE.source="all_seisan"; return; } // 全て精算対象店舗だった
   }
   // 前月・同科目（補助科目まで一致）で反映済みの実績があれば、その店舗比率で今回の金額を按分する
   const cur=new Date(PLFEE_STATE.yearMonth);
@@ -785,11 +789,94 @@ function plfeeSourceLabel(){
     manual:"📊 参考にできる情報が無かったため、店舗を選んで金額を入力してください。",
   }[PLFEE_STATE.source]||"";
 }
-function plfeeSkippedSeisanHtml(){
-  const skipped=PLFEE_STATE.skippedSeisan;
-  if(!skipped||!skipped.length) return "";
-  const list=skipped.map(s=>`${esc(s.name)}（${yen(s.amount)}）`).join("・");
-  return `<div class="adcost-source" style="color:var(--amber)">⚠️ ${list}は精算対象店舗のため、ここでは反映していません。精算書に入力してください（自動でPLにも反映されます・二重計上防止のため）。</div>`;
+// 2026-09-05新設：業務委託精算書自動連携（設計書_業務委託精算書自動連携_2026-09-04.md）。
+// 従来（続き〜09-03）は精算対象店舗を検出したら「ここでは反映していません。精算書に入力して
+// ください」という警告のみで、実際の転記は人がseisan-dashboard画面を開いて手打ちする必要が
+// あった。今回、既存のsd_apiAddExternalLine（GAS側・担当A実装済み）を呼ぶ経路を追加し、
+// この画面から直接「精算書へ登録」できるようにした（ファイルは複製しない・二重計上防止の
+// 既存ガードはそのまま）。
+function plfeeSeisanRowHtml(row,idx){
+  const eligible=PLFEE_STATE.stores.filter(s=>s.seisan_target||s.seisan_pl_categories_target);
+  const opts=`<option value="">（店舗を選択）</option>`+eligible.map(s=>`<option value="${esc(s.id)}" ${row.store_id===s.id?"selected":""}>${esc(s.name)}${s.seisan_store_name?"":"（精算書店舗名 未設定）"}</option>`).join("");
+  return `<tr data-idx="${idx}">
+    <td><select class="plfee-seisan-store" data-idx="${idx}">${opts}</select></td>
+    <td class="amt"><input type="number" class="plfee-seisan-amount" data-idx="${idx}" value="${row.amount}"></td>
+    <td class="rm">${PLFEE_STATE.seisanRows.length>1?`<button data-plfeeseisanrm="${idx}" title="この行を削除">−</button>`:""}</td>
+  </tr>`;
+}
+function plfeeSeisanSectionHtml(){
+  const rows=PLFEE_STATE.seisanRows||[];
+  if(!rows.length) return "";
+  const missingName=rows.filter(r=>{ const s=PLFEE_STATE.stores.find(x=>x.id===r.store_id); return s&&!s.seisan_store_name; });
+  const total=rows.reduce((s,r)=>s+(Number(r.amount)||0),0);
+  return `<div class="adcost-box" style="margin-top:12px;border-top:2px dashed var(--m-line);padding-top:12px">
+    <h3 style="font-size:13px">🧮 業務委託精算書へ登録</h3>
+    <div class="adcost-sub">この科目・この金額のうち、精算対象店舗の分はPLへ直接ではなく業務委託精算書（別システム）へ登録します（精算書側で振込確定した後、既存の自動連携でPLへ反映されます。二重計上防止のためここでは選べません）。</div>
+    ${missingName.length?`<div class="adcost-source" style="color:var(--m-red)">⚠️ ${missingName.map(r=>esc(r.store_name||"—")).join("・")}は「精算書店舗名」が店舗マスタに未設定のため登録できません。設定タブ「法人・店舗・部門マッピング」から設定してください。</div>`:""}
+    <div class="ai-grid">
+      <div class="ai-field"><small>費目名（精算書の「費目名」列）</small><input id="plfee-seisan-item" value="${esc(PLFEE_STATE.seisanItemName??PLFEE_STATE.currentAccount??"")}" placeholder="例: 電気代"></div>
+      <div class="ai-field"><small>税率</small><select id="plfee-seisan-tax">${["10%","8%","非課税"].map(t=>`<option value="${t}" ${(PLFEE_STATE.seisanTaxRate||"10%")===t?"selected":""}>${t}</option>`).join("")}</select></div>
+    </div>
+    <table class="adcost-table">
+      <thead><tr><th>店舗</th><th style="text-align:right">金額</th><th></th></tr></thead>
+      <tbody id="plfee-seisan-rows">${rows.map((r,i)=>plfeeSeisanRowHtml(r,i)).join("")}</tbody>
+    </table>
+    <div class="mail-actions" style="margin-top:6px"><button id="plfee-seisan-add-row">＋ 店舗を追加</button></div>
+    <div class="adcost-total"><span>登録する合計 <b>${yen(total)}</b></span></div>
+    <div class="mail-actions" style="margin-top:10px"><button class="primary" id="plfee-seisan-confirm">📋 この内容で業務委託精算書へ登録</button></div>
+    <div class="err" id="plfee-seisan-msg" style="margin-top:6px"></div>
+  </div>`;
+}
+function plfeeWireSeisanSection(){
+  if(!$("plfee-seisan-confirm")) return;
+  document.querySelectorAll(".plfee-seisan-store").forEach(el=>el.onchange=()=>{
+    const idx=+el.dataset.idx, s=PLFEE_STATE.stores.find(x=>x.id===el.value);
+    PLFEE_STATE.seisanRows[idx].store_id=el.value; PLFEE_STATE.seisanRows[idx].store_name=s?s.name:"";
+  });
+  document.querySelectorAll(".plfee-seisan-amount").forEach(el=>el.oninput=()=>{
+    PLFEE_STATE.seisanRows[+el.dataset.idx].amount=el.value;
+  });
+  document.querySelectorAll("[data-plfeeseisanrm]").forEach(el=>el.onclick=()=>{ PLFEE_STATE.seisanRows.splice(+el.dataset.plfeeseisanrm,1); plfeeRenderPanel(); });
+  $("plfee-seisan-add-row").onclick=()=>{ PLFEE_STATE.seisanRows.push({store_id:"",store_name:"",amount:0}); plfeeRenderPanel(); };
+  $("plfee-seisan-item").oninput=()=>{ PLFEE_STATE.seisanItemName=$("plfee-seisan-item").value; };
+  $("plfee-seisan-tax").onchange=()=>{ PLFEE_STATE.seisanTaxRate=$("plfee-seisan-tax").value; };
+  $("plfee-seisan-confirm").onclick=plfeeSeisanConfirm;
+}
+async function plfeeSeisanConfirm(){
+  const ctx=PLFEE_STATE.ctx;
+  const msg=$("plfee-seisan-msg"); msg.className="err"; msg.textContent="";
+  const accountName=(PLFEE_STATE.currentAccount||"").trim();
+  const subAccountName=(PLFEE_STATE.currentSubAccount||"").trim();
+  if(!accountName){ msg.textContent="勘定科目を確認してください"; return; }
+  const itemName=(PLFEE_STATE.seisanItemName||accountName||"").trim();
+  const taxRate=PLFEE_STATE.seisanTaxRate||"10%";
+  const rows=(PLFEE_STATE.seisanRows||[]).filter(r=>r.store_id&&Number(r.amount)>0);
+  if(!rows.length){ msg.textContent="店舗と金額を入力してください"; return; }
+  $("plfee-seisan-confirm").disabled=true; msg.textContent="精算書へ登録中…";
+  const r=await plFeeCall("seisan_confirm",{
+    invoice_id:ctx.invoiceId, account_name:accountName, sub_account_name:subAccountName||undefined,
+    item_name:itemName, tax_rate:taxRate, year_month:PLFEE_STATE.yearMonth,
+    allocations:rows.map(r=>({store_id:r.store_id,store_name:r.store_name,amount:Number(r.amount)})),
+  });
+  if(!r.ok){ msg.textContent=r.body.error||"登録に失敗しました"; $("plfee-seisan-confirm").disabled=false; return; }
+  const results=Array.isArray(r.body.results)?r.body.results:[];
+  const failed=results.filter(x=>!x.ok);
+  msg.className="err msg-ok";
+  msg.textContent=failed.length
+    ?`一部の店舗で失敗しました：${failed.map(f=>`${f.store}（${f.error}）`).join("、")}。成功した店舗は登録済みです。`
+    :"業務委託精算書へ登録しました。";
+  setTimeout(async()=>{
+    await plfeeInit(ctx);
+    if(!(PLFEE_STATE.groups||[]).length && !(PLFEE_STATE.seisanRows||[]).length && ctx.onDone) ctx.onDone();
+  },1200);
+}
+// 2026-09-05更新：精算書側の状態（振込確定待ち→PL反映済み等の6状態）を取得し直す。
+// 個々の明細が実際にPLへ入ったかは即時反映ではない（設計書§9-1・§5-3の制約）ため、
+// ボタンを押したタイミングで都度取得し直す形にした（自動ポーリングはしない）
+async function plfeeSeisanRefreshStatus(){
+  const r=await plFeeCall("seisan_refresh_status",{invoice_id:PLFEE_STATE.ctx.invoiceId});
+  if(!r.ok){ alert(r.body.error||"状態の取得に失敗しました"); return; }
+  await plfeeInit(PLFEE_STATE.ctx);
 }
 function plfeeReflectedCardHtml(row){
   const a=row.allocations||[];
@@ -799,6 +886,23 @@ function plfeeReflectedCardHtml(row){
   // 2026-09-05新規：ユーザー要望「PL登録したら修正できない。取り消しして修正できるようにしてほしい」
   // に対応。反映済み1件ごとに「取り消す」ボタンを追加（クリック時の処理はplfeeRenderPanel側で
   // イベント委任により配線）
+  if(row.reflection_route==="seisan"){
+    // 2026-09-05新規：業務委託精算書経由の行。「PL反映済み」を直接断定しないよう、設計書§9-2の
+    // 6状態モデルのpl_statusをそのまま表示する（seisan-dashboard側の実データから導出された値）
+    const storeName=row.seisan_store_name||(a[0]&&a[0].store_name)||"—";
+    const statusPill={
+      "PL対象外":"gray","振込確定待ち":"amber","PL同期待ち":"amber",
+      "店舗月次PL同期実行済み（個別反映未検証）":"blue","PL反映済み（個別確認済み）":"green","PLエラー":"red",
+    }[row.pl_status]||"gray";
+    return `<div class="adcost-badge-row" style="margin-bottom:6px">
+      <span class="hq-pill blue">🧮 ${esc(label)}</span>
+      　${esc(storeName)}　${esc(ym)}　合計${yen(total)}
+      　<span class="hq-pill ${statusPill}">${esc(row.pl_status||"—")}</span>
+      ${row.pl_status_checked_at?`　<span class="meta" style="font-size:10px">（確認: ${fmtDT(row.pl_status_checked_at)}）</span>`:""}
+      　<button class="hq-btn" style="font-size:11px;padding:4px 8px" data-plfee-seisan-refresh="1">🔄 状態を更新</button>
+      　<button class="hq-btn" style="font-size:11px;padding:4px 8px" data-plfee-unconfirm="${esc(row.id)}">↩️ 取り消す</button>
+    </div>`;
+  }
   return `<div class="adcost-badge-row" style="margin-bottom:6px">
     <span class="hq-pill green">✅ ${esc(label)}</span>
     　${esc(ym)}　${a.length}店舗に按分　合計${yen(total)}
@@ -807,8 +911,9 @@ function plfeeReflectedCardHtml(row){
   </div>`;
 }
 function plfeeRowHtml(row,idx){
-  // 精算対象店舗は精算書経由で別途PLへ自動連携されるため、選択肢から除外する（二重計上防止）
-  const opts=`<option value="">（店舗を選択）</option>`+PLFEE_STATE.stores.filter(s=>!s.seisan_target).map(s=>`<option value="${esc(s.id)}" ${row.store_id===s.id?"selected":""}>${esc(s.name)}</option>`).join("");
+  // 精算対象店舗は精算書経由で別途PLへ自動連携されるため、選択肢から除外する（二重計上防止。
+  // 2026-09-05: seisan_pl_categories_target店舗（黒霧屋等）も同様に除外対象に追加）
+  const opts=`<option value="">（店舗を選択）</option>`+PLFEE_STATE.stores.filter(s=>!s.seisan_target&&!s.seisan_pl_categories_target).map(s=>`<option value="${esc(s.id)}" ${row.store_id===s.id?"selected":""}>${esc(s.name)}</option>`).join("");
   return `<tr data-idx="${idx}">
     <td><select class="plfee-store" data-idx="${idx}">${opts}</select></td>
     <td class="amt"><input type="number" class="plfee-amount" data-idx="${idx}" value="${row.amount}"></td>
@@ -846,6 +951,12 @@ function plfeeRenderPanel(){
   // 2026-09-05新規：反映履歴の「取り消す」ボタン配線（4つある描画分岐すべてに履歴表示が
   // 含まれるため、box全体へのイベント委任で1箇所だけ書けば済むようにした）
   box.onclick=async(e)=>{
+    const refreshBtn=e.target.closest("[data-plfee-seisan-refresh]");
+    if(refreshBtn){
+      refreshBtn.disabled=true; refreshBtn.textContent="更新中…";
+      await plfeeSeisanRefreshStatus();
+      return;
+    }
     const btn=e.target.closest("[data-plfee-unconfirm]");
     if(!btn) return;
     if(!confirm("このPL反映を取り消しますか？\n\nシート（Google Sheets）側の数字は、正しい内容で再度反映するまでは古いまま残ります（削除ではなく上書き方式のため）。金額や科目を直したい場合は、取り消した後にもう一度正しい内容で「PLに反映」してください。")) return;
@@ -891,21 +1002,28 @@ function plfeeRenderPanel(){
   if(PLFEE_STATE.rows==null){ plfeeSelectGroup(0,false); return; } // 初回は先頭の候補を自動選択
 
   if(PLFEE_STATE.source==="all_seisan"){
-    // この科目は検出できた店舗が全て精算対象店舗だった＝ここでは反映できない
+    // この科目は検出できた店舗が全て精算対象店舗だった＝直接PLへは反映できない。
+    // 2026-09-05: 「精算書側で入力してください」という案内だけでなく、下のplfeeSeisanSectionHtml()
+    // から実際に登録できるようにした
     box.innerHTML=`<div class="adcost-box">
       <h3>📊 PLへ反映しますか？</h3>
       ${reflectedHtml}
-      ${plfeeSkippedSeisanHtml()}
-      <div class="adcost-sub">この科目（${esc(PLFEE_STATE.currentAccount)}${PLFEE_STATE.currentSubAccount?"/"+esc(PLFEE_STATE.currentSubAccount):""}）は精算対象店舗のみだったため、この画面では反映できません。精算書側で入力してください。</div>
+      <div class="adcost-sub">この科目（${esc(PLFEE_STATE.currentAccount)}${PLFEE_STATE.currentSubAccount?"/"+esc(PLFEE_STATE.currentSubAccount):""}）は精算対象店舗のみだったため、直接のPL反映はできません。下から業務委託精算書へ登録してください。</div>
+      ${groups.length>1?plfeeGroupPickerHtml():""}
+      <div class="ai-grid">
+        <div class="ai-field"><small>対象年月</small><input id="plfee-ym" type="month" value="${PLFEE_STATE.yearMonth.slice(0,7)}"></div>
+      </div>
       <div class="mail-actions" style="margin-top:8px">
-        ${groups.length>1?plfeeGroupPickerHtml():""}
         <button id="plfee-exclude">🚫 この請求書はこれ以上PLに反映しない（対象外にする）</button>
       </div>
       <div class="err" id="plfee-msg" style="margin-top:6px"></div>
+      ${plfeeSeisanSectionHtml()}
     </div>`;
     const picker0=$("plfee-group-pick");
     if(picker0) picker0.onchange=()=>{ picker0.value==="manual"?plfeeSelectGroup(0,true):plfeeSelectGroup(+picker0.value,false); };
+    $("plfee-ym").onchange=()=>{ PLFEE_STATE.yearMonth=$("plfee-ym").value+"-01"; };
     $("plfee-exclude").onclick=plfeeExclude;
+    plfeeWireSeisanSection();
     return;
   }
 
@@ -923,7 +1041,6 @@ function plfeeRenderPanel(){
       <div class="ai-field"><small>対象年月</small><input id="plfee-ym" type="month" value="${PLFEE_STATE.yearMonth.slice(0,7)}"></div>
     </div>
     <div class="adcost-source">${plfeeSourceLabel()}</div>
-    ${plfeeSkippedSeisanHtml()}
     <table class="adcost-table">
       <thead><tr><th>店舗</th><th style="text-align:right">金額</th><th></th></tr></thead>
       <tbody id="plfee-rows">${PLFEE_STATE.rows.map((r,i)=>plfeeRowHtml(r,i)).join("")}</tbody>
@@ -943,6 +1060,7 @@ function plfeeRenderPanel(){
     </div>
     <div class="adcost-hint">💡 ここに反映できるのはPL科目（設定タブ「PL連携対象科目」に登録済みの科目）のみです。精算対象店舗は選べません（精算書に入力すると自動でPLにも反映されるため、二重計上防止でここでは除外しています）。反映後も「反映履歴」から取り消して内容を直せます（シート側は正しい内容で再度反映するまで古いまま残ります）。</div>
     <div class="err" id="plfee-msg" style="margin-top:6px"></div>
+    ${plfeeSeisanSectionHtml()}
   </div>`;
   $("plfee-ym").onchange=()=>{ PLFEE_STATE.yearMonth=$("plfee-ym").value+"-01"; };
   const picker=$("plfee-group-pick");
@@ -961,6 +1079,7 @@ function plfeeRenderPanel(){
   if($("plfee-recalc")) $("plfee-recalc").onclick=async()=>{ PLFEE_STATE.rows=null; await plfeeComputeAllocation(PLFEE_STATE.groups[PLFEE_STATE.selectedGroupIdx]); plfeeRenderPanel(); };
   $("plfee-confirm").onclick=plfeeConfirm;
   $("plfee-exclude").onclick=plfeeExclude;
+  plfeeWireSeisanSection();
 }
 async function plfeeExclude(){
   if(!confirm("この請求書はPLに反映しない、という記録を残します。よろしいですか？（あとで取り消せます）")) return;
@@ -1555,7 +1674,7 @@ async function ensureCorpStoreCache(){
   if(CORP_STORE_CACHE) return CORP_STORE_CACHE;
   const [corpRes,storeRes]=await Promise.all([
     authed("/rest/v1/corporations?select=id,name&order=name"),
-    authed("/rest/v1/stores?select=id,name,corporation_id,seisan_target&order=name"),
+    authed("/rest/v1/stores?select=id,name,corporation_id,seisan_target,seisan_pl_categories_target,seisan_store_name&order=name"),
   ]);
   CORP_STORE_CACHE={
     corporations:(corpRes.ok&&Array.isArray(corpRes.body))?corpRes.body:[],
@@ -1881,13 +2000,17 @@ function attCardHtml(a){
       :""}
   </div>`;
 }
-// 2026-09-04新規：この請求書の対象店舗（invoice_stores）のうち、業務委託精算対象店舗
-// （stores.seisan_target）を返す。空配列なら通常の請求書→PL直接反映のルート
+// 2026-09-04新規：この請求書の対象店舗（invoice_stores）のうち、業務委託精算対象店舗を返す。
+// 空配列なら通常の請求書→PL直接反映のルート。
+// 2026-09-05修正：黒霧屋 新横浜のように「運営委託費の自動連携(seisan_target)は対象外だが、
+// 個別経費のPL反映(seisan_pl_categories_target)だけは精算書経由」という店舗も、この経費PL連携の
+// 文脈では精算書ルートに含める必要があるため、どちらかのフラグが立っていれば対象とする
+// （設計書_業務委託精算書自動連携_2026-09-04.md §14）
 function invoiceSeisanStores(invoice){
   if(!invoice||!Array.isArray(invoice.invoice_stores)) return [];
   const allStores=(CORP_STORE_CACHE&&CORP_STORE_CACHE.stores)||[];
   const ids=new Set(invoice.invoice_stores.map(x=>x.store_id));
-  return allStores.filter(s=>ids.has(s.id)&&s.seisan_target);
+  return allStores.filter(s=>ids.has(s.id)&&(s.seisan_target||s.seisan_pl_categories_target));
 }
 // 「現在：◯◯」バナー用の次アクション文言（工程キー→表示文言）
 const STAGE_NEXT_ACTION={info:"請求情報の入力待ち",accounting:"会計・仕訳の登録待ち",pl:"PL・広告・精算の確認待ち",payment:"振込待ち",verified:"支払確認待ち"};
@@ -2343,7 +2466,11 @@ function renderMailDetail(u){
         // （緑チェック=完了／赤枠+番号=いまここ／グレー番号=未処理）を直接適用する形にした
         const infoDone=!!(invoice&&invoice.amount!=null);
         const accountingDone=!!(invoice&&invoice.mf_journal_id);
-        const plDoneForCard=!!(invoice&&(invoice.pl_fee_reflected_at||invoice.pl_fee_excluded_at))||invoiceSeisanStores(invoice).length>0;
+        // 2026-09-05修正：業務委託精算書自動連携の実装前は「精算対象店舗が含まれる」というだけで
+        // このカードを対応完了扱いにしていたが、実際には何も登録されていなかった（本当の完了を
+        // 偽って表示していた）。今回から実際にPLへ反映（direct）または精算書へ登録（seisan）される
+        // までは未完了のままにする＝直接反映と同じ基準に統一
+        const plDoneForCard=!!(invoice&&(invoice.pl_fee_reflected_at||invoice.pl_fee_excluded_at));
         const paymentDoneForCard=!!(invoice&&invoice.payment_verified_at);
         let currentCardKey=null;
         for(const[k,d]of[["info",infoDone],["accounting",accountingDone],["pl",plDoneForCard],["payment",paymentDoneForCard]]){ if(!d){ currentCardKey=k; break; } }
@@ -2419,25 +2546,20 @@ function renderMailDetail(u){
               else if(invoice.pl_fee_reflected_at) plStateHtml=`<span class="pl-state done">✓ PL反映済み</span>`;
               else if(seisanStores.length) plStateHtml=`<span class="pl-state seisan">🧮 業務委託精算対象</span>`;
               else plStateHtml=`<span class="pl-state wait">○ PL反映待ち</span>`;
-              const cardDone=plDone||seisanStores.length>0;
+              // 2026-09-05修正：業務委託精算書自動連携の実装により、対象店舗があるというだけで
+              // 「対応完了」扱いにしていた従来のロジックをやめ、実際に登録（direct/seisanいずれか）
+              // されるまではcardDoneにしない（plDoneのみで判定＝直接反映と同じ基準に統一）
+              const cardDone=plDone;
               return `<div class="step-card${stepCardClass("pl")}" id="step-pl">
               <div class="step-card-head" data-cardtoggle="pl">${stepNumHtml("pl",++stepNo,cardDone)}<h3 class="step-title">PL・広告・業務委託精算</h3>${cardDone?'<span class="step-badge done">✓ 対応完了</span>':'<span class="step-badge current">いまここ・要対応</span>'}<span class="step-chevron" id="chev-pl">${cardDone?"▼":"▲"}</span></div>
               ${cardDone?`<div class="step-summary" id="summary-pl">${plStateHtml} <button class="step-summary-edit" data-cardtoggle="pl">詳細を見る▼</button></div>`:""}
               <div class="step-card-body" id="body-pl" ${cardDone?"hidden":""}>
               <div class="ai-field" style="margin-bottom:10px"><small>現在の状態</small>${plStateHtml}</div>
               ${seisanStores.length?`<div class="task-link-box" style="margin-top:0;margin-bottom:12px"><small>🧮 業務委託精算対象店舗：${seisanStores.map(s=>esc(s.name)).join("・")}</small>
-                <div style="font-size:12px;color:var(--m-blue);margin-top:4px">この請求書は業務委託精算書経由でPLへ反映するルートです（請求書から直接のPL反映はできません＝二重計上防止のため選択肢から除外されます）。以下の内容を「精算管理」の店舗チェック／業務委託精算書の入力画面へ転記してください：</div>
-                <div class="ai-grid" style="margin-top:8px">
-                  <div class="ai-field"><small>店舗</small><b>${seisanStores.map(s=>esc(s.name)).join("・")}</b></div>
-                  <div class="ai-field"><small>対象月</small><b>${esc((invoice.due_date||invoice.created_at||"").slice(0,7))}</b></div>
-                  <div class="ai-field"><small>金額（税込）</small><b>${yen(invoice.amount)}</b></div>
-                  <div class="ai-field"><small>取引先</small><b>${esc((invoice.vendor&&invoice.vendor.name)||invoice.vendor_name||"—")}</b></div>
-                </div>
-                <div class="meta" style="color:var(--muted);font-size:11px;margin-top:8px">⚠️ 正直な注記：現在このアプリ（ns-portal）から精算書（別システム・別リポジトリseisan-dashboard）へ自動で明細を書き込む仕組みはまだありません。上記の内容を精算書側の画面で入力してください。振込済み確定後に精算書側からPLへ自動反映されます（既存の仕組み・変更していません）。</div>
-              </div>`:`
+                <div style="font-size:12px;color:var(--m-blue);margin-top:4px">この請求書は業務委託精算書経由でPLへ反映するルートです（請求書から直接のPL反映はできません＝二重計上防止のため選択肢から除外されます）。下の「PLへ反映しますか？」欄で自動検出された精算対象店舗分は、そのまま「業務委託精算書へ登録」できます。</div>
+              </div>`:""}
               ${(invoice&&invoice.amount!=null)?`<div id="adcostbox"></div>`:`<div class="meta" style="color:var(--muted);font-size:12px">先に上の「請求情報」で金額を保存してください</div>`}
               ${(invoice&&invoice.mf_journal_id)?`<div id="plfeebox"></div>`:`<div class="meta" style="color:var(--muted);font-size:12px;margin-top:8px">PLへの反映は会計・仕訳の登録後に行えます</div>`}
-              `}
               </div>
             </div>`;
             })()}

@@ -54,6 +54,26 @@ const userClient = (req: Request) =>
 // 同じ値がある＝秘密情報ではない）
 const DASH_API_URL = "https://script.google.com/macros/s/AKfycbwW0qhyEr0-uQWTaLg7MkQhurHq6wMoaOKL7uCCnI_bgnAsGB5-auqG_dm_Q9uJc3Kc/exec";
 
+// 2026-09-05新設：業務委託精算書自動連携（設計書_業務委託精算書自動連携_2026-09-04.md）。
+// seisan-dashboardのGAS Web App URL（担当A実装・11章で本番デプロイ済み。DASH_API_URLとは別の
+// GASプロジェクト＝別トークンPL_SYNC_TOKENで認証する）
+const SEISAN_API_URL = "https://script.google.com/macros/s/AKfycbzwYN9uSEtcJHSKSVQCoQOrllhO7G6gR-E4dvP-V4o_VdGXr9VQx2mbYYPNyNEFSQCiKg/exec";
+// seisan-dashboard側のWeb App呼び出し規約: {fn:'関数名', args:[...]} を1本のPOSTで送るだけ
+// （既存sd_apiCategorizedLines等と同じ形。設計書§5冒頭）
+async function seisanCall(fn: string, args: unknown[]) {
+  const res = await fetch(SEISAN_API_URL, {
+    method: "POST",
+    headers: { "Content-Type": "text/plain;charset=utf-8" },
+    body: JSON.stringify({ fn, args }),
+  });
+  const text = await res.text();
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new Error("精算書APIの応答を読めませんでした: " + text.slice(0, 200));
+  }
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: cors });
   if (req.method !== "POST") return json({ error: "POSTのみ対応" }, 405);
@@ -101,8 +121,10 @@ Deno.serve(async (req: Request) => {
         .select("id, pl_fee_excluded_at, pl_fee_excluded_by").eq("id", invoiceId).maybeSingle();
       if (invErr) return json({ error: "確認に失敗しました: " + invErr.message }, 500);
       if (!inv) return json({ error: "対象が見つからないか権限がありません" }, 403);
+      // 2026-09-05追加：業務委託精算書自動連携（reflection_route='seisan'）の行を区別して
+      // 返せるよう、新設列（reflection_route/seisan_store_name/pl_status/pl_status_checked_at）も選択する
       const { data: refl, error: reflErr } = await uc.from("invoice_pl_reflections")
-        .select("id, account_name, sub_account_name, year_month, allocations, reflected_at, sheet_synced_at, sheet_sync_error")
+        .select("id, account_name, sub_account_name, year_month, allocations, reflected_at, sheet_synced_at, sheet_sync_error, reflection_route, seisan_store_name, pl_status, pl_status_checked_at")
         .eq("invoice_id", invoiceId).order("reflected_at", { ascending: true });
       if (reflErr) return json({ error: "確認に失敗しました: " + reflErr.message }, 500);
       return json({ success: true, excluded_at: inv.pl_fee_excluded_at, reflections: refl ?? [] });
@@ -153,11 +175,16 @@ Deno.serve(async (req: Request) => {
       if (!plAcc) return json({ error: `「${accountName}」はPL科目として登録されていません。設定タブの「PL連携対象科目」で先に登録してください（資産科目等をPLに載せてしまうミスを防ぐための確認です）` }, 400);
 
       // ②精算対象店舗との二重計上防止: 精算対象店舗は精算書側で入力すれば別途PLへ自動連携されるため、
-      // この経路（DB_PL直接書き込み）の対象には含めない
+      // この経路（DB_PL直接書き込み）の対象には含めない。
+      // 2026-09-05修正：黒霧屋 新横浜のように「運営委託費の自動連携(seisan_target)は対象外だが、
+      // 個別経費のPL反映(seisan_pl_categories_target)だけは精算書経由」という店舗も同じ理由で
+      // 対象外にする必要があるため、どちらかのフラグが立っていれば拒否する
+      // （設計書_業務委託精算書自動連携_2026-09-04.md §14。この判定漏れは今回追加した
+      // seisan_confirmアクションとの整合性を取る過程で発見した既存バグ）
       const storeIds = allocations.map((a) => a.store_id).filter(Boolean);
       if (storeIds.length) {
         const { data: seisanStores, error: seisanErr } = await uc.from("stores")
-          .select("id, name").in("id", storeIds).eq("seisan_target", true);
+          .select("id, name").in("id", storeIds).or("seisan_target.eq.true,seisan_pl_categories_target.eq.true");
         if (seisanErr) return json({ error: "店舗の確認に失敗しました: " + seisanErr.message }, 500);
         if (seisanStores && seisanStores.length) {
           const names = seisanStores.map((s: any) => s.name).join("・");
@@ -221,6 +248,166 @@ Deno.serve(async (req: Request) => {
       }).eq("id", reflRow?.id);
 
       return json({ success: true, account_name: accountName, sub_account_name: subAccountName || null, year_month: yearMonth, total, sheet_synced: sheetSynced, sheet_error: sheetError });
+    }
+
+    // ============================================================
+    // 2026-09-05新規：業務委託精算書自動連携（設計書_業務委託精算書自動連携_2026-09-04.md）。
+    // 精算対象店舗（stores.seisan_target/seisan_pl_categories_target）の分は、DB_PLへ直接では
+    // なく業務委託精算書（seisan-dashboard）へ登録する。設計書§4のとおり「1回の呼び出しは
+    // 1店舗1明細」が前提のため、店舗ごとにinvoice_pl_reflectionsを1行作る（reflection_route=
+    // 'seisan'。allocationsは常に1要素）。sourceKeyにはこの行のid（新規なら発行直後のid、
+    // 既存なら再利用）を使い"invoice:<invoice_id>:<この行のid>"とすることで、同じ
+    // 請求書×科目×店舗の組み合わせを編集し直しても同じsourceKeyで冪等に上書きされるようにする。
+    // ============================================================
+    if (action === "seisan_confirm") {
+      const invoiceId = body?.invoice_id;
+      const accountName: string = (body?.account_name ?? "").trim();
+      const subAccountName: string = (body?.sub_account_name ?? "").trim();
+      const itemName: string = (body?.item_name ?? "").trim() || accountName;
+      const taxRate: string = body?.tax_rate || "10%";
+      const yearMonth: string = body?.year_month || "";
+      const allocations: any[] = Array.isArray(body?.allocations) ? body.allocations : [];
+      if (!invoiceId || !accountName || !/^\d{4}-\d{2}-01$/.test(yearMonth)) {
+        return json({ error: "勘定科目・対象年月（YYYY-MM-01）・請求書IDは必須です" }, 400);
+      }
+      if (!allocations.length) return json({ error: "店舗×金額の割り振りが0件です" }, 400);
+      if (!["10%", "8%", "非課税"].includes(taxRate)) return json({ error: "税率は10%/8%/非課税のいずれかです" }, 400);
+      for (const a of allocations) {
+        const amt = Number(a.amount);
+        if (!a.store_id || !a.store_name || !Number.isFinite(amt) || amt <= 0) {
+          return json({ error: "各行に店舗と金額（0円より大きい）を入力してください" }, 400);
+        }
+      }
+
+      const { data: inv, error: invErr } = await uc.from("invoices")
+        .select("id, email_id, vendor_name").eq("id", invoiceId).maybeSingle();
+      if (invErr) return json({ error: "確認に失敗しました: " + invErr.message }, 500);
+      if (!inv) return json({ error: "対象が見つからないか権限がありません" }, 403);
+
+      // このactionの対象は精算対象店舗のみ（direct route側との二重計上防止の裏返し）
+      const storeIds = allocations.map((a) => a.store_id).filter(Boolean);
+      const { data: storeRows, error: storeErr } = await uc.from("stores")
+        .select("id, name, seisan_target, seisan_pl_categories_target, seisan_store_name").in("id", storeIds);
+      if (storeErr) return json({ error: "店舗の確認に失敗しました: " + storeErr.message }, 500);
+      const storeMap = new Map((storeRows ?? []).map((s: any) => [s.id, s]));
+      for (const a of allocations) {
+        const s = storeMap.get(a.store_id);
+        if (!s) return json({ error: `店舗が見つかりません（${a.store_name}）` }, 400);
+        if (!s.seisan_target && !s.seisan_pl_categories_target) {
+          return json({ error: `${s.name}は精算対象店舗ではありません。この店舗は「PLへ反映」（直接反映）から登録してください` }, 400);
+        }
+        if (!s.seisan_store_name) {
+          return json({ error: `${s.name}の「精算書店舗名」が店舗マスタに未設定です。設定タブから設定してから登録してください` }, 400);
+        }
+      }
+
+      const tk = Deno.env.get("PL_SYNC_TOKEN");
+      if (!tk) return json({ error: "PL_SYNC_TOKEN が未設定です（担当Cまでご連絡ください）" }, 500);
+
+      const db = svc();
+      const rawToken = (req.headers.get("Authorization") ?? "").replace(/^Bearer\s+/i, "");
+      const { data: userData } = rawToken ? await uc.auth.getUser(rawToken) : { data: { user: null } } as any;
+      const monthKey = yearMonth.slice(0, 7);
+      const results: { store: string; ok: boolean; error?: string }[] = [];
+      let anyOk = false;
+
+      for (const a of allocations) {
+        const s = storeMap.get(a.store_id);
+        // 重複防止（同じ請求書×科目×補助科目×店舗の既存行があれば、それを更新扱いにする＝同じsourceKeyで上書き）
+        let dupQuery = uc.from("invoice_pl_reflections").select("id, seisan_line_key")
+          .eq("invoice_id", invoiceId).eq("account_name", accountName).eq("reflection_route", "seisan")
+          .eq("seisan_store_name", s.seisan_store_name);
+        dupQuery = subAccountName ? dupQuery.eq("sub_account_name", subAccountName) : dupQuery.is("sub_account_name", null);
+        const { data: existing } = await dupQuery.maybeSingle();
+
+        let reflectionId: string | undefined = existing?.id;
+        let sourceKey: string | undefined = existing?.seisan_line_key;
+        if (!reflectionId) {
+          const { data: newRow, error: insErr } = await uc.from("invoice_pl_reflections").insert({
+            invoice_id: invoiceId, account_name: accountName, sub_account_name: subAccountName || null,
+            year_month: yearMonth, allocations: [a], reflected_by: userData?.user?.id ?? null,
+            reflection_route: "seisan", seisan_store_name: s.seisan_store_name,
+            item_name: itemName, tax_rate: taxRate,
+          }).select("id").maybeSingle();
+          if (insErr) { results.push({ store: s.name, ok: false, error: "保存に失敗しました: " + insErr.message }); continue; }
+          reflectionId = newRow?.id;
+          sourceKey = `invoice:${invoiceId}:${reflectionId}`;
+        } else {
+          await db.from("invoice_pl_reflections").update({
+            allocations: [a], year_month: yearMonth, item_name: itemName, tax_rate: taxRate,
+          }).eq("id", reflectionId);
+        }
+
+        try {
+          const gasRes = await seisanCall("sd_apiAddExternalLine", [tk, s.seisan_store_name, monthKey, {
+            sourceKey, item: itemName, amount: Number(a.amount), tax: taxRate,
+            account: accountName, subAccount: subAccountName || undefined, note: body?.note || undefined,
+          }]);
+          if (!gasRes.ok) {
+            throw new Error(gasRes.error || (gasRes.locked ? "この月は振込済みのため精算書への登録・更新はできません" : "精算書側で失敗しました"));
+          }
+          await db.from("invoice_pl_reflections").update({
+            seisan_line_key: sourceKey, sheet_synced_at: new Date().toISOString(), sheet_sync_error: null,
+            pl_status: "振込確定待ち", pl_status_checked_at: new Date().toISOString(),
+          }).eq("id", reflectionId);
+          results.push({ store: s.name, ok: true });
+          anyOk = true;
+        } catch (e) {
+          const msg = String((e as Error)?.message ?? e);
+          await db.from("invoice_pl_reflections").update({
+            seisan_line_key: sourceKey, sheet_sync_error: msg, pl_status: "PLエラー", pl_status_checked_at: new Date().toISOString(),
+          }).eq("id", reflectionId);
+          results.push({ store: s.name, ok: false, error: msg });
+        }
+      }
+
+      if (anyOk) {
+        await uc.from("invoices").update({ pl_fee_reflected_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+          .eq("id", invoiceId).is("pl_fee_reflected_at", null);
+      }
+
+      const totalAmt = allocations.reduce((s: number, a: any) => s + Number(a.amount), 0);
+      await db.from("invoice_audit_logs").insert({
+        entity_type: "invoice_email", entity_id: inv.email_id, action: "pl_fee_reflected_seisan", actor_type: "human",
+        note: `業務委託精算書へ登録（科目: ${accountName}${subAccountName ? "/" + subAccountName : ""}／対象: ${monthKey}／合計: ${totalAmt.toLocaleString()}円／${allocations.length}店舗）${results.some((r) => !r.ok) ? "※一部失敗あり" : ""}`,
+      });
+
+      return json({ success: results.every((r) => r.ok), results });
+    }
+
+    // 2026-09-05新規：精算書側の実データ（sd_apiGetLines）から個々の明細のPL反映状態
+    // （設計書§9-2の6状態モデル。plStatusはGAS側で既に計算済みの値をそのまま使う＝
+    // ns-portal側で「反映済み」を勝手に断定しない）を取得し直す
+    if (action === "seisan_refresh_status") {
+      const invoiceId = body?.invoice_id;
+      if (!invoiceId) return json({ error: "invoice_idは必須です" }, 400);
+      const { data: rows, error: rowsErr } = await uc.from("invoice_pl_reflections")
+        .select("id, seisan_store_name, year_month, seisan_line_key")
+        .eq("invoice_id", invoiceId).eq("reflection_route", "seisan").not("seisan_line_key", "is", null);
+      if (rowsErr) return json({ error: "確認に失敗しました: " + rowsErr.message }, 500);
+      if (!rows || !rows.length) return json({ success: true, updated: 0 });
+
+      const tk = Deno.env.get("PL_SYNC_TOKEN");
+      if (!tk) return json({ error: "PL_SYNC_TOKEN が未設定です" }, 500);
+
+      const items = rows.map((r: any) => ({ store: r.seisan_store_name, monthKey: String(r.year_month).slice(0, 7), sourceKey: r.seisan_line_key }));
+      const db = svc();
+      try {
+        const res = await seisanCall("sd_apiGetLines", [tk, items]);
+        if (!res.ok) return json({ error: res.error || "精算書側の状態取得に失敗しました" }, 500);
+        const lines: any[] = Array.isArray(res.lines) ? res.lines : [];
+        const bySourceKey = new Map(lines.map((l: any) => [l.sourceKey, l]));
+        let updated = 0;
+        for (const r of rows) {
+          const line = bySourceKey.get(r.seisan_line_key);
+          const status = (line && line.plStatus) || "PLエラー";
+          await db.from("invoice_pl_reflections").update({ pl_status: status, pl_status_checked_at: new Date().toISOString() }).eq("id", r.id);
+          updated++;
+        }
+        return json({ success: true, updated });
+      } catch (e) {
+        return json({ error: "精算書APIの呼び出しに失敗しました: " + String((e as Error)?.message ?? e) }, 500);
+      }
     }
 
     // 2026-09-05新規：ユーザー要望「PL登録したら修正できない。取り消しして修正できるように
