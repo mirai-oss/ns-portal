@@ -6,6 +6,8 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
+**★★★★★2026-09-05（担当C実行スレッド・続き42）業務委託精算書自動連携: PL_SYNC_TOKEN設定・秋葉原肉寿司の店舗名設定・GAS応答ラッパーのバグ修正まで完了。実機ボタン操作の確認待ち**（続き41の続報。詳細は[続き42の記録](#2026-09-05担当c実行スレッド続き42)）: ユーザーから①`PL_SYNC_TOKEN`の値、②秋葉原肉寿司の精算書店舗名（「秋葉原 肉寿司」）を受け取り、Supabase Secretsへの登録・`stores.seisan_store_name`の更新を実施。続けて**使い捨て診断用Edge Function（テスト後削除）で`sd_apiGetLines`を実際に叩いて安全に接続確認**したところ、**GAS側のディスパッチャが関数の戻り値を`{ok:true, result:<戻り値>}`という1段外側のラッパーで包んで返す**という、設計書に明記の無い挙動を発見。`seisanCall()`がこれを考慮しておらず、`seisan_refresh_status`が常に「PLエラー」と誤判定してしまうバグを実装直後に発見・修正（`sd_apiAddExternalLine`側でも同様の実害が起きていたはず）。実データでの読み取りテスト（存在しないsourceKeyへの問い合わせ→`{ok:true,found:false}`が正しく返る）で接続・認証・アンラップの3点を確認済み（書き込みは行っていない）。`supabase/functions/pl-fee-reflect/index.ts`コミット`fb9c502`push済み・デプロイ済み。**ブロッカーは解消済み。次は中山さんに実際に請求書詳細の「📋 業務委託精算書へ登録」ボタンから実機で試していただき、精算書側に反映されるかを確認していただく段階**
+
 **★★★★★2026-09-05（担当C実行スレッド・続き41）業務委託精算書自動連携: 担当C側実装（TK-85）完了・PL_SYNC_TOKEN設定待ち**（担当Aから引き継ぎ完了の報告を受けて着手。詳細は[続き41の記録](#2026-09-05担当c実行スレッド続き41)。設計書_業務委託精算書自動連携_2026-09-04.md§15参照）: 担当A側（seisan-dashboard・tori-dashboard、sd_apiAddExternalLine/sd_apiGetLines等・実機E2E完了・本番デプロイ済み）を土台に、ns-portal側を実装。**①SQL**: `invoice_pl_reflections`を拡張（新テーブルは作らない・設計書§9-3のとおり）。**②pl-fee-reflect Edge Functionに`seisan_confirm`/`seisan_refresh_status`を新設**：精算対象店舗分をDB_PL直接ではなくsd_apiAddExternalLine経由で業務委託精算書へ登録し（店舗ごとに1行・sourceKeyで冪等）、sd_apiGetLinesで精算書側の実データから6状態モデル（設計書§9-2・「店舗×月の同期成功」を「個別invoice反映済み」と断定しない設計）を取得し直せるようにした。**③フロント**：既存「📊 PLへ反映」パネルに統合し、精算対象店舗を検出したら「📋 業務委託精算書へ登録」ボタンから実際に登録できるように（従来は「精算書に手入力してください」という案内のみだった）。**④既存バグ2件を発見・修正**：(a)精算対象店舗の判定漏れ（`seisan_target`のみ見ていて`seisan_pl_categories_target`＝黒霧屋新横浜等を見ていなかった。direct route側のconfirmアクション）、(b)「精算対象店舗が含まれる」というだけでPL・広告・業務委託精算カードを対応完了扱いにしていた（実際には何も登録されていなかった＝本当の完了を偽っていた）ロジックを、実際の登録まで未完了のままにするよう修正。`invoices.html`・`supabase/functions/pl-fee-reflect/index.ts`コミット`029e684`push済み・デプロイ済み・GitHub Pages反映確認済み。**未完了（ユーザー対応待ち）**: ①`PL_SYNC_TOKEN`（seisan-dashboard API認証用）が未設定のため、実際の登録はまだ動かない。ユーザーから値を受け取ってSupabase Secretsへ登録する必要がある（設計書§15の指示どおり、自動化ツールでの登録は拒否されるため）②秋葉原 肉寿司の`seisan_store_name`が未設定（他の対象店舗は設定済み）。設定タブから設定が必要③実機E2E未実施（PL_SYNC_TOKEN設定後）
 
 **★★★★2026-09-05（担当C実行スレッド・続き40）③証憑アップロード失敗の根本原因を特定・修正（トークン期限切れで失敗していた）**（続き39の続報。詳細は[続き40の記録](#2026-09-05担当c実行スレッド続き40)）: 続き39で入れた「無言の失敗をバナー表示する」対策が効き、ユーザーが実機で具体的なエラー「エラー: アップロードに失敗しました」を再現・報告してくれた。これを手がかりに該当コード（請求書詳細「証憑プレビュー」→「＋このメールに紐付けて追加」＝`manual-att-upload`）を再調査したところ、**Supabase StorageへのPOSTだけが、他のAPI呼び出しが必ず経由する`authed()`（アクセストークン期限切れを自動検知・リフレッシュして再試行する共通処理）を使わず、sessionのアクセストークンで直接fetchしていたことが判明**。画面を長時間開いたままトークンが切れると、他の操作は自動リフレッシュされて動き続ける中、この一箇所だけがトークン切れで失敗し続ける再現しづらい不具合だったと推測される。加えて失敗時にSupabaseの実際のエラー内容を握りつぶし固定文言にしていたため特定できずにいた。**修正**: ①生fetchをauthed()経由に変更（自動リフレッシュが効くように）②失敗時はStorage・RPCどちらもSupabaseの実際のstatus/エラー内容を画面とconsoleの両方に表示③ボタンをtry/catch/finallyで確実に復帰させる④ボタン文言を「＋この請求書に証憑を追加」に変更（ユーザー要望）。`invoices.html`コミット`92c0dd6`push済み・GitHub Pages反映確認済み。**実機E2E未実施**（この環境からユーザーの実ログインセッションを操作できないため）。ユーザーに実機での再試行・確認を依頼中
@@ -6839,3 +6841,26 @@ ns-portal側（担当C）の実装は精算書側（担当A・GAS・`seisan-dash
 3. 実機E2E未実施（PL_SYNC_TOKEN設定後にユーザーに確認してもらう必要がある）。
 
 `ai-cockpit progress`（TK-85）実行済み。
+
+## 2026-09-05（担当C実行スレッド・続き42）
+
+続き41で報告した2つのブロッカーについて、ユーザーから即座に対応をもらえた。
+
+- **①PL_SYNC_TOKEN**: ユーザーから値を受け取り、`npx supabase secrets set PL_SYNC_TOKEN=... --project-ref uuvsxzhpxtghojoubjcc`で登録。
+- **②秋葉原肉寿司の精算書店舗名**: ユーザーの実機スクリーンショット（精算書「法人別・振込」画面）で店舗名が「秋葉原 肉寿司」であることを確認し、`stores.seisan_store_name`をSQLで更新。
+
+その場で終わらせず、実際に接続できるかを確認するため、**使い捨て診断用Edge Function**（`diagseisanping`・認証無し・`sd_apiGetLines`を叩くだけ・テスト後に`supabase functions delete`で削除、gitには一切コミットしていない）を一時的にデプロイし、`{store:"秋葉原 肉寿司",monthKey:"2026-08",sourceKey:"invoice:test:doesnotexist"}`という実在しないダミーの問い合わせを実行した（既存データを書き換えない読み取り専用のテスト）。
+
+その結果、**GAS側のレスポンス形式が設計書の記述と食い違っていることを発見**した：
+```
+実際の応答: {"ok":true,"result":{"ok":true,"lines":[{"store":"秋葉原 肉寿司","monthKey":"2026-08","sourceKey":"invoice:test:doesnotexist","found":false}]}}
+```
+設計書§5-2は`sd_apiGetLines`が`{ok:true, lines:[...]}`を直接返すと書いているが、実際には`sd_apiCategorizedLines`等と同じGASディスパッチャが、呼び出した関数の戻り値をさらに`{ok:true, result:<戻り値>}`という外側のラッパーで包んで返していた（関数呼び出し自体が例外を投げた場合は`{ok:false, error:...}`になっていると推測される）。
+
+前日実装した`seisanCall()`はこの外側ラッパーを考慮しておらず、`res.lines`（実際には存在しない。正しくは`res.result.lines`）を読もうとして常に空配列を返す状態だった。これは`seisan_refresh_status`が実際には正常に精算書へ登録済みの明細まで「PLエラー」と誤判定してしまう、実害のあるバグだった（同じディスパッチャを使う`sd_apiAddExternalLine`側の`seisan_confirm`でも、レスポンスの`ok`/`locked`判定が常に外側の`true`しか見えず、内側の実際の成否を見誤っていた可能性が高い）。
+
+`seisanCall()`内で`{ok:false,...}`なら例外を投げ、`result`キーがあればそれを1段アンラップして返すよう修正（ラッパーが無い形式が来た場合はそのまま通す後方互換つき）。構文チェック（`npx esbuild`でのバンドル確認）後、再デプロイ。同じ診断用Edge Functionで再度読み取りテストを行い、正しくアンラップされた`{ok:true,found:false}`が得られることを確認（書き込みは一切行っていない）。診断用Edge Functionはテスト後に`supabase functions delete`で削除済み。
+
+構文チェック済み。`supabase/functions/pl-fee-reflect/index.ts`をコミット`fb9c502`としてpush済み・`git diff origin/main --stat`で空（クリーン同期）確認済み。デプロイ済み（フロント側`invoices.html`の変更は無いためGitHub Pagesへの追加反映は不要）。`ai-cockpit progress`（TK-85・95%）実行済み。
+
+**現状のまとめ**: 2つのブロッカー（トークン・店舗名）は解消済み、かつ実装直後のバグ（GAS応答ラッパー未対応）も実機接続テストで発見・修正済み。残るは**中山さんに実際に請求書詳細画面から「📋 業務委託精算書へ登録」ボタンを押していただく実機E2E確認**のみ（`sd_apiAddExternalLine`の書き込み自体はこの環境から安全に代行できないため、ユーザー操作が必要）。
