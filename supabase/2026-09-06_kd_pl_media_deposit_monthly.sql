@@ -53,9 +53,13 @@ create table if not exists public.kd_pl_monthly_summary (
   source_count int not null default 0,
   sync_run_id uuid references public.kd_sync_runs (id)
 );
--- store_idのNULL（全社共通行）は年月ごとに1行だけに保ちたいので、NULLをセンチネル値に丸めてunique化
+-- 2026-09-06修正: 当初はcoalesce()の式インデックスにしていたが、PostgRESTのupsert(onConflict:...)が
+-- 生成する`ON CONFLICT (store_id, year_month)`は素の列に対する制約にしかマッチせず
+-- 「there is no unique or exclusion constraint matching the ON CONFLICT specification」で失敗した
+-- （実機で確認）。store_id=NULL（全社共通経費・1年月1行）はアプリ側でselect→insert/updateの手動upsertに
+-- しており本インデックスには依存しないため、素の列インデックスに変更。
 create unique index if not exists kd_pl_monthly_summary_unique
-  on public.kd_pl_monthly_summary (coalesce(store_id, '00000000-0000-0000-0000-000000000000'::uuid), year_month);
+  on public.kd_pl_monthly_summary (store_id, year_month);
 create index if not exists kd_pl_monthly_summary_ym_idx on public.kd_pl_monthly_summary (year_month desc);
 create index if not exists kd_pl_monthly_summary_corp_ym_idx on public.kd_pl_monthly_summary (corporation_id, year_month);
 
