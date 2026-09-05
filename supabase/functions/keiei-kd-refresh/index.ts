@@ -1,9 +1,12 @@
-// W2③④: kd_サマリ系の日次/毎時リフレッシュジョブ（レーンP専任・service_role限定）
-// docs/設計書_表示集計層kdと高速化実行計画_2026-09-02.md §3/§6/§10.1
+// W2③④+W3①: kd_サマリ系の日次/毎時/月次リフレッシュジョブ（レーンP専任・service_role限定）
+// docs/設計書_表示集計層kdと高速化実行計画_2026-09-02.md §3/§6/§10.1/§10.2-1
 //
-// 呼び出し方: POST { op: 'reservation_daily'|'dashboard_daily'|'home_kpi'|'unresolved_notify' }（service_roleのみ）
+// 呼び出し方: POST { op: 'reservation_daily'|'dashboard_daily'|'home_kpi'|'unresolved_notify'
+//                    |'pl_monthly'|'media_monthly'|'deposit_monthly' }（service_roleのみ）
 //   運用: .github/workflows/keiei-kd-hourly.yml（dashboard_daily・home_kpiを日中毎時）
-//        .github/workflows/keiei-perflog-daily.yml（reservation_daily・unresolved_notifyを日次で追加実行）
+//        .github/workflows/keiei-perflog-daily.yml（reservation_daily・unresolved_notify・
+//        pl_monthly・media_monthly・deposit_monthlyを日次で追加実行。月次サマリだが当月分の
+//        反映を翌日まで待たせたくないので日次リフレッシュに含める）
 //
 // 各opの実行内容はkd_sync_runsに記録する（start→success/failed）。画面側（app.js）はkd_sync_runsの
 // 最新finished_atが変わった時だけ再取得すればよい設計（§7）。
@@ -60,10 +63,19 @@ async function startRun(sb: any, job: string, periodFrom?: string, periodTo?: st
   if (error) throw new Error("kd_sync_runs開始記録に失敗: " + error.message);
   return data.id as string;
 }
-async function finishRun(sb: any, runId: string, ok: boolean, rows: number, error?: string) {
+// 2026-09-06追加（担当D・監視タスク）: 失敗時はkd_sync_runsへの記録だけでなく、当日中にLarkへも
+// 通知する（今まではfinishRun(ok:false)がkd_sync_runsに書くだけで、誰も見ていなければ何日も
+// 気づかれない状態だった。実際に9/2〜9/5で5回のdashboard_daily失敗がLark無通知のまま記録されていた）。
+// job名も渡してもらい、どのサマリの更新が止まっているか一目で分かるメッセージにする。
+async function finishRun(sb: any, runId: string, ok: boolean, rows: number, error?: string, job?: string) {
   await sb.from("kd_sync_runs").update({
     finished_at: new Date().toISOString(), status: ok ? "success" : "failed", rows, error: error ?? null,
   }).eq("id", runId);
+  if (!ok) {
+    try {
+      await sendLark(sb, `⚠️ kd_サマリ更新に失敗しました（${job ?? "job不明"}）\n${(error ?? "").slice(0, 300)}\nrun_id=${runId}\n※次回の自動リフレッシュで再試行されます。繰り返す場合はkd_sync_runsを確認してください。`);
+    } catch (_) { /* Lark通知自体の失敗でジョブ本体は止めない */ }
+  }
 }
 
 async function sendLark(sb: any, text: string) {
@@ -169,7 +181,7 @@ async function refreshReservationDaily(sb: any, body: any) {
     await finishRun(sb, runId, true, upserts.length);
     return { ok: true, job: "reservation_daily", from, to, rows: upserts.length, sync_run_id: runId };
   } catch (e) {
-    await finishRun(sb, runId, false, 0, String(e));
+    await finishRun(sb, runId, false, 0, String(e), "kd_reservation_daily_summary");
     return { ok: false, error: String(e) };
   }
 }
@@ -250,10 +262,18 @@ async function refreshDashboardDaily(sb: any, body: any) {
       const { error: upErr } = await sb.from("kd_dashboard_daily_summary").upsert(upserts.slice(i, i + 500), { onConflict: "store_id,period_date" });
       if (upErr) throw new Error("upsert失敗: " + upErr.message);
     }
+    // 2026-09-06追加（担当D・監視タスク）: 未対応の店舗名はkd_sync_runs.errorに埋めるだけでなく、
+    // kd_unresolved_namesへも隔離登録する（既存RPC・(source_table,kind,raw_name)でupsert・
+    // 再出現のたびoccurrences+1）。こうしないとmorning-watchdogのkd_unresolved件数チェック（担当D実装）
+    // からは見えないまま埋もれてしまう。
+    for (const nm of unmatched) {
+      try { await sb.rpc("kd_report_unresolved_name", { p_source_table: "kd_dashboard_daily_summary", p_kind: "store", p_raw_name: nm }); }
+      catch (_) { /* 隔離登録の失敗でリフレッシュ本体は止めない */ }
+    }
     await finishRun(sb, runId, true, upserts.length, unmatched.size ? `店舗名未対応: ${[...unmatched].join("、")}` : undefined);
     return { ok: true, job: "dashboard_daily", rows: upserts.length, unmatched: [...unmatched], sync_run_id: runId };
   } catch (e) {
-    await finishRun(sb, runId, false, 0, String(e));
+    await finishRun(sb, runId, false, 0, String(e), "kd_dashboard_daily_summary");
     return { ok: false, error: String(e) };
   }
 }
@@ -318,7 +338,7 @@ async function refreshHomeKpi(sb: any) {
     await finishRun(sb, runId, true, upserts.length);
     return { ok: true, job: "home_kpi", rows: upserts.length, sync_run_id: runId };
   } catch (e) {
-    await finishRun(sb, runId, false, 0, String(e));
+    await finishRun(sb, runId, false, 0, String(e), "kd_home_kpi_snapshot");
     return { ok: false, error: String(e) };
   }
 }
