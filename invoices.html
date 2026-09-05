@@ -520,6 +520,35 @@ const SALES_STATUS_LABEL={draft:"下書き",registered:"確認中",duplicate_sus
 
 const $=id=>document.getElementById(id);
 const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+// 2026-09-05追加：ユーザー報告「アップロード請求書がまた失敗する。エラーメッセージも何も表示されない」
+// への対応。実データを確認したところ、再試行時にinvoices・mf_sync_logsどちらにも新しい行が
+// 作られておらず、サーバーへリクエストが届く前にクライアント側で（何らかの理由で）処理が
+// 止まっていると判明。この画面には従来、想定外の例外を拾って表示する仕組みが一切無く、
+// どこかで例外が起きると開発者ツールのコンソールにしか出ず、画面には「何も起きなかったように」
+// 見えてしまう構造的な問題があった。今後は同じ「無言の失敗」が起きても必ず画面上に表示されるよう、
+// window全体の想定外エラー・拾われなかったPromise失敗を、目立つバナーとして常に表示する
+function showGlobalErrorBanner(message){
+  let bar=document.getElementById("global-error-banner");
+  if(!bar){
+    bar=document.createElement("div");
+    bar.id="global-error-banner";
+    // CSS変数（--m-red等）は.mail-shell配下でしか定義されておらず、この関数はどのタイミングでも
+    // 呼ばれ得るため、依存を避けて色を直接指定する
+    bar.style.cssText="position:fixed;top:0;left:0;right:0;z-index:99999;background:#c0392b;color:#fff;font-size:13px;padding:10px 14px;box-shadow:0 2px 8px rgba(0,0,0,.25);display:flex;gap:10px;align-items:flex-start;justify-content:space-between";
+    document.body.appendChild(bar);
+  }
+  const msgBox=document.createElement("div");
+  msgBox.style.cssText="flex:1;white-space:pre-wrap;word-break:break-word";
+  msgBox.textContent="⚠️ 予期しないエラーが発生しました: "+message;
+  const closeBtn=document.createElement("button");
+  closeBtn.textContent="✕ 閉じる";
+  closeBtn.style.cssText="background:none;border:1px solid #fff;color:#fff;border-radius:5px;padding:3px 8px;font-size:12px;cursor:pointer;flex-shrink:0";
+  closeBtn.onclick=()=>bar.remove();
+  bar.innerHTML=""; bar.appendChild(msgBox); bar.appendChild(closeBtn);
+}
+window.addEventListener("error",e=>{ try{ showGlobalErrorBanner((e&&e.message)||String(e)); }catch(_e){} });
+window.addEventListener("unhandledrejection",e=>{ try{ showGlobalErrorBanner((e&&e.reason&&(e.reason.message||String(e.reason)))||"不明なエラー"); }catch(_e){} });
 const sess={get:()=>{try{return JSON.parse(localStorage.getItem(LS_KEY))}catch(e){return null}},
             set:v=>localStorage.setItem(LS_KEY,JSON.stringify(v)),
             clear:()=>localStorage.removeItem(LS_KEY)};
@@ -5090,10 +5119,20 @@ function wireUploadInvoiceTab(u){
     if(e.dataTransfer.files&&e.dataTransfer.files.length) addFiles(e.dataTransfer.files);
   });
   $("up-submit").onclick=async()=>{
+    // 2026-09-05修正：ユーザー報告「再試行してもエラーメッセージも何も表示されない」に対応。
+    // 実データ確認の結果、再試行時にサーバー側（invoices・mf_sync_logs）に一切新しい記録が
+    // 無く、リクエストが送信される前にクライアント側で処理が止まっていたと判明。
+    // 従来はtry節の外側（ファイル未選択チェック・ボタン無効化）で例外が起きると画面に何も
+    // 表示されず、また成功時にボタンの無効化を戻していなかったため、何らかの理由で処理が
+    // 一度でも詰まるとボタンが無効のまま二度と反応しなくなる可能性があった。
+    // ここから下を丸ごとtry/catch/finallyで囲み、どんな失敗でも必ず画面に表示され、
+    // ボタンも必ず再び押せる状態に戻るようにする
     const msg=$("up-msg");
-    if(!UPLOAD_STATE.files.length){ msg.textContent="ファイルを選択してください"; return; }
-    $("up-submit").disabled=true; msg.className="err"; msg.textContent="取込中…";
+    const btn=$("up-submit");
     try{
+      if(!UPLOAD_STATE.files.length){ msg.className="err"; msg.textContent="ファイルを選択してください"; return; }
+      btn.disabled=true; msg.className="err"; msg.textContent="取込中…";
+      console.log("[アップロード請求書] 取込開始",{files:UPLOAD_STATE.files.map(f=>({name:f.name,size:f.size,type:f.type}))});
       const voucherFiles=[];
       for(const f of UPLOAD_STATE.files) voucherFiles.push({file_name:f.name, file_data:await uploadFileToBase64(f)});
       const payload={
@@ -5103,7 +5142,8 @@ function wireUploadInvoiceTab(u){
         voucher_files:voucherFiles,
       };
       const {ok,body:j}=await mfCall("intake_upload",payload);
-      if(!ok){ msg.textContent=j.error||"取込に失敗しました"; $("up-submit").disabled=false; return; }
+      console.log("[アップロード請求書] intake_upload応答",{ok,body:j});
+      if(!ok){ msg.textContent=(j&&j.error)||"取込に失敗しました（サーバーからの応答が異常です）"; return; }
       // 2026-09-05修正：ユーザー報告「アップロード請求書のPDFプレビューが出ない」に対応。
       // 従来は証憑の保存に失敗しても気付けなかったため、失敗があればここで明示する
       if(j.attach_errors&&j.attach_errors.length){
@@ -5126,7 +5166,12 @@ function wireUploadInvoiceTab(u){
         TAB="unified"; await renderTabBody(u);
         if(j.invoice_id) await openInvoiceDetail(u,j.invoice_id);
       },600);
-    }catch(e){ msg.textContent="取込中にエラーが発生しました: "+e.message; $("up-submit").disabled=false; }
+    }catch(e){
+      console.error("[アップロード請求書] 取込中に例外",e);
+      msg.className="err"; msg.textContent="取込中にエラーが発生しました: "+(e&&e.message?e.message:String(e));
+    }finally{
+      btn.disabled=false;
+    }
   };
   document.querySelectorAll("[data-open-invoice]").forEach(el=>el.onclick=()=>openInvoiceDetail(u,el.dataset.openInvoice));
 }
@@ -6127,6 +6172,9 @@ async function payrollOpenPreview(userId){
   const usingDraft=!!(draft&&Array.isArray(draft.branches)&&draft.branches.length);
   if(usingDraft) branches=draft.branches.map(b=>({...b}));
   const name=(row.user&&row.user.name)||"—";
+  // 2026-09-05修正：ユーザー要望「摘要のデフォルトに従業員名も入れてほしい（例: ○月分給与　田中　太郎）」
+  // に対応。既定文言を1箇所にまとめ、placeholder・伝票プレビュー・登録payloadの3箇所で共通利用する
+  const defaultRemark=`${PAYROLL_STATE.yearMonth}分給与　${name}`;
   const pdfBase64=await payrollFetchPdfBase64(userId,PAYROLL_STATE.yearMonth);
   // 2026-09-02: PDFを見ながら金額を修正できるよう、以降は毎回branchesから合計を計算し直す
   // （固定のtotalDebit/totalCredit定数にはしない＝編集後に古い値のまま参照してしまう事故を防ぐ）
@@ -6152,9 +6200,9 @@ async function payrollOpenPreview(userId){
     const hasDebit=!!b.debitLabel, hasCredit=!!b.creditLabel;
     // 2026-09-05追加：ユーザー要望「仕訳ごとに摘要を入力できるようにしてほしい」に対応。
     // 従来はb.remarkが埋まっている場合のみ読み取り専用で表示していたが、そもそも編集欄が
-    // 無かった。登録時のデフォルト文言（例:「2026-09分給与」）をplaceholderに出しつつ、
+    // 無かった。登録時のデフォルト文言（従業員名入り）をplaceholderに出しつつ、
     // 明細行ごとに自由に上書きできるようにする
-    const remarkInput=`<input class="payroll-preview-remark" data-idx="${idx}" value="${esc(b.remark||"")}" placeholder="摘要（空欄の場合は「${esc(PAYROLL_STATE.yearMonth)}分給与」等の既定文言で登録されます）" style="width:100%;box-sizing:border-box;margin-top:8px;font-size:12px;padding:5px 8px;border:1px solid var(--line);border-radius:6px">`;
+    const remarkInput=`<input class="payroll-preview-remark" data-idx="${idx}" value="${esc(b.remark||"")}" placeholder="摘要（空欄の場合は「${esc(defaultRemark)}」で登録されます）" style="width:100%;box-sizing:border-box;margin-top:8px;font-size:12px;padding:5px 8px;border:1px solid var(--line);border-radius:6px">`;
     return `<div class="mfj-preview-entry" data-row-idx="${idx}">
       <div class="payroll-preview-head"><div>借方</div><div>貸方</div></div>
       <div class="mfj-preview-body">
@@ -6249,7 +6297,7 @@ async function payrollOpenPreview(userId){
         <td style="padding:6px 8px;border:1px solid var(--line)">${creditOn?esc(b.creditLabel):""}</td>
         <td style="padding:6px 8px;border:1px solid var(--line);text-align:right;font-variant-numeric:tabular-nums">${creditOn?yen(b.creditAmount):""}</td>
         <td style="padding:6px 8px;border:1px solid var(--line);font-size:11px;color:var(--muted)">${creditOn?esc(deptName(b.credit_department_id)):""}</td>
-        <td style="padding:6px 8px;border:1px solid var(--line);font-size:11px;color:var(--muted)">${esc(b.remark||`${PAYROLL_STATE.yearMonth}分給与`)}</td>
+        <td style="padding:6px 8px;border:1px solid var(--line);font-size:11px;color:var(--muted)">${esc(b.remark||defaultRemark)}</td>
       </tr>`;
     }).join("");
     const t=calcTotals();
@@ -6390,7 +6438,7 @@ async function payrollOpenPreview(userId){
         credit:b.credit?{account_id:b.credit.account_id,sub_account_id:b.credit.sub_account_id||undefined,value:b.creditAmount}:undefined,
         department_id:b.department_id||null, tax_id:b.tax_id||null,
         credit_department_id:b.credit_department_id||null, credit_tax_id:b.credit_tax_id||null,
-        remark:b.remark||`${PAYROLL_STATE.yearMonth}分給与`,
+        remark:b.remark||defaultRemark,
       })),
       transaction_date: $("payroll-date").value,
       remark:`${PAYROLL_STATE.yearMonth}分給与（${name}）`,
