@@ -60,6 +60,14 @@ const DASH_API_URL = "https://script.google.com/macros/s/AKfycbwW0qhyEr0-uQWTaLg
 const SEISAN_API_URL = "https://script.google.com/macros/s/AKfycbzwYN9uSEtcJHSKSVQCoQOrllhO7G6gR-E4dvP-V4o_VdGXr9VQx2mbYYPNyNEFSQCiKg/exec";
 // seisan-dashboard側のWeb App呼び出し規約: {fn:'関数名', args:[...]} を1本のPOSTで送るだけ
 // （既存sd_apiCategorizedLines等と同じ形。設計書§5冒頭）
+//
+// 2026-09-05実機確認で判明：この呼び出し規約のGASディスパッチャは、関数自体の戻り値を
+// そのまま返すのではなく、{ok:true, result:<関数の戻り値>}（fn呼び出し自体が例外を投げた
+// 場合は{ok:false, error:...}）という1段外側のラッパーで包んで返す（診断用Edge Function
+// diagseisanpingで実際にsd_apiGetLinesを叩いて確認済み。設計書§5-1/5-2に書かれている
+// {ok,lines,...}等の戻り値は、このラッパーのresultの中身のこと）。
+// 呼び出し側（sd_apiAddExternalLine/sd_apiGetLines）はこのresultをそのまま使えるよう、
+// ここで1段アンラップしておく（ラッパーが無い形式で返ってきた場合はそのまま通す＝後方互換）
 async function seisanCall(fn: string, args: unknown[]) {
   const res = await fetch(SEISAN_API_URL, {
     method: "POST",
@@ -67,11 +75,16 @@ async function seisanCall(fn: string, args: unknown[]) {
     body: JSON.stringify({ fn, args }),
   });
   const text = await res.text();
+  let outer: any;
   try {
-    return JSON.parse(text);
+    outer = JSON.parse(text);
   } catch {
     throw new Error("精算書APIの応答を読めませんでした: " + text.slice(0, 200));
   }
+  if (outer && typeof outer === "object" && outer.ok === false) {
+    throw new Error(outer.error || "精算書API呼び出し自体が失敗しました（" + fn + "）");
+  }
+  return (outer && typeof outer === "object" && "result" in outer) ? outer.result : outer;
 }
 
 Deno.serve(async (req: Request) => {
