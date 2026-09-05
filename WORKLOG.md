@@ -6,6 +6,8 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
+**★★★★2026-09-06（担当C実行スレッド・続き49）請求書処理フローの速度改善（TK-93・司令塔指示「会計処理の速度改善」の担当C分）第1弾: 計測導入＋実測前の明白な無駄を除去**（詳細は[続き49の記録](#2026-09-06担当c実行スレッド続き49)）: 指示は①フロー棚卸し②操作単位の処理時間記録③実測Top10④無駄の除去、新機能追加禁止・正確性優先。まず`invoices.html`の請求書処理フロー全体（メール処理・アップロード・仕訳作成・PL/広告パネル・mf-journal/invoice-ocr Edge Function）を調査エージェントで棚卸し。**②計測**は新しい受け皿を作らず、レーンPが既に用意した`keiei-api-perflog`（kd_perf_log・日次Lark「遅い/失敗トップ10」自動配信）をそのまま流用（`app="invoices"`で記録。tori-dashboard/app.jsの`logApiPerf_()`と全く同じ`sendBeacon`方式）。**④無駄の除去（実測を待たずコードから明白に分かったもの）**: 最大の効果は**mf-journalの「仕訳を作成」パネルが同じ仕訳履歴（最大1000件）をsuggest/list_journals/list_departmentsで3回別々に取得・スキャンしていた**のを新規action`journal_search`で1回に統合（直列4呼び出し→並列2呼び出し）。加えて、請求書詳細を開くたびに広告費/PL反映パネルが`CORP_STORE_CACHE.stores`と同じ店舗データを別途再取得していた重複、詳細を開く際の法人・店舗・取引先マスタ取得と本体データ取得が不要に直列だった箇所、invoice-ocr/アップロード請求書の直列ループ、を修正。`invoices.html`・`supabase/functions/mf-journal/index.ts`・`supabase/functions/invoice-ocr/index.ts`コミット`9339b74`push済み・デプロイ済み・GitHub Pages反映確認済み。**③実測Top10はまだ出ていない**（計測を入れたばかりで、明日以降の日次Lark配信を待つ必要がある）。ai-cockpit TK-93作成・進捗記録済み
+
 **★★★★★★2026-09-06（レーンPスレッド）司令塔指示「経営D/会計処理の速度改善」対応: keiei-api-home文書化＋PL/媒体/入金の月次kd_サマリ3本＋読み取りAPI新設。本番デプロイ・実機確認済み**
 
 司令塔からの5項目指示に対応。**tori-dashboardのapp.js/invoices.html/GASは無変更**（既存のlogin/bqGetPL/bqGetMedia/bqGetDepositアクションを呼んでいるだけ）。
@@ -6990,3 +6992,28 @@ if(modal) modal.remove();
 構文チェック（`node --check`・`npx esbuild`）済み。`invoices.html`・`supabase/functions/mf-journal/index.ts`をコミット`0335022`としてpush済み・`git diff origin/main --stat`で空（クリーン同期）確認済み。デプロイ済み・GitHub Pagesへの反映もcurlで確認済み。`ai-cockpit progress`（TK-85関連の追加対応として）実行済み。
 
 ユーザーに、もう一度同じ請求書で「登録済み仕訳の内容」を開き直してもらい、今度は「↩️この仕訳の紐付けを解除する」ボタンが表示されるか確認を依頼中。
+
+## 2026-09-06（担当C実行スレッド・続き49）
+
+司令塔からの指示（レーンP経由と思われる）「会計項目で請求書を処理するときの遅さを最優先で改善」を受けて着手。ユーザーからの直接の指示文をそのまま引用すると：①`invoices.html`の請求書処理フロー棚卸し②操作単位の処理時間記録（AI読取・仕訳候補取得・MF部門/税区分取得・仕訳登録・PDF取得・送信等。`kd_perf_log`を流用できるなら流用）③実測で遅いTop10④無駄の除去（既取得マスタの再取得・MF APIの不要な複数回呼び出し・直列処理の並列化・不要な重い処理の後回し・部門/税区分/仕訳辞書のキャッシュ）。注意事項：新機能追加はしない・金額や仕訳の正確性を犠牲にしない・体感改善を優先。
+
+**①棚卸し**: 探索専用エージェントに、`invoices.html`の請求書メール処理（`openMailDetail`）・アップロード請求書（`renderUploadInvoiceTab`）・仕訳作成（`MFJ_STATE`/`mfjLoadForTenant`）・PL/広告パネル（`plfeeInit`/`adcostInit`）・`invoice-ocr`・`mf-journal`（Edge Function側含む）を実際のコードから読ませ、無駄な再取得・不要な直列化・キャッシュの取りこぼしを行番号つきで報告させた（読み取り専用・編集なし）。
+
+**②計測導入**: 新しいテーブル・Edge Functionを新設するのではなく、レーンPが既に用意していた仕組みをそのまま流用した：
+- `keiei-api-perflog` Edge Function（無認証ingest・`kd_perf_log`テーブルへ書き込み・14日で自動削除・日次で「遅いaction/失敗actionトップ10」をLarkへ自動配信する仕組みまで既に完成していた）
+- `tori-dashboard/app.js`の`logApiPerf_()`と全く同じ方式（`navigator.sendBeacon`・`apikey`はクエリ文字列に載せる）を`invoices.html`にも実装（`perfTimed()`/`logApiPerf()`ヘルパー、`app:"invoices"`で記録）
+- 主要操作（`mail_detail_open`・`invoice_detail_open`・`mfj_load_for_tenant`・`mfj_journal_create`・`invoice_ocr_ai_fill`・`invoice_intake_upload`・`invoice_send`・`attachment_sign_urls`・`mf_accounts_departments`）に計測を仕込んだ
+- これにより、明日以降`.github/workflows/keiei-perflog-daily.yml`の日次配信に「invoices」を含むトップ10が自動的に混ざって出てくる（レポート機能自体は新設不要）
+
+**③実測Top10**: まだ実施できていない（計測を入れたばかりでデータが無いため）。この環境から実際のログインセッションを長時間操作して十分なデータを蓄積することもできないため、正直に「未実施」として報告する。ユーザーが実機で普段どおり使えば自然にデータが溜まり、明日以降のLark配信で確認できる。
+
+**④実測を待たずコードから明白に分かった無駄の除去**（すべて動作・金額計算ロジックを変えず高速化のみ）:
+1. **【最大の効果】`mf-journal`の3重取得統合**: 「仕訳を作成」パネルを開くたびに、`suggest`・`list_journals`・`list_departments`（部門が空の場合のみ）が同じ`vendor_name`で最大1000件（前期＋当期）のマネーフォワード仕訳履歴を毎回別々に取得・スキャンしていた。実装を読むと、この3つは元々1回のスキャンで`match`（suggest）・`departments`/`taxes`・`results`（list_journals）が同時に求まる構造だった。新規action`journal_search`でこれを1回にまとめ、フロント側（`mfjLoadForTenant`）も直列4呼び出し（`accounts`→`suggest`→`list_journals`→`list_departments`）→並列2呼び出し（`Promise.all([accounts, journal_search, 仕訳辞書])`）に変更。直列にしていた理由（「同時に呼ぶとマネーフォワード側のトークン更新が競合することがある」というコード上のコメント）は、`_shared/mf.ts`の`getValidAccessToken()`に既に競合時の待機・再読込フォールバックが実装済みで、かつ同じアプリの設定タブ（`mftLoadAccountsAndDepts`）では実際に`accounts`/`list_departments`をPromise.allで並列に呼んでいて問題が出ていない実績があったため、安全に並列化できると判断した。既存の`suggest`/`list_journals`/`list_departments`単体アクション自体は他の呼び出し元（設定タブの仕訳辞書・仕訳検索欄等）でそのまま使われ続けるため、追加のみで既存動作への影響はゼロ。
+2. **店舗一覧のキャッシュ重複解消**: 請求書詳細を開くと、`CORP_STORE_CACHE.stores`（法人・店舗キャッシュ）に既に読み込み済みの店舗一覧を、広告費パネル（`ADCOST_STATE`。詳細を開くたびに毎回再取得）とPL反映パネル（`PLFEE_STATE`。セッション内1回のみだが同じデータを二重保持）がそれぞれ独自にDBから再取得していた。両方とも`CORP_STORE_CACHE.stores`をそのまま使い回すよう修正。
+3. **`openMailDetail`/`openInvoiceDetail`の不要な直列化解消**: 法人・店舗・取引先マスタの取得（`ensureCorpStoreCache`/`ensureVendorCache`）と請求書本体データの取得は互いに依存関係が無いのに、別々の`Promise.all`として直列に実行されていた。1つの`Promise.all`にまとめて並列化。
+4. **`invoice-ocr`**: 添付ファイルのStorageダウンロード（最大4件）が直列forループだったのをPromise.allで並列化（AIへ渡す添付の順序は維持）。
+5. **アップロード請求書**: 複数ファイルのbase64変換（直列forループ）をPromise.allで並列化。取込完了後の演出的な待ち時間を600ms→300msに短縮。
+
+構文チェック（`node --check`・`npx esbuild`）済み。`invoices.html`・`supabase/functions/mf-journal/index.ts`・`supabase/functions/invoice-ocr/index.ts`をコミット`9339b74`としてpush済み・`git diff origin/main --stat`で空（クリーン同期）確認済み。両Edge Functionをデプロイ・匿名curlで生存確認済み。GitHub Pagesへの反映もcurlで確認済み・ブラウザでの初期表示にコンソールエラーが無いことも確認済み（ログイン後の実機動作確認は環境上できないため未実施）。`ai-cockpit`にTK-93を新規登録・進捗記録済み。
+
+**次にやること（ユーザーへの依頼）**: このまま普段どおり請求書処理を使ってもらえれば計測データが溜まる。明日以降、Larkに配信される「遅いaction/失敗actionトップ10」（`invoices`アプリ分）を見て、本当に遅い箇所が今回の修正でどう変わったか、まだ残っている遅い箇所は無いかを確認し、必要なら第2弾の改善に進む。
