@@ -1959,7 +1959,7 @@ function invoicePaymentTabHtml(invoice){
   }else{
     // 2026-09-05追加：振込予定日（PayPay銀行CSV出力時に入力・銀行の仕組み上、当日振り込みは
     // できないため）が分かっている場合はここに表示する
-    stateLine=`<span class="pl-state wait">●振込準備完了／振込一覧に登録済み</span>${invoice.transfer_scheduled_date?`　<span class="meta" style="color:var(--muted);font-size:11px">📅振込予定日: ${esc(fmtD(invoice.transfer_scheduled_date))}</span>`:""}`;
+    stateLine=`<span class="pl-state wait">●振込準備完了／振込一覧に登録済み</span>${invoice.transfer_scheduled_date?`<div style="margin-top:4px"><span class="hq-pill blue">📅 ${esc(fmtD(invoice.transfer_scheduled_date))} 振込予定</span></div>`:""}`;
     actionHtml=`<div class="mail-actions"><button id="dash-go-transfers-from-invoice">🏦 振込一覧を開く →</button></div>`;
   }
   const vendorLinkedName=(invoice.vendor&&invoice.vendor.name)||invoice.vendor_name||"";
@@ -4067,7 +4067,12 @@ function unifiedRender(u){
    ============================================================ */
 async function renderTransfersTab(u){
   $("tabbody").innerHTML=`<div class="spin">読み込み中…</div>`;
-  const r=await authed(`/rest/v1/invoices?mf_journal_id=not.is.null&payment_status=in.(wait,csv,processing)&select=*,vendor:vendors(name)&order=due_date.asc.nullslast&limit=300`);
+  // 2026-09-05追加：本部タスク自動作成時に「請求情報で選んだ対象法人」を使うため、
+  // 法人一覧（CORP_STORE_CACHE）をここでも確実に取得しておく
+  const [r]=await Promise.all([
+    authed(`/rest/v1/invoices?mf_journal_id=not.is.null&payment_status=in.(wait,csv,processing)&select=*,vendor:vendors(name)&order=due_date.asc.nullslast&limit=300`),
+    ensureCorpStoreCache(),
+  ]);
   const rows=(r.ok&&Array.isArray(r.body))?r.body:[];
   const vendorIds=[...new Set(rows.map(r2=>r2.vendor_id).filter(Boolean))];
   let accountsByVendor=new Map();
@@ -4075,10 +4080,10 @@ async function renderTransfersTab(u){
     const ar=await authed(`/rest/v1/vendor_bank_accounts?vendor_id=in.(${vendorIds.join(",")})&is_current=eq.true&select=*`);
     if(ar.ok&&Array.isArray(ar.body)) for(const a of ar.body) accountsByVendor.set(a.vendor_id,a);
   }
-  TRANSFERS_STATE={rows,accountsByVendor,selected:new Set()};
+  TRANSFERS_STATE={rows,accountsByVendor,selected:new Set(),scheduleFilter:TRANSFERS_STATE.scheduleFilter};
   transferRender(u);
 }
-let TRANSFERS_STATE={rows:[],accountsByVendor:new Map(),selected:new Set()};
+let TRANSFERS_STATE={rows:[],accountsByVendor:new Map(),selected:new Set(),scheduleFilter:""};
 function transferRowHtml(r){
   const acc=TRANSFERS_STATE.accountsByVendor.get(r.vendor_id);
   const blocked=r.bank_account_change_detected;
@@ -4096,12 +4101,22 @@ function transferRowHtml(r){
     <td>${acc?esc(acc.branch_name||"—"):"—"}</td>
     <td>${acc?esc(acc.account_number||"—"):"—"}</td>
     <td>${r.mf_journal_id?'<span class="invoice-status done">済</span>':'<span class="invoice-status wait">未</span>'}</td>
-    <td><span class="invoice-status ${pay[1]}">${esc(pay[0])}</span>${r.transfer_scheduled_date?`<div class="meta" style="color:var(--muted);font-size:10px;margin-top:2px">📅${esc(fmtD(r.transfer_scheduled_date))}</div>`:""}</td>
+    <td><span class="invoice-status ${pay[1]}">${esc(pay[0])}</span>${r.transfer_scheduled_date?`<div style="margin-top:3px"><span class="hq-pill blue">📅 ${esc(fmtD(r.transfer_scheduled_date))} 振込予定</span></div>`:""}</td>
     <td><button class="hq-btn" data-transfer-open="${r.id}" data-email="${r.email_id||""}">詳細</button></td>
   </tr>`;
 }
+// 2026-09-05追加：ユーザー要望「振込予約済み・未対応などプルダウンで絞り込めるように」に対応。
+// 振込予定日（transfer_scheduled_date）の有無で絞り込むだけのシンプルな絞り込み
+function transferFilteredRows(){
+  const rows=TRANSFERS_STATE.rows;
+  const f=TRANSFERS_STATE.scheduleFilter||"";
+  if(f==="scheduled") return rows.filter(r=>r.transfer_scheduled_date);
+  if(f==="unscheduled") return rows.filter(r=>!r.transfer_scheduled_date);
+  return rows;
+}
 function transferRender(u){
   const rows=TRANSFERS_STATE.rows;
+  const filtered=transferFilteredRows();
   $("tabbody").innerHTML=`
     <section class="invoice-list active">
       <div class="kpis" style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:14px">
@@ -4111,9 +4126,16 @@ function transferRender(u){
       </div>
       <div class="card" style="padding:16px">
         <div class="meta" style="color:var(--muted);font-size:12px;margin-bottom:10px">会計登録済み（仕訳登録済み）で、まだ振込が完了していない請求書の一覧です。振込先口座変更が未承認の請求書は選択できません（設定タブ「支払先・銀行口座」で確認してください）。給与の振込は「💴給与仕訳」タブでこれまでどおり行えます。</div>
+        <div style="margin-bottom:10px"><label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">振込予定日で絞り込み</label>
+          <select id="transfer-schedule-filter" style="max-width:220px">
+            <option value="" ${!TRANSFERS_STATE.scheduleFilter?"selected":""}>すべて（${rows.length}件）</option>
+            <option value="scheduled" ${TRANSFERS_STATE.scheduleFilter==="scheduled"?"selected":""}>📅 振込予約済み（${rows.filter(r=>r.transfer_scheduled_date).length}件）</option>
+            <option value="unscheduled" ${TRANSFERS_STATE.scheduleFilter==="unscheduled"?"selected":""}>未対応・振込予定日未設定（${rows.filter(r=>!r.transfer_scheduled_date).length}件）</option>
+          </select>
+        </div>
         <div class="hq-tablewrap"><table class="invoice-table">
           <thead><tr><th></th><th>支払期限</th><th>取引先</th><th>金額</th><th>銀行</th><th>支店</th><th>口座番号</th><th>会計</th><th>振込状態</th><th></th></tr></thead>
-          <tbody>${rows.length?rows.map(transferRowHtml).join(""):'<tr><td colspan="10">振込待ちの請求書はありません</td></tr>'}</tbody>
+          <tbody>${filtered.length?filtered.map(transferRowHtml).join(""):'<tr><td colspan="10">該当する請求書はありません</td></tr>'}</tbody>
         </table></div>
         <div class="mail-actions" style="margin-top:10px">
           <button class="hq-btn blue" id="transfer-export-csv">📥 PayPay銀行CSVを出力</button>
@@ -4122,6 +4144,7 @@ function transferRender(u){
         <div class="err" id="transfer-msg" style="margin-top:8px"></div>
       </div>
     </section>`;
+  $("transfer-schedule-filter").onchange=()=>{ TRANSFERS_STATE.scheduleFilter=$("transfer-schedule-filter").value; transferRender(u); };
   document.querySelectorAll(".transfer-check").forEach(el=>el.onchange=()=>{
     if(el.checked) TRANSFERS_STATE.selected.add(el.dataset.id); else TRANSFERS_STATE.selected.delete(el.dataset.id);
   });
@@ -4155,11 +4178,27 @@ async function transferExportCsv(u){
   const blob=paypayCsvToBlob(csv); // 2026-09-04：Shift-JISでエンコード（PayPay銀行アップロードエラー対応）
   const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download=`paypay_transfer_${new Date().toISOString().slice(0,10)}.csv`; a.click();
   await authed(`/rest/v1/invoices?id=in.(${withAccount.map(r=>r.id).join(",")})`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({payment_status:"csv",transfer_csv_exported_at:new Date().toISOString(),transfer_scheduled_date:transferDate})});
-  const recipientNames=withAccount.map(r=>(r.vendor&&r.vendor.name)||r.vendor_name).filter(Boolean);
-  const taskR=await createTransferConfirmTask("vendor",transferDate,recipientNames,"N-Style");
+  // 2026-09-05修正：ユーザー指摘「本部タスクの法人がN-Style固定になっている。請求情報の
+  // 対象法人で作られるようにしてほしい」に対応。選択した請求書を対象法人ごとにグループ化し、
+  // 法人ごとに別々の本部タスクを作る（対象法人が未設定の請求書はN-Styleを既定値として扱う）
+  const corpNameOf=r=>{
+    const name=(CORP_STORE_CACHE&&CORP_STORE_CACHE.corporations||[]).find(c=>c.id===r.corporation_id);
+    return (name&&name.name)||"N-Style";
+  };
+  const groups=new Map();
+  for(const r of withAccount){
+    const corp=corpNameOf(r);
+    if(!groups.has(corp)) groups.set(corp,[]);
+    groups.get(corp).push((r.vendor&&r.vendor.name)||r.vendor_name);
+  }
+  let taskOkCount=0, taskFailCount=0;
+  for(const [corp,names] of groups){
+    const taskR=await createTransferConfirmTask("vendor",transferDate,names,corp);
+    if(taskR.ok) taskOkCount++; else taskFailCount++;
+  }
   await renderTransfersTab(u);
-  $("transfer-msg").className=taskR.ok?"err msg-ok":"err";
-  $("transfer-msg").textContent=taskR.ok?`振込予定日: ${fmtD(transferDate)}／本部タスク「振込先を確認」を作成しました。`:"⚠️本部タスクの自動作成に失敗しました（振込CSV自体は正常に作成されています）。";
+  $("transfer-msg").className=taskFailCount?"err":"err msg-ok";
+  $("transfer-msg").textContent=`振込予定日: ${fmtD(transferDate)}／本部タスク「振込先を確認」を${taskOkCount}件（法人ごと）作成しました。`+(taskFailCount?`⚠️${taskFailCount}件は作成に失敗しました（振込CSV自体は正常に作成されています）。`:"");
 }
 async function transferMarkPaid(u){
   const selected=rows_for_transfer_selection();
@@ -5945,7 +5984,10 @@ async function payrollExportCsv(){
   a.href=url; a.download=`paypay_furikomi_${PAYROLL_STATE.yearMonth}.csv`;
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(()=>URL.revokeObjectURL(url),2000);
-  const taskR=await createTransferConfirmTask("payroll",transferDate,paidNames,"N-Style");
+  // 2026-09-05修正：ユーザー指摘「本部タスクの法人がN-Style固定になっている」に対応。
+  // 給与仕訳はまだ有限会社トーホーエージェンシー分のみ対応（画面上部の案内文と同じ前提）のため、
+  // 既定値をN-Styleからトーホーへ変更した
+  const taskR=await createTransferConfirmTask("payroll",transferDate,paidNames,"トーホー");
   await authed(`/rest/v1/payroll_transfer_schedule`,{method:"POST",headers:{Prefer:"resolution=merge-duplicates,return=minimal"},body:JSON.stringify({
     year_month:PAYROLL_STATE.yearMonth, scheduled_date:transferDate, hq_task_id:(taskR.ok&&taskR.body)||null, created_by:ME.id, updated_at:new Date().toISOString(),
   })}).catch(()=>{});
