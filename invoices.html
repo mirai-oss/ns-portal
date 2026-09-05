@@ -1110,7 +1110,7 @@ function ivxRenderJournalArea(state,existingInvoice,emailId){
 }
 async function ivOpenExtraInvoiceModal(emailId,existingInvoice){
   const modal=document.createElement("div");
-  modal.className="modal-bg"; modal.id="ivExtraModal";
+  modal.className="modal-bg mail-shell"; modal.id="ivExtraModal";
   modal.innerHTML=`<div class="modal" style="max-width:640px">
     <div class="mhead"><h2>🧾 ${existingInvoice?"請求書を編集・仕訳を作成":"別の請求書を追加"}</h2><button class="linkbtn" id="ivExtraModalClose" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:13px">閉じる ×</button></div>
     <div class="ai-grid">
@@ -1384,7 +1384,7 @@ async function openComposeModal(u){
   const suggestions=(r.ok&&Array.isArray(r.body))?r.body.map(x=>x.to_address):[];
 
   const modal=document.createElement("div");
-  modal.className="modal-bg"; modal.id="composeModal";
+  modal.className="modal-bg mail-shell"; modal.id="composeModal";
   modal.innerHTML=`<div class="modal">
     <div class="mhead"><h2>✏️ 新規メール作成</h2><button class="linkbtn" id="composeClose" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:13px">閉じる ×</button></div>
     <label>宛先</label>
@@ -1680,7 +1680,16 @@ async function openMailDetail(u,emailId,skipHighlight){
 // 2026-09-04・共通invoice詳細への統合にあたり、外枠の生成だけを共通部品として切り出した
 function createMailDetailModalShell(){
   const modal=document.createElement("div");
-  modal.className="modal-bg"; modal.id="mailDetailModalBg";
+  // 2026-09-05修正：ユーザー報告「工程カードの丸数字・チェックマークが全く表示されない」の
+  // 根本原因を特定。--m-green/--m-red/--m-line/--m-muted等（.step-num/.step-badge等が使う色）は
+  // .mail-shellのスコープ内でだけ定義されるCSSカスタムプロパティだが、このモーダルは
+  // document.bodyへ直接appendされておりmail-shellの外にあったため、これらの変数が
+  // 未定義（無効値）のままだった。backgroundは無効値だと透明（initial）にフォールバックする
+  // ため、.step-num.done/.currentのように「色付き背景＋白文字」の組み合わせで白文字が
+  // 透明な背景の上に乗り、事実上「白文字on白背景」で完全に見えなくなっていた
+  // （.step-num.waitはcolorも同じ理由で無効値→継承色にフォールバックしていたため、
+  // 数字だけは黒っぽく見えて「一部だけ見える」ように見えた）。mail-shellクラスを追加して解消。
+  modal.className="modal-bg mail-shell"; modal.id="mailDetailModalBg";
   modal.innerHTML=`<div class="modal" style="max-width:1180px">
     <div class="mhead"><h2 id="mailDetailModalTitle">メール詳細</h2><button class="linkbtn" id="mailDetailModalClose" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:13px">閉じる ×</button></div>
     <div class="card mail-detail" id="mailDetail" style="border:none;box-shadow:none;padding:0"><div class="spin">読み込み中…</div></div>
@@ -1740,7 +1749,7 @@ async function loadStandaloneIntoSelected(u,inv){
 // 送信済み・新規作成メールの内容だけを表示する軽量モーダル（invoice_emailsに紐付かないため）
 function openComposeSentModal(row){
   const modal=document.createElement("div");
-  modal.className="modal-bg";
+  modal.className="modal-bg mail-shell";
   modal.innerHTML=`<div class="modal">
     <div class="mhead"><h2>${esc(row.subject||"（件名なし）")}</h2><button class="linkbtn" id="composeSentClose" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:13px">閉じる ×</button></div>
     <div class="mail-mini" style="margin-bottom:10px"><small>宛先</small><b>${esc(row.to_address||"—")}</b></div>
@@ -3451,7 +3460,7 @@ function wireDetailActions(u){
     }).join("");
 
     const modal=document.createElement("div");
-    modal.className="modal-bg"; modal.id="mfjPreviewModal";
+    modal.className="modal-bg mail-shell"; modal.id="mfjPreviewModal";
     modal.innerHTML=`<div class="modal" style="max-width:820px">
       <div class="mhead"><h2>🧾 振替伝票プレビュー</h2><button class="linkbtn" id="mfjPreviewClose" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:13px">閉じる ×</button></div>
       <div style="font-size:12px;color:var(--muted);margin-bottom:8px">登録先: <b>${esc(MFJ_STATE.tenantLabel||MFJ_STATE.tenantId)}</b>　日付: <b>${esc(date)}</b>　全体の摘要: <b>${esc(remark||"（なし）")}</b></div>
@@ -4288,7 +4297,7 @@ function mftLabelOf(side){ if(!side||!side.account_name) return ""; return side.
 // 登録された借方・貸方の内容をそのまま表示する（読み取り専用・編集や再登録はできない）
 async function mfjOpenJournalPreview(journalId,tenantId){
   const modal=document.createElement("div");
-  modal.className="modal-bg"; modal.id="mfjJournalViewModal";
+  modal.className="modal-bg mail-shell"; modal.id="mfjJournalViewModal";
   modal.innerHTML=`<div class="modal" style="max-width:820px">
     <div class="mhead"><h2>🧾 登録済み仕訳の内容</h2><button class="linkbtn" id="mfjJournalViewClose" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:13px">閉じる ×</button></div>
     <div id="mfjJournalViewBody"><div class="spin">読み込み中…</div></div>
@@ -5621,7 +5630,7 @@ function payrollOpenBankModal(userId){
   const name=(row&&row.user&&row.user.name)||"—";
   const method=bank.payment_method||"bank_transfer";
   const modal=document.createElement("div");
-  modal.className="modal-bg"; modal.id="payrollBankModal";
+  modal.className="modal-bg mail-shell"; modal.id="payrollBankModal";
   modal.innerHTML=`<div class="modal" style="max-width:480px">
     <div class="mhead"><h2>🏦 支払方法 — ${esc(name)}</h2><button class="linkbtn" id="payrollBankClose" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:13px">閉じる ×</button></div>
     <label>支払方法</label>
@@ -5930,7 +5939,7 @@ async function payrollOpenPreview(userId){
     </div>
   `;
   const modal=document.createElement("div");
-  modal.className="modal-bg"; modal.id="payrollPreviewModal";
+  modal.className="modal-bg mail-shell"; modal.id="payrollPreviewModal";
   modal.innerHTML=`<div class="modal" style="max-width:${pdfUrl?"1440px":"820px"}">
     <div class="mhead"><h2>🧾 給与仕訳プレビュー — ${esc(name)}</h2><button class="linkbtn" id="payrollPreviewClose" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:13px">閉じる ×</button></div>
     ${pdfUrl?`<div style="display:grid;grid-template-columns:1.6fr 1fr;gap:16px;align-items:start">
