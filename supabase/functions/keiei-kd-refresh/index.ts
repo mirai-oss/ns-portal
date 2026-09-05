@@ -220,7 +220,7 @@ async function refreshDashboardDaily(sb: any, body: any) {
     const { idByName, corpByStoreId } = await loadStoreMaps(sb);
     const rawRows = await bqDailyStoreFull(sb, months);
     const unmatched = new Set<string>();
-    type Row = { store_id: string; period_date: string; net_sales: number; guests: number; parties: number };
+    type Row = { store_id: string; period_date: string; net_sales: number; guests: number; parties: number; cost: number; labor: number };
     const parsed: Row[] = [];
     for (let r = 1; r < rawRows.length; r++) {
       const row = rawRows[r];
@@ -232,7 +232,12 @@ async function refreshDashboardDaily(sb: any, body: any) {
       // 列順（bqDailyStore・tori-dashboard/gas/Code.gs:1523 BQ_DAILY_STORE_HEADER参照）: date,store_name,
       // net_sales,guests_total,parttime_labor,fulltime_labor,labor_total,cogs,cash,employee_salary_bonus,
       // statutory_welfare,commute_allowance,parties_total
-      parsed.push({ store_id: storeId, period_date: dateStr, net_sales: num(row[2]), guests: num(row[3]), parties: num(row[12]) });
+      // 2026-09-06追加: cost(cogs=row[7])/labor(labor_total=row[6])。kd_pl_monthly_summary(op=pl_monthly)の
+      // 自動売上/原価/人件費の元データとして使う（既に取得していたのに保存していなかった列）。
+      parsed.push({
+        store_id: storeId, period_date: dateStr, net_sales: num(row[2]), guests: num(row[3]), parties: num(row[12]),
+        cost: num(row[7]), labor: num(row[6]),
+      });
     }
 
     // 前年同曜日比較: 同じ店舗の364日前（同曜日）の行を自テーブルから引く（蓄積が浅いうちはnullのまま）
@@ -250,7 +255,7 @@ async function refreshDashboardDaily(sb: any, body: any) {
       const priorSales = priorMap.get(`${p.store_id}|${priorDate}`);
       return {
         store_id: p.store_id, corporation_id: corpByStoreId.get(p.store_id) ?? null, period_date: p.period_date,
-        net_sales: p.net_sales, guests: p.guests, parties: p.parties,
+        net_sales: p.net_sales, guests: p.guests, parties: p.parties, cost: p.cost, labor: p.labor,
         avg_check: p.guests ? Math.round(p.net_sales / p.guests) : null,
         prior_year_same_weekday_sales: priorSales ?? null,
         prior_year_same_weekday_ratio: priorSales ? (p.net_sales / priorSales) : null,
@@ -274,6 +279,280 @@ async function refreshDashboardDaily(sb: any, body: any) {
     return { ok: true, job: "dashboard_daily", rows: upserts.length, unmatched: [...unmatched], sync_run_id: runId };
   } catch (e) {
     await finishRun(sb, runId, false, 0, String(e), "kd_dashboard_daily_summary");
+    return { ok: false, error: String(e) };
+  }
+}
+
+// ============== op=pl_monthly: kd_pl_monthly_summary ==============
+// app.jsのplCatOf()と全く同じ判定ルール（Code.gs/app.js自体は無変更・ここに移植しただけ）。
+function plCatOf(v: unknown): "F" | "L" | "A" | "R" | "O" {
+  const s = String(v ?? "").trim().toUpperCase().replace(/[Ａ-Ｚ]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xFEE0));
+  if (!s) return "O";
+  if (s[0] === "F" || /仕入|原価/.test(s)) return "F";
+  if (s[0] === "L" || /人件/.test(s)) return "L";
+  if (s[0] === "A" || /広告/.test(s)) return "A";
+  if (s[0] === "R" || /家賃|賃料/.test(s)) return "R";
+  return "O";
+}
+async function bqGetPLRows(sb: any): Promise<any[][]> {
+  const { id, pw } = await dashSecrets(sb);
+  if (!id || !pw) throw new Error("app_secretsにdash_id/dash_pwが未設定です");
+  const login = await dashCall({ action: "login", id, pw });
+  if (!login.ok) throw new Error("ダッシュボードへのログインに失敗: " + (login.error ?? ""));
+  const res = await dashCall({ action: "bqGetPL", token: login.token });
+  if (!res.ok) throw new Error("bqGetPL取得に失敗: " + (res.error ?? ""));
+  return (res.sheets?.PL ?? []) as any[][];
+}
+const COMMON_STORE_KEY = "00000000-0000-0000-0000-000000000000"; // 全社共通経費行（store_id=NULL）のupsertキー用センチネル
+
+async function refreshPlMonthly(sb: any) {
+  const runId = await startRun(sb, "kd_pl_monthly_summary");
+  try {
+    const { idByName, corpByStoreId } = await loadStoreMaps(sb);
+    const rawRows = await bqGetPLRows(sb);
+    const unmatched = new Set<string>();
+    type Bucket = {
+      store_id: string | null; year_month: string;
+      cost_manual: number; labor_manual: number; ad_manual: number; rent: number; other: number;
+      breakdown: Record<string, Record<string, number>>; // {F:{勘定科目:金額},...}
+    };
+    const byKey = new Map<string, Bucket>();
+    for (let r = 1; r < rawRows.length; r++) {
+      const row = rawRows[r];
+      const ym = String(row[0] ?? "").trim().replace(/\//g, "-").slice(0, 7);
+      if (!/^\d{4}-\d{2}$/.test(ym)) continue;
+      const storeName = String(row[1] ?? "").trim();
+      const item = String(row[2] ?? "").trim() || "(未分類)";
+      const cat = plCatOf(row[3]);
+      const amount = num(row[4]);
+      let storeId: string | null = null;
+      if (storeName) {
+        storeId = idByName.get(storeName) ?? null;
+        if (!storeId) { unmatched.add(storeName); continue; } // 店舗名が解決できない行は集計に混ぜない（原則5）
+      }
+      const key = `${storeId ?? COMMON_STORE_KEY}|${ym}`;
+      const b = byKey.get(key) ?? { store_id: storeId, year_month: ym, cost_manual: 0, labor_manual: 0, ad_manual: 0, rent: 0, other: 0, breakdown: {} };
+      if (cat === "F") b.cost_manual += amount;
+      else if (cat === "L") b.labor_manual += amount;
+      else if (cat === "A") b.ad_manual += amount;
+      else if (cat === "R") b.rent += amount;
+      else b.other += amount;
+      (b.breakdown[cat] ??= {})[item] = (b.breakdown[cat][item] ?? 0) + amount;
+      byKey.set(key, b);
+    }
+
+    // 自動売上/原価/人件費: kd_dashboard_daily_summaryを月合計（対象年月＋店舗のみ）
+    const yms = [...new Set([...byKey.values()].map((b) => b.year_month))];
+    const storeIds = [...new Set([...byKey.values()].map((b) => b.store_id).filter((v): v is string => !!v))];
+    type Auto = { sales: number; cost: number; labor: number };
+    const autoByKey = new Map<string, Auto>();
+    if (yms.length && storeIds.length) {
+      const minYm = yms.sort()[0], maxYm = yms.sort()[yms.length - 1];
+      const { data: dashRows } = await sb.from("kd_dashboard_daily_summary")
+        .select("store_id,period_date,net_sales,cost,labor")
+        .in("store_id", storeIds).gte("period_date", `${minYm}-01`).lt("period_date", addDays(`${maxYm}-01`, 32));
+      (dashRows ?? []).forEach((r: any) => {
+        const ym = String(r.period_date).slice(0, 7);
+        const key = `${r.store_id}|${ym}`;
+        const a = autoByKey.get(key) ?? { sales: 0, cost: 0, labor: 0 };
+        a.sales += Number(r.net_sales) || 0; a.cost += Number(r.cost) || 0; a.labor += Number(r.labor) || 0;
+        autoByKey.set(key, a);
+      });
+    }
+
+    const upserts = [...byKey.values()].map((b) => {
+      // 注意: kd_dashboard_daily_summaryはop=dashboard_dailyのmonthsパラメータ分（既定2〜3ヶ月）しか
+      // 保持していないため、それより古い年月はauto=undefined（sales/cost_auto/labor_autoは全てnull
+      // ＝「データが無い」を正しく表す。0円だったと誤解させない）。DB_PL手入力分（cost_manual等）は
+      // 何年前でも取得できるため、古い月でもF/L/A/R/O自体は正しく集計される。
+      const auto = b.store_id ? autoByKey.get(`${b.store_id}|${b.year_month}`) : undefined;
+      const sales = auto ? auto.sales : null;
+      const costAuto = auto ? auto.cost : null;
+      const laborAuto = auto ? auto.labor : null;
+      const costTotal = b.store_id && costAuto != null ? costAuto + b.cost_manual : null;
+      const laborTotal = b.store_id && laborAuto != null ? laborAuto + b.labor_manual : null;
+      const grossProfit = sales != null && costTotal != null ? sales - costTotal : null;
+      // laborTotalがnull（自動人件費データ未保持の古い月）のときはsga自体もnullにする
+      // （労務費を0円扱いで販管費計を過小表示しないため）
+      const sga = laborTotal != null ? laborTotal + b.ad_manual + b.rent + b.other : null;
+      const operatingProfit = sales != null && costTotal != null && sga != null ? sales - costTotal - sga : null;
+      return {
+        store_id: b.store_id, corporation_id: b.store_id ? corpByStoreId.get(b.store_id) ?? null : null,
+        year_month: b.year_month, sales,
+        cost_auto: costAuto, cost_manual: b.cost_manual, cost_total: costTotal,
+        labor_auto: laborAuto, labor_manual: b.labor_manual, labor_total: laborTotal,
+        ad_manual: b.ad_manual, rent: b.rent, other: b.other,
+        gross_profit: grossProfit, sga, operating_profit: operatingProfit,
+        pl_item_breakdown: b.breakdown,
+        source_updated_at: new Date().toISOString(), computed_at: new Date().toISOString(),
+        source_count: 1, sync_run_id: runId,
+      };
+    });
+    for (let i = 0; i < upserts.length; i += 500) {
+      // onConflictはDBのユニークインデックス式（coalesce(store_id,センチネル), year_month）に対応する
+      // 生成列が無いため、Supabase upsertの標準onConflictでは直接指定できない。ここでは店舗ありと
+      // 共通経費(store_id=null)を分けてupsertする（PostgRESTのupsertはNULL列を含む複合キーを
+      // 正しく扱えないため）。
+      const withStore = upserts.slice(i, i + 500).filter((u) => u.store_id);
+      const common = upserts.slice(i, i + 500).filter((u) => !u.store_id);
+      if (withStore.length) {
+        const { error: upErr } = await sb.from("kd_pl_monthly_summary").upsert(withStore, { onConflict: "store_id,year_month" });
+        if (upErr) throw new Error("upsert失敗(店舗別): " + upErr.message);
+      }
+      for (const row of common) {
+        // 共通経費行はstore_id is null で1年月1行。matchで既存行を探して更新、無ければ挿入。
+        const { data: existing } = await sb.from("kd_pl_monthly_summary").select("id").is("store_id", null).eq("year_month", row.year_month).maybeSingle();
+        if (existing) { const { error } = await sb.from("kd_pl_monthly_summary").update(row).eq("id", existing.id); if (error) throw new Error("update失敗(共通経費): " + error.message); }
+        else { const { error } = await sb.from("kd_pl_monthly_summary").insert(row); if (error) throw new Error("insert失敗(共通経費): " + error.message); }
+      }
+    }
+    for (const nm of unmatched) {
+      try { await sb.rpc("kd_report_unresolved_name", { p_source_table: "kd_pl_monthly_summary", p_kind: "store", p_raw_name: nm }); }
+      catch (_) { /* 隔離登録の失敗でリフレッシュ本体は止めない */ }
+    }
+    await finishRun(sb, runId, true, upserts.length, unmatched.size ? `店舗名未対応: ${[...unmatched].join("、")}` : undefined);
+    return { ok: true, job: "pl_monthly", rows: upserts.length, unmatched: [...unmatched], sync_run_id: runId };
+  } catch (e) {
+    await finishRun(sb, runId, false, 0, String(e), "kd_pl_monthly_summary");
+    return { ok: false, error: String(e) };
+  }
+}
+
+// ============== op=media_monthly: kd_media_monthly_summary ==============
+async function bqGetMediaRows(sb: any, months: number): Promise<any[][]> {
+  const { id, pw } = await dashSecrets(sb);
+  if (!id || !pw) throw new Error("app_secretsにdash_id/dash_pwが未設定です");
+  const login = await dashCall({ action: "login", id, pw });
+  if (!login.ok) throw new Error("ダッシュボードへのログインに失敗: " + (login.error ?? ""));
+  const res = await dashCall({ action: "bqGetMedia", token: login.token, months: months + 1 });
+  if (!res.ok) throw new Error("bqGetMedia取得に失敗: " + (res.error ?? ""));
+  return (res.sheets?.media ?? res.sheets?.["媒体別"] ?? Object.values(res.sheets ?? {})[0] ?? []) as any[][];
+}
+async function resolveMediaName(sb: any, cache: Map<string, string>, raw: string): Promise<string> {
+  if (cache.has(raw)) return cache.get(raw)!;
+  const { data } = await sb.from("tpl_media_alias").select("canonical_media").eq("raw_media", raw).maybeSingle();
+  // 注記③のとおりtpl_media_aliasは既知の表記ゆれ「修正表」であって全媒体名の正本ではないため、
+  // 見つからない場合はstore名と違って隔離せず、そのままの表記を正規名として使う。
+  const canonical = (data?.canonical_media ?? raw).trim() || raw;
+  cache.set(raw, canonical);
+  return canonical;
+}
+async function refreshMediaMonthly(sb: any, body: any) {
+  const months = Math.max(1, Number(body.months) || 3);
+  const runId = await startRun(sb, "kd_media_monthly_summary");
+  try {
+    const { idByName, corpByStoreId } = await loadStoreMaps(sb);
+    const rawRows = await bqGetMediaRows(sb, months);
+    const unmatched = new Set<string>();
+    const aliasCache = new Map<string, string>();
+    type Bucket = { store_id: string; year_month: string; media_name: string; net_sales: number; guests: number; parties: number; count: number };
+    const byKey = new Map<string, Bucket>();
+    for (let r = 1; r < rawRows.length; r++) {
+      const row = rawRows[r];
+      const storeName = String(row[0] ?? "").trim();
+      const dateStr = toDateStr(row[1]);
+      const mediaRaw = String(row[2] ?? "").trim() || "(不明)";
+      if (!storeName || !dateStr) continue;
+      const storeId = idByName.get(storeName);
+      if (!storeId) { unmatched.add(storeName); continue; }
+      const mediaName = await resolveMediaName(sb, aliasCache, mediaRaw);
+      const ym = dateStr.slice(0, 7);
+      const key = `${storeId}|${ym}|${mediaName}`;
+      const b = byKey.get(key) ?? { store_id: storeId, year_month: ym, media_name: mediaName, net_sales: 0, guests: 0, parties: 0, count: 0 };
+      b.net_sales += num(row[5]); b.guests += num(row[3]); b.parties += num(row[4]); b.count++;
+      byKey.set(key, b);
+    }
+    const upserts = [...byKey.values()].map((b) => ({
+      store_id: b.store_id, corporation_id: corpByStoreId.get(b.store_id) ?? null,
+      year_month: b.year_month, media_name: b.media_name,
+      net_sales: b.net_sales, guests: b.guests, parties: b.parties,
+      source_updated_at: new Date().toISOString(), computed_at: new Date().toISOString(),
+      source_count: b.count, sync_run_id: runId,
+    }));
+    for (let i = 0; i < upserts.length; i += 500) {
+      const { error: upErr } = await sb.from("kd_media_monthly_summary").upsert(upserts.slice(i, i + 500), { onConflict: "store_id,year_month,media_name" });
+      if (upErr) throw new Error("upsert失敗: " + upErr.message);
+    }
+    for (const nm of unmatched) {
+      try { await sb.rpc("kd_report_unresolved_name", { p_source_table: "kd_media_monthly_summary", p_kind: "store", p_raw_name: nm }); }
+      catch (_) { /* noop */ }
+    }
+    await finishRun(sb, runId, true, upserts.length, unmatched.size ? `店舗名未対応: ${[...unmatched].join("、")}` : undefined);
+    return { ok: true, job: "media_monthly", rows: upserts.length, unmatched: [...unmatched], sync_run_id: runId };
+  } catch (e) {
+    await finishRun(sb, runId, false, 0, String(e), "kd_media_monthly_summary");
+    return { ok: false, error: String(e) };
+  }
+}
+
+// ============== op=deposit_monthly: kd_deposit_monthly_summary ==============
+async function bqGetDepositRows(sb: any): Promise<any[][]> {
+  const { id, pw } = await dashSecrets(sb);
+  if (!id || !pw) throw new Error("app_secretsにdash_id/dash_pwが未設定です");
+  const login = await dashCall({ action: "login", id, pw });
+  if (!login.ok) throw new Error("ダッシュボードへのログインに失敗: " + (login.error ?? ""));
+  const res = await dashCall({ action: "bqGetDeposit", token: login.token });
+  if (!res.ok) throw new Error("bqGetDeposit取得に失敗: " + (res.error ?? ""));
+  return (res.sheets?.deposit ?? []) as any[][];
+}
+async function refreshDepositMonthly(sb: any) {
+  const runId = await startRun(sb, "kd_deposit_monthly_summary");
+  try {
+    const { idByName, corpByStoreId } = await loadStoreMaps(sb);
+    const rawRows = await bqGetDepositRows(sb);
+    const unmatched = new Set<string>();
+    type Bucket = { store_id: string; year_month: string; total: number; count: number };
+    const byKey = new Map<string, Bucket>();
+    for (let r = 1; r < rawRows.length; r++) {
+      const row = rawRows[r];
+      const storeName = String(row[0] ?? "").trim();
+      const dateStr = toDateStr(row[1]);
+      if (!storeName || !dateStr) continue;
+      const storeId = idByName.get(storeName);
+      if (!storeId) { unmatched.add(storeName); continue; }
+      const ym = dateStr.slice(0, 7);
+      const key = `${storeId}|${ym}`;
+      const b = byKey.get(key) ?? { store_id: storeId, year_month: ym, total: 0, count: 0 };
+      b.total += num(row[2]); b.count++;
+      byKey.set(key, b);
+    }
+
+    const yms = [...new Set([...byKey.values()].map((b) => b.year_month))];
+    const storeIds = [...new Set([...byKey.values()].map((b) => b.store_id))];
+    const salesByKey = new Map<string, number>();
+    if (yms.length && storeIds.length) {
+      const minYm = yms.sort()[0], maxYm = yms.sort()[yms.length - 1];
+      const { data: dashRows } = await sb.from("kd_dashboard_daily_summary")
+        .select("store_id,period_date,net_sales")
+        .in("store_id", storeIds).gte("period_date", `${minYm}-01`).lt("period_date", addDays(`${maxYm}-01`, 32));
+      (dashRows ?? []).forEach((r: any) => {
+        const key = `${r.store_id}|${String(r.period_date).slice(0, 7)}`;
+        salesByKey.set(key, (salesByKey.get(key) ?? 0) + (Number(r.net_sales) || 0));
+      });
+    }
+
+    const upserts = [...byKey.values()].map((b) => {
+      const salesTotal = salesByKey.get(`${b.store_id}|${b.year_month}`) ?? null;
+      return {
+        store_id: b.store_id, corporation_id: corpByStoreId.get(b.store_id) ?? null, year_month: b.year_month,
+        deposit_total: b.total, deposit_count: b.count, sales_total: salesTotal,
+        diff: salesTotal != null ? b.total - salesTotal : null,
+        source_updated_at: new Date().toISOString(), computed_at: new Date().toISOString(),
+        source_count: b.count, sync_run_id: runId,
+      };
+    });
+    for (let i = 0; i < upserts.length; i += 500) {
+      const { error: upErr } = await sb.from("kd_deposit_monthly_summary").upsert(upserts.slice(i, i + 500), { onConflict: "store_id,year_month" });
+      if (upErr) throw new Error("upsert失敗: " + upErr.message);
+    }
+    for (const nm of unmatched) {
+      try { await sb.rpc("kd_report_unresolved_name", { p_source_table: "kd_deposit_monthly_summary", p_kind: "store", p_raw_name: nm }); }
+      catch (_) { /* noop */ }
+    }
+    await finishRun(sb, runId, true, upserts.length, unmatched.size ? `店舗名未対応: ${[...unmatched].join("、")}` : undefined);
+    return { ok: true, job: "deposit_monthly", rows: upserts.length, unmatched: [...unmatched], sync_run_id: runId };
+  } catch (e) {
+    await finishRun(sb, runId, false, 0, String(e), "kd_deposit_monthly_summary");
     return { ok: false, error: String(e) };
   }
 }
@@ -373,7 +652,10 @@ Deno.serve(async (req) => {
       case "dashboard_daily": result = await refreshDashboardDaily(sb, body); break;
       case "home_kpi": result = await refreshHomeKpi(sb); break;
       case "unresolved_notify": result = await notifyUnresolved(sb); break;
-      default: return json({ ok: false, error: "opは'reservation_daily'|'dashboard_daily'|'home_kpi'|'unresolved_notify'のいずれかが必須です" }, 400);
+      case "pl_monthly": result = await refreshPlMonthly(sb); break;
+      case "media_monthly": result = await refreshMediaMonthly(sb, body); break;
+      case "deposit_monthly": result = await refreshDepositMonthly(sb); break;
+      default: return json({ ok: false, error: "opは'reservation_daily'|'dashboard_daily'|'home_kpi'|'unresolved_notify'|'pl_monthly'|'media_monthly'|'deposit_monthly'のいずれかが必須です" }, 400);
     }
     // 2026-09-03修正: ok:falseの結果をHTTP 200で返してしまうとGitHub Actions側のHTTP_CODEチェックを
     // すり抜けて「success」表示のまま失敗が握りつぶされる（実際にdashboard_dailyの失敗がこれで見逃されていた）。
