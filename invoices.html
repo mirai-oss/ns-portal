@@ -689,7 +689,7 @@ async function plfeeInit(ctx){
     // される仕組みが既にあるため、ここ（請求書仕訳→PL直接反映）の対象からは外す＝二重計上防止
     // （ユーザー指摘・2026-09-03。2026-09-05: 業務委託精算書自動連携により、この対象店舗は
     // 「精算書へ登録」ボタンで実際に登録できるようになった＝plfeeSeisanRowHtml等）
-    const r=await authed("/rest/v1/stores?select=id,name,seisan_target,seisan_pl_categories_target,seisan_store_name&order=name");
+    const r=await authed("/rest/v1/stores?select=id,name,corporation_id,seisan_target,seisan_pl_categories_target,seisan_store_name&order=name");
     PLFEE_STATE.stores=(r.ok&&Array.isArray(r.body))?r.body:[];
   }
   if(!PLFEE_STATE.yearMonth){
@@ -865,7 +865,10 @@ async function plfeeSeisanConfirm(){
   const msg=$("plfee-seisan-msg"); msg.className="err"; msg.textContent="";
   const accountName=(PLFEE_STATE.currentAccount||"").trim();
   const subAccountName=(PLFEE_STATE.currentSubAccount||"").trim();
-  if(!accountName){ msg.textContent="勘定科目を確認してください"; return; }
+  // 2026-09-05修正：ユーザー報告「勘定科目を確認してくださいと出るが、どこに入力すればいいか
+  // 分からない」に対応。上のPLへ直接反映欄の「勘定科目」とこの欄は同じ状態を共有しているため、
+  // このセクション自体にある「勘定科目」欄への入力が必要であることを明示する
+  if(!accountName){ msg.textContent="この「業務委託精算書へ登録」欄の中にある「勘定科目」欄に入力してください（上のPLへ直接反映用の欄とは別に、この枠の中にあります）"; return; }
   const itemName=(PLFEE_STATE.seisanItemName||accountName||"").trim();
   const taxRate=PLFEE_STATE.seisanTaxRate||"10%";
   const rows=(PLFEE_STATE.seisanRows||[]).filter(r=>r.store_id&&Number(r.amount)>0);
@@ -930,8 +933,18 @@ function plfeeReflectedCardHtml(row){
 }
 function plfeeRowHtml(row,idx){
   // 精算対象店舗は精算書経由で別途PLへ自動連携されるため、選択肢から除外する（二重計上防止。
-  // 2026-09-05: seisan_pl_categories_target店舗（黒霧屋等）も同様に除外対象に追加）
-  const opts=`<option value="">（店舗を選択）</option>`+PLFEE_STATE.stores.filter(s=>!s.seisan_target&&!s.seisan_pl_categories_target).map(s=>`<option value="${esc(s.id)}" ${row.store_id===s.id?"selected":""}>${esc(s.name)}</option>`).join("");
+  // 2026-09-05: seisan_pl_categories_target店舗（黒霧屋等）も同様に除外対象に追加）。
+  // 2026-09-05追加：ユーザー報告「対象法人をN-Styleにしているのに、PLへ反映の店舗欄には
+  // トーホーの店舗が出てくる」に対応。従来は法人を問わず全店舗（精算対象店舗を除く）を
+  // 出していたが、請求書の対象法人が分かっていれば、まずその法人の店舗に絞り込む
+  // （既に選択済みの店舗が対象法人と異なる場合のみ、対象店舗選択欄と同じく「（他法人）」を
+  // 注記して一覧に残す＝選択の確認・解除ができなくならないようにする）
+  const corpId=PLFEE_STATE.ctx.corporationId;
+  const eligible=PLFEE_STATE.stores.filter(s=>!s.seisan_target&&!s.seisan_pl_categories_target);
+  const scoped=corpId?eligible.filter(s=>s.corporation_id===corpId):eligible;
+  const keepSelected=eligible.filter(s=>s.id===row.store_id&&!scoped.some(x=>x.id===s.id));
+  const storeOptions=[...scoped,...keepSelected];
+  const opts=`<option value="">（店舗を選択）</option>`+storeOptions.map(s=>`<option value="${esc(s.id)}" ${row.store_id===s.id?"selected":""}>${esc(s.name)}${(corpId&&s.corporation_id!==corpId)?"（他法人）":""}</option>`).join("");
   return `<tr data-idx="${idx}">
     <td><select class="plfee-store" data-idx="${idx}">${opts}</select></td>
     <td class="amt"><input type="number" class="plfee-amount" data-idx="${idx}" value="${row.amount}"></td>
@@ -3151,7 +3164,7 @@ function wireDetailActions(u){
   if(!isSales&&invoice&&invoice.mf_journal_id){
     plfeeInit({
       boxId:"plfeebox", invoiceId:invoice.id, journalId:invoice.mf_journal_id, tenantId:invoice.mf_tenant_id||"default",
-      fallbackAmount:Number(invoice.amount)||0,
+      fallbackAmount:Number(invoice.amount)||0, corporationId:invoice.corporation_id||null,
       onDone:()=>reloadDetail(),
     });
   }
