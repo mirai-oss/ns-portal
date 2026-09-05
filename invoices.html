@@ -1843,7 +1843,7 @@ function ivVendorLinkHtml(invoice){
       </select>
       <button type="button" class="hq-btn" id="iv-vendor-link-newtoggle">＋ 新規登録して紐付ける</button>
     </div>
-    ${linkedName?`<div class="meta" style="color:var(--muted);font-size:11px;margin-top:4px">✅ 現在の紐付け先：${esc(linkedName)}（口座は設定タブ「支払先・銀行口座」で登録・確認できます）</div>`
+    ${linkedName?`<div class="meta" style="color:var(--muted);font-size:11px;margin-top:4px">✅ 現在の紐付け先：${esc(linkedName)}（口座は設定タブ「取引先マスタ」の編集画面で登録・確認できます）</div>`
       :`<div class="meta" style="color:var(--muted);font-size:11px;margin-top:4px">⚠️ 取引先マスタに未登録のため、振込先口座を登録できません（設定タブのプルダウンにも出てきません）。</div>`}
     <div id="iv-vendorlink-newbox" style="margin-top:8px"></div>
     <div class="err" id="iv-vendorlink-msg" style="margin-top:4px"></div>
@@ -1857,7 +1857,7 @@ function ivVendorLinkHtml(invoice){
 // 同じ項目・同じ入力チェック（銀行コード4桁以内・支店コード3桁以内の数字）を追加した
 function ivVendorLinkNewFormHtml(defaultName){
   return `<div class="card" style="padding:10px;border-color:var(--m-blue)">
-    <div class="meta" style="color:var(--muted);font-size:11px;margin-bottom:6px">取引先マスタへ新規登録します。銀行口座も入力すれば、そのまま設定タブ「支払先・銀行口座」にも同じ口座として登録されます（未入力でも構いません。後から設定タブで登録できます）。振込先口座を入力する場合は、銀行コード・支店コードも入力してください（PayPay銀行への振込CSV作成に必須です）。</div>
+    <div class="meta" style="color:var(--muted);font-size:11px;margin-bottom:6px">取引先マスタへ新規登録します。銀行口座も入力すれば、そのまま設定タブ「取引先マスタ」の編集画面にも同じ口座として登録されます（未入力でも構いません。後から設定タブで登録できます）。振込先口座を入力する場合は、銀行コード・支店コードも入力してください（PayPay銀行への振込CSV作成に必須です）。</div>
     <div class="ai-grid">
       <div class="ai-field full"><small>取引先の正式名称</small><input id="ivvl-name" value="${esc(defaultName||"")}"></div>
       <div class="ai-field"><small>銀行コード（4桁の数字。通帳・キャッシュカードに記載）</small><input id="ivvl-bankcode" placeholder="例: 0033" maxlength="4"></div>
@@ -1880,7 +1880,7 @@ function invoiceAiTabHtml(invoice){
     html+=`<div class="risk-card danger"><h5>🚨 重複請求の可能性</h5><p>取引先・金額・請求日などが過去の登録と一致しています。内容を確認し、重複でなければ下のボタンで解除してください。</p><button class="hq-btn" id="ai-resolve-dup" style="margin-top:6px">重複でないと確認する</button></div>`;
   }
   if(invoice.bank_account_change_detected){
-    html+=`<div class="risk-card danger"><h5>⚠️ 振込先口座変更を検知</h5><p>請求書に記載の口座が、登録済みの口座と異なります。設定タブ「支払先・銀行口座」で承認するまで振込一覧には追加できません。</p><button class="hq-btn" id="ai-goto-bank" style="margin-top:6px">設定タブで確認する</button></div>`;
+    html+=`<div class="risk-card danger"><h5>⚠️ 振込先口座変更を検知</h5><p>請求書に記載の口座が、登録済みの口座と異なります。設定タブ「取引先マスタ」で承認するまで振込一覧には追加できません。</p><button class="hq-btn" id="ai-goto-bank" style="margin-top:6px">設定タブで確認する</button></div>`;
   }
   if(invoice.ai_match_reasons&&invoice.ai_match_reasons.length){
     html+=`<div class="ai-field" style="margin-bottom:10px"><small>判定理由</small>${invoice.ai_match_reasons.map(r=>esc(r)).join("・")}</div>`;
@@ -1936,7 +1936,7 @@ function invoicePaymentTabHtml(invoice){
   const dupBlock=!invoice.bank_account_change_detected&&!noAccountBlock&&invoice.payment_status==="not_ready"&&invoice.duplicate_suspected;
   if(invoice.bank_account_change_detected){
     stateLine=`<span class="pl-state excluded">！口座変更未承認</span>`;
-    actionHtml=`<div class="risk-card danger"><h5>⚠️ 口座変更未承認</h5><p>振込先口座の変更が未承認のため、振込一覧に追加できません。下の「取引先・振込先口座」、または設定タブ「支払先・銀行口座」で承認してください。</p></div>`;
+    actionHtml=`<div class="risk-card danger"><h5>⚠️ 口座変更未承認</h5><p>振込先口座の変更が未承認のため、振込一覧に追加できません。下の「取引先・振込先口座」、または設定タブ「取引先マスタ」で承認してください。</p></div>`;
   }else if(noAccountBlock){
     stateLine=`<span class="pl-state excluded">！振込先口座未登録</span>`;
     actionHtml=`<div class="risk-card danger"><h5>⚠️ 振込先口座が未登録です</h5><p>振込先口座を登録しないと振込一覧に追加できません。上の「取引先・振込先口座」から登録してください。</p></div>`;
@@ -2931,9 +2931,10 @@ function wireDetailActions(u){
     await reloadDetail();
   };
   if($("ai-goto-bank")) $("ai-goto-bank").onclick=()=>{
+    // 2026-09-05：独立タブ「支払先・銀行口座」は取引先マスタに統合されたため遷移先を変更
     history.back();
     TAB="settings";
-    renderTabBody(u).then(()=>renderSettingsTab(u,"bankAccounts"));
+    renderTabBody(u).then(()=>renderSettingsTab(u,"vendors"));
   };
   if($("payment-add-transfer")) $("payment-add-transfer").onclick=async()=>{
     await authed(`/rest/v1/invoices?id=eq.${invoice.id}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({payment_status:"wait",updated_at:new Date().toISOString()})});
@@ -4125,7 +4126,7 @@ function transferRender(u){
         <div class="card kpi" style="padding:14px"><small style="color:var(--muted);font-size:9px;display:block">口座変更未承認</small><b style="font-size:24px;display:block;margin-top:5px;color:var(--m-red)">${rows.filter(r=>r.bank_account_change_detected).length}</b></div>
       </div>
       <div class="card" style="padding:16px">
-        <div class="meta" style="color:var(--muted);font-size:12px;margin-bottom:10px">会計登録済み（仕訳登録済み）で、まだ振込が完了していない請求書の一覧です。振込先口座変更が未承認の請求書は選択できません（設定タブ「支払先・銀行口座」で確認してください）。給与の振込は「💴給与仕訳」タブでこれまでどおり行えます。</div>
+        <div class="meta" style="color:var(--muted);font-size:12px;margin-bottom:10px">会計登録済み（仕訳登録済み）で、まだ振込が完了していない請求書の一覧です。振込先口座変更が未承認の請求書は選択できません（設定タブ「取引先マスタ」で確認してください）。給与の振込は「💴給与仕訳」タブでこれまでどおり行えます。</div>
         <div style="margin-bottom:10px"><label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">振込予定日で絞り込み</label>
           <select id="transfer-schedule-filter" style="max-width:220px">
             <option value="" ${!TRANSFERS_STATE.scheduleFilter?"selected":""}>すべて（${rows.length}件）</option>
@@ -6322,6 +6323,11 @@ let PLFEE_ACC_STATE={};
    切り替える形に再編し、新規に取引先マスタ・勘定科目マッピング・法人店舗部門マッピング・
    支払先/銀行口座・自動処理ルールを追加した。
    ============================================================ */
+// 2026-09-05再編：担当Bスレッドからの依頼（WORKLOG「担当C・担当Fへ依頼: 振込口座まわりの
+// UI整理」コミットc6a93cf）に対応。①独立タブ「支払先・銀行口座」は廃止し、取引先マスタの
+// 編集フォームに銀行口座の登録を直接統合（renderSettingsVendors/vendorRenderEditor参照）。
+// ②空いた枠に、従業員の振込口座（payroll_bank_accounts）を人を選ばず全員ずらっと一覧で
+// 見られる新タブを追加（read-only。編集は引き続き給与仕訳タブ・本人からの申請経由）
 let SETTINGS_TAB="journalRules";
 const SETTINGS_SUBTABS=[
   ["journalRules","📗 仕訳辞書"],
@@ -6329,7 +6335,7 @@ const SETTINGS_SUBTABS=[
   ["accounts","💹 勘定科目マッピング"],
   ["mapping","🏬 法人・店舗・部門マッピング"],
   ["pl","📊 PLマッピング"],
-  ["bankAccounts","🏦 支払先・銀行口座"],
+  ["payrollBank","👥 従業員振込口座"],
   ["automation","🤖 自動処理ルール"],
   ["exclusion","🚫 メール除外設定"],
 ];
@@ -6348,7 +6354,7 @@ async function renderSettingsTab(u,subTab){
   else if(SETTINGS_TAB==="accounts") await renderSettingsAccounts();
   else if(SETTINGS_TAB==="mapping") await renderSettingsMapping();
   else if(SETTINGS_TAB==="pl") await renderSettingsPl();
-  else if(SETTINGS_TAB==="bankAccounts") await renderSettingsBankAccounts();
+  else if(SETTINGS_TAB==="payrollBank") await renderSettingsPayrollBank();
   else if(SETTINGS_TAB==="automation") await renderSettingsAutomation();
   else if(SETTINGS_TAB==="exclusion") await renderSettingsExclusion(u);
 }
@@ -6438,23 +6444,54 @@ async function renderSettingsExclusion(u){
 let VENDOR_STATE={};
 async function renderSettingsVendors(){
   $("settingsBody").innerHTML=`<div class="spin">読み込み中…</div>`;
-  const [vr,corpRes,storeRes]=await Promise.all([
+  // 2026-09-05：口座変更の未確認申請一覧（旧「支払先・銀行口座」タブから移設）もここで取得する
+  const [vr,corpRes,storeRes,reqRes]=await Promise.all([
     vendorCall("list_vendors"),
     authed("/rest/v1/corporations?select=id,name&order=name"),
     authed("/rest/v1/stores?select=id,name&order=name"),
+    vendorCall("list_change_requests",{status:"pending"}),
   ]);
   VENDOR_STATE.vendors=(vr.ok&&vr.body.vendors)||[];
   VENDOR_STATE.corporations=(corpRes.ok&&Array.isArray(corpRes.body))?corpRes.body:[];
   VENDOR_STATE.stores=(storeRes.ok&&Array.isArray(storeRes.body))?storeRes.body:[];
+  VENDOR_STATE.pending=(reqRes.ok&&reqRes.body.requests)||[];
   VENDOR_STATE.editing=null;
   vendorRenderBox();
+}
+// 2026-09-05新規：振込先口座変更（未確認）パネル。旧「支払先・銀行口座」タブの内容を
+// そのまま移設しただけ（判定ロジック・API呼び出しは無改修）
+function vendorPendingChangesHtml(){
+  const pending=VENDOR_STATE.pending||[];
+  return `<div class="card" style="padding:16px;margin-bottom:14px">
+    <h3 style="font-size:14px;margin-bottom:6px">⚠️ 振込先口座変更（未確認）</h3>
+    <div class="meta" style="color:var(--muted);font-size:12px;margin-bottom:10px">請求書から読み取った振込先口座が、登録済みの口座と異なっていたものです。自動更新はせず、内容を確認してから承認または却下してください。</div>
+    ${pending.length?pending.map(r=>`<div class="card" style="padding:10px;margin-bottom:8px;border-color:var(--m-amber)">
+      <div style="font-size:12px"><b>${esc((r.vendor&&r.vendor.name)||"—")}</b>（元請求書: ${esc((r.invoice&&r.invoice.vendor_name)||"—")}・${yen(r.invoice&&r.invoice.amount)}）</div>
+      <div style="font-size:11px;color:var(--muted);margin-top:4px">申請内容: ${esc(r.proposed_bank_name||"—")} ${esc(r.proposed_branch_name||"")} ${r.proposed_account_type==="2"?"当座":r.proposed_account_type==="4"?"貯蓄":"普通"} ${esc(r.proposed_account_number||"—")}（${esc(r.proposed_account_holder_kana||"—")}）</div>
+      <div class="mail-actions" style="margin-top:8px"><button class="hq-btn primary" data-bank-approve="${r.id}">承認する</button><button class="hq-btn" data-bank-reject="${r.id}">却下する</button></div>
+    </div>`).join(""):'<div style="font-size:12px;color:var(--muted)">未確認の口座変更はありません</div>'}
+  </div>`;
+}
+function vendorWirePendingChanges(){
+  document.querySelectorAll("[data-bank-approve]").forEach(el=>el.onclick=async()=>{
+    if(!confirm("この振込先口座変更を承認します。今後この取引先への振込はこの新しい口座になります。よろしいですか？")) return;
+    const r=await vendorCall("approve_change_request",{id:el.dataset.bankApprove});
+    if(!r.ok){ alert(r.body.error||"承認に失敗しました"); return; }
+    await renderSettingsVendors();
+  });
+  document.querySelectorAll("[data-bank-reject]").forEach(el=>el.onclick=async()=>{
+    if(!confirm("この振込先口座変更を却下します。口座は変更されません。よろしいですか？")) return;
+    const r=await vendorCall("reject_change_request",{id:el.dataset.bankReject});
+    if(!r.ok){ alert(r.body.error||"却下に失敗しました"); return; }
+    await renderSettingsVendors();
+  });
 }
 function vendorRenderBox(){
   const box=$("settingsBody");
   const editing=VENDOR_STATE.editing;
-  box.innerHTML=`<div class="card" style="padding:16px">
+  box.innerHTML=`${vendorPendingChangesHtml()}<div class="card" style="padding:16px">
     <h3 style="font-size:14px;margin-bottom:6px">🏢 取引先マスタ</h3>
-    <div class="meta" style="color:var(--muted);font-size:12px;margin-bottom:10px">請求書の取引先を正規化して管理します（仕訳辞書とは別物です）。表記ゆれ（別名）をまとめておくと、仕訳辞書・自動判定・銀行口座の紐付けが正しく効くようになります。</div>
+    <div class="meta" style="color:var(--muted);font-size:12px;margin-bottom:10px">請求書の取引先を正規化して管理します（仕訳辞書とは別物です）。表記ゆれ（別名）をまとめておくと、仕訳辞書・自動判定・銀行口座の紐付けが正しく効くようになります。振込先口座も、取引先を編集する画面からそのまま登録できます。</div>
     <button class="hq-btn primary" id="vendor-new" style="margin-bottom:10px">＋ 取引先を追加</button>
     ${editing&&!editing.id?`<div id="vendor-editor" style="margin-bottom:12px"></div>`:""}
     <div class="hq-tablewrap"><table class="invoice-table">
@@ -6474,6 +6511,7 @@ function vendorRenderBox(){
       }).join("")||'<tr><td colspan="6">取引先はまだ登録されていません</td></tr>'}</tbody>
     </table></div>
   </div>`;
+  vendorWirePendingChanges();
   $("vendor-new").onclick=()=>vendorOpenEditor(null);
   document.querySelectorAll("[data-vendor-edit]").forEach(el=>el.onclick=()=>vendorOpenEditor(VENDOR_STATE.vendors.find(v=>v.id===el.dataset.vendorEdit)));
   if(editing) vendorRenderEditor();
@@ -6507,8 +6545,13 @@ function vendorRenderEditor(){
     </div>
     <div class="mail-actions" style="margin-top:10px"><button class="primary" id="vendor-save">💾 保存</button><button id="vendor-cancel">キャンセル</button></div>
     <div class="err" id="vendor-msg" style="margin-top:6px"></div>
+    ${ed.id?`<div style="margin-top:14px;padding-top:14px;border-top:1px dashed var(--line)">
+      <h4 style="font-size:13px;margin-bottom:6px">🏦 振込先口座</h4>
+      <div id="vb-accounts-box">読み込み中…</div>
+    </div>`:`<div class="meta" style="color:var(--muted);font-size:11px;margin-top:10px">💡 保存すると、この画面のまま振込先口座を登録できるようになります。</div>`}
   </div>`;
   $("vendor-cancel").onclick=()=>{ VENDOR_STATE.editing=null; vendorRenderBox(); };
+  if(ed.id) vbLoadAccountsForVendor(ed.id);
   $("vendor-save").onclick=async()=>{
     const name=$("vendor-name").value.trim();
     const msg=$("vendor-msg");
@@ -6528,9 +6571,120 @@ function vendorRenderEditor(){
     };
     const r=await vendorCall("upsert_vendor",{vendor});
     if(!r.ok){ msg.textContent=r.body.error||"保存に失敗しました"; return; }
+    // 2026-09-05：新規取引先を保存した直後は、続けてこの画面のまま振込先口座を登録できるよう
+    // 編集モードのまま（新しく発行されたidで）再読み込みする（従来は保存すると一覧に戻っていた）
+    if(!ed.id && r.body&&r.body.id){
+      await renderSettingsVendors();
+      const created=VENDOR_STATE.vendors.find(v=>v.id===r.body.id);
+      vendorOpenEditor(created||null);
+      return;
+    }
     VENDOR_STATE.editing=null;
     await renderSettingsVendors();
   };
+}
+// 2026-09-05新規：取引先マスタの編集画面に統合した振込先口座のCRUD。旧「支払先・銀行口座」
+// タブのbankLoadAccountsForVendor/$("bank-add")のロジックをそのまま移設し、要素IDだけ
+// vb-プレフィックスに変えて（BANK_STATE.selectedVendorIdの代わりに引数のvendorIdを使う）
+// 取引先編集フォーム内に埋め込めるようにした。呼び出すAPI（vendor-master Edge Function）は
+// 完全に同じなので、保存先（vendor_bank_accounts）も従来と変わらない
+async function vbLoadAccountsForVendor(vendorId){
+  const box=$("vb-accounts-box");
+  if(!box) return;
+  box.innerHTML="読み込み中…";
+  const r=await vendorCall("list_bank_accounts",{vendor_id:vendorId});
+  const accounts=(r.ok&&r.body.accounts)||[];
+  box.innerHTML=`<div class="hq-tablewrap"><table class="invoice-table">
+    <thead><tr><th>銀行コード</th><th>銀行</th><th>支店コード</th><th>支店</th><th>種別</th><th>口座番号</th><th>名義</th><th>状態</th><th>最終確認日</th></tr></thead>
+    <tbody>${accounts.length?accounts.map(a=>`<tr>
+      <td>${a.bank_code?esc(a.bank_code):'<span class="invoice-status err">未登録</span>'}</td><td>${esc(a.bank_name||"—")}</td>
+      <td>${a.branch_code?esc(a.branch_code):'<span class="invoice-status err">未登録</span>'}</td><td>${esc(a.branch_name||"—")}</td>
+      <td>${a.account_type==="2"?"当座":a.account_type==="4"?"貯蓄":"普通"}</td>
+      <td>${esc(a.account_number||"—")}</td><td>${esc(a.account_holder_kana||"—")}</td>
+      <td>${a.is_current?'<span class="invoice-status done">現在有効</span>':'<span class="invoice-status gray">過去口座</span>'}</td>
+      <td>${a.confirmed_at?fmtD(a.confirmed_at):"—"}</td>
+    </tr>`).join(""):'<tr><td colspan="9">登録済みの口座はありません</td></tr>'}</tbody>
+  </table></div>
+  <div class="mail-actions" style="margin-top:10px"><button class="hq-btn primary" id="vb-add">＋ 口座を追加（現在有効な口座として登録）</button></div>
+  <div id="vb-editor" style="margin-top:10px"></div>`;
+  $("vb-add").onclick=()=>{
+    $("vb-editor").innerHTML=`<div class="card" style="padding:12px;border-color:var(--m-blue)">
+      <div class="ai-grid">
+        <div class="ai-field"><small>銀行コード（4桁の数字。通帳・キャッシュカードに記載）</small><input id="vb-code" placeholder="例: 0033" maxlength="4"></div>
+        <div class="ai-field"><small>銀行名（任意・表示用）</small><input id="vb-name" placeholder="例: PayPay銀行"></div>
+        <div class="ai-field"><small>支店コード（3桁の数字）</small><input id="vb-branchcode" placeholder="例: 003" maxlength="3"></div>
+        <div class="ai-field"><small>支店名（任意・表示用）</small><input id="vb-branch" placeholder="例: 本店営業部"></div>
+        <div class="ai-field"><small>口座種別</small><select id="vb-type"><option value="1">普通</option><option value="2">当座</option><option value="4">貯蓄</option></select></div>
+        <div class="ai-field"><small>口座番号</small><input id="vb-number" maxlength="7"></div>
+        <div class="ai-field full"><small>名義（カナ）</small><input id="vb-holder"></div>
+      </div>
+      <div class="mail-actions" style="margin-top:8px"><button class="primary" id="vb-save">💾 保存</button><button id="vb-cancel">キャンセル</button></div>
+      <div class="err" id="vb-msg" style="margin-top:6px"></div>
+    </div>`;
+    $("vb-cancel").onclick=()=>{ $("vb-editor").innerHTML=""; };
+    $("vb-save").onclick=async()=>{
+      const msg=$("vb-msg"); msg.className="err";
+      const bankCode=$("vb-code").value.trim(), branchCode=$("vb-branchcode").value.trim();
+      if(!/^\d{1,4}$/.test(bankCode)){ msg.textContent="銀行コード（数字4桁以内）を入力してください"; return; }
+      if(!/^\d{1,3}$/.test(branchCode)){ msg.textContent="支店コード（数字3桁以内）を入力してください"; return; }
+      msg.textContent="保存中…";
+      const account={
+        vendor_id: vendorId, bank_code: bankCode, bank_name: $("vb-name").value.trim(),
+        branch_code: branchCode, branch_name: $("vb-branch").value.trim(), account_type: $("vb-type").value,
+        account_number: $("vb-number").value.trim(), account_holder_kana: $("vb-holder").value.trim(),
+      };
+      const r=await vendorCall("upsert_bank_account",{account});
+      if(!r.ok){ msg.textContent=r.body.error||"保存に失敗しました"; return; }
+      await vbLoadAccountsForVendor(vendorId);
+    };
+  };
+}
+
+/* ---- 従業員振込口座（一覧・read only。2026-09-05新規。担当Bスレッドからの依頼＝
+   WORKLOG「担当C・担当Fへ依頼: 振込口座まわりのUI整理」コミットc6a93cf ②③に対応。
+   人を選ぶドロップダウン式ではなく、全従業員をずらっと一覧表示するだけの画面にした。
+   編集は従来どおり給与仕訳タブ（payrollBankModal）・本人からの個人情報変更申請の承認
+   経由のみで、ここでは新しいテーブル・書き込み経路は一切作っていない（read-only）。
+   変更があれば、この一覧を開き直すたびに同じpayroll_bank_accountsを読み直すため、
+   アカウント管理（nippo）の従業員詳細と常に同じ内容になる ---- */
+async function renderSettingsPayrollBank(){
+  $("settingsBody").innerHTML=`<div class="spin">読み込み中…</div>`;
+  const r=await authed(`/rest/v1/payroll_bank_accounts?select=*,owner:users!payroll_bank_accounts_user_id_fkey(name)`);
+  const rows=(r.ok&&Array.isArray(r.body))?r.body:[];
+  rows.sort((a,b)=>((a.owner&&a.owner.name)||"").localeCompare((b.owner&&b.owner.name)||"","ja"));
+  const methodLabel={bank_transfer:"銀行振込",cash:"現金手渡し"};
+  $("settingsBody").innerHTML=`<div class="card" style="padding:16px">
+    <h3 style="font-size:14px;margin-bottom:6px">👥 従業員振込口座（${rows.length}件）</h3>
+    <div class="meta" style="color:var(--muted);font-size:12px;margin-bottom:10px">給与仕訳タブでの登録、または本人からの個人情報変更申請が承認されたものが、どちらもここに集約されます（アカウント管理の従業員詳細と同じ内容です）。ここでは参照のみで、編集は給与仕訳タブ、または本人からの申請経由で行ってください。</div>
+    <input type="search" id="pb-search" placeholder="🔎 氏名で検索" style="max-width:280px;margin-bottom:10px">
+    <div class="hq-tablewrap"><table class="invoice-table">
+      <thead><tr><th>氏名</th><th>支払方法</th><th>銀行コード</th><th>銀行</th><th>支店コード</th><th>支店</th><th>種別</th><th>口座番号</th><th>名義</th><th>最終更新</th></tr></thead>
+      <tbody id="pb-rows">${rows.map(a=>payrollBankRowHtml(a,methodLabel)).join("")||'<tr><td colspan="10">登録がありません</td></tr>'}</tbody>
+    </table></div>
+  </div>`;
+  $("pb-search").oninput=()=>{
+    const q=$("pb-search").value.trim().toLowerCase();
+    const filtered=rows.filter(a=>!q||((a.owner&&a.owner.name)||"").toLowerCase().includes(q));
+    $("pb-rows").innerHTML=filtered.map(a=>payrollBankRowHtml(a,methodLabel)).join("")||'<tr><td colspan="10">該当する従業員はいません</td></tr>';
+  };
+}
+function payrollBankRowHtml(a,methodLabel){
+  if(a.payment_method==="cash"){
+    return `<tr><td><b>${esc((a.owner&&a.owner.name)||"—")}</b></td><td><span class="invoice-status gray">現金手渡し</span></td><td colspan="7" style="color:var(--muted)">口座登録不要</td></tr>`;
+  }
+  const hasCodes=a.bank_code&&a.branch_code;
+  return `<tr>
+    <td><b>${esc((a.owner&&a.owner.name)||"—")}</b></td>
+    <td><span class="invoice-status ${hasCodes?"done":"err"}">${esc(methodLabel[a.payment_method]||"未登録")}</span></td>
+    <td>${a.bank_code?esc(a.bank_code):'<span class="invoice-status err">未登録</span>'}</td>
+    <td>${esc(a.bank_name||"—")}</td>
+    <td>${a.branch_code?esc(a.branch_code):'<span class="invoice-status err">未登録</span>'}</td>
+    <td>${esc(a.branch_name||"—")}</td>
+    <td>${a.account_type==="2"?"当座":a.account_type==="4"?"貯蓄":"普通"}</td>
+    <td>${esc(a.account_number||"—")}</td>
+    <td>${esc(a.account_holder_kana||"—")}</td>
+    <td>${a.updated_at?fmtD(a.updated_at):"—"}</td>
+  </tr>`;
 }
 
 /* ---- 勘定科目マッピング（マネーフォワード本体の一覧の参照のみ・2026-09-03新規） ---- */
@@ -6589,109 +6743,6 @@ async function renderSettingsMapping(){
     el.disabled=false; el.textContent="✓ 保存済み";
     setTimeout(()=>{ if(el) el.textContent="保存"; },1500);
   });
-}
-
-/* ---- 支払先・銀行口座（取引先の口座＋口座変更申請の承認・却下・2026-09-03新規） ---- */
-let BANK_STATE={};
-async function renderSettingsBankAccounts(){
-  $("settingsBody").innerHTML=`<div class="spin">読み込み中…</div>`;
-  const [reqRes,vendorRes]=await Promise.all([
-    vendorCall("list_change_requests",{status:"pending"}),
-    vendorCall("list_vendors"),
-  ]);
-  BANK_STATE.pending=(reqRes.ok&&reqRes.body.requests)||[];
-  BANK_STATE.vendors=(vendorRes.ok&&vendorRes.body.vendors)||[];
-  bankRenderBox();
-}
-function bankRenderBox(){
-  const box=$("settingsBody");
-  const pending=BANK_STATE.pending||[];
-  box.innerHTML=`<div class="card" style="padding:16px;margin-bottom:14px">
-    <h3 style="font-size:14px;margin-bottom:6px">⚠️ 振込先口座変更（未確認）</h3>
-    <div class="meta" style="color:var(--muted);font-size:12px;margin-bottom:10px">請求書から読み取った振込先口座が、登録済みの口座と異なっていたものです。自動更新はせず、内容を確認してから承認または却下してください。</div>
-    ${pending.length?pending.map(r=>`<div class="card" style="padding:10px;margin-bottom:8px;border-color:var(--m-amber)">
-      <div style="font-size:12px"><b>${esc((r.vendor&&r.vendor.name)||"—")}</b>（元請求書: ${esc((r.invoice&&r.invoice.vendor_name)||"—")}・${yen(r.invoice&&r.invoice.amount)}）</div>
-      <div style="font-size:11px;color:var(--muted);margin-top:4px">申請内容: ${esc(r.proposed_bank_name||"—")} ${esc(r.proposed_branch_name||"")} ${r.proposed_account_type==="2"?"当座":r.proposed_account_type==="4"?"貯蓄":"普通"} ${esc(r.proposed_account_number||"—")}（${esc(r.proposed_account_holder_kana||"—")}）</div>
-      <div class="mail-actions" style="margin-top:8px"><button class="hq-btn primary" data-bank-approve="${r.id}">承認する</button><button class="hq-btn" data-bank-reject="${r.id}">却下する</button></div>
-    </div>`).join(""):'<div style="font-size:12px;color:var(--muted)">未確認の口座変更はありません</div>'}
-  </div>
-  <div class="card" style="padding:16px">
-    <h3 style="font-size:14px;margin-bottom:6px">🏦 取引先ごとの銀行口座</h3>
-    <div class="ai-field" style="max-width:320px;margin-bottom:10px"><small>取引先を選択</small><select id="bank-vendor-select"><option value="">（選択してください）</option>${(BANK_STATE.vendors||[]).map(v=>`<option value="${esc(v.id)}" ${BANK_STATE.selectedVendorId===v.id?"selected":""}>${esc(v.name)}</option>`).join("")}</select></div>
-    <div id="bank-accounts-box">${BANK_STATE.selectedVendorId?"":'<div style="font-size:12px;color:var(--muted)">取引先を選ぶと登録済みの口座が表示されます</div>'}</div>
-  </div>`;
-  document.querySelectorAll("[data-bank-approve]").forEach(el=>el.onclick=async()=>{
-    if(!confirm("この振込先口座変更を承認します。今後この取引先への振込はこの新しい口座になります。よろしいですか？")) return;
-    const r=await vendorCall("approve_change_request",{id:el.dataset.bankApprove});
-    if(!r.ok){ alert(r.body.error||"承認に失敗しました"); return; }
-    await renderSettingsBankAccounts();
-  });
-  document.querySelectorAll("[data-bank-reject]").forEach(el=>el.onclick=async()=>{
-    if(!confirm("この振込先口座変更を却下します。口座は変更されません。よろしいですか？")) return;
-    const r=await vendorCall("reject_change_request",{id:el.dataset.bankReject});
-    if(!r.ok){ alert(r.body.error||"却下に失敗しました"); return; }
-    await renderSettingsBankAccounts();
-  });
-  if($("bank-vendor-select")) $("bank-vendor-select").onchange=async()=>{
-    BANK_STATE.selectedVendorId=$("bank-vendor-select").value;
-    if(!BANK_STATE.selectedVendorId){ $("bank-accounts-box").innerHTML=""; return; }
-    await bankLoadAccountsForVendor();
-  };
-  if(BANK_STATE.selectedVendorId) bankLoadAccountsForVendor();
-}
-async function bankLoadAccountsForVendor(){
-  const box=$("bank-accounts-box");
-  box.innerHTML="読み込み中…";
-  const r=await vendorCall("list_bank_accounts",{vendor_id:BANK_STATE.selectedVendorId});
-  const accounts=(r.ok&&r.body.accounts)||[];
-  box.innerHTML=`<div class="hq-tablewrap"><table class="invoice-table">
-    <thead><tr><th>銀行コード</th><th>銀行</th><th>支店コード</th><th>支店</th><th>種別</th><th>口座番号</th><th>名義</th><th>状態</th><th>最終確認日</th></tr></thead>
-    <tbody>${accounts.length?accounts.map(a=>`<tr>
-      <td>${a.bank_code?esc(a.bank_code):'<span class="invoice-status err">未登録</span>'}</td><td>${esc(a.bank_name||"—")}</td>
-      <td>${a.branch_code?esc(a.branch_code):'<span class="invoice-status err">未登録</span>'}</td><td>${esc(a.branch_name||"—")}</td>
-      <td>${a.account_type==="2"?"当座":a.account_type==="4"?"貯蓄":"普通"}</td>
-      <td>${esc(a.account_number||"—")}</td><td>${esc(a.account_holder_kana||"—")}</td>
-      <td>${a.is_current?'<span class="invoice-status done">現在有効</span>':'<span class="invoice-status gray">過去口座</span>'}</td>
-      <td>${a.confirmed_at?fmtD(a.confirmed_at):"—"}</td>
-    </tr>`).join(""):'<tr><td colspan="9">登録済みの口座はありません</td></tr>'}</tbody>
-  </table></div>
-  <div class="mail-actions" style="margin-top:10px"><button class="hq-btn primary" id="bank-add">＋ 口座を追加（現在有効な口座として登録）</button></div>
-  <div id="bank-editor" style="margin-top:10px"></div>`;
-  // 2026-09-05修正：銀行コード・支店コードの入力欄を追加。ユーザー報告「PayPay銀行CSVを
-  // アップロードしたら『銀行コードは必須入力項目です』『支店コードは必須入力項目です』という
-  // エラーが出た」に対応（この欄が無かったため常に空欄でCSVに出力されていた）。給与仕訳の
-  // 振込先口座登録（payrollBankModal）と同じ項目・同じ入力チェックにした
-  $("bank-add").onclick=()=>{
-    $("bank-editor").innerHTML=`<div class="card" style="padding:12px;border-color:var(--m-blue)">
-      <div class="ai-grid">
-        <div class="ai-field"><small>銀行コード（4桁の数字。通帳・キャッシュカードに記載）</small><input id="bank-code" placeholder="例: 0033" maxlength="4"></div>
-        <div class="ai-field"><small>銀行名（任意・表示用）</small><input id="bank-name" placeholder="例: PayPay銀行"></div>
-        <div class="ai-field"><small>支店コード（3桁の数字）</small><input id="bank-branchcode" placeholder="例: 003" maxlength="3"></div>
-        <div class="ai-field"><small>支店名（任意・表示用）</small><input id="bank-branch" placeholder="例: 本店営業部"></div>
-        <div class="ai-field"><small>口座種別</small><select id="bank-type"><option value="1">普通</option><option value="2">当座</option><option value="4">貯蓄</option></select></div>
-        <div class="ai-field"><small>口座番号</small><input id="bank-number" maxlength="7"></div>
-        <div class="ai-field full"><small>名義（カナ）</small><input id="bank-holder"></div>
-      </div>
-      <div class="mail-actions" style="margin-top:8px"><button class="primary" id="bank-save">💾 保存</button><button id="bank-cancel">キャンセル</button></div>
-      <div class="err" id="bank-msg" style="margin-top:6px"></div>
-    </div>`;
-    $("bank-cancel").onclick=()=>{ $("bank-editor").innerHTML=""; };
-    $("bank-save").onclick=async()=>{
-      const msg=$("bank-msg"); msg.className="err";
-      const bankCode=$("bank-code").value.trim(), branchCode=$("bank-branchcode").value.trim();
-      if(!/^\d{1,4}$/.test(bankCode)){ msg.textContent="銀行コード（数字4桁以内）を入力してください"; return; }
-      if(!/^\d{1,3}$/.test(branchCode)){ msg.textContent="支店コード（数字3桁以内）を入力してください"; return; }
-      msg.textContent="保存中…";
-      const account={
-        vendor_id: BANK_STATE.selectedVendorId, bank_code: bankCode, bank_name: $("bank-name").value.trim(),
-        branch_code: branchCode, branch_name: $("bank-branch").value.trim(), account_type: $("bank-type").value,
-        account_number: $("bank-number").value.trim(), account_holder_kana: $("bank-holder").value.trim(),
-      };
-      const r=await vendorCall("upsert_bank_account",{account});
-      if(!r.ok){ msg.textContent=r.body.error||"保存に失敗しました"; return; }
-      await bankLoadAccountsForVendor();
-    };
-  };
 }
 
 /* ---- 自動処理ルール（2026-09-03新規） ---- */
