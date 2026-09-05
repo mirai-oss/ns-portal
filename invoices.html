@@ -1873,9 +1873,20 @@ function invoicePaymentTabHtml(invoice){
   const dueLabel=invoice.due_date?`／支払期限${esc(fmtD(invoice.due_date))}`:"";
   const amtLabel=`／金額${yen(invoice.amount)}`;
   let stateLine, actionHtml;
+  // 2026-09-05新規：ユーザー指示書「振込先口座に問題がある場合（口座変更・口座未登録・
+  // 重複請求疑い等）は振込一覧への追加を自動停止してほしい」に対応。従来は口座変更未承認
+  // だけがブロック対象だったため、口座未登録・重複請求疑いのときも同様にブロックする
+  const noAccountBlock=!invoice.bank_account_change_detected&&invoice.payment_status==="not_ready"&&(!invoice.vendor_id||!currentVendorAccount(invoice));
+  const dupBlock=!invoice.bank_account_change_detected&&!noAccountBlock&&invoice.payment_status==="not_ready"&&invoice.duplicate_suspected;
   if(invoice.bank_account_change_detected){
     stateLine=`<span class="pl-state excluded">！口座変更未承認</span>`;
     actionHtml=`<div class="risk-card danger"><h5>⚠️ 口座変更未承認</h5><p>振込先口座の変更が未承認のため、振込一覧に追加できません。下の「取引先・振込先口座」、または設定タブ「支払先・銀行口座」で承認してください。</p></div>`;
+  }else if(noAccountBlock){
+    stateLine=`<span class="pl-state excluded">！振込先口座未登録</span>`;
+    actionHtml=`<div class="risk-card danger"><h5>⚠️ 振込先口座が未登録です</h5><p>振込先口座を登録しないと振込一覧に追加できません。上の「取引先・振込先口座」から登録してください。</p></div>`;
+  }else if(dupBlock){
+    stateLine=`<span class="pl-state excluded">！重複請求の疑い</span>`;
+    actionHtml=`<div class="risk-card danger"><h5>🚨 重複請求の疑いが解消されていません</h5><p>①請求情報カードの「重複でないと確認する」で解除してから振込一覧に追加してください。</p></div>`;
   }else if(invoice.payment_status==="not_ready"){
     stateLine=`<span class="pl-state wait">●振込待ち</span>`;
     actionHtml=`<div class="mail-actions"><button id="payment-add-transfer">🏦 振込一覧へ追加</button></div>`;
