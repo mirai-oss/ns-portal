@@ -12,6 +12,9 @@
 //                                     → スマレジスタッフ紐付きの招待を発行し、必要ならResendでメール送信（CEO/HQのみ）
 //   { action: "invite_staffs", invite_token }
 //                                    → 未連携スタッフの名前一覧（有効な招待トークン必須・未ログイン可）
+//   { action: "pull_profiles", user_id? } → 2026-09-05追加。スマレジ側の住所・生年月日・電話番号・
+//     郵便番号・性別・入社日をemployee_profilesへ取り込む（プル方向。sync actionの逆）。
+//     user_id省略時は連携済み全員が対象（CEO/HQのみ）。既に入力済みの項目は上書きしない
 import { createClient } from "npm:@supabase/supabase-js@2";
 
 const IS_PROD = Deno.env.get("SMAREGI_ENV") === "prod";
@@ -91,6 +94,14 @@ async function fetchAllStaffs(token: string) {
         kana: s.staffKana ?? "",
         mail: s.mail ?? "",
         classification: clsMap[String(s.employeeClassificationId)] ?? "",
+        // 2026-09-05追加: 個人情報の取り込み(pull_profiles)用。/staffs一覧の時点で既に返ってきている
+        // フィールドなので、ページング済みのこの一覧をそのまま使い回す（個別に/staffs/{id}を叩き直さない）
+        postCode: s.postCode ?? null,
+        address: s.address ?? null,
+        phone: s.phone ?? null,
+        birthday: s.birthday ?? null,
+        gender: s.gender ?? null,
+        hireDate: s.hireDate ?? null,
       });
     }
     const pageCount = Array.isArray(raw) ? (arr.length < 100 ? page : page + 1) : (raw?.pageCount ?? page);
@@ -194,6 +205,55 @@ Deno.serve(async (req) => {
       );
       for (const s of staffs) s.storeIds = storeMap[s.staffId] ?? [];
       return json({ ok: true, staffs });
+    }
+
+    // ---- 2026-09-05追加: スマレジの個人情報(住所・生年月日・電話番号等)をemployee_profilesへ
+    //   取り込む（プル方向。既存のaction:"sync"はnippo→スマレジへの一方向pushのみで、
+    //   スマレジ側が既に持っている個人情報をnippo側へ反映する経路が無かった＝ユーザー指摘に対応）。
+    //   安全のため「現在空欄の項目だけ埋める」方式（既に入力済みの値は絶対に上書きしない）。
+    //   body: { action:"pull_profiles", user_id? }  user_id省略時は連携済み全員（CEO/HQのみ）
+    if (body.action === "pull_profiles") {
+      if (!isAdmin) return json({ ok: false, error: caller.uid ? "forbidden" : "unauthorized" }, caller.uid ? 403 : 401);
+      const sb = svc();
+      const uid = body.user_id ? String(body.user_id) : null;
+      let profQuery = sb.from("employee_profiles").select("user_id,smaregi_staff_id,name_kana,birth_date,phone,postal_code,address,gender,hire_date").not("smaregi_staff_id", "is", null);
+      if (uid) profQuery = profQuery.eq("user_id", uid);
+      const { data: profs } = await profQuery;
+      if (!profs || !profs.length) return json({ ok: true, updated: [], skipped: [], errorCount: 0, errors: [] });
+
+      const token = await getToken();
+      const staffs = await fetchAllStaffs(token);
+      const byStaffId: Record<string, any> = {};
+      for (const s of staffs) byStaffId[s.staffId] = s;
+
+      const genderFromCode = (g: unknown): string | null => {
+        const v = String(g ?? "");
+        if (v === "0") return "male";
+        if (v === "1") return "female";
+        return null; // 未選択・不明なコードは無理に埋めない
+      };
+
+      const updated: any[] = [];
+      const skipped: any[] = [];
+      const errors: string[] = [];
+      for (const p of profs) {
+        const s = byStaffId[String(p.smaregi_staff_id)];
+        if (!s) { skipped.push({ user_id: p.user_id, reason: "スマレジ側で見つかりません（退職済み等）" }); continue; }
+        const patch: Record<string, unknown> = {};
+        if (!p.name_kana && s.kana) patch.name_kana = s.kana;
+        if (!p.birth_date && s.birthday) patch.birth_date = s.birthday;
+        if (!p.phone && s.phone) patch.phone = s.phone;
+        if (!p.postal_code && s.postCode) patch.postal_code = s.postCode;
+        if (!p.address && s.address) patch.address = s.address;
+        if (!p.gender && genderFromCode(s.gender)) patch.gender = genderFromCode(s.gender);
+        if (!p.hire_date && s.hireDate) patch.hire_date = s.hireDate;
+        if (!Object.keys(patch).length) { skipped.push({ user_id: p.user_id, reason: "埋める項目がありません（既に入力済み、またはスマレジ側も未入力）" }); continue; }
+        patch.updated_at = new Date().toISOString();
+        const { error } = await sb.from("employee_profiles").update(patch).eq("user_id", p.user_id);
+        if (error) { errors.push(`${p.user_id}: ${error.message}`); continue; }
+        updated.push({ user_id: p.user_id, filled: Object.keys(patch).filter((k) => k !== "updated_at") });
+      }
+      return json({ ok: true, updated, updatedCount: updated.length, skipped, skippedCount: skipped.length, errorCount: errors.length, errors });
     }
 
     // ---- スマレジスタッフ紐付き招待の発行（＋Resendメール送信） ----
