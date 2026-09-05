@@ -1432,7 +1432,18 @@ function pushNav(extra){ history.pushState(Object.assign({tab:TAB},extra||{}),""
 window.addEventListener("popstate",e=>{
   if(!ME) return;
   const st=e.state||{tab:"inbox"};
-  const modal=document.querySelector(".modal-bg");
+  // 2026-09-05修正：ユーザー報告「振替伝票プレビューで登録した直後に予期しないエラー
+  // （Cannot set properties of null (setting 'innerHTML')）が出る」の根本原因を特定。
+  // このアプリはモーダルの上にさらにモーダルを重ねて開く場面がある（例：請求書詳細モーダル
+  // →その上に開く振替伝票プレビューモーダル）。従来はdocument.querySelector(".modal-bg")で
+  // 「最初に見つかった.modal-bg」＝DOM上に一番先に追加された一番外側のモーダルを閉じていたため、
+  // 内側のモーダル（今まさに閉じようとしている振替伝票プレビュー等）を閉じたつもりが、
+  // 実際には見えない背後の外側モーダル（請求書詳細）ごと消えてしまっていた。その状態で
+  // 直後にreloadDetail()が請求書詳細側の要素（#mailDetail等）を更新しようとしてnullになり、
+  // このエラーになっていた。querySelectorAll+最後の要素（＝一番後に追加された＝一番上に
+  // 重なっている、今閉じるべきモーダル）を閉じるよう修正
+  const modals=document.querySelectorAll(".modal-bg");
+  const modal=modals[modals.length-1];
   if(modal) modal.remove();
   if(MOBILE_VIEW==="detail"){
     MOBILE_VIEW="list";
