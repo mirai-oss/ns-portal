@@ -6,6 +6,8 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
+**★★★2026-09-06（担当C実行スレッド・続き48）仕訳プレビュー: MFが404でなく400で「存在しない」を返すケースへの対応漏れを修正**（続き47の続報）: ユーザーが実機で再試行した結果、実際のエラーが判明：`status 400: {"errors":[{"code":"invalid_request_path_parameter","message":"The given id does not exist for this office."}]}`。前回の修正はstatus===404のみを「削除されている可能性」として扱っており、この400パターンでは紐付け解除ボタンが出ない不具合があった。`get_journal`のerrors配列も見て「見つからない」を判定する`not_found`フラグを返すよう修正し、フロントもそれを見るように変更。`invoices.html`・`supabase/functions/mf-journal/index.ts`コミット`0335022`push済み・デプロイ済み・GitHub Pages反映確認済み。ユーザーに実機での再試行を依頼中
+
 **★★★★2026-09-06（担当A実行スレッド）経営ダッシュボード体感速度改善: keiei-api-homeをホーム初期表示に接続（詳細は[tori-dashboard/HANDOFF.md](https://github.com/mirai-oss/tori-dashboard/blob/main/HANDOFF.md)2026-09-06エントリ・コミット[b95b5e4](https://github.com/mirai-oss/tori-dashboard/commit/b95b5e4)）**: ユーザー指示「売上確認・PL確認・売上分析の遅さが最優先」を受け、レーンP管轄の軽量Edge Function`keiei-api-home`をホーム画面の初期表示に接続し、従来のGAS`action:data`（実測失敗率38%）を初期表示の必須待ちから外して裏更新に降格。既存の`kpi-grid`/`panel`/`tbl`クラスをそのまま流用し新UIは追加していない。あわせて`bqGetPL`/`bqDetail`/`bqGetMedia`/`bqDailyStore`の呼び出し箇所を棚卸しし、`kd_`テーブルへの差し替え可否を調査した結果、**`kd_dashboard_daily_summary`には原価・人件費列が無く、`bqDailyStore`/`bqGetPL`/`bqGetMedia`の安全な差し替えは現時点でできない**ことを確認（`kd_store_monthly_summary`等の構築はレーンP待ち＝TK-60②と同じ依存）。今回安全に差し替えられたのはホーム画面の速報値のみ。GitHub Pages反映確認済み（`app.js?v=173`）。**実機でのログイン後の表示確認（速報→詳細への切り替わり）はユーザー確認待ち**
 
 **★★★2026-09-06（担当C実行スレッド・続き47）仕訳プレビュー失敗時の詳細表示・削除された仕訳の紐付け解除機能を追加**（続き46の続報。詳細は[続き47の記録](#2026-09-06担当c実行スレッド続き47)）: ユーザーが伝票531の請求書の「登録済み仕訳の内容」を開いたところ「取得に失敗しました: 仕訳の取得に失敗しました」というエラーに遭遇し、「マネーフォワード側で削除されたのか、単なるエラーなのか分からない」「削除されていたら、こちらの紐付けも解除して未登録の状態に戻してほしい」と報告。調査の結果、`mf-journal`の`get_journal`アクションがMF APIからの実際のエラー内容（status・応答本文）を一切画面に出していなかったことが判明。**修正**: ①失敗時にstatus・応答内容をエラーメッセージに含める（404→「削除されている可能性」、401→「連携切れの可能性」のヒント文言つき）②新規action`unlink_journal`（invoices.mf_journal_id等をクリアし会計・仕訳を未登録状態に戻す。MFへの問い合わせが不要なため連携が切れていても動く）③フロント：404で失敗したときだけ「↩️この仕訳の紐付けを解除する」ボタンを表示（確認ダイアログ経由・自動解除はしない）。`invoices.html`・`supabase/functions/mf-journal/index.ts`コミット`ac2e2c7`push済み・デプロイ済み・GitHub Pages反映確認済み。ユーザーに実機での再試行を依頼中
@@ -6945,3 +6947,19 @@ if(modal) modal.remove();
 構文チェック（`node --check`・`npx esbuild`）済み。`invoices.html`・`supabase/functions/mf-journal/index.ts`をコミット`ac2e2c7`としてpush済み・デプロイ済み・GitHub Pagesへの反映もcurlで確認済み。**なお404だったのか401だったのか、実際にどちらが原因だったかはまだ確認できていない**（ユーザーが再試行して初めて表示される情報のため）。`ai-cockpit`は本件専用のタスクIDが割られていないため未実行（ユーザー実機報告への即時対応のため）。
 
 **正直な注記**: `git push`後の`git diff origin/main --stat`で`supabase/functions/keiei-kd-refresh/index.ts`の変更が表示されたが、これは担当Dスレッド（同じ日・同じリポジトリで並行作業中）の未コミットのローカル変更であり、私のpush自体は正常にfast-forwardで完了している（`git log`で確認済み）。担当外のため一切触れていない。
+
+## 2026-09-06（担当C実行スレッド・続き48）
+
+続き47の対策後、ユーザーが実機で再試行し、今度は本当のエラー内容が表示された：
+```
+取得に失敗しました: 仕訳の取得に失敗しました（status 400: {"errors":[{"code":"invalid_request_path_parameter","message":"The given id does not exist for this office."}]}）
+```
+ただし「紐付け解除」ボタンは表示されなかった、との報告。
+
+**原因**: 前回の実装は`res.status===404`のときだけ「削除されている可能性」と判定していたが、実際にマネーフォワードが返してきたのは**404ではなく400**だった。マネーフォワードAPIは「指定されたIDがこの事業者（テナント）に存在しない」場合でも、必ずしも404を返すとは限らず、`errors`配列に`code:"invalid_request_path_parameter"`・`message:"The given id does not exist for this office."`という形の400を返すことがある、という実機でしか分からない仕様の癖だった。
+
+**修正**: `get_journal`の失敗判定に、404単独の判定に加えて「`errors`配列に`code==="invalid_request_path_parameter"`かつ`message`に"does not exist"を含む要素があるか」も見るようにし、どちらかに該当すれば`not_found:true`をレスポンスに含めるよう修正。フロント（`mfjOpenJournalPreview`）も`j.status===404`直接判定から`j.not_found`を見るように変更（バックエンド側に判定ロジックを一本化）。
+
+構文チェック（`node --check`・`npx esbuild`）済み。`invoices.html`・`supabase/functions/mf-journal/index.ts`をコミット`0335022`としてpush済み・`git diff origin/main --stat`で空（クリーン同期）確認済み。デプロイ済み・GitHub Pagesへの反映もcurlで確認済み。`ai-cockpit progress`（TK-85関連の追加対応として）実行済み。
+
+ユーザーに、もう一度同じ請求書で「登録済み仕訳の内容」を開き直してもらい、今度は「↩️この仕訳の紐付けを解除する」ボタンが表示されるか確認を依頼中。
