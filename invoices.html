@@ -1948,8 +1948,11 @@ function invoicePaymentTabHtml(invoice){
     actionHtml=`<div class="mail-actions"><button id="payment-add-transfer">🏦 振込一覧へ追加</button></div>`;
   }else if(invoice.payment_status==="paid"&&!invoice.payment_verified_at){
     stateLine=`<span class="pl-state done">✓振込済み</span>`;
+    // 2026-09-05追加：ユーザー報告「間違えて振込済みにしてしまったものを戻す方法がない」に
+    // 対応。振込先口座CSVを再出力できる状態（transfer_csv_exported_atがある＝csv）へ戻す。
+    // 一度に済ませてしまった等の理由で無い場合はwait（振込一覧に登録済みの状態）へ戻す
     actionHtml=`<div class="meta" style="color:var(--muted);font-size:12px;margin-bottom:8px">実際の着金・支払完了を確認できたら、下のボタンを押してください。</div>
-      <div class="mail-actions"><button id="payment-verify">✅ 支払を確認済みにする</button></div>`;
+      <div class="mail-actions"><button id="payment-verify">✅ 支払を確認済みにする</button><button id="payment-unmark-paid" style="color:var(--m-red)">↩️ 振込済みを取り消す</button></div>`;
   }else if(invoice.payment_verified_at){
     stateLine=`<span class="pl-state done">✓支払確認済み</span>`;
     actionHtml=`<div class="meta" style="color:var(--muted);font-size:12px">${fmtDT(invoice.payment_verified_at)}に確認済みにしました。</div>`;
@@ -2944,6 +2947,17 @@ function wireDetailActions(u){
     fireInvoiceEvent(invoice.id,"payment_verified").catch(()=>{});
     await reloadDetail();
   };
+  // 2026-09-05新規：ユーザー報告「間違えて振込完了にしてしまったものを戻す方法がない」に対応。
+  // CSV出力済みなら「csv」（振込一覧に残ったまま・再出力可能）へ、まだCSVを出していなければ
+  // 「wait」（振込一覧に登録済み）へ戻す。正直な注記：本部タスク側で完了扱いになった
+  // 「振込完了」工程は自動では未完了に戻らない（invoice_task_eventsは監査記録のため保持し、
+  // 直接の取り消しAPIが無い）ため、その旨をボタン押下時に案内する
+  if($("payment-unmark-paid")) $("payment-unmark-paid").onclick=async()=>{
+    if(!confirm("「振込済み」を取り消し、振込前の状態に戻します。よろしいですか？\n\n※本部タスク側で「振込完了」として完了扱いになっている場合、そちらは自動では取り消されません。必要であれば本部タスク側で確認してください。")) return;
+    const backTo=invoice.transfer_csv_exported_at?"csv":"wait";
+    await authed(`/rest/v1/invoices?id=eq.${invoice.id}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({payment_status:backTo,paid_at:null,paid_by:null})});
+    await reloadDetail();
+  };
   // 2026-09-05新規：④振込カードでの振込先口座の登録・編集（新規／既存どちらも同じフォーム。
   // 設定タブと全く同じupsert_bank_accountを呼ぶので、保存先は同じvendor_bank_accounts）
   if($("pay-bank-edit")) $("pay-bank-edit").onclick=()=>{
@@ -3795,6 +3809,7 @@ const UNIFIED_SUBTABS=[["review","要対応"],["all","すべて"],["accounting",
 const REASON_FILTER_LABELS={
   overdue:"支払期限超過", bank_change:"振込先口座変更", duplicate:"重複疑い", mf_error:"MF登録エラー",
   unknown_journal:"仕訳不明（未判定）", unknown_company:"法人不明", unknown_store:"店舗・部門不明", import_error:"取込エラー",
+  payment_unverified:"振込済み・支払確認待ち",
 };
 // 2026-09-04新規：会計ダッシュボードのカード・要対応内訳から🧾請求書一覧へ絞り込み付きで
 // 遷移するための共通関数（指示書§20-21）。ダッシュボード側は判定ロジックを一切持たず、
@@ -3848,10 +3863,18 @@ function unifiedStoreLabel(r){
   }
   return esc((r.store&&r.store.name)||"—");
 }
+// 2026-09-05修正：ユーザー報告「間違えて振込完了にしてしまった請求書が、ダッシュボード上は
+// ステータス『完了』になっているが、開いてみると実際には振込のところで止まっていて『支払を
+// 確認済みにする』ボタンで止まっている」に対応。従来はpayment_status==='paid'（振込済みに
+// した時点）を「完了」「対象外」として扱っていたが、本当の完了は支払確認（payment_verified_at）
+// まで進んだときだけ。振込済み・支払確認待ちの請求書を「完了済みだから今さら指摘しても
+// 仕方ない」と要対応から除外していたのが原因で見つけにくくなっていたため、新しい理由
+// payment_unverified（振込済み・支払確認待ち）を要対応に追加し、絞り込みで見つけられるようにした
 function unifiedAttentionReasons(r){
-  if(r.payment_status==="paid") return []; // 完了済みは対象外（今さら指摘しても仕方ないため）
+  if(r.payment_verified_at) return []; // 支払確認まで終わった、本当の完了済みだけ対象外にする
   const today=new Date().toISOString().slice(0,10);
   const reasons=[];
+  if(r.payment_status==="paid") reasons.push("payment_unverified"); // 振込済みだが支払確認が済んでいない
   if(r.duplicate_suspected) reasons.push("duplicate");
   if(r.bank_account_change_detected) reasons.push("bank_change");
   if(r.mf_registration_error) reasons.push("mf_error");
@@ -3868,12 +3891,13 @@ function unifiedMatchesSubTab(r,tab){
   if(tab==="review") return unifiedNeedsAttention(r);
   if(tab==="accounting") return !r.mf_journal_id;
   if(tab==="payment") return !!r.mf_journal_id&&["wait","csv","processing"].includes(r.payment_status);
-  if(tab==="done") return r.payment_status==="paid";
+  if(tab==="done") return !!r.payment_verified_at; // 支払確認まで終わって初めて「完了」タブに入る
   return true;
 }
 function unifiedStageOf(r){
   if(!r.mf_journal_id) return "内容確認・会計待ち";
-  if(r.payment_status==="paid") return "完了";
+  if(r.payment_verified_at) return "完了";
+  if(r.payment_status==="paid") return "支払確認待ち";
   if(["wait","csv","processing"].includes(r.payment_status)) return "振込準備";
   return "会計済み";
 }
