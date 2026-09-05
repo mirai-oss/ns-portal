@@ -3215,7 +3215,18 @@ function wireDetailActions(u){
       if(!sr.ok) console.error("[invoice_set_stores失敗]",{invoice_id:savedInvoiceId,status:sr.status,body:sr.body});
     }
     await reloadDetail();
-    const freshMsg=$("iv-msg"); if(freshMsg){ freshMsg.className="err msg-ok"; freshMsg.textContent="保存しました"; }
+    const freshMsg=$("iv-msg");
+    if(freshMsg){
+      // 2026-09-05修正：ユーザー報告「アップロード請求書で保存しても次のタスクへ進まない」に対応。
+      // 金額が未入力のまま保存すると①請求情報カードが完了扱いにならず「いまここ」バッジが
+      // 消えないため、原因（金額欄が空のまま）をその場で伝える
+      if(!isSales&&SELECTED.invoice&&SELECTED.invoice.amount==null){
+        freshMsg.className="err";
+        freshMsg.textContent="保存しましたが、金額が未入力のため次の工程へ進めません。証憑からのAI自動入力に失敗している場合があるので、上の「金額」欄に手入力してもう一度保存してください。";
+      }else{
+        freshMsg.className="err msg-ok"; freshMsg.textContent="保存しました";
+      }
+    }
     await loadWaitingPaymentCount();
     // 新規作成のときだけ自動判定を実行（会計・請求書処理の全面刷新・2026-09-03）。取引先マッチ・
     // 仕訳辞書の自動照合・重複/口座変更等のリスク判定を行い、統合請求書一覧のAI判定バッジに反映する。
@@ -3891,6 +3902,7 @@ const REASON_FILTER_LABELS={
   overdue:"支払期限超過", bank_change:"振込先口座変更", duplicate:"重複疑い", mf_error:"MF登録エラー",
   unknown_journal:"仕訳不明（未判定）", unknown_company:"法人不明", unknown_store:"店舗・部門不明", import_error:"取込エラー",
   payment_unverified:"振込済み・支払確認待ち",
+  incomplete_info:"金額・取引先など未入力",
 };
 // 2026-09-04新規：会計ダッシュボードのカード・要対応内訳から🧾請求書一覧へ絞り込み付きで
 // 遷移するための共通関数（指示書§20-21）。ダッシュボード側は判定ロジックを一切持たず、
@@ -3955,6 +3967,11 @@ function unifiedAttentionReasons(r){
   if(r.payment_verified_at) return []; // 支払確認まで終わった、本当の完了済みだけ対象外にする
   const today=new Date().toISOString().slice(0,10);
   const reasons=[];
+  // 2026-09-05修正：ユーザー報告「アップロード請求書で処理した請求書が一覧に出てこない」に対応。
+  // amount未入力＝カード①(請求情報)が未完了のはずなのに、法人・店舗・仕訳判定などが
+  // たまたま埋まっていると要対応理由が0件になり、既定の「要対応」タブから消えてしまっていた。
+  // 金額が入っていない請求書は必ず要対応として残す
+  if(r.amount==null) reasons.push("incomplete_info");
   if(r.payment_status==="paid") reasons.push("payment_unverified"); // 振込済みだが支払確認が済んでいない
   if(r.duplicate_suspected) reasons.push("duplicate");
   if(r.bank_account_change_detected) reasons.push("bank_change");
@@ -5087,7 +5104,14 @@ function wireUploadInvoiceTab(u){
       };
       const {ok,body:j}=await mfCall("intake_upload",payload);
       if(!ok){ msg.textContent=j.error||"取込に失敗しました"; $("up-submit").disabled=false; return; }
-      msg.className="err msg-ok"; msg.textContent="取り込みました。続けて請求書一覧を開きます…";
+      // 2026-09-05修正：ユーザー報告「アップロード請求書のPDFプレビューが出ない」に対応。
+      // 従来は証憑の保存に失敗しても気付けなかったため、失敗があればここで明示する
+      if(j.attach_errors&&j.attach_errors.length){
+        msg.className="err";
+        msg.textContent=`請求書は取り込みましたが、証憑ファイルの保存に失敗しました：${j.attach_errors.map(e=>`${e.file_name}（${e.error}）`).join("、")}。お手数ですが、開いた請求書詳細の「証憑プレビュー」からファイルを追加し直してください。`;
+      }else{
+        msg.className="err msg-ok"; msg.textContent="取り込みました。続けて請求書一覧を開きます…";
+      }
       // 新規取込時のみ自動判定を実行（iv-saveの新規保存時と同じ流儀）。完了を待たずに進める
       if(j.invoice_id){
         const newId=j.invoice_id;
@@ -6126,13 +6150,18 @@ async function payrollOpenPreview(userId){
     const deptSelect=(side)=>`<select class="payroll-preview-dept" data-idx="${idx}" data-side="${side}" style="width:100%;box-sizing:border-box;margin-top:5px;font-size:13px;padding:4px">${deptOptionsHtml(side==="debit"?b.department_id:b.credit_department_id)}</select>`;
     const amtInput=(side)=>`<input type="number" class="payroll-preview-amt" data-idx="${idx}" data-side="${side}" value="${side==="debit"?b.debitAmount:b.creditAmount}" style="width:100%;box-sizing:border-box;margin-top:8px;text-align:right;font-weight:700;font-size:17px;border:1px solid var(--line);border-radius:6px;padding:6px 9px;font-variant-numeric:tabular-nums">`;
     const hasDebit=!!b.debitLabel, hasCredit=!!b.creditLabel;
+    // 2026-09-05追加：ユーザー要望「仕訳ごとに摘要を入力できるようにしてほしい」に対応。
+    // 従来はb.remarkが埋まっている場合のみ読み取り専用で表示していたが、そもそも編集欄が
+    // 無かった。登録時のデフォルト文言（例:「2026-09分給与」）をplaceholderに出しつつ、
+    // 明細行ごとに自由に上書きできるようにする
+    const remarkInput=`<input class="payroll-preview-remark" data-idx="${idx}" value="${esc(b.remark||"")}" placeholder="摘要（空欄の場合は「${esc(PAYROLL_STATE.yearMonth)}分給与」等の既定文言で登録されます）" style="width:100%;box-sizing:border-box;margin-top:8px;font-size:12px;padding:5px 8px;border:1px solid var(--line);border-radius:6px">`;
     return `<div class="mfj-preview-entry" data-row-idx="${idx}">
       <div class="payroll-preview-head"><div>借方</div><div>貸方</div></div>
       <div class="mfj-preview-body">
         <div class="mfj-preview-side">${accInput("debit")}${deptSelect("debit")}${taxOptionsHtml(b.tax_id).replace('class="payroll-preview-tax"',`class="payroll-preview-tax" data-idx="${idx}" data-side="debit"`)}${amtInput("debit")}</div>
         <div class="mfj-preview-side">${accInput("credit")}${deptSelect("credit")}${taxOptionsHtml(b.credit_tax_id).replace('class="payroll-preview-tax"',`class="payroll-preview-tax" data-idx="${idx}" data-side="credit"`)}${amtInput("credit")}</div>
       </div>
-      ${b.remark?`<div class="mfj-preview-remark">${esc(b.remark)}</div>`:""}
+      <div style="padding:0 9px 6px">${remarkInput}</div>
       ${branches.length>1?`<div style="text-align:right;padding:4px 9px 6px"><button data-payroll-preview-rm="${idx}" title="この行を削除" style="background:none;border:none;color:var(--accent);font-size:11px;cursor:pointer;padding:0">✕ この行を削除</button></div>`:""}
     </div>`;
   };
@@ -6156,6 +6185,10 @@ async function payrollOpenPreview(userId){
     </div>
     <div style="font-size:10px;color:var(--muted);margin-bottom:6px">💡 金額はPDFと見比べて違っていればここで直接修正できます（例: 端数調整や個別の手当漏れ等）</div>
     <datalist id="payroll-preview-acc-datalist">${PAYROLL_STATE.accountDatalistHtml||""}</datalist>
+    <div style="margin-bottom:10px">
+      <button type="button" id="payroll-voucher-toggle" style="font-size:12px">📋 伝票プレビューを見る（借方・貸方を伝票のような形で確認）</button>
+      <div id="payroll-voucher-preview" hidden></div>
+    </div>
     <div id="payroll-preview-entries">${entries}</div>
     <div class="mail-actions" style="margin-top:6px"><button id="payroll-preview-addrow">＋ 明細行を追加</button></div>
     <div class="err" id="payrollPreviewMsg" style="margin-top:6px"></div>
@@ -6196,6 +6229,54 @@ async function payrollOpenPreview(userId){
     $("payroll-preview-credit-total").textContent=yen(t.credit);
     $("payroll-preview-diff-amt").textContent=yen(t.debit-t.credit);
     $("payroll-preview-diff-box").className=`box ${t.debit===t.credit?"ok":"ng"}`;
+    refreshVoucherPreview();
+  };
+  // 2026-09-05新規：ユーザー要望「仕訳の内容（借方・貸方）自体を、フォーム入力欄の羅列ではなく
+  // 伝票のような読みやすい形で確認できるプレビューが欲しい」に対応。上の入力フォームとは別に、
+  // 現在の入力内容をそのまま「借方｜貸方」の伝票形式の表で読み取り専用表示するだけの機能
+  // （マネーフォワードへの登録内容自体には影響しない、あくまで見た目の確認用）
+  const refreshVoucherPreview=()=>{
+    const box=$("payroll-voucher-preview");
+    if(!box||box.hidden) return;
+    const deptName=id=>id?(((PAYROLL_STATE.departments||[]).find(d=>d.id===id)||{}).name||""):"";
+    const rowsHtml=branches.map((b,i)=>{
+      const debitOn=!!(b.debitLabel&&Number(b.debitAmount)>0), creditOn=!!(b.creditLabel&&Number(b.creditAmount)>0);
+      if(!debitOn&&!creditOn) return "";
+      return `<tr>
+        <td style="padding:6px 8px;border:1px solid var(--line)">${debitOn?esc(b.debitLabel):""}</td>
+        <td style="padding:6px 8px;border:1px solid var(--line);text-align:right;font-variant-numeric:tabular-nums">${debitOn?yen(b.debitAmount):""}</td>
+        <td style="padding:6px 8px;border:1px solid var(--line);font-size:11px;color:var(--muted)">${debitOn?esc(deptName(b.department_id)):""}</td>
+        <td style="padding:6px 8px;border:1px solid var(--line)">${creditOn?esc(b.creditLabel):""}</td>
+        <td style="padding:6px 8px;border:1px solid var(--line);text-align:right;font-variant-numeric:tabular-nums">${creditOn?yen(b.creditAmount):""}</td>
+        <td style="padding:6px 8px;border:1px solid var(--line);font-size:11px;color:var(--muted)">${creditOn?esc(deptName(b.credit_department_id)):""}</td>
+        <td style="padding:6px 8px;border:1px solid var(--line);font-size:11px;color:var(--muted)">${esc(b.remark||`${PAYROLL_STATE.yearMonth}分給与`)}</td>
+      </tr>`;
+    }).join("");
+    const t=calcTotals();
+    box.innerHTML=`<div style="overflow-x:auto;margin-top:6px">
+      <table style="width:100%;border-collapse:collapse;font-size:12px">
+        <thead><tr style="background:var(--panel-2,#f5f5f5)">
+          <th colspan="3" style="padding:6px 8px;border:1px solid var(--line)">借方</th>
+          <th colspan="3" style="padding:6px 8px;border:1px solid var(--line)">貸方</th>
+          <th style="padding:6px 8px;border:1px solid var(--line)">摘要</th>
+        </tr></thead>
+        <tbody>${rowsHtml||`<tr><td colspan="7" style="padding:8px;text-align:center;color:var(--muted)">まだ入力がありません</td></tr>`}</tbody>
+        <tfoot><tr style="font-weight:700">
+          <td style="padding:6px 8px;border:1px solid var(--line)">合計</td>
+          <td style="padding:6px 8px;border:1px solid var(--line);text-align:right;font-variant-numeric:tabular-nums">${yen(t.debit)}</td>
+          <td style="padding:6px 8px;border:1px solid var(--line)"></td>
+          <td style="padding:6px 8px;border:1px solid var(--line)">合計</td>
+          <td style="padding:6px 8px;border:1px solid var(--line);text-align:right;font-variant-numeric:tabular-nums">${yen(t.credit)}</td>
+          <td colspan="2" style="padding:6px 8px;border:1px solid var(--line)"></td>
+        </tr></tfoot>
+      </table>
+    </div>`;
+  };
+  $("payroll-voucher-toggle").onclick=()=>{
+    const box=$("payroll-voucher-preview");
+    box.hidden=!box.hidden;
+    $("payroll-voucher-toggle").textContent=box.hidden?"📋 伝票プレビューを見る（借方・貸方を伝票のような形で確認）":"📋 伝票プレビューを閉じる";
+    if(!box.hidden) refreshVoucherPreview();
   };
   // entries部分の再描画（明細行の追加・削除のたびに呼ぶ）＋配線のやり直し
   const rerenderEntries=()=>{
@@ -6224,6 +6305,11 @@ async function payrollOpenPreview(userId){
     document.querySelectorAll(".payroll-preview-tax").forEach(el=>el.onchange=()=>{
       const idx=+el.dataset.idx, side=el.dataset.side;
       if(side==="debit") branches[idx].tax_id=el.value; else branches[idx].credit_tax_id=el.value;
+    });
+    // 2026-09-05追加：摘要欄の入力を保持（refreshTotals()内でrefreshVoucherPreview()も呼ばれ、伝票プレビューにも反映される）
+    document.querySelectorAll(".payroll-preview-remark").forEach(el=>el.oninput=()=>{
+      branches[+el.dataset.idx].remark=el.value;
+      refreshTotals();
     });
     document.querySelectorAll("[data-payroll-preview-rm]").forEach(el=>el.onclick=()=>{
       branches.splice(+el.dataset.payrollPreviewRm,1);

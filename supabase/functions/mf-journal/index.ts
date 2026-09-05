@@ -566,6 +566,8 @@ Deno.serve(async (req: Request) => {
       // invoice-filesバケット＋invoice_attachments（invoice_id紐付け）にも保存する。
       // マネーフォワードへの送信が失敗していてもこちらの保存は独立して試みる（証憑を見返せることの
       // 方が重要なため）
+      // 2026-09-05修正：intake_uploadと同じ理由で、エラーを握りつぶさず記録・返すようにした
+      const localAttachErrors: { file_name: string; error: string }[] = [];
       for (const f of inlineFiles) {
         try {
           const bytes = Uint8Array.from(atob(f.file_data), (c) => c.charCodeAt(0));
@@ -575,13 +577,13 @@ Deno.serve(async (req: Request) => {
           const fileHash = Array.from(new Uint8Array(hashBuf)).map((b) => b.toString(16).padStart(2, "0")).join("");
           const storagePath = `standalone/${newInv.id}/${crypto.randomUUID()}_${f.file_name}`;
           const { error: upErr } = await db.storage.from("invoice-files").upload(storagePath, bytes, { contentType: mimeType });
-          if (!upErr) {
-            await db.from("invoice_attachments").insert({
-              invoice_id: newInv.id, file_name: f.file_name, mime_type: mimeType ?? null,
-              storage_path: storagePath, file_hash: fileHash, size_bytes: bytes.length,
-            });
-          }
-        } catch (_e) { /* 証憑プレビューの保存に失敗しても登録自体は成立させる（正直な部分成功として扱う） */ }
+          if (upErr) { localAttachErrors.push({ file_name: f.file_name, error: "アップロード失敗: " + upErr.message }); continue; }
+          const { error: insAttErr } = await db.from("invoice_attachments").insert({
+            invoice_id: newInv.id, file_name: f.file_name, mime_type: mimeType ?? null,
+            storage_path: storagePath, file_hash: fileHash, size_bytes: bytes.length,
+          });
+          if (insAttErr) localAttachErrors.push({ file_name: f.file_name, error: "記録の保存失敗: " + insAttErr.message });
+        } catch (e) { localAttachErrors.push({ file_name: f.file_name, error: String((e as Error)?.message ?? e) }); }
       }
 
       // 紐付けた工程があれば完了させる（呼び出しユーザー自身のJWTで＝completed_byが正しく記録される）。
@@ -595,7 +597,7 @@ Deno.serve(async (req: Request) => {
         hqErr = error; hqStepCompleted = !error;
       }
 
-      return json({ success: true, invoice_id: newInv.id, journal_id: journalId, journal_number: journalNumber, hq_step_completed: hqStepCompleted, hq_step_error: hqErr?.message ?? null, voucher_attached: voucherAttached, voucher_error: voucherError });
+      return json({ success: true, invoice_id: newInv.id, journal_id: journalId, journal_number: journalNumber, hq_step_completed: hqStepCompleted, hq_step_error: hqErr?.message ?? null, voucher_attached: voucherAttached, voucher_error: voucherError, attach_errors: localAttachErrors });
     }
 
     if (action === "intake_upload") {
@@ -629,7 +631,14 @@ Deno.serve(async (req: Request) => {
         await db.from("invoice_stores").insert({ invoice_id: newInv.id, store_id: storeId }).then(() => {}, () => {});
       }
 
+      // 2026-09-05修正：ユーザー報告「アップロード請求書のPDFプレビューが出ない（証憑
+      // プレビュー・0ファイル）」に対応。従来はここで失敗しても例外を握りつぶすだけで、
+      // 実際に何が失敗したのか呼び出し元（フロント・このログ）のどちらからも一切分からない
+      // 状態だった（実データを確認したところ実際に files_attached:0 のまま保存されている
+      // ケースがあった）。1件ずつ実際のエラー内容を記録・返すようにし、次に同じ不具合が
+      // 起きたときに原因を特定できるようにした
       let attached = 0;
+      const attachErrors: { file_name: string; error: string }[] = [];
       for (const f of inlineFiles) {
         try {
           const bytes = Uint8Array.from(atob(f.file_data), (c) => c.charCodeAt(0));
@@ -639,18 +648,18 @@ Deno.serve(async (req: Request) => {
           const fileHash = Array.from(new Uint8Array(hashBuf)).map((b) => b.toString(16).padStart(2, "0")).join("");
           const storagePath = `standalone/${newInv.id}/${crypto.randomUUID()}_${f.file_name}`;
           const { error: upErr } = await db.storage.from("invoice-files").upload(storagePath, bytes, { contentType: mimeType });
-          if (!upErr) {
-            await db.from("invoice_attachments").insert({
-              invoice_id: newInv.id, file_name: f.file_name, mime_type: mimeType ?? null,
-              storage_path: storagePath, file_hash: fileHash, size_bytes: bytes.length,
-            });
-            attached++;
-          }
-        } catch (_e) { /* 1件失敗しても他のファイルは続行し、取込自体は成立させる */ }
+          if (upErr) { attachErrors.push({ file_name: f.file_name, error: "アップロード失敗: " + upErr.message }); continue; }
+          const { error: insAttErr } = await db.from("invoice_attachments").insert({
+            invoice_id: newInv.id, file_name: f.file_name, mime_type: mimeType ?? null,
+            storage_path: storagePath, file_hash: fileHash, size_bytes: bytes.length,
+          });
+          if (insAttErr) { attachErrors.push({ file_name: f.file_name, error: "記録の保存失敗: " + insAttErr.message }); continue; }
+          attached++;
+        } catch (e) { attachErrors.push({ file_name: f.file_name, error: String((e as Error)?.message ?? e) }); }
       }
-      await db.from("mf_sync_logs").insert({ action: "invoice_intake_upload", actor_type: "human", detail: { invoice_id: newInv.id, files_attached: attached } });
+      await db.from("mf_sync_logs").insert({ action: "invoice_intake_upload", actor_type: "human", detail: { invoice_id: newInv.id, files_attached: attached, attach_errors: attachErrors } });
 
-      return json({ success: true, invoice_id: newInv.id, files_attached: attached });
+      return json({ success: true, invoice_id: newInv.id, files_attached: attached, attach_errors: attachErrors });
     }
 
     return json({ error: "不明なactionです" }, 400);
