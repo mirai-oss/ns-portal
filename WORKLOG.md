@@ -6,6 +6,8 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
+**★★★★2026-09-06（担当A実行スレッド）経営ダッシュボード体感速度改善: keiei-api-homeをホーム初期表示に接続（詳細は[tori-dashboard/HANDOFF.md](https://github.com/mirai-oss/tori-dashboard/blob/main/HANDOFF.md)2026-09-06エントリ・コミット[b95b5e4](https://github.com/mirai-oss/tori-dashboard/commit/b95b5e4)）**: ユーザー指示「売上確認・PL確認・売上分析の遅さが最優先」を受け、レーンP管轄の軽量Edge Function`keiei-api-home`をホーム画面の初期表示に接続し、従来のGAS`action:data`（実測失敗率38%）を初期表示の必須待ちから外して裏更新に降格。既存の`kpi-grid`/`panel`/`tbl`クラスをそのまま流用し新UIは追加していない。あわせて`bqGetPL`/`bqDetail`/`bqGetMedia`/`bqDailyStore`の呼び出し箇所を棚卸しし、`kd_`テーブルへの差し替え可否を調査した結果、**`kd_dashboard_daily_summary`には原価・人件費列が無く、`bqDailyStore`/`bqGetPL`/`bqGetMedia`の安全な差し替えは現時点でできない**ことを確認（`kd_store_monthly_summary`等の構築はレーンP待ち＝TK-60②と同じ依存）。今回安全に差し替えられたのはホーム画面の速報値のみ。GitHub Pages反映確認済み（`app.js?v=173`）。**実機でのログイン後の表示確認（速報→詳細への切り替わり）はユーザー確認待ち**
+
 **★★★2026-09-06（担当C実行スレッド・続き47）仕訳プレビュー失敗時の詳細表示・削除された仕訳の紐付け解除機能を追加**（続き46の続報。詳細は[続き47の記録](#2026-09-06担当c実行スレッド続き47)）: ユーザーが伝票531の請求書の「登録済み仕訳の内容」を開いたところ「取得に失敗しました: 仕訳の取得に失敗しました」というエラーに遭遇し、「マネーフォワード側で削除されたのか、単なるエラーなのか分からない」「削除されていたら、こちらの紐付けも解除して未登録の状態に戻してほしい」と報告。調査の結果、`mf-journal`の`get_journal`アクションがMF APIからの実際のエラー内容（status・応答本文）を一切画面に出していなかったことが判明。**修正**: ①失敗時にstatus・応答内容をエラーメッセージに含める（404→「削除されている可能性」、401→「連携切れの可能性」のヒント文言つき）②新規action`unlink_journal`（invoices.mf_journal_id等をクリアし会計・仕訳を未登録状態に戻す。MFへの問い合わせが不要なため連携が切れていても動く）③フロント：404で失敗したときだけ「↩️この仕訳の紐付けを解除する」ボタンを表示（確認ダイアログ経由・自動解除はしない）。`invoices.html`・`supabase/functions/mf-journal/index.ts`コミット`ac2e2c7`push済み・デプロイ済み・GitHub Pages反映確認済み。ユーザーに実機での再試行を依頼中
 
 **★★★2026-09-06（担当D実行スレッド）kd_サマリ3本の鮮度・欠損を点検→失敗時Lark通知が無い穴を発見・修正。dataFreshness→kd_sync_runs移行を担当A/レーンPへ提案（SendMessage不可のためWORKLOG経由）**
