@@ -125,16 +125,18 @@ Deno.serve(async (req) => {
   }
 
   // タスク更新（task_status / progress_percent / blocker が来たときだけ）
-  if (task && (b.task_status || b.task_assignee || b.progress_percent !== undefined || b.blocker !== undefined)) {
+  if (task && (b.task_status || b.task_assignee || b.task_unblocks !== undefined || b.task_note || b.progress_percent !== undefined || b.blocker !== undefined)) {
     const tp: Record<string, unknown> = { updated_at: now };
     if (b.task_assignee) { tp.assignee_name = String(b.task_assignee); tp.assignee_type = b.task_assignee === "中山" ? "human" : "ai"; }
+    if (b.task_unblocks !== undefined && b.task_unblocks !== null) tp.unblocks = String(b.task_unblocks);
+    if (b.task_note) tp.on_done_note = String(b.task_note);
     if (b.task_status) { tp.status = b.task_status; if (b.task_status === "done") { tp.completed_at = now; tp.progress_percent = 100; } }
     if (b.progress_percent !== undefined && b.progress_percent !== null) tp.progress_percent = b.progress_percent;
     if (b.blocker !== undefined && b.blocker !== null) tp.blocker = b.blocker;
     await sb.from("ck_tasks").update(tp).eq("id", task.id);
     // 完了/ブロック/エラーはLark通知（完了時はunblocksの後続タスクを自動で着手可へ）。
     // すでに同じ状態なら通知しない（AI代理完了→画面で再度完了などの二重通知を防ぐ）
-    if ((b.task_status === "done" || b.task_status === "blocked") && task.status !== b.task_status) {
+    if ((b.task_status === "done" || b.task_status === "blocked") && task.status !== b.task_status && !b.quiet) {
       await notifyTaskEvent(sb, b.task_status === "done" ? "task_done" : "blocked",
         { ...task, status: b.task_status },
         { actor: b.agent_name ?? "", message: b.message ?? "", deviceKey });

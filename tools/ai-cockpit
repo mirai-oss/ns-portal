@@ -337,9 +337,13 @@ def main():
         payload["message"] = flags["message"]
         if cmd == "blocked": payload["blocker"] = flags["message"]
     if cmd == "done": payload.setdefault("progress_percent", 100)
-    if cmd == "update":  # 台帳整備用: ai-cockpit update --task TK-42 --to 担当B --status ready
+    if cmd == "update":  # 台帳整備用: ai-cockpit update --task TK-42 --to 担当B --status ready --unblocks "TK-60,TK-61" --note "…"
         if flags.get("status"): payload["task_status"] = flags["status"]
         if flags.get("to"): payload["task_assignee"] = flags["to"]
+        if flags.get("unblocks") is not None: payload["task_unblocks"] = flags["unblocks"]
+        if flags.get("note"): payload["task_note"] = flags["note"]
+    # --quiet: 過去分の一括反映用。Lark通知とunblocks自動処理を抑制（新規の完了報告には使わない）
+    if flags.get("quiet"): payload["quiet"] = 1
     if cmd == "approval-request":
         payload["approval_title"] = flags.get("message", "承認をお願いします")
         payload["approval_kind"] = flags.get("kind", "other")
