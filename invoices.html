@@ -4754,7 +4754,11 @@ async function mfjOpenJournalPreview(journalId,tenantId,invoiceId){
     // エラーなのか分からない。削除されていたら紐付けも解除してほしい」に対応。
     // status===404（マネーフォワード側で仕訳が見つからない＝削除された可能性が高い）の
     // ときだけ、確認の上で紐付けを解除できるボタンを出す（自動では解除しない＝誤操作防止）
-    const looksDeleted=j&&j.status===404;
+    // 2026-09-06実機確認で判明：マネーフォワードは「見つからない」場合でも404ではなく
+    // 400（errors配列にcode:"invalid_request_path_parameter"）を返すことがあった
+    // （ユーザーの実機報告で確認済み）。バックエンド側でこのパターンも判定し
+    // not_foundとして返すようにしたので、それをそのまま使う
+    const looksDeleted=!!(j&&j.not_found);
     box.innerHTML=`<div class="err">取得に失敗しました: ${esc((j&&j.error)||"")}</div>
       ${(looksDeleted&&invoiceId)?`<div class="mail-actions" style="margin-top:10px"><button id="mfj-unlink-journal">↩️ この仕訳の紐付けを解除する（会計・仕訳を未登録の状態に戻す）</button></div>`:""}`;
     if($("mfj-unlink-journal")) $("mfj-unlink-journal").onclick=async()=>{

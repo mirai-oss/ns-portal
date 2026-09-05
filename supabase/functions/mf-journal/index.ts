@@ -295,12 +295,21 @@ Deno.serve(async (req: Request) => {
       // 応答内容をそのままエラーメッセージに含めるよう修正
       if (!res.ok) {
         const detailText = typeof data === "object" ? JSON.stringify(data).slice(0, 300) : String(data).slice(0, 300);
-        const hint = res.status === 404
-          ? "（マネーフォワード側でこの仕訳が削除されている可能性があります）"
+        // 2026-09-06実機確認で判明：マネーフォワードは「このIDの仕訳は存在しない」場合でも
+        // 404ではなく400（errors配列にcode:"invalid_request_path_parameter"、
+        // message:"The given id does not exist for this office."）を返すことがある
+        // （実際にユーザーが遭遇したケースで確認済み）。404だけでなくこのパターンも
+        // 「見つからない＝削除されている可能性が高い」として扱う
+        const errList = Array.isArray((data as any)?.errors) ? (data as any).errors : [];
+        const notFoundByBody = errList.some((e: any) =>
+          e?.code === "invalid_request_path_parameter" && String(e?.message || "").includes("does not exist"));
+        const notFound = res.status === 404 || notFoundByBody;
+        const hint = notFound
+          ? "（マネーフォワード側でこの仕訳が削除されている、または別の事業者のIDになっている可能性があります）"
           : res.status === 401
           ? "（マネーフォワードとの連携が切れている可能性があります。設定タブから再連携してください）"
           : "";
-        return json({ error: `仕訳の取得に失敗しました${hint}（status ${res.status}: ${detailText}）`, status: res.status, detail: data }, 502);
+        return json({ error: `仕訳の取得に失敗しました${hint}（status ${res.status}: ${detailText}）`, status: res.status, not_found: notFound, detail: data }, 502);
       }
       const j = data.journal ?? {};
       const branches = (j.branches ?? []).map(branchToTemplate);
