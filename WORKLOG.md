@@ -6,6 +6,8 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
+**★★★★★2026-09-05（担当C実行スレッド・続き41）業務委託精算書自動連携: 担当C側実装（TK-85）完了・PL_SYNC_TOKEN設定待ち**（担当Aから引き継ぎ完了の報告を受けて着手。詳細は[続き41の記録](#2026-09-05担当c実行スレッド続き41)。設計書_業務委託精算書自動連携_2026-09-04.md§15参照）: 担当A側（seisan-dashboard・tori-dashboard、sd_apiAddExternalLine/sd_apiGetLines等・実機E2E完了・本番デプロイ済み）を土台に、ns-portal側を実装。**①SQL**: `invoice_pl_reflections`を拡張（新テーブルは作らない・設計書§9-3のとおり）。**②pl-fee-reflect Edge Functionに`seisan_confirm`/`seisan_refresh_status`を新設**：精算対象店舗分をDB_PL直接ではなくsd_apiAddExternalLine経由で業務委託精算書へ登録し（店舗ごとに1行・sourceKeyで冪等）、sd_apiGetLinesで精算書側の実データから6状態モデル（設計書§9-2・「店舗×月の同期成功」を「個別invoice反映済み」と断定しない設計）を取得し直せるようにした。**③フロント**：既存「📊 PLへ反映」パネルに統合し、精算対象店舗を検出したら「📋 業務委託精算書へ登録」ボタンから実際に登録できるように（従来は「精算書に手入力してください」という案内のみだった）。**④既存バグ2件を発見・修正**：(a)精算対象店舗の判定漏れ（`seisan_target`のみ見ていて`seisan_pl_categories_target`＝黒霧屋新横浜等を見ていなかった。direct route側のconfirmアクション）、(b)「精算対象店舗が含まれる」というだけでPL・広告・業務委託精算カードを対応完了扱いにしていた（実際には何も登録されていなかった＝本当の完了を偽っていた）ロジックを、実際の登録まで未完了のままにするよう修正。`invoices.html`・`supabase/functions/pl-fee-reflect/index.ts`コミット`029e684`push済み・デプロイ済み・GitHub Pages反映確認済み。**未完了（ユーザー対応待ち）**: ①`PL_SYNC_TOKEN`（seisan-dashboard API認証用）が未設定のため、実際の登録はまだ動かない。ユーザーから値を受け取ってSupabase Secretsへ登録する必要がある（設計書§15の指示どおり、自動化ツールでの登録は拒否されるため）②秋葉原 肉寿司の`seisan_store_name`が未設定（他の対象店舗は設定済み）。設定タブから設定が必要③実機E2E未実施（PL_SYNC_TOKEN設定後）
+
 **★★★★2026-09-05（担当C実行スレッド・続き40）③証憑アップロード失敗の根本原因を特定・修正（トークン期限切れで失敗していた）**（続き39の続報。詳細は[続き40の記録](#2026-09-05担当c実行スレッド続き40)）: 続き39で入れた「無言の失敗をバナー表示する」対策が効き、ユーザーが実機で具体的なエラー「エラー: アップロードに失敗しました」を再現・報告してくれた。これを手がかりに該当コード（請求書詳細「証憑プレビュー」→「＋このメールに紐付けて追加」＝`manual-att-upload`）を再調査したところ、**Supabase StorageへのPOSTだけが、他のAPI呼び出しが必ず経由する`authed()`（アクセストークン期限切れを自動検知・リフレッシュして再試行する共通処理）を使わず、sessionのアクセストークンで直接fetchしていたことが判明**。画面を長時間開いたままトークンが切れると、他の操作は自動リフレッシュされて動き続ける中、この一箇所だけがトークン切れで失敗し続ける再現しづらい不具合だったと推測される。加えて失敗時にSupabaseの実際のエラー内容を握りつぶし固定文言にしていたため特定できずにいた。**修正**: ①生fetchをauthed()経由に変更（自動リフレッシュが効くように）②失敗時はStorage・RPCどちらもSupabaseの実際のstatus/エラー内容を画面とconsoleの両方に表示③ボタンをtry/catch/finallyで確実に復帰させる④ボタン文言を「＋この請求書に証憑を追加」に変更（ユーザー要望）。`invoices.html`コミット`92c0dd6`push済み・GitHub Pages反映確認済み。**実機E2E未実施**（この環境からユーザーの実ログインセッションを操作できないため）。ユーザーに実機での再試行・確認を依頼中
 
 **★★★2026-09-05（担当C実行スレッド・続き39）①摘要デフォルトに従業員名を追加／③再試行しても「無言の失敗」→原因はクライアント側と特定、暫定対策を実装**（続き38の続報。詳細は[続き39の記録](#2026-09-05担当c実行スレッド続き39)）: ユーザーから①「摘要のデフォルトに従業員名も入れてほしい」→`defaultRemark`に従業員名を含めるよう修正。③についてユーザーから「再度試したけどやはりできない、エラーメッセージも何も表示されない」と報告。**invoices・mf_sync_logsの実データを確認したところ、再試行時にどちらにも新しい記録が一切無く、リクエストがサーバーに届く前にクライアント側で処理が止まっていたと判明**。さらに調査したところ、この画面には想定外の例外を拾って画面に表示する仕組みが従来一切無く、どこかで例外が起きると画面には「何も起きなかったように」見えてしまう構造的な欠陥があった（`window.onerror`/`unhandledrejection`のハンドラが存在しなかった）。**対策**: ①window全体の未処理エラー・Promise失敗を画面上部の赤いバナーで必ず表示する仕組み（`showGlobalErrorBanner`）を新設、②アップロードボタンのクリック処理を丸ごとtry/catch/finallyで囲み直し、どんな失敗でも必ずメッセージが出てボタンも必ず再度押せる状態に戻るよう修正、③診断用console.log/errorを追加。**根本原因（なぜ無言で止まったか）自体はまだ特定できていない**が、次回発生時は必ず何らかのメッセージが表示されるはず。`invoices.html`コミット`1b2fde8`push済み・GitHub Pages反映確認済み。**ユーザーへの依頼は継続**: 再試行して、今度こそ表示されるメッセージ（またはそれでも何も表示されない場合はその旨）を教えてほしい
@@ -6809,3 +6811,31 @@ ns-portal側（担当C）の実装は精算書側（担当A・GAS・`seisan-dash
 構文チェック（`node --check`）済み。`invoices.html`をコミット`92c0dd6`としてpush済み・`git diff origin/main --stat`で空（クリーン同期）確認済み。GitHub Pagesへの反映もcurlで確認済み。`ai-cockpit progress`（TK-91・92%）実行済み。
 
 **正直な限界と次のお願い**: 今回の修正はコードレビューと実データ（RLS定義・bucket設定）の確認から導いた、最も筋の通る原因（トークン期限切れ＋自動リフレッシュ漏れ）への対応であり、ユーザーが挙げた他の候補（RLS拒否・MIME/サイズ制限等）は設定を確認した上で除外した。ただし、この環境から中山さんの実際のログインセッションを直接操作してE2E確認する手段が無いため、**ユーザーが指定した確認手順（PDF選択→アップロード成功→証憑プレビュー「1ファイル」→PDFを開ける→ページ再読み込み→同じ請求書を再度開く→引き続き1ファイル）は未実施**。実機での再試行・確認をお願いする。もし今回の修正後もまだ失敗する場合は、新しく画面に表示されるはずの詳細エラー内容（Storageの実際のstatus/message）を教えてもらうことで、次の手がかりになる。
+
+## 2026-09-05（担当C実行スレッド・続き41）
+
+前段（アップロード請求書5件の不具合対応）完了後、ユーザーから「担当Aから業務委託精算書自動連携の引き継ぎが完了した」との報告を受けて着手。設計書_業務委託精算書自動連携_2026-09-04.md §15「担当Cへの引き継ぎ」を読み込み、実装に必要な情報（API仕様§5、6状態モデル§9-2、`invoice_pl_reflections`拡張方針§9-3、責務分離§8、二重計上防止の既存ガード§7）を確認したうえで実装した。
+
+**①SQLマイグレーション**（`supabase/2026-09-05_invoice_pl_reflections_seisan_route.sql`・適用済み）: 設計書§9-3のとおり、新テーブルは作らず既存`invoice_pl_reflections`を拡張。`reflection_route`（direct/seisan）・`seisan_store_name`・`seisan_line_key`・`item_name`・`tax_rate`・`pl_status`・`pl_status_checked_at`を追加。既存direct行の挙動は無変更。適用後、列の存在をSELECTで確認済み。
+
+**②`pl-fee-reflect` Edge Functionの拡張**（`seisan_confirm`/`seisan_refresh_status`を新設）:
+- `seisan_confirm`: 設計書§4「1回の呼び出しは1店舗1明細」の方針どおり、精算対象店舗（`stores.seisan_target`または`seisan_pl_categories_target`）の店舗ごとに`invoice_pl_reflections`を1行作り（`reflection_route='seisan'`）、`sd_apiAddExternalLine`（担当A実装済み・GAS）を店舗ごとに1回呼ぶ。sourceKeyは`invoice:<invoice_id>:<この行のid>`とし、同じ請求書×科目×店舗の組み合わせを再登録すると既存行を再利用（同じsourceKeyで冪等に上書き）。店舗に`seisan_store_name`（精算書側の店舗名）が未設定の場合は明確なエラーで拒否。
+- `seisan_refresh_status`: `sd_apiGetLines`（担当A実装済み）を呼び、精算書側が計算済みの`plStatus`（設計書§9-2の6状態モデル。GAS側で計算済みの値をそのまま使い、ns-portal側で「反映済み」を勝手に断定しない）を`pl_status`列に取り込む。
+- 既存`confirm`アクション（direct route）の精算対象店舗リジェクト条件に、判定漏れだった`seisan_pl_categories_target`（黒霧屋 新横浜等・§14で追加されたフラグ）を追加。この判定漏れは、`seisan_confirm`実装時に「どちらが対象店舗か」を整理する過程で発見した既存バグで、放置すると黒霧屋の経費が直接PL反映と精算書経由の両方で二重計上されうる状態だった。
+- `status`アクションのSELECT列に新設列を追加し、フロントが`reflection_route`等を区別できるようにした。
+- 構文チェックは`node --check`が使えないため（Deno/TypeScript）、`npx esbuild`でバンドルできることを確認（パースエラーなし）。`npx supabase functions deploy pl-fee-reflect`でデプロイし、匿名curl呼び出しで生存確認済み。
+
+**③フロント（`invoices.html`）**: 既存の「📊 PLへ反映」パネル（`plfeebox`/`PLFEE_STATE`）に統合する形で実装（新しい別パネルを作らず、既存の仕訳グループ検出・部門別金額按分ロジックをそのまま再利用）:
+- `plfeeComputeAllocation`が部門名から精算対象店舗を検出したら、従来は「ここでは反映していません。精算書に入力してください」という警告のみ（`skippedSeisan`）だったのを、`seisanRows`という編集可能な行データに変更。
+- 新設`plfeeSeisanSectionHtml`/`plfeeWireSeisanSection`/`plfeeSeisanConfirm`: 費目名・税率の入力欄＋店舗×金額の表＋「📋 この内容で業務委託精算書へ登録」ボタンを追加。押すと`seisan_confirm`を呼ぶ。
+- 反映履歴（`plfeeReflectedCardHtml`）を`reflection_route`で分岐：seisan経由の行は店舗名・pl_statusバッジ（6色分け：PL対象外=灰／振込確定待ち・PL同期待ち=amber／店舗月次PL同期実行済み＝blue／PL反映済み＝green／PLエラー＝red）・「🔄 状態を更新」ボタン（`seisan_refresh_status`呼び出し）を表示。
+- `invoiceSeisanStores`・`CORP_STORE_CACHE`・`PLFEE_STATE.stores`の店舗クエリに`seisan_pl_categories_target`/`seisan_store_name`を追加。
+
+**④実装中に見つけた既存バグの修正（②のバグに加えてもう1件）**: 「PL・広告・業務委託精算」の工程カードが、精算対象店舗が含まれるというだけで「対応完了」バッジを表示していた（`invoiceSeisanStores(invoice).length>0`を`plDone`のOR条件に入れていた）。実際には精算書への登録が何も行われていなくても完了扱いになる、本当の完了を偽って表示するバグだった。実際に登録（direct routeの`pl_fee_reflected_at`。今回からseisan routeの登録成功時も同じ列に書き込むようにしたため、これ1つのフラグで両ルートの完了を正しく判定できる）されるまでは未完了のままにするよう、2箇所（`plDoneForCard`・`step-pl`カードの`cardDone`）を修正。
+
+**正直な限界・ユーザー対応待ち**:
+1. `PL_SYNC_TOKEN`（seisan-dashboard API認証用の共有トークン）が未設定。設計書§15に明記のとおり、自動化ツールでの`app_secrets`登録は拒否されるため、ユーザーから値を直接受け取ってSupabase Secretsへ登録する必要がある。設定するまで`seisan_confirm`/`seisan_refresh_status`はエラーを返す（コード上は明確なエラーメッセージを返すので、実害なく安全に失敗する）。
+2. データ確認の結果、**秋葉原 肉寿司**（担当AのE2Eテストで使われた店舗）だけ`stores.seisan_store_name`が未設定と判明（他の対象店舗：エース本厚木・じんべぇ川崎・じんべぇ新横浜・黒霧屋新横浜は設定済み）。設定タブ「法人・店舗・部門マッピング」から設定してもらう必要がある。
+3. 実機E2E未実施（PL_SYNC_TOKEN設定後にユーザーに確認してもらう必要がある）。
+
+`ai-cockpit progress`（TK-85）実行済み。
