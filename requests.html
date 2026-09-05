@@ -225,7 +225,6 @@ function renderApp(){
       <div class="who">${esc(ME.name)}さん・申請した内容は本部の承認後に反映されます</div>
     </div>
     <div id="approvePanel"></div>
-    <div id="bankListPanel"></div>
     <div class="card" style="padding:0;overflow:hidden">
       <div class="tabrow">
         <button id="tabPersonal" class="${TAB==='personal'?'active':''}" onclick="switchTab('personal')">自分の情報変更</button>
@@ -240,7 +239,7 @@ function renderApp(){
   `;
   renderTabBody();
   loadHistory();
-  if(PROFILE_APPROVER){ loadApprovePanel(); loadBankList(); }
+  if(PROFILE_APPROVER) loadApprovePanel();
 }
 function switchTab(t){ TAB=t; renderApp(); }
 
@@ -312,52 +311,6 @@ async function reviewProfileRequest(id,approve){
   const msg=$("approveMsg");
   if(!r.ok){ if(msg) msg.innerHTML=`<div class="msg-err">${esc(r.body?.message||"処理できませんでした")}</div>`; return; }
   await loadApprovePanel();
-}
-
-/* ============================================================
-   登録済みの振込口座一覧（本部/マスター用）
-   2026-09-02 担当Cからの依頼: 給与仕訳タブで登録・または本人申請で承認された
-   payroll_bank_accountsを、従業員情報を見る場所からも確認できるようにしたい、
-   との要望。ns-info-system側のemployees画面（info.employees）はportal_user_id
-   紐付けがほぼ無い別テーブルのためそちらに追加しても実質誰も表示されない
-   （今回の緊急バグと同じ原因）。payroll_bank_accountsは元々public.users.id
-   （ポータルの実アカウント）で管理されているため、この画面（requests.html）に
-   一覧を追加するのが実データと正しく結びつく置き場所と判断した
-   ============================================================ */
-const ACCOUNT_TYPE_LABEL={"1":"普通","2":"当座","4":"貯蓄"};
-const PAYMENT_METHOD_LABEL={bank_transfer:"銀行振込",cash:"現金手渡し"};
-let BANK_LIST=null, BANK_Q="";
-async function loadBankList(){
-  const r=await authed(`/rest/v1/payroll_bank_accounts?select=user_id,bank_name,bank_code,branch_name,branch_code,account_type,account_number,account_holder_kana,payment_method,updated_at,owner:users!payroll_bank_accounts_user_id_fkey(name)`);
-  BANK_LIST=(r.ok&&Array.isArray(r.body))?r.body.sort((a,b)=>(a.owner?.name||"").localeCompare(b.owner?.name||"","ja")):[];
-  renderBankShell();
-}
-function renderBankShell(){
-  const el=$("bankListPanel"); if(!el) return;
-  if(BANK_LIST===null) return;
-  el.innerHTML=`<div class="card">
-    <div class="sec-title">🏦 登録済みの振込口座（${BANK_LIST.length}件）</div>
-    <div class="sec-sub">給与仕訳タブでの登録、または本人からの変更申請が承認されたものが、どちらもここに集約されます。</div>
-    <input type="search" id="bankQ" oninput="setBankQ(this.value)" placeholder="氏名で検索">
-    <div id="bankResults" style="margin-top:8px"></div>
-  </div>`;
-  updateBankResults();
-}
-function setBankQ(v){ BANK_Q=v; updateBankResults(); }
-function updateBankResults(){
-  const el=$("bankResults"); if(!el) return;
-  const q=BANK_Q.trim().toLowerCase();
-  const filtered=(BANK_LIST||[]).filter(r=>!q||(r.owner?.name||"").toLowerCase().includes(q));
-  if(filtered.length===0){ el.innerHTML='<p style="color:var(--muted);font-size:13px">該当する登録はありません</p>'; return; }
-  el.innerHTML=filtered.map(r=>{
-    const isCash=r.payment_method==="cash";
-    const detail=isCash?"（現金手渡しのため口座情報なし）":
-      `${r.bank_name||r.bank_code||""} ${r.branch_name||r.branch_code||""} ${ACCOUNT_TYPE_LABEL[r.account_type]||r.account_type||""} ${r.account_number||""}（${r.account_holder_kana||""}）`.replace(/\s+/g," ").trim();
-    return `<div class="hist-row" style="align-items:flex-start">
-      <span><b>${esc(r.owner?.name||"（不明）")}</b><br><span style="font-size:12px;color:var(--muted)">${esc(detail)}</span></span>
-      <span class="hist-meta">${PAYMENT_METHOD_LABEL[r.payment_method]||r.payment_method||""}<br>${new Date(r.updated_at).toLocaleDateString("ja-JP")}更新</span>
-    </div>`;
-  }).join("");
 }
 
 /* ============================================================
