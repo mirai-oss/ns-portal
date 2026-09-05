@@ -1162,11 +1162,70 @@ function prepareBodyHtml(html){
   const doc=new DOMParser().parseFromString(html,"text/html");
   doc.querySelectorAll("script,style,iframe,object,embed").forEach(el=>el.remove());
   doc.querySelectorAll("a[href]").forEach(a=>{ a.setAttribute("target","_blank"); a.setAttribute("rel","noopener noreferrer"); });
+  // 2026-09-05追加：ユーザー報告「請求書メールの本文にあるダウンロードURLがリンクになって
+  // いない」に対応。自動送信システムが<a>タグで囲まずプレーンテキストのままURLを貼り付けて
+  // いるHTMLメールが多いため、既存のリンク以外の生のURL文字列をクリックできるリンクに変換する
+  linkifyBareUrlsInDom(doc,doc.body);
   return doc.body ? doc.body.innerHTML : html;
 }
+const URL_RE=/(https?:\/\/[^\s<>"'）】]+)/g;
+// docに属するTreeWalkerでrootの下のテキストノードを走査し、<a>の中以外にある生のURLを
+// <a>要素へ置き換える（既存のリンク・script/styleの中身は対象外）
+function linkifyBareUrlsInDom(doc,root){
+  if(!root) return;
+  const walker=doc.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode(node){
+      URL_RE.lastIndex=0;
+      if(!node.nodeValue || !URL_RE.test(node.nodeValue)) return NodeFilter.FILTER_REJECT;
+      let p=node.parentNode;
+      while(p){ if(p.nodeName==="A") return NodeFilter.FILTER_REJECT; p=p.parentNode; }
+      return NodeFilter.FILTER_ACCEPT;
+    }
+  });
+  const targets=[]; let n; while((n=walker.nextNode())) targets.push(n);
+  targets.forEach(node=>{
+    const text=node.nodeValue;
+    URL_RE.lastIndex=0;
+    const frag=doc.createDocumentFragment();
+    let last=0, m;
+    while((m=URL_RE.exec(text))){
+      if(m.index>last) frag.appendChild(doc.createTextNode(text.slice(last,m.index)));
+      const a=doc.createElement("a");
+      a.setAttribute("href",m[1]); a.setAttribute("target","_blank"); a.setAttribute("rel","noopener noreferrer"); a.textContent=m[1];
+      frag.appendChild(a);
+      last=m.index+m[1].length;
+    }
+    if(last<text.length) frag.appendChild(doc.createTextNode(text.slice(last)));
+    node.parentNode.replaceChild(frag,node);
+  });
+}
+// 2026-09-05追加：プレーンテキストのメールで、長いURLが自動送信システム側の固定幅折り返しで
+// 改行だけで分断されているケース（見た目には1つのURLなのに改行でちぎれて認識できない）を
+// できるだけ結合してからリンク化する。URLとして使える文字が改行の前後どちらにもある場合だけ
+// 結合する（通常の改行・段落区切りには影響しない）
+function joinWrappedUrls(text){
+  const re=/https?:\/\/(?:[A-Za-z0-9\-._~:/?#[\]@!$&'()*+,;=%]|\r?\n(?=[A-Za-z0-9\-._~:/?#[\]@!$&'()*+,;=%]))*[A-Za-z0-9\-._~:/?#[\]@!$&'()*+,;=%]/g;
+  return text.replace(re, m => m.replace(/\r?\n/g, ""));
+}
 function linkifyText(text){
-  const e=esc(text);
+  const joined=joinWrappedUrls(text);
+  const e=esc(joined);
   return e.replace(/(https?:\/\/[^\s<>"'）】]+)/g, url => `<a href="${url}" target="_blank" rel="noopener noreferrer">${url}</a>`);
+}
+// 2026-09-05新規：ユーザー要望「パスワード通知メールのパスワードもコピーできるように」に
+// 対応。本文（プレーンテキスト優先、無ければHTMLからテキストだけ取り出す）から
+// 「パスワード：〇〇」のような記載を探し、見つかれば値を返す（見つからなければnull）。
+// 自動検出のため誤検出の可能性があり、UI側では検出結果を本文と見比べられる形で表示する
+function detectMailPassword(mail){
+  let text=(mail&&mail.body_text)||"";
+  if(!text&&mail&&mail.body_html){
+    const tmp=document.createElement("div");
+    tmp.innerHTML=mail.body_html;
+    text=tmp.textContent||"";
+  }
+  if(!text) return null;
+  const m=text.match(/(?:パスワード|ﾊﾟｽﾜｰﾄﾞ|password)\s*[:：]\s*([^\s　<>「」『』（）()]{3,40})/i);
+  return m?m[1]:null;
 }
 
 /* ============================================================
@@ -2101,6 +2160,16 @@ function renderMailDetail(u){
       <div class="err" id="act-msg" style="margin-top:6px"></div>`}`;
 
   const mailBodyIframeHtml=`<div class="mail-body"><iframe class="mail-body-frame" id="mailBodyFrame" sandbox="allow-popups allow-popups-to-escape-sandbox"></iframe></div>`;
+  // 2026-09-05新規：ユーザー要望「パスワード通知メールのパスワードもコピーできるように」に
+  // 対応。本文中に検出できた場合だけ、コピー用ボタン付きの小さな案内を表示する
+  // （iframeはscript実行不可のサンドボックスのため、コピー機能は親ページ側に置く）
+  const detectedPassword=detectMailPassword(mail);
+  const passwordBannerHtml=detectedPassword?`<div class="card" style="padding:10px 12px;margin-bottom:10px;border-color:var(--m-blue);display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+    <span style="font-size:12px">🔑 本文から検出したパスワード：</span>
+    <code style="background:var(--bg);padding:3px 8px;border-radius:6px;font-size:12px;font-weight:800">${esc(detectedPassword)}</code>
+    <button class="hq-btn" id="mail-copy-password" style="font-size:11px;padding:5px 9px" data-password="${esc(detectedPassword)}">📋 コピー</button>
+    <span class="meta" style="color:var(--muted);font-size:10px">※自動検出のため、念のため本文と見比べてご利用ください</span>
+  </div>`:"";
 
   const headHtml=invoiceHeaderMode?`
     <div class="mail-detail-head inv-head">
@@ -2118,7 +2187,7 @@ function renderMailDetail(u){
         <summary style="cursor:pointer;font-size:12px;color:var(--muted);font-weight:700">📎 取得元情報（${esc(sourceLabel)}）を見る</summary>
         <div style="margin-top:8px">${legacyMailHeadInnerHtml}</div>
         ${mail.mail_status==="processing"&&!isHolder?`<div class="mail-lock">🔒 <b>${esc(mail.processor?mail.processor.name:"担当者")}さんが処理中です。</b> 他の人は処理を開始できません。</div>`:""}
-        <details style="margin-top:8px"><summary style="cursor:pointer;font-size:12px;color:var(--muted);font-weight:700">${isStandalone?"取込内容の詳細を表示":"📩 元メールを表示"}</summary>${mailBodyIframeHtml}</details>
+        <details style="margin-top:8px"><summary style="cursor:pointer;font-size:12px;color:var(--muted);font-weight:700">${isStandalone?"取込内容の詳細を表示":"📩 元メールを表示"}</summary>${passwordBannerHtml}${mailBodyIframeHtml}</details>
       </details>
     </div>`:`
     <div class="mail-detail-head">${legacyMailHeadInnerHtml}</div>`;
@@ -2128,6 +2197,7 @@ function renderMailDetail(u){
 
     ${(!invoiceHeaderMode&&mail.mail_status==="processing"&&!isHolder)?`<div class="mail-lock">🔒 <b>${esc(mail.processor?mail.processor.name:"担当者")}さんが処理中です。</b> 他の人は処理を開始できません。</div>`:""}
     ${(!invoiceHeaderMode&&mail.duplicate_suspected)?'<div class="mail-alert">⚠️ <b>重複の可能性があります。</b> 同じ添付ファイル（ハッシュ一致）が既に登録されています。</div>':""}
+    ${invoiceHeaderMode?"":passwordBannerHtml}
 
     <div class="mail-body">
       ${invoiceHeaderMode?"":'<iframe class="mail-body-frame" id="mailBodyFrame" sandbox="allow-popups allow-popups-to-escape-sandbox"></iframe>'}
@@ -2415,6 +2485,16 @@ function renderMailDetail(u){
   // リンクは新規タブで開けるがスクリプト実行・トップ遷移は不可のまま
   const bodyHtml = mail.body_html ? prepareBodyHtml(mail.body_html) : (mail.body_text ? `<pre style="white-space:pre-wrap;font-family:inherit">${linkifyText(mail.body_text)}</pre>` : "（本文なし）");
   $("mailBodyFrame").srcdoc = `<!doctype html><html><head><meta charset="utf-8"><style>body{font-family:-apple-system,sans-serif;font-size:13px;line-height:1.7;color:#3a352f;margin:10px}</style></head><body>${bodyHtml}</body></html>`;
+  if($("mail-copy-password")) $("mail-copy-password").onclick=async(e)=>{
+    const btn=e.currentTarget; const pw=btn.dataset.password;
+    try{
+      await navigator.clipboard.writeText(pw);
+      btn.textContent="✓ コピーしました";
+      setTimeout(()=>{ if(btn.isConnected) btn.textContent="📋 コピー"; },1500);
+    }catch(err){
+      alert("コピーに失敗しました。お手数ですが本文から直接選択してコピーしてください。");
+    }
+  };
 
   if(atts.length){
     signAttachmentUrls(atts.map(a=>a.storage_path)).then(map=>{
