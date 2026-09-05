@@ -4193,7 +4193,7 @@ async function transferExportCsv(u){
   }
   let taskOkCount=0, taskFailCount=0;
   for(const [corp,names] of groups){
-    const taskR=await createTransferConfirmTask("vendor",transferDate,names,corp);
+    const taskR=await createTransferConfirmTask("vendor",corp,transferDate,names,corp); // scope_key=法人名（法人ごとに1つの開いているタスクとして扱う）
     if(taskR.ok) taskOkCount++; else taskFailCount++;
   }
   await renderTransfersTab(u);
@@ -5899,13 +5899,17 @@ function promptTransferDateModal(defaultDate){
     };
   });
 }
-// 振込予定日の確定後に「振込先を確認」本部タスクを自動作成する共通ヘルパー。
+// 振込予定日の確定後に「振込先を確認」本部タスクを自動作成・更新する共通ヘルパー。
 // タスク作成に失敗しても、CSV出力自体（既に完了済み）は取り消さない＝結果を呼び出し元へ
-// 返すだけにして、呼び出し元がメッセージ欄に表示するかどうかを決める
-async function createTransferConfirmTask(kind,transferDate,recipientNames,corp){
+// 返すだけにして、呼び出し元がメッセージ欄に表示するかどうかを決める。
+// 2026-09-05修正：ユーザー報告「振込予定日を変更するたびに新規タスクが作られて増え続ける」
+// に対応。scopeKey（同じ対象と見なす単位。取引先向け＝法人名、給与＝対象年月）が同じで、
+// まだ完了していない既存タスクがあれば新規作成せず期日・チェックリストを更新するだけにする
+// hq_upsert_transfer_task（続き32のhq_create_transfer_taskの後継）を使う
+async function createTransferConfirmTask(kind,scopeKey,transferDate,recipientNames,corp){
   const names=[...new Set((recipientNames||[]).filter(Boolean))];
   if(!names.length) return {ok:false,error:"振込先の名前が取得できませんでした"};
-  const r=await authed("/rest/v1/rpc/hq_create_transfer_task",{method:"POST",body:JSON.stringify({p_kind:kind,p_transfer_date:transferDate,p_recipient_names:names,p_corp:corp||"N-Style"})});
+  const r=await authed("/rest/v1/rpc/hq_upsert_transfer_task",{method:"POST",body:JSON.stringify({p_kind:kind,p_scope_key:scopeKey,p_transfer_date:transferDate,p_recipient_names:names,p_corp:corp||"N-Style"})});
   return r;
 }
 // 2026-09-04追加：振込依頼人名（データレコード8項目め）。フォーマット仕様書PDFには「任意・
@@ -5987,7 +5991,7 @@ async function payrollExportCsv(){
   // 2026-09-05修正：ユーザー指摘「本部タスクの法人がN-Style固定になっている」に対応。
   // 給与仕訳はまだ有限会社トーホーエージェンシー分のみ対応（画面上部の案内文と同じ前提）のため、
   // 既定値をN-Styleからトーホーへ変更した
-  const taskR=await createTransferConfirmTask("payroll",transferDate,paidNames,"トーホー");
+  const taskR=await createTransferConfirmTask("payroll",PAYROLL_STATE.yearMonth,transferDate,paidNames,"トーホー"); // scope_key=対象年月（月ごとに1つの開いているタスクとして扱う）
   await authed(`/rest/v1/payroll_transfer_schedule`,{method:"POST",headers:{Prefer:"resolution=merge-duplicates,return=minimal"},body:JSON.stringify({
     year_month:PAYROLL_STATE.yearMonth, scheduled_date:transferDate, hq_task_id:(taskR.ok&&taskR.body)||null, created_by:ME.id, updated_at:new Date().toISOString(),
   })}).catch(()=>{});
