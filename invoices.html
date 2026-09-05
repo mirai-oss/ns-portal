@@ -1954,7 +1954,9 @@ function invoicePaymentTabHtml(invoice){
     stateLine=`<span class="pl-state done">✓支払確認済み</span>`;
     actionHtml=`<div class="meta" style="color:var(--muted);font-size:12px">${fmtDT(invoice.payment_verified_at)}に確認済みにしました。</div>`;
   }else{
-    stateLine=`<span class="pl-state wait">●振込準備完了／振込一覧に登録済み</span>`;
+    // 2026-09-05追加：振込予定日（PayPay銀行CSV出力時に入力・銀行の仕組み上、当日振り込みは
+    // できないため）が分かっている場合はここに表示する
+    stateLine=`<span class="pl-state wait">●振込準備完了／振込一覧に登録済み</span>${invoice.transfer_scheduled_date?`　<span class="meta" style="color:var(--muted);font-size:11px">📅振込予定日: ${esc(fmtD(invoice.transfer_scheduled_date))}</span>`:""}`;
     actionHtml=`<div class="mail-actions"><button id="dash-go-transfers-from-invoice">🏦 振込一覧を開く →</button></div>`;
   }
   const vendorLinkedName=(invoice.vendor&&invoice.vendor.name)||invoice.vendor_name||"";
@@ -4070,7 +4072,7 @@ function transferRowHtml(r){
     <td>${acc?esc(acc.branch_name||"—"):"—"}</td>
     <td>${acc?esc(acc.account_number||"—"):"—"}</td>
     <td>${r.mf_journal_id?'<span class="invoice-status done">済</span>':'<span class="invoice-status wait">未</span>'}</td>
-    <td><span class="invoice-status ${pay[1]}">${esc(pay[0])}</span></td>
+    <td><span class="invoice-status ${pay[1]}">${esc(pay[0])}</span>${r.transfer_scheduled_date?`<div class="meta" style="color:var(--muted);font-size:10px;margin-top:2px">📅${esc(fmtD(r.transfer_scheduled_date))}</div>`:""}</td>
     <td><button class="hq-btn" data-transfer-open="${r.id}" data-email="${r.email_id||""}">詳細</button></td>
   </tr>`;
 }
@@ -4118,14 +4120,22 @@ async function transferExportCsv(u){
   if(!withAccount.length){ $("transfer-msg").textContent="選択した請求書に振込先口座（銀行コード・支店コードを含む）の登録がありません（設定タブ、または請求書詳細の④振込カードから登録してください）"; return; }
   const remitterName=paypayRemitterName(); // 2026-09-04追加：PayPay銀行が振込依頼人名を必須としていたため確認する
   if(remitterName===null) return; // キャンセル
+  // 2026-09-05追加：ユーザー要望「当日振り込みができないので振込予定日を表示・本部タスクを
+  // 自動発行してほしい（担当：青山純・原美香・齋藤隆治／工程内チェックリストに振込先の名前）」
+  const transferDate=await promptTransferDateModal();
+  if(transferDate===null) return; // キャンセル
   const csv=buildPaypayCsv(withAccount.map(r=>{
     const acc=TRANSFERS_STATE.accountsByVendor.get(r.vendor_id);
     return { bankCode:acc.bank_code||"", branchCode:acc.branch_code||"", accountType:acc.account_type||"1", accountNumber:acc.account_number||"", holderKana:acc.account_holder_kana||"", amount:Number(r.amount)||0 };
   }),remitterName);
   const blob=paypayCsvToBlob(csv); // 2026-09-04：Shift-JISでエンコード（PayPay銀行アップロードエラー対応）
   const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download=`paypay_transfer_${new Date().toISOString().slice(0,10)}.csv`; a.click();
-  await authed(`/rest/v1/invoices?id=in.(${withAccount.map(r=>r.id).join(",")})`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({payment_status:"csv",transfer_csv_exported_at:new Date().toISOString()})});
+  await authed(`/rest/v1/invoices?id=in.(${withAccount.map(r=>r.id).join(",")})`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({payment_status:"csv",transfer_csv_exported_at:new Date().toISOString(),transfer_scheduled_date:transferDate})});
+  const recipientNames=withAccount.map(r=>(r.vendor&&r.vendor.name)||r.vendor_name).filter(Boolean);
+  const taskR=await createTransferConfirmTask("vendor",transferDate,recipientNames,"N-Style");
   await renderTransfersTab(u);
+  $("transfer-msg").className=taskR.ok?"err msg-ok":"err";
+  $("transfer-msg").textContent=taskR.ok?`振込予定日: ${fmtD(transferDate)}／本部タスク「振込先を確認」を作成しました。`:"⚠️本部タスクの自動作成に失敗しました（振込CSV自体は正常に作成されています）。";
 }
 async function transferMarkPaid(u){
   const selected=rows_for_transfer_selection();
@@ -4981,7 +4991,7 @@ async function renderPayrollTab(u){
 async function payrollLoad(){
   const ym=PAYROLL_STATE.yearMonth;
   const fetchSync=()=>authed(`/rest/v1/sf_payroll_sync?year_month=eq.${ym}&select=*,user:users(name,role,is_active)&order=user(name)`);
-  let [syncR,recR,asgR,tplR,deptR,allocR,bankR,hiddenR,accR,draftR]=await Promise.all([
+  let [syncR,recR,asgR,tplR,deptR,allocR,bankR,hiddenR,accR,draftR,scheduleR]=await Promise.all([
     fetchSync(),
     authed(`/rest/v1/payroll_journal_records?year_month=eq.${ym}&select=*`),
     authed(`/rest/v1/payroll_journal_assignments?select=*`),
@@ -4996,6 +5006,8 @@ async function payrollLoad(){
     mfCall("accounts",{tenant_id:"default"}),
     // 2026-09-02: 一時保存（下書き）機能。「途中で消えてしまう」対策
     authed(`/rest/v1/payroll_journal_drafts?year_month=eq.${ym}&select=*`),
+    // 2026-09-05追加：振込予定日（振込CSV出力時にユーザーが入力）。無ければ未設定のまま
+    authed(`/rest/v1/payroll_transfer_schedule?year_month=eq.${ym}&select=*`),
   ]);
   // 給与データの取得に失敗した場合（トークン更新タイミング等による一時的な失敗を想定）、少し待って
   // 1回だけ自動で再試行する。ユーザー報告「タブを開き直すとKPIが0にリセットされて見づらい」対策
@@ -5025,6 +5037,7 @@ async function payrollLoad(){
   PAYROLL_STATE.bankAccounts=(bankR.ok&&Array.isArray(bankR.body))?bankR.body:[];
   PAYROLL_STATE.hiddenUserIds=new Set((hiddenR.ok&&Array.isArray(hiddenR.body))?hiddenR.body.map(h=>h.user_id):[]);
   PAYROLL_STATE.drafts=(draftR.ok&&Array.isArray(draftR.body))?draftR.body:[];
+  PAYROLL_STATE.transferScheduledDate=(scheduleR.ok&&Array.isArray(scheduleR.body)&&scheduleR.body[0])?scheduleR.body[0].scheduled_date:null;
   {
     const {map,dl}=mftBuildAccountIndex((accR.ok&&accR.body.accounts)||[]);
     PAYROLL_STATE.accountLabelMap=map; PAYROLL_STATE.accountDatalistHtml=dl;
@@ -5310,8 +5323,8 @@ function payrollRender(){
       <div class="pr-hero">
         <div class="card pr-hero-main">
           <div class="eyebrow">現在処理している対象月</div>
-          <div class="pr-hero-title"><div class="month">${esc(PAYROLL_STATE.yearMonth.replace("-","年"))}月</div><div class="label">給与振込</div></div>
-          <p>まだ<b>有限会社トーホーエージェンシー分のみ</b>対応しています（SK側は未対応）。「仕訳辞書パターン」は設定タブで「給与仕訳での用途」を設定したテンプレートだけが選べます。</p>
+          <div class="pr-hero-title"><div class="month">${esc(PAYROLL_STATE.yearMonth.replace("-","年"))}月</div><div class="label">給与振込</div>${PAYROLL_STATE.transferScheduledDate?`<div class="label" style="background:var(--m-bluesoft);color:var(--m-blue)">📅振込予定日: ${esc(fmtD(PAYROLL_STATE.transferScheduledDate))}</div>`:""}</div>
+          <p>まだ<b>有限会社トーホーエージェンシー分のみ</b>対応しています（SK側は未対応）。「仕訳辞書パターン」は設定タブで「給与仕訳での用途」を設定したテンプレートだけが選べます。${PAYROLL_STATE.transferScheduledDate?"":"（振込CSVを出力すると振込予定日を入力でき、ここに表示されます）"}</p>
         </div>
         <div class="card pr-hero-side">
           <label>対象月を変更</label>
@@ -5795,6 +5808,43 @@ function toShiftJisBytes(str){
 function paypayCsvToBlob(csvString){
   return new Blob([toShiftJisBytes(csvString)],{type:"text/csv"});
 }
+// 2026-09-05新規：ユーザー要望「PayPay銀行は当日振り込みができないため、振込予定日を
+// 振込状態のところに表示させ、さらに本部タスクを自動発行して振込予定日を期限にタスクが
+// 作られるようにしてほしい」に対応。CSV出力時に振込予定日を確認する小さなモーダル。
+// window.prompt()だと日付形式を手入力させることになりミスの元になるため、
+// <input type="date">を使った専用モーダルにした
+function promptTransferDateModal(defaultDate){
+  return new Promise(resolve=>{
+    const modal=document.createElement("div");
+    modal.className="modal-bg mail-shell"; modal.id="transferDateModal";
+    modal.innerHTML=`<div class="modal" style="max-width:360px">
+      <div class="mhead"><h2>振込予定日</h2></div>
+      <div class="meta" style="color:var(--muted);font-size:12px;margin-bottom:10px">銀行の仕組み上、当日振り込みはできません。実際に振り込まれる予定日を入力してください（本部タスク「振込先を確認」の期限にも使われます）。</div>
+      <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">振込予定日</label>
+      <input type="date" id="td-date" value="${esc(defaultDate||"")}" style="width:100%;border:1px solid var(--line);border-radius:8px;background:var(--panel);color:var(--ink);padding:10px;font-size:13px">
+      <div class="err" id="td-msg" style="margin-top:6px"></div>
+      <div class="mail-actions" style="margin-top:12px"><button class="primary" id="td-ok">決定</button><button id="td-cancel">キャンセル</button></div>
+    </div>`;
+    document.body.appendChild(modal);
+    const close=val=>{ modal.remove(); resolve(val); };
+    modal.onclick=e=>{ if(e.target===modal) close(null); };
+    $("td-cancel").onclick=()=>close(null);
+    $("td-ok").onclick=()=>{
+      const v=$("td-date").value;
+      if(!v){ $("td-msg").textContent="振込予定日を選択してください"; return; }
+      close(v);
+    };
+  });
+}
+// 振込予定日の確定後に「振込先を確認」本部タスクを自動作成する共通ヘルパー。
+// タスク作成に失敗しても、CSV出力自体（既に完了済み）は取り消さない＝結果を呼び出し元へ
+// 返すだけにして、呼び出し元がメッセージ欄に表示するかどうかを決める
+async function createTransferConfirmTask(kind,transferDate,recipientNames,corp){
+  const names=[...new Set((recipientNames||[]).filter(Boolean))];
+  if(!names.length) return {ok:false,error:"振込先の名前が取得できませんでした"};
+  const r=await authed("/rest/v1/rpc/hq_create_transfer_task",{method:"POST",body:JSON.stringify({p_kind:kind,p_transfer_date:transferDate,p_recipient_names:names,p_corp:corp||"N-Style"})});
+  return r;
+}
 // 2026-09-04追加：振込依頼人名（データレコード8項目め）。フォーマット仕様書PDFには「任意・
 // 省略時はPayPay銀行アップロード画面側で一律指定する運用」と書かれていたが、実際にユーザーが
 // アップロードしたところ全件「振込依頼人名を入力して下さい」となったため、実際のPayPay銀行の
@@ -5839,10 +5889,11 @@ function buildPaypayCsv(rows,remitterName){
 // PayPay銀行指定フォーマット（CSV）どおりに振込データを組み立てて出力する。
 // 実フォーマットはdocs/フォーマット登録_PayPay銀行WEB総振_2026-08-31.md参照（公式PDFから取得済み）。
 // 振込の実行はしない＝生成したCSVをダウンロードするだけ（人が確認してPayPay銀行の画面で実行する）
-function payrollExportCsv(){
+async function payrollExportCsv(){
   const msg=$("payroll-csv-msg"); msg.className="err"; msg.textContent="";
   const skipped=[];
   const csvRows=[];
+  const paidNames=[];
   const hidden=PAYROLL_STATE.hiddenUserIds||new Set();
   for(const row of PAYROLL_STATE.rows){
     const name=(row.user&&row.user.name)||row.user_id;
@@ -5853,11 +5904,16 @@ function payrollExportCsv(){
     if(!bank){ skipped.push(`${name}（支払方法が未登録）`); continue; }
     if(bank.payment_method==="cash"){ skipped.push(`${name}（現金手渡し・CSV対象外）`); continue; }
     csvRows.push({bankCode:bank.bank_code, branchCode:bank.branch_code, accountType:bank.account_type, accountNumber:bank.account_number, holderKana:bank.account_holder_kana, amount});
+    paidNames.push(name);
   }
   const count=csvRows.length, total=csvRows.reduce((s,r)=>s+Math.round(Number(r.amount)||0),0);
   if(!count){ msg.textContent="出力できる従業員がいません（振込先口座の登録状況を確認してください）"; return; }
   const remitterName=paypayRemitterName(); // 2026-09-04追加：PayPay銀行が振込依頼人名を必須としていたため確認する
   if(remitterName===null) return; // キャンセル
+  // 2026-09-05追加：ユーザー要望「当日振り込みができないので振込予定日を表示・本部タスクを
+  // 自動発行してほしい（担当：青山純・原美香・齋藤隆治／工程内チェックリストに振込先の名前）」
+  const transferDate=await promptTransferDateModal(payrollLastDayOfMonth(PAYROLL_STATE.yearMonth));
+  if(transferDate===null) return; // キャンセル
   const csv=buildPaypayCsv(csvRows,remitterName);
   const blob=paypayCsvToBlob(csv); // 2026-09-04：Shift-JISでエンコード（PayPay銀行アップロードエラー対応）
   const url=URL.createObjectURL(blob);
@@ -5865,8 +5921,15 @@ function payrollExportCsv(){
   a.href=url; a.download=`paypay_furikomi_${PAYROLL_STATE.yearMonth}.csv`;
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(()=>URL.revokeObjectURL(url),2000);
-  msg.className="err msg-ok";
-  msg.textContent=`${count}件・合計${yen(total)}のCSVをダウンロードしました。`+(skipped.length?`スキップ: ${skipped.join("、")}`:"");
+  const taskR=await createTransferConfirmTask("payroll",transferDate,paidNames,"N-Style");
+  await authed(`/rest/v1/payroll_transfer_schedule`,{method:"POST",headers:{Prefer:"resolution=merge-duplicates,return=minimal"},body:JSON.stringify({
+    year_month:PAYROLL_STATE.yearMonth, scheduled_date:transferDate, hq_task_id:(taskR.ok&&taskR.body)||null, created_by:ME.id, updated_at:new Date().toISOString(),
+  })}).catch(()=>{});
+  PAYROLL_STATE.transferScheduledDate=transferDate;
+  payrollRender();
+  const msg2=$("payroll-csv-msg");
+  msg2.className="err msg-ok";
+  msg2.textContent=`${count}件・合計${yen(total)}のCSVをダウンロードしました（振込予定日: ${fmtD(transferDate)}）。`+(taskR.ok?"本部タスク「振込先を確認」も作成しました。":"⚠️本部タスクの自動作成に失敗しました（振込CSV自体は正常に作成されています）。")+(skipped.length?` スキップ: ${skipped.join("、")}`:"");
 }
 // 対象年月（"YYYY-MM"）の末日を"YYYY-MM-DD"で返す（2026-09-02追加。ユーザー要望
 // 「会計計上日は対象月の末日が既定値になるように」に対応。従来は常に「今日の日付」だった）
