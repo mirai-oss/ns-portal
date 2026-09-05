@@ -1647,7 +1647,7 @@ function createMailDetailModalShell(){
   const modal=document.createElement("div");
   modal.className="modal-bg"; modal.id="mailDetailModalBg";
   modal.innerHTML=`<div class="modal" style="max-width:1180px">
-    <div class="mhead"><h2>メール詳細</h2><button class="linkbtn" id="mailDetailModalClose" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:13px">閉じる ×</button></div>
+    <div class="mhead"><h2 id="mailDetailModalTitle">メール詳細</h2><button class="linkbtn" id="mailDetailModalClose" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:13px">閉じる ×</button></div>
     <div class="card mail-detail" id="mailDetail" style="border:none;box-shadow:none;padding:0"><div class="spin">読み込み中…</div></div>
   </div>`;
   document.body.appendChild(modal);
@@ -1971,9 +1971,25 @@ function renderMailDetail(u){
   const canUnmarkNA=mail.mail_status==="archived";
   const pillKind=MAIL_STATUS_PILL[mail.mail_status]||"gray";
 
-  $("mailDetail").innerHTML=`
-    <div class="mail-detail-head">
-      <button class="mobile-back" id="mobile-back-btn">← 一覧へ戻る</button>
+  // 2026-09-05書き換え：ユーザー指摘「コード内部で共通化されていることと、ユーザーが見る
+  // 画面が共通化されていることは別」への対応。従来はDETAIL_MODEに関わらず、この関数の
+  // 一番上に「メール件名を見出しにしたメール中心のヘッダー（.mail-detail-head）」＋
+  // 「メール本文のiframe（.mail-body）」を無条件に描画していたため、🧾請求書一覧から
+  // メール由来の請求書を開いても見た目が「メール詳細」のままだった（モーダルの
+  // タイトルも常に固定で「メール詳細」）。DETAIL_MODE==="process"（請求書一覧・振込一覧
+  // 等から開いた場合）のときだけ、請求元・金額を見出しにした請求書中心の軽量ヘッダーへ
+  // 差し替え、メール（またはアップロードの取込情報）そのものは「取得元情報」という
+  // 開閉式の欄に格納する（削除はしない＝指示どおり）。受信トレイでの閲覧
+  // （DETAIL_MODE==="mail"）・売上一覧・契約書一覧は従来どおりメール中心のヘッダーのまま
+  const invoiceHeaderMode=DETAIL_MODE==="process"&&!isSales&&!isContract;
+  const sourceLabel=INTAKE_SOURCE_LABEL[invoice&&invoice.intake_source]||(mail.id?"メール":"手動");
+  const vendorHeadline=esc((invoice&&((invoice.vendor&&invoice.vendor.name)||invoice.vendor_name))||"（請求元未入力）");
+  const amountHeadline=invoice&&invoice.amount!=null?yen(invoice.amount):"";
+
+  // 従来の「メール中心ヘッダー」の中身（種類ボタン・受信/処理担当/処理状態・ロック解除等の
+  // 操作ボタン一式）。invoiceHeaderModeのときはこのブロックごと「取得元情報」の
+  // 開閉欄の中に格納し、それ以外（受信トレイ・売上・契約書）は従来どおりそのまま表示する
+  const legacyMailHeadInnerHtml=`
       <div class="hq-badges">
         <span class="hq-pill ${pillKind}">${MAIL_STATUS_LABEL[mail.mail_status]||mail.mail_status}</span>
         ${atts.length?'<span class="hq-pill gray">添付あり</span>':''}
@@ -2017,14 +2033,39 @@ function renderMailDetail(u){
         <textarea id="release-reason" rows="2" style="width:100%;border:1px solid var(--line);border-radius:8px;padding:8px;margin-top:4px"></textarea>
         <button class="hq-btn" style="margin-top:8px;background:var(--accent);color:#fff;border-color:var(--accent)" id="release-send">解除する</button>
       </div>
-      <div class="err" id="act-msg" style="margin-top:6px"></div>`}
-    </div>
+      <div class="err" id="act-msg" style="margin-top:6px"></div>`}`;
 
-    ${mail.mail_status==="processing"&&!isHolder?`<div class="mail-lock">🔒 <b>${esc(mail.processor?mail.processor.name:"担当者")}さんが処理中です。</b> 他の人は処理を開始できません。</div>`:""}
-    ${mail.duplicate_suspected?'<div class="mail-alert">⚠️ <b>重複の可能性があります。</b> 同じ添付ファイル（ハッシュ一致）が既に登録されています。</div>':""}
+  const mailBodyIframeHtml=`<div class="mail-body"><iframe class="mail-body-frame" id="mailBodyFrame" sandbox="allow-popups allow-popups-to-escape-sandbox"></iframe></div>`;
+
+  const headHtml=invoiceHeaderMode?`
+    <div class="mail-detail-head inv-head">
+      <button class="mobile-back" id="mobile-back-btn">← 一覧へ戻る</button>
+      <div class="hq-badges">
+        <span class="hq-pill gray">取得元：${esc(sourceLabel)}</span>
+        ${atts.length?'<span class="hq-pill gray">添付あり</span>':''}
+        ${invoice&&invoice.duplicate_suspected?'<span class="hq-pill red">重複疑い</span>':''}
+        ${invoice&&invoice.bank_account_change_detected?'<span class="hq-pill red">口座変更検知</span>':''}
+        ${invoice&&invoice.ai_match_status?`<span class="hq-pill ${invoice.ai_match_status==='auto'?'green':invoice.ai_match_status==='error'?'red':'amber'}">🤖 ${esc(({auto:'自動判定済',review:'要確認',error:'エラー'})[invoice.ai_match_status]||invoice.ai_match_status)}</span>`:''}
+      </div>
+      <h2>${vendorHeadline}${amountHeadline?`　${amountHeadline}`:""}</h2>
+      <div class="meta">${esc((invoice&&invoice.invoice_number)?"請求書番号 "+invoice.invoice_number+"　｜　":"")}${mail.subject?esc(mail.subject):""}</div>
+      <details class="inv-source-details" style="margin-top:10px;border:1px solid var(--m-line);border-radius:10px;padding:10px 12px;background:var(--panel)">
+        <summary style="cursor:pointer;font-size:12px;color:var(--muted);font-weight:700">📎 取得元情報（${esc(sourceLabel)}）を見る</summary>
+        <div style="margin-top:8px">${legacyMailHeadInnerHtml}</div>
+        ${mail.mail_status==="processing"&&!isHolder?`<div class="mail-lock">🔒 <b>${esc(mail.processor?mail.processor.name:"担当者")}さんが処理中です。</b> 他の人は処理を開始できません。</div>`:""}
+        <details style="margin-top:8px"><summary style="cursor:pointer;font-size:12px;color:var(--muted);font-weight:700">${isStandalone?"取込内容の詳細を表示":"📩 元メールを表示"}</summary>${mailBodyIframeHtml}</details>
+      </details>
+    </div>`:`
+    <div class="mail-detail-head">${legacyMailHeadInnerHtml}</div>`;
+
+  $("mailDetail").innerHTML=`
+    ${headHtml}
+
+    ${(!invoiceHeaderMode&&mail.mail_status==="processing"&&!isHolder)?`<div class="mail-lock">🔒 <b>${esc(mail.processor?mail.processor.name:"担当者")}さんが処理中です。</b> 他の人は処理を開始できません。</div>`:""}
+    ${(!invoiceHeaderMode&&mail.duplicate_suspected)?'<div class="mail-alert">⚠️ <b>重複の可能性があります。</b> 同じ添付ファイル（ハッシュ一致）が既に登録されています。</div>':""}
 
     <div class="mail-body">
-      <iframe class="mail-body-frame" id="mailBodyFrame" sandbox="allow-popups allow-popups-to-escape-sandbox"></iframe>
+      ${invoiceHeaderMode?"":'<iframe class="mail-body-frame" id="mailBodyFrame" sandbox="allow-popups allow-popups-to-escape-sandbox"></iframe>'}
 
       ${(isContract||slimMail)?`<div class="invoice-attach">
         <h3>📎 添付（${atts.length}件）</h3>
@@ -2300,6 +2341,11 @@ function renderMailDetail(u){
       </div>`}
     </div>
   `;
+  // 2026-09-05新規：モーダルのタイトルが常に固定で「メール詳細」だった点への対応
+  // （createMailDetailModalShellはSELECTED読み込み前に呼ばれるためタイトルを渡せない。
+  // ここで内容確定後に書き換える）
+  const modalTitleEl=$("mailDetailModalTitle");
+  if(modalTitleEl) modalTitleEl.textContent=invoiceHeaderMode?"請求書処理":isSales?"入金メール詳細":isContract?"契約書メール詳細":"メール詳細";
   wireDetailTabs();
 
   // 本文はsrcdoc（DOMプロパティで直接セット）。sandboxはallow-popupsのみ＝
