@@ -231,6 +231,35 @@ Deno.serve(async (req: Request) => {
       return json({ success: true, results: Array.from(merged.values()) });
     }
 
+    // 2026-09-06新規：ユーザー要望「マネーフォワード側で仕訳が削除されていたら、こちらの
+    // 紐付けも解除して未登録の状態に戻ってほしい」に対応。get_journalで404（削除済みと推測）
+    // だったときに、確認ボタンを押してもらった上でこのactionを呼び、invoices側の仕訳紐付け
+    // 列だけをクリアする（PL反映等の別の記録には触れない＝ユーザー指示の範囲に留める）。
+    // マネーフォワードへ問い合わせる必要は無いため、tenant_id・accessToken取得より前に置く
+    // （MF連携そのものが切れている場合でも紐付け解除はできるようにするため）
+    if (action === "unlink_journal") {
+      const invoiceId = body?.invoice_id;
+      if (!invoiceId) return json({ error: "invoice_idは必須です" }, 400);
+      const { data: inv, error: invErr } = await uc.from("invoices")
+        .select("id, email_id, mf_journal_number").eq("id", invoiceId).maybeSingle();
+      if (invErr) return json({ error: "確認に失敗しました: " + invErr.message }, 500);
+      if (!inv) return json({ error: "対象が見つからないか権限がありません" }, 403);
+
+      const db = svc();
+      const { error: updErr } = await db.from("invoices").update({
+        mf_journal_id: null, mf_journal_number: null, mf_journal_created_at: null,
+        mf_debit_accounts: null, mf_registration_error: null, mf_registration_error_at: null,
+        updated_at: new Date().toISOString(),
+      }).eq("id", invoiceId);
+      if (updErr) return json({ error: "紐付け解除に失敗しました: " + updErr.message }, 500);
+
+      await db.from("invoice_audit_logs").insert({
+        entity_type: "invoice_email", entity_id: inv.email_id, action: "mf_journal_unlinked", actor_type: "human",
+        note: `マネーフォワード側で仕訳が見つからなかったため、仕訳の紐付けを解除しました（元の伝票番号: ${inv.mf_journal_number ?? "-"}）。会計・仕訳は未登録の状態に戻りました`,
+      });
+      return json({ success: true });
+    }
+
     // 以降のactionはマネーフォワードへ問い合わせる。どの事業者（テナント）かをtenant_idで指定
     // （省略時は最初に連携した'default'＝有限会社トーホーエージェンシー）
     const tenantId: string = body?.tenant_id || "default";
@@ -258,8 +287,21 @@ Deno.serve(async (req: Request) => {
       // 注意: マネーフォワードのIDは既にパーセントエンコード済みの文字列がそのまま返ってくる仕様
       // （実データで確認済み）のため、encodeURIComponent()で二重エンコードしない。そのままパスに埋め込む
       const res = await mfFetch(`/api/v3/journals/${journalId}`, accessToken);
-      const data = await res.json();
-      if (!res.ok) return json({ error: "仕訳の取得に失敗しました", detail: data }, 502);
+      const data = await res.json().catch(() => ({}));
+      // 2026-09-06修正：ユーザー報告「登録済み仕訳の内容を見ようとしたら『仕訳の取得に失敗
+      // しました』としか出ず、マネーフォワード側で削除されたのか単なるエラーなのか分からない」
+      // に対応。従来はdetail（MFからの実際の応答）を画面に一切出しておらず、404（削除済み・
+      // 存在しない）と他のエラー（トークン切れ等）を区別できなかった。res.statusと実際の
+      // 応答内容をそのままエラーメッセージに含めるよう修正
+      if (!res.ok) {
+        const detailText = typeof data === "object" ? JSON.stringify(data).slice(0, 300) : String(data).slice(0, 300);
+        const hint = res.status === 404
+          ? "（マネーフォワード側でこの仕訳が削除されている可能性があります）"
+          : res.status === 401
+          ? "（マネーフォワードとの連携が切れている可能性があります。設定タブから再連携してください）"
+          : "";
+        return json({ error: `仕訳の取得に失敗しました${hint}（status ${res.status}: ${detailText}）`, status: res.status, detail: data }, 502);
+      }
       const j = data.journal ?? {};
       const branches = (j.branches ?? []).map(branchToTemplate);
       return json({ success: true, branches, transaction_date: j.transaction_date ?? null, journal_number: j.number ?? null, memo: j.memo ?? null });

@@ -1200,7 +1200,7 @@ function ivExtraSectionHtml(invoices,emailId){
 }
 function ivExtraRowHtml(iv){
   const status=iv.mf_journal_id
-    ?`<span class="invoice-status done" style="cursor:pointer" data-journal-view="${esc(iv.mf_journal_id)}" data-journal-tenant="${esc(iv.mf_tenant_id||"default")}" title="クリックすると登録した仕訳の内容を確認できます">✅仕訳登録済み（伝票番号:${esc(String(iv.mf_journal_number??"-"))}）🔍</span>`
+    ?`<span class="invoice-status done" style="cursor:pointer" data-journal-view="${esc(iv.mf_journal_id)}" data-journal-tenant="${esc(iv.mf_tenant_id||"default")}" data-journal-invoice="${esc(iv.id)}" title="クリックすると登録した仕訳の内容を確認できます">✅仕訳登録済み（伝票番号:${esc(String(iv.mf_journal_number??"-"))}）🔍</span>`
     :`<span class="invoice-status wait">未登録</span>`;
   return `<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 0;border-top:1px solid var(--line);flex-wrap:wrap">
     <div style="font-size:12px"><b>${esc(iv.vendor_name||"（未入力）")}</b>　${yen(iv.amount)}</div>
@@ -2604,7 +2604,7 @@ function renderMailDetail(u){
               <div class="step-card-body" id="body-accounting" ${(invoice&&invoice.mf_journal_id)?"hidden":""}>
               <div class="mail-actions" style="margin-top:0">
                 ${(invoice&&invoice.amount!=null)?(invoice.mf_journal_id
-                  ?`<button data-journal-view="${esc(invoice.mf_journal_id)}" data-journal-tenant="${esc(invoice.mf_tenant_id||"default")}" title="クリックすると登録した仕訳の内容を確認できます">✅ 仕訳登録済み（伝票番号: ${esc(String(invoice.mf_journal_number??"-"))}）🔍</button>`
+                  ?`<button data-journal-view="${esc(invoice.mf_journal_id)}" data-journal-tenant="${esc(invoice.mf_tenant_id||"default")}" data-journal-invoice="${esc(invoice.id)}" title="クリックすると登録した仕訳の内容を確認できます">✅ 仕訳登録済み（伝票番号: ${esc(String(invoice.mf_journal_number??"-"))}）🔍</button>`
                   :`<button id="mfj-open">🧾 仕訳を作成</button>`):`<div class="meta" style="color:var(--muted);font-size:12px">先に上の「請求情報」で金額を保存してください</div>`}
               </div>
               <div class="replybox" id="mfjournalbox">
@@ -4736,7 +4736,7 @@ function mftLabelOf(side){ if(!side||!side.account_name) return ""; return side.
 // 「仕分けを登録したら、どんな仕分けにしたかも確認できるように」に対応）。mf-journalの
 // get_journalアクション（GET /api/v3/journals/{id}）を呼び、実際にマネーフォワード側へ
 // 登録された借方・貸方の内容をそのまま表示する（読み取り専用・編集や再登録はできない）
-async function mfjOpenJournalPreview(journalId,tenantId){
+async function mfjOpenJournalPreview(journalId,tenantId,invoiceId){
   const modal=document.createElement("div");
   modal.className="modal-bg mail-shell"; modal.id="mfjJournalViewModal";
   modal.innerHTML=`<div class="modal" style="max-width:820px">
@@ -4749,7 +4749,25 @@ async function mfjOpenJournalPreview(journalId,tenantId){
   $("mfjJournalViewClose").onclick=()=>history.back();
   const {ok,body:j}=await mfCall("get_journal",{tenant_id:tenantId,journal_id:journalId});
   const box=$("mfjJournalViewBody");
-  if(!ok){ box.innerHTML=`<div class="err">取得に失敗しました: ${esc((j&&j.error)||"")}</div>`; return; }
+  if(!ok){
+    // 2026-09-06修正：ユーザー報告「取得に失敗しましたとしか出ず、削除されたのか単なる
+    // エラーなのか分からない。削除されていたら紐付けも解除してほしい」に対応。
+    // status===404（マネーフォワード側で仕訳が見つからない＝削除された可能性が高い）の
+    // ときだけ、確認の上で紐付けを解除できるボタンを出す（自動では解除しない＝誤操作防止）
+    const looksDeleted=j&&j.status===404;
+    box.innerHTML=`<div class="err">取得に失敗しました: ${esc((j&&j.error)||"")}</div>
+      ${(looksDeleted&&invoiceId)?`<div class="mail-actions" style="margin-top:10px"><button id="mfj-unlink-journal">↩️ この仕訳の紐付けを解除する（会計・仕訳を未登録の状態に戻す）</button></div>`:""}`;
+    if($("mfj-unlink-journal")) $("mfj-unlink-journal").onclick=async()=>{
+      if(!confirm("この請求書の「会計・仕訳」を未登録の状態に戻します。マネーフォワード側の仕訳自体は操作しません（既に見つからない状態のままです）。よろしいですか？")) return;
+      const btn=$("mfj-unlink-journal"); btn.disabled=true; btn.textContent="解除中…";
+      const r=await mfCall("unlink_journal",{invoice_id:invoiceId});
+      if(!r.ok){ alert((r.body&&r.body.error)||"解除に失敗しました"); btn.disabled=false; btn.textContent="↩️ この仕訳の紐付けを解除する（会計・仕訳を未登録の状態に戻す）"; return; }
+      // このプレビューモーダル＋その下の請求書詳細モーダルを閉じ、最新の状態で開き直す
+      history.back();
+      setTimeout(()=>{ history.back(); setTimeout(()=>openInvoiceDetail(ME,invoiceId),300); },300);
+    };
+    return;
+  }
   const entries=(j.branches||[]).map(b=>{
     const deptName=(b.debit&&b.debit.department_name)||"";
     const creditDeptName=(b.credit&&b.credit.department_name)||"";
@@ -4771,7 +4789,7 @@ async function mfjOpenJournalPreview(journalId,tenantId){
 }
 // [data-journal-view]付きの要素をまとめて配線するヘルパー（各render関数の最後で呼ぶ）
 function wireJournalViewButtons(){
-  document.querySelectorAll("[data-journal-view]").forEach(el=>el.onclick=()=>mfjOpenJournalPreview(el.dataset.journalView,el.dataset.journalTenant||"default"));
+  document.querySelectorAll("[data-journal-view]").forEach(el=>el.onclick=()=>mfjOpenJournalPreview(el.dataset.journalView,el.dataset.journalTenant||"default",el.dataset.journalInvoice||null));
 }
 
 async function renderMftSection(tenantId){
