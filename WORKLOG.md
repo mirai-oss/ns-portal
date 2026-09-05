@@ -6,6 +6,33 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
+**★★★★★★2026-09-06（レーンPスレッド）司令塔指示「経営D/会計処理の速度改善」対応: keiei-api-home文書化＋PL/媒体/入金の月次kd_サマリ3本＋読み取りAPI新設。本番デプロイ・実機確認済み**
+
+司令塔からの5項目指示に対応。**tori-dashboardのapp.js/invoices.html/GASは無変更**（既存のlogin/bqGetPL/bqGetMedia/bqGetDepositアクションを呼んでいるだけ）。
+
+**①`keiei-api-home`の文書化**: 2026-09-05に新設・本番デプロイ済みだったが**コミット漏れ**で作業ツリーに未追跡のまま残っていたのを発見・git管理下に置いた（コード変更なし・動作確認のみ。コミット[a147a82](https://github.com/mirai-oss/ns-portal/commit/a147a82)）。担当A向け仕様:
+- 呼び出し: `POST /functions/v1/keiei-api-home` `{ as_of?: 'YYYY-MM-DD' }`（Authorization: Bearer <ユーザーJWT>。経営Dと同じ役職ゲート＝社長/本部/チーム長/店長のみ）
+- 返り値: `{ ok, asOf, monthStart, latestBizDate, source, totals:{todaySales,todayGuests,todayParties,todayAvgCheck,mtdSales,target,targetDiff,targetRate,priorYearSameWeekdaySales,priorYearSameWeekdayRatio,dailyReportSubmissionRate,checklistCompletionRate,hqTaskOverdueCount,reservationCount,reservationPartySize,reservationExpectedSales}, stores:[{storeId,storeName,todaySales,...同様の店舗別内訳,reservationCount,...}], scope:{role,restrictedStoreIds} }`
+- データ源はkd_home_kpi_snapshot＋kd_dashboard_daily_summary＋kd_reservation_daily_summary（当日分が未生成ならdash_sales_daily等へ自動フォールバック）。**日報提出率・チェック実施率は出典テーブル未特定のため常にnull**（司令塔確認待ち・画面側は「準備中」表示か非表示にする判断をお願いしたい）
+
+**②kd_dashboard_daily_summaryのギャップ確認**: 既存列（net_sales/guests/parties/avg_check等）に加え、**cost（原価）・labor（人件費）列が欠落**していたと判明——`bqDailyStoreFull()`が実は毎回取得していたのに保存していなかった（担当AのTK-60対応時のバグ修正の副産物）。列を追加し、リフレッシュ処理を修正して埋まるようにした（PL月次の自動売上/原価/人件費の元データとして使う）。
+
+**③④kd_サマリ3本を新設・本番稼働開始**（設計書§3/§10.2-1のkd_サマリ4本のうちstore_monthly以外の3本。司令塔指示の優先順=会計/売上/PL/売上分析を反映）:
+- `kd_pl_monthly_summary`（store×年月）: 売上高・原価(自動+DB_PL手入力)・人件費(同)・広告費(DB_PL手入力のみ)・家賃・他・粗利・販管費計・営業利益・勘定科目別内訳(jsonb)。app.jsの`plAgg()`/`plCatOf()`と全く同じF/L/A/R/O区分ルールをTS側に移植（数字が変わらないことを保証）。全社共通経費（DB_PLの店舗名が空の行）はstore_id=nullの1行に集計
+- `kd_media_monthly_summary`（store×年月×媒体）: 売上・客数・組数。媒体名は`tpl_media_alias`で正規化
+- `kd_deposit_monthly_summary`（store×年月）: 入金合計・件数・売上との差額（突合列）
+- 3本とも`keiei-kd-refresh`に`op=pl_monthly/media_monthly/deposit_monthly`として追加、`keiei-perflog-daily.yml`で日次自動実行（本番で実行成功を確認: pl_monthly 166行・media_monthly 263行・deposit_monthly 178行）
+
+**⑤`keiei-api-dashboard-summary`を新設**: PL/媒体別売上分析/入金の3画面向け軽量読み取りAPI。`POST { kind:'pl'|'media'|'deposit', year_month or from+to（必須）, store_id?, media_name?, limit? }`→経営Dと同じ役職ゲート＋TENCHOは自店舗のみ（§6の規約どおりkind・期間必須／select列指名／明細行を返さない）。無認証・パラメータ不足時のエラーは実機確認済み。認証込みの正常系はコード上はkeiei-api-homeと同一パターン（既に本番実績あり）だが、担当Aの画面接続時にあわせて確認をお願いしたい
+
+**⑥会計請求書処理の処理時間ログ**: 既存`kd_perf_log`＋`keiei-api-perflog`をそのまま流用すればよいと判断（新テーブル不要）。担当C向け: `POST /functions/v1/keiei-api-perflog`（無認証）に`{app:'ns-portal-invoices'（等、区別できる値）, action:'ocr_extract'等の処理名, ms:所要時間, ok:成否, errType:'', t:Date.now()}`を送るだけ。日次のLark「遅い/失敗トップ10」配信にも自動的に混ざって出るようになる
+
+**⚠️既知の制約（v1・司令塔/担当Aへ）**:
+1. **広告費の自動component（stg_ad_cost）が未対応**——`bqSyncAdCost`は書き込み専用で、読み取り用GASアクションが無い。レーンPはGASに触れないため新設できない。**担当Aへ依頼**: `bqGetSpot`/`bqGetPL`と同じ方針で読み取り専用アクション（例: `bqGetAdCost`・BQ_LOAD_TOKEN認証でOK）を追加していただければ、次のリフレッシュで自動的にkd_pl_monthly_summary.ad_manual/kd_media_monthly_summaryのROASへ反映できる設計にしてある
+2. **簡易CF（法人税等・減価償却費・返済元金）は未計算**（pl_item_breakdownのO区分に減価償却費の内訳は残っている。返済元金はstg_loan_principalが別データ源のため対象外）
+3. **4店舗（じんべぇ川崎・じんべぇ新横浜・エース本厚木・秋葉原肉寿司）でcost/laborが恒常的に0**と判明（8月全体を確認・売上は正常に入っているのにfact_daily_store側のcogs/labor_cost_totalだけ空）。これらの店舗のPL自動原価/人件費だけ実態を反映できていない（DB_PL手入力分は正常）。原因調査は担当D（ns-daily-import側の自動連携範囲）にお願いしたい
+4. `kd_pl_monthly_summary`のPL手入力店舗名の未解決3件（じんべえ川崎店・じんべえ新横浜店・横濱ホルモン会館エース本厚木店＝表記ゆれ）はkd_unresolved_namesへ隔離済み（3の店舗と同一店舗の別表記の可能性が高い）
+
 **★★★2026-09-06（担当C実行スレッド・続き48）仕訳プレビュー: MFが404でなく400で「存在しない」を返すケースへの対応漏れを修正**（続き47の続報）: ユーザーが実機で再試行した結果、実際のエラーが判明：`status 400: {"errors":[{"code":"invalid_request_path_parameter","message":"The given id does not exist for this office."}]}`。前回の修正はstatus===404のみを「削除されている可能性」として扱っており、この400パターンでは紐付け解除ボタンが出ない不具合があった。`get_journal`のerrors配列も見て「見つからない」を判定する`not_found`フラグを返すよう修正し、フロントもそれを見るように変更。`invoices.html`・`supabase/functions/mf-journal/index.ts`コミット`0335022`push済み・デプロイ済み・GitHub Pages反映確認済み。ユーザーに実機での再試行を依頼中
 
 **★★★★2026-09-06（担当A実行スレッド）経営ダッシュボード体感速度改善: keiei-api-homeをホーム初期表示に接続（詳細は[tori-dashboard/HANDOFF.md](https://github.com/mirai-oss/tori-dashboard/blob/main/HANDOFF.md)2026-09-06エントリ・コミット[b95b5e4](https://github.com/mirai-oss/tori-dashboard/commit/b95b5e4)）**: ユーザー指示「売上確認・PL確認・売上分析の遅さが最優先」を受け、レーンP管轄の軽量Edge Function`keiei-api-home`をホーム画面の初期表示に接続し、従来のGAS`action:data`（実測失敗率38%）を初期表示の必須待ちから外して裏更新に降格。既存の`kpi-grid`/`panel`/`tbl`クラスをそのまま流用し新UIは追加していない。あわせて`bqGetPL`/`bqDetail`/`bqGetMedia`/`bqDailyStore`の呼び出し箇所を棚卸しし、`kd_`テーブルへの差し替え可否を調査した結果、**`kd_dashboard_daily_summary`には原価・人件費列が無く、`bqDailyStore`/`bqGetPL`/`bqGetMedia`の安全な差し替えは現時点でできない**ことを確認（`kd_store_monthly_summary`等の構築はレーンP待ち＝TK-60②と同じ依存）。今回安全に差し替えられたのはホーム画面の速報値のみ。GitHub Pages反映確認済み（`app.js?v=173`）。**実機でのログイン後の表示確認（速報→詳細への切り替わり）はユーザー確認待ち**
