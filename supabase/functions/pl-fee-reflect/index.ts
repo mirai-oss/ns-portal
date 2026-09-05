@@ -374,9 +374,14 @@ Deno.serve(async (req: Request) => {
         }
       }
 
+      // 2026-09-06修正：ユーザー報告「業務委託精算書へ反映したつもりなのに『PLに反映済み』と
+      // 出てややこしい」に対応。seisanルートはまだ実際にPLへは入っていない（精算書側の振込確定・
+      // 次回同期を待つ状態）ため、direct routeと同じpl_fee_reflected_atに書き込むのは不正確
+      // だった。以前から用意されていた専用列invoices.pl_fee_seisan_synced_at（統合請求書一覧の
+      // 「精算書」列が既に参照している）に書き込むよう修正
       if (anyOk) {
-        await uc.from("invoices").update({ pl_fee_reflected_at: new Date().toISOString(), updated_at: new Date().toISOString() })
-          .eq("id", invoiceId).is("pl_fee_reflected_at", null);
+        await uc.from("invoices").update({ pl_fee_seisan_synced_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+          .eq("id", invoiceId).is("pl_fee_seisan_synced_at", null);
       }
 
       const totalAmt = allocations.reduce((s: number, a: any) => s + Number(a.amount), 0);

@@ -789,6 +789,15 @@ function plfeeSourceLabel(){
     manual:"📊 参考にできる情報が無かったため、店舗を選んで金額を入力してください。",
   }[PLFEE_STATE.source]||"";
 }
+// 2026-09-06新設：ユーザー要望「PL・業務委託精算書へ反映する月が合っているか、最終確認の
+// ところで強調して出してほしい（会計で入れる月を間違えることがよくある）」に対応。
+// 直接PL反映・業務委託精算書登録の両方の確認画面で共通に使う、目立つ対象年月欄
+function plfeeYmFieldHtml(id){
+  return `<div style="border:2px solid var(--m-amber);background:var(--m-ambersoft);border-radius:8px;padding:8px 10px;margin-bottom:10px">
+    <small style="color:var(--m-amber);font-weight:800">⚠️ 対象年月（会計月の入れ間違いが多いため、必ずご確認ください）</small>
+    <input id="${id}" type="month" value="${PLFEE_STATE.yearMonth.slice(0,7)}" style="font-weight:800;font-size:16px;margin-top:4px;display:block;width:auto">
+  </div>`;
+}
 // 2026-09-05新設：業務委託精算書自動連携（設計書_業務委託精算書自動連携_2026-09-04.md）。
 // 従来（続き〜09-03）は精算対象店舗を検出したら「ここでは反映していません。精算書に入力して
 // ください」という警告のみで、実際の転記は人がseisan-dashboard画面を開いて手打ちする必要が
@@ -822,6 +831,7 @@ function plfeeSeisanSectionHtml(){
     <h3 style="font-size:13px">🧮 業務委託精算書へ登録</h3>
     <div class="adcost-sub">この科目・この金額のうち、精算対象店舗の分はPLへ直接ではなく業務委託精算書（別システム）へ登録します（精算書側で振込確定した後、既存の自動連携でPLへ反映されます。二重計上防止のためここでは選べません）。</div>
     ${missingName.length?`<div class="adcost-source" style="color:var(--m-red)">⚠️ ${missingName.map(r=>esc(r.store_name||"—")).join("・")}は「精算書店舗名」が店舗マスタに未設定のため登録できません。設定タブ「法人・店舗・部門マッピング」から設定してください。</div>`:""}
+    ${plfeeYmFieldHtml("plfee-seisan-ym")}
     <div class="ai-grid">
       <div class="ai-field"><small>勘定科目（精算書の「勘定科目」列）</small><input id="plfee-seisan-account" value="${esc(PLFEE_STATE.currentAccount||"")}" placeholder="例: 水道光熱費"></div>
       <div class="ai-field"><small>費目名（精算書の「費目名」列）</small><input id="plfee-seisan-item" value="${esc(PLFEE_STATE.seisanItemName??PLFEE_STATE.currentAccount??"")}" placeholder="例: 電気代"></div>
@@ -832,7 +842,7 @@ function plfeeSeisanSectionHtml(){
       <tbody id="plfee-seisan-rows">${rows.map((r,i)=>plfeeSeisanRowHtml(r,i)).join("")}</tbody>
     </table>
     <div class="mail-actions" style="margin-top:6px"><button id="plfee-seisan-add-row">＋ 店舗を追加</button></div>
-    <div class="adcost-total"><span>登録する合計 <b>${yen(total)}</b></span></div>
+    <div class="adcost-total"><span>登録する合計 <b id="plfee-seisan-total-sum">${yen(total)}</b></span></div>
     <div class="mail-actions" style="margin-top:10px"><button class="primary" id="plfee-seisan-confirm">📋 この内容で業務委託精算書へ登録</button></div>
     <div class="err" id="plfee-seisan-msg" style="margin-top:6px"></div>
   </div>`;
@@ -847,12 +857,18 @@ function plfeeWireSeisanSection(){
   // 2026-09-05追加：グループ自動検出が0件（PL科目未登録の科目のみ等）でこの欄を開いた場合に
   // 備え、勘定科目を直接入力できるようにした（グループ選択済みならその値を初期値に使う）
   if($("plfee-seisan-account")) $("plfee-seisan-account").oninput=()=>{ PLFEE_STATE.currentAccount=$("plfee-seisan-account").value; };
+  if($("plfee-seisan-ym")) $("plfee-seisan-ym").onchange=()=>{ PLFEE_STATE.yearMonth=$("plfee-seisan-ym").value+"-01"; };
   document.querySelectorAll(".plfee-seisan-store").forEach(el=>el.onchange=()=>{
     const idx=+el.dataset.idx, s=PLFEE_STATE.stores.find(x=>x.id===el.value);
     PLFEE_STATE.seisanRows[idx].store_id=el.value; PLFEE_STATE.seisanRows[idx].store_name=s?s.name:"";
   });
+  // 2026-09-06修正：ユーザー報告「金額を入れたのに合計額が0円のまま」に対応。
+  // 従来はstateの値を更新するだけで、画面上の「登録する合計」表示を更新していなかった
+  // （直接PL反映側のplfeeUpdateTotals()と同じ更新をここでも行う必要があった）
   document.querySelectorAll(".plfee-seisan-amount").forEach(el=>el.oninput=()=>{
     PLFEE_STATE.seisanRows[+el.dataset.idx].amount=el.value;
+    const sum=PLFEE_STATE.seisanRows.reduce((s,r)=>s+(Number(r.amount)||0),0);
+    if($("plfee-seisan-total-sum")) $("plfee-seisan-total-sum").textContent=yen(sum);
   });
   document.querySelectorAll("[data-plfeeseisanrm]").forEach(el=>el.onclick=()=>{ PLFEE_STATE.seisanRows.splice(+el.dataset.plfeeseisanrm,1); plfeeRenderPanel(); });
   $("plfee-seisan-add-row").onclick=()=>{ PLFEE_STATE.seisanRows.push({store_id:"",store_name:"",amount:0}); plfeeRenderPanel(); };
@@ -908,20 +924,34 @@ function plfeeReflectedCardHtml(row){
   // に対応。反映済み1件ごとに「取り消す」ボタンを追加（クリック時の処理はplfeeRenderPanel側で
   // イベント委任により配線）
   if(row.reflection_route==="seisan"){
-    // 2026-09-05新規：業務委託精算書経由の行。「PL反映済み」を直接断定しないよう、設計書§9-2の
-    // 6状態モデルのpl_statusをそのまま表示する（seisan-dashboard側の実データから導出された値）
+    // 2026-09-06修正：ユーザー要望「どのように反映されているかをプレビューで見れるように」に
+    // 対応。従来は1行に詰め込んだ表示だったのを、実際に精算書へ送った内容（勘定科目・費目名・
+    // 店舗・対象月・税率・金額）が一目で分かるラベル付きのカードに変更。
+    // 「PL反映済み」を直接断定しないよう、設計書§9-2の6状態モデルのpl_statusをそのまま表示する
+    // （seisan-dashboard側の実データから導出された値）
     const storeName=row.seisan_store_name||(a[0]&&a[0].store_name)||"—";
     const statusPill={
       "PL対象外":"gray","振込確定待ち":"amber","PL同期待ち":"amber",
       "店舗月次PL同期実行済み（個別反映未検証）":"blue","PL反映済み（個別確認済み）":"green","PLエラー":"red",
     }[row.pl_status]||"gray";
-    return `<div class="adcost-badge-row" style="margin-bottom:6px">
-      <span class="hq-pill blue">🧮 ${esc(label)}</span>
-      　${esc(storeName)}　${esc(ym)}　合計${yen(total)}
-      　<span class="hq-pill ${statusPill}">${esc(row.pl_status||"—")}</span>
-      ${row.pl_status_checked_at?`　<span class="meta" style="font-size:10px">（確認: ${fmtDT(row.pl_status_checked_at)}）</span>`:""}
-      　<button class="hq-btn" style="font-size:11px;padding:4px 8px" data-plfee-seisan-refresh="1">🔄 状態を更新</button>
-      　<button class="hq-btn" style="font-size:11px;padding:4px 8px" data-plfee-unconfirm="${esc(row.id)}">↩️ 取り消す</button>
+    return `<div class="adcost-box" style="margin-bottom:8px;border-color:var(--m-blue)">
+      <div class="adcost-badge-row" style="margin-bottom:8px">
+        <span class="hq-pill blue">🧮 業務委託精算書へ登録済み</span>
+        　<span class="hq-pill ${statusPill}">${esc(row.pl_status||"—")}</span>
+        ${row.pl_status_checked_at?`　<span class="meta" style="font-size:10px">（状態確認: ${fmtDT(row.pl_status_checked_at)}）</span>`:""}
+      </div>
+      <div class="ai-grid" style="font-size:12px">
+        <div class="ai-field"><small>勘定科目</small><b>${esc(label)}</b></div>
+        <div class="ai-field"><small>費目名（精算書側）</small><b>${esc(row.item_name||"—")}</b></div>
+        <div class="ai-field"><small>店舗</small><b>${esc(storeName)}</b></div>
+        <div class="ai-field"><small>対象月</small><b>${esc(ym)}</b></div>
+        <div class="ai-field"><small>税率</small><b>${esc(row.tax_rate||"—")}</b></div>
+        <div class="ai-field"><small>金額</small><b>${yen(total)}</b></div>
+      </div>
+      <div class="mail-actions" style="margin-top:8px">
+        <button class="hq-btn" style="font-size:11px;padding:4px 8px" data-plfee-seisan-refresh="1">🔄 状態を更新</button>
+        <button class="hq-btn" style="font-size:11px;padding:4px 8px" data-plfee-unconfirm="${esc(row.id)}">↩️ 取り消す</button>
+      </div>
     </div>`;
   }
   return `<div class="adcost-badge-row" style="margin-bottom:6px">
@@ -1000,7 +1030,11 @@ function plfeeRenderPanel(){
   // 矛盾して見える（指示書の指摘）ため、履歴は折りたたみの別枠にし、現在の状態・操作と
   // 混ぜて表示しないようにした
   const reflections=PLFEE_STATE.reflections||[];
-  const reflectedHtml=reflections.length?`<details style="margin-bottom:10px"><summary style="cursor:pointer;font-size:12px;color:var(--muted);font-weight:700">▼ 反映履歴（${reflections.length}件）</summary><div style="margin-top:6px">${reflections.map(plfeeReflectedCardHtml).join("")}</div></details>`:"";
+  // 2026-09-06修正：ユーザー要望「どのように反映されているかを、詳細を開くでプレビューで
+  // 見れるようにしてほしい」に対応。従来は折りたたみ（<details>）が常に閉じた状態から
+  // 始まり、登録内容を確認するには毎回クリックが必要だった。反映済みの内容があるときは
+  // 最初から開いた状態（open属性）で見せる
+  const reflectedHtml=reflections.length?`<details open style="margin-bottom:10px"><summary style="cursor:pointer;font-size:12px;color:var(--muted);font-weight:700">▼ 反映履歴（${reflections.length}件）</summary><div style="margin-top:6px">${reflections.map(plfeeReflectedCardHtml).join("")}</div></details>`:"";
 
   if(PLFEE_STATE.excludedAt){
     box.innerHTML=`<div class="adcost-box">
@@ -1046,9 +1080,7 @@ function plfeeRenderPanel(){
       ${reflectedHtml}
       <div class="adcost-sub">この科目（${esc(PLFEE_STATE.currentAccount)}${PLFEE_STATE.currentSubAccount?"/"+esc(PLFEE_STATE.currentSubAccount):""}）は精算対象店舗のみだったため、直接のPL反映はできません。下から業務委託精算書へ登録してください。</div>
       ${groups.length>1?plfeeGroupPickerHtml():""}
-      <div class="ai-grid">
-        <div class="ai-field"><small>対象年月</small><input id="plfee-ym" type="month" value="${PLFEE_STATE.yearMonth.slice(0,7)}"></div>
-      </div>
+      ${plfeeYmFieldHtml("plfee-ym")}
       <div class="mail-actions" style="margin-top:8px">
         <button id="plfee-exclude">🚫 この請求書はこれ以上PLに反映しない（対象外にする）</button>
       </div>
@@ -1073,9 +1105,7 @@ function plfeeRenderPanel(){
     <div class="adcost-sub">今回登録した仕訳の内容から、店舗ごとのPLへ反映します。内容をご確認のうえ「この内容でPLに反映」を押してください。</div>
     ${groups.length>1||PLFEE_STATE.manualGroup?plfeeGroupPickerHtml():""}
     ${plfeeManualAccountHtml()}
-    <div class="ai-grid">
-      <div class="ai-field"><small>対象年月</small><input id="plfee-ym" type="month" value="${PLFEE_STATE.yearMonth.slice(0,7)}"></div>
-    </div>
+    ${plfeeYmFieldHtml("plfee-ym")}
     <div class="adcost-source">${plfeeSourceLabel()}</div>
     <table class="adcost-table">
       <thead><tr><th>店舗</th><th style="text-align:right">金額</th><th></th></tr></thead>
@@ -2320,6 +2350,7 @@ function renderMailDetail(u){
         ${mail.is_important?'<span class="hq-pill amber">⭐ 重要</span>':''}
         ${invoice&&invoice.mf_journal_id?'<span class="hq-pill green">💰 会計処理済み</span>':''}
         ${invoice&&invoice.pl_fee_reflected_at?'<span class="hq-pill green">📊 PL反映済み</span>':''}
+        ${invoice&&invoice.pl_fee_seisan_synced_at?'<span class="hq-pill blue">🧮 業務委託精算書へ登録済み</span>':''}
       </div>
       <h2>${esc(mail.subject||"（件名なし）")}</h2>
       <div class="meta">${esc(mail.from_address||"—")} 　→　 ${esc(mail.to_address||"—")}</div>
@@ -2517,7 +2548,7 @@ function renderMailDetail(u){
         // このカードを対応完了扱いにしていたが、実際には何も登録されていなかった（本当の完了を
         // 偽って表示していた）。今回から実際にPLへ反映（direct）または精算書へ登録（seisan）される
         // までは未完了のままにする＝直接反映と同じ基準に統一
-        const plDoneForCard=!!(invoice&&(invoice.pl_fee_reflected_at||invoice.pl_fee_excluded_at));
+        const plDoneForCard=!!(invoice&&(invoice.pl_fee_reflected_at||invoice.pl_fee_excluded_at||invoice.pl_fee_seisan_synced_at));
         const paymentDoneForCard=!!(invoice&&invoice.payment_verified_at);
         let currentCardKey=null;
         for(const[k,d]of[["info",infoDone],["accounting",accountingDone],["pl",plDoneForCard],["payment",paymentDoneForCard]]){ if(!d){ currentCardKey=k; break; } }
@@ -2585,12 +2616,22 @@ function renderMailDetail(u){
 
             ${isSales?"":(()=>{
               const seisanStores=invoiceSeisanStores(invoice);
-              const plDone=!!(invoice&&(invoice.pl_fee_reflected_at||invoice.pl_fee_excluded_at));
+              // 2026-09-05修正：ユーザー報告「業務委託精算書へ反映したつもりなのに『PLに反映済み』
+              // と出てややこしい」に対応。従来はpl_fee_reflected_atだけを見て「✓ PL反映済み」と
+              // 表示していたが、seisanルート（業務委託精算書へ登録）はまだ実際にPLへは入っていない
+              // （振込確定・次回同期を待つ状態）ため、「PL反映済み」と名乗るのは不正確だった。
+              // 統合請求書一覧の「精算書」列が既に使っているinvoices.pl_fee_seisan_synced_at
+              // （以前から用意されていたが今まで実際には書き込んでいなかった列）を、
+              // seisan_confirm成功時にきちんと記録するよう修正し、ここでも区別する
+              const plDone=!!(invoice&&(invoice.pl_fee_reflected_at||invoice.pl_fee_excluded_at||invoice.pl_fee_seisan_synced_at));
+              const hasDirect=!!(invoice&&invoice.pl_fee_reflected_at), hasSeisan=!!(invoice&&invoice.pl_fee_seisan_synced_at);
               // 「現在状態は必ず一つだけ」（指示書）：優先順位を決めて1行に確定する
               let plStateHtml;
               if(!invoice||invoice.mf_journal_id==null) plStateHtml=`<span class="pl-state wait">○ 会計登録後に判断</span>`;
               else if(invoice.pl_fee_excluded_at) plStateHtml=`<span class="pl-state excluded">－ PL対象外</span>`;
-              else if(invoice.pl_fee_reflected_at) plStateHtml=`<span class="pl-state done">✓ PL反映済み</span>`;
+              else if(hasDirect&&hasSeisan) plStateHtml=`<span class="pl-state done">✓ PL反映済み</span>　<span class="pl-state seisan">🧮 業務委託精算書へも登録済み（PL反映は振込確定後）</span>`;
+              else if(hasSeisan) plStateHtml=`<span class="pl-state seisan">🧮 業務委託精算書へ登録済み（PL反映は振込確定・次回同期後）</span>`;
+              else if(hasDirect) plStateHtml=`<span class="pl-state done">✓ PL反映済み</span>`;
               else if(seisanStores.length) plStateHtml=`<span class="pl-state seisan">🧮 業務委託精算対象</span>`;
               else plStateHtml=`<span class="pl-state wait">○ PL反映待ち</span>`;
               // 2026-09-05修正：業務委託精算書自動連携の実装により、対象店舗があるというだけで
