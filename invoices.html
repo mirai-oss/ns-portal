@@ -19,6 +19,13 @@
 }
 @media(prefers-color-scheme:dark){
   :root{--bg:#211d18; --panel:#2b2620; --ink:#f2ede6; --muted:#b3aa9f; --line:#433c33; --accent-soft:#4a2c22; --green-soft:#1f3a2c; --amber-soft:#3d3018; --blue-soft:#1e3049;}
+  /* 2026-09-05追加：ユーザー報告「夜モードだと色が変わって見づらい」に対応。
+     .step-badge.currentは続き27で赤系（--accent-soft背景＋--accentの太字）に変更したが、
+     ダークモードの--accent-softは暗い赤茶色になる一方、文字色の--accentはライト/ダーク共通の
+     ままだったため、コントラスト比が約2.6:1（WCAG基準4.5:1を大きく下回る）まで低下し
+     「めちゃくちゃ見づらい」状態になっていた。ダークモード専用の明るい配色に差し替えて
+     コントラスト比を約6.5:1まで改善した */
+  .step-badge.current{background:#4a1c16;color:#ff9080}
 }
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Noto Sans JP",sans-serif;background:var(--bg);color:var(--ink);min-height:100vh}
