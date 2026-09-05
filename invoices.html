@@ -1849,15 +1849,23 @@ function ivVendorLinkHtml(invoice){
     <div class="err" id="iv-vendorlink-msg" style="margin-top:4px"></div>
   </div>`;
 }
+// 2026-09-05修正：ユーザー報告「PayPay銀行CSVをアップロードしたら『銀行コードは必須入力
+// 項目です』『支店コードは必須入力項目です』というエラーが出た」に対応。給与仕訳の振込先
+// 口座登録（payrollBankModal）には銀行コード・支店コードの入力欄があったが、この取引先の
+// 振込先口座登録フォームには無かった（設計時に見落としていた）ため、PayPay銀行CSVの
+// 該当欄が常に空欄になり、アップロード時にエラーになっていた。給与仕訳の入力欄と
+// 同じ項目・同じ入力チェック（銀行コード4桁以内・支店コード3桁以内の数字）を追加した
 function ivVendorLinkNewFormHtml(defaultName){
   return `<div class="card" style="padding:10px;border-color:var(--m-blue)">
-    <div class="meta" style="color:var(--muted);font-size:11px;margin-bottom:6px">取引先マスタへ新規登録します。銀行口座も入力すれば、そのまま設定タブ「支払先・銀行口座」にも同じ口座として登録されます（未入力でも構いません。後から設定タブで登録できます）。</div>
+    <div class="meta" style="color:var(--muted);font-size:11px;margin-bottom:6px">取引先マスタへ新規登録します。銀行口座も入力すれば、そのまま設定タブ「支払先・銀行口座」にも同じ口座として登録されます（未入力でも構いません。後から設定タブで登録できます）。振込先口座を入力する場合は、銀行コード・支店コードも入力してください（PayPay銀行への振込CSV作成に必須です）。</div>
     <div class="ai-grid">
       <div class="ai-field full"><small>取引先の正式名称</small><input id="ivvl-name" value="${esc(defaultName||"")}"></div>
-      <div class="ai-field"><small>銀行名（任意）</small><input id="ivvl-bank"></div>
-      <div class="ai-field"><small>支店名（任意）</small><input id="ivvl-branch"></div>
+      <div class="ai-field"><small>銀行コード（4桁の数字。通帳・キャッシュカードに記載）</small><input id="ivvl-bankcode" placeholder="例: 0033" maxlength="4"></div>
+      <div class="ai-field"><small>銀行名（任意・表示用）</small><input id="ivvl-bank" placeholder="例: PayPay銀行"></div>
+      <div class="ai-field"><small>支店コード（3桁の数字）</small><input id="ivvl-branchcode" placeholder="例: 003" maxlength="3"></div>
+      <div class="ai-field"><small>支店名（任意・表示用）</small><input id="ivvl-branch" placeholder="例: 本店営業部"></div>
       <div class="ai-field"><small>口座種別</small><select id="ivvl-type"><option value="1">普通</option><option value="2">当座</option><option value="4">貯蓄</option></select></div>
-      <div class="ai-field"><small>口座番号（任意）</small><input id="ivvl-number"></div>
+      <div class="ai-field"><small>口座番号（任意）</small><input id="ivvl-number" maxlength="7"></div>
       <div class="ai-field full"><small>名義（半角カナ・任意）</small><input id="ivvl-holder"></div>
     </div>
     <div class="mail-actions" style="margin-top:8px"><button class="primary" id="ivvl-save">💾 登録して紐付ける</button><button id="ivvl-cancel">キャンセル</button></div>
@@ -1894,13 +1902,17 @@ const BANK_TYPE_LABEL={"2":"当座","4":"貯蓄"};
 // 振込先口座の登録・編集フォーム（新規登録・既存編集の両方に使う共通部品）。
 // vendor-master Edge Functionのupsert_bank_account（設定タブ「支払先・銀行口座」と全く同じ
 // アクション・同じvendor_bank_accountsテーブル）を呼ぶだけなので、別データにはならない
+// 2026-09-05修正：銀行コード・支店コードの入力欄を追加（ivVendorLinkNewFormHtmlと同じ理由。
+// PayPay銀行CSVの必須項目のため、給与仕訳の振込先口座登録と同じ項目・同じ入力チェックにした）
 function bankAccountEditFormHtml(acc){
   return `<div class="card" style="padding:10px;border-color:var(--m-blue)">
     <div class="ai-grid">
-      <div class="ai-field"><small>銀行名</small><input id="pbe-bank" value="${esc((acc&&acc.bank_name)||"")}"></div>
-      <div class="ai-field"><small>支店名</small><input id="pbe-branch" value="${esc((acc&&acc.branch_name)||"")}"></div>
+      <div class="ai-field"><small>銀行コード（4桁の数字。通帳・キャッシュカードに記載）</small><input id="pbe-bankcode" value="${esc((acc&&acc.bank_code)||"")}" placeholder="例: 0033" maxlength="4"></div>
+      <div class="ai-field"><small>銀行名（任意・表示用）</small><input id="pbe-bank" value="${esc((acc&&acc.bank_name)||"")}" placeholder="例: PayPay銀行"></div>
+      <div class="ai-field"><small>支店コード（3桁の数字）</small><input id="pbe-branchcode" value="${esc((acc&&acc.branch_code)||"")}" placeholder="例: 003" maxlength="3"></div>
+      <div class="ai-field"><small>支店名（任意・表示用）</small><input id="pbe-branch" value="${esc((acc&&acc.branch_name)||"")}" placeholder="例: 本店営業部"></div>
       <div class="ai-field"><small>口座種別</small><select id="pbe-type">${["1","2","4"].map(t=>`<option value="${t}" ${(acc?acc.account_type:"1")===t?"selected":""}>${t==="1"?"普通":BANK_TYPE_LABEL[t]}</option>`).join("")}</select></div>
-      <div class="ai-field"><small>口座番号</small><input id="pbe-number" value="${esc((acc&&acc.account_number)||"")}"></div>
+      <div class="ai-field"><small>口座番号</small><input id="pbe-number" value="${esc((acc&&acc.account_number)||"")}" maxlength="7"></div>
       <div class="ai-field full"><small>名義（半角カナ）</small><input id="pbe-holder" value="${esc((acc&&acc.account_holder_kana)||"")}"></div>
     </div>
     <div class="mail-actions" style="margin-top:8px"><button class="primary" id="pbe-save">💾 保存</button><button id="pbe-cancel">キャンセル</button></div>
@@ -1954,9 +1966,13 @@ function invoicePaymentTabHtml(invoice){
       ${ivVendorLinkHtml(invoice)}
     </div>`;
   }else if(acc){
+    // 2026-09-05追加：銀行コード・支店コードが無いとPayPay銀行CSVでエラーになるため、
+    // 未登録の場合は一目で分かるよう警告を表示する
+    const missingCodes=!acc.bank_code||!acc.branch_code;
     bankBoxHtml=`<div class="ai-field" style="margin-bottom:10px" id="pay-bankbox"><small>取引先・振込先口座</small>
       <b>${esc(vendorLinkedName)}</b>
-      <div class="meta" style="color:var(--muted);font-size:12px;margin-top:2px">${esc(acc.bank_name||"—")} ${esc(acc.branch_name||"")} ${BANK_TYPE_LABEL[acc.account_type]||"普通"} ${esc(acc.account_number||"—")}（${esc(acc.account_holder_kana||"—")}）</div>
+      <div class="meta" style="color:var(--muted);font-size:12px;margin-top:2px">${acc.bank_code?esc(acc.bank_code)+"　":""}${esc(acc.bank_name||"—")} ${acc.branch_code?esc(acc.branch_code)+"　":""}${esc(acc.branch_name||"")} ${BANK_TYPE_LABEL[acc.account_type]||"普通"} ${esc(acc.account_number||"—")}（${esc(acc.account_holder_kana||"—")}）</div>
+      ${missingCodes?'<div class="meta" style="color:var(--m-red);font-size:11px;margin-top:4px">⚠️ 銀行コード・支店コードが未登録です。PayPay銀行への振込CSV作成でエラーになるため、下の「編集する」から入力してください。</div>':""}
       <div class="mail-actions" style="margin-top:6px"><button class="hq-btn" id="pay-bank-edit">✏️ 口座情報を編集する</button></div>
       <div id="pay-bank-editor" style="margin-top:8px"></div>
     </div>`;
@@ -2528,14 +2544,22 @@ function wireDetailActions(u){
       const msg=$("iv-vendorlink-msg"); msg.className="err"; msg.textContent="";
       const name=$("ivvl-name").value.trim();
       if(!name){ msg.textContent="取引先の正式名称を入力してください"; return; }
+      // 2026-09-05追加：銀行コード・支店コードの入力チェック（PayPay銀行CSVの必須項目のため、
+      // 銀行口座を1つでも入力する場合はこの2つを数字で必ず入力してもらう）
+      const bankCode=$("ivvl-bankcode").value.trim(), branchCode=$("ivvl-branchcode").value.trim();
+      const bankName=$("ivvl-bank").value.trim(), branchName=$("ivvl-branch").value.trim(), accNumber=$("ivvl-number").value.trim(), holder=$("ivvl-holder").value.trim();
+      const anyBankField=bankCode||branchCode||bankName||branchName||accNumber||holder;
+      if(anyBankField){
+        if(!/^\d{1,4}$/.test(bankCode)){ msg.textContent="振込先口座を入力する場合は、銀行コード（数字4桁以内）を入力してください"; return; }
+        if(!/^\d{1,3}$/.test(branchCode)){ msg.textContent="振込先口座を入力する場合は、支店コード（数字3桁以内）を入力してください"; return; }
+      }
       $("ivvl-save").disabled=true; $("ivvl-save").textContent="登録中…";
       const vr=await vendorCall("upsert_vendor",{vendor:{name}});
       if(!vr.ok||!vr.body.id){ msg.textContent=vr.body.error||"取引先の登録に失敗しました"; $("ivvl-save").disabled=false; $("ivvl-save").textContent="💾 登録して紐付ける"; return; }
       const vendorId=vr.body.id;
       // 銀行情報が何か入力されていれば、設定タブと同じupsert_bank_accountで口座も一緒に登録する
-      const bankName=$("ivvl-bank").value.trim(), branchName=$("ivvl-branch").value.trim(), accNumber=$("ivvl-number").value.trim(), holder=$("ivvl-holder").value.trim();
-      if(bankName||branchName||accNumber||holder){
-        const ar=await vendorCall("upsert_bank_account",{account:{vendor_id:vendorId,bank_name:bankName,branch_name:branchName,account_type:$("ivvl-type").value,account_number:accNumber,account_holder_kana:holder}});
+      if(anyBankField){
+        const ar=await vendorCall("upsert_bank_account",{account:{vendor_id:vendorId,bank_code:bankCode,bank_name:bankName,branch_code:branchCode,branch_name:branchName,account_type:$("ivvl-type").value,account_number:accNumber,account_holder_kana:holder}});
         if(!ar.ok){ msg.textContent="取引先は登録できましたが、口座の登録に失敗しました："+(ar.body.error||""); }
       }
       await authed(`/rest/v1/invoices?id=eq.${invoice.id}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({vendor_id:vendorId})});
@@ -2926,10 +2950,15 @@ function wireDetailActions(u){
     box.innerHTML=bankAccountEditFormHtml(acc);
     $("pbe-cancel").onclick=()=>{ box.innerHTML=""; };
     $("pbe-save").onclick=async()=>{
-      const msg=$("pbe-msg"); msg.className="err"; msg.textContent="保存中…";
+      const msg=$("pbe-msg"); msg.className="err"; msg.textContent="";
+      // 2026-09-05追加：銀行コード・支店コードの入力チェック（PayPay銀行CSVの必須項目のため）
+      const bankCode=$("pbe-bankcode").value.trim(), branchCode=$("pbe-branchcode").value.trim();
+      if(!/^\d{1,4}$/.test(bankCode)){ msg.textContent="銀行コード（数字4桁以内）を入力してください"; return; }
+      if(!/^\d{1,3}$/.test(branchCode)){ msg.textContent="支店コード（数字3桁以内）を入力してください"; return; }
+      msg.textContent="保存中…";
       $("pbe-save").disabled=true;
       const account={
-        vendor_id:invoice.vendor_id, bank_name:$("pbe-bank").value.trim(), branch_name:$("pbe-branch").value.trim(),
+        vendor_id:invoice.vendor_id, bank_code:bankCode, bank_name:$("pbe-bank").value.trim(), branch_code:branchCode, branch_name:$("pbe-branch").value.trim(),
         account_type:$("pbe-type").value, account_number:$("pbe-number").value.trim(), account_holder_kana:$("pbe-holder").value.trim(),
       };
       if(acc) account.id=acc.id;
@@ -4027,13 +4056,17 @@ let TRANSFERS_STATE={rows:[],accountsByVendor:new Map(),selected:new Set()};
 function transferRowHtml(r){
   const acc=TRANSFERS_STATE.accountsByVendor.get(r.vendor_id);
   const blocked=r.bank_account_change_detected;
+  // 2026-09-05追加：ユーザー報告「PayPay銀行CSVをアップロードしたら『銀行コードは必須入力
+  // 項目です』とエラーが出た」に対応。銀行コード・支店コードが未登録の口座はCSV出力すると
+  // 必ずエラーになるため、選択できないようにして事前に気付けるようにする
+  const missingCodes=acc&&(!acc.bank_code||!acc.branch_code);
   const pay=PAYMENT_STATUS_LABEL[r.payment_status]||PAYMENT_STATUS_LABEL.not_ready;
   return `<tr>
-    <td><input type="checkbox" class="transfer-check" data-id="${r.id}" ${TRANSFERS_STATE.selected.has(r.id)?"checked":""} ${blocked||!acc?"disabled":""}></td>
+    <td><input type="checkbox" class="transfer-check" data-id="${r.id}" ${TRANSFERS_STATE.selected.has(r.id)?"checked":""} ${blocked||!acc||missingCodes?"disabled":""} ${missingCodes?'title="銀行コード・支店コードが未登録のため選択できません。詳細から編集してください"':""}></td>
     <td>${fmtD(r.due_date)}</td>
     <td>${esc((r.vendor&&r.vendor.name)||r.vendor_name||"—")}</td>
     <td>${yen(r.amount)}</td>
-    <td>${acc?esc(acc.bank_name||"—"):(blocked?'<span class="invoice-status err">口座変更未承認</span>':'<span class="invoice-status gray">未登録</span>')}</td>
+    <td>${acc?esc(acc.bank_name||"—"):(blocked?'<span class="invoice-status err">口座変更未承認</span>':'<span class="invoice-status gray">未登録</span>')}${missingCodes?' <span class="invoice-status err">コード未登録</span>':''}</td>
     <td>${acc?esc(acc.branch_name||"—"):"—"}</td>
     <td>${acc?esc(acc.account_number||"—"):"—"}</td>
     <td>${r.mf_journal_id?'<span class="invoice-status done">済</span>':'<span class="invoice-status wait">未</span>'}</td>
@@ -4078,8 +4111,11 @@ function rows_for_transfer_selection(){
 async function transferExportCsv(u){
   const selected=rows_for_transfer_selection();
   if(!selected.length){ $("transfer-msg").textContent="対象を選択してください"; return; }
-  const withAccount=selected.filter(r=>TRANSFERS_STATE.accountsByVendor.has(r.vendor_id));
-  if(!withAccount.length){ $("transfer-msg").textContent="選択した請求書に振込先口座の登録がありません（設定タブで登録してください）"; return; }
+  const withAccount=selected.filter(r=>{
+    const acc=TRANSFERS_STATE.accountsByVendor.get(r.vendor_id);
+    return acc&&acc.bank_code&&acc.branch_code; // 2026-09-05：銀行コード・支店コード未登録はCSV出力対象から除外（必ずエラーになるため）
+  });
+  if(!withAccount.length){ $("transfer-msg").textContent="選択した請求書に振込先口座（銀行コード・支店コードを含む）の登録がありません（設定タブ、または請求書詳細の④振込カードから登録してください）"; return; }
   const remitterName=paypayRemitterName(); // 2026-09-04追加：PayPay銀行が振込依頼人名を必須としていたため確認する
   if(remitterName===null) return; // キャンセル
   const csv=buildPaypayCsv(withAccount.map(r=>{
@@ -6476,24 +6512,31 @@ async function bankLoadAccountsForVendor(){
   const r=await vendorCall("list_bank_accounts",{vendor_id:BANK_STATE.selectedVendorId});
   const accounts=(r.ok&&r.body.accounts)||[];
   box.innerHTML=`<div class="hq-tablewrap"><table class="invoice-table">
-    <thead><tr><th>銀行</th><th>支店</th><th>種別</th><th>口座番号</th><th>名義</th><th>状態</th><th>最終確認日</th></tr></thead>
+    <thead><tr><th>銀行コード</th><th>銀行</th><th>支店コード</th><th>支店</th><th>種別</th><th>口座番号</th><th>名義</th><th>状態</th><th>最終確認日</th></tr></thead>
     <tbody>${accounts.length?accounts.map(a=>`<tr>
-      <td>${esc(a.bank_name||"—")}</td><td>${esc(a.branch_name||"—")}</td>
+      <td>${a.bank_code?esc(a.bank_code):'<span class="invoice-status err">未登録</span>'}</td><td>${esc(a.bank_name||"—")}</td>
+      <td>${a.branch_code?esc(a.branch_code):'<span class="invoice-status err">未登録</span>'}</td><td>${esc(a.branch_name||"—")}</td>
       <td>${a.account_type==="2"?"当座":a.account_type==="4"?"貯蓄":"普通"}</td>
       <td>${esc(a.account_number||"—")}</td><td>${esc(a.account_holder_kana||"—")}</td>
       <td>${a.is_current?'<span class="invoice-status done">現在有効</span>':'<span class="invoice-status gray">過去口座</span>'}</td>
       <td>${a.confirmed_at?fmtD(a.confirmed_at):"—"}</td>
-    </tr>`).join(""):'<tr><td colspan="7">登録済みの口座はありません</td></tr>'}</tbody>
+    </tr>`).join(""):'<tr><td colspan="9">登録済みの口座はありません</td></tr>'}</tbody>
   </table></div>
   <div class="mail-actions" style="margin-top:10px"><button class="hq-btn primary" id="bank-add">＋ 口座を追加（現在有効な口座として登録）</button></div>
   <div id="bank-editor" style="margin-top:10px"></div>`;
+  // 2026-09-05修正：銀行コード・支店コードの入力欄を追加。ユーザー報告「PayPay銀行CSVを
+  // アップロードしたら『銀行コードは必須入力項目です』『支店コードは必須入力項目です』という
+  // エラーが出た」に対応（この欄が無かったため常に空欄でCSVに出力されていた）。給与仕訳の
+  // 振込先口座登録（payrollBankModal）と同じ項目・同じ入力チェックにした
   $("bank-add").onclick=()=>{
     $("bank-editor").innerHTML=`<div class="card" style="padding:12px;border-color:var(--m-blue)">
       <div class="ai-grid">
-        <div class="ai-field"><small>銀行名</small><input id="bank-name"></div>
-        <div class="ai-field"><small>支店名</small><input id="bank-branch"></div>
+        <div class="ai-field"><small>銀行コード（4桁の数字。通帳・キャッシュカードに記載）</small><input id="bank-code" placeholder="例: 0033" maxlength="4"></div>
+        <div class="ai-field"><small>銀行名（任意・表示用）</small><input id="bank-name" placeholder="例: PayPay銀行"></div>
+        <div class="ai-field"><small>支店コード（3桁の数字）</small><input id="bank-branchcode" placeholder="例: 003" maxlength="3"></div>
+        <div class="ai-field"><small>支店名（任意・表示用）</small><input id="bank-branch" placeholder="例: 本店営業部"></div>
         <div class="ai-field"><small>口座種別</small><select id="bank-type"><option value="1">普通</option><option value="2">当座</option><option value="4">貯蓄</option></select></div>
-        <div class="ai-field"><small>口座番号</small><input id="bank-number"></div>
+        <div class="ai-field"><small>口座番号</small><input id="bank-number" maxlength="7"></div>
         <div class="ai-field full"><small>名義（カナ）</small><input id="bank-holder"></div>
       </div>
       <div class="mail-actions" style="margin-top:8px"><button class="primary" id="bank-save">💾 保存</button><button id="bank-cancel">キャンセル</button></div>
@@ -6501,10 +6544,14 @@ async function bankLoadAccountsForVendor(){
     </div>`;
     $("bank-cancel").onclick=()=>{ $("bank-editor").innerHTML=""; };
     $("bank-save").onclick=async()=>{
-      const msg=$("bank-msg"); msg.className="err"; msg.textContent="保存中…";
+      const msg=$("bank-msg"); msg.className="err";
+      const bankCode=$("bank-code").value.trim(), branchCode=$("bank-branchcode").value.trim();
+      if(!/^\d{1,4}$/.test(bankCode)){ msg.textContent="銀行コード（数字4桁以内）を入力してください"; return; }
+      if(!/^\d{1,3}$/.test(branchCode)){ msg.textContent="支店コード（数字3桁以内）を入力してください"; return; }
+      msg.textContent="保存中…";
       const account={
-        vendor_id: BANK_STATE.selectedVendorId, bank_name: $("bank-name").value.trim(),
-        branch_name: $("bank-branch").value.trim(), account_type: $("bank-type").value,
+        vendor_id: BANK_STATE.selectedVendorId, bank_code: bankCode, bank_name: $("bank-name").value.trim(),
+        branch_code: branchCode, branch_name: $("bank-branch").value.trim(), account_type: $("bank-type").value,
         account_number: $("bank-number").value.trim(), account_holder_kana: $("bank-holder").value.trim(),
       };
       const r=await vendorCall("upsert_bank_account",{account});
