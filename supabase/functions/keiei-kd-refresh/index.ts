@@ -294,6 +294,29 @@ function plCatOf(v: unknown): "F" | "L" | "A" | "R" | "O" {
   if (s[0] === "R" || /家賃|賃料/.test(s)) return "R";
   return "O";
 }
+// 業務委託精算書由来のPL反映（2026-09-06追加・司令塔指示）。tori-dashboard/gas/Code.gs:2970の
+// PL_SEISAN_CAT_MEMO/PL_SEISAN_ACCOUNT_CAT_/plSeisanGuessCat_と全く同じ判定（GAS側は無変更・移植のみ）。
+// syncSeisanCategoriesToPlがDB_PLへ書き込む際にこのmemoを付けるため、bqGetPLの結果からこのmemoの
+// 行だけを抜き出せば「業務委託精算書経由で実際にDB_PLへ届いた金額」を裏付けできる。
+const PL_SEISAN_CAT_MEMO = "自動｜精算書";
+const PL_SEISAN_ACCOUNT_CAT: Record<string, "S" | "F" | "L" | "A" | "R" | "O" | "X"> = {
+  "役員報酬": "L", "法定福利費": "L", "通勤手当": "L", "旅費交通費": "L", "賞与積立": "L", "退職金等": "L",
+  "家賃": "R", "リース料": "R", "家賃更新按分": "R", "広告宣伝費": "A", "販売促進費": "A",
+  "水道光熱費": "O", "通信費": "O", "消耗品・備品費": "O", "修繕費": "O", "衛生管理費": "O", "カード手数料": "O",
+  "支払手数料": "O", "支払報酬料": "O", "採用教育費": "O", "接待交際費": "O", "会議費": "O", "慶弔見舞費": "O",
+  "保険料": "O", "租税公課": "O", "減価償却費": "O", "福利厚生費": "O", "諸会費": "O", "雑費": "O", "本部経費（按分）": "O",
+  "その他売上": "S", "銀行返済": "X", "仕入（食材・飲料）": "F", "運営委託費": "O",
+};
+function plSeisanGuessCat(name: string): "S" | "F" | "L" | "A" | "R" | "O" | "X" {
+  if (PL_SEISAN_ACCOUNT_CAT[name]) return PL_SEISAN_ACCOUNT_CAT[name];
+  if (/給料|雑給|人件費|法定福利|通勤/.test(name)) return "L";
+  if (/広告|販促/.test(name)) return "A";
+  if (/家賃|賃料/.test(name)) return "R";
+  if (/仕入/.test(name)) return "F";
+  if (/売上/.test(name)) return "S";
+  return "O";
+}
+
 async function bqGetPLRows(sb: any): Promise<any[][]> {
   const { id, pw } = await dashSecrets(sb);
   if (!id || !pw) throw new Error("app_secretsにdash_id/dash_pwが未設定です");
@@ -315,7 +338,13 @@ async function refreshPlMonthly(sb: any) {
       store_id: string | null; year_month: string;
       cost_manual: number; labor_manual: number; ad_manual: number; rent: number; other: number;
       breakdown: Record<string, Record<string, number>>; // {F:{勘定科目:金額},...}
+      seisanSynced: Record<string, number>; // {F:n,L:n,...}（bqGetPLのmemo=自動｜精算書だけの内訳。裏付け用・加算禁止）
+      seisanPending: number; seisanPendingBreakdown: Record<string, number>; // invoice_pl_reflectionsのDB_PL未反映分（後段で合流）
     };
+    const newBucket = (storeId: string | null, ym: string): Bucket => ({
+      store_id: storeId, year_month: ym, cost_manual: 0, labor_manual: 0, ad_manual: 0, rent: 0, other: 0,
+      breakdown: {}, seisanSynced: {}, seisanPending: 0, seisanPendingBreakdown: {},
+    });
     const byKey = new Map<string, Bucket>();
     for (let r = 1; r < rawRows.length; r++) {
       const row = rawRows[r];
@@ -325,20 +354,48 @@ async function refreshPlMonthly(sb: any) {
       const item = String(row[2] ?? "").trim() || "(未分類)";
       const cat = plCatOf(row[3]);
       const amount = num(row[4]);
+      const memo = String(row[5] ?? "").trim();
       let storeId: string | null = null;
       if (storeName) {
         storeId = idByName.get(storeName) ?? null;
         if (!storeId) { unmatched.add(storeName); continue; } // 店舗名が解決できない行は集計に混ぜない（原則5）
       }
       const key = `${storeId ?? COMMON_STORE_KEY}|${ym}`;
-      const b = byKey.get(key) ?? { store_id: storeId, year_month: ym, cost_manual: 0, labor_manual: 0, ad_manual: 0, rent: 0, other: 0, breakdown: {} };
+      const b = byKey.get(key) ?? newBucket(storeId, ym);
       if (cat === "F") b.cost_manual += amount;
       else if (cat === "L") b.labor_manual += amount;
       else if (cat === "A") b.ad_manual += amount;
       else if (cat === "R") b.rent += amount;
       else b.other += amount;
       (b.breakdown[cat] ??= {})[item] = (b.breakdown[cat][item] ?? 0) + amount;
+      if (memo === PL_SEISAN_CAT_MEMO) b.seisanSynced[cat] = (b.seisanSynced[cat] ?? 0) + amount;
       byKey.set(key, b);
+    }
+
+    // 業務委託精算書のうち、まだDB_PL/stg_plに反映されていない分（振込確定待ち/PL同期待ち）を
+    // 別枠で加算（cost_manual等には含めない＝新旧突合の対象外・部分反映として表示する）。
+    // 2026-09-06追加（司令塔指示: PL本番切替の条件＝この分がkd_pl_monthly_summaryで見える化されること）。
+    {
+      const { data: pendingRows, error: pendingErr } = await sb.from("invoice_pl_reflections")
+        .select("account_name,year_month,allocations,pl_status")
+        .eq("reflection_route", "seisan").in("pl_status", ["振込確定待ち", "PL同期待ち"]);
+      if (pendingErr) throw new Error("invoice_pl_reflections取得に失敗: " + pendingErr.message);
+      for (const r of (pendingRows ?? []) as any[]) {
+        const ym = String(r.year_month ?? "").slice(0, 7);
+        if (!/^\d{4}-\d{2}$/.test(ym)) continue;
+        const cat = plSeisanGuessCat(String(r.account_name ?? ""));
+        if (cat === "S" || cat === "X") continue; // 売上・借入返済はPL費用ではないので対象外
+        for (const a of (Array.isArray(r.allocations) ? r.allocations : [])) {
+          const storeId: string | null = a?.store_id ?? null;
+          const amount = num(a?.amount);
+          if (!storeId || !amount) continue;
+          const key = `${storeId}|${ym}`;
+          const b = byKey.get(key) ?? newBucket(storeId, ym);
+          b.seisanPending += amount;
+          b.seisanPendingBreakdown[cat] = (b.seisanPendingBreakdown[cat] ?? 0) + amount;
+          byKey.set(key, b);
+        }
+      }
     }
 
     // 自動売上/原価/人件費: kd_dashboard_daily_summaryを月合計（対象年月＋店舗のみ）
@@ -384,15 +441,17 @@ async function refreshPlMonthly(sb: any) {
         ad_manual: b.ad_manual, rent: b.rent, other: b.other,
         gross_profit: grossProfit, sga, operating_profit: operatingProfit,
         pl_item_breakdown: b.breakdown,
+        seisan_synced_breakdown: b.seisanSynced,
+        seisan_pending_total: b.seisanPending || null,
+        seisan_pending_breakdown: b.seisanPendingBreakdown,
         source_updated_at: new Date().toISOString(), computed_at: new Date().toISOString(),
         source_count: 1, sync_run_id: runId,
       };
     });
     for (let i = 0; i < upserts.length; i += 500) {
-      // onConflictはDBのユニークインデックス式（coalesce(store_id,センチネル), year_month）に対応する
-      // 生成列が無いため、Supabase upsertの標準onConflictでは直接指定できない。ここでは店舗ありと
-      // 共通経費(store_id=null)を分けてupsertする（PostgRESTのupsertはNULL列を含む複合キーを
-      // 正しく扱えないため）。
+      // store_id is null（全社共通経費）はNULLを含む複合キーのためPostgRESTのupsert(onConflict)で
+      // 正しく扱えず、店舗ありと分けて処理する（店舗ありはstore_id,year_monthの通常ユニーク
+      // インデックスでupsert。詳細はsupabase/2026-09-06_kd_pl_media_deposit_monthly.sqlのコメント参照）。
       const withStore = upserts.slice(i, i + 500).filter((u) => u.store_id);
       const common = upserts.slice(i, i + 500).filter((u) => !u.store_id);
       if (withStore.length) {

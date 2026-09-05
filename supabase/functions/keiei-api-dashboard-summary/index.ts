@@ -14,6 +14,12 @@
 // 【既知の制約（v1）】kd_pl_monthly_summaryの広告費(自動component)・簡易CF・kd_media_monthly_summaryの
 // 広告費/ROAS/キャンセル率は元データ未対応のためこのAPIの返り値にも含まれない
 // （詳細はsupabase/2026-09-06_kd_pl_media_deposit_monthly.sqlの冒頭コメント参照）。
+//
+// 【業務委託精算書由来のPL反映（2026-09-06追加・司令塔指示。新旧突合パネルの材料）】
+// kind='pl'の各行にseisan_synced_breakdown（既にDB_PL/stg_plへ反映済みの精算書由来分の内訳。
+// cost_total等に既に含まれている＝加算禁止・裏付け表示用）とseisan_pending_total/breakdown
+// （まだDB_PL未反映＝振込確定待ち/PL同期待ち。cost_total等には含まれていない「処理中」の金額）を
+// 追加した。詳細はsupabase/2026-09-06_kd_pl_monthly_seisan.sqlのコメント参照。
 import { createClient } from "npm:@supabase/supabase-js@2";
 
 const cors: Record<string, string> = {
@@ -47,7 +53,7 @@ async function resolveScope(sb: ReturnType<typeof createClient>, uid: string) {
   return { allowed: false as const, error: "権限がありません（社長・本部・チーム長・店長のみ。経営Dと同じ判定）" };
 }
 
-const PL_COLUMNS = "store_id,corporation_id,year_month,sales,cost_auto,cost_manual,cost_total,labor_auto,labor_manual,labor_total,ad_manual,rent,other,gross_profit,sga,operating_profit,pl_item_breakdown,source_updated_at,computed_at,sync_run_id";
+const PL_COLUMNS = "store_id,corporation_id,year_month,sales,cost_auto,cost_manual,cost_total,labor_auto,labor_manual,labor_total,ad_manual,rent,other,gross_profit,sga,operating_profit,pl_item_breakdown,seisan_synced_breakdown,seisan_pending_total,seisan_pending_breakdown,source_updated_at,computed_at,sync_run_id";
 const MEDIA_COLUMNS = "store_id,corporation_id,year_month,media_name,net_sales,guests,parties,source_updated_at,computed_at,sync_run_id";
 const DEPOSIT_COLUMNS = "store_id,corporation_id,year_month,deposit_total,deposit_count,sales_total,diff,source_breakdown,source_updated_at,computed_at,sync_run_id";
 
