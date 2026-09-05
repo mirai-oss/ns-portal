@@ -130,6 +130,7 @@ Deno.serve(async (req) => {
     if (b.task_assignee) { tp.assignee_name = String(b.task_assignee); tp.assignee_type = b.task_assignee === "中山" ? "human" : "ai"; }
     if (b.task_unblocks !== undefined && b.task_unblocks !== null) tp.unblocks = String(b.task_unblocks);
     if (b.task_note) tp.on_done_note = String(b.task_note);
+    if (["highest", "high", "mid", "low"].includes(b.task_priority)) tp.priority = b.task_priority;
     if (b.task_status) { tp.status = b.task_status; if (b.task_status === "done") { tp.completed_at = now; tp.progress_percent = 100; } }
     if (b.progress_percent !== undefined && b.progress_percent !== null) tp.progress_percent = b.progress_percent;
     if (b.blocker !== undefined && b.blocker !== null) tp.blocker = b.blocker;

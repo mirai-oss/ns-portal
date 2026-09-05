@@ -342,6 +342,7 @@ def main():
         if flags.get("to"): payload["task_assignee"] = flags["to"]
         if flags.get("unblocks") is not None: payload["task_unblocks"] = flags["unblocks"]
         if flags.get("note"): payload["task_note"] = flags["note"]
+        if flags.get("priority"): payload["task_priority"] = flags["priority"]
     # --quiet: 過去分の一括反映用。Lark通知とunblocks自動処理を抑制（新規の完了報告には使わない）
     if flags.get("quiet"): payload["quiet"] = 1
     if cmd == "approval-request":

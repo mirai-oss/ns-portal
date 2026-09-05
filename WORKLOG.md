@@ -6909,3 +6909,7 @@ if(modal) modal.remove();
 構文チェック（`node --check`・`npx esbuild`）済み。`invoices.html`・`supabase/functions/pl-fee-reflect/index.ts`をコミット`ef782ca`としてpush済み・`git diff origin/main --stat`で空（クリーン同期）確認済み。デプロイ済み・GitHub Pagesへの反映もcurlで確認済み。`ai-cockpit progress`（TK-85）実行済み。
 
 **現状のまとめ**: 業務委託精算書自動連携（TK-85）は実機での登録成功を確認済み、かつ今回の5件のフィードバックにも対応した。残るはユーザーによる最終確認（表示の見た目・強調表示等が意図通りか）のみ。
+
+## 2026-09-06（担当Hセッション）高速化の優先順位をユーザー実感ベースに組み替え
+
+ユーザー指示「新機能より体感速度。予約は頻繁に見ないので最優先でない。ストレス順=①会計/請求書処理②売上確認③PL確認④売上分析」を台帳へ反映: **TK-92新規（C: 会計/請求書処理の計測と高速化・最優先）**／TK-60=highest（keiei-api-homeをホーム/売上確認初期表示へ・FL列はTK-63から）／TK-63=highest（kd_サマリはpl_monthly→store_monthly優先で作成・完成でTK-61/60が自動着手可）／TK-61=対象action明確化（bqGetPL/bqDetail/bqGetMedia/bqDailyStore差し替え）／**TK-66を担当Dへ変更・ready**（kd_更新監視＋同期状態API=優先#5）／TK-47（予約系内訳）=mid降格・予約は安定化のみ継続。TK-91（C向け不具合5件）も担当Cへ割当。CLI`update`に`--priority`追加・ingestデプロイ済み
