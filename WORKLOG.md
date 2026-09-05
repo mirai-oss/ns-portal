@@ -6,6 +6,18 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
+**★★★★2026-09-06（レーンPスレッド・続き）PL本番切替の条件への対応: 業務委託精算書由来のPL反映データをkd_pl_monthly_summaryへ取り込み（二重計上なし）**
+
+司令塔指示「PL本番切替の条件＝業務委託精算書由来の経費・原価・人件費がkd_pl_monthly_summaryに反映され、新旧突合パネルで差異が解消されること」に対応。
+
+- **仕組み**: 設計書_業務委託精算書自動連携_2026-09-04.md §9-2の6状態モデルを踏まえ、二重計上を避けつつ2種類の列を追加
+  - `seisan_synced_breakdown`（F/L/A/R/O別）: `bqGetPL`の行のうち`memo='自動｜精算書'`（GAS側`syncSeisanCategoriesToPl`が付ける目印）だけを抜き出した内訳。**既に`cost_manual`/`labor_manual`等に含まれている金額の裏付け表示用**（加算しない）
+  - `seisan_pending_total`/`seisan_pending_breakdown`: `invoice_pl_reflections`（`reflection_route='seisan'`）で`pl_status`がまだDB_PL反映前（振込確定待ち/PL同期待ち）の金額。まだ`stg_pl`に無いため`cost_manual`等には含まれていない「処理中」の金額として別枠保持（部分反映の原則）
+  - 勘定科目→F/L/A/R/O区分は`tori-dashboard/gas/Code.gs:2976`の`PL_SEISAN_ACCOUNT_CAT_`/`plSeisanGuessCat_`と全く同じ判定をTS側に移植（GAS側は無変更）
+- **実機検証**: 本番の`invoice_pl_reflections`には現時点で`reflection_route='seisan'`の行が0件（前回セッションのTK-85実機テストの跡は残っていなかった）だったため、使い捨てテスト行（実在する`invoice_id`を借用・年月2099-01の絶対に衝突しないダミー）で動作確認→`seisan_pending_total`へ正しく反映・`cost_manual`等への非混入を確認→**削除して0件に戻した**
+- **担当A/Cへ**: 新旧突合パネルを作る際は、`kd_pl_monthly_summary`の`cost_total`等（旧=GASのPL画面と同じstg_pl経由の数字）と`seisan_synced_breakdown`（精算書経由で実際に届いた内訳の裏付け）を比較し、`seisan_pending_total`は別枠（「確定 X円＋精算書処理中 Y円」のような表示）として扱ってください。**実際に業務委託精算書経由のデータが1件でも本番投入されてから、この機能の実データでの動作を再確認したい**（現状はテストデータでのみ確認済み）
+- コミット[7cf3a25](https://github.com/mirai-oss/ns-portal/commit/7cf3a25)・本番デプロイ済み
+
 **★★★2026-09-06（担当C・TK-93）請求書処理の速度改善・第2弾はユーザーからの実行指示待ち＋データ蓄積待ち**: 続き49で計測導入（`app='invoices'`でkd_perf_logへ記録）＋実測前の明白な無駄5件除去（最大効果：mf-journalの仕訳履歴3重取得を`journal_search`へ統合）まで完了・デプロイ済み。ユーザーから「明日以降、Top10を確認して②仕訳作成画面を開く処理③MF部門/税区分取得④仕訳登録⑤請求書詳細を開く処理⑥PDF/添付取得を重点確認し第2弾の改善を」と指示あり。**確認したところ現時点（2026-09-06）でkd_perf_log(app='invoices')は0件**（計測導入直後で誰も使っていないため）。次にこのスレッドが動くときは、まず`select action,count(*),avg(ms),max(ms) from kd_perf_log where app='invoices' group by action`でデータの有無を確認し、十分溜まっていればTop10を分析→該当箇所を特定→新機能追加せず高速化のみで第2弾修正、を行うこと（新規テーブル・受け皿は既存のkeiei-api-perflogをそのまま使う。続き49参照）
 
 **★★★★2026-09-06（担当A実行スレッド・続き）W3②: 媒体別・入金をkeiei-api-dashboard-summaryに接続、PLは新旧突合の検証パネルのみ（詳細は[tori-dashboard/HANDOFF.md](https://github.com/mirai-oss/tori-dashboard/blob/main/HANDOFF.md)2026-09-06続きエントリ・コミット[03971fc](https://github.com/mirai-oss/tori-dashboard/commit/03971fc)）**: 司令塔指示を受け、`kd_media_monthly_summary`/`kd_deposit_monthly_summary`（欠損未確認＝低リスク）を先読み表示に接続。`kd_pl_monthly_summary`は4店舗（じんべぇ川崎・じんべぇ新横浜・エース本厚木・秋葉原肉寿司＝業務委託精算店舗）の原価/人件費が業務委託精算書側で計算されており通常PL集計にまだ現れない既知の状態（司令塔確認済み・異常ではない）のため、**本番表示には使わずマスター/本部限定の新旧突合検証パネルのみ実装**（`DASH_SUMMARY_PL_LIVE_=false`固定）。GitHub Pages反映確認済み（`app.js?v=174`）。**実機でのログイン後の表示確認はユーザー確認待ち**。申し送り：`kd_pl_monthly_summary`への業務委託精算書反映分の取り込みはレーンP側で進行中、完了・突合パネルで差異解消確認後に本番表示切替を検討
