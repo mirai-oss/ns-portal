@@ -164,11 +164,19 @@ Deno.serve(async (req: Request) => {
       ? `件名: ${subjectForPrompt}\n添付ファイルから入金・送金明細の情報を読み取ってください。添付の中に複数件の入金・送金明細（別々の取引）が含まれる場合は、それぞれ別項目として全件返してください（同じ明細の別ページは1件にまとめる）。`
       : `件名: ${subjectForPrompt}\n添付ファイルから請求書情報を読み取ってください。添付の中に複数件の請求書（別々の取引先・別々の請求書番号等）が含まれる場合は、それぞれ別項目として全件返してください（同じ請求書の別ページ=表紙+明細等は1件にまとめる）。` },
   ];
-  for (const a of candidates) {
+  // 2026-09-06修正：請求書処理の速度改善指示への対応。添付ファイルのStorageダウンロードは
+  // 1件ずつ独立しており互いに依存しないため、直列forループではなくPromise.allで並列化する
+  // （最大MAX_ATTACHMENTS件・通常は数件のため効果は限定的だが、無駄な待ちを削る）。
+  // AIへ渡すcontent配列の順序（candidatesの並び）はPromise.all後もそのまま維持する
+  const downloaded = await Promise.all(candidates.map(async (a) => {
     const { data: fileData, error: dlErr } = await db.storage.from(BUCKET).download(a.storage_path);
-    if (dlErr || !fileData) continue;
+    if (dlErr || !fileData) return null;
     const bytes = new Uint8Array(await fileData.arrayBuffer());
-    const b64 = bytesToBase64(bytes);
+    return { a, b64: bytesToBase64(bytes) };
+  }));
+  for (const d of downloaded) {
+    if (!d) continue;
+    const { a, b64 } = d;
     const mt = String(a.mime_type);
     content.push(
       { type: "text", text: `添付ファイル名: ${a.file_name}` },

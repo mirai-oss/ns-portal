@@ -400,6 +400,71 @@ Deno.serve(async (req: Request) => {
       });
     }
 
+    // 2026-09-06新設：請求書処理の速度改善指示（レーンP経由）への対応。
+    // 従来、請求書詳細の「仕訳を作成」パネルを開くたびに、フロント側（mfjLoadForTenant）が
+    // suggest・list_journals・（部門が空なら）list_departmentsを同じvendor_nameで3回別々に
+    // 呼んでいたが、上のsuggest/list_journals/list_departmentsの実装を見れば分かるとおり、
+    // 3つとも「同じ2期分（最大1000件）のマネーフォワード仕訳履歴を取得してスキャンする」
+    // という全く同じ重い処理を、呼び出しごとに毎回やり直しているだけだった（match/departments/
+    // taxes/resultsは元々同じ1回のスキャンで同時に求まる）。
+    // このactionは、その3回分を1回の取得・1回のスキャンにまとめて返す（既存のsuggest/
+    // list_journals/list_departments自体は他の呼び出し元（設定タブの仕訳辞書・仕訳検索欄等）
+    // でそのまま使われ続けているため、動作を変えず新規追加のみで対応する＝既存動作への
+    // 影響ゼロ）。ロジックは上のブロックと完全に同じ（意図的に重複させている。共通化して
+    // 既存の3action側の挙動まで変えてしまうリスクを避けるため）
+    if (action === "journal_search") {
+      const keyword: string = (body?.vendor_name ?? body?.keyword ?? "").trim();
+
+      const [directDepartments, directTaxes] = await Promise.all([
+        fetchDepartmentsDirect(accessToken),
+        fetchTaxesDirect(accessToken),
+      ]);
+      const [resCur, resPrev] = await Promise.all([
+        mfFetch(`/api/v3/journals?start_date=${fiscalYearStart()}&end_date=${todayStr()}&per_page=500&page=1`, accessToken),
+        mfFetch(`/api/v3/journals?start_date=${prevFiscalYearStart()}&end_date=${fiscalYearStart()}&per_page=500&page=1`, accessToken),
+      ]);
+      const [dataCur, dataPrev] = await Promise.all([resCur.json(), resPrev.json()]);
+      if (!resCur.ok) return json({ error: "仕訳履歴の取得に失敗しました", detail: dataCur }, 502);
+      const journals = [...(dataCur.journals ?? []), ...(resPrev.ok ? (dataPrev.journals ?? []) : [])];
+
+      const deptMap = new Map<string, string>();
+      const matches: any[] = [];
+      let best: any = null;
+      for (const j of journals) {
+        for (const br of j.branches ?? []) {
+          for (const side of [br.debitor, br.creditor]) {
+            if (side?.department_id) deptMap.set(side.department_id, side.department_name ?? "");
+          }
+          const hay = [
+            br.remark, br.debitor?.trade_partner_name, br.creditor?.trade_partner_name,
+            br.debitor?.sub_account_name, br.creditor?.sub_account_name,
+            br.debitor?.account_name, br.creditor?.account_name,
+          ].filter(Boolean).join(" ");
+          if (!keyword || hay.includes(keyword)) {
+            const tmpl = branchToTemplate(br);
+            if (!best || (j.transaction_date ?? "") >= (best._date ?? "")) best = { ...tmpl, _date: j.transaction_date };
+            matches.push({ journal_id: j.id, transaction_date: j.transaction_date, summary: branchSummary(br), template: tmpl });
+          }
+        }
+      }
+      if (best) delete best._date;
+      matches.sort((a, b) => (a.transaction_date < b.transaction_date ? 1 : -1));
+
+      const departments = (directDepartments && directDepartments.length)
+        ? directDepartments
+        : Array.from(deptMap, ([id, name]) => ({ id, name }));
+      const taxes = directTaxes ?? [];
+
+      return json({
+        success: true,
+        match: best,
+        departments,
+        taxes,
+        results: matches.slice(0, 30),
+        searched_count: journals.length,
+      });
+    }
+
     if (action === "create") {
       const invoiceId = body?.invoice_id;
       const transactionDate = body?.transaction_date || todayStr();

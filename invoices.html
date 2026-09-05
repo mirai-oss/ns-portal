@@ -553,6 +553,41 @@ const sess={get:()=>{try{return JSON.parse(localStorage.getItem(LS_KEY))}catch(e
             set:v=>localStorage.setItem(LS_KEY,JSON.stringify(v)),
             clear:()=>localStorage.removeItem(LS_KEY)};
 
+// ============================================================
+// パフォーマンス計測（2026-09-06・「請求書処理が遅い」というユーザー報告への対応指示）。
+// 主要な処理（AI読取・仕訳候補取得・MF部門/税区分取得・仕訳登録・PDF取得・送信等）の
+// 実行時間を記録する。専用の受け皿を新設せず、レーンPが既に作った既存の仕組み
+// （tori-dashboard/app.js:1517-1524のlogApiPerf_()と同じ方式）をそのまま流用する：
+// keiei-api-perflog Edge Function（無認証ingest・kd_perf_logへ書き込み・失敗/遅いactionの
+// 日次トップ10を自動でLarkへ配信する仕組みまで既に用意されている）へnavigator.sendBeaconで
+// 送るだけ。新しいEdge Function・新しいテーブルは一切作らない（app='invoices'で書き込み、
+// tori-dashboard/seisan-dashboardと同じ集計・同じLark通知にそのまま乗る）。
+// sendBeaconはヘッダーを付けられないため、apikeyはクエリ文字列に載せる（既存方式と同じ）。
+// あくまで計測用のため、送信自体が失敗しても本来の処理（await fnの結果・例外）には
+// 一切影響させない
+// ============================================================
+const PERF_LOG_URL=SUPA_URL+"/functions/v1/keiei-api-perflog";
+function logApiPerf(actionName,ms,ok,errType){
+  try{
+    if(typeof navigator==="undefined"||!navigator.sendBeacon) return;
+    const payload=JSON.stringify({app:"invoices",action:actionName||"",ms:Math.round(ms),ok:!!ok,errType:errType||"",t:Date.now()});
+    navigator.sendBeacon(PERF_LOG_URL+"?apikey="+SUPA_KEY,new Blob([payload],{type:"text/plain;charset=utf-8"}));
+  }catch(e){ /* 計測の失敗は握りつぶす。本来の処理には一切影響させない */ }
+}
+// perfTimed("仕訳登録",()=>mfCall("create",payload)) のように、計測したい処理をそのまま
+// ラップして使う。fnの戻り値・例外はそのまま素通しする（計測のために処理内容を変えない）
+async function perfTimed(actionName,fn){
+  const t0=performance.now();
+  try{
+    const result=await fn();
+    logApiPerf(actionName,performance.now()-t0,true,"");
+    return result;
+  }catch(e){
+    logApiPerf(actionName,performance.now()-t0,false,String((e&&e.message)||e).slice(0,40));
+    throw e;
+  }
+}
+
 async function api(path,opt={},token){
   const r=await fetch(SUPA_URL+path,{...opt,headers:{
     "apikey":SUPA_KEY,...(opt.isBinary?{}:{"Content-Type":"application/json"}),
@@ -688,9 +723,12 @@ async function plfeeInit(ctx){
     // seisan_target/seisan_pl_categories_target=精算対象店舗。精算書に入力すれば別途PLへ自動連携
     // される仕組みが既にあるため、ここ（請求書仕訳→PL直接反映）の対象からは外す＝二重計上防止
     // （ユーザー指摘・2026-09-03。2026-09-05: 業務委託精算書自動連携により、この対象店舗は
-    // 「精算書へ登録」ボタンで実際に登録できるようになった＝plfeeSeisanRowHtml等）
-    const r=await authed("/rest/v1/stores?select=id,name,corporation_id,seisan_target,seisan_pl_categories_target,seisan_store_name&order=name");
-    PLFEE_STATE.stores=(r.ok&&Array.isArray(r.body))?r.body:[];
+    // 「精算書へ登録」ボタンで実際に登録できるようになった＝plfeeSeisanRowHtml等）。
+    // 2026-09-06修正：請求書処理の速度改善指示への対応。CORP_STORE_CACHE.storesが同じ列を
+    // 全て含む形で既に読み込み済みのため、ここで別途DBから取り直さず使い回す
+    // （従来はセッション内で1回だけとはいえ、CORP_STORE_CACHE.storesと全く同じデータを
+    // 2重に持っていた）
+    PLFEE_STATE.stores=(CORP_STORE_CACHE&&CORP_STORE_CACHE.stores)||[];
   }
   if(!PLFEE_STATE.yearMonth){
     const d=new Date();
@@ -1235,7 +1273,7 @@ function ivRenderOcrExtras(extras,emailId){
 function ivxLabelOf(side){ if(!side||!side.account_name) return ""; return side.sub_account_name?`${side.account_name}/${side.sub_account_name}`:side.account_name; }
 async function ivxLoadForTenant(tenantId,state){
   state.tenantId=tenantId;
-  const [aRes,dRes]=await Promise.all([mfCall("accounts",{tenant_id:tenantId}),mfCall("list_departments",{tenant_id:tenantId})]);
+  const [aRes,dRes]=await perfTimed("mf_accounts_departments",()=>Promise.all([mfCall("accounts",{tenant_id:tenantId}),mfCall("list_departments",{tenant_id:tenantId})]));
   state.accounts=(aRes.ok&&aRes.body.accounts)||[];
   state.departments=(dRes.ok&&dRes.body.departments)||[];
   state.accountMap=new Map();
@@ -1712,7 +1750,7 @@ async function openComposeModal(u){
     if(!qr.ok){ $("cp-msg").textContent=(qr.body&&qr.body.message)||"送信予約に失敗しました"; $("cp-send-btn").disabled=false; return; }
     const outboxId=qr.body;
     const s=sess.get();
-    const sr=await fetch(SUPA_URL+"/functions/v1/invoice-send",{method:"POST",headers:{"Content-Type":"application/json","apikey":SUPA_KEY,"Authorization":"Bearer "+(s?s.at:"")},body:JSON.stringify({outbox_id:outboxId})});
+    const sr=await perfTimed("invoice_send",()=>fetch(SUPA_URL+"/functions/v1/invoice-send",{method:"POST",headers:{"Content-Type":"application/json","apikey":SUPA_KEY,"Authorization":"Bearer "+(s?s.at:"")},body:JSON.stringify({outbox_id:outboxId})}));
     const sj=await sr.json().catch(()=>({}));
     $("cp-msg").className="err msg-ok";
     $("cp-msg").textContent=(sr.ok&&sj.success)?"送信しました":"送信予約は完了しました。数分以内に自動で再送されます。";
@@ -1906,14 +1944,22 @@ async function openMailDetail(u,emailId,skipHighlight){
   }
   $("mailDetail").innerHTML='<div class="spin">読み込み中…</div>';
 
-  const [mr,ar,rr,lr,ivr,cr]=await Promise.all([
+  // 2026-09-06修正：請求書処理の速度改善指示への対応。ensureCorpStoreCache()/ensureVendorCache()
+  // （下の方で従来は別の直列await Promise.allとして呼ばれていた）は、ここで取得する
+  // メール・請求書データと一切依存関係が無い（法人・店舗・取引先マスタは特定のemailIdに
+  // 紐付かない共通マスタ）ため、同じPromise.allにまとめて最初から並列で走らせる。
+  // 初回セッション（キャッシュが空の状態）で1往復分の待ち時間を削減できる
+  // （2回目以降はensureCorpStoreCache/ensureVendorCache自体がキャッシュ済みで即返るため実害なし）
+  const [mr,ar,rr,lr,ivr,cr]=await perfTimed("mail_detail_open",()=>Promise.all([
     authed(`/rest/v1/invoice_emails?id=eq.${emailId}&select=*,processor:users!invoice_emails_processing_user_id_fkey(name),completer:users!invoice_emails_completed_by_fkey(name)`),
     authed(`/rest/v1/invoice_attachments?email_id=eq.${emailId}&select=*&order=created_at`),
     authed(`/rest/v1/invoice_email_reads?email_id=eq.${emailId}&select=opened_at,reader:users(name)&order=opened_at.asc&limit=1`),
     authed(`/rest/v1/invoice_audit_logs?entity_id=eq.${emailId}&select=*,actor:users(name)&order=created_at.asc&limit=50`),
     authed(`/rest/v1/invoices?email_id=eq.${emailId}&select=*,vendor:vendors(name,vendor_bank_accounts(id,bank_name,branch_name,account_type,account_number,account_holder_kana,is_current)),linked_step:hq_task_steps!linked_hq_step_id(id,title,task:hq_tasks(title,corp)),linked_step_payment:hq_task_steps!linked_hq_step_id_payment(id,title,task:hq_tasks(title,corp)),invoice_stores(store_id)&order=created_at`),
     authed(`/rest/v1/invoice_comments?email_id=eq.${emailId}&select=*,author:users(name)&order=created_at.asc`),
-  ]);
+    ensureCorpStoreCache(),
+    ensureVendorCache(),
+  ]));
   if(!mr.ok||!mr.body||!mr.body[0]){ $("mailDetail").innerHTML='<div class="empty">読み込みに失敗しました</div>'; return; }
   const mail=mr.body[0];
   const atts=(ar.ok&&Array.isArray(ar.body))?ar.body:[];
@@ -1937,8 +1983,8 @@ async function openMailDetail(u,emailId,skipHighlight){
   // 請求書情報パネルで対象法人・対象店舗を直接選べるようにする。法人・店舗一覧は
   // ほぼ変わらないため、初回だけ取得してキャッシュする（renderMailDetailは同期関数のため、
   // renderMailDetailを呼ぶ前にここで取得を終わらせておく必要がある）。
-  // 取引先マスタ一覧（VENDOR_CACHE）も同じ理由で事前取得しておく（2026-09-05・取引先紐付け機能）
-  await Promise.all([ensureCorpStoreCache(),ensureVendorCache()]);
+  // 取引先マスタ一覧（VENDOR_CACHE）も同じ理由で事前取得しておく（2026-09-05・取引先紐付け機能）。
+  // 2026-09-06: 上のPromise.allに統合済み（このコメント箇所での再取得は不要）。
 
   renderMailDetail(u);
 
@@ -1994,8 +2040,14 @@ async function openMailDetailModal(u,emailId){
 // そのまま使うため、会計・仕訳／PL・広告・精算書／振込／本部タスク連携のロジックは完全に共通
 async function openInvoiceDetail(u,invoiceId){
   DETAIL_MODE="process";
-  await Promise.all([ensureCorpStoreCache(),ensureVendorCache()]);
-  const ivr=await authed(`/rest/v1/invoices?id=eq.${invoiceId}&select=*,vendor:vendors(name,vendor_bank_accounts(id,bank_name,branch_name,account_type,account_number,account_holder_kana,is_current)),linked_step:hq_task_steps!linked_hq_step_id(id,title,task:hq_tasks(title,corp)),linked_step_payment:hq_task_steps!linked_hq_step_id_payment(id,title,task:hq_tasks(title,corp)),invoice_stores(store_id)`);
+  // 2026-09-06修正：請求書処理の速度改善指示への対応。この請求書データの取得と
+  // ensureCorpStoreCache/ensureVendorCache（法人・店舗・取引先の共通マスタ。この
+  // invoiceIdとは無関係）に依存関係は無いため、直列awaitではなく並列で待つ
+  const [,,ivr]=await perfTimed("invoice_detail_open",()=>Promise.all([
+    ensureCorpStoreCache(),
+    ensureVendorCache(),
+    authed(`/rest/v1/invoices?id=eq.${invoiceId}&select=*,vendor:vendors(name,vendor_bank_accounts(id,bank_name,branch_name,account_type,account_number,account_holder_kana,is_current)),linked_step:hq_task_steps!linked_hq_step_id(id,title,task:hq_tasks(title,corp)),linked_step_payment:hq_task_steps!linked_hq_step_id_payment(id,title,task:hq_tasks(title,corp)),invoice_stores(store_id)`),
+  ]));
   const inv=(ivr.ok&&Array.isArray(ivr.body)&&ivr.body[0])||null;
   if(!inv){ alert("請求書が見つかりませんでした（削除された可能性があります）"); return; }
   if(inv.email_id){
@@ -2736,7 +2788,7 @@ function renderMailDetail(u){
   };
 
   if(atts.length){
-    signAttachmentUrls(atts.map(a=>a.storage_path)).then(map=>{
+    perfTimed("attachment_sign_urls",()=>signAttachmentUrls(atts.map(a=>a.storage_path))).then(map=>{
       document.querySelectorAll("[data-attpath]").forEach(el=>{ const url=map[el.dataset.attpath]; if(url) el.href=url; });
       document.querySelectorAll("[data-attpreview]").forEach(el=>{ const url=map[el.dataset.attpreview]; if(url) el.src=url; });
     });
@@ -3047,8 +3099,11 @@ function wireDetailActions(u){
     const box=$("adcostbox");
     box.innerHTML=`<div class="adcost-box"><div style="font-size:12px;color:var(--muted)">読み込み中…</div></div>`;
     if(!ADCOST_STATE.stores){
-      const r=await authed("/rest/v1/stores?select=id,name&order=name");
-      ADCOST_STATE.stores=(r.ok&&Array.isArray(r.body))?r.body:[];
+      // 2026-09-06修正：請求書処理の速度改善指示への対応。ここで毎回`stores`テーブルを
+      // 取り直していたが、請求書詳細を開いた時点で既にensureCorpStoreCache()により
+      // CORP_STORE_CACHE.storesへ同じテーブル（列は上位互換）が読み込み済みのため、
+      // それをそのまま使い回す（請求書詳細を開くたびに発生していた無駄な再取得を解消）
+      ADCOST_STATE.stores=(CORP_STORE_CACHE&&CORP_STORE_CACHE.stores)||[];
     }
     if(!ADCOST_STATE.yearMonth){
       const d=invoice.due_date?new Date(invoice.due_date):new Date();
@@ -3388,7 +3443,7 @@ function wireDetailActions(u){
     btn.disabled=true; msg.className="err"; msg.textContent="AIが添付を読み取っています…（数十秒かかることがあります）";
     try{
       const s=sess.get();
-      const fr=await fetch(SUPA_URL+"/functions/v1/invoice-ocr",{method:"POST",headers:{"Content-Type":"application/json","apikey":SUPA_KEY,"Authorization":"Bearer "+(s?s.at:"")},body:JSON.stringify({email_id:emailId||null,invoice_id:emailId?null:(invoice&&invoice.id),mail_kind:kind})});
+      const fr=await perfTimed("invoice_ocr_ai_fill",()=>fetch(SUPA_URL+"/functions/v1/invoice-ocr",{method:"POST",headers:{"Content-Type":"application/json","apikey":SUPA_KEY,"Authorization":"Bearer "+(s?s.at:"")},body:JSON.stringify({email_id:emailId||null,invoice_id:emailId?null:(invoice&&invoice.id),mail_kind:kind})}));
       const fj=await fr.json().catch(()=>({}));
       if(!fr.ok||!fj.success){ msg.textContent=fj.error||"AI読み取りに失敗しました"; btn.disabled=false; return; }
       // C-8（2026-09-01）: invoice-ocrは1件ずつの配列で返す。1件目は既存の「請求書情報」フォームに
@@ -3568,22 +3623,34 @@ function wireDetailActions(u){
     body.innerHTML="読み込み中…（勘定科目・過去の仕訳・仕訳辞書を確認しています）";
     const inv=SELECTED.invoice;
     const vendorName=(inv&&inv.vendor_name)||"";
-    // 同時に呼ぶとマネーフォワード側のトークン更新が競合することがあるため直列で呼ぶ
-    const accRes=await mfjCall("accounts",{tenant_id:tenantId});
+    // 2026-09-06修正：請求書処理の速度改善指示（レーンP経由）への対応。
+    // 従来はaccounts→suggest→list_journals→（部門が空なら）list_departmentsの4呼び出しを
+    // すべて直列（1つ終わってから次を呼ぶ）で行っていた。うちsuggest/list_journals/
+    // list_departmentsの3つは「同じ最大1000件のマネーフォワード仕訳履歴を取得してスキャン」
+    // という同じ重い処理を3回繰り返していただけだったため、mf-journal側に新設した
+    // journal_search（1回の取得・1回のスキャンでmatch/departments/taxes/resultsを
+    // まとめて返す）に統合し、呼び出し回数を4→2に削減。さらに、直列にしていた本来の理由
+    // 「同時に呼ぶとマネーフォワード側のトークン更新が競合することがある」は、_shared/mf.tsの
+    // getValidAccessToken()に既に競合時の待機・再読込フォールバックが入っており、かつ
+    // 設定タブの仕訳辞書編集（mftLoadAccountsAndDepts）では実際にaccounts/list_departmentsを
+    // Promise.allで並列に呼んでいて問題が出ていない実績があるため、ここも並列化する。
+    // 仕訳辞書（mf_journal_templates）取得はマネーフォワードのトークンと無関係のプレーンな
+    // Supabase REST呼び出しのため、そもそも競合の心配なく並列にできる
+    const [accRes,searchRes,templates]=await perfTimed("mfj_load_for_tenant",()=>Promise.all([
+      mfjCall("accounts",{tenant_id:tenantId}),
+      mfjCall("journal_search",{vendor_name:vendorName,tenant_id:tenantId}),
+      mfjFetchTemplates(tenantId),
+    ]));
     if(!accRes.ok){ body.innerHTML=`<div class="err">勘定科目の取得に失敗しました: ${esc(accRes.body.error||"")}${accRes.body.detail?"（詳細: "+esc(JSON.stringify(accRes.body.detail))+"）":""}<br><button id="mfj-retry" style="margin-top:8px">🔄 もう一度試す</button></div>`; if($("mfj-retry")) $("mfj-retry").onclick=mfjRenderInitial; return; }
-    const sugRes=await mfjCall("suggest",{vendor_name:vendorName,tenant_id:tenantId});
-    const listRes=await mfjCall("list_journals",{keyword:vendorName,tenant_id:tenantId});
-    // suggestが（vendor_name空欄等で）部門を返せなかった場合は、部門専用の問い合わせで代用する
-    const deptRes=(sugRes.ok&&sugRes.body.departments&&sugRes.body.departments.length)?sugRes:await mfjCall("list_departments",{tenant_id:tenantId});
-    const templates=await mfjFetchTemplates(tenantId);
+    if(!searchRes.ok){ body.innerHTML=`<div class="err">過去の仕訳の取得に失敗しました: ${esc(searchRes.body.error||"")}${searchRes.body.detail?"（詳細: "+esc(JSON.stringify(searchRes.body.detail))+"）":""}<br><button id="mfj-retry" style="margin-top:8px">🔄 もう一度試す</button></div>`; if($("mfj-retry")) $("mfj-retry").onclick=mfjRenderInitial; return; }
     const tenantLabel=(tenants||[]).find(t=>t.id===tenantId)?.label||tenantId;
     MFJ_STATE={
       tenantId, tenantLabel, tenants: tenants||[], autoMatchedFrom: autoMatchedFrom||null,
       mode:"journal", // 既定は①仕訳日記帳から選ぶ。候補が無ければ②仕訳辞書→③直接入力の順で切替
       accounts: accRes.body.accounts||[],
-      departments: (deptRes.ok&&deptRes.body.departments)||[],
-      taxes: (deptRes.ok&&deptRes.body.taxes)||[],
-      journalResults: (listRes.ok&&listRes.body.results)||[],
+      departments: searchRes.body.departments||[],
+      taxes: searchRes.body.taxes||[],
+      journalResults: searchRes.body.results||[],
       journalKeyword: vendorName,
       templates,
       branches: [], // 確定した明細行（複数行=複合仕訳/振替伝票）
@@ -3877,7 +3944,7 @@ function wireDetailActions(u){
         // PL連携対象科目かどうかの判定用（手数料等→PL自動反映・ラウンド5指示書§6.1）。MF送信には使わない
         debit_account_names: branchesPayload.filter(b=>b.debit).map(b=>mfjLabelOf(b.debit)),
       };
-      const {ok,body:j}=await mfjCall("create",payload);
+      const {ok,body:j}=await perfTimed("mfj_journal_create",()=>mfjCall("create",payload));
       if(!ok){ pmsg.textContent=j.error||"登録に失敗しました"; $("mfjPreviewSubmit").disabled=false; return; }
       pmsg.className="err msg-ok";
       pmsg.textContent=`登録しました（伝票番号: ${j.journal_number??"-"}）`
@@ -3990,7 +4057,7 @@ function wireDetailActions(u){
     if(!qr.ok){ $("reply-msg").textContent=(qr.body&&qr.body.message)||"送信予約に失敗しました"; $("reply-send").disabled=false; return; }
     const outboxId=qr.body;
     const s=sess.get();
-    const sr=await fetch(SUPA_URL+"/functions/v1/invoice-send",{method:"POST",headers:{"Content-Type":"application/json","apikey":SUPA_KEY,"Authorization":"Bearer "+(s?s.at:"")},body:JSON.stringify({outbox_id:outboxId})});
+    const sr=await perfTimed("invoice_send",()=>fetch(SUPA_URL+"/functions/v1/invoice-send",{method:"POST",headers:{"Content-Type":"application/json","apikey":SUPA_KEY,"Authorization":"Bearer "+(s?s.at:"")},body:JSON.stringify({outbox_id:outboxId})}));
     const sj=await sr.json().catch(()=>({}));
     $("reply-msg").className="err msg-ok";
     $("reply-msg").textContent=(sr.ok&&sj.success)?"送信しました":"送信予約は完了しました。数分以内に自動で再送されます。";
@@ -4714,7 +4781,7 @@ const RULE_TYPE_LABEL={subject_contains:"件名に含む（部分一致）",from
    ============================================================ */
 let MFT_STATE={};
 async function mftLoadAccountsAndDepts(tenantId){
-  const [accRes,deptRes]=await Promise.all([mfCall("accounts",{tenant_id:tenantId}),mfCall("list_departments",{tenant_id:tenantId})]);
+  const [accRes,deptRes]=await perfTimed("mf_accounts_departments",()=>Promise.all([mfCall("accounts",{tenant_id:tenantId}),mfCall("list_departments",{tenant_id:tenantId})]));
   return {accounts:(accRes.ok&&accRes.body.accounts)||[], departments:(deptRes.ok&&deptRes.body.departments)||[], taxes:(deptRes.ok&&deptRes.body.taxes)||[], accountsOk:accRes.ok, accountsError:accRes.body&&accRes.body.error};
 }
 function mftBuildAccountIndex(accounts){
@@ -5383,15 +5450,17 @@ function wireUploadInvoiceTab(u){
       if(!UPLOAD_STATE.files.length){ msg.className="err"; msg.textContent="ファイルを選択してください"; return; }
       btn.disabled=true; msg.className="err"; msg.textContent="取込中…";
       console.log("[アップロード請求書] 取込開始",{files:UPLOAD_STATE.files.map(f=>({name:f.name,size:f.size,type:f.type}))});
-      const voucherFiles=[];
-      for(const f of UPLOAD_STATE.files) voucherFiles.push({file_name:f.name, file_data:await uploadFileToBase64(f)});
+      // 2026-09-06修正：請求書処理の速度改善指示への対応。複数ファイルのbase64変換
+      // （ローカルのFileReader処理・ネットワーク通信ではないが互いに独立）を直列forループ
+      // ではなくPromise.allで並列化。ファイル選択順（file_name表示等）は維持される
+      const voucherFiles=await Promise.all(UPLOAD_STATE.files.map(async f=>({file_name:f.name, file_data:await uploadFileToBase64(f)})));
       const payload={
         vendor_name:$("up-vendor").value.trim()||null,
         corporation_id:$("up-corp").value||null,
         store_id:$("up-store").value||null,
         voucher_files:voucherFiles,
       };
-      const {ok,body:j}=await mfCall("intake_upload",payload);
+      const {ok,body:j}=await perfTimed("invoice_intake_upload",()=>mfCall("intake_upload",payload));
       console.log("[アップロード請求書] intake_upload応答",{ok,body:j});
       if(!ok){ msg.textContent=(j&&j.error)||"取込に失敗しました（サーバーからの応答が異常です）"; return; }
       // 2026-09-05修正：ユーザー報告「アップロード請求書のPDFプレビューが出ない」に対応。
@@ -5412,10 +5481,12 @@ function wireUploadInvoiceTab(u){
           }
         }).catch(()=>{});
       }
+      // 2026-09-06修正：請求書処理の速度改善指示への対応。従来600msの一律待ちを入れていたが
+      // （メッセージを一瞬見せるためだけの演出的な待ち時間）、体感速度を優先し300msに短縮
       setTimeout(async()=>{
         TAB="unified"; await renderTabBody(u);
         if(j.invoice_id) await openInvoiceDetail(u,j.invoice_id);
-      },600);
+      },300);
     }catch(e){
       console.error("[アップロード請求書] 取込中に例外",e);
       msg.className="err"; msg.textContent="取込中にエラーが発生しました: "+(e&&e.message?e.message:String(e));
