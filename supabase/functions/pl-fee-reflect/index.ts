@@ -223,6 +223,45 @@ Deno.serve(async (req: Request) => {
       return json({ success: true, account_name: accountName, sub_account_name: subAccountName || null, year_month: yearMonth, total, sheet_synced: sheetSynced, sheet_error: sheetError });
     }
 
+    // 2026-09-05新規：ユーザー要望「PL登録したら修正できない。取り消しして修正できるように
+    // してほしい」に対応。invoice_pl_reflectionsの該当行を削除し、他に反映済み科目が無ければ
+    // invoices.pl_fee_reflected_atも未反映状態に戻す。
+    // 【正直な注記・重要】tori-dashboard側（writePlFee）は「請求書ID（source_key）単位で
+    // DB_PLの行を都度upsert（同じキーなら上書き）」する設計のため、ここで取り消した直後の
+    // 時点ではGoogle Sheets側の数字はまだ古いまま残る（削除ではなく上書き方式のため）。
+    // ユーザーが正しい内容で再度「PLへ反映」を確定すると、同じ請求書ID（source_key）で
+    // upsertされ、シート側も正しい内容に上書きされる。つまり「金額や科目を直す」用途では
+    // 取り消し→再登録で完全に直るが、「そもそも反映自体を取りやめたい」場合はシート側の
+    // 行が孤立して残るため、担当A側でのシート削除（GAS側に削除APIが無い）が別途必要になる。
+    if (action === "unconfirm") {
+      const reflectionId = body?.reflection_id;
+      const invoiceId = body?.invoice_id;
+      if (!reflectionId || !invoiceId) return json({ error: "reflection_id・invoice_idは必須です" }, 400);
+      const { data: refl, error: reflErr } = await uc.from("invoice_pl_reflections")
+        .select("id, invoice_id, account_name, sub_account_name, year_month, allocations")
+        .eq("id", reflectionId).eq("invoice_id", invoiceId).maybeSingle();
+      if (reflErr) return json({ error: "確認に失敗しました: " + reflErr.message }, 500);
+      if (!refl) return json({ error: "対象の反映内容が見つからないか権限がありません" }, 403);
+
+      const db = svc();
+      const { error: delErr } = await db.from("invoice_pl_reflections").delete().eq("id", reflectionId);
+      if (delErr) return json({ error: "取り消しに失敗しました: " + delErr.message }, 500);
+
+      const { count } = await uc.from("invoice_pl_reflections").select("id", { count: "exact", head: true }).eq("invoice_id", invoiceId);
+      if (!count) {
+        await db.from("invoices").update({ pl_fee_reflected_at: null, pl_fee_reflected_by: null }).eq("id", invoiceId);
+      }
+
+      const { data: inv } = await uc.from("invoices").select("email_id").eq("id", invoiceId).maybeSingle();
+      const total = (Array.isArray(refl.allocations) ? refl.allocations : []).reduce((s: number, a: any) => s + (Number(a?.amount) || 0), 0);
+      await db.from("invoice_audit_logs").insert({
+        entity_type: "invoice_email", entity_id: inv?.email_id, action: "pl_fee_unconfirmed", actor_type: "human",
+        note: `PL反映を取り消し（科目: ${refl.account_name}${refl.sub_account_name ? "/" + refl.sub_account_name : ""}／対象: ${String(refl.year_month).slice(0, 7)}／合計: ${total.toLocaleString()}円）。シート側は正しい内容で再登録するまで古い数字のまま残ります`,
+      });
+
+      return json({ success: true });
+    }
+
     return json({ error: "不明なactionです" }, 400);
   } catch (e) {
     return json({ error: "予期しないエラー: " + String(e) }, 500);

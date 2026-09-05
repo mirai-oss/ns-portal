@@ -148,12 +148,20 @@ button,input,select,textarea{font:inherit}
 /* 処理フローの各工程カード（2026-09-03再設計→再調整。ユーザー提供の参考HTMLの枠・文字サイズ・
    色合いに合わせた：カードにうっすら影をつけて浮かせ、余白を広めに、番号は濃い円形バッジ） */
 .step-card{background:var(--panel);border:1px solid var(--m-line);border-radius:12px;padding:24px;margin-bottom:16px;box-shadow:var(--shadow)}
+/* 2026-09-05追加：ユーザー要望「止まっているタスク（いまここ）をもっと強調してほしい」に対応。
+   本部タスクのサブタスク一覧と同じく、現在のカードだけ赤枠で強調する */
+.step-card.current{border-color:var(--m-red);border-width:2px;box-shadow:0 2px 10px rgba(0,0,0,.06)}
 .step-card-head{display:flex;align-items:center;gap:12px;margin-bottom:16px;border-bottom:1px dashed var(--m-line);padding-bottom:12px}
 .step-num{background:var(--ink);color:var(--panel);width:24px;height:24px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:800;flex:0 0 auto}
+/* 2026-09-05追加：ユーザー要望「番号が消えて緑色のチェックがつく」に対応。完了カードは丸数字の
+   代わりに緑チェック、現在のカードは赤丸＋番号、未処理はグレー丸＋番号で区別する */
+.step-num.done{background:var(--m-green);color:#fff}
+.step-num.current{background:var(--m-red);color:#fff}
+.step-num.wait{background:var(--m-line);color:var(--m-muted)}
 .step-title{font-size:15px;font-weight:800;margin:0;flex:1}
 .step-badge{font-size:10px;font-weight:800;padding:4px 9px;border-radius:999px;background:var(--m-line);color:var(--m-muted)}
 .step-badge.done{background:var(--m-greensoft);color:var(--m-green)}
-.step-badge.current{background:var(--m-bluesoft);color:var(--m-blue)}
+.step-badge.current{background:var(--m-redsoft);color:var(--m-red);font-weight:800}
 /* 本部タスク紐付け欄（参考HTMLの.checkbox-wrap＝淡い青の枠つきボックス準拠） */
 .task-link-box{background:var(--m-bluesoft);border:1px solid var(--m-blue);border-radius:8px;padding:12px}
 .task-link-box>small{color:var(--m-blue)!important;font-weight:800!important}
@@ -228,7 +236,8 @@ button,input,select,textarea{font:inherit}
 .step-chevron{position:absolute;right:0;top:50%;transform:translateY(-50%);font-size:11px;color:var(--muted);cursor:pointer}
 .step-summary{font-size:12px;color:var(--muted);padding:4px 0 2px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .step-summary-edit{background:none;border:none;color:var(--blue);cursor:pointer;font-size:11px;font-weight:700;padding:0}
-.step-badge.current{background:var(--amber-soft);color:var(--amber)}
+/* 2026-09-05：.step-badge.currentの重複定義を整理（旧amber色はここで上書きされ実質死んでいた。
+   line164の赤系定義に一本化） */
 .step-badge.wait{background:var(--bg);color:var(--muted)}
 .pl-state{display:inline-block;font-size:13px;font-weight:800;padding:2px 0}
 .pl-state.done{color:var(--green)}
@@ -751,10 +760,14 @@ function plfeeReflectedCardHtml(row){
   const ym=(row.year_month||"").slice(0,7);
   const label=row.account_name+(row.sub_account_name?"/"+row.sub_account_name:"");
   const total=a.reduce((s,x)=>s+(Number(x.amount)||0),0);
+  // 2026-09-05新規：ユーザー要望「PL登録したら修正できない。取り消しして修正できるようにしてほしい」
+  // に対応。反映済み1件ごとに「取り消す」ボタンを追加（クリック時の処理はplfeeRenderPanel側で
+  // イベント委任により配線）
   return `<div class="adcost-badge-row" style="margin-bottom:6px">
     <span class="hq-pill green">✅ ${esc(label)}</span>
     　${esc(ym)}　${a.length}店舗に按分　合計${yen(total)}
     ${row.sheet_synced_at?"　✅PL反映済み":row.sheet_sync_error?"　⚠️PLへの書き込みが未完了":"　⏳PLへの書き込み待ち"}
+    　<button class="hq-btn" style="font-size:11px;padding:4px 8px" data-plfee-unconfirm="${esc(row.id)}">↩️ 取り消す</button>
   </div>`;
 }
 function plfeeRowHtml(row,idx){
@@ -794,6 +807,17 @@ function plfeeManualAccountHtml(){
 function plfeeRenderPanel(){
   const box=$(PLFEE_STATE.ctx.boxId);
   if(!box) return;
+  // 2026-09-05新規：反映履歴の「取り消す」ボタン配線（4つある描画分岐すべてに履歴表示が
+  // 含まれるため、box全体へのイベント委任で1箇所だけ書けば済むようにした）
+  box.onclick=async(e)=>{
+    const btn=e.target.closest("[data-plfee-unconfirm]");
+    if(!btn) return;
+    if(!confirm("このPL反映を取り消しますか？\n\nシート（Google Sheets）側の数字は、正しい内容で再度反映するまでは古いまま残ります（削除ではなく上書き方式のため）。金額や科目を直したい場合は、取り消した後にもう一度正しい内容で「PLに反映」してください。")) return;
+    btn.disabled=true; btn.textContent="取り消し中…";
+    const r=await plFeeCall("unconfirm",{invoice_id:PLFEE_STATE.ctx.invoiceId,reflection_id:btn.dataset.plfeeUnconfirm});
+    if(!r.ok){ alert(r.body.error||"取り消しに失敗しました"); btn.disabled=false; btn.textContent="↩️ 取り消す"; return; }
+    await plfeeInit(PLFEE_STATE.ctx);
+  };
   // 2026-09-04：請求書詳細UX整理指示書対応。「現在の状態」と「過去の反映履歴」が混在して
   // 矛盾して見える（指示書の指摘）ため、履歴は折りたたみの別枠にし、現在の状態・操作と
   // 混ぜて表示しないようにした
@@ -881,7 +905,7 @@ function plfeeRenderPanel(){
       <button class="primary" id="plfee-confirm">📊 この内容でPLに反映</button>
       <button id="plfee-exclude">🚫 これ以上は反映しない（対象外にする）</button>
     </div>
-    <div class="adcost-hint">💡 ここに反映できるのはPL科目（設定タブ「PL連携対象科目」に登録済みの科目）のみです。精算対象店舗は選べません（精算書に入力すると自動でPLにも反映されるため、二重計上防止でここでは除外しています）。反映すると取り消せないため、内容をよくご確認のうえ反映してください。</div>
+    <div class="adcost-hint">💡 ここに反映できるのはPL科目（設定タブ「PL連携対象科目」に登録済みの科目）のみです。精算対象店舗は選べません（精算書に入力すると自動でPLにも反映されるため、二重計上防止でここでは除外しています）。反映後も「反映履歴」から取り消して内容を直せます（シート側は正しい内容で再度反映するまで古いまま残ります）。</div>
     <div class="err" id="plfee-msg" style="margin-top:6px"></div>
   </div>`;
   $("plfee-ym").onchange=()=>{ PLFEE_STATE.yearMonth=$("plfee-ym").value+"-01"; };
@@ -2176,17 +2200,29 @@ function renderMailDetail(u){
         let stepNo=0;
         // 2026-09-05再修正：続き23で「本部タスクの工程一覧のように進捗が分かるように」との
         // 要望を受けて追加した縦積みステッパー（wf-stepper）だが、実機で見たユーザーから
-        // 「（下のアコーディオンと内容が重複していて）いらないのでは？」との指摘。
-        // 各カード自身のヘッダーに✓対応完了／！要対応／○未処理のバッジが既にあり、
-        // 二重表示になっていたため、このステッパーは削除しアコーディオン自体の
-        // バッジ表示だけに一本化した
+        // 「（下のアコーディオンと内容が重複していて）いらないのでは？」との指摘を受け削除した。
+        // その後改めて「番号が消えて緑チェックになる／止まっているタスクをもっと強調してほしい」
+        // との要望（本部タスクのサブタスク一覧の見た目を参考画像で提示）があったため、別枠に
+        // 重複表示するのではなく、各カード自身の丸数字とカード外枠に同じ視覚言語
+        // （緑チェック=完了／赤枠+番号=いまここ／グレー番号=未処理）を直接適用する形にした
+        const infoDone=!!(invoice&&invoice.amount!=null);
+        const accountingDone=!!(invoice&&invoice.mf_journal_id);
+        const plDoneForCard=!!(invoice&&(invoice.pl_fee_reflected_at||invoice.pl_fee_excluded_at))||invoiceSeisanStores(invoice).length>0;
+        const paymentDoneForCard=!!(invoice&&invoice.payment_verified_at);
+        let currentCardKey=null;
+        for(const[k,d]of[["info",infoDone],["accounting",accountingDone],["pl",plDoneForCard],["payment",paymentDoneForCard]]){ if(!d){ currentCardKey=k; break; } }
+        const stepNumHtml=(key,n,done)=>{
+          const state=done?"done":(key===currentCardKey?"current":"wait");
+          return `<div class="step-num ${state}">${done?"✓":n}</div>`;
+        };
+        const stepCardClass=key=>key===currentCardKey?" current":"";
         return `<div class="detail-layout">
           ${evidenceHtml}
           <div>
             ${riskBannerHtml}
 
-            <div class="step-card" id="step-info">
-              <div class="step-card-head" data-cardtoggle="info"><div class="step-num">${++stepNo}</div><h3 class="step-title">${isSales?"入金情報":"請求情報"}</h3>${invoice&&invoice.amount!=null?'<span class="step-badge done">✓ 対応完了</span>':'<span class="step-badge current">！要対応</span>'}${aiConfidenceBadge}<span class="step-chevron" id="chev-info">${(invoice&&invoice.amount!=null)?"▼":"▲"}</span></div>
+            <div class="step-card${stepCardClass("info")}" id="step-info">
+              <div class="step-card-head" data-cardtoggle="info">${stepNumHtml("info",++stepNo,infoDone)}<h3 class="step-title">${isSales?"入金情報":"請求情報"}</h3>${invoice&&invoice.amount!=null?'<span class="step-badge done">✓ 対応完了</span>':'<span class="step-badge current">いまここ・要対応</span>'}${aiConfidenceBadge}<span class="step-chevron" id="chev-info">${(invoice&&invoice.amount!=null)?"▼":"▲"}</span></div>
               ${(invoice&&invoice.amount!=null)?(()=>{
                 // corp:corporations(name)埋め込みが無いクエリ経由でも法人名が出るよう、
                 // CORP_STORE_CACHE（常に事前ロード済み）からも引けるようにする
@@ -2221,8 +2257,8 @@ function renderMailDetail(u){
               </div>
             </div>
 
-            <div class="step-card" id="step-accounting">
-              <div class="step-card-head" data-cardtoggle="accounting"><div class="step-num">${++stepNo}</div><h3 class="step-title">会計・仕訳</h3>${invoice&&invoice.mf_journal_id?'<span class="step-badge done">✓ 対応完了</span>':(invoice&&invoice.amount!=null?'<span class="step-badge current">！要対応</span>':'<span class="step-badge wait">○未処理</span>')}<span class="step-chevron" id="chev-accounting">${(invoice&&invoice.mf_journal_id)?"▼":"▲"}</span></div>
+            <div class="step-card${stepCardClass("accounting")}" id="step-accounting">
+              <div class="step-card-head" data-cardtoggle="accounting">${stepNumHtml("accounting",++stepNo,accountingDone)}<h3 class="step-title">会計・仕訳</h3>${invoice&&invoice.mf_journal_id?'<span class="step-badge done">✓ 対応完了</span>':(invoice&&invoice.amount!=null?'<span class="step-badge current">いまここ・要対応</span>':'<span class="step-badge wait">○未処理</span>')}<span class="step-chevron" id="chev-accounting">${(invoice&&invoice.mf_journal_id)?"▼":"▲"}</span></div>
               ${(invoice&&invoice.mf_journal_id)?`<div class="step-summary" id="summary-accounting">伝票番号: ${esc(String(invoice.mf_journal_number??"-"))} <button class="step-summary-edit" data-cardtoggle="accounting">詳細を見る▼</button></div>`:""}
               <div class="step-card-body" id="body-accounting" ${(invoice&&invoice.mf_journal_id)?"hidden":""}>
               <div class="mail-actions" style="margin-top:0">
@@ -2248,8 +2284,8 @@ function renderMailDetail(u){
               else if(seisanStores.length) plStateHtml=`<span class="pl-state seisan">🧮 業務委託精算対象</span>`;
               else plStateHtml=`<span class="pl-state wait">○ PL反映待ち</span>`;
               const cardDone=plDone||seisanStores.length>0;
-              return `<div class="step-card" id="step-pl">
-              <div class="step-card-head" data-cardtoggle="pl"><div class="step-num">${++stepNo}</div><h3 class="step-title">PL・広告・業務委託精算</h3>${cardDone?'<span class="step-badge done">✓ 対応完了</span>':'<span class="step-badge current">！要対応</span>'}<span class="step-chevron" id="chev-pl">${cardDone?"▼":"▲"}</span></div>
+              return `<div class="step-card${stepCardClass("pl")}" id="step-pl">
+              <div class="step-card-head" data-cardtoggle="pl">${stepNumHtml("pl",++stepNo,cardDone)}<h3 class="step-title">PL・広告・業務委託精算</h3>${cardDone?'<span class="step-badge done">✓ 対応完了</span>':'<span class="step-badge current">いまここ・要対応</span>'}<span class="step-chevron" id="chev-pl">${cardDone?"▼":"▲"}</span></div>
               ${cardDone?`<div class="step-summary" id="summary-pl">${plStateHtml} <button class="step-summary-edit" data-cardtoggle="pl">詳細を見る▼</button></div>`:""}
               <div class="step-card-body" id="body-pl" ${cardDone?"hidden":""}>
               <div class="ai-field" style="margin-bottom:10px"><small>現在の状態</small>${plStateHtml}</div>
@@ -2272,9 +2308,9 @@ function renderMailDetail(u){
 
             ${isSales?"":(()=>{
               const payDone=!!(invoice&&invoice.payment_verified_at);
-              const payBadge=invoice&&invoice.payment_verified_at?'<span class="step-badge done">✓ 対応完了</span>':(invoice&&invoice.payment_status==="paid"?'<span class="step-badge current">！要対応</span>':(invoice&&invoice.mf_journal_id?'<span class="step-badge wait">●振込待ち</span>':'<span class="step-badge wait">○未処理</span>'));
-              return `<div class="step-card" id="step-payment">
-              <div class="step-card-head" data-cardtoggle="payment"><div class="step-num">${++stepNo}</div><h3 class="step-title">振込</h3>${payBadge}<span class="step-chevron" id="chev-payment">${payDone?"▼":"▲"}</span></div>
+              const payBadge=invoice&&invoice.payment_verified_at?'<span class="step-badge done">✓ 対応完了</span>':(invoice&&invoice.payment_status==="paid"?'<span class="step-badge current">いまここ・要対応</span>':(invoice&&invoice.mf_journal_id?'<span class="step-badge current">いまここ・振込待ち</span>':'<span class="step-badge wait">○未処理</span>'));
+              return `<div class="step-card${stepCardClass("payment")}" id="step-payment">
+              <div class="step-card-head" data-cardtoggle="payment">${stepNumHtml("payment",++stepNo,payDone)}<h3 class="step-title">振込</h3>${payBadge}<span class="step-chevron" id="chev-payment">${payDone?"▼":"▲"}</span></div>
               ${payDone?`<div class="step-summary" id="summary-payment">${yen(invoice.amount)}｜${fmtDT(invoice.payment_verified_at)}支払確認済み <button class="step-summary-edit" data-cardtoggle="payment">詳細を見る▼</button></div>`:""}
               <div class="step-card-body" id="body-payment" ${payDone?"hidden":""}>
               ${invoicePaymentTabHtml(invoice)}
@@ -2285,7 +2321,7 @@ function renderMailDetail(u){
             ${isSales?"":(()=>{
               const hasAnyLink=!!(invoice&&(invoice.linked_step||invoice.linked_step_payment||(invoice.event_task_links&&Object.keys(invoice.event_task_links).length)));
               return `<div class="step-card" id="step-events">
-              <div class="step-card-head" data-cardtoggle="events"><div class="step-num">${++stepNo}</div><h3 class="step-title">本部タスク連携</h3>${hasAnyLink?'<span class="step-badge done">✓ 設定あり</span>':'<span class="step-badge wait">連携なし</span>'}<span class="step-chevron" id="chev-events">▲</span></div>
+              <div class="step-card-head" data-cardtoggle="events">${stepNumHtml("events",++stepNo,hasAnyLink)}<h3 class="step-title">本部タスク連携</h3>${hasAnyLink?'<span class="step-badge done">✓ 設定あり</span>':'<span class="step-badge wait">連携なし</span>'}<span class="step-chevron" id="chev-events">▲</span></div>
               <div class="step-card-body" id="body-events">
               <div class="meta" style="color:var(--muted);font-size:11px;margin-bottom:10px">この請求書の処理イベントが起きたとき、どの本部タスク工程を自動完了させるかの設定です。ここは「①〜④のこの請求書自体の処理状態」とは別物＝「このinvoiceのイベントで、別の本部タスク工程を自動完了させる設定」です。未設定のイベントは何も完了させません。</div>
               <div class="hq-tablewrap"><table class="event-map-table">
