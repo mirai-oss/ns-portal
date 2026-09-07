@@ -67,6 +67,14 @@ a{color:inherit}
 .brand{display:flex;gap:12px;align-items:center;padding:4px 4px 18px;border-bottom:1px solid var(--nav-line);margin-bottom:14px}
 .brand-badge{width:40px;height:40px;border-radius:12px;background:#f0c24f;display:grid;place-items:center;font-size:20px;flex:0 0 auto}
 .brand strong{display:block;font-size:17px;color:#fff}.brand small{color:#bdb6ad;font-size:11.5px}
+/* 2026-09-07: 上部の横タブ（カテゴリ切替）。サイドバー内・ブランドロゴのすぐ下に
+   折り返し可能な行で並べる（ページ全体のヘッダーは変更せず、変更範囲をサイドバーに限定） */
+.nav-sections{display:flex;flex-wrap:wrap;gap:5px;margin-bottom:16px}
+.nav-sec-btn{flex:1 1 auto;min-width:0;border:1px solid var(--nav-line);background:transparent;color:#cfc7bd;border-radius:9px;padding:8px 6px;display:flex;flex-direction:column;align-items:center;gap:2px;cursor:pointer;font-size:11px;position:relative}
+.nav-sec-btn span:first-child{font-size:15px}
+.nav-sec-btn:hover{background:rgba(255,255,255,.06);color:#fff}
+.nav-sec-btn.active{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:700}
+.nav-sec-btn .count{position:absolute;top:-6px;right:-4px;background:#d64545;color:#fff;border-radius:99px;padding:1px 5px;font-size:9.5px;font-weight:700;line-height:1.4}
 .section-title{font-size:10.5px;color:#8f887f;text-transform:uppercase;letter-spacing:.12em;margin:20px 10px 7px}
 .nav-item,.nav-group-head{width:100%;border:0;background:transparent;color:var(--nav-ink);text-align:left;padding:10px 11px;border-radius:10px;display:flex;align-items:center;gap:10px;cursor:pointer;font-size:13.5px}
 .nav-item:hover,.nav-group-head:hover{background:rgba(255,255,255,.06);color:#fff}
@@ -1037,16 +1045,31 @@ const seisanTab=v=>SEISAN_URL+"?embed=1&view="+v; // W2-A（2026-09-02）: seisa
 // 担当Eが先行してtasks.html側に実装・依頼をWORKLOG経由で受けて追加
 const tasksPage=p=>"tasks.html?embed=1&page="+p;
 
+// 2026-09-07 ユーザー要望: 「タブの項目が増えすぎて見づらい。上の横軸にカテゴリ、
+// 左の軸にその中身をタブで表示させたい」（Diniiの管理画面を参照例として提示）。
+// 既存の項目・キー・countKey等は一切変更せず、新規プロパティsection（どの上部カテゴリに
+// 属するか）だけを追加する形にした（badge計算・findItem・itemVisible等は無改修で流用）。
+// pinned:trueの項目は現在のセクションに関わらず常にサイドバー最上部に表示する
+const NAV_SECTIONS=[
+  {key:"genba", cap:"現場・人事", ico:"📝"},
+  {key:"keiei", cap:"経営",       ico:"📊"},
+  {key:"kaikei",cap:"会計・請求", ico:"🧾"},
+  {key:"admin", cap:"管理",       ico:"⚙️"},
+  {key:"cockpit",cap:"AI開発",    ico:"🛠️"},
+];
 const TOP_ITEMS=[
-  {key:"home",ico:"🏠",label:"概要（ホーム）",type:"home"},
-  {key:"notice",ico:"📣",label:"お知らせ",url:"index.html",countKey:"posts"},
-  {key:"hqtasks",sysKey:"hqtasks",ico:"📌",label:"本部タスク",url:"tasks.html",countKey:"hq"},
+  {key:"home",ico:"🏠",label:"概要（ホーム）",type:"home",pinned:true},
+  {key:"notice",ico:"📣",label:"お知らせ",url:"index.html",countKey:"posts",pinned:true},
+  {key:"hqtasks",sysKey:"hqtasks",ico:"📌",label:"本部タスク",url:"tasks.html",countKey:"hq",section:"genba"},
   // 2026-08-31 ユーザーからの実機フィードバック: F-10でこの項目を「🧾会計」グループの中に
   // 移したところ、未読件数バッジ(countKey:"inv")がグループを開かないと見えなくなり、新着の
   // 請求書メールに気づけなくなった。nav-group-head（グループの見出しボタン）は現状バッジを
   // 集計表示しない作りのため、対策として「請求書メールだけは今まで通りトップレベルに表示する」
-  // 方式へ戻した（ユーザーが提示した2案のうち採用したほう）。key/sysKey/countKeyは不変
-  {key:"invoices",sysKey:"invoices",ico:"✉️",label:"請求書メール",url:"invoices.html?embed=1",countKey:"inv"},
+  // 方式へ戻した（ユーザーが提示した2案のうち採用したほう）。key/sysKey/countKeyは不変。
+  // 2026-09-07追記: 今回のセクション分けで「🧾会計・請求」タブ自体が常時見えるバッジの役目を
+  // 果たすようになったため、請求書メールはkaikeiセクションのサイドバーへ移した（他セクション表示中でも
+  // トップの会計タブに未読件数が出るので気づけなくなる問題は再発しない）
+  {key:"invoices",sysKey:"invoices",ico:"✉️",label:"請求書メール",url:"invoices.html?embed=1",countKey:"inv",section:"kaikei"},
 ];
 // 2026-09-01 ユーザー実機フィードバック（続き）:「そもそも社内情報管理システムへ
 // リンクで飛ばす必要が無い。経費申請と同じようにその場（ポータル内）で申請できるように
@@ -1060,7 +1083,7 @@ const TOP_ITEMS=[
 // 2026-09-03 ユーザー要望: 「自分宛の承認待ち等が残っている数」を各項目・グループ見出し
 // 双方にバッジ表示（countOf()参照）。全員共通のロジックで、誰のアカウントで開いても
 // そのアカウント自身の承認待ち件数になる（ログイン中ユーザー基準で都度計算するため）
-const SHINSEI_GROUP={cap:"申請",ico:"🔁", items:[
+const SHINSEI_GROUP={cap:"申請",ico:"🔁", section:"genba", items:[
   {key:"expenses",sysKey:"expenses",ico:"🧾",label:"経費申請",url:"expenses.html",countKey:"expense"},
   // sysKeyは設定しない（notice等と同じ「sysKeyなし＝全員に見える」パターン。
   // アルバイトも含め全従業員が使える機能のため）
@@ -1083,7 +1106,7 @@ const SHINSEI_GROUP={cap:"申請",ico:"🔁", items:[
 // このグループへの導線を追加。従来「支払い（インフォマート・振込）」はsoon:trueのプレースホルダー
 // だった（インフォマート発注データ連携=D-9待ちの部分は引き続き未着手）が、振込一覧そのものは
 // 今回実装済みのためsoonを外してurlを設定した（ラベルはインフォマート対応も見据えて維持）
-const KAIKEI_GROUP={cap:"会計",ico:"🧾", items:[
+const KAIKEI_GROUP={cap:"会計",ico:"🧾", section:"kaikei", items:[
   {key:"kaikei-dashboard",sysKey:"invoices",ico:"📊",label:"会計ダッシュボード",url:"invoices.html?embed=1&tab=dashboard"},
   {key:"kaikei-unified",  sysKey:"invoices",ico:"🧾",label:"請求書",url:"invoices.html?embed=1&tab=unified"},
   {key:"kaikei-upload",   sysKey:"invoices",ico:"📤",label:"アップロード請求書",url:"invoices.html?embed=1&tab=upload"},
@@ -1097,22 +1120,22 @@ const KAIKEI_GROUP={cap:"会計",ico:"🧾", items:[
    embed/view/postMessage対応が入ったため、経営管理と同じ開閉グループ方式に
    変更した（下のGROUPS内「精算管理」参照）。 */
 const SYS_ITEMS=[
-  {key:"joho",   sysKey:"joho",   ico:"🔐", label:"社内情報管理", url:JOHO_URL, external:true, sso:true, countKey:"approval"},
+  {key:"joho",   sysKey:"joho",   ico:"🔐", label:"社内情報管理", url:JOHO_URL, external:true, sso:true, countKey:"approval", section:"admin"},
   // 担当G「データ出力センター」Phase1（コミットfeadac3・WORKLOG「2026-08-25（担当G実行スレッド）
   // Phase 1実装・本番デプロイ・実機E2E」担当Fへの依頼）。export.html側のexport_can_access()と
   // 同じ役職（マスター・CEO・HQ・TEAM・TENCHO）に合わせ、二重管理を避けている
-  {key:"export", ico:"📤", label:"データ出力", url:"export.html?embed=1", roles:["TENCHO","TEAM","HQ","CEO"]},
+  {key:"export", ico:"📤", label:"データ出力", url:"export.html?embed=1", roles:["TENCHO","TEAM","HQ","CEO"], section:"keiei"},
   // A-6「予約管理」（実装指示書_ラウンド4_2026-08-27.md §2.6）。参照デザイン
   // docs/mockups/NStyle_統合ポータル_予約管理_UI_v3_日別タイムライン対応.htmlでは
   // 経営管理グループのサブ項目ではなく独立したトップ項目として置かれているため、
   // それに合わせた。Sync4（担当D・予約データ取込基盤）・A-6実装（担当A・app.jsの
   // reservationタブ）とも本番反映済みを確認したため、2026-08-29に実URLへ差し替え。
   // sysKey:"keiei"にしたことで経営管理グループ内の他タブとの高速切替（postMessage）も効く
-  {key:"reservations", sysKey:"keiei", ico:"📅", label:"予約管理", url:keieiTab("reservation"), roles:["TENCHO","TEAM","HQ","CEO"]},
+  {key:"reservations", sysKey:"keiei", ico:"📅", label:"予約管理", url:keieiTab("reservation"), roles:["TENCHO","TEAM","HQ","CEO"], section:"keiei"},
 ];
 const GROUPS=[
   SHINSEI_GROUP,
-  {cap:"現場・日報",ico:"📝", items:[
+  {cap:"現場・日報",ico:"📝", section:"genba", items:[
     {key:"nippo-daily",  sysKey:"nippo", ico:"📝", label:"日報",     url:nippoPage("write"), countKey:"reportFeedback"},
     {key:"nippo-weekly", sysKey:"nippo", ico:"🗓️", label:"週報",     url:nippoPage("weekly")},
     {key:"nippo-list",   sysKey:"nippo", ico:"📋", label:"一覧",     url:nippoPage("list")},
@@ -1133,7 +1156,7 @@ const GROUPS=[
     {key:"nippo-admin",    sysKey:"nippo_admin", ico:"👥", label:"管理（アカウント）", url:nippoPage("admin")},
     {key:"nippo-settings", sysKey:"nippo_admin", ico:"⚙️", label:"設定（連携キー）", url:nippoPage("settings")},
   ]},
-  {cap:"採用管理",ico:"👥", roles:["TEAM","HQ","CEO"], items:[
+  {cap:"採用管理",ico:"👥", roles:["TEAM","HQ","CEO"], section:"genba", items:[
     {key:"recruit",             sysKey:"nippo", ico:"🧑‍💼", label:"応募者・採用管理", url:nippoPage("recruit")},
     {key:"recruit-dash",        ico:"📈", label:"採用ダッシュボード", soon:true},
     {key:"recruit-personality", ico:"🧠", label:"性格診断", soon:true},
@@ -1141,7 +1164,7 @@ const GROUPS=[
   // tori-dashboardのTAB_LABELS(app.js:38)・ROLE_TABS(app.js:29)を突き合わせて全項目を反映
   // （2026-08-24追加分。partner=外販専用タブのため対象外。tori-dashboard側にも
   // 権限チェックがあるため、ここでの出し分けは主にUI上の分かりやすさのため）
-  {cap:"経営管理",ico:"📊", items:[
+  {cap:"経営管理",ico:"📊", section:"keiei", items:[
     {key:"keiei-dash",     sysKey:"keiei", ico:"📊", label:"経営ダッシュボード", url:keieiTab("dash")},
     {key:"keiei-target",   sysKey:"keiei", ico:"🎯", label:"目標管理",   url:keieiTab("target")},
     {key:"keiei-analysis", sysKey:"keiei", ico:"📈", label:"推移分析",   url:keieiTab("analysis")},
@@ -1159,7 +1182,7 @@ const GROUPS=[
   // W2-A（2026-09-02）: 精算ダッシュボードのタブをURLで直接指定できるようになった
   // （seisan-dashboard側の?embed=1&view=X対応）ため、経営管理と同じ開閉グループ方式に変更。
   // 従来は単一項目（1グループ=1画面）だったため権限のroles指定は無し＝そのまま踏襲
-  {cap:"精算管理",ico:"🧮", items:[
+  {cap:"精算管理",ico:"🧮", section:"keiei", items:[
     {key:"seisan-check",  sysKey:"seisan", ico:"✅", label:"店舗チェック",   url:seisanTab("check")},
     {key:"seisan-corp",   sysKey:"seisan", ico:"🏢", label:"法人別・振込",   url:seisanTab("corp")},
     {key:"seisan-annual", sysKey:"seisan", ico:"📊", label:"年間推移",       url:seisanTab("annual")},
@@ -1169,7 +1192,7 @@ const GROUPS=[
   // 管理系機能を1グループに集約する「タブ集約方式」の実装。別サイトは作らず、
   // 既存のサイドバーグループ機構（開閉サブメニュー＝実質的なタブ）をそのまま使い、
   // 各項目は既存画面をiframe/リンクで再利用（作り直さない）。マスター・社長・本部のみ表示
-  {cap:"管理",ico:"⚙️", roles:["HQ","CEO"], items:[
+  {cap:"管理",ico:"⚙️", roles:["HQ","CEO"], section:"admin", items:[
     {key:"admin-accounts", ico:"👤", label:"アカウント管理（nippo）", url:nippoPage("admin")},
     {key:"admin-perm",     ico:"🔑", label:"権限設定（従来ポータル）", legacyLink:true},
     {key:"admin-notify",   ico:"🔔", label:"通知先（配信グループ管理）", url:nippoPage("admin")},
@@ -1199,7 +1222,7 @@ const GROUPS=[
   // （cockpit.html側はembed=1のとき内部サイドバーを隠す。切替はsysKey"cockpit"のFAST_SWITCHで
   //   iframeを作り直さずnsPortalSetTabメッセージ→cockpit側showに渡す）。roles:[]=マスターのみ。
   // 「管理項目を見せる人を設定」「権限・画面設定」もユーザー指示でこのグループ内に置く
-  {cap:"AI開発コックピット", ico:"🛠️", items:[
+  {cap:"AI開発コックピット", ico:"🛠️", section:"cockpit", items:[
     {key:"ck-dashboard", ico:"📊", label:"開発ダッシュボード", url:"cockpit.html?embed=1&page=dashboard", sysKey:"cockpit", roles:[]},
     {key:"ck-tasks",     ico:"📋", label:"全タスク",           url:"cockpit.html?embed=1&page=tasks",     sysKey:"cockpit", roles:[]},
     {key:"ck-agents",    ico:"🖥️", label:"AI / PC稼働状況",    url:"cockpit.html?embed=1&page=agents",    sysKey:"cockpit", roles:[]},
@@ -1235,6 +1258,7 @@ function visibleLeafItems(u){
 
 let ME=null, VIEW="home", CUR=null;
 let OPEN_GROUP="現場・日報"; // アコーディオン式に開いているグループは常に1つだけ（下のwireNav参照）
+let CUR_SECTION="genba"; // 2026-09-07: 上部の横タブで選んでいるカテゴリ（サイドバーはこれで絞り込む）
 let SIDEBAR_COLLAPSED=(()=>{ try{ return localStorage.getItem("portal_sidebar_collapsed")==="1"; }catch(e){ return false; } })();
 let NAV_HQ_CNT=0, NAV_INV_CNT=0, NAV_APPROVAL_CNT=0;
 // 2026-09-03 ユーザー要望: 経費申請の自分宛承認待ち／個人情報・社内システム変更申請の
@@ -1363,11 +1387,38 @@ function navItemHtml(it,activeKey){
   const cnt=countOf(it);
   return `<button class="nav-item${activeKey===it.key?" active":""}" data-key="${it.key}"><span>${it.ico}</span><span>${esc(it.label)}</span>${cnt?`<span class="count">${cnt}</span>`:""}${it.external?'<span class="ext">↗</span>':""}</button>`;
 }
+// 2026-09-07: 上部の横タブ（カテゴリ）＋左のサイドバー（選んだカテゴリの中身）という
+// 2階層ナビに刷新。既存のTOP_ITEMS/SYS_ITEMS/GROUPSはそのまま流用し、新規プロパティ
+// section（GROUPSはグループ単位・TOP_ITEMS/SYS_ITEMSは項目単位）でどのタブに属するかだけ
+// 追加した。pinned:trueの項目（ホーム・お知らせ）はどのタブを選んでいても常に一番上に出る
+function itemsInSection(sectionKey,u){
+  const out=[];
+  TOP_ITEMS.forEach(it=>{ if(it.section===sectionKey&&itemVisible(it,null,u)) out.push(it); });
+  SYS_ITEMS.forEach(it=>{ if(it.section===sectionKey&&itemVisible(it,null,u)) out.push(it); });
+  GROUPS.forEach(grp=>{ if(grp.section===sectionKey) grp.items.forEach(it=>{ if(!it.soon&&itemVisible(it,grp,u)) out.push(it); }); });
+  return out;
+}
+function sectionVisible(sectionKey,u){ return itemsInSection(sectionKey,u).length>0; }
+function sectionCount(sectionKey,u){ return itemsInSection(sectionKey,u).reduce((s,it)=>s+countOf(it),0); }
+function topSectionsHtml(u){
+  const visible=NAV_SECTIONS.filter(s=>sectionVisible(s.key,u));
+  return `<div class="nav-sections">${visible.map(s=>{
+    const cnt=sectionCount(s.key,u);
+    return `<button class="nav-sec-btn${CUR_SECTION===s.key?" active":""}" data-section="${s.key}"><span>${s.ico}</span><span>${esc(s.cap)}</span>${cnt?`<span class="count">${cnt}</span>`:""}</button>`;
+  }).join("")}</div>`;
+}
 function sidebarHtml(u){
   const activeKey=VIEW==="home"?"home":CUR;
-  const topHtml=TOP_ITEMS.filter(it=>it.type==="home"||itemVisible(it,null,u)).map(it=>navItemHtml(it,activeKey)).join("");
-  const sysHtml=SYS_ITEMS.filter(it=>itemVisible(it,null,u)).map(it=>navItemHtml(it,activeKey)).join("");
-  const groupsHtml=GROUPS.map(grp=>{
+  // 役職変更等で今のセクションが1件も表示できなくなった場合、表示可能な最初の
+  // セクションへ自動でフォールバックする（真っ白なサイドバーを避ける）
+  if(!sectionVisible(CUR_SECTION,u)){
+    const fallback=NAV_SECTIONS.find(s=>sectionVisible(s.key,u));
+    if(fallback) CUR_SECTION=fallback.key;
+  }
+  const pinnedHtml=TOP_ITEMS.filter(it=>it.pinned&&(it.type==="home"||itemVisible(it,null,u))).map(it=>navItemHtml(it,activeKey)).join("");
+  const topHtml=TOP_ITEMS.filter(it=>it.section===CUR_SECTION&&itemVisible(it,null,u)).map(it=>navItemHtml(it,activeKey)).join("");
+  const sysHtml=SYS_ITEMS.filter(it=>it.section===CUR_SECTION&&itemVisible(it,null,u)).map(it=>navItemHtml(it,activeKey)).join("");
+  const groupsHtml=GROUPS.filter(grp=>grp.section===CUR_SECTION).map(grp=>{
     const items=grp.items.filter(it=>itemVisible(it,grp,u));
     if(!items.length) return "";
     const isOpen=grp.cap===OPEN_GROUP;
@@ -1379,9 +1430,10 @@ function sidebarHtml(u){
   }).join("");
   return `<aside class="sidebar" id="sidebar">
     <div class="brand"><div class="brand-badge">🐔</div><div><strong>N-Styleグループ</strong><small>統合ポータル</small></div><button class="sidebar-toggle" id="sidebarCollapse" title="メニューをしまう">⟨⟨</button></div>
+    ${topSectionsHtml(u)}
+    ${pinnedHtml}
     ${topHtml}
-    <div class="section-title">各システム</div>
-    ${sysHtml}
+    ${sysHtml?`<div class="section-title">各システム</div>${sysHtml}`:""}
     ${groupsHtml}
     <!-- 2026-08-31 ユーザー指示: 「管理項目を見せる人を設定」「権限・画面設定（従来ポータル）」は
          AI開発コックピット（cockpit.html）のサイドメニューへ移動。cockpit側は同一オリジンiframeのため
@@ -1439,6 +1491,10 @@ function shellHtml(u){
 function openItem(key,u){
   const found=findItem(key); if(!found) return;
   const {it,grp}=found;
+  // 2026-09-07: 開いた項目が属するセクション（GROUPS内はグループ単位・それ以外は項目単位）に
+  // 上部タブを合わせる。pinned項目（ホーム・お知らせ）等sectionを持たない項目は現状維持
+  const itSection=it.section||(grp&&grp.section);
+  if(itSection) CUR_SECTION=itSection;
   if(it.type==="home"){ VIEW="home"; CUR=null; CUR_IFRAME=null; CUR_IFRAME_SYSKEY=null; renderShellBody(u); return; }
   if(it.soon){ toast("準備中です"); return; }
   if(it.sso){ openJohoSso(it.ssoTo); return; }
@@ -1517,6 +1573,17 @@ function wireNav(u){
       document.querySelectorAll(".nav-group").forEach(g=>g.classList.remove("open"));
       OPEN_GROUP=willOpen?grp.dataset.group:null;
       if(willOpen) grp.classList.add("open");
+    };
+  });
+  // 2026-09-07: 上部の横タブ（カテゴリ）クリック。既に選択中のタブは何もしない
+  // （うっかり同じカテゴリの別画面に飛ばされないように）。それ以外は、そのカテゴリの
+  // 一番上の項目を開く（Diniiの管理画面等、一般的な「カテゴリ切替＝既定ページ表示」に合わせた）
+  document.querySelectorAll(".nav-sec-btn").forEach(b=>{
+    b.onclick=()=>{
+      const key=b.dataset.section;
+      if(CUR_SECTION===key) return;
+      const first=itemsInSection(key,u)[0];
+      if(first) openItem(first.key,u); else { CUR_SECTION=key; refreshNavActive(u); }
     };
   });
   const more=$("moreBtn"); if(more) more.onclick=()=>$("mobileMore")?.classList.add("open");
