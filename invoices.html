@@ -1567,6 +1567,7 @@ window.addEventListener("popstate",e=>{
   const modals=document.querySelectorAll(".modal-bg");
   const modal=modals[modals.length-1];
   if(modal) modal.remove();
+  const modalsRemaining=document.querySelectorAll(".modal-bg").length;
   if(MOBILE_VIEW==="detail"){
     MOBILE_VIEW="list";
     const layout=$("mailLayout"); if(layout) layout.classList.remove("mobile-detail");
@@ -1575,6 +1576,15 @@ window.addEventListener("popstate",e=>{
     TAB=st.tab;
     document.querySelectorAll(".mail-tab").forEach(x=>x.classList.toggle("active",x.dataset.tab===TAB));
     renderTabBody(ME);
+  }else if(modal&&modalsRemaining===0&&(TAB==="unified"||TAB==="transfers")){
+    // 2026-09-08追加：ユーザー報告「請求書詳細で取引先の紐付け・支払方法を直したのに、
+    // 🧾請求書一覧タブに戻ると直っていない（取引先名・振込状態が古いまま）」に対応。
+    // reloadDetail()はモーダル自身の表示・受信トレイ一覧は更新するが、🧾請求書一覧／振込一覧
+    // タブ側の一覧データ（UNIFIED_STATE.rows/TRANSFERS_STATE.rows）はモーダルを開いたときに
+    // 取得したまま更新されない設計だった。同じタブに留まったままモーダルを全て閉じ切った
+    // タイミング（＝一覧が実際に見える状態に戻ったタイミング）でだけ、該当タブを再取得し直す
+    // （モーダルが入れ子になっている途中では余計な再取得をしないよう、modalsRemaining===0のときのみ）
+    if(TAB==="unified") renderUnifiedInvoiceTab(ME); else renderTransfersTab(ME);
   }
 });
 
