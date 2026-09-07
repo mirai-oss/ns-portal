@@ -1185,7 +1185,9 @@ const GROUPS=[
   // W2-A（2026-09-02）: 精算ダッシュボードのタブをURLで直接指定できるようになった
   // （seisan-dashboard側の?embed=1&view=X対応）ため、経営管理と同じ開閉グループ方式に変更。
   // 従来は単一項目（1グループ=1画面）だったため権限のroles指定は無し＝そのまま踏襲
-  {cap:"精算管理",ico:"🧮", section:"keiei", items:[
+  // 2026-09-07 ユーザー指示: 業務委託精算書は会計処理の一部という位置づけのため、
+  // カテゴリタブは「経営」ではなく「会計・請求」に置いてほしいとのこと。中身（sysKey/url等）は無変更
+  {cap:"精算管理",ico:"🧮", section:"kaikei", items:[
     {key:"seisan-check",  sysKey:"seisan", ico:"✅", label:"店舗チェック",   url:seisanTab("check")},
     {key:"seisan-corp",   sysKey:"seisan", ico:"🏢", label:"法人別・振込",   url:seisanTab("corp")},
     {key:"seisan-annual", sysKey:"seisan", ico:"📊", label:"年間推移",       url:seisanTab("annual")},
