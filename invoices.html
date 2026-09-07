@@ -5685,13 +5685,15 @@ function payrollPdfBlobUrl(base64){
 // （Claude APIへPDFを直接渡して構造化抽出する方式）と全く同じ設計のpayroll-pdf-ocrへ切り替えた。
 // あくまで「参考値の表示」に留め（自動で仕訳金額へ反映はしない）、読み取れなかった場合はその旨を
 // 明示する（誤った金額を無言で仕訳に使ってしまう事故を避けるため）
-async function payrollExtractStoreBreakdown(base64){
+// 2026-09-07修正：複数枚PDF対応。第1引数をbase64単数からpdfFiles配列（{file_name,file_data}）に変更し、
+// 事業所ごとに明細が分かれている従業員でも全ファイルを通して1回で集計できるようにした
+async function payrollExtractStoreBreakdown(pdfFiles){
   const s=sess.get();
   let r;
   try{
     r=await fetch(`${SUPA_URL}/functions/v1/payroll-pdf-ocr`,{
       method:"POST",headers:{apikey:SUPA_KEY,Authorization:"Bearer "+(s?s.at:""),"Content-Type":"application/json"},
-      body:JSON.stringify({pdf_base64:base64}),
+      body:JSON.stringify({pdf_files:pdfFiles.map(f=>({file_name:f.file_name,file_data:f.file_data}))}),
     });
   }catch(e){
     return {ok:false,error:"AI読み取りサービスへの接続に失敗しました"};
@@ -5782,6 +5784,203 @@ function payrollComputeBranches(row,template){
     const creditAmount=b.credit?(overridden!=null?overridden:(b.credit.value??b.amount??0)):null;
     return {debit:b.debit||null,credit:b.credit||null,debitAmount,creditAmount,department_id:useDept,tax_id:b.tax_id||null,credit_department_id:b.credit_department_id||null,credit_tax_id:b.credit_tax_id||null,purpose:b.purpose||null,remark:b.remark||null};
   }).filter(b=>b.purpose?((b.debit&&b.debitAmount>0)||(b.credit&&b.creditAmount>0)):(b.debit||b.credit));
+}
+
+/* ----------------------------------------------------------
+   2026-09-07新規：給与仕訳のAI自動生成（担当BスレッドWORKLOG f604e2f の6項目仕様への対応）
+   -----------------------------------------------------------
+   方針（ユーザー・担当Bへの説明どおり）: PDFの「支給テーブル」「控除テーブル」自体はAIで
+   再読み取りしない。担当Bが「スマレジAPI自身のnetPayとの一致を全件検証済み」と明言している
+   sf_payroll_sync（total_allowance/deduction_total/net_pay/deductions）を正として使う。
+   AIでのPDF読み取りは、sf_payroll_syncには無い「事業所ごとの内訳」（PDF下部の勤務詳細表でしか
+   分からない情報）にのみ使う。
+   検算がOK（丸め差1円以内）の場合だけ、確認画面を出したうえで人が「反映する」を押して初めて
+   branches配列を書き換える（自動確定はしない＝deptMismatchWarnHtmlと同じ「警告はするが
+   勝手に金額を変えない」方針を踏襲）
+   ---------------------------------------------------------- */
+// 事業所名（AI読み取り結果）→ stores→departmentsの2段階でMF部門へ寄せる。
+// payrollFindDeptForUser()と同じ「空白除去して部分一致」の正規化方式に合わせてある
+function payrollMatchStoreRecord(storeName){
+  const norm=s=>String(s||"").replace(/\s+/g,"");
+  const n=norm(storeName);
+  if(!n) return null;
+  return (PAYROLL_STATE.stores||[]).find(s=>norm(s.name)===n)
+    || (PAYROLL_STATE.stores||[]).find(s=>n.includes(norm(s.name))||norm(s.name).includes(n))
+    || null;
+}
+function payrollMatchDeptByStoreName(storeName){
+  const norm=s=>String(s||"").replace(/\s+/g,"").replace(/^\d+/,"");
+  const n=norm(storeName);
+  if(!n) return null;
+  const store=payrollMatchStoreRecord(storeName);
+  if(store){
+    const sn=norm(store.name);
+    const dept=(PAYROLL_STATE.departments||[]).find(d=>norm(d.name)===sn)
+      || (PAYROLL_STATE.departments||[]).find(d=>sn.includes(norm(d.name))||norm(d.name).includes(sn));
+    if(dept) return dept;
+  }
+  // storesテーブル経由で見つからない場合でも、部門名に直接含まれていれば拾えるようフォールバック
+  return (PAYROLL_STATE.departments||[]).find(d=>{ const dn=norm(d.name); return dn&&(n.includes(dn)||dn.includes(n)); }) || null;
+}
+// テンプレート由来のbranches配列から「給料」「交通費」に該当する借方行を1つ探す。
+// 仕訳辞書エディタでpurposeが設定されていればそれを優先し、無ければ勘定科目名のキーワードで推定する
+// （現状ほぼ全テンプレートでpurpose未設定のため、実質キーワード推定が使われる）
+function payrollFindBranchIndexByKind(branches,kind){
+  const purposeKey=kind;
+  let idx=branches.findIndex(b=>b.purpose===purposeKey&&b.debit);
+  if(idx>=0) return idx;
+  const re=kind==="base_salary"?/給料|給与|基本給|雑給|賃金/:/旅費交通費|通勤手当|交通費/;
+  return branches.findIndex(b=>b.debit&&re.test(b.debitLabel||""));
+}
+// sf_payroll_sync.deductions（控除内訳jsonb配列）のlabel文字列を、既存の貸方科目に振り分けるための
+// キーワード分類。分類しきれない項目は「その他控除」に該当する科目があればそこへ、無ければ未マッチ扱い
+const PAYROLL_DEDUCTION_CATS=[
+  {key:"income_tax",label:"所得税",re:/所得税/},
+  {key:"resident_tax",label:"住民税",re:/住民税/},
+  {key:"social_insurance",label:"社会保険料",re:/社会保険|健康保険|厚生年金|介護保険/},
+  {key:"employment_insurance",label:"雇用保険",re:/雇用保険/},
+  {key:"other",label:"その他控除",re:/その他控除|控除/},
+];
+const PAYROLL_NETPAY_RE=/未払金|差引支給|普通預金|振込/;
+// 検算・自動生成プランを組み立てる（実際にbranchesは書き換えない。判定結果だけを返す純粋関数）
+function payrollBuildAutoJournalPlan(row,branches,storeTotals){
+  const warnings=[];
+  // 2026-09-07：ここで見つけた行はオブジェクト参照として保持する（indexではない）。検算結果の
+  // 確認画面から実際に「反映する」を押すまでの間に、ユーザーが手動で行を追加・削除した場合でも
+  // インデックスのズレで誤った行を書き換えてしまわないようにするため
+  const salaryIdxTmp=payrollFindBranchIndexByKind(branches,"base_salary");
+  if(salaryIdxTmp<0){
+    return {ok:false,reason:"仕訳辞書（テンプレート）に「給料」に該当する借方科目が見つかりませんでした。設定タブでご確認ください",stores:[],warnings};
+  }
+  const salaryBranch=branches[salaryIdxTmp];
+  const commuteIdxTmp=payrollFindBranchIndexByKind(branches,"commute");
+  const commuteBranch=commuteIdxTmp>=0?branches[commuteIdxTmp]:null;
+  // 事業所ごとの部門マッチング
+  const stores=storeTotals.map(t=>{
+    const dept=payrollMatchDeptByStoreName(t.store);
+    return {storeName:t.store,amount:Math.round(Number(t.amount)||0),commute:Math.round(Number(t.commute)||0),dept};
+  });
+  const unmatchedStores=stores.filter(s=>!s.dept);
+  if(unmatchedStores.length){
+    warnings.push(`事業所「${unmatchedStores.map(s=>s.storeName).join("、")}」に対応する部門（勘定科目の部門マスタ）が見つかりませんでした。店舗名の表記ゆれの可能性があります`);
+  }
+  const totalCommuteNeeded=stores.reduce((s,x)=>s+x.commute,0);
+  if(totalCommuteNeeded>0&&!commuteBranch){
+    warnings.push("交通費が発生していますが、仕訳辞書に「旅費交通費」に該当する借方科目が見つかりませんでした");
+  }
+  const storeSum=stores.reduce((s,x)=>s+x.amount+x.commute,0);
+  const hasTotalAllowance=row.total_allowance!=null&&row.total_allowance!=="";
+  const expectedAllowance=Math.round(Number(hasTotalAllowance?row.total_allowance:(Number(row.fixed_salary_amount)||0)+(Number(row.commute_allowance)||0))||0);
+  if(!hasTotalAllowance) warnings.push("sf_payroll_syncに支給額合計（total_allowance）が無いため、固定給＋通勤手当の合計で代用して検算しました");
+  const allowanceDiff=storeSum-expectedAllowance;
+  const allowanceOk=Math.abs(allowanceDiff)<=1;
+
+  // 控除内訳のマッチング（既存の貸方科目名 ⇔ sf_payroll_sync.deductionsのlabel）。
+  // ※branches配列は後段のpayrollApplyAutoJournalPlanで給料/交通費行の差し替え（splice）が
+  // 発生し、そこでインデックスがずれてしまうため、ここではインデックスではなくオブジェクト
+  // 参照そのものを保持する（配列が変形しても参照は追跡できる）
+  const deductions=Array.isArray(row.deductions)?row.deductions:[];
+  const catBranchRef={}; // category key -> branchオブジェクト参照
+  let netPayBranch=null;
+  branches.forEach((b)=>{
+    if(!b.credit) return;
+    const label=b.creditLabel||"";
+    if(PAYROLL_NETPAY_RE.test(label)){ if(!netPayBranch) netPayBranch=b; return; }
+    for(const cat of PAYROLL_DEDUCTION_CATS){
+      if(cat.re.test(label)&&!(cat.key in catBranchRef)){ catBranchRef[cat.key]=b; break; }
+    }
+  });
+  const catSums={}; // category key -> 合計額
+  const unmatchedDeductions=[];
+  for(const d of deductions){
+    const amt=Math.round(Number(d.resultAmount)||0);
+    const label=String(d.label||"");
+    const cat=PAYROLL_DEDUCTION_CATS.find(c=>c.re.test(label));
+    if(cat&&cat.key in catBranchRef){
+      catSums[cat.key]=(catSums[cat.key]||0)+amt;
+    }else{
+      unmatchedDeductions.push({label,amount:amt});
+    }
+  }
+  if(unmatchedDeductions.length){
+    warnings.push(`控除項目「${unmatchedDeductions.map(d=>`${d.label}(${yen(d.amount)})`).join("、")}」に対応する貸方科目が仕訳辞書に見つかりませんでした`);
+  }
+  const deductionSum=Object.values(catSums).reduce((s,v)=>s+v,0);
+  const expectedDeductionTotal=Math.round(Number(row.deduction_total)||0);
+  const deductionOk=unmatchedDeductions.length===0&&Math.abs(deductionSum-expectedDeductionTotal)<=1;
+  if(!netPayBranch) warnings.push("仕訳辞書に「未払金」または「差引支給額」に該当する貸方科目が見つかりませんでした");
+
+  const ok=allowanceOk&&deductionOk&&!!netPayBranch&&unmatchedStores.length===0&&(totalCommuteNeeded===0||!!commuteBranch);
+  return {
+    ok, warnings,
+    salaryBranch, commuteBranch,
+    stores, storeSum, expectedAllowance, allowanceDiff, allowanceOk,
+    catBranchRef, catSums, netPayBranch, deductionSum, expectedDeductionTotal, deductionOk,
+    netPayAmount:Math.round(Number(row.net_pay)||0),
+  };
+}
+// 検算結果の確認画面（HTML）を組み立てる。okがtrueの場合のみ「反映する」ボタンを出す
+function payrollAutoJournalPlanHtml(plan){
+  if(plan.reason){
+    return `<div class="err">⚠️ ${esc(plan.reason)}</div>`;
+  }
+  const storeRows=plan.stores.map(s=>`<tr style="border-top:1px solid var(--line)">
+    <td style="padding:3px 6px">${esc(s.storeName)}</td>
+    <td style="text-align:right;padding:3px 6px">${yen(s.amount)}</td>
+    <td style="text-align:right;padding:3px 6px">${yen(s.commute)}</td>
+    <td style="padding:3px 6px">${s.dept?esc(s.dept.name):`<span style="color:var(--accent)">未マッチ</span>`}</td>
+  </tr>`).join("");
+  const catRows=Object.entries(plan.catSums).map(([key,amt])=>{
+    const cat=PAYROLL_DEDUCTION_CATS.find(c=>c.key===key);
+    return `<tr style="border-top:1px solid var(--line)"><td style="padding:3px 6px">${esc(cat?cat.label:key)}</td><td style="text-align:right;padding:3px 6px">${yen(amt)}</td></tr>`;
+  }).join("");
+  const warnHtml=plan.warnings.length?`<div style="font-size:11px;color:var(--m-amber);margin:6px 0">${plan.warnings.map(w=>`⚠️ ${esc(w)}`).join("<br>")}</div>`:"";
+  return `<div class="card" style="padding:8px 10px">
+    <div style="font-size:10px;color:var(--muted);margin-bottom:6px">🧮 AI読み取り結果とsf_payroll_sync（スマレジ実データ）を突き合わせた検算結果です</div>
+    <table style="width:100%;font-size:12px;border-collapse:collapse">
+      <thead><tr><th style="text-align:left;padding:3px 6px">事業所</th><th style="text-align:right;padding:3px 6px">給料相当額</th><th style="text-align:right;padding:3px 6px">交通費</th><th style="text-align:left;padding:3px 6px">部門マッチ</th></tr></thead>
+      <tbody>${storeRows}</tbody>
+    </table>
+    <div style="font-size:12px;margin:6px 0">借方合計（AI読み取り）: <b>${yen(plan.storeSum)}</b>　支給額合計（スマレジ）: <b>${yen(plan.expectedAllowance)}</b>　${plan.allowanceOk?`<span style="color:var(--m-green)">✓一致</span>`:`<span style="color:var(--accent)">✗差額${yen(plan.allowanceDiff)}</span>`}</div>
+    ${catRows?`<table style="width:100%;font-size:12px;border-collapse:collapse;margin-top:4px">
+      <thead><tr><th style="text-align:left;padding:3px 6px">控除項目</th><th style="text-align:right;padding:3px 6px">金額</th></tr></thead>
+      <tbody>${catRows}</tbody>
+    </table>`:""}
+    <div style="font-size:12px;margin:6px 0">貸方（控除＋差引支給額）合計: <b>${yen(plan.deductionSum+plan.netPayAmount)}</b>　控除額合計＋差引支給額（スマレジ）: <b>${yen(plan.expectedDeductionTotal+plan.netPayAmount)}</b>　${plan.deductionOk?`<span style="color:var(--m-green)">✓一致</span>`:`<span style="color:var(--accent)">✗要確認</span>`}</div>
+    ${warnHtml}
+    ${plan.ok
+      ?`<button class="hq-btn primary" id="payroll-autogen-apply">✅ この内容を仕訳に反映する</button>`
+      :`<div style="font-size:11px;color:var(--accent)">検算が一致しなかったため、自動反映はしていません。内容をご確認のうえ、必要であれば上の入力欄を手動で修正してください</div>`}
+  </div>`;
+}
+// 検算OKのプランを実際にbranches配列へ反映する（給料・交通費は事業所別行に差し替え、
+// 控除・差引支給額は既存の貸方行の金額だけを書き換える＝科目・部門・税区分等は変更しない）
+function payrollApplyAutoJournalPlan(branches,plan){
+  const salaryTpl=plan.salaryBranch;
+  const commuteTpl=plan.commuteBranch;
+  const removeObjs=[salaryTpl,commuteTpl].filter(Boolean);
+  for(const obj of removeObjs){
+    const i=branches.indexOf(obj);
+    if(i>=0) branches.splice(i,1);
+  }
+  const newRows=[];
+  for(const s of plan.stores){
+    if(s.amount>0){
+      newRows.push({debit:salaryTpl.debit||null,credit:null,debitLabel:salaryTpl.debitLabel||"",creditLabel:"",debitAmount:s.amount,creditAmount:0,department_id:s.dept?s.dept.id:null,tax_id:salaryTpl.tax_id||null,credit_department_id:null,credit_tax_id:null,purpose:null,remark:salaryTpl.remark||null});
+    }
+    if(s.commute>0&&commuteTpl){
+      newRows.push({debit:commuteTpl.debit||null,credit:null,debitLabel:commuteTpl.debitLabel||"",creditLabel:"",debitAmount:s.commute,creditAmount:0,department_id:s.dept?s.dept.id:null,tax_id:commuteTpl.tax_id||null,credit_department_id:null,credit_tax_id:null,purpose:null,remark:commuteTpl.remark||null});
+    }
+  }
+  branches.unshift(...newRows);
+  // 控除・差引支給額は既存行の金額だけを書き換える（科目・部門・税区分は仕訳辞書の設定のまま維持）。
+  // オブジェクト参照で直接書き換えるため、上のsplice/unshiftでインデックスがずれていても問題ない
+  Object.entries(plan.catBranchRef).forEach(([key,b])=>{
+    b.creditAmount=plan.catSums[key]||0;
+  });
+  if(plan.netPayBranch){
+    plan.netPayBranch.creditAmount=plan.netPayAmount;
+  }
 }
 function payrollBankFor(userId){ return (PAYROLL_STATE.bankAccounts||[]).find(b=>b.user_id===userId); }
 // 一覧の並び替え・絞り込み（2026-09-01: ユーザー要望「振込済みが1番下に行くように・絞れるように」）
@@ -6704,8 +6903,12 @@ async function payrollOpenPreview(userId){
     ${pdfUrl?`<details open style="margin-bottom:14px">
       <summary style="cursor:pointer;font-size:12px;color:var(--muted);font-weight:700">📎 給与明細PDF${pdfUrls.length>1?`（${pdfUrls.length}枚。見ながら金額を確認できます・クリックで折りたたみ）`:"（見ながら金額を確認できます・クリックで折りたたみ）"}</summary>
       ${pdfUrls.map((f,i)=>`${pdfUrls.length>1?`<div style="font-size:11px;color:var(--muted);margin-top:${i===0?"8":"14"}px">${i+1}枚目：${esc(f.file_name)}</div>`:""}<iframe src="${esc(f.url)}" title="給与明細PDF ${i+1}" style="width:100%;height:${pdfUrls.length>1?"36vh":"50vh"};border:1px solid var(--line);border-radius:8px;margin-top:4px"></iframe>`).join("")}
-      <div style="margin-top:8px"><button id="payroll-preview-ocr">🤖 AIで事業所別の金額・交通費を読み取る（参考値${pdfUrls.length>1?"・1枚目のみ対象":""}）</button></div>
+      <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">
+        <button id="payroll-preview-ocr">🤖 AIで事業所別の金額・交通費を読み取る（参考値）</button>
+        <button id="payroll-preview-autogen" title="スマレジの支給額合計・控除内訳（sf_payroll_sync）を正として、PDFのAI読み取り結果と検算したうえで、一致する場合のみ仕訳の借方・貸方を自動で組み立てます">🧮 AIで仕訳を自動生成する（検算OKの場合のみ）</button>
+      </div>
       <div id="payroll-preview-ocr-result" style="margin-top:6px"></div>
+      <div id="payroll-preview-autogen-result" style="margin-top:6px"></div>
     </details>${bodyContent}`:bodyContent}
   </div>`;
   document.body.appendChild(modal);
@@ -6824,12 +7027,21 @@ async function payrollOpenPreview(userId){
     });
   }
   wireEntries();
+  // 2026-09-07：「参考値を読む」ボタンと「仕訳を自動生成する」ボタンの両方でPDFのAI読み取りを
+  // 使うため、同じ結果を使い回せるようキャッシュする（両方押してもAI呼び出しは1回で済む）
+  let storeBreakdownCache=null;
+  const runStoreBreakdown=async()=>{
+    if(storeBreakdownCache) return storeBreakdownCache;
+    const res=await payrollExtractStoreBreakdown(pdfFiles);
+    if(res.ok) storeBreakdownCache=res;
+    return res;
+  };
   // 2026-09-02: ユーザー要望「事業所ごとの金額と交通費だけでもOCRで読み込んで表示させることは
   // できないか」に対応。あくまで参考値の表示のみ（仕訳金額への自動反映はしない）
   if($("payroll-preview-ocr")) $("payroll-preview-ocr").onclick=async()=>{
     const btn=$("payroll-preview-ocr"), el=$("payroll-preview-ocr-result");
     btn.disabled=true; btn.textContent="読み取り中…";
-    const res=await payrollExtractStoreBreakdown(pdfBase64);
+    const res=await runStoreBreakdown();
     btn.disabled=false; btn.textContent="🤖 AIで事業所別の金額・交通費を読み取る（参考値）";
     if(!res.ok){ el.innerHTML=`<div class="err">⚠️ ${esc(res.error)}</div>`; return; }
     el.innerHTML=`<div class="card" style="padding:8px 10px">
@@ -6839,6 +7051,31 @@ async function payrollOpenPreview(userId){
         <tbody>${res.totals.map(t=>`<tr style="border-top:1px solid var(--line)"><td style="padding:3px 6px">${esc(t.store)}</td><td style="text-align:right;padding:3px 6px">${yen(Math.round(t.amount))}</td><td style="text-align:right;padding:3px 6px">${yen(t.commute)}</td></tr>`).join("")}</tbody>
       </table>
     </div>`;
+  };
+  // 2026-09-07新規：担当Bスレッドから受領した仕様「AIで支給・控除・勤務詳細を読み取り、仕訳候補を
+  // 自動生成する」に対応。ただし支給テーブル・控除テーブル自体は、担当Bが検証済みと明言している
+  // sf_payroll_sync（スマレジAPI由来のtotal_allowance/deduction_total/net_pay/deductions）を
+  // 正とし、AIでの再読み取りはしない（同じ数字を2回読み取るのは冗長かつ余計な誤読リスクを増やすだけ
+  // のため）。AIでの読み取りは、sf_payroll_syncには無い「事業所ごとの内訳」（勤務詳細表でしか
+  // 分からない情報）にのみ使う。検算（AIの事業所別合計 = sf_payroll_syncの支給額合計、かつ
+  // 控除内訳が全項目テンプレートの科目にマッチ）がOKの場合だけ、確認画面を出したうえで反映する
+  // （自動確定はしない＝必ず人が「反映する」ボタンを押す一手間を挟む）
+  if($("payroll-preview-autogen")) $("payroll-preview-autogen").onclick=async()=>{
+    const btn=$("payroll-preview-autogen"), el=$("payroll-preview-autogen-result");
+    btn.disabled=true; btn.textContent="読み取り・検算中…";
+    const bres=await runStoreBreakdown();
+    btn.disabled=false; btn.textContent="🧮 AIで仕訳を自動生成する（検算OKの場合のみ）";
+    if(!bres.ok){ el.innerHTML=`<div class="err">⚠️ ${esc(bres.error)}</div>`; return; }
+    const plan=payrollBuildAutoJournalPlan(row,branches,bres.totals);
+    el.innerHTML=payrollAutoJournalPlanHtml(plan);
+    if(plan.ok){
+      const applyBtn=$("payroll-autogen-apply");
+      if(applyBtn) applyBtn.onclick=()=>{
+        payrollApplyAutoJournalPlan(branches,plan);
+        rerenderEntries();
+        el.innerHTML=`<div class="err msg-ok">✅ 自動生成した内容を上の表に反映しました。登録前に一度ご確認ください</div>`;
+      };
+    }
   };
   // 2026-09-02: ユーザー要望「明細を追加できるようにしてほしい」に対応。空の行を追加し、
   // 借方・貸方どちらの勘定科目も入力補完（既に取得済みのPAYROLL_STATE.accountLabelMap）から選べる

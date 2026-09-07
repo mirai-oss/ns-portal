@@ -8,9 +8,16 @@
 // 既存のinvoice-ocr Edge Function（Anthropic Claude APIへPDFを直接渡して構造化抽出する方式）
 // と全く同じ設計に切り替えた。正規表現より遥かにレイアウト崩れ・表記ゆれに強い。
 //
-// 入力(JSON): { pdf_base64 }  ※フロント側で既にpayroll-pdfsバケットから取得済みのbase64をそのまま渡す
+// 2026-09-07: 給与明細PDFが事業所ごとに複数枚に分かれている従業員（担当Bスレッド依頼）に対応するため、
+// 複数PDFをまとめて1回のAI呼び出しで読み取れるよう拡張（pdf_files配列）。従来のpdf_base64（単数）も
+// 後方互換のため引き続き受け付ける。あわせて、担当Bスレッドから受領した「AIで仕訳候補を自動生成する」
+// 仕様の注意事項（同日複数事業所・日付空欄の継続行への対応）をAIへの指示文に明記した
+//
+// 入力(JSON): { pdf_files:[{file_name?, file_data(base64)}] } または後方互換の { pdf_base64 }（単数）
+//   ※フロント側で既にpayroll-pdfsバケットから取得済みのbase64をそのまま渡す
 //   （storageへの再アクセスをこのFunction内で行わずに済むよう、あえてbase64を直接受け取る設計にした）
 // 出力(JSON): { success:true, stores:[{store_name, amount_total, commute_total, days_count}], note }
+//   ※複数ファイルを渡した場合、stores は全ファイルを通して事業所ごとに集計した結果（1事業所1件）
 //
 // 認証: 呼び出し元のJWTでinvoice_can_access()を満たすか確認（他の請求書・給与仕訳系Edge Functionと同じ）
 // 必要な環境変数: ANTHROPIC_API_KEY（invoice-ocrと同じシークレットをそのまま流用）
@@ -69,8 +76,15 @@ Deno.serve(async (req: Request) => {
   } catch (_) {
     return json({ error: "JSONの読み取りに失敗しました" }, 400);
   }
-  const pdfBase64 = body?.pdf_base64;
-  if (!pdfBase64 || typeof pdfBase64 !== "string") return json({ error: "pdf_base64は必須です" }, 400);
+  // 2026-09-07: 複数PDF対応（pdf_files配列を優先。無ければ従来のpdf_base64単数を1件配列として扱う）
+  let pdfFiles: { file_name?: string; file_data: string }[] = [];
+  if (Array.isArray(body?.pdf_files)) {
+    pdfFiles = body.pdf_files.filter((f: any) => f && typeof f.file_data === "string");
+  } else if (typeof body?.pdf_base64 === "string" && body.pdf_base64) {
+    pdfFiles = [{ file_data: body.pdf_base64 }];
+  }
+  if (!pdfFiles.length) return json({ error: "pdf_filesまたはpdf_base64は必須です" }, 400);
+  if (pdfFiles.length > 5) pdfFiles = pdfFiles.slice(0, 5); // 念のための上限（voucher_files添付上限と揃える）
 
   // 権限確認（他の請求書・給与仕訳系Edge Functionと同じパターン）
   const uc = userClient(req);
@@ -89,14 +103,19 @@ Deno.serve(async (req: Request) => {
       body: JSON.stringify({
         model: MODEL,
         max_tokens: 1024,
-        system: "あなたは日本企業の給与計算担当者向けに、スマレジが出力する給与明細PDFの「勤務詳細」表を読み取るアシスタントです。表の「事業所」列に登場する勤務先ごとに、「金額」列と「交通費」列を正確に合計してください。抽出結果は必ずextract_store_breakdownツールの呼び出しのみで返してください。",
+        system: "あなたは日本企業の給与計算担当者向けに、スマレジが出力する給与明細PDFの「勤務詳細」表を読み取るアシスタントです。表の「事業所」列に登場する勤務先ごとに、「金額」列と「交通費」列を正確に合計してください。" +
+          "同じ従業員の給与明細が複数のPDFファイルに分かれて渡されることがあります（事業所ごとに明細が分かれているケース）。その場合は全ファイルを通して事業所ごとに集計してください（同じ事業所名が複数ファイルに跨って登場する場合は合算する）。" +
+          "1つの表の中で、同じ日付に複数の事業所が記載されている行（掛け持ち勤務）は、それぞれ該当する事業所の集計に含めてください。日付欄が空欄の行は、直前の行と同じ日付の続き（同日の別時間帯や別事業所の追加行）とみなして扱ってください。" +
+          "抽出結果は必ずextract_store_breakdownツールの呼び出しのみで返してください。",
         tools: [TOOL],
         tool_choice: { type: "tool", name: "extract_store_breakdown" },
         messages: [{
           role: "user",
           content: [
-            { type: "text", text: "この給与明細PDFの「勤務詳細」表から、事業所ごとの金額合計・交通費合計を集計してください。" },
-            { type: "document", source: { type: "base64", media_type: "application/pdf", data: pdfBase64 } },
+            { type: "text", text: pdfFiles.length > 1
+              ? `この給与明細PDF（同じ従業員の${pdfFiles.length}ファイル分）の「勤務詳細」表から、事業所ごとの金額合計・交通費合計を、全ファイルを通して集計してください。`
+              : "この給与明細PDFの「勤務詳細」表から、事業所ごとの金額合計・交通費合計を集計してください。" },
+            ...pdfFiles.map((f) => ({ type: "document", source: { type: "base64", media_type: "application/pdf", data: f.file_data } })),
           ],
         }],
       }),
