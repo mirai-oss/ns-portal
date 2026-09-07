@@ -439,7 +439,10 @@ button,input,select,textarea{font:inherit}
    縦に積んで表示する */
 .payroll-edit-table .pet-acc-group{display:flex;flex-direction:column;gap:2px;min-width:140px}
 .payroll-edit-table .pet-acc-main{font-weight:700}
-.payroll-edit-table .pet-acc-sub{font-size:10px;color:var(--m-muted);padding:3px 5px}
+/* 2026-09-07修正：ユーザー報告「補助科目の文字が小さくて薄いから、勘定科目と同じか部門と
+   同じサイズにしてほしい」に対応。部門欄（select）と同じ標準サイズ・通常の文字色にする
+   （勘定科目のように太字にはせず、主従の区別だけは残す） */
+.payroll-edit-table .pet-acc-sub{font-size:12px;font-weight:400}
 .payroll-edit-table .pet-remark{min-width:130px}
 .payroll-edit-table .pet-warn{color:var(--m-red);font-size:10px;cursor:help;white-space:nowrap}
 .mfj-tpl-item{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:9px;border:1px solid var(--m-line);border-radius:9px;margin-bottom:6px;background:var(--bg)}
@@ -5607,14 +5610,25 @@ async function payrollLoad(){
     PAYROLL_STATE.accountLabelMap=map; PAYROLL_STATE.accountDatalistHtml=dl;
     // 2026-09-07：担当Bスレッド経由のユーザー要望「勘定科目と補助科目を、マネーフォワード会計と
     // 同じように別々の入力欄にしてほしい（今は「雑給/04/恵比寿」のように1つに連結されている）」に
-    // 対応するため、勘定科目名だけの候補・補助科目名だけの候補（全科目横断で重複除去）も別途用意する
-    const accNames=new Set(), subNames=new Set();
+    // 対応するため、勘定科目名だけの候補を用意する。
+    // 2026-09-07追記：ユーザー報告「マネーフォワードのように、補助科目は選んだ勘定科目で
+    // 使われている補助科目だけに絞り込まれるようにしてほしい（今は全科目の補助科目が
+    // 一緒くたに出てきて選びにくい）」に対応するため、補助科目は「全科目横断の重複除去リスト」
+    // 1本ではなく、勘定科目名→その科目に登録済みの補助科目名リストのMapとして保持し、
+    // 入力中の勘定科目名に応じて候補を絞り込めるようにする（accInput/wireEntries側で使用）。
+    // 勘定科目名がまだ確定していない・一致しない場合のフォールバック用に全件版も残す
+    const accNames=new Set();
+    const subsByAccount=new Map();
+    const subNamesAll=new Set();
     for(const a of accountsRaw){
       if(a.name) accNames.add(a.name);
-      for(const sa of (a.sub_accounts||[])){ if(sa.name) subNames.add(sa.name); }
+      const names=[];
+      for(const sa of (a.sub_accounts||[])){ if(sa.name){ names.push(sa.name); subNamesAll.add(sa.name); } }
+      if(a.name&&names.length) subsByAccount.set(a.name,names);
     }
     PAYROLL_STATE.accountNameDatalistHtml=[...accNames].map(n=>`<option value="${esc(n)}">`).join("");
-    PAYROLL_STATE.subAccountNameDatalistHtml=[...subNames].map(n=>`<option value="${esc(n)}">`).join("");
+    PAYROLL_STATE.subAccountsByAccountName=subsByAccount;
+    PAYROLL_STATE.subAccountNamesAll=[...subNamesAll];
   }
   if(!PAYROLL_STATE.stores){
     const r=await authed("/rest/v1/stores?select=id,name&order=name");
@@ -6832,6 +6846,15 @@ async function payrollOpenPreview(userId){
   // ここも他の欄と同じく入力補完（勘定科目入力欄と同じ<input list>方式）で編集できるように統一した
   // （初期値としてテンプレートが決めた科目名をそのまま入れておく＝何もしなければ従来どおりの科目で登録される）
   const deptOptionsHtml=(selectedId)=>`<option value="">（指定なし）</option>`+(PAYROLL_STATE.departments||[]).map(d=>`<option value="${esc(d.id)}" ${selectedId===d.id?"selected":""}>${esc(d.name)}</option>`).join("");
+  // 2026-09-07追加：ユーザー報告「マネーフォワードのように、補助科目は選んだ勘定科目に登録済みの
+  // 補助科目だけに絞り込んでほしい（今は全科目分の補助科目が一緒くたに出てきて選びにくい）」に対応。
+  // 指定した勘定科目名に紐づく補助科目一覧があればそれだけを、無ければ（未確定の入力中・一致しない
+  // 科目名等）フォールバックとして全科目横断の一覧を返す
+  const subAccountOptionsHtml=accountName=>{
+    const perAccount=PAYROLL_STATE.subAccountsByAccountName&&PAYROLL_STATE.subAccountsByAccountName.get((accountName||"").trim());
+    const names=(perAccount&&perAccount.length)?perAccount:(PAYROLL_STATE.subAccountNamesAll||[]);
+    return names.map(n=>`<option value="${esc(n)}">`).join("");
+  };
   const taxOptionsHtml=(selectedId,side,idx)=>(PAYROLL_STATE.taxes&&PAYROLL_STATE.taxes.length)?`<select class="payroll-preview-tax" data-idx="${idx}" data-side="${side}">${`<option value="">（既定）</option>`+PAYROLL_STATE.taxes.map(t=>`<option value="${esc(t.id)}" ${selectedId===t.id?"selected":""}>${esc(t.name)}</option>`).join("")}</select>`:"";
   // 2026-09-07新規：ユーザー報告「AIで読み取った事業所別の金額と、実際に選んでいる部門がずれる」に
   // 対応。原因の実例は、複数事業所で働く従業員の行を追加したとき、勘定科目の補助科目名
@@ -6860,11 +6883,16 @@ async function payrollOpenPreview(userId){
     // 補助科目名の一部として扱う）を2つの入力欄に分けて表示し、どちらかを編集したら元の1本の
     // 文字列に組み直す
     const splitAccLabel=label=>{ const s=String(label||""); const i=s.indexOf("/"); return i<0?{account:s,sub:""}:{account:s.slice(0,i),sub:s.slice(i+1)}; };
+    // 2026-09-07修正：補助科目の候補を選択中の勘定科目に連動させるため、行・借方貸方ごとに
+    // 個別のdatalist要素を持たせる（勘定科目名を打ち直すたびにwireEntries側でこのdatalistの
+    // 中身だけを差し替える＝入力中のフォーカスを失わせずに候補を絞り込める）
     const accInput=(side)=>{
       const {account,sub}=splitAccLabel(side==="debit"?b.debitLabel:b.creditLabel);
+      const subDlId=`payroll-preview-subaccount-datalist-${idx}-${side}`;
       return `<div class="pet-acc-group">
         <input list="payroll-preview-account-datalist" class="pet-acc-main payroll-preview-accmain" data-idx="${idx}" data-side="${side}" value="${esc(account)}" placeholder="${side==="debit"?"借方":"貸方"}勘定科目（空欄可）">
-        <input list="payroll-preview-subaccount-datalist" class="pet-acc-sub payroll-preview-accsub" data-idx="${idx}" data-side="${side}" value="${esc(sub)}" placeholder="補助科目（任意）">
+        <input list="${subDlId}" class="pet-acc-sub payroll-preview-accsub" data-idx="${idx}" data-side="${side}" value="${esc(sub)}" placeholder="補助科目（任意）">
+        <datalist id="${subDlId}">${subAccountOptionsHtml(account)}</datalist>
       </div>`;
     };
     const deptSelect=(side)=>`<select class="payroll-preview-dept" data-idx="${idx}" data-side="${side}">${deptOptionsHtml(side==="debit"?b.department_id:b.credit_department_id)}</select>`;
@@ -6914,7 +6942,8 @@ async function payrollOpenPreview(userId){
     <div style="font-size:10px;color:var(--muted);margin-bottom:6px">💡 金額はPDFと見比べて違っていればここで直接修正できます（例: 端数調整や個別の手当漏れ等）</div>
     <datalist id="payroll-preview-acc-datalist">${PAYROLL_STATE.accountDatalistHtml||""}</datalist>
     <datalist id="payroll-preview-account-datalist">${PAYROLL_STATE.accountNameDatalistHtml||""}</datalist>
-    <datalist id="payroll-preview-subaccount-datalist">${PAYROLL_STATE.subAccountNameDatalistHtml||""}</datalist>
+    <!-- 補助科目のdatalistは行・借方貸方ごとに個別（payroll-preview-subaccount-datalist-{idx}-{side}）に
+         生成している（accInput参照）。選択中の勘定科目に応じて候補を絞り込むため -->
     <div style="margin-bottom:10px">
       <button type="button" id="payroll-voucher-toggle" style="font-size:12px">📋 伝票プレビューを見る（借方・貸方を伝票のような形で確認）</button>
       <div id="payroll-voucher-preview" hidden></div>
@@ -7047,7 +7076,21 @@ async function payrollOpenPreview(userId){
       const mainVal=(main&&main.value||"").trim(), subVal=(sub&&sub.value||"").trim();
       return subVal?`${mainVal}/${subVal}`:mainVal;
     };
-    document.querySelectorAll(".payroll-preview-accmain,.payroll-preview-accsub").forEach(el=>el.oninput=()=>{
+    // 勘定科目（主）の入力：内部のラベル文字列を組み直すのに加え、ユーザー報告「マネーフォワードの
+    // ように、補助科目の候補は選んだ勘定科目に登録済みのものだけに絞り込んでほしい」に対応するため、
+    // 同じ行の補助科目datalistの中身をその場で差し替える（rerenderEntries()で全体を作り直すと、
+    // 入力中のテキスト欄がフォーカスを失いカーソル位置も飛んでしまうため、datalistの中身だけを
+    // ピンポイントで更新する）
+    document.querySelectorAll(".payroll-preview-accmain").forEach(el=>el.oninput=()=>{
+      const idx=+el.dataset.idx, side=el.dataset.side;
+      const label=combineAccLabel(idx,side);
+      if(side==="debit") branches[idx].debitLabel=label; else branches[idx].creditLabel=label;
+      const dl=document.getElementById(`payroll-preview-subaccount-datalist-${idx}-${side}`);
+      if(dl) dl.innerHTML=subAccountOptionsHtml(el.value);
+      refreshTotals();
+    });
+    // 補助科目（従）の入力：ラベル文字列の組み直しのみ
+    document.querySelectorAll(".payroll-preview-accsub").forEach(el=>el.oninput=()=>{
       const idx=+el.dataset.idx, side=el.dataset.side;
       const label=combineAccLabel(idx,side);
       if(side==="debit") branches[idx].debitLabel=label; else branches[idx].creditLabel=label;
