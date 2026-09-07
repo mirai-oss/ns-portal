@@ -413,6 +413,28 @@ button,input,select,textarea{font:inherit}
 .payroll-preview-head div{padding:8px 10px;font-size:13px;font-weight:800}
 .payroll-preview-head div:first-child{background:var(--blue-soft);color:var(--blue)}
 .payroll-preview-head div:last-child{background:var(--green-soft);color:var(--green)}
+/* 2026-09-07: ユーザー要望「マネーフォワード会計の複合仕訳入力画面と同じような形・サイズ感・
+   入力方法にしたい」に対応。従来の縦積みカード（借方カード→貸方カードを1行ずつ積む）をやめ、
+   MF本体の複合仕訳画面と同じ「1明細=1行、借方・貸方の科目/部門/税区分/金額を横並び」の
+   表形式に作り替えた。他のプレビュー（.mfj-preview-*）には影響させないよう、給与仕訳専用の
+   クラス名にしてある */
+.payroll-edit-table{width:100%;border-collapse:collapse;font-size:12px;min-width:1080px}
+.payroll-edit-table th,.payroll-edit-table td{border:1px solid var(--m-line);padding:4px 5px;vertical-align:top}
+.payroll-edit-table thead tr:first-child th{font-size:11px;font-weight:800;padding:5px}
+.payroll-edit-table thead tr:first-child .pet-debit-head{background:var(--blue-soft);color:var(--blue)}
+.payroll-edit-table thead tr:first-child .pet-credit-head{background:var(--green-soft);color:var(--green)}
+.payroll-edit-table thead tr:last-child th{font-size:10px;font-weight:700;color:var(--m-muted);background:var(--bg)}
+.payroll-edit-table .pet-ins{width:26px;text-align:center;vertical-align:middle}
+.payroll-edit-table .pet-ins button{background:none;border:1px solid var(--m-line);border-radius:5px;color:var(--m-muted);cursor:pointer;font-size:12px;width:22px;height:22px;line-height:1}
+.payroll-edit-table .pet-ins button:hover{background:var(--bg);color:var(--accent)}
+.payroll-edit-table .pet-rm{width:20px;text-align:center;vertical-align:middle}
+.payroll-edit-table .pet-rm button{background:none;border:none;color:var(--accent);cursor:pointer;font-size:13px;padding:2px}
+.payroll-edit-table input,.payroll-edit-table select{width:100%;box-sizing:border-box;font-size:12px;padding:4px 5px;border:1px solid var(--m-line);border-radius:4px}
+.payroll-edit-table select{min-width:88px}
+.payroll-edit-table .pet-amt{text-align:right;font-weight:700;font-variant-numeric:tabular-nums;min-width:90px}
+.payroll-edit-table .pet-acc{font-weight:700;min-width:130px}
+.payroll-edit-table .pet-remark{min-width:130px}
+.payroll-edit-table .pet-warn{color:var(--m-red);font-size:10px;cursor:help;white-space:nowrap}
 .mfj-tpl-item{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:9px;border:1px solid var(--m-line);border-radius:9px;margin-bottom:6px;background:var(--bg)}
 .mfj-tpl-item .lbl{font-size:12px;font-weight:700}
 .mfj-tpl-item .sum{font-size:10px;color:var(--m-muted);margin-top:2px}
@@ -6525,29 +6547,49 @@ async function payrollOpenPreview(userId){
   // ここも他の欄と同じく入力補完（勘定科目入力欄と同じ<input list>方式）で編集できるように統一した
   // （初期値としてテンプレートが決めた科目名をそのまま入れておく＝何もしなければ従来どおりの科目で登録される）
   const deptOptionsHtml=(selectedId)=>`<option value="">（指定なし）</option>`+(PAYROLL_STATE.departments||[]).map(d=>`<option value="${esc(d.id)}" ${selectedId===d.id?"selected":""}>${esc(d.name)}</option>`).join("");
-  const taxOptionsHtml=(selectedId)=>(PAYROLL_STATE.taxes&&PAYROLL_STATE.taxes.length)?`<select class="payroll-preview-tax" style="width:100%;box-sizing:border-box;margin-top:5px;font-size:13px;padding:4px">${`<option value="">（既定の税区分）</option>`+PAYROLL_STATE.taxes.map(t=>`<option value="${esc(t.id)}" ${selectedId===t.id?"selected":""}>${esc(t.name)}</option>`).join("")}</select>`:"";
+  const taxOptionsHtml=(selectedId,side,idx)=>(PAYROLL_STATE.taxes&&PAYROLL_STATE.taxes.length)?`<select class="payroll-preview-tax" data-idx="${idx}" data-side="${side}">${`<option value="">（既定）</option>`+PAYROLL_STATE.taxes.map(t=>`<option value="${esc(t.id)}" ${selectedId===t.id?"selected":""}>${esc(t.name)}</option>`).join("")}</select>`:"";
+  // 2026-09-07新規：ユーザー報告「AIで読み取った事業所別の金額と、実際に選んでいる部門がずれる」に
+  // 対応。原因の実例は、複数事業所で働く従業員の行を追加したとき、勘定科目の補助科目名
+  // （例:「雑給/04/恵比寿」）は元の行のままコピーされるが、部門プルダウンだけ正しく選び直した
+  // 結果、科目名と部門が食い違ってしまうというもの。自動で直すと金額の対応関係を勝手に
+  // 変えてしまう恐れがあるため、自動修正はせず、科目名と選択中の部門が食い違っていそうな
+  // ときだけ⚠️で気づけるようにする（あくまで注意喚起。登録は妨げない）
+  const deptMismatchWarnHtml=(label,deptId)=>{
+    if(!deptId||!label||!label.includes("/")) return "";
+    const dept=(PAYROLL_STATE.departments||[]).find(d=>d.id===deptId);
+    if(!dept) return "";
+    const deptCore=dept.name.replace(/^\d+/,"").trim();
+    if(!deptCore||label.includes(deptCore)) return "";
+    return `<span class="pet-warn" title="勘定科目名「${esc(label)}」と選択中の部門「${esc(dept.name)}」が一致していないかもしれません。科目名の補助科目（/以降）をご確認ください">⚠️部門と科目名が不一致かも</span>`;
+  };
   const entryHtml=(b,idx)=>{
     // 表示用ラベル（初回描画時のみ）: まだ編集用ラベルが無ければ、テンプレート由来の解決済み科目名で初期化する
     if(b.debitLabel==null) b.debitLabel=b.debit?mftLabelOf(b.debit):"";
     if(b.creditLabel==null) b.creditLabel=b.credit?mftLabelOf(b.credit):"";
-    const accInput=(side)=>`<input list="payroll-preview-acc-datalist" class="payroll-preview-acclabel" data-idx="${idx}" data-side="${side}" value="${esc(side==="debit"?b.debitLabel:b.creditLabel)}" placeholder="${side==="debit"?"借方":"貸方"}勘定科目（空欄可）" style="width:100%;box-sizing:border-box;font-size:14px;font-weight:700;padding:6px 8px;border:1px solid var(--line);border-radius:6px">`;
-    const deptSelect=(side)=>`<select class="payroll-preview-dept" data-idx="${idx}" data-side="${side}" style="width:100%;box-sizing:border-box;margin-top:5px;font-size:13px;padding:4px">${deptOptionsHtml(side==="debit"?b.department_id:b.credit_department_id)}</select>`;
-    const amtInput=(side)=>`<input type="number" class="payroll-preview-amt" data-idx="${idx}" data-side="${side}" value="${side==="debit"?b.debitAmount:b.creditAmount}" style="width:100%;box-sizing:border-box;margin-top:8px;text-align:right;font-weight:700;font-size:17px;border:1px solid var(--line);border-radius:6px;padding:6px 9px;font-variant-numeric:tabular-nums">`;
-    const hasDebit=!!b.debitLabel, hasCredit=!!b.creditLabel;
+    const accInput=(side)=>`<input list="payroll-preview-acc-datalist" class="pet-acc payroll-preview-acclabel" data-idx="${idx}" data-side="${side}" value="${esc(side==="debit"?b.debitLabel:b.creditLabel)}" placeholder="${side==="debit"?"借方":"貸方"}科目（空欄可）">`;
+    const deptSelect=(side)=>`<select class="payroll-preview-dept" data-idx="${idx}" data-side="${side}">${deptOptionsHtml(side==="debit"?b.department_id:b.credit_department_id)}</select>`;
+    const amtInput=(side)=>`<input type="number" class="pet-amt payroll-preview-amt" data-idx="${idx}" data-side="${side}" value="${side==="debit"?b.debitAmount:b.creditAmount}">`;
     // 2026-09-05追加：ユーザー要望「仕訳ごとに摘要を入力できるようにしてほしい」に対応。
     // 従来はb.remarkが埋まっている場合のみ読み取り専用で表示していたが、そもそも編集欄が
     // 無かった。登録時のデフォルト文言（従業員名入り）をplaceholderに出しつつ、
     // 明細行ごとに自由に上書きできるようにする
-    const remarkInput=`<input class="payroll-preview-remark" data-idx="${idx}" value="${esc(b.remark||"")}" placeholder="摘要（空欄の場合は「${esc(defaultRemark)}」で登録されます）" style="width:100%;box-sizing:border-box;margin-top:8px;font-size:12px;padding:5px 8px;border:1px solid var(--line);border-radius:6px">`;
-    return `<div class="mfj-preview-entry" data-row-idx="${idx}">
-      <div class="payroll-preview-head"><div>借方</div><div>貸方</div></div>
-      <div class="mfj-preview-body">
-        <div class="mfj-preview-side">${accInput("debit")}${deptSelect("debit")}${taxOptionsHtml(b.tax_id).replace('class="payroll-preview-tax"',`class="payroll-preview-tax" data-idx="${idx}" data-side="debit"`)}${amtInput("debit")}</div>
-        <div class="mfj-preview-side">${accInput("credit")}${deptSelect("credit")}${taxOptionsHtml(b.credit_tax_id).replace('class="payroll-preview-tax"',`class="payroll-preview-tax" data-idx="${idx}" data-side="credit"`)}${amtInput("credit")}</div>
-      </div>
-      <div style="padding:0 9px 6px">${remarkInput}</div>
-      ${branches.length>1?`<div style="text-align:right;padding:4px 9px 6px"><button data-payroll-preview-rm="${idx}" title="この行を削除" style="background:none;border:none;color:var(--accent);font-size:11px;cursor:pointer;padding:0">✕ この行を削除</button></div>`:""}
-    </div>`;
+    const remarkInput=`<input class="pet-remark payroll-preview-remark" data-idx="${idx}" value="${esc(b.remark||"")}" placeholder="${esc(defaultRemark)}">`;
+    // 2026-09-07書き換え：ユーザー要望「マネーフォワード会計の複合仕訳入力画面と同じような
+    // 形・サイズ感・入力方法にしたい」に対応。1明細=1行、借方・貸方の科目/部門/税区分/金額を
+    // 横並びにする表形式（従来は1明細ごとに「借方カード」「貸方カード」を縦に積んでいた）
+    return `<tr data-row-idx="${idx}">
+      <td class="pet-ins"><button type="button" data-payroll-preview-insert="${idx}" title="この下に行を追加">＋</button></td>
+      <td>${accInput("debit")}</td>
+      <td>${deptSelect("debit")}${deptMismatchWarnHtml(b.debitLabel,b.department_id)}</td>
+      <td>${taxOptionsHtml(b.tax_id,"debit",idx)}</td>
+      <td>${amtInput("debit")}</td>
+      <td>${accInput("credit")}</td>
+      <td>${deptSelect("credit")}${deptMismatchWarnHtml(b.creditLabel,b.credit_department_id)}</td>
+      <td>${taxOptionsHtml(b.credit_tax_id,"credit",idx)}</td>
+      <td>${amtInput("credit")}</td>
+      <td>${remarkInput}</td>
+      <td class="pet-rm">${branches.length>1?`<button data-payroll-preview-rm="${idx}" title="この行を削除">✕</button>`:""}</td>
+    </tr>`;
   };
   const entries=branches.map(entryHtml).join("");
 
@@ -6573,8 +6615,16 @@ async function payrollOpenPreview(userId){
       <button type="button" id="payroll-voucher-toggle" style="font-size:12px">📋 伝票プレビューを見る（借方・貸方を伝票のような形で確認）</button>
       <div id="payroll-voucher-preview" hidden></div>
     </div>
-    <div id="payroll-preview-entries">${entries}</div>
-    <div class="mail-actions" style="margin-top:6px"><button id="payroll-preview-addrow">＋ 明細行を追加</button></div>
+    <div style="overflow-x:auto">
+      <table class="payroll-edit-table">
+        <thead>
+          <tr><th class="pet-ins"></th><th colspan="4" class="pet-debit-head">借方</th><th colspan="4" class="pet-credit-head">貸方</th><th>摘要</th><th class="pet-rm"></th></tr>
+          <tr><th></th><th>勘定科目</th><th>部門</th><th>税区分</th><th>金額</th><th>勘定科目</th><th>部門</th><th>税区分</th><th>金額</th><th></th><th></th></tr>
+        </thead>
+        <tbody id="payroll-preview-entries">${entries}</tbody>
+      </table>
+    </div>
+    <div class="mail-actions" style="margin-top:6px"><button id="payroll-preview-addrow">＋ 明細行を末尾に追加</button></div>
     <div class="err" id="payrollPreviewMsg" style="margin-top:6px"></div>
     <div class="mail-actions" style="margin-top:12px">
       <button id="payrollPreviewBack">← 閉じる</button>
@@ -6685,6 +6735,10 @@ async function payrollOpenPreview(userId){
     document.querySelectorAll(".payroll-preview-dept").forEach(el=>el.onchange=()=>{
       const idx=+el.dataset.idx, side=el.dataset.side;
       if(side==="debit") branches[idx].department_id=el.value; else branches[idx].credit_department_id=el.value;
+      // 2026-09-07追加：ユーザー報告「勘定科目名と選んだ部門がずれてしまう」対応の一環。
+      // 部門を変えた直後に⚠️不一致警告をその場で更新できるよう再描画する（プルダウンの
+      // 選択操作自体は完了しているため、テキスト入力中と違いフォーカスを失っても実害が無い）
+      rerenderEntries();
     });
     document.querySelectorAll(".payroll-preview-tax").forEach(el=>el.onchange=()=>{
       const idx=+el.dataset.idx, side=el.dataset.side;
@@ -6697,6 +6751,13 @@ async function payrollOpenPreview(userId){
     });
     document.querySelectorAll("[data-payroll-preview-rm]").forEach(el=>el.onclick=()=>{
       branches.splice(+el.dataset.payrollPreviewRm,1);
+      rerenderEntries();
+    });
+    // 2026-09-07追加：ユーザー要望「（末尾だけでなく）間にも行を追加できるようにしてほしい」に対応。
+    // 「＋」を押した行のすぐ下に空の明細行を挿入する（末尾に足すだけの既存ボタンとは別に用意）
+    document.querySelectorAll("[data-payroll-preview-insert]").forEach(el=>el.onclick=()=>{
+      const idx=+el.dataset.payrollPreviewInsert;
+      branches.splice(idx+1,0,{debit:null,credit:null,debitLabel:"",creditLabel:"",debitAmount:0,creditAmount:0,department_id:null,tax_id:null,credit_department_id:null,credit_tax_id:null,remark:""});
       rerenderEntries();
     });
   }
