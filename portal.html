@@ -67,14 +67,6 @@ a{color:inherit}
 .brand{display:flex;gap:12px;align-items:center;padding:4px 4px 18px;border-bottom:1px solid var(--nav-line);margin-bottom:14px}
 .brand-badge{width:40px;height:40px;border-radius:12px;background:#f0c24f;display:grid;place-items:center;font-size:20px;flex:0 0 auto}
 .brand strong{display:block;font-size:17px;color:#fff}.brand small{color:#bdb6ad;font-size:11.5px}
-/* 2026-09-07: 上部の横タブ（カテゴリ切替）。サイドバー内・ブランドロゴのすぐ下に
-   折り返し可能な行で並べる（ページ全体のヘッダーは変更せず、変更範囲をサイドバーに限定） */
-.nav-sections{display:flex;flex-wrap:wrap;gap:5px;margin-bottom:16px}
-.nav-sec-btn{flex:1 1 auto;min-width:0;border:1px solid var(--nav-line);background:transparent;color:#cfc7bd;border-radius:9px;padding:8px 6px;display:flex;flex-direction:column;align-items:center;gap:2px;cursor:pointer;font-size:11px;position:relative}
-.nav-sec-btn span:first-child{font-size:15px}
-.nav-sec-btn:hover{background:rgba(255,255,255,.06);color:#fff}
-.nav-sec-btn.active{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:700}
-.nav-sec-btn .count{position:absolute;top:-6px;right:-4px;background:#d64545;color:#fff;border-radius:99px;padding:1px 5px;font-size:9.5px;font-weight:700;line-height:1.4}
 .section-title{font-size:10.5px;color:#8f887f;text-transform:uppercase;letter-spacing:.12em;margin:20px 10px 7px}
 .nav-item,.nav-group-head{width:100%;border:0;background:transparent;color:var(--nav-ink);text-align:left;padding:10px 11px;border-radius:10px;display:flex;align-items:center;gap:10px;cursor:pointer;font-size:13.5px}
 .nav-item:hover,.nav-group-head:hover{background:rgba(255,255,255,.06);color:#fff}
@@ -95,8 +87,18 @@ a{color:inherit}
 .userbox button:hover{color:#fff}
 
 .main{min-width:0;display:flex;flex-direction:column}
-.topbar{min-height:70px;background:var(--panel);border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:16px;padding:0 26px;position:sticky;top:0;z-index:5;flex-wrap:wrap}
+.topbar{background:var(--panel);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:5}
 .topbar h1{font-size:20px;margin:10px 0 0}.topbar .meta{color:var(--muted);font-size:12.5px;margin:2px 0 10px}
+/* 2026-09-07: ユーザー指示「サイドバー内ではなく、上のタブを固定して欲しい」を受け、
+   カテゴリ切替タブをサイドバーから.topbarの最上段（page-title行の上）へ移設。
+   .topbar自体がposition:stickyなので、タブごとページ上部に固定表示される */
+.topbar-tabs{display:flex;flex-wrap:wrap;gap:7px;padding:10px 26px 0}
+.topsec-btn{border:1px solid var(--line);background:var(--panel);color:var(--muted);border-radius:99px;padding:7px 14px;display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12.5px;font-weight:600;white-space:nowrap}
+.topsec-btn:hover{background:var(--bg);color:var(--ink)}
+.topsec-btn.active{background:var(--accent);border-color:var(--accent);color:#fff}
+.topsec-btn .count{background:#d64545;color:#fff;border-radius:99px;padding:1px 6px;font-size:10px;font-weight:700;line-height:1.4}
+.topsec-btn.active .count{background:rgba(255,255,255,.35)}
+.topbar-main{min-height:70px;display:flex;align-items:center;justify-content:space-between;gap:16px;padding:0 26px;flex-wrap:wrap}
 .top-actions{display:flex;gap:9px;align-items:center;margin:10px 0;position:relative}
 .search{border:1px solid var(--line);background:var(--bg);border-radius:11px;padding:10px 13px;min-width:280px;color:var(--ink)}
 .searchdrop{position:absolute;top:calc(100% + 6px);left:0;right:74px;background:var(--panel);border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow);overflow:hidden;z-index:20;max-height:60vh;overflow-y:auto}
@@ -222,7 +224,8 @@ canvas{width:100%;height:100%;display:block}
   .app{display:flex;flex-direction:column;min-height:100vh}
   .main{flex:1;min-height:0}
   .sidebar{display:none}
-  .topbar{padding:0 16px;min-height:60px}
+  .topbar-tabs{display:none}
+  .topbar-main{padding:0 16px;min-height:60px}
   .top-actions{display:none}
   .content{padding:14px 12px 90px}
   .two{grid-template-columns:1fr}
@@ -1391,6 +1394,8 @@ function navItemHtml(it,activeKey){
 // 2階層ナビに刷新。既存のTOP_ITEMS/SYS_ITEMS/GROUPSはそのまま流用し、新規プロパティ
 // section（GROUPSはグループ単位・TOP_ITEMS/SYS_ITEMSは項目単位）でどのタブに属するかだけ
 // 追加した。pinned:trueの項目（ホーム・お知らせ）はどのタブを選んでいても常に一番上に出る
+// （タブ自体の表示場所は当初サイドバー内だったが、ユーザー指示によりtopbar最上段に移設。
+// itemsInSection以下のロジック自体は表示場所に依存しないためそのまま流用）
 function itemsInSection(sectionKey,u){
   const out=[];
   TOP_ITEMS.forEach(it=>{ if(it.section===sectionKey&&itemVisible(it,null,u)) out.push(it); });
@@ -1400,11 +1405,14 @@ function itemsInSection(sectionKey,u){
 }
 function sectionVisible(sectionKey,u){ return itemsInSection(sectionKey,u).length>0; }
 function sectionCount(sectionKey,u){ return itemsInSection(sectionKey,u).reduce((s,it)=>s+countOf(it),0); }
+// topbar最上段に置く横タブ。#topSections単体でouterHTML差し替えできるよう
+// ラップ用divのid/classもここで持たせる（topbar-main側の検索窓<input>は
+// 一切触らないIME安全パターン。ns-portal/CLAUDE.md IMEバグの教訓を参照）
 function topSectionsHtml(u){
   const visible=NAV_SECTIONS.filter(s=>sectionVisible(s.key,u));
-  return `<div class="nav-sections">${visible.map(s=>{
+  return `<div class="topbar-tabs" id="topSections">${visible.map(s=>{
     const cnt=sectionCount(s.key,u);
-    return `<button class="nav-sec-btn${CUR_SECTION===s.key?" active":""}" data-section="${s.key}"><span>${s.ico}</span><span>${esc(s.cap)}</span>${cnt?`<span class="count">${cnt}</span>`:""}</button>`;
+    return `<button class="topsec-btn${CUR_SECTION===s.key?" active":""}" data-section="${s.key}"><span>${s.ico}</span><span>${esc(s.cap)}</span>${cnt?`<span class="count">${cnt}</span>`:""}</button>`;
   }).join("")}</div>`;
 }
 function sidebarHtml(u){
@@ -1430,7 +1438,6 @@ function sidebarHtml(u){
   }).join("");
   return `<aside class="sidebar" id="sidebar">
     <div class="brand"><div class="brand-badge">🐔</div><div><strong>N-Styleグループ</strong><small>統合ポータル</small></div><button class="sidebar-toggle" id="sidebarCollapse" title="メニューをしまう">⟨⟨</button></div>
-    ${topSectionsHtml(u)}
     ${pinnedHtml}
     ${topHtml}
     ${sysHtml?`<div class="section-title">各システム</div>${sysHtml}`:""}
@@ -1478,8 +1485,11 @@ function shellHtml(u){
     ${sidebarHtml(u)}
     <main class="main">
       <header class="topbar">
-        <div><h1 id="pagetitle">おはようございます、${esc((u.name||"").replace(/(さん|様)$/,""))}さん</h1><div class="meta" id="pagemeta">N-Styleグループ / 統合ポータル</div></div>
-        ${topActionsHtml()}
+        ${topSectionsHtml(u)}
+        <div class="topbar-main">
+          <div><h1 id="pagetitle">おはようございます、${esc((u.name||"").replace(/(さん|様)$/,""))}さん</h1><div class="meta" id="pagemeta">N-Styleグループ / 統合ポータル</div></div>
+          ${topActionsHtml()}
+        </div>
       </header>
       <div class="content" id="viewarea" style="flex:1;min-height:0;display:flex;flex-direction:column;padding:0"><div class="spin">読み込み中…</div></div>
     </main>
@@ -1553,8 +1563,10 @@ function openItem(key,u){
   refreshNavActive(u);
 }
 function refreshNavActive(u){
-  // サイドバー・下部ナビ・ページ全体を作り直さず、活性状態だけ更新する
+  // サイドバー・topbarの横タブ・下部ナビだけをピンポイントで作り直す（ページ全体や
+  // topbar-main（検索窓<input id="q">を含む）は触らない＝IME入力中の破壊を避ける）
   const sb=$("sidebar"); if(sb) sb.outerHTML=sidebarHtml(u);
+  const ts=$("topSections"); if(ts) ts.outerHTML=topSectionsHtml(u);
   const mb=$("mobilebar"); if(mb) mb.outerHTML=mobilebarHtml(u);
   wireNav(u);
 }
@@ -1578,7 +1590,7 @@ function wireNav(u){
   // 2026-09-07: 上部の横タブ（カテゴリ）クリック。既に選択中のタブは何もしない
   // （うっかり同じカテゴリの別画面に飛ばされないように）。それ以外は、そのカテゴリの
   // 一番上の項目を開く（Diniiの管理画面等、一般的な「カテゴリ切替＝既定ページ表示」に合わせた）
-  document.querySelectorAll(".nav-sec-btn").forEach(b=>{
+  document.querySelectorAll(".topsec-btn").forEach(b=>{
     b.onclick=()=>{
       const key=b.dataset.section;
       if(CUR_SECTION===key) return;
