@@ -5825,12 +5825,20 @@ function payrollMatchDeptByStoreName(storeName){
 // テンプレート由来のbranches配列から「給料」「交通費」に該当する借方行を1つ探す。
 // 仕訳辞書エディタでpurposeが設定されていればそれを優先し、無ければ勘定科目名のキーワードで推定する
 // （現状ほぼ全テンプレートでpurpose未設定のため、実質キーワード推定が使われる）
+// 2026-09-07修正：ユーザー報告「一時保存の下書きから再開した状態でAI自動生成を押すと
+// 『給料に該当する借方科目が見つからない』と出る（実際には「雑給」等の科目が入っているのに）」の
+// 原因を特定。一時保存の下書きは、保存時にb.debit/b.credit（解決済みのMF勘定科目オブジェクト）を
+// あえて含めていない（`payrollPreviewSaveDraft`のコメント参照）ため、下書きから再開した直後は
+// 全行のb.debit/b.creditがundefinedのまま（登録直前に初めてdebitLabel/creditLabelの文字列から
+// 再解決される設計）。この関数がb.debitの真偽値をチェックしていたため、下書き再開後は常に
+// 「1件も見つからない」扱いになっていた。b.debitではなくdebitLabel（文字列。テンプレートからの
+// 初回描画時・下書き読み込み時のどちらでも必ず設定される）の有無で判定するよう修正した
 function payrollFindBranchIndexByKind(branches,kind){
   const purposeKey=kind;
-  let idx=branches.findIndex(b=>b.purpose===purposeKey&&b.debit);
+  let idx=branches.findIndex(b=>b.purpose===purposeKey&&(b.debitLabel||"").trim());
   if(idx>=0) return idx;
   const re=kind==="base_salary"?/給料|給与|基本給|雑給|賃金/:/旅費交通費|通勤手当|交通費/;
-  return branches.findIndex(b=>b.debit&&re.test(b.debitLabel||""));
+  return branches.findIndex(b=>(b.debitLabel||"").trim()&&re.test(b.debitLabel||""));
 }
 // sf_payroll_sync.deductions（控除内訳jsonb配列）のlabel文字列を、既存の貸方科目に振り分けるための
 // キーワード分類。分類しきれない項目は「その他控除」に該当する科目があればそこへ、無ければ未マッチ扱い
@@ -5879,11 +5887,13 @@ function payrollBuildAutoJournalPlan(row,branches,storeTotals){
   // ※branches配列は後段のpayrollApplyAutoJournalPlanで給料/交通費行の差し替え（splice）が
   // 発生し、そこでインデックスがずれてしまうため、ここではインデックスではなくオブジェクト
   // 参照そのものを保持する（配列が変形しても参照は追跡できる）
+  // ※b.creditではなくcreditLabel（文字列）の有無で判定する（上のpayrollFindBranchIndexByKindと
+  // 同じ理由＝一時保存の下書きから再開した直後はb.creditが未解決のため）
   const deductions=Array.isArray(row.deductions)?row.deductions:[];
   const catBranchRef={}; // category key -> branchオブジェクト参照
   let netPayBranch=null;
   branches.forEach((b)=>{
-    if(!b.credit) return;
+    if(!(b.creditLabel||"").trim()) return;
     const label=b.creditLabel||"";
     if(PAYROLL_NETPAY_RE.test(label)){ if(!netPayBranch) netPayBranch=b; return; }
     for(const cat of PAYROLL_DEDUCTION_CATS){
