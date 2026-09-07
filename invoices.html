@@ -6243,8 +6243,20 @@ async function payrollUploadPdfs(){
   if(!matches.length){ msg.textContent="対応付けられたファイルがありません（従業員を選んでください）"; $("payroll-pdf-upload").disabled=false; return; }
   const s=sess.get();
   let okCount=0; const fail=[];
+  // 2026-09-07修正（担当Bスレッド実害報告・原因特定済み）：同じ従業員に複数ファイルを対応付けた
+  // 場合（事業所ごとに明細が分かれているケース）、従来は全ファイルが同じ固定パス
+  // {userId}/{yearMonth}.pdfへx-upsert:trueで上書きしていたため、最後にアップロードした
+  // ファイルだけが残り、それ以前のファイルは静かに消えていた。既にStorageにある枚数を
+  // 起点に、同一userIdの2件目以降は{yearMonth}_2.pdf・_3.pdf...という連番パスへ割り当てる
+  const nextIndex={}; // userId -> 次に使う連番（1始まり）。既存ファイルは上書きしない
   for(const m of matches){
-    const path=`${m.userId}/${PAYROLL_STATE.yearMonth}.pdf`;
+    if(!(m.userId in nextIndex)){
+      const existing=await payrollListPdfFiles(m.userId,PAYROLL_STATE.yearMonth);
+      nextIndex[m.userId]=existing.length+1;
+    }
+    const idx=nextIndex[m.userId]++;
+    const fileName=idx===1?`${PAYROLL_STATE.yearMonth}.pdf`:`${PAYROLL_STATE.yearMonth}_${idx}.pdf`;
+    const path=`${m.userId}/${fileName}`;
     const buf=await m.file.arrayBuffer();
     const r=await fetch(`${SUPA_URL}/storage/v1/object/payroll-pdfs/${path}`,{
       method:"POST",
