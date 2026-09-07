@@ -6,7 +6,9 @@
 //   - "upsert_vendor"           {vendor}  : 取引先の新規作成・更新
 //   - "match_vendor"        {name}        : 名称のあいまい一致で候補を返す（invoice-auto-matchからも呼ばれる）
 //   - "list_bank_accounts"  {vendor_id}   : ある取引先の口座一覧（現在有効＋過去分・履歴）
-//   - "upsert_bank_account" {account}     : 口座の新規作成・更新（マスター/HQ限定）
+//   - "upsert_bank_account" {account}     : 口座の新規作成・更新（マスター/HQ限定）。account.payment_method
+//                                            は"bank_transfer"（既定）|"direct_debit"|"cash"。
+//                                            後者2つは銀行口座情報が不要（2026-09-07追加）
 //   - "confirm_bank_account" {id}         : 「最終確認日」を今日に更新するだけの軽量action
 //   - "list_change_requests" {status?}    : 口座変更申請の一覧（マスター/HQ限定）
 //   - "approve_change_request" {id}       : 変更申請を承認→現在の口座をvalid_to=nowで無効化し、
@@ -140,8 +142,13 @@ Deno.serve(async (req: Request) => {
       const vendorId = a.vendor_id;
       if (!vendorId) return json({ error: "vendor_idは必須です" }, 400);
       const db = svc();
+      // 2026-09-07追加：ユーザー要望「請求書の振込待ちで引き落とし・現金払いも選べるように」に
+      // 対応。銀行振込以外（引き落とし・現金払い）は銀行口座情報が不要なため、送られてこなければ
+      // nullのまま保存する（payroll_bank_accountsの現金払いパターンと同じ考え方）
+      const paymentMethod = ["bank_transfer", "direct_debit", "cash"].includes(a.payment_method) ? a.payment_method : "bank_transfer";
       const row: Record<string, unknown> = {
         vendor_id: vendorId,
+        payment_method: paymentMethod,
         bank_code: a.bank_code || null,
         bank_name: a.bank_name || null,
         branch_code: a.branch_code || null,
