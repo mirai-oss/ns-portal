@@ -433,6 +433,13 @@ button,input,select,textarea{font:inherit}
 .payroll-edit-table select{min-width:88px}
 .payroll-edit-table .pet-amt{text-align:right;font-weight:700;font-variant-numeric:tabular-nums;min-width:90px}
 .payroll-edit-table .pet-acc{font-weight:700;min-width:130px}
+/* 2026-09-07追加：勘定科目・補助科目を別々の入力欄にする際のスタイル（担当Bスレッド経由の
+   ユーザー要望「マネーフォワード会計と同じように、勘定科目と補助科目を分けてほしい」対応）。
+   マネーフォワード本体の画面と同じく、同じ列内で勘定科目（太字・上）・補助科目（小さめ・下）を
+   縦に積んで表示する */
+.payroll-edit-table .pet-acc-group{display:flex;flex-direction:column;gap:2px;min-width:140px}
+.payroll-edit-table .pet-acc-main{font-weight:700}
+.payroll-edit-table .pet-acc-sub{font-size:10px;color:var(--m-muted);padding:3px 5px}
 .payroll-edit-table .pet-remark{min-width:130px}
 .payroll-edit-table .pet-warn{color:var(--m-red);font-size:10px;cursor:help;white-space:nowrap}
 .mfj-tpl-item{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:9px;border:1px solid var(--m-line);border-radius:9px;margin-bottom:6px;background:var(--bg)}
@@ -5595,8 +5602,19 @@ async function payrollLoad(){
   PAYROLL_STATE.drafts=(draftR.ok&&Array.isArray(draftR.body))?draftR.body:[];
   PAYROLL_STATE.transferScheduledDate=(scheduleR.ok&&Array.isArray(scheduleR.body)&&scheduleR.body[0])?scheduleR.body[0].scheduled_date:null;
   {
-    const {map,dl}=mftBuildAccountIndex((accR.ok&&accR.body.accounts)||[]);
+    const accountsRaw=(accR.ok&&accR.body.accounts)||[];
+    const {map,dl}=mftBuildAccountIndex(accountsRaw);
     PAYROLL_STATE.accountLabelMap=map; PAYROLL_STATE.accountDatalistHtml=dl;
+    // 2026-09-07：担当Bスレッド経由のユーザー要望「勘定科目と補助科目を、マネーフォワード会計と
+    // 同じように別々の入力欄にしてほしい（今は「雑給/04/恵比寿」のように1つに連結されている）」に
+    // 対応するため、勘定科目名だけの候補・補助科目名だけの候補（全科目横断で重複除去）も別途用意する
+    const accNames=new Set(), subNames=new Set();
+    for(const a of accountsRaw){
+      if(a.name) accNames.add(a.name);
+      for(const sa of (a.sub_accounts||[])){ if(sa.name) subNames.add(sa.name); }
+    }
+    PAYROLL_STATE.accountNameDatalistHtml=[...accNames].map(n=>`<option value="${esc(n)}">`).join("");
+    PAYROLL_STATE.subAccountNameDatalistHtml=[...subNames].map(n=>`<option value="${esc(n)}">`).join("");
   }
   if(!PAYROLL_STATE.stores){
     const r=await authed("/rest/v1/stores?select=id,name&order=name");
@@ -6833,7 +6851,22 @@ async function payrollOpenPreview(userId){
     // 表示用ラベル（初回描画時のみ）: まだ編集用ラベルが無ければ、テンプレート由来の解決済み科目名で初期化する
     if(b.debitLabel==null) b.debitLabel=b.debit?mftLabelOf(b.debit):"";
     if(b.creditLabel==null) b.creditLabel=b.credit?mftLabelOf(b.credit):"";
-    const accInput=(side)=>`<input list="payroll-preview-acc-datalist" class="pet-acc payroll-preview-acclabel" data-idx="${idx}" data-side="${side}" value="${esc(side==="debit"?b.debitLabel:b.creditLabel)}" placeholder="${side==="debit"?"借方":"貸方"}科目（空欄可）">`;
+    // 2026-09-07書き換え：担当Bスレッド経由のユーザー要望「マネーフォワード会計と同じように、
+    // 勘定科目と補助科目を別々の入力欄にしてほしい（今は『雑給/04/恵比寿』のように1つに連結されて
+    // いる）」に対応。内部的には従来どおりdebitLabel/creditLabelを「勘定科目/補助科目」形式の
+    // 1本の文字列として保持する（登録直前の科目解決・検算・部門不一致警告など他の処理が全てこの
+    // 形式を前提にしているため、そちらは変更しない）。見た目だけ、勘定科目名（最初の"/"より前）と
+    // 補助科目名（それ以降。店舗名の補助科目自体に"/"を含む場合があるため、2つ目以降の"/"は
+    // 補助科目名の一部として扱う）を2つの入力欄に分けて表示し、どちらかを編集したら元の1本の
+    // 文字列に組み直す
+    const splitAccLabel=label=>{ const s=String(label||""); const i=s.indexOf("/"); return i<0?{account:s,sub:""}:{account:s.slice(0,i),sub:s.slice(i+1)}; };
+    const accInput=(side)=>{
+      const {account,sub}=splitAccLabel(side==="debit"?b.debitLabel:b.creditLabel);
+      return `<div class="pet-acc-group">
+        <input list="payroll-preview-account-datalist" class="pet-acc-main payroll-preview-accmain" data-idx="${idx}" data-side="${side}" value="${esc(account)}" placeholder="${side==="debit"?"借方":"貸方"}勘定科目（空欄可）">
+        <input list="payroll-preview-subaccount-datalist" class="pet-acc-sub payroll-preview-accsub" data-idx="${idx}" data-side="${side}" value="${esc(sub)}" placeholder="補助科目（任意）">
+      </div>`;
+    };
     const deptSelect=(side)=>`<select class="payroll-preview-dept" data-idx="${idx}" data-side="${side}">${deptOptionsHtml(side==="debit"?b.department_id:b.credit_department_id)}</select>`;
     const amtInput=(side)=>`<input type="number" class="pet-amt payroll-preview-amt" data-idx="${idx}" data-side="${side}" value="${side==="debit"?b.debitAmount:b.creditAmount}">`;
     // 2026-09-05追加：ユーザー要望「仕訳ごとに摘要を入力できるようにしてほしい」に対応。
@@ -6880,6 +6913,8 @@ async function payrollOpenPreview(userId){
     </div>
     <div style="font-size:10px;color:var(--muted);margin-bottom:6px">💡 金額はPDFと見比べて違っていればここで直接修正できます（例: 端数調整や個別の手当漏れ等）</div>
     <datalist id="payroll-preview-acc-datalist">${PAYROLL_STATE.accountDatalistHtml||""}</datalist>
+    <datalist id="payroll-preview-account-datalist">${PAYROLL_STATE.accountNameDatalistHtml||""}</datalist>
+    <datalist id="payroll-preview-subaccount-datalist">${PAYROLL_STATE.subAccountNameDatalistHtml||""}</datalist>
     <div style="margin-bottom:10px">
       <button type="button" id="payroll-voucher-toggle" style="font-size:12px">📋 伝票プレビューを見る（借方・貸方を伝票のような形で確認）</button>
       <div id="payroll-voucher-preview" hidden></div>
@@ -7001,10 +7036,21 @@ async function payrollOpenPreview(userId){
       if(side==="debit") branches[idx].debitAmount=val; else branches[idx].creditAmount=val;
       refreshTotals();
     });
-    // 勘定科目名の入力（空欄にするとその側は合計から除外される＝refreshTotals()で反映）
-    document.querySelectorAll(".payroll-preview-acclabel").forEach(el=>el.oninput=()=>{
+    // 2026-09-07書き換え：勘定科目・補助科目の入力欄を分けたことに伴い、どちらかを編集したら
+    // 同じ行のもう片方の欄の値と組み合わせて、内部で使う1本の文字列（debitLabel/creditLabel、
+    // 「勘定科目/補助科目」形式）へ書き戻す。空欄にするとその側は合計から除外される＝refreshTotals()で反映
+    const combineAccLabel=(idx,side)=>{
+      const row=document.querySelector(`tr[data-row-idx="${idx}"]`);
+      if(!row) return "";
+      const main=row.querySelector(`.payroll-preview-accmain[data-side="${side}"]`);
+      const sub=row.querySelector(`.payroll-preview-accsub[data-side="${side}"]`);
+      const mainVal=(main&&main.value||"").trim(), subVal=(sub&&sub.value||"").trim();
+      return subVal?`${mainVal}/${subVal}`:mainVal;
+    };
+    document.querySelectorAll(".payroll-preview-accmain,.payroll-preview-accsub").forEach(el=>el.oninput=()=>{
       const idx=+el.dataset.idx, side=el.dataset.side;
-      if(side==="debit") branches[idx].debitLabel=el.value; else branches[idx].creditLabel=el.value;
+      const label=combineAccLabel(idx,side);
+      if(side==="debit") branches[idx].debitLabel=label; else branches[idx].creditLabel=label;
       refreshTotals();
     });
     document.querySelectorAll(".payroll-preview-dept").forEach(el=>el.onchange=()=>{
