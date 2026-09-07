@@ -4,6 +4,8 @@
 // 「振込」タブから呼ばれる。actionは9つ:
 //   - "list_vendors"                      : 取引先一覧を返す（invoice_can_access()で読める全員）
 //   - "upsert_vendor"           {vendor}  : 取引先の新規作成・更新
+//   - "delete_vendor"           {id}      : 取引先の削除（マスター/HQ限定）。請求書・仕訳辞書で
+//                                            使用中の取引先は削除できない（2026-09-08追加）
 //   - "match_vendor"        {name}        : 名称のあいまい一致で候補を返す（invoice-auto-matchからも呼ばれる）
 //   - "list_bank_accounts"  {vendor_id}   : ある取引先の口座一覧（現在有効＋過去分・履歴）
 //   - "upsert_bank_account" {account}     : 口座の新規作成・更新（マスター/HQ限定）。account.payment_method
@@ -116,6 +118,32 @@ Deno.serve(async (req: Request) => {
       const { data, error } = await uc.from("vendors").insert(row).select("id").maybeSingle();
       if (error) return json({ error: error.message }, 500);
       return json({ success: true, id: data?.id });
+    }
+
+    // 2026-09-08新規：ユーザー要望「取引先マスタの取引先を削除できるようにしてほしい」に対応。
+    // 誤って重複登録してしまった取引先（口座も請求書も紐付いていない、作りたてのもの）を
+    // 掃除できるようにするための機能。請求書・仕訳辞書で実際に使われている取引先は、
+    // 履歴を壊さないよう削除させず「無効にする」への案内で止める（vendors.idを参照する
+    // 全テーブルがON DELETE NO ACTIONのため、本来DB側でも拒否されるが、分かりやすい
+    // エラーメッセージを返すため事前にチェックしている）
+    if (action === "delete_vendor") {
+      const user = await currentUser(req);
+      if (!(await isMasterOrHQ(user?.id))) return json({ error: "取引先の削除はマスター/HQのみ行えます" }, 403);
+      const vendorId = body?.id;
+      if (!vendorId) return json({ error: "idは必須です" }, 400);
+      const db = svc();
+      const [invCount, tplCount] = await Promise.all([
+        db.from("invoices").select("id", { count: "exact", head: true }).eq("vendor_id", vendorId),
+        db.from("mf_journal_templates").select("id", { count: "exact", head: true }).eq("vendor_id", vendorId),
+      ]);
+      if ((invCount.count ?? 0) > 0) return json({ error: `この取引先は請求書${invCount.count}件で使用されているため削除できません。使わなくなった場合は「無効にする」をご利用ください。` }, 409);
+      if ((tplCount.count ?? 0) > 0) return json({ error: `この取引先は仕訳辞書${tplCount.count}件で使用されているため削除できません。使わなくなった場合は「無効にする」をご利用ください。` }, 409);
+      // 口座・変更申請は取引先そのものの付属データなので、取引先ごと一緒に削除する
+      await db.from("vendor_bank_account_change_requests").delete().eq("vendor_id", vendorId);
+      await db.from("vendor_bank_accounts").delete().eq("vendor_id", vendorId);
+      const { error } = await db.from("vendors").delete().eq("id", vendorId);
+      if (error) return json({ error: error.message }, 500);
+      return json({ success: true });
     }
 
     if (action === "match_vendor") {

@@ -2212,9 +2212,12 @@ function invoiceWorkflowSteps(invoice,mail){
 // vendor_bank_accounts／upsert_bank_account（vendor-master Edge Function）を再利用する。
 // これにより、ここで登録した口座は設定タブ側にもそのまま同じものとして表示される
 // （二重管理・別データ構造にはならない）
+// 2026-09-08修正：ユーザー要望「取引先マスタで無効にした取引先を、請求書の紐付け先に
+// 表示させないでほしい」に対応。無効な取引先は候補から除外する（ただし、この請求書が
+// 既にその取引先に紐付いている場合だけは、選択中の内容が消えて見えないよう例外的に残す）
 function ivVendorLinkHtml(invoice){
   if(!invoice) return "";
-  const vendors=VENDOR_CACHE||[];
+  const vendors=(VENDOR_CACHE||[]).filter(v=>v.is_active!==false||v.id===invoice.vendor_id);
   const linkedName=(invoice.vendor&&invoice.vendor.name)||"";
   return `<div class="ai-field full" id="iv-vendorlink-field">
     <small>取引先マスタとの紐付け（振込先口座の登録・自動判定に使います）</small>
@@ -7590,17 +7593,36 @@ function vendorWirePendingChanges(){
     await renderSettingsVendors();
   });
 }
+// 2026-09-08追加：ユーザー要望「取引先マスタで有効/無効の絞り込み・名前検索ができるように」に対応
+function vendorFilteredList(){
+  let list=VENDOR_STATE.vendors||[];
+  const status=VENDOR_STATE.statusFilter||"all";
+  if(status==="active") list=list.filter(v=>v.is_active!==false);
+  else if(status==="inactive") list=list.filter(v=>v.is_active===false);
+  const q=(VENDOR_STATE.search||"").trim().toLowerCase();
+  if(q) list=list.filter(v=>v.name.toLowerCase().includes(q)||(v.name_aliases||[]).some(a=>a.toLowerCase().includes(q)));
+  return list;
+}
 function vendorRenderBox(){
   const box=$("settingsBody");
   const editing=VENDOR_STATE.editing;
+  const list=vendorFilteredList();
   box.innerHTML=`${vendorPendingChangesHtml()}<div class="card" style="padding:16px">
     <h3 style="font-size:14px;margin-bottom:6px">🏢 取引先マスタ</h3>
     <div class="meta" style="color:var(--muted);font-size:12px;margin-bottom:10px">請求書の取引先を正規化して管理します（仕訳辞書とは別物です）。表記ゆれ（別名）をまとめておくと、仕訳辞書・自動判定・銀行口座の紐付けが正しく効くようになります。振込先口座も、取引先を編集する画面からそのまま登録できます。</div>
     <button class="hq-btn primary" id="vendor-new" style="margin-bottom:10px">＋ 取引先を追加</button>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">
+      <input type="search" id="vendor-search" placeholder="🔎 正式名称・別名で検索" value="${esc(VENDOR_STATE.search||"")}" style="flex:1;min-width:200px">
+      <select id="vendor-status-filter" style="min-width:140px">
+        <option value="all" ${(VENDOR_STATE.statusFilter||"all")==="all"?"selected":""}>すべて（${(VENDOR_STATE.vendors||[]).length}件）</option>
+        <option value="active" ${VENDOR_STATE.statusFilter==="active"?"selected":""}>有効のみ（${(VENDOR_STATE.vendors||[]).filter(v=>v.is_active!==false).length}件）</option>
+        <option value="inactive" ${VENDOR_STATE.statusFilter==="inactive"?"selected":""}>無効のみ（${(VENDOR_STATE.vendors||[]).filter(v=>v.is_active===false).length}件）</option>
+      </select>
+    </div>
     ${editing&&!editing.id?`<div id="vendor-editor" style="margin-bottom:12px"></div>`:""}
     <div class="hq-tablewrap"><table class="invoice-table">
       <thead><tr><th>正式名称</th><th>別名</th><th>既定法人</th><th>既定店舗</th><th>状態</th><th></th></tr></thead>
-      <tbody>${(VENDOR_STATE.vendors||[]).map(v=>{
+      <tbody>${list.map(v=>{
         const corpName=(VENDOR_STATE.corporations.find(c=>c.id===v.default_corporation_id)||{}).name||"—";
         const storeName=(VENDOR_STATE.stores.find(s=>s.id===v.default_store_id)||{}).name||"—";
         const row=`<tr>
@@ -7609,15 +7631,30 @@ function vendorRenderBox(){
           <td>${esc(corpName)}</td>
           <td>${esc(storeName)}</td>
           <td>${v.is_active?'<span class="invoice-status done">有効</span>':'<span class="invoice-status gray">無効</span>'}</td>
-          <td><button class="hq-btn" style="font-size:11px;padding:6px 9px" data-vendor-edit="${v.id}">編集</button></td>
+          <td><button class="hq-btn" style="font-size:11px;padding:6px 9px" data-vendor-edit="${v.id}">編集</button> <button class="hq-btn" style="font-size:11px;padding:6px 9px;color:var(--m-red)" data-vendor-delete="${v.id}" title="請求書・仕訳辞書で使われていない取引先のみ削除できます">🗑 削除</button></td>
         </tr>`;
         return row+((editing&&editing.id===v.id)?`<tr><td colspan="6"><div id="vendor-editor"></div></td></tr>`:"");
-      }).join("")||'<tr><td colspan="6">取引先はまだ登録されていません</td></tr>'}</tbody>
+      }).join("")||`<tr><td colspan="6">${(VENDOR_STATE.vendors||[]).length?"条件に一致する取引先はありません":"取引先はまだ登録されていません"}</td></tr>`}</tbody>
     </table></div>
   </div>`;
   vendorWirePendingChanges();
   $("vendor-new").onclick=()=>vendorOpenEditor(null);
+  $("vendor-search").oninput=()=>{ VENDOR_STATE.search=$("vendor-search").value; vendorRenderBox(); };
+  $("vendor-status-filter").onchange=()=>{ VENDOR_STATE.statusFilter=$("vendor-status-filter").value; vendorRenderBox(); };
   document.querySelectorAll("[data-vendor-edit]").forEach(el=>el.onclick=()=>vendorOpenEditor(VENDOR_STATE.vendors.find(v=>v.id===el.dataset.vendorEdit)));
+  // 2026-09-08新規：ユーザー要望「取引先マスタの取引先を削除できるようにしてほしい」に対応。
+  // 請求書・仕訳辞書で使用中の取引先はEdge Function側（delete_vendor）で拒否され、その旨の
+  // エラーメッセージがそのまま返るので、ここでは結果をそのままalertで案内するだけにしている
+  document.querySelectorAll("[data-vendor-delete]").forEach(el=>el.onclick=async()=>{
+    const v=VENDOR_STATE.vendors.find(x=>x.id===el.dataset.vendorDelete);
+    if(!v) return;
+    if(!confirm(`取引先「${v.name}」を削除します。この操作は取り消せません。よろしいですか？`)) return;
+    el.disabled=true;
+    const r=await vendorCall("delete_vendor",{id:v.id});
+    if(!r.ok){ alert(r.body.error||"削除に失敗しました"); el.disabled=false; return; }
+    await ensureVendorCache(true); // 紐付け用キャッシュにも反映
+    await renderSettingsVendors();
+  });
   if(editing) vendorRenderEditor();
 }
 function vendorOpenEditor(v){
