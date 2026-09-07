@@ -5906,12 +5906,31 @@ function payrollComputeBranches(row,template){
   // purposeが未設定の行（＝現状ほぼ全行）は、口座・部門・摘要などテンプレートの情報は活かしつつ
   // 金額だけ0円で残し、プレビュー画面で手入力できるようにする（今まで消えて何も編集できず
   // 完全にブロックされていたのを、少なくとも手入力で会計登録を進められる状態にする）
+  // 2026-09-08追加：担当Bスレッドから受領した要望「摘要を『○月分 基本給 氏名』のように行ごとに
+  // 自動入力したい」＋技術メモ（()を含む文字列テンプレートの置換は、氏名や既存の摘要に偶然()が
+  // 含まれた場合に誤爆する恐れがあるため非推奨・行を生成する時点でJSのテンプレートリテラルで
+  // 直接組み立てて実際の値として設定すべき、との提案）に対応。
+  // 仕訳辞書（mf_journal_templates）の各行のremarkは、実データを確認したところ「月　基本給」
+  // 「月　交通費」「月　所得税」「月　振込金額」のように「月」＋区切り＋ラベルという固定書式で
+  // 保存されており、月の数字・従業員名はそもそも含まれていなかった（ユーザー報告の「月の数字が
+  // 抜けている」は、この固定書式をテンプレートに保存した時点からそうだった、というのが実体）。
+  // この書式に一致する行だけ「月」の部分を実際の対象月の数字に、末尾に従業員名を追加して
+  // 組み立て直す（一致しない自由記述の摘要はそのまま尊重して変更しない）
+  const employeeName=(row.user&&row.user.name)||"";
+  const monthNum=Number((PAYROLL_STATE.yearMonth||"").split("-")[1])||null;
+  const buildRemark=rawRemark=>{
+    if(!rawRemark) return rawRemark;
+    const m=String(rawRemark).match(/^月[\s　]*(.*)$/);
+    if(!m) return rawRemark; // 「月」から始まらない自由記述の摘要はそのまま
+    const label=m[1];
+    return [monthNum?`${monthNum}月`:"月",label,employeeName].filter(Boolean).join("　");
+  };
   return (template.branches||[]).map(b=>{
     const overridden=amountFor(b.purpose);
     const useDept=(b.purpose==="base_salary"||b.purpose==="commute")&&dept?dept.id:(b.department_id||null);
     const debitAmount=b.debit?(overridden!=null?overridden:(b.debit.value??b.amount??0)):null;
     const creditAmount=b.credit?(overridden!=null?overridden:(b.credit.value??b.amount??0)):null;
-    return {debit:b.debit||null,credit:b.credit||null,debitAmount,creditAmount,department_id:useDept,tax_id:b.tax_id||null,credit_department_id:b.credit_department_id||null,credit_tax_id:b.credit_tax_id||null,purpose:b.purpose||null,remark:b.remark||null};
+    return {debit:b.debit||null,credit:b.credit||null,debitAmount,creditAmount,department_id:useDept,tax_id:b.tax_id||null,credit_department_id:b.credit_department_id||null,credit_tax_id:b.credit_tax_id||null,purpose:b.purpose||null,remark:buildRemark(b.remark)};
   }).filter(b=>b.purpose?((b.debit&&b.debitAmount>0)||(b.credit&&b.creditAmount>0)):(b.debit||b.credit));
 }
 
