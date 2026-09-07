@@ -5703,13 +5703,28 @@ function payrollComputeBranches(row,template){
     if(purpose==="net_pay") return Math.round(Number(row.net_pay)||0);
     return null;
   };
+  // 2026-09-07修正：ユーザー報告「給与仕訳で会計登録しようとすると『金額が計算できませんでした
+  // （給与データを確認してください）』と出て登録が一切できない」の根本原因を特定。
+  // 実データを確認したところ、mf_journal_templates（仕訳辞書）は現在46件すべて（給与仕訳の
+  // テンプレートも例外なく全件）でbranches[].purposeが未設定（null）だった。設定タブの
+  // 仕訳辞書エディタには各行の用途（基本給・通勤手当・控除・差引支給額）を選ぶ「mft-purpose」
+  // 欄が存在するが、実際にはどのテンプレートでも一度も設定されたことが無かった（payroll_journal_
+  // recordsが1件も無い＝この機能で給与仕訳が登録できたことがこれまで一度も無かったことも確認済み）。
+  // purposeが無いとamountFor()がnullを返し、フォールバック先のbranches[].value（テンプレート側の
+  // 固定金額）もほぼ全件nullのため、debitAmount/creditAmountが軒並み0になり、下のfilterで
+  // 全行が消えてbranches.length===0→呼び出し元のalert()で完全にブロックされていた。
+  // 【方針】purposeが設定されている行（今後、仕訳辞書エディタで正しく設定されれば）は従来どおり
+  // 「計算結果が0円ならその行は出さない」を維持する（本来の自動計算の挙動は変えない）。
+  // purposeが未設定の行（＝現状ほぼ全行）は、口座・部門・摘要などテンプレートの情報は活かしつつ
+  // 金額だけ0円で残し、プレビュー画面で手入力できるようにする（今まで消えて何も編集できず
+  // 完全にブロックされていたのを、少なくとも手入力で会計登録を進められる状態にする）
   return (template.branches||[]).map(b=>{
     const overridden=amountFor(b.purpose);
     const useDept=(b.purpose==="base_salary"||b.purpose==="commute")&&dept?dept.id:(b.department_id||null);
     const debitAmount=b.debit?(overridden!=null?overridden:(b.debit.value??b.amount??0)):null;
     const creditAmount=b.credit?(overridden!=null?overridden:(b.credit.value??b.amount??0)):null;
     return {debit:b.debit||null,credit:b.credit||null,debitAmount,creditAmount,department_id:useDept,tax_id:b.tax_id||null,credit_department_id:b.credit_department_id||null,credit_tax_id:b.credit_tax_id||null,purpose:b.purpose||null,remark:b.remark||null};
-  }).filter(b=>(b.debit&&b.debitAmount>0)||(b.credit&&b.creditAmount>0));
+  }).filter(b=>b.purpose?((b.debit&&b.debitAmount>0)||(b.credit&&b.creditAmount>0)):(b.debit||b.credit));
 }
 function payrollBankFor(userId){ return (PAYROLL_STATE.bankAccounts||[]).find(b=>b.user_id===userId); }
 // 一覧の並び替え・絞り込み（2026-09-01: ユーザー要望「振込済みが1番下に行くように・絞れるように」）
