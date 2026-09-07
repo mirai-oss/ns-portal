@@ -6634,17 +6634,19 @@ async function payrollOpenPreview(userId){
   `;
   const modal=document.createElement("div");
   modal.className="modal-bg mail-shell"; modal.id="payrollPreviewModal";
-  modal.innerHTML=`<div class="modal" style="max-width:${pdfUrl?"1440px":"820px"}">
+  // 2026-09-07修正：ユーザー報告「表が横幅を必要とするため、PDFと横並び（左右2カラム）だと
+  // UIが崩れる（PDFが極端に細くなり、表もはみ出す）」に対応。ユーザー提案どおり、PDFと
+  // 会計入力を左右ではなく上下に並べる1カラム構成に変更（PDF→折りたたみ可能な明細PDF、
+  // その下に会計入力の表）。表がmin-width:1080pxを必要とするため、PDF有無どちらの場合も
+  // モーダル自体の横幅を広めに確保する
+  modal.innerHTML=`<div class="modal" style="max-width:${pdfUrl?"1300px":"1200px"}">
     <div class="mhead"><h2>🧾 給与仕訳プレビュー — ${esc(name)}</h2><button class="linkbtn" id="payrollPreviewClose" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:13px">閉じる ×</button></div>
-    ${pdfUrl?`<div style="display:grid;grid-template-columns:1.6fr 1fr;gap:16px;align-items:start">
-      <div>
-        <div style="font-size:11px;color:var(--muted);margin-bottom:4px">📎 給与明細PDF（見ながら金額を確認できます）</div>
-        <iframe src="${esc(pdfUrl)}" title="給与明細PDF" style="width:100%;height:82vh;border:1px solid var(--line);border-radius:8px"></iframe>
-        <div style="margin-top:8px"><button id="payroll-preview-ocr">🤖 AIで事業所別の金額・交通費を読み取る（参考値）</button></div>
-        <div id="payroll-preview-ocr-result" style="margin-top:6px"></div>
-      </div>
-      <div>${bodyContent}</div>
-    </div>`:bodyContent}
+    ${pdfUrl?`<details open style="margin-bottom:14px">
+      <summary style="cursor:pointer;font-size:12px;color:var(--muted);font-weight:700">📎 給与明細PDF（見ながら金額を確認できます・クリックで折りたたみ）</summary>
+      <iframe src="${esc(pdfUrl)}" title="給与明細PDF" style="width:100%;height:50vh;border:1px solid var(--line);border-radius:8px;margin-top:8px"></iframe>
+      <div style="margin-top:8px"><button id="payroll-preview-ocr">🤖 AIで事業所別の金額・交通費を読み取る（参考値）</button></div>
+      <div id="payroll-preview-ocr-result" style="margin-top:6px"></div>
+    </details>${bodyContent}`:bodyContent}
   </div>`;
   document.body.appendChild(modal);
   pushNav({modal:true});
