@@ -1987,7 +1987,7 @@ async function openMailDetail(u,emailId,skipHighlight){
     authed(`/rest/v1/invoice_attachments?email_id=eq.${emailId}&select=*&order=created_at`),
     authed(`/rest/v1/invoice_email_reads?email_id=eq.${emailId}&select=opened_at,reader:users(name)&order=opened_at.asc&limit=1`),
     authed(`/rest/v1/invoice_audit_logs?entity_id=eq.${emailId}&select=*,actor:users(name)&order=created_at.asc&limit=50`),
-    authed(`/rest/v1/invoices?email_id=eq.${emailId}&select=*,vendor:vendors(name,vendor_bank_accounts(id,bank_name,branch_name,account_type,account_number,account_holder_kana,is_current)),linked_step:hq_task_steps!linked_hq_step_id(id,title,task:hq_tasks(title,corp)),linked_step_payment:hq_task_steps!linked_hq_step_id_payment(id,title,task:hq_tasks(title,corp)),invoice_stores(store_id)&order=created_at`),
+    authed(`/rest/v1/invoices?email_id=eq.${emailId}&select=*,vendor:vendors(name,vendor_bank_accounts(id,payment_method,bank_code,bank_name,branch_code,branch_name,account_type,account_number,account_holder_kana,is_current)),linked_step:hq_task_steps!linked_hq_step_id(id,title,task:hq_tasks(title,corp)),linked_step_payment:hq_task_steps!linked_hq_step_id_payment(id,title,task:hq_tasks(title,corp)),invoice_stores(store_id)&order=created_at`),
     authed(`/rest/v1/invoice_comments?email_id=eq.${emailId}&select=*,author:users(name)&order=created_at.asc`),
     ensureCorpStoreCache(),
     ensureVendorCache(),
@@ -2078,7 +2078,7 @@ async function openInvoiceDetail(u,invoiceId){
   const [,,ivr]=await perfTimed("invoice_detail_open",()=>Promise.all([
     ensureCorpStoreCache(),
     ensureVendorCache(),
-    authed(`/rest/v1/invoices?id=eq.${invoiceId}&select=*,vendor:vendors(name,vendor_bank_accounts(id,bank_name,branch_name,account_type,account_number,account_holder_kana,is_current)),linked_step:hq_task_steps!linked_hq_step_id(id,title,task:hq_tasks(title,corp)),linked_step_payment:hq_task_steps!linked_hq_step_id_payment(id,title,task:hq_tasks(title,corp)),invoice_stores(store_id)`),
+    authed(`/rest/v1/invoices?id=eq.${invoiceId}&select=*,vendor:vendors(name,vendor_bank_accounts(id,payment_method,bank_code,bank_name,branch_code,branch_name,account_type,account_number,account_holder_kana,is_current)),linked_step:hq_task_steps!linked_hq_step_id(id,title,task:hq_tasks(title,corp)),linked_step_payment:hq_task_steps!linked_hq_step_id_payment(id,title,task:hq_tasks(title,corp)),invoice_stores(store_id)`),
   ]));
   const inv=(ivr.ok&&Array.isArray(ivr.body)&&ivr.body[0])||null;
   if(!inv){ alert("請求書が見つかりませんでした（削除された可能性があります）"); return; }
@@ -2370,13 +2370,15 @@ function invoicePaymentTabHtml(invoice){
       <b>${esc(vendorLinkedName)}</b>　<span class="invoice-status ${method==="bank_transfer"?"gray":"check"}" style="margin-left:4px">${esc(PAYMENT_METHOD_LABEL[method]||method)}</span>
       ${accDetailHtml}
       ${missingCodes?'<div class="meta" style="color:var(--m-red);font-size:11px;margin-top:4px">⚠️ 銀行コード・支店コードが未登録です。PayPay銀行への振込CSV作成でエラーになるため、下の「編集する」から入力してください。</div>':""}
-      <div class="mail-actions" style="margin-top:6px"><button class="hq-btn" id="pay-bank-edit">✏️ 支払方法・口座情報を編集する</button></div>
+      <div class="mail-actions" style="margin-top:6px"><button class="hq-btn" id="pay-bank-edit">✏️ 支払方法・口座情報を編集する</button><button class="hq-btn" id="pay-vendor-relink-toggle" style="font-size:11px;color:var(--muted)">🔗 取引先の紐付けを変更する</button></div>
       <div id="pay-bank-editor" style="margin-top:8px"></div>
+      <div id="pay-vendor-relink-box" style="margin-top:8px"></div>
     </div>`;
   }else{
     bankBoxHtml=`<div class="ai-field" style="margin-bottom:10px" id="pay-bankbox"><small>取引先・振込先口座</small>
-      <div class="risk-card danger"><h5>⚠️ 支払方法 未登録</h5><p>取引先「${esc(vendorLinkedName)}」の支払方法（銀行振込・引き落とし・現金払い）がまだ登録されていません。</p><button class="hq-btn" id="pay-bank-edit" style="margin-top:6px">＋ 支払方法を登録する</button></div>
+      <div class="risk-card danger"><h5>⚠️ 支払方法 未登録</h5><p>取引先「${esc(vendorLinkedName)}」の支払方法（銀行振込・引き落とし・現金払い）がまだ登録されていません。</p><button class="hq-btn" id="pay-bank-edit" style="margin-top:6px">＋ 支払方法を登録する</button> <button class="hq-btn" id="pay-vendor-relink-toggle" style="font-size:11px;color:var(--muted);margin-top:6px">🔗 取引先の紐付けを変更する</button></div>
       <div id="pay-bank-editor" style="margin-top:8px"></div>
+      <div id="pay-vendor-relink-box" style="margin-top:8px"></div>
     </div>`;
   }
   let html=`${bankBoxHtml}<div class="ai-field" style="margin-bottom:10px"><small>現在の状態</small>${stateLine}<div class="meta" style="color:var(--muted);font-size:11px;margin-top:2px">${amtLabel.slice(1)}${dueLabel}</div></div>${actionHtml}`;
@@ -2957,43 +2959,62 @@ function wireDetailActions(u){
   // 2026-09-05新規：取引先マスタとの紐付け（既存を選ぶ／その場で新規登録＋任意で口座も登録）。
   // 口座はvendor-master Edge Functionのupsert_bank_account（設定タブ「支払先・銀行口座」と
   // 完全に同じ処理・同じvendor_bank_accountsテーブル）を呼ぶだけなので、別データにはならない
-  if($("iv-vendor-link")) $("iv-vendor-link").onchange=async()=>{
-    const msg=$("iv-vendorlink-msg"); if(msg){ msg.className="err"; msg.textContent="保存中…"; }
-    const vendorId=$("iv-vendor-link").value||null;
-    await authed(`/rest/v1/invoices?id=eq.${invoice.id}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({vendor_id:vendorId})});
-    await reloadDetail();
-  };
-  if($("iv-vendor-link-newtoggle")) $("iv-vendor-link-newtoggle").onclick=()=>{
-    const box=$("iv-vendorlink-newbox");
-    const defaultName=(invoice&&invoice.vendor_name)||($("iv-vendor")?$("iv-vendor").value:"");
-    box.innerHTML=ivVendorLinkNewFormHtml(defaultName);
-    $("ivvl-cancel").onclick=()=>{ box.innerHTML=""; };
-    $("ivvl-save").onclick=async()=>{
-      const msg=$("iv-vendorlink-msg"); msg.className="err"; msg.textContent="";
-      const name=$("ivvl-name").value.trim();
-      if(!name){ msg.textContent="取引先の正式名称を入力してください"; return; }
-      // 2026-09-05追加：銀行コード・支店コードの入力チェック（PayPay銀行CSVの必須項目のため、
-      // 銀行口座を1つでも入力する場合はこの2つを数字で必ず入力してもらう）
-      const bankCode=$("ivvl-bankcode").value.trim(), branchCode=$("ivvl-branchcode").value.trim();
-      const bankName=$("ivvl-bank").value.trim(), branchName=$("ivvl-branch").value.trim(), accNumber=$("ivvl-number").value.trim(), holder=$("ivvl-holder").value.trim();
-      const anyBankField=bankCode||branchCode||bankName||branchName||accNumber||holder;
-      if(anyBankField){
-        if(!/^\d{1,4}$/.test(bankCode)){ msg.textContent="振込先口座を入力する場合は、銀行コード（数字4桁以内）を入力してください"; return; }
-        if(!/^\d{1,3}$/.test(branchCode)){ msg.textContent="振込先口座を入力する場合は、支店コード（数字3桁以内）を入力してください"; return; }
-      }
-      $("ivvl-save").disabled=true; $("ivvl-save").textContent="登録中…";
-      const vr=await vendorCall("upsert_vendor",{vendor:{name}});
-      if(!vr.ok||!vr.body.id){ msg.textContent=vr.body.error||"取引先の登録に失敗しました"; $("ivvl-save").disabled=false; $("ivvl-save").textContent="💾 登録して紐付ける"; return; }
-      const vendorId=vr.body.id;
-      // 銀行情報が何か入力されていれば、設定タブと同じupsert_bank_accountで口座も一緒に登録する
-      if(anyBankField){
-        const ar=await vendorCall("upsert_bank_account",{account:{vendor_id:vendorId,bank_code:bankCode,bank_name:bankName,branch_code:branchCode,branch_name:branchName,account_type:$("ivvl-type").value,account_number:accNumber,account_holder_kana:holder}});
-        if(!ar.ok){ msg.textContent="取引先は登録できましたが、口座の登録に失敗しました："+(ar.body.error||""); }
-      }
+  // 2026-09-08修正：ユーザー報告「間違えて違う取引先と紐付けてしまったが、直す方法が無い」に
+  // 対応。従来はivVendorLinkHtml()（この紐付けUI）自体が「取引先マスタ未登録（vendor_id無し）」
+  // のときにしか表示されず、一度でも紐付いてしまうと解除・変更する手段が画面上に存在しなかった。
+  // 配線をwireVendorLinkUI()として関数化し、④振込カード側（口座登録済み・未登録どちらの場合も）
+  // から「🔗 取引先の紐付けを変更する」ボタンで後からこのUIを呼び出せるようにした
+  function wireVendorLinkUI(){
+    if($("iv-vendor-link")) $("iv-vendor-link").onchange=async()=>{
+      const msg=$("iv-vendorlink-msg"); if(msg){ msg.className="err"; msg.textContent="保存中…"; }
+      const vendorId=$("iv-vendor-link").value||null;
       await authed(`/rest/v1/invoices?id=eq.${invoice.id}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({vendor_id:vendorId})});
-      await ensureVendorCache(true); // 新規追加した取引先をキャッシュに反映
       await reloadDetail();
     };
+    if($("iv-vendor-link-newtoggle")) $("iv-vendor-link-newtoggle").onclick=()=>{
+      const box=$("iv-vendorlink-newbox");
+      const defaultName=(invoice&&invoice.vendor_name)||($("iv-vendor")?$("iv-vendor").value:"");
+      box.innerHTML=ivVendorLinkNewFormHtml(defaultName);
+      $("ivvl-cancel").onclick=()=>{ box.innerHTML=""; };
+      $("ivvl-save").onclick=async()=>{
+        const msg=$("iv-vendorlink-msg"); msg.className="err"; msg.textContent="";
+        const name=$("ivvl-name").value.trim();
+        if(!name){ msg.textContent="取引先の正式名称を入力してください"; return; }
+        // 2026-09-05追加：銀行コード・支店コードの入力チェック（PayPay銀行CSVの必須項目のため、
+        // 銀行口座を1つでも入力する場合はこの2つを数字で必ず入力してもらう）
+        const bankCode=$("ivvl-bankcode").value.trim(), branchCode=$("ivvl-branchcode").value.trim();
+        const bankName=$("ivvl-bank").value.trim(), branchName=$("ivvl-branch").value.trim(), accNumber=$("ivvl-number").value.trim(), holder=$("ivvl-holder").value.trim();
+        const anyBankField=bankCode||branchCode||bankName||branchName||accNumber||holder;
+        if(anyBankField){
+          if(!/^\d{1,4}$/.test(bankCode)){ msg.textContent="振込先口座を入力する場合は、銀行コード（数字4桁以内）を入力してください"; return; }
+          if(!/^\d{1,3}$/.test(branchCode)){ msg.textContent="振込先口座を入力する場合は、支店コード（数字3桁以内）を入力してください"; return; }
+        }
+        $("ivvl-save").disabled=true; $("ivvl-save").textContent="登録中…";
+        const vr=await vendorCall("upsert_vendor",{vendor:{name}});
+        if(!vr.ok||!vr.body.id){ msg.textContent=vr.body.error||"取引先の登録に失敗しました"; $("ivvl-save").disabled=false; $("ivvl-save").textContent="💾 登録して紐付ける"; return; }
+        const vendorId=vr.body.id;
+        // 銀行情報が何か入力されていれば、設定タブと同じupsert_bank_accountで口座も一緒に登録する
+        if(anyBankField){
+          const ar=await vendorCall("upsert_bank_account",{account:{vendor_id:vendorId,bank_code:bankCode,bank_name:bankName,branch_code:branchCode,branch_name:branchName,account_type:$("ivvl-type").value,account_number:accNumber,account_holder_kana:holder}});
+          if(!ar.ok){ msg.textContent="取引先は登録できましたが、口座の登録に失敗しました："+(ar.body.error||""); }
+        }
+        await authed(`/rest/v1/invoices?id=eq.${invoice.id}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({vendor_id:vendorId})});
+        await ensureVendorCache(true); // 新規追加した取引先をキャッシュに反映
+        await reloadDetail();
+      };
+    };
+  }
+  wireVendorLinkUI();
+  // 2026-09-08新規：④振込カードで「取引先・振込先口座」欄が既に埋まっている（vendor_idが
+  // 既に設定済み）場合でも、間違って紐付けてしまったときに直せるよう、紐付け変更UIを
+  // 後から呼び出せるトグルボタンを配線する（bankBoxHtmlの2つの分岐＝口座あり／支払方法未登録
+  // のどちらにも同じid "pay-vendor-relink-toggle" のボタンを置いている）
+  if($("pay-vendor-relink-toggle")) $("pay-vendor-relink-toggle").onclick=()=>{
+    const box=$("pay-vendor-relink-box");
+    if(!box) return;
+    if(box.innerHTML){ box.innerHTML=""; return; } // もう一度押したら閉じる
+    box.innerHTML=ivVendorLinkHtml(invoice);
+    wireVendorLinkUI();
   };
   renderHqLinkBox();
   // 2026-09-04新規：振込完了イベント専用の本部タスク工程紐付け（指示書§9）。会計・仕訳の
@@ -3338,7 +3359,7 @@ function wireDetailActions(u){
     if(emailId){ await openMailDetail(u,emailId,true); return; }
     const freshId=invoice&&invoice.id;
     if(!freshId) return;
-    const ivr2=await authed(`/rest/v1/invoices?id=eq.${freshId}&select=*,vendor:vendors(name,vendor_bank_accounts(id,bank_name,branch_name,account_type,account_number,account_holder_kana,is_current)),linked_step:hq_task_steps!linked_hq_step_id(id,title,task:hq_tasks(title,corp)),linked_step_payment:hq_task_steps!linked_hq_step_id_payment(id,title,task:hq_tasks(title,corp)),invoice_stores(store_id)`);
+    const ivr2=await authed(`/rest/v1/invoices?id=eq.${freshId}&select=*,vendor:vendors(name,vendor_bank_accounts(id,payment_method,bank_code,bank_name,branch_code,branch_name,account_type,account_number,account_holder_kana,is_current)),linked_step:hq_task_steps!linked_hq_step_id(id,title,task:hq_tasks(title,corp)),linked_step_payment:hq_task_steps!linked_hq_step_id_payment(id,title,task:hq_tasks(title,corp)),invoice_stores(store_id)`);
     const freshInv=(ivr2.ok&&Array.isArray(ivr2.body)&&ivr2.body[0])||null;
     if(!freshInv){ $("mailDetail").innerHTML='<div class="empty">この請求書は削除されました</div>'; return; }
     await loadStandaloneIntoSelected(u,freshInv);
