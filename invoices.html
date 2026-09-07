@@ -4440,12 +4440,21 @@ function unifiedRowHtml(r){
 }
 // 請求書の削除（2026-09-04新規。ユーザー要望「テストで入力してる請求書を削除できるように」に
 // 対応）。ローカルの記録（invoicesレコード）を削除するだけで、既にマネーフォワードへ登録済みの
-// 仕訳自体は取り消さない（実際の会計取消は人が確認して行う既存方針のため）。関連する
-// invoice_pl_reflections（PL反映実績）・vendor_bank_account_change_requests（口座変更申請）は
-// 外部キー制約で先に削除する必要があるため、ベストエフォートで先に消してからinvoicesを消す
+// 仕訳自体は取り消さない（実際の会計取消は人が確認して行う既存方針のため）。invoicesを参照する
+// 外部キーを持つテーブルは先に削除する必要があるため、ベストエフォートで先に消してからinvoicesを消す。
+// 2026-09-07修正：ユーザー報告「削除に失敗しました」と実機で再現・原因特定。invoicesを参照する
+// 外部キー制約を全テーブル洗い出したところ、invoice_pl_reflections・vendor_bank_account_change_
+// requests（対応済み）に加えて、invoice_attachments（証憑ファイルの添付記録）・invoice_comments
+// （コメント）・payroll_journal_records（給与仕訳の登録記録）の3テーブルもON DELETE NO ACTIONで
+// 未対応だった（invoice_stores・invoice_task_eventsはON DELETE CASCADEのため元から問題無し）。
+// 実際に失敗した請求書（テストデータ）はinvoice_attachmentsに1件残っておりそれが原因と確認済み。
+// 3テーブルとも事前削除の対象に追加した
 async function deleteInvoiceRecord(invoiceId,opts){
   await authed(`/rest/v1/invoice_pl_reflections?invoice_id=eq.${invoiceId}`,{method:"DELETE",headers:{Prefer:"return=minimal"}}).catch(()=>{});
   await authed(`/rest/v1/vendor_bank_account_change_requests?invoice_id=eq.${invoiceId}`,{method:"DELETE",headers:{Prefer:"return=minimal"}}).catch(()=>{});
+  await authed(`/rest/v1/invoice_attachments?invoice_id=eq.${invoiceId}`,{method:"DELETE",headers:{Prefer:"return=minimal"}}).catch(()=>{});
+  await authed(`/rest/v1/invoice_comments?invoice_id=eq.${invoiceId}`,{method:"DELETE",headers:{Prefer:"return=minimal"}}).catch(()=>{});
+  await authed(`/rest/v1/payroll_journal_records?invoice_id=eq.${invoiceId}`,{method:"DELETE",headers:{Prefer:"return=minimal"}}).catch(()=>{});
   const r=await authed(`/rest/v1/invoices?id=eq.${invoiceId}`,{method:"DELETE",headers:{Prefer:"return=minimal"}});
   return r;
 }
