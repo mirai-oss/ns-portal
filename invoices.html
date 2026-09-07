@@ -5602,35 +5602,68 @@ async function payrollLoad(){
     const r=await authed("/rest/v1/stores?select=id,name&order=name");
     PAYROLL_STATE.stores=(r.ok&&Array.isArray(r.body))?r.body:[];
   }
-  // 給与明細PDF（担当Bが用意したStorageバケット payroll-pdfs・{user_id}/{year_month}.pdf規約）が
-  // この月・この従業員分に既にあるかを一括で確認し、一覧に📎バッジを出せるようにする
-  const pdfChecks=await Promise.all(PAYROLL_STATE.rows.map(row=>payrollCheckPdfExists(row.user_id,ym)));
-  PAYROLL_STATE.rows.forEach((row,i)=>{ row._hasPdf=pdfChecks[i]; });
+  // 給与明細PDF（担当Bが用意したStorageバケット payroll-pdfs・{user_id}/{year_month}[_n].pdf規約。
+  // 2026-09-07: 複数枚対応のためファイル一覧を保持するよう変更）が
+  // この月・この従業員分に既にあるかを一括で確認し、一覧に📎バッジ（件数つき）を出せるようにする
+  const pdfLists=await Promise.all(PAYROLL_STATE.rows.map(row=>payrollListPdfFiles(row.user_id,ym)));
+  PAYROLL_STATE.rows.forEach((row,i)=>{ row._pdfFiles=pdfLists[i]; row._hasPdf=pdfLists[i].length>0; });
 }
-// payroll-pdfsバケット内に{userId}/{yearMonth}.pdfが存在するか（一覧表示用の軽い存在確認）
-async function payrollCheckPdfExists(userId,yearMonth){
+// 2026-09-07修正：担当Bスレッドからの依頼「給与明細PDFの複数枚アップロードに対応してほしい
+// （事業所ごとに明細が分かれていて3〜4枚になる人もいる）」に対応。nippo側は既にpayroll-pdfs
+// バケットへ{userId}/{yearMonth}.pdf・{yearMonth}_2.pdf・{yearMonth}_3.pdf...という連番規約で
+// 複数枚保存できるようになっている（1枚目は既存の固定パスのまま後方互換）。従来この画面は
+// 1枚目の固定パスしか見ておらず、2枚目以降の存在確認・取得・添付・削除ができなかった。
+// storage.list(prefix:'{userId}/')でその従業員の全ファイルを取得し、正規表現で対象月の
+// ファイル（本体＋連番）だけを絞り込む共通ヘルパーに一本化した
+async function payrollListPdfFiles(userId,yearMonth){
   const s=sess.get();
   const r=await fetch(`${SUPA_URL}/storage/v1/object/list/payroll-pdfs`,{
     method:"POST",
     headers:{apikey:SUPA_KEY,Authorization:"Bearer "+(s?s.at:""),"Content-Type":"application/json"},
-    body:JSON.stringify({prefix:`${userId}/`,search:`${yearMonth}.pdf`}),
+    body:JSON.stringify({prefix:`${userId}/`,limit:100}),
   });
-  if(!r.ok) return false;
+  if(!r.ok) return [];
   const list=await r.json().catch(()=>[]);
-  return Array.isArray(list)&&list.some(x=>x.name===`${yearMonth}.pdf`);
+  if(!Array.isArray(list)) return [];
+  const re=new RegExp(`^${yearMonth.replace(/[.*+?^${}()|[\]\\]/g,"\\$&")}(?:_(\\d+))?\\.pdf$`);
+  return list.filter(x=>re.test(x.name)).sort((a,b)=>{
+    const na=Number((a.name.match(re)||[])[1]||1), nb=Number((b.name.match(re)||[])[1]||1);
+    return na-nb;
+  }).map(x=>x.name);
 }
-// payroll-pdfsから実際のPDFをbase64で取得（登録直前の証憑添付用。無ければnull）
-async function payrollFetchPdfBase64(userId,yearMonth){
+// payroll-pdfsバケット内にこの月・この従業員分のPDFが1枚でもあるか（一覧表示用の軽い存在確認。
+// 既存の呼び出し元との後方互換のため真偽値のまま残す）
+async function payrollCheckPdfExists(userId,yearMonth){
+  const files=await payrollListPdfFiles(userId,yearMonth);
+  return files.length>0;
+}
+// bytes(Uint8Array)→base64（複数ファイル対応のため共通化。2026-09-07）
+function bytesToBase64_(bytes){
+  let binary=""; const chunk=0x8000;
+  for(let i=0;i<bytes.length;i+=chunk) binary+=String.fromCharCode(...bytes.subarray(i,i+chunk));
+  return btoa(binary);
+}
+// payroll-pdfsから指定ファイル名のPDFをbase64で取得（無ければnull）。fileNameを省略すると
+// 従来どおり1枚目固定パス（{yearMonth}.pdf）を見る＝既存呼び出し元との後方互換
+async function payrollFetchPdfBase64(userId,yearMonth,fileName){
   const s=sess.get();
-  const r=await fetch(`${SUPA_URL}/storage/v1/object/payroll-pdfs/${userId}/${yearMonth}.pdf`,{
+  const r=await fetch(`${SUPA_URL}/storage/v1/object/payroll-pdfs/${userId}/${fileName||`${yearMonth}.pdf`}`,{
     headers:{apikey:SUPA_KEY,Authorization:"Bearer "+(s?s.at:"")},
   });
   if(!r.ok) return null;
   const buf=await r.arrayBuffer();
-  const bytes=new Uint8Array(buf);
-  let binary=""; const chunk=0x8000;
-  for(let i=0;i<bytes.length;i+=chunk) binary+=String.fromCharCode(...bytes.subarray(i,i+chunk));
-  return btoa(binary);
+  return bytesToBase64_(new Uint8Array(buf));
+}
+// 2026-09-07新規：担当Bスレッドからの依頼「複数枚のPDFに対応してほしい」に対応。この月・
+// この従業員の全ファイル（{yearMonth}.pdf・_2.pdf・_3.pdf...）をbase64でまとめて取得する。
+// 仕訳登録時の証憑添付・AI読み取り（複数枚を1回のAI呼び出しでまとめて読ませる）の両方で使う
+async function payrollFetchAllPdfBase64(userId,yearMonth){
+  const fileNames=await payrollListPdfFiles(userId,yearMonth);
+  const results=await Promise.all(fileNames.map(async fileName=>{
+    const data=await payrollFetchPdfBase64(userId,yearMonth,fileName);
+    return data?{file_name:fileName,file_data:data}:null;
+  }));
+  return results.filter(Boolean);
 }
 // base64のPDFデータをその場で開ける一時URL（Blob URL）に変換する（2026-09-02追加。
 // ユーザー要望「PDFをここから開けるように・プレビューでも内容を見れるように」に対応。
@@ -5669,13 +5702,15 @@ async function payrollExtractStoreBreakdown(base64){
   if(!stores.length) return {ok:false,error:j.note||"勤務詳細の表が見つかりませんでした"};
   return {ok:true,totals:stores.map(st=>({store:st.store_name,amount:Number(st.amount_total)||0,commute:Number(st.commute_total)||0,count:Number(st.days_count)||0})),note:j.note};
 }
-// payroll-pdfsから証憑を削除（添付間違い等の取り消し用。2026-09-01）
-async function payrollDeletePdf(userId,yearMonth){
+// payroll-pdfsから証憑を削除（添付間違い等の取り消し用。2026-09-01）。
+// 2026-09-07修正：fileNameを指定できるようにし、複数枚のうち1枚だけを個別に削除できるように
+// した（省略時は従来どおり1枚目固定パスを削除＝既存呼び出し元との後方互換）
+async function payrollDeletePdf(userId,yearMonth,fileName){
   const s=sess.get();
   const r=await fetch(`${SUPA_URL}/storage/v1/object/payroll-pdfs`,{
     method:"DELETE",
     headers:{apikey:SUPA_KEY,Authorization:"Bearer "+(s?s.at:""),"Content-Type":"application/json"},
-    body:JSON.stringify({prefixes:[`${userId}/${yearMonth}.pdf`]}),
+    body:JSON.stringify({prefixes:[`${userId}/${fileName||`${yearMonth}.pdf`}`]}),
   });
   return r.ok;
 }
@@ -5787,8 +5822,14 @@ function payrollRowHtml(row){
   else if(draft){ status=`<span class="pr-status warn" title="一時保存済み。編集を再開するには「プレビュー・登録」から開いてください">📝下書き保存中</span>`; }
   else if(asg&&asg.template_id){ status=`<span class="pr-status wait">● パターン設定済み・未登録</span>`; }
   else{ status=`<span class="pr-status na">－ パターン未設定</span>`; }
-  const pdfBadge=row._hasPdf
-    ?`<span title="給与明細PDFあり（登録時に証憑として添付されます）">📎</span> <button class="linkbtn" style="color:var(--blue);font-size:11px;background:none;border:none;cursor:pointer;padding:0" data-payroll-pdf-open="${esc(row.user_id)}" title="PDFを開いて内容を確認">開く</button> <button class="linkbtn" style="color:var(--accent);font-size:11px;background:none;border:none;cursor:pointer;padding:0" data-payroll-pdf-delete="${esc(row.user_id)}" title="添付を間違えたPDFを削除">削除</button>`
+  // 2026-09-07修正：担当Bスレッドからの依頼「複数枚のPDFに対応してほしい（事業所ごとに明細が
+  // 分かれていて3〜4枚になる人もいる）」に対応。1枚だけなら従来どおりの1行表示、複数枚あれば
+  // ファイルごとに開く・削除ボタンを1行ずつ出す（登録時は_hasPdf全体で証憑として全枚数を添付する）
+  const pdfFiles=row._pdfFiles||[];
+  const pdfBadge=pdfFiles.length
+    ?(pdfFiles.length===1
+      ?`<span title="給与明細PDFあり（登録時に証憑として添付されます）">📎</span> <button class="linkbtn" style="color:var(--blue);font-size:11px;background:none;border:none;cursor:pointer;padding:0" data-payroll-pdf-open="${esc(row.user_id)}" data-payroll-pdf-file="${esc(pdfFiles[0])}" title="PDFを開いて内容を確認">開く</button> <button class="linkbtn" style="color:var(--accent);font-size:11px;background:none;border:none;cursor:pointer;padding:0" data-payroll-pdf-delete="${esc(row.user_id)}" data-payroll-pdf-file="${esc(pdfFiles[0])}" title="添付を間違えたPDFを削除">削除</button>`
+      :`<div title="給与明細PDF${pdfFiles.length}枚あり（登録時に全枚数を証憑として添付します）">📎${pdfFiles.length}枚</div>`+pdfFiles.map((fn,i)=>`<div style="font-size:10px;margin-top:2px">${i+1}枚目 <button class="linkbtn" style="color:var(--blue);font-size:10px;background:none;border:none;cursor:pointer;padding:0" data-payroll-pdf-open="${esc(row.user_id)}" data-payroll-pdf-file="${esc(fn)}">開く</button> <button class="linkbtn" style="color:var(--accent);font-size:10px;background:none;border:none;cursor:pointer;padding:0" data-payroll-pdf-delete="${esc(row.user_id)}" data-payroll-pdf-file="${esc(fn)}">削除</button></div>`).join(""))
     :`<span style="color:var(--muted)" title="給与明細PDF未アップロード">－</span>`;
   const bank=payrollBankFor(row.user_id);
   const bankPill=payrollBankPill(row);
@@ -6119,23 +6160,25 @@ function wirePayrollRowActions(){
     PAYROLL_STATE.records=(PAYROLL_STATE.records||[]).filter(rc=>!(rc.user_id===userId&&rc.year_month===PAYROLL_STATE.yearMonth));
     payrollRender(); updateMailSummaryBar();
   });
-  // 2026-09-02: 一覧のPDF列から直接開けるように（ユーザー要望「削除しかできないので開けるように」）
+  // 2026-09-02: 一覧のPDF列から直接開けるように（ユーザー要望「削除しかできないので開けるように」）。
+  // 2026-09-07: data-payroll-pdf-fileで対象ファイルを指定できるようにし、複数枚のうち
+  // どれを開く/削除するかを個別に選べるようにした（省略時は1枚目扱い＝後方互換）
   document.querySelectorAll("[data-payroll-pdf-open]").forEach(el=>el.onclick=async()=>{
-    const userId=el.dataset.payrollPdfOpen;
+    const userId=el.dataset.payrollPdfOpen, fileName=el.dataset.payrollPdfFile;
     el.disabled=true; const orig=el.textContent; el.textContent="開いています…";
-    const b64=await payrollFetchPdfBase64(userId,PAYROLL_STATE.yearMonth);
+    const b64=await payrollFetchPdfBase64(userId,PAYROLL_STATE.yearMonth,fileName);
     el.disabled=false; el.textContent=orig;
     if(!b64){ alert("PDFの取得に失敗しました"); return; }
     window.open(payrollPdfBlobUrl(b64),"_blank");
   });
   document.querySelectorAll("[data-payroll-pdf-delete]").forEach(el=>el.onclick=async()=>{
-    const userId=el.dataset.payrollPdfDelete;
+    const userId=el.dataset.payrollPdfDelete, fileName=el.dataset.payrollPdfFile;
     const row=(PAYROLL_STATE.rows||[]).find(r=>r.user_id===userId);
     const name=(row&&row.user&&row.user.name)||"この従業員";
-    if(!confirm(`${name}さんの${PAYROLL_STATE.yearMonth}分の給与明細PDFを削除しますか？（添付間違い等の取り消し用。削除後は未アップロード扱いに戻ります）`)) return;
+    if(!confirm(`${name}さんの${PAYROLL_STATE.yearMonth}分の給与明細PDF（${fileName}）を削除しますか？（添付間違い等の取り消し用）`)) return;
     el.disabled=true;
-    await payrollDeletePdf(userId,PAYROLL_STATE.yearMonth);
-    if(row) row._hasPdf=false;
+    await payrollDeletePdf(userId,PAYROLL_STATE.yearMonth,fileName);
+    if(row) row._pdfFiles=(row._pdfFiles||[]).filter(f=>f!==fileName), row._hasPdf=row._pdfFiles.length>0;
     payrollRender();
   });
   // 2026-09-02: プルダウン(select)から検索入力(input+datalist)に変更したため、値の受け渡しを
@@ -6533,7 +6576,10 @@ async function payrollOpenPreview(userId){
   // 2026-09-05修正：ユーザー要望「摘要のデフォルトに従業員名も入れてほしい（例: ○月分給与　田中　太郎）」
   // に対応。既定文言を1箇所にまとめ、placeholder・伝票プレビュー・登録payloadの3箇所で共通利用する
   const defaultRemark=`${PAYROLL_STATE.yearMonth}分給与　${name}`;
-  const pdfBase64=await payrollFetchPdfBase64(userId,PAYROLL_STATE.yearMonth);
+  // 2026-09-07：給与明細PDFが複数枚（事業所ごとに分かれている等）ある従業員に対応。
+  // 全ファイルを取得し、プレビュー・AI読み取り・MF添付のいずれも「1枚目」だけでなく全枚扱う
+  const pdfFiles=await payrollFetchAllPdfBase64(userId,PAYROLL_STATE.yearMonth);
+  const pdfBase64=pdfFiles[0]?pdfFiles[0].file_data:null; // AI読み取り（参考値）は当面1枚目のみ対象
   // 2026-09-02: PDFを見ながら金額を修正できるよう、以降は毎回branchesから合計を計算し直す
   // （固定のtotalDebit/totalCredit定数にはしない＝編集後に古い値のまま参照してしまう事故を防ぐ）
   // debitLabel/creditLabel（入力欄の文字列）を基準に集計する。b.debit/b.creditは登録直前の
@@ -6597,13 +6643,15 @@ async function payrollOpenPreview(userId){
   // （ユーザー要望「プレビューでPDFの内容も見れるように」「左にPDF・右で見ながら確認できるように」
   // 「PDFをもう少し大きく見やすく」に対応。PDF側を広めの比率にし、モーダル自体も横幅を拡大）。
   // 既に取得済みのbase64をその場でBlob URLに変換するだけなので追加の通信は発生しない
-  const pdfUrl=pdfBase64?payrollPdfBlobUrl(pdfBase64):null;
+  // 複数枚ある場合は、それぞれをBlob URLに変換して1枚ずつ折りたたみ表示する
+  const pdfUrls=pdfFiles.map(f=>({file_name:f.file_name,url:payrollPdfBlobUrl(f.file_data)}));
+  const pdfUrl=pdfUrls[0]?pdfUrls[0].url:null;
   const {debit:initDebit,credit:initCredit}=calcTotals();
   const bodyContent=`
     ${usingDraft?`<div class="err msg-ok" style="margin-bottom:8px">📝 一時保存していた下書きから再開しました（${fmtDT(draft.updated_at)}保存分）</div>`:""}
     <div class="ai-field" style="max-width:220px;margin-bottom:10px"><small>会計計上日</small><input id="payroll-date" type="date" value="${(usingDraft&&draft.transaction_date)?draft.transaction_date:payrollLastDayOfMonth(PAYROLL_STATE.yearMonth)}"></div>
     <div style="font-size:12px;color:var(--muted);margin-bottom:8px">対象年月: <b>${esc(PAYROLL_STATE.yearMonth)}</b>　テンプレート: <b>${esc(template.label)}</b></div>
-    <div style="font-size:12px;margin-bottom:8px;color:${pdfBase64?"var(--m-green)":"var(--m-amber)"}">${pdfBase64?"📎 給与明細PDFが見つかりました。登録と同時にマネーフォワードの証憑として添付します":"⚠️ この従業員・この月の給与明細PDFが見つかりません（未アップロード）。証憑添付なしで登録します。上の「まとめてアップロード」から追加できます"}</div>
+    <div style="font-size:12px;margin-bottom:8px;color:${pdfBase64?"var(--m-green)":"var(--m-amber)"}">${pdfFiles.length>1?`📎 給与明細PDFが${pdfFiles.length}枚見つかりました。登録と同時にマネーフォワードの証憑として全て添付します`:pdfBase64?"📎 給与明細PDFが見つかりました。登録と同時にマネーフォワードの証憑として添付します":"⚠️ この従業員・この月の給与明細PDFが見つかりません（未アップロード）。証憑添付なしで登録します。上の「まとめてアップロード」から追加できます"}</div>
     <div class="mfj-balance" style="margin:0 0 10px">
       <div class="box"><small>借方合計</small><b id="payroll-preview-debit-total">${yen(initDebit)}</b></div>
       <div class="box"><small>貸方合計</small><b id="payroll-preview-credit-total">${yen(initCredit)}</b></div>
@@ -6642,17 +6690,17 @@ async function payrollOpenPreview(userId){
   modal.innerHTML=`<div class="modal" style="max-width:${pdfUrl?"1300px":"1200px"}">
     <div class="mhead"><h2>🧾 給与仕訳プレビュー — ${esc(name)}</h2><button class="linkbtn" id="payrollPreviewClose" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:13px">閉じる ×</button></div>
     ${pdfUrl?`<details open style="margin-bottom:14px">
-      <summary style="cursor:pointer;font-size:12px;color:var(--muted);font-weight:700">📎 給与明細PDF（見ながら金額を確認できます・クリックで折りたたみ）</summary>
-      <iframe src="${esc(pdfUrl)}" title="給与明細PDF" style="width:100%;height:50vh;border:1px solid var(--line);border-radius:8px;margin-top:8px"></iframe>
-      <div style="margin-top:8px"><button id="payroll-preview-ocr">🤖 AIで事業所別の金額・交通費を読み取る（参考値）</button></div>
+      <summary style="cursor:pointer;font-size:12px;color:var(--muted);font-weight:700">📎 給与明細PDF${pdfUrls.length>1?`（${pdfUrls.length}枚。見ながら金額を確認できます・クリックで折りたたみ）`:"（見ながら金額を確認できます・クリックで折りたたみ）"}</summary>
+      ${pdfUrls.map((f,i)=>`${pdfUrls.length>1?`<div style="font-size:11px;color:var(--muted);margin-top:${i===0?"8":"14"}px">${i+1}枚目：${esc(f.file_name)}</div>`:""}<iframe src="${esc(f.url)}" title="給与明細PDF ${i+1}" style="width:100%;height:${pdfUrls.length>1?"36vh":"50vh"};border:1px solid var(--line);border-radius:8px;margin-top:4px"></iframe>`).join("")}
+      <div style="margin-top:8px"><button id="payroll-preview-ocr">🤖 AIで事業所別の金額・交通費を読み取る（参考値${pdfUrls.length>1?"・1枚目のみ対象":""}）</button></div>
       <div id="payroll-preview-ocr-result" style="margin-top:6px"></div>
     </details>${bodyContent}`:bodyContent}
   </div>`;
   document.body.appendChild(modal);
   pushNav({modal:true});
   modal.onclick=e=>{ if(e.target===modal) history.back(); };
-  if(pdfUrl){
-    const revoke=()=>URL.revokeObjectURL(pdfUrl);
+  if(pdfUrls.length){
+    const revoke=()=>pdfUrls.forEach(f=>URL.revokeObjectURL(f.url));
     $("payrollPreviewClose").addEventListener("click",revoke);
     $("payrollPreviewBack").addEventListener("click",revoke);
   }
@@ -6841,7 +6889,8 @@ async function payrollOpenPreview(userId){
       })),
       transaction_date: $("payroll-date").value,
       remark:`${PAYROLL_STATE.yearMonth}分給与（${name}）`,
-      voucher_files: pdfBase64?[{file_name:`給与明細_${name}_${PAYROLL_STATE.yearMonth}.pdf`,file_data:pdfBase64}]:[],
+      // 2026-09-07：複数枚ある場合は全て証憑として添付する（従来は1枚目のみ）
+      voucher_files: pdfFiles.map((f,i)=>({file_name:`給与明細_${name}_${PAYROLL_STATE.yearMonth}${pdfFiles.length>1?`_${i+1}`:""}.pdf`,file_data:f.file_data})),
     };
     const {ok,body:j}=await mfCall("create_standalone",payload);
     if(!ok){ pmsg.textContent=j.error||"登録に失敗しました"; $("payrollPreviewSubmit").disabled=false; return; }
