@@ -6,6 +6,12 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
+**★★★★2026-09-07（担当C実行スレッド・続き60）請求書の振込待ちに「引き落とし」「現金払い」を追加**: ユーザー要望「請求書の振込待ちのところで、引落とし・現金払いを選択できるようにしてほしい。引き落としと現金払いの場合は、振り込み口座登録してタスクと同じく振り込み準備中になるようにしてほしい。そして、引き落とし完了後にタスク完了されるように」に対応。
+- 給与の振込先口座（`payroll_bank_accounts`）に既にある`payment_method`と同じ考え方で、取引先の振込先口座（`vendor_bank_accounts`）にも`payment_method`列（bank_transfer/direct_debit/cash・既定bank_transfer）を追加（SQLマイグレーション）。`vendor-master` Edge Function（`upsert_bank_account`）で受け取り保存。
+- 振込先口座の登録・編集フォーム（請求書詳細④振込カード・設定タブ取引先マスタの両方）に支払方法セレクトを追加。銀行振込以外を選ぶと銀行コード等の入力が不要になる（`payrollOpenBankModal`の「現金手渡し」パターンを踏襲）。
+- 既存の「振込一覧」タブの仕組み（CSV出力・振込完了→`fireInvoiceEvent(...,"payment_completed")`で本部タスク工程を完了）はそのまま活用。引き落とし・現金払いの行はCSV出力対象からは除外しつつ選択自体はブロックせず、「✅ 選択を振込済みにする」で完了にできる＝これが「引き落とし完了後にタスク完了」の要件をそのまま満たす（新規の完了経路は作らず、既存の仕組みに支払方法の概念を差し込んだだけ）。
+- ローカルブラウザで一覧テーブル（3方式混在）・支払方法トグルの見た目と動作を確認済み。コミット`b1ad102`push・デプロイ済み。TK-103・100%。実機でのユーザー確認待ち。
+
 **★★★2026-09-07（担当Aスレッド・続き）tori-dashboard: PL画面だけ媒体販促費（自動連携）を除外できる機能を追加（実装完了・【要ユーザー操作】GAS再デプロイ待ち）**: ユーザー要望「媒体販促費（自動）を実際の販売促進費を入力し、終わった後にPLのところだけ削除できるようにしたい。ダッシュボードのところはそのままで」に対応。PL画面（単月表示・店舗1つ選択時のみ）に、店舗×月単位で「広告費（自動連携）」をPL集計から除外できるトグルを追加。媒体別画面・推移分析タブ（ダッシュボード側）は無改修（呼び出し元を分けて影響範囲を限定）。詳細は[tori-dashboard/HANDOFF.md](../tori-dashboard/HANDOFF.md)「2026-09-07（担当A実行スレッド・続き）PL画面だけ媒体販促費（自動連携）を除外できる機能を追加」参照。コミット`7d8e0bb`+`462b194`・`app.js?v=179`。**`gas/Code.gs`を変更したため、ユーザーによる手動デプロイが必要（デプロイを管理→編集→新バージョン→デプロイ）。デプロイ後`ping`のverが`a6p9`になっているか確認**。実機動作確認もユーザー待ち。
 
 **★★★2026-09-07（担当C実行スレッド・続き59）請求書削除で「削除に失敗しました」となるバグを修正（給与仕訳とは無関係の別件）**: ユーザーから実機スクリーンショット「mirai-oss.github.io の内容：削除に失敗しました」の報告。テストデータ請求書（取引先名「っhbhbhbhbhbhbh」）をSQLで特定し、`invoices`を参照する外部キー制約を持つ全テーブルを`information_schema`で洗い出したところ、`deleteInvoiceRecord()`が事前削除していた`invoice_pl_reflections`・`vendor_bank_account_change_requests`の2テーブル以外に、`invoice_attachments`・`invoice_comments`・`payroll_journal_records`の3テーブルもON DELETE NO ACTIONで未対応だったと判明（`invoice_stores`・`invoice_task_events`はON DELETE CASCADEのため元から問題無し）。報告のあった請求書は`invoice_attachments`に1件残っておりそれが直接原因と特定。この3テーブルの事前削除を追加し、修正後のシーケンスを実際にSQLで実行して当該テストデータの削除まで完了させて確認済み。コミット`a9e4a4f`push・デプロイ済み。この関数は請求書一覧の🗑ボタン・詳細モーダルの削除ボタン両方から共通で呼ばれているため、両方の削除経路に効く。
@@ -7274,3 +7280,24 @@ if(modal) modal.remove();
 この関数（`deleteInvoiceRecord`）は請求書一覧の🗑ボタン（`unifiedDeleteInvoice`経由）・請求書詳細モーダルの「この請求書を削除」ボタン（`iv-delete`経由）の両方から共通で呼ばれているため、今回の修正はどちらの削除経路にも効く。
 
 構文チェック（`node --check`）済み・コミット`a9e4a4f`push済み・`git diff origin/main --stat`で空（クリーン同期）確認済み・GitHub Pagesへの反映も確認済み。実際にSQL上で削除の成功まで確認済みのため、実機でも同様に削除できるはず。
+
+## 2026-09-07（担当C実行スレッド・続き60）
+
+続き59をユーザーに確認してもらい成功。続けて新規要望「請求書の振り込み待ちのところで、引落とし、現金払い、を選択できるようにしてほしい！引き落としと現金払いの場合は、振り込み口座登録してタスクと同じく振り込み準備中になるようにしてほしい！そして、引き落とし完了後にタスク完了されるように」を受け対応した。
+
+**現状調査**: `invoicePaymentTabHtml()`（請求書詳細④振込カード）・「振込一覧」タブ（`renderTransfersTab`/`transferRowHtml`/`transferExportCsv`/`transferMarkPaid`）の実装を確認。既存の状態遷移は`invoices.payment_status`（not_ready→wait→csv→paid）＋`payment_verified_at`の組み合わせで管理されており、`mf_journal_id`が付いた（会計登録済み）請求書に、取引先の現在有効な口座（`vendor_bank_accounts`、`is_current=true`）が登録されていることが「振込一覧へ追加」できる条件（`noAccountBlock`）になっていた。振込完了（`transferMarkPaid`）は選択した請求書を`payment_status=paid`にし、`fireInvoiceEvent(id,"payment_completed")`を呼んで本部タスク工程を自動完了させる仕組みが既にあった。給与側（`payroll_bank_accounts`）には既に`payment_method`（bank_transfer/cash）の概念があり、取引先側（`vendor_bank_accounts`）にはこれが無かった、という違いを特定した。
+
+**設計方針**: 給与側の`payment_method`の考え方を、取引先の振込先口座にもそのまま輸入する（`direct_debit`＝引き落としを新たに加える）。振込完了→本部タスク完了の仕組みは支払方法を問わず`transferMarkPaid()`が共通で使えるため、この部分は変更不要と判断した（＝「引き落とし完了後にタスク完了されるように」という要望は、引き落としの請求書も同じ「振込一覧」の「✅選択を振込済みにする」ボタンで完了できるようにするだけで自然に満たされる）。
+
+**実装**:
+- SQLマイグレーション（`2026-09-07_vendor_bank_accounts_payment_method.sql`）: `vendor_bank_accounts`に`payment_method`列（'bank_transfer'|'direct_debit'|'cash'、既定'bank_transfer'、CHECK制約付き）を追加。
+- `vendor-master` Edge Function（`upsert_bank_account`）: `account.payment_method`を受け取り保存するよう変更。
+- `bankAccountEditFormHtml()`（請求書詳細④振込カードの口座登録・編集フォーム）・設定タブ取引先マスタの`vbLoadAccountsForVendor()`の追加フォーム、両方に支払方法セレクト（銀行振込／引き落とし／現金払い）を追加。銀行振込以外を選ぶと、銀行コード等の入力欄自体を隠し、保存時のバリデーション（銀行コード4桁・支店コード3桁の必須チェック）もスキップする（`payrollOpenBankModal`の「現金手渡し」トグルと同じUXパターン）。
+- `invoicePaymentTabHtml()`: 口座情報の表示を、銀行振込のときは従来どおり銀行名・支店名等、それ以外は支払方法バッジ＋「銀行口座の登録は不要です」に分岐。「銀行コード・支店コードが未登録」警告は銀行振込のときだけ出すよう修正（引き落とし・現金払いは口座情報が無くて正しいため、誤ってエラー扱いしないように）。
+- 「振込一覧」タブ（`transferRowHtml`）: 支払方法列を新設。引き落とし・現金払いの行は銀行・支店・口座番号の3列を「口座登録不要」にまとめる（`colspan="3"`）。従来「銀行コード・支店コードが未登録」でチェックボックスを無効化していたロジックは銀行振込のときだけに限定し、引き落とし・現金払いの行は選択・「振込済みにする」の対象にできるようにした。
+- `transferExportCsv()`: CSV出力の対象を明示的に`payment_method==="bank_transfer"`の行だけに絞り込み、引き落とし・現金払いだけを選んでCSV出力しようとした場合は「〇件は引き落とし・現金払いのため対象外です」と分かりやすく案内するようにした。
+- 設定タブ取引先マスタの口座一覧（`vbLoadAccountsForVendor`）にも支払方法列を追加し、同じ「口座登録不要」表示に対応。
+
+**検証**: ローカルに実際のCSSを使い、振込一覧テーブル（銀行振込1件・引き落とし1件・現金払い1件の混在）と、支払方法セレクトのトグル動作（現金払いを選ぶと口座入力欄が隠れる）を再現したページを作成し、ブラウザで実際に確認した。列のcolspanがずれていないか（1箇所、`vbLoadAccountsForVendor`側で最初colspan=6と書いてしまい名義列が1つ足りなくなっていたミスを、コードを見直して発見・colspan=7に修正）も確認済み。
+
+構文チェック（`node --check`・Edge Functionは`esbuild --bundle`）済み・コミット`b1ad102`push済み・`git diff origin/main --stat`で空（クリーン同期）確認済み・GitHub Pagesへの反映・Edge Functionのデプロイも確認済み。ai-cockpit新規`TK-103`を100%で記録。実機でのユーザー確認待ち。
