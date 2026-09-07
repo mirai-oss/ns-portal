@@ -6,6 +6,8 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
+**★★★2026-09-07（担当C実行スレッド・続き59）請求書削除で「削除に失敗しました」となるバグを修正（給与仕訳とは無関係の別件）**: ユーザーから実機スクリーンショット「mirai-oss.github.io の内容：削除に失敗しました」の報告。テストデータ請求書（取引先名「っhbhbhbhbhbhbh」）をSQLで特定し、`invoices`を参照する外部キー制約を持つ全テーブルを`information_schema`で洗い出したところ、`deleteInvoiceRecord()`が事前削除していた`invoice_pl_reflections`・`vendor_bank_account_change_requests`の2テーブル以外に、`invoice_attachments`・`invoice_comments`・`payroll_journal_records`の3テーブルもON DELETE NO ACTIONで未対応だったと判明（`invoice_stores`・`invoice_task_events`はON DELETE CASCADEのため元から問題無し）。報告のあった請求書は`invoice_attachments`に1件残っておりそれが直接原因と特定。この3テーブルの事前削除を追加し、修正後のシーケンスを実際にSQLで実行して当該テストデータの削除まで完了させて確認済み。コミット`a9e4a4f`push・デプロイ済み。この関数は請求書一覧の🗑ボタン・詳細モーダルの削除ボタン両方から共通で呼ばれているため、両方の削除経路に効く。
+
 **★★2026-09-07（担当C実行スレッド・続き58）補助科目の候補を選択中の勘定科目に連動して絞り込むよう改善＋文字サイズ修正（続き57の追加フィードバック対応）**: 続き57で分離した補助科目欄について、ユーザーから①「マネーフォワードのように、補助科目は選んだ勘定科目で使ってる補助科目しか表示されないようにできない？」②「補助科目の文字が小さくて薄いので、勘定科目か部門と同じサイズで」の2件フィードバック。
 - ①: 補助科目の入力候補が全科目横断（重複除去）の一覧だったため、「雑給」の欄に無関係な銀行口座の補助科目（代表/PayPay/964等）まで出てきていた。`PAYROLL_STATE.subAccountsByAccountName`（勘定科目名→補助科目名リストのMap）を新設し、行・借方貸方ごとに個別のdatalist要素を持たせ、勘定科目欄への入力のたびにその行のdatalistの中身だけをその場で選択中の科目の候補に差し替えるよう変更（`rerenderEntries()`で全体を作り直すと入力中の欄がフォーカスを失うため、datalistだけをピンポイント更新）。
 - ②: `.pet-acc-sub`のCSSをfont-size:10px+ミュートカラーから、部門欄と同じfont-size:12px・通常の文字色に変更。
@@ -7256,3 +7258,17 @@ if(modal) modal.remove();
 **検証**: ローカルに、実際のCSS＋簡略化したJSロジック（`accInput`/`wireEntries`の該当部分をそのままコピー）を使った再現ページを作成し、ブラウザで実際に勘定科目欄へ「旅費交通費」と入力→補助科目のdatalistが「通勤手当交通費」「出張旅費」（この科目専用の候補）だけに絞り込まれ、無関係な候補が消えることを確認した。文字サイズも部門欄と揃ったことを画面で確認済み。
 
 構文チェック（`node --check`）済み・コミット`f59c694`push済み・`git diff origin/main --stat`で空（クリーン同期）確認済み・GitHub Pagesへの反映も確認済み。実機でのユーザー確認待ち。
+
+## 2026-09-07（担当C実行スレッド・続き59）
+
+続き58をユーザーに確認してもらったところ「素晴らしい！できたよ！」と成功報告。続けて別件、実機スクリーンショット「mirai-oss.github.io の内容：削除に失敗しました」（請求書一覧の🗑ボタンでテストデータ請求書を削除しようとしたら失敗した、というアラート）の報告を受けた。給与仕訳とは無関係の、請求書一覧・削除機能側の不具合。
+
+**調査**: スクリーンショットから該当行（取引先名「っhbhbhbhbhbhbh」・請求書番号「s」・金額¥1,000・振込対象外）を特定し、SQLで`id=45bc3828-e9dc-49e8-a9ab-af9708696081`の請求書と確認。`deleteInvoiceRecord()`（2026-09-04新規実装。ユーザー要望「テストで入力してる請求書を削除できるように」に対応した機能）の実装を確認したところ、`invoices`テーブルへの`DELETE`実行前に`invoice_pl_reflections`（PL反映実績）・`vendor_bank_account_change_requests`（口座変更申請）の2テーブルだけを事前削除する作りだった。
+
+`information_schema.table_constraints`/`key_column_usage`/`constraint_column_usage`を使い、`invoices.id`を参照する外部キー制約を持つ全テーブルを機械的に洗い出したところ、実際には**7テーブル**が参照していることが判明: `payroll_journal_records`・`invoice_pl_reflections`（対応済み）・`vendor_bank_account_change_requests`（対応済み）・`invoice_attachments`・`invoice_comments`・`invoice_task_events`・`invoice_stores`。さらに`information_schema.referential_constraints`で各制約の`delete_rule`を確認したところ、`invoice_stores`・`invoice_task_events`は`ON DELETE CASCADE`（invoices削除時に自動で一緒に消える＝対応不要）だったが、`invoice_attachments`・`invoice_comments`・`payroll_journal_records`の3テーブルは`ON DELETE NO ACTION`（参照行が残っていると削除自体がブロックされる）で、しかも`deleteInvoiceRecord()`側が未対応だった。報告のあった請求書を実際に調べたところ、`invoice_attachments`に1件（証憑ファイルの添付記録）が残っており、これが直接の原因と特定できた。
+
+**修正**: `deleteInvoiceRecord()`に、`invoice_attachments`・`invoice_comments`・`payroll_journal_records`の3テーブルの事前削除（ベストエフォート）を追加。修正後の削除シーケンスをSQLで実際に1つずつ実行し、報告のあった請求書（テストデータのため実際に削除して後片付けも兼ねた）がエラーなく削除できること、`invoices`テーブルから該当行が消えたことまで確認済み。
+
+この関数（`deleteInvoiceRecord`）は請求書一覧の🗑ボタン（`unifiedDeleteInvoice`経由）・請求書詳細モーダルの「この請求書を削除」ボタン（`iv-delete`経由）の両方から共通で呼ばれているため、今回の修正はどちらの削除経路にも効く。
+
+構文チェック（`node --check`）済み・コミット`a9e4a4f`push済み・`git diff origin/main --stat`で空（クリーン同期）確認済み・GitHub Pagesへの反映も確認済み。実際にSQL上で削除の成功まで確認済みのため、実機でも同様に削除できるはず。
