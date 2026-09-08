@@ -416,35 +416,39 @@ button,input,select,textarea{font:inherit}
 /* 2026-09-07: ユーザー要望「マネーフォワード会計の複合仕訳入力画面と同じような形・サイズ感・
    入力方法にしたい」に対応。従来の縦積みカード（借方カード→貸方カードを1行ずつ積む）をやめ、
    MF本体の複合仕訳画面と同じ「1明細=1行、借方・貸方の科目/部門/税区分/金額を横並び」の
-   表形式に作り替えた。他のプレビュー（.mfj-preview-*）には影響させないよう、給与仕訳専用の
-   クラス名にしてある */
-.payroll-edit-table{width:100%;border-collapse:collapse;font-size:12px;min-width:1080px}
-.payroll-edit-table th,.payroll-edit-table td{border:1px solid var(--m-line);padding:4px 5px;vertical-align:top}
-.payroll-edit-table thead tr:first-child th{font-size:11px;font-weight:800;padding:5px}
-.payroll-edit-table thead tr:first-child .pet-debit-head{background:var(--blue-soft);color:var(--blue)}
-.payroll-edit-table thead tr:first-child .pet-credit-head{background:var(--green-soft);color:var(--green)}
-.payroll-edit-table thead tr:last-child th{font-size:10px;font-weight:700;color:var(--m-muted);background:var(--bg)}
-.payroll-edit-table .pet-ins{width:26px;text-align:center;vertical-align:middle}
-.payroll-edit-table .pet-ins button{background:none;border:1px solid var(--m-line);border-radius:5px;color:var(--m-muted);cursor:pointer;font-size:12px;width:22px;height:22px;line-height:1}
-.payroll-edit-table .pet-ins button:hover{background:var(--bg);color:var(--accent)}
-.payroll-edit-table .pet-rm{width:20px;text-align:center;vertical-align:middle}
-.payroll-edit-table .pet-rm button{background:none;border:none;color:var(--accent);cursor:pointer;font-size:13px;padding:2px}
-.payroll-edit-table input,.payroll-edit-table select{width:100%;box-sizing:border-box;font-size:12px;padding:4px 5px;border:1px solid var(--m-line);border-radius:4px}
-.payroll-edit-table select{min-width:88px}
-.payroll-edit-table .pet-amt{text-align:right;font-weight:700;font-variant-numeric:tabular-nums;min-width:90px}
-.payroll-edit-table .pet-acc{font-weight:700;min-width:130px}
+   表形式に作り替えた。
+   2026-09-08追加：ユーザー要望「会計の入力フォーマットが変わってやりやすくなったので、
+   請求書・仕訳辞書テンプレートも同じフォーマットにしてほしい」に対応し、同じスタイルを
+   請求書の仕訳作成（.mfj-edit-table）・設定タブの仕訳辞書テンプレート編集（.mft-edit-table）
+   にも適用した（他のプレビュー＝.mfj-preview-*には影響させない。あちらは登録済み仕訳の
+   読み取り専用プレビュー表示で、今回のような入力用の表とは別物のため） */
+.payroll-edit-table,.mfj-edit-table,.mft-edit-table{width:100%;border-collapse:collapse;font-size:12px;min-width:1080px}
+.payroll-edit-table th,.payroll-edit-table td,.mfj-edit-table th,.mfj-edit-table td,.mft-edit-table th,.mft-edit-table td{border:1px solid var(--m-line);padding:4px 5px;vertical-align:top}
+.payroll-edit-table thead tr:first-child th,.mfj-edit-table thead tr:first-child th,.mft-edit-table thead tr:first-child th{font-size:11px;font-weight:800;padding:5px}
+.payroll-edit-table thead tr:first-child .pet-debit-head,.mfj-edit-table thead tr:first-child .pet-debit-head,.mft-edit-table thead tr:first-child .pet-debit-head{background:var(--blue-soft);color:var(--blue)}
+.payroll-edit-table thead tr:first-child .pet-credit-head,.mfj-edit-table thead tr:first-child .pet-credit-head,.mft-edit-table thead tr:first-child .pet-credit-head{background:var(--green-soft);color:var(--green)}
+.payroll-edit-table thead tr:last-child th,.mfj-edit-table thead tr:last-child th,.mft-edit-table thead tr:last-child th{font-size:10px;font-weight:700;color:var(--m-muted);background:var(--bg)}
+.payroll-edit-table .pet-ins,.mfj-edit-table .pet-ins,.mft-edit-table .pet-ins{width:26px;text-align:center;vertical-align:middle}
+.payroll-edit-table .pet-ins button,.mfj-edit-table .pet-ins button,.mft-edit-table .pet-ins button{background:none;border:1px solid var(--m-line);border-radius:5px;color:var(--m-muted);cursor:pointer;font-size:12px;width:22px;height:22px;line-height:1}
+.payroll-edit-table .pet-ins button:hover,.mfj-edit-table .pet-ins button:hover,.mft-edit-table .pet-ins button:hover{background:var(--bg);color:var(--accent)}
+.payroll-edit-table .pet-rm,.mfj-edit-table .pet-rm,.mft-edit-table .pet-rm{width:20px;text-align:center;vertical-align:middle}
+.payroll-edit-table .pet-rm button,.mfj-edit-table .pet-rm button,.mft-edit-table .pet-rm button{background:none;border:none;color:var(--accent);cursor:pointer;font-size:13px;padding:2px}
+.payroll-edit-table input,.payroll-edit-table select,.mfj-edit-table input,.mfj-edit-table select,.mft-edit-table input,.mft-edit-table select{width:100%;box-sizing:border-box;font-size:12px;padding:4px 5px;border:1px solid var(--m-line);border-radius:4px}
+.payroll-edit-table select,.mfj-edit-table select,.mft-edit-table select{min-width:88px}
+.payroll-edit-table .pet-amt,.mfj-edit-table .pet-amt,.mft-edit-table .pet-amt{text-align:right;font-weight:700;font-variant-numeric:tabular-nums;min-width:90px}
+.payroll-edit-table .pet-acc,.mfj-edit-table .pet-acc,.mft-edit-table .pet-acc{font-weight:700;min-width:130px}
 /* 2026-09-07追加：勘定科目・補助科目を別々の入力欄にする際のスタイル（担当Bスレッド経由の
    ユーザー要望「マネーフォワード会計と同じように、勘定科目と補助科目を分けてほしい」対応）。
    マネーフォワード本体の画面と同じく、同じ列内で勘定科目（太字・上）・補助科目（小さめ・下）を
    縦に積んで表示する */
-.payroll-edit-table .pet-acc-group{display:flex;flex-direction:column;gap:2px;min-width:140px}
-.payroll-edit-table .pet-acc-main{font-weight:700}
+.payroll-edit-table .pet-acc-group,.mfj-edit-table .pet-acc-group,.mft-edit-table .pet-acc-group{display:flex;flex-direction:column;gap:2px;min-width:140px}
+.payroll-edit-table .pet-acc-main,.mfj-edit-table .pet-acc-main,.mft-edit-table .pet-acc-main{font-weight:700}
 /* 2026-09-07修正：ユーザー報告「補助科目の文字が小さくて薄いから、勘定科目と同じか部門と
    同じサイズにしてほしい」に対応。部門欄（select）と同じ標準サイズ・通常の文字色にする
    （勘定科目のように太字にはせず、主従の区別だけは残す） */
-.payroll-edit-table .pet-acc-sub{font-size:12px;font-weight:400}
-.payroll-edit-table .pet-remark{min-width:130px}
-.payroll-edit-table .pet-warn{color:var(--m-red);font-size:10px;cursor:help;white-space:nowrap}
+.payroll-edit-table .pet-acc-sub,.mfj-edit-table .pet-acc-sub,.mft-edit-table .pet-acc-sub{font-size:12px;font-weight:400}
+.payroll-edit-table .pet-remark,.mfj-edit-table .pet-remark,.mft-edit-table .pet-remark{min-width:130px}
+.payroll-edit-table .pet-warn,.mfj-edit-table .pet-warn,.mft-edit-table .pet-warn{color:var(--m-red);font-size:10px;cursor:help;white-space:nowrap}
 .mfj-tpl-item{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:9px;border:1px solid var(--m-line);border-radius:9px;margin-bottom:6px;background:var(--bg)}
 .mfj-tpl-item .lbl{font-size:12px;font-weight:700}
 .mfj-tpl-item .sum{font-size:10px;color:var(--m-muted);margin-top:2px}
@@ -3652,20 +3656,39 @@ function wireDetailActions(u){
   const mfjCall=mfCall; // 設定タブと共通化（2026-08-31。トップレベルのmfCall()を参照するだけ）
 
   // 勘定科目の検索用インデックスを構築（datalistの表示名→id の逆引き用）
+  // 2026-09-08修正：ユーザー要望「請求書の仕訳入力も給与仕訳と同じフォーマットにしてほしい」に
+  // 対応するため、勘定科目名だけの候補・勘定科目名→補助科目名リストのMap（選択中の勘定科目に
+  // 連動して補助科目の候補を絞り込むため。payrollOpenPreview()と同じ設計）も一緒に構築する
   function mfjBuildAccountIndex(){
     const map=new Map(); // label -> {account_id, sub_account_id, account_name, sub_account_name}
     let dl="";
+    const accNames=new Set();
+    const subsByAccount=new Map();
+    const subNamesAll=new Set();
     for(const a of (MFJ_STATE.accounts||[])){
       map.set(a.name,{account_id:a.id,sub_account_id:null,account_name:a.name,sub_account_name:null});
       dl+=`<option value="${esc(a.name)}">`;
+      if(a.name) accNames.add(a.name);
+      const names=[];
       for(const sa of (a.sub_accounts||[])){
         const label=`${a.name}/${sa.name}`;
         map.set(label,{account_id:a.id,sub_account_id:sa.id,account_name:a.name,sub_account_name:sa.name});
         dl+=`<option value="${esc(label)}">`;
+        if(sa.name){ names.push(sa.name); subNamesAll.add(sa.name); }
       }
+      if(a.name&&names.length) subsByAccount.set(a.name,names);
     }
     MFJ_STATE.accountLabelMap=map;
     MFJ_STATE.accountDatalistHtml=dl;
+    MFJ_STATE.accountNameDatalistHtml=[...accNames].map(n=>`<option value="${esc(n)}">`).join("");
+    MFJ_STATE.subAccountsByAccountName=subsByAccount;
+    MFJ_STATE.subAccountNamesAll=[...subNamesAll];
+  }
+  // 選択中の勘定科目に紐づく補助科目候補（無ければ全科目横断のフォールバック）
+  function mfjSubAccountOptionsHtml(accountName){
+    const perAccount=MFJ_STATE.subAccountsByAccountName&&MFJ_STATE.subAccountsByAccountName.get((accountName||"").trim());
+    const names=(perAccount&&perAccount.length)?perAccount:(MFJ_STATE.subAccountNamesAll||[]);
+    return names.map(n=>`<option value="${esc(n)}">`).join("");
   }
   function mfjLabelOf(side){ // {account_name, sub_account_name} -> 表示名
     if(!side||!side.account_name) return "";
@@ -3742,6 +3765,12 @@ function wireDetailActions(u){
     if(!accRes.ok){ body.innerHTML=`<div class="err">勘定科目の取得に失敗しました: ${esc(accRes.body.error||"")}${accRes.body.detail?"（詳細: "+esc(JSON.stringify(accRes.body.detail))+"）":""}<br><button id="mfj-retry" style="margin-top:8px">🔄 もう一度試す</button></div>`; if($("mfj-retry")) $("mfj-retry").onclick=mfjRenderInitial; return; }
     if(!searchRes.ok){ body.innerHTML=`<div class="err">過去の仕訳の取得に失敗しました: ${esc(searchRes.body.error||"")}${searchRes.body.detail?"（詳細: "+esc(JSON.stringify(searchRes.body.detail))+"）":""}<br><button id="mfj-retry" style="margin-top:8px">🔄 もう一度試す</button></div>`; if($("mfj-retry")) $("mfj-retry").onclick=mfjRenderInitial; return; }
     const tenantLabel=(tenants||[]).find(t=>t.id===tenantId)?.label||tenantId;
+    // 2026-09-08追加：ユーザー要望「摘要も給料仕分けと同じく、その請求書の○月分　会社名を
+    // 入れて欲しい」に対応。会計計上日（従来どおり支払期限を既定値に使う）の月を使って
+    // 「○月分　会社名」を組み立てる（給与仕訳のbuildRemark()と同じ考え方）。手入力で
+    // 自由に書き換えることもできる（あくまで初期値としての自動入力）
+    const date=(inv&&inv.due_date)||new Date().toISOString().slice(0,10);
+    const monthNum=Number((date||"").split("-")[1])||null;
     MFJ_STATE={
       tenantId, tenantLabel, tenants: tenants||[], autoMatchedFrom: autoMatchedFrom||null,
       mode:"journal", // 既定は①仕訳日記帳から選ぶ。候補が無ければ②仕訳辞書→③直接入力の順で切替
@@ -3753,8 +3782,8 @@ function wireDetailActions(u){
       templates,
       branches: [], // 確定した明細行（複数行=複合仕訳/振替伝票）
       amount: (inv&&inv.amount!=null)?inv.amount:0,
-      remark: vendorName,
-      date: (inv&&inv.due_date)||new Date().toISOString().slice(0,10),
+      remark: vendorName?(monthNum?`${monthNum}月分　${vendorName}`:vendorName):"",
+      date,
     };
     mfjBuildAccountIndex();
     // 過去の仕訳の候補が1件も無ければ、仕訳辞書があればそちらを優先→どちらも無ければ直接入力へ
@@ -3770,29 +3799,45 @@ function wireDetailActions(u){
   function mfjAddBranchRow(){
     const isFirst=!MFJ_STATE.branches.length;
     const amt=isFirst?MFJ_STATE.amount:"";
-    MFJ_STATE.branches.push({debitLabel:"",debitAmount:amt,creditLabel:"",creditAmount:amt,department_id:"",remark:""});
+    MFJ_STATE.branches.push({debitLabel:"",debitAmount:amt,creditLabel:"",creditAmount:amt,department_id:"",tax_id:"",credit_department_id:"",credit_tax_id:"",remark:""});
   }
   // 仕訳辞書・過去の仕訳の複数行をまとめて明細行エディタへ反映し、直接入力モードへ切り替える
   function mfjApplyBranches(branches){
-    MFJ_STATE.branches=branches.length?branches:[{debitLabel:"",debitAmount:MFJ_STATE.amount||"",creditLabel:"",creditAmount:MFJ_STATE.amount||"",department_id:"",remark:""}];
+    MFJ_STATE.branches=branches.length?branches:[{debitLabel:"",debitAmount:MFJ_STATE.amount||"",creditLabel:"",creditAmount:MFJ_STATE.amount||"",department_id:"",tax_id:"",credit_department_id:"",credit_tax_id:"",remark:""}];
     MFJ_STATE.mode="manual";
     mfjRenderForm();
   }
 
-  // 振替伝票入力（マネーフォワードの入力画面と同じ、借方/貸方を横に並べた表形式）の1行分。
+  // 振替伝票入力の1行分。2026-09-08書き換え：ユーザー要望「会計の入力フォーマットが変わって
+  // やりやすくなったので、請求書の仕訳作成も同じフォーマットにしてほしい」に対応し、給与仕訳
+  // （.payroll-edit-table）と全く同じ、マネーフォワード本体の複合仕訳画面に近い表形式
+  // （勘定科目・補助科目・部門・税区分・金額を借方/貸方それぞれ横並びにする）に作り替えた。
   // 借方・貸方どちらか片方だけの入力も可（空欄のまま登録すればその行はその側を持たない明細になる）
   function mfjBranchRowHtml(br,idx){
     const deptOptions=`<option value="">（指定なし）</option>`+MFJ_STATE.departments.map(d=>`<option value="${esc(d.id)}" ${br.department_id===d.id?"selected":""}>${esc(d.name)}</option>`).join("");
+    const creditDeptOptions=`<option value="">（指定なし）</option>`+MFJ_STATE.departments.map(d=>`<option value="${esc(d.id)}" ${br.credit_department_id===d.id?"selected":""}>${esc(d.name)}</option>`).join("");
+    const taxOptionsHtml=(selectedId,side)=>(MFJ_STATE.taxes&&MFJ_STATE.taxes.length)?`<select class="mfj-branch-tax" data-idx="${idx}" data-side="${side}">${`<option value="">（既定）</option>`+MFJ_STATE.taxes.map(t=>`<option value="${esc(t.id)}" ${selectedId===t.id?"selected":""}>${esc(t.name)}</option>`).join("")}</select>`:"";
+    const accInput=side=>{
+      const {account,sub}=splitAccLabel(side==="debit"?br.debitLabel:br.creditLabel);
+      const subDlId=`mfj-subaccount-datalist-${idx}-${side}`;
+      return `<div class="pet-acc-group">
+        <input list="mfj-account-datalist" class="pet-acc-main mfj-branch-accmain" data-idx="${idx}" data-side="${side}" value="${esc(account)}" placeholder="${side==="debit"?"借方":"貸方"}勘定科目（空欄可）">
+        <input list="${subDlId}" class="pet-acc-sub mfj-branch-accsub" data-idx="${idx}" data-side="${side}" value="${esc(sub)}" placeholder="補助科目（任意）">
+        <datalist id="${subDlId}">${mfjSubAccountOptionsHtml(account)}</datalist>
+      </div>`;
+    };
     return `<tr class="mfj-branch-row" data-idx="${idx}">
-      <td class="mfj-rmcell">${MFJ_STATE.branches.length>1?`<button data-mfjrm="${idx}" title="この行を削除">−</button>`:""}</td>
-      <td>
-        <input list="mfj-acc-datalist" class="mfj-branch-debit" data-idx="${idx}" value="${esc(br.debitLabel||"")}" placeholder="借方勘定科目（空欄可）">
-        <select class="mfj-branch-dept" data-idx="${idx}" style="margin-top:4px">${deptOptions}</select>
-      </td>
-      <td><input type="number" class="mfj-branch-debit-amount mfj-amt" data-idx="${idx}" value="${br.debitAmount??""}" placeholder="金額"></td>
-      <td><input list="mfj-acc-datalist" class="mfj-branch-credit" data-idx="${idx}" value="${esc(br.creditLabel||"")}" placeholder="貸方勘定科目（空欄可）"></td>
-      <td><input type="number" class="mfj-branch-credit-amount mfj-amt" data-idx="${idx}" value="${br.creditAmount??""}" placeholder="金額"></td>
-      <td><textarea class="mfj-branch-remark" data-idx="${idx}" placeholder="行ごとの摘要（空欄なら全体の摘要を使用）">${esc(br.remark||"")}</textarea></td>
+      <td class="pet-ins"><button type="button" data-mfjins="${idx}" title="この下に行を追加">＋</button></td>
+      <td>${accInput("debit")}</td>
+      <td><select class="mfj-branch-dept" data-idx="${idx}">${deptOptions}</select></td>
+      <td>${taxOptionsHtml(br.tax_id,"debit")}</td>
+      <td><input type="number" class="pet-amt mfj-branch-debit-amount mfj-amt" data-idx="${idx}" value="${br.debitAmount??""}"></td>
+      <td>${accInput("credit")}</td>
+      <td><select class="mfj-branch-credit-dept" data-idx="${idx}">${creditDeptOptions}</select></td>
+      <td>${taxOptionsHtml(br.credit_tax_id,"credit")}</td>
+      <td><input type="number" class="pet-amt mfj-branch-credit-amount mfj-amt" data-idx="${idx}" value="${br.creditAmount??""}"></td>
+      <td><input class="pet-remark mfj-branch-remark" data-idx="${idx}" value="${esc(br.remark||"")}" placeholder="行ごとの摘要（空欄なら全体の摘要を使用）"></td>
+      <td class="pet-rm">${MFJ_STATE.branches.length>1?`<button data-mfjrm="${idx}" title="この行を削除">✕</button>`:""}</td>
     </tr>`;
   }
 
@@ -3805,14 +3850,45 @@ function wireDetailActions(u){
     if($("mfj-diff-box")) $("mfj-diff-box").className="box "+(totalDebit===totalCredit?"ok":"ng");
   }
 
+  // 2026-09-08書き換え：勘定科目・補助科目の分離（給与仕訳と同じ方式）に伴う配線の作り直し。
+  // 貸方側の部門・税区分も独立して選べるようにした（従来は借方側の部門しか選べなかった）
   function mfjWireBranchRows(){
-    document.querySelectorAll(".mfj-branch-debit").forEach(el=>el.oninput=()=>{ MFJ_STATE.branches[+el.dataset.idx].debitLabel=el.value; });
-    document.querySelectorAll(".mfj-branch-credit").forEach(el=>el.oninput=()=>{ MFJ_STATE.branches[+el.dataset.idx].creditLabel=el.value; });
+    const combineAccLabel=(idx,side)=>{
+      const row=document.querySelector(`.mfj-branch-row[data-idx="${idx}"]`);
+      if(!row) return "";
+      const main=row.querySelector(`.mfj-branch-accmain[data-side="${side}"]`);
+      const sub=row.querySelector(`.mfj-branch-accsub[data-side="${side}"]`);
+      const mainVal=(main&&main.value||"").trim(), subVal=(sub&&sub.value||"").trim();
+      return subVal?`${mainVal}/${subVal}`:mainVal;
+    };
+    document.querySelectorAll(".mfj-branch-accmain").forEach(el=>el.oninput=()=>{
+      const idx=+el.dataset.idx, side=el.dataset.side;
+      const label=combineAccLabel(idx,side);
+      if(side==="debit") MFJ_STATE.branches[idx].debitLabel=label; else MFJ_STATE.branches[idx].creditLabel=label;
+      const dl=document.getElementById(`mfj-subaccount-datalist-${idx}-${side}`);
+      if(dl) dl.innerHTML=mfjSubAccountOptionsHtml(el.value);
+    });
+    document.querySelectorAll(".mfj-branch-accsub").forEach(el=>el.oninput=()=>{
+      const idx=+el.dataset.idx, side=el.dataset.side;
+      const label=combineAccLabel(idx,side);
+      if(side==="debit") MFJ_STATE.branches[idx].debitLabel=label; else MFJ_STATE.branches[idx].creditLabel=label;
+    });
     document.querySelectorAll(".mfj-branch-dept").forEach(el=>el.onchange=()=>{ MFJ_STATE.branches[+el.dataset.idx].department_id=el.value; });
+    document.querySelectorAll(".mfj-branch-credit-dept").forEach(el=>el.onchange=()=>{ MFJ_STATE.branches[+el.dataset.idx].credit_department_id=el.value; });
+    document.querySelectorAll(".mfj-branch-tax").forEach(el=>el.onchange=()=>{
+      const idx=+el.dataset.idx, side=el.dataset.side;
+      if(side==="debit") MFJ_STATE.branches[idx].tax_id=el.value; else MFJ_STATE.branches[idx].credit_tax_id=el.value;
+    });
     document.querySelectorAll(".mfj-branch-remark").forEach(el=>el.oninput=()=>{ MFJ_STATE.branches[+el.dataset.idx].remark=el.value; });
     document.querySelectorAll(".mfj-branch-debit-amount").forEach(el=>el.oninput=()=>{ MFJ_STATE.branches[+el.dataset.idx].debitAmount=el.value; mfjUpdateBalance(); });
     document.querySelectorAll(".mfj-branch-credit-amount").forEach(el=>el.oninput=()=>{ MFJ_STATE.branches[+el.dataset.idx].creditAmount=el.value; mfjUpdateBalance(); });
     document.querySelectorAll("[data-mfjrm]").forEach(el=>el.onclick=()=>{ MFJ_STATE.branches.splice(+el.dataset.mfjrm,1); mfjRenderForm(); });
+    // 2026-09-08追加：給与仕訳と同じく、末尾だけでなく行の間にも追加できるように
+    document.querySelectorAll("[data-mfjins]").forEach(el=>el.onclick=()=>{
+      const idx=+el.dataset.mfjins;
+      MFJ_STATE.branches.splice(idx+1,0,{debitLabel:"",debitAmount:"",creditLabel:"",creditAmount:"",department_id:"",tax_id:"",credit_department_id:"",credit_tax_id:"",remark:""});
+      mfjRenderForm();
+    });
   }
 
   async function mfjRunJournalSearch(kw){
@@ -3904,6 +3980,9 @@ function wireDetailActions(u){
     const totalCredit=MFJ_STATE.branches.reduce((s,b)=>s+(Number(b.creditAmount)||0),0);
     body.innerHTML=`
       <datalist id="mfj-acc-datalist">${MFJ_STATE.accountDatalistHtml||""}</datalist>
+      <datalist id="mfj-account-datalist">${MFJ_STATE.accountNameDatalistHtml||""}</datalist>
+      <!-- 補助科目のdatalistは行・借方貸方ごとに個別（mfj-subaccount-datalist-{idx}-{side}）に
+           生成している（mfjBranchRowHtml参照）。選択中の勘定科目に応じて候補を絞り込むため -->
       ${MFJ_STATE.tenants&&MFJ_STATE.tenants.length>1?`<div class="ai-field" style="margin-bottom:6px;font-size:11px;color:${MFJ_STATE.autoMatchedFrom?"var(--accent)":"var(--muted)"}">登録先: <b>${esc(MFJ_STATE.tenantLabel||"")}</b> <button id="mfj-change-tenant" style="font-size:10px">変更</button>${MFJ_STATE.autoMatchedFrom?`<br>⚠️ 宛先「${esc(MFJ_STATE.autoMatchedFrom)}」から自動選択しました。<b>本当にこの事業者で合っていますか？</b>違う場合は「変更」から選び直してください`:""}</div>`:""}
       <div class="mail-actions" style="margin-bottom:8px">
         <button data-mfjmode="journal" ${mode==="journal"?'class="primary"':""}>📖 過去の仕訳から選ぶ</button>
@@ -3922,18 +4001,18 @@ function wireDetailActions(u){
         <div class="box"><small>貸方合計</small><b id="mfj-credit-total">${yen(totalCredit)}</b></div>
         <div class="box ${totalDebit===totalCredit?"ok":"ng"}" id="mfj-diff-box"><small>差額</small><b id="mfj-diff-amt">${yen(totalDebit-totalCredit)}</b></div>
       </div>
-      <div class="mfj-gridwrap">
-        <table class="mfj-grid">
+      <div style="overflow-x:auto">
+        <table class="mfj-edit-table">
           <thead>
-            <tr><th rowspan="2" style="width:26px"></th><th colspan="2" class="side">借方</th><th colspan="2" class="side" style="background:var(--m-greensoft);color:var(--m-green)">貸方</th><th rowspan="2">摘要（行ごと・任意）</th></tr>
-            <tr><th>勘定科目・部門</th><th>金額</th><th>勘定科目</th><th>金額</th></tr>
+            <tr><th class="pet-ins"></th><th colspan="4" class="pet-debit-head">借方</th><th colspan="4" class="pet-credit-head">貸方</th><th>摘要</th><th class="pet-rm"></th></tr>
+            <tr><th></th><th>勘定科目</th><th>部門</th><th>税区分</th><th>金額</th><th>勘定科目</th><th>部門</th><th>税区分</th><th>金額</th><th></th><th></th></tr>
           </thead>
           <tbody id="mfj-branch-rows">${MFJ_STATE.branches.map((br,i)=>mfjBranchRowHtml(br,i)).join("")}</tbody>
         </table>
       </div>
       <div style="font-size:10px;color:var(--muted);margin-top:4px">💡 各行は借方・貸方のどちらか片方だけでも登録できます（例: 借方2行に分けて、貸方は1行にまとめる）。借方合計と貸方合計さえ一致していれば登録できます</div>
       <div class="mail-actions" style="margin-top:6px">
-        <button id="mfj-add-row">＋ 明細行を追加（振替伝票・複合仕訳の場合）</button>
+        <button id="mfj-add-row">＋ 明細行を末尾に追加</button>
         <button id="mfj-save-template">💾 この内容を仕訳辞書に登録</button>
       </div>
       <div class="ai-grid" style="margin-top:8px">
@@ -4913,20 +4992,39 @@ async function mftLoadAccountsAndDepts(tenantId){
   const [accRes,deptRes]=await perfTimed("mf_accounts_departments",()=>Promise.all([mfCall("accounts",{tenant_id:tenantId}),mfCall("list_departments",{tenant_id:tenantId})]));
   return {accounts:(accRes.ok&&accRes.body.accounts)||[], departments:(deptRes.ok&&deptRes.body.departments)||[], taxes:(deptRes.ok&&deptRes.body.taxes)||[], accountsOk:accRes.ok, accountsError:accRes.body&&accRes.body.error};
 }
+// 2026-09-08修正：ユーザー要望「請求書の仕訳作成・仕訳辞書テンプレートも給与仕訳と同じ
+// フォーマットにしてほしい」に対応するため、勘定科目名だけの候補・勘定科目名→補助科目名
+// リストのMap（選択中の勘定科目に連動して補助科目候補を絞り込むため）も一緒に構築するよう拡張。
+// 戻り値に新しいフィールドを追加しているだけなので、従来どおり{map,dl}だけを使う呼び出し元
+// （給与仕訳のpayrollLoad()）には影響しない
 function mftBuildAccountIndex(accounts){
   const map=new Map(); let dl="";
+  const accNames=new Set(); const subsByAccount=new Map(); const subNamesAll=new Set();
   for(const a of accounts){
     map.set(a.name,{account_id:a.id,sub_account_id:null,account_name:a.name,sub_account_name:null});
     dl+=`<option value="${esc(a.name)}">`;
+    if(a.name) accNames.add(a.name);
+    const names=[];
     for(const sa of (a.sub_accounts||[])){
       const label=`${a.name}/${sa.name}`;
       map.set(label,{account_id:a.id,sub_account_id:sa.id,account_name:a.name,sub_account_name:sa.name});
       dl+=`<option value="${esc(label)}">`;
+      if(sa.name){ names.push(sa.name); subNamesAll.add(sa.name); }
     }
+    if(a.name&&names.length) subsByAccount.set(a.name,names);
   }
-  return {map,dl};
+  const accountNameDatalistHtml=[...accNames].map(n=>`<option value="${esc(n)}">`).join("");
+  return {map,dl,accountNameDatalistHtml,subAccountsByAccountName:subsByAccount,subAccountNamesAll:[...subNamesAll]};
 }
 function mftLabelOf(side){ if(!side||!side.account_name) return ""; return side.sub_account_name?`${side.account_name}/${side.sub_account_name}`:side.account_name; }
+// 2026-09-08追加：勘定科目・補助科目を「勘定科目/補助科目」形式の1本の文字列から分解する共通
+// ヘルパー（給与仕訳・請求書の仕訳作成・仕訳辞書テンプレート編集の3箇所で共通利用するため、
+// トップレベル関数にしてある。店舗名の補助科目自体に"/"を含む場合があるため、最初の"/"だけで
+// 分割し、2つ目以降の"/"は補助科目名の一部として扱う）
+function splitAccLabel(label){
+  const s=String(label||""); const i=s.indexOf("/");
+  return i<0?{account:s,sub:""}:{account:s.slice(0,i),sub:s.slice(i+1)};
+}
 
 // 登録済み仕訳の内容をクリックして確認できるプレビュー（2026-09-03追加。ユーザー要望
 // 「仕分けを登録したら、どんな仕分けにしたかも確認できるように」に対応）。mf-journalの
@@ -5002,8 +5100,9 @@ async function renderMftSection(tenantId){
   MFT_STATE.tenants=tenants; MFT_STATE.activeTenantId=activeTenantId;
   box.innerHTML="読み込み中…（勘定科目・仕訳辞書を確認しています）";
   const {accounts,departments,taxes,accountsOk,accountsError}=await mftLoadAccountsAndDepts(activeTenantId);
-  const {map,dl}=mftBuildAccountIndex(accounts);
+  const {map,dl,accountNameDatalistHtml,subAccountsByAccountName,subAccountNamesAll}=mftBuildAccountIndex(accounts);
   MFT_STATE.accountLabelMap=map; MFT_STATE.accountDatalistHtml=dl; MFT_STATE.departments=departments; MFT_STATE.taxes=taxes;
+  MFT_STATE.accountNameDatalistHtml=accountNameDatalistHtml; MFT_STATE.subAccountsByAccountName=subAccountsByAccountName; MFT_STATE.subAccountNamesAll=subAccountNamesAll;
   // 判定条件（取引先・対象法人・対象店舗）のプルダウン用に取得（2026-09-03・仕訳辞書の拡張）
   const [vendorsRes,corpRes,storesRes]=await Promise.all([
     vendorCall("list_vendors"),
@@ -5110,6 +5209,9 @@ function mftRenderEditor(){
     <div class="card" style="padding:12px;border-color:var(--m-blue)">
       <div class="ai-field"><small>仕訳辞書の名前</small><input id="mft-label" value="${esc(ed.label)}" placeholder="例:【未払金】アルバイト給与（川崎）"></div>
       <datalist id="mft-acc-datalist">${MFT_STATE.accountDatalistHtml||""}</datalist>
+      <datalist id="mft-account-datalist">${MFT_STATE.accountNameDatalistHtml||""}</datalist>
+      <!-- 補助科目のdatalistは行・借方貸方ごとに個別（mft-subaccount-datalist-{idx}-{side}）に
+           生成している（mftBranchRowHtml参照） -->
 
       <div class="card" style="padding:10px;margin-top:10px;background:var(--m-bluesoft)">
         <b style="font-size:11px">🔎 判定条件（この条件に一致した請求書に、この仕訳辞書を自動で提案します。空欄のままなら「よく使う仕訳」としてプリセット選択にのみ使われ、自動照合の対象にはなりません）</b>
@@ -5145,17 +5247,17 @@ function mftRenderEditor(){
           <div class="ai-field"><label style="display:flex;gap:6px;align-items:center;font-size:12px"><input type="checkbox" id="mft-require-review" ${ed.requireHumanReview?"checked":""}>それでも必ず人間確認を必須にする（安全のため既定でON）</label></div>
         </div>
       </div>
-      <div class="mfj-gridwrap" style="margin-top:8px">
-        <table class="mfj-grid">
+      <div style="overflow-x:auto;margin-top:8px">
+        <table class="mft-edit-table">
           <thead>
-            <tr><th rowspan="2" style="width:26px"></th><th colspan="2" class="side">借方</th><th colspan="2" class="side" style="background:var(--m-greensoft);color:var(--m-green)">貸方</th><th rowspan="2">摘要（行ごと・任意）</th><th rowspan="2">給与仕訳での用途（任意）</th></tr>
-            <tr><th>勘定科目・部門・税区分</th><th>金額（任意・空欄可）</th><th>勘定科目・部門・税区分</th><th>金額</th></tr>
+            <tr><th class="pet-ins"></th><th colspan="4" class="pet-debit-head">借方</th><th colspan="4" class="pet-credit-head">貸方</th><th>摘要</th><th>給与仕訳での用途</th><th class="pet-rm"></th></tr>
+            <tr><th></th><th>勘定科目</th><th>部門</th><th>税区分</th><th>金額（任意）</th><th>勘定科目</th><th>部門</th><th>税区分</th><th>金額（任意）</th><th></th><th></th><th></th></tr>
           </thead>
           <tbody id="mft-branch-rows">${ed.branches.map((br,i)=>mftBranchRowHtml(br,i)).join("")}</tbody>
         </table>
       </div>
       <div style="font-size:10px;color:var(--muted);margin-top:4px">💡 借方・貸方はどちらか片方だけの行も作れます（例: 借方2行を貸方1行にまとめる）。金額は空欄のまま登録できます（実際に使うときに毎回入力する想定の場合）。「給与仕訳での用途」を設定すると、💴給与仕訳タブでこのテンプレートを従業員に割り当てたときに、その行の金額（借方・貸方とも設定されていれば両方）を実際の給与データ（固定給・通勤手当・控除・差引支給額）へ自動で置き換えます</div>
-      <div class="mail-actions" style="margin-top:6px"><button id="mft-add-row">＋ 明細行を追加</button></div>
+      <div class="mail-actions" style="margin-top:6px"><button id="mft-add-row">＋ 明細行を末尾に追加</button></div>
       <div class="mail-actions" style="margin-top:10px">
         <button class="primary" id="mft-save">💾 保存</button>
         <button id="mft-cancel">キャンセル</button>
@@ -5164,25 +5266,40 @@ function mftRenderEditor(){
   `;
   mftWireEditor();
 }
+// 2026-09-08書き換え：ユーザー要望「会計の入力フォーマットが変わってやりやすくなったので、
+// 仕訳辞書テンプレートも同じフォーマットにしてほしい」に対応し、給与仕訳・請求書の仕訳作成と
+// 同じ表形式（.mft-edit-table＝.payroll-edit-tableと同じスタイル）に作り替えた
 function mftBranchRowHtml(br,idx){
   const deptOptions=`<option value="">（指定なし）</option>`+(MFT_STATE.departments||[]).map(d=>`<option value="${esc(d.id)}" ${br.department_id===d.id?"selected":""}>${esc(d.name)}</option>`).join("");
   const creditDeptOptions=`<option value="">（指定なし）</option>`+(MFT_STATE.departments||[]).map(d=>`<option value="${esc(d.id)}" ${br.credit_department_id===d.id?"selected":""}>${esc(d.name)}</option>`).join("");
-  // 税区分（2026-09-02追加。2026-09-02追記: 貸方側にも同様に追加＝ユーザー報告
-  // 「貸方のほうは部門とか税率とか出てこない」に対応）: taxes.readスコープでの再認可がまだの
-  // 事業者はMFT_STATE.taxesが空になるため、その場合はプルダウンの代わりに案内文を出す
+  // 税区分（2026-09-02追加）: taxes.readスコープでの再認可がまだの事業者はMFT_STATE.taxesが
+  // 空になるため、その場合はプルダウンの代わりに案内文を出す
   const taxCell=(MFT_STATE.taxes&&MFT_STATE.taxes.length)
-    ?`<select class="mft-tax" data-idx="${idx}" style="margin-top:4px"><option value="">（勘定科目の既定のまま）</option>${MFT_STATE.taxes.map(t=>`<option value="${esc(t.id)}" ${br.tax_id===t.id?"selected":""}>${esc(t.name)}${t.tax_rate!=null?`（${Math.round(t.tax_rate*100)}%）`:""}</option>`).join("")}</select>`
-    :`<div style="font-size:10px;color:var(--muted);margin-top:4px">税率連携が未完了です（設定タブ下部の再認可リンクから）</div>`;
+    ?`<select class="mft-tax" data-idx="${idx}"><option value="">（既定）</option>${MFT_STATE.taxes.map(t=>`<option value="${esc(t.id)}" ${br.tax_id===t.id?"selected":""}>${esc(t.name)}</option>`).join("")}</select>`
+    :`<div style="font-size:10px;color:var(--muted)">未連携</div>`;
   const creditTaxCell=(MFT_STATE.taxes&&MFT_STATE.taxes.length)
-    ?`<select class="mft-credit-tax" data-idx="${idx}" style="margin-top:4px"><option value="">（勘定科目の既定のまま）</option>${MFT_STATE.taxes.map(t=>`<option value="${esc(t.id)}" ${br.credit_tax_id===t.id?"selected":""}>${esc(t.name)}${t.tax_rate!=null?`（${Math.round(t.tax_rate*100)}%）`:""}</option>`).join("")}</select>`
-    :`<div style="font-size:10px;color:var(--muted);margin-top:4px">税率連携が未完了です</div>`;
+    ?`<select class="mft-credit-tax" data-idx="${idx}"><option value="">（既定）</option>${MFT_STATE.taxes.map(t=>`<option value="${esc(t.id)}" ${br.credit_tax_id===t.id?"selected":""}>${esc(t.name)}</option>`).join("")}</select>`
+    :`<div style="font-size:10px;color:var(--muted)">未連携</div>`;
+  const accInput=side=>{
+    const {account,sub}=splitAccLabel(side==="debit"?br.debitLabel:br.creditLabel);
+    const subDlId=`mft-subaccount-datalist-${idx}-${side}`;
+    return `<div class="pet-acc-group">
+      <input list="mft-account-datalist" class="pet-acc-main mft-accmain" data-idx="${idx}" data-side="${side}" value="${esc(account)}" placeholder="${side==="debit"?"借方":"貸方"}勘定科目（空欄可）">
+      <input list="${subDlId}" class="pet-acc-sub mft-accsub" data-idx="${idx}" data-side="${side}" value="${esc(sub)}" placeholder="補助科目（任意）">
+      <datalist id="${subDlId}">${mftSubAccountOptionsHtml(account)}</datalist>
+    </div>`;
+  };
   return `<tr data-idx="${idx}">
-    <td class="mfj-rmcell">${MFT_STATE.editing.branches.length>1?`<button data-mftrm="${idx}" title="この行を削除">−</button>`:""}</td>
-    <td><input list="mft-acc-datalist" class="mft-debit" data-idx="${idx}" value="${esc(br.debitLabel||"")}" placeholder="借方勘定科目（空欄可）"><select class="mft-dept" data-idx="${idx}" style="margin-top:4px">${deptOptions}</select>${taxCell}</td>
-    <td><input type="number" class="mft-debit-amount" data-idx="${idx}" value="${br.debitAmount??""}" placeholder="任意"></td>
-    <td><input list="mft-acc-datalist" class="mft-credit" data-idx="${idx}" value="${esc(br.creditLabel||"")}" placeholder="貸方勘定科目（空欄可）"><select class="mft-credit-dept" data-idx="${idx}" style="margin-top:4px">${creditDeptOptions}</select>${creditTaxCell}</td>
-    <td><input type="number" class="mft-credit-amount" data-idx="${idx}" value="${br.creditAmount??""}" placeholder="任意"></td>
-    <td><textarea class="mft-remark" data-idx="${idx}">${esc(br.remark||"")}</textarea></td>
+    <td class="pet-ins"><button type="button" data-mftins="${idx}" title="この下に行を追加">＋</button></td>
+    <td>${accInput("debit")}</td>
+    <td><select class="mft-dept" data-idx="${idx}">${deptOptions}</select></td>
+    <td>${taxCell}</td>
+    <td><input type="number" class="pet-amt mft-debit-amount" data-idx="${idx}" value="${br.debitAmount??""}" placeholder="任意"></td>
+    <td>${accInput("credit")}</td>
+    <td><select class="mft-credit-dept" data-idx="${idx}">${creditDeptOptions}</select></td>
+    <td>${creditTaxCell}</td>
+    <td><input type="number" class="pet-amt mft-credit-amount" data-idx="${idx}" value="${br.creditAmount??""}" placeholder="任意"></td>
+    <td><input class="pet-remark mft-remark" data-idx="${idx}" value="${esc(br.remark||"")}"></td>
     <td><select class="mft-purpose" data-idx="${idx}">
       <option value="" ${!br.purpose?"selected":""}>（手入力のまま）</option>
       <option value="base_salary" ${br.purpose==="base_salary"?"selected":""}>基本給・固定給</option>
@@ -5190,12 +5307,38 @@ function mftBranchRowHtml(br,idx){
       <option value="deduction" ${br.purpose==="deduction"?"selected":""}>控除・預り金</option>
       <option value="net_pay" ${br.purpose==="net_pay"?"selected":""}>差引支給額</option>
     </select></td>
+    <td class="pet-rm">${MFT_STATE.editing.branches.length>1?`<button data-mftrm="${idx}" title="この行を削除">✕</button>`:""}</td>
   </tr>`;
+}
+// 選択中の勘定科目に紐づく補助科目候補（無ければ全科目横断のフォールバック）
+function mftSubAccountOptionsHtml(accountName){
+  const perAccount=MFT_STATE.subAccountsByAccountName&&MFT_STATE.subAccountsByAccountName.get((accountName||"").trim());
+  const names=(perAccount&&perAccount.length)?perAccount:(MFT_STATE.subAccountNamesAll||[]);
+  return names.map(n=>`<option value="${esc(n)}">`).join("");
 }
 function mftWireEditor(){
   const ed=MFT_STATE.editing;
-  document.querySelectorAll(".mft-debit").forEach(elx=>elx.oninput=()=>{ ed.branches[+elx.dataset.idx].debitLabel=elx.value; });
-  document.querySelectorAll(".mft-credit").forEach(elx=>elx.oninput=()=>{ ed.branches[+elx.dataset.idx].creditLabel=elx.value; });
+  // 2026-09-08書き換え：勘定科目・補助科目の分離（給与仕訳・請求書の仕訳作成と同じ方式）に伴う配線
+  const combineAccLabel=(idx,side)=>{
+    const row=document.querySelector(`#mft-branch-rows tr[data-idx="${idx}"]`);
+    if(!row) return "";
+    const main=row.querySelector(`.mft-accmain[data-side="${side}"]`);
+    const sub=row.querySelector(`.mft-accsub[data-side="${side}"]`);
+    const mainVal=(main&&main.value||"").trim(), subVal=(sub&&sub.value||"").trim();
+    return subVal?`${mainVal}/${subVal}`:mainVal;
+  };
+  document.querySelectorAll(".mft-accmain").forEach(elx=>elx.oninput=()=>{
+    const idx=+elx.dataset.idx, side=elx.dataset.side;
+    const label=combineAccLabel(idx,side);
+    if(side==="debit") ed.branches[idx].debitLabel=label; else ed.branches[idx].creditLabel=label;
+    const dl=document.getElementById(`mft-subaccount-datalist-${idx}-${side}`);
+    if(dl) dl.innerHTML=mftSubAccountOptionsHtml(elx.value);
+  });
+  document.querySelectorAll(".mft-accsub").forEach(elx=>elx.oninput=()=>{
+    const idx=+elx.dataset.idx, side=elx.dataset.side;
+    const label=combineAccLabel(idx,side);
+    if(side==="debit") ed.branches[idx].debitLabel=label; else ed.branches[idx].creditLabel=label;
+  });
   document.querySelectorAll(".mft-dept").forEach(elx=>elx.onchange=()=>{ ed.branches[+elx.dataset.idx].department_id=elx.value; });
   document.querySelectorAll(".mft-tax").forEach(elx=>elx.onchange=()=>{ ed.branches[+elx.dataset.idx].tax_id=elx.value; });
   document.querySelectorAll(".mft-credit-dept").forEach(elx=>elx.onchange=()=>{ ed.branches[+elx.dataset.idx].credit_department_id=elx.value; });
@@ -5205,6 +5348,12 @@ function mftWireEditor(){
   document.querySelectorAll(".mft-debit-amount").forEach(elx=>elx.oninput=()=>{ ed.branches[+elx.dataset.idx].debitAmount=elx.value; });
   document.querySelectorAll(".mft-credit-amount").forEach(elx=>elx.oninput=()=>{ ed.branches[+elx.dataset.idx].creditAmount=elx.value; });
   document.querySelectorAll("[data-mftrm]").forEach(elx=>elx.onclick=()=>{ ed.branches.splice(+elx.dataset.mftrm,1); mftRenderEditor(); });
+  // 2026-09-08追加：給与仕訳・請求書の仕訳作成と同じく、末尾だけでなく行の間にも追加できるように
+  document.querySelectorAll("[data-mftins]").forEach(elx=>elx.onclick=()=>{
+    const idx=+elx.dataset.mftins;
+    ed.branches.splice(idx+1,0,{debitLabel:"",debitAmount:"",creditLabel:"",creditAmount:"",department_id:"",tax_id:"",credit_department_id:"",credit_tax_id:"",remark:"",purpose:""});
+    mftRenderEditor();
+  });
   $("mft-add-row").onclick=()=>{ ed.branches.push({debitLabel:"",debitAmount:"",creditLabel:"",creditAmount:"",department_id:"",tax_id:"",credit_department_id:"",credit_tax_id:"",remark:"",purpose:""}); mftRenderEditor(); };
   $("mft-cancel").onclick=()=>{ MFT_STATE.editing=null; mftRenderBox(); };
   $("mft-save").onclick=mftSaveEditor;
@@ -6997,8 +7146,8 @@ async function payrollOpenPreview(userId){
     // 形式を前提にしているため、そちらは変更しない）。見た目だけ、勘定科目名（最初の"/"より前）と
     // 補助科目名（それ以降。店舗名の補助科目自体に"/"を含む場合があるため、2つ目以降の"/"は
     // 補助科目名の一部として扱う）を2つの入力欄に分けて表示し、どちらかを編集したら元の1本の
-    // 文字列に組み直す
-    const splitAccLabel=label=>{ const s=String(label||""); const i=s.indexOf("/"); return i<0?{account:s,sub:""}:{account:s.slice(0,i),sub:s.slice(i+1)}; };
+    // 文字列に組み直す（splitAccLabel()はトップレベルの共通ヘルパー。2026-09-08：請求書の
+    // 仕訳作成・仕訳辞書テンプレート編集でも同じ関数を使うよう統一した）
     // 2026-09-07修正：補助科目の候補を選択中の勘定科目に連動させるため、行・借方貸方ごとに
     // 個別のdatalist要素を持たせる（勘定科目名を打ち直すたびにwireEntries側でこのdatalistの
     // 中身だけを差し替える＝入力中のフォーカスを失わせずに候補を絞り込める）
