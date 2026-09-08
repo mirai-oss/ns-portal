@@ -58,6 +58,27 @@ const DASH_API_URL = "https://script.google.com/macros/s/AKfycbwW0qhyEr0-uQWTaLg
 // seisan-dashboardのGAS Web App URL（担当A実装・11章で本番デプロイ済み。DASH_API_URLとは別の
 // GASプロジェクト＝別トークンPL_SYNC_TOKENで認証する）
 const SEISAN_API_URL = "https://script.google.com/macros/s/AKfycbzwYN9uSEtcJHSKSVQCoQOrllhO7G6gR-E4dvP-V4o_VdGXr9VQx2mbYYPNyNEFSQCiKg/exec";
+// 2026-09-08新設：ユーザー要望「黒霧屋はPLに反映させるか、精算書に反映させるか選べて、精算書に
+// 反映しないで直でPLに反映させるようにできるようにして欲しい。請求書がトーホーになってる場合には
+// トーホーで支払いしてるから精算書には入れない、請求書がN styleになっていたら立替払いしてるから
+// 精算書に入れる、の定義です」に対応。invoices.html側（plfeeSeisanRoute）と全く同じ判定を
+// サーバー側でも独立して行う（フロントは案内表示・UI制御用、サーバー側はここが最終防衛ライン）。
+//   - seisan_target（完全業務委託店舗。じんべぇ川崎等）→ 常に"seisan"（対象法人に関わらず）
+//   - seisan_pl_categories_targetのみ（黒霧屋 新横浜等。「使い分け」店舗）→
+//       請求書の対象法人が店舗の運営法人（stores.corporation_id）と同じ＝運営法人自身が
+//       直接支払っている（立替ではない）ので"direct"、対象法人が異なる（未設定含む）＝
+//       別法人が立替払いをしている（後で精算が必要）ので"seisan"
+//   - どちらのフラグも無い店舗 → "normal"
+function plSeisanRoute(
+  store: { seisan_target?: boolean; seisan_pl_categories_target?: boolean; corporation_id?: string | null },
+  invoiceCorpId: string | null | undefined,
+): "seisan" | "direct" | "normal" {
+  if (!store) return "normal";
+  if (store.seisan_target) return "seisan";
+  if (store.seisan_pl_categories_target) return (invoiceCorpId && invoiceCorpId === store.corporation_id) ? "direct" : "seisan";
+  return "normal";
+}
+
 // seisan-dashboard側のWeb App呼び出し規約: {fn:'関数名', args:[...]} を1本のPOSTで送るだけ
 // （既存sd_apiCategorizedLines等と同じ形。設計書§5冒頭）
 //
@@ -176,7 +197,7 @@ Deno.serve(async (req: Request) => {
       }
 
       const { data: inv, error: invErr } = await uc.from("invoices")
-        .select("id, email_id, vendor_name").eq("id", invoiceId).maybeSingle();
+        .select("id, email_id, vendor_name, corporation_id").eq("id", invoiceId).maybeSingle();
       if (invErr) return json({ error: "確認に失敗しました: " + invErr.message }, 500);
       if (!inv) return json({ error: "対象が見つからないか権限がありません" }, 403);
 
@@ -189,18 +210,18 @@ Deno.serve(async (req: Request) => {
 
       // ②精算対象店舗との二重計上防止: 精算対象店舗は精算書側で入力すれば別途PLへ自動連携されるため、
       // この経路（DB_PL直接書き込み）の対象には含めない。
-      // 2026-09-05修正：黒霧屋 新横浜のように「運営委託費の自動連携(seisan_target)は対象外だが、
-      // 個別経費のPL反映(seisan_pl_categories_target)だけは精算書経由」という店舗も同じ理由で
-      // 対象外にする必要があるため、どちらかのフラグが立っていれば拒否する
-      // （設計書_業務委託精算書自動連携_2026-09-04.md §14。この判定漏れは今回追加した
-      // seisan_confirmアクションとの整合性を取る過程で発見した既存バグ）
+      // 2026-09-08修正：黒霧屋 新横浜のように「運営委託費の自動連携(seisan_target)は対象外だが、
+      // 個別経費のPL反映(seisan_pl_categories_target)だけは精算書経由」という店舗は、常に拒否するのではなく
+      // plSeisanRoute()で請求書の対象法人から判定する（"seisan"の場合だけ拒否。"direct"＝運営法人自身が
+      // 直接支払っている請求書の場合はここを通す）
       const storeIds = allocations.map((a) => a.store_id).filter(Boolean);
       if (storeIds.length) {
-        const { data: seisanStores, error: seisanErr } = await uc.from("stores")
-          .select("id, name").in("id", storeIds).or("seisan_target.eq.true,seisan_pl_categories_target.eq.true");
+        const { data: candStores, error: seisanErr } = await uc.from("stores")
+          .select("id, name, corporation_id, seisan_target, seisan_pl_categories_target").in("id", storeIds);
         if (seisanErr) return json({ error: "店舗の確認に失敗しました: " + seisanErr.message }, 500);
-        if (seisanStores && seisanStores.length) {
-          const names = seisanStores.map((s: any) => s.name).join("・");
+        const blockedStores = (candStores ?? []).filter((s: any) => plSeisanRoute(s, inv.corporation_id) === "seisan");
+        if (blockedStores.length) {
+          const names = blockedStores.map((s: any) => s.name).join("・");
           return json({ error: `${names}は精算対象店舗のため、ここではPLに反映できません（精算書に入力すると自動でPLにも反映されるため、二重計上になってしまいます）。精算書側で入力してください` }, 400);
         }
       }
@@ -293,21 +314,28 @@ Deno.serve(async (req: Request) => {
       }
 
       const { data: inv, error: invErr } = await uc.from("invoices")
-        .select("id, email_id, vendor_name").eq("id", invoiceId).maybeSingle();
+        .select("id, email_id, vendor_name, corporation_id").eq("id", invoiceId).maybeSingle();
       if (invErr) return json({ error: "確認に失敗しました: " + invErr.message }, 500);
       if (!inv) return json({ error: "対象が見つからないか権限がありません" }, 403);
 
-      // このactionの対象は精算対象店舗のみ（direct route側との二重計上防止の裏返し）
+      // このactionの対象は精算対象店舗のみ（direct route側との二重計上防止の裏返し）。
+      // 2026-09-08修正：黒霧屋のような「使い分け」店舗は、この請求書の対象法人によって
+      // plSeisanRoute()が"direct"（PL直接反映）と判定する場合は、ここ（精算書登録）には
+      // 入れられないようにする（confirm側の拒否と対になる、ユーザー定義の業務ルール）
       const storeIds = allocations.map((a) => a.store_id).filter(Boolean);
       const { data: storeRows, error: storeErr } = await uc.from("stores")
-        .select("id, name, seisan_target, seisan_pl_categories_target, seisan_store_name").in("id", storeIds);
+        .select("id, name, corporation_id, seisan_target, seisan_pl_categories_target, seisan_store_name").in("id", storeIds);
       if (storeErr) return json({ error: "店舗の確認に失敗しました: " + storeErr.message }, 500);
       const storeMap = new Map((storeRows ?? []).map((s: any) => [s.id, s]));
       for (const a of allocations) {
         const s = storeMap.get(a.store_id);
         if (!s) return json({ error: `店舗が見つかりません（${a.store_name}）` }, 400);
-        if (!s.seisan_target && !s.seisan_pl_categories_target) {
+        const route = plSeisanRoute(s, inv.corporation_id);
+        if (route === "normal") {
           return json({ error: `${s.name}は精算対象店舗ではありません。この店舗は「PLへ反映」（直接反映）から登録してください` }, 400);
+        }
+        if (route === "direct") {
+          return json({ error: `${s.name}はこの請求書の対象法人（運営元法人と同じ）では直接支払い扱いのため、業務委託精算書には登録できません。「PLへ反映」（直接反映）から登録してください` }, 400);
         }
         if (!s.seisan_store_name) {
           return json({ error: `${s.name}の「精算書店舗名」が店舗マスタに未設定です。設定タブから設定してから登録してください` }, 400);
