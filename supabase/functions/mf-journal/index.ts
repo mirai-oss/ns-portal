@@ -55,18 +55,51 @@ const userClient = (req: Request) =>
     global: { headers: { Authorization: req.headers.get("Authorization") ?? "" } },
   });
 
-// 今期（4/1始まり）の開始日。MF側は会計期間外の日付をstart_dateに渡すとエラーになるため。
-function fiscalYearStart(): string {
-  const now = new Date();
-  const y = now.getUTCMonth() >= 3 ? now.getUTCFullYear() : now.getUTCFullYear() - 1; // UTC基準の簡易判定（JST運用のみのため実用上問題なし）
-  return `${y}-04-01`;
+// テナントごとの会計期間の開始月。MF側は「日付レンジが登録済みの会計期間をまたぐ／
+// どの期間にも収まらない」とAPIがエラー(invalid_query_parameter_value: "Given date is
+// not matching any accounting periods")を返すため、テナントごとに正しい開始月を
+// 持たせる必要がある。
+// 2026-09-08・ユーザー報告「N-Styleの請求書で仕訳ができない」を機に、実際にMF APIへ
+// 日付レンジを変えながら直接probeして判明した事実:
+//   有限会社トーホーエージェンシー(default) = 4月始まり（4/1〜翌3/31が1期）
+//   株式会社N-Style(nstyle)               = 8月始まり（8/1〜翌7/31が1期）
+// 従来は全テナント一律で4月始まり固定だったため、N-Styleでは当期の検索(fiscalYearStart〜
+// today)そのものが「どの期間にも属さない日付」として毎回失敗していた（2026-09-02のコメントで
+// 「間欠的な失敗」と誤って推測されていたものの正体もこれ）。未知のテナントは従来どおり
+// 4月始まりを既定にする（後方互換）
+const FISCAL_YEAR_START_MONTH: Record<string, number> = {
+  default: 4,
+  nstyle: 8,
+};
+function fiscalYearStartMonth(tenantId: string): number {
+  return FISCAL_YEAR_START_MONTH[tenantId] ?? 4;
 }
-// 前期首。当期分だけだと検索範囲が狭いため、履歴検索(list_journals/suggest)は前期も含めて探す
-// （2026-04-01〜が当期・2025-04-01〜2026-03-31が前期と実データで確認済み。2期分あれば実用上十分）
-function prevFiscalYearStart(): string {
+// 今期の開始日。MF側は会計期間外の日付をstart_dateに渡すとエラーになるため。
+function fiscalYearStart(tenantId: string): string {
+  const startMonth = fiscalYearStartMonth(tenantId); // 1-12
   const now = new Date();
-  const y = (now.getUTCMonth() >= 3 ? now.getUTCFullYear() : now.getUTCFullYear() - 1) - 1;
-  return `${y}-04-01`;
+  const curMonth = now.getUTCMonth() + 1; // 1-12（UTC基準の簡易判定。JST運用のみのため実用上問題なし）
+  const y = curMonth >= startMonth ? now.getUTCFullYear() : now.getUTCFullYear() - 1;
+  return `${y}-${String(startMonth).padStart(2, "0")}-01`;
+}
+// 前期の開始日。当期分だけだと検索範囲が狭いため、履歴検索(list_journals/suggest)は前期も含めて探す
+function prevFiscalYearStart(tenantId: string): string {
+  const startMonth = fiscalYearStartMonth(tenantId);
+  const now = new Date();
+  const curMonth = now.getUTCMonth() + 1;
+  const y = (curMonth >= startMonth ? now.getUTCFullYear() : now.getUTCFullYear() - 1) - 1;
+  return `${y}-${String(startMonth).padStart(2, "0")}-01`;
+}
+// 前期の終了日（＝今期開始日の前日）。2026-09-08修正：従来は前期の検索範囲の終了日に
+// 今期開始日をそのまま使っており（例: 2025-04-01〜2026-04-01）、これは前期・今期の
+// 2つの会計期間をまたぐ日付レンジになるためMF APIに拒否されていた。ただしこの前期検索の
+// 失敗は呼び出し側で握りつぶされ「前期分0件」として静かに扱われていた（=実害としては
+// 当期分の検索結果は返るため気づかれにくかった）ため、実データprobeで見つけて今回あわせて修正
+function prevFiscalYearEnd(tenantId: string): string {
+  const [y, m, d] = fiscalYearStart(tenantId).split("-").map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  dt.setUTCDate(dt.getUTCDate() - 1);
+  return dt.toISOString().slice(0, 10);
 }
 function todayStr(): string {
   return new Date().toISOString().slice(0, 10);
@@ -343,8 +376,8 @@ Deno.serve(async (req: Request) => {
         // 前期＋当期の2期分をまとめて検索（前期・当期をまたいで1回のGETで取れる範囲か未確認のため
         // 念のため2回に分けて取得しマージする。件数が多い場合はper_pageの上限に注意）
         const [resCur, resPrev] = await Promise.all([
-          mfFetch(`/api/v3/journals?start_date=${fiscalYearStart()}&end_date=${todayStr()}&per_page=500&page=1`, accessToken),
-          mfFetch(`/api/v3/journals?start_date=${prevFiscalYearStart()}&end_date=${fiscalYearStart()}&per_page=500&page=1`, accessToken),
+          mfFetch(`/api/v3/journals?start_date=${fiscalYearStart(tenantId)}&end_date=${todayStr()}&per_page=500&page=1`, accessToken),
+          mfFetch(`/api/v3/journals?start_date=${prevFiscalYearStart(tenantId)}&end_date=${prevFiscalYearEnd(tenantId)}&per_page=500&page=1`, accessToken),
         ]);
         const [dataCur, dataPrev] = await Promise.all([resCur.json(), resPrev.json()]);
         if (!resCur.ok) return json({ error: "仕訳履歴の取得に失敗しました", detail: dataCur }, 502);
@@ -420,8 +453,8 @@ Deno.serve(async (req: Request) => {
         fetchTaxesDirect(accessToken),
       ]);
       const [resCur, resPrev] = await Promise.all([
-        mfFetch(`/api/v3/journals?start_date=${fiscalYearStart()}&end_date=${todayStr()}&per_page=500&page=1`, accessToken),
-        mfFetch(`/api/v3/journals?start_date=${prevFiscalYearStart()}&end_date=${fiscalYearStart()}&per_page=500&page=1`, accessToken),
+        mfFetch(`/api/v3/journals?start_date=${fiscalYearStart(tenantId)}&end_date=${todayStr()}&per_page=500&page=1`, accessToken),
+        mfFetch(`/api/v3/journals?start_date=${prevFiscalYearStart(tenantId)}&end_date=${prevFiscalYearEnd(tenantId)}&per_page=500&page=1`, accessToken),
       ]);
       const [dataCur, dataPrev] = await Promise.all([resCur.json(), resPrev.json()]);
       if (!resCur.ok) return json({ error: "仕訳履歴の取得に失敗しました", detail: dataCur }, 502);

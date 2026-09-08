@@ -805,15 +805,22 @@ async function plfeeComputeAllocation(group){
   const withDept=group.branches.filter(d=>d.department_name);
   PLFEE_STATE.seisanRows=[]; // 業務委託精算書へ登録する店舗（このgroupを選び直すたびに作り直す）
   if(withDept.length){
-    // 精算対象店舗（stores.seisan_target/seisan_pl_categories_target）は精算書経由で別途PLへ
-    // 自動連携される仕組みが既にあるため、直接のPL反映（rows）には選ばせない＝二重計上防止
-    // （ユーザー指摘・2026-09-03）。2026-09-05: 従来は警告表示のみだったが、業務委託精算書
-    // 自動連携の実装により、代わりにseisanRowsとして「精算書へ登録」できるようにした
+    // 完全業務委託店舗（stores.seisan_target）は精算書経由で別途PLへ自動連携される仕組みが
+    // 既にあるため、直接のPL反映（rows）には選ばせない＝二重計上防止（ユーザー指摘・2026-09-03）。
+    // 2026-09-05: 従来は警告表示のみだったが、業務委託精算書自動連携の実装により、代わりに
+    // seisanRowsとして「精算書へ登録」できるようにした。
+    // 2026-09-08修正：ユーザー報告「黒霧屋は自社グループでの運営（N style→トーホーエージェンに委託）
+    // なのでPL反映と精算書への反映で別れるため選択できるようにして欲しい」に対応。
+    // seisan_pl_categories_targetのみ（seisan_targetはfalse）の店舗（黒霧屋 新横浜が該当。
+    // 設計書_業務委託精算書自動連携_2026-09-04.md §14）は、運営委託費の自動連携こそ対象外だが
+    // 直接PL反映と業務委託精算書登録の両方を使い分ける想定の店舗のため、ここでは除外しない
+    // （＝自動検出時はまず直接PLのrowsに入れる。精算書へも登録したい場合は下の「業務委託精算書へ
+    // 登録する店舗を追加する」から別途手動で追加できる＝二重計上ではなく使い分けなので問題ない）
     const rows=[]; const seisanRows=[];
     for(const d of withDept){
       const store=plfeeFindStoreByName(PLFEE_STATE.stores,d.department_name);
       if(!store||!(Number(d.value)>0)) continue;
-      if(store.seisan_target||store.seisan_pl_categories_target){ seisanRows.push({store_id:store.id,store_name:store.name,amount:Math.round(Number(d.value))}); continue; }
+      if(store.seisan_target){ seisanRows.push({store_id:store.id,store_name:store.name,amount:Math.round(Number(d.value))}); continue; }
       rows.push({store_id:store.id,store_name:store.name,amount:Math.round(Number(d.value))});
     }
     PLFEE_STATE.seisanRows=seisanRows;
@@ -1036,15 +1043,20 @@ function plfeeReflectedCardHtml(row){
   </div>`;
 }
 function plfeeRowHtml(row,idx){
-  // 精算対象店舗は精算書経由で別途PLへ自動連携されるため、選択肢から除外する（二重計上防止。
-  // 2026-09-05: seisan_pl_categories_target店舗（黒霧屋等）も同様に除外対象に追加）。
+  // 完全業務委託店舗（seisan_target）は精算書経由で別途PLへ自動連携されるため、選択肢から
+  // 除外する（二重計上防止）。
+  // 2026-09-08修正：ユーザー報告「黒霧屋は自社グループでの運営なのでPL反映と精算書への反映で
+  // 別れるため（黒霧屋を）選択できるようにして欲しい」に対応。2026-09-05にseisan_pl_categories_target
+  // 店舗（黒霧屋 新横浜等）もここから除外していたが、この店舗は直接PL反映と業務委託精算書登録の
+  // 両方を使い分ける想定（設計書_業務委託精算書自動連携_2026-09-04.md §14）のため除外を戻す
+  // （seisan_targetのみで判定＝direct PLの選択肢から本当に除外すべきは完全業務委託店舗だけ）。
   // 2026-09-05追加：ユーザー報告「対象法人をN-Styleにしているのに、PLへ反映の店舗欄には
   // トーホーの店舗が出てくる」に対応。従来は法人を問わず全店舗（精算対象店舗を除く）を
   // 出していたが、請求書の対象法人が分かっていれば、まずその法人の店舗に絞り込む
   // （既に選択済みの店舗が対象法人と異なる場合のみ、対象店舗選択欄と同じく「（他法人）」を
   // 注記して一覧に残す＝選択の確認・解除ができなくならないようにする）
   const corpId=PLFEE_STATE.ctx.corporationId;
-  const eligible=PLFEE_STATE.stores.filter(s=>!s.seisan_target&&!s.seisan_pl_categories_target);
+  const eligible=PLFEE_STATE.stores.filter(s=>!s.seisan_target);
   const scoped=corpId?eligible.filter(s=>s.corporation_id===corpId):eligible;
   const keepSelected=eligible.filter(s=>s.id===row.store_id&&!scoped.some(x=>x.id===s.id));
   const storeOptions=[...scoped,...keepSelected];
@@ -2766,9 +2778,23 @@ function renderMailDetail(u){
               ${cardDone?`<div class="step-summary" id="summary-pl">${plStateHtml} <button class="step-summary-edit" data-cardtoggle="pl">詳細を見る▼</button></div>`:""}
               <div class="step-card-body" id="body-pl" ${cardDone?"hidden":""}>
               <div class="ai-field" style="margin-bottom:10px"><small>現在の状態</small>${plStateHtml}</div>
-              ${seisanStores.length?`<div class="task-link-box" style="margin-top:0;margin-bottom:12px"><small>🧮 業務委託精算対象店舗：${seisanStores.map(s=>esc(s.name)).join("・")}</small>
-                <div style="font-size:12px;color:var(--m-blue);margin-top:4px">この請求書は業務委託精算書経由でPLへ反映するルートです（請求書から直接のPL反映はできません＝二重計上防止のため選択肢から除外されます）。下の「PLへ反映しますか？」欄で自動検出された精算対象店舗分は、そのまま「業務委託精算書へ登録」できます。</div>
-              </div>`:""}
+              ${(()=>{
+                // 2026-09-08修正：ユーザー報告「黒霧屋は自社グループでの運営（N style→トーホーエージェンに
+                // 委託）なのでPL反映と精算書への反映で別れるため選択できるようにして欲しい」に対応。
+                // 従来は精算対象店舗（seisan_target/seisan_pl_categories_targetのどちらか）を一律「直接の
+                // PL反映はできません」と案内していたが、seisan_pl_categories_targetのみ（黒霧屋等）の店舗は
+                // 直接PL反映と業務委託精算書登録の両方を使い分ける想定（設計書_業務委託精算書自動連携_
+                // 2026-09-04.md §14）のため、案内文を分ける
+                const seisanOnly=seisanStores.filter(s=>s.seisan_target); // 完全業務委託＝精算書経由のみ
+                const dualStores=seisanStores.filter(s=>!s.seisan_target&&s.seisan_pl_categories_target); // 黒霧屋等＝両方選べる
+                if(!seisanOnly.length&&!dualStores.length) return "";
+                return `<div class="task-link-box" style="margin-top:0;margin-bottom:12px">
+                  ${seisanOnly.length?`<small>🧮 業務委託精算対象店舗：${seisanOnly.map(s=>esc(s.name)).join("・")}</small>
+                  <div style="font-size:12px;color:var(--m-blue);margin-top:4px">この請求書は業務委託精算書経由でPLへ反映するルートです（請求書から直接のPL反映はできません＝二重計上防止のため選択肢から除外されます）。下の「PLへ反映しますか？」欄で自動検出された精算対象店舗分は、そのまま「業務委託精算書へ登録」できます。</div>`:""}
+                  ${dualStores.length?`<small${seisanOnly.length?' style="margin-top:8px;display:block"':""}>🧮 PL反映・業務委託精算書登録の両方が使える店舗：${dualStores.map(s=>esc(s.name)).join("・")}</small>
+                  <div style="font-size:12px;color:var(--m-blue);margin-top:4px">この店舗は自社グループでの運営（委託先経由）のため、下の「PLへ反映しますか？」欄で店舗を選んで直接PLに反映することも、別途「業務委託精算書へ登録する」こともできます（必要な方だけ、または両方お使いください）。</div>`:""}
+                </div>`;
+              })()}
               ${(invoice&&invoice.amount!=null)?`<div id="adcostbox"></div>`:`<div class="meta" style="color:var(--muted);font-size:12px">先に上の「請求情報」で金額を保存してください</div>`}
               ${(invoice&&invoice.mf_journal_id)?`<div id="plfeebox"></div>`:`<div class="meta" style="color:var(--muted);font-size:12px;margin-top:8px">PLへの反映は会計・仕訳の登録後に行えます</div>`}
               </div>
