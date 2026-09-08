@@ -1164,6 +1164,10 @@ const GROUPS=[
     // nippo内の「利用ダッシュボード」（提出率・既読・チャット利用の集計）。
     // nippo側のcan("dash")既定値=TENCHO/TEAM/SHAIN/HQ/CEO（バイト・外販は対象外）に合わせた
     {key:"nippo-dash", sysKey:"nippo", roles:["TENCHO","TEAM","SHAIN","HQ","CEO"], ico:"📈", label:"利用ダッシュボード", url:nippoPage("dash")},
+    // 現金手渡し給与の受け渡し確認・電子サイン（担当B・2026-09-08新設）。
+    // 給与仕訳・会計の閲覧権限が無くても店長以上なら使える独立画面のため、ここ（現場・日報グループ）に置く。
+    // roles=nippo側のcash_handoff_manage既定値(TENCHO/TEAM/HQ/CEO)に合わせた
+    {key:"nippo-cash", sysKey:"nippo", roles:["TENCHO","TEAM","HQ","CEO"], ico:"💴", label:"現金手渡し・サイン", url:nippoPage("cashhandoff")},
     // 「管理」「設定」はアカウント無効化・外部連携キーなど重い機能のため、
     // 既定は誰にも見せずマスターと個別許可された人だけに見せる（nippo_admin）
     {key:"nippo-admin",    sysKey:"nippo_admin", ico:"👥", label:"管理（アカウント）", url:nippoPage("admin")},
