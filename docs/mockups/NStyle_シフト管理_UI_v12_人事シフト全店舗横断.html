@@ -1,0 +1,698 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>N-Style シフト管理 UI v10</title>
+<style>
+:root{
+  --bg:#f5f6f7;--panel:#fff;--ink:#222;--muted:#727980;--line:#dfe3e7;
+  --green:#69b80c;--green-dark:#58a000;--green-soft:#f1f8e9;
+  --red:#cf4b45;--red-soft:#fff0ef;--amber:#a96f09;--amber-soft:#fff7e5;
+  --blue:#3478b8;--blue-soft:#eef6fd;--purple:#6f5aa8;--purple-soft:#f4f0ff;
+  --black:#111;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:13px -apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans JP",sans-serif}
+button,select,input{font:inherit}button{cursor:pointer}
+.top{height:48px;background:var(--black);color:#fff;display:flex;align-items:center;justify-content:space-between;padding:0 16px;position:sticky;top:0;z-index:40}
+.brand{font-weight:800}.brand small{font-weight:500;color:#c8c8c8;margin-left:8px}
+.page{padding:14px 18px 46px}
+.mainnav{display:flex;background:#fff;border:1px solid var(--line);border-bottom:0;overflow:auto}
+.mainnav button{border:0;background:#fff;padding:12px 16px;border-bottom:3px solid transparent;color:#656b71;font-weight:700;white-space:nowrap}
+.mainnav button.on{color:#222;border-color:var(--green)}
+.view{display:none}.view.on{display:block}
+.toolbar{background:#fff;border:1px solid var(--line);padding:10px 12px;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
+.group,.seg{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.btn,select,input{border:1px solid #ccd2d7;background:#fff;border-radius:3px;padding:7px 10px;color:#333}
+.btn.primary{background:var(--green);border-color:var(--green);color:#fff;font-weight:700}
+.btn.red{background:var(--red);border-color:var(--red);color:#fff;font-weight:700}
+.btn.purple{background:var(--purple);border-color:var(--purple);color:#fff;font-weight:700}
+.seg{gap:0;border:1px solid #ccd2d7;border-radius:3px;overflow:hidden}
+.seg button{border:0;border-right:1px solid #ccd2d7;background:#fff;padding:7px 11px}
+.seg button:last-child{border-right:0}.seg button.on{background:var(--green);color:#fff;font-weight:700}
+.month{font-size:21px;font-weight:500;min-width:170px;text-align:center}
+.title{margin:16px 0 8px;font-size:16px;color:#5b910e;font-weight:800}
+.sub{font-size:10px;color:var(--muted);margin-top:3px}
+.kpis{display:grid;grid-template-columns:repeat(6,1fr);gap:8px;margin:10px 0}
+.kpi{background:#fff;border:1px solid var(--line);padding:11px 13px;min-height:70px}.kpi small{color:var(--muted)}.kpi b{display:block;font-size:19px;margin-top:4px}.kpi.good{border-left:3px solid var(--green)}.kpi.bad{border-left:3px solid var(--red)}.kpi.purple{border-left:3px solid var(--purple)}
+.card{background:#fff;border:1px solid var(--line);margin-top:10px}
+.cardhead{padding:10px 12px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:10px}.cardhead h2{font-size:14px;margin:0}
+.notice{background:var(--amber-soft);border:1px solid #e8d4a4;padding:9px 12px;margin:9px 0;font-size:11px;display:flex;justify-content:space-between;align-items:center;gap:8px}
+.notice.danger{background:var(--red-soft);border-color:#efc5c2;color:#8f3530}
+.notice.success{background:var(--green-soft);border-color:#d8e9c4;color:#4b7710}
+.wrap{overflow:auto}
+table{border-collapse:collapse;width:100%;min-width:1480px;table-layout:fixed}
+th,td{border-right:1px solid #dde1e4;border-bottom:1px solid #dde1e4;text-align:center;padding:4px 3px;height:41px}
+th{background:#fafafa;font-size:10px;color:#555}
+th:first-child,td:first-child{position:sticky;left:0;background:#fff;z-index:3;text-align:left;width:145px}th:first-child{z-index:5;background:#fafafa}
+.name{font-weight:700;color:#2e72b5;font-size:11px}.meta{font-size:9px;color:var(--muted)}
+.cell{font-size:9px;line-height:1.12;padding:3px 2px;border-radius:2px;cursor:pointer;position:relative}.cell:hover{outline:2px solid #c4d5e5}.cell.selected{outline:2px solid var(--blue);background:var(--blue-soft)}
+.time{font-weight:700}.role{font-size:8px;margin-top:2px;text-decoration:underline}.kitchen{color:#5c8d13}.hall{color:#3478b8}.prep{color:#a56c00}.drink{color:#6c5ba7}
+.err{background:var(--red-soft)}.warn{background:var(--amber-soft)}.help{background:var(--purple-soft)}
+.footer td{height:29px;background:#fbfbfb;font-size:10px}.footer td:first-child{font-weight:700}.short{color:var(--red);font-weight:800}.goodtxt{color:#4d7d0f;font-weight:800}
+.actions{padding:10px 12px;background:#fafbfb;display:flex;justify-content:space-between;gap:8px;align-items:center}
+.badge{display:inline-block;padding:3px 7px;border-radius:999px;font-size:9px;background:#f0f2f3}.badge.good{background:var(--green-soft);color:#4c7a0f}.badge.bad{background:var(--red-soft);color:#9e3832}.badge.blue{background:var(--blue-soft);color:#2c6497}.badge.purple{background:var(--purple-soft);color:#615090}
+.grid2{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(320px,.75fr);gap:10px}.grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px}
+.side{background:#fff;border:1px solid var(--line);padding:12px;margin-top:10px}.side h3{font-size:13px;margin:0 0 8px}
+.rank{padding:8px 0;border-bottom:1px solid #eee}.rank:last-child{border:0}.ranktop{display:flex;justify-content:space-between;gap:8px}.ranktop b{font-size:12px}.ranktop span{font-size:10px;color:var(--muted)}
+.barwrap{height:7px;background:#edf0f2;border-radius:999px;overflow:hidden;margin-top:5px}.barfill{height:100%;background:var(--green)}
+.mini-table{width:100%;min-width:0;table-layout:auto}.mini-table th,.mini-table td{position:static!important;width:auto!important;height:34px;text-align:left;padding:7px 8px}
+.calendar{display:grid;grid-template-columns:repeat(7,1fr);gap:6px;padding:10px}.day{border:1px solid var(--line);background:#fff;min-height:108px;padding:7px}.day b{font-size:11px}.day .preset{display:inline-block;margin-top:8px;padding:5px 7px;background:#f1f2f3;border-radius:3px;font-size:9px}.day .status{font-size:9px;color:var(--muted);margin-top:4px}.day.selected{outline:2px solid var(--green)}
+.formgrid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.field label{display:block;color:var(--muted);font-size:10px;margin-bottom:4px}.field input,.field select{width:100%}
+.bulkbar{display:none;background:#eef6fd;border:1px solid #bfd7eb;padding:9px 12px;margin:8px 0;align-items:center;justify-content:space-between;gap:10px}.bulkbar.on{display:flex}.bulkbar b{color:#285f91}
+.urgent-list{display:grid;gap:8px}.urgent-item{border:1px solid var(--line);padding:10px;background:#fff}.urgent-item.open{border-left:3px solid var(--red)}.urgent-head{display:flex;justify-content:space-between;gap:8px}.urgent-head b{font-size:12px}.urgent-meta{font-size:10px;color:var(--muted);margin-top:3px}.urgent-actions{margin-top:8px;display:flex;gap:6px;flex-wrap:wrap}
+.syncbox{display:flex;gap:6px;align-items:center;flex-wrap:wrap}.syncdot{width:8px;height:8px;border-radius:50%;background:var(--green);display:inline-block}
+.modal-bg{display:none;position:fixed;inset:0;background:#0007;z-index:100;align-items:center;justify-content:center;padding:15px}.modal-bg.on{display:flex}.modal{width:min(620px,100%);background:#fff;border-radius:6px;box-shadow:0 20px 60px #0005}.modalhead{padding:13px 15px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between}.modalbody{padding:15px}.modalfoot{padding:12px 15px;border-top:1px solid var(--line);display:flex;justify-content:space-between;gap:8px}
+.audit{border-top:1px solid #eee;margin-top:10px;padding-top:8px;font-size:10px;color:var(--muted)}
+@media(max-width:1050px){.kpis{grid-template-columns:repeat(3,1fr)}.grid2,.grid3{grid-template-columns:1fr}.calendar{grid-template-columns:repeat(3,1fr)}}
+@media(max-width:700px){.page{padding:10px}.kpis{grid-template-columns:repeat(2,1fr)}.calendar{grid-template-columns:1fr 1fr}.formgrid{grid-template-columns:1fr}.bulkbar{align-items:stretch;flex-direction:column}}
+
+/* ===== v11: 売上・適正人員・人件費シミュレーション ===== */
+.labor-sim{margin-top:10px;background:#fff;border:1px solid var(--line)}
+.labor-sim-head{padding:10px 12px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}
+.labor-sim-head h2{font-size:14px;margin:0}
+.sim-note{font-size:10px;color:var(--muted)}
+.sim-table{min-width:1480px}
+.sim-table th,.sim-table td{height:31px;font-size:9px}
+.sim-table .rowlabel{font-weight:700;background:#fafafa;color:#555}
+.sim-table .money{font-variant-numeric:tabular-nums}
+.sim-table .target{background:#f8fbff}
+.sim-table .ly{background:#fafafa}
+.sim-table .rate-good{color:#4d7d0f;font-weight:800}
+.sim-table .rate-bad{color:var(--red);font-weight:800;background:var(--red-soft)}
+.sim-table .rate-warn{color:#895d0c;font-weight:800;background:var(--amber-soft)}
+.sim-table .recommend{background:#f8fbff;font-weight:700}
+.sim-table .recommend.bad{background:var(--red-soft);color:#9a3732}
+.sim-table .recommend.good{background:var(--green-soft);color:#4b7710}
+.day-tip{position:relative;cursor:help}
+.day-tip:hover::after{
+ content:attr(data-tip);
+ position:absolute;left:50%;bottom:calc(100% + 6px);transform:translateX(-50%);
+ width:260px;white-space:normal;text-align:left;line-height:1.45;
+ background:#222;color:#fff;padding:9px 10px;border-radius:5px;font-size:10px;z-index:50;
+ box-shadow:0 6px 18px #0003;
+}
+.day-tip:hover::before{
+ content:"";position:absolute;left:50%;bottom:100%;transform:translateX(-50%);
+ border:6px solid transparent;border-top-color:#222;z-index:51;
+}
+.reco-panel{display:grid;grid-template-columns:1.15fr .85fr;gap:10px;margin-top:10px}
+.reco-card{background:#fff;border:1px solid var(--line);padding:12px}
+.reco-card h3{font-size:13px;margin:0 0 8px}
+.reco-item{padding:8px 0;border-bottom:1px solid #eee}
+.reco-item:last-child{border:0}
+.reco-item b{font-size:12px}
+.reco-item p{font-size:10px;color:var(--muted);margin:3px 0 0}
+.formula-box{background:#fafbfb;border:1px solid var(--line);padding:10px;font-size:10px;line-height:1.55;color:#555}
+.rulebar{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+@media(max-width:1050px){.reco-panel{grid-template-columns:1fr}}
+
+
+/* ===== v12: 人事シフト（全店舗横断） ===== */
+.hr-switch{display:flex;gap:0;border:1px solid #ccd2d7;border-radius:3px;overflow:hidden}
+.hr-switch button{border:0;border-right:1px solid #ccd2d7;background:#fff;padding:7px 11px}
+.hr-switch button:last-child{border-right:0}
+.hr-switch button.on{background:#555;color:#fff;font-weight:700}
+.hr-panel{display:none}
+.hr-panel.on{display:block}
+.hr-kpis{display:grid;grid-template-columns:repeat(6,1fr);gap:8px;margin:10px 0}
+.hr-kpi{background:#fff;border:1px solid var(--line);padding:11px 13px}
+.hr-kpi small{color:var(--muted)}
+.hr-kpi b{display:block;font-size:18px;margin-top:4px}
+.hr-kpi.bad{border-left:3px solid var(--red)}
+.hr-kpi.warn{border-left:3px solid var(--amber)}
+.hr-kpi.good{border-left:3px solid var(--green)}
+.hr-table{min-width:1500px}
+.store-chip{display:inline-block;border-radius:999px;padding:2px 5px;font-size:8px;margin-top:2px;background:#eef1f3;color:#555}
+.store-chip.main{background:var(--green-soft);color:#4f7a13}
+.store-chip.help{background:var(--purple-soft);color:#655293}
+.store-chip.other{background:var(--blue-soft);color:#2c6497}
+.consecutive-bad{background:var(--red-soft)!important;color:#9f3732!important;font-weight:800}
+.consecutive-warn{background:var(--amber-soft)!important;color:#845b0a!important;font-weight:800}
+.dayoff-good{color:#4c7c0f;font-weight:800}
+.dayoff-bad{color:var(--red);font-weight:800}
+.hr-summary{display:grid;grid-template-columns:1.3fr .7fr;gap:10px;margin-top:10px}
+.hr-alert-list{display:grid;gap:8px}
+.hr-alert{border:1px solid var(--line);background:#fff;padding:10px}
+.hr-alert.bad{border-left:3px solid var(--red)}
+.hr-alert.warn{border-left:3px solid var(--amber)}
+.hr-alert b{font-size:12px}
+.hr-alert p{margin:3px 0 0;font-size:10px;color:var(--muted)}
+@media(max-width:1050px){.hr-kpis{grid-template-columns:repeat(3,1fr)}.hr-summary{grid-template-columns:1fr}}
+@media(max-width:700px){.hr-kpis{grid-template-columns:repeat(2,1fr)}}
+
+</style>
+</head>
+<body>
+<div class="top"><div class="brand">N-Style <small>シフト・勤怠管理</small></div><div>鳥一代 本店 ｜ 管理者</div></div>
+<main class="page">
+
+<div class="mainnav">
+  <button class="on" data-view="dashboard">ダッシュボード</button>
+  <button data-view="submit">シフト提出</button>
+  <button data-view="adjust">シフト調整</button>
+  <button data-view="confirmed">確定シフト</button>
+  <button data-view="actual">実績・差異</button>
+</div>
+
+<!-- DASHBOARD -->
+<section id="dashboard" class="view on">
+ <div class="toolbar">
+  <div class="group"><select><option>鳥一代 本店</option><option>全店舗</option></select><select><option>2026年9月 前半</option><option>2026年9月 後半</option></select></div>
+  <div class="group"><button class="btn">CSV</button><button class="btn">集計条件</button></div>
+ </div>
+ <div class="title">シフトダッシュボード</div>
+ <div class="kpis">
+   <div class="kpi good"><small>期限内提出率</small><b>91.7%</b><div class="sub">22 / 24名</div></div>
+   <div class="kpi bad"><small>未提出</small><b>2名</b><div class="sub">LINE通知可</div></div>
+   <div class="kpi"><small>平均叶え率</small><b>87.4%</b><div class="sub">希望日数基準</div></div>
+   <div class="kpi purple"><small>ヘルプ貢献</small><b>14回</b><div class="sub">計52.5h</div></div>
+   <div class="kpi bad"><small>急募対応</small><b>9回</b><div class="sub">今月 / 6名</div></div>
+   <div class="kpi"><small>人員不足</small><b>3枠</b><div class="sub">未解消</div></div>
+ </div>
+
+ <div class="grid2">
+   <div>
+    <div class="card">
+      <div class="cardhead"><h2>提出・貢献状況</h2><button class="btn">未提出者へLINE通知</button></div>
+      <div class="wrap"><table class="mini-table">
+        <thead><tr><th>従業員</th><th>提出</th><th>期限内</th><th>叶え率</th><th>ヘルプ</th><th>急募対応</th><th>貢献スコア</th></tr></thead>
+        <tbody>
+          <tr><td>佐藤 健</td><td><span class="badge good">提出済</span></td><td>○</td><td>100%</td><td>4回 / 16h</td><td>2回</td><td>96</td></tr>
+          <tr><td>田中 美咲</td><td><span class="badge good">提出済</span></td><td>○</td><td>85%</td><td>5回 / 18h</td><td>3回</td><td>93</td></tr>
+          <tr><td>山本 翔</td><td><span class="badge blue">期限後提出</span></td><td>×</td><td>78%</td><td>1回 / 4h</td><td>1回</td><td>75</td></tr>
+          <tr><td>高橋 蓮</td><td><span class="badge bad">未提出</span></td><td>—</td><td>—</td><td>0</td><td>0</td><td>—</td></tr>
+        </tbody>
+      </table></div>
+    </div>
+
+    <div class="card">
+      <div class="cardhead"><h2>現在の急募</h2><button class="btn red open-urgent">＋ 急募を作成</button></div>
+      <div style="padding:10px 12px" class="urgent-list">
+        <div class="urgent-item open">
+          <div class="urgent-head"><b>9/12（土）09:00〜12:00　仕込み 1名</b><span class="badge bad">募集中</span></div>
+          <div class="urgent-meta">鳥一代 本店 ｜ 応募2名 ｜ 締切 9/11 18:00 ｜ LINE配信済</div>
+          <div class="urgent-actions"><button class="btn">応募者を見る</button><button class="btn primary">1名確定</button><button class="btn">再通知</button></div>
+        </div>
+        <div class="urgent-item open">
+          <div class="urgent-head"><b>9/13（日）17:00〜22:00　ホール 2名</b><span class="badge bad">募集中</span></div>
+          <div class="urgent-meta">鳥一代 本店 ｜ 応募1名 ｜ 他店舗ヘルプ可</div>
+          <div class="urgent-actions"><button class="btn">応募者を見る</button><button class="btn purple">他店舗にも募集</button></div>
+        </div>
+      </div>
+    </div>
+   </div>
+
+   <div>
+     <div class="side">
+       <h3>シフト貢献 TOP</h3>
+       <div class="rank"><div class="ranktop"><b>1. 佐藤 健</b><span>96pt</span></div><div class="barwrap"><div class="barfill" style="width:96%"></div></div><div class="sub">繁忙枠・不足枠・希望外対応を加点</div></div>
+       <div class="rank"><div class="ranktop"><b>2. 田中 美咲</b><span>93pt</span></div><div class="barwrap"><div class="barfill" style="width:93%"></div></div></div>
+       <div class="rank"><div class="ranktop"><b>3. 山本 翔</b><span>75pt</span></div><div class="barwrap"><div class="barfill" style="width:75%"></div></div></div>
+     </div>
+     <div class="side">
+       <h3>急募対応 TOP</h3>
+       <div class="rank"><div class="ranktop"><b>田中 美咲</b><span>3回 / 11.5h</span></div></div>
+       <div class="rank"><div class="ranktop"><b>佐藤 健</b><span>2回 / 8h</span></div></div>
+       <div class="rank"><div class="ranktop"><b>鈴木 彩</b><span>2回 / 7h</span></div></div>
+       <div class="sub" style="margin-top:8px">※急募に応募→採用→実勤務まで完了した回数をカウント</div>
+     </div>
+     <div class="side">
+       <h3>スマレジ同期</h3>
+       <div class="syncbox"><span class="syncdot"></span><b>予定シフト同期済 98.7%</b></div>
+       <div class="sub">未同期1件 / エラー0件</div>
+       <button class="btn" style="margin-top:8px">スマレジから予定を取込</button>
+     </div>
+   </div>
+ </div>
+</section>
+
+<!-- SUBMIT -->
+<section id="submit" class="view">
+ <div class="toolbar">
+  <div class="group"><select><option>鳥一代 本店</option></select><button class="btn">‹</button><span class="month">9/1〜9/15</span><button class="btn">›</button></div>
+  <div class="group"><span class="badge bad">締切 8/20</span><span class="badge blue">公開 8/25</span><button class="btn primary">この内容で提出</button></div>
+ </div>
+ <div class="title">希望シフト提出</div>
+ <div class="grid2">
+   <div class="card">
+    <div class="cardhead"><h2>半月カレンダー</h2><div class="group"><button class="btn">前半</button><button class="btn">後半</button></div></div>
+    <div class="calendar">
+      <div class="day selected"><b>9/1 火</b><div class="preset">ランチ 11:00〜15:00</div><div class="status">希望役割：ホール</div></div>
+      <div class="day"><b>9/2 水</b><div class="preset">休み</div><div class="status">希望</div></div>
+      <div class="day"><b>9/3 木</b><div class="preset">ディナー 17:00〜23:00</div><div class="status">開始時刻微調整可</div></div>
+      <div class="day"><b>9/4 金</b><div class="preset">終日 11:00〜22:00</div><div class="status">ヘルプ可</div></div>
+      <div class="day"><b>9/5 土</b><div class="preset">ランチ 11:00〜17:00</div><div class="status">土日営業</div></div>
+      <div class="day"><b>9/6 日</b><div class="preset">NG</div><div class="status">予定あり</div></div>
+      <div class="day"><b>9/7 月</b><div class="preset">休み</div></div>
+    </div>
+   </div>
+   <aside>
+    <div class="side">
+      <h3>9/1を編集</h3>
+      <div class="field"><label>時間帯プリセット</label><select><option>ランチ</option><option>ディナー</option><option>終日</option><option>休み</option></select></div>
+      <div class="formgrid" style="margin-top:8px"><div class="field"><label>開始</label><input value="11:00"></div><div class="field"><label>終了</label><input value="15:00"></div></div>
+      <div class="field" style="margin-top:8px"><label>希望役割</label><select><option>ホール</option><option>キッチン</option><option>仕込み</option><option>ドリンク</option></select></div>
+      <div class="field" style="margin-top:8px"><label>他店舗ヘルプ</label><select><option>不可</option><option>可能</option><option>急募なら可能</option></select></div>
+      <button class="btn primary" style="width:100%;margin-top:10px">この日に反映</button>
+    </div>
+    <div class="side">
+      <h3>提出状況</h3><p>入力済 12 / 15日</p><p>未入力 3日</p><p>前回提出 8/19 21:02</p><p><span class="badge good">LINE連携済</span></p>
+    </div>
+   </aside>
+ </div>
+
+ <div class="card">
+   <div class="cardhead"><h2>日別希望ガント / ヘルプ候補</h2><select><option>9/4 金</option><option>9/5 土</option></select></div>
+   <div style="padding:14px;color:#666">既存v5の「メイン所属 / ヘルプ希望 / 社員 / PA」を区別した希望ガントは維持。ここでは一覧UIに収め、日付選択時だけ展開する設計です。</div>
+ </div>
+</section>
+
+<!-- ADJUST -->
+<section id="adjust" class="view">
+ <div class="toolbar">
+  <div class="group"><select><option>鳥一代 本店</option></select><button class="btn">‹</button><span class="month">2026年 9月</span><button class="btn">›</button><select><option>半月表示</option><option>1ヶ月表示</option></select><select><option>全体</option><option>ランチ</option><option>ディナー</option></select></div>
+  <div class="group"><button class="btn">自動配置案</button><button class="btn purple">ヘルプ候補</button><button class="btn red open-urgent">不足枠を急募</button><button class="btn primary">確定・公開</button></div>
+ </div>
+ <div class="title">シフト調整</div>
+ <div class="toolbar" style="margin-top:0">
+   <div class="group">
+     <b>表示：</b>
+     <div class="hr-switch" id="hrSwitch">
+       <button class="on" data-hrmode="store">店舗シフト</button>
+       <button data-hrmode="hr">人事シフト（全店舗横断）</button>
+     </div>
+     <select id="hrEmployeeType">
+       <option>全従業員</option>
+       <option>社員のみ</option>
+       <option>PAのみ</option>
+     </select>
+   </div>
+   <div class="sub">人事シフトでは、所属店舗に関係なく全店舗勤務を合算して連勤・休日数・勤務時間を確認</div>
+ </div>
+
+ <div class="toolbar" style="margin-top:0">
+   <div class="rulebar">
+     <b>適正人員計算：</b>
+     <select id="salesBasisRule">
+       <option>売上目標を優先し、昨年同週同曜日を参考</option>
+       <option>昨年同週同曜日を優先</option>
+       <option>高い方を採用</option>
+       <option>平均値を採用</option>
+     </select>
+     <label>PA目標人件費率 <input id="paTargetRate" value="14.0%" style="width:70px"></label>
+     <label>深夜割増 <input value="25%" style="width:60px"></label>
+   </div>
+   <div class="sub">基準値は店舗設定から変更可能にする想定</div>
+ </div>
+ <div id="storeShiftPanel" class="hr-panel on">
+ <div class="kpis">
+   <div class="kpi"><small>売上予想</small><b>¥12,400,000</b></div>
+   <div class="kpi"><small>社員人件費</small><b>¥1,280,000</b></div>
+   <div class="kpi"><small>PA人件費</small><b>¥2,240,000</b></div>
+   <div class="kpi"><small>総人件費</small><b>¥3,520,000</b></div>
+   <div class="kpi good"><small>人件費率</small><b>28.4%</b></div>
+   <div class="kpi bad"><small>不足枠</small><b>3</b></div>
+ </div>
+ <div class="notice"><span><b>要確認：</b> 9/6夜 ホール2名不足 / 9/12朝 仕込み1名不足 / 未提出2名</span><button class="btn">不足だけ表示</button></div>
+
+
+ <div class="labor-sim">
+  <div class="labor-sim-head">
+    <div><h2>日別 売上・人件費・適正時間シミュレーション</h2>
+      <div class="sim-note">昨年同週同曜日＋売上目標を参考に、PA予算・適正PA時間・現在シフトとの差を表示。22時以降は深夜割増を加味。</div>
+    </div>
+    <div class="group"><button class="btn">計算条件</button><button class="btn">昨年実績を見る</button></div>
+  </div>
+  <div class="wrap">
+   <table class="sim-table">
+    <thead><tr>
+      <th>指標</th>
+      <th class="day-tip" data-tip="昨年同週同曜日：2025/9/2(火)。売上目標¥820,000に対し昨年実績¥785,000。目標優先で基準売上¥820,000。">1 火</th>
+      <th class="day-tip" data-tip="昨年実績¥760,000、目標¥790,000。PA目標人件費率14.0%ならPA予算¥110,600。">2 水</th>
+      <th class="day-tip" data-tip="昨年実績¥735,000、目標¥760,000。ランチ比率が高いため昼帯を厚めに推奨。">3 木</th>
+      <th class="day-tip" data-tip="昨年実績¥920,000、目標¥980,000。ディナー強化日。17〜20時の配置を優先。">4 金</th>
+      <th class="day-tip" data-tip="土曜。昼営業あり。昨年実績¥1,120,000、目標¥1,180,000。仕込みとランチ要員を別枠管理。">5 土</th>
+      <th class="day-tip" data-tip="日曜。現在PA人件費率が目標を2.1pt超過。17〜18時・21〜23時で合計4.0h削減すると目標圏内。">6 日</th>
+      <th>7 月</th><th>8 火</th><th>9 水</th><th>10 木</th><th>11 金</th>
+      <th class="day-tip" data-tip="土曜。仕込み1名不足。削減ではなく9〜11時に+2.0h追加推奨。">12 土</th>
+      <th>13 日</th><th>14 月</th><th>15 火</th><th>計</th>
+    </tr></thead>
+    <tbody>
+      <tr><td class="rowlabel">昨年同週同曜日 売上</td><td class="ly money">¥785k</td><td class="ly money">¥760k</td><td class="ly money">¥735k</td><td class="ly money">¥920k</td><td class="ly money">¥1,120k</td><td class="ly money">¥990k</td><td class="ly">¥700k</td><td class="ly">¥775k</td><td class="ly">¥748k</td><td class="ly">¥785k</td><td class="ly">¥940k</td><td class="ly">¥1,150k</td><td class="ly">¥1,020k</td><td class="ly">¥720k</td><td class="ly">¥770k</td><td>—</td></tr>
+      <tr><td class="rowlabel">売上目標</td><td class="target money">¥820k</td><td class="target">¥790k</td><td class="target">¥760k</td><td class="target">¥980k</td><td class="target">¥1,180k</td><td class="target">¥1,050k</td><td class="target">¥730k</td><td class="target">¥800k</td><td class="target">¥780k</td><td class="target">¥820k</td><td class="target">¥990k</td><td class="target">¥1,210k</td><td class="target">¥1,080k</td><td class="target">¥750k</td><td class="target">¥800k</td><td>¥13.54M</td></tr>
+      <tr><td class="rowlabel">基準売上</td><td class="money"><b>¥820k</b></td><td><b>¥790k</b></td><td><b>¥760k</b></td><td><b>¥980k</b></td><td><b>¥1,180k</b></td><td><b>¥1,050k</b></td><td><b>¥730k</b></td><td><b>¥800k</b></td><td><b>¥780k</b></td><td><b>¥820k</b></td><td><b>¥990k</b></td><td><b>¥1,210k</b></td><td><b>¥1,080k</b></td><td><b>¥750k</b></td><td><b>¥800k</b></td><td>¥13.54M</td></tr>
+      <tr><td class="rowlabel">PA目標人件費率</td><td>14.0%</td><td>14.0%</td><td>14.0%</td><td>14.0%</td><td>14.5%</td><td>14.0%</td><td>13.5%</td><td>14.0%</td><td>14.0%</td><td>14.0%</td><td>14.5%</td><td>14.5%</td><td>14.0%</td><td>13.5%</td><td>14.0%</td><td>14.1%</td></tr>
+      <tr><td class="rowlabel">PA使用可能人件費</td><td>¥114.8k</td><td>¥110.6k</td><td>¥106.4k</td><td>¥137.2k</td><td>¥171.1k</td><td>¥147.0k</td><td>¥98.6k</td><td>¥112.0k</td><td>¥109.2k</td><td>¥114.8k</td><td>¥143.6k</td><td>¥175.5k</td><td>¥151.2k</td><td>¥101.3k</td><td>¥112.0k</td><td>¥1.91M</td></tr>
+      <tr><td class="rowlabel">現在PA人件費</td><td>¥111k</td><td>¥108k</td><td>¥104k</td><td>¥141k</td><td>¥176k</td><td class="rate-bad">¥169k</td><td>¥96k</td><td>¥110k</td><td>¥108k</td><td>¥116k</td><td>¥145k</td><td>¥168k</td><td>¥149k</td><td>¥99k</td><td>¥110k</td><td>¥1.91M</td></tr>
+      <tr><td class="rowlabel">現在PA人件費率</td><td class="rate-good">13.5%</td><td class="rate-good">13.7%</td><td class="rate-good">13.7%</td><td class="rate-warn">14.4%</td><td class="rate-warn">14.9%</td><td class="rate-bad">16.1%</td><td class="rate-good">13.2%</td><td class="rate-good">13.8%</td><td class="rate-good">13.8%</td><td class="rate-warn">14.1%</td><td class="rate-good">14.6%</td><td class="rate-good">13.9%</td><td class="rate-good">13.8%</td><td class="rate-good">13.2%</td><td class="rate-good">13.8%</td><td>14.1%</td></tr>
+      <tr><td class="rowlabel">社員人件費</td><td>¥96k</td><td>¥96k</td><td>¥84k</td><td>¥108k</td><td>¥132k</td><td>¥120k</td><td>¥84k</td><td>¥96k</td><td>¥96k</td><td>¥108k</td><td>¥108k</td><td>¥132k</td><td>¥120k</td><td>¥84k</td><td>¥96k</td><td>¥1.56M</td></tr>
+      <tr><td class="rowlabel">社員人件費率</td><td>11.7%</td><td>12.2%</td><td>11.1%</td><td>11.0%</td><td>11.2%</td><td>11.4%</td><td>11.5%</td><td>12.0%</td><td>12.3%</td><td>13.2%</td><td>10.9%</td><td>10.9%</td><td>11.1%</td><td>11.2%</td><td>12.0%</td><td>11.5%</td></tr>
+      <tr><td class="rowlabel">総人件費</td><td>¥207k</td><td>¥204k</td><td>¥188k</td><td>¥249k</td><td>¥308k</td><td class="rate-bad">¥289k</td><td>¥180k</td><td>¥206k</td><td>¥204k</td><td>¥224k</td><td>¥253k</td><td>¥300k</td><td>¥269k</td><td>¥183k</td><td>¥206k</td><td>¥3.47M</td></tr>
+      <tr><td class="rowlabel">合計人件費率</td><td>25.2%</td><td>25.8%</td><td>24.8%</td><td>25.4%</td><td>26.1%</td><td class="rate-bad">27.5%</td><td>24.7%</td><td>25.8%</td><td>26.1%</td><td>27.3%</td><td>25.6%</td><td>24.8%</td><td>24.9%</td><td>24.4%</td><td>25.8%</td><td>25.6%</td></tr>
+      <tr><td class="rowlabel">加重平均PA時給<br><span class="sub">深夜割増込</span></td><td>¥1,430</td><td>¥1,425</td><td>¥1,420</td><td>¥1,445</td><td>¥1,455</td><td>¥1,470</td><td>¥1,420</td><td>¥1,430</td><td>¥1,430</td><td>¥1,440</td><td>¥1,450</td><td>¥1,460</td><td>¥1,455</td><td>¥1,420</td><td>¥1,430</td><td>¥1,441</td></tr>
+      <tr><td class="rowlabel">適正PA時間</td><td class="recommend">80.3h</td><td class="recommend">77.6h</td><td class="recommend">74.9h</td><td class="recommend">94.9h</td><td class="recommend">117.6h</td><td class="recommend bad">100.0h</td><td class="recommend">69.4h</td><td class="recommend">78.3h</td><td class="recommend">76.4h</td><td class="recommend">79.7h</td><td class="recommend">99.0h</td><td class="recommend good">120.2h</td><td class="recommend">103.9h</td><td class="recommend">71.3h</td><td class="recommend">78.3h</td><td>1,321.7h</td></tr>
+      <tr><td class="rowlabel">現在PA予定時間</td><td>77.6h</td><td>75.8h</td><td>73.2h</td><td>97.6h</td><td>121.0h</td><td class="rate-bad">115.0h</td><td>67.6h</td><td>76.9h</td><td>75.5h</td><td>80.6h</td><td>100.0h</td><td>115.1h</td><td>102.4h</td><td>69.7h</td><td>76.9h</td><td>1,324.9h</td></tr>
+      <tr><td class="rowlabel">推奨調整時間</td><td class="recommend good">+2.7h可</td><td class="recommend good">+1.8h可</td><td class="recommend good">+1.7h可</td><td class="recommend bad">-2.7h</td><td class="recommend bad">-3.4h</td><td class="recommend bad day-tip" data-tip="17〜18時のホール1名を1h短縮、21〜23時のPAを合計3h短縮すると、PA人件費率14.1%前後まで改善見込み。">-15.0h</td><td class="recommend good">+1.8h可</td><td class="recommend good">+1.4h可</td><td class="recommend good">+0.9h可</td><td class="recommend bad">-0.9h</td><td class="recommend bad">-1.0h</td><td class="recommend good day-tip" data-tip="仕込み9〜11時が1名不足。PA予算には余裕があるため、2h追加しても目標人件費率内。">+5.1h推奨</td><td class="recommend good">+1.5h可</td><td class="recommend good">+1.6h可</td><td class="recommend good">+1.4h可</td><td>-3.2h</td></tr>
+    </tbody>
+   </table>
+  </div>
+ </div>
+
+ <div class="reco-panel">
+   <div class="reco-card">
+     <h3>今日の調整アドバイス</h3>
+     <div class="reco-item"><b>9/6（日） PA時間 -15.0h 推奨</b><p>現在PA人件費率16.1% → 目標14.0%。17〜18時のホール1名を1h短縮、21〜23時を合計3h×複数名削減する案が最も影響が小さいです。</p></div>
+     <div class="reco-item"><b>9/12（土） PA時間 +5.1hまで追加可能</b><p>仕込み9〜11時が1名不足。2h追加してもPA目標人件費率14.5%以内に収まる見込みです。</p></div>
+     <div class="reco-item"><b>9/4（金） PA時間 -2.7h 推奨</b><p>17〜20時は昨年実績・目標とも強いため削減せず、21時以降の終業調整を優先する案です。</p></div>
+   </div>
+   <div class="reco-card">
+     <h3>計算ロジック（UI説明用）</h3>
+     <div class="formula-box">
+       ① 基準売上 = 選択ルールにより「売上目標」と「昨年同週同曜日」を参照<br>
+       ② PA使用可能人件費 = 基準売上 × PA目標人件費率<br>
+       ③ 加重平均PA時給 = 通常時給 + 22時以降の深夜割増をシフト構成比で加重<br>
+       ④ 適正PA時間 = PA使用可能人件費 ÷ 加重平均PA時給<br>
+       ⑤ 推奨調整時間 = 適正PA時間 − 現在PA予定時間<br><br>
+       ※必要人数・役割不足を下回る削減案は出さない。まず不足解消を優先し、その範囲内で削減候補を提示。
+     </div>
+   </div>
+ </div>
+
+ <div class="bulkbar" id="bulkbar">
+   <div><b><span id="selectedCount">0</span>セル選択中</b>　複数セルをまとめて変更できます</div>
+   <div class="group"><button class="btn" id="bulkTime">時間一括変更</button><button class="btn" id="bulkRole">役割一括変更</button><button class="btn">ヘルプへ変更</button><button class="btn" id="clearSelect">選択解除</button></div>
+ </div>
+
+ <div class="card">
+  <div class="cardhead"><div><h2>調整一覧</h2><div class="sub">セルをクリック＝編集 / Ctrl・⌘または「複数選択モード」で一括選択</div></div><div class="group"><button class="btn" id="multiMode">複数選択モード OFF</button><button class="btn">勤務パターン</button></div></div>
+  <div class="wrap">
+   <table>
+    <thead><tr><th>従業員</th><th>1 火</th><th>2 水</th><th>3 木</th><th>4 金</th><th>5 土</th><th>6 日</th><th>7 月</th><th>8 火</th><th>9 水</th><th>10 木</th><th>11 金</th><th>12 土</th><th>13 日</th><th>14 月</th><th>15 火</th><th>計</th></tr></thead>
+    <tbody>
+      <tr><td><div class="name">佐藤 健</div><div class="meta">社員 / キッチン</div></td>
+        <td><div class="cell edit-cell" data-name="佐藤 健" data-date="9/1"><div class="time">10:00<br>19:00</div><div class="role kitchen">キッチン</div></div></td>
+        <td><div class="cell edit-cell" data-name="佐藤 健" data-date="9/2"><div class="time">10:00<br>19:00</div><div class="role prep">仕込み</div></div></td>
+        <td>休</td>
+        <td><div class="cell edit-cell" data-name="佐藤 健" data-date="9/4"><div class="time">12:00<br>21:00</div><div class="role kitchen">キッチン</div></div></td>
+        <td><div class="cell edit-cell help"><div class="time">10:00<br>21:00</div><div class="role prep">仕込み→厨房</div></div></td>
+        <td><div class="cell edit-cell err"><div class="time">17:00<br>23:00</div><div class="role kitchen">キッチン不足</div></div></td>
+        <td>休</td><td><div class="cell edit-cell"><div class="time">10:00<br>19:00</div></div></td><td><div class="cell edit-cell"><div class="time">10:00<br>19:00</div></div></td><td><div class="cell edit-cell"><div class="time">12:00<br>21:00</div></div></td><td>休</td><td><div class="cell edit-cell err"><div class="time">09:00<br>21:00</div><div class="role prep">仕込み不足</div></div></td><td><div class="cell edit-cell"><div class="time">10:00<br>21:00</div></div></td><td>休</td><td><div class="cell edit-cell"><div class="time">10:00<br>19:00</div></div></td><td>104h</td></tr>
+      <tr><td><div class="name">田中 美咲</div><div class="meta">PA / ホール</div></td>
+        <td><div class="cell edit-cell"><div class="time">11:00<br>15:00</div><div class="role hall">ホール</div></div></td><td>—</td><td><div class="cell edit-cell"><div class="time">11:00<br>15:00</div></div></td><td><div class="cell edit-cell"><div class="time">17:00<br>22:00</div></div></td><td><div class="cell edit-cell"><div class="time">11:00<br>17:00</div><div class="role hall">昼営業</div></div></td><td><div class="cell edit-cell err"><div class="time">未配置</div></div></td><td>—</td><td><div class="cell edit-cell"><div class="time">11:00<br>15:00</div></div></td><td>—</td><td><div class="cell edit-cell"><div class="time">17:00<br>22:00</div></div></td><td><div class="cell edit-cell"><div class="time">17:00<br>22:00</div></div></td><td><div class="cell edit-cell"><div class="time">11:00<br>16:00</div><div class="role hall">昼営業</div></div></td><td><div class="cell edit-cell"><div class="time">11:00<br>17:00</div></div></td><td>—</td><td><div class="cell edit-cell"><div class="time">11:00<br>15:00</div></div></td><td>48h</td></tr>
+      <tr><td><div class="name">田中 海</div><div class="meta">PA / 新橋所属 / ヘルプ候補</div></td><td>—</td><td>—</td><td>—</td><td><div class="cell edit-cell help"><div class="time">17:00<br>23:00</div><div class="role hall">ヘルプ可</div></div></td><td><div class="cell edit-cell help"><div class="time">17:00<br>23:00</div><div class="role hall">ヘルプ可</div></div></td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>12h</td></tr>
+      <tr class="footer"><td>キッチン人数</td><td>2</td><td>2</td><td>1</td><td>2</td><td>3</td><td class="short">2/3</td><td>1</td><td>2</td><td>2</td><td>2</td><td>2</td><td class="short">2/3</td><td>3</td><td>2</td><td>2</td><td>—</td></tr>
+      <tr class="footer"><td>ホール人数</td><td>2</td><td>1</td><td>2</td><td>3</td><td>3</td><td class="short">2/4</td><td>1</td><td>2</td><td>1</td><td>3</td><td>3</td><td>3/3</td><td>3</td><td>1</td><td>2</td><td>—</td></tr>
+      <tr class="footer"><td>昼営業人数</td><td>—</td><td>—</td><td>—</td><td>—</td><td class="goodtxt">5/5</td><td class="short">4/5</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td class="goodtxt">5/5</td><td class="goodtxt">5/5</td><td>—</td><td>—</td><td>—</td></tr>
+      <tr class="footer"><td>仕込み人数</td><td>1/1</td><td>1/1</td><td>1/1</td><td>1/1</td><td>2/2</td><td>2/2</td><td>1/1</td><td>1/1</td><td>1/1</td><td>1/1</td><td>1/1</td><td class="short">1/2</td><td>2/2</td><td>1/1</td><td>1/1</td><td>—</td></tr>
+    </tbody>
+   </table>
+  </div>
+  <div class="actions"><div class="syncbox"><span class="syncdot"></span>スマレジ同期済　<button class="btn">スマレジから予定を再取込</button></div><div><button class="btn">下書き保存</button> <button class="btn primary">確定・公開</button></div></div>
+ </div>
+</section>
+
+ </div>
+
+ <div id="hrShiftPanel" class="hr-panel">
+   <div class="hr-kpis">
+     <div class="hr-kpi bad"><small>連勤要確認</small><b>3名</b><div class="sub">7連勤以上</div></div>
+     <div class="hr-kpi warn"><small>休日不足見込み</small><b>2名</b><div class="sub">社内休日基準未達</div></div>
+     <div class="hr-kpi"><small>複数店舗勤務</small><b>11名</b><div class="sub">対象期間</div></div>
+     <div class="hr-kpi"><small>社員平均休日</small><b>4.2日</b><div class="sub">半月</div></div>
+     <div class="hr-kpi"><small>平均週勤務時間</small><b>41.3h</b><div class="sub">社員</div></div>
+     <div class="hr-kpi good"><small>ヘルプ稼働</small><b>52.5h</b><div class="sub">全店舗合計</div></div>
+   </div>
+
+   <div class="notice danger">
+     <span><b>人事シフト要確認：</b> 店舗単位では問題なく見えても、全店舗合算で佐藤健が10連勤、田中海が7連勤になっています。</span>
+     <button class="btn">要確認者だけ表示</button>
+   </div>
+
+   <div class="card">
+     <div class="cardhead">
+       <div><h2>全店舗横断シフト</h2><div class="sub">1人の勤務を店舗横断で集約。セルには「店舗・時間・役割」を表示。</div></div>
+       <div class="group"><button class="btn">休日基準設定</button><button class="btn">勤務時間アラート設定</button><button class="btn">CSV</button></div>
+     </div>
+     <div class="wrap">
+       <table class="hr-table">
+         <thead>
+           <tr><th>従業員</th><th>1 火</th><th>2 水</th><th>3 木</th><th>4 金</th><th>5 土</th><th>6 日</th><th>7 月</th><th>8 火</th><th>9 水</th><th>10 木</th><th>11 金</th><th>12 土</th><th>13 日</th><th>14 月</th><th>15 火</th><th>連勤</th><th>休日</th><th>時間</th></tr>
+         </thead>
+         <tbody>
+           <tr>
+             <td><div class="name">佐藤 健</div><div class="meta">社員 / 鳥一代本店所属</div></td>
+             <td><div class="cell"><div class="time">10-19</div><span class="store-chip main">本店</span></div></td>
+             <td><div class="cell"><div class="time">10-19</div><span class="store-chip main">本店</span></div></td>
+             <td><div class="cell"><div class="time">17-23</div><span class="store-chip help">新橋</span></div></td>
+             <td><div class="cell"><div class="time">12-21</div><span class="store-chip main">本店</span></div></td>
+             <td><div class="cell"><div class="time">10-21</div><span class="store-chip main">本店</span></div></td>
+             <td><div class="cell"><div class="time">17-23</div><span class="store-chip other">恵比寿</span></div></td>
+             <td><div class="cell"><div class="time">12-21</div><span class="store-chip help">芝</span></div></td>
+             <td><div class="cell"><div class="time">10-19</div><span class="store-chip main">本店</span></div></td>
+             <td><div class="cell"><div class="time">10-19</div><span class="store-chip main">本店</span></div></td>
+             <td><div class="cell err"><div class="time">12-21</div><span class="store-chip main">本店</span></div></td>
+             <td>休</td>
+             <td><div class="cell"><div class="time">09-21</div><span class="store-chip main">本店</span></div></td>
+             <td>休</td><td><div class="cell"><div class="time">10-19</div><span class="store-chip help">新橋</span></div></td><td>休</td>
+             <td class="consecutive-bad">10連勤</td>
+             <td class="dayoff-bad">3 / 必要4</td>
+             <td>102.5h</td>
+           </tr>
+
+           <tr>
+             <td><div class="name">田中 海</div><div class="meta">PA / 新橋所属 / ヘルプ多</div></td>
+             <td>—</td>
+             <td><div class="cell"><div class="time">17-23</div><span class="store-chip main">新橋</span></div></td>
+             <td><div class="cell"><div class="time">17-23</div><span class="store-chip help">本店</span></div></td>
+             <td><div class="cell"><div class="time">17-23</div><span class="store-chip help">恵比寿</span></div></td>
+             <td><div class="cell"><div class="time">12-18</div><span class="store-chip help">芝</span></div></td>
+             <td><div class="cell"><div class="time">17-23</div><span class="store-chip main">新橋</span></div></td>
+             <td><div class="cell"><div class="time">17-23</div><span class="store-chip help">本店</span></div></td>
+             <td><div class="cell"><div class="time">17-23</div><span class="store-chip help">川崎</span></div></td>
+             <td>休</td><td>—</td><td>—</td><td><div class="cell"><div class="time">17-23</div><span class="store-chip main">新橋</span></div></td><td>—</td><td>—</td><td>—</td>
+             <td class="consecutive-warn">7連勤</td>
+             <td class="dayoff-good">8日</td>
+             <td>48.0h</td>
+           </tr>
+
+           <tr>
+             <td><div class="name">肥田 葵</div><div class="meta">社員 / 恵比寿所属</div></td>
+             <td><div class="cell"><div class="time">12-22</div><span class="store-chip main">恵比寿</span></div></td>
+             <td>休</td>
+             <td><div class="cell"><div class="time">17-23</div><span class="store-chip main">恵比寿</span></div></td>
+             <td><div class="cell"><div class="time">17-23</div><span class="store-chip help">本店</span></div></td>
+             <td><div class="cell"><div class="time">12-22</div><span class="store-chip main">恵比寿</span></div></td>
+             <td><div class="cell"><div class="time">12-22</div><span class="store-chip main">恵比寿</span></div></td>
+             <td>休</td>
+             <td><div class="cell"><div class="time">12-22</div><span class="store-chip main">恵比寿</span></div></td>
+             <td><div class="cell"><div class="time">17-23</div><span class="store-chip help">新橋</span></div></td>
+             <td><div class="cell"><div class="time">12-22</div><span class="store-chip main">恵比寿</span></div></td>
+             <td>休</td>
+             <td><div class="cell"><div class="time">12-22</div><span class="store-chip main">恵比寿</span></div></td>
+             <td><div class="cell"><div class="time">12-22</div><span class="store-chip main">恵比寿</span></div></td>
+             <td>休</td>
+             <td><div class="cell"><div class="time">17-23</div><span class="store-chip main">恵比寿</span></div></td>
+             <td>4連勤</td>
+             <td class="dayoff-good">4 / 必要4</td>
+             <td>94.0h</td>
+           </tr>
+         </tbody>
+       </table>
+     </div>
+   </div>
+
+   <div class="hr-summary">
+     <div class="hr-alert-list">
+       <div class="hr-alert bad"><b>佐藤 健：10連勤 / 休日1日不足見込み</b><p>本店だけでは5勤務に見えますが、新橋・恵比寿・芝のヘルプ勤務を含めると10連勤です。9/7または9/10の調整を推奨。</p></div>
+       <div class="hr-alert warn"><b>田中 海：7連勤</b><p>新橋・本店・恵比寿・芝・川崎を横断。PAですが連勤確認対象として表示。</p></div>
+       <div class="hr-alert"><b>肥田 葵：休日数は基準内</b><p>半月4日休み。複数店舗勤務ありですが連勤上限には達していません。</p></div>
+     </div>
+
+     <div class="side" style="margin-top:0">
+       <h3>社員休日チェック</h3>
+       <div class="rank"><div class="ranktop"><b>佐藤 健</b><span class="dayoff-bad">3 / 4日</span></div><div class="sub">1日不足見込み</div></div>
+       <div class="rank"><div class="ranktop"><b>肥田 葵</b><span class="dayoff-good">4 / 4日</span></div><div class="sub">基準内</div></div>
+       <div class="rank"><div class="ranktop"><b>坂本</b><span class="dayoff-good">5 / 4日</span></div><div class="sub">基準内</div></div>
+       <div class="sub" style="margin-top:8px">※休日必要数は社員マスタの「月間休日基準」から取得する想定。</div>
+     </div>
+   </div>
+ </div>
+
+<!-- CONFIRMED -->
+<section id="confirmed" class="view">
+ <div class="toolbar">
+  <div class="group"><select><option>鳥一代 本店</option></select><button class="btn">‹</button><span class="month">2026年 9月</span><button class="btn">›</button><select><option>半月表示</option><option>1ヶ月表示</option></select></div>
+  <div class="group"><button class="btn">変更申請 2件</button><button class="btn">未確認5名へ再通知</button><button class="btn">変更履歴</button><button class="btn">印刷</button></div>
+ </div>
+ <div class="title">確定シフト</div>
+ <div class="notice success"><span><b>公開済：</b> 8/25 18:00　48名へ通知済　スマレジ同期98.7%</span><span>ヘルプ確定3名</span></div>
+ <div class="grid2">
+   <div class="card">
+    <div class="cardhead"><h2>公開済みシフト</h2><span class="sub">公開後変更可 / スマレジへ即時追従</span></div>
+    <div style="padding:18px;color:#666">調整画面と同じ一覧を使用。通常は無彩色、公開後変更は青、同期エラーは赤。各セルから修正・削除・スマレジ同期ができます。</div>
+   </div>
+   <aside>
+     <div class="side"><h3>公開後の確認</h3><p><b>未確認 5名</b><br><span class="sub">確定シフト未確認</span></p><p><b>変更申請 2件</b><br><span class="sub">交代希望</span></p><p><b>ヘルプ確定 3名</b></p></div>
+     <div class="side"><h3>自分の確定シフト</h3><p>マイページではpublishedのみをカレンダー表示</p><button class="btn">従業員表示をプレビュー</button></div>
+   </aside>
+ </div>
+</section>
+
+<!-- ACTUAL -->
+<section id="actual" class="view">
+ <div class="toolbar">
+  <div class="group"><select><option>鳥一代 本店</option></select><button class="btn">‹</button><span class="month">2026年 9月</span><button class="btn">›</button><select><option>半月表示</option><option>1ヶ月表示</option></select></div>
+  <div class="group"><div class="seg" id="actualSeg"><button class="on" data-act="hours">勤務時間数</button><button data-act="times">出退勤時間</button><button data-act="diff">予定との差異</button><button data-act="fulfill">叶え率</button></div><button class="btn">CSV</button><button class="btn">スマレジ最新取得</button></div>
+ </div>
+ <div class="title">実績・差異</div>
+ <div class="kpis">
+  <div class="kpi"><small>売上実績</small><b>¥12.68M</b></div><div class="kpi"><small>実績人件費率</small><b>28.1%</b></div><div class="kpi"><small>PA予定時間</small><b>272.0h</b></div><div class="kpi"><small>PA実績時間</small><b>267.5h</b></div><div class="kpi good"><small>削減時間</small><b>14.5h</b></div><div class="kpi bad"><small>超過時間</small><b>9.0h</b></div>
+ </div>
+
+ <div class="card"><div class="cardhead"><h2 id="actualTitle">勤務時間数</h2><span class="sub">スマレジ実績を正本として表示 / 予定・実績とも修正可</span></div>
+  <div class="wrap">
+   <table id="actHours"><thead><tr><th>従業員</th><th>1 火</th><th>2 水</th><th>3 木</th><th>4 金</th><th>5 土</th><th>6 日</th><th>7 月</th><th>8 火</th><th>9 水</th><th>10 木</th><th>11 金</th><th>12 土</th><th>13 日</th><th>14 月</th><th>15 火</th><th>計</th></tr></thead><tbody><tr><td><div class="name">佐藤 健</div></td><td>8.0</td><td>8.0</td><td>—</td><td>8.0</td><td>10.5</td><td class="warn">6.2</td><td>—</td><td>8.0</td><td>8.0</td><td>8.0</td><td>—</td><td class="err">11.1</td><td>10.2</td><td>—</td><td>8.0</td><td>85.9</td></tr></tbody></table>
+
+   <table id="actTimes" style="display:none"><thead><tr><th>従業員</th><th>1 火</th><th>2 水</th><th>3 木</th><th>4 金</th><th>5 土</th><th>6 日</th><th>7 月</th><th>8 火</th><th>9 水</th><th>10 木</th><th>11 金</th><th>12 土</th><th>13 日</th><th>14 月</th><th>15 火</th><th>計</th></tr></thead><tbody><tr><td><div class="name">佐藤 健</div></td><td>10:03<br>19:06</td><td>09:58<br>19:04</td><td>—</td><td>12:01<br>21:07</td><td>09:54<br>21:03</td><td class="warn">17:18<br>23:12</td><td>—</td><td>10:02<br>19:00</td><td>10:01<br>19:05</td><td>12:04<br>21:00</td><td>—</td><td class="err">09:00<br>退勤なし</td><td>10:02<br>21:06</td><td>—</td><td>10:00<br>19:03</td><td>85.9h</td></tr></tbody></table>
+
+   <table id="actDiff" style="display:none"><thead><tr><th>日付</th><th>売上予想</th><th>売上実績</th><th>売上差</th><th>想定人件費率</th><th>実績人件費率</th><th>予定時間</th><th>実績時間</th><th>削減/超過</th><th>同期</th></tr></thead><tbody>
+     <tr><td>9/1</td><td>¥820,000</td><td>¥845,500</td><td class="goodtxt">+25,500</td><td>28.2%</td><td>27.5%</td><td><button class="btn small-edit">17:00–23:00</button></td><td><button class="btn small-edit">17:03–22:47</button></td><td class="goodtxt">-0.3h</td><td><span class="badge good">同期済</span></td></tr>
+     <tr><td>9/2</td><td>¥790,000</td><td>¥752,300</td><td class="short">-37,700</td><td>28.1%</td><td>29.6%</td><td><button class="btn small-edit">17:00–23:00</button></td><td><button class="btn small-edit">16:55–23:22</button></td><td class="short">+0.5h</td><td><span class="badge good">同期済</span></td></tr>
+   </tbody></table>
+
+   <div id="actFulfill" style="display:none;padding:12px">
+     <div class="grid2">
+       <div class="side"><h3>叶え率ランキング</h3><div class="rank"><div class="ranktop"><b>佐藤 健</b><span>100%</span></div><div class="barwrap"><div class="barfill" style="width:100%"></div></div><div class="sub">希望112h / 採用112h</div></div><div class="rank"><div class="ranktop"><b>田中 美咲</b><span>91.7%</span></div><div class="barwrap"><div class="barfill" style="width:91.7%"></div></div></div></div>
+       <div class="side"><h3>叶え率一覧</h3><table class="mini-table"><tr><th>従業員</th><th>希望日数</th><th>採用日数</th><th>時間差</th></tr><tr><td>佐藤 健</td><td>15</td><td>15</td><td>0h</td></tr><tr><td>田中 美咲</td><td>12</td><td>11</td><td>-6h</td></tr></table></div>
+     </div>
+   </div>
+  </div>
+ </div>
+</section>
+
+</main>
+
+<!-- SINGLE EDIT MODAL -->
+<div class="modal-bg" id="editModal">
+ <div class="modal">
+  <div class="modalhead"><b id="editTitle">シフト編集</b><button class="btn modal-close">×</button></div>
+  <div class="modalbody">
+    <div class="formgrid">
+      <div class="field"><label>開始</label><input value="10:00"></div>
+      <div class="field"><label>終了</label><input value="19:00"></div>
+      <div class="field"><label>休憩</label><select><option>60分</option><option>45分</option><option>30分</option></select></div>
+      <div class="field"><label>役割</label><select><option>キッチン</option><option>ホール</option><option>仕込み</option><option>ドリンク</option></select></div>
+      <div class="field"><label>勤務区分</label><select><option>通常</option><option>ヘルプ</option><option>研修</option></select></div>
+      <div class="field"><label>店舗</label><select><option>鳥一代 本店</option><option>鳥一代 新橋</option></select></div>
+    </div>
+    <div class="audit">希望：10:00〜19:00 / キッチン ｜ スマレジ：同期済 ｜ 修正者・修正前後・同期結果を履歴保存</div>
+  </div>
+  <div class="modalfoot"><button class="btn">削除</button><div><button class="btn modal-close">キャンセル</button> <button class="btn primary modal-close">保存してスマレジ同期</button></div></div>
+ </div>
+</div>
+
+<!-- BULK MODAL -->
+<div class="modal-bg" id="bulkModal">
+ <div class="modal">
+  <div class="modalhead"><b>一括変更</b><button class="btn modal-close">×</button></div>
+  <div class="modalbody">
+    <div class="notice success"><span><b id="bulkCount">3件</b>を一括変更します</span><span>元の希望・履歴は保持</span></div>
+    <div class="formgrid">
+      <div class="field"><label>変更方法</label><select><option>開始・終了を同じ時刻へ変更</option><option>開始だけ変更</option><option>終了だけ変更</option><option>時間を±30分ずらす</option></select></div>
+      <div class="field"><label>役割</label><select><option>変更しない</option><option>キッチン</option><option>ホール</option><option>仕込み</option><option>ドリンク</option></select></div>
+      <div class="field"><label>開始</label><input value="17:00"></div>
+      <div class="field"><label>終了</label><input value="23:00"></div>
+    </div>
+  </div>
+  <div class="modalfoot"><button class="btn modal-close">キャンセル</button><button class="btn primary modal-close">選択セルへ一括反映</button></div>
+ </div>
+</div>
+
+<!-- URGENT MODAL -->
+<div class="modal-bg" id="urgentModal">
+ <div class="modal">
+  <div class="modalhead"><b>急募シフトを作成</b><button class="btn modal-close">×</button></div>
+  <div class="modalbody">
+    <div class="formgrid">
+      <div class="field"><label>店舗</label><select><option>鳥一代 本店</option></select></div>
+      <div class="field"><label>日付</label><input type="date" value="2026-09-12"></div>
+      <div class="field"><label>開始</label><input value="09:00"></div>
+      <div class="field"><label>終了</label><input value="12:00"></div>
+      <div class="field"><label>役割</label><select><option>仕込み</option><option>ホール</option><option>キッチン</option><option>ドリンク</option></select></div>
+      <div class="field"><label>募集人数</label><input type="number" value="1"></div>
+      <div class="field"><label>対象</label><select><option>自店舗のみ</option><option>他店舗も含める</option><option>全店舗</option></select></div>
+      <div class="field"><label>応募締切</label><input type="datetime-local" value="2026-09-11T18:00"></div>
+    </div>
+    <div class="field" style="margin-top:10px"><label>募集メッセージ</label><input style="width:100%" value="9/12（土）朝の仕込みを1名募集します。対応可能な方は応募してください。"></div>
+    <div class="audit">LINE連携済の対象者へ通知 → 応募 → 店長確定 → sf_shiftsへ追加 → スマレジ同期。採用かつ実勤務完了したら「急募対応回数」を+1。</div>
+  </div>
+  <div class="modalfoot"><button class="btn modal-close">キャンセル</button><button class="btn red modal-close">LINEで急募を配信</button></div>
+ </div>
+</div>
+
+<script>
+document.querySelectorAll('.mainnav button').forEach(b=>b.onclick=()=>{
+ document.querySelectorAll('.mainnav button').forEach(x=>x.classList.remove('on'));
+ document.querySelectorAll('.view').forEach(x=>x.classList.remove('on'));
+ b.classList.add('on');document.getElementById(b.dataset.view).classList.add('on');
+});
+
+let multi=false;
+const cells=[...document.querySelectorAll('#adjust .edit-cell')];
+const bulkbar=document.getElementById('bulkbar');
+function updateSelected(){
+ const n=document.querySelectorAll('#adjust .edit-cell.selected').length;
+ document.getElementById('selectedCount').textContent=n;
+ bulkbar.classList.toggle('on',n>0);
+}
+document.getElementById('multiMode').onclick=()=>{
+ multi=!multi;
+ document.getElementById('multiMode').textContent='複数選択モード '+(multi?'ON':'OFF');
+ document.getElementById('multiMode').classList.toggle('primary',multi);
+};
+cells.forEach(c=>c.onclick=(e)=>{
+ if(multi||e.ctrlKey||e.metaKey){
+  c.classList.toggle('selected');updateSelected();return;
+ }
+ document.getElementById('editTitle').textContent=(c.dataset.name||'シフト')+' '+(c.dataset.date||'')+' を編集';
+ document.getElementById('editModal').classList.add('on');
+});
+document.getElementById('clearSelect').onclick=()=>{cells.forEach(c=>c.classList.remove('selected'));updateSelected()};
+document.getElementById('bulkTime').onclick=()=>{
+ const n=document.querySelectorAll('#adjust .edit-cell.selected').length;
+ document.getElementById('bulkCount').textContent=n+'件';
+ document.getElementById('bulkModal').classList.add('on');
+};
+document.getElementById('bulkRole').onclick=document.getElementById('bulkTime').onclick;
+
+document.querySelectorAll('.open-urgent').forEach(b=>b.onclick=()=>document.getElementById('urgentModal').classList.add('on'));
+document.querySelectorAll('.modal-close').forEach(b=>b.onclick=()=>b.closest('.modal-bg').classList.remove('on'));
+document.querySelectorAll('.modal-bg').forEach(bg=>bg.onclick=e=>{if(e.target===bg)bg.classList.remove('on')});
+
+
+const hrModeBtns=[...document.querySelectorAll('#hrSwitch button')];
+if(hrModeBtns.length){
+  hrModeBtns.forEach(b=>b.onclick=()=>{
+    hrModeBtns.forEach(x=>x.classList.remove('on'));
+    b.classList.add('on');
+    const mode=b.dataset.hrmode;
+    document.getElementById('storeShiftPanel').classList.toggle('on',mode==='store');
+    document.getElementById('hrShiftPanel').classList.toggle('on',mode==='hr');
+  });
+}
+
+const actBtns=[...document.querySelectorAll('#actualSeg button')];
+actBtns.forEach(b=>b.onclick=()=>{
+ actBtns.forEach(x=>x.classList.remove('on'));b.classList.add('on');
+ const t=b.dataset.act;
+ document.getElementById('actHours').style.display=t==='hours'?'table':'none';
+ document.getElementById('actTimes').style.display=t==='times'?'table':'none';
+ document.getElementById('actDiff').style.display=t==='diff'?'table':'none';
+ document.getElementById('actFulfill').style.display=t==='fulfill'?'block':'none';
+ document.getElementById('actualTitle').textContent=t==='hours'?'勤務時間数':t==='times'?'出退勤時間':t==='diff'?'日別 実績差分':'シフト叶え率';
+});
+</script>
+</body>
+</html>
