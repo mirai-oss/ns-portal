@@ -6449,6 +6449,7 @@ function payrollRender(){
           <input id="payroll-ym" type="month" value="${esc(PAYROLL_STATE.yearMonth)}">
           <div class="pr-sync-box"><span>給与データ<br><b>✓ 取得済み</b></span><button class="btn" id="payroll-sync-now">🔄 スマレジから今すぐ取得</button></div>
           <div class="err" id="payroll-sync-msg" style="margin-top:6px"></div>
+          <button data-payroll-finalize class="hq-btn primary" style="margin-top:10px;width:100%">✅ 給料確定（本部タスクを自動発行）</button>
         </div>
       </div>
 
@@ -6582,6 +6583,21 @@ function payrollRender(){
     }catch(e){ msg.textContent="通信エラーが発生しました"; }
     finally{ btn.disabled=false; btn.textContent="🔄 スマレジから今すぐ取得"; }
   };
+  // 2026-09-08追加: 給料確定ボタン（担当Bからの依頼。押すと本部タスク＝給料振込／現金手渡しを
+  // 自動発行するRPC hq_create_payroll_tasks を呼ぶだけ。実体（祝日調整・対象者抽出等）は
+  // 担当Bがバックエンド側で実装済み。同じ月で2回押しても重複作成されない（べき等）
+  document.querySelectorAll("[data-payroll-finalize]").forEach(el=>el.onclick=async()=>{
+    if(!confirm(`${PAYROLL_STATE.yearMonth}分の給与を確定し、本部タスク（給料振込・現金手渡し）を自動発行しますか？\n※既に発行済みの場合は重複作成されません。`)) return;
+    el.disabled=true;
+    const r=await authed("/rest/v1/rpc/hq_create_payroll_tasks",{
+      method:"POST",
+      body:JSON.stringify({p_year_month:PAYROLL_STATE.yearMonth,p_corp:"N-Style"})
+    });
+    el.disabled=false;
+    if(!r.ok){ alert("本部タスクの自動発行に失敗しました: "+(r.body&&r.body.message||JSON.stringify(r.body))); return; }
+    const d=r.body;
+    alert(`本部タスクを発行しました。\n・給料振込：対象${d.transfer_count}名／期日${d.transfer_due}\n・現金手渡し：対象${d.cash_count}名／期日${d.cash_due}\n\n本部タスク（tasks.html）で内容を確認してください。`);
+  });
   // 一覧をCSVでダウンロード（記録・確認用。PayPay振込CSVとは別物）
   $("payroll-csv-download").onclick=()=>{
     const statusText=r=>{ const rec=payrollRecordFor(r.user_id); const asg=payrollAssignmentFor(r.user_id);
@@ -6642,6 +6658,17 @@ function wirePayrollRowActions(){
     });
     if(!r.ok){ alert("振込完了の記録に失敗しました"); el.disabled=false; return; }
     const rec=payrollRecordFor(userId); if(rec){ rec.paid_at=new Date().toISOString(); rec.paid_by=ME.id; }
+    // 2026-09-08追加: 本部タスク（給料振込）のチェックリストへ連携（担当B依頼）。
+    // この月に「給料確定」を押していない（＝対応する本部タスクが無い）場合はRPC側が
+    // エラーを投げずに{ok:false}を返すだけなので、失敗を握りつぶして振込完了自体は止めない
+    const payRow=(PAYROLL_STATE.rows||[]).find(r2=>r2.user_id===userId);
+    const payUname=payRow&&payRow.user&&payRow.user.name;
+    if(payUname){
+      authed("/rest/v1/rpc/hq_check_payroll_task_item",{
+        method:"POST",
+        body:JSON.stringify({p_year_month:PAYROLL_STATE.yearMonth,p_kind:"transfer",p_person_name:payUname})
+      }).catch(()=>{});
+    }
     payrollRender(); updateMailSummaryBar();
   });
   document.querySelectorAll("[data-payroll-unpay]").forEach(el=>el.onclick=async()=>{
