@@ -1,7 +1,7 @@
 // 取引先マスタ・取引先銀行口座・口座変更申請 Edge Function（会計・請求書処理の全面刷新 フェーズB-2・2026-09-03）
 //
 // invoices.htmlの設定タブ「取引先マスタ」「支払先・銀行口座」、および統合詳細モーダルの
-// 「振込」タブから呼ばれる。actionは9つ:
+// 「振込」タブから呼ばれる。actionは10:
 //   - "list_vendors"                      : 取引先一覧を返す（invoice_can_access()で読める全員）
 //   - "upsert_vendor"           {vendor}  : 取引先の新規作成・更新
 //   - "delete_vendor"           {id}      : 取引先の削除（マスター/HQ限定）。請求書・仕訳辞書で
@@ -12,6 +12,8 @@
 //                                            は"bank_transfer"（既定）|"direct_debit"|"cash"。
 //                                            後者2つは銀行口座情報が不要（2026-09-07追加）
 //   - "confirm_bank_account" {id}         : 「最終確認日」を今日に更新するだけの軽量action
+//   - "delete_bank_account" {id}          : 口座の削除（マスター/HQ限定。2026-09-08追加）。
+//                                            現在有効・過去分どちらも削除可（参照する外部キーは無い）
 //   - "list_change_requests" {status?}    : 口座変更申請の一覧（マスター/HQ限定）
 //   - "approve_change_request" {id}       : 変更申請を承認→現在の口座をvalid_to=nowで無効化し、
 //                                            申請内容を新しい現在口座として登録。対象請求書の
@@ -198,6 +200,21 @@ Deno.serve(async (req: Request) => {
       const { data, error } = await db.from("vendor_bank_accounts").insert({ ...row, is_current: true, source: a.source || "manual" }).select("id").maybeSingle();
       if (error) return json({ error: error.message }, 500);
       return json({ success: true, id: data?.id });
+    }
+
+    // 2026-09-08新規：ユーザー要望「取引先マスタの銀行口座が削除も編集もできないので、
+    // 編集できるようにしてほしい」に対応。編集自体はupsert_bank_account（account.idを指定した
+    // 更新）で既に可能だった設計だが、フロント側に編集ボタンが無かった。あわせて削除も追加。
+    // vendor_bank_accounts.idを参照する外部キーは無い（information_schemaで確認済み）ため、
+    // 現在有効・過去分どちらの行でも安全に削除できる
+    if (action === "delete_bank_account") {
+      const user = await currentUser(req);
+      if (!(await isMasterOrHQ(user?.id))) return json({ error: "振込先口座の削除はマスター/HQのみ行えます" }, 403);
+      const id = body?.id;
+      if (!id) return json({ error: "idは必須です" }, 400);
+      const { error } = await svc().from("vendor_bank_accounts").delete().eq("id", id);
+      if (error) return json({ error: error.message }, 500);
+      return json({ success: true });
     }
 
     if (action === "confirm_bank_account") {
