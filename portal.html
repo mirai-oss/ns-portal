@@ -1545,10 +1545,15 @@ function openItem(key,u){
   // iframeを作り直さずpostMessageでタブ/ページだけ切り替える
   if(it.sysKey && it.sysKey===CUR_IFRAME_SYSKEY && FAST_SWITCH_SYSKEYS.has(it.sysKey) && CUR_IFRAME){
     const paramName=SYS_TAB_PARAM[it.sysKey];
-    const tabValue=paramName?new URL(it.url,location.href).searchParams.get(paramName):null;
+    const itUrl=new URL(it.url,location.href);
+    const tabValue=paramName?itUrl.searchParams.get(paramName):null;
+    // 2026-09-08追加: 勤怠グループ(kintai-*)は4項目とも page=shift で同じtabValueになるため、
+    //   これだけではpostMessageを送っても「同じタブへの切替」に見えて中の画面が変わらない
+    //   （nippo側のsfMgStepが更新されないバグの原因）。&sub=があれば併せて送る
+    const subValue=itUrl.searchParams.get("sub");
     if(tabValue){
       try{
-        CUR_IFRAME.contentWindow.postMessage({type:"nsPortalSetTab",tab:tabValue},CUR_IFRAME_ORIGIN);
+        CUR_IFRAME.contentWindow.postMessage({type:"nsPortalSetTab",tab:tabValue,sub:subValue||undefined},CUR_IFRAME_ORIGIN);
         VIEW="frame"; CUR=key;
         $("pagetitle").textContent=it.label;
         closeMobileMore();
