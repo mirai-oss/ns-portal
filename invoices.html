@@ -1846,7 +1846,13 @@ async function openComposeModal(u){
   };
 }
 async function renderTabBody(u){
-  $("tabbody").innerHTML='<div class="spin">読み込み中…</div>';
+  // 2026-09-08追加：ユーザー報告「予期しないエラーが発生しました: Cannot set properties of null
+  // (setting 'innerHTML')」対策。#tabbodyはアプリの持続的な土台要素で通常は必ず存在するが、
+  // モーダルを閉じた直後の遷移など、タイミングによっては一時的にDOMから見つからない状態で
+  // 呼ばれるケースがある。他の描画関数（plfeeInit等）と同じく、要素が無ければ何もせず抜ける
+  // 防御的なガードを入れて、少なくとも「真っ赤なエラーバナー」で処理が止まって見えることは防ぐ
+  const tb=$("tabbody"); if(!tb) return;
+  tb.innerHTML='<div class="spin">読み込み中…</div>';
   updateMailSummaryBar();
   if(TAB==="dashboard") await renderAccountingDashboardTab(u);
   else if(TAB==="unified") await renderUnifiedInvoiceTab(u);
@@ -3234,11 +3240,21 @@ function wireDetailActions(u){
   // 対応: 同じ#mailDetailを使い回すモーダルの重ね張りをやめ、🧾請求書一覧タブへ実際に画面遷移
   // してから（＝受信トレイ側の#mailDetailをDOMから完全に消してから）その請求書の詳細を
   // 開き直す形にした（ユーザーの要望どおり「請求書メールは入口・処理は請求書一覧」を徹底する）
-  if($("goto-invoice-process")) $("goto-invoice-process").onclick=()=>{
+  if($("goto-invoice-process")) $("goto-invoice-process").onclick=async()=>{
     const invoiceId=invoice&&invoice.id; if(!invoiceId) return;
-    const inModal=!!document.querySelector(".modal-bg");
-    const proceed=async()=>{ TAB="unified"; await renderTabBody(u); await openInvoiceDetail(u,invoiceId); };
-    if(inModal){ history.back(); setTimeout(proceed,300); } else { proceed(); }
+    // 2026-09-08再修正：ユーザー報告「予期しないエラーが発生しました: Cannot set properties of
+    // null (setting 'innerHTML')」に対応。history.back()でモーダルを閉じたあと、popstateハンドラ
+    // による除去処理の完了をsetTimeoutの固定時間待ち（300ms）に頼っていたのが不安定だった
+    // （タイミング次第でタブ切り替えの描画と競合し、要素が見つからずエラーになることがあった）。
+    // history.back()の非同期な完了を待つのではなく、popstateハンドラと同じロジック
+    // （一番上に重なっているモーダルを直接削除する。1580行目付近参照）をここで同期的に行うことで、
+    // タイミングに依存せず確実に処理できるようにした
+    const modals=document.querySelectorAll(".modal-bg");
+    const topModal=modals[modals.length-1];
+    if(topModal) topModal.remove();
+    TAB="unified";
+    await renderTabBody(u);
+    await openInvoiceDetail(u,invoiceId);
   };
 
   /* ----------------------------------------------------------
