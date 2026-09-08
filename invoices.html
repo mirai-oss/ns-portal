@@ -3208,9 +3208,27 @@ function wireDetailActions(u){
   }
   renderEventMapTable();
   // 2026-09-04新規：受信トレイの簡易表示（メールは入口）から「🧾請求書一覧で確認・処理する」を
-  // 押したときの遷移。同じメールをDETAIL_MODE="process"で開き直すだけ＝処理ロジック自体は
-  // 既存のrenderMailDetail／wireDetailActionsをそのまま再利用する
-  if($("goto-invoice-process")) $("goto-invoice-process").onclick=()=>{ DETAIL_MODE="process"; openMailDetailModal(u,emailId); };
+  // 押したときの遷移。
+  // 2026-09-08修正：ユーザー報告「請求書メールのところから処理するのはNGにしてるはずなので、
+  // 請求書メールから請求書のところに飛ばすだけ（入口）にするように」（会計・仕訳等の処理カード
+  // 一式が受信トレイの画面のまま表示されてしまうスクリーンショット添付）に対応。
+  // 根本原因: 受信トレイの簡易表示自体が#mailDetailという同じidの要素を使っており、従来の
+  // 実装（同じメールをDETAIL_MODE="process"でopenMailDetailModal＝新しいモーダルとして
+  // 開き直すだけ）だと、受信トレイの埋め込み表示（モーダルではなく）または既に開いている
+  // モーダルの中にさらにモーダルを重ねる形になり、id="mailDetail"を持つ要素がDOM上に同時に
+  // 2つ以上存在してしまっていた。document.getElementById("mailDetail")はdocument順で先に
+  // 見つかった方（多くは受信トレイの埋め込み表示側）を返すため、新しいモーダルの中身のつもりで
+  // 書き込んだ内容が実際には受信トレイの埋め込み表示側に書き込まれ、モーダルを閉じたあとに
+  // 受信トレイの画面がそのまま会計・仕訳等の処理画面になってしまっていた。
+  // 対応: 同じ#mailDetailを使い回すモーダルの重ね張りをやめ、🧾請求書一覧タブへ実際に画面遷移
+  // してから（＝受信トレイ側の#mailDetailをDOMから完全に消してから）その請求書の詳細を
+  // 開き直す形にした（ユーザーの要望どおり「請求書メールは入口・処理は請求書一覧」を徹底する）
+  if($("goto-invoice-process")) $("goto-invoice-process").onclick=()=>{
+    const invoiceId=invoice&&invoice.id; if(!invoiceId) return;
+    const inModal=!!document.querySelector(".modal-bg");
+    const proceed=async()=>{ TAB="unified"; await renderTabBody(u); await openInvoiceDetail(u,invoiceId); };
+    if(inModal){ history.back(); setTimeout(proceed,300); } else { proceed(); }
+  };
 
   /* ----------------------------------------------------------
      広告費として反映（C-7②・2026-08-31）
@@ -4608,6 +4626,16 @@ function unifiedFilteredRows(){
       if(av>bv) return UNIFIED_STATE.sortDir==="asc"?1:-1;
       return 0;
     });
+  }else if(UNIFIED_STATE.subTab==="review"){
+    // 2026-09-08新設：ユーザー要望「振込準備にしたらすべてのタブに入ってわかりにくいから、
+    // 要対応の一番上に並ぶようにして欲しい」に対応。列見出しで明示的に並び替えていない
+    // （既定の受領日順の）ときだけ、要対応タブ内で「振込準備」段階の請求書を最優先で
+    // 一番上にまとめる（Array.prototype.sortは安定ソートのため、振込準備どうし・
+    // それ以外どうしの中の順番は元の受領日順のまま保たれる）
+    list=[...list].sort((a,b)=>{
+      const ap=unifiedStageOf(a)==="振込準備"?0:1, bp=unifiedStageOf(b)==="振込準備"?0:1;
+      return ap-bp;
+    });
   }
   return list;
 }
@@ -4637,7 +4665,7 @@ function unifiedRowHtml(r){
     <td>${r.pl_fee_seisan_synced_at?'<span class="invoice-status done">済</span>':"—"}</td>
     <td><span class="invoice-status ${pay[1]}">${esc(pay[0])}</span></td>
     <td>${esc((r.linked_step&&r.linked_step.title)||"—")}</td>
-    <td>${esc(unifiedStageOf(r))}</td>
+    <td>${unifiedStageOf(r)==="支払確認待ち"?`<span class="hq-pill amber" title="振込は完了していますが、まだ「支払を確認済みにする」操作が済んでいません">支払確認待ち</span>`:esc(unifiedStageOf(r))}</td>
     <td><button class="hq-btn" style="padding:9px 10px" data-delete-invoice="${r.id}" title="この請求書を削除（テストデータの削除等に）">🗑</button></td>
   </tr>`;
 }
@@ -5638,6 +5666,7 @@ function dashRenderBody(u){
           ${progressHtml("内容確認",reviewDoneCount,totalCount)}
           ${progressHtml("会計処理",accountingDoneCount,totalCount)}
           ${progressHtml("振込処理",paymentDoneCount,paymentTargetRows.length)}
+          ${(reasonCounts.payment_unverified||0)>0?`<div class="dash-p-note" data-dash-goto="payment_unverified" style="cursor:pointer;font-size:11px;color:var(--m-amber);margin-top:-6px;margin-bottom:4px">⚠️ うち${reasonCounts.payment_unverified}件は振込は完了していますが、まだ「支払を確認済みにする」操作が済んでいません（振込処理の完了には数えていますが、本当の完了＝支払確認まではまだです）。クリックすると一覧で確認できます</div>`:""}
         </div>
         <div class="card" style="padding:18px">
           <div class="dash-section-title">④ 今月の支払状況・⑤ 支払予定</div>
