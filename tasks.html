@@ -10,6 +10,9 @@
   --bg:#f5f4f1; --card:#ffffff; --ink:#26221e; --muted:#8a8377;
   --accent:#c8401f; --accent2:#a33318; --line:#e7e3dc; --ok:#2e7d32;
   --warn:#b58a00; --stall:#c62828;
+  /* 2026-09-08: 「期限超過（赤）」と「3日以上停止」が同じ赤色で混ざって見分けがつかない
+     という実機フィードバックへの対応。停止だけは別の落ち着いた色にする（警告色ではない） */
+  --stopped:#5b7290;
 }
 @media(prefers-color-scheme:dark){
   :root{--bg:#1d1b18; --card:#282521; --ink:#f0ece5; --muted:#a29a8c; --line:#3a362f;}
@@ -105,14 +108,18 @@ textarea{resize:vertical}
 .col h2 b{color:var(--ink)}
 .tcard{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin-bottom:10px;cursor:pointer;transition:transform .08s}
 .tcard:hover{transform:translateY(-1px)}
-.tcard.stall{border-color:var(--stall);border-width:2px}
+.tcard.overdue{border-color:var(--stall);border-width:2px}
+.tcard.stall{border-color:var(--stopped);border-width:2px}
 .tcard.warn{border-color:var(--warn);border-width:2px}
 .tcard .badges{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px}
 .tag{display:inline-block;font-size:10px;padding:2px 8px;border-radius:99px;border:1px solid var(--line);color:var(--muted)}
 .tag.freq{color:var(--accent);border-color:var(--accent)}
 .tcard .ti{font-size:14px;font-weight:600;margin-bottom:4px}
 .tcard .meta{font-size:12px;color:var(--muted);line-height:1.6}
-.tcard .stall-badge{display:inline-block;font-size:11px;color:#fff;background:var(--stall);padding:1px 8px;border-radius:99px;margin-bottom:4px}
+/* 2026-09-08: 「期限超過」(赤・.due-badge.stall)と紛らわしかったため、停止バッジは
+   別の落ち着いた色(--stopped)にした。「停止」は「まだ動いていない」という情報であって
+   「期限超過」ほどの緊急度ではないため、危険色の赤は使わない */
+.tcard .stall-badge{display:inline-block;font-size:11px;color:#fff;background:var(--stopped);padding:1px 8px;border-radius:99px;margin-bottom:4px}
 .due-badge{font-weight:600}
 .due-badge.stall{background:var(--stall);color:#fff;border-color:var(--stall)}
 .due-badge.warn{background:var(--warn);color:#fff;border-color:var(--warn)}
@@ -529,8 +536,15 @@ function computeSignal(t){
   const idx=steps.indexOf(cur);
   const sinceStr=idx>0?steps[idx-1].completed_at:t.created_at;
   const stalledDays=sinceStr?Math.floor((Date.now()-new Date(sinceStr).getTime())/86400000):0;
-  const stalled=overdue||stalledDays>=3;
-  let level="ok"; if(stalled)level="stall"; else if(dueToday||dueSoon)level="warn";
+  // 2026-09-08: 「期限超過」と「3日以上停止」を別の信号として扱うよう修正（実機フィードバック）。
+  // 以前は overdue||stalledDays>=3 で1つの"stall"にまとめていたため、期限を過ぎた直後
+  // （停止0日）の工程にまで「⏸0日停止」の赤バッジが付いてしまい、本当に3日以上動いて
+  // いない工程との違いが分からなくなっていた。levelは表示の優先度（枠の色）だけを決め、
+  // stalledDaysそのものは常に返す（バッジ表示・KPI集計は下でoverdueと独立に扱う）
+  let level="ok";
+  if(overdue) level="overdue";
+  else if(stalledDays>=3) level="stall";
+  else if(dueToday||dueSoon) level="warn";
   return {cur,level,stalledDays,overdue,dueToday};
 }
 
@@ -648,7 +662,7 @@ function applyFilters(list){
       const sig=computeSignal(t);
       if(FILTER.signal==="overdue" && !sig.overdue) return false;
       if(FILTER.signal==="today" && !sig.dueToday) return false;
-      if(FILTER.signal==="stall" && sig.level!=="stall") return false;
+      if(FILTER.signal==="stall" && sig.stalledDays<3) return false;
     }
     return true;
   });
@@ -656,7 +670,10 @@ function applyFilters(list){
 function summaryCounts(){
   const base=TASKS.filter(t=>t.status!=="done");
   let overdue=0,today=0,stall=0;
-  base.forEach(t=>{ const s=computeSignal(t); if(s.overdue)overdue++; if(s.dueToday)today++; if(s.level==="stall")stall++; });
+  // 2026-09-08: 「3日以上停止」の集計は期限超過かどうかに関わらず、実際にstalledDaysが
+  // 3以上かで数える（levelは枠の色の優先度だけなので、ここでlevelを見るとoverdue優先の
+  // ときに漏れてしまい「3日以上停止」の件数として不正確になる）
+  base.forEach(t=>{ const s=computeSignal(t); if(s.overdue)overdue++; if(s.dueToday)today++; if(s.stalledDays>=3)stall++; });
   const doneCount=TASKS.filter(t=>t.status==="done").length;
   return {overdue,today,stall,doneCount};
 }
@@ -666,12 +683,12 @@ function onboardingOpenCount(){
 }
 function taskCardHtml(t){
   const sig=computeSignal(t);
-  const cls=sig.level==="stall"?"stall":(sig.level==="warn"?"warn":"");
+  const cls=sig.level==="overdue"?"overdue":(sig.level==="stall"?"stall":(sig.level==="warn"?"warn":""));
   const steps=sortedSteps(t);
   const doneCount=steps.filter(s=>s.completed_at).length;
   return `<div class="tcard ${cls}" data-open="${t.id}">
     <div class="badges"><span class="tag">${esc(t.corp)}</span><span class="tag freq">${t.freq!=="once"?"🔁 "+FREQ_LABEL[t.freq]:"単発"}</span>${dueBadgeHtml(sig)}</div>
-    ${sig.level==="stall"?`<div class="stall-badge">⏸ ${sig.stalledDays}日停止</div>`:""}
+    ${sig.stalledDays>=3?`<div class="stall-badge">⏸ ${sig.stalledDays}日停止</div>`:""}
     <div class="ti">${esc(t.title)}</div>
     <div class="meta">作成日 ${fmtD((t.created_at||"").slice(0,10))}${t.status==="done"?" ／ "+fmtD((t.completed_at||"").slice(0,10))+" 完了 ✓":""}</div>
     <!-- 2026-08-31(E-5): 全体期限だけだと「いま止まっている工程」の期日が分からず期限切れ表示が
@@ -934,7 +951,7 @@ function renderRepeat(u){
   ${list.map(t=>{
     const steps=sortedSteps(t); const done=steps.filter(s=>s.completed_at).length;
     const sig=computeSignal(t);
-    const stateLabel=t.status==="done"?"✓ 完了":(sig.level==="stall"?`⏸ ${sig.stalledDays}日停止`:(sig.overdue?"超過":(t.status==="todo"?"未着手":"進行中")));
+    const stateLabel=t.status==="done"?"✓ 完了":(sig.overdue?"超過":(sig.stalledDays>=3?`⏸ ${sig.stalledDays}日停止`:(t.status==="todo"?"未着手":"進行中")));
     return `<tr data-open="${t.id}" style="cursor:pointer">
       <td>${esc(t.title)}</td><td>${esc(t.corp)}</td><td>${fmtD(t.target_date)}</td><td>${done}/${steps.length}</td>
       <td>${sig.cur?esc(stepAssigneeNames(sig.cur))+"（"+esc(sig.cur.title)+"）":"—"}</td>
@@ -1027,7 +1044,7 @@ function renderDetail(u){
   <div class="hero">
     <div class="card pad">
       <div class="badges"><span class="tag">${esc(t.corp)}</span><span class="tag freq">${t.freq!=="once"?"🔁 "+FREQ_LABEL[t.freq]:"単発"}</span><span class="tag">${STATUS_LABEL[t.status]}</span>
-      ${sig.level==="stall"?`<span class="stall-badge">⏸ ${sig.stalledDays}日停止</span>`:""}</div>
+      ${sig.stalledDays>=3?`<span class="stall-badge">⏸ ${sig.stalledDays}日停止</span>`:""}</div>
       <div class="title">${esc(t.title)}</div>
       ${t.description?`<div class="desc">${richTextHtml(t.description)}</div>`:""}
       <div class="progress"><span style="width:${pct}%"></span></div>
