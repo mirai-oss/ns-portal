@@ -1070,7 +1070,10 @@ const NAV_SECTIONS=[
 const TOP_ITEMS=[
   {key:"home",ico:"🏠",label:"概要（ホーム）",type:"home",pinned:true},
   {key:"notice",ico:"📣",label:"お知らせ",url:"index.html",countKey:"posts",pinned:true},
-  {key:"hqtasks",sysKey:"hqtasks",ico:"📌",label:"本部タスク",url:"tasks.html",countKey:"hq",section:"genba"},
+  // 2026-09-08 ユーザー指示: 本部タスクはホーム・お知らせと同じく、どのカテゴリタブを
+  // 選んでいても常にサイドバー上部に見えるようにしてほしいとのこと。section指定を外し
+  // pinned:trueにするだけで、ホーム・お知らせと全く同じ「タブ非依存」の扱いになる
+  {key:"hqtasks",sysKey:"hqtasks",ico:"📌",label:"本部タスク",url:"tasks.html",countKey:"hq",pinned:true},
   // 2026-08-31 ユーザーからの実機フィードバック: F-10でこの項目を「🧾会計」グループの中に
   // 移したところ、未読件数バッジ(countKey:"inv")がグループを開かないと見えなくなり、新着の
   // 請求書メールに気づけなくなった。nav-group-head（グループの見出しボタン）は現状バッジを
