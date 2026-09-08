@@ -62,7 +62,10 @@ set search_path to 'public'
 as $function$
 declare v_caller users%rowtype; v_stores uuid[];
 begin
-  select * into v_caller from users where id = auth.uid() and is_active;
+  -- 2026-09-08修正: RETURNS TABLEの出力列名にis_activeがあるため、bareのis_activeは
+  -- users.is_activeと出力変数の間で"column reference is_active is ambiguous"になる。
+  -- テーブルエイリアスを付けて明示的にusers側を指すよう修正
+  select * into v_caller from users u0 where u0.id = auth.uid() and u0.is_active;
   if v_caller.id is null or not (v_caller.is_master or v_caller.role in ('CEO','HQ','TENCHO','TEAM')) then
     raise exception '権限がありません';
   end if;
