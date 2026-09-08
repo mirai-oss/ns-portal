@@ -2330,7 +2330,12 @@ function currentVendorAccount(invoice){
   return accs.find(a=>a.is_current)||null;
 }
 const BANK_TYPE_LABEL={"2":"当座","4":"貯蓄"};
-const PAYMENT_METHOD_LABEL={bank_transfer:"銀行振込",direct_debit:"引き落とし",cash:"現金払い"};
+const PAYMENT_METHOD_LABEL={bank_transfer:"銀行振込",direct_debit:"引き落とし",cash:"現金払い",credit_card:"クレジット払い",other_bank_transfer:"他行口座から振込"};
+// 2026-09-08新設：ユーザー要望「支払い方法にクレジット払い・他行口座から振込を追加する」に対応。
+// bank_transfer（PayPay銀行CSVでまとめて振込）とother_bank_transfer（PayPay銀行CSVの対象外・
+// 別の銀行から手動で振込）は、どちらも振込先の銀行口座情報が必要な点は同じ（＝銀行口座の入力欄を
+// 出す／保存する対象）。direct_debit・cash・credit_cardは銀行口座情報が不要
+function paymentMethodHasBankInfo(method){ return method==="bank_transfer"||method==="other_bank_transfer"; }
 // 振込先口座の登録・編集フォーム（新規登録・既存編集の両方に使う共通部品）。
 // vendor-master Edge Functionのupsert_bank_account（設定タブ「支払先・銀行口座」と全く同じ
 // アクション・同じvendor_bank_accountsテーブル）を呼ぶだけなので、別データにはならない
@@ -2346,8 +2351,10 @@ function bankAccountEditFormHtml(acc){
     <div class="ai-field" style="margin-bottom:10px"><small>支払方法</small>
       <select id="pbe-method">
         <option value="bank_transfer" ${method==="bank_transfer"?"selected":""}>銀行振込（PayPay銀行CSVの対象になります）</option>
+        <option value="other_bank_transfer" ${method==="other_bank_transfer"?"selected":""}>他行口座から振込（PayPay銀行CSVの対象外・手動で振込）</option>
         <option value="direct_debit" ${method==="direct_debit"?"selected":""}>引き落とし（銀行口座の登録は不要です）</option>
         <option value="cash" ${method==="cash"?"selected":""}>現金払い（銀行口座の登録は不要です）</option>
+        <option value="credit_card" ${method==="credit_card"?"selected":""}>クレジット払い（銀行口座の登録は不要です）</option>
       </select>
     </div>
     <div id="pbe-bank-fields">
@@ -2419,10 +2426,14 @@ function invoicePaymentTabHtml(invoice){
   }else if(acc){
     // 2026-09-07修正：引き落とし・現金払い（口座情報が無くて当然）を、銀行振込の「口座未登録」と
     // 誤って同じ警告表示にしないよう分岐した。銀行振込のときだけ、銀行コード・支店コードが
-    // 無いとPayPay銀行CSVでエラーになるため未登録の場合は一目で分かるよう警告を表示する
+    // 無いとPayPay銀行CSVでエラーになるため未登録の場合は一目で分かるよう警告を表示する。
+    // 2026-09-08修正：他行口座から振込（other_bank_transfer）も銀行口座情報を持つため、
+    // 口座詳細の表示自体はbank_transferと同じ扱いにする（paymentMethodHasBankInfo参照）。
+    // PayPay銀行CSVのエラー警告（missingCodes）だけはbank_transfer専用のまま
     const method=acc.payment_method||"bank_transfer";
+    const hasBankInfo=paymentMethodHasBankInfo(method);
     const missingCodes=method==="bank_transfer"&&(!acc.bank_code||!acc.branch_code);
-    const accDetailHtml=method==="bank_transfer"
+    const accDetailHtml=hasBankInfo
       ?`<div class="meta" style="color:var(--muted);font-size:12px;margin-top:2px">${acc.bank_code?esc(acc.bank_code)+"　":""}${esc(acc.bank_name||"—")} ${acc.branch_code?esc(acc.branch_code)+"　":""}${esc(acc.branch_name||"")} ${BANK_TYPE_LABEL[acc.account_type]||"普通"} ${esc(acc.account_number||"—")}（${esc(acc.account_holder_kana||"—")}）</div>`
       :`<div class="meta" style="color:var(--muted);font-size:12px;margin-top:2px"><span class="invoice-status gray">${esc(PAYMENT_METHOD_LABEL[method]||method)}</span>（銀行口座の登録は不要です）</div>`;
     bankBoxHtml=`<div class="ai-field" style="margin-bottom:10px" id="pay-bankbox"><small>取引先・振込先口座</small>
@@ -3506,25 +3517,32 @@ function wireDetailActions(u){
     const acc=currentVendorAccount(invoice);
     box.innerHTML=bankAccountEditFormHtml(acc);
     $("pbe-cancel").onclick=()=>{ box.innerHTML=""; };
-    // 2026-09-07追加：支払方法（銀行振込／引き落とし／現金払い）に応じて口座入力欄の表示を切り替える
-    const toggleBankFields=()=>{ $("pbe-bank-fields").style.display=$("pbe-method").value==="bank_transfer"?"block":"none"; };
+    // 2026-09-07追加：支払方法（銀行振込／引き落とし／現金払い）に応じて口座入力欄の表示を切り替える。
+    // 2026-09-08修正：他行口座から振込（other_bank_transfer）を追加し、銀行振込と同じく
+    // 口座情報の入力欄が必要な支払方法として扱う（paymentMethodHasBankInfo参照）
+    const toggleBankFields=()=>{ $("pbe-bank-fields").style.display=paymentMethodHasBankInfo($("pbe-method").value)?"block":"none"; };
     toggleBankFields();
     $("pbe-method").onchange=toggleBankFields;
     $("pbe-save").onclick=async()=>{
       const msg=$("pbe-msg"); msg.className="err"; msg.textContent="";
       const method=$("pbe-method").value;
       let account;
-      if(method==="bank_transfer"){
-        // 2026-09-05追加：銀行コード・支店コードの入力チェック（PayPay銀行CSVの必須項目のため）
+      if(paymentMethodHasBankInfo(method)){
         const bankCode=$("pbe-bankcode").value.trim(), branchCode=$("pbe-branchcode").value.trim();
-        if(!/^\d{1,4}$/.test(bankCode)){ msg.textContent="銀行コード（数字4桁以内）を入力してください"; return; }
-        if(!/^\d{1,3}$/.test(branchCode)){ msg.textContent="支店コード（数字3桁以内）を入力してください"; return; }
+        // 2026-09-05追加：銀行コード・支店コードの入力チェック（PayPay銀行CSVの必須項目のため）。
+        // 2026-09-08修正：このチェックはPayPay銀行CSVで送るbank_transferのときだけ必須にする
+        // （other_bank_transfer＝別の銀行から手動で振込む場合は、銀行名・支店名など分かる範囲の
+        // 情報だけで登録できるようにする。銀行コード・支店コードは任意入力扱い）
+        if(method==="bank_transfer"){
+          if(!/^\d{1,4}$/.test(bankCode)){ msg.textContent="銀行コード（数字4桁以内）を入力してください"; return; }
+          if(!/^\d{1,3}$/.test(branchCode)){ msg.textContent="支店コード（数字3桁以内）を入力してください"; return; }
+        }
         account={
-          vendor_id:invoice.vendor_id, payment_method:method, bank_code:bankCode, bank_name:$("pbe-bank").value.trim(), branch_code:branchCode, branch_name:$("pbe-branch").value.trim(),
+          vendor_id:invoice.vendor_id, payment_method:method, bank_code:bankCode||null, bank_name:$("pbe-bank").value.trim(), branch_code:branchCode||null, branch_name:$("pbe-branch").value.trim(),
           account_type:$("pbe-type").value, account_number:$("pbe-number").value.trim(), account_holder_kana:$("pbe-holder").value.trim(),
         };
       }else{
-        // 2026-09-07追加：引き落とし・現金払いは銀行口座情報が不要（payrollOpenBankModalの
+        // 2026-09-07追加：引き落とし・現金払い・クレジット払いは銀行口座情報が不要（payrollOpenBankModalの
         // 「現金手渡し」と同じ考え方）。既存口座を切り替えた場合に古い銀行情報が残らないよう明示的にnullで上書きする
         account={ vendor_id:invoice.vendor_id, payment_method:method, bank_code:null,bank_name:null,branch_code:null,branch_name:null,account_number:null,account_holder_kana:null, account_type:"1" };
       }
@@ -4774,10 +4792,12 @@ async function renderTransfersTab(u){
     const ar=await authed(`/rest/v1/vendor_bank_accounts?vendor_id=in.(${vendorIds.join(",")})&is_current=eq.true&select=*`);
     if(ar.ok&&Array.isArray(ar.body)) for(const a of ar.body) accountsByVendor.set(a.vendor_id,a);
   }
-  TRANSFERS_STATE={rows,accountsByVendor,selected:new Set(),scheduleFilter:TRANSFERS_STATE.scheduleFilter};
+  // 2026-09-08追加：ユーザー要望「支払い（振込）のところに法人毎で絞れるようにする」に対応。
+  // corpFilterは絞り込みタブを行き来しても覚えておく（scheduleFilterと同じ扱い）
+  TRANSFERS_STATE={rows,accountsByVendor,selected:new Set(),scheduleFilter:TRANSFERS_STATE.scheduleFilter,corpFilter:TRANSFERS_STATE.corpFilter};
   transferRender(u);
 }
-let TRANSFERS_STATE={rows:[],accountsByVendor:new Map(),selected:new Set(),scheduleFilter:""};
+let TRANSFERS_STATE={rows:[],accountsByVendor:new Map(),selected:new Set(),scheduleFilter:"",corpFilter:""};
 function transferRowHtml(r){
   const acc=TRANSFERS_STATE.accountsByVendor.get(r.vendor_id);
   const blocked=r.bank_account_change_detected;
@@ -4791,16 +4811,23 @@ function transferRowHtml(r){
   const missingCodes=method==="bank_transfer"&&(!acc.bank_code||!acc.branch_code);
   const pay=PAYMENT_STATUS_LABEL[r.payment_status]||PAYMENT_STATUS_LABEL.not_ready;
   const methodCell=method?`<span class="invoice-status ${method==="bank_transfer"?"gray":"check"}">${esc(PAYMENT_METHOD_LABEL[method]||method)}</span>`:"—";
-  // 引き落とし・現金払いは銀行口座欄そのものが不要なので3列（銀行・支店・口座番号）をまとめて「口座登録不要」にする
-  const bankCellsHtml=(method&&method!=="bank_transfer")
+  // 引き落とし・現金払い・クレジット払いは銀行口座欄そのものが不要なので3列（銀行・支店・口座番号）を
+  // まとめて「口座登録不要」にする。2026-09-08修正：他行口座から振込（other_bank_transfer）は
+  // 銀行口座情報を持つため、bank_transferと同じく口座欄を表示する（paymentMethodHasBankInfo参照）
+  const bankCellsHtml=(method&&!paymentMethodHasBankInfo(method))
     ?`<td colspan="3" style="color:var(--muted)">口座登録不要</td>`
     :`<td>${acc?esc(acc.bank_name||"—"):(blocked?'<span class="invoice-status err">口座変更未承認</span>':'<span class="invoice-status gray">未登録</span>')}${missingCodes?' <span class="invoice-status err">コード未登録</span>':''}</td>
       <td>${acc?esc(acc.branch_name||"—"):"—"}</td>
       <td>${acc?esc(acc.account_number||"—"):"—"}</td>`;
+  // 2026-09-08追加：法人ごとに絞り込めるようにしたのに合わせ、行にも対象法人を表示する
+  // （複数法人が混ざって表示されているときに、選んで振込CSVを出すと依頼人名が全法人分
+  // 同じになってしまう間違いに気付きやすくする）
+  const corpName=transferCorpName(r);
   return `<tr>
     <td><input type="checkbox" class="transfer-check" data-id="${r.id}" ${TRANSFERS_STATE.selected.has(r.id)?"checked":""} ${blocked||!acc||missingCodes?"disabled":""} ${missingCodes?'title="銀行コード・支店コードが未登録のため選択できません。詳細から編集してください"':""}></td>
     <td>${methodCell}</td>
     <td>${fmtD(r.due_date)}</td>
+    <td>${esc(corpName)}</td>
     <td>${esc((r.vendor&&r.vendor.name)||r.vendor_name||"—")}</td>
     <td>${yen(r.amount)}</td>
     ${bankCellsHtml}
@@ -4809,37 +4836,63 @@ function transferRowHtml(r){
     <td><button class="hq-btn" data-transfer-open="${r.id}" data-email="${r.email_id||""}">詳細</button></td>
   </tr>`;
 }
+// 2026-09-08新設：請求書の対象法人名を引く共通ヘルパー（transferRowHtml・transferExportCsvの
+// 本部タスク作成部分・法人絞り込みのラベル表示で使う。未設定はN-Style扱い＝既存のcorpNameOf
+// ロジックと合わせる）
+function transferCorpName(r){
+  const c=(CORP_STORE_CACHE&&CORP_STORE_CACHE.corporations||[]).find(x=>x.id===r.corporation_id);
+  return (c&&c.name)||(r.corporation_id?"—":"（未設定）");
+}
 // 2026-09-05追加：ユーザー要望「振込予約済み・未対応などプルダウンで絞り込めるように」に対応。
-// 振込予定日（transfer_scheduled_date）の有無で絞り込むだけのシンプルな絞り込み
+// 振込予定日（transfer_scheduled_date）の有無で絞り込むだけのシンプルな絞り込み。
+// 2026-09-08追加：ユーザー要望「支払い（振込）のところに法人毎で絞れるようにする」に対応。
+// corpFilterが空文字（未設定＝法人未設定の請求書）と、実際の法人IDの両方を区別して絞り込めるようにする
 function transferFilteredRows(){
-  const rows=TRANSFERS_STATE.rows;
+  let rows=TRANSFERS_STATE.rows;
   const f=TRANSFERS_STATE.scheduleFilter||"";
-  if(f==="scheduled") return rows.filter(r=>r.transfer_scheduled_date);
-  if(f==="unscheduled") return rows.filter(r=>!r.transfer_scheduled_date);
+  if(f==="scheduled") rows=rows.filter(r=>r.transfer_scheduled_date);
+  if(f==="unscheduled") rows=rows.filter(r=>!r.transfer_scheduled_date);
+  const cf=TRANSFERS_STATE.corpFilter||"";
+  if(cf==="__unset__") rows=rows.filter(r=>!r.corporation_id);
+  else if(cf) rows=rows.filter(r=>r.corporation_id===cf);
   return rows;
 }
 function transferRender(u){
-  const rows=TRANSFERS_STATE.rows;
   const filtered=transferFilteredRows();
+  // 2026-09-08修正：法人・振込予定日で絞り込んでいるときに「振込待ち」等のKPIが常に全件の
+  // ままだと、絞り込んだ意味が薄れる（「N-Styleだけでいくら残っているか」が分からない）ため、
+  // 絞り込み後の件数・金額を表示するよう変更（従来はTRANSFERS_STATE.rows＝全件固定だった）
+  const corporations=(CORP_STORE_CACHE&&CORP_STORE_CACHE.corporations)||[];
+  const corpCounts=new Map();
+  TRANSFERS_STATE.rows.forEach(r=>{ const k=r.corporation_id||"__unset__"; corpCounts.set(k,(corpCounts.get(k)||0)+1); });
   $("tabbody").innerHTML=`
     <section class="invoice-list active">
       <div class="kpis" style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:14px">
-        <div class="card kpi" style="padding:14px"><small style="color:var(--muted);font-size:9px;display:block">振込待ち</small><b style="font-size:24px;display:block;margin-top:5px">${rows.length}</b></div>
-        <div class="card kpi" style="padding:14px"><small style="color:var(--muted);font-size:9px;display:block">合計金額</small><b style="font-size:24px;display:block;margin-top:5px">${yen(rows.reduce((s,r)=>s+(Number(r.amount)||0),0))}</b></div>
-        <div class="card kpi" style="padding:14px"><small style="color:var(--muted);font-size:9px;display:block">口座変更未承認</small><b style="font-size:24px;display:block;margin-top:5px;color:var(--m-red)">${rows.filter(r=>r.bank_account_change_detected).length}</b></div>
+        <div class="card kpi" style="padding:14px"><small style="color:var(--muted);font-size:9px;display:block">振込待ち</small><b style="font-size:24px;display:block;margin-top:5px">${filtered.length}</b></div>
+        <div class="card kpi" style="padding:14px"><small style="color:var(--muted);font-size:9px;display:block">合計金額</small><b style="font-size:24px;display:block;margin-top:5px">${yen(filtered.reduce((s,r)=>s+(Number(r.amount)||0),0))}</b></div>
+        <div class="card kpi" style="padding:14px"><small style="color:var(--muted);font-size:9px;display:block">口座変更未承認</small><b style="font-size:24px;display:block;margin-top:5px;color:var(--m-red)">${filtered.filter(r=>r.bank_account_change_detected).length}</b></div>
       </div>
       <div class="card" style="padding:16px">
         <div class="meta" style="color:var(--muted);font-size:12px;margin-bottom:10px">会計登録済み（仕訳登録済み）で、まだ振込が完了していない請求書の一覧です。振込先口座変更が未承認の請求書は選択できません（設定タブ「取引先マスタ」で確認してください）。給与の振込は「💴給与仕訳」タブでこれまでどおり行えます。</div>
-        <div style="margin-bottom:10px"><label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">振込予定日で絞り込み</label>
+        <div style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:10px">
+          <div><label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">法人で絞り込み</label>
+            <select id="transfer-corp-filter" style="max-width:220px">
+              <option value="" ${!TRANSFERS_STATE.corpFilter?"selected":""}>すべての法人（${TRANSFERS_STATE.rows.length}件）</option>
+              ${corporations.map(c=>`<option value="${esc(c.id)}" ${TRANSFERS_STATE.corpFilter===c.id?"selected":""}>${esc(c.name)}（${corpCounts.get(c.id)||0}件）</option>`).join("")}
+              ${corpCounts.get("__unset__")?`<option value="__unset__" ${TRANSFERS_STATE.corpFilter==="__unset__"?"selected":""}>（法人未設定）（${corpCounts.get("__unset__")}件）</option>`:""}
+            </select>
+          </div>
+          <div><label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">振込予定日で絞り込み</label>
           <select id="transfer-schedule-filter" style="max-width:220px">
-            <option value="" ${!TRANSFERS_STATE.scheduleFilter?"selected":""}>すべて（${rows.length}件）</option>
-            <option value="scheduled" ${TRANSFERS_STATE.scheduleFilter==="scheduled"?"selected":""}>📅 振込予約済み（${rows.filter(r=>r.transfer_scheduled_date).length}件）</option>
-            <option value="unscheduled" ${TRANSFERS_STATE.scheduleFilter==="unscheduled"?"selected":""}>未対応・振込予定日未設定（${rows.filter(r=>!r.transfer_scheduled_date).length}件）</option>
+            <option value="" ${!TRANSFERS_STATE.scheduleFilter?"selected":""}>すべて（${TRANSFERS_STATE.rows.length}件）</option>
+            <option value="scheduled" ${TRANSFERS_STATE.scheduleFilter==="scheduled"?"selected":""}>📅 振込予約済み（${TRANSFERS_STATE.rows.filter(r=>r.transfer_scheduled_date).length}件）</option>
+            <option value="unscheduled" ${TRANSFERS_STATE.scheduleFilter==="unscheduled"?"selected":""}>未対応・振込予定日未設定（${TRANSFERS_STATE.rows.filter(r=>!r.transfer_scheduled_date).length}件）</option>
           </select>
+          </div>
         </div>
         <div class="hq-tablewrap"><table class="invoice-table">
-          <thead><tr><th></th><th>支払方法</th><th>支払期限</th><th>取引先</th><th>金額</th><th>銀行</th><th>支店</th><th>口座番号</th><th>会計</th><th>振込状態</th><th></th></tr></thead>
-          <tbody>${filtered.length?filtered.map(transferRowHtml).join(""):'<tr><td colspan="11">該当する請求書はありません</td></tr>'}</tbody>
+          <thead><tr><th></th><th>支払方法</th><th>支払期限</th><th>法人</th><th>取引先</th><th>金額</th><th>銀行</th><th>支店</th><th>口座番号</th><th>会計</th><th>振込状態</th><th></th></tr></thead>
+          <tbody>${filtered.length?filtered.map(transferRowHtml).join(""):'<tr><td colspan="12">該当する請求書はありません</td></tr>'}</tbody>
         </table></div>
         <div class="mail-actions" style="margin-top:10px">
           <button class="hq-btn blue" id="transfer-export-csv">📥 PayPay銀行CSVを出力</button>
@@ -4848,6 +4901,7 @@ function transferRender(u){
         <div class="err" id="transfer-msg" style="margin-top:8px"></div>
       </div>
     </section>`;
+  $("transfer-corp-filter").onchange=()=>{ TRANSFERS_STATE.corpFilter=$("transfer-corp-filter").value; transferRender(u); };
   $("transfer-schedule-filter").onchange=()=>{ TRANSFERS_STATE.scheduleFilter=$("transfer-schedule-filter").value; transferRender(u); };
   document.querySelectorAll(".transfer-check").forEach(el=>el.onchange=()=>{
     if(el.checked) TRANSFERS_STATE.selected.add(el.dataset.id); else TRANSFERS_STATE.selected.delete(el.dataset.id);
@@ -4877,10 +4931,16 @@ async function transferExportCsv(u){
   }).length;
   if(!withAccount.length){
     $("transfer-msg").textContent=nonBankCount>0
-      ?`選択した${nonBankCount}件は引き落とし・現金払いのためCSV出力の対象外です（振込一覧の「✅ 選択を振込済みにする」で完了にしてください）`
+      ?`選択した${nonBankCount}件は引き落とし・現金払い・クレジット払い・他行口座から振込のためCSV出力の対象外です（振込一覧の「✅ 選択を振込済みにする」で完了にしてください）`
       :"選択した請求書に振込先口座（銀行コード・支店コードを含む）の登録がありません（設定タブ、または請求書詳細の④振込カードから登録してください）";
     return;
   }
+  // 2026-09-08追加：ユーザー要望「支払い（振込）のところに法人毎で絞れるようにする」対応の一環。
+  // CSVは振込依頼人名を1つだけ指定する仕組みのため、法人が異なる請求書を混ぜて出力すると、
+  // 実際の振込元（銀行口座）と依頼人名が食い違ったCSVになってしまう。複数法人が混ざっている
+  // ときは、そのまま進めてよいか必ず確認する（法人フィルタで絞り込んでから出す運用を促す）
+  const distinctCorps=[...new Set(withAccount.map(r=>transferCorpName(r)))];
+  if(distinctCorps.length>1&&!confirm(`選択した請求書に複数の法人（${distinctCorps.join("・")}）が混ざっています。\nPayPay銀行CSVは振込依頼人名を1つしか指定できないため、法人ごとに分けて出力することを推奨します。\n\nこのまま全法人まとめて1つのCSVとして出力しますか？（キャンセルすると、上の「法人で絞り込み」から1法人ずつ選び直せます）`)) return;
   const remitterName=paypayRemitterName(); // 2026-09-04追加：PayPay銀行が振込依頼人名を必須としていたため確認する
   if(remitterName===null) return; // キャンセル
   // 2026-09-05追加：ユーザー要望「当日振り込みができないので振込予定日を表示・本部タスクを
@@ -8095,7 +8155,9 @@ async function vbLoadAccountsForVendor(vendorId){
     <tbody>${accounts.length?accounts.map(a=>{
       const method=a.payment_method||"bank_transfer";
       const actionsHtml=`<button class="hq-btn" style="font-size:11px;padding:4px 7px" data-vb-edit="${esc(a.id)}">✏️編集</button> <button class="hq-btn" style="font-size:11px;padding:4px 7px;color:var(--m-red)" data-vb-delete="${esc(a.id)}">🗑削除</button>`;
-      if(method!=="bank_transfer"){
+      // 2026-09-08修正：他行口座から振込（other_bank_transfer）は銀行口座情報を持つため、
+      // bank_transferと同じ口座欄の表示にする（paymentMethodHasBankInfo参照）
+      if(!paymentMethodHasBankInfo(method)){
         return `<tr><td><span class="invoice-status check">${esc(PAYMENT_METHOD_LABEL[method]||method)}</span></td><td colspan="7" style="color:var(--muted)">口座登録不要</td>
           <td>${a.is_current?'<span class="invoice-status done">現在有効</span>':'<span class="invoice-status gray">過去口座</span>'}</td>
           <td>${a.confirmed_at?fmtD(a.confirmed_at):"—"}</td><td>${actionsHtml}</td></tr>`;
@@ -8146,8 +8208,10 @@ function vbShowAccountEditor(vendorId,existingAccount){
     <div class="ai-field" style="margin-bottom:10px"><small>支払方法</small>
       <select id="vb-method">
         <option value="bank_transfer" ${method0==="bank_transfer"?"selected":""}>銀行振込（PayPay銀行CSVの対象になります）</option>
+        <option value="other_bank_transfer" ${method0==="other_bank_transfer"?"selected":""}>他行口座から振込（PayPay銀行CSVの対象外・手動で振込）</option>
         <option value="direct_debit" ${method0==="direct_debit"?"selected":""}>引き落とし（銀行口座の登録は不要です）</option>
         <option value="cash" ${method0==="cash"?"selected":""}>現金払い（銀行口座の登録は不要です）</option>
+        <option value="credit_card" ${method0==="credit_card"?"selected":""}>クレジット払い（銀行口座の登録は不要です）</option>
       </select>
     </div>
     <div id="vb-bank-fields">
@@ -8164,7 +8228,8 @@ function vbShowAccountEditor(vendorId,existingAccount){
     <div class="mail-actions" style="margin-top:8px"><button class="primary" id="vb-save">💾 ${existingAccount?"更新":"保存"}</button><button id="vb-cancel">キャンセル</button></div>
     <div class="err" id="vb-msg" style="margin-top:6px"></div>
   </div>`;
-  const toggleVbBankFields=()=>{ $("vb-bank-fields").style.display=$("vb-method").value==="bank_transfer"?"block":"none"; };
+  // 2026-09-08修正：他行口座から振込（other_bank_transfer）も銀行口座情報が必要な支払方法として扱う
+  const toggleVbBankFields=()=>{ $("vb-bank-fields").style.display=paymentMethodHasBankInfo($("vb-method").value)?"block":"none"; };
   toggleVbBankFields();
   $("vb-method").onchange=toggleVbBankFields;
   $("vb-cancel").onclick=()=>{ $("vb-editor").innerHTML=""; };
@@ -8172,16 +8237,20 @@ function vbShowAccountEditor(vendorId,existingAccount){
     const msg=$("vb-msg"); msg.className="err";
     const method=$("vb-method").value;
     let account;
-    if(method!=="bank_transfer"){
-      // 2026-09-07追加：引き落とし・現金払いは銀行口座情報が不要
+    if(!paymentMethodHasBankInfo(method)){
+      // 2026-09-07追加：引き落とし・現金払い・クレジット払いは銀行口座情報が不要
       account={ vendor_id: vendorId, payment_method: method, bank_code:null,bank_name:null,branch_code:null,branch_name:null,account_number:null,account_holder_kana:null, account_type:"1" };
     }else{
       const bankCode=$("vb-code").value.trim(), branchCode=$("vb-branchcode").value.trim();
-      if(!/^\d{1,4}$/.test(bankCode)){ msg.textContent="銀行コード（数字4桁以内）を入力してください"; return; }
-      if(!/^\d{1,3}$/.test(branchCode)){ msg.textContent="支店コード（数字3桁以内）を入力してください"; return; }
+      // 2026-09-08修正：銀行コード・支店コードの厳密な形式チェックは、PayPay銀行CSVで送る
+      // bank_transferのときだけ必須にする（other_bank_transferは分かる範囲の情報で登録できる）
+      if(method==="bank_transfer"){
+        if(!/^\d{1,4}$/.test(bankCode)){ msg.textContent="銀行コード（数字4桁以内）を入力してください"; return; }
+        if(!/^\d{1,3}$/.test(branchCode)){ msg.textContent="支店コード（数字3桁以内）を入力してください"; return; }
+      }
       account={
-        vendor_id: vendorId, payment_method: method, bank_code: bankCode, bank_name: $("vb-name").value.trim(),
-        branch_code: branchCode, branch_name: $("vb-branch").value.trim(), account_type: $("vb-type").value,
+        vendor_id: vendorId, payment_method: method, bank_code: bankCode||null, bank_name: $("vb-name").value.trim(),
+        branch_code: branchCode||null, branch_name: $("vb-branch").value.trim(), account_type: $("vb-type").value,
         account_number: $("vb-number").value.trim(), account_holder_kana: $("vb-holder").value.trim(),
       };
     }
