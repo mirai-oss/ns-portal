@@ -1153,11 +1153,8 @@ const GROUPS=[
     {key:"nippo-weekly", sysKey:"nippo", ico:"🗓️", label:"週報",     url:nippoPage("weekly")},
     {key:"nippo-list",   sysKey:"nippo", ico:"📋", label:"一覧",     url:nippoPage("list")},
     {key:"nippo-check",  sysKey:"nippo", ico:"✅", label:"チェック", url:nippoPage("check")},
-    {key:"nippo-shift",  sysKey:"nippo", ico:"📅", label:"シフト",   url:nippoPage("shift")},
-    // シフトの④実績ステップが独立ページに分離された（担当B・2026-08-24）。
-    // 従業員(SHAIN)・バイト(AL)には出さない（nippo側のnavactual表示条件=
-    // 店長(TENCHO)・チーム長(TEAM)・本部(HQ)・社長(CEO)のみに合わせた）
-    {key:"nippo-actual", sysKey:"nippo", roles:["TENCHO","TEAM","HQ","CEO"], ico:"📊", label:"実績確認", url:nippoPage("actual")},
+    // シフト・実績確認は2026-09-08のユーザー指示により「勤怠」グループへ独立させた（下記参照）。
+    // このグループには置かない
     {key:"nippo-tasks",  sysKey:"nippo", ico:"✅", label:"タスク（現場）", url:nippoPage("tasks")},
     {key:"nippo-chat",   sysKey:"nippo", ico:"💬", label:"チャット", url:nippoPage("chat")},
     {key:"nippo-manual", sysKey:"nippo", ico:"📘", label:"マニュアル", url:nippoPage("manuals")},
@@ -1172,6 +1169,18 @@ const GROUPS=[
     // 既定は誰にも見せずマスターと個別許可された人だけに見せる（nippo_admin）
     {key:"nippo-admin",    sysKey:"nippo_admin", ico:"👥", label:"管理（アカウント）", url:nippoPage("admin")},
     {key:"nippo-settings", sysKey:"nippo_admin", ico:"⚙️", label:"設定（連携キー）", url:nippoPage("settings")},
+  ]},
+  // 2026-09-08 ユーザー指示: シフト管理機能が大きくなったため「現場・日報」から切り離し、
+  // 「勤怠」を独立したトップレベルメニューにする。中身はnippo側の同一画面(page=shift)で、
+  // sub=でどのタブを最初に開くかだけを指定する（nippo側のsfV12View実装参照）。
+  // ダッシュボード・実績・設定はマネージャー以上（店長・チーム長・本部・社長）のみ実際に開ける
+  // 画面のため、nippo-actual等の既存項目と同じroles指定にしている。「シフト」は全員が使う
+  // （一般従業員は自動的に自分の提出画面が開く。nippo側shiftView()のisManager判定）
+  {cap:"勤怠",ico:"🕐", section:"genba", items:[
+    {key:"kintai-dashboard", sysKey:"nippo", roles:["TENCHO","TEAM","HQ","CEO"], ico:"📊", label:"ダッシュボード", url:nippoPage("shift")+"&sub=dashboard"},
+    {key:"kintai-shift",     sysKey:"nippo", ico:"📅", label:"シフト", url:nippoPage("shift")+"&sub=submit"},
+    {key:"kintai-actual",    sysKey:"nippo", roles:["TENCHO","TEAM","HQ","CEO"], ico:"📈", label:"実績", url:nippoPage("shift")+"&sub=actual"},
+    {key:"kintai-settings",  sysKey:"nippo", roles:["TENCHO","TEAM","HQ","CEO"], ico:"⚙️", label:"設定", url:nippoPage("shift")+"&sub=settings"},
   ]},
   {cap:"採用管理",ico:"👥", roles:["TEAM","HQ","CEO"], section:"genba", items:[
     {key:"recruit",             sysKey:"nippo", ico:"🧑‍💼", label:"応募者・採用管理", url:nippoPage("recruit")},
