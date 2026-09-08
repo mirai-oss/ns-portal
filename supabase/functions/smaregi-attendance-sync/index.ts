@@ -98,14 +98,16 @@ Deno.serve(async (req) => {
     let body: any = {};
     try { body = await req.json(); } catch { /* GET等ボディなし */ }
 
-    // 認可: CEO/HQ/マスターのJWT、またはservice_roleキー直呼び（内部バッチ用）を許可
+    // 認可: CEO/HQ/マスター/店長/チーム長のJWT、またはservice_roleキー直呼び（内部バッチ用）を許可
+    // 2026-09-08追加: ユーザー指示「店長・チーム長もスマレジと同期の権限付与してください」に対応
+    //   （nippoのシフト管理UI「実績・差異」タブのスマレジ最新取得ボタンを店長・チーム長にも開放）
     const authHeader = req.headers.get("Authorization") ?? "";
     const isServiceRole = authHeader.includes(Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? " ");
     if (!isServiceRole) {
       const uid = jwtUid(req);
       const { data: u } = await sb.from("users").select("role,is_master,is_active").eq("id", uid).maybeSingle();
-      if (!u?.is_active || !(u.is_master || ["CEO", "HQ"].includes(u.role))) {
-        return json({ ok: false, error: "権限がありません（CEO/HQ/マスターのみ）" }, 403);
+      if (!u?.is_active || !(u.is_master || ["CEO", "HQ", "TENCHO", "TEAM"].includes(u.role))) {
+        return json({ ok: false, error: "権限がありません（CEO/HQ/店長/チーム長/マスターのみ）" }, 403);
       }
     }
 
