@@ -1,9 +1,16 @@
 // 取引先マスタ・取引先銀行口座・口座変更申請 Edge Function（会計・請求書処理の全面刷新 フェーズB-2・2026-09-03）
 //
 // invoices.htmlの設定タブ「取引先マスタ」「支払先・銀行口座」、および統合詳細モーダルの
-// 「振込」タブから呼ばれる。actionは10:
-//   - "list_vendors"                      : 取引先一覧を返す（invoice_can_access()で読める全員）
-//   - "upsert_vendor"           {vendor}  : 取引先の新規作成・更新
+// 「振込」タブから呼ばれる。actionは12:
+//   - "list_vendors"                      : 取引先一覧を返す（invoice_can_access()で読める全員）。
+//                                            info_supplier_idが設定されている行には、社内情報
+//                                            管理システム側（info.suppliers）の参照情報を
+//                                            info_supplierとして埋め込む（2026-09-08追加）
+//   - "upsert_vendor"           {vendor}  : 取引先の新規作成・更新。vendor.info_supplier_idで
+//                                            社内情報管理システムの取引先と「軽く」リンクできる
+//                                            （自動同期はしない・参照表示のみ。2026-09-08追加）
+//   - "search_info_suppliers"   {q}       : 社内情報管理システムの取引先（info.suppliers）を
+//                                            名前部分一致で検索（紐付け候補を出すため。2026-09-08追加）
 //   - "delete_vendor"           {id}      : 取引先の削除（マスター/HQ限定）。請求書・仕訳辞書で
 //                                            使用中の取引先は削除できない（2026-09-08追加）
 //   - "match_vendor"        {name}        : 名称のあいまい一致で候補を返す（invoice-auto-matchからも呼ばれる）
@@ -89,7 +96,33 @@ Deno.serve(async (req: Request) => {
     if (action === "list_vendors") {
       const { data, error } = await uc.from("vendors").select("*").order("name");
       if (error) return json({ error: error.message }, 500);
-      return json({ success: true, vendors: data ?? [] });
+      const vendors = data ?? [];
+      // 2026-09-08追加：社内情報管理システムの取引先（info.suppliers）との「軽い連携」。
+      // 手動でリンクされたvendorがあれば、参照表示用に相手側のレコードをまとめて取得し埋め込む
+      // （自動同期はしない。あくまで参照表示のためだけにservice roleでinfoスキーマを読む）
+      const linkedIds = [...new Set(vendors.map((v: any) => v.info_supplier_id).filter(Boolean))];
+      if (linkedIds.length) {
+        const { data: suppliers } = await svc().schema("info").from("suppliers")
+          .select("id,name,kind,phone,contact_name,contact_mobile,status").in("id", linkedIds);
+        const byId = new Map((suppliers ?? []).map((s: any) => [s.id, s]));
+        for (const v of vendors) if (v.info_supplier_id) v.info_supplier = byId.get(v.info_supplier_id) ?? null;
+      }
+      return json({ success: true, vendors });
+    }
+
+    // 2026-09-08新規：ユーザー要望「取引先マスタは社内情報管理システムの取引先と連動されて
+    // いるか？されていなければ連動させてほしい」への対応（軽い連携方式で採用）。
+    // info.suppliers（ns-info-system・担当F管轄）を名前部分一致で検索し、候補を返すだけの
+    // 読み取り専用action。info.suppliers自体には銀行口座等の機密情報は含まれていないため
+    // service roleでの直接検索でよいと判断した（RLSはinfo.suppliers側の独自権限モデル用で、
+    // ns-portal利用者はそちら側のprofilesを持たないため通常のuser tokenでは読めない）
+    if (action === "search_info_suppliers") {
+      const q: string = (body?.q ?? "").trim();
+      if (!q) return json({ success: true, suppliers: [] });
+      const { data, error } = await svc().schema("info").from("suppliers")
+        .select("id,name,kind,phone,contact_name,contact_mobile,status").ilike("name", `%${q}%`).order("name").limit(20);
+      if (error) return json({ error: error.message }, 500);
+      return json({ success: true, suppliers: data ?? [] });
     }
 
     if (action === "upsert_vendor") {
@@ -109,6 +142,7 @@ Deno.serve(async (req: Request) => {
         infomart_partner_id: v.infomart_partner_id || null,
         notes: v.notes || null,
         is_active: v.is_active !== false,
+        info_supplier_id: v.info_supplier_id || null,
         updated_by: user?.id ?? null,
       };
       if (v.id) {

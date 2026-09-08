@@ -7832,6 +7832,10 @@ function vendorOpenEditor(v){
     contactPhone: v?(v.contact_phone||""):"", defaultCorporationId: v?(v.default_corporation_id||""):"",
     defaultStoreId: v?(v.default_store_id||""):"", mfPartnerName: v?(v.mf_partner_name||""):"",
     notes: v?(v.notes||""):"", isActive: v?v.is_active!==false:true,
+    // 2026-09-08追加：社内情報管理システムの取引先（info.suppliers）との「軽い連携」
+    // （ユーザー要望「取引先マスタが社内情報管理システムの取引先と連動されているか」への対応。
+    // 自動同期はせず、手動で紐付けて参照表示するだけの方式を採用した）
+    infoSupplierId: v?(v.info_supplier_id||""):"", infoSupplier: v?(v.info_supplier||null):null,
   };
   vendorRenderBox();
   const el=$("vendor-editor"); if(el) el.scrollIntoView({behavior:"smooth",block:"center"});
@@ -7852,6 +7856,7 @@ function vendorRenderEditor(){
       <div class="ai-field full"><small>メモ</small><textarea id="vendor-notes">${esc(ed.notes)}</textarea></div>
       <div class="ai-field"><label style="display:flex;gap:6px;align-items:center;font-size:12px"><input type="checkbox" id="vendor-active" ${ed.isActive?"checked":""}>有効</label></div>
     </div>
+    <div style="margin-top:10px">${vendorInfoSupplierLinkHtml(ed)}</div>
     <div class="mail-actions" style="margin-top:10px"><button class="primary" id="vendor-save">💾 保存</button><button id="vendor-cancel">キャンセル</button></div>
     <div class="err" id="vendor-msg" style="margin-top:6px"></div>
     ${ed.id?`<div style="margin-top:14px;padding-top:14px;border-top:1px dashed var(--line)">
@@ -7861,6 +7866,7 @@ function vendorRenderEditor(){
   </div>`;
   $("vendor-cancel").onclick=()=>{ VENDOR_STATE.editing=null; vendorRenderBox(); };
   if(ed.id) vbLoadAccountsForVendor(ed.id);
+  vendorWireInfoSupplierLink(ed);
   $("vendor-save").onclick=async()=>{
     const name=$("vendor-name").value.trim();
     const msg=$("vendor-msg");
@@ -7877,6 +7883,7 @@ function vendorRenderEditor(){
       default_store_id: $("vendor-defstore").value||null,
       notes: $("vendor-notes").value.trim(),
       is_active: $("vendor-active").checked,
+      info_supplier_id: ed.infoSupplierId||null,
     };
     const r=await vendorCall("upsert_vendor",{vendor});
     if(!r.ok){ msg.textContent=r.body.error||"保存に失敗しました"; return; }
@@ -7891,6 +7898,67 @@ function vendorRenderEditor(){
     VENDOR_STATE.editing=null;
     await renderSettingsVendors();
   };
+}
+// 2026-09-08新規：ユーザー要望「取引先マスタは社内情報管理システムの取引先と連動されて
+// いるか？されていなければ連動させてほしい」への対応。調査の結果、両者は同じSupabase
+// プロジェクト内の別スキーマにあるが未連携で、そもそも持っている項目も異なる（社内情報管理
+// システム側=info.suppliersは電話番号・担当者名・取引状況などの一般連絡先台帳で、銀行口座は
+// 持っていない。こちら=vendorsは請求書処理用に銀行口座・支払方法を持つ）ため、ユーザーと
+// 相談のうえ「軽い連携」（自動での書き換え・同期はせず、手動で「この会社です」と紐付けて
+// 参照表示するだけ）を採用した
+function vendorInfoSupplierLinkHtml(ed){
+  const linked=ed.infoSupplier;
+  return `<div class="card" style="padding:10px;background:var(--m-bluesoft)">
+    <b style="font-size:11px">🔗 社内情報管理システムの取引先と紐付け（任意・参照表示のみ。自動では同期しません）</b>
+    <div id="vendor-info-supplier-current" style="margin-top:6px;font-size:12px">
+      ${linked
+        ?`✅ <b>${esc(linked.name)}</b>${linked.kind?`（${esc(linked.kind)}）`:""}${linked.status?` <span class="invoice-status gray">${esc(linked.status)}</span>`:""}
+           ${linked.contact_name||linked.phone?`<div class="meta" style="color:var(--muted);font-size:11px;margin-top:2px">${linked.contact_name?"担当: "+esc(linked.contact_name)+"　":""}${linked.phone?esc(linked.phone):""}</div>`:""}
+           <div class="mail-actions" style="margin-top:6px"><button class="hq-btn" id="vendor-info-supplier-unlink" style="font-size:11px">紐付けを解除</button></div>`
+        :`<span style="color:var(--muted)">まだ紐付けられていません</span>`}
+    </div>
+    <div id="vendor-info-supplier-search-box" style="margin-top:8px;${linked?"display:none":""}">
+      <input id="vendor-info-supplier-search" placeholder="🔎 社内情報管理システムの取引先名で検索" style="max-width:320px">
+      <div id="vendor-info-supplier-results" style="margin-top:6px;font-size:12px"></div>
+    </div>
+    ${linked?`<button class="hq-btn" id="vendor-info-supplier-relink-toggle" style="font-size:11px;margin-top:6px">別の取引先に紐付け直す</button>`:""}
+  </div>`;
+}
+function vendorWireInfoSupplierLink(ed){
+  const searchBox=$("vendor-info-supplier-search-box");
+  if($("vendor-info-supplier-relink-toggle")) $("vendor-info-supplier-relink-toggle").onclick=()=>{
+    if(searchBox) searchBox.style.display=searchBox.style.display==="none"?"block":"none";
+  };
+  if($("vendor-info-supplier-unlink")) $("vendor-info-supplier-unlink").onclick=()=>{
+    ed.infoSupplierId=""; ed.infoSupplier=null;
+    vendorRenderEditor();
+  };
+  const input=$("vendor-info-supplier-search");
+  if(!input) return;
+  let debounceTimer=null;
+  const runSearch=async q=>{
+    const box=$("vendor-info-supplier-results");
+    if(!q.trim()){ box.innerHTML=""; return; }
+    box.innerHTML="検索中…";
+    const r=await vendorCall("search_info_suppliers",{q:q.trim()});
+    const suppliers=(r.ok&&r.body.suppliers)||[];
+    box.innerHTML=suppliers.length
+      ?suppliers.map(s=>`<div class="ai-field" style="padding:6px 8px;margin-bottom:4px;border:1px solid var(--line);border-radius:6px">
+          <b>${esc(s.name)}</b>${s.kind?`（${esc(s.kind)}）`:""}${s.status?` <span class="invoice-status gray">${esc(s.status)}</span>`:""}
+          ${s.contact_name||s.phone?`<div class="meta" style="color:var(--muted);font-size:11px">${s.contact_name?"担当: "+esc(s.contact_name)+"　":""}${s.phone?esc(s.phone):""}</div>`:""}
+          <button class="hq-btn" data-vendor-info-supplier-pick="${esc(s.id)}" style="font-size:11px;margin-top:4px">この取引先に紐付ける</button>
+        </div>`).join("")
+      :`<div style="color:var(--muted)">該当する取引先が見つかりません</div>`;
+    document.querySelectorAll("[data-vendor-info-supplier-pick]").forEach(btn=>btn.onclick=()=>{
+      const picked=suppliers.find(s=>s.id===btn.dataset.vendorInfoSupplierPick);
+      if(!picked) return;
+      ed.infoSupplierId=picked.id; ed.infoSupplier=picked;
+      vendorRenderEditor();
+    });
+  };
+  input.oninput=()=>{ clearTimeout(debounceTimer); const q=input.value; debounceTimer=setTimeout(()=>runSearch(q),350); };
+  // 初回表示時、取引先の正式名称で自動的に候補を検索しておく（未紐付けのときだけ）
+  if(!ed.infoSupplier&&ed.name){ input.value=ed.name; runSearch(ed.name); }
 }
 // 2026-09-05新規：取引先マスタの編集画面に統合した振込先口座のCRUD。旧「支払先・銀行口座」
 // タブのbankLoadAccountsForVendor/$("bank-add")のロジックをそのまま移設し、要素IDだけ
