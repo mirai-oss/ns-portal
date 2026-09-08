@@ -45,7 +45,9 @@ textarea{resize:vertical}
 
 /* サマリー信号 */
 /* 2026-08-26: デザイン案の.metrics/.metric（左揃え・見出し→数字→補足の3段）に合わせて刷新 */
-.sig-row{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:14px}
+/* 2026-09-08: 「担当・期限未設定」カードを追加するため4列固定からauto-fitへ変更
+   （カード数が増えても画面幅に応じて自動的に折り返す） */
+.sig-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px;margin-bottom:14px}
 @media(max-width:600px){.sig-row{grid-template-columns:repeat(2,1fr)}}
 .sig{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:18px;text-align:left;cursor:pointer;transition:box-shadow .1s}
 .sig:hover{box-shadow:0 2px 8px rgba(0,0,0,.08)}
@@ -54,7 +56,10 @@ textarea{resize:vertical}
 .sig .n{font-size:32px;font-weight:900;margin-top:7px}
 .sig.overdue .n{color:var(--stall)}
 .sig.today .n{color:var(--warn)}
-.sig.stall .n{color:var(--stall)}
+/* 2026-09-08: KPIカードの数字も期限超過と同じ赤だったため、タスクカードと同様に
+   --stoppedへ変更（担当・期限未設定は緊急アラートではないのでさらに落ち着いた--mutedにした） */
+.sig.stall .n{color:var(--stopped)}
+.sig.unassigned .n{color:var(--muted)}
 .sig .s{font-size:12px;color:var(--muted);margin-top:4px}
 
 /* 検索・絞り込み */
@@ -513,6 +518,21 @@ function stepAssigneeNames(s){
   return ids.length?ids.map(id=>userName(id)).join("・"):"未定";
 }
 function isStepAssignee(s,userId){ return stepAssigneeIds(s).includes(userId); }
+// 2026-09-08: 「担当者・期限が未設定の工程をなくしたい」という要望対応。ユーザーに確認した
+// 結果、保存自体は止めない（テンプレートの「担当（空欄=誰でも可）」という仕様と両立させる
+// ため）が、保存前に目立つ確認ダイアログを出すことにした。工程を保存する箇所すべて
+// （工程のその場編集・新規タスク作成・テンプレート編集・工程追加）で共通して使う
+function confirmMissingAssignment(items){
+  const missing=items.filter(x=>!x.hasAssignee||!x.hasDue);
+  if(!missing.length) return true;
+  const lines=missing.map(x=>{
+    const parts=[];
+    if(!x.hasAssignee) parts.push("担当者");
+    if(!x.hasDue) parts.push("期限");
+    return `・${x.title||"（無題）"}: ${parts.join("・")}が未設定`;
+  });
+  return confirm(`次の工程は担当者または期限が未設定です。このまま保存しますか？\n（「担当・期限未設定」の絞り込みで後から見つけられます）\n\n${lines.join("\n")}`);
+}
 function todayStr(){const d=new Date();return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0");}
 function monthStartStr(){const d=new Date();return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-01";}
 function fmtD(d){ if(!d) return "—"; const t=new Date(d+"T00:00:00"); return `${t.getMonth()+1}/${t.getDate()}`; }
@@ -663,19 +683,28 @@ function applyFilters(list){
       if(FILTER.signal==="overdue" && !sig.overdue) return false;
       if(FILTER.signal==="today" && !sig.dueToday) return false;
       if(FILTER.signal==="stall" && sig.stalledDays<3) return false;
+      if(FILTER.signal==="unassigned" && !hasMissingAssignment(t)) return false;
     }
     return true;
   });
 }
+// 2026-09-08: 「担当者や期限が未設定の工程がないようにしたい」という要望対応。
+// いきなり保存を止める（必須化）と、テンプレート編集の「担当（空欄=誰でも可）」という
+// 既存の仕様と衝突するため、必須化はせず「見つけやすくする絞り込み」の方を選んだ
+// （ユーザーへの確認回答）。判定対象は未完了の工程だけ（完了済みの工程は今さら
+// 担当・期限が無くても実害が無いため対象外にする）
+function hasMissingAssignment(t){
+  return sortedSteps(t).some(s=>!s.completed_at && (!stepAssigneeIds(s).length || !s.due_date));
+}
 function summaryCounts(){
   const base=TASKS.filter(t=>t.status!=="done");
-  let overdue=0,today=0,stall=0;
+  let overdue=0,today=0,stall=0,unassigned=0;
   // 2026-09-08: 「3日以上停止」の集計は期限超過かどうかに関わらず、実際にstalledDaysが
   // 3以上かで数える（levelは枠の色の優先度だけなので、ここでlevelを見るとoverdue優先の
   // ときに漏れてしまい「3日以上停止」の件数として不正確になる）
-  base.forEach(t=>{ const s=computeSignal(t); if(s.overdue)overdue++; if(s.dueToday)today++; if(s.stalledDays>=3)stall++; });
+  base.forEach(t=>{ const s=computeSignal(t); if(s.overdue)overdue++; if(s.dueToday)today++; if(s.stalledDays>=3)stall++; if(hasMissingAssignment(t))unassigned++; });
   const doneCount=TASKS.filter(t=>t.status==="done").length;
-  return {overdue,today,stall,doneCount};
+  return {overdue,today,stall,unassigned,doneCount};
 }
 // 種別タブの赤バッジ用（現在のフィルタに関係なく、未完了の入社登録タスク数を出す＝KPIカードと同じ考え方）
 function onboardingOpenCount(){
@@ -814,6 +843,7 @@ function renderBoard(u){
     <div class="sig overdue ${FILTER.signal==='overdue'?'active':''}" data-sig="overdue"><div class="l">期限超過</div><div class="n">${cnt.overdue}</div><div class="s">すぐ確認が必要</div></div>
     <div class="sig today ${FILTER.signal==='today'?'active':''}" data-sig="today"><div class="l">今日が期限</div><div class="n">${cnt.today}</div><div class="s">本日中に対応</div></div>
     <div class="sig stall ${FILTER.signal==='stall'?'active':''}" data-sig="stall"><div class="l">3日以上停止</div><div class="n">${cnt.stall}</div><div class="s">停滞タスク</div></div>
+    <div class="sig unassigned ${FILTER.signal==='unassigned'?'active':''}" data-sig="unassigned"><div class="l">担当・期限未設定</div><div class="n">${cnt.unassigned}</div><div class="s">工程を確認してください</div></div>
     <div class="sig"><div class="l">今月完了</div><div class="n">${cnt.doneCount}</div><div class="s">完了済み</div></div>
   </div>
   <!-- 2026-08-26: デザイン案のtoolbar-top（検索＋表示切替＋主要アクションを1行に）に合わせて再構成。
@@ -1956,12 +1986,14 @@ function wireDetail(t,u){
       e.stopPropagation();
       const sid=btn.dataset.stepsavemeta;
       const step=sortedSteps(t).find(s=>s.id===sid);
-      const msg=$("stepmetamsg-"+sid); if(msg){ msg.className="err"; msg.textContent="保存中…"; }
+      const msg=$("stepmetamsg-"+sid);
       const newTitle=document.querySelector(`[data-steptitle="${sid}"]`).value.trim();
       const newAssignees=[...document.querySelectorAll(`[data-stepowners="${sid}"] input:checked`)].map(el=>el.value);
       const newDue=document.querySelector(`[data-stepdue="${sid}"]`).value||null;
       const newDueTime=document.querySelector(`[data-steptime="${sid}"]`).value||null;
       if(!newTitle){ if(msg) msg.textContent="工程名を入力してください"; return; }
+      if(!confirmMissingAssignment([{title:newTitle,hasAssignee:newAssignees.length>0,hasDue:!!newDue}])) return;
+      if(msg){ msg.className="err"; msg.textContent="保存中…"; }
       btn.disabled=true;
       const r=await authed(`/rest/v1/hq_task_steps?id=eq.${sid}`,{method:"PATCH",headers:{Prefer:"return=minimal"},
         body:JSON.stringify({title:newTitle,assignee_ids:newAssignees.length?newAssignees:null,due_date:newDue,due_time:newDueTime})});
@@ -2212,7 +2244,9 @@ function wireDetail(t,u){
     if(!title){ msg.textContent="工程名を入力してください"; return; }
     const maxSort=Math.max(0,...sortedSteps(t).map(s=>s.sort_order||0));
     const newAssignees=[...document.querySelectorAll("#sa-assignee input:checked")].map(el=>el.value);
-    const body={task_id:t.id,title,assignee_ids:newAssignees.length?newAssignees:null,due_date:$("sa-due").value||null,due_time:$("sa-duetime").value||null,sort_order:maxSort+10,kind:"step"};
+    const newDue=$("sa-due").value||null;
+    const body={task_id:t.id,title,assignee_ids:newAssignees.length?newAssignees:null,due_date:newDue,due_time:$("sa-duetime").value||null,sort_order:maxSort+10,kind:"step"};
+    if(!confirmMissingAssignment([{title,hasAssignee:newAssignees.length>0,hasDue:!!newDue}])) return;
     $("stepaddsave").disabled=true; msg.textContent="追加中…";
     const r=await authed("/rest/v1/hq_task_steps",{method:"POST",headers:{Prefer:"return=minimal"},body:JSON.stringify(body)});
     if(!r.ok){ msg.textContent="追加できませんでした"; $("stepaddsave").disabled=false; return; }
@@ -2446,6 +2480,7 @@ async function submitNewTask(u){
   const dueSorted=steps.filter(s=>s.due_date).sort((a,b)=>(a.due_date+(a.due_time||"23:59")).localeCompare(b.due_date+(b.due_time||"23:59")));
   const lastDue=dueSorted[dueSorted.length-1]||null;
   const due_date=lastDue?lastDue.due_date:null, due_time=lastDue?(lastDue.due_time||null):null;
+  if(!confirmMissingAssignment(steps.map(s=>({title:s.title.trim(),hasAssignee:stepAssigneeIds(s).length>0,hasDue:!!s.due_date})))) return;
   $("nt-send").disabled=true; msg.textContent="作成中…";
   const tr=await authed("/rest/v1/hq_tasks",{method:"POST",headers:{Prefer:"return=representation"},body:JSON.stringify({
     title,corp,freq:"once",target_date,due_date,due_time,notes:$("nt-notes").value.trim(),description:$("nt-desc").value.trim()||null,visibility,created_by:ME.id
@@ -3141,6 +3176,10 @@ async function saveTemplate(u){
     alert_before3: $("tp-a3").checked, alert_before1: $("tp-a1").checked, alert_due: $("tp-a0").checked, alert_overdue_daily: $("tp-aod").checked,
     created_by: ME.id,
   };
+  // テンプレートの工程は「対象日から何日後か」という相対値(既定0=当日)を持つ作りのため、
+  // タスク側の「期限が未設定」とは違い、期限そのものは常に何かしら入る。ここでは
+  // 担当者（空欄=誰でも可を選んだかどうか）だけ確認の対象にする
+  if(!confirmMissingAssignment(steps.map(s=>({title:s.title.trim(),hasAssignee:stepAssigneeIds(s).length>0,hasDue:true})))) return;
   $("tp-save").disabled=true; msg.textContent="保存中…";
   let tplId=TPL_EDIT&&TPL_EDIT.id;
   let r;
