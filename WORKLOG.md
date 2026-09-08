@@ -6,6 +6,12 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
+**★★★★★2026-09-08（担当C実行スレッド・続き68）給料確定ボタン＋振込完了時の本部タスク連携（担当Bからの実装依頼）に対応・実装完了**: 担当Bスレッド・続き4の依頼（[実装指示書_担当C_給料確定ボタン_2026-09-08.md](docs/実装指示書_担当C_給料確定ボタン_2026-09-08.md)）に沿って、フロント側（invoices.html・給与仕訳タブ）のみ実装。バックエンド（`hq_create_payroll_tasks`/`hq_check_payroll_task_item`/`jp_prev_business_day`）は担当Bが本番適用済みなのを実際にSQLで存在確認してから着手。
+- 給与仕訳タブ上部（対象月変更のカード内）に「✅ 給料確定（本部タスクを自動発行）」ボタンを追加。押すと`hq_create_payroll_tasks(p_year_month,p_corp:'N-Style')`を呼び、給料振込・現金手渡しの本部タスクをそれぞれ自動発行（同月で2回押しても重複作成されない設計はバックエンド側で担保済み）。
+- 個人の「振込完了」ボタン（`[data-payroll-pay]`）の成功パスに、`hq_check_payroll_task_item(p_year_month,'transfer',p_person_name)`の呼び出しを1行追加。これで振込完了を押した瞬間に本部タスク側の該当者チェックが自動で入り、全員完了すると本部タスクも自動完了・Larkへ完了報告される。RPC呼び出しは失敗を握りつぶす設計（この月にまだ「給料確定」を押していない＝対応する本部タスクが無い場合でも、振込完了の記録自体は止まらない）。
+- 現金手渡し側は担当Bの実装（`cash_handoff_complete`から自動連携）で既に完結しており、担当C側の追加対応は不要（指示書のとおり確認済み）。
+- `node --check`で構文確認、`information_schema`ならぬ`pg_proc`で3つのRPCの実在・引数シグネチャ一致を事前確認してからコード実装。コミット`4ed5388`push・GitHub Pagesデプロイ確認済み。**実機E2E（実際に「給料確定」を押してtasks.htmlに反映されるか、振込完了でチェックが連動するか）は未実施**。次に触るセッションは指示書③の手順で一往復確認することを推奨。
+
 **★★★★★2026-09-08（担当Bスレッド・続き4）給料確定→本部タスク自動発行の基盤を新設＋担当Cへ実装依頼**: ユーザー要望「給与仕訳のところで給料確定ボタンを作り、押したら本部タスクに振込・現金手渡しのタスクが自動発行され、完了も自動連携されるようにしたい（振込=期日15日・担当青山純/原美香/中山俊士、現金手渡し=期日25日・担当は上記+坂本龍太郎/佐藤俊一/鍋倉巧、期日は土日祝日を挟む前はその前、チェック項目は対象者の氏名、全員完了したらタスク完了＆Lark報告）」に対応。
 - **担当Bで実装・本番適用済み**（コミット[771605d](https://github.com/mirai-oss/ns-portal/commit/771605d)）: `jp_is_holiday`/`jp_prev_business_day`（日本の祝日判定＋直前営業日への調整。固定日・ハッピーマンデー・春分秋分の近似計算・振替休日に対応、「国民の休日」は非対応）、`payroll_task_links`（年月・種別→本部タスクの対応表）、`hq_create_payroll_tasks(year_month,corp)`（振込・現金手渡し双方の本部タスクをそれぞれ1件＋チェックリスト自動発行。現金手渡し対象は既存`cash_handoff_targets`をそのまま再利用。前例の`hq_create_transfer_task`＝担当C・2026-09-05と同じ「タスク1件＋工程1件＋チェックリスト」パターンを踏襲。同月同種別は重複作成しないべき等設計）、`hq_check_payroll_task_item(year_month,kind,person_name)`（個人の完了時にチェックリストの該当項目へチェック→工程内全員完了で本部タスクを自動的にstatus='done'に→その遷移が起きた時だけLarkへ完了報告。`notify_lark`＝ai-cockpit等でも使っている共通Lark Webhook）。
 - **`cash_handoff_complete`を拡張**: 現金手渡しが個人単位で完了した瞬間に上記`hq_check_payroll_task_item`を自動呼び出し（nippo側は追加実装不要）。加えて、その月の現金手渡し対象者が全員完了したらLarkへ別途完了報告。再実行時の重複Lark通知を防ぐガードも追加。nippo側フロントには「🏧引き出し確認の取り消しボタン」「一覧のCSV/印刷(PDF)出力」もあわせて追加（コミット[2cee1a6](https://github.com/mirai-oss/nippo/commit/2cee1a6)）。
@@ -7562,3 +7568,24 @@ Node上で「月　基本給」「月　交通費」「月　所得税」「月�
 ローカルブラウザで未紐付け・紐付け済みどちらの表示も崩れないことを確認済み。構文チェック（`node --check`・Edge Functionは`esbuild --bundle`）済み・コミット`a960b59`push済み・`git diff origin/main --stat`で空（クリーン同期）確認済み・GitHub Pages・Edge Functionのデプロイも確認済み。
 
 **正直な限界・申し送り**: `info`スキーマ自体は担当Fの管轄（`ns-info-system`が実装・運用）のため、`info.suppliers`テーブルの構造・RLSポリシーを直接変更するようなことはしていない（読み取り専用のservice role検索のみ）。将来、より踏み込んだ連携（例: 名前の自動同期）を検討する場合は、担当Fとの調整が必要になる旨をユーザーには伝えていない未共有事項として残しておく（次回セッションで思い出せるよう、ここに明記）。
+
+## 2026-09-08（担当C実行スレッド・続き68）
+
+**発端**: 担当Bスレッド・続き4で新設されたバックエンド（`hq_create_payroll_tasks`/`hq_check_payroll_task_item`/`jp_prev_business_day`）に対応する、担当C管轄`invoices.html`側の実装依頼。担当Bが作成した実装指示書（[実装指示書_担当C_給料確定ボタン_2026-09-08.md](docs/実装指示書_担当C_給料確定ボタン_2026-09-08.md)）を読み、コード例の行番号（`[data-payroll-pay]`ハンドラ＝6636〜6646行目）が実際のコードと一致することを確認してから着手。
+
+**実施内容**:
+1. バックエンド実在確認: `pg_proc`を直接クエリし、`hq_create_payroll_tasks(p_year_month text, p_corp text)`／`hq_check_payroll_task_item(p_year_month text, p_kind text, p_person_name text)`／`jp_prev_business_day(p_date date)`の3関数が実際に本番DBに存在し、指示書記載の引数シグネチャと一致することを確認。
+2. 給与仕訳タブ（`payrollRender()`内の`.pr-hero-side`カード）に「✅ 給料確定（本部タスクを自動発行）」ボタンを追加（`data-payroll-finalize`）。
+3. ボタンの配線（`payrollLoad()`後の各種イベントバインド箇所、`$("payroll-sync-now").onclick`の直後）を追加。クリック時に確認ダイアログ→`hq_create_payroll_tasks`をRPC呼び出し→結果（振込対象数・期日／現金手渡し対象数・期日）をalertで表示。
+4. `[data-payroll-pay]`（個人の振込完了）ハンドラの成功パスに、`hq_check_payroll_task_item`の呼び出しを追加。`PAYROLL_STATE.rows`から氏名を引いて渡す。既存の`rec`/`row`等の変数名と衝突しないよう`payRow`/`payUname`で命名（指示書の注意書きどおり）。RPC呼び出しは`.catch(()=>{})`で失敗を握りつぶし、振込完了の記録自体（PATCH）には影響しない設計。
+5. `node --check`で構文確認（1スクリプトブロック、エラーなし）。
+6. コミット`4ed5388`をpush、`git fetch`で`origin/main`とHEADの一致を確認。GitHub Pagesを新コードのマーカー（`data-payroll-finalize`）でcurlポーリングし、デプロイ完了を確認（5回目のポーリングで反映）。
+
+**現金手渡し側について**: 指示書のとおり、`cash_handoff_complete`（担当B・nippo側）から`hq_check_payroll_task_item`が既に自動で呼ばれる設計になっているため、担当C側の追加対応は不要（対応済みの確認のみ）。
+
+**正直な限界・申し送り**:
+- 実機E2Eは未実施。次にこのタブを触るセッション（または人間の中山さん）は、指示書③の手順（①給料確定を押してtasks.htmlに2件のタスクが作られるか②1人ぶん振込完了でチェックが連動するか③全員完了でタスクが完了しLark通知が届くか）を一度実際に試すことを推奨する。
+- `p_corp`は固定で`"N-Style"`。`users`テーブルに会社区分の列が無く、給与仕訳の対象者を会社ごとに分ける仕組みが現状無いため（指示書の記載どおり。将来複数法人に分ける場合は要相談）。
+- 祝日判定（`jp_is_holiday`）は「国民の休日」（祝日に挟まれた平日）に非対応（担当B確認済み・発生頻度が極めて低いため許容）。
+
+**関連ファイル**: `invoices.html`（フロント実装）、`docs/実装指示書_担当C_給料確定ボタン_2026-09-08.md`（依頼元指示書）。DB側は担当Bのコミット`771605d`（本ファイルの担当Bスレッド・続き4を参照）で完結済み・担当C側の変更なし。
