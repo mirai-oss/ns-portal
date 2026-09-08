@@ -152,6 +152,16 @@ button,input,select,textarea{font:inherit}
 .wf-rowtag.done{color:var(--m-green)}
 .wf-rowtag.wait{color:var(--m-muted);font-weight:600}
 .detail-layout{display:grid;grid-template-columns:1fr 1fr;gap:24px;align-items:start}
+/* 2026-09-08修正：ユーザー報告「請求書の仕訳登録するときのUIが崩れてる（プレビューが出ない）」
+   に対応。原因はCSS Gridの既知の落とし穴＝グリッドの直接の子要素はデフォルトでmin-width:autoの
+   ため、右カラムの内部に.mfj-edit-table（min-width:1080px。給与仕訳と統一した仕訳テーブル）が
+   入ると、その最小コンテンツ幅がグリッドの列幅計算に伝わってしまい、右カラム（会計・仕訳の表）が
+   1080px分の幅を要求し、左カラム（証憑プレビュー）がほぼ0幅まで押しつぶされて実質見えなくなって
+   いた（表自体は`overflow-x:auto`で囲ってあるが、それだけではグリッドの列幅計算には効かない）。
+   直接の子要素にmin-width:0を明示することで、overflow-x:autoが正しく機能し、表は自分の列内で
+   横スクロールするだけになり、証憑プレビューの列幅は元通りになる（グリッドでこの種の「意図せず
+   幅が突っ張る」不具合を防ぐ定番の対処。ローカルで実データに近いHTML+実CSSで再現・修正確認済み） */
+.detail-layout>*{min-width:0}
 /* 処理フローの各工程カード（2026-09-03再設計→再調整。ユーザー提供の参考HTMLの枠・文字サイズ・
    色合いに合わせた：カードにうっすら影をつけて浮かせ、余白を広めに、番号は濃い円形バッジ） */
 .step-card{background:var(--panel);border:1px solid var(--m-line);border-radius:12px;padding:24px;margin-bottom:16px;box-shadow:var(--shadow)}
