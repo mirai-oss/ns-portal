@@ -51,19 +51,27 @@ create policy cash_handoff_rw on sf_cash_handoff_signatures for all using (
 );
 
 -- ② 対象者一覧を作るRPC（payroll_bank_accountsを直接公開しない・3項目だけ返す）
--- 店舗はuser_stores（複数所属の場合は最初の1件）から決める。RLSで店長・チーム長は
--- 自店舗の人だけに絞られる設計のため、ここでは全件返し、絞り込みはRLS/呼び出し側に任せる
+-- 店舗はuser_stores（複数所属の場合は最初の1件）から決める。呼び出し元の役職が
+-- TENCHO/TEAMの場合はRPC自身が対象を自店舗ぶんだけに絞り込む（payroll_bank_accounts自体は
+-- SECURITY DEFINERで読むためRLSは効かない＝ここで絞らないと全店舗が見えてしまう不具合になる）
 create or replace function public.cash_handoff_targets(p_year_month text)
 returns table(user_id uuid, name text, store_id uuid, amount numeric, is_active boolean)
 language plpgsql
 security definer
 set search_path to 'public'
 as $function$
+declare v_caller users%rowtype; v_stores uuid[];
 begin
-  if not exists(select 1 from users where id = auth.uid() and is_active and (
-    is_master or role in ('CEO','HQ','TENCHO','TEAM')
-  )) then
+  select * into v_caller from users where id = auth.uid() and is_active;
+  if v_caller.id is null or not (v_caller.is_master or v_caller.role in ('CEO','HQ','TENCHO','TEAM')) then
     raise exception '権限がありません';
+  end if;
+  if v_caller.is_master or v_caller.role in ('CEO','HQ') then
+    v_stores := null; -- 全店舗
+  elsif v_caller.role = 'TEAM' then
+    v_stores := team_store_ids(v_caller.team_id);
+  else
+    v_stores := user_store_ids(v_caller.id);
   end if;
   return query
     select u.id, u.name,
@@ -73,7 +81,8 @@ begin
     from payroll_bank_accounts pba
     join users u on u.id = pba.user_id
     left join sf_payroll_sync s on s.user_id = u.id and s.year_month = p_year_month
-    where pba.payment_method = 'cash';
+    where pba.payment_method = 'cash'
+      and (v_stores is null or (select us2.store_id from user_stores us2 where us2.user_id = u.id order by us2.is_primary desc limit 1) = any(v_stores));
 end;
 $function$;
 grant execute on function public.cash_handoff_targets(text) to authenticated;
