@@ -6083,9 +6083,19 @@ async function payrollLoad(){
     // おけば、次回から同じ店舗と認識して反映されるようにしてほしい」に対応。設定タブ
     // 「法人・店舗・部門マッピング」で既に用意されていたstores.mf_department_name（店舗↔MF部門名の
     // 手動紐付け。従来は他の用途向けで、給与仕訳のAI事業所名マッチングでは未使用だった）を
-    // 取得し、payrollMatchDeptByStoreName()から使えるようにする
-    const r=await authed("/rest/v1/stores?select=id,name,mf_department_name&order=name");
+    // 取得し、payrollMatchDeptByStoreName()から使えるようにする。
+    // 2026-09-09追加（続き）：ユーザー報告「まだできない」で発覚。事業所名が店舗の正式名では
+    // なく2枚看板の別名（例:「匠味 新横浜」＝「鶏武者 新横浜」の別ブランド名）で書かれている
+    // PDFがあり、mf_department_nameを設定しても、そもそも店舗自体が特定できず素通りしていた。
+    // 広告費・予約データの店舗名寄せで既に使われているstore_aliasesテーブル（担当G実装済み・
+    // 「匠味 新横浜」→鶏武者 新横浜のstore_id等が既に登録されている）を給与仕訳でも読み、
+    // payrollMatchStoreRecord()から使えるようにする
+    const [r,ar]=await Promise.all([
+      authed("/rest/v1/stores?select=id,name,mf_department_name&order=name"),
+      authed("/rest/v1/store_aliases?select=alias,store_id"),
+    ]);
     PAYROLL_STATE.stores=(r.ok&&Array.isArray(r.body))?r.body:[];
+    PAYROLL_STATE.storeAliases=(ar.ok&&Array.isArray(ar.body))?ar.body:[];
   }
   // 給与明細PDF（担当Bが用意したStorageバケット payroll-pdfs・{user_id}/{year_month}[_n].pdf規約。
   // 2026-09-07: 複数枚対応のためファイル一覧を保持するよう変更）が
@@ -6308,9 +6318,17 @@ function payrollMatchStoreRecord(storeName){
   const norm=s=>String(s||"").replace(/\s+/g,"");
   const n=norm(storeName);
   if(!n) return null;
-  return (PAYROLL_STATE.stores||[]).find(s=>norm(s.name)===n)
-    || (PAYROLL_STATE.stores||[]).find(s=>n.includes(norm(s.name))||norm(s.name).includes(n))
-    || null;
+  const byName=(PAYROLL_STATE.stores||[]).find(s=>norm(s.name)===n)
+    || (PAYROLL_STATE.stores||[]).find(s=>n.includes(norm(s.name))||norm(s.name).includes(n));
+  if(byName) return byName;
+  // 2026-09-09追加：ユーザー報告「まだできない」で発覚。給与明細PDFの事業所名が店舗の正式名
+  // ではなく2枚看板の別ブランド名（例:「匠味 新横浜」＝実店舗は「鶏武者 新横浜」）で書かれて
+  // いる場合、店舗名同士の一致では原理的に見つからない。広告費・予約データで既に使われている
+  // store_aliasesテーブル（担当G実装済み）を使い、別名からも店舗を特定できるようにする
+  const aliases=PAYROLL_STATE.storeAliases||[];
+  const aliasHit=aliases.find(a=>norm(a.alias)===n) || aliases.find(a=>n.includes(norm(a.alias))||norm(a.alias).includes(n));
+  if(aliasHit) return (PAYROLL_STATE.stores||[]).find(s=>s.id===aliasHit.store_id)||null;
+  return null;
 }
 function payrollMatchDeptByStoreName(storeName){
   const norm=s=>String(s||"").replace(/\s+/g,"").replace(/^\d+/,"");
