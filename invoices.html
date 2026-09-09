@@ -5952,6 +5952,45 @@ function wireUploadInvoiceTab(u){
    （OAuth）自体もまだ無い。そのためこの画面は事業者='default'（トーホー）固定で動く
    ============================================================ */
 let PAYROLL_STATE={};
+// 2026-09-09新設：ユーザー報告「給料確定タスクの会社名がN-Styleになっているが実際はトーホー」
+// （担当EがDBで実データを確認しWORKLOGで申し送り）に対応。給料確定ボタンでhq_create_payroll_tasksを
+// 呼ぶ前に、実際に振込・現金手渡し対象になる従業員の所属店舗→法人を調べ、正しい法人名を
+// 自動判定する。振込対象はpayroll_bank_accounts（現金以外）、現金手渡し対象は既存の
+// cash_handoff_targets RPC（nippo「現金手渡し・サイン」と同じ判定基準）をそのまま使う。
+// 対象者が複数法人にまたがる場合は呼び出し元でユーザーに確認してもらう想定のため、
+// 見つかった法人名の一覧（重複無し）と、所属店舗が特定できなかった人数を返すだけに留める
+async function payrollDetermineTargetCorp(yearMonth){
+  await ensureCorpStoreCache();
+  const storeCorpName=storeId=>{
+    const store=(CORP_STORE_CACHE.stores||[]).find(s=>s.id===storeId);
+    if(!store) return null;
+    const corp=(CORP_STORE_CACHE.corporations||[]).find(c=>c.id===store.corporation_id);
+    return corp?corp.name:null;
+  };
+  const [bankR,cashR]=await Promise.all([
+    authed(`/rest/v1/payroll_bank_accounts?payment_method=neq.cash&select=user_id,user:users!inner(is_active,user_stores(is_primary,store_id))`),
+    authed("/rest/v1/rpc/cash_handoff_targets",{method:"POST",body:JSON.stringify({p_year_month:yearMonth})}),
+  ]);
+  const corpNames=new Set();
+  let unresolved=0;
+  if(bankR.ok&&Array.isArray(bankR.body)){
+    for(const row of bankR.body){
+      if(!row.user||!row.user.is_active) continue;
+      const stores=row.user.user_stores||[];
+      const primary=stores.find(s=>s.is_primary)||stores[0];
+      const name=primary?storeCorpName(primary.store_id):null;
+      if(name) corpNames.add(name); else unresolved++;
+    }
+  }
+  if(cashR.ok&&Array.isArray(cashR.body)){
+    for(const t of cashR.body){
+      if(!t.is_active) continue;
+      const name=t.store_id?storeCorpName(t.store_id):null;
+      if(name) corpNames.add(name); else unresolved++;
+    }
+  }
+  return {corpNames:[...corpNames],unresolved};
+}
 function payrollYmDefault(){
   const d=new Date();
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
@@ -6749,17 +6788,37 @@ function payrollRender(){
   // 2026-09-08追加: 給料確定ボタン（担当Bからの依頼。押すと本部タスク＝給料振込／現金手渡しを
   // 自動発行するRPC hq_create_payroll_tasks を呼ぶだけ。実体（祝日調整・対象者抽出等）は
   // 担当Bがバックエンド側で実装済み。同じ月で2回押しても重複作成されない（べき等）
+  // 2026-09-09修正：ユーザー報告「給料タスクの会社名が違う」（担当Eが実機データで調査・WORKLOGで
+  // 担当Cへ申し送り）に対応。従来はp_corpを"N-Style"に決め打ちしていたが、実際の対象者
+  // （振込・現金手渡し双方）は全員トーホー所属だった。対象者の所属店舗→法人を実際に調べて
+  // 自動で正しい法人名を渡すように修正（payrollDetermineTargetCorp）。将来、対象者が複数法人に
+  // またがるようになった場合は、その場でどちらの法人名を使うか確認する
   document.querySelectorAll("[data-payroll-finalize]").forEach(el=>el.onclick=async()=>{
-    if(!confirm(`${PAYROLL_STATE.yearMonth}分の給与を確定し、本部タスク（給料振込・現金手渡し）を自動発行しますか？\n※既に発行済みの場合は重複作成されません。`)) return;
+    el.disabled=true;
+    const {corpNames,unresolved}=await payrollDetermineTargetCorp(PAYROLL_STATE.yearMonth);
+    el.disabled=false;
+    let corp;
+    if(corpNames.length===1){
+      corp=corpNames[0];
+    }else if(corpNames.length===0){
+      alert("対象者の所属法人を特定できませんでした（店舗マスタの法人設定をご確認ください）。本部タスクの自動発行は中止しました。");
+      return;
+    }else{
+      const picked=prompt(`対象者の所属法人が複数（${corpNames.join("・")}）に分かれています。\nこの本部タスクは1回につき1つの法人名でしか作成できません。\nどちらの法人名でタスクを作成しますか？\n（${corpNames.join(" / ")}のいずれかを入力）`,corpNames[0]);
+      if(!picked||!corpNames.includes(picked)) return;
+      corp=picked;
+    }
+    if(unresolved>0&&!confirm(`${unresolved}名は所属店舗・法人を特定できませんでした（店舗未設定等）。それでも法人「${corp}」として本部タスクを発行しますか？`)) return;
+    if(!confirm(`${PAYROLL_STATE.yearMonth}分の給与を確定し、本部タスク（給料振込・現金手渡し）を法人「${corp}」で自動発行しますか？\n※既に発行済みの場合は重複作成されません。`)) return;
     el.disabled=true;
     const r=await authed("/rest/v1/rpc/hq_create_payroll_tasks",{
       method:"POST",
-      body:JSON.stringify({p_year_month:PAYROLL_STATE.yearMonth,p_corp:"N-Style"})
+      body:JSON.stringify({p_year_month:PAYROLL_STATE.yearMonth,p_corp:corp})
     });
     el.disabled=false;
     if(!r.ok){ alert("本部タスクの自動発行に失敗しました: "+(r.body&&r.body.message||JSON.stringify(r.body))); return; }
     const d=r.body;
-    alert(`本部タスクを発行しました。\n・給料振込：対象${d.transfer_count}名／期日${d.transfer_due}\n・現金手渡し：対象${d.cash_count}名／期日${d.cash_due}\n\n本部タスク（tasks.html）で内容を確認してください。`);
+    alert(`本部タスクを発行しました（法人: ${corp}）。\n・給料振込：対象${d.transfer_count}名／期日${d.transfer_due}\n・現金手渡し：対象${d.cash_count}名／期日${d.cash_due}\n\n本部タスク（tasks.html）で内容を確認してください。`);
   });
   // 一覧をCSVでダウンロード（記録・確認用。PayPay振込CSVとは別物）
   $("payroll-csv-download").onclick=()=>{
