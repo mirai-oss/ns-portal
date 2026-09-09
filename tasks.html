@@ -887,6 +887,11 @@ function renderBoard(u){
       <span>並び替え: <select id="sortsel">
         ${Object.entries(SORT_LABEL).map(([k,v])=>`<option value="${k}" ${SORT_MODE===k?"selected":""}>${esc(v)}</option>`).join("")}
       </select></span>
+      <!-- 2026-09-09: 「自分の担当のタスクも絞り込めるように」という要望対応。同じ絞り込み自体は
+           頻度チップ行の「自分の担当」チップからも既にできたが、この選択系の行に無く見つけにくい
+           とのことなので、ここにも同じFILTER.assigneeを操作する目立つチェックボックスを追加した
+           （どちらを操作しても状態は共有されるので、表示は常に一致する） -->
+      <span><label class="chipcheck"><input type="checkbox" id="assignmine" ${FILTER.assignee===u.id?"checked":""}> 👤 自分の担当のみ</label></span>
     </div>
   </div>
   <div class="chiprow" id="typechips" style="margin-top:14px">
@@ -945,6 +950,7 @@ function wireBoard(u){
   // 依頼者ですべて表示）はそのまま残し、他人で絞り込みたい場合はそちらを使う
   $("chipmine").onclick=()=>{ FILTER.assignee=FILTER.assignee===u.id?null:u.id; renderBoard(u); };
   $("chipmineasked").onclick=()=>{ FILTER.creator=FILTER.creator===u.id?null:u.id; renderBoard(u); };
+  $("assignmine").onchange=e=>{ FILTER.assignee=e.target.checked?u.id:null; renderBoard(u); };
   document.querySelectorAll("[data-listsort]").forEach(th=>th.onclick=()=>{
     const k=th.dataset.listsort;
     if(LIST_SORT.col===k) LIST_SORT.dir=LIST_SORT.dir==="asc"?"desc":"asc"; else LIST_SORT={col:k,dir:"asc"};
