@@ -6079,7 +6079,12 @@ async function payrollLoad(){
     PAYROLL_STATE.subAccountNamesAll=[...subNamesAll];
   }
   if(!PAYROLL_STATE.stores){
-    const r=await authed("/rest/v1/stores?select=id,name&order=name");
+    // 2026-09-09追加：ユーザー要望「AI判定の事業所名と会計の部門名が一致しない店舗を登録して
+    // おけば、次回から同じ店舗と認識して反映されるようにしてほしい」に対応。設定タブ
+    // 「法人・店舗・部門マッピング」で既に用意されていたstores.mf_department_name（店舗↔MF部門名の
+    // 手動紐付け。従来は他の用途向けで、給与仕訳のAI事業所名マッチングでは未使用だった）を
+    // 取得し、payrollMatchDeptByStoreName()から使えるようにする
+    const r=await authed("/rest/v1/stores?select=id,name,mf_department_name&order=name");
     PAYROLL_STATE.stores=(r.ok&&Array.isArray(r.body))?r.body:[];
   }
   // 給与明細PDF（担当Bが用意したStorageバケット payroll-pdfs・{user_id}/{year_month}[_n].pdf規約。
@@ -6312,6 +6317,17 @@ function payrollMatchDeptByStoreName(storeName){
   const n=norm(storeName);
   if(!n) return null;
   const store=payrollMatchStoreRecord(storeName);
+  // 2026-09-09追加：ユーザー要望「AI判定の事業所名と会計の部門名が一致しない場合、その店舗を
+  // 登録しておけば次回から同じ店舗と認識して反映されるようにしてほしい」に対応。
+  // 例: PDFの事業所名「黒霧屋　新横浜」に対し、MF部門名は「06新横浜黒霧屋」（語順が逆）で、
+  // 単純な部分一致では引っかからなかった。設定タブ「法人・店舗・部門マッピング」で店舗ごとに
+  // 手動登録できるstores.mf_department_name（従来は他用途向けで、ここでは未参照だった）を
+  // 最優先で見る。ここで見つかれば、語順が違う・略称が違う等どんな表記ゆれでも確実に一致する
+  if(store&&store.mf_department_name){
+    const mn=norm(store.mf_department_name);
+    const dept=(PAYROLL_STATE.departments||[]).find(d=>norm(d.name)===mn);
+    if(dept) return dept;
+  }
   if(store){
     const sn=norm(store.name);
     const dept=(PAYROLL_STATE.departments||[]).find(d=>norm(d.name)===sn)
