@@ -446,7 +446,10 @@ window.addEventListener("popstate",e=>{
 let TASKS=[];             // ボード表示範囲のタスク（工程埋め込み）
 let SEARCHQ="";
 let SEARCH_RESULTS=null;  // 検索中はこちらを表示
-let FILTER={corp:null,freq:null,assignee:null,creator:null,signal:null,type:null};
+// 2026-09-09: FILTER.assignee=「工程のどれかに自分が入っているタスク」（先の工程だけ
+// 自分が担当のものも含む）。それとは別に、FILTER.currentOnly=「“いま”動いている工程が
+// 自分の担当のタスクだけ」という、ユーザーから明確に区別を求められた絞り込み
+let FILTER={corp:null,freq:null,assignee:null,creator:null,signal:null,type:null,currentOnly:false};
 let SORT_MODE=localStorage.getItem("hq_sort")||"due";  // due | created | stalled（このブラウザだけに効く。DB保存なし）
 const SORT_LABEL={due:"期限が近い順（既定）",created:"作成が新しい順",stalled:"停滞が長い順"};
 let BOARD_VIEW=localStorage.getItem("hq_boardview")||"kanban"; // kanban | list | calendar（B6・全面刷新Phase2でカレンダー追加・ブラウザだけに効く）
@@ -678,6 +681,13 @@ function applyFilters(list){
       if(!match) return false;
     }
     if(FILTER.creator && t.created_by!==FILTER.creator) return false;
+    // 2026-09-09: 「先の工程も含めて自分が入っているタスク」(FILTER.assignee)と、
+    // 「“いま”動いている工程が自分の担当のタスクだけ」(FILTER.currentOnly)は別物、と
+    // ユーザーから明確に指摘があったため独立した絞り込みにした
+    if(FILTER.currentOnly){
+      const cur=computeSignal(t).cur;
+      if(!cur || !isStepAssignee(cur,ME.id)) return false;
+    }
     if(FILTER.signal){
       const sig=computeSignal(t);
       if(FILTER.signal==="overdue" && !sig.overdue) return false;
@@ -892,6 +902,11 @@ function renderBoard(u){
            とのことなので、ここにも同じFILTER.assigneeを操作する目立つチェックボックスを追加した
            （どちらを操作しても状態は共有されるので、表示は常に一致する） -->
       <span><label class="chipcheck"><input type="checkbox" id="assignmine" ${FILTER.assignee===u.id?"checked":""}> 👤 自分の担当のみ</label></span>
+      <!-- 2026-09-09: 「これだと先の工程だけ自分が担当のタスクも出てくる。今の工程が
+           自分の担当のものだけに絞りたい」という指摘への対応。上の「自分の担当のみ」
+           （工程のどれかに自分が入っていればヒット）とは別に、"いま"動いている工程だけを
+           見る絞り込みを追加した（両方同時にONにもできる） -->
+      <span><label class="chipcheck"><input type="checkbox" id="assignmecurrent" ${FILTER.currentOnly?"checked":""}> ⏱ 今、自分の番のみ</label></span>
     </div>
   </div>
   <div class="chiprow" id="typechips" style="margin-top:14px">
@@ -951,6 +966,7 @@ function wireBoard(u){
   $("chipmine").onclick=()=>{ FILTER.assignee=FILTER.assignee===u.id?null:u.id; renderBoard(u); };
   $("chipmineasked").onclick=()=>{ FILTER.creator=FILTER.creator===u.id?null:u.id; renderBoard(u); };
   $("assignmine").onchange=e=>{ FILTER.assignee=e.target.checked?u.id:null; renderBoard(u); };
+  $("assignmecurrent").onchange=e=>{ FILTER.currentOnly=e.target.checked; renderBoard(u); };
   document.querySelectorAll("[data-listsort]").forEach(th=>th.onclick=()=>{
     const k=th.dataset.listsort;
     if(LIST_SORT.col===k) LIST_SORT.dir=LIST_SORT.dir==="asc"?"desc":"asc"; else LIST_SORT={col:k,dir:"asc"};
