@@ -143,6 +143,15 @@ Deno.serve(async (req) => {
 
     let inserted = 0, skipped = 0;
     const errors: string[] = [];
+    const staffNotFound: string[] = []; // 2026-09-09追加: スマレジ側に存在しないstaff_id（本部・マスター等の疑似アカウントに多い）。毎回失敗するとわかっているためerrorCountには含めない
+    // 2026-09-09追加: attendance_records（生ログ）は(user_id,work_date)にunique制約があり「1日1行」設計。
+    //   一方labor_cost_dailyはsmaregi_shift_result_id単位で複数行保持できる設計（split shift対応）。
+    //   従来はattendance_recordsもsmaregi_shift_result_id単位でupsertしていたため、1日に複数の
+    //   シフト結果（ランチ→ディナー等の分割シフト）がある人で(user_id,work_date)の一意制約違反が
+    //   多発していた（実行結果で306件反映／エラー43件のうち大半を占めていた）。
+    //   対策: (user_id,work_date)ごとに、その日の最も早い出勤〜最も遅い退勤にまとめてから
+    //   1日1行でupsertする（onConflictも(user_id,work_date)に変更）
+    const attendanceByDay = new Map<string, { user_id: string; store_id: string; work_date: string; clock_in: string | null; clock_out: string | null }>();
 
     for (const p of profs ?? []) {
       for (const { y, m } of months) {
@@ -155,18 +164,15 @@ Deno.serve(async (req) => {
             if (!storeId) { errors.push(`store未対応: smaregi_store_id=${r.storeIdSmaregi}`); continue; }
             if (!r.shiftResultId) { skipped++; continue; }
 
-            // attendance_records（生ログ）。source列は既存のcheck制約で'api'/'csv'のみ許可
-            // （2026-08-21に判明。'smaregi'は通らないため'api'を使う＝API経由取込という制約の意図と合致）
-            const { error: arErr } = await sb.from("attendance_records").upsert({
-              user_id: p.user_id,
-              store_id: storeId,
-              work_date: r.date,
-              clock_in: r.attendance,
-              clock_out: r.leaving,
-              source: "api",
-              smaregi_shift_result_id: r.shiftResultId,
-            }, { onConflict: "smaregi_shift_result_id" });
-            if (arErr) { errors.push(`attendance_records upsert失敗 (${r.shiftResultId}): ${arErr.message}`); }
+            // attendance_records用に日別でまとめる（実際のupsertはループの外で1日1回だけ行う）
+            const dayKey = `${p.user_id}|${r.date}`;
+            const cur = attendanceByDay.get(dayKey);
+            if (!cur) {
+              attendanceByDay.set(dayKey, { user_id: p.user_id, store_id: storeId, work_date: r.date, clock_in: r.attendance, clock_out: r.leaving });
+            } else {
+              if (r.attendance && (!cur.clock_in || r.attendance < cur.clock_in)) cur.clock_in = r.attendance;
+              if (r.leaving && (!cur.clock_out || r.leaving > cur.clock_out)) cur.clock_out = r.leaving;
+            }
 
             // labor_cost_daily（集計・見積もり。computed_costの自前計算は次フェーズ）
             const { error: lcErr } = await sb.from("labor_cost_daily").upsert({
@@ -189,9 +195,31 @@ Deno.serve(async (req) => {
             inserted++;
           }
         } catch (e) {
-          errors.push(`staff ${p.smaregi_staff_id} ${y}-${m}: ${String(e)}`);
+          // 2026-09-09追加: スマレジ側にそもそも存在しないstaff_id（400 Bad Request「所属事業所が存在しません。ID: xxx」）は、
+          //   何度実行しても必ず失敗する既知のパターンのため、errorsとは別集計にして毎回のノイズを減らす。
+          // 注: スマレジのエラー文言(日本語)はres.text()の生JSON中で\uXXXXエスケープされたまま渡ってくるため、
+          //   日本語文字列そのものでは一致判定できない。"Bad Request"・"ID:"はASCIIのまま含まれるためこちらで判定する
+          const msg = String(e);
+          if (msg.includes("400") && msg.includes("Bad Request") && msg.includes("ID:")) {
+            staffNotFound.push(p.smaregi_staff_id);
+          } else {
+            errors.push(`staff ${p.smaregi_staff_id} ${y}-${m}: ${msg}`);
+          }
         }
       }
+    }
+
+    // attendance_records（生ログ）は1日1行にまとめてから書き込む
+    for (const rec of attendanceByDay.values()) {
+      const { error: arErr } = await sb.from("attendance_records").upsert({
+        user_id: rec.user_id,
+        store_id: rec.store_id,
+        work_date: rec.work_date,
+        clock_in: rec.clock_in,
+        clock_out: rec.clock_out,
+        source: "api",
+      }, { onConflict: "user_id,work_date" });
+      if (arErr) { errors.push(`attendance_records upsert失敗 (${rec.user_id} ${rec.work_date}): ${arErr.message}`); }
     }
 
     return json({
@@ -201,6 +229,8 @@ Deno.serve(async (req) => {
       staffCount: (profs ?? []).length,
       inserted,
       skipped,
+      staffNotFoundCount: staffNotFound.length,
+      staffNotFound: [...new Set(staffNotFound)].slice(0, 10),
       errorCount: errors.length,
       errors: errors.slice(0, 20),
     });
