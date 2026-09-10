@@ -319,6 +319,12 @@ button,input,select,textarea{font:inherit}
 .pr-filter-row{display:grid;grid-template-columns:repeat(6,1fr);gap:8px}
 .pr-filter-row select,.pr-filter-row input{width:100%;border:1px solid var(--line);border-radius:8px;padding:8px;background:#fff;font-size:10px}
 .pr-quick-filters{display:flex;gap:7px;flex-wrap:wrap;margin-top:10px}
+.pr-store-stats{margin-top:12px;padding:12px;border:1px solid var(--line);border-radius:10px;background:var(--bg)}
+.pr-store-stats-title{font-size:11px;color:var(--muted);margin-bottom:8px}
+.pr-store-stats-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+.pr-store-stats-grid>div{display:flex;flex-direction:column;gap:2px}
+.pr-store-stats-grid small{font-size:10px;color:var(--muted)}
+.pr-store-stats-grid b{font-size:15px}
 .pr-chip{border:1px solid var(--line);background:#fff;border-radius:999px;padding:7px 10px;font-size:10px}
 .pr-chip.active{background:var(--ink);color:#fff;border-color:var(--ink)}
 .pr-chip.attn{border-color:var(--accent);color:var(--accent)}
@@ -6114,7 +6120,9 @@ async function payrollLoad(){
     authed(`/rest/v1/payroll_journal_assignments?select=*`),
     authed(`/rest/v1/mf_journal_templates?tenant_id=eq.default&select=id,label,branches&order=label`),
     mfCall("list_departments",{tenant_id:"default"}),
-    authed(`/rest/v1/sf_payroll_allocations?period_key=like.${ym}*&select=user_id,store_id,kind`),
+    // 2026-09-10追加：amountも取得する（店舗別の給料・交通費集計に使う。従来は店舗の特定にしか
+    // 使っておらず、複数店舗に按分されている人の「その店舗ぶんの金額」が取れていなかった）
+    authed(`/rest/v1/sf_payroll_allocations?period_key=like.${ym}*&select=user_id,store_id,kind,amount`),
     authed(`/rest/v1/payroll_bank_accounts?select=*`),
     // nippo「給与・インセンティブ配分」画面が使っているsf_payroll_hidden（この月は対象外にした人）を
     // こちらでも参照する（2026-09-02・担当Bからの依頼②。表側の実体は共有のためテーブル新設不要）
@@ -6632,12 +6640,21 @@ function payrollBankFor(userId){ return (PAYROLL_STATE.bankAccounts||[]).find(b=
 // 一覧の並び替え・絞り込み（2026-09-01: ユーザー要望「振込済みが1番下に行くように・絞れるように」）
 // 2026-09-02: この月は対象外にした人（sf_payroll_hidden・担当Bからの依頼②）は一覧から常に除外し、
 // 検索キーワード（氏名の部分一致・依頼③）も同時にここで反映する
+// 2026-09-10新設：ユーザー要望「店舗毎に絞り込みできるようにしてほしい」に対応。
+// sf_payroll_allocations（1人が複数店舗ぶんの給料を按分されているとき、店舗ごとの金額を
+// 持つテーブル。kind=base/commute/incentive/bonus）から、指定した店舗に金額>0の按分が
+// 1件でもある人を「その店舗の対象者」とみなす
+function payrollUserHasStoreAlloc(userId,storeId){
+  if(!storeId) return true;
+  return (PAYROLL_STATE.allocations||[]).some(a=>a.user_id===userId&&a.store_id===storeId&&(Number(a.amount)||0)>0);
+}
 function payrollSortedRows(){
   let rows=[...(PAYROLL_STATE.rows||[])];
   const hidden=PAYROLL_STATE.hiddenUserIds||new Set();
   rows=rows.filter(r=>!hidden.has(r.user_id));
   const q=(PAYROLL_STATE.searchQuery||"").trim();
   if(q) rows=rows.filter(r=>((r.user&&r.user.name)||"").includes(q));
+  if(PAYROLL_STATE.storeFilter) rows=rows.filter(r=>payrollUserHasStoreAlloc(r.user_id,PAYROLL_STATE.storeFilter));
   if(PAYROLL_STATE.hidePaid){
     rows=rows.filter(r=>{ const rec=payrollRecordFor(r.user_id); return !(rec&&rec.paid_at); });
   }
@@ -6725,18 +6742,53 @@ function payrollAlertCounts(rows){
   }).length;
   return {bankMissing,patternMissing};
 }
+// 2026-09-10修正：ユーザー報告「振込対象の人数、金額だけ出して欲しい（現金支払を除く）」に対応。
+// 従来は「仕訳登録済み・振込待ち」「振込済」の集計が現金支払の人も無条件に含んでおり、
+// サブラベル「CSV出力の対象」（＝銀行振込CSVの対象）と矛盾していた（現金手渡し完了時も
+// payroll_journal_records.paid_atが更新されるため、振込済のカウントにも現金の人が混ざっていた）。
+// prep/registered/paidは銀行振込対象（現金以外）だけに絞り、total/cashは従来どおり全員基準のまま残す
 function payrollKpiCounts(rows){
-  const registered=rows.filter(r=>payrollRecordFor(r.user_id));
+  const isCash=r=>{const b=payrollBankFor(r.user_id);return b&&b.payment_method==="cash";};
+  const bankRows=rows.filter(r=>!isCash(r));
+  const registered=bankRows.filter(r=>payrollRecordFor(r.user_id));
   const paid=registered.filter(r=>{const rec=payrollRecordFor(r.user_id);return rec&&rec.paid_at;});
-  const cash=rows.filter(r=>{const b=payrollBankFor(r.user_id);return b&&b.payment_method==="cash";});
+  const cash=rows.filter(isCash);
   const sum=list=>list.reduce((s,r)=>s+(Number(r.net_pay)||0),0);
   return {
     total:{n:rows.length,amt:sum(rows)},
-    prep:{n:rows.length-registered.length,amt:sum(rows.filter(r=>!payrollRecordFor(r.user_id)))},
+    bankTotal:{n:bankRows.length,amt:sum(bankRows)},
+    prep:{n:bankRows.length-registered.length,amt:sum(bankRows.filter(r=>!payrollRecordFor(r.user_id)))},
     registered:{n:registered.length-paid.length,amt:sum(registered.filter(r=>{const rec=payrollRecordFor(r.user_id);return!rec.paid_at;}))},
     paid:{n:paid.length,amt:sum(paid)},
     cash:{n:cash.length,amt:sum(cash)},
   };
+}
+// 2026-09-10新設：ユーザー要望「店舗で絞り込んだら、その結果に人数・給料合計・交通費・振込額を
+// 出してほしい。1人で複数店舗の給料が発生してる方はその店舗の分を計算に入れる（会計仕訳で
+// 入れてる金額）」に対応。sf_payroll_allocations（店舗ごとの按分金額。kind=base/incentive/bonus
+// は「給料」・commuteは「交通費」として合算）から、この店舗ぶんの金額だけを集計する
+// （row.net_pay等の「本人の全体の金額」は使わない＝複数店舗按分の人はその店舗の取り分だけになる）。
+// 振込額は現金支払の人を除いた合計（現金の人はその店舗の給料・交通費があっても振込は発生しないため）
+function payrollStoreStats(storeId){
+  if(!storeId) return null;
+  const allocs=(PAYROLL_STATE.allocations||[]).filter(a=>a.store_id===storeId);
+  const byUser=new Map();
+  allocs.forEach(a=>{
+    const amt=Number(a.amount)||0;
+    if(amt<=0) return;
+    if(!byUser.has(a.user_id)) byUser.set(a.user_id,{salary:0,commute:0});
+    const u=byUser.get(a.user_id);
+    if(a.kind==="commute") u.commute+=amt; else u.salary+=amt; // base/incentive/bonus
+  });
+  let headcount=0, salaryTotal=0, commuteTotal=0, transferTotal=0;
+  byUser.forEach((v,userId)=>{
+    headcount++;
+    salaryTotal+=v.salary;
+    commuteTotal+=v.commute;
+    const b=payrollBankFor(userId);
+    if(!(b&&b.payment_method==="cash")) transferTotal+=(v.salary+v.commute);
+  });
+  return {headcount,salaryTotal,commuteTotal,transferTotal};
 }
 function payrollStatusPill(r){
   const rec=payrollRecordFor(r.user_id), asg=payrollAssignmentFor(r.user_id), draft=payrollDraftFor(r.user_id);
@@ -6756,10 +6808,14 @@ function payrollMatchesQuick(r,q){
   const rec=payrollRecordFor(r.user_id), b=payrollBankFor(r.user_id);
   if(q==="all") return true;
   if(q==="attention") return !b || !(payrollAssignmentFor(r.user_id)&&payrollAssignmentFor(r.user_id).template_id) && !rec;
-  if(q==="prep-wait") return !rec;
-  if(q==="registered") return rec&&!rec.paid_at;
-  if(q==="paid") return rec&&rec.paid_at;
-  if(q==="cash") return b&&b.payment_method==="cash";
+  // 2026-09-10修正：KPIカードの集計（payrollKpiCounts）を銀行振込対象（現金以外）だけに絞った
+  // のに合わせ、カードをクリックしたときの絞り込みも同じ基準にする（現金支払の人は「振込データ
+  // 作成待ち」等のチップをクリックしたときに混ざって出てこないように）
+  const isCash=b&&b.payment_method==="cash";
+  if(q==="prep-wait") return !rec&&!isCash;
+  if(q==="registered") return rec&&!rec.paid_at&&!isCash;
+  if(q==="paid") return rec&&rec.paid_at&&!isCash;
+  if(q==="cash") return isCash;
   return true;
 }
 function payrollRender(){
@@ -6807,23 +6863,27 @@ function payrollRender(){
         <div class="pr-progress-flow">
           <div class="pr-pstep done"><small>STEP 1</small><b>給与確定</b><div class="count">${allRows.length} / ${allRows.length}</div><div class="bar"><span style="width:100%"></span></div></div>
           <div class="pr-pstep ${alerts.bankMissing?"warn":"done"}"><small>STEP 2</small><b>口座確認</b><div class="count">${allRows.length-alerts.bankMissing} / ${allRows.length}</div><div class="bar"><span style="width:${allRows.length?Math.round((allRows.length-alerts.bankMissing)/allRows.length*100):0}%"></span></div></div>
-          <div class="pr-pstep current"><small>STEP 3</small><b>振込データ作成</b><div class="count">${kpi.registered.n+kpi.paid.n} / ${allRows.length}</div><div class="bar"><span style="width:${allRows.length?Math.round((kpi.registered.n+kpi.paid.n)/allRows.length*100):0}%"></span></div></div>
-          <div class="pr-pstep current"><small>STEP 4</small><b>振込</b><div class="count">${kpi.paid.n} / ${allRows.length}</div><div class="bar"><span style="width:${allRows.length?Math.round(kpi.paid.n/allRows.length*100):0}%"></span></div></div>
-          <div class="pr-pstep"><small>STEP 5</small><b>支払確認</b><div class="count">${kpi.paid.n} / ${allRows.length}</div><div class="bar"><span style="width:${allRows.length?Math.round(kpi.paid.n/allRows.length*100):0}%"></span></div></div>
+          <div class="pr-pstep current"><small>STEP 3</small><b>振込データ作成</b><div class="count">${kpi.registered.n+kpi.paid.n} / ${kpi.bankTotal.n}</div><div class="bar"><span style="width:${kpi.bankTotal.n?Math.round((kpi.registered.n+kpi.paid.n)/kpi.bankTotal.n*100):0}%"></span></div></div>
+          <div class="pr-pstep current"><small>STEP 4</small><b>振込</b><div class="count">${kpi.paid.n} / ${kpi.bankTotal.n}</div><div class="bar"><span style="width:${kpi.bankTotal.n?Math.round(kpi.paid.n/kpi.bankTotal.n*100):0}%"></span></div></div>
+          <div class="pr-pstep"><small>STEP 5</small><b>支払確認</b><div class="count">${kpi.paid.n} / ${kpi.bankTotal.n}</div><div class="bar"><span style="width:${kpi.bankTotal.n?Math.round(kpi.paid.n/kpi.bankTotal.n*100):0}%"></span></div></div>
         </div>
       </div>
 
       <div class="pr-kpis">
         <div class="card pr-kpi total" data-pr-quick="all"><small>振込対象</small><b>${kpi.total.n}名</b><div class="amount">${yen(kpi.total.amt)}</div><div class="sub">現金支払を含む全対象</div></div>
-        <div class="card pr-kpi prep" data-pr-quick="prep-wait"><small>振込データ作成待ち</small><b>${kpi.prep.n}名</b><div class="amount">${yen(kpi.prep.amt)}</div><div class="sub">仕訳未登録</div></div>
-        <div class="card pr-kpi csv" data-pr-quick="registered"><small>仕訳登録済み・振込待ち</small><b>${kpi.registered.n}名</b><div class="amount">${yen(kpi.registered.amt)}</div><div class="sub">CSV出力の対象</div></div>
-        <div class="card pr-kpi paid" data-pr-quick="paid"><small>振込済</small><b>${kpi.paid.n}名</b><div class="amount">${yen(kpi.paid.amt)}</div><div class="sub">振込処理を実行済</div></div>
+        <div class="card pr-kpi prep" data-pr-quick="prep-wait"><small>振込データ作成待ち</small><b>${kpi.prep.n}名</b><div class="amount">${yen(kpi.prep.amt)}</div><div class="sub">仕訳未登録（現金支払を除く）</div></div>
+        <div class="card pr-kpi csv" data-pr-quick="registered"><small>仕訳登録済み・振込待ち</small><b>${kpi.registered.n}名</b><div class="amount">${yen(kpi.registered.amt)}</div><div class="sub">CSV出力の対象（現金支払を除く）</div></div>
+        <div class="card pr-kpi paid" data-pr-quick="paid"><small>振込済</small><b>${kpi.paid.n}名</b><div class="amount">${yen(kpi.paid.amt)}</div><div class="sub">振込処理を実行済（現金支払を除く）</div></div>
         <div class="card pr-kpi cash" data-pr-quick="cash"><small>現金支払</small><b>${kpi.cash.n}名</b><div class="amount">${yen(kpi.cash.amt)}</div><div class="sub">口座不要</div></div>
       </div>
 
       <div class="card pr-filters">
         <div class="pr-filter-row">
           <input id="payroll-search" placeholder="🔍 氏名で検索" value="${esc(PAYROLL_STATE.searchQuery||"")}">
+          <select id="payroll-store-filter">
+            <option value="">店舗で絞り込み（すべて）</option>
+            ${(PAYROLL_STATE.stores||[]).map(s=>`<option value="${esc(s.id)}" ${PAYROLL_STATE.storeFilter===s.id?"selected":""}>${esc(s.name)}</option>`).join("")}
+          </select>
           <select id="payroll-sort">
             <option value="pendingFirst" ${PAYROLL_STATE.sortMode==="pendingFirst"?"selected":""}>振込完了を下へ</option>
             <option value="default" ${PAYROLL_STATE.sortMode==="default"?"selected":""}>通常（一覧順）</option>
@@ -6837,6 +6897,20 @@ function payrollRender(){
           <button class="pr-chip ${PAYROLL_STATE.quickFilter==="paid"?"active":""}" data-pr-quick="paid">振込済</button>
           <button class="pr-chip ${PAYROLL_STATE.quickFilter==="cash"?"active":""}" data-pr-quick="cash">現金支払</button>
         </div>
+        ${(()=>{
+          if(!PAYROLL_STATE.storeFilter) return "";
+          const store=(PAYROLL_STATE.stores||[]).find(s=>s.id===PAYROLL_STATE.storeFilter);
+          const st=payrollStoreStats(PAYROLL_STATE.storeFilter);
+          return `<div class="pr-store-stats">
+            <div class="pr-store-stats-title">🏪 ${esc(store?store.name:"")}のこの月ぶん（複数店舗按分の人はこの店舗の取り分だけを集計）</div>
+            <div class="pr-store-stats-grid">
+              <div><small>対象人数</small><b>${st.headcount}名</b></div>
+              <div><small>給料合計</small><b>${yen(st.salaryTotal)}</b></div>
+              <div><small>交通費</small><b>${yen(st.commuteTotal)}</b></div>
+              <div><small>振込額（現金支払を除く）</small><b>${yen(st.transferTotal)}</b></div>
+            </div>
+          </div>`;
+        })()}
       </div>
 
       <div class="card" style="padding:16px;margin-bottom:14px">
@@ -6884,6 +6958,7 @@ function payrollRender(){
     await payrollLoad(); payrollRender(); updateMailSummaryBar();
   };
   $("payroll-sort").onchange=()=>{ PAYROLL_STATE.sortMode=$("payroll-sort").value; payrollRender(); };
+  $("payroll-store-filter").onchange=()=>{ PAYROLL_STATE.storeFilter=$("payroll-store-filter").value; payrollRender(); };
   document.querySelectorAll("[data-pr-quick]").forEach(el=>el.onclick=()=>{ PAYROLL_STATE.quickFilter=el.dataset.prQuick; payrollRender(); });
   if($("payroll-reset-filter")) $("payroll-reset-filter").onclick=()=>{ PAYROLL_STATE.quickFilter="all"; PAYROLL_STATE.searchQuery=""; payrollRender(); };
   // 2026-09-02: 検索（氏名の部分一致）。入力のたびに全部を作り直すとIME入力が壊れるため
