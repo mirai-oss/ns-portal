@@ -6768,7 +6768,10 @@ function payrollKpiCounts(rows){
 // 入れてる金額）」に対応。sf_payroll_allocations（店舗ごとの按分金額。kind=base/incentive/bonus
 // は「給料」・commuteは「交通費」として合算）から、この店舗ぶんの金額だけを集計する
 // （row.net_pay等の「本人の全体の金額」は使わない＝複数店舗按分の人はその店舗の取り分だけになる）。
-// 振込額は現金支払の人を除いた合計（現金の人はその店舗の給料・交通費があっても振込は発生しないため）
+// 2026-09-10修正：当初は合計から現金支払を除いていたが、ユーザーから「店舗別の給料が知りたい
+// だけなので、現金支払いも含む、でお願いします」と訂正指示あり。①のKPI（振込対象の集計）は
+// 引き続き現金を除くが、②の店舗別集計は支払方法を問わず店舗の総支払額を見たいという趣旨のため、
+// ここでは現金支払も含めて合計する（paymentTotalに改称）
 function payrollStoreStats(storeId){
   if(!storeId) return null;
   const allocs=(PAYROLL_STATE.allocations||[]).filter(a=>a.store_id===storeId);
@@ -6780,15 +6783,14 @@ function payrollStoreStats(storeId){
     const u=byUser.get(a.user_id);
     if(a.kind==="commute") u.commute+=amt; else u.salary+=amt; // base/incentive/bonus
   });
-  let headcount=0, salaryTotal=0, commuteTotal=0, transferTotal=0;
-  byUser.forEach((v,userId)=>{
+  let headcount=0, salaryTotal=0, commuteTotal=0, paymentTotal=0;
+  byUser.forEach(v=>{
     headcount++;
     salaryTotal+=v.salary;
     commuteTotal+=v.commute;
-    const b=payrollBankFor(userId);
-    if(!(b&&b.payment_method==="cash")) transferTotal+=(v.salary+v.commute);
+    paymentTotal+=(v.salary+v.commute);
   });
-  return {headcount,salaryTotal,commuteTotal,transferTotal};
+  return {headcount,salaryTotal,commuteTotal,paymentTotal};
 }
 function payrollStatusPill(r){
   const rec=payrollRecordFor(r.user_id), asg=payrollAssignmentFor(r.user_id), draft=payrollDraftFor(r.user_id);
@@ -6907,7 +6909,7 @@ function payrollRender(){
               <div><small>対象人数</small><b>${st.headcount}名</b></div>
               <div><small>給料合計</small><b>${yen(st.salaryTotal)}</b></div>
               <div><small>交通費</small><b>${yen(st.commuteTotal)}</b></div>
-              <div><small>振込額（現金支払を除く）</small><b>${yen(st.transferTotal)}</b></div>
+              <div><small>支払合計（給料+交通費・現金支払を含む）</small><b>${yen(st.paymentTotal)}</b></div>
             </div>
           </div>`;
         })()}
