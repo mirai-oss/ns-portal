@@ -137,6 +137,20 @@ Deno.serve(async (req) => {
       const existingByKey: Record<string, any> = {};
       (existing ?? []).forEach((r: any) => { existingByKey[`${r.user_id}|${r.work_date}`] = r; });
 
+      // 2026-09-10追加: sf_shiftsは(user_id,work_date)がDB全体で一意（1人1日1件。店舗をまたいでも1件）。
+      //   掛け持ち勤務の人（本部所属で他店舗もヘルプする等）は、この店舗・この期間には行が無くても
+      //   「別の店舗」に既にその日の行を持っていることがあり、それに気づかず新規insertしようとすると
+      //   DB全体の一意制約違反でスマレジ同期処理全体が失敗していた（ユーザー報告の実エラー原因）。
+      //   対象スタッフ・対象日範囲でstore_idを問わず既存行を取得し、他店舗に既にある日は
+      //   上書き・追加のどちらもせずスキップする（他店舗のシフトを無断で書き換えないため）
+      const rangeStart = `${range.year}-${String(range.month).padStart(2, "0")}-${String(range.fromDay).padStart(2, "0")}`;
+      const rangeEnd = `${range.year}-${String(range.month).padStart(2, "0")}-${String(range.toDay).padStart(2, "0")}`;
+      const { data: existingElsewhere } = await sb.from("sf_shifts")
+        .select("user_id,work_date,store_id")
+        .in("user_id", userIds).gte("work_date", rangeStart).lte("work_date", rangeEnd).neq("store_id", storeId);
+      const otherStoreKeys = new Set((existingElsewhere ?? []).map((r: any) => `${r.user_id}|${r.work_date}`));
+      const conflicts: string[] = [];
+
       let token: string;
       try { token = await getToken(); } catch (e) { return json({ ok: false, error: "スマレジ認証に失敗しました: " + String(e) }, 502); }
 
@@ -182,6 +196,11 @@ Deno.serve(async (req) => {
         const sm = smaregiByKey[key];
         const cur = existingByKey[key];
         const [userId, workDate] = key.split("|");
+        if (!cur && otherStoreKeys.has(key)) {
+          // 既に他店舗にこの人・この日の行があるため、書き換えずスキップ（掛け持ち勤務の衝突）
+          conflicts.push(`${userId} ${workDate}`);
+          continue;
+        }
         if (!cur) {
           toInsert.push({
             user_id: userId, store_id: storeId, work_date: workDate, period_key: periodKey,
@@ -208,11 +227,17 @@ Deno.serve(async (req) => {
         }
       }
 
-      if (toInsert.length) {
-        const { error: insErr } = await sb.from("sf_shifts").insert(toInsert);
-        if (insErr) return json({ ok: false, error: insErr.message }, 500);
+      // 2026-09-10修正: 一括insertが1件でも一意制約違反になると全体がエラーになり、この時点で
+      //   既に反映済みの更新・削除の結果まで呼び出し元に返せなくなっていた。1件ずつinsertし直し、
+      //   個別の失敗だけconflictsに積む（上のotherStoreKeysガードで大半は防げるが、他要因の
+      //   一意制約違反が起きた場合の保険として残す）
+      let added = 0;
+      for (const row of toInsert) {
+        const { error: insErr } = await sb.from("sf_shifts").insert(row);
+        if (insErr) { conflicts.push(`${row.user_id} ${row.work_date} (${insErr.message})`); continue; }
+        added++;
       }
-      return json({ ok: true, added: toInsert.length, updated, removed });
+      return json({ ok: true, added, updated, removed, conflictCount: conflicts.length, conflicts: conflicts.slice(0, 20) });
     }
 
     // ---- 公開時の同期（既定動作。旧仕様と互換） ----
