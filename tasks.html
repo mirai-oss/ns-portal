@@ -13,6 +13,9 @@
   /* 2026-09-08: 「期限超過（赤）」と「3日以上停止」が同じ赤色で混ざって見分けがつかない
      という実機フィードバックへの対応。停止だけは別の落ち着いた色にする（警告色ではない） */
   --stopped:#5b7290;
+  /* 2026-09-10: 「最重要（急ぎ）」フラグ専用の色。期限超過(--stall)より一段目立たせるため
+     濃い紫を使う（他のどの信号色とも被らない色にして、一目で最優先と分かるようにする） */
+  --urgent:#7b2d8e;
 }
 @media(prefers-color-scheme:dark){
   :root{--bg:#1d1b18; --card:#282521; --ink:#f0ece5; --muted:#a29a8c; --line:#3a362f;}
@@ -60,6 +63,8 @@ textarea{resize:vertical}
    --stoppedへ変更（担当・期限未設定は緊急アラートではないのでさらに落ち着いた--mutedにした） */
 .sig.stall .n{color:var(--stopped)}
 .sig.unassigned .n{color:var(--muted)}
+.sig.urgent .n{color:var(--urgent)}
+.sig.urgent{border-color:var(--urgent);border-width:2px}
 .sig .s{font-size:12px;color:var(--muted);margin-top:4px}
 
 /* 検索・絞り込み */
@@ -116,6 +121,10 @@ textarea{resize:vertical}
 .tcard.overdue{border-color:var(--stall);border-width:2px}
 .tcard.stall{border-color:var(--stopped);border-width:2px}
 .tcard.warn{border-color:var(--warn);border-width:2px}
+/* 2026-09-10: 「最重要（急ぎ）」は期限超過より優先度を上にする（枠線・上部の帯とも）。
+   カード全体が最重要だと一目で分かるよう、上端に太い帯を追加する */
+.tcard.urgent{border-color:var(--urgent);border-width:2px;border-top-width:6px}
+.tcard .urgent-badge{display:inline-block;font-size:12px;font-weight:700;color:#fff;background:var(--urgent);padding:2px 10px;border-radius:99px;margin-bottom:6px}
 .tcard .badges{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px}
 .tag{display:inline-block;font-size:10px;padding:2px 8px;border-radius:99px;border:1px solid var(--line);color:var(--muted)}
 .tag.freq{color:var(--accent);border-color:var(--accent)}
@@ -147,6 +156,7 @@ textarea{resize:vertical}
 .cal-task.overdue{background:var(--stall);color:#fff}
 .cal-task.warn{background:var(--warn);color:#fff}
 .cal-task.done{background:var(--ok);color:#fff}
+.cal-task.urgent{background:var(--urgent);color:#fff;font-weight:700}
 .cal-more{font-size:10px;color:var(--muted)}
 @media(max-width:640px){
   .cal-day{min-height:60px;font-size:10px}
@@ -457,15 +467,20 @@ let LIST_SORT={col:"due",dir:"asc"}; // リスト表示の列ソート状態（�
 let CAL_MONTH=todayStr().slice(0,7); // カレンダー表示中の年月（YYYY-MM・保存はしない＝毎回今月から）
 function sortTasks(list){
   const arr=list.slice();
+  let cmp;
   if(SORT_MODE==="created"){
-    arr.sort((a,b)=>new Date(b.created_at)-new Date(a.created_at));
+    cmp=(a,b)=>new Date(b.created_at)-new Date(a.created_at);
   } else if(SORT_MODE==="stalled"){
-    arr.sort((a,b)=>computeSignal(b).stalledDays-computeSignal(a).stalledDays);
+    cmp=(a,b)=>computeSignal(b).stalledDays-computeSignal(a).stalledDays;
   } else {
     // 2026-08-31(E-5): 「期限が近い順」は全体期限ではなく、いま止まっている工程の期日で並べる
     const key=t=>{ const d=currentDueOf(t); return d.due_date?new Date(d.due_date+"T"+(d.due_time?d.due_time.slice(0,8):"23:59:59")).getTime():Infinity; };
-    arr.sort((a,b)=>key(a)-key(b));
+    cmp=(a,b)=>key(a)-key(b);
   }
+  // 2026-09-10: 「急ぎのタスクは絶対漏れないように、並び替え条件に関わらず1番上に出るように
+  // してほしい」という要望対応。最重要フラグを最優先の並び順にし、選択中の並び替えは
+  // 同じ最重要度どうしのタイブレークとして使う
+  arr.sort((a,b)=>(b.is_urgent?1:0)-(a.is_urgent?1:0) || cmp(a,b));
   return arr;
 }
 let CUR_TASK=null;        // 詳細表示中のタスク（工程・リンク・写真・履歴込み）
@@ -694,6 +709,7 @@ function applyFilters(list){
       if(FILTER.signal==="today" && !sig.dueToday) return false;
       if(FILTER.signal==="stall" && sig.stalledDays<3) return false;
       if(FILTER.signal==="unassigned" && !hasMissingAssignment(t)) return false;
+      if(FILTER.signal==="urgent" && !t.is_urgent) return false;
     }
     return true;
   });
@@ -708,13 +724,13 @@ function hasMissingAssignment(t){
 }
 function summaryCounts(){
   const base=TASKS.filter(t=>t.status!=="done");
-  let overdue=0,today=0,stall=0,unassigned=0;
+  let overdue=0,today=0,stall=0,unassigned=0,urgent=0;
   // 2026-09-08: 「3日以上停止」の集計は期限超過かどうかに関わらず、実際にstalledDaysが
   // 3以上かで数える（levelは枠の色の優先度だけなので、ここでlevelを見るとoverdue優先の
   // ときに漏れてしまい「3日以上停止」の件数として不正確になる）
-  base.forEach(t=>{ const s=computeSignal(t); if(s.overdue)overdue++; if(s.dueToday)today++; if(s.stalledDays>=3)stall++; if(hasMissingAssignment(t))unassigned++; });
+  base.forEach(t=>{ const s=computeSignal(t); if(s.overdue)overdue++; if(s.dueToday)today++; if(s.stalledDays>=3)stall++; if(hasMissingAssignment(t))unassigned++; if(t.is_urgent)urgent++; });
   const doneCount=TASKS.filter(t=>t.status==="done").length;
-  return {overdue,today,stall,unassigned,doneCount};
+  return {overdue,today,stall,unassigned,urgent,doneCount};
 }
 // 種別タブの赤バッジ用（現在のフィルタに関係なく、未完了の入社登録タスク数を出す＝KPIカードと同じ考え方）
 function onboardingOpenCount(){
@@ -722,10 +738,12 @@ function onboardingOpenCount(){
 }
 function taskCardHtml(t){
   const sig=computeSignal(t);
-  const cls=sig.level==="overdue"?"overdue":(sig.level==="stall"?"stall":(sig.level==="warn"?"warn":""));
+  // 2026-09-10: 「最重要（急ぎ）」は期限超過・停止より優先度を上にする（枠の色はこれが最優先）
+  const cls=t.is_urgent?"urgent":(sig.level==="overdue"?"overdue":(sig.level==="stall"?"stall":(sig.level==="warn"?"warn":"")));
   const steps=sortedSteps(t);
   const doneCount=steps.filter(s=>s.completed_at).length;
   return `<div class="tcard ${cls}" data-open="${t.id}">
+    ${t.is_urgent?`<div class="urgent-badge">🔥 最重要</div>`:""}
     <div class="badges"><span class="tag">${esc(t.corp)}</span><span class="tag freq">${t.freq!=="once"?"🔁 "+FREQ_LABEL[t.freq]:"単発"}</span>${dueBadgeHtml(sig)}</div>
     ${sig.stalledDays>=3?`<div class="stall-badge">⏸ ${sig.stalledDays}日停止</div>`:""}
     <div class="ti">${esc(t.title)}</div>
@@ -769,6 +787,8 @@ function listSortValue(t,col){
 }
 function listViewHtml(list){
   const sorted=list.slice().sort((a,b)=>{
+    // 2026-09-10: リスト表示でも最重要タスクは列の並び替えに関わらず先頭に出す
+    const u=(b.is_urgent?1:0)-(a.is_urgent?1:0); if(u) return u;
     const va=listSortValue(a,LIST_SORT.col), vb=listSortValue(b,LIST_SORT.col);
     const c=va<vb?-1:(va>vb?1:0);
     return LIST_SORT.dir==="asc"?c:-c;
@@ -778,8 +798,8 @@ function listViewHtml(list){
     <thead><tr>${LIST_COLS.map(c=>`<th data-listsort="${c.key}" style="cursor:pointer;white-space:nowrap">${c.label}${arrow(c.key)}</th>`).join("")}</tr></thead>
     <tbody>${sorted.map(t=>{
       const steps=sortedSteps(t), total=steps.length, done=steps.filter(s=>s.completed_at).length;
-      return `<tr data-open="${t.id}" style="cursor:pointer">
-        <td>${esc(t.title)}</td>
+      return `<tr data-open="${t.id}" style="cursor:pointer${t.is_urgent?`;background:color-mix(in srgb, var(--urgent) 8%, transparent)`:""}">
+        <td>${t.is_urgent?`<span class="urgent-badge" style="margin-right:6px">🔥</span>`:""}${esc(t.title)}</td>
         <td>${esc(t.corp)}</td>
         <td>${t.freq!=="once"?esc(FREQ_LABEL[t.freq]):"単発"}</td>
         <td>${STATUS_LABEL[t.status]}</td>
@@ -801,7 +821,9 @@ function calendarViewHtml(list){
   const todayS=todayStr();
   const byDate={};
   list.forEach(t=>{ const d=calendarDateOf(t); if(d) (byDate[d]=byDate[d]||[]).push(t); });
-  Object.values(byDate).forEach(arr=>arr.sort((a,b)=>(a.due_time||"")<(b.due_time||"")?-1:1));
+  // 2026-09-10: 「最重要」タスクは、日をまたいで4件を超えて「+N件」に埋もれて見えなくなる
+  // ことが絶対無いよう、各日ごとの並びでも先頭に来るようにする
+  Object.values(byDate).forEach(arr=>arr.sort((a,b)=>((b.is_urgent?1:0)-(a.is_urgent?1:0))||((a.due_time||"")<(b.due_time||"")?-1:1)));
   const cells=[];
   for(let i=0;i<startDow;i++) cells.push('<div class="cal-day empty"></div>');
   for(let d=1; d<=daysInMonth; d++){
@@ -811,8 +833,8 @@ function calendarViewHtml(list){
     cells.push(`<div class="cal-day${dateStr===todayS?" today":""}">
       <div class="cal-date">${d}${dateStr===todayS?" (今日)":""}</div>
       ${shown.map(t=>{
-        const cls=t.status==="done"?"done":(dateStr<todayS?"overdue":(dateStr===todayS?"warn":""));
-        return `<div class="cal-task ${cls}" data-open="${t.id}" title="${esc(t.title)}">${esc(t.title)}</div>`;
+        const cls=t.is_urgent?"urgent":(t.status==="done"?"done":(dateStr<todayS?"overdue":(dateStr===todayS?"warn":"")));
+        return `<div class="cal-task ${cls}" data-open="${t.id}" title="${esc(t.title)}">${t.is_urgent?"🔥 ":""}${esc(t.title)}</div>`;
       }).join("")}
       ${dayTasks.length>4?`<div class="cal-more">+${dayTasks.length-4}件</div>`:""}
     </div>`);
@@ -850,6 +872,7 @@ function renderBoard(u){
     </div>`).join(""):'<div class="meta">通知はありません</div>'}
   </div>
   <div class="sig-row">
+    <div class="sig urgent ${FILTER.signal==='urgent'?'active':''}" data-sig="urgent"><div class="l">🔥 最重要</div><div class="n">${cnt.urgent}</div><div class="s">絶対に見逃さない</div></div>
     <div class="sig overdue ${FILTER.signal==='overdue'?'active':''}" data-sig="overdue"><div class="l">期限超過</div><div class="n">${cnt.overdue}</div><div class="s">すぐ確認が必要</div></div>
     <div class="sig today ${FILTER.signal==='today'?'active':''}" data-sig="today"><div class="l">今日が期限</div><div class="n">${cnt.today}</div><div class="s">本日中に対応</div></div>
     <div class="sig stall ${FILTER.signal==='stall'?'active':''}" data-sig="stall"><div class="l">3日以上停止</div><div class="n">${cnt.stall}</div><div class="s">停滞タスク</div></div>
@@ -1096,11 +1119,18 @@ function renderDetail(u){
   <div class="hero">
     <div class="card pad">
       <div class="badges"><span class="tag">${esc(t.corp)}</span><span class="tag freq">${t.freq!=="once"?"🔁 "+FREQ_LABEL[t.freq]:"単発"}</span><span class="tag">${STATUS_LABEL[t.status]}</span>
+      ${t.is_urgent?`<span class="urgent-badge">🔥 最重要</span>`:""}
       ${sig.stalledDays>=3?`<span class="stall-badge">⏸ ${sig.stalledDays}日停止</span>`:""}</div>
       <div class="title">${esc(t.title)}</div>
       ${t.description?`<div class="desc">${richTextHtml(t.description)}</div>`:""}
       <div class="progress"><span style="width:${pct}%"></span></div>
       <div class="meta">工程 ${doneCount} / ${steps.length} 完了 ／ 対象日 ${fmtD(t.target_date)} ／ 期限 ${fmtDD(t.due_date,t.due_time)}${t.status==="done"?" ／ "+fmtDT(t.completed_at)+" 完了":""}</div>
+      <!-- 2026-09-10: 「急ぎのタスクを最重要としてボタンで押せるように・絶対漏れないように」
+           という要望対応。押せる人はcanManage・タスクの依頼者・いまの工程の担当者（＝実際に
+           緊急だと気づく可能性が高い人たち）に限定し、誰でも無制限に押せるようにはしていない -->
+      ${(canManage(u)||t.created_by===u.id||(sig.cur&&isStepAssignee(sig.cur,u.id)))?`<div style="margin-top:8px">
+        <button class="btn sm" id="toggleurgent" style="background:var(--urgent)">${t.is_urgent?"✅ 最重要を解除":"🔥 最重要にする"}</button>
+      </div>`:""}
       <div style="margin-top:8px">
         ${t.status==="done"?`<button class="linkbtn" id="undotask">↩️ 完了を取り消す</button>`:""}
         ${canFeature(u,"templates")?`<button class="linkbtn" id="totemplate">📋 テンプレートに登録</button>`:""}
@@ -1978,6 +2008,20 @@ function wireDetail(t,u){
     CUR_TASK=await fetchTaskDetail(t.id); syncTaskIntoBoardList(CUR_TASK); renderDetail(u);
   };
   if($("totemplate")) $("totemplate").onclick=()=>registerTaskAsTemplate(t,u);
+  if($("toggleurgent")) $("toggleurgent").onclick=async()=>{
+    const btn=$("toggleurgent"); const msg=$("taskactmsg"); msg.textContent="";
+    const willBeUrgent=!t.is_urgent;
+    btn.disabled=true;
+    const r=await authed("/rest/v1/rpc/hq_set_task_urgent",{method:"POST",body:JSON.stringify({p_task_id:t.id,p_urgent:willBeUrgent})});
+    if(!r.ok){ msg.textContent="変更できませんでした（権限を確認してください）"; btn.disabled=false; return; }
+    await logActivity(t.id,"comment",willBeUrgent?"🔥「最重要」に設定":"「最重要」を解除");
+    // 2026-09-10: 最重要に設定した瞬間だけ通知（解除時は特に知らせる必要が無いため送らない）
+    if(willBeUrgent){
+      const nr=await authed("/rest/v1/rpc/hq_notify_task_urgent",{method:"POST",body:JSON.stringify({p_task_id:t.id})});
+      if(nr.ok&&Array.isArray(nr.body)) await sendNotifications(nr.body);
+    }
+    CUR_TASK=await fetchTaskDetail(t.id); syncTaskIntoBoardList(CUR_TASK); renderDetail(u);
+  };
   if($("deltask")) $("deltask").onclick=async()=>{
     // 2026-08-31(E-4): 誤削除防止のため確認ダイアログ＋論理削除（deleted_at）に変更。
     // 一覧・検索・かんばん・過去タスクからは消えるが、DB上のデータ自体は残るため復旧可能
@@ -3538,7 +3582,7 @@ async function runAlertChecks(){
 /* ---------- 通知設定（チャンネル登録・ルール） ---------- */
 let NOTIFY_CHANNELS=[];
 let NOTIFY_RULES=[];
-const EVENT_LABEL={due_alert:"期限アラート（3日前・前日・当日・超過）",stalled:"⏸ 3日以上停止",step_complete:"工程完了のたび",issue_reported:"異常ありが付いたとき",mention:"@メンションされたとき"};
+const EVENT_LABEL={due_alert:"期限アラート（3日前・前日・当日・超過）",stalled:"⏸ 3日以上停止",step_complete:"工程完了のたび",issue_reported:"異常ありが付いたとき",mention:"@メンションされたとき",task_urgent:"🔥 最重要に設定されたとき"};
 const CHANNEL_ICON={lark_webhook:"💬",inapp:"🔔",chatwork:"🟢"};
 async function fetchNotifySettings(){
   const [c,r]=await Promise.all([
