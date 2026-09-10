@@ -357,8 +357,30 @@ Deno.serve(async (req: Request) => {
       const rawToken = (req.headers.get("Authorization") ?? "").replace(/^Bearer\s+/i, "");
       const { data: userData } = rawToken ? await uc.auth.getUser(rawToken) : { data: { user: null } } as any;
       const monthKey = yearMonth.slice(0, 7);
-      const results: { store: string; ok: boolean; error?: string }[] = [];
+      const results: { store: string; ok: boolean; error?: string; attachments?: number }[] = [];
       let anyOk = false;
+
+      // 2026-09-10追加：ユーザー要望「請求書のところから仕分け・登録したときの添付ファイルも
+      // 精算書に自動で添付されるようにしてほしい」に対応。従来はsd_apiAddExternalLineで明細
+      // （店舗・科目・金額）だけを登録しており、請求書の証憑ファイル自体は精算書側に一切渡って
+      // いなかった。ここで請求書の添付（invoice_attachments）を一度だけ読み込み、店舗ごとの
+      // 登録が成功するたびsd_apiUploadAttachment（新設・PL_SYNC_TOKEN認証のサーバー間API）で
+      // 精算書のDriveフォルダへアップロードする（mf-journal/index.tsのマネーフォワード証憑添付
+      // と同じchunk方式のbase64エンコードを使い回す）
+      const { data: atts } = await db.from("invoice_attachments")
+        .select("file_name, storage_path, mime_type, size_bytes").eq("invoice_id", invoiceId)
+        .order("created_at").limit(5);
+      const attachmentFiles: { file_name: string; mime_type: string | null; b64: string }[] = [];
+      for (const at of atts ?? []) {
+        if ((at.size_bytes ?? 0) > 15 * 1024 * 1024) continue; // 大きすぎるものはスキップ（413対策）
+        const { data: blob, error: dlErr } = await db.storage.from("invoice-files").download(at.storage_path);
+        if (dlErr || !blob) continue;
+        const bytes = new Uint8Array(await blob.arrayBuffer());
+        let binary = "";
+        const chunkSize = 0x8000;
+        for (let i = 0; i < bytes.length; i += chunkSize) binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+        attachmentFiles.push({ file_name: at.file_name || "attachment", mime_type: at.mime_type, b64: btoa(binary) });
+      }
 
       for (const a of allocations) {
         const s = storeMap.get(a.store_id);
@@ -399,7 +421,24 @@ Deno.serve(async (req: Request) => {
             seisan_line_key: sourceKey, sheet_synced_at: new Date().toISOString(), sheet_sync_error: null,
             pl_status: "振込確定待ち", pl_status_checked_at: new Date().toISOString(),
           }).eq("id", reflectionId);
-          results.push({ store: s.name, ok: true });
+
+          // 添付ファイルを精算書側へアップロード（2件目以降は費目名に②③…を付けて別ファイル扱いに
+          // する＝sd_apiUploadAttachmentは同じkindなら上書きする冪等設計のため、複数枚を別々に残すには
+          // kindを変える必要がある）。ここが失敗しても明細行の登録自体は成功しているので、行全体を
+          // 失敗扱いにはせず、件数だけresultsに記録する
+          let attachedCount = 0;
+          for (let fi = 0; fi < attachmentFiles.length; fi++) {
+            const f = attachmentFiles[fi];
+            const kind = fi === 0 ? itemName : `${itemName}${["②", "③", "④", "⑤"][fi - 1] ?? `(${fi + 1})`}`;
+            try {
+              const upRes = await seisanCall("sd_apiUploadAttachment", [tk, s.seisan_store_name, monthKey, {
+                kind, fileName: f.file_name, mimeType: f.mime_type || undefined, b64: f.b64,
+              }]);
+              if (upRes.ok) attachedCount++;
+            } catch { /* 添付アップロードの失敗は明細登録自体の成否には影響させない */ }
+          }
+
+          results.push({ store: s.name, ok: true, attachments: attachedCount });
           anyOk = true;
         } catch (e) {
           const msg = String((e as Error)?.message ?? e);
