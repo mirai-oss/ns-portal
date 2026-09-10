@@ -321,7 +321,7 @@ button,input,select,textarea{font:inherit}
 .pr-quick-filters{display:flex;gap:7px;flex-wrap:wrap;margin-top:10px}
 .pr-store-stats{margin-top:12px;padding:12px;border:1px solid var(--line);border-radius:10px;background:var(--bg)}
 .pr-store-stats-title{font-size:11px;color:var(--muted);margin-bottom:8px}
-.pr-store-stats-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+.pr-store-stats-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
 .pr-store-stats-grid>div{display:flex;flex-direction:column;gap:2px}
 .pr-store-stats-grid small{font-size:10px;color:var(--muted)}
 .pr-store-stats-grid b{font-size:15px}
@@ -6640,13 +6640,79 @@ function payrollBankFor(userId){ return (PAYROLL_STATE.bankAccounts||[]).find(b=
 // 一覧の並び替え・絞り込み（2026-09-01: ユーザー要望「振込済みが1番下に行くように・絞れるように」）
 // 2026-09-02: この月は対象外にした人（sf_payroll_hidden・担当Bからの依頼②）は一覧から常に除外し、
 // 検索キーワード（氏名の部分一致・依頼③）も同時にここで反映する
-// 2026-09-10新設：ユーザー要望「店舗毎に絞り込みできるようにしてほしい」に対応。
-// sf_payroll_allocations（1人が複数店舗ぶんの給料を按分されているとき、店舗ごとの金額を
-// 持つテーブル。kind=base/commute/incentive/bonus）から、指定した店舗に金額>0の按分が
-// 1件でもある人を「その店舗の対象者」とみなす
+// 2026-09-10新設→同日修正：ユーザー要望「店舗毎に絞り込みできるようにしてほしい」に対応。
+// 当初はsf_payroll_allocations（勤怠系の按分テーブル）から集計していたが、ユーザーから
+// 「全然違うよ」「振込額は店舗別で出すことは難しいかもしれないから、会計仕訳で店舗別に
+// 仕訳されてるはずだからそれをベースに見て計算すればいいのでは？」と指摘・訂正があった。
+// sf_payroll_allocationsは実際に会計へ登録した仕訳の金額とは別経路のデータで、値が食い違って
+// いたのが原因と判断。実際に登録済みの仕訳（mf_journal_id）を1件ずつ読み直し、部門（＝店舗）が
+// 付いている借方行の金額を集計する方式に作り直した（payrollEnsureJournalDeptCache参照）。
+// 部門名→店舗の突き合わせは、勘定科目・部門マッピング（stores.mf_department_name）を使う。
+// 「給料」か「交通費」かは、行の摘要（payrollComputeBranchesのbuildRemarkが「◯月　基本給　氏名」
+// 「◯月　交通費　氏名」のように組み立てている）に含まれる文言で判定する（所得税・振込金額等の
+// 部門を持たない行は自然に対象外になる）。仕訳登録がまだの人はここでは対象にならない
+// （集計の元になる会計仕訳自体がまだ無いため）。
+function payrollStoreByDeptName(deptName){
+  if(!deptName) return null;
+  const norm=s=>String(s||"").replace(/\s+/g,"");
+  const n=norm(deptName);
+  if(!n) return null;
+  const stores=(PAYROLL_STATE.stores||[]).filter(s=>s.mf_department_name);
+  return stores.find(s=>norm(s.mf_department_name)===n)
+    || stores.find(s=>n.includes(norm(s.mf_department_name))||norm(s.mf_department_name).includes(n))
+    || null;
+}
+// 対象月の登録済み仕訳（payroll_journal_records.mf_journal_id）を持つ全員ぶん、実際にマネー
+// フォワードへ問い合わせて部門別の金額を集計し、PAYROLL_STATE.journalDeptCacheへキャッシュする
+// （user_id -> Map(store_id -> {salary,commute})）。件数が多いと時間がかかるため、並列数を
+// 絞って呼び出し、対象月が変わったときだけ再取得する
+async function payrollEnsureJournalDeptCache(){
+  const ym=PAYROLL_STATE.yearMonth;
+  if(PAYROLL_STATE.journalDeptCacheYm===ym&&PAYROLL_STATE.journalDeptCache) return;
+  if(PAYROLL_STATE.journalDeptCacheLoading) return;
+  PAYROLL_STATE.journalDeptCacheLoading=true;
+  try{
+    const targets=(PAYROLL_STATE.rows||[]).map(r=>({userId:r.user_id,rec:payrollRecordFor(r.user_id)})).filter(t=>t.rec&&t.rec.mf_journal_id);
+    const cache=new Map();
+    let idx=0;
+    async function worker(){
+      while(idx<targets.length){
+        const my=targets[idx++];
+        try{
+          const r=await mfCall("get_journal",{tenant_id:my.rec.tenant_id||"default",journal_id:my.rec.mf_journal_id});
+          if(!r.ok||!Array.isArray(r.body.branches)) continue;
+          const byStore=new Map();
+          r.body.branches.forEach(b=>{
+            const d=b.debit;
+            if(!d||!d.department_name||!(Number(d.value)>0)) return;
+            const store=payrollStoreByDeptName(d.department_name);
+            if(!store) return;
+            const remark=String(b.remark||"");
+            let kind=null;
+            if(remark.includes("基本給")) kind="salary";
+            else if(remark.includes("交通費")) kind="commute";
+            if(!kind) return;
+            if(!byStore.has(store.id)) byStore.set(store.id,{salary:0,commute:0});
+            byStore.get(store.id)[kind]+=Number(d.value);
+          });
+          if(byStore.size) cache.set(my.userId,byStore);
+        }catch(e){ /* 1件失敗しても他は続ける */ }
+      }
+    }
+    await Promise.all(Array.from({length:Math.min(8,targets.length||1)},worker));
+    PAYROLL_STATE.journalDeptCache=cache;
+    PAYROLL_STATE.journalDeptCacheYm=ym;
+  }finally{
+    PAYROLL_STATE.journalDeptCacheLoading=false;
+  }
+}
 function payrollUserHasStoreAlloc(userId,storeId){
   if(!storeId) return true;
-  return (PAYROLL_STATE.allocations||[]).some(a=>a.user_id===userId&&a.store_id===storeId&&(Number(a.amount)||0)>0);
+  const cache=PAYROLL_STATE.journalDeptCache;
+  if(!cache) return false; // 集計中はまだ絞り込めない（読み込み完了後に再描画される）
+  const byStore=cache.get(userId);
+  const v=byStore&&byStore.get(storeId);
+  return !!(v&&(v.salary>0||v.commute>0));
 }
 function payrollSortedRows(){
   let rows=[...(PAYROLL_STATE.rows||[])];
@@ -6763,34 +6829,22 @@ function payrollKpiCounts(rows){
     cash:{n:cash.length,amt:sum(cash)},
   };
 }
-// 2026-09-10新設：ユーザー要望「店舗で絞り込んだら、その結果に人数・給料合計・交通費・振込額を
-// 出してほしい。1人で複数店舗の給料が発生してる方はその店舗の分を計算に入れる（会計仕訳で
-// 入れてる金額）」に対応。sf_payroll_allocations（店舗ごとの按分金額。kind=base/incentive/bonus
-// は「給料」・commuteは「交通費」として合算）から、この店舗ぶんの金額だけを集計する
-// （row.net_pay等の「本人の全体の金額」は使わない＝複数店舗按分の人はその店舗の取り分だけになる）。
-// 2026-09-10修正：当初は合計から現金支払を除いていたが、ユーザーから「店舗別の給料が知りたい
-// だけなので、現金支払いも含む、でお願いします」と訂正指示あり。①のKPI（振込対象の集計）は
-// 引き続き現金を除くが、②の店舗別集計は支払方法を問わず店舗の総支払額を見たいという趣旨のため、
-// ここでは現金支払も含めて合計する（paymentTotalに改称）
+// 2026-09-10新設→同日修正：ユーザー要望「店舗別の人数、給料、交通費（給料と合算しないこと）
+// だけでもいいよ」に対応（振込額は集計対象から外した＝店舗別には出さない）。
+// payrollEnsureJournalDeptCache()が集計した「登録済み仕訳の部門別・摘要別の実額」を店舗単位で
+// 合計する。読み込み中はloading:trueを返す
 function payrollStoreStats(storeId){
   if(!storeId) return null;
-  const allocs=(PAYROLL_STATE.allocations||[]).filter(a=>a.store_id===storeId);
-  const byUser=new Map();
-  allocs.forEach(a=>{
-    const amt=Number(a.amount)||0;
-    if(amt<=0) return;
-    if(!byUser.has(a.user_id)) byUser.set(a.user_id,{salary:0,commute:0});
-    const u=byUser.get(a.user_id);
-    if(a.kind==="commute") u.commute+=amt; else u.salary+=amt; // base/incentive/bonus
-  });
-  let headcount=0, salaryTotal=0, commuteTotal=0, paymentTotal=0;
-  byUser.forEach(v=>{
+  if(!PAYROLL_STATE.journalDeptCache) return {loading:true};
+  let headcount=0, salaryTotal=0, commuteTotal=0;
+  PAYROLL_STATE.journalDeptCache.forEach(byStore=>{
+    const v=byStore.get(storeId);
+    if(!v||(v.salary<=0&&v.commute<=0)) return;
     headcount++;
     salaryTotal+=v.salary;
     commuteTotal+=v.commute;
-    paymentTotal+=(v.salary+v.commute);
   });
-  return {headcount,salaryTotal,commuteTotal,paymentTotal};
+  return {headcount,salaryTotal,commuteTotal};
 }
 function payrollStatusPill(r){
   const rec=payrollRecordFor(r.user_id), asg=payrollAssignmentFor(r.user_id), draft=payrollDraftFor(r.user_id);
@@ -6903,13 +6957,13 @@ function payrollRender(){
           if(!PAYROLL_STATE.storeFilter) return "";
           const store=(PAYROLL_STATE.stores||[]).find(s=>s.id===PAYROLL_STATE.storeFilter);
           const st=payrollStoreStats(PAYROLL_STATE.storeFilter);
+          if(!st||st.loading) return `<div class="pr-store-stats"><div class="pr-store-stats-title">🏪 ${esc(store?store.name:"")}の集計中…（登録済みの仕訳を1件ずつ確認しています。人数が多いと少し時間がかかります）</div></div>`;
           return `<div class="pr-store-stats">
-            <div class="pr-store-stats-title">🏪 ${esc(store?store.name:"")}のこの月ぶん（複数店舗按分の人はこの店舗の取り分だけを集計）</div>
+            <div class="pr-store-stats-title">🏪 ${esc(store?store.name:"")}のこの月ぶん（会計仕訳に登録済みの人のみ・複数店舗按分の人はこの店舗の取り分だけを集計）</div>
             <div class="pr-store-stats-grid">
               <div><small>対象人数</small><b>${st.headcount}名</b></div>
-              <div><small>給料合計</small><b>${yen(st.salaryTotal)}</b></div>
+              <div><small>給料</small><b>${yen(st.salaryTotal)}</b></div>
               <div><small>交通費</small><b>${yen(st.commuteTotal)}</b></div>
-              <div><small>支払合計（給料+交通費・現金支払を含む）</small><b>${yen(st.paymentTotal)}</b></div>
             </div>
           </div>`;
         })()}
@@ -6960,7 +7014,11 @@ function payrollRender(){
     await payrollLoad(); payrollRender(); updateMailSummaryBar();
   };
   $("payroll-sort").onchange=()=>{ PAYROLL_STATE.sortMode=$("payroll-sort").value; payrollRender(); };
-  $("payroll-store-filter").onchange=()=>{ PAYROLL_STATE.storeFilter=$("payroll-store-filter").value; payrollRender(); };
+  $("payroll-store-filter").onchange=()=>{
+    PAYROLL_STATE.storeFilter=$("payroll-store-filter").value;
+    payrollRender();
+    if(PAYROLL_STATE.storeFilter) payrollEnsureJournalDeptCache().then(payrollRender);
+  };
   document.querySelectorAll("[data-pr-quick]").forEach(el=>el.onclick=()=>{ PAYROLL_STATE.quickFilter=el.dataset.prQuick; payrollRender(); });
   if($("payroll-reset-filter")) $("payroll-reset-filter").onclick=()=>{ PAYROLL_STATE.quickFilter="all"; PAYROLL_STATE.searchQuery=""; payrollRender(); };
   // 2026-09-02: 検索（氏名の部分一致）。入力のたびに全部を作り直すとIME入力が壊れるため
