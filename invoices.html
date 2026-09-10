@@ -451,12 +451,15 @@ button,input,select,textarea{font:inherit}
    ユーザー要望「マネーフォワード会計と同じように、勘定科目と補助科目を分けてほしい」対応）。
    マネーフォワード本体の画面と同じく、同じ列内で勘定科目（太字・上）・補助科目（小さめ・下）を
    縦に積んで表示する */
-.payroll-edit-table .pet-acc-group,.mfj-edit-table .pet-acc-group,.mft-edit-table .pet-acc-group{display:flex;flex-direction:column;gap:2px;min-width:140px}
-.payroll-edit-table .pet-acc-main,.mfj-edit-table .pet-acc-main,.mft-edit-table .pet-acc-main{font-weight:700}
+/* 2026-09-10追加：PLへ反映の勘定科目欄（.adcost-box）でも同じ縦積みスタイルを使えるように
+   スコープを追加（ユーザー要望「PLに反映の勘定科目も会計入力と同じように勘定科目・補助科目を
+   分けてほしい」対応） */
+.payroll-edit-table .pet-acc-group,.mfj-edit-table .pet-acc-group,.mft-edit-table .pet-acc-group,.adcost-box .pet-acc-group{display:flex;flex-direction:column;gap:2px;min-width:140px}
+.payroll-edit-table .pet-acc-main,.mfj-edit-table .pet-acc-main,.mft-edit-table .pet-acc-main,.adcost-box .pet-acc-main{font-weight:700}
 /* 2026-09-07修正：ユーザー報告「補助科目の文字が小さくて薄いから、勘定科目と同じか部門と
    同じサイズにしてほしい」に対応。部門欄（select）と同じ標準サイズ・通常の文字色にする
    （勘定科目のように太字にはせず、主従の区別だけは残す） */
-.payroll-edit-table .pet-acc-sub,.mfj-edit-table .pet-acc-sub,.mft-edit-table .pet-acc-sub{font-size:12px;font-weight:400}
+.payroll-edit-table .pet-acc-sub,.mfj-edit-table .pet-acc-sub,.mft-edit-table .pet-acc-sub,.adcost-box .pet-acc-sub{font-size:12px;font-weight:400}
 .payroll-edit-table .pet-remark,.mfj-edit-table .pet-remark,.mft-edit-table .pet-remark{min-width:130px}
 .payroll-edit-table .pet-warn,.mfj-edit-table .pet-warn,.mft-edit-table .pet-warn{color:var(--m-red);font-size:10px;cursor:help;white-space:nowrap}
 .mfj-tpl-item{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:9px;border:1px solid var(--m-line);border-radius:9px;margin-bottom:6px;background:var(--bg)}
@@ -778,7 +781,11 @@ async function plfeeInit(ctx){
   const box=$(ctx.boxId);
   if(!box) return;
   const keepStores=PLFEE_STATE.stores; // 店舗一覧だけは使い回す（毎回引き直す必要はないため）
-  PLFEE_STATE={ctx, stores:keepStores};
+  // 2026-09-10追加：ユーザー要望「PLに反映の勘定科目も、会計入力と同じように勘定科目・補助科目を
+  // 分けて、マネーフォワードの勘定科目・補助科目とAPI連携してほしい」対応の一環。テナントごとの
+  // MF勘定科目インデックス（mftBuildAccountIndex）も使い回す（テナントが変わらない限り引き直さない）
+  const keepAccIdx=PLFEE_STATE.mfAccountIndexByTenant;
+  PLFEE_STATE={ctx, stores:keepStores, mfAccountIndexByTenant:keepAccIdx||new Map()};
   box.innerHTML=`<div class="adcost-box"><div style="font-size:12px;color:var(--muted)">読み込み中…</div></div>`;
   const st=await plFeeCall("status",{invoice_id:ctx.invoiceId});
   if(!st.ok){ box.innerHTML=`<div class="adcost-box"><div class="err">PL反映状況の取得に失敗しました: ${esc(st.body.error||"")}</div></div>`; return; }
@@ -800,8 +807,25 @@ async function plfeeInit(ctx){
     PLFEE_STATE.yearMonth=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-01`;
   }
   PLFEE_STATE.groups=null; PLFEE_STATE.selectedGroupIdx=0; PLFEE_STATE.manualGroup=false; PLFEE_STATE.rows=null; PLFEE_STATE.seisanRows=[];
-  if(!PLFEE_STATE.excludedAt) await plfeeLoadJournalGroups();
+  await Promise.all([
+    PLFEE_STATE.excludedAt?Promise.resolve():plfeeLoadJournalGroups(),
+    plfeeEnsureMfAccountIndex(),
+  ]);
   plfeeRenderPanel();
+}
+// 2026-09-10新設：ユーザー要望「PLに反映の勘定科目も、会計入力と同じように勘定科目・補助科目を
+// 分けて、マネーフォワードの勘定科目・補助科目とAPI連携してほしい」に対応。テナントごとに
+// マネーフォワードの勘定科目マスタ（補助科目込み）を取得し、mftBuildAccountIndex（仕訳辞書・
+// 給与仕訳・請求書の仕訳作成の3箇所で既に使っている共通関数）で同じ形のインデックスを作る。
+// 取得できなかった場合は空のインデックスを返す（従来どおりPL_FEE_TARGET_ACCOUNTSだけで
+// 動作する状態にフォールバック）
+async function plfeeEnsureMfAccountIndex(){
+  const tenantId=(PLFEE_STATE.ctx&&PLFEE_STATE.ctx.tenantId)||"default";
+  if(PLFEE_STATE.mfAccountIndexByTenant.has(tenantId)) return PLFEE_STATE.mfAccountIndexByTenant.get(tenantId);
+  const r=await mfCall("accounts",{tenant_id:tenantId});
+  const idx=mftBuildAccountIndex((r.ok&&Array.isArray(r.body&&r.body.accounts))?r.body.accounts:[]);
+  PLFEE_STATE.mfAccountIndexByTenant.set(tenantId,idx);
+  return idx;
 }
 // 実際に登録済みの仕訳（get_journal）を読み直し、借方科目ごと（勘定科目×補助科目）にグループ化する。
 // PL科目に限定（設定タブ「PL連携対象科目」に登録済みの科目のみ）し、既にPL反映済みの科目
@@ -1112,14 +1136,30 @@ function plfeeGroupPickerHtml(){
     <select id="plfee-group-pick">${opts}<option value="manual" ${PLFEE_STATE.manualGroup?"selected":""}>✏️ 手動で科目を指定する</option></select>
   </div>`;
 }
+// 2026-09-10新設：選択中の勘定科目に応じて補助科目の候補を絞り込む（mfjSubAccountOptionsHtml等と
+// 同じ考え方）。テナントのマネーフォワード勘定科目マスタ（plfeeEnsureMfAccountIndex参照）から引く
+function plfeeSubAccountOptionsHtml(accountName){
+  const tenantId=(PLFEE_STATE.ctx&&PLFEE_STATE.ctx.tenantId)||"default";
+  const idx=PLFEE_STATE.mfAccountIndexByTenant&&PLFEE_STATE.mfAccountIndexByTenant.get(tenantId);
+  if(!idx||!accountName) return "";
+  const names=(idx.subAccountsByAccountName&&idx.subAccountsByAccountName.get(accountName))||[];
+  return names.map(n=>`<option value="${esc(n)}">`).join("");
+}
 function plfeeManualAccountHtml(){
   if(!PLFEE_STATE.manualGroup) return "";
-  // 反映できるのはPL科目（設定タブ登録済み）のみのため、候補をdatalistで提示する（自由入力も可だが、
-  // 未登録の科目名を入力するとconfirm時にサーバー側で拒否される）
+  // 反映できるのはPL科目（設定タブ登録済み）のみのため、勘定科目の候補をdatalistで提示する
+  // （自由入力も可だが、未登録の科目名を入力するとconfirm時にサーバー側で拒否される）。
+  // 2026-09-10修正：ユーザー要望「勘定科目と補助科目を分けて、マネーフォワードの勘定科目・
+  // 補助科目とAPI連携してほしい」に対応。会計入力（仕訳作成・仕訳辞書・給与仕訳）と同じ
+  // .pet-acc-group形式（縦積み・補助科目は選択中の勘定科目に連動して絞り込み）に変更した
   const dl=(PL_FEE_TARGET_ACCOUNTS||[]).map(a=>`<option value="${esc(a.account_name)}">`).join("");
-  return `<div class="ai-grid">
-    <div class="ai-field"><small>勘定科目（PL科目として登録済みのものだけ反映できます）</small><input id="plfee-acc-name" type="text" list="plfee-acc-dl" value="${esc(PLFEE_STATE.currentAccount||"")}" placeholder="例: 支払手数料"><datalist id="plfee-acc-dl">${dl}</datalist></div>
-    <div class="ai-field"><small>補助科目（あれば）</small><input id="plfee-sub-name" type="text" value="${esc(PLFEE_STATE.currentSubAccount||"")}" placeholder="例: カード決済"></div>
+  return `<div class="ai-field"><small>勘定科目（PL科目として登録済みのものだけ反映できます）</small>
+    <div class="pet-acc-group">
+      <input id="plfee-acc-name" class="pet-acc-main" type="text" list="plfee-acc-dl" value="${esc(PLFEE_STATE.currentAccount||"")}" placeholder="例: 支払手数料">
+      <input id="plfee-sub-name" class="pet-acc-sub" type="text" list="plfee-sub-dl" value="${esc(PLFEE_STATE.currentSubAccount||"")}" placeholder="補助科目（マネーフォワードの登録済み候補から連動）">
+    </div>
+    <datalist id="plfee-acc-dl">${dl}</datalist>
+    <datalist id="plfee-sub-dl">${plfeeSubAccountOptionsHtml(PLFEE_STATE.currentAccount||"")}</datalist>
   </div>`;
 }
 function plfeeRenderPanel(){
@@ -1247,7 +1287,13 @@ function plfeeRenderPanel(){
   $("plfee-ym").onchange=()=>{ PLFEE_STATE.yearMonth=$("plfee-ym").value+"-01"; };
   const picker=$("plfee-group-pick");
   if(picker) picker.onchange=()=>{ picker.value==="manual"?plfeeSelectGroup(0,true):plfeeSelectGroup(+picker.value,false); };
-  if($("plfee-acc-name")) $("plfee-acc-name").oninput=()=>{ PLFEE_STATE.currentAccount=$("plfee-acc-name").value; };
+  // 2026-09-10修正：勘定科目を入力するたびに、補助科目の候補（plfee-sub-dl）を選択中の
+  // 勘定科目に連動して絞り込み直す（mfjWireBranchRows等と同じ考え方）
+  if($("plfee-acc-name")) $("plfee-acc-name").oninput=()=>{
+    PLFEE_STATE.currentAccount=$("plfee-acc-name").value;
+    const dl=$("plfee-sub-dl");
+    if(dl) dl.innerHTML=plfeeSubAccountOptionsHtml(PLFEE_STATE.currentAccount);
+  };
   if($("plfee-sub-name")) $("plfee-sub-name").oninput=()=>{ PLFEE_STATE.currentSubAccount=$("plfee-sub-name").value; };
   document.querySelectorAll(".plfee-store").forEach(el=>el.onchange=()=>{
     const idx=+el.dataset.idx, s=PLFEE_STATE.stores.find(x=>x.id===el.value);
@@ -4746,7 +4792,7 @@ function unifiedRender(u){
         <div><label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">検索</label><input id="unified-search" placeholder="🔎 取引先・請求書番号・法人・店舗" value="${esc(UNIFIED_STATE.search)}" style="max-width:280px"></div>
         <div><label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">対象年月（支払期限、無ければ受領日）</label><input type="month" id="unified-ym" value="${esc(UNIFIED_STATE.yearMonth)}"></div>
         ${UNIFIED_STATE.reasonFilter?`<span class="hq-pill amber" style="align-self:center">絞り込み中: ${esc(REASON_FILTER_LABELS[UNIFIED_STATE.reasonFilter]||UNIFIED_STATE.reasonFilter)}</span>`:''}
-        ${(UNIFIED_STATE.search||UNIFIED_STATE.yearMonth||UNIFIED_STATE.reasonFilter)?'<button class="hq-btn" id="unified-filter-clear">絞り込み解除</button>':''}
+        <span id="unified-clear-wrap">${(UNIFIED_STATE.search||UNIFIED_STATE.yearMonth||UNIFIED_STATE.reasonFilter)?'<button class="hq-btn" id="unified-filter-clear">絞り込み解除</button>':''}</span>
       </div>
       <div class="card hq-tablewrap">
         <table class="invoice-table" style="min-width:1400px">
@@ -4768,11 +4814,39 @@ function unifiedRender(u){
     else { UNIFIED_STATE.sortCol=col; UNIFIED_STATE.sortDir="asc"; }
     unifiedRender(u);
   });
-  $("unified-search").oninput=()=>{ UNIFIED_STATE.search=$("unified-search").value; unifiedRender(u); };
+  // 2026-09-10修正：ユーザー報告「検索とかフリーで文章を入れるときに最後まで入れる前に勝手に
+  // 閉じちゃったりする」に対応。従来は1文字打つたびに画面全体（検索欄自身を含むtabbody）を
+  // 丸ごと作り直しており、入力欄そのものが毎回作り直されて（＝別の要素に置き換わって）
+  // フォーカス・入力途中の文字が失われていた（2026-08-31に給与仕訳の検索欄で実際に起きた
+  // 不具合と同じ原因）。給与仕訳の検索欄（payroll-search）と同じく、デバウンス＋テーブル本体
+  // だけを差し替える方式に変更し、検索欄自体は絶対に作り直さないようにした
+  let unifiedSearchTimer=null;
+  $("unified-search").oninput=()=>{
+    clearTimeout(unifiedSearchTimer);
+    const val=$("unified-search").value;
+    unifiedSearchTimer=setTimeout(()=>{ UNIFIED_STATE.search=val; unifiedRenderTableOnly(u); },250);
+  };
   $("unified-ym").onchange=()=>{ UNIFIED_STATE.yearMonth=$("unified-ym").value; unifiedRender(u); };
+  unifiedWireFilterClear(u);
+  unifiedWireRowActions(u);
+}
+// 2026-09-10新設：unifiedRender()から検索専用の部分描画として切り出した。絞り込み解除ボタンの
+// 出し分け・行のクリック配線も、フル再描画（unifiedRender）と全く同じ内容をここでも行う
+function unifiedRenderTableOnly(u){
+  const list=unifiedFilteredRows();
+  const tbody=document.querySelector("#tabbody table.invoice-table tbody");
+  if(tbody) tbody.innerHTML=list.length?list.map(unifiedRowHtml).join(""):'<tr><td colspan="17">該当する請求書はありません</td></tr>';
+  const clearWrap=$("unified-clear-wrap");
+  if(clearWrap) clearWrap.innerHTML=(UNIFIED_STATE.search||UNIFIED_STATE.yearMonth||UNIFIED_STATE.reasonFilter)?'<button class="hq-btn" id="unified-filter-clear">絞り込み解除</button>':'';
+  unifiedWireFilterClear(u);
+  unifiedWireRowActions(u);
+}
+function unifiedWireFilterClear(u){
   if($("unified-filter-clear")) $("unified-filter-clear").onclick=()=>{ UNIFIED_STATE.search=""; UNIFIED_STATE.yearMonth=""; UNIFIED_STATE.reasonFilter=""; unifiedRender(u); };
-  // 2026-09-05新規：行のどこをクリックしても詳細が開くようにする（一括選択バー廃止に伴う対応）。
-  // 法人プルダウン・削除ボタンをクリックしたときだけは行を開かないよう除外する
+}
+// 2026-09-05新規：行のどこをクリックしても詳細が開くようにする（一括選択バー廃止に伴う対応）。
+// 法人プルダウン・削除ボタンをクリックしたときだけは行を開かないよう除外する
+function unifiedWireRowActions(u){
   document.querySelectorAll(".unified-row").forEach(tr=>tr.onclick=e=>{
     if(e.target.closest("select,button")) return;
     openInvoiceDetail(u,tr.dataset.invoiceId);
@@ -8054,6 +8128,43 @@ function vendorFilteredList(){
   if(q) list=list.filter(v=>v.name.toLowerCase().includes(q)||(v.name_aliases||[]).some(a=>a.toLowerCase().includes(q)));
   return list;
 }
+// 2026-09-10新設：vendorRenderBox()のtbody生成ロジックを切り出し、フル描画・検索時の
+// 部分描画（vendorRenderTableOnly）の両方から同じロジックを使えるようにした
+function vendorRowsHtml(list,editing){
+  return list.map(v=>{
+    const corpName=(VENDOR_STATE.corporations.find(c=>c.id===v.default_corporation_id)||{}).name||"—";
+    const storeName=(VENDOR_STATE.stores.find(s=>s.id===v.default_store_id)||{}).name||"—";
+    const row=`<tr>
+      <td><b>${esc(v.name)}</b></td>
+      <td>${esc((v.name_aliases||[]).join("、")||"—")}</td>
+      <td>${esc(corpName)}</td>
+      <td>${esc(storeName)}</td>
+      <td>${v.is_active?'<span class="invoice-status done">有効</span>':'<span class="invoice-status gray">無効</span>'}</td>
+      <td><button class="hq-btn" style="font-size:11px;padding:6px 9px" data-vendor-edit="${v.id}">編集</button> <button class="hq-btn" style="font-size:11px;padding:6px 9px;color:var(--m-red)" data-vendor-delete="${v.id}" title="請求書・仕訳辞書で使われていない取引先のみ削除できます">🗑 削除</button></td>
+    </tr>`;
+    return row+((editing&&editing.id===v.id)?`<tr><td colspan="6"><div id="vendor-editor"></div></td></tr>`:"");
+  }).join("")||`<tr><td colspan="6">${(VENDOR_STATE.vendors||[]).length?"条件に一致する取引先はありません":"取引先はまだ登録されていません"}</td></tr>`;
+}
+// 2026-09-10新設：検索欄の部分描画用。テーブル本体（tbody）だけを差し替え、検索欄自体は
+// 一切作り直さない（フォーカス・入力中の文字を失わないため）
+function vendorRenderTableOnly(){
+  const editing=VENDOR_STATE.editing;
+  const list=vendorFilteredList();
+  const tbody=document.querySelector("#settingsBody table.invoice-table tbody");
+  if(tbody) tbody.innerHTML=vendorRowsHtml(list,editing);
+  document.querySelectorAll("[data-vendor-edit]").forEach(el=>el.onclick=()=>vendorOpenEditor(VENDOR_STATE.vendors.find(v=>v.id===el.dataset.vendorEdit)));
+  document.querySelectorAll("[data-vendor-delete]").forEach(el=>el.onclick=async()=>{
+    const v=VENDOR_STATE.vendors.find(x=>x.id===el.dataset.vendorDelete);
+    if(!v) return;
+    if(!confirm(`取引先「${v.name}」を削除します。この操作は取り消せません。よろしいですか？`)) return;
+    el.disabled=true;
+    const r=await vendorCall("delete_vendor",{id:v.id});
+    if(!r.ok){ alert(r.body.error||"削除に失敗しました"); el.disabled=false; return; }
+    await ensureVendorCache(true);
+    await renderSettingsVendors();
+  });
+  if(editing) vendorRenderEditor();
+}
 function vendorRenderBox(){
   const box=$("settingsBody");
   const editing=VENDOR_STATE.editing;
@@ -8073,24 +8184,19 @@ function vendorRenderBox(){
     ${editing&&!editing.id?`<div id="vendor-editor" style="margin-bottom:12px"></div>`:""}
     <div class="hq-tablewrap"><table class="invoice-table">
       <thead><tr><th>正式名称</th><th>別名</th><th>既定法人</th><th>既定店舗</th><th>状態</th><th></th></tr></thead>
-      <tbody>${list.map(v=>{
-        const corpName=(VENDOR_STATE.corporations.find(c=>c.id===v.default_corporation_id)||{}).name||"—";
-        const storeName=(VENDOR_STATE.stores.find(s=>s.id===v.default_store_id)||{}).name||"—";
-        const row=`<tr>
-          <td><b>${esc(v.name)}</b></td>
-          <td>${esc((v.name_aliases||[]).join("、")||"—")}</td>
-          <td>${esc(corpName)}</td>
-          <td>${esc(storeName)}</td>
-          <td>${v.is_active?'<span class="invoice-status done">有効</span>':'<span class="invoice-status gray">無効</span>'}</td>
-          <td><button class="hq-btn" style="font-size:11px;padding:6px 9px" data-vendor-edit="${v.id}">編集</button> <button class="hq-btn" style="font-size:11px;padding:6px 9px;color:var(--m-red)" data-vendor-delete="${v.id}" title="請求書・仕訳辞書で使われていない取引先のみ削除できます">🗑 削除</button></td>
-        </tr>`;
-        return row+((editing&&editing.id===v.id)?`<tr><td colspan="6"><div id="vendor-editor"></div></td></tr>`:"");
-      }).join("")||`<tr><td colspan="6">${(VENDOR_STATE.vendors||[]).length?"条件に一致する取引先はありません":"取引先はまだ登録されていません"}</td></tr>`}</tbody>
+      <tbody>${vendorRowsHtml(list,editing)}</tbody>
     </table></div>
   </div>`;
   vendorWirePendingChanges();
   $("vendor-new").onclick=()=>vendorOpenEditor(null);
-  $("vendor-search").oninput=()=>{ VENDOR_STATE.search=$("vendor-search").value; vendorRenderBox(); };
+  // 2026-09-10修正：ユーザー報告「検索で文字を打っていると途中で消える」に対応。デバウンス＋
+  // テーブル本体だけの差し替えに変更（unified-search・payroll-searchと同じ考え方）
+  let vendorSearchTimer=null;
+  $("vendor-search").oninput=()=>{
+    clearTimeout(vendorSearchTimer);
+    const val=$("vendor-search").value;
+    vendorSearchTimer=setTimeout(()=>{ VENDOR_STATE.search=val; vendorRenderTableOnly(); },250);
+  };
   $("vendor-status-filter").onchange=()=>{ VENDOR_STATE.statusFilter=$("vendor-status-filter").value; vendorRenderBox(); };
   document.querySelectorAll("[data-vendor-edit]").forEach(el=>el.onclick=()=>vendorOpenEditor(VENDOR_STATE.vendors.find(v=>v.id===el.dataset.vendorEdit)));
   // 2026-09-08新規：ユーザー要望「取引先マスタの取引先を削除できるようにしてほしい」に対応。
