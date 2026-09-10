@@ -130,10 +130,13 @@ Deno.serve(async (req: Request) => {
 
     if (action === "add_target_account") {
       const accountName: string = (body?.account_name ?? "").trim();
+      const subAccountName: string = (body?.sub_account_name ?? "").trim();
       if (!accountName) return json({ error: "勘定科目名は必須です" }, 400);
+      const defaultLabel = accountName + (subAccountName ? "/" + subAccountName : "");
       const db = svc();
       const { error } = await db.from("mf_pl_fee_accounts").insert({
-        account_name: accountName, pl_label: (body?.pl_label ?? "").trim() || accountName,
+        account_name: accountName, sub_account_name: subAccountName || null,
+        pl_label: (body?.pl_label ?? "").trim() || defaultLabel,
       });
       if (error) return json({ error: error.message.includes("duplicate") ? "既に登録されています" : error.message }, 500);
       return json({ success: true });
@@ -203,10 +206,15 @@ Deno.serve(async (req: Request) => {
 
       // ①PL科目に限定: mf_pl_fee_accounts未登録の科目はPLへ反映させない（前払費用等の資産科目を
       // 誤ってPLに載せてしまう事故防止）
-      const { data: plAcc, error: plAccErr } = await uc.from("mf_pl_fee_accounts")
-        .select("id").eq("account_name", accountName).maybeSingle();
+      // 2026-09-10修正: mf_pl_fee_accountsは勘定科目・補助科目を分けて登録する形に変わった
+      // （account_name×sub_account_nameの組で1件）ため、account_nameだけでなくsub_account_name
+      // も一致するかを見る（従来はaccount_name完全一致だけを見ており、勘定科目・補助科目を
+      // 分けて指定する新UIでは常に不一致になり「登録されていません」で弾かれてしまっていた）
+      let plAccQuery = uc.from("mf_pl_fee_accounts").select("id").eq("account_name", accountName);
+      plAccQuery = subAccountName ? plAccQuery.eq("sub_account_name", subAccountName) : plAccQuery.is("sub_account_name", null);
+      const { data: plAcc, error: plAccErr } = await plAccQuery.maybeSingle();
       if (plAccErr) return json({ error: "PL科目の確認に失敗しました: " + plAccErr.message }, 500);
-      if (!plAcc) return json({ error: `「${accountName}」はPL科目として登録されていません。設定タブの「PL連携対象科目」で先に登録してください（資産科目等をPLに載せてしまうミスを防ぐための確認です）` }, 400);
+      if (!plAcc) return json({ error: `「${accountName}${subAccountName ? "/" + subAccountName : ""}」はPL科目として登録されていません。設定タブの「PL連携対象科目」で先に登録してください（資産科目等をPLに載せてしまうミスを防ぐための確認です）` }, 400);
 
       // ②精算対象店舗との二重計上防止: 精算対象店舗は精算書側で入力すれば別途PLへ自動連携されるため、
       // この経路（DB_PL直接書き込み）の対象には含めない。

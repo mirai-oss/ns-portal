@@ -454,12 +454,12 @@ button,input,select,textarea{font:inherit}
 /* 2026-09-10追加：PLへ反映の勘定科目欄（.adcost-box）でも同じ縦積みスタイルを使えるように
    スコープを追加（ユーザー要望「PLに反映の勘定科目も会計入力と同じように勘定科目・補助科目を
    分けてほしい」対応） */
-.payroll-edit-table .pet-acc-group,.mfj-edit-table .pet-acc-group,.mft-edit-table .pet-acc-group,.adcost-box .pet-acc-group{display:flex;flex-direction:column;gap:2px;min-width:140px}
-.payroll-edit-table .pet-acc-main,.mfj-edit-table .pet-acc-main,.mft-edit-table .pet-acc-main,.adcost-box .pet-acc-main{font-weight:700}
+.payroll-edit-table .pet-acc-group,.mfj-edit-table .pet-acc-group,.mft-edit-table .pet-acc-group,.adcost-box .pet-acc-group,#plfee-accounts-box .pet-acc-group{display:flex;flex-direction:column;gap:2px;min-width:140px}
+.payroll-edit-table .pet-acc-main,.mfj-edit-table .pet-acc-main,.mft-edit-table .pet-acc-main,.adcost-box .pet-acc-main,#plfee-accounts-box .pet-acc-main{font-weight:700}
 /* 2026-09-07修正：ユーザー報告「補助科目の文字が小さくて薄いから、勘定科目と同じか部門と
    同じサイズにしてほしい」に対応。部門欄（select）と同じ標準サイズ・通常の文字色にする
    （勘定科目のように太字にはせず、主従の区別だけは残す） */
-.payroll-edit-table .pet-acc-sub,.mfj-edit-table .pet-acc-sub,.mft-edit-table .pet-acc-sub,.adcost-box .pet-acc-sub{font-size:12px;font-weight:400}
+.payroll-edit-table .pet-acc-sub,.mfj-edit-table .pet-acc-sub,.mft-edit-table .pet-acc-sub,.adcost-box .pet-acc-sub,#plfee-accounts-box .pet-acc-sub{font-size:12px;font-weight:400}
 .payroll-edit-table .pet-remark,.mfj-edit-table .pet-remark,.mft-edit-table .pet-remark{min-width:130px}
 .payroll-edit-table .pet-warn,.mfj-edit-table .pet-warn,.mft-edit-table .pet-warn{color:var(--m-red);font-size:10px;cursor:help;white-space:nowrap}
 .mfj-tpl-item{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:9px;border:1px solid var(--m-line);border-radius:9px;margin-bottom:6px;background:var(--bg)}
@@ -844,7 +844,13 @@ async function plfeeLoadJournalGroups(){
   for(const b of branches){
     const d=b.debit;
     if(!d||!d.account_name||!(Number(d.value)>0)) continue;
-    if(!targets.some(t=>t.account_name===d.account_name)) continue; // PL科目として未登録の科目は対象外
+    // 2026-09-10修正：mf_pl_fee_accountsが勘定科目・補助科目を分けて持つようになったため、
+    // 判定もsub_account_nameまで見る（account_nameだけの一致だと、勘定科目は同じでも
+    // 補助科目違いの仕訳まで拾ってしまう／逆に一致条件が緩すぎて未登録の組み合わせを
+    // 通してしまう。以前はaccount_nameに結合文字列が入っていたため、実質どの仕訳も
+    // 一致せず自動検出候補に出てこなかった）
+    const dSub=d.sub_account_name||"";
+    if(!targets.some(t=>t.account_name===d.account_name&&(t.sub_account_name||"")===dSub)) continue; // PL科目として未登録の科目は対象外
     const key=d.account_name+""+(d.sub_account_name||"");
     if(already.has(key)) continue;
     if(!map.has(key)) map.set(key,{accountName:d.account_name, subAccountName:d.sub_account_name||"", branches:[]});
@@ -1152,7 +1158,11 @@ function plfeeManualAccountHtml(){
   // 2026-09-10修正：ユーザー要望「勘定科目と補助科目を分けて、マネーフォワードの勘定科目・
   // 補助科目とAPI連携してほしい」に対応。会計入力（仕訳作成・仕訳辞書・給与仕訳）と同じ
   // .pet-acc-group形式（縦積み・補助科目は選択中の勘定科目に連動して絞り込み）に変更した
-  const dl=(PL_FEE_TARGET_ACCOUNTS||[]).map(a=>`<option value="${esc(a.account_name)}">`).join("");
+  // 2026-09-10修正：mf_pl_fee_accountsは勘定科目・補助科目を分けて持つようになった（同じ
+  // 勘定科目で補助科目違いの複数行がありうる＝例:広告宣伝費/TAGZ・広告宣伝費/食べログ）ため、
+  // 勘定科目の候補は重複排除してから出す（そのままだと「広告宣伝費」が2回出てしまう）
+  const accNames=[...new Set((PL_FEE_TARGET_ACCOUNTS||[]).map(a=>a.account_name))];
+  const dl=accNames.map(n=>`<option value="${esc(n)}">`).join("");
   return `<div class="ai-field"><small>勘定科目（PL科目として登録済みのものだけ反映できます）</small>
     <div class="pet-acc-group">
       <input id="plfee-acc-name" class="pet-acc-main" type="text" list="plfee-acc-dl" value="${esc(PLFEE_STATE.currentAccount||"")}" placeholder="例: 支払手数料">
@@ -7933,19 +7943,25 @@ async function renderPlFeeAccountsSection(){
   PLFEE_ACC_STATE.tenantId=tenantId; PLFEE_ACC_STATE.tenants=tenants;
   const accRes=await mfCall("accounts",{tenant_id:tenantId});
   const mfAccounts=(accRes.ok&&accRes.body.accounts)||[];
-  const dl=mfAccounts.map(a=>{
-    let opts=`<option value="${esc(a.name)}">`;
-    for(const sa of (a.sub_accounts||[])) opts+=`<option value="${esc(a.name)}/${esc(sa.name)}">`;
-    return opts;
-  }).join("");
+  // 2026-09-10修正：ユーザー要望「PLマッピングもマネーフォワード会計と同じようになってない」
+  // 「勘定科目と補助科目を分けて、マネーフォワードの勘定科目と補助科目と同じように連動して
+  // ほしい（API連携）」に対応。従来は「勘定科目/補助科目」を1本のテキスト欄（結合文字列）で
+  // 登録していたが、会計入力・仕訳辞書と同じ.pet-acc-group形式（勘定科目→補助科目の2段・
+  // 補助科目は選択中の勘定科目に連動してMFの実データから絞り込み）に変更した
+  const idx=mftBuildAccountIndex(mfAccounts);
   box.innerHTML=`
     ${tenants.length>1?`<div style="margin-bottom:10px"><label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">事業者</label>
       <select id="plfee-acc-tenant">${tenants.map(t=>`<option value="${esc(t.id)}" ${t.id===tenantId?"selected":""}>${esc(t.label)}</option>`).join("")}</select></div>`:""}
     ${!accRes.ok?`<div class="err" style="margin-bottom:8px">勘定科目の取得に失敗しました（マネーフォワード未連携の可能性）: ${esc((accRes.body&&accRes.body.error)||"")}。下の欄は手入力になります（MFの表記と完全に一致させてください）</div>`:""}
-    <datalist id="plfee-acc-datalist">${dl}</datalist>
     <div style="display:grid;grid-template-columns:1fr 1fr auto;gap:8px;align-items:end;margin-bottom:10px">
-      <div><label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">勘定科目名（候補から選択・入力すると絞り込めます）</label>
-        <input id="plfee-acc-name" list="plfee-acc-datalist" placeholder="例: 支払手数料"></div>
+      <div><label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">勘定科目・補助科目（候補から選択・入力すると絞り込めます）</label>
+        <div class="pet-acc-group">
+          <input id="plfee-acc-name" class="pet-acc-main" list="plfee-acc-datalist" placeholder="例: 支払手数料">
+          <input id="plfee-acc-sub" class="pet-acc-sub" list="plfee-acc-subdatalist" placeholder="補助科目（無ければ空欄のまま）">
+        </div>
+        <datalist id="plfee-acc-datalist">${idx.accountNameDatalistHtml}</datalist>
+        <datalist id="plfee-acc-subdatalist"></datalist>
+      </div>
       <div><label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">PL上での表示名（任意）</label>
         <input id="plfee-acc-label" placeholder="省略時は科目名と同じ"></div>
       <button class="hq-btn primary" id="plfee-acc-add">＋ 追加</button>
@@ -7953,24 +7969,31 @@ async function renderPlFeeAccountsSection(){
     <div class="err" id="plfee-acc-msg" style="margin-bottom:8px"></div>
     <div class="hq-tablewrap">
       <table class="invoice-table">
-        <thead><tr><th>勘定科目名</th><th>PL表示名</th><th></th></tr></thead>
+        <thead><tr><th>勘定科目</th><th>補助科目</th><th>PL表示名</th><th></th></tr></thead>
         <tbody>${accounts.map(a=>`<tr>
           <td><b>${esc(a.account_name)}</b></td>
+          <td>${esc(a.sub_account_name||"—")}</td>
           <td>${esc(a.pl_label||a.account_name)}</td>
           <td><button class="hq-btn" style="font-size:11px;padding:6px 9px" data-plfee-acc-del="${esc(a.id)}">削除</button></td>
-        </tr>`).join("")||'<tr><td colspan="3">登録されていません</td></tr>'}</tbody>
+        </tr>`).join("")||'<tr><td colspan="4">登録されていません</td></tr>'}</tbody>
       </table>
     </div>`;
   if(tenants.length>1) $("plfee-acc-tenant").onchange=e=>{ PLFEE_ACC_STATE.tenantId=e.target.value; renderPlFeeAccountsSection(); };
-  const accountNameSet=new Set(mfAccounts.flatMap(a=>[a.name, ...(a.sub_accounts||[]).map(sa=>`${a.name}/${sa.name}`)]));
+  const refreshSubDl=()=>{
+    const dl=$("plfee-acc-subdatalist");
+    if(dl) dl.innerHTML=plfeeSettingsSubAccountOptionsHtml(idx,$("plfee-acc-name").value.trim());
+  };
+  $("plfee-acc-name").oninput=refreshSubDl;
   $("plfee-acc-add").onclick=async()=>{
     const name=$("plfee-acc-name").value.trim();
+    const sub=$("plfee-acc-sub").value.trim();
     const label=$("plfee-acc-label").value.trim();
     const msg=$("plfee-acc-msg");
     if(!name){ msg.textContent="勘定科目名を選択してください"; return; }
-    if(accRes.ok&&!accountNameSet.has(name)){ msg.textContent="候補一覧に無い科目名です。候補から選び直してください（誤字防止のため）"; return; }
+    if(accRes.ok&&!idx.map.has(name)){ msg.textContent="候補一覧に無い勘定科目名です。候補から選び直してください（誤字防止のため）"; return; }
+    if(accRes.ok&&sub&&!(idx.subAccountsByAccountName.get(name)||[]).includes(sub)){ msg.textContent="その勘定科目に登録が無い補助科目です。候補から選び直してください（誤字防止のため）"; return; }
     msg.className="err"; msg.textContent="追加中…";
-    const r=await plFeeCall("add_target_account",{account_name:name,pl_label:label});
+    const r=await plFeeCall("add_target_account",{account_name:name,sub_account_name:sub,pl_label:label});
     if(!r.ok){ msg.textContent=r.body.error||"追加できませんでした"; return; }
     await renderPlFeeAccountsSection();
   };
@@ -7979,6 +8002,13 @@ async function renderPlFeeAccountsSection(){
     await plFeeCall("remove_target_account",{id:el.dataset.plfeeAccDel});
     await renderPlFeeAccountsSection();
   });
+}
+// 2026-09-10新設：plfeeSubAccountOptionsHtml（請求書詳細のPL反映パネル用）と同じ考え方だが、
+// こちらは設定タブでmftBuildAccountIndex()の結果を直接受け取る形（tenantキャッシュを介さない）
+function plfeeSettingsSubAccountOptionsHtml(idx,accountName){
+  if(!idx||!accountName) return "";
+  const names=(idx.subAccountsByAccountName&&idx.subAccountsByAccountName.get(accountName))||[];
+  return names.map(n=>`<option value="${esc(n)}">`).join("");
 }
 let PLFEE_ACC_STATE={};
 /* ============================================================
