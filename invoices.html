@@ -4568,11 +4568,13 @@ async function renderSalesListTab(u){ await renderFinancialListTab(u,"sales"); }
 // 2026-09-04: 既定タブを「要対応」に変更し先頭へ（指示書§12・42「開いたときにまず対応が
 // 必要なものが目に入るように」）。ラベルも「要確認」→「要対応」に変更（内容は変わらず、
 // unifiedMatchesSubTab側の"review"キー判定はそのまま）
-// 2026-09-10追加：ユーザー要望「請求書一覧のところで給料なのか請求書なのか区別がつかないので、
-// 絞り込みできるようにしてほしい」に対応。payrollFilterの既定は"exclude"（給与関連を隠す）＝
-// 給与仕訳から自動作成される「給与：氏名（年月）」invoicesレコード（is_payroll_related=true）が
-// 大量にあると通常の請求書処理の妨げになるため、まず見えなくしておく（切り替えて含められる）
-let UNIFIED_STATE={subTab:"review", search:"", yearMonth:"", reasonFilter:"", sortCol:"", sortDir:"desc", rows:[], payrollFilter:"exclude"};
+// 2026-09-10：ユーザー要望「請求書一覧のところで給料なのか請求書なのか区別がつかないので、
+// 絞り込みできるようにしてほしい」を受け、当初は「種類」絞り込み（既定で給与関連を隠しつつ
+// 切り替えて含められる）を用意したが、その後「やはりわかりにくいし見ずらいから、給与は
+// 請求書一覧に入れないで欲しい」との報告を受け、切り替え無しで常に除外する方式に変更した
+// （unifiedFilteredRows参照。給与仕訳から自動作成される「給与：氏名（年月）」invoicesレコード
+// ＝is_payroll_related=trueは、この一覧には一切出てこない。確認は給与仕訳タブで行う）
+let UNIFIED_STATE={subTab:"review", search:"", yearMonth:"", reasonFilter:"", sortCol:"", sortDir:"desc", rows:[]};
 const UNIFIED_SUBTABS=[["review","要対応"],["all","すべて"],["accounting","会計待ち"],["payment","振込待ち"],["done","完了"]];
 const REASON_FILTER_LABELS={
   overdue:"支払期限超過", bank_change:"振込先口座変更", duplicate:"重複疑い", mf_error:"MF登録エラー",
@@ -4701,9 +4703,11 @@ async function unifiedSetCorporation(u,invoiceId,corporationId){
 }
 function unifiedFilteredRows(){
   let list=UNIFIED_STATE.rows.filter(r=>unifiedMatchesSubTab(r,UNIFIED_STATE.subTab));
-  // 2026-09-10追加：給与関連（is_payroll_related）の絞り込み
-  if(UNIFIED_STATE.payrollFilter==="exclude") list=list.filter(r=>!r.is_payroll_related);
-  else if(UNIFIED_STATE.payrollFilter==="only") list=list.filter(r=>r.is_payroll_related);
+  // 2026-09-10：給与関連（is_payroll_related）は🧾請求書一覧には常に出さない。
+  // 当初は「種類」絞り込み（通常のみ/すべて/給与関連のみ、既定は通常のみ）を用意したが、
+  // ユーザー報告「やはりわかりにくいし見ずらいから、給与は請求書一覧に入れないで欲しい」
+  // を受け、選択肢を無くして常に除外する方式に変更した（給与関連の確認は給与仕訳タブで行う）
+  list=list.filter(r=>!r.is_payroll_related);
   // 2026-09-04新規：会計ダッシュボードのカード・要対応内訳からの絞り込み遷移用
   // （overdue/bank_change/duplicate/mf_error/unknown_journal/unknown_company/unknown_store/import_error）
   if(UNIFIED_STATE.reasonFilter) list=list.filter(r=>unifiedAttentionReasons(r).includes(UNIFIED_STATE.reasonFilter));
@@ -4804,7 +4808,10 @@ async function unifiedDeleteInvoice(u,invoiceId){
 function unifiedRender(u){
   const list=unifiedFilteredRows();
   const counts={};
-  UNIFIED_SUBTABS.forEach(([k])=>{ counts[k]=UNIFIED_STATE.rows.filter(r=>unifiedMatchesSubTab(r,k)).length; });
+  // 2026-09-10修正：タブの件数バッジも、一覧本体と同じく給与関連（is_payroll_related）を
+  // 除いて数える（一覧には出てこないのに件数だけ多く見えてしまっていたのを修正）
+  const countBase=UNIFIED_STATE.rows.filter(r=>!r.is_payroll_related);
+  UNIFIED_SUBTABS.forEach(([k])=>{ counts[k]=countBase.filter(r=>unifiedMatchesSubTab(r,k)).length; });
   $("tabbody").innerHTML=`
     <section class="invoice-list active">
       <div class="mail-tabs" style="margin-bottom:10px">
@@ -4813,13 +4820,6 @@ function unifiedRender(u){
       <div class="card" style="padding:12px;margin-bottom:10px;display:flex;gap:10px;flex-wrap:wrap;align-items:end">
         <div><label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">検索</label><input id="unified-search" placeholder="🔎 取引先・請求書番号・法人・店舗" value="${esc(UNIFIED_STATE.search)}" style="max-width:280px"></div>
         <div><label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">対象年月（支払期限、無ければ受領日）</label><input type="month" id="unified-ym" value="${esc(UNIFIED_STATE.yearMonth)}"></div>
-        <div><label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">種類</label>
-          <select id="unified-payroll-filter">
-            <option value="exclude" ${UNIFIED_STATE.payrollFilter==="exclude"?"selected":""}>通常の請求書のみ（既定）</option>
-            <option value="all" ${UNIFIED_STATE.payrollFilter==="all"?"selected":""}>すべて（給与関連も含む）</option>
-            <option value="only" ${UNIFIED_STATE.payrollFilter==="only"?"selected":""}>給与関連のみ</option>
-          </select>
-        </div>
         ${UNIFIED_STATE.reasonFilter?`<span class="hq-pill amber" style="align-self:center">絞り込み中: ${esc(REASON_FILTER_LABELS[UNIFIED_STATE.reasonFilter]||UNIFIED_STATE.reasonFilter)}</span>`:''}
         <span id="unified-clear-wrap">${(UNIFIED_STATE.search||UNIFIED_STATE.yearMonth||UNIFIED_STATE.reasonFilter)?'<button class="hq-btn" id="unified-filter-clear">絞り込み解除</button>':''}</span>
       </div>
@@ -4856,7 +4856,6 @@ function unifiedRender(u){
     unifiedSearchTimer=setTimeout(()=>{ UNIFIED_STATE.search=val; unifiedRenderTableOnly(u); },250);
   };
   $("unified-ym").onchange=()=>{ UNIFIED_STATE.yearMonth=$("unified-ym").value; unifiedRender(u); };
-  $("unified-payroll-filter").onchange=()=>{ UNIFIED_STATE.payrollFilter=$("unified-payroll-filter").value; unifiedRender(u); };
   unifiedWireFilterClear(u);
   unifiedWireRowActions(u);
 }
