@@ -2814,6 +2814,9 @@ function renderMailDetail(u){
                 </div>
               </div>
               <div class="meta" style="color:var(--muted);font-size:11px;margin-top:4px">💡 対象法人・対象店舗を設定すると、「🧾請求書」一覧で法人ごとに絞り込めるようになります（未設定でも仕訳登録自体は今までどおり行えます）。</div>
+              ${isSales?"":`<div class="ai-field" style="margin-top:8px"><label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px"><input type="checkbox" id="iv-payroll-related" ${invoice&&invoice.is_payroll_related?"checked":""}> 🧑‍💼 給与関連の請求書（人材紹介・派遣費用など）</label>
+                <div class="meta" style="color:var(--muted);font-size:11px;margin-top:2px">チェックすると「🧾請求書」一覧で給与関連の請求書だけ絞り込めます（給与仕訳タブとは別物・通常どおりこの画面で処理してください）</div>
+              </div>`}
               ${isSales?"":`<div class="meta" style="color:var(--muted);font-size:11px;margin-top:8px">🔗 本部タスクとの連携設定は⑤本部タスク連携カードにまとめました${invoice&&invoice.linked_step?"（設定あり）":""}。取引先マスタ・振込先口座との紐付けは④振込カードにまとめました。</div>`}
               <div class="mail-actions">
                 ${atts.length?`<button id="iv-ai-fill">🤖 AIで${isSales?"入金情報":"請求書情報"}を自動入力</button>`:""}
@@ -3736,6 +3739,8 @@ function wireDetailActions(u){
       // 2026-09-04変更：store_idは対象店舗複数選択の導入により、ここでは直接設定しない
       // （invoice_set_stores RPCが、保存後にinvoice_storesの内容から自動でミラーする）
       ...(isSales?{}:{linked_hq_step_id:LINKED_HQ_STEP?LINKED_HQ_STEP.id:null}),
+      // 2026-09-10追加：ユーザー要望「請求書一覧で給料なのか請求書なのか区別がつかない」対応
+      ...($("iv-payroll-related")?{is_payroll_related:$("iv-payroll-related").checked}:{}),
     };
     const isNew=!SELECTED.invoice;
     let r;
@@ -4553,7 +4558,11 @@ async function renderSalesListTab(u){ await renderFinancialListTab(u,"sales"); }
 // 2026-09-04: 既定タブを「要対応」に変更し先頭へ（指示書§12・42「開いたときにまず対応が
 // 必要なものが目に入るように」）。ラベルも「要確認」→「要対応」に変更（内容は変わらず、
 // unifiedMatchesSubTab側の"review"キー判定はそのまま）
-let UNIFIED_STATE={subTab:"review", search:"", yearMonth:"", reasonFilter:"", sortCol:"", sortDir:"desc", rows:[]};
+// 2026-09-10追加：ユーザー要望「請求書一覧のところで給料なのか請求書なのか区別がつかないので、
+// 絞り込みできるようにしてほしい」に対応。payrollFilterの既定は"exclude"（給与関連を隠す）＝
+// 給与仕訳から自動作成される「給与：氏名（年月）」invoicesレコード（is_payroll_related=true）が
+// 大量にあると通常の請求書処理の妨げになるため、まず見えなくしておく（切り替えて含められる）
+let UNIFIED_STATE={subTab:"review", search:"", yearMonth:"", reasonFilter:"", sortCol:"", sortDir:"desc", rows:[], payrollFilter:"exclude"};
 const UNIFIED_SUBTABS=[["review","要対応"],["all","すべて"],["accounting","会計待ち"],["payment","振込待ち"],["done","完了"]];
 const REASON_FILTER_LABELS={
   overdue:"支払期限超過", bank_change:"振込先口座変更", duplicate:"重複疑い", mf_error:"MF登録エラー",
@@ -4682,6 +4691,9 @@ async function unifiedSetCorporation(u,invoiceId,corporationId){
 }
 function unifiedFilteredRows(){
   let list=UNIFIED_STATE.rows.filter(r=>unifiedMatchesSubTab(r,UNIFIED_STATE.subTab));
+  // 2026-09-10追加：給与関連（is_payroll_related）の絞り込み
+  if(UNIFIED_STATE.payrollFilter==="exclude") list=list.filter(r=>!r.is_payroll_related);
+  else if(UNIFIED_STATE.payrollFilter==="only") list=list.filter(r=>r.is_payroll_related);
   // 2026-09-04新規：会計ダッシュボードのカード・要対応内訳からの絞り込み遷移用
   // （overdue/bank_change/duplicate/mf_error/unknown_journal/unknown_company/unknown_store/import_error）
   if(UNIFIED_STATE.reasonFilter) list=list.filter(r=>unifiedAttentionReasons(r).includes(UNIFIED_STATE.reasonFilter));
@@ -4791,6 +4803,13 @@ function unifiedRender(u){
       <div class="card" style="padding:12px;margin-bottom:10px;display:flex;gap:10px;flex-wrap:wrap;align-items:end">
         <div><label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">検索</label><input id="unified-search" placeholder="🔎 取引先・請求書番号・法人・店舗" value="${esc(UNIFIED_STATE.search)}" style="max-width:280px"></div>
         <div><label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">対象年月（支払期限、無ければ受領日）</label><input type="month" id="unified-ym" value="${esc(UNIFIED_STATE.yearMonth)}"></div>
+        <div><label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">種類</label>
+          <select id="unified-payroll-filter">
+            <option value="exclude" ${UNIFIED_STATE.payrollFilter==="exclude"?"selected":""}>通常の請求書のみ（既定）</option>
+            <option value="all" ${UNIFIED_STATE.payrollFilter==="all"?"selected":""}>すべて（給与関連も含む）</option>
+            <option value="only" ${UNIFIED_STATE.payrollFilter==="only"?"selected":""}>給与関連のみ</option>
+          </select>
+        </div>
         ${UNIFIED_STATE.reasonFilter?`<span class="hq-pill amber" style="align-self:center">絞り込み中: ${esc(REASON_FILTER_LABELS[UNIFIED_STATE.reasonFilter]||UNIFIED_STATE.reasonFilter)}</span>`:''}
         <span id="unified-clear-wrap">${(UNIFIED_STATE.search||UNIFIED_STATE.yearMonth||UNIFIED_STATE.reasonFilter)?'<button class="hq-btn" id="unified-filter-clear">絞り込み解除</button>':''}</span>
       </div>
@@ -4827,6 +4846,7 @@ function unifiedRender(u){
     unifiedSearchTimer=setTimeout(()=>{ UNIFIED_STATE.search=val; unifiedRenderTableOnly(u); },250);
   };
   $("unified-ym").onchange=()=>{ UNIFIED_STATE.yearMonth=$("unified-ym").value; unifiedRender(u); };
+  $("unified-payroll-filter").onchange=()=>{ UNIFIED_STATE.payrollFilter=$("unified-payroll-filter").value; unifiedRender(u); };
   unifiedWireFilterClear(u);
   unifiedWireRowActions(u);
 }
@@ -7864,6 +7884,20 @@ async function payrollOpenPreview(userId){
     };
     const {ok,body:j}=await mfCall("create_standalone",payload);
     if(!ok){ pmsg.textContent=j.error||"登録に失敗しました"; $("payrollPreviewSubmit").disabled=false; return; }
+    // 2026-09-10追加：ユーザー報告「請求書一覧のところで給料なのか請求書なのか区別がつかない」に
+    // 対応。給与仕訳から証憑添付のために自動作成される「給与：氏名（年月）」invoicesレコードに、
+    // is_payroll_relatedフラグを立てておく（🧾請求書一覧の絞り込みで使う）。
+    // 2026-09-10追加（続き）：ユーザー要望「給料は全てトーホーだから、法人のところも、トーホーと
+    // 自動で連携されるようにしてほしい」に対応。給与仕訳タブ自体が「有限会社トーホーエージェンシー
+    // 分のみ対応」と明記されている（対象法人を選ぶ仕組みが元々無い）ため、法人名で引いたトーホーの
+    // corporation_idをあわせて設定する（見つからない場合は法人未設定のまま・実害なく続行）
+    if(j.invoice_id){
+      await ensureCorpStoreCache();
+      const tohoCorp=(CORP_STORE_CACHE&&CORP_STORE_CACHE.corporations||[]).find(c=>c.name==="トーホー");
+      const patchBody={is_payroll_related:true};
+      if(tohoCorp) patchBody.corporation_id=tohoCorp.id;
+      authed(`/rest/v1/invoices?id=eq.${j.invoice_id}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify(patchBody)}).catch(()=>{});
+    }
     const recR=await authed("/rest/v1/payroll_journal_records",{method:"POST",headers:{Prefer:"return=minimal"},body:JSON.stringify({
       user_id:userId, year_month:PAYROLL_STATE.yearMonth, tenant_id:"default", template_id:template.id,
       mf_journal_id:j.journal_id, mf_journal_number:j.journal_number, mf_journal_created_at:new Date().toISOString(),
