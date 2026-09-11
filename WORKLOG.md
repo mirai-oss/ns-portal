@@ -8356,3 +8356,61 @@ node --check・GitHub Pages反映確認済み。コミット`8589ea4`push。**�
 ## 2026-09-11（司令塔スレッド・続き）高速化の検証判定と実装GOを発行
 
 WORKLOG実査に基づき`docs/判定_高速化検証と実装GO_2026-09-11.md`を発行（判定表10項目・担当別実装指示・シート→DB移行の優先順・ユーザー確認2点）。要点は📍最新2エントリ参照。担当Hはコックピット反映（TK-60を再開readyへ・A/P/Cの新タスク登録）をお願いします。
+
+---
+
+## 2026-09-11（担当E実行スレッド）会計・請求ワークスペースUI刷新§1担当E分: hq_tasksに例外連携の受け皿＋種別タブ送金/入金/請求書（TK-52）
+
+### 指示
+
+`実装指示書_会計請求ワークスペースUI刷新_2026-09-11.md`§1「E（本部タスク例外連携）: hq_tasksに例外連携の受け皿（invoice_id/receivable_id・発生理由・元画面リンク・問題解消後の自動完了）。既存TK-52（種別タブ送金/入金/請求書）とセットで。列追加は宣言制・§9-13が仕様」。§9-13原文: 「本部タスク: 人間が動かないと進まない場合のみ（未取得・金額不一致・入金差異・AI確信度不足・勘定科目/法人/店舗不明・口座変更・MF登録エラー・振込エラー）。タスクにinvoice_id/receivable_id・発生理由・担当者・期限・元画面リンクを持たせ、問題解消後は自動完了。本部タスクを会計処理の正本にしない。」§9-12「自動化管理: ...正常処理を本部タスクへ大量発行しない。」
+
+### 調査（実装前）
+
+既存の`invoices.linked_hq_step_id`/`linked_hq_step_id_payment`/`event_task_links`（担当C実装）は、**人が既存の任意のhq_task_stepを手動で選んで請求書に紐付ける**仕組みであり、今回求められている「例外発生時に自動でタスクを発行し、解消後に自動完了する」仕組みとは別物と確認。よって新規に発行・解消の両RPCを作る設計にした（既存の手動紐付け機構には一切触れていない）。
+
+### 対応（DB・`supabase/2026-09-11_hq_task_exception_link.sql`）
+
+- `hq_tasks`に列を追加（列追加は宣言制。このファイル＋本エントリをもって宣言）:
+  - `exception_invoice_id uuid references invoices(id)`
+  - `exception_receivable_id uuid`（`ar_receivables`は担当C/D側でまだ新設されていないためFKなし。テーブルができ次第FKを追加できる）
+  - `exception_reason text`（発生理由）・`exception_source_url text`（元画面リンク）
+  - `task_category text`（種別タブ用の汎用カテゴリ。'invoice'|'deposit'|'transfer'|'onboarding'|null）
+- `hq_create_exception_task(p_title,p_reason,p_corp,p_invoice_id,p_receivable_id,p_due_date,p_assignee_ids,p_source_url,p_category)`: 例外タスクの発行。**同じ(invoice_id/receivable_id, reason)の組み合わせで未完了タスクが既にあれば作り直さない**（べき等。§9-12「正常処理を本部タスクへ大量発行しない」を、例外タスク自体の重複防止という形で担保）。期限未指定時は「検知日+2日」（§9-11の発行ルールに準拠）。`category`未指定時は`invoice_id`/`receivable_id`の有無から`invoice`/`deposit`を自動判定（`transfer`は呼び出し元が明示する想定）
+- `hq_resolve_exception_task(p_invoice_id,p_receivable_id,p_reason)`: 問題解消後の自動完了。該当タスクの全工程の`completed_at`を立てるだけにとどめ、既存の`hq_task_recalc_status`トリガー（全工程完了で`hq_tasks.status='done'`へ自動遷移させる仕組み）にタスク本体の完了を任せる設計にした（自動化ロジックを二重に持たない）
+- 呼び出し権限: `auth.uid()`がある場合はHQ/CEO/マスターのみ許可、`auth.uid()`が無い場合（service_role＝Playwright取込等のサーバー側ジョブからの呼び出し）は許可。担当Dの`ns-daily-import`側が「未取得を検知したら自動でタスク発行」を人手を介さず実行できるようにするため
+
+### 動作確認
+
+本番DBで、実在するinvoice_id（1件）を使い、ロールバック無しの一時的なテストで①`hq_create_exception_task`を2回呼び出し、2回目が新規作成せず同じtask_idを返す（べき等）ことを確認②`hq_resolve_exception_task`を呼び出し、対象タスクの`status`が`'done'`に自動遷移することを確認。**確認後、作成したテストタスク（工程・活動履歴含む）は完全に削除し原状回復済み**（本番データへの影響なし）。
+
+### 対応（`tasks.html`・TK-52の残り）
+
+- `matchesTaskCategory(t,cat)`を新設。既存の`isOnboardingTask`（タイトル判定）と、新設の`task_category`列の両方を見る（入社登録は既存タスクとの後方互換のため両方チェック、送金/入金/請求書は`task_category`のみで判定）
+- 種別タブに💸送金／💰入金／🧾請求書を追加（既存の📋入社登録の隣）。バッジは各カテゴリの未完了件数。**急ぎ（`is_urgent`。2026-09-10実装分）が1件でも含まれていれば、バッジの色を通常の赤から最重要色（紫）に変える**（元のSK設計モックにあった「送金タブに🔴急ぎNバッジ」を、汎用の最重要フラグで実現）
+- タスクカード・タスク詳細画面に`exception_reason`（発生理由）・`exception_source_url`（元画面リンク）を表示。詳細画面ではリンクをクリックすると元の会計ワークスペース画面へ`target="_blank"`で遷移できる
+
+harnessで①種別タブのバッジ内容（入社登録1件・入金1件・請求書2件のうち1件が急ぎ→バッジが最重要色）②請求書タブをクリックして正しく絞り込まれ、急ぎのタスクが先頭に来ること（2026-09-10実装の並び替えロジックと連携）③カード・詳細画面での発生理由・リンク表示、を確認済み。`node --check`相当の構文チェックも実施済み。
+
+### 担当C/Dへの申し送り
+
+`hq_create_exception_task`/`hq_resolve_exception_task`は実装済み・本番で動作確認済みです。会計ワークスペース（invoices.html・§9-13の該当箇所）や自動取込ジョブ（ns-daily-import）から実際に呼び出す配線はこちらでは行っていません（レーンEの管轄外のため）。呼び出し例:
+
+```
+-- 例外発生時（invoiceの金額不一致を検知した場合）
+select hq_create_exception_task(
+  p_title := '⚠️ 金額不一致: ' || vendor_name,
+  p_reason := '金額不一致',
+  p_corp := 'トーホー',
+  p_invoice_id := <invoices.id>,
+  p_due_date := null,          -- 省略時は検知日+2日
+  p_assignee_ids := null,       -- 省略可（未設定でも保存はできる。担当・期限未設定の絞り込みで見つけられる）
+  p_source_url := 'https://.../invoices.html?tab=unified&invoice=' || invoice_id,
+  p_category := null            -- 省略時はinvoice_idがあるので'invoice'になる
+);
+
+-- 問題解消後（人がMFへ登録し直した・金額を修正した等）
+select hq_resolve_exception_task(p_invoice_id := <invoices.id>, p_reason := '金額不一致');
+```
+
+正常処理（毎回のAI解析成功・自動仕訳成功等）ではこの関数を呼ばないでください（§9-12「正常処理を本部タスクへ大量発行しない」）。呼ぶのは§9-13に列挙された8パターン（未取得・金額不一致・入金差異・AI確信度不足・勘定科目/法人/店舗不明・口座変更・MF登録エラー・振込エラー）のときだけ、という認識合わせをお願いします。`category`を明示したい場合（送金系の例外を💸送金タブに出したい場合等）は`p_category:='transfer'`を渡してください。
