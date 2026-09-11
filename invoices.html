@@ -4909,6 +4909,18 @@ function unifiedRender(u){
         <div><label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">対象年月（支払期限、無ければ受領日）</label><input type="month" id="unified-ym" value="${esc(UNIFIED_STATE.yearMonth)}"></div>
         ${UNIFIED_STATE.reasonFilter?`<span class="hq-pill amber" style="align-self:center">絞り込み中: ${esc(REASON_FILTER_LABELS[UNIFIED_STATE.reasonFilter]||UNIFIED_STATE.reasonFilter)}</span>`:''}
         <span id="unified-clear-wrap">${(UNIFIED_STATE.search||UNIFIED_STATE.yearMonth||UNIFIED_STATE.reasonFilter)?'<button class="hq-btn" id="unified-filter-clear">絞り込み解除</button>':''}</span>
+        <div style="margin-left:auto;display:flex;gap:8px;align-items:end">
+          <button class="hq-btn primary" id="unified-open-transfers">🏦 振込一覧を開く</button>
+          <div><label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">その他の一覧</label>
+            <select id="unified-other-nav">
+              <option value="">選択…</option>
+              <option value="inbox">受信トレイ（未処理メール）</option>
+              <option value="sent">送信済み</option>
+              <option value="notApplicable">対象外にしたメール</option>
+              <option value="important">⭐ 重要にしたメール</option>
+            </select>
+          </div>
+        </div>
       </div>
       <div class="card hq-tablewrap">
         <table class="invoice-table" style="min-width:1400px">
@@ -4924,6 +4936,16 @@ function unifiedRender(u){
       </div>
     </section>`;
   document.querySelectorAll("[data-unified-tab]").forEach(b=>b.onclick=()=>{ UNIFIED_STATE.subTab=b.dataset.unifiedTab; unifiedRender(u); });
+  // 2026-09-11追加：会計・請求ワークスペースUI刷新Step3。ユーザー確認済みの方針
+  // （振込一覧→請求書タブに一本化／受信トレイ・送信済み・対象外・⭐重要→統合請求書一覧に
+  // 畳み込む）に対応。データモデルが異なる（invoice_emails起点／監査ログ起点）ため一覧自体を
+  // 合体させることはせず、請求書タブの中からワンクリックで開ける導線として統合した
+  // （旧タブ自体・その中身のロジックは削除していない）
+  if($("unified-open-transfers")) $("unified-open-transfers").onclick=()=>{ TAB="transfers"; pushNav(); renderTabBody(u); };
+  if($("unified-other-nav")) $("unified-other-nav").onchange=e=>{
+    const v=e.target.value; if(!v) return;
+    TAB=v; pushNav(); renderTabBody(u);
+  };
   document.querySelectorAll("[data-usort]").forEach(el=>el.onclick=()=>{
     const col=el.dataset.usort;
     if(UNIFIED_STATE.sortCol===col) UNIFIED_STATE.sortDir=UNIFIED_STATE.sortDir==="asc"?"desc":"asc";
@@ -5073,6 +5095,7 @@ function transferRender(u){
   TRANSFERS_STATE.rows.forEach(r=>{ const k=r.corporation_id||"__unset__"; corpCounts.set(k,(corpCounts.get(k)||0)+1); });
   $("tabbody").innerHTML=`
     <section class="invoice-list active">
+      <div style="margin-bottom:10px"><button class="hq-btn" id="transfers-back-unified">← 🧾請求書一覧へ戻る</button></div>
       <div class="kpis" style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:14px">
         <div class="card kpi" style="padding:14px"><small style="color:var(--muted);font-size:9px;display:block">振込待ち</small><b style="font-size:24px;display:block;margin-top:5px">${filtered.length}</b></div>
         <div class="card kpi" style="padding:14px"><small style="color:var(--muted);font-size:9px;display:block">合計金額</small><b style="font-size:24px;display:block;margin-top:5px">${yen(filtered.reduce((s,r)=>s+(Number(r.amount)||0),0))}</b></div>
@@ -5107,6 +5130,8 @@ function transferRender(u){
         <div class="err" id="transfer-msg" style="margin-top:8px"></div>
       </div>
     </section>`;
+  // 2026-09-11追加：会計・請求ワークスペースUI刷新Step3（請求書タブから開いたときの戻り導線）
+  if($("transfers-back-unified")) $("transfers-back-unified").onclick=()=>{ TAB="unified"; pushNav(); renderTabBody(u); };
   $("transfer-corp-filter").onchange=()=>{ TRANSFERS_STATE.corpFilter=$("transfer-corp-filter").value; transferRender(u); };
   $("transfer-schedule-filter").onchange=()=>{ TRANSFERS_STATE.scheduleFilter=$("transfer-schedule-filter").value; transferRender(u); };
   document.querySelectorAll(".transfer-check").forEach(el=>el.onchange=()=>{
@@ -5227,10 +5252,13 @@ async function renderHistoryTab(u){
   const rows=(r.ok&&Array.isArray(r.body))?r.body:[];
   $("tabbody").innerHTML=`
     <section class="invoice-list active">
+      <div style="margin-bottom:10px"><button class="hq-btn" id="history-back-upload">← 自動取込へ戻る</button></div>
       <div class="card hq-tablewrap"><table class="invoice-table"><tbody>
         ${rows.map(x=>`<tr><td><b>${fmtDT(x.created_at)}</b></td><td>${esc(x.actor&&x.actor.name||"—")}が${logLabel(x.action)}${x.note?"（"+esc(x.note)+"）":""}</td></tr>`).join("")||'<tr><td colspan="2">履歴はありません</td></tr>'}
       </tbody></table></div>
     </section>`;
+  // 2026-09-11追加：会計・請求ワークスペースUI刷新Step3（自動取込タブから開いたときの戻り導線）
+  if($("history-back-upload")) $("history-back-upload").onclick=()=>{ TAB="upload"; pushNav(); renderTabBody(u); };
 }
 
 /* ============================================================
@@ -6013,7 +6041,13 @@ async function renderUploadInvoiceTab(u){
   $("tabbody").innerHTML=`
     <section class="invoice-list active">
       <div class="card" style="padding:16px;margin-bottom:14px">
-        <h3 style="font-size:14px;margin-bottom:6px">📤 アップロード請求書（取込専用）</h3>
+        <div style="display:flex;justify-content:space-between;align-items:start;gap:10px;flex-wrap:wrap">
+          <h3 style="font-size:14px;margin-bottom:6px">📤 アップロード請求書（取込専用）</h3>
+          <!-- 2026-09-11追加：会計・請求ワークスペースUI刷新Step3。ユーザー確認済みの方針
+               （処理履歴→自動取込タブへ統合）に対応。invoice_audit_logs起点の別データのため
+               一覧自体は合体させず、ここから開ける導線として統合した -->
+          <button class="hq-btn" id="upload-open-history">📋 処理履歴を見る</button>
+        </div>
         <div style="font-size:12px;color:var(--muted);margin-bottom:12px">メールに来ない請求書（手渡し・現金精算・郵送のPDF等）を取り込みます。<b>ここでは取込だけを行います。</b>会計登録・PL反映・広告費反映・精算書連携・振込などの処理は、取込後に「🧾請求書」一覧から行ってください。</div>
         <div class="ai-grid">
           <div class="ai-field"><small>請求元（分かれば・後からでも入力できます）</small><input id="up-vendor"></div>
@@ -6051,6 +6085,7 @@ function uploadFileToBase64(file){
   });
 }
 function wireUploadInvoiceTab(u){
+  if($("upload-open-history")) $("upload-open-history").onclick=()=>{ TAB="history"; pushNav(); renderTabBody(u); };
   const drop=$("up-drop");
   const renderFileList=()=>{
     $("up-filelist").innerHTML=UPLOAD_STATE.files.length
