@@ -1837,12 +1837,25 @@ function payrollSummaryHtml(){
 // この3タブでは請求書メール向けの項目（KPIバー・受信トレイ等のタブ切替行）を表示しない
 // 2026-09-11修正：新5タブナビ（.acws-tabs）を追加したreceivableSoon/automationSoonも、
 // dashboard等と同じ「EMBED時は旧.mail-tabs行を隠す」対象に含める。
-// 【あえて含めないもの】inbox/sent/notApplicable/important/history/salesList/contractListは
-// TAB_TO_AC_GROUPで「請求書」「自動取込」グループに対応付けてはいるが、新ナビ側にはまだ
-// これらへ個別に飛べるボタンが無い（新ナビは5グループの代表タブへ飛ぶだけ＝Step2は外枠のみ）。
-// ここでEMBED時に旧行を隠してしまうと、この5タブ同士を行き来する手段が無くなり操作不能になる
-// ため、Step3（請求書タブの中身を実際に統合し尽くす）までは旧行を出したままにする
-const ACCOUNTING_ONLY_TABS=["dashboard","upload","payroll","unified","transfers","settings","receivableSoon","automationSoon"];
+// 2026-09-11再修正（ユーザー実機フィードバック対応）：Step3で統合請求書一覧（unified）に
+// 「その他の一覧」ドロップダウン（inbox/sent/notApplicable/important）、自動取込タブに
+// 「処理履歴を見る」ボタンを追加済みで、これらのタブへ個別に飛べる手段は既にある。
+// ユーザーから「縦のタブ1つの中で横タブに切り替えられるようにしてるはずなのに、前のUIの
+// ままでわかりづらい」との指摘を受け、旧.mail-tabs行がinbox等でまだ表示されたままだった
+// （＝新5タブナビと旧タブ行が二重に出て「統合された1つのワークスペース」に見えていなかった）
+// ことが原因と判断。橋渡し導線が揃った今、これらも隠す対象に追加する（salesList=廃止決定
+// 済みのため橋渡し導線を作っていない・contractListは5タブ構成の外に残す方針＝意図的に対象外）
+const ACCOUNTING_ONLY_TABS=["dashboard","upload","payroll","unified","transfers","settings","receivableSoon","automationSoon","inbox","sent","notApplicable","important","history"];
+// 2026-09-11追加：ユーザー実機フィードバック対応。担当D管轄のimport_schedule/import_runsは
+// 13ジョブ全て（横浜アリーナのイベント取得・Dinii注文明細・スマレジ人件費等、会計と無関係な
+// ものも含む）を管理しているが、会計・請求ワークスペースの「自動取込」タブには「会計入力に
+// 必要になっているものだけ」を出してほしいとの指摘。import_schedule.kindで判定する:
+// 'deposit'=入金明細（PayPay・Dinii支払い＝売上入金の元データ）／'purchase'=仕入請求
+// （インフォマート＝請求書の元データ）の2種類だけが会計・請求ワークスペースの対象。
+// それ以外（イベント取得・媒体別・注文明細・アンケート・人件費・BQ突合等）は会計処理に
+// 使っておらず、全ジョブの実行状況はportal.html「⚙️管理・設定＞システム利用状況」に集約する
+// （担当F管轄の既存画面。WORKLOGにこの分担を記録済み）
+const ACCOUNTING_IMPORT_KINDS="deposit,purchase";
 // 画面上部のKPIバーと、その下のタブ切替行（受信トレイ／請求書一覧／…／新規作成）をタブに応じて
 // 出し分ける。ユーザー報告「そのタブに合わない請求書メールの項目が混じっている」に対応
 // （2026-09-01: 会計ダッシュボード・アップロード請求書・給与仕訳では請求書メール向けの項目を隠す）
@@ -2021,10 +2034,10 @@ let AUTOMATION_STATE={runs:[],exceptionTasks:[],manualTasks:[],statusToday:[]};
 async function renderAutomationTab(u){
   $("tabbody").innerHTML=`<section class="invoice-list active"><div class="card" style="padding:16px"><div class="spin" style="padding:20px 0">読み込み中…</div></div></section>`;
   const [runsR,excR,manR,statusR]=await Promise.all([
-    authed(`/rest/v1/import_runs?select=*&order=started_at.desc&limit=100`),
+    authed(`/rest/v1/import_runs?kind=in.(${ACCOUNTING_IMPORT_KINDS})&select=*&order=started_at.desc&limit=100`),
     authed(`/rest/v1/hq_tasks?exception_reason=not.is.null&deleted_at=is.null&status=neq.done&select=*&order=created_at.desc&limit=50`),
     authed(`/rest/v1/hq_tasks?task_category=not.is.null&exception_reason=is.null&status=neq.done&deleted_at=is.null&select=*&order=due_date.asc.nullslast&limit=50`),
-    authed(`/rest/v1/import_status_today?select=*`),
+    authed(`/rest/v1/import_status_today?kind=in.(${ACCOUNTING_IMPORT_KINDS})&select=*`),
   ]);
   AUTOMATION_STATE.runs=(runsR.ok&&Array.isArray(runsR.body))?runsR.body:[];
   AUTOMATION_STATE.exceptionTasks=(excR.ok&&Array.isArray(excR.body))?excR.body:[];
@@ -6125,8 +6138,8 @@ async function renderAccountingDashboardTab(u){
     authed(`/rest/v1/invoices?select=*,email:invoice_emails(mail_kind),corp:corporations(name),store:stores!invoices_store_id_fkey(name),invoice_stores(store:stores(name)),vendor:vendors(name)&order=created_at.desc&limit=1000`),
     ensureCorpStoreCache(),
     authed(`/rest/v1/ar_receivables?year_month=eq.${encodeURIComponent(nowYm)}&select=id,status,expected_date,source_name`),
-    authed(`/rest/v1/import_status_today?select=is_overdue`),
-    authed(`/rest/v1/import_runs?select=status,started_at,finished_at&order=started_at.desc&limit=200`),
+    authed(`/rest/v1/import_status_today?kind=in.(${ACCOUNTING_IMPORT_KINDS})&select=is_overdue`),
+    authed(`/rest/v1/import_runs?kind=in.(${ACCOUNTING_IMPORT_KINDS})&select=status,started_at,finished_at&order=started_at.desc&limit=200`),
   ]);
   if(!r.ok){
     DASH_STATE.error="取得に失敗しました";
@@ -6447,9 +6460,9 @@ async function renderUploadInvoiceTab(u){
   await ensureCorpStoreCache();
   const [recentR,runsR,scheduleR,statusR]=await Promise.all([
     authed(`/rest/v1/invoices?email_id=is.null&select=*&order=created_at.desc&limit=30`),
-    authed(`/rest/v1/import_runs?select=*&order=started_at.desc&limit=100`),
-    authed(`/rest/v1/import_schedule?select=*&order=label`),
-    authed(`/rest/v1/import_status_today?select=*&order=is_overdue.desc,expected_time_jst.asc.nullslast`),
+    authed(`/rest/v1/import_runs?kind=in.(${ACCOUNTING_IMPORT_KINDS})&select=*&order=started_at.desc&limit=100`),
+    authed(`/rest/v1/import_schedule?kind=in.(${ACCOUNTING_IMPORT_KINDS})&select=*&order=label`),
+    authed(`/rest/v1/import_status_today?kind=in.(${ACCOUNTING_IMPORT_KINDS})&select=*&order=is_overdue.desc,expected_time_jst.asc.nullslast`),
   ]);
   UPLOAD_STATE={files:[],recent:(recentR.ok&&Array.isArray(recentR.body))?recentR.body:[]};
   INTAKE_STATE.runs=(runsR.ok&&Array.isArray(runsR.body))?runsR.body:[];
@@ -6501,7 +6514,7 @@ function intakeAutoHtml(){
   const statusLabel={running:["実行中","gray"],success:["成功","done"],partial:["一部成功","wait"],failed:["失敗","err"]};
   return `
       <div class="card" style="padding:16px;margin-bottom:14px">
-        <div style="font-size:12px;color:var(--muted)">Playwright等による自動取込ジョブの実行ログです（担当D管轄・ns-daily-import。直近100件）。AI解析状態・会計/消込状態は、取込後にそれぞれ「🧾請求書」「💰売上入金」タブでご確認ください（このジョブ単位のログとは別の一覧です）。</div>
+        <div style="font-size:12px;color:var(--muted)">会計入力に必要な取込ジョブ（PayPay・インフォマート仕入等）だけを表示しています（担当D管轄・ns-daily-import。直近100件）。AI解析状態・会計/消込状態は、取込後にそれぞれ「🧾請求書」「💰売上入金」タブでご確認ください。イベント取得・媒体別・人件費等、会計に使わないジョブも含めた全ジョブの実行状況は「⚙️管理・設定＞システム利用状況」でご確認いただけます。</div>
       </div>
       <div class="card hq-tablewrap" style="padding:0">
         <table class="invoice-table">
