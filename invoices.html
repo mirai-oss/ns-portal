@@ -8,17 +8,29 @@
 <style>
 /* ============================================================
    配色・レイアウトはユーザー提供のUIプロトタイプ（mail-shell）に準拠
+   2026-09-11更新：会計・請求ワークスペースUI刷新（実機フィードバック対応）。ユーザーから
+   「色合いが全然違う」との指摘を受け再点検した結果、この:rootパレットが2026-08頃の旧
+   プロトタイプ（請求書メール管理Phase1のmail-shell）のままで、今回のUI Source of Truth
+   （NStyle_添付HTMLをベースにした_3HTML統合版_修正版.html）の実際の配色に一度も合わせて
+   いなかったと判明（Step2-11ではCSS変数を"再利用"しただけで、変数の値自体は旧のまま
+   だった）。invoices.html全体＝会計・請求ワークスペースそのものであり他の用途と共有して
+   いないため、SoTの値にそのまま合わせる（指示書§9-16「最終HTML忠実」に対応）。
+   --accentは元々SoTの値(#c94728)と一致していたため変更なし。--red/--purpleはSoTに
+   あるが旧パレットに無かった変数を新規追加した（既存の var(--accent) をエラー色として
+   使っている箇所は多数あり、broad replaceは今回のfixの範囲外として見送った）
    ============================================================ */
 :root{
-  --bg:#f4f1eb; --panel:#fff; --ink:#231f1a; --muted:#7d756d; --line:#e4ddd4;
+  --bg:#f5f6f7; --panel:#fff; --ink:#222; --muted:#737a81; --line:#dfe3e7;
   --accent:#c94728; --accent-soft:#fce9e3;
-  --green:#2f8f63; --green-soft:#e7f5ed;
-  --amber:#b77b13; --amber-soft:#fff3d8;
-  --blue:#2f6fb7; --blue-soft:#e8f0fb;
+  --red:#cf4b45; --red-soft:#fff0ef;
+  --green:#69b80c; --green-soft:#f1f8e9;
+  --amber:#aa700b; --amber-soft:#fff7e7;
+  --blue:#3478b8; --blue-soft:#eef6fd;
+  --purple:#6d5aa5; --purple-soft:#f5f1ff;
   --shadow:0 8px 28px rgba(35,31,26,.08); --radius:16px;
 }
 @media(prefers-color-scheme:dark){
-  :root{--bg:#211d18; --panel:#2b2620; --ink:#f2ede6; --muted:#b3aa9f; --line:#433c33; --accent-soft:#4a2c22; --green-soft:#1f3a2c; --amber-soft:#3d3018; --blue-soft:#1e3049;}
+  :root{--bg:#211d18; --panel:#2b2620; --ink:#f2ede6; --muted:#b3aa9f; --line:#433c33; --accent-soft:#4a2c22; --red-soft:#4a2320; --green-soft:#213a10; --amber-soft:#3d2f10; --blue-soft:#152a3d; --purple-soft:#2c2438;}
   /* 2026-09-05追加：ユーザー報告「夜モードだと色が変わって見づらい」に対応。
      .step-badge.currentは続き27で赤系（--accent-soft背景＋--accentの太字）に変更したが、
      ダークモードの--accent-softは暗い赤茶色になる一方、文字色の--accentはライト/ダーク共通の
@@ -364,6 +376,15 @@ button,input,select,textarea{font:inherit}
 .dash-kpi-label{font-size:11px;color:var(--muted);font-weight:600;margin-bottom:4px}
 .dash-kpi-val{font-size:22px;font-weight:800}
 .dash-kpi-card.alert .dash-kpi-label,.dash-kpi-card.alert .dash-kpi-val{color:var(--accent)}
+/* 2026-09-11追加：実機フィードバック対応。SoT（3HTML統合版修正版.html）の.kpiは背景色では
+   なく左ボーダー3pxで状態を示す（.kpi.good/.bad/.warn/.info）。既存の.card.kpi（Step4/6の
+   KPI6枚行）・.dash-kpi-card（Step7/8）の両方にこの左ボーダー方式を追加する。既存の
+   .alert（.dash-kpi-cardの警告表現）はそのまま残し、新しくgood/bad/warn/infoを追加する形
+   （後方互換・既存呼び出し元を壊さない） */
+.card.kpi.good,.dash-kpi-card.good{border-left:3px solid var(--green)}
+.card.kpi.bad,.dash-kpi-card.bad{border-left:3px solid var(--red,var(--accent))}
+.card.kpi.warn,.dash-kpi-card.warn{border-left:3px solid var(--amber)}
+.card.kpi.info,.dash-kpi-card.info{border-left:3px solid var(--blue)}
 .dash-two-col{display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:26px}
 .dash-progress-row{margin-bottom:14px}
 .dash-progress-row:last-child{margin-bottom:0}
@@ -575,6 +596,12 @@ body.embed-mode .wrap{padding-top:16px}
 <div id="app"><div class="spin">読み込み中…</div></div>
 </div>
 <script>
+// 2026-09-11追加：会計・請求ワークスペースUI刷新への実機フィードバック対応。ユーザーから
+// 「変更が反映されているか分からない」との指摘を受け、acws-head（会計・請求ワークスペースの
+// 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
+// スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
+// （デプロイのたびにここを更新する）
+const BUILD_TAG="2026-09-11-19:40";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -1881,7 +1908,7 @@ function shellHtml(u){
   </div>`}
   <div class="mail-shell">
     ${(EMBED&&acActiveGroup())?`
-    <div class="acws-head"><b>会計・請求ワークスペース</b><small>支払・入金・自動取込を一元管理</small></div>
+    <div class="acws-head"><b>会計・請求ワークスペース</b><small>支払・入金・自動取込を一元管理</small><small style="margin-left:auto;color:#767">build ${esc(BUILD_TAG)}</small></div>
     <div class="acws-tabs" id="acwsTabs">
       ${AC_GROUPS.map(([key,label])=>`<button class="${acActiveGroup()===key?"active":""}" data-acgroup="${key}">${esc(label)}</button>`).join("")}
     </div>`:""}
@@ -2132,11 +2159,11 @@ function automationRender(u){
   $("tabbody").innerHTML=`
     <section class="invoice-list active">
       <div class="kpis kpis6">
-        <div class="card kpi" style="padding:14px"><small style="color:var(--muted);font-size:9px;display:block">要人間確認</small><b style="font-size:22px;display:block;margin-top:5px;color:var(--m-red)">${kpi.needAttn}件</b></div>
+        <div class="card kpi bad" style="padding:14px"><small style="color:var(--muted);font-size:9px;display:block">要人間確認</small><b style="font-size:22px;display:block;margin-top:5px">${kpi.needAttn}件</b></div>
         <div class="card kpi" style="padding:14px"><small style="color:var(--muted);font-size:9px;display:block">自動処理中</small><b style="font-size:22px;display:block;margin-top:5px">${kpi.running}件</b></div>
-        <div class="card kpi" style="padding:14px"><small style="color:var(--muted);font-size:9px;display:block">本日自動完了</small><b style="font-size:22px;display:block;margin-top:5px">${kpi.doneToday}件</b></div>
+        <div class="card kpi good" style="padding:14px"><small style="color:var(--muted);font-size:9px;display:block">本日自動完了</small><b style="font-size:22px;display:block;margin-top:5px">${kpi.doneToday}件</b></div>
         <div class="card kpi" style="padding:14px"><small style="color:var(--muted);font-size:9px;display:block">未取得</small><b style="font-size:22px;display:block;margin-top:5px">${kpi.overdue}件</b></div>
-        <div class="card kpi" style="padding:14px"><small style="color:var(--muted);font-size:9px;display:block">処理エラー</small><b style="font-size:22px;display:block;margin-top:5px;color:var(--m-red)">${kpi.errToday}件</b></div>
+        <div class="card kpi bad" style="padding:14px"><small style="color:var(--muted);font-size:9px;display:block">処理エラー</small><b style="font-size:22px;display:block;margin-top:5px">${kpi.errToday}件</b></div>
         <div class="card kpi" style="padding:14px"><small style="color:var(--muted);font-size:9px;display:block">自動完了率</small><b style="font-size:22px;display:block;margin-top:5px">${kpi.rate}%</b></div>
       </div>
       <div class="card" style="padding:10px 14px;margin-bottom:14px;background:var(--m-bg,#f4f1eb);font-size:12px;color:var(--muted)">
@@ -2265,9 +2292,9 @@ function receivableRender(u){
     <section class="invoice-list active">
       <div class="kpis kpis6">
         <div class="card kpi" style="padding:14px"><small style="color:var(--muted);font-size:9px;display:block">今月入金予定</small><b style="font-size:20px;display:block;margin-top:5px">${kpi.pending.n}件</b><small style="color:var(--muted)">${yen(kpi.pending.amt)}</small></div>
-        <div class="card kpi" style="padding:14px"><small style="color:var(--muted);font-size:9px;display:block">未入金</small><b style="font-size:20px;display:block;margin-top:5px;color:var(--m-red)">${kpi.overdue.n}件</b><small style="color:var(--muted)">${yen(kpi.overdue.amt)}</small></div>
-        <div class="card kpi" style="padding:14px"><small style="color:var(--muted);font-size:9px;display:block">差異あり</small><b style="font-size:20px;display:block;margin-top:5px;color:var(--m-red)">${kpi.diff.n}件</b><small style="color:var(--muted)">${yen(kpi.diff.amt)}</small></div>
-        <div class="card kpi" style="padding:14px"><small style="color:var(--muted);font-size:9px;display:block">自動消込</small><b style="font-size:20px;display:block;margin-top:5px">${kpi.autoMatched.n}件</b></div>
+        <div class="card kpi bad" style="padding:14px"><small style="color:var(--muted);font-size:9px;display:block">未入金</small><b style="font-size:20px;display:block;margin-top:5px">${kpi.overdue.n}件</b><small style="color:var(--muted)">${yen(kpi.overdue.amt)}</small></div>
+        <div class="card kpi warn" style="padding:14px"><small style="color:var(--muted);font-size:9px;display:block">差異あり</small><b style="font-size:20px;display:block;margin-top:5px">${kpi.diff.n}件</b><small style="color:var(--muted)">${yen(kpi.diff.amt)}</small></div>
+        <div class="card kpi good" style="padding:14px"><small style="color:var(--muted);font-size:9px;display:block">自動消込</small><b style="font-size:20px;display:block;margin-top:5px">${kpi.autoMatched.n}件</b></div>
         <div class="card kpi" style="padding:14px"><small style="color:var(--muted);font-size:9px;display:block">消込完了</small><b style="font-size:20px;display:block;margin-top:5px">${kpi.matched.n}件</b><small style="color:var(--muted)">${yen(kpi.matched.amt)}</small></div>
         <div class="card kpi" style="padding:14px"><small style="color:var(--muted);font-size:9px;display:block">自動消込率</small><b style="font-size:20px;display:block;margin-top:5px">${kpi.rate}%</b></div>
       </div>
@@ -5187,8 +5214,30 @@ function unifiedRender(u){
   // 除いて数える（一覧には出てこないのに件数だけ多く見えてしまっていたのを修正）
   const countBase=UNIFIED_STATE.rows.filter(r=>!r.is_payroll_related);
   UNIFIED_SUBTABS.forEach(([k])=>{ counts[k]=countBase.filter(r=>unifiedMatchesSubTab(r,k)).length; });
+  // 2026-09-11追加：実機フィードバック対応。SoT（3HTML統合版修正版.html）の請求書タブは
+  // 一覧の前にKPI6枚（要対応/会計待ち/振込待ち/完了/自動処理/今月請求総額）が必ずあるが、
+  // このタブにはこれが1枚も無かった（画面上部のmail-summary-barはStep2からEMBED時は隠す
+  // 設定になっており、代わりが用意されていなかった）。会計ダッシュボード「②今月の処理状況」
+  // と同じ実データ・同じ判定ロジックで、このタブ自身にもKPI6枚を追加する
+  const thisMonthYm=new Date().toISOString().slice(0,7);
+  const unifiedKpi={
+    needsAttn:countBase.filter(unifiedNeedsAttention).length,
+    accountingWaiting:countBase.filter(r=>!r.mf_journal_id).length,
+    paymentWaiting:countBase.filter(r=>r.mf_journal_id&&["wait","csv","processing"].includes(r.payment_status)).length,
+    done:countBase.filter(r=>r.payment_verified_at).length,
+    auto:countBase.filter(r=>r.ai_match_status==="auto"&&!r.bank_account_change_detected&&!r.duplicate_suspected).length,
+    totalAmount:countBase.filter(r=>{const d=r.due_date||r.created_at; return d&&String(d).slice(0,7)===thisMonthYm;}).reduce((s,r)=>s+(Number(r.amount)||0),0),
+  };
   $("tabbody").innerHTML=`
     <section class="invoice-list active">
+      <div class="kpis kpis6" style="margin-bottom:14px">
+        <div class="card kpi bad" style="padding:14px;cursor:pointer" data-ukpi="review"><small style="color:var(--muted);font-size:9px;display:block">要対応</small><b style="font-size:20px;display:block;margin-top:5px">${unifiedKpi.needsAttn}件</b></div>
+        <div class="card kpi warn" style="padding:14px;cursor:pointer" data-ukpi="accounting"><small style="color:var(--muted);font-size:9px;display:block">会計待ち</small><b style="font-size:20px;display:block;margin-top:5px">${unifiedKpi.accountingWaiting}件</b></div>
+        <div class="card kpi" style="padding:14px;cursor:pointer" data-ukpi="payment"><small style="color:var(--muted);font-size:9px;display:block">振込待ち</small><b style="font-size:20px;display:block;margin-top:5px">${unifiedKpi.paymentWaiting}件</b></div>
+        <div class="card kpi good" style="padding:14px;cursor:pointer" data-ukpi="done"><small style="color:var(--muted);font-size:9px;display:block">完了</small><b style="font-size:20px;display:block;margin-top:5px">${unifiedKpi.done}件</b></div>
+        <div class="card kpi" style="padding:14px"><small style="color:var(--muted);font-size:9px;display:block">自動処理</small><b style="font-size:20px;display:block;margin-top:5px">${unifiedKpi.auto}件</b></div>
+        <div class="card kpi" style="padding:14px"><small style="color:var(--muted);font-size:9px;display:block">今月請求総額</small><b style="font-size:20px;display:block;margin-top:5px">${yen(unifiedKpi.totalAmount)}</b></div>
+      </div>
       <div class="mail-tabs" style="margin-bottom:10px">
         ${UNIFIED_SUBTABS.map(([k,l])=>`<button class="mail-tab ${UNIFIED_STATE.subTab===k?"active":""}" data-unified-tab="${k}">${l}（${counts[k]}）</button>`).join("")}
       </div>
@@ -5224,6 +5273,7 @@ function unifiedRender(u){
       </div>
     </section>`;
   document.querySelectorAll("[data-unified-tab]").forEach(b=>b.onclick=()=>{ UNIFIED_STATE.subTab=b.dataset.unifiedTab; unifiedRender(u); });
+  document.querySelectorAll("[data-ukpi]").forEach(el=>el.onclick=()=>{ UNIFIED_STATE.subTab=el.dataset.ukpi; unifiedRender(u); });
   // 2026-09-11追加：会計・請求ワークスペースUI刷新Step3。ユーザー確認済みの方針
   // （振込一覧→請求書タブに一本化／受信トレイ・送信済み・対象外・⭐重要→統合請求書一覧に
   // 畳み込む）に対応。データモデルが異なる（invoice_emails起点／監査ログ起点）ため一覧自体を
