@@ -6,6 +6,8 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
+**★★★★2026-09-11（担当C実行スレッド）会計UI刷新Step4完了：売上入金タブを新規実装（`ar_`系4テーブル新設＋UI）**: 担当D既存の`import_paypay_settlement`/`import_runs`/`import_schedule`/`import_status_today`（生データ取込層）を調査した上で、それを正規化・消込する会計レイヤーとして`ar_receivables`（入金予定）/`ar_deposits`（実入金）/`ar_matching`（消込結果・差異ログ）/`ar_recurring_master`（定期入金マスタ）を新設（全て新規テーブルのみ・既存テーブル無改修・事前報告はSQL冒頭コメントに記載・Supabase Management API適用済み・4テーブル作成確認済み）。`invoices.html`の`renderReceivableSoonTab`（準備中案内）を`renderReceivableTab`に置き換え、KPI6枚（今月入金予定/未入金/差異あり/自動消込/消込完了/自動消込率）・5内部タブ（入金予定/未入金/差異あり/入金済/消込完了）・店舗/対象月絞り込み・一覧テーブルを実装。共通費（store_id=null）は「共通費」ピルで明示しAI按分しない設計を徹底。現状は担当DのPayPay加盟店明細取込ジョブが未着手（Step1で判明: PayPay for Business管理画面からの新規取得が必要）のため実データ0件・空表示になる。ローカル静的モックでレイアウト確認・node --check済み。コミット[8e5b164](https://github.com/mirai-oss/ns-portal/commit/8e5b164)（DB）・[a85b618](https://github.com/mirai-oss/ns-portal/commit/a85b618)（UI）push・デプロイ確認済み。**実機E2Eは未実施**（自動取込側の実データが揃い次第、担当Dと連携して確認予定）。次はStep5（自動取込UI — D側import_runs/import_schedule/import_status_todayを自動取込タブへ接続）。
+
 **★★★★2026-09-11（担当C実行スレッド）会計UI刷新Step3完了：振込一覧・メール管理・処理履歴を請求書/自動取込タブへ統合**: Step1確定方針（振込一覧→請求書タブに一本化／受信トレイ・送信済み・対象外・⭐重要→統合請求書一覧に畳み込む／処理履歴→自動取込タブへ統合）に対応。調査の結果、これらはinvoicesテーブルではなくinvoice_emails・invoice_audit_logs起点の別データモデルと判明し、一覧自体の合体はせず**各タブの中からワンクリックで開ける導線として統合**する方式にした：①🧾請求書タブのツールバーに「🏦振込一覧を開く」ボタン＋「その他の一覧」セレクト（受信トレイ/送信済み/対象外/⭐重要）を追加②📤自動取込タブに「📋処理履歴を見る」ボタンを追加③振込一覧・処理履歴タブに「請求書一覧へ戻る」「自動取込へ戻る」の戻り導線を追加（従来は行き止まりだった）。既存タブのロジック・データ取得は無変更。実CSSでの静的モック確認・node --check済み。コミット`4cc56bc`push・デプロイ確認済み。**実機E2Eは未実施**。次はStep4（売上入金・新規実装）。
 
 **★★2026-09-11（担当Fスレッド）担当Cからの申し送りに対応: 売上入金/自動化のsoonプレースホルダーを実URLへ差し替え**: 担当CのStep2完了報告（本WORKLOG直下のエントリ）「`KAIKEI_GROUP`の『売上入金』『自動化』に実URLが使えるようになった→`tab=receivableSoon`／`tab=automationSoon`」を受け対応。`portal.html`の`KAIKEI_GROUP`で`soon:true`（🚧準備中バッジのみ）にしていた2項目のurlをそれぞれ`invoices.html?embed=1&tab=receivableSoon`／`invoices.html?embed=1&tab=automationSoon`に差し替えた。中身はまだ準備中案内のみだが、Cの申し送りどおりリンク先としては機能する。Step4（売上入金）/Step6（自動化管理）で中身が実装されtab名が変わる場合はurlの差し替えのみで追従できる旨コード側にコメント済み。ブラウザのモック描画で両項目とも正しいURLのiframeが開くことを確認済み。コミット[988f114](https://github.com/mirai-oss/ns-portal/commit/988f114)・push済み。
@@ -8422,5 +8424,44 @@ select hq_create_exception_task(
 -- 問題解消後（人がMFへ登録し直した・金額を修正した等）
 select hq_resolve_exception_task(p_invoice_id := <invoices.id>, p_reason := '金額不一致');
 ```
+
+## 2026-09-11（担当C実行スレッド）会計UI刷新Step4: 売上入金タブを新規実装（`ar_`系4テーブル新設＋UI）
+
+`実装指示書_会計請求ワークスペースUI刷新_2026-09-11.md`のStep4「売上入金（新規実装）」に対応。指示書§9-8/9-9（フロー=売上発生→入金予定→実入金→照合→消込。PayPay等の店舗別集計は共通費をAI按分せず分離）。
+
+### 着手前の調査（担当D既存資産との重複回避）
+
+Step4着手前に`information_schema`を確認し、担当Dが本指示書§1担当D分（自動取込レーン）で先行構築済みの4テーブルを把握:
+- `import_runs`: 取込ジョブ実行ログ（自動取込タブの「取込履歴」データ源）
+- `import_schedule`: 定期取込ジョブ定義（13ジョブ登録済み。paypay-bank/paypay-bank-b含む）
+- `import_status_today`（ビュー）: 未取得・要エスカレーション判定
+- `import_paypay_settlement`: PayPay決済明細の格納先（store_id/is_common_cost/target_ym/transaction_amount/system_fee/deposit_amount。既にstore_id=null+is_common_cost=trueの共通費分離設計で準備済みだが、担当D側のPayPay加盟店明細取込ジョブが未着手のため現状0件）
+
+これらは「取込元ごとの生データ」であり、会計・消込処理に必要な「取込元を問わない正規化された共通形」ではないため、担当D＝生データ取込層／担当C＝正規化・消込・UI層、という指示書§1の役割分担どおりに新規テーブルを設計した（D側テーブルの重複作成・書き換えは行っていない）。
+
+### 実装した内容（§9-20様式の事前報告はSQLファイル冒頭コメントに記載）
+
+**DB（`supabase/2026-09-11_ar_receivables_schema.sql`。全て新規テーブルのみ・既存テーブル無改修）**:
+1. `ar_recurring_master`: 定期請求・入金マスタ（指示書§9-11）。`import_schedule`とはjob名の緩い対応のみ（外部キー制約なし＝担当D管轄テーブルを直接参照制約しない）。自動化レベルLv1-4・担当者・請求書/売上入金の別など会計側の管理項目を保持
+2. `ar_receivables`: 売上入金予定（正規化）。`source_table`/`source_ref_id`で元データ（`import_paypay_settlement`等）を自由記述で参照。`store_id`/`is_common_cost`で共通費分離。`status`(pending/matched/diff/manual_review)
+3. `ar_deposits`: 実入金記録
+4. `ar_matching`: 消込結果・差異ログ（1つのreceivableに複数回の消込試行を履歴として残せる設計）
+
+Supabase Management API経由で適用・4テーブル作成を`information_schema`で確認済み。既存データへの影響なし・rollbackは各テーブルDROPのみ（依存される側のテーブルが無いため安全）。コミット[8e5b164](https://github.com/mirai-oss/ns-portal/commit/8e5b164)。
+
+**UI（`invoices.html`。既存13タブ・ロジックは無改修）**:
+`renderReceivableSoonTab()`（Step2で作った準備中案内のみのプレースホルダー）を`renderReceivableTab()`に置き換え:
+- KPI6枚: 今月入金予定／未入金／差異あり／自動消込／消込完了／自動消込率（`receivableKpis()`。自動消込率＝`ar_matching.matched_by==='auto'`件数÷消込完了件数）
+- 5内部タブ: 入金予定／未入金／差異あり／入金済／消込完了（`receivableRowState()`。`ar_receivables.status`を主軸に、`status='pending'`のうち入金予定日超過は「未入金」、`ar_deposits`に登録済みだが未消込は「入金済」と動的に分類。SoT補助モックの5状態設計に準拠）
+- 対象月（`receivable-ym`）・店舗（`receivable-store-filter`）絞り込み
+- 一覧テーブル: 入金元／店舗／売上決済額／手数料／入金予定額／実入金額／差異／入金予定日／状態／備考。共通費行は「共通費」ピルで明示
+
+ローカル静的モック（実CSS抜き出し・サンプルデータ）でブラウザ確認、`node --check`で構文確認済み。コミット[a85b618](https://github.com/mirai-oss/ns-portal/commit/a85b618)。
+
+### 現状の制約・次にやること
+
+現状はStep1で判明した担当Dの§9-9ブロッカー（PayPay加盟店明細の取込ジョブが未着手。PayPay for Business管理画面からの新規Playwrightジョブが必要）が解消していないため、`ar_receivables`へのデータ投入経路がまだ無く、実データ0件・空表示になる。担当DのジョブとD→C間のデータ連携（`import_paypay_settlement`→`ar_receivables`への取込・正規化バッチ、または直接`ar_receivables`へ書き込む方式）は次スレッド以降で担当Dと擦り合わせる。**実機E2Eは未実施**。
+
+次はStep5（自動取込UI — 担当Dの`import_runs`/`import_schedule`/`import_status_today`を「自動取込」タブのジョブ一覧／未取得／取込履歴サブタブへ接続）。
 
 正常処理（毎回のAI解析成功・自動仕訳成功等）ではこの関数を呼ばないでください（§9-12「正常処理を本部タスクへ大量発行しない」）。呼ぶのは§9-13に列挙された8パターン（未取得・金額不一致・入金差異・AI確信度不足・勘定科目/法人/店舗不明・口座変更・MF登録エラー・振込エラー）のときだけ、という認識合わせをお願いします。`category`を明示したい場合（送金系の例外を💸送金タブに出したい場合等）は`p_category:='transfer'`を渡してください。
