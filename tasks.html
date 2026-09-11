@@ -98,6 +98,9 @@ textarea{resize:vertical}
 #typechips .chip{position:relative;padding:16px 26px;font-size:15px;font-weight:700;border:2px solid var(--line);border-radius:12px;background:#fff;color:#222}
 #typechips .chip.active{background:#fff;color:var(--stall);border-color:var(--stall)}
 #typechips .chip .badge-dot{position:absolute;top:-10px;right:-10px;min-width:22px;height:22px;padding:0 6px;border-radius:999px;background:var(--stall);color:#fff;font-size:12px;font-weight:700;display:inline-flex;align-items:center;justify-content:center;box-shadow:0 0 0 2px #fff}
+/* 2026-09-11: 種別タブに急ぎ(最重要)のタスクが含まれる場合は、通常の赤バッジではなく
+   最重要色にして「ただの件数」ではなく「急ぎがある」ことを示す */
+#typechips .chip .badge-dot.badge-dot-urgent{background:var(--urgent)}
 /* プルダウン（担当者・依頼者・並び替え）はチップ列と混ぜず専用の行にまとめ、見た目も統一する */
 .board-selects{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
 .board-selects select{width:auto;padding:7px 12px;font-size:13px;border-radius:99px}
@@ -671,6 +674,13 @@ async function fetchTaskDetail(id){
 // （送金/入金/請求書は§5の質問回答待ちのため未着手）。種別の判定はこの1関数に集約しておき、
 // SK設計確定後に他の種別を追加するときはここへ足す
 function isOnboardingTask(t){ return (t.title||"").indexOf("入社登録（")===0; }
+// 2026-09-11（司令塔・実装指示書_会計請求ワークスペースUI刷新_2026-09-11.md §1・TK-52）:
+// 入社登録タブを支えていたタイトル判定に加え、新設のhq_tasks.task_category列（会計の
+// 例外連携タスク=hq_create_exception_taskが設定）にも対応させ、送金/入金/請求書タブを追加
+function matchesTaskCategory(t,cat){
+  if(cat==="onboarding") return isOnboardingTask(t)||t.task_category==="onboarding";
+  return t.task_category===cat;
+}
 // 2026-09-02(担当Aからの指摘・改善提案への対応): 工程完了・チェック操作などタスク詳細側の
 // 変更後はCUR_TASK（詳細パネル）だけ再取得しており、ボード側の一覧配列TASKS/SEARCH_RESULTSは
 // 古いままだった（例: 最後の工程を完了してもかんばんの「処理中/完了」列がページ再読み込みまで
@@ -690,7 +700,7 @@ function applyFilters(list){
   return list.filter(t=>{
     if(FILTER.corp && t.corp!==FILTER.corp) return false;
     if(FILTER.freq && t.freq!==FILTER.freq) return false;
-    if(FILTER.type==="onboarding" && !isOnboardingTask(t)) return false;
+    if(FILTER.type && !matchesTaskCategory(t,FILTER.type)) return false;
     if(FILTER.assignee){
       const match=sortedSteps(t).some(s=>isStepAssignee(s,FILTER.assignee));
       if(!match) return false;
@@ -736,6 +746,14 @@ function summaryCounts(){
 function onboardingOpenCount(){
   return TASKS.filter(t=>t.status!=="done" && isOnboardingTask(t)).length;
 }
+// 2026-09-11: 種別タブ（送金/入金/請求書）の件数バッジ。急ぎ（is_urgent）が1件でも
+// あればバッジの色を最重要色に変え、通常の未完了件数バッジと見分けられるようにする
+function typeTabBadgeHtml(cat){
+  const openList=TASKS.filter(t=>t.status!=="done" && matchesTaskCategory(t,cat));
+  if(!openList.length) return "";
+  const hasUrgent=openList.some(t=>t.is_urgent);
+  return `<span class="badge-dot${hasUrgent?" badge-dot-urgent":""}">${openList.length}</span>`;
+}
 function taskCardHtml(t){
   const sig=computeSignal(t);
   // 2026-09-10: 「最重要（急ぎ）」は期限超過・停止より優先度を上にする（枠の色はこれが最優先）
@@ -752,6 +770,7 @@ function taskCardHtml(t){
          見づらいという要望のため、工程期日（バッジ・並び替えと同じ基準）を主役にして全体は添える -->
     ${sig.cur?`<div class="meta"><b>工程期日 ${fmtDD(sig.cur.due_date,sig.cur.due_time)}</b> ／ 全体 ${fmtDD(t.due_date,t.due_time)}</div>`:`<div class="meta">期限 ${fmtDD(t.due_date,t.due_time)}</div>`}
     ${steps.length?`<div class="meta">工程 ${doneCount}/${steps.length} 完了</div>`:""}
+    ${t.exception_reason?`<div class="meta">⚠️ ${esc(t.exception_reason)}</div>`:""}
     ${t.memo?`<div class="memo-line">📝 ${esc((t.memo.split("\n")[0]||"").slice(0,60))}</div>`:""}
     ${sig.cur?`<div class="now">いま: ${esc(sig.cur.title)}（${esc(stepAssigneeNames(sig.cur))}）</div>`:""}
   </div>`;
@@ -934,7 +953,13 @@ function renderBoard(u){
   </div>
   <div class="chiprow" id="typechips" style="margin-top:14px">
     <span class="chip ${!FILTER.type?'active':''}" data-type="">すべて</span>
-    <span class="chip ${FILTER.type==='onboarding'?'active':''}" data-type="onboarding">📋 入社登録${onboardingOpenCount()?`<span class="badge-dot">${onboardingOpenCount()}</span>`:""}</span>
+    <span class="chip ${FILTER.type==='onboarding'?'active':''}" data-type="onboarding">📋 入社登録${typeTabBadgeHtml('onboarding')}</span>
+    <!-- 2026-09-11: TK-52＋会計・請求ワークスペースUI刷新(§9-13)対応。会計処理の例外
+         （hq_create_exception_task）はinvoice_id/receivable_idの有無でinvoice/deposit
+         に自動分類される。送金(transfer)は担当C/D側が呼び出し時にp_categoryで明示する想定 -->
+    <span class="chip ${FILTER.type==='transfer'?'active':''}" data-type="transfer">💸 送金${typeTabBadgeHtml('transfer')}</span>
+    <span class="chip ${FILTER.type==='deposit'?'active':''}" data-type="deposit">💰 入金${typeTabBadgeHtml('deposit')}</span>
+    <span class="chip ${FILTER.type==='invoice'?'active':''}" data-type="invoice">🧾 請求書${typeTabBadgeHtml('invoice')}</span>
   </div>
   <div class="toprow" style="margin-top:10px">
     <div></div>
@@ -1125,6 +1150,9 @@ function renderDetail(u){
       ${t.description?`<div class="desc">${richTextHtml(t.description)}</div>`:""}
       <div class="progress"><span style="width:${pct}%"></span></div>
       <div class="meta">工程 ${doneCount} / ${steps.length} 完了 ／ 対象日 ${fmtD(t.target_date)} ／ 期限 ${fmtDD(t.due_date,t.due_time)}${t.status==="done"?" ／ "+fmtDT(t.completed_at)+" 完了":""}</div>
+      <!-- 2026-09-11: 会計処理の例外連携で自動発行されたタスクは、発生理由・元画面リンクを
+           表示する（§9-13「タスクにinvoice_id/receivable_id・発生理由...元画面リンクを持たせる」） -->
+      ${t.exception_reason?`<div class="notes-box" style="margin-top:8px">⚠️ 発生理由: ${esc(t.exception_reason)}${t.exception_source_url?` ／ <a href="${esc(t.exception_source_url)}" target="_blank" rel="noopener">元の画面を見る →</a>`:""}</div>`:""}
       <!-- 2026-09-10: 「急ぎのタスクを最重要としてボタンで押せるように・絶対漏れないように」
            という要望対応。押せる人はcanManage・タスクの依頼者・いまの工程の担当者（＝実際に
            緊急だと気づく可能性が高い人たち）に限定し、誰でも無制限に押せるようにはしていない -->
