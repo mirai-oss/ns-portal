@@ -794,7 +794,48 @@ async function renderSysUsageArea(u){
     </section>
     <section class="panel" style="margin-top:16px"><div class="phead"><h2>📱 LINE配信数・残高</h2><span class="sub2">LINE Messaging API</span></div>
       <div>${lineUsageHtml(lineUsage)}</div>
+    </section>
+    <section class="panel" style="margin-top:16px"><div class="phead"><h2>⚙️ 自動取込ジョブ一覧（全システム横断）</h2><span class="sub2">ns-daily-import（担当D管轄）</span></div>
+      <div id="importJobsBox" style="padding:12px 17px"><div class="spin">読み込み中…</div></div>
     </section>`;
+  renderImportJobsBox();
+}
+// 2026-09-11新設：ユーザー実機フィードバック対応。「会計・請求ワークスペースの自動取込タブ
+// には会計入力に必要なジョブ（PayPay・インフォマート仕入等）だけを出し、全ジョブ（イベント
+// 取得・媒体別・注文明細・人件費・BQ突合等、会計と無関係なものを含む全13ジョブ）の実行状況は
+// システム利用状況に集約してほしい」との指示に対応。invoices.html Step5と同じ
+// import_runs/import_schedule/import_status_today（担当D管轄）を読み取り専用で接続する
+// （フィルタ無し＝全ジョブ対象。会計関連への絞り込みはinvoices.html側でのみ行う）
+async function renderImportJobsBox(){
+  const box=$("importJobsBox"); if(!box) return;
+  const [scheduleR,statusR,runsR]=await Promise.all([
+    authed(`/rest/v1/import_schedule?select=*&order=label`),
+    authed(`/rest/v1/import_status_today?select=*`),
+    authed(`/rest/v1/import_runs?select=job,status,started_at,finished_at,error&order=started_at.desc&limit=300`),
+  ]);
+  if(!box.isConnected) return; // 読み込み中に他画面へ移動していたら上書きしない
+  const schedule=(scheduleR.ok&&Array.isArray(scheduleR.body))?scheduleR.body:[];
+  const statusToday=(statusR.ok&&Array.isArray(statusR.body))?statusR.body:[];
+  const runs=(runsR.ok&&Array.isArray(runsR.body))?runsR.body:[];
+  const statusLabel={running:["実行中","gray"],success:["成功","done"],partial:["一部成功","wait"],failed:["失敗","err"]};
+  const rows=schedule.map(s=>{
+    const st=statusToday.find(x=>x.job===s.job);
+    const lastRun=runs.find(r=>r.job===s.job);
+    const last=st&&st.last_status?statusLabel[st.last_status]:(lastRun?statusLabel[lastRun.status]:null);
+    return {...s,last,lastAt:(st&&(st.last_finished_at||st.last_started_at))||(lastRun&&(lastRun.finished_at||lastRun.started_at)),isOverdue:st&&st.is_overdue,needsEscalation:st&&st.needs_escalation};
+  });
+  box.innerHTML=`<div style="font-size:12px;color:var(--muted,#767676);margin-bottom:10px">Playwright等による全自動取込ジョブの実行状況です（${rows.length}件）。会計・請求ワークスペースの「自動取込」タブには、この中で会計入力に必要なジョブ（PayPay・インフォマート仕入等）だけを抜き出して表示しています。</div>
+    <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px">
+      <thead><tr style="text-align:left;border-bottom:1px solid var(--line,#e3ddd0)"><th style="padding:6px 8px">ジョブ</th><th style="padding:6px 8px">取得元</th><th style="padding:6px 8px">種別</th><th style="padding:6px 8px">前回結果</th><th style="padding:6px 8px">最終実行</th><th style="padding:6px 8px">状態</th></tr></thead>
+      <tbody>${rows.length?rows.map(r=>`<tr style="border-bottom:1px solid var(--line,#eee)">
+        <td style="padding:6px 8px">${esc(r.label||r.job)}</td>
+        <td style="padding:6px 8px">${esc(r.source||"—")}</td>
+        <td style="padding:6px 8px">${esc(r.kind||"—")}</td>
+        <td style="padding:6px 8px">${r.last?`<span class="badge ${r.last[1]==="err"?"b-bad":r.last[1]==="done"?"b-up":""}">${esc(r.last[0])}</span>`:"—"}</td>
+        <td style="padding:6px 8px">${fmtDT(r.lastAt)}</td>
+        <td style="padding:6px 8px">${r.needsEscalation?'<span class="badge b-bad">⚠️ 要エスカレーション</span>':(r.isOverdue?'<span class="badge b-warn">超過</span>':'<span class="badge b-up">OK</span>')}</td>
+      </tr>`).join(""):'<tr><td colspan="6" style="padding:10px 8px;color:var(--muted,#767676)">ジョブが登録されていません</td></tr>'}</tbody>
+    </table></div>`;
 }
 /* ============================================================
    F-7: ホーム画面のウィジェット編集（WP/ブログ風・サイズ選択付き）
