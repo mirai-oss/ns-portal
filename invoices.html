@@ -6165,21 +6165,38 @@ function dashRenderBody(u){
    マネーフォワードへは何も送信しない）→ 取込完了 →「🧾請求書一覧で確認」で共通invoice詳細へ
    ============================================================ */
 let UPLOAD_STATE={files:[],recent:[]};
+// 2026-09-11更新：会計・請求ワークスペースUI刷新Step5（自動取込UI）。指示書§10「自動取込＝
+// 請求書と売上入金の共通入口。内部タブ=手動アップロード/自動取込/未取得/取込履歴」に対応。
+// 担当Dが構築済みの import_runs（実行ログ）・import_schedule（定期ジョブ定義）・
+// import_status_today（未取得/要エスカレーション判定ビュー）を読み取り専用で接続する
+// （書き込み・再取得の実行はMac mini側のns-daily-import運用に依存するため、このアプリからは
+// 行わない＝状態の可視化のみ。既存の手動アップロード機能・処理履歴タブは無改修）
+let INTAKE_STATE={subTab:"manual",runs:[],schedule:[],statusToday:[]};
 async function renderUploadInvoiceTab(u){
   $("tabbody").innerHTML=`<section class="invoice-list active"><div class="card" style="padding:16px"><div class="spin" style="padding:20px 0">読み込み中…</div></div></section>`;
   await ensureCorpStoreCache();
-  const recentR=await authed(`/rest/v1/invoices?email_id=is.null&select=*&order=created_at.desc&limit=30`);
+  const [recentR,runsR,scheduleR,statusR]=await Promise.all([
+    authed(`/rest/v1/invoices?email_id=is.null&select=*&order=created_at.desc&limit=30`),
+    authed(`/rest/v1/import_runs?select=*&order=started_at.desc&limit=100`),
+    authed(`/rest/v1/import_schedule?select=*&order=label`),
+    authed(`/rest/v1/import_status_today?select=*&order=is_overdue.desc,expected_time_jst.asc.nullslast`),
+  ]);
   UPLOAD_STATE={files:[],recent:(recentR.ok&&Array.isArray(recentR.body))?recentR.body:[]};
-  $("tabbody").innerHTML=`
-    <section class="invoice-list active">
+  INTAKE_STATE.runs=(runsR.ok&&Array.isArray(runsR.body))?runsR.body:[];
+  INTAKE_STATE.schedule=(scheduleR.ok&&Array.isArray(scheduleR.body))?scheduleR.body:[];
+  INTAKE_STATE.statusToday=(statusR.ok&&Array.isArray(statusR.body))?statusR.body:[];
+  intakeRender(u);
+}
+function intakeScheduleLabel(job){
+  const s=INTAKE_STATE.schedule.find(x=>x.job===job);
+  return (s&&s.label)||job||"—";
+}
+function intakeOverdueCount(){ return INTAKE_STATE.statusToday.filter(s=>s.is_overdue).length; }
+function intakeEscalationCount(){ return INTAKE_STATE.statusToday.filter(s=>s.needs_escalation).length; }
+function intakeManualHtml(){
+  return `
       <div class="card" style="padding:16px;margin-bottom:14px">
-        <div style="display:flex;justify-content:space-between;align-items:start;gap:10px;flex-wrap:wrap">
-          <h3 style="font-size:14px;margin-bottom:6px">📤 アップロード請求書（取込専用）</h3>
-          <!-- 2026-09-11追加：会計・請求ワークスペースUI刷新Step3。ユーザー確認済みの方針
-               （処理履歴→自動取込タブへ統合）に対応。invoice_audit_logs起点の別データのため
-               一覧自体は合体させず、ここから開ける導線として統合した -->
-          <button class="hq-btn" id="upload-open-history">📋 処理履歴を見る</button>
-        </div>
+        <h3 style="font-size:14px;margin-bottom:6px">📤 アップロード請求書（取込専用）</h3>
         <div style="font-size:12px;color:var(--muted);margin-bottom:12px">メールに来ない請求書（手渡し・現金精算・郵送のPDF等）を取り込みます。<b>ここでは取込だけを行います。</b>会計登録・PL反映・広告費反映・精算書連携・振込などの処理は、取込後に「🧾請求書」一覧から行ってください。</div>
         <div class="ai-grid">
           <div class="ai-field"><small>請求元（分かれば・後からでも入力できます）</small><input id="up-vendor"></div>
@@ -6204,9 +6221,81 @@ async function renderUploadInvoiceTab(u){
             <td><button class="hq-btn" style="font-size:11px;padding:6px 9px" data-open-invoice="${esc(x.id)}">🧾請求書一覧で確認</button></td>
           </tr>`).join(""):'<tr><td colspan="5">まだ取り込んだ請求書はありません</td></tr>'}</tbody>
         </table>
+      </div>`;
+}
+// 「自動取込」サブタブ: import_runs（担当D管轄・Playwright等の実行ログ）をそのまま一覧表示。
+// 指示書§10の想定列のうちAI解析状態/処理先/会計・消込状態は、この生データ層にはまだ存在しない
+// （請求書として取込まれた後は「🧾請求書」一覧・売上入金として取込まれた後は「💰売上入金」
+// 一覧側の状態を見ていただく運用。個々のjob実行と請求書/入金レコードの1:1紐付けは今後の課題）
+function intakeAutoHtml(){
+  const statusLabel={running:["実行中","gray"],success:["成功","done"],partial:["一部成功","wait"],failed:["失敗","err"]};
+  return `
+      <div class="card" style="padding:16px;margin-bottom:14px">
+        <div style="font-size:12px;color:var(--muted)">Playwright等による自動取込ジョブの実行ログです（担当D管轄・ns-daily-import。直近100件）。AI解析状態・会計/消込状態は、取込後にそれぞれ「🧾請求書」「💰売上入金」タブでご確認ください（このジョブ単位のログとは別の一覧です）。</div>
       </div>
+      <div class="card hq-tablewrap" style="padding:0">
+        <table class="invoice-table">
+          <thead><tr><th>取得元</th><th>種別</th><th>対象月</th><th>取得方法</th><th>取得状態</th><th>最終実行日時</th><th>実行時間</th><th>エラー</th></tr></thead>
+          <tbody>${INTAKE_STATE.runs.length?INTAKE_STATE.runs.map(r=>{
+            const st=statusLabel[r.status]||["—","gray"];
+            return `<tr>
+              <td>${esc(r.source||"—")}</td>
+              <td>${esc(r.kind||"—")}</td>
+              <td>${esc(r.target_ym||"—")}</td>
+              <td>${esc(intakeScheduleLabel(r.job))}</td>
+              <td><span class="invoice-status ${st[1]}">${esc(st[0])}</span></td>
+              <td>${fmtDT(r.finished_at||r.started_at)}</td>
+              <td>${r.duration_sec!=null?r.duration_sec+"秒":"—"}</td>
+              <td>${r.error?`<span style="color:var(--m-red)">${esc(r.error)}</span>`:"—"}</td>
+            </tr>`;
+          }).join(""):'<tr><td colspan="8">まだ実行ログがありません</td></tr>'}</tbody>
+        </table>
+      </div>`;
+}
+// 「未取得」サブタブ: import_status_today（担当D管轄ビュー）から、予定時刻+猶予を超えてまだ
+// 当日成功していないジョブ（is_overdue）・3回失敗してもなお未成功のジョブ（needs_escalation）
+// を可視化する。自動再取得自体はns-daily-import側の既存の仕組み（dispatch.jsが1日最大3回まで
+// 自動再試行）で行われており、このアプリから再取得を実行する機能ではない（状態表示のみ）
+function intakeOverdueHtml(){
+  const rows=[...INTAKE_STATE.statusToday].sort((a,b)=>(b.is_overdue===a.is_overdue?0:(b.is_overdue?1:-1)));
+  return `
+      <div class="card" style="padding:16px;margin-bottom:14px">
+        <div style="font-size:12px;color:var(--muted)">予定時刻＋猶予時間を過ぎても当日まだ成功していないジョブです。自動再取得（1日最大3回）はMac mini側のns-daily-importが自動で行います。3回失敗してもなお未成功のものは「要エスカレーション」となり、本部タスクへの起票対象になります（担当E連携）。</div>
+      </div>
+      <div class="card hq-tablewrap" style="padding:0">
+        <table class="invoice-table">
+          <thead><tr><th>ジョブ</th><th>取得元</th><th>予定時刻</th><th>前回結果</th><th>前回実行</th><th>本日試行回数</th><th>状態</th></tr></thead>
+          <tbody>${rows.length?rows.map(s=>{
+            const lastLabel={running:["実行中","gray"],success:["成功","done"],partial:["一部成功","wait"],failed:["失敗","err"]}[s.last_status]||["未実行","gray"];
+            return `<tr>
+              <td>${esc(s.label||s.job||"—")}</td>
+              <td>${esc(s.source||"—")}</td>
+              <td>${esc(s.expected_time_jst||"—")}</td>
+              <td><span class="invoice-status ${lastLabel[1]}">${esc(lastLabel[0])}</span></td>
+              <td>${fmtDT(s.last_finished_at||s.last_started_at)}</td>
+              <td>${s.attempts_today!=null?s.attempts_today+"回":"0回"}</td>
+              <td>${s.needs_escalation?'<span class="invoice-status err">⚠️ 要エスカレーション</span>':(s.is_overdue?'<span class="invoice-status wait">超過</span>':'<span class="invoice-status done">OK</span>')}</td>
+            </tr>`;
+          }).join(""):'<tr><td colspan="7">対象ジョブがありません</td></tr>'}</tbody>
+        </table>
+      </div>`;
+}
+function intakeRender(u){
+  const sub=INTAKE_STATE.subTab;
+  const overdueN=intakeOverdueCount(), escN=intakeEscalationCount();
+  $("tabbody").innerHTML=`
+    <section class="invoice-list active">
+      <div class="mail-chips" style="margin-bottom:14px">
+        <button class="mail-chip ${sub==="manual"?"active":""}" data-intake-subtab="manual">📤 手動アップロード</button>
+        <button class="mail-chip ${sub==="auto"?"active":""}" data-intake-subtab="auto">⚙️ 自動取込ジョブ（${INTAKE_STATE.runs.length}）</button>
+        <button class="mail-chip ${sub==="overdue"?"active":""}" data-intake-subtab="overdue">${escN?`⚠️ 未取得（${overdueN}・要対応${escN}）`:(overdueN?`未取得（${overdueN}）`:"未取得")}</button>
+        <button class="mail-chip" id="intake-open-history">📋 取込履歴</button>
+      </div>
+      ${sub==="auto"?intakeAutoHtml():sub==="overdue"?intakeOverdueHtml():intakeManualHtml()}
     </section>`;
-  wireUploadInvoiceTab(u);
+  if($("intake-open-history")) $("intake-open-history").onclick=()=>{ TAB="history"; pushNav(); renderTabBody(u); };
+  document.querySelectorAll("[data-intake-subtab]").forEach(el=>el.onclick=()=>{ INTAKE_STATE.subTab=el.dataset.intakeSubtab; intakeRender(u); });
+  if(sub==="manual"||!sub) wireUploadInvoiceTab(u);
 }
 function uploadFileToBase64(file){
   return new Promise((resolve,reject)=>{
