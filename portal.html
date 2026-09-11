@@ -1105,24 +1105,24 @@ const SHINSEI_GROUP={cap:"申請",ico:"🔁", section:"genba", items:[
 // §1 担当F分「portal.htmlの会計・請求グループをSoTモックの構成に合わせて新ワークスペースの
 // 各タブへ接続（深リンク・バッジ）。他領域のナビは変更しない」）。
 // SoT（docs/mockups/NStyle_添付HTMLをベースにした_3HTML統合版_修正版.html）の会計・請求WSは
-// 「請求書／売上入金／自動取込／自動化／設定」の5タブ構成。新UI本体（invoices.html）は
-// 担当CがStep1（調査・マッピング表）から順に構築中でこのコミット時点ではまだ未着手のため、
-// 実在するタブには現行の対応画面をそのまま接続し（tabパラメータ名はC側が新UIを組む際に
-// このまま踏襲してもらうようWORKLOGで申し送り済み）、まだ存在しない2タブ（売上入金・自動化＝
-// 新設ar_系テーブルやタスクボードがまだ無い）は既存の「soon:true」パターンでプレースホルダー
-// 表示にとどめた（キーイ_ラウンド4等の予約管理と同じ「未実装は準備中バッジ」方式。実装後は
-// urlを設定するだけでよい）。旧来の会計ダッシュボード／給与仕訳／支払い（インフォマート・振込）は
+// 「請求書／売上入金／自動取込／自動化／設定」の5タブ構成。実在するタブには現行の対応画面を
+// そのまま接続。旧来の会計ダッシュボード／給与仕訳／支払い（インフォマート・振込）は
 // §9-15「給与仕訳・精算管理は壊さない」に従い削除せず、新5タブの下にそのまま残した
 // （§9-6により会計ダッシュボードのKPIは将来「請求書」タブへ統合予定・§9-7により支払いは
 // 「請求書」タブの状態タブ"振込待ち"へ将来統合予定だが、どちらも新タブがまだ無いため
 // 現時点ではこの導線を維持する）。「請求書」項目は旧TOP_ITEMSの「請求書メール」
 // （key:"invoices"・countKey:"inv"）をそのままこちらへ統合したもの（詳細は上のTOP_ITEMS側コメント）
+// 2026-09-11追記: 「売上入金」「自動化」は当初soon:trueプレースホルダーだったが、担当CがStep2
+// （外枠）でSoT準拠の5タブナビをinvoices.htmlへ追加し、tab=receivableSoon/automationSoonという
+// 実URLをWORKLOGで案内してくれたため実リンクへ差し替えた（中身はまだ準備中案内のみだが
+// リンク先としては機能する、との申し送りどおり）。Step4/6で中身が実装され次第、tab名を
+// receivables/automation等の正式名へ変える可能性がある旨もCから聞いている
 const KAIKEI_GROUP={cap:"会計",ico:"🧾", section:"kaikei", items:[
   // --- SoT 5タブ（新ワークスペースの構成に合わせた並び） ---
   {key:"invoices",         sysKey:"invoices", ico:"🧾", label:"請求書",     url:"invoices.html?embed=1&tab=unified", countKey:"inv"},
-  {key:"kaikei-ar",        sysKey:"invoices", ico:"💰", label:"売上入金",   soon:true},
+  {key:"kaikei-ar",        sysKey:"invoices", ico:"💰", label:"売上入金",   url:"invoices.html?embed=1&tab=receivableSoon"},
   {key:"kaikei-intake",    sysKey:"invoices", ico:"📥", label:"自動取込",   url:"invoices.html?embed=1&tab=upload"},
-  {key:"kaikei-automation",sysKey:"invoices", ico:"🤖", label:"自動化",     soon:true},
+  {key:"kaikei-automation",sysKey:"invoices", ico:"🤖", label:"自動化",     url:"invoices.html?embed=1&tab=automationSoon"},
   {key:"kaikei-settings",  sysKey:"invoices", ico:"⚙️", label:"設定",       url:"invoices.html?embed=1&tab=settings"},
   // --- 新UI未統合の既存機能（引き続き利用可。§9-15により給与仕訳は今回の刷新対象外） ---
   {key:"kaikei-dashboard", sysKey:"invoices", ico:"📊", label:"会計ダッシュボード", url:"invoices.html?embed=1&tab=dashboard"},
