@@ -509,6 +509,25 @@ button,input,select,textarea{font:inherit}
 
 .mail-tabs-row{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:12px}
 .mail-tabs-row .mail-tabs{margin-bottom:0}
+
+/* ============================================================
+   2026-09-11 会計・請求ワークスペースUI刷新（指示書_会計請求ワークスペースUI刷新_2026-09-11.md）
+   Step2（外枠）: SoT（docs/mockups/NStyle_添付HTMLをベースにした_3HTML統合版_修正版.html）の
+   「請求書／売上入金／自動取込／自動化／設定」5タブ構成のナビだけを追加する。中身（各タブの
+   内容）はStep3以降で順次移す。既存の.mail-tabs（受信トレイ/売上一覧/契約書一覧/送信済み/
+   対象外/⭐重要 等）は削除せず、EMBED時（portal.html組込・ACCOUNTING_ONLY_TABSのタブを
+   見ているとき）に隠れる現行の仕組みはそのまま活かし、その「隠れている場所」に新ナビを
+   差し込む形にした（＝旧UIを壊さず共存させる。指示書§9-20の新旧切替方針）。
+   ============================================================ */
+.acws-head{background:#151515;color:#fff;min-height:48px;display:flex;align-items:center;justify-content:space-between;padding:10px 16px;margin-bottom:0;border-radius:var(--radius) var(--radius) 0 0}
+.acws-head b{font-size:15px}.acws-head small{color:#c4c4c4;margin-left:7px;font-weight:400}
+.acws-tabs{display:flex;background:var(--panel);border-bottom:1px solid var(--m-line);overflow-x:auto;white-space:nowrap}
+.acws-tabs button{border:0;background:transparent;padding:12px 16px;border-bottom:3px solid transparent;color:var(--muted);font-weight:700;font-size:13px;cursor:pointer;flex-shrink:0}
+.acws-tabs button.active{color:var(--ink);border-color:var(--m-green)}
+.acws-soon{background:var(--panel);border:1px solid var(--m-line);border-radius:var(--radius);padding:28px 20px;text-align:center;color:var(--muted)}
+.acws-soon b{display:block;color:var(--ink);font-size:15px;margin-bottom:6px}
+.acws-soon p{font-size:12px;line-height:1.7;max-width:480px;margin:0 auto}
+@media(max-width:650px){.acws-tabs button{padding:10px 12px;font-size:12px}}
 body.embed-mode .wrap{padding-top:16px}
 .mobile-back{display:none}
 .modal .mobile-back{display:none!important} /* モーダル内では「一覧へ戻る」は不要（閉じるボタンで戻る） */
@@ -1632,9 +1651,33 @@ let DATE_FROM="", DATE_TO=""; // 受信日の絞り込み（yyyy-mm-dd）
 // TAB初期値: URLの?tab=を見る（例: invoices.html?embed=1&tab=upload。portal.htmlのサイドバーが
 // この形でリンクする。2026-08-31・担当Fからの緊急報告=.mail-tabボタンをembed時に隠した結果、
 // サイドバー経由でdashboard/upload/payrollへ一切たどり着けなくなっていた不具合の修正）
-const TAB_WHITELIST=["dashboard","unified","inbox","invoiceList","salesList","contractList","upload","payroll","transfers","history","sent","notApplicable","important","settings"];
+const TAB_WHITELIST=["dashboard","unified","inbox","invoiceList","salesList","contractList","upload","payroll","transfers","history","sent","notApplicable","important","settings","receivableSoon","automationSoon"];
 const TAB_FROM_URL=new URLSearchParams(location.search).get("tab");
 let TAB=(TAB_FROM_URL&&TAB_WHITELIST.includes(TAB_FROM_URL))?TAB_FROM_URL:"inbox";           // inbox | invoiceList | history | sent
+// 2026-09-11新設：会計・請求ワークスペースUI刷新のStep2（外枠）。SoTの5タブ構成
+// （請求書／売上入金／自動取込／自動化／設定）と、現行の各TAB値との対応表。
+// ユーザー確認済みの最終マッピング（調査レポート_会計UI刷新_Step1現行機能マッピング_2026-09-11.md
+// §H）: ①受信トレイ/送信済み/対象外/⭐重要→請求書タブへ畳み込み②売上一覧→廃止（対応なし）
+// ③契約書一覧→社内情報管理システムへの受け渡し用として維持（このグループ構造には含めない）
+// ④振込一覧→請求書タブへ一本化⑤処理履歴→自動取込タブへ統合。
+// 各タブの中身の統合はStep3（請求書）・Step5（自動取込）・Step8（設定）で順次行う。
+// dashboard・payroll・contractListはこのグループ構造にあえて含めない（別導線のまま。
+// portal.html側の「会計・請求」グループに個別リンクとして残っている＝担当F対応済み）
+const AC_GROUPS=[
+  ["invoice","請求書","unified"],
+  ["receivable","売上入金","receivableSoon"],
+  ["intake","自動取込","upload"],
+  ["automation","自動化","automationSoon"],
+  ["settings","設定","settings"],
+];
+const TAB_TO_AC_GROUP={
+  unified:"invoice", inbox:"invoice", sent:"invoice", notApplicable:"invoice", important:"invoice", transfers:"invoice",
+  upload:"intake", history:"intake",
+  settings:"settings",
+  receivableSoon:"receivable",
+  automationSoon:"automation",
+};
+function acActiveGroup(){ return TAB_TO_AC_GROUP[TAB]||null; }
 let SELECTED_ID=null;
 let SELECTED=null;         // 選択中メールの詳細一式
 // 2026-09-04新規: 「メールは入口、会計・仕訳などの処理は請求書一覧から」の分離指示書に対応。
@@ -1786,7 +1829,14 @@ function payrollSummaryHtml(){
 // portal.html組込(EMBED)時にサイドバーの「会計」グループから開く3タブ（会計ダッシュボード／
 // アップロード請求書／給与仕訳）。ポータル側に別途「請求書メール」の専用リンクがあるため、
 // この3タブでは請求書メール向けの項目（KPIバー・受信トレイ等のタブ切替行）を表示しない
-const ACCOUNTING_ONLY_TABS=["dashboard","upload","payroll","unified","transfers","settings"];
+// 2026-09-11修正：新5タブナビ（.acws-tabs）を追加したreceivableSoon/automationSoonも、
+// dashboard等と同じ「EMBED時は旧.mail-tabs行を隠す」対象に含める。
+// 【あえて含めないもの】inbox/sent/notApplicable/important/history/salesList/contractListは
+// TAB_TO_AC_GROUPで「請求書」「自動取込」グループに対応付けてはいるが、新ナビ側にはまだ
+// これらへ個別に飛べるボタンが無い（新ナビは5グループの代表タブへ飛ぶだけ＝Step2は外枠のみ）。
+// ここでEMBED時に旧行を隠してしまうと、この5タブ同士を行き来する手段が無くなり操作不能になる
+// ため、Step3（請求書タブの中身を実際に統合し尽くす）までは旧行を出したままにする
+const ACCOUNTING_ONLY_TABS=["dashboard","upload","payroll","unified","transfers","settings","receivableSoon","automationSoon"];
 // 画面上部のKPIバーと、その下のタブ切替行（受信トレイ／請求書一覧／…／新規作成）をタブに応じて
 // 出し分ける。ユーザー報告「そのタブに合わない請求書メールの項目が混じっている」に対応
 // （2026-09-01: 会計ダッシュボード・アップロード請求書・給与仕訳では請求書メール向けの項目を隠す）
@@ -1811,6 +1861,11 @@ function shellHtml(u){
     </div>
   </div>`}
   <div class="mail-shell">
+    ${(EMBED&&acActiveGroup())?`
+    <div class="acws-head"><b>会計・請求ワークスペース</b><small>支払・入金・自動取込を一元管理</small></div>
+    <div class="acws-tabs" id="acwsTabs">
+      ${AC_GROUPS.map(([key,label])=>`<button class="${acActiveGroup()===key?"active":""}" data-acgroup="${key}">${esc(label)}</button>`).join("")}
+    </div>`:""}
     <div class="mail-summary" id="mailSummaryBar">${mailSummaryDefaultHtml()}</div>
     <div class="mail-tabs-row">
       <div class="mail-tabs">
@@ -1840,6 +1895,18 @@ function wireShell(u){
   document.querySelectorAll("[data-tab]").forEach(b=>b.onclick=async()=>{
     TAB=b.dataset.tab;
     pushNav();
+    document.querySelectorAll(".mail-tab").forEach(x=>x.classList.toggle("active",x.dataset.tab===TAB));
+    document.querySelectorAll("#acwsTabs button").forEach(x=>x.classList.toggle("active",x.dataset.acgroup===acActiveGroup()));
+    await renderTabBody(u);
+  });
+  // 2026-09-11新設：新5タブナビ（請求書/売上入金/自動取込/自動化/設定）のクリック。
+  // そのグループの代表タブ（AC_GROUPSの3つ目の要素）へ切り替える
+  document.querySelectorAll("#acwsTabs button").forEach(b=>b.onclick=async()=>{
+    const grp=AC_GROUPS.find(g=>g[0]===b.dataset.acgroup);
+    if(!grp) return;
+    TAB=grp[2];
+    pushNav();
+    document.querySelectorAll("#acwsTabs button").forEach(x=>x.classList.toggle("active",x.dataset.acgroup===b.dataset.acgroup));
     document.querySelectorAll(".mail-tab").forEach(x=>x.classList.toggle("active",x.dataset.tab===TAB));
     await renderTabBody(u);
   });
@@ -1930,6 +1997,20 @@ async function renderTabBody(u){
   else if(TAB==="notApplicable") await renderNotApplicableTab(u);
   else if(TAB==="important") await renderImportantTab(u);
   else if(TAB==="settings") await renderSettingsTab(u);
+  else if(TAB==="receivableSoon") renderReceivableSoonTab();
+  else if(TAB==="automationSoon") renderAutomationSoonTab();
+}
+// 2026-09-11新設：会計・請求ワークスペースUI刷新Step2（外枠）。「売上入金」「自動化」は
+// 新規実装（Step4・Step6で着手）のため、SoTの準備中パターンに合わせた案内だけを出す
+function renderReceivableSoonTab(){
+  $("tabbody").innerHTML=`<div class="acws-soon"><b>💰 売上入金は準備中です</b>
+    <p>PayPay等の決済入金を「売上発生→入金予定→実入金→照合→消込」のフローで管理する新機能です（指示書§9-8/9-9）。<br>
+    Step4で新規テーブル（<code>ar_receivables</code>・<code>ar_deposits</code>・<code>ar_matching</code>等）とあわせて実装します。</p></div>`;
+}
+function renderAutomationSoonTab(){
+  $("tabbody").innerHTML=`<div class="acws-soon"><b>🤖 自動化管理は準備中です</b>
+    <p>正常に自動処理できたものは本部タスクへ出さず、人間の判断が必要な例外だけをここへ集約する画面です（指示書§9-12/9-13）。<br>
+    Step6で実装します。</p></div>`;
 }
 
 /* ============================================================
