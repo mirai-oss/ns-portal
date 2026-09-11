@@ -6085,7 +6085,7 @@ async function mftSaveEditor(){
    日付基準は🧾請求書一覧と統一：支払期限(due_date)があればそちら、無ければ取込日(created_at)
    （invoicesのスキーマには請求日・計上日という独立列が無いため。指示書§28への回答）
    ============================================================ */
-let DASH_STATE={corpId:"", yearMonth:"", allRows:null, error:null};
+let DASH_STATE={corpId:"", yearMonth:"", allRows:null, error:null, arSummary:null, autoSummary:null};
 function dashYmDefault(){ const d=new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`; }
 function dashDateBasis(r){ return r.due_date||r.created_at; }
 function dashYmCandidates(rows){
@@ -6104,11 +6104,23 @@ function dashAttentionCounts(rows){
   rows.forEach(r=>unifiedAttentionReasons(r).forEach(reason=>{ map[reason]=(map[reason]||0)+1; }));
   return map;
 }
+// 2026-09-11更新：会計・請求ワークスペースUI刷新Step7（会計ダッシュボード1画面化）。
+// 指示書§9-6「最低限=請求書要対応/会計待ち/振込待ち/売上入金差異/未入金/未取得/自動処理中/
+// 自動完了/自動化エラー/自動化率。各KPIクリックで該当画面へ絞り込み付き遷移」に対応。
+// 請求書要対応/会計待ち/振込待ち/期限超過（≒未入金相当）は元々このダッシュボードにあった
+// ため、不足していた売上入金（Step4のar_receivables）・自動取込/自動化（Step5/6の
+// import_status_today・import_runs）の指標だけを新たに集計して追加する（横タブは増やさず
+// 同じ1画面に新セクションとして追加＝タブを増やさない指示を厳守）
 async function renderAccountingDashboardTab(u){
   $("tabbody").innerHTML=`<section class="invoice-list active"><div class="card" style="padding:16px"><div class="spin" style="padding:40px 0">最新のデータを集計しています…</div></div></section>`;
-  const [r]=await Promise.all([
+  const nowYm=dashYmDefault();
+  const todayStr=new Date().toISOString().slice(0,10);
+  const [r,,arR,statusR,runsR]=await Promise.all([
     authed(`/rest/v1/invoices?select=*,email:invoice_emails(mail_kind),corp:corporations(name),store:stores!invoices_store_id_fkey(name),invoice_stores(store:stores(name)),vendor:vendors(name)&order=created_at.desc&limit=1000`),
     ensureCorpStoreCache(),
+    authed(`/rest/v1/ar_receivables?year_month=eq.${encodeURIComponent(nowYm)}&select=status,expected_date`),
+    authed(`/rest/v1/import_status_today?select=is_overdue`),
+    authed(`/rest/v1/import_runs?select=status,started_at,finished_at&order=started_at.desc&limit=200`),
   ]);
   if(!r.ok){
     DASH_STATE.error="取得に失敗しました";
@@ -6121,6 +6133,23 @@ async function renderAccountingDashboardTab(u){
   DASH_STATE.allRows=(r.body||[]).filter(row=>!row.email||row.email.mail_kind==="invoice");
   DASH_STATE.error=null;
   if(!DASH_STATE.yearMonth) DASH_STATE.yearMonth=dashYmDefault();
+  const arRows=(arR.ok&&Array.isArray(arR.body))?arR.body:[];
+  DASH_STATE.arSummary={
+    diffCount:arRows.filter(x=>x.status==="diff"||x.status==="manual_review").length,
+    overdueCount:arRows.filter(x=>x.status==="pending"&&x.expected_date&&x.expected_date<todayStr).length,
+  };
+  const statusRows=(statusR.ok&&Array.isArray(statusR.body))?statusR.body:[];
+  const runsRows=(runsR.ok&&Array.isArray(runsR.body))?runsR.body:[];
+  const isToday=x=>(x.finished_at||x.started_at||"").slice(0,10)===todayStr;
+  const doneToday=runsRows.filter(x=>x.status==="success"&&isToday(x)).length;
+  const errToday=runsRows.filter(x=>x.status==="failed"&&isToday(x)).length;
+  const rateDenom=doneToday+errToday;
+  DASH_STATE.autoSummary={
+    intakeOverdue:statusRows.filter(x=>x.is_overdue).length,
+    running:runsRows.filter(x=>x.status==="running").length,
+    doneToday,errToday,
+    rate:rateDenom?Math.round((doneToday/rateDenom)*100):0,
+  };
   dashRenderBody(u);
 }
 function dashRenderBody(u){
@@ -6253,6 +6282,21 @@ function dashRenderBody(u){
         ${reasonRows.map(([key,count])=>`<div class="dash-reason-card" data-dash-goto="${key}">${esc(REASON_FILTER_LABELS[key]||key)} <span class="dash-reason-badge">${count}件</span></div>`).join("")}
       </div>`:""}
 
+      ${DASH_STATE.arSummary&&DASH_STATE.autoSummary?`
+      <div class="dash-section-title">⑧ 売上入金・自動取込・自動化の状況（今月・全社。クリックで各タブへ）</div>
+      <div class="dash-grid-4">
+        <div class="dash-kpi-card${DASH_STATE.arSummary.diffCount?" alert":""}" data-dash-goto2="ar_diff"><div class="dash-kpi-label">売上入金差異</div><div class="dash-kpi-val">${DASH_STATE.arSummary.diffCount}<span style="font-size:12px;font-weight:normal;color:var(--muted)"> 件</span></div></div>
+        <div class="dash-kpi-card" data-dash-goto2="ar_overdue"><div class="dash-kpi-label">未入金</div><div class="dash-kpi-val">${DASH_STATE.arSummary.overdueCount}<span style="font-size:12px;font-weight:normal;color:var(--muted)"> 件</span></div></div>
+        <div class="dash-kpi-card" data-dash-goto2="intake_overdue"><div class="dash-kpi-label">未取得</div><div class="dash-kpi-val">${DASH_STATE.autoSummary.intakeOverdue}<span style="font-size:12px;font-weight:normal;color:var(--muted)"> 件</span></div></div>
+        <div class="dash-kpi-card" data-dash-goto2="automation"><div class="dash-kpi-label">自動処理中</div><div class="dash-kpi-val">${DASH_STATE.autoSummary.running}<span style="font-size:12px;font-weight:normal;color:var(--muted)"> 件</span></div></div>
+      </div>
+      <div class="dash-grid-4" style="margin-top:10px">
+        <div class="dash-kpi-card" data-dash-goto2="automation"><div class="dash-kpi-label">本日自動完了</div><div class="dash-kpi-val">${DASH_STATE.autoSummary.doneToday}<span style="font-size:12px;font-weight:normal;color:var(--muted)"> 件</span></div></div>
+        <div class="dash-kpi-card${DASH_STATE.autoSummary.errToday?" alert":""}" data-dash-goto2="automation"><div class="dash-kpi-label">自動化エラー</div><div class="dash-kpi-val">${DASH_STATE.autoSummary.errToday}<span style="font-size:12px;font-weight:normal;color:var(--muted)"> 件</span></div></div>
+        <div class="dash-kpi-card" data-dash-goto2="automation"><div class="dash-kpi-label">自動化率</div><div class="dash-kpi-val">${DASH_STATE.autoSummary.rate}<span style="font-size:12px;font-weight:normal;color:var(--muted)"> %</span></div></div>
+        <div></div>
+      </div>`:""}
+
       <div class="dash-section-title">⑦ 最近の処理（直近5件） <button class="hq-btn" style="font-size:11px;padding:5px 10px;margin-left:8px" id="dash-go-all">請求書一覧を見る →</button></div>
       <div class="card hq-tablewrap">
         <table class="invoice-table">
@@ -6289,6 +6333,15 @@ function dashRenderBody(u){
     if(key==="__accounting") return openUnifiedFiltered(u,{subTab:"accounting"});
     if(key==="__payment") return openUnifiedFiltered(u,{subTab:"payment"});
     openUnifiedFiltered(u,{subTab:"review",reasonFilter:key});
+  });
+  // 2026-09-11追加：会計・請求ワークスペースUI刷新Step7。売上入金・自動取込・自動化タブへの
+  // 絞り込み付き遷移（指示書§9-6「各KPIクリックで該当画面へ絞り込み付き遷移」）
+  document.querySelectorAll("[data-dash-goto2]").forEach(el=>el.onclick=()=>{
+    const key=el.dataset.dashGoto2;
+    if(key==="ar_diff"){ TAB="receivableSoon"; RECEIVABLE_STATE.subTab="diff"; pushNav(); renderTabBody(u); }
+    else if(key==="ar_overdue"){ TAB="receivableSoon"; RECEIVABLE_STATE.subTab="overdue"; pushNav(); renderTabBody(u); }
+    else if(key==="intake_overdue"){ TAB="upload"; INTAKE_STATE.subTab="overdue"; pushNav(); renderTabBody(u); }
+    else if(key==="automation"){ TAB="automationSoon"; pushNav(); renderTabBody(u); }
   });
 }
 
