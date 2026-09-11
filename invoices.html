@@ -344,6 +344,12 @@ button,input,select,textarea{font:inherit}
 @media(max-width:700px){.pr-hero,.pr-alert-grid,.pr-kpis,.pr-progress-flow,.pr-filter-row{grid-template-columns:1fr}}
 .dash-section-title{font-size:13px;font-weight:700;color:var(--muted);margin:0 0 10px 2px}
 .dash-grid-4{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:26px}
+/* 2026-09-11追加：会計・請求ワークスペースUI刷新Step10（スマホ回帰確認）。売上入金・自動化
+   タブのKPI6枚行はdash-grid-4を流用せず専用クラスにし、6→3→2列で指示書§9-17「KPI2〜3列」の
+   基準に合わせて畳む（機能・情報量は削減せず表示列数だけ変える） */
+.kpis6{display:grid;grid-template-columns:repeat(6,1fr);gap:10px;margin-bottom:14px}
+@media(max-width:900px){.kpis6{grid-template-columns:repeat(3,1fr)}}
+@media(max-width:600px){.kpis6{grid-template-columns:repeat(2,1fr)}}
 .dash-action-card{background:var(--accent-soft);border:1px solid var(--accent);border-left:5px solid var(--accent);border-radius:10px;padding:14px;cursor:pointer;transition:.15s}
 .dash-action-card:hover{transform:translateY(-2px)}
 .dash-action-card.warning{background:var(--amber-soft);border-color:var(--amber);border-left-color:var(--amber)}
@@ -2112,7 +2118,7 @@ function automationRender(u){
   const events=automationEventRows();
   $("tabbody").innerHTML=`
     <section class="invoice-list active">
-      <div class="kpis" style="display:grid;grid-template-columns:repeat(6,1fr);gap:10px;margin-bottom:14px">
+      <div class="kpis kpis6">
         <div class="card kpi" style="padding:14px"><small style="color:var(--muted);font-size:9px;display:block">要人間確認</small><b style="font-size:22px;display:block;margin-top:5px;color:var(--m-red)">${kpi.needAttn}件</b></div>
         <div class="card kpi" style="padding:14px"><small style="color:var(--muted);font-size:9px;display:block">自動処理中</small><b style="font-size:22px;display:block;margin-top:5px">${kpi.running}件</b></div>
         <div class="card kpi" style="padding:14px"><small style="color:var(--muted);font-size:9px;display:block">本日自動完了</small><b style="font-size:22px;display:block;margin-top:5px">${kpi.doneToday}件</b></div>
@@ -2123,7 +2129,7 @@ function automationRender(u){
       <div class="card" style="padding:10px 14px;margin-bottom:14px;background:var(--m-bg,#f4f1eb);font-size:12px;color:var(--muted)">
         <b>基本方針：</b> AIが処理できるものはタスク化しません。人間の判断が必要になった時だけ、本部タスクを自動発行します（指示書§9-12/9-13）。
       </div>
-      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px">
+      <div class="dash-grid-4" style="margin-bottom:16px">
         <div><h3 style="font-size:12px;margin-bottom:8px">⚠️ 要確認（${AUTOMATION_STATE.exceptionTasks.length}）</h3>${AUTOMATION_STATE.exceptionTasks.length?AUTOMATION_STATE.exceptionTasks.map(automationExcCardHtml).join(""):'<div style="font-size:11px;color:var(--muted)">現在ありません</div>'}</div>
         <div><h3 style="font-size:12px;margin-bottom:8px">⚙️ 自動処理中（${runningRuns.length}）</h3>${runningRuns.length?runningRuns.map(r=>automationRunCardHtml(r,"running")).join(""):'<div style="font-size:11px;color:var(--muted)">現在ありません</div>'}</div>
         <div><h3 style="font-size:12px;margin-bottom:8px">✅ 自動完了（本日${doneRuns.length}）</h3>${doneRuns.length?doneRuns.slice(0,8).map(r=>automationRunCardHtml(r,"done")).join(""):'<div style="font-size:11px;color:var(--muted)">まだありません</div>'}</div>
@@ -2244,7 +2250,7 @@ function receivableRender(u){
   const stores=(CORP_STORE_CACHE&&CORP_STORE_CACHE.stores)||[];
   $("tabbody").innerHTML=`
     <section class="invoice-list active">
-      <div class="kpis" style="display:grid;grid-template-columns:repeat(6,1fr);gap:10px;margin-bottom:14px">
+      <div class="kpis kpis6">
         <div class="card kpi" style="padding:14px"><small style="color:var(--muted);font-size:9px;display:block">今月入金予定</small><b style="font-size:20px;display:block;margin-top:5px">${kpi.pending.n}件</b><small style="color:var(--muted)">${yen(kpi.pending.amt)}</small></div>
         <div class="card kpi" style="padding:14px"><small style="color:var(--muted);font-size:9px;display:block">未入金</small><b style="font-size:20px;display:block;margin-top:5px;color:var(--m-red)">${kpi.overdue.n}件</b><small style="color:var(--muted)">${yen(kpi.overdue.amt)}</small></div>
         <div class="card kpi" style="padding:14px"><small style="color:var(--muted);font-size:9px;display:block">差異あり</small><b style="font-size:20px;display:block;margin-top:5px;color:var(--m-red)">${kpi.diff.n}件</b><small style="color:var(--muted)">${yen(kpi.diff.amt)}</small></div>
