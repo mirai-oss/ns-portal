@@ -6,6 +6,25 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
+**★★★2026-09-11（担当D実行スレッド）会計・請求ワークスペースUI刷新§9-10/11の担当D分: import_runs基盤を新設・run.jsに接続完了／§9-9 PayPay決済集計はデータ源未確定で設計のみ**: `実装指示書_会計請求ワークスペースUI刷新_2026-09-11.md`のD分「Playwright取込の取得状態・未取得・取込履歴をDBへ記録しC画面と接続／PayPay明細の店舗別集計（共通費はAI按分禁止）／定期マスタとの突合・予定日超過の自動再取得」を受領・実行。
+
+**現状把握（着手前の事実確認）**: `ai-agent-team/import_task_board.md`に明記の通り、ns-daily-importの13ジョブ（PayPay銀行含む）の実行結果は**Mac miniローカルのlogs/\*.logとマーカーファイルにしか残っておらず、DBには一切記録が無かった**（「『前回』列は本Macからは確認できません」）。会計・請求WSの「自動取込」タブ（未取得・取込履歴）が参照できるデータがそもそも存在しない状態だった。担当CのStep1調査（`調査レポート_会計UI刷新_Step1現行機能マッピング_2026-09-11.md`）でも同じ結論（「ns-daily-import＝売上入金・自動取込の主要データソースになる予定・現状invoices.html側に接続無し」）に独立して到達しており、認識一致を確認。
+
+**実装した内容（§9-20様式: 理由/影響/migration/rollbackは`ns-portal/supabase/2026-09-11_import_runs.sql`本文コメントに記載済み）**:
+1. `import_runs`（新規）: 全取込ジョブ1回の実行=1行の実行履歴テーブル。job/source/kind/target_ym/host/triggered_by/started_at/finished_at/status(running/success/partial/failed)/duration_sec/detail/error/items(jsonb)。RLSはkd_sync_runs等の既存パターン踏襲（select→authenticated、書込はservice_roleのみ）。
+2. `import_schedule`（新規）: D管轄13ジョブの予定表（import_task_board.mdのDB版・13行投入済み）。**担当C側の`ar_recurring_master`（請求書/売上入金全般の定期マスタ）とは別テーブル**（job/kindキーは揃えてあるので将来相互参照可能）。
+3. `import_status_today`（ビュー）: 予定表×当日の実行履歴から「未取得」（予定時刻+猶予を超えて当日成功なし＝`is_overdue`）と「3回失敗してもなお未成功」（`needs_escalation`）を判定。**担当Eへ**: `hq_tasks`の例外連携（§9-13「未取得」条件）はこの`needs_escalation=true`行をポーリングして起票する形を想定。
+4. `import_paypay_settlement`（新規・**未実装/空**）: §9-9「PayPay等の店舗別取引金額/システム利用料/入金相当額・共通費分離」用のテーブル。**投入元が未確定のため空のまま**（詳細は次段落）。
+5. `ns-daily-import`側: `lib/import-tracker.js`新設（store-gateway.jsと同じ「記録失敗でジョブ本体を止めない」設計）。全ジョブの唯一の実行経路`run.js`に接続し、`dispatch.js`（スケジュール実行=`schedule`・スマホキュー実行=`queue`）・`lark-listener.js`（Lark手動実行=`lark`）から`triggered_by`が伝わるようにした。Supabase REST（INSERT→PATCH→SELECT→DELETE）で動作確認済み（このMacBookに`.env`が無く実ジョブは走らせられないため、Mac miniの次回自動実行で実データが記録される見込み）。コミット: ns-portal `669f448`+`0941088`／ns-daily-import `cde3228`。
+
+**⚠️§9-9 PayPay決済店舗別集計は「データ源が無い」ことが判明・司令塔/Cへ確認依頼**: 既存の`paypay-bank.js`/`paypay-bank-b.js`は**PayPay銀行（口座）のATM入金明細**を取り込むジョブで、指示書が求める「取引金額/システム利用料/入金相当額」（＝PayPay決済＝QR/オンライン決済の加盟店手数料明細）とは別物と判断（既存CSVには手数料列が無い・摘要にATM入金以外は除外する設計）。加盟店ポータルからの明細取得手段（新規Playwright／メール添付／手動アップロード等）は本セッションでは未確認・未確定。**新規Playwrightジョブを作る前に、データがどこから来るのか（PayPay for Businessの管理画面か、既に請求書メールに添付が来ているか等）をユーザー/司令塔に確認してから着手したい**。テーブル自体（`import_paypay_settlement`。store_id=null+is_common_cost=trueで共通費分離済み設計）は準備済みなので、データ源さえ決まればすぐ投入開始できる。
+
+**§9-11「予定日超過→自動再取得」の現状**: `dispatch.js`は元々1日最大3回まで自動再試行する設計（既存`MAX_ATTEMPTS`）のため、「未取得→自動再取得」自体は**既存の仕組みで既に満たされている**。今回追加した`import_status_today.needs_escalation`（3回失敗してもなお未成功）が「一定期間超過→本部タスク発行」の判定基準として使える状態。
+
+**次にやること**: ①PayPay決済データ源の確認待ち（上記）②担当Cの`ar_receivables`/`ar_deposits`/`ar_recurring_master`設計時に、本エントリの`import_runs`/`import_schedule`/`import_status_today`をどう参照するか擦り合わせ（C側Step1調査でも同じ認識のため大きな齟齬は無い見込み）③担当EへneedsEscalation運用の合図（本エントリで代替。SendMessage送信先の担当Eセッションが不明瞭だったためWORKLOG記載のみ）。
+
+**git運用の注意（担当Cの直上エントリと同じ教訓を踏まえ実施済み）**: 本スレッドは全コミットで`git add <自分のファイルのみ>`の直後に`git status --short`で混入が無いことを確認してからcommit・pushした（他レーンの未コミットファイルに一切触れていない）。
+
 **★★★2026-09-11（担当E実行スレッド）会計・請求ワークスペースUI刷新§1担当E分完了: hq_tasksに例外連携の受け皿＋種別タブ送金/入金/請求書（TK-52）**: `実装指示書_会計請求ワークスペースUI刷新_2026-09-11.md`§1「E=本部タスク例外連携。hq_tasksに例外連携の受け皿（invoice_id/receivable_id・発生理由・元画面リンク・問題解消後の自動完了）。既存TK-52とセットで」＋§9-13に対応（内容は本日付エントリ参照。コミットは`ce17271`に混入・下記「訂正」参照）。`hq_tasks`に`exception_invoice_id`/`exception_receivable_id`/`exception_reason`/`exception_source_url`/`task_category`を追加し、`hq_create_exception_task`（べき等・正常処理の大量発行を防ぐ）／`hq_resolve_exception_task`（問題解消後の自動完了）を新設・本番適用済み。`tasks.html`側はTK-52の残り（💸送金／💰入金／🧾請求書タブ）を追加し、既存の📋入社登録タブと統一の`matchesTaskCategory()`経由に整理。**担当C/Dへ**: 呼び出し方法・べき等の鍵（invoice_id/receivable_id+reason）は本日付エントリに詳細記録。会計ワークスペース側からの実際の呼び出し配線はC/D側の実装待ち。
 
 **★★2026-09-11（担当E実行スレッド）訂正: コミット`ce17271`に自分（担当E）の変更が混入しています**: 上記の`tasks.html`・`supabase/2026-09-11_hq_task_exception_link.sql`の変更は、担当Fが同じ作業ディレクトリで`git commit`を実行した際、こちらが`git add`済みのままにしていた分がindexに残っており、担当Fの意図に反して同じコミット（`ce17271`「docs(worklog): 会計・請求WS刷新§1担当F分の完了記録」）に巻き込まれてpushされました。内容自体は確認済みで実害・巻き戻しの必要はありません。担当Cが直前のエントリで残してくれた教訓（コミット前に`git status --short`で確認する・`git commit <path> -F <msgfile>`のように対象パスを直接指定する）を今回から自分も採用します。
