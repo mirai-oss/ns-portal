@@ -159,7 +159,11 @@ Deno.serve(async (req) => {
       return json({ ok: true, asOf, monthStart: start, latestBizDate: null, stores: [], totals: makeKpis(sumDaily([]), 0, 0), scope: { role, restrictedStoreIds } });
     }
 
-    const [homeRes, dashRes, rsvRes] = await Promise.all([
+    // TK-60②（2026-09-11・判定_高速化検証と実装GO）: トップKPIのF率/L率/FLをkd_直読みへ切替するため、
+    // 当月累計（monthStart〜asOf）のcost/laborをkd_dashboard_daily_summaryから合算して追加する。
+    // 9/6にP側でこの2列が追加・埋まり始めたことを実データで確認済み（WORKLOG参照）。
+    // 単日分（今日ぶんのprior_year比較用）とMTD合算分は別クエリにする（範囲が違うため）。
+    const [homeRes, dashRes, rsvRes, mtdRes] = await Promise.all([
       sb.from("kd_home_kpi_snapshot").select(
         "store_id,period_date,today_sales,today_guests,today_parties,mtd_sales,budget_achievement_rate,daily_report_submission_rate,checklist_completion_rate,hq_task_overdue_count,source_updated_at,computed_at",
       ).in("store_id", storeIds).eq("period_date", asOf),
@@ -168,8 +172,10 @@ Deno.serve(async (req) => {
       ).in("store_id", storeIds).eq("period_date", asOf),
       sb.from("kd_reservation_daily_summary").select("store_id,reservation_count,party_size_sum,expected_sales")
         .in("store_id", storeIds).eq("period_date", asOf),
+      sb.from("kd_dashboard_daily_summary").select("store_id,net_sales,cost,labor")
+        .in("store_id", storeIds).gte("period_date", start).lte("period_date", asOf),
     ]);
-    for (const r of [homeRes, dashRes, rsvRes]) {
+    for (const r of [homeRes, dashRes, rsvRes, mtdRes]) {
       if (r.error) return json({ ok: false, error: "ホームスナップショットの取得に失敗しました: " + r.error.message }, 500);
     }
 
@@ -178,6 +184,16 @@ Deno.serve(async (req) => {
       const homeByStore = new Map(homeRows.map((r) => [r.store_id, r]));
       const dashByStore = new Map(((dashRes.data ?? []) as DashRow[]).map((r) => [r.store_id, r]));
       const rsvByStore = new Map(((rsvRes.data ?? []) as RsvRow[]).map((r) => [r.store_id, r]));
+      // MTD原価・人件費（店舗別＋合計）。net_salesはkd_home_kpi_snapshot側のmtd_salesを正とする
+      // （既存の当月累計売上の表示と完全に一致させるため。ここではcost/laborの合算だけに使う）。
+      const mtdByStore = new Map<string, { cost: number; labor: number }>();
+      let mtdCostTotal = 0, mtdLaborTotal = 0;
+      for (const r of (mtdRes.data ?? []) as Array<{ store_id: string; net_sales: number | null; cost: number | null; labor: number | null }>) {
+        const acc = mtdByStore.get(r.store_id) ?? { cost: 0, labor: 0 };
+        acc.cost += n(r.cost); acc.labor += n(r.labor);
+        mtdByStore.set(r.store_id, acc);
+        mtdCostTotal += n(r.cost); mtdLaborTotal += n(r.labor);
+      }
       const targetTotal = budgetTargetFrom(homeRows);
       const salesTotal = homeRows.reduce((a, r) => a + n(r.mtd_sales), 0);
       const todaySalesTotal = homeRows.reduce((a, r) => a + n(r.today_sales), 0);
@@ -193,6 +209,9 @@ Deno.serve(async (req) => {
         const mtdSales = n(h?.mtd_sales);
         const budgetRate = h?.budget_achievement_rate ?? null;
         const target = budgetRate && budgetRate > 0 ? mtdSales / budgetRate : 0;
+        const mtd = mtdByStore.get(s.id) ?? { cost: 0, labor: 0 };
+        const gross = mtdSales - mtd.cost;
+        const fl = mtd.cost + mtd.labor;
         return {
           storeId: s.id,
           storeName: s.dash_store_name || s.name,
@@ -213,6 +232,13 @@ Deno.serve(async (req) => {
           reservationCount: rv?.reservation_count ?? 0,
           reservationPartySize: rv?.party_size_sum ?? 0,
           reservationExpectedSales: rv?.expected_sales ?? null,
+          // TK-60②追加（2026-09-11）: 当月累計（monthStart〜asOf）の原価・人件費・粗利・FL。
+          mtdCost: mtd.cost,
+          mtdLabor: mtd.labor,
+          mtdGross: gross,
+          mtdGrossRate: div(gross, mtdSales),
+          mtdFl: fl,
+          mtdFlRate: div(fl, mtdSales),
         };
       });
       return json({
@@ -240,6 +266,13 @@ Deno.serve(async (req) => {
           reservationCount: [...rsvByStore.values()].reduce((a, r) => a + n(r.reservation_count), 0),
           reservationPartySize: [...rsvByStore.values()].reduce((a, r) => a + n(r.party_size_sum), 0),
           reservationExpectedSales: [...rsvByStore.values()].reduce((a, r) => a + n(r.expected_sales), 0),
+          // TK-60②追加（2026-09-11）: 当月累計（monthStart〜asOf）の原価・人件費・粗利・FL（全店合計）。
+          mtdCost: mtdCostTotal,
+          mtdLabor: mtdLaborTotal,
+          mtdGross: salesTotal - mtdCostTotal,
+          mtdGrossRate: div(salesTotal - mtdCostTotal, salesTotal),
+          mtdFl: mtdCostTotal + mtdLaborTotal,
+          mtdFlRate: div(mtdCostTotal + mtdLaborTotal, salesTotal),
         },
         stores: storeSummaries,
         scope: { role, restrictedStoreIds },
