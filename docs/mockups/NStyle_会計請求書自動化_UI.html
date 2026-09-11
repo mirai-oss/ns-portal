@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>N-Style 会計・請求書自動化 UI</title>
+<style>
+:root{--bg:#f5f6f7;--panel:#fff;--ink:#222;--muted:#737a81;--line:#dfe3e7;--green:#6ab80d;--green-soft:#eff8e7;--red:#cf4b45;--red-soft:#fff0ef;--amber:#aa700b;--amber-soft:#fff7e7;--blue:#3478b8;--blue-soft:#eef6fd;--purple:#6d5aa5;--purple-soft:#f5f1ff;--black:#161616}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:13px -apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans JP",sans-serif}button,select,input{font:inherit}button{cursor:pointer}
+.top{height:52px;background:var(--black);color:#fff;display:flex;align-items:center;justify-content:space-between;padding:0 18px;position:sticky;top:0;z-index:30}.brand{font-size:17px;font-weight:800}.brand small{font-size:11px;color:#c9c9c9;font-weight:500;margin-left:8px}
+.page{padding:14px 18px 42px;max-width:1600px;margin:auto}.nav{display:flex;background:#fff;border:1px solid var(--line);border-bottom:0;overflow:auto}.nav button{border:0;background:#fff;padding:13px 18px;border-bottom:3px solid transparent;color:#666;font-weight:750;white-space:nowrap}.nav button.on{color:#222;border-color:var(--green)}
+.view{display:none}.view.on{display:block}.toolbar{background:#fff;border:1px solid var(--line);padding:10px 12px;display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap}.group{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.btn,select,input{border:1px solid #ccd2d7;background:#fff;border-radius:4px;padding:7px 10px;color:#333}.btn.primary{background:var(--green);border-color:var(--green);color:#fff;font-weight:700}.btn.red{background:var(--red);border-color:var(--red);color:#fff;font-weight:700}.btn.blue{background:var(--blue);border-color:var(--blue);color:#fff;font-weight:700}
+.title{margin:16px 0 8px;font-size:18px;font-weight:800}.sub{font-size:10px;color:var(--muted);margin-top:3px}
+.kpis{display:grid;grid-template-columns:repeat(6,1fr);gap:8px;margin:10px 0}.kpi{background:#fff;border:1px solid var(--line);padding:11px 13px}.kpi small{color:var(--muted)}.kpi b{display:block;font-size:19px;margin-top:4px}.kpi.good{border-left:3px solid var(--green)}.kpi.bad{border-left:3px solid var(--red)}.kpi.warn{border-left:3px solid var(--amber)}
+.card{background:#fff;border:1px solid var(--line);margin-top:10px}.cardhead{padding:10px 12px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:8px}.cardhead h2{font-size:14px;margin:0}
+.wrap{overflow:auto}table{border-collapse:collapse;width:100%;min-width:1080px}th,td{border-right:1px solid #e3e6e9;border-bottom:1px solid #e3e6e9;padding:8px;text-align:left;white-space:nowrap}th{background:#fafafa;color:#5c636a;font-size:10px}td{font-size:11px}
+.badge{display:inline-block;padding:3px 7px;border-radius:999px;font-size:9px;background:#f0f2f3;color:#555}.badge.good{background:var(--green-soft);color:#4f7d0f}.badge.bad{background:var(--red-soft);color:#9a3732}.badge.warn{background:var(--amber-soft);color:#845a08}.badge.blue{background:var(--blue-soft);color:#2c6596}
+.notice{padding:9px 12px;border:1px solid #e8d5a8;background:var(--amber-soft);margin-top:10px;font-size:11px;display:flex;justify-content:space-between;gap:8px;align-items:center}.notice.bad{background:var(--red-soft);border-color:#efc8c5;color:#903630}.notice.good{background:var(--green-soft);border-color:#d6e9c1;color:#4c7710}
+.grid2{display:grid;grid-template-columns:1.25fr .75fr;gap:10px}.side{background:#fff;border:1px solid var(--line);padding:12px;margin-top:10px}.side h3{font-size:13px;margin:0 0 8px}.log{padding:8px 0;border-bottom:1px solid #eee}.log:last-child{border-bottom:0}.log b{font-size:11px}.log p{font-size:10px;color:var(--muted);margin:3px 0 0}
+.pipeline{display:flex;align-items:center;gap:5px;flex-wrap:wrap}.step{padding:5px 7px;background:#f1f2f3;border-radius:4px;font-size:9px}.step.done{background:var(--green-soft);color:#4f7b0f}.arrow{color:#aaa}
+.drop{border:2px dashed #d5d9dd;background:#fafbfb;padding:28px 20px;text-align:center;margin:12px;border-radius:5px}
+.setting-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px}.setting-card{background:#fff;border:1px solid var(--line);padding:12px}.setting-card h3{font-size:13px;margin:0 0 8px}
+.formgrid{display:grid;grid-template-columns:1fr 1fr;gap:8px}.field label{display:block;font-size:10px;color:var(--muted);margin-bottom:4px}.field input,.field select{width:100%}
+.task-board{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:10px}.column{background:#fff;border:1px solid var(--line);min-height:340px}.column h3{font-size:12px;margin:0;padding:10px 11px;border-bottom:1px solid var(--line);background:#fafafa}
+.task{margin:8px;border:1px solid var(--line);padding:9px;background:#fff}.task.critical{border-left:3px solid var(--red)}.task.ai{border-left:3px solid var(--blue)}.task h4{font-size:11px;margin:0 0 5px}.task p{font-size:9px;color:var(--muted);margin:3px 0}.task .foot{display:flex;justify-content:space-between;gap:5px;align-items:center;margin-top:7px}
+.tabs2{display:flex;gap:0;margin:10px 0 0}.tabs2 button{border:1px solid #ccd2d7;background:#fff;padding:7px 11px}.tabs2 button+button{border-left:0}.tabs2 button.on{background:#555;color:#fff}.hidden{display:none!important}
+@media(max-width:1000px){.kpis{grid-template-columns:repeat(3,1fr)}.grid2,.setting-grid{grid-template-columns:1fr}.task-board{grid-template-columns:1fr 1fr}}@media(max-width:650px){.page{padding:10px}.kpis{grid-template-columns:repeat(2,1fr)}.task-board{grid-template-columns:1fr}.formgrid{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="top"><div class="brand">N-Style <small>会計・請求書自動化</small></div><div>トーホー ｜ 管理者</div></div>
+<main class="page">
+<div class="nav"><button class="on" data-view="invoice">請求書</button><button data-view="upload">アップロード</button><button data-view="settings">設定</button><button data-view="tasks">自動化・本部タスク</button></div>
+
+<section id="invoice" class="view on">
+<div class="toolbar"><div class="group"><select><option>全法人</option><option>トーホー</option></select><select><option>2026年9月</option></select><input placeholder="取引先・請求書番号・金額で検索" style="min-width:270px"></div><div class="group"><button class="btn">CSV</button><button class="btn primary">＋請求書を追加</button></div></div>
+<div class="title">請求書</div>
+<div class="kpis"><div class="kpi bad"><small>要対応</small><b>3件</b></div><div class="kpi warn"><small>会計待ち</small><b>5件</b></div><div class="kpi"><small>振込待ち</small><b>8件</b></div><div class="kpi good"><small>完了</small><b>42件</b></div><div class="kpi"><small>自動処理</small><b>31件</b></div><div class="kpi"><small>今月請求総額</small><b>¥8.42M</b></div></div>
+<div class="tabs2"><button class="on">要対応</button><button>すべて</button><button>会計待ち</button><button>振込待ち</button><button>完了</button></div>
+<div class="card"><div class="cardhead"><h2>統合請求書一覧</h2><div class="group"><select><option>全取得元</option><option>メール</option><option>手動</option><option>自動取込</option></select><button class="btn">フィルタ</button></div></div>
+<div class="wrap"><table><thead><tr><th>取得元</th><th>取引先</th><th>対象月</th><th>店舗</th><th>請求額</th><th>状態</th><th>会計</th><th>振込</th><th>自動処理</th><th>操作</th></tr></thead><tbody>
+<tr><td><span class="badge blue">自動取込</span></td><td>PayPay</td><td>2026/08</td><td>新横浜 / 川崎</td><td>¥46,923</td><td><span class="badge good">照合済</span></td><td><span class="badge good">MF登録済</span></td><td><span class="badge good">対象外</span></td><td><span class="badge good">完全自動</span></td><td><button class="btn">開く</button></td></tr>
+<tr><td><span class="badge blue">自動取込</span></td><td>SUUMO</td><td>2026/09</td><td>本部</td><td>¥220,000</td><td><span class="badge warn">確認必要</span></td><td><span class="badge warn">候補作成済</span></td><td><span class="badge">対象外</span></td><td><span class="badge warn">Lv2</span></td><td><button class="btn">確認</button></td></tr>
+<tr><td><span class="badge">メール</span></td><td>東京ガス</td><td>2026/09</td><td>鳥一代 本店</td><td>¥128,440</td><td><span class="badge bad">要対応</span></td><td><span class="badge">未登録</span></td><td><span class="badge">未設定</span></td><td>—</td><td><button class="btn">開く</button></td></tr>
+</tbody></table></div></div>
+<div class="grid2"><div class="side"><h3>自動処理の流れ</h3><div class="pipeline"><span class="step done">PDF取得</span><span class="arrow">→</span><span class="step done">AI解析</span><span class="arrow">→</span><span class="step done">照合</span><span class="arrow">→</span><span class="step done">店舗配賦</span><span class="arrow">→</span><span class="step done">仕訳</span><span class="arrow">→</span><span class="step done">MF登録</span><span class="arrow">→</span><span class="step done">完了</span></div></div><div class="side"><h3>直近の異常</h3><div class="log"><b>PayPay 8月分：正常終了</b><p>精算書・明細・入金額が一致</p></div><div class="log"><b>SUUMO 9月分：勘定科目要確認</b><p>AI確信度 71%</p></div></div></div>
+</section>
+
+<section id="upload" class="view">
+<div class="toolbar"><div class="group"><select><option>全法人</option><option>トーホー</option></select><select><option>2026年9月</option></select></div><div class="group"><button class="btn">取込履歴</button></div></div>
+<div class="title">アップロード / 自動取込</div>
+<div class="tabs2" id="uploadTabs"><button class="on" data-uploadtab="manual">手動アップロード</button><button data-uploadtab="auto">自動取込</button><button data-uploadtab="missing">未取得</button></div>
+<div id="manualTab"><div class="card"><div class="cardhead"><h2>手動アップロード</h2><span class="sub">PDF・画像・ZIP</span></div><div class="drop"><b>請求書をドロップ / 選択</b><p class="sub">AI/OCR → 請求書一覧へ取り込み</p><button class="btn primary">ファイルを選択</button></div></div></div>
+<div id="autoTab" class="hidden">
+<div class="kpis"><div class="kpi good"><small>本日成功</small><b>12件</b></div><div class="kpi bad"><small>エラー</small><b>1件</b></div><div class="kpi warn"><small>人間確認</small><b>2件</b></div><div class="kpi"><small>今月自動取込</small><b>31件</b></div><div class="kpi"><small>完全自動</small><b>24件</b></div><div class="kpi"><small>自動化率</small><b>77%</b></div></div>
+<div class="card"><div class="cardhead"><h2>自動取込ジョブ</h2><button class="btn primary">＋自動取込元を追加</button></div><div class="wrap"><table><thead><tr><th>取得元</th><th>対象月</th><th>取得方法</th><th>取得</th><th>AI解析</th><th>会計</th><th>確認</th><th>最終実行</th><th>操作</th></tr></thead><tbody>
+<tr><td>PayPay</td><td>2026/08</td><td>Playwright</td><td><span class="badge good">成功</span></td><td><span class="badge good">照合済</span></td><td><span class="badge good">MF登録済</span></td><td><span class="badge good">不要</span></td><td>9/11 05:02</td><td><button class="btn">詳細</button></td></tr>
+<tr><td>SUUMO</td><td>2026/09</td><td>Playwright</td><td><span class="badge good">成功</span></td><td><span class="badge warn">確認必要</span></td><td><span class="badge warn">候補</span></td><td><span class="badge warn">本部タスク</span></td><td>9/11 05:12</td><td><button class="btn">確認</button></td></tr>
+<tr><td>食べログ</td><td>2026/09</td><td>メール</td><td><span class="badge bad">未取得</span></td><td>—</td><td>—</td><td><span class="badge bad">タスク発行</span></td><td>9/10 05:10</td><td><button class="btn red">再取得</button></td></tr>
+</tbody></table></div></div></div>
+<div id="missingTab" class="hidden"><div class="notice bad"><span><b>3件の定期請求書が未取得です。</b> 予定日超過後も未取得の場合、本部タスクを自動作成します。</span><button class="btn">まとめて再取得</button></div><div class="card"><div class="cardhead"><h2>未取得一覧</h2><span class="sub">定期請求マスタと照合</span></div><div class="wrap"><table><thead><tr><th>取引先</th><th>予定日</th><th>取得方法</th><th>最終成功</th><th>再試行</th><th>状態</th><th>タスク</th></tr></thead><tbody><tr><td>食べログ</td><td>毎月10日</td><td>メール</td><td>2026/08/10</td><td>2回</td><td><span class="badge bad">未取得</span></td><td><span class="badge bad">発行済</span></td></tr><tr><td>東京ガス</td><td>毎月9〜11日</td><td>メール</td><td>2026/08/10</td><td>1回</td><td><span class="badge warn">監視中</span></td><td>未発行</td></tr></tbody></table></div></div></div>
+</section>
+
+<section id="settings" class="view">
+<div class="toolbar"><div class="group"><select><option>全法人共通</option><option>トーホー</option></select></div><button class="btn primary">設定を保存</button></div>
+<div class="title">会計・自動化設定</div>
+<div class="setting-grid">
+<div class="setting-card"><h3>定期請求マスタ</h3><div class="wrap"><table><thead><tr><th>取引先</th><th>頻度</th><th>予定日</th><th>取得</th><th>自動化</th></tr></thead><tbody><tr><td>PayPay</td><td>毎月</td><td>1〜3日</td><td>Playwright</td><td><span class="badge good">Lv4</span></td></tr><tr><td>SUUMO</td><td>毎月</td><td>1日</td><td>Playwright</td><td><span class="badge warn">Lv2</span></td></tr><tr><td>食べログ</td><td>毎月</td><td>10日</td><td>メール</td><td><span class="badge blue">Lv3</span></td></tr></tbody></table></div><button class="btn" style="margin-top:8px">＋追加</button></div>
+<div class="setting-card"><h3>自動化レベル</h3><div class="log"><b>Lv1 取得のみ</b><p>PDF取得・保存まで</p></div><div class="log"><b>Lv2 仕訳候補</b><p>AI解析・仕訳候補まで</p></div><div class="log"><b>Lv3 自動仕訳＋人間確認</b><p>MF登録後に確認タスク</p></div><div class="log"><b>Lv4 完全自動</b><p>整合性OKなら自動完了、異常時だけ人間確認</p></div></div>
+<div class="setting-card"><h3>取引先・店舗マッピング</h3><div class="formgrid"><div class="field"><label>取引先</label><select><option>PayPay</option></select></div><div class="field"><label>店舗名ルール</label><select><option>PDF内店舗名を使用</option></select></div><div class="field"><label>新横浜</label><select><option>鶏武者 新横浜</option></select></div><div class="field"><label>川崎</label><select><option>鶏武者 川崎</option></select></div></div></div>
+<div class="setting-card"><h3>仕訳・勘定科目マッピング</h3><div class="formgrid"><div class="field"><label>取引金額</label><select><option>売上 / 未収金</option></select></div><div class="field"><label>決済手数料</label><select><option>支払手数料</option></select></div><div class="field"><label>月額利用料</label><select><option>支払手数料</option></select></div><div class="field"><label>共通費</label><select><option>本部共通</option></select></div></div></div>
+<div class="setting-card"><h3>整合性チェック</h3><label><input type="checkbox" checked> 明細合計 = 精算書決済額</label><br><label><input type="checkbox" checked> 手数料合計 = 請求額</label><br><label><input type="checkbox" checked> 対象年月一致</label><br><label><input type="checkbox" checked> MID / 契約ID一致</label><br><label><input type="checkbox" checked> 重複ファイルチェック</label></div>
+<div class="setting-card"><h3>本部タスク発行ルール</h3><div class="formgrid"><div class="field"><label>未取得アラート</label><select><option>予定日+2日</option></select></div><div class="field"><label>AI確信度</label><select><option>80%未満で確認</option></select></div><div class="field"><label>金額不一致</label><select><option>即タスク</option></select></div><div class="field"><label>MF登録エラー</label><select><option>即タスク</option></select></div></div></div>
+</div>
+</section>
+
+<section id="tasks" class="view">
+<div class="toolbar"><div class="group"><select><option>全法人</option><option>トーホー</option></select><select><option>全自動化</option><option>会計</option><option>請求書</option></select></div><div class="group"><button class="btn">自動化ログ</button><button class="btn primary">＋タスク作成</button></div></div>
+<div class="title">自動化管理 / 本部タスク</div>
+<div class="kpis"><div class="kpi bad"><small>要人間確認</small><b>4件</b></div><div class="kpi warn"><small>自動処理中</small><b>3件</b></div><div class="kpi"><small>本日自動完了</small><b>18件</b></div><div class="kpi"><small>未取得</small><b>2件</b></div><div class="kpi"><small>処理エラー</small><b>1件</b></div><div class="kpi good"><small>自動完了率</small><b>82%</b></div></div>
+<div class="notice good"><span><b>基本方針：</b> AIが処理できるものはタスク化しない。人間判断が必要になった時だけ本部タスクを自動発行。</span></div>
+<div class="task-board">
+<div class="column"><h3>要確認</h3><div class="task critical"><h4>SUUMO 9月分 仕訳確認</h4><p>AI確信度71%。勘定科目候補：広告宣伝費</p><div class="foot"><span class="badge warn">AI→人間</span><button class="btn">確認</button></div></div><div class="task critical"><h4>食べログ 9月分 未取得</h4><p>予定日+2日経過 / 自動再試行2回失敗</p><div class="foot"><span class="badge bad">未取得</span><button class="btn red">対応</button></div></div></div>
+<div class="column"><h3>自動処理中</h3><div class="task ai"><h4>PayPay 9月分</h4><p>Playwrightで明細取得中</p><div class="foot"><span class="badge blue">AI処理</span><button class="btn">ログ</button></div></div><div class="task ai"><h4>東京ガス 9月分</h4><p>メール添付解析中</p><div class="foot"><span class="badge blue">OCR</span><button class="btn">ログ</button></div></div></div>
+<div class="column"><h3>自動完了</h3><div class="task"><h4>PayPay 8月分</h4><p>取得→照合→店舗配賦→MF会計登録 完了</p><div class="foot"><span class="badge good">完了</span><button class="btn">詳細</button></div></div><div class="task"><h4>Meta広告 8月分</h4><p>請求書取得→広告費反映 完了</p><div class="foot"><span class="badge good">完了</span><button class="btn">詳細</button></div></div></div>
+<div class="column"><h3>手動タスク</h3><div class="task"><h4>9月請求書 最終確認</h4><p>担当：齋藤 / 期限 9/20</p><div class="foot"><span class="badge">人間作成</span><button class="btn">開く</button></div></div><div class="task"><h4>振込確認</h4><p>担当：原 / 期限 9/25</p><div class="foot"><span class="badge">人間作成</span><button class="btn">開く</button></div></div></div>
+</div>
+<div class="card"><div class="cardhead"><h2>自動化イベント履歴</h2><button class="btn">全履歴</button></div><div class="wrap"><table><thead><tr><th>日時</th><th>対象</th><th>イベント</th><th>結果</th><th>人間介入</th><th>詳細</th></tr></thead><tbody><tr><td>9/11 05:02</td><td>PayPay 8月</td><td>auto_fetch_complete</td><td><span class="badge good">成功</span></td><td>不要</td><td>PDF2件</td></tr><tr><td>9/11 05:04</td><td>PayPay 8月</td><td>reconcile_complete</td><td><span class="badge good">一致</span></td><td>不要</td><td>¥2,418,542</td></tr><tr><td>9/11 05:05</td><td>PayPay 8月</td><td>mf_journal_created</td><td><span class="badge good">成功</span></td><td>不要</td><td>店舗2件＋共通費</td></tr><tr><td>9/11 05:12</td><td>SUUMO 9月</td><td>ai_classification</td><td><span class="badge warn">要確認</span></td><td>タスク発行</td><td>確信度71%</td></tr></tbody></table></div></div>
+</section>
+</main>
+<script>
+document.querySelectorAll('.nav button').forEach(b=>b.onclick=()=>{document.querySelectorAll('.nav button').forEach(x=>x.classList.remove('on'));document.querySelectorAll('.view').forEach(x=>x.classList.remove('on'));b.classList.add('on');document.getElementById(b.dataset.view).classList.add('on')});
+document.querySelectorAll('#uploadTabs button').forEach(b=>b.onclick=()=>{document.querySelectorAll('#uploadTabs button').forEach(x=>x.classList.remove('on'));b.classList.add('on');document.getElementById('manualTab').classList.toggle('hidden',b.dataset.uploadtab!=='manual');document.getElementById('autoTab').classList.toggle('hidden',b.dataset.uploadtab!=='auto');document.getElementById('missingTab').classList.toggle('hidden',b.dataset.uploadtab!=='missing')});
+</script>
+</body></html>
