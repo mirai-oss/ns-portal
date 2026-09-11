@@ -8687,6 +8687,7 @@ let PLFEE_ACC_STATE={};
 // 見られる新タブを追加（read-only。編集は引き続き給与仕訳タブ・本人からの申請経由）
 let SETTINGS_TAB="journalRules";
 const SETTINGS_SUBTABS=[
+  ["recurring","📅 定期請求・入金マスタ"],
   ["journalRules","📗 仕訳辞書"],
   ["vendors","🏢 取引先マスタ"],
   ["accounts","💹 勘定科目マッピング"],
@@ -8696,17 +8697,43 @@ const SETTINGS_SUBTABS=[
   ["automation","🤖 自動処理ルール"],
   ["exclusion","🚫 メール除外設定"],
 ];
+// 2026-09-11更新：会計・請求ワークスペースUI刷新Step8。指示書§9-14「設定は定期請求・入金
+// マスタ/取引先マスタ/仕訳辞書/勘定科目・店舗・法人・PLマッピング/自動化レベル/自動取込
+// ルール/入金照合ルール/重複検知/本部タスク発行ルールを集約（分散させない）」に対応。
+// 既存8サブタブの中身（renderSettings*関数）は一切無改修のまま、その上に「関連する設定を
+// まとめた4グループ」のナビ層を追加する（Step2のAC_GROUPS/TAB_TO_AC_GROUPと同じ考え方）。
+// 給与仕訳専用のpayrollBankは、指示書§9-15「給与仕訳は壊さない」の方針により無理に
+// 会計向けグループへ寄せず、取引先・店舗マッピング（口座情報という点で近い）に含めている
+const SETTINGS_GROUPS=[
+  ["recurring","📅 定期請求・入金マスタ",["recurring"]],
+  ["vendorsMapping","🏢 取引先・店舗マッピング",["vendors","mapping","payrollBank"]],
+  ["journalPl","📗 仕訳・勘定科目・PL",["journalRules","accounts","pl"]],
+  ["automationRules","🤖 自動化・ルール",["automation","exclusion"]],
+];
+function settingsGroupOf(tab){ return SETTINGS_GROUPS.find(([,,members])=>members.includes(tab))||SETTINGS_GROUPS[0]; }
 async function renderSettingsTab(u,subTab){
   if(subTab) SETTINGS_TAB=subTab;
+  const group=settingsGroupOf(SETTINGS_TAB);
   $("tabbody").innerHTML=`
     <section class="invoice-list active">
+      <div class="meta" style="color:var(--muted);font-size:12px;margin-bottom:10px">関連する設定をグループにまとめています（分散させない）。グループを選ぶと、その中の項目が下に表示されます。</div>
+      <div class="dash-grid-4" style="margin-bottom:14px">
+        ${SETTINGS_GROUPS.map(([gk,gl])=>`<div class="dash-kpi-card${group[0]===gk?" alert":""}" data-settings-group="${gk}" style="cursor:pointer">
+          <div class="dash-kpi-label" style="font-size:12px;font-weight:${group[0]===gk?"700":"normal"}">${esc(gl)}</div>
+        </div>`).join("")}
+      </div>
       <div class="mail-tabs" style="margin-bottom:14px">
-        ${SETTINGS_SUBTABS.map(([k,l])=>`<button class="mail-tab ${SETTINGS_TAB===k?"active":""}" data-settings-tab="${k}">${l}</button>`).join("")}
+        ${group[2].map(k=>{ const l=(SETTINGS_SUBTABS.find(([kk])=>kk===k)||[k,k])[1]; return `<button class="mail-tab ${SETTINGS_TAB===k?"active":""}" data-settings-tab="${k}">${l}</button>`; }).join("")}
       </div>
       <div id="settingsBody"><div class="spin">読み込み中…</div></div>
     </section>`;
+  document.querySelectorAll("[data-settings-group]").forEach(b=>b.onclick=()=>{
+    const g=SETTINGS_GROUPS.find(x=>x[0]===b.dataset.settingsGroup);
+    renderSettingsTab(u,g[2][0]);
+  });
   document.querySelectorAll("[data-settings-tab]").forEach(b=>b.onclick=()=>renderSettingsTab(u,b.dataset.settingsTab));
-  if(SETTINGS_TAB==="journalRules") await renderSettingsJournalRules();
+  if(SETTINGS_TAB==="recurring") await renderSettingsRecurringMaster();
+  else if(SETTINGS_TAB==="journalRules") await renderSettingsJournalRules();
   else if(SETTINGS_TAB==="vendors") await renderSettingsVendors();
   else if(SETTINGS_TAB==="accounts") await renderSettingsAccounts();
   else if(SETTINGS_TAB==="mapping") await renderSettingsMapping();
@@ -8714,6 +8741,73 @@ async function renderSettingsTab(u,subTab){
   else if(SETTINGS_TAB==="payrollBank") await renderSettingsPayrollBank();
   else if(SETTINGS_TAB==="automation") await renderSettingsAutomation();
   else if(SETTINGS_TAB==="exclusion") await renderSettingsExclusion(u);
+}
+// 2026-09-11新設：会計・請求ワークスペースUI刷新Step8。指示書§9-11/9-14「定期請求・入金
+// マスタ：取引先・入金元/種別/頻度/通常取得日/取得方法/自動化レベル/担当」に対応する管理画面。
+// Step4で新設したar_recurring_masterテーブル（今までUIが無かった）の一覧・登録を行う。
+// 担当D管轄のimport_schedule（自動取込ジョブの予定表）とは別の、会計側の管理台帳という位置づけ
+// （intakeScheduleLabel等と同様、job名の緩い対応はあるが直接の連携は今後の課題）
+async function renderSettingsRecurringMaster(){
+  $("settingsBody").innerHTML=`<div class="spin">読み込み中…</div>`;
+  const r=await authed(`/rest/v1/ar_recurring_master?select=*&order=name`);
+  const rows=(r.ok&&Array.isArray(r.body))?r.body:[];
+  const fetchMethodLabel={playwright:"Playwright",email:"メール",api:"API",manual:"手動"};
+  const levelLabel={1:"Lv1 取得のみ",2:"Lv2 仕訳候補",3:"Lv3 自動仕訳＋人間確認",4:"Lv4 完全自動"};
+  $("settingsBody").innerHTML=`
+    <div class="card" style="padding:16px;margin-bottom:14px">
+      <h3 style="font-size:14px;margin-bottom:6px">📅 定期請求・入金マスタ</h3>
+      <div class="meta" style="color:var(--muted);font-size:12px;margin-bottom:10px">毎月決まって発生する請求・入金の管理台帳です（指示書§9-11）。「自動取込」タブの未取得判定は担当D管轄の自動取込ジョブ側の予定表を見ています。ここは会計側の台帳で、請求書/売上入金の区別・自動化レベルを記録します（ジョブとの直接連携は今後の課題）。</div>
+      <div class="ai-grid">
+        <div class="ai-field"><small>名前（取引先・入金元）</small><input id="rm-name"></div>
+        <div class="ai-field"><small>種別</small><select id="rm-kind"><option value="invoice">🧾請求書</option><option value="receivable">💰売上入金</option></select></div>
+        <div class="ai-field"><small>頻度</small><input id="rm-frequency" placeholder="例: monthly"></div>
+        <div class="ai-field"><small>取得方法</small><select id="rm-method">${Object.entries(fetchMethodLabel).map(([k,l])=>`<option value="${k}">${l}</option>`).join("")}</select></div>
+        <div class="ai-field"><small>通常取得日（開始・省略可）</small><input type="number" id="rm-day-from" min="1" max="31"></div>
+        <div class="ai-field"><small>通常取得日（終了・省略可）</small><input type="number" id="rm-day-to" min="1" max="31"></div>
+        <div class="ai-field"><small>自動化レベル</small><select id="rm-level">${Object.entries(levelLabel).map(([k,l])=>`<option value="${k}">${l}</option>`).join("")}</select></div>
+        <div class="ai-field"><small>備考</small><input id="rm-note"></div>
+      </div>
+      <button class="hq-btn primary" style="margin-top:10px" id="rm-add">＋ 追加</button>
+      <div class="err" id="rm-msg" style="margin-top:8px"></div>
+    </div>
+    <div class="card hq-tablewrap" style="padding:0">
+      <table class="invoice-table">
+        <thead><tr><th>名前</th><th>種別</th><th>頻度</th><th>取得日</th><th>取得方法</th><th>自動化レベル</th><th>有効</th></tr></thead>
+        <tbody>${rows.length?rows.map(x=>`<tr>
+          <td>${esc(x.name)}</td>
+          <td>${x.kind==="invoice"?"🧾請求書":"💰売上入金"}</td>
+          <td>${esc(x.frequency||"—")}</td>
+          <td>${x.expected_day_from?esc(String(x.expected_day_from)+(x.expected_day_to&&x.expected_day_to!==x.expected_day_from?"〜"+x.expected_day_to:"")+"日"):"—"}</td>
+          <td>${esc(fetchMethodLabel[x.fetch_method]||x.fetch_method||"—")}</td>
+          <td>${x.automation_level?esc(levelLabel[x.automation_level]||("Lv"+x.automation_level)):"—"}</td>
+          <td><input type="checkbox" class="rm-active" data-id="${esc(x.id)}" ${x.is_active?"checked":""}></td>
+        </tr>`).join(""):'<tr><td colspan="7">まだ登録がありません</td></tr>'}</tbody>
+      </table>
+    </div>`;
+  $("rm-add").onclick=async()=>{
+    const msg=$("rm-msg");
+    const name=$("rm-name").value.trim();
+    if(!name){ msg.className="err"; msg.textContent="名前を入力してください"; return; }
+    msg.className="err"; msg.textContent="登録中…";
+    const dayFrom=$("rm-day-from").value?Number($("rm-day-from").value):null;
+    const dayTo=$("rm-day-to").value?Number($("rm-day-to").value):dayFrom;
+    const payload={
+      name, kind:$("rm-kind").value,
+      frequency:$("rm-frequency").value.trim()||null,
+      fetch_method:$("rm-method").value,
+      expected_day_from:dayFrom, expected_day_to:dayTo,
+      automation_level:Number($("rm-level").value),
+      note:$("rm-note").value.trim()||null,
+      is_active:true,
+    };
+    const rr=await authed(`/rest/v1/ar_recurring_master`,{method:"POST",headers:{Prefer:"return=minimal"},body:JSON.stringify(payload)});
+    if(!rr.ok){ msg.textContent="登録に失敗しました"; return; }
+    msg.className="err msg-ok"; msg.textContent="登録しました";
+    renderSettingsRecurringMaster();
+  };
+  document.querySelectorAll(".rm-active").forEach(el=>el.onchange=async()=>{
+    await authed(`/rest/v1/ar_recurring_master?id=eq.${el.dataset.id}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({is_active:el.checked,updated_at:new Date().toISOString()})});
+  });
 }
 
 async function renderSettingsJournalRules(){
