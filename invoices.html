@@ -1997,20 +1997,152 @@ async function renderTabBody(u){
   else if(TAB==="notApplicable") await renderNotApplicableTab(u);
   else if(TAB==="important") await renderImportantTab(u);
   else if(TAB==="settings") await renderSettingsTab(u);
-  else if(TAB==="receivableSoon") renderReceivableSoonTab();
+  else if(TAB==="receivableSoon") await renderReceivableTab(u);
   else if(TAB==="automationSoon") renderAutomationSoonTab();
-}
-// 2026-09-11新設：会計・請求ワークスペースUI刷新Step2（外枠）。「売上入金」「自動化」は
-// 新規実装（Step4・Step6で着手）のため、SoTの準備中パターンに合わせた案内だけを出す
-function renderReceivableSoonTab(){
-  $("tabbody").innerHTML=`<div class="acws-soon"><b>💰 売上入金は準備中です</b>
-    <p>PayPay等の決済入金を「売上発生→入金予定→実入金→照合→消込」のフローで管理する新機能です（指示書§9-8/9-9）。<br>
-    Step4で新規テーブル（<code>ar_receivables</code>・<code>ar_deposits</code>・<code>ar_matching</code>等）とあわせて実装します。</p></div>`;
 }
 function renderAutomationSoonTab(){
   $("tabbody").innerHTML=`<div class="acws-soon"><b>🤖 自動化管理は準備中です</b>
     <p>正常に自動処理できたものは本部タスクへ出さず、人間の判断が必要な例外だけをここへ集約する画面です（指示書§9-12/9-13）。<br>
     Step6で実装します。</p></div>`;
+}
+
+/* ============================================================
+   売上入金（Step4・2026-09-11新設）
+   PayPay等の決済入金を「売上発生→入金予定→実入金→照合→消込」で管理する新機能。
+   データ源: ar_receivables（正規化済み入金予定。担当Dの取込元別生データ―
+   import_paypay_settlement等―から取込む設計。現状はまだ生データ0件のため空表示になる）、
+   ar_deposits（実入金）、ar_matching（消込結果・差異ログ）。指示書§9-8/9-9対応。
+   ============================================================ */
+function receivableYmDefault(){
+  const d=new Date();
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
+}
+let RECEIVABLE_STATE={yearMonth:"",storeFilter:"",subTab:"pending",receivables:[],deposits:[],matches:[]};
+async function renderReceivableTab(u){
+  $("tabbody").innerHTML=`<section class="invoice-list active"><div class="card" style="padding:16px"><div class="spin" style="padding:20px 0">読み込み中…</div></div></section>`;
+  if(!RECEIVABLE_STATE.yearMonth) RECEIVABLE_STATE.yearMonth=receivableYmDefault();
+  await Promise.all([ensureCorpStoreCache(),receivableLoad()]);
+  receivableRender(u);
+}
+async function receivableLoad(){
+  const ym=RECEIVABLE_STATE.yearMonth;
+  const r=await authed(`/rest/v1/ar_receivables?year_month=eq.${encodeURIComponent(ym)}&select=*&order=expected_date.asc.nullslast&limit=500`);
+  const receivables=(r.ok&&Array.isArray(r.body))?r.body:[];
+  RECEIVABLE_STATE.receivables=receivables;
+  const ids=receivables.map(x=>x.id);
+  if(!ids.length){ RECEIVABLE_STATE.deposits=[]; RECEIVABLE_STATE.matches=[]; return; }
+  const [dr,mr]=await Promise.all([
+    authed(`/rest/v1/ar_deposits?receivable_id=in.(${ids.join(",")})&select=*`),
+    authed(`/rest/v1/ar_matching?receivable_id=in.(${ids.join(",")})&select=*&order=created_at.desc`),
+  ]);
+  RECEIVABLE_STATE.deposits=(dr.ok&&Array.isArray(dr.body))?dr.body:[];
+  RECEIVABLE_STATE.matches=(mr.ok&&Array.isArray(mr.body))?mr.body:[];
+}
+// 各入金予定行の内部タブ判定（指示書§9-8の想定フローに沿って5状態に分類）。
+// ar_receivables.statusを主軸に、入金済（ar_deposits登録あり）だけはmatches優先で見分ける
+function receivableRowState(row){
+  if(row.status==="matched") return "matched"; // 消込完了
+  if(row.status==="diff"||row.status==="manual_review") return "diff"; // 差異あり
+  const hasDeposit=RECEIVABLE_STATE.deposits.some(d=>d.receivable_id===row.id);
+  if(hasDeposit) return "deposited"; // 入金済（消込はまだ）
+  const today=new Date().toISOString().slice(0,10);
+  if(row.expected_date&&row.expected_date<today) return "overdue"; // 未入金（予定日超過）
+  return "pending"; // 入金予定
+}
+const RECEIVABLE_SUBTABS=[
+  ["pending","入金予定"],
+  ["overdue","未入金"],
+  ["diff","差異あり"],
+  ["deposited","入金済"],
+  ["matched","消込完了"],
+];
+function receivableFilteredRows(){
+  let rows=RECEIVABLE_STATE.receivables;
+  if(RECEIVABLE_STATE.storeFilter) rows=rows.filter(r=>r.store_id===RECEIVABLE_STATE.storeFilter);
+  return rows.filter(r=>receivableRowState(r)===RECEIVABLE_STATE.subTab);
+}
+function receivableStoreName(storeId){
+  if(!storeId) return "（共通費）";
+  const s=(CORP_STORE_CACHE&&CORP_STORE_CACHE.stores||[]).find(x=>x.id===storeId);
+  return s?s.name:"（不明な店舗）";
+}
+function receivableRowHtml(r){
+  const st=receivableRowState(r);
+  const deposit=RECEIVABLE_STATE.deposits.find(d=>d.receivable_id===r.id);
+  const lastMatch=RECEIVABLE_STATE.matches.find(m=>m.receivable_id===r.id);
+  const statusLabel={pending:["予定","gray"],overdue:["未入金","err"],diff:["差異あり","err"],deposited:["入金済","check"],matched:["消込完了","done"]}[st];
+  return `<tr>
+    <td>${esc(r.source_name||"—")}</td>
+    <td>${esc(receivableStoreName(r.store_id))}${r.is_common_cost?' <span class="hq-pill blue">共通費</span>':''}</td>
+    <td>${yen(r.gross_amount)}</td>
+    <td>${yen(r.fee_amount)}</td>
+    <td>${yen(r.expected_amount)}</td>
+    <td>${deposit?yen(deposit.amount):"—"}</td>
+    <td>${lastMatch?yen(lastMatch.diff_amount):(deposit?yen((Number(deposit.amount)||0)-(Number(r.expected_amount)||0)):"—")}</td>
+    <td>${fmtD(r.expected_date)}</td>
+    <td><span class="invoice-status ${statusLabel[1]}">${esc(statusLabel[0])}</span></td>
+    <td>${esc(r.note||"—")}</td>
+  </tr>`;
+}
+function receivableKpis(){
+  const rows=RECEIVABLE_STATE.storeFilter?RECEIVABLE_STATE.receivables.filter(r=>r.store_id===RECEIVABLE_STATE.storeFilter):RECEIVABLE_STATE.receivables;
+  const byState=k=>rows.filter(r=>receivableRowState(r)===k);
+  const sum=list=>list.reduce((s,r)=>s+(Number(r.expected_amount)||0),0);
+  const matchedRows=byState("matched");
+  const matchedIds=new Set(matchedRows.map(r=>r.id));
+  const autoMatched=RECEIVABLE_STATE.matches.filter(m=>matchedIds.has(m.receivable_id)&&m.matched_by==="auto").length;
+  const rate=matchedRows.length?Math.round((autoMatched/matchedRows.length)*100):0;
+  return {
+    pending:{n:byState("pending").length,amt:sum(byState("pending"))},
+    overdue:{n:byState("overdue").length,amt:sum(byState("overdue"))},
+    diff:{n:byState("diff").length,amt:sum(byState("diff"))},
+    autoMatched:{n:autoMatched},
+    matched:{n:matchedRows.length,amt:sum(matchedRows)},
+    rate,
+  };
+}
+function receivableRender(u){
+  const kpi=receivableKpis();
+  const filtered=receivableFilteredRows();
+  const stores=(CORP_STORE_CACHE&&CORP_STORE_CACHE.stores)||[];
+  $("tabbody").innerHTML=`
+    <section class="invoice-list active">
+      <div class="kpis" style="display:grid;grid-template-columns:repeat(6,1fr);gap:10px;margin-bottom:14px">
+        <div class="card kpi" style="padding:14px"><small style="color:var(--muted);font-size:9px;display:block">今月入金予定</small><b style="font-size:20px;display:block;margin-top:5px">${kpi.pending.n}件</b><small style="color:var(--muted)">${yen(kpi.pending.amt)}</small></div>
+        <div class="card kpi" style="padding:14px"><small style="color:var(--muted);font-size:9px;display:block">未入金</small><b style="font-size:20px;display:block;margin-top:5px;color:var(--m-red)">${kpi.overdue.n}件</b><small style="color:var(--muted)">${yen(kpi.overdue.amt)}</small></div>
+        <div class="card kpi" style="padding:14px"><small style="color:var(--muted);font-size:9px;display:block">差異あり</small><b style="font-size:20px;display:block;margin-top:5px;color:var(--m-red)">${kpi.diff.n}件</b><small style="color:var(--muted)">${yen(kpi.diff.amt)}</small></div>
+        <div class="card kpi" style="padding:14px"><small style="color:var(--muted);font-size:9px;display:block">自動消込</small><b style="font-size:20px;display:block;margin-top:5px">${kpi.autoMatched.n}件</b></div>
+        <div class="card kpi" style="padding:14px"><small style="color:var(--muted);font-size:9px;display:block">消込完了</small><b style="font-size:20px;display:block;margin-top:5px">${kpi.matched.n}件</b><small style="color:var(--muted)">${yen(kpi.matched.amt)}</small></div>
+        <div class="card kpi" style="padding:14px"><small style="color:var(--muted);font-size:9px;display:block">自動消込率</small><b style="font-size:20px;display:block;margin-top:5px">${kpi.rate}%</b></div>
+      </div>
+      <div class="card" style="padding:16px">
+        <div class="meta" style="color:var(--muted);font-size:12px;margin-bottom:10px">PayPay等の決済入金を「売上発生→入金予定→実入金→照合→消込」のフローで管理します（指示書§9-8/9-9）。データは自動取込タブ経由で登録された入金予定（<code>ar_receivables</code>）を表示しています。</div>
+        <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end;margin-bottom:10px">
+          <div><label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">対象月</label>
+            <input type="month" id="receivable-ym" value="${esc(RECEIVABLE_STATE.yearMonth)}"></div>
+          <div><label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">店舗で絞り込み</label>
+            <select id="receivable-store-filter" style="max-width:220px">
+              <option value="" ${!RECEIVABLE_STATE.storeFilter?"selected":""}>すべての店舗</option>
+              ${stores.map(s=>`<option value="${esc(s.id)}" ${RECEIVABLE_STATE.storeFilter===s.id?"selected":""}>${esc(s.name)}</option>`).join("")}
+            </select></div>
+        </div>
+        <div class="mail-chips" style="margin-bottom:10px">
+          ${RECEIVABLE_SUBTABS.map(([k,l])=>{
+            const n=RECEIVABLE_STATE.receivables.filter(r=>(!RECEIVABLE_STATE.storeFilter||r.store_id===RECEIVABLE_STATE.storeFilter)&&receivableRowState(r)===k).length;
+            return `<button class="mail-chip ${RECEIVABLE_STATE.subTab===k?'active':''}" data-receivable-subtab="${k}">${l}（${n}）</button>`;
+          }).join("")}
+        </div>
+        <div class="hq-tablewrap"><table class="invoice-table">
+          <thead><tr><th>入金元</th><th>店舗</th><th>売上決済額</th><th>手数料</th><th>入金予定額</th><th>実入金額</th><th>差異</th><th>入金予定日</th><th>状態</th><th>備考</th></tr></thead>
+          <tbody>${filtered.length?filtered.map(receivableRowHtml).join(""):'<tr><td colspan="10">該当するデータはありません（自動取込がまだ稼働していないため、現状は表示されるデータがありません）</td></tr>'}</tbody>
+        </table></div>
+      </div>
+    </section>`;
+  $("receivable-ym").onchange=()=>{ RECEIVABLE_STATE.yearMonth=$("receivable-ym").value||receivableYmDefault(); renderReceivableTab(u); };
+  $("receivable-store-filter").onchange=()=>{ RECEIVABLE_STATE.storeFilter=$("receivable-store-filter").value; receivableRender(u); };
+  document.querySelectorAll("[data-receivable-subtab]").forEach(el=>el.onclick=()=>{
+    RECEIVABLE_STATE.subTab=el.dataset.receivableSubtab; receivableRender(u);
+  });
 }
 
 /* ============================================================
