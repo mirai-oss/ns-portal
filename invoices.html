@@ -6118,7 +6118,7 @@ async function renderAccountingDashboardTab(u){
   const [r,,arR,statusR,runsR]=await Promise.all([
     authed(`/rest/v1/invoices?select=*,email:invoice_emails(mail_kind),corp:corporations(name),store:stores!invoices_store_id_fkey(name),invoice_stores(store:stores(name)),vendor:vendors(name)&order=created_at.desc&limit=1000`),
     ensureCorpStoreCache(),
-    authed(`/rest/v1/ar_receivables?year_month=eq.${encodeURIComponent(nowYm)}&select=status,expected_date`),
+    authed(`/rest/v1/ar_receivables?year_month=eq.${encodeURIComponent(nowYm)}&select=id,status,expected_date,source_name`),
     authed(`/rest/v1/import_status_today?select=is_overdue`),
     authed(`/rest/v1/import_runs?select=status,started_at,finished_at&order=started_at.desc&limit=200`),
   ]);
@@ -6151,6 +6151,80 @@ async function renderAccountingDashboardTab(u){
     rate:rateDenom?Math.round((doneToday/rateDenom)*100):0,
   };
   dashRenderBody(u);
+  // 2026-09-11追加：会計・請求ワークスペースUI刷新Step9（本部タスク例外連携）。ダッシュボード
+  // 表示のじゃまをしないよう画面描画の後にバックグラウンドで実行する（結果を待たない）
+  hqSyncExceptions(DASH_STATE.allRows,arRows).catch(e=>console.warn("[hqSyncExceptions] 失敗",e));
+}
+
+// 2026-09-11新設：会計・請求ワークスペースUI刷新Step9（本部タスク例外連携の仕上げ）。
+// 指示書§9-13「本部タスクは人間が動かないと進まない場合のみ（…口座変更・MF登録エラー・
+// 入金差異等）。invoice_id/receivable_id・発生理由・元画面リンクを持たせ、問題解消後は自動
+// 完了。本部タスクを会計処理の正本にしない」に対応し、担当Eが構築済みの
+// hq_create_exception_task/hq_resolve_exception_task（WORKLOG 2026-09-11担当Eエントリ参照）
+// を実際の異常検知箇所から呼び出す。
+// 対象は§9-13の列挙のうち「このアプリが既に確実に検知できている・かつ本当に人間の判断でしか
+// 進められない」3種類＋売上入金差異に絞った（意図的に絞った理由）:
+//   ・重複疑い(duplicate_suspected)／口座変更(bank_account_change_detected)／
+//     MF登録エラー(mf_registration_error) … 既存のunifiedAttentionReasons()が使っているのと
+//     同じ実データ列をそのまま見る（新しい判定ロジックを増やさない）
+//   ・売上入金差異(ar_receivables.status in diff/manual_review) … Step4の実データをそのまま見る
+// 「期限超過（振込待ち）」「勘定科目/法人/店舗不明」等は指示書§9-13の例示には無く、かつ
+// 既にこのアプリ自身のダッシュボード「①今日やること」・請求書一覧の絞り込みで十分に
+// 可視化されている定常業務（＝本当の"人間が動かないと進まない"例外ではなく普段の処理待ち）
+// のため、あえて本部タスク化の対象に含めていない（タスクの大量発行を避ける指示書§9-12を優先）。
+// 呼び出し元セッションがHQ/CEO/master権限を持たない一般スタッフの場合、
+// hq_create_exception_task/hq_resolve_exception_task はDB側の権限チェックで失敗するが
+// （担当E実装の仕様どおり）、authed()は例外を投げず{ok:false}を返すため、その場合は
+// 何もせず静かにスキップする（ダッシュボード表示自体は壊れない）
+const EXCEPTION_INVOICE_REASONS=[
+  ["duplicate","重複疑いのある請求書です",r=>!!r.duplicate_suspected,"重複疑い"],
+  ["bank_change","振込先口座の変更が検知されています。承認が必要です",r=>!!r.bank_account_change_detected,"口座変更"],
+  ["mf_error","マネーフォワードへの登録でエラーが発生しています",r=>!!(r.mf_registration_error&&String(r.mf_registration_error).trim()),"MF登録エラー"],
+];
+const EXCEPTION_AR_REASON="入金予定額と実入金額に差異があります（売上入金）";
+async function hqExceptionCall(fn,params){
+  const r=await authed(`/rest/v1/rpc/${fn}`,{method:"POST",body:JSON.stringify(params)});
+  if(!r.ok) console.warn(`[hqSyncExceptions] ${fn}呼び出し失敗（権限不足の可能性・想定内）`,r.status,r.body);
+  return r;
+}
+async function hqSyncExceptions(invoiceRows,arRows){
+  const excR=await authed(`/rest/v1/hq_tasks?exception_reason=not.is.null&deleted_at=is.null&status=neq.done&select=id,exception_invoice_id,exception_receivable_id,exception_reason`);
+  if(!excR.ok) return; // 権限不足等で読めない場合はここで諦める（表示は既に終わっているので実害なし）
+  const openTasks=Array.isArray(excR.body)?excR.body:[];
+  const invRows=invoiceRows||[];
+  for(const [,reasonText,test] of EXCEPTION_INVOICE_REASONS){
+    const flagged=invRows.filter(test);
+    const flaggedIds=new Set(flagged.map(r=>r.id));
+    for(const r of flagged){
+      const exists=openTasks.some(t=>t.exception_invoice_id===r.id&&t.exception_reason===reasonText);
+      if(exists) continue;
+      const excLabel=EXCEPTION_INVOICE_REASONS.find(([,rt])=>rt===reasonText)[3];
+      await hqExceptionCall("hq_create_exception_task",{
+        p_title:`⚠️ ${excLabel}: ${(r.vendor&&r.vendor.name)||r.vendor_name||"取引先未設定"}`,
+        p_reason:reasonText, p_corp:(r.corp&&r.corp.name)||null, p_invoice_id:r.id,
+        p_source_url:`${location.origin}${location.pathname}?embed=${EMBED?1:0}&tab=unified&invoice=${r.id}`,
+        p_category:"invoice",
+      });
+    }
+    for(const t of openTasks.filter(t=>t.exception_reason===reasonText&&t.exception_invoice_id)){
+      if(!flaggedIds.has(t.exception_invoice_id)) await hqExceptionCall("hq_resolve_exception_task",{p_invoice_id:t.exception_invoice_id,p_reason:reasonText});
+    }
+  }
+  const arFlagged=(arRows||[]).filter(x=>x.status==="diff"||x.status==="manual_review");
+  const arFlaggedIds=new Set(arFlagged.map(x=>x.id));
+  for(const x of arFlagged){
+    const exists=openTasks.some(t=>t.exception_receivable_id===x.id&&t.exception_reason===EXCEPTION_AR_REASON);
+    if(exists) continue;
+    await hqExceptionCall("hq_create_exception_task",{
+      p_title:`⚠️ 売上入金差異: ${x.source_name||"入金"}`,
+      p_reason:EXCEPTION_AR_REASON, p_corp:null, p_receivable_id:x.id,
+      p_source_url:`${location.origin}${location.pathname}?embed=${EMBED?1:0}&tab=receivableSoon`,
+      p_category:"deposit",
+    });
+  }
+  for(const t of openTasks.filter(t=>t.exception_reason===EXCEPTION_AR_REASON&&t.exception_receivable_id)){
+    if(!arFlaggedIds.has(t.exception_receivable_id)) await hqExceptionCall("hq_resolve_exception_task",{p_receivable_id:t.exception_receivable_id,p_reason:EXCEPTION_AR_REASON});
+  }
 }
 function dashRenderBody(u){
   const allRows=DASH_STATE.allRows||[];
