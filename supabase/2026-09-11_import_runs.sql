@@ -84,6 +84,7 @@ select
   lr.id as last_run_id, lr.started_at as last_started_at, lr.finished_at as last_finished_at,
   lr.status as last_status, lr.error as last_error, lr.duration_sec as last_duration_sec,
   ta.attempts_today, ta.success_today,
+  coalesce(ta.attempts_today, 0) >= 3 and not coalesce(ta.success_today, false) as needs_escalation,  -- 2026-09-11追加: 担当E(hq_tasks)が例外連携すべき対象の判定用
   case
     when s.frequency = 'monthly'
       and not (extract(day from (now() at time zone 'Asia/Tokyo'))::int = any(coalesce(s.monthly_days, array[]::int[])))
