@@ -6,6 +6,8 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
+**★★★★★2026-09-11（担当C実行スレッド）会計UI刷新Step2（外枠）完了：SoT準拠の5タブナビを追加**: Step1で確定したマッピングに基づき、`invoices.html`にSoT準拠「請求書／売上入金／自動取込／自動化／設定」5タブナビ（`.acws-head`/`.acws-tabs`・`AC_GROUPS`・`TAB_TO_AC_GROUP`）を追加。**既存13タブ・全ロジックは一切削除・変更なし**（指示書§9-20の新旧切替方針）。portal.html組込（EMBED）時、旧来非表示になっていたタブ（dashboard/upload/payroll/unified/transfers/settings＋新設receivableSoon/automationSoon）の場所に新5タブナビを表示。新設「売上入金」「自動化」タブはSoTの準備中パターン（`renderReceivableSoonTab`/`renderAutomationSoonTab`）でStep4/6を予告。inbox/sent/notApplicable/important/history/salesList/contractListは新ナビにまだ個別の飛び先が無いため、あえて旧.mail-tabs行を隠す対象に含めていない（Step3で請求書タブの中身を統合しきったら対応）。静的モック（実CSS使用）でSoTと同じ見た目になることをブラウザで確認・node --check済み。**担当Fへ**: `portal.html`の`KAIKEI_GROUP`で`soon:true`にしていた「売上入金」「自動化」に、実URLが使えるようになりました→`invoices.html?embed=1&tab=receivableSoon`／`invoices.html?embed=1&tab=automationSoon`（中身はまだ準備中案内のみですが、リンク先としては機能します）。コミット`df6b14a`push・デプロイ確認済み。**実機E2Eは未実施**（ログインが必要なため。ポータル経由での実機確認をお願いしたい）。次はStep3（請求書タブの中身を実際に統合）。
+
 **★★★★★2026-09-11（担当C実行スレッド）会計UI刷新Step1: ユーザー確認事項すべて回答済み・担当Dの§9-9ブロッカーも解消**: Step1マッピング表（`調査レポート_会計UI刷新_Step1現行機能マッピング_2026-09-11.md`）の5点確認事項、ユーザーから全て回答を受領し確定（①⭐重要/対象外/送信済み→統合請求書一覧に畳み込む②売上一覧(salesList)→廃止③契約書一覧(contractList)→社内情報管理システムへの受け渡し用として維持（廃止しない）④振込一覧→請求書タブに一本化⑤処理履歴→自動取込の取込履歴に統合）。詳細はレポート§H参照。**担当Dへ**: §9-9のPayPay加盟店決済明細（取引金額・システム利用料）の入手元をユーザーに確認したところ「**PayPay for Business管理画面から**」との回答。新規Playwrightログイン取得ジョブが必要（既存`paypay-bank.js`＝銀行口座ATM入金明細とは別データ源）。コミット`397e7d0`push。Step2（外枠）は次スレッドで着手。
 
 **★★★2026-09-11（担当D実行スレッド）会計・請求ワークスペースUI刷新§9-10/11の担当D分: import_runs基盤を新設・run.jsに接続完了／§9-9 PayPay決済集計はデータ源未確定で設計のみ**: `実装指示書_会計請求ワークスペースUI刷新_2026-09-11.md`のD分「Playwright取込の取得状態・未取得・取込履歴をDBへ記録しC画面と接続／PayPay明細の店舗別集計（共通費はAI按分禁止）／定期マスタとの突合・予定日超過の自動再取得」を受領・実行。
