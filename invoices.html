@@ -1998,12 +1998,149 @@ async function renderTabBody(u){
   else if(TAB==="important") await renderImportantTab(u);
   else if(TAB==="settings") await renderSettingsTab(u);
   else if(TAB==="receivableSoon") await renderReceivableTab(u);
-  else if(TAB==="automationSoon") renderAutomationSoonTab();
+  else if(TAB==="automationSoon") await renderAutomationTab(u);
 }
-function renderAutomationSoonTab(){
-  $("tabbody").innerHTML=`<div class="acws-soon"><b>🤖 自動化管理は準備中です</b>
-    <p>正常に自動処理できたものは本部タスクへ出さず、人間の判断が必要な例外だけをここへ集約する画面です（指示書§9-12/9-13）。<br>
-    Step6で実装します。</p></div>`;
+
+/* ============================================================
+   自動化管理（Step6・2026-09-11新設）
+   指示書§9-12「処理中/自動完了/エラー/未取得/要人間確認を確認。正常処理を本部タスクへ
+   大量発行しない」§9-13「本部タスクは人間が動かないと進まない場合のみ」に対応。
+   データ源はすべて既存の実データ: import_runs（担当D管轄・ジョブ実行ログ）、
+   hq_tasks/hq_task_activity（担当E管轄・例外連携。exception_reasonが立っているものだけが
+   AI発の「要確認」）、import_status_today（Step5と同じ・未取得判定）。
+   自動化イベント履歴はこれらを時系列マージした実イベントのみを表示し、実際には起きていない
+   処理（架空の自動仕訳・自動照合イベント等）は表示しない。
+   ============================================================ */
+let AUTOMATION_STATE={runs:[],exceptionTasks:[],manualTasks:[],statusToday:[]};
+async function renderAutomationTab(u){
+  $("tabbody").innerHTML=`<section class="invoice-list active"><div class="card" style="padding:16px"><div class="spin" style="padding:20px 0">読み込み中…</div></div></section>`;
+  const [runsR,excR,manR,statusR]=await Promise.all([
+    authed(`/rest/v1/import_runs?select=*&order=started_at.desc&limit=100`),
+    authed(`/rest/v1/hq_tasks?exception_reason=not.is.null&deleted_at=is.null&status=neq.done&select=*&order=created_at.desc&limit=50`),
+    authed(`/rest/v1/hq_tasks?task_category=not.is.null&exception_reason=is.null&status=neq.done&deleted_at=is.null&select=*&order=due_date.asc.nullslast&limit=50`),
+    authed(`/rest/v1/import_status_today?select=*`),
+  ]);
+  AUTOMATION_STATE.runs=(runsR.ok&&Array.isArray(runsR.body))?runsR.body:[];
+  AUTOMATION_STATE.exceptionTasks=(excR.ok&&Array.isArray(excR.body))?excR.body:[];
+  AUTOMATION_STATE.manualTasks=(manR.ok&&Array.isArray(manR.body))?manR.body:[];
+  AUTOMATION_STATE.statusToday=(statusR.ok&&Array.isArray(statusR.body))?statusR.body:[];
+  // イベント履歴用に、要確認タスクのactivityログも取得（担当Eのhq_create_exception_task/
+  // hq_resolve_exception_task呼び出し時に自動で記録される。無ければ空のまま）
+  let activity=[];
+  const excIds=[...new Set([...AUTOMATION_STATE.exceptionTasks.map(t=>t.id)])];
+  if(excIds.length){
+    const actR=await authed(`/rest/v1/hq_task_activity?task_id=in.(${excIds.join(",")})&select=*&order=created_at.desc&limit=50`);
+    activity=(actR.ok&&Array.isArray(actR.body))?actR.body:[];
+  }
+  AUTOMATION_STATE.activity=activity;
+  automationRender(u);
+}
+function automationTodayStr(){ return new Date().toISOString().slice(0,10); }
+function automationKpis(){
+  const runs=AUTOMATION_STATE.runs;
+  const today=automationTodayStr();
+  const isToday=r=>(r.finished_at||r.started_at||"").slice(0,10)===today;
+  const running=runs.filter(r=>r.status==="running").length;
+  const doneToday=runs.filter(r=>r.status==="success"&&isToday(r)).length;
+  const errToday=runs.filter(r=>r.status==="failed"&&isToday(r)).length;
+  const overdue=AUTOMATION_STATE.statusToday.filter(s=>s.is_overdue).length;
+  const needAttn=AUTOMATION_STATE.exceptionTasks.length;
+  const rateDenom=doneToday+errToday;
+  const rate=rateDenom?Math.round((doneToday/rateDenom)*100):0;
+  return {needAttn,running,doneToday,overdue,errToday,rate};
+}
+function automationTaskCategoryLabel(cat){ return {invoice:"🧾請求書",deposit:"💰入金",transfer:"💸送金"}[cat]||cat||"—"; }
+function automationExcCardHtml(t){
+  return `<div class="card" style="padding:10px 12px;margin-bottom:8px;border-left:3px solid var(--m-red)">
+    <b style="font-size:12px;display:block">${esc(t.title||"（無題）")}</b>
+    <p style="font-size:11px;color:var(--muted);margin:4px 0">${esc(t.exception_reason||"—")}${t.corp?"／"+esc(t.corp):""}</p>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px">
+      <span class="invoice-status err" style="font-size:10px">${automationTaskCategoryLabel(t.task_category)}</span>
+      ${t.exception_source_url?`<a class="hq-btn" style="font-size:11px;padding:5px 8px" href="${esc(t.exception_source_url)}" target="_blank" rel="noopener">対応する</a>`
+        :`<a class="hq-btn" style="font-size:11px;padding:5px 8px" href="tasks.html?task=${esc(t.id)}" target="_blank" rel="noopener">対応する</a>`}
+    </div>
+  </div>`;
+}
+function automationRunCardHtml(r,kind){
+  const badge=kind==="running"?["処理中","gray"]:["完了","done"];
+  return `<div class="card" style="padding:10px 12px;margin-bottom:8px">
+    <b style="font-size:12px;display:block">${esc(intakeScheduleLabel(r.job))}</b>
+    <p style="font-size:11px;color:var(--muted);margin:4px 0">${esc(r.source||"—")}${r.target_ym?"／"+esc(r.target_ym):""}</p>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px">
+      <span class="invoice-status ${badge[1]}" style="font-size:10px">${badge[0]}</span>
+      <span style="font-size:10px;color:var(--muted)">${fmtDT(r.finished_at||r.started_at)}</span>
+    </div>
+  </div>`;
+}
+function automationManualCardHtml(t){
+  return `<div class="card" style="padding:10px 12px;margin-bottom:8px">
+    <b style="font-size:12px;display:block">${esc(t.title||"（無題）")}</b>
+    <p style="font-size:11px;color:var(--muted);margin:4px 0">${t.due_date?"期限 "+esc(fmtD(t.due_date)):"期限未設定"}</p>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px">
+      <span class="invoice-status gray" style="font-size:10px">${automationTaskCategoryLabel(t.task_category)}</span>
+      <a class="hq-btn" style="font-size:11px;padding:5px 8px" href="tasks.html?task=${esc(t.id)}" target="_blank" rel="noopener">開く</a>
+    </div>
+  </div>`;
+}
+function automationEventRows(){
+  const runEvents=AUTOMATION_STATE.runs.map(r=>({
+    at:r.finished_at||r.started_at,
+    target:`${intakeScheduleLabel(r.job)}${r.target_ym?" "+r.target_ym:""}`,
+    event:"import_run（"+esc(r.kind||r.job||"")+"）",
+    result:r.status==="success"?["成功","done"]:r.status==="failed"?["失敗","err"]:r.status==="partial"?["一部成功","wait"]:["実行中","gray"],
+    human:"不要",
+    detail:r.error||r.detail||"—",
+  }));
+  const actEvents=AUTOMATION_STATE.activity.map(a=>{
+    const t=AUTOMATION_STATE.exceptionTasks.find(x=>x.id===a.task_id);
+    return {
+      at:a.created_at,
+      target:(t&&t.title)||"—",
+      event:a.kind==="create"?"exception_task_created":a.kind,
+      result:["要確認","wait"],
+      human:"タスク発行",
+      detail:a.detail||"—",
+    };
+  });
+  return [...runEvents,...actEvents].filter(e=>e.at).sort((a,b)=>new Date(b.at)-new Date(a.at)).slice(0,60);
+}
+function automationRender(u){
+  const kpi=automationKpis();
+  const runningRuns=AUTOMATION_STATE.runs.filter(r=>r.status==="running");
+  const today=automationTodayStr();
+  const doneRuns=AUTOMATION_STATE.runs.filter(r=>r.status==="success"&&(r.finished_at||r.started_at||"").slice(0,10)===today);
+  const events=automationEventRows();
+  $("tabbody").innerHTML=`
+    <section class="invoice-list active">
+      <div class="kpis" style="display:grid;grid-template-columns:repeat(6,1fr);gap:10px;margin-bottom:14px">
+        <div class="card kpi" style="padding:14px"><small style="color:var(--muted);font-size:9px;display:block">要人間確認</small><b style="font-size:22px;display:block;margin-top:5px;color:var(--m-red)">${kpi.needAttn}件</b></div>
+        <div class="card kpi" style="padding:14px"><small style="color:var(--muted);font-size:9px;display:block">自動処理中</small><b style="font-size:22px;display:block;margin-top:5px">${kpi.running}件</b></div>
+        <div class="card kpi" style="padding:14px"><small style="color:var(--muted);font-size:9px;display:block">本日自動完了</small><b style="font-size:22px;display:block;margin-top:5px">${kpi.doneToday}件</b></div>
+        <div class="card kpi" style="padding:14px"><small style="color:var(--muted);font-size:9px;display:block">未取得</small><b style="font-size:22px;display:block;margin-top:5px">${kpi.overdue}件</b></div>
+        <div class="card kpi" style="padding:14px"><small style="color:var(--muted);font-size:9px;display:block">処理エラー</small><b style="font-size:22px;display:block;margin-top:5px;color:var(--m-red)">${kpi.errToday}件</b></div>
+        <div class="card kpi" style="padding:14px"><small style="color:var(--muted);font-size:9px;display:block">自動完了率</small><b style="font-size:22px;display:block;margin-top:5px">${kpi.rate}%</b></div>
+      </div>
+      <div class="card" style="padding:10px 14px;margin-bottom:14px;background:var(--m-bg,#f4f1eb);font-size:12px;color:var(--muted)">
+        <b>基本方針：</b> AIが処理できるものはタスク化しません。人間の判断が必要になった時だけ、本部タスクを自動発行します（指示書§9-12/9-13）。
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px">
+        <div><h3 style="font-size:12px;margin-bottom:8px">⚠️ 要確認（${AUTOMATION_STATE.exceptionTasks.length}）</h3>${AUTOMATION_STATE.exceptionTasks.length?AUTOMATION_STATE.exceptionTasks.map(automationExcCardHtml).join(""):'<div style="font-size:11px;color:var(--muted)">現在ありません</div>'}</div>
+        <div><h3 style="font-size:12px;margin-bottom:8px">⚙️ 自動処理中（${runningRuns.length}）</h3>${runningRuns.length?runningRuns.map(r=>automationRunCardHtml(r,"running")).join(""):'<div style="font-size:11px;color:var(--muted)">現在ありません</div>'}</div>
+        <div><h3 style="font-size:12px;margin-bottom:8px">✅ 自動完了（本日${doneRuns.length}）</h3>${doneRuns.length?doneRuns.slice(0,8).map(r=>automationRunCardHtml(r,"done")).join(""):'<div style="font-size:11px;color:var(--muted)">まだありません</div>'}</div>
+        <div><h3 style="font-size:12px;margin-bottom:8px">📋 手動タスク（${AUTOMATION_STATE.manualTasks.length}）</h3>${AUTOMATION_STATE.manualTasks.length?AUTOMATION_STATE.manualTasks.map(automationManualCardHtml).join(""):'<div style="font-size:11px;color:var(--muted)">現在ありません</div>'}</div>
+      </div>
+      <div class="card hq-tablewrap" style="padding:0">
+        <div style="padding:12px 16px 0"><h3 style="font-size:14px">自動化イベント履歴</h3></div>
+        <table class="invoice-table">
+          <thead><tr><th>日時</th><th>対象</th><th>イベント</th><th>結果</th><th>人間介入</th><th>詳細</th></tr></thead>
+          <tbody>${events.length?events.map(e=>`<tr>
+            <td>${fmtDT(e.at)}</td><td>${esc(e.target)}</td><td>${esc(e.event)}</td>
+            <td><span class="invoice-status ${e.result[1]}">${esc(e.result[0])}</span></td>
+            <td>${esc(e.human)}</td><td>${esc(e.detail)}</td>
+          </tr>`).join(""):'<tr><td colspan="6">イベントはまだありません</td></tr>'}</tbody>
+        </table>
+      </div>
+    </section>`;
 }
 
 /* ============================================================
