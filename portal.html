@@ -1178,13 +1178,14 @@ const SHINSEI_GROUP={cap:"申請",ico:"🔁", section:"genba", items:[
 // 二重表示していたため、この項目からはcountKeyを外した。未読メール件数は「請求書メール」
 // 項目だけが表示する（会計・請求グループ自体は「請求書」項目に会計処理待ちの意味の
 // バッジが欲しくなった場合、別のcountKeyを新設して対応する）
+// 2026-09-14さらに削除: ユーザー実機フィードバック「(サイドバーの)請求書/売上入金/自動取込/
+// 自動化/設定は、画面の中で切り替えできるのであんまり必要性を感じない」に対応。この5つは
+// invoices.html側の.acws-tabs（ページ内の横タブ）で完全に行き来できるため、サイドバー側に
+// 同じ行き先を5つ並べる必要は無いと判断し、代表として「請求書」1項目だけを残した（会計・請求
+// カテゴリタブをクリックしたときに開く既定ページとしても機能する。findItem("kaikei-ar")等の
+// 他参照は無いことをgrep確認済み）
 const KAIKEI_GROUP={cap:"会計",ico:"🧾", section:"kaikei", items:[
-  // --- SoT 5タブ（新ワークスペースの構成に合わせた並び） ---
   {key:"invoices",         sysKey:"invoices", ico:"🧾", label:"請求書",     url:"invoices.html?embed=1&tab=unified"},
-  {key:"kaikei-ar",        sysKey:"invoices", ico:"💰", label:"売上入金",   url:"invoices.html?embed=1&tab=receivableSoon"},
-  {key:"kaikei-intake",    sysKey:"invoices", ico:"📥", label:"自動取込",   url:"invoices.html?embed=1&tab=upload"},
-  {key:"kaikei-automation",sysKey:"invoices", ico:"🤖", label:"自動化",     url:"invoices.html?embed=1&tab=automationSoon"},
-  {key:"kaikei-settings",  sysKey:"invoices", ico:"⚙️", label:"設定",       url:"invoices.html?embed=1&tab=settings"},
   // --- 新UI未統合の既存機能（引き続き利用可。§9-15により給与仕訳は今回の刷新対象外） ---
   {key:"kaikei-dashboard", sysKey:"invoices", ico:"📊", label:"会計ダッシュボード", url:"invoices.html?embed=1&tab=dashboard"},
   {key:"kaikei-payroll",   sysKey:"invoices", ico:"💴", label:"給与仕訳",   url:"invoices.html?embed=1&tab=payroll"},
