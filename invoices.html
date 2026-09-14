@@ -1792,19 +1792,26 @@ async function loadInboxMaster(){
 // KPIカード（未処理・処理中・今月完了）は、MASTER_MAILSがlimitで切り詰められる可能性を
 // 考慮せず常に正確な値を出すため、一覧とは別にDBへ直接件数を問い合わせて求める
 // （ポータル側の未処理件数バッジと同じ方式に統一＝表示がズレていた問題への対応）
-let KPI_COUNTS={unprocessed:0,processing:0,completedThisMonth:0};
+let KPI_COUNTS={unprocessed:0,processing:0,completedThisMonth:0,archived:0};
 async function loadKpiCounts(){
   const now=new Date();
   const startOfMonth=new Date(now.getFullYear(),now.getMonth(),1).toISOString();
-  const [unprocR,procR,doneR]=await Promise.all([
+  // 2026-09-14追加：ユーザー指示「請求書メールのUIを添付写真のとおりに」対応。受信トレイ
+  // 画面のKPI4枚目「対象外」用に、archived件数もここで合わせて取得する（既存の
+  // unprocessed/processing/completedThisMonthと同じ仕組みに乗せることで、他タブでの
+  // 処理完了後にこの値も自動的に最新化される＝loadKpiCounts()の既存呼び出し元4箇所を
+  // そのまま使い回せる）
+  const [unprocR,procR,doneR,archR]=await Promise.all([
     authed(`/rest/v1/invoice_emails?mail_status=in.(unread,read)&select=id`),
     authed(`/rest/v1/invoice_emails?mail_status=eq.processing&select=id`),
     authed(`/rest/v1/invoice_emails?mail_status=eq.completed&completed_at=gte.${startOfMonth}&select=id`),
+    authed(`/rest/v1/invoice_emails?mail_status=eq.archived&select=id`),
   ]);
   KPI_COUNTS={
     unprocessed:(unprocR.ok&&Array.isArray(unprocR.body))?unprocR.body.length:0,
     processing:(procR.ok&&Array.isArray(procR.body))?procR.body.length:0,
     completedThisMonth:(doneR.ok&&Array.isArray(doneR.body))?doneR.body.length:0,
+    archived:(archR.ok&&Array.isArray(archR.body))?archR.body.length:0,
   };
 }
 function kpiCounts(){ return KPI_COUNTS; }
@@ -2386,27 +2393,39 @@ function renderInbox(u){
   const list=filteredMails();
   BULK_SELECTED=new Set([...BULK_SELECTED].filter(id=>list.some(m=>m.id===id)));
   MOBILE_VIEW="list"; // タブ/絞り込み切替のたびに一覧表示へ戻す
+  const kc=kpiCounts();
   $("tabbody").innerHTML=`
     <section class="mail-inbox active">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;margin-bottom:14px">
+        <div>
+          <h2 style="font-size:22px;font-weight:800;margin:0">請求書メール</h2>
+          <div style="font-size:12px;color:var(--muted);margin-top:3px">現行 invoice_emails の受信・分類・送信済み・対象外・重要・処理履歴を明示的に残す</div>
+        </div>
+        <button class="hq-btn primary" id="inbox-compose-open">✏️ 新規作成</button>
+      </div>
       ${mailWsTabsHtml()}
+      <div class="mail-chips">
+        ${[["all","種類：すべて"],["unclassified","❔未分類"],["invoice","📄請求書"],["sales","💰売上"],["contract","📃契約書"]].map(([k,l])=>
+          `<button class="mail-chip ${KIND_FILTER===k?'active':''}" data-kindchip="${k}">${l}</button>`).join("")}
+      </div>
+      <div class="kpis" style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:12px 0 14px">
+        <div class="card kpi bad" style="padding:14px;cursor:pointer" data-chip="unprocessed"><small style="color:var(--muted);font-size:9px;display:block">未処理</small><b style="font-size:22px;display:block;margin-top:5px">${kc.unprocessed}件</b></div>
+        <div class="card kpi info" style="padding:14px;cursor:pointer" data-chip="processing"><small style="color:var(--muted);font-size:9px;display:block">処理中</small><b style="font-size:22px;display:block;margin-top:5px">${kc.processing}件</b></div>
+        <div class="card kpi good" style="padding:14px;cursor:pointer" data-chip="completed"><small style="color:var(--muted);font-size:9px;display:block">完了</small><b style="font-size:22px;display:block;margin-top:5px">${kc.completedThisMonth}件</b></div>
+        <div class="card kpi" style="padding:14px;cursor:pointer" id="kpi-goto-archived"><small style="color:var(--muted);font-size:9px;display:block">対象外</small><b style="font-size:22px;display:block;margin-top:5px">${kc.archived}件</b></div>
+      </div>
       <div class="mail-layout" id="mailLayout">
         <div class="card mail-list-card">
           <div class="mail-toolbar">
             <input id="mailSearch" placeholder="🔎 送信元・件名・本文を検索" value="${esc(SEARCH_Q)}">
+            <button class="hq-btn" id="mailSearchBtn">検索</button>
             <div class="toolbar-dates">
               <input type="date" id="mailDateFrom" value="${esc(DATE_FROM)}" title="受信日（開始）">〜
               <input type="date" id="mailDateTo" value="${esc(DATE_TO)}" title="受信日（終了）">
               ${(DATE_FROM||DATE_TO)?'<button class="hq-btn" id="mailDateClear" style="padding:6px 9px;font-size:11px">×</button>':''}
             </div>
           </div>
-          <div class="mail-chips">
-            ${[["unprocessed","未処理"],["processing","処理中"],["completed","完了"],["all","すべて"]].map(([k,l])=>
-              `<button class="mail-chip ${CHIP===k?'active':''}" data-chip="${k}">${l}</button>`).join("")}
-          </div>
-          <div class="mail-chips">
-            ${[["all","種類：すべて"],["unclassified","❔未分類"],["invoice","📄請求書"],["sales","💰売上"],["contract","📃契約書"]].map(([k,l])=>
-              `<button class="mail-chip ${KIND_FILTER===k?'active':''}" data-kindchip="${k}">${l}</button>`).join("")}
-          </div>
+          ${CHIP!=="unprocessed"?`<div class="meta" style="color:var(--muted);font-size:11px;padding:0 12px 6px">絞り込み中：${{processing:"処理中",completed:"完了",all:"すべて"}[CHIP]||CHIP}　<a href="javascript:void(0)" id="chip-reset" style="color:var(--accent)">解除</a></div>`:""}
           <div class="bulkbar" id="bulkbar">
             <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)"><input type="checkbox" id="bulk-selectall">全選択</label>
             <span id="bulk-count" style="font-size:12px;color:var(--muted)"></span>
@@ -2429,11 +2448,15 @@ function renderInbox(u){
       </div>
     </section>`;
   $("mailSearch").oninput=e=>{ SEARCH_Q=e.target.value; renderMailListOnly(); };
+  $("mailSearchBtn").onclick=()=>{ SEARCH_Q=$("mailSearch").value; renderMailListOnly(); };
   $("mailDateFrom").onchange=e=>{ DATE_FROM=e.target.value; renderInbox(u); };
   $("mailDateTo").onchange=e=>{ DATE_TO=e.target.value; renderInbox(u); };
   if($("mailDateClear")) $("mailDateClear").onclick=()=>{ DATE_FROM=""; DATE_TO=""; renderInbox(u); };
   document.querySelectorAll("[data-chip]").forEach(b=>b.onclick=()=>{ CHIP=b.dataset.chip; renderInbox(u); });
   document.querySelectorAll("[data-kindchip]").forEach(b=>b.onclick=()=>{ KIND_FILTER=b.dataset.kindchip; renderInbox(u); });
+  if($("chip-reset")) $("chip-reset").onclick=()=>{ CHIP="all"; renderInbox(u); };
+  $("kpi-goto-archived").onclick=()=>{ TAB="notApplicable"; pushNav(); renderTabBody(u); };
+  $("inbox-compose-open").onclick=()=>openComposeModal(u);
   wireMailListClicks(u);
   wireBulkBar(u);
   wireMailWsTabs(u);
