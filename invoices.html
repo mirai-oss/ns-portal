@@ -624,7 +624,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-09-15-v2";
+const BUILD_TAG="2026-09-15-v3";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -2248,7 +2248,7 @@ function receivableYmDefault(){
   const d=new Date();
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
 }
-let RECEIVABLE_STATE={yearMonth:"",storeFilter:"",subTab:"pending",receivables:[],deposits:[],matches:[]};
+let RECEIVABLE_STATE={yearMonth:"",storeFilter:"",corpFilter:"",subTab:"pending",receivables:[],deposits:[],matches:[]};
 async function renderReceivableTab(u){
   $("tabbody").innerHTML=`<section class="invoice-list active"><div class="card" style="padding:16px"><div class="spin" style="padding:20px 0">読み込み中…</div></div></section>`;
   if(!RECEIVABLE_STATE.yearMonth) RECEIVABLE_STATE.yearMonth=receivableYmDefault();
@@ -2290,7 +2290,24 @@ const RECEIVABLE_SUBTABS=[
 function receivableFilteredRows(){
   let rows=RECEIVABLE_STATE.receivables;
   if(RECEIVABLE_STATE.storeFilter) rows=rows.filter(r=>r.store_id===RECEIVABLE_STATE.storeFilter);
+  if(RECEIVABLE_STATE.corpFilter) rows=rows.filter(r=>receivableCorpId(r)===RECEIVABLE_STATE.corpFilter);
   return rows.filter(r=>receivableRowState(r)===RECEIVABLE_STATE.subTab);
+}
+// 2026-09-15新規：ユーザー要望「店舗はあるんだけど、法人がないから法人も追加してほしい」に
+// 対応。ar_receivables.corporation_idは共通費行（店舗が無い行）のために直接持たせているが、
+// 店舗が分かる行はcorporation_idが空でも店舗マスタ（stores.corporation_id）から法人を
+// 逆引きできるため、そちらもフォールバックとして見る（自動取込側がcorporation_idを
+// 埋めていない今の実データでも法人での絞り込みが機能するようにするため）
+function receivableCorpId(row){
+  if(row.corporation_id) return row.corporation_id;
+  const s=(CORP_STORE_CACHE&&CORP_STORE_CACHE.stores||[]).find(x=>x.id===row.store_id);
+  return (s&&s.corporation_id)||null;
+}
+function receivableCorpName(row){
+  const cid=receivableCorpId(row);
+  if(!cid) return "—";
+  const c=(CORP_STORE_CACHE&&CORP_STORE_CACHE.corporations||[]).find(x=>x.id===cid);
+  return c?c.name:"（不明な法人）";
 }
 function receivableStoreName(storeId){
   if(!storeId) return "（共通費）";
@@ -2304,6 +2321,7 @@ function receivableRowHtml(r){
   const statusLabel={pending:["予定","gray"],overdue:["未入金","err"],diff:["差異あり","err"],deposited:["入金済","check"],matched:["消込完了","done"]}[st];
   return `<tr>
     <td>${esc(r.source_name||"—")}</td>
+    <td>${esc(receivableCorpName(r))}</td>
     <td>${esc(receivableStoreName(r.store_id))}${r.is_common_cost?' <span class="hq-pill blue">共通費</span>':''}</td>
     <td>${yen(r.gross_amount)}</td>
     <td>${yen(r.fee_amount)}</td>
@@ -2317,7 +2335,8 @@ function receivableRowHtml(r){
   </tr>`;
 }
 function receivableKpis(){
-  const rows=RECEIVABLE_STATE.storeFilter?RECEIVABLE_STATE.receivables.filter(r=>r.store_id===RECEIVABLE_STATE.storeFilter):RECEIVABLE_STATE.receivables;
+  let rows=RECEIVABLE_STATE.storeFilter?RECEIVABLE_STATE.receivables.filter(r=>r.store_id===RECEIVABLE_STATE.storeFilter):RECEIVABLE_STATE.receivables;
+  if(RECEIVABLE_STATE.corpFilter) rows=rows.filter(r=>receivableCorpId(r)===RECEIVABLE_STATE.corpFilter);
   const byState=k=>rows.filter(r=>receivableRowState(r)===k);
   const sum=list=>list.reduce((s,r)=>s+(Number(r.expected_amount)||0),0);
   const matchedRows=byState("matched");
@@ -2337,6 +2356,7 @@ function receivableRender(u){
   const kpi=receivableKpis();
   const filtered=receivableFilteredRows();
   const stores=(CORP_STORE_CACHE&&CORP_STORE_CACHE.stores)||[];
+  const corps=(CORP_STORE_CACHE&&CORP_STORE_CACHE.corporations)||[];
   $("tabbody").innerHTML=`
     <section class="invoice-list active">
       <div class="kpis kpis6">
@@ -2349,33 +2369,121 @@ function receivableRender(u){
       </div>
       <div class="card" style="padding:16px">
         <div class="meta" style="color:var(--muted);font-size:12px;margin-bottom:10px">PayPay等の決済入金を「売上発生→入金予定→実入金→照合→消込」のフローで管理します（指示書§9-8/9-9）。データは自動取込タブ経由で登録された入金予定（<code>ar_receivables</code>）を表示しています。</div>
-        <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end;margin-bottom:10px">
-          <div><label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">対象月</label>
-            <input type="month" id="receivable-ym" value="${esc(RECEIVABLE_STATE.yearMonth)}"></div>
-          <div><label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">店舗で絞り込み</label>
-            <select id="receivable-store-filter" style="max-width:220px">
-              <option value="" ${!RECEIVABLE_STATE.storeFilter?"selected":""}>すべての店舗</option>
-              ${stores.map(s=>`<option value="${esc(s.id)}" ${RECEIVABLE_STATE.storeFilter===s.id?"selected":""}>${esc(s.name)}</option>`).join("")}
-            </select></div>
+        <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;margin-bottom:10px">
+          <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end">
+            <div><label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">対象月</label>
+              <input type="month" id="receivable-ym" value="${esc(RECEIVABLE_STATE.yearMonth)}"></div>
+            <div><label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">法人で絞り込み</label>
+              <select id="receivable-corp-filter" style="max-width:220px">
+                <option value="" ${!RECEIVABLE_STATE.corpFilter?"selected":""}>すべての法人</option>
+                ${corps.map(c=>`<option value="${esc(c.id)}" ${RECEIVABLE_STATE.corpFilter===c.id?"selected":""}>${esc(c.name)}</option>`).join("")}
+              </select></div>
+            <div><label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">店舗で絞り込み</label>
+              <select id="receivable-store-filter" style="max-width:220px">
+                <option value="" ${!RECEIVABLE_STATE.storeFilter?"selected":""}>すべての店舗</option>
+                ${stores.map(s=>`<option value="${esc(s.id)}" ${RECEIVABLE_STATE.storeFilter===s.id?"selected":""}>${esc(s.name)}</option>`).join("")}
+              </select></div>
+          </div>
+          <button class="hq-btn primary" id="receivable-add">＋ 入金を追加</button>
         </div>
         <div class="mail-chips" style="margin-bottom:10px">
           ${RECEIVABLE_SUBTABS.map(([k,l])=>{
-            const n=RECEIVABLE_STATE.receivables.filter(r=>(!RECEIVABLE_STATE.storeFilter||r.store_id===RECEIVABLE_STATE.storeFilter)&&receivableRowState(r)===k).length;
+            const n=RECEIVABLE_STATE.receivables.filter(r=>(!RECEIVABLE_STATE.storeFilter||r.store_id===RECEIVABLE_STATE.storeFilter)&&(!RECEIVABLE_STATE.corpFilter||receivableCorpId(r)===RECEIVABLE_STATE.corpFilter)&&receivableRowState(r)===k).length;
             return `<button class="mail-chip ${RECEIVABLE_STATE.subTab===k?'active':''}" data-receivable-subtab="${k}">${l}（${n}）</button>`;
           }).join("")}
         </div>
         <div class="hq-tablewrap"><table class="invoice-table">
-          <thead><tr><th>入金元</th><th>店舗</th><th>売上決済額</th><th>手数料</th><th>入金予定額</th><th>実入金額</th><th>差異</th><th>入金予定日</th><th>状態</th><th>備考</th><th>MF仕訳</th></tr></thead>
-          <tbody>${filtered.length?filtered.map(receivableRowHtml).join(""):'<tr><td colspan="11">該当するデータはありません（自動取込がまだ稼働していないため、現状は表示されるデータがありません）</td></tr>'}</tbody>
+          <thead><tr><th>入金元</th><th>法人</th><th>店舗</th><th>売上決済額</th><th>手数料</th><th>入金予定額</th><th>実入金額</th><th>差異</th><th>入金予定日</th><th>状態</th><th>備考</th><th>MF仕訳</th></tr></thead>
+          <tbody>${filtered.length?filtered.map(receivableRowHtml).join(""):'<tr><td colspan="12">該当するデータはありません（自動取込がまだ稼働していないため、現状は表示されるデータがありません）</td></tr>'}</tbody>
         </table></div>
       </div>
     </section>`;
   $("receivable-ym").onchange=()=>{ RECEIVABLE_STATE.yearMonth=$("receivable-ym").value||receivableYmDefault(); renderReceivableTab(u); };
   $("receivable-store-filter").onchange=()=>{ RECEIVABLE_STATE.storeFilter=$("receivable-store-filter").value; receivableRender(u); };
+  $("receivable-corp-filter").onchange=()=>{ RECEIVABLE_STATE.corpFilter=$("receivable-corp-filter").value; receivableRender(u); };
   document.querySelectorAll("[data-receivable-subtab]").forEach(el=>el.onclick=()=>{
     RECEIVABLE_STATE.subTab=el.dataset.receivableSubtab; receivableRender(u);
   });
   document.querySelectorAll("[data-arj-open]").forEach(el=>el.onclick=()=>openReceivableJournalModal(u,el.dataset.arjOpen));
+  $("receivable-add").onclick=()=>openReceivableUploadModal(u);
+}
+// 2026-09-15新規：ユーザー要望「売上入金のところにも手動アップロードできるように」に対応。
+// 🧾請求書一覧の「＋ 請求書を追加」（openUploadModal）と同じ位置づけ＝自動取込が失敗した
+// 場合や、自動取込の対象外の入金元（新規の入金元・単発の入金など）を手動でも登録できるように。
+// ar_receivablesへ直接1行INSERTするだけ（自動取込側のロジック・重複判定等には一切影響しない）
+async function openReceivableUploadModal(u){
+  await ensureCorpStoreCache();
+  const rmR=await authed(`/rest/v1/ar_recurring_master?kind=eq.receivable&is_active=eq.true&select=id,name&order=name`);
+  const recurringMasters=(rmR.ok&&Array.isArray(rmR.body))?rmR.body:[];
+  const stores=(CORP_STORE_CACHE&&CORP_STORE_CACHE.stores)||[];
+  const corps=(CORP_STORE_CACHE&&CORP_STORE_CACHE.corporations)||[];
+  const modal=document.createElement("div");
+  modal.className="modal-bg mail-shell"; modal.id="rcvUploadModal";
+  modal.innerHTML=`<div class="modal" style="max-width:560px">
+    <div class="mhead"><h2>📤 入金を追加（手動）</h2><button class="linkbtn" id="rcvUploadModalClose" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:13px">閉じる ×</button></div>
+    <div class="meta" style="color:var(--muted);font-size:12px;margin-bottom:10px">自動取込が失敗した月の分を埋めたいときや、自動取込の対象外の入金元を単発で登録したいときに使います（自動取込のジョブ自体には影響しません）。</div>
+    <div class="ai-grid">
+      <div class="ai-field"><small>入金元</small><input id="rcv-source" placeholder="例: ロケットナウ"></div>
+      <div class="ai-field"><small>定期請求・入金マスタ（任意・紐付けると仕訳作成時の初期値等に使われます）</small><select id="rcv-recurring"><option value="">（指定なし）</option>${recurringMasters.map(m=>`<option value="${esc(m.id)}">${esc(m.name)}</option>`).join("")}</select></div>
+      <div class="ai-field"><small>対象年月</small><input id="rcv-ym" type="month" value="${esc(RECEIVABLE_STATE.yearMonth||receivableYmDefault())}"></div>
+      <div class="ai-field"><small>対象店舗（共通費の場合は空欄）</small><select id="rcv-store"><option value="">（共通費／未設定）</option>${stores.map(s=>`<option value="${esc(s.id)}" data-corp="${esc(s.corporation_id||"")}">${esc(s.name)}</option>`).join("")}</select></div>
+      <div class="ai-field"><small>対象法人（店舗を選ぶと自動で入ります・共通費の場合は直接選んでください）</small><select id="rcv-corp"><option value="">（未設定）</option>${corps.map(c=>`<option value="${esc(c.id)}">${esc(c.name)}</option>`).join("")}</select></div>
+      <div class="ai-field"><small>売上決済額</small><input id="rcv-gross" type="number"></div>
+      <div class="ai-field"><small>手数料</small><input id="rcv-fee" type="number" value="0"></div>
+      <div class="ai-field"><small>入金予定額</small><input id="rcv-expected" type="number"></div>
+      <div class="ai-field"><small>入金予定日（任意）</small><input id="rcv-date" type="date"></div>
+      <div class="ai-field"><small>備考（任意）</small><input id="rcv-note"></div>
+    </div>
+    <div class="mail-actions" style="margin-top:10px"><button class="primary" id="rcv-save">保存</button></div>
+    <div class="err" id="rcv-msg" style="margin-top:6px"></div>
+  </div>`;
+  document.body.appendChild(modal);
+  pushNav({modal:true});
+  modal.onclick=e=>{ if(e.target===modal) history.back(); };
+  $("rcvUploadModalClose").onclick=()=>history.back();
+  // 定期請求・入金マスタを選んだら入金元名を自動で埋める（上書きはユーザーの自由）
+  $("rcv-recurring").onchange=()=>{
+    const m=recurringMasters.find(x=>x.id===$("rcv-recurring").value);
+    if(m&&!$("rcv-source").value.trim()) $("rcv-source").value=m.name;
+  };
+  // 店舗を選んだら、その店舗の法人を自動で埋める（店舗ごとに法人が1つに決まっているため）。
+  // 共通費（店舗なし）の場合はここで直接法人を選んでもらう
+  $("rcv-store").onchange=()=>{
+    const opt=$("rcv-store").options[$("rcv-store").selectedIndex];
+    const corpId=opt&&opt.dataset.corp;
+    if(corpId) $("rcv-corp").value=corpId;
+  };
+  $("rcv-save").onclick=async()=>{
+    const msg=$("rcv-msg"); msg.className="err"; msg.textContent="";
+    const source=$("rcv-source").value.trim();
+    const ym=$("rcv-ym").value;
+    if(!source){ msg.textContent="入金元を入力してください"; return; }
+    if(!ym){ msg.textContent="対象年月を入力してください"; return; }
+    $("rcv-save").disabled=true; msg.textContent="保存中…";
+    const payload={
+      source_name:source, source_table:"manual",
+      recurring_master_id:$("rcv-recurring").value||null,
+      year_month:ym, store_id:$("rcv-store").value||null, is_common_cost:!$("rcv-store").value,
+      corporation_id:$("rcv-corp").value||null,
+      // gross_amount/fee_amount/expected_amountはNOT NULL（列default=0）。空欄のとき
+      // nullを明示送信するとdefaultが効かずNOT NULL違反になるため、キー自体を省略してdefaultに任せる
+      ...($("rcv-gross").value?{gross_amount:Number($("rcv-gross").value)}:{}),
+      ...($("rcv-fee").value?{fee_amount:Number($("rcv-fee").value)}:{}),
+      ...($("rcv-expected").value?{expected_amount:Number($("rcv-expected").value)}:{}),
+      expected_date:$("rcv-date").value||null,
+      note:$("rcv-note").value.trim()||"手動追加",
+      status:"pending",
+    };
+    const r=await authed("/rest/v1/ar_receivables",{method:"POST",headers:{Prefer:"return=minimal"},body:JSON.stringify(payload)});
+    if(!r.ok){ msg.textContent="保存に失敗しました"; $("rcv-save").disabled=false; return; }
+    msg.className="err msg-ok"; msg.textContent="保存しました。画面を更新します…";
+    setTimeout(async()=>{
+      history.back();
+      RECEIVABLE_STATE.yearMonth=ym;
+      await Promise.all([receivableLoad(),loadAcBadgeCounts()]);
+      receivableRender(u);
+    },700);
+  };
 }
 
 // 2026-09-15新規：売上入金（ar_receivables）からMF仕訳を作成する（ロケットナウ等のPL反映）。
@@ -9397,16 +9505,63 @@ async function renderSettingsTab(u,subTab){
 // Step4で新設したar_recurring_masterテーブル（今までUIが無かった）の一覧・登録を行う。
 // 担当D管轄のimport_schedule（自動取込ジョブの予定表）とは別の、会計側の管理台帳という位置づけ
 // （intakeScheduleLabel等と同様、job名の緩い対応はあるが直接の連携は今後の課題）
+// 2026-09-15新規：ユーザー要望「定期請求・入金マスタに登録したら、期限内に取り込みできて
+// いないのはどこにアラートが出るのかルールを決めて欲しい」に対応して新設したルール。
+// 【決めたルール】「取得方法・ジョブ名」ではなく「結果（対象年月の行が実際に届いたか）」
+// だけを見る＝担当D管轄のimport_schedule（Playwrightジョブの実行予定表）には一切依存しない。
+// 理由：ロケットナウのようにGASの手動ボタンで取り込む場合等、そもそもimport_scheduleに
+// 登録されない経路もあり、ジョブ側を見ていると拾えないケースがある。「頻度=monthly・
+// 通常取得日（開始/終了）」から、直近で終わったはずの取得サイクルを計算し、その期間に
+// 対応するyear_monthの行がar_receivablesに実在するかどうかだけを判定する（kind=receivable
+// のみ対応。kind=invoiceは請求書側にyear_month相当の照合先が無いため今回は対象外）。
+// 猶予期間5日を過ぎても行が無ければ「⚠️未取込」。表示場所はこの設定画面のみ（サイドバー等の
+// バッジ化は今後の課題として残す。まずは「どこを見れば分かるか」を確定させることを優先した）
+const RM_GRACE_DAYS=5;
+function rmDueWindow(row,refDate){
+  if((row.frequency||"").trim()!=="monthly"||!row.expected_day_from) return null;
+  const from=row.expected_day_from, to=row.expected_day_to||from;
+  const wraps=from>to;
+  const y=refDate.getFullYear(), m=refDate.getMonth();
+  const candidates=[-2,-1,0].map(offset=>{
+    const start=new Date(y,m+offset,from);
+    const end=wraps?new Date(y,m+offset+1,to,23,59,59):new Date(y,m+offset,to,23,59,59);
+    return {start,end,dueYm:`${start.getFullYear()}-${String(start.getMonth()+1).padStart(2,"0")}`};
+  }).filter(c=>c.end<=refDate);
+  return candidates.length?candidates[candidates.length-1]:null;
+}
+function rmStatus(row,receivablesByMaster){
+  if(row.kind!=="receivable") return {label:"－",tone:"",detail:"請求書（kind=invoice）は今回のルールの対象外です"};
+  const win=rmDueWindow(row,new Date());
+  if(!win) return {label:"－",tone:"",detail:"頻度=monthly・通常取得日（開始/終了）を設定すると自動判定できます"};
+  const list=receivablesByMaster.get(row.id)||[];
+  if(list.includes(win.dueYm)) return {label:"✅取込済み",tone:"good",detail:`${win.dueYm}分を確認済み`};
+  const graceEnd=new Date(win.end); graceEnd.setDate(graceEnd.getDate()+RM_GRACE_DAYS);
+  const daysLate=Math.floor((Date.now()-win.end.getTime())/86400000);
+  if(new Date()>graceEnd) return {label:`⚠️未取込（${daysLate}日超過）`,tone:"bad",detail:`${win.dueYm}分が期限＋猶予${RM_GRACE_DAYS}日を過ぎても未登録です`};
+  return {label:"⏳猶予中",tone:"warn",detail:`${win.dueYm}分はあと${Math.max(0,RM_GRACE_DAYS-daysLate)}日の猶予があります`};
+}
 async function renderSettingsRecurringMaster(){
   $("settingsBody").innerHTML=`<div class="spin">読み込み中…</div>`;
   const r=await authed(`/rest/v1/ar_recurring_master?select=*&order=name`);
   const rows=(r.ok&&Array.isArray(r.body))?r.body:[];
+  const receivableMasterIds=rows.filter(x=>x.kind==="receivable").map(x=>x.id);
+  const receivablesByMaster=new Map();
+  if(receivableMasterIds.length){
+    const rr=await authed(`/rest/v1/ar_receivables?recurring_master_id=in.(${receivableMasterIds.join(",")})&select=recurring_master_id,year_month`);
+    if(rr.ok&&Array.isArray(rr.body)) for(const x of rr.body){
+      if(!receivablesByMaster.has(x.recurring_master_id)) receivablesByMaster.set(x.recurring_master_id,[]);
+      receivablesByMaster.get(x.recurring_master_id).push(x.year_month);
+    }
+  }
+  const statusByRow=new Map(rows.map(x=>[x.id, x.is_active?rmStatus(x,receivablesByMaster):{label:"（無効）",tone:"",detail:""}]));
+  const overdueCount=[...statusByRow.values()].filter(s=>s.tone==="bad").length;
   const fetchMethodLabel={playwright:"Playwright",email:"メール",api:"API",manual:"手動"};
   const levelLabel={1:"Lv1 取得のみ",2:"Lv2 仕訳候補",3:"Lv3 自動仕訳＋人間確認",4:"Lv4 完全自動"};
   $("settingsBody").innerHTML=`
     <div class="card" style="padding:16px;margin-bottom:14px">
       <h3 style="font-size:14px;margin-bottom:6px">📅 定期請求・入金マスタ</h3>
-      <div class="meta" style="color:var(--muted);font-size:12px;margin-bottom:10px">毎月決まって発生する請求・入金の管理台帳です（指示書§9-11）。「自動取込」タブの未取得判定は担当D管轄の自動取込ジョブ側の予定表を見ています。ここは会計側の台帳で、請求書/売上入金の区別・自動化レベルを記録します（ジョブとの直接連携は今後の課題）。</div>
+      <div class="meta" style="color:var(--muted);font-size:12px;margin-bottom:10px">毎月決まって発生する請求・入金の管理台帳です（指示書§9-11）。<b>アラートのルール（2026-09-15確定）</b>：この一覧の「状態」列が、対象年月の入金データ（<code>ar_receivables</code>）が実際に届いたかどうかだけを見て自動判定します（担当D管轄の自動取込ジョブの実行有無ではなく、結果そのものを見るため、ロケットナウのような手動取込の経路でも拾えます）。💰売上入金（kind=receivable）のみ対応・🧾請求書はデータ構造上まだ対応できていません。</div>
+      ${overdueCount?`<div class="card kpi bad" style="padding:14px;margin-bottom:10px;max-width:220px"><small style="color:var(--muted);font-size:9px;display:block">⚠️未取込の疑い</small><b style="font-size:20px;display:block;margin-top:5px">${overdueCount}件</b></div>`:""}
       <div class="ai-grid">
         <div class="ai-field"><small>名前（取引先・入金元）</small><input id="rm-name"></div>
         <div class="ai-field"><small>種別</small><select id="rm-kind"><option value="invoice">🧾請求書</option><option value="receivable">💰売上入金</option></select></div>
@@ -9422,16 +9577,20 @@ async function renderSettingsRecurringMaster(){
     </div>
     <div class="card hq-tablewrap" style="padding:0">
       <table class="invoice-table">
-        <thead><tr><th>名前</th><th>種別</th><th>頻度</th><th>取得日</th><th>取得方法</th><th>自動化レベル</th><th>有効</th></tr></thead>
-        <tbody>${rows.length?rows.map(x=>`<tr>
+        <thead><tr><th>名前</th><th>種別</th><th>頻度</th><th>取得日</th><th>取得方法</th><th>自動化レベル</th><th>状態</th><th>有効</th></tr></thead>
+        <tbody>${rows.length?rows.map(x=>{
+          const st=statusByRow.get(x.id);
+          return `<tr>
           <td>${esc(x.name)}</td>
           <td>${x.kind==="invoice"?"🧾請求書":"💰売上入金"}</td>
           <td>${esc(x.frequency||"—")}</td>
           <td>${x.expected_day_from?esc(String(x.expected_day_from)+(x.expected_day_to&&x.expected_day_to!==x.expected_day_from?"〜"+x.expected_day_to:"")+"日"):"—"}</td>
           <td>${esc(fetchMethodLabel[x.fetch_method]||x.fetch_method||"—")}</td>
           <td>${x.automation_level?esc(levelLabel[x.automation_level]||("Lv"+x.automation_level)):"—"}</td>
+          <td title="${esc(st.detail)}"><span class="invoice-status ${st.tone==="bad"?"err":st.tone==="good"?"done":st.tone==="warn"?"wait":"gray"}">${esc(st.label)}</span></td>
           <td><input type="checkbox" class="rm-active" data-id="${esc(x.id)}" ${x.is_active?"checked":""}></td>
-        </tr>`).join(""):'<tr><td colspan="7">まだ登録がありません</td></tr>'}</tbody>
+        </tr>`;
+        }).join(""):'<tr><td colspan="8">まだ登録がありません</td></tr>'}</tbody>
       </table>
     </div>`;
   $("rm-add").onclick=async()=>{
