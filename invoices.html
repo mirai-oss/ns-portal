@@ -27,7 +27,15 @@
   --amber:#aa700b; --amber-soft:#fff7e7;
   --blue:#3478b8; --blue-soft:#eef6fd;
   --purple:#6d5aa5; --purple-soft:#f5f1ff;
-  --shadow:0 8px 28px rgba(35,31,26,.08); --radius:16px;
+  /* 2026-09-14更新：ユーザー指摘「ボタンが四角と丸っぽい感じとか含め雰囲気が違う」に対応。
+     SoT（3HTML統合版修正版.html）の.card/.kpiは角丸なし・box-shadowなしの平たいデザイン
+     （border 1pxのみ）で、.btnもborder-radius:4pxとほぼ直角に近い。従来の16px角丸＋大きな
+     ドロップシャドウは以前の別プロトタイプ（mail-shell）由来のままだった（色の時と同じ理由）。
+     --radius/--shadowを変えるだけで.card（KPIカード・一覧カード等、最も使用箇所が多い
+     部品）が一括でSoTの雰囲気に近づく。個別に大きめのradiusを直書きしている一部の既存
+     コンポーネント（step-card・evidence-panel等）は今回は対象外（影響範囲が広く、実機未確認の
+     まま変更するリスクを避けた）。追加で調整が必要なら次のステップで対応する */
+  --shadow:none; --radius:6px;
 }
 @media(prefers-color-scheme:dark){
   :root{--bg:#211d18; --panel:#2b2620; --ink:#f2ede6; --muted:#b3aa9f; --line:#433c33; --accent-soft:#4a2c22; --red-soft:#4a2320; --green-soft:#213a10; --amber-soft:#3d2f10; --blue-soft:#152a3d; --purple-soft:#2c2438;}
@@ -49,7 +57,7 @@ button,input,select,textarea{font:inherit}
 .msg-ok{color:var(--green)}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow)}
 .modal-bg{position:fixed;inset:0;background:rgba(20,15,8,.55);z-index:100;display:flex;align-items:flex-start;justify-content:center;padding:16px;overflow-y:auto}
-.modal{background:var(--panel);border-radius:16px;padding:20px;max-width:520px;width:100%;margin:20px 0}
+.modal{background:var(--panel);border-radius:8px;padding:20px;max-width:520px;width:100%;margin:20px 0}
 .modal .mhead{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px}
 .modal .mhead h2{font-size:16px}
 .modal label{display:block;font-size:12px;color:var(--muted);margin:12px 0 4px}
@@ -78,7 +86,7 @@ button,input,select,textarea{font:inherit}
 .mail-layout{display:grid;grid-template-columns:minmax(340px,.9fr) minmax(0,1.5fr);gap:14px;align-items:start}
 .mail-list-card{overflow:hidden}
 .mail-toolbar{padding:12px;border-bottom:1px solid var(--m-line);display:flex;gap:8px;align-items:center}
-.mail-toolbar input{flex:1;border:1px solid var(--m-line);border-radius:10px;padding:10px;background:var(--panel);color:var(--ink)}
+.mail-toolbar input{flex:1;border:1px solid var(--m-line);border-radius:4px;padding:10px;background:var(--panel);color:var(--ink)}
 .mail-list-scroll{max-height:74vh;overflow-y:auto}
 .mail-item{padding:13px 14px 13px 36px;border-bottom:1px solid var(--m-line);cursor:pointer;background:var(--panel);position:relative}
 .mail-checkwrap{position:absolute;left:10px;top:15px}
@@ -110,7 +118,7 @@ button,input,select,textarea{font:inherit}
 .hq-pill.green{background:var(--m-greensoft);color:var(--m-green)}
 .hq-pill.blue{background:var(--m-bluesoft);color:var(--m-blue)}
 .hq-pill.gray{background:var(--bg);color:var(--muted)}
-.hq-btn{border:1px solid var(--m-line);background:var(--panel);border-radius:8px;padding:10px 16px;cursor:pointer;color:var(--ink);font-size:13px;font-weight:700}
+.hq-btn{border:1px solid var(--m-line);background:var(--panel);border-radius:4px;padding:10px 16px;cursor:pointer;color:var(--ink);font-size:13px;font-weight:700}
 .hq-btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
 .hq-btn.green{background:var(--green);border-color:var(--green);color:#fff}
 .hq-btn:disabled{opacity:.45;cursor:not-allowed}
