@@ -1185,7 +1185,10 @@ const SHINSEI_GROUP={cap:"申請",ico:"🔁", section:"genba", items:[
 // カテゴリタブをクリックしたときに開く既定ページとしても機能する。findItem("kaikei-ar")等の
 // 他参照は無いことをgrep確認済み）
 const KAIKEI_GROUP={cap:"会計",ico:"🧾", section:"kaikei", items:[
-  {key:"invoices",         sysKey:"invoices", ico:"🧾", label:"請求書",     url:"invoices.html?embed=1&tab=unified"},
+  // 2026-09-15: countKey:"receivable"を追加（上のコメントで予告していた「会計処理待ちの
+  // 意味のバッジ」＝売上入金のうちMF仕訳未作成の件数。countKey:"inv"とは別物で、
+  // 会計・請求グループの見出しバッジ・トップカテゴリタブバッジにも合算表示される）
+  {key:"invoices",         sysKey:"invoices", ico:"🧾", label:"請求書",     url:"invoices.html?embed=1&tab=unified", countKey:"receivable"},
   // --- 新UI未統合の既存機能（引き続き利用可。§9-15により給与仕訳は今回の刷新対象外） ---
   {key:"kaikei-dashboard", sysKey:"invoices", ico:"📊", label:"会計ダッシュボード", url:"invoices.html?embed=1&tab=dashboard"},
   {key:"kaikei-payroll",   sysKey:"invoices", ico:"💴", label:"給与仕訳",   url:"invoices.html?embed=1&tab=payroll"},
@@ -1357,7 +1360,7 @@ let ME=null, VIEW="home", CUR=null;
 let OPEN_GROUP="現場・日報"; // アコーディオン式に開いているグループは常に1つだけ（下のwireNav参照）
 let CUR_SECTION="genba"; // 2026-09-07: 上部の横タブで選んでいるカテゴリ（サイドバーはこれで絞り込む）
 let SIDEBAR_COLLAPSED=(()=>{ try{ return localStorage.getItem("portal_sidebar_collapsed")==="1"; }catch(e){ return false; } })();
-let NAV_HQ_CNT=0, NAV_INV_CNT=0, NAV_APPROVAL_CNT=0;
+let NAV_HQ_CNT=0, NAV_INV_CNT=0, NAV_APPROVAL_CNT=0, NAV_RECEIVABLE_CNT=0;
 // 2026-09-03 ユーザー要望: 経費申請の自分宛承認待ち／個人情報・社内システム変更申請の
 // 承認待ち（従来のNAV_APPROVAL_CNTを内訳ごとに分割）／自分の日報へのいいね・コメント通知
 let NAV_EXPENSE_CNT=0, NAV_PROFILE_APPROVAL_CNT=0, NAV_CRED_APPROVAL_CNT=0, NAV_REPORT_FEEDBACK_CNT=0;
@@ -1472,6 +1475,7 @@ function countOf(it){
   if(it.countKey==="posts") return POSTS?POSTS.length:0;
   if(it.countKey==="hq") return NAV_HQ_CNT;
   if(it.countKey==="inv") return NAV_INV_CNT;
+  if(it.countKey==="receivable") return NAV_RECEIVABLE_CNT;
   if(it.countKey==="approval") return NAV_APPROVAL_CNT;
   if(it.countKey==="expense") return NAV_EXPENSE_CNT;
   if(it.countKey==="profileApproval") return NAV_PROFILE_APPROVAL_CNT;
@@ -1888,6 +1892,15 @@ async function renderHomeArea(u){
       const invR=await authed(`/rest/v1/invoice_emails?mail_status=in.(unread,read)&select=id`);
       NAV_INV_CNT=(invR.ok&&Array.isArray(invR.body))?invR.body.length:0;
     }catch(e){ NAV_INV_CNT=0; }
+    // 2026-09-15追加: ユーザー要望「自動取込が成功したのに気づかず、仕訳を切り忘れるのが嫌」に
+    // 対応。invoices.html側の会計・請求グループ見出しコメント（2026-09-14）で予告していた
+    // 「会計処理待ちの意味のバッジ」を、売上入金（ar_receivables）のうちMF仕訳未作成の
+    // 件数として実装。「請求書」項目（countKey:"receivable"）にだけ付け、「請求書メール」
+    // 項目のcountKey:"inv"とは完全に独立＝二重表示にはならない
+    try{
+      const recR=await authed(`/rest/v1/ar_receivables?status=eq.pending&mf_journal_id=is.null&select=id`);
+      NAV_RECEIVABLE_CNT=(recR.ok&&Array.isArray(recR.body))?recR.body.length:0;
+    }catch(e){ NAV_RECEIVABLE_CNT=0; }
   }
   // 2026-09-01/03 ユーザー要望: 変更申請（requests.html）の承認待ちに気づけるよう、
   // 「社内情報管理」・「申請」グループ配下にバッジを追加。

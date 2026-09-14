@@ -570,6 +570,10 @@ button,input,select,textarea{font:inherit}
 .acws-tabs{display:flex;background:var(--panel);border-bottom:1px solid var(--m-line);overflow-x:auto;white-space:nowrap}
 .acws-tabs button{border:0;background:transparent;padding:12px 16px;border-bottom:3px solid transparent;color:var(--muted);font-weight:700;font-size:13px;cursor:pointer;flex-shrink:0}
 .acws-tabs button.active{color:var(--ink);border-color:var(--m-green)}
+/* 2026-09-15追加：ユーザー要望「自動取込が成功したのに気づかず仕訳を切り忘れるのが嫌」
+   に対応した未処理バッジ。portal.htmlのサイドバー未読バッジ（.nav-item .count）と
+   同じaccent色のピル型に揃えた */
+.acws-tabs .ac-badge{display:inline-block;margin-left:6px;background:var(--accent);color:#fff;border-radius:99px;padding:1px 7px;font-size:10.5px;font-weight:700;vertical-align:middle}
 .acws-soon{background:var(--panel);border:1px solid var(--m-line);border-radius:var(--radius);padding:28px 20px;text-align:center;color:var(--muted)}
 .acws-soon b{display:block;color:var(--ink);font-size:15px;margin-bottom:6px}
 .acws-soon p{font-size:12px;line-height:1.7;max-width:480px;margin:0 auto}
@@ -620,7 +624,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-09-15-v1";
+const BUILD_TAG="2026-09-15-v2";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -1861,6 +1865,17 @@ async function loadWaitingPaymentCount(){
   const r=await authed(`/rest/v1/invoices?invoice_status=eq.waiting_payment&select=id`);
   WAITING_PAYMENT_COUNT=(r.ok&&Array.isArray(r.body))?r.body.length:0;
 }
+// 2026-09-15新規：ユーザー要望「自動取込が成功したのに気づかず、仕訳を切り忘れるのが嫌」に
+// 対応。売上入金（ar_receivables）のうち「まだMF仕訳を作っていない入金予定」件数を
+// 5タブナビ「売上入金」に赤バッジで表示する（is_common_costや対象月に関わらず全件対象＝
+// 見ている月に関係なく気づけるようにするため、あえてRECEIVABLE_STATEとは別に集計する）。
+let AC_BADGE_COUNTS={receivable:0};
+async function loadAcBadgeCounts(){
+  const r=await authed(`/rest/v1/ar_receivables?status=eq.pending&mf_journal_id=is.null&select=id&limit=500`);
+  AC_BADGE_COUNTS.receivable=(r.ok&&Array.isArray(r.body))?r.body.length:0;
+  const btn=document.querySelector('#acwsTabs [data-acgroup="receivable"]');
+  if(btn) btn.innerHTML=`売上入金${AC_BADGE_COUNTS.receivable?`<span class="ac-badge">${AC_BADGE_COUNTS.receivable}</span>`:""}`;
+}
 // 画面上部のKPIバー（2026-09-01: タブ切替時にタブの内容に合わせて出し分ける。
 // ユーザー報告「給与仕訳タブなのに請求書メールの件数が出ている」に対応。
 // mail-summaryはshellHtml()の初回描画時に一度だけ作られ、その後はタブ切替のたびに
@@ -1943,7 +1958,7 @@ function shellHtml(u){
     ${(EMBED&&acActiveGroup())?`
     <div class="acws-head"><b>会計・請求ワークスペース</b><small>支払・入金・自動取込を一元管理</small><small style="margin-left:auto;color:#767">build ${esc(BUILD_TAG)}</small></div>
     <div class="acws-tabs" id="acwsTabs">
-      ${AC_GROUPS.map(([key,label])=>`<button class="${acActiveGroup()===key?"active":""}" data-acgroup="${key}">${esc(label)}</button>`).join("")}
+      ${AC_GROUPS.map(([key,label])=>`<button class="${acActiveGroup()===key?"active":""}" data-acgroup="${key}">${esc(label)}${key==="receivable"&&AC_BADGE_COUNTS.receivable?`<span class="ac-badge">${AC_BADGE_COUNTS.receivable}</span>`:""}</button>`).join("")}
     </div>`:""}
     <div class="mail-summary" id="mailSummaryBar">${mailSummaryDefaultHtml()}</div>
     <div class="mail-tabs-row">
@@ -2364,117 +2379,382 @@ function receivableRender(u){
 }
 
 // 2026-09-15新規：売上入金（ar_receivables）からMF仕訳を作成する（ロケットナウ等のPL反映）。
+// ユーザー要望「仕訳辞書から選べるように」「摘要が無い」「行を追加できない」「通常の仕訳と
+// 同じフォーマットにしてほしい」を受け、請求書メール詳細の仕訳作成（wireDetailActions内の
+// mfj*）・設定タブの仕訳辞書テンプレート編集（mft*）と全く同じ、複数明細行×借方/貸方×
+// 勘定科目/補助科目/部門/税区分/摘要の編集テーブル（.mfj-edit-table。CSSは完全に共通のため
+// 新規CSSは不要）を使うよう作り替えた。ただしmfj*はSELECTED.invoice/emailId等（メール詳細
+// 画面）に強く依存しており、メールに紐づかないar_receivablesからは呼び出せないため、
+// 依存を持たない新規のARJ_STATE/arj*として同じ見た目・操作感だけを再現した
+// （既存のmfj*・mft*・wireDetailActions本体には一切手を加えていない＝請求書処理の心臓部には
+// 影響なし。仕訳辞書テーブルmf_journal_templatesはどちらからも同じものを見る＝共有資産）。
 // mf-journalの通常のcreateアクションはinvoice_idが必須でar_receivablesを直接渡せないため、
 // create_standaloneアクション（invoices行の作成とMF登録を一度に行う・給与仕訳でも使用中の
 // 既存の仕組み）をそのまま使う。作成されるinvoices行にはis_receivable_relatedを立てて
 // 🧾請求書一覧（unifiedRender）の集計・表示からは除外する（is_payroll_relatedと同じ扱い）。
+let ARJ_STATE={};
 async function openReceivableJournalModal(u,receivableId){
   const row=RECEIVABLE_STATE.receivables.find(r=>r.id===receivableId);
   if(!row) return;
   await ensureCorpStoreCache();
+  ARJ_STATE={row,receivableId,u,amount:Number(row.expected_amount)||0};
   const modal=document.createElement("div");
   modal.className="modal-bg mail-shell"; modal.id="arjModal";
-  modal.innerHTML=`<div class="modal" style="max-width:640px">
+  modal.innerHTML=`<div class="modal" style="max-width:900px">
     <div class="mhead"><h2>🧾 MF仕訳を作成（${esc(row.source_name||"—")}・${esc(row.year_month||"")}）</h2><button class="linkbtn" id="arjModalClose" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:13px">閉じる ×</button></div>
     <div class="meta" style="color:var(--muted);font-size:12px;margin-bottom:10px">
       店舗：${esc(receivableStoreName(row.store_id))}／売上決済額：${yen(row.gross_amount)}／手数料：${yen(row.fee_amount)}／入金予定額：${yen(row.expected_amount)}<br>
       ⚠️ 登録すると実際にマネーフォワードへ仕訳が作成されます（一度登録すると取り消しはマネーフォワード側での手動対応が必要です）。勘定科目・金額は登録前に必ずご確認ください。
     </div>
-    <div id="arj-journal-area">読み込み中…</div>
-    <div class="err" id="arj-msg" style="margin-top:6px"></div>
+    <div id="arj-body">読み込み中…（連携先の事業者を確認しています）</div>
   </div>`;
   document.body.appendChild(modal);
   pushNav({modal:true});
   modal.onclick=e=>{ if(e.target===modal) history.back(); };
   $("arjModalClose").onclick=()=>history.back();
 
-  const state={tenants:[],accounts:[],departments:[],accountMap:new Map(),tenantId:"default"};
   const tRes=await mfCall("list_tenants");
-  state.tenants=(tRes.ok&&tRes.body.tenants)||[];
-  await ivxLoadForTenant(state.tenantId,state);
-  arjRenderJournalArea(state,row,u);
+  const tenants=(tRes.ok&&tRes.body.tenants)||[];
+  await arjLoadForTenant(tenants.length?tenants[0].id:"default",tenants);
 }
-function arjRenderJournalArea(state,row,u){
-  const area=$("arj-journal-area");
-  if(!area) return;
-  const defDeposit=state.accountMap.get("普通預金");
-  const defFee=state.accountMap.get("支払手数料");
-  const defSales=state.accountMap.get("売上高");
-  const expected=Number(row.expected_amount)||0;
-  const fee=Number(row.fee_amount)||0;
-  area.innerHTML=`
-    <datalist id="arj-acc-datalist">${state.accountDatalistHtml||""}</datalist>
-    ${state.tenants.length>1?`<div class="ai-field" style="margin:8px 0"><small>登録先の事業者</small><select id="arj-tenant">${state.tenants.map(t=>`<option value="${esc(t.id)}" ${t.id===state.tenantId?"selected":""}>${esc(t.label)}</option>`).join("")}</select></div>`:""}
-    <div class="ai-field" style="margin:8px 0"><small>会計計上日</small><input id="arj-date" type="date" value="${new Date().toISOString().slice(0,10)}"></div>
-    <div class="mfj-gridwrap">
-      <table class="mfj-grid">
-        <thead><tr><th colspan="2" class="side">借方</th><th colspan="2" class="side" style="background:var(--m-greensoft);color:var(--m-green)">貸方</th></tr></thead>
-        <tbody>
-          <tr>
-            <td><input list="arj-acc-datalist" id="arj-debit1" placeholder="勘定科目" value="${esc(defDeposit?ivxLabelOf(defDeposit):"普通預金")}"></td>
-            <td><input type="number" id="arj-debit1-amount" style="width:100px" value="${expected}"></td>
-            <td><input list="arj-acc-datalist" id="arj-credit1" placeholder="勘定科目" value="${esc(defSales?ivxLabelOf(defSales):"売上高")}"></td>
-            <td><input type="number" id="arj-credit1-amount" style="width:100px" value="${expected}"></td>
-          </tr>
-          <tr>
-            <td><input list="arj-acc-datalist" id="arj-debit2" placeholder="勘定科目" value="${esc(defFee?ivxLabelOf(defFee):"支払手数料")}"></td>
-            <td><input type="number" id="arj-debit2-amount" style="width:100px" value="${fee}"></td>
-            <td><input list="arj-acc-datalist" id="arj-credit2" placeholder="勘定科目" value="${esc(defSales?ivxLabelOf(defSales):"売上高")}"></td>
-            <td><input type="number" id="arj-credit2-amount" style="width:100px" value="${fee}"></td>
-          </tr>
-        </tbody>
+// 仕訳辞書（mf_journal_templates）取得。請求書メール詳細の仕訳作成（mfjFetchTemplates）・
+// 設定タブの仕訳辞書編集と全く同じテーブルを見ているため、どちらで登録してももう一方から使える
+async function arjFetchTemplates(tenantId){
+  const r=await authed(`/rest/v1/mf_journal_templates?tenant_id=eq.${encodeURIComponent(tenantId)}&select=id,label,branches&order=label`);
+  return (r.ok&&Array.isArray(r.body))?r.body:[];
+}
+async function arjLoadForTenant(tenantId,tenants){
+  const body=$("arj-body");
+  if(!body) return;
+  body.innerHTML="読み込み中…（勘定科目・過去の仕訳・仕訳辞書を確認しています）";
+  const row=ARJ_STATE.row;
+  const [accRes,searchRes,templates]=await Promise.all([
+    mfCall("accounts",{tenant_id:tenantId}),
+    mfCall("journal_search",{vendor_name:row.source_name||"",tenant_id:tenantId}),
+    arjFetchTemplates(tenantId),
+  ]);
+  if(!accRes.ok){ body.innerHTML=`<div class="err">勘定科目の取得に失敗しました: ${esc(accRes.body.error||"")}<br><button id="arj-retry" style="margin-top:8px">🔄 もう一度試す</button></div>`; if($("arj-retry")) $("arj-retry").onclick=()=>arjLoadForTenant(tenantId,tenants); return; }
+  if(!searchRes.ok){ body.innerHTML=`<div class="err">過去の仕訳の取得に失敗しました: ${esc(searchRes.body.error||"")}<br><button id="arj-retry" style="margin-top:8px">🔄 もう一度試す</button></div>`; if($("arj-retry")) $("arj-retry").onclick=()=>arjLoadForTenant(tenantId,tenants); return; }
+  const tenantLabel=(tenants||[]).find(t=>t.id===tenantId)?.label||tenantId;
+  const idx=mftBuildAccountIndex(accRes.body.accounts||[]); // 設定タブの仕訳辞書編集と共通の索引ビルダーをそのまま流用
+  const ymLabel=(row.year_month||"").replace(/^(\d{4})-(\d{2})$/,"$1年$2月分");
+  ARJ_STATE={
+    ...ARJ_STATE,
+    tenantId, tenantLabel, tenants:tenants||[],
+    mode:"journal", // 既定は①過去の仕訳から選ぶ。候補が無ければ②仕訳辞書→③直接入力の順で切替（mfj*と同じ考え方）
+    accounts:accRes.body.accounts||[], departments:searchRes.body.departments||[], taxes:searchRes.body.taxes||[],
+    journalResults:searchRes.body.results||[], journalKeyword:row.source_name||"",
+    templates,
+    accountLabelMap:idx.map, accountDatalistHtml:idx.dl, accountNameDatalistHtml:idx.accountNameDatalistHtml,
+    subAccountsByAccountName:idx.subAccountsByAccountName, subAccountNamesAll:idx.subAccountNamesAll,
+    branches:[],
+    remark:ymLabel?`${ymLabel}　${row.source_name||""}`:(row.source_name||""),
+    date:new Date().toISOString().slice(0,10),
+  };
+  if(!ARJ_STATE.journalResults.length) ARJ_STATE.mode=ARJ_STATE.templates.length?"dict":"manual";
+  if(ARJ_STATE.mode==="manual") arjSetDefaultBranches();
+  arjRenderForm();
+}
+// 初回・候補が何も無いときの既定値（1行目=入金予定額分・普通預金⇔売上高、2行目=手数料分・
+// 支払手数料⇔売上高）。実データでgross_amount≠fee_amount+expected_amountのため金額は目安。
+// 過去の仕訳・仕訳辞書があればそちらが優先され、この既定値は出てこない
+function arjSetDefaultBranches(){
+  const row=ARJ_STATE.row;
+  const expected=Number(row.expected_amount)||0, fee=Number(row.fee_amount)||0;
+  ARJ_STATE.branches=[
+    {debitLabel:"普通預金",debitAmount:expected||"",creditLabel:"売上高",creditAmount:expected||"",department_id:"",tax_id:"",credit_department_id:"",credit_tax_id:"",remark:"入金分"},
+    {debitLabel:"支払手数料",debitAmount:fee||"",creditLabel:"売上高",creditAmount:fee||"",department_id:"",tax_id:"",credit_department_id:"",credit_tax_id:"",remark:"手数料分"},
+  ];
+}
+function arjAddBranchRow(){
+  ARJ_STATE.branches.push({debitLabel:"",debitAmount:"",creditLabel:"",creditAmount:"",department_id:"",tax_id:"",credit_department_id:"",credit_tax_id:"",remark:""});
+}
+// 仕訳辞書・過去の仕訳の複数行をまとめて明細行エディタへ反映し、直接入力モードへ切り替える
+function arjApplyBranches(branches){
+  ARJ_STATE.branches=branches.length?branches:[{debitLabel:"",debitAmount:ARJ_STATE.amount||"",creditLabel:"",creditAmount:ARJ_STATE.amount||"",department_id:"",tax_id:"",credit_department_id:"",credit_tax_id:"",remark:""}];
+  ARJ_STATE.mode="manual";
+  arjRenderForm();
+}
+function arjSubAccountOptionsHtml(accountName){
+  const perAccount=ARJ_STATE.subAccountsByAccountName&&ARJ_STATE.subAccountsByAccountName.get((accountName||"").trim());
+  const names=(perAccount&&perAccount.length)?perAccount:(ARJ_STATE.subAccountNamesAll||[]);
+  return names.map(n=>`<option value="${esc(n)}">`).join("");
+}
+// 振替伝票入力の1行分（mfjBranchRowHtml/mftBranchRowHtmlと全く同じフォーマット：勘定科目・
+// 補助科目・部門・税区分・金額を借方/貸方それぞれ横並び＋行ごとの摘要＋行追加/削除ボタン）
+function arjBranchRowHtml(br,idx){
+  const deptOptions=`<option value="">（指定なし）</option>`+ARJ_STATE.departments.map(d=>`<option value="${esc(d.id)}" ${br.department_id===d.id?"selected":""}>${esc(d.name)}</option>`).join("");
+  const creditDeptOptions=`<option value="">（指定なし）</option>`+ARJ_STATE.departments.map(d=>`<option value="${esc(d.id)}" ${br.credit_department_id===d.id?"selected":""}>${esc(d.name)}</option>`).join("");
+  const taxOptionsHtml=(selectedId,side)=>(ARJ_STATE.taxes&&ARJ_STATE.taxes.length)?`<select class="arj-branch-tax" data-idx="${idx}" data-side="${side}">${`<option value="">（既定）</option>`+ARJ_STATE.taxes.map(t=>`<option value="${esc(t.id)}" ${selectedId===t.id?"selected":""}>${esc(t.name)}</option>`).join("")}</select>`:"";
+  const accInput=side=>{
+    const {account,sub}=splitAccLabel(side==="debit"?br.debitLabel:br.creditLabel);
+    const subDlId=`arj-subaccount-datalist-${idx}-${side}`;
+    return `<div class="pet-acc-group">
+      <input list="arj-account-datalist" class="pet-acc-main arj-branch-accmain" data-idx="${idx}" data-side="${side}" value="${esc(account)}" placeholder="${side==="debit"?"借方":"貸方"}勘定科目（空欄可）">
+      <input list="${subDlId}" class="pet-acc-sub arj-branch-accsub" data-idx="${idx}" data-side="${side}" value="${esc(sub)}" placeholder="補助科目（任意）">
+      <datalist id="${subDlId}">${arjSubAccountOptionsHtml(account)}</datalist>
+    </div>`;
+  };
+  return `<tr class="arj-branch-row" data-idx="${idx}">
+    <td class="pet-ins"><button type="button" data-arjins="${idx}" title="この下に行を追加">＋</button></td>
+    <td>${accInput("debit")}</td>
+    <td><select class="arj-branch-dept" data-idx="${idx}">${deptOptions}</select></td>
+    <td>${taxOptionsHtml(br.tax_id,"debit")}</td>
+    <td><input type="number" class="pet-amt arj-branch-debit-amount" data-idx="${idx}" value="${br.debitAmount??""}"></td>
+    <td>${accInput("credit")}</td>
+    <td><select class="arj-branch-credit-dept" data-idx="${idx}">${creditDeptOptions}</select></td>
+    <td>${taxOptionsHtml(br.credit_tax_id,"credit")}</td>
+    <td><input type="number" class="pet-amt arj-branch-credit-amount" data-idx="${idx}" value="${br.creditAmount??""}"></td>
+    <td><input class="pet-remark arj-branch-remark" data-idx="${idx}" value="${esc(br.remark||"")}" placeholder="行ごとの摘要（空欄なら全体の摘要を使用）"></td>
+    <td class="pet-rm">${ARJ_STATE.branches.length>1?`<button data-arjrm="${idx}" title="この行を削除">✕</button>`:""}</td>
+  </tr>`;
+}
+function arjUpdateBalance(){
+  const totalDebit=ARJ_STATE.branches.reduce((s,b)=>s+(Number(b.debitAmount)||0),0);
+  const totalCredit=ARJ_STATE.branches.reduce((s,b)=>s+(Number(b.creditAmount)||0),0);
+  if($("arj-debit-total")) $("arj-debit-total").textContent=yen(totalDebit);
+  if($("arj-credit-total")) $("arj-credit-total").textContent=yen(totalCredit);
+  if($("arj-diff-amt")) $("arj-diff-amt").textContent=yen(totalDebit-totalCredit);
+  if($("arj-diff-box")) $("arj-diff-box").className="box "+(totalDebit===totalCredit?"ok":"ng");
+}
+function arjWireBranchRows(){
+  const combineAccLabel=(idx,side)=>{
+    const row=document.querySelector(`.arj-branch-row[data-idx="${idx}"]`);
+    if(!row) return "";
+    const main=row.querySelector(`.arj-branch-accmain[data-side="${side}"]`);
+    const sub=row.querySelector(`.arj-branch-accsub[data-side="${side}"]`);
+    const mainVal=(main&&main.value||"").trim(), subVal=(sub&&sub.value||"").trim();
+    return subVal?`${mainVal}/${subVal}`:mainVal;
+  };
+  document.querySelectorAll(".arj-branch-accmain").forEach(el=>el.oninput=()=>{
+    const idx=+el.dataset.idx, side=el.dataset.side;
+    const label=combineAccLabel(idx,side);
+    if(side==="debit") ARJ_STATE.branches[idx].debitLabel=label; else ARJ_STATE.branches[idx].creditLabel=label;
+    const dl=document.getElementById(`arj-subaccount-datalist-${idx}-${side}`);
+    if(dl) dl.innerHTML=arjSubAccountOptionsHtml(el.value);
+  });
+  document.querySelectorAll(".arj-branch-accsub").forEach(el=>el.oninput=()=>{
+    const idx=+el.dataset.idx, side=el.dataset.side;
+    const label=combineAccLabel(idx,side);
+    if(side==="debit") ARJ_STATE.branches[idx].debitLabel=label; else ARJ_STATE.branches[idx].creditLabel=label;
+  });
+  document.querySelectorAll(".arj-branch-dept").forEach(el=>el.onchange=()=>{ ARJ_STATE.branches[+el.dataset.idx].department_id=el.value; });
+  document.querySelectorAll(".arj-branch-credit-dept").forEach(el=>el.onchange=()=>{ ARJ_STATE.branches[+el.dataset.idx].credit_department_id=el.value; });
+  document.querySelectorAll(".arj-branch-tax").forEach(el=>el.onchange=()=>{
+    const idx=+el.dataset.idx, side=el.dataset.side;
+    if(side==="debit") ARJ_STATE.branches[idx].tax_id=el.value; else ARJ_STATE.branches[idx].credit_tax_id=el.value;
+  });
+  document.querySelectorAll(".arj-branch-remark").forEach(el=>el.oninput=()=>{ ARJ_STATE.branches[+el.dataset.idx].remark=el.value; });
+  document.querySelectorAll(".arj-branch-debit-amount").forEach(el=>el.oninput=()=>{ ARJ_STATE.branches[+el.dataset.idx].debitAmount=el.value; arjUpdateBalance(); });
+  document.querySelectorAll(".arj-branch-credit-amount").forEach(el=>el.oninput=()=>{ ARJ_STATE.branches[+el.dataset.idx].creditAmount=el.value; arjUpdateBalance(); });
+  document.querySelectorAll("[data-arjrm]").forEach(el=>el.onclick=()=>{ ARJ_STATE.branches.splice(+el.dataset.arjrm,1); arjRenderForm(); });
+  document.querySelectorAll("[data-arjins]").forEach(el=>el.onclick=()=>{
+    const idx=+el.dataset.arjins;
+    ARJ_STATE.branches.splice(idx+1,0,{debitLabel:"",debitAmount:"",creditLabel:"",creditAmount:"",department_id:"",tax_id:"",credit_department_id:"",credit_tax_id:"",remark:""});
+    arjRenderForm();
+  });
+}
+async function arjRunJournalSearch(kw){
+  $("arj-journal-results").innerHTML="検索中…";
+  const r=await mfCall("journal_search",{keyword:kw,tenant_id:ARJ_STATE.tenantId});
+  ARJ_STATE.journalResults=(r.ok&&r.body.results)||[];
+  ARJ_STATE.journalKeyword=kw;
+  arjRenderJournalResults();
+}
+function arjRenderJournalResults(){
+  const el=$("arj-journal-results");
+  if(!el) return;
+  const rs=ARJ_STATE.journalResults;
+  el.innerHTML=rs.length?rs.map((r,i)=>`<div class="ai-field" style="margin-bottom:4px"><small>${esc(r.transaction_date||"")}</small>${esc(r.summary)}<div class="mail-actions" style="margin-top:4px"><button data-arjpick="${i}" style="font-size:12px">この仕訳を使う</button></div></div>`).join("")
+    :`<div style="font-size:12px;color:var(--muted)">${ARJ_STATE.journalKeyword?"該当する過去の仕訳が見つかりませんでした":"キーワードを入力して検索してください"}</div>`;
+  document.querySelectorAll("[data-arjpick]").forEach(btn=>btn.onclick=()=>{
+    const r=ARJ_STATE.journalResults[+btn.dataset.arjpick];
+    const amt=ARJ_STATE.amount||(r.template.debit&&r.template.debit.value)||(r.template.credit&&r.template.credit.value)||"";
+    arjApplyBranches([{
+      debitLabel:mftLabelOf(r.template.debit), debitAmount:r.template.debit?amt:"",
+      creditLabel:mftLabelOf(r.template.credit), creditAmount:r.template.credit?amt:"",
+      department_id:(r.template.debit&&r.template.debit.department_id)||"", tax_id:(r.template.debit&&r.template.debit.tax_id)||"",
+      credit_department_id:(r.template.credit&&r.template.credit.department_id)||"", credit_tax_id:(r.template.credit&&r.template.credit.tax_id)||"",
+      remark:r.template.remark||"",
+    }]);
+  });
+}
+// 仕訳辞書（mf_journal_templates。1件で複数の明細行を持てる＝振替伝票まるごと保存できる）
+function arjRenderTemplateResults(){
+  const el=$("arj-tpl-results");
+  if(!el) return;
+  const all=ARJ_STATE.templates||[];
+  const q=(ARJ_STATE.tplSearchQuery||"").trim();
+  const tpls=q?all.filter(t=>(t.label||"").includes(q)):all;
+  el.innerHTML=tpls.length?tpls.map(t=>{
+    const sum=(t.branches||[]).map(b=>`${mftLabelOf(b.debit)||"?"}／${mftLabelOf(b.credit)||"?"}`).join("、");
+    return `<div class="mfj-tpl-item"><div><div class="lbl">${esc(t.label)}</div><div class="sum">${esc(sum)}（${(t.branches||[]).length}行）</div></div><button data-arjtpluse="${esc(t.id)}" style="font-size:12px;white-space:nowrap">この仕訳辞書を使う</button></div>`;
+  }).join("")
+    :(q?`<div style="font-size:12px;color:var(--muted)">該当する仕訳辞書が見つかりません</div>`:`<div style="font-size:12px;color:var(--muted)">この事業者にはまだ仕訳辞書が登録されていません。「🔧 直接入力」で内容を作ってから「💾 仕訳辞書に登録」で追加できます（設定タブでも管理できます）。</div>`);
+  if($("arj-tpl-search")) $("arj-tpl-search").oninput=()=>{ ARJ_STATE.tplSearchQuery=$("arj-tpl-search").value; arjRenderTemplateResults(); };
+  document.querySelectorAll("[data-arjtpluse]").forEach(btn=>btn.onclick=()=>{
+    const t=ARJ_STATE.templates.find(x=>x.id===btn.dataset.arjtpluse);
+    // 古い仕訳辞書（貸借同額の共通amount形式）・新しい仕訳辞書（辺ごとにvalueを持つ形式）の両方に対応
+    const branches=(t.branches||[]).map(b=>({
+      debitLabel:mftLabelOf(b.debit), debitAmount:b.debit?(b.debit.value??b.amount??ARJ_STATE.amount??""):"",
+      creditLabel:mftLabelOf(b.credit), creditAmount:b.credit?(b.credit.value??b.amount??ARJ_STATE.amount??""):"",
+      department_id:b.department_id||"", tax_id:b.tax_id||"",
+      credit_department_id:b.credit_department_id||"", credit_tax_id:b.credit_tax_id||"",
+      remark:b.remark||"",
+    }));
+    arjApplyBranches(branches);
+  });
+}
+// 今組んでいる明細行を仕訳辞書として保存（次回から「📗 仕訳辞書から選ぶ」に出てくる。
+// 請求書メール詳細の仕訳作成・設定タブの仕訳辞書編集と同じテーブルに登録するため、
+// どちらから登録しても3箇所すべてで使えるようになる）
+async function arjSaveAsTemplate(){
+  const label=(prompt("仕訳辞書として登録する名前を入力してください（例: 【売上高】ロケットナウ）")||"").trim();
+  if(!label) return;
+  const structured=[];
+  for(const b of ARJ_STATE.branches){
+    const debit=b.debitLabel?ARJ_STATE.accountLabelMap.get(b.debitLabel):null;
+    const credit=b.creditLabel?ARJ_STATE.accountLabelMap.get(b.creditLabel):null;
+    if(b.debitLabel&&!debit){ alert("借方はプルダウンの候補から選んでから登録してください"); return; }
+    if(b.creditLabel&&!credit){ alert("貸方はプルダウンの候補から選んでから登録してください"); return; }
+    if(!debit&&!credit) continue;
+    structured.push({
+      debit:debit?{...debit,value:Number(b.debitAmount)||null}:null,
+      credit:credit?{...credit,value:Number(b.creditAmount)||null}:null,
+      department_id:b.department_id||null, department_name:(ARJ_STATE.departments.find(d=>d.id===b.department_id)||{}).name||null,
+      tax_id:b.tax_id||null, tax_name:(ARJ_STATE.taxes.find(t=>t.id===b.tax_id)||{}).name||null,
+      credit_department_id:b.credit_department_id||null, credit_department_name:(ARJ_STATE.departments.find(d=>d.id===b.credit_department_id)||{}).name||null,
+      credit_tax_id:b.credit_tax_id||null, credit_tax_name:(ARJ_STATE.taxes.find(t=>t.id===b.credit_tax_id)||{}).name||null,
+      remark:b.remark||null,
+    });
+  }
+  if(!structured.length){ alert("明細行がありません"); return; }
+  const msg=$("arj-msg");
+  const r=await authed("/rest/v1/mf_journal_templates",{method:"POST",headers:{Prefer:"return=minimal"},body:JSON.stringify({tenant_id:ARJ_STATE.tenantId,label,branches:structured,created_by:ME.id})});
+  if(!r.ok){ if(msg){ msg.className="err"; msg.textContent="仕訳辞書への登録に失敗しました"; } return; }
+  if(msg){ msg.className="err msg-ok"; msg.textContent=`仕訳辞書「${label}」に登録しました`; }
+  ARJ_STATE.templates=await arjFetchTemplates(ARJ_STATE.tenantId);
+}
+function arjRenderForm(){
+  const body=$("arj-body");
+  if(!body) return;
+  const mode=ARJ_STATE.mode;
+  const totalDebit=ARJ_STATE.branches.reduce((s,b)=>s+(Number(b.debitAmount)||0),0);
+  const totalCredit=ARJ_STATE.branches.reduce((s,b)=>s+(Number(b.creditAmount)||0),0);
+  const row=ARJ_STATE.row;
+  body.innerHTML=`
+    <datalist id="arj-acc-datalist">${ARJ_STATE.accountDatalistHtml||""}</datalist>
+    <datalist id="arj-account-datalist">${ARJ_STATE.accountNameDatalistHtml||""}</datalist>
+    ${ARJ_STATE.tenants&&ARJ_STATE.tenants.length>1?`<div class="ai-field" style="margin-bottom:6px;font-size:11px;color:var(--muted)">登録先: <b>${esc(ARJ_STATE.tenantLabel||"")}</b> <button id="arj-change-tenant" style="font-size:10px">変更</button></div>`:""}
+    <div class="mail-actions" style="margin-bottom:8px">
+      <button data-arjmode="journal" ${mode==="journal"?'class="primary"':""}>📖 過去の仕訳から選ぶ</button>
+      <button data-arjmode="dict" ${mode==="dict"?'class="primary"':""}>📗 仕訳辞書から選ぶ${ARJ_STATE.templates.length?`（${ARJ_STATE.templates.length}）`:""}</button>
+      <button data-arjmode="manual" ${mode==="manual"?'class="primary"':""}>🔧 直接入力</button>
+    </div>
+    ${mode==="journal"?`<div id="arj-journal-picker">
+      <input id="arj-journal-search" placeholder="会社名や勘定科目名で検索" value="${esc(ARJ_STATE.journalKeyword||"")}">
+      <div id="arj-journal-results" style="margin-top:6px"></div>
+    </div>`:mode==="dict"?`<div id="arj-tpl-picker">
+      <input id="arj-tpl-search" placeholder="🔍 仕訳辞書の名前で検索" value="${esc(ARJ_STATE.tplSearchQuery||"")}" style="max-width:240px;margin-bottom:8px">
+      <div id="arj-tpl-results"></div>
+    </div>`:`
+    <div class="mfj-balance">
+      <div class="box"><small>借方合計</small><b id="arj-debit-total">${yen(totalDebit)}</b></div>
+      <div class="box"><small>貸方合計</small><b id="arj-credit-total">${yen(totalCredit)}</b></div>
+      <div class="box ${totalDebit===totalCredit?"ok":"ng"}" id="arj-diff-box"><small>差額</small><b id="arj-diff-amt">${yen(totalDebit-totalCredit)}</b></div>
+    </div>
+    <div style="overflow-x:auto">
+      <table class="mfj-edit-table">
+        <thead>
+          <tr><th class="pet-ins"></th><th colspan="4" class="pet-debit-head">借方</th><th colspan="4" class="pet-credit-head">貸方</th><th>摘要</th><th class="pet-rm"></th></tr>
+          <tr><th></th><th>勘定科目</th><th>部門</th><th>税区分</th><th>金額</th><th>勘定科目</th><th>部門</th><th>税区分</th><th>金額</th><th></th><th></th></tr>
+        </thead>
+        <tbody id="arj-branch-rows">${ARJ_STATE.branches.map((br,i)=>arjBranchRowHtml(br,i)).join("")}</tbody>
       </table>
     </div>
-    <small style="color:var(--muted);display:block;margin-top:4px">1行目＝入金予定額分、2行目＝手数料分です。売上決済額（${yen(row.gross_amount)}）と手数料＋入金予定額の合計（${yen(fee+expected)}）が実データ上一致しないことがあります。その場合も含め、金額は自由に修正してから登録してください。</small>
-    <div class="ai-field" style="margin-top:8px"><small>部門（任意）</small><select id="arj-dept"><option value="">（指定なし）</option>${state.departments.map(d=>`<option value="${esc(d.id)}">${esc(d.name)}</option>`).join("")}</select></div>
-    <div class="mail-actions" style="margin-top:10px"><button class="primary" id="arj-register">🧾 保存して仕訳登録</button></div>
+    <div style="font-size:10px;color:var(--muted);margin-top:4px">💡 各行は借方・貸方のどちらか片方だけでも登録できます。借方合計と貸方合計さえ一致していれば登録できます。売上決済額（${yen(row.gross_amount)}）と手数料＋入金予定額の合計（${yen((Number(row.fee_amount)||0)+(Number(row.expected_amount)||0))}）が実データ上一致しないことがあります。その場合も含め、金額は自由に修正してから登録してください。</div>
+    <div class="mail-actions" style="margin-top:6px">
+      <button id="arj-add-row">＋ 明細行を末尾に追加</button>
+      <button id="arj-save-template">💾 この内容を仕訳辞書に登録</button>
+    </div>
+    <div class="ai-grid" style="margin-top:8px">
+      <div class="ai-field"><small>会計計上日</small><input id="arj-date" type="date" value="${esc(ARJ_STATE.date)}"></div>
+      <div class="ai-field"><small>摘要（全体・行ごとの摘要が空の場合に使われます）</small><input id="arj-remark" value="${esc(ARJ_STATE.remark)}"></div>
+    </div>
+    <div class="mail-actions" style="margin-top:8px">
+      <button class="primary" id="arj-register">🧾 保存して仕訳登録</button>
+    </div>`}
+    <div class="err" id="arj-msg" style="margin-top:6px"></div>
   `;
-  if(state.tenants.length>1) $("arj-tenant").onchange=async e=>{ await ivxLoadForTenant(e.target.value,state); arjRenderJournalArea(state,row,u); };
-  $("arj-register").onclick=async()=>{
-    const msg=$("arj-msg"); msg.className="err"; msg.textContent="";
-    const readBranch=(debitSel,debitAmtSel,creditSel,creditAmtSel)=>{
-      const debitVal=$(debitSel).value.trim(), creditVal=$(creditSel).value.trim();
-      return {
-        debitVal,creditVal,
-        debit:debitVal?state.accountMap.get(debitVal):null,
-        credit:creditVal?state.accountMap.get(creditVal):null,
-        debitAmount:+($(debitAmtSel).value||0), creditAmount:+($(creditAmtSel).value||0),
-      };
-    };
-    const b1=readBranch("arj-debit1","arj-debit1-amount","arj-credit1","arj-credit1-amount");
-    const b2=readBranch("arj-debit2","arj-debit2-amount","arj-credit2","arj-credit2-amount");
-    for(const [b,label] of [[b1,"1行目（入金分）"],[b2,"2行目（手数料分）"]]){
-      if(b.debitVal&&!b.debit){ msg.textContent=`${label}の借方はプルダウンの候補から選んでください`; return; }
-      if(b.creditVal&&!b.credit){ msg.textContent=`${label}の貸方はプルダウンの候補から選んでください`; return; }
-      if(!b.debit&&!b.credit) continue; // その行は使わない（0円等）
-      if(b.debit&&b.debitAmount<=0){ msg.textContent=`${label}の借方金額を入力してください`; return; }
-      if(b.credit&&b.creditAmount<=0){ msg.textContent=`${label}の貸方金額を入力してください`; return; }
-      if(b.debit&&b.credit&&b.debitAmount!==b.creditAmount){ msg.textContent=`${label}は借方（${yen(b.debitAmount)}）と貸方（${yen(b.creditAmount)}）の金額が一致していません`; return; }
-    }
-    if((!b1.debit&&!b1.credit)&&(!b2.debit&&!b2.credit)){ msg.textContent="少なくとも1行は入力してください"; return; }
-    $("arj-register").disabled=true; msg.textContent="登録中…";
-
-    const branches=[];
-    if(b1.debit||b1.credit) branches.push({debit:b1.debit?{account_id:b1.debit.account_id,sub_account_id:b1.debit.sub_account_id||undefined,value:b1.debitAmount}:undefined,credit:b1.credit?{account_id:b1.credit.account_id,sub_account_id:b1.credit.sub_account_id||undefined,value:b1.creditAmount}:undefined,remark:"入金分",department_id:$("arj-dept").value||null});
-    if(b2.debit||b2.credit) branches.push({debit:b2.debit?{account_id:b2.debit.account_id,sub_account_id:b2.debit.sub_account_id||undefined,value:b2.debitAmount}:undefined,credit:b2.credit?{account_id:b2.credit.account_id,sub_account_id:b2.credit.sub_account_id||undefined,value:b2.creditAmount}:undefined,remark:"手数料分",department_id:$("arj-dept").value||null});
-
-    const {ok,body:j}=await mfCall("create_standalone",{
-      is_receivable_related:true,
-      vendor_name:row.source_name||"売上入金", tenant_id:state.tenantId, branches, transaction_date:$("arj-date").value,
-      remark:`${row.source_name||"売上入金"}（${row.year_month||""}）`, attach_files:false,
-      debit_account_names:[b1.debit?ivxLabelOf(b1.debit):null,b2.debit?ivxLabelOf(b2.debit):null].filter(Boolean),
-    });
-    if(!ok){ msg.textContent=j.error||"仕訳登録に失敗しました"; $("arj-register").disabled=false; return; }
-
-    // ar_receivables側へ紐付けを記録（一覧から「登録済み」と分かるように）
-    await authed(`/rest/v1/ar_receivables?id=eq.${row.id}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({
-      linked_invoice_id:j.invoice_id||null, mf_journal_id:j.journal_id||null, mf_journal_number:j.journal_number??null, mf_journal_created_at:new Date().toISOString(),
-    })});
-
-    msg.className="err msg-ok";
-    msg.textContent=`登録しました（伝票番号: ${j.journal_number??"-"}）。画面を更新します…`;
-    setTimeout(async()=>{ history.back(); await receivableLoad(); receivableRender(u); },900);
+  document.querySelectorAll("[data-arjmode]").forEach(btn=>btn.onclick=()=>{
+    ARJ_STATE.mode=btn.dataset.arjmode;
+    if(ARJ_STATE.mode==="manual"&&!ARJ_STATE.branches.length) arjSetDefaultBranches();
+    arjRenderForm();
+  });
+  if($("arj-change-tenant")) $("arj-change-tenant").onclick=()=>{
+    const body2=$("arj-body");
+    body2.innerHTML=`<div class="ai-field"><small>登録先の事業者を選んでください</small><div class="mail-actions" style="margin-top:6px">${ARJ_STATE.tenants.map(t=>`<button data-arjtenant="${esc(t.id)}">${esc(t.label)}</button>`).join("")}</div></div>`;
+    document.querySelectorAll("[data-arjtenant]").forEach(btn=>btn.onclick=()=>arjLoadForTenant(btn.dataset.arjtenant,ARJ_STATE.tenants));
   };
+  if(mode==="journal"){
+    arjRenderJournalResults();
+    let t=null;
+    $("arj-journal-search").oninput=()=>{ clearTimeout(t); const kw=$("arj-journal-search").value.trim(); t=setTimeout(()=>arjRunJournalSearch(kw),350); };
+    return;
+  }
+  if(mode==="dict"){
+    arjRenderTemplateResults();
+    return;
+  }
+  arjWireBranchRows();
+  $("arj-add-row").onclick=()=>{ arjAddBranchRow(); arjRenderForm(); };
+  $("arj-save-template").onclick=arjSaveAsTemplate;
+  $("arj-register").onclick=arjSubmitJournal;
+}
+async function arjSubmitJournal(){
+  const msg=$("arj-msg"); msg.className="err"; msg.textContent="";
+  const branchesPayload=[];
+  let totalDebit=0, totalCredit=0;
+  for(const b of ARJ_STATE.branches){
+    const debit=b.debitLabel?ARJ_STATE.accountLabelMap.get(b.debitLabel):null;
+    const credit=b.creditLabel?ARJ_STATE.accountLabelMap.get(b.creditLabel):null;
+    if(b.debitLabel&&!debit){ msg.textContent="借方はプルダウンの候補から選択してください（自由入力のままだと登録できません）"; return; }
+    if(b.creditLabel&&!credit){ msg.textContent="貸方はプルダウンの候補から選択してください（自由入力のままだと登録できません）"; return; }
+    if(!debit&&!credit) continue;
+    const dAmt=debit?Number(b.debitAmount):null, cAmt=credit?Number(b.creditAmount):null;
+    if(debit&&(!dAmt||dAmt<=0)){ msg.textContent="借方の金額が未入力（0円）の行があります"; return; }
+    if(credit&&(!cAmt||cAmt<=0)){ msg.textContent="貸方の金額が未入力（0円）の行があります"; return; }
+    if(debit) totalDebit+=dAmt; if(credit) totalCredit+=cAmt;
+    branchesPayload.push({debit,debitAmount:dAmt,credit,creditAmount:cAmt,department_id:b.department_id||null,tax_id:b.tax_id||null,credit_department_id:b.credit_department_id||null,credit_tax_id:b.credit_tax_id||null,remark:b.remark||undefined});
+  }
+  if(!branchesPayload.length){ msg.textContent="明細行がありません"; return; }
+  if(totalDebit!==totalCredit){ msg.textContent=`借方合計（${yen(totalDebit)}）と貸方合計（${yen(totalCredit)}）が一致していません`; return; }
+  const date=$("arj-date").value, remark=$("arj-remark").value;
+  $("arj-register").disabled=true; msg.textContent="登録中…";
+  const {ok,body:j}=await mfCall("create_standalone",{
+    is_receivable_related:true,
+    vendor_name:ARJ_STATE.row.source_name||"売上入金", tenant_id:ARJ_STATE.tenantId,
+    branches:branchesPayload.map(b=>({
+      debit:b.debit?{account_id:b.debit.account_id,sub_account_id:b.debit.sub_account_id||undefined,value:b.debitAmount}:undefined,
+      credit:b.credit?{account_id:b.credit.account_id,sub_account_id:b.credit.sub_account_id||undefined,value:b.creditAmount}:undefined,
+      department_id:b.department_id||null, tax_id:b.tax_id||null,
+      credit_department_id:b.credit_department_id||null, credit_tax_id:b.credit_tax_id||null,
+      remark:b.remark||undefined,
+    })),
+    transaction_date:date, remark, attach_files:false,
+    debit_account_names:branchesPayload.filter(b=>b.debit).map(b=>mftLabelOf(b.debit)),
+  });
+  if(!ok){ msg.textContent=j.error||"仕訳登録に失敗しました"; $("arj-register").disabled=false; return; }
+
+  // ar_receivables側へ紐付けを記録（一覧から「登録済み」と分かるように）
+  await authed(`/rest/v1/ar_receivables?id=eq.${ARJ_STATE.row.id}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({
+    linked_invoice_id:j.invoice_id||null, mf_journal_id:j.journal_id||null, mf_journal_number:j.journal_number??null, mf_journal_created_at:new Date().toISOString(),
+  })});
+
+  msg.className="err msg-ok";
+  msg.textContent=`登録しました（伝票番号: ${j.journal_number??"-"}）。画面を更新します…`;
+  const u=ARJ_STATE.u;
+  setTimeout(async()=>{ history.back(); await Promise.all([receivableLoad(),loadAcBadgeCounts()]); receivableRender(u); },900);
 }
 
 /* ============================================================
@@ -9820,7 +10100,7 @@ async function main(){
   if(u.is_active===false){renderLogin();return}
   ME=u;
   history.replaceState({tab:TAB},"");
-  await Promise.all([loadInboxMaster(), loadWaitingPaymentCount(), loadKpiCounts()]);
+  await Promise.all([loadInboxMaster(), loadWaitingPaymentCount(), loadKpiCounts(), loadAcBadgeCounts()]);
   $("app").innerHTML=shellHtml(u);
   wireShell(u);
   await renderTabBody(u);
