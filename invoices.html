@@ -79,6 +79,15 @@ button,input,select,textarea{font:inherit}
 .mail-tabs{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
 .mail-tab{border:1px solid var(--m-line);background:var(--panel);border-radius:999px;padding:8px 14px;cursor:pointer;color:var(--ink)}
 .mail-tab.active{background:var(--ink);color:var(--bg);border-color:var(--ink)}
+/* 2026-09-14追加：ユーザー指摘「要対応/すべて/会計待ち...のタブが丸いピル+隙間ありだが、
+   リファレンスは隙間の無い連結した四角いセグメント（1つの枠を共有し、区切り線だけがある形）」
+   に対応。少数（4〜5個）の状態タブ切替（統合請求書一覧・請求書メール・設定グループ内）だけに
+   .segmentedを付けて連結スタイルにする。旧来の.mail-tabs-row（会計ダッシュボード等・タブ数が
+   多く隠しきれていない一覧）は対象外のまま維持し、丸ピル+隙間の従来デザインを崩さない
+   （タブ数が多い状態でoverflow:hiddenの連結枠にすると見切れて不格好になるため） */
+.mail-tabs.segmented{display:inline-flex;gap:0;border:1px solid var(--line);border-radius:6px;overflow:hidden;flex-wrap:nowrap;max-width:100%;overflow-x:auto}
+.mail-tabs.segmented .mail-tab{border:0;border-right:1px solid var(--line);border-radius:0;flex:0 0 auto}
+.mail-tabs.segmented .mail-tab:last-child{border-right:0}
 .mail-chips{display:flex;gap:6px;flex-wrap:wrap;padding:10px 12px 0}
 .mail-chip{border:1px solid var(--m-line);background:var(--panel);border-radius:999px;padding:6px 11px;cursor:pointer;font-size:12px;color:var(--muted)}
 .mail-chip.active{background:var(--accent);color:#fff;border-color:var(--accent)}
@@ -611,7 +620,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-09-14-v2"; // 前回から更新し忘れていた（要反省）。以後デプロイのたび必ず更新する
+const BUILD_TAG="2026-09-14-v3";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -2394,7 +2403,7 @@ function isMobileWidth(){ return window.matchMedia("(max-width:900px)").matches;
    ============================================================ */
 const MAILWS_TABS=[["inbox","受信トレイ"],["sent","送信済み"],["notApplicable","対象外"],["important","⭐重要"],["history","処理履歴"]];
 function mailWsTabsHtml(){
-  return `<div class="mail-tabs" style="margin-bottom:10px">${MAILWS_TABS.map(([k,l])=>`<button class="mail-tab ${TAB===k?"active":""}" data-mailwstab="${k}">${l}</button>`).join("")}</div>`;
+  return `<div class="mail-tabs segmented" style="margin-bottom:10px">${MAILWS_TABS.map(([k,l])=>`<button class="mail-tab ${TAB===k?"active":""}" data-mailwstab="${k}">${l}</button>`).join("")}</div>`;
 }
 function wireMailWsTabs(u){
   document.querySelectorAll("[data-mailwstab]").forEach(b=>b.onclick=()=>{ TAB=b.dataset.mailwstab; pushNav(); renderTabBody(u); });
@@ -5309,7 +5318,7 @@ function unifiedRender(u){
         <div class="card kpi" style="padding:14px"><small style="color:var(--muted);font-size:9px;display:block">今月請求総額</small><b style="font-size:20px;display:block;margin-top:5px">${yen(unifiedKpi.totalAmount)}</b></div>
       </div>
       <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:10px">
-        <div class="mail-tabs" style="margin-bottom:0">
+        <div class="mail-tabs segmented" style="margin-bottom:0">
           ${UNIFIED_SUBTABS.map(([k,l])=>`<button class="mail-tab ${UNIFIED_STATE.subTab===k?"active":""}" data-unified-tab="${k}">${l}（${counts[k]}）</button>`).join("")}
         </div>
         <button class="hq-btn primary" id="unified-add-invoice">＋ 請求書を追加</button>
@@ -8963,7 +8972,7 @@ async function renderSettingsTab(u,subTab){
           <div class="dash-kpi-label" style="font-size:12px;font-weight:${group[0]===gk?"700":"normal"}">${esc(gl)}</div>
         </div>`).join("")}
       </div>
-      <div class="mail-tabs" style="margin-bottom:14px">
+      <div class="mail-tabs segmented" style="margin-bottom:14px">
         ${group[2].map(k=>{ const l=(SETTINGS_SUBTABS.find(([kk])=>kk===k)||[k,k])[1]; return `<button class="mail-tab ${SETTINGS_TAB===k?"active":""}" data-settings-tab="${k}">${l}</button>`; }).join("")}
       </div>
       <div id="settingsBody"><div class="spin">読み込み中…</div></div>
