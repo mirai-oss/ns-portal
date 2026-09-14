@@ -624,7 +624,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-09-15-v3";
+const BUILD_TAG="2026-09-15-v4";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -1181,8 +1181,39 @@ function plfeeReflectedCardHtml(row){
     <span class="hq-pill green">✅ ${esc(label)}</span>
     　${esc(ym)}　${a.length}店舗に按分　合計${yen(total)}
     ${row.sheet_synced_at?"　✅PL反映済み":row.sheet_sync_error?"　⚠️PLへの書き込みが未完了":"　⏳PLへの書き込み待ち"}
+    　<button class="linkbtn" style="background:none;border:none;color:var(--m-blue,#3478b8);cursor:pointer;font-size:11px;padding:0" data-plfee-view="${esc(row.id)}">🔍 詳細を見る</button>
     　<button class="hq-btn" style="font-size:11px;padding:4px 8px" data-plfee-unconfirm="${esc(row.id)}">↩️ 取り消す</button>
   </div>`;
+}
+// 2026-09-15新規：ユーザー要望「仕訳をどのように仕訳したか見れるのと同じように、PLもどう
+// 処理したか詳細を見るで見れるようにしてほしい」に対応。従来のカードは「N店舗に按分　合計¥X」
+// という集計しか出ておらず、実際にどの店舗にいくら配分したかが分からなかった。
+// row.allocationsに元々店舗ごとの内訳（store_name/amount）が保存されていた（登録時に一度
+// 使われるだけで、表示には使われていなかった）ため、それをmfjOpenJournalPreview（登録済み
+// 仕訳の内容プレビュー）と同じ「クリックで内容を確認できるモーダル」の考え方で表示する
+function plfeeOpenReflectionPreview(row){
+  const a=row.allocations||[];
+  const ym=(row.year_month||"").slice(0,7);
+  const label=row.account_name+(row.sub_account_name?"/"+row.sub_account_name:"");
+  const total=a.reduce((s,x)=>s+(Number(x.amount)||0),0);
+  const modal=document.createElement("div");
+  modal.className="modal-bg mail-shell"; modal.id="plfeeReflectionViewModal";
+  modal.innerHTML=`<div class="modal" style="max-width:520px">
+    <div class="mhead"><h2>📊 PL反映の内容</h2><button class="linkbtn" id="plfeeReflectionViewClose" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:13px">閉じる ×</button></div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:10px">科目: <b>${esc(label)}</b>　対象月: <b>${esc(ym)}</b></div>
+    <div class="hq-tablewrap"><table class="invoice-table">
+      <thead><tr><th>店舗</th><th>金額</th></tr></thead>
+      <tbody>${a.length?a.map(x=>`<tr><td>${esc(x.store_name||"（未設定）")}</td><td>${yen(x.amount)}</td></tr>`).join(""):'<tr><td colspan="2">内訳が見つかりませんでした</td></tr>'}
+        <tr><td><b>合計</b></td><td><b>${yen(total)}</b></td></tr>
+      </tbody>
+    </table></div>
+    <div class="mail-actions" style="margin-top:12px"><button id="plfeeReflectionViewClose2">閉じる</button></div>
+  </div>`;
+  document.body.appendChild(modal);
+  pushNav({modal:true});
+  modal.onclick=e=>{ if(e.target===modal) history.back(); };
+  $("plfeeReflectionViewClose").onclick=()=>history.back();
+  $("plfeeReflectionViewClose2").onclick=()=>history.back();
 }
 function plfeeRowHtml(row,idx){
   // 完全業務委託店舗（seisan_target）は精算書経由で別途PLへ自動連携されるため、選択肢から
@@ -1263,6 +1294,12 @@ function plfeeRenderPanel(){
     if(refreshBtn){
       refreshBtn.disabled=true; refreshBtn.textContent="更新中…";
       await plfeeSeisanRefreshStatus();
+      return;
+    }
+    const viewBtn=e.target.closest("[data-plfee-view]");
+    if(viewBtn){
+      const row=(PLFEE_STATE.reflections||[]).find(x=>x.id===viewBtn.dataset.plfeeView);
+      if(row) plfeeOpenReflectionPreview(row);
       return;
     }
     const btn=e.target.closest("[data-plfee-unconfirm]");
