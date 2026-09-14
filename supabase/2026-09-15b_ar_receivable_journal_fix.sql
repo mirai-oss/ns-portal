@@ -1,0 +1,22 @@
+-- 2026-09-15（同日追補）: 直前の2026-09-15_ar_receivable_journal.sqlで
+-- ar_receivables.mf_journal_id を uuid 型で作ってしまっていたミスの修正。
+--
+-- 【なぜ必要か】
+-- 「🧾仕訳を作成」機能の実装中に気づいた。マネーフォワードの仕訳ID（journal_id）は
+-- 実際には invoices.mf_journal_id（既存列）と同じ text 型の値で返ってくる
+-- （information_schema.columnsで実際に確認: invoices.mf_journal_id は text）。
+-- ar_receivables側だけ uuid 型のままだと、仕訳登録成功後のPATCHが型エラーで
+-- 失敗してしまう。
+--
+-- 【現在の構造】ar_receivables.mf_journal_id は前回のmigrationでuuid型として作成済み。
+-- まだ実際のデータは1件も書き込まれていない（本機能は今回が初実装のため）。
+--
+-- 【今回の変更】ar_receivables.mf_journal_id を text 型に変更（uuid→text）。
+-- 【既存データへの影響】無し（この列にまだ値が入っている行が無いため、型変換で失われる
+-- データも無い）。
+-- 【migration】このファイル自体
+-- 【rollback】alter table ar_receivables alter column mf_journal_id type uuid using mf_journal_id::uuid;
+--   （ただし文字列としてMF仕訳IDが入った後にrollbackするとuuid変換に失敗する点に注意）
+-- 【既存機能への影響】無し。
+
+alter table ar_receivables alter column mf_journal_id type text;

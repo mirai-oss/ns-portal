@@ -620,7 +620,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-09-14-v3";
+const BUILD_TAG="2026-09-15-v1";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -2298,6 +2298,7 @@ function receivableRowHtml(r){
     <td>${fmtD(r.expected_date)}</td>
     <td><span class="invoice-status ${statusLabel[1]}">${esc(statusLabel[0])}</span></td>
     <td>${esc(r.note||"—")}</td>
+    <td>${r.mf_journal_id?`✅仕訳登録済み（伝票番号: ${esc(String(r.mf_journal_number??"-"))}）`:`<button class="linkbtn" data-arj-open="${esc(r.id)}" style="background:none;border:1px solid var(--line);padding:4px 8px;cursor:pointer;font-size:12px">🧾仕訳を作成</button>`}</td>
   </tr>`;
 }
 function receivableKpis(){
@@ -2349,8 +2350,8 @@ function receivableRender(u){
           }).join("")}
         </div>
         <div class="hq-tablewrap"><table class="invoice-table">
-          <thead><tr><th>入金元</th><th>店舗</th><th>売上決済額</th><th>手数料</th><th>入金予定額</th><th>実入金額</th><th>差異</th><th>入金予定日</th><th>状態</th><th>備考</th></tr></thead>
-          <tbody>${filtered.length?filtered.map(receivableRowHtml).join(""):'<tr><td colspan="10">該当するデータはありません（自動取込がまだ稼働していないため、現状は表示されるデータがありません）</td></tr>'}</tbody>
+          <thead><tr><th>入金元</th><th>店舗</th><th>売上決済額</th><th>手数料</th><th>入金予定額</th><th>実入金額</th><th>差異</th><th>入金予定日</th><th>状態</th><th>備考</th><th>MF仕訳</th></tr></thead>
+          <tbody>${filtered.length?filtered.map(receivableRowHtml).join(""):'<tr><td colspan="11">該当するデータはありません（自動取込がまだ稼働していないため、現状は表示されるデータがありません）</td></tr>'}</tbody>
         </table></div>
       </div>
     </section>`;
@@ -2359,6 +2360,121 @@ function receivableRender(u){
   document.querySelectorAll("[data-receivable-subtab]").forEach(el=>el.onclick=()=>{
     RECEIVABLE_STATE.subTab=el.dataset.receivableSubtab; receivableRender(u);
   });
+  document.querySelectorAll("[data-arj-open]").forEach(el=>el.onclick=()=>openReceivableJournalModal(u,el.dataset.arjOpen));
+}
+
+// 2026-09-15新規：売上入金（ar_receivables）からMF仕訳を作成する（ロケットナウ等のPL反映）。
+// mf-journalの通常のcreateアクションはinvoice_idが必須でar_receivablesを直接渡せないため、
+// create_standaloneアクション（invoices行の作成とMF登録を一度に行う・給与仕訳でも使用中の
+// 既存の仕組み）をそのまま使う。作成されるinvoices行にはis_receivable_relatedを立てて
+// 🧾請求書一覧（unifiedRender）の集計・表示からは除外する（is_payroll_relatedと同じ扱い）。
+async function openReceivableJournalModal(u,receivableId){
+  const row=RECEIVABLE_STATE.receivables.find(r=>r.id===receivableId);
+  if(!row) return;
+  await ensureCorpStoreCache();
+  const modal=document.createElement("div");
+  modal.className="modal-bg mail-shell"; modal.id="arjModal";
+  modal.innerHTML=`<div class="modal" style="max-width:640px">
+    <div class="mhead"><h2>🧾 MF仕訳を作成（${esc(row.source_name||"—")}・${esc(row.year_month||"")}）</h2><button class="linkbtn" id="arjModalClose" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:13px">閉じる ×</button></div>
+    <div class="meta" style="color:var(--muted);font-size:12px;margin-bottom:10px">
+      店舗：${esc(receivableStoreName(row.store_id))}／売上決済額：${yen(row.gross_amount)}／手数料：${yen(row.fee_amount)}／入金予定額：${yen(row.expected_amount)}<br>
+      ⚠️ 登録すると実際にマネーフォワードへ仕訳が作成されます（一度登録すると取り消しはマネーフォワード側での手動対応が必要です）。勘定科目・金額は登録前に必ずご確認ください。
+    </div>
+    <div id="arj-journal-area">読み込み中…</div>
+    <div class="err" id="arj-msg" style="margin-top:6px"></div>
+  </div>`;
+  document.body.appendChild(modal);
+  pushNav({modal:true});
+  modal.onclick=e=>{ if(e.target===modal) history.back(); };
+  $("arjModalClose").onclick=()=>history.back();
+
+  const state={tenants:[],accounts:[],departments:[],accountMap:new Map(),tenantId:"default"};
+  const tRes=await mfCall("list_tenants");
+  state.tenants=(tRes.ok&&tRes.body.tenants)||[];
+  await ivxLoadForTenant(state.tenantId,state);
+  arjRenderJournalArea(state,row,u);
+}
+function arjRenderJournalArea(state,row,u){
+  const area=$("arj-journal-area");
+  if(!area) return;
+  const defDeposit=state.accountMap.get("普通預金");
+  const defFee=state.accountMap.get("支払手数料");
+  const defSales=state.accountMap.get("売上高");
+  const expected=Number(row.expected_amount)||0;
+  const fee=Number(row.fee_amount)||0;
+  area.innerHTML=`
+    <datalist id="arj-acc-datalist">${state.accountDatalistHtml||""}</datalist>
+    ${state.tenants.length>1?`<div class="ai-field" style="margin:8px 0"><small>登録先の事業者</small><select id="arj-tenant">${state.tenants.map(t=>`<option value="${esc(t.id)}" ${t.id===state.tenantId?"selected":""}>${esc(t.label)}</option>`).join("")}</select></div>`:""}
+    <div class="ai-field" style="margin:8px 0"><small>会計計上日</small><input id="arj-date" type="date" value="${new Date().toISOString().slice(0,10)}"></div>
+    <div class="mfj-gridwrap">
+      <table class="mfj-grid">
+        <thead><tr><th colspan="2" class="side">借方</th><th colspan="2" class="side" style="background:var(--m-greensoft);color:var(--m-green)">貸方</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><input list="arj-acc-datalist" id="arj-debit1" placeholder="勘定科目" value="${esc(defDeposit?ivxLabelOf(defDeposit):"普通預金")}"></td>
+            <td><input type="number" id="arj-debit1-amount" style="width:100px" value="${expected}"></td>
+            <td><input list="arj-acc-datalist" id="arj-credit1" placeholder="勘定科目" value="${esc(defSales?ivxLabelOf(defSales):"売上高")}"></td>
+            <td><input type="number" id="arj-credit1-amount" style="width:100px" value="${expected}"></td>
+          </tr>
+          <tr>
+            <td><input list="arj-acc-datalist" id="arj-debit2" placeholder="勘定科目" value="${esc(defFee?ivxLabelOf(defFee):"支払手数料")}"></td>
+            <td><input type="number" id="arj-debit2-amount" style="width:100px" value="${fee}"></td>
+            <td><input list="arj-acc-datalist" id="arj-credit2" placeholder="勘定科目" value="${esc(defSales?ivxLabelOf(defSales):"売上高")}"></td>
+            <td><input type="number" id="arj-credit2-amount" style="width:100px" value="${fee}"></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <small style="color:var(--muted);display:block;margin-top:4px">1行目＝入金予定額分、2行目＝手数料分です。売上決済額（${yen(row.gross_amount)}）と手数料＋入金予定額の合計（${yen(fee+expected)}）が実データ上一致しないことがあります。その場合も含め、金額は自由に修正してから登録してください。</small>
+    <div class="ai-field" style="margin-top:8px"><small>部門（任意）</small><select id="arj-dept"><option value="">（指定なし）</option>${state.departments.map(d=>`<option value="${esc(d.id)}">${esc(d.name)}</option>`).join("")}</select></div>
+    <div class="mail-actions" style="margin-top:10px"><button class="primary" id="arj-register">🧾 保存して仕訳登録</button></div>
+  `;
+  if(state.tenants.length>1) $("arj-tenant").onchange=async e=>{ await ivxLoadForTenant(e.target.value,state); arjRenderJournalArea(state,row,u); };
+  $("arj-register").onclick=async()=>{
+    const msg=$("arj-msg"); msg.className="err"; msg.textContent="";
+    const readBranch=(debitSel,debitAmtSel,creditSel,creditAmtSel)=>{
+      const debitVal=$(debitSel).value.trim(), creditVal=$(creditSel).value.trim();
+      return {
+        debitVal,creditVal,
+        debit:debitVal?state.accountMap.get(debitVal):null,
+        credit:creditVal?state.accountMap.get(creditVal):null,
+        debitAmount:+($(debitAmtSel).value||0), creditAmount:+($(creditAmtSel).value||0),
+      };
+    };
+    const b1=readBranch("arj-debit1","arj-debit1-amount","arj-credit1","arj-credit1-amount");
+    const b2=readBranch("arj-debit2","arj-debit2-amount","arj-credit2","arj-credit2-amount");
+    for(const [b,label] of [[b1,"1行目（入金分）"],[b2,"2行目（手数料分）"]]){
+      if(b.debitVal&&!b.debit){ msg.textContent=`${label}の借方はプルダウンの候補から選んでください`; return; }
+      if(b.creditVal&&!b.credit){ msg.textContent=`${label}の貸方はプルダウンの候補から選んでください`; return; }
+      if(!b.debit&&!b.credit) continue; // その行は使わない（0円等）
+      if(b.debit&&b.debitAmount<=0){ msg.textContent=`${label}の借方金額を入力してください`; return; }
+      if(b.credit&&b.creditAmount<=0){ msg.textContent=`${label}の貸方金額を入力してください`; return; }
+      if(b.debit&&b.credit&&b.debitAmount!==b.creditAmount){ msg.textContent=`${label}は借方（${yen(b.debitAmount)}）と貸方（${yen(b.creditAmount)}）の金額が一致していません`; return; }
+    }
+    if((!b1.debit&&!b1.credit)&&(!b2.debit&&!b2.credit)){ msg.textContent="少なくとも1行は入力してください"; return; }
+    $("arj-register").disabled=true; msg.textContent="登録中…";
+
+    const branches=[];
+    if(b1.debit||b1.credit) branches.push({debit:b1.debit?{account_id:b1.debit.account_id,sub_account_id:b1.debit.sub_account_id||undefined,value:b1.debitAmount}:undefined,credit:b1.credit?{account_id:b1.credit.account_id,sub_account_id:b1.credit.sub_account_id||undefined,value:b1.creditAmount}:undefined,remark:"入金分",department_id:$("arj-dept").value||null});
+    if(b2.debit||b2.credit) branches.push({debit:b2.debit?{account_id:b2.debit.account_id,sub_account_id:b2.debit.sub_account_id||undefined,value:b2.debitAmount}:undefined,credit:b2.credit?{account_id:b2.credit.account_id,sub_account_id:b2.credit.sub_account_id||undefined,value:b2.creditAmount}:undefined,remark:"手数料分",department_id:$("arj-dept").value||null});
+
+    const {ok,body:j}=await mfCall("create_standalone",{
+      is_receivable_related:true,
+      vendor_name:row.source_name||"売上入金", tenant_id:state.tenantId, branches, transaction_date:$("arj-date").value,
+      remark:`${row.source_name||"売上入金"}（${row.year_month||""}）`, attach_files:false,
+      debit_account_names:[b1.debit?ivxLabelOf(b1.debit):null,b2.debit?ivxLabelOf(b2.debit):null].filter(Boolean),
+    });
+    if(!ok){ msg.textContent=j.error||"仕訳登録に失敗しました"; $("arj-register").disabled=false; return; }
+
+    // ar_receivables側へ紐付けを記録（一覧から「登録済み」と分かるように）
+    await authed(`/rest/v1/ar_receivables?id=eq.${row.id}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({
+      linked_invoice_id:j.invoice_id||null, mf_journal_id:j.journal_id||null, mf_journal_number:j.journal_number??null, mf_journal_created_at:new Date().toISOString(),
+    })});
+
+    msg.className="err msg-ok";
+    msg.textContent=`登録しました（伝票番号: ${j.journal_number??"-"}）。画面を更新します…`;
+    setTimeout(async()=>{ history.back(); await receivableLoad(); receivableRender(u); },900);
+  };
 }
 
 /* ============================================================
@@ -5180,6 +5296,10 @@ function unifiedFilteredRows(){
   // ユーザー報告「やはりわかりにくいし見ずらいから、給与は請求書一覧に入れないで欲しい」
   // を受け、選択肢を無くして常に除外する方式に変更した（給与関連の確認は給与仕訳タブで行う）
   list=list.filter(r=>!r.is_payroll_related);
+  // 2026-09-15新規：売上入金（ar_receivables）からのMF仕訳作成用に内部的に作られる
+  // invoices行（is_receivable_related）も、給与関連と同じ理由で🧾請求書一覧には出さない
+  // （確認は売上入金タブの「MF仕訳」列で行う）
+  list=list.filter(r=>!r.is_receivable_related);
   // 2026-09-04新規：会計ダッシュボードのカード・要対応内訳からの絞り込み遷移用
   // （overdue/bank_change/duplicate/mf_error/unknown_journal/unknown_company/unknown_store/import_error）
   if(UNIFIED_STATE.reasonFilter) list=list.filter(r=>unifiedAttentionReasons(r).includes(UNIFIED_STATE.reasonFilter));
@@ -5282,7 +5402,7 @@ function unifiedRender(u){
   const counts={};
   // 2026-09-10修正：タブの件数バッジも、一覧本体と同じく給与関連（is_payroll_related）を
   // 除いて数える（一覧には出てこないのに件数だけ多く見えてしまっていたのを修正）
-  const countBase=UNIFIED_STATE.rows.filter(r=>!r.is_payroll_related);
+  const countBase=UNIFIED_STATE.rows.filter(r=>!r.is_payroll_related&&!r.is_receivable_related);
   UNIFIED_SUBTABS.forEach(([k])=>{ counts[k]=countBase.filter(r=>unifiedMatchesSubTab(r,k)).length; });
   // 2026-09-11追加：実機フィードバック対応。SoT（3HTML統合版修正版.html）の請求書タブは
   // 一覧の前にKPI6枚（要対応/会計待ち/振込待ち/完了/自動処理/今月請求総額）が必ずあるが、

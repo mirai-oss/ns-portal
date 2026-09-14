@@ -686,11 +686,18 @@ Deno.serve(async (req: Request) => {
       const debitAccountNames: string[] = Array.isArray(body?.debit_account_names)
         ? body.debit_account_names.filter((x: any) => typeof x === "string" && x)
         : [];
+      // 2026-09-15追加: 売上入金（ar_receivables）からの仕訳作成（担当C・ロケットナウPL反映）は
+      // このcreate_standaloneをそのまま使う。invoice_id不要でinvoices行の作成とMF登録を一度に
+      // 行える既存の仕組みが、ar_receivablesにも欲しかった橋渡しとぴったり合うため。
+      // is_receivable_relatedは既存のis_payroll_relatedと同じ「🧾請求書一覧から除外する」フラグ。
+      // bodyに無ければ従来どおりfalse（既存の呼び出し元＝アップロード請求書・給与仕訳には影響なし）
+      const isReceivableRelated = body?.is_receivable_related === true;
       const { data: newInv, error: insErr } = await db.from("invoices").insert({
         email_id: linkedEmailId, linked_hq_step_id: linkedHqStepId, vendor_name: vendorName,
         amount: totalAmount, invoice_status: "paid",
         mf_journal_id: journalId, mf_journal_number: journalNumber, mf_journal_created_at: new Date().toISOString(), mf_tenant_id: tenantId,
         ...(debitAccountNames.length ? { mf_debit_accounts: debitAccountNames } : {}),
+        ...(isReceivableRelated ? { is_receivable_related: true } : {}),
       }).select("id").single();
       if (insErr) return json({ error: "マネーフォワードへの登録はできましたが記録の保存に失敗しました: " + insErr.message, journal_id: journalId, journal_number: journalNumber }, 500);
       await db.from("mf_sync_logs").insert({ action: "journal_create", actor_type: "human", detail: { invoice_id: newInv.id, journal_id: journalId, standalone: true } });
