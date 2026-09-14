@@ -1188,7 +1188,11 @@ const KAIKEI_GROUP={cap:"会計",ico:"🧾", section:"kaikei", items:[
   // --- 新UI未統合の既存機能（引き続き利用可。§9-15により給与仕訳は今回の刷新対象外） ---
   {key:"kaikei-dashboard", sysKey:"invoices", ico:"📊", label:"会計ダッシュボード", url:"invoices.html?embed=1&tab=dashboard"},
   {key:"kaikei-payroll",   sysKey:"invoices", ico:"💴", label:"給与仕訳",   url:"invoices.html?embed=1&tab=payroll"},
-  {key:"kaikei-payment",   sysKey:"invoices", ico:"💸", label:"支払い（インフォマート・振込）", url:"invoices.html?embed=1&tab=transfers"},
+  // 2026-09-14削除: ユーザー指示「振り込みのタブもなくしてしまって、請求書一覧の中の
+  // 振り込み待ちのところにその振り込みタブで開いた画面を入れれば管理もしやすい」に対応。
+  // 旧key:"kaikei-payment"（支払い（インフォマート・振込）・tab=transfers）はここから削除
+  // した。中身（invoices.html側のtransferBodyHtml等）は削除しておらず、🧾請求書タブの
+  // 「振込待ち」サブタブから同じ内容にアクセスできる（担当C・invoices.html側で対応済み）
 ]};
 /* 社内情報管理は、実際のアプリがURLで内部タブを指定する仕組みを持っていない
    （別オリジンのSSO外部リンクのため、そもそも埋め込みiframeではない）ため
