@@ -1171,9 +1171,16 @@ const SHINSEI_GROUP={cap:"申請",ico:"🔁", section:"genba", items:[
 // 実URLをWORKLOGで案内してくれたため実リンクへ差し替えた（中身はまだ準備中案内のみだが
 // リンク先としては機能する、との申し送りどおり）。Step4/6で中身が実装され次第、tab名を
 // receivables/automation等の正式名へ変える可能性がある旨もCから聞いている
+// 2026-09-14 ユーザー実機フィードバック: 「請求書メールの未読バッジが会計のところにも
+// ついてしまってて紛らわしい」との指摘。この「請求書」項目のcountKey:"inv"（未処理メール数）
+// が、新設したトップレベル単独項目「請求書メール」（同じcountKey:"inv"）と同じ数を
+// 会計・請求グループの見出しバッジ・トップカテゴリタブバッジ（どちらもcountOf()の合算）に
+// 二重表示していたため、この項目からはcountKeyを外した。未読メール件数は「請求書メール」
+// 項目だけが表示する（会計・請求グループ自体は「請求書」項目に会計処理待ちの意味の
+// バッジが欲しくなった場合、別のcountKeyを新設して対応する）
 const KAIKEI_GROUP={cap:"会計",ico:"🧾", section:"kaikei", items:[
   // --- SoT 5タブ（新ワークスペースの構成に合わせた並び） ---
-  {key:"invoices",         sysKey:"invoices", ico:"🧾", label:"請求書",     url:"invoices.html?embed=1&tab=unified", countKey:"inv"},
+  {key:"invoices",         sysKey:"invoices", ico:"🧾", label:"請求書",     url:"invoices.html?embed=1&tab=unified"},
   {key:"kaikei-ar",        sysKey:"invoices", ico:"💰", label:"売上入金",   url:"invoices.html?embed=1&tab=receivableSoon"},
   {key:"kaikei-intake",    sysKey:"invoices", ico:"📥", label:"自動取込",   url:"invoices.html?embed=1&tab=upload"},
   {key:"kaikei-automation",sysKey:"invoices", ico:"🤖", label:"自動化",     url:"invoices.html?embed=1&tab=automationSoon"},
