@@ -1374,8 +1374,14 @@ let NAV_EXPENSE_CNT=0, NAV_PROFILE_APPROVAL_CNT=0, NAV_CRED_APPROVAL_CNT=0, NAV_
    tori-dashboard（sysKey:"keiei"）はapp.js側の受け口デプロイ済み・確認済み。
    nippo（sysKey:"nippo"）は担当Bと連携のうえ追加予定（2026-08-26時点は未追加）
    ============================================================ */
-const SYS_TAB_PARAM={keiei:"tab",nippo:"page",cockpit:"page",seisan:"view"}; // その システムの「タブ」がURLのどのクエリパラメータで表されるか
-const FAST_SWITCH_SYSKEYS=new Set(["keiei","nippo","cockpit","seisan"]); // nippo側の受け口は担当Bが実装・デプロイ済み（コミットbe020d2・2026-08-27確認）。cockpit側は2026-08-31実装。seisan側はW2-A（2026-09-02）実装
+const SYS_TAB_PARAM={keiei:"tab",nippo:"page",cockpit:"page",seisan:"view",invoices:"tab"}; // その システムの「タブ」がURLのどのクエリパラメータで表されるか
+// 2026-09-17追加：ユーザー報告「請求書一覧の表示が遅い」（TK-92/93）に対応。invoicesは
+// 今まで高速切替の対象外で、会計・請求グループ内のどれを開いてもiframeを毎回作り直し、
+// invoices.html側のログイン確認・4本の並列読み込み等のブートストラップを都度やり直して
+// いた（一覧クエリ自体は軽い＝EXPLAIN ANALYZEで1.3msと実測済みのため、この毎回の
+// フルリロードが体感の重さの主因とみられる）。invoices.html側にnsPortalSetTabの受け口を
+// 実装済みのため追加する
+const FAST_SWITCH_SYSKEYS=new Set(["keiei","nippo","cockpit","seisan","invoices"]); // nippo側の受け口は担当Bが実装・デプロイ済み（コミットbe020d2・2026-08-27確認）。cockpit側は2026-08-31実装。seisan側はW2-A（2026-09-02）実装。invoices側は担当Cが2026-09-17実装
 let CUR_IFRAME=null, CUR_IFRAME_SYSKEY=null, CUR_IFRAME_ORIGIN=null;
 
 /* ============================================================

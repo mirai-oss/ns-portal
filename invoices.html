@@ -624,7 +624,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-09-17-v4";
+const BUILD_TAG="2026-09-17-v5";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -10329,6 +10329,27 @@ async function main(){
   wireShell(u);
   await renderTabBody(u);
 }
+// 2026-09-17新規：ユーザー報告「請求書一覧の表示が遅い」（TK-92/93）に対応。invoicesは
+// portal.html側のFAST_SWITCH_SYSKEYSに入っておらず、会計・請求を開くたびiframeが毎回
+// 作り直され、main()のログイン確認・4本の並列読み込み等のブートストラップを全部
+// やり直していた（実際の一覧クエリ自体は160行・1.3msで軽いにもかかわらず、体感が重かった
+// 主因はこちらだったとみられる）。keiei/nippo/cockpit/seisanと同じ「同じiframeのまま
+// postMessageでタブだけ切り替える」高速切替の受け口をこちらにも追加する
+// （portal.html側もFAST_SWITCH_SYSKEYS/SYS_TAB_PARAMに"invoices"を追加済み）。
+// 送信元は同じGitHub Pagesオリジンからのみ受け付け、TAB_WHITELISTに無い値は無視する
+// （不正なpostMessageで想定外のタブへ遷移させられないようにする防御）
+window.addEventListener("message",async(e)=>{
+  if(e.origin!==location.origin) return;
+  const d=e.data;
+  if(!d||d.type!=="nsPortalSetTab") return;
+  if(!ME) return; // 初回ブートストラップがまだ終わっていなければ何もしない（通常は起こらないはず）
+  if(!d.tab||!TAB_WHITELIST.includes(d.tab)) return;
+  TAB=d.tab;
+  pushNav();
+  document.querySelectorAll(".mail-tab").forEach(x=>x.classList.toggle("active",x.dataset.tab===TAB));
+  document.querySelectorAll("#acwsTabs button").forEach(x=>x.classList.toggle("active",x.dataset.acgroup===acActiveGroup()));
+  await renderTabBody(ME);
+});
 main();
 </script>
 </body>
