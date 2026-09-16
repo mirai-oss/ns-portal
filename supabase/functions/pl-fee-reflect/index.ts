@@ -506,14 +506,22 @@ Deno.serve(async (req: Request) => {
         if (!res.ok) return json({ error: res.error || "精算書側の状態取得に失敗しました" }, 500);
         const lines: any[] = Array.isArray(res.lines) ? res.lines : [];
         const bySourceKey = new Map(lines.map((l: any) => [l.sourceKey, l]));
-        let updated = 0;
+        let updated = 0, notFound = 0;
+        // 2026-09-17修正：ユーザー報告「もともと反映されていたもの（振込確定待ち等）に
+        // PLエラーが出ている」に対応した重大なバグ修正。従来はsd_apiGetLinesの応答に
+        // 該当行が見つからない（GAS側の一過性の不調で一部だけ欠落して返ってきた等）場合、
+        // 「plStatusが無い＝PLエラー」と決めつけてDBを上書きしていた。実際には精算書側の
+        // 登録自体は生きているのに、状態確認の一時的な取得失敗だけで既存の正しい状態
+        // （振込確定待ち等）を消し去ってしまう不具合だった。見つからなかった行は状態を
+        // 一切変更しない（前回の状態のまま）方針に変更し、確認できなかった件数だけ
+        // notFoundとして呼び出し元へ返す
         for (const r of rows) {
           const line = bySourceKey.get(r.seisan_line_key);
-          const status = (line && line.plStatus) || "PLエラー";
-          await db.from("invoice_pl_reflections").update({ pl_status: status, pl_status_checked_at: new Date().toISOString() }).eq("id", r.id);
+          if (!line || !line.plStatus) { notFound++; continue; }
+          await db.from("invoice_pl_reflections").update({ pl_status: line.plStatus, pl_status_checked_at: new Date().toISOString() }).eq("id", r.id);
           updated++;
         }
-        return json({ success: true, updated });
+        return json({ success: true, updated, not_found: notFound });
       } catch (e) {
         return json({ error: "精算書APIの呼び出しに失敗しました: " + String((e as Error)?.message ?? e) }, 500);
       }

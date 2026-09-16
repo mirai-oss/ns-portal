@@ -624,7 +624,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-09-17-v1";
+const BUILD_TAG="2026-09-17-v2";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -1137,6 +1137,11 @@ async function plfeeSeisanRefreshStatus(){
   const r=await plFeeCall("seisan_refresh_status",{invoice_id:PLFEE_STATE.ctx.invoiceId});
   if(!r.ok){ alert(r.body.error||"状態の取得に失敗しました"); return; }
   await plfeeInit(PLFEE_STATE.ctx);
+  // 2026-09-17追加：精算書側から一部の行の状態を確認できなかった場合（GAS側の一時的な
+  // 応答不備等）は、前回の状態のまま変更していないことを案内する（以前は「確認できない
+  // ＝PLエラー」と誤って上書きしてしまうバグがあった。今は状態を書き換えないため安全だが、
+  // 何も起きていないように見えて分かりにくいので一言添える）
+  if(r.body.not_found>0) alert(`${r.body.not_found}件は精算書側で状態を確認できませんでした（表示は前回確認できた状態のままにしています。しばらくしてからもう一度「状態を更新」を試してください）`);
 }
 // 2026-09-17新規：ユーザー報告「精算書の添付にファイルが無い」に対応。この機能自体は
 // 2026-09-10から実装済み（seisan_confirmが登録成功のたびinvoice_attachmentsを精算書の
