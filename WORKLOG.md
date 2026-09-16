@@ -6,6 +6,8 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
+**★★★2026-09-17（担当Aスレッド）TK-180（精算書API=SEISAN_API_URLがGoogleの認証ページを返している疑い）を調査・GASの一過性不調と判断**: 直上の担当Cエントリ（TK-180）を受けて調査。`SEISAN_API_URL`（`https://script.google.com/macros/s/AKfycbzwYN9uSEtcJHSKSVQCoQOrllhO7G6gR-E4dvP-V4o_VdGXr9VQx2mbYYPNyNEFSQCiKg/exec`）に`?action=ping`で直接6回連続ヘルスチェックを送ったところ**6回とも正常応答**（`{"ok":true,"ver":"v5.20-plsync-monthkey-fix"}`）。Googleの認証・確認ページは一度も返らず、デプロイのバージョンも最新で、再デプロイ漏れ・権限設定の問題は見つからなかった。tori-dashboard側で何度も遭遇している「GAS Web Appがまれに一時的なエラーページを返す」既知の不安定症状と同系統の、seisan-dashboard側での一過性の不調だった可能性が高いと判断（書き込みパス=`sd_apiAddExternalLine`等はPL_SYNC_TOKENが必要なため直接検証はできていない）。SendMessageで担当Cへ登録処理の再試行を直接依頼済み（ai-cockpit TK-180・progress 70%）。**次は担当Cの再試行結果待ち**（同じエラーが再現すればTK-180を再オープンして追加調査）。
+
 **★★★2026-09-17（担当D実行スレッド）ポータルのアカウント発行だけで経営ダッシュボードへも役職に応じて自動ログインできるように実装（`tori-dashboard`コミット[8df7cb9](https://github.com/mirai-oss/tori-dashboard/commit/8df7cb9)・本番デプロイはユーザーのclasp再ログイン待ち）**: 発端はユーザー報告「店長ログインで売上が出ない」の調査（PL/入金画面のバグ調査に続く別トピック）。原因は経営ダッシュボードが**ポータルとは別の独自アカウント一覧**（`アカウント管理`シート・メールアドレスで個別登録）を持っており、店長ロールのアカウントはそこに未登録だったこと（2026-09-02時点で店舗ロール4件が統合アカウント未対応、という既存コメントから判明）。ユーザーへ「ポータルのアカウント発行だけでダッシュボードにも役職に応じて自動で入れないか」と聞かれ、`AskUserQuestion`で範囲（店長のみ/全役職）を確認→**「全役職（社長・本部・チーム長・店長）を自動連携したい、役職ごとに見える範囲も絞れるのが理想」**との回答。
 - **実装**: `supaLogin()`（GAS）を拡張。アカウント管理シートに個別登録（メール一致）が無い統合アカウントは、**ポータル側Supabase（`public.users.role`・`public.user_stores`→`stores.name`）を正本に**role/storesを自動組み立てする`portalAutoAccount_()`を新設（既存の`SUPABASE_URL`/`SUPABASE_SERVICE_KEY`Script Propertiesを流用・新規シークレット追加なし）。
 - **役職対応**: CEO→社長（全店固定）／HQ→本部（全店固定）／TEAM→マネージャー（`user_stores`の担当店舗のみ）／TENCHO→店舗（同・0件なら非対応＝ポータル側の店舗設定待ち）／SHAIN・AL→非対応（従来どおり個別登録が必要。ダッシュボード対象外のまま）。
