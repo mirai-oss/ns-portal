@@ -624,7 +624,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-09-17-v3";
+const BUILD_TAG="2026-09-17-v4";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -5710,13 +5710,18 @@ function unifiedStageOf(r){
 }
 async function renderUnifiedInvoiceTab(u){
   $("tabbody").innerHTML=`<div class="spin">読み込み中…</div>`;
-  // 2026-09-17追加：ユーザー報告「請求書一覧の表示が遅い」（TK-92/93）に対応する計測。
+  // 2026-09-17追加：ユーザー報告「請求書一覧の表示が遅い」（TK-92/93）に対応。
   // 2026-09-06の速度改善第1弾では請求書詳細・仕訳作成周りは計測・改善したが、一覧本体の
-  // 読み込み（select=*・5個のJOIN・limit=500）自体は一度も計測していなかった（実測Top10に
-  // 一度も出てこなかったのはこれが理由）。まずは計測を入れて実測を取ってから、select列の
-  // 絞り込み等の対応を行う（新機能追加禁止・実測に基づく高速化のみ、という既存方針を踏襲）
+  // 読み込み自体は一度も計測していなかった（実測Top10に一度も出てこなかったのはこれが
+  // 理由）。まず計測を追加した上でDB側を直接EXPLAIN ANALYZEしたところ、invoicesテーブルは
+  // 現状160行しか無く、select=*のままでもサーバー側の実行時間は1.3ms（インデックス不要な
+  // 規模）と判明＝DBクエリの重さ自体は体感速度の主要因ではない、というのが実測結果。
+  // とはいえselect=*＋5個のJOINで、一覧の描画・絞り込みに使っていない列（OCR結果等の重い列・
+  // email.subject/from_address等）まで毎回転送しているのは明確な無駄なので、実際に一覧で
+  // 使っている列だけに絞った（請求書詳細モーダルは常に別途id指定でselect=*を取り直す設計の
+  // ため、ここを絞っても詳細画面には一切影響しないことを調査済み）
   const [r,corpCache]=await perfTimed("unified_list_load",()=>Promise.all([
-    authed(`/rest/v1/invoices?select=*,email:invoice_emails(subject,from_address,mail_kind),vendor:vendors(name),corp:corporations(name),store:stores!invoices_store_id_fkey(name),invoice_stores(store:stores(name)),linked_step:hq_task_steps!linked_hq_step_id(title)&order=created_at.desc&limit=500`),
+    authed(`/rest/v1/invoices?select=id,created_at,due_date,invoice_status,amount,vendor_name,invoice_number,corporation_id,store_id,email_id,intake_source,ai_match_status,mf_journal_id,mf_journal_number,payment_status,payment_verified_at,duplicate_suspected,bank_account_change_detected,mf_registration_error,is_payroll_related,is_receivable_related,pl_fee_reflected_at,ad_cost_reflected_at,pl_fee_seisan_synced_at,email:invoice_emails(mail_kind),vendor:vendors(name),corp:corporations(name),store:stores!invoices_store_id_fkey(name),invoice_stores(store:stores(name)),linked_step:hq_task_steps!linked_hq_step_id(title)&order=created_at.desc&limit=500`),
     ensureCorpStoreCache(),
   ]));
   const raw=(r.ok&&Array.isArray(r.body))?r.body:[];
