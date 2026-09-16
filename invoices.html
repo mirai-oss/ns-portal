@@ -624,7 +624,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-09-15-v4";
+const BUILD_TAG="2026-09-16-v1";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -1163,6 +1163,7 @@ function plfeeReflectedCardHtml(row){
         　<span class="hq-pill ${statusPill}">${esc(row.pl_status||"—")}</span>
         ${row.pl_status_checked_at?`　<span class="meta" style="font-size:10px">（状態確認: ${fmtDT(row.pl_status_checked_at)}）</span>`:""}
       </div>
+      ${row.pl_status==="PLエラー"&&row.sheet_sync_error?`<div class="err" style="margin-bottom:8px">⚠️ 精算書側のエラー内容: ${esc(row.sheet_sync_error)}</div>`:""}
       <div class="ai-grid" style="font-size:12px">
         <div class="ai-field"><small>勘定科目</small><b>${esc(label)}</b></div>
         <div class="ai-field"><small>費目名（精算書側）</small><b>${esc(row.item_name||"—")}</b></div>
