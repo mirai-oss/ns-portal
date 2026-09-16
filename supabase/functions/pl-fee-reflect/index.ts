@@ -160,8 +160,11 @@ Deno.serve(async (req: Request) => {
       if (!inv) return json({ error: "対象が見つからないか権限がありません" }, 403);
       // 2026-09-05追加：業務委託精算書自動連携（reflection_route='seisan'）の行を区別して
       // 返せるよう、新設列（reflection_route/seisan_store_name/pl_status/pl_status_checked_at）も選択する
+      // 2026-09-17追加：精算書への添付ファイル反映状況（attached_count/attachment_error）も
+      // 返す。ユーザー報告「精算書の添付にファイルが無い」に対応し、反映履歴カードで
+      // 添付の成否を確認できるようにするため
       const { data: refl, error: reflErr } = await uc.from("invoice_pl_reflections")
-        .select("id, account_name, sub_account_name, year_month, allocations, reflected_at, sheet_synced_at, sheet_sync_error, reflection_route, seisan_store_name, pl_status, pl_status_checked_at")
+        .select("id, account_name, sub_account_name, year_month, allocations, reflected_at, sheet_synced_at, sheet_sync_error, reflection_route, seisan_store_name, pl_status, pl_status_checked_at, attached_count, attachment_error")
         .eq("invoice_id", invoiceId).order("reflected_at", { ascending: true });
       if (reflErr) return json({ error: "確認に失敗しました: " + reflErr.message }, 500);
       return json({ success: true, excluded_at: inv.pl_fee_excluded_at, reflections: refl ?? [] });
@@ -426,7 +429,12 @@ Deno.serve(async (req: Request) => {
           // する＝sd_apiUploadAttachmentは同じkindなら上書きする冪等設計のため、複数枚を別々に残すには
           // kindを変える必要がある）。ここが失敗しても明細行の登録自体は成功しているので、行全体を
           // 失敗扱いにはせず、件数だけresultsに記録する
+          // 2026-09-17修正：ユーザー報告「精算書の添付にファイルが無い」に対応。従来はこの結果を
+          // その場のレスポンス（results配列）にしか残しておらず、画面を再度開くと添付が成功したか
+          // 失敗したか一切わからなかった。attached_count/attachment_errorとしてDBにも保存し、
+          // 反映履歴カードから確認できるようにする
           let attachedCount = 0;
+          let attachmentError: string | null = null;
           for (let fi = 0; fi < attachmentFiles.length; fi++) {
             const f = attachmentFiles[fi];
             const kind = fi === 0 ? itemName : `${itemName}${["②", "③", "④", "⑤"][fi - 1] ?? `(${fi + 1})`}`;
@@ -435,8 +443,16 @@ Deno.serve(async (req: Request) => {
                 kind, fileName: f.file_name, mimeType: f.mime_type || undefined, b64: f.b64,
               }]);
               if (upRes.ok) attachedCount++;
-            } catch { /* 添付アップロードの失敗は明細登録自体の成否には影響させない */ }
+              else if (!attachmentError) attachmentError = upRes.error || "精算書側で添付の保存に失敗しました";
+            } catch (ae) {
+              // 添付アップロードの失敗は明細登録自体の成否には影響させない（結果はresults/DBに記録するのみ）
+              if (!attachmentError) attachmentError = String((ae as Error)?.message ?? ae);
+            }
           }
+          await db.from("invoice_pl_reflections").update({
+            attached_count: attachedCount,
+            attachment_error: attachmentFiles.length ? attachmentError : null,
+          }).eq("id", reflectionId);
 
           results.push({ store: s.name, ok: true, attachments: attachedCount });
           anyOk = true;

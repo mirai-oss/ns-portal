@@ -624,7 +624,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-09-16-v1";
+const BUILD_TAG="2026-09-17-v1";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -1138,6 +1138,17 @@ async function plfeeSeisanRefreshStatus(){
   if(!r.ok){ alert(r.body.error||"状態の取得に失敗しました"); return; }
   await plfeeInit(PLFEE_STATE.ctx);
 }
+// 2026-09-17新規：ユーザー報告「精算書の添付にファイルが無い」に対応。この機能自体は
+// 2026-09-10から実装済み（seisan_confirmが登録成功のたびinvoice_attachmentsを精算書の
+// Driveフォルダへアップロードする）だったが、成否が画面のどこにも表示されていなかった
+// （その場のレスポンスにしか残らず、履歴を後から見返しても分からなかった）ため追加。
+// この請求書に添付が無ければ何も表示しない（反映するものが無いので確認不要）
+function plfeeAttachmentStatusHtml(row){
+  if(!(SELECTED&&SELECTED.atts&&SELECTED.atts.length)) return "";
+  if(row.attachment_error) return `<div class="err" style="margin-bottom:8px">⚠️ 添付ファイルの精算書への反映に失敗しました: ${esc(row.attachment_error)}（明細行自体の登録は成功しています。「状態を更新」では再送信されないため、直すには一度「取り消す」→もう一度登録し直してください）</div>`;
+  if(row.attached_count>0) return `<div class="meta" style="font-size:11px;color:var(--muted);margin-bottom:8px">📎 添付ファイルを${row.attached_count}件、精算書へ反映済みです</div>`;
+  return `<div class="err" style="margin-bottom:8px">⚠️ この請求書には添付ファイルがありますが、精算書へは反映されていません（0件。2026-09-17より前に登録した分はこの確認自体ができていないため、実際は反映済みの場合もあります）</div>`;
+}
 function plfeeReflectedCardHtml(row){
   const a=row.allocations||[];
   const ym=(row.year_month||"").slice(0,7);
@@ -1164,6 +1175,7 @@ function plfeeReflectedCardHtml(row){
         ${row.pl_status_checked_at?`　<span class="meta" style="font-size:10px">（状態確認: ${fmtDT(row.pl_status_checked_at)}）</span>`:""}
       </div>
       ${row.pl_status==="PLエラー"&&row.sheet_sync_error?`<div class="err" style="margin-bottom:8px">⚠️ 精算書側のエラー内容: ${esc(row.sheet_sync_error)}</div>`:""}
+      ${plfeeAttachmentStatusHtml(row)}
       <div class="ai-grid" style="font-size:12px">
         <div class="ai-field"><small>勘定科目</small><b>${esc(label)}</b></div>
         <div class="ai-field"><small>費目名（精算書側）</small><b>${esc(row.item_name||"—")}</b></div>
