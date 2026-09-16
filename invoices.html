@@ -624,7 +624,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-09-17-v2";
+const BUILD_TAG="2026-09-17-v3";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -5710,10 +5710,15 @@ function unifiedStageOf(r){
 }
 async function renderUnifiedInvoiceTab(u){
   $("tabbody").innerHTML=`<div class="spin">読み込み中…</div>`;
-  const [r,corpCache]=await Promise.all([
+  // 2026-09-17追加：ユーザー報告「請求書一覧の表示が遅い」（TK-92/93）に対応する計測。
+  // 2026-09-06の速度改善第1弾では請求書詳細・仕訳作成周りは計測・改善したが、一覧本体の
+  // 読み込み（select=*・5個のJOIN・limit=500）自体は一度も計測していなかった（実測Top10に
+  // 一度も出てこなかったのはこれが理由）。まずは計測を入れて実測を取ってから、select列の
+  // 絞り込み等の対応を行う（新機能追加禁止・実測に基づく高速化のみ、という既存方針を踏襲）
+  const [r,corpCache]=await perfTimed("unified_list_load",()=>Promise.all([
     authed(`/rest/v1/invoices?select=*,email:invoice_emails(subject,from_address,mail_kind),vendor:vendors(name),corp:corporations(name),store:stores!invoices_store_id_fkey(name),invoice_stores(store:stores(name)),linked_step:hq_task_steps!linked_hq_step_id(title)&order=created_at.desc&limit=500`),
     ensureCorpStoreCache(),
-  ]);
+  ]));
   const raw=(r.ok&&Array.isArray(r.body))?r.body:[];
   // メール起点は種類=請求書のみ。アップロード（email無し）は全て対象
   UNIFIED_STATE.rows=raw.filter(row=>!row.email||row.email.mail_kind==="invoice");
