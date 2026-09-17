@@ -624,7 +624,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-09-17-v7";
+const BUILD_TAG="2026-09-17-v8";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -2610,6 +2610,20 @@ async function arjLoadForTenant(tenantId,tenants){
   const tenantLabel=(tenants||[]).find(t=>t.id===tenantId)?.label||tenantId;
   const idx=mftBuildAccountIndex(accRes.body.accounts||[]); // 設定タブの仕訳辞書編集と共通の索引ビルダーをそのまま流用
   const ymLabel=(row.year_month||"").replace(/^(\d{4})-(\d{2})$/,"$1年$2月分");
+  // 2026-09-17追加：ユーザー報告「PLに反映は出てきたけど、金額（店舗）が違う。自動で仕訳と
+  // 同じ勘定科目・店舗で反映されるようにしてほしい」に対応。PL反映パネル（plfeeComputeAllocation）
+  // は、登録済み仕訳の借方の部門名（department_name）から店舗を特定して自動で割り振る仕組み
+  // だが、従来はここで作る仕訳の明細行に部門を一切設定していなかった（department_id:""）ため、
+  // 部門情報が無く「本部」等の当てずっぽうの既定値になってしまっていた。この売上入金の店舗
+  // （stores.mf_department_name＝設定タブ「法人・店舗・部門マッピング」で登録済みの対応表）を
+  // 事前に解決し、既定の明細行に設定しておく。これで登録した瞬間からPL反映が正しい店舗・
+  // 正しい金額で自動検出されるようになる
+  let storeDepartmentId="";
+  const store=(CORP_STORE_CACHE&&CORP_STORE_CACHE.stores||[]).find(s=>s.id===row.store_id);
+  if(store&&store.mf_department_name){
+    const dep=(searchRes.body.departments||[]).find(d=>d.name===store.mf_department_name);
+    if(dep) storeDepartmentId=dep.id;
+  }
   ARJ_STATE={
     ...ARJ_STATE,
     tenantId, tenantLabel, tenants:tenants||[],
@@ -2630,7 +2644,7 @@ async function arjLoadForTenant(tenantId,tenants){
     accountLabelMap:idx.map, accountDatalistHtml:idx.dl, accountNameDatalistHtml:idx.accountNameDatalistHtml,
     subAccountsByAccountName:idx.subAccountsByAccountName, subAccountNamesAll:idx.subAccountNamesAll,
     branches:[],
-    ymLabel,
+    ymLabel, storeDepartmentId,
     remark:ymLabel?`${ymLabel}　${row.source_name||""}`:(row.source_name||""),
     date:new Date().toISOString().slice(0,10),
   };
@@ -2640,15 +2654,18 @@ async function arjLoadForTenant(tenantId,tenants){
 // 初回の既定値（1行目=入金予定額分・普通預金⇔売上高、2行目=手数料分・支払手数料⇔売上高）。
 // 実データでgross_amount≠fee_amount+expected_amountのため金額は目安。「🔧直接入力」への
 // 切替時・過去の仕訳/仕訳辞書を選んだ後にまたやり直したいときにも呼べるよう独立させてある。
-// 摘要はユーザー要望「○月分　入金先　売上等の項目、が入るようにしてほしい」に対応した書式
+// 摘要はユーザー要望「○月分　入金先　売上等の項目、が入るようにしてほしい」に対応した書式。
+// 部門はstoreDepartmentIdが解決できていれば両側に設定し、PL反映パネルの自動検出（借方の
+// 部門名から店舗を特定する仕組み）が最初から正しい店舗を拾えるようにする
 function arjSetDefaultBranches(){
   const row=ARJ_STATE.row;
   const ymLabel=ARJ_STATE.ymLabel||"";
   const prefix=[ymLabel,row.source_name||""].filter(Boolean).join("　");
   const expected=Number(row.expected_amount)||0, fee=Number(row.fee_amount)||0;
+  const dep=ARJ_STATE.storeDepartmentId||"";
   ARJ_STATE.branches=[
-    {debitLabel:"普通預金",debitAmount:expected||"",creditLabel:"売上高",creditAmount:expected||"",department_id:"",tax_id:"",credit_department_id:"",credit_tax_id:"",remark:prefix?`${prefix}　売上`:"入金分"},
-    {debitLabel:"支払手数料",debitAmount:fee||"",creditLabel:"売上高",creditAmount:fee||"",department_id:"",tax_id:"",credit_department_id:"",credit_tax_id:"",remark:prefix?`${prefix}　手数料`:"手数料分"},
+    {debitLabel:"普通預金",debitAmount:expected||"",creditLabel:"売上高",creditAmount:expected||"",department_id:dep,tax_id:"",credit_department_id:dep,credit_tax_id:"",remark:prefix?`${prefix}　売上`:"入金分"},
+    {debitLabel:"支払手数料",debitAmount:fee||"",creditLabel:"売上高",creditAmount:fee||"",department_id:dep,tax_id:"",credit_department_id:dep,credit_tax_id:"",remark:prefix?`${prefix}　手数料`:"手数料分"},
   ];
 }
 function arjAddBranchRow(){
@@ -2758,12 +2775,17 @@ function arjFillRealAmounts(branches){
   const row=ARJ_STATE.row;
   const prefix=[ARJ_STATE.ymLabel||"",row.source_name||""].filter(Boolean).join("　");
   const expected=Number(row.expected_amount)||0, fee=Number(row.fee_amount)||0;
+  const dep=ARJ_STATE.storeDepartmentId||"";
+  // 2026-09-17追加：部門も未設定なら店舗の部門で埋める（PL反映パネルの自動検出のため）。
+  // 仕訳辞書・過去の仕訳が既に部門を持っていればそちらを優先し、上書きはしない
+  const fillDept=b=>{ if(!b.department_id&&dep) b.department_id=dep; if(!b.credit_department_id&&dep) b.credit_department_id=dep; };
   if(branches.length===2){
     const amounts=[expected,fee], suffixes=["売上","手数料"];
     branches.forEach((b,i)=>{
       if(b.debitLabel) b.debitAmount=amounts[i]||"";
       if(b.creditLabel) b.creditAmount=amounts[i]||"";
       if(prefix) b.remark=`${prefix}　${suffixes[i]}`;
+      fillDept(b);
     });
     return true;
   }
@@ -2773,6 +2795,7 @@ function arjFillRealAmounts(branches){
     if(branches[0].debitLabel) branches[0].debitAmount=amt||"";
     if(branches[0].creditLabel) branches[0].creditAmount=amt||"";
     if(prefix) branches[0].remark=`${prefix}　${isFee?"手数料":"売上"}`;
+    fillDept(branches[0]);
     return true;
   }
   return false;
