@@ -624,7 +624,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-09-17-v11";
+const BUILD_TAG="2026-09-17-v12";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -2316,13 +2316,17 @@ async function receivableLoad(){
   const receivables=(r.ok&&Array.isArray(r.body))?r.body:[];
   RECEIVABLE_STATE.receivables=receivables;
   const ids=receivables.map(x=>x.id);
-  if(!ids.length){ RECEIVABLE_STATE.deposits=[]; RECEIVABLE_STATE.matches=[]; return; }
-  const [dr,mr]=await Promise.all([
+  if(!ids.length){ RECEIVABLE_STATE.deposits=[]; RECEIVABLE_STATE.matches=[]; RECEIVABLE_STATE.attachments=[]; return; }
+  const [dr,mr,ar]=await Promise.all([
     authed(`/rest/v1/ar_deposits?receivable_id=in.(${ids.join(",")})&select=*`),
     authed(`/rest/v1/ar_matching?receivable_id=in.(${ids.join(",")})&select=*&order=created_at.desc`),
+    // 2026-09-17追加：手動追加時にアップロードした証憑（ar_receivable_attachments）の
+    // 件数を一覧に出すため
+    authed(`/rest/v1/ar_receivable_attachments?receivable_id=in.(${ids.join(",")})&select=id,receivable_id,file_name,storage_path`),
   ]);
   RECEIVABLE_STATE.deposits=(dr.ok&&Array.isArray(dr.body))?dr.body:[];
   RECEIVABLE_STATE.matches=(mr.ok&&Array.isArray(mr.body))?mr.body:[];
+  RECEIVABLE_STATE.attachments=(ar.ok&&Array.isArray(ar.body))?ar.body:[];
 }
 // 各入金予定行の内部タブ判定（指示書§9-8の想定フローに沿って5状態に分類）。
 // ar_receivables.statusを主軸に、入金済（ar_deposits登録あり）だけはmatches優先で見分ける
@@ -2385,7 +2389,11 @@ function receivableRowHtml(r){
     <td>${lastMatch?yen(lastMatch.diff_amount):(deposit?yen((Number(deposit.amount)||0)-(Number(r.expected_amount)||0)):"—")}</td>
     <td>${fmtD(r.expected_date)}</td>
     <td><span class="invoice-status ${statusLabel[1]}">${esc(statusLabel[0])}</span></td>
-    <td>${esc(r.note||"—")}</td>
+    <td>${esc(r.note||"—")}${(()=>{
+      const atts=(RECEIVABLE_STATE.attachments||[]).filter(a=>a.receivable_id===r.id);
+      if(!atts.length) return "";
+      return ` <button class="linkbtn" data-rcv-view-atts="${esc(r.id)}" style="background:none;border:none;color:var(--m-blue,#3478b8);cursor:pointer;font-size:11px;padding:0;text-decoration:underline" title="クリックすると添付ファイルを開けます">📎${atts.length}</button>`;
+    })()}</td>
     <td>${r.mf_journal_id?`<button class="linkbtn" data-arj-view-invoice="${esc(r.linked_invoice_id||"")}" style="background:none;border:none;color:var(--m-green);cursor:pointer;font-size:12px;padding:0;text-decoration:underline" title="クリックすると請求書詳細（PLへ反映を含む）を開けます">✅仕訳登録済み（伝票番号: ${esc(String(r.mf_journal_number??"-"))}）</button>`:`<button class="linkbtn" data-arj-open="${esc(r.id)}" style="background:none;border:1px solid var(--line);padding:4px 8px;cursor:pointer;font-size:12px">🧾仕訳を作成</button>`}</td>
   </tr>`;
 }
@@ -2469,6 +2477,14 @@ function receivableRender(u){
     if(el.dataset.arjViewInvoice) openInvoiceDetail(u,el.dataset.arjViewInvoice);
     else alert("この売上入金には請求書との紐付けが記録されていません（2026-09-17より前に登録した分は紐付け情報が無い場合があります）");
   });
+  // 2026-09-17新規：手動追加時にアップロードした証憑ファイルを開く（署名付きURLを発行して
+  // 新しいタブで開くだけ・請求書側のsignAttachmentUrlsをそのまま流用）
+  document.querySelectorAll("[data-rcv-view-atts]").forEach(el=>el.onclick=async()=>{
+    const atts=(RECEIVABLE_STATE.attachments||[]).filter(a=>a.receivable_id===el.dataset.rcvViewAtts);
+    if(!atts.length) return;
+    const map=await signAttachmentUrls(atts.map(a=>a.storage_path));
+    for(const a of atts){ const url=map[a.storage_path]; if(url) window.open(url,"_blank","noopener"); }
+  });
   $("receivable-add").onclick=()=>openReceivableUploadModal(u);
 }
 // 2026-09-15新規：ユーザー要望「売上入金のところにも手動アップロードできるように」に対応。
@@ -2481,6 +2497,14 @@ async function openReceivableUploadModal(u){
   const recurringMasters=(rmR.ok&&Array.isArray(rmR.body))?rmR.body:[];
   const stores=(CORP_STORE_CACHE&&CORP_STORE_CACHE.stores)||[];
   const corps=(CORP_STORE_CACHE&&CORP_STORE_CACHE.corporations)||[];
+  // 2026-09-17新規：ユーザー報告「売上入金の手動アップロードの所がアップロードできない状態に
+  // なってる。請求書みたいにアップロードできるようにしてほしい」に対応。従来はテキスト項目
+  // だけでファイルを添付する仕組み自体が無かった。🧾請求書一覧の「＋ 請求書を追加」
+  // （uploadFormHtml/wireUploadInvoiceTab）と同じドラッグ＆ドロップの見た目・操作感を追加し、
+  // ファイルはStorage（invoice-filesバケット・receivables/配下に分離）へ直接アップロードした
+  // うえで新設のar_receivable_attachmentsへ記録する（請求書側と違いEdge Function経由の
+  // base64送信ではなく、証憑の手動追加（manual-att-upload）と同じ直接アップロード方式を採用）
+  let rcvFiles=[];
   const modal=document.createElement("div");
   modal.className="modal-bg mail-shell"; modal.id="rcvUploadModal";
   modal.innerHTML=`<div class="modal" style="max-width:560px">
@@ -2488,17 +2512,27 @@ async function openReceivableUploadModal(u){
     <div class="meta" style="color:var(--muted);font-size:12px;margin-bottom:10px">自動取込が失敗した月の分を埋めたいときや、自動取込の対象外の入金元を単発で登録したいときに使います（自動取込のジョブ自体には影響しません）。</div>
     <div class="ai-grid">
       <div class="ai-field"><small>入金元</small><input id="rcv-source" placeholder="例: ロケットナウ"></div>
-      <div class="ai-field"><small>定期請求・入金マスタ（任意・紐付けると仕訳作成時の初期値等に使われます）</small><select id="rcv-recurring"><option value="">（指定なし）</option>${recurringMasters.map(m=>`<option value="${esc(m.id)}">${esc(m.name)}</option>`).join("")}</select></div>
       <div class="ai-field"><small>対象年月</small><input id="rcv-ym" type="month" value="${esc(RECEIVABLE_STATE.yearMonth||receivableYmDefault())}"></div>
       <div class="ai-field"><small>対象店舗（共通費の場合は空欄）</small><select id="rcv-store"><option value="">（共通費／未設定）</option>${stores.map(s=>`<option value="${esc(s.id)}" data-corp="${esc(s.corporation_id||"")}">${esc(s.name)}</option>`).join("")}</select></div>
-      <div class="ai-field"><small>対象法人（店舗を選ぶと自動で入ります・共通費の場合は直接選んでください）</small><select id="rcv-corp"><option value="">（未設定）</option>${corps.map(c=>`<option value="${esc(c.id)}">${esc(c.name)}</option>`).join("")}</select></div>
-      <div class="ai-field"><small>売上決済額</small><input id="rcv-gross" type="number"></div>
-      <div class="ai-field"><small>手数料</small><input id="rcv-fee" type="number" value="0"></div>
-      <div class="ai-field"><small>入金予定額</small><input id="rcv-expected" type="number"></div>
-      <div class="ai-field"><small>入金予定日（任意）</small><input id="rcv-date" type="date"></div>
-      <div class="ai-field"><small>備考（任意）</small><input id="rcv-note"></div>
+      <div class="ai-field"><small>対象法人（店舗を選ぶと自動で入ります）</small><select id="rcv-corp"><option value="">（未設定）</option>${corps.map(c=>`<option value="${esc(c.id)}">${esc(c.name)}</option>`).join("")}</select></div>
     </div>
-    <div class="mail-actions" style="margin-top:10px"><button class="primary" id="rcv-save">保存</button></div>
+    <div id="rcv-drop" style="border:2px dashed var(--m-line);border-radius:10px;padding:20px;text-align:center;font-size:12px;color:var(--muted);margin-top:12px">
+      精算明細等のファイル（PDF・画像。複数可・任意）をここにドラッグ＆ドロップ、または<br>
+      <input type="file" id="rcv-file" multiple style="margin-top:8px">
+    </div>
+    <div id="rcv-filelist" style="margin-top:8px;font-size:12px"></div>
+    <details style="margin-top:12px">
+      <summary style="cursor:pointer;font-size:12px;color:var(--muted);font-weight:700">▶ 金額・その他の項目（分かれば・後からでも入力できます）</summary>
+      <div class="ai-grid" style="margin-top:8px">
+        <div class="ai-field"><small>定期請求・入金マスタ（任意・紐付けると仕訳作成時の初期値等に使われます）</small><select id="rcv-recurring"><option value="">（指定なし）</option>${recurringMasters.map(m=>`<option value="${esc(m.id)}">${esc(m.name)}</option>`).join("")}</select></div>
+        <div class="ai-field"><small>売上決済額</small><input id="rcv-gross" type="number"></div>
+        <div class="ai-field"><small>手数料</small><input id="rcv-fee" type="number" value="0"></div>
+        <div class="ai-field"><small>入金予定額</small><input id="rcv-expected" type="number"></div>
+        <div class="ai-field"><small>入金予定日（任意）</small><input id="rcv-date" type="date"></div>
+        <div class="ai-field"><small>備考（任意）</small><input id="rcv-note"></div>
+      </div>
+    </details>
+    <button class="hq-btn primary" style="margin-top:12px;width:100%" id="rcv-save">💰 入金として取込</button>
     <div class="err" id="rcv-msg" style="margin-top:6px"></div>
   </div>`;
   document.body.appendChild(modal);
@@ -2517,36 +2551,76 @@ async function openReceivableUploadModal(u){
     const corpId=opt&&opt.dataset.corp;
     if(corpId) $("rcv-corp").value=corpId;
   };
+  // ファイルのドラッグ＆ドロップ（uploadFormHtml/wireUploadInvoiceTabと全く同じ操作感）
+  const drop=$("rcv-drop");
+  const renderRcvFileList=()=>{
+    $("rcv-filelist").innerHTML=rcvFiles.length
+      ? rcvFiles.map((f,i)=>`<div>📎 ${esc(f.name)} <button data-rcv-rmfile="${i}" style="margin-left:6px;font-size:11px">✕ 外す</button></div>`).join("")
+      : "";
+    document.querySelectorAll("[data-rcv-rmfile]").forEach(el=>el.onclick=()=>{ rcvFiles.splice(+el.dataset.rcvRmfile,1); renderRcvFileList(); });
+  };
+  const addRcvFiles=fileList=>{ for(const f of fileList) rcvFiles.push(f); renderRcvFileList(); };
+  $("rcv-file").onchange=e=>addRcvFiles(e.target.files);
+  ["dragover","dragenter"].forEach(ev=>drop.addEventListener(ev,e=>{ e.preventDefault(); drop.style.background="var(--m-bg,#f4f1eb)"; drop.style.borderColor="var(--accent)"; }));
+  ["dragleave","dragend"].forEach(ev=>drop.addEventListener(ev,e=>{ e.preventDefault(); drop.style.background=""; drop.style.borderColor=""; }));
+  drop.addEventListener("drop",e=>{
+    e.preventDefault(); drop.style.background=""; drop.style.borderColor="";
+    if(e.dataTransfer.files&&e.dataTransfer.files.length) addRcvFiles(e.dataTransfer.files);
+  });
   $("rcv-save").onclick=async()=>{
     const msg=$("rcv-msg"); msg.className="err"; msg.textContent="";
     const source=$("rcv-source").value.trim();
     const ym=$("rcv-ym").value;
     if(!source){ msg.textContent="入金元を入力してください"; return; }
     if(!ym){ msg.textContent="対象年月を入力してください"; return; }
-    $("rcv-save").disabled=true; msg.textContent="保存中…";
-    const payload={
-      source_name:source, source_table:"manual",
-      recurring_master_id:$("rcv-recurring").value||null,
-      year_month:ym, store_id:$("rcv-store").value||null, is_common_cost:!$("rcv-store").value,
-      corporation_id:$("rcv-corp").value||null,
-      // gross_amount/fee_amount/expected_amountはNOT NULL（列default=0）。空欄のとき
-      // nullを明示送信するとdefaultが効かずNOT NULL違反になるため、キー自体を省略してdefaultに任せる
-      ...($("rcv-gross").value?{gross_amount:Number($("rcv-gross").value)}:{}),
-      ...($("rcv-fee").value?{fee_amount:Number($("rcv-fee").value)}:{}),
-      ...($("rcv-expected").value?{expected_amount:Number($("rcv-expected").value)}:{}),
-      expected_date:$("rcv-date").value||null,
-      note:$("rcv-note").value.trim()||"手動追加",
-      status:"pending",
-    };
-    const r=await authed("/rest/v1/ar_receivables",{method:"POST",headers:{Prefer:"return=minimal"},body:JSON.stringify(payload)});
-    if(!r.ok){ msg.textContent="保存に失敗しました"; $("rcv-save").disabled=false; return; }
-    msg.className="err msg-ok"; msg.textContent="保存しました。画面を更新します…";
-    setTimeout(async()=>{
-      history.back();
-      RECEIVABLE_STATE.yearMonth=ym;
-      await Promise.all([receivableLoad(),loadAcBadgeCounts()]);
-      receivableRender(u);
-    },700);
+    $("rcv-save").disabled=true; msg.textContent="取込中…";
+    try{
+      const payload={
+        source_name:source, source_table:"manual",
+        recurring_master_id:$("rcv-recurring").value||null,
+        year_month:ym, store_id:$("rcv-store").value||null, is_common_cost:!$("rcv-store").value,
+        corporation_id:$("rcv-corp").value||null,
+        // gross_amount/fee_amount/expected_amountはNOT NULL（列default=0）。空欄のとき
+        // nullを明示送信するとdefaultが効かずNOT NULL違反になるため、キー自体を省略してdefaultに任せる
+        ...($("rcv-gross").value?{gross_amount:Number($("rcv-gross").value)}:{}),
+        ...($("rcv-fee").value?{fee_amount:Number($("rcv-fee").value)}:{}),
+        ...($("rcv-expected").value?{expected_amount:Number($("rcv-expected").value)}:{}),
+        expected_date:$("rcv-date").value||null,
+        note:$("rcv-note").value.trim()||"手動追加",
+        status:"pending",
+      };
+      const r=await authed("/rest/v1/ar_receivables",{method:"POST",headers:{Prefer:"return=representation"},body:JSON.stringify(payload)});
+      if(!r.ok||!Array.isArray(r.body)||!r.body[0]){ msg.textContent="保存に失敗しました"; $("rcv-save").disabled=false; return; }
+      const receivableId=r.body[0].id;
+      // 証憑ファイルのアップロード（あれば）。1件失敗しても入金record自体の登録は成功済みなので
+      // 続行し、失敗があれば最後にまとめて案内する（manual-att-uploadと同じ直接アップロード方式）
+      const attachErrors=[];
+      for(const f of rcvFiles){
+        try{
+          const buf=await f.arrayBuffer();
+          const hashBuf=await crypto.subtle.digest("SHA-256",buf);
+          const hash=Array.from(new Uint8Array(hashBuf)).map(b=>b.toString(16).padStart(2,"0")).join("");
+          const ext=(f.name.split(".").pop()||"").toLowerCase().replace(/[^a-z0-9]/g,"");
+          const path=`receivables/${receivableId}/${Date.now()}_${Math.random().toString(36).slice(2,8)}${ext?"."+ext:""}`;
+          const upRes=await authed(`/storage/v1/object/${BUCKET}/${path}`,{method:"POST",isBinary:true,headers:{"Content-Type":f.type||"application/octet-stream"},body:buf});
+          if(!upRes.ok) throw new Error((upRes.body&&(upRes.body.message||upRes.body.error))||`status ${upRes.status}`);
+          const ar=await authed("/rest/v1/ar_receivable_attachments",{method:"POST",headers:{Prefer:"return=minimal"},body:JSON.stringify({receivable_id:receivableId,file_name:f.name,mime_type:f.type||null,storage_path:path,file_hash:hash,size_bytes:f.size})});
+          if(!ar.ok) throw new Error("記録の保存に失敗しました");
+        }catch(e){ attachErrors.push(`${f.name}（${e&&e.message?e.message:String(e)}）`); }
+      }
+      msg.className="err msg-ok";
+      msg.textContent=attachErrors.length?`入金を取り込みましたが、一部のファイルの保存に失敗しました：${attachErrors.join("、")}`:"取り込みました。画面を更新します…";
+      setTimeout(async()=>{
+        history.back();
+        RECEIVABLE_STATE.yearMonth=ym;
+        await Promise.all([receivableLoad(),loadAcBadgeCounts()]);
+        receivableRender(u);
+      },attachErrors.length?1800:700);
+    }catch(e){
+      msg.textContent="取込中にエラーが発生しました: "+(e&&e.message?e.message:String(e));
+    }finally{
+      $("rcv-save").disabled=false;
+    }
   };
 }
 
