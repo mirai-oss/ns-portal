@@ -624,7 +624,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-09-17-v12";
+const BUILD_TAG="2026-09-17-v13";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -919,6 +919,13 @@ async function plfeeLoadJournalGroups(){
     mfCall("get_journal",{journal_id:ctx.journalId, tenant_id:ctx.tenantId||"default"}),
     plFeeTargetAccounts(),
   ]);
+  // 2026-09-17修正：ユーザー報告「請求書や入金のところのPL反映の月も仕訳した月と同じ月を
+  // 自動で連携されるようにしてほしい」に対応。従来はPLFEE_STATE.yearMonthの既定値が常に
+  // 今日の日付（plfeeInit内）で、過去月分の仕訳を処理する場合は毎回手で直す必要があった。
+  // 登録済みの仕訳（今取得したget_journalの応答）に会計計上日（transaction_date）が
+  // あれば、その月を対象年月の既定値として使う（plfeeInitのplfeeRenderPanel呼び出しより
+  // 前にここが完了するため、上書きしても表示前に反映される）
+  if(r.ok&&r.body.transaction_date) PLFEE_STATE.yearMonth=r.body.transaction_date.slice(0,7)+"-01";
   const branches=(r.ok&&Array.isArray(r.body.branches))?r.body.branches:[];
   const already=new Set((PLFEE_STATE.reflections||[]).map(x=>(x.account_name||"")+""+(x.sub_account_name||"")));
   const map=new Map();
