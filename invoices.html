@@ -624,7 +624,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-09-17-v9";
+const BUILD_TAG="2026-09-17-v10";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -2595,6 +2595,13 @@ async function arjFetchTemplates(tenantId){
   const r=await authed(`/rest/v1/mf_journal_templates?tenant_id=eq.${encodeURIComponent(tenantId)}&select=id,label,branches&order=label`);
   return (r.ok&&Array.isArray(r.body))?r.body:[];
 }
+// year_month（"YYYY-MM"）の月末日を"YYYY-MM-DD"で返す（2月の28/29日等も自動で正しく計算される）
+function arjLastDayOfMonth(yearMonth){
+  const m=String(yearMonth||"").match(/^(\d{4})-(\d{2})$/);
+  if(!m) return new Date().toISOString().slice(0,10);
+  const last=new Date(+m[1],+m[2],0); // 月初日を0にすると前月＝指定月の最終日になる
+  return `${last.getFullYear()}-${String(last.getMonth()+1).padStart(2,"0")}-${String(last.getDate()).padStart(2,"0")}`;
+}
 async function arjLoadForTenant(tenantId,tenants){
   const body=$("arj-body");
   if(!body) return;
@@ -2646,7 +2653,10 @@ async function arjLoadForTenant(tenantId,tenants){
     branches:[],
     ymLabel, storeDepartmentId,
     remark:ymLabel?`${ymLabel}　${row.source_name||""}`:(row.source_name||""),
-    date:new Date().toISOString().slice(0,10),
+    // 2026-09-17修正：ユーザー要望「会計計上日を摘要に入る月と同じ月に自動でなるように
+    // してほしい。7月であれば7/31で」に対応。従来は常に今日の日付が既定値だったため、
+    // 過去月分のデータ（年月をまたいで処理する場合等）では毎回手で直す必要があった
+    date:arjLastDayOfMonth(row.year_month),
   };
   arjSetDefaultBranches();
   arjRenderForm();
