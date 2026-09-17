@@ -624,7 +624,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-09-17-v6";
+const BUILD_TAG="2026-09-17-v7";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -2386,7 +2386,7 @@ function receivableRowHtml(r){
     <td>${fmtD(r.expected_date)}</td>
     <td><span class="invoice-status ${statusLabel[1]}">${esc(statusLabel[0])}</span></td>
     <td>${esc(r.note||"—")}</td>
-    <td>${r.mf_journal_id?`✅仕訳登録済み（伝票番号: ${esc(String(r.mf_journal_number??"-"))}）`:`<button class="linkbtn" data-arj-open="${esc(r.id)}" style="background:none;border:1px solid var(--line);padding:4px 8px;cursor:pointer;font-size:12px">🧾仕訳を作成</button>`}</td>
+    <td>${r.mf_journal_id?`<button class="linkbtn" data-arj-view-invoice="${esc(r.linked_invoice_id||"")}" style="background:none;border:none;color:var(--m-green);cursor:pointer;font-size:12px;padding:0;text-decoration:underline" title="クリックすると請求書詳細（PLへ反映を含む）を開けます">✅仕訳登録済み（伝票番号: ${esc(String(r.mf_journal_number??"-"))}）</button>`:`<button class="linkbtn" data-arj-open="${esc(r.id)}" style="background:none;border:1px solid var(--line);padding:4px 8px;cursor:pointer;font-size:12px">🧾仕訳を作成</button>`}</td>
   </tr>`;
 }
 function receivableKpis(){
@@ -2460,6 +2460,15 @@ function receivableRender(u){
     RECEIVABLE_STATE.subTab=el.dataset.receivableSubtab; receivableRender(u);
   });
   document.querySelectorAll("[data-arj-open]").forEach(el=>el.onclick=()=>openReceivableJournalModal(u,el.dataset.arjOpen));
+  // 2026-09-17新規：ユーザー報告「PL反映が出ない」に対応。仕訳登録済みの売上入金行から
+  // 請求書詳細（PLへ反映パネルを含む）へ移動する手段が無かった（is_receivable_relatedの
+  // invoicesは🧾請求書一覧からは意図的に除外しているため、そちらから開くこともできない）。
+  // 登録済みバッジ自体をボタン化し、既存のopenInvoiceDetail（アップロード請求書と同じ
+  // 「メールに紐づかない請求書」の扱いで開ける）をそのまま呼ぶ
+  document.querySelectorAll("[data-arj-view-invoice]").forEach(el=>el.onclick=()=>{
+    if(el.dataset.arjViewInvoice) openInvoiceDetail(u,el.dataset.arjViewInvoice);
+    else alert("この売上入金には請求書との紐付けが記録されていません（2026-09-17より前に登録した分は紐付け情報が無い場合があります）");
+  });
   $("receivable-add").onclick=()=>openReceivableUploadModal(u);
 }
 // 2026-09-15新規：ユーザー要望「売上入金のところにも手動アップロードできるように」に対応。
@@ -2737,6 +2746,37 @@ async function arjRunJournalSearch(kw){
   ARJ_STATE.journalKeyword=kw;
   arjRenderJournalResults();
 }
+// 2026-09-17新規：ユーザー報告「仕訳辞書で入れようとするとやはり数字と摘要が自動で
+// 入らない」に対応。過去の仕訳・仕訳辞書は勘定科目・部門・税区分の「構造」だけを借りて、
+// 金額と摘要は常に今回の実データ（入金予定額・手数料）で上書きする（過去の仕訳・仕訳辞書に
+// 保存されている古い金額をそのまま使うと、月ごとに変わる実際の金額と食い違ってしまうため。
+// arjSetDefaultBranchesと同じ考え方）。1行だけ選んだ場合は、その行が「支払手数料」らしいか
+// どうかで入金分/手数料分どちらの金額を当てはめるか判定する。2行（入金分＋手数料分）の
+// 組み合わせならそのまま両方当てはめる。3行以上等、自動では判断できない構成のときは
+// 金額を書き換えず、その旨をfilled=falseで呼び出し元に伝える
+function arjFillRealAmounts(branches){
+  const row=ARJ_STATE.row;
+  const prefix=[ARJ_STATE.ymLabel||"",row.source_name||""].filter(Boolean).join("　");
+  const expected=Number(row.expected_amount)||0, fee=Number(row.fee_amount)||0;
+  if(branches.length===2){
+    const amounts=[expected,fee], suffixes=["売上","手数料"];
+    branches.forEach((b,i)=>{
+      if(b.debitLabel) b.debitAmount=amounts[i]||"";
+      if(b.creditLabel) b.creditAmount=amounts[i]||"";
+      if(prefix) b.remark=`${prefix}　${suffixes[i]}`;
+    });
+    return true;
+  }
+  if(branches.length===1){
+    const isFee=/手数料/.test(branches[0].debitLabel||branches[0].creditLabel||"");
+    const amt=isFee?fee:expected;
+    if(branches[0].debitLabel) branches[0].debitAmount=amt||"";
+    if(branches[0].creditLabel) branches[0].creditAmount=amt||"";
+    if(prefix) branches[0].remark=`${prefix}　${isFee?"手数料":"売上"}`;
+    return true;
+  }
+  return false;
+}
 function arjRenderJournalResults(){
   const el=$("arj-journal-results");
   if(!el) return;
@@ -2745,14 +2785,15 @@ function arjRenderJournalResults(){
     :`<div style="font-size:12px;color:var(--muted)">${ARJ_STATE.journalKeyword?"該当する過去の仕訳が見つかりませんでした":"キーワードを入力して検索してください"}</div>`;
   document.querySelectorAll("[data-arjpick]").forEach(btn=>btn.onclick=()=>{
     const r=ARJ_STATE.journalResults[+btn.dataset.arjpick];
-    const amt=ARJ_STATE.amount||(r.template.debit&&r.template.debit.value)||(r.template.credit&&r.template.credit.value)||"";
-    arjApplyBranches([{
-      debitLabel:mftLabelOf(r.template.debit), debitAmount:r.template.debit?amt:"",
-      creditLabel:mftLabelOf(r.template.credit), creditAmount:r.template.credit?amt:"",
+    const branch={
+      debitLabel:mftLabelOf(r.template.debit), debitAmount:"",
+      creditLabel:mftLabelOf(r.template.credit), creditAmount:"",
       department_id:(r.template.debit&&r.template.debit.department_id)||"", tax_id:(r.template.debit&&r.template.debit.tax_id)||"",
       credit_department_id:(r.template.credit&&r.template.credit.department_id)||"", credit_tax_id:(r.template.credit&&r.template.credit.tax_id)||"",
-      remark:r.template.remark||"",
-    }]);
+      remark:"",
+    };
+    arjFillRealAmounts([branch]); // 1行だけの選択は常に1行判定＝必ず金額・摘要を当てはめられる
+    arjApplyBranches([branch]);
   });
 }
 // 仕訳辞書（mf_journal_templates。1件で複数の明細行を持てる＝振替伝票まるごと保存できる）
@@ -2772,13 +2813,15 @@ function arjRenderTemplateResults(){
     const t=ARJ_STATE.templates.find(x=>x.id===btn.dataset.arjtpluse);
     // 古い仕訳辞書（貸借同額の共通amount形式）・新しい仕訳辞書（辺ごとにvalueを持つ形式）の両方に対応
     const branches=(t.branches||[]).map(b=>({
-      debitLabel:mftLabelOf(b.debit), debitAmount:b.debit?(b.debit.value??b.amount??ARJ_STATE.amount??""):"",
-      creditLabel:mftLabelOf(b.credit), creditAmount:b.credit?(b.credit.value??b.amount??ARJ_STATE.amount??""):"",
+      debitLabel:mftLabelOf(b.debit), debitAmount:"",
+      creditLabel:mftLabelOf(b.credit), creditAmount:"",
       department_id:b.department_id||"", tax_id:b.tax_id||"",
       credit_department_id:b.credit_department_id||"", credit_tax_id:b.credit_tax_id||"",
-      remark:b.remark||"",
+      remark:"",
     }));
+    const filled=arjFillRealAmounts(branches);
     arjApplyBranches(branches);
+    if(!filled) alert(`この仕訳辞書は${branches.length}行構成のため、金額・摘要を自動では当てはめられませんでした（2行＝入金分＋手数料分の構成のときだけ自動対応しています）。手動で確認・入力してください。`);
   });
 }
 // 今組んでいる明細行を仕訳辞書として保存（次回から「📗 仕訳辞書から選ぶ」に出てくる。
