@@ -624,7 +624,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-09-17-v8";
+const BUILD_TAG="2026-09-17-v9";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -4015,7 +4015,12 @@ function renderMailDetail(u){
             </div>`;
             })()}
 
-            ${isSales?"":(()=>{
+            ${(isSales||(invoice&&invoice.is_receivable_related))?"":(()=>{
+              // 2026-09-17修正：ユーザー報告「入金の場合も、支払い口座の登録になってしまってる」
+              // に対応。売上入金から作った請求書（is_receivable_related=true）は、自分たちが
+              // 支払う側ではなく受け取る側（お金が入ってくる）のため、「取引先への振込」を
+              // 案内するこのカード自体が意味を持たない（isSales=売上メール由来の場合と
+              // 同じ理由でここを非表示にする）
               const payDone=!!(invoice&&invoice.payment_verified_at);
               const payBadge=invoice&&invoice.payment_verified_at?'<span class="step-badge done">✓ 対応完了</span>':(invoice&&invoice.payment_status==="paid"?'<span class="step-badge current">いまここ・要対応</span>':(invoice&&invoice.mf_journal_id?'<span class="step-badge current">いまここ・振込待ち</span>':'<span class="step-badge wait">○未処理</span>'));
               return `<div class="step-card${stepCardClass("payment")}" id="step-payment">
