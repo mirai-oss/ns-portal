@@ -624,7 +624,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-09-17-v10";
+const BUILD_TAG="2026-09-17-v11";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -4042,7 +4042,7 @@ function renderMailDetail(u){
             </div>`;
             })()}
 
-            ${isSales?"":(()=>{
+            ${(isSales||(invoice&&invoice.is_receivable_related))?"":(()=>{
               const hasAnyLink=!!(invoice&&(invoice.linked_step||invoice.linked_step_payment||(invoice.event_task_links&&Object.keys(invoice.event_task_links).length)));
               return `<div class="step-card" id="step-events">
               <div class="step-card-head" data-cardtoggle="events">${stepNumHtml("events",++stepNo,hasAnyLink)}<h3 class="step-title">本部タスク連携</h3>${hasAnyLink?'<span class="step-badge done">✓ 設定あり</span>':'<span class="step-badge wait">連携なし</span>'}<span class="step-chevron" id="chev-events">▲</span></div>
@@ -4062,6 +4062,21 @@ function renderMailDetail(u){
               </div>
             </div>`;
             })()}
+
+            ${(invoice&&invoice.is_receivable_related)?(()=>{
+              // 2026-09-17新規：ユーザー要望「入金待ちになってしまってて、どこで入金済みに
+              // 変更できるのかわからない。この一連の流れの中に入れてほしい」に対応。
+              // 実は入金済みへの変更操作（ar_deposits登録）は、この画面に限らずアプリ全体の
+              // どこにも今まで存在しなかった（売上入金タブは自動取込結果を表示するだけ・
+              // 手動での「入金済みにする」ボタンは無かった）。ここに新設し、この請求書に
+              // 紐づくar_receivables行を見つけて、実入金額・入金日を確認のうえ登録できるようにする
+              return `<div class="step-card" id="step-deposit">
+              <div class="step-card-head" data-cardtoggle="deposit">${stepNumHtml("deposit",++stepNo,false)}<h3 class="step-title">入金確認</h3><span class="step-badge wait" id="deposit-badge">読み込み中…</span><span class="step-chevron" id="chev-deposit">▲</span></div>
+              <div class="step-card-body" id="body-deposit">
+              <div id="deposit-box">読み込み中…</div>
+              </div>
+            </div>`;
+            })():""}
 
             <div class="step-card" id="step-audit">
               <div class="step-card-head"><div class="step-num">${++stepNo}</div><h3 class="step-title">履歴・監査</h3></div>
@@ -4404,6 +4419,55 @@ function wireDetailActions(u){
     });
   }
   renderEventMapTable();
+  // 2026-09-17新規：ユーザー要望「入金待ちのままで、どこで入金済みに変更できるのか
+  // わからない。この一連の流れの中に入れてほしい」に対応。実は「入金済みにする」操作
+  // （ar_deposits登録）はアプリ全体のどこにも今まで存在しなかった（売上入金タブは
+  // 自動取込結果を表示するだけ）。この請求書に紐づくar_receivables行を見つけ、
+  // 実入金額・入金日を確認のうえ手動で入金済みにできるようにする
+  async function initDepositBox(){
+    const box=$("deposit-box"), badge=$("deposit-badge");
+    if(!box) return;
+    const rr=await authed(`/rest/v1/ar_receivables?linked_invoice_id=eq.${invoice.id}&select=*`);
+    const receivable=(rr.ok&&Array.isArray(rr.body)&&rr.body[0])||null;
+    if(!receivable){
+      box.innerHTML=`<div class="meta" style="color:var(--muted);font-size:12px">この請求書に紐づく売上入金の記録が見つかりませんでした（2026-09-17より前に作成した仕訳は紐付け情報が無い場合があります）。「💰売上入金」タブから直接ご確認ください。</div>`;
+      if(badge){ badge.className="step-badge wait"; badge.textContent="確認不可"; }
+      return;
+    }
+    const dr=await authed(`/rest/v1/ar_deposits?receivable_id=eq.${receivable.id}&select=*&order=created_at.desc`);
+    const deposits=(dr.ok&&Array.isArray(dr.body))?dr.body:[];
+    const deposit=deposits[0]||null;
+    if(deposit){
+      if(badge){ badge.className="step-badge done"; badge.textContent="✓ 入金済み"; }
+      box.innerHTML=`<div class="ai-grid" style="font-size:12px">
+        <div class="ai-field"><small>実入金額</small><b>${yen(deposit.amount)}</b></div>
+        <div class="ai-field"><small>入金日</small><b>${fmtD(deposit.deposit_date)}</b></div>
+      </div>
+      <div class="meta" style="color:var(--muted);font-size:11px;margin-top:6px">内容の修正・取り消しは「💰売上入金」タブから行ってください。</div>`;
+      return;
+    }
+    if(badge){ badge.className="step-badge current"; badge.textContent="いまここ・未入金"; }
+    box.innerHTML=`<div class="meta" style="color:var(--muted);font-size:12px;margin-bottom:8px">実際に入金が確認できたら、金額・入金日を確認のうえ登録してください（「💰売上入金」タブの状態が「入金済み」に変わります）。</div>
+    <div class="ai-grid">
+      <div class="ai-field"><small>実入金額</small><input id="deposit-amount" type="number" value="${receivable.expected_amount||""}"></div>
+      <div class="ai-field"><small>入金日</small><input id="deposit-date" type="date" value="${new Date().toISOString().slice(0,10)}"></div>
+    </div>
+    <div class="mail-actions" style="margin-top:8px"><button class="primary" id="deposit-confirm">✅ 入金済みにする</button></div>
+    <div class="err" id="deposit-msg" style="margin-top:6px"></div>`;
+    $("deposit-confirm").onclick=async()=>{
+      const msg=$("deposit-msg"); msg.className="err"; msg.textContent="";
+      const amount=$("deposit-amount").value?Number($("deposit-amount").value):null;
+      const depositDate=$("deposit-date").value;
+      if(!amount||amount<=0){ msg.textContent="実入金額を入力してください"; return; }
+      if(!depositDate){ msg.textContent="入金日を入力してください"; return; }
+      $("deposit-confirm").disabled=true; msg.textContent="登録中…";
+      const r=await authed("/rest/v1/ar_deposits",{method:"POST",headers:{Prefer:"return=minimal"},body:JSON.stringify({receivable_id:receivable.id,amount,deposit_date:depositDate,bank_source:"手動登録（請求書詳細より）"})});
+      if(!r.ok){ msg.textContent="登録に失敗しました"; $("deposit-confirm").disabled=false; return; }
+      msg.className="err msg-ok"; msg.textContent="入金済みにしました。画面を更新します…";
+      setTimeout(()=>initDepositBox(),700);
+    };
+  }
+  if(invoice&&invoice.is_receivable_related) initDepositBox();
   // 2026-09-04新規：受信トレイの簡易表示（メールは入口）から「🧾請求書一覧で確認・処理する」を
   // 押したときの遷移。
   // 2026-09-08修正：ユーザー報告「請求書メールのところから処理するのはNGにしてるはずなので、
