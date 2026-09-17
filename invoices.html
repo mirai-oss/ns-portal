@@ -624,7 +624,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-09-17-v13";
+const BUILD_TAG="2026-09-17-v14";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -7689,8 +7689,18 @@ async function payrollDetermineTargetCorp(yearMonth){
   }
   return {corpNames:[...corpNames],unresolved};
 }
-function payrollYmDefault(){
+// 2026-09-17修正：ユーザー要望「月を間違えて給料手渡しサインをしたり、8月分のつもりで
+// 9月分の給料振込処理をしてしまうことがあるので、給料手渡しサインと会計の給料仕訳を、
+// その月が終わるまで表示させないでほしい（例: 9月分給料は10月に入ってから表示）」に対応。
+// nippo側（担当B担当・現金手渡しサイン画面）と判定ロジックをすり合わせ済み: 「対象年月＞＝
+// 今月」なら非表示（文字列比較"YYYY-MM"のままで比較できる）＝先月以前だけ表示、で統一。
+// 既定値も「今月」から「前月」に変更（開いてすぐ制限メッセージになるのを避けるため）
+function payrollCurrentYm(){
   const d=new Date();
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
+}
+function payrollYmDefault(){
+  const d=new Date(); d.setMonth(d.getMonth()-1);
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
 }
 async function renderPayrollTab(u){
@@ -8464,6 +8474,31 @@ function payrollMatchesQuick(r,q){
   return true;
 }
 function payrollRender(){
+  // 2026-09-17新規：対象月が今月以降（＝まだ月が終わっていない）なら、月を間違えての誤操作
+  // （手渡しサイン・振込処理）を防ぐため一覧自体を表示しない。月選択欄だけは残し、先月以前へ
+  // 切り替えられるようにする（payrollYmDefault/payrollCurrentYmと同じ判定ロジック）
+  if(PAYROLL_STATE.yearMonth>=payrollCurrentYm()){
+    $("tabbody").innerHTML=`
+      <section class="invoice-list active">
+        <div class="pr-hero">
+          <div class="card pr-hero-main">
+            <div class="eyebrow">現在処理している対象月</div>
+            <div class="pr-hero-title"><div class="month">${esc(PAYROLL_STATE.yearMonth.replace("-","年"))}月</div><div class="label">給与振込</div></div>
+            <p style="color:var(--m-red)">⚠️ ${esc(PAYROLL_STATE.yearMonth.replace("-","年"))}月分は、月を間違えての誤処理（手渡しサイン・振込）を防ぐため、月が終わるまで表示されません。翌月になってからご確認ください。</p>
+          </div>
+          <div class="card pr-hero-side">
+            <label>対象月を変更</label>
+            <input id="payroll-ym" type="month" value="${esc(PAYROLL_STATE.yearMonth)}" max="${payrollYmDefault()}">
+          </div>
+        </div>
+      </section>`;
+    $("payroll-ym").onchange=async()=>{
+      PAYROLL_STATE.yearMonth=$("payroll-ym").value;
+      $("tabbody").innerHTML=`<section class="invoice-list active"><div class="card" style="padding:16px"><div class="spin" style="padding:20px 0">読み込み中…</div></div></section>`;
+      await payrollLoad(); payrollRender(); updateMailSummaryBar();
+    };
+    return;
+  }
   if(!PAYROLL_STATE.sortMode) PAYROLL_STATE.sortMode="pendingFirst"; // 既定で振込完了は下へ
   if(!PAYROLL_STATE.quickFilter) PAYROLL_STATE.quickFilter="all";
   const hiddenIds=PAYROLL_STATE.hiddenUserIds||new Set();
@@ -8486,7 +8521,7 @@ function payrollRender(){
         </div>
         <div class="card pr-hero-side">
           <label>対象月を変更</label>
-          <input id="payroll-ym" type="month" value="${esc(PAYROLL_STATE.yearMonth)}">
+          <input id="payroll-ym" type="month" value="${esc(PAYROLL_STATE.yearMonth)}" max="${payrollYmDefault()}">
           <div class="pr-sync-box"><span>給与データ<br><b>✓ 取得済み</b></span><button class="btn" id="payroll-sync-now">🔄 スマレジから今すぐ取得</button></div>
           <div class="err" id="payroll-sync-msg" style="margin-top:6px"></div>
           <button data-payroll-finalize class="hq-btn primary" style="margin-top:10px;width:100%">✅ 給料確定（本部タスクを自動発行）</button>
