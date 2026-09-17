@@ -624,7 +624,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-09-17-v5";
+const BUILD_TAG="2026-09-17-v6";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -2604,29 +2604,42 @@ async function arjLoadForTenant(tenantId,tenants){
   ARJ_STATE={
     ...ARJ_STATE,
     tenantId, tenantLabel, tenants:tenants||[],
-    mode:"journal", // 既定は①過去の仕訳から選ぶ。候補が無ければ②仕訳辞書→③直接入力の順で切替（mfj*と同じ考え方）
+    // 2026-09-17修正：ユーザー報告「請求書のように自動で仕訳に数字が入らない」に対応。
+    // 従来は請求書メール詳細の仕訳作成（mfj*）と同じく「過去の仕訳／仕訳辞書があれば
+    // それを優先」としていたが、請求書は金額が1本（invoice.amount）なので過去の仕訳・
+    // 辞書を選んでも金額はそのまま流用できる。一方こちら（売上入金）は毎月・毎店舗で
+    // 実際の金額（入金予定額・手数料）が変わるため、古い仕訳辞書・過去の仕訳に埋め込まれた
+    // 金額をそのまま持ってくると「借方合計と貸方合計が全く合わない」状態になってしまう
+    // （実際に発生：仕訳辞書の内容がそのまま出て¥114,728もズレていた）。この画面では
+    // 常に「🔧直接入力」を既定にし、今回の実データ（入金予定額・手数料）から作った
+    // 明細行を必ず最初から入れておく（過去の仕訳・仕訳辞書は勘定科目の参考として
+    // 選べる状態のまま残すが、既定では選ばせない）
+    mode:"manual",
     accounts:accRes.body.accounts||[], departments:searchRes.body.departments||[], taxes:searchRes.body.taxes||[],
     journalResults:searchRes.body.results||[], journalKeyword:row.source_name||"",
     templates,
     accountLabelMap:idx.map, accountDatalistHtml:idx.dl, accountNameDatalistHtml:idx.accountNameDatalistHtml,
     subAccountsByAccountName:idx.subAccountsByAccountName, subAccountNamesAll:idx.subAccountNamesAll,
     branches:[],
+    ymLabel,
     remark:ymLabel?`${ymLabel}　${row.source_name||""}`:(row.source_name||""),
     date:new Date().toISOString().slice(0,10),
   };
-  if(!ARJ_STATE.journalResults.length) ARJ_STATE.mode=ARJ_STATE.templates.length?"dict":"manual";
-  if(ARJ_STATE.mode==="manual") arjSetDefaultBranches();
+  arjSetDefaultBranches();
   arjRenderForm();
 }
-// 初回・候補が何も無いときの既定値（1行目=入金予定額分・普通預金⇔売上高、2行目=手数料分・
-// 支払手数料⇔売上高）。実データでgross_amount≠fee_amount+expected_amountのため金額は目安。
-// 過去の仕訳・仕訳辞書があればそちらが優先され、この既定値は出てこない
+// 初回の既定値（1行目=入金予定額分・普通預金⇔売上高、2行目=手数料分・支払手数料⇔売上高）。
+// 実データでgross_amount≠fee_amount+expected_amountのため金額は目安。「🔧直接入力」への
+// 切替時・過去の仕訳/仕訳辞書を選んだ後にまたやり直したいときにも呼べるよう独立させてある。
+// 摘要はユーザー要望「○月分　入金先　売上等の項目、が入るようにしてほしい」に対応した書式
 function arjSetDefaultBranches(){
   const row=ARJ_STATE.row;
+  const ymLabel=ARJ_STATE.ymLabel||"";
+  const prefix=[ymLabel,row.source_name||""].filter(Boolean).join("　");
   const expected=Number(row.expected_amount)||0, fee=Number(row.fee_amount)||0;
   ARJ_STATE.branches=[
-    {debitLabel:"普通預金",debitAmount:expected||"",creditLabel:"売上高",creditAmount:expected||"",department_id:"",tax_id:"",credit_department_id:"",credit_tax_id:"",remark:"入金分"},
-    {debitLabel:"支払手数料",debitAmount:fee||"",creditLabel:"売上高",creditAmount:fee||"",department_id:"",tax_id:"",credit_department_id:"",credit_tax_id:"",remark:"手数料分"},
+    {debitLabel:"普通預金",debitAmount:expected||"",creditLabel:"売上高",creditAmount:expected||"",department_id:"",tax_id:"",credit_department_id:"",credit_tax_id:"",remark:prefix?`${prefix}　売上`:"入金分"},
+    {debitLabel:"支払手数料",debitAmount:fee||"",creditLabel:"売上高",creditAmount:fee||"",department_id:"",tax_id:"",credit_department_id:"",credit_tax_id:"",remark:prefix?`${prefix}　手数料`:"手数料分"},
   ];
 }
 function arjAddBranchRow(){
