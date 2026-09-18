@@ -1,12 +1,15 @@
-// W2③④+W3①: kd_サマリ系の日次/毎時/月次リフレッシュジョブ（レーンP専任・service_role限定）
+// W2③④+W3①+ラウンド6§1: kd_サマリ系の日次/毎時/月次リフレッシュジョブ（レーンP専任・service_role限定）
 // docs/設計書_表示集計層kdと高速化実行計画_2026-09-02.md §3/§6/§10.1/§10.2-1
+// docs/実装指示書_ラウンド6_2026-09-18.md §1（kd_pl毎時化・kd_store_monthly=TK-63・ds_sessions掃除）
 //
 // 呼び出し方: POST { op: 'reservation_daily'|'dashboard_daily'|'home_kpi'|'unresolved_notify'
-//                    |'pl_monthly'|'media_monthly'|'deposit_monthly' }（service_roleのみ）
-//   運用: .github/workflows/keiei-kd-hourly.yml（dashboard_daily・home_kpiを日中毎時）
+//                    |'pl_monthly'|'media_monthly'|'deposit_monthly'|'store_monthly'
+//                    |'sessions_cleanup' }（service_roleのみ）
+//   運用: .github/workflows/keiei-kd-hourly.yml（dashboard_daily・home_kpi・store_monthly・
+//        pl_monthly・sessions_cleanupを日中毎時。2026-09-18: pl_monthlyはA-12前倒し切替支援のため
+//        日次から毎時に格上げ）
 //        .github/workflows/keiei-perflog-daily.yml（reservation_daily・unresolved_notify・
-//        pl_monthly・media_monthly・deposit_monthlyを日次で追加実行。月次サマリだが当月分の
-//        反映を翌日まで待たせたくないので日次リフレッシュに含める）
+//        media_monthly・deposit_monthlyを日次実行のまま）
 //
 // 各opの実行内容はkd_sync_runsに記録する（start→success/failed）。画面側（app.js）はkd_sync_runsの
 // 最新finished_atが変わった時だけ再取得すればよい設計（§7）。
@@ -220,7 +223,10 @@ async function refreshDashboardDaily(sb: any, body: any) {
     const { idByName, corpByStoreId } = await loadStoreMaps(sb);
     const rawRows = await bqDailyStoreFull(sb, months);
     const unmatched = new Set<string>();
-    type Row = { store_id: string; period_date: string; net_sales: number; guests: number; parties: number; cost: number; labor: number };
+    type Row = {
+      store_id: string; period_date: string; net_sales: number; guests: number; parties: number;
+      cost: number; labor: number; labor_pa: number; labor_emp: number;
+    };
     const parsed: Row[] = [];
     for (let r = 1; r < rawRows.length; r++) {
       const row = rawRows[r];
@@ -232,11 +238,12 @@ async function refreshDashboardDaily(sb: any, body: any) {
       // 列順（bqDailyStore・tori-dashboard/gas/Code.gs:1523 BQ_DAILY_STORE_HEADER参照）: date,store_name,
       // net_sales,guests_total,parttime_labor,fulltime_labor,labor_total,cogs,cash,employee_salary_bonus,
       // statutory_welfare,commute_allowance,parties_total
-      // 2026-09-06追加: cost(cogs=row[7])/labor(labor_total=row[6])。kd_pl_monthly_summary(op=pl_monthly)の
-      // 自動売上/原価/人件費の元データとして使う（既に取得していたのに保存していなかった列）。
+      // 2026-09-06追加: cost(cogs=row[7])/labor(labor_total=row[6])。2026-09-18追加: labor_pa(row[4])/
+      // labor_emp(row[5])——kd_store_monthly_summary(TK-63)のF率/L率カード用の内訳（既に取得していたのに
+      // 保存していなかった列。cost/laborと同じ経緯）。
       parsed.push({
         store_id: storeId, period_date: dateStr, net_sales: num(row[2]), guests: num(row[3]), parties: num(row[12]),
-        cost: num(row[7]), labor: num(row[6]),
+        cost: num(row[7]), labor: num(row[6]), labor_pa: num(row[4]), labor_emp: num(row[5]),
       });
     }
 
@@ -256,6 +263,7 @@ async function refreshDashboardDaily(sb: any, body: any) {
       return {
         store_id: p.store_id, corporation_id: corpByStoreId.get(p.store_id) ?? null, period_date: p.period_date,
         net_sales: p.net_sales, guests: p.guests, parties: p.parties, cost: p.cost, labor: p.labor,
+        labor_pa: p.labor_pa, labor_emp: p.labor_emp,
         avg_check: p.guests ? Math.round(p.net_sales / p.guests) : null,
         prior_year_same_weekday_sales: priorSales ?? null,
         prior_year_same_weekday_ratio: priorSales ? (p.net_sales / priorSales) : null,
@@ -279,6 +287,105 @@ async function refreshDashboardDaily(sb: any, body: any) {
     return { ok: true, job: "dashboard_daily", rows: upserts.length, unmatched: [...unmatched], sync_run_id: runId };
   } catch (e) {
     await finishRun(sb, runId, false, 0, String(e), "kd_dashboard_daily_summary");
+    return { ok: false, error: String(e) };
+  }
+}
+
+// ============== op=store_monthly: kd_store_monthly_summary（TK-63・2026-09-18） ==============
+async function bqGetSpotRows(sb: any): Promise<any[][]> {
+  const { id, pw } = await dashSecrets(sb);
+  if (!id || !pw) throw new Error("app_secretsにdash_id/dash_pwが未設定です");
+  const login = await dashCall({ action: "login", id, pw });
+  if (!login.ok) throw new Error("ダッシュボードへのログインに失敗: " + (login.error ?? ""));
+  const res = await dashCall({ action: "bqGetSpot", token: login.token });
+  if (!res.ok) throw new Error("bqGetSpot取得に失敗: " + (res.error ?? ""));
+  return (res.sheets?.["スポット人件費"] ?? Object.values(res.sheets ?? {})[0] ?? []) as any[][];
+}
+
+async function refreshStoreMonthly(sb: any) {
+  const runId = await startRun(sb, "kd_store_monthly_summary");
+  try {
+    const { idByName, corpByStoreId } = await loadStoreMaps(sb);
+
+    // ①売上/原価/PA/社員人件費: kd_dashboard_daily_summaryの月合計（dashboard_dailyのmonths窓の範囲内のみ）
+    const { data: dashRows, error: dashErr } = await sb.from("kd_dashboard_daily_summary")
+      .select("store_id,period_date,net_sales,cost,labor_pa,labor_emp");
+    if (dashErr) throw new Error("kd_dashboard_daily_summary取得に失敗: " + dashErr.message);
+    type Bucket = {
+      store_id: string; year_month: string; sales: number; cost: number; labor_pa: number; labor_emp: number; labor_spot: number;
+    };
+    const byKey = new Map<string, Bucket>();
+    for (const r of (dashRows ?? []) as any[]) {
+      const ym = String(r.period_date).slice(0, 7);
+      const key = `${r.store_id}|${ym}`;
+      const b = byKey.get(key) ?? { store_id: r.store_id, year_month: ym, sales: 0, cost: 0, labor_pa: 0, labor_emp: 0, labor_spot: 0 };
+      b.sales += Number(r.net_sales) || 0; b.cost += Number(r.cost) || 0;
+      b.labor_pa += Number(r.labor_pa) || 0; b.labor_emp += Number(r.labor_emp) || 0;
+      byKey.set(key, b);
+    }
+
+    // ②スポット人件費（stg_spot・bqGetSpot経由）を月合計してマージ
+    const unmatched = new Set<string>();
+    const spotRows = await bqGetSpotRows(sb);
+    // 列: 日付,店舗名,区分,金額,人数,メモ,入力者,入力日時,ID（tori-dashboard/gas/Code.gs:2601 bqGetSpot参照）
+    for (let r = 1; r < spotRows.length; r++) {
+      const row = spotRows[r];
+      const storeName = String(row[1] ?? "").trim();
+      const dateStr = toDateStr(row[0]);
+      if (!storeName || !dateStr) continue;
+      const storeId = idByName.get(storeName);
+      if (!storeId) { unmatched.add(storeName); continue; }
+      const ym = dateStr.slice(0, 7);
+      const key = `${storeId}|${ym}`;
+      const b = byKey.get(key) ?? { store_id: storeId, year_month: ym, sales: 0, cost: 0, labor_pa: 0, labor_emp: 0, labor_spot: 0 };
+      b.labor_spot += num(row[3]);
+      byKey.set(key, b);
+    }
+
+    // ③売上目標: dash_sales_target_dailyの月合計
+    const yms = [...new Set([...byKey.values()].map((b) => b.year_month))];
+    const storeIds = [...new Set([...byKey.values()].map((b) => b.store_id))];
+    const budgetByKey = new Map<string, number>();
+    if (yms.length && storeIds.length) {
+      const minYm = yms.sort()[0], maxYm = yms.sort()[yms.length - 1];
+      const { data: targetRows } = await sb.from("dash_sales_target_daily")
+        .select("store_id,biz_date,sales_target")
+        .in("store_id", storeIds).gte("biz_date", `${minYm}-01`).lt("biz_date", addDays(`${maxYm}-01`, 32));
+      (targetRows ?? []).forEach((r: any) => {
+        const key = `${r.store_id}|${String(r.biz_date).slice(0, 7)}`;
+        budgetByKey.set(key, (budgetByKey.get(key) ?? 0) + (Number(r.sales_target) || 0));
+      });
+    }
+
+    const upserts = [...byKey.values()].map((b) => {
+      const laborTotal = b.labor_pa + b.labor_emp + b.labor_spot;
+      const costRate = b.sales ? b.cost / b.sales : null;
+      const laborRate = b.sales ? laborTotal / b.sales : null;
+      const budgetSales = budgetByKey.get(`${b.store_id}|${b.year_month}`) ?? null;
+      return {
+        store_id: b.store_id, corporation_id: corpByStoreId.get(b.store_id) ?? null, year_month: b.year_month,
+        sales: b.sales, cost: b.cost, cost_rate: costRate,
+        labor_pa: b.labor_pa, labor_emp: b.labor_emp, labor_spot: b.labor_spot, labor_total: laborTotal, labor_rate: laborRate,
+        fl_rate: costRate != null && laborRate != null ? costRate + laborRate : null,
+        gross_profit: b.sales - b.cost,
+        budget_sales: budgetSales, budget_diff: budgetSales != null ? b.sales - budgetSales : null,
+        budget_rate: budgetSales ? b.sales / budgetSales : null,
+        source_updated_at: new Date().toISOString(), computed_at: new Date().toISOString(),
+        source_count: 1, sync_run_id: runId,
+      };
+    });
+    for (let i = 0; i < upserts.length; i += 500) {
+      const { error: upErr } = await sb.from("kd_store_monthly_summary").upsert(upserts.slice(i, i + 500), { onConflict: "store_id,year_month" });
+      if (upErr) throw new Error("upsert失敗: " + upErr.message);
+    }
+    for (const nm of unmatched) {
+      try { await sb.rpc("kd_report_unresolved_name", { p_source_table: "kd_store_monthly_summary", p_kind: "store", p_raw_name: nm }); }
+      catch (_) { /* noop */ }
+    }
+    await finishRun(sb, runId, true, upserts.length, unmatched.size ? `店舗名未対応: ${[...unmatched].join("、")}` : undefined);
+    return { ok: true, job: "store_monthly", rows: upserts.length, unmatched: [...unmatched], sync_run_id: runId };
+  } catch (e) {
+    await finishRun(sb, runId, false, 0, String(e), "kd_store_monthly_summary");
     return { ok: false, error: String(e) };
   }
 }
@@ -694,6 +801,13 @@ async function notifyUnresolved(sb: any) {
   return { ok: true, count: data.length, sent };
 }
 
+// ============== op=sessions_cleanup: ds_sessionsの期限切れ行を削除（A-11・2026-09-18） ==============
+async function cleanupSessions(sb: any) {
+  const { error, count } = await sb.from("ds_sessions").delete({ count: "exact" }).lt("expires_at", new Date().toISOString());
+  if (error) return { ok: false, error: error.message };
+  return { ok: true, deleted: count ?? 0 };
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
   try {
@@ -711,10 +825,12 @@ Deno.serve(async (req) => {
       case "dashboard_daily": result = await refreshDashboardDaily(sb, body); break;
       case "home_kpi": result = await refreshHomeKpi(sb); break;
       case "unresolved_notify": result = await notifyUnresolved(sb); break;
+      case "store_monthly": result = await refreshStoreMonthly(sb); break;
       case "pl_monthly": result = await refreshPlMonthly(sb); break;
       case "media_monthly": result = await refreshMediaMonthly(sb, body); break;
       case "deposit_monthly": result = await refreshDepositMonthly(sb); break;
-      default: return json({ ok: false, error: "opは'reservation_daily'|'dashboard_daily'|'home_kpi'|'unresolved_notify'|'pl_monthly'|'media_monthly'|'deposit_monthly'のいずれかが必須です" }, 400);
+      case "sessions_cleanup": result = await cleanupSessions(sb); break;
+      default: return json({ ok: false, error: "opは'reservation_daily'|'dashboard_daily'|'home_kpi'|'unresolved_notify'|'pl_monthly'|'media_monthly'|'deposit_monthly'|'store_monthly'|'sessions_cleanup'のいずれかが必須です" }, 400);
     }
     // 2026-09-03修正: ok:falseの結果をHTTP 200で返してしまうとGitHub Actions側のHTTP_CODEチェックを
     // すり抜けて「success」表示のまま失敗が握りつぶされる（実際にdashboard_dailyの失敗がこれで見逃されていた）。

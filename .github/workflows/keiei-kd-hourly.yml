@@ -1,10 +1,13 @@
 name: kd_ダッシュボード集計の毎時リフレッシュ
 
-# W2④（docs/設計書_表示集計層kdと高速化実行計画_2026-09-02.md §10.1）。
-# 日中の間、kd_dashboard_daily_summary（店舗×日の売上・客数等）とkd_home_kpi_snapshot
-# （ホームKPI・当日実績/月累計/予算達成率/本部タスク滞留数）を毎時リフレッシュする。
-# dashboard_dailyを先に呼んでからhome_kpiを呼ぶこと（home_kpiは当日分のkd_dashboard_daily_summaryを
-# 読むため。順序を変えるとhome_kpiのtoday_sales等が1つ前の値のままになる）。
+# W2④（docs/設計書_表示集計層kdと高速化実行計画_2026-09-02.md §10.1）＋
+# 実装指示書_ラウンド6_2026-09-18.md §1（A-12支援: pl_monthly毎時化・store_monthly=TK-63・
+# ds_sessionsの期限切れ掃除）。
+# 日中の間、kd_dashboard_daily_summary（店舗×日の売上・客数等）→kd_home_kpi_snapshot（ホームKPI）
+# →kd_store_monthly_summary（店舗×月のF率/L率/FL計・TK-63）→kd_pl_monthly_summary（店舗×月のPL）
+# →ds_sessionsの期限切れ行削除、の順で毎時リフレッシュする。
+# dashboard_dailyを先に呼ぶこと（home_kpi・store_monthly・pl_monthlyがkd_dashboard_daily_summaryの
+# 当日/当月分を読むため。順序を変えると1つ前の値のままになる）。
 #
 # 実際の発火は他の日次workflowと同じく外部cron（cron-job.org）からworkflow_dispatch APIを叩く。
 #   POST https://api.github.com/repos/mirai-oss/ns-portal/actions/workflows/keiei-kd-hourly.yml/dispatches
@@ -59,4 +62,55 @@ jobs:
           if [ "$HTTP_CODE" != "200" ]; then
             echo "::error::home_kpiが失敗しました（HTTP $HTTP_CODE）"
             exit 1
+          fi
+
+      - name: keiei-kd-refreshを呼ぶ（store_monthly・TK-63）
+        env:
+          SR_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          RES=$(curl -s -w "\n%{http_code}" -X POST \
+            "https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/keiei-kd-refresh" \
+            -H "Authorization: Bearer $SR_KEY" \
+            -H "Content-Type: application/json" \
+            -d '{"op":"store_monthly"}')
+          HTTP_CODE=$(echo "$RES" | tail -1)
+          BODY_TEXT=$(echo "$RES" | sed '$d')
+          echo "$BODY_TEXT"
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "::error::store_monthlyが失敗しました（HTTP $HTTP_CODE）"
+            exit 1
+          fi
+
+      - name: keiei-kd-refreshを呼ぶ（pl_monthly・ラウンド6§1 A-12支援で日次→毎時に格上げ）
+        env:
+          SR_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          RES=$(curl -s -w "\n%{http_code}" -X POST \
+            "https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/keiei-kd-refresh" \
+            -H "Authorization: Bearer $SR_KEY" \
+            -H "Content-Type: application/json" \
+            -d '{"op":"pl_monthly"}')
+          HTTP_CODE=$(echo "$RES" | tail -1)
+          BODY_TEXT=$(echo "$RES" | sed '$d')
+          echo "$BODY_TEXT"
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "::error::pl_monthlyが失敗しました（HTTP $HTTP_CODE）"
+            exit 1
+          fi
+
+      - name: keiei-kd-refreshを呼ぶ（sessions_cleanup・ds_sessionsの期限切れ行削除・A-11）
+        env:
+          SR_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          RES=$(curl -s -w "\n%{http_code}" -X POST \
+            "https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/keiei-kd-refresh" \
+            -H "Authorization: Bearer $SR_KEY" \
+            -H "Content-Type: application/json" \
+            -d '{"op":"sessions_cleanup"}')
+          HTTP_CODE=$(echo "$RES" | tail -1)
+          BODY_TEXT=$(echo "$RES" | sed '$d')
+          echo "$BODY_TEXT"
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "::warning::sessions_cleanupが失敗しました（HTTP $HTTP_CODE）。他のジョブは成功しているので失敗にしない"
+            exit 0
           fi
