@@ -6,6 +6,11 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
+**★★★2026-09-18（担当Aスレッド）ラウンド6§1着手: A-12の安全なMVPを本番反映・A-11はPと設計調整中**: `実装指示書_ラウンド6_2026-09-18.md`§1を受けTK-39を中断し着手。
+- **A-12（PL管理タブのkd_直読み）**: `fetchPlKd_()`（kd_pl_monthly_summaryをSupabase直読み・GAS非経由・5分SWR）をtori-dashboardへ追加（コミット[0a506e7](https://github.com/mirai-oss/tori-dashboard/commit/0a506e7)・app.js?v=198で本番デプロイ済み・PLタブの実機確認で新規エラー無し確認済み）。既存の検証パネル（`plShadowCompareNote_`・W3②2026-09-06実装）の「業務委託精算店舗は差異正常」判定を、店舗名の固定リスト（SEISAN_STORES_）から`seisan_pending_total`列ベースの動的判定へ変更し、バッジ文言を指示書指定の「⚠️確定処理中（精算書反映待ち）」に統一。**KPIカード・PL表そのものの主経路切替は保留**: kd_pl_monthly_summaryに`store_id is null`の行（全社共通経費）が0件という差異を発見し、全社共通経費が各店舗へ按分済みかP側の設計を確認中（レーンPへSendMessage送信済み・返信待ち）。この確認が取れ次第、KPIカードから主経路を切り替える。
+- **A-11（セッションのSupabase化）**: レーンPが`ds_sessions`テーブルの設計（jsonb 1列・経営D/精算D共通・service_role限定RLS）を用意中と確認（未コミット・未適用）。GAS側（sessionPut/sessionGet/sessionDel、gas/Code.gs:535〜）の新旧併用フラグ実装は、Pのテーブルが本番適用され次第着手する。
+- A-13（BQ非依存の構造ルール）・A-14（精算D計測）は未着手。次セッションでA-11のP側完了を確認後、A-13の既存パターン（fetchAnalysisKd_・fetchDashboardSummaryApi_等、既に複数タブで実装済み）を棚卸しして明文化・未移行画面への展開を進める。
+
 **★★★2026-09-18（担当D実行スレッド）ラウンド6の担当D分（D-9・TK-64・TK-66・ロケットナウPhase2）を実施**:
 - **D-9（インフォマートAPI）**: `INFOMART_CLIENT_ID`/`INFOMART_CLIENT_SECRET`がSupabaseシークレットに未登録のままであることを確認（前回8/31の手順書送付から進捗なし）。**引き続き外部ブロック中**（ユーザーの申込み完了・認証情報発行待ち）。今回は追加の準備作業なし。
 - **TK-64（kd_unresolved隔離の全ジョブ適用）**: 残り3ジョブ（`infomart-siire.js`・`smaregi-payroll.js`・`dinii-questionnaire.js`）を調査。**`infomart-siire.js`は対応完了**（[ns-daily-importコミット`92ca8de`](https://github.com/mirai-oss/ns-daily-import/commit/92ca8de)）——GAS側(`取込WebApp.gs`/`コード.gs importSiireCSV`)は未登録店舗を静的辞書(`STORE_NAME_MAP`)で検出済み書込みスキップする設計だったが、通知が`ui.alert()`止まり（無人実行では応答メッセージに捕捉されるだけで誰にも見えていなかった）と判明。`store-gateway.js`に`extractGasAlertList`/`reportGasUnknownStores`を追加し、GAS応答から「⚠️ 未登録店舗:」ブロックを抽出→既存の`kd_unresolved_names`＋Lark通知へ橋渡しするよう修正。**残り2ジョブは今回未対応**（調査済み・理由を記録）: `smaregi-payroll.js`は同じ取込WebAppだが除外検出が別の静的辞書(`JIGYOSHO_MAP`・事業所名ベース)で、`store_aliases`登録では直らないため同じ通知文言を流用すると誤案内になる（本部等の恒常的な除外が混在する可能性もあり要精査）。`dinii-questionnaire.js`（口コミ・review-db GAS）は対応するGAS側に店舗名検証ロジックが一切無い（未登録でもそのまま書き込み）ことを確認——これはGAS側への新規実装が必要でこのMacBookからはreview-db GASへの実デプロイ手段が無いため対応不可（Mac miniでのclasp設定 or 該当セッションでの対応が必要）。
