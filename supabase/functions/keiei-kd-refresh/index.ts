@@ -198,13 +198,27 @@ async function dashSecrets(sb: any) {
   (data ?? []).forEach((r: any) => { m[r.key] = (r.value ?? "").trim(); });
   return { id: m.dash_id ?? "", pw: m.dash_pw ?? "" };
 }
-async function dashCall(body: unknown) {
+// 2026-09-18追加（ラウンド6§1・実装指示書の背景記述より）: GAS Webアプリは一時的にGoogleの
+// ボット判定ページ（HTML・404/405相当）を返すことがあると担当Aが特定・対症療法済み（tori-dashboard
+// 側のsupalogin等にリトライを追加）。keiei-kd-refresh側も同じDASH_API_URLへログイン経由で呼んでおり、
+// 実際に直近24時間でdashboard_dailyが3/17回この症状で失敗していた（kd_sync_runsで確認）。
+// 毎時リフレッシュなので次の回で自然に復旧するとはいえ、担当A側の対策と同じ考え方で軽いリトライを
+// 入れておく（最大3回・指数バックオフ）。JSON以外（HTML等）が返ってきた回だけ再試行し、
+// 正常なJSONエラー応答（{ok:false,error:...}）は再試行しない（無限ループ防止・本当のエラーを隠さない）。
+async function dashCall(body: unknown, attempt = 1): Promise<any> {
   const res = await fetch(DASH_API_URL, {
     method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" }, body: JSON.stringify(body),
   });
   const text = await res.text();
-  try { return JSON.parse(text); }
-  catch (_) { return { ok: false, error: "ダッシュボードの応答を読めませんでした: " + text.slice(0, 200) }; }
+  try {
+    return JSON.parse(text);
+  } catch (_) {
+    if (attempt < 3) {
+      await new Promise((r) => setTimeout(r, attempt * 1500)); // 1.5秒→3秒
+      return dashCall(body, attempt + 1);
+    }
+    return { ok: false, error: `ダッシュボードの応答を読めませんでした（${attempt}回試行・Googleボット判定等の一時的な不調の可能性）: ` + text.slice(0, 200) };
+  }
 }
 async function bqDailyStoreFull(sb: any, months: number) {
   const { id, pw } = await dashSecrets(sb);
