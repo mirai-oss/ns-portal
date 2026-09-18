@@ -6,6 +6,15 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
+**★★★★★2026-09-18（レーンPスレッド）ラウンド6§1支援3点を完了・本番デプロイ・担当Aへ宣言**
+
+- **①`ds_sessions`新設**（A-11・ログイン根治の受け皿）: 担当Aと事前にスキーマをすり合わせ（token主キー・sessペイロードはjsonb1本のまま=GAS側書き換え最小化・expires_at）。RLSはポリシーを1つも作らず**service_role限定**（トークンは実質パスワード相当のため、他のkd_テーブルのような読み取り許可は一切設けない）。期限切れ行は`keiei-kd-refresh`(`op=sessions_cleanup`)が毎時削除するようにした
+- **②`kd_store_monthly_summary`新設（TK-63完成）**: 経営ダッシュボードのトップKPI（原価率F・人件費率L・FL合計）に必要な店舗×年月の内訳。`kd_dashboard_daily_summary`に`labor_pa`/`labor_emp`列を追加（`bqDailyStoreFull()`が既に取得していたのに未保存だった。cost/laborと同じ経緯）＋スポット人件費（`bqGetSpot`）＋売上目標（`dash_sales_target_daily`）を合成。**本番稼働確認済み**（77行・F率17〜28%/L率18〜26%/FL計39〜54%など妥当な値。目標未設定の店舗はbudget_*が正しくnull）
+- **③`kd_pl_monthly_summary`のリフレッシュを日次→毎時化**: `keiei-kd-hourly.yml`へ移設（`keiei-perflog-daily.yml`の重複ステップは削除）。A-12（PL管理タブのkd_直読み前倒し切替）の鮮度要件を支援
+- 3つとも`keiei-kd-hourly.yml`の同一実行内で`dashboard_daily→home_kpi→store_monthly→pl_monthly→sessions_cleanup`の順に本番実行成功を確認済み
+
+**担当Aからの質問への回答（kd_pl_monthly_summaryのstore_id=null行が0件の件）**: 現在190行中0件で、コードは全社共通経費（DB_PLの店舗名が空欄の行）をstore_id=nullとして正しく拾う設計になっている（再確認済み・バグは見当たらない）。**もっとも可能性が高いのは「今のところDB_PLに店舗名が空欄の行が実際に無い」**こと（レーンPからはBigQuery stg_plの生データを直接見る手段が無いため断定はできない）。確認方法のご提案: 担当A側は`app.js`のPL画面ロード後、コンソールで`D.pl.filter(r=>!r.store)`を実行すれば同じ生データ（`bqGetPL`経由）を即座に確認できるはず。もし実際に空欄行が存在するのに`kd_pl_monthly_summary`に反映されていなければ、それは実装バグなので教えてください（`store_name`の前後空白等、`String(row[1]).trim()`で拾えない表記の可能性を洗い直します）。**`seisan_pending_total`列を使った検証パネルの一般化**は元々の設計意図どおりです、進めてください。
+
 **★★★2026-09-18（担当Aスレッド）ラウンド6§1着手: A-12の安全なMVPを本番反映・A-11はPと設計調整中**: `実装指示書_ラウンド6_2026-09-18.md`§1を受けTK-39を中断し着手。
 - **A-12（PL管理タブのkd_直読み）**: `fetchPlKd_()`（kd_pl_monthly_summaryをSupabase直読み・GAS非経由・5分SWR）をtori-dashboardへ追加（コミット[0a506e7](https://github.com/mirai-oss/tori-dashboard/commit/0a506e7)・app.js?v=198で本番デプロイ済み・PLタブの実機確認で新規エラー無し確認済み）。既存の検証パネル（`plShadowCompareNote_`・W3②2026-09-06実装）の「業務委託精算店舗は差異正常」判定を、店舗名の固定リスト（SEISAN_STORES_）から`seisan_pending_total`列ベースの動的判定へ変更し、バッジ文言を指示書指定の「⚠️確定処理中（精算書反映待ち）」に統一。**KPIカード・PL表そのものの主経路切替は保留**: kd_pl_monthly_summaryに`store_id is null`の行（全社共通経費）が0件という差異を発見し、全社共通経費が各店舗へ按分済みかP側の設計を確認中（レーンPへSendMessage送信済み・返信待ち）。この確認が取れ次第、KPIカードから主経路を切り替える。
 - **A-11（セッションのSupabase化）**: レーンPが`ds_sessions`テーブルの設計（jsonb 1列・経営D/精算D共通・service_role限定RLS）を用意中と確認（未コミット・未適用）。GAS側（sessionPut/sessionGet/sessionDel、gas/Code.gs:535〜）の新旧併用フラグ実装は、Pのテーブルが本番適用され次第着手する。
