@@ -491,7 +491,7 @@ Deno.serve(async (req: Request) => {
       const invoiceId = body?.invoice_id;
       if (!invoiceId) return json({ error: "invoice_idは必須です" }, 400);
       const { data: rows, error: rowsErr } = await uc.from("invoice_pl_reflections")
-        .select("id, seisan_store_name, year_month, seisan_line_key")
+        .select("id, seisan_store_name, year_month, seisan_line_key, account_name, sub_account_name, item_name")
         .eq("invoice_id", invoiceId).eq("reflection_route", "seisan").not("seisan_line_key", "is", null);
       if (rowsErr) return json({ error: "確認に失敗しました: " + rowsErr.message }, 500);
       if (!rows || !rows.length) return json({ success: true, updated: 0 });
@@ -507,21 +507,32 @@ Deno.serve(async (req: Request) => {
         const lines: any[] = Array.isArray(res.lines) ? res.lines : [];
         const bySourceKey = new Map(lines.map((l: any) => [l.sourceKey, l]));
         let updated = 0, notFound = 0;
-        // 2026-09-17修正：ユーザー報告「もともと反映されていたもの（振込確定待ち等）に
-        // PLエラーが出ている」に対応した重大なバグ修正。従来はsd_apiGetLinesの応答に
-        // 該当行が見つからない（GAS側の一過性の不調で一部だけ欠落して返ってきた等）場合、
-        // 「plStatusが無い＝PLエラー」と決めつけてDBを上書きしていた。実際には精算書側の
-        // 登録自体は生きているのに、状態確認の一時的な取得失敗だけで既存の正しい状態
-        // （振込確定待ち等）を消し去ってしまう不具合だった。見つからなかった行は状態を
-        // 一切変更しない（前回の状態のまま）方針に変更し、確認できなかった件数だけ
-        // notFoundとして呼び出し元へ返す
+        // 2026-09-19追加（実装指示書§5.7）：ユーザー報告「秋葉原肉寿司4件のうち3件が
+        // 『状態を更新』で確認できない」に対応。従来はnotFoundの件数しか返しておらず、
+        // 「どの明細が・なぜ見つからないか」が画面から一切分からなかった（担当者が精算書
+        // シート側の外部参照ID列を手で1件ずつ突き合わせる必要があった）。見つからなかった
+        // 行の科目名・費目名・sourceKey（＝精算書シートの「外部参照ID」列に入っているはずの
+        // 値）とGAS側が返したerror文言（店舗/DBシート自体が見つからない場合のみ設定される。
+        // それ以外の「単に一致する行が無い」場合はGAS側にerrorという概念自体が無いので固定文言
+        // を補う）をnot_found_detailsとして返し、ポップアップ・反映履歴カードの両方で
+        // sourceKeyまで開示することで、精算書シート側の突き合わせ依頼・担当A/司令塔への
+        // 報告がこの画面の情報だけで完結するようにする
+        const notFoundDetails: { id: string; label: string; source_key: string; reason: string }[] = [];
         for (const r of rows) {
           const line = bySourceKey.get(r.seisan_line_key);
-          if (!line || !line.plStatus) { notFound++; continue; }
+          if (!line || !line.plStatus) {
+            notFound++;
+            const label = `${r.account_name || ""}${r.sub_account_name ? "/" + r.sub_account_name : ""}${r.item_name ? "（" + r.item_name + "）" : ""}`;
+            const reason = line?.error
+              ? line.error
+              : "精算書シートの「外部参照ID」列にこのIDと一致する行が見つかりません（行が消された・まとめられた・IDが書き換わった可能性）";
+            notFoundDetails.push({ id: r.id, label, source_key: r.seisan_line_key, reason });
+            continue;
+          }
           await db.from("invoice_pl_reflections").update({ pl_status: line.plStatus, pl_status_checked_at: new Date().toISOString() }).eq("id", r.id);
           updated++;
         }
-        return json({ success: true, updated, not_found: notFound });
+        return json({ success: true, updated, not_found: notFound, not_found_details: notFoundDetails });
       } catch (e) {
         return json({ error: "精算書APIの呼び出しに失敗しました: " + String((e as Error)?.message ?? e) }, 500);
       }
