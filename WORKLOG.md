@@ -6,6 +6,25 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
+**★★★★★2026-09-19（担当Cスレッド）§5.7「状態を更新で3件（実際は4件とも）確認できない」を調査・sourceKey一覧を担当Aへ引き継ぎ＋恒久改善（BUILD_TAG=2026-09-19-v15）**: 実装指示書§5.7の担当C分を実行。
+
+1. **DB側の比較**: `invoice_pl_reflections`（reflection_route=seisan・秋葉原肉寿司・2026-08）の対象4行は以下（全て`sheet_sync_error=null`・`sheet_synced_at`も設定済み＝**登録自体（`sd_apiAddExternalLine`）は4件とも当初成功していた**ことを確認）:
+
+   | 明細 | invoice_id | seisan_line_key（sourceKey） | sheet_synced_at |
+   |---|---|---|---|
+   | GOSSO 702／通信費・システム使用料 | 6e3520e4 | `invoice:6e3520e4...:14cc9355...` | 09-15 06:19 |
+   | GOSSO 702／仕入高・GOSSO仕入(8%) | 6e3520e4 | `invoice:6e3520e4...:89ef29ec...` | 09-15 05:59 |
+   | GOSSO 702／GOSSO・ロイヤリティ | 6e3520e4 | `invoice:6e3520e4...:e08d4b74...` | 09-15 05:45 |
+   | 榎本酒類 700／仕入高・榎本酒類(8%) | 79b14e0c | `invoice:79b14e0c...:e10f23a4...` | 09-15 06:24 |
+
+   ns-portal側のsourceKey生成（`invoice:<invoice_id>:<reflection_id>`）は4件とも同じ規則で一意・正常。**違いはns-portal側の形式にはなく、精算書シート側の「外部参照ID」列の中身にある**（司令塔の仮説どおり）。
+
+2. **診断（使い捨てEdge Function・調査後delete済み）で現時点のGAS応答を直接確認**: `sd_apiGetLines`にこの4件のsourceKeyをそのまま投げたところ、**4件とも`found:false`**（§5.7時点で「1件＝榎本酒類は見つかった」とされていたが、現時点では榎本酒類も含めて4件とも見つからない状態に変化している）。ns-portal・精算GAS間の疎通・認証・店舗名解決は正常（`error`は返っていない＝店舗・DBシート自体は見つかっている）ため、**精算書シート側でこの4行の「外部参照ID」列の値が変わった（または行自体が編集・削除された）可能性が高い**。担当Aへ4件のsourceKeyをSendMessageで連携済み。
+3. **恒久改善**: `pl-fee-reflect`の`seisan_refresh_status`が返す`not_found`を**件数だけ→`not_found_details`（科目/費目ラベル・sourceKey・理由）の配列**に拡張し、`invoices.html`のポップアップで1件ずつ表示するように変更。無言の「3件確認できません」をやめ、sourceKeyが直接コピペできる形にしたことで、今後同じ問題が起きても担当Aへの確認依頼がこの文言だけで完結する。
+4. **復旧手順の案内**（ポップアップ内にも同文言を掲載）: 精算書シート側でsourceKeyが本当に無い/書き換わっていると確認できた場合は、この請求書の反映カードから「↩️ 取り消す」→もう一度「業務委託精算書へ登録する」で再登録すれば、新しいsourceKeyで冪等に復旧する（`unconfirm`は既存機能）。ただし取り消し前に精算書シート側で該当行が本当に消えている（二重登録にならない）ことの確認を先にすること。
+
+commit: [0541d3a](https://github.com/mirai-oss/ns-portal/commit/0541d3a)。GitHub Pages・Edge Function両方デプロイ確認済み。**次は担当Aが精算書DBシート（秋葉原肉寿司・2026-08）で4件のsourceKeyの「外部参照ID」列を確認する番**。
+
 **★★★★★★2026-09-19 最新（担当Aスレッド・続き）A-11b（精算D側セッション共通化）実装完了・ユーザー手貼り待ち＋副次バグ1件発見・修正**: 司令塔指示§5.2②のとおり、精算D（seisan-dashboard）のセッション保存をtori-dashboardと同じ方式（PropertiesService+ds_sessions・SESSION_BACKENDフラグで新旧併用・sliding TTL）へ移行。真因だった「CacheService 6時間固定・延長なし」を解消。`index.html`のAPIリトライも0.5/1.5秒2回→1/2/4/8秒4回へ強化し再試行中の進捗表示を追加（コミット[7cb03df](https://github.com/mirai-oss/seisan-dashboard/commit/7cb03df)・index.htmlはGitHub Pagesで自動反映済み、`gas/SeisanDashboard.gs`はユーザーの手貼り必須）。**副次的に発見**: 2026-09-10追加の`sd_apiUploadAttachment`（ns-portal請求書→精算書への添付ファイル自動連携用）が`SD_API_WHITELIST`/`sd_apiFnMap_`に未登録で、ライブに存在していても呼び出せない状態だったバグも同時に修正。手貼り手順書＋§5.7②（9/10コミットのライブ存在確認依頼）を[docs/手順書_2026-09-19_精算D_GASセッション共通化.md](docs/手順書_2026-09-19_精算D_GASセッション共通化.md)にまとめてユーザーへ送付済み・回答待ち。**§5.7①（秋葉原肉寿司3件のsourceKey確認）は担当Cからの連絡待ちで未着手**（届き次第、精算書DBシートの外部参照ID列・備考列で存在確認する）。次はA-12（D.pl.filter(r=>!r.store)確認→KPI/PL表の主経路切替）。
 
 **★★★2026-09-19（担当Dスレッド・続き）司令塔の§5.7貼り付け文どおりD-9=台帳TK-25をon_holdへ担当Hへ依頼→反映確認・TK-64残/TK-66は継続**: 司令塔指示書§5.7の担当D分を実行。D-9（インフォマートAPI）はユーザー方針「とりあえずなし」で保留済み（直下のエントリで対応済み）なので、AI開発コックピットの台帳側も実態に合わせるため、稼働中の【担当H】セッションへSendMessageでTK-25のon_hold化を依頼（理由・背景リンク付き）。**担当Hから反映完了の返信あり**（status=blocked・blocker「⏸保留(on_hold)・9/19ユーザー指示・再開指示待ち」・TK-187としてロケットナウPhase2=完成済み登録doneも追加）。担当Hの返信内で「5.4-④回答済みに伴うdelivery_store_map登録（セントラルキッチン）」が担当D残タスクとして挙がっていたが、これは本日すでに完了済み（直下のエントリ参照）だったため、担当Hへ完了済みである旨を返信。**担当Hが台帳に未登録だったことを確認しTK-194として新規登録のうえdone処理済み**（9/19・ユーザーSQL実行・実機確認済みの旨を記録）。D残タスクの認識（TK-64=残2ジョブ／TK-66=監視／TK-25=保留）も担当Hと一致。担当D側の残タスク: TK-64残り2ジョブのうちsmaregi-payroll.jsはMac miniでの実施待ち（[指示書](docs/指示書_TK64_smaregi-payroll除外事業所通知_2026-09-19.md)発行済み）・dinii-questionnaire.jsはGAS側実装＋Mac miniデプロイが必要（未着手）。TK-66（sync_status_v）は完了済みで監視に使うのみ。
