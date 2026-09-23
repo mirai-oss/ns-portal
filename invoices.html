@@ -624,7 +624,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-09-23-v16";
+const BUILD_TAG="2026-09-23-v17";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -4916,7 +4916,7 @@ function wireDetailActions(u){
     if(invoice.mf_journal_id) msg=`⚠️既にマネーフォワードへ仕訳登録済み（伝票番号: ${invoice.mf_journal_number??"-"}）です。この削除ではマネーフォワード側の仕訳は取り消されません（ローカルの記録だけが消え、追跡できなくなります）。テスト登録の後片付け以外では使わないでください。本当に削除しますか？`;
     if(!confirm(msg)) return;
     const r=await deleteInvoiceRecord(invoice.id);
-    if(!r.ok){ alert("削除に失敗しました"); return; }
+    if(!r.ok){ alert("削除に失敗しました: "+(r.body?.message||r.body?.error||"原因不明（担当Cまでこの画面のまま連絡してください）")); return; }
     history.back();
   };
 
@@ -6086,7 +6086,16 @@ function unifiedRowHtml(r){
 // 未対応だった（invoice_stores・invoice_task_eventsはON DELETE CASCADEのため元から問題無し）。
 // 実際に失敗した請求書（テストデータ）はinvoice_attachmentsに1件残っておりそれが原因と確認済み。
 // 3テーブルとも事前削除の対象に追加した
+// 2026-09-23再修正：ユーザー報告「削除に失敗しました」が再発。9/7以降に新設した外部キー2件が
+// 未対応だった：①hq_tasks.exception_invoice_id（2026-09-11・本部タスクの例外連携）②
+// ar_receivables.linked_invoice_id/mf_journal_id等（2026-09-15・売上入金からの仕訳作成）。
+// どちらもinvoicesを「削除」ではなく「参照」しているだけの列なので、行ごと消すのではなく
+// 参照列だけnullに戻す（本部タスクや売上入金の記録自体は残す）。あわせて、原因究明のたびに
+// 外部キーを1個ずつ洗い出す手間を減らすため、失敗時にPostgRESTのエラー本文（どのテーブル・
+// 制約で失敗したか）をそのままアラートに出すよう呼び出し元2箇所も変更した
 async function deleteInvoiceRecord(invoiceId,opts){
+  await authed(`/rest/v1/hq_tasks?exception_invoice_id=eq.${invoiceId}`,{method:"PATCH",body:JSON.stringify({exception_invoice_id:null}),headers:{Prefer:"return=minimal"}}).catch(()=>{});
+  await authed(`/rest/v1/ar_receivables?linked_invoice_id=eq.${invoiceId}`,{method:"PATCH",body:JSON.stringify({linked_invoice_id:null,mf_journal_id:null,mf_journal_number:null,mf_journal_created_at:null}),headers:{Prefer:"return=minimal"}}).catch(()=>{});
   await authed(`/rest/v1/invoice_pl_reflections?invoice_id=eq.${invoiceId}`,{method:"DELETE",headers:{Prefer:"return=minimal"}}).catch(()=>{});
   await authed(`/rest/v1/vendor_bank_account_change_requests?invoice_id=eq.${invoiceId}`,{method:"DELETE",headers:{Prefer:"return=minimal"}}).catch(()=>{});
   await authed(`/rest/v1/invoice_attachments?invoice_id=eq.${invoiceId}`,{method:"DELETE",headers:{Prefer:"return=minimal"}}).catch(()=>{});
@@ -6102,7 +6111,7 @@ async function unifiedDeleteInvoice(u,invoiceId){
   if(row&&row.mf_journal_id) msg=`⚠️「${esc(name)}」は既にマネーフォワードへ仕訳登録済み（伝票番号: ${row.mf_journal_number??"-"}）です。この削除ではマネーフォワード側の仕訳は取り消されません（ローカルの記録だけが消え、追跡できなくなります）。テスト登録の後片付け以外では使わないでください。本当に削除しますか？`;
   if(!confirm(msg)) return;
   const r=await deleteInvoiceRecord(invoiceId);
-  if(!r.ok){ alert("削除に失敗しました"); return; }
+  if(!r.ok){ alert("削除に失敗しました: "+(r.body?.message||r.body?.error||"原因不明（担当Cまでこの画面のまま連絡してください）")); return; }
   await renderUnifiedInvoiceTab(u);
 }
 function unifiedRender(u){
