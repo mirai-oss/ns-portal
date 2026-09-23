@@ -624,7 +624,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-09-23-v18";
+const BUILD_TAG="2026-09-23-v19";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -6100,18 +6100,21 @@ function unifiedRowHtml(r){
 // invoice_attachmentsを先に消そうとして（invoices側からの参照が残っているため）失敗し、
 // それを.catch(()=>{})で握りつぶしていたため、後続のinvoices本体の削除で
 // 「invoice_attachmentsがまだ参照している」という一見矛盾したエラーになっていた。
-// invoice_attachmentsを消す前にinvoices.attachment_idを先にnullへ戻すことで解消する
+// →invoices.attachment_idを先にnullへ戻す1行を追加したがそれでも再現。
+// 2026-09-23再修正③（真因）：invoices.attachment_idは実際には既にnullだった。
+// 本当の原因は、invoice_attachments・invoice_comments共にRLSがSELECTしか許可しておらず
+// （書き込みはEdge Function/RPC経由という設計。invoice_commentsも実際は
+// invoice_add_commentというSECURITY DEFINER RPC経由でしか投稿できない）、クライアント
+// 自身のJWTで送っていた直接DELETEが常にRLSで弾かれ0件のまま無言で失敗し
+// （`.catch(()=>{})`で握りつぶされていた）、行が残ったままinvoices本体のDELETEに進んで
+// 同じエラーを繰り返していたこと。新設のinvoice-delete Edge Function（service_roleで
+// RLSを完全にバイパスし、削除前クリーンアップから本体削除まで1つの権限で確実に行う）へ
+// 置き換えた
 async function deleteInvoiceRecord(invoiceId,opts){
-  await authed(`/rest/v1/invoices?id=eq.${invoiceId}`,{method:"PATCH",body:JSON.stringify({attachment_id:null}),headers:{Prefer:"return=minimal"}}).catch(()=>{});
-  await authed(`/rest/v1/hq_tasks?exception_invoice_id=eq.${invoiceId}`,{method:"PATCH",body:JSON.stringify({exception_invoice_id:null}),headers:{Prefer:"return=minimal"}}).catch(()=>{});
-  await authed(`/rest/v1/ar_receivables?linked_invoice_id=eq.${invoiceId}`,{method:"PATCH",body:JSON.stringify({linked_invoice_id:null,mf_journal_id:null,mf_journal_number:null,mf_journal_created_at:null}),headers:{Prefer:"return=minimal"}}).catch(()=>{});
-  await authed(`/rest/v1/invoice_pl_reflections?invoice_id=eq.${invoiceId}`,{method:"DELETE",headers:{Prefer:"return=minimal"}}).catch(()=>{});
-  await authed(`/rest/v1/vendor_bank_account_change_requests?invoice_id=eq.${invoiceId}`,{method:"DELETE",headers:{Prefer:"return=minimal"}}).catch(()=>{});
-  await authed(`/rest/v1/invoice_attachments?invoice_id=eq.${invoiceId}`,{method:"DELETE",headers:{Prefer:"return=minimal"}}).catch(()=>{});
-  await authed(`/rest/v1/invoice_comments?invoice_id=eq.${invoiceId}`,{method:"DELETE",headers:{Prefer:"return=minimal"}}).catch(()=>{});
-  await authed(`/rest/v1/payroll_journal_records?invoice_id=eq.${invoiceId}`,{method:"DELETE",headers:{Prefer:"return=minimal"}}).catch(()=>{});
-  const r=await authed(`/rest/v1/invoices?id=eq.${invoiceId}`,{method:"DELETE",headers:{Prefer:"return=minimal"}});
-  return r;
+  const s=sess.get();
+  const r=await fetch(SUPA_URL+"/functions/v1/invoice-delete",{method:"POST",headers:{"Content-Type":"application/json","apikey":SUPA_KEY,"Authorization":"Bearer "+(s?s.at:"")},body:JSON.stringify({invoice_id:invoiceId})});
+  const j=await r.json().catch(()=>({}));
+  return {ok:r.ok,body:j};
 }
 async function unifiedDeleteInvoice(u,invoiceId){
   const row=UNIFIED_STATE.rows.find(r=>r.id===invoiceId);
