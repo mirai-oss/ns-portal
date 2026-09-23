@@ -624,7 +624,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-09-23-v19";
+const BUILD_TAG="2026-09-23-v20";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -2896,8 +2896,14 @@ function arjFillRealAmounts(branches){
   const expected=Number(row.expected_amount)||0, fee=Number(row.fee_amount)||0;
   const dep=ARJ_STATE.storeDepartmentId||"";
   // 2026-09-17追加：部門も未設定なら店舗の部門で埋める（PL反映パネルの自動検出のため）。
-  // 仕訳辞書・過去の仕訳が既に部門を持っていればそちらを優先し、上書きはしない
-  const fillDept=b=>{ if(!b.department_id&&dep) b.department_id=dep; if(!b.credit_department_id&&dep) b.credit_department_id=dep; };
+  // 2026-09-23修正：当初は「仕訳辞書・過去の仕訳が既に部門を持っていればそちらを優先し、
+  // 上書きしない」仕様にしていたが、ユーザー報告「別店舗の仕訳が自動で選ばれて、部門も
+  // その別店舗のまま残ってしまう」で発覚した不具合を受けて方針を変更。source_name（例
+  // 「PayPay加盟店」）だけで過去の仕訳・仕訳辞書を検索するため、たまたま最初にヒットした
+  // 別店舗ぶんの部門がそのまま残ってしまっていた。部門は勘定科目と違い「今回処理している
+  // ar_receivables行の店舗」に必ず一致すべき値なので、storeDepartmentIdが解決できている
+  // 場合は常にそちらで上書きする（勘定科目・税区分は引き続き過去の仕訳/仕訳辞書を尊重）。
+  const fillDept=b=>{ if(dep){ b.department_id=dep; b.credit_department_id=dep; } };
   if(branches.length===2){
     const amounts=[expected,fee], suffixes=["売上","手数料"];
     branches.forEach((b,i)=>{
