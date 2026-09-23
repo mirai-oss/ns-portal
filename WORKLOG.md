@@ -6,7 +6,7 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
-**★★★★★★★★2026-09-23（Mac miniセッション）トーホーエージェンシー PayPay加盟店パネルの入金自動取込を新規実装＋売上入金の仕訳作成で部門が別店舗のまま残るバグ修正**: ユーザー依頼でPayPay for Business（加盟店パネル・QRコード決済）の店舗別月次入金を自動取込む`ns-daily-import/tasks/paypay-merchant-deposit.js`を新規実装（ロケットナウと違いBigQuery層は無し・直接ar_receivablesへ登録）。2店舗（匠味川崎店=440,518円/芝の鳥一代芝店=1,332,561円）で実機検証し画面表示と完全一致を確認、ユーザー承認のうえ本番実行（鶏武者川崎店2026年8月分をar_receivablesへ実登録）。作業中、生成したMF仕訳作成モーダルのスクリーンショットで**部門（飲食売上側）が別店舗（01本店）のまま**になっているとユーザーから指摘があり調査。`invoices.html`の`arjFillRealAmounts`が「過去の仕訳・仕訳辞書に既に部門があれば上書きしない」仕様だったため、source_name（例「PayPay加盟店」）だけで検索してたまたまヒットした別店舗ぶんの過去仕訳の部門が残ってしまうバグと判明。部門は勘定科目と違い今回処理中の店舗に必ず一致すべき値のため、`storeDepartmentId`解決時は常に上書きするよう修正（勘定科目・税区分は引き続き過去データを尊重）。invoicesコミット[d8738d4](https://github.com/mirai-oss/ns-portal/commit/d8738d4)・BUILD_TAG `2026-09-23-v20`・push済み。**PayPay側のPlaywright店舗マッピングは`鶏武者 川崎店`のみ確定済み**（PayPay登録名「匠味 川崎店」と社内店舗名が不一致・corporation="トーホー"で実機確認）。残り店舗（新横浜店・芝店・新橋店・本店・恵比寿店・はなれ）は次セッションでマッピング確認→STORE_MAP追記→毎月3日の自動スケジュール登録が必要（ns-daily-import/WORKLOG.md参照）。
+**★★★★★★★★2026-09-23（Mac miniセッション・完了）トーホーエージェンシー PayPay加盟店パネルの入金自動取込を実装完了（全7店舗）＋売上入金の仕訳作成で部門が別店舗のまま残るバグ修正**: ユーザー依頼でPayPay for Business（加盟店パネル・QRコード決済）の店舗別月次入金を自動取込む`ns-daily-import/tasks/paypay-merchant-deposit.js`を新規実装（ロケットナウと違いBigQuery層は無し・直接ar_receivablesへ登録）。全7店舗（川崎・新横浜・芝・新橋・本店・恵比寿・はなれ）のマッピング・実機検証が完了し、2026年8月分を一括実行で全店舗正しく`ar_receivables`へupsert済み（詳細な罠と対策はns-daily-import/WORKLOG.md参照）。毎月3日07:20の自動スケジュールも登録済み（`config.js`の`MONTHLY_SCHEDULE`）。ns-daily-importコミット[94cee6c](https://github.com/mirai-oss/ns-daily-import/commit/94cee6c)・push済み。作業中、生成したMF仕訳作成モーダルのスクリーンショットで**部門（飲食売上側）が別店舗（01本店）のまま**になっているとユーザーから指摘があり調査。`invoices.html`の`arjFillRealAmounts`が「過去の仕訳・仕訳辞書に既に部門があれば上書きしない」仕様だったため、source_name（例「PayPay加盟店」）だけで検索してたまたまヒットした別店舗ぶんの過去仕訳の部門が残ってしまうバグと判明。部門は勘定科目と違い今回処理中の店舗に必ず一致すべき値のため、`storeDepartmentId`解決時は常に上書きするよう修正（勘定科目・税区分は引き続き過去データを尊重）。invoicesコミット[d8738d4](https://github.com/mirai-oss/ns-portal/commit/d8738d4)・BUILD_TAG `2026-09-23-v20`・push済み。**川崎店の2026年8月分は元々手動入力済みのものにテスト目的で重複投入しているため、ユーザー側で後日削除予定（本人了承済み）**。
 
 **★★★★★★★★2026-09-23 最新（担当Aスレッド）推移分析「年初来×営業区分絞込」で古い月が¥0になるバグを修正**: 担当Dから引き継がれたバグ（下記エントリ）を調査。担当Dの「多段タイムアウト」仮説は**採用せず**（コード上、BQ・シートフォールバックどちらも月数は正しく絞り込まれており、タイムアウトを疑う根拠は無かった）、実際に`app.js`を追って別の真因を特定: `bqMonthsForMedia_()`（9/19対応で年初来なら経過月数+12ヶ月を要求するよう既に修正済み）は**`fetchMediaBQ()`が実際に呼ばれたときにしか効かない**が、`fetchMediaBQ()`はページ読み込み時（既定「直近30日」＝3ヶ月分）にしか呼ばれておらず、ユーザーが後から「年初来」や「営業区分」に切り替えても`App.set()`は状態を書き換えて再描画するだけでD.mediaを再取得していなかった（＝D.mediaは常に最初の3ヶ月分のまま）。絞込無し（「全体」）表示は`fetchAnalysisKd_`という別経路（常に全期間を読む）を使うため無関係で正しく見えていた。**修正**: 必要な月数が既読込み月数を超えたときだけ`fetchMediaBQ()`を再取得する`ensureMediaMonths_()`を追加し、`aRange`/`aSeg`/`cStart`/`cEnd`変更時に`App.set()`から呼ぶようにした。あわせて、調査中に見つけた`bqMonthsForMedia_()`の期間指定(custom)分岐の型バグ（`parseDateStr()`の戻り値＝epoch ms数値に直接`.getFullYear()`を呼んで必ず例外→シートフォールバックに握りつぶされていた）も修正。ローカルのサンプルデータ（demoアカウント`shacho`/`tori2026`＋コンソールでS.useBqDaily/S.auth.tokenを疑似設定）で、aRange変更時に必要月数(19〜31ヶ月)を正しく検知して再取得がトリガーされること・custom範囲で例外が出ないこと・UI操作（年初来ボタン・営業区分プルダウン）でconsoleエラーが出ないことを確認済み。tori-dashboardコミット[c2d25b5](https://github.com/mirai-oss/tori-dashboard/commit/c2d25b5)・push済み（GitHub Pages自動反映・GAS変更なし）。**BQモード本番（実データ・実際のBigQuery接続）での最終確認はユーザー実機待ち**。
 
@@ -8908,3 +8908,23 @@ flakinessへのリトライ追加等）はns-daily-import/WORKLOG.md 2026-09-14�
 ## 2026-09-19（担当Hセッション）台帳をラウンド6§5.5＋ユーザー補足指示に同期
 
 ①新規: **TK-183 A-11b**（精算D共通セッション・A・ready・unblocks→TK-191）／**TK-184 A-12**（PL主経路切替・in_progress・TK-60を統合）／**TK-185 A-14**（精算書スピード・ready）／**TK-193**（GOSSO3件が精算書側で見つからない調査・C・high・A支援=9/19ユーザー指示）②完了登録: TK-186 A-11a／TK-187 ロケットナウPhase2／**TK-63 kd_サマリ4本（unblocks作動でTK-61=A-13が自動ready化）**／5.4-①④⑤=TK-188〜190（ユーザー回答済み）③TK-60=cancelled（A-12へ統合）／TK-61=A-13として継続（note更新）④**TK-25 D-9=保留(on_hold)**（blocked+保留blocker。API取得データが想定と異なり方針転換・再開指示待ち。担当Dセッションからの依頼とも一致）⑤TK-191（プロパティ投入）=backlog・A-11b完了で自動ready／TK-192（ログイン体感）=waiting_human。TK-86/92/93のdoneは確認のみ（反映済みだった）
+
+## 2026-09-23（Mac miniセッション）トーホーエージェンシー PayPay加盟店パネル入金取込・全7店舗完了
+
+ユーザー依頼「PayPay加盟店パネルの売上入金明細を毎月3日に前月分自動取込→売上入金へ」に対応
+（1店舗テスト→数字確認→2店舗目テスト→本番投入→残り店舗の自動化、の順で段階承認）。
+実装詳細・実機で踏んだ罠（非同期CSV生成／zipマルチファイル分割／アカウント単位の同意モーダル／
+店舗選択リストの仮想スクロール／完全一致クリックへの変更）は`ns-daily-import/WORKLOG.md`の
+同日エントリに記載。
+
+**結果**: 全7店舗（川崎・新横浜・芝・新橋・本店・恵比寿・はなれ）のPayPay表示名↔社内store_id
+マッピングを実機確認のうえ確定し、2026年8月分を一括実行で全店舗正しく`ar_receivables`へ
+upsert（1回の実行で2分20秒・失敗0件）。毎月3日07:20の自動スケジュールを`config.js`の
+`MONTHLY_SCHEDULE`に登録済み。ns-daily-importコミット
+[94cee6c](https://github.com/mirai-oss/ns-daily-import/commit/94cee6c)・push済み。
+
+あわせて発見した`invoices.html`のMF仕訳部門バグ（過去仕訳流用時に別店舗の部門が残る）も修正・
+コミット[d8738d4](https://github.com/mirai-oss/ns-portal/commit/d8738d4)・push済み。
+
+**ユーザーへの申し送り**: 川崎店の2026年8月分は元々手動入力済みのものにテスト目的で重複投入して
+いるため、ユーザー側で後日削除予定（本人了承済み）。
