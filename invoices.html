@@ -624,7 +624,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-09-23-v17";
+const BUILD_TAG="2026-09-23-v18";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -6093,7 +6093,16 @@ function unifiedRowHtml(r){
 // 参照列だけnullに戻す（本部タスクや売上入金の記録自体は残す）。あわせて、原因究明のたびに
 // 外部キーを1個ずつ洗い出す手間を減らすため、失敗時にPostgRESTのエラー本文（どのテーブル・
 // 制約で失敗したか）をそのままアラートに出すよう呼び出し元2箇所も変更した
+// 2026-09-23再修正②：上記デプロイ後もユーザーで再現。表示された実際のDBエラーで
+// invoice_attachments_invoice_id_fkey違反と判明——invoices.attachment_id（2026-08-23の
+// 当初設計から存在する「請求書に紐づく代表添付」列）がinvoice_attachments(id)を参照する
+// 循環参照になっており、invoices行がまだattachment_idで特定の添付を指したまま
+// invoice_attachmentsを先に消そうとして（invoices側からの参照が残っているため）失敗し、
+// それを.catch(()=>{})で握りつぶしていたため、後続のinvoices本体の削除で
+// 「invoice_attachmentsがまだ参照している」という一見矛盾したエラーになっていた。
+// invoice_attachmentsを消す前にinvoices.attachment_idを先にnullへ戻すことで解消する
 async function deleteInvoiceRecord(invoiceId,opts){
+  await authed(`/rest/v1/invoices?id=eq.${invoiceId}`,{method:"PATCH",body:JSON.stringify({attachment_id:null}),headers:{Prefer:"return=minimal"}}).catch(()=>{});
   await authed(`/rest/v1/hq_tasks?exception_invoice_id=eq.${invoiceId}`,{method:"PATCH",body:JSON.stringify({exception_invoice_id:null}),headers:{Prefer:"return=minimal"}}).catch(()=>{});
   await authed(`/rest/v1/ar_receivables?linked_invoice_id=eq.${invoiceId}`,{method:"PATCH",body:JSON.stringify({linked_invoice_id:null,mf_journal_id:null,mf_journal_number:null,mf_journal_created_at:null}),headers:{Prefer:"return=minimal"}}).catch(()=>{});
   await authed(`/rest/v1/invoice_pl_reflections?invoice_id=eq.${invoiceId}`,{method:"DELETE",headers:{Prefer:"return=minimal"}}).catch(()=>{});
