@@ -928,6 +928,16 @@ async function plfeeLoadJournalGroups(){
   if(r.ok&&r.body.transaction_date) PLFEE_STATE.yearMonth=r.body.transaction_date.slice(0,7)+"-01";
   const branches=(r.ok&&Array.isArray(r.body.branches))?r.body.branches:[];
   const already=new Set((PLFEE_STATE.reflections||[]).map(x=>(x.account_name||"")+""+(x.sub_account_name||"")));
+  // 2026-09-23追加: 部門(department_name)が業務委託精算書ルートの店舗を指す借方は、直接反映専用の
+  // 「PL連携対象科目」ホワイトリスト判定の対象外にする（seisan_confirmはこのホワイトリストを見ないため、
+  // 未登録でも精算書へは正しく登録できる。従来は科目未登録というだけでここで弾かれ、精算書登録時に
+  // 勘定科目・補助科目が毎回空欄になっていた＝ユーザー報告の原因）。
+  const invoiceCorpId=PLFEE_STATE.ctx.corporationId;
+  const isSeisanBranch=(d)=>{
+    if(!d.department_name) return false;
+    const store=plfeeFindStoreByName(PLFEE_STATE.stores,d.department_name);
+    return !!(store&&plfeeSeisanRoute(store,invoiceCorpId)==="seisan");
+  };
   const map=new Map();
   for(const b of branches){
     const d=b.debit;
@@ -938,7 +948,7 @@ async function plfeeLoadJournalGroups(){
     // 通してしまう。以前はaccount_nameに結合文字列が入っていたため、実質どの仕訳も
     // 一致せず自動検出候補に出てこなかった）
     const dSub=d.sub_account_name||"";
-    if(!targets.some(t=>t.account_name===d.account_name&&(t.sub_account_name||"")===dSub)) continue; // PL科目として未登録の科目は対象外
+    if(!isSeisanBranch(d)&&!targets.some(t=>t.account_name===d.account_name&&(t.sub_account_name||"")===dSub)) continue; // PL科目として未登録の科目は対象外（精算書ルートの借方を除く）
     const key=d.account_name+""+(d.sub_account_name||"");
     if(already.has(key)) continue;
     if(!map.has(key)) map.set(key,{accountName:d.account_name, subAccountName:d.sub_account_name||"", branches:[]});
@@ -1064,6 +1074,7 @@ function plfeeSeisanSectionHtml(){
     ${plfeeYmFieldHtml("plfee-seisan-ym")}
     <div class="ai-grid">
       <div class="ai-field"><small>勘定科目（精算書の「勘定科目」列）</small><input id="plfee-seisan-account" value="${esc(PLFEE_STATE.currentAccount||"")}" placeholder="例: 水道光熱費"></div>
+      <div class="ai-field"><small>補助科目（精算書の「補助科目」列・任意）</small><input id="plfee-seisan-subaccount" value="${esc(PLFEE_STATE.currentSubAccount||"")}" placeholder="例: GOSSO株式会社"></div>
       <div class="ai-field"><small>費目名（精算書の「費目名」列）</small><input id="plfee-seisan-item" value="${esc(PLFEE_STATE.seisanItemName??PLFEE_STATE.currentAccount??"")}" placeholder="例: 電気代"></div>
       <div class="ai-field"><small>税率</small><select id="plfee-seisan-tax">${["10%","8%","非課税"].map(t=>`<option value="${t}" ${(PLFEE_STATE.seisanTaxRate||"10%")===t?"selected":""}>${t}</option>`).join("")}</select></div>
     </div>
@@ -1087,6 +1098,7 @@ function plfeeWireSeisanSection(){
   // 2026-09-05追加：グループ自動検出が0件（PL科目未登録の科目のみ等）でこの欄を開いた場合に
   // 備え、勘定科目を直接入力できるようにした（グループ選択済みならその値を初期値に使う）
   if($("plfee-seisan-account")) $("plfee-seisan-account").oninput=()=>{ PLFEE_STATE.currentAccount=$("plfee-seisan-account").value; };
+  if($("plfee-seisan-subaccount")) $("plfee-seisan-subaccount").oninput=()=>{ PLFEE_STATE.currentSubAccount=$("plfee-seisan-subaccount").value; };
   if($("plfee-seisan-ym")) $("plfee-seisan-ym").onchange=()=>{ PLFEE_STATE.yearMonth=$("plfee-seisan-ym").value+"-01"; };
   document.querySelectorAll(".plfee-seisan-store").forEach(el=>el.onchange=()=>{
     const idx=+el.dataset.idx, s=PLFEE_STATE.stores.find(x=>x.id===el.value);
