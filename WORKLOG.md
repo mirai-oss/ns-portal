@@ -6,6 +6,8 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
+**★★★★★★★2026-09-23 最新（担当Aスレッド）`.slice(0,80)`切り詰めバグを修正＋GOSSO3件のデータ復旧関数を追加、ユーザー手貼り待ち**: 担当Cの根本原因確定（`sd_apiAddExternalLine`のsourceKey上限80文字が、常に81文字のinvoice由来sourceKeyの末尾1文字を保存のたびに切り捨てていた＝invoice連携全体に影響する構造的バグ）を受け、上限を200文字へ拡張（コミット[0be670d](https://github.com/mirai-oss/seisan-dashboard/commit/0be670d)）。あわせて、既に欠けた値で保存済みのGOSSO株式会社3明細（秋葉原肉寿司2026-08）を正しい81文字の値へ書き戻す一時復旧関数`sd_fixTruncatedExtRef_akihabara_20260923`を追加（セルの現在値が「欠けている前提の値」と完全一致する場合のみ上書きする安全設計・エディタから手動で1回実行）。手貼り手順はブラウザで開けるページに作り直して送付済み（Markdown添付が開けないとの報告を受けアーティファクト形式に変更）。**榎本酒類700の1件は未解決**（現在のDB行のsourceKeyが2026-08シートのどこにも存在しない＝再登録が実際にはシートへ書き込まれていない可能性。担当Cへ調査継続を依頼中）。反映され次第、担当Cに再度`sd_apiGetLines`で4件確認してもらう。
+
 **★★★★★★2026-09-23（担当Cスレッド）§5.7ついに根本原因確定: `sd_apiAddExternalLine`の`.slice(0,80)`が81文字のsourceKeyを1文字切り捨てている（GOSSO3件は確定・全件に影響する可能性・榎本酒類1件は別問題で未解決）**: 担当Aが追加した`sd_apiDebugExtRef`（診断用Edge Function経由で叩き、テスト後delete済み）の結果を1文字単位で比較。
 
 - **GOSSO 702の3明細は3件とも「シートのextRef＝ns-portalのsourceKeyを80文字にスライスした値」と完全一致**することを確認（例: 通信費の行はシート側`...df65fb28d69`＝こちら側`...df65fb28d690`の末尾"0"を欠いた80文字）。原因は`gas/SeisanDashboard.gs:1696`の`var sourceKey = String(line.sourceKey || '').trim().slice(0, 80);`。**ns-portal側のsourceKey形式`invoice:<uuid>:<uuid>`は常に81文字**（"invoice:"8＋uuid36＋":"1＋uuid36）のため、**書き込み側（`sd_apiAddExternalLine`）は必ず末尾1文字を切り捨てて保存するが、読み取り側（`sd_apiGetLines`）は切り捨てずに完全一致比較する**——invoice由来のsourceKeyを使う限り、この構造では**理論上全ての「状態を更新」が永久に一致しない**（今回の4件に限らない可能性が高い）。register時（`seisan_confirm`）自体はDB側を直接更新するため気づかれにくいが、その後の「状態を更新」は常に空振りしていたとみられる。
