@@ -3078,6 +3078,24 @@ function arjRenderForm(){
   $("arj-save-template").onclick=arjSaveAsTemplate;
   $("arj-register").onclick=arjSubmitJournal;
 }
+// 2026-09-24新規：ユーザー指示「管理システムの添付がzipで中身がその場で確認できないから、
+// PDFも貼り付けて」に対応。自動取込（例: paypay-merchant-deposit.js）がar_receivable_attachments
+// へ保存した証憑（現状PDF/画像のみ）を、仕訳登録時にマネーフォワードへも一緒に添付する
+// （create_standaloneのvoucher_filesはbase64埋め込み方式のため、Storageから直接取得して変換）。
+// 最大5件（mf-journal側のcreate_standaloneの上限に合わせる）
+async function arjFetchVoucherFiles(){
+  const atts=(RECEIVABLE_STATE.attachments||[]).filter(a=>a.receivable_id===ARJ_STATE.row.id).slice(0,5);
+  const results=await Promise.all(atts.map(async a=>{
+    try{
+      const s=sess.get();
+      const r=await fetch(`${SUPA_URL}/storage/v1/object/${BUCKET}/${a.storage_path}`,{headers:{apikey:SUPA_KEY,Authorization:"Bearer "+(s?s.at:"")}});
+      if(!r.ok) return null;
+      const buf=await r.arrayBuffer();
+      return {file_name:a.file_name,file_data:bytesToBase64_(new Uint8Array(buf))};
+    }catch(e){ return null; }
+  }));
+  return results.filter(Boolean);
+}
 async function arjSubmitJournal(){
   const msg=$("arj-msg"); msg.className="err"; msg.textContent="";
   const branchesPayload=[];
@@ -3098,6 +3116,7 @@ async function arjSubmitJournal(){
   if(totalDebit!==totalCredit){ msg.textContent=`借方合計（${yen(totalDebit)}）と貸方合計（${yen(totalCredit)}）が一致していません`; return; }
   const date=$("arj-date").value, remark=$("arj-remark").value;
   $("arj-register").disabled=true; msg.textContent="登録中…";
+  const voucherFiles=await arjFetchVoucherFiles();
   const {ok,body:j}=await mfCall("create_standalone",{
     is_receivable_related:true,
     vendor_name:ARJ_STATE.row.source_name||"売上入金", tenant_id:ARJ_STATE.tenantId,
@@ -3110,6 +3129,7 @@ async function arjSubmitJournal(){
     })),
     transaction_date:date, remark, attach_files:false,
     debit_account_names:branchesPayload.filter(b=>b.debit).map(b=>mftLabelOf(b.debit)),
+    voucher_files:voucherFiles,
   });
   if(!ok){ msg.textContent=j.error||"仕訳登録に失敗しました"; $("arj-register").disabled=false; return; }
 
@@ -3119,7 +3139,9 @@ async function arjSubmitJournal(){
   })});
 
   msg.className="err msg-ok";
-  msg.textContent=`登録しました（伝票番号: ${j.journal_number??"-"}）。画面を更新します…`;
+  msg.textContent=`登録しました（伝票番号: ${j.journal_number??"-"}）`
+    +(j.voucher_attached?`。証憑PDFも${j.voucher_attached}件添付しました`:(voucherFiles.length&&j.voucher_error)?`（証憑添付: ${j.voucher_error}）`:"")
+    +"。画面を更新します…";
   const u=ARJ_STATE.u;
   setTimeout(async()=>{ history.back(); await Promise.all([receivableLoad(),loadAcBadgeCounts()]); receivableRender(u); },900);
 }
