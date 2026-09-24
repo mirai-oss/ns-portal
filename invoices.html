@@ -624,7 +624,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-09-23-v20";
+const BUILD_TAG="2026-09-24-v21";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -2430,6 +2430,7 @@ function receivableRowHtml(r){
       return ` <button class="linkbtn" data-rcv-view-atts="${esc(r.id)}" style="background:none;border:none;color:var(--m-blue,#3478b8);cursor:pointer;font-size:11px;padding:0;text-decoration:underline" title="クリックすると添付ファイルを開けます">📎${atts.length}</button>`;
     })()}</td>
     <td>${r.mf_journal_id?`<button class="linkbtn" data-arj-view-invoice="${esc(r.linked_invoice_id||"")}" style="background:none;border:none;color:var(--m-green);cursor:pointer;font-size:12px;padding:0;text-decoration:underline" title="クリックすると請求書詳細（PLへ反映を含む）を開けます">✅仕訳登録済み（伝票番号: ${esc(String(r.mf_journal_number??"-"))}）</button>`:`<button class="linkbtn" data-arj-open="${esc(r.id)}" style="background:none;border:1px solid var(--line);padding:4px 8px;cursor:pointer;font-size:12px">🧾仕訳を作成</button>`}</td>
+    <td><button class="hq-btn" style="padding:6px 8px" data-delete-receivable="${esc(r.id)}" title="この売上入金を削除（取込ミス・重複データの削除に）">🗑</button></td>
   </tr>`;
 }
 function receivableKpis(){
@@ -2491,8 +2492,8 @@ function receivableRender(u){
           }).join("")}
         </div>
         <div class="hq-tablewrap"><table class="invoice-table">
-          <thead><tr><th>入金元</th><th>法人</th><th>店舗</th><th>売上決済額</th><th>手数料</th><th>入金予定額</th><th>実入金額</th><th>差異</th><th>入金予定日</th><th>状態</th><th>備考</th><th>MF仕訳</th></tr></thead>
-          <tbody>${filtered.length?filtered.map(receivableRowHtml).join(""):'<tr><td colspan="12">該当するデータはありません（自動取込がまだ稼働していないため、現状は表示されるデータがありません）</td></tr>'}</tbody>
+          <thead><tr><th>入金元</th><th>法人</th><th>店舗</th><th>売上決済額</th><th>手数料</th><th>入金予定額</th><th>実入金額</th><th>差異</th><th>入金予定日</th><th>状態</th><th>備考</th><th>MF仕訳</th><th></th></tr></thead>
+          <tbody>${filtered.length?filtered.map(receivableRowHtml).join(""):'<tr><td colspan="13">該当するデータはありません（自動取込がまだ稼働していないため、現状は表示されるデータがありません）</td></tr>'}</tbody>
         </table></div>
       </div>
     </section>`;
@@ -2520,7 +2521,39 @@ function receivableRender(u){
     const map=await signAttachmentUrls(atts.map(a=>a.storage_path));
     for(const a of atts){ const url=map[a.storage_path]; if(url) window.open(url,"_blank","noopener"); }
   });
+  document.querySelectorAll("[data-delete-receivable]").forEach(el=>el.onclick=()=>deleteReceivableRow(u,el.dataset.deleteReceivable));
   $("receivable-add").onclick=()=>openReceivableUploadModal(u);
+}
+// 2026-09-24新規：ユーザー要望「売上入金のデータも間違えたものがあるから削除できるように
+// してほしい」に対応。ar_receivables本体に加え、紐づく消込結果（ar_matching）・実入金
+// （ar_deposits。ar_matching.deposit_idがar_deposits(id)を参照するため、ar_matching→
+// ar_depositsの順で消さないとFK違反になる。実機テスト前に使い捨てデータで検証し発見・
+// 順序を修正済み）・添付（ar_receivable_attachments）を削除し、本部タスクの例外連携
+// （hq_tasks.exception_receivable_id。FKなしのため無くても削除は失敗しないが、片付けとして
+// 一応nullに戻す）も外す。既にMF仕訳登録済み（mf_journal_id・linked_invoice_idあり）の場合は
+// invoices側にも内部的な「請求書」行（is_receivable_related=true）が作られているため、
+// invoice-delete Edge Function（RLSをservice_roleでバイパスする、請求書削除の不具合修正で
+// 新設したもの）へ丸ごと委ねて一緒に削除する（invoice_attachments・invoice_pl_reflections等の
+// 後始末もそちらに任せられる）。ar_receivables自体はRLS無効のためクライアント直接の
+// DELETE/PATCHで問題なく削除できる
+async function deleteReceivableRow(u,receivableId){
+  const row=(RECEIVABLE_STATE.receivables||[]).find(r=>r.id===receivableId);
+  const name=(row&&row.source_name)||"この売上入金";
+  let msg=`「${esc(name)}」（${esc(receivableStoreName(row&&row.store_id))}）を削除します。よろしいですか？`;
+  if(row&&row.mf_journal_id) msg=`⚠️「${esc(name)}」は既にマネーフォワードへ仕訳登録済み（伝票番号: ${row.mf_journal_number??"-"}）です。この削除ではマネーフォワード側の仕訳は取り消されません（ローカルの記録だけが消え、追跡できなくなります）。テスト登録の後片付け以外では使わないでください。本当に削除しますか？`;
+  if(!confirm(msg)) return;
+  if(row&&row.linked_invoice_id){
+    const r=await deleteInvoiceRecord(row.linked_invoice_id);
+    if(!r.ok){ alert("削除に失敗しました: "+(r.body?.message||r.body?.error||"原因不明（担当Cまでこの画面のまま連絡してください）")); return; }
+  }
+  await authed(`/rest/v1/hq_tasks?exception_receivable_id=eq.${receivableId}`,{method:"PATCH",body:JSON.stringify({exception_receivable_id:null}),headers:{Prefer:"return=minimal"}}).catch(()=>{});
+  await authed(`/rest/v1/ar_matching?receivable_id=eq.${receivableId}`,{method:"DELETE",headers:{Prefer:"return=minimal"}}).catch(()=>{});
+  await authed(`/rest/v1/ar_deposits?receivable_id=eq.${receivableId}`,{method:"DELETE",headers:{Prefer:"return=minimal"}}).catch(()=>{});
+  await authed(`/rest/v1/ar_receivable_attachments?receivable_id=eq.${receivableId}`,{method:"DELETE",headers:{Prefer:"return=minimal"}}).catch(()=>{});
+  const r=await authed(`/rest/v1/ar_receivables?id=eq.${receivableId}`,{method:"DELETE",headers:{Prefer:"return=minimal"}});
+  if(!r.ok){ alert("削除に失敗しました: "+(r.body?.message||"原因不明（担当Cまでこの画面のまま連絡してください）")); return; }
+  await receivableLoad();
+  receivableRender(u);
 }
 // 2026-09-15新規：ユーザー要望「売上入金のところにも手動アップロードできるように」に対応。
 // 🧾請求書一覧の「＋ 請求書を追加」（openUploadModal）と同じ位置づけ＝自動取込が失敗した
