@@ -8,7 +8,7 @@
 
 **★★★★2026-09-24（担当Cスレッド）ユーザー要望「売上入金のデータも間違えたものがあるから削除できるようにしてほしい」に対応（BUILD_TAG=2026-09-24-v21）**: 💰売上入金タブの各行に🗑削除ボタンを新設。ar_receivables本体に加え、紐づく消込結果(ar_matching)・実入金(ar_deposits)・添付(ar_receivable_attachments)を削除し、本部タスクの例外連携（hq_tasks.exception_receivable_id）も外す。既にMF仕訳登録済み（mf_journal_id・linked_invoice_idあり）の場合は、invoices側に作られる内部的な「請求書」行も直前に新設した`invoice-delete`Edge Function経由で一緒に削除する（請求書削除の不具合修正で得た知見の横展開）。**実機に触る前に使い捨てテストデータ（消込・実入金・添付・MF仕訳連携ありの2パターン）を作って削除順序を検証**したところ、`ar_matching.deposit_id`が`ar_deposits(id)`を参照するため`ar_deposits`を先に消すとFK違反になると判明・`ar_matching`→`ar_deposits`の順に修正（請求書削除で味わった「デプロイしてから気づく」を今回は避けられた）。commit: [415cbc0](https://github.com/mirai-oss/ns-portal/commit/415cbc0)。GitHub Pages反映確認済み。直上（Mac miniセッション）エントリで「川崎店の2026年8月分はテスト目的の重複投入、ユーザー側で後日削除予定」と書かれているのはまさにこの機能で対応可能になったケース。**次はユーザーに実機で削除を試してもらう**。
 
-**★★★★★★★★2026-09-23（Mac miniセッション・完了）トーホーエージェンシー PayPay加盟店パネルの入金自動取込を実装完了（全7店舗）＋売上入金の仕訳作成で部門が別店舗のまま残るバグ修正**: ユーザー依頼でPayPay for Business（加盟店パネル・QRコード決済）の店舗別月次入金を自動取込む`ns-daily-import/tasks/paypay-merchant-deposit.js`を新規実装（ロケットナウと違いBigQuery層は無し・直接ar_receivablesへ登録）。全7店舗（川崎・新横浜・芝・新橋・本店・恵比寿・はなれ）のマッピング・実機検証が完了し、2026年8月分を一括実行で全店舗正しく`ar_receivables`へupsert済み（詳細な罠と対策はns-daily-import/WORKLOG.md参照）。毎月3日07:20の自動スケジュールも登録済み（`config.js`の`MONTHLY_SCHEDULE`）。ns-daily-importコミット[94cee6c](https://github.com/mirai-oss/ns-daily-import/commit/94cee6c)・push済み。作業中、生成したMF仕訳作成モーダルのスクリーンショットで**部門（飲食売上側）が別店舗（01本店）のまま**になっているとユーザーから指摘があり調査。`invoices.html`の`arjFillRealAmounts`が「過去の仕訳・仕訳辞書に既に部門があれば上書きしない」仕様だったため、source_name（例「PayPay加盟店」）だけで検索してたまたまヒットした別店舗ぶんの過去仕訳の部門が残ってしまうバグと判明。部門は勘定科目と違い今回処理中の店舗に必ず一致すべき値のため、`storeDepartmentId`解決時は常に上書きするよう修正（勘定科目・税区分は引き続き過去データを尊重）。invoicesコミット[d8738d4](https://github.com/mirai-oss/ns-portal/commit/d8738d4)・BUILD_TAG `2026-09-23-v20`・push済み。**川崎店の2026年8月分は元々手動入力済みのものにテスト目的で重複投入しているため、ユーザー側で後日削除予定（本人了承済み）**。
+**★★★★★★★★2026-09-24（Mac miniセッション・続き）PayPay加盟店パネル取込に証憑PDF添付を追加＋MF仕訳への証憑添付を新規実装**: ユーザー指摘「管理システムの添付がzipで中身をその場で確認できないから、PDFも貼り付けて（手順の中にPDFダウンロードもあるはず）」に対応。`ns-daily-import/tasks/paypay-merchant-deposit.js`に「入金額の内訳」タブのPDF出力（gross/fee/netが1枚にまとまった要約。対象取引の生データCSVより証憑向き）を取得し`ar_receivable_attachments`へ登録する処理を追加（詳細・実機の罠はns-daily-import/WORKLOG.md参照）。あわせて調査中に判明: `invoices.html`の`arjSubmitJournal`（売上入金→MF仕訳作成）は`attach_files:false`が常に指定されており、**そもそも証憑を一切マネーフォワードへ送っていなかった**（`create_standalone`はこのフラグを見ておらず`voucher_files`にbase64で直接埋め込む必要がある仕様だったため無意味な指定になっていた）。`arjFetchVoucherFiles()`を新設し、その入金に紐づく`ar_receivable_attachments`をStorageから取得・base64変換して送るよう修正。invoicesコミット[9cbf159](https://github.com/mirai-oss/ns-portal/commit/9cbf159)（415cbc0の売上入金削除機能とのマージ後push済み・現BUILD_TAG `2026-09-24-v21`のまま変更なし）。ns-daily-importコミット[f2a651f](https://github.com/mirai-oss/ns-daily-import/commit/f2a651f)。全7店舗で2026年8月分に証憑PDFが正しく添付されることを確認。**⚠️検証中に気づいた点**: Supabaseを直接確認したところ`ar_receivables`の2026年8月分から川崎店・新横浜店の2行が無くなっていた。同時期に追加された直上の🗑削除機能（415cbc0）で消された可能性が高い。川崎店は「テスト目的の重複投入・後日削除予定」とご本人が明言済みのケースなので想定内だが、**新横浜店の削除は意図不明**（テストで消しただけか本当に不要だったか、次にこのスレッドを開いたら確認すること）。次回3日の自動実行で両店舗とも自然に再投入されるため実害は無い。
 
 **★★★★★★★★2026-09-23 最新（担当Aスレッド）推移分析「年初来×営業区分絞込」で古い月が¥0になるバグを修正**: 担当Dから引き継がれたバグ（下記エントリ）を調査。担当Dの「多段タイムアウト」仮説は**採用せず**（コード上、BQ・シートフォールバックどちらも月数は正しく絞り込まれており、タイムアウトを疑う根拠は無かった）、実際に`app.js`を追って別の真因を特定: `bqMonthsForMedia_()`（9/19対応で年初来なら経過月数+12ヶ月を要求するよう既に修正済み）は**`fetchMediaBQ()`が実際に呼ばれたときにしか効かない**が、`fetchMediaBQ()`はページ読み込み時（既定「直近30日」＝3ヶ月分）にしか呼ばれておらず、ユーザーが後から「年初来」や「営業区分」に切り替えても`App.set()`は状態を書き換えて再描画するだけでD.mediaを再取得していなかった（＝D.mediaは常に最初の3ヶ月分のまま）。絞込無し（「全体」）表示は`fetchAnalysisKd_`という別経路（常に全期間を読む）を使うため無関係で正しく見えていた。**修正**: 必要な月数が既読込み月数を超えたときだけ`fetchMediaBQ()`を再取得する`ensureMediaMonths_()`を追加し、`aRange`/`aSeg`/`cStart`/`cEnd`変更時に`App.set()`から呼ぶようにした。あわせて、調査中に見つけた`bqMonthsForMedia_()`の期間指定(custom)分岐の型バグ（`parseDateStr()`の戻り値＝epoch ms数値に直接`.getFullYear()`を呼んで必ず例外→シートフォールバックに握りつぶされていた）も修正。ローカルのサンプルデータ（demoアカウント`shacho`/`tori2026`＋コンソールでS.useBqDaily/S.auth.tokenを疑似設定）で、aRange変更時に必要月数(19〜31ヶ月)を正しく検知して再取得がトリガーされること・custom範囲で例外が出ないこと・UI操作（年初来ボタン・営業区分プルダウン）でconsoleエラーが出ないことを確認済み。tori-dashboardコミット[c2d25b5](https://github.com/mirai-oss/tori-dashboard/commit/c2d25b5)・push済み（GitHub Pages自動反映・GAS変更なし）。**BQモード本番（実データ・実際のBigQuery接続）での最終確認はユーザー実機待ち**。
 
@@ -8930,3 +8930,38 @@ upsert（1回の実行で2分20秒・失敗0件）。毎月3日07:20の自動ス
 
 **ユーザーへの申し送り**: 川崎店の2026年8月分は元々手動入力済みのものにテスト目的で重複投入して
 いるため、ユーザー側で後日削除予定（本人了承済み）。
+
+## 2026-09-24（Mac miniセッション）売上入金にPDF証憑を添付・MF仕訳への証憑送信を新規実装
+
+ユーザー指摘「管理システムに入っている添付ファイルを確認したらzipファイルになって中身がその場で
+開けないから、PDFファイルも貼り付けてね！手順の中にPDFダウンロードもあるはずだから、それも
+アップロードするように！」に対応。
+
+**ns-daily-import側**（詳細はns-daily-import/WORKLOG.md参照）: Scribeガイドを再確認し、
+「入金額の内訳」タブのPDF出力（gross/fee/netの1枚要約）を`paypay-merchant-deposit.js`で
+取得・`ar_receivable_attachments`へ登録する処理を追加。Supabase Storageのキーに日本語は
+使えない（InvalidKey）という罠を踏み、表示名とキーを分離して解決。
+
+**ns-portal側**: 調査の結果、`invoices.html`の`arjSubmitJournal`（売上入金→MF仕訳作成）は
+これまで`attach_files:false`を常に送っており、証憑を一切マネーフォワードへ添付していなかった
+（このフラグは`create_standalone`アクションでは見られておらず、実際は`voucher_files`に
+base64で直接埋め込んで送る必要があった＝無意味な指定だった）。`arjFetchVoucherFiles()`を
+新設し、その入金に紐づく`ar_receivable_attachments`をStorageから取得・base64変換して
+`create_standalone`へ渡すよう修正。既存の`bytesToBase64_`（給与PDF添付で実績のある変換関数）
+をそのまま再利用。
+
+**検証**: 川崎店で1件PDF添付→InvalidKeyで失敗→ASCII固定パスに修正→再検証→全7店舗一括実行で
+2026年8月分すべてに証憑PDFが添付されることを確認。invoices.htmlの構文チェック
+（`<script>`抽出→`new Function`）も実施しOK。実際のMF仕訳登録（本物の証憑送信）は
+今回のセッションでは行っていない（既存の`arjFetchVoucherFiles`は給与PDF添付と同じ実績パターンの
+転用のため、次回ユーザーが売上入金のMF仕訳登録を行うタイミングで実地確認されたい）。
+
+commit: [9cbf159](https://github.com/mirai-oss/ns-portal/commit/9cbf159)（415cbc0の
+売上入金削除機能とマージ後push済み）／ns-daily-import
+[f2a651f](https://github.com/mirai-oss/ns-daily-import/commit/f2a651f)。
+
+**⚠️次セッションへ**: 検証中、`ar_receivables`の2026年8月分から川崎店・新横浜店の2行が
+消えていることに気付いた（直上のエントリで触れた🗑削除機能・415cbc0によるものと推定）。
+川崎店は本人が「テスト目的の重複投入・後日削除予定」と明言済みなので想定どおりだが、
+新横浜店の削除意図は未確認（テストで消しただけか、本当に不要だったか）。実害はない
+（次回3日の自動実行で両店舗とも自然に再投入される）が、気になるようならユーザーに確認すること。
