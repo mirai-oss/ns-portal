@@ -2734,7 +2734,7 @@ async function openReceivableJournalModal(u,receivableId){
 // 仕訳辞書（mf_journal_templates）取得。請求書メール詳細の仕訳作成（mfjFetchTemplates）・
 // 設定タブの仕訳辞書編集と全く同じテーブルを見ているため、どちらで登録してももう一方から使える
 async function arjFetchTemplates(tenantId){
-  const r=await authed(`/rest/v1/mf_journal_templates?tenant_id=eq.${encodeURIComponent(tenantId)}&select=id,label,branches&order=label`);
+  const r=await authed(`/rest/v1/mf_journal_templates?tenant_id=eq.${encodeURIComponent(tenantId)}&select=id,label,branches,receivable_source_name&order=label`);
   return (r.ok&&Array.isArray(r.body))?r.body:[];
 }
 // year_month（"YYYY-MM"）の月末日を"YYYY-MM-DD"で返す（2月の28/29日等も自動で正しく計算される）
@@ -2809,12 +2809,51 @@ async function arjLoadForTenant(tenantId,tenants){
 // 摘要はユーザー要望「○月分　入金先　売上等の項目、が入るようにしてほしい」に対応した書式。
 // 部門はstoreDepartmentIdが解決できていれば両側に設定し、PL反映パネルの自動検出（借方の
 // 部門名から店舗を特定する仕組み）が最初から正しい店舗を拾えるようにする
+// 2026-09-25追加: ユーザー要望「よく使う仕訳は仕訳辞書のように登録しておいて自動で連携
+// されるようにしたい」「PayPay加盟店だけでなくロケットナウ等の既存sourceにも同じ仕組みを
+// 使えるようにしたい」に対応。source_name（例:「PayPay加盟店」）と
+// receivable_source_name（仕訳辞書側に追加した専用列。2026-09-25
+// _mf_journal_templates_receivable_source.sql参照）が完全一致する仕訳辞書
+// （mf_journal_templates。設定タブ「仕訳辞書」から誰でも登録・編集できる）があれば、
+// 勘定科目・補助科目の「型」だけをそこから借りる（金額・部門・摘要は従来どおり
+// 必ず今回の実データで上書きする＝直後のif内・arjFillRealAmountsと同じ思想。テンプレートに
+// 古い金額が入っていても混乱しない）。labelはユーザーが自由に付けられる表示名
+// （例:「PayPay売上」）のままでよく、判定にはreceivable_source_nameだけを使う
+// （当初labelで判定していたが、表示名と判定条件を分離してほしいという要望を受けて変更）。
+// 貸方の補助科目は常にこの売上入金の店舗名で上書きする（部門と同じく「今回処理している
+// ar_receivables行の店舗」に必ず一致すべき値のため、テンプレート側にどんな値が入っていても
+// 使わない）。該当テンプレートが無いsourceは従来どおりの決め打ち（普通預金/支払手数料/売上高）
+// のまま変えない。
+// ⚠️注意: 貸方の補助科目（店舗名）は、MF側にその勘定科目・店舗名の組み合わせの補助科目が
+// 既に存在している場合のみ選択できる（MF公式に補助科目マスタ作成APIが無いため、
+// accountLabelMapに無い組み合わせは登録時に「プルダウンの候補から選択してください」エラーに
+// なる＝arjSubmitJournal参照）。初めて使う店舗はMF側で先に補助科目を作成しておく必要がある。
+function arjApplyTemplateAsDefault_(tpl,expected,fee,dep,prefix){
+  const storeName=receivableStoreName(ARJ_STATE.row.store_id);
+  const amounts=[expected,fee], suffixes=["売上","手数料"];
+  return tpl.branches.map((b,i)=>{
+    const creditAccountName=(b.credit&&b.credit.account_name)||"";
+    return {
+      debitLabel:mftLabelOf(b.debit), debitAmount:amounts[i]??"",
+      creditLabel:creditAccountName?(storeName?`${creditAccountName}/${storeName}`:creditAccountName):"",
+      creditAmount:amounts[i]??"",
+      department_id:dep, tax_id:(b.debit&&b.debit.tax_id)||"",
+      credit_department_id:dep, credit_tax_id:(b.credit&&b.credit.tax_id)||"",
+      remark:prefix?`${prefix}　${suffixes[i]||""}`:"",
+    };
+  });
+}
 function arjSetDefaultBranches(){
   const row=ARJ_STATE.row;
   const ymLabel=ARJ_STATE.ymLabel||"";
   const prefix=[ymLabel,row.source_name||""].filter(Boolean).join("　");
   const expected=Number(row.expected_amount)||0, fee=Number(row.fee_amount)||0;
   const dep=ARJ_STATE.storeDepartmentId||"";
+  const tpl=(ARJ_STATE.templates||[]).find(t=>t.receivable_source_name===row.source_name);
+  if(tpl&&Array.isArray(tpl.branches)&&tpl.branches.length){
+    ARJ_STATE.branches=arjApplyTemplateAsDefault_(tpl,expected,fee,dep,prefix);
+    return;
+  }
   ARJ_STATE.branches=[
     {debitLabel:"普通預金",debitAmount:expected||"",creditLabel:"売上高",creditAmount:expected||"",department_id:dep,tax_id:"",credit_department_id:dep,credit_tax_id:"",remark:prefix?`${prefix}　売上`:"入金分"},
     {debitLabel:"支払手数料",debitAmount:fee||"",creditLabel:"売上高",creditAmount:fee||"",department_id:dep,tax_id:"",credit_department_id:dep,credit_tax_id:"",remark:prefix?`${prefix}　手数料`:"手数料分"},
@@ -6822,14 +6861,19 @@ async function renderMftSection(tenantId){
   MFT_STATE.accountLabelMap=map; MFT_STATE.accountDatalistHtml=dl; MFT_STATE.departments=departments; MFT_STATE.taxes=taxes;
   MFT_STATE.accountNameDatalistHtml=accountNameDatalistHtml; MFT_STATE.subAccountsByAccountName=subAccountsByAccountName; MFT_STATE.subAccountNamesAll=subAccountNamesAll;
   // 判定条件（取引先・対象法人・対象店舗）のプルダウン用に取得（2026-09-03・仕訳辞書の拡張）
-  const [vendorsRes,corpRes,storesRes]=await Promise.all([
+  // 2026-09-25追加：売上入金への自動適用キー（receivable_source_name）の入力補助用に、
+  // 既存のar_receivables.source_nameの値を重複無しで取得しておく（打ち間違えると
+  // 一生マッチしなくなる文字列一致判定のため、候補から選べるようにする）
+  const [vendorsRes,corpRes,storesRes,receivableSourcesRes]=await Promise.all([
     vendorCall("list_vendors"),
     authed("/rest/v1/corporations?select=id,name&order=name"),
     authed("/rest/v1/stores?select=id,name&order=name"),
+    authed("/rest/v1/ar_receivables?select=source_name&order=source_name"),
   ]);
   MFT_STATE.vendors=(vendorsRes.ok&&vendorsRes.body.vendors)||[];
   MFT_STATE.corporations=(corpRes.ok&&Array.isArray(corpRes.body))?corpRes.body:[];
   MFT_STATE.storesAll=(storesRes.ok&&Array.isArray(storesRes.body))?storesRes.body:[];
+  MFT_STATE.receivableSourceNames=(receivableSourcesRes.ok&&Array.isArray(receivableSourcesRes.body))?[...new Set(receivableSourcesRes.body.map(x=>x.source_name).filter(Boolean))]:[];
   const tplRes=await authed(`/rest/v1/mf_journal_templates?tenant_id=eq.${encodeURIComponent(activeTenantId)}&select=*&order=label`);
   MFT_STATE.templates=(tplRes.ok&&Array.isArray(tplRes.body))?tplRes.body:[];
   MFT_STATE.editing=null;
@@ -6875,7 +6919,8 @@ function mftListHtml(){
   if(!tpls.length) return `<div style="font-size:12px;color:var(--muted)">${q?"該当する仕訳辞書が見つかりません":"この事業者にはまだ仕訳辞書が登録されていません。"}</div>`;
   return tpls.map(t=>{
     const sum=(t.branches||[]).map(b=>`${mftLabelOf(b.debit)||"?"}／${mftLabelOf(b.credit)||"?"}`).join("、");
-    const row=`<div class="mfj-tpl-item"><div><div class="lbl">${esc(t.label)}</div><div class="sum">${esc(sum)}（${(t.branches||[]).length}行）</div></div>
+    const srcBadge=t.receivable_source_name?`<span style="font-size:10px;color:var(--m-blue);margin-left:6px">💰${esc(t.receivable_source_name)}へ自動適用</span>`:"";
+    const row=`<div class="mfj-tpl-item"><div><div class="lbl">${esc(t.label)}${srcBadge}</div><div class="sum">${esc(sum)}（${(t.branches||[]).length}行）</div></div>
       <div style="display:flex;gap:6px"><button class="hq-btn" style="font-size:11px;padding:6px 9px" data-mft-edit="${t.id}">編集</button><button class="hq-btn" style="font-size:11px;padding:6px 9px" data-mft-del="${t.id}" data-mft-label="${esc(t.label)}">削除</button></div>
     </div>`;
     // 編集中の項目の直後に編集フォームの差込先を用意（2026-09-02: ユーザー報告「編集画面が一番下に
@@ -6905,6 +6950,9 @@ function mftOpenEditor(tpl){
     autoApply: tpl?!!tpl.auto_apply:false,
     requireHumanReview: tpl?(tpl.require_human_review!==false):true,
     priority: tpl?(tpl.priority??100):100,
+    // 2026-09-25追加：売上入金（ar_receivables.source_name）への自動適用キー。
+    // 請求書用の判定条件（取引先・キーワード等）とは別概念のため独立させてある
+    receivableSourceName: tpl?(tpl.receivable_source_name||""):"",
     branches: tpl?(tpl.branches||[]).map(b=>({
       debitLabel:mftLabelOf(b.debit), debitAmount:b.debit?(b.debit.value??b.amount??""):"",
       creditLabel:mftLabelOf(b.credit), creditAmount:b.credit?(b.credit.value??b.amount??""):"",
@@ -6944,6 +6992,13 @@ function mftRenderEditor(){
             <div style="display:flex;gap:10px;flex-wrap:wrap;font-size:11px">${sourceOptions.map(([k,l])=>`<label style="display:flex;gap:4px;align-items:center"><input type="checkbox" class="mft-source" value="${k}" ${ed.sourceFilter.includes(k)?"checked":""}>${l}</label>`).join("")}</div>
           </div>
         </div>
+      </div>
+
+      <div class="card" style="padding:10px;margin-top:8px;background:var(--m-purplesoft,#f1edfb)">
+        <b style="font-size:11px">💰 売上入金への自動適用（PayPay加盟店・ロケットナウ等）</b>
+        <div class="meta" style="color:var(--muted);font-size:11px;margin:4px 0 8px">「会計・請求ワークスペース→売上入金」の「🧾 MF仕訳を作成」画面を開いたとき、対象の入金の種類（例:「PayPay加盟店」）がここで指定した値と完全一致すれば、この仕訳辞書の勘定科目・補助科目を自動で初期値にします（金額・部門・摘要は毎回実際の入金データで上書きされます。貸方の補助科目は常にその時の店舗名に置き換わります）。上の名前（表示名）とは別に、ここに実際のsource_name（下のリストから選ぶか、既存の売上入金画面のタイトルに表示されている文言と完全に同じ文字列を入力）を指定してください。空欄なら自動適用されません。</div>
+        <input id="mft-receivable-source" list="mft-receivable-source-datalist" value="${esc(ed.receivableSourceName)}" placeholder="例: PayPay加盟店">
+        <datalist id="mft-receivable-source-datalist">${(MFT_STATE.receivableSourceNames||[]).map(n=>`<option value="${esc(n)}">`).join("")}</datalist>
       </div>
 
       <div class="card" style="padding:10px;margin-top:8px;background:var(--m-greensoft)">
@@ -7085,6 +7140,7 @@ function mftWireEditor(){
   document.querySelectorAll(".mft-source").forEach(elx=>elx.onchange=()=>{
     ed.sourceFilter=[...document.querySelectorAll(".mft-source:checked")].map(x=>x.value);
   });
+  $("mft-receivable-source").oninput=()=>{ ed.receivableSourceName=$("mft-receivable-source").value; };
   $("mft-corp").onchange=()=>{ ed.targetCorporationId=$("mft-corp").value; };
   $("mft-store").onchange=()=>{ ed.targetStoreId=$("mft-store").value; };
   $("mft-pl-account").oninput=()=>{ ed.plAccount=$("mft-pl-account").value; };
@@ -7128,6 +7184,7 @@ async function mftSaveEditor(){
     amount_min: ed.amountMin===""?null:Number(ed.amountMin),
     amount_max: ed.amountMax===""?null:Number(ed.amountMax),
     source_filter: ed.sourceFilter,
+    receivable_source_name: ed.receivableSourceName.trim()||null,
     pl_account: ed.plAccount||null,
     ad_target: ed.adTarget,
     settlement_target: ed.settlementTarget,
