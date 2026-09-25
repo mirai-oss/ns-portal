@@ -624,7 +624,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-09-26-v32";
+const BUILD_TAG="2026-09-26-v33";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -2441,9 +2441,17 @@ function receivableRowHtml(r){
       ${(()=>{
         // 2026-09-26追加：業務委託精算店舗向けにPayPay売上・手数料が業務委託精算書へも
         // 反映されたかどうかを一覧から分かるようにする（対象外の店舗はseisan_synced_at自体が
-        // 一度も設定されないので何も表示しない）
-        if(r.seisan_sync_error) return `<div style="font-size:10px;color:var(--m-red)" title="${esc(r.seisan_sync_error)}">⚠️業務委託精算書への反映に失敗</div>`;
+        // 一度も設定されないので何も表示しない）。
+        // 2026-09-26追加②：ユーザー実機テストで①精算書側の一時的な不調（GAS側のよくある
+        // 「エンドポイントはJSON APIです」誤応答）②機能追加前に登録済みだったMF仕訳では
+        // そもそも一度も呼ばれていない、の2パターンが見つかった。MF仕訳の登録自体は既に
+        // 成功しているので、精算書への反映だけを再試行できるボタンを追加する
+        // （MoneyForwardへは二重登録しない・sourceKeyが冪等なので精算書側も安全に再送できる）
+        if(!r.mf_journal_id) return "";
+        if(r.seisan_sync_error) return `<div style="font-size:10px;color:var(--m-red)" title="${esc(r.seisan_sync_error)}">⚠️業務委託精算書への反映に失敗</div><button class="linkbtn" data-rcv-seisan-retry="${esc(r.id)}" style="background:none;border:none;color:var(--m-blue,#3478b8);cursor:pointer;font-size:10px;padding:0;text-decoration:underline">🔁精算書へ再試行</button>`;
         if(r.seisan_synced_at) return `<div style="font-size:10px;color:var(--muted)">🏢精算書へ反映済み（${fmtDT(r.seisan_synced_at)}）</div>`;
+        const store=(CORP_STORE_CACHE&&CORP_STORE_CACHE.stores||[]).find(s=>s.id===r.store_id);
+        if(store&&(store.seisan_target||store.seisan_pl_categories_target)) return `<button class="linkbtn" data-rcv-seisan-retry="${esc(r.id)}" style="background:none;border:none;color:var(--m-blue,#3478b8);cursor:pointer;font-size:10px;padding:0;text-decoration:underline">🏢業務委託精算書へ登録（未反映）</button>`;
         return "";
       })()}</td>
     <td><button class="hq-btn" style="padding:6px 8px" data-delete-receivable="${esc(r.id)}" title="この売上入金を削除（取込ミス・重複データの削除に）">🗑</button></td>
@@ -2538,6 +2546,17 @@ function receivableRender(u){
     for(const a of atts){ const url=map[a.storage_path]; if(url) window.open(url,"_blank","noopener"); }
   });
   document.querySelectorAll("[data-delete-receivable]").forEach(el=>el.onclick=()=>deleteReceivableRow(u,el.dataset.deleteReceivable));
+  // 2026-09-26追加：MF仕訳登録済みの売上入金で業務委託精算書への反映が未実施・失敗している行を、
+  // MoneyForwardへ再登録することなく精算書側だけ再試行する（sourceKeyが冪等のため安全に再送できる）
+  document.querySelectorAll("[data-rcv-seisan-retry]").forEach(el=>el.onclick=async()=>{
+    el.disabled=true; el.textContent="登録中…";
+    const r=await plFeeCall("seisan_confirm_receivable",{receivable_id:el.dataset.rcvSeisanRetry});
+    if(!r.ok){ alert("業務委託精算書への反映に失敗しました: "+(r.body.error||"不明なエラー")); }
+    else if(r.body.skipped){ alert(r.body.reason||"この店舗は業務委託精算書の対象外です"); }
+    else if(!r.body.success){ alert("業務委託精算書への反映に一部失敗しました: "+(r.body.results||[]).filter(x=>!x.ok).map(x=>`${x.item}: ${x.error}`).join("／")); }
+    await receivableLoad();
+    receivableRender(u);
+  });
   $("receivable-add").onclick=()=>openReceivableUploadModal(u);
 }
 // 2026-09-24新規：ユーザー要望「売上入金のデータも間違えたものがあるから削除できるように
