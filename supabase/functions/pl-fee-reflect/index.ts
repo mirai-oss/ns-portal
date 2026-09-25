@@ -534,7 +534,12 @@ Deno.serve(async (req: Request) => {
 
       // 税率は10%固定（実データは飲食売上で8%/10%が混在するが、行を分けて明細を渡す元データが
       // 無いため簡易的に10%とする。精算書シート側で実態に応じて手動で直せる通常の1行として扱う）
-      const srcLabel = (rcv.source_name || "PayPay").trim();
+      // 2026-09-26修正：ユーザー要望「PayPay加盟店売上をPayPay売上に、PayPay加盟店手数料を
+      // PayPay手数料に変更してほしい」に対応。source_name（ar_receivables.source_nameの表記
+      // そのまま＝"PayPay加盟店"）の末尾「加盟店」は精算書の費目名としては不要な事務的な
+      // 接尾語のため取り除く（ロケットナウ等、他のsource_nameはそのまま使う＝汎用的な仕組みを
+      // 保つ）
+      const srcLabel = (rcv.source_name || "PayPay").trim().replace(/加盟店$/, "");
       const lines = [
         { key: "sales", item: `${srcLabel}売上`, account: "売上高", amount: Number(rcv.gross_amount) || 0 },
         { key: "fee", item: `${srcLabel}手数料`, account: "支払手数料", amount: Number(rcv.fee_amount) || 0 },
