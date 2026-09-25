@@ -624,7 +624,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-09-26-v29";
+const BUILD_TAG="2026-09-26-v30";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -2785,15 +2785,34 @@ async function arjLoadForTenant(tenantId,tenants){
   // 漏れてしまう可能性があった。設定タブの部門マッピング画面と同じ、部門取得専用の
   // list_departmentsアクションを別途呼び、そちらの結果を部門の解決・選択肢の両方に使う
   // （journal_searchは過去の仕訳検索という本来の役割だけに使う）
-  const [accRes,searchRes,deptRes,templates]=await Promise.all([
+  const [accRes,searchRes,deptRes,templates,priorRcvRes]=await Promise.all([
     mfCall("accounts",{tenant_id:tenantId}),
     mfCall("journal_search",{vendor_name:row.source_name||"",tenant_id:tenantId}),
     mfCall("list_departments",{tenant_id:tenantId}),
     arjFetchTemplates(tenantId),
+    // 2026-09-26追加：この店舗で過去に成功登録した売上入金（同じsource_name・別の年月）を
+    // 探す。見つかればその仕訳の実際の補助科目・部門を後述のフォールバックに使う
+    row.store_id?authed(`/rest/v1/ar_receivables?store_id=eq.${row.store_id}&source_name=eq.${encodeURIComponent(row.source_name||"")}&mf_journal_id=not.is.null&id=neq.${row.id}&select=mf_journal_id&order=year_month.desc&limit=1`):Promise.resolve({ok:false}),
   ]);
   if(!accRes.ok){ body.innerHTML=`<div class="err">勘定科目の取得に失敗しました: ${esc(accRes.body.error||"")}<br><button id="arj-retry" style="margin-top:8px">🔄 もう一度試す</button></div>`; if($("arj-retry")) $("arj-retry").onclick=()=>arjLoadForTenant(tenantId,tenants); return; }
   if(!searchRes.ok){ body.innerHTML=`<div class="err">過去の仕訳の取得に失敗しました: ${esc(searchRes.body.error||"")}<br><button id="arj-retry" style="margin-top:8px">🔄 もう一度試す</button></div>`; if($("arj-retry")) $("arj-retry").onclick=()=>arjLoadForTenant(tenantId,tenants); return; }
   const departmentsList=(deptRes.ok&&Array.isArray(deptRes.body.departments)&&deptRes.body.departments.length)?deptRes.body.departments:(searchRes.body.departments||[]);
+  // 2026-09-26追加：ユーザー要望「対象店舗が完全一致でない場合でも、一度仕訳登録した
+  // ことのある店舗であれば、前回登録した補助科目・部門を出してほしい」に対応。
+  // 上で見つけた過去の売上入金のmf_journal_idからMF側の実際の仕訳内容を取得し、貸方に
+  // 補助科目が入っている行の勘定科目名・補助科目名・部門idを控えておく（一度MF側で受理
+  // された実績のある値＝店舗名の表記が変わっていても今回また通る可能性が高い）
+  let priorCreditAccountName="", priorCreditSubAccount="", priorCreditDepartmentId="";
+  const priorJournalId=(priorRcvRes.ok&&Array.isArray(priorRcvRes.body)&&priorRcvRes.body[0])?priorRcvRes.body[0].mf_journal_id:null;
+  if(priorJournalId){
+    const gj=await mfCall("get_journal",{journal_id:priorJournalId,tenant_id:tenantId});
+    const creditWithSub=(gj.ok&&Array.isArray(gj.body.branches))?gj.body.branches.find(b=>b.credit&&b.credit.sub_account_name):null;
+    if(creditWithSub){
+      priorCreditAccountName=creditWithSub.credit.account_name||"";
+      priorCreditSubAccount=creditWithSub.credit.sub_account_name||"";
+      priorCreditDepartmentId=creditWithSub.credit.department_id||(creditWithSub.debit&&creditWithSub.debit.department_id)||"";
+    }
+  }
   const tenantLabel=(tenants||[]).find(t=>t.id===tenantId)?.label||tenantId;
   const idx=mftBuildAccountIndex(accRes.body.accounts||[]); // 設定タブの仕訳辞書編集と共通の索引ビルダーをそのまま流用
   const ymLabel=(row.year_month||"").replace(/^(\d{4})-(\d{2})$/,"$1年$2月分");
@@ -2819,7 +2838,11 @@ async function arjLoadForTenant(tenantId,tenants){
   if(store&&store.mf_department_name){
     const wantName=normDeptName(store.mf_department_name);
     const dep=departmentsList.find(d=>normDeptName(d.name)===wantName);
-    if(dep) storeDepartmentId=dep.id; else storeDepartmentMismatch=store.mf_department_name;
+    if(dep) storeDepartmentId=dep.id;
+    else if(priorCreditDepartmentId) storeDepartmentId=priorCreditDepartmentId; // 過去の成功実績で埋める
+    else storeDepartmentMismatch=store.mf_department_name;
+  } else if(priorCreditDepartmentId){
+    storeDepartmentId=priorCreditDepartmentId;
   }
   ARJ_STATE={
     ...ARJ_STATE,
@@ -2841,7 +2864,7 @@ async function arjLoadForTenant(tenantId,tenants){
     accountLabelMap:idx.map, accountDatalistHtml:idx.dl, accountNameDatalistHtml:idx.accountNameDatalistHtml,
     subAccountsByAccountName:idx.subAccountsByAccountName, subAccountNamesAll:idx.subAccountNamesAll,
     branches:[],
-    ymLabel, storeDepartmentId, storeDepartmentMismatch,
+    ymLabel, storeDepartmentId, storeDepartmentMismatch, priorCreditAccountName, priorCreditSubAccount,
     remark:ymLabel?`${ymLabel}　${row.source_name||""}`:(row.source_name||""),
     // 2026-09-17修正：ユーザー要望「会計計上日を摘要に入る月と同じ月に自動でなるように
     // してほしい。7月であれば7/31で」に対応。従来は常に今日の日付が既定値だったため、
@@ -2908,11 +2931,21 @@ function arjFillBlankCreditFromTemplate_(branches){
 // mftBuildAccountIndexで構築済み）で実在確認したうえで上書きし、実在しない場合は補助科目を
 // 空のままにして警告を出す（部門の警告と同じ「間違った値を紛れ込ませるより、空にして
 // 気づかせる」方針）
+// 2026-09-26追加②：ユーザー要望「対象店舗が完全一致でない場合でも、一度仕訳登録したことの
+// ある店舗の仕訳であれば、前回登録した補助科目と部門を出すようにしてほしい」に対応。完全
+// 一致で見つからない場合、この店舗で過去に成功登録したMF仕訳（arjLoadForTenantが事前に
+// get_journalで取得済み・ARJ_STATE.priorCreditSubAccount/priorCreditAccountName）があれば、
+// その時実際に使われた補助科目を優先フォールバックとして使う（一度MF側で受理された実績が
+// ある値なので、店舗名の表記が変わった／最初から店舗名と違う名前で補助科目を作っていた、
+// 等のケースでも今回また通る可能性が高い）。それも無ければ空欄+警告のまま
 function arjCreditLabelForStore_(accountName,storeName){
   if(!accountName) return "";
   if(!storeName||storeName==="（共通費）") return accountName;
   const perAccount=ARJ_STATE.subAccountsByAccountName&&ARJ_STATE.subAccountsByAccountName.get(accountName.trim());
   if(perAccount&&perAccount.includes(storeName)) return `${accountName}/${storeName}`;
+  if(ARJ_STATE.priorCreditSubAccount&&ARJ_STATE.priorCreditAccountName===accountName){
+    return `${accountName}/${ARJ_STATE.priorCreditSubAccount}`;
+  }
   ARJ_STATE.creditSubAccountWarning=`「${accountName}」の補助科目に「${storeName}」が見つかりませんでした（マネーフォワード側にまだ登録されていない可能性）。補助科目は空のままにしています。MF側で先に補助科目を作成してから、この欄に手動で入力してください。`;
   return accountName;
 }
