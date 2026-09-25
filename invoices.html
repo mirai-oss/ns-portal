@@ -624,7 +624,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-09-26-v30";
+const BUILD_TAG="2026-09-26-v31";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -7103,6 +7103,17 @@ function mftRenderBox(){
 }
 function mftWireListButtons(){
   document.querySelectorAll("[data-mft-edit]").forEach(el=>el.onclick=()=>mftOpenEditor(MFT_STATE.templates.find(t=>t.id===el.dataset.mftEdit)));
+  // 2026-09-26追加：ユーザー要望「仕訳辞書をコピーして作成できるようにしてほしい」に対応。
+  // 既存の仕訳辞書の内容（判定条件・明細行すべて）を引き継いだまま新規作成モード（id:null）で
+  // 開く。似た仕訳辞書を毎回ゼロから組み直さずに、名前や勘定科目だけ変えて量産できるように
+  // する。receivable_source_name（売上入金への自動適用キー）だけは意図的にコピーしない
+  // （同じキーを持つ仕訳辞書が2件できると`arjSetDefaultBranches`のfind()がどちらを使うか
+  // 曖昧になり事故につながるため。必要なら保存前に手動で設定してもらう）
+  document.querySelectorAll("[data-mft-copy]").forEach(el=>el.onclick=()=>{
+    const src=MFT_STATE.templates.find(t=>t.id===el.dataset.mftCopy);
+    if(!src) return;
+    mftOpenEditor(src,true);
+  });
   document.querySelectorAll("[data-mft-del]").forEach(el=>el.onclick=async()=>{
     if(!confirm(`仕訳辞書「${el.dataset.mftLabel}」を削除しますか？`)) return;
     await authed(`/rest/v1/mf_journal_templates?id=eq.${el.dataset.mftDel}`,{method:"DELETE"});
@@ -7119,7 +7130,7 @@ function mftListHtml(){
     const sum=(t.branches||[]).map(b=>`${mftLabelOf(b.debit)||"?"}／${mftLabelOf(b.credit)||"?"}`).join("、");
     const srcBadge=t.receivable_source_name?`<span style="font-size:10px;color:var(--m-blue);margin-left:6px">💰${esc(t.receivable_source_name)}へ自動適用</span>`:"";
     const row=`<div class="mfj-tpl-item"><div><div class="lbl">${esc(t.label)}${srcBadge}</div><div class="sum">${esc(sum)}（${(t.branches||[]).length}行）</div></div>
-      <div style="display:flex;gap:6px"><button class="hq-btn" style="font-size:11px;padding:6px 9px" data-mft-edit="${t.id}">編集</button><button class="hq-btn" style="font-size:11px;padding:6px 9px" data-mft-del="${t.id}" data-mft-label="${esc(t.label)}">削除</button></div>
+      <div style="display:flex;gap:6px"><button class="hq-btn" style="font-size:11px;padding:6px 9px" data-mft-edit="${t.id}">編集</button><button class="hq-btn" style="font-size:11px;padding:6px 9px" data-mft-copy="${t.id}">📄 コピーして作成</button><button class="hq-btn" style="font-size:11px;padding:6px 9px" data-mft-del="${t.id}" data-mft-label="${esc(t.label)}">削除</button></div>
     </div>`;
     // 編集中の項目の直後に編集フォームの差込先を用意（2026-09-02: ユーザー報告「編集画面が一番下に
     // 出るので、その項目のすぐ下に出してほしい」に対応。新規追加時はediting.idがnullなので一覧の外＝
@@ -7127,11 +7138,13 @@ function mftListHtml(){
     return row+((ed&&ed.id===t.id)?`<div id="mft-editor" style="margin:8px 0 14px"></div>`:"");
   }).join("");
 }
-function mftOpenEditor(tpl){
+function mftOpenEditor(tpl,asCopy){
   // 古い仕訳辞書（借方・貸方が共通amountを持つ形式）・新しい仕訳辞書（辺ごとにvalueを持つ形式）の両方に対応
+  // 2026-09-26追加：asCopy=trueのときは既存の内容を引き継ぎつつid:nullにして新規作成にする
+  // （＝保存するとPOSTで別の行が新しくできる。既存行はそのまま残る）
   MFT_STATE.editing={
-    id: tpl?tpl.id:null,
-    label: tpl?tpl.label:"",
+    id: (tpl&&!asCopy)?tpl.id:null,
+    label: tpl?(asCopy?`${tpl.label}のコピー`:tpl.label):"",
     // 判定条件・連携先・自動化設定（2026-09-03追加。会計・請求書処理の全面刷新＝自動照合の実体）
     vendorId: tpl?(tpl.vendor_id||""):"",
     matchKeywords: tpl?((tpl.match_keywords||[]).join("、")):"",
@@ -7149,8 +7162,10 @@ function mftOpenEditor(tpl){
     requireHumanReview: tpl?(tpl.require_human_review!==false):true,
     priority: tpl?(tpl.priority??100):100,
     // 2026-09-25追加：売上入金（ar_receivables.source_name）への自動適用キー。
-    // 請求書用の判定条件（取引先・キーワード等）とは別概念のため独立させてある
-    receivableSourceName: tpl?(tpl.receivable_source_name||""):"",
+    // 請求書用の判定条件（取引先・キーワード等）とは別概念のため独立させてある。
+    // 2026-09-26追加：コピー時はこのキーだけ意図的に引き継がない（同じキーを持つ仕訳辞書が
+    // 2件できると自動適用のfind()がどちらを使うか曖昧になるため。必要なら手動で設定し直す）
+    receivableSourceName: (tpl&&!asCopy)?(tpl.receivable_source_name||""):"",
     branches: tpl?(tpl.branches||[]).map(b=>({
       debitLabel:mftLabelOf(b.debit), debitAmount:b.debit?(b.debit.value??b.amount??""):"",
       creditLabel:mftLabelOf(b.credit), creditAmount:b.credit?(b.credit.value??b.amount??""):"",
