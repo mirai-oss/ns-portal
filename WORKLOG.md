@@ -8,7 +8,9 @@
 
 **★★★★2026-09-24（担当Cスレッド）ユーザー要望「売上入金のデータも間違えたものがあるから削除できるようにしてほしい」に対応（BUILD_TAG=2026-09-24-v21）**: 💰売上入金タブの各行に🗑削除ボタンを新設。ar_receivables本体に加え、紐づく消込結果(ar_matching)・実入金(ar_deposits)・添付(ar_receivable_attachments)を削除し、本部タスクの例外連携（hq_tasks.exception_receivable_id）も外す。既にMF仕訳登録済み（mf_journal_id・linked_invoice_idあり）の場合は、invoices側に作られる内部的な「請求書」行も直前に新設した`invoice-delete`Edge Function経由で一緒に削除する（請求書削除の不具合修正で得た知見の横展開）。**実機に触る前に使い捨てテストデータ（消込・実入金・添付・MF仕訳連携ありの2パターン）を作って削除順序を検証**したところ、`ar_matching.deposit_id`が`ar_deposits(id)`を参照するため`ar_deposits`を先に消すとFK違反になると判明・`ar_matching`→`ar_deposits`の順に修正（請求書削除で味わった「デプロイしてから気づく」を今回は避けられた）。commit: [415cbc0](https://github.com/mirai-oss/ns-portal/commit/415cbc0)。GitHub Pages反映確認済み。直上（Mac miniセッション）エントリで「川崎店の2026年8月分はテスト目的の重複投入、ユーザー側で後日削除予定」と書かれているのはまさにこの機能で対応可能になったケース。**次はユーザーに実機で削除を試してもらう**。
 
-**★★★★★★★★2026-09-23（Mac miniセッション・完了）トーホーエージェンシー PayPay加盟店パネルの入金自動取込を実装完了（全7店舗）＋売上入金の仕訳作成で部門が別店舗のまま残るバグ修正**: ユーザー依頼でPayPay for Business（加盟店パネル・QRコード決済）の店舗別月次入金を自動取込む`ns-daily-import/tasks/paypay-merchant-deposit.js`を新規実装（ロケットナウと違いBigQuery層は無し・直接ar_receivablesへ登録）。全7店舗（川崎・新横浜・芝・新橋・本店・恵比寿・はなれ）のマッピング・実機検証が完了し、2026年8月分を一括実行で全店舗正しく`ar_receivables`へupsert済み（詳細な罠と対策はns-daily-import/WORKLOG.md参照）。毎月3日07:20の自動スケジュールも登録済み（`config.js`の`MONTHLY_SCHEDULE`）。ns-daily-importコミット[94cee6c](https://github.com/mirai-oss/ns-daily-import/commit/94cee6c)・push済み。作業中、生成したMF仕訳作成モーダルのスクリーンショットで**部門（飲食売上側）が別店舗（01本店）のまま**になっているとユーザーから指摘があり調査。`invoices.html`の`arjFillRealAmounts`が「過去の仕訳・仕訳辞書に既に部門があれば上書きしない」仕様だったため、source_name（例「PayPay加盟店」）だけで検索してたまたまヒットした別店舗ぶんの過去仕訳の部門が残ってしまうバグと判明。部門は勘定科目と違い今回処理中の店舗に必ず一致すべき値のため、`storeDepartmentId`解決時は常に上書きするよう修正（勘定科目・税区分は引き続き過去データを尊重）。invoicesコミット[d8738d4](https://github.com/mirai-oss/ns-portal/commit/d8738d4)・BUILD_TAG `2026-09-23-v20`・push済み。**川崎店の2026年8月分は元々手動入力済みのものにテスト目的で重複投入しているため、ユーザー側で後日削除予定（本人了承済み）**。
+**★★★★★★★★★2026-09-25（Mac miniセッション）会計・請求＞自動取込＞「未取得」を月次ジョブ専用に変更＋期限切れをLarkアラート（BUILD_TAG=2026-09-25-v22）**: ユーザー指示「未取得に出ているのは毎日のタスク（インフォマート・Dinii支払い・PayPay入金）で、管理・権限＞システム利用状況の自動取込ジョブ一覧で見るものだから外して。代わりに前回作ったPayPayの取込をここに入れて。期限内に入ってこない場合は未取得と照らし合わせてLarkでアラートして」に対応。**自動取込タブ（自動取込ジョブ／未取得）は月次の会計取込ジョブだけ**（import_schedule.frequency='monthly'かつkind∈deposit/purchase/sales＝現状PayPay加盟店入金・ロケットナウ月次精算の2件）を扱う形に変更。未取得は「直近の予定日に成功が無く、予定時刻＋猶予24hを過ぎたもの」を⚠️未取得（N日超過）、期限内は「実行待ち」、監視開始前は「待機中（次回◯/◯）」と表示。会計ダッシュボードの「未取得」KPIも同じ判定に統一。**Lark通知はMac mini側**（ns-daily-import `lib/monthly-overdue-alert.js`・dispatch.jsから30分間隔で確認・同一ジョブ1日1回・期限から10日間）で、判定ロジックは画面の`intakeMonthlyStatus`と同一（片方を直したら両方直す）。`partial`（一部店舗のみ成功）も未取得扱い。**設計上の注意**: `import_status_today`ビューは月次ジョブの`is_overdue`が構造的に永久falseになる（「今日が予定日」かつ「予定時刻+24h超過」は同時に成立しない）うえ、`import_runs.kind`が全行nullで従来の「自動取込ジョブ（0）」表示も空だった。本番SQLに触れずに済むよう予定表と実行履歴から画面・Node双方で算出する方式にした（ビュー修正が必要ならユーザー確認のうえ別途）。PayPay加盟店入金の初回実地確認は10/3。invoicesコミット[b99b74e](https://github.com/mirai-oss/ns-portal/commit/b99b74e)・ns-daily-importコミット[0eef6d2](https://github.com/mirai-oss/ns-daily-import/commit/0eef6d2)。**同日続き（BUILD_TAG=2026-09-25-v23）**: ①ユーザー指摘「未読バッジがどこの未読か分からない」→サイドバー「請求書」のバッジの正体は**売上入金のうちMF仕訳未作成の件数**（portal.htmlのcountKey:"receivable"）だったため、バッジに「入金」「未処理」の文字＋ホバー説明を付け、グループ見出し・上部カテゴリタブの合計にも内訳をホバー表示。あわせて数字がホーム表示時にしか更新されず古いまま残る問題を、invoices.html→portal.htmlのpostMessage（`nsAcBadge`）で即時同期＋売上入金の削除後も数え直すよう修正。②「PayPay加盟入金が前回結果=失敗」は9/23の私のデバッグ中の**テスト実行の記録**（manual-test 7件）が残っていただけと判明・該当7件を削除（本番の定期実行は10/3が初回）。③未取得タブに「▶ 再実行」ボタンを追加：ブラウザ→`import_run_requests`にINSERT→Mac mini（`lib/run-requests.js`）が拾って`node run.js`実行→結果を書き戻し、画面は15秒ごとに自動更新。**⚠️本番SQL（`supabase/2026-09-25_import_run_requests.sql`）が未適用**のためボタンはまだ出ない（テーブルが無い間は画面もMac mini側も何もしない設計）。適用はユーザー確認のうえ（この環境にDDL権限なし）。
+
+**★★★★★★★★2026-09-24（Mac miniセッション・続き）PayPay加盟店パネル取込に証憑PDF添付を追加＋MF仕訳への証憑添付を新規実装**: ユーザー指摘「管理システムの添付がzipで中身をその場で確認できないから、PDFも貼り付けて（手順の中にPDFダウンロードもあるはず）」に対応。`ns-daily-import/tasks/paypay-merchant-deposit.js`に「入金額の内訳」タブのPDF出力（gross/fee/netが1枚にまとまった要約。対象取引の生データCSVより証憑向き）を取得し`ar_receivable_attachments`へ登録する処理を追加（詳細・実機の罠はns-daily-import/WORKLOG.md参照）。あわせて調査中に判明: `invoices.html`の`arjSubmitJournal`（売上入金→MF仕訳作成）は`attach_files:false`が常に指定されており、**そもそも証憑を一切マネーフォワードへ送っていなかった**（`create_standalone`はこのフラグを見ておらず`voucher_files`にbase64で直接埋め込む必要がある仕様だったため無意味な指定になっていた）。`arjFetchVoucherFiles()`を新設し、その入金に紐づく`ar_receivable_attachments`をStorageから取得・base64変換して送るよう修正。invoicesコミット[9cbf159](https://github.com/mirai-oss/ns-portal/commit/9cbf159)（415cbc0の売上入金削除機能とのマージ後push済み・現BUILD_TAG `2026-09-24-v21`のまま変更なし）。ns-daily-importコミット[f2a651f](https://github.com/mirai-oss/ns-daily-import/commit/f2a651f)。全7店舗で2026年8月分に証憑PDFが正しく添付されることを確認。**検証中に気づいた点（解決済み）**: Supabaseを直接確認したところ`ar_receivables`の2026年8月分から川崎店・新横浜店の2行が無くなっており、新横浜店の削除意図が不明だったためユーザーに確認したところ「テストが順調だったのを見て前もって消した。8月分は元々全部（手動で）登録済みのデータなので、いずれ全7店舗とも削除するつもりだった」と回答（意図的・想定どおりで対応不要）。9月分以降は正規の自動取込データとして通常どおり残る。
 
 **★★★★★★★★2026-09-23 最新（担当Aスレッド）推移分析「年初来×営業区分絞込」で古い月が¥0になるバグを修正**: 担当Dから引き継がれたバグ（下記エントリ）を調査。担当Dの「多段タイムアウト」仮説は**採用せず**（コード上、BQ・シートフォールバックどちらも月数は正しく絞り込まれており、タイムアウトを疑う根拠は無かった）、実際に`app.js`を追って別の真因を特定: `bqMonthsForMedia_()`（9/19対応で年初来なら経過月数+12ヶ月を要求するよう既に修正済み）は**`fetchMediaBQ()`が実際に呼ばれたときにしか効かない**が、`fetchMediaBQ()`はページ読み込み時（既定「直近30日」＝3ヶ月分）にしか呼ばれておらず、ユーザーが後から「年初来」や「営業区分」に切り替えても`App.set()`は状態を書き換えて再描画するだけでD.mediaを再取得していなかった（＝D.mediaは常に最初の3ヶ月分のまま）。絞込無し（「全体」）表示は`fetchAnalysisKd_`という別経路（常に全期間を読む）を使うため無関係で正しく見えていた。**修正**: 必要な月数が既読込み月数を超えたときだけ`fetchMediaBQ()`を再取得する`ensureMediaMonths_()`を追加し、`aRange`/`aSeg`/`cStart`/`cEnd`変更時に`App.set()`から呼ぶようにした。あわせて、調査中に見つけた`bqMonthsForMedia_()`の期間指定(custom)分岐の型バグ（`parseDateStr()`の戻り値＝epoch ms数値に直接`.getFullYear()`を呼んで必ず例外→シートフォールバックに握りつぶされていた）も修正。ローカルのサンプルデータ（demoアカウント`shacho`/`tori2026`＋コンソールでS.useBqDaily/S.auth.tokenを疑似設定）で、aRange変更時に必要月数(19〜31ヶ月)を正しく検知して再取得がトリガーされること・custom範囲で例外が出ないこと・UI操作（年初来ボタン・営業区分プルダウン）でconsoleエラーが出ないことを確認済み。tori-dashboardコミット[c2d25b5](https://github.com/mirai-oss/tori-dashboard/commit/c2d25b5)・push済み（GitHub Pages自動反映・GAS変更なし）。**BQモード本番（実データ・実際のBigQuery接続）での最終確認はユーザー実機待ち**。
 
@@ -8930,3 +8932,59 @@ upsert（1回の実行で2分20秒・失敗0件）。毎月3日07:20の自動ス
 
 **ユーザーへの申し送り**: 川崎店の2026年8月分は元々手動入力済みのものにテスト目的で重複投入して
 いるため、ユーザー側で後日削除予定（本人了承済み）。
+
+## 2026-09-24（Mac miniセッション）売上入金にPDF証憑を添付・MF仕訳への証憑送信を新規実装
+
+ユーザー指摘「管理システムに入っている添付ファイルを確認したらzipファイルになって中身がその場で
+開けないから、PDFファイルも貼り付けてね！手順の中にPDFダウンロードもあるはずだから、それも
+アップロードするように！」に対応。
+
+**ns-daily-import側**（詳細はns-daily-import/WORKLOG.md参照）: Scribeガイドを再確認し、
+「入金額の内訳」タブのPDF出力（gross/fee/netの1枚要約）を`paypay-merchant-deposit.js`で
+取得・`ar_receivable_attachments`へ登録する処理を追加。Supabase Storageのキーに日本語は
+使えない（InvalidKey）という罠を踏み、表示名とキーを分離して解決。
+
+**ns-portal側**: 調査の結果、`invoices.html`の`arjSubmitJournal`（売上入金→MF仕訳作成）は
+これまで`attach_files:false`を常に送っており、証憑を一切マネーフォワードへ添付していなかった
+（このフラグは`create_standalone`アクションでは見られておらず、実際は`voucher_files`に
+base64で直接埋め込んで送る必要があった＝無意味な指定だった）。`arjFetchVoucherFiles()`を
+新設し、その入金に紐づく`ar_receivable_attachments`をStorageから取得・base64変換して
+`create_standalone`へ渡すよう修正。既存の`bytesToBase64_`（給与PDF添付で実績のある変換関数）
+をそのまま再利用。
+
+**検証**: 川崎店で1件PDF添付→InvalidKeyで失敗→ASCII固定パスに修正→再検証→全7店舗一括実行で
+2026年8月分すべてに証憑PDFが添付されることを確認。invoices.htmlの構文チェック
+（`<script>`抽出→`new Function`）も実施しOK。実際のMF仕訳登録（本物の証憑送信）は
+今回のセッションでは行っていない（既存の`arjFetchVoucherFiles`は給与PDF添付と同じ実績パターンの
+転用のため、次回ユーザーが売上入金のMF仕訳登録を行うタイミングで実地確認されたい）。
+
+commit: [9cbf159](https://github.com/mirai-oss/ns-portal/commit/9cbf159)（415cbc0の
+売上入金削除機能とマージ後push済み）／ns-daily-import
+[f2a651f](https://github.com/mirai-oss/ns-daily-import/commit/f2a651f)。
+
+**（解決済み）**: 検証中、`ar_receivables`の2026年8月分から川崎店・新横浜店の2行が
+消えていることに気付いた（🗑削除機能・415cbc0によるもの）。ユーザーに確認したところ
+「テストが順調だったのを見て前もって消した。8月分はもともと手動で全部登録済みのデータ
+なので、いずれ全7店舗とも削除するつもりだった」とのことで意図的・想定どおり。対応不要。
+
+## 2026-09-25（Mac miniセッション）自動取込タブを月次ジョブ専用化・未取得のLarkアラート
+
+ユーザー指示（未取得タブのスクショ付き）に対応。詳細は上の📍と`ns-daily-import/WORKLOG.md`の同日エントリ。
+**画面（invoices.html・BUILD_TAG 2026-09-25-v22）**: 自動取込ジョブ／未取得の両サブタブを月次の会計取込ジョブ
+（PayPay加盟店入金・ロケットナウ月次精算）だけに絞り、毎日のジョブは「管理・設定＞システム利用状況」で見る旨を
+説明文に明記。実行ログの表示列にジョブ名・内容/エラーを追加（従来の`kind`絞込は全行nullで常に0件だった）。
+**Lark**: ns-daily-import側の`monthly-overdue-alert.js`が同一判定でアラート（初回実地は10/3のPayPay加盟店入金）。
+検証: 想定時刻注入の判定テスト・実データで現状=誤警報なし・HTML描画テスト（期限超過シナリオ）を実施。
+実ブラウザでの目視確認とLark実送信テストは未実施（次回10/3〜4に自然に確認される）。
+
+## 2026-09-25（Mac miniセッション・続き）未読バッジの表示明確化・再実行ボタン用の受け口追加
+
+ユーザー要望（請求書一覧のスクショ付き）「未読バッジがどこの未読か分からない。PayPay加盟入金が前回結果=失敗に
+なっているが大丈夫？失敗時にLark通知と、未取得タブから再実行できるボタンがあれば理想」に対応。詳細は上の📍と
+ns-daily-import/WORKLOG.mdの同日「続き」エントリ。
+- **バッジ**（portal.html／invoices.html・BUILD_TAG 2026-09-25-v23）: 「請求書」のバッジ=売上入金の仕訳未作成件数と判明。
+  「入金 N」表記＋ホバー説明、グループ／上部タブの合計は内訳ホバー、iframe内の増減はpostMessageでサイドバーへ即時反映。
+- **「失敗」表示**: 9/23のテスト実行記録（manual-test 7件）の残り。削除済み。定期実行の初回は10/3。
+- **再実行ボタン**: `supabase/2026-09-25_import_run_requests.sql`（新規・**未適用**）＋ns-daily-import `lib/run-requests.js`＋
+  未取得タブのボタン。SQL適用までは画面・Mac mini側とも無害に無効。適用後の初回動作確認（依頼→実行→書き戻し）は未実施。
+- Lark通知: 未取得アラート（9/25実装）に加え、再実行が失敗した場合はrun.js既存の失敗通知がLarkへ飛ぶ。
