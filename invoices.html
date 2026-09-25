@@ -624,7 +624,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-09-26-v33";
+const BUILD_TAG="2026-09-26-v34";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -2475,6 +2475,124 @@ function receivableKpis(){
     rate,
   };
 }
+/* ============================================================
+   現金売上照合（2026-09-26・ユーザー要望）
+   毎月3日にMac mini(ns-daily-import cash-sales-monthly-check)が前月の現金売上をレジ(Dinii/ZeroRegi)から取り直し、
+   管理システム（売上DB「支払いDB」）と店舗×日で照合した結果を cash_recon_runs / cash_recon_items に保存する。
+   ここでは結果の表示と「レジに合わせて修正」（cash_recon_fix_requests へ依頼→Mac miniが売上DB・分析・BQ・精算書を更新）を行う。
+   全店舗一致すると「現金売上」の仕訳候補が売上入金（入金予定）に自動で作られる。SQL: supabase/2026-09-26_cash_recon.sql
+   ============================================================ */
+let CASHRECON_STATE={ym:null,loading:false,available:true,run:null,items:[],fix:null,expanded:{},poll:null,msg:""};
+async function cashReconLoad(){
+  const ym=RECEIVABLE_STATE.yearMonth;
+  CASHRECON_STATE.loading=true;
+  const rr=await authed(`/rest/v1/cash_recon_runs?target_ym=eq.${encodeURIComponent(ym)}&select=*&order=started_at.desc&limit=1`);
+  if(!rr.ok){ Object.assign(CASHRECON_STATE,{ym,loading:false,available:false,run:null,items:[],fix:null}); return; }
+  const run=(Array.isArray(rr.body)&&rr.body[0])||null;
+  let items=[],fix=null;
+  if(run){
+    const ir=await authed(`/rest/v1/cash_recon_items?run_id=eq.${run.id}&select=id,store_name,business_date,mgmt_cash,pos_cash,diff,status,fix_status,pos_source&order=store_name,business_date&limit=2000`);
+    items=(ir.ok&&Array.isArray(ir.body))?ir.body:[];
+    const fr=await authed(`/rest/v1/cash_recon_fix_requests?run_id=eq.${run.id}&select=*&order=requested_at.desc&limit=1`);
+    fix=(fr.ok&&Array.isArray(fr.body)&&fr.body[0])||null;
+  }
+  Object.assign(CASHRECON_STATE,{ym,loading:false,available:true,run,items,fix});
+}
+function cashReconChipBadge(){
+  const S=CASHRECON_STATE;
+  if(S.ym!==RECEIVABLE_STATE.yearMonth||!S.run) return "";
+  const n=cashReconStores().filter(s=>s.diffDays.length).length;
+  return n?`（⚠️${n}店舗に差異）`:"（✅一致）";
+}
+function cashReconStores(){
+  const m=new Map();
+  for(const it of CASHRECON_STATE.items){
+    if(!m.has(it.store_name)) m.set(it.store_name,{store:it.store_name,mgmt:0,pos:0,diffDays:[],okDays:0});
+    const s=m.get(it.store_name);
+    s.mgmt+=Number(it.mgmt_cash)||0; s.pos+=Number(it.pos_cash)||0;
+    if(it.status==="ok") s.okDays++; else s.diffDays.push(it);
+  }
+  return [...m.values()].sort((a,b)=>a.store.localeCompare(b.store,"ja"));
+}
+function cashReconSigned(n){ n=Number(n)||0; return n===0?"¥0":(n>0?"+":"-")+yen(Math.abs(n)); }
+function cashReconDayLabel(d){ return `${Number(d.slice(5,7))}/${Number(d.slice(8,10))}`; }
+function cashReconFixOpen(){ const f=CASHRECON_STATE.fix; return !!f&&(f.status==="pending"||f.status==="running"); }
+function cashReconPanelHtml(){
+  const S=CASHRECON_STATE, ym=RECEIVABLE_STATE.yearMonth;
+  const box=(inner)=>`<div class="card" style="padding:16px;background:var(--m-bg,#faf8f4)">${inner}</div>`;
+  if(S.loading||S.ym!==ym){ if(!S.loading) setTimeout(()=>cashReconReload(),0); return box('<div class="spin">読み込み中…</div>'); }
+  if(!S.available) return box(`<div style="font-size:13px"><b>現金売上照合はまだ使えません。</b><div class="meta" style="color:var(--muted);font-size:12px;margin-top:6px">照合結果を保存するテーブルが未作成です（本番SQL <code>supabase/2026-09-26_cash_recon.sql</code> の適用待ち）。適用後、毎月3日に自動で照合され、ここに結果が出ます。</div></div>`);
+  const rerunBtn=`<button class="hq-btn" data-cash-rerun="1">🔁 ${esc(ym)}の照合をやり直す</button>`;
+  if(!S.run) return box(`<div style="font-size:13px"><b>${esc(ym)}の照合結果はまだありません。</b><div class="meta" style="color:var(--muted);font-size:12px;margin:6px 0 10px">毎月3日に前月分を自動で照合します（レジからDinii・ZeroRegiの月間データを取り直して、管理システムと店舗×日で比べます）。</div>${rerunBtn}<span id="cash-msg" class="meta" style="margin-left:8px;font-size:12px"></span></div>`);
+  const run=S.run, stores=cashReconStores();
+  const ng=stores.filter(s=>s.diffDays.length);
+  const head=ng.length
+    ?`<span class="invoice-status err">⚠️ ${ng.length}店舗に差異あり</span> <span class="meta" style="color:var(--muted);font-size:12px">全店舗一致するまで、仕訳候補は作られません</span>`
+    :`<span class="invoice-status done">✅ 全店舗一致</span> <span class="meta" style="color:var(--muted);font-size:12px">「現金売上」の仕訳候補を作成済みです。<a href="javascript:void(0)" data-receivable-subtab="pending" style="color:var(--accent)">入金予定タブ</a>で「仕訳を作成」できます</span>`;
+  const fixOpen=cashReconFixOpen(), f=S.fix;
+  const fixState=f?(fixOpen?`<span class="invoice-status wait">${f.status==="running"?"▶ 修正中…":"🕒 修正依頼済み（開始待ち）"}</span>`:`<span class="meta" style="font-size:11px;color:var(--muted)" title="${esc(f.result||"")}">前回の修正依頼: ${{success:"成功",failed:"失敗"}[f.status]||esc(f.status)} ${fmtDT(f.finished_at||f.requested_at)}${f.status==="failed"?"（"+esc(String(f.result||"").slice(0,60))+"）":""}</span>`):"";
+  return `
+    <div class="card" style="padding:16px">
+      <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:10px">
+        <div>${head}<div class="meta" style="color:var(--muted);font-size:11px;margin-top:4px">照合日時: ${fmtDT(run.finished_at||run.started_at)}／対象: ${esc(ym)}（レジ=Dinii・ZeroRegi／管理システム=売上DB「支払いDB」）${run.note?`／${esc(run.note)}`:""}</div></div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">${fixState}${rerunBtn}${ng.length?`<button class="hq-btn primary" data-cash-fix="__ALL__" ${fixOpen?"disabled":""}>🛠 差異のある全店舗をレジに合わせて修正</button>`:""}</div>
+      </div>
+      <div id="cash-msg" class="err" style="margin-bottom:6px"></div>
+      <div class="hq-tablewrap"><table class="invoice-table">
+        <thead><tr><th>店舗</th><th>管理システム</th><th>レジ（正）</th><th>差額（レジ−管理）</th><th>状態</th><th></th></tr></thead>
+        <tbody>${stores.map(s=>{
+          const open=!!CASHRECON_STATE.expanded[s.store], d=s.pos-s.mgmt;
+          const row=`<tr>
+            <td><b>${esc(s.store)}</b></td><td>${yen(s.mgmt)}</td><td>${yen(s.pos)}</td>
+            <td style="${d?"color:var(--m-red);font-weight:700":""}">${cashReconSigned(d)}</td>
+            <td>${s.diffDays.length?`<span class="invoice-status err">要確認（${s.diffDays.length}日）</span>`:'<span class="invoice-status done">照合OK</span>'}</td>
+            <td style="white-space:nowrap">${s.diffDays.length?`<button class="linkbtn" style="background:none;border:none;color:var(--accent);cursor:pointer;font-size:12px" data-cash-toggle="${esc(s.store)}">${open?"▲ 閉じる":"▼ 日別を見る"}</button> <button class="hq-btn" style="padding:4px 8px" data-cash-fix="${esc(s.store)}" ${fixOpen?"disabled":""}>この店舗を修正</button>`:""}</td></tr>`;
+          const det=(open&&s.diffDays.length)?`<tr><td colspan="6" style="background:#fbf9f5"><table class="invoice-table" style="margin:4px 0"><thead><tr><th>日付</th><th>管理システム</th><th>レジ</th><th>差額</th><th>内容</th></tr></thead><tbody>${s.diffDays.map(x=>{
+            const dd=(Number(x.pos_cash)||0)-(Number(x.mgmt_cash)||0);
+            const kind={diff:"金額が違う",missing_mgmt:"管理システムにその日が無い",missing_pos:"管理システムにだけある日（自動では消しません・要確認）"}[x.status]||x.status;
+            return `<tr><td>${cashReconDayLabel(x.business_date)}</td><td>${x.mgmt_cash==null?"—":yen(x.mgmt_cash)}</td><td>${x.pos_cash==null?"—":yen(x.pos_cash)}</td><td style="color:var(--m-red)">${cashReconSigned(dd)}</td><td>${kind}${x.fix_status==="fixed"?" ✅修正済み":x.fix_status==="failed"?" ⚠️修正できず":""}</td></tr>`;
+          }).join("")}</tbody></table></td></tr>`:"";
+          return row+det;
+        }).join("")}</tbody>
+      </table></div>
+      <div class="meta" style="color:var(--muted);font-size:11px;margin-top:8px">「レジに合わせて修正」は、その店舗×日の売上（支払いDBの1行）をレジの値で書き換え、分析・BigQuery・業務委託精算書の現金売上（振込済みの月は除く）にも反映します。書き換え前の値は売上DBの「支払い修正ログ」シートに残ります。</div>
+    </div>`;
+}
+async function cashReconReload(){ await cashReconLoad(); receivableRender(RECEIVABLE_STATE.u||CASHRECON_STATE.u); cashReconPollStart(); }
+function cashReconPollStart(){
+  if(CASHRECON_STATE.poll||!cashReconFixOpen()) return;
+  const t0=Date.now();
+  CASHRECON_STATE.poll=setInterval(async()=>{
+    if(TAB!=="receivableSoon"||RECEIVABLE_STATE.subTab!=="cashRecon"||Date.now()-t0>30*60*1000){ clearInterval(CASHRECON_STATE.poll); CASHRECON_STATE.poll=null; return; }
+    await cashReconLoad(); receivableRender(CASHRECON_STATE.u);
+    if(!cashReconFixOpen()){ clearInterval(CASHRECON_STATE.poll); CASHRECON_STATE.poll=null; }
+  },15000);
+}
+function wireCashRecon(u){
+  CASHRECON_STATE.u=u;
+  document.querySelectorAll("[data-cash-toggle]").forEach(el=>el.onclick=()=>{ const k=el.dataset.cashToggle; CASHRECON_STATE.expanded[k]=!CASHRECON_STATE.expanded[k]; receivableRender(u); });
+  document.querySelectorAll("[data-cash-fix]").forEach(el=>el.onclick=async()=>{
+    const which=el.dataset.cashFix, all=which==="__ALL__";
+    const stores=cashReconStores().filter(s=>s.diffDays.length&&(all||s.store===which));
+    const days=stores.reduce((n,s)=>n+s.diffDays.filter(d=>d.status!=="missing_pos").length,0);
+    const manual=stores.reduce((n,s)=>n+s.diffDays.filter(d=>d.status==="missing_pos").length,0);
+    if(!days){ alert("自動で修正できる差異（金額違い／管理システムに無い日）がありません。"+(manual?"\n管理システムにだけある日が"+manual+"日あります（自動では消さないため、売上DBで確認してください）。":"")); return; }
+    if(!confirm(`${all?"差異のある全"+stores.length+"店舗":"「"+which+"」"}の${days}日分を、レジの値に合わせて管理システム（売上DB）の売上を書き換えます。\\n\\n・分析_日別店舗・BigQuery・業務委託精算書（対象店舗・未振込の月）にも反映されます\\n・書き換え前の値は売上DBの「支払い修正ログ」に残ります\\n・Mac miniが数分以内に実行します。結果はこの画面とLarkに出ます${manual?"\\n\\n※管理システムにだけある日"+manual+"日は自動では変更しません":""}\\n\\nよろしいですか？`)) return;
+    const body={run_id:CASHRECON_STATE.run.id,status:"pending"};
+    if(!all) body.store_name=which;
+    const r=await authed(`/rest/v1/cash_recon_fix_requests`,{method:"POST",headers:{Prefer:"return=minimal"},body:JSON.stringify(body)});
+    if(!r.ok){ alert(r.status===409?"すでに修正を依頼済み（または実行中）です。結果が出るまでお待ちください。":(r.status===401||r.status===403)?"修正を依頼する権限がありません（マスター／CEO／HQのみ）。":"修正の依頼に失敗しました。時間をおいて再度お試しください。"); return; }
+    await cashReconLoad(); receivableRender(u); cashReconPollStart();
+  });
+  document.querySelectorAll("[data-cash-rerun]").forEach(el=>el.onclick=async()=>{
+    const ym=RECEIVABLE_STATE.yearMonth;
+    if(!confirm(`${ym}の現金売上照合をやり直しますか？\\n\\nMac miniがレジ(Dinii・ZeroRegi)から月間データを取り直して管理システムと照合します（数分かかります）。結果はLarkにも通知されます。`)) return;
+    const r=await authed(`/rest/v1/import_run_requests`,{method:"POST",headers:{Prefer:"return=minimal"},body:JSON.stringify({job:"cash-sales-monthly-check",target_ym:ym,status:"pending"})});
+    const m=$("cash-msg");
+    if(!r.ok){ alert(r.status===409?"すでに照合を依頼済み（または実行中）です。しばらくお待ちください。":"照合の依頼に失敗しました（再実行ボタン用のテーブル未作成、または権限がありません）。"); return; }
+    if(m){ m.className="meta"; m.textContent="依頼しました。Mac miniが数分以内に開始し、完了するとLarkに通知されます。この画面は少し後に開き直してください。"; }
+  });
+}
 function receivableRender(u){
   const kpi=receivableKpis();
   const filtered=receivableFilteredRows();
@@ -2514,11 +2632,12 @@ function receivableRender(u){
             const n=RECEIVABLE_STATE.receivables.filter(r=>(!RECEIVABLE_STATE.storeFilter||r.store_id===RECEIVABLE_STATE.storeFilter)&&(!RECEIVABLE_STATE.corpFilter||receivableCorpId(r)===RECEIVABLE_STATE.corpFilter)&&receivableRowState(r)===k).length;
             return `<button class="mail-chip ${RECEIVABLE_STATE.subTab===k?'active':''}" data-receivable-subtab="${k}">${l}（${n}）</button>`;
           }).join("")}
+          <button class="mail-chip ${RECEIVABLE_STATE.subTab==='cashRecon'?'active':''}" data-receivable-subtab="cashRecon">💴 現金売上照合${cashReconChipBadge()}</button>
         </div>
-        <div class="hq-tablewrap"><table class="invoice-table">
+        ${RECEIVABLE_STATE.subTab==="cashRecon"?cashReconPanelHtml():`<div class="hq-tablewrap"><table class="invoice-table">
           <thead><tr><th>入金元</th><th>法人</th><th>店舗</th><th>売上決済額</th><th>手数料</th><th>入金予定額</th><th>実入金額</th><th>差異</th><th>入金予定日</th><th>状態</th><th>備考</th><th>MF仕訳</th><th></th></tr></thead>
           <tbody>${filtered.length?filtered.map(receivableRowHtml).join(""):'<tr><td colspan="13">該当するデータはありません（自動取込がまだ稼働していないため、現状は表示されるデータがありません）</td></tr>'}</tbody>
-        </table></div>
+        </table></div>`}
       </div>
     </section>`;
   $("receivable-ym").onchange=()=>{ RECEIVABLE_STATE.yearMonth=$("receivable-ym").value||receivableYmDefault(); renderReceivableTab(u); };
@@ -2527,6 +2646,7 @@ function receivableRender(u){
   document.querySelectorAll("[data-receivable-subtab]").forEach(el=>el.onclick=()=>{
     RECEIVABLE_STATE.subTab=el.dataset.receivableSubtab; receivableRender(u);
   });
+  wireCashRecon(u);
   document.querySelectorAll("[data-arj-open]").forEach(el=>el.onclick=()=>openReceivableJournalModal(u,el.dataset.arjOpen));
   // 2026-09-17新規：ユーザー報告「PL反映が出ない」に対応。仕訳登録済みの売上入金行から
   // 請求書詳細（PLへ反映パネルを含む）へ移動する手段が無かった（is_receivable_relatedの
