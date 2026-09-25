@@ -624,7 +624,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-09-26-v27";
+const BUILD_TAG="2026-09-26-v28";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -2737,7 +2737,27 @@ async function openReceivableJournalModal(u,receivableId){
 
   const tRes=await mfCall("list_tenants");
   const tenants=(tRes.ok&&tRes.body.tenants)||[];
-  await arjLoadForTenant(tenants.length?tenants[0].id:"default",tenants);
+  await arjLoadForTenant(arjPickTenantId(row,tenants),tenants);
+}
+// 2026-09-26：ユーザー報告「N-Styleの売上入金なのに仕訳の登録先がトーホーになっている」に対応。
+// 従来は連携済み事業者の先頭（=トーホー）に固定されていた。売上入金の法人からMFの事業者を選ぶ:
+//   ①法人コード→事業者IDの対応（corporations.corp_code → mf_oauth_tokens.id）
+//   ②事業者名に法人名が含まれる（例: 株式会社N-Style ⊃ N-Style）  ③どちらも無ければ従来どおり先頭
+// 法人は行のcorporation_id、無ければ店舗マスタの法人。画面上部の「変更」で手動切替も引き続き可能。
+const MF_TENANT_BY_CORP_CODE={nstyle:"nstyle",toho:"default"};
+function arjPickTenantId(row,tenants){
+  if(!tenants.length) return "default";
+  const corps=(CORP_STORE_CACHE&&CORP_STORE_CACHE.corporations)||[];
+  const stores=(CORP_STORE_CACHE&&CORP_STORE_CACHE.stores)||[];
+  const corpId=row.corporation_id||((stores.find(s=>s.id===row.store_id)||{}).corporation_id);
+  const corp=corps.find(c=>c.id===corpId);
+  if(corp){
+    const byCode=MF_TENANT_BY_CORP_CODE[corp.corp_code];
+    if(byCode&&tenants.some(t=>t.id===byCode)) return byCode;
+    const byLabel=tenants.find(t=>(t.label||"").includes(corp.name));
+    if(byLabel) return byLabel.id;
+  }
+  return tenants[0].id;
 }
 // 仕訳辞書（mf_journal_templates）取得。請求書メール詳細の仕訳作成（mfjFetchTemplates）・
 // 設定タブの仕訳辞書編集と全く同じテーブルを見ているため、どちらで登録してももう一方から使える
@@ -3323,7 +3343,7 @@ let CORP_STORE_CACHE=null;
 async function ensureCorpStoreCache(){
   if(CORP_STORE_CACHE) return CORP_STORE_CACHE;
   const [corpRes,storeRes]=await Promise.all([
-    authed("/rest/v1/corporations?select=id,name&order=name"),
+    authed("/rest/v1/corporations?select=id,name,corp_code&order=name"),
     authed("/rest/v1/stores?select=id,name,corporation_id,seisan_target,seisan_pl_categories_target,seisan_store_name&order=name"),
   ]);
   CORP_STORE_CACHE={
