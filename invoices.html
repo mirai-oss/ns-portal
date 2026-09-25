@@ -624,7 +624,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-09-26-v25";
+const BUILD_TAG="2026-09-26-v26";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -2862,18 +2862,27 @@ function arjFillBlankCreditFromTemplate_(branches){
     credit:{...(b.credit||{}), account_name:(b.credit&&b.credit.account_name)||firstName, tax_id:(b.credit&&b.credit.tax_id)||firstTax},
   }));
 }
+// 2026-09-26追加②：ユーザー要望「飲食売上は同じ仕訳だから、わざわざ仕訳を2つにして数字を
+// 分けなくて良いので、合算した数字にしてほしい」に対応。直上の修正で2行とも「飲食売上」に
+// 正しく計上されるようにはなったが、同じ勘定科目・同じ補助科目（店舗）の行が2行に分かれて
+// 表示されるのは冗長だった。貸方は1行目（入金分の行）にまとめて実際の売上決済額（入金予定額
+// ＋手数料）を計上し、2行目（手数料分の行）の貸方は空にする（画面のヒントにあるとおり
+// 「各行は借方・貸方のどちらか片方だけでも登録できる」ため、2行目は借方＝支払手数料のみの
+// 行になる）
 function arjApplyTemplateAsDefault_(tpl,expected,fee,dep,prefix){
   const storeName=receivableStoreName(ARJ_STATE.row.store_id);
   const amounts=[expected,fee], suffixes=["売上","手数料"];
+  const combinedCredit=expected+fee;
   const branches=arjFillBlankCreditFromTemplate_(tpl.branches);
   return branches.map((b,i)=>{
-    const creditAccountName=(b.credit&&b.credit.account_name)||"";
+    const isCombinedRow=i===0;
+    const creditAccountName=isCombinedRow?((b.credit&&b.credit.account_name)||""):"";
     return {
       debitLabel:mftLabelOf(b.debit), debitAmount:amounts[i]??"",
       creditLabel:creditAccountName?(storeName?`${creditAccountName}/${storeName}`:creditAccountName):"",
-      creditAmount:amounts[i]??"",
+      creditAmount:isCombinedRow?(combinedCredit||""):"",
       department_id:dep, tax_id:(b.debit&&b.debit.tax_id)||"",
-      credit_department_id:dep, credit_tax_id:(b.credit&&b.credit.tax_id)||"",
+      credit_department_id:isCombinedRow?dep:"", credit_tax_id:(b.credit&&b.credit.tax_id)||"",
       remark:prefix?`${prefix}　${suffixes[i]||""}`:"",
     };
   });
@@ -3040,11 +3049,18 @@ function arjRenderJournalResults(){
     :`<div style="font-size:12px;color:var(--muted)">${ARJ_STATE.journalKeyword?"該当する過去の仕訳が見つかりませんでした":"キーワードを入力して検索してください"}</div>`;
   document.querySelectorAll("[data-arjpick]").forEach(btn=>btn.onclick=()=>{
     const r=ARJ_STATE.journalResults[+btn.dataset.arjpick];
+    // 2026-09-26修正：ユーザー報告「部門が自動で変わらない場合がある」に対応。従来は過去の
+    // 仕訳に保存されていた部門（その仕訳が作られたときの店舗の部門）をそのまま引き継いでおり、
+    // arjFillRealAmountsのfillDeptは「今回の店舗の部門が解決できた場合だけ」上書きする設計
+    // だったため、解決できなかった場合に古い店舗の部門がそのまま残ってしまい、見た目は
+    // 埋まっているのに実は無関係な店舗の部門、という一番気づきにくい間違いになっていた。
+    // 部門は常に空から始め、解決できた場合だけ今回の店舗の部門で埋める（できなければ
+    // 「指定なし」のまま＝フォーム上部の警告と矛盾しない状態にする）
     const branch={
       debitLabel:mftLabelOf(r.template.debit), debitAmount:"",
       creditLabel:mftLabelOf(r.template.credit), creditAmount:"",
-      department_id:(r.template.debit&&r.template.debit.department_id)||"", tax_id:(r.template.debit&&r.template.debit.tax_id)||"",
-      credit_department_id:(r.template.credit&&r.template.credit.department_id)||"", credit_tax_id:(r.template.credit&&r.template.credit.tax_id)||"",
+      department_id:"", tax_id:(r.template.debit&&r.template.debit.tax_id)||"",
+      credit_department_id:"", credit_tax_id:(r.template.credit&&r.template.credit.tax_id)||"",
       remark:"",
     };
     arjFillRealAmounts([branch]); // 1行だけの選択は常に1行判定＝必ず金額・摘要を当てはめられる
@@ -3085,12 +3101,17 @@ function arjRenderTemplateResults(){
     // 古い仕訳辞書（貸借同額の共通amount形式）・新しい仕訳辞書（辺ごとにvalueを持つ形式）の両方に対応
     // 2026-09-26修正：貸方勘定科目が一部の行だけ空欄のテンプレートでも売上が正しく合算される
     // よう、事前にarjFillBlankCreditFromTemplate_で埋めてからmapする
+    // 2026-09-26修正：ユーザー報告「部門が自動で変わらない場合がある」に対応。仕訳辞書に
+    // 保存されている部門（テンプレートを最初に作ったときの店舗の部門）をそのまま引き継ぐと、
+    // 今回の店舗の部門が解決できなかった場合に無関係な店舗の部門が残ってしまう（一番気づき
+    // にくい間違い）。部門は常に空から始め、arjFillRealAmountsで今回の店舗の部門が解決できた
+    // 場合だけ埋める
     const tplBranches=arjFillBlankCreditFromTemplate_(t.branches||[]);
     const branches=tplBranches.map(b=>({
       debitLabel:mftLabelOf(b.debit), debitAmount:"",
       creditLabel:mftLabelOf(b.credit), creditAmount:"",
-      department_id:b.department_id||"", tax_id:b.tax_id||"",
-      credit_department_id:b.credit_department_id||"", credit_tax_id:b.credit_tax_id||"",
+      department_id:"", tax_id:b.tax_id||"",
+      credit_department_id:"", credit_tax_id:b.credit_tax_id||"",
       remark:"",
     }));
     const filled=arjFillRealAmounts(branches);
