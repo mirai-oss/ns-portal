@@ -624,7 +624,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-09-25-v23";
+const BUILD_TAG="2026-09-25-v24";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -7686,7 +7686,12 @@ function intakeRequestOpen(q){ return !!q&&(q.status==="pending"||q.status==="ru
 async function intakeRequestRerun(u,job){
   const sch=INTAKE_STATE.schedule.find(x=>x.job===job);
   const label=(sch&&sch.label)||job;
-  if(!confirm(`「${label}」を今すぐ再実行しますか？\n\nMac miniが数分以内に開始し、本番データ（売上入金など）を更新します。結果はこの画面に反映され、失敗時はLarkにも通知されます。`)) return;
+  // 月次ジョブの既定の対象月は「前月」（ns-daily-import各タスクのtargetYearMonth既定）。押し間違いで
+  // 削除済みの月が復活しないよう、対象月を確認ダイアログに明示する（2026-09-25）
+  const nj=new Date(Date.now()+9*3600e3);
+  const pm=new Date(Date.UTC(nj.getUTCFullYear(),nj.getUTCMonth()-1,1));
+  const targetLabel=`${pm.getUTCFullYear()}年${pm.getUTCMonth()+1}月分`;
+  if(!confirm(`「${label}」を今すぐ再実行しますか？\n\n【対象: 前月＝${targetLabel}】のデータを取り込み直します。Mac miniが数分以内に開始し、本番データ（売上入金など）を更新します（すでに削除した${targetLabel}の入金も再登録されます）。結果はこの画面に反映され、失敗時はLarkにも通知されます。`)) return;
   const r=await authed(`/rest/v1/import_run_requests`,{method:"POST",headers:{Prefer:"return=minimal"},body:JSON.stringify({job,status:"pending"})});
   if(!r.ok){
     alert(r.status===409?"このジョブは既に再実行を依頼済み（または実行中）です。結果が出るまでお待ちください。":(r.status===403||r.status===401)?"再実行を依頼する権限がありません（マスター／CEO／HQのみ）。":"再実行の依頼に失敗しました。時間をおいて再度お試しください。");
