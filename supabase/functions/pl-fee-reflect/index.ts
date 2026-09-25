@@ -484,6 +484,88 @@ Deno.serve(async (req: Request) => {
       return json({ success: results.every((r) => r.ok), results });
     }
 
+    // 2026-09-26新設：ユーザー要望「N-Styleの業務委託精算店舗（じんべぇ川崎・秋葉原肉寿司等）
+    // のPayPay売上・手数料も業務委託精算書に反映したい」に対応。invoices.htmlのarjSubmitJournal
+    // （売上入金からのMF仕訳作成）が仕訳登録に成功した直後に呼ばれる。MoneyForwardへの直接
+    // 仕訳登録（銀行入金の簿付け・現金の動きの記録）はそのまま残し、対象店舗であれば追加で
+    // 業務委託精算書へ「〇〇売上」「〇〇手数料」の2行を登録する（ユーザー確認済み：両方登録する
+    // 方針＝現金の動きの記録と精算書のPL集計は別の役割として両方必要）。seisan_target/
+    // seisan_pl_categories_targetのどちらも立っていない店舗は何もせず成功扱い（skipped）で
+    // 返す（精算対象店舗以外はこの機能自体が関係ないため、エラーにはしない）。sourceKeyは
+    // "receivable:<ar_receivables.id>:sales"/"fee"の固定2種のため、invoice_pl_reflectionsの
+    // ような子テーブルは持たず、ar_receivables自体にseisan_synced_at/seisan_sync_errorを
+    // 直接持たせている（1行=常にこの2明細のみという単純な構造のため）
+    if (action === "seisan_confirm_receivable") {
+      const receivableId = body?.receivable_id;
+      if (!receivableId) return json({ error: "receivable_idは必須です" }, 400);
+      const { data: rcv, error: rcvErr } = await uc.from("ar_receivables")
+        .select("id, store_id, corporation_id, gross_amount, fee_amount, year_month, source_name")
+        .eq("id", receivableId).maybeSingle();
+      if (rcvErr) return json({ error: "確認に失敗しました: " + rcvErr.message }, 500);
+      if (!rcv) return json({ error: "対象が見つからないか権限がありません" }, 403);
+      if (!rcv.store_id) return json({ success: true, skipped: true, reason: "共通費行（店舗未設定）は対象外です" });
+
+      const { data: store, error: storeErr } = await uc.from("stores")
+        .select("id, name, corporation_id, seisan_target, seisan_pl_categories_target, seisan_store_name")
+        .eq("id", rcv.store_id).maybeSingle();
+      if (storeErr) return json({ error: "店舗の確認に失敗しました: " + storeErr.message }, 500);
+      if (!store) return json({ success: true, skipped: true, reason: "店舗が見つかりません" });
+
+      // 2026-09-26注記：経費のplSeisanRoute（"誰がこの請求書を立て替えたか"で direct/seisan を
+      // 分岐する仕組み）は、売上入金にはそのまま適用できない。売上は立替払いという概念が無く、
+      // 「受け取った売上そのもの」なので、店舗自身がどちらの法人の会計を使っていようと関係ない。
+      // 実際、黒霧屋 新横浜はar_receivables.corporation_id（=店舗自身のcorporation_id・トーホー）
+      // が一致するためplSeisanRouteに通すと"direct"（対象外）になってしまうが、ユーザーから
+      // 「黒霧屋も対象」と明示指示を受けている。そのためここではseisan_target/
+      // seisan_pl_categories_targetのどちらか一方でも立っていれば常に対象とする
+      // （経費のdirect/seisan分岐はここでは行わない）
+      if (!store.seisan_target && !store.seisan_pl_categories_target) {
+        return json({ success: true, skipped: true, reason: `${store.name}は業務委託精算書の対象店舗ではありません` });
+      }
+      if (!store.seisan_store_name) {
+        return json({ error: `${store.name}の「精算書店舗名」が店舗マスタに未設定です。設定タブから設定してから登録してください` }, 400);
+      }
+
+      const tk = Deno.env.get("PL_SYNC_TOKEN");
+      if (!tk) return json({ error: "PL_SYNC_TOKEN が未設定です（担当Cまでご連絡ください）" }, 500);
+
+      const monthKey = String(rcv.year_month || "").slice(0, 7);
+      if (!/^\d{4}-\d{2}$/.test(monthKey)) return json({ error: "対象年月が不正です" }, 400);
+
+      // 税率は10%固定（実データは飲食売上で8%/10%が混在するが、行を分けて明細を渡す元データが
+      // 無いため簡易的に10%とする。精算書シート側で実態に応じて手動で直せる通常の1行として扱う）
+      const srcLabel = (rcv.source_name || "PayPay").trim();
+      const lines = [
+        { key: "sales", item: `${srcLabel}売上`, account: "売上高", amount: Number(rcv.gross_amount) || 0 },
+        { key: "fee", item: `${srcLabel}手数料`, account: "支払手数料", amount: Number(rcv.fee_amount) || 0 },
+      ].filter((l) => l.amount > 0);
+      if (!lines.length) return json({ success: true, skipped: true, reason: "売上・手数料とも0円のため登録対象がありません" });
+
+      const db = svc();
+      const results: { item: string; ok: boolean; error?: string }[] = [];
+      for (const l of lines) {
+        const sourceKey = `receivable:${receivableId}:${l.key}`;
+        try {
+          const gasRes = await seisanCall("sd_apiAddExternalLine", [tk, store.seisan_store_name, monthKey, {
+            sourceKey, item: l.item, amount: l.amount, tax: "10%", account: l.account,
+          }]);
+          if (!gasRes.ok) {
+            throw new Error(gasRes.error || (gasRes.locked ? "この月は振込済みのため精算書への登録・更新はできません" : "精算書側で失敗しました"));
+          }
+          results.push({ item: l.item, ok: true });
+        } catch (e) {
+          results.push({ item: l.item, ok: false, error: String((e as Error)?.message ?? e) });
+        }
+      }
+      const allOk = results.every((r) => r.ok);
+      await db.from("ar_receivables").update({
+        seisan_synced_at: allOk ? new Date().toISOString() : null,
+        seisan_sync_error: allOk ? null : results.filter((r) => !r.ok).map((r) => `${r.item}: ${r.error}`).join("／"),
+      }).eq("id", receivableId);
+
+      return json({ success: allOk, results });
+    }
+
     // 2026-09-05新規：精算書側の実データ（sd_apiGetLines）から個々の明細のPL反映状態
     // （設計書§9-2の6状態モデル。plStatusはGAS側で既に計算済みの値をそのまま使う＝
     // ns-portal側で「反映済み」を勝手に断定しない）を取得し直す

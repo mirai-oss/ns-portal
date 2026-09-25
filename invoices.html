@@ -624,7 +624,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-09-26-v31";
+const BUILD_TAG="2026-09-26-v32";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -2437,7 +2437,15 @@ function receivableRowHtml(r){
       if(!atts.length) return "";
       return ` <button class="linkbtn" data-rcv-view-atts="${esc(r.id)}" style="background:none;border:none;color:var(--m-blue,#3478b8);cursor:pointer;font-size:11px;padding:0;text-decoration:underline" title="クリックすると添付ファイルを開けます">📎${atts.length}</button>`;
     })()}</td>
-    <td>${r.mf_journal_id?`<button class="linkbtn" data-arj-view-invoice="${esc(r.linked_invoice_id||"")}" style="background:none;border:none;color:var(--m-green);cursor:pointer;font-size:12px;padding:0;text-decoration:underline" title="クリックすると請求書詳細（PLへ反映を含む）を開けます">✅仕訳登録済み（伝票番号: ${esc(String(r.mf_journal_number??"-"))}）</button>`:`<button class="linkbtn" data-arj-open="${esc(r.id)}" style="background:none;border:1px solid var(--line);padding:4px 8px;cursor:pointer;font-size:12px">🧾仕訳を作成</button>`}</td>
+    <td>${r.mf_journal_id?`<button class="linkbtn" data-arj-view-invoice="${esc(r.linked_invoice_id||"")}" style="background:none;border:none;color:var(--m-green);cursor:pointer;font-size:12px;padding:0;text-decoration:underline" title="クリックすると請求書詳細（PLへ反映を含む）を開けます">✅仕訳登録済み（伝票番号: ${esc(String(r.mf_journal_number??"-"))}）</button>`:`<button class="linkbtn" data-arj-open="${esc(r.id)}" style="background:none;border:1px solid var(--line);padding:4px 8px;cursor:pointer;font-size:12px">🧾仕訳を作成</button>`}
+      ${(()=>{
+        // 2026-09-26追加：業務委託精算店舗向けにPayPay売上・手数料が業務委託精算書へも
+        // 反映されたかどうかを一覧から分かるようにする（対象外の店舗はseisan_synced_at自体が
+        // 一度も設定されないので何も表示しない）
+        if(r.seisan_sync_error) return `<div style="font-size:10px;color:var(--m-red)" title="${esc(r.seisan_sync_error)}">⚠️業務委託精算書への反映に失敗</div>`;
+        if(r.seisan_synced_at) return `<div style="font-size:10px;color:var(--muted)">🏢精算書へ反映済み（${fmtDT(r.seisan_synced_at)}）</div>`;
+        return "";
+      })()}</td>
     <td><button class="hq-btn" style="padding:6px 8px" data-delete-receivable="${esc(r.id)}" title="この売上入金を削除（取込ミス・重複データの削除に）">🗑</button></td>
   </tr>`;
 }
@@ -3386,9 +3394,20 @@ async function arjSubmitJournal(){
     linked_invoice_id:j.invoice_id||null, mf_journal_id:j.journal_id||null, mf_journal_number:j.journal_number??null, mf_journal_created_at:new Date().toISOString(),
   })});
 
+  // 2026-09-26追加：ユーザー要望「N-Styleの業務委託精算店舗のPayPay売上・手数料も業務委託
+  // 精算書に反映したい」に対応。MoneyForwardへの仕訳登録（銀行入金の簿付け）はそのまま残し、
+  // 対象店舗（stores.seisan_target等）であれば同じタイミングで自動的に業務委託精算書へも
+  // 「〇〇売上」「〇〇手数料」を登録する（両方登録する方針・ユーザー確認済み）。対象外の店舗
+  // では何もせず{skipped:true}が返るだけなので、結果に応じてメッセージを一言追加するだけで良い
+  const seisanR=await plFeeCall("seisan_confirm_receivable",{receivable_id:ARJ_STATE.row.id});
+  const seisanNote=(!seisanR.ok)
+    ?`⚠️業務委託精算書への反映に失敗しました: ${seisanR.body.error||"不明なエラー"}（MoneyForwardへの仕訳登録自体は成功しています）`
+    :(seisanR.body.skipped?"":(seisanR.body.success?"②業務委託精算書へPayPay売上・手数料を登録しました。":`⚠️業務委託精算書への反映に一部失敗しました: ${(seisanR.body.results||[]).filter(r=>!r.ok).map(r=>`${r.item}: ${r.error}`).join("／")}`));
+
   msg.className="err msg-ok";
-  msg.textContent=`登録しました（伝票番号: ${j.journal_number??"-"}）`
+  msg.textContent=`①MoneyForwardへ仕訳登録しました（伝票番号: ${j.journal_number??"-"}）`
     +(j.voucher_attached?`。証憑PDFも${j.voucher_attached}件添付しました`:(voucherFiles.length&&j.voucher_error)?`（証憑添付: ${j.voucher_error}）`:"")
+    +(seisanNote?`　${seisanNote}`:"")
     +"。画面を更新します…";
   const u=ARJ_STATE.u;
   setTimeout(async()=>{ history.back(); await Promise.all([receivableLoad(),loadAcBadgeCounts()]); receivableRender(u); },900);
