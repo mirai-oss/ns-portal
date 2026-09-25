@@ -624,7 +624,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-09-26-v26";
+const BUILD_TAG="2026-09-26-v27";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -3022,12 +3022,28 @@ function arjFillRealAmounts(branches){
   const fillDept=b=>{ if(dep){ b.department_id=dep; b.credit_department_id=dep; } };
   if(branches.length===2){
     const amounts=[expected,fee], suffixes=["売上","手数料"];
+    // 2026-09-26追加：ユーザー要望「飲食売上は同じ仕訳だから、わざわざ2行に分けて数字を
+    // 分けなくて良いので、合算した数字にしてほしい」に対応。2行とも貸方の勘定科目/補助科目
+    // ラベルが完全に同一（＝同じ売上科目・同じ店舗に対して入金分・手数料分をそれぞれ計上する
+    // 構成）の場合だけ、1行目に合算額（入金予定額＋手数料）をまとめ、2行目の貸方は空にする
+    // （各行は借方・貸方どちらか片方だけでも登録できる既存仕様を利用）。貸方が別の科目を
+    // 指している場合（例: 2行目が雑収入等）は従来どおり行ごとに金額を分けたままにする。
+    // 補助科目（店舗名）はこの後arjOverrideCreditStoreOnBranches_で統一されるため、
+    // 判定は勘定科目名のみで行う（補助科目が一時的に食い違っていても正しく合算できるように）
+    const acc0=splitAccLabel(branches[0].creditLabel||"").account;
+    const acc1=splitAccLabel(branches[1].creditLabel||"").account;
+    const sameCreditAccount=acc0&&acc0===acc1;
     branches.forEach((b,i)=>{
       if(b.debitLabel) b.debitAmount=amounts[i]||"";
-      if(b.creditLabel) b.creditAmount=amounts[i]||"";
       if(prefix) b.remark=`${prefix}　${suffixes[i]}`;
       fillDept(b);
     });
+    if(sameCreditAccount){
+      branches[0].creditAmount=expected+fee;
+      branches[1].creditLabel=""; branches[1].creditAmount=""; branches[1].credit_department_id="";
+    } else {
+      branches.forEach((b,i)=>{ if(b.creditLabel) b.creditAmount=amounts[i]||""; });
+    }
     return true;
   }
   if(branches.length===1){
@@ -10881,30 +10897,50 @@ async function renderSettingsAccounts(){
 }
 
 /* ---- 法人・店舗・部門マッピング（2026-09-03新規。店舗↔MF部門名の紐付けのみ編集可） ---- */
+// 2026-09-26修正：ユーザー報告「仕訳作成で部門が入らない/無関係な店舗の部門が残る」の
+// 根本原因を調査したところ、この画面のマネーフォワード部門名入力が完全な自由記述の
+// テキスト欄で、MF側の実際の部門名と何の照合も無いまま「完全一致させてください」という
+// プレースホルダだけで手入力を頼っていたと判明（1文字でも違えば仕訳作成側の突き合わせが
+// 永久に失敗する）。MF側の部門一覧を取得し<datalist>で候補表示することで、実際に存在する
+// 部門名からそのまま選べるようにし、以後の入力ミスを防ぐ
 async function renderSettingsMapping(){
   $("settingsBody").innerHTML=`<div class="spin">読み込み中…</div>`;
-  const [storeRes,corpRes]=await Promise.all([
+  const [storeRes,corpRes,tRes]=await Promise.all([
     authed("/rest/v1/stores?select=id,name,corporation_id,mf_department_name&order=name"),
     authed("/rest/v1/corporations?select=id,name&order=name"),
+    mfCall("list_tenants"),
   ]);
   const stores=(storeRes.ok&&Array.isArray(storeRes.body))?storeRes.body:[];
   const corps=(corpRes.ok&&Array.isArray(corpRes.body))?corpRes.body:[];
+  const tenants=(tRes.ok&&tRes.body.tenants)||[];
+  MAPPING_STATE.tenants=tenants;
+  if(!MAPPING_STATE.tenantId) MAPPING_STATE.tenantId=tenants[0]?tenants[0].id:"default";
+  const deptRes=await mfCall("list_departments",{tenant_id:MAPPING_STATE.tenantId});
+  const departments=(deptRes.ok&&Array.isArray(deptRes.body.departments))?deptRes.body.departments:[];
+  MAPPING_STATE.departments=departments;
   $("settingsBody").innerHTML=`<div class="card" style="padding:16px">
     <h3 style="font-size:14px;margin-bottom:6px">🏬 法人・店舗・部門マッピング</h3>
     <div class="meta" style="color:var(--muted);font-size:12px;margin-bottom:10px">法人・店舗そのものの登録・編集は社内情報管理システム側で行います。ここでは各店舗に対応するマネーフォワードの「部門」名だけを紐付けます（仕訳の店舗別金額を自動集計するときに使う参照情報です）。</div>
+    ${tenants.length>1?`<div class="ai-field" style="margin-bottom:10px"><small>候補一覧を取得する事業者</small><select id="mapping-tenant">${tenants.map(t=>`<option value="${esc(t.id)}" ${t.id===MAPPING_STATE.tenantId?"selected":""}>${esc(t.label)}</option>`).join("")}</select></div>`:""}
+    ${departments.length?"":`<div class="err" style="margin-bottom:10px">⚠️ この事業者の部門一覧を取得できませんでした（マネーフォワード側の権限またはAPI連携の問題の可能性があります）。候補は出ませんが、直接入力自体は可能です。</div>`}
+    <datalist id="mapping-dept-datalist">${departments.map(d=>`<option value="${esc(d.name)}">`).join("")}</datalist>
     <div class="hq-tablewrap"><table class="invoice-table">
       <thead><tr><th>店舗</th><th>法人</th><th>マネーフォワード部門名</th><th></th></tr></thead>
       <tbody>${stores.map(s=>{
         const corpName=(corps.find(c=>c.id===s.corporation_id)||{}).name||"—";
+        const cur=s.mf_department_name||"";
+        const exists=!cur||departments.some(d=>d.name===cur);
         return `<tr>
           <td><b>${esc(s.name)}</b></td>
           <td>${esc(corpName)}</td>
-          <td><input class="mapping-dept" data-store="${s.id}" value="${esc(s.mf_department_name||"")}" placeholder="MF側の部門名と完全一致させてください"></td>
+          <td><input class="mapping-dept" list="mapping-dept-datalist" data-store="${s.id}" value="${esc(cur)}" placeholder="MF側の部門名と完全一致させてください">
+            ${cur&&!exists?`<div style="font-size:10px;color:var(--m-red)">⚠️ 選んだ事業者の部門一覧に見つかりません（表記違いの可能性）</div>`:""}</td>
           <td><button class="hq-btn" style="font-size:11px;padding:6px 9px" data-mapping-save="${s.id}">保存</button></td>
         </tr>`;
       }).join("")||'<tr><td colspan="4">店舗が登録されていません</td></tr>'}</tbody>
     </table></div>
   </div>`;
+  if($("mapping-tenant")) $("mapping-tenant").onchange=()=>{ MAPPING_STATE.tenantId=$("mapping-tenant").value; renderSettingsMapping(); };
   document.querySelectorAll("[data-mapping-save]").forEach(el=>el.onclick=async()=>{
     const storeId=el.dataset.mappingSave;
     const val=document.querySelector(`.mapping-dept[data-store="${storeId}"]`).value.trim();
@@ -10914,6 +10950,7 @@ async function renderSettingsMapping(){
     setTimeout(()=>{ if(el) el.textContent="保存"; },1500);
   });
 }
+let MAPPING_STATE={tenantId:"",tenants:[],departments:[]};
 
 /* ---- 自動処理ルール（2026-09-03新規） ---- */
 async function renderSettingsAutomation(){
