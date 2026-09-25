@@ -624,7 +624,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-09-26-v28";
+const BUILD_TAG="2026-09-26-v29";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -2777,13 +2777,23 @@ async function arjLoadForTenant(tenantId,tenants){
   if(!body) return;
   body.innerHTML="読み込み中…（勘定科目・過去の仕訳・仕訳辞書を確認しています）";
   const row=ARJ_STATE.row;
-  const [accRes,searchRes,templates]=await Promise.all([
+  // 2026-09-26修正：ユーザー報告「設定タブでは部門名がMF側の候補と一致しているのに、この
+  // 画面では部門が自動で入らない」に対応。従来はjournal_search（仕訳履歴検索と抱き合わせの
+  // API）が返す部門一覧をそのまま使っていたが、journal_searchは「部門直接取得（departments.
+  // read）が失敗した場合、過去の仕訳履歴に実際に登場した部門だけ」にフォールバックする仕組み
+  // のため、まだ一度も仕訳に使われていない部門（今回のように新しく連携する店舗）は一覧から
+  // 漏れてしまう可能性があった。設定タブの部門マッピング画面と同じ、部門取得専用の
+  // list_departmentsアクションを別途呼び、そちらの結果を部門の解決・選択肢の両方に使う
+  // （journal_searchは過去の仕訳検索という本来の役割だけに使う）
+  const [accRes,searchRes,deptRes,templates]=await Promise.all([
     mfCall("accounts",{tenant_id:tenantId}),
     mfCall("journal_search",{vendor_name:row.source_name||"",tenant_id:tenantId}),
+    mfCall("list_departments",{tenant_id:tenantId}),
     arjFetchTemplates(tenantId),
   ]);
   if(!accRes.ok){ body.innerHTML=`<div class="err">勘定科目の取得に失敗しました: ${esc(accRes.body.error||"")}<br><button id="arj-retry" style="margin-top:8px">🔄 もう一度試す</button></div>`; if($("arj-retry")) $("arj-retry").onclick=()=>arjLoadForTenant(tenantId,tenants); return; }
   if(!searchRes.ok){ body.innerHTML=`<div class="err">過去の仕訳の取得に失敗しました: ${esc(searchRes.body.error||"")}<br><button id="arj-retry" style="margin-top:8px">🔄 もう一度試す</button></div>`; if($("arj-retry")) $("arj-retry").onclick=()=>arjLoadForTenant(tenantId,tenants); return; }
+  const departmentsList=(deptRes.ok&&Array.isArray(deptRes.body.departments)&&deptRes.body.departments.length)?deptRes.body.departments:(searchRes.body.departments||[]);
   const tenantLabel=(tenants||[]).find(t=>t.id===tenantId)?.label||tenantId;
   const idx=mftBuildAccountIndex(accRes.body.accounts||[]); // 設定タブの仕訳辞書編集と共通の索引ビルダーをそのまま流用
   const ymLabel=(row.year_month||"").replace(/^(\d{4})-(\d{2})$/,"$1年$2月分");
@@ -2808,7 +2818,7 @@ async function arjLoadForTenant(tenantId,tenants){
   const store=(CORP_STORE_CACHE&&CORP_STORE_CACHE.stores||[]).find(s=>s.id===row.store_id);
   if(store&&store.mf_department_name){
     const wantName=normDeptName(store.mf_department_name);
-    const dep=(searchRes.body.departments||[]).find(d=>normDeptName(d.name)===wantName);
+    const dep=departmentsList.find(d=>normDeptName(d.name)===wantName);
     if(dep) storeDepartmentId=dep.id; else storeDepartmentMismatch=store.mf_department_name;
   }
   ARJ_STATE={
@@ -2825,7 +2835,7 @@ async function arjLoadForTenant(tenantId,tenants){
     // 明細行を必ず最初から入れておく（過去の仕訳・仕訳辞書は勘定科目の参考として
     // 選べる状態のまま残すが、既定では選ばせない）
     mode:"manual",
-    accounts:accRes.body.accounts||[], departments:searchRes.body.departments||[], taxes:searchRes.body.taxes||[],
+    accounts:accRes.body.accounts||[], departments:departmentsList, taxes:searchRes.body.taxes||[],
     journalResults:searchRes.body.results||[], journalKeyword:row.source_name||"",
     templates,
     accountLabelMap:idx.map, accountDatalistHtml:idx.dl, accountNameDatalistHtml:idx.accountNameDatalistHtml,
@@ -2889,17 +2899,35 @@ function arjFillBlankCreditFromTemplate_(branches){
 // ＋手数料）を計上し、2行目（手数料分の行）の貸方は空にする（画面のヒントにあるとおり
 // 「各行は借方・貸方のどちらか片方だけでも登録できる」ため、2行目は借方＝支払手数料のみの
 // 行になる）
+// 2026-09-26追加：ユーザー報告「対象店舗が完全一致になっていない場合、店舗名が補助科目に
+// 入ってしまうが、実際の会計上の補助科目と合わないものが入っている」に対応。従来は貸方の
+// 補助科目を無条件に今回の店舗名で上書きしていたが、MF側にその勘定科目・店舗名の組み合わせの
+// 補助科目が実際に存在するとは限らない（既存コメントにもある「MF公式に補助科目マスタ作成
+// APIが無いため、accountLabelMapに無い組み合わせは登録時にエラーになる」という既知の制約と
+// 同じ話）。ARJ_STATE.subAccountsByAccountName（勘定科目→実在する補助科目名の一覧。
+// mftBuildAccountIndexで構築済み）で実在確認したうえで上書きし、実在しない場合は補助科目を
+// 空のままにして警告を出す（部門の警告と同じ「間違った値を紛れ込ませるより、空にして
+// 気づかせる」方針）
+function arjCreditLabelForStore_(accountName,storeName){
+  if(!accountName) return "";
+  if(!storeName||storeName==="（共通費）") return accountName;
+  const perAccount=ARJ_STATE.subAccountsByAccountName&&ARJ_STATE.subAccountsByAccountName.get(accountName.trim());
+  if(perAccount&&perAccount.includes(storeName)) return `${accountName}/${storeName}`;
+  ARJ_STATE.creditSubAccountWarning=`「${accountName}」の補助科目に「${storeName}」が見つかりませんでした（マネーフォワード側にまだ登録されていない可能性）。補助科目は空のままにしています。MF側で先に補助科目を作成してから、この欄に手動で入力してください。`;
+  return accountName;
+}
 function arjApplyTemplateAsDefault_(tpl,expected,fee,dep,prefix){
   const storeName=receivableStoreName(ARJ_STATE.row.store_id);
   const amounts=[expected,fee], suffixes=["売上","手数料"];
   const combinedCredit=expected+fee;
   const branches=arjFillBlankCreditFromTemplate_(tpl.branches);
+  ARJ_STATE.creditSubAccountWarning="";
   return branches.map((b,i)=>{
     const isCombinedRow=i===0;
     const creditAccountName=isCombinedRow?((b.credit&&b.credit.account_name)||""):"";
     return {
       debitLabel:mftLabelOf(b.debit), debitAmount:amounts[i]??"",
-      creditLabel:creditAccountName?(storeName?`${creditAccountName}/${storeName}`:creditAccountName):"",
+      creditLabel:arjCreditLabelForStore_(creditAccountName,storeName),
       creditAmount:isCombinedRow?(combinedCredit||""):"",
       department_id:dep, tax_id:(b.debit&&b.debit.tax_id)||"",
       credit_department_id:isCombinedRow?dep:"", credit_tax_id:(b.credit&&b.credit.tax_id)||"",
@@ -3112,10 +3140,11 @@ function arjRenderJournalResults(){
 // そのまま尊重しつつ、補助科目だけを必ず今回の売上入金の店舗名で上書きする
 function arjOverrideCreditStoreOnBranches_(branches){
   const storeName=receivableStoreName(ARJ_STATE.row.store_id);
+  ARJ_STATE.creditSubAccountWarning="";
   if(!storeName||storeName==="（共通費）") return branches;
   branches.forEach(b=>{
     const {account}=splitAccLabel(b.creditLabel||"");
-    if(account) b.creditLabel=`${account}/${storeName}`;
+    if(account) b.creditLabel=arjCreditLabelForStore_(account,storeName);
   });
   return branches;
 }
@@ -3198,6 +3227,7 @@ function arjRenderForm(){
     <datalist id="arj-account-datalist">${ARJ_STATE.accountNameDatalistHtml||""}</datalist>
     ${ARJ_STATE.tenants&&ARJ_STATE.tenants.length>1?`<div class="ai-field" style="margin-bottom:6px;font-size:11px;color:var(--muted)">登録先: <b>${esc(ARJ_STATE.tenantLabel||"")}</b> <button id="arj-change-tenant" style="font-size:10px">変更</button></div>`:""}
     ${ARJ_STATE.storeDepartmentMismatch?`<div class="err" style="margin-bottom:8px">⚠️ 店舗マスタに登録されている部門名「${esc(ARJ_STATE.storeDepartmentMismatch)}」と一致する部門がこの事業者（${esc(ARJ_STATE.tenantLabel||"")}）に見つかりませんでした。部門は下の表で手動で選んでください。直す場合は、①マネーフォワード側にまだこの部門が無ければ作成する、②登録先の事業者が違う場合は上の「変更」から選び直す、③それでも直らなければ設定タブ「法人・店舗・部門マッピング」の店舗名の表記を見直してください。</div>`:""}
+    ${ARJ_STATE.creditSubAccountWarning?`<div class="err" style="margin-bottom:8px">⚠️ ${esc(ARJ_STATE.creditSubAccountWarning)}</div>`:""}
     <div class="mail-actions" style="margin-bottom:8px">
       <button data-arjmode="journal" ${mode==="journal"?'class="primary"':""}>📖 過去の仕訳から選ぶ</button>
       <button data-arjmode="dict" ${mode==="dict"?'class="primary"':""}>📗 仕訳辞書から選ぶ${ARJ_STATE.templates.length?`（${ARJ_STATE.templates.length}）`:""}</button>
@@ -10922,7 +10952,25 @@ async function renderSettingsAccounts(){
 // テキスト欄で、MF側の実際の部門名と何の照合も無いまま「完全一致させてください」という
 // プレースホルダだけで手入力を頼っていたと判明（1文字でも違えば仕訳作成側の突き合わせが
 // 永久に失敗する）。MF側の部門一覧を取得し<datalist>で候補表示することで、実際に存在する
-// 部門名からそのまま選べるようにし、以後の入力ミスを防ぐ
+// 部門名からそのまま選べるようにし、以後の入力ミスを防ぐ。
+// 2026-09-26追加修正：ユーザー報告「法人がN-Styleの店舗でもトーホーの部門が出てしまう」に
+// 対応。当初は事業者（tenant）を1つだけ選ぶ設計だったため、複数事業者（法人）が混在する
+// 店舗一覧全体に単一の部門候補を出していた。店舗の法人名からmfjMatchTenant_と同じロジックで
+// 対応する事業者を推定し、店舗ごとに正しい事業者の部門一覧を候補として出すようにした
+// （invoices.html側の請求書メール仕訳作成（mfjMatchTenant）と同じ会社名の正規化・突き合わせ
+// ロジックをここでも使う。1対1で一意に決まらない法人は事業者を自動判定できない旨を表示する）
+function mappingNormCompanyName_(s){
+  return String(s||"").replace(/株式会社|有限会社|合同会社|（株）|（有）|\(株\)|\(有\)|御中|様/g,"").replace(/\s+/g,"").toLowerCase();
+}
+function mappingMatchTenant_(corpName,tenants){
+  const norm=mappingNormCompanyName_(corpName);
+  if(!norm) return null;
+  const hits=tenants.filter(t=>{
+    const tn=mappingNormCompanyName_(t.label);
+    return tn&&(norm.includes(tn)||tn.includes(norm));
+  });
+  return hits.length===1?hits[0]:null;
+}
 async function renderSettingsMapping(){
   $("settingsBody").innerHTML=`<div class="spin">読み込み中…</div>`;
   const [storeRes,corpRes,tRes]=await Promise.all([
@@ -10933,34 +10981,45 @@ async function renderSettingsMapping(){
   const stores=(storeRes.ok&&Array.isArray(storeRes.body))?storeRes.body:[];
   const corps=(corpRes.ok&&Array.isArray(corpRes.body))?corpRes.body:[];
   const tenants=(tRes.ok&&tRes.body.tenants)||[];
-  MAPPING_STATE.tenants=tenants;
-  if(!MAPPING_STATE.tenantId) MAPPING_STATE.tenantId=tenants[0]?tenants[0].id:"default";
-  const deptRes=await mfCall("list_departments",{tenant_id:MAPPING_STATE.tenantId});
-  const departments=(deptRes.ok&&Array.isArray(deptRes.body.departments))?deptRes.body.departments:[];
-  MAPPING_STATE.departments=departments;
+  // 店舗の法人ごとに、対応する事業者（tenant）を推定する。一意に決まらない場合はnull
+  const corpTenant=new Map(); // corporation_id -> tenant|null
+  for(const c of corps) corpTenant.set(c.id, tenants.length===1?tenants[0]:mappingMatchTenant_(c.name,tenants));
+  // 実際に使う事業者だけ（推定できたもの＋推定できなかった法人向けの既定=tenants[0]）の
+  // 部門一覧をまとめて取得する
+  const neededTenantIds=new Set(stores.map(s=>(corpTenant.get(s.corporation_id)||tenants[0]||{}).id).filter(Boolean));
+  const deptByTenant=new Map();
+  await Promise.all([...neededTenantIds].map(async tid=>{
+    const r=await mfCall("list_departments",{tenant_id:tid});
+    deptByTenant.set(tid,(r.ok&&Array.isArray(r.body.departments))?r.body.departments:[]);
+  }));
   $("settingsBody").innerHTML=`<div class="card" style="padding:16px">
     <h3 style="font-size:14px;margin-bottom:6px">🏬 法人・店舗・部門マッピング</h3>
-    <div class="meta" style="color:var(--muted);font-size:12px;margin-bottom:10px">法人・店舗そのものの登録・編集は社内情報管理システム側で行います。ここでは各店舗に対応するマネーフォワードの「部門」名だけを紐付けます（仕訳の店舗別金額を自動集計するときに使う参照情報です）。</div>
-    ${tenants.length>1?`<div class="ai-field" style="margin-bottom:10px"><small>候補一覧を取得する事業者</small><select id="mapping-tenant">${tenants.map(t=>`<option value="${esc(t.id)}" ${t.id===MAPPING_STATE.tenantId?"selected":""}>${esc(t.label)}</option>`).join("")}</select></div>`:""}
-    ${departments.length?"":`<div class="err" style="margin-bottom:10px">⚠️ この事業者の部門一覧を取得できませんでした（マネーフォワード側の権限またはAPI連携の問題の可能性があります）。候補は出ませんが、直接入力自体は可能です。</div>`}
-    <datalist id="mapping-dept-datalist">${departments.map(d=>`<option value="${esc(d.name)}">`).join("")}</datalist>
+    <div class="meta" style="color:var(--muted);font-size:12px;margin-bottom:10px">法人・店舗そのものの登録・編集は社内情報管理システム側で行います。ここでは各店舗に対応するマネーフォワードの「部門」名だけを紐付けます（仕訳の店舗別金額を自動集計するときに使う参照情報です）。部門の候補は、各店舗の法人名からマネーフォワードの事業者を自動判定して表示しています。</div>
+    ${[...neededTenantIds].map(tid=>{
+      const t=tenants.find(x=>x.id===tid);
+      return `<datalist id="mapping-dept-datalist-${esc(tid)}">${(deptByTenant.get(tid)||[]).map(d=>`<option value="${esc(d.name)}">`).join("")}</datalist>`;
+    }).join("")}
     <div class="hq-tablewrap"><table class="invoice-table">
       <thead><tr><th>店舗</th><th>法人</th><th>マネーフォワード部門名</th><th></th></tr></thead>
       <tbody>${stores.map(s=>{
-        const corpName=(corps.find(c=>c.id===s.corporation_id)||{}).name||"—";
+        const corp=corps.find(c=>c.id===s.corporation_id);
+        const corpName=corp?.name||"—";
+        const matchedTenant=corp?corpTenant.get(corp.id):null;
+        const usedTenant=matchedTenant||tenants[0];
+        const departments=usedTenant?(deptByTenant.get(usedTenant.id)||[]):[];
         const cur=s.mf_department_name||"";
         const exists=!cur||departments.some(d=>d.name===cur);
         return `<tr>
           <td><b>${esc(s.name)}</b></td>
           <td>${esc(corpName)}</td>
-          <td><input class="mapping-dept" list="mapping-dept-datalist" data-store="${s.id}" value="${esc(cur)}" placeholder="MF側の部門名と完全一致させてください">
-            ${cur&&!exists?`<div style="font-size:10px;color:var(--m-red)">⚠️ 選んだ事業者の部門一覧に見つかりません（表記違いの可能性）</div>`:""}</td>
+          <td><input class="mapping-dept" list="mapping-dept-datalist-${esc(usedTenant?.id||"")}" data-store="${s.id}" value="${esc(cur)}" placeholder="MF側の部門名と完全一致させてください">
+            <div style="font-size:10px;color:var(--muted)">候補: ${esc(usedTenant?.label||"—")}${matchedTenant?"":"（法人名から事業者を自動判定できず既定を表示中）"}</div>
+            ${cur&&!exists?`<div style="font-size:10px;color:var(--m-red)">⚠️ この事業者の部門一覧に見つかりません（表記違い、または事業者の判定ミスの可能性）</div>`:""}</td>
           <td><button class="hq-btn" style="font-size:11px;padding:6px 9px" data-mapping-save="${s.id}">保存</button></td>
         </tr>`;
       }).join("")||'<tr><td colspan="4">店舗が登録されていません</td></tr>'}</tbody>
     </table></div>
   </div>`;
-  if($("mapping-tenant")) $("mapping-tenant").onchange=()=>{ MAPPING_STATE.tenantId=$("mapping-tenant").value; renderSettingsMapping(); };
   document.querySelectorAll("[data-mapping-save]").forEach(el=>el.onclick=async()=>{
     const storeId=el.dataset.mappingSave;
     const val=document.querySelector(`.mapping-dept[data-store="${storeId}"]`).value.trim();
@@ -10970,7 +11029,6 @@ async function renderSettingsMapping(){
     setTimeout(()=>{ if(el) el.textContent="保存"; },1500);
   });
 }
-let MAPPING_STATE={tenantId:"",tenants:[],departments:[]};
 
 /* ---- 自動処理ルール（2026-09-03新規） ---- */
 async function renderSettingsAutomation(){
