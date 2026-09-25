@@ -624,7 +624,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-09-25-v22";
+const BUILD_TAG="2026-09-25-v23";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -1964,7 +1964,9 @@ async function loadAcBadgeCounts(){
   const r=await authed(`/rest/v1/ar_receivables?status=eq.pending&mf_journal_id=is.null&select=id&limit=500`);
   AC_BADGE_COUNTS.receivable=(r.ok&&Array.isArray(r.body))?r.body.length:0;
   const btn=document.querySelector('#acwsTabs [data-acgroup="receivable"]');
-  if(btn) btn.innerHTML=`売上入金${AC_BADGE_COUNTS.receivable?`<span class="ac-badge">${AC_BADGE_COUNTS.receivable}</span>`:""}`;
+  if(btn) btn.innerHTML=`売上入金${AC_BADGE_COUNTS.receivable?`<span class="ac-badge" title="MF仕訳がまだ作られていない売上入金 ${AC_BADGE_COUNTS.receivable}件">${AC_BADGE_COUNTS.receivable}</span>`:""}`;
+  // 2026-09-25：ポータル（親画面）のサイドバーのバッジも同じ数字に揃える（portal.html側で受信）
+  try{ if(window.parent&&window.parent!==window) window.parent.postMessage({type:"nsAcBadge",receivable:AC_BADGE_COUNTS.receivable},location.origin); }catch(e){}
 }
 // 画面上部のKPIバー（2026-09-01: タブ切替時にタブの内容に合わせて出し分ける。
 // ユーザー報告「給与仕訳タブなのに請求書メールの件数が出ている」に対応。
@@ -2558,7 +2560,7 @@ async function deleteReceivableRow(u,receivableId){
   await authed(`/rest/v1/ar_receivable_attachments?receivable_id=eq.${receivableId}`,{method:"DELETE",headers:{Prefer:"return=minimal"}}).catch(()=>{});
   const r=await authed(`/rest/v1/ar_receivables?id=eq.${receivableId}`,{method:"DELETE",headers:{Prefer:"return=minimal"}});
   if(!r.ok){ alert("削除に失敗しました: "+(r.body?.message||"原因不明（担当Cまでこの画面のまま連絡してください）")); return; }
-  await receivableLoad();
+  await Promise.all([receivableLoad(),loadAcBadgeCounts()]); // 削除後は「売上入金」バッジ（サイドバー含む）も数え直す
   receivableRender(u);
 }
 // 2026-09-15新規：ユーザー要望「売上入金のところにも手動アップロードできるように」に対応。
@@ -7537,7 +7539,8 @@ let UPLOAD_STATE={files:[],recent:[]};
 // このタブ（自動取込）から完全に外へ出した（openUploadModal参照）。このタブは
 // 自動取込ジョブ・未取得の可視化専用になったため、invoices/CORP_STORE_CACHE関連の
 // 取得は不要になった
-let INTAKE_STATE={subTab:"auto",runs:[],schedule:[],monthly:[]};
+let INTAKE_STATE={subTab:"auto",runs:[],schedule:[],monthly:[],requests:null};
+let INTAKE_POLL=null;
 // 月次ジョブの予定表と実行履歴を取得して監視状態（monthly）まで計算する。会計ダッシュボードの
 // 「未取得」KPIとも共用。判定ロジックはMac mini側のLarkアラート（ns-daily-import/lib/monthly-overdue-alert.js）
 // と同一（画面の「未取得」とLarkアラートの対象が食い違わないように両方を揃えて保守すること）
@@ -7549,8 +7552,14 @@ async function intakeLoadMonthly(){
     const rR=await authed(`/rest/v1/import_runs?job=in.(${schedule.map(x=>x.job).join(",")})&select=*&order=started_at.desc&limit=100`);
     runs=(rR.ok&&Array.isArray(rR.body))?rR.body:[];
   }
+  // 再実行ボタン用の依頼履歴。テーブル未作成（SQL適用前）や権限なしでnullになり、その間はボタンを出さない
+  let requests=null;
+  if(schedule.length){
+    const qR=await authed(`/rest/v1/import_run_requests?job=in.(${schedule.map(x=>x.job).join(",")})&select=*&order=requested_at.desc&limit=50`);
+    requests=(qR.ok&&Array.isArray(qR.body))?qR.body:null;
+  }
   const now=Date.now();
-  return {schedule,runs,monthly:schedule.map(sch=>({sch,...intakeMonthlyStatus(sch,runs,now)}))};
+  return {schedule,runs,requests,monthly:schedule.map(sch=>({sch,...intakeMonthlyStatus(sch,runs,now)}))};
 }
 // 予定日（monthly_days）×予定時刻（JST）のうち、現在時刻以前で最も新しいもの（無ければnull）
 function intakeOccurrenceBefore(sch,nowMs){
@@ -7608,7 +7617,41 @@ async function renderUploadInvoiceTab(u){
   INTAKE_STATE.schedule=m.schedule;
   INTAKE_STATE.runs=m.runs;
   INTAKE_STATE.monthly=m.monthly;
+  INTAKE_STATE.requests=m.requests;
   intakeRender(u);
+  intakePollStart(u);
+}
+// 再実行ボタン（2026-09-25・ユーザー要望）。ブラウザからはimport_run_requestsに1行INSERTするだけで、
+// Mac mini（ns-daily-import/lib/run-requests.js）が数分以内に拾って実行し、結果を書き戻す。
+// テーブルの定義: supabase/2026-09-25_import_run_requests.sql（適用前は requests===null でボタン非表示）
+function intakeRequestOf(job){ return (INTAKE_STATE.requests||[]).find(q=>q.job===job)||null; } // 降順なので先頭=最新
+function intakeRequestOpen(q){ return !!q&&(q.status==="pending"||q.status==="running"); }
+async function intakeRequestRerun(u,job){
+  const sch=INTAKE_STATE.schedule.find(x=>x.job===job);
+  const label=(sch&&sch.label)||job;
+  if(!confirm(`「${label}」を今すぐ再実行しますか？\n\nMac miniが数分以内に開始し、本番データ（売上入金など）を更新します。結果はこの画面に反映され、失敗時はLarkにも通知されます。`)) return;
+  const r=await authed(`/rest/v1/import_run_requests`,{method:"POST",headers:{Prefer:"return=minimal"},body:JSON.stringify({job,status:"pending"})});
+  if(!r.ok){
+    alert(r.status===409?"このジョブは既に再実行を依頼済み（または実行中）です。結果が出るまでお待ちください。":(r.status===403||r.status===401)?"再実行を依頼する権限がありません（マスター／CEO／HQのみ）。":"再実行の依頼に失敗しました。時間をおいて再度お試しください。");
+    return;
+  }
+  const m=await intakeLoadMonthly();
+  Object.assign(INTAKE_STATE,{schedule:m.schedule,runs:m.runs,monthly:m.monthly,requests:m.requests});
+  intakeRender(u);
+  intakePollStart(u);
+}
+// 依頼中（pending/running）がある間だけ15秒ごとに自動更新（未取得タブを開いている間・最大30分）
+function intakePollStart(u){
+  if(INTAKE_POLL) return;
+  if(!(INTAKE_STATE.requests||[]).some(intakeRequestOpen)) return;
+  const t0=Date.now();
+  INTAKE_POLL=setInterval(async()=>{
+    if(TAB!=="upload"||Date.now()-t0>30*60*1000){ clearInterval(INTAKE_POLL); INTAKE_POLL=null; return; }
+    const m=await intakeLoadMonthly();
+    Object.assign(INTAKE_STATE,{schedule:m.schedule,runs:m.runs,monthly:m.monthly,requests:m.requests});
+    intakeRender(u);
+    if(!(INTAKE_STATE.requests||[]).some(intakeRequestOpen)){ clearInterval(INTAKE_POLL); INTAKE_POLL=null; }
+  },15000);
 }
 function intakeScheduleLabel(job){
   const s=INTAKE_STATE.schedule.find(x=>x.job===job);
@@ -7683,7 +7726,14 @@ function intakeAutoHtml(){
 // （既定24時間）を過ぎても成功が無いものが「⚠️未取得」で、この状態が続いている間はMac mini側
 // （ns-daily-import/lib/monthly-overdue-alert.js）が1日1回Larkへアラートを送る。
 // 自動再取得（1日最大3回）はns-daily-import側のdispatch.jsが行い、このアプリから再取得はしない
+function intakeRerunCellHtml(job){
+  const q=intakeRequestOf(job);
+  if(intakeRequestOpen(q)) return `<span class="invoice-status wait">${q.status==="running"?"▶ 実行中…":"🕒 依頼済み（開始待ち）"}</span>`;
+  const done=q?`<div class="meta" style="font-size:11px;color:var(--muted);margin-top:4px" title="${esc(q.result||"")}">前回の再実行: ${{success:"成功",partial:"一部失敗",failed:"失敗"}[q.status]||esc(q.status)} ${fmtDT(q.finished_at||q.requested_at)}</div>`:"";
+  return `<button class="hq-btn" style="padding:6px 10px" data-intake-rerun="${esc(job)}">▶ 再実行</button>${done}`;
+}
 function intakeOverdueHtml(){
+  const canRerun=INTAKE_STATE.requests!==null;
   const order={overdue:0,waiting:1,none:2,ok:3};
   const rows=[...INTAKE_STATE.monthly].sort((a,b)=>(order[a.state]-order[b.state])||String(a.sch.label).localeCompare(String(b.sch.label)));
   const lastLabel={running:["実行中","gray"],success:["成功","done"],partial:["一部失敗","wait"],failed:["失敗","err"]};
@@ -7693,7 +7743,7 @@ function intakeOverdueHtml(){
       </div>
       <div class="card hq-tablewrap" style="padding:0">
         <table class="invoice-table">
-          <thead><tr><th>ジョブ</th><th>取得元</th><th>予定（毎月）</th><th>直近の予定日</th><th>前回結果</th><th>前回実行</th><th>状態</th></tr></thead>
+          <thead><tr><th>ジョブ</th><th>取得元</th><th>予定（毎月）</th><th>直近の予定日</th><th>前回結果</th><th>前回実行</th><th>状態</th>${canRerun?"<th>操作</th>":""}</tr></thead>
           <tbody>${rows.length?rows.map(x=>{
             const s=x.sch, l=x.last;
             const lastSt=l?(lastLabel[l.status]||["—","gray"]):["未実行","gray"];
@@ -7711,8 +7761,9 @@ function intakeOverdueHtml(){
               <td><span class="invoice-status ${lastSt[1]}">${esc(lastSt[0])}</span></td>
               <td>${l?fmtDT(l.finished_at||l.started_at):"—"}</td>
               <td>${stateHtml}</td>
+              ${canRerun?`<td>${intakeRerunCellHtml(s.job)}</td>`:""}
             </tr>`;
-          }).join(""):'<tr><td colspan="7">対象の月次ジョブがありません</td></tr>'}</tbody>
+          }).join(""):'<tr><td colspan="8">対象の月次ジョブがありません</td></tr>'}</tbody>
         </table>
       </div>`;
 }
@@ -7730,6 +7781,7 @@ function intakeRender(u){
     </section>`;
   if($("intake-open-history")) $("intake-open-history").onclick=()=>{ TAB="history"; pushNav(); renderTabBody(u); };
   document.querySelectorAll("[data-intake-subtab]").forEach(el=>el.onclick=()=>{ INTAKE_STATE.subTab=el.dataset.intakeSubtab; intakeRender(u); });
+  document.querySelectorAll("[data-intake-rerun]").forEach(el=>el.onclick=()=>intakeRequestRerun(u,el.dataset.intakeRerun));
 }
 function uploadFileToBase64(file){
   return new Promise((resolve,reject)=>{

@@ -1132,7 +1132,7 @@ const TOP_ITEMS=[
   // ＝「処理は今のまま（🧾請求書タブ側で行う）・請求書メールからは処理はしない」というユーザー
   // 指示は、この画面が元々持っていたDETAIL_MODE="mail"の簡易表示だけで自動的に満たされる
   // （コード変更なし。openMailDetail内のslimMail判定が既にこの制御をしている）
-  {key:"invoiceMail",sysKey:"invoices",ico:"✉️",label:"請求書メール",url:"invoices.html?embed=1&tab=inbox",countKey:"inv",pinned:true},
+  {key:"invoiceMail",sysKey:"invoices",ico:"✉️",label:"請求書メール",url:"invoices.html?embed=1&tab=inbox",countKey:"inv",countLabel:"未処理",countTitle:"未処理の請求書メール",pinned:true},
 ];
 // 2026-09-01 ユーザー実機フィードバック（続き）:「そもそも社内情報管理システムへ
 // リンクで飛ばす必要が無い。経費申請と同じようにその場（ポータル内）で申請できるように
@@ -1188,7 +1188,9 @@ const KAIKEI_GROUP={cap:"会計",ico:"🧾", section:"kaikei", items:[
   // 2026-09-15: countKey:"receivable"を追加（上のコメントで予告していた「会計処理待ちの
   // 意味のバッジ」＝売上入金のうちMF仕訳未作成の件数。countKey:"inv"とは別物で、
   // 会計・請求グループの見出しバッジ・トップカテゴリタブバッジにも合算表示される）
-  {key:"invoices",         sysKey:"invoices", ico:"🧾", label:"請求書",     url:"invoices.html?embed=1&tab=unified", countKey:"receivable"},
+  // 2026-09-25: ユーザー指摘「未読バッジがどこの未読か分からない」に対応。この数字は請求書ではなく
+  // 「売上入金のうちMF仕訳が未作成のもの」なので、バッジに「入金」の文字とホバー説明を付けた
+  {key:"invoices",         sysKey:"invoices", ico:"🧾", label:"請求書",     url:"invoices.html?embed=1&tab=unified", countKey:"receivable", countLabel:"入金", countTitle:"売上入金のうち、MF仕訳がまだ作られていないもの（「売上入金」タブで確認）"},
   // --- 新UI未統合の既存機能（引き続き利用可。§9-15により給与仕訳は今回の刷新対象外） ---
   {key:"kaikei-dashboard", sysKey:"invoices", ico:"📊", label:"会計ダッシュボード", url:"invoices.html?embed=1&tab=dashboard"},
   {key:"kaikei-payroll",   sysKey:"invoices", ico:"💴", label:"給与仕訳",   url:"invoices.html?embed=1&tab=payroll"},
@@ -1492,7 +1494,13 @@ function countOf(it){
 function navItemHtml(it,activeKey){
   if(it.soon) return `<button class="nav-item soon" data-soon="1"><span>${it.ico}</span><span>${esc(it.label)}</span><span class="badge-soon">🚧 準備中</span></button>`;
   const cnt=countOf(it);
-  return `<button class="nav-item${activeKey===it.key?" active":""}" data-key="${it.key}"><span>${it.ico}</span><span>${esc(it.label)}</span>${cnt?`<span class="count">${cnt}</span>`:""}${it.external?'<span class="ext">↗</span>':""}</button>`;
+  const cntText=it.countLabel?`${esc(it.countLabel)} ${cnt}`:String(cnt);
+  return `<button class="nav-item${activeKey===it.key?" active":""}" data-key="${it.key}"><span>${it.ico}</span><span>${esc(it.label)}</span>${cnt?`<span class="count"${it.countTitle?` title="${esc(it.countTitle)}：${cnt}件"`:""}>${cntText}</span>`:""}${it.external?'<span class="ext">↗</span>':""}</button>`;
+}
+// グループ見出し・上部カテゴリタブの合計バッジ用：内訳をホバーで見えるようにする（2026-09-25）
+function countBreakdownTitle(items){
+  const parts=items.filter(it=>!it.soon&&countOf(it)>0).map(it=>`${it.countTitle||it.label} ${countOf(it)}件`);
+  return parts.length?` title="${esc(parts.join(" ／ "))}"`:"";
 }
 // 2026-09-07: 上部の横タブ（カテゴリ）＋左のサイドバー（選んだカテゴリの中身）という
 // 2階層ナビに刷新。既存のTOP_ITEMS/SYS_ITEMS/GROUPSはそのまま流用し、新規プロパティ
@@ -1516,7 +1524,7 @@ function topSectionsHtml(u){
   const visible=NAV_SECTIONS.filter(s=>sectionVisible(s.key,u));
   return `<div class="topbar-tabs" id="topSections">${visible.map(s=>{
     const cnt=sectionCount(s.key,u);
-    return `<button class="topsec-btn${CUR_SECTION===s.key?" active":""}" data-section="${s.key}"><span>${s.ico}</span><span>${esc(s.cap)}</span>${cnt?`<span class="count">${cnt}</span>`:""}</button>`;
+    return `<button class="topsec-btn${CUR_SECTION===s.key?" active":""}" data-section="${s.key}"><span>${s.ico}</span><span>${esc(s.cap)}</span>${cnt?`<span class="count"${countBreakdownTitle(itemsInSection(s.key,u))}>${cnt}</span>`:""}</button>`;
   }).join("")}</div>`;
 }
 function sidebarHtml(u){
@@ -1536,7 +1544,7 @@ function sidebarHtml(u){
     const isOpen=grp.cap===OPEN_GROUP;
     const grpCnt=items.filter(it=>!it.soon).reduce((s,it)=>s+countOf(it),0);
     return `<div class="nav-group${isOpen?" open":""}" data-group="${esc(grp.cap)}">
-      <button class="nav-group-head"><span>${grp.ico}</span><span>${esc(grp.cap)}</span><span class="grp-trail">${grpCnt?`<span class="count">${grpCnt}</span>`:""}<span class="chev">›</span></span></button>
+      <button class="nav-group-head"><span>${grp.ico}</span><span>${esc(grp.cap)}</span><span class="grp-trail">${grpCnt?`<span class="count"${countBreakdownTitle(items)}>${grpCnt}</span>`:""}<span class="chev">›</span></span></button>
       <div class="subnav">${items.map(it=>navItemHtml(it,activeKey)).join("")}</div>
     </div>`;
   }).join("");
@@ -1984,6 +1992,14 @@ async function main(){
   VIEW="home"; CUR=null;
   renderShellBody(u);
 }
+// 2026-09-25: 売上入金の件数が中の画面（invoices.html）で変わったら、サイドバーのバッジも即座に更新する
+// （従来はホーム表示時にしか数え直さず、入金を削除・仕訳作成しても古い数字が残っていた）
+window.addEventListener("message",e=>{
+  if(e.origin!==location.origin||!e.data||e.data.type!=="nsAcBadge"||!ME) return;
+  const n=Number(e.data.receivable);
+  if(!Number.isFinite(n)||n===NAV_RECEIVABLE_CNT) return;
+  NAV_RECEIVABLE_CNT=n; refreshNavActive(ME);
+});
 main();
 </script>
 </body>
