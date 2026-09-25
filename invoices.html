@@ -624,7 +624,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-09-25-v24";
+const BUILD_TAG="2026-09-26-v25";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -2775,11 +2775,21 @@ async function arjLoadForTenant(tenantId,tenants){
   // （stores.mf_department_name＝設定タブ「法人・店舗・部門マッピング」で登録済みの対応表）を
   // 事前に解決し、既定の明細行に設定しておく。これで登録した瞬間からPL反映が正しい店舗・
   // 正しい金額で自動検出されるようになる
-  let storeDepartmentId="";
+  // 2026-09-26修正：ユーザー報告「部門が入らないところがある」に対応。従来は完全一致
+  // （===）だけで比較しており、全角/半角や前後の空白等のわずかな表記差でも一致せず、
+  // storeDepartmentIdが空のまま「（指定なし）」になっていた（原因が画面から一切分からず、
+  // 店舗マスタ側・MF側どちらを直せばいいか判断できなかった）。Unicode正規化（NFKC）を
+  // かけてから比較することで表記ゆれを吸収しつつ、それでも一致しなかった場合は
+  // storeDepartmentMismatchに検索した部門名を記録し、フォームに警告として表示する
+  // （店舗マスタのmf_department_nameが間違っているのか、MF側にまだその部門が無いのか、
+  // ユーザー自身がその場で切り分けられるようにするため）
+  let storeDepartmentId="", storeDepartmentMismatch="";
+  const normDeptName=s=>String(s||"").trim().normalize("NFKC");
   const store=(CORP_STORE_CACHE&&CORP_STORE_CACHE.stores||[]).find(s=>s.id===row.store_id);
   if(store&&store.mf_department_name){
-    const dep=(searchRes.body.departments||[]).find(d=>d.name===store.mf_department_name);
-    if(dep) storeDepartmentId=dep.id;
+    const wantName=normDeptName(store.mf_department_name);
+    const dep=(searchRes.body.departments||[]).find(d=>normDeptName(d.name)===wantName);
+    if(dep) storeDepartmentId=dep.id; else storeDepartmentMismatch=store.mf_department_name;
   }
   ARJ_STATE={
     ...ARJ_STATE,
@@ -2801,7 +2811,7 @@ async function arjLoadForTenant(tenantId,tenants){
     accountLabelMap:idx.map, accountDatalistHtml:idx.dl, accountNameDatalistHtml:idx.accountNameDatalistHtml,
     subAccountsByAccountName:idx.subAccountsByAccountName, subAccountNamesAll:idx.subAccountNamesAll,
     branches:[],
-    ymLabel, storeDepartmentId,
+    ymLabel, storeDepartmentId, storeDepartmentMismatch,
     remark:ymLabel?`${ymLabel}　${row.source_name||""}`:(row.source_name||""),
     // 2026-09-17修正：ユーザー要望「会計計上日を摘要に入る月と同じ月に自動でなるように
     // してほしい。7月であれば7/31で」に対応。従来は常に今日の日付が既定値だったため、
@@ -2836,10 +2846,27 @@ async function arjLoadForTenant(tenantId,tenants){
 // 既に存在している場合のみ選択できる（MF公式に補助科目マスタ作成APIが無いため、
 // accountLabelMapに無い組み合わせは登録時に「プルダウンの候補から選択してください」エラーに
 // なる＝arjSubmitJournal参照）。初めて使う店舗はMF側で先に補助科目を作成しておく必要がある。
+// 2026-09-26追加：ユーザー報告「貸方の売上が実際の売上と一致しない」に対応。テンプレートが
+// 1行目（入金分）にだけ貸方勘定科目（例:飲食売上）を持ち、2行目（手数料分）の貸方勘定科目が
+// 空欄のまま登録されている場合、貸方合計は借方合計と一致していても、実際に「売上」科目へ
+// 計上される金額が入金予定額（手数料を引いた後）分だけになり、手数料分は勘定科目未設定の
+// まま貸方に混ざるだけ＝飲食売上として記帳される額が本当の売上決済額(gross)より手数料分
+// 少なく見えてしまっていた。空欄の行は他の行の貸方勘定科目（最初に見つかったもの）を
+// 引き継ぐようにし、貸方の売上合計が必ず実際の売上決済額と一致するようにする
+function arjFillBlankCreditFromTemplate_(branches){
+  const firstName=(branches.map(b=>(b.credit&&b.credit.account_name)||"").find(Boolean))||"";
+  const firstTax=(branches.map(b=>(b.credit&&b.credit.tax_id)||"").find(Boolean))||"";
+  if(!firstName) return branches;
+  return branches.map(b=>({
+    ...b,
+    credit:{...(b.credit||{}), account_name:(b.credit&&b.credit.account_name)||firstName, tax_id:(b.credit&&b.credit.tax_id)||firstTax},
+  }));
+}
 function arjApplyTemplateAsDefault_(tpl,expected,fee,dep,prefix){
   const storeName=receivableStoreName(ARJ_STATE.row.store_id);
   const amounts=[expected,fee], suffixes=["売上","手数料"];
-  return tpl.branches.map((b,i)=>{
+  const branches=arjFillBlankCreditFromTemplate_(tpl.branches);
+  return branches.map((b,i)=>{
     const creditAccountName=(b.credit&&b.credit.account_name)||"";
     return {
       debitLabel:mftLabelOf(b.debit), debitAmount:amounts[i]??"",
@@ -3021,8 +3048,24 @@ function arjRenderJournalResults(){
       remark:"",
     };
     arjFillRealAmounts([branch]); // 1行だけの選択は常に1行判定＝必ず金額・摘要を当てはめられる
+    arjOverrideCreditStoreOnBranches_([branch]);
     arjApplyBranches([branch]);
   });
+}
+// 2026-09-26追加：ユーザー報告「仕訳辞書で登録したものを選択したら、（貸方補助科目の）店舗が
+// 今回の店舗と関係ない」に対応。過去の仕訳・仕訳辞書には「保存されたときの店舗名」が貸方の
+// 補助科目として残っており、arjApplyTemplateAsDefault_（テンプレートの自動適用）はこれを
+// 現在の店舗名で上書きしていたが、「📗 仕訳辞書から選ぶ」「📖 過去の仕訳から選ぶ」で手動で
+// 選んだ場合はこの上書きが行われず、古い店舗名の補助科目のまま残っていた。貸方勘定科目名は
+// そのまま尊重しつつ、補助科目だけを必ず今回の売上入金の店舗名で上書きする
+function arjOverrideCreditStoreOnBranches_(branches){
+  const storeName=receivableStoreName(ARJ_STATE.row.store_id);
+  if(!storeName||storeName==="（共通費）") return branches;
+  branches.forEach(b=>{
+    const {account}=splitAccLabel(b.creditLabel||"");
+    if(account) b.creditLabel=`${account}/${storeName}`;
+  });
+  return branches;
 }
 // 仕訳辞書（mf_journal_templates。1件で複数の明細行を持てる＝振替伝票まるごと保存できる）
 function arjRenderTemplateResults(){
@@ -3040,7 +3083,10 @@ function arjRenderTemplateResults(){
   document.querySelectorAll("[data-arjtpluse]").forEach(btn=>btn.onclick=()=>{
     const t=ARJ_STATE.templates.find(x=>x.id===btn.dataset.arjtpluse);
     // 古い仕訳辞書（貸借同額の共通amount形式）・新しい仕訳辞書（辺ごとにvalueを持つ形式）の両方に対応
-    const branches=(t.branches||[]).map(b=>({
+    // 2026-09-26修正：貸方勘定科目が一部の行だけ空欄のテンプレートでも売上が正しく合算される
+    // よう、事前にarjFillBlankCreditFromTemplate_で埋めてからmapする
+    const tplBranches=arjFillBlankCreditFromTemplate_(t.branches||[]);
+    const branches=tplBranches.map(b=>({
       debitLabel:mftLabelOf(b.debit), debitAmount:"",
       creditLabel:mftLabelOf(b.credit), creditAmount:"",
       department_id:b.department_id||"", tax_id:b.tax_id||"",
@@ -3048,6 +3094,7 @@ function arjRenderTemplateResults(){
       remark:"",
     }));
     const filled=arjFillRealAmounts(branches);
+    arjOverrideCreditStoreOnBranches_(branches);
     arjApplyBranches(branches);
     if(!filled) alert(`この仕訳辞書は${branches.length}行構成のため、金額・摘要を自動では当てはめられませんでした（2行＝入金分＋手数料分の構成のときだけ自動対応しています）。手動で確認・入力してください。`);
   });
@@ -3093,6 +3140,7 @@ function arjRenderForm(){
     <datalist id="arj-acc-datalist">${ARJ_STATE.accountDatalistHtml||""}</datalist>
     <datalist id="arj-account-datalist">${ARJ_STATE.accountNameDatalistHtml||""}</datalist>
     ${ARJ_STATE.tenants&&ARJ_STATE.tenants.length>1?`<div class="ai-field" style="margin-bottom:6px;font-size:11px;color:var(--muted)">登録先: <b>${esc(ARJ_STATE.tenantLabel||"")}</b> <button id="arj-change-tenant" style="font-size:10px">変更</button></div>`:""}
+    ${ARJ_STATE.storeDepartmentMismatch?`<div class="err" style="margin-bottom:8px">⚠️ 店舗マスタに登録されている部門名「${esc(ARJ_STATE.storeDepartmentMismatch)}」と一致する部門がこの事業者（${esc(ARJ_STATE.tenantLabel||"")}）に見つかりませんでした。部門は下の表で手動で選んでください。直す場合は、①マネーフォワード側にまだこの部門が無ければ作成する、②登録先の事業者が違う場合は上の「変更」から選び直す、③それでも直らなければ設定タブ「法人・店舗・部門マッピング」の店舗名の表記を見直してください。</div>`:""}
     <div class="mail-actions" style="margin-bottom:8px">
       <button data-arjmode="journal" ${mode==="journal"?'class="primary"':""}>📖 過去の仕訳から選ぶ</button>
       <button data-arjmode="dict" ${mode==="dict"?'class="primary"':""}>📗 仕訳辞書から選ぶ${ARJ_STATE.templates.length?`（${ARJ_STATE.templates.length}）`:""}</button>
