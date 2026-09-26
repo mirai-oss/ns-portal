@@ -624,7 +624,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-09-26-v34";
+const BUILD_TAG="2026-09-26-v35";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -3105,12 +3105,20 @@ function arjApplyTemplateAsDefault_(tpl,expected,fee,dep,prefix){
   return branches.map((b,i)=>{
     const isCombinedRow=i===0;
     const creditAccountName=isCombinedRow?((b.credit&&b.credit.account_name)||""):"";
+    // 2026-09-26追加：ユーザー要望「売上入金の店舗の候補を出すのは仕訳辞書を優先してほしい。
+    // 仕訳辞書で部門が店舗入っている場合にはそちらを優先でそのまま使用すること」に対応。
+    // 従来はこの行のdep（店舗マスタmf_department_name→MF部門一覧の名称一致／過去の仕訳から
+    // 推測した部門）で常に上書きしており、仕訳辞書（tpl.branches[].department_id）に部門が
+    // 登録されていてもそれは一切見ずに捨てていた。仕訳辞書は「設定タブ」で人が明細行ごとに
+    // 部門まで選んで登録したものなので、それが入っている行はそのまま信用して使い、
+    // 入っていない行だけ従来のdepにフォールバックする。
+    const rowDep=b.department_id||dep;
     return {
       debitLabel:mftLabelOf(b.debit), debitAmount:amounts[i]??"",
       creditLabel:arjCreditLabelForStore_(creditAccountName,storeName),
       creditAmount:isCombinedRow?(combinedCredit||""):"",
-      department_id:dep, tax_id:(b.debit&&b.debit.tax_id)||"",
-      credit_department_id:isCombinedRow?dep:"", credit_tax_id:(b.credit&&b.credit.tax_id)||"",
+      department_id:rowDep, tax_id:(b.debit&&b.debit.tax_id)||"",
+      credit_department_id:isCombinedRow?rowDep:"", credit_tax_id:(b.credit&&b.credit.tax_id)||"",
       remark:prefix?`${prefix}　${suffixes[i]||""}`:"",
     };
   });
