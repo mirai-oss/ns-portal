@@ -640,7 +640,11 @@ async function renderApproverRules(){
       fixed_role:mode==="fixed_role"?row.querySelector(".rule-role").value:null,
       fixed_user_id:mode==="fixed_user"?(row.querySelector(".rule-user").value||null):null,
       updated_at:new Date().toISOString()};
-    const r=await authed("/rest/v1/expense_approver_rules",{method:"POST",headers:{Prefer:"resolution=merge-duplicates,return=minimal"},body:JSON.stringify(payload)});
+    // 2026-09-28修正: expense_approver_rulesの一意制約はid（主キー）ではなくapplicant_role列
+    // （2026-08-18_expenses.sql参照）。on_conflictを指定しないとPrefer:merge-duplicatesは
+    // 既定でid（未送信＝毎回新規uuid）を衝突対象にしてしまい、常にINSERTを試みて
+    // applicant_roleのunique制約違反（409）で保存に失敗していた。
+    const r=await authed("/rest/v1/expense_approver_rules?on_conflict=applicant_role",{method:"POST",headers:{Prefer:"resolution=merge-duplicates,return=minimal"},body:JSON.stringify(payload)});
     b.textContent=r.ok?"保存しました":"失敗しました";
     setTimeout(()=>{b.textContent="保存"},1500);
   });
