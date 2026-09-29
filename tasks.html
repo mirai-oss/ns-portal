@@ -3622,6 +3622,9 @@ async function runAlertChecks(){
 /* ---------- 通知設定（チャンネル登録・ルール） ---------- */
 let NOTIFY_CHANNELS=[];
 let NOTIFY_RULES=[];
+// 2026-09-29: 「通知ルールを編集できるようにしてほしい（今は削除しかない）」への対応。
+// 編集中のルールidを持つ（null=新規追加モード）
+let RULE_EDIT_ID=null;
 const EVENT_LABEL={due_alert:"期限アラート（3日前・前日・当日・超過）",stalled:"⏸ 3日以上停止",step_complete:"工程完了のたび",issue_reported:"異常ありが付いたとき",mention:"@メンションされたとき",task_urgent:"🔥 最重要に設定されたとき"};
 const CHANNEL_ICON={lark_webhook:"💬",inapp:"🔔",chatwork:"🟢"};
 async function fetchNotifySettings(){
@@ -3661,14 +3664,29 @@ function renderNotify(u){
   <div class="sec"><h3>通知ルール（どのタスクの・どの出来事を・どこに流すか）</h3>
     <div id="rule-list">${NOTIFY_RULES.map(ruleRowHtml).join("")||'<div class="card">まだ登録されていません</div>'}</div>
     <div class="card" style="margin-top:10px">
-      <label>ルール名</label><input id="rl-name" placeholder="例: 期限アラート全体">
-      <label>対象の法人（空欄=すべて）</label><select id="rl-corp"><option value="">すべて</option>${CORPS.map(c=>`<option value="${esc(c.name)}">${esc(c.name)}</option>`).join("")}</select>
-      <label>対象の頻度（空欄=すべて）</label><select id="rl-freq"><option value="">すべて</option><option value="daily">毎日</option><option value="weekly">毎週</option><option value="monthly">毎月</option><option value="once">単発</option></select>
-      <label>出来事</label><select id="rl-event">${Object.entries(EVENT_LABEL).map(([k,v])=>`<option value="${k}">${esc(v)}</option>`).join("")}</select>
+      <!-- 2026-09-29: 「メンションだけの場所と、複数選択してその他をまとめる場所を分けたい」
+           「ルールを編集できるようにしてほしい（今は削除しかない）」への対応。
+           出来事を複数選択できるようにし（DBは1行=1出来事のままなので、複数選択時は
+           選んだ数だけ行を作る/編集中の1件は先頭の選択で更新し残りは新規追加にする）、
+           一覧に「編集」ボタンを追加してこのフォームへ読み込めるようにした -->
+      ${(()=>{ const editing=RULE_EDIT_ID?NOTIFY_RULES.find(r=>r.id===RULE_EDIT_ID):null; return `
+      ${editing?`<div class="sec-sub" style="margin-bottom:8px">✏️「${esc(editing.name)}」を編集中です</div>`:""}
+      <label>ルール名</label><input id="rl-name" placeholder="例: 期限アラート全体" value="${editing?esc(editing.name):""}">
+      <label>対象の法人（空欄=すべて）</label><select id="rl-corp"><option value="">すべて</option>${CORPS.map(c=>`<option value="${esc(c.name)}" ${editing&&editing.target_corp===c.name?"selected":""}>${esc(c.name)}</option>`).join("")}</select>
+      <label>対象の頻度（空欄=すべて）</label><select id="rl-freq">
+        <option value="">すべて</option>
+        <option value="daily" ${editing&&editing.target_freq==="daily"?"selected":""}>毎日</option>
+        <option value="weekly" ${editing&&editing.target_freq==="weekly"?"selected":""}>毎週</option>
+        <option value="monthly" ${editing&&editing.target_freq==="monthly"?"selected":""}>毎月</option>
+        <option value="once" ${editing&&editing.target_freq==="once"?"selected":""}>単発</option>
+      </select>
+      <label>出来事（複数選択可。まとめて選ぶと選んだ数だけルールが作られます）</label>
+      <div class="chiprow" id="rl-events">${Object.entries(EVENT_LABEL).map(([k,v])=>`<label class="chipcheck"><input type="checkbox" value="${k}" ${editing&&editing.event===k?"checked":""}>${esc(v)}</label>`).join("")}</div>
       <label>宛先チャンネル（複数選択可）</label>
-      <select id="rl-channels" multiple size="4">${NOTIFY_CHANNELS.map(c=>`<option value="${c.id}">${CHANNEL_ICON[c.kind]||"📣"} ${esc(c.name)}</option>`).join("")}</select>
-      <button class="btn sm" style="margin-top:8px" id="rl-add">追加</button>
-      <div class="err" id="rl-msg"></div>
+      <select id="rl-channels" multiple size="4">${NOTIFY_CHANNELS.map(c=>`<option value="${c.id}" ${editing&&(editing.channel_ids||[]).includes(c.id)?"selected":""}>${CHANNEL_ICON[c.kind]||"📣"} ${esc(c.name)}</option>`).join("")}</select>
+      <button class="btn sm" style="margin-top:8px" id="rl-add">${editing?"保存する":"追加"}</button>
+      ${editing?` <button class="linkbtn" id="rl-canceledit">編集をやめる</button>`:""}
+      <div class="err" id="rl-msg"></div>`; })()}
     </div>
   </div>`;
   $("back").onclick=()=>goBack(u);
@@ -3703,17 +3721,35 @@ function renderNotify(u){
   $("rl-add").onclick=async()=>{
     const name=$("rl-name").value.trim();
     if(!name){$("rl-msg").textContent="ルール名を入力してください";return}
+    const events=[...document.querySelectorAll("#rl-events input:checked")].map(cb=>cb.value);
+    if(!events.length){$("rl-msg").textContent="出来事を1つ以上選択してください";return}
     const sel=[...$("rl-channels").selectedOptions].map(o=>o.value);
     if(!sel.length){$("rl-msg").textContent="宛先チャンネルを1つ以上選択してください";return}
-    const payload={name,target_corp:$("rl-corp").value||null,target_freq:$("rl-freq").value||null,event:$("rl-event").value,channel_ids:sel,created_by:ME.id};
-    $("rl-msg").textContent="追加中…";
-    const r=await authed("/rest/v1/hq_notify_rules",{method:"POST",headers:{Prefer:"return=minimal"},body:JSON.stringify(payload)});
-    if(!r.ok){$("rl-msg").textContent="追加できませんでした";return}
+    const base={name,target_corp:$("rl-corp").value||null,target_freq:$("rl-freq").value||null,channel_ids:sel,created_by:ME.id};
+    $("rl-msg").textContent=RULE_EDIT_ID?"保存中…":"追加中…";
+    if(RULE_EDIT_ID){
+      // 編集中の1件は最初に選んだ出来事で更新。追加でチェックした分は新規ルールとして作る
+      const r=await authed(`/rest/v1/hq_notify_rules?id=eq.${RULE_EDIT_ID}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({...base,event:events[0]})});
+      if(!r.ok){$("rl-msg").textContent="保存できませんでした";return}
+      for(const ev of events.slice(1)){
+        const r2=await authed("/rest/v1/hq_notify_rules",{method:"POST",headers:{Prefer:"return=minimal"},body:JSON.stringify({...base,event:ev})});
+        if(!r2.ok){$("rl-msg").textContent="一部の出来事の追加に失敗しました";return}
+      }
+      RULE_EDIT_ID=null;
+    } else {
+      for(const ev of events){
+        const r=await authed("/rest/v1/hq_notify_rules",{method:"POST",headers:{Prefer:"return=minimal"},body:JSON.stringify({...base,event:ev})});
+        if(!r.ok){$("rl-msg").textContent="追加できませんでした";return}
+      }
+    }
     await fetchNotifySettings(); renderNotify(u);
   };
+  if($("rl-canceledit")) $("rl-canceledit").onclick=()=>{RULE_EDIT_ID=null; renderNotify(u);};
+  document.querySelectorAll("[data-ruleedit]").forEach(b=>b.onclick=()=>{RULE_EDIT_ID=b.dataset.ruleedit; renderNotify(u);});
   document.querySelectorAll("[data-ruledel]").forEach(b=>b.onclick=async()=>{
     if(!confirm("このルールを削除しますか？"))return;
     await authed(`/rest/v1/hq_notify_rules?id=eq.${b.dataset.ruledel}`,{method:"DELETE"});
+    if(RULE_EDIT_ID===b.dataset.ruledel) RULE_EDIT_ID=null; // 編集中だった行が消えたら編集モードも解除
     await fetchNotifySettings(); renderNotify(u);
   });
 }
@@ -3726,7 +3762,7 @@ function chRowHtml(c){
 function ruleRowHtml(r){
   const chNames=(r.channel_ids||[]).map(id=>{const c=NOTIFY_CHANNELS.find(x=>x.id===id);return c?c.name:"?"}).join("、");
   const target=[r.target_corp||"すべての法人",r.target_freq?FREQ_LABEL[r.target_freq]:"すべての頻度"].join(" ／ ");
-  return `<div class="link-row"><div style="flex:1"><b>${esc(r.name)}</b><div class="meta">${esc(target)} ／ ${esc(EVENT_LABEL[r.event]||r.event)} → ${esc(chNames)}</div></div><button class="linkbtn" data-ruledel="${r.id}">削除</button></div>`;
+  return `<div class="link-row"><div style="flex:1"><b>${esc(r.name)}</b><div class="meta">${esc(target)} ／ ${esc(EVENT_LABEL[r.event]||r.event)} → ${esc(chNames)}</div></div><button class="linkbtn" data-ruleedit="${r.id}">編集</button><button class="linkbtn" data-ruledel="${r.id}">削除</button></div>`;
 }
 
 /* ---------- 過去タスク（月別・無期限保存） ---------- */
