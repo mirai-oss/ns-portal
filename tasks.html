@@ -506,6 +506,12 @@ let NOTIFICATIONS=[];     // アプリ内通知（自分宛）
 let NOTIF_UNREAD=0;
 let BELL_OPEN=false;
 let MY_CHATWORK=null;      // 自分のChatwork設定 {account_id, room_id}（登録済みなら）
+// 2026-09-29: 「コメントで@メンションしたときに相手へChatwork通知を出したい」という要望調査の結果、
+// メンション通知の仕組み自体（hq_notify_comment・個人ルームへの配信）は既に実装済みだったが、
+// 本部メンバーの大半が自分のChatworkルームID未登録のため、実質的に相手へ届いていなかったと判明。
+// 登録済みになるまで毎回ボードでさりげなく促す（閉じても次に開いたときはまた出る＝
+// 登録が完了しない限りリマインドし続ける設計。localStorageで永久に消したりはしない）
+let CW_NUDGE_DISMISSED=false;
 let FEATURE_PERMS={};      // hq_feature_permissions {feature: min_level}（マスターが権限設定画面で変更）
 const qs=new URLSearchParams(location.search);
 const EMBED=qs.get("embed")==="1"; // 全面刷新Phase1: ポータルシェル(portal.html)のiframeから開かれた時は自リンクを隠す
@@ -885,6 +891,10 @@ function renderBoard(u){
       👤 ${esc(u.name)}${EMBED?"":` ／ <a href="index.html">← ポータルへ</a>`}
     </div>
   </div>
+  ${(!CW_NUDGE_DISMISSED&&ASSIGNABLE_ROLES.includes(u.role)&&!(MY_CHATWORK&&MY_CHATWORK.room_id))?`<div class="notes-box" style="margin-bottom:14px;display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
+    <div>💬 コメントで@メンションされたとき、あなた宛にChatworkへ通知が届くようにできます。右上の「🟢 Chatwork ID」から通知ルームIDを登録してください。</div>
+    <button class="linkbtn" id="cwnudgeclose" style="white-space:nowrap">✕ 閉じる</button>
+  </div>`:""}
   <div id="bellpanel" class="card" style="display:${BELL_OPEN?'block':'none'};margin-bottom:14px">
     ${NOTIFICATIONS.length?NOTIFICATIONS.map(n=>`<div class="act-row" style="cursor:pointer${n.read_at?'':';font-weight:600'}" data-notifopen="${n.id}" data-notiftask="${n.task_id||''}">
       <b>${fmtDT(n.created_at)}</b> ${esc(n.title)}${n.body?" — "+esc(n.body):""}
@@ -998,6 +1008,7 @@ function wireBoard(u){
   if($("gocorps"))$("gocorps").onclick=()=>{pushNav(); VIEW="corps";renderCorps(u);};
   if($("goperms"))$("goperms").onclick=()=>{pushNav(); VIEW="perms";renderPerms(u);};
   if($("mycwbtn"))$("mycwbtn").onclick=()=>openMyChatworkModal(u);
+  if($("cwnudgeclose"))$("cwnudgeclose").onclick=()=>{CW_NUDGE_DISMISSED=true; renderBoard(u);};
   document.querySelectorAll("[data-corp]").forEach(c=>c.onclick=()=>{FILTER.corp=c.dataset.corp||null;renderBoard(u);});
   document.querySelectorAll("[data-freq]").forEach(c=>c.onclick=()=>{FILTER.freq=c.dataset.freq||null;renderBoard(u);});
   document.querySelectorAll("[data-type]").forEach(c=>c.onclick=()=>{FILTER.type=c.dataset.type||null;renderBoard(u);});
@@ -3572,6 +3583,7 @@ function openMyChatworkModal(u){
     const r=await authed("/rest/v1/hq_user_chatwork",{method:"POST",headers:{Prefer:"resolution=merge-duplicates,return=minimal"},body:JSON.stringify({user_id:u.id,account_id:id||null,room_id:roomId||null,updated_at:new Date().toISOString()})});
     if(!r.ok){ msg.textContent="保存できませんでした"; return; }
     MY_CHATWORK={account_id:id||null,room_id:roomId||null}; modal.remove();
+    renderBoard(u); // 登録直後にメンション通知の案内バナーを即座に消す
   };
 }
 async function markNotificationsRead(){
