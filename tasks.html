@@ -3625,15 +3625,25 @@ let NOTIFY_RULES=[];
 // 2026-09-29: 「通知ルールを編集できるようにしてほしい（今は削除しかない）」への対応。
 // 編集中のルールidを持つ（null=新規追加モード）
 let RULE_EDIT_ID=null;
+// 2026-09-29: 「メンションだけの通知先と、複数選択したその他の通知先を分けたい（経費申請も
+// 同じ部屋に来てしまうので整理したい）」への対応。自分の個人通知ルームを出来事ごとに
+// 複数登録できるようにする（hq_user_notify_routes）。1件も登録が無ければ従来どおり
+// 「🟢 Chatwork ID」の単一ルーム（hq_user_chatwork）がすべての出来事に使われる
+let MY_NOTIFY_ROUTES=[];
+let ROUTE_EDIT_ID=null;
 const EVENT_LABEL={due_alert:"期限アラート（3日前・前日・当日・超過）",stalled:"⏸ 3日以上停止",step_complete:"工程完了のたび",issue_reported:"異常ありが付いたとき",mention:"@メンションされたとき",task_urgent:"🔥 最重要に設定されたとき"};
 const CHANNEL_ICON={lark_webhook:"💬",inapp:"🔔",chatwork:"🟢"};
 async function fetchNotifySettings(){
-  const [c,r]=await Promise.all([
+  const [c,r,ur]=await Promise.all([
     authed("/rest/v1/hq_notify_channels?select=*&order=created_at"),
     authed("/rest/v1/hq_notify_rules?select=*&order=sort_order"),
+    // 2026-09-29: 個人通知（メンション・期限アラート等）を出来事ごとに複数の部屋へ振り分ける機能。
+    // 自分の分だけ取得（他人のルートは見せない・hqunr_readはログイン済みなら読めるがUIでは絞る）
+    authed(`/rest/v1/hq_user_notify_routes?user_id=eq.${ME.id}&select=*&order=sort_order`),
   ]);
   NOTIFY_CHANNELS=(c.ok&&Array.isArray(c.body))?c.body:[];
   NOTIFY_RULES=(r.ok&&Array.isArray(r.body))?r.body:[];
+  MY_NOTIFY_ROUTES=(ur.ok&&Array.isArray(ur.body))?ur.body:[];
 }
 function renderNotify(u){
   CURRENT_RENDER=()=>renderNotify(u);
@@ -3659,6 +3669,27 @@ function renderNotify(u){
       <label>Chatworkアカウント ID</label><input id="mycw-id" placeholder="例: 1234567" value="${esc((MY_CHATWORK&&MY_CHATWORK.account_id)||"")}">
       <button class="btn sm" style="margin-top:8px" id="mycw-save">保存</button>
       <div class="err" id="mycw-msg"></div>
+    </div>
+  </div>
+  <!-- 2026-09-29: 「メンションだけの場所と、複数選択してその他をまとめる場所を分けたい。
+       経費申請も同じ部屋に来てしまうから整理したい」への対応。上の「個人通知ルームID」は
+       今までどおり全出来事の既定の届け先（経費申請など担当E管轄外の通知もこちらを使い続ける
+       ため、そちらの動作は一切変えていない）。ここで出来事ごとに別の部屋を追加登録すると、
+       その出来事だけそちらへ優先的に届く（担当Eの4つの通知＝メンション・期限アラート・
+       停止・工程完了・異常あり・最重要のみ対象） -->
+  <div class="sec"><h3>💬 本部タスクの通知を、出来事ごとに別の部屋へ振り分ける（任意）</h3>
+    <div class="card" style="margin-bottom:10px"><div class="sec-sub">上の「個人通知ルームID」は、すべての通知（経費申請なども含む）の既定の届け先です。ここで特定の出来事だけ別のルームIDを登録すると、その出来事の本部タスク通知だけそちらへ届くようになります（経費申請の届け先は変わりません）。「出来事」を1つも選ばずに保存すると「ここで指定していない、その他すべての本部タスク通知」の受け皿になります。</div></div>
+    <div id="route-list">${MY_NOTIFY_ROUTES.map(routeRowHtml).join("")||'<div class="card">まだ登録されていません（登録が無ければ、すべて上の個人通知ルームIDに届きます）</div>'}</div>
+    <div class="card" style="margin-top:10px">
+      ${(()=>{ const editing=ROUTE_EDIT_ID?MY_NOTIFY_ROUTES.find(r=>r.id===ROUTE_EDIT_ID):null; return `
+      ${editing?`<div class="sec-sub" style="margin-bottom:8px">✏️「${esc(editing.label||"(名前未設定)")}」を編集中です</div>`:""}
+      <label>名前（任意・一覧での見分け用）</label><input id="rt-label" placeholder="例: メンション専用" value="${editing?esc(editing.label||""):""}">
+      <label>出来事（複数選択可・何も選ばなければ「その他すべて」の受け皿になります）</label>
+      <div class="chiprow" id="rt-events">${Object.entries(EVENT_LABEL).map(([k,v])=>`<label class="chipcheck"><input type="checkbox" value="${k}" ${editing&&(editing.events||[]).includes(k)?"checked":""}>${esc(v)}</label>`).join("")}</div>
+      <label>届け先のChatworkルームID</label><input id="rt-room" placeholder="例: 123456789" value="${editing?esc(editing.room_id||""):""}">
+      <button class="btn sm" style="margin-top:8px" id="rt-add">${editing?"保存する":"追加"}</button>
+      ${editing?` <button class="linkbtn" id="rt-canceledit">編集をやめる</button>`:""}
+      <div class="err" id="rt-msg"></div>`; })()}
     </div>
   </div>
   <div class="sec"><h3>通知ルール（どのタスクの・どの出来事を・どこに流すか）</h3>
@@ -3718,6 +3749,28 @@ function renderNotify(u){
     if(!r.ok){ msg.textContent="保存できませんでした"; return; }
     MY_CHATWORK={account_id:id||null,room_id:roomId||null}; msg.className="err msg-ok"; msg.textContent="保存しました";
   };
+  if($("rt-add")) $("rt-add").onclick=async()=>{
+    const room=$("rt-room").value.trim();
+    if(!room){$("rt-msg").textContent="ルームIDを入力してください";return}
+    const events=[...document.querySelectorAll("#rt-events input:checked")].map(cb=>cb.value);
+    const label=$("rt-label").value.trim()||null;
+    const payload={user_id:ME.id,room_id:room,events,label};
+    $("rt-msg").textContent=ROUTE_EDIT_ID?"保存中…":"追加中…";
+    const url=ROUTE_EDIT_ID?`/rest/v1/hq_user_notify_routes?id=eq.${ROUTE_EDIT_ID}`:"/rest/v1/hq_user_notify_routes";
+    const method=ROUTE_EDIT_ID?"PATCH":"POST";
+    const r=await authed(url,{method,headers:{Prefer:"return=minimal"},body:JSON.stringify(payload)});
+    if(!r.ok){$("rt-msg").textContent="保存できませんでした";return}
+    ROUTE_EDIT_ID=null;
+    await fetchNotifySettings(); renderNotify(u);
+  };
+  if($("rt-canceledit")) $("rt-canceledit").onclick=()=>{ROUTE_EDIT_ID=null; renderNotify(u);};
+  document.querySelectorAll("[data-routeedit]").forEach(b=>b.onclick=()=>{ROUTE_EDIT_ID=b.dataset.routeedit; renderNotify(u);});
+  document.querySelectorAll("[data-routedel]").forEach(b=>b.onclick=async()=>{
+    if(!confirm("この振り分け設定を削除しますか？"))return;
+    await authed(`/rest/v1/hq_user_notify_routes?id=eq.${b.dataset.routedel}`,{method:"DELETE"});
+    if(ROUTE_EDIT_ID===b.dataset.routedel) ROUTE_EDIT_ID=null;
+    await fetchNotifySettings(); renderNotify(u);
+  });
   $("rl-add").onclick=async()=>{
     const name=$("rl-name").value.trim();
     if(!name){$("rl-msg").textContent="ルール名を入力してください";return}
@@ -3763,6 +3816,11 @@ function ruleRowHtml(r){
   const chNames=(r.channel_ids||[]).map(id=>{const c=NOTIFY_CHANNELS.find(x=>x.id===id);return c?c.name:"?"}).join("、");
   const target=[r.target_corp||"すべての法人",r.target_freq?FREQ_LABEL[r.target_freq]:"すべての頻度"].join(" ／ ");
   return `<div class="link-row"><div style="flex:1"><b>${esc(r.name)}</b><div class="meta">${esc(target)} ／ ${esc(EVENT_LABEL[r.event]||r.event)} → ${esc(chNames)}</div></div><button class="linkbtn" data-ruleedit="${r.id}">編集</button><button class="linkbtn" data-ruledel="${r.id}">削除</button></div>`;
+}
+// 2026-09-29: 個人通知の振り分け（hq_user_notify_routes）1行分の表示
+function routeRowHtml(route){
+  const evText=(route.events&&route.events.length)?route.events.map(e=>EVENT_LABEL[e]||e).join("・"):"（その他すべて）";
+  return `<div class="link-row"><div style="flex:1"><b>${esc(route.label||"(名前未設定)")}</b><div class="meta">${esc(evText)} → ルームID: ${esc(route.room_id)}</div></div><button class="linkbtn" data-routeedit="${route.id}">編集</button><button class="linkbtn" data-routedel="${route.id}">削除</button></div>`;
 }
 
 /* ---------- 過去タスク（月別・無期限保存） ---------- */
