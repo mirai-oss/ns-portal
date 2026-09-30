@@ -624,7 +624,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-09-26-v35";
+const BUILD_TAG="2026-09-30-v36";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -3096,10 +3096,17 @@ function arjCreditLabelForStore_(accountName,storeName){
   ARJ_STATE.creditSubAccountWarning=`「${accountName}」の補助科目に「${storeName}」が見つかりませんでした（マネーフォワード側にまだ登録されていない可能性）。補助科目は空のままにしています。MF側で先に補助科目を作成してから、この欄に手動で入力してください。`;
   return accountName;
 }
-function arjApplyTemplateAsDefault_(tpl,expected,fee,dep,prefix){
+// feeParts: 手数料の内訳（複数要素なら明細行を分けて自動流し込みする）。通常は[fee_amount]の1要素だが、
+// SMBC GMO PAYMENT（カード売上）のように課税・非課税の手数料が別々にわかる場合は[課税分,非課税分]の
+// 2要素になる（2026-09-30追加・ユーザー報告「手数料が2つの仕訳になるはずなのに1つしか出ない」対応）。
+// amounts=[expected, ...feeParts]をテンプレートの行に先頭から順に流し込むだけなので、要素数が
+// テンプレートの行数と一致していれば何個でも対応できる（1個だけの既存データは従来どおり動く）。
+function arjApplyTemplateAsDefault_(tpl,expected,feeParts,dep,prefix){
   const storeName=receivableStoreName(ARJ_STATE.row.store_id);
-  const amounts=[expected,fee], suffixes=["売上","手数料"];
-  const combinedCredit=expected+fee;
+  const feeTotal=feeParts.reduce((s,v)=>s+(Number(v)||0),0);
+  const amounts=[expected,...feeParts];
+  const suffixes=["売上",...feeParts.map((_,i)=>feeParts.length>1?`手数料${i+1}`:"手数料")];
+  const combinedCredit=expected+feeTotal;
   const branches=arjFillBlankCreditFromTemplate_(tpl.branches);
   ARJ_STATE.creditSubAccountWarning="";
   return branches.map((b,i)=>{
@@ -3128,10 +3135,15 @@ function arjSetDefaultBranches(){
   const ymLabel=ARJ_STATE.ymLabel||"";
   const prefix=[ymLabel,row.source_name||""].filter(Boolean).join("　");
   const expected=Number(row.expected_amount)||0, fee=Number(row.fee_amount)||0;
+  // 2026-09-30追加: 手数料の内訳（課税/非課税）が別々に保存されている行（SMBC GMO PAYMENTのカード売上等）
+  // は2要素の配列にする。無ければ従来どおり合計1本（[fee]）。
+  const feeParts=(row.fee_amount_taxable!=null||row.fee_amount_exempt!=null)
+    ?[Number(row.fee_amount_taxable)||0,Number(row.fee_amount_exempt)||0]
+    :[fee];
   const dep=ARJ_STATE.storeDepartmentId||"";
   const tpl=(ARJ_STATE.templates||[]).find(t=>t.receivable_source_name===row.source_name);
   if(tpl&&Array.isArray(tpl.branches)&&tpl.branches.length){
-    ARJ_STATE.branches=arjApplyTemplateAsDefault_(tpl,expected,fee,dep,prefix);
+    ARJ_STATE.branches=arjApplyTemplateAsDefault_(tpl,expected,feeParts,dep,prefix);
     return;
   }
   ARJ_STATE.branches=[
