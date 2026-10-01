@@ -6,6 +6,9 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
+**★★★★★2026-10-01（Mac miniセッション・続き）売上入金の精算書反映が「仕訳を作成」のたびに二重登録されていた問題を発見・修正（Edge Functionデプロイ待ち）**: SMBC GMO PAYMENT（カード売上）の実機確認中、ユーザーが「仕訳を作成」したら精算書に2重で明細が入ったと報告。調査の結果、`pl-fee-reflect`の`seisan_confirm_receivable`（`arjSubmitJournal`成功直後に全receivable共通で自動発火。source_nameを問わない既存の仕組み）が、ns-daily-import側`smbc-card-deposit.js`が取込時点で別途行っていた精算書反映（`smbcCardSeisanSync`・別sourceKey）とは独立に同じ内容を追加していたため。**反映は`seisan_confirm_receivable`の1本に統一**し、ns-daily-import側の取込時点の反映は削除（詳細はns-daily-import WORKLOG参照）。あわせて`seisan_confirm_receivable`が精算GASへ`kubun`を渡していなかった不具合も発見・修正（売上行も常に「変動費」固定だった＝PayPay等、既存の全source_nameに共通する不具合。カード売上の件で顕在化して発覚）。**`supabase/functions/pl-fee-reflect`のデプロイが必要（ユーザー確認待ち）**。既存の重複行（黒霧屋 新横浜・伝票941で既発生）はseisan-dashboard GAS v5.24（`sd_apiRemoveExternalLine`）デプロイ後に削除予定。
+
+
 **★★★★2026-10-01（Mac miniセッション・続き）「仕訳辞書から選ぶ」で部門が辞書の設定より自動検出を優先してしまう点を修正（BUILD_TAG=2026-10-01-v38）**: v37で手数料2本化の金額自動入力が直ったことをユーザーが実機確認→続けて「部門が仕訳辞書で優先されていない」と報告。原因は2026-09-26の修正（過去の仕訳から選んだ際に無関係な店舗の部門が残るバグ対応）で、「仕訳辞書から選ぶ」（`arjRenderTemplateResults`）側も道連れで部門を常に空から始める仕様に変更されてしまっていたこと。しかし原因だった不具合は「過去の仕訳から選ぶ」（`arjRunJournalSearch`）側の話で、「仕訳辞書から選ぶ」はユーザー自身が明示的に選ぶものなので区別して良いと判断。`arjRenderTemplateResults`は辞書の`department_id`/`credit_department_id`をそのまま引き継ぐよう変更し、`arjFillRealAmounts`内の`fillDept`も「未設定の場合だけ今回の店舗の部門で補う」方式に戻した（`arjRunJournalSearch`側は引き続き`department_id:""`で渡すため無関係な店舗の部門が残る心配はない）。**次はユーザーに部門が仕訳辞書どおりになっているか実機確認してもらう**。
 
 

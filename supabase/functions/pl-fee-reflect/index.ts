@@ -540,9 +540,14 @@ Deno.serve(async (req: Request) => {
       // 接尾語のため取り除く（ロケットナウ等、他のsource_nameはそのまま使う＝汎用的な仕組みを
       // 保つ）
       const srcLabel = (rcv.source_name || "PayPay").trim().replace(/加盟店$/, "");
+      // 2026-10-01修正（ユーザー指摘「カード売上が変動費で入ってしまっている」）: 精算GAS
+      // （sd_apiAddExternalLine）へkubunを渡していなかったため、売上の明細も常に精算GAS側の
+      // 既定値'変動費'で保存されていた（PayPay等、既存のsource_nameすべてに共通する不具合。
+      // 今回SMBC GMO PAYMENTのカード売上で顕在化して発覚）。売上行='売上'・手数料行='変動費'を
+      // 明示的に渡すよう修正。
       const lines = [
-        { key: "sales", item: `${srcLabel}売上`, account: "売上高", amount: Number(rcv.gross_amount) || 0 },
-        { key: "fee", item: `${srcLabel}手数料`, account: "支払手数料", amount: Number(rcv.fee_amount) || 0 },
+        { key: "sales", item: `${srcLabel}売上`, account: "売上高", kubun: "売上", amount: Number(rcv.gross_amount) || 0 },
+        { key: "fee", item: `${srcLabel}手数料`, account: "支払手数料", kubun: "変動費", amount: Number(rcv.fee_amount) || 0 },
       ].filter((l) => l.amount > 0);
       if (!lines.length) return json({ success: true, skipped: true, reason: "売上・手数料とも0円のため登録対象がありません" });
 
@@ -552,7 +557,7 @@ Deno.serve(async (req: Request) => {
         const sourceKey = `receivable:${receivableId}:${l.key}`;
         try {
           const gasRes = await seisanCall("sd_apiAddExternalLine", [tk, store.seisan_store_name, monthKey, {
-            sourceKey, item: l.item, amount: l.amount, tax: "10%", account: l.account,
+            sourceKey, item: l.item, amount: l.amount, tax: "10%", account: l.account, kubun: l.kubun,
           }]);
           if (!gasRes.ok) {
             throw new Error(gasRes.error || (gasRes.locked ? "この月は振込済みのため精算書への登録・更新はできません" : "精算書側で失敗しました"));
