@@ -624,7 +624,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-09-30-v36";
+const BUILD_TAG="2026-10-01-v37";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -3302,6 +3302,32 @@ function arjFillRealAmounts(branches){
     if(prefix) branches[0].remark=`${prefix}　${isFee?"手数料":"売上"}`;
     fillDept(branches[0]);
     return true;
+  }
+  // 2026-09-30追加: fee_amount_taxable/fee_amount_exemptが入っている行（SMBC GMO PAYMENTの
+  // カード売上等）は手数料を課税・非課税の2明細に分けたテンプレート（3行以上）になり、上の
+  // 2行/1行判定には当てはまらず、これまで何も埋めずに（false を返して）素通りしていた
+  // （ユーザー報告「仕訳辞書から選ぶと金額が1つも入らない」で発覚。arjApplyTemplateAsDefault_
+  // 側だけ直して、この関数を直し漏れていた＝2026-09-26のv26/v27と全く同じパターンの抜け）。
+  // ①借方は先頭から[売上, 手数料パート1, 手数料パート2, …]の順に当てはめる
+  // ②貸方は「最初に貸方科目を持つ行」に合計額（売上+手数料合計）をまとめ、他の貸方行は空にする
+  //   （各行は借方・貸方のどちらか片方だけでも登録できる既存仕様＝借方合計=貸方合計さえ一致すればよい）。
+  const feeParts=(row.fee_amount_taxable!=null||row.fee_amount_exempt!=null)
+    ?[Number(row.fee_amount_taxable)||0,Number(row.fee_amount_exempt)||0]
+    :null;
+  if(feeParts&&branches.length>=2){
+    const amounts=[expected,...feeParts];
+    if(branches.length>=amounts.length){
+      const total=amounts.reduce((s,v)=>s+v,0);
+      const firstCreditIdx=branches.findIndex(b=>b.creditLabel);
+      const suffixes=["売上",...feeParts.map((_,i)=>`手数料${i+1}`)];
+      branches.forEach((b,i)=>{
+        if(b.debitLabel) b.debitAmount=amounts[i]??"";
+        if(b.creditLabel) b.creditAmount=(i===firstCreditIdx)?total:"";
+        if(prefix&&(b.debitLabel||b.creditLabel)) b.remark=`${prefix}　${suffixes[i]||""}`;
+        fillDept(b);
+      });
+      return true;
+    }
   }
   return false;
 }
