@@ -624,7 +624,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-01-v37";
+const BUILD_TAG="2026-10-01-v38";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -3264,10 +3264,16 @@ function arjFillRealAmounts(branches){
   // 上書きしない」仕様にしていたが、ユーザー報告「別店舗の仕訳が自動で選ばれて、部門も
   // その別店舗のまま残ってしまう」で発覚した不具合を受けて方針を変更。source_name（例
   // 「PayPay加盟店」）だけで過去の仕訳・仕訳辞書を検索するため、たまたま最初にヒットした
-  // 別店舗ぶんの部門がそのまま残ってしまっていた。部門は勘定科目と違い「今回処理している
-  // ar_receivables行の店舗」に必ず一致すべき値なので、storeDepartmentIdが解決できている
-  // 場合は常にそちらで上書きする（勘定科目・税区分は引き続き過去の仕訳/仕訳辞書を尊重）。
-  const fillDept=b=>{ if(dep){ b.department_id=dep; b.credit_department_id=dep; } };
+  // 別店舗ぶんの部門がそのまま残ってしまっていた。
+  // 2026-10-01再修正：ユーザー要望「仕訳辞書で、もともと店舗の部門が設定されていたら、
+  // その部門を優先してほしい」に対応し、再び「既に部門が入っていれば上書きしない」仕様へ
+  // 戻した。09-23の問題（無関係な店舗の部門が残る）が起きていたのは「過去の仕訳から選ぶ」
+  // （arjRunJournalSearch内）側で、そちらは呼び出し前に引き続きdepartment_id:""で渡される
+  // ため影響なし。「仕訳辞書から選ぶ」（arjRenderTemplateResults）側は、辞書自体に保存されて
+  // いる部門（ユーザーが明示的に設定したもの）をそのまま渡すよう別途修正済み（呼び出し箇所
+  // 参照）。source_nameではなくこの行の店舗名に一致するかはユーザー自身が辞書を選ぶ時点で
+  // 判断できるため、無関係な店舗の部門が紛れ込む心配は無い。
+  const fillDept=b=>{ if(dep){ if(!b.department_id) b.department_id=dep; if(!b.credit_department_id) b.credit_department_id=dep; } };
   if(branches.length===2){
     const amounts=[expected,fee], suffixes=["売上","手数料"];
     // 2026-09-26追加：ユーザー要望「飲食売上は同じ仕訳だから、わざわざ2行に分けて数字を
@@ -3392,17 +3398,18 @@ function arjRenderTemplateResults(){
     // 古い仕訳辞書（貸借同額の共通amount形式）・新しい仕訳辞書（辺ごとにvalueを持つ形式）の両方に対応
     // 2026-09-26修正：貸方勘定科目が一部の行だけ空欄のテンプレートでも売上が正しく合算される
     // よう、事前にarjFillBlankCreditFromTemplate_で埋めてからmapする
-    // 2026-09-26修正：ユーザー報告「部門が自動で変わらない場合がある」に対応。仕訳辞書に
-    // 保存されている部門（テンプレートを最初に作ったときの店舗の部門）をそのまま引き継ぐと、
-    // 今回の店舗の部門が解決できなかった場合に無関係な店舗の部門が残ってしまう（一番気づき
-    // にくい間違い）。部門は常に空から始め、arjFillRealAmountsで今回の店舗の部門が解決できた
-    // 場合だけ埋める
+    // 2026-10-01修正（ユーザー要望「仕訳辞書で、もともと店舗の部門が設定されていたら、その
+    // 部門を優先してほしい」）：従来は部門を常に空から始めていた（09-26のユーザー報告「部門が
+    // 自動で変わらない場合がある」対応）が、その原因は「過去の仕訳から選ぶ」側の話であり、
+    // こちら（仕訳辞書から選ぶ）はユーザー自身がこの売上入金に対して明示的に選んだ辞書なので、
+    // 辞書に部門が設定されていればそれを尊重する。未設定の行だけarjFillRealAmounts内の
+    // fillDeptが今回の店舗の部門で補う。
     const tplBranches=arjFillBlankCreditFromTemplate_(t.branches||[]);
     const branches=tplBranches.map(b=>({
       debitLabel:mftLabelOf(b.debit), debitAmount:"",
       creditLabel:mftLabelOf(b.credit), creditAmount:"",
-      department_id:"", tax_id:b.tax_id||"",
-      credit_department_id:"", credit_tax_id:b.credit_tax_id||"",
+      department_id:b.department_id||"", tax_id:b.tax_id||"",
+      credit_department_id:b.credit_department_id||"", credit_tax_id:b.credit_tax_id||"",
       remark:"",
     }));
     const filled=arjFillRealAmounts(branches);
