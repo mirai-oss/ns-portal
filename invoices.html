@@ -624,7 +624,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-02-v40";
+const BUILD_TAG="2026-10-02-v41";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -3492,7 +3492,10 @@ async function arjSaveAsTemplate(){
   if(!structured.length){ alert("明細行がありません"); return; }
   const msg=$("arj-msg");
   const r=await authed("/rest/v1/mf_journal_templates",{method:"POST",headers:{Prefer:"return=minimal"},body:JSON.stringify({tenant_id:ARJ_STATE.tenantId,label,branches:structured,created_by:ME.id})});
-  if(!r.ok){ if(msg){ msg.className="err"; msg.textContent="仕訳辞書への登録に失敗しました"; } return; }
+  // 2026-10-02修正（ユーザー報告「仕訳辞書の登録が失敗しましたと出てしまう」）：理由が一切
+  // 表示されず原因究明ができなかったため、PostgRESTのエラー内容（message/hint/details等）を
+  // そのまま表示するよう変更（RLS拒否・列制約違反等、原因によってメッセージが変わる）。
+  if(!r.ok){ if(msg){ msg.className="err"; msg.textContent=`仕訳辞書への登録に失敗しました（HTTP ${r.status}）: ${esc((r.body&&(r.body.message||r.body.hint||r.body.details))||JSON.stringify(r.body||"").slice(0,200))}`; } return; }
   if(msg){ msg.className="err msg-ok"; msg.textContent=`仕訳辞書「${label}」に登録しました`; }
   ARJ_STATE.templates=await arjFetchTemplates(ARJ_STATE.tenantId);
 }
@@ -5968,7 +5971,9 @@ function wireDetailActions(u){
     if(!structured.length){ alert("明細行がありません"); return; }
     const msg=$("mfj-msg");
     const r=await authed("/rest/v1/mf_journal_templates",{method:"POST",headers:{Prefer:"return=minimal"},body:JSON.stringify({tenant_id:MFJ_STATE.tenantId,label,branches:structured,created_by:ME.id})});
-    if(!r.ok){ msg.className="err"; msg.textContent="仕訳辞書への登録に失敗しました"; return; }
+    // 2026-10-02修正（ユーザー報告「仕訳辞書の登録が失敗しましたと出てしまう」）：arjSaveAsTemplate
+    // と同様、理由を表示するよう変更
+    if(!r.ok){ msg.className="err"; msg.textContent=`仕訳辞書への登録に失敗しました（HTTP ${r.status}）: ${esc((r.body&&(r.body.message||r.body.hint||r.body.details))||JSON.stringify(r.body||"").slice(0,200))}`; return; }
     msg.className="err msg-ok"; msg.textContent=`仕訳辞書「${label}」に登録しました`;
     MFJ_STATE.templates=await mfjFetchTemplates(MFJ_STATE.tenantId);
   }
@@ -7668,7 +7673,9 @@ async function mftSaveEditor(){
   const r=ed.id
     ?await authed(`/rest/v1/mf_journal_templates?id=eq.${ed.id}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({...payload,updated_at:new Date().toISOString()})})
     :await authed("/rest/v1/mf_journal_templates",{method:"POST",headers:{Prefer:"return=minimal"},body:JSON.stringify({...payload,created_by:ME.id})});
-  if(!r.ok){ if($("mft-save")) $("mft-save").disabled=false; alert("保存に失敗しました"); return; }
+  // 2026-10-02修正（ユーザー報告「仕訳辞書の登録が失敗しましたと出てしまう」）：理由が一切
+  // 表示されず原因究明ができなかったため、PostgRESTのエラー内容を表示するよう変更
+  if(!r.ok){ if($("mft-save")) $("mft-save").disabled=false; alert(`保存に失敗しました（HTTP ${r.status}）: ${(r.body&&(r.body.message||r.body.hint||r.body.details))||JSON.stringify(r.body||"").slice(0,200)}`); return; }
   renderMftSection(MFT_STATE.activeTenantId);
 }
 
