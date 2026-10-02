@@ -59,6 +59,22 @@ function num(v: unknown): number {
   return isNaN(n) ? 0 : n;
 }
 
+// PostgRESTは1リクエスト最大1000行で「無言に」打ち切る。集計の元データ読み出しは必ずこれでページングして全件読む。
+// （2026-10-03: 未ページングのままkd_store_monthly/kd_pl_monthly/kd_deposit_monthlyが日次テーブルを
+// 先頭1000行だけで集計していた＝売上・原価・人件費が過少になる欠陥を修正。順序は(period_date,store_id)等
+// ユニークな組で固定すること＝ページ間で重複・欠落しない）
+async function fetchAll(build: (from: number, to: number) => PromiseLike<{ data: any[] | null; error: any }>, pageSize = 1000, maxRows = 300000): Promise<any[]> {
+  const out: any[] = [];
+  for (let offset = 0; offset < maxRows; offset += pageSize) {
+    const { data, error } = await build(offset, offset + pageSize - 1);
+    if (error) throw new Error(error.message ?? String(error));
+    if (!data || !data.length) break;
+    out.push(...data);
+    if (data.length < pageSize) break;
+  }
+  return out;
+}
+
 async function startRun(sb: any, job: string, periodFrom?: string, periodTo?: string) {
   // 2026-10-03追加: Edge Function側のタイムアウト等で強制終了されると finishRun が呼ばれず、
   // kd_sync_runs に 'running' のまま永久に残る（長期バックフィルで実際に発生）。同じjobの古い
@@ -323,9 +339,14 @@ async function refreshDashboardDaily(sb: any, body: any) {
     const storeIds = [...new Set(parsed.map((p) => p.store_id))];
     const priorMap = new Map<string, number>();
     if (priorDates.length && storeIds.length) {
-      const { data: priorRows } = await sb.from("kd_dashboard_daily_summary")
-        .select("store_id,period_date,net_sales").in("store_id", storeIds).in("period_date", priorDates);
-      (priorRows ?? []).forEach((r: any) => priorMap.set(`${r.store_id}|${r.period_date}`, Number(r.net_sales) || 0));
+      const priorRows: any[] = [];
+      for (let i = 0; i < priorDates.length; i += 60) {   // URLが長くなりすぎないよう日付は60件ずつ
+        const chunk = priorDates.slice(i, i + 60);
+        priorRows.push(...await fetchAll((f, t) => sb.from("kd_dashboard_daily_summary")
+          .select("store_id,period_date,net_sales").in("store_id", storeIds).in("period_date", chunk)
+          .order("period_date").order("store_id").range(f, t)));
+      }
+      priorRows.forEach((r: any) => priorMap.set(`${r.store_id}|${r.period_date}`, Number(r.net_sales) || 0));
     }
 
     const upserts = parsed.map((p) => {
@@ -375,9 +396,9 @@ async function refreshStoreMonthly(sb: any) {
     const { idByName, corpByStoreId } = await loadStoreMaps(sb);
 
     // ①売上/原価/PA/社員人件費: kd_dashboard_daily_summaryの月合計（dashboard_dailyのmonths窓の範囲内のみ）
-    const { data: dashRows, error: dashErr } = await sb.from("kd_dashboard_daily_summary")
-      .select("store_id,period_date,net_sales,cost,labor_pa,labor_emp");
-    if (dashErr) throw new Error("kd_dashboard_daily_summary取得に失敗: " + dashErr.message);
+    const dashRows = await fetchAll((f, t) => sb.from("kd_dashboard_daily_summary")
+      .select("store_id,period_date,net_sales,cost,labor_pa,labor_emp")
+      .order("period_date").order("store_id").range(f, t));
     type Bucket = {
       store_id: string; year_month: string; sales: number; cost: number; labor_pa: number; labor_emp: number; labor_spot: number;
     };
@@ -415,10 +436,11 @@ async function refreshStoreMonthly(sb: any) {
     const budgetByKey = new Map<string, number>();
     if (yms.length && storeIds.length) {
       const minYm = yms.sort()[0], maxYm = yms.sort()[yms.length - 1];
-      const { data: targetRows } = await sb.from("dash_sales_target_daily")
+      const targetRows = await fetchAll((f, t) => sb.from("dash_sales_target_daily")
         .select("store_id,biz_date,sales_target")
-        .in("store_id", storeIds).gte("biz_date", `${minYm}-01`).lt("biz_date", addDays(`${maxYm}-01`, 32));
-      (targetRows ?? []).forEach((r: any) => {
+        .in("store_id", storeIds).gte("biz_date", `${minYm}-01`).lt("biz_date", addDays(`${maxYm}-01`, 32))
+        .order("biz_date").order("store_id").range(f, t));
+      targetRows.forEach((r: any) => {
         const key = `${r.store_id}|${String(r.biz_date).slice(0, 7)}`;
         budgetByKey.set(key, (budgetByKey.get(key) ?? 0) + (Number(r.sales_target) || 0));
       });
@@ -605,10 +627,11 @@ async function refreshPlMonthly(sb: any) {
     const autoByKey = new Map<string, Auto>();
     if (yms.length && storeIds.length) {
       const minYm = yms.sort()[0], maxYm = yms.sort()[yms.length - 1];
-      const { data: dashRows } = await sb.from("kd_dashboard_daily_summary")
+      const dashRows = await fetchAll((f, t) => sb.from("kd_dashboard_daily_summary")
         .select("store_id,period_date,net_sales,cost,labor")
-        .in("store_id", storeIds).gte("period_date", `${minYm}-01`).lt("period_date", addDays(`${maxYm}-01`, 32));
-      (dashRows ?? []).forEach((r: any) => {
+        .in("store_id", storeIds).gte("period_date", `${minYm}-01`).lt("period_date", addDays(`${maxYm}-01`, 32))
+        .order("period_date").order("store_id").range(f, t));
+      dashRows.forEach((r: any) => {
         const ym = String(r.period_date).slice(0, 7);
         const key = `${r.store_id}|${ym}`;
         const a = autoByKey.get(key) ?? { sales: 0, cost: 0, labor: 0 };
@@ -774,10 +797,11 @@ async function refreshDepositMonthly(sb: any) {
     const salesByKey = new Map<string, number>();
     if (yms.length && storeIds.length) {
       const minYm = yms.sort()[0], maxYm = yms.sort()[yms.length - 1];
-      const { data: dashRows } = await sb.from("kd_dashboard_daily_summary")
+      const dashRows = await fetchAll((f, t) => sb.from("kd_dashboard_daily_summary")
         .select("store_id,period_date,net_sales")
-        .in("store_id", storeIds).gte("period_date", `${minYm}-01`).lt("period_date", addDays(`${maxYm}-01`, 32));
-      (dashRows ?? []).forEach((r: any) => {
+        .in("store_id", storeIds).gte("period_date", `${minYm}-01`).lt("period_date", addDays(`${maxYm}-01`, 32))
+        .order("period_date").order("store_id").range(f, t));
+      dashRows.forEach((r: any) => {
         const key = `${r.store_id}|${String(r.period_date).slice(0, 7)}`;
         salesByKey.set(key, (salesByKey.get(key) ?? 0) + (Number(r.net_sales) || 0));
       });

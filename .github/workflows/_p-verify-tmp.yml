@@ -5,11 +5,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 12
     steps:
-      - name: 24か月分の月次を再計算(store_monthly → pl_monthly)
+      - name: ページング修正後の再計算(dashboard_daily → store_monthly → pl_monthly → deposit_monthly)
         env:
           SR_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: |
           U=https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/keiei-kd-refresh
-          for B in '{"op":"store_monthly"}' '{"op":"pl_monthly"}'; do
-            echo "== $B"; curl -s -m 300 -X POST $U -H "Authorization: Bearer $SR_KEY" -H "Content-Type: application/json" -d "$B" | cut -c1-300; echo
+          for B in '{"op":"dashboard_daily"}' '{"op":"store_monthly"}' '{"op":"pl_monthly"}' '{"op":"deposit_monthly"}'; do
+            echo "== $B"; curl -s -m 280 -X POST $U -H "Authorization: Bearer $SR_KEY" -H "Content-Type: application/json" -d "$B" | cut -c1-260; echo
           done
