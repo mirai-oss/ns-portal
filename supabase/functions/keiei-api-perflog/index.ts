@@ -12,8 +12,9 @@
 //   ①ingest（無認証・sendBeaconから）: POST { app, action, ms, ok, errType, t }
 //      → app.jsのlogApiPerf_()が送るペイロードそのまま（1件=1リクエスト。バッチ無し）
 //   ②管理系（service_roleのみ・GitHub Actions日次cronから）: POST { op: 'notify' | 'cleanup', force?: boolean }
-//      - notify : 前日(JST)分を集計し「遅いaction/失敗actionトップ10」をLarkへ配信
-//                 （force:trueで当日分に対して即時実行＝動作確認用）
+//      - notify : 前日(JST)分を集計し「遅いaction/失敗actionトップ10」＋「起動時間(boot_first_paint*)の
+//                 中央値/90%点・直近7日の日別中央値」をLarkへ配信
+//                 （force:trueで当日分に対して即時実行＝動作確認用。dry_run:trueでLark送信せず本文だけ返す）
 //      - cleanup: 14日より古い行を削除
 //   運用: .github/workflows/keiei-perflog-daily.yml（cron-job.orgからworkflow_dispatchで日次起動。
 //   登録手順はWORKLOG参照・ユーザー作業）
@@ -75,6 +76,80 @@ async function fetchDayRows(sb: ReturnType<typeof createClient>, fromIso: string
   return rows;
 }
 
+// ---- 起動時間（boot_first_paint）の集計（2026-10-03追加・ラウンド6§6 F0 / 設計書_経営D即時表示_GASレス起動 §0）----
+// 担当Aの計測フックが「ログイン（再訪）→最初の数字表示」のmsを action='boot_first_paint*' で送る。
+// キャッシュ有無の区別はaction名の接尾辞で行う想定（例: boot_first_paint=初回/コールド、
+// boot_first_paint_cached=前回値キャッシュあり）。名前に"cache"を含むactionは目標1秒、それ以外は2秒で判定。
+// 専用列を増やさず既存の受け口（action 80文字まで）のまま対応するための取り決め。
+const BOOT_PREFIX = "boot_first_paint";
+const BOOT_TARGET_COLD_MS = 2000;   // 設計書§0: ログイン後、最初の数字が出るまで2秒以内
+const BOOT_TARGET_CACHED_MS = 1000; // 設計書§0: 2回目以降は1秒前後
+const isBootAction = (action: string) => action.startsWith(BOOT_PREFIX);
+const bootTargetMs = (action: string) => /cache/i.test(action) ? BOOT_TARGET_CACHED_MS : BOOT_TARGET_COLD_MS;
+
+// nearest-rank法のパーセンタイル（sortedは昇順）
+function percentile(sorted: number[], p: number): number | null {
+  if (!sorted.length) return null;
+  const idx = Math.min(sorted.length - 1, Math.max(0, Math.ceil((p / 100) * sorted.length) - 1));
+  return sorted[idx];
+}
+const fmtMs = (v: number | null) => v == null ? "—" : `${Math.round(v)}ms`;
+
+type BootRow = { action: string; ms: number; ok: boolean; created_at: string };
+async function fetchBootRows(sb: ReturnType<typeof createClient>, fromIso: string, toIso: string): Promise<BootRow[]> {
+  const rows: BootRow[] = [];
+  const PAGE = 1000;
+  for (let offset = 0; offset < 20000; offset += PAGE) {
+    const { data, error } = await sb.from("kd_perf_log").select("action,ms,ok,created_at")
+      .like("action", `${BOOT_PREFIX}%`).gte("created_at", fromIso).lt("created_at", toIso)
+      .range(offset, offset + PAGE - 1);
+    if (error) throw new Error(error.message);
+    if (!data || !data.length) break;
+    rows.push(...(data as BootRow[]));
+    if (data.length < PAGE) break;
+  }
+  return rows;
+}
+
+// Larkに追記する「起動時間」ブロックを組み立てる。対象日の分布＋直近7日の日別中央値（before/after比較用）
+async function buildBootSection(sb: ReturnType<typeof createClient>, fromUtc: Date, toUtc: Date): Promise<string[]> {
+  const weekFrom = new Date(fromUtc.getTime() - 6 * 86400000);
+  const bootRows = await fetchBootRows(sb, weekFrom.toISOString(), toUtc.toISOString());
+  const lines: string[] = [];
+  lines.push("");
+  lines.push("🚀 起動時間（ログイン/再訪→最初の数字表示・boot_first_paint）");
+  const day = bootRows.filter((r) => r.created_at >= fromUtc.toISOString());
+  if (!day.length) {
+    lines.push("（この日の計測なし＝計測フック未導入、または誰も起動していません）");
+  } else {
+    const byAction = new Map<string, BootRow[]>();
+    for (const r of day) (byAction.get(r.action) ?? byAction.set(r.action, []).get(r.action)!).push(r);
+    for (const [action, rs] of [...byAction.entries()].sort()) {
+      const okMs = rs.filter((r) => r.ok).map((r) => Number(r.ms) || 0).sort((a, b) => a - b);
+      const fail = rs.length - okMs.length;
+      const med = percentile(okMs, 50), p90 = percentile(okMs, 90);
+      const target = bootTargetMs(action);
+      const mark = p90 == null ? "" : (p90 <= target ? " ✅" : " ⚠️");
+      lines.push(`・${action}: 中央値${fmtMs(med)} / 90%点${fmtMs(p90)}（目標${target}ms以内${mark}）／${rs.length}回${fail ? `・失敗${fail}` : ""}`);
+    }
+  }
+  // 直近7日の日別中央値（JST日付ごと・全boot_first_paint系を合算）
+  const byDay = new Map<string, number[]>();
+  for (const r of bootRows) {
+    if (!r.ok) continue;
+    const d = new Date(new Date(r.created_at).getTime() + 9 * 3600 * 1000).toISOString().slice(0, 10);
+    (byDay.get(d) ?? byDay.set(d, []).get(d)!).push(Number(r.ms) || 0);
+  }
+  if (byDay.size) {
+    const trend = [...byDay.entries()].sort().map(([d, arr]) => {
+      arr.sort((a, b) => a - b);
+      return `${d.slice(5)}:${fmtMs(percentile(arr, 50))}`;
+    });
+    lines.push(`📈 直近7日の中央値（全種別合算）: ${trend.join(" / ")}`);
+  }
+  return lines;
+}
+
 async function notifyDailyRanking(sb: ReturnType<typeof createClient>, body: any) {
   // 対象: 前日1日分（JST 00:00-24:00）。force:trueなら当日分に対して即時実行（動作確認用）
   const nowJst = new Date(Date.now() + 9 * 3600 * 1000);
@@ -105,7 +180,8 @@ async function notifyDailyRanking(sb: ReturnType<typeof createClient>, body: any
   const all = [...byAction.values()];
 
   // 遅いactionトップ10（ノイズ防止に3回以上呼ばれたactionのみ対象・平均ms降順）
-  const slow = all.filter((a) => a.count >= 3).map((a) => ({ ...a, avgMs: a.sumMs / a.count }))
+  // boot_first_paint系は下の専用ブロック（中央値/90%点）で報告するためランキングからは除外
+  const slow = all.filter((a) => a.count >= 3 && !isBootAction(a.key.slice(a.key.indexOf(":") + 1))).map((a) => ({ ...a, avgMs: a.sumMs / a.count }))
     .sort((a, b) => b.avgMs - a.avgMs).slice(0, 10);
   // 失敗actionトップ10（失敗率降順・同率は失敗件数降順）
   const failing = all.filter((a) => a.failCount > 0)
@@ -125,7 +201,16 @@ async function notifyDailyRanking(sb: ReturnType<typeof createClient>, body: any
   if (!failing.length) lines.push("（失敗なし）");
   failing.forEach((a, i) => lines.push(`${i + 1}. ${a.key} 失敗${a.failCount}/${a.count}回（${(a.failCount / a.count * 100).toFixed(0)}%）`));
 
+  // 起動時間ブロックの失敗でランキング本体の配信を止めない
+  try {
+    lines.push(...await buildBootSection(sb, fromUtc, toUtc));
+  } catch (e) {
+    lines.push("", `🚀 起動時間の集計に失敗しました: ${String(e).slice(0, 120)}`);
+  }
+
   const text = lines.join("\n");
+  // dry_run:true は動作確認用。Larkへは送らず本文だけ返す（本番チャンネルにテスト投稿を出さないため）
+  if (body.dry_run) return { ok: true, date: targetLabel, rows: totalCalls, fail: totalFail, dry_run: true, text };
   const sent = await sendLark(sb, text);
   return { ok: true, date: targetLabel, rows: totalCalls, fail: totalFail, sent };
 }

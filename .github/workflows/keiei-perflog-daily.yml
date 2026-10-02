@@ -25,6 +25,11 @@ on:
         required: false
         default: ''
         type: string
+      dry_run:
+        description: '動作確認用: Larkへ送信せず本文だけログに出す（force=trueと併用。通常は空欄のまま）'
+        required: false
+        default: ''
+        type: string
 
 jobs:
   daily:
@@ -42,8 +47,9 @@ jobs:
         env:
           SR_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           FORCE: ${{ github.event.inputs.force }}
+          DRY_RUN: ${{ github.event.inputs.dry_run }}
         run: |
-          BODY=$(node -e "console.log(JSON.stringify({op:'notify', force: process.env.FORCE==='true'}))")
+          BODY=$(node -e "console.log(JSON.stringify({op:'notify', force: process.env.FORCE==='true', dry_run: process.env.DRY_RUN==='true'}))")
           RES=$(curl -s -w "\n%{http_code}" -X POST \
             "https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/keiei-api-perflog" \
             -H "Authorization: Bearer $SR_KEY" \
