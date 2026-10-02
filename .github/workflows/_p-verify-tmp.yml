@@ -3,13 +3,11 @@ on: workflow_dispatch
 jobs:
   v:
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 8
     steps:
-      - name: ページング修正後の再計算(dashboard_daily → store_monthly → pl_monthly → deposit_monthly)
+      - name: pl_monthly(洗い替え・日次起点の行作成・借入元金)
         env:
           SR_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: |
           U=https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/keiei-kd-refresh
-          for B in '{"op":"dashboard_daily"}' '{"op":"store_monthly"}' '{"op":"pl_monthly"}' '{"op":"deposit_monthly"}'; do
-            echo "== $B"; curl -s -m 280 -X POST $U -H "Authorization: Bearer $SR_KEY" -H "Content-Type: application/json" -d "$B" | cut -c1-260; echo
-          done
+          curl -s -m 280 -X POST $U -H "Authorization: Bearer $SR_KEY" -H "Content-Type: application/json" -d '{"op":"pl_monthly"}' | cut -c1-500; echo

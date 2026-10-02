@@ -75,6 +75,20 @@ async function fetchAll(build: (from: number, to: number) => PromiseLike<{ data:
   return out;
 }
 
+// 洗い替え（2026-10-03）: 派生テーブル(kd_)は毎回「元データの今の姿」で作り直すのが正。元データから消えた行
+// （例: DB_PLの経費行が精算書同期で置き換わった月）が古い数字のまま残らないよう、今回のrunで書かれなかった行を削除する。
+// 安全装置: 古い行が今回の行数の半分を超えるときは、取得の不調・部分応答の可能性があるため削除せず警告だけ返す。
+async function sweepStale(sb: any, table: string, runId: string, newCount: number): Promise<{ deleted: number; skipped?: string }> {
+  const { count: staleCount, error: cErr } = await sb.from(table).select("id", { count: "exact", head: true })
+    .or(`sync_run_id.is.null,sync_run_id.neq.${runId}`);
+  if (cErr) return { deleted: 0, skipped: "count失敗: " + cErr.message };
+  if (!staleCount) return { deleted: 0 };
+  if (newCount < 10 || staleCount > newCount * 0.5) return { deleted: 0, skipped: `古い行${staleCount}件が今回${newCount}件の半分超のため削除せず（取得の部分応答の疑い）` };
+  const { error: dErr } = await sb.from(table).delete().or(`sync_run_id.is.null,sync_run_id.neq.${runId}`);
+  if (dErr) return { deleted: 0, skipped: "delete失敗: " + dErr.message };
+  return { deleted: staleCount };
+}
+
 async function startRun(sb: any, job: string, periodFrom?: string, periodTo?: string) {
   // 2026-10-03追加: Edge Function側のタイムアウト等で強制終了されると finishRun が呼ばれず、
   // kd_sync_runs に 'running' のまま永久に残る（長期バックフィルで実際に発生）。同じjobの古い
@@ -620,25 +634,23 @@ async function refreshPlMonthly(sb: any) {
       }
     } catch (_) { loanOk = false; }
 
-    // 自動売上/原価/人件費: kd_dashboard_daily_summaryを月合計（対象年月＋店舗のみ）
-    const yms = [...new Set([...byKey.values()].map((b) => b.year_month))];
-    const storeIds = [...new Set([...byKey.values()].map((b) => b.store_id).filter((v): v is string => !!v))];
+    // 自動売上/原価/人件費: kd_dashboard_daily_summaryを月合計。
+    // 2026-10-03変更: 以前は「DB_PLに行がある店舗×月」だけを対象にしていたため、(1)DB_PL行の無い店舗×月
+    // （売上はあるが手入力経費が無い月）にkd_plの行自体が作られず、(2)DB_PLから行が消えた店舗×月は
+    // 古い数字のまま残り続けた。日次データがある店舗×月は必ず行を作る（手入力0円として）。
     type Auto = { sales: number; cost: number; labor: number };
     const autoByKey = new Map<string, Auto>();
-    if (yms.length && storeIds.length) {
-      const minYm = yms.sort()[0], maxYm = yms.sort()[yms.length - 1];
-      const dashRows = await fetchAll((f, t) => sb.from("kd_dashboard_daily_summary")
-        .select("store_id,period_date,net_sales,cost,labor")
-        .in("store_id", storeIds).gte("period_date", `${minYm}-01`).lt("period_date", addDays(`${maxYm}-01`, 32))
-        .order("period_date").order("store_id").range(f, t));
-      dashRows.forEach((r: any) => {
-        const ym = String(r.period_date).slice(0, 7);
-        const key = `${r.store_id}|${ym}`;
-        const a = autoByKey.get(key) ?? { sales: 0, cost: 0, labor: 0 };
-        a.sales += Number(r.net_sales) || 0; a.cost += Number(r.cost) || 0; a.labor += Number(r.labor) || 0;
-        autoByKey.set(key, a);
-      });
-    }
+    const dashRows = await fetchAll((f, t) => sb.from("kd_dashboard_daily_summary")
+      .select("store_id,period_date,net_sales,cost,labor")
+      .order("period_date").order("store_id").range(f, t));
+    dashRows.forEach((r: any) => {
+      const ym = String(r.period_date).slice(0, 7);
+      const key = `${r.store_id}|${ym}`;
+      const a = autoByKey.get(key) ?? { sales: 0, cost: 0, labor: 0 };
+      a.sales += Number(r.net_sales) || 0; a.cost += Number(r.cost) || 0; a.labor += Number(r.labor) || 0;
+      autoByKey.set(key, a);
+      if (!byKey.has(key)) byKey.set(key, newBucket(r.store_id, ym));
+    });
 
     const upserts = [...byKey.values()].map((b) => {
       // 注意: kd_dashboard_daily_summaryはop=dashboard_dailyのmonthsパラメータ分（既定2〜3ヶ月）しか
@@ -689,12 +701,14 @@ async function refreshPlMonthly(sb: any) {
         else { const { error } = await sb.from("kd_pl_monthly_summary").insert(row); if (error) throw new Error("insert失敗(共通経費): " + error.message); }
       }
     }
+    const sweep = await sweepStale(sb, "kd_pl_monthly_summary", runId, upserts.length);
     for (const nm of unmatched) {
       try { await sb.rpc("kd_report_unresolved_name", { p_source_table: "kd_pl_monthly_summary", p_kind: "store", p_raw_name: nm }); }
       catch (_) { /* 隔離登録の失敗でリフレッシュ本体は止めない */ }
     }
-    await finishRun(sb, runId, true, upserts.length, unmatched.size ? `店舗名未対応: ${[...unmatched].join("、")}` : undefined);
-    return { ok: true, job: "pl_monthly", rows: upserts.length, unmatched: [...unmatched], sync_run_id: runId };
+    const plNote = [unmatched.size ? `店舗名未対応: ${[...unmatched].join("、")}` : "", sweep.deleted ? `古い行${sweep.deleted}件を洗い替え削除` : "", sweep.skipped ? `洗い替え見送り: ${sweep.skipped}` : "", loanOk ? "" : "借入元金の取得に失敗(列は更新せず)"].filter(Boolean).join(" / ");
+    await finishRun(sb, runId, true, upserts.length, plNote || undefined);
+    return { ok: true, job: "pl_monthly", rows: upserts.length, unmatched: [...unmatched], swept: sweep, loan_ok: loanOk, sync_run_id: runId };
   } catch (e) {
     await finishRun(sb, runId, false, 0, String(e), "kd_pl_monthly_summary");
     return { ok: false, error: String(e) };
