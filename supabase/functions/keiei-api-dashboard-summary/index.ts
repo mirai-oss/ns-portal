@@ -55,7 +55,7 @@ async function resolveScope(sb: ReturnType<typeof createClient>, uid: string) {
 
 const PL_COLUMNS = "store_id,corporation_id,year_month,sales,cost_auto,cost_manual,cost_total,labor_auto,labor_manual,labor_total,ad_manual,rent,other,gross_profit,sga,operating_profit,pl_item_breakdown,seisan_synced_breakdown,seisan_pending_total,seisan_pending_breakdown,source_updated_at,computed_at,sync_run_id";
 const MEDIA_COLUMNS = "store_id,corporation_id,year_month,media_name,net_sales,guests,parties,source_updated_at,computed_at,sync_run_id";
-const STORE_COLUMNS = "store_id,corporation_id,year_month,sales,cost,cost_rate,labor_pa,labor_emp,labor_spot,labor_total,labor_rate,fl_rate,gross_profit,budget_sales,budget_diff,budget_rate,source_updated_at,computed_at,sync_run_id";
+const STORE_COLUMNS = "store_id,corporation_id,year_month,sales,cost,cost_rate,labor_pa,labor_emp,labor_other,labor_spot,labor_total,labor_rate,fl_rate,gross_profit,budget_sales,budget_diff,budget_rate,source_updated_at,computed_at,sync_run_id";
 // 目標（dash_target_monthly＝dash-syncが日次でDB_目標月次から同期済み。売上目標の月合計はstore側のbudget_sales）
 const TARGET_COLUMNS = "store_id,ym,pa_rate,emp_rate,cost_rate,dinii_target,review_target,updated_at";
 const DEPOSIT_COLUMNS = "store_id,corporation_id,year_month,deposit_total,deposit_count,sales_total,diff,source_breakdown,source_updated_at,computed_at,sync_run_id";
