@@ -1,0 +1,11 @@
+name: P一時検証(削除予定)
+on: workflow_dispatch
+jobs:
+  v:
+    runs-on: ubuntu-latest
+    steps:
+      - name: pl_monthly
+        env:
+          SR_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          curl -s -m 280 -X POST https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/keiei-kd-refresh -H "Authorization: Bearer $SR_KEY" -H "Content-Type: application/json" -d '{"op":"pl_monthly"}' | cut -c1-400; echo

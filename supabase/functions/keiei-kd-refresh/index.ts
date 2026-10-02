@@ -615,9 +615,10 @@ async function refreshPlMonthly(sb: any) {
 
     // 借入返済元金（2026-10-03追加・F2。簡易CFの返済元金欄をkd_で持つため）。取得に失敗したらこの列だけ
     // 更新しない（0で上書きして誤った数字にしない）。PL本体の更新は止めない。
-    let loanOk = true;
+    let loanOk = true; let loanRowCount = 0;
     try {
       const loanRows = await bqGetLoanRows(sb);
+      loanRowCount = Math.max(0, loanRows.length - 1);
       for (let r = 1; r < loanRows.length; r++) {
         const row = loanRows[r];
         const ym = String(row[0] ?? "").trim().replace(/\//g, "-").slice(0, 7);
@@ -710,7 +711,7 @@ async function refreshPlMonthly(sb: any) {
     }
     const plNote = [unmatched.size ? `店舗名未対応: ${[...unmatched].join("、")}` : "", sweep.deleted ? `古い行${sweep.deleted}件を洗い替え削除` : "", sweep.skipped ? `洗い替え見送り: ${sweep.skipped}` : "", loanOk ? "" : "借入元金の取得に失敗(列は更新せず)"].filter(Boolean).join(" / ");
     await finishRun(sb, runId, true, upserts.length, plNote || undefined);
-    return { ok: true, job: "pl_monthly", rows: upserts.length, unmatched: [...unmatched], swept: sweep, loan_ok: loanOk, sync_run_id: runId };
+    return { ok: true, job: "pl_monthly", rows: upserts.length, unmatched: [...unmatched], swept: sweep, loan_ok: loanOk, loan_rows: loanRowCount, sync_run_id: runId };
   } catch (e) {
     await finishRun(sb, runId, false, 0, String(e), "kd_pl_monthly_summary");
     return { ok: false, error: String(e) };
