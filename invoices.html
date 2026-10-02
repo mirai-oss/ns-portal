@@ -624,7 +624,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-09-26-v35";
+const BUILD_TAG="2026-10-02-v42";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -1959,10 +1959,17 @@ async function loadWaitingPaymentCount(){
 // 対応。売上入金（ar_receivables）のうち「まだMF仕訳を作っていない入金予定」件数を
 // 5タブナビ「売上入金」に赤バッジで表示する（is_common_costや対象月に関わらず全件対象＝
 // 見ている月に関係なく気づけるようにするため、あえてRECEIVABLE_STATEとは別に集計する）。
-let AC_BADGE_COUNTS={receivable:0};
+let AC_BADGE_COUNTS={receivable:0,byMonth:{}};
 async function loadAcBadgeCounts(){
-  const r=await authed(`/rest/v1/ar_receivables?status=eq.pending&mf_journal_id=is.null&select=id&limit=500`);
-  AC_BADGE_COUNTS.receivable=(r.ok&&Array.isArray(r.body))?r.body.length:0;
+  const r=await authed(`/rest/v1/ar_receivables?status=eq.pending&mf_journal_id=is.null&select=id,year_month&limit=500`);
+  const rows=(r.ok&&Array.isArray(r.body))?r.body:[];
+  AC_BADGE_COUNTS.receivable=rows.length;
+  // 2026-10-02追加：ユーザー報告「バッジの件数(全期間合計)と、今見ている月の件数が合わなくて、
+  // 残りがどの月にあるのか毎回月をさかのぼって探している」に対応。年月ごとの内訳を保持しておき、
+  // 売上入金タブ側（receivableRender）で「他の月にもあります」の案内に使う。
+  const byMonth={};
+  rows.forEach(x=>{ const ym=x.year_month||"（年月未設定）"; byMonth[ym]=(byMonth[ym]||0)+1; });
+  AC_BADGE_COUNTS.byMonth=byMonth;
   const btn=document.querySelector('#acwsTabs [data-acgroup="receivable"]');
   if(btn) btn.innerHTML=`売上入金${AC_BADGE_COUNTS.receivable?`<span class="ac-badge" title="MF仕訳がまだ作られていない売上入金 ${AC_BADGE_COUNTS.receivable}件">${AC_BADGE_COUNTS.receivable}</span>`:""}`;
   // 2026-09-25：ポータル（親画面）のサイドバーのバッジも同じ数字に揃える（portal.html側で受信）
@@ -2593,6 +2600,25 @@ function wireCashRecon(u){
     if(m){ m.className="meta"; m.textContent="依頼しました。Mac miniが数分以内に開始し、完了するとLarkに通知されます。この画面は少し後に開き直してください。"; }
   });
 }
+// 2026-10-02新規：ユーザー報告「5タブナビの売上入金バッジ（例: 14件）は全期間のMF未仕訳合計だが、
+// 画面は選んでいる対象月だけしか見えないので、残りがどの月にあるのか毎回月をさかのぼって探して
+// いる」に対応。loadAcBadgeCounts()が集計済みのAC_BADGE_COUNTS.byMonth（年月→MF未仕訳件数）を
+// そのまま使い、件数のある月をチップで一覧表示する（0件の月は出さない）。クリックで対象月を
+// その月に切り替えて再読み込みする（現在表示中の月は強調表示・クリック不要）。
+function receivableUnjournaledByMonthHtml(){
+  const byMonth=AC_BADGE_COUNTS.byMonth||{};
+  const months=Object.keys(byMonth).sort();
+  if(!months.length) return "";
+  const chips=months.map(ym=>{
+    const isCurrent=ym===RECEIVABLE_STATE.yearMonth;
+    return `<button class="mail-chip ${isCurrent?'active':''}" ${isCurrent?'disabled':''} data-rcv-jump-ym="${esc(ym)}" style="font-size:11px">${esc(ym)}（${byMonth[ym]}件）</button>`;
+  }).join("");
+  const total=months.reduce((s,ym)=>s+byMonth[ym],0);
+  return `<div class="card" style="padding:10px 12px;margin-bottom:10px;background:var(--bg-soft,#f7f7f5)">
+    <div style="font-size:11px;color:var(--muted);margin-bottom:6px">MF仕訳がまだ作られていない売上入金（全期間合計${total}件）の内訳。クリックでその月を表示します</div>
+    <div class="mail-chips">${chips}</div>
+  </div>`;
+}
 function receivableRender(u){
   const kpi=receivableKpis();
   const filtered=receivableFilteredRows();
@@ -2610,6 +2636,7 @@ function receivableRender(u){
       </div>
       <div class="card" style="padding:16px">
         <div class="meta" style="color:var(--muted);font-size:12px;margin-bottom:10px">PayPay等の決済入金を「売上発生→入金予定→実入金→照合→消込」のフローで管理します（指示書§9-8/9-9）。データは自動取込タブ経由で登録された入金予定（<code>ar_receivables</code>）を表示しています。</div>
+        ${receivableUnjournaledByMonthHtml()}
         <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;margin-bottom:10px">
           <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end">
             <div><label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">対象月</label>
@@ -2641,6 +2668,12 @@ function receivableRender(u){
       </div>
     </section>`;
   $("receivable-ym").onchange=()=>{ RECEIVABLE_STATE.yearMonth=$("receivable-ym").value||receivableYmDefault(); renderReceivableTab(u); };
+  document.querySelectorAll("[data-rcv-jump-ym]").forEach(el=>el.onclick=()=>{
+    // subTab（入金予定/未入金/差異あり等）はそのまま維持する。MF未仕訳の行は予定日の前後で
+    // 「入金予定」「未入金」どちらにもなり得るため、ここで特定のsubTabに固定すると逆に見えなく
+    // なることがある（実機確認）。
+    RECEIVABLE_STATE.yearMonth=el.dataset.rcvJumpYm; renderReceivableTab(u);
+  });
   $("receivable-store-filter").onchange=()=>{ RECEIVABLE_STATE.storeFilter=$("receivable-store-filter").value; receivableRender(u); };
   $("receivable-corp-filter").onchange=()=>{ RECEIVABLE_STATE.corpFilter=$("receivable-corp-filter").value; receivableRender(u); };
   document.querySelectorAll("[data-receivable-subtab]").forEach(el=>el.onclick=()=>{
@@ -3053,7 +3086,20 @@ async function arjLoadForTenant(tenantId,tenants){
 // まま貸方に混ざるだけ＝飲食売上として記帳される額が本当の売上決済額(gross)より手数料分
 // 少なく見えてしまっていた。空欄の行は他の行の貸方勘定科目（最初に見つかったもの）を
 // 引き継ぐようにし、貸方の売上合計が必ず実際の売上決済額と一致するようにする
+// 2026-10-02修正（ユーザー報告「仕訳辞書だと貸方が空白のはずなのに、なぜか飲食売上が
+// 入ってしまう」）：この関数は元々「入金分・手数料分の2行だけ」の古いテンプレート専用の
+// 対応だった（2行目の貸方が空欄のまま登録されていると売上の計上額が手数料分だけ少なく
+// なってしまう問題を、1行目の貸方勘定科目を2行目にも継承させることで解決）。しかし手数料
+// 2本化（課税/非課税）に対応した3〜4行のテンプレート（SMBC GMO PAYMENT等。借方のみの
+// カード手数料行が複数あり、貸方勘定科目を持つのは1行だけ＝意図的に他の行は空欄）に対しても
+// 無差別に適用されてしまい、本来空欄のままであるべき行（カード手数料の借方行）にまで
+// 貸方勘定科目が紛れ込んでいた（結果としてarjFillRealAmounts側のfirstCreditIdxが本来の
+// 行ではなく先頭の行を指してしまい、部門等が設定された正しい行から金額が外れる実害もあった）。
+// 対象を元々の2行テンプレートに限定し、3行以上（手数料2本化等）では何もしない
+// （そちらは各行の貸方が空欄かどうかは仕訳辞書どおりの意図された状態であり、
+// arjFillRealAmountsのfeeParts分岐がfirstCreditIdxで正しく1行だけに合算してくれる）。
 function arjFillBlankCreditFromTemplate_(branches){
+  if(branches.length!==2) return branches;
   const firstName=(branches.map(b=>(b.credit&&b.credit.account_name)||"").find(Boolean))||"";
   const firstTax=(branches.map(b=>(b.credit&&b.credit.tax_id)||"").find(Boolean))||"";
   if(!firstName) return branches;
@@ -3096,10 +3142,17 @@ function arjCreditLabelForStore_(accountName,storeName){
   ARJ_STATE.creditSubAccountWarning=`「${accountName}」の補助科目に「${storeName}」が見つかりませんでした（マネーフォワード側にまだ登録されていない可能性）。補助科目は空のままにしています。MF側で先に補助科目を作成してから、この欄に手動で入力してください。`;
   return accountName;
 }
-function arjApplyTemplateAsDefault_(tpl,expected,fee,dep,prefix){
+// feeParts: 手数料の内訳（複数要素なら明細行を分けて自動流し込みする）。通常は[fee_amount]の1要素だが、
+// SMBC GMO PAYMENT（カード売上）のように課税・非課税の手数料が別々にわかる場合は[課税分,非課税分]の
+// 2要素になる（2026-09-30追加・ユーザー報告「手数料が2つの仕訳になるはずなのに1つしか出ない」対応）。
+// amounts=[expected, ...feeParts]をテンプレートの行に先頭から順に流し込むだけなので、要素数が
+// テンプレートの行数と一致していれば何個でも対応できる（1個だけの既存データは従来どおり動く）。
+function arjApplyTemplateAsDefault_(tpl,expected,feeParts,dep,prefix){
   const storeName=receivableStoreName(ARJ_STATE.row.store_id);
-  const amounts=[expected,fee], suffixes=["売上","手数料"];
-  const combinedCredit=expected+fee;
+  const feeTotal=feeParts.reduce((s,v)=>s+(Number(v)||0),0);
+  const amounts=[expected,...feeParts];
+  const suffixes=["売上",...feeParts.map((_,i)=>feeParts.length>1?`手数料${i+1}`:"手数料")];
+  const combinedCredit=expected+feeTotal;
   const branches=arjFillBlankCreditFromTemplate_(tpl.branches);
   ARJ_STATE.creditSubAccountWarning="";
   return branches.map((b,i)=>{
@@ -3113,9 +3166,17 @@ function arjApplyTemplateAsDefault_(tpl,expected,fee,dep,prefix){
     // 部門まで選んで登録したものなので、それが入っている行はそのまま信用して使い、
     // 入っていない行だけ従来のdepにフォールバックする。
     const rowDep=b.department_id||dep;
+    // 2026-10-02修正（ユーザー指摘「仕訳辞書が優先で科目や部門はいじらないでください」）：
+    // 従来は貸方の補助科目を常にarjCreditLabelForStore_（今回の店舗名から再推測）で上書きして
+    // いたため、複数店舗で共通利用する仕訳辞書（SMBC GMO PAYMENT等）で、辞書自体に正しい補助
+    // 科目が設定されていても無視して店舗名からの再推測に置き換わってしまっていた（推測が
+    // マネーフォワード側の実在補助科目と一致しない場合は空欄化＋警告も出ていた）。辞書の補助
+    // 科目が既に設定されている行はそのまま使い、未設定（空欄で店舗名だけを仮置きしている共通
+    // 辞書向け）の行だけ今回の店舗名から推測する（部門と同じ「設定済みなら触らない」方針に統一）。
+    const creditLabel=(isCombinedRow&&b.credit&&b.credit.sub_account_name)?mftLabelOf(b.credit):arjCreditLabelForStore_(creditAccountName,storeName);
     return {
       debitLabel:mftLabelOf(b.debit), debitAmount:amounts[i]??"",
-      creditLabel:arjCreditLabelForStore_(creditAccountName,storeName),
+      creditLabel,
       creditAmount:isCombinedRow?(combinedCredit||""):"",
       department_id:rowDep, tax_id:(b.debit&&b.debit.tax_id)||"",
       credit_department_id:isCombinedRow?rowDep:"", credit_tax_id:(b.credit&&b.credit.tax_id)||"",
@@ -3128,10 +3189,15 @@ function arjSetDefaultBranches(){
   const ymLabel=ARJ_STATE.ymLabel||"";
   const prefix=[ymLabel,row.source_name||""].filter(Boolean).join("　");
   const expected=Number(row.expected_amount)||0, fee=Number(row.fee_amount)||0;
+  // 2026-09-30追加: 手数料の内訳（課税/非課税）が別々に保存されている行（SMBC GMO PAYMENTのカード売上等）
+  // は2要素の配列にする。無ければ従来どおり合計1本（[fee]）。
+  const feeParts=(row.fee_amount_taxable!=null||row.fee_amount_exempt!=null)
+    ?[Number(row.fee_amount_taxable)||0,Number(row.fee_amount_exempt)||0]
+    :[fee];
   const dep=ARJ_STATE.storeDepartmentId||"";
   const tpl=(ARJ_STATE.templates||[]).find(t=>t.receivable_source_name===row.source_name);
   if(tpl&&Array.isArray(tpl.branches)&&tpl.branches.length){
-    ARJ_STATE.branches=arjApplyTemplateAsDefault_(tpl,expected,fee,dep,prefix);
+    ARJ_STATE.branches=arjApplyTemplateAsDefault_(tpl,expected,feeParts,dep,prefix);
     return;
   }
   ARJ_STATE.branches=[
@@ -3252,10 +3318,16 @@ function arjFillRealAmounts(branches){
   // 上書きしない」仕様にしていたが、ユーザー報告「別店舗の仕訳が自動で選ばれて、部門も
   // その別店舗のまま残ってしまう」で発覚した不具合を受けて方針を変更。source_name（例
   // 「PayPay加盟店」）だけで過去の仕訳・仕訳辞書を検索するため、たまたま最初にヒットした
-  // 別店舗ぶんの部門がそのまま残ってしまっていた。部門は勘定科目と違い「今回処理している
-  // ar_receivables行の店舗」に必ず一致すべき値なので、storeDepartmentIdが解決できている
-  // 場合は常にそちらで上書きする（勘定科目・税区分は引き続き過去の仕訳/仕訳辞書を尊重）。
-  const fillDept=b=>{ if(dep){ b.department_id=dep; b.credit_department_id=dep; } };
+  // 別店舗ぶんの部門がそのまま残ってしまっていた。
+  // 2026-10-01再修正：ユーザー要望「仕訳辞書で、もともと店舗の部門が設定されていたら、
+  // その部門を優先してほしい」に対応し、再び「既に部門が入っていれば上書きしない」仕様へ
+  // 戻した。09-23の問題（無関係な店舗の部門が残る）が起きていたのは「過去の仕訳から選ぶ」
+  // （arjRunJournalSearch内）側で、そちらは呼び出し前に引き続きdepartment_id:""で渡される
+  // ため影響なし。「仕訳辞書から選ぶ」（arjRenderTemplateResults）側は、辞書自体に保存されて
+  // いる部門（ユーザーが明示的に設定したもの）をそのまま渡すよう別途修正済み（呼び出し箇所
+  // 参照）。source_nameではなくこの行の店舗名に一致するかはユーザー自身が辞書を選ぶ時点で
+  // 判断できるため、無関係な店舗の部門が紛れ込む心配は無い。
+  const fillDept=b=>{ if(dep){ if(!b.department_id) b.department_id=dep; if(!b.credit_department_id) b.credit_department_id=dep; } };
   if(branches.length===2){
     const amounts=[expected,fee], suffixes=["売上","手数料"];
     // 2026-09-26追加：ユーザー要望「飲食売上は同じ仕訳だから、わざわざ2行に分けて数字を
@@ -3290,6 +3362,32 @@ function arjFillRealAmounts(branches){
     if(prefix) branches[0].remark=`${prefix}　${isFee?"手数料":"売上"}`;
     fillDept(branches[0]);
     return true;
+  }
+  // 2026-09-30追加: fee_amount_taxable/fee_amount_exemptが入っている行（SMBC GMO PAYMENTの
+  // カード売上等）は手数料を課税・非課税の2明細に分けたテンプレート（3行以上）になり、上の
+  // 2行/1行判定には当てはまらず、これまで何も埋めずに（false を返して）素通りしていた
+  // （ユーザー報告「仕訳辞書から選ぶと金額が1つも入らない」で発覚。arjApplyTemplateAsDefault_
+  // 側だけ直して、この関数を直し漏れていた＝2026-09-26のv26/v27と全く同じパターンの抜け）。
+  // ①借方は先頭から[売上, 手数料パート1, 手数料パート2, …]の順に当てはめる
+  // ②貸方は「最初に貸方科目を持つ行」に合計額（売上+手数料合計）をまとめ、他の貸方行は空にする
+  //   （各行は借方・貸方のどちらか片方だけでも登録できる既存仕様＝借方合計=貸方合計さえ一致すればよい）。
+  const feeParts=(row.fee_amount_taxable!=null||row.fee_amount_exempt!=null)
+    ?[Number(row.fee_amount_taxable)||0,Number(row.fee_amount_exempt)||0]
+    :null;
+  if(feeParts&&branches.length>=2){
+    const amounts=[expected,...feeParts];
+    if(branches.length>=amounts.length){
+      const total=amounts.reduce((s,v)=>s+v,0);
+      const firstCreditIdx=branches.findIndex(b=>b.creditLabel);
+      const suffixes=["売上",...feeParts.map((_,i)=>`手数料${i+1}`)];
+      branches.forEach((b,i)=>{
+        if(b.debitLabel) b.debitAmount=amounts[i]??"";
+        if(b.creditLabel) b.creditAmount=(i===firstCreditIdx)?total:"";
+        if(prefix&&(b.debitLabel||b.creditLabel)) b.remark=`${prefix}　${suffixes[i]||""}`;
+        fillDept(b);
+      });
+      return true;
+    }
   }
   return false;
 }
@@ -3326,12 +3424,19 @@ function arjRenderJournalResults(){
 // 現在の店舗名で上書きしていたが、「📗 仕訳辞書から選ぶ」「📖 過去の仕訳から選ぶ」で手動で
 // 選んだ場合はこの上書きが行われず、古い店舗名の補助科目のまま残っていた。貸方勘定科目名は
 // そのまま尊重しつつ、補助科目だけを必ず今回の売上入金の店舗名で上書きする
-function arjOverrideCreditStoreOnBranches_(branches){
+// 2026-10-02修正（ユーザー指摘「仕訳辞書が優先で科目や部門はいじらないでください」）：
+// respectExisting=trueのときは、辞書に既に補助科目が設定されている行はそのまま尊重し、
+// 空欄の行だけ今回の店舗名から推測する（部門と同じ「設定済みなら触らない」方針）。「📗 仕訳
+// 辞書から選ぶ」はユーザー自身が内容を信頼して選ぶ操作なのでtrueで呼ぶ。「📖 過去の仕訳から
+// 選ぶ」は構造だけを借りる操作で、残っている補助科目は常に無関係な店舗のものなので、従来どおり
+// false（常に上書き）のまま呼ぶ
+function arjOverrideCreditStoreOnBranches_(branches,respectExisting){
   const storeName=receivableStoreName(ARJ_STATE.row.store_id);
   ARJ_STATE.creditSubAccountWarning="";
   if(!storeName||storeName==="（共通費）") return branches;
   branches.forEach(b=>{
-    const {account}=splitAccLabel(b.creditLabel||"");
+    const {account,sub}=splitAccLabel(b.creditLabel||"");
+    if(respectExisting&&sub) return;
     if(account) b.creditLabel=arjCreditLabelForStore_(account,storeName);
   });
   return branches;
@@ -3354,21 +3459,22 @@ function arjRenderTemplateResults(){
     // 古い仕訳辞書（貸借同額の共通amount形式）・新しい仕訳辞書（辺ごとにvalueを持つ形式）の両方に対応
     // 2026-09-26修正：貸方勘定科目が一部の行だけ空欄のテンプレートでも売上が正しく合算される
     // よう、事前にarjFillBlankCreditFromTemplate_で埋めてからmapする
-    // 2026-09-26修正：ユーザー報告「部門が自動で変わらない場合がある」に対応。仕訳辞書に
-    // 保存されている部門（テンプレートを最初に作ったときの店舗の部門）をそのまま引き継ぐと、
-    // 今回の店舗の部門が解決できなかった場合に無関係な店舗の部門が残ってしまう（一番気づき
-    // にくい間違い）。部門は常に空から始め、arjFillRealAmountsで今回の店舗の部門が解決できた
-    // 場合だけ埋める
+    // 2026-10-01修正（ユーザー要望「仕訳辞書で、もともと店舗の部門が設定されていたら、その
+    // 部門を優先してほしい」）：従来は部門を常に空から始めていた（09-26のユーザー報告「部門が
+    // 自動で変わらない場合がある」対応）が、その原因は「過去の仕訳から選ぶ」側の話であり、
+    // こちら（仕訳辞書から選ぶ）はユーザー自身がこの売上入金に対して明示的に選んだ辞書なので、
+    // 辞書に部門が設定されていればそれを尊重する。未設定の行だけarjFillRealAmounts内の
+    // fillDeptが今回の店舗の部門で補う。
     const tplBranches=arjFillBlankCreditFromTemplate_(t.branches||[]);
     const branches=tplBranches.map(b=>({
       debitLabel:mftLabelOf(b.debit), debitAmount:"",
       creditLabel:mftLabelOf(b.credit), creditAmount:"",
-      department_id:"", tax_id:b.tax_id||"",
-      credit_department_id:"", credit_tax_id:b.credit_tax_id||"",
+      department_id:b.department_id||"", tax_id:b.tax_id||"",
+      credit_department_id:b.credit_department_id||"", credit_tax_id:b.credit_tax_id||"",
       remark:"",
     }));
     const filled=arjFillRealAmounts(branches);
-    arjOverrideCreditStoreOnBranches_(branches);
+    arjOverrideCreditStoreOnBranches_(branches,true);
     arjApplyBranches(branches);
     if(!filled) alert(`この仕訳辞書は${branches.length}行構成のため、金額・摘要を自動では当てはめられませんでした（2行＝入金分＋手数料分の構成のときだけ自動対応しています）。手動で確認・入力してください。`);
   });
@@ -3399,7 +3505,10 @@ async function arjSaveAsTemplate(){
   if(!structured.length){ alert("明細行がありません"); return; }
   const msg=$("arj-msg");
   const r=await authed("/rest/v1/mf_journal_templates",{method:"POST",headers:{Prefer:"return=minimal"},body:JSON.stringify({tenant_id:ARJ_STATE.tenantId,label,branches:structured,created_by:ME.id})});
-  if(!r.ok){ if(msg){ msg.className="err"; msg.textContent="仕訳辞書への登録に失敗しました"; } return; }
+  // 2026-10-02修正（ユーザー報告「仕訳辞書の登録が失敗しましたと出てしまう」）：理由が一切
+  // 表示されず原因究明ができなかったため、PostgRESTのエラー内容（message/hint/details等）を
+  // そのまま表示するよう変更（RLS拒否・列制約違反等、原因によってメッセージが変わる）。
+  if(!r.ok){ if(msg){ msg.className="err"; msg.textContent=`仕訳辞書への登録に失敗しました（HTTP ${r.status}）: ${esc((r.body&&(r.body.message||r.body.hint||r.body.details))||JSON.stringify(r.body||"").slice(0,200))}`; } return; }
   if(msg){ msg.className="err msg-ok"; msg.textContent=`仕訳辞書「${label}」に登録しました`; }
   ARJ_STATE.templates=await arjFetchTemplates(ARJ_STATE.tenantId);
 }
@@ -5875,7 +5984,9 @@ function wireDetailActions(u){
     if(!structured.length){ alert("明細行がありません"); return; }
     const msg=$("mfj-msg");
     const r=await authed("/rest/v1/mf_journal_templates",{method:"POST",headers:{Prefer:"return=minimal"},body:JSON.stringify({tenant_id:MFJ_STATE.tenantId,label,branches:structured,created_by:ME.id})});
-    if(!r.ok){ msg.className="err"; msg.textContent="仕訳辞書への登録に失敗しました"; return; }
+    // 2026-10-02修正（ユーザー報告「仕訳辞書の登録が失敗しましたと出てしまう」）：arjSaveAsTemplate
+    // と同様、理由を表示するよう変更
+    if(!r.ok){ msg.className="err"; msg.textContent=`仕訳辞書への登録に失敗しました（HTTP ${r.status}）: ${esc((r.body&&(r.body.message||r.body.hint||r.body.details))||JSON.stringify(r.body||"").slice(0,200))}`; return; }
     msg.className="err msg-ok"; msg.textContent=`仕訳辞書「${label}」に登録しました`;
     MFJ_STATE.templates=await mfjFetchTemplates(MFJ_STATE.tenantId);
   }
@@ -7575,7 +7686,9 @@ async function mftSaveEditor(){
   const r=ed.id
     ?await authed(`/rest/v1/mf_journal_templates?id=eq.${ed.id}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({...payload,updated_at:new Date().toISOString()})})
     :await authed("/rest/v1/mf_journal_templates",{method:"POST",headers:{Prefer:"return=minimal"},body:JSON.stringify({...payload,created_by:ME.id})});
-  if(!r.ok){ if($("mft-save")) $("mft-save").disabled=false; alert("保存に失敗しました"); return; }
+  // 2026-10-02修正（ユーザー報告「仕訳辞書の登録が失敗しましたと出てしまう」）：理由が一切
+  // 表示されず原因究明ができなかったため、PostgRESTのエラー内容を表示するよう変更
+  if(!r.ok){ if($("mft-save")) $("mft-save").disabled=false; alert(`保存に失敗しました（HTTP ${r.status}）: ${(r.body&&(r.body.message||r.body.hint||r.body.details))||JSON.stringify(r.body||"").slice(0,200)}`); return; }
   renderMftSection(MFT_STATE.activeTenantId);
 }
 

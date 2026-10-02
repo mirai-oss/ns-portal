@@ -499,7 +499,7 @@ Deno.serve(async (req: Request) => {
       const receivableId = body?.receivable_id;
       if (!receivableId) return json({ error: "receivable_idは必須です" }, 400);
       const { data: rcv, error: rcvErr } = await uc.from("ar_receivables")
-        .select("id, store_id, corporation_id, gross_amount, fee_amount, year_month, source_name")
+        .select("id, store_id, corporation_id, gross_amount, fee_amount, year_month, source_name, recurring_master_id")
         .eq("id", receivableId).maybeSingle();
       if (rcvErr) return json({ error: "確認に失敗しました: " + rcvErr.message }, 500);
       if (!rcv) return json({ error: "対象が見つからないか権限がありません" }, 403);
@@ -540,9 +540,30 @@ Deno.serve(async (req: Request) => {
       // 接尾語のため取り除く（ロケットナウ等、他のsource_nameはそのまま使う＝汎用的な仕組みを
       // 保つ）
       const srcLabel = (rcv.source_name || "PayPay").trim().replace(/加盟店$/, "");
+      let salesItem = `${srcLabel}売上`;
+      let feeItem = `${srcLabel}手数料`;
+      // 2026-10-02追加（ユーザー要望）: SMBC GMO PAYMENT（カード売上）は振込明細書が前半/後半の
+      // 月2回発行され、ar_receivablesも前半用・後半用の別々のar_recurring_master（smbc-card-deposit.js
+      // のRECURRING_MASTER_NAME_H1/H2＝「カード売上（SMBC GMO PAYMENT・前半分）」/「…後半分）」）に
+      // 紐づく。精算書上でどちらの振込か区別できるよう、費目名を「カード売上（前半分）」のように
+      // 半期つきへ変更（note列の自由記述を正規表現で読むよりロバストなrecurring_masterのnameで判定）。
+      if (rcv.source_name === "SMBC GMO PAYMENT（カード売上）" && rcv.recurring_master_id) {
+        const { data: master } = await uc.from("ar_recurring_master")
+          .select("name").eq("id", rcv.recurring_master_id).maybeSingle();
+        const half = master?.name?.includes("前半") ? "前半分" : master?.name?.includes("後半") ? "後半分" : null;
+        if (half) {
+          salesItem = `カード売上（${half}）`;
+          feeItem = `カード手数料（${half}）`;
+        }
+      }
+      // 2026-10-01修正（ユーザー指摘「カード売上が変動費で入ってしまっている」）: 精算GAS
+      // （sd_apiAddExternalLine）へkubunを渡していなかったため、売上の明細も常に精算GAS側の
+      // 既定値'変動費'で保存されていた（PayPay等、既存のsource_nameすべてに共通する不具合。
+      // 今回SMBC GMO PAYMENTのカード売上で顕在化して発覚）。売上行='売上'・手数料行='変動費'を
+      // 明示的に渡すよう修正。
       const lines = [
-        { key: "sales", item: `${srcLabel}売上`, account: "売上高", amount: Number(rcv.gross_amount) || 0 },
-        { key: "fee", item: `${srcLabel}手数料`, account: "支払手数料", amount: Number(rcv.fee_amount) || 0 },
+        { key: "sales", item: salesItem, account: "売上高", kubun: "売上", amount: Number(rcv.gross_amount) || 0 },
+        { key: "fee", item: feeItem, account: "支払手数料", kubun: "変動費", amount: Number(rcv.fee_amount) || 0 },
       ].filter((l) => l.amount > 0);
       if (!lines.length) return json({ success: true, skipped: true, reason: "売上・手数料とも0円のため登録対象がありません" });
 
@@ -552,7 +573,7 @@ Deno.serve(async (req: Request) => {
         const sourceKey = `receivable:${receivableId}:${l.key}`;
         try {
           const gasRes = await seisanCall("sd_apiAddExternalLine", [tk, store.seisan_store_name, monthKey, {
-            sourceKey, item: l.item, amount: l.amount, tax: "10%", account: l.account,
+            sourceKey, item: l.item, amount: l.amount, tax: "10%", account: l.account, kubun: l.kubun,
           }]);
           if (!gasRes.ok) {
             throw new Error(gasRes.error || (gasRes.locked ? "この月は振込済みのため精算書への登録・更新はできません" : "精算書側で失敗しました"));
