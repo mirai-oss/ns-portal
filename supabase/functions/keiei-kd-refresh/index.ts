@@ -220,12 +220,49 @@ async function dashCall(body: unknown, attempt = 1): Promise<any> {
     return { ok: false, error: `ダッシュボードの応答を読めませんでした（${attempt}回試行・Googleボット判定等の一時的な不調の可能性）: ` + text.slice(0, 200) };
   }
 }
-async function bqDailyStoreFull(sb: any, months: number) {
+// ---- GASログインの使い回し（2026-10-03・ラウンド6§7 P① 実測で発覚した不具合の修正）----
+// 従来は各opが毎回action:'login'を呼んでいたため、連携用アカウント(dash_id)のセッションが
+// 1日約48件×14日=約670件ds_sessionsに溜まっていた（毎時×3op。GAS側のPropertiesServiceにも
+// tok_*が二重書きされるため、設計書§2-4「tok_が溜まって満杯→セッション切れ」の一因になっていた）。
+// 本来セッションは14日のスライディング期限なので、1つを使い回せば足りる。トークンはapp_secrets
+// (service_role専用・dash_pwと同じ置き場)に保存し、unauthorizedが返った時だけ取り直す。
+const DASH_TOKEN_KEY = "kd_refresh_dash_token";
+let dashTokenMemo: string | null = null; // 同一isolate内の再利用（app_secrets読み出しも省く）
+async function dashLoginAndStore(sb: any): Promise<string> {
   const { id, pw } = await dashSecrets(sb);
   if (!id || !pw) throw new Error("app_secretsにdash_id/dash_pwが未設定です");
   const login = await dashCall({ action: "login", id, pw });
-  if (!login.ok) throw new Error("ダッシュボードへのログインに失敗: " + (login.error ?? ""));
-  const res = await dashCall({ action: "bqDailyStore", token: login.token, months: months + 1 });
+  if (!login.ok || !login.token) throw new Error("ダッシュボードへのログインに失敗: " + (login.error ?? ""));
+  await sb.from("app_secrets").upsert({ key: DASH_TOKEN_KEY, value: login.token, updated_at: new Date().toISOString() }, { onConflict: "key" });
+  dashTokenMemo = login.token;
+  return login.token;
+}
+async function dashAuthed(sb: any, action: string, extra: Record<string, unknown> = {}): Promise<any> {
+  let token = dashTokenMemo;
+  if (!token) {
+    const { data } = await sb.from("app_secrets").select("value").eq("key", DASH_TOKEN_KEY).maybeSingle();
+    token = (data?.value ?? "").trim() || null;
+  }
+  if (!token) token = await dashLoginAndStore(sb);
+  const isUnauth = (r: any) => r && r.ok === false && /unauthorized/i.test(String(r.error ?? ""));
+  let res = await dashCall({ action, token, ...extra });
+  if (isUnauth(res)) {
+    // 2026-10-03実測: 発行直後の有効なセッションでもunauthorizedが返ることがある。GAS側sessionGet_が
+    // Supabase読み取りの一時失敗(非200/例外)を「セッション無し」と同じnull扱いにし、Properties側が
+    // 掃除済みだとunauthorizedになるため（tori-dashboard gas/Code.gs sessionSupaGet_/sessionGet）。
+    // そこで①同じトークンを2秒後に1回だけ再試行 ②それでもダメなら取り直し（無駄なセッション量産を避ける）
+    await new Promise((r) => setTimeout(r, 2000));
+    res = await dashCall({ action, token, ...extra });
+    if (isUnauth(res)) {
+      token = await dashLoginAndStore(sb);
+      res = await dashCall({ action, token, ...extra });
+    }
+  }
+  return res;
+}
+
+async function bqDailyStoreFull(sb: any, months: number) {
+  const res = await dashAuthed(sb, "bqDailyStore", { months: months + 1 });
   if (!res.ok) throw new Error("bqDailyStore取得に失敗: " + (res.error ?? ""));
   return (res.sheets?.daily ?? []) as any[][];
 }
@@ -307,11 +344,7 @@ async function refreshDashboardDaily(sb: any, body: any) {
 
 // ============== op=store_monthly: kd_store_monthly_summary（TK-63・2026-09-18） ==============
 async function bqGetSpotRows(sb: any): Promise<any[][]> {
-  const { id, pw } = await dashSecrets(sb);
-  if (!id || !pw) throw new Error("app_secretsにdash_id/dash_pwが未設定です");
-  const login = await dashCall({ action: "login", id, pw });
-  if (!login.ok) throw new Error("ダッシュボードへのログインに失敗: " + (login.error ?? ""));
-  const res = await dashCall({ action: "bqGetSpot", token: login.token });
+  const res = await dashAuthed(sb, "bqGetSpot");
   if (!res.ok) throw new Error("bqGetSpot取得に失敗: " + (res.error ?? ""));
   return (res.sheets?.["スポット人件費"] ?? Object.values(res.sheets ?? {})[0] ?? []) as any[][];
 }
@@ -439,11 +472,7 @@ function plSeisanGuessCat(name: string): "S" | "F" | "L" | "A" | "R" | "O" | "X"
 }
 
 async function bqGetPLRows(sb: any): Promise<any[][]> {
-  const { id, pw } = await dashSecrets(sb);
-  if (!id || !pw) throw new Error("app_secretsにdash_id/dash_pwが未設定です");
-  const login = await dashCall({ action: "login", id, pw });
-  if (!login.ok) throw new Error("ダッシュボードへのログインに失敗: " + (login.error ?? ""));
-  const res = await dashCall({ action: "bqGetPL", token: login.token });
+  const res = await dashAuthed(sb, "bqGetPL");
   if (!res.ok) throw new Error("bqGetPL取得に失敗: " + (res.error ?? ""));
   return (res.sheets?.PL ?? []) as any[][];
 }
@@ -600,11 +629,7 @@ async function refreshPlMonthly(sb: any) {
 
 // ============== op=media_monthly: kd_media_monthly_summary ==============
 async function bqGetMediaRows(sb: any, months: number): Promise<any[][]> {
-  const { id, pw } = await dashSecrets(sb);
-  if (!id || !pw) throw new Error("app_secretsにdash_id/dash_pwが未設定です");
-  const login = await dashCall({ action: "login", id, pw });
-  if (!login.ok) throw new Error("ダッシュボードへのログインに失敗: " + (login.error ?? ""));
-  const res = await dashCall({ action: "bqGetMedia", token: login.token, months: months + 1 });
+  const res = await dashAuthed(sb, "bqGetMedia", { months: months + 1 });
   if (!res.ok) throw new Error("bqGetMedia取得に失敗: " + (res.error ?? ""));
   return (res.sheets?.media ?? res.sheets?.["媒体別"] ?? Object.values(res.sheets ?? {})[0] ?? []) as any[][];
 }
@@ -667,11 +692,7 @@ async function refreshMediaMonthly(sb: any, body: any) {
 
 // ============== op=deposit_monthly: kd_deposit_monthly_summary ==============
 async function bqGetDepositRows(sb: any): Promise<any[][]> {
-  const { id, pw } = await dashSecrets(sb);
-  if (!id || !pw) throw new Error("app_secretsにdash_id/dash_pwが未設定です");
-  const login = await dashCall({ action: "login", id, pw });
-  if (!login.ok) throw new Error("ダッシュボードへのログインに失敗: " + (login.error ?? ""));
-  const res = await dashCall({ action: "bqGetDeposit", token: login.token });
+  const res = await dashAuthed(sb, "bqGetDeposit");
   if (!res.ok) throw new Error("bqGetDeposit取得に失敗: " + (res.error ?? ""));
   return (res.sheets?.deposit ?? []) as any[][];
 }
