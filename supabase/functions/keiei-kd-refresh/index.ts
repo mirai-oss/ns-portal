@@ -534,6 +534,17 @@ async function bqGetPLRows(sb: any): Promise<any[][]> {
   if (!res.ok) throw new Error("bqGetPL取得に失敗: " + (res.error ?? ""));
   return (res.sheets?.PL ?? []) as any[][];
 }
+// 年月セルの揺れ吸収（"2026/09"・"2026-09"・"2026/9/1"・Date型セルのtoString "Tue Sep 01 2026 00:00:00 GMT+0900 ..."）。
+// stg_loan_principal.year_monthはSTRINGで、シートのDateセルがそのまま文字列化されることがある（9/2にfact_daily_storeで
+// 発生したのと同種）ため、単純な先頭7文字では拾えない。
+function ymOf(v: unknown): string | null {
+  const s = String(v ?? "").trim();
+  const m = s.match(/^(\d{4})[\/\-](\d{1,2})/);
+  if (m) return `${m[1]}-${m[2].padStart(2, "0")}`;
+  const d = new Date(s);
+  if (isNaN(d.getTime())) return null;
+  return new Date(d.getTime() + 9 * 3600 * 1000).toISOString().slice(0, 7);
+}
 // 借入返済元金（stg_loan_principal）。列: 年月,店舗,法人,元金額,メモ（tori-dashboard/gas/Code.gs bqGetLoanPrincipal）
 async function bqGetLoanRows(sb: any): Promise<any[][]> {
   const res = await dashAuthed(sb, "bqGetLoanPrincipal");
@@ -615,14 +626,15 @@ async function refreshPlMonthly(sb: any) {
 
     // 借入返済元金（2026-10-03追加・F2。簡易CFの返済元金欄をkd_で持つため）。取得に失敗したらこの列だけ
     // 更新しない（0で上書きして誤った数字にしない）。PL本体の更新は止めない。
-    let loanOk = true; let loanRowCount = 0;
+    let loanOk = true; let loanRowCount = 0; let loanBadYm = 0; const loanSample: string[] = [];
     try {
       const loanRows = await bqGetLoanRows(sb);
       loanRowCount = Math.max(0, loanRows.length - 1);
       for (let r = 1; r < loanRows.length; r++) {
         const row = loanRows[r];
-        const ym = String(row[0] ?? "").trim().replace(/\//g, "-").slice(0, 7);
-        if (!/^\d{4}-\d{2}$/.test(ym)) continue;
+        if (loanSample.length < 3) loanSample.push(String(row[0]).slice(0, 40));
+        const ym = ymOf(row[0]);
+        if (!ym) { loanBadYm++; continue; }
         const storeName = String(row[1] ?? "").trim();
         const amount = num(row[3]);
         let storeId: string | null = null;
@@ -711,7 +723,7 @@ async function refreshPlMonthly(sb: any) {
     }
     const plNote = [unmatched.size ? `店舗名未対応: ${[...unmatched].join("、")}` : "", sweep.deleted ? `古い行${sweep.deleted}件を洗い替え削除` : "", sweep.skipped ? `洗い替え見送り: ${sweep.skipped}` : "", loanOk ? "" : "借入元金の取得に失敗(列は更新せず)"].filter(Boolean).join(" / ");
     await finishRun(sb, runId, true, upserts.length, plNote || undefined);
-    return { ok: true, job: "pl_monthly", rows: upserts.length, unmatched: [...unmatched], swept: sweep, loan_ok: loanOk, loan_rows: loanRowCount, sync_run_id: runId };
+    return { ok: true, job: "pl_monthly", rows: upserts.length, unmatched: [...unmatched], swept: sweep, loan_ok: loanOk, loan_rows: loanRowCount, loan_bad_ym: loanBadYm, loan_ym_sample: loanSample, sync_run_id: runId };
   } catch (e) {
     await finishRun(sb, runId, false, 0, String(e), "kd_pl_monthly_summary");
     return { ok: false, error: String(e) };
