@@ -60,6 +60,15 @@ function num(v: unknown): number {
 }
 
 async function startRun(sb: any, job: string, periodFrom?: string, periodTo?: string) {
+  // 2026-10-03追加: Edge Function側のタイムアウト等で強制終了されると finishRun が呼ばれず、
+  // kd_sync_runs に 'running' のまま永久に残る（長期バックフィルで実際に発生）。同じjobの古い
+  // 'running'（15分超）は打ち切られたものとして failed に確定させる（鮮度表示が「更新中」のまま固まらないように）。
+  try {
+    await sb.from("kd_sync_runs").update({
+      status: "failed", finished_at: new Date().toISOString(),
+      error: "実行が途中で打ち切られました（Edge Functionのタイムアウト等）",
+    }).eq("job", job).eq("status", "running").lt("started_at", new Date(Date.now() - 15 * 60000).toISOString());
+  } catch (_) { /* 掃除の失敗で本処理は止めない */ }
   const { data, error } = await sb.from("kd_sync_runs")
     .insert({ job, period_from: periodFrom ?? null, period_to: periodTo ?? null, status: "running" })
     .select("id").single();
@@ -108,12 +117,23 @@ async function refreshReservationDaily(sb: any, body: any) {
   const runId = await startRun(sb, "kd_reservation_daily_summary", from, to);
   try {
     const { corpByStoreId } = await loadStoreMaps(sb);
-    let q = sb.from("rsv_reservations")
-      .select("store_id,visit_date,visit_time,party_size,status_normalized,channel_raw,created_at_source,imported_at,store_account")
-      .gte("visit_date", from).lte("visit_date", to)
-      .not("store_account", "in", `(${EXCLUDE_ACCOUNTS_TEMP.map((n) => `"${n}"`).join(",")})`);
-    const { data, error } = await q;
-    if (error) throw new Error(error.message);
+    // 2026-10-03修正: PostgRESTは1リクエスト最大1000行で打ち切るため、過去分のバックフィル
+    // （from/to指定で数万行）では無言で欠落する。visit_date,idの安定順でページングして全件読む。
+    // （既定の「前日〜当日」だけなら従来どおり1ページで済む）
+    const data: any[] = [];
+    const PAGE = 1000;
+    for (let offset = 0; offset < 400000; offset += PAGE) {
+      const { data: page, error: pageErr } = await sb.from("rsv_reservations")
+        .select("store_id,visit_date,visit_time,party_size,status_normalized,channel_raw,created_at_source,imported_at,store_account")
+        .gte("visit_date", from).lte("visit_date", to)
+        .not("store_account", "in", `(${EXCLUDE_ACCOUNTS_TEMP.map((n) => `"${n}"`).join(",")})`)
+        .order("visit_date", { ascending: true }).order("id", { ascending: true })
+        .range(offset, offset + PAGE - 1);
+      if (pageErr) throw new Error(pageErr.message);
+      if (!page || !page.length) break;
+      data.push(...page);
+      if (page.length < PAGE) break;
+    }
 
     type Day = {
       store_id: string; period_date: string; reservation_count: number; party_size_sum: number;
