@@ -77,15 +77,17 @@ async function fetchDayRows(sb: ReturnType<typeof createClient>, fromIso: string
 }
 
 // ---- 起動時間（boot_first_paint）の集計（2026-10-03追加・ラウンド6§6 F0 / 設計書_経営D即時表示_GASレス起動 §0）----
-// 担当Aの計測フックが「ログイン（再訪）→最初の数字表示」のmsを action='boot_first_paint*' で送る。
-// キャッシュ有無の区別はaction名の接尾辞で行う想定（例: boot_first_paint=初回/コールド、
-// boot_first_paint_cached=前回値キャッシュあり）。名前に"cache"を含むactionは目標1秒、それ以外は2秒で判定。
-// 専用列を増やさず既存の受け口（action 80文字まで）のまま対応するための取り決め。
+// 担当Aの計測フック（tori-dashboard/app.js bootMark_()）が、ログイン（再訪）→最初の数字表示のmsを
+// action='boot_first_paint'・errType='cache|gasless'（=「キャッシュ有無|gasless/legacy」）で送る。
+// 以前の受け口はok=trueのときerrTypeを捨てていたため、boot_first_paintだけはok=trueでもerrTypeを
+// タグとして保存するようにした（ingest側の変更）。レポートはこのタグ別（cache/nocache × gasless/legacy）に
+// 中央値・90%点を出す＝BOOT_GASLESS_フラグのbefore/afterがそのまま見える。
+// 目標判定: タグが"cache"始まり（=前回値キャッシュあり）は1秒、それ以外（nocache・タグなし）は2秒。
 const BOOT_PREFIX = "boot_first_paint";
 const BOOT_TARGET_COLD_MS = 2000;   // 設計書§0: ログイン後、最初の数字が出るまで2秒以内
 const BOOT_TARGET_CACHED_MS = 1000; // 設計書§0: 2回目以降は1秒前後
 const isBootAction = (action: string) => action.startsWith(BOOT_PREFIX);
-const bootTargetMs = (action: string) => /cache/i.test(action) ? BOOT_TARGET_CACHED_MS : BOOT_TARGET_COLD_MS;
+const isCachedBoot = (action: string, tag: string) => /cache/i.test(action) || /^cache/i.test(tag);
 
 // nearest-rank法のパーセンタイル（sortedは昇順）
 function percentile(sorted: number[], p: number): number | null {
@@ -95,12 +97,12 @@ function percentile(sorted: number[], p: number): number | null {
 }
 const fmtMs = (v: number | null) => v == null ? "—" : `${Math.round(v)}ms`;
 
-type BootRow = { action: string; ms: number; ok: boolean; created_at: string };
+type BootRow = { action: string; ms: number; ok: boolean; err_type: string | null; created_at: string };
 async function fetchBootRows(sb: ReturnType<typeof createClient>, fromIso: string, toIso: string): Promise<BootRow[]> {
   const rows: BootRow[] = [];
   const PAGE = 1000;
   for (let offset = 0; offset < 20000; offset += PAGE) {
-    const { data, error } = await sb.from("kd_perf_log").select("action,ms,ok,created_at")
+    const { data, error } = await sb.from("kd_perf_log").select("action,ms,ok,err_type,created_at")
       .like("action", `${BOOT_PREFIX}%`).gte("created_at", fromIso).lt("created_at", toIso)
       .range(offset, offset + PAGE - 1);
     if (error) throw new Error(error.message);
@@ -111,7 +113,7 @@ async function fetchBootRows(sb: ReturnType<typeof createClient>, fromIso: strin
   return rows;
 }
 
-// Larkに追記する「起動時間」ブロックを組み立てる。対象日の分布＋直近7日の日別中央値（before/after比較用）
+// Larkに追記する「起動時間」ブロック。対象日のタグ別分布＋直近7日の日別中央値（コールド/キャッシュ別・before/after比較用）
 async function buildBootSection(sb: ReturnType<typeof createClient>, fromUtc: Date, toUtc: Date): Promise<string[]> {
   const weekFrom = new Date(fromUtc.getTime() - 6 * 86400000);
   const bootRows = await fetchBootRows(sb, weekFrom.toISOString(), toUtc.toISOString());
@@ -122,31 +124,36 @@ async function buildBootSection(sb: ReturnType<typeof createClient>, fromUtc: Da
   if (!day.length) {
     lines.push("（この日の計測なし＝計測フック未導入、または誰も起動していません）");
   } else {
-    const byAction = new Map<string, BootRow[]>();
-    for (const r of day) (byAction.get(r.action) ?? byAction.set(r.action, []).get(r.action)!).push(r);
-    for (const [action, rs] of [...byAction.entries()].sort()) {
+    const byTag = new Map<string, BootRow[]>();
+    for (const r of day) {
+      const key = `${r.action}[${r.err_type || "タグなし"}]`;
+      (byTag.get(key) ?? byTag.set(key, []).get(key)!).push(r);
+    }
+    for (const [key, rs] of [...byTag.entries()].sort()) {
       const okMs = rs.filter((r) => r.ok).map((r) => Number(r.ms) || 0).sort((a, b) => a - b);
       const fail = rs.length - okMs.length;
       const med = percentile(okMs, 50), p90 = percentile(okMs, 90);
-      const target = bootTargetMs(action);
+      const target = isCachedBoot(rs[0].action, rs[0].err_type ?? "") ? BOOT_TARGET_CACHED_MS : BOOT_TARGET_COLD_MS;
       const mark = p90 == null ? "" : (p90 <= target ? " ✅" : " ⚠️");
-      lines.push(`・${action}: 中央値${fmtMs(med)} / 90%点${fmtMs(p90)}（目標${target}ms以内${mark}）／${rs.length}回${fail ? `・失敗${fail}` : ""}`);
+      lines.push(`・${key}: 中央値${fmtMs(med)} / 90%点${fmtMs(p90)}（目標${target}ms以内${mark}）／${rs.length}回${fail ? `・失敗${fail}` : ""}`);
     }
   }
-  // 直近7日の日別中央値（JST日付ごと・全boot_first_paint系を合算）
-  const byDay = new Map<string, number[]>();
-  for (const r of bootRows) {
-    if (!r.ok) continue;
-    const d = new Date(new Date(r.created_at).getTime() + 9 * 3600 * 1000).toISOString().slice(0, 10);
-    (byDay.get(d) ?? byDay.set(d, []).get(d)!).push(Number(r.ms) || 0);
-  }
-  if (byDay.size) {
-    const trend = [...byDay.entries()].sort().map(([d, arr]) => {
-      arr.sort((a, b) => a - b);
+  // 直近7日の日別中央値（JST日付ごと。コールド＝キャッシュ無し／キャッシュありを分ける。両者は桁が違うため混ぜない）
+  const trendOf = (cached: boolean) => {
+    const byDay = new Map<string, number[]>();
+    for (const r of bootRows) {
+      if (!r.ok || isCachedBoot(r.action, r.err_type ?? "") !== cached) continue;
+      const d = new Date(new Date(r.created_at).getTime() + 9 * 3600 * 1000).toISOString().slice(0, 10);
+      (byDay.get(d) ?? byDay.set(d, []).get(d)!).push(Number(r.ms) || 0);
+    }
+    return [...byDay.entries()].sort().map(([d, arr]) => {
+      arr.sort((x, y) => x - y);
       return `${d.slice(5)}:${fmtMs(percentile(arr, 50))}`;
     });
-    lines.push(`📈 直近7日の中央値（全種別合算）: ${trend.join(" / ")}`);
-  }
+  };
+  const cold = trendOf(false), warm = trendOf(true);
+  if (cold.length) lines.push(`📈 直近7日の中央値（キャッシュ無し）: ${cold.join(" / ")}`);
+  if (warm.length) lines.push(`📈 直近7日の中央値（キャッシュあり）: ${warm.join(" / ")}`);
   return lines;
 }
 
@@ -260,7 +267,9 @@ Deno.serve(async (req) => {
     const appName = String(body.app ?? "unknown").trim().slice(0, 40) || "unknown";
     const ms = Math.round(clamp(Number(body.ms), 0, MAX_MS));
     const ok = !!body.ok;
-    const errType = ok ? null : (String(body.errType ?? "").trim().slice(0, 40) || null);
+    // boot_first_paintは errType に「キャッシュ有無|gasless/legacy」のタグが入る（ok=trueでも保存。その他は従来どおり失敗時のみ）
+    const keepTag = !ok || action.startsWith(BOOT_PREFIX);
+    const errType = keepTag ? (String(body.errType ?? "").trim().slice(0, 40) || null) : null;
     const tNum = Number(body.t);
     const clientTs = Number.isFinite(tNum) && tNum > 0 ? new Date(tNum).toISOString() : null;
 
