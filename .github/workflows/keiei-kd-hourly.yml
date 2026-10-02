@@ -1,116 +1,58 @@
-name: kd_ダッシュボード集計の毎時リフレッシュ
+name: kd_ダッシュボード集計の更新（取込完了ドリブン・毎時チェック）
 
-# W2④（docs/設計書_表示集計層kdと高速化実行計画_2026-09-02.md §10.1）＋
-# 実装指示書_ラウンド6_2026-09-18.md §1（A-12支援: pl_monthly毎時化・store_monthly=TK-63・
-# ds_sessionsの期限切れ掃除）。
-# 日中の間、kd_dashboard_daily_summary（店舗×日の売上・客数等）→kd_home_kpi_snapshot（ホームKPI）
-# →kd_store_monthly_summary（店舗×月のF率/L率/FL計・TK-63）→kd_pl_monthly_summary（店舗×月のPL）
-# →ds_sessionsの期限切れ行削除、の順で毎時リフレッシュする。
-# dashboard_dailyを先に呼ぶこと（home_kpi・store_monthly・pl_monthlyがkd_dashboard_daily_summaryの
-# 当日/当月分を読むため。順序を変えると1つ前の値のままになる）。
+# W2④（docs/設計書_表示集計層kdと高速化実行計画_2026-09-02.md §10.1）＋ラウンド6§1/§7。
+# 【2026-10-03変更】ユーザー回答「売上は前日分が分かればよい。リアルタイムは不要」を受け、毎時に重いGAS呼び出しを
+# 無条件に回すのをやめた。毎時（cron-job.orgの起動は従来どおり毎時0分・08:00〜23:00 JST）に最初に
+# keiei-kd-refresh の op=due を呼び、「ns-daily-importの関連する取込が前回のkd_更新より新しく終わった時」
+# （＋日中は前回成功から3時間たっていれば手入力反映の保険として）だけ、売上・PL・入金・予約の更新を実行する。
+# home_kpi（Supabase内完結・平均3秒）とsessions_cleanupは毎回実行。判定ロジックとグループはindex.tsのDUE_GROUPS。
+# 効果: GAS呼び出し（平均32秒・失敗率16%）が1日約16回→数回に減り、失敗通知も減る。取込完了から1時間以内に反映される。
 #
-# 実際の発火は他の日次workflowと同じく外部cron（cron-job.org）からworkflow_dispatch APIを叩く。
+# 実際の発火は他の日次workflowと同じく外部cron（cron-job.org）からworkflow_dispatch APIを叩く（登録済み・変更不要）。
 #   POST https://api.github.com/repos/mirai-oss/ns-portal/actions/workflows/keiei-kd-hourly.yml/dispatches
-#   body: {"ref":"main"}
-#   Schedule: 毎時0分・08:00〜23:00 JST目安（深夜は数字が動かないため対象外でよい）
-#
-# 手動実行: GitHubの Actions タブ → 本workflow → Run workflow でも実行可能
+# 手動実行: GitHubの Actions タブ → 本workflow → Run workflow（force=trueで判定を無視して全部実行）
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      force:
+        description: '動作確認用: 取込完了の判定を無視して全て実行する（通常は空欄）'
+        required: false
+        default: ''
+        type: string
 
 jobs:
-  hourly:
+  refresh:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 15
     steps:
-      - name: 設定チェック（未設定ならスキップ）
+      - name: 設定チェック
         run: |
           if [ -z "${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" ]; then
             echo "::error::SUPABASE_SERVICE_ROLE_KEY が未設定です"
             exit 1
           fi
 
-      - name: keiei-kd-refreshを呼ぶ（dashboard_daily）
+      - name: 今回実行するopを判定（op=due）して順に実行
         env:
           SR_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          FORCE: ${{ github.event.inputs.force }}
         run: |
-          RES=$(curl -s -w "\n%{http_code}" -X POST \
-            "https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/keiei-kd-refresh" \
-            -H "Authorization: Bearer $SR_KEY" \
-            -H "Content-Type: application/json" \
-            -d '{"op":"dashboard_daily"}')
-          HTTP_CODE=$(echo "$RES" | tail -1)
-          BODY_TEXT=$(echo "$RES" | sed '$d')
-          echo "$BODY_TEXT"
-          if [ "$HTTP_CODE" != "200" ]; then
-            echo "::error::dashboard_dailyが失敗しました（HTTP $HTTP_CODE）"
-            exit 1
+          U="https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/keiei-kd-refresh"
+          PLAN=$(curl -s -m 60 -X POST "$U" -H "Authorization: Bearer $SR_KEY" -H "Content-Type: application/json" -d '{"op":"due"}')
+          echo "判定: $PLAN"
+          if [ "$FORCE" = "true" ]; then
+            OPS="dashboard_daily store_monthly pl_monthly deposit_monthly reservation_daily home_kpi sessions_cleanup"
+          else
+            OPS=$(echo "$PLAN" | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{try{const j=JSON.parse(s);if(!j.ok)throw 0;console.log(j.due.join(' '))}catch(e){console.log('dashboard_daily store_monthly pl_monthly home_kpi sessions_cleanup')}})")
           fi
-
-      - name: keiei-kd-refreshを呼ぶ（home_kpi）
-        env:
-          SR_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-        run: |
-          RES=$(curl -s -w "\n%{http_code}" -X POST \
-            "https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/keiei-kd-refresh" \
-            -H "Authorization: Bearer $SR_KEY" \
-            -H "Content-Type: application/json" \
-            -d '{"op":"home_kpi"}')
-          HTTP_CODE=$(echo "$RES" | tail -1)
-          BODY_TEXT=$(echo "$RES" | sed '$d')
-          echo "$BODY_TEXT"
-          if [ "$HTTP_CODE" != "200" ]; then
-            echo "::error::home_kpiが失敗しました（HTTP $HTTP_CODE）"
-            exit 1
-          fi
-
-      - name: keiei-kd-refreshを呼ぶ（store_monthly・TK-63）
-        env:
-          SR_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-        run: |
-          RES=$(curl -s -w "\n%{http_code}" -X POST \
-            "https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/keiei-kd-refresh" \
-            -H "Authorization: Bearer $SR_KEY" \
-            -H "Content-Type: application/json" \
-            -d '{"op":"store_monthly"}')
-          HTTP_CODE=$(echo "$RES" | tail -1)
-          BODY_TEXT=$(echo "$RES" | sed '$d')
-          echo "$BODY_TEXT"
-          if [ "$HTTP_CODE" != "200" ]; then
-            echo "::error::store_monthlyが失敗しました（HTTP $HTTP_CODE）"
-            exit 1
-          fi
-
-      - name: keiei-kd-refreshを呼ぶ（pl_monthly・ラウンド6§1 A-12支援で日次→毎時に格上げ）
-        env:
-          SR_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-        run: |
-          RES=$(curl -s -w "\n%{http_code}" -X POST \
-            "https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/keiei-kd-refresh" \
-            -H "Authorization: Bearer $SR_KEY" \
-            -H "Content-Type: application/json" \
-            -d '{"op":"pl_monthly"}')
-          HTTP_CODE=$(echo "$RES" | tail -1)
-          BODY_TEXT=$(echo "$RES" | sed '$d')
-          echo "$BODY_TEXT"
-          if [ "$HTTP_CODE" != "200" ]; then
-            echo "::error::pl_monthlyが失敗しました（HTTP $HTTP_CODE）"
-            exit 1
-          fi
-
-      - name: keiei-kd-refreshを呼ぶ（sessions_cleanup・ds_sessionsの期限切れ行削除・A-11）
-        env:
-          SR_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-        run: |
-          RES=$(curl -s -w "\n%{http_code}" -X POST \
-            "https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/keiei-kd-refresh" \
-            -H "Authorization: Bearer $SR_KEY" \
-            -H "Content-Type: application/json" \
-            -d '{"op":"sessions_cleanup"}')
-          HTTP_CODE=$(echo "$RES" | tail -1)
-          BODY_TEXT=$(echo "$RES" | sed '$d')
-          echo "$BODY_TEXT"
-          if [ "$HTTP_CODE" != "200" ]; then
-            echo "::warning::sessions_cleanupが失敗しました（HTTP $HTTP_CODE）。他のジョブは成功しているので失敗にしない"
-            exit 0
-          fi
+          echo "実行するop: $OPS"
+          FAILED=""
+          for OP in $OPS; do
+            RES=$(curl -s -m 280 -w "\n%{http_code}" -X POST "$U" -H "Authorization: Bearer $SR_KEY" -H "Content-Type: application/json" -d "{\"op\":\"$OP\"}")
+            CODE=$(echo "$RES" | tail -1); BODY=$(echo "$RES" | sed '$d')
+            echo "== $OP (HTTP $CODE): $(echo "$BODY" | cut -c1-300)"
+            if [ "$CODE" != "200" ]; then
+              if [ "$OP" = "sessions_cleanup" ]; then echo "::warning::sessions_cleanup失敗（他は継続）"; else FAILED="$FAILED $OP"; fi
+            fi
+          done
+          if [ -n "$FAILED" ]; then echo "::error::失敗したop:$FAILED"; exit 1; fi

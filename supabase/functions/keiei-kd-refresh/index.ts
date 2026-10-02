@@ -865,27 +865,35 @@ async function refreshDepositMonthly(sb: any) {
 // ============== op=home_kpi: kd_home_kpi_snapshot ==============
 async function refreshHomeKpi(sb: any) {
   const today = jstToday();
-  const monthStart = today.slice(0, 7) + "-01";
-  const runId = await startRun(sb, "kd_home_kpi_snapshot", monthStart, today);
+  const runId = await startRun(sb, "kd_home_kpi_snapshot", today.slice(0, 7) + "-01", today);
   try {
     const { data: storeRows } = await sb.from("stores").select("id,corporation_id");
     const stores = (storeRows ?? []) as { id: string; corporation_id: string | null }[];
 
-    // 当日実績（今日ぶんのkd_dashboard_daily_summary。dashboard_dailyのリフレッシュ後に呼ぶ想定）
+    // 2026-10-03変更（ユーザー回答「売上は前日分が分かればよい」）: 売上の取込は朝に前日分までが入る運用で、
+    // 当日(JST)の行は一日中0/nullになる。そこで「売上のある最新営業日」(=dataDate・通常は前日)を基準に、
+    // その日の実績・その月の月初〜dataDateの累計・同期間の目標累計を出す（達成率の分子分母の期間を揃える）。
+    // 行のキー(period_date)は従来どおり今日のまま＝keiei-api-home等の読み手は無変更で動く。
+    const { data: latest } = await sb.from("kd_dashboard_daily_summary").select("period_date")
+      .lte("period_date", today).gt("net_sales", 0).order("period_date", { ascending: false }).limit(1);
+    const dataDate: string = latest?.[0]?.period_date ?? today;
+    const monthStart = dataDate.slice(0, 7) + "-01";
+
+    // 最新営業日の実績
     const { data: todayRows } = await sb.from("kd_dashboard_daily_summary")
-      .select("store_id,net_sales,guests,parties").eq("period_date", today);
+      .select("store_id,net_sales,guests,parties").eq("period_date", dataDate);
     const todayMap = new Map<string, any>();
     (todayRows ?? []).forEach((r: any) => todayMap.set(r.store_id, r));
 
-    // 月累計売上
+    // 月累計売上（月初〜dataDate）
     const { data: mtdRows } = await sb.from("kd_dashboard_daily_summary")
-      .select("store_id,net_sales").gte("period_date", monthStart).lte("period_date", today);
+      .select("store_id,net_sales").gte("period_date", monthStart).lte("period_date", dataDate);
     const mtdMap = new Map<string, number>();
     (mtdRows ?? []).forEach((r: any) => mtdMap.set(r.store_id, (mtdMap.get(r.store_id) ?? 0) + (Number(r.net_sales) || 0)));
 
-    // 月初〜当日ぶんの日別売上目標を積み上げ（dash_sales_target_daily。dash-syncが既に日次で維持）
+    // 月初〜dataDateぶんの日別売上目標を積み上げ（dash_sales_target_daily。dash-syncが既に日次で維持）
     const { data: targetRows } = await sb.from("dash_sales_target_daily")
-      .select("store_id,sales_target").gte("biz_date", monthStart).lte("biz_date", today);
+      .select("store_id,sales_target").gte("biz_date", monthStart).lte("biz_date", dataDate);
     const targetMap = new Map<string, number>();
     (targetRows ?? []).forEach((r: any) => targetMap.set(r.store_id, (targetMap.get(r.store_id) ?? 0) + (Number(r.sales_target) || 0)));
 
@@ -903,7 +911,7 @@ async function refreshHomeKpi(sb: any) {
     });
 
     const upserts = stores.map((s) => ({
-      store_id: s.id, corporation_id: s.corporation_id, period_date: today,
+      store_id: s.id, corporation_id: s.corporation_id, period_date: today, data_date: dataDate,
       today_sales: todayMap.get(s.id)?.net_sales ?? null,
       today_guests: todayMap.get(s.id)?.guests ?? null,
       today_parties: todayMap.get(s.id)?.parties ?? null,
@@ -920,7 +928,7 @@ async function refreshHomeKpi(sb: any) {
       if (upErr) throw new Error("upsert失敗: " + upErr.message);
     }
     await finishRun(sb, runId, true, upserts.length);
-    return { ok: true, job: "home_kpi", rows: upserts.length, sync_run_id: runId };
+    return { ok: true, job: "home_kpi", rows: upserts.length, data_date: dataDate, sync_run_id: runId };
   } catch (e) {
     await finishRun(sb, runId, false, 0, String(e), "kd_home_kpi_snapshot");
     return { ok: false, error: String(e) };
@@ -938,6 +946,41 @@ async function notifyUnresolved(sb: any) {
   lines.push("→ store_aliases/media_aliasに正式名を登録すると次回から自動で解消します");
   const sent = await sendLark(sb, lines.join("\n"));
   return { ok: true, count: data.length, sent };
+}
+
+// ============== op=due: 今回どのopを実行すべきかを返す（取込完了ドリブン・2026-10-03） ==============
+// ユーザー回答「売上は前日分が分かればよい（リアルタイム不要）」。売上の元データは朝の取込（zeroregi 06:3x → dinii 07:3x〜08:3x →
+// morning-refresh 08:49 → bq-sales-reconcile 11:0x）で前日分が確定し、それ以外の時間帯は変わらない。毎時に重いGAS呼び出し
+// （dashboard_daily 平均32秒・失敗16.5%）を回しても読むのは同じ数字なので、ns-daily-importの完了記録(import_runs)を見て、
+// 「関連する取込が前回のkd_更新より新しく終わった時」だけ重い更新を走らせる。手入力（DB_PL等）の反映用に、日中は
+// 前回成功から3時間たっていれば保険として走らせる。home_kpi（Supabase内3秒）は毎回走らせる。
+const DUE_GROUPS: { name: string; kdJob: string; ops: string[]; imports: string[]; safetyHours: number | null }[] = [
+  { name: "売上・PL", kdJob: "kd_dashboard_daily_summary", ops: ["dashboard_daily", "store_monthly", "pl_monthly"], safetyHours: 3,
+    imports: ["zeroregi-akihabara", "dinii-orders", "dinii-payment-ns", "dinii-payment-nstyle", "morning-refresh", "bq-sales-reconcile", "smaregi-payroll", "infomart-siire", "rocketnow-sales"] },
+  { name: "入金", kdJob: "kd_deposit_monthly_summary", ops: ["deposit_monthly"], safetyHours: null,
+    imports: ["paypay-bank", "paypay-bank-b", "paypay-merchant-deposit", "paypay-merchant-deposit-nstyle", "smbc-card-deposit", "smbc-card-deposit-toho", "morning-refresh"] },
+  { name: "予約", kdJob: "kd_reservation_daily_summary", ops: ["reservation_daily"], safetyHours: null,
+    imports: ["tabelog-note-reservation", "dinii-reservation", "bq-reservation-sync"] },
+];
+async function planDue(sb: any) {
+  const due: string[] = []; const reasons: Record<string, string> = {};
+  const hourJst = new Date(Date.now() + 9 * 3600 * 1000).getUTCHours();
+  for (const g of DUE_GROUPS) {
+    const { data: lastRun } = await sb.from("kd_sync_runs").select("started_at").eq("job", g.kdJob).eq("status", "success")
+      .order("started_at", { ascending: false }).limit(1);
+    const lastStart: string | null = lastRun?.[0]?.started_at ?? null;
+    const { data: imp } = await sb.from("import_runs").select("job,finished_at").in("job", g.imports).in("status", ["success", "partial"])
+      .not("finished_at", "is", null).order("finished_at", { ascending: false }).limit(1);
+    const lastImp = imp?.[0] ?? null;
+    let why = "";
+    if (!lastStart) why = "初回";
+    else if (lastImp && lastImp.finished_at > lastStart) why = `取込完了(${lastImp.job} ${String(lastImp.finished_at).slice(11, 16)}UTC)が前回更新より新しい`;
+    else if (g.safetyHours && hourJst >= 8 && hourJst <= 22 && (Date.now() - new Date(lastStart).getTime()) / 3600000 >= g.safetyHours) why = `前回更新から${g.safetyHours}時間以上（手入力反映の保険）`;
+    if (why) { due.push(...g.ops); reasons[g.name] = why; }
+  }
+  due.push("home_kpi");   // Supabase内で完結(平均3秒)・本部タスク滞留数などの鮮度のため毎回
+  due.push("sessions_cleanup");
+  return { ok: true, due, reasons };
 }
 
 // ============== op=sessions_cleanup: ds_sessionsの期限切れ行を削除（A-11・2026-09-18） ==============
@@ -969,7 +1012,8 @@ Deno.serve(async (req) => {
       case "media_monthly": result = await refreshMediaMonthly(sb, body); break;
       case "deposit_monthly": result = await refreshDepositMonthly(sb); break;
       case "sessions_cleanup": result = await cleanupSessions(sb); break;
-      default: return json({ ok: false, error: "opは'reservation_daily'|'dashboard_daily'|'home_kpi'|'unresolved_notify'|'pl_monthly'|'media_monthly'|'deposit_monthly'|'store_monthly'|'sessions_cleanup'のいずれかが必須です" }, 400);
+      case "due": result = await planDue(sb); break;
+      default: return json({ ok: false, error: "opは'reservation_daily'|'dashboard_daily'|'home_kpi'|'unresolved_notify'|'pl_monthly'|'media_monthly'|'deposit_monthly'|'store_monthly'|'sessions_cleanup'|'due'のいずれかが必須です" }, 400);
     }
     // 2026-09-03修正: ok:falseの結果をHTTP 200で返してしまうとGitHub Actions側のHTTP_CODEチェックを
     // すり抜けて「success」表示のまま失敗が握りつぶされる（実際にdashboard_dailyの失敗がこれで見逃されていた）。

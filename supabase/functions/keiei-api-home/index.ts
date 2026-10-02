@@ -7,7 +7,8 @@
 // Google Sheets / GAS / BigQuery は画面表示時に一切呼ばない。
 //
 // 呼び出し: POST { as_of?: 'YYYY-MM-DD' }
-// 返り値: { ok:true, asOf, monthStart, latestBizDate, totals, stores, scope, source }
+// 返り値: { ok:true, asOf, dataDate, monthStart, latestBizDate, totals, stores, scope, source }
+//   2026-10-03: dataDate=売上のある最新営業日（通常は前日）。todaySales等・mtd*・目標達成率はdataDate基準（スナップショット経路のみ。フォールバック経路は従来どおり）
 import { createClient } from "npm:@supabase/supabase-js@2";
 
 const cors: Record<string, string> = {
@@ -72,6 +73,7 @@ type HomeRow = {
   store_id: string; period_date: string; today_sales: number | null; today_guests: number | null; today_parties: number | null;
   mtd_sales: number | null; budget_achievement_rate: number | null; daily_report_submission_rate: number | null;
   checklist_completion_rate: number | null; hq_task_overdue_count: number | null; source_updated_at: string | null; computed_at: string;
+  data_date?: string | null;
 };
 type DashRow = {
   store_id: string; period_date: string; net_sales: number | null; guests: number | null; parties: number | null;
@@ -163,17 +165,22 @@ Deno.serve(async (req) => {
     // 当月累計（monthStart〜asOf）のcost/laborをkd_dashboard_daily_summaryから合算して追加する。
     // 9/6にP側でこの2列が追加・埋まり始めたことを実データで確認済み（WORKLOG参照）。
     // 単日分（今日ぶんのprior_year比較用）とMTD合算分は別クエリにする（範囲が違うため）。
-    const [homeRes, dashRes, rsvRes, mtdRes] = await Promise.all([
-      sb.from("kd_home_kpi_snapshot").select(
-        "store_id,period_date,today_sales,today_guests,today_parties,mtd_sales,budget_achievement_rate,daily_report_submission_rate,checklist_completion_rate,hq_task_overdue_count,source_updated_at,computed_at",
-      ).in("store_id", storeIds).eq("period_date", asOf),
+    // 2026-10-03変更（ユーザー回答「売上は前日分が分かればよい」）: 売上は朝に前日分までが入る運用で当日行は常に空。
+    // kd_home_kpi_snapshotは「売上のある最新営業日」(data_date)基準で today_*/mtd/目標累計を作るので、
+    // 前年同曜日・MTD原価人件費もdata_date基準で読む（予約は今日=asOfのまま。予約は先の日付に意味がある）。
+    const homeRes = await sb.from("kd_home_kpi_snapshot").select(
+      "store_id,period_date,data_date,today_sales,today_guests,today_parties,mtd_sales,budget_achievement_rate,daily_report_submission_rate,checklist_completion_rate,hq_task_overdue_count,source_updated_at,computed_at",
+    ).in("store_id", storeIds).eq("period_date", asOf);
+    const dataDate: string = ((homeRes.data ?? []) as HomeRow[]).find((r) => r.data_date)?.data_date ?? asOf;
+    const dataStart = monthStart(dataDate);
+    const [dashRes, rsvRes, mtdRes] = await Promise.all([
       sb.from("kd_dashboard_daily_summary").select(
         "store_id,period_date,net_sales,guests,parties,avg_check,prior_year_same_weekday_sales,prior_year_same_weekday_ratio",
-      ).in("store_id", storeIds).eq("period_date", asOf),
+      ).in("store_id", storeIds).eq("period_date", dataDate),
       sb.from("kd_reservation_daily_summary").select("store_id,reservation_count,party_size_sum,expected_sales")
         .in("store_id", storeIds).eq("period_date", asOf),
       sb.from("kd_dashboard_daily_summary").select("store_id,net_sales,cost,labor")
-        .in("store_id", storeIds).gte("period_date", start).lte("period_date", asOf),
+        .in("store_id", storeIds).gte("period_date", dataStart).lte("period_date", dataDate),
     ]);
     for (const r of [homeRes, dashRes, rsvRes, mtdRes]) {
       if (r.error) return json({ ok: false, error: "ホームスナップショットの取得に失敗しました: " + r.error.message }, 500);
@@ -216,6 +223,7 @@ Deno.serve(async (req) => {
           storeId: s.id,
           storeName: s.dash_store_name || s.name,
           periodDate: asOf,
+          dataDate, // todaySales〜priorYear*・mtd*は「このdataDateまでの実績」
           todaySales: n(h?.today_sales),
           todayGuests: n(h?.today_guests),
           todayParties: n(h?.today_parties),
@@ -244,8 +252,9 @@ Deno.serve(async (req) => {
       return json({
         ok: true,
         asOf,
-        monthStart: start,
-        latestBizDate: asOf,
+        dataDate, // 売上系の数字が何日時点か（売上のある最新営業日・通常は前日）。画面は『本日』ではなく『◯/◯（曜）までの実績』と表示する
+        monthStart: dataStart,
+        latestBizDate: dataDate,
         source: "kd_home_kpi_snapshot + kd_dashboard_daily_summary + kd_reservation_daily_summary（Supabase集計済みテーブル。GAS/Sheets非経由）",
         sourceComputedAt: sourceComputedAt || null,
         sourceUpdatedAt: sourceUpdatedAt || null,
