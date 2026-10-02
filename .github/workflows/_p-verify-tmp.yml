@@ -5,11 +5,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 12
     steps:
-      - name: 24か月バックフィル(dashboard_daily months=26 → store_monthly → pl_monthly)
+      - name: 予約日次サマリの過去分バックフィル(Supabaseのみ・GAS不使用)
         env:
           SR_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: |
           U=https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/keiei-kd-refresh
-          for B in '{"op":"dashboard_daily","months":26}' '{"op":"store_monthly"}' '{"op":"pl_monthly"}'; do
-            echo "== $B"; curl -s -m 400 -X POST $U -H "Authorization: Bearer $SR_KEY" -H "Content-Type: application/json" -d "$B" | cut -c1-400; echo
+          for R in '2023-02-01|2024-06-30' '2024-07-01|2025-06-30' '2025-07-01|2026-12-31'; do
+            F=${R%%|*}; T=${R#*|}
+            echo "== $F..$T"; curl -s -m 300 -X POST $U -H "Authorization: Bearer $SR_KEY" -H "Content-Type: application/json" -d "{\"op\":\"reservation_daily\",\"from\":\"$F\",\"to\":\"$T\"}" | cut -c1-300; echo
           done
