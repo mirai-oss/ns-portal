@@ -624,7 +624,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-02-v39";
+const BUILD_TAG="2026-10-02-v40";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -1959,10 +1959,17 @@ async function loadWaitingPaymentCount(){
 // 対応。売上入金（ar_receivables）のうち「まだMF仕訳を作っていない入金予定」件数を
 // 5タブナビ「売上入金」に赤バッジで表示する（is_common_costや対象月に関わらず全件対象＝
 // 見ている月に関係なく気づけるようにするため、あえてRECEIVABLE_STATEとは別に集計する）。
-let AC_BADGE_COUNTS={receivable:0};
+let AC_BADGE_COUNTS={receivable:0,byMonth:{}};
 async function loadAcBadgeCounts(){
-  const r=await authed(`/rest/v1/ar_receivables?status=eq.pending&mf_journal_id=is.null&select=id&limit=500`);
-  AC_BADGE_COUNTS.receivable=(r.ok&&Array.isArray(r.body))?r.body.length:0;
+  const r=await authed(`/rest/v1/ar_receivables?status=eq.pending&mf_journal_id=is.null&select=id,year_month&limit=500`);
+  const rows=(r.ok&&Array.isArray(r.body))?r.body:[];
+  AC_BADGE_COUNTS.receivable=rows.length;
+  // 2026-10-02追加：ユーザー報告「バッジの件数(全期間合計)と、今見ている月の件数が合わなくて、
+  // 残りがどの月にあるのか毎回月をさかのぼって探している」に対応。年月ごとの内訳を保持しておき、
+  // 売上入金タブ側（receivableRender）で「他の月にもあります」の案内に使う。
+  const byMonth={};
+  rows.forEach(x=>{ const ym=x.year_month||"（年月未設定）"; byMonth[ym]=(byMonth[ym]||0)+1; });
+  AC_BADGE_COUNTS.byMonth=byMonth;
   const btn=document.querySelector('#acwsTabs [data-acgroup="receivable"]');
   if(btn) btn.innerHTML=`売上入金${AC_BADGE_COUNTS.receivable?`<span class="ac-badge" title="MF仕訳がまだ作られていない売上入金 ${AC_BADGE_COUNTS.receivable}件">${AC_BADGE_COUNTS.receivable}</span>`:""}`;
   // 2026-09-25：ポータル（親画面）のサイドバーのバッジも同じ数字に揃える（portal.html側で受信）
@@ -2593,6 +2600,25 @@ function wireCashRecon(u){
     if(m){ m.className="meta"; m.textContent="依頼しました。Mac miniが数分以内に開始し、完了するとLarkに通知されます。この画面は少し後に開き直してください。"; }
   });
 }
+// 2026-10-02新規：ユーザー報告「5タブナビの売上入金バッジ（例: 14件）は全期間のMF未仕訳合計だが、
+// 画面は選んでいる対象月だけしか見えないので、残りがどの月にあるのか毎回月をさかのぼって探して
+// いる」に対応。loadAcBadgeCounts()が集計済みのAC_BADGE_COUNTS.byMonth（年月→MF未仕訳件数）を
+// そのまま使い、件数のある月をチップで一覧表示する（0件の月は出さない）。クリックで対象月を
+// その月に切り替えて再読み込みする（現在表示中の月は強調表示・クリック不要）。
+function receivableUnjournaledByMonthHtml(){
+  const byMonth=AC_BADGE_COUNTS.byMonth||{};
+  const months=Object.keys(byMonth).sort();
+  if(!months.length) return "";
+  const chips=months.map(ym=>{
+    const isCurrent=ym===RECEIVABLE_STATE.yearMonth;
+    return `<button class="mail-chip ${isCurrent?'active':''}" ${isCurrent?'disabled':''} data-rcv-jump-ym="${esc(ym)}" style="font-size:11px">${esc(ym)}（${byMonth[ym]}件）</button>`;
+  }).join("");
+  const total=months.reduce((s,ym)=>s+byMonth[ym],0);
+  return `<div class="card" style="padding:10px 12px;margin-bottom:10px;background:var(--bg-soft,#f7f7f5)">
+    <div style="font-size:11px;color:var(--muted);margin-bottom:6px">MF仕訳がまだ作られていない売上入金（全期間合計${total}件）の内訳。クリックでその月を表示します</div>
+    <div class="mail-chips">${chips}</div>
+  </div>`;
+}
 function receivableRender(u){
   const kpi=receivableKpis();
   const filtered=receivableFilteredRows();
@@ -2610,6 +2636,7 @@ function receivableRender(u){
       </div>
       <div class="card" style="padding:16px">
         <div class="meta" style="color:var(--muted);font-size:12px;margin-bottom:10px">PayPay等の決済入金を「売上発生→入金予定→実入金→照合→消込」のフローで管理します（指示書§9-8/9-9）。データは自動取込タブ経由で登録された入金予定（<code>ar_receivables</code>）を表示しています。</div>
+        ${receivableUnjournaledByMonthHtml()}
         <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;margin-bottom:10px">
           <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end">
             <div><label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">対象月</label>
@@ -2641,6 +2668,12 @@ function receivableRender(u){
       </div>
     </section>`;
   $("receivable-ym").onchange=()=>{ RECEIVABLE_STATE.yearMonth=$("receivable-ym").value||receivableYmDefault(); renderReceivableTab(u); };
+  document.querySelectorAll("[data-rcv-jump-ym]").forEach(el=>el.onclick=()=>{
+    // subTab（入金予定/未入金/差異あり等）はそのまま維持する。MF未仕訳の行は予定日の前後で
+    // 「入金予定」「未入金」どちらにもなり得るため、ここで特定のsubTabに固定すると逆に見えなく
+    // なることがある（実機確認）。
+    RECEIVABLE_STATE.yearMonth=el.dataset.rcvJumpYm; renderReceivableTab(u);
+  });
   $("receivable-store-filter").onchange=()=>{ RECEIVABLE_STATE.storeFilter=$("receivable-store-filter").value; receivableRender(u); };
   $("receivable-corp-filter").onchange=()=>{ RECEIVABLE_STATE.corpFilter=$("receivable-corp-filter").value; receivableRender(u); };
   document.querySelectorAll("[data-receivable-subtab]").forEach(el=>el.onclick=()=>{
