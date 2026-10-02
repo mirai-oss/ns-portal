@@ -624,7 +624,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-01-v38";
+const BUILD_TAG="2026-10-02-v39";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -3120,9 +3120,17 @@ function arjApplyTemplateAsDefault_(tpl,expected,feeParts,dep,prefix){
     // 部門まで選んで登録したものなので、それが入っている行はそのまま信用して使い、
     // 入っていない行だけ従来のdepにフォールバックする。
     const rowDep=b.department_id||dep;
+    // 2026-10-02修正（ユーザー指摘「仕訳辞書が優先で科目や部門はいじらないでください」）：
+    // 従来は貸方の補助科目を常にarjCreditLabelForStore_（今回の店舗名から再推測）で上書きして
+    // いたため、複数店舗で共通利用する仕訳辞書（SMBC GMO PAYMENT等）で、辞書自体に正しい補助
+    // 科目が設定されていても無視して店舗名からの再推測に置き換わってしまっていた（推測が
+    // マネーフォワード側の実在補助科目と一致しない場合は空欄化＋警告も出ていた）。辞書の補助
+    // 科目が既に設定されている行はそのまま使い、未設定（空欄で店舗名だけを仮置きしている共通
+    // 辞書向け）の行だけ今回の店舗名から推測する（部門と同じ「設定済みなら触らない」方針に統一）。
+    const creditLabel=(isCombinedRow&&b.credit&&b.credit.sub_account_name)?mftLabelOf(b.credit):arjCreditLabelForStore_(creditAccountName,storeName);
     return {
       debitLabel:mftLabelOf(b.debit), debitAmount:amounts[i]??"",
-      creditLabel:arjCreditLabelForStore_(creditAccountName,storeName),
+      creditLabel,
       creditAmount:isCombinedRow?(combinedCredit||""):"",
       department_id:rowDep, tax_id:(b.debit&&b.debit.tax_id)||"",
       credit_department_id:isCombinedRow?rowDep:"", credit_tax_id:(b.credit&&b.credit.tax_id)||"",
@@ -3370,12 +3378,19 @@ function arjRenderJournalResults(){
 // 現在の店舗名で上書きしていたが、「📗 仕訳辞書から選ぶ」「📖 過去の仕訳から選ぶ」で手動で
 // 選んだ場合はこの上書きが行われず、古い店舗名の補助科目のまま残っていた。貸方勘定科目名は
 // そのまま尊重しつつ、補助科目だけを必ず今回の売上入金の店舗名で上書きする
-function arjOverrideCreditStoreOnBranches_(branches){
+// 2026-10-02修正（ユーザー指摘「仕訳辞書が優先で科目や部門はいじらないでください」）：
+// respectExisting=trueのときは、辞書に既に補助科目が設定されている行はそのまま尊重し、
+// 空欄の行だけ今回の店舗名から推測する（部門と同じ「設定済みなら触らない」方針）。「📗 仕訳
+// 辞書から選ぶ」はユーザー自身が内容を信頼して選ぶ操作なのでtrueで呼ぶ。「📖 過去の仕訳から
+// 選ぶ」は構造だけを借りる操作で、残っている補助科目は常に無関係な店舗のものなので、従来どおり
+// false（常に上書き）のまま呼ぶ
+function arjOverrideCreditStoreOnBranches_(branches,respectExisting){
   const storeName=receivableStoreName(ARJ_STATE.row.store_id);
   ARJ_STATE.creditSubAccountWarning="";
   if(!storeName||storeName==="（共通費）") return branches;
   branches.forEach(b=>{
-    const {account}=splitAccLabel(b.creditLabel||"");
+    const {account,sub}=splitAccLabel(b.creditLabel||"");
+    if(respectExisting&&sub) return;
     if(account) b.creditLabel=arjCreditLabelForStore_(account,storeName);
   });
   return branches;
@@ -3413,7 +3428,7 @@ function arjRenderTemplateResults(){
       remark:"",
     }));
     const filled=arjFillRealAmounts(branches);
-    arjOverrideCreditStoreOnBranches_(branches);
+    arjOverrideCreditStoreOnBranches_(branches,true);
     arjApplyBranches(branches);
     if(!filled) alert(`この仕訳辞書は${branches.length}行構成のため、金額・摘要を自動では当てはめられませんでした（2行＝入金分＋手数料分の構成のときだけ自動対応しています）。手動で確認・入力してください。`);
   });
