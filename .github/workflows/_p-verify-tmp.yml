@@ -1,0 +1,13 @@
+name: P一時検証(削除予定)
+on: workflow_dispatch
+jobs:
+  v:
+    runs-on: ubuntu-latest
+    steps:
+      - name: dashboard-summary 正常系
+        env:
+          SR_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          U=https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/keiei-api-dashboard-summary
+          curl -s -X POST $U -H "Authorization: Bearer $SR_KEY" -H "Content-Type: application/json" -d '{"kinds":["store","pl","deposit","target"],"months":24}' | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{const j=JSON.parse(s);console.log('ok',j.ok,'from',j.from,'to',j.to);for(const [k,v] of Object.entries(j.results||{}))console.log(k,'rows',v.rows.length,'hasMore',v.hasMore,'fresh',v.fresh,'sample',JSON.stringify(v.rows[0]).slice(0,160));if(!j.ok)console.log(s.slice(0,300))})"
+          curl -s -X POST $U -H "Authorization: Bearer $SR_KEY" -H "Content-Type: application/json" -d '{"kind":"media","months":24,"limit":1000}' | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{const j=JSON.parse(s);console.log('media ok',j.ok,'rows',(j.rows||[]).length,'hasMore',j.hasMore)})"
