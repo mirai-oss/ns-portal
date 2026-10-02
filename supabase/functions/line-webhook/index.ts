@@ -27,7 +27,9 @@ async function secrets(sb) {
     "line_channel_token",
     "line_channel_secret",
     "checklist_intake_secret",
-    "checklist_intake_secret_prev"
+    "checklist_intake_secret_prev",
+    "line_order_push_secret",
+    "line_order_group_id"
   ]);
   const m = {};
   (data ?? []).forEach((r)=>{
@@ -37,7 +39,11 @@ async function secrets(sb) {
     token: m.line_channel_token ?? "",
     secret: m.line_channel_secret ?? "",
     intakeSecret: m.checklist_intake_secret ?? "",
-    intakeSecretPrev: m.checklist_intake_secret_prev ?? ""
+    intakeSecretPrev: m.checklist_intake_secret_prev ?? "",
+    // 2026-10-03追加（店舗間の仕入れ移動＝発注情報を「発注グループ」LINEへ通知する機能）:
+    // 既存のchecklist_intake_secret（求人・入社用）とは用途が違うため専用の合言葉を分ける。
+    orderPushSecret: m.line_order_push_secret ?? "",
+    orderGroupId: m.line_order_group_id ?? ""
   };
 }
 // LINEの署名検証（本文のHMAC-SHA256をBase64にしたものが x-line-signature と一致する）
@@ -108,7 +114,7 @@ Deno.serve(async (req)=>{
       body = {};
     }
     const sb = svc();
-    const { token, secret, intakeSecret, intakeSecretPrev } = await secrets(sb);
+    const { token, secret, intakeSecret, intakeSecretPrev, orderPushSecret, orderGroupId } = await secrets(sb);
     // ---------------- 1) LINEからのWebhook ----------------
     if (Array.isArray(body.events)) {
       const sig = req.headers.get("x-line-signature") ?? "";
@@ -119,6 +125,21 @@ Deno.serve(async (req)=>{
         }, 401);
       }
       for (const ev of body.events){
+        // 2026-10-03追加（発注グループLINE連携）: このアカウントを新しいLINEグループに招待すると
+        // 送られてくるjoinイベント。source.groupIdをapp_secrets.line_order_group_idへ保存し、
+        // グループ側にも「このグループを記録しました」と返信する（ユーザーが設定を確認できるように）。
+        // このBotが複数の用途のグループに追加される想定は今のところ無いため、joinした最新の
+        // グループを一律「発注グループ」として扱う（用途が増えたら呼び出し元で判定を分ける）。
+        if (ev.type === "join" && ev.source?.type === "group" && ev.source?.groupId) {
+          const gid = String(ev.source.groupId);
+          await sb.from("app_secrets").upsert({
+            key: "line_order_group_id",
+            value: gid,
+            updated_at: new Date().toISOString()
+          });
+          await lineReply(token, ev.replyToken, `このグループを「発注グループ」として登録しました。\nグループID: ${gid}\n\n以後、店舗間の仕入れ移動（発注）があるとこちらに通知されます。`);
+          continue;
+        }
         const uid = ev?.source?.userId ?? "";
         if (!uid) continue;
         // v2.6.21: このアカウントは求人の返信用としても使われているため、
@@ -210,6 +231,36 @@ Deno.serve(async (req)=>{
         alerts: t?.alerts ?? 0,
         reminded: sent,
         failed
+      });
+    }
+    // ---------------- 2.4) 発注（店舗間の仕入れ移動）を「発注グループ」LINEへ通知（2026-10-03追加） ----------------
+    // tori-dashboard（GAS・costTransferPublicSubmit）から、ログイン不要の専用合言葉
+    // （line_order_push_secret）つきで呼ばれる。現場の公開フォームから仕入れ移動の送信があった
+    // 時点ですぐ通知する設計（PL反映の承認を待たない＝現場の受け渡し作業をすぐ始められるように）。
+    if (body.action === "push_order_group") {
+      if (!orderPushSecret || body.secret !== orderPushSecret) return json({
+        ok: false,
+        error: "認証エラー"
+      }, 403);
+      if (!token) return json({
+        ok: false,
+        error: "チャネルアクセストークンが未設定です"
+      }, 400);
+      if (!orderGroupId) return json({
+        ok: false,
+        error: "発注グループが未登録です（LINEでBotをグループに招待してください）"
+      }, 400);
+      const items = Array.isArray(body.items) ? body.items : [];
+      const itemLines = items.map((it)=>`・${String(it?.name ?? "")} ×${String(it?.qty ?? "")}（${Number(it?.amount ?? 0).toLocaleString("ja-JP")}円）`).join("\n");
+      const total = items.reduce((s, it)=>s + (Number(it?.amount) || 0), 0);
+      const text = `🔀 仕入れ移動の申請がありました\n` + `${String(body.fromStore ?? "")} → ${String(body.toStore ?? "")}（${String(body.date ?? "")}）\n\n` + `${itemLines || "（商品なし）"}\n\n` + `合計: ${total.toLocaleString("ja-JP")}円` + (body.note ? `\nメモ: ${String(body.note)}` : "");
+      const sent = await linePush(token, orderGroupId, text);
+      if (!sent.ok) return json({
+        ok: false,
+        error: `LINEの応答: ${sent.status} ${sent.body}`
+      }, 400);
+      return json({
+        ok: true
       });
     }
     // ---------------- 2.5) 入社登録が完了した合図（v2.6.53・ログイン不要） ----------------
