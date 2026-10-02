@@ -496,6 +496,12 @@ async function bqGetPLRows(sb: any): Promise<any[][]> {
   if (!res.ok) throw new Error("bqGetPL取得に失敗: " + (res.error ?? ""));
   return (res.sheets?.PL ?? []) as any[][];
 }
+// 借入返済元金（stg_loan_principal）。列: 年月,店舗,法人,元金額,メモ（tori-dashboard/gas/Code.gs bqGetLoanPrincipal）
+async function bqGetLoanRows(sb: any): Promise<any[][]> {
+  const res = await dashAuthed(sb, "bqGetLoanPrincipal");
+  if (!res.ok) throw new Error("bqGetLoanPrincipal取得に失敗: " + (res.error ?? ""));
+  return (res.sheets?.["借入返済元金"] ?? Object.values(res.sheets ?? {})[0] ?? []) as any[][];
+}
 const COMMON_STORE_KEY = "00000000-0000-0000-0000-000000000000"; // 全社共通経費行（store_id=NULL）のupsertキー用センチネル
 
 async function refreshPlMonthly(sb: any) {
@@ -510,10 +516,11 @@ async function refreshPlMonthly(sb: any) {
       breakdown: Record<string, Record<string, number>>; // {F:{勘定科目:金額},...}
       seisanSynced: Record<string, number>; // {F:n,L:n,...}（bqGetPLのmemo=自動｜精算書だけの内訳。裏付け用・加算禁止）
       seisanPending: number; seisanPendingBreakdown: Record<string, number>; // invoice_pl_reflectionsのDB_PL未反映分（後段で合流）
+      loan: number; // 借入返済元金（PL費用ではない・後段で合流）
     };
     const newBucket = (storeId: string | null, ym: string): Bucket => ({
       store_id: storeId, year_month: ym, cost_manual: 0, labor_manual: 0, ad_manual: 0, rent: 0, other: 0,
-      breakdown: {}, seisanSynced: {}, seisanPending: 0, seisanPendingBreakdown: {},
+      breakdown: {}, seisanSynced: {}, seisanPending: 0, seisanPendingBreakdown: {}, loan: 0,
     });
     const byKey = new Map<string, Bucket>();
     for (let r = 1; r < rawRows.length; r++) {
@@ -568,6 +575,29 @@ async function refreshPlMonthly(sb: any) {
       }
     }
 
+    // 借入返済元金（2026-10-03追加・F2。簡易CFの返済元金欄をkd_で持つため）。取得に失敗したらこの列だけ
+    // 更新しない（0で上書きして誤った数字にしない）。PL本体の更新は止めない。
+    let loanOk = true;
+    try {
+      const loanRows = await bqGetLoanRows(sb);
+      for (let r = 1; r < loanRows.length; r++) {
+        const row = loanRows[r];
+        const ym = String(row[0] ?? "").trim().replace(/\//g, "-").slice(0, 7);
+        if (!/^\d{4}-\d{2}$/.test(ym)) continue;
+        const storeName = String(row[1] ?? "").trim();
+        const amount = num(row[3]);
+        let storeId: string | null = null;
+        if (storeName) {
+          storeId = idByName.get(storeName) ?? null;
+          if (!storeId) { unmatched.add(storeName); continue; }
+        }
+        const key = `${storeId ?? COMMON_STORE_KEY}|${ym}`;
+        const b = byKey.get(key) ?? newBucket(storeId, ym);
+        b.loan += amount;
+        byKey.set(key, b);
+      }
+    } catch (_) { loanOk = false; }
+
     // 自動売上/原価/人件費: kd_dashboard_daily_summaryを月合計（対象年月＋店舗のみ）
     const yms = [...new Set([...byKey.values()].map((b) => b.year_month))];
     const storeIds = [...new Set([...byKey.values()].map((b) => b.store_id).filter((v): v is string => !!v))];
@@ -614,6 +644,7 @@ async function refreshPlMonthly(sb: any) {
         seisan_synced_breakdown: b.seisanSynced,
         seisan_pending_total: b.seisanPending || null,
         seisan_pending_breakdown: b.seisanPendingBreakdown,
+        ...(loanOk ? { loan_principal: b.loan || null } : {}),
         source_updated_at: new Date().toISOString(), computed_at: new Date().toISOString(),
         source_count: 1, sync_run_id: runId,
       };
