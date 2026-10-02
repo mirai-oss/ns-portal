@@ -1790,6 +1790,7 @@ function detectMailPassword(mail){
    ============================================================ */
 let ME=null;
 let MASTER_MAILS=[];      // 受信トレイの全件（KPI・フィルタの元データ）
+let MASTER_MAILS_LOADED=false;
 let CHIP="unprocessed";   // unprocessed | processing | completed | all
 let KIND_FILTER="all";    // all | unclassified | invoice | sales | contract（2026-08-25 Phase1.6）
 let SEARCH_Q="";
@@ -1901,6 +1902,7 @@ async function loadInboxMaster(){
   // 実運用の総件数(1000件強)を見込んで余裕を持たせた
   const r=await authed(`/rest/v1/invoice_emails?select=id,from_address,subject,body_text,received_at,mail_status,mail_kind,duplicate_suspected,is_important,processing_user_id,completed_at,updated_at,processor:users!invoice_emails_processing_user_id_fkey(name),atts:invoice_attachments(id)&order=received_at.desc&limit=5000`);
   MASTER_MAILS=(r.ok&&Array.isArray(r.body))?r.body:[];
+  MASTER_MAILS_LOADED=true;
 }
 // KPIカード（未処理・処理中・今月完了）は、MASTER_MAILSがlimitで切り詰められる可能性を
 // 考慮せず常に正確な値を出すため、一覧とは別にDBへ直接件数を問い合わせて求める
@@ -2185,7 +2187,7 @@ async function renderTabBody(u){
   if(TAB==="dashboard") await renderAccountingDashboardTab(u);
   else if(TAB==="unified") await renderUnifiedInvoiceTab(u);
   else if(TAB==="transfers") await renderTransfersTab(u);
-  else if(TAB==="inbox") renderInbox(u);
+  else if(TAB==="inbox") await renderInbox(u);
   else if(TAB==="invoiceList") await renderInvoiceListTab(u);
   else if(TAB==="salesList") await renderSalesListTab(u);
   else if(TAB==="contractList") await renderContractListTab(u);
@@ -3716,7 +3718,11 @@ function mailWsTabsHtml(){
 function wireMailWsTabs(u){
   document.querySelectorAll("[data-mailwstab]").forEach(b=>b.onclick=()=>{ TAB=b.dataset.mailwstab; pushNav(); renderTabBody(u); });
 }
-function renderInbox(u){
+async function renderInbox(u){
+  if(!MASTER_MAILS_LOADED){
+    $("tabbody").innerHTML='<div class="spin">請求書メールを読み込み中…</div>';
+    await perfTimed("inbox_master_load",()=>loadInboxMaster());
+  }
   const list=filteredMails();
   BULK_SELECTED=new Set([...BULK_SELECTED].filter(id=>list.some(m=>m.id===id)));
   MOBILE_VIEW="list"; // タブ/絞り込み切替のたびに一覧表示へ戻す
@@ -11406,7 +11412,9 @@ async function main(){
   if(u.is_active===false){renderLogin();return}
   ME=u;
   history.replaceState({tab:TAB},"");
-  await Promise.all([loadInboxMaster(), loadWaitingPaymentCount(), loadKpiCounts(), loadAcBadgeCounts()]);
+  const bootJobs=[loadWaitingPaymentCount(), loadKpiCounts(), loadAcBadgeCounts()];
+  if(TAB==="inbox") bootJobs.push(perfTimed("inbox_master_load",()=>loadInboxMaster()));
+  await Promise.all(bootJobs);
   $("app").innerHTML=shellHtml(u);
   wireShell(u);
   await renderTabBody(u);

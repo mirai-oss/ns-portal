@@ -533,29 +533,33 @@ function toriCacheGet(){ try{ return JSON.parse(localStorage.getItem(TORI_CACHE_
 function toriCacheSet(v){ try{ localStorage.setItem(TORI_CACHE_KEY,JSON.stringify(v)); }catch(e){} }
 function toriCacheFresh(c){
   if(!c||!c.fetchedAt||!Array.isArray(c.daily)) return false;
-  const fetched=new Date(c.fetchedAt), now=new Date();
-  const today11=new Date(now.getFullYear(),now.getMonth(),now.getDate(),11,0,0);
-  if(now<today11) return true;
-  return fetched>=today11;
+  return Date.now()-new Date(c.fetchedAt).getTime()<5*60*1000;
 }
 let TORI_STATE={status:"idle",daily:[],error:null};
+function ymOf(d){ return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0"); }
+function addMonthsYm(ym,n){ const [y,m]=String(ym).split("-").map(Number); return ymOf(new Date(y,m-1+n,1)); }
 async function ensureToriData(force){
   const cached=toriCacheGet();
-  if(!force&&toriCacheFresh(cached)){ TORI_STATE={status:"ok",daily:cached.daily,error:null}; return TORI_STATE; }
+  if(!force&&toriCacheFresh(cached)){ TORI_STATE={status:"ok",daily:cached.daily,error:null,monthly:!!cached.monthly}; return TORI_STATE; }
   TORI_STATE={status:"loading",daily:cached?cached.daily:[],error:null};
   try{
-    const token=await toriSsoLogin();
-    const d=await toriApi({action:"data",token,months:13,keys:"daily"});
-    if(!d.ok) throw new Error(d.error||"取得に失敗しました");
-    const daily=parseToriDaily((d.sheets||{}).daily||[]);
-    toriCacheSet({fetchedAt:new Date().toISOString(),daily});
-    TORI_STATE={status:"ok",daily,error:null};
+    const to=ymOf(new Date()), from=addMonthsYm(to,-12);
+    const r=await authed(`/rest/v1/kd_store_monthly_summary?year_month=gte.${from}&year_month=lte.${to}&select=store_id,year_month,sales,cost,labor_total,store:stores(name)&order=year_month.asc&limit=2000`);
+    if(!r.ok) throw new Error((r.body&&r.body.message)||"経営集計の取得に失敗しました");
+    const daily=(Array.isArray(r.body)?r.body:[]).map(row=>{
+      const [y,m]=String(row.year_month||"").split("-").map(Number);
+      return {store:(row.store&&row.store.name)||row.store_id||"",t:new Date(y,m-1,1).getTime(),sales:toriNum(row.sales),cost:toriNum(row.cost),labor:toriNum(row.labor_total),monthly:true};
+    }).filter(r=>r.store&&Number.isFinite(r.t));
+    toriCacheSet({fetchedAt:new Date().toISOString(),daily,monthly:true});
+    TORI_STATE={status:"ok",daily,error:null,monthly:true};
   }catch(e){
-    TORI_STATE={status:"error",daily:cached?cached.daily:[],error:e.message||"接続できません"};
+    TORI_STATE={status:"error",daily:cached?cached.daily:[],error:e.message||"接続できません",monthly:!!(cached&&cached.monthly)};
   }
   return TORI_STATE;
 }
 function sameDay(t,d){ const a=new Date(t); return a.getFullYear()===d.getFullYear()&&a.getMonth()===d.getMonth()&&a.getDate()===d.getDate(); }
+function sameMonth(t,d){ const a=new Date(t); return a.getFullYear()===d.getFullYear()&&a.getMonth()===d.getMonth(); }
+function sameMonthLastYear(t,ref){ const a=new Date(t); return a.getFullYear()===ref.getFullYear()-1&&a.getMonth()===ref.getMonth(); }
 function sameDayLastYearSameDow(t,ref){
   const a=new Date(t); if(a.getFullYear()!==ref.getFullYear()-1) return false;
   const diff=Math.abs((a-new Date(ref.getFullYear()-1,ref.getMonth(),ref.getDate()))/86400000);
@@ -580,12 +584,12 @@ const WIDGETS={
    if(scoped&&!scoped.length) return kpiCard("自店の昨日売上","—","","所属店舗が未設定です");
    if(scoped){
      const yday=new Date(Date.now()-86400000);
-     const rows=st.daily.filter(r=>scoped.includes(r.store)&&sameDay(r.t,yday));
+     const rows=st.daily.filter(r=>scoped.includes(r.store)&&(st.monthly?sameMonth(r.t,new Date()):sameDay(r.t,yday)));
      const sum=rows.reduce((s,r)=>s+r.sales,0);
-     const prev=st.daily.filter(r=>scoped.includes(r.store)&&sameDayLastYearSameDow(r.t,yday));
+     const prev=st.daily.filter(r=>scoped.includes(r.store)&&(st.monthly?sameMonthLastYear(r.t,new Date()):sameDayLastYearSameDow(r.t,yday)));
      const psum=prev.reduce((s,r)=>s+r.sales,0);
      const yoy=psum>0?Math.round((sum/psum-1)*1000)/10:null;
-     return kpiCard("自店の昨日売上",yen(sum),yoyBadge(yoy),`${scoped[0]||""}（経営Dから）`);
+     return kpiCard(st.monthly?"自店の今月売上":"自店の昨日売上",yen(sum),yoyBadge(yoy),`${scoped[0]||""}（集計DBから）`);
    }
    const now=new Date();
    const rows=st.daily.filter(r=>{ const d=new Date(r.t); return d.getFullYear()===now.getFullYear()&&d.getMonth()===now.getMonth()&&d.getDate()<=now.getDate(); });
@@ -593,7 +597,7 @@ const WIDGETS={
    const prevRows=st.daily.filter(r=>{ const d=new Date(r.t); return d.getFullYear()===now.getFullYear()-1&&d.getMonth()===now.getMonth()&&d.getDate()<=now.getDate(); });
    const psum=prevRows.reduce((s,r)=>s+r.sales,0);
    const yoy=psum>0?Math.round((sum/psum-1)*1000)/10:null;
-   return kpiCard("今月の売上（全店）",yen(sum),yoyBadge(yoy),`${now.getDate()}日時点（経営Dから）`);
+   return kpiCard("今月の売上（全店）",yen(sum),yoyBadge(yoy),`${now.getDate()}日時点（集計DBから）`);
  }},
  kpi_nippo:{ render(ctx){
    const scoped=myStoreScope(ctx.u);
@@ -1780,9 +1784,9 @@ function salesHeroHtml(ctx){
   const scoped=myStoreScope(ctx.u);
   if(scoped){
     const yday=new Date(Date.now()-86400000);
-    const rows=st.daily.filter(r=>scoped.includes(r.store)&&sameDay(r.t,yday));
+    const rows=st.daily.filter(r=>scoped.includes(r.store)&&(st.monthly?sameMonth(r.t,new Date()):sameDay(r.t,yday)));
     const sum=rows.reduce((s,r)=>s+r.sales,0);
-    return `<div class="mobile-home-summary"><small>自店の昨日売上</small><div class="sales">${yen(sum)}</div></div>`;
+    return `<div class="mobile-home-summary"><small>${st.monthly?"自店の今月売上":"自店の昨日売上"}</small><div class="sales">${yen(sum)}</div></div>`;
   }
   const now=new Date();
   const rows=st.daily.filter(r=>{ const d=new Date(r.t); return d.getFullYear()===now.getFullYear()&&d.getMonth()===now.getMonth()&&d.getDate()<=now.getDate(); });
