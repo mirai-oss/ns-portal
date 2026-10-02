@@ -411,17 +411,17 @@ async function refreshStoreMonthly(sb: any) {
 
     // ①売上/原価/PA/社員人件費: kd_dashboard_daily_summaryの月合計（dashboard_dailyのmonths窓の範囲内のみ）
     const dashRows = await fetchAll((f, t) => sb.from("kd_dashboard_daily_summary")
-      .select("store_id,period_date,net_sales,cost,labor_pa,labor_emp")
+      .select("store_id,period_date,net_sales,cost,labor,labor_pa,labor_emp")
       .order("period_date").order("store_id").range(f, t));
     type Bucket = {
-      store_id: string; year_month: string; sales: number; cost: number; labor_pa: number; labor_emp: number; labor_spot: number;
+      store_id: string; year_month: string; sales: number; cost: number; labor: number; labor_pa: number; labor_emp: number; labor_spot: number;
     };
     const byKey = new Map<string, Bucket>();
     for (const r of (dashRows ?? []) as any[]) {
       const ym = String(r.period_date).slice(0, 7);
       const key = `${r.store_id}|${ym}`;
-      const b = byKey.get(key) ?? { store_id: r.store_id, year_month: ym, sales: 0, cost: 0, labor_pa: 0, labor_emp: 0, labor_spot: 0 };
-      b.sales += Number(r.net_sales) || 0; b.cost += Number(r.cost) || 0;
+      const b = byKey.get(key) ?? { store_id: r.store_id, year_month: ym, sales: 0, cost: 0, labor: 0, labor_pa: 0, labor_emp: 0, labor_spot: 0 };
+      b.sales += Number(r.net_sales) || 0; b.cost += Number(r.cost) || 0; b.labor += Number(r.labor) || 0;
       b.labor_pa += Number(r.labor_pa) || 0; b.labor_emp += Number(r.labor_emp) || 0;
       byKey.set(key, b);
     }
@@ -439,7 +439,7 @@ async function refreshStoreMonthly(sb: any) {
       if (!storeId) { unmatched.add(storeName); continue; }
       const ym = dateStr.slice(0, 7);
       const key = `${storeId}|${ym}`;
-      const b = byKey.get(key) ?? { store_id: storeId, year_month: ym, sales: 0, cost: 0, labor_pa: 0, labor_emp: 0, labor_spot: 0 };
+      const b = byKey.get(key) ?? { store_id: storeId, year_month: ym, sales: 0, cost: 0, labor: 0, labor_pa: 0, labor_emp: 0, labor_spot: 0 };
       b.labor_spot += num(row[3]);
       byKey.set(key, b);
     }
@@ -461,14 +461,16 @@ async function refreshStoreMonthly(sb: any) {
     }
 
     const upserts = [...byKey.values()].map((b) => {
-      const laborTotal = b.labor_pa + b.labor_emp + b.labor_spot;
+      // 人件費合計はapp.js stat()と同じ定義＝fact_daily_store.labor_cost_total(日次のlabor列の和)+スポット。
+      // PA+社員の和ではない（API切替前の月は賞与・法定福利・通勤手当等を含むため和の2倍超になる月がある）。
+      const laborTotal = b.labor + b.labor_spot;
       const costRate = b.sales ? b.cost / b.sales : null;
       const laborRate = b.sales ? laborTotal / b.sales : null;
       const budgetSales = budgetByKey.get(`${b.store_id}|${b.year_month}`) ?? null;
       return {
         store_id: b.store_id, corporation_id: corpByStoreId.get(b.store_id) ?? null, year_month: b.year_month,
         sales: b.sales, cost: b.cost, cost_rate: costRate,
-        labor_pa: b.labor_pa, labor_emp: b.labor_emp, labor_spot: b.labor_spot, labor_total: laborTotal, labor_rate: laborRate,
+        labor_pa: b.labor_pa, labor_emp: b.labor_emp, labor_other: b.labor - b.labor_pa - b.labor_emp, labor_spot: b.labor_spot, labor_total: laborTotal, labor_rate: laborRate,
         fl_rate: costRate != null && laborRate != null ? costRate + laborRate : null,
         gross_profit: b.sales - b.cost,
         budget_sales: budgetSales, budget_diff: budgetSales != null ? b.sales - budgetSales : null,

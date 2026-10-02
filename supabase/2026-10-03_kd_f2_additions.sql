@@ -36,3 +36,12 @@ from public.kd_reservation_daily_summary
 group by store_id, corporation_id, to_char(period_date, 'YYYY-MM');
 comment on view public.kd_reservation_monthly_v is
   '予約の店舗×月集計(kd_reservation_daily_summaryのビュー)。キャンセル内訳・チャネル内訳(jsonb)は日次側のcancel_summaryモードを使う。';
+
+-- 3. kd_store_monthly_summary.labor_other: 人件費合計(labor_cost_total)のうちPA・社員の内訳に入らない分（残差）。
+--    【事前報告】理由: app.jsのstat()の人件費合計は fact_daily_store.labor_cost_total(+スポット) であり、PA+社員の和ではない。
+--    API切替前の月(〜2026-08)は labor_cost_total が社員賞与・法定福利・通勤手当等を含み、PA+社員の和の2倍超になる月がある
+--    (2026-06実測)。当初のlabor_total=PA+社員+スポットでは旧経路よりL率が低く出ていた。
+--    現構造: labor_pa/labor_emp/labor_spot/labor_total(=3つの和)。 影響: 列追加(null許容)＋labor_totalの定義を
+--    labor_cost_total+スポットへ修正(リフレッシュで全行が再計算される)。 rollback: 列drop＋コードを戻す。
+alter table public.kd_store_monthly_summary add column if not exists labor_other numeric;
+comment on column public.kd_store_monthly_summary.labor_other is 'labor_cost_total−(labor_pa+labor_emp)。社員賞与・法定福利・通勤手当等のPA/社員内訳外。labor_total=labor_cost_total合計+labor_spot';
