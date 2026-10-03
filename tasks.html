@@ -2354,6 +2354,17 @@ function wireDetail(t,u){
     }
     const r2=await authed(`/rest/v1/hq_task_steps?id=eq.${sid}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({completed_at:new Date().toISOString()})});
     if(!r2.ok){ offbFail(sid,"配布は完了しましたが、工程を完了にできませんでした。「この工程を完了」を押してください。"); return false; }
+    // 2026-10-03(B) v4: 源泉徴収票が済んだので、退職日を過ぎていれば停止してスマレジへも反映する（失敗しても工程の完了は有効。毎朝の自動停止も同じ判定をする）
+    try{
+      const fr=await authed("/rest/v1/rpc/hr_finalize_retirement",{method:"POST",body:JSON.stringify({p_user:p.user_id})});
+      if(fr.ok&&fr.body&&fr.body.stopped){
+        const s3=sess.get();
+        const sr=await fetch(SUPA_URL+"/functions/v1/smaregi-sync",{method:"POST",headers:{"Content-Type":"application/json","apikey":SUPA_KEY,"Authorization":"Bearer "+(s3?s3.at:"")},body:JSON.stringify({action:"terminate",user_id:p.user_id,date:fr.body.date})});
+        const sj=await sr.json().catch(()=>({}));
+        if(fr.body.request_id) await authed("/rest/v1/rpc/hr_record_retirement_sync",{method:"POST",body:JSON.stringify({p_request:fr.body.request_id,p_status:sj.ok?"synced":"error",p_result:sj})}).catch(()=>{});
+        await logActivity(t.id,"comment",`退職日を過ぎているため、ログインを停止${sj.ok?"し、スマレジにも反映":"しました（スマレジ反映は失敗。退職申請一覧から再同期できます）"}`,sid);
+      }
+    }catch(e){ console.warn("退職の停止判定:",e); }
     await logActivity(t.id,"step_complete",`工程「${step.title}」完了（源泉徴収票を登録${withLine?"・LINEで本人へ案内":"・LINE通知なし"}）`,sid);
     await notifyStepEvent(sid,"step_complete");
     OFFB_DOC_DONE.delete(sid); OPEN_STEP=null; STEP_ATT_OPEN.delete(sid);
