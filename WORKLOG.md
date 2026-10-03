@@ -6,6 +6,12 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
+**★★★★2026-10-03（担当Bスレッド）退職申請 v5: 申請が出たらLINE通知（マスター・社長・本部・チーム長のうちLINE連携済み・その店舗に関係する人だけ）／SQL v5・Edge Functionは事前報告済み・未適用/未デプロイ（nippoはその後にpush）**:
+- `supabase/2026-10-03_hr_change_requests_v5_notify.sql`（列line_notified_at＋service_role専用RPC `hr_claim_retire_notify`: 承認待ち・10分以内・未通知の申請だけを1回だけ「通知する」と印を付け、文面情報と宛先を返す。宛先=マスター/CEO/HQは全店舗、TEAMは担当チーム店舗＋所属店舗がその申請店舗に含まれる人）と Edge Function `hr-retire-notify`（ログイン不要・verify_jwt無し・request_idだけ受け取りLINE push）。フォーム(retire-form.html)とnippoの申請フォームが申請直後に呼ぶ。
+- 現在LINE連携済みの対象: 坂本龍太郎(TEAM)・中山(CEO)のみ。本部の原・青山・齋藤は未連携＝通知は届かない（連携すれば届く）。
+- 参考(ユーザー質問): Slack統一は、日報配信(report_channels: Lark/Chatwork)は種別追加で比較的小さいが、LINEの個別DM(シフト・源泉徴収票案内等)や他の通知は個別実装で散在＝移行は中規模。共通の`notify`窓口を先に作るのが前提。
+- 補足(源泉徴収票の停止): 申請を承認した人のブラウザが古い画面だと停止判定が呼ばれない→画面の再読み込みが必要。手動でhr-termination-applyを動かして1件停止済み。
+
 **★★★★2026-10-03（担当Bスレッド）退職申請 v4: 源泉徴収票が済むまで実際の停止を待たせる＋従業員編集から源泉徴収票アップロード／SQL v4はユーザーがSQL Editorで適用済み・nippo公開済み(ecf787b)**:
 - ユーザー要望: 退職処理が先に済むと源泉徴収票が取れない→承認時でなく「実際の停止（ログイン停止・スマレジ退職反映）」を待たせる（選択肢Aをユーザーが選択）。本部が直接管理画面から退職処理する場合のため、従業員編集からも源泉徴収票をアップロード可能に（Storage→hr_register_document→任意でLINE案内→停止判定）。
 - **SQL v4（`supabase/2026-10-03_hr_change_requests_v4_hold.sql`・適用済み。関数の存在と slip_pending(完了済み=false) をservice keyで確認。承認→待機→停止の通し検証は実画面で未実施）**: `hr_slip_pending(user)`（退職タスクの源泉徴収票工程が未完了かつその年の書類未登録＝待つ）／`set_employee_termination`は退職日を入れてもその場で停止しない／新RPC `hr_finalize_retirement(user)`（退職日を過ぎていて待たなくてよいなら停止）／`hr_apply_due_terminations`も同条件＋戻り値にitems(user_id,date)。
