@@ -6,6 +6,14 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
+**★★★★★2026-10-03（担当Bスレッド）Sync7（退職申請・承認）本番適用完了／SQL・smaregi-sync・nippo・自動停止workflow すべて稼働**:
+- **適用済み（ユーザー承認）**: `supabase/2026-10-03_hr_change_requests.sql`（テーブル`hr_change_requests`＋RPC6本＋`hr_can_act_store`＋`set_employee_termination`改修§9）を本番へ。`smaregi-sync`(`terminate`にdeactivate/deactivate_only/service_role対応)をデプロイ済み。nippo `ef0e97b` push済み（承認処理→スマレジ退職日送信→`hq_create_offboarding_task`）。workflow `hr-termination-apply.yml` を手動実行→成功（対象0件）。毎朝06:00 JSTに自動実行。
+- **ルール（ユーザー確認済み）**: 承認＝退職日の登録のみ。退職日が昨日以前→承認時に即停止（deactivated_at=退職日JST0:00）／今日以降→停止は翌朝の自動処理。退職日カード（従業員編集）も同じルール・同じ文言に統一。`set_employee_termination`は権限にマスター追加・戻り値に`deactivated_now`追加。
+- **検証（本番DBでトランザクション内→最後にロールバック・痕跡0件確認済み）**: 申請→二重申請拒否→承認(今日付は停止しない)→二重承認拒否→過去日で即停止→復職→未来日→過去日申請拒否→一般権限での自動停止RPC拒否→自動停止RPC(対象を停止・2回目は空)→結果記録(synced/error)。スマレジ未連携者の`terminate`は`skipped`。
+- **未実施**: ①実画面(ブラウザ)でのE2E、②スマレジ連携済みの本物の人での最初の退職反映（ユーザー立ち会い必須）、③店長/チーム長の店舗スコープ(RLS)の実アカウント確認。④担当Eの工程5（源泉徴収票→hr_documents）通しテスト。
+- **元に戻す(rollback)**: `set_employee_termination`の元定義はSQLファイルの§9見出しコメントに保存。新規関数・テーブルはdrop。
+- **セキュリティ**: PAT(`~/.config/ns-portal/supabase_pat`)は作業後に失効(Revoke)推奨。smaregi-syncのJWT未署名検証は別タスク（chip: smaregi系Edge FunctionのJWT署名検証を追加）。
+
 **★★★★2026-10-03（担当Bスレッド）Sync7（退職申請・承認）実装: nippo側（画面①②）push済み・SQL/Edge Function/自動停止workflowは下書き（未適用）／PAT失効のため§6-1「`set_employee_termination`の定義確認」ができず、既存RPC改修だけ未確定**:
 - **nippo（push済み・`719c536`）**: 画面①「退職申請」(page=retire・店長/チーム長/本部/社長/マスター)＝店舗→従業員(名前絞り込み・承認待ちの人は除外)→退職日→確認→`hr_request_retirement`。画面②「退職申請一覧」(従業員管理内・本部/社長/マスター)＝承認(確認ダイアログ)→`hr_approve_retirement`→既存`smaregiTerminate`(退職日のみ・`deactivate:false`)→結果を`hr_record_retirement_sync`で記録→`hqNotifyOffboarding`(本部タスク自動発行・失敗しても承認は有効)／却下(理由任意)／スマレジ未同期の再同期。`hrRetireReady`＝DBに`hr_change_requests`が在る間だけナビ・ボタンを出す（SQL適用前は非表示）。
 - **SQL下書き**: `supabase/2026-10-03_hr_change_requests.sql`（テーブル`hr_change_requests`＋部分ユニーク索引＋RPC: `hr_can_act_store`/`hr_request_retirement`/`hr_approve_retirement`/`hr_reject_retirement`/`hr_record_retirement_sync`/`hr_apply_due_terminations`(service_role専用)/`hr_record_deactivation_result`(service_role専用)）。**§6 `set_employee_termination`改修は未確定**（既存定義が必要）。
