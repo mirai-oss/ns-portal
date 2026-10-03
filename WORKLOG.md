@@ -6,7 +6,7 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
-**★★★★2026-10-03（担当Bスレッド）退職申請 v5: 申請が出たらLINE通知（マスター・社長・本部・チーム長のうちLINE連携済み・その店舗に関係する人だけ）／SQL v5・Edge Functionは事前報告済み・未適用/未デプロイ（nippoはその後にpush）**:
+**★★★★2026-10-03（担当Bスレッド）退職申請 v5: 申請が出たらLINE通知（マスター・社長・本部・チーム長のうちLINE連携済み・その店舗に関係する人だけ）／SQL v5・Edge Function `hr-retire-notify`はユーザーがダッシュボードで適用/登録済み(Verify JWTオフ)・nippo公開済み。実LINE送信の実機テストは未実施（坂本さんにも届くため事前連絡が必要）**:
 - `supabase/2026-10-03_hr_change_requests_v5_notify.sql`（列line_notified_at＋service_role専用RPC `hr_claim_retire_notify`: 承認待ち・10分以内・未通知の申請だけを1回だけ「通知する」と印を付け、文面情報と宛先を返す。宛先=マスター/CEO/HQは全店舗、TEAMは担当チーム店舗＋所属店舗がその申請店舗に含まれる人）と Edge Function `hr-retire-notify`（ログイン不要・verify_jwt無し・request_idだけ受け取りLINE push）。フォーム(retire-form.html)とnippoの申請フォームが申請直後に呼ぶ。
 - 現在LINE連携済みの対象: 坂本龍太郎(TEAM)・中山(CEO)のみ。本部の原・青山・齋藤は未連携＝通知は届かない（連携すれば届く）。
 - 参考(ユーザー質問): Slack統一は、日報配信(report_channels: Lark/Chatwork)は種別追加で比較的小さいが、LINEの個別DM(シフト・源泉徴収票案内等)や他の通知は個別実装で散在＝移行は中規模。共通の`notify`窓口を先に作るのが前提。
