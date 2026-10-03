@@ -14,7 +14,7 @@
   - **追加RPC** `hr_mark_document_notified(p_document uuid)`（担当Eのボタンが `line-webhook push_user` 成功後に呼ぶ。指示書の列 `line_notified_at` を埋める口が無かったため担当Bが追加）
   - バケット `hr-documents`（非公開・PDFのみ・20MB・パス `{user_id}/withholding_{year}.pdf`）。Storageポリシー: 読取=本人は自分のフォルダ（**is_active不問**）＋本部/社長/マスター、insert/update/delete=本部/社長/マスター（差し替えupsertのためupdateも許可）
   - テーブルRLS: select=本人（is_active不問）＋本部/社長/マスター。insert/update/deleteポリシーなし＝書き込みはRPC経由のみ
-  - **担当Eが呼ぶ`hq_create_offboarding_task`の引数（nippo側の呼び出し）**: `p_user_id, p_name, p_is_employee, p_retirement_date, p_approved_on` ＋ 法人が解決できたとき `p_corp`（nippo側で user_stores→stores.corporation_id→corporations.name を解決して渡す）。担当Eの実装がこれと違う場合はどちらかを直すのでWORKLOGで連絡を
+  - **`hq_create_offboarding_task`の呼び出し（担当Eの`2026-10-03_hq_offboarding_task.sql`の署名を確認して一致済み）**: nippoは `p_user_id, p_name, p_corp, p_is_employee, p_retirement_date, p_approved_on` を渡す（`p_corp`はnippo側で user_stores→stores.corporation_id→corporations.name を解決・取れなければ'トーホー'。`p_final_pay_date`は渡さずRPC既定値）
 - **③nippo**（push済み・コミット`32a078a`）: マイページ「📄 自分の書類」(page=mydocs・全員のナビに「書類」)。`hr_documents`の本人の行を一覧→押すと120秒の署名付きURLで開く。**補足Q1=a**: 退職後(`is_active=false`)でも`hr_documents`に自分の行があれば書類専用でログインを通す（他画面はpage強制＋既存RLS(is_active必須)の二重で閉じる。書類が無ければ従来どおりログイン不可）。`hr_documents`未作成の間は「まだ書類はありません」を出すだけで壊れない。
 - **検証**: syntax check＋vmで`myDocsView`の描画（正常／テーブル未作成）を確認。署名付きURL・退職者ログインの実動作は`hr_documents`適用後に使い捨て従業員で確認予定（未実施）。
 - **要対応**: ①Management API用PAT（`~/.config/ns-portal/supabase_pat`）が**401（失効）**のため、このセッションでは本番DBの確認・SQL適用ができない。SQL適用にはPATの再発行が必要。②Sync7（退職申請・承認）の承認処理の実装が先。
