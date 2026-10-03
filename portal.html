@@ -1299,7 +1299,9 @@ const GROUPS=[
   // 各項目は既存画面をiframe/リンクで再利用（作り直さない）。マスター・社長・本部のみ表示
   // 2026-09-07: カテゴリタブは「社内情報管理」（joho SSOリンク）と分離し「管理・権限」へ変更
   {cap:"管理",ico:"⚙️", roles:["HQ","CEO"], section:"manage", items:[
-    {key:"admin-accounts", ico:"👤", label:"アカウント管理（nippo）", url:nippoPage("admin")},
+    {key:"admin-accounts", ico:"👤", label:"アカウント管理（nippo）", url:nippoPage("admin"), countKey:"retire", countLabel:"退職申請", countTitle:"退職申請（承認待ち）"},
+    // 2026-10-03(B): 退職申請一覧への直リンク。件数はアカウント管理と同じ（合計バッジは二重に数えないようdupCount）
+    {key:"admin-retire",   ico:"🚪", label:"退職申請一覧", url:nippoPage("admin")+"&m=retire", countKey:"retire", countLabel:"承認待ち", countTitle:"退職申請（承認待ち）", dupCount:true},
     {key:"admin-perm",     ico:"🔑", label:"権限設定（従来ポータル）", legacyLink:true},
     {key:"admin-notify",   ico:"🔔", label:"通知先（配信グループ管理）", url:nippoPage("admin")},
     {key:"admin-stores",   ico:"🏢", label:"マスタ：店舗管理", url:nippoPage("admin")},
@@ -1369,6 +1371,7 @@ let SIDEBAR_COLLAPSED=(()=>{ try{ return localStorage.getItem("portal_sidebar_co
 let NAV_HQ_CNT=0, NAV_INV_CNT=0, NAV_APPROVAL_CNT=0, NAV_RECEIVABLE_CNT=0;
 // 2026-09-03 ユーザー要望: 経費申請の自分宛承認待ち／個人情報・社内システム変更申請の
 // 承認待ち（従来のNAV_APPROVAL_CNTを内訳ごとに分割）／自分の日報へのいいね・コメント通知
+let NAV_RETIRE_CNT=0; // 2026-10-03(B): 退職申請の承認待ち件数（nippo hr_change_requests・本部/社長/マスターのみ）
 let NAV_EXPENSE_CNT=0, NAV_PROFILE_APPROVAL_CNT=0, NAV_CRED_APPROVAL_CNT=0, NAV_REPORT_FEEDBACK_CNT=0;
 
 /* ============================================================
@@ -1493,6 +1496,7 @@ function countOf(it){
   if(it.countKey==="profileApproval") return NAV_PROFILE_APPROVAL_CNT;
   if(it.countKey==="credApproval") return NAV_CRED_APPROVAL_CNT;
   if(it.countKey==="reportFeedback") return NAV_REPORT_FEEDBACK_CNT;
+  if(it.countKey==="retire") return NAV_RETIRE_CNT;
   return 0;
 }
 function navItemHtml(it,activeKey){
@@ -1503,7 +1507,7 @@ function navItemHtml(it,activeKey){
 }
 // グループ見出し・上部カテゴリタブの合計バッジ用：内訳をホバーで見えるようにする（2026-09-25）
 function countBreakdownTitle(items){
-  const parts=items.filter(it=>!it.soon&&countOf(it)>0).map(it=>`${it.countTitle||it.label} ${countOf(it)}件`);
+  const parts=items.filter(it=>!it.soon&&!it.dupCount&&countOf(it)>0).map(it=>`${it.countTitle||it.label} ${countOf(it)}件`);
   return parts.length?` title="${esc(parts.join(" ／ "))}"`:"";
 }
 // 2026-09-07: 上部の横タブ（カテゴリ）＋左のサイドバー（選んだカテゴリの中身）という
@@ -1520,7 +1524,7 @@ function itemsInSection(sectionKey,u){
   return out;
 }
 function sectionVisible(sectionKey,u){ return itemsInSection(sectionKey,u).length>0; }
-function sectionCount(sectionKey,u){ return itemsInSection(sectionKey,u).reduce((s,it)=>s+countOf(it),0); }
+function sectionCount(sectionKey,u){ return itemsInSection(sectionKey,u).reduce((s,it)=>s+(it.dupCount?0:countOf(it)),0); }
 // topbar最上段に置く横タブ。#topSections単体でouterHTML差し替えできるよう
 // ラップ用divのid/classもここで持たせる（topbar-main側の検索窓<input>は
 // 一切触らないIME安全パターン。ns-portal/CLAUDE.md IMEバグの教訓を参照）
@@ -1546,7 +1550,7 @@ function sidebarHtml(u){
     const items=grp.items.filter(it=>itemVisible(it,grp,u));
     if(!items.length) return "";
     const isOpen=grp.cap===OPEN_GROUP;
-    const grpCnt=items.filter(it=>!it.soon).reduce((s,it)=>s+countOf(it),0);
+    const grpCnt=items.filter(it=>!it.soon).reduce((s,it)=>s+(it.dupCount?0:countOf(it)),0);
     return `<div class="nav-group${isOpen?" open":""}" data-group="${esc(grp.cap)}">
       <button class="nav-group-head"><span>${grp.ico}</span><span>${esc(grp.cap)}</span><span class="grp-trail">${grpCnt?`<span class="count"${countBreakdownTitle(items)}>${grpCnt}</span>`:""}<span class="chev">›</span></span></button>
       <div class="subnav">${items.map(it=>navItemHtml(it,activeKey)).join("")}</div>
@@ -1968,6 +1972,13 @@ async function renderHomeArea(u){
       NAV_REPORT_FEEDBACK_CNT=((likesR.ok&&Array.isArray(likesR.body))?likesR.body.length:0)+((commentsR.ok&&Array.isArray(commentsR.body))?commentsR.body.length:0);
     } else { NAV_REPORT_FEEDBACK_CNT=0; }
   }catch(e){ NAV_REPORT_FEEDBACK_CNT=0; }
+  // 2026-10-03(B): 退職申請の承認待ち（承認できる人＝本部・社長・マスターだけ。SQL適用前でテーブルが無ければ0件）
+  try{
+    if(u.is_master||u.role==="HQ"||u.role==="CEO"){
+      const rr=await authed(`/rest/v1/hr_change_requests?kind=eq.retirement&status=eq.pending&select=id`);
+      NAV_RETIRE_CNT=(rr.ok&&Array.isArray(rr.body))?rr.body.length:0;
+    } else NAV_RETIRE_CNT=0;
+  }catch(e){ NAV_RETIRE_CNT=0; }
   refreshNavActive(u);
 }
 // nippo系メニューを開いたら「いいね・コメントを見た」とみなし、次回のバッジ計算の

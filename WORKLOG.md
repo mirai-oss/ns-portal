@@ -6,6 +6,11 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
+**★★★★2026-10-03（担当Bスレッド）退職申請 v3: ログイン不要の申請フォーム＋承認待ちバッジ（ユーザー要望: tori-dashboardのtransferFormのようなシンプルなURLフォーム／未読バッジ）／SQL v3は事前報告済み・未適用**:
+- **フォーム**: nippoに独立ページ `retire-form.html?k=<合言葉>`（管理システムとは別ページ・ログイン不要）。入力=退職日(30日前から)・店舗・従業員・申請者の名前・備考。送信すると「承認待ち」で入るだけ（本部がnippoで承認するまで何も変わらない）。DB側は公開RPC `hr_public_retire_options(p_token)`／`hr_public_request_retirement(...)`（合言葉を確認。直近1時間に20件超で拒否）。合言葉は`hr_form_tokens`（RLSで直接アクセス不可）。本部はnippoの退職申請一覧からURLをコピー／「URLを作り直す」（`hr_get_retire_form_token`／`hr_rotate_retire_form_token`）。SQL=`supabase/2026-10-03_hr_change_requests_v3_form.sql`（未適用）。
+- **バッジ（ns-portal portal.html・担当F管轄の最小変更）**: 管理・権限タブ／アカウント管理(nippo)／新設「退職申請一覧」(`?page=admin&m=retire`直リンク)に承認待ち件数（本部・社長・マスターのみ。合計は二重に数えない`dupCount`）。nippo本体の「管理」ナビのバッジにも承認待ちを加算。
+- **検証**: 構文チェックOK・フォームの見た目はブラウザで確認(モックデータ)。DB側は未適用のため未検証。
+
 **★★★★2026-10-03（担当Bスレッド）退職申請 v2（ユーザー要望: 過去日・取り消し・URL・タスクに管理画面リンク）／SQL v2はユーザーがSQL Editorで適用済み・nippo公開済み(c07ce42)／テスト用の退職タスク1件をソフト削除**:
 - ユーザーの実機テスト(カウン　カン=スマレジ連携者)で判明: ①申請フォームが今日以降のみ→過去に退職済みの人を申請できない ②承認後に「退職を取り消す」(復職)しても申請一覧に承認済みのまま残り履歴が無い ③店長に渡せるURLが欲しい ④退職タスクにその人の管理画面リンクが欲しい ⑤源泉徴収票アップロードが「本部に問い合わせ」と出て失敗（原因調査中・ユーザーに画面確認依頼。ns-portalのコードには該当文言なし。DB上hr_documents・Storageは空）。
 - **SQL v2（`supabase/2026-10-03_hr_change_requests_v2.sql`・適用済み。関数/列の存在は確認済みだが、PAT削除済みのため過去日申請→承認→取り消しの通し検証(ロールバック付き)は未実施）**: statusに'cancelled'＋列cancelled_by/at／`hr_request_retirement`を退職日30日前まで許可／新RPC `hr_cancel_retirement(p_request)`（本部・社長・マスター。set_employee_termination(null)を呼び申請を取り消し済みに）／`set_employee_termination`の復職で承認済み申請を取り消し済みに。
