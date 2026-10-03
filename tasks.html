@@ -355,6 +355,7 @@ const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&
 const RICH_SIZE_PX={s:"12px",m:"14px",l:"18px",xl:"24px"};
 function richTextHtml(raw){
   let s=esc(raw||"").replace(/\n/g,"<br>");
+  s=s.replace(/(https?:\/\/[^\s<]+)/g,'<a href="$1" target="_blank" rel="noopener">$1</a>'); // 2026-10-03(B): 説明欄のURLをクリックで開けるように（退職タスクの管理画面リンク用）
   s=s.replace(/\*\*([^*]+)\*\*/g,"<b>$1</b>");
   s=s.replace(/\[color=(#[0-9a-fA-F]{3,8})\]([\s\S]*?)\[\/color\]/g,'<span style="color:$1">$2</span>');
   s=s.replace(/\[size=(s|m|l|xl)\]([\s\S]*?)\[\/size\]/g,(m,sz,inner)=>`<span style="font-size:${RICH_SIZE_PX[sz]}">${inner}</span>`);

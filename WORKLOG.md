@@ -6,6 +6,13 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
+**★★★★2026-10-03（担当Bスレッド）退職申請 v2（ユーザー要望: 過去日・取り消し・URL・タスクに管理画面リンク）／SQL v2は事前報告済み・未適用／テスト用の退職タスク1件をソフト削除**:
+- ユーザーの実機テスト(カウン　カン=スマレジ連携者)で判明: ①申請フォームが今日以降のみ→過去に退職済みの人を申請できない ②承認後に「退職を取り消す」(復職)しても申請一覧に承認済みのまま残り履歴が無い ③店長に渡せるURLが欲しい ④退職タスクにその人の管理画面リンクが欲しい ⑤源泉徴収票アップロードが「本部に問い合わせ」と出て失敗（原因調査中・ユーザーに画面確認依頼。ns-portalのコードには該当文言なし。DB上hr_documents・Storageは空）。
+- **SQL v2（`supabase/2026-10-03_hr_change_requests_v2.sql`・未適用）**: statusに'cancelled'＋列cancelled_by/at／`hr_request_retirement`を退職日30日前まで許可／新RPC `hr_cancel_retirement(p_request)`（本部・社長・マスター。set_employee_termination(null)を呼び申請を取り消し済みに）／`set_employee_termination`の復職で承認済み申請を取り消し済みに。
+- **nippo（ローカルコミットのみ・SQL適用後にpush）**: 申請フォームの退職日min=30日前・過去日の説明、申請一覧に「取り消す（復職）」ボタン＋「承認済みのみ／取り消し済みのみ」フィルタ＋申請フォームURL(`?page=retire`)コピー、`?page=admin&u=<user_id>`でその人の従業員編集を直接開く、`hqNotifyOffboarding`が作成後に本部タスクの説明欄へ「従業員の管理画面: URL」を追記(担当EのRPCは変更せず)。
+- **tasks.html(担当E管轄・最小変更)**: `richTextHtml`が説明欄のURLをクリック可能なリンクにする。
+- **後始末**: テスト用タスク d1ba6e86…（カウン　カンさん退職手続き）は deleted_at を入れてソフト削除。テスト相手カウン　カンさんは復職済み（退職日なし・在籍・スマレジも打刻ON）。Management API用PAT控えは削除済み（ユーザーはSupabaseのトークン画面で失効する）。
+
 **★★★★★2026-10-03（担当Bスレッド）Sync7（退職申請・承認）本番適用完了／SQL・smaregi-sync・nippo・自動停止workflow すべて稼働**:
 - **適用済み（ユーザー承認）**: `supabase/2026-10-03_hr_change_requests.sql`（テーブル`hr_change_requests`＋RPC6本＋`hr_can_act_store`＋`set_employee_termination`改修§9）を本番へ。`smaregi-sync`(`terminate`にdeactivate/deactivate_only/service_role対応)をデプロイ済み。nippo `ef0e97b` push済み（承認処理→スマレジ退職日送信→`hq_create_offboarding_task`）。workflow `hr-termination-apply.yml` を手動実行→成功（対象0件）。毎朝06:00 JSTに自動実行。
 - **ルール（ユーザー確認済み）**: 承認＝退職日の登録のみ。退職日が昨日以前→承認時に即停止（deactivated_at=退職日JST0:00）／今日以降→停止は翌朝の自動処理。退職日カード（従業員編集）も同じルール・同じ文言に統一。`set_employee_termination`は権限にマスター追加・戻り値に`deactivated_now`追加。
