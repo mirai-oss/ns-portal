@@ -6,6 +6,19 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
+**★★★★2026-10-03（担当Bスレッド）退職 第2フェーズ=担当B側（nippo）の準備: 「📄 自分の書類」実装・hr_documents等のSQL案を作成（※SQLは事前報告＝ユーザー確認待ちで未適用）／①承認フックは前提のSync7承認処理が未実装のため保留**: 指示書 `実装指示書_退職手続きタスクと書類配布_担当BE_2026-10-03.md` §3。
+- **前提の確認結果**: `hr_approve_retirement`／`hr_change_requests`／`hr_request_retirement`はリポジトリ・nippo/index.htmlのどこにも**未実装**（Sync7の承認処理は着手されていない）。よって§3-1「承認フック」は呼び出し元が無く繋げない。呼び出し側の関数 `hqNotifyOffboarding(uid,name,role,retirementDate)` は nippo に用意済み（承認ハンドラ完成時に成功パス最後へ1行足すだけ）。
+- **②SQL案**（未適用）: `supabase/2026-10-03_hr_documents.sql`。**担当Eはこの契約で合わせてください**:
+  - テーブル `hr_documents(id uuid pk, user_id uuid, kind text, year int, path text, uploaded_by uuid, uploaded_at timestamptz, line_notified_at timestamptz, unique(user_id,kind,year))`。`kind`は現状 `'withholding_slip'` のみ
+  - RPC `hr_register_document(p_user uuid, p_kind text, p_year int, p_path text) returns jsonb {ok,id,replaced}`（本部/社長/マスターのみ。**pathは必ず `{p_user}/...` で始める**＝本人フォルダ以外は拒否。同じ(user,kind,year)は差し替え＝line_notified_atをnullに戻す）
+  - **追加RPC** `hr_mark_document_notified(p_document uuid)`（担当Eのボタンが `line-webhook push_user` 成功後に呼ぶ。指示書の列 `line_notified_at` を埋める口が無かったため担当Bが追加）
+  - バケット `hr-documents`（非公開・PDFのみ・20MB・パス `{user_id}/withholding_{year}.pdf`）。Storageポリシー: 読取=本人は自分のフォルダ（**is_active不問**）＋本部/社長/マスター、insert/update/delete=本部/社長/マスター（差し替えupsertのためupdateも許可）
+  - テーブルRLS: select=本人（is_active不問）＋本部/社長/マスター。insert/update/deleteポリシーなし＝書き込みはRPC経由のみ
+  - **担当Eが呼ぶ`hq_create_offboarding_task`の引数（nippo側の呼び出し）**: `p_user_id, p_name, p_is_employee, p_retirement_date, p_approved_on` ＋ 法人が解決できたとき `p_corp`（nippo側で user_stores→stores.corporation_id→corporations.name を解決して渡す）。担当Eの実装がこれと違う場合はどちらかを直すのでWORKLOGで連絡を
+- **③nippo**（push済み・コミット`32a078a`）: マイページ「📄 自分の書類」(page=mydocs・全員のナビに「書類」)。`hr_documents`の本人の行を一覧→押すと120秒の署名付きURLで開く。**補足Q1=a**: 退職後(`is_active=false`)でも`hr_documents`に自分の行があれば書類専用でログインを通す（他画面はpage強制＋既存RLS(is_active必須)の二重で閉じる。書類が無ければ従来どおりログイン不可）。`hr_documents`未作成の間は「まだ書類はありません」を出すだけで壊れない。
+- **検証**: syntax check＋vmで`myDocsView`の描画（正常／テーブル未作成）を確認。署名付きURL・退職者ログインの実動作は`hr_documents`適用後に使い捨て従業員で確認予定（未実施）。
+- **要対応**: ①Management API用PAT（`~/.config/ns-portal/supabase_pat`）が**401（失効）**のため、このセッションでは本番DBの確認・SQL適用ができない。SQL適用にはPATの再発行が必要。②Sync7（退職申請・承認）の承認処理の実装が先。
+
 **★★★2026-10-03（司令塔スレッド）退職申請 第2フェーズ=ユーザー承認→`実装指示書_退職手続きタスクと書類配布_担当BE_2026-10-03.md`を発行**: 退職承認時に本部タスク「退職手続き」を自動発行（入社登録タスク`hq_create_onboarding_task`と同じ作法で`hq_create_offboarding_task`・担当E）。工程=社員: 退職願/届受取・健康保険証回収・資格喪失届提出・住民税手続き・源泉徴収票／アルバイト: 源泉徴収票のみ（ユーザー指定）。源泉徴収票は工程5の特別ボタンでPDFを`hr-documents`へ→`hr_documents`（担当B）→本人マイページ「自分の書類」＋LINEは本人ページへの案内のみ（PDF/URLは送らない）。前提=Sync7の承認処理完成後。補足Q1（退職後の書類閲覧=★a）は回答無ければ★で進行。
 
 **★★★2026-10-03（司令塔スレッド）調査「源泉徴収票を退職時に自動発行してLINE送付できるか」→結論: スマレジ・タイムカードAPIに源泉徴収票/年末調整/帳票PDFは無い（月別給与明細まで・年間累計なし）。源泉徴収票は管理画面からの手動出力のみ。LINEはPDF直接送信不可（ファイル種別なし）→推奨=半自動（退職承認翌日に本部タスク自動発行→本部がPDFをポータルへアップロード→本人マイページ表示＋LINEに期限付きリンク）。詳細=`docs/調査メモ_源泉徴収票の自動発行とLINE送付_2026-10-03.md`。ユーザー判断待ち（案Aを退職申請の第2フェーズにするか）**
