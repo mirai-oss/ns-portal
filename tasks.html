@@ -964,6 +964,7 @@ function renderBoard(u){
   <div class="chiprow" id="typechips" style="margin-top:14px">
     <span class="chip ${!FILTER.type?'active':''}" data-type="">すべて</span>
     <span class="chip ${FILTER.type==='onboarding'?'active':''}" data-type="onboarding">📋 入社登録${typeTabBadgeHtml('onboarding')}</span>
+    <span class="chip ${FILTER.type==='offboarding'?'active':''}" data-type="offboarding">🚪 退職手続き${typeTabBadgeHtml('offboarding')}</span>
     <!-- 2026-09-11: TK-52＋会計・請求ワークスペースUI刷新(§9-13)対応。会計処理の例外
          （hq_create_exception_task）はinvoice_id/receivable_idの有無でinvoice/deposit
          に自動分類される。送金(transfer)は担当C/D側が呼び出し時にp_categoryで明示する想定 -->
@@ -1318,6 +1319,28 @@ function onboardingLineSectionHtml(s,canTouch){
     </div>
   </div>`;
 }
+/* 2026-10-03(E): 退職手続きタスク（hq_create_offboarding_task）の工程5「源泉徴収票」の特別ボタン。
+   実装指示書_退職手続きタスクと書類配布_担当BE_2026-10-03.md §2。流れ: PDFをhr-documentsバケットへ
+   （{user_id}/withholding_{year}.pdf・上書き可）→担当BのRPC hr_register_document→line-webhookの
+   push_userで本人へ案内（PDF・URLは送らない）→工程を完了。どこかで失敗したら工程は完了にしない。
+   書類登録まで済んでLINEだけ失敗した場合（LINE未連携など）は、再送または「LINE通知なしで完了」を出す */
+const OFFB_DOC_DONE=new Map(); // 書類登録まで済んだ工程id→hr_documentsのid（LINE再送時の記録用）
+function offboardingTaxSlipSectionHtml(s,canTouch){
+  if(s.action_kind!=="offboarding_tax_slip") return "";
+  const p=s.action_payload||{};
+  if(s.completed_at) return `<div style="margin-top:10px"><div class="checklist-hd">📎 源泉徴収票</div><div class="meta">${esc(p.name||"—")}さん宛に配布済み（${esc(p.year||"")}年分）</div></div>`;
+  const registered=OFFB_DOC_DONE.has(s.id);
+  return `<div style="margin-top:10px" onclick="event.stopPropagation()">
+    <div class="checklist-hd">📎 源泉徴収票（${esc(p.year||"")}年分）をアップロードして本人へ配布</div>
+    <div class="meta">対象: ${esc(p.name||"—")}さん ／ 本人のマイページ「自分の書類」に表示され、LINEで案内が届きます（PDF自体はLINEに送りません）</div>
+    ${canTouch?(registered?`<div class="meta" style="color:var(--ok);margin-top:6px">✅ 書類は登録済みです。LINE通知だけ完了していません。</div>
+      <button class="btn sm" data-offbresend="${s.id}" style="margin-top:6px">📱 LINE通知を再送して完了</button>
+      <button class="linkbtn" data-offbskipline="${s.id}" style="margin-left:6px">LINE通知なしで完了にする</button>`
+      :`<input type="file" accept="application/pdf,.pdf" id="offbfile-${s.id}" style="margin-top:6px">
+      <button class="btn sm" data-offbupload="${s.id}" style="margin-top:6px">📎 源泉徴収票PDFをアップロード</button>`):""}
+    <div class="err" id="offb-msg-${s.id}" style="margin-top:6px"></div>
+  </div>`;
+}
 function invoiceSectionHtml(t,s,u){
   if(!canManage(u)) return ""; // invoice_can_access()と同じ条件（会計操作のため一般閲覧者には見せない）
   const inv=invoiceLinkFor(t,s.id);
@@ -1567,7 +1590,7 @@ function stepHtml(t,s,u){
   // 2026-08-25(続き): 判定(is_binary)も必須写真(requires_photo)も無い単純な工程は、
   // 開かなくてもその場で完了できるよう行のメタ行に「✅完了にする」を追加してほしいとの
   // 実機フィードバック対応。判定・写真が要る工程は入力が要るため従来どおりパネルを開く
-  const canQuickComplete=canComplete&&!s.is_binary&&!s.requires_photo;
+  const canQuickComplete=canComplete&&!s.is_binary&&!s.requires_photo&&s.action_kind!=="offboarding_tax_slip"; // 源泉徴収票は専用ボタン（アップロード→配布→完了）を通す
   const hasPanel=links.length||photos.length||attCanEdit||canComplete;
   const panelOpen=STEP_ATT_OPEN.has(s.id);
   const stepNum=sortedSteps(t).indexOf(s)+1;
@@ -1596,6 +1619,7 @@ function stepHtml(t,s,u){
         ${procedureHtml(s,canTouch)}
         ${invoiceSectionHtml(t,s,u)}
         ${onboardingLineSectionHtml(s,canTouch)}
+        ${offboardingTaxSlipSectionHtml(s,canTouch)}
         ${(s.is_binary||s.requires_photo)&&canComplete?`<div class="step-body" style="border:0;padding:10px 0 0">
           ${s.is_binary?`<label>判定</label>
             <select id="judge-${s.id}"><option value="">選択してください</option><option value="ok">OK</option><option value="issue">異常あり</option></select>
@@ -2306,6 +2330,69 @@ function wireDetail(t,u){
         }
         btn.disabled=false;
       }catch(err){ if(msg){ msg.className="err"; msg.textContent="送信中にエラーが発生しました"; } btn.disabled=false; }
+    };
+  });
+  /* 2026-10-03(E): 退職手続き工程5「源泉徴収票」。アップロード→hr_register_document→LINE案内→工程完了。
+     LINE送信とその後の完了処理は再送ボタンからも使うため関数にまとめる */
+  const offbFail=(sid,text)=>{
+    renderDetail(u); // 再送・LINEなし完了のボタンを出すため描画し直す
+    const m=$("offb-msg-"+sid); if(m){ m.className="err"; m.textContent=text; }
+  };
+  const offbFinish=async(sid,withLine)=>{
+    const step=sortedSteps(t).find(s=>s.id===sid);
+    const p=step?.action_payload||{};
+    if(withLine){
+      const s2=sess.get();
+      const text=`${p.name||""}さん\n\n源泉徴収票が届きました。ポータルの「自分の書類」からご確認ください。`;
+      const r=await fetch(SUPA_URL+"/functions/v1/line-webhook",{method:"POST",headers:{"Content-Type":"application/json","apikey":SUPA_KEY,"Authorization":"Bearer "+(s2?s2.at:"")},body:JSON.stringify({action:"push_user",user_id:p.user_id,text})});
+      const j=await r.json().catch(()=>({}));
+      if(!j.ok){ offbFail(sid,"書類は登録済みですが、LINE通知を送れませんでした（"+(j.error||"原因不明")+"）。"); return false; }
+      const did=OFFB_DOC_DONE.get(sid);
+      if(did) await authed("/rest/v1/rpc/hr_mark_document_notified",{method:"POST",body:JSON.stringify({p_document:did})}).catch(()=>{}); // LINE案内の記録は失敗しても完了を止めない
+    }
+    const r2=await authed(`/rest/v1/hq_task_steps?id=eq.${sid}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({completed_at:new Date().toISOString()})});
+    if(!r2.ok){ offbFail(sid,"配布は完了しましたが、工程を完了にできませんでした。「この工程を完了」を押してください。"); return false; }
+    await logActivity(t.id,"step_complete",`工程「${step.title}」完了（源泉徴収票を登録${withLine?"・LINEで本人へ案内":"・LINE通知なし"}）`,sid);
+    await notifyStepEvent(sid,"step_complete");
+    OFFB_DOC_DONE.delete(sid); OPEN_STEP=null; STEP_ATT_OPEN.delete(sid);
+    CUR_TASK=await fetchTaskDetail(t.id); syncTaskIntoBoardList(CUR_TASK); renderDetail(u);
+    return true;
+  };
+  document.querySelectorAll("[data-offbupload]").forEach(btn=>{
+    btn.onclick=async(e)=>{
+      e.stopPropagation();
+      const sid=btn.dataset.offbupload;
+      const step=sortedSteps(t).find(s=>s.id===sid);
+      const p=step?.action_payload||{};
+      const msg=$("offb-msg-"+sid); msg.className="err"; msg.textContent="";
+      const f=$("offbfile-"+sid)?.files[0];
+      if(!f){ msg.textContent="PDFファイルを選択してください"; return; }
+      if(!(f.type==="application/pdf"||/\.pdf$/i.test(f.name))){ msg.textContent="PDFファイルを選択してください"; return; }
+      if(f.size>10*1024*1024){ msg.textContent="ファイルが大きすぎます（10MBまで）"; return; }
+      if(!p.user_id||!p.year){ msg.textContent="対象者または年の情報がありません（工程データを確認してください）"; return; }
+      btn.disabled=true; msg.textContent="アップロード中…";
+      try{
+        const path=`${p.user_id}/withholding_${p.year}.pdf`;
+        const up=await authed(`/storage/v1/object/hr-documents/${path}`,{method:"POST",isBinary:true,headers:{"Content-Type":"application/pdf","x-upsert":"true"},body:await f.arrayBuffer()});
+        if(!up.ok){ msg.textContent="アップロードできませんでした（"+up.status+"）。工程は完了にしていません。もう一度お試しください"; btn.disabled=false; return; }
+        msg.textContent="書類を登録中…";
+        const reg=await authed("/rest/v1/rpc/hr_register_document",{method:"POST",body:JSON.stringify({p_user:p.user_id,p_kind:"withholding_slip",p_year:Number(p.year),p_path:path})});
+        if(!reg.ok){ msg.textContent="書類の登録に失敗しました（"+(reg.body&&reg.body.message?reg.body.message:reg.status)+"）。工程は完了にしていません。もう一度お試しください"; btn.disabled=false; return; }
+        OFFB_DOC_DONE.set(sid,(reg.body&&reg.body.id)||null);
+        msg.textContent="本人へLINEで案内中…";
+        await offbFinish(sid,true);
+        btn.disabled=false;
+      }catch(err){ msg.textContent="エラー: "+err.message; btn.disabled=false; }
+    };
+  });
+  document.querySelectorAll("[data-offbresend]").forEach(btn=>{
+    btn.onclick=async(e)=>{ e.stopPropagation(); btn.disabled=true; const m=$("offb-msg-"+btn.dataset.offbresend); if(m){m.className="err";m.textContent="送信中…";} try{ await offbFinish(btn.dataset.offbresend,true); }catch(err){ if(m) m.textContent="エラー: "+err.message; } btn.disabled=false; };
+  });
+  document.querySelectorAll("[data-offbskipline]").forEach(btn=>{
+    btn.onclick=async(e)=>{
+      e.stopPropagation();
+      if(!confirm("LINE通知を送らずに工程を完了にします。本人へは別の方法でお知らせしてください。よろしいですか？")) return;
+      btn.disabled=true; try{ await offbFinish(btn.dataset.offbskipline,false); }catch(err){ const m=$("offb-msg-"+btn.dataset.offbskipline); if(m) m.textContent="エラー: "+err.message; } btn.disabled=false;
     };
   });
   /* 2026-08-25: 工程ごとの添付・完了操作パネルの開閉。行全体(row1)と「📎添付・マニュアル」
