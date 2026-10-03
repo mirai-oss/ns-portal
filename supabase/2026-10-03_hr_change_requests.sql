@@ -1,10 +1,8 @@
 -- ============================================================
 -- 2026-10-03 担当B（nippo）— 退職申請・承認（Sync7）のDB側
 -- 実装指示書_担当B_退職申請承認_2026-10-03.md §1・§8（Q1=a: 退職日の翌日に自動停止）
--- 【状態】⚠️下書き（未適用）。§6の set_employee_termination 改修だけは、既存関数の定義
---   （DB上にのみ存在・リポジトリに無い）を pg_get_functiondef で確認してから確定する。
---   §1〜§5（テーブル・申請/承認/却下RPC・自動停止RPC）は既存関数に依存しないが、承認RPCは
---   §6で改修した set_employee_termination を呼ぶため、§6が確定するまで一括適用はしない。
+-- 【状態】事前報告（ユーザー確認待ち・未適用）。§9の set_employee_termination 改修は、2026-10-03に
+--   pg_get_functiondef で確認した既存定義（下の「元の定義」）をもとに作成。
 --
 -- 【理由】店舗（店長・チーム長・本部）からの退職申請→本部の承認→退職日の登録、を画面から行うため。
 -- 【現構造】退職処理は従業員編集の「退職日」カード→RPC set_employee_termination→smaregi-sync terminate
@@ -186,7 +184,7 @@ declare v_today date := (now() at time zone 'Asia/Tokyo')::date; v_ids uuid[];
 begin
   with due as (
     update users u set is_active = false,
-           deactivated_at = ((ep.termination_date + 1)::timestamp at time zone 'Asia/Tokyo')
+           deactivated_at = (ep.termination_date::timestamp at time zone 'Asia/Tokyo')
       from employee_profiles ep
      where ep.user_id = u.id and u.is_active and ep.termination_date is not null and ep.termination_date < v_today
     returning u.id
@@ -222,11 +220,71 @@ revoke all on function public.hr_record_deactivation_result(uuid, boolean, jsonb
 grant execute on function public.hr_record_deactivation_result(uuid, boolean, jsonb) to service_role;
 
 -- ============================================================
--- §6 set_employee_termination の改修（★未確定。既存定義を確認してから書く）
---   目標の挙動（Q1=a）:
---     p_date が null      → 復職: employee_profiles.termination_date=null・users.is_active=true・deactivated_at=null（従来どおり即時）
---     p_date < 今日(JST)  → 退職日が過去: termination_date登録＋その場で is_active=false・deactivated_at=p_date+1
---     p_date >= 今日(JST) → 退職日のみ登録。is_active は触らない（退職日の翌日に hr_apply_due_terminations が停止）
---     いずれも従来の副作用（応募者管理の状況を「退職」へ更新し、件数を {applicants:n} で返す）は維持
---   → 既存の本文（応募者更新の条件等）が分からないと書き換えられないため、pg_get_functiondef の結果を見て確定する
+-- §9 set_employee_termination の改修（Q1=a: 退職日の翌日に停止／過去日なら即停止）
+--   既存の挙動: 退職日を入れた瞬間に is_active=false。→ 新: 退職日が昨日以前の時だけ即停止、今日以降は退職日のみ登録
+--   （停止は毎日の hr_apply_due_terminations が退職日の翌日に行う）。復職(null)・応募者の状況更新・戻り値は従来どおり。
+--   追加点: ①権限に is_master を加える（承認＝本部・社長・マスターのため。従来はCEO/HQのみ）
+--          ②deactivated_at は従来どおり「退職日」を記録（従業員一覧の「退職 ○/○」表示と同じ意味）
+--          ③戻り値に deactivated_now（今回の呼び出しで停止したか）を追加
+-- 【元の定義（rollback用）】
+-- CREATE OR REPLACE FUNCTION public.set_employee_termination(p_user uuid, p_date date)
+--  RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path TO 'public' AS $function$
+-- declare v_staff text; v_apps int := 0; v_name text;
+-- begin
+--   if not exists (select 1 from users where id = auth.uid() and role in ('CEO','HQ')) then
+--     raise exception '権限がありません（社長・本部のみ）';
+--   end if;
+--   if p_user = auth.uid() then raise exception '自分自身には設定できません'; end if;
+--   select name into v_name from users where id = p_user;
+--   if v_name is null then raise exception '対象の従業員が見つかりません'; end if;
+--   insert into employee_profiles (user_id) values (p_user) on conflict (user_id) do nothing;
+--   update employee_profiles set termination_date = p_date, updated_at = now() where user_id = p_user;
+--   if p_date is null then
+--     update users set is_active = true, deactivated_at = null, updated_at = now() where id = p_user;
+--     update applicants set status = 'hired', status_changed_at = now(), updated_at = now() where user_id = p_user and status = 'retired';
+--     get diagnostics v_apps = row_count;
+--   else
+--     update users set is_active = false, deactivated_at = p_date::timestamptz, updated_at = now() where id = p_user;
+--     update applicants set status = 'retired', status_changed_at = now(), updated_at = now() where user_id = p_user and status <> 'retired';
+--     get diagnostics v_apps = row_count;
+--   end if;
+--   select smaregi_staff_id into v_staff from employee_profiles where user_id = p_user;
+--   return jsonb_build_object('ok', true, 'name', v_name, 'applicants', v_apps, 'smaregi_staff_id', v_staff);
+-- end $function$
 -- ============================================================
+create or replace function public.set_employee_termination(p_user uuid, p_date date)
+ returns jsonb
+ language plpgsql
+ security definer
+ set search_path to 'public'
+as $function$
+declare v_staff text; v_apps int := 0; v_name text; v_deact boolean := false;
+        v_today date := (now() at time zone 'Asia/Tokyo')::date;
+begin
+  if not exists (select 1 from users where id = auth.uid() and (is_master or role in ('CEO','HQ'))) then
+    raise exception '権限がありません（社長・本部・マスターのみ）';
+  end if;
+  if p_user = auth.uid() then raise exception '自分自身には設定できません'; end if;
+  select name into v_name from users where id = p_user;
+  if v_name is null then raise exception '対象の従業員が見つかりません'; end if;
+  insert into employee_profiles (user_id) values (p_user) on conflict (user_id) do nothing;
+  update employee_profiles set termination_date = p_date, updated_at = now() where user_id = p_user;
+  if p_date is null then
+    update users set is_active = true, deactivated_at = null, updated_at = now() where id = p_user;
+    update applicants set status = 'hired', status_changed_at = now(), updated_at = now()
+     where user_id = p_user and status = 'retired';
+    get diagnostics v_apps = row_count;
+  else
+    if p_date < v_today then
+      -- 退職日が昨日以前: その場で停止（退職日の翌日を既に過ぎているため）
+      update users set is_active = false, deactivated_at = (p_date::timestamp at time zone 'Asia/Tokyo'), updated_at = now() where id = p_user;
+      v_deact := true;
+    end if;
+    -- 退職日が今日以降: is_activeは触らない（退職日の翌日に hr_apply_due_terminations が停止）
+    update applicants set status = 'retired', status_changed_at = now(), updated_at = now()
+     where user_id = p_user and status <> 'retired';
+    get diagnostics v_apps = row_count;
+  end if;
+  select smaregi_staff_id into v_staff from employee_profiles where user_id = p_user;
+  return jsonb_build_object('ok', true, 'name', v_name, 'applicants', v_apps, 'smaregi_staff_id', v_staff, 'deactivated_now', v_deact);
+end $function$;
