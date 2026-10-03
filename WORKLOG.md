@@ -8,7 +8,7 @@
 
 **★★★★2026-10-03（担当Bスレッド）退職 第2フェーズ=担当B側（nippo）の準備: 「📄 自分の書類」実装・hr_documents等のSQL案を作成（※SQLは事前報告＝ユーザー確認待ちで未適用）／①承認フックは前提のSync7承認処理が未実装のため保留**: 指示書 `実装指示書_退職手続きタスクと書類配布_担当BE_2026-10-03.md` §3。
 - **前提の確認結果**: `hr_approve_retirement`／`hr_change_requests`／`hr_request_retirement`はリポジトリ・nippo/index.htmlのどこにも**未実装**（Sync7の承認処理は着手されていない）。よって§3-1「承認フック」は呼び出し元が無く繋げない。呼び出し側の関数 `hqNotifyOffboarding(uid,name,role,retirementDate)` は nippo に用意済み（承認ハンドラ完成時に成功パス最後へ1行足すだけ）。
-- **②SQL案**（未適用）: `supabase/2026-10-03_hr_documents.sql`。**担当Eはこの契約で合わせてください**:
+- **②SQL**（✅**適用済み**＝ユーザーが同日SQL Editorで実行。担当BはPAT失効のため直接適用不可。service_role経由で表・RPC2本・バケットの存在を確認済み。Storage/テーブルのRLSポリシーの中身は未確認＝次のPAT再発行時に確認）: `supabase/2026-10-03_hr_documents.sql`。**担当Eはこの契約で結合できます**。**担当Eはこの契約で合わせてください**:
   - テーブル `hr_documents(id uuid pk, user_id uuid, kind text, year int, path text, uploaded_by uuid, uploaded_at timestamptz, line_notified_at timestamptz, unique(user_id,kind,year))`。`kind`は現状 `'withholding_slip'` のみ
   - RPC `hr_register_document(p_user uuid, p_kind text, p_year int, p_path text) returns jsonb {ok,id,replaced}`（本部/社長/マスターのみ。**pathは必ず `{p_user}/...` で始める**＝本人フォルダ以外は拒否。同じ(user,kind,year)は差し替え＝line_notified_atをnullに戻す）
   - **追加RPC** `hr_mark_document_notified(p_document uuid)`（担当Eのボタンが `line-webhook push_user` 成功後に呼ぶ。指示書の列 `line_notified_at` を埋める口が無かったため担当Bが追加）
