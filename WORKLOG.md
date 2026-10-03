@@ -6,6 +6,11 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
+**★★★★2026-10-03（担当Bスレッド）退職申請 v3 適用済み・公開済み／フォームの従業員フリーワード検索／本部タスクに「配布した源泉徴収票を開く」ボタン**:
+- v3 SQLはユーザーがSQL Editorで適用済み。公開RPC・合言葉・申請が動くことをanonキーで確認（試験データは削除済み）。`retire-form.html`は従業員をフリーワード検索（空白・全角半角を無視。店舗は任意の絞り込み）。
+- 源泉徴収票の配布は実機で成功（hr_documents・Storage `hr-documents/<user_id>/withholding_2026.pdf`・LINE案内・工程完了）。保管場所はStorageの非公開バケット＋hr_documents。tasks.html(担当E管轄・最小変更)の完了後の工程に「📎 配布した源泉徴収票を開く」（本部・社長・マスターのみ・120秒の署名付きURL）を追加。
+- 注意: 本部タスクへの管理画面リンク追記(`hqNotifyOffboarding`)は、1件目で入っていなかった（公開前の画面で承認した可能性）。次回承認で入るか要確認（入らなければRPC側で入れる）。
+
 **★★★★2026-10-03（担当Bスレッド）退職申請 v3: ログイン不要の申請フォーム＋承認待ちバッジ（ユーザー要望: tori-dashboardのtransferFormのようなシンプルなURLフォーム／未読バッジ）／SQL v3は事前報告済み・未適用**:
 - **フォーム**: nippoに独立ページ `retire-form.html?k=<合言葉>`（管理システムとは別ページ・ログイン不要）。入力=退職日(30日前から)・店舗・従業員・申請者の名前・備考。送信すると「承認待ち」で入るだけ（本部がnippoで承認するまで何も変わらない）。DB側は公開RPC `hr_public_retire_options(p_token)`／`hr_public_request_retirement(...)`（合言葉を確認。直近1時間に20件超で拒否）。合言葉は`hr_form_tokens`（RLSで直接アクセス不可）。本部はnippoの退職申請一覧からURLをコピー／「URLを作り直す」（`hr_get_retire_form_token`／`hr_rotate_retire_form_token`）。SQL=`supabase/2026-10-03_hr_change_requests_v3_form.sql`（未適用）。
 - **バッジ（ns-portal portal.html・担当F管轄の最小変更）**: 管理・権限タブ／アカウント管理(nippo)／新設「退職申請一覧」(`?page=admin&m=retire`直リンク)に承認待ち件数（本部・社長・マスターのみ。合計は二重に数えない`dupCount`）。nippo本体の「管理」ナビのバッジにも承認待ちを加算。

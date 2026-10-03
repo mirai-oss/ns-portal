@@ -1329,7 +1329,8 @@ const OFFB_DOC_DONE=new Map(); // 書類登録まで済んだ工程id→hr_docum
 function offboardingTaxSlipSectionHtml(s,canTouch){
   if(s.action_kind!=="offboarding_tax_slip") return "";
   const p=s.action_payload||{};
-  if(s.completed_at) return `<div style="margin-top:10px"><div class="checklist-hd">📎 源泉徴収票</div><div class="meta">${esc(p.name||"—")}さん宛に配布済み（${esc(p.year||"")}年分）</div></div>`;
+  if(s.completed_at) return `<div style="margin-top:10px" onclick="event.stopPropagation()"><div class="checklist-hd">📎 源泉徴収票</div><div class="meta">${esc(p.name||"—")}さん宛に配布済み（${esc(p.year||"")}年分）</div>
+    ${p.user_id&&p.year?`<button class="btn sm" data-offbopen="${s.id}" style="margin-top:6px">📎 配布した源泉徴収票を開く</button><div class="err" id="offb-open-msg-${s.id}" style="margin-top:6px"></div>`:""}</div>`; // 2026-10-03(B): 本部・社長・マスターが配布済みPDFを確認できるように（hr-documentsの短時間URL）
   const registered=OFFB_DOC_DONE.has(s.id);
   return `<div style="margin-top:10px" onclick="event.stopPropagation()">
     <div class="checklist-hd">📎 源泉徴収票（${esc(p.year||"")}年分）をアップロードして本人へ配布</div>
@@ -2384,6 +2385,23 @@ function wireDetail(t,u){
         await offbFinish(sid,true);
         btn.disabled=false;
       }catch(err){ msg.textContent="エラー: "+err.message; btn.disabled=false; }
+    };
+  });
+  document.querySelectorAll("[data-offbopen]").forEach(btn=>{
+    btn.onclick=async(e)=>{
+      e.stopPropagation();
+      const sid=btn.dataset.offbopen;
+      const step=sortedSteps(t).find(x=>x.id===sid);
+      const p=step?.action_payload||{};
+      const msg=$("offb-open-msg-"+sid); if(msg) msg.textContent="";
+      const w=window.open("","_blank"); // クリック直後に開いておく（あとからだとポップアップとして止められるため）
+      btn.disabled=true;
+      try{
+        const r=await authed(`/storage/v1/object/sign/hr-documents/${p.user_id}/withholding_${p.year}.pdf`,{method:"POST",body:JSON.stringify({expiresIn:120})});
+        if(!r.ok||!r.body||!r.body.signedURL){ if(w) w.close(); if(msg) msg.textContent="開けませんでした（"+(r.status===400||r.status===404?"ファイルが見つかりません":"権限がありません。本部・社長・マスターのみ開けます")+"）"; }
+        else if(w) w.location.href=SUPA_URL+"/storage/v1"+r.body.signedURL;
+      }catch(err){ if(w) w.close(); if(msg) msg.textContent="エラー: "+err.message; }
+      btn.disabled=false;
     };
   });
   document.querySelectorAll("[data-offbresend]").forEach(btn=>{
