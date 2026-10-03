@@ -6,10 +6,10 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
-**★★★★2026-10-03（担当Bスレッド）退職申請 v2（ユーザー要望: 過去日・取り消し・URL・タスクに管理画面リンク）／SQL v2は事前報告済み・未適用／テスト用の退職タスク1件をソフト削除**:
+**★★★★2026-10-03（担当Bスレッド）退職申請 v2（ユーザー要望: 過去日・取り消し・URL・タスクに管理画面リンク）／SQL v2はユーザーがSQL Editorで適用済み・nippo公開済み(c07ce42)／テスト用の退職タスク1件をソフト削除**:
 - ユーザーの実機テスト(カウン　カン=スマレジ連携者)で判明: ①申請フォームが今日以降のみ→過去に退職済みの人を申請できない ②承認後に「退職を取り消す」(復職)しても申請一覧に承認済みのまま残り履歴が無い ③店長に渡せるURLが欲しい ④退職タスクにその人の管理画面リンクが欲しい ⑤源泉徴収票アップロードが「本部に問い合わせ」と出て失敗（原因調査中・ユーザーに画面確認依頼。ns-portalのコードには該当文言なし。DB上hr_documents・Storageは空）。
-- **SQL v2（`supabase/2026-10-03_hr_change_requests_v2.sql`・未適用）**: statusに'cancelled'＋列cancelled_by/at／`hr_request_retirement`を退職日30日前まで許可／新RPC `hr_cancel_retirement(p_request)`（本部・社長・マスター。set_employee_termination(null)を呼び申請を取り消し済みに）／`set_employee_termination`の復職で承認済み申請を取り消し済みに。
-- **nippo（ローカルコミットのみ・SQL適用後にpush）**: 申請フォームの退職日min=30日前・過去日の説明、申請一覧に「取り消す（復職）」ボタン＋「承認済みのみ／取り消し済みのみ」フィルタ＋申請フォームURL(`?page=retire`)コピー、`?page=admin&u=<user_id>`でその人の従業員編集を直接開く、`hqNotifyOffboarding`が作成後に本部タスクの説明欄へ「従業員の管理画面: URL」を追記(担当EのRPCは変更せず)。
+- **SQL v2（`supabase/2026-10-03_hr_change_requests_v2.sql`・適用済み。関数/列の存在は確認済みだが、PAT削除済みのため過去日申請→承認→取り消しの通し検証(ロールバック付き)は未実施）**: statusに'cancelled'＋列cancelled_by/at／`hr_request_retirement`を退職日30日前まで許可／新RPC `hr_cancel_retirement(p_request)`（本部・社長・マスター。set_employee_termination(null)を呼び申請を取り消し済みに）／`set_employee_termination`の復職で承認済み申請を取り消し済みに。
+- **nippo（公開済み c07ce42）**: 申請フォームの退職日min=30日前・過去日の説明、申請一覧に「取り消す（復職）」ボタン＋「承認済みのみ／取り消し済みのみ」フィルタ＋申請フォームURL(`?page=retire`)コピー、`?page=admin&u=<user_id>`でその人の従業員編集を直接開く、`hqNotifyOffboarding`が作成後に本部タスクの説明欄へ「従業員の管理画面: URL」を追記(担当EのRPCは変更せず)。
 - **tasks.html(担当E管轄・最小変更)**: `richTextHtml`が説明欄のURLをクリック可能なリンクにする。
 - **後始末**: テスト用タスク d1ba6e86…（カウン　カンさん退職手続き）は deleted_at を入れてソフト削除。テスト相手カウン　カンさんは復職済み（退職日なし・在籍・スマレジも打刻ON）。Management API用PAT控えは削除済み（ユーザーはSupabaseのトークン画面で失効する）。
 
