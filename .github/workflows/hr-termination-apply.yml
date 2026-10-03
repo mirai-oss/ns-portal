@@ -6,8 +6,8 @@ name: 退職日の翌日の自動停止（ログイン停止＋スマレジ打�
 # 流れ:
 #   1. RPC hr_apply_due_terminations（service_role専用）: 退職日が昨日以前でまだ在籍(is_active=true)の人を
 #      一括で停止（users.is_active=false・deactivated_at）し、対象のuser_id一覧を返す
-#   2. 返ってきた各人について smaregi-sync の action:"terminate" を deactivate_only:true で呼び、
-#      スマレジ側の打刻だけをOFFにする（退職日自体は承認時に送信済み）
+#   2. 返ってきた各人について smaregi-sync の action:"terminate"（退職日つき）を呼び、スマレジに退職日を送って
+#      打刻をOFFにする（v4: 源泉徴収票が済むまで実際の停止・スマレジ反映を待たせるため、承認時には送らない）
 #   3. 結果を RPC hr_record_deactivation_result で、その人の承認済み退職申請（hr_change_requests）の
 #      sync_status / sync_result に記録（スマレジ失敗は「エラー」として後から画面で見え、再同期できる）
 # スマレジ側が失敗した人がいる場合はこのworkflowを失敗(赤)にしてGitHubの通知で気づけるようにする。
@@ -43,13 +43,17 @@ jobs:
           echo "hr_apply_due_terminations (HTTP $CODE): $BODY"
           if [ "$CODE" = "404" ]; then echo "::warning::hr_apply_due_terminationsが未作成（退職申請のSQL適用前）のためスキップします"; exit 0; fi
           if [ "$CODE" != "200" ]; then echo "::error::hr_apply_due_terminationsが失敗しました"; exit 1; fi
-          USERS=$(echo "$BODY" | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{try{const j=JSON.parse(s);console.log((j.users||[]).join(' '))}catch(e){console.log('')}})")
+          # 2026-10-03 v4: items=[{user_id,date}]。源泉徴収票を待つ人はRPC側で除外済み。スマレジには退職日と打刻OFFをまとめて送る（承認時には送らない）
+          USERS=$(echo "$BODY" | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{try{const j=JSON.parse(s);console.log((j.items||(j.users||[]).map(u=>({user_id:u,date:''}))).map(i=>i.user_id+':'+i.date).join(' '))}catch(e){console.log('')}})")
           if [ -z "$USERS" ]; then echo "停止対象はありません"; exit 0; fi
           FAILED=""
-          for U in $USERS; do
+          for UD in $USERS; do
+            U="${UD%%:*}"; D="${UD##*:}"
+            # 旧RPC（v4適用前）はitemsを返さない＝退職日なし。その場合は従来どおり打刻OFFのみ（退職日はnullで上書きしない）
+            if [ -n "$D" ]; then BODYJ="{\"action\":\"terminate\",\"user_id\":\"$U\",\"date\":\"$D\"}"; else BODYJ="{\"action\":\"terminate\",\"user_id\":\"$U\",\"deactivate_only\":true}"; fi
             R=$(curl -s -m 60 -w "\n%{http_code}" -X POST "$BASE/functions/v1/smaregi-sync" \
               -H "Authorization: Bearer $SR_KEY" -H "Content-Type: application/json" \
-              -d "{\"action\":\"terminate\",\"user_id\":\"$U\",\"deactivate_only\":true}")
+              -d "$BODYJ")
             C=$(echo "$R" | tail -1); B=$(echo "$R" | sed '$d')
             echo "== $U smaregi terminate (HTTP $C): $(echo "$B" | cut -c1-300)"
             OK=false; if [ "$C" = "200" ]; then OK=$(echo "$B" | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{try{console.log(JSON.parse(s).ok===true)}catch(e){console.log(false)}})"); fi
