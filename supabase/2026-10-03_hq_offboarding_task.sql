@@ -37,11 +37,11 @@ create index if not exists idx_hq_tasks_related_user on hq_tasks(related_user_id
 --   p_is_employee     … true=社員扱い（SHAIN/TENCHO/TEAM/HQ）／false=アルバイト（AL）
 --   p_retirement_date … 退職日
 --   p_approved_on     … 承認日（工程1の期限＝承認日+3日）
---   p_final_pay_date  … 最終給与の支払日（任意）。省略時は「退職月の翌月25日」と仮定（★要確認）。
+--   p_final_pay_date  … 最終給与の支払日（任意）。省略時は「退職月の翌月15日」（2026-10-03ユーザー回答）。
 --                       工程5の期限＝この日+3日
 --
 -- 期限（§1の表）: 1=承認日+3日／2=退職日／3=退職日+5日／4=退職日の翌月10日／5=最終給与支払日+3日
--- 担当: 入社登録と同じ固定担当（青山純→見つからなければ齋藤　隆治→無ければ担当未定で作成）
+-- 担当: 原　美香・青山純・齋藤　隆治の3名（工程すべてに複数担当。在籍していない人は除く。誰もいなければ担当未定で作成）
 -- 返り値: タスクid。同じ従業員の退職タスクが未完了で既にあれば、新規作成せずそのidを返す（べき等）
 -- 権限: 本部担当者（マスター・社長・本部）または auth.uid()が無いサーバー側ジョブ
 -- ============================================================
@@ -58,7 +58,7 @@ language plpgsql security definer set search_path = public as $$
 declare
   v_task_id uuid;
   v_existing uuid;
-  v_assignee uuid;
+  v_assignees uuid[];
   v_corp text;
   v_pay date;
   v_year int;
@@ -89,7 +89,7 @@ begin
 
   v_corp := case when p_corp in ('LiveGate','SK','N-Style','トーホー') then p_corp else 'トーホー' end;
   v_pay := coalesce(p_final_pay_date,
-                    (date_trunc('month', p_retirement_date) + interval '1 month' + interval '24 days')::date);
+                    (date_trunc('month', p_retirement_date) + interval '1 month' + interval '14 days')::date);
   v_year := extract(year from p_retirement_date)::int;
   v_retire_txt := to_char(p_retirement_date, 'YYYY/MM/DD');
   v_title := '退職手続き（' || p_name || 'さん・退職日 ' || v_retire_txt || '）';
@@ -98,10 +98,10 @@ begin
             '承認日: ' || to_char(coalesce(p_approved_on, current_date), 'YYYY/MM/DD') || E'\n' ||
             '退職承認により自動発行';
 
-  select id into v_assignee from users where name = '青山純' and is_active limit 1;
-  if v_assignee is null then
-    select id into v_assignee from users where name = '齋藤　隆治' and is_active limit 1;
-  end if;
+  -- 担当は3名の複数担当（2026-10-03ユーザー指定）。在籍している人だけを、この並びで入れる
+  select array_agg(u.id order by case u.name when '原　美香' then 1 when '青山純' then 2 else 3 end)
+    into v_assignees
+    from users u where u.is_active and u.name in ('原　美香', '青山純', '齋藤　隆治');
 
   insert into hq_tasks (title, corp, freq, target_date, due_date, notes, description, visibility,
                         created_by, task_category, related_user_id)
@@ -113,16 +113,16 @@ begin
   returning id into v_task_id;
 
   if p_is_employee then
-    insert into hq_task_steps(task_id, title, assignee_id, sort_order, kind, due_date) values
-      (v_task_id, '「退職願」／「退職届」を受け取る', v_assignee, 10, 'step', coalesce(p_approved_on, current_date) + 3),
-      (v_task_id, '健康保険証を回収する', v_assignee, 20, 'step', p_retirement_date),
-      (v_task_id, '「健康保険・厚生年金保険被保険者資格喪失届」を提出する', v_assignee, 30, 'step', p_retirement_date + 5),
-      (v_task_id, '住民税の手続き（異動届・徴収方法の切替）', v_assignee, 40, 'step',
+    insert into hq_task_steps(task_id, title, assignee_ids, sort_order, kind, due_date) values
+      (v_task_id, '「退職願」／「退職届」を受け取る', v_assignees, 10, 'step', coalesce(p_approved_on, current_date) + 3),
+      (v_task_id, '健康保険証を回収する', v_assignees, 20, 'step', p_retirement_date),
+      (v_task_id, '「健康保険・厚生年金保険被保険者資格喪失届」を提出する', v_assignees, 30, 'step', p_retirement_date + 5),
+      (v_task_id, '住民税の手続き（異動届・徴収方法の切替）', v_assignees, 40, 'step',
          (date_trunc('month', p_retirement_date) + interval '1 month' + interval '9 days')::date);
   end if;
 
-  insert into hq_task_steps(task_id, title, assignee_id, sort_order, kind, due_date, action_kind, action_payload)
-  values (v_task_id, '源泉徴収票をスマレジから出力してアップロードする', v_assignee,
+  insert into hq_task_steps(task_id, title, assignee_ids, sort_order, kind, due_date, action_kind, action_payload)
+  values (v_task_id, '源泉徴収票をスマレジから出力してアップロードする', v_assignees,
           50, 'step', v_pay + 3, 'offboarding_tax_slip',
           jsonb_build_object('user_id', p_user_id, 'name', p_name, 'year', v_year));
 
