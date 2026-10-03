@@ -5,7 +5,7 @@
 // actions:
 //   { action: "test" }                → 事業所/従業員区分一覧（CEO/HQのみ・疎通確認）
 //   { action: "sync", user_id }      → employee_profiles を読みスマレジに従業員登録（本人 or CEO/HQ）
-//   { action: "terminate", user_id, date } → 退職日をスマレジへ反映＋打刻の利用ON/OFF（CEO/HQのみ）
+//   { action: "terminate", user_id, date, deactivate?, deactivate_only? } → 退職日をスマレジへ反映＋打刻の利用ON/OFF（CEO/HQ。terminateのみservice_roleも可）
 //   { action: "notify_chatwork", secret, room, text, token } → Chatworkへメッセージ送信（DBからの中継用）
 //   { action: "staffs" }              → スマレジ登録済みスタッフ一覧＋メール有無（CEO/HQのみ）
 //   { action: "invite", staff_id, role, store_ids, days, send_email }
@@ -372,10 +372,19 @@ Deno.serve(async (req) => {
     }
 
     // v2.6.8: 退職日をスマレジへ反映（打刻も利用OFFにする）
+    // 2026-10-03(Sync7・退職申請承認): 在籍判定を「退職日の翌日に自動停止」へ変えたため、任意引数を2つ追加
+    //   deactivate      … 既定true(従来動作＝退職日の登録＋打刻OFF)。falseなら退職日だけ送り打刻は止めない（承認時に使う）
+    //   deactivate_only … trueなら退職日は送らず打刻OFF(activeFlag:false)だけ行う（退職日の翌日の自動処理が使う）
+    //   既存の呼び出し元（従業員編集の退職日カード等）は引数なし＝従来どおり。
+    // 認可: CEO/HQのJWTに加え、毎日の自動処理(GitHub Actions)がservice_roleキーで呼べるようにした（attendance-syncと同じ方式）。
+    //   ※service_role許可はこのterminateアクションだけ。他のアクションは従来どおりCEO/HQのみ
     if (body.action === "terminate") {
-      if (!isAdmin) return json({ ok: false, error: caller.uid ? "forbidden" : "unauthorized" }, caller.uid ? 403 : 401);
+      const isService = (req.headers.get("Authorization") ?? "").includes(Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? " ");
+      if (!isAdmin && !isService) return json({ ok: false, error: caller.uid ? "forbidden" : "unauthorized" }, caller.uid ? 403 : 401);
       const uid = String(body.user_id ?? "");
       const date = body.date ? String(body.date) : null;
+      const deactivate = body.deactivate !== false;
+      const deactivateOnly = body.deactivate_only === true;
       if (!uid) return json({ ok: false, error: "user_id required" }, 400);
       const sb = svc();
       const { data: prof } = await sb.from("employee_profiles").select("smaregi_staff_id").eq("user_id", uid).single();
@@ -383,24 +392,30 @@ Deno.serve(async (req) => {
       if (!staffId) return json({ ok: true, skipped: "スマレジ未連携のためスキップ" });
 
       const token = await getToken();
-      const res = await api(token, `/staffs/${staffId}`, {
-        method: "PATCH",
-        body: JSON.stringify({ terminationDate: date }),
-      });
-      const j = await res.json().catch(() => ({}));
-      if (!res.ok) return json({ ok: false, status: res.status, error: j }, 500);
-
-      // 退職日を設定したときは打刻も利用OFF、取り消したときはON（失敗しても退職処理自体は成功扱い）
-      let activeResult = "skip";
-      try {
-        const ar = await api(token, `/staffs/${staffId}/active`, {
-          method: "PUT",
-          body: JSON.stringify({ activeFlag: date ? false : true }),
+      if (!deactivateOnly) {
+        const res = await api(token, `/staffs/${staffId}`, {
+          method: "PATCH",
+          body: JSON.stringify({ terminationDate: date }),
         });
-        activeResult = ar.ok ? "ok" : `HTTP ${ar.status}`;
-      } catch (_) { activeResult = "error"; }
+        const j = await res.json().catch(() => ({}));
+        if (!res.ok) return json({ ok: false, status: res.status, error: j }, 500);
+      }
 
-      return json({ ok: true, staffId, terminationDate: date, active: activeResult });
+      // 退職日を設定したときは打刻も利用OFF、取り消したときはON（失敗しても退職処理自体は成功扱い）。
+      // deactivate=false(承認時)は打刻を触らない。deactivate_only=trueは必ず打刻OFF
+      let activeResult = "skip";
+      if (deactivateOnly || deactivate) {
+        try {
+          const ar = await api(token, `/staffs/${staffId}/active`, {
+            method: "PUT",
+            body: JSON.stringify({ activeFlag: deactivateOnly ? false : (date ? false : true) }),
+          });
+          activeResult = ar.ok ? "ok" : `HTTP ${ar.status}`;
+        } catch (_) { activeResult = "error"; }
+      }
+      if (deactivateOnly && activeResult !== "ok") return json({ ok: false, staffId, active: activeResult, error: "打刻OFFに失敗しました" }, 500);
+
+      return json({ ok: true, staffId, terminationDate: deactivateOnly ? undefined : date, active: activeResult });
     }
 
     // 2026-09-05追加: nippo側で住所・生年月日・電話番号等を編集したら、既に連携済みの

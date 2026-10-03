@@ -1,0 +1,61 @@
+name: 退職日の翌日の自動停止（ログイン停止＋スマレジ打刻OFF）
+
+# Sync7（退職申請・承認）Q1=a の「退職日の翌日に自動でログイン・打刻を止める」毎日処理。
+# 実装指示書_担当B_退職申請承認_2026-10-03.md §8-3。
+#
+# 流れ:
+#   1. RPC hr_apply_due_terminations（service_role専用）: 退職日が昨日以前でまだ在籍(is_active=true)の人を
+#      一括で停止（users.is_active=false・deactivated_at）し、対象のuser_id一覧を返す
+#   2. 返ってきた各人について smaregi-sync の action:"terminate" を deactivate_only:true で呼び、
+#      スマレジ側の打刻だけをOFFにする（退職日自体は承認時に送信済み）
+#   3. 結果を RPC hr_record_deactivation_result で、その人の承認済み退職申請（hr_change_requests）の
+#      sync_status / sync_result に記録（スマレジ失敗は「エラー」として後から画面で見え、再同期できる）
+# スマレジ側が失敗した人がいる場合はこのworkflowを失敗(赤)にしてGitHubの通知で気づけるようにする。
+#
+# 発火: 毎日06:00 JST（GitHub内蔵のschedule＝21:00 UTC）。他のworkflowは時刻のずれを嫌って外部cronから
+# 叩いているが、この処理は「その日のうちのどこか」で動けば足りる（時刻が数十分ずれても問題なし）ため、
+# 外部cronの追加登録なしで動くよう内蔵scheduleにした。手動実行（Actions→Run workflow）も可能。
+on:
+  schedule:
+    - cron: '0 21 * * *'
+  workflow_dispatch:
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: 設定チェック
+        run: |
+          if [ -z "${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" ]; then
+            echo "::error::SUPABASE_SERVICE_ROLE_KEY が未設定です"
+            exit 1
+          fi
+
+      - name: 退職日の翌日を迎えた人を停止し、スマレジの打刻をOFFにする
+        env:
+          SR_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          BASE="https://uuvsxzhpxtghojoubjcc.supabase.co"
+          RES=$(curl -s -m 60 -w "\n%{http_code}" -X POST "$BASE/rest/v1/rpc/hr_apply_due_terminations" \
+            -H "apikey: $SR_KEY" -H "Authorization: Bearer $SR_KEY" -H "Content-Type: application/json" -d '{}')
+          CODE=$(echo "$RES" | tail -1); BODY=$(echo "$RES" | sed '$d')
+          echo "hr_apply_due_terminations (HTTP $CODE): $BODY"
+          if [ "$CODE" = "404" ]; then echo "::warning::hr_apply_due_terminationsが未作成（退職申請のSQL適用前）のためスキップします"; exit 0; fi
+          if [ "$CODE" != "200" ]; then echo "::error::hr_apply_due_terminationsが失敗しました"; exit 1; fi
+          USERS=$(echo "$BODY" | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{try{const j=JSON.parse(s);console.log((j.users||[]).join(' '))}catch(e){console.log('')}})")
+          if [ -z "$USERS" ]; then echo "停止対象はありません"; exit 0; fi
+          FAILED=""
+          for U in $USERS; do
+            R=$(curl -s -m 60 -w "\n%{http_code}" -X POST "$BASE/functions/v1/smaregi-sync" \
+              -H "Authorization: Bearer $SR_KEY" -H "Content-Type: application/json" \
+              -d "{\"action\":\"terminate\",\"user_id\":\"$U\",\"deactivate_only\":true}")
+            C=$(echo "$R" | tail -1); B=$(echo "$R" | sed '$d')
+            echo "== $U smaregi terminate (HTTP $C): $(echo "$B" | cut -c1-300)"
+            OK=false; if [ "$C" = "200" ]; then OK=$(echo "$B" | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{try{console.log(JSON.parse(s).ok===true)}catch(e){console.log(false)}})"); fi
+            PAYLOAD=$(node -e "console.log(JSON.stringify({p_user:process.argv[1],p_ok:process.argv[2]==='true',p_result:{http:process.argv[3],body:process.argv[4].slice(0,300)}}))" "$U" "$OK" "$C" "$B")
+            curl -s -m 30 -X POST "$BASE/rest/v1/rpc/hr_record_deactivation_result" \
+              -H "apikey: $SR_KEY" -H "Authorization: Bearer $SR_KEY" -H "Content-Type: application/json" -d "$PAYLOAD" >/dev/null
+            if [ "$OK" != "true" ]; then FAILED="$FAILED $U"; fi
+          done
+          if [ -n "$FAILED" ]; then echo "::error::スマレジの打刻OFFに失敗した人:$FAILED（画面の退職申請一覧から再同期できます）"; exit 1; fi

@@ -6,6 +6,15 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
+**★★★★2026-10-03（担当Bスレッド）Sync7（退職申請・承認）実装: nippo側（画面①②）push済み・SQL/Edge Function/自動停止workflowは下書き（未適用）／PAT失効のため§6-1「`set_employee_termination`の定義確認」ができず、既存RPC改修だけ未確定**:
+- **nippo（push済み・`719c536`）**: 画面①「退職申請」(page=retire・店長/チーム長/本部/社長/マスター)＝店舗→従業員(名前絞り込み・承認待ちの人は除外)→退職日→確認→`hr_request_retirement`。画面②「退職申請一覧」(従業員管理内・本部/社長/マスター)＝承認(確認ダイアログ)→`hr_approve_retirement`→既存`smaregiTerminate`(退職日のみ・`deactivate:false`)→結果を`hr_record_retirement_sync`で記録→`hqNotifyOffboarding`(本部タスク自動発行・失敗しても承認は有効)／却下(理由任意)／スマレジ未同期の再同期。`hrRetireReady`＝DBに`hr_change_requests`が在る間だけナビ・ボタンを出す（SQL適用前は非表示）。
+- **SQL下書き**: `supabase/2026-10-03_hr_change_requests.sql`（テーブル`hr_change_requests`＋部分ユニーク索引＋RPC: `hr_can_act_store`/`hr_request_retirement`/`hr_approve_retirement`/`hr_reject_retirement`/`hr_record_retirement_sync`/`hr_apply_due_terminations`(service_role専用)/`hr_record_deactivation_result`(service_role専用)）。**§6 `set_employee_termination`改修は未確定**（既存定義が必要）。
+- **Edge Function（コード変更済み・未デプロイ）**: `smaregi-sync`の`terminate`に任意引数`deactivate`(既定true=従来)・`deactivate_only`を追加し、`terminate`だけservice_roleキーでも呼べるようにした。
+- **workflow**: `.github/workflows/hr-termination-apply.yml`(毎日06:00 JST・内蔵schedule＋手動実行)。RPC未作成の間は404でスキップ（赤にならない）。
+- **判断メモ**: 退職日が「今日」の場合は当日まで在籍＝翌日の自動処理で停止（指示書§8の「退職日が当日以前なら承認時に即停止」は「過去日なら即停止」と解釈。Q1=aの『翌日停止』と整合）。承認後の本部タスクは`hqNotifyOffboarding`(担当Eの`hq_create_offboarding_task`)。
+- **未実施・次の手順**: ①PAT再発行→`pg_get_functiondef('set_employee_termination')`確認→§6確定→ユーザー確認のうえSQL適用→`smaregi-sync`デプロイ→従業員編集「退職日」カードの文言を「退職日の翌日から使えなくなります」へ修正→使い捨て従業員で正常系/異常系(要望17章)→ユーザー立会いで実データ1件。②既存の退職日カードのsmaregiTerminate呼び出し(`saveTerm`)も未来日は`deactivate:false`にする（§6確定と同時に）。
+- **セキュリティ**: `smaregi-sync`も他のsmaregi系Edge Functionと同じ`jwtUid()`(署名未検証)を使っている（WORKLOG 2026-09-10「JWT署名検証」の対象）。
+
 **★★★★2026-10-03（担当Bスレッド）退職 第2フェーズ=担当B側（nippo）の準備: 「📄 自分の書類」実装・hr_documents等のSQL案を作成（※SQLは事前報告＝ユーザー確認待ちで未適用）／①承認フックは前提のSync7承認処理が未実装のため保留**: 指示書 `実装指示書_退職手続きタスクと書類配布_担当BE_2026-10-03.md` §3。
 - **前提の確認結果**: `hr_approve_retirement`／`hr_change_requests`／`hr_request_retirement`はリポジトリ・nippo/index.htmlのどこにも**未実装**（Sync7の承認処理は着手されていない）。よって§3-1「承認フック」は呼び出し元が無く繋げない。呼び出し側の関数 `hqNotifyOffboarding(uid,name,role,retirementDate)` は nippo に用意済み（承認ハンドラ完成時に成功パス最後へ1行足すだけ）。
 - **②SQL**（✅**適用済み**＝ユーザーが同日SQL Editorで実行。担当BはPAT失効のため直接適用不可。service_role経由で表・RPC2本・バケットの存在を確認済み。Storage/テーブルのRLSポリシーの中身は未確認＝次のPAT再発行時に確認）: `supabase/2026-10-03_hr_documents.sql`。**担当Eはこの契約で結合できます**。**担当Eはこの契約で合わせてください**:
