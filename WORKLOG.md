@@ -33,6 +33,10 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
+**★★★★2026-10-06（レーンP）PL正本pl_entriesへ初回取込済み（772行・月別件数/金額がkd_pl_entriesと完全一致）。`pl_source='entries'`への切替は未実施（保留）**
+- ユーザーがDB_PLの年月を復元 → bqSyncPL（`op=gas_sync`新設）でstg_pl最新化(772行) → pl_monthly → `pl_import`(=pl_entries_import_from_kd) 1回実行。区分「空」は復元で解消、「？」13行（MF取込の地代家賃・食べログ広告等）は科目名から推定（R/A/O、一覧は取込結果のnormalized）
+- 保留理由: ①切替後はGAS側の書込(精算書→PL・スポット・請求書連携・旧入力画面)がkdに出なくなる＝担当Aが書込先をpl_entries(replace_source)へ切り替える同時が前提 ②本番の切替は権限確認待ち。切替時は「pl_entriesを空にして再取込→pl_source=entries→pl_monthly→月別合計突合」の順
+
 **★★★★2026-10-06（レーンP）F3前倒し: PL販管費の正本テーブル `pl_entries` ＋RPCを作成（担当A設計・空の状態。切替は未実施）**
 - 背景: DB_PLの年月列が人の編集で空→DB_PL→stg_pl→kd全てに波及。入力の正本をSupabaseに置く（`supabase/2026-10-06_pl_entries_master.sql`）
 - `pl_entries`（uuid主キー・年月はDBがYYYY-MMを強制・区分S/F/L/A/R/O/X・ソフト削除・source/source_key）＋`pl_entries_history`（トリガで全変更を自動記録）。書込は必ずRPC: `pl_entries_bulk_upsert(rows, mode, dry_run, actor, scope)`（検証つき・1行でも不正なら何も書かず理由付きで返す。mode=upsert|replace_month_store|replace_source）/ `pl_entries_delete` / `pl_entries_export`（jsonbで返す＝1000行打切りなし）。権限: master/CEO/HQ=全部、TENCHO=自店舗の手入力のみ、service_role=GAS自動連携
