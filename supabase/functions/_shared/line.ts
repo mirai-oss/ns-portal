@@ -18,15 +18,16 @@ function buildOrderGroupText(params: {
   toStore?: string;
   items?: Array<{ name?: string; qty?: string | number; amount?: number }>;
   note?: string;
+  requester?: string;
 }): string {
-  const { date, fromStore, toStore, items, note } = params;
+  const { date, fromStore, toStore, items, note, requester } = params;
   const list = Array.isArray(items) ? items : [];
   const itemLines = list
     .map((it) => `・${String(it?.name ?? "")} ×${String(it?.qty ?? "")}（${Number(it?.amount ?? 0).toLocaleString("ja-JP")}円）`)
     .join("\n");
   const total = list.reduce((s, it) => s + (Number(it?.amount) || 0), 0);
   return (
-    `🔀 仕入れ移動の申請がありました\n` +
+    `🔀 仕入れ移動の申請がありました` + (requester ? `（申請者: ${String(requester)}）` : ``) + `\n` +
     `${String(fromStore ?? "")} → ${String(toStore ?? "")}（${String(date ?? "")}）\n\n` +
     `${itemLines || "（商品なし）"}\n\n` +
     `合計: ${total.toLocaleString("ja-JP")}円` +
@@ -38,7 +39,7 @@ function buildOrderGroupText(params: {
 // 呼び出し元（line-webhook・cost-transfer-submit）は合言葉チェック済みの状態でこれを呼ぶこと。
 export async function linePushOrderGroup(
   sb: any,
-  params: { date?: string; fromStore?: string; toStore?: string; items?: Array<{ name?: string; qty?: string | number; amount?: number }>; note?: string }
+  params: { date?: string; fromStore?: string; toStore?: string; items?: Array<{ name?: string; qty?: string | number; amount?: number }>; note?: string; requester?: string }
 ): Promise<{ ok: boolean; error?: string }> {
   const { data } = await sb.from("app_secrets").select("key,value").in("key", ["line_channel_token", "line_order_group_id"]);
   const m: Record<string, string> = {};

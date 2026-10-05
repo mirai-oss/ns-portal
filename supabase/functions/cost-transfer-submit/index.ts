@@ -37,6 +37,13 @@ Deno.serve(async (req) => {
       return json({ ok: false, error: "unauthorized" }, 401);
     }
 
+    // 申請者の選択肢（従業員名簿）。フォームのトークンを持つ人だけに返す（名簿を誰でも読める状態にしないため）。
+    if (body.action === "staff") {
+      const { data: staff, error: se } = await sb.from("users").select("id,name").eq("is_active", true).order("name");
+      if (se) return json({ ok: false, error: "名簿の取得に失敗しました" }, 500);
+      return json({ ok: true, staff: (staff ?? []).filter((u: any) => String(u.name ?? "").trim()).map((u: any) => ({ id: u.id, name: u.name })) });
+    }
+
     const date = String(body.date ?? "").trim();
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return json({ ok: false, error: "移動日が不正です" }, 400);
 
@@ -67,15 +74,21 @@ Deno.serve(async (req) => {
       total += amount;
     }
 
+    // 申請者（2026-10-05追加）: 名簿に実在する有効な従業員のIDだけ受け付ける（名前はサーバー側で引き直す＝なりすまし防止）
+    const requesterId = String(body.requesterId ?? "").trim();
+    if (!requesterId) return json({ ok: false, error: "申請者を選んでください" }, 400);
+    const { data: ru } = await sb.from("users").select("id,name").eq("id", requesterId).eq("is_active", true).maybeSingle();
+    if (!ru) return json({ ok: false, error: "申請者が見つかりません。名前を選び直してください" }, 400);
+
     const note = String(body.note ?? "").trim().slice(0, 300);
     const { data: inserted, error } = await sb
       .from("cost_transfer_requests")
-      .insert({ transfer_date: date, from_store: fromStore, to_store: toStore, items, total, note, status: "pending" })
+      .insert({ transfer_date: date, from_store: fromStore, to_store: toStore, items, total, note, status: "pending", requester_id: ru.id, requester_name: ru.name })
       .select("id")
       .single();
     if (error) return json({ ok: false, error: "保存に失敗しました: " + String(error.message ?? error) }, 500);
 
-    linePushOrderGroup(sb, { date, fromStore, toStore, items, note }).catch(() => {}); // ベストエフォート（失敗しても申請自体は成功のまま）
+    linePushOrderGroup(sb, { date, fromStore, toStore, items, note, requester: ru.name }).catch(() => {}); // ベストエフォート（失敗しても申請自体は成功のまま）
 
     return json({ ok: true, id: inserted.id, total });
   } catch (e) {
