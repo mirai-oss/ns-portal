@@ -4,6 +4,10 @@
 
 ---
 
+## 2026-10-05 担当A F1-b/c: 日次・入金・繰越をkd直読み化(v238)
+- レーンP回答(kd daily/deposit_daily/deposit_carry)を受け app.js に fetchKdFull_ を追加。D.daily確定(現金・社員給与賞与・法定福利・通勤)をkdで構築→GAS日次を省略。目標/入金/明細/外販先の確定データ待ちが解消される想定。PLはGAS(pl)が届くまでPL速報を表示。
+- 旧経路へ戻す: localStorage kd_full=0。広告(kind:ad)・目標(kind:target)は未切替（GAS action:dataの軽い部分で足りているため）。明細(#5)はレーンPから仕様質問あり→回答待ち。
+
 ## 2026-10-05（調査・修正スレッド）イベント自動取得の取りこぼし対策＋祝日判定の計算式統一
 - イベント: ns-daily-import `6dedfea`（catchUpDays・読めた月だけ送信）。祝日: tori-dashboard `3056a47`／nippo `4b072cf`／ns-portal `supabase/2026-10-05_jp_holiday_formula_fix.sql`（**本番未適用・PAT失効**）。要点は📍参照。
 
