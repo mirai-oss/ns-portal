@@ -41,7 +41,7 @@ jobs:
           PLAN=$(curl -s -m 60 -X POST "$U" -H "Authorization: Bearer $SR_KEY" -H "Content-Type: application/json" -d '{"op":"due"}')
           echo "判定: $PLAN"
           if [ "$FORCE" = "true" ]; then
-            OPS="dashboard_daily store_monthly pl_monthly ad_monthly deposit_monthly reservation_daily home_kpi sessions_cleanup"
+            OPS="dashboard_daily store_monthly pl_monthly ad_monthly delivery_daily detail_daily deposit_monthly reservation_daily home_kpi sessions_cleanup"
           else
             OPS=$(echo "$PLAN" | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{try{const j=JSON.parse(s);if(!j.ok)throw 0;console.log(j.due.join(' '))}catch(e){console.log('dashboard_daily store_monthly pl_monthly home_kpi sessions_cleanup')}})")
           fi

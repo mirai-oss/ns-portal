@@ -4,11 +4,8 @@ jobs:
   v:
     runs-on: ubuntu-latest
     steps:
-      - name: detail 長期間(商品>1000件になる範囲)
+      - name: due判定(明細が対象に入るか)
         env:
           SR_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: |
-          A=https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/keiei-api-dashboard-summary
-          for lim in 3000 5000; do
-            curl -s -m 90 -X POST $A -H "Authorization: Bearer $SR_KEY" -H "Content-Type: application/json" -d "{\"kind\":\"detail_items\",\"from\":\"2025-03-01\",\"to\":\"2026-10-05\",\"daypart\":\"all\",\"basis\":\"excl\",\"limit\":$lim}" | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{const j=JSON.parse(s);const it=j.items||[];const last=it[it.length-1]||{};console.log('CHK limit=$lim ok='+j.ok,'items='+it.length,'last_rank='+last.rank,'last_cum='+(last.cum_share&&last.cum_share.toFixed(4)),'err='+(j.error||''))})"
-          done
+          echo "DUE $(curl -s -m 60 -X POST https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/keiei-kd-refresh -H "Authorization: Bearer $SR_KEY" -H "Content-Type: application/json" -d '{"op":"due"}')"
