@@ -269,11 +269,11 @@ revoke all on function public.pl_entries_export(text, text, uuid, boolean) from 
 grant execute on function public.pl_entries_export(text, text, uuid, boolean) to authenticated, service_role;
 
 -- 移行用（1回だけ・service_roleのみ）: kd_pl_entries（=DB_PL/stg_plの最新ミラー）から正本へ取り込む。
--- 空の正本にだけ実行可（p_force=trueで追加取込）。区分が空/不明の行は現行kdと同じくO（その他）に寄せ、件数をnoticesで返す。
+-- 空の正本にだけ実行可（p_force=trueで追加取込）。区分が空/不明の行は科目名から推定（家賃→R等・不明はO）し、normalizedで一覧を返す。
 -- 年月が不正/店舗名が解決不能の行は取り込まず rejected に理由を返す（行は黙って捨てない）。memoが「自動｜…」で始まる行は sourceをその値に。
 create or replace function public.pl_entries_import_from_kd(p_actor text default 'import', p_force boolean default false) returns jsonb
 language plpgsql security definer set search_path = public as $$
-declare v_claims jsonb; v_cnt int; ins int := 0; fixed_cat int := 0; rej jsonb := '[]'::jsonb; k record; v_cat text; v_src text;
+declare v_claims jsonb; v_cnt int; ins int := 0; fixed_cat int := 0; rej jsonb := '[]'::jsonb; norm jsonb := '[]'::jsonb; k record; v_cat text; v_src text;
 begin
   begin v_claims := nullif(current_setting('request.jwt.claims', true), '')::jsonb; exception when others then v_claims := null; end;
   if coalesce(v_claims->>'role','') <> 'service_role' then return jsonb_build_object('ok', false, 'error', 'service_roleのみ'); end if;
@@ -289,15 +289,19 @@ begin
     end if;
     v_cat := upper(btrim(k.category));
     if v_cat not in ('S','F','L','A','R','O','X') then
-      v_cat := case when v_cat ~ '^F|仕入|原価' then 'F' when v_cat ~ '^L|人件' then 'L' when v_cat ~ '^A|広告' then 'A' when v_cat ~ '^R|家賃|賃料' then 'R' else 'O' end;
+      -- 区分が空/「？」等の行は、区分セルの文字→無ければ科目名から推定（家賃→R・広告/販促→A・仕入→F・人件/給料/福利→L・他はO）。推定した行は normalized に返す
+      v_cat := case when v_cat ~ '^F|仕入|原価' then 'F' when v_cat ~ '^L|人件' then 'L' when v_cat ~ '^A|広告' then 'A' when v_cat ~ '^R|家賃|賃料' then 'R'
+        when k.item ~ '仕入' then 'F' when k.item ~ '給料|雑給|人件費|法定福利|通勤|役員報酬|賞与' then 'L' when k.item ~ '広告|販促|販売促進' then 'A' when k.item ~ '家賃|賃料|地代|リース' then 'R'
+        else 'O' end;
       fixed_cat := fixed_cat + 1;
+      norm := norm || jsonb_build_object('kd_id', k.id, 'ym', k.year_month, 'store', k.store_name, 'item', k.item, 'amount', k.amount, 'category', v_cat);
     end if;
     v_src := case when k.memo like '自動｜%' then k.memo else '手入力' end;
     insert into public.pl_entries (year_month, store_id, item, category, amount, memo, sub_item, source, created_by, updated_by)
       values (k.year_month, k.store_id, coalesce(nullif(btrim(k.item), ''), '(未分類)'), v_cat, k.amount, k.memo, k.sub_item, v_src, coalesce(p_actor,'import'), coalesce(p_actor,'import'));
     ins := ins + 1;
   end loop;
-  return jsonb_build_object('ok', true, 'inserted', ins, 'category_normalized', fixed_cat, 'rejected', rej);
+  return jsonb_build_object('ok', true, 'inserted', ins, 'category_normalized', fixed_cat, 'normalized', norm, 'rejected', rej);
 end $$;
 revoke all on function public.pl_entries_import_from_kd(text, boolean) from public, anon, authenticated;
 grant execute on function public.pl_entries_import_from_kd(text, boolean) to service_role;
