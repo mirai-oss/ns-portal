@@ -4,7 +4,7 @@
 -- 【影響】cost_transfer_requestsに列2つ追加（既存行はnullのまま）／新テーブル request_log（RLS有効・ポリシー無し＝service roleのみ）／
 --   新RPC staff_directory（ログイン済みのみ・従業員名簿）／新RPC request_history（社長・本部・マスターのみ）。
 --   退職申請（hr_change_requests・担当B所有）は読み取りのみ（変更しない）。
--- 【rollback】drop function request_history(text), staff_directory(); drop table request_log; alter table cost_transfer_requests drop column requester_name, drop column requester_id;
+-- 【rollback】drop function request_history(text), staff_directory(), request_log_add(text,text,uuid,text,text,numeric,text,text); drop table request_log; alter table cost_transfer_requests drop column requester_name, drop column requester_id;
 
 alter table public.cost_transfer_requests add column if not exists requester_name text;
 alter table public.cost_transfer_requests add column if not exists requester_id uuid references public.users (id);
@@ -79,3 +79,23 @@ end;
 $$;
 revoke all on function public.request_history(text) from public, anon;
 grant execute on function public.request_history(text) to authenticated;
+
+-- 履歴の記録（スポット人件費の入力・管理者の仕入れ移動登録）。ダッシュボードのブラウザから、ログイン情報を使って書く。
+-- 入力した人(entered_by)はサーバー側でログイン中のユーザーから決める（クライアントの申告は信用しない）。
+create or replace function public.request_log_add(
+  p_kind text, p_requester_name text, p_requester_id uuid, p_store text, p_summary text, p_amount numeric, p_action text, p_ref_id text)
+returns void
+language plpgsql security definer set search_path to 'public'
+as $$
+declare v_name text;
+begin
+  select u.name into v_name from public.users u where u.id = auth.uid() and u.is_active;
+  if v_name is null then raise exception 'forbidden'; end if;
+  if p_kind not in ('spot_labor', 'cost_transfer_direct') then raise exception 'bad kind'; end if;
+  if p_action not in ('create', 'update', 'delete') then raise exception 'bad action'; end if;
+  insert into public.request_log (kind, requester_name, requester_id, entered_by, store_name, summary, amount, action, ref_id)
+  values (p_kind, nullif(trim(p_requester_name), ''), p_requester_id, v_name, p_store, left(p_summary, 300), p_amount, p_action, p_ref_id);
+end;
+$$;
+revoke all on function public.request_log_add(text, text, uuid, text, text, numeric, text, text) from public, anon;
+grant execute on function public.request_log_add(text, text, uuid, text, text, numeric, text, text) to authenticated;
