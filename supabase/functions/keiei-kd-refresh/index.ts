@@ -1065,6 +1065,159 @@ async function refreshAdMonthly(sb: any) {
   }
 }
 
+// ============== op=delivery_daily: kd_delivery_daily（明細分析の「デリバリー」区分・2026-10-06） ==============
+// 元データ: GAS bqGetDelivery（stg_delivery_order=ロケットナウ等の店舗×日の件数・純売上。login経由）。
+// 商品は文字列(items_text)のためランキング/ABCの対象外。months窓内だけ洗い替え（既定3か月。バックフィルは months:40 等）。
+async function sweepWindow(sb: any, table: string, dateCol: string, runId: string, from: string, to: string, newCount: number) {
+  const win = (q: any) => q.gte(dateCol, from).lte(dateCol, to).or(`sync_run_id.is.null,sync_run_id.neq.${runId}`);
+  const { count: stale, error: cErr } = await win(sb.from(table).select("id", { count: "exact", head: true }));
+  if (cErr) return { deleted: 0, skipped: "count失敗: " + cErr.message };
+  if (!stale) return { deleted: 0 };
+  if (newCount < 5 || stale > newCount * 0.5) return { deleted: 0, skipped: `窓内の古い行${stale}件が今回${newCount}件の半分超のため削除せず（部分応答の疑い）` };
+  const { error: dErr } = await win(sb.from(table).delete());
+  if (dErr) return { deleted: 0, skipped: "delete失敗: " + dErr.message };
+  return { deleted: stale };
+}
+async function refreshDeliveryDaily(sb: any, body: any) {
+  const months = Math.max(1, Math.min(60, Number(body.months) || 3));
+  const runId = await startRun(sb, "kd_delivery_daily");
+  try {
+    const maps = await loadStoreMaps(sb);
+    const res = await dashAuthed(sb, "bqGetDelivery", { months });
+    if (!res.ok) throw new Error("bqGetDelivery取得に失敗: " + (res.error ?? ""));
+    const rows: any[][] = res.sheets?.delivery ?? [];
+    const unmatched = new Set<string>();
+    const byKey = new Map<string, { store_id: string; biz_date: string; channel: string; orders: number; net_sales: number }>();
+    let minDate = "9999-12-31", maxDate = "0000-01-01";
+    for (let r = 1; r < rows.length; r++) {
+      const row = rows[r];
+      const hit = lookupStore(maps, String(row[0] ?? "").trim());
+      const date = toDateStr(row[1]);
+      if (!date) continue;
+      if (!hit) { unmatched.add(String(row[0] ?? "")); continue; }
+      const channel = String(row[2] ?? "").trim() || "デリバリー";
+      const key = `${hit.store_id}|${date}|${channel}`;
+      const b = byKey.get(key) ?? { store_id: hit.store_id, biz_date: date, channel, orders: 0, net_sales: 0 };
+      b.orders += num(row[3]); b.net_sales += num(row[5]);
+      byKey.set(key, b);
+      if (date < minDate) minDate = date; if (date > maxDate) maxDate = date;
+    }
+    const upserts = [...byKey.values()].map((b) => ({ ...b, computed_at: new Date().toISOString(), sync_run_id: runId }));
+    for (let i = 0; i < upserts.length; i += 500) {
+      const { error } = await sb.from("kd_delivery_daily").upsert(upserts.slice(i, i + 500), { onConflict: "store_id,biz_date,channel" });
+      if (error) throw new Error("upsert失敗: " + error.message);
+    }
+    // 窓の下限は months 前の月初に丸めず、実際に返ってきた最小日付から（GAS側のcutoffは日付単位）
+    const sweep = upserts.length ? await sweepWindow(sb, "kd_delivery_daily", "biz_date", runId, minDate, maxDate, upserts.length) : { deleted: 0 };
+    for (const nm of unmatched) {
+      try { await sb.rpc("kd_report_unresolved_name", { p_source_table: "kd_delivery_daily", p_kind: "store", p_raw_name: nm }); } catch (_) { /* noop */ }
+    }
+    const note = [unmatched.size ? `店舗名未対応: ${[...unmatched].join("、")}` : "", sweep.deleted ? `窓内の古い行${sweep.deleted}件を洗い替え削除` : "", (sweep as any).skipped ? `洗い替え見送り: ${(sweep as any).skipped}` : ""].filter(Boolean).join(" / ");
+    await finishRun(sb, runId, true, upserts.length, note || undefined);
+    return { ok: true, job: "delivery_daily", rows: upserts.length, range: [minDate, maxDate], unmatched: [...unmatched], swept: sweep, sync_run_id: runId };
+  } catch (e) {
+    await finishRun(sb, runId, false, 0, String(e), "kd_delivery_daily");
+    return { ok: false, error: String(e) };
+  }
+}
+
+// ============== op=detail_daily: kd_detail_item_daily / kd_detail_hour_daily（明細分析・2026-10-06） ==============
+// 元データ: GAS bqDetailItemDailyForSync（担当A実装・BQ_LOAD_TOKEN認証・ログイン不要・1回最大31日）。ランチ/ディナーの
+// 境目やドリンク/フード/カラオケの判定はGAS(bqDetailと同一ロジック)で適用済みの結果をそのまま保存する（計算式は1か所）。
+// 呼び方: { op:'detail_daily', from?, to? }（既定=前月1日〜今日。31日ごとに順に取得）。窓ごとに洗い替え（安全装置付き）。
+// 有効化フラグ: app_secrets.kd_detail_daily_enabled='1' になるまで、取込完了ドリブン(op=due)には載せない
+//   （GASアクションの本番貼替・突合確認前に毎時の失敗通知を出さないため）。手動実行(op直指定)はいつでも可。
+async function bqDetailItemDailyRows(from: string, to: string): Promise<{ logic_ver: number | null; item: any[][]; hour: any[][] }> {
+  const tk = Deno.env.get("BQ_LOAD_TOKEN");
+  if (!tk) throw new Error("BQ_LOAD_TOKENが未設定です（Supabaseのシークレット）");
+  const url = new URL(DASH_API_URL);
+  url.searchParams.set("action", "bqDetailItemDailyForSync"); url.searchParams.set("token", tk);
+  url.searchParams.set("from", from); url.searchParams.set("to", to); url.searchParams.set("part", "both");
+  let lastText = "";
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    const res = await fetch(url.toString());
+    lastText = await res.text();
+    let j: any = null;
+    try { j = JSON.parse(lastText); } catch (_) { /* GASの一時不調(HTML)→再試行 */ }
+    if (j) {
+      if (!j.ok) throw new Error("bqDetailItemDailyForSync失敗: " + (j.error ?? JSON.stringify(j).slice(0, 120)));
+      return { logic_ver: j.logic_ver ?? null, item: j.sheets?.item ?? [], hour: j.sheets?.hour ?? [] };
+    }
+    if (attempt < 3) await new Promise((r) => setTimeout(r, attempt * 2000));
+  }
+  throw new Error("bqDetailItemDailyForSyncの応答を読めませんでした: " + lastText.slice(0, 120));
+}
+async function refreshDetailDaily(sb: any, body: any) {
+  const today = jstToday();
+  const prevMonthFirst = (() => { const [y, m] = today.split("-").map(Number); return new Date(Date.UTC(y, m - 2, 1)).toISOString().slice(0, 10); })();
+  const from: string = typeof body.from === "string" ? body.from : prevMonthFirst;
+  const to: string = typeof body.to === "string" ? body.to : today;
+  const runId = await startRun(sb, "kd_detail_item_daily", from, to);
+  try {
+    const maps = await loadStoreMaps(sb);
+    const unmatched = new Set<string>();
+    let itemTotal = 0, hourTotal = 0, deleted = 0; const skips: string[] = []; let logicVer: number | null = null;
+    // 31日ごとの窓
+    for (let cur = from; cur <= to;) {
+      const winEnd = (() => { const e = addDays(cur, 30); return e < to ? e : to; })();
+      const g = await bqDetailItemDailyRows(cur, winEnd);
+      logicVer = g.logic_ver;
+      const itemMap = new Map<string, any>(); const hourMap = new Map<string, any>();
+      for (let r = 1; r < g.item.length; r++) {
+        const row = g.item[r];
+        const hit = lookupStore(maps, String(row[0] ?? "").trim()); const date = toDateStr(row[1]); const dp = String(row[2] ?? "").trim();
+        if (!date || (dp !== "lunch" && dp !== "dinner")) continue;
+        if (!hit) { unmatched.add(String(row[0] ?? "")); continue; }
+        const item = String(row[3] ?? "").trim() || "(不明)";
+        const key = `${hit.store_id}|${date}|${dp}|${item}`;
+        const b = itemMap.get(key) ?? { store_id: hit.store_id, biz_date: date, daypart: dp, item_name: item, category: String(row[4] ?? "").trim() || null, qty: 0, sales_incl: 0, sales_excl: 0 };
+        b.qty += num(row[5]); b.sales_incl += num(row[6]); b.sales_excl += num(row[7]);
+        itemMap.set(key, b);
+      }
+      for (let r = 1; r < g.hour.length; r++) {
+        const row = g.hour[r];
+        const hit = lookupStore(maps, String(row[0] ?? "").trim()); const date = toDateStr(row[1]); const dp = String(row[2] ?? "").trim();
+        const hr = Number(row[3]);
+        if (!date || (dp !== "lunch" && dp !== "dinner") || !Number.isFinite(hr)) continue;
+        if (!hit) { unmatched.add(String(row[0] ?? "")); continue; }
+        const key = `${hit.store_id}|${date}|${dp}|${hr}`;
+        const b = hourMap.get(key) ?? { store_id: hit.store_id, biz_date: date, daypart: dp, hour: hr, sales_incl: 0, sales_excl: 0, checks: 0, guests_otoshi: 0, qty: 0, drink_excl: 0, food_excl: 0, karaoke_excl: 0 };
+        b.sales_incl += num(row[4]); b.sales_excl += num(row[5]); b.checks += num(row[6]); b.guests_otoshi += num(row[7]); b.qty += num(row[8]);
+        b.drink_excl += num(row[9]); b.food_excl += num(row[10]); b.karaoke_excl += num(row[11]);
+        hourMap.set(key, b);
+      }
+      const stamp = { logic_ver: logicVer, computed_at: new Date().toISOString(), sync_run_id: runId };
+      const itemRows = [...itemMap.values()].map((b) => ({ ...b, ...stamp }));
+      const hourRows = [...hourMap.values()].map((b) => ({ ...b, ...stamp }));
+      for (let i = 0; i < itemRows.length; i += 1000) {
+        const { error } = await sb.from("kd_detail_item_daily").upsert(itemRows.slice(i, i + 1000), { onConflict: "store_id,biz_date,daypart,item_name" });
+        if (error) throw new Error("item upsert失敗: " + error.message);
+      }
+      for (let i = 0; i < hourRows.length; i += 1000) {
+        const { error } = await sb.from("kd_detail_hour_daily").upsert(hourRows.slice(i, i + 1000), { onConflict: "store_id,biz_date,daypart,hour" });
+        if (error) throw new Error("hour upsert失敗: " + error.message);
+      }
+      itemTotal += itemRows.length; hourTotal += hourRows.length;
+      // 窓内の洗い替え（BQ側で消えた/変わった行を残さない。空応答や部分応答では消さない安全装置付き）
+      const s1 = await sweepWindow(sb, "kd_detail_item_daily", "biz_date", runId, cur, winEnd, itemRows.length);
+      const s2 = await sweepWindow(sb, "kd_detail_hour_daily", "biz_date", runId, cur, winEnd, hourRows.length);
+      deleted += s1.deleted + s2.deleted;
+      if ((s1 as any).skipped) skips.push(`${cur}〜 item: ${(s1 as any).skipped}`);
+      if ((s2 as any).skipped) skips.push(`${cur}〜 hour: ${(s2 as any).skipped}`);
+      cur = addDays(winEnd, 1);
+    }
+    for (const nm of unmatched) {
+      try { await sb.rpc("kd_report_unresolved_name", { p_source_table: "kd_detail_item_daily", p_kind: "store", p_raw_name: nm }); } catch (_) { /* noop */ }
+    }
+    const note = [unmatched.size ? `店舗名未対応: ${[...unmatched].join("、")}` : "", deleted ? `古い行${deleted}件を洗い替え削除` : "", skips.length ? `洗い替え見送り: ${skips.join(" / ")}` : "", logicVer != null ? `logic_ver=${logicVer}` : ""].filter(Boolean).join(" / ");
+    await finishRun(sb, runId, true, itemTotal + hourTotal, note || undefined);
+    return { ok: true, job: "detail_daily", from, to, item_rows: itemTotal, hour_rows: hourTotal, logic_ver: logicVer, deleted, skips, unmatched: [...unmatched], sync_run_id: runId };
+  } catch (e) {
+    await finishRun(sb, runId, false, 0, String(e), "kd_detail_item_daily");
+    return { ok: false, error: String(e) };
+  }
+}
+
 // ============== op=home_kpi: kd_home_kpi_snapshot ==============
 async function refreshHomeKpi(sb: any) {
   const today = jstToday();
@@ -1157,11 +1310,13 @@ async function notifyUnresolved(sb: any) {
 // （dashboard_daily 平均32秒・失敗16.5%）を回しても読むのは同じ数字なので、ns-daily-importの完了記録(import_runs)を見て、
 // 「関連する取込が前回のkd_更新より新しく終わった時」だけ重い更新を走らせる。手入力（DB_PL等）の反映用に、日中は
 // 前回成功から3時間たっていれば保険として走らせる。home_kpi（Supabase内3秒）は毎回走らせる。
-const DUE_GROUPS: { name: string; kdJob: string; ops: string[]; imports: string[]; safetyHours: number | null }[] = [
-  { name: "売上・PL", kdJob: "kd_dashboard_daily_summary", ops: ["dashboard_daily", "store_monthly", "pl_monthly", "ad_monthly"], safetyHours: 3,
+const DUE_GROUPS: { name: string; kdJob: string; ops: string[]; imports: string[]; safetyHours: number | null; flagKey?: string }[] = [
+  { name: "売上・PL", kdJob: "kd_dashboard_daily_summary", ops: ["dashboard_daily", "store_monthly", "pl_monthly", "ad_monthly", "delivery_daily"], safetyHours: 3,
     imports: ["zeroregi-akihabara", "dinii-orders", "dinii-payment-ns", "dinii-payment-nstyle", "morning-refresh", "bq-sales-reconcile", "smaregi-payroll", "infomart-siire", "rocketnow-sales"] },
   { name: "入金", kdJob: "kd_deposit_monthly_summary", ops: ["deposit_monthly"], safetyHours: null,
     imports: ["paypay-bank", "paypay-bank-b", "paypay-merchant-deposit", "paypay-merchant-deposit-nstyle", "smbc-card-deposit", "smbc-card-deposit-toho", "morning-refresh"] },
+  { name: "明細", kdJob: "kd_detail_item_daily", ops: ["detail_daily"], safetyHours: null, flagKey: "kd_detail_daily_enabled",
+    imports: ["dinii-orders", "morning-refresh"] },
   { name: "予約", kdJob: "kd_reservation_daily_summary", ops: ["reservation_daily"], safetyHours: null,
     imports: ["tabelog-note-reservation", "dinii-reservation", "bq-reservation-sync"] },
 ];
@@ -1169,6 +1324,10 @@ async function planDue(sb: any) {
   const due: string[] = []; const reasons: Record<string, string> = {};
   const hourJst = new Date(Date.now() + 9 * 3600 * 1000).getUTCHours();
   for (const g of DUE_GROUPS) {
+    if (g.flagKey) {   // 有効化フラグ(app_secrets)が'1'になるまで自動実行しない
+      const { data: fl } = await sb.from("app_secrets").select("value").eq("key", g.flagKey).maybeSingle();
+      if ((fl?.value ?? "").trim() !== "1") continue;
+    }
     const { data: lastRun } = await sb.from("kd_sync_runs").select("started_at").eq("job", g.kdJob).eq("status", "success")
       .order("started_at", { ascending: false }).limit(1);
     const lastStart: string | null = lastRun?.[0]?.started_at ?? null;
@@ -1248,6 +1407,8 @@ Deno.serve(async (req) => {
       case "unresolved_notify": result = await notifyUnresolved(sb); break;
       case "store_monthly": result = await refreshStoreMonthly(sb); break;
       case "ad_monthly": result = await refreshAdMonthly(sb); break;
+      case "delivery_daily": result = await refreshDeliveryDaily(sb, body); break;
+      case "detail_daily": result = await refreshDetailDaily(sb, body); break;
       case "pl_monthly": result = await refreshPlMonthly(sb); break;
       case "media_monthly": result = await refreshMediaMonthly(sb, body); break;
       case "deposit_monthly": result = await refreshDepositMonthly(sb); break;
@@ -1255,7 +1416,7 @@ Deno.serve(async (req) => {
       case "due": result = await planDue(sb); break;
       case "diag_detail_cov": result = await diagDetailCov(sb); break;
       case "verify_carry": result = await verifyCarry(sb, body); break;
-      default: return json({ ok: false, error: "opは'reservation_daily'|'dashboard_daily'|'home_kpi'|'unresolved_notify'|'pl_monthly'|'media_monthly'|'deposit_monthly'|'store_monthly'|'ad_monthly'|'sessions_cleanup'|'due'のいずれかが必須です" }, 400);
+      default: return json({ ok: false, error: "opは'reservation_daily'|'dashboard_daily'|'home_kpi'|'unresolved_notify'|'pl_monthly'|'media_monthly'|'deposit_monthly'|'store_monthly'|'ad_monthly'|'delivery_daily'|'detail_daily'|'sessions_cleanup'|'due'のいずれかが必須です" }, 400);
     }
     // 2026-09-03修正: ok:falseの結果をHTTP 200で返してしまうとGitHub Actions側のHTTP_CODEチェックを
     // すり抜けて「success」表示のまま失敗が握りつぶされる（実際にdashboard_dailyの失敗がこれで見逃されていた）。

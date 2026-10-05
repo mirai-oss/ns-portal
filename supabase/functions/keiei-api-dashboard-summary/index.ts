@@ -98,12 +98,100 @@ function jstYm(offsetMonths = 0): string {
   return t.toISOString().slice(0, 7);
 }
 
+// ---------------------------------------------------------------------
+// 明細分析（2026-10-06・#5）: kind='detail'（一括）／'detail_items'／'detail_hours'／'detail_stores'／'detail_coverage'／'detail_delivery'
+//   必須: from, to（YYYY-MM-DD・最大800日）。任意: store_ids[]（またはstore_id）, daypart('all'|'lunch'|'dinner'|'delivery'), basis('incl'|'excl'), limit(商品ランキング上限・既定3000・最大5000)
+//   返り値(kind='detail'): { ok, from, to, daypart, items:[{item_name,category,qty,sales_incl,sales_excl,rank,share,cum_share,total_sales}], hours:[…], stores:[…],
+//                           coverage:[{month,stores,days,item_rows}], delivery:{by_store:[{store_id,orders,net_sales}]}, meta:{logic_ver,computed_at}, scope }
+//   - 商品別(items)はABC分析用に構成比・累計構成比まで返す。deliveryは商品なし（ランキング/ABC対象外）。daypart='delivery'ならitems/hours/storesは空。
+//   - 店舗スコープは他kindと同じ判定。店舗指定が権限外なら無視（権限内の店舗に絞る）。ブラウザへ全行は返さない（集計はRPC）。
+// ---------------------------------------------------------------------
+const DETAIL_KINDS = ["detail", "detail_items", "detail_hours", "detail_stores", "detail_coverage", "detail_delivery"];
+const isDay = (s: unknown): s is string => typeof s === "string" && /^\d{4}-\d{2}-\d{2}$/.test(s);
+async function handleDetail(sb: ReturnType<typeof createClient>, body: any, role: string, restrictedStoreIds: string[] | null): Promise<Response> {
+  const kind: string = body.kind;
+  if (!isDay(body.from) || !isDay(body.to) || body.from > body.to) return json({ ok: false, error: "from・to（YYYY-MM-DD・from<=to）が必須です" }, 400);
+  const spanDays = (Date.parse(body.to) - Date.parse(body.from)) / 86400000 + 1;
+  if (spanDays > 800) return json({ ok: false, error: "期間は最大800日です" }, 400);
+  const daypart: string = ["all", "lunch", "dinner", "delivery"].includes(body.daypart) ? body.daypart : "all";
+  const basis: string = body.basis === "excl" ? "excl" : "incl";
+  const limit = Math.min(5000, Math.max(1, Number(body.limit) || 3000));
+
+  // 対象店舗: 権限内 ∩ 指定（指定なしは権限内すべて／権限制限なしなら有効店舗すべて）
+  let stores: string[];
+  const requested: string[] = Array.isArray(body.store_ids) ? body.store_ids.filter((x: unknown) => typeof x === "string")
+    : (typeof body.store_id === "string" && body.store_id !== "all" ? [body.store_id] : []);
+  if (restrictedStoreIds) stores = requested.length ? requested.filter((id) => restrictedStoreIds.includes(id)) : restrictedStoreIds;
+  else if (requested.length) stores = requested;
+  else {
+    const { data } = await sb.from("stores").select("id").eq("is_active", true);
+    stores = (data ?? []).map((r: any) => r.id);
+  }
+  const scope = { role, restrictedStoreIds };
+  if (!stores.length) return json({ ok: true, kind, from: body.from, to: body.to, daypart, items: [], hours: [], stores: [], coverage: [], delivery: { by_store: [] }, meta: null, scope });
+
+  const want = (k: string) => kind === "detail" || kind === `detail_${k}`;
+  const noLunchDinner = daypart === "delivery";
+  const args = { p_from: body.from, p_to: body.to, p_stores: stores, p_daypart: daypart };
+  const rpc = async (fn: string, a: Record<string, unknown>) => {
+    const { data, error } = await sb.rpc(fn, a);
+    if (error) throw new Error(`${fn}: ${error.message}`);
+    return data ?? [];
+  };
+  const out: Record<string, unknown> = { ok: true, kind, from: body.from, to: body.to, daypart, basis, scope };
+  const jobs: Promise<void>[] = [];
+  if (want("items")) jobs.push((noLunchDinner ? Promise.resolve([]) : rpc("kd_detail_items", { ...args, p_basis: basis, p_limit: limit })).then((d) => { out.items = d; }));
+  if (want("hours")) jobs.push((noLunchDinner ? Promise.resolve([]) : rpc("kd_detail_hours", args)).then((d) => { out.hours = d; }));
+  if (want("stores")) jobs.push((noLunchDinner ? Promise.resolve([]) : rpc("kd_detail_stores", args)).then((d) => { out.stores = d; }));
+  if (want("coverage")) jobs.push(rpc("kd_detail_coverage", { p_from: body.from, p_to: body.to, p_stores: stores }).then((d) => { out.coverage = d; }));
+  if (want("delivery") && (daypart === "all" || daypart === "delivery")) {
+    jobs.push((async () => {
+      const rows: any[] = [];
+      for (let off = 0; off < 20000; off += 1000) {
+        const { data, error } = await sb.from("kd_delivery_daily").select("store_id,biz_date,orders,net_sales")
+          .gte("biz_date", body.from).lte("biz_date", body.to).in("store_id", stores)
+          .order("biz_date").order("store_id").range(off, off + 999);
+        if (error) throw new Error("kd_delivery_daily: " + error.message);
+        rows.push(...(data ?? []));
+        if (!data || data.length < 1000) break;
+      }
+      const by = new Map<string, { store_id: string; orders: number; net_sales: number }>();
+      for (const r of rows) {
+        const b = by.get(r.store_id) ?? { store_id: r.store_id, orders: 0, net_sales: 0 };
+        b.orders += Number(r.orders) || 0; b.net_sales += Number(r.net_sales) || 0; by.set(r.store_id, b);
+      }
+      out.delivery = { by_store: [...by.values()].sort((a, b) => b.net_sales - a.net_sales) };
+      if (body.daily === true) (out.delivery as any).daily = rows;
+    })());
+  } else if (kind === "detail") out.delivery = { by_store: [] };
+  if (kind === "detail") {
+    jobs.push((async () => {
+      const { data } = await sb.from("kd_detail_item_daily").select("logic_ver,computed_at").order("computed_at", { ascending: false }).limit(1);
+      out.meta = data?.[0] ?? null;
+    })());
+  }
+  await Promise.all(jobs);
+  if (kind === "detail") for (const k of ["items", "hours", "stores", "coverage"]) if (!(k in out)) out[k] = [];
+  return json(out);
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
   try {
     const sb = svc();
     let body: any = {};
     try { body = await req.json(); } catch (_) { /* ボディ必須（下のkindチェックで弾く） */ }
+
+    if (typeof body.kind === "string" && DETAIL_KINDS.includes(body.kind)) {
+      // 明細分析（期間は日付単位。年月単位の他kindとは入力が違うため別枠で認証・スコープ判定を行う）
+      const ah = req.headers.get("Authorization") ?? "";
+      if (ah.includes(Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? " ")) return await handleDetail(sb, body, "service_role", null);
+      const uid0 = jwtUid(req);
+      if (!uid0) return json({ ok: false, error: "ログインが必要です" }, 401);
+      const sc0 = await resolveScope(sb, uid0);
+      if (!sc0.allowed) return json({ ok: false, error: sc0.error }, 403);
+      return await handleDetail(sb, body, sc0.role, sc0.restrictedStoreIds);
+    }
 
     const kinds: string[] = Array.isArray(body.kinds) ? body.kinds : (body.kind ? [body.kind] : []);
     const multi = Array.isArray(body.kinds);

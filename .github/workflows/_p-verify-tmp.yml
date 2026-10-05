@@ -1,0 +1,21 @@
+name: P一時検証(削除予定)
+on: workflow_dispatch
+jobs:
+  v:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: delivery_daily と 明細API
+        env:
+          SR_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          R=https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/keiei-kd-refresh
+          echo "DLV $(curl -s -m 280 -X POST $R -H "Authorization: Bearer $SR_KEY" -H "Content-Type: application/json" -d '{"op":"delivery_daily","months":40}' | cut -c1-500)"
+          A=https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/keiei-api-dashboard-summary
+          p() { echo "API $2 $(curl -s -m 60 -X POST $A -H "Authorization: Bearer $SR_KEY" -H "Content-Type: application/json" -d "$1" | cut -c1-$3)"; }
+          p '{"kind":"detail","from":"2026-09-01","to":"2026-09-02","daypart":"all"}' all 1500
+          p '{"kind":"detail_items","from":"2026-09-01","to":"2026-09-01","daypart":"lunch","basis":"excl","limit":3}' lunch_excl_top3 700
+          p '{"kind":"detail_hours","from":"2026-09-01","to":"2026-09-02","daypart":"dinner"}' hours_dinner 600
+          p '{"kind":"detail_items","from":"2026-09-01","to":"2026-09-02","daypart":"delivery"}' delivery_items 300
+          p '{"kind":"detail_delivery","from":"2026-09-01","to":"2026-09-30"}' delivery_sep 500
+          p '{"kind":"detail","from":"2026-09-02","to":"2026-09-01"}' badrange 200
