@@ -1386,6 +1386,16 @@ async function diagDetailCov(sb: any) {
   return { ok: true, header: sh[0] ?? null, rows: sh.slice(1) };
 }
 
+// ============== op=run_status: 指定jobの直近のkd_sync_runsを返す（長時間opの完了待ち用・読み取り専用） ==============
+async function runStatus(sb: any, body: any) {
+  const job = String(body.job ?? "");
+  if (!job) return { ok: false, error: "jobが必要です" };
+  const { data, error } = await sb.from("kd_sync_runs").select("id,job,status,rows,error,started_at,finished_at,period_from,period_to")
+    .eq("job", job).order("started_at", { ascending: false }).limit(1);
+  if (error) return { ok: false, error: error.message };
+  return { ok: true, run: data?.[0] ?? null };
+}
+
 // ============== op=sessions_cleanup: ds_sessionsの期限切れ行を削除（A-11・2026-09-18） ==============
 async function cleanupSessions(sb: any) {
   const { error, count } = await sb.from("ds_sessions").delete({ count: "exact" }).lt("expires_at", new Date().toISOString());
@@ -1413,12 +1423,22 @@ Deno.serve(async (req) => {
       case "store_monthly": result = await refreshStoreMonthly(sb); break;
       case "ad_monthly": result = await refreshAdMonthly(sb); break;
       case "delivery_daily": result = await refreshDeliveryDaily(sb, body); break;
-      case "detail_daily": result = await refreshDetailDaily(sb, body); break;
+      case "detail_daily": {
+        // 長い窓(31日=約1.5〜3分)はEdge Functionのリクエスト待ち上限(150秒)を超えるため、async:trueなら即応答して裏で続行する
+        // （完了は op=run_status で kd_sync_runs を見る）。通常のcron(取込完了ドリブン)は直近の短い窓のため同期で足りる。
+        if (body.async === true) {
+          // deno-lint-ignore no-explicit-any
+          (globalThis as any).EdgeRuntime?.waitUntil(refreshDetailDaily(sb, body));
+          result = { ok: true, started: true, job: "detail_daily", from: body.from, to: body.to };
+        } else result = await refreshDetailDaily(sb, body);
+        break;
+      }
       case "pl_monthly": result = await refreshPlMonthly(sb); break;
       case "media_monthly": result = await refreshMediaMonthly(sb, body); break;
       case "deposit_monthly": result = await refreshDepositMonthly(sb); break;
       case "sessions_cleanup": result = await cleanupSessions(sb); break;
       case "due": result = await planDue(sb); break;
+      case "run_status": result = await runStatus(sb, body); break;
       case "diag_detail_cov": result = await diagDetailCov(sb); break;
       case "verify_carry": result = await verifyCarry(sb, body); break;
       default: return json({ ok: false, error: "opは'reservation_daily'|'dashboard_daily'|'home_kpi'|'unresolved_notify'|'pl_monthly'|'media_monthly'|'deposit_monthly'|'store_monthly'|'ad_monthly'|'delivery_daily'|'detail_daily'|'sessions_cleanup'|'due'のいずれかが必須です" }, 400);
