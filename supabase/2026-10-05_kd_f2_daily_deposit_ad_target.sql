@@ -173,3 +173,13 @@ select
 from public.dash_target_monthly t;
 revoke all on public.kd_target_monthly_v from anon, authenticated;
 comment on view public.kd_target_monthly_v is '店舗×月の目標（売上目標=日別目標の月合計、PA率・社員率・F率(原価率)目標、ダイニー点数・口コミ件数目標）。keiei-api-dashboard-summary経由で読む';
+
+-- ---------------------------------------------------------------------
+-- #3 追補: 広告DBの店舗名は「鳥一代（本店）」「匠味（新横浜）」等の表記で、2枚看板(別看板=listing別名)の広告費は
+--   親店舗(store_id)に紐づけつつ、どの看板の広告費かをbrand_nameで残す（app.js adAgg()の own/parent と同じ考え方）。
+--   通常の店舗名で一致する行はbrand_name=''。テーブルは新設直後で実質空のためユニークキーを作り直す。
+-- ---------------------------------------------------------------------
+alter table public.kd_ad_monthly add column if not exists brand_name text not null default '';
+drop index if exists public.kd_ad_monthly_unique;
+create unique index if not exists kd_ad_monthly_unique on public.kd_ad_monthly (store_id, year_month, media_name, brand_name);
+comment on column public.kd_ad_monthly.brand_name is '広告DB上の看板名（2枚看板=store_aliases kind=listingの別名）。通常店舗の行は空文字。例: 匠味（新横浜）→ store=鶏武者 新横浜・brand_name=匠味 新横浜';

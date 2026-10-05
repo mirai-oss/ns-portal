@@ -128,6 +128,10 @@ async function sendLark(sb: any, text: string) {
   return { ok: res.ok, status: res.status };
 }
 
+// 店舗名の表記ゆれ吸収用の正規化: 全角/半角の括弧・スペースを揃える（「鳥一代（本店）」→「鳥一代 本店」）
+function normStoreName(s: string): string {
+  return String(s ?? "").replace(/[（(]/g, " ").replace(/[）)]/g, " ").replace(/[\u3000\s]+/g, " ").trim();
+}
 async function loadStoreMaps(sb: any) {
   const { data: storeRows } = await sb.from("stores").select("id,name,dash_store_name,corporation_id");
   const idByName = new Map<string, string>();
@@ -137,7 +141,25 @@ async function loadStoreMaps(sb: any) {
     if (!idByName.has(String(s.name).trim())) idByName.set(String(s.name).trim(), s.id);
     corpByStoreId.set(s.id, s.corporation_id ?? null);
   });
-  return { idByName, corpByStoreId };
+  // 店舗名ゲートウェイ(store_aliases): kind='name'=同一店舗の別表記→idByNameへ。kind='listing'=2枚看板等の別掲載名
+  // →listingByName（親店舗のidを返し、看板名は呼び出し側がbrandとして保持する）
+  const listingByName = new Map<string, string>();
+  const { data: aliasRows } = await sb.from("store_aliases").select("alias,store_id,kind");
+  (aliasRows ?? []).forEach((a: any) => {
+    const al = String(a.alias ?? "").trim(); if (!al || !a.store_id) return;
+    if (a.kind === "listing") listingByName.set(al, a.store_id);
+    else if (!idByName.has(al)) idByName.set(al, a.store_id);
+  });
+  return { idByName, corpByStoreId, listingByName };
+}
+// 生の名前→正規化した名前の順に引く。見つからなければnull（呼び出し側がkd_unresolved_namesへ隔離）
+function lookupStore(maps: { idByName: Map<string, string>; listingByName: Map<string, string> }, raw: string): { store_id: string; brand: string } | null {
+  const r = String(raw ?? "").trim(); const n = normStoreName(r);
+  const id = maps.idByName.get(r) ?? maps.idByName.get(n);
+  if (id) return { store_id: id, brand: "" };
+  const lid = maps.listingByName.get(r) ?? maps.listingByName.get(n);
+  if (lid) return { store_id: lid, brand: n };
+  return null;
 }
 
 // ============== op=reservation_daily: kd_reservation_daily_summary ==============
@@ -921,16 +943,17 @@ async function bqGetAdCostRows(): Promise<any[][]> {
 async function refreshAdMonthly(sb: any) {
   const runId = await startRun(sb, "kd_ad_monthly");
   try {
-    const { idByName, corpByStoreId } = await loadStoreMaps(sb);
+    const maps = await loadStoreMaps(sb);
+    const { corpByStoreId } = maps;
     const unmatched = new Set<string>();
     const aliasCache = new Map<string, string>();
     type Fx = { access: number; net_groups: number; net_people: number; tel: number; tGrp: number; tPpl: number; tSales: number; fee: number };
-    type B = { store_id: string; ym: string; media: string; cost: number | null; plan: Record<string, number>; fx: Fx | null; n: number };
+    type B = { store_id: string; ym: string; media: string; brand: string; cost: number | null; plan: Record<string, number>; fx: Fx | null; n: number };
     const byKey = new Map<string, B>();
-    const getB = (storeId: string, ym: string, media: string): B => {
-      const key = `${storeId}|${ym}|${media}`;
+    const getB = (storeId: string, ym: string, media: string, brand = ""): B => {
+      const key = `${storeId}|${ym}|${media}|${brand}`;
       let b = byKey.get(key);
-      if (!b) { b = { store_id: storeId, ym, media, cost: null, plan: {}, fx: null, n: 0 }; byKey.set(key, b); }
+      if (!b) { b = { store_id: storeId, ym, media, brand, cost: null, plan: {}, fx: null, n: 0 }; byKey.set(key, b); }
       return b;
     };
 
@@ -942,10 +965,10 @@ async function refreshAdMonthly(sb: any) {
       const ym = ymOf(row[0]); const storeName = String(row[1] ?? "").trim();
       if (!ym) continue;
       if (!storeName) { noStore++; continue; }            // 店舗未指定(全体)の広告費は店舗キーを持てないため対象外(件数のみ報告)
-      const storeId = idByName.get(storeName);
-      if (!storeId) { unmatched.add(storeName); continue; }
+      const hit = lookupStore(maps, storeName);
+      if (!hit) { unmatched.add(storeName); continue; }
       const media = await resolveMediaName(sb, aliasCache, String(row[2] ?? "").trim() || "（媒体未指定）");
-      const b = getB(storeId, ym, media);
+      const b = getB(hit.store_id, ym, media, hit.brand);
       const amt = num(row[4]);
       b.cost = (b.cost ?? 0) + amt; b.n++;
       const plan = String(row[3] ?? "").trim();
@@ -981,10 +1004,10 @@ async function refreshAdMonthly(sb: any) {
             if (!Object.values(fx).some((v) => v)) continue;
             const storeName = String(iS >= 0 ? c[iS] ?? "" : "").trim();
             if (!storeName) continue;
-            const storeId = idByName.get(storeName);
-            if (!storeId) { unmatched.add(storeName); continue; }
+            const hit = lookupStore(maps, storeName);
+            if (!hit) { unmatched.add(storeName); continue; }
             const media = await resolveMediaName(sb, aliasCache, String(iM >= 0 ? c[iM] ?? "" : "").trim() || "（媒体未指定）");
-            const b = getB(storeId, ym, media);
+            const b = getB(hit.store_id, ym, media, hit.brand);
             const cur = b.fx ?? { access: 0, net_groups: 0, net_people: 0, tel: 0, tGrp: 0, tPpl: 0, tSales: 0, fee: 0 };
             (Object.keys(cur) as (keyof Fx)[]).forEach((k) => { cur[k] += fx[k]; });
             b.fx = cur;
@@ -996,9 +1019,9 @@ async function refreshAdMonthly(sb: any) {
         for (let i = 1; i < exSheet.length; i++) {
           const c = exSheet[i]; const storeName = String(c[1] ?? "").trim(); const ym = ymOf(c[0]);
           if (!storeName || !ym) continue;
-          const storeId = idByName.get(storeName);
-          if (!storeId) { unmatched.add(storeName); continue; }
-          excluded.add(`${storeId}|${ym}`);
+          const hit = lookupStore(maps, storeName);
+          if (!hit) { unmatched.add(storeName); continue; }
+          excluded.add(`${hit.store_id}|${ym}`);
         }
       }
       exclOk = true;
@@ -1012,7 +1035,7 @@ async function refreshAdMonthly(sb: any) {
 
     const upserts = [...byKey.values()].map((b) => {
       const row: Record<string, unknown> = {
-        store_id: b.store_id, corporation_id: corpByStoreId.get(b.store_id) ?? null, year_month: b.ym, media_name: b.media,
+        store_id: b.store_id, corporation_id: corpByStoreId.get(b.store_id) ?? null, year_month: b.ym, media_name: b.media, brand_name: b.brand,
         ad_cost: b.cost, plan_breakdown: b.plan,
         source_updated_at: new Date().toISOString(), computed_at: new Date().toISOString(), source_count: b.n, sync_run_id: runId,
       };
@@ -1024,7 +1047,7 @@ async function refreshAdMonthly(sb: any) {
       return row;
     });
     for (let i = 0; i < upserts.length; i += 500) {
-      const { error: upErr } = await sb.from("kd_ad_monthly").upsert(upserts.slice(i, i + 500), { onConflict: "store_id,year_month,media_name" });
+      const { error: upErr } = await sb.from("kd_ad_monthly").upsert(upserts.slice(i, i + 500), { onConflict: "store_id,year_month,media_name,brand_name" });
       if (upErr) throw new Error("upsert失敗: " + upErr.message);
     }
     // 洗い替え: ①②③が全て取れた時だけ（一部失敗時は消さない）
