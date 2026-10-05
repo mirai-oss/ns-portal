@@ -1835,6 +1835,23 @@ function homeGridHtml(items,ctx){
 }
 function homeGridAfter(items,ctx){ items.forEach(w=>{ if(WIDGETS[w.key]&&WIDGETS[w.key].after) WIDGETS[w.key].after(ctx); }); }
 
+// 2026-10-05(A): 申請の承認待ちバッジ（退職・スポット人件費・仕入れ移動）を、開いたまま自動で更新する。
+// 従来はホーム画面を描く時にしか件数を取っていなかったため、開いたあとに申請が来ても再読み込みするまでバッジが付かなかった。
+// 60秒ごと・タブに戻った時・経営ダッシュボード側で承認/却下/編集/削除した時（postMessage）に、件数が変わった時だけ左メニューを作り直す。
+async function refreshReqBadge_(){
+  try{
+    const u=ME; if(!u||!(u.is_master||u.role==="HQ"||u.role==="CEO")) return;
+    const [rp,rr]=await Promise.all([
+      authed(`/rest/v1/rpc/request_pending_counts`,{method:"POST",body:"{}"}),
+      authed(`/rest/v1/hr_change_requests?kind=eq.retirement&status=eq.pending&select=id`)]);
+    const nReq=(rp.ok&&Array.isArray(rp.body))?rp.body.filter(x=>x.kind!=="retirement").reduce((t,x)=>t+(Number(x.n)||0),0):NAV_REQ_CNT;
+    const nRet=(rr.ok&&Array.isArray(rr.body))?rr.body.length:NAV_RETIRE_CNT;
+    if(nReq!==NAV_REQ_CNT||nRet!==NAV_RETIRE_CNT){ NAV_REQ_CNT=nReq; NAV_RETIRE_CNT=nRet; refreshNavActive(u); }
+  }catch(e){}
+}
+setInterval(()=>{ if(document.visibilityState==="visible") refreshReqBadge_(); },60000);
+document.addEventListener("visibilitychange",()=>{ if(document.visibilityState==="visible") refreshReqBadge_(); });
+window.addEventListener("message",ev=>{ if(ev.origin==="https://mirai-oss.github.io"&&ev.data&&ev.data.type==="nsReqPendingChanged") refreshReqBadge_(); });
 async function renderHomeArea(u){
   const area=$("viewarea"); if(!area) return;
   area.style.padding="";
