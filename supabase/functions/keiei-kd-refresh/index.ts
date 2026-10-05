@@ -556,7 +556,23 @@ function plSeisanGuessCat(name: string): "S" | "F" | "L" | "A" | "R" | "O" | "X"
   return "O";
 }
 
+// PL行の取得元。既定=GAS bqGetPL（DB_PL→stg_pl）。app_secrets.pl_source='entries' のときは正本テーブル pl_entries（F3・2026-10-06）から
+// 同じ列形式（年月,店舗名,勘定科目,区分,金額,メモ,補助科目）に組み立てて返す＝以降のpl_monthly/kd_pl_entriesの処理は無変更。
+// memo列は「自動｜…」の行ではsourceを入れる（精算書由来の判定 PL_SEISAN_CAT_MEMO がmemoで行われているため）。切替は移行手順（取込・突合）完了後。
 async function bqGetPLRows(sb: any): Promise<any[][]> {
+  const { data: flag } = await sb.from("app_secrets").select("value").eq("key", "pl_source").maybeSingle();
+  if ((flag?.value ?? "").trim() === "entries") {
+    const { data: st } = await sb.from("stores").select("id,name,dash_store_name");
+    const nameById = new Map<string, string>((st ?? []).map((x: any) => [x.id, String(x.dash_store_name || x.name || "")]));
+    const rows = await fetchAll((f, t) => sb.from("pl_entries").select("id,year_month,store_id,item,category,amount,memo,sub_item,source")
+      .is("deleted_at", null).order("id").range(f, t));
+    const out: any[][] = [["年月", "店舗名", "勘定科目", "区分", "金額", "メモ", "補助科目"]];
+    for (const r of rows) {
+      out.push([r.year_month, r.store_id ? (nameById.get(r.store_id) ?? "") : "", r.item, r.category, Number(r.amount) || 0,
+        r.source && r.source !== "手入力" ? r.source : (r.memo ?? ""), r.sub_item ?? ""]);
+    }
+    return out;
+  }
   const res = await dashAuthed(sb, "bqGetPL");
   if (!res.ok) throw new Error("bqGetPL取得に失敗: " + (res.error ?? ""));
   return (res.sheets?.PL ?? []) as any[][];

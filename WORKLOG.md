@@ -33,6 +33,12 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
+**★★★★2026-10-06（レーンP）F3前倒し: PL販管費の正本テーブル `pl_entries` ＋RPCを作成（担当A設計・空の状態。切替は未実施）**
+- 背景: DB_PLの年月列が人の編集で空→DB_PL→stg_pl→kd全てに波及。入力の正本をSupabaseに置く（`supabase/2026-10-06_pl_entries_master.sql`）
+- `pl_entries`（uuid主キー・年月はDBがYYYY-MMを強制・区分S/F/L/A/R/O/X・ソフト削除・source/source_key）＋`pl_entries_history`（トリガで全変更を自動記録）。書込は必ずRPC: `pl_entries_bulk_upsert(rows, mode, dry_run, actor, scope)`（検証つき・1行でも不正なら何も書かず理由付きで返す。mode=upsert|replace_month_store|replace_source）/ `pl_entries_delete` / `pl_entries_export`（jsonbで返す＝1000行打切りなし）。権限: master/CEO/HQ=全部、TENCHO=自店舗の手入力のみ、service_role=GAS自動連携
+- 移行用 `pl_entries_import_from_kd`（service_roleのみ・空の正本にだけ）。kdの計算元は `app_secrets.pl_source='entries'` で pl_entries に切替（既定=従来のGAS経路。切替は取込・突合の後）
+- 注意: 2027-01〜2029-02 の「５年間/第一興商カラオケ」行（26か月）は破損ではなく期間一括計上（5年リース）に見える。削除前にユーザー確認
+
 **★★★★2026-10-06（レーンP）担当A依頼: 媒体日次＋PL行データ(GASレスPL)のkd_を追加・初回投入済み・突合OK**
 - 新テーブル4つ（`supabase/2026-10-06_kd_entries_media_daily.sql`）: `kd_media_daily`(stg_media 店舗×日×媒体 19,972行・2024-07〜) / `kd_pl_entries`(stg_pl行 398行) / `kd_spot_entries`(stg_spot) / `kd_loan_entries`(借入元金 74行)。読み出しは `keiei-api-dashboard-summary` の `kind: media_daily|pl_entries|spot|loan`（months/from-to・limit≤5000・offset・hasMore。pl_entries/loanは全社共通行(店舗名空)を店長にも返す=GASと同じ）
 - 更新: 既存のop（media_monthly→媒体日次 / pl_monthly→PL行+借入 / store_monthly→スポット）が同じ取得結果を使って書く＝GAS呼び出しは増えない。単独の `op=entries`（kinds:[pl,spot,loan,media]）も追加。PL・借入・スポットは毎回まるごと入れ替え（1トランザクション・取得が半分未満なら中止）、媒体は取得窓内を洗い替え。店舗名が解決できない行も落とさず store_id=null・名前保持
