@@ -1,0 +1,15 @@
+name: P一時検証(削除予定)
+on: workflow_dispatch
+jobs:
+  v:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: F2バックフィル(日次60か月→入金→広告)
+        env:
+          SR_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          U=https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/keiei-kd-refresh
+          for B in '{"op":"deposit_monthly"}' '{"op":"ad_monthly"}' '{"op":"dashboard_daily","months":60}'; do
+            echo "== $B"; curl -s -m 500 -X POST $U -H "Authorization: Bearer $SR_KEY" -H "Content-Type: application/json" -d "$B" | cut -c1-500; echo
+          done
