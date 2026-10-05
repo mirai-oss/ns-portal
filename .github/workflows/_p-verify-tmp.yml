@@ -1,0 +1,12 @@
+name: P一時実行(削除予定)
+on: workflow_dispatch
+jobs:
+  v:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: detail_daily バックフィル(直近2か月)
+        env:
+          SR_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          echo "DET $(curl -s -m 600 -X POST https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/keiei-kd-refresh -H "Authorization: Bearer $SR_KEY" -H "Content-Type: application/json" -d '{"op":"detail_daily"}' | cut -c1-900)"
