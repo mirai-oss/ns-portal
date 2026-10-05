@@ -67,14 +67,31 @@ const DEPOSIT_COLUMNS = "store_id,corporation_id,year_month,deposit_total,deposi
 //   - kinds:[...]（最大4種）… 同じ期間で複数種を1往復で取得 → { results:{<kind>:{rows,hasMore,fresh}}, ... }
 //   - offset … ページング（limit最大2000）。hasMoreがtrueなら次のoffsetで続きを取る
 //   - fresh … その種別の computed_at 最大値（SWR用: 前回値と同じなら再描画不要の目印）
-const KINDS: Record<string, { table: string; columns: string; periodCol: string; isDate?: boolean; freshCol?: string }> = {
-  pl: { table: "kd_pl_monthly_summary", columns: PL_COLUMNS, periodCol: "year_month" },
-  media: { table: "kd_media_monthly_summary", columns: MEDIA_COLUMNS, periodCol: "year_month" },
-  deposit: { table: "kd_deposit_monthly_summary", columns: DEPOSIT_COLUMNS, periodCol: "year_month" },
-  store: { table: "kd_store_monthly_summary", columns: STORE_COLUMNS, periodCol: "year_month" },
-  // dash_target_monthly.ymはdate型（月初日）。範囲指定は月初日に直し、返り値にはyear_month(YYYY-MM)を足して他の種別と揃える
-  target: { table: "dash_target_monthly", columns: TARGET_COLUMNS, periodCol: "ym", isDate: true, freshCol: "updated_at" },
+const DAILY_COLUMNS = "store_id,corporation_id,date,net_sales,guests_total,parties_total,parttime_labor_cost,fulltime_labor_cost,labor_cost_total,cogs,cash,employee_salary_bonus,statutory_welfare,commute_allowance,avg_check,prior_year_same_weekday_sales,prior_year_same_weekday_ratio,computed_at,sync_run_id";
+const DEPOSIT_DAILY_COLUMNS = "store_id,date,cash_sales,deposit_amount,diff,deposit_count,entries";
+const DEPOSIT_CARRY_COLUMNS = "store_id,year_month,month_start,cash_before,deposit_before,carry";
+const AD_COLUMNS = "store_id,corporation_id,year_month,media_name,ad_cost,plan_breakdown,access_count,net_groups,net_people,tel_count,total_groups,total_people,total_sales,acquisition_fee,pl_excluded,source_updated_at,computed_at,sync_run_id";
+const TARGET_V_COLUMNS = "store_id,year_month,ym,sales_target,target_days,pa_rate,emp_rate,cost_rate,dinii_target,review_target,updated_at";
+const TARGET_DAILY_COLUMNS = "store_id,biz_date,sales_target";
+// periodKind: 'ym'=年月(text) / 'day'=日付(date)。dayの範囲指定は from月の1日〜to月の末日。
+const KINDS: Record<string, { table: string; columns: string; periodCol: string; periodKind: "ym" | "day"; freshCol?: string; noStoreScope?: boolean }> = {
+  pl: { table: "kd_pl_monthly_summary", columns: PL_COLUMNS, periodCol: "year_month", periodKind: "ym" },
+  media: { table: "kd_media_monthly_summary", columns: MEDIA_COLUMNS, periodCol: "year_month", periodKind: "ym" },
+  deposit: { table: "kd_deposit_monthly_summary", columns: DEPOSIT_COLUMNS, periodCol: "year_month", periodKind: "ym" },
+  store: { table: "kd_store_monthly_summary", columns: STORE_COLUMNS, periodCol: "year_month", periodKind: "ym" },
+  // 2026-10-05追加（依頼_レーンP_経営D_F2用kd追加）
+  daily: { table: "kd_daily_store_full", columns: DAILY_COLUMNS, periodCol: "date", periodKind: "day" },            // #1 fact_daily_store互換の日次
+  deposit_daily: { table: "kd_deposit_daily_v", columns: DEPOSIT_DAILY_COLUMNS, periodCol: "date", periodKind: "day" }, // #2 店舗×日の現金売上・入金・差額
+  deposit_carry: { table: "kd_deposit_carry_v", columns: DEPOSIT_CARRY_COLUMNS, periodCol: "year_month", periodKind: "ym" }, // #2 月初繰越
+  ad: { table: "kd_ad_monthly", columns: AD_COLUMNS, periodCol: "year_month", periodKind: "ym" },                   // #3 店舗×媒体×月
+  // #4 目標。kind:'target'は従来の列(ym含む)＋売上目標(sales_target=日別目標の月合計)。日別の元値はtarget_daily
+  target: { table: "kd_target_monthly_v", columns: TARGET_V_COLUMNS, periodCol: "year_month", periodKind: "ym", freshCol: "updated_at" },
+  target_daily: { table: "dash_sales_target_daily", columns: TARGET_DAILY_COLUMNS, periodCol: "biz_date", periodKind: "day" },
 };
+function addMonthFirst(ym: string): string {
+  const [y, m] = ym.split("-").map(Number);
+  return new Date(Date.UTC(y, m, 1)).toISOString().slice(0, 10);
+}
 function jstYm(offsetMonths = 0): string {
   const d = new Date(Date.now() + 9 * 3600 * 1000);
   const t = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + offsetMonths, 1));
@@ -91,7 +108,7 @@ Deno.serve(async (req) => {
     const kinds: string[] = Array.isArray(body.kinds) ? body.kinds : (body.kind ? [body.kind] : []);
     const multi = Array.isArray(body.kinds);
     if (!kinds.length || kinds.length > 4 || kinds.some((k) => !(k in KINDS))) {
-      return json({ ok: false, error: "kind（またはkinds=最大4種）は'pl'|'media'|'deposit'|'store'|'target'のいずれかが必須です" }, 400);
+      return json({ ok: false, error: "kind（またはkinds=最大4種）は'pl'|'media'|'deposit'|'store'|'target'|'daily'|'deposit_daily'|'deposit_carry'|'ad'|'target_daily'のいずれかが必須です" }, 400);
     }
     let from: string | null, to: string | null;
     const monthsN = Number(body.months);
@@ -105,7 +122,7 @@ Deno.serve(async (req) => {
     if (!from || !to) {
       return json({ ok: false, error: "year_month、from+to、またはmonths（YYYY-MM形式／1〜36）の期間指定が必須です（明細の全件返しを防ぐため）" }, 400);
     }
-    const limit = Math.min(2000, Math.max(1, Number(body.limit) || 500));
+    const limit = Math.min(5000, Math.max(1, Number(body.limit) || 500));
     const offset = Math.max(0, Math.floor(Number(body.offset) || 0));
 
     const authHeader = req.headers.get("Authorization") ?? "";
@@ -127,31 +144,42 @@ Deno.serve(async (req) => {
       }
     }
 
+    // PostgRESTは1リクエスト最大1000行で打ち切るため、内部で1000行ずつ取り直して最大limit件まで集める
+    // （limit最大5000。hasMoreは「まだ続きがあるか」を正しく返す＝呼び出し側が無言に欠落しない）。
     const fetchKind = async (kind: string) => {
       const def = KINDS[kind];
-      // limit+1件取って「まだ続きがあるか」を判定する（余分な1件は返さない）
-      let q = sb.from(def.table).select(def.columns).gte(def.periodCol, def.isDate ? `${from}-01` : from).lte(def.periodCol, def.isDate ? `${to}-01` : to)
-        .order(def.periodCol, { ascending: false }).range(offset, offset + limit);
-      if (restrictedStoreIds) {
-        // TENCHO（店長）は自店舗のみ。kd_pl_monthly_summaryの全社共通経費行(store_id is null)は
-        // plAgg()の挙動（単一店舗表示では共通経費を含めない）と同じく店長には見せない。
-        q = q.in("store_id", restrictedStoreIds);
+      const lo = def.periodKind === "day" ? `${from}-01` : from;
+      const hiExclusive = def.periodKind === "day" ? addMonthFirst(to!) : null;   // dayは翌月1日未満
+      const wantMax = limit + 1;
+      const rows: any[] = [];
+      for (let off = offset; rows.length < wantMax; off += 1000) {
+        const pageEnd = off + Math.min(1000, wantMax - rows.length) - 1;
+        let q = sb.from(def.table).select(def.columns).gte(def.periodCol, lo);
+        q = def.periodKind === "day" ? q.lt(def.periodCol, hiExclusive!) : q.lte(def.periodCol, to!);
+        q = q.order(def.periodCol, { ascending: false }).order("store_id", { ascending: true }).range(off, pageEnd);
+        if (restrictedStoreIds) {
+          // TENCHO（店長）は自店舗のみ。kd_pl_monthly_summaryの全社共通経費行(store_id is null)は
+          // plAgg()の挙動（単一店舗表示では共通経費を含めない）と同じく店長には見せない。
+          q = q.in("store_id", restrictedStoreIds);
+        }
+        if (body.store_id && typeof body.store_id === "string") q = q.eq("store_id", body.store_id);
+        if (kind === "media" && typeof body.media_name === "string" && body.media_name) q = q.eq("media_name", body.media_name);
+        if (kind === "ad" && typeof body.media_name === "string" && body.media_name) q = q.eq("media_name", body.media_name);
+        const { data, error } = await q;
+        if (error) throw new Error(`${kind}サマリの取得に失敗しました: ${error.message}`);
+        const got = (data ?? []) as any[];
+        rows.push(...got);
+        if (got.length < Math.min(1000, pageEnd - off + 1)) break;   // 最後のページ
       }
-      if (body.store_id && typeof body.store_id === "string") q = q.eq("store_id", body.store_id);
-      if (kind === "media" && typeof body.media_name === "string" && body.media_name) q = q.eq("media_name", body.media_name);
-      const { data, error } = await q;
-      if (error) throw new Error(`${kind}サマリの取得に失敗しました: ${error.message}`);
-      const all = (data ?? []) as any[];
-      const rows = all.slice(0, limit);
-      if (def.isDate) for (const r of rows) r.year_month = String(r.ym).slice(0, 7);
+      const out = rows.slice(0, limit);
       const fc = def.freshCol ?? "computed_at";
-      const fresh = rows.reduce((m: string | null, r: any) => (r[fc] && (!m || r[fc] > m)) ? r[fc] : m, null);
-      return { kind, rows, hasMore: all.length > limit, fresh };
+      const fresh = out.reduce((m: string | null, r: any) => (r[fc] && (!m || r[fc] > m)) ? r[fc] : m, null);
+      return { kind, rows: out, hasMore: rows.length > limit, nextOffset: rows.length > limit ? offset + limit : null, fresh };
     };
 
     if (!multi) {
       const r = await fetchKind(kinds[0]);
-      return json({ ok: true, kind: r.kind, from, to, rows: r.rows, hasMore: r.hasMore, fresh: r.fresh, scope: { role, restrictedStoreIds } });
+      return json({ ok: true, kind: r.kind, from, to, rows: r.rows, hasMore: r.hasMore, nextOffset: r.nextOffset, fresh: r.fresh, scope: { role, restrictedStoreIds } });
     }
     const results: Record<string, unknown> = {};
     for (const r of await Promise.all(kinds.map(fetchKind))) results[r.kind] = r;

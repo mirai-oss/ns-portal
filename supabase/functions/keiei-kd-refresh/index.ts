@@ -327,6 +327,7 @@ async function refreshDashboardDaily(sb: any, body: any) {
     type Row = {
       store_id: string; period_date: string; net_sales: number; guests: number; parties: number;
       cost: number; labor: number; labor_pa: number; labor_emp: number;
+      cash: number; employee_salary_bonus: number; statutory_welfare: number; commute_allowance: number;
     };
     const parsed: Row[] = [];
     for (let r = 1; r < rawRows.length; r++) {
@@ -345,6 +346,8 @@ async function refreshDashboardDaily(sb: any, body: any) {
       parsed.push({
         store_id: storeId, period_date: dateStr, net_sales: num(row[2]), guests: num(row[3]), parties: num(row[12]),
         cost: num(row[7]), labor: num(row[6]), labor_pa: num(row[4]), labor_emp: num(row[5]),
+        // 2026-10-05追加（F2・依頼_レーンP_経営D_F2用kd追加 #1）: 現金売上・社員給与賞与・法定福利・通勤手当（fact_daily_store互換）
+        cash: num(row[8]), employee_salary_bonus: num(row[9]), statutory_welfare: num(row[10]), commute_allowance: num(row[11]),
       });
     }
 
@@ -370,6 +373,7 @@ async function refreshDashboardDaily(sb: any, body: any) {
         store_id: p.store_id, corporation_id: corpByStoreId.get(p.store_id) ?? null, period_date: p.period_date,
         net_sales: p.net_sales, guests: p.guests, parties: p.parties, cost: p.cost, labor: p.labor,
         labor_pa: p.labor_pa, labor_emp: p.labor_emp,
+        cash: p.cash, employee_salary_bonus: p.employee_salary_bonus, statutory_welfare: p.statutory_welfare, commute_allowance: p.commute_allowance,
         avg_check: p.guests ? Math.round(p.net_sales / p.guests) : null,
         prior_year_same_weekday_sales: priorSales ?? null,
         prior_year_same_weekday_ratio: priorSales ? (p.net_sales / priorSales) : null,
@@ -539,7 +543,7 @@ async function bqGetPLRows(sb: any): Promise<any[][]> {
 // 発生したのと同種）ため、単純な先頭7文字では拾えない。
 function ymOf(v: unknown): string | null {
   const s = String(v ?? "").trim();
-  const m = s.match(/^(\d{4})[\/\-](\d{1,2})/);
+  const m = s.match(/^(\d{4})\s*[年\/\-\.]\s*(\d{1,2})/);
   if (m) return `${m[1]}-${m[2].padStart(2, "0")}`;
   const d = new Date(s);
   if (isNaN(d.getTime())) return null;
@@ -807,6 +811,9 @@ async function refreshDepositMonthly(sb: any) {
     const unmatched = new Set<string>();
     type Bucket = { store_id: string; year_month: string; total: number; count: number };
     const byKey = new Map<string, Bucket>();
+    // 2026-10-05追加（F2 #2）: 店舗×日の入金（kd_deposit_daily）。明細(金額・メモ)もjsonbで持つ
+    type DayBucket = { store_id: string; deposit_date: string; amount: number; count: number; entries: { a: number; m: string }[] };
+    const dayMap = new Map<string, DayBucket>();
     for (let r = 1; r < rawRows.length; r++) {
       const row = rawRows[r];
       const storeName = String(row[0] ?? "").trim();
@@ -819,6 +826,11 @@ async function refreshDepositMonthly(sb: any) {
       const b = byKey.get(key) ?? { store_id: storeId, year_month: ym, total: 0, count: 0 };
       b.total += num(row[2]); b.count++;
       byKey.set(key, b);
+      const dk = `${storeId}|${dateStr}`;
+      const db = dayMap.get(dk) ?? { store_id: storeId, deposit_date: dateStr, amount: 0, count: 0, entries: [] };
+      db.amount += num(row[2]); db.count++;
+      if (db.entries.length < 50) db.entries.push({ a: num(row[2]), m: String(row[3] ?? "").slice(0, 80) });
+      dayMap.set(dk, db);
     }
 
     const yms = [...new Set([...byKey.values()].map((b) => b.year_month))];
@@ -850,14 +862,182 @@ async function refreshDepositMonthly(sb: any) {
       const { error: upErr } = await sb.from("kd_deposit_monthly_summary").upsert(upserts.slice(i, i + 500), { onConflict: "store_id,year_month" });
       if (upErr) throw new Error("upsert失敗: " + upErr.message);
     }
+    const dayUpserts = [...dayMap.values()].map((d) => ({
+      store_id: d.store_id, corporation_id: corpByStoreId.get(d.store_id) ?? null, deposit_date: d.deposit_date,
+      amount: d.amount, deposit_count: d.count, entries: d.entries,
+      source_updated_at: new Date().toISOString(), computed_at: new Date().toISOString(), source_count: d.count, sync_run_id: runId,
+    }));
+    for (let i = 0; i < dayUpserts.length; i += 500) {
+      const { error: upErr } = await sb.from("kd_deposit_daily").upsert(dayUpserts.slice(i, i + 500), { onConflict: "store_id,deposit_date" });
+      if (upErr) throw new Error("upsert失敗(日次): " + upErr.message);
+    }
+    // 入金DBから消えた行（重複削除・取消等）は古い数字のまま残さない（洗い替え・安全装置付き）
+    const sweepM = await sweepStale(sb, "kd_deposit_monthly_summary", runId, upserts.length);
+    const sweepD = await sweepStale(sb, "kd_deposit_daily", runId, dayUpserts.length);
     for (const nm of unmatched) {
       try { await sb.rpc("kd_report_unresolved_name", { p_source_table: "kd_deposit_monthly_summary", p_kind: "store", p_raw_name: nm }); }
       catch (_) { /* noop */ }
     }
-    await finishRun(sb, runId, true, upserts.length, unmatched.size ? `店舗名未対応: ${[...unmatched].join("、")}` : undefined);
-    return { ok: true, job: "deposit_monthly", rows: upserts.length, unmatched: [...unmatched], sync_run_id: runId };
+    const note = [unmatched.size ? `店舗名未対応: ${[...unmatched].join("、")}` : "", sweepM.deleted || sweepD.deleted ? `古い行を洗い替え削除(月次${sweepM.deleted}/日次${sweepD.deleted})` : "", sweepM.skipped ? `月次洗い替え見送り: ${sweepM.skipped}` : "", sweepD.skipped ? `日次洗い替え見送り: ${sweepD.skipped}` : ""].filter(Boolean).join(" / ");
+    await finishRun(sb, runId, true, upserts.length, note || undefined);
+    return { ok: true, job: "deposit_monthly", rows: upserts.length, daily_rows: dayUpserts.length, unmatched: [...unmatched], swept: { monthly: sweepM, daily: sweepD }, sync_run_id: runId };
   } catch (e) {
     await finishRun(sb, runId, false, 0, String(e), "kd_deposit_monthly_summary");
+    return { ok: false, error: String(e) };
+  }
+}
+
+// ============== op=ad_monthly: kd_ad_monthly（F2 #3・2026-10-05） ==============
+// 3つの元データを店舗×媒体×月に合成する（app.jsのingestAd/ingestAdFx/ingestAdExcludeと同じ解釈）:
+//  ①広告費DB=stg_ad_cost（BQミラー。GAS bqGetAdCost・BQ_LOAD_TOKEN認証・ログイン不要）
+//  ②広告効果シート（アクセス/ネット予約/電話/総売上/集客手数料。GAS action:data の keys 指定で当該シートだけ取得）
+//  ③広告除外設定シート（店舗×月。PLの「媒体販促費(自動)」をゼロ扱いにする月）
+// ②③の取得（action:data）が失敗しても①は更新する（失敗した側の列は更新せず前回値を残す・洗い替えも見送る）。
+// 注意: app.jsの広告費DBは「確認」列が使われている時だけ確認済み行に絞る仕様。stg_ad_costのミラーが同じ絞り込みを
+// しているかは未検証＝担当Aの新旧突合で差異があれば報告されたい。
+const colOf = (H: string[], kw: string) => H.findIndex((h) => String(h).indexOf(kw) >= 0);
+const colAny = (H: string[], kws: string[]) => { for (const kw of kws) { const i = colOf(H, kw); if (i >= 0) return i; } return -1; };
+
+async function bqGetAdCostRows(): Promise<any[][]> {
+  const tk = Deno.env.get("BQ_LOAD_TOKEN");
+  if (!tk) throw new Error("BQ_LOAD_TOKENが未設定です（Supabaseのシークレット）");
+  const url = new URL(DASH_API_URL);
+  url.searchParams.set("action", "bqGetAdCost"); url.searchParams.set("token", tk);
+  let lastText = "";
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    const res = await fetch(url.toString());
+    lastText = await res.text();
+    let j: any = null;
+    try { j = JSON.parse(lastText); } catch (_) { /* GASの一時不調(HTML)→再試行 */ }
+    if (j) {
+      if (!j.ok) throw new Error("bqGetAdCost取得に失敗: " + (j.error ?? ""));
+      return (j.sheets?.["広告費"] ?? Object.values(j.sheets ?? {})[0] ?? []) as any[][];
+    }
+    if (attempt < 3) await new Promise((r) => setTimeout(r, attempt * 1500));
+  }
+  throw new Error("bqGetAdCostの応答を読めませんでした: " + lastText.slice(0, 120));
+}
+
+async function refreshAdMonthly(sb: any) {
+  const runId = await startRun(sb, "kd_ad_monthly");
+  try {
+    const { idByName, corpByStoreId } = await loadStoreMaps(sb);
+    const unmatched = new Set<string>();
+    const aliasCache = new Map<string, string>();
+    type Fx = { access: number; net_groups: number; net_people: number; tel: number; tGrp: number; tPpl: number; tSales: number; fee: number };
+    type B = { store_id: string; ym: string; media: string; cost: number | null; plan: Record<string, number>; fx: Fx | null; n: number };
+    const byKey = new Map<string, B>();
+    const getB = (storeId: string, ym: string, media: string): B => {
+      const key = `${storeId}|${ym}|${media}`;
+      let b = byKey.get(key);
+      if (!b) { b = { store_id: storeId, ym, media, cost: null, plan: {}, fx: null, n: 0 }; byKey.set(key, b); }
+      return b;
+    };
+
+    // ① 広告費
+    const adRows = await bqGetAdCostRows();
+    let noStore = 0;
+    for (let r = 1; r < adRows.length; r++) {
+      const row = adRows[r];
+      const ym = ymOf(row[0]); const storeName = String(row[1] ?? "").trim();
+      if (!ym) continue;
+      if (!storeName) { noStore++; continue; }            // 店舗未指定(全体)の広告費は店舗キーを持てないため対象外(件数のみ報告)
+      const storeId = idByName.get(storeName);
+      if (!storeId) { unmatched.add(storeName); continue; }
+      const media = await resolveMediaName(sb, aliasCache, String(row[2] ?? "").trim() || "（媒体未指定）");
+      const b = getB(storeId, ym, media);
+      const amt = num(row[4]);
+      b.cost = (b.cost ?? 0) + amt; b.n++;
+      const plan = String(row[3] ?? "").trim();
+      if (plan) b.plan[plan] = (b.plan[plan] ?? 0) + amt;
+    }
+
+    // ② 広告効果 ③ 広告除外設定（action:data でこの2シートだけ）
+    let fxOk = false, exclOk = false; const excluded = new Set<string>();
+    let fxErr = "";
+    try {
+      const res = await dashAuthed(sb, "data", { keys: "広告効果,広告除外設定" });
+      if (!res.ok) throw new Error(res.error ?? "data取得失敗");
+      const fxSheet: any[][] | undefined = res.sheets?.["広告効果"];
+      const exSheet: any[][] | undefined = res.sheets?.["広告除外設定"];
+      if (fxSheet && fxSheet.length) {
+        let hi = -1;
+        for (let i = 0; i < Math.min(fxSheet.length, 12); i++) {
+          const line = fxSheet[i].map((x: unknown) => String(x ?? "")).join(",");
+          if (/アクセス/.test(line) && /予約|組数/.test(line)) { hi = i; break; }
+        }
+        if (hi < 0) hi = 0;
+        const H = fxSheet[hi].map((h: unknown) => String(h).trim());
+        const iD = colAny(H, ["年月", "日付"]), iS = colOf(H, "店舗"), iM = colOf(H, "媒体"), iA = colOf(H, "アクセス");
+        const iG = colAny(H, ["ネット予約組数", "予約組数", "NET件数", "NET組数", "ネット予約件数", "予約件数", "組数"]);
+        let iP = colAny(H, ["ネット予約人数", "予約人数", "NET人数"]); if (iP < 0) { const x = colOf(H, "人数"); if (x >= 0 && x !== iG) iP = x; }
+        const iT = colAny(H, ["電話数", "電話"]), iTG = colAny(H, ["総組数"]), iTP = colAny(H, ["総人数"]), iTS = colAny(H, ["総売上"]), iFee = colAny(H, ["集客手数料"]);
+        if (iD >= 0 && (iA >= 0 || iG >= 0)) {
+          for (let i = hi + 1; i < fxSheet.length; i++) {
+            const c = fxSheet[i];
+            const ym = ymOf(c[iD]); if (!ym) continue;
+            const g = (ix: number) => ix >= 0 ? num(c[ix]) : 0;
+            const fx: Fx = { access: g(iA), net_groups: g(iG), net_people: g(iP), tel: g(iT), tGrp: g(iTG), tPpl: g(iTP), tSales: g(iTS), fee: g(iFee) };
+            if (!Object.values(fx).some((v) => v)) continue;
+            const storeName = String(iS >= 0 ? c[iS] ?? "" : "").trim();
+            if (!storeName) continue;
+            const storeId = idByName.get(storeName);
+            if (!storeId) { unmatched.add(storeName); continue; }
+            const media = await resolveMediaName(sb, aliasCache, String(iM >= 0 ? c[iM] ?? "" : "").trim() || "（媒体未指定）");
+            const b = getB(storeId, ym, media);
+            const cur = b.fx ?? { access: 0, net_groups: 0, net_people: 0, tel: 0, tGrp: 0, tPpl: 0, tSales: 0, fee: 0 };
+            (Object.keys(cur) as (keyof Fx)[]).forEach((k) => { cur[k] += fx[k]; });
+            b.fx = cur;
+          }
+          fxOk = true;
+        } else fxErr = "広告効果シートの列を読めません";
+      } else fxOk = true; // シートが空/未配信＝広告効果なし（前回値は消す）
+      if (exSheet) {
+        for (let i = 1; i < exSheet.length; i++) {
+          const c = exSheet[i]; const storeName = String(c[1] ?? "").trim(); const ym = ymOf(c[0]);
+          if (!storeName || !ym) continue;
+          const storeId = idByName.get(storeName);
+          if (!storeId) { unmatched.add(storeName); continue; }
+          excluded.add(`${storeId}|${ym}`);
+        }
+      }
+      exclOk = true;
+    } catch (e) { fxErr = fxErr || String(e).slice(0, 120); }
+
+    // 除外設定だけがある店舗×月にも行を作る（PL側がフラグを引けるように。媒体は便宜上の固定名）
+    if (exclOk) for (const key of excluded) {
+      const [storeId, ym] = key.split("|");
+      if (![...byKey.values()].some((b) => b.store_id === storeId && b.ym === ym)) getB(storeId, ym, "（広告除外設定のみ）");
+    }
+
+    const upserts = [...byKey.values()].map((b) => {
+      const row: Record<string, unknown> = {
+        store_id: b.store_id, corporation_id: corpByStoreId.get(b.store_id) ?? null, year_month: b.ym, media_name: b.media,
+        ad_cost: b.cost, plan_breakdown: b.plan,
+        source_updated_at: new Date().toISOString(), computed_at: new Date().toISOString(), source_count: b.n, sync_run_id: runId,
+      };
+      if (fxOk) Object.assign(row, {
+        access_count: b.fx?.access ?? null, net_groups: b.fx?.net_groups ?? null, net_people: b.fx?.net_people ?? null, tel_count: b.fx?.tel ?? null,
+        total_groups: b.fx?.tGrp ?? null, total_people: b.fx?.tPpl ?? null, total_sales: b.fx?.tSales ?? null, acquisition_fee: b.fx?.fee ?? null,
+      });
+      if (exclOk) row.pl_excluded = excluded.has(`${b.store_id}|${b.ym}`);
+      return row;
+    });
+    for (let i = 0; i < upserts.length; i += 500) {
+      const { error: upErr } = await sb.from("kd_ad_monthly").upsert(upserts.slice(i, i + 500), { onConflict: "store_id,year_month,media_name" });
+      if (upErr) throw new Error("upsert失敗: " + upErr.message);
+    }
+    // 洗い替え: ①②③が全て取れた時だけ（一部失敗時は消さない）
+    const sweep = (fxOk && exclOk) ? await sweepStale(sb, "kd_ad_monthly", runId, upserts.length) : { deleted: 0, skipped: "広告効果/除外設定の取得に失敗したため見送り" };
+    for (const nm of unmatched) {
+      try { await sb.rpc("kd_report_unresolved_name", { p_source_table: "kd_ad_monthly", p_kind: "store", p_raw_name: nm }); } catch (_) { /* noop */ }
+    }
+    const note = [unmatched.size ? `店舗名未対応: ${[...unmatched].join("、")}` : "", noStore ? `店舗未指定の広告費${noStore}行は対象外` : "",
+      sweep.deleted ? `古い行${sweep.deleted}件を洗い替え削除` : "", !(fxOk && exclOk) ? `広告効果/除外設定は前回値のまま(${fxErr})` : ""].filter(Boolean).join(" / ");
+    await finishRun(sb, runId, true, upserts.length, note || undefined);
+    return { ok: true, job: "ad_monthly", rows: upserts.length, fx_ok: fxOk, excl_ok: exclOk, excluded_months: excluded.size, no_store_rows: noStore, unmatched: [...unmatched], swept: sweep, sync_run_id: runId };
+  } catch (e) {
+    await finishRun(sb, runId, false, 0, String(e), "kd_ad_monthly");
     return { ok: false, error: String(e) };
   }
 }
@@ -955,7 +1135,7 @@ async function notifyUnresolved(sb: any) {
 // 「関連する取込が前回のkd_更新より新しく終わった時」だけ重い更新を走らせる。手入力（DB_PL等）の反映用に、日中は
 // 前回成功から3時間たっていれば保険として走らせる。home_kpi（Supabase内3秒）は毎回走らせる。
 const DUE_GROUPS: { name: string; kdJob: string; ops: string[]; imports: string[]; safetyHours: number | null }[] = [
-  { name: "売上・PL", kdJob: "kd_dashboard_daily_summary", ops: ["dashboard_daily", "store_monthly", "pl_monthly"], safetyHours: 3,
+  { name: "売上・PL", kdJob: "kd_dashboard_daily_summary", ops: ["dashboard_daily", "store_monthly", "pl_monthly", "ad_monthly"], safetyHours: 3,
     imports: ["zeroregi-akihabara", "dinii-orders", "dinii-payment-ns", "dinii-payment-nstyle", "morning-refresh", "bq-sales-reconcile", "smaregi-payroll", "infomart-siire", "rocketnow-sales"] },
   { name: "入金", kdJob: "kd_deposit_monthly_summary", ops: ["deposit_monthly"], safetyHours: null,
     imports: ["paypay-bank", "paypay-bank-b", "paypay-merchant-deposit", "paypay-merchant-deposit-nstyle", "smbc-card-deposit", "smbc-card-deposit-toho", "morning-refresh"] },
@@ -1008,12 +1188,13 @@ Deno.serve(async (req) => {
       case "home_kpi": result = await refreshHomeKpi(sb); break;
       case "unresolved_notify": result = await notifyUnresolved(sb); break;
       case "store_monthly": result = await refreshStoreMonthly(sb); break;
+      case "ad_monthly": result = await refreshAdMonthly(sb); break;
       case "pl_monthly": result = await refreshPlMonthly(sb); break;
       case "media_monthly": result = await refreshMediaMonthly(sb, body); break;
       case "deposit_monthly": result = await refreshDepositMonthly(sb); break;
       case "sessions_cleanup": result = await cleanupSessions(sb); break;
       case "due": result = await planDue(sb); break;
-      default: return json({ ok: false, error: "opは'reservation_daily'|'dashboard_daily'|'home_kpi'|'unresolved_notify'|'pl_monthly'|'media_monthly'|'deposit_monthly'|'store_monthly'|'sessions_cleanup'|'due'のいずれかが必須です" }, 400);
+      default: return json({ ok: false, error: "opは'reservation_daily'|'dashboard_daily'|'home_kpi'|'unresolved_notify'|'pl_monthly'|'media_monthly'|'deposit_monthly'|'store_monthly'|'ad_monthly'|'sessions_cleanup'|'due'のいずれかが必須です" }, 400);
     }
     // 2026-09-03修正: ok:falseの結果をHTTP 200で返してしまうとGitHub Actions側のHTTP_CODEチェックを
     // すり抜けて「success」表示のまま失敗が握りつぶされる（実際にdashboard_dailyの失敗がこれで見逃されていた）。
