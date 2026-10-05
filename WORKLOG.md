@@ -4,6 +4,10 @@
 
 ---
 
+## 2026-10-05 担当A F2: 明細タブkd直読み切替(v242)
+- レーンPのkind:'detail'を旧bqDetailと突合(2026-09/10×全体・ランチ・ディナー、全店)→店舗別/時間帯別/商品別すべて差0。明細タブを既定でkd直読みに切替。旧経路へ戻す: localStorage detail_kd=0。対象外(従来GAS): 集計基準order/arrival・時間帯×商品。期間は日/週/月/年/期間指定すべて対応。
+- 管理者用ボタン「🧪新旧突合」常設。レーンPへ app_secrets.kd_detail_daily_enabled=1(自動更新有効化)を依頼。
+
 ## 2026-10-05 担当A F1-b/c: 日次・入金・繰越をkd直読み化(v238)
 - レーンP回答(kd daily/deposit_daily/deposit_carry)を受け app.js に fetchKdFull_ を追加。D.daily確定(現金・社員給与賞与・法定福利・通勤)をkdで構築→GAS日次を省略。目標/入金/明細/外販先の確定データ待ちが解消される想定。PLはGAS(pl)が届くまでPL速報を表示。
 - 旧経路へ戻す: localStorage kd_full=0。広告(kind:ad)・目標(kind:target)は未切替（GAS action:dataの軽い部分で足りているため）。明細(#5)はレーンPから仕様質問あり→回答待ち。
