@@ -73,8 +73,14 @@ const DEPOSIT_CARRY_COLUMNS = "store_id,year_month,month_start,cash_before,depos
 const AD_COLUMNS = "store_id,corporation_id,year_month,media_name,ad_cost,plan_breakdown,access_count,net_groups,net_people,tel_count,total_groups,total_people,total_sales,acquisition_fee,pl_excluded,source_updated_at,computed_at,sync_run_id";
 const TARGET_V_COLUMNS = "store_id,year_month,ym,sales_target,target_days,pa_rate,emp_rate,cost_rate,dinii_target,review_target,updated_at";
 const TARGET_DAILY_COLUMNS = "store_id,biz_date,sales_target";
+// 2026-10-06追加（担当A依頼）: stg_* の行ミラー。GAS(bqGetMedia/bqGetPL/bqGetSpot/bqGetLoanPrincipal)なしで媒体別売上・PLを描く用
+const MEDIA_DAILY_COLUMNS = "id,store_id,biz_date,media_raw,media_name,guests,parties,net_sales,computed_at";
+const PL_ENTRIES_COLUMNS = "id,year_month,store_id,store_name,item,category,amount,memo,sub_item,computed_at";
+const SPOT_COLUMNS = "id,spot_id,work_date,store_id,store_name,kind,amount,headcount,memo,entered_by,entered_at,computed_at";
+const LOAN_COLUMNS = "id,year_month,store_id,store_name,corp_name,principal,memo,computed_at";
 // periodKind: 'ym'=年月(text) / 'day'=日付(date)。dayの範囲指定は from月の1日〜to月の末日。
-const KINDS: Record<string, { table: string; columns: string; periodCol: string; periodKind: "ym" | "day"; freshCol?: string; noStoreScope?: boolean }> = {
+// tie: 並び順の最後に足す一意列（同日同店の行がページ境界で重複・欠落しないように）／commonVisible: 全社共通行(store_name='')を店長にも見せる（GASのbqGetPL/bqGetLoanPrincipalと同じ）
+const KINDS: Record<string, { table: string; columns: string; periodCol: string; periodKind: "ym" | "day"; freshCol?: string; noStoreScope?: boolean; tie?: string; commonVisible?: boolean }> = {
   pl: { table: "kd_pl_monthly_summary", columns: PL_COLUMNS, periodCol: "year_month", periodKind: "ym" },
   media: { table: "kd_media_monthly_summary", columns: MEDIA_COLUMNS, periodCol: "year_month", periodKind: "ym" },
   deposit: { table: "kd_deposit_monthly_summary", columns: DEPOSIT_COLUMNS, periodCol: "year_month", periodKind: "ym" },
@@ -87,6 +93,11 @@ const KINDS: Record<string, { table: string; columns: string; periodCol: string;
   // #4 目標。kind:'target'は従来の列(ym含む)＋売上目標(sales_target=日別目標の月合計)。日別の元値はtarget_daily
   target: { table: "kd_target_monthly_v", columns: TARGET_V_COLUMNS, periodCol: "year_month", periodKind: "ym", freshCol: "updated_at" },
   target_daily: { table: "dash_sales_target_daily", columns: TARGET_DAILY_COLUMNS, periodCol: "biz_date", periodKind: "day" },
+  // 2026-10-06 行ミラー（担当A依頼: 媒体別売上・広告管理・PLをGASなしで）
+  media_daily: { table: "kd_media_daily", columns: MEDIA_DAILY_COLUMNS, periodCol: "biz_date", periodKind: "day", tie: "id" },
+  pl_entries: { table: "kd_pl_entries", columns: PL_ENTRIES_COLUMNS, periodCol: "year_month", periodKind: "ym", tie: "id", commonVisible: true },
+  spot: { table: "kd_spot_entries", columns: SPOT_COLUMNS, periodCol: "work_date", periodKind: "day", tie: "id" },
+  loan: { table: "kd_loan_entries", columns: LOAN_COLUMNS, periodCol: "year_month", periodKind: "ym", tie: "id", commonVisible: true },
 };
 function addMonthFirst(ym: string): string {
   const [y, m] = ym.split("-").map(Number);
@@ -210,7 +221,7 @@ Deno.serve(async (req) => {
     const kinds: string[] = Array.isArray(body.kinds) ? body.kinds : (body.kind ? [body.kind] : []);
     const multi = Array.isArray(body.kinds);
     if (!kinds.length || kinds.length > 4 || kinds.some((k) => !(k in KINDS))) {
-      return json({ ok: false, error: "kind（またはkinds=最大4種）は'pl'|'media'|'deposit'|'store'|'target'|'daily'|'deposit_daily'|'deposit_carry'|'ad'|'target_daily'のいずれかが必須です" }, 400);
+      return json({ ok: false, error: "kind（またはkinds=最大4種）は'pl'|'media'|'deposit'|'store'|'target'|'daily'|'deposit_daily'|'deposit_carry'|'ad'|'target_daily'|'media_daily'|'pl_entries'|'spot'|'loan'のいずれかが必須です" }, 400);
     }
     let from: string | null, to: string | null;
     const monthsN = Number(body.months);
@@ -258,11 +269,15 @@ Deno.serve(async (req) => {
         const pageEnd = off + Math.min(1000, wantMax - rows.length) - 1;
         let q = sb.from(def.table).select(def.columns).gte(def.periodCol, lo);
         q = def.periodKind === "day" ? q.lt(def.periodCol, hiExclusive!) : q.lte(def.periodCol, to!);
-        q = q.order(def.periodCol, { ascending: false }).order("store_id", { ascending: true }).range(off, pageEnd);
+        q = q.order(def.periodCol, { ascending: false }).order("store_id", { ascending: true });
+        if (def.tie) q = q.order(def.tie, { ascending: true });
+        q = q.range(off, pageEnd);
         if (restrictedStoreIds) {
           // TENCHO（店長）は自店舗のみ。kd_pl_monthly_summaryの全社共通経費行(store_id is null)は
           // plAgg()の挙動（単一店舗表示では共通経費を含めない）と同じく店長には見せない。
-          q = q.in("store_id", restrictedStoreIds);
+          q = def.commonVisible
+            ? q.or(`store_id.in.(${restrictedStoreIds.join(",")}),store_name.eq.`)
+            : q.in("store_id", restrictedStoreIds);
         }
         if (body.store_id && typeof body.store_id === "string") q = q.eq("store_id", body.store_id);
         if (kind === "media" && typeof body.media_name === "string" && body.media_name) q = q.eq("media_name", body.media_name);

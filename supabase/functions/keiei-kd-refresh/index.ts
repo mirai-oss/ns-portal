@@ -514,7 +514,8 @@ async function refreshStoreMonthly(sb: any) {
       catch (_) { /* noop */ }
     }
     await finishRun(sb, runId, true, upserts.length, unmatched.size ? `店舗名未対応: ${[...unmatched].join("、")}` : undefined);
-    return { ok: true, job: "store_monthly", rows: upserts.length, unmatched: [...unmatched], sync_run_id: runId };
+    const spotEntries = await mirrorEntries(sb, "spot", spotRows);   // 行ミラー(kd_spot_entries)。同じ取得結果を再利用
+    return { ok: true, job: "store_monthly", rows: upserts.length, unmatched: [...unmatched], entries: { spot: spotEntries }, sync_run_id: runId };
   } catch (e) {
     await finishRun(sb, runId, false, 0, String(e), "kd_store_monthly_summary");
     return { ok: false, error: String(e) };
@@ -653,8 +654,10 @@ async function refreshPlMonthly(sb: any) {
     // 借入返済元金（2026-10-03追加・F2。簡易CFの返済元金欄をkd_で持つため）。取得に失敗したらこの列だけ
     // 更新しない（0で上書きして誤った数字にしない）。PL本体の更新は止めない。
     let loanOk = true; let loanRowCount = 0; let loanBadYm = 0; const loanSample: string[] = [];
+    let loanRawRows: any[][] | null = null;   // 行ミラー(kd_loan_entries)用に保持
     try {
       const loanRows = await bqGetLoanRows(sb);
+      loanRawRows = loanRows;
       loanRowCount = Math.max(0, loanRows.length - 1);
       for (let r = 1; r < loanRows.length; r++) {
         const row = loanRows[r];
@@ -749,11 +752,138 @@ async function refreshPlMonthly(sb: any) {
     }
     const plNote = [unmatched.size ? `店舗名未対応: ${[...unmatched].join("、")}` : "", sweep.deleted ? `古い行${sweep.deleted}件を洗い替え削除` : "", sweep.skipped ? `洗い替え見送り: ${sweep.skipped}` : "", loanOk ? "" : "借入元金の取得に失敗(列は更新せず)"].filter(Boolean).join(" / ");
     await finishRun(sb, runId, true, upserts.length, plNote || undefined);
-    return { ok: true, job: "pl_monthly", rows: upserts.length, unmatched: [...unmatched], swept: sweep, loan_ok: loanOk, loan_rows: loanRowCount, loan_bad_ym: loanBadYm, loan_ym_sample: loanSample, sync_run_id: runId };
+    // 行ミラー（kd_pl_entries/kd_loan_entries）。同じ取得結果を再利用（GAS呼び出しを増やさない）。失敗してもPL月次の成功は変えない
+    // （失敗は各job=kd_pl_entries/kd_loan_entriesのkd_sync_runs+Lark通知に出る）が、結果には含める
+    const entries: Record<string, unknown> = {};
+    entries.pl = await mirrorEntries(sb, "pl", rawRows);
+    if (loanRawRows) entries.loan = await mirrorEntries(sb, "loan", loanRawRows);
+    return { ok: true, job: "pl_monthly", rows: upserts.length, unmatched: [...unmatched], swept: sweep, loan_ok: loanOk, loan_rows: loanRowCount, loan_bad_ym: loanBadYm, loan_ym_sample: loanSample, entries, sync_run_id: runId };
   } catch (e) {
     await finishRun(sb, runId, false, 0, String(e), "kd_pl_monthly_summary");
     return { ok: false, error: String(e) };
   }
+}
+
+// ============== 行ミラー（kd_pl_entries / kd_spot_entries / kd_loan_entries / kd_media_daily・2026-10-06・担当A依頼）==============
+// 経営Dが PL・媒体別売上を GAS(bqGetPL等) なしで描くための stg_* の行レベルミラー。元データは今ある取得結果をそのまま使う
+// （pl_monthly/store_monthly/media_monthly が取った rows を再利用＝GAS呼び出しは増えない）。op=entries なら単独でも取れる。
+// 店舗名が既知なら store_id、空=全社共通(store_id=null,store_name='')、解決できない名前は store_id=null のまま store_name を残す
+// （行は絶対に落とさない＝PLが過少にならない）。解決不能な名前はkd_unresolved_namesにも報告する。
+const ENTRY_META: Record<string, { job: string; table: string }> = {
+  pl: { job: "kd_pl_entries", table: "kd_pl_entries" },
+  spot: { job: "kd_spot_entries", table: "kd_spot_entries" },
+  loan: { job: "kd_loan_entries", table: "kd_loan_entries" },
+};
+async function mirrorEntries(sb: any, kind: "pl" | "spot" | "loan", raw: any[][]): Promise<any> {
+  const meta = ENTRY_META[kind];
+  const runId = await startRun(sb, meta.job);
+  try {
+    const maps = await loadStoreMaps(sb);
+    const unresolved = new Set<string>();
+    const resolve = (nm: string): string | null => {
+      if (!nm) return null;
+      const hit = lookupStore(maps, nm);
+      if (hit) return hit.store_id;
+      unresolved.add(nm); return null;
+    };
+    const rows: any[] = []; let badKey = 0;
+    for (let r = 1; r < raw.length; r++) {
+      const row = raw[r] ?? [];
+      if (kind === "pl") {   // 列: 年月,店舗名,勘定科目,区分,金額,メモ,補助科目（bqGetPL）
+        const ym = ymOf(row[0]); if (!ym) { badKey++; continue; }
+        const nm = String(row[1] ?? "").trim();
+        rows.push({ year_month: ym, store_id: resolve(nm), store_name: nm, item: String(row[2] ?? ""), category: String(row[3] ?? ""),
+          amount: num(row[4]), memo: String(row[5] ?? ""), sub_item: String(row[6] ?? "") });
+      } else if (kind === "spot") {   // 列: 日付,店舗名,区分,金額,人数,メモ,入力者,入力日時,ID（bqGetSpot）
+        const d = toDateStr(row[0]); if (!d) { badKey++; continue; }
+        const nm = String(row[1] ?? "").trim();
+        const hc = String(row[4] ?? "").trim();
+        rows.push({ spot_id: String(row[8] ?? ""), work_date: d, store_id: resolve(nm), store_name: nm, kind: String(row[2] ?? ""), amount: num(row[3]),
+          headcount: hc === "" ? null : num(hc), memo: String(row[5] ?? ""), entered_by: String(row[6] ?? ""), entered_at: String(row[7] ?? "") });
+      } else {   // loan 列: 年月,店舗,法人,元金額,メモ（bqGetLoanPrincipal）
+        const ym = ymOf(row[0]); if (!ym) { badKey++; continue; }
+        const nm = String(row[1] ?? "").trim();
+        rows.push({ year_month: ym, store_id: resolve(nm), store_name: nm, corp_name: String(row[2] ?? ""), principal: num(row[3]), memo: String(row[4] ?? "") });
+      }
+    }
+    // 安全装置: 取得の部分応答・空応答で既存ミラーを空にしない（既存が20行以上で、新しい行数が既存の半分未満なら入れ替えない）
+    const { count: existing } = await sb.from(meta.table).select("id", { count: "exact", head: true });
+    if ((existing ?? 0) >= 20 && rows.length < (existing ?? 0) * 0.5) {
+      throw new Error(`新しい${rows.length}行が既存${existing}行の半分未満のため入れ替えを中止（部分応答の疑い）`);
+    }
+    if (!rows.length && (existing ?? 0) > 0) throw new Error("取得結果が0行のため入れ替えを中止");
+    const { data: n, error } = await sb.rpc("kd_replace_entries", { p_table: meta.table, p_rows: rows, p_run: runId });
+    if (error) throw new Error("kd_replace_entries失敗: " + error.message);
+    for (const nm of unresolved) {
+      try { await sb.rpc("kd_report_unresolved_name", { p_source_table: meta.table, p_kind: "store", p_raw_name: nm }); } catch (_) { /* noop */ }
+    }
+    const note = [unresolved.size ? `店舗名未対応(store_id=null,名前は保持): ${[...unresolved].join("、")}` : "", badKey ? `年月/日付不正で除外${badKey}行` : ""].filter(Boolean).join(" / ");
+    await finishRun(sb, runId, true, Number(n) || rows.length, note || undefined);
+    return { ok: true, job: meta.job, rows: Number(n) || rows.length, unresolved: [...unresolved], bad_key: badKey };
+  } catch (e) {
+    await finishRun(sb, runId, false, 0, String(e), meta.job);
+    return { ok: false, job: meta.job, error: String(e) };
+  }
+}
+// kd_media_daily: 元=bqGetMedia(店舗名,営業日,媒体名,客数,客組数,純売上)。取得窓(months)内だけ洗い替え（窓内で今回書かれなかった行を削除）
+async function mirrorMediaDaily(sb: any, raw: any[][]): Promise<any> {
+  const runId = await startRun(sb, "kd_media_daily");
+  try {
+    const maps = await loadStoreMaps(sb);
+    const unmatched = new Set<string>();
+    type B = { store_id: string; biz_date: string; media_raw: string; media_name: string; guests: number; parties: number; net_sales: number; count: number };
+    const by = new Map<string, B>();
+    const aliasCache = new Map<string, string>();
+    let minDate = "9999-12-31";
+    for (let r = 1; r < raw.length; r++) {
+      const row = raw[r] ?? [];
+      const nm = String(row[0] ?? "").trim(); const d = toDateStr(row[1]);
+      if (!nm || !d) continue;
+      const hit = lookupStore(maps, nm);
+      if (!hit) { unmatched.add(nm); continue; }
+      const mediaRaw = String(row[2] ?? "").trim() || "(不明)";
+      const key = `${hit.store_id}|${d}|${mediaRaw}`;
+      const b = by.get(key) ?? { store_id: hit.store_id, biz_date: d, media_raw: mediaRaw, media_name: await resolveMediaName(sb, aliasCache, mediaRaw), guests: 0, parties: 0, net_sales: 0, count: 0 };
+      b.guests += num(row[3]); b.parties += num(row[4]); b.net_sales += num(row[5]); b.count++;
+      by.set(key, b);
+      if (d < minDate) minDate = d;
+    }
+    const now = new Date().toISOString();
+    const ups = [...by.values()].map((b) => ({ store_id: b.store_id, biz_date: b.biz_date, media_raw: b.media_raw, media_name: b.media_name,
+      guests: b.guests, parties: b.parties, net_sales: b.net_sales, source_count: b.count, computed_at: now, sync_run_id: runId }));
+    for (let i = 0; i < ups.length; i += 1000) {
+      const { error } = await sb.from("kd_media_daily").upsert(ups.slice(i, i + 1000), { onConflict: "store_id,biz_date,media_raw" });
+      if (error) throw new Error("upsert失敗: " + error.message);
+    }
+    let swept: any = { deleted: 0 };
+    if (ups.length) swept = await sweepWindow(sb, "kd_media_daily", "biz_date", runId, minDate, "9999-12-31", ups.length);
+    for (const nm of unmatched) {
+      try { await sb.rpc("kd_report_unresolved_name", { p_source_table: "kd_media_daily", p_kind: "store", p_raw_name: nm }); } catch (_) { /* noop */ }
+    }
+    const note = [unmatched.size ? `店舗名未対応: ${[...unmatched].join("、")}` : "", swept.skipped ? `洗い替えスキップ: ${swept.skipped}` : ""].filter(Boolean).join(" / ");
+    await finishRun(sb, runId, true, ups.length, note || undefined);
+    return { ok: true, job: "kd_media_daily", rows: ups.length, from: minDate, unmatched: [...unmatched], swept };
+  } catch (e) {
+    await finishRun(sb, runId, false, 0, String(e), "kd_media_daily");
+    return { ok: false, job: "kd_media_daily", error: String(e) };
+  }
+}
+// op=entries: 行ミラーだけを単独で更新（GASの保存直後の即時反映・初回バックフィル用）。kinds=['pl','spot','loan','media']（省略=pl,spot,loan）
+async function refreshEntries(sb: any, body: any) {
+  const kinds: string[] = Array.isArray(body.kinds) && body.kinds.length ? body.kinds : ["pl", "spot", "loan"];
+  const out: Record<string, unknown> = {};
+  let ok = true;
+  try {
+    if (kinds.includes("pl")) { out.pl = await mirrorEntries(sb, "pl", await bqGetPLRows(sb)); }
+    if (kinds.includes("loan")) { out.loan = await mirrorEntries(sb, "loan", await bqGetLoanRows(sb)); }
+    if (kinds.includes("spot")) { out.spot = await mirrorEntries(sb, "spot", await bqGetSpotRows(sb)); }
+    if (kinds.includes("media")) {
+      const months = Math.max(1, Math.min(40, Number(body.months) || 3));
+      out.media = await mirrorMediaDaily(sb, await bqGetMediaRows(sb, months));
+    }
+  } catch (e) { ok = false; out.error = String(e); }
+  for (const v of Object.values(out)) if (v && typeof v === "object" && (v as any).ok === false) ok = false;
+  return { ok, job: "entries", kinds, results: out };
 }
 
 // ============== op=media_monthly: kd_media_monthly_summary ==============
@@ -812,7 +942,8 @@ async function refreshMediaMonthly(sb: any, body: any) {
       catch (_) { /* noop */ }
     }
     await finishRun(sb, runId, true, upserts.length, unmatched.size ? `店舗名未対応: ${[...unmatched].join("、")}` : undefined);
-    return { ok: true, job: "media_monthly", rows: upserts.length, unmatched: [...unmatched], sync_run_id: runId };
+    const mediaDaily = await mirrorMediaDaily(sb, rawRows);   // 日次ミラー(kd_media_daily)。同じ取得結果を再利用
+    return { ok: true, job: "media_monthly", rows: upserts.length, unmatched: [...unmatched], media_daily: mediaDaily, sync_run_id: runId };
   } catch (e) {
     await finishRun(sb, runId, false, 0, String(e), "kd_media_monthly_summary");
     return { ok: false, error: String(e) };
@@ -1409,10 +1540,23 @@ Deno.serve(async (req) => {
     const sb = svc();
     const authHeader = req.headers.get("Authorization") ?? "";
     const isServiceRole = authHeader.includes(Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? " ");
-    if (!isServiceRole) return json({ ok: false, error: "権限がありません（service_roleのみ）" }, 403);
 
     let body: any = {};
     try { body = await req.json(); } catch { /* ボディなし */ }
+
+    if (!isServiceRole) {
+      // GAS（保存直後の即時反映）専用の狭い入口: op=entries だけを BQ_LOAD_TOKEN（GASのスクリプトプロパティと同じ値）で許可。
+      // 他のopは従来どおりservice_roleのみ。即応答して裏で更新する（GAS側の保存処理を待たせない）。
+      const tk = Deno.env.get("BQ_LOAD_TOKEN") ?? "";
+      if (body?.op === "entries" && tk && String(body.token ?? "").trim() === tk.trim()) {
+        const kinds = (Array.isArray(body.kinds) ? body.kinds : []).filter((k: unknown) => ["pl", "spot", "loan", "media"].includes(String(k)));
+        const b2 = { op: "entries", kinds: kinds.length ? kinds : ["pl", "spot", "loan"], months: body.months };
+        // deno-lint-ignore no-explicit-any
+        (globalThis as any).EdgeRuntime?.waitUntil(refreshEntries(sb, b2));
+        return json({ ok: true, started: true, job: "entries", kinds: b2.kinds }, 202);
+      }
+      return json({ ok: false, error: "権限がありません（service_roleのみ）" }, 403);
+    }
 
     let result: any;
     switch (body.op) {
@@ -1435,13 +1579,14 @@ Deno.serve(async (req) => {
       }
       case "pl_monthly": result = await refreshPlMonthly(sb); break;
       case "media_monthly": result = await refreshMediaMonthly(sb, body); break;
+      case "entries": result = await refreshEntries(sb, body); break;
       case "deposit_monthly": result = await refreshDepositMonthly(sb); break;
       case "sessions_cleanup": result = await cleanupSessions(sb); break;
       case "due": result = await planDue(sb); break;
       case "run_status": result = await runStatus(sb, body); break;
       case "diag_detail_cov": result = await diagDetailCov(sb); break;
       case "verify_carry": result = await verifyCarry(sb, body); break;
-      default: return json({ ok: false, error: "opは'reservation_daily'|'dashboard_daily'|'home_kpi'|'unresolved_notify'|'pl_monthly'|'media_monthly'|'deposit_monthly'|'store_monthly'|'ad_monthly'|'delivery_daily'|'detail_daily'|'sessions_cleanup'|'due'のいずれかが必須です" }, 400);
+      default: return json({ ok: false, error: "opは'reservation_daily'|'dashboard_daily'|'home_kpi'|'unresolved_notify'|'pl_monthly'|'media_monthly'|'deposit_monthly'|'store_monthly'|'ad_monthly'|'delivery_daily'|'detail_daily'|'entries'|'sessions_cleanup'|'due'のいずれかが必須です" }, 400);
     }
     // 2026-09-03修正: ok:falseの結果をHTTP 200で返してしまうとGitHub Actions側のHTTP_CODEチェックを
     // すり抜けて「success」表示のまま失敗が握りつぶされる（実際にdashboard_dailyの失敗がこれで見逃されていた）。
