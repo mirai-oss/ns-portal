@@ -4,6 +4,14 @@
 
 ---
 
+## 2026-10-05 担当A F0/F1/F2 実測(本番・社長アカウント・app.js v242・キャッシュなしの初回)
+- boot_first_paint(最初の数字): **0.5秒**（F0前は数十秒〜「読み込み中」固定）。合格ライン2秒→達成。HTML到着0.2秒・DOM完成0.5秒。
+- kd日次(現金・人件費内訳つき)の全期間取得 kd_full:daily: 3.5秒 → 目標・入金・明細・外販先がGAS待ちなしで使える状態に（以前は GAS data 20秒+bqDailyStore 30〜60秒待ち）。keiei-api-home 0.7秒 / dashboard-summary(media,deposit,pl) 1.3〜1.4秒 / kd_dashboard_daily_summary(分析) 2.0秒。
+- GAS(裏・画面表示は待たない): bqGetSpot 5.2秒 / data 19.7秒 / **bqGetMedia 失敗(http_404・20.4秒)** ← 媒体別・広告管理が依存。kd_media_monthly_summary(月次)はあるが期間可変の日次kd_mediaが無い→次の候補(レーンPへkd_media_daily依頼＋広告管理/目標値のkd直読み)。
+- 強制ログアウト: F1-e(セッション貼替・SESSION_BACKEND=supabase・tok_68件/43KB)後の本番で発生なし(ユーザー確認待ち・継続観察)。
+- 未計測: タブ切替の個別秒数(PL/入金/目標/明細は kd 直読み＝通信ゼロ〜1.3秒の設計。実測貼付待ち)、再訪(キャッシュあり)の秒数、ログイン直後の秒数。
+- 明細タブはkd直読み(v242)。旧bqDetailとの突合: 2026-09/10×全体・ランチ・ディナー全店で差0。
+
 ## 2026-10-05 担当A F2: 明細タブkd直読み切替(v242)
 - レーンPのkind:'detail'を旧bqDetailと突合(2026-09/10×全体・ランチ・ディナー、全店)→店舗別/時間帯別/商品別すべて差0。明細タブを既定でkd直読みに切替。旧経路へ戻す: localStorage detail_kd=0。対象外(従来GAS): 集計基準order/arrival・時間帯×商品。期間は日/週/月/年/期間指定すべて対応。
 - 管理者用ボタン「🧪新旧突合」常設。レーンPへ app_secrets.kd_detail_daily_enabled=1(自動更新有効化)を依頼。
