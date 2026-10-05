@@ -3,13 +3,18 @@ on: workflow_dispatch
 jobs:
   v:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
     steps:
-      - name: F2バックフィル(日次60か月→入金→広告)
+      - name: API新種別の正常系
         env:
           SR_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: |
-          U=https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/keiei-kd-refresh
-          for B in '{"op":"verify_carry"}' '{"op":"verify_carry","before":"2026-07-01"}'; do
-            echo "== $B"; curl -s -m 500 -X POST $U -H "Authorization: Bearer $SR_KEY" -H "Content-Type: application/json" -d "$B" | cut -c1-500; echo
-          done
+          U=https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/keiei-api-dashboard-summary
+          call() { curl -s -m 120 -X POST $U -H "Authorization: Bearer $SR_KEY" -H "Content-Type: application/json" -d "$1" | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{try{const j=JSON.parse(s);const r=j.results?Object.entries(j.results).map(([k,v])=>k+':'+v.rows.length+(v.hasMore?'+more':'')).join(' '):('rows='+(j.rows||[]).length+' hasMore='+j.hasMore+' next='+j.nextOffset);console.log('API',process.argv[1],'ok='+j.ok,r,j.ok?'':s.slice(0,200),j.rows&&j.rows[0]?JSON.stringify(j.rows[0]).slice(0,230):'')}catch(e){console.log('API',process.argv[1],'ERR',s.slice(0,200))}})" "$2"; }
+          call '{"kind":"daily","months":24,"limit":5000}' "daily24(limit5000)"
+          call '{"kind":"daily","months":24,"limit":5000,"offset":5000}' "daily24(offset5000)"
+          call '{"kind":"deposit_daily","months":3,"limit":1000}' "deposit_daily3"
+          call '{"kind":"deposit_carry","year_month":"2026-10"}' "carry202610"
+          call '{"kind":"ad","months":24,"limit":2000}' "ad24"
+          call '{"kind":"target","months":6}' "target6"
+          call '{"kind":"target_daily","year_month":"2026-10","limit":2000}' "target_daily202610"
+          call '{"kinds":["daily","deposit_daily","deposit_carry","ad"],"months":2,"limit":3000}' "multi4"
