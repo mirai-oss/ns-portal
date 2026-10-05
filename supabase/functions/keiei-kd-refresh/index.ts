@@ -1214,6 +1214,14 @@ async function verifyCarry(sb: any, body: any) {
   return { ok: true, before, compared, mismatch, gas_stores: gas.size, unresolved_gas_stores: unresolved };
 }
 
+// ============== op=diag_detail_cov: 明細(dinii.orders)の月別カバレッジを返す読み取り専用の診断（2026-10-06・明細kd_化の規模見積り用） ==============
+async function diagDetailCov(sb: any) {
+  const res = await dashAuthed(sb, "data", { keys: "明細カバレッジ" });
+  if (!res.ok) return { ok: false, error: "data取得失敗: " + (res.error ?? "") };
+  const sh = res.sheets?.["明細カバレッジ"] ?? [];
+  return { ok: true, header: sh[0] ?? null, rows: sh.slice(1) };
+}
+
 // ============== op=sessions_cleanup: ds_sessionsの期限切れ行を削除（A-11・2026-09-18） ==============
 async function cleanupSessions(sb: any) {
   const { error, count } = await sb.from("ds_sessions").delete({ count: "exact" }).lt("expires_at", new Date().toISOString());
@@ -1245,6 +1253,7 @@ Deno.serve(async (req) => {
       case "deposit_monthly": result = await refreshDepositMonthly(sb); break;
       case "sessions_cleanup": result = await cleanupSessions(sb); break;
       case "due": result = await planDue(sb); break;
+      case "diag_detail_cov": result = await diagDetailCov(sb); break;
       case "verify_carry": result = await verifyCarry(sb, body); break;
       default: return json({ ok: false, error: "opは'reservation_daily'|'dashboard_daily'|'home_kpi'|'unresolved_notify'|'pl_monthly'|'media_monthly'|'deposit_monthly'|'store_monthly'|'ad_monthly'|'sessions_cleanup'|'due'のいずれかが必須です" }, 400);
     }
