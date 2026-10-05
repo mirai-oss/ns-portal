@@ -1140,7 +1140,12 @@ async function bqDetailItemDailyRows(from: string, to: string): Promise<{ logic_
     let j: any = null;
     try { j = JSON.parse(lastText); } catch (_) { /* GASの一時不調(HTML)→再試行 */ }
     if (j) {
-      if (!j.ok) throw new Error("bqDetailItemDailyForSync失敗: " + (j.error ?? JSON.stringify(j).slice(0, 120)));
+      if (!j.ok) {
+        // 同じBQ_LOAD_TOKENで他のtoken認証アクション(bqGetAdCost等)は通るのに本アクションだけunauthorizedなら、
+        // 未知のアクションがセッション必須の経路に落ちている＝本番Webアプリのデプロイが古い（新バージョン未作成）可能性が高い
+        const hint = j.error === "unauthorized" ? "（同じトークンで他のtoken認証アクションは通るため、GAS本番Webアプリに本アクションが載っていない＝『デプロイを管理→新バージョン』が未実施の可能性）" : "";
+        throw new Error("bqDetailItemDailyForSync失敗: " + (j.error ?? JSON.stringify(j).slice(0, 120)) + hint);
+      }
       return { logic_ver: j.logic_ver ?? null, item: j.sheets?.item ?? [], hour: j.sheets?.hour ?? [] };
     }
     if (attempt < 3) await new Promise((r) => setTimeout(r, attempt * 2000));
