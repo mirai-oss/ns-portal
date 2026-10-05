@@ -1304,7 +1304,7 @@ const GROUPS=[
     //   （承認待ちの件数バッジもアカウント管理に残っている）。履歴の確認とフォームURL一覧は、下の「申請履歴」にまとめた（中の切り替え「📜申請履歴／📎申請フォームURL」）。
     // 2026-10-05(A): 申請履歴（退職申請・スポット人件費・仕入れ移動の いつ誰が申請しいつ誰が承認したか を月ごとに表示）。
     // tori-dashboardの新タブrequestLog（社長・本部のみ）をkeiei系と同じ経路で埋め込む
-    {key:"admin-reqlog",   sysKey:"keiei", ico:"📜", label:"申請履歴", url:keieiTab("requestLog")},
+    {key:"admin-reqlog",   sysKey:"keiei", ico:"📜", label:"申請履歴", url:keieiTab("requestLog"), countKey:"reqpending", countLabel:"承認待ち", countTitle:"承認待ち（スポット人件費・仕入れ移動）"},
     {key:"admin-perm",     ico:"🔑", label:"権限設定（従来ポータル）", legacyLink:true},
     {key:"admin-notify",   ico:"🔔", label:"通知先（配信グループ管理）", url:nippoPage("admin")},
     {key:"admin-stores",   ico:"🏢", label:"マスタ：店舗管理", url:nippoPage("admin")},
@@ -1374,6 +1374,7 @@ let SIDEBAR_COLLAPSED=(()=>{ try{ return localStorage.getItem("portal_sidebar_co
 let NAV_HQ_CNT=0, NAV_INV_CNT=0, NAV_APPROVAL_CNT=0, NAV_RECEIVABLE_CNT=0;
 // 2026-09-03 ユーザー要望: 経費申請の自分宛承認待ち／個人情報・社内システム変更申請の
 // 承認待ち（従来のNAV_APPROVAL_CNTを内訳ごとに分割）／自分の日報へのいいね・コメント通知
+let NAV_REQ_CNT=0; // 2026-10-05(A): 申請の承認待ち件数（スポット人件費の申請＋仕入れ移動の現場申請・退職はNAV_RETIRE_CNTでアカウント管理に出るため含めない）
 let NAV_RETIRE_CNT=0; // 2026-10-03(B): 退職申請の承認待ち件数（nippo hr_change_requests・本部/社長/マスターのみ）
 let NAV_EXPENSE_CNT=0, NAV_PROFILE_APPROVAL_CNT=0, NAV_CRED_APPROVAL_CNT=0, NAV_REPORT_FEEDBACK_CNT=0;
 
@@ -1500,6 +1501,7 @@ function countOf(it){
   if(it.countKey==="credApproval") return NAV_CRED_APPROVAL_CNT;
   if(it.countKey==="reportFeedback") return NAV_REPORT_FEEDBACK_CNT;
   if(it.countKey==="retire") return NAV_RETIRE_CNT;
+  if(it.countKey==="reqpending") return NAV_REQ_CNT;
   return 0;
 }
 function navItemHtml(it,activeKey){
@@ -1982,6 +1984,13 @@ async function renderHomeArea(u){
       NAV_RETIRE_CNT=(rr.ok&&Array.isArray(rr.body))?rr.body.length:0;
     } else NAV_RETIRE_CNT=0;
   }catch(e){ NAV_RETIRE_CNT=0; }
+  // 2026-10-05(A): 申請（スポット人件費・仕入れ移動）の承認待ち。SQL(request_pending_counts)未適用・権限外なら0件
+  try{
+    if(u.is_master||u.role==="HQ"||u.role==="CEO"){
+      const rp=await authed(`/rest/v1/rpc/request_pending_counts`,{method:"POST",body:"{}"});
+      NAV_REQ_CNT=(rp.ok&&Array.isArray(rp.body))?rp.body.filter(x=>x.kind!=="retirement").reduce((t,x)=>t+(Number(x.n)||0),0):0;
+    } else NAV_REQ_CNT=0;
+  }catch(e){ NAV_REQ_CNT=0; }
   refreshNavActive(u);
 }
 // nippo系メニューを開いたら「いいね・コメントを見た」とみなし、次回のバッジ計算の
