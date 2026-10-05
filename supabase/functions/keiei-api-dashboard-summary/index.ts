@@ -138,9 +138,23 @@ async function handleDetail(sb: ReturnType<typeof createClient>, body: any, role
     if (error) throw new Error(`${fn}: ${error.message}`);
     return data ?? [];
   };
+  // 集合を返すRPCもPostgRESTの1リクエスト最大1000行で無言に切られる。商品別(最大5000件)は1000行ずつ取り直す
+  // （並びはRPC内で売上降順＋商品名で確定しているのでページ間で重複・欠落しない）。
+  const rpcPaged = async (fn: string, a: Record<string, unknown>, max: number) => {
+    const out: any[] = [];
+    for (let off = 0; off < max; off += 1000) {
+      const end = Math.min(off + 999, max - 1);
+      const { data, error } = await sb.rpc(fn, a).range(off, end);
+      if (error) throw new Error(`${fn}: ${error.message}`);
+      const got = (data ?? []) as any[];
+      out.push(...got);
+      if (got.length < end - off + 1) break;
+    }
+    return out;
+  };
   const out: Record<string, unknown> = { ok: true, kind, from: body.from, to: body.to, daypart, basis, scope };
   const jobs: Promise<void>[] = [];
-  if (want("items")) jobs.push((noLunchDinner ? Promise.resolve([]) : rpc("kd_detail_items", { ...args, p_basis: basis, p_limit: limit })).then((d) => { out.items = d; }));
+  if (want("items")) jobs.push((noLunchDinner ? Promise.resolve([]) : rpcPaged("kd_detail_items", { ...args, p_basis: basis, p_limit: limit }, limit)).then((d) => { out.items = d; }));
   if (want("hours")) jobs.push((noLunchDinner ? Promise.resolve([]) : rpc("kd_detail_hours", args)).then((d) => { out.hours = d; }));
   if (want("stores")) jobs.push((noLunchDinner ? Promise.resolve([]) : rpc("kd_detail_stores", args)).then((d) => { out.stores = d; }));
   if (want("coverage")) jobs.push(rpc("kd_detail_coverage", { p_from: body.from, p_to: body.to, p_stores: stores }).then((d) => { out.coverage = d; }));
