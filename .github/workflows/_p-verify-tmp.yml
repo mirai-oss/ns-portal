@@ -1,0 +1,14 @@
+name: P一時検証(削除予定)
+on: workflow_dispatch
+jobs:
+  v:
+    runs-on: ubuntu-latest
+    steps:
+      - name: detail dinner
+        env:
+          SR_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          A=https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/keiei-api-dashboard-summary
+          for dp in all lunch dinner; do
+            curl -s -m 60 -X POST $A -H "Authorization: Bearer $SR_KEY" -H "Content-Type: application/json" -d "{\"kind\":\"detail\",\"from\":\"2026-09-01\",\"to\":\"2026-09-30\",\"daypart\":\"$dp\",\"basis\":\"excl\",\"limit\":3000}" | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{const j=JSON.parse(s);console.log('CHK $dp ok='+j.ok,'stores='+(j.stores||[]).length,'items='+(j.items||[]).length,'hours='+(j.hours||[]).length,'sales_excl='+Math.round((j.stores||[]).reduce((a,r)=>a+Number(r.sales_excl),0)),'err='+(j.error||''))})"
+          done
