@@ -4,6 +4,9 @@
 
 ---
 
+## 2026-10-05 担当A F3: PL入力Supabase正本化 — PL入力(表)公開・切替計画
+- app.js v246 に『📝 PL入力（表）』(pl_entries 直接読書・貼付取込・検証)。切替計画: docs/計画_PL入力のSupabase正本化_切替手順_2026-10-05.md。GASへ年月空ガード＋kd即時通知(手順書渡し済)。pl_entries取込済(772行・月別差0)。pl_source切替は書込先(GAS)切替と同時にする(未実施)。
+
 ## 2026-10-05 担当A F0/F1/F2 実測(本番・社長アカウント・app.js v242・キャッシュなしの初回)
 - boot_first_paint(最初の数字): **0.5秒**（F0前は数十秒〜「読み込み中」固定）。合格ライン2秒→達成。HTML到着0.2秒・DOM完成0.5秒。
 - kd日次(現金・人件費内訳つき)の全期間取得 kd_full:daily: 3.5秒 → 目標・入金・明細・外販先がGAS待ちなしで使える状態に（以前は GAS data 20秒+bqDailyStore 30〜60秒待ち）。keiei-api-home 0.7秒 / dashboard-summary(media,deposit,pl) 1.3〜1.4秒 / kd_dashboard_daily_summary(分析) 2.0秒。
