@@ -4,6 +4,9 @@
 
 ---
 
+## 2026-10-05（調査・修正スレッド）イベント自動取得の取りこぼし対策＋祝日判定の計算式統一
+- イベント: ns-daily-import `6dedfea`（catchUpDays・読めた月だけ送信）。祝日: tori-dashboard `3056a47`／nippo `4b072cf`／ns-portal `supabase/2026-10-05_jp_holiday_formula_fix.sql`（**本番未適用・PAT失効**）。要点は📍参照。
+
 ## 2026-10-05 担当A→レーンP 依頼: 経営D F2用kd追加
 - docs/依頼_レーンP_経営D_F2用kd追加_2026-10-05.md（kd_daily_store_full最優先／入金／広告／目標／明細）。完了後に担当Aが各タブをkd主経路へ。
 
@@ -13,6 +16,11 @@
 - 入金タブをkd_deposit速報で即表示（v237）。PL速報(viewPLFast_)は既存。目標/広告/媒体/明細は確定データ(GAS)待ちのまま＝次はkd追加(F2・レーンP)待ち。社員人件費反映はユーザー確認済み。
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
+
+**★★★2026-10-05（このスレッド）祝日判定を3システムで同じ計算式に統一（経営D・日報は反映済み／ポータルDBのSQLは未適用＝PAT失効）＋イベント自動取得の取りこぼし対策**: ユーザー依頼「横浜アリーナ・日産スタジアムのイベントは自動取得か調査→弱点修正」「祝日も調査→計算式へ統一」。
+- **イベント**: 既に`ns-daily-import`の月次タスク（毎月1日・15日・当月から先へローリング取得→`DB_イベント`）で自動化済みと確認。弱点2点を修正（[6dedfea](https://github.com/mirai-oss/ns-daily-import/commit/6dedfea)）: ①`MONTHLY_SCHEDULE`に任意の`{catchUpDays}`を追加し、予定日に未成功なら6日以内に取り戻す（イベント2タスクのみ）②正しく読めた月だけをGASへ送り、読めなかった月の既存イベントが掲載終了扱いで消えるのを防止。詳細は`ns-daily-import/WORKLOG.md` 2026-10-05。
+- **祝日**: 経営Dは固定表（〜2027年）、日報・ポータルDBは計算式だが「火・水曜にずれる振替休日」「国民の休日」を取りこぼす状態だった（2045年までで8日: 2031-05-06/2032-09-21/2036-05-06/2037-05-06/2037-09-22/2042-05-06/2043-05-06/2043-09-22）。3箇所を同じロジック（固定日・ハッピーマンデー・春分秋分近似・振替休日・国民の休日）に統一。**経営D** `app.js jpHolidayName`（tori-dashboard `3056a47`・v=238）と**日報** `index.html sfV12JpHolidayName`（nippo `4b072cf`）はpush済み。2024〜2045年で両者全日一致・2024〜2027年は旧固定表と完全一致を確認。
+- **⚠️未了（ユーザー作業 or PAT再発行待ち）**: ポータルDBの`jp_is_holiday`置換SQL [supabase/2026-10-05_jp_holiday_formula_fix.sql](supabase/2026-10-05_jp_holiday_formula_fix.sql) は、Management API用PAT（`~/.config/ns-portal/supabase_pat`）が401失効のため**本番未適用**。SQL Editorで1回実行すれば完了（`create or replace function`1本・テーブル変更なし）。影響は`jp_prev_business_day`→`hq_create_payroll_tasks`（給与タスク期日）で、差が出るのは最短でも2031年5月なので急ぎではない。**祝日ロジックを直すときは3箇所（経営D・日報・このSQL）を必ず揃える**。
 
 **★★★★2026-10-03（担当Bスレッド）退職申請 v5: 申請が出たらLINE通知（マスター・社長・本部・チーム長のうちLINE連携済み・その店舗に関係する人だけ）／SQL v5・Edge Function `hr-retire-notify`はユーザーがダッシュボードで適用/登録済み(Verify JWTオフ)・nippo公開済み。実LINE送信の実機テストは未実施（坂本さんにも届くため事前連絡が必要）**:
 - `supabase/2026-10-03_hr_change_requests_v5_notify.sql`（列line_notified_at＋service_role専用RPC `hr_claim_retire_notify`: 承認待ち・10分以内・未通知の申請だけを1回だけ「通知する」と印を付け、文面情報と宛先を返す。宛先=マスター/CEO/HQは全店舗、TEAMは担当チーム店舗＋所属店舗がその申請店舗に含まれる人）と Edge Function `hr-retire-notify`（ログイン不要・verify_jwt無し・request_idだけ受け取りLINE push）。フォーム(retire-form.html)とnippoの申請フォームが申請直後に呼ぶ。
