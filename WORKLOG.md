@@ -33,6 +33,12 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
+**★★★★2026-10-06（レーンP）担当A依頼: 媒体日次＋PL行データ(GASレスPL)のkd_を追加・初回投入済み・突合OK**
+- 新テーブル4つ（`supabase/2026-10-06_kd_entries_media_daily.sql`）: `kd_media_daily`(stg_media 店舗×日×媒体 19,972行・2024-07〜) / `kd_pl_entries`(stg_pl行 398行) / `kd_spot_entries`(stg_spot) / `kd_loan_entries`(借入元金 74行)。読み出しは `keiei-api-dashboard-summary` の `kind: media_daily|pl_entries|spot|loan`（months/from-to・limit≤5000・offset・hasMore。pl_entries/loanは全社共通行(店舗名空)を店長にも返す=GASと同じ）
+- 更新: 既存のop（media_monthly→媒体日次 / pl_monthly→PL行+借入 / store_monthly→スポット）が同じ取得結果を使って書く＝GAS呼び出しは増えない。単独の `op=entries`（kinds:[pl,spot,loan,media]）も追加。PL・借入・スポットは毎回まるごと入れ替え（1トランザクション・取得が半分未満なら中止）、媒体は取得窓内を洗い替え。店舗名が解決できない行も落とさず store_id=null・名前保持
+- 突合: 媒体日次の月合計は kd_media_monthly_summary と完全一致（2026-08〜10 売上・客数）。PL行は費目別の月合計が kd_pl_monthly_summary と一致（残差は区分外(S/X/空)行のみ＝月次側は「その他」に含める仕様）
+- **GASからの即時反映用の入口**: `POST …/functions/v1/keiei-kd-refresh` body `{op:"entries",kinds:["pl"],token:<BQ_LOAD_TOKEN>}`（即202・裏で更新。他のopは従来どおりservice_roleのみ）。保存系GASの末尾から呼ぶ（担当A側でGAS追加）
+
 **★2026-10-06（レーンP）訂正: じんべぇ川崎・じんべぇ新横浜・エース本厚木・秋葉原肉寿司の原価・人件費0は「正常」（業務委託店舗でグループ運営ではないため）。ユーザー確認済み。欠損バグとして追わない／異常検知・突合・原価率人件費率の欠損チェックの対象外でよい**
 
 **★★★★2026-10-06（レーンPスレッド）明細分析(#5)完了: 担当Aの新旧突合が全項目差0 → 自動更新を有効化。明細タブはkd直読みが既定に（app.js v242）**
