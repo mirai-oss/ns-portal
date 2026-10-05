@@ -884,6 +884,24 @@ async function mirrorMediaDaily(sb: any, raw: any[][]): Promise<any> {
     return { ok: false, job: "kd_media_daily", error: String(e) };
   }
 }
+// op=gas_sync: GASのtoken認証の同期アクションを1つ叩く（BQ_LOAD_TOKEN）。許可リストのみ（現在はbqSyncPL=DB_PLシート→BQ stg_plの全置換ミラー。冪等）。
+// 用途: シート側を直した後にstg_plを最新にしてからop=pl_monthlyを回す、など（2026-10-06・担当A依頼）。
+const GAS_SYNC_ALLOW = ["bqSyncPL"];
+async function gasSync(body: any) {
+  const action = String(body.action ?? "");
+  if (!GAS_SYNC_ALLOW.includes(action)) return { ok: false, error: `actionは ${GAS_SYNC_ALLOW.join("|")} のみ` };
+  const tk = Deno.env.get("BQ_LOAD_TOKEN");
+  if (!tk) return { ok: false, error: "BQ_LOAD_TOKENが未設定です" };
+  const url = new URL(DASH_API_URL); url.searchParams.set("action", action); url.searchParams.set("token", tk);
+  let last = "";
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    const res = await fetch(url.toString()); last = await res.text();
+    try { const j = JSON.parse(last); return { ok: j.ok !== false, action, gas: j }; } catch (_) { /* HTML→再試行 */ }
+    if (attempt < 3) await new Promise((r) => setTimeout(r, attempt * 2000));
+  }
+  return { ok: false, action, error: "応答を読めませんでした: " + last.slice(0, 120) };
+}
+
 // op=entries: 行ミラーだけを単独で更新（GASの保存直後の即時反映・初回バックフィル用）。kinds=['pl','spot','loan','media']（省略=pl,spot,loan）
 async function refreshEntries(sb: any, body: any) {
   const kinds: string[] = Array.isArray(body.kinds) && body.kinds.length ? body.kinds : ["pl", "spot", "loan"];
@@ -1596,6 +1614,11 @@ Deno.serve(async (req) => {
       case "pl_monthly": result = await refreshPlMonthly(sb); break;
       case "media_monthly": result = await refreshMediaMonthly(sb, body); break;
       case "entries": result = await refreshEntries(sb, body); break;
+      case "gas_sync": result = await gasSync(body); break;
+      case "pl_import": {   // 正本pl_entriesへの1回限りの取り込み（kd_pl_entriesから）。force=trueで既存があっても追加
+        const { data, error } = await sb.rpc("pl_entries_import_from_kd", { p_actor: String(body.actor ?? "import"), p_force: body.force === true });
+        result = error ? { ok: false, error: error.message } : data; break;
+      }
       case "deposit_monthly": result = await refreshDepositMonthly(sb); break;
       case "sessions_cleanup": result = await cleanupSessions(sb); break;
       case "due": result = await planDue(sb); break;
