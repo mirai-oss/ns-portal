@@ -1186,6 +1186,34 @@ async function planDue(sb: any) {
   return { ok: true, due, reasons };
 }
 
+// ============== op=verify_carry: 入金の繰越をGAS(depositCarry)とkd_deposit_carry_vで突合（読み取り専用・2026-10-05） ==============
+// 旧経路(GAS depositCarry=シート全期間走査)と新経路(kd_)の数字が同じ定義で一致しているかを確認するための検査op。
+// body.before省略時は当月1日(JST)。差異のある店舗だけ返す（全店一致ならmismatch=[]）。
+async function verifyCarry(sb: any, body: any) {
+  const before: string = typeof body.before === "string" ? body.before : jstToday().slice(0, 7) + "-01";
+  const res = await dashAuthed(sb, "depositCarry", { before });
+  if (!res.ok) return { ok: false, error: "GAS depositCarry失敗: " + (res.error ?? "") };
+  const { idByName } = await loadStoreMaps(sb);
+  const gas = new Map<string, { cash: number; dep: number }>();
+  const unresolved: string[] = [];
+  for (const r of (res.carry ?? []) as any[]) {
+    const id = idByName.get(String(r[0] ?? "").trim());
+    if (!id) { unresolved.push(String(r[0])); continue; }
+    const cur = gas.get(id) ?? { cash: 0, dep: 0 };
+    cur.cash += Number(r[1]) || 0; cur.dep += Number(r[2]) || 0; gas.set(id, cur);
+  }
+  const ym = before.slice(0, 7);
+  const { data: kd } = await sb.from("kd_deposit_carry_v").select("store_id,cash_before,deposit_before,carry").eq("year_month", ym);
+  const mismatch: any[] = []; let compared = 0;
+  for (const k of (kd ?? []) as any[]) {
+    const g = gas.get(k.store_id); if (!g) continue;
+    compared++;
+    const dc = Math.round(Number(k.cash_before) - g.cash), dd = Math.round(Number(k.deposit_before) - g.dep);
+    if (Math.abs(dc) > 1 || Math.abs(dd) > 1) mismatch.push({ store_id: k.store_id, cash_diff: dc, deposit_diff: dd, kd_cash: Number(k.cash_before), gas_cash: g.cash, kd_dep: Number(k.deposit_before), gas_dep: g.dep });
+  }
+  return { ok: true, before, compared, mismatch, gas_stores: gas.size, unresolved_gas_stores: unresolved };
+}
+
 // ============== op=sessions_cleanup: ds_sessionsの期限切れ行を削除（A-11・2026-09-18） ==============
 async function cleanupSessions(sb: any) {
   const { error, count } = await sb.from("ds_sessions").delete({ count: "exact" }).lt("expires_at", new Date().toISOString());
@@ -1217,6 +1245,7 @@ Deno.serve(async (req) => {
       case "deposit_monthly": result = await refreshDepositMonthly(sb); break;
       case "sessions_cleanup": result = await cleanupSessions(sb); break;
       case "due": result = await planDue(sb); break;
+      case "verify_carry": result = await verifyCarry(sb, body); break;
       default: return json({ ok: false, error: "opは'reservation_daily'|'dashboard_daily'|'home_kpi'|'unresolved_notify'|'pl_monthly'|'media_monthly'|'deposit_monthly'|'store_monthly'|'ad_monthly'|'sessions_cleanup'|'due'のいずれかが必須です" }, 400);
     }
     // 2026-09-03修正: ok:falseの結果をHTTP 200で返してしまうとGitHub Actions側のHTTP_CODEチェックを
