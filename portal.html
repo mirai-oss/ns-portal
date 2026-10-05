@@ -1300,8 +1300,8 @@ const GROUPS=[
   // 2026-09-07: カテゴリタブは「社内情報管理」（joho SSOリンク）と分離し「管理・権限」へ変更
   {cap:"管理",ico:"⚙️", roles:["HQ","CEO"], section:"manage", items:[
     {key:"admin-accounts", ico:"👤", label:"アカウント管理（nippo）", url:nippoPage("admin"), countKey:"retire", countLabel:"退職申請", countTitle:"退職申請（承認待ち）"},
-    // 2026-10-03(B): 退職申請一覧への直リンク。件数はアカウント管理と同じ（合計バッジは二重に数えないようdupCount）
-    {key:"admin-retire",   ico:"🚪", label:"退職申請一覧", url:nippoPage("admin")+"&m=retire", countKey:"retire", countLabel:"承認待ち", countTitle:"退職申請（承認待ち）", dupCount:true},
+    // 2026-10-05(A): 「退職申請一覧」の直リンクは廃止（ユーザー指示「スッキリさせたい」）。退職申請の承認・却下は上の「アカウント管理（nippo）」内の退職申請一覧で行える
+    //   （承認待ちの件数バッジもアカウント管理に残っている）。履歴の確認とフォームURL一覧は、下の「申請履歴」にまとめた（中の切り替え「📜申請履歴／📎申請フォームURL」）。
     // 2026-10-05(A): 申請履歴（退職申請・スポット人件費・仕入れ移動の いつ誰が申請しいつ誰が承認したか を月ごとに表示）。
     // tori-dashboardの新タブrequestLog（社長・本部のみ）をkeiei系と同じ経路で埋め込む
     {key:"admin-reqlog",   sysKey:"keiei", ico:"📜", label:"申請履歴", url:keieiTab("requestLog")},
