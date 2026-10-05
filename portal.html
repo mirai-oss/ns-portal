@@ -1302,6 +1302,9 @@ const GROUPS=[
     {key:"admin-accounts", ico:"👤", label:"アカウント管理（nippo）", url:nippoPage("admin"), countKey:"retire", countLabel:"退職申請", countTitle:"退職申請（承認待ち）"},
     // 2026-10-03(B): 退職申請一覧への直リンク。件数はアカウント管理と同じ（合計バッジは二重に数えないようdupCount）
     {key:"admin-retire",   ico:"🚪", label:"退職申請一覧", url:nippoPage("admin")+"&m=retire", countKey:"retire", countLabel:"承認待ち", countTitle:"退職申請（承認待ち）", dupCount:true},
+    // 2026-10-05(A): 申請履歴（退職申請・スポット人件費・仕入れ移動の いつ誰が申請しいつ誰が承認したか を月ごとに表示）。
+    // tori-dashboardの新タブrequestLog（社長・本部のみ）をkeiei系と同じ経路で埋め込む
+    {key:"admin-reqlog",   sysKey:"keiei", ico:"📜", label:"申請履歴", url:keieiTab("requestLog")},
     {key:"admin-perm",     ico:"🔑", label:"権限設定（従来ポータル）", legacyLink:true},
     {key:"admin-notify",   ico:"🔔", label:"通知先（配信グループ管理）", url:nippoPage("admin")},
     {key:"admin-stores",   ico:"🏢", label:"マスタ：店舗管理", url:nippoPage("admin")},
