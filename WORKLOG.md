@@ -21,6 +21,12 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
+**★★★2026-10-06（レーンPスレッド）明細分析(#5)のkd_化: Pの受け側を完成（担当AのGASアクション`bqDetailItemDailyForSync`の本番貼替待ち）**（詳細=[docs/回答_レーンP_経営D_F2用kd追加_2026-10-05.md](docs/回答_レーンP_経営D_F2用kd追加_2026-10-05.md)§3・事前報告=`supabase/2026-10-06_kd_detail.sql`冒頭）
+- ユーザー回答（期間=日/週/月/年/任意、区分=ランチ/ディナー/デリバリー、ランチ/ディナー分析必須）を受け、担当Aと**加算可能な最小粒度（店舗×営業日×区分×商品／×時間）をSupabaseに持ち、期間集計はRPC**にする設計で合意（月固定は不採用）。計算式（境目・ドリンク/フード判定）はBQ側=GAS(bqDetail同一ロジック)で適用済みの結果を保存＝計算式は1か所
+- P側完成: `kd_detail_item_daily`／`kd_detail_hour_daily`／`kd_delivery_daily`・RPC4本（商品別[順位・構成比・累計構成比=ABC]・時間帯別・店舗別・カバレッジ）・`op=detail_daily`（31日窓・窓ごと洗い替え・安全装置）・API `kind:'detail'`等。**デリバリー(`kd_delivery_daily`)は稼働中**（2026-04〜176行）。仮データで算術・順位・ABC・区分を検証後に削除（本番の明細テーブルは0件）
+- **自動実行はフラグ待ち**: `app_secrets.kd_detail_daily_enabled='1'`にするまで取込完了ドリブンに載せない（GAS貼替前の失敗通知回避）。手順: ①ユーザーがGASを貼替・デプロイ→②Pが`op=detail_daily`で期間バックフィル→③Aが旧経路(bqDetail)と突合→④フラグON
+- 対象外（GAS従来経路）: 集計基準order/arrival、時間帯×商品(hourItem)。デリバリーは件数・売上のみ（商品別/ABC対象外）
+
 **★★★★2026-10-05（レーンPスレッド）担当Aの依頼「経営D F2用kd_追加」#1〜#4を実装・本番確認済み（#5明細は仕様待ち）**（回答と使い方=[docs/回答_レーンP_経営D_F2用kd追加_2026-10-05.md](docs/回答_レーンP_経営D_F2用kd追加_2026-10-05.md)・事前報告=`supabase/2026-10-05_kd_f2_daily_deposit_ad_target.sql`冒頭）
 - **#1** `kd_dashboard_daily_summary`に現金売上・社員給与賞与・法定福利・通勤手当を追加し、fact_daily_store互換の列名ビュー`kd_daily_store_full`（実体は1つ＝二重管理しない）。約6,060行/24か月（2023-11〜）。画面が使う列（stat()）は全て揃う。BQにあってGASが返さない列（店内外客数・クレジット/ポイント内訳等）は含まれない
 - **#2** `kd_deposit_daily`（明細jsonb付き）・`kd_deposit_daily_v`（現金売上/入金/差額）・`kd_deposit_carry_v`（月初繰越）。**繰越は旧GAS `depositCarry` と12店舗全て一致**（`op=verify_carry`・2026-10/07基準・差1円以内）。入金は洗い替え（安全装置付き）
