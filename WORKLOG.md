@@ -4,6 +4,12 @@
 
 ---
 
+## 2026-10-06 担当A+P: PL手入力のSupabase正本化 切替完了
+- 手入力PL=pl_entries(社長/本部のみ)。自動行(精算書等)は従来どおりGAS→DB_PL→stg_pl→自動行として取込。切替前後の月次サマリ差0・精算書反映済み/未反映も同一。app.js v249で PL_ENTRIES_INPUT_=true。
+- データ出力センター(export-run/preview)は pl_source='entries' で pl_entries から読む(DB_PL書戻しミラーは不採用)。2026-09月次PLを画面と突合OK(社長確認)。
+- DB_PLシートの手入力行は反映されない(自動行のみ取込)。注意書きはシート保護の説明文で。戻す場合は app_secrets の pl_source 行削除(先に pl_entries_export で退避)。
+- 未了: MF取込のマッピング学習(DB_科目対応/補助科目)、S/X区分追加時はPへ連絡。
+
 ## 2026-10-05 担当A F3: PL入力Supabase正本化 — PL入力(表)公開・切替計画
 - app.js v246 に『📝 PL入力（表）』(pl_entries 直接読書・貼付取込・検証)。切替計画: docs/計画_PL入力のSupabase正本化_切替手順_2026-10-05.md。GASへ年月空ガード＋kd即時通知(手順書渡し済)。pl_entries取込済(772行・月別差0)。pl_source切替は書込先(GAS)切替と同時にする(未実施)。
 
