@@ -36,6 +36,12 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
+**★★★★2026-10-06（レーンP）PL正本の「ハイブリッド」切替の準備完了（実行は担当Aの画面側完了＋ユーザー承認待ち）**
+- 方針（A+ユーザー: 店長はPL入力不可・本日切替）: 手入力=pl_entries正本 / 自動行（memoが「自動｜」「（自動計上）」「店舗間移動:」）=stg_plからpl_entriesへ取込（GASは従来どおりDB_PL→stg_plに書く）
+- 実装: `autoSyncFromStgPl`（(source×年月)単位のreplace_source・変化した組だけ入れ替え・半分未満なら中止・dryあり=`op=pl_auto_sync dry:true`）。`pl_source='entries'`の時だけ pl_monthly/entries が最初に自動取込を実行。kdNotifyEntries_(['pl'])は自動取込→kd_pl_entries→kd_pl_monthly_summaryまで一括。手入力保存直後は `keiei-api-pl-refresh`（JWT・社長/本部のみ・即202・3分以内の二重起動は拒否）→pl_monthly skipAuto
+- 本日の切替手順（P）: ①`op=gas_sync`+pl_monthly(旧経路)でkd最新化 ②`op=pl_import reset:true`（pl_entriesを空にして再取込・自動行は新判定で分類）③`app_secrets.pl_source='entries'` ④pl_monthly→月別合計を切替前(スナップショット)と突合 ⑤NGなら`pl_source`を削除して即戻す。③はユーザー承認が必要
+- ドライ検証: stg_plの自動行94件（媒体販促10・運営委託24・支払手数料17・精算書14…）・店舗未解決0・年月不正0
+
 **★★★★2026-10-06（レーンP）PL正本pl_entriesへ初回取込済み（772行・月別件数/金額がkd_pl_entriesと完全一致）。`pl_source='entries'`への切替は未実施（保留）**
 - ユーザーがDB_PLの年月を復元 → bqSyncPL（`op=gas_sync`新設）でstg_pl最新化(772行) → pl_monthly → `pl_import`(=pl_entries_import_from_kd) 1回実行。区分「空」は復元で解消、「？」13行（MF取込の地代家賃・食べログ広告等）は科目名から推定（R/A/O、一覧は取込結果のnormalized）
 - 保留理由: ①切替後はGAS側の書込(精算書→PL・スポット・請求書連携・旧入力画面)がkdに出なくなる＝担当Aが書込先をpl_entries(replace_source)へ切り替える同時が前提 ②本番の切替は権限確認待ち。切替時は「pl_entriesを空にして再取込→pl_source=entries→pl_monthly→月別合計突合」の順

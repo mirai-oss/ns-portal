@@ -1662,9 +1662,26 @@ Deno.serve(async (req) => {
       if (body?.op === "entries" && tk && String(body.token ?? "").trim() === tk.trim()) {
         const kinds = (Array.isArray(body.kinds) ? body.kinds : []).filter((k: unknown) => ["pl", "spot", "loan", "media"].includes(String(k)));
         const b2 = { op: "entries", kinds: kinds.length ? kinds : ["pl", "spot", "loan"], months: body.months };
+        // pl_source='entries'（正本切替後）のPLは、自動行のstg_pl取込→kd_pl_entries→kd_pl_monthly_summaryまで一括で作り直す
+        // （同時実行を避けるため、実行中のPL月次があれば最大90秒待ってから）
+        const { data: fl } = await sb.from("app_secrets").select("value").eq("key", "pl_source").maybeSingle();
+        const plAll = (fl?.value ?? "").trim() === "entries" && b2.kinds.includes("pl");
+        if (plAll) b2.kinds = b2.kinds.filter((k: string) => k !== "pl");
+        const work = (async () => {
+          if (plAll) {
+            for (let i = 0; i < 18; i++) {
+              const { data: run } = await sb.from("kd_sync_runs").select("id").eq("job", "kd_pl_monthly_summary").eq("status", "running")
+                .gte("started_at", new Date(Date.now() - 3 * 60000).toISOString()).limit(1);
+              if (!run?.length) break;
+              await new Promise((r) => setTimeout(r, 5000));
+            }
+            await refreshPlMonthly(sb, {});
+          }
+          if (b2.kinds.length) await refreshEntries(sb, b2);
+        })();
         // deno-lint-ignore no-explicit-any
-        (globalThis as any).EdgeRuntime?.waitUntil(refreshEntries(sb, b2));
-        return json({ ok: true, started: true, job: "entries", kinds: b2.kinds }, 202);
+        (globalThis as any).EdgeRuntime?.waitUntil(work);
+        return json({ ok: true, started: true, job: "entries", kinds: [...b2.kinds, ...(plAll ? ["pl"] : [])] }, 202);
       }
       return json({ ok: false, error: "権限がありません（service_roleのみ）" }, 403);
     }
