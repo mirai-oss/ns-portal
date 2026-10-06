@@ -624,7 +624,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-06-v56";
+const BUILD_TAG="2026-10-06-v58";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -9273,7 +9273,20 @@ function payrollApplyAutoJournalPlan(branches,plan){
   if(plan.netPayBranch&&trustCredit){
     plan.netPayBranch.creditAmount=plan.netPayAmount;
   }
-  return {removedZero,missingSub:[...new Set(missingSub)]};
+  // 2026-10-06追加：検算は支給額合計との差が±1円まで許容する（勤務詳細の金額は小数を丸めて合算するため）が、
+  // 貸方（控除＋差引支給額）は円単位で確定した値なので、借方との差が1円残ると「借方・貸方が一致しません」で
+  // 一括生成が要確認になっていた。1円以内の差だけ、金額が最大の自動生成の借方行で吸収して借方＝貸方にする
+  let roundAdj=0;
+  if(trustCredit&&plan.netPayBranch){
+    const dSum=branches.reduce((t,b)=>t+((b.debitLabel||"").trim()?Number(b.debitAmount)||0:0),0);
+    const cSum=branches.reduce((t,b)=>t+((b.creditLabel||"").trim()?Number(b.creditAmount)||0:0),0);
+    const diff=cSum-dSum;
+    if(diff!==0&&Math.abs(diff)<=1){
+      const target=branches.filter(b=>b._auto&&(b.debitLabel||"").trim()&&Number(b.debitAmount)>0).sort((a,b)=>b.debitAmount-a.debitAmount)[0];
+      if(target){ target.debitAmount=Number(target.debitAmount)+diff; roundAdj=diff; }
+    }
+  }
+  return {removedZero,roundAdj,missingSub:[...new Set(missingSub)]};
 }
 // 2026-10-06追加（§1の保険）：登録直前に「仕訳辞書由来（_fromTpl）・両側0円・ユーザーが触っていない
 // （_touchedなし）」の行を自動除外する。手で入れた0円行・触った行は従来どおり検証で止める。
@@ -9702,7 +9715,7 @@ function payrollRender(){
         <div><h2 style="margin:0;font-size:16px">給与振込一覧</h2><p style="font-size:9px;color:var(--muted);margin:4px 0 0">${esc(PAYROLL_STATE.yearMonth)} / ${rows.length}名表示 ／ <b title="この画面のバージョン。最新でないときは Cmd+Shift+R で強制再読み込み">build ${esc(BUILD_TAG)}</b></p></div>
         <div class="actionbar" style="display:flex;gap:8px"><button class="btn" id="payroll-csv-download">📥 一覧をCSVでダウンロード</button><button class="btn primary" id="payroll-csv-export">🏦 PayPay銀行CSV出力</button></div>
       </div>
-      <div id="payroll-bulk-bar" style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:0 0 12px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--panel-2,#fafafa)"><button class="btn" id="payroll-bulk-gen" title="登録前の全員分を、PDF読み取り・検算・前月比チェックまで自動で行います（マネーフォワードへはまだ登録しません）">🧮 全員をAIで自動生成</button><button class="btn primary" id="payroll-bulk-register" ${payrollBulkSelected().length?"":"disabled"} title="自動OK（緑）でチェックした人だけを、1人ずつ順番にマネーフォワードへ登録します">✅ チェックした人をまとめて登録（${payrollBulkSelected().length}名）</button><label style="display:flex;gap:4px;align-items:center;font-size:12px;margin-left:8px" title="法人×区分（社員/アルバイト）でテンプレートを自動で割り当てます。人ごとの手動割当は例外として常に優先されます"><input type="checkbox" id="payroll-autoassign-toggle" ${payrollAutoAssignOn()?"checked":""}>🤖区分で自動割当</label>${payrollBulkSummaryHtml()}</div>
+      <div id="payroll-bulk-bar" style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:0 0 12px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--panel-2,#fafafa)"><button class="btn" id="payroll-bulk-gen" title="登録前の全員分を、PDF読み取り・検算・前月比チェックまで自動で行います（マネーフォワードへはまだ登録しません）">🧮 全員をAIで自動生成</button><button class="btn primary" id="payroll-bulk-register" ${payrollBulkSelected().length?"":"disabled"} title="自動OK（緑）でチェックした人だけを、1人ずつ順番にマネーフォワードへ登録します">✅ チェックした人をまとめて登録（${payrollBulkSelected().length}名）</button><label style="display:flex;gap:4px;align-items:center;font-size:12px;margin-left:8px" title="法人×区分（社員/アルバイト）でテンプレートを自動で割り当てます。人ごとの手動割当は例外として常に優先されます"><input type="checkbox" id="payroll-autoassign-toggle" ${payrollAutoAssignOn()?"checked":""}>🤖区分で自動割当</label>${payrollBulkSummaryHtml()}${payrollBulkListsHtml()}</div>
       <div class="err" id="payroll-csv-msg" style="margin-bottom:8px"></div>
 
       <div class="card hq-tablewrap">
@@ -9814,6 +9827,8 @@ function payrollRender(){
     payrollRender();
   };
   if($("payroll-bulk-register")) $("payroll-bulk-register").onclick=()=>payrollBulkRegister();
+  if($("payroll-bulk-all-on")) $("payroll-bulk-all-on").onclick=ev=>{ ev.preventDefault(); payrollBulkAutoOk().forEach(r=>{ r.checked=true; }); payrollRender(); };
+  if($("payroll-bulk-all-off")) $("payroll-bulk-all-off").onclick=ev=>{ ev.preventDefault(); payrollBulkAutoOk().forEach(r=>{ r.checked=false; }); payrollRender(); };
   document.querySelectorAll("[data-bulk-check]").forEach(el=>el.onchange=()=>{
     const ar=PAYROLL_STATE.autoResults&&PAYROLL_STATE.autoResults.get(el.dataset.bulkCheck);
     if(ar) ar.checked=el.checked;
@@ -10353,9 +10368,24 @@ function payrollBulkSummaryHtml(){
   const top=[...cnt.entries()].sort((a,b)=>b[1]-a[1]).slice(0,8);
   return `<div style="width:100%;font-size:12px;margin-top:6px"><b>自動生成の結果</b>: ✅自動OK ${ok}名 ／ ⚠️要確認 ${ng}名${top.length?`<div style="font-size:11px;color:var(--muted);margin-top:3px">要確認の内訳（人数）: ${top.map(([k,v])=>`${esc(k)} ${v}名`).join(" ／ ")}</div>`:""}</div>`;
 }
+// 2026-10-06追加：ユーザー要望「自動OKが出た人の名前や、自動で登録した人のリストが分かるように」。
+// ①自動OKの人（これから登録できる人）②一括登録で登録済みの人（payroll_journal_records.registered_via='bulk'）の一覧
+function payrollBulkListsHtml(){
+  const nameOf=uid=>{ const r=(PAYROLL_STATE.rows||[]).find(x=>x.user_id===uid); return (r&&r.user&&r.user.name)||"—"; };
+  const okList=payrollBulkAutoOk();
+  const okHtml=okList.length?`<details open style="width:100%;margin-top:6px"><summary style="cursor:pointer;font-size:12px"><b>✅ 自動OKの人（${okList.length}名）</b>　<button type="button" class="linkbtn" id="payroll-bulk-all-on" style="font-size:11px;background:none;border:none;color:var(--blue);cursor:pointer">全員チェック</button><button type="button" class="linkbtn" id="payroll-bulk-all-off" style="font-size:11px;background:none;border:none;color:var(--blue);cursor:pointer">全員はずす</button></summary>
+    <div style="font-size:11px;line-height:1.7;margin-top:4px;columns:3;column-gap:16px">${okList.map(r=>`<div>${r.checked?"☑":"☐"} ${esc(r.name||nameOf(r.userId))}　${yen(r.netPay)}</div>`).join("")}</div></details>`:"";
+  const bulkRecs=(PAYROLL_STATE.records||[]).filter(r=>r.registered_via==="bulk").sort((a,b)=>String(a.created_at).localeCompare(String(b.created_at)));
+  const fmt=t=>{ try{ return new Date(t).toLocaleString("ja-JP",{month:"numeric",day:"numeric",hour:"2-digit",minute:"2-digit"}); }catch(e){ return ""; } };
+  const doneHtml=bulkRecs.length?`<details style="width:100%;margin-top:6px"><summary style="cursor:pointer;font-size:12px"><b>🤖 一括登録で登録した人（${bulkRecs.length}名）</b></summary>
+    <div style="font-size:11px;line-height:1.7;margin-top:4px;columns:3;column-gap:16px">${bulkRecs.map(r=>`<div>${esc(nameOf(r.user_id))}　伝票${esc(String(r.mf_journal_number??"-"))}　${esc(fmt(r.created_at))}</div>`).join("")}</div></details>`:"";
+  return okHtml+doneHtml;
+}
 function payrollBulkBadgeHtml(row){
+  const rec0=payrollRecordFor(row.user_id);
+  if(rec0&&rec0.registered_via==="bulk") return `<div style="margin-top:4px"><span class="pr-status ok" title="「チェックした人をまとめて登録」で登録した人です">🤖一括登録</span></div>`;
   const ar=PAYROLL_STATE.autoResults&&PAYROLL_STATE.autoResults.get(row.user_id);
-  if(!ar||payrollRecordFor(row.user_id)) return "";
+  if(!ar||rec0) return "";
   if(ar.status==="auto_ok"){
     return `<div style="margin-top:4px"><label style="display:flex;gap:4px;align-items:center;font-size:11px"><input type="checkbox" data-bulk-check="${esc(row.user_id)}" ${ar.checked?"checked":""}><span class="pr-status ok" title="検算OK・前月比±30%以内・PDF添付済み。一括登録の対象にできます">✅自動OK</span></label></div>`;
   }
@@ -10497,9 +10527,17 @@ async function payrollBulkRegister(){
     targets=sel.slice(0,3);
   }
   const total=targets.reduce((t,r)=>t+(r.netPay||0),0);
+  // 法人は「その月の按分で金額が最大の店舗」→無ければ「生成した仕訳の部門の店舗」の法人。法人名のキャッシュが
+  // 未読み込みだと全員「法人不明」になっていたため、先に読み込む
+  try{ await ensureCorpStoreCache(); }catch(e){}
   const byCorp=new Map();
   for(const r of targets){
-    const cid=payrollUserCorporationId(r.userId);
+    let cid=payrollUserCorporationId(r.userId);
+    if(!cid&&r.branches){
+      const sid=[...payrollStoreIdsFromBranches_(r.branches)][0];
+      const st=sid?(PAYROLL_STATE.stores||[]).find(x=>x.id===sid):null;
+      cid=st?st.corporation_id:null;
+    }
     const cn=((CORP_STORE_CACHE&&CORP_STORE_CACHE.corporations)||[]).find(c=>c.id===cid);
     const k=cn?cn.name:"法人不明"; byCorp.set(k,(byCorp.get(k)||0)+1);
   }
@@ -10985,10 +11023,11 @@ async function payrollOpenPreview(userId){
           const ap=payrollApplyAutoJournalPlan(branches,plan);
           rerenderEntries();
           const zeroNote=(ap&&ap.removedZero&&ap.removedZero.length)?`<div style="font-size:11px;color:var(--m-amber);margin-top:4px">0円のため除外: ${ap.removedZero.map(esc).join("、")}</div>`:"";
+          const roundNote=(ap&&ap.roundAdj)?`<div style="font-size:11px;color:var(--muted);margin-top:4px">端数調整: 借方と貸方を一致させるため、金額が最大の借方行を${ap.roundAdj>0?"+":""}${ap.roundAdj}円しました</div>`:"";
           const unres=plan.stores.filter(x=>!x.dept);
           const partNote=plan.partial?`<div style="font-size:11px;color:var(--accent);margin-top:4px">${unres.length?`未解決の店舗（${unres.map(x=>esc(x.storeName)).join("、")}）は赤い行で残しています。解決するまで「登録」はできません。`:""}${plan.creditIncomplete?"貸方（所得税・未払金など）は反映できなかったため、借方（給料・交通費）だけ入れました。貸方の行を追加して手入力してください（テンプレートに貸方行が無い場合は設定タブの仕訳辞書へ追加すると次回から自動で入ります）。":""}</div>`:"";
           const subNote=(ap&&ap.missingSub&&ap.missingSub.length)?`<div style="font-size:11px;color:var(--m-amber);margin-top:4px">⚠️ 部門に対応する補助科目がMFに見つからず、テンプレートの補助科目のままにしました: ${ap.missingSub.map(esc).join("、")}（MF側で補助科目を作成するか、行の補助科目を手で直してください）</div>`:"";
-          el.querySelector(".card")?.insertAdjacentHTML("afterend",`<div class="err msg-ok" style="margin-top:6px">${plan.ok?"✅ 検算OK。":"⚠️ 一部のみ。"}自動生成した内容を上の仕訳の表に反映しました。登録前に一度ご確認ください</div>${zeroNote}${partNote}${subNote}`);
+          el.querySelector(".card")?.insertAdjacentHTML("afterend",`<div class="err msg-ok" style="margin-top:6px">${plan.ok?"✅ 検算OK。":"⚠️ 一部のみ。"}自動生成した内容を上の仕訳の表に反映しました。登録前に一度ご確認ください</div>${zeroNote}${roundNote}${partNote}${subNote}`);
           const ab=$("payroll-autogen-apply"); if(ab) ab.remove();
         };
         applyNow();
