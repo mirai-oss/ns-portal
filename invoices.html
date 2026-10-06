@@ -624,7 +624,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-06-v45";
+const BUILD_TAG="2026-10-06-v46";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -8959,9 +8959,14 @@ function payrollBuildAutoJournalPlan(row,branches,storeTotals){
   const ok=baseOk&&unmatchedStores.length===0;
   // 2026-10-06追加（§3）：店舗が未解決でも、検算自体（支給・控除）が合っていて解決済みの店舗が
   // 1つでもあれば、解決済み店舗の分だけ先に反映する。未解決の店舗は赤い行で残し、解決するまで登録させない
-  const partial=baseOk&&unmatchedStores.length>0&&stores.some(s=>!!s.dept);
+  // 2026-10-06追加（ユーザー実機報告）：仕訳辞書テンプレートに貸方行（所得税・未払金）が無い／控除の検算が
+  // 合わない場合でも、借方（給料・交通費）の支給額検算が合っていれば借方だけ先に反映する（0円のまま何も
+  // 入らない状態を避ける）。貸方は足りない分を手入力してもらう（creditIncomplete）
+  const debitReady=allowanceOk&&(totalCommuteNeeded===0||!!commuteBranch)&&stores.some(s=>!!s.dept);
+  const creditIncomplete=!deductionOk||!netPayBranch;
+  const partial=!ok&&debitReady;
   return {
-    ok, partial, warnings,
+    ok, partial, creditIncomplete, warnings,
     salaryBranch, commuteBranch,
     stores, storeSum, expectedAllowance, allowanceDiff, allowanceOk,
     catBranchRef, catSums, netPayBranch, deductionSum, expectedDeductionTotal, deductionOk,
@@ -9013,7 +9018,7 @@ function payrollAutoJournalPlanHtml(plan){
     ${plan.ok
       ?`<button class="hq-btn primary" id="payroll-autogen-apply">✅ この内容を仕訳に反映する</button>`
       :plan.partial
-        ?`<button class="hq-btn primary" id="payroll-autogen-apply">✅ 解決済みの店舗分だけ先に反映する</button><div style="font-size:11px;color:var(--accent);margin-top:4px">未解決の店舗は赤い行で残り、解決するまで「登録」はできません（上の「この店舗として登録」で解決できます）</div>`
+        ?`<button class="hq-btn primary" id="payroll-autogen-apply">✅ 確認できた分だけ先に反映する</button><div style="font-size:11px;color:var(--accent);margin-top:4px">${plan.creditIncomplete?"貸方（控除・差引支給額）はテンプレートに行が無い／検算が合わないため、借方（給料・交通費）だけ反映します。貸方は手入力してください。":""}${plan.stores.some(x=>!x.dept)?"未解決の店舗は赤い行で残り、解決するまで「登録」はできません（上の「この店舗として登録」で解決できます）。":""}</div>`
         :`<div style="font-size:11px;color:var(--accent)">検算が一致しなかったため、自動反映はしていません。内容をご確認のうえ、必要であれば上の入力欄を手動で修正してください</div>`}
   </div>`;
 }
@@ -10466,8 +10471,9 @@ async function payrollOpenPreview(userId){
           const ap=payrollApplyAutoJournalPlan(branches,plan);
           rerenderEntries();
           const zeroNote=(ap&&ap.removedZero&&ap.removedZero.length)?`<div style="font-size:11px;color:var(--m-amber);margin-top:4px">0円のため除外: ${ap.removedZero.map(esc).join("、")}</div>`:"";
-          const partNote=plan.partial?`<div style="font-size:11px;color:var(--accent);margin-top:4px">未解決の店舗（${plan.stores.filter(x=>!x.dept).map(x=>esc(x.storeName)).join("、")}）は赤い行で残しています。解決するまで「登録」はできません</div>`:"";
-          el.querySelector(".card")?.insertAdjacentHTML("afterend",`<div class="err msg-ok" style="margin-top:6px">✅ 検算OK。自動生成した内容を上の仕訳の表に反映しました。登録前に一度ご確認ください</div>${zeroNote}${partNote}`);
+          const unres=plan.stores.filter(x=>!x.dept);
+          const partNote=plan.partial?`<div style="font-size:11px;color:var(--accent);margin-top:4px">${unres.length?`未解決の店舗（${unres.map(x=>esc(x.storeName)).join("、")}）は赤い行で残しています。解決するまで「登録」はできません。`:""}${plan.creditIncomplete?"貸方（所得税・未払金など）は反映できなかったため、借方（給料・交通費）だけ入れました。貸方の行を追加して手入力してください（テンプレートに貸方行が無い場合は設定タブの仕訳辞書へ追加すると次回から自動で入ります）。":""}</div>`:"";
+          el.querySelector(".card")?.insertAdjacentHTML("afterend",`<div class="err msg-ok" style="margin-top:6px">${plan.ok?"✅ 検算OK。":"⚠️ 一部のみ。"}自動生成した内容を上の仕訳の表に反映しました。登録前に一度ご確認ください</div>${zeroNote}${partNote}`);
           const ab=$("payroll-autogen-apply"); if(ab) ab.remove();
         };
         applyNow();
@@ -10475,6 +10481,9 @@ async function payrollOpenPreview(userId){
     };
     showPlan();
   };
+  // 2026-10-06追加：ユーザー要望「AI仕訳の自動生成も、プレビュー・登録を開いた段階で仕訳された状態の画面に
+  // してほしい」に対応。一時保存の下書きから再開した場合は（手入力を壊さないよう）走らせない。PDFが無い人も対象外
+  if(!usingDraft&&pdfFiles.length&&$("payroll-preview-autogen")) $("payroll-preview-autogen").click();
   // 2026-09-02: ユーザー要望「明細を追加できるようにしてほしい」に対応。空の行を追加し、
   // 借方・貸方どちらの勘定科目も入力補完（既に取得済みのPAYROLL_STATE.accountLabelMap）から選べる
   $("payroll-preview-addrow").onclick=()=>{
