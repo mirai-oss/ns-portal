@@ -624,7 +624,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-06-v43";
+const BUILD_TAG="2026-10-06-v44";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -8567,7 +8567,7 @@ async function payrollLoad(){
     // payrollMatchStoreRecord()から使えるようにする
     const [r,ar]=await Promise.all([
       authed("/rest/v1/stores?select=id,name,mf_department_name&order=name"),
-      authed("/rest/v1/store_aliases?select=alias,store_id"),
+      authed("/rest/v1/store_aliases?select=alias,store_id,source,kind"),
     ]);
     PAYROLL_STATE.stores=(r.ok&&Array.isArray(r.body))?r.body:[];
     PAYROLL_STATE.storeAliases=(ar.ok&&Array.isArray(ar.body))?ar.body:[];
@@ -8789,47 +8789,54 @@ function payrollComputeBranches(row,template){
    ---------------------------------------------------------- */
 // 事業所名（AI読み取り結果）→ stores→departmentsの2段階でMF部門へ寄せる。
 // payrollFindDeptForUser()と同じ「空白除去して部分一致」の正規化方式に合わせてある
-function payrollMatchStoreRecord(storeName){
-  const norm=s=>String(s||"").replace(/\s+/g,"");
-  const n=norm(storeName);
-  if(!n) return null;
-  const byName=(PAYROLL_STATE.stores||[]).find(s=>norm(s.name)===n)
-    || (PAYROLL_STATE.stores||[]).find(s=>n.includes(norm(s.name))||norm(s.name).includes(n));
-  if(byName) return byName;
-  // 2026-09-09追加：ユーザー報告「まだできない」で発覚。給与明細PDFの事業所名が店舗の正式名
-  // ではなく2枚看板の別ブランド名（例:「匠味 新横浜」＝実店舗は「鶏武者 新横浜」）で書かれて
-  // いる場合、店舗名同士の一致では原理的に見つからない。広告費・予約データで既に使われている
-  // store_aliasesテーブル（担当G実装済み）を使い、別名からも店舗を特定できるようにする
-  const aliases=PAYROLL_STATE.storeAliases||[];
-  const aliasHit=aliases.find(a=>norm(a.alias)===n) || aliases.find(a=>n.includes(norm(a.alias))||norm(a.alias).includes(n));
-  if(aliasHit) return (PAYROLL_STATE.stores||[]).find(s=>s.id===aliasHit.store_id)||null;
-  return null;
+// 2026-10-06改修（設計書_給与仕訳の全自動化 §2）：事業所名→店舗の解決順を固定した。
+// ①store_aliases（登録済みの別名）の完全一致 → ②stores.name の完全一致 → ③別名の部分一致
+// → ④店舗名の部分一致。③④（部分一致）で解決した場合は fuzzy=true を返し、画面の警告に
+// 「あいまい一致（登録を推奨）」を出す。全角半角はNFKCで揃える
+const payrollNormName_=s=>String(s||"").normalize("NFKC").replace(/\s+/g,"");
+function payrollResolveStore(storeName){
+  const n=payrollNormName_(storeName);
+  if(!n) return {store:null,how:"",fuzzy:false};
+  const stores=PAYROLL_STATE.stores||[], aliases=PAYROLL_STATE.storeAliases||[];
+  const byId=id=>stores.find(x=>x.id===id)||null;
+  let a=aliases.find(x=>payrollNormName_(x.alias)===n&&byId(x.store_id));
+  if(a) return {store:byId(a.store_id),how:"登録済みの別名",fuzzy:false};
+  let st=stores.find(x=>payrollNormName_(x.name)===n);
+  if(st) return {store:st,how:"店舗名と完全一致",fuzzy:false};
+  a=aliases.find(x=>{ const an=payrollNormName_(x.alias); return an&&byId(x.store_id)&&(n.includes(an)||an.includes(n)); });
+  if(a) return {store:byId(a.store_id),how:"別名の部分一致",fuzzy:true};
+  st=stores.find(x=>{ const sn=payrollNormName_(x.name); return sn&&(n.includes(sn)||sn.includes(n)); });
+  if(st) return {store:st,how:"店舗名の部分一致",fuzzy:true};
+  return {store:null,how:"",fuzzy:false};
 }
-function payrollMatchDeptByStoreName(storeName){
-  const norm=s=>String(s||"").replace(/\s+/g,"").replace(/^\d+/,"");
+function payrollMatchStoreRecord(storeName){ return payrollResolveStore(storeName).store; }
+// 事業所名→{dept(MF部門),store,how,fuzzy}。fuzzy=trueは部分一致で拾えた（登録を推奨）
+function payrollMatchDeptDetail(storeName){
+  const norm=s=>String(s||"").normalize("NFKC").replace(/\s+/g,"").replace(/^\d+/,"");
   const n=norm(storeName);
-  if(!n) return null;
-  const store=payrollMatchStoreRecord(storeName);
-  // 2026-09-09追加：ユーザー要望「AI判定の事業所名と会計の部門名が一致しない場合、その店舗を
-  // 登録しておけば次回から同じ店舗と認識して反映されるようにしてほしい」に対応。
-  // 例: PDFの事業所名「黒霧屋　新横浜」に対し、MF部門名は「06新横浜黒霧屋」（語順が逆）で、
-  // 単純な部分一致では引っかからなかった。設定タブ「法人・店舗・部門マッピング」で店舗ごとに
-  // 手動登録できるstores.mf_department_name（従来は他用途向けで、ここでは未参照だった）を
-  // 最優先で見る。ここで見つかれば、語順が違う・略称が違う等どんな表記ゆれでも確実に一致する
+  if(!n) return {dept:null,store:null,how:"",fuzzy:false};
+  const r=payrollResolveStore(storeName);
+  const store=r.store;
+  const depts=PAYROLL_STATE.departments||[];
+  // 2026-09-09追加：stores.mf_department_name（設定タブ「法人・店舗・部門マッピング」で手動登録）を
+  // 最優先。語順が違う・略称が違う等の表記ゆれでも確実に一致する
   if(store&&store.mf_department_name){
     const mn=norm(store.mf_department_name);
-    const dept=(PAYROLL_STATE.departments||[]).find(d=>norm(d.name)===mn);
-    if(dept) return dept;
+    const dept=depts.find(d=>norm(d.name)===mn);
+    if(dept) return {dept,store,how:r.how,fuzzy:r.fuzzy};
   }
   if(store){
     const sn=norm(store.name);
-    const dept=(PAYROLL_STATE.departments||[]).find(d=>norm(d.name)===sn)
-      || (PAYROLL_STATE.departments||[]).find(d=>sn.includes(norm(d.name))||norm(d.name).includes(sn));
-    if(dept) return dept;
+    const exact=depts.find(d=>norm(d.name)===sn);
+    if(exact) return {dept:exact,store,how:r.how,fuzzy:r.fuzzy};
+    const part=depts.find(d=>sn.includes(norm(d.name))||norm(d.name).includes(sn));
+    if(part) return {dept:part,store,how:r.how,fuzzy:true};
   }
-  // storesテーブル経由で見つからない場合でも、部門名に直接含まれていれば拾えるようフォールバック
-  return (PAYROLL_STATE.departments||[]).find(d=>{ const dn=norm(d.name); return dn&&(n.includes(dn)||dn.includes(n)); }) || null;
+  // storesテーブル経由で見つからない場合でも、部門名に直接含まれていれば拾う（あいまい扱い）
+  const direct=depts.find(d=>{ const dn=norm(d.name); return dn&&(n.includes(dn)||dn.includes(n)); })||null;
+  return {dept:direct,store,how:direct?"部門名の部分一致":r.how,fuzzy:!!direct};
 }
+function payrollMatchDeptByStoreName(storeName){ return payrollMatchDeptDetail(storeName).dept; }
 // テンプレート由来のbranches配列から「給料」「交通費」に該当する借方行を1つ探す。
 // 仕訳辞書エディタでpurposeが設定されていればそれを優先し、無ければ勘定科目名のキーワードで推定する
 // （現状ほぼ全テンプレートでpurpose未設定のため、実質キーワード推定が使われる）
@@ -8873,13 +8880,14 @@ function payrollBuildAutoJournalPlan(row,branches,storeTotals){
   const commuteBranch=commuteIdxTmp>=0?branches[commuteIdxTmp]:null;
   // 事業所ごとの部門マッチング
   const stores=storeTotals.map(t=>{
-    const dept=payrollMatchDeptByStoreName(t.store);
-    return {storeName:t.store,amount:Math.round(Number(t.amount)||0),commute:Math.round(Number(t.commute)||0),dept};
+    const m=payrollMatchDeptDetail(t.store);
+    return {storeName:t.store,amount:Math.round(Number(t.amount)||0),commute:Math.round(Number(t.commute)||0),dept:m.dept,store:m.store,how:m.how,fuzzy:m.fuzzy};
   });
   const unmatchedStores=stores.filter(s=>!s.dept);
   if(unmatchedStores.length){
-    warnings.push(`事業所「${unmatchedStores.map(s=>s.storeName).join("、")}」に対応する部門（勘定科目の部門マスタ）が見つかりませんでした。店舗名の表記ゆれの可能性があります`);
+    warnings.push(`事業所「${unmatchedStores.map(s=>s.storeName).join("、")}」に対応する部門（勘定科目の部門マスタ）が見つかりませんでした。下の「この店舗として登録」で店舗を選んで登録すると、次回から自動で解決します`);
   }
+  stores.filter(s=>s.dept&&s.fuzzy).forEach(s=>warnings.push(`事業所「${s.storeName}」はあいまい一致（${s.how}）で部門「${s.dept.name}」と判定しました。「この店舗として登録」で別名を登録しておくと確実になります`));
   const totalCommuteNeeded=stores.reduce((s,x)=>s+x.commute,0);
   if(totalCommuteNeeded>0&&!commuteBranch){
     warnings.push("交通費が発生していますが、仕訳辞書に「旅費交通費」に該当する借方科目が見つかりませんでした");
@@ -8916,7 +8924,8 @@ function payrollBuildAutoJournalPlan(row,branches,storeTotals){
     const cat=PAYROLL_DEDUCTION_CATS.find(c=>c.re.test(label));
     if(cat&&cat.key in catBranchRef){
       catSums[cat.key]=(catSums[cat.key]||0)+amt;
-    }else{
+    }else if(amt!==0){
+      // 2026-10-06：0円の控除は対応する貸方行が無くて（§1で行ごと削除済みでも）問題ないため警告しない
       unmatchedDeductions.push({label,amount:amt});
     }
   }
@@ -8928,9 +8937,13 @@ function payrollBuildAutoJournalPlan(row,branches,storeTotals){
   const deductionOk=unmatchedDeductions.length===0&&Math.abs(deductionSum-expectedDeductionTotal)<=1;
   if(!netPayBranch) warnings.push("仕訳辞書に「未払金」または「差引支給額」に該当する貸方科目が見つかりませんでした");
 
-  const ok=allowanceOk&&deductionOk&&!!netPayBranch&&unmatchedStores.length===0&&(totalCommuteNeeded===0||!!commuteBranch);
+  const baseOk=allowanceOk&&deductionOk&&!!netPayBranch&&(totalCommuteNeeded===0||!!commuteBranch);
+  const ok=baseOk&&unmatchedStores.length===0;
+  // 2026-10-06追加（§3）：店舗が未解決でも、検算自体（支給・控除）が合っていて解決済みの店舗が
+  // 1つでもあれば、解決済み店舗の分だけ先に反映する。未解決の店舗は赤い行で残し、解決するまで登録させない
+  const partial=baseOk&&unmatchedStores.length>0&&stores.some(s=>!!s.dept);
   return {
-    ok, warnings,
+    ok, partial, warnings,
     salaryBranch, commuteBranch,
     stores, storeSum, expectedAllowance, allowanceDiff, allowanceOk,
     catBranchRef, catSums, netPayBranch, deductionSum, expectedDeductionTotal, deductionOk,
@@ -8942,12 +8955,25 @@ function payrollAutoJournalPlanHtml(plan){
   if(plan.reason){
     return `<div class="err">⚠️ ${esc(plan.reason)}</div>`;
   }
-  const storeRows=plan.stores.map(s=>`<tr style="border-top:1px solid var(--line)">
+  // 2026-10-06追加（設計書 §2）：部門が見つからない（またはあいまい一致の）事業所は、その場で店舗を選んで
+  // 「この店舗として登録」できる（store_aliasesへ別名登録→即再検算）。設定タブへ行かなくて済む
+  const storeOpts=(selId)=>`<option value="">店舗を選ぶ</option>`+(PAYROLL_STATE.stores||[]).map(x=>`<option value="${esc(x.id)}" ${x.id===selId?"selected":""}>${esc(x.name)}</option>`).join("");
+  const storeRows=plan.stores.map((s,k)=>{
+    let cell;
+    if(s.dept&&!s.fuzzy) cell=esc(s.dept.name);
+    else{
+      const regUi=`<div style="margin-top:3px"><select data-alias-store="${k}" style="font-size:11px">${storeOpts(s.store?s.store.id:"")}</select> <button type="button" class="hq-btn" style="font-size:11px;padding:3px 8px" data-alias-register="${k}">この店舗として登録</button></div>`;
+      if(s.dept) cell=`${esc(s.dept.name)} <span style="color:var(--m-amber)">⚠️あいまい一致（登録を推奨）</span>${regUi}`;
+      else if(s.store) cell=`<span style="color:var(--accent)">店舗は「${esc(s.store.name)}」と特定済み・MF部門が未設定／不一致</span><div style="font-size:10px;color:var(--muted)">設定タブ「法人・店舗・部門マッピング」でこの店舗のMF部門名を設定してください</div>${regUi}`;
+      else cell=`<span style="color:var(--accent)">未マッチ（店舗を特定できません）</span>${regUi}`;
+    }
+    return `<tr style="border-top:1px solid var(--line)">
     <td style="padding:3px 6px">${esc(s.storeName)}</td>
     <td style="text-align:right;padding:3px 6px">${yen(s.amount)}</td>
     <td style="text-align:right;padding:3px 6px">${yen(s.commute)}</td>
-    <td style="padding:3px 6px">${s.dept?esc(s.dept.name):`<span style="color:var(--accent)">未マッチ</span>`}</td>
-  </tr>`).join("");
+    <td style="padding:3px 6px">${cell}</td>
+  </tr>`;
+  }).join("");
   const catRows=Object.entries(plan.catSums).map(([key,amt])=>{
     const cat=PAYROLL_DEDUCTION_CATS.find(c=>c.key===key);
     return `<tr style="border-top:1px solid var(--line)"><td style="padding:3px 6px">${esc(cat?cat.label:key)}</td><td style="text-align:right;padding:3px 6px">${yen(amt)}</td></tr>`;
@@ -8968,14 +8994,33 @@ function payrollAutoJournalPlanHtml(plan){
     ${warnHtml}
     ${plan.ok
       ?`<button class="hq-btn primary" id="payroll-autogen-apply">✅ この内容を仕訳に反映する</button>`
-      :`<div style="font-size:11px;color:var(--accent)">検算が一致しなかったため、自動反映はしていません。内容をご確認のうえ、必要であれば上の入力欄を手動で修正してください</div>`}
+      :plan.partial
+        ?`<button class="hq-btn primary" id="payroll-autogen-apply">✅ 解決済みの店舗分だけ先に反映する</button><div style="font-size:11px;color:var(--accent);margin-top:4px">未解決の店舗は赤い行で残り、解決するまで「登録」はできません（上の「この店舗として登録」で解決できます）</div>`
+        :`<div style="font-size:11px;color:var(--accent)">検算が一致しなかったため、自動反映はしていません。内容をご確認のうえ、必要であれば上の入力欄を手動で修正してください</div>`}
   </div>`;
 }
 // 検算OKのプランを実際にbranches配列へ反映する（給料・交通費は事業所別行に差し替え、
 // 控除・差引支給額は既存の貸方行の金額だけを書き換える＝科目・部門・税区分等は変更しない）
+// 2026-10-06追加（§2/§3）：「この店舗として登録」→再検算で自動生成をやり直せるよう、前回の自動生成行を
+// 取り除いて元のテンプレート行（給料・交通費）を戻す。一時保存の下書きから再開した場合は退避が無いので
+// 自動生成行の1行目から作り直す
+function payrollRestoreAutoRows(branches){
+  let st=branches._autoStash;
+  const autos=branches.filter(b=>b._auto);
+  if(!st&&!autos.length) return;
+  if(!st){
+    const si=payrollFindBranchIndexByKind(autos,"base_salary"), ci=payrollFindBranchIndexByKind(autos,"commute");
+    const clean=b=>b?{...b,debitAmount:0,creditAmount:0,_auto:undefined,_unresolvedStore:undefined,department_id:null}:null;
+    st={salary:clean(autos[si]),commute:clean(autos[ci])};
+  }
+  for(let i=branches.length-1;i>=0;i--) if(branches[i]._auto) branches.splice(i,1);
+  branches.unshift(...[st.salary,st.commute].filter(Boolean));
+  delete branches._autoStash;
+}
 function payrollApplyAutoJournalPlan(branches,plan){
   const salaryTpl=plan.salaryBranch;
   const commuteTpl=plan.commuteBranch;
+  branches._autoStash={salary:salaryTpl,commute:commuteTpl};
   const removeObjs=[salaryTpl,commuteTpl].filter(Boolean);
   for(const obj of removeObjs){
     const i=branches.indexOf(obj);
@@ -8984,10 +9029,10 @@ function payrollApplyAutoJournalPlan(branches,plan){
   const newRows=[];
   for(const s of plan.stores){
     if(s.amount>0){
-      newRows.push({debit:salaryTpl.debit||null,credit:null,debitLabel:salaryTpl.debitLabel||"",creditLabel:"",debitAmount:s.amount,creditAmount:0,department_id:s.dept?s.dept.id:null,tax_id:salaryTpl.tax_id||null,credit_department_id:null,credit_tax_id:null,purpose:null,remark:salaryTpl.remark||null});
+      newRows.push({debit:salaryTpl.debit||null,credit:null,debitLabel:salaryTpl.debitLabel||"",creditLabel:"",debitAmount:s.amount,creditAmount:0,department_id:s.dept?s.dept.id:null,tax_id:salaryTpl.tax_id||null,credit_department_id:null,credit_tax_id:null,purpose:null,remark:salaryTpl.remark||null,_auto:true,_unresolvedStore:s.dept?undefined:s.storeName});
     }
     if(s.commute>0&&commuteTpl){
-      newRows.push({debit:commuteTpl.debit||null,credit:null,debitLabel:commuteTpl.debitLabel||"",creditLabel:"",debitAmount:s.commute,creditAmount:0,department_id:s.dept?s.dept.id:null,tax_id:commuteTpl.tax_id||null,credit_department_id:null,credit_tax_id:null,purpose:null,remark:commuteTpl.remark||null});
+      newRows.push({debit:commuteTpl.debit||null,credit:null,debitLabel:commuteTpl.debitLabel||"",creditLabel:"",debitAmount:s.commute,creditAmount:0,department_id:s.dept?s.dept.id:null,tax_id:commuteTpl.tax_id||null,credit_department_id:null,credit_tax_id:null,purpose:null,remark:commuteTpl.remark||null,_auto:true,_unresolvedStore:s.dept?undefined:s.storeName});
     }
   }
   branches.unshift(...newRows);
@@ -10103,10 +10148,10 @@ async function payrollOpenPreview(userId){
     // 2026-09-07書き換え：ユーザー要望「マネーフォワード会計の複合仕訳入力画面と同じような
     // 形・サイズ感・入力方法にしたい」に対応。1明細=1行、借方・貸方の科目/部門/税区分/金額を
     // 横並びにする表形式（従来は1明細ごとに「借方カード」「貸方カード」を縦に積んでいた）
-    return `<tr data-row-idx="${idx}">
+    return `<tr data-row-idx="${idx}"${b._unresolvedStore?` style="background:rgba(220,60,60,.10);outline:1px solid var(--m-red,#c33)"`:""}>
       <td class="pet-ins"><button type="button" data-payroll-preview-insert="${idx}" title="この下に行を追加">＋</button></td>
       <td>${accInput("debit")}</td>
-      <td>${deptSelect("debit")}${deptMismatchWarnHtml(b.debitLabel,b.department_id)}</td>
+      <td>${deptSelect("debit")}${b._unresolvedStore?`<div style="font-size:10px;color:var(--m-red,#c33)">🔴 店舗未解決: ${esc(b._unresolvedStore)}（部門を選ぶか、上で店舗登録）</div>`:""}${deptMismatchWarnHtml(b.debitLabel,b.department_id)}</td>
       <td>${taxOptionsHtml(b.tax_id,"debit",idx)}</td>
       <td>${amtInput("debit")}</td>
       <td>${accInput("credit")}</td>
@@ -10137,6 +10182,7 @@ async function payrollOpenPreview(userId){
       <div class="box"><small>貸方合計</small><b id="payroll-preview-credit-total">${yen(initCredit)}</b></div>
       <div class="box ${initDebit===initCredit?"ok":"ng"}" id="payroll-preview-diff-box"><small>差額</small><b id="payroll-preview-diff-amt">${yen(initDebit-initCredit)}</b></div>
     </div>
+    <div id="payroll-unresolved-note" style="font-size:12px;color:var(--m-red,#c33);margin-bottom:6px"></div>
     <div style="font-size:10px;color:var(--muted);margin-bottom:6px">💡 金額はPDFと見比べて違っていればここで直接修正できます（例: 端数調整や個別の手当漏れ等）</div>
     <datalist id="payroll-preview-acc-datalist">${PAYROLL_STATE.accountDatalistHtml||""}</datalist>
     <datalist id="payroll-preview-account-datalist">${PAYROLL_STATE.accountNameDatalistHtml||""}</datalist>
@@ -10200,6 +10246,11 @@ async function payrollOpenPreview(userId){
     $("payroll-preview-credit-total").textContent=yen(t.credit);
     $("payroll-preview-diff-amt").textContent=yen(t.debit-t.credit);
     $("payroll-preview-diff-box").className=`box ${t.debit===t.credit?"ok":"ng"}`;
+    // 2026-10-06追加（§3）：店舗が未解決の行が残っている間は「登録」を無効にし、理由を1行表示する
+    const unresolved=branches.filter(b=>b._unresolvedStore).map(b=>b._unresolvedStore);
+    const un=$("payroll-unresolved-note"), sb=$("payrollPreviewSubmit");
+    if(un) un.textContent=unresolved.length?`🔴 店舗が未解決の行があるため登録できません: ${[...new Set(unresolved)].join("、")}`:"";
+    if(sb&&!sb.dataset.busy) sb.disabled=unresolved.length>0;
     refreshVoucherPreview();
   };
   // 2026-09-05新規：ユーザー要望「仕訳の内容（借方・貸方）自体を、フォーム入力欄の羅列ではなく
@@ -10300,6 +10351,7 @@ async function payrollOpenPreview(userId){
     document.querySelectorAll(".payroll-preview-dept").forEach(el=>el.onchange=()=>{
       const idx=+el.dataset.idx, side=el.dataset.side;
       if(side==="debit") branches[idx].department_id=el.value; else branches[idx].credit_department_id=el.value;
+      if(side==="debit"&&el.value) delete branches[idx]._unresolvedStore;
       // 2026-09-07追加：ユーザー報告「勘定科目名と選んだ部門がずれてしまう」対応の一環。
       // 部門を変えた直後に⚠️不一致警告をその場で更新できるよう再描画する（プルダウンの
       // 選択操作自体は完了しているため、テキスト入力中と違いフォーカスを失っても実害が無い）
@@ -10366,17 +10418,40 @@ async function payrollOpenPreview(userId){
     const bres=await runStoreBreakdown();
     btn.disabled=false; btn.textContent="🧮 AIで仕訳を自動生成する（検算OKの場合のみ）";
     if(!bres.ok){ el.innerHTML=`<div class="err">⚠️ ${esc(bres.error)}</div>`; return; }
-    const plan=payrollBuildAutoJournalPlan(row,branches,bres.totals);
-    el.innerHTML=payrollAutoJournalPlanHtml(plan);
-    if(plan.ok){
-      const applyBtn=$("payroll-autogen-apply");
-      if(applyBtn) applyBtn.onclick=()=>{
-        const ap=payrollApplyAutoJournalPlan(branches,plan);
-        rerenderEntries();
-        const zeroNote=(ap&&ap.removedZero&&ap.removedZero.length)?`<div style="font-size:11px;color:var(--m-amber);margin-top:4px">0円のため除外: ${ap.removedZero.map(esc).join("、")}</div>`:"";
-        el.innerHTML=`<div class="err msg-ok">✅ 自動生成した内容を上の表に反映しました。登録前に一度ご確認ください</div>${zeroNote}`;
-      };
-    }
+    // 2026-10-06改修（設計書 §2/§3）：検算→表示→「この店舗として登録」→再検算 を繰り返せるよう関数化
+    const showPlan=()=>{
+      if(branches._autoStash||branches.some(b=>b._auto)){ payrollRestoreAutoRows(branches); rerenderEntries(); }
+      const plan=payrollBuildAutoJournalPlan(row,branches,bres.totals);
+      el.innerHTML=payrollAutoJournalPlanHtml(plan);
+      el.querySelectorAll("[data-alias-register]").forEach(rb=>rb.onclick=async()=>{
+        const k=+rb.dataset.aliasRegister;
+        const sel=el.querySelector(`[data-alias-store="${k}"]`);
+        const storeId=sel?sel.value:"";
+        const name=String(plan.stores[k].storeName||"").trim();
+        if(!storeId||!name){ rb.textContent="店舗を選んでください"; setTimeout(()=>{ rb.textContent="この店舗として登録"; },1500); return; }
+        rb.disabled=true; rb.textContent="登録中…";
+        const r=await authed("/rest/v1/store_aliases",{method:"POST",headers:{Prefer:"return=minimal"},body:JSON.stringify({alias:name,store_id:storeId,source:"smaregi_timecard",kind:"name"})});
+        if(!r.ok){
+          rb.disabled=false; rb.textContent="この店舗として登録";
+          const dup=/duplicate|23505|already exists|409/i.test(JSON.stringify(r.body||"")+String(r.status||""));
+          alert(dup?`「${name}」は既に別の店舗の別名として登録されています。設定タブ「法人・店舗・部門マッピング」で確認してください。`:`登録に失敗しました（${(r.body&&(r.body.message||r.body.error))||"権限または通信エラー"}）`);
+          return;
+        }
+        PAYROLL_STATE.storeAliases=(PAYROLL_STATE.storeAliases||[]).concat([{alias:name,store_id:storeId,source:"smaregi_timecard",kind:"name"}]);
+        showPlan();
+      });
+      if(plan.ok||plan.partial){
+        const applyBtn=$("payroll-autogen-apply");
+        if(applyBtn) applyBtn.onclick=()=>{
+          const ap=payrollApplyAutoJournalPlan(branches,plan);
+          rerenderEntries();
+          const zeroNote=(ap&&ap.removedZero&&ap.removedZero.length)?`<div style="font-size:11px;color:var(--m-amber);margin-top:4px">0円のため除外: ${ap.removedZero.map(esc).join("、")}</div>`:"";
+          const partNote=plan.partial?`<div style="font-size:11px;color:var(--accent);margin-top:4px">未解決の店舗（${plan.stores.filter(x=>!x.dept).map(x=>esc(x.storeName)).join("、")}）は赤い行で残しています。解決するまで「登録」はできません</div>`:"";
+          el.innerHTML=`<div class="err msg-ok">✅ 自動生成した内容を上の表に反映しました。登録前に一度ご確認ください</div>${zeroNote}${partNote}`;
+        };
+      }
+    };
+    showPlan();
   };
   // 2026-09-02: ユーザー要望「明細を追加できるようにしてほしい」に対応。空の行を追加し、
   // 借方・貸方どちらの勘定科目も入力補完（既に取得済みのPAYROLL_STATE.accountLabelMap）から選べる
@@ -10410,6 +10485,8 @@ async function payrollOpenPreview(userId){
     // 2026-09-02: 勘定科目名（テキスト）をプルダウンの候補から選んだ勘定科目オブジェクトへ解決してから
     // 送信する（mft/mfjの仕訳辞書エディタと同じ方式）。テンプレート由来の行も含め全行が編集可能なため、
     // 全行について毎回この解決をやり直す
+    const unresolvedNames=branches.filter(b=>b._unresolvedStore).map(b=>b._unresolvedStore);
+    if(unresolvedNames.length){ pmsg.className="err"; pmsg.textContent=`店舗が未解決の行があるため登録できません: ${[...new Set(unresolvedNames)].join("、")}`; return; }
     const droppedZero=payrollDropUntouchedZeroRows(branches);
     if(droppedZero.length){ rerenderEntries(); pmsg.className="err msg-ok"; pmsg.textContent=`0円のため除外しました: ${droppedZero.join("、")}`; }
     for(const [i,b] of branches.entries()){
@@ -10428,7 +10505,7 @@ async function payrollOpenPreview(userId){
     }
     const {debit:totalDebit,credit:totalCredit}=calcTotals();
     if(totalDebit!==totalCredit){ pmsg.className="err"; pmsg.textContent=`借方合計（${yen(totalDebit)}）と貸方合計（${yen(totalCredit)}）が一致していません。金額を確認してください`; return; }
-    $("payrollPreviewSubmit").disabled=true;
+    $("payrollPreviewSubmit").disabled=true; $("payrollPreviewSubmit").dataset.busy="1";
     pmsg.className="err"; pmsg.textContent="登録中…";
     const payload={
       tenant_id:"default", vendor_name:`給与：${name}（${PAYROLL_STATE.yearMonth}）`,
@@ -10445,7 +10522,7 @@ async function payrollOpenPreview(userId){
       voucher_files: pdfFiles.map((f,i)=>({file_name:`給与明細_${name}_${PAYROLL_STATE.yearMonth}${pdfFiles.length>1?`_${i+1}`:""}.pdf`,file_data:f.file_data})),
     };
     const {ok,body:j}=await mfCall("create_standalone",payload);
-    if(!ok){ pmsg.textContent=j.error||"登録に失敗しました"; $("payrollPreviewSubmit").disabled=false; return; }
+    if(!ok){ pmsg.textContent=j.error||"登録に失敗しました"; $("payrollPreviewSubmit").disabled=false; delete $("payrollPreviewSubmit").dataset.busy; return; }
     // 2026-09-10追加：ユーザー報告「請求書一覧のところで給料なのか請求書なのか区別がつかない」に
     // 対応。給与仕訳から証憑添付のために自動作成される「給与：氏名（年月）」invoicesレコードに、
     // is_payroll_relatedフラグを立てておく（🧾請求書一覧の絞り込みで使う）。
@@ -11333,13 +11410,23 @@ function mappingMatchTenant_(corpName,tenants){
   });
   return hits.length===1?hits[0]:null;
 }
+function mappingAliasCellHtml_(aliases,storeId,source){
+  const mine=aliases.filter(a=>a.store_id===storeId&&a.source===source);
+  const chips=mine.map(a=>`<span style="display:inline-block;border:1px solid var(--line);border-radius:10px;padding:1px 6px;margin:0 4px 3px 0;font-size:11px">${esc(a.alias)} <a href="#" onclick="return false" style="color:var(--m-red,#c33);text-decoration:none" data-alias-del="${esc(storeId)}|${esc(source)}|${encodeURIComponent(a.alias)}" title="削除">✕</a></span>`).join("");
+  return `${chips||`<span style="font-size:11px;color:var(--muted)">未登録</span>`}<div style="margin-top:3px"><input class="mapping-alias-input" data-store="${esc(storeId)}" data-source="${esc(source)}" placeholder="${source==="pl"?"PL側の店舗名":"タイムカードの事業所名"}" style="width:150px;font-size:11px"> <button type="button" class="hq-btn" style="font-size:11px;padding:3px 8px" data-alias-add="${esc(storeId)}|${esc(source)}">追加</button></div>`;
+}
 async function renderSettingsMapping(){
   $("settingsBody").innerHTML=`<div class="spin">読み込み中…</div>`;
-  const [storeRes,corpRes,tRes]=await Promise.all([
+  const [storeRes,corpRes,tRes,aliasRes]=await Promise.all([
     authed("/rest/v1/stores?select=id,name,corporation_id,mf_department_name&order=name"),
     authed("/rest/v1/corporations?select=id,name&order=name"),
     mfCall("list_tenants"),
+    authed("/rest/v1/store_aliases?select=alias,store_id,source,kind&order=alias"),
   ]);
+  // 2026-10-06追加（設計書_給与仕訳の全自動化 §2）：タイムカード（スマレジ）側の事業所名とPL側の店舗名を
+  // 「店舗ごとの対応表」として持つ。どちらも store_aliases の別名（source='smaregi_timecard' / 'pl'）。
+  // 別名は1つの名前＝1店舗（alias が主キー）。PL店舗名は今は表示と登録だけで、PL反映には使わない
+  let aliases=(aliasRes.ok&&Array.isArray(aliasRes.body))?aliasRes.body:[];
   const stores=(storeRes.ok&&Array.isArray(storeRes.body))?storeRes.body:[];
   const corps=(corpRes.ok&&Array.isArray(corpRes.body))?corpRes.body:[];
   const tenants=(tRes.ok&&tRes.body.tenants)||[];
@@ -11362,7 +11449,7 @@ async function renderSettingsMapping(){
       return `<datalist id="mapping-dept-datalist-${esc(tid)}">${(deptByTenant.get(tid)||[]).map(d=>`<option value="${esc(d.name)}">`).join("")}</datalist>`;
     }).join("")}
     <div class="hq-tablewrap"><table class="invoice-table">
-      <thead><tr><th>店舗</th><th>法人</th><th>マネーフォワード部門名</th><th></th></tr></thead>
+      <thead><tr><th>店舗</th><th>法人</th><th>マネーフォワード部門名</th><th>タイムカード事業所名（複数可）</th><th>PL店舗名（複数可）</th><th></th></tr></thead>
       <tbody>${stores.map(s=>{
         const corp=corps.find(c=>c.id===s.corporation_id);
         const corpName=corp?.name||"—";
@@ -11377,11 +11464,46 @@ async function renderSettingsMapping(){
           <td><input class="mapping-dept" list="mapping-dept-datalist-${esc(usedTenant?.id||"")}" data-store="${s.id}" value="${esc(cur)}" placeholder="MF側の部門名と完全一致させてください">
             <div style="font-size:10px;color:var(--muted)">候補: ${esc(usedTenant?.label||"—")}${matchedTenant?"":"（法人名から事業者を自動判定できず既定を表示中）"}</div>
             ${cur&&!exists?`<div style="font-size:10px;color:var(--m-red)">⚠️ この事業者の部門一覧に見つかりません（表記違い、または事業者の判定ミスの可能性）</div>`:""}</td>
+          <td data-alias-cell="smaregi_timecard" data-store="${s.id}">${mappingAliasCellHtml_(aliases,s.id,"smaregi_timecard")}</td>
+          <td data-alias-cell="pl" data-store="${s.id}">${mappingAliasCellHtml_(aliases,s.id,"pl")}</td>
           <td><button class="hq-btn" style="font-size:11px;padding:6px 9px" data-mapping-save="${s.id}">保存</button></td>
         </tr>`;
-      }).join("")||'<tr><td colspan="4">店舗が登録されていません</td></tr>'}</tbody>
+      }).join("")||'<tr><td colspan="6">店舗が登録されていません</td></tr>'}</tbody>
     </table></div>
   </div>`;
+  // 別名セル（チップ＋追加欄）。追加・削除はその場でstore_aliasesへ反映し、そのセルだけ描き直す
+  const refreshAliasCell=(storeId,source)=>{
+    const c=document.querySelector(`[data-alias-cell="${source}"][data-store="${storeId}"]`);
+    if(c) c.innerHTML=mappingAliasCellHtml_(aliases,storeId,source);
+  };
+  $("settingsBody").onclick=async ev=>{ // addEventListenerだと再描画のたびに重複するため代入式にする
+    const add=ev.target.closest("[data-alias-add]"), del=ev.target.closest("[data-alias-del]");
+    if(add){
+      const [storeId,source]=add.dataset.aliasAdd.split("|");
+      const inp=document.querySelector(`.mapping-alias-input[data-store="${storeId}"][data-source="${source}"]`);
+      const name=(inp&&inp.value||"").trim();
+      if(!name) return;
+      add.disabled=true;
+      const r=await authed("/rest/v1/store_aliases",{method:"POST",headers:{Prefer:"return=minimal"},body:JSON.stringify({alias:name,store_id:storeId,source,kind:"name"})});
+      if(!r.ok){
+        add.disabled=false;
+        const dup=/duplicate|23505|already exists|409/i.test(JSON.stringify(r.body||"")+String(r.status||""));
+        const other=aliases.find(a=>a.alias===name);
+        alert(dup||other?`「${name}」は既に${other?`別の店舗（${(storeRes.body.find(x=>x.id===other.store_id)||{}).name||"不明"}）の別名として`:""}登録されています。同じ名前は1つの店舗にしか登録できません。`:`登録に失敗しました（${(r.body&&(r.body.message||r.body.error))||"権限または通信エラー"}）`);
+        return;
+      }
+      aliases=aliases.concat([{alias:name,store_id:storeId,source,kind:"name"}]);
+      refreshAliasCell(storeId,source);
+    }else if(del){
+      const [storeId,source,enc]=del.dataset.aliasDel.split("|");
+      const name=decodeURIComponent(enc);
+      if(!confirm(`別名「${name}」の登録を削除しますか？（次回から店舗を自動判定できなくなる場合があります）`)) return;
+      const r=await authed(`/rest/v1/store_aliases?alias=eq.${encodeURIComponent(name)}&store_id=eq.${storeId}`,{method:"DELETE",headers:{Prefer:"return=minimal"}});
+      if(!r.ok){ alert("削除に失敗しました"); return; }
+      aliases=aliases.filter(a=>!(a.alias===name&&a.store_id===storeId));
+      refreshAliasCell(storeId,source);
+    }
+  };
   document.querySelectorAll("[data-mapping-save]").forEach(el=>el.onclick=async()=>{
     const storeId=el.dataset.mappingSave;
     const val=document.querySelector(`.mapping-dept[data-store="${storeId}"]`).value.trim();
