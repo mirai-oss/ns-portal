@@ -271,12 +271,22 @@ grant execute on function public.pl_entries_export(text, text, uuid, boolean) to
 -- 移行用（1回だけ・service_roleのみ）: kd_pl_entries（=DB_PL/stg_plの最新ミラー）から正本へ取り込む。
 -- 空の正本にだけ実行可（p_force=trueで追加取込）。区分が空/不明の行は科目名から推定（家賃→R等・不明はO）し、normalizedで一覧を返す。
 -- 年月が不正/店舗名が解決不能の行は取り込まず rejected に理由を返す（行は黙って捨てない）。memoが「自動｜…」で始まる行は sourceをその値に。
-create or replace function public.pl_entries_import_from_kd(p_actor text default 'import', p_force boolean default false) returns jsonb
+-- 自動連携行の判定（担当A定義）。keiei-kd-refreshのplAutoSourceOf()と同じ規則。手入力ならnull
+create or replace function public.pl_auto_source(p_memo text) returns text language sql immutable as $$
+  select case
+    when btrim(coalesce(p_memo,'')) like '自動｜%' then btrim(p_memo)
+    when btrim(coalesce(p_memo,'')) like '%（自動計上）' then btrim(p_memo)
+    when btrim(coalesce(p_memo,'')) like '店舗間移動:%' or btrim(coalesce(p_memo,'')) like '店舗間移動：%' then '店舗間移動'
+    else null end
+$$;
+drop function if exists public.pl_entries_import_from_kd(text, boolean);
+create or replace function public.pl_entries_import_from_kd(p_actor text default 'import', p_force boolean default false, p_reset boolean default false) returns jsonb
 language plpgsql security definer set search_path = public as $$
 declare v_claims jsonb; v_cnt int; ins int := 0; fixed_cat int := 0; rej jsonb := '[]'::jsonb; norm jsonb := '[]'::jsonb; k record; v_cat text; v_src text;
 begin
   begin v_claims := nullif(current_setting('request.jwt.claims', true), '')::jsonb; exception when others then v_claims := null; end;
   if coalesce(v_claims->>'role','') <> 'service_role' then return jsonb_build_object('ok', false, 'error', 'service_roleのみ'); end if;
+  if p_reset then delete from public.pl_entries where true; end if;   -- 切替時の「空にして再取込」（削除行は履歴に残る）
   select count(*) into v_cnt from public.pl_entries;
   if v_cnt > 0 and not p_force then return jsonb_build_object('ok', false, 'error', format('pl_entriesに既に%s行あります（追加取込はp_force=true）', v_cnt)); end if;
   perform set_config('app.actor', coalesce(p_actor, 'import'), true);
@@ -296,15 +306,17 @@ begin
       fixed_cat := fixed_cat + 1;
       norm := norm || jsonb_build_object('kd_id', k.id, 'ym', k.year_month, 'store', k.store_name, 'item', k.item, 'amount', k.amount, 'category', v_cat);
     end if;
-    v_src := case when k.memo like '自動｜%' then k.memo else '手入力' end;
+    v_src := coalesce(public.pl_auto_source(k.memo), '手入力');
     insert into public.pl_entries (year_month, store_id, item, category, amount, memo, sub_item, source, created_by, updated_by)
       values (k.year_month, k.store_id, coalesce(nullif(btrim(k.item), ''), '(未分類)'), v_cat, k.amount, k.memo, k.sub_item, v_src, coalesce(p_actor,'import'), coalesce(p_actor,'import'));
     ins := ins + 1;
   end loop;
   return jsonb_build_object('ok', true, 'inserted', ins, 'category_normalized', fixed_cat, 'normalized', norm, 'rejected', rej);
 end $$;
-revoke all on function public.pl_entries_import_from_kd(text, boolean) from public, anon, authenticated;
-grant execute on function public.pl_entries_import_from_kd(text, boolean) to service_role;
+revoke all on function public.pl_entries_import_from_kd(text, boolean, boolean) from public, anon, authenticated;
+grant execute on function public.pl_entries_import_from_kd(text, boolean, boolean) to service_role;
+revoke all on function public.pl_auto_source(text) from public, anon;
+grant execute on function public.pl_auto_source(text) to authenticated, service_role;
 
 comment on table public.pl_entries is 'PL販管費の正本（F3）。書込はRPC(pl_entries_bulk_upsert/delete)のみ。kd_pl_*はここから作る（切替後）';
 comment on table public.pl_entries_history is 'pl_entriesの変更履歴（トリガ自動記録・master/CEO/HQのみ閲覧）';

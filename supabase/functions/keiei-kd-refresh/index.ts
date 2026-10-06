@@ -559,9 +559,85 @@ function plSeisanGuessCat(name: string): "S" | "F" | "L" | "A" | "R" | "O" | "X"
 // PL行の取得元。既定=GAS bqGetPL（DB_PL→stg_pl）。app_secrets.pl_source='entries' のときは正本テーブル pl_entries（F3・2026-10-06）から
 // 同じ列形式（年月,店舗名,勘定科目,区分,金額,メモ,補助科目）に組み立てて返す＝以降のpl_monthly/kd_pl_entriesの処理は無変更。
 // memo列は「自動｜…」の行ではsourceを入れる（精算書由来の判定 PL_SEISAN_CAT_MEMO がmemoで行われているため）。切替は移行手順（取込・突合）完了後。
-async function bqGetPLRows(sb: any): Promise<any[][]> {
+// 自動連携行の判定（担当A定義・2026-10-06）。stg_pl(DB_PL)のmemoがこれに当たる行は自動連携＝GAS側が書き続ける。それ以外は手入力＝pl_entriesが正本。
+// 戻り値=source（精算書は'自動｜精算書'のまま。店舗間移動はmemoが可変なので'店舗間移動'に束ねる）。手入力ならnull。
+function plAutoSourceOf(memo: unknown): string | null {
+  const m = String(memo ?? "").trim();
+  if (m.startsWith("自動｜")) return m;
+  if (/（自動計上）$/.test(m)) return m;                      // 運営委託費（自動計上）/媒体販促費（自動計上）
+  if (m.startsWith("店舗間移動:") || m.startsWith("店舗間移動：")) return "店舗間移動";
+  return null;
+}
+// 区分が空/「？」等の行を S/F/L/A/R/O/X に寄せる（supabase/2026-10-06_pl_entries_master.sql の pl_entries_import_from_kd と同じ規則）
+function plCatForEntries(cat: unknown, item: string): string {
+  const s = String(cat ?? "").trim().toUpperCase().replace(/[Ａ-Ｚ]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xFEE0));
+  if (["S", "F", "L", "A", "R", "O", "X"].includes(s)) return s;
+  if (/^F|仕入|原価/.test(s)) return "F"; if (/^L|人件/.test(s)) return "L"; if (/^A|広告/.test(s)) return "A"; if (/^R|家賃|賃料/.test(s)) return "R";
+  if (/仕入/.test(item)) return "F"; if (/給料|雑給|人件費|法定福利|通勤|役員報酬|賞与/.test(item)) return "L";
+  if (/広告|販促|販売促進/.test(item)) return "A"; if (/家賃|賃料|地代|リース/.test(item)) return "R";
+  return "O";
+}
+// ハイブリッド同期: stg_pl(GAS bqGetPL)の「自動連携行」だけを正本pl_entriesへ反映（(source×年月)単位のreplace_source）。
+// 手入力(source='手入力')には触れない。内容が変わった(source×年月)だけを入れ替える（毎時回しても履歴・ソフト削除行が増えない）。
+// 安全装置: 既存の自動行が20行以上で、今回の自動行が半分未満なら（取得の部分応答の疑い）中止。
+async function autoSyncFromStgPl(sb: any, dry = false): Promise<any> {
+  const runId = dry ? "dry" : await startRun(sb, "kd_pl_auto_sync");
+  try {
+    const res = await dashAuthed(sb, "bqGetPL");
+    if (!res.ok) throw new Error("bqGetPL取得に失敗: " + (res.error ?? ""));
+    const raw: any[][] = res.sheets?.PL ?? [];
+    const maps = await loadStoreMaps(sb);
+    const unresolved = new Set<string>(); let badYm = 0;
+    type R = { year_month: string; store_id: string | null; item: string; category: string; amount: number; memo: string; sub_item: string; source: string };
+    const rows: R[] = [];
+    for (let r = 1; r < raw.length; r++) {
+      const row = raw[r] ?? [];
+      const memo = String(row[5] ?? "").trim(); const source = plAutoSourceOf(memo);
+      if (!source) continue;
+      const ym = ymOf(row[0]); if (!ym) { badYm++; continue; }
+      const nm = String(row[1] ?? "").trim(); let sid: string | null = null;
+      if (nm) { const hit = lookupStore(maps, nm); if (!hit) { unresolved.add(nm); continue; } sid = hit.store_id; }
+      const item = String(row[2] ?? "").trim() || "(未分類)";
+      rows.push({ year_month: ym, store_id: sid, item, category: plCatForEntries(row[3], item), amount: num(row[4]), memo, sub_item: String(row[6] ?? ""), source });
+    }
+    const old = await fetchAll((f, t) => sb.from("pl_entries").select("id,year_month,store_id,item,category,amount,memo,sub_item,source")
+      .is("deleted_at", null).neq("source", "手入力").order("id").range(f, t));
+    if (old.length >= 20 && rows.length < old.length * 0.5) throw new Error(`自動行が${rows.length}件（既存${old.length}件の半分未満）のため中止（部分応答の疑い）`);
+    const sig = (x: any) => [x.store_id ?? "", x.item, x.category, Number(x.amount), x.memo, x.sub_item ?? ""].join("\u0001");
+    const group = (list: any[]) => { const m = new Map<string, string[]>(); for (const x of list) { const k = `${x.source}\u0002${x.year_month}`; (m.get(k) ?? m.set(k, []).get(k)!).push(sig(x)); } for (const v of m.values()) v.sort(); return m; };
+    const gNew = group(rows), gOld = group(old);
+    const changed = new Set<string>();
+    for (const [k, v] of gNew) if ((gOld.get(k) ?? []).join("\u0003") !== v.join("\u0003")) changed.add(k);
+    for (const k of gOld.keys()) if (!gNew.has(k)) changed.add(k);
+    if (dry) {   // 検証用: 書かずに差分だけ返す
+      const bySrc: Record<string, number> = {}; for (const x of rows) bySrc[x.source] = (bySrc[x.source] ?? 0) + 1;
+      return { ok: true, dry: true, auto_rows: rows.length, existing_auto: old.length, changed_groups: changed.size, changed_sample: [...changed].slice(0, 12).map((k) => k.replace("\u0002", " / ")), by_source: bySrc, unresolved: [...unresolved], bad_ym: badYm };
+    }
+    let result: any = { inserted: 0, updated: 0, deleted: 0 };
+    if (changed.size) {
+      const payload = rows.filter((x) => changed.has(`${x.source}\u0002${x.year_month}`));
+      const scope = [...changed].map((k) => { const [source, year_month] = k.split("\u0002"); return { source, year_month }; });
+      const { data, error } = await sb.rpc("pl_entries_bulk_upsert", { p_rows: payload, p_mode: "replace_source", p_dry_run: false, p_actor: "auto-sync", p_scope: scope });
+      if (error) throw new Error("pl_entries_bulk_upsert失敗: " + error.message);
+      if (!data?.ok) throw new Error("自動行の取込を検証が拒否: " + JSON.stringify(data?.errors ?? data?.error).slice(0, 300));
+      result = data;
+    }
+    for (const nm of unresolved) {
+      try { await sb.rpc("kd_report_unresolved_name", { p_source_table: "pl_entries", p_kind: "store", p_raw_name: nm }); } catch (_) { /* noop */ }
+    }
+    const note = [unresolved.size ? `店舗名未対応(取込せず): ${[...unresolved].join("、")}` : "", badYm ? `年月不正で除外${badYm}行` : ""].filter(Boolean).join(" / ");
+    await finishRun(sb, runId, true, rows.length, note || undefined);
+    return { ok: true, auto_rows: rows.length, changed_groups: changed.size, ...result, unresolved: [...unresolved], bad_ym: badYm };
+  } catch (e) {
+    await finishRun(sb, runId, false, 0, String(e), "kd_pl_auto_sync");
+    throw e;
+  }
+}
+
+async function bqGetPLRows(sb: any, opts: { skipAuto?: boolean } = {}): Promise<any[][]> {
   const { data: flag } = await sb.from("app_secrets").select("value").eq("key", "pl_source").maybeSingle();
   if ((flag?.value ?? "").trim() === "entries") {
+    if (!opts.skipAuto) await autoSyncFromStgPl(sb);   // 手入力=正本(pl_entries) / 自動行=stg_plから取り込み（ハイブリッド）
     const { data: st } = await sb.from("stores").select("id,name,dash_store_name");
     const nameById = new Map<string, string>((st ?? []).map((x: any) => [x.id, String(x.dash_store_name || x.name || "")]));
     const rows = await fetchAll((f, t) => sb.from("pl_entries").select("id,year_month,store_id,item,category,amount,memo,sub_item,source")
@@ -596,11 +672,11 @@ async function bqGetLoanRows(sb: any): Promise<any[][]> {
 }
 const COMMON_STORE_KEY = "00000000-0000-0000-0000-000000000000"; // 全社共通経費行（store_id=NULL）のupsertキー用センチネル
 
-async function refreshPlMonthly(sb: any) {
+async function refreshPlMonthly(sb: any, body: any = {}) {
   const runId = await startRun(sb, "kd_pl_monthly_summary");
   try {
     const { idByName, corpByStoreId } = await loadStoreMaps(sb);
-    const rawRows = await bqGetPLRows(sb);
+    const rawRows = await bqGetPLRows(sb, { skipAuto: body?.skipAuto === true });
     const unmatched = new Set<string>();
     type Bucket = {
       store_id: string | null; year_month: string;
@@ -672,6 +748,7 @@ async function refreshPlMonthly(sb: any) {
     let loanOk = true; let loanRowCount = 0; let loanBadYm = 0; const loanSample: string[] = [];
     let loanRawRows: any[][] | null = null;   // 行ミラー(kd_loan_entries)用に保持
     try {
+      if (body?.skipAuto === true) throw new Error("手入力の即時反映ではGASの借入取得を省く（借入列は更新しない）");
       const loanRows = await bqGetLoanRows(sb);
       loanRawRows = loanRows;
       loanRowCount = Math.max(0, loanRows.length - 1);
@@ -908,7 +985,7 @@ async function refreshEntries(sb: any, body: any) {
   const out: Record<string, unknown> = {};
   let ok = true;
   try {
-    if (kinds.includes("pl")) { out.pl = await mirrorEntries(sb, "pl", await bqGetPLRows(sb)); }
+    if (kinds.includes("pl")) { out.pl = await mirrorEntries(sb, "pl", await bqGetPLRows(sb, { skipAuto: body?.skipAuto === true })); }
     if (kinds.includes("loan")) { out.loan = await mirrorEntries(sb, "loan", await bqGetLoanRows(sb)); }
     if (kinds.includes("spot")) { out.spot = await mirrorEntries(sb, "spot", await bqGetSpotRows(sb)); }
     if (kinds.includes("media")) {
@@ -1611,12 +1688,13 @@ Deno.serve(async (req) => {
         } else result = await refreshDetailDaily(sb, body);
         break;
       }
-      case "pl_monthly": result = await refreshPlMonthly(sb); break;
+      case "pl_monthly": result = await refreshPlMonthly(sb, body); break;
       case "media_monthly": result = await refreshMediaMonthly(sb, body); break;
       case "entries": result = await refreshEntries(sb, body); break;
       case "gas_sync": result = await gasSync(body); break;
+      case "pl_auto_sync": result = await autoSyncFromStgPl(sb, body.dry === true); break;
       case "pl_import": {   // 正本pl_entriesへの1回限りの取り込み（kd_pl_entriesから）。force=trueで既存があっても追加
-        const { data, error } = await sb.rpc("pl_entries_import_from_kd", { p_actor: String(body.actor ?? "import"), p_force: body.force === true });
+        const { data, error } = await sb.rpc("pl_entries_import_from_kd", { p_actor: String(body.actor ?? "import"), p_force: body.force === true, p_reset: body.reset === true });
         result = error ? { ok: false, error: error.message } : data; break;
       }
       case "deposit_monthly": result = await refreshDepositMonthly(sb); break;
