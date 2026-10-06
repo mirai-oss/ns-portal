@@ -624,7 +624,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-06-v47";
+const BUILD_TAG="2026-10-06-v48";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -7449,6 +7449,9 @@ function mftOpenEditor(tpl,asCopy){
     // 2026-09-26追加：コピー時はこのキーだけ意図的に引き継がない（同じキーを持つ仕訳辞書が
     // 2件できると自動適用のfind()がどちらを使うか曖昧になるため。必要なら手動で設定し直す）
     receivableSourceName: (tpl&&!asCopy)?(tpl.receivable_source_name||""):"",
+    hadPayrollCols: !!(tpl&&("payroll_kind" in tpl)),
+    payrollKind: tpl?(tpl.payroll_kind||""):"",
+    payrollCorporationId: tpl?(tpl.payroll_corporation_id||""):"",
     branches: tpl?(tpl.branches||[]).map(b=>({
       debitLabel:mftLabelOf(b.debit), debitAmount:b.debit?(b.debit.value??b.amount??""):"",
       creditLabel:mftLabelOf(b.credit), creditAmount:b.credit?(b.credit.value??b.amount??""):"",
@@ -7495,6 +7498,15 @@ function mftRenderEditor(){
         <div class="meta" style="color:var(--muted);font-size:11px;margin:4px 0 8px">「会計・請求ワークスペース→売上入金」の「🧾 MF仕訳を作成」画面を開いたとき、対象の入金の種類（例:「PayPay加盟店」）がここで指定した値と完全一致すれば、この仕訳辞書の勘定科目・補助科目を自動で初期値にします（金額・部門・摘要は毎回実際の入金データで上書きされます。貸方の補助科目は常にその時の店舗名に置き換わります）。上の名前（表示名）とは別に、ここに実際のsource_name（下のリストから選ぶか、既存の売上入金画面のタイトルに表示されている文言と完全に同じ文字列を入力）を指定してください。空欄なら自動適用されません。</div>
         <input id="mft-receivable-source" list="mft-receivable-source-datalist" value="${esc(ed.receivableSourceName)}" placeholder="例: PayPay加盟店">
         <datalist id="mft-receivable-source-datalist">${(MFT_STATE.receivableSourceNames||[]).map(n=>`<option value="${esc(n)}">`).join("")}</datalist>
+      </div>
+
+      <div class="card" style="padding:10px;margin-top:8px;background:var(--m-bluesoft,#eaf2fb)">
+        <b style="font-size:11px">💴 給与仕訳への自動割当（法人×区分）</b>
+        <div class="meta" style="color:var(--muted);font-size:11px;margin:4px 0 8px">区分と法人を指定すると、💴給与仕訳タブで「その法人（所属店舗の法人）×その区分（社員／アルバイト）」の人へ、この仕訳辞書が自動で割り当てられます（人ごとの手動割当は例外として優先されます）。法人を空にすると法人を問わず使います。</div>
+        <div class="ai-grid">
+          <div class="ai-field"><small>給与の区分</small><select id="mft-payroll-kind"><option value="">（自動割当しない）</option><option value="employee" ${ed.payrollKind==="employee"?"selected":""}>社員</option><option value="parttime" ${ed.payrollKind==="parttime"?"selected":""}>アルバイト</option></select></div>
+          <div class="ai-field"><small>対象法人（所属店舗の法人）</small><select id="mft-payroll-corp"><option value="">（法人を問わない）</option>${(MFT_STATE.corporations||[]).map(c=>`<option value="${esc(c.id)}" ${ed.payrollCorporationId===c.id?"selected":""}>${esc(c.name)}</option>`).join("")}</select></div>
+        </div>
       </div>
 
       <div class="card" style="padding:10px;margin-top:8px;background:var(--m-greensoft)">
@@ -7637,6 +7649,8 @@ function mftWireEditor(){
     ed.sourceFilter=[...document.querySelectorAll(".mft-source:checked")].map(x=>x.value);
   });
   $("mft-receivable-source").oninput=()=>{ ed.receivableSourceName=$("mft-receivable-source").value; };
+  $("mft-payroll-kind").onchange=()=>{ ed.payrollKind=$("mft-payroll-kind").value; };
+  $("mft-payroll-corp").onchange=()=>{ ed.payrollCorporationId=$("mft-payroll-corp").value; };
   $("mft-corp").onchange=()=>{ ed.targetCorporationId=$("mft-corp").value; };
   $("mft-store").onchange=()=>{ ed.targetStoreId=$("mft-store").value; };
   $("mft-pl-account").oninput=()=>{ ed.plAccount=$("mft-pl-account").value; };
@@ -7689,6 +7703,13 @@ async function mftSaveEditor(){
     require_human_review: ed.requireHumanReview,
     priority: Number(ed.priority)||100,
   };
+  // 2026-10-06（§4）：新列が本番に無い間も既存の保存が壊れないよう、値が入っているときだけ送る
+  // （区分・法人を外したいときは空にして保存＝nullを送る必要があるが、列が既にある前提のときだけ。
+  //  編集前から値があった行は列が存在する＝tplに項目がある）
+  if(ed.payrollKind||ed.payrollCorporationId||ed.hadPayrollCols){
+    payload.payroll_kind=ed.payrollKind||null;
+    payload.payroll_corporation_id=ed.payrollCorporationId||null;
+  }
   const r=ed.id
     ?await authed(`/rest/v1/mf_journal_templates?id=eq.${ed.id}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({...payload,updated_at:new Date().toISOString()})})
     :await authed("/rest/v1/mf_journal_templates",{method:"POST",headers:{Prefer:"return=minimal"},body:JSON.stringify({...payload,created_by:ME.id})});
@@ -8482,7 +8503,7 @@ async function payrollLoad(){
     fetchSync(),
     authed(`/rest/v1/payroll_journal_records?year_month=eq.${ym}&select=*`),
     authed(`/rest/v1/payroll_journal_assignments?select=*`),
-    authed(`/rest/v1/mf_journal_templates?tenant_id=eq.default&select=id,label,branches&order=label`),
+    authed(`/rest/v1/mf_journal_templates?tenant_id=eq.default&select=id,label,branches,payroll_kind,payroll_corporation_id&order=label`),
     mfCall("list_departments",{tenant_id:"default"}),
     // 2026-09-10追加：amountも取得する（店舗別の給料・交通費集計に使う。従来は店舗の特定にしか
     // 使っておらず、複数店舗に按分されている人の「その店舗ぶんの金額」が取れていなかった）
@@ -8503,6 +8524,11 @@ async function payrollLoad(){
   if(!(syncR.ok&&Array.isArray(syncR.body))){
     await new Promise(res=>setTimeout(res,800));
     syncR=await fetchSync();
+  }
+  // 2026-10-06（§4）：payroll_kind/payroll_corporation_id列（supabase/2026-10-06_payroll_template_kind_corp.sql）が
+  // まだ本番に無い場合は取得が失敗するため、従来の列だけで取り直す（給与仕訳タブ自体が動かなくなるのを防ぐ）
+  if(!(tplR.ok&&Array.isArray(tplR.body))){
+    tplR=await authed(`/rest/v1/mf_journal_templates?tenant_id=eq.default&select=id,label,branches&order=label`);
   }
   const syncOk=syncR.ok&&Array.isArray(syncR.body);
   if(syncOk){
@@ -8566,7 +8592,7 @@ async function payrollLoad(){
     // 「匠味 新横浜」→鶏武者 新横浜のstore_id等が既に登録されている）を給与仕訳でも読み、
     // payrollMatchStoreRecord()から使えるようにする
     const [r,ar]=await Promise.all([
-      authed("/rest/v1/stores?select=id,name,mf_department_name&order=name"),
+      authed("/rest/v1/stores?select=id,name,mf_department_name,corporation_id&order=name"),
       authed("/rest/v1/store_aliases?select=alias,store_id,source,kind"),
     ]);
     PAYROLL_STATE.stores=(r.ok&&Array.isArray(r.body))?r.body:[];
@@ -8706,7 +8732,38 @@ function payrollGuessEmployeeByFilename(filename){
   });
   return hit||null;
 }
-function payrollAssignmentFor(userId){ return PAYROLL_STATE.assignments.find(a=>a.user_id===userId); }
+function payrollManualAssignmentFor(userId){ return PAYROLL_STATE.assignments.find(a=>a.user_id===userId); }
+// 2026-10-06（設計書_給与仕訳の全自動化 §4）：テンプレート（仕訳辞書）を人ごとに手で割り当てる運用から、
+// 「法人×区分（社員/アルバイト）」での自動割当へ。区分は users.role（AL=アルバイト・それ以外=社員）、
+// 法人は所属店舗（その月の按分で金額が最大の店舗）の法人。人ごとの手動割当（payroll_journal_assignments）は
+// 「例外の上書き」として最優先で残す。自動割当はブラウザのスイッチ（localStorage）でいつでも切れる
+function payrollAutoAssignOn(){ try{ return localStorage.getItem("payrollAutoAssignOff")!=="1"; }catch(e){ return true; } }
+function payrollUserCorporationId(userId){
+  const al=(PAYROLL_STATE.allocations||[]).filter(a=>a.user_id===userId&&a.store_id);
+  if(!al.length) return null;
+  const byStore=new Map();
+  al.forEach(a=>byStore.set(a.store_id,(byStore.get(a.store_id)||0)+(Number(a.amount)||0)));
+  const top=[...byStore.entries()].sort((a,b)=>b[1]-a[1])[0][0];
+  const st=(PAYROLL_STATE.stores||[]).find(x=>x.id===top);
+  return st?st.corporation_id||null:null;
+}
+function payrollAutoTemplateFor(userId){
+  const row=(PAYROLL_STATE.rows||[]).find(r=>r.user_id===userId);
+  const kind=(row&&row.user&&row.user.role==="AL")?"parttime":"employee";
+  const cands=(PAYROLL_STATE.templates||[]).filter(t=>t.payroll_kind===kind);
+  if(!cands.length) return null;
+  const corp=payrollUserCorporationId(userId);
+  return cands.find(t=>corp&&t.payroll_corporation_id===corp)||cands.find(t=>!t.payroll_corporation_id)||null;
+}
+function payrollAssignmentFor(userId){
+  const man=payrollManualAssignmentFor(userId);
+  if(man&&man.template_id) return man;
+  if(payrollAutoAssignOn()){
+    const t=payrollAutoTemplateFor(userId);
+    if(t) return {user_id:userId,tenant_id:"default",template_id:t.id,auto:true};
+  }
+  return man;
+}
 function payrollRecordFor(userId){ return PAYROLL_STATE.records.find(r=>r.user_id===userId); }
 function payrollDraftFor(userId){ return (PAYROLL_STATE.drafts||[]).find(d=>d.user_id===userId); }
 function payrollFindDeptForUser(userId){
@@ -9242,7 +9299,7 @@ function payrollRowHtml(row){
   // 勘定科目のように検索できるように」に対応。既に割り当て済みのテンプレートが万一「給料」を
   // 含まない古いものだった場合でも、選択中の表示が消えて空欄に見えてしまわないよう現在値だけは例外的に残す
   const currentTpl=asg&&PAYROLL_STATE.templates.find(t=>t.id===asg.template_id);
-  const patternInput=`<input list="payroll-template-datalist" class="payroll-pattern-input" data-payroll-pattern="${esc(row.user_id)}" value="${esc(currentTpl?currentTpl.label:"")}" placeholder="🔍 給料の仕訳辞書を検索" ${rec?"disabled":""}>`;
+  const patternInput=`<input list="payroll-template-datalist" class="payroll-pattern-input" data-payroll-pattern="${esc(row.user_id)}" value="${esc(currentTpl?currentTpl.label:"")}" placeholder="🔍 給料の仕訳辞書を検索" ${rec?"disabled":""}>${asg&&asg.auto?` <span class="pr-status na" title="法人×区分（社員/アルバイト）から自動で割り当てています。別のものを選ぶと、この人だけ例外として上書きします">🤖自動</span>`:""}`;
   // 状態は「パターン未設定→未登録（会計未計上）→📝下書き保存中→仕訳登録済み・振込待ち→振込完了」の
   // 5段階。2026-09-01: 会計計上（MF仕訳登録）と実際の振込は別のタイミングで完了するため区別して表示。
   // 2026-09-02: 一時保存（下書き）は登録が完了するまで「完了」扱いにしない（ユーザー要望どおり）
@@ -9520,7 +9577,7 @@ function payrollRender(){
 
       <div class="section" style="display:flex;justify-content:space-between;align-items:end;gap:10px;margin:0 0 10px">
         <div><h2 style="margin:0;font-size:16px">給与振込一覧</h2><p style="font-size:9px;color:var(--muted);margin:4px 0 0">${esc(PAYROLL_STATE.yearMonth)} / ${rows.length}名表示</p></div>
-        <div class="actionbar" style="display:flex;gap:8px"><button class="btn" id="payroll-csv-download">📥 一覧をCSVでダウンロード</button><button class="btn primary" id="payroll-csv-export">🏦 PayPay銀行CSV出力</button></div>
+        <div class="actionbar" style="display:flex;gap:8px"><button class="btn" id="payroll-csv-download">📥 一覧をCSVでダウンロード</button><button class="btn primary" id="payroll-csv-export">🏦 PayPay銀行CSV出力</button><label style="display:flex;gap:4px;align-items:center;font-size:12px;margin-left:8px" title="法人×区分（社員/アルバイト）でテンプレートを自動で割り当てます。人ごとの手動割当は例外として常に優先されます"><input type="checkbox" id="payroll-autoassign-toggle" ${payrollAutoAssignOn()?"checked":""}>🤖区分で自動割当</label></div>
       </div>
       <div class="err" id="payroll-csv-msg" style="margin-bottom:8px"></div>
 
@@ -9621,6 +9678,10 @@ function payrollRender(){
     const d=r.body;
     alert(`本部タスクを発行しました（法人: ${corp}）。\n・給料振込：対象${d.transfer_count}名／期日${d.transfer_due}\n・現金手渡し：対象${d.cash_count}名／期日${d.cash_due}\n\n本部タスク（tasks.html）で内容を確認してください。`);
   });
+  if($("payroll-autoassign-toggle")) $("payroll-autoassign-toggle").onchange=ev=>{
+    try{ if(ev.target.checked) localStorage.removeItem("payrollAutoAssignOff"); else localStorage.setItem("payrollAutoAssignOff","1"); }catch(e){}
+    payrollRender();
+  };
   // 一覧をCSVでダウンロード（記録・確認用。PayPay振込CSVとは別物）
   $("payroll-csv-download").onclick=()=>{
     const statusText=r=>{ const rec=payrollRecordFor(r.user_id); const asg=payrollAssignmentFor(r.user_id);
@@ -9745,14 +9806,14 @@ function wirePayrollRowActions(){
     const tpl=label?(PAYROLL_STATE.templates||[]).find(t=>t.label===label):null;
     if(label&&!tpl){
       alert("一覧の候補から仕訳辞書を選んでください（該当する名前が見つかりません）");
-      const prevAsg=payrollAssignmentFor(userId);
+      const prevAsg=payrollManualAssignmentFor(userId);
       const prevTpl=prevAsg&&(PAYROLL_STATE.templates||[]).find(t=>t.id===prevAsg.template_id);
       el.value=prevTpl?prevTpl.label:"";
       return;
     }
     const templateId=tpl?tpl.id:null;
     await authed("/rest/v1/payroll_journal_assignments",{method:"POST",headers:{Prefer:"resolution=merge-duplicates,return=minimal"},body:JSON.stringify({user_id:userId,tenant_id:"default",template_id:templateId,updated_by:ME.id,updated_at:new Date().toISOString()})});
-    const existing=payrollAssignmentFor(userId);
+    const existing=payrollManualAssignmentFor(userId);
     if(existing) existing.template_id=templateId; else PAYROLL_STATE.assignments.push({user_id:userId,tenant_id:"default",template_id:templateId});
     payrollRender();
   });
