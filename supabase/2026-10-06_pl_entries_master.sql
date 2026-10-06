@@ -6,7 +6,7 @@
 --   pl_entries_history  … 変更履歴（トリガで自動記録。誰が・いつ・前後の値）
 --   RPC: pl_entries_bulk_upsert（検証つき一括登録。dry_runで事前検証だけも可）/ pl_entries_delete / pl_entries_export /
 --        pl_entries_import_from_kd（移行時に1回だけ。kd_pl_entriesからの取り込み）
--- 書込権限: master/CEO/HQ=全店・全社共通・自動行すべて、TENCHO=自店舗の手入力行のみ（現行GASの scopeAllows_ と同じ）、他は不可。service_role=GAS等の自動連携（p_actorで実行者名を記録）。
+-- 書込権限: master/CEO/HQ=全店・全社共通・自動行すべて。TENCHOを含む他は不可（2026-10-06 ユーザー判断）。service_role=GAS等の自動連携（p_actorで実行者名を記録）。
 -- 直接のINSERT/UPDATE/DELETEはRLSで不可（必ずRPC経由）。読取は master/CEO/HQ/TEAM=全件、TENCHO=自店舗＋全社共通行（現行bqGetPLと同じ）。
 -- ロールバック: drop function pl_entries_*; drop table pl_entries_history, pl_entries;
 -- 実行: supabase db query --linked -f supabase/2026-10-06_pl_entries_master.sql
@@ -90,10 +90,8 @@ begin
   if u.is_master or u.role in ('CEO','HQ') then
     return jsonb_build_object('kind', 'admin', 'actor', u.id::text || ':' || coalesce(u.name, ''));
   end if;
-  if u.role = 'TENCHO' then
-    select coalesce(array_agg(store_id), '{}') into v_stores from public.user_stores where user_id = u.id;
-    return jsonb_build_object('kind', 'tencho', 'actor', u.id::text || ':' || coalesce(u.name, ''), 'stores', to_jsonb(v_stores));
-  end if;
+  -- 2026-10-06 ユーザー判断「店長にはPLをいじらせない」: TENCHOは書込不可（読取はRLSで自店舗＋全社共通のまま）。
+  -- 復活させる場合はここに kind='tencho'（自店舗の手入力のみ）を返す分岐を戻す（bulk_upsert/deleteはtencho対応済み）。
   return jsonb_build_object('kind', 'none', 'actor', '');
 end $$;
 revoke all on function public._pl_scope(text) from public, anon;
