@@ -624,7 +624,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-06-v46";
+const BUILD_TAG="2026-10-06-v47";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -9040,6 +9040,55 @@ function payrollRestoreAutoRows(branches){
   branches.unshift(...[st.salary,st.commute].filter(Boolean));
   delete branches._autoStash;
 }
+// 2026-10-06追加：ユーザー要望「貸し方の行も自動で入れて。今後は仕訳辞書という概念がなくなるので、
+// 自動で仕訳処理して」に対応。テンプレート（仕訳辞書）に貸方行（控除・差引支給額）が無い場合に、
+// 貸方の行を自動で用意する。科目の決め方は優先順: ①この人の直近の登録済み仕訳（MF）の貸方
+// （実際にMFで受理された科目・補助科目なので最も確実）②他の給与テンプレートの貸方 ③勘定科目一覧から
+// 名前で探す（未払金／預り金の源泉所得税・住民税・社会保険・雇用保険）。MFの科目一覧に実在しないラベルは
+// 使わない（登録時エラーになるため）。金額は後段のplanが埋め、0円の行は§1で行ごと除外される
+async function payrollEnsureCreditRows(branches,row,userId){
+  const notes=[];
+  const hasNet=branches.some(b=>!b._auto&&(b.creditLabel||"").trim()&&PAYROLL_NETPAY_RE.test(b.creditLabel));
+  if(hasNet) return notes;
+  const known=lb=>PAYROLL_STATE.accountLabelMap&&PAYROLL_STATE.accountLabelMap.has(lb);
+  let labels=[], src="";
+  // ① この人の直近の登録済み仕訳
+  try{
+    const r=await authed(`/rest/v1/payroll_journal_records?user_id=eq.${userId}&mf_journal_id=not.is.null&year_month=lt.${PAYROLL_STATE.yearMonth}&select=mf_journal_id,year_month&order=year_month.desc&limit=1`);
+    const jid=(r.ok&&Array.isArray(r.body)&&r.body[0])?r.body[0].mf_journal_id:null;
+    if(jid){
+      const gj=await mfCall("get_journal",{journal_id:jid,tenant_id:"default"});
+      if(gj.ok&&Array.isArray(gj.body.branches)){
+        labels=[...new Set(gj.body.branches.filter(b=>b.credit&&b.credit.account_name).map(b=>mftLabelOf(b.credit)))];
+        src=`前月（${r.body[0].year_month}）の登録済み仕訳`;
+      }
+    }
+  }catch(e){ /* 取得できなければ次の候補へ */ }
+  // ② 他の給与テンプレート
+  if(!labels.some(l=>PAYROLL_NETPAY_RE.test(l))){
+    const isAl=/アルバイト/.test(String((row.user&&row.user.role)||"")+String(row._templateLabel||""));
+    const cands=(PAYROLL_STATE.templates||[]).filter(t=>(t.branches||[]).some(b=>b.credit&&PAYROLL_NETPAY_RE.test(mftLabelOf(b.credit))));
+    cands.sort((a,b)=>(/アルバイト/.test(a.label||"")===isAl?0:1)-(/アルバイト/.test(b.label||"")===isAl?0:1));
+    if(cands[0]){
+      labels=[...new Set((cands[0].branches||[]).filter(b=>b.credit&&b.credit.account_name).map(b=>mftLabelOf(b.credit)))];
+      src=`テンプレート「${cands[0].label}」の貸方`;
+    }
+  }
+  // ③ 勘定科目名から探す
+  if(!labels.some(l=>PAYROLL_NETPAY_RE.test(l))){
+    const keys=[...(PAYROLL_STATE.accountLabelMap?PAYROLL_STATE.accountLabelMap.keys():[])];
+    const pick=re=>keys.find(k=>re.test(k));
+    labels=[pick(/^未払金$/)||pick(/^未払金\//),pick(/^預り金\/.*(源泉|所得税)/),pick(/^預り金\/.*住民税/),pick(/^預り金\/.*(社会保険|健康保険)/),pick(/^預り金\/.*雇用保険/)].filter(Boolean);
+    src="勘定科目の名前から推定";
+  }
+  const existing=new Set(branches.filter(b=>!b._auto).map(b=>(b.creditLabel||"").trim()).filter(Boolean));
+  const usable=labels.filter(known).filter(l=>!existing.has(l));
+  if(labels.length>usable.length) notes.push(`MFの科目一覧に無いため貸方から除外: ${labels.filter(l=>!known(l)).join("、")}`);
+  usable.forEach(label=>branches.push({debit:null,credit:null,debitLabel:"",creditLabel:label,debitAmount:0,creditAmount:0,department_id:null,tax_id:null,credit_department_id:null,credit_tax_id:null,purpose:null,remark:null,_auto:true}));
+  if(usable.length) notes.push(`貸方の行を自動で用意しました（${src}）: ${usable.join("、")}`);
+  else notes.push("貸方の科目を自動で決められませんでした。貸方の行を手入力してください");
+  return notes;
+}
 function payrollApplyAutoJournalPlan(branches,plan){
   const salaryTpl=plan.salaryBranch;
   const commuteTpl=plan.commuteBranch;
@@ -10442,9 +10491,12 @@ async function payrollOpenPreview(userId){
     btn.disabled=false; btn.textContent="🧮 AIで仕訳を自動生成する（検算OKの場合のみ）";
     if(!bres.ok){ el.innerHTML=`<div class="err">⚠️ ${esc(bres.error)}</div>`; return; }
     // 2026-10-06改修（設計書 §2/§3）：検算→表示→「この店舗として登録」→再検算 を繰り返せるよう関数化
-    const showPlan=()=>{
+    const showPlan=async()=>{
       if(branches._autoStash||branches.some(b=>b._auto)){ payrollRestoreAutoRows(branches); rerenderEntries(); }
+      row._templateLabel=template.label;
+      const creditNotes=await payrollEnsureCreditRows(branches,row,userId);
       const plan=payrollBuildAutoJournalPlan(row,branches,bres.totals);
+      creditNotes.forEach(n=>plan.warnings.push(n));
       el.innerHTML=payrollAutoJournalPlanHtml(plan);
       el.querySelectorAll("[data-alias-register]").forEach(rb=>rb.onclick=async()=>{
         const k=+rb.dataset.aliasRegister;
@@ -10461,7 +10513,7 @@ async function payrollOpenPreview(userId){
           return;
         }
         PAYROLL_STATE.storeAliases=(PAYROLL_STATE.storeAliases||[]).concat([{alias:name,store_id:storeId,source:"smaregi_timecard",kind:"name"}]);
-        showPlan();
+        await showPlan();
       });
       if(plan.ok||plan.partial){
         // 2026-10-06改修：ユーザー要望「AIで読み取る→自動生成、の両方を押したら仕訳に反映されているイメージ」。
@@ -10479,7 +10531,7 @@ async function payrollOpenPreview(userId){
         applyNow();
       }
     };
-    showPlan();
+    await showPlan();
   };
   // 2026-10-06追加：ユーザー要望「AI仕訳の自動生成も、プレビュー・登録を開いた段階で仕訳された状態の画面に
   // してほしい」に対応。一時保存の下書きから再開した場合は（手入力を壊さないよう）走らせない。PDFが無い人も対象外
