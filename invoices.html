@@ -624,7 +624,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-06-v51";
+const BUILD_TAG="2026-10-06-v52";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -9668,8 +9668,9 @@ function payrollRender(){
 
       <div class="section" style="display:flex;justify-content:space-between;align-items:end;gap:10px;margin:0 0 10px">
         <div><h2 style="margin:0;font-size:16px">給与振込一覧</h2><p style="font-size:9px;color:var(--muted);margin:4px 0 0">${esc(PAYROLL_STATE.yearMonth)} / ${rows.length}名表示</p></div>
-        <div class="actionbar" style="display:flex;gap:8px"><button class="btn" id="payroll-csv-download">📥 一覧をCSVでダウンロード</button><button class="btn primary" id="payroll-csv-export">🏦 PayPay銀行CSV出力</button><button class="btn" id="payroll-bulk-gen" title="登録前の全員分を、PDF読み取り・検算・前月比チェックまで自動で行います（マネーフォワードへはまだ登録しません）">🧮 全員をAIで自動生成</button><button class="btn primary" id="payroll-bulk-register" ${payrollBulkSelected().length?"":"disabled"} title="自動OK（緑）でチェックした人だけを、1人ずつ順番にマネーフォワードへ登録します">✅ チェックした人をまとめて登録（${payrollBulkSelected().length}名）</button><label style="display:flex;gap:4px;align-items:center;font-size:12px;margin-left:8px" title="法人×区分（社員/アルバイト）でテンプレートを自動で割り当てます。人ごとの手動割当は例外として常に優先されます"><input type="checkbox" id="payroll-autoassign-toggle" ${payrollAutoAssignOn()?"checked":""}>🤖区分で自動割当</label></div>
+        <div class="actionbar" style="display:flex;gap:8px"><button class="btn" id="payroll-csv-download">📥 一覧をCSVでダウンロード</button><button class="btn primary" id="payroll-csv-export">🏦 PayPay銀行CSV出力</button></div>
       </div>
+      <div id="payroll-bulk-bar" style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:0 0 12px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--panel-2,#fafafa)"><button class="btn" id="payroll-bulk-gen" title="登録前の全員分を、PDF読み取り・検算・前月比チェックまで自動で行います（マネーフォワードへはまだ登録しません）">🧮 全員をAIで自動生成</button><button class="btn primary" id="payroll-bulk-register" ${payrollBulkSelected().length?"":"disabled"} title="自動OK（緑）でチェックした人だけを、1人ずつ順番にマネーフォワードへ登録します">✅ チェックした人をまとめて登録（${payrollBulkSelected().length}名）</button><label style="display:flex;gap:4px;align-items:center;font-size:12px;margin-left:8px" title="法人×区分（社員/アルバイト）でテンプレートを自動で割り当てます。人ごとの手動割当は例外として常に優先されます"><input type="checkbox" id="payroll-autoassign-toggle" ${payrollAutoAssignOn()?"checked":""}>🤖区分で自動割当</label></div>
       <div class="err" id="payroll-csv-msg" style="margin-bottom:8px"></div>
 
       <div class="card hq-tablewrap">
