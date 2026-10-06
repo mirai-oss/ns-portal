@@ -624,7 +624,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-06-v59";
+const BUILD_TAG="2026-10-06-v60";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -8545,6 +8545,13 @@ async function payrollLoad(){
     PAYROLL_STATE.loadError=true; // 同じ年月の直前データはそのまま維持し、失敗した旨だけ画面に出す
   }
   PAYROLL_STATE.records=(recR.ok&&Array.isArray(recR.body))?recR.body:[];
+  {
+    const ids=[...new Set(PAYROLL_STATE.records.map(r=>r.created_by).filter(Boolean))];
+    if(ids.length){
+      const ur=await authed(`/rest/v1/users?id=in.(${ids.join(",")})&select=id,name`);
+      PAYROLL_STATE.userNames=new Map((ur.ok&&Array.isArray(ur.body))?ur.body.map(u=>[u.id,u.name]):[]);
+    }
+  }
   PAYROLL_STATE.assignments=(asgR.ok&&Array.isArray(asgR.body))?asgR.body:[];
   PAYROLL_STATE.templates=(tplR.ok&&Array.isArray(tplR.body))?tplR.body:[];
   PAYROLL_STATE.departments=(deptR.ok&&deptR.body.departments)||[];
@@ -8777,6 +8784,13 @@ function payrollAssignmentFor(userId){
     if(t) return {user_id:userId,tenant_id:"default",template_id:t.id,auto:true};
   }
   return man;
+}
+// 登録者・登録時刻（一覧のツールチップ用。誰がいつ登録したかを後から追えるように）
+function payrollRegistrantLabel(rec){
+  if(!rec) return "";
+  const nm=(PAYROLL_STATE.userNames&&PAYROLL_STATE.userNames.get(rec.created_by))||"";
+  let t=""; try{ t=new Date(rec.created_at).toLocaleString("ja-JP",{month:"numeric",day:"numeric",hour:"2-digit",minute:"2-digit"}); }catch(e){}
+  return [nm?`登録者: ${nm}`:"",t?`登録: ${t}`:""].filter(Boolean).join(" ");
 }
 function payrollRecordFor(userId){ return PAYROLL_STATE.records.find(r=>r.user_id===userId); }
 function payrollDraftFor(userId){ return (PAYROLL_STATE.drafts||[]).find(d=>d.user_id===userId); }
@@ -9437,8 +9451,10 @@ function payrollRowHtml(row){
   // 2026-09-02: 一時保存（下書き）は登録が完了するまで「完了」扱いにしない（ユーザー要望どおり）
   const draft=payrollDraftFor(row.user_id);
   let status;
-  const journalViewAttr=rec&&rec.mf_journal_id?` style="cursor:pointer" data-journal-view="${esc(rec.mf_journal_id)}" data-journal-tenant="default" title="クリックすると登録した仕訳の内容を確認できます"`:"";
-  if(rec&&rec.paid_at){ status=`<span class="pr-status ok"${journalViewAttr}>✓ 振込済（伝票番号:${esc(String(rec.mf_journal_number??"-"))}）${rec.mf_journal_id?"🔍":""}</span>`; }
+  const who=rec?payrollRegistrantLabel(rec):"";
+  const journalViewAttr=rec&&rec.mf_journal_id?` style="cursor:pointer" data-journal-view="${esc(rec.mf_journal_id)}" data-journal-tenant="default" title="クリックすると登録した仕訳の内容を確認できます${who?`（${esc(who)}）`:""}"`:"";
+  if(rec&&!rec.mf_journal_id){ status=`<span class="pr-status warn" title="他の人が登録処理中、または途中で止まっています。しばらくして画面を更新しても変わらず、MFにも仕訳が無い場合は「仕訳登録を解除」してからやり直してください${who?`（${esc(who)}）`:""}">⏳登録処理中</span>`; }
+  else if(rec&&rec.paid_at){ status=`<span class="pr-status ok"${journalViewAttr}>✓ 振込済（伝票番号:${esc(String(rec.mf_journal_number??"-"))}）${rec.mf_journal_id?"🔍":""}</span>`; }
   else if(rec){ status=`<span class="pr-status wait"${journalViewAttr}>● 仕訳登録済み・振込待ち（伝票番号:${esc(String(rec.mf_journal_number??"-"))}）${rec.mf_journal_id?"🔍":""}</span>`; }
   else if(draft){ status=`<span class="pr-status warn" title="一時保存済み。編集を再開するには「プレビュー・登録」から開いてください">📝下書き保存中</span>`; }
   else if(asg&&asg.template_id){ status=`<span class="pr-status wait">● パターン設定済み・未登録</span>`; }
@@ -9461,7 +9477,9 @@ function payrollRowHtml(row){
   // 今月は支払い不要と分かっている場合に使う想定のため状態を問わず出す）
   const hideBtn=`<button class="linkbtn" style="font-size:11px;background:none;border:none;color:var(--muted);cursor:pointer;padding:0;text-align:left" data-payroll-hide="${esc(row.user_id)}">🚫この月は非表示</button>`;
   let actionCell;
-  if(rec){
+  if(rec&&!rec.mf_journal_id){
+    actionCell=`<div style="display:flex;flex-direction:column;gap:5px;align-items:flex-start"><button class="linkbtn" style="font-size:11px;background:none;border:none;color:var(--accent);cursor:pointer;padding:0;text-align:left" data-payroll-unregister="${esc(row.user_id)}">仕訳登録を解除</button></div>`;
+  }else if(rec){
     const payBtn=rec.paid_at
       ?`<button class="linkbtn" style="font-size:11px;background:none;border:none;color:var(--muted);cursor:pointer;padding:0;text-align:left" data-payroll-unpay="${esc(row.user_id)}">振込完了を取り消す</button>`
       :`<button class="hq-btn primary" style="font-size:11px;padding:6px 9px" data-payroll-pay="${esc(row.user_id)}">💰振込完了にする</button>`;
@@ -10609,8 +10627,32 @@ async function payrollRegisterCore({userId,name,templateId,branches,date,pdfFile
     // 2026-09-07：複数枚ある場合は全て証憑として添付する（従来は1枚目のみ）
     voucher_files: pdfFiles.map((f,i)=>({file_name:`給与明細_${name}_${PAYROLL_STATE.yearMonth}${pdfFiles.length>1?`_${i+1}`:""}.pdf`,file_data:f.file_data})),
   };
-  const {ok,body:j}=await mfCall("create_standalone",payload);
-  if(!ok) return {ok:false,error:j.error||"登録に失敗しました"};
+  // 2026-10-06追加（二重登録の防止）：ユーザー報告「カルマ シェルパさんがMFに2回登録されていた」。従来は
+  // 「MFへ登録→登録記録を保存」の順で、同じ人・同じ月は1件だけという DB の一意制約は記録の保存時にしか
+  // 効かなかった。そのため、別の人の画面が古いまま（まだ未登録表示）・登録直後の再クリック・通信が切れての
+  // やり直し等で2回目の登録操作をすると、MFには2本目の仕訳が作られ、記録だけが弾かれていた（実例: 14:27:50に
+  // 1本目・81秒後に2本目）。順序を逆にし、MFへ登録する前に先に登録記録の「枠」を確保する（一意制約で
+  // 確保できるのは1人だけ）。確保できなければMFへは一切送らない。MFが失敗したら枠を解放し、成功したら記録を完成させる
+  const lockRow={user_id:userId,year_month:PAYROLL_STATE.yearMonth,tenant_id:"default",template_id:templateId,created_by:ME.id};
+  if(batch&&batch.id&&batch.hasCols){ lockRow.batch_id=batch.id; lockRow.registered_via="bulk"; }
+  const lr=await authed("/rest/v1/payroll_journal_records",{method:"POST",headers:{Prefer:"return=representation"},body:JSON.stringify(lockRow)});
+  if(!lr.ok||!Array.isArray(lr.body)||!lr.body[0]){
+    await payrollLoadRecordsOnly();
+    return {ok:false,duplicate:true,error:"この人の仕訳は、既に登録済み、または他の人が登録処理中です（二重登録を防ぐため、マネーフォワードへは送っていません）。画面を更新して状態を確認してください"};
+  }
+  const recId=lr.body[0].id;
+  PAYROLL_STATE.records.push({...lr.body[0]});
+  const releaseLock=async()=>{
+    await authed(`/rest/v1/payroll_journal_records?id=eq.${recId}`,{method:"DELETE"});
+    PAYROLL_STATE.records=(PAYROLL_STATE.records||[]).filter(x=>x.id!==recId);
+  };
+  let ok,j;
+  try{ ({ok,body:j}=await mfCall("create_standalone",payload)); }
+  catch(e){
+    // 通信エラー等でMF側の結果が分からない場合は枠を残す（MFに登録されている可能性があり、解放すると二重登録の恐れ）
+    return {ok:false,error:"マネーフォワードからの応答が確認できませんでした。MF側に登録されていないか確認してください（この人は「登録処理中」のまま残してあり、再登録はできません。MFに無ければ「仕訳登録を解除」してからやり直してください）"};
+  }
+  if(!ok){ await releaseLock(); return {ok:false,error:(j&&j.error)||"登録に失敗しました"}; }
   // 2026-09-10追加：給与仕訳から証憑添付のために自動作成される「給与：氏名（年月）」invoicesレコードに
   // is_payroll_relatedフラグを立てる（🧾請求書一覧の絞り込み用）＋法人はトーホーを自動設定
   if(j.invoice_id){
@@ -10620,13 +10662,10 @@ async function payrollRegisterCore({userId,name,templateId,branches,date,pdfFile
     if(tohoCorp) patchBody.corporation_id=tohoCorp.id;
     authed(`/rest/v1/invoices?id=eq.${j.invoice_id}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify(patchBody)}).catch(()=>{});
   }
-  const rec={
-    user_id:userId, year_month:PAYROLL_STATE.yearMonth, tenant_id:"default", template_id:templateId,
-    mf_journal_id:j.journal_id, mf_journal_number:j.journal_number, mf_journal_created_at:new Date().toISOString(),
-    invoice_id:j.invoice_id, created_by:ME.id,
-  };
-  if(batch&&batch.id&&batch.hasCols){ rec.batch_id=batch.id; rec.registered_via="bulk"; }
-  const recR=await authed("/rest/v1/payroll_journal_records",{method:"POST",headers:{Prefer:"return=minimal"},body:JSON.stringify(rec)});
+  const done={mf_journal_id:j.journal_id,mf_journal_number:j.journal_number,mf_journal_created_at:new Date().toISOString(),invoice_id:j.invoice_id};
+  let recR=await authed(`/rest/v1/payroll_journal_records?id=eq.${recId}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify(done)});
+  if(!recR.ok) recR=await authed(`/rest/v1/payroll_journal_records?id=eq.${recId}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify(done)}); // 1回だけ再試行
+  const loc=PAYROLL_STATE.records.find(x=>x.id===recId); if(loc) Object.assign(loc,done);
   // 2026-09-02: 実際に登録できたら一時保存の下書きは不要になるため削除する
   await authed(`/rest/v1/payroll_journal_drafts?user_id=eq.${userId}&year_month=eq.${PAYROLL_STATE.yearMonth}`,{method:"DELETE"});
   return {ok:true,j,recOk:recR.ok};
@@ -11096,7 +11135,7 @@ async function payrollOpenPreview(userId){
     $("payrollPreviewSubmit").disabled=true; $("payrollPreviewSubmit").dataset.busy="1";
     pmsg.className="err"; pmsg.textContent="登録中…";
     const core=await payrollRegisterCore({userId,name,templateId:template.id,branches,date:$("payroll-date").value,pdfFiles,defaultRemark});
-    if(!core.ok){ pmsg.textContent=core.error; $("payrollPreviewSubmit").disabled=false; delete $("payrollPreviewSubmit").dataset.busy; return; }
+    if(!core.ok){ pmsg.textContent=core.error; if(!core.duplicate){ $("payrollPreviewSubmit").disabled=false; delete $("payrollPreviewSubmit").dataset.busy; } return; }
     const j=core.j, recR={ok:core.recOk};
     pmsg.className="err msg-ok";
     const voucherNote=j.voucher_attached?`。証憑PDFも添付しました`:(j.voucher_error?`（証憑添付: ${j.voucher_error}）`:"");
