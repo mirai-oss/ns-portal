@@ -62,7 +62,30 @@ function normalizeYm(v: unknown): string | null {
 
 type PlRow = { ym: string; storeName: string; item: string; category: string; amount: number; memo: string; subItem: string };
 
+// 2026-10-06 PL入力の正本化（app_secrets.pl_source='entries'）後は、正本pl_entriesから読む（export-runと同じ）。フラグが無ければ従来どおりGAS(bqGetPL)。
+async function plFromEntries(): Promise<PlRow[] | null> {
+  const sb0 = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
+  const { data: flag } = await sb0.from("app_secrets").select("value").eq("key", "pl_source").maybeSingle();
+  if ((flag?.value ?? "").trim() !== "entries") return null;
+  const { data: st } = await sb0.from("stores").select("id,name,dash_store_name");
+  const nameById = new Map<string, string>((st ?? []).map((x: any) => [x.id, String(x.dash_store_name || x.name || "").trim()]));
+  const out: PlRow[] = [];
+  for (let off = 0; off < 200000; off += 1000) {
+    const { data, error } = await sb0.from("pl_entries").select("year_month,store_id,item,category,amount,memo,sub_item,source")
+      .is("deleted_at", null).order("id").range(off, off + 999);
+    if (error) throw new Error("pl_entries取得に失敗: " + error.message);
+    for (const r of data ?? []) {
+      out.push({ ym: r.year_month, storeName: r.store_id ? (nameById.get(r.store_id) ?? "") : "", item: String(r.item ?? "").trim(), category: String(r.category ?? "").trim(),
+        amount: Number(r.amount) || 0, memo: r.source && r.source !== "手入力" ? r.source : String(r.memo ?? ""), subItem: String(r.sub_item ?? "") });
+    }
+    if (!data || data.length < 1000) break;
+  }
+  return out;
+}
+
 async function fetchPlRows(token: string): Promise<PlRow[]> {
+  const fromEntries = await plFromEntries();
+  if (fromEntries) return fromEntries;
   const res = await dashCall({ action: "bqGetPL", token });
   if (!res.ok) throw new Error("bqGetPL取得に失敗: " + (res.error ?? ""));
   const rows: any[] = (res.sheets?.PL ?? []).slice(1); // ヘッダー行を除く

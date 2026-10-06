@@ -83,7 +83,30 @@ function normalizeYm(v: unknown): string | null {
 // stg_pl（手入力の販管費。区分F=原価補正／L=人件費補正／A=広告費／R=家賃／O=その他経費）
 type PlItemRow = { ym: string; storeName: string; item: string; category: string; amount: number };
 
+// 2026-10-06 PL入力の正本化（app_secrets.pl_source='entries'）後は、DB_PL/stg_plには手入力が出なくなるため、
+// 正本pl_entries（Supabase。手入力＋自動行の取込済み）から同じ形で読む。フラグが無ければ従来どおりGAS(bqGetPL)。
+async function plFromEntries(sb: any): Promise<{ ym: string; storeName: string; item: string; category: string; amount: number; memo: string; subItem: string }[] | null> {
+  const { data: flag } = await sb.from("app_secrets").select("value").eq("key", "pl_source").maybeSingle();
+  if ((flag?.value ?? "").trim() !== "entries") return null;
+  const { data: st } = await sb.from("stores").select("id,name,dash_store_name");
+  const nameById = new Map<string, string>((st ?? []).map((x: any) => [x.id, String(x.dash_store_name || x.name || "").trim()]));
+  const out: any[] = [];
+  for (let off = 0; off < 200000; off += 1000) {
+    const { data, error } = await sb.from("pl_entries").select("year_month,store_id,item,category,amount,memo,sub_item,source")
+      .is("deleted_at", null).order("id").range(off, off + 999);
+    if (error) throw new Error("pl_entries取得に失敗: " + error.message);
+    for (const r of data ?? []) {
+      out.push({ ym: r.year_month, storeName: r.store_id ? (nameById.get(r.store_id) ?? "") : "", item: String(r.item ?? "").trim(), category: String(r.category ?? "").trim(),
+        amount: Number(r.amount) || 0, memo: r.source && r.source !== "手入力" ? r.source : String(r.memo ?? ""), subItem: String(r.sub_item ?? "") });
+    }
+    if (!data || data.length < 1000) break;
+  }
+  return out;
+}
+
 async function fetchPlRows(token: string): Promise<PlItemRow[]> {
+  const fromEntries = await plFromEntries(svc());
+  if (fromEntries) return fromEntries.map((r) => ({ ym: r.ym, storeName: r.storeName, item: r.item, category: r.category, amount: r.amount }));
   const res = await dashCall({ action: "bqGetPL", token });
   if (!res.ok) throw new Error("bqGetPL取得に失敗: " + (res.error ?? ""));
   const rows: any[] = (res.sheets?.PL ?? []).slice(1);

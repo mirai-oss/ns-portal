@@ -36,6 +36,12 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
+**★★★★2026-10-06（レーンP）データ出力センターのPL出力を正本pl_entries直読みに変更（DB_PL/stg_plへの書き戻し=plMirrorReplaceは不要に）**
+- 背景: 切替後はDB_PL/stg_plに手入力が出ない。stg_plの手入力分が古くなって困る読み手は出力センター(export-run/export-preview の fetchPlRows=GAS bqGetPL)だけ（担当A調査）
+- 対応: 両関数の fetchPlRows を `pl_source='entries'` のとき pl_entries（手入力＋自動行・店舗名はdash_store_name）から読む形に変更・デプロイ済み（フラグ削除で従来のGAS経路に戻る）。シート書き戻しは二重管理・競合の元なので作らない
+- 突合: 出力が読むデータ＝画面と同じpl_entries（切替前後の集計は差0確認済み）。2026-09/10の店舗別・区分別合計を確認（例: 2026-09 黒霧屋 新横浜 家賃1,399,076円・その他2,532,197円）。実際のExcel出力は export.html で社長がPLを1回出して確認
+- 注意: DB_PLシートの手入力行を直接編集してももうどこにも反映されない（stg_plの手入力分も古いまま）。シートに「手入力は経営ダッシュボードのPL入力から。ここは自動連携の書込先」と注記を推奨
+
 **★★★★★2026-10-06（レーンP）PL入力のSupabase正本化 切替完了（`app_secrets.pl_source='entries'`）・切替前後のkd_pl_monthly_summaryは399行すべて差0**
 - 手順: bqSyncPL→pl_monthly(旧経路)→切替前スナップショット→`pl_import reset:true`(pl_entries 745行・自動行94)→`pl_source='entries'`→pl_monthly→突合。全列(売上/原価/人件費/広告/家賃/その他/粗利/営業利益/pl_item_breakdown/精算書反映済み・未反映/借入元金)差0。精算書: 反映済み 2026-08=2,385,881円 ／ 未反映 2026-08=701,546円・2026-09=1,032,774円（切替前後で同一）
 - 以降: 手入力=pl_entries（社長/本部のみRPCで書込。店長はDBでも不可）／自動行(memo「自動｜」「（自動計上）」「店舗間移動:」)=GASがDB_PL→stg_plに従来どおり出し、pl_monthly/kdNotifyEntries_が`autoSyncFromStgPl`で取込（変化した月だけ入れ替え・実測 変更0・削除行0）。精算書連携(syncSeisanFeeToPl等)は無変更
