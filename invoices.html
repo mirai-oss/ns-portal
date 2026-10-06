@@ -624,7 +624,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-06-v53";
+const BUILD_TAG="2026-10-06-v54";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -9702,7 +9702,7 @@ function payrollRender(){
         <div><h2 style="margin:0;font-size:16px">給与振込一覧</h2><p style="font-size:9px;color:var(--muted);margin:4px 0 0">${esc(PAYROLL_STATE.yearMonth)} / ${rows.length}名表示</p></div>
         <div class="actionbar" style="display:flex;gap:8px"><button class="btn" id="payroll-csv-download">📥 一覧をCSVでダウンロード</button><button class="btn primary" id="payroll-csv-export">🏦 PayPay銀行CSV出力</button></div>
       </div>
-      <div id="payroll-bulk-bar" style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:0 0 12px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--panel-2,#fafafa)"><button class="btn" id="payroll-bulk-gen" title="登録前の全員分を、PDF読み取り・検算・前月比チェックまで自動で行います（マネーフォワードへはまだ登録しません）">🧮 全員をAIで自動生成</button><button class="btn primary" id="payroll-bulk-register" ${payrollBulkSelected().length?"":"disabled"} title="自動OK（緑）でチェックした人だけを、1人ずつ順番にマネーフォワードへ登録します">✅ チェックした人をまとめて登録（${payrollBulkSelected().length}名）</button><label style="display:flex;gap:4px;align-items:center;font-size:12px;margin-left:8px" title="法人×区分（社員/アルバイト）でテンプレートを自動で割り当てます。人ごとの手動割当は例外として常に優先されます"><input type="checkbox" id="payroll-autoassign-toggle" ${payrollAutoAssignOn()?"checked":""}>🤖区分で自動割当</label></div>
+      <div id="payroll-bulk-bar" style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:0 0 12px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--panel-2,#fafafa)"><button class="btn" id="payroll-bulk-gen" title="登録前の全員分を、PDF読み取り・検算・前月比チェックまで自動で行います（マネーフォワードへはまだ登録しません）">🧮 全員をAIで自動生成</button><button class="btn primary" id="payroll-bulk-register" ${payrollBulkSelected().length?"":"disabled"} title="自動OK（緑）でチェックした人だけを、1人ずつ順番にマネーフォワードへ登録します">✅ チェックした人をまとめて登録（${payrollBulkSelected().length}名）</button><label style="display:flex;gap:4px;align-items:center;font-size:12px;margin-left:8px" title="法人×区分（社員/アルバイト）でテンプレートを自動で割り当てます。人ごとの手動割当は例外として常に優先されます"><input type="checkbox" id="payroll-autoassign-toggle" ${payrollAutoAssignOn()?"checked":""}>🤖区分で自動割当</label>${payrollBulkSummaryHtml()}</div>
       <div class="err" id="payroll-csv-msg" style="margin-bottom:8px"></div>
 
       <div class="card hq-tablewrap">
@@ -10340,14 +10340,27 @@ function payrollLastDayOfMonth(ym){
    ---------------------------------------------------------- */
 function payrollBulkAutoOk(){ return [...(PAYROLL_STATE.autoResults||new Map()).values()].filter(r=>r.status==="auto_ok"&&!payrollRecordFor(r.userId)); }
 function payrollBulkSelected(){ return payrollBulkAutoOk().filter(r=>r.checked); }
+// 要確認の理由を種類ごとに数えて表示する（金額・人名などの違いは同じ種類として集計）
+function payrollBulkSummaryHtml(){
+  const m=PAYROLL_STATE.autoResults;
+  if(!m||!m.size) return "";
+  const all=[...m.values()];
+  const ok=all.filter(r=>r.status==="auto_ok").length, ng=all.length-ok;
+  const cnt=new Map();
+  all.filter(r=>r.status!=="auto_ok").forEach(r=>{
+    new Set((r.reasons||[]).map(x=>String(x).replace(/[¥\d,.%+\-]+/g,"#").split(/[（(:：]/)[0].trim().slice(0,34))).forEach(k=>cnt.set(k,(cnt.get(k)||0)+1));
+  });
+  const top=[...cnt.entries()].sort((a,b)=>b[1]-a[1]).slice(0,8);
+  return `<div style="width:100%;font-size:12px;margin-top:6px"><b>自動生成の結果</b>: ✅自動OK ${ok}名 ／ ⚠️要確認 ${ng}名${top.length?`<div style="font-size:11px;color:var(--muted);margin-top:3px">要確認の内訳（人数）: ${top.map(([k,v])=>`${esc(k)} ${v}名`).join(" ／ ")}</div>`:""}</div>`;
+}
 function payrollBulkBadgeHtml(row){
   const ar=PAYROLL_STATE.autoResults&&PAYROLL_STATE.autoResults.get(row.user_id);
   if(!ar||payrollRecordFor(row.user_id)) return "";
   if(ar.status==="auto_ok"){
     return `<div style="margin-top:4px"><label style="display:flex;gap:4px;align-items:center;font-size:11px"><input type="checkbox" data-bulk-check="${esc(row.user_id)}" ${ar.checked?"checked":""}><span class="pr-status ok" title="検算OK・前月比±30%以内・PDF添付済み。一括登録の対象にできます">✅自動OK</span></label></div>`;
   }
-  const first=(ar.reasons||[])[0]||"要確認";
-  return `<div style="margin-top:4px"><span class="pr-status warn" title="${esc((ar.reasons||[]).join("\n"))}">⚠️要確認: ${esc(first)}${(ar.reasons||[]).length>1?` 他${ar.reasons.length-1}件`:""}</span></div>`;
+  const rs=(ar.reasons&&ar.reasons.length)?ar.reasons:["要確認"];
+  return `<div style="margin-top:4px"><span class="pr-status warn">⚠️要確認</span><div style="font-size:10px;color:var(--muted);margin-top:2px;max-width:280px;white-space:normal;line-height:1.4">${rs.map(esc).join("<br>")}</div></div>`;
 }
 // 1人ぶんを自動で組み立てて判定する（画面は開かない。プレビューの「自動生成」と同じ関数群を使う）
 async function payrollAutoPrepare(userId,ctx){
@@ -10360,8 +10373,14 @@ async function payrollAutoPrepare(userId,ctx){
   const template=asg&&PAYROLL_STATE.templates.find(t=>t.id===asg.template_id);
   if(!template){ res.reasons.push("パターン未設定"); return res; }
   res.templateId=template.id;
+  // 2026-10-06修正：ユーザー報告「自動OKが付かない」。全員に従来の手動割当が入っているため「手動の例外割当あり」で
+  // 全員が要確認になっていた。例外とみなすのは、自動割当（法人×区分）が決まる人で、手動の割当がそれと違う
+  // テンプレートのときだけ（自動割当の対象が無い／同じテンプレートなら通常のパターンとして扱う）
   const man=payrollManualAssignmentFor(userId);
-  if(man&&man.template_id) res.reasons.push("手動の例外割当あり");
+  if(man&&man.template_id){
+    const autoT=payrollAutoAssignOn()?payrollAutoTemplateFor(userId):null;
+    if(autoT&&autoT.id!==man.template_id) res.reasons.push("手動の例外割当あり（自動割当と違うテンプレート）");
+  }
   const draft=payrollDraftFor(userId);
   if(draft&&!(draft.branches||[]).some(b=>b._bulk)) res.reasons.push("手動の一時保存の下書きあり");
   const pdfFiles=await payrollFetchAllPdfBase64(userId,ym);
@@ -10397,10 +10416,11 @@ async function payrollAutoPrepare(userId,ctx){
     res.branches=branches;
   }
   // 前月の登録済み仕訳との比較（±30%以内。初回・前月なしは要確認）
-  if(!ctx.prevRegistered.has(userId)) res.reasons.push("前月の登録済み仕訳なし（初回は要確認）");
-  else{
+  // 2026-10-06修正：前月の「登録済み仕訳」が必須だと、このシステムで初めて登録する月は全員が要確認になって
+  // しまうため、比較の基準は前月のスマレジ給与データ（差引支給額）にした。前月のデータが無い人（新規など）だけ要確認
+  {
     const pn=ctx.prevNet.get(userId);
-    if(!pn||pn<=0) res.reasons.push("前月の差引支給額が取得できません");
+    if(!pn||pn<=0) res.reasons.push("前月の給与データなし（新規の人は要確認）");
     else{
       const ratio=(res.netPay-pn)/pn;
       if(Math.abs(ratio)>0.3) res.reasons.push(`前月比${ratio>0?"+":""}${Math.round(ratio*100)}%（±30%超）`);
