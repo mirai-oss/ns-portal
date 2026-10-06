@@ -624,7 +624,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-06-v52";
+const BUILD_TAG="2026-10-06-v53";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -9340,10 +9340,10 @@ async function payrollEnsureJournalDeptCache(){
             const store=payrollStoreByDeptName(d.department_name);
             if(!store) return;
             const remark=String(b.remark||"");
-            let kind=null;
-            if(remark.includes("基本給")) kind="salary";
-            else if(remark.includes("交通費")) kind="commute";
-            if(!kind) return;
+            // 2026-10-06修正：ユーザー報告「店舗で絞り込むとその店舗のはずなのに数人しか出ない」。摘要に
+            // 「基本給」「交通費」が入っている行しか数えておらず、手当・自動生成の行・摘要が違う行が漏れていた。
+            // 部門が付いた借方の行は給料か交通費のどちらかなので、交通・通勤を含めば交通費、それ以外は給料として数える
+            const kind=/交通|通勤/.test(remark)?"commute":"salary";
             if(!byStore.has(store.id)) byStore.set(store.id,{salary:0,commute:0});
             byStore.get(store.id)[kind]+=Number(d.value);
           });
@@ -9358,8 +9358,26 @@ async function payrollEnsureJournalDeptCache(){
     PAYROLL_STATE.journalDeptCacheLoading=false;
   }
 }
+// 2026-10-06修正：ユーザー報告「店舗で絞り込むとその店舗のはずなのに数人しか出ない」。従来は登録済みの
+// MF仕訳だけを根拠にしていたため、未登録の人・下書きの人は出てこなかった。①その月の按分（sf_payroll_allocations）
+// ②登録済みMF仕訳の部門 ③一時保存の下書き・一括生成した行の部門、のどれかでその店舗が出てくれば表示する
+function payrollStoreIdsFromBranches_(branches){
+  const ids=new Set();
+  for(const b of (branches||[])){
+    if(!b||!b.department_id) continue;
+    const dept=(PAYROLL_STATE.departments||[]).find(d=>d.id===b.department_id);
+    const st=dept?payrollStoreByDeptName(dept.name):null;
+    if(st) ids.add(st.id);
+  }
+  return ids;
+}
 function payrollUserHasStoreAlloc(userId,storeId){
   if(!storeId) return true;
+  if((PAYROLL_STATE.allocations||[]).some(a=>a.user_id===userId&&a.store_id===storeId&&(Number(a.amount)||0)>0)) return true;
+  const draft=payrollDraftFor(userId);
+  if(draft&&payrollStoreIdsFromBranches_(draft.branches).has(storeId)) return true;
+  const ar=PAYROLL_STATE.autoResults&&PAYROLL_STATE.autoResults.get(userId);
+  if(ar&&ar.branches&&payrollStoreIdsFromBranches_(ar.branches).has(storeId)) return true;
   const cache=PAYROLL_STATE.journalDeptCache;
   if(!cache) return false; // 集計中はまだ絞り込めない（読み込み完了後に再描画される）
   const byStore=cache.get(userId);
@@ -9373,6 +9391,11 @@ function payrollSortedRows(){
   const q=(PAYROLL_STATE.searchQuery||"").trim();
   if(q) rows=rows.filter(r=>((r.user&&r.user.name)||"").includes(q));
   if(PAYROLL_STATE.storeFilter) rows=rows.filter(r=>payrollUserHasStoreAlloc(r.user_id,PAYROLL_STATE.storeFilter));
+  // 2026-10-06追加：役職（users.role）での絞り込みと、仕訳の登録状態での絞り込み（支払方法に関係なく
+  // 「仕訳登録済み」＝振込済み・現金支払も含めて登録が完了している人。上のチップは従来どおり現金除くの区分）
+  if(PAYROLL_STATE.roleFilter) rows=rows.filter(r=>(r.user&&r.user.role)===PAYROLL_STATE.roleFilter);
+  if(PAYROLL_STATE.regFilter==="registered") rows=rows.filter(r=>!!payrollRecordFor(r.user_id));
+  else if(PAYROLL_STATE.regFilter==="unregistered") rows=rows.filter(r=>!payrollRecordFor(r.user_id));
   if(PAYROLL_STATE.hidePaid){
     rows=rows.filter(r=>{ const rec=payrollRecordFor(r.user_id); return !(rec&&rec.paid_at); });
   }
@@ -9617,6 +9640,15 @@ function payrollRender(){
             <option value="">店舗で絞り込み（すべて）</option>
             ${(PAYROLL_STATE.stores||[]).map(s=>`<option value="${esc(s.id)}" ${PAYROLL_STATE.storeFilter===s.id?"selected":""}>${esc(s.name)}</option>`).join("")}
           </select>
+          <select id="payroll-role-filter" title="役職（users.role）で絞り込み">
+            <option value="">役職で絞り込み（すべて）</option>
+            ${(()=>{ const L={CEO:"社長",HQ:"本部",TEAM:"チーム長",TENCHO:"店長",SHAIN:"社員",AL:"アルバイト"}; const present=new Set((PAYROLL_STATE.rows||[]).map(r=>r.user&&r.user.role).filter(Boolean)); return ["CEO","HQ","TEAM","TENCHO","SHAIN","AL"].filter(c=>present.has(c)||PAYROLL_STATE.roleFilter===c).concat([...present].filter(c=>!L[c])).map(c=>`<option value="${esc(c)}" ${PAYROLL_STATE.roleFilter===c?"selected":""}>${esc(L[c]||c)}</option>`).join(""); })()}
+          </select>
+          <select id="payroll-reg-filter" title="仕訳の登録状態で絞り込み（現金支払・振込済みの人も含む）">
+            <option value="" ${!PAYROLL_STATE.regFilter?"selected":""}>仕訳の状態（すべて）</option>
+            <option value="unregistered" ${PAYROLL_STATE.regFilter==="unregistered"?"selected":""}>仕訳 未登録</option>
+            <option value="registered" ${PAYROLL_STATE.regFilter==="registered"?"selected":""}>仕訳 登録済み（振込済・現金も含む）</option>
+          </select>
           <select id="payroll-sort">
             <option value="pendingFirst" ${PAYROLL_STATE.sortMode==="pendingFirst"?"selected":""}>振込完了を下へ</option>
             <option value="default" ${PAYROLL_STATE.sortMode==="default"?"selected":""}>通常（一覧順）</option>
@@ -9625,9 +9657,9 @@ function payrollRender(){
         <div class="pr-quick-filters">
           <button class="pr-chip ${PAYROLL_STATE.quickFilter==="all"?"active":""}" data-pr-quick="all">すべて</button>
           <button class="pr-chip attn ${PAYROLL_STATE.quickFilter==="attention"?"active":""}" data-pr-quick="attention">要対応</button>
-          <button class="pr-chip ${PAYROLL_STATE.quickFilter==="prep-wait"?"active":""}" data-pr-quick="prep-wait">振込データ作成待ち</button>
-          <button class="pr-chip ${PAYROLL_STATE.quickFilter==="registered"?"active":""}" data-pr-quick="registered">仕訳登録済み</button>
-          <button class="pr-chip ${PAYROLL_STATE.quickFilter==="paid"?"active":""}" data-pr-quick="paid">振込済</button>
+          <button class="pr-chip ${PAYROLL_STATE.quickFilter==="prep-wait"?"active":""}" data-pr-quick="prep-wait" title="仕訳が未登録で、現金支払ではない人">仕訳未登録（現金除く）</button>
+          <button class="pr-chip ${PAYROLL_STATE.quickFilter==="registered"?"active":""}" data-pr-quick="registered" title="仕訳登録済みで振込がまだの人（現金支払の人は含みません。現金も含めたいときは右の「仕訳の状態」で絞り込み）">仕訳登録済み・振込待ち（現金除く）</button>
+          <button class="pr-chip ${PAYROLL_STATE.quickFilter==="paid"?"active":""}" data-pr-quick="paid" title="振込処理を実行済みの人（現金支払の人は含みません）">振込済（現金除く）</button>
           <button class="pr-chip ${PAYROLL_STATE.quickFilter==="cash"?"active":""}" data-pr-quick="cash">現金支払</button>
         </div>
         ${(()=>{
@@ -9692,13 +9724,15 @@ function payrollRender(){
     await payrollLoad(); payrollRender(); updateMailSummaryBar();
   };
   $("payroll-sort").onchange=()=>{ PAYROLL_STATE.sortMode=$("payroll-sort").value; payrollRender(); };
+  $("payroll-role-filter").onchange=()=>{ PAYROLL_STATE.roleFilter=$("payroll-role-filter").value; payrollRender(); };
+  $("payroll-reg-filter").onchange=()=>{ PAYROLL_STATE.regFilter=$("payroll-reg-filter").value; payrollRender(); };
   $("payroll-store-filter").onchange=()=>{
     PAYROLL_STATE.storeFilter=$("payroll-store-filter").value;
     payrollRender();
     if(PAYROLL_STATE.storeFilter) payrollEnsureJournalDeptCache().then(payrollRender);
   };
   document.querySelectorAll("[data-pr-quick]").forEach(el=>el.onclick=()=>{ PAYROLL_STATE.quickFilter=el.dataset.prQuick; payrollRender(); });
-  if($("payroll-reset-filter")) $("payroll-reset-filter").onclick=()=>{ PAYROLL_STATE.quickFilter="all"; PAYROLL_STATE.searchQuery=""; payrollRender(); };
+  if($("payroll-reset-filter")) $("payroll-reset-filter").onclick=()=>{ PAYROLL_STATE.quickFilter="all"; PAYROLL_STATE.searchQuery=""; PAYROLL_STATE.storeFilter=""; PAYROLL_STATE.roleFilter=""; PAYROLL_STATE.regFilter=""; payrollRender(); };
   // 2026-09-02: 検索（氏名の部分一致）。入力のたびに全部を作り直すとIME入力が壊れるため
   // （2026-08-31に別画面で実際に起きた不具合＝同じ轍を踏まないよう、テーブル部分だけを差し替える）
   let payrollSearchTimer=null;
