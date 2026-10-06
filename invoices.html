@@ -624,7 +624,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-06-v50";
+const BUILD_TAG="2026-10-06-v51";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -8498,6 +8498,7 @@ async function renderPayrollTab(u){
 }
 async function payrollLoad(){
   const ym=PAYROLL_STATE.yearMonth;
+  if(PAYROLL_STATE.autoResultsYm&&PAYROLL_STATE.autoResultsYm!==ym){ PAYROLL_STATE.autoResults=new Map(); PAYROLL_STATE.autoResultsYm=null; } // 月を切り替えたら一括生成の結果は破棄
   const fetchSync=()=>authed(`/rest/v1/sf_payroll_sync?year_month=eq.${ym}&select=*,user:users(name,role,is_active)&order=user(name)`);
   let [syncR,recR,asgR,tplR,deptR,allocR,bankR,hiddenR,accR,draftR,scheduleR]=await Promise.all([
     fetchSync(),
@@ -9439,7 +9440,7 @@ function payrollRowHtml(row){
     <td>${patternInput}</td>
     <td style="text-align:center">${pdfBadge}</td>
     <td>${bankBtn}</td>
-    <td>${status}</td>
+    <td>${status}${payrollBulkBadgeHtml(row)}</td>
     <td>${actionCell}</td>
   </tr>`;
 }
@@ -9667,7 +9668,7 @@ function payrollRender(){
 
       <div class="section" style="display:flex;justify-content:space-between;align-items:end;gap:10px;margin:0 0 10px">
         <div><h2 style="margin:0;font-size:16px">給与振込一覧</h2><p style="font-size:9px;color:var(--muted);margin:4px 0 0">${esc(PAYROLL_STATE.yearMonth)} / ${rows.length}名表示</p></div>
-        <div class="actionbar" style="display:flex;gap:8px"><button class="btn" id="payroll-csv-download">📥 一覧をCSVでダウンロード</button><button class="btn primary" id="payroll-csv-export">🏦 PayPay銀行CSV出力</button><label style="display:flex;gap:4px;align-items:center;font-size:12px;margin-left:8px" title="法人×区分（社員/アルバイト）でテンプレートを自動で割り当てます。人ごとの手動割当は例外として常に優先されます"><input type="checkbox" id="payroll-autoassign-toggle" ${payrollAutoAssignOn()?"checked":""}>🤖区分で自動割当</label></div>
+        <div class="actionbar" style="display:flex;gap:8px"><button class="btn" id="payroll-csv-download">📥 一覧をCSVでダウンロード</button><button class="btn primary" id="payroll-csv-export">🏦 PayPay銀行CSV出力</button><button class="btn" id="payroll-bulk-gen" title="登録前の全員分を、PDF読み取り・検算・前月比チェックまで自動で行います（マネーフォワードへはまだ登録しません）">🧮 全員をAIで自動生成</button><button class="btn primary" id="payroll-bulk-register" ${payrollBulkSelected().length?"":"disabled"} title="自動OK（緑）でチェックした人だけを、1人ずつ順番にマネーフォワードへ登録します">✅ チェックした人をまとめて登録（${payrollBulkSelected().length}名）</button><label style="display:flex;gap:4px;align-items:center;font-size:12px;margin-left:8px" title="法人×区分（社員/アルバイト）でテンプレートを自動で割り当てます。人ごとの手動割当は例外として常に優先されます"><input type="checkbox" id="payroll-autoassign-toggle" ${payrollAutoAssignOn()?"checked":""}>🤖区分で自動割当</label></div>
       </div>
       <div class="err" id="payroll-csv-msg" style="margin-bottom:8px"></div>
 
@@ -9767,6 +9768,22 @@ function payrollRender(){
     if(!r.ok){ alert("本部タスクの自動発行に失敗しました: "+(r.body&&r.body.message||JSON.stringify(r.body))); return; }
     const d=r.body;
     alert(`本部タスクを発行しました（法人: ${corp}）。\n・給料振込：対象${d.transfer_count}名／期日${d.transfer_due}\n・現金手渡し：対象${d.cash_count}名／期日${d.cash_due}\n\n本部タスク（tasks.html）で内容を確認してください。`);
+  });
+  if($("payroll-bulk-gen")) $("payroll-bulk-gen").onclick=async()=>{
+    const b=$("payroll-bulk-gen");
+    if(!confirm("登録前の全員分について、給与明細PDFのAI読み取り・検算・前月比チェックを行い、自動OKの人は下書き保存します。\n（マネーフォワードへはまだ登録しません。人数によって数分かかります）\nよろしいですか？")) return;
+    b.disabled=true;
+    try{ await payrollAutoPrepareAll((d,t)=>{ b.textContent=`準備中… ${d}/${t}`; }); }
+    catch(e){ alert("自動生成中にエラーが発生しました: "+String(e&&e.message||e)); }
+    b.disabled=false; b.textContent="🧮 全員をAIで自動生成";
+    payrollRender();
+  };
+  if($("payroll-bulk-register")) $("payroll-bulk-register").onclick=()=>payrollBulkRegister();
+  document.querySelectorAll("[data-bulk-check]").forEach(el=>el.onchange=()=>{
+    const ar=PAYROLL_STATE.autoResults&&PAYROLL_STATE.autoResults.get(el.dataset.bulkCheck);
+    if(ar) ar.checked=el.checked;
+    const n=payrollBulkSelected().length, bb=$("payroll-bulk-register");
+    if(bb){ bb.disabled=!n; bb.textContent=`✅ チェックした人をまとめて登録（${n}名）`; }
   });
   if($("payroll-autoassign-toggle")) $("payroll-autoassign-toggle").onchange=ev=>{
     try{ if(ev.target.checked) localStorage.removeItem("payrollAutoAssignOff"); else localStorage.setItem("payrollAutoAssignOff","1"); }catch(e){}
@@ -10279,6 +10296,229 @@ function payrollLastDayOfMonth(ym){
   const d=new Date(y,m,0); // 月mの0日目=月m(1始まり)の末日
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
 }
+/* ----------------------------------------------------------
+   2026-10-06新規（設計書_給与仕訳の全自動化 §6）：一覧の「🧮 全員をAIで自動生成」→自動OK判定→
+   「✅ チェックした人をまとめて登録」。無人の自動登録はしない（AI=下書き・人=承認）。
+   自動OK条件（全て満たす人だけ緑バッジ＋チェック済み・下書き保存。満たさない人は黄バッジ「要確認: 理由」・チェック無し）:
+   ①検算OK（支給・控除・PDF合計欄の突き合わせ・店舗すべて解決済み）②前月の登録済み仕訳があり差引支給額が±30%以内
+   ③給与明細PDF添付済み ④手動の例外割当・手動の一時保存の下書きが無い
+   ---------------------------------------------------------- */
+function payrollBulkAutoOk(){ return [...(PAYROLL_STATE.autoResults||new Map()).values()].filter(r=>r.status==="auto_ok"&&!payrollRecordFor(r.userId)); }
+function payrollBulkSelected(){ return payrollBulkAutoOk().filter(r=>r.checked); }
+function payrollBulkBadgeHtml(row){
+  const ar=PAYROLL_STATE.autoResults&&PAYROLL_STATE.autoResults.get(row.user_id);
+  if(!ar||payrollRecordFor(row.user_id)) return "";
+  if(ar.status==="auto_ok"){
+    return `<div style="margin-top:4px"><label style="display:flex;gap:4px;align-items:center;font-size:11px"><input type="checkbox" data-bulk-check="${esc(row.user_id)}" ${ar.checked?"checked":""}><span class="pr-status ok" title="検算OK・前月比±30%以内・PDF添付済み。一括登録の対象にできます">✅自動OK</span></label></div>`;
+  }
+  const first=(ar.reasons||[])[0]||"要確認";
+  return `<div style="margin-top:4px"><span class="pr-status warn" title="${esc((ar.reasons||[]).join("\n"))}">⚠️要確認: ${esc(first)}${(ar.reasons||[]).length>1?` 他${ar.reasons.length-1}件`:""}</span></div>`;
+}
+// 1人ぶんを自動で組み立てて判定する（画面は開かない。プレビューの「自動生成」と同じ関数群を使う）
+async function payrollAutoPrepare(userId,ctx){
+  const ym=PAYROLL_STATE.yearMonth;
+  const row=PAYROLL_STATE.rows.find(r=>r.user_id===userId);
+  const name=(row&&row.user&&row.user.name)||"—";
+  const res={userId,name,status:"review",reasons:[],branches:null,date:payrollLastDayOfMonth(ym),netPay:Math.round(Number(row&&row.net_pay)||0),checked:false};
+  if(!row) { res.reasons.push("対象データなし"); return res; }
+  const asg=payrollAssignmentFor(userId);
+  const template=asg&&PAYROLL_STATE.templates.find(t=>t.id===asg.template_id);
+  if(!template){ res.reasons.push("パターン未設定"); return res; }
+  res.templateId=template.id;
+  const man=payrollManualAssignmentFor(userId);
+  if(man&&man.template_id) res.reasons.push("手動の例外割当あり");
+  const draft=payrollDraftFor(userId);
+  if(draft&&!(draft.branches||[]).some(b=>b._bulk)) res.reasons.push("手動の一時保存の下書きあり");
+  const pdfFiles=await payrollFetchAllPdfBase64(userId,ym);
+  if(!pdfFiles.length){ res.reasons.push("給与明細PDFが未添付"); return res; }
+  const [bres,summary]=await Promise.all([payrollExtractStoreBreakdown(pdfFiles),payrollExtractPdfSummary(pdfFiles)]);
+  if(!bres.ok){ res.reasons.push(`AI読み取り失敗: ${bres.error}`); return res; }
+  let branches=payrollComputeBranches(row,template);
+  if(!branches.length){ res.reasons.push("金額が計算できません"); return res; }
+  row._templateLabel=template.label;
+  const notes=await payrollEnsureCreditRows(branches,row,userId);
+  const plan=payrollBuildAutoJournalPlan(row,branches,bres.totals,summary);
+  if(plan.blocked) plan.blockReasons.forEach(r=>res.reasons.push(r));
+  else if(!plan.pdfChecked) res.reasons.push("PDF合計欄との突き合わせができていません");
+  if(!plan.blocked&&!plan.ok){
+    if(plan.stores.some(x=>!x.dept)) res.reasons.push(`店舗が未解決: ${plan.stores.filter(x=>!x.dept).map(x=>x.storeName).join("、")}`);
+    else res.reasons.push(`検算が合いません（${(plan.warnings[0]||"支給・控除の不一致")}）`);
+  }
+  if(plan.ok&&!plan.blocked){
+    payrollApplyAutoJournalPlan(branches,plan);
+    payrollDropUntouchedZeroRows(branches);
+    // 登録できる状態か最終確認（科目がMFに実在・借方＝貸方）
+    let miss=null;
+    for(const b of branches){
+      for(const lb of [(b.debitLabel||"").trim(),(b.creditLabel||"").trim()]){
+        if(lb&&!PAYROLL_STATE.accountLabelMap.has(lb)){ miss=lb; break; }
+      }
+      if(miss) break;
+    }
+    if(miss) res.reasons.push(`MFに無い科目: ${miss}`);
+    const td=branches.reduce((t,b)=>t+(b.debitLabel?Number(b.debitAmount)||0:0),0), tc=branches.reduce((t,b)=>t+(b.creditLabel?Number(b.creditAmount)||0:0),0);
+    if(td!==tc) res.reasons.push(`借方${yen(td)}・貸方${yen(tc)}が一致しません`);
+    if(branches.some(b=>b._unresolvedStore)) res.reasons.push("店舗が未解決の行があります");
+    res.branches=branches;
+  }
+  // 前月の登録済み仕訳との比較（±30%以内。初回・前月なしは要確認）
+  if(!ctx.prevRegistered.has(userId)) res.reasons.push("前月の登録済み仕訳なし（初回は要確認）");
+  else{
+    const pn=ctx.prevNet.get(userId);
+    if(!pn||pn<=0) res.reasons.push("前月の差引支給額が取得できません");
+    else{
+      const ratio=(res.netPay-pn)/pn;
+      if(Math.abs(ratio)>0.3) res.reasons.push(`前月比${ratio>0?"+":""}${Math.round(ratio*100)}%（±30%超）`);
+    }
+  }
+  res.status=res.reasons.length?"review":"auto_ok";
+  res.checked=res.status==="auto_ok";
+  return res;
+}
+async function payrollAutoPrepareAll(onProgress){
+  const ym=PAYROLL_STATE.yearMonth;
+  const [py,pm]=ym.split("-").map(Number);
+  const prev=pm===1?`${py-1}-12`:`${py}-${String(pm-1).padStart(2,"0")}`;
+  const [pr,pn]=await Promise.all([
+    authed(`/rest/v1/payroll_journal_records?year_month=eq.${prev}&mf_journal_id=not.is.null&select=user_id`),
+    authed(`/rest/v1/sf_payroll_sync?year_month=eq.${prev}&select=user_id,net_pay`),
+  ]);
+  const ctx={
+    prevRegistered:new Set((pr.ok&&Array.isArray(pr.body))?pr.body.map(x=>x.user_id):[]),
+    prevNet:new Map((pn.ok&&Array.isArray(pn.body))?pn.body.map(x=>[x.user_id,Math.round(Number(x.net_pay)||0)]):[]),
+  };
+  const targets=(PAYROLL_STATE.rows||[]).filter(r=>!payrollRecordFor(r.user_id)&&!PAYROLL_STATE.hiddenUserIds.has(r.user_id)).map(r=>r.user_id);
+  PAYROLL_STATE.autoResults=new Map(); PAYROLL_STATE.autoResultsYm=ym;
+  let done=0, idx=0;
+  const worker=async()=>{
+    while(idx<targets.length){
+      const uid=targets[idx++];
+      let r;
+      try{ r=await payrollAutoPrepare(uid,ctx); }
+      catch(e){ r={userId:uid,name:"",status:"review",reasons:[`処理中にエラー: ${String(e&&e.message||e).slice(0,80)}`],checked:false}; }
+      PAYROLL_STATE.autoResults.set(uid,r);
+      done++; if(onProgress) onProgress(done,targets.length);
+    }
+  };
+  await Promise.all([worker(),worker(),worker()]);
+  // 自動OKの人は下書きとして保存する（再読み込みしても残る。_bulk印で「手動の下書き」と区別する）
+  const date=payrollLastDayOfMonth(ym);
+  for(const r of payrollBulkAutoOk()){
+    const payloadBranches=r.branches.map(({debit,credit,...rest})=>({...rest,_bulk:true}));
+    const draftPayload={user_id:r.userId,year_month:ym,template_id:r.templateId,branches:payloadBranches,transaction_date:date,updated_by:ME.id,updated_at:new Date().toISOString()};
+    const dr=await authed("/rest/v1/payroll_journal_drafts",{method:"POST",headers:{Prefer:"resolution=merge-duplicates,return=minimal"},body:JSON.stringify(draftPayload)});
+    if(dr.ok){
+      const ex=payrollDraftFor(r.userId);
+      if(ex) Object.assign(ex,draftPayload); else PAYROLL_STATE.drafts.push(draftPayload);
+    }
+  }
+  return {total:targets.length};
+}
+// チェックした人をまとめて登録（直列・失敗しても続行・最後に一覧表示）。確認ダイアログ付き
+async function payrollBulkRegister(){
+  const sel=payrollBulkSelected();
+  if(!sel.length){ alert("チェックされた人がいません"); return; }
+  const FIRST_KEY="payrollBulkFirstDone";
+  let firstDone=false; try{ firstDone=localStorage.getItem(FIRST_KEY)==="1"; }catch(e){}
+  let targets=sel;
+  if(!firstDone&&sel.length>3){
+    if(!confirm(`初回の一括登録は、ユーザー立会いで3名以内に限定しています（設計書§7）。\nチェックされている${sel.length}名のうち、先頭の3名だけ登録します。よろしいですか？`)) return;
+    targets=sel.slice(0,3);
+  }
+  const total=targets.reduce((t,r)=>t+(r.netPay||0),0);
+  const byCorp=new Map();
+  for(const r of targets){
+    const cid=payrollUserCorporationId(r.userId);
+    const cn=((CORP_STORE_CACHE&&CORP_STORE_CACHE.corporations)||[]).find(c=>c.id===cid);
+    const k=cn?cn.name:"法人不明"; byCorp.set(k,(byCorp.get(k)||0)+1);
+  }
+  const corpText=[...byCorp.entries()].map(([k,v])=>`${k} ${v}件`).join("、");
+  if(!confirm(`${PAYROLL_STATE.yearMonth}分の給与仕訳を、マネーフォワードへまとめて登録します。\n\n人数: ${targets.length}名\n差引支給額の合計: ${yen(total)}\n法人別: ${corpText}\n\n1人ずつ順番に登録します（失敗しても残りは続行し、最後に一覧を表示します）。\nよろしいですか？`)) return;
+  // 一括登録の識別・実行ログ用の列／テーブルが本番にあるかを確認（無ければ記録だけ省略して従来どおり登録）
+  const [c1,c2]=await Promise.all([
+    authed("/rest/v1/payroll_journal_records?select=batch_id,registered_via&limit=1"),
+    authed("/rest/v1/payroll_bulk_runs?select=id&limit=1"),
+  ]);
+  const batch={id:(crypto&&crypto.randomUUID)?crypto.randomUUID():null,hasCols:c1.ok};
+  const btn=$("payroll-bulk-register");
+  const ok=[], failed=[];
+  for(let i=0;i<targets.length;i++){
+    const r=targets[i];
+    if(btn){ btn.disabled=true; btn.textContent=`登録中… ${i+1}/${targets.length}`; }
+    try{
+      // 登録直前に再確認（その間に別の画面で登録済みになっていないか）
+      await payrollLoadRecordsOnly();
+      if(payrollRecordFor(r.userId)){ failed.push({user_id:r.userId,name:r.name,error:"既に登録済みのためスキップ"}); continue; }
+      const pdfFiles=await payrollFetchAllPdfBase64(r.userId,PAYROLL_STATE.yearMonth);
+      const branches=r.branches.map(b=>{
+        const debit=(b.debitLabel||"").trim()?PAYROLL_STATE.accountLabelMap.get((b.debitLabel||"").trim()):null;
+        const credit=(b.creditLabel||"").trim()?PAYROLL_STATE.accountLabelMap.get((b.creditLabel||"").trim()):null;
+        return {...b,debit:debit||null,credit:credit||null};
+      });
+      if(branches.some(b=>(b.debitLabel&&!b.debit)||(b.creditLabel&&!b.credit))) throw new Error("MFに無い科目が含まれています");
+      const defaultRemark=`${PAYROLL_STATE.yearMonth}分給与　${r.name}`;
+      const core=await payrollRegisterCore({userId:r.userId,name:r.name,templateId:r.templateId,branches,date:r.date,pdfFiles,defaultRemark,batch});
+      if(!core.ok) failed.push({user_id:r.userId,name:r.name,error:core.error});
+      else ok.push({user_id:r.userId,name:r.name,number:core.j.journal_number,recOk:core.recOk});
+    }catch(e){ failed.push({user_id:r.userId,name:r.name,error:String(e&&e.message||e).slice(0,120)}); }
+    await new Promise(res=>setTimeout(res,800)); // MF側のレート制限を避けるため間隔を空ける
+  }
+  if(c2.ok){
+    await authed("/rest/v1/payroll_bulk_runs",{method:"POST",headers:{Prefer:"return=minimal"},body:JSON.stringify({
+      ...(batch.id?{id:batch.id}:{}),year_month:PAYROLL_STATE.yearMonth,executed_by:ME.id,total_count:targets.length,success_count:ok.length,
+      failed,user_ids:targets.map(t=>t.userId),
+    })});
+  }
+  if(ok.length){ try{ localStorage.setItem(FIRST_KEY,"1"); }catch(e){} }
+  const recWarn=ok.filter(o=>!o.recOk).map(o=>o.name);
+  alert(`一括登録が終わりました。\n成功: ${ok.length}名／失敗: ${failed.length}名${failed.length?`\n\n【失敗】\n${failed.map(f=>`・${f.name}: ${f.error}`).join("\n")}`:""}${recWarn.length?`\n\n⚠️マネーフォワードへは登録できましたが、進捗の記録に失敗した人: ${recWarn.join("、")}（再登録すると重複するため、MF側で確認してください）`:""}${(!firstDone&&sel.length>targets.length)?`\n\n※初回は3名までに限定しました。残り${sel.length-targets.length}名は、確認のうえ次回の「まとめて登録」で登録できます。`:""}`);
+  await payrollLoad(); payrollRender();
+}
+async function payrollLoadRecordsOnly(){
+  const r=await authed(`/rest/v1/payroll_journal_records?year_month=eq.${PAYROLL_STATE.yearMonth}&select=*`);
+  if(r.ok&&Array.isArray(r.body)) PAYROLL_STATE.records=r.body;
+}
+// 2026-10-06（設計書_給与仕訳の全自動化 §6）：「この内容で登録」の登録処理本体（MF登録→請求書フラグ→
+// 進捗記録→下書き削除）を関数に切り出した。プレビュー画面の登録ボタンと、一覧の「まとめて登録」の
+// 両方から同じ処理を呼ぶ（処理内容は従来と同一）。branchesは科目解決済み（b.debit/b.credit設定済み）が前提。
+// batch={id}を渡すと、登録記録に一括登録の識別（batch_id・registered_via）を残す（列がある場合のみ）
+async function payrollRegisterCore({userId,name,templateId,branches,date,pdfFiles,defaultRemark,batch}){
+  const payload={
+    tenant_id:"default", vendor_name:`給与：${name}（${PAYROLL_STATE.yearMonth}）`,
+    branches: branches.map(b=>({
+      debit:b.debit?{account_id:b.debit.account_id,sub_account_id:b.debit.sub_account_id||undefined,value:b.debitAmount}:undefined,
+      credit:b.credit?{account_id:b.credit.account_id,sub_account_id:b.credit.sub_account_id||undefined,value:b.creditAmount}:undefined,
+      department_id:b.department_id||null, tax_id:b.tax_id||null,
+      credit_department_id:b.credit_department_id||null, credit_tax_id:b.credit_tax_id||null,
+      remark:b.remark||defaultRemark,
+    })),
+    transaction_date: date,
+    remark:`${PAYROLL_STATE.yearMonth}分給与（${name}）`,
+    // 2026-09-07：複数枚ある場合は全て証憑として添付する（従来は1枚目のみ）
+    voucher_files: pdfFiles.map((f,i)=>({file_name:`給与明細_${name}_${PAYROLL_STATE.yearMonth}${pdfFiles.length>1?`_${i+1}`:""}.pdf`,file_data:f.file_data})),
+  };
+  const {ok,body:j}=await mfCall("create_standalone",payload);
+  if(!ok) return {ok:false,error:j.error||"登録に失敗しました"};
+  // 2026-09-10追加：給与仕訳から証憑添付のために自動作成される「給与：氏名（年月）」invoicesレコードに
+  // is_payroll_relatedフラグを立てる（🧾請求書一覧の絞り込み用）＋法人はトーホーを自動設定
+  if(j.invoice_id){
+    await ensureCorpStoreCache();
+    const tohoCorp=(CORP_STORE_CACHE&&CORP_STORE_CACHE.corporations||[]).find(c=>c.name==="トーホー");
+    const patchBody={is_payroll_related:true};
+    if(tohoCorp) patchBody.corporation_id=tohoCorp.id;
+    authed(`/rest/v1/invoices?id=eq.${j.invoice_id}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify(patchBody)}).catch(()=>{});
+  }
+  const rec={
+    user_id:userId, year_month:PAYROLL_STATE.yearMonth, tenant_id:"default", template_id:templateId,
+    mf_journal_id:j.journal_id, mf_journal_number:j.journal_number, mf_journal_created_at:new Date().toISOString(),
+    invoice_id:j.invoice_id, created_by:ME.id,
+  };
+  if(batch&&batch.id&&batch.hasCols){ rec.batch_id=batch.id; rec.registered_via="bulk"; }
+  const recR=await authed("/rest/v1/payroll_journal_records",{method:"POST",headers:{Prefer:"return=minimal"},body:JSON.stringify(rec)});
+  // 2026-09-02: 実際に登録できたら一時保存の下書きは不要になるため削除する
+  await authed(`/rest/v1/payroll_journal_drafts?user_id=eq.${userId}&year_month=eq.${PAYROLL_STATE.yearMonth}`,{method:"DELETE"});
+  return {ok:true,j,recOk:recR.ok};
+}
 async function payrollOpenPreview(userId){
   const row=PAYROLL_STATE.rows.find(r=>r.user_id===userId);
   const asg=payrollAssignmentFor(userId);
@@ -10742,44 +10982,9 @@ async function payrollOpenPreview(userId){
     if(totalDebit!==totalCredit){ pmsg.className="err"; pmsg.textContent=`借方合計（${yen(totalDebit)}）と貸方合計（${yen(totalCredit)}）が一致していません。金額を確認してください`; return; }
     $("payrollPreviewSubmit").disabled=true; $("payrollPreviewSubmit").dataset.busy="1";
     pmsg.className="err"; pmsg.textContent="登録中…";
-    const payload={
-      tenant_id:"default", vendor_name:`給与：${name}（${PAYROLL_STATE.yearMonth}）`,
-      branches: branches.map(b=>({
-        debit:b.debit?{account_id:b.debit.account_id,sub_account_id:b.debit.sub_account_id||undefined,value:b.debitAmount}:undefined,
-        credit:b.credit?{account_id:b.credit.account_id,sub_account_id:b.credit.sub_account_id||undefined,value:b.creditAmount}:undefined,
-        department_id:b.department_id||null, tax_id:b.tax_id||null,
-        credit_department_id:b.credit_department_id||null, credit_tax_id:b.credit_tax_id||null,
-        remark:b.remark||defaultRemark,
-      })),
-      transaction_date: $("payroll-date").value,
-      remark:`${PAYROLL_STATE.yearMonth}分給与（${name}）`,
-      // 2026-09-07：複数枚ある場合は全て証憑として添付する（従来は1枚目のみ）
-      voucher_files: pdfFiles.map((f,i)=>({file_name:`給与明細_${name}_${PAYROLL_STATE.yearMonth}${pdfFiles.length>1?`_${i+1}`:""}.pdf`,file_data:f.file_data})),
-    };
-    const {ok,body:j}=await mfCall("create_standalone",payload);
-    if(!ok){ pmsg.textContent=j.error||"登録に失敗しました"; $("payrollPreviewSubmit").disabled=false; delete $("payrollPreviewSubmit").dataset.busy; return; }
-    // 2026-09-10追加：ユーザー報告「請求書一覧のところで給料なのか請求書なのか区別がつかない」に
-    // 対応。給与仕訳から証憑添付のために自動作成される「給与：氏名（年月）」invoicesレコードに、
-    // is_payroll_relatedフラグを立てておく（🧾請求書一覧の絞り込みで使う）。
-    // 2026-09-10追加（続き）：ユーザー要望「給料は全てトーホーだから、法人のところも、トーホーと
-    // 自動で連携されるようにしてほしい」に対応。給与仕訳タブ自体が「有限会社トーホーエージェンシー
-    // 分のみ対応」と明記されている（対象法人を選ぶ仕組みが元々無い）ため、法人名で引いたトーホーの
-    // corporation_idをあわせて設定する（見つからない場合は法人未設定のまま・実害なく続行）
-    if(j.invoice_id){
-      await ensureCorpStoreCache();
-      const tohoCorp=(CORP_STORE_CACHE&&CORP_STORE_CACHE.corporations||[]).find(c=>c.name==="トーホー");
-      const patchBody={is_payroll_related:true};
-      if(tohoCorp) patchBody.corporation_id=tohoCorp.id;
-      authed(`/rest/v1/invoices?id=eq.${j.invoice_id}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify(patchBody)}).catch(()=>{});
-    }
-    const recR=await authed("/rest/v1/payroll_journal_records",{method:"POST",headers:{Prefer:"return=minimal"},body:JSON.stringify({
-      user_id:userId, year_month:PAYROLL_STATE.yearMonth, tenant_id:"default", template_id:template.id,
-      mf_journal_id:j.journal_id, mf_journal_number:j.journal_number, mf_journal_created_at:new Date().toISOString(),
-      invoice_id:j.invoice_id, created_by:ME.id,
-    })});
-    // 2026-09-02: 実際に登録できたら一時保存の下書きは不要になるため削除する（「登録になるまで
-    // 完了にならない」＝逆に言えば登録できたら下書き扱いのままにしない、という要望に対応）
-    await authed(`/rest/v1/payroll_journal_drafts?user_id=eq.${userId}&year_month=eq.${PAYROLL_STATE.yearMonth}`,{method:"DELETE"});
+    const core=await payrollRegisterCore({userId,name,templateId:template.id,branches,date:$("payroll-date").value,pdfFiles,defaultRemark});
+    if(!core.ok){ pmsg.textContent=core.error; $("payrollPreviewSubmit").disabled=false; delete $("payrollPreviewSubmit").dataset.busy; return; }
+    const j=core.j, recR={ok:core.recOk};
     pmsg.className="err msg-ok";
     const voucherNote=j.voucher_attached?`。証憑PDFも添付しました`:(j.voucher_error?`（証憑添付: ${j.voucher_error}）`:"");
     pmsg.textContent=recR.ok
