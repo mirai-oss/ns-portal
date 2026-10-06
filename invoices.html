@@ -624,7 +624,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-06-v49";
+const BUILD_TAG="2026-10-06-v50";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -8683,6 +8683,19 @@ function payrollPdfBlobUrl(base64){
 // 明示する（誤った金額を無言で仕訳に使ってしまう事故を避けるため）
 // 2026-09-07修正：複数枚PDF対応。第1引数をbase64単数からpdfFiles配列（{file_name,file_data}）に変更し、
 // 事業所ごとに明細が分かれている従業員でも全ファイルを通して1回で集計できるようにした
+// 2026-10-06追加：PDF下部の合計欄（支給額合計・控除額合計・差引支給額）だけを読む。勤務詳細の転記とは
+// 別呼び出し（Edge Functionのmode:"summary"）。未デプロイ・失敗時はnull（＝PDFとの突き合わせは未実施として表示）
+async function payrollExtractPdfSummary(pdfFiles){
+  try{
+    const s=sess.get();
+    const r=await fetch(`${SUPA_URL}/functions/v1/payroll-pdf-ocr`,{
+      method:"POST",headers:{apikey:SUPA_KEY,Authorization:"Bearer "+(s?s.at:""),"Content-Type":"application/json"},
+      body:JSON.stringify({mode:"summary",pdf_files:pdfFiles.map(f=>({file_name:f.file_name,file_data:f.file_data}))}),
+    });
+    const j=await r.json().catch(()=>({}));
+    return (r.ok&&j.success&&j.summary)?j.summary:null;
+  }catch(e){ return null; }
+}
 async function payrollExtractStoreBreakdown(pdfFiles){
   const s=sess.get();
   let r;
@@ -8698,7 +8711,7 @@ async function payrollExtractStoreBreakdown(pdfFiles){
   if(!r.ok||!j.success) return {ok:false,error:j.error||"読み取りに失敗しました"};
   const stores=Array.isArray(j.stores)?j.stores:[];
   if(!stores.length) return {ok:false,error:j.note||"勤務詳細の表が見つかりませんでした"};
-  return {ok:true,totals:stores.map(st=>({store:st.store_name,amount:Number(st.amount_total)||0,commute:Number(st.commute_total)||0,count:Number(st.days_count)||0})),note:j.note};
+  return {ok:true,totals:stores.map(st=>({store:st.store_name,amount:Number(st.amount_total)||0,commute:Number(st.commute_total)||0,count:Number(st.days_count)||0})),summary:j.summary||null,note:j.note};
 }
 // payroll-pdfsから証憑を削除（添付間違い等の取り消し用。2026-09-01）。
 // 2026-09-07修正：fileNameを指定できるようにし、複数枚のうち1枚だけを個別に削除できるように
@@ -8923,7 +8936,7 @@ const PAYROLL_DEDUCTION_CATS=[
 ];
 const PAYROLL_NETPAY_RE=/未払金|差引支給|普通預金|振込/;
 // 検算・自動生成プランを組み立てる（実際にbranchesは書き換えない。判定結果だけを返す純粋関数）
-function payrollBuildAutoJournalPlan(row,branches,storeTotals){
+function payrollBuildAutoJournalPlan(row,branches,storeTotals,pdfSummary){
   const warnings=[];
   // 2026-09-07：ここで見つけた行はオブジェクト参照として保持する（indexではない）。検算結果の
   // 確認画面から実際に「反映する」を押すまでの間に、ユーザーが手動で行を追加・削除した場合でも
@@ -8971,8 +8984,52 @@ function payrollBuildAutoJournalPlan(row,branches,storeTotals){
   const hasTotalAllowance=row.total_allowance!=null&&row.total_allowance!=="";
   const expectedAllowance=Math.round(Number(hasTotalAllowance?row.total_allowance:(Number(row.fixed_salary_amount)||0)+(Number(row.commute_allowance)||0))||0);
   if(!hasTotalAllowance) warnings.push("sf_payroll_syncに支給額合計（total_allowance）が無いため、固定給＋通勤手当の合計で代用して検算しました");
-  const allowanceDiff=storeSum-expectedAllowance;
+  // 2026-10-06追加（§4-1）：スマレジの生データ（raw.allowanceWage.allowance[]）に特別な手当（役職手当・資格手当等）が
+  // あると、勤務詳細表の合計だけでは支給額合計に届かず検算NGで手動になっていた。検算式を
+  // 「勤務詳細の合計＋手当合計＝支給額合計」に拡張し、足りない分が手当の合計とちょうど合うときだけ手当を行として
+  // 自動追加する（勤務詳細の合計だけで既に支給額合計と合うときは、手当は勤務詳細に含まれているとみなし追加しない）。
+  // 通勤・交通を含む名前の手当は交通費行で扱うため除く。部門は主たる店舗（勤務詳細の金額が最大の店舗）
+  const allowItems=((row.raw&&row.raw.allowanceWage&&Array.isArray(row.raw.allowanceWage.allowance))?row.raw.allowanceWage.allowance:[])
+    .filter(a=>!/交通|通勤/.test(String(a&&a.label||""))&&Math.round(Number(a&&a.resultAmount)||0)>0)
+    .map(a=>({label:String(a.label||"手当"),amount:Math.round(Number(a.resultAmount)||0)}));
+  const allowSum=allowItems.reduce((t,a)=>t+a.amount,0);
+  const diffPlain=storeSum-expectedAllowance;
+  const useAllowRows=allowItems.length>0&&Math.abs(diffPlain)>1&&Math.abs(storeSum+allowSum-expectedAllowance)<=1;
+  const allowanceDiff=useAllowRows?(storeSum+allowSum-expectedAllowance):diffPlain;
   const allowanceOk=Math.abs(allowanceDiff)<=1;
+  if(useAllowRows) warnings.push(`手当（${allowItems.map(a=>`${a.label}${yen(a.amount)}`).join("、")}）を勤務詳細とは別の行として自動で追加しました`);
+  const mainStoreIdx=stores.reduce((bi,x,i)=>x.amount+x.commute>stores[bi].amount+stores[bi].commute?i:bi,0);
+
+  // 2026-10-06追加：ユーザー報告（社員・上江さん）。スマレジ同期の差引支給額（¥235,058）が実際の給与明細PDFの
+  // 振込予定額（¥242,738）とズレているのに自動で仕訳へ数字が入ってしまった。従来の検算はスマレジ同期の数字同士
+  // しか比べていなかったため、同期データ自体がズレていると素通りしていた。①同期値の内部整合
+  // （支給額合計−控除額合計＝差引支給額・生データとの一致）②PDFから読み取った合計との突き合わせ、を必須にし、
+  // 1つでも合わなければ自動では1円も入れない（blocked）
+  const blockReasons=[];
+  const tA=hasTotalAllowance?Math.round(Number(row.total_allowance)):null;
+  const tD=(row.deduction_total!=null&&row.deduction_total!=="")?Math.round(Number(row.deduction_total)):null;
+  const tN=(row.net_pay!=null&&row.net_pay!=="")?Math.round(Number(row.net_pay)):null;
+  if(tA!=null&&tD!=null&&tN!=null&&Math.abs(tA-tD-tN)>1){
+    blockReasons.push(`スマレジ同期値が一致しません（支給額合計${yen(tA)}−控除額合計${yen(tD)}＝${yen(tA-tD)}、差引支給額は${yen(tN)}）`);
+  }
+  if(row.raw&&typeof row.raw==="object"){
+    const rT=row.raw.totalAllowance!=null?Math.ceil(Number(row.raw.totalAllowance)):null;
+    const rN=row.raw.netPay!=null?Math.round(Number(row.raw.netPay)):null;
+    if(tA!=null&&rT!=null&&Number.isFinite(rT)&&Math.abs(tA-rT)>1) blockReasons.push(`同期済みの支給額合計（${yen(tA)}）とスマレジの生データ（${yen(rT)}）が違います。同期が古い可能性があります`);
+    if(tN!=null&&rN!=null&&Number.isFinite(rN)&&Math.abs(tN-rN)>1) blockReasons.push(`同期済みの差引支給額（${yen(tN)}）とスマレジの生データ（${yen(rN)}）が違います。同期が古い可能性があります`);
+  }
+  const sm=pdfSummary&&typeof pdfSummary==="object"?pdfSummary:null;
+  let pdfChecked=false;
+  if(sm){
+    const cmp=(label,pdfV,syncV)=>{
+      if(pdfV==null||!Number.isFinite(Number(pdfV))||syncV==null) return;
+      pdfChecked=true;
+      if(Math.abs(Math.round(Number(pdfV))-syncV)>1) blockReasons.push(`PDFの${label}（${yen(Math.round(Number(pdfV)))}）とスマレジ同期値（${yen(syncV)}）が違います（差額${yen(Math.round(Number(pdfV))-syncV)}）`);
+    };
+    cmp("支給額合計",sm.allowance_total,tA);
+    cmp("控除額合計",sm.deduction_total,tD);
+    cmp("差引支給額（振込予定額）",sm.net_pay,tN);
+  }
 
   // 控除内訳のマッチング（既存の貸方科目名 ⇔ sf_payroll_sync.deductionsのlabel）。
   // ※branches配列は後段のpayrollApplyAutoJournalPlanで給料/交通費行の差し替え（splice）が
@@ -9012,18 +9069,21 @@ function payrollBuildAutoJournalPlan(row,branches,storeTotals){
   const deductionOk=unmatchedDeductions.length===0&&Math.abs(deductionSum-expectedDeductionTotal)<=1;
   if(!netPayBranch) warnings.push("仕訳辞書に「未払金」または「差引支給額」に該当する貸方科目が見つかりませんでした");
 
-  const baseOk=allowanceOk&&deductionOk&&!!netPayBranch&&(totalCommuteNeeded===0||!!commuteBranch);
+  const blocked=blockReasons.length>0;
+  blockReasons.forEach(r=>warnings.unshift(r));
+  const baseOk=!blocked&&allowanceOk&&deductionOk&&!!netPayBranch&&(totalCommuteNeeded===0||!!commuteBranch);
   const ok=baseOk&&unmatchedStores.length===0;
   // 2026-10-06追加（§3）：店舗が未解決でも、検算自体（支給・控除）が合っていて解決済みの店舗が
   // 1つでもあれば、解決済み店舗の分だけ先に反映する。未解決の店舗は赤い行で残し、解決するまで登録させない
   // 2026-10-06追加（ユーザー実機報告）：仕訳辞書テンプレートに貸方行（所得税・未払金）が無い／控除の検算が
   // 合わない場合でも、借方（給料・交通費）の支給額検算が合っていれば借方だけ先に反映する（0円のまま何も
   // 入らない状態を避ける）。貸方は足りない分を手入力してもらう（creditIncomplete）
-  const debitReady=allowanceOk&&(totalCommuteNeeded===0||!!commuteBranch)&&stores.some(s=>!!s.dept);
+  const debitReady=!blocked&&allowanceOk&&(totalCommuteNeeded===0||!!commuteBranch)&&stores.some(s=>!!s.dept);
   const creditIncomplete=!deductionOk||!netPayBranch;
   const partial=!ok&&debitReady;
   return {
-    ok, partial, creditIncomplete, warnings,
+    ok, partial, creditIncomplete, blocked, blockReasons, pdfChecked, warnings,
+    allowRows:useAllowRows?allowItems:[], mainStoreIdx, empName:(row.user&&row.user.name)||"",
     salaryBranch, commuteBranch,
     stores, storeSum, expectedAllowance, allowanceDiff, allowanceOk,
     catBranchRef, catSums, netPayBranch, deductionSum, expectedDeductionTotal, deductionOk,
@@ -9071,6 +9131,7 @@ function payrollAutoJournalPlanHtml(plan){
       <tbody>${catRows}</tbody>
     </table>`:""}
     <div style="font-size:12px;margin:6px 0">貸方（控除＋差引支給額）合計: <b>${yen(plan.deductionSum+plan.netPayAmount)}</b>　控除額合計＋差引支給額（スマレジ）: <b>${yen(plan.expectedDeductionTotal+plan.netPayAmount)}</b>　${plan.deductionOk?`<span style="color:var(--m-green)">✓一致</span>`:`<span style="color:var(--accent)">✗要確認</span>`}</div>
+    ${plan.blocked?`<div style="font-size:12px;color:var(--accent);background:rgba(220,60,60,.08);border:1px solid var(--accent);border-radius:6px;padding:6px 8px;margin:6px 0"><b>⛔ 数字にズレがあるため、自動では仕訳に入れていません</b><br>${plan.blockReasons.map(r=>`・${esc(r)}`).join("<br>")}<div style="font-size:11px;color:var(--muted);margin-top:4px">スマレジの同期データか給与明細PDFのどちらかが古い／違う可能性があります。給与データを最新に同期し直す、またはPDFを確認してから、もう一度お試しください。手入力で仕訳を作ることもできます。</div></div>`:(plan.pdfChecked?`<div style="font-size:11px;color:var(--m-green);margin:4px 0">✓ PDFの支給額合計・控除額合計・差引支給額もスマレジ同期値と一致</div>`:`<div style="font-size:11px;color:var(--muted);margin:4px 0">※PDFの合計との突き合わせは未実施（AI読み取りが合計欄を返さなかった）</div>`)}
     ${warnHtml}
     ${plan.ok
       ?`<button class="hq-btn primary" id="payroll-autogen-apply">✅ この内容を仕訳に反映する</button>`
@@ -9183,6 +9244,13 @@ function payrollApplyAutoJournalPlan(branches,plan){
       newRows.push({debit:null,credit:null,debitLabel:subFor(commuteTpl.debitLabel,s),creditLabel:"",debitAmount:s.commute,creditAmount:0,department_id:s.dept?s.dept.id:null,tax_id:commuteTpl.tax_id||null,credit_department_id:null,credit_tax_id:null,purpose:null,remark:commuteTpl.remark||null,_auto:true,_unresolvedStore:s.dept?undefined:s.storeName});
     }
   }
+  // 2026-10-06追加（§4-1）：手当は主たる店舗の部門で、給料と同じ借方科目の行として追加する（摘要に手当名を入れる）
+  const mainStore=plan.stores[plan.mainStoreIdx];
+  const mm=Number((PAYROLL_STATE.yearMonth||"").split("-")[1])||null;
+  for(const a of (plan.allowRows||[])){
+    if(!mainStore) break;
+    newRows.push({debit:null,credit:null,debitLabel:subFor(salaryTpl.debitLabel,mainStore),creditLabel:"",debitAmount:a.amount,creditAmount:0,department_id:mainStore.dept?mainStore.dept.id:null,tax_id:salaryTpl.tax_id||null,credit_department_id:null,credit_tax_id:null,purpose:null,remark:[mm?`${mm}月`:"月",a.label,plan.empName].filter(Boolean).join("　"),_auto:true,_unresolvedStore:mainStore.dept?undefined:mainStore.storeName});
+  }
   branches.unshift(...newRows);
   // 控除・差引支給額は既存行の金額だけを書き換える（科目・部門・税区分は仕訳辞書の設定のまま維持）。
   // オブジェクト参照で直接書き換えるため、上のsplice/unshiftでインデックスがずれていても問題ない
@@ -9192,13 +9260,16 @@ function payrollApplyAutoJournalPlan(branches,plan){
   // 「貸方の金額が未入力（0円）の行があります」で止まっていた）。黙って消さず、除外した
   // 科目名を返して画面に表示する
   const removedZero=[];
+  // 貸方の金額は、控除の検算が合っているとき（deductionOk）だけ入れる（ズレたまま数字を入れない）
+  const trustCredit=!!plan.deductionOk;
   Object.entries(plan.catBranchRef).forEach(([key,b])=>{
+    if(!trustCredit) return;
     const amt=plan.catSums[key]||0;
     if(amt>0){ b.creditAmount=amt; return; }
     const i=branches.indexOf(b);
     if(i>=0){ branches.splice(i,1); removedZero.push((b.creditLabel||"").trim()||"（科目名なし）"); }
   });
-  if(plan.netPayBranch){
+  if(plan.netPayBranch&&trustCredit){
     plan.netPayBranch.creditAmount=plan.netPayAmount;
   }
   return {removedZero,missingSub:[...new Set(missingSub)]};
@@ -10536,8 +10607,8 @@ async function payrollOpenPreview(userId){
   let storeBreakdownCache=null;
   const runStoreBreakdown=async()=>{
     if(storeBreakdownCache) return storeBreakdownCache;
-    const res=await payrollExtractStoreBreakdown(pdfFiles);
-    if(res.ok) storeBreakdownCache=res;
+    const [res,summary]=await Promise.all([payrollExtractStoreBreakdown(pdfFiles),payrollExtractPdfSummary(pdfFiles)]);
+    if(res.ok){ res.summary=summary; storeBreakdownCache=res; }
     return res;
   };
   // 2026-09-02: ユーザー要望「事業所ごとの金額と交通費だけでもOCRで読み込んで表示させることは
@@ -10575,7 +10646,7 @@ async function payrollOpenPreview(userId){
       if(branches._autoStash||branches.some(b=>b._auto)){ payrollRestoreAutoRows(branches); rerenderEntries(); }
       row._templateLabel=template.label;
       const creditNotes=await payrollEnsureCreditRows(branches,row,userId);
-      const plan=payrollBuildAutoJournalPlan(row,branches,bres.totals);
+      const plan=payrollBuildAutoJournalPlan(row,branches,bres.totals,bres.summary);
       creditNotes.forEach(n=>plan.warnings.push(n));
       el.innerHTML=payrollAutoJournalPlanHtml(plan);
       el.querySelectorAll("[data-alias-register]").forEach(rb=>rb.onclick=async()=>{

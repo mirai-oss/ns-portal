@@ -79,6 +79,24 @@ const TOOL = {
   },
 };
 
+// 2026-10-06追加（設計書_給与仕訳の全自動化・ユーザー報告：スマレジ同期の差引支給額とPDFの振込予定額のズレ）。
+// 勤務詳細の転記（既存・プロンプト変更なし）とは別に、PDF下部の「合計」欄（支給額合計・控除額合計・差引支給額）だけを
+// 読み取る専用モード（body.mode==="summary"）。既存の転記プロンプトに追記すると精度が崩れた前例（2026-09-07）があるため、
+// 呼び出しも別にして既存の経路には一切触れない。AIは数値を転記するだけ（計算はさせない）。見つからなければnull
+const SUMMARY_TOOL = {
+  name: "extract_payslip_totals",
+  description: "給与明細PDFの合計欄に書かれている金額をそのまま転記する（計算はしない）。",
+  input_schema: {
+    type: "object",
+    properties: {
+      allowance_total: { type: ["number", "null"], description: "「支給額合計」（切上げ後の表示値）。無ければnull" },
+      deduction_total: { type: ["number", "null"], description: "「控除額合計」（切捨て後の表示値）。無ければnull" },
+      net_pay: { type: ["number", "null"], description: "「差引支給額」（振込予定額）。無ければnull" },
+    },
+    required: ["allowance_total", "deduction_total", "net_pay"],
+  },
+};
+
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: cors });
   if (req.method !== "POST") return json({ error: "POSTのみ対応" }, 405);
@@ -106,6 +124,37 @@ Deno.serve(async (req: Request) => {
   const uc = userClient(req);
   const { data: canAccess, error: accessErr } = await uc.rpc("invoice_can_access");
   if (accessErr || canAccess !== true) return json({ error: "権限がありません" }, 403);
+
+  if (body?.mode === "summary") {
+    try {
+      const sres = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01" },
+        body: JSON.stringify({
+          model: MODEL,
+          max_tokens: 512,
+          system: "あなたは給与明細PDFの合計欄を読み取るアシスタントです。「支給額合計」「控除額合計」「差引支給額」の3つの金額を、PDFに書かれている表示値のまま転記してください。計算や補正は一切しないでください。複数ファイルが渡された場合は、全体の合計として最も妥当な1組（同じ従業員の月の合計）を返してください。見つからない項目はnullにしてください。結果は必ずextract_payslip_totalsツールの呼び出しのみで返してください。",
+          tools: [SUMMARY_TOOL],
+          tool_choice: { type: "tool", name: "extract_payslip_totals" },
+          messages: [{
+            role: "user",
+            content: [
+              { type: "text", text: "この給与明細PDFの合計欄（支給額合計・控除額合計・差引支給額）を転記してください。" },
+              ...pdfFiles.map((f) => ({ type: "document", source: { type: "base64", media_type: "application/pdf", data: f.file_data } })),
+            ],
+          }],
+        }),
+      });
+      if (!sres.ok) return json({ error: `合計欄の読み取りに失敗しました（${sres.status}）` }, 502);
+      const sj: any = await sres.json();
+      const tb = (sj.content ?? []).find((c: any) => c.type === "tool_use" && c.name === "extract_payslip_totals");
+      const inp = tb?.input ?? {};
+      const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : null);
+      return json({ success: true, summary: { allowance_total: num(inp.allowance_total), deduction_total: num(inp.deduction_total), net_pay: num(inp.net_pay) } });
+    } catch (e) {
+      return json({ error: "合計欄の読み取りに失敗しました: " + String(e) }, 502);
+    }
+  }
 
   let aiRes: Response;
   try {
