@@ -624,7 +624,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-06-v44";
+const BUILD_TAG="2026-10-06-v45";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -8888,6 +8888,24 @@ function payrollBuildAutoJournalPlan(row,branches,storeTotals){
     warnings.push(`事業所「${unmatchedStores.map(s=>s.storeName).join("、")}」に対応する部門（勘定科目の部門マスタ）が見つかりませんでした。下の「この店舗として登録」で店舗を選んで登録すると、次回から自動で解決します`);
   }
   stores.filter(s=>s.dept&&s.fuzzy).forEach(s=>warnings.push(`事業所「${s.storeName}」はあいまい一致（${s.how}）で部門「${s.dept.name}」と判定しました。「この店舗として登録」で別名を登録しておくと確実になります`));
+  // 2026-10-06追加：ユーザー実機報告（はなれの人）。勤務詳細表の交通費合計(¥6,500)とスマレジの支給交通費
+  // (¥6,000)が食い違い、給料部分は一致しているのに検算NGで止まっていた。金額の正はスマレジ
+  // （sf_payroll_sync）なので、交通費の合計はスマレジの通勤手当に合わせて店舗へ按分し直す
+  // （勤務詳細表の比率で按分・端数は最大の店舗へ。勤務詳細表が0なら最大の店舗に寄せる）。必ず警告に出す
+  const apiCommute=(row.commute_allowance!=null&&row.commute_allowance!=="")?Math.round(Number(row.commute_allowance)):null;
+  const aiCommute=stores.reduce((s,x)=>s+x.commute,0);
+  if(apiCommute!=null&&Number.isFinite(apiCommute)&&stores.length&&Math.abs(aiCommute-apiCommute)>1){
+    const base=stores.map(x=>x.commute);
+    const biggest=stores.reduce((bi,x,i)=>x.amount+x.commute>stores[bi].amount+stores[bi].commute?i:bi,0);
+    if(aiCommute>0){
+      let alloc=base.map(c=>Math.round(apiCommute*c/aiCommute));
+      alloc[biggest]+=apiCommute-alloc.reduce((a,b)=>a+b,0);
+      stores.forEach((x,i)=>{ x.commute=Math.max(0,alloc[i]); });
+    }else{
+      stores.forEach((x,i)=>{ x.commute=i===biggest?apiCommute:0; });
+    }
+    warnings.push(`交通費: 勤務詳細表の合計（${yen(aiCommute)}）とスマレジの支給額（${yen(apiCommute)}）が違うため、スマレジの金額に合わせて店舗へ按分しました`);
+  }
   const totalCommuteNeeded=stores.reduce((s,x)=>s+x.commute,0);
   if(totalCommuteNeeded>0&&!commuteBranch){
     warnings.push("交通費が発生していますが、仕訳辞書に「旅費交通費」に該当する借方科目が見つかりませんでした");
@@ -10441,14 +10459,18 @@ async function payrollOpenPreview(userId){
         showPlan();
       });
       if(plan.ok||plan.partial){
-        const applyBtn=$("payroll-autogen-apply");
-        if(applyBtn) applyBtn.onclick=()=>{
+        // 2026-10-06改修：ユーザー要望「AIで読み取る→自動生成、の両方を押したら仕訳に反映されているイメージ」。
+        // 検算OK（または解決済み店舗分のみ）の場合は「反映する」ボタンを待たず、自動で仕訳へ反映する
+        // （マネーフォワードへの登録は従来どおり必ず人が「この内容で登録」を押したときだけ）
+        const applyNow=()=>{
           const ap=payrollApplyAutoJournalPlan(branches,plan);
           rerenderEntries();
           const zeroNote=(ap&&ap.removedZero&&ap.removedZero.length)?`<div style="font-size:11px;color:var(--m-amber);margin-top:4px">0円のため除外: ${ap.removedZero.map(esc).join("、")}</div>`:"";
           const partNote=plan.partial?`<div style="font-size:11px;color:var(--accent);margin-top:4px">未解決の店舗（${plan.stores.filter(x=>!x.dept).map(x=>esc(x.storeName)).join("、")}）は赤い行で残しています。解決するまで「登録」はできません</div>`:"";
-          el.innerHTML=`<div class="err msg-ok">✅ 自動生成した内容を上の表に反映しました。登録前に一度ご確認ください</div>${zeroNote}${partNote}`;
+          el.querySelector(".card")?.insertAdjacentHTML("afterend",`<div class="err msg-ok" style="margin-top:6px">✅ 検算OK。自動生成した内容を上の仕訳の表に反映しました。登録前に一度ご確認ください</div>${zeroNote}${partNote}`);
+          const ab=$("payroll-autogen-apply"); if(ab) ab.remove();
         };
+        applyNow();
       }
     };
     showPlan();
