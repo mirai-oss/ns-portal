@@ -624,7 +624,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-02-v42";
+const BUILD_TAG="2026-10-06-v43";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -8771,7 +8771,7 @@ function payrollComputeBranches(row,template){
     const useDept=(b.purpose==="base_salary"||b.purpose==="commute")&&dept?dept.id:(b.department_id||null);
     const debitAmount=b.debit?(overridden!=null?overridden:(b.debit.value??b.amount??0)):null;
     const creditAmount=b.credit?(overridden!=null?overridden:(b.credit.value??b.amount??0)):null;
-    return {debit:b.debit||null,credit:b.credit||null,debitAmount,creditAmount,department_id:useDept,tax_id:b.tax_id||null,credit_department_id:b.credit_department_id||null,credit_tax_id:b.credit_tax_id||null,purpose:b.purpose||null,remark:buildRemark(b.remark)};
+    return {debit:b.debit||null,credit:b.credit||null,debitAmount,creditAmount,department_id:useDept,tax_id:b.tax_id||null,credit_department_id:b.credit_department_id||null,credit_tax_id:b.credit_tax_id||null,purpose:b.purpose||null,remark:buildRemark(b.remark),_fromTpl:true};
   }).filter(b=>b.purpose?((b.debit&&b.debitAmount>0)||(b.credit&&b.creditAmount>0)):(b.debit||b.credit));
 }
 
@@ -8993,12 +8993,35 @@ function payrollApplyAutoJournalPlan(branches,plan){
   branches.unshift(...newRows);
   // 控除・差引支給額は既存行の金額だけを書き換える（科目・部門・税区分は仕訳辞書の設定のまま維持）。
   // オブジェクト参照で直接書き換えるため、上のsplice/unshiftでインデックスがずれていても問題ない
+  // 2026-10-06追加（設計書_給与仕訳の全自動化 §1）：ユーザー要望「AI自動生成後、仕訳辞書由来の
+  // 預り金／源泉所得税が0円だと登録できないので自動で消したい」に対応。今月その控除が無い
+  // （合計0円）カテゴリの貸方行は、金額0を書くのではなく行ごと削除する（登録時の検証
+  // 「貸方の金額が未入力（0円）の行があります」で止まっていた）。黙って消さず、除外した
+  // 科目名を返して画面に表示する
+  const removedZero=[];
   Object.entries(plan.catBranchRef).forEach(([key,b])=>{
-    b.creditAmount=plan.catSums[key]||0;
+    const amt=plan.catSums[key]||0;
+    if(amt>0){ b.creditAmount=amt; return; }
+    const i=branches.indexOf(b);
+    if(i>=0){ branches.splice(i,1); removedZero.push((b.creditLabel||"").trim()||"（科目名なし）"); }
   });
   if(plan.netPayBranch){
     plan.netPayBranch.creditAmount=plan.netPayAmount;
   }
+  return {removedZero};
+}
+// 2026-10-06追加（§1の保険）：登録直前に「仕訳辞書由来（_fromTpl）・両側0円・ユーザーが触っていない
+// （_touchedなし）」の行を自動除外する。手で入れた0円行・触った行は従来どおり検証で止める。
+// 除外した科目名の配列を返す（呼び出し側がトースト表示）
+function payrollDropUntouchedZeroRows(branches){
+  const removed=[];
+  for(let i=branches.length-1;i>=0;i--){
+    const b=branches[i];
+    if(!b._fromTpl||b._touched) continue;
+    const dz=!(Number(b.debitAmount)>0), cz=!(Number(b.creditAmount)>0);
+    if(dz&&cz){ removed.unshift((b.creditLabel||b.debitLabel||"").trim()||"（科目名なし）"); branches.splice(i,1); }
+  }
+  return removed;
 }
 function payrollBankFor(userId){ return (PAYROLL_STATE.bankAccounts||[]).find(b=>b.user_id===userId); }
 // 一覧の並び替え・絞り込み（2026-09-01: ユーザー要望「振込済みが1番下に行くように・絞れるように」）
@@ -10238,6 +10261,7 @@ async function payrollOpenPreview(userId){
       const idx=+el.dataset.idx, side=el.dataset.side;
       const val=Number(el.value)||0;
       if(side==="debit") branches[idx].debitAmount=val; else branches[idx].creditAmount=val;
+      branches[idx]._touched=true;
       refreshTotals();
     });
     // 2026-09-07書き換え：勘定科目・補助科目の入力欄を分けたことに伴い、どちらかを編集したら
@@ -10260,6 +10284,7 @@ async function payrollOpenPreview(userId){
       const idx=+el.dataset.idx, side=el.dataset.side;
       const label=combineAccLabel(idx,side);
       if(side==="debit") branches[idx].debitLabel=label; else branches[idx].creditLabel=label;
+      branches[idx]._touched=true;
       const dl=document.getElementById(`payroll-preview-subaccount-datalist-${idx}-${side}`);
       if(dl) dl.innerHTML=subAccountOptionsHtml(el.value);
       refreshTotals();
@@ -10269,6 +10294,7 @@ async function payrollOpenPreview(userId){
       const idx=+el.dataset.idx, side=el.dataset.side;
       const label=combineAccLabel(idx,side);
       if(side==="debit") branches[idx].debitLabel=label; else branches[idx].creditLabel=label;
+      branches[idx]._touched=true;
       refreshTotals();
     });
     document.querySelectorAll(".payroll-preview-dept").forEach(el=>el.onchange=()=>{
@@ -10345,9 +10371,10 @@ async function payrollOpenPreview(userId){
     if(plan.ok){
       const applyBtn=$("payroll-autogen-apply");
       if(applyBtn) applyBtn.onclick=()=>{
-        payrollApplyAutoJournalPlan(branches,plan);
+        const ap=payrollApplyAutoJournalPlan(branches,plan);
         rerenderEntries();
-        el.innerHTML=`<div class="err msg-ok">✅ 自動生成した内容を上の表に反映しました。登録前に一度ご確認ください</div>`;
+        const zeroNote=(ap&&ap.removedZero&&ap.removedZero.length)?`<div style="font-size:11px;color:var(--m-amber);margin-top:4px">0円のため除外: ${ap.removedZero.map(esc).join("、")}</div>`:"";
+        el.innerHTML=`<div class="err msg-ok">✅ 自動生成した内容を上の表に反映しました。登録前に一度ご確認ください</div>${zeroNote}`;
       };
     }
   };
@@ -10383,6 +10410,8 @@ async function payrollOpenPreview(userId){
     // 2026-09-02: 勘定科目名（テキスト）をプルダウンの候補から選んだ勘定科目オブジェクトへ解決してから
     // 送信する（mft/mfjの仕訳辞書エディタと同じ方式）。テンプレート由来の行も含め全行が編集可能なため、
     // 全行について毎回この解決をやり直す
+    const droppedZero=payrollDropUntouchedZeroRows(branches);
+    if(droppedZero.length){ rerenderEntries(); pmsg.className="err msg-ok"; pmsg.textContent=`0円のため除外しました: ${droppedZero.join("、")}`; }
     for(const [i,b] of branches.entries()){
       const debitLabel=(b.debitLabel||"").trim(), creditLabel=(b.creditLabel||"").trim();
       if(debitLabel){
