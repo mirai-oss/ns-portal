@@ -624,7 +624,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-06-v48";
+const BUILD_TAG="2026-10-06-v49";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -9146,10 +9146,29 @@ async function payrollEnsureCreditRows(branches,row,userId){
   else notes.push("貸方の科目を自動で決められませんでした。貸方の行を手入力してください");
   return notes;
 }
+// 2026-10-06追加：ユーザー報告「部門は自動で仕訳してくれたが、科目（補助科目）が変わっていない。部門の店舗と
+// 合わせてほしい」に対応。テンプレートの借方科目の補助科目（例:「雑給/03/芝」の「03/芝」）は1店舗分だけなので、
+// 店舗ごとの行では、その店舗の部門（例:「05新橋」）に対応する補助科目（「05/新橋」）へ差し替える。
+// 対応は「区切りの/・空白を除いた名前が部門名と一致する補助科目」をMFの補助科目一覧から探す
+// （部門名「05新橋」⇔補助科目「05/新橋」）。見つからなければテンプレートのままにして警告を返す
+function payrollSubAccountLabelForDept(baseLabel,dept){
+  const lb=String(baseLabel||"").trim();
+  if(!lb||!dept) return {label:lb,found:true,changed:false};
+  const i=lb.indexOf("/");
+  const account=i>=0?lb.slice(0,i):lb;
+  const norm=x=>String(x||"").normalize("NFKC").replace(/[\s\/]/g,"");
+  const names=(PAYROLL_STATE.subAccountsByAccountName&&PAYROLL_STATE.subAccountsByAccountName.get(account.trim()))||[];
+  const want=norm(dept.name);
+  const sub=names.find(n=>norm(n)===want);
+  if(sub){ const label=`${account}/${sub}`; return {label,found:true,changed:label!==lb}; }
+  return {label:lb,found:false,changed:false};
+}
 function payrollApplyAutoJournalPlan(branches,plan){
   const salaryTpl=plan.salaryBranch;
   const commuteTpl=plan.commuteBranch;
   branches._autoStash={salary:salaryTpl,commute:commuteTpl};
+  const missingSub=[];
+  const subFor=(base,s)=>{ const r=payrollSubAccountLabelForDept(base,s.dept); if(s.dept&&!r.found) missingSub.push(`${(base||"").split("/")[0]}の補助科目（${s.dept.name}）`); return r.label; };
   const removeObjs=[salaryTpl,commuteTpl].filter(Boolean);
   for(const obj of removeObjs){
     const i=branches.indexOf(obj);
@@ -9158,10 +9177,10 @@ function payrollApplyAutoJournalPlan(branches,plan){
   const newRows=[];
   for(const s of plan.stores){
     if(s.amount>0){
-      newRows.push({debit:salaryTpl.debit||null,credit:null,debitLabel:salaryTpl.debitLabel||"",creditLabel:"",debitAmount:s.amount,creditAmount:0,department_id:s.dept?s.dept.id:null,tax_id:salaryTpl.tax_id||null,credit_department_id:null,credit_tax_id:null,purpose:null,remark:salaryTpl.remark||null,_auto:true,_unresolvedStore:s.dept?undefined:s.storeName});
+      newRows.push({debit:null,credit:null,debitLabel:subFor(salaryTpl.debitLabel,s),creditLabel:"",debitAmount:s.amount,creditAmount:0,department_id:s.dept?s.dept.id:null,tax_id:salaryTpl.tax_id||null,credit_department_id:null,credit_tax_id:null,purpose:null,remark:salaryTpl.remark||null,_auto:true,_unresolvedStore:s.dept?undefined:s.storeName});
     }
     if(s.commute>0&&commuteTpl){
-      newRows.push({debit:commuteTpl.debit||null,credit:null,debitLabel:commuteTpl.debitLabel||"",creditLabel:"",debitAmount:s.commute,creditAmount:0,department_id:s.dept?s.dept.id:null,tax_id:commuteTpl.tax_id||null,credit_department_id:null,credit_tax_id:null,purpose:null,remark:commuteTpl.remark||null,_auto:true,_unresolvedStore:s.dept?undefined:s.storeName});
+      newRows.push({debit:null,credit:null,debitLabel:subFor(commuteTpl.debitLabel,s),creditLabel:"",debitAmount:s.commute,creditAmount:0,department_id:s.dept?s.dept.id:null,tax_id:commuteTpl.tax_id||null,credit_department_id:null,credit_tax_id:null,purpose:null,remark:commuteTpl.remark||null,_auto:true,_unresolvedStore:s.dept?undefined:s.storeName});
     }
   }
   branches.unshift(...newRows);
@@ -9182,7 +9201,7 @@ function payrollApplyAutoJournalPlan(branches,plan){
   if(plan.netPayBranch){
     plan.netPayBranch.creditAmount=plan.netPayAmount;
   }
-  return {removedZero};
+  return {removedZero,missingSub:[...new Set(missingSub)]};
 }
 // 2026-10-06追加（§1の保険）：登録直前に「仕訳辞書由来（_fromTpl）・両側0円・ユーザーが触っていない
 // （_touchedなし）」の行を自動除外する。手で入れた0円行・触った行は従来どおり検証で止める。
@@ -10586,7 +10605,8 @@ async function payrollOpenPreview(userId){
           const zeroNote=(ap&&ap.removedZero&&ap.removedZero.length)?`<div style="font-size:11px;color:var(--m-amber);margin-top:4px">0円のため除外: ${ap.removedZero.map(esc).join("、")}</div>`:"";
           const unres=plan.stores.filter(x=>!x.dept);
           const partNote=plan.partial?`<div style="font-size:11px;color:var(--accent);margin-top:4px">${unres.length?`未解決の店舗（${unres.map(x=>esc(x.storeName)).join("、")}）は赤い行で残しています。解決するまで「登録」はできません。`:""}${plan.creditIncomplete?"貸方（所得税・未払金など）は反映できなかったため、借方（給料・交通費）だけ入れました。貸方の行を追加して手入力してください（テンプレートに貸方行が無い場合は設定タブの仕訳辞書へ追加すると次回から自動で入ります）。":""}</div>`:"";
-          el.querySelector(".card")?.insertAdjacentHTML("afterend",`<div class="err msg-ok" style="margin-top:6px">${plan.ok?"✅ 検算OK。":"⚠️ 一部のみ。"}自動生成した内容を上の仕訳の表に反映しました。登録前に一度ご確認ください</div>${zeroNote}${partNote}`);
+          const subNote=(ap&&ap.missingSub&&ap.missingSub.length)?`<div style="font-size:11px;color:var(--m-amber);margin-top:4px">⚠️ 部門に対応する補助科目がMFに見つからず、テンプレートの補助科目のままにしました: ${ap.missingSub.map(esc).join("、")}（MF側で補助科目を作成するか、行の補助科目を手で直してください）</div>`:"";
+          el.querySelector(".card")?.insertAdjacentHTML("afterend",`<div class="err msg-ok" style="margin-top:6px">${plan.ok?"✅ 検算OK。":"⚠️ 一部のみ。"}自動生成した内容を上の仕訳の表に反映しました。登録前に一度ご確認ください</div>${zeroNote}${partNote}${subNote}`);
           const ab=$("payroll-autogen-apply"); if(ab) ab.remove();
         };
         applyNow();
