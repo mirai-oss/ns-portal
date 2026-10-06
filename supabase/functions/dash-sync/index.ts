@@ -85,7 +85,8 @@ async function logRun(sb: any, ok: boolean, detail: string) {
   try { await sb.from("dash_sync_log").insert({ ok, detail: detail.slice(0, 2000) }); } catch (_e) {}
 }
 
-async function runSync(sb: any) {
+// onlyTargets=true: 目標・目標月次だけ反映（実績のBigQuery取得は省く。GASで目標を保存した直後の即時反映用・2026-10-06）
+async function runSync(sb: any, onlyTargets = false) {
   const { data: storeRows } = await sb.from("stores").select("id,name,dash_store_name");
   const nameMap = new Map<string, string>();
   (storeRows ?? []).forEach((s: any) => {
@@ -96,7 +97,7 @@ async function runSync(sb: any) {
 
   // --- ① 分析_日別店舗（実績）: GASの軽量BigQuery問い合わせアクション経由（ログイン・スプレッドシート読みは無し） ---
   const dailyUpserts: any[] = [];
-  try {
+  if (!onlyTargets) try {
     const dailyRows = await bqDailyStoreForSync(2);
     for (let r = 1; r < dailyRows.length; r++) {
       const row = dailyRows[r];
@@ -213,6 +214,14 @@ Deno.serve(async (req) => {
       if (body.secret !== INTAKE_SECRET) return json({ ok: false, error: "認証エラー" }, 403);
       const result = await runSync(sb);
       return json(result, result.ok ? 200 : 500);
+    }
+    // ---------------- GASから目標を保存した直後（BQ_LOAD_TOKEN認証・即202で裏実行。目標・目標月次だけ反映） ----------------
+    if (body.action === "target_sync") {
+      const tk = Deno.env.get("BQ_LOAD_TOKEN") ?? "";
+      if (!tk || String(body.token ?? "").trim() !== tk.trim()) return json({ ok: false, error: "認証エラー" }, 403);
+      // deno-lint-ignore no-explicit-any
+      (globalThis as any).EdgeRuntime?.waitUntil(runSync(sb, true).catch(() => {}));
+      return json({ ok: true, started: true }, 202);
     }
     // ---------------- ここから先はログイン必須 ----------------
     const uid = jwtUid(req);

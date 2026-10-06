@@ -988,6 +988,7 @@ async function refreshEntries(sb: any, body: any) {
     if (kinds.includes("pl")) { out.pl = await mirrorEntries(sb, "pl", await bqGetPLRows(sb, { skipAuto: body?.skipAuto === true })); }
     if (kinds.includes("loan")) { out.loan = await mirrorEntries(sb, "loan", await bqGetLoanRows(sb)); }
     if (kinds.includes("spot")) { out.spot = await mirrorEntries(sb, "spot", await bqGetSpotRows(sb)); }
+    if (kinds.includes("ad")) out.ad = await refreshAdMonthly(sb);   // 広告費DB保存直後の即時反映（GASの kdNotifyEntries_(['ad'])）
     if (kinds.includes("media")) {
       const months = Math.max(1, Math.min(40, Number(body.months) || 3));
       out.media = await mirrorMediaDaily(sb, await bqGetMediaRows(sb, months));
@@ -1660,7 +1661,7 @@ Deno.serve(async (req) => {
       // 他のopは従来どおりservice_roleのみ。即応答して裏で更新する（GAS側の保存処理を待たせない）。
       const tk = Deno.env.get("BQ_LOAD_TOKEN") ?? "";
       if (body?.op === "entries" && tk && String(body.token ?? "").trim() === tk.trim()) {
-        const kinds = (Array.isArray(body.kinds) ? body.kinds : []).filter((k: unknown) => ["pl", "spot", "loan", "media"].includes(String(k)));
+        const kinds = (Array.isArray(body.kinds) ? body.kinds : []).filter((k: unknown) => ["pl", "spot", "loan", "media", "ad"].includes(String(k)));
         const b2 = { op: "entries", kinds: kinds.length ? kinds : ["pl", "spot", "loan"], months: body.months };
         // pl_source='entries'（正本切替後）のPLは、自動行のstg_pl取込→kd_pl_entries→kd_pl_monthly_summaryまで一括で作り直す
         // （同時実行を避けるため、実行中のPL月次があれば最大90秒待ってから）
