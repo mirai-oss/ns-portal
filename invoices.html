@@ -624,7 +624,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-06-v55";
+const BUILD_TAG="2026-10-06-v56";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -10385,13 +10385,29 @@ async function payrollAutoPrepare(userId,ctx){
   if(draft&&!(draft.branches||[]).some(b=>b._bulk)) res.reasons.push("手動の一時保存の下書きあり");
   const pdfFiles=await payrollFetchAllPdfBase64(userId,ym);
   if(!pdfFiles.length){ res.reasons.push("給与明細PDFが未添付"); return res; }
-  const [bres,summary]=await Promise.all([payrollExtractStoreBreakdown(pdfFiles),payrollExtractPdfSummary(pdfFiles)]);
+  const wait=ms=>new Promise(r=>setTimeout(r,ms));
+  let [bres,summary]=await Promise.all([payrollExtractStoreBreakdown(pdfFiles),payrollExtractPdfSummary(pdfFiles)]);
+  // AIの一時的な失敗（同時実行による混雑など）は1回だけ自動で取り直す
+  if(!bres.ok||!summary){
+    await wait(2500);
+    const [b2,s2]=await Promise.all([bres.ok?Promise.resolve(bres):payrollExtractStoreBreakdown(pdfFiles),summary?Promise.resolve(summary):payrollExtractPdfSummary(pdfFiles)]);
+    bres=b2; summary=summary||s2;
+  }
   if(!bres.ok){ res.reasons.push(`AI読み取り失敗: ${bres.error}`); return res; }
   let branches=payrollComputeBranches(row,template);
   if(!branches.length){ res.reasons.push("金額が計算できません"); return res; }
+  // 2026-10-06修正：ユーザー報告「自動OKが1人も付かない（個別で開くと合っている）」の原因。検算は行の
+  // debitLabel/creditLabel（科目名の文字列）で給料・控除・差引支給額の行を探すが、この文字列はプレビュー画面を
+  // 最初に描画するときに初めて設定される（entryHtml）。一括生成は画面を開かないため未設定のままで、
+  // 「給料に該当する借方科目が見つかりません」で全員が検算NGになっていた。描画時と同じ初期化をここでも行う
+  branches.forEach(b=>{
+    if(b.debitLabel==null) b.debitLabel=b.debit?mftLabelOf(b.debit):"";
+    if(b.creditLabel==null) b.creditLabel=b.credit?mftLabelOf(b.credit):"";
+  });
   row._templateLabel=template.label;
   const notes=await payrollEnsureCreditRows(branches,row,userId);
   const plan=payrollBuildAutoJournalPlan(row,branches,bres.totals,summary);
+  if(plan.reason){ res.reasons.push(plan.reason); res.status="review"; return res; }
   if(plan.blocked) plan.blockReasons.forEach(r=>res.reasons.push(r));
   else if(!plan.pdfChecked) res.reasons.push("PDF合計欄との突き合わせができていません");
   if(!plan.blocked&&!plan.ok){
