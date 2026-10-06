@@ -11,7 +11,11 @@ jobs:
           SR_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: |
           U="https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/keiei-kd-refresh"
-          for B in '{"op":"pl_monthly"}'; do
-            echo "== $B"
-            curl -s -m 280 -w "\nHTTP %{http_code}\n" -X POST "$U" -H "Authorization: Bearer $SR_KEY" -H "Content-Type: application/json" -d "$B" | cut -c1-2500
+          for B in '{"op":"pl_auto_sync","dry":true}' '{"op":"pl_auto_sync","dry":true}'; do
+            S=$(date +%s)
+            R=$(curl -s -m 200 -X POST "$U" -H "Authorization: Bearer $SR_KEY" -H "Content-Type: application/json" -d "$B" | cut -c1-300)
+            echo "== $B  $(( $(date +%s) - S ))s  $R"
           done
+          S=$(date +%s)
+          R=$(curl -s -m 200 -X POST "$U" -H "Authorization: Bearer $SR_KEY" -H "Content-Type: application/json" -d '{"op":"gas_sync","action":"bqSyncPL"}' | cut -c1-200)
+          echo "== bqSyncPL $(( $(date +%s) - S ))s $R"
