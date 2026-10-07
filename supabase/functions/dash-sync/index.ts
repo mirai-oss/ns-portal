@@ -130,7 +130,7 @@ async function runSync(sb: any, onlyTargets = false) {
   if (id && pw) {
     const login = await dashCall({ action: "login", id, pw });
     if (login.ok) {
-      const data = await dashCall({ action: "data", token: login.token, keys: "目標,目標月次", months: 2 });
+      const data = await dashCall({ action: "data", token: login.token, keys: "目標,目標月次", months: 36 });
       if (data.ok) {
         const sheets = data.sheets ?? {};
         const targetRows = sheets["目標"] ?? [];
@@ -154,9 +154,9 @@ async function runSync(sb: any, onlyTargets = false) {
           const header = targetMRows[0].map((h: any) => String(h ?? ""));
           const iM = colIdx(header, ["年月"]);
           const iS = colIdx(header, ["店舗名", "店舗"]);
-          const iPA = colIdx(header, ["PA人件費率", "アルバイト人件費率"]);
-          const iEmp = colIdx(header, ["社員人件費率"]);
-          const iCost = colIdx(header, ["仕入原価率", "原価率"]);
+          const iPA = colIdx(header, ["PA人件費率", "アルバイト人件費率", "PA人件費", "アルバイト人件費"]);   // 実シートの見出しは「PA人件費」（率の字なし）。2026-10-07修正
+          const iEmp = colIdx(header, ["社員人件費率", "社員人件費"]);
+          const iCost = colIdx(header, ["仕入原価率", "原価率", "仕入原価"]);
           const iDinii = colIdx(header, ["ダイニー点数", "ダイニー"]);
           const iReview = colIdx(header, ["口コミ件数", "口コミ"]);
           for (let r = 1; r < targetMRows.length; r++) {

@@ -1710,6 +1710,12 @@ Deno.serve(async (req) => {
       case "media_monthly": result = await refreshMediaMonthly(sb, body); break;
       case "entries": result = await refreshEntries(sb, body); break;
       case "gas_sync": result = await gasSync(body); break;
+      case "dash_target_sync": {   // dash-syncの目標・目標月次だけ反映を起動（BQ_LOAD_TOKEN認証）。完了を待つ
+        const tk = Deno.env.get("BQ_LOAD_TOKEN") ?? "";
+        const r = await fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/dash-sync`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "target_sync", token: tk }) });
+        result = { ok: r.ok, status: r.status, note: "dash-syncは裏で実行（結果はdash_sync_log）" };
+        break;
+      }
       case "diag_target_header": {   // 診断: GAS action=data の目標/目標月次の見出しと先頭行（dash-syncの列名一致の確認用・読み取りのみ）
         const r = await dashAuthed(sb, "data", { keys: "目標,目標月次", months: Number(body.months) || 2 });
         result = r?.ok ? { ok: true, sheets: Object.fromEntries(Object.entries(r.sheets ?? {}).map(([k, v]: any) => [k, { rows: (v as any[]).length, header: (v as any[])[0], sample: (v as any[]).slice(1, 3) }])) } : { ok: false, error: r?.error ?? "取得失敗" };

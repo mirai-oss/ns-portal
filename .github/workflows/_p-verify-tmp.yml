@@ -11,7 +11,7 @@ jobs:
           SR_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: |
           U="https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/keiei-kd-refresh"
-          for B in '{"op":"diag_target_header","months":2}' '{"op":"diag_target_header","months":36}'; do
+          for B in '{"op":"ad_monthly"}' '{"op":"dash_target_sync"}'; do
             echo "== $B"
             curl -s -m 200 -w "\nHTTP %{http_code}\n" -X POST "$U" -H "Authorization: Bearer $SR_KEY" -H "Content-Type: application/json" -d "$B" | cut -c1-1800
           done
