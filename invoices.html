@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-07-v65";
+const BUILD_TAG="2026-10-07-v66";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -8601,12 +8601,15 @@ async function payrollLoad(){
     // 広告費・予約データの店舗名寄せで既に使われているstore_aliasesテーブル（担当G実装済み・
     // 「匠味 新横浜」→鶏武者 新横浜のstore_id等が既に登録されている）を給与仕訳でも読み、
     // payrollMatchStoreRecord()から使えるようにする
-    const [r,ar]=await Promise.all([
+    const [r,ar,xr]=await Promise.all([
       authed("/rest/v1/stores?select=id,name,mf_department_name,corporation_id&order=name"),
       authed("/rest/v1/store_aliases?select=alias,store_id,source,kind"),
+      // 2026-10-07：店舗・法人・運営関係の正本（担当F Phase1）の外部名マッピング。給与の事業所名・MF部門名で使う
+      authed("/rest/v1/store_external_mappings?is_active=eq.true&source_system=in.(smaregi_timecard,payroll)&select=store_id,source_system,external_store_id,external_store_name"),
     ]);
     PAYROLL_STATE.stores=(r.ok&&Array.isArray(r.body))?r.body:[];
     PAYROLL_STATE.storeAliases=(ar.ok&&Array.isArray(ar.body))?ar.body:[];
+    PAYROLL_STATE.externalMappings=(xr.ok&&Array.isArray(xr.body))?xr.body:[];
   }
   // 給与明細PDF（担当Bが用意したStorageバケット payroll-pdfs・{user_id}/{year_month}[_n].pdf規約。
   // 2026-09-07: 複数枚対応のためファイル一覧を保持するよう変更）が
@@ -8759,7 +8762,7 @@ function payrollGuessEmployeeByFilename(filename){
 // 登録先は、担当Fが作る store_external_mappings ＋ RPC register_store_mapping（Phase1）。完成するまで store_aliases への
 // 暫定登録は行わない（登録ボタン・設定タブの別名追加を止める）。新RPCの完成後、この旗をtrueにして登録処理を
 // register_store_mapping の呼び出しへ差し替える（Phase3）
-const STORE_MAPPING_REGISTER_READY=false;
+const STORE_MAPPING_REGISTER_READY=true; // 2026-10-07 担当Fの店舗正本Phase1（store_external_mappings＋register_store_mapping）が本番適用済みのため接続
 function payrollManualAssignmentFor(userId){ return PAYROLL_STATE.assignments.find(a=>a.user_id===userId); }
 // 2026-10-06（設計書_給与仕訳の全自動化 §4）：テンプレート（仕訳辞書）を人ごとに手で割り当てる運用から、
 // 「法人×区分（社員/アルバイト）」での自動割当へ。区分は users.role（AL=アルバイト・それ以外=社員）、
@@ -8891,6 +8894,9 @@ function payrollResolveStore(storeName){
   if(!n) return {store:null,how:"",fuzzy:false};
   const stores=PAYROLL_STATE.stores||[], aliases=PAYROLL_STATE.storeAliases||[];
   const byId=id=>stores.find(x=>x.id===id)||null;
+  // 2026-10-07：店舗正本（store_external_mappings）に登録済みの外部名（事業所名・MF部門名）の完全一致を最優先にする
+  const ext=(PAYROLL_STATE.externalMappings||[]).find(x=>x.external_store_name&&payrollNormName_(x.external_store_name)===n&&byId(x.store_id));
+  if(ext) return {store:byId(ext.store_id),how:"登録済みの外部名（店舗正本）",fuzzy:false};
   let a=aliases.find(x=>payrollNormName_(x.alias)===n&&byId(x.store_id));
   if(a) return {store:byId(a.store_id),how:"登録済みの別名",fuzzy:false};
   let st=stores.find(x=>payrollNormName_(x.name)===n);
@@ -8979,9 +8985,9 @@ function payrollBuildAutoJournalPlan(row,branches,storeTotals,pdfSummary){
   });
   const unmatchedStores=stores.filter(s=>!s.dept);
   if(unmatchedStores.length){
-    warnings.push(`事業所「${unmatchedStores.map(s=>s.storeName).join("、")}」に対応する部門（勘定科目の部門マスタ）が見つかりませんでした。店舗が特定できない場合は、その行の部門を手で選ぶか、店舗の登録（新機能の完成後）で解決してください`);
+    warnings.push(`事業所「${unmatchedStores.map(s=>s.storeName).join("、")}」に対応する部門（勘定科目の部門マスタ）が見つかりませんでした。下の「この店舗として登録」で店舗を選んで登録すると、次回から自動で解決します（その行の部門を手で選んでも進められます）`);
   }
-  stores.filter(s=>s.dept&&s.fuzzy).forEach(s=>warnings.push(`事業所「${s.storeName}」はあいまい一致（${s.how}）で部門「${s.dept.name}」と判定しました。店舗名の登録（新機能の完成後）をしておくと確実になります`));
+  stores.filter(s=>s.dept&&s.fuzzy).forEach(s=>warnings.push(`事業所「${s.storeName}」はあいまい一致（${s.how}）で部門「${s.dept.name}」と判定しました。「この店舗として登録」で登録しておくと確実になります`));
   // 2026-10-06追加：ユーザー実機報告（はなれの人）。勤務詳細表の交通費合計(¥6,500)とスマレジの支給交通費
   // (¥6,000)が食い違い、給料部分は一致しているのに検算NGで止まっていた。金額の正はスマレジ
   // （sf_payroll_sync）なので、交通費の合計はスマレジの通勤手当に合わせて店舗へ按分し直す
@@ -11189,14 +11195,16 @@ async function payrollOpenPreview(userId){
         const name=String(plan.stores[k].storeName||"").trim();
         if(!storeId||!name){ rb.textContent="店舗を選んでください"; setTimeout(()=>{ rb.textContent="この店舗として登録"; },1500); return; }
         rb.disabled=true; rb.textContent="登録中…";
-        const r=await authed("/rest/v1/store_aliases",{method:"POST",headers:{Prefer:"return=minimal"},body:JSON.stringify({alias:name,store_id:storeId,source:"smaregi_timecard",kind:"name"})});
+        // 2026-10-07：登録先は店舗正本のRPC register_store_mapping（本部・社長・マスターのみ実行可。同じ外部名が別の店舗へ
+        // 登録済みなら拒否される）。store_aliasesへは書かない
+        const r=await authed("/rest/v1/rpc/register_store_mapping",{method:"POST",body:JSON.stringify({p_source:"smaregi_timecard",p_external_id:null,p_code:null,p_name:name,p_store_id:storeId,p_brand_id:null})});
         if(!r.ok){
           rb.disabled=false; rb.textContent="この店舗として登録";
-          const dup=/duplicate|23505|already exists|409/i.test(JSON.stringify(r.body||"")+String(r.status||""));
-          alert(dup?`「${name}」は既に別の店舗の別名として登録されています。設定タブ「法人・店舗・部門マッピング」で確認してください。`:`登録に失敗しました（${(r.body&&(r.body.message||r.body.error))||"権限または通信エラー"}）`);
+          const msg=(r.body&&(r.body.message||r.body.error||r.body.hint))||"権限または通信エラー";
+          alert(`登録できませんでした: ${msg}\n\n（登録できるのは本部・社長・マスターの権限の人だけです。同じ名前が別の店舗に登録済みの場合は、ポータル「管理・権限」→「法人・店舗マスタ（正本）」の外部マッピングで確認してください）`);
           return;
         }
-        PAYROLL_STATE.storeAliases=(PAYROLL_STATE.storeAliases||[]).concat([{alias:name,store_id:storeId,source:"smaregi_timecard",kind:"name"}]);
+        PAYROLL_STATE.externalMappings=(PAYROLL_STATE.externalMappings||[]).concat([{store_id:storeId,source_system:"smaregi_timecard",external_store_id:null,external_store_name:name}]);
         await showPlan();
       });
       if(plan.ok||plan.partial){
@@ -12144,28 +12152,20 @@ function mappingMatchTenant_(corpName,tenants){
   });
   return hits.length===1?hits[0]:null;
 }
-function mappingAliasCellHtml_(aliases,storeId,source){
-  const mine=aliases.filter(a=>a.store_id===storeId&&a.source===source);
-  const chips=mine.map(a=>`<span style="display:inline-block;border:1px solid var(--line);border-radius:10px;padding:1px 6px;margin:0 4px 3px 0;font-size:11px">${esc(a.alias)} <a href="#" onclick="return false" style="color:var(--m-red,#c33);text-decoration:none" data-alias-del="${esc(storeId)}|${esc(source)}|${encodeURIComponent(a.alias)}" title="削除">✕</a></span>`).join("");
-  if(!STORE_MAPPING_REGISTER_READY){
-    // 暫定登録は止めている（新しい外部名の登録機能の完成待ち）。登録済みの別名の表示だけ行う（削除✕・追加欄は出さない）
-    const ro=mine.map(a=>`<span style="display:inline-block;border:1px solid var(--line);border-radius:10px;padding:1px 6px;margin:0 4px 3px 0;font-size:11px">${esc(a.alias)}</span>`).join("");
-    return `${ro||`<span style="font-size:11px;color:var(--muted)">未登録</span>`}<div style="font-size:10px;color:var(--muted);margin-top:3px">登録は新しい外部名の登録機能の完成後</div>`;
-  }
-  return `${chips||`<span style="font-size:11px;color:var(--muted)">未登録</span>`}<div style="margin-top:3px"><input class="mapping-alias-input" data-store="${esc(storeId)}" data-source="${esc(source)}" placeholder="${source==="pl"?"PL側の店舗名":"タイムカードの事業所名"}" style="width:150px;font-size:11px"> <button type="button" class="hq-btn" style="font-size:11px;padding:3px 8px" data-alias-add="${esc(storeId)}|${esc(source)}">追加</button></div>`;
-}
 async function renderSettingsMapping(){
   $("settingsBody").innerHTML=`<div class="spin">読み込み中…</div>`;
-  const [storeRes,corpRes,tRes,aliasRes]=await Promise.all([
+  const [storeRes,corpRes,tRes,aliasRes,extRes]=await Promise.all([
     authed("/rest/v1/stores?select=id,name,corporation_id,mf_department_name&order=name"),
     authed("/rest/v1/corporations?select=id,name&order=name"),
     mfCall("list_tenants"),
     authed("/rest/v1/store_aliases?select=alias,store_id,source,kind&order=alias"),
+    authed("/rest/v1/store_external_mappings?is_active=eq.true&source_system=eq.smaregi_timecard&select=store_id,external_store_id,external_store_name"),
   ]);
   // 2026-10-06追加（設計書_給与仕訳の全自動化 §2）：タイムカード（スマレジ）側の事業所名とPL側の店舗名を
   // 「店舗ごとの対応表」として持つ。どちらも store_aliases の別名（source='smaregi_timecard' / 'pl'）。
   // 別名は1つの名前＝1店舗（alias が主キー）。PL店舗名は今は表示と登録だけで、PL反映には使わない
   let aliases=(aliasRes.ok&&Array.isArray(aliasRes.body))?aliasRes.body:[];
+  const extMaps=(extRes.ok&&Array.isArray(extRes.body))?extRes.body:[];
   const stores=(storeRes.ok&&Array.isArray(storeRes.body))?storeRes.body:[];
   const corps=(corpRes.ok&&Array.isArray(corpRes.body))?corpRes.body:[];
   const tenants=(tRes.ok&&tRes.body.tenants)||[];
@@ -12188,7 +12188,7 @@ async function renderSettingsMapping(){
       return `<datalist id="mapping-dept-datalist-${esc(tid)}">${(deptByTenant.get(tid)||[]).map(d=>`<option value="${esc(d.name)}">`).join("")}</datalist>`;
     }).join("")}
     <div class="hq-tablewrap"><table class="invoice-table">
-      <thead><tr><th>店舗</th><th>法人</th><th>マネーフォワード部門名</th><th>タイムカード事業所名（複数可）</th><th>PL店舗名（複数可）</th><th></th></tr></thead>
+      <thead><tr><th>店舗</th><th>法人</th><th>マネーフォワード部門名</th><th>タイムカード事業所（店舗正本）</th><th></th></tr></thead>
       <tbody>${stores.map(s=>{
         const corp=corps.find(c=>c.id===s.corporation_id);
         const corpName=corp?.name||"—";
@@ -12203,46 +12203,12 @@ async function renderSettingsMapping(){
           <td><input class="mapping-dept" list="mapping-dept-datalist-${esc(usedTenant?.id||"")}" data-store="${s.id}" value="${esc(cur)}" placeholder="MF側の部門名と完全一致させてください">
             <div style="font-size:10px;color:var(--muted)">候補: ${esc(usedTenant?.label||"—")}${matchedTenant?"":"（法人名から事業者を自動判定できず既定を表示中）"}</div>
             ${cur&&!exists?`<div style="font-size:10px;color:var(--m-red)">⚠️ この事業者の部門一覧に見つかりません（表記違い、または事業者の判定ミスの可能性）</div>`:""}</td>
-          <td data-alias-cell="smaregi_timecard" data-store="${s.id}">${mappingAliasCellHtml_(aliases,s.id,"smaregi_timecard")}</td>
-          <td data-alias-cell="pl" data-store="${s.id}">${mappingAliasCellHtml_(aliases,s.id,"pl")}</td>
+          <td>${(()=>{ const mine=extMaps.filter(m=>m.store_id===s.id); return mine.length?mine.map(m=>`<span style="display:inline-block;border:1px solid var(--line);border-radius:10px;padding:1px 6px;margin:0 4px 3px 0;font-size:11px">${esc(m.external_store_name||("事業所ID "+m.external_store_id))}</span>`).join(""):`<span style="font-size:11px;color:var(--muted)">未登録</span>`; })()}</td>
           <td><button class="hq-btn" style="font-size:11px;padding:6px 9px" data-mapping-save="${s.id}">保存</button></td>
         </tr>`;
-      }).join("")||'<tr><td colspan="6">店舗が登録されていません</td></tr>'}</tbody>
+      }).join("")||'<tr><td colspan="5">店舗が登録されていません</td></tr>'}</tbody>
     </table></div>
   </div>`;
-  // 別名セル（チップ＋追加欄）。追加・削除はその場でstore_aliasesへ反映し、そのセルだけ描き直す
-  const refreshAliasCell=(storeId,source)=>{
-    const c=document.querySelector(`[data-alias-cell="${source}"][data-store="${storeId}"]`);
-    if(c) c.innerHTML=mappingAliasCellHtml_(aliases,storeId,source);
-  };
-  $("settingsBody").onclick=async ev=>{ // addEventListenerだと再描画のたびに重複するため代入式にする
-    const add=ev.target.closest("[data-alias-add]"), del=ev.target.closest("[data-alias-del]");
-    if(add){
-      const [storeId,source]=add.dataset.aliasAdd.split("|");
-      const inp=document.querySelector(`.mapping-alias-input[data-store="${storeId}"][data-source="${source}"]`);
-      const name=(inp&&inp.value||"").trim();
-      if(!name) return;
-      add.disabled=true;
-      const r=await authed("/rest/v1/store_aliases",{method:"POST",headers:{Prefer:"return=minimal"},body:JSON.stringify({alias:name,store_id:storeId,source,kind:"name"})});
-      if(!r.ok){
-        add.disabled=false;
-        const dup=/duplicate|23505|already exists|409/i.test(JSON.stringify(r.body||"")+String(r.status||""));
-        const other=aliases.find(a=>a.alias===name);
-        alert(dup||other?`「${name}」は既に${other?`別の店舗（${(storeRes.body.find(x=>x.id===other.store_id)||{}).name||"不明"}）の別名として`:""}登録されています。同じ名前は1つの店舗にしか登録できません。`:`登録に失敗しました（${(r.body&&(r.body.message||r.body.error))||"権限または通信エラー"}）`);
-        return;
-      }
-      aliases=aliases.concat([{alias:name,store_id:storeId,source,kind:"name"}]);
-      refreshAliasCell(storeId,source);
-    }else if(del){
-      const [storeId,source,enc]=del.dataset.aliasDel.split("|");
-      const name=decodeURIComponent(enc);
-      if(!confirm(`別名「${name}」の登録を削除しますか？（次回から店舗を自動判定できなくなる場合があります）`)) return;
-      const r=await authed(`/rest/v1/store_aliases?alias=eq.${encodeURIComponent(name)}&store_id=eq.${storeId}`,{method:"DELETE",headers:{Prefer:"return=minimal"}});
-      if(!r.ok){ alert("削除に失敗しました"); return; }
-      aliases=aliases.filter(a=>!(a.alias===name&&a.store_id===storeId));
-      refreshAliasCell(storeId,source);
-    }
-  };
   document.querySelectorAll("[data-mapping-save]").forEach(el=>el.onclick=async()=>{
     const storeId=el.dataset.mappingSave;
     const val=document.querySelector(`.mapping-dept[data-store="${storeId}"]`).value.trim();
