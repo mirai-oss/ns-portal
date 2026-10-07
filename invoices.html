@@ -490,7 +490,9 @@ button,input,select,textarea{font:inherit}
 .payroll-edit-table thead tr:first-child .pet-debit-head,.mfj-edit-table thead tr:first-child .pet-debit-head,.mft-edit-table thead tr:first-child .pet-debit-head{background:var(--blue-soft);color:var(--blue)}
 .payroll-edit-table thead tr:first-child .pet-credit-head,.mfj-edit-table thead tr:first-child .pet-credit-head,.mft-edit-table thead tr:first-child .pet-credit-head{background:var(--green-soft);color:var(--green)}
 .payroll-edit-table thead tr:last-child th,.mfj-edit-table thead tr:last-child th,.mft-edit-table thead tr:last-child th{font-size:10px;font-weight:700;color:var(--m-muted);background:var(--bg)}
-.payroll-edit-table .pet-ins,.mfj-edit-table .pet-ins,.mft-edit-table .pet-ins{width:26px;text-align:center;vertical-align:middle}
+.payroll-edit-table .pet-ins,.mfj-edit-table .pet-ins,.mft-edit-table .pet-ins{width:30px;text-align:center;vertical-align:middle}
+.payroll-edit-table .pet-ins button.pet-del-left,.mfj-edit-table .pet-ins button.pet-del-left,.mft-edit-table .pet-ins button.pet-del-left{display:block;margin:4px auto 0;color:var(--accent);border-color:var(--accent)}
+.payroll-edit-table tr:has(button.pet-del-left:hover),.mfj-edit-table tr:has(button.pet-del-left:hover),.mft-edit-table tr:has(button.pet-del-left:hover),.payroll-edit-table tr:has(.pet-rm button:hover),.mfj-edit-table tr:has(.pet-rm button:hover),.mft-edit-table tr:has(.pet-rm button:hover){background:rgba(220,60,60,.13);outline:2px solid var(--accent)}
 .payroll-edit-table .pet-ins button,.mfj-edit-table .pet-ins button,.mft-edit-table .pet-ins button{background:none;border:1px solid var(--m-line);border-radius:5px;color:var(--m-muted);cursor:pointer;font-size:12px;width:22px;height:22px;line-height:1}
 .payroll-edit-table .pet-ins button:hover,.mfj-edit-table .pet-ins button:hover,.mft-edit-table .pet-ins button:hover{background:var(--bg);color:var(--accent)}
 .payroll-edit-table .pet-rm,.mfj-edit-table .pet-rm,.mft-edit-table .pet-rm{width:20px;text-align:center;vertical-align:middle}
@@ -624,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-06-v60";
+const BUILD_TAG="2026-10-07-v61";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -3237,7 +3239,7 @@ function arjBranchRowHtml(br,idx){
     </div>`;
   };
   return `<tr class="arj-branch-row" data-idx="${idx}">
-    <td class="pet-ins"><button type="button" data-arjins="${idx}" title="この下に行を追加">＋</button></td>
+    <td class="pet-ins"><button type="button" data-arjins="${idx}" title="この下に行を追加">＋</button>${ARJ_STATE.branches.length>1?`<button type="button" class="pet-del-left" data-arjrm="${idx}" title="この行を削除">✕</button>`:""}</td>
     <td>${accInput("debit")}</td>
     <td><select class="arj-branch-dept" data-idx="${idx}">${deptOptions}</select></td>
     <td>${taxOptionsHtml(br.tax_id,"debit")}</td>
@@ -5849,7 +5851,7 @@ function wireDetailActions(u){
       </div>`;
     };
     return `<tr class="mfj-branch-row" data-idx="${idx}">
-      <td class="pet-ins"><button type="button" data-mfjins="${idx}" title="この下に行を追加">＋</button></td>
+      <td class="pet-ins"><button type="button" data-mfjins="${idx}" title="この下に行を追加">＋</button>${MFJ_STATE.branches.length>1?`<button type="button" class="pet-del-left" data-mfjrm="${idx}" title="この行を削除">✕</button>`:""}</td>
       <td>${accInput("debit")}</td>
       <td><select class="mfj-branch-dept" data-idx="${idx}">${deptOptions}</select></td>
       <td>${taxOptionsHtml(br.tax_id,"debit")}</td>
@@ -7571,7 +7573,7 @@ function mftBranchRowHtml(br,idx){
     </div>`;
   };
   return `<tr data-idx="${idx}">
-    <td class="pet-ins"><button type="button" data-mftins="${idx}" title="この下に行を追加">＋</button></td>
+    <td class="pet-ins"><button type="button" data-mftins="${idx}" title="この下に行を追加">＋</button>${MFT_STATE.editing.branches.length>1?`<button type="button" class="pet-del-left" data-mftrm="${idx}" title="この行を削除">✕</button>`:""}</td>
     <td>${accInput("debit")}</td>
     <td><select class="mft-dept" data-idx="${idx}">${deptOptions}</select></td>
     <td>${taxCell}</td>
@@ -10763,7 +10765,7 @@ async function payrollOpenPreview(userId){
     // 形・サイズ感・入力方法にしたい」に対応。1明細=1行、借方・貸方の科目/部門/税区分/金額を
     // 横並びにする表形式（従来は1明細ごとに「借方カード」「貸方カード」を縦に積んでいた）
     return `<tr data-row-idx="${idx}"${b._unresolvedStore?` style="background:rgba(220,60,60,.10);outline:1px solid var(--m-red,#c33)"`:""}>
-      <td class="pet-ins"><button type="button" data-payroll-preview-insert="${idx}" title="この下に行を追加">＋</button></td>
+      <td class="pet-ins"><button type="button" data-payroll-preview-insert="${idx}" title="この下に行を追加">＋</button>${branches.length>1?`<button type="button" class="pet-del-left" data-payroll-preview-rm="${idx}" title="この行を削除">✕</button>`:""}</td>
       <td>${accInput("debit")}</td>
       <td>${deptSelect("debit")}${b._unresolvedStore?`<div style="font-size:10px;color:var(--m-red,#c33)">🔴 店舗未解決: ${esc(b._unresolvedStore)}（部門を選ぶか、上で店舗登録）</div>`:""}${deptMismatchWarnHtml(b.debitLabel,b.department_id)}</td>
       <td>${taxOptionsHtml(b.tax_id,"debit",idx)}</td>
