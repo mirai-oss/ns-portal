@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-07-v62";
+const BUILD_TAG="2026-10-07-v63";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -8952,7 +8952,9 @@ function payrollFindBranchIndexByKind(branches,kind){
 const PAYROLL_DEDUCTION_CATS=[
   {key:"income_tax",label:"所得税",re:/所得税/},
   {key:"resident_tax",label:"住民税",re:/住民税/},
-  {key:"social_insurance",label:"社会保険料",re:/社会保険|健康保険|厚生年金|介護保険/},
+  // 2026-10-07: 9月分の実データで「子ども・子育て支援金」(13名)がどの区分にも当たらず、控除の検算が成立しなかった。
+  // 健康保険と一緒に徴収される社会保険料の一部なので社会保険料の区分に含める
+  {key:"social_insurance",label:"社会保険料",re:/社会保険|健康保険|厚生年金|介護保険|子ども・子育て|子育て支援|支援金/},
   {key:"employment_insurance",label:"雇用保険",re:/雇用保険/},
   {key:"other",label:"その他控除",re:/その他控除|控除/},
 ];
@@ -9072,12 +9074,30 @@ function payrollBuildAutoJournalPlan(row,branches,storeTotals,pdfSummary){
   });
   const catSums={}; // category key -> 合計額
   const unmatchedDeductions=[];
+  // 2026-10-07追加：9月分の実データで「社宅料金」(2名・¥42,000)のように、標準の区分（所得税・住民税・社会保険・雇用保険・
+  // その他）に当たらない控除があった。貸方に名前の近い科目（例:「預り金/社宅料」）が既にあれば、その行へ振り分ける
+  // （科目を勝手に決めない＝無ければ従来どおり未対応として要確認にする）
+  const usedRows=new Set(Object.values(catBranchRef));
+  const coreOf=l=>String(l||"").replace(/[（(][^）)]*[）)]/g,"").replace(/[0-9０-９]+(年|月分|月)?/g,"").replace(/\s/g,"");
+  const dynRowFor=label=>{
+    const core=coreOf(label);
+    if(core.length<3) return null;
+    const term=core.slice(0,2);
+    return branches.find(b=>{
+      const cl=(b.creditLabel||"").trim();
+      return cl&&!PAYROLL_NETPAY_RE.test(cl)&&!usedRows.has(b)&&cl.includes(term);
+    })||null;
+  };
   for(const d of deductions){
     const amt=Math.round(Number(d.resultAmount)||0);
     const label=String(d.label||"");
     const cat=PAYROLL_DEDUCTION_CATS.find(c=>c.re.test(label));
     if(cat&&cat.key in catBranchRef){
       catSums[cat.key]=(catSums[cat.key]||0)+amt;
+    }else if(amt!==0&&dynRowFor(label)){
+      const key="x:"+coreOf(label);
+      if(!(key in catBranchRef)){ catBranchRef[key]=dynRowFor(label); usedRows.add(catBranchRef[key]); }
+      catSums[key]=(catSums[key]||0)+amt;
     }else if(amt!==0){
       // 2026-10-06：0円の控除は対応する貸方行が無くて（§1で行ごと削除済みでも）問題ないため警告しない
       unmatchedDeductions.push({label,amount:amt});
@@ -9140,7 +9160,7 @@ function payrollAutoJournalPlanHtml(plan){
   }).join("");
   const catRows=Object.entries(plan.catSums).map(([key,amt])=>{
     const cat=PAYROLL_DEDUCTION_CATS.find(c=>c.key===key);
-    return `<tr style="border-top:1px solid var(--line)"><td style="padding:3px 6px">${esc(cat?cat.label:key)}</td><td style="text-align:right;padding:3px 6px">${yen(amt)}</td></tr>`;
+    return `<tr style="border-top:1px solid var(--line)"><td style="padding:3px 6px">${esc(cat?cat.label:String(key).replace(/^x:/,""))}</td><td style="text-align:right;padding:3px 6px">${yen(amt)}</td></tr>`;
   }).join("");
   const warnHtml=plan.warnings.length?`<div style="font-size:11px;color:var(--m-amber);margin:6px 0">${plan.warnings.map(w=>`⚠️ ${esc(w)}`).join("<br>")}</div>`:"";
   return `<div class="card" style="padding:8px 10px">
