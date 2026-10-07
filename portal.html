@@ -1309,6 +1309,9 @@ const GROUPS=[
     {key:"admin-notify",   ico:"🔔", label:"通知先（配信グループ管理）", url:nippoPage("admin")},
     {key:"admin-stores",   ico:"🏢", label:"マスタ：店舗管理", url:nippoPage("admin")},
     {key:"admin-corps",    ico:"🏢", label:"マスタ：法人管理", url:tasksPage("corps")},
+    // 2026-10-07 店舗・法人・運営関係の正本 Phase1（担当F）: 法人・店舗・運営関係・外部マッピングの管理画面
+    // （設計書_店舗法人運営関係の正本再設計_2026-10-07.md §3）。DBのmigration適用前は画面内で「準備待ち」表示
+    {key:"admin-masters",  ico:"🏷️", label:"法人・店舗マスタ（正本）", url:"masters.html?embed=1"},
     // 本部タスクボード（tasks.html）自身の管理機能。従来ポータルのadmin-perm・
     // nippoの配信グループ管理admin-notifyとは別物のため、混同しないラベルにしている
     // （担当Eからの依頼・WORKLOG「2026-08-25（担当E実行スレッド・続き11）」）

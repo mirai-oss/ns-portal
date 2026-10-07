@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>🏷️ 法人・店舗マスタ（正本） — N-Styleグループ ポータル</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🏷️</text></svg>">
+<style>
+:root{
+  --bg:#f5f4f1; --card:#ffffff; --ink:#26221e; --muted:#8a8377;
+  --accent:#1f5fbf; --accent2:#184c99; --line:#e7e3dc; --ok:#2e7d32;
+  --warn:#b58a00; --bad:#c62828; --soft:#f1f5f9;
+}
+@media(prefers-color-scheme:dark){
+  :root{--bg:#1d1b18; --card:#282521; --ink:#f0ece5; --muted:#a29a8c; --line:#3a362f; --soft:#33302a;}
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Noto Sans JP",sans-serif;background:var(--bg);color:var(--ink);min-height:100vh;font-size:14px}
+.wrap{max-width:1120px;margin:0 auto;padding:18px 16px 70px}
+a{color:var(--accent)}
+.spin{text-align:center;color:var(--muted);padding:60px 0}
+h1{font-size:19px}
+.sub{font-size:12px;color:var(--muted);line-height:1.6;margin-top:3px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px 18px;box-shadow:0 1px 4px rgba(0,0,0,.04);margin-bottom:14px}
+.tabrow{display:flex;gap:6px;flex-wrap:wrap;margin:14px 0}
+.tabrow button{padding:9px 16px;border-radius:99px;border:1px solid var(--line);background:var(--card);color:var(--muted);font-size:13px;font-weight:700;cursor:pointer}
+.tabrow button.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+.tabrow .cnt{background:var(--bad);color:#fff;border-radius:99px;padding:0 6px;font-size:10px;margin-left:5px}
+label{display:block;font-size:12px;color:var(--muted);margin:10px 0 3px;font-weight:600}
+input,select,textarea{width:100%;padding:8px 10px;font-size:13px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);font-family:inherit}
+input[type=checkbox],input[type=radio]{width:auto}
+.btn{display:inline-block;padding:8px 14px;font-size:13px;font-weight:700;color:#fff;background:var(--accent);border:none;border-radius:8px;cursor:pointer;white-space:nowrap}
+.btn:hover{background:var(--accent2)}
+.btn:disabled{opacity:.5;cursor:default}
+.btn.ghost{background:transparent;color:var(--accent);border:1px solid var(--line)}
+.btn.warn{background:var(--bad)}
+.btn.sm{padding:5px 10px;font-size:12px}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{font-size:11px;color:var(--muted);text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);white-space:nowrap}
+td{padding:8px;border-bottom:1px solid var(--line);vertical-align:top}
+tr:last-child td{border-bottom:none}
+.scroll{overflow-x:auto}
+.pill{display:inline-block;border-radius:99px;padding:2px 9px;font-size:11px;white-space:nowrap}
+.pill.ok{background:#e9f6ef;color:var(--ok)}
+.pill.warn{background:#fdf5e0;color:var(--warn)}
+.pill.off{background:var(--soft);color:var(--muted)}
+.pill.bad{background:#fdecec;color:var(--bad)}
+.chip{display:inline-flex;align-items:center;gap:4px;background:var(--soft);border:1px solid var(--line);border-radius:99px;padding:2px 4px 2px 10px;font-size:12px;margin:2px 4px 2px 0}
+.chip button{border:none;background:none;color:var(--muted);cursor:pointer;font-size:13px;padding:0 5px}
+.msg-err{color:var(--bad);font-size:13px;background:rgba(198,40,40,.08);border-radius:8px;padding:8px 10px;margin:10px 0}
+.msg-ok{color:var(--ok);font-size:13px;background:rgba(46,125,50,.08);border-radius:8px;padding:8px 10px;margin:10px 0}
+.note{font-size:11px;color:var(--muted);line-height:1.5}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px}
+.dyn{background:var(--soft);border-radius:10px;padding:12px 14px;margin-top:10px}
+.hist{font-size:12px;color:var(--muted);margin-top:6px}
+.hist div{padding:2px 0}
+.right{display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;margin-top:10px}
+.toolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px}
+.toolbar select,.toolbar input{width:auto;min-width:150px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div id="head"></div>
+  <div id="app"><div class="spin">読み込み中…</div></div>
+</div>
+<script>
+/* ============================================================
+   法人・店舗マスタ（正本）管理画面 — 店舗・法人・運営関係の正本 Phase1（担当F）
+   設計: docs/設計書_店舗法人運営関係の正本再設計_2026-10-07.md ／ 指示書 §3
+   正本は public.*（corporations / stores / brands / store_operation_relations / store_external_mappings 等）。
+   書き込みはすべてRPC（smv2_* / register_store_mapping）経由。既存列（stores.name 等）はこの画面から変更できない。
+   認証は expenses.html / requests.html と同一実装（nsportal_session_v1 の形式は変更しない）
+   ============================================================ */
+const SUPA_URL="https://uuvsxzhpxtghojoubjcc.supabase.co";
+const SUPA_KEY="sb_publishable_MrwPJAx_Ws_fdRutprKCiQ_dg3wCiTr";
+const LS_KEY="nsportal_session_v1";
+const EMBED=new URLSearchParams(location.search).get("embed")==="1";
+const $=id=>document.getElementById(id);
+const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const sess={get:()=>{try{return JSON.parse(localStorage.getItem(LS_KEY))}catch(e){return null}},
+            set:v=>localStorage.setItem(LS_KEY,JSON.stringify(v)),
+            clear:()=>localStorage.removeItem(LS_KEY)};
+async function api(path,opt={},token){
+  const r=await fetch(SUPA_URL+path,{...opt,headers:{
+    "apikey":SUPA_KEY,"Content-Type":"application/json",
+    ...(token?{"Authorization":"Bearer "+token}:{}),...(opt.headers||{})}});
+  let body=null; const tx=await r.text(); try{body=tx?JSON.parse(tx):null}catch(e){}
+  return {ok:r.ok,status:r.status,body};
+}
+async function authed(path,opt={}){
+  const s=sess.get(); if(!s) return {ok:false,status:401,body:null};
+  let r=await api(path,opt,s.at);
+  if(r.status===401){ if(!await refresh()) return r; r=await api(path,opt,sess.get().at); }
+  return r;
+}
+async function refresh(){
+  const s=sess.get(); if(!s?.rt) return false;
+  const r=await api("/auth/v1/token?grant_type=refresh_token",{method:"POST",body:JSON.stringify({refresh_token:s.rt})});
+  if(!r.ok){sess.clear();return false}
+  sess.set({at:r.body.access_token,rt:r.body.refresh_token,uid:r.body.user.id});
+  return true;
+}
+async function fetchMe(){
+  const s=sess.get(); if(!s) return null;
+  const r=await authed(`/rest/v1/users?id=eq.${s.uid}&select=id,name,role,is_master,is_active`);
+  return (r.ok&&Array.isArray(r.body)&&r.body[0])||null;
+}
+
+/* ---------- データ取得・RPC ---------- */
+class DbNotReady extends Error{}
+async function sel(path){
+  const r=await authed("/rest/v1/"+path);
+  if(r.status===404||(r.body&&(r.body.code==="PGRST205"||r.body.code==="42P01"))) throw new DbNotReady(path);
+  if(!r.ok) throw new Error((r.body&&(r.body.message||r.body.hint))||("取得に失敗しました（"+r.status+"）"));
+  return r.body||[];
+}
+async function rpc(name,args){
+  const r=await authed("/rest/v1/rpc/"+name,{method:"POST",body:JSON.stringify(args||{})});
+  if(!r.ok) throw new Error((r.body&&(r.body.message||r.body.hint))||("保存に失敗しました（"+r.status+"）"));
+  return r.body;
+}
+
+const SOURCES=[["smaregi","スマレジ（店舗ID）"],["smaregi_timecard","スマレジ・タイムカード（事業所）"],["invoice","請求書"],["payroll","給与（MF部門）"],
+  ["settlement","精算書"],["ad","広告"],["delivery","デリバリー"],["reservation","予約"],["tabelog","食べログ"],["hotpepper","ホットペッパー"],
+  ["gurunavi","ぐるなび"],["gbp","Googleビジネス"],["dashboard","経営ダッシュボード/売上シート"],["legacy_alias","旧別名（種別不明）"]];
+const SRC_LABEL=Object.fromEntries(SOURCES);
+const LOC_LABEL={store:"店舗",hq:"本社",central_kitchen:"セントラルキッチン",office:"事務所",warehouse:"倉庫"};
+const REL_LABEL={direct:"直営",outsourcing:"業務委託",sublease:"転貸"};
+const S={me:null,tab:"corp",D:null,msg:null,err:null,editBrands:null,relForm:null,relOpen:{},mapQ:"",mapSrc:"",mapShowOff:false,regOpen:null};
+
+async function loadAll(){
+  const [corps,aliases,stores,brands,sbr,rels,vendors,vroles,mappings,unres,cur]=await Promise.all([
+    sel("corporations?select=*&order=sort_order"),
+    sel("corporation_aliases?select=*&order=created_at"),
+    sel("stores?select=id,name,store_no,sort_order,is_active,corporation_id,location_type,display_name&order=sort_order"),
+    sel("brands?select=*&order=name"),
+    sel("store_brand_relations?select=*&effective_to=is.null"),
+    sel("store_operation_relations?select=*&order=effective_from"),
+    sel("vendors?select=id,name,is_active&order=name&limit=1000"),
+    sel("vendor_roles?select=*"),
+    sel("store_external_mappings?select=*&order=source_system,external_store_name&limit=5000"),
+    sel("kd_unresolved_names?select=*&kind=eq.store&status=eq.open&order=occurrences.desc"),
+    sel("v_store_current_relations?select=*")]);
+  S.D={corps,aliases,stores,brands,sbr,rels,vendors,vroles,mappings,unres,cur};
+}
+const corpName=id=>{const c=S.D.corps.find(x=>x.id===id);return c?(c.display_name||c.name):"—"};
+const storeName=id=>{const s=S.D.stores.find(x=>x.id===id);return s?(s.display_name||s.name):"—"};
+const brandName=id=>{const b=S.D.brands.find(x=>x.id===id);return b?(b.display_name||b.name):"—"};
+const entName=(t,id)=>t==="corporation"?corpName(id):((S.D.vendors.find(v=>v.id===id)||{}).name||"—");
+const today=()=>new Date(Date.now()+9*3600e3).toISOString().slice(0,10);
+const fmtD=d=>d?String(d).slice(0,10):"—";
+
+/* ---------- 画面 ---------- */
+function headHtml(){
+  return `<div style="display:flex;justify-content:space-between;align-items:flex-end;gap:10px;flex-wrap:wrap">
+    <div><h1>🏷️ 法人・店舗マスタ（正本）</h1>
+    <div class="sub">店舗・法人・運営関係・外部システム名の正本です。ここで登録した内容は、今後 請求書・給与・精算書・広告・PL が店舗を判定する時に参照されます（Phase1では各システムの読み取り先は切り替えていません）。<br>
+    既存の店舗名（stores.name）や「所属法人」は、この画面からは変更できません。</div></div>
+    ${EMBED?"":`<a href="portal.html">← ポータルへ</a>`}</div>`;
+}
+function tabsHtml(){
+  const t=[["corp","① 法人"],["store","② 店舗・事業所"],["rel","③ 運営関係"],["map","④ 外部マッピング"]];
+  const n=S.D.unres.length;
+  return `<div class="tabrow">${t.map(([k,l])=>`<button data-act="tab" data-k="${k}" class="${S.tab===k?"active":""}">${l}${k==="map"&&n?`<span class="cnt">${n}</span>`:""}</button>`).join("")}</div>`;
+}
+function flashHtml(){
+  return (S.err?`<div class="msg-err">${esc(S.err)}</div>`:"")+(S.msg?`<div class="msg-ok">${esc(S.msg)}</div>`:"");
+}
+
+/* ① 法人 */
+function corpTabHtml(){
+  return S.D.corps.map(c=>{
+    const al=S.D.aliases.filter(a=>a.corporation_id===c.id);
+    return `<div class="card" data-corp="${c.id}">
+      <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap"><b>${esc(c.name)}</b>
+        <span class="note">コード: ${esc(c.corp_code||"—")}　／　既存の名称「${esc(c.name)}」は変更されません</span></div>
+      <div class="grid">
+        <div><label>正式名（請求書・契約書上の名称）</label><input data-f="legal" value="${esc(c.legal_name||"")}"></div>
+        <div><label>表示名</label><input data-f="disp" value="${esc(c.display_name||"")}"></div>
+        <div><label>グループ会社</label><select data-f="grp"><option value="1" ${c.is_group_company?"selected":""}>グループ会社</option><option value="0" ${!c.is_group_company?"selected":""}>グループ外</option></select></div>
+      </div>
+      <div class="right"><button class="btn sm" data-act="saveCorp" data-id="${c.id}">保存</button></div>
+      <label>別名（請求書の会社名の表記ゆれ。ここに登録した名前は同じ法人として扱われます）</label>
+      <div>${al.map(a=>`<span class="chip" style="${a.is_active?"":"opacity:.45;text-decoration:line-through"}">${esc(a.alias)}<button title="${a.is_active?"無効にする":"有効に戻す"}" data-act="aliasToggle" data-id="${a.id}" data-on="${a.is_active?0:1}">${a.is_active?"×":"↺"}</button></span>`).join("")||`<span class="note">まだありません</span>`}</div>
+      <div class="toolbar" style="margin-top:8px"><input data-f="newalias" placeholder="別名を追加（例: ㈲トーホー）"><button class="btn sm" data-act="aliasAdd" data-id="${c.id}">追加</button></div>
+    </div>`;
+  }).join("");
+}
+
+/* ② 店舗・事業所 */
+function storeTabHtml(){
+  const brandsOf=sid=>S.D.sbr.filter(r=>r.store_id===sid).sort((a,b)=>(b.is_primary?1:0)-(a.is_primary?1:0));
+  const rows=S.D.stores.map(s=>{
+    const bs=brandsOf(s.id);
+    return `<tr data-store="${s.id}">
+      <td>${esc(s.store_no||"")}</td>
+      <td><b>${esc(s.name)}</b>${s.is_active?"":` <span class="pill off">非稼働</span>`}<div class="note">所属法人: ${esc(corpName(s.corporation_id))}</div></td>
+      <td><input data-f="disp" value="${esc(s.display_name||"")}" placeholder="（未設定=店舗名のまま）"></td>
+      <td><select data-f="loc">${Object.entries(LOC_LABEL).map(([k,l])=>`<option value="${k}" ${s.location_type===k?"selected":""}>${l}</option>`).join("")}</select></td>
+      <td>${bs.map(b=>`<span class="chip" style="padding-right:10px">${b.is_primary?"★ ":""}${esc(brandName(b.brand_id))}</span>`).join("")||`<span class="note">なし</span>`}
+        <button class="btn ghost sm" data-act="brandEdit" data-id="${s.id}">編集</button></td>
+      <td><button class="btn sm" data-act="saveStore" data-id="${s.id}">保存</button></td></tr>
+      ${S.editBrands&&S.editBrands.storeId===s.id?`<tr><td colspan="6"><div class="dyn">${brandEditorHtml(s)}</div></td></tr>`:""}`;
+  }).join("");
+  return `<div class="card"><div class="note" style="margin-bottom:8px">店舗名そのもの・所属法人・稼働状態は既存システムが参照しているためここでは変更できません。表示名・拠点種類・ブランドだけを編集します。</div>
+    <div class="scroll"><table><thead><tr><th>No.</th><th>店舗・事業所</th><th>表示名</th><th>拠点種類</th><th>ブランド（★=主）</th><th></th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
+}
+function brandEditorHtml(s){
+  const E=S.editBrands;
+  return `<b>${esc(s.name)} のブランド</b>
+    <div class="note">チェックを入れたブランドが対象です。「主」は1つ選びます（広告=ブランド単位・PL=店舗単位で使います）。外したブランドは削除ではなく終了日が入ります。</div>
+    <div style="margin-top:6px">${S.D.brands.map(b=>`<div><label style="display:inline-flex;gap:6px;align-items:center;margin:2px 0;color:var(--ink);font-weight:400">
+      <input type="checkbox" data-b="${b.id}" ${E.sel.includes(b.id)?"checked":""}> ${esc(b.display_name||b.name)}</label>
+      <label style="display:inline-flex;gap:4px;align-items:center;margin:0 0 0 10px;color:var(--muted);font-weight:400"><input type="radio" name="primB" data-p="${b.id}" ${E.primary===b.id?"checked":""}> 主</label></div>`).join("")}</div>
+    <div class="toolbar" style="margin-top:8px"><input data-f="newbrand" placeholder="新しいブランド名を追加（例: 新ブランド）"><button class="btn ghost sm" data-act="brandNew">ブランドを追加</button></div>
+    <div class="right"><button class="btn ghost sm" data-act="brandCancel">閉じる</button><button class="btn sm" data-act="brandSave" data-id="${s.id}">このブランド構成で保存</button></div>`;
+}
+
+/* ③ 運営関係 */
+function relTabHtml(){
+  const curOf=sid=>S.D.cur.find(c=>c.store_id===sid&&c.relation_id);
+  const hist=sid=>S.D.rels.filter(r=>r.store_id===sid).sort((a,b)=>String(b.effective_from).localeCompare(String(a.effective_from)));
+  return `<div class="card"><div class="note" style="margin-bottom:8px">関係を変える時は<b>上書きせず</b>、いまの関係に終了日（新しい開始日の前日）が入り、新しい関係が追加されます（履歴は消えません）。<br>
+    名義＝賃貸借の名義／運営＝店舗を運営している主体／入金先＝売上が入金される先。精算（入金先→運営主体）はここから自動で導かれます。</div>
+    <div class="scroll"><table><thead><tr><th>店舗</th><th>種別</th><th>名義</th><th>運営</th><th>入金先</th><th>開始日</th><th>契約</th><th>精算（導出）</th><th></th></tr></thead><tbody>
+    ${S.D.stores.map(s=>{
+      const c=curOf(s.id); const h=hist(s.id);
+      const open=S.relOpen[s.id];
+      return `<tr><td><b>${esc(s.display_name||s.name)}</b></td>
+        ${c?`<td><span class="pill ${c.relation_type==="direct"?"ok":"warn"}">${REL_LABEL[c.relation_type]||esc(c.relation_type)}</span></td>
+          <td>${esc(c.lease_name||"—")}</td><td>${esc(c.operator_name||"—")}</td><td>${esc(c.revenue_name||"—")}</td>
+          <td>${fmtD(c.effective_from)}</td>
+          <td>${c.contract_term_months?`${c.contract_term_months}か月${c.auto_renew?"・自動更新":""}<div class="note">今期の満了: ${fmtD(c.current_term_end)}</div>`:"—"}</td>
+          <td>${c.settlement_from_name?`${esc(c.settlement_from_name)} → ${esc(c.settlement_to_name)}`:`<span class="note">なし</span>`}</td>`
+        :`<td colspan="7"><span class="note">運営関係が未登録</span></td>`}
+        <td style="white-space:nowrap"><button class="btn sm" data-act="relNew" data-id="${s.id}">関係を変更</button>
+          ${c?` <button class="btn ghost sm" data-act="relEnd" data-id="${c.relation_id}">終了</button>`:""}
+          ${h.length>1?` <button class="btn ghost sm" data-act="relHist" data-id="${s.id}">履歴${h.length}</button>`:""}</td></tr>
+        ${open?`<tr><td colspan="9"><div class="hist">${h.map(r=>`<div>${fmtD(r.effective_from)} 〜 ${r.effective_to?fmtD(r.effective_to):"現在"}：${REL_LABEL[r.relation_type]||esc(r.relation_type)}／名義 ${esc(entName(r.lease_entity_type,r.lease_entity_id))}／運営 ${esc(entName(r.operator_entity_type,r.operator_entity_id))}／入金先 ${esc(entName(r.revenue_entity_type,r.revenue_entity_id))}${r.note?`　<span class="note">(${esc(r.note)})</span>`:""}</div>`).join("")}</div></td></tr>`:""}
+        ${S.relForm&&S.relForm.storeId===s.id?`<tr><td colspan="9"><div class="dyn">${relFormHtml(s)}</div></td></tr>`:""}`;
+    }).join("")}</tbody></table></div></div>`;
+}
+function entOptions(sel){
+  const opRoleIds=new Set(S.D.vroles.filter(r=>r.role_type==="operator").map(r=>r.vendor_id));
+  const op=S.D.vendors.filter(v=>opRoleIds.has(v.id)), other=S.D.vendors.filter(v=>!opRoleIds.has(v.id)&&v.is_active);
+  const o=(t,id,nm)=>`<option value="${t}:${id}" ${sel===t+":"+id?"selected":""}>${esc(nm)}</option>`;
+  return `<optgroup label="グループ法人">${S.D.corps.map(c=>o("corporation",c.id,c.display_name||c.name)).join("")}</optgroup>`
+    +`<optgroup label="運営受託会社（取引先）">${op.map(v=>o("vendor",v.id,v.name)).join("")}</optgroup>`
+    +`<optgroup label="その他の取引先">${other.map(v=>o("vendor",v.id,v.name)).join("")}</optgroup>`;
+}
+function relFormHtml(s){
+  const F=S.relForm;
+  return `<b>${esc(s.display_name||s.name)} — 新しい運営関係を追加</b>
+    <div class="grid">
+      <div><label>種別</label><select data-r="type">${Object.entries(REL_LABEL).map(([k,l])=>`<option value="${k}" ${F.type===k?"selected":""}>${l}</option>`).join("")}</select></div>
+      <div><label>名義（賃貸借）</label><select data-r="lease">${entOptions(F.lease)}</select></div>
+      <div><label>運営</label><select data-r="op">${entOptions(F.op)}</select></div>
+      <div><label>入金先</label><select data-r="rev">${entOptions(F.rev)}</select></div>
+      <div><label>開始日</label><input type="date" data-r="from" value="${esc(F.from)}"></div>
+      <div><label>契約期間（月・任意）</label><input type="number" min="1" data-r="term" value="${esc(F.term)}" placeholder="例: 12"></div>
+      <div><label>自動更新</label><select data-r="auto"><option value="0" ${F.auto==="0"?"selected":""}>なし</option><option value="1" ${F.auto==="1"?"selected":""}>あり</option></select></div>
+      <div><label>備考</label><input data-r="note" value="${esc(F.note)}"></div></div>
+    <div class="note" style="margin-top:6px">保存すると、いまの関係に終了日（開始日の前日）が入り、この内容が新しい関係として追加されます。</div>
+    <div class="right"><button class="btn ghost sm" data-act="relCancel">キャンセル</button><button class="btn sm" data-act="relSave" data-id="${s.id}">追加する</button></div>`;
+}
+
+/* ④ 外部マッピング */
+function guessSource(t){
+  if(/^resolve_store:/.test(t)) return t.replace("resolve_store:","");
+  if(/ad_monthly|ad/.test(t)) return "ad";
+  if(/dinii/.test(t)) return "legacy_alias";
+  if(/pl_monthly|invoice/.test(t)) return "invoice";
+  return "legacy_alias";
+}
+function storeOptions(sel){
+  return S.D.stores.map(s=>`<option value="${s.id}" ${sel===s.id?"selected":""}>${esc((s.display_name||s.name)+(s.is_active?"":"（非稼働）"))}</option>`).join("");
+}
+function unresHtml(){
+  if(!S.D.unres.length) return `<div class="card"><b>✅ 未解決の店舗名はありません</b><div class="note">各システムが店舗を判定できなかった名前はここに溜まり、店舗を選んで登録すると次回から自動で解決されます。</div></div>`;
+  return `<div class="card"><b>⚠️ 未解決の店舗名（${S.D.unres.length}件）</b>
+    <div class="note" style="margin:3px 0 8px">どの店舗か分からなかった名前です。「この店舗として登録」で店舗を選ぶと、次回から自動で解決され、この一覧から消えます。</div>
+    <div class="scroll"><table><thead><tr><th>取込元</th><th>名前</th><th>回数</th><th>最終確認</th><th></th></tr></thead><tbody>
+    ${S.D.unres.map(u=>`<tr><td>${esc(u.source_table)}</td><td><b>${esc(u.raw_name)}</b></td><td>${u.occurrences}</td><td>${fmtD(u.last_seen)}</td>
+      <td><button class="btn sm" data-act="regOpen" data-id="${u.id}">この店舗として登録</button></td></tr>
+      ${S.regOpen&&S.regOpen.id===u.id?`<tr><td colspan="5"><div class="dyn"><div class="grid">
+        <div><label>どの店舗？</label><select data-g="store"><option value="">選んでください</option>${storeOptions(S.regOpen.store)}</select></div>
+        <div><label>どのシステムの名前？</label><select data-g="src">${SOURCES.map(([k,l])=>`<option value="${k}" ${S.regOpen.src===k?"selected":""}>${l}</option>`).join("")}</select></div>
+        <div><label>ブランド（任意）</label><select data-g="brand"><option value="">指定しない</option>${S.D.brands.map(b=>`<option value="${b.id}">${esc(b.display_name||b.name)}</option>`).join("")}</select></div></div>
+        <div class="note" style="margin-top:6px">登録する名前: 「${esc(u.raw_name)}」</div>
+        <div class="right"><button class="btn ghost sm" data-act="regCancel">キャンセル</button><button class="btn sm" data-act="regSave" data-id="${u.id}">登録する</button></div></div></td></tr>`:""}`).join("")}
+    </tbody></table></div></div>`;
+}
+/* 検索窓はシェル側（再描画しない）／結果だけ #mapResults を差し替える＝日本語入力(IME)を壊さない */
+function mapShellHtml(){
+  return `${unresHtml()}
+    <div class="card"><b>外部システムごとの店舗名・ID（一覧）</b>
+      <div class="note" style="margin:3px 0 8px">同じ名前でもシステムごとに別の店舗を指せます（例: スマレジの「本部」＝トーホー本社）。</div>
+      <div class="toolbar">
+        <select id="mapSrc"><option value="">すべてのシステム</option>${SOURCES.map(([k,l])=>`<option value="${k}" ${S.mapSrc===k?"selected":""}>${l}</option>`).join("")}</select>
+        <input id="mapQ" placeholder="名前・ID・店舗で検索" value="${esc(S.mapQ)}">
+        <label style="display:inline-flex;gap:5px;align-items:center;margin:0;color:var(--ink);font-weight:400"><input type="checkbox" id="mapOff" ${S.mapShowOff?"checked":""}> 無効も表示</label>
+      </div>
+      <details style="margin-bottom:10px"><summary style="cursor:pointer;font-weight:700;font-size:13px">＋ マッピングを手で追加</summary>
+        <div class="dyn"><div class="grid">
+          <div><label>システム</label><select id="nmSrc">${SOURCES.map(([k,l])=>`<option value="${k}">${l}</option>`).join("")}</select></div>
+          <div><label>外部ID（任意）</label><input id="nmId"></div><div><label>外部コード（任意）</label><input id="nmCode"></div>
+          <div><label>外部の名前（任意）</label><input id="nmName"></div>
+          <div><label>店舗</label><select id="nmStore"><option value="">選んでください</option>${storeOptions("")}</select></div>
+          <div><label>ブランド（任意）</label><select id="nmBrand"><option value="">指定しない</option>${S.D.brands.map(b=>`<option value="${b.id}">${esc(b.display_name||b.name)}</option>`).join("")}</select></div></div>
+          <div class="right"><button class="btn sm" data-act="mapAdd">追加する</button></div></div></details>
+      <div id="mapResults">${mapResultsHtml()}</div></div>`;
+}
+function mapResultsHtml(){
+  const q=S.mapQ.trim().toLowerCase();
+  const rows=S.D.mappings.filter(m=>(S.mapShowOff||m.is_active)&&(!S.mapSrc||m.source_system===S.mapSrc)
+    &&(!q||[m.external_store_id,m.external_store_code,m.external_store_name,storeName(m.store_id),m.note].some(v=>String(v||"").toLowerCase().includes(q))));
+  return `<div class="note" style="margin-bottom:6px">${rows.length}件${rows.length>300?"（先頭300件を表示）":""}</div>
+    <div class="scroll"><table><thead><tr><th>システム</th><th>外部ID</th><th>外部コード</th><th>外部の名前</th><th>→ 店舗</th><th>状態</th><th>メモ</th><th></th></tr></thead><tbody>
+    ${rows.slice(0,300).map(m=>`<tr style="${m.is_active?"":"opacity:.5"}"><td>${esc(SRC_LABEL[m.source_system]||m.source_system)}</td>
+      <td>${esc(m.external_store_id||"")}</td><td>${esc(m.external_store_code||"")}</td><td>${esc(m.external_store_name||"")}</td>
+      <td><b>${esc(storeName(m.store_id))}</b>${m.brand_id?`<div class="note">ブランド: ${esc(brandName(m.brand_id))}</div>`:""}</td>
+      <td><span class="pill ${m.is_active?"ok":"off"}">${m.is_active?"有効":"無効"}</span></td><td class="note">${esc(m.note||"")}</td>
+      <td><button class="btn ghost sm" data-act="mapToggle" data-id="${m.id}" data-on="${m.is_active?0:1}">${m.is_active?"無効にする":"有効に戻す"}</button></td></tr>`).join("")}
+    </tbody></table></div>`;
+}
+
+function render(){
+  $("head").innerHTML=headHtml();
+  const body=S.tab==="corp"?corpTabHtml():S.tab==="store"?storeTabHtml():S.tab==="rel"?relTabHtml():mapShellHtml();
+  $("app").innerHTML=tabsHtml()+`<div id="flash">${flashHtml()}</div>`+body;
+  if(S.tab==="map") wireMapShell();
+}
+function flash(msg,err){ S.msg=err?null:msg; S.err=err?msg:null; const f=$("flash"); if(f) f.innerHTML=flashHtml(); }
+function wireMapShell(){
+  $("mapQ").oninput=e=>{ S.mapQ=e.target.value; $("mapResults").innerHTML=mapResultsHtml(); };
+  $("mapSrc").onchange=e=>{ S.mapSrc=e.target.value; $("mapResults").innerHTML=mapResultsHtml(); };
+  $("mapOff").onchange=e=>{ S.mapShowOff=e.target.checked; $("mapResults").innerHTML=mapResultsHtml(); };
+}
+async function reload(keepMsg){ try{ await loadAll(); }catch(e){ S.err=e.message; } render(); }
+async function run(fn,okMsg){
+  try{ await fn(); await loadAll(); S.err=null; S.msg=okMsg||"保存しました"; }
+  catch(e){ S.msg=null; S.err=e.message||String(e); }
+  render();
+}
+const q1=(root,sel)=>root.querySelector(sel);
+
+document.addEventListener("click",async ev=>{
+  const b=ev.target.closest("[data-act]"); if(!b||!S.D) return;
+  const act=b.dataset.act, id=b.dataset.id;
+  if(act==="tab"){ S.tab=b.dataset.k; S.msg=S.err=null; S.editBrands=S.relForm=S.regOpen=null; render(); return; }
+  if(act==="saveCorp"){ const c=b.closest("[data-corp]");
+    return run(()=>rpc("smv2_update_corporation",{p_id:id,p_legal_name:q1(c,'[data-f=legal]').value,p_display_name:q1(c,'[data-f=disp]').value,p_is_group_company:q1(c,'[data-f=grp]').value==="1"}),"法人を保存しました"); }
+  if(act==="aliasAdd"){ const c=b.closest("[data-corp]"); const v=q1(c,'[data-f=newalias]').value;
+    return run(()=>rpc("smv2_add_corporation_alias",{p_corporation_id:id,p_alias:v,p_source:"manual"}),"別名を追加しました"); }
+  if(act==="aliasToggle") return run(()=>rpc("smv2_set_corporation_alias_active",{p_id:id,p_active:b.dataset.on==="1"}),"更新しました");
+  if(act==="saveStore"){ const r=b.closest("tr");
+    return run(()=>rpc("smv2_update_store",{p_id:id,p_display_name:q1(r,'[data-f=disp]').value,p_location_type:q1(r,'[data-f=loc]').value}),"店舗を保存しました"); }
+  if(act==="brandEdit"){ const cur=S.D.sbr.filter(r=>r.store_id===id); S.editBrands={storeId:id,sel:cur.map(r=>r.brand_id),primary:(cur.find(r=>r.is_primary)||{}).brand_id||null}; render(); return; }
+  if(act==="brandCancel"){ S.editBrands=null; render(); return; }
+  if(act==="brandNew"){ const v=q1(document,'[data-f=newbrand]').value; if(!v.trim()) return;
+    try{ const nid=await rpc("smv2_add_brand",{p_name:v,p_display_name:v}); await loadAll(); if(S.editBrands){ S.editBrands.sel.push(nid); if(!S.editBrands.primary) S.editBrands.primary=nid; } S.msg="ブランドを追加しました"; S.err=null; }catch(e){ S.err=e.message; } render(); return; }
+  if(act==="brandSave"){ const wrap=b.closest(".dyn");
+    const sel=[...wrap.querySelectorAll("[data-b]")].filter(x=>x.checked).map(x=>x.dataset.b);
+    const pr=(wrap.querySelector("[data-p]:checked")||{dataset:{}}).dataset.p;
+    if(pr&&!sel.includes(pr)){ flash("「主」のブランドにはチェックも入れてください",true); return; }
+    const ordered=pr?[pr,...sel.filter(x=>x!==pr)]:sel;
+    S.editBrands=null; return run(()=>rpc("smv2_set_store_brands",{p_store_id:id,p_brand_ids:ordered}),"ブランドを保存しました"); }
+  if(act==="relHist"){ S.relOpen[id]=!S.relOpen[id]; render(); return; }
+  if(act==="relNew"){ const c=S.D.cur.find(x=>x.store_id===id&&x.relation_id);
+    S.relForm={storeId:id,type:c?c.relation_type:"direct",lease:c?c.lease_entity_type+":"+c.lease_entity_id:"",op:c?c.operator_entity_type+":"+c.operator_entity_id:"",rev:c?c.revenue_entity_type+":"+c.revenue_entity_id:"",from:today(),term:"",auto:"0",note:""}; render(); return; }
+  if(act==="relCancel"){ S.relForm=null; render(); return; }
+  if(act==="relSave"){ const w=b.closest(".dyn"); const g=k=>q1(w,`[data-r=${k}]`).value; const sp=v=>{const i=v.indexOf(":");return [v.slice(0,i),v.slice(i+1)]};
+    const [lt,li]=sp(g("lease")),[ot,oi]=sp(g("op")),[rt,ri]=sp(g("rev"));
+    if(!li||!oi||!ri){ flash("名義・運営・入金先を選んでください",true); return; }
+    S.relForm=null; return run(()=>rpc("smv2_add_operation_relation",{p_store_id:id,p_relation_type:g("type"),p_lease_type:lt,p_lease_id:li,p_operator_type:ot,p_operator_id:oi,p_revenue_type:rt,p_revenue_id:ri,
+      p_effective_from:g("from"),p_term_months:g("term")?Number(g("term")):null,p_auto_renew:g("auto")==="1",p_note:g("note")||null}),"運営関係を追加しました（旧関係には終了日が入りました）"); }
+  if(act==="relEnd"){ const d=prompt("この運営関係の終了日（最終日）を入力してください（例: 2026-12-31）。閉店・契約終了の時だけ使います。",today()); if(!d) return;
+    return run(()=>rpc("smv2_end_operation_relation",{p_id:id,p_effective_to:d}),"運営関係を終了しました"); }
+  if(act==="regOpen"){ const u=S.D.unres.find(x=>x.id===id); S.regOpen={id,store:"",src:guessSource(u.source_table)}; render(); return; }
+  if(act==="regCancel"){ S.regOpen=null; render(); return; }
+  if(act==="regSave"){ const u=S.D.unres.find(x=>x.id===id); const w=b.closest(".dyn"); const sid=q1(w,"[data-g=store]").value;
+    if(!sid){ flash("店舗を選んでください",true); return; }
+    S.regOpen=null; return run(()=>rpc("register_store_mapping",{p_source:q1(w,"[data-g=src]").value,p_external_id:null,p_code:null,p_name:u.raw_name,p_store_id:sid,p_brand_id:q1(w,"[data-g=brand]").value||null}),`「${u.raw_name}」を登録しました`); }
+  if(act==="mapToggle") return run(()=>rpc("smv2_set_mapping_active",{p_id:id,p_active:b.dataset.on==="1"}),"更新しました");
+  if(act==="mapAdd"){ const v=i=>$(i).value.trim(); if(!v("nmStore")){ flash("店舗を選んでください",true); return; }
+    return run(()=>rpc("register_store_mapping",{p_source:v("nmSrc"),p_external_id:v("nmId")||null,p_code:v("nmCode")||null,p_name:v("nmName")||null,p_store_id:v("nmStore"),p_brand_id:v("nmBrand")||null}),"マッピングを追加しました"); }
+});
+
+async function init(){
+  const app=$("app");
+  if(!sess.get()){ app.innerHTML=`<div class="card">ログインが必要です。ポータルからアクセスしてください。<div style="margin-top:10px"><a class="btn" style="text-decoration:none" href="portal.html">← ポータルへ</a></div></div>`; return; }
+  S.me=await fetchMe();
+  if(!S.me){ app.innerHTML=`<div class="card">ログイン情報を確認できませんでした。ポータルから開き直してください。</div>`; return; }
+  if(!(S.me.is_active&&(S.me.is_master||["CEO","HQ"].includes(S.me.role)))){
+    app.innerHTML=`<div class="card"><b>権限がありません</b><div class="note">この画面は本部・社長・マスターのみ使えます。</div></div>`; return; }
+  try{ await loadAll(); render(); }
+  catch(e){
+    if(e instanceof DbNotReady) app.innerHTML=`<div class="card"><b>⏳ データベースの準備待ちです</b><div class="note" style="margin-top:6px">店舗・法人の正本テーブルがまだ本番に作られていません（migration未適用）。適用後にこの画面が使えるようになります。</div></div>`;
+    else app.innerHTML=`<div class="msg-err">読み込みに失敗しました: ${esc(e.message)}</div>`;
+  }
+}
+init();
+</script>
+</body>
+</html>
