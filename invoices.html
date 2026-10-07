@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-07-v61";
+const BUILD_TAG="2026-10-07-v62";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -8755,6 +8755,11 @@ function payrollGuessEmployeeByFilename(filename){
   });
   return hit||null;
 }
+// 2026-10-07（司令塔の順序変更・設計書_店舗法人運営関係の正本再設計 Q4）：給与仕訳の「タイムカード事業所名→店舗」の
+// 登録先は、担当Fが作る store_external_mappings ＋ RPC register_store_mapping（Phase1）。完成するまで store_aliases への
+// 暫定登録は行わない（登録ボタン・設定タブの別名追加を止める）。新RPCの完成後、この旗をtrueにして登録処理を
+// register_store_mapping の呼び出しへ差し替える（Phase3）
+const STORE_MAPPING_REGISTER_READY=false;
 function payrollManualAssignmentFor(userId){ return PAYROLL_STATE.assignments.find(a=>a.user_id===userId); }
 // 2026-10-06（設計書_給与仕訳の全自動化 §4）：テンプレート（仕訳辞書）を人ごとに手で割り当てる運用から、
 // 「法人×区分（社員/アルバイト）」での自動割当へ。区分は users.role（AL=アルバイト・それ以外=社員）、
@@ -8972,9 +8977,9 @@ function payrollBuildAutoJournalPlan(row,branches,storeTotals,pdfSummary){
   });
   const unmatchedStores=stores.filter(s=>!s.dept);
   if(unmatchedStores.length){
-    warnings.push(`事業所「${unmatchedStores.map(s=>s.storeName).join("、")}」に対応する部門（勘定科目の部門マスタ）が見つかりませんでした。下の「この店舗として登録」で店舗を選んで登録すると、次回から自動で解決します`);
+    warnings.push(`事業所「${unmatchedStores.map(s=>s.storeName).join("、")}」に対応する部門（勘定科目の部門マスタ）が見つかりませんでした。店舗が特定できない場合は、その行の部門を手で選ぶか、店舗の登録（新機能の完成後）で解決してください`);
   }
-  stores.filter(s=>s.dept&&s.fuzzy).forEach(s=>warnings.push(`事業所「${s.storeName}」はあいまい一致（${s.how}）で部門「${s.dept.name}」と判定しました。「この店舗として登録」で別名を登録しておくと確実になります`));
+  stores.filter(s=>s.dept&&s.fuzzy).forEach(s=>warnings.push(`事業所「${s.storeName}」はあいまい一致（${s.how}）で部門「${s.dept.name}」と判定しました。店舗名の登録（新機能の完成後）をしておくと確実になります`));
   // 2026-10-06追加：ユーザー実機報告（はなれの人）。勤務詳細表の交通費合計(¥6,500)とスマレジの支給交通費
   // (¥6,000)が食い違い、給料部分は一致しているのに検算NGで止まっていた。金額の正はスマレジ
   // （sf_payroll_sync）なので、交通費の合計はスマレジの通勤手当に合わせて店舗へ按分し直す
@@ -9119,7 +9124,9 @@ function payrollAutoJournalPlanHtml(plan){
     let cell;
     if(s.dept&&!s.fuzzy) cell=esc(s.dept.name);
     else{
-      const regUi=`<div style="margin-top:3px"><select data-alias-store="${k}" style="font-size:11px">${storeOpts(s.store?s.store.id:"")}</select> <button type="button" class="hq-btn" style="font-size:11px;padding:3px 8px" data-alias-register="${k}">この店舗として登録</button></div>`;
+      const regUi=STORE_MAPPING_REGISTER_READY
+        ?`<div style="margin-top:3px"><select data-alias-store="${k}" style="font-size:11px">${storeOpts(s.store?s.store.id:"")}</select> <button type="button" class="hq-btn" style="font-size:11px;padding:3px 8px" data-alias-register="${k}">この店舗として登録</button></div>`
+        :`<div style="margin-top:3px;font-size:10px;color:var(--muted)">店舗名の登録は、店舗の正本（新しい外部名の登録機能）の完成後に、ここから行えるようになります。当面は、下の仕訳の行の「部門」を手で選ぶか、設定タブ「法人・店舗・部門マッピング」でその店舗のMF部門名を設定してください</div>`;
       if(s.dept) cell=`${esc(s.dept.name)} <span style="color:var(--m-amber)">⚠️あいまい一致（登録を推奨）</span>${regUi}`;
       else if(s.store) cell=`<span style="color:var(--accent)">店舗は「${esc(s.store.name)}」と特定済み・MF部門が未設定／不一致</span><div style="font-size:10px;color:var(--muted)">設定タブ「法人・店舗・部門マッピング」でこの店舗のMF部門名を設定してください</div>${regUi}`;
       else cell=`<span style="color:var(--accent)">未マッチ（店舗を特定できません）</span>${regUi}`;
@@ -9153,7 +9160,7 @@ function payrollAutoJournalPlanHtml(plan){
     ${plan.ok
       ?`<button class="hq-btn primary" id="payroll-autogen-apply">✅ この内容を仕訳に反映する</button>`
       :plan.partial
-        ?`<button class="hq-btn primary" id="payroll-autogen-apply">✅ 確認できた分だけ先に反映する</button><div style="font-size:11px;color:var(--accent);margin-top:4px">${plan.creditIncomplete?"貸方（控除・差引支給額）はテンプレートに行が無い／検算が合わないため、借方（給料・交通費）だけ反映します。貸方は手入力してください。":""}${plan.stores.some(x=>!x.dept)?"未解決の店舗は赤い行で残り、解決するまで「登録」はできません（上の「この店舗として登録」で解決できます）。":""}</div>`
+        ?`<button class="hq-btn primary" id="payroll-autogen-apply">✅ 確認できた分だけ先に反映する</button><div style="font-size:11px;color:var(--accent);margin-top:4px">${plan.creditIncomplete?"貸方（控除・差引支給額）はテンプレートに行が無い／検算が合わないため、借方（給料・交通費）だけ反映します。貸方は手入力してください。":""}${plan.stores.some(x=>!x.dept)?"未解決の店舗は赤い行で残り、解決するまで「登録」はできません（その行の部門を選ぶと解決済みになります）。":""}</div>`
         :`<div style="font-size:11px;color:var(--accent)">検算が一致しなかったため、自動反映はしていません。内容をご確認のうえ、必要であれば上の入力欄を手動で修正してください</div>`}
   </div>`;
 }
@@ -12007,6 +12014,11 @@ function mappingMatchTenant_(corpName,tenants){
 function mappingAliasCellHtml_(aliases,storeId,source){
   const mine=aliases.filter(a=>a.store_id===storeId&&a.source===source);
   const chips=mine.map(a=>`<span style="display:inline-block;border:1px solid var(--line);border-radius:10px;padding:1px 6px;margin:0 4px 3px 0;font-size:11px">${esc(a.alias)} <a href="#" onclick="return false" style="color:var(--m-red,#c33);text-decoration:none" data-alias-del="${esc(storeId)}|${esc(source)}|${encodeURIComponent(a.alias)}" title="削除">✕</a></span>`).join("");
+  if(!STORE_MAPPING_REGISTER_READY){
+    // 暫定登録は止めている（新しい外部名の登録機能の完成待ち）。登録済みの別名の表示だけ行う（削除✕・追加欄は出さない）
+    const ro=mine.map(a=>`<span style="display:inline-block;border:1px solid var(--line);border-radius:10px;padding:1px 6px;margin:0 4px 3px 0;font-size:11px">${esc(a.alias)}</span>`).join("");
+    return `${ro||`<span style="font-size:11px;color:var(--muted)">未登録</span>`}<div style="font-size:10px;color:var(--muted);margin-top:3px">登録は新しい外部名の登録機能の完成後</div>`;
+  }
   return `${chips||`<span style="font-size:11px;color:var(--muted)">未登録</span>`}<div style="margin-top:3px"><input class="mapping-alias-input" data-store="${esc(storeId)}" data-source="${esc(source)}" placeholder="${source==="pl"?"PL側の店舗名":"タイムカードの事業所名"}" style="width:150px;font-size:11px"> <button type="button" class="hq-btn" style="font-size:11px;padding:3px 8px" data-alias-add="${esc(storeId)}|${esc(source)}">追加</button></div>`;
 }
 async function renderSettingsMapping(){
