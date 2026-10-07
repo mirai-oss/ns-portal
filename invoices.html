@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-07-v66";
+const BUILD_TAG="2026-10-07-v67";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -9288,7 +9288,14 @@ function payrollSubAccountLabelForDept(baseLabel,dept){
   const names=(PAYROLL_STATE.subAccountsByAccountName&&PAYROLL_STATE.subAccountsByAccountName.get(account.trim()))||[];
   const want=norm(dept.name);
   const sub=names.find(n=>norm(n)===want);
-  if(sub){ const label=`${account}/${sub}`; return {label,found:true,changed:label!==lb}; }
+  if(sub){ const label=`${account}/${sub}`; return {label,found:true,changed:label!==lb,sub,by:"name"}; }
+  // 2026-10-07追加：部門名と補助科目名の表記が違う店舗（例: 部門「08新横浜・匠味/鶏武者」⇔補助科目「08/新横浜匠味」。2枚看板の店舗）でも、
+  // 店舗番号（先頭の数字）が同じ補助科目が1つだけなら、それを同じ店舗の補助科目とみなす（番号は店舗ごとに一意）
+  const code=(String(dept.name).match(/^(\d+)/)||[])[1];
+  if(code){
+    const byCode=names.filter(n=>/^\d/.test(norm(n))&&norm(n).startsWith(code));
+    if(byCode.length===1){ const label=`${account}/${byCode[0]}`; return {label,found:true,changed:label!==lb,sub:byCode[0],by:"code"}; }
+  }
   return {label:lb,found:false,changed:false};
 }
 function payrollApplyAutoJournalPlan(branches,plan){
@@ -10724,10 +10731,15 @@ async function payrollDiagnose(){
     const subs=PAYROLL_DIAG_ACCOUNTS.map(acc=>{
       if(!dept) return {acc,ok:null,expect:""};
       const r=payrollSubAccountLabelForDept(acc,dept);
-      return {acc,ok:r.found,expect:`${acc}/${payrollExpectedSubName_(dept.name)}`};
+      const code=(String(dept.name).match(/^(\d+)/)||[])[1];
+      const all=(PAYROLL_STATE.subAccountsByAccountName&&PAYROLL_STATE.subAccountsByAccountName.get(acc))||[];
+      const cands=code?all.filter(n=>norm(n).startsWith(code)):[];
+      return {acc,ok:r.found,expect:`${acc}/${payrollExpectedSubName_(dept.name)}`,matched:r.found?r.sub:"",by:r.by||"",cands};
     });
     const problems=(dept?0:1)+subs.filter(x=>x.ok===false).length;
-    return {st,dept,deptMsg,subs,problems};
+    // スマレジのタイムカード側：この店舗に登録済みの事業所（店舗正本 store_external_mappings の smaregi_timecard）
+    const tc=(PAYROLL_STATE.externalMappings||[]).filter(m=>m.store_id===st.id&&m.source_system==="smaregi_timecard").map(m=>m.external_store_name||("事業所ID "+m.external_store_id));
+    return {st,dept,deptMsg,subs,problems,tc};
   }).sort((a,b)=>(b.problems-a.problems)||String(a.st.name).localeCompare(String(b.st.name),"ja"));
   // 共通チェック
   const tpl=PAYROLL_STATE.templates||[];
@@ -10741,16 +10753,17 @@ async function payrollDiagnose(){
     ["区分「アルバイト」の仕訳辞書が設定済み（新しいアルバイトの自動割当）",tpl.some(t=>t.payroll_kind==="parttime")],
   ];
   const badStores=rows.filter(r=>r.problems>0).length;
-  const mark=(ok,expect)=>ok===null?`<span style="color:var(--muted)">－</span>`:ok?`<span style="color:var(--m-green)">✓</span>`:`<span style="color:var(--accent)" title="MFに「${esc(expect)}」を作成してください">✗ ${esc(expect.split("/").slice(1).join("/"))}</span>`;
+  const mark=x=>x.ok===null?`<span style="color:var(--muted)">－</span>`:x.ok?`<span style="color:var(--m-green)">✓</span>${x.by==="code"?` <span style="font-size:10px;color:var(--muted)" title="部門名とは表記が違いますが、店舗番号が同じ補助科目として扱います">${esc(x.matched)}（番号で一致）</span>`:""}`:`<span style="color:var(--accent)" title="MFに「${esc(x.expect)}」を作成するか、既存の補助科目の名前を部門名に合わせてください">✗ ${esc(x.expect.split("/").slice(1).join("/"))}</span>${x.cands.length?`<div style="font-size:10px;color:var(--muted)">同じ番号の既存: ${x.cands.map(esc).join("、")}</div>`:`<div style="font-size:10px;color:var(--muted)">同じ番号の既存なし＝未作成</div>`}`;
   PAYROLL_STATE.diagHtml=`<div class="card" style="width:100%;margin-top:8px;padding:10px 12px;border:1px solid var(--line)">
     <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap"><b>🔍 マッピング診断</b><button type="button" class="linkbtn" id="payroll-diag-close" style="background:none;border:none;color:var(--blue);cursor:pointer;font-size:12px">閉じる</button></div>
     <div style="font-size:12px;margin:6px 0">店舗 ${rows.length}件中 <b style="color:${badStores?"var(--accent)":"var(--m-green)"}">${badStores}件に不足あり</b>${other?`（別法人の店舗${other}件は対象外）`:""}。✗の補助科目は、MF側で作成すると自動で仕訳に入るようになります。</div>
     <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px">
-      <thead><tr style="background:var(--panel-2,#f5f5f5)"><th style="text-align:left;padding:4px 6px">店舗</th><th style="text-align:left;padding:4px 6px">MFの部門</th>${PAYROLL_DIAG_ACCOUNTS.map(a=>`<th style="text-align:left;padding:4px 6px">${esc(a)}の補助科目</th>`).join("")}</tr></thead>
+      <thead><tr style="background:var(--panel-2,#f5f5f5)"><th style="text-align:left;padding:4px 6px">店舗</th><th style="text-align:left;padding:4px 6px">MFの部門</th>${PAYROLL_DIAG_ACCOUNTS.map(a=>`<th style="text-align:left;padding:4px 6px">${esc(a)}の補助科目</th>`).join("")}<th style="text-align:left;padding:4px 6px">スマレジ事業所</th></tr></thead>
       <tbody>${rows.map(r=>`<tr style="border-top:1px solid var(--line);${r.problems?"background:rgba(220,60,60,.06)":""}">
         <td style="padding:4px 6px"><b>${esc(r.st.name)}</b></td>
         <td style="padding:4px 6px">${r.dept?`<span style="color:var(--m-green)">✓ ${esc(r.dept.name)}</span>`:`<span style="color:var(--accent)">✗ ${esc(r.deptMsg)}</span>`}</td>
-        ${r.subs.map(x=>`<td style="padding:4px 6px">${mark(x.ok,x.expect)}</td>`).join("")}
+        ${r.subs.map(x=>`<td style="padding:4px 6px">${mark(x)}</td>`).join("")}
+        <td style="padding:4px 6px">${r.tc.length?`<span style="color:var(--m-green)">✓</span> <span style="font-size:10px;color:var(--muted)">${r.tc.map(esc).join("、")}</span>`:`<span style="color:var(--muted)" title="スマレジのタイムカードに対応する事業所が登録されていません。給与明細の事業所名で店舗が特定できないときは「この店舗として登録」で登録できます">－ 未登録</span>`}</td>
       </tr>`).join("")}</tbody></table></div>
     <div style="font-size:12px;margin-top:8px"><b>共通のチェック</b></div>
     <div style="font-size:12px;columns:2;column-gap:20px;margin-top:2px">${common.map(([l,ok])=>`<div>${ok?`<span style="color:var(--m-green)">✓</span>`:`<span style="color:var(--accent)">✗</span>`} ${esc(l)}</div>`).join("")}</div>
