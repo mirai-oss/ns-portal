@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-07-v67";
+const BUILD_TAG="2026-10-07-v68";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -10739,7 +10739,9 @@ async function payrollDiagnose(){
     const problems=(dept?0:1)+subs.filter(x=>x.ok===false).length;
     // スマレジのタイムカード側：この店舗に登録済みの事業所（店舗正本 store_external_mappings の smaregi_timecard）
     const tc=(PAYROLL_STATE.externalMappings||[]).filter(m=>m.store_id===st.id&&m.source_system==="smaregi_timecard").map(m=>m.external_store_name||("事業所ID "+m.external_store_id));
-    return {st,dept,deptMsg,subs,problems,tc};
+    // 給与明細の事業所名として自動で認識できる名前（店舗名・登録済みの別名・店舗正本に登録した外部名）。ここに無い表記は「あいまい」か「未解決」になる
+    const recog=[...new Set([st.name,...(PAYROLL_STATE.storeAliases||[]).filter(a=>a.store_id===st.id).map(a=>a.alias),...(PAYROLL_STATE.externalMappings||[]).filter(m=>m.store_id===st.id&&m.external_store_name).map(m=>m.external_store_name)])].filter(Boolean);
+    return {st,dept,deptMsg,subs,problems,tc,recog};
   }).sort((a,b)=>(b.problems-a.problems)||String(a.st.name).localeCompare(String(b.st.name),"ja"));
   // 共通チェック
   const tpl=PAYROLL_STATE.templates||[];
@@ -10753,19 +10755,35 @@ async function payrollDiagnose(){
     ["区分「アルバイト」の仕訳辞書が設定済み（新しいアルバイトの自動割当）",tpl.some(t=>t.payroll_kind==="parttime")],
   ];
   const badStores=rows.filter(r=>r.problems>0).length;
+  // MF側で名前をそろえたほうがいい補助科目：同じ店舗の補助科目が科目ごとに違う名前になっている／部門名と表記が違う（番号でしか結べない）もの。
+  // そろえる先は、その店舗で最も多く使われている名前（同数なら部門名に近いもの）
+  const unify=[];
+  for(const r of rows){
+    if(!r.dept) continue;
+    const found=r.subs.filter(x=>x.ok&&x.matched);
+    if(!found.length) continue;
+    const cnt=new Map(); found.forEach(x=>cnt.set(x.matched,(cnt.get(x.matched)||0)+1));
+    const want=norm(payrollExpectedSubName_(r.dept.name));
+    const target=[...cnt.entries()].sort((a,b)=>(b[1]-a[1])||((norm(b[0])===want)-(norm(a[0])===want))||(b[0].length-a[0].length))[0][0];
+    for(const x of found){ if(x.matched!==target) unify.push({store:r.st.name,acc:x.acc,now:x.matched,to:target}); }
+  }
   const mark=x=>x.ok===null?`<span style="color:var(--muted)">－</span>`:x.ok?`<span style="color:var(--m-green)">✓</span>${x.by==="code"?` <span style="font-size:10px;color:var(--muted)" title="部門名とは表記が違いますが、店舗番号が同じ補助科目として扱います">${esc(x.matched)}（番号で一致）</span>`:""}`:`<span style="color:var(--accent)" title="MFに「${esc(x.expect)}」を作成するか、既存の補助科目の名前を部門名に合わせてください">✗ ${esc(x.expect.split("/").slice(1).join("/"))}</span>${x.cands.length?`<div style="font-size:10px;color:var(--muted)">同じ番号の既存: ${x.cands.map(esc).join("、")}</div>`:`<div style="font-size:10px;color:var(--muted)">同じ番号の既存なし＝未作成</div>`}`;
   PAYROLL_STATE.diagHtml=`<div class="card" style="width:100%;margin-top:8px;padding:10px 12px;border:1px solid var(--line)">
     <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap"><b>🔍 マッピング診断</b><button type="button" class="linkbtn" id="payroll-diag-close" style="background:none;border:none;color:var(--blue);cursor:pointer;font-size:12px">閉じる</button></div>
     <div style="font-size:12px;margin:6px 0">店舗 ${rows.length}件中 <b style="color:${badStores?"var(--accent)":"var(--m-green)"}">${badStores}件に不足あり</b>${other?`（別法人の店舗${other}件は対象外）`:""}。✗の補助科目は、MF側で作成すると自動で仕訳に入るようになります。</div>
     <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px">
-      <thead><tr style="background:var(--panel-2,#f5f5f5)"><th style="text-align:left;padding:4px 6px">店舗</th><th style="text-align:left;padding:4px 6px">MFの部門</th>${PAYROLL_DIAG_ACCOUNTS.map(a=>`<th style="text-align:left;padding:4px 6px">${esc(a)}の補助科目</th>`).join("")}<th style="text-align:left;padding:4px 6px">スマレジ事業所</th></tr></thead>
+      <thead><tr style="background:var(--panel-2,#f5f5f5)"><th style="text-align:left;padding:4px 6px">店舗</th><th style="text-align:left;padding:4px 6px">MFの部門</th>${PAYROLL_DIAG_ACCOUNTS.map(a=>`<th style="text-align:left;padding:4px 6px">${esc(a)}の補助科目</th>`).join("")}<th style="text-align:left;padding:4px 6px">スマレジ事業所</th><th style="text-align:left;padding:4px 6px" title="給与明細の事業所名がこのどれかに一致すれば、自動でこの店舗に結びつきます。ここに無い表記は「あいまい」または「未解決」になり、『この店舗として登録』で追加できます">明細の事業所名として自動で認識できる名前</th></tr></thead>
       <tbody>${rows.map(r=>`<tr style="border-top:1px solid var(--line);${r.problems?"background:rgba(220,60,60,.06)":""}">
         <td style="padding:4px 6px"><b>${esc(r.st.name)}</b></td>
         <td style="padding:4px 6px">${r.dept?`<span style="color:var(--m-green)">✓ ${esc(r.dept.name)}</span>`:`<span style="color:var(--accent)">✗ ${esc(r.deptMsg)}</span>`}</td>
         ${r.subs.map(x=>`<td style="padding:4px 6px">${mark(x)}</td>`).join("")}
         <td style="padding:4px 6px">${r.tc.length?`<span style="color:var(--m-green)">✓</span> <span style="font-size:10px;color:var(--muted)">${r.tc.map(esc).join("、")}</span>`:`<span style="color:var(--muted)" title="スマレジのタイムカードに対応する事業所が登録されていません。給与明細の事業所名で店舗が特定できないときは「この店舗として登録」で登録できます">－ 未登録</span>`}</td>
+        <td style="padding:4px 6px;font-size:11px;color:var(--muted)">${r.recog.map(esc).join("、")}</td>
       </tr>`).join("")}</tbody></table></div>
-    <div style="font-size:12px;margin-top:8px"><b>共通のチェック</b></div>
+    <div style="font-size:12px;margin-top:10px"><b>MF側で名前をそろえたほうがいいところ</b>${unify.length?`（${unify.length}件）`:""}</div>
+    ${unify.length?`<div style="font-size:11px;color:var(--muted);margin:2px 0 4px">同じ店舗なのに科目ごとに補助科目の名前が違うものです。今のままでも番号で結ばれて動きますが、そろえておくと見分けやすく、取り違えも防げます。</div>
+    <table style="border-collapse:collapse;font-size:12px"><thead><tr style="background:var(--panel-2,#f5f5f5)"><th style="text-align:left;padding:3px 8px">店舗</th><th style="text-align:left;padding:3px 8px">勘定科目</th><th style="text-align:left;padding:3px 8px">今の補助科目</th><th style="text-align:left;padding:3px 8px">そろえる先</th></tr></thead><tbody>${unify.map(u=>`<tr style="border-top:1px solid var(--line)"><td style="padding:3px 8px">${esc(u.store)}</td><td style="padding:3px 8px">${esc(u.acc)}</td><td style="padding:3px 8px">${esc(u.now)}</td><td style="padding:3px 8px"><b>${esc(u.to)}</b></td></tr>`).join("")}</tbody></table>`:`<div style="font-size:12px;color:var(--m-green)">✓ そろえる必要のある補助科目はありません</div>`}
+    <div style="font-size:12px;margin-top:10px"><b>共通のチェック</b></div>
     <div style="font-size:12px;columns:2;column-gap:20px;margin-top:2px">${common.map(([l,ok])=>`<div>${ok?`<span style="color:var(--m-green)">✓</span>`:`<span style="color:var(--accent)">✗</span>`} ${esc(l)}</div>`).join("")}</div>
   </div>`;
 }
