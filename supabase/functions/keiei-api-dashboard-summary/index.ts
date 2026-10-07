@@ -70,7 +70,7 @@ const DEPOSIT_COLUMNS = "store_id,corporation_id,year_month,deposit_total,deposi
 const DAILY_COLUMNS = "store_id,corporation_id,date,net_sales,guests_total,parties_total,parttime_labor_cost,fulltime_labor_cost,labor_cost_total,cogs,cash,employee_salary_bonus,statutory_welfare,commute_allowance,avg_check,prior_year_same_weekday_sales,prior_year_same_weekday_ratio,computed_at,sync_run_id";
 const DEPOSIT_DAILY_COLUMNS = "store_id,date,cash_sales,deposit_amount,diff,deposit_count,entries";
 const DEPOSIT_CARRY_COLUMNS = "store_id,year_month,month_start,cash_before,deposit_before,carry";
-const AD_COLUMNS = "store_id,corporation_id,year_month,media_name,ad_cost,plan_breakdown,access_count,net_groups,net_people,tel_count,total_groups,total_people,total_sales,acquisition_fee,pl_excluded,source_updated_at,computed_at,sync_run_id";
+const AD_COLUMNS = "store_id,corporation_id,year_month,media_name,brand_name,ad_cost,plan_breakdown,access_count,net_groups,net_people,tel_count,total_groups,total_people,total_sales,acquisition_fee,pl_excluded,source_updated_at,computed_at,sync_run_id";
 const TARGET_V_COLUMNS = "store_id,year_month,ym,sales_target,target_days,pa_rate,emp_rate,cost_rate,dinii_target,review_target,updated_at";
 const TARGET_DAILY_COLUMNS = "store_id,biz_date,sales_target";
 // 2026-10-06追加（担当A依頼）: stg_* の行ミラー。GAS(bqGetMedia/bqGetPL/bqGetSpot/bqGetLoanPrincipal)なしで媒体別売上・PLを描く用
