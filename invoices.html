@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-07-v63";
+const BUILD_TAG="2026-10-07-v64";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -9088,9 +9088,24 @@ function payrollBuildAutoJournalPlan(row,branches,storeTotals,pdfSummary){
       return cl&&!PAYROLL_NETPAY_RE.test(cl)&&!usedRows.has(b)&&cl.includes(term);
     })||null;
   };
+  // 2026-10-07追加（ユーザー指示）：社会保険系の控除（健康保険・厚生年金・介護保険・子ども・子育て支援金・社会保険料）は
+  // 科目＝法定福利費（貸方）・補助科目と部門はその店舗のものを入れ、明細どおり1項目ずつ別の行にする（1行に合計しない）。
+  // 社宅料金は 雑収入／補助科目「社宅/自己負担分」・部門は働いた店舗。仕訳辞書の貸方行は使わず、行を新しく作る
+  // （雇用保険・所得税・住民税は従来どおり仕訳辞書の貸方行へ）
+  const itemRows=[]; // {kind:"welfare"|"rent", label, amount}
+  const cleanLabel=l=>String(l||"").replace(/[（(][^）)]*[）)]/g,"").trim();
   for(const d of deductions){
     const amt=Math.round(Number(d.resultAmount)||0);
     const label=String(d.label||"");
+    if(amt===0) continue;
+    if(/社宅/.test(label)) itemRows.push({kind:"rent",label:cleanLabel(label)||"社宅料金",amount:amt});
+    else if(/健康保険|厚生年金|介護保険|子ども・子育て|子育て支援|支援金|社会保険/.test(label)) itemRows.push({kind:"welfare",label:cleanLabel(label)||"社会保険料",amount:amt});
+  }
+  const itemSet=new Set(itemRows.map(x=>x.label+"|"+x.amount));
+  for(const d of deductions){
+    const amt=Math.round(Number(d.resultAmount)||0);
+    const label=String(d.label||"");
+    if(amt!==0&&itemSet.has(cleanLabel(label)+"|"+amt)&&(/社宅/.test(label)||/健康保険|厚生年金|介護保険|子ども・子育て|子育て支援|支援金|社会保険/.test(label))) continue; // 明細行で扱う
     const cat=PAYROLL_DEDUCTION_CATS.find(c=>c.re.test(label));
     if(cat&&cat.key in catBranchRef){
       catSums[cat.key]=(catSums[cat.key]||0)+amt;
@@ -9106,7 +9121,7 @@ function payrollBuildAutoJournalPlan(row,branches,storeTotals,pdfSummary){
   if(unmatchedDeductions.length){
     warnings.push(`控除項目「${unmatchedDeductions.map(d=>`${d.label}(${yen(d.amount)})`).join("、")}」に対応する貸方科目が仕訳辞書に見つかりませんでした`);
   }
-  const deductionSum=Object.values(catSums).reduce((s,v)=>s+v,0);
+  const deductionSum=Object.values(catSums).reduce((s,v)=>s+v,0)+itemRows.reduce((t,x)=>t+x.amount,0);
   const expectedDeductionTotal=Math.round(Number(row.deduction_total)||0);
   const deductionOk=unmatchedDeductions.length===0&&Math.abs(deductionSum-expectedDeductionTotal)<=1;
   if(!netPayBranch) warnings.push("仕訳辞書に「未払金」または「差引支給額」に該当する貸方科目が見つかりませんでした");
@@ -9125,7 +9140,8 @@ function payrollBuildAutoJournalPlan(row,branches,storeTotals,pdfSummary){
   const partial=!ok&&debitReady;
   return {
     ok, partial, creditIncomplete, blocked, blockReasons, pdfChecked, warnings,
-    allowRows:useAllowRows?allowItems:[], mainStoreIdx, empName:(row.user&&row.user.name)||"",
+    allowRows:useAllowRows?allowItems:[], mainStoreIdx, empName:(row.user&&row.user.name)||"", itemRows,
+    salaryAccountBase:(row.user&&row.user.role==="AL")?"雑給":"給料手当",
     salaryBranch, commuteBranch,
     stores, storeSum, expectedAllowance, allowanceDiff, allowanceOk,
     catBranchRef, catSums, netPayBranch, deductionSum, expectedDeductionTotal, deductionOk,
@@ -9158,7 +9174,8 @@ function payrollAutoJournalPlanHtml(plan){
     <td style="padding:3px 6px">${cell}</td>
   </tr>`;
   }).join("");
-  const catRows=Object.entries(plan.catSums).map(([key,amt])=>{
+  const itemHtml=(plan.itemRows||[]).map(x=>`<tr style="border-top:1px solid var(--line)"><td style="padding:3px 6px">${esc(x.label)} <span style="color:var(--muted);font-size:10px">→ ${x.kind==="rent"?"雑収入／社宅/自己負担分":"法定福利費（店舗の補助科目）"}・1行ずつ</span></td><td style="text-align:right;padding:3px 6px">${yen(x.amount)}</td></tr>`).join("");
+  const catRows=itemHtml+Object.entries(plan.catSums).map(([key,amt])=>{
     const cat=PAYROLL_DEDUCTION_CATS.find(c=>c.key===key);
     return `<tr style="border-top:1px solid var(--line)"><td style="padding:3px 6px">${esc(cat?cat.label:String(key).replace(/^x:/,""))}</td><td style="text-align:right;padding:3px 6px">${yen(amt)}</td></tr>`;
   }).join("");
@@ -9291,11 +9308,38 @@ function payrollApplyAutoJournalPlan(branches,plan){
   // 2026-10-06追加（§4-1）：手当は主たる店舗の部門で、給料と同じ借方科目の行として追加する（摘要に手当名を入れる）
   const mainStore=plan.stores[plan.mainStoreIdx];
   const mm=Number((PAYROLL_STATE.yearMonth||"").split("-")[1])||null;
+  // 2026-10-07（ユーザー指示）：手当（インセンティブ・手当・有給買取分等）は支給ごとに行を分け、摘要に手当名。科目は社員＝給料手当・アルバイト＝雑給
+  const allowLabelFor=st=>{
+    const base=plan.salaryAccountBase||"給料手当";
+    const r=payrollSubAccountLabelForDept(base,st.dept);
+    if(st.dept&&!r.found&&!(PAYROLL_STATE.accountLabelMap&&PAYROLL_STATE.accountLabelMap.has(base))) return subFor(salaryTpl.debitLabel,st); // 科目が見つからなければテンプレートの科目にフォールバック
+    if(st.dept&&!r.found) missingSub.push(`${base}の補助科目（${st.dept.name}）`);
+    return r.label;
+  };
   for(const a of (plan.allowRows||[])){
     if(!mainStore) break;
-    newRows.push({debit:null,credit:null,debitLabel:subFor(salaryTpl.debitLabel,mainStore),creditLabel:"",debitAmount:a.amount,creditAmount:0,department_id:mainStore.dept?mainStore.dept.id:null,tax_id:salaryTpl.tax_id||null,credit_department_id:null,credit_tax_id:null,purpose:null,remark:[mm?`${mm}月`:"月",a.label,plan.empName].filter(Boolean).join("　"),_auto:true,_unresolvedStore:mainStore.dept?undefined:mainStore.storeName});
+    newRows.push({debit:null,credit:null,debitLabel:allowLabelFor(mainStore),creditLabel:"",debitAmount:a.amount,creditAmount:0,department_id:mainStore.dept?mainStore.dept.id:null,tax_id:salaryTpl.tax_id||null,credit_department_id:null,credit_tax_id:null,purpose:null,remark:[mm?`${mm}月`:"月",a.label,plan.empName].filter(Boolean).join("　"),_auto:true,_unresolvedStore:mainStore.dept?undefined:mainStore.storeName});
   }
   branches.unshift(...newRows);
+  // 控除の明細行（法定福利費・社宅）。貸方のみの行・部門は主たる店舗（働いた店舗）
+  const itemOut=[];
+  const trustItems=!!plan.deductionOk;
+  if(trustItems&&mainStore&&(plan.itemRows||[]).length){
+    const known=lb=>PAYROLL_STATE.accountLabelMap&&PAYROLL_STATE.accountLabelMap.has(lb);
+    for(const it of plan.itemRows){
+      let label;
+      if(it.kind==="welfare"){
+        const r=payrollSubAccountLabelForDept("法定福利費",mainStore.dept);
+        label=r.label; if(mainStore.dept&&!r.found) missingSub.push(`法定福利費の補助科目（${mainStore.dept.name}）`);
+      }else{
+        label="雑収入/社宅/自己負担分";
+        if(!known(label)){ missingSub.push("雑収入の補助科目（社宅/自己負担分）"); label="雑収入"; }
+      }
+      itemOut.push({debit:null,credit:null,debitLabel:"",creditLabel:label,debitAmount:0,creditAmount:it.amount,department_id:null,tax_id:null,credit_department_id:mainStore.dept?mainStore.dept.id:null,credit_tax_id:null,purpose:null,remark:[mm?`${mm}月`:"月",it.label,plan.empName].filter(Boolean).join("　"),_auto:true,_unresolvedStore:mainStore.dept?undefined:mainStore.storeName});
+    }
+    const ni=plan.netPayBranch?branches.indexOf(plan.netPayBranch):-1;
+    if(ni>=0) branches.splice(ni,0,...itemOut); else branches.push(...itemOut);
+  }
   // 控除・差引支給額は既存行の金額だけを書き換える（科目・部門・税区分は仕訳辞書の設定のまま維持）。
   // オブジェクト参照で直接書き換えるため、上のsplice/unshiftでインデックスがずれていても問題ない
   // 2026-10-06追加（設計書_給与仕訳の全自動化 §1）：ユーザー要望「AI自動生成後、仕訳辞書由来の
