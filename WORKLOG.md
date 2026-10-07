@@ -42,6 +42,8 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
+**★★★★★2026-10-07 最新（司令塔スレッド）Sync9宣言: 店舗・法人・運営関係の正本再設計=設計確定v1.0（Q1〜Q5すべてa・Q1は`vendor_roles`で役割複数化）→担当FへPhase1指示書`実装指示書_担当F_店舗法人正本Phase1_2026-10-07.md`を発行**: Phase1=法人列追加＋`corporation_aliases`／`stores.location_type`（本部・CKは既存行再利用・新規はN-Style本社のみ）／`brands`＋`store_brand_relations`（`signs`からバックフィル）／`vendor_roles`／`store_operation_relations`（期間履歴・重なり禁止・seed=直営7＋非直営5）／`store_external_mappings`（複合キー・既存別名列から一括バックフィル・「本部」はsmaregi_timecard限定）／**RPC `resolve_store`=唯一の店舗判定ゲートウェイ**（解決順固定・未解決は`kd_unresolved_names`）＋`register_store_mapping`／導出ビュー／新旧比較レポート／管理画面。Phase1では読み取り先を切り替えない。担当CのSync8 §2は新表完成後に登録先を変更（store_aliases暫定登録はしない）。切替順=請求書→給与→精算書→広告→PL。
+
 **★★★2026-10-07（レーンP）広告kdの新横浜の看板向きを画面（DB_店舗対応）に合わせた**
 - 画面が使うDB_店舗対応は新横浜だけ逆向き（GAS広告DB『鶏武者（新横浜）』=看板「匠味 新横浜」、『匠味（新横浜）』=親そのもの）。store_aliasesを入れ替えると予約等の他の取込が壊れるため、広告だけの上書き設定 `app_secrets.kd_ad_name_overrides`（JSON。キー=括弧/空白を正規化した名前→{store,brand}）で解決（refreshAdMonthly内 adLookup。広告・広告効果・広告除外で共通）。ユーザーが対応表を直したらこの設定を削除/更新する
 - 結果(2025-01): 鶏武者 新横浜 brand空=404,504（旧GAS『匠味（新横浜）』）／brand『匠味 新横浜』=328,461（旧GAS『鶏武者（新横浜）』）。黒霧屋 新横浜は変更なし（374,855／彩 276,950）
@@ -9451,3 +9453,5 @@ TK-213「設計ゲート: 給与仕訳全自動化Q1〜Q3」を完了記録と�
 ## 2026-10-07（司令塔スレッド）店舗・法人・運営関係の正本再設計 レビュー
 
 ユーザー提示のChatGPT案を既存スキーマ（stores/corporations/store_aliases/本部・CK行/info.brands/vendors）と8/26の店舗法人マスタ統一レポートに突き合わせ、採否表と修正点・Phase分割・質問Q1〜Q5を設計書に記載。実装はSync後（担当F Phase1から）。
+
+**同日（続き）Sync9**: ユーザー＋ChatGPTレビューともQ1〜Q5=a。設計書§7に確定を追記し、担当FへPhase1指示書、担当Cへ順序変更通知、担当Hへ台帳反映依頼。
