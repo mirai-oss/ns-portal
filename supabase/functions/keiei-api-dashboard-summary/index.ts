@@ -89,7 +89,7 @@ const KINDS: Record<string, { table: string; columns: string; periodCol: string;
   daily: { table: "kd_daily_store_full", columns: DAILY_COLUMNS, periodCol: "date", periodKind: "day" },            // #1 fact_daily_store互換の日次
   deposit_daily: { table: "kd_deposit_daily_v", columns: DEPOSIT_DAILY_COLUMNS, periodCol: "date", periodKind: "day" }, // #2 店舗×日の現金売上・入金・差額
   deposit_carry: { table: "kd_deposit_carry_v", columns: DEPOSIT_CARRY_COLUMNS, periodCol: "year_month", periodKind: "ym" }, // #2 月初繰越
-  ad: { table: "kd_ad_monthly", columns: AD_COLUMNS, periodCol: "year_month", periodKind: "ym" },                   // #3 店舗×媒体×月
+  ad: { table: "kd_ad_monthly", columns: AD_COLUMNS, periodCol: "year_month", periodKind: "ym", tie: "id" },                   // #3 店舗×媒体×月
   // #4 目標。kind:'target'は従来の列(ym含む)＋売上目標(sales_target=日別目標の月合計)。日別の元値はtarget_daily
   target: { table: "kd_target_monthly_v", columns: TARGET_V_COLUMNS, periodCol: "year_month", periodKind: "ym", freshCol: "updated_at" },
   target_daily: { table: "dash_sales_target_daily", columns: TARGET_DAILY_COLUMNS, periodCol: "biz_date", periodKind: "day" },
