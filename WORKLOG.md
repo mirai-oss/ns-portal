@@ -42,6 +42,10 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
+**★★2026-10-07（レーンP）広告の新横浜上書きを「全角括弧の旧名」だけに限定（直近2行の逆転を解消）**
+- `kd_ad_name_overrides` のキーを広告DBの生の店名（『鶏武者（新横浜）』『匠味（新横浜）』）の完全一致のみに変更。直近の通常表記（『鶏武者 新横浜』等）は標準の解決（親・brand空）。結果: 2026-09 食べログ22,000／2026-10 ぐるなび104,641 は鶏武者 新横浜(親)。2025-01は 親404,504／brand『匠味 新横浜』328,461のまま
+- 注意: GASのbqGetAdCost等が遅い日は ad_monthly が3分近くかかり、workflow経由だと504（処理は完了）になる
+
 **★★★★★2026-10-07（担当F・TK-215）店舗・法人・運営関係の正本 Phase1（土台）: 成果物は完成・push済み（`d6c81f6`）／⚠️本番SQLはユーザー確認待ち（未適用）**: 指示書`実装指示書_担当F_店舗法人正本Phase1_2026-10-07.md`・設計書v1.0(Sync9)に対応。**Phase1ではどのシステムの読み取り先も切り替えていない**。
 - **成果物**: ①[supabase/2026-10-07_store_master_v2_01_tables.sql](supabase/2026-10-07_store_master_v2_01_tables.sql)（表・列・seed・バックフィル。corporations列追加/corporation_aliases/stores列(location_type・display_name)/brands・store_brand_relations/vendor_roles+MostFun・FAM Dining/store_operation_relations(期間重複禁止トリガー)/store_external_mappings。既存行は不変・本部とCKは再利用・新規行はN-Style 本社のみ・冪等）②[supabase/2026-10-07_store_master_v2_02_rpc_views.sql](supabase/2026-10-07_store_master_v2_02_rpc_views.sql)（`resolve_store`・`register_store_mapping`・`v_store_current_relations`・管理画面用`smv2_*` RPC。stores.name等の既存列には触れない）③管理画面[masters.html](masters.html)（portal「管理・権限」→「法人・店舗マスタ（正本）」。DB未適用の間は画面内に「準備待ち」と出る）④[比較レポート](docs/比較レポート_店舗判定_新旧_2026-10-07.md)⑤[resolve_storeの使い方](docs/resolve_store_使い方_2026-10-07.md)⑥[次フェーズ影響報告](docs/報告_店舗法人正本Phase1_次フェーズ影響_2026-10-07.md)。
 - **検証**: 本番を**読み取り専用**で調べ（stores14行・aliases・vendors・未解決16件等）、同構造の検証用DB(PGlite)でmigration01を2回・02を2回適用→冪等・既存stores14行の変更0・追加1行のみ・`resolve_store`の解決順/同名別法人の絞り込み/未解決の隔離/`register_store_mapping`の権限・上書き拒否/運営関係の変更（終了日→新規）/期間重複禁止を確認。masters.htmlはモックで4タブ・IME安全性・コンソールエラー無しを確認。**本番DBでの実行は未実施**（PATが無く、事前報告→ユーザー確認が必要なため）。
