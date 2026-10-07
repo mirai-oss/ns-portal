@@ -915,7 +915,7 @@ function renderBoard(u){
        任意の相手で絞り込みたい場合は従来どおりセレクトを使う） -->
   <div class="card" style="padding:14px;margin-top:14px">
     <div class="toolbar-top">
-      <div class="searchbox" style="margin:0"><span class="mag">🔍</span><input id="q" type="search" placeholder="タイトル・注意事項・工程名・コメントを検索（過去分含む）" value="${esc(SEARCHQ)}"></div>
+      <div style="display:flex;gap:6px;align-items:center"><div class="searchbox" style="margin:0;flex:1"><span class="mag">🔍</span><input id="q" type="search" placeholder="タイトル・注意事項・工程名・コメントを検索（過去分含む）" value="${esc(SEARCHQ)}"></div><button class="btn sm" id="qgo" style="white-space:nowrap">検索</button></div>
       <div class="chiprow" id="viewtoggle" style="margin:0">
         <span class="chip ${BOARD_VIEW==="kanban"?"active":""}" data-view="kanban">🗂 かんばん</span>
         <span class="chip ${BOARD_VIEW==="list"?"active":""}" data-view="list">📋 リスト</span>
@@ -994,8 +994,13 @@ function renderBoard(u){
   wireBoard(u);
 }
 function wireBoard(u){
-  let t=null;
-  $("q").oninput=e=>{ SEARCHQ=e.target.value; clearTimeout(t); t=setTimeout(()=>runSearch(SEARCHQ),350); };
+  // 2026-10-07: 入力のたびに自動検索すると、結果表示で画面が描き直されて入力中の文字が消えるため、
+  // 検索はEnterキーまたは「検索」ボタンを押したときだけ実行する（入力中は何も描き直さない）。
+  // 入力欄の「×」で空にしたときだけは、検索結果をやめてボードに戻す
+  $("q").oninput=e=>{ SEARCHQ=e.target.value; };
+  $("q").onkeydown=e=>{ if(e.key==="Enter"&&!e.isComposing&&e.keyCode!==229){ e.preventDefault(); runSearch(SEARCHQ); } };
+  $("q").onsearch=e=>{ if(!e.target.value&&SEARCH_RESULTS!==null){ SEARCHQ=""; runSearch(""); } };
+  $("qgo").onclick=()=>runSearch(SEARCHQ);
   if($("clearsearch"))$("clearsearch").onclick=()=>{SEARCHQ="";SEARCH_RESULTS=null;renderBoard(u);};
   $("bellbtn").onclick=async()=>{
     BELL_OPEN=!BELL_OPEN;
