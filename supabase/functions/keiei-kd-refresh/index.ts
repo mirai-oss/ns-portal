@@ -1188,7 +1188,7 @@ async function refreshAdMonthly(sb: any) {
   try {
     const maps = await loadStoreMaps(sb);
     const { corpByStoreId } = maps;
-    // 広告DBだけの店名→(店舗,看板)の上書き（app_secrets.kd_ad_name_overrides のJSON。キーは括弧/空白を正規化した名前）。
+    // 広告DBだけの店名→(店舗,看板)の上書き（app_secrets.kd_ad_name_overrides のJSON。キーは広告DBの生の店名＝全角括弧の旧名のみ。通常表記は標準の解決）。
     // 新横浜はユーザーの店舗対応表(DB_店舗対応)が「逆向き」＝GAS広告DBの『鶏武者（新横浜）』が看板『匠味 新横浜』、『匠味（新横浜）』が親そのもの。
     // 他の取込(予約等)のstore_aliasesには影響させない。画面(旧GAS経路)の解決結果に合わせる（2026-10-07 担当A確認）。
     let adOverrides: Record<string, { store: string; brand: string }> = {};
@@ -1197,7 +1197,7 @@ async function refreshAdMonthly(sb: any) {
       if (ov?.value) adOverrides = JSON.parse(ov.value);
     } catch (_) { /* 設定が壊れていても通常の解決で続行 */ }
     const adLookup = (name: string): { store_id: string; brand: string } | null => {
-      const o = adOverrides[normStoreName(name)];
+      const o = adOverrides[String(name ?? "").trim()];   // 生の表記で完全一致のみ（全角括弧の旧名だけ。通常表記は標準の解決）
       if (o) { const h = lookupStore(maps, o.store); return h ? { store_id: h.store_id, brand: o.brand } : null; }
       return lookupStore(maps, name);
     };
