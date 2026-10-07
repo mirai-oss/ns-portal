@@ -235,7 +235,7 @@ function relTabHtml(){
           <td>${c.settlement_from_name?`${esc(c.settlement_from_name)} → ${esc(c.settlement_to_name)}`:`<span class="note">なし</span>`}</td>`
         :`<td colspan="7"><span class="note">運営関係が未登録</span></td>`}
         <td style="white-space:nowrap"><button class="btn sm" data-act="relNew" data-id="${s.id}">関係を変更</button>
-          ${c?` <button class="btn ghost sm" data-act="relEnd" data-id="${c.relation_id}">終了</button>`:""}
+          ${c?` <button class="btn ghost sm" data-act="relFix" data-id="${c.relation_id}" data-from="${fmtD(c.effective_from)}" data-term="${c.contract_term_months||""}" data-auto="${c.auto_renew?1:0}" title="開始日・契約期間の入力ミスや仮置きを直します（履歴は増えません）">開始日を訂正</button> <button class="btn ghost sm" data-act="relEnd" data-id="${c.relation_id}">終了</button>`:""}
           ${h.length>1?` <button class="btn ghost sm" data-act="relHist" data-id="${s.id}">履歴${h.length}</button>`:""}</td></tr>
         ${open?`<tr><td colspan="9"><div class="hist">${h.map(r=>`<div>${fmtD(r.effective_from)} 〜 ${r.effective_to?fmtD(r.effective_to):"現在"}：${REL_LABEL[r.relation_type]||esc(r.relation_type)}／名義 ${esc(entName(r.lease_entity_type,r.lease_entity_id))}／運営 ${esc(entName(r.operator_entity_type,r.operator_entity_id))}／入金先 ${esc(entName(r.revenue_entity_type,r.revenue_entity_id))}${r.note?`　<span class="note">(${esc(r.note)})</span>`:""}</div>`).join("")}</div></td></tr>`:""}
         ${S.relForm&&S.relForm.storeId===s.id?`<tr><td colspan="9"><div class="dyn">${relFormHtml(s)}</div></td></tr>`:""}`;
@@ -375,6 +375,9 @@ document.addEventListener("click",async ev=>{
     if(!li||!oi||!ri){ flash("名義・運営・入金先を選んでください",true); return; }
     S.relForm=null; return run(()=>rpc("smv2_add_operation_relation",{p_store_id:id,p_relation_type:g("type"),p_lease_type:lt,p_lease_id:li,p_operator_type:ot,p_operator_id:oi,p_revenue_type:rt,p_revenue_id:ri,
       p_effective_from:g("from"),p_term_months:g("term")?Number(g("term")):null,p_auto_renew:g("auto")==="1",p_note:g("note")||null}),"運営関係を追加しました（旧関係には終了日が入りました）"); }
+  if(act==="relFix"){ const d=prompt("開始日を訂正します（入力ミス・仮置きの直し用。履歴は増えません）。\n実際に関係が変わった時は「関係を変更」を使ってください。\n\n新しい開始日（例: 2025-04-01）",b.dataset.from); if(!d||d===b.dataset.from) return;
+    if(!/^\d{4}-\d{2}-\d{2}$/.test(d)){ flash("日付は 2025-04-01 の形式で入力してください",true); return; }
+    return run(()=>rpc("smv2_correct_operation_relation",{p_id:id,p_effective_from:d,p_term_months:b.dataset.term?Number(b.dataset.term):null,p_auto_renew:b.dataset.auto==="1",p_note:"開始日を訂正（"+b.dataset.from+"→"+d+"）"}),"開始日を訂正しました"); }
   if(act==="relEnd"){ const d=prompt("この運営関係の終了日（最終日）を入力してください（例: 2026-12-31）。閉店・契約終了の時だけ使います。",today()); if(!d) return;
     return run(()=>rpc("smv2_end_operation_relation",{p_id:id,p_effective_to:d}),"運営関係を終了しました"); }
   if(act==="regOpen"){ const u=S.D.unres.find(x=>x.id===id); S.regOpen={id,store:"",src:guessSource(u.source_table)}; render(); return; }

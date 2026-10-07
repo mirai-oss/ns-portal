@@ -162,12 +162,12 @@ create table if not exists public.vendor_roles (
   primary key (vendor_id, role_type)
 );
 
+-- 正式名はユーザー確認済み（2026-10-07）: 株式会社MostFun／株式会社FAM Dining。会計用の列は空のまま
 insert into public.vendors (name, notes)
-select v.name, '運営受託会社（店舗法人正本Phase1で追加。正式な法人名・請求先情報は未入力）'
-from (values ('MostFun'),('FAM Dining')) as v(name)
+select v.name, '運営受託会社（店舗法人正本Phase1で追加。請求先情報は未入力）'
+from (values ('株式会社MostFun','mostfun'),('株式会社FAM Dining','famdining')) as v(name, core)
 where not exists (
-  select 1 from public.vendors x
-  where lower(replace(x.name,' ','')) like '%' || lower(replace(v.name,' ','')) || '%'
+  select 1 from public.vendors x where lower(replace(x.name,' ','')) like '%' || v.core || '%'
 );
 
 insert into public.vendor_roles (vendor_id, role_type)
@@ -324,7 +324,7 @@ select s.id, 'settlement', s.seisan_store_name, 'backfill:stores.seisan_store_na
 from public.stores s where s.seisan_store_name is not null and btrim(s.seisan_store_name) <> ''
 on conflict do nothing;
 
--- mf_department_name「本社」は 本部 と セントラルキッチン の2行が同名＝曖昧。本部（トーホー本社）だけ登録し、CKは未登録（要確認）
+-- mf_department_name「本社」は 本部 と セントラルキッチン の2行が同名。MF上の「本社」は本部のものなので、本部だけ登録する（CKは下で「セントラルキッチン」を登録）
 insert into public.store_external_mappings (store_id, source_system, external_store_name, note)
 select s.id, 'payroll', s.mf_department_name, 'backfill:stores.mf_department_name'
 from public.stores s
@@ -332,10 +332,22 @@ where s.mf_department_name is not null and btrim(s.mf_department_name) <> ''
 order by (s.store_no='99') desc, s.store_no
 on conflict do nothing;
 
+-- セントラルキッチンのMF部門は新設の「セントラルキッチン」（ユーザー確認済み 2026-10-07）。
+-- stores.mf_department_name（既存列）は変更しないため、CK行にはまだ旧値「本社」が残る（上のバックフィルは本部が先取りして衝突回避）
+insert into public.store_external_mappings (store_id, source_system, external_store_name, corporation_hint, note)
+select s.id, 'payroll', 'セントラルキッチン', 'toho', 'Phase1 seed: CKのMF部門名（ユーザー確認済み）'
+from public.stores s where s.name='セントラルキッチン'
+on conflict do nothing;
+
 insert into public.store_external_mappings (store_id, source_system, external_store_name, note)
 select s.id, 'dashboard', s.dash_store_name, 'backfill:stores.dash_store_name'
 from public.stores s where s.dash_store_name is not null and btrim(s.dash_store_name) <> ''
 on conflict do nothing;
+
+-- 「本部」はstores.corporation_idが空（既存列は変えない）ため、本部のマッピングには全てトーホーの法人ヒントを付け、
+-- resolve_store の戻り値 corporation_id を補えるようにする
+update public.store_external_mappings m set corporation_hint = 'toho'
+from public.stores s where s.id = m.store_id and s.store_no = '99' and s.name = '本部' and m.corporation_hint is null;
 
 -- store_aliases → source/kind から source_system を決める（不明は legacy_alias）
 insert into public.store_external_mappings (store_id, source_system, external_store_name, note)
@@ -358,6 +370,9 @@ select d.store_id, 'delivery', d.channel_store_id, d.channel_store_name, coalesc
        'backfill:delivery_store_map(channel=' || d.channel || ')'
 from public.delivery_store_map d
 on conflict do nothing;
+
+update public.store_external_mappings m set corporation_hint = 'toho'
+from public.stores s where s.id = m.store_id and s.store_no = '99' and s.name = '本部' and m.corporation_hint is null;
 
 -- ---------------------------------------------------------------------
 -- RLS: 認証済み=読み取りのみ。書き込みは 02 のRPC（security definer）経由、service_roleはRLSを素通り
@@ -384,5 +399,5 @@ end $$;
 --   update public.stores set location_type='store', display_name=null where store_no in ('99','100');
 --   alter table public.stores drop constraint if exists stores_location_type_check;
 --   alter table public.stores drop column if exists location_type, drop column if exists display_name;
---   delete from public.vendors where name in ('MostFun','FAM Dining') and notes like '運営受託会社（店舗法人正本Phase1%';
+--   delete from public.vendors where name in ('株式会社MostFun','株式会社FAM Dining') and notes like '運営受託会社（店舗法人正本Phase1%';
 -- ---------------------------------------------------------------------

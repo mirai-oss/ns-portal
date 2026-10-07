@@ -368,6 +368,23 @@ begin
   if not found then raise exception '終了できる関係が見つかりません（終了済み・または開始日より前です）'; end if;
 end $$;
 
+-- 開始日・契約条件・備考の「訂正」（入力ミス/仮置きの開始日を後から正しい日付にする）。履歴は増やさず同じ行を直す。
+-- 実際に関係が変わった時は smv2_add_operation_relation（終了日→新規追加）を使うこと。期間重複はトリガーが拒否する
+create or replace function public.smv2_correct_operation_relation(
+  p_id uuid, p_effective_from date, p_term_months int default null, p_auto_renew boolean default null, p_note text default null
+) returns void language plpgsql security definer set search_path to 'public' as $$
+begin
+  if not store_master_can_edit() then raise exception '権限がありません（本部/社長/マスターのみ）'; end if;
+  if p_effective_from is null then raise exception '開始日を入力してください'; end if;
+  update public.store_operation_relations
+     set effective_from = p_effective_from,
+         contract_term_months = p_term_months,
+         auto_renew = coalesce(p_auto_renew, auto_renew),
+         note = coalesce(nullif(btrim(p_note),''), note)
+   where id = p_id;
+  if not found then raise exception '対象の運営関係が見つかりません'; end if;
+end $$;
+
 create or replace function public.smv2_set_mapping_active(p_id uuid, p_active boolean)
 returns void language plpgsql security definer set search_path to 'public' as $$
 begin
@@ -383,7 +400,7 @@ begin
     'smv2_set_corporation_alias_active(uuid,boolean)','smv2_update_store(uuid,text,text)',
     'smv2_add_brand(text,text)','smv2_set_store_brands(uuid,uuid[])',
     'smv2_add_operation_relation(uuid,text,text,uuid,text,uuid,text,uuid,date,int,boolean,text)',
-    'smv2_end_operation_relation(uuid,date)','smv2_set_mapping_active(uuid,boolean)']
+    'smv2_end_operation_relation(uuid,date)','smv2_correct_operation_relation(uuid,date,int,boolean,text)','smv2_set_mapping_active(uuid,boolean)']
   loop
     execute format('revoke all on function public.%s from public', f);
     execute format('grant execute on function public.%s to authenticated', f);
@@ -398,5 +415,5 @@ end $$;
 --     public.smv2_add_corporation_alias(uuid,text,text), public.smv2_set_corporation_alias_active(uuid,boolean),
 --     public.smv2_update_store(uuid,text,text), public.smv2_add_brand(text,text), public.smv2_set_store_brands(uuid,uuid[]),
 --     public.smv2_add_operation_relation(uuid,text,text,uuid,text,uuid,text,uuid,date,int,boolean,text),
---     public.smv2_end_operation_relation(uuid,date), public.smv2_set_mapping_active(uuid,boolean);
+--     public.smv2_end_operation_relation(uuid,date), public.smv2_correct_operation_relation(uuid,date,int,boolean,text), public.smv2_set_mapping_active(uuid,boolean);
 -- ---------------------------------------------------------------------
