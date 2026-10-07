@@ -154,7 +154,7 @@ const fmtD=d=>d?String(d).slice(0,10):"—";
 /* ---------- 画面 ---------- */
 function headHtml(){
   return `<div style="display:flex;justify-content:space-between;align-items:flex-end;gap:10px;flex-wrap:wrap">
-    <div><h1>🏷️ 法人・店舗マスタ（正本）</h1>
+    <div>${EMBED?"":"<h1>🏷️ 法人・店舗マスタ（正本）</h1>"}
     <div class="sub">店舗・法人・運営関係・外部システム名の正本です。ここで登録した内容は、今後 請求書・給与・精算書・広告・PL が店舗を判定する時に参照されます（Phase1では各システムの読み取り先は切り替えていません）。<br>
     既存の店舗名（stores.name）や「所属法人」は、この画面からは変更できません。</div></div>
     ${EMBED?"":`<a href="portal.html">← ポータルへ</a>`}</div>`;
