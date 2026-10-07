@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-07-v68";
+const BUILD_TAG="2026-10-07-v69";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -8981,13 +8981,43 @@ function payrollBuildAutoJournalPlan(row,branches,storeTotals,pdfSummary){
   // 事業所ごとの部門マッチング
   const stores=storeTotals.map(t=>{
     const m=payrollMatchDeptDetail(t.store);
-    return {storeName:t.store,amount:Math.round(Number(t.amount)||0),commute:Math.round(Number(t.commute)||0),dept:m.dept,store:m.store,how:m.how,fuzzy:m.fuzzy};
+    return {storeName:t.store,amount:Math.round(Number(t.amount)||0),commute:Math.round(Number(t.commute)||0),days:Math.round(Number(t.count)||0),dept:m.dept,store:m.store,how:m.how,fuzzy:m.fuzzy};
   });
   const unmatchedStores=stores.filter(s=>!s.dept);
   if(unmatchedStores.length){
     warnings.push(`事業所「${unmatchedStores.map(s=>s.storeName).join("、")}」に対応する部門（勘定科目の部門マスタ）が見つかりませんでした。下の「この店舗として登録」で店舗を選んで登録すると、次回から自動で解決します（その行の部門を手で選んでも進められます）`);
   }
   stores.filter(s=>s.dept&&s.fuzzy).forEach(s=>warnings.push(`事業所「${s.storeName}」はあいまい一致（${s.how}）で部門「${s.dept.name}」と判定しました。「この店舗として登録」で登録しておくと確実になります`));
+  // 2026-10-07追加（ユーザー要望「社員も労働明細から事業所ごとに給料を按分して仕訳を起こしてほしい。できていなければ労働日数で按分」）：
+  // 社員の給与明細は勤務詳細の「金額」「交通費」が「-」（時給計算がない）ため、事業所ごとの金額がすべて0円になり、検算が成立せず
+  // 止まっていた。勤務詳細の金額がすべて0で、勤務日数（行数）が読み取れているときは、スマレジの金額（支給額合計−通勤手当−別行にする手当）を
+  // 事業所ごとの勤務日数の比で按分する（端数は最大剰余法で合計をちょうど合わせる）。通勤手当も同じ日数比で按分する
+  let apportion=null;
+  {
+    const sumAmt0=stores.reduce((t,x)=>t+x.amount,0), sumDays0=stores.reduce((t,x)=>t+x.days,0);
+    const hasT=row.total_allowance!=null&&row.total_allowance!=="";
+    if(sumAmt0<1&&sumDays0>0&&hasT){
+      const commuteApi=(row.commute_allowance!=null&&row.commute_allowance!=="")?Math.max(0,Math.round(Number(row.commute_allowance))):0;
+      const allowA=((row.raw&&row.raw.allowanceWage&&Array.isArray(row.raw.allowanceWage.allowance))?row.raw.allowanceWage.allowance:[])
+        .filter(a=>!/交通|通勤/.test(String(a&&a.label||""))&&Math.round(Number(a&&a.resultAmount)||0)>0)
+        .reduce((t,a)=>t+Math.round(Number(a.resultAmount)||0),0);
+      const base=Math.round(Number(row.total_allowance))-commuteApi-allowA;
+      const split=(total,weights)=>{
+        const w=weights.reduce((a,b)=>a+b,0);
+        const raw=weights.map(x=>total*x/w), fl=raw.map(Math.floor);
+        let rem=total-fl.reduce((a,b)=>a+b,0);
+        raw.map((v,i)=>[v-Math.floor(v),i]).sort((a,b)=>b[0]-a[0]).forEach(([,i])=>{ if(rem>0){ fl[i]++; rem--; } });
+        return fl;
+      };
+      if(base>0){
+        const days=stores.map(x=>x.days);
+        const salAlloc=split(base,days), comAlloc=split(commuteApi,days);
+        stores.forEach((x,i)=>{ x.amount=salAlloc[i]; x.commute=comAlloc[i]; });
+        apportion={base,commute:commuteApi,rows:stores.map(x=>({store:x.storeName,days:x.days,amount:x.amount,commute:x.commute}))};
+        warnings.unshift(`勤務詳細に金額が無い（社員等）ため、勤務日数で按分しました: ${stores.map(x=>`${x.storeName} ${x.days}日→${yen(x.amount)}`).join("、")}（給料${yen(base)}${commuteApi?`・通勤手当${yen(commuteApi)}`:""}）`);
+      }
+    }
+  }
   // 2026-10-06追加：ユーザー実機報告（はなれの人）。勤務詳細表の交通費合計(¥6,500)とスマレジの支給交通費
   // (¥6,000)が食い違い、給料部分は一致しているのに検算NGで止まっていた。金額の正はスマレジ
   // （sf_payroll_sync）なので、交通費の合計はスマレジの通勤手当に合わせて店舗へ按分し直す
@@ -9146,7 +9176,7 @@ function payrollBuildAutoJournalPlan(row,branches,storeTotals,pdfSummary){
   const partial=!ok&&debitReady;
   return {
     ok, partial, creditIncomplete, blocked, blockReasons, pdfChecked, warnings,
-    allowRows:useAllowRows?allowItems:[], mainStoreIdx, empName:(row.user&&row.user.name)||"", itemRows,
+    allowRows:useAllowRows?allowItems:[], mainStoreIdx, empName:(row.user&&row.user.name)||"", itemRows, apportion,
     salaryAccountBase:(row.user&&row.user.role==="AL")?"雑給":"給料手当",
     salaryBranch, commuteBranch,
     stores, storeSum, expectedAllowance, allowanceDiff, allowanceOk,
@@ -9192,6 +9222,7 @@ function payrollAutoJournalPlanHtml(plan){
       <thead><tr><th style="text-align:left;padding:3px 6px">事業所</th><th style="text-align:right;padding:3px 6px">給料相当額</th><th style="text-align:right;padding:3px 6px">交通費</th><th style="text-align:left;padding:3px 6px">部門マッチ</th></tr></thead>
       <tbody>${storeRows}</tbody>
     </table>
+    ${plan.apportion?`<div style="font-size:11px;color:var(--m-amber);margin:4px 0">📅 勤務詳細に金額が無いため、<b>勤務日数で按分</b>しています（${plan.apportion.rows.map(r=>`${esc(r.store)} ${r.days}日`).join("、")}）</div>`:""}
     <div style="font-size:12px;margin:6px 0">借方合計（AI読み取り）: <b>${yen(plan.storeSum)}</b>　支給額合計（スマレジ）: <b>${yen(plan.expectedAllowance)}</b>　${plan.allowanceOk?`<span style="color:var(--m-green)">✓一致</span>`:`<span style="color:var(--accent)">✗差額${yen(plan.allowanceDiff)}</span>`}</div>
     ${catRows?`<table style="width:100%;font-size:12px;border-collapse:collapse;margin-top:4px">
       <thead><tr><th style="text-align:left;padding:3px 6px">控除項目</th><th style="text-align:right;padding:3px 6px">金額</th></tr></thead>
