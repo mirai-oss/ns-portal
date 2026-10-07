@@ -1710,6 +1710,11 @@ Deno.serve(async (req) => {
       case "media_monthly": result = await refreshMediaMonthly(sb, body); break;
       case "entries": result = await refreshEntries(sb, body); break;
       case "gas_sync": result = await gasSync(body); break;
+      case "diag_target_header": {   // 診断: GAS action=data の目標/目標月次の見出しと先頭行（dash-syncの列名一致の確認用・読み取りのみ）
+        const r = await dashAuthed(sb, "data", { keys: "目標,目標月次", months: Number(body.months) || 2 });
+        result = r?.ok ? { ok: true, sheets: Object.fromEntries(Object.entries(r.sheets ?? {}).map(([k, v]: any) => [k, { rows: (v as any[]).length, header: (v as any[])[0], sample: (v as any[]).slice(1, 3) }])) } : { ok: false, error: r?.error ?? "取得失敗" };
+        break;
+      }
       case "pl_auto_sync": result = await autoSyncFromStgPl(sb, body.dry === true); break;
       case "pl_import": {   // 正本pl_entriesへの1回限りの取り込み（kd_pl_entriesから）。force=trueで既存があっても追加
         const { data, error } = await sb.rpc("pl_entries_import_from_kd", { p_actor: String(body.actor ?? "import"), p_force: body.force === true, p_reset: body.reset === true });

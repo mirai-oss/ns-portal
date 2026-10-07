@@ -1,0 +1,17 @@
+name: _p一時検証（実行後に削除）
+on:
+  workflow_dispatch:
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: run
+        env:
+          SR_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          U="https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/keiei-kd-refresh"
+          for B in '{"op":"diag_target_header","months":2}' '{"op":"diag_target_header","months":36}'; do
+            echo "== $B"
+            curl -s -m 200 -w "\nHTTP %{http_code}\n" -X POST "$U" -H "Authorization: Bearer $SR_KEY" -H "Content-Type: application/json" -d "$B" | cut -c1-1800
+          done
