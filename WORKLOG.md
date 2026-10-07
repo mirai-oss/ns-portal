@@ -4,6 +4,11 @@
 
 ---
 
+## 2026-10-07 担当A: 広告管理・目標管理をkd直読み(GASなし)に切替 — 新旧突合 全項目差0
+- app.js v259: 広告(kind:'ad')・目標(kind:'target'/'target_daily')をSupabase直読み既定ON(localStorage.kd_ad=0 / kd_target=0 で旧GAS経路)。画面の『🧪広告・目標突合』(管理者)で月×店舗(×媒体)の旧GAS vs kdを比較。
+- 突合で見つかった差と対応(P): 目標月次の率が0(dash-syncの列名)・過去月の目標(取得窓2→36か月)・鳥一代（芝）のalias・2枚看板(brand_name返却)・新横浜の匠味/鶏武者は画面のDB_店舗対応が逆向き→app_secrets.kd_ad_name_overrides(広告取込だけに効く・全角括弧の旧名のみ)で解決。DB_店舗対応を直したらこの上書きを削除して ad_monthly を再作成すること。
+- 保存直後の反映: 広告は90分/目標は26時間GAS経路に逃がす(localStorage kd_edit_*)。GASに kdNotifyTarget_(dash-sync target_sync)/kdNotifyEntries_(['ad']) を足せば短縮可(P準備済み・未適用)。
+
 ## 2026-10-06 担当A+P: PL手入力のSupabase正本化 切替完了
 - 手入力PL=pl_entries(社長/本部のみ)。自動行(精算書等)は従来どおりGAS→DB_PL→stg_pl→自動行として取込。切替前後の月次サマリ差0・精算書反映済み/未反映も同一。app.js v249で PL_ENTRIES_INPUT_=true。
 - データ出力センター(export-run/preview)は pl_source='entries' で pl_entries から読む(DB_PL書戻しミラーは不採用)。2026-09月次PLを画面と突合OK(社長確認)。
