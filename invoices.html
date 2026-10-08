@@ -789,6 +789,28 @@ async function mfCall(action,extra={}){
   const j=await r.json().catch(()=>({}));
   return {ok:r.ok,body:j};
 }
+// マネーフォワードの仕訳を削除（2026-10-08・mf-journalのdelete_journal）。
+// サーバー側で「このシステムが登録した仕訳か」「決算期間を過ぎていないか」を必ず確認する。
+// 成功すればシステム側の仕訳登録の記録（請求書・売上入金・給与）もサーバーが解除する。
+// 戻り値 {ok, closed(決算期間を過ぎている), gone(MF側に既に無い), notTracked(システムに記録が無い), error}
+async function mfDeleteJournal(journalId,{dryRun=false,tenantId}={}){
+  const r=await mfCall("delete_journal",{journal_id:journalId,dry_run:dryRun,tenant_id:tenantId||"default"});
+  const b=r.body||{};
+  return {ok:r.ok&&b.success===true,closed:!!b.period_closed,gone:!!b.already_gone,notTracked:!!b.not_tracked,error:b.error||"通信エラー",body:b};
+}
+// 請求書・売上入金の削除前に呼ぶ。決算期間を過ぎた仕訳が絡む削除は中止し、そうでなければ
+// 「MF側の仕訳も一緒に削除するか」を確認する。戻り値 true=削除を続行 / false=中止
+async function mfJournalDeleteGuard(journalId,journalNumber,label){
+  if(!journalId) return true;
+  const pre=await mfDeleteJournal(journalId,{dryRun:true});
+  if(pre.closed){ alert(`${label}の仕訳は決算期間を過ぎているため、削除・編集できません。削除を中止しました。`); return false; }
+  if(pre.notTracked||(pre.ok&&pre.gone)) return true; // システムに記録が無い／MF側に既に無い＝MFには触れず続行
+  if(!pre.ok){ alert("マネーフォワードの仕訳の状態を確認できなかったため、削除を中止しました。\n"+pre.error); return false; }
+  if(!confirm(`マネーフォワード側の仕訳（伝票番号: ${journalNumber??"-"}）も一緒に削除しますか？\n\nOK＝MF側の仕訳も削除する\nキャンセル＝MF側の仕訳は残したまま、システム側の記録だけ削除する`)) return true;
+  const d=await mfDeleteJournal(journalId);
+  if(!d.ok){ alert("マネーフォワード側の仕訳を削除できなかったため、削除を中止しました。\n"+d.error); return false; }
+  return true;
+}
 // MF仕訳→PL自動反映（手数料等・ラウンド5指示書§6.1）。pl-fee-reflect Edge Functionの薄いラッパー
 async function plFeeCall(action,extra={}){
   const s=sess.get();
@@ -2732,8 +2754,9 @@ async function deleteReceivableRow(u,receivableId){
   const row=(RECEIVABLE_STATE.receivables||[]).find(r=>r.id===receivableId);
   const name=(row&&row.source_name)||"この売上入金";
   let msg=`「${esc(name)}」（${esc(receivableStoreName(row&&row.store_id))}）を削除します。よろしいですか？`;
-  if(row&&row.mf_journal_id) msg=`⚠️「${esc(name)}」は既にマネーフォワードへ仕訳登録済み（伝票番号: ${row.mf_journal_number??"-"}）です。この削除ではマネーフォワード側の仕訳は取り消されません（ローカルの記録だけが消え、追跡できなくなります）。テスト登録の後片付け以外では使わないでください。本当に削除しますか？`;
+  if(row&&row.mf_journal_id) msg=`⚠️「${esc(name)}」は既にマネーフォワードへ仕訳登録済み（伝票番号: ${row.mf_journal_number??"-"}）です。このあと、マネーフォワード側の仕訳も一緒に削除するかを確認します（決算期間を過ぎた仕訳は削除できません）。本当に削除しますか？`;
   if(!confirm(msg)) return;
+  if(!(await mfJournalDeleteGuard(row&&row.mf_journal_id,row&&row.mf_journal_number,"この売上入金"))) return;
   if(row&&row.linked_invoice_id){
     const r=await deleteInvoiceRecord(row.linked_invoice_id);
     if(!r.ok){ alert("削除に失敗しました: "+(r.body?.message||r.body?.error||"原因不明（担当Cまでこの画面のまま連絡してください）")); return; }
@@ -5484,8 +5507,9 @@ function wireDetailActions(u){
   };
   if($("iv-delete")) $("iv-delete").onclick=async()=>{
     let msg=`「${esc(invoice.vendor_name||"この請求書")}」を削除します。元のメール・添付は削除されません（メールはまた「未処理」として残ります）。よろしいですか？`;
-    if(invoice.mf_journal_id) msg=`⚠️既にマネーフォワードへ仕訳登録済み（伝票番号: ${invoice.mf_journal_number??"-"}）です。この削除ではマネーフォワード側の仕訳は取り消されません（ローカルの記録だけが消え、追跡できなくなります）。テスト登録の後片付け以外では使わないでください。本当に削除しますか？`;
+    if(invoice.mf_journal_id) msg=`⚠️既にマネーフォワードへ仕訳登録済み（伝票番号: ${invoice.mf_journal_number??"-"}）です。このあと、マネーフォワード側の仕訳も一緒に削除するかを確認します（決算期間を過ぎた仕訳は削除できません）。本当に削除しますか？`;
     if(!confirm(msg)) return;
+    if(!(await mfJournalDeleteGuard(invoice.mf_journal_id,invoice.mf_journal_number,"この請求書"))) return;
     const r=await deleteInvoiceRecord(invoice.id);
     if(!r.ok){ alert("削除に失敗しました: "+(r.body?.message||r.body?.error||"原因不明（担当Cまでこの画面のまま連絡してください）")); return; }
     history.back();
@@ -6693,8 +6717,9 @@ async function unifiedDeleteInvoice(u,invoiceId){
   const row=UNIFIED_STATE.rows.find(r=>r.id===invoiceId);
   const name=(row&&((row.vendor&&row.vendor.name)||row.vendor_name))||"この請求書";
   let msg=`「${esc(name)}」を削除します。元のメール・添付は削除されません（メールはまた「未処理」として残ります）。よろしいですか？`;
-  if(row&&row.mf_journal_id) msg=`⚠️「${esc(name)}」は既にマネーフォワードへ仕訳登録済み（伝票番号: ${row.mf_journal_number??"-"}）です。この削除ではマネーフォワード側の仕訳は取り消されません（ローカルの記録だけが消え、追跡できなくなります）。テスト登録の後片付け以外では使わないでください。本当に削除しますか？`;
+  if(row&&row.mf_journal_id) msg=`⚠️「${esc(name)}」は既にマネーフォワードへ仕訳登録済み（伝票番号: ${row.mf_journal_number??"-"}）です。このあと、マネーフォワード側の仕訳も一緒に削除するかを確認します（決算期間を過ぎた仕訳は削除できません）。本当に削除しますか？`;
   if(!confirm(msg)) return;
+  if(!(await mfJournalDeleteGuard(row&&row.mf_journal_id,row&&row.mf_journal_number,"この請求書"))) return;
   const r=await deleteInvoiceRecord(invoiceId);
   if(!r.ok){ alert("削除に失敗しました: "+(r.body?.message||r.body?.error||"原因不明（担当Cまでこの画面のまま連絡してください）")); return; }
   await renderUnifiedInvoiceTab(u);
@@ -7321,8 +7346,17 @@ async function mfjOpenJournalPreview(journalId,tenantId,invoiceId){
   box.innerHTML=`
     <div style="font-size:12px;color:var(--muted);margin-bottom:8px">伝票番号: <b>${esc(String(j.journal_number??"-"))}</b>　会計計上日: <b>${esc(j.transaction_date||"—")}</b></div>
     ${entries||`<div class="empty">明細が見つかりませんでした</div>`}
-    <div class="mail-actions" style="margin-top:12px"><button id="mfjJournalViewClose2">閉じる</button></div>
+    ${j.period_closed?`<div class="note" style="margin-top:10px;font-size:12px;color:var(--muted)">🔒 この仕訳は決算期間を過ぎているため、削除・編集できません。</div>`:""}
+    <div class="mail-actions" style="margin-top:12px">${(invoiceId&&!j.period_closed)?`<button id="mfjJournalDelete" style="color:#b00020">🗑 MFの仕訳を削除して「会計・仕訳」を未登録に戻す</button> `:""}<button id="mfjJournalViewClose2">閉じる</button></div>
   `;
+  if($("mfjJournalDelete")) $("mfjJournalDelete").onclick=async()=>{
+    if(!confirm(`マネーフォワードの仕訳（伝票番号: ${j.journal_number??"-"}）を削除し、この請求書の「会計・仕訳」を未登録に戻します。\n\n※元に戻せません。MFの画面操作と同じく、証憑などの紐づけも外れる可能性があります。\n\nよろしいですか？`)) return;
+    const btn=$("mfjJournalDelete"); btn.disabled=true; btn.textContent="削除中…";
+    const d=await mfDeleteJournal(journalId,{tenantId});
+    if(!d.ok){ alert((d.closed?"決算期間を過ぎているため削除できません。\n":"削除できませんでした。\n")+d.error); btn.disabled=false; btn.textContent="🗑 MFの仕訳を削除して「会計・仕訳」を未登録に戻す"; return; }
+    history.back();
+    setTimeout(()=>{ history.back(); setTimeout(()=>openInvoiceDetail(ME,invoiceId),300); },300);
+  };
   if($("mfjJournalViewClose2")) $("mfjJournalViewClose2").onclick=()=>history.back();
 }
 // [data-journal-view]付きの要素をまとめて配線するヘルパー（各render関数の最後で呼ぶ）
@@ -9762,11 +9796,30 @@ async function payrollEditAction(kind){
     const targets=ids.filter(id=>!!payrollRecordFor(id));
     const paid=targets.filter(id=>{ const rec=payrollRecordFor(id); return rec&&rec.paid_at; }).length;
     if(!targets.length){ alert("削除できる人がいません。削除（仕訳登録の解除）できるのは、仕訳を登録済みの人だけです。"); return; }
-    if(!confirm(`${targets.length}名の${ym}分の「仕訳登録」をこの画面上で解除（削除）します。\n${paid?`※うち${paid}名は振込済みの記録も一緒に消えます。\n`:""}\n※マネーフォワード側に登録済みの仕訳自体は削除されません。間違えて登録した場合は、MF側でも別途削除してください。\n\nよろしいですか？`)) return;
-    const r=await authed(`/rest/v1/payroll_journal_records?year_month=eq.${ym}&user_id=${inList(targets)}`,{method:"DELETE"});
-    if(!r.ok){ alert("削除（解除）に失敗しました"); return; }
-    PAYROLL_STATE.records=(PAYROLL_STATE.records||[]).filter(rc=>!(rc.year_month===ym&&targets.includes(rc.user_id)));
-    finish(`${targets.length}名の仕訳登録を解除しました。`);
+    const withMf=targets.filter(id=>{ const rec=payrollRecordFor(id); return rec&&rec.mf_journal_id; });
+    if(!confirm(`${targets.length}名の${ym}分の「仕訳登録」を解除（削除）します。\n${paid?`※うち${paid}名は振込済みの記録も一緒に消えます。\n`:""}\n※マネーフォワードに登録済みの${withMf.length}名分は、MF側の仕訳も一緒に削除されます（元に戻せません）。決算期間を過ぎている仕訳は削除されず、その人だけ残ります。\n\nよろしいですか？`)) return;
+    const btn=document.getElementById("payroll-edit-del"); if(btn){ btn.disabled=true; btn.textContent="削除中…"; }
+    const done=[], closed=[], failed=[];
+    for(const id of targets){
+      const rec=payrollRecordFor(id);
+      if(rec&&rec.mf_journal_id){
+        const d=await mfDeleteJournal(rec.mf_journal_id);
+        if(d.closed){ closed.push(nameOf(id)); continue; }
+        if(!d.ok&&!d.notTracked){ failed.push(`${nameOf(id)}（${d.error.slice(0,60)}）`); continue; }
+      }
+      done.push(id);
+    }
+    if(done.length){
+      const r=await authed(`/rest/v1/payroll_journal_records?year_month=eq.${ym}&user_id=${inList(done)}`,{method:"DELETE"});
+      if(!r.ok){ alert("MF側の削除後、この画面の記録の解除に失敗しました。画面を更新して確認してください"); }
+      PAYROLL_STATE.records=(PAYROLL_STATE.records||[]).filter(rc=>!(rc.year_month===ym&&done.includes(rc.user_id)));
+    }
+    if(btn){ btn.textContent="🗑 削除（仕訳登録の解除）"; }
+    const parts=[`${done.length}名の仕訳登録を解除しました。`];
+    if(closed.length) parts.push(`決算期間を過ぎているため削除できなかった人（${closed.length}名）: ${closed.join("、")}`);
+    if(failed.length) parts.push(`MF側の削除に失敗した人（${failed.length}名・記録は残してあります）: ${failed.join("、")}`);
+    if(closed.length||failed.length) alert(parts.join("\n"));
+    finish(parts.join(" "));
   }
 }
 function payrollRowHtml(row){
@@ -10324,8 +10377,16 @@ function wirePayrollRowActions(){
     const userId=el.dataset.payrollUnregister;
     const row=(PAYROLL_STATE.rows||[]).find(r=>r.user_id===userId);
     const name=(row&&row.user&&row.user.name)||"この従業員";
-    if(!confirm(`${name}さんの${PAYROLL_STATE.yearMonth}分の仕訳登録をこの画面上で解除しますか？\n\n※マネーフォワード側に登録済みの仕訳自体はこの操作では削除されません。間違えて登録した場合は、マネーフォワードの画面から該当の仕訳も別途削除・修正してください。解除するとこの一覧では「未登録」に戻り、もう一度登録し直せるようになります。`)) return;
+    const rec=payrollRecordFor(userId);
+    const hasMf=!!(rec&&rec.mf_journal_id);
+    // 2026-10-08: 解除と同時にマネーフォワード側の仕訳も削除する（決算期間を過ぎた仕訳は削除・解除ともできない）
+    if(!confirm(`${name}さんの${PAYROLL_STATE.yearMonth}分の仕訳登録を解除します。\n\n${hasMf?"※マネーフォワード側に登録した仕訳も一緒に削除されます。決算期間を過ぎている仕訳は削除できません。":"※マネーフォワードには登録されていない（途中で止まっている）ため、この画面上の記録だけを解除します。"}\n解除するとこの一覧では「未登録」に戻り、もう一度登録し直せます。\n\nよろしいですか？`)) return;
     el.disabled=true;
+    if(hasMf){
+      const d=await mfDeleteJournal(rec.mf_journal_id);
+      if(d.closed){ alert(`${name}さんの仕訳は決算期間を過ぎているため、削除・解除できません。`); el.disabled=false; return; }
+      if(!d.ok&&!d.notTracked){ alert("マネーフォワード側の仕訳を削除できなかったため、解除を中止しました。\n"+d.error); el.disabled=false; return; }
+    }
     const r=await authed(`/rest/v1/payroll_journal_records?user_id=eq.${userId}&year_month=eq.${PAYROLL_STATE.yearMonth}`,{method:"DELETE"});
     if(!r.ok){ alert("解除に失敗しました"); el.disabled=false; return; }
     PAYROLL_STATE.records=(PAYROLL_STATE.records||[]).filter(rc=>!(rc.user_id===userId&&rc.year_month===PAYROLL_STATE.yearMonth));
