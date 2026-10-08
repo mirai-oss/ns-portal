@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-08-v70";
+const BUILD_TAG="2026-10-08-v71";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -8547,6 +8547,10 @@ async function payrollLoad(){
     PAYROLL_STATE.loadError=true; // 同じ年月の直前データはそのまま維持し、失敗した旨だけ画面に出す
   }
   PAYROLL_STATE.records=(recR.ok&&Array.isArray(recR.body))?recR.body:[];
+  { // 区分の月ごとの上書き（表が無い間は空＝全員「自動（役職から）」）
+    const ko=await authed(`/rest/v1/payroll_kind_overrides?year_month=eq.${ym}&select=user_id,year_month,kind`);
+    PAYROLL_STATE.kindOverrides=(ko.ok&&Array.isArray(ko.body))?ko.body:[];
+  }
   {
     const ids=[...new Set(PAYROLL_STATE.records.map(r=>r.created_by).filter(Boolean))];
     if(ids.length){
@@ -8787,22 +8791,29 @@ function payrollRoleKind_(userId){
   const row=(PAYROLL_STATE.rows||[]).find(r=>r.user_id===userId);
   return (row&&row.user&&row.user.role==="AL")?"parttime":"employee";
 }
+// 2026-10-08：区分は「その月の上書き（payroll_kind_overrides）→役職(users.role)から自動」の順。上書きは月ごとなので、
+// 管理システムで役職を変えれば、上書きの無い月は自動で新しい区分になる
+function payrollKindOverrideFor(userId){
+  return (PAYROLL_STATE.kindOverrides||[]).find(o=>o.user_id===userId&&o.year_month===PAYROLL_STATE.yearMonth)||null;
+}
 function payrollEffectiveKind(userId){
-  const man=payrollManualAssignmentFor(userId);
-  return (man&&man.kind)||payrollRoleKind_(userId);
+  const o=payrollKindOverrideFor(userId);
+  return (o&&o.kind)||payrollRoleKind_(userId);
 }
 function payrollAutoTemplateFor(userId){
   const kind=payrollEffectiveKind(userId);
   const cands=(PAYROLL_STATE.templates||[]).filter(t=>t.payroll_kind===kind);
   if(!cands.length) return null;
   const corp=payrollUserCorporationId(userId);
-  return cands.find(t=>corp&&t.payroll_corporation_id===corp)||cands.find(t=>!t.payroll_corporation_id)||null;
+  // 法人が分かる人は同じ法人の型を優先、法人を問わない型があればそれ。所属店舗の按分が無く法人が不明な人（大半）は、
+  // 給与仕訳タブが有限会社トーホーエージェンシー分のみのため、型の対象法人を問わず区分が合う型を使う
+  return (corp&&cands.find(t=>t.payroll_corporation_id===corp))||cands.find(t=>!t.payroll_corporation_id)||(!corp?cands[0]:null)||null;
 }
 function payrollAssignmentFor(userId){
   const man=payrollManualAssignmentFor(userId);
   if(payrollAutoAssignOn()){
     const t=payrollAutoTemplateFor(userId);
-    if(t) return {user_id:userId,tenant_id:"default",template_id:t.id,auto:true,kind:payrollEffectiveKind(userId),overridden:!!(man&&man.kind)};
+    if(t) return {user_id:userId,tenant_id:"default",template_id:t.id,auto:true,kind:payrollEffectiveKind(userId),overridden:!!payrollKindOverrideFor(userId)};
   }
   // 区分の型（区分付きの仕訳辞書）がまだ無い場合だけ、従来の人ごとの仕訳辞書の割当を使う（移行期間の保険）
   return man&&man.template_id?man:man;
@@ -9049,8 +9060,12 @@ function payrollBuildAutoJournalPlan(row,branches,storeTotals,pdfSummary){
     warnings.push(`交通費: 勤務詳細表の合計（${yen(aiCommute)}）とスマレジの支給額（${yen(apiCommute)}）が違うため、スマレジの金額に合わせて店舗へ按分しました`);
   }
   const totalCommuteNeeded=stores.reduce((s,x)=>s+x.commute,0);
-  if(totalCommuteNeeded>0&&!commuteBranch){
-    warnings.push("交通費が発生していますが、仕訳辞書に「旅費交通費」に該当する借方科目が見つかりませんでした");
+  // 2026-10-08（ユーザー要望「形は社員給料のとおり。人ごとに足りない行は自動で追加」）：型に通勤手当の行が無い（社員給料は給料手当のみ）
+  // 場合は、通勤手当（科目「通勤手当」・税区分「対象外」・店舗の補助科目と部門）の行を店舗ごとに自動で作る
+  const hasCommuteAcc=[...((PAYROLL_STATE.accountLabelMap&&PAYROLL_STATE.accountLabelMap.keys())||[])].some(k=>k==="通勤手当"||k.startsWith("通勤手当/"));
+  const autoCommute=totalCommuteNeeded>0&&!commuteBranch&&hasCommuteAcc;
+  if(totalCommuteNeeded>0&&!commuteBranch&&!autoCommute){
+    warnings.push("交通費が発生していますが、型に通勤手当の行が無く、MFにも「通勤手当」の科目が見つかりませんでした");
   }
   const storeSum=stores.reduce((s,x)=>s+x.amount+x.commute,0);
   const hasTotalAllowance=row.total_allowance!=null&&row.total_allowance!=="";
@@ -9147,13 +9162,13 @@ function payrollBuildAutoJournalPlan(row,branches,storeTotals,pdfSummary){
     const label=String(d.label||"");
     if(amt===0) continue;
     if(/社宅/.test(label)) itemRows.push({kind:"rent",label:cleanLabel(label)||"社宅料金",amount:amt});
-    else if(/健康保険|厚生年金|介護保険|子ども・子育て|子育て支援|支援金|社会保険/.test(label)) itemRows.push({kind:"welfare",label:cleanLabel(label)||"社会保険料",amount:amt});
+    else if(/健康保険|厚生年金|介護保険|子ども・子育て|子育て支援|支援金|社会保険|雇用保険/.test(label)) itemRows.push({kind:"welfare",label:cleanLabel(label)||"社会保険料",amount:amt});
   }
   const itemSet=new Set(itemRows.map(x=>x.label+"|"+x.amount));
   for(const d of deductions){
     const amt=Math.round(Number(d.resultAmount)||0);
     const label=String(d.label||"");
-    if(amt!==0&&itemSet.has(cleanLabel(label)+"|"+amt)&&(/社宅/.test(label)||/健康保険|厚生年金|介護保険|子ども・子育て|子育て支援|支援金|社会保険/.test(label))) continue; // 明細行で扱う
+    if(amt!==0&&itemSet.has(cleanLabel(label)+"|"+amt)&&(/社宅/.test(label)||/健康保険|厚生年金|介護保険|子ども・子育て|子育て支援|支援金|社会保険|雇用保険/.test(label))) continue; // 明細行で扱う
     const cat=PAYROLL_DEDUCTION_CATS.find(c=>c.re.test(label));
     if(cat&&cat.key in catBranchRef){
       catSums[cat.key]=(catSums[cat.key]||0)+amt;
@@ -9176,18 +9191,18 @@ function payrollBuildAutoJournalPlan(row,branches,storeTotals,pdfSummary){
 
   const blocked=blockReasons.length>0;
   blockReasons.forEach(r=>warnings.unshift(r));
-  const baseOk=!blocked&&allowanceOk&&deductionOk&&!!netPayBranch&&(totalCommuteNeeded===0||!!commuteBranch);
+  const baseOk=!blocked&&allowanceOk&&deductionOk&&!!netPayBranch&&(totalCommuteNeeded===0||!!commuteBranch||autoCommute);
   const ok=baseOk&&unmatchedStores.length===0;
   // 2026-10-06追加（§3）：店舗が未解決でも、検算自体（支給・控除）が合っていて解決済みの店舗が
   // 1つでもあれば、解決済み店舗の分だけ先に反映する。未解決の店舗は赤い行で残し、解決するまで登録させない
   // 2026-10-06追加（ユーザー実機報告）：仕訳辞書テンプレートに貸方行（所得税・未払金）が無い／控除の検算が
   // 合わない場合でも、借方（給料・交通費）の支給額検算が合っていれば借方だけ先に反映する（0円のまま何も
   // 入らない状態を避ける）。貸方は足りない分を手入力してもらう（creditIncomplete）
-  const debitReady=!blocked&&allowanceOk&&(totalCommuteNeeded===0||!!commuteBranch)&&stores.some(s=>!!s.dept);
+  const debitReady=!blocked&&allowanceOk&&(totalCommuteNeeded===0||!!commuteBranch||autoCommute)&&stores.some(s=>!!s.dept);
   const creditIncomplete=!deductionOk||!netPayBranch;
   const partial=!ok&&debitReady;
   return {
-    ok, partial, creditIncomplete, blocked, blockReasons, pdfChecked, warnings,
+    ok, partial, creditIncomplete, blocked, blockReasons, pdfChecked, warnings, autoCommute,
     allowRows:useAllowRows?allowItems:[], mainStoreIdx, empName:(row.user&&row.user.name)||"", itemRows, apportion,
     salaryAccountBase:(row.user&&row.user.role==="AL")?"雑給":"給料手当",
     salaryBranch, commuteBranch,
@@ -9274,6 +9289,30 @@ function payrollRestoreAutoRows(branches){
 // （実際にMFで受理された科目・補助科目なので最も確実）②他の給与テンプレートの貸方 ③勘定科目一覧から
 // 名前で探す（未払金／預り金の源泉所得税・住民税・社会保険・雇用保険）。MFの科目一覧に実在しないラベルは
 // 使わない（登録時エラーになるため）。金額は後段のplanが埋め、0円の行は§1で行ごと除外される
+// 2026-10-08：型に無い控除の行を自動で足す（人ごとに控除の種類が違うため）。今月その控除があり、型に対応する貸方行が無いときだけ、
+// MFの科目一覧から該当する科目（預り金/源泉所得税・預り金/住民税）を探して貸方行を追加する。見つからなければ何もしない（従来どおり要確認）
+function payrollEnsureDeductionRows(branches,row){
+  const notes=[];
+  const keys=[...((PAYROLL_STATE.accountLabelMap&&PAYROLL_STATE.accountLabelMap.keys())||[])];
+  const rules=[
+    {key:"income_tax",re:/所得税/,find:k=>/^預り金\/.*(源泉|所得税)/.test(k)},
+    {key:"resident_tax",re:/住民税/,find:k=>/^預り金\/.*住民税/.test(k)},
+  ];
+  const deductions=Array.isArray(row.deductions)?row.deductions:[];
+  for(const rule of rules){
+    const amt=deductions.filter(d=>rule.re.test(String(d.label||""))).reduce((t,d)=>t+Math.round(Number(d.resultAmount)||0),0);
+    if(amt===0) continue;
+    const exists=branches.some(b=>(b.creditLabel||"").trim()&&rule.re.test(b.creditLabel||""));
+    if(exists) continue;
+    const label=keys.find(rule.find);
+    if(!label){ notes.push(`控除「${rule.key==="income_tax"?"所得税":"住民税"}」の貸方科目がMFに見つかりませんでした`); continue; }
+    const nr={debit:null,credit:null,debitLabel:"",creditLabel:label,debitAmount:0,creditAmount:0,department_id:null,tax_id:null,credit_department_id:null,credit_tax_id:payrollTaxIdByName_("対象外"),purpose:null,remark:null,_auto:true};
+    const ni=branches.findIndex(b=>(b.creditLabel||"").trim()&&PAYROLL_NETPAY_RE.test(b.creditLabel)); // 差引支給額（未払金）の行の手前に入れる
+    if(ni>=0) branches.splice(ni,0,nr); else branches.push(nr);
+    notes.push(`控除の行を自動で追加しました: ${label}`);
+  }
+  return notes;
+}
 async function payrollEnsureCreditRows(branches,row,userId){
   const notes=[];
   const hasNet=branches.some(b=>!b._auto&&(b.creditLabel||"").trim()&&PAYROLL_NETPAY_RE.test(b.creditLabel));
@@ -9341,6 +9380,10 @@ function payrollSubAccountLabelForDept(baseLabel,dept){
   }
   return {label:lb,found:false,changed:false};
 }
+function payrollTaxIdByName_(name){
+  const t=(PAYROLL_STATE.taxes||[]).find(x=>x&&x.name===name);
+  return t?t.id:null;
+}
 function payrollApplyAutoJournalPlan(branches,plan){
   const salaryTpl=plan.salaryBranch;
   const commuteTpl=plan.commuteBranch;
@@ -9356,6 +9399,9 @@ function payrollApplyAutoJournalPlan(branches,plan){
   for(const s of plan.stores){
     if(s.amount>0){
       newRows.push({debit:null,credit:null,debitLabel:subFor(salaryTpl.debitLabel,s),creditLabel:"",debitAmount:s.amount,creditAmount:0,department_id:s.dept?s.dept.id:null,tax_id:salaryTpl.tax_id||null,credit_department_id:null,credit_tax_id:null,purpose:null,remark:salaryTpl.remark||null,_auto:true,_unresolvedStore:s.dept?undefined:s.storeName});
+    }
+    if(s.commute>0&&!commuteTpl&&plan.autoCommute){
+      newRows.push({debit:null,credit:null,debitLabel:subFor("通勤手当",s),creditLabel:"",debitAmount:s.commute,creditAmount:0,department_id:s.dept?s.dept.id:null,tax_id:payrollTaxIdByName_("対象外"),credit_department_id:null,credit_tax_id:null,purpose:null,remark:[Number((PAYROLL_STATE.yearMonth||"").split("-")[1])?`${Number((PAYROLL_STATE.yearMonth||"").split("-")[1])}月`:"月","交通費",plan.empName].filter(Boolean).join("　"),_auto:true,_unresolvedStore:s.dept?undefined:s.storeName});
     }
     if(s.commute>0&&commuteTpl){
       newRows.push({debit:null,credit:null,debitLabel:subFor(commuteTpl.debitLabel,s),creditLabel:"",debitAmount:s.commute,creditAmount:0,department_id:s.dept?s.dept.id:null,tax_id:commuteTpl.tax_id||null,credit_department_id:null,credit_tax_id:null,purpose:null,remark:commuteTpl.remark||null,_auto:true,_unresolvedStore:s.dept?undefined:s.storeName});
@@ -9428,6 +9474,15 @@ function payrollApplyAutoJournalPlan(branches,plan){
       const target=branches.filter(b=>b._auto&&(b.debitLabel||"").trim()&&Number(b.debitAmount)>0).sort((a,b)=>b.debitAmount-a.debitAmount)[0];
       if(target){ target.debitAmount=Number(target.debitAmount)+diff; roundAdj=diff; }
     }
+  }
+  // 2026-10-08：型にあらかじめ入っている法定福利費の貸方行（店舗固定の補助科目）は、控除の明細から作った行に置き換わるため取り除く。
+  // 控除が確定している（trustCredit）ときは、金額0のまま残った型の行（2行目の給料手当など）も取り除く
+  if(trustCredit){
+    for(let i=branches.length-1;i>=0;i--){
+      const b=branches[i];
+      if(b._fromTpl&&!b._touched&&(b.creditLabel||"").trim().startsWith("法定福利費")) branches.splice(i,1);
+    }
+    payrollDropUntouchedZeroRows(branches);
   }
   return {removedZero,roundAdj,missingSub:[...new Set(missingSub)]};
 }
@@ -9574,7 +9629,7 @@ function payrollRowHtml(row){
   // 勘定科目のように検索できるように」に対応。既に割り当て済みのテンプレートが万一「給料」を
   // 含まない古いものだった場合でも、選択中の表示が消えて空欄に見えてしまわないよう現在値だけは例外的に残す
   const currentTpl=asg&&PAYROLL_STATE.templates.find(t=>t.id===asg.template_id);
-  const effKind=payrollEffectiveKind(row.user_id), manKind=(payrollManualAssignmentFor(row.user_id)||{}).kind||"";
+  const effKind=payrollEffectiveKind(row.user_id), manKind=(payrollKindOverrideFor(row.user_id)||{}).kind||"";
   const roleKindLabel=payrollRoleKind_(row.user_id)==="parttime"?"アルバイト":"社員";
   const noTpl=!(asg&&asg.template_id);
   const patternInput=`<select class="payroll-kind-select" data-payroll-kind="${esc(row.user_id)}" ${rec?"disabled":""} title="既定は役職から自動で決まります。この人だけ変えたいときに選んでください">
@@ -10123,15 +10178,18 @@ function wirePayrollRowActions(){
   document.querySelectorAll("[data-payroll-kind]").forEach(el=>el.onchange=async()=>{
     const userId=el.dataset.payrollKind;
     const kind=el.value||null;
-    const r=await authed("/rest/v1/payroll_journal_assignments",{method:"POST",headers:{Prefer:"resolution=merge-duplicates,return=minimal"},body:JSON.stringify({user_id:userId,tenant_id:"default",kind,updated_by:ME.id,updated_at:new Date().toISOString()})});
+    const ym=PAYROLL_STATE.yearMonth;
+    // 空（自動）＝その月の上書きを削除。社員／アルバイト＝その月だけの上書きを保存（月ごと）
+    const r=kind
+      ?await authed("/rest/v1/payroll_kind_overrides",{method:"POST",headers:{Prefer:"resolution=merge-duplicates,return=minimal"},body:JSON.stringify({user_id:userId,year_month:ym,kind,updated_by:ME.id,updated_at:new Date().toISOString()})})
+      :await authed(`/rest/v1/payroll_kind_overrides?user_id=eq.${userId}&year_month=eq.${ym}`,{method:"DELETE"});
     if(!r.ok){
-      alert(`区分の保存に失敗しました（${(r.body&&(r.body.message||r.body.error))||"通信エラー"}）。DBの更新（kind列の追加）がまだの可能性があります。`);
-      const cur=(payrollManualAssignmentFor(userId)||{}).kind||"";
-      el.value=cur;
+      alert(`区分の保存に失敗しました（${(r.body&&(r.body.message||r.body.error))||"通信エラー"}）。DBの更新（payroll_kind_overridesの作成）がまだの可能性があります。`);
+      el.value=(payrollKindOverrideFor(userId)||{}).kind||"";
       return;
     }
-    const existing=payrollManualAssignmentFor(userId);
-    if(existing) existing.kind=kind; else PAYROLL_STATE.assignments.push({user_id:userId,tenant_id:"default",template_id:null,kind});
+    PAYROLL_STATE.kindOverrides=(PAYROLL_STATE.kindOverrides||[]).filter(o=>!(o.user_id===userId&&o.year_month===ym));
+    if(kind) PAYROLL_STATE.kindOverrides.push({user_id:userId,year_month:ym,kind});
     payrollRender();
   });
   document.querySelectorAll("[data-payroll-preview]").forEach(el=>el.onclick=()=>payrollOpenPreview(el.dataset.payrollPreview));
@@ -10586,7 +10644,7 @@ async function payrollAutoPrepare(userId,ctx){
     if(b.creditLabel==null) b.creditLabel=b.credit?mftLabelOf(b.credit):"";
   });
   row._templateLabel=template.label;
-  const notes=await payrollEnsureCreditRows(branches,row,userId);
+  const notes=(await payrollEnsureCreditRows(branches,row,userId)).concat(payrollEnsureDeductionRows(branches,row));
   const plan=payrollBuildAutoJournalPlan(row,branches,bres.totals,summary);
   if(plan.reason){ res.reasons.push(plan.reason); res.status="review"; return res; }
   if(plan.blocked) plan.blockReasons.forEach(r=>res.reasons.push(r));
@@ -11253,7 +11311,7 @@ async function payrollOpenPreview(userId){
     const showPlan=async()=>{
       if(branches._autoStash||branches.some(b=>b._auto)){ payrollRestoreAutoRows(branches); rerenderEntries(); }
       row._templateLabel=template.label;
-      const creditNotes=await payrollEnsureCreditRows(branches,row,userId);
+      const creditNotes=(await payrollEnsureCreditRows(branches,row,userId)).concat(payrollEnsureDeductionRows(branches,row));
       const plan=payrollBuildAutoJournalPlan(row,branches,bres.totals,bres.summary);
       creditNotes.forEach(n=>plan.warnings.push(n));
       el.innerHTML=payrollAutoJournalPlanHtml(plan);
