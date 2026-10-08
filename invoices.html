@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-07-v69";
+const BUILD_TAG="2026-10-08-v70";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -8778,9 +8778,21 @@ function payrollUserCorporationId(userId){
   const st=(PAYROLL_STATE.stores||[]).find(x=>x.id===top);
   return st?st.corporation_id||null:null;
 }
-function payrollAutoTemplateFor(userId){
+// 2026-10-08（ユーザー要望「仕訳辞書を選ぶ代わりに、社員かアルバイトだけを選べば自動で仕訳されるように」）：
+// 給与仕訳の「パターン」は人ごとの仕訳辞書ではなく「区分（社員／アルバイト）」。区分は既定で役職（users.role。AL=アルバイト・
+// それ以外=社員）から自動で決まり、人ごとに上書きしたいときだけ payroll_journal_assignments.kind に保存する。
+// 区分→仕訳の型は、区分(payroll_kind)を設定した仕訳辞書（法人も合うもの）から取る。アルバイトでも社会保険の控除がある人は、
+// 区分を分けなくても、控除の明細（健康保険・厚生年金など）から法定福利費の行が自動で作られる
+function payrollRoleKind_(userId){
   const row=(PAYROLL_STATE.rows||[]).find(r=>r.user_id===userId);
-  const kind=(row&&row.user&&row.user.role==="AL")?"parttime":"employee";
+  return (row&&row.user&&row.user.role==="AL")?"parttime":"employee";
+}
+function payrollEffectiveKind(userId){
+  const man=payrollManualAssignmentFor(userId);
+  return (man&&man.kind)||payrollRoleKind_(userId);
+}
+function payrollAutoTemplateFor(userId){
+  const kind=payrollEffectiveKind(userId);
   const cands=(PAYROLL_STATE.templates||[]).filter(t=>t.payroll_kind===kind);
   if(!cands.length) return null;
   const corp=payrollUserCorporationId(userId);
@@ -8788,12 +8800,12 @@ function payrollAutoTemplateFor(userId){
 }
 function payrollAssignmentFor(userId){
   const man=payrollManualAssignmentFor(userId);
-  if(man&&man.template_id) return man;
   if(payrollAutoAssignOn()){
     const t=payrollAutoTemplateFor(userId);
-    if(t) return {user_id:userId,tenant_id:"default",template_id:t.id,auto:true};
+    if(t) return {user_id:userId,tenant_id:"default",template_id:t.id,auto:true,kind:payrollEffectiveKind(userId),overridden:!!(man&&man.kind)};
   }
-  return man;
+  // 区分の型（区分付きの仕訳辞書）がまだ無い場合だけ、従来の人ごとの仕訳辞書の割当を使う（移行期間の保険）
+  return man&&man.template_id?man:man;
 }
 // 登録者・登録時刻（一覧のツールチップ用。誰がいつ登録したかを後から追えるように）
 function payrollRegistrantLabel(rec){
@@ -9562,7 +9574,14 @@ function payrollRowHtml(row){
   // 勘定科目のように検索できるように」に対応。既に割り当て済みのテンプレートが万一「給料」を
   // 含まない古いものだった場合でも、選択中の表示が消えて空欄に見えてしまわないよう現在値だけは例外的に残す
   const currentTpl=asg&&PAYROLL_STATE.templates.find(t=>t.id===asg.template_id);
-  const patternInput=`<input list="payroll-template-datalist" class="payroll-pattern-input" data-payroll-pattern="${esc(row.user_id)}" value="${esc(currentTpl?currentTpl.label:"")}" placeholder="🔍 給料の仕訳辞書を検索" ${rec?"disabled":""}>${asg&&asg.auto?` <span class="pr-status na" title="法人×区分（社員/アルバイト）から自動で割り当てています。別のものを選ぶと、この人だけ例外として上書きします">🤖自動</span>`:""}`;
+  const effKind=payrollEffectiveKind(row.user_id), manKind=(payrollManualAssignmentFor(row.user_id)||{}).kind||"";
+  const roleKindLabel=payrollRoleKind_(row.user_id)==="parttime"?"アルバイト":"社員";
+  const noTpl=!(asg&&asg.template_id);
+  const patternInput=`<select class="payroll-kind-select" data-payroll-kind="${esc(row.user_id)}" ${rec?"disabled":""} title="既定は役職から自動で決まります。この人だけ変えたいときに選んでください">
+    <option value="" ${!manKind?"selected":""}>自動（${roleKindLabel}）</option>
+    <option value="employee" ${manKind==="employee"?"selected":""}>社員</option>
+    <option value="parttime" ${manKind==="parttime"?"selected":""}>アルバイト</option>
+  </select>${noTpl?` <span class="pr-status warn" title="この区分（${effKind==="parttime"?"アルバイト":"社員"}）の仕訳の型が未設定です。設定タブ「仕訳辞書」で、型にする仕訳辞書の「給与の区分」を設定してください">⚠️型未設定</span>`:""}`;
   // 状態は「パターン未設定→未登録（会計未計上）→📝下書き保存中→仕訳登録済み・振込待ち→振込完了」の
   // 5段階。2026-09-01: 会計計上（MF仕訳登録）と実際の振込は別のタイミングで完了するため区別して表示。
   // 2026-09-02: 一時保存（下書き）は登録が完了するまで「完了」扱いにしない（ユーザー要望どおり）
@@ -9856,9 +9875,8 @@ function payrollRender(){
       <div class="err" id="payroll-csv-msg" style="margin-bottom:8px"></div>
 
       <div class="card hq-tablewrap">
-        <datalist id="payroll-template-datalist">${payrollTemplateDatalistHtml()}</datalist>
         ${rows.length?`<table class="pr-table" style="width:100%;border-collapse:collapse">
-          <thead><tr><th>氏名</th><th style="text-align:right">固定給</th><th style="text-align:right">通勤</th><th style="text-align:right">控除</th><th style="text-align:right">差引支給額</th><th>仕訳辞書パターン</th><th>PDF</th><th>口座状態</th><th>状態</th><th></th></tr></thead>
+          <thead><tr><th>氏名</th><th style="text-align:right">固定給</th><th style="text-align:right">通勤</th><th style="text-align:right">控除</th><th style="text-align:right">差引支給額</th><th>区分（社員／アルバイト）</th><th>PDF</th><th>口座状態</th><th>状態</th><th></th></tr></thead>
           <tbody>${rows.map(payrollRowHtml).join("")}</tbody>
         </table>`:`<div class="empty">${PAYROLL_STATE.searchQuery?"該当する氏名の人が見つかりません":(PAYROLL_STATE.hidePaid?"振込完了以外は残っていません（絞り込み中）":`${esc(PAYROLL_STATE.yearMonth)}のデータがまだありません（スマレジ給与明細の同期後に表示されます）`)}</div>`}
         <div class="pr-footer-actions"><small>絞り込み条件に応じて自動更新</small><button class="btn" id="payroll-reset-filter">絞り込みをリセット</button></div>
@@ -9896,7 +9914,7 @@ function payrollRender(){
       const rows2=payrollSortedRows().filter(r=>payrollMatchesQuick(r,PAYROLL_STATE.quickFilter));
       const target=wrap.querySelector("table,.empty");
       if(target) target.outerHTML=rows2.length?`<table class="pr-table" style="width:100%;border-collapse:collapse">
-        <thead><tr><th>氏名</th><th style="text-align:right">固定給</th><th style="text-align:right">通勤</th><th style="text-align:right">控除</th><th style="text-align:right">差引支給額</th><th>仕訳辞書パターン</th><th>PDF</th><th>口座状態</th><th>状態</th><th></th></tr></thead>
+        <thead><tr><th>氏名</th><th style="text-align:right">固定給</th><th style="text-align:right">通勤</th><th style="text-align:right">控除</th><th style="text-align:right">差引支給額</th><th>区分（社員／アルバイト）</th><th>PDF</th><th>口座状態</th><th>状態</th><th></th></tr></thead>
         <tbody>${rows2.map(payrollRowHtml).join("")}</tbody>
       </table>`:`<div class="empty">該当する氏名の人が見つかりません</div>`;
       wirePayrollRowActions();
@@ -10101,21 +10119,19 @@ function wirePayrollRowActions(){
   });
   // 2026-09-02: プルダウン(select)から検索入力(input+datalist)に変更したため、値の受け渡しを
   // テンプレートIDではなくラベルの完全一致検索に変更（勘定科目入力欄と同じ方式）
-  document.querySelectorAll("[data-payroll-pattern]").forEach(el=>el.onchange=async()=>{
-    const userId=el.dataset.payrollPattern;
-    const label=el.value.trim();
-    const tpl=label?(PAYROLL_STATE.templates||[]).find(t=>t.label===label):null;
-    if(label&&!tpl){
-      alert("一覧の候補から仕訳辞書を選んでください（該当する名前が見つかりません）");
-      const prevAsg=payrollManualAssignmentFor(userId);
-      const prevTpl=prevAsg&&(PAYROLL_STATE.templates||[]).find(t=>t.id===prevAsg.template_id);
-      el.value=prevTpl?prevTpl.label:"";
+  // 2026-10-08：区分（社員／アルバイト）の選択。空＝役職から自動。選んだ区分はこの人だけの上書きとして保存する
+  document.querySelectorAll("[data-payroll-kind]").forEach(el=>el.onchange=async()=>{
+    const userId=el.dataset.payrollKind;
+    const kind=el.value||null;
+    const r=await authed("/rest/v1/payroll_journal_assignments",{method:"POST",headers:{Prefer:"resolution=merge-duplicates,return=minimal"},body:JSON.stringify({user_id:userId,tenant_id:"default",kind,updated_by:ME.id,updated_at:new Date().toISOString()})});
+    if(!r.ok){
+      alert(`区分の保存に失敗しました（${(r.body&&(r.body.message||r.body.error))||"通信エラー"}）。DBの更新（kind列の追加）がまだの可能性があります。`);
+      const cur=(payrollManualAssignmentFor(userId)||{}).kind||"";
+      el.value=cur;
       return;
     }
-    const templateId=tpl?tpl.id:null;
-    await authed("/rest/v1/payroll_journal_assignments",{method:"POST",headers:{Prefer:"resolution=merge-duplicates,return=minimal"},body:JSON.stringify({user_id:userId,tenant_id:"default",template_id:templateId,updated_by:ME.id,updated_at:new Date().toISOString()})});
     const existing=payrollManualAssignmentFor(userId);
-    if(existing) existing.template_id=templateId; else PAYROLL_STATE.assignments.push({user_id:userId,tenant_id:"default",template_id:templateId});
+    if(existing) existing.kind=kind; else PAYROLL_STATE.assignments.push({user_id:userId,tenant_id:"default",template_id:null,kind});
     payrollRender();
   });
   document.querySelectorAll("[data-payroll-preview]").forEach(el=>el.onclick=()=>payrollOpenPreview(el.dataset.payrollPreview));
@@ -10128,11 +10144,6 @@ function payrollEmployeeDatalistHtml(){
   return (PAYROLL_STATE.rows||[]).map(r=>`<option value="${esc((r.user&&r.user.name)||"")}">`).join("");
 }
 function payrollNameOf(userId){ const r=(PAYROLL_STATE.rows||[]).find(x=>x.user_id===userId); return r?((r.user&&r.user.name)||""):""; }
-// 仕訳辞書パターンの入力補完用datalist（2026-09-02: ユーザー要望「給料の文字が入っている仕訳辞書
-// だけ表示・プルダウンではなく勘定科目のように検索できるように」に対応）
-function payrollTemplateDatalistHtml(){
-  return (PAYROLL_STATE.templates||[]).filter(t=>(t.label||"").includes("給料")).map(t=>`<option value="${esc(t.label)}">`).join("");
-}
 function payrollRenderPdfMatchArea(){
   const el=$("payroll-pdf-match-area");
   const matches=PAYROLL_STATE.pdfMatches||[];
@@ -10550,11 +10561,7 @@ async function payrollAutoPrepare(userId,ctx){
   // 2026-10-06修正：ユーザー報告「自動OKが付かない」。全員に従来の手動割当が入っているため「手動の例外割当あり」で
   // 全員が要確認になっていた。例外とみなすのは、自動割当（法人×区分）が決まる人で、手動の割当がそれと違う
   // テンプレートのときだけ（自動割当の対象が無い／同じテンプレートなら通常のパターンとして扱う）
-  const man=payrollManualAssignmentFor(userId);
-  if(man&&man.template_id){
-    const autoT=payrollAutoAssignOn()?payrollAutoTemplateFor(userId):null;
-    if(autoT&&autoT.id!==man.template_id) res.reasons.push("手動の例外割当あり（自動割当と違うテンプレート）");
-  }
+  // 2026-10-08：パターンは区分（社員／アルバイト）になったため「手動の例外割当」の要確認は廃止（区分は人が選んだ値として扱う）
   const draft=payrollDraftFor(userId);
   if(draft&&!(draft.branches||[]).some(b=>b._bulk)) res.reasons.push("手動の一時保存の下書きあり");
   const pdfFiles=await payrollFetchAllPdfBase64(userId,ym);
