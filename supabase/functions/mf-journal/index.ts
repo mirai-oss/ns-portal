@@ -33,6 +33,13 @@
 //                 body: {vendor_name?, invoice_number?, amount?, due_date?, corporation_id?, store_id?,
 //                 voucher_files:[{file_name,file_data(base64)}]（1件以上必須）}
 //
+//   - "delete_journal"（2026-10-08新規・ユーザー要望「解除したらMF側の仕訳も削除」）:
+//                 body: {journal_id, dry_run?}。このシステムが登録した仕訳（invoices / payroll_journal_records /
+//                 ar_receivables のいずれかのmf_journal_idに記録があるもの）だけを DELETE /api/v3/journals/{id}
+//                 で削除し、成功したら（または既にMF側に無ければ）システム側の仕訳登録の記録も解除する。
+//                 【決算期間ガード】仕訳の会計計上日が今期の開始日より前（＝決算期間を過ぎている）なら、
+//                 MFにも触れず403(period_closed)で拒否する（削除・編集不可の指示）。dry_run=trueは判定だけ行い何も変更しない。
+//
 // 複数事業者対応（2026-08-27）: accounts/suggest/list_journals/createはbody.tenant_idで
 // どの事業者（有限会社トーホーエージェンシー='default'、株式会社N-Style='nstyle'等）かを指定できる。
 // 省略時は'default'（後方互換）。事業者ごとにmf_oauth_tokensの行が分かれている。
@@ -81,6 +88,13 @@ function fiscalYearStart(tenantId: string): string {
   const curMonth = now.getUTCMonth() + 1; // 1-12（UTC基準の簡易判定。JST運用のみのため実用上問題なし）
   const y = curMonth >= startMonth ? now.getUTCFullYear() : now.getUTCFullYear() - 1;
   return `${y}-${String(startMonth).padStart(2, "0")}-01`;
+}
+// 決算期間を過ぎているか（2026-10-08・削除/編集ガード用）。仕訳の会計計上日が今期の開始日より前なら
+// 「前の決算期間の仕訳」とみなす。日付が取れない場合は安全側（＝閉じている扱い）に倒す。
+function isPeriodClosed(transactionDate: string | null | undefined, tenantId: string): boolean {
+  const d = String(transactionDate ?? "").slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return true;
+  return d < fiscalYearStart(tenantId);
 }
 // 前期の開始日。当期分だけだと検索範囲が狭いため、履歴検索(list_journals/suggest)は前期も含めて探す
 function prevFiscalYearStart(tenantId: string): string {
@@ -293,6 +307,88 @@ Deno.serve(async (req: Request) => {
       return json({ success: true });
     }
 
+    // delete_journal（2026-10-08）: システムで解除した仕訳をMF側からも削除する。
+    // 対象はこのシステムが登録した仕訳（記録のあるmf_journal_id）に限る＝任意のIDは消せない。
+    if (action === "delete_journal") {
+      const journalId = String(body?.journal_id ?? "");
+      if (!journalId) return json({ error: "journal_idは必須です" }, 400);
+      const dryRun = body?.dry_run === true;
+      // 呼び出しユーザー自身の権限（RLS）で記録を探す
+      const [invR, payR, arR] = await Promise.all([
+        uc.from("invoices").select("id, email_id, mf_tenant_id, mf_journal_number").eq("mf_journal_id", journalId).limit(1),
+        uc.from("payroll_journal_records").select("user_id, year_month").eq("mf_journal_id", journalId).limit(1),
+        uc.from("ar_receivables").select("id").eq("mf_journal_id", journalId).limit(1),
+      ]);
+      const inv = invR.data?.[0] ?? null, pay = payR.data?.[0] ?? null, ar = arR.data?.[0] ?? null;
+      if (!inv && !pay && !ar) return json({ error: "このシステムで登録した仕訳として確認できないため、削除できません（権限がない、または既に解除済みの可能性があります）", not_tracked: true }, 403);
+      const delTenant: string = inv?.mf_tenant_id || body?.tenant_id || "default";
+      let delToken: string;
+      try {
+        ({ accessToken: delToken } = await getValidAccessToken(delTenant));
+      } catch (e) {
+        return json({ error: "マネーフォワード未連携、またはトークン更新に失敗しました: " + String(e) }, 502);
+      }
+      // 1) MF側の現状を確認（会計計上日の取得＝決算期間の判定にも使う）
+      const gRes = await mfFetch(`/api/v3/journals/${journalId}`, delToken);
+      const gData = await gRes.json().catch(() => ({}));
+      let alreadyGone = false;
+      let txDate: string | null = null;
+      let journalNumber: any = inv?.mf_journal_number ?? null;
+      if (!gRes.ok) {
+        const errList = Array.isArray((gData as any)?.errors) ? (gData as any).errors : [];
+        const notFound = gRes.status === 404 || errList.some((e: any) =>
+          e?.code === "invalid_request_path_parameter" && String(e?.message || "").includes("does not exist"));
+        if (!notFound) {
+          return json({ error: `マネーフォワードの仕訳の状態を確認できなかったため、削除しませんでした（status ${gRes.status}: ${JSON.stringify(gData).slice(0, 300)}）`, status: gRes.status }, 502);
+        }
+        alreadyGone = true; // MF側に既に無い＝システム側の記録だけ解除すればよい
+      } else {
+        const gj = (gData as any).journal ?? {};
+        txDate = gj.transaction_date ?? null;
+        journalNumber = gj.number ?? journalNumber;
+        // 2) 決算期間ガード: 今期より前の仕訳は削除も編集もさせない
+        if (isPeriodClosed(txDate, delTenant)) {
+          return json({ error: `この仕訳は決算期間を過ぎている（会計計上日 ${txDate ?? "不明"}・今期は ${fiscalYearStart(delTenant)} 以降）ため、削除・編集できません`, period_closed: true, transaction_date: txDate }, 403);
+        }
+      }
+      if (dryRun) return json({ success: true, dry_run: true, already_gone: alreadyGone, period_closed: false, transaction_date: txDate, journal_number: journalNumber });
+      // 3) MF側を削除（既に無ければスキップ）
+      if (!alreadyGone) {
+        const dRes = await mfFetch(`/api/v3/journals/${journalId}`, delToken, { method: "DELETE" });
+        if (!dRes.ok) {
+          const dData = await dRes.json().catch(() => ({}));
+          return json({ error: `マネーフォワード側の仕訳を削除できませんでした。システム側の記録は残してあります（status ${dRes.status}: ${JSON.stringify(dData).slice(0, 300)}）`, status: dRes.status }, 502);
+        }
+      }
+      // 4) システム側の記録を解除
+      const db = svc();
+      const cleared: string[] = [];
+      if (inv) {
+        const { error: uErr } = await db.from("invoices").update({
+          mf_journal_id: null, mf_journal_number: null, mf_journal_created_at: null,
+          mf_debit_accounts: null, mf_registration_error: null, mf_registration_error_at: null,
+          updated_at: new Date().toISOString(),
+        }).eq("id", inv.id);
+        if (uErr) return json({ error: "MF側は削除しましたが、請求書の仕訳紐付け解除に失敗しました: " + uErr.message, mf_deleted: true }, 500);
+        cleared.push("invoice");
+        await db.from("invoice_audit_logs").insert({
+          entity_type: "invoice_email", entity_id: inv.email_id, action: "mf_journal_deleted", actor_type: "human",
+          note: `マネーフォワードの仕訳を削除しました（伝票番号: ${journalNumber ?? "-"}${alreadyGone ? "・MF側には既に無かったため記録のみ解除" : ""}）。会計・仕訳は未登録の状態に戻りました。`,
+        });
+      }
+      if (ar) {
+        const { error: aErr } = await db.from("ar_receivables").update({ mf_journal_id: null, mf_journal_number: null, mf_journal_created_at: null }).eq("mf_journal_id", journalId);
+        if (aErr) return json({ error: "MF側は削除しましたが、売上入金の仕訳紐付け解除に失敗しました: " + aErr.message, mf_deleted: true }, 500);
+        cleared.push("receivable");
+      }
+      if (pay) {
+        const { error: pErr } = await db.from("payroll_journal_records").delete().eq("mf_journal_id", journalId);
+        if (pErr) return json({ error: "MF側は削除しましたが、給与仕訳の登録記録の解除に失敗しました: " + pErr.message, mf_deleted: true }, 500);
+        cleared.push("payroll");
+      }
+      return json({ success: true, deleted: !alreadyGone, already_gone: alreadyGone, cleared, journal_number: journalNumber });
+    }
+
     // 以降のactionはマネーフォワードへ問い合わせる。どの事業者（テナント）かをtenant_idで指定
     // （省略時は最初に連携した'default'＝有限会社トーホーエージェンシー）
     const tenantId: string = body?.tenant_id || "default";
@@ -346,7 +442,8 @@ Deno.serve(async (req: Request) => {
       }
       const j = data.journal ?? {};
       const branches = (j.branches ?? []).map(branchToTemplate);
-      return json({ success: true, branches, transaction_date: j.transaction_date ?? null, journal_number: j.number ?? null, memo: j.memo ?? null });
+      return json({ success: true, branches, transaction_date: j.transaction_date ?? null, journal_number: j.number ?? null, memo: j.memo ?? null,
+        period_closed: isPeriodClosed(j.transaction_date, tenantId) });
     }
 
     if (action === "suggest" || action === "list_journals" || action === "list_departments") {
