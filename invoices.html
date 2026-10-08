@@ -7696,16 +7696,33 @@ function mftWireEditor(){
   $("mft-auto-apply").onchange=()=>{ ed.autoApply=$("mft-auto-apply").checked; };
   $("mft-require-review").onchange=()=>{ ed.requireHumanReview=$("mft-require-review").checked; };
 }
+// 2026-10-08：ユーザー報告「仕訳辞書を編集しようとすると『借方はプルダウンの候補から選んでください』と出て保存できない」。
+// 補助科目が「06新横浜黒霧屋」（部門名の書き方）のように、MFの候補「06/新横浜黒霧屋」と区切り文字・空白だけ違う
+// 場合に完全一致しないため弾かれていた。区切りの/・空白を除いて一意に一致する候補があれば、それを採用する
+function mftResolveAccountLabel(label){
+  const map=MFT_STATE.accountLabelMap;
+  if(!label) return null;
+  if(map.has(label)) return map.get(label);
+  const {account,sub}=splitAccLabel(label);
+  const acc=account.trim();
+  const norm=x=>String(x||"").normalize("NFKC").replace(/[\s\/]/g,"");
+  const names=(MFT_STATE.subAccountsByAccountName&&MFT_STATE.subAccountsByAccountName.get(acc))||[];
+  const hit=names.filter(n=>norm(n)===norm(sub));
+  if(hit.length===1) return map.get(`${acc}/${hit[0]}`)||null;
+  return null;
+}
 async function mftSaveEditor(){
   const ed=MFT_STATE.editing;
   const label=$("mft-label").value.trim();
   if(!label){ alert("名前を入力してください"); return; }
   const structured=[];
+  let rowNo=0;
   for(const b of ed.branches){
-    const debit=b.debitLabel?MFT_STATE.accountLabelMap.get(b.debitLabel):null;
-    const credit=b.creditLabel?MFT_STATE.accountLabelMap.get(b.creditLabel):null;
-    if(b.debitLabel&&!debit){ alert("借方はプルダウンの候補から選んでください"); return; }
-    if(b.creditLabel&&!credit){ alert("貸方はプルダウンの候補から選んでください"); return; }
+    rowNo++;
+    const debit=b.debitLabel?mftResolveAccountLabel(b.debitLabel):null;
+    const credit=b.creditLabel?mftResolveAccountLabel(b.creditLabel):null;
+    if(b.debitLabel&&!debit){ alert(`借方（${rowNo}行目「${b.debitLabel}」）が、マネーフォワードの勘定科目・補助科目の候補に見つかりません。プルダウンの候補から選び直してください（補助科目の区切りの「/」や空白の違いは自動で補正します）`); return; }
+    if(b.creditLabel&&!credit){ alert(`貸方（${rowNo}行目「${b.creditLabel}」）が、マネーフォワードの勘定科目・補助科目の候補に見つかりません。プルダウンの候補から選び直してください（補助科目の区切りの「/」や空白の違いは自動で補正します）`); return; }
     if(!debit&&!credit) continue;
     structured.push({
       debit:debit?{...debit,value:Number(b.debitAmount)||null}:null,
@@ -8965,11 +8982,33 @@ function payrollComputeBranches(row,template){
   // 組み立て直す（一致しない自由記述の摘要はそのまま尊重して変更しない）
   const employeeName=(row.user&&row.user.name)||"";
   const monthNum=Number((PAYROLL_STATE.yearMonth||"").split("-")[1])||null;
+  // 2026-10-08：ユーザー報告「仕訳辞書に入っていた別の人の名前（例:上江篤司）が摘要に入ってしまう」。
+  // 仕訳辞書を別の人の仕訳から作ると摘要に「月 上江篤司 基本給」のように人名が焼き込まれており、
+  // 他の人の給与仕訳にそのまま出てしまっていた。摘要の中の人名（①従業員一覧に居る名前 ②辞書内の
+  // 複数行で共通して先頭に付いている語＝人名）を取り除いてから、実際の従業員名を末尾に付ける。
+  const normTok=x=>String(x==null?"":x).normalize("NFKC").replace(/[\s　]/g,"");
+  const knownNames=new Set((PAYROLL_STATE.rows||[]).map(r=>normTok(r.user&&r.user.name)).filter(Boolean));
+  const firstToks=(template.branches||[]).map(b=>{
+    const mm=String(b.remark||"").match(/^月[\s　]*(.*)$/); if(!mm) return null;
+    const t=mm[1].split(/[\s　]+/).filter(Boolean); return t.length>=2?normTok(t[0]):null;
+  }).filter(Boolean);
+  const firstCnt={}; firstToks.forEach(t=>{ firstCnt[t]=(firstCnt[t]||0)+1; });
+  const bakedName=Object.keys(firstCnt).find(t=>firstCnt[t]>=2&&firstCnt[t]===firstToks.length)||null;
+  const stripNames=label=>{
+    const toks=String(label||"").split(/[\s　]+/).filter(Boolean); const out=[];
+    for(let i=0;i<toks.length;i++){
+      const t=normTok(toks[i]);
+      if(knownNames.has(t)||(bakedName&&t===bakedName)) continue;
+      if(i+1<toks.length&&knownNames.has(normTok(toks[i]+toks[i+1]))){ i++; continue; }
+      out.push(toks[i]);
+    }
+    return out.join("　");
+  };
   const buildRemark=rawRemark=>{
     if(!rawRemark) return rawRemark;
     const m=String(rawRemark).match(/^月[\s　]*(.*)$/);
     if(!m) return rawRemark; // 「月」から始まらない自由記述の摘要はそのまま
-    const label=m[1];
+    const label=stripNames(m[1]);
     return [monthNum?`${monthNum}月`:"月",label,employeeName].filter(Boolean).join("　");
   };
   return (template.branches||[]).map(b=>{
