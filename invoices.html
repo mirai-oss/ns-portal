@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-08-v75";
+const BUILD_TAG="2026-10-08-v76";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -8500,6 +8500,7 @@ async function renderPayrollTab(u){
 }
 async function payrollLoad(){
   const ym=PAYROLL_STATE.yearMonth;
+  if(PAYROLL_STATE.dryResultsYm&&PAYROLL_STATE.dryResultsYm!==ym){ PAYROLL_STATE.dryResults=null; PAYROLL_STATE.dryResultsYm=null; }
   if(PAYROLL_STATE.autoResultsYm&&PAYROLL_STATE.autoResultsYm!==ym){ PAYROLL_STATE.autoResults=new Map(); PAYROLL_STATE.autoResultsYm=null; } // 月を切り替えたら一括生成の結果は破棄
   const fetchSync=()=>authed(`/rest/v1/sf_payroll_sync?year_month=eq.${ym}&select=*,user:users(name,role,is_active)&order=user(name)`);
   let [syncR,recR,asgR,tplR,deptR,allocR,bankR,hiddenR,accR,draftR,scheduleR]=await Promise.all([
@@ -9990,9 +9991,9 @@ function payrollRender(){
 
       <div class="section" style="display:flex;justify-content:space-between;align-items:end;gap:10px;margin:0 0 10px">
         <div style="flex:0 0 auto"><h2 style="margin:0;font-size:16px">給与振込一覧</h2><p style="font-size:9px;color:var(--muted);margin:4px 0 0">${esc(PAYROLL_STATE.yearMonth)} / ${rows.length}名表示 ／ <b title="この画面のバージョン。最新でないときは Cmd+Shift+R で強制再読み込み">build ${esc(BUILD_TAG)}</b></p></div>
-        <div class="actionbar" style="flex:1 1 auto;min-width:0;display:flex;flex-wrap:nowrap;justify-content:flex-end;align-items:center;gap:6px"><button class="btn" id="payroll-diag-btn" style="font-size:12px;padding:6px 10px;white-space:nowrap" title="MF側の部門・補助科目・共通の科目が、自動仕訳に必要なぶんそろっているかを店舗ごとに確認します（何も書き込みません）">🔍 マッピング診断</button><button class="btn" id="payroll-bulk-gen" style="font-size:12px;padding:6px 10px;white-space:nowrap" title="登録前の全員分を、PDF読み取り・検算・前月比チェックまで自動で行います（マネーフォワードへはまだ登録しません）">🧮 全員をAIで自動生成</button><button class="btn primary" id="payroll-bulk-register" style="font-size:12px;padding:6px 10px;white-space:nowrap" ${payrollBulkSelected().length?"":"disabled"} title="自動OK（緑）でチェックした人だけを、1人ずつ順番にマネーフォワードへ登録します">✅ チェックした人をまとめて登録（${payrollBulkSelected().length}名）</button><button class="btn" id="payroll-csv-download" style="font-size:12px;padding:6px 10px;white-space:nowrap">📥 一覧をCSVでダウンロード</button><button class="btn primary" id="payroll-csv-export" style="font-size:12px;padding:6px 10px;white-space:nowrap">🏦 PayPay銀行CSV出力</button><label style="display:flex;gap:4px;align-items:center;font-size:12px;white-space:nowrap;margin-left:6px" title="法人×区分（社員/アルバイト）でテンプレートを自動で割り当てます。人ごとの手動割当は例外として常に優先されます"><input type="checkbox" id="payroll-autoassign-toggle" ${payrollAutoAssignOn()?"checked":""}>🤖区分で自動割当</label></div>
+        <div class="actionbar" style="flex:1 1 auto;min-width:0;display:flex;flex-wrap:nowrap;justify-content:flex-end;align-items:center;gap:6px"><button class="btn" id="payroll-diag-btn" style="font-size:12px;padding:6px 10px;white-space:nowrap" title="MF側の部門・補助科目・共通の科目が、自動仕訳に必要なぶんそろっているかを店舗ごとに確認します（何も書き込みません）">🔍 マッピング診断</button><button class="btn" id="payroll-dry-btn" style="font-size:12px;padding:6px 10px;white-space:nowrap" title="登録済みの人も含めて、自動生成の判定だけを行います（下書きの保存・マネーフォワードへの登録は一切しません）">🔬 確認だけ</button><button class="btn" id="payroll-bulk-gen" style="font-size:12px;padding:6px 10px;white-space:nowrap" title="登録前の全員分を、PDF読み取り・検算・前月比チェックまで自動で行います（マネーフォワードへはまだ登録しません）">🧮 全員をAIで自動生成</button><button class="btn primary" id="payroll-bulk-register" style="font-size:12px;padding:6px 10px;white-space:nowrap" ${payrollBulkSelected().length?"":"disabled"} title="自動OK（緑）でチェックした人だけを、1人ずつ順番にマネーフォワードへ登録します">✅ チェックした人をまとめて登録（${payrollBulkSelected().length}名）</button><button class="btn" id="payroll-csv-download" style="font-size:12px;padding:6px 10px;white-space:nowrap">📥 一覧をCSVでダウンロード</button><button class="btn primary" id="payroll-csv-export" style="font-size:12px;padding:6px 10px;white-space:nowrap">🏦 PayPay銀行CSV出力</button><label style="display:flex;gap:4px;align-items:center;font-size:12px;white-space:nowrap;margin-left:6px" title="法人×区分（社員/アルバイト）でテンプレートを自動で割り当てます。人ごとの手動割当は例外として常に優先されます"><input type="checkbox" id="payroll-autoassign-toggle" ${payrollAutoAssignOn()?"checked":""}>🤖区分で自動割当</label></div>
       </div>
-      ${(()=>{ const extra=`${payrollBulkSummaryHtml()}${payrollBulkListsHtml()}${PAYROLL_STATE.diagHtml||""}`; return extra.trim()?`<div id="payroll-bulk-bar" style="margin:0 0 12px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--panel-2,#fafafa)">${extra}</div>`:""; })()}
+      ${(()=>{ const extra=`${payrollBulkSummaryHtml()}${payrollBulkListsHtml()}${PAYROLL_STATE.diagHtml||""}${payrollDryRunHtml()}`; return extra.trim()?`<div id="payroll-bulk-bar" style="margin:0 0 12px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--panel-2,#fafafa)">${extra}</div>`:""; })()}
       <div class="err" id="payroll-csv-msg" style="margin-bottom:8px"></div>
 
       <div class="card hq-tablewrap">
@@ -10108,6 +10109,16 @@ function payrollRender(){
     try{ await payrollDiagnose(); }catch(e){ PAYROLL_STATE.diagHtml=`<div class="err" style="width:100%">診断に失敗しました: ${esc(String(e&&e.message||e))}</div>`; }
     payrollRender();
   };
+  if($("payroll-dry-btn")) $("payroll-dry-btn").onclick=async()=>{
+    const b=$("payroll-dry-btn");
+    if(!confirm("登録済みの人も含めて、全員ぶんの自動生成の「判定だけ」を行います。\n（PDFのAI読み取りを使うため、人数によって数分かかります。下書きの保存・マネーフォワードへの登録は一切しません）\nよろしいですか？")) return;
+    b.disabled=true;
+    try{ await payrollDryRunAll((d,t)=>{ b.textContent=`確認中… ${d}/${t}`; }); }
+    catch(e){ alert("確認中にエラーが発生しました: "+String(e&&e.message||e)); }
+    b.disabled=false; b.textContent="🔬 確認だけ";
+    payrollRender();
+  };
+  if($("payroll-dry-close")) $("payroll-dry-close").onclick=()=>{ PAYROLL_STATE.dryResults=null; payrollRender(); };
   if($("payroll-diag-close")) $("payroll-diag-close").onclick=()=>{ PAYROLL_STATE.diagHtml=""; payrollRender(); };
   if($("payroll-bulk-register")) $("payroll-bulk-register").onclick=()=>payrollBulkRegister();
   if($("payroll-bulk-all-on")) $("payroll-bulk-all-on").onclick=ev=>{ ev.preventDefault(); payrollBulkAutoOk().forEach(r=>{ r.checked=true; }); payrollRender(); };
@@ -10790,6 +10801,59 @@ async function payrollAutoPrepareAll(onProgress){
     }
   }
   return {total:targets.length};
+}
+// 2026-10-08新規（ユーザー要望「確認だけのモードを作って」）：「🔬 確認だけ」。登録済みの人も含めて、全員ぶんの自動生成（PDF読み取り・合計欄/会社名の突合・
+// 検算・仕訳の組み立て・前月比）の「判定」だけを行い、結果を画面に出す。下書きの保存・MFへの登録・チェックボックスは一切なし
+// （月が終わる前や、全員登録済みの月でも、新しい仕訳のルールや自動OKの出方を確認できる）
+async function payrollDryRunAll(onProgress){
+  const ym=PAYROLL_STATE.yearMonth;
+  const [py,pm]=ym.split("-").map(Number);
+  const prev=pm===1?`${py-1}-12`:`${py}-${String(pm-1).padStart(2,"0")}`;
+  const [pr,pn]=await Promise.all([
+    authed(`/rest/v1/payroll_journal_records?year_month=eq.${prev}&mf_journal_id=not.is.null&select=user_id`),
+    authed(`/rest/v1/sf_payroll_sync?year_month=eq.${prev}&select=user_id,net_pay`),
+  ]);
+  const ctx={
+    prevRegistered:new Set((pr.ok&&Array.isArray(pr.body))?pr.body.map(x=>x.user_id):[]),
+    prevNet:new Map((pn.ok&&Array.isArray(pn.body))?pn.body.map(x=>[x.user_id,Math.round(Number(x.net_pay)||0)]):[]),
+  };
+  const targets=(PAYROLL_STATE.rows||[]).filter(r=>!PAYROLL_STATE.hiddenUserIds.has(r.user_id)).map(r=>r.user_id);
+  const results=new Map();
+  let done=0, idx=0;
+  const worker=async()=>{
+    while(idx<targets.length){
+      const uid=targets[idx++];
+      let r;
+      try{ r=await payrollAutoPrepare(uid,ctx); }
+      catch(e){ r={userId:uid,name:"",status:"review",reasons:[`処理中にエラー: ${String(e&&e.message||e).slice(0,80)}`]}; }
+      results.set(uid,r);
+      done++; if(onProgress) onProgress(done,targets.length);
+    }
+  };
+  await Promise.all([worker(),worker(),worker()]);
+  PAYROLL_STATE.dryResults=results; PAYROLL_STATE.dryResultsYm=ym;
+  return {total:targets.length};
+}
+function payrollDryRunHtml(){
+  const m=PAYROLL_STATE.dryResults;
+  if(!m||!m.size) return "";
+  const nameOf=uid=>{ const r=(PAYROLL_STATE.rows||[]).find(x=>x.user_id===uid); return (r&&r.user&&r.user.name)||"—"; };
+  const all=[...m.values()];
+  const ok=all.filter(r=>r.status==="auto_ok"), ng=all.filter(r=>r.status!=="auto_ok");
+  const cnt=new Map();
+  ng.forEach(r=>{ new Set((r.reasons||[]).map(x=>String(x).replace(/[¥\d,.%+\-]+/g,"#").split(/[（(:：]/)[0].trim().slice(0,34))).forEach(k=>cnt.set(k,(cnt.get(k)||0)+1)); });
+  const top=[...cnt.entries()].sort((a,b)=>b[1]-a[1]).slice(0,10);
+  const reg=uid=>payrollRecordFor(uid)?"（登録済み）":"";
+  return `<div class="card" style="width:100%;margin-top:8px;padding:10px 12px;border:1px solid var(--line)">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap"><b>🔬 確認だけの結果</b><button type="button" class="linkbtn" id="payroll-dry-close" style="background:none;border:none;color:var(--blue);cursor:pointer;font-size:12px">閉じる</button></div>
+    <div style="font-size:11px;color:var(--muted);margin:2px 0 6px">※判定だけを行いました。下書きの保存・マネーフォワードへの登録は一切していません（登録済みの人も含めて判定しています）。</div>
+    <div style="font-size:12px"><b>✅自動OK ${ok.length}名 ／ ⚠️要確認 ${ng.length}名</b>（合計${all.length}名）</div>
+    ${top.length?`<div style="font-size:11px;color:var(--muted);margin-top:3px">要確認の内訳（人数）: ${top.map(([k,v])=>`${esc(k)} ${v}名`).join(" ／ ")}</div>`:""}
+    ${ng.length?`<details open style="margin-top:6px"><summary style="cursor:pointer;font-size:12px"><b>⚠️ 要確認の人と理由（${ng.length}名）</b></summary>
+      <div style="font-size:11px;line-height:1.6;margin-top:3px">${ng.map(r=>`<div style="border-top:1px solid var(--line);padding:2px 0"><b>${esc(r.name||nameOf(r.userId))}</b>${reg(r.userId)}　${(r.reasons||[]).map(esc).join(" ／ ")}</div>`).join("")}</div></details>`:""}
+    ${ok.length?`<details style="margin-top:6px"><summary style="cursor:pointer;font-size:12px"><b>✅ 自動OKの人（${ok.length}名）</b></summary>
+      <div style="font-size:11px;line-height:1.7;margin-top:3px;columns:3;column-gap:16px">${ok.map(r=>`<div>${esc(r.name||nameOf(r.userId))}${reg(r.userId)}　${yen(r.netPay)}</div>`).join("")}</div></details>`:""}
+  </div>`;
 }
 // チェックした人をまとめて登録（直列・失敗しても続行・最後に一覧表示）。確認ダイアログ付き
 async function payrollBulkRegister(){
