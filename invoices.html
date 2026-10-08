@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-08-v76";
+const BUILD_TAG="2026-10-08-v77";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -9687,6 +9687,77 @@ function payrollSortedRows(){
   }
   return rows;
 }
+// ===== 一括編集（2026-10-08・ユーザー要望: マネーフォワード仕訳帳の「一括編集」と同じ見せ方）=====
+// 「一括編集」ボタンで編集モードに入ると各行にチェックが付き、選んだ人をまとめて
+// 「振込済みにする」「この月は非表示にする」「削除（仕訳登録の解除）」できる。
+// 削除＝この画面上の仕訳登録記録(payroll_journal_records)の解除。マネーフォワード側の仕訳や
+// スマレジの給与データ自体は消さない（1人ずつの「仕訳登録を解除」と同じ動作）。
+function payrollVisibleRows(){ return payrollSortedRows().filter(r=>payrollMatchesQuick(r,PAYROLL_STATE.quickFilter)); }
+function payrollTheadHtml(){
+  const ck=PAYROLL_STATE.editMode?`<th style="width:28px"><input type="checkbox" data-pr-selall title="表示中の全員を選択／解除"></th>`:"";
+  return `<thead><tr>${ck}<th>氏名</th><th style="text-align:right">固定給</th><th style="text-align:right">通勤</th><th style="text-align:right">控除</th><th style="text-align:right">差引支給額</th><th>区分（社員／アルバイト）</th><th>PDF</th><th>口座状態</th><th>状態</th><th></th></tr></thead>`;
+}
+function payrollEditPanelHtml(){
+  if(!PAYROLL_STATE.editMode) return "";
+  return `<div id="payroll-edit-panel" class="card" style="margin:0 0 12px;padding:10px 14px;border:2px solid #e6b800;background:#fffbea;display:flex;flex-wrap:wrap;gap:8px;align-items:center">
+    <b>☑ 一括編集モード</b>
+    <label style="font-size:12px;display:flex;gap:4px;align-items:center"><input type="checkbox" data-pr-selall> 表示中の全員を選択／解除</label>
+    <span id="payroll-edit-count" style="font-size:13px"></span>
+    <span style="flex:1"></span>
+    <button class="btn primary" id="payroll-edit-pay" style="font-size:12px">💰 振込済みにする</button>
+    <button class="btn" id="payroll-edit-hide" style="font-size:12px">🚫 この月は非表示にする</button>
+    <button class="btn" id="payroll-edit-del" style="font-size:12px;color:#b00020" title="この画面上の仕訳登録の記録を解除します（マネーフォワード側の仕訳は消えません）">🗑 削除（仕訳登録の解除）</button>
+    <button class="btn" id="payroll-edit-exit" style="font-size:12px">編集を終了</button>
+  </div>`;
+}
+function payrollEditRefresh(){
+  const sel=PAYROLL_STATE.editSel||(PAYROLL_STATE.editSel=new Set());
+  const vis=payrollVisibleRows();
+  const n=vis.filter(r=>sel.has(r.user_id)).length;
+  const c=document.getElementById("payroll-edit-count");
+  if(c) c.innerHTML=`選択中 <b>${sel.size}名</b>${sel.size!==n?`（うち表示中 ${n}名）`:""}`;
+  ["payroll-edit-pay","payroll-edit-hide","payroll-edit-del"].forEach(id=>{ const b=document.getElementById(id); if(b) b.disabled=!sel.size; });
+  const all=vis.length>0&&vis.every(r=>sel.has(r.user_id));
+  document.querySelectorAll("[data-pr-selall]").forEach(el=>{ el.checked=all; });
+  document.querySelectorAll("[data-pr-sel]").forEach(el=>{ el.checked=sel.has(el.dataset.prSel); });
+}
+async function payrollEditAction(kind){
+  const sel=PAYROLL_STATE.editSel||new Set();
+  const ym=PAYROLL_STATE.yearMonth;
+  const ids=[...sel];
+  if(!ids.length) return;
+  const nameOf=id=>{ const r=(PAYROLL_STATE.rows||[]).find(x=>x.user_id===id); return (r&&r.user&&r.user.name)||id; };
+  const inList=arr=>`in.(${arr.join(",")})`;
+  const finish=(msg)=>{ PAYROLL_STATE.editSel=new Set(); payrollRender(); updateMailSummaryBar(); setTimeout(()=>{ const m=document.getElementById("payroll-csv-msg"); if(m){ m.className="err msg-ok"; m.textContent=msg; } },0); };
+  if(kind==="pay"){
+    const targets=ids.filter(id=>{ const rec=payrollRecordFor(id); return rec&&!rec.paid_at; });
+    const already=ids.filter(id=>{ const rec=payrollRecordFor(id); return rec&&rec.paid_at; }).length;
+    const noRec=ids.filter(id=>!payrollRecordFor(id)).length;
+    if(!targets.length){ alert(`振込済みにできる人がいません（仕訳が未登録: ${noRec}名／すでに振込済み: ${already}名）。振込済みにできるのは「仕訳登録済み・振込待ち」の人だけです。`); return; }
+    if(!confirm(`${targets.length}名を「振込済み」にします。\n（仕訳未登録のため対象外: ${noRec}名／すでに振込済み: ${already}名）\n\nよろしいですか？`)) return;
+    const now=new Date().toISOString();
+    const r=await authed(`/rest/v1/payroll_journal_records?year_month=eq.${ym}&user_id=${inList(targets)}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({paid_at:now,paid_by:ME.id})});
+    if(!r.ok){ alert("振込済みの記録に失敗しました"); return; }
+    targets.forEach(id=>{ const rec=payrollRecordFor(id); if(rec){ rec.paid_at=now; rec.paid_by=ME.id; } const uname=nameOf(id);
+      authed("/rest/v1/rpc/hq_check_payroll_task_item",{method:"POST",body:JSON.stringify({p_year_month:ym,p_kind:"transfer",p_person_name:uname})}).catch(()=>{}); });
+    finish(`${targets.length}名を振込済みにしました。`);
+  }else if(kind==="hide"){
+    if(!confirm(`${ids.length}名を${ym}分の一覧から非表示にします。\n（下の「この月は非表示にしている人」からいつでも復活できます）\n\nよろしいですか？`)) return;
+    const r=await authed("/rest/v1/sf_payroll_hidden",{method:"POST",headers:{Prefer:"resolution=merge-duplicates,return=minimal"},body:JSON.stringify(ids.map(id=>({user_id:id,year_month:ym,hidden_by:ME.id})))});
+    if(!r.ok){ alert("非表示にできませんでした（マスター権限が必要です）"); return; }
+    ids.forEach(id=>PAYROLL_STATE.hiddenUserIds.add(id));
+    finish(`${ids.length}名を非表示にしました。`);
+  }else if(kind==="del"){
+    const targets=ids.filter(id=>!!payrollRecordFor(id));
+    const paid=targets.filter(id=>{ const rec=payrollRecordFor(id); return rec&&rec.paid_at; }).length;
+    if(!targets.length){ alert("削除できる人がいません。削除（仕訳登録の解除）できるのは、仕訳を登録済みの人だけです。"); return; }
+    if(!confirm(`${targets.length}名の${ym}分の「仕訳登録」をこの画面上で解除（削除）します。\n${paid?`※うち${paid}名は振込済みの記録も一緒に消えます。\n`:""}\n※マネーフォワード側に登録済みの仕訳自体は削除されません。間違えて登録した場合は、MF側でも別途削除してください。\n\nよろしいですか？`)) return;
+    const r=await authed(`/rest/v1/payroll_journal_records?year_month=eq.${ym}&user_id=${inList(targets)}`,{method:"DELETE"});
+    if(!r.ok){ alert("削除（解除）に失敗しました"); return; }
+    PAYROLL_STATE.records=(PAYROLL_STATE.records||[]).filter(rc=>!(rc.year_month===ym&&targets.includes(rc.user_id)));
+    finish(`${targets.length}名の仕訳登録を解除しました。`);
+  }
+}
 function payrollRowHtml(row){
   const asg=payrollAssignmentFor(row.user_id);
   const rec=payrollRecordFor(row.user_id);
@@ -9748,6 +9819,7 @@ function payrollRowHtml(row){
     actionCell=`<div style="display:flex;flex-direction:column;gap:5px;align-items:flex-start">${hideBtn}</div>`;
   }
   return `<tr>
+    ${PAYROLL_STATE.editMode?`<td style="width:28px;text-align:center"><input type="checkbox" data-pr-sel="${esc(row.user_id)}" ${(PAYROLL_STATE.editSel&&PAYROLL_STATE.editSel.has(row.user_id))?"checked":""}></td>`:""}
     <td><b>${esc(name)}</b></td>
     <td style="text-align:right">${yen(row.fixed_salary_amount)}</td>
     <td style="text-align:right">${yen(row.commute_allowance)}</td>
@@ -9991,14 +10063,15 @@ function payrollRender(){
 
       <div class="section" style="display:flex;justify-content:space-between;align-items:end;gap:10px;margin:0 0 10px">
         <div style="flex:0 0 auto"><h2 style="margin:0;font-size:16px">給与振込一覧</h2><p style="font-size:9px;color:var(--muted);margin:4px 0 0">${esc(PAYROLL_STATE.yearMonth)} / ${rows.length}名表示 ／ <b title="この画面のバージョン。最新でないときは Cmd+Shift+R で強制再読み込み">build ${esc(BUILD_TAG)}</b></p></div>
-        <div class="actionbar" style="flex:1 1 auto;min-width:0;display:flex;flex-wrap:nowrap;justify-content:flex-end;align-items:center;gap:6px"><button class="btn" id="payroll-diag-btn" style="font-size:12px;padding:6px 10px;white-space:nowrap" title="MF側の部門・補助科目・共通の科目が、自動仕訳に必要なぶんそろっているかを店舗ごとに確認します（何も書き込みません）">🔍 マッピング診断</button><button class="btn" id="payroll-dry-btn" style="font-size:12px;padding:6px 10px;white-space:nowrap" title="登録済みの人も含めて、自動生成の判定だけを行います（下書きの保存・マネーフォワードへの登録は一切しません）">🔬 確認だけ</button><button class="btn" id="payroll-bulk-gen" style="font-size:12px;padding:6px 10px;white-space:nowrap" title="登録前の全員分を、PDF読み取り・検算・前月比チェックまで自動で行います（マネーフォワードへはまだ登録しません）">🧮 全員をAIで自動生成</button><button class="btn primary" id="payroll-bulk-register" style="font-size:12px;padding:6px 10px;white-space:nowrap" ${payrollBulkSelected().length?"":"disabled"} title="自動OK（緑）でチェックした人だけを、1人ずつ順番にマネーフォワードへ登録します">✅ チェックした人をまとめて登録（${payrollBulkSelected().length}名）</button><button class="btn" id="payroll-csv-download" style="font-size:12px;padding:6px 10px;white-space:nowrap">📥 一覧をCSVでダウンロード</button><button class="btn primary" id="payroll-csv-export" style="font-size:12px;padding:6px 10px;white-space:nowrap">🏦 PayPay銀行CSV出力</button><label style="display:flex;gap:4px;align-items:center;font-size:12px;white-space:nowrap;margin-left:6px" title="法人×区分（社員/アルバイト）でテンプレートを自動で割り当てます。人ごとの手動割当は例外として常に優先されます"><input type="checkbox" id="payroll-autoassign-toggle" ${payrollAutoAssignOn()?"checked":""}>🤖区分で自動割当</label></div>
+        <div class="actionbar" style="flex:1 1 auto;min-width:0;display:flex;flex-wrap:nowrap;justify-content:flex-end;align-items:center;gap:6px"><button class="btn${PAYROLL_STATE.editMode?" primary":""}" id="payroll-edit-toggle" style="font-size:12px;padding:6px 10px;white-space:nowrap" title="選んだ人をまとめて「振込済み」「非表示」「削除」できます">☑ 一括編集</button><button class="btn" id="payroll-diag-btn" style="font-size:12px;padding:6px 10px;white-space:nowrap" title="MF側の部門・補助科目・共通の科目が、自動仕訳に必要なぶんそろっているかを店舗ごとに確認します（何も書き込みません）">🔍 マッピング診断</button><button class="btn" id="payroll-dry-btn" style="font-size:12px;padding:6px 10px;white-space:nowrap" title="登録済みの人も含めて、自動生成の判定だけを行います（下書きの保存・マネーフォワードへの登録は一切しません）">🔬 確認だけ</button><button class="btn" id="payroll-bulk-gen" style="font-size:12px;padding:6px 10px;white-space:nowrap" title="登録前の全員分を、PDF読み取り・検算・前月比チェックまで自動で行います（マネーフォワードへはまだ登録しません）">🧮 全員をAIで自動生成</button><button class="btn primary" id="payroll-bulk-register" style="font-size:12px;padding:6px 10px;white-space:nowrap" ${payrollBulkSelected().length?"":"disabled"} title="自動OK（緑）でチェックした人だけを、1人ずつ順番にマネーフォワードへ登録します">✅ チェックした人をまとめて登録（${payrollBulkSelected().length}名）</button><button class="btn" id="payroll-csv-download" style="font-size:12px;padding:6px 10px;white-space:nowrap">📥 一覧をCSVでダウンロード</button><button class="btn primary" id="payroll-csv-export" style="font-size:12px;padding:6px 10px;white-space:nowrap">🏦 PayPay銀行CSV出力</button><label style="display:flex;gap:4px;align-items:center;font-size:12px;white-space:nowrap;margin-left:6px" title="法人×区分（社員/アルバイト）でテンプレートを自動で割り当てます。人ごとの手動割当は例外として常に優先されます"><input type="checkbox" id="payroll-autoassign-toggle" ${payrollAutoAssignOn()?"checked":""}>🤖区分で自動割当</label></div>
       </div>
       ${(()=>{ const extra=`${payrollBulkSummaryHtml()}${payrollBulkListsHtml()}${PAYROLL_STATE.diagHtml||""}${payrollDryRunHtml()}`; return extra.trim()?`<div id="payroll-bulk-bar" style="margin:0 0 12px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--panel-2,#fafafa)">${extra}</div>`:""; })()}
+      ${payrollEditPanelHtml()}
       <div class="err" id="payroll-csv-msg" style="margin-bottom:8px"></div>
 
       <div class="card hq-tablewrap">
         ${rows.length?`<table class="pr-table" style="width:100%;border-collapse:collapse">
-          <thead><tr><th>氏名</th><th style="text-align:right">固定給</th><th style="text-align:right">通勤</th><th style="text-align:right">控除</th><th style="text-align:right">差引支給額</th><th>区分（社員／アルバイト）</th><th>PDF</th><th>口座状態</th><th>状態</th><th></th></tr></thead>
+          ${payrollTheadHtml()}
           <tbody>${rows.map(payrollRowHtml).join("")}</tbody>
         </table>`:`<div class="empty">${PAYROLL_STATE.searchQuery?"該当する氏名の人が見つかりません":(PAYROLL_STATE.hidePaid?"振込完了以外は残っていません（絞り込み中）":`${esc(PAYROLL_STATE.yearMonth)}のデータがまだありません（スマレジ給与明細の同期後に表示されます）`)}</div>`}
         <div class="pr-footer-actions"><small>絞り込み条件に応じて自動更新</small><button class="btn" id="payroll-reset-filter">絞り込みをリセット</button></div>
@@ -10036,10 +10109,11 @@ function payrollRender(){
       const rows2=payrollSortedRows().filter(r=>payrollMatchesQuick(r,PAYROLL_STATE.quickFilter));
       const target=wrap.querySelector("table,.empty");
       if(target) target.outerHTML=rows2.length?`<table class="pr-table" style="width:100%;border-collapse:collapse">
-        <thead><tr><th>氏名</th><th style="text-align:right">固定給</th><th style="text-align:right">通勤</th><th style="text-align:right">控除</th><th style="text-align:right">差引支給額</th><th>区分（社員／アルバイト）</th><th>PDF</th><th>口座状態</th><th>状態</th><th></th></tr></thead>
+        ${payrollTheadHtml()}
         <tbody>${rows2.map(payrollRowHtml).join("")}</tbody>
       </table>`:`<div class="empty">該当する氏名の人が見つかりません</div>`;
       wirePayrollRowActions();
+      if(PAYROLL_STATE.editMode) payrollEditRefresh();
     },250);
   };
   // 2026-09-02: スマレジ再取得ボタン（nippo「給与・インセンティブ配分」画面のsmaregi-payroll-sync呼び出しと同じパターン）
@@ -10151,6 +10225,14 @@ function payrollRender(){
     setTimeout(()=>URL.revokeObjectURL(url),1000);
   };
   wirePayrollRowActions();
+  $("payroll-edit-toggle").onclick=()=>{ PAYROLL_STATE.editMode=!PAYROLL_STATE.editMode; PAYROLL_STATE.editSel=new Set(); payrollRender(); };
+  if(PAYROLL_STATE.editMode){
+    if($("payroll-edit-exit")) $("payroll-edit-exit").onclick=()=>{ PAYROLL_STATE.editMode=false; PAYROLL_STATE.editSel=new Set(); payrollRender(); };
+    if($("payroll-edit-pay")) $("payroll-edit-pay").onclick=()=>payrollEditAction("pay");
+    if($("payroll-edit-hide")) $("payroll-edit-hide").onclick=()=>payrollEditAction("hide");
+    if($("payroll-edit-del")) $("payroll-edit-del").onclick=()=>payrollEditAction("del");
+    payrollEditRefresh();
+  }
   $("payroll-csv-export").onclick=payrollExportCsv;
   $("payroll-pdf-match").onclick=()=>{
     const files=Array.from($("payroll-pdf-files").files||[]);
@@ -10166,6 +10248,16 @@ function payrollRender(){
 // payrollRender()の全体再描画後だけでなく、検索の部分差し替え後（テーブルだけ作り直したとき）にも
 // 呼び直せるよう独立した関数にしてある（2026-09-02）
 function wirePayrollRowActions(){
+  document.querySelectorAll("[data-pr-sel]").forEach(el=>el.onchange=()=>{
+    const sel=PAYROLL_STATE.editSel||(PAYROLL_STATE.editSel=new Set());
+    if(el.checked) sel.add(el.dataset.prSel); else sel.delete(el.dataset.prSel);
+    payrollEditRefresh();
+  });
+  document.querySelectorAll("[data-pr-selall]").forEach(el=>el.onchange=()=>{
+    const sel=PAYROLL_STATE.editSel||(PAYROLL_STATE.editSel=new Set());
+    payrollVisibleRows().forEach(r=>{ if(el.checked) sel.add(r.user_id); else sel.delete(r.user_id); });
+    payrollEditRefresh();
+  });
   // 2026-09-02: この月は非表示にする／復活する（依頼②。sf_payroll_hidden。書き込みはmasterのみ
   // 許可のRLSのため、master以外が押すとエラーになる＝nippo側と同じ仕様）
   document.querySelectorAll("[data-payroll-hide]").forEach(el=>el.onclick=async()=>{
@@ -10683,6 +10775,29 @@ function payrollBulkBadgeHtml(row){
   return `<div style="margin-top:4px"><span class="pr-status warn">⚠️要確認</span><div style="font-size:10px;color:var(--muted);margin-top:2px;max-width:280px;white-space:normal;line-height:1.4">${rs.map(esc).join("<br>")}</div></div>`;
 }
 // 1人ぶんを自動で組み立てて判定する（画面は開かない。プレビューの「自動生成」と同じ関数群を使う）
+// 2026-10-08追加（「確認だけ」の実データ結果より）：①社員の給与明細は事業所名が「社員」（店舗ではない）になっている（10名）→ その人の
+// 主な所属店舗（user_stores）として扱う。②勤務詳細の表そのものが無いPDF（集計表のみ・1名）→ 同じく所属店舗に全額を計上する。どちらも
+// 店舗別の按分はできない（所属店舗に寄せる）ため、画面の警告に明示する。所属店舗が分からない／給料の対象外の店舗のときは何もしない（従来どおり）
+function payrollBreakdownFallback_(userId,bres){
+  const sid=payrollUserPrimaryStoreId(userId);
+  const st=sid?(PAYROLL_STATE.stores||[]).find(x=>x.id===sid):null;
+  if(!st||!payrollStoreHasPayroll(st.id)) return bres;
+  const isGeneric=n=>/^社員$/.test(String(n||"").normalize("NFKC").replace(/\s+/g,""));
+  if(bres&&bres.ok&&Array.isArray(bres.totals)&&bres.totals.some(t=>isGeneric(t.store))){
+    const merged=new Map();
+    for(const t of bres.totals){
+      const key=isGeneric(t.store)?st.name:t.store;
+      const cur=merged.get(key)||{store:key,amount:0,commute:0,count:0};
+      cur.amount+=Number(t.amount)||0; cur.commute+=Number(t.commute)||0; cur.count+=Number(t.count)||0;
+      merged.set(key,cur);
+    }
+    return {...bres,totals:[...merged.values()],fallbackNote:`事業所「社員」は店舗ではないため、所属店舗（${st.name}）として扱いました（店舗別の按分はできません）`};
+  }
+  if(bres&&!bres.ok&&/勤務詳細|転記すべき行/.test(String(bres.error||""))){
+    return {ok:true,totals:[{store:st.name,amount:0,commute:0,count:1}],summary:bres.summary||null,fallbackNote:`勤務詳細の表が無いPDFのため、所属店舗（${st.name}）に全額を計上しました（店舗別の按分はできません）`};
+  }
+  return bres;
+}
 async function payrollAutoPrepare(userId,ctx){
   const ym=PAYROLL_STATE.yearMonth;
   const row=PAYROLL_STATE.rows.find(r=>r.user_id===userId);
@@ -10710,7 +10825,9 @@ async function payrollAutoPrepare(userId,ctx){
     const [b2,s2]=await Promise.all([bres.ok?Promise.resolve(bres):payrollExtractStoreBreakdown(pdfFiles),summary?Promise.resolve(summary):payrollExtractPdfSummary(pdfFiles)]);
     bres=b2; summary=summary||s2;
   }
+  bres=payrollBreakdownFallback_(userId,bres);
   if(!bres.ok){ res.reasons.push(`AI読み取り失敗: ${bres.error}`); return res; }
+  if(bres.fallbackNote&&/勤務詳細の表が無い/.test(bres.fallbackNote)) res.reasons.push(bres.fallbackNote); // 勤務詳細が無い場合は人の確認に回す
   let branches=payrollComputeBranches(row,template);
   if(!branches.length){ res.reasons.push("金額が計算できません"); return res; }
   // 2026-10-06修正：ユーザー報告「自動OKが1人も付かない（個別で開くと合っている）」の原因。検算は行の
@@ -10729,7 +10846,13 @@ async function payrollAutoPrepare(userId,ctx){
   else if(!plan.pdfChecked) res.reasons.push("PDF合計欄との突き合わせができていません");
   if(!plan.blocked&&!plan.ok){
     if(plan.stores.some(x=>!x.dept)) res.reasons.push(`店舗が未解決: ${plan.stores.filter(x=>!x.dept).map(x=>x.storeName).join("、")}`);
-    else res.reasons.push(`検算が合いません（${(plan.warnings[0]||"支給・控除の不一致")}）`);
+    else{
+      const why=[];
+      if(!plan.allowanceOk) why.push(`支給額の差${yen(plan.allowanceDiff)}（勤務詳細の合計${yen(plan.storeSum)}／スマレジ${yen(plan.expectedAllowance)}）`);
+      if(!plan.deductionOk) why.push(`控除の差${yen(plan.deductionSum-plan.expectedDeductionTotal)}`);
+      if(!plan.netPayBranch) why.push("差引支給額（未払金）の行が型に無い");
+      res.reasons.push(`検算が合いません（${why.join("／")||plan.warnings[0]||"支給・控除の不一致"}）`);
+    }
   }
   if(plan.ok&&!plan.blocked){
     payrollApplyAutoJournalPlan(branches,plan);
@@ -10754,7 +10877,9 @@ async function payrollAutoPrepare(userId,ctx){
   {
     const pn=ctx.prevNet.get(userId);
     if(!pn||pn<=0) res.reasons.push("前月の給与データなし（新規の人は要確認）");
-    else{
+    else if(payrollEffectiveKind(userId)==="employee"){
+      // 前月比のチェックは社員だけ。アルバイトは月ごとの勤務時間で給料が大きく変わるのが普通（実データで37名が該当・ほぼ全て正常な変動）で、
+      // 数字の取り違えはPDF合計欄との突合・検算で別に確認しているため、要確認の理由にしない
       const ratio=(res.netPay-pn)/pn;
       if(Math.abs(ratio)>0.3) res.reasons.push(`前月比${ratio>0?"+":""}${Math.round(ratio*100)}%（±30%超）`);
     }
@@ -11406,8 +11531,9 @@ async function payrollOpenPreview(userId){
   const runStoreBreakdown=async()=>{
     if(storeBreakdownCache) return storeBreakdownCache;
     const [res,summary]=await Promise.all([payrollExtractStoreBreakdown(pdfFiles),payrollExtractPdfSummary(pdfFiles)]);
-    if(res.ok){ res.summary=summary; storeBreakdownCache=res; }
-    return res;
+    const res2=payrollBreakdownFallback_(userId,res);
+    if(res2.ok){ res2.summary=summary; storeBreakdownCache=res2; }
+    return res2;
   };
   // 2026-09-02: ユーザー要望「事業所ごとの金額と交通費だけでもOCRで読み込んで表示させることは
   // できないか」に対応。あくまで参考値の表示のみ（仕訳金額への自動反映はしない）
@@ -11446,6 +11572,7 @@ async function payrollOpenPreview(userId){
       const creditNotes=(await payrollEnsureCreditRows(branches,row,userId)).concat(payrollEnsureDeductionRows(branches,row));
       const plan=payrollBuildAutoJournalPlan(row,branches,bres.totals,bres.summary);
       creditNotes.forEach(n=>plan.warnings.push(n));
+      if(bres.fallbackNote) plan.warnings.unshift(bres.fallbackNote);
       el.innerHTML=payrollAutoJournalPlanHtml(plan);
       el.querySelectorAll("[data-alias-register]").forEach(rb=>rb.onclick=async()=>{
         const k=+rb.dataset.aliasRegister;
