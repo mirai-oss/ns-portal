@@ -4,6 +4,12 @@
 
 ---
 
+## 2026-10-08 Mac miniセッション: システム利用状況の「自動取込ジョブ一覧」に「頻度」列と「▶ 再実行」ボタンを追加（portal.html・**SQL適用待ち**）
+- ユーザー要望: 失敗したタスクを管理システム（システム利用状況）から再実行できるように／毎日・毎月など頻度を見える化。
+- `portal.html renderImportJobsBox`: 頻度バッジ列（毎日 06:25／毎月2・17日 08:10。weeklyは将来用）・頻度順ソート・失敗/一部失敗ジョブの行ハイライトと件数バナー・「▶ 再実行」ボタン（`import_run_requests`へINSERT→Mac miniが数分以内に実行。依頼中は15秒ごと自動更新）。会計・請求WS「自動取込＞未取得」と同じ依頼の仕組み。
+- **SQL**: `supabase/2026-10-08_import_run_requests_all_jobs.sql`（INSERTポリシーの対象を「月次の会計系ジョブ」→「import_scheduleの有効な全ジョブ」へ拡張。マスター/CEO/HQのみ・重複依頼禁止は維持）。**ユーザー承認後に適用**。適用前は毎日ジョブ等のボタンを押すと権限エラーの案内が出る（月次の会計系は従来どおり動く）。
+- Mac mini側 `ns-daily-import/lib/run-requests.js` も有効な全ジョブを実行対象に拡張（コミット済み・稼働中）。
+
 ## 2026-10-07 担当A: 広告管理・目標管理をkd直読み(GASなし)に切替 — 新旧突合 全項目差0
 - app.js v259: 広告(kind:'ad')・目標(kind:'target'/'target_daily')をSupabase直読み既定ON(localStorage.kd_ad=0 / kd_target=0 で旧GAS経路)。画面の『🧪広告・目標突合』(管理者)で月×店舗(×媒体)の旧GAS vs kdを比較。
 - 突合で見つかった差と対応(P): 目標月次の率が0(dash-syncの列名)・過去月の目標(取得窓2→36か月)・鳥一代（芝）のalias・2枚看板(brand_name返却)・新横浜の匠味/鶏武者は画面のDB_店舗対応が逆向き→app_secrets.kd_ad_name_overrides(広告取込だけに効く・全角括弧の旧名のみ)で解決。DB_店舗対応を直したらこの上書きを削除して ad_monthly を再作成すること。
