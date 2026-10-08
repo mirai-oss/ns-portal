@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-08-v71";
+const BUILD_TAG="2026-10-08-v72";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -8605,6 +8605,17 @@ async function payrollLoad(){
     // 広告費・予約データの店舗名寄せで既に使われているstore_aliasesテーブル（担当G実装済み・
     // 「匠味 新横浜」→鶏武者 新横浜のstore_id等が既に登録されている）を給与仕訳でも読み、
     // payrollMatchStoreRecord()から使えるようにする
+    // 2026-10-08：給料の会社は「賃貸借の名義」ではなく「運営している会社」で決める。店舗・法人・運営関係の正本（担当F）の現在の運営関係、
+    // 法人（グループ会社か）、従業員の所属店舗（user_stores）を読む。取得できなければ従来どおり stores.corporation_id で判定する
+    await Promise.all([
+      authed("/rest/v1/v_store_current_relations?select=store_id,relation_type,operator_entity_type,operator_entity_id,operator_name"),
+      authed("/rest/v1/corporations?select=id,name,is_group_company"),
+      authed("/rest/v1/user_stores?select=user_id,store_id,is_primary"),
+    ]).then(([a,b,c])=>{
+      PAYROLL_STATE.relations=(a.ok&&Array.isArray(a.body))?a.body:[];
+      PAYROLL_STATE.corporations=(b.ok&&Array.isArray(b.body))?b.body:[];
+      PAYROLL_STATE.userStores=(c.ok&&Array.isArray(c.body))?c.body:[];
+    }).catch(()=>{});
     const [r,ar,xr]=await Promise.all([
       authed("/rest/v1/stores?select=id,name,mf_department_name,corporation_id&order=name"),
       authed("/rest/v1/store_aliases?select=alias,store_id,source,kind"),
@@ -8773,14 +8784,34 @@ function payrollManualAssignmentFor(userId){ return PAYROLL_STATE.assignments.fi
 // 法人は所属店舗（その月の按分で金額が最大の店舗）の法人。人ごとの手動割当（payroll_journal_assignments）は
 // 「例外の上書き」として最優先で残す。自動割当はブラウザのスイッチ（localStorage）でいつでも切れる
 function payrollAutoAssignOn(){ try{ return localStorage.getItem("payrollAutoAssignOff")!=="1"; }catch(e){ return true; } }
-function payrollUserCorporationId(userId){
+// 店舗の運営会社と、給料が発生する店舗か。運営が会社（corporation）でグループ会社なら給料対象（その会社から発生）。運営が取引先（vendor＝業務委託でグループ外）
+// なら給料は発生しない。運営関係が未登録の拠点（本部・セントラルキッチン等）は店舗マスタの法人で判定する
+function payrollStoreOperatorInfo_(storeId){
+  const rel=(PAYROLL_STATE.relations||[]).find(r=>r.store_id===storeId);
+  const st=(PAYROLL_STATE.stores||[]).find(x=>x.id===storeId);
+  if(rel&&rel.operator_entity_type){
+    if(rel.operator_entity_type==="corporation"){
+      const c=(PAYROLL_STATE.corporations||[]).find(x=>x.id===rel.operator_entity_id);
+      return {corpId:rel.operator_entity_id,name:rel.operator_name||"",payroll:c?c.is_group_company!==false:true};
+    }
+    return {corpId:null,name:rel.operator_name||"",payroll:false};
+  }
+  return {corpId:st?st.corporation_id||null:null,name:"",payroll:true};
+}
+function payrollStoreHasPayroll(storeId){ return payrollStoreOperatorInfo_(storeId).payroll; }
+function payrollPayrollStores(){ return (PAYROLL_STATE.stores||[]).filter(st=>payrollStoreHasPayroll(st.id)); }
+function payrollUserPrimaryStoreId(userId){
+  const us=(PAYROLL_STATE.userStores||[]).filter(x=>x.user_id===userId);
+  const prim=us.find(x=>x.is_primary)||us[0];
+  if(prim) return prim.store_id;
   const al=(PAYROLL_STATE.allocations||[]).filter(a=>a.user_id===userId&&a.store_id);
   if(!al.length) return null;
-  const byStore=new Map();
-  al.forEach(a=>byStore.set(a.store_id,(byStore.get(a.store_id)||0)+(Number(a.amount)||0)));
-  const top=[...byStore.entries()].sort((a,b)=>b[1]-a[1])[0][0];
-  const st=(PAYROLL_STATE.stores||[]).find(x=>x.id===top);
-  return st?st.corporation_id||null:null;
+  const by=new Map(); al.forEach(a=>by.set(a.store_id,(by.get(a.store_id)||0)+(Number(a.amount)||0)));
+  return [...by.entries()].sort((a,b)=>b[1]-a[1])[0][0];
+}
+function payrollUserCorporationId(userId){
+  const sid=payrollUserPrimaryStoreId(userId);
+  return sid?payrollStoreOperatorInfo_(sid).corpId:null;
 }
 // 2026-10-08（ユーザー要望「仕訳辞書を選ぶ代わりに、社員かアルバイトだけを選べば自動で仕訳されるように」）：
 // 給与仕訳の「パターン」は人ごとの仕訳辞書ではなく「区分（社員／アルバイト）」。区分は既定で役職（users.role。AL=アルバイト・
@@ -9218,7 +9249,7 @@ function payrollAutoJournalPlanHtml(plan){
   }
   // 2026-10-06追加（設計書 §2）：部門が見つからない（またはあいまい一致の）事業所は、その場で店舗を選んで
   // 「この店舗として登録」できる（store_aliasesへ別名登録→即再検算）。設定タブへ行かなくて済む
-  const storeOpts=(selId)=>`<option value="">店舗を選ぶ</option>`+(PAYROLL_STATE.stores||[]).map(x=>`<option value="${esc(x.id)}" ${x.id===selId?"selected":""}>${esc(x.name)}</option>`).join("");
+  const storeOpts=(selId)=>`<option value="">店舗を選ぶ</option>`+payrollPayrollStores().map(x=>`<option value="${esc(x.id)}" ${x.id===selId?"selected":""}>${esc(x.name)}</option>`).join("");
   const storeRows=plan.stores.map((s,k)=>{
     let cell;
     if(s.dept&&!s.fuzzy) cell=esc(s.dept.name);
@@ -9865,7 +9896,7 @@ function payrollRender(){
           <input id="payroll-search" placeholder="🔍 氏名で検索" value="${esc(PAYROLL_STATE.searchQuery||"")}">
           <select id="payroll-store-filter">
             <option value="">店舗で絞り込み（すべて）</option>
-            ${(PAYROLL_STATE.stores||[]).map(s=>`<option value="${esc(s.id)}" ${PAYROLL_STATE.storeFilter===s.id?"selected":""}>${esc(s.name)}</option>`).join("")}
+            ${payrollPayrollStores().map(s=>`<option value="${esc(s.id)}" ${PAYROLL_STATE.storeFilter===s.id?"selected":""}>${esc(s.name)}</option>`).join("")}
           </select>
           <select id="payroll-role-filter" title="役職（users.role）で絞り込み">
             <option value="">役職で絞り込み（すべて）</option>
@@ -10612,6 +10643,7 @@ async function payrollAutoPrepare(userId,ctx){
   const name=(row&&row.user&&row.user.name)||"—";
   const res={userId,name,status:"review",reasons:[],branches:null,date:payrollLastDayOfMonth(ym),netPay:Math.round(Number(row&&row.net_pay)||0),checked:false};
   if(!row) { res.reasons.push("対象データなし"); return res; }
+  { const sid=payrollUserPrimaryStoreId(userId); if(sid&&!payrollStoreHasPayroll(sid)){ res.reasons.push("所属店舗の運営が業務委託先（グループ外）のため給料の対象外"); return res; } }
   const asg=payrollAssignmentFor(userId);
   const template=asg&&PAYROLL_STATE.templates.find(t=>t.id===asg.template_id);
   if(!template){ res.reasons.push("パターン未設定"); return res; }
@@ -10812,7 +10844,8 @@ async function payrollDiagnose(){
   const toho=corps.find(c=>c.name==="トーホー");
   const depts=PAYROLL_STATE.departments||[];
   const accMap=PAYROLL_STATE.accountLabelMap||new Map();
-  const stores=(PAYROLL_STATE.stores||[]).filter(st=>!toho||!st.corporation_id||st.corporation_id===toho.id);
+  // 給料が発生する店舗＝運営がトーホー（グループ会社含む）の店舗。運営が業務委託先（グループ外）の店舗は対象外（診断にも出さない）
+  const stores=payrollPayrollStores().filter(st=>{ const o=payrollStoreOperatorInfo_(st.id); return !toho||!o.corpId||o.corpId===toho.id; });
   const other=(PAYROLL_STATE.stores||[]).length-stores.length;
   const rows=stores.map(st=>{
     const set=(st.mf_department_name||"").trim();
@@ -10866,7 +10899,7 @@ async function payrollDiagnose(){
   const mark=x=>x.ok===null?`<span style="color:var(--muted)">－</span>`:x.ok?`<span style="color:var(--m-green)">✓</span>${x.by==="code"?` <span style="font-size:10px;color:var(--muted)" title="部門名とは表記が違いますが、店舗番号が同じ補助科目として扱います">${esc(x.matched)}（番号で一致）</span>`:""}`:`<span style="color:var(--accent)" title="MFに「${esc(x.expect)}」を作成するか、既存の補助科目の名前を部門名に合わせてください">✗ ${esc(x.expect.split("/").slice(1).join("/"))}</span>${x.cands.length?`<div style="font-size:10px;color:var(--muted)">同じ番号の既存: ${x.cands.map(esc).join("、")}</div>`:`<div style="font-size:10px;color:var(--muted)">同じ番号の既存なし＝未作成</div>`}`;
   PAYROLL_STATE.diagHtml=`<div class="card" style="width:100%;margin-top:8px;padding:10px 12px;border:1px solid var(--line)">
     <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap"><b>🔍 マッピング診断</b><button type="button" class="linkbtn" id="payroll-diag-close" style="background:none;border:none;color:var(--blue);cursor:pointer;font-size:12px">閉じる</button></div>
-    <div style="font-size:12px;margin:6px 0">店舗 ${rows.length}件中 <b style="color:${badStores?"var(--accent)":"var(--m-green)"}">${badStores}件に不足あり</b>${other?`（別法人の店舗${other}件は対象外）`:""}。✗の補助科目は、MF側で作成すると自動で仕訳に入るようになります。</div>
+    <div style="font-size:12px;margin:6px 0">店舗 ${rows.length}件中 <b style="color:${badStores?"var(--accent)":"var(--m-green)"}">${badStores}件に不足あり</b>${other?`（運営が別の会社・業務委託先の店舗${other}件は給料の対象外）`:""}。✗の補助科目は、MF側で作成すると自動で仕訳に入るようになります。</div>
     <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px">
       <thead><tr style="background:var(--panel-2,#f5f5f5)"><th style="text-align:left;padding:4px 6px">店舗</th><th style="text-align:left;padding:4px 6px">MFの部門</th>${PAYROLL_DIAG_ACCOUNTS.map(a=>`<th style="text-align:left;padding:4px 6px">${esc(a)}の補助科目</th>`).join("")}<th style="text-align:left;padding:4px 6px">スマレジ事業所</th><th style="text-align:left;padding:4px 6px" title="給与明細の事業所名がこのどれかに一致すれば、自動でこの店舗に結びつきます。ここに無い表記は「あいまい」または「未解決」になり、『この店舗として登録』で追加できます">明細の事業所名として自動で認識できる名前</th></tr></thead>
       <tbody>${rows.map(r=>`<tr style="border-top:1px solid var(--line);${r.problems?"background:rgba(220,60,60,.06)":""}">
