@@ -92,8 +92,9 @@ const SUMMARY_TOOL = {
       allowance_total: { type: ["number", "null"], description: "「支給額合計」（切上げ後の表示値）。無ければnull" },
       deduction_total: { type: ["number", "null"], description: "「控除額合計」（切捨て後の表示値）。無ければnull" },
       net_pay: { type: ["number", "null"], description: "「差引支給額」（振込予定額）。無ければnull" },
+      company_name: { type: ["string", "null"], description: "給与明細の発行元・事業主の会社名（例: 有限会社トーホーエージェンシー）。書かれていなければnull" },
     },
-    required: ["allowance_total", "deduction_total", "net_pay"],
+    required: ["allowance_total", "deduction_total", "net_pay", "company_name"],
   },
 };
 
@@ -133,7 +134,7 @@ Deno.serve(async (req: Request) => {
         body: JSON.stringify({
           model: MODEL,
           max_tokens: 512,
-          system: "あなたは給与明細PDFの合計欄を読み取るアシスタントです。「支給額合計」「控除額合計」「差引支給額」の3つの金額を、PDFに書かれている表示値のまま転記してください。計算や補正は一切しないでください。複数ファイルが渡された場合は、全体の合計として最も妥当な1組（同じ従業員の月の合計）を返してください。見つからない項目はnullにしてください。結果は必ずextract_payslip_totalsツールの呼び出しのみで返してください。",
+          system: "あなたは給与明細PDFの合計欄を読み取るアシスタントです。「支給額合計」「控除額合計」「差引支給額」の3つの金額と、給与明細に書かれている会社名（事業主）を、PDFに書かれている表示値のまま転記してください。計算や補正は一切しないでください。複数ファイルが渡された場合は、全体の合計として最も妥当な1組（同じ従業員の月の合計）を返してください。見つからない項目はnullにしてください。結果は必ずextract_payslip_totalsツールの呼び出しのみで返してください。",
           tools: [SUMMARY_TOOL],
           tool_choice: { type: "tool", name: "extract_payslip_totals" },
           messages: [{
@@ -150,7 +151,7 @@ Deno.serve(async (req: Request) => {
       const tb = (sj.content ?? []).find((c: any) => c.type === "tool_use" && c.name === "extract_payslip_totals");
       const inp = tb?.input ?? {};
       const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : null);
-      return json({ success: true, summary: { allowance_total: num(inp.allowance_total), deduction_total: num(inp.deduction_total), net_pay: num(inp.net_pay) } });
+      return json({ success: true, summary: { allowance_total: num(inp.allowance_total), deduction_total: num(inp.deduction_total), net_pay: num(inp.net_pay), company_name: typeof inp.company_name === "string" && inp.company_name.trim() ? inp.company_name.trim() : null } });
     } catch (e) {
       return json({ error: "合計欄の読み取りに失敗しました: " + String(e) }, 502);
     }

@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-08-v72";
+const BUILD_TAG="2026-10-08-v73";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -8609,9 +8609,11 @@ async function payrollLoad(){
     // 法人（グループ会社か）、従業員の所属店舗（user_stores）を読む。取得できなければ従来どおり stores.corporation_id で判定する
     await Promise.all([
       authed("/rest/v1/v_store_current_relations?select=store_id,relation_type,operator_entity_type,operator_entity_id,operator_name"),
-      authed("/rest/v1/corporations?select=id,name,is_group_company"),
+      authed("/rest/v1/corporations?select=id,name,legal_name,display_name,is_group_company"),
       authed("/rest/v1/user_stores?select=user_id,store_id,is_primary"),
-    ]).then(([a,b,c])=>{
+      authed("/rest/v1/corporation_aliases?is_active=eq.true&select=corporation_id,alias"),
+    ]).then(([a,b,c,d])=>{
+      PAYROLL_STATE.corpAliases=(d.ok&&Array.isArray(d.body))?d.body:[];
       PAYROLL_STATE.relations=(a.ok&&Array.isArray(a.body))?a.body:[];
       PAYROLL_STATE.corporations=(b.ok&&Array.isArray(b.body))?b.body:[];
       PAYROLL_STATE.userStores=(c.ok&&Array.isArray(c.body))?c.body:[];
@@ -8798,8 +8800,28 @@ function payrollStoreOperatorInfo_(storeId){
   }
   return {corpId:st?st.corporation_id||null:null,name:"",payroll:true};
 }
+// 給与明細の会社名（例:「有限会社トーホーエージェンシー」）→ 法人。法人の正式名・表示名・名称・別名（㈲／（有）等の表記ゆれ）と照合する
+function payrollCorpFromCompanyName_(name){
+  const strip=x=>String(x||"").normalize("NFKC").replace(/\s+/g,"").replace(/有限会社|株式会社|合同会社|\(株\)|\(有\)|㈱|㈲/g,"");
+  const n=strip(name);
+  if(!n) return null;
+  const corps=PAYROLL_STATE.corporations||[], als=PAYROLL_STATE.corpAliases||[];
+  const exact=als.find(a=>String(a.alias||"").normalize("NFKC").replace(/\s+/g,"")===String(name).normalize("NFKC").replace(/\s+/g,""));
+  if(exact) return exact.corporation_id;
+  const cands=[];
+  corps.forEach(c=>[c.legal_name,c.display_name,c.name].forEach(x=>{ if(x) cands.push([strip(x),c.id]); }));
+  als.forEach(a=>{ if(a.alias) cands.push([strip(a.alias),a.corporation_id]); });
+  const hit=cands.find(([k])=>k&&(k===n||n.includes(k)||k.includes(n)));
+  return hit?hit[1]:null;
+}
 function payrollStoreHasPayroll(storeId){ return payrollStoreOperatorInfo_(storeId).payroll; }
 function payrollPayrollStores(){ return (PAYROLL_STATE.stores||[]).filter(st=>payrollStoreHasPayroll(st.id)); }
+// 給与仕訳タブは有限会社トーホーエージェンシー分のみ。給料が発生する店舗のうち、運営会社がトーホー（または運営会社を持たない本部・セントラルキッチン）のものだけを選択肢に出す
+// （N-Style 本社などは給料の人がいないため出さない）
+function payrollTohoStores(){
+  const toho=(PAYROLL_STATE.corporations||[]).find(c=>c.name==="トーホー");
+  return payrollPayrollStores().filter(st=>{ const o=payrollStoreOperatorInfo_(st.id); return !toho||!o.corpId||o.corpId===toho.id; });
+}
 function payrollUserPrimaryStoreId(userId){
   const us=(PAYROLL_STATE.userStores||[]).filter(x=>x.user_id===userId);
   const prim=us.find(x=>x.is_primary)||us[0];
@@ -9138,6 +9160,18 @@ function payrollBuildAutoJournalPlan(row,branches,storeTotals,pdfSummary){
   }
   const sm=pdfSummary&&typeof pdfSummary==="object"?pdfSummary:null;
   let pdfChecked=false;
+  // 2026-10-08追加（ユーザー指摘「給料明細にも会社名は入っている」）：明細の会社名が、この人の給料を出す法人（運営会社。不明ならトーホー）と
+  // 一致するかを確認する。別の会社の明細・登録されていない会社名のときは自動では入れない
+  let companyNote="";
+  if(sm&&typeof sm.company_name==="string"&&sm.company_name.trim()){
+    const toho=(PAYROLL_STATE.corporations||[]).find(c=>c.name==="トーホー");
+    const expectId=row._expectedCorpId||(toho?toho.id:null);
+    const gotId=payrollCorpFromCompanyName_(sm.company_name);
+    const expectName=((PAYROLL_STATE.corporations||[]).find(c=>c.id===expectId)||{}).name||"トーホー";
+    if(!gotId) blockReasons.push(`給与明細の会社名「${sm.company_name}」が、登録されている法人に見つかりません`);
+    else if(expectId&&gotId!==expectId) blockReasons.push(`給与明細の会社名「${sm.company_name}」が、この人の給料を出す法人（${expectName}）と違います`);
+    else companyNote=sm.company_name.trim();
+  }
   if(sm){
     const cmp=(label,pdfV,syncV)=>{
       if(pdfV==null||!Number.isFinite(Number(pdfV))||syncV==null) return;
@@ -9233,7 +9267,7 @@ function payrollBuildAutoJournalPlan(row,branches,storeTotals,pdfSummary){
   const creditIncomplete=!deductionOk||!netPayBranch;
   const partial=!ok&&debitReady;
   return {
-    ok, partial, creditIncomplete, blocked, blockReasons, pdfChecked, warnings, autoCommute,
+    ok, partial, creditIncomplete, blocked, blockReasons, pdfChecked, companyNote, warnings, autoCommute,
     allowRows:useAllowRows?allowItems:[], mainStoreIdx, empName:(row.user&&row.user.name)||"", itemRows, apportion,
     salaryAccountBase:(row.user&&row.user.role==="AL")?"雑給":"給料手当",
     salaryBranch, commuteBranch,
@@ -9249,7 +9283,7 @@ function payrollAutoJournalPlanHtml(plan){
   }
   // 2026-10-06追加（設計書 §2）：部門が見つからない（またはあいまい一致の）事業所は、その場で店舗を選んで
   // 「この店舗として登録」できる（store_aliasesへ別名登録→即再検算）。設定タブへ行かなくて済む
-  const storeOpts=(selId)=>`<option value="">店舗を選ぶ</option>`+payrollPayrollStores().map(x=>`<option value="${esc(x.id)}" ${x.id===selId?"selected":""}>${esc(x.name)}</option>`).join("");
+  const storeOpts=(selId)=>`<option value="">店舗を選ぶ</option>`+payrollTohoStores().map(x=>`<option value="${esc(x.id)}" ${x.id===selId?"selected":""}>${esc(x.name)}</option>`).join("");
   const storeRows=plan.stores.map((s,k)=>{
     let cell;
     if(s.dept&&!s.fuzzy) cell=esc(s.dept.name);
@@ -9287,7 +9321,7 @@ function payrollAutoJournalPlanHtml(plan){
       <tbody>${catRows}</tbody>
     </table>`:""}
     <div style="font-size:12px;margin:6px 0">貸方（控除＋差引支給額）合計: <b>${yen(plan.deductionSum+plan.netPayAmount)}</b>　控除額合計＋差引支給額（スマレジ）: <b>${yen(plan.expectedDeductionTotal+plan.netPayAmount)}</b>　${plan.deductionOk?`<span style="color:var(--m-green)">✓一致</span>`:`<span style="color:var(--accent)">✗要確認</span>`}</div>
-    ${plan.blocked?`<div style="font-size:12px;color:var(--accent);background:rgba(220,60,60,.08);border:1px solid var(--accent);border-radius:6px;padding:6px 8px;margin:6px 0"><b>⛔ 数字にズレがあるため、自動では仕訳に入れていません</b><br>${plan.blockReasons.map(r=>`・${esc(r)}`).join("<br>")}<div style="font-size:11px;color:var(--muted);margin-top:4px">スマレジの同期データか給与明細PDFのどちらかが古い／違う可能性があります。給与データを最新に同期し直す、またはPDFを確認してから、もう一度お試しください。手入力で仕訳を作ることもできます。</div></div>`:(plan.pdfChecked?`<div style="font-size:11px;color:var(--m-green);margin:4px 0">✓ PDFの支給額合計・控除額合計・差引支給額もスマレジ同期値と一致</div>`:`<div style="font-size:11px;color:var(--muted);margin:4px 0">※PDFの合計との突き合わせは未実施（AI読み取りが合計欄を返さなかった）</div>`)}
+    ${plan.blocked?`<div style="font-size:12px;color:var(--accent);background:rgba(220,60,60,.08);border:1px solid var(--accent);border-radius:6px;padding:6px 8px;margin:6px 0"><b>⛔ 数字にズレがあるため、自動では仕訳に入れていません</b><br>${plan.blockReasons.map(r=>`・${esc(r)}`).join("<br>")}<div style="font-size:11px;color:var(--muted);margin-top:4px">スマレジの同期データか給与明細PDFのどちらかが古い／違う可能性があります。給与データを最新に同期し直す、またはPDFを確認してから、もう一度お試しください。手入力で仕訳を作ることもできます。</div></div>`:(plan.pdfChecked?`<div style="font-size:11px;color:var(--m-green);margin:4px 0">✓ PDFの支給額合計・控除額合計・差引支給額もスマレジ同期値と一致${plan.companyNote?`／会社名「${esc(plan.companyNote)}」も一致`:""}</div>`:`<div style="font-size:11px;color:var(--muted);margin:4px 0">※PDFの合計との突き合わせは未実施（AI読み取りが合計欄を返さなかった）</div>`)}
     ${warnHtml}
     ${plan.ok
       ?`<button class="hq-btn primary" id="payroll-autogen-apply">✅ この内容を仕訳に反映する</button>`
@@ -9896,7 +9930,7 @@ function payrollRender(){
           <input id="payroll-search" placeholder="🔍 氏名で検索" value="${esc(PAYROLL_STATE.searchQuery||"")}">
           <select id="payroll-store-filter">
             <option value="">店舗で絞り込み（すべて）</option>
-            ${payrollPayrollStores().map(s=>`<option value="${esc(s.id)}" ${PAYROLL_STATE.storeFilter===s.id?"selected":""}>${esc(s.name)}</option>`).join("")}
+            ${payrollTohoStores().map(s=>`<option value="${esc(s.id)}" ${PAYROLL_STATE.storeFilter===s.id?"selected":""}>${esc(s.name)}</option>`).join("")}
           </select>
           <select id="payroll-role-filter" title="役職（users.role）で絞り込み">
             <option value="">役職で絞り込み（すべて）</option>
@@ -10675,7 +10709,7 @@ async function payrollAutoPrepare(userId,ctx){
     if(b.debitLabel==null) b.debitLabel=b.debit?mftLabelOf(b.debit):"";
     if(b.creditLabel==null) b.creditLabel=b.credit?mftLabelOf(b.credit):"";
   });
-  row._templateLabel=template.label;
+  row._templateLabel=template.label; row._expectedCorpId=payrollUserCorporationId(userId);
   const notes=(await payrollEnsureCreditRows(branches,row,userId)).concat(payrollEnsureDeductionRows(branches,row));
   const plan=payrollBuildAutoJournalPlan(row,branches,bres.totals,summary);
   if(plan.reason){ res.reasons.push(plan.reason); res.status="review"; return res; }
@@ -11343,7 +11377,7 @@ async function payrollOpenPreview(userId){
     // 2026-10-06改修（設計書 §2/§3）：検算→表示→「この店舗として登録」→再検算 を繰り返せるよう関数化
     const showPlan=async()=>{
       if(branches._autoStash||branches.some(b=>b._auto)){ payrollRestoreAutoRows(branches); rerenderEntries(); }
-      row._templateLabel=template.label;
+      row._templateLabel=template.label; row._expectedCorpId=payrollUserCorporationId(userId);
       const creditNotes=(await payrollEnsureCreditRows(branches,row,userId)).concat(payrollEnsureDeductionRows(branches,row));
       const plan=payrollBuildAutoJournalPlan(row,branches,bres.totals,bres.summary);
       creditNotes.forEach(n=>plan.warnings.push(n));
