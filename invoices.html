@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-08-v77";
+const BUILD_TAG="2026-10-08-v78";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -9043,6 +9043,17 @@ const PAYROLL_DEDUCTION_CATS=[
 ];
 const PAYROLL_NETPAY_RE=/未払金|差引支給|普通預金|振込/;
 // 検算・自動生成プランを組み立てる（実際にbranchesは書き換えない。判定結果だけを返す純粋関数）
+// 2026-10-08：スマレジの手当の一覧（raw.allowanceWage.allowance[]）に「交通費」「通勤」を含む名前の項目（例: 交通費¥7,700）があると、通勤手当の欄
+// （commute_allowance＝transportation）とは別に支給されている。実データ（MYAT PHOO PWINTさん）で、これを交通費として扱わず検算が¥7,700ずれた。
+// 通勤手当（スマレジ）＝commute_allowance＋この項目の合計 として扱う（値が一つも無ければnull）
+function payrollApiCommute_(row){
+  const base=(row.commute_allowance!=null&&row.commute_allowance!=="")?Math.round(Number(row.commute_allowance)):null;
+  const items=((row.raw&&row.raw.allowanceWage&&Array.isArray(row.raw.allowanceWage.allowance))?row.raw.allowanceWage.allowance:[])
+    .filter(a=>/交通|通勤/.test(String(a&&a.label||""))&&Math.round(Number(a&&a.resultAmount)||0)>0)
+    .reduce((t,a)=>t+Math.round(Number(a.resultAmount)||0),0);
+  if(base==null&&items===0) return null;
+  return (Number.isFinite(base)?base:0)+items;
+}
 function payrollBuildAutoJournalPlan(row,branches,storeTotals,pdfSummary){
   const warnings=[];
   // 2026-09-07：ここで見つけた行はオブジェクト参照として保持する（indexではない）。検算結果の
@@ -9074,7 +9085,7 @@ function payrollBuildAutoJournalPlan(row,branches,storeTotals,pdfSummary){
     const sumAmt0=stores.reduce((t,x)=>t+x.amount,0), sumDays0=stores.reduce((t,x)=>t+x.days,0);
     const hasT=row.total_allowance!=null&&row.total_allowance!=="";
     if(sumAmt0<1&&sumDays0>0&&hasT){
-      const commuteApi=(row.commute_allowance!=null&&row.commute_allowance!=="")?Math.max(0,Math.round(Number(row.commute_allowance))):0;
+      const commuteApi=Math.max(0,payrollApiCommute_(row)||0);
       const allowA=((row.raw&&row.raw.allowanceWage&&Array.isArray(row.raw.allowanceWage.allowance))?row.raw.allowanceWage.allowance:[])
         .filter(a=>!/交通|通勤/.test(String(a&&a.label||""))&&Math.round(Number(a&&a.resultAmount)||0)>0)
         .reduce((t,a)=>t+Math.round(Number(a.resultAmount)||0),0);
@@ -9099,7 +9110,7 @@ function payrollBuildAutoJournalPlan(row,branches,storeTotals,pdfSummary){
   // (¥6,000)が食い違い、給料部分は一致しているのに検算NGで止まっていた。金額の正はスマレジ
   // （sf_payroll_sync）なので、交通費の合計はスマレジの通勤手当に合わせて店舗へ按分し直す
   // （勤務詳細表の比率で按分・端数は最大の店舗へ。勤務詳細表が0なら最大の店舗に寄せる）。必ず警告に出す
-  const apiCommute=(row.commute_allowance!=null&&row.commute_allowance!=="")?Math.round(Number(row.commute_allowance)):null;
+  const apiCommute=payrollApiCommute_(row);
   const aiCommute=stores.reduce((s,x)=>s+x.commute,0);
   if(apiCommute!=null&&Number.isFinite(apiCommute)&&stores.length&&Math.abs(aiCommute-apiCommute)>1){
     const base=stores.map(x=>x.commute);
