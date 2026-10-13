@@ -48,6 +48,7 @@ const TOOL = {
           subtotal_amount: { ...num, description: "税抜合計（円・整数）" },
           tax_amount: { ...num, description: "消費税額の合計（円・整数）" },
           total_amount: { ...num, description: "税込の請求合計（円・整数）" },
+          line_amounts_include_tax: { type: ["boolean", "null"], description: "明細行の「金額」欄が税込で書かれている請求書なら true、税抜なら false、判断できなければ null" },
           target_year_month: { ...str, description: "請求の対象年月。YYYY-MM（「2026年09月分」→2026-09）。無ければnull" },
           tax_breakdown: {
             type: "array", description: "税率別の内訳があれば（8%・10%など）",
@@ -171,13 +172,25 @@ Deno.serve(async (req: Request) => {
   const problems: string[] = [];
   if (!lines.length) problems.push("明細行を読み取れませんでした");
   if (result.truncated) problems.push("行が多く、読み切れていない可能性があります");
-  if (subtotal != null) {
+  const inclTax = header.line_amounts_include_tax === true;
+  checks.line_amounts_include_tax = header.line_amounts_include_tax ?? null;
+  if (inclTax) {
+    // 明細の金額が税込の請求書: 税込合計と突き合わせる
+    if (total != null) {
+      checks.total = total; checks.diff = sumLines - total;
+      if (Math.abs(sumLines - total) > 1) problems.push(`明細合計（${sumLines}・税込表記）と税込合計（${total}）が合いません`);
+    } else problems.push("税込合計が読み取れず、明細合計の検算ができません");
+  } else if (subtotal != null) {
     checks.subtotal = subtotal; checks.diff = sumLines - subtotal;
     if (Math.abs(sumLines - subtotal) > 1) problems.push(`明細合計（${sumLines}）と税抜合計（${subtotal}）が合いません`);
   } else problems.push("税抜合計が読み取れず、明細合計の検算ができません");
+  if (!inclTax) {
+    const bad = lines.filter((l) => toNum(l.quantity) != null && toNum(l.unit_price) != null && toNum(l.amount) != null && Math.abs(Number(l.quantity) * Number(l.unit_price) - Number(l.amount)) > 1).length;
+    if (bad) problems.push(`数量×単価と金額が合わない行が${bad}行あります`);
+  }
   if (subtotal != null && tax != null && total != null && Math.abs(subtotal + tax - total) > 1) problems.push(`税抜${subtotal}＋税${tax}が税込${total}と合いません`);
   if (total != null && inv.amount != null && Math.abs(Number(inv.amount) - total) > 1) problems.push(`請求書の金額（${inv.amount}）と読み取った税込合計（${total}）が違います`);
-  if (Array.isArray(header.tax_breakdown) && header.tax_breakdown.length) {
+  if (!inclTax && Array.isArray(header.tax_breakdown) && header.tax_breakdown.length) {
     for (const b of header.tax_breakdown) {
       const rate = toNum(b.rate), sub = toNum(b.subtotal);
       if (rate == null || sub == null) continue;

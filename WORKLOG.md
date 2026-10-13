@@ -4,11 +4,12 @@
 
 ---
 
-## 2026-10-13 担当C: 請求書自動処理 Phase3「明細OCR」実装（**SQL適用・Edge Functionデプロイ待ち**）
+## 2026-10-13 担当C: 請求書自動処理 Phase3「明細OCR」実装（SQL適用・デプロイ済み 2026-10-13）
 - ユーザー補足: 請求書は「複数店舗が混ざるもの」と「1店舗だけのもの」の両方がある。食べログの請求元は株式会社カカクコム。
-- `supabase/2026-10-13_invoice_lines.sql`（未適用）: `invoice_lines`（明細名・品目・店舗表記・店舗コード・ブランド・数量・単価・金額・税率・税額・備考・resolved_store_id/resolved_by=Phase4用）、invoicesに subtotal_amount/tax_amount/target_year_month/lines_check/lines_extracted_at、automation_rule_settingsに invoice_lines_ai（モデル名）。
+- `supabase/2026-10-13_invoice_lines.sql`（適用済み）: `invoice_lines`（明細名・品目・店舗表記・店舗コード・ブランド・数量・単価・金額・税率・税額・備考・resolved_store_id/resolved_by=Phase4用）、invoicesに subtotal_amount/tax_amount/target_year_month/lines_check/lines_extracted_at、automation_rule_settingsに invoice_lines_ai（モデル名）。
 - `functions/invoice-lines-ocr`（新規・secretまたはユーザーJWT）: 請求書1枚の添付から ヘッダー(税抜/税/税込/対象年月/税率別内訳)＋明細行を読み取り保存。表→検算（明細合計=税抜合計±1円・税の整合・請求額一致・税率別内訳）を lines_check に記録。人が確定した行(resolved_by='human')は上書きしない。複数請求書PDFは請求番号・金額をヒントに1件に絞る。
 - `invoice-auto-create`: 下書き作成後に明細OCRを非同期で起動。取引先の名前一致が複数ある場合、完全同名の重複登録(例: 株式会社カカクコム×6)は「既定法人あり→最古」の1件に確定するよう改善（食べログの下書き2件のvendor_idを手当て済み）。
+- 実機確認: 3下書きの明細OCR。カカクコム(1店舗)4行・(複数店舗8店)18行ともに明細合計=税抜合計で検算OK、店舗表記が行ごとに取れた（うお蔵 新横浜店/黒霧屋 新横浜店/匠味 川崎店/鶏武者 川崎店/鶏武者 新横浜店/和食と個室居酒屋 匠味 新横浜店/鳥一代 新橋店）。CureNextは明細金額が税込表記→line_amounts_include_taxを追加し税込合計と突合（修正して再デプロイ・OK）。数量×単価≠金額の検算も追加。
 - 取引先マスタに同名重複が複数ある（カカクコム6件など）→ 統合は別途ユーザー確認の上で。
 
 ---
