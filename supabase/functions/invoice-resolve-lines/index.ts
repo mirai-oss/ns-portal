@@ -41,7 +41,7 @@ Deno.serve(async (req: Request) => {
     if (error || ok !== true) return json({ error: "権限がありません" }, 403);
   }
 
-  const { data: inv } = await db.from("invoices").select("id, vendor_id, corporation_id, store_id, lines_check").eq("id", body.invoice_id).maybeSingle();
+  const { data: inv } = await db.from("invoices").select("id, vendor_id, corporation_id, store_id, lines_check, intake_source").eq("id", body.invoice_id).maybeSingle();
   if (!inv) return json({ error: "請求書が見つかりません" }, 404);
   const { data: lines } = await db.from("invoice_lines").select("id, line_no, store_text, store_code, brand_text, resolved_by").eq("invoice_id", inv.id).order("line_no");
   if (!lines?.length) return json({ success: true, resolved: 0, note: "明細行がありません" });
@@ -60,6 +60,9 @@ Deno.serve(async (req: Request) => {
     const { data: v } = await db.from("vendors").select("default_store_id").eq("id", inv.vendor_id).maybeSingle();
     vendorDefaultStore = v?.default_store_id ?? null;
   }
+
+  // インフォマートから取り込んだ請求書（intake_source='infomart'）の店舗コードは、取引先に行ルールが無くても必ずインフォマートのコードとして解決する（06/08がハブのstore_noと逆）
+  if (inv.intake_source === "infomart") isInfomartVendor = true;
 
   const cache = new Map<string, any>();
   const callResolve = async (args: Record<string, unknown>) => {
