@@ -425,6 +425,19 @@ async function refreshDashboardDaily(sb: any, body: any) {
 
 // ============== op=store_monthly: kd_store_monthly_summary（TK-63・2026-09-18） ==============
 async function bqGetSpotRows(sb: any): Promise<any[][]> {
+  // 2026-10-13: スポット人件費の正本はSupabase(spot_entries)。app_secrets.spot_source='entries' の間はGAS(stg_spot)ではなく正本から同じ列形式で返す
+  const { data: flag } = await sb.from("app_secrets").select("value").eq("key", "spot_source").maybeSingle();
+  if ((flag?.value ?? "").trim() === "entries") {
+    const list = await fetchAll((f: number, t: number) => sb.from("spot_entries")
+      .select("id,work_date,kind,amount,headcount,memo,entered_by,entered_at,stores(name,dash_store_name)").is("deleted_at", null).order("id").range(f, t));
+    const out: any[][] = [["日付", "店舗名", "区分", "金額", "人数", "メモ", "入力者", "入力日時", "ID"]];
+    for (const r of list) {
+      const st = Array.isArray(r.stores) ? r.stores[0] : r.stores;
+      const nm = String((st?.dash_store_name ?? "").trim() || st?.name || "");
+      out.push([String(r.work_date), nm, r.kind, r.amount, r.headcount ?? "", r.memo ?? "", r.entered_by ?? "", r.entered_at ?? "", r.id]);
+    }
+    return out;
+  }
   const res = await dashAuthed(sb, "bqGetSpot");
   if (!res.ok) throw new Error("bqGetSpot取得に失敗: " + (res.error ?? ""));
   return (res.sheets?.["スポット人件費"] ?? Object.values(res.sheets ?? {})[0] ?? []) as any[][];
@@ -593,7 +606,7 @@ async function autoSyncFromStgPl(sb: any, dry = false): Promise<any> {
     for (let r = 1; r < raw.length; r++) {
       const row = raw[r] ?? [];
       const memo = String(row[5] ?? "").trim(); const source = plAutoSourceOf(memo);
-      if (!source) continue;
+      if (!source || source === "自動｜スポット人件費") continue;   // スポット人件費はSupabase正本(spot_entries)から作る（2026-10-13）
       const ym = ymOf(row[0]); if (!ym) { badYm++; continue; }
       const nm = String(row[1] ?? "").trim(); let sid: string | null = null;
       if (nm) { const hit = lookupStore(maps, nm); if (!hit) { unresolved.add(nm); continue; } sid = hit.store_id; }
@@ -601,7 +614,7 @@ async function autoSyncFromStgPl(sb: any, dry = false): Promise<any> {
       rows.push({ year_month: ym, store_id: sid, item, category: plCatForEntries(row[3], item), amount: num(row[4]), memo, sub_item: String(row[6] ?? ""), source });
     }
     const old = await fetchAll((f, t) => sb.from("pl_entries").select("id,year_month,store_id,item,category,amount,memo,sub_item,source")
-      .is("deleted_at", null).neq("source", "手入力").order("id").range(f, t));
+      .is("deleted_at", null).neq("source", "手入力").neq("source", "自動｜スポット人件費").order("id").range(f, t));
     if (old.length >= 20 && rows.length < old.length * 0.5) throw new Error(`自動行が${rows.length}件（既存${old.length}件の半分未満）のため中止（部分応答の疑い）`);
     const sig = (x: any) => [x.store_id ?? "", x.item, x.category, Number(x.amount), x.memo, x.sub_item ?? ""].join("\u0001");
     const group = (list: any[]) => { const m = new Map<string, string[]>(); for (const x of list) { const k = `${x.source}\u0002${x.year_month}`; (m.get(k) ?? m.set(k, []).get(k)!).push(sig(x)); } for (const v of m.values()) v.sort(); return m; };
