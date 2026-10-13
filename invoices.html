@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-13-v101";
+const BUILD_TAG="2026-10-13-v102";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -907,7 +907,7 @@ async function openApprovalModal(u,invoiceId){
     <td><input class="apv-dept" data-ln="${l.line_no}" list="apv-dept-dl" value="${esc(l.debit.department||"")}" style="width:130px"></td>
     <td><select class="apv-tax" data-ln="${l.line_no}">${[8,10,0].map(t=>`<option value="${t}" ${(l.debit.tax?Number(l.debit.tax.rate):0)===t?"selected":""}>${t?`課税仕入 ${t}%`:"対象外"}</option>`).join("")}</select></td>
     <td style="text-align:right">${yen(l.debit.amount)}</td>
-    <td style="font-size:10px;color:var(--muted)">${esc({ledger:"元帳",approved:"承認",corrected:"修正"}[l.rule&&l.rule.source]||"")} v${l.rule?l.rule.version:""}</td></tr>`;
+    <td style="font-size:10px;color:var(--muted)">${esc({ledger:"元帳",approved:"承認",corrected:"修正",proposed:"提案"}[l.rule&&l.rule.source]||"")} v${l.rule?l.rule.version:""}</td></tr>`;
   modal.innerHTML=`<div class="modal" style="max-width:1100px">
     <div class="mhead"><h2>✅ 承認確認（${esc(inv.vendor_name||(inv.vendor&&inv.vendor.name)||"")}・${esc(ym)}）</h2><button class="linkbtn" id="apvClose" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:13px">閉じる ×</button></div>
     <div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.3fr);gap:14px">
@@ -1168,7 +1168,7 @@ async function invdraftInit(invoiceId){
   const d=inv.journal_draft;
   const acc=x=>x?`${esc(x.account||"")}${x.sub_account?"／"+esc(x.sub_account):""}`:"—";
   const taxLbl=t=>t?`課税仕入 ${t.rate}%`:"—";
-  const noRule=d&&(d.problems||[]).some(p=>/行ルールがありません/.test(p));
+  const noRule=d&&(d.problems||[]).some(p=>/行ルールが(ありません|未登録)/.test(p));
   const STAGE_LABEL={received:"受信",parsed:"読み取り済み",mapping:"店舗・取引先の確認中",journal_draft:"仕訳下書き（要確認）",ready_for_approval:"承認待ち",approved:"承認済み",payment_waiting:"支払待ち",paid:"支払済み",completed:"完了",error:"エラー"};
   const autoLocked=["email_auto","infomart"].includes(inv.intake_source)&&inv.auto_mode==="auto"&&!!inv.current_stage&&!["approved","payment_waiting","paid","completed"].includes(inv.current_stage);
   // 自動処理中は手動の仕訳作成を無効にして二重処理を防ぐ（「手動に切り替え」で解除）
@@ -1190,7 +1190,7 @@ async function invdraftInit(invoiceId){
     ${(d.warnings||[]).length?`<div style="margin:6px 0;font-size:12px;color:#b45309">ℹ️ ${d.warnings.map(esc).join("<br>ℹ️ ")}</div>`:""}
     <div style="font-size:11px;color:var(--muted);margin:4px 0">MF事業者: ${esc(d.tenant_id)}／計上日 ${esc(d.transaction_date||"")}／摘要 ${esc(d.remark||"")}</div>
     <div style="overflow-x:auto"><table class="invoice-table" style="font-size:12px"><thead><tr><th>#</th><th>借方（科目／補助）</th><th>部門</th><th>税区分</th><th style="text-align:right">金額</th><th>ルール</th></tr></thead><tbody>
-      ${(d.debit_lines||[]).map(l=>`<tr><td>${l.line_no}</td><td>${acc(l.debit)}</td><td>${esc(l.debit.department||"—")}</td><td>${taxLbl(l.debit.tax)}</td><td style="text-align:right">${yen(l.debit.amount)}</td><td style="font-size:10px;color:var(--muted)">${esc({ledger:"元帳",approved:"承認",corrected:"修正"}[l.rule&&l.rule.source]||"")} v${l.rule?l.rule.version:""}</td></tr>`).join("")}
+      ${(d.debit_lines||[]).map(l=>`<tr><td>${l.line_no}</td><td>${acc(l.debit)}</td><td>${esc(l.debit.department||"—")}</td><td>${taxLbl(l.debit.tax)}</td><td style="text-align:right">${yen(l.debit.amount)}</td><td style="font-size:10px;color:var(--muted)">${esc({ledger:"元帳",approved:"承認",corrected:"修正",proposed:"提案"}[l.rule&&l.rule.source]||"")} v${l.rule?l.rule.version:""}</td></tr>`).join("")}
       <tr style="background:var(--bg-soft,#f7f7f5)"><td></td><td colspan="3"><b>貸方</b> ${acc(d.credit)}</td><td style="text-align:right"><b>${d.credit&&d.credit.amount!=null?yen(d.credit.amount):"—"}</b></td><td></td></tr>
     </tbody></table></div>
     ${(d.adjustments||[]).length?`<div style="font-size:11px;color:var(--muted)">1円調整: ${d.adjustments.map(a=>`行${a.line_no} ${a.amount>0?"+":""}${a.amount}円`).join("、")}</div>`:""}`
@@ -1231,7 +1231,17 @@ async function invdraftInit(invoiceId){
       const ids=(VENDOR_CACHE||[]).filter(v=>vendor&&nn(v.name)===nn(vendor.name)).map(v=>v.id); if(!ids.length&&inv.vendor_id) ids.push(inv.vendor_id);
       const pr=await authed(`/rest/v1/invoices?vendor_id=in.(${ids.join(",")})&mf_journal_id=not.is.null&select=mf_journal_id,mf_tenant_id,invoice_number&order=created_at.desc&limit=4`);
       const past=(pr.ok&&Array.isArray(pr.body))?pr.body:[];
-      if(!past.length){ el.innerHTML="この取引先の過去の仕訳が見つかりませんでした。下の欄に直接入力してください。"; return; }
+      if(!past.length){
+        const dl=d&&(d.debit_lines||[])[0];
+        if(dl&&dl.rule&&dl.rule.source==="proposed"){
+          // 過去の仕訳が無い（インフォマート由来）: 自動で出した提案（CSVの既定）を候補にする
+          const vname0=(vendor&&vendor.name)||inv.vendor_name||"";
+          el.innerHTML=`<div style="color:var(--ink)"><b>提案（CSVの既定）</b>: 借方 仕入高／${esc(vname0)}　貸方 買掛金／${esc(vname0)}　部門=明細の店舗。合っていれば、下の「この内容で今後処理する」を押してください。違えば下の欄を直してから押してください。</div>`;
+          $("invd-acc").value="仕入高"; $("invd-submode").value="vendor"; $("invd-credit").value="買掛金"; $("invd-dept").value="line_store";
+          return;
+        }
+        el.innerHTML="この取引先の過去の仕訳が見つかりませんでした。下の欄に直接入力してください。"; return;
+      }
       const js=await Promise.all(past.map(p=>mfCall("get_journal",{journal_id:p.mf_journal_id,tenant_id:p.mf_tenant_id||"default"})));
       const agg=new Map();
       js.forEach((j,ji)=>{

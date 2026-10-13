@@ -71,9 +71,18 @@ Deno.serve(async (req: Request) => {
   const { data: rulesAll } = vendor
     ? await db.from("v_vendor_line_rule_status").select("*").eq("vendor_id", vendor.id).eq("tenant_id", tenantId)
     : { data: [] as any[] };
-  const rules = rulesAll ?? [];
+  let rules = rulesAll ?? [];
+  // インフォマート（CSV）由来で行ルールが無い取引先: CSVの既定（仕入高／補助科目=取引先名／貸方=買掛金）を「提案」として下書きに出す。
+  // 提案は常に要確認（自動OKにしない）。人が確認して「今後この内容で処理する」を保存するとルールになり、次回から自動で作れる。
+  let proposed = false;
+  if (!rules.length && vendor && inv.intake_source === "infomart") {
+    proposed = true;
+    rules = [{ id: null, version: 0, source: "proposed", line_pattern: "*", account_name: "仕入高", sub_account_mode: "vendor", sub_account_name: null,
+      tax_mode: "by_line", expected_tax_rates: null, credit_account: "買掛金", credit_sub_mode: "vendor", credit_sub_name: null, dept_mode: "line_store", unstable: false }];
+  }
   const { data: policy } = vendor ? await db.from("vendor_invoice_policies").select("*").eq("vendor_id", vendor.id).eq("tenant_id", tenantId).maybeSingle() : { data: null };
   if (vendor && !rules.length) problems.push(`この取引先の行ルールがありません（「今後この内容で処理する」で登録すると次回から自動で作れます）`);
+  if (proposed) problems.push("この取引先の行ルールが未登録です。CSVの既定（仕入高／補助科目=取引先名／貸方=買掛金）を提案として出しています。内容を確認し、「今後この内容で処理する」で保存すると次回から自動で作れます");
   if (policy?.evidence_warning) warnings.push(policy.evidence_warning);
 
   const pickRule = (l: any) => {
