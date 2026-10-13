@@ -4,6 +4,13 @@
 
 ---
 
+## 2026-10-13 担当C: 請求書自動処理 Phase5「行ルール」の土台（Sync11反映・**SQL適用待ち**）
+- 現状確認: Phase1〜4（auto_category・invoice_lines・明細OCR）・担当Fの`vendor_aliases`は本番に未作成。`vendors`は10社中プレコ(株式会社プレコ)1社のみ。→ 承認画面(Phase7)・検算(Phase6)・journal_draft生成は前提が揃うまで着手不可。先に前提不要の土台だけ用意。
+- `supabase/2026-10-13_vendor_line_rules.sql`（未適用）: `vendor_line_rules`（source=ledger/approved/corrected・version・corrected_count_90d・last_corrected_at・有効1行＋履歴を残す）、`vendor_invoice_policies`（貸方・税1円調整=最大金額行・証憑警告）、`v_vendor_line_rule_status`（90日内修正2回以上=unstable）、`save_vendor_line_rule()`（同内容は何もしない／違えば新version=corrected）、10社seed（§3・§6 Q1〜Q4=a。プレコは納品書インボイス警告）。
+- 未対応（前提待ち）: ③承認画面に辞書選択を出さない=Phase7で実装（既存の請求書メール詳細の仕訳作成画面は手動・例外用として現状維持）。税1円調整・インボイス警告・ルール不安定の判定は、invoice_lines/journal_draftができ次第 検算(Phase6)で使う。
+
+---
+
 ## 2026-10-13 担当A: 店舗間の仕入れ移動もSupabaseに統一(GAS/DB_PLなし)・PLは『店舗間移動』1行に合算
 - RPC cost_transfer_add/cancel/list/pending_list/approve/reject(supabase/2026-10-13_cost_transfer_supabase.sql)。移動の行は正本pl_entriesに直接書く(source='店舗間移動'・memo『店舗間移動:<id>:<日付>』・F区分・source_key xfer:<id>:out|in)。承認は申請の状態更新と同一トランザクション。app.js v265 CT_SUPA_=true。
 - Edge keiei-kd-refresh autoSyncFromStgPlは source='店舗間移動'(と自動｜スポット人件費)を無視(Supabaseが正本・stg_plの古い行で消さない)。
