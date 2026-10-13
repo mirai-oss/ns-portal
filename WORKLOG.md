@@ -4,9 +4,9 @@
 
 ---
 
-## 2026-10-13 担当C: 店舗ごとの銀行口座（野村不動産コマース等）実装（v105・**SQL適用・Edge Function3本デプロイ待ち**）
+## 2026-10-13 担当C: 店舗ごとの銀行口座（野村不動産コマース等）実装（v105・SQL適用済み・Edge Function3本デプロイ済み）
 - 目的: 新横浜=口座8031・川崎=口座3712のように、同じ取引先でも店舗ごとに振込先が違うケース。現状は現在有効な口座が1取引先1件(vba_current_unique)。
-- `supabase/2026-10-13_vendor_bank_accounts_store.sql`（未適用）: vendor_bank_accounts.store_id(任意)追加、現在有効の一意索引を(取引先×店舗)に置換(vba_current_per_store_uk)、野村の2口座を店舗に設定(0bca01a2=鶏武者 新横浜・961c6260=鶏武者 川崎店・両方現在有効)。他の取引先は変化なし(store_id=NULL)。
+- `supabase/2026-10-13_vendor_bank_accounts_store.sql`（適用済み）: vendor_bank_accounts.store_id(任意)追加、現在有効の一意索引を(取引先×店舗)に置換(vba_current_per_store_uk)、野村の2口座を店舗に設定(0bca01a2=鶏武者 新横浜・961c6260=鶏武者 川崎店・両方現在有効)。他の取引先は変化なし(store_id=NULL)。
 - 選び方(共通): 請求書の店舗の口座→店舗なしの口座→(現在有効が1件だけなら)その口座。
 - Edge: `vendor-master` upsert_bank_account が store_id を受け、新規時の「現在有効の無効化」を同じ店舗の分だけに限定／`invoice-auto-match` の口座変更検知を店舗の口座と比較／`invoice-check` の口座判定が店舗を見る(別店舗の口座一致は警告)。
 - 画面(v105・公開済み): 請求書の口座・支払方法の編集に「この口座を使う店舗」、振込一覧とCSV出力・請求書詳細が請求書の店舗で口座を選ぶ(transferAccountOf/currentVendorAccount)。
