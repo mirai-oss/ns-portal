@@ -79,8 +79,13 @@ Deno.serve(async (req: Request) => {
   if (inv.duplicate_suspected) dupNotes.push("メール添付が既存と同じファイル（重複疑い）");
   let dupNg = false;
   if (inv.vendor_id) {
+    // 取引先マスタに同名の取引先が重複登録されていても見逃さない（同名の取引先IDを全部対象にする）
+    const normC = (x: unknown) => String(x ?? "").normalize("NFKC").replace(/\s+/g, "").toLowerCase().replace(/株式会社|有限会社|合同会社|\(株\)|\(有\)|㈱|㈲/g, "");
+    const { data: allV } = await db.from("vendors").select("id, name");
+    const meV = (allV ?? []).find((v: any) => v.id === inv.vendor_id);
+    const vids = meV ? (allV ?? []).filter((v: any) => normC(v.name) === normC(meV.name)).map((v: any) => v.id) : [inv.vendor_id];
     const { data: others } = await db.from("invoices").select("id, invoice_number, amount, due_date, target_year_month, created_at, invoice_status")
-      .eq("vendor_id", inv.vendor_id).neq("id", inv.id).neq("invoice_status", "cancelled");
+      .in("vendor_id", vids).neq("id", inv.id).neq("invoice_status", "cancelled");
     for (const o of others ?? []) {
       if (inv.invoice_number && o.invoice_number && o.invoice_number === inv.invoice_number) { dupNg = true; dupNotes.push(`同じ請求番号の請求書があります（${o.id}）`); }
       else if (inv.amount != null && o.amount != null && Number(o.amount) === Number(inv.amount) && o.due_date && inv.due_date && o.due_date === inv.due_date) { dupNg = true; dupNotes.push(`同じ金額・期限の請求書があります（${o.id}）`); }

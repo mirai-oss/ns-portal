@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-13-v96";
+const BUILD_TAG="2026-10-13-v97";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -948,6 +948,7 @@ async function invdraftCall_(fn,invoiceId){
   const r=await fetch(SUPA_URL+"/functions/v1/"+fn,{method:"POST",headers:{"Content-Type":"application/json","apikey":SUPA_KEY,"Authorization":"Bearer "+(s?s.at:"")},body:JSON.stringify({invoice_id:invoiceId})});
   return {ok:r.ok,body:await r.json().catch(()=>({}))};
 }
+let INVD_CAND=null;
 async function invdraftInit(invoiceId){
   const box=$("invdraftbox"); if(!box) return;
   const ir=await authed(`/rest/v1/invoices?id=eq.${invoiceId}&select=id,vendor_id,vendor_name,corporation_id,mf_journal_id,journal_draft,journal_draft_at,lines_extracted_at,current_stage,blocked_reason,checks,auto_mode,manual_reason,intake_source`);
@@ -987,13 +988,14 @@ async function invdraftInit(invoiceId){
       ${autoLocked?`<button class="hq-btn" id="invd-manual" style="font-size:11px;padding:3px 8px">✋ 手動に切り替え</button>`:""}
       ${inv.vendor_id?`<button class="hq-btn" id="invd-learn-toggle" style="font-size:11px;padding:3px 8px">📚 今後この内容で処理する（ルール登録）</button>`:""}</div>
     <div id="invd-learn" style="display:${noRule?"block":"none"};margin-top:8px">
-      <div class="meta" style="font-size:11px;color:var(--muted);margin-bottom:6px">この取引先の行ルールを登録すると、次回から同じ形で自動の下書きができます（科目名はMFに実在するものだけ登録できます。仕訳辞書は使いません）。</div>
+      <div class="meta" style="font-size:11px;color:var(--muted);margin-bottom:6px">この取引先の行ルールを登録すると、次回から同じ形で自動の下書きができます。まず、<b>過去にこの取引先で登録した仕訳</b>から候補を出します。合っているものを選んで「この内容で今後処理する」を押してください（科目名はMFに実在するものだけ登録できます。仕訳辞書は使いません）。</div>
+      <div id="invd-cands" style="margin-bottom:8px;font-size:12px;color:var(--muted)">過去の仕訳から候補を探しています…</div>
       <div class="ai-grid">
         <div class="ai-field"><small>借方 勘定科目</small><input id="invd-acc" placeholder="例: 仕入高"></div>
         <div class="ai-field"><small>借方 補助科目</small><select id="invd-submode"><option value="vendor">取引先名</option><option value="fixed">固定の名前</option><option value="none">なし</option></select> <input id="invd-sub" placeholder="固定の場合の補助科目名" style="margin-top:4px"></div>
         <div class="ai-field"><small>貸方 勘定科目</small><select id="invd-credit"><option>買掛金</option><option>未払金</option></select></div>
         <div class="ai-field"><small>部門の決め方</small><select id="invd-dept"><option value="line_store">明細の店舗</option><option value="primary_store">取引先の主な店舗</option><option value="hq">本部</option></select></div>
-        <div class="ai-field"><small>想定する税率（複数可）</small><label><input type="checkbox" class="invd-rate" value="8" checked>8%</label> <label><input type="checkbox" class="invd-rate" value="10" checked>10%</label></div>
+        <div class="ai-field"><small>想定する税率（複数可）</small><div style="display:flex;gap:14px;align-items:center"><label style="display:inline-flex;gap:4px;align-items:center;font-size:13px"><input type="checkbox" class="invd-rate" value="8" checked style="width:auto">8%</label><label style="display:inline-flex;gap:4px;align-items:center;font-size:13px"><input type="checkbox" class="invd-rate" value="10" checked style="width:auto">10%</label></div></div>
       </div>
       <div class="mail-actions" style="margin-top:6px"><button class="primary" id="invd-learn-save">💾 この内容で今後処理する</button></div>
     </div>
@@ -1007,6 +1009,60 @@ async function invdraftInit(invoiceId){
     await invdraftCall_("invoice-check",invoiceId);
     invdraftInit(invoiceId);
   };
+  // 過去にこの取引先で登録したMF仕訳（総勘定元帳の実績）から、ルールの候補を出す
+  INVD_CAND=null;
+  const loadCands=async()=>{
+    const el=$("invd-cands"); if(!el||el.dataset.loaded) return; el.dataset.loaded="1";
+    try{
+      await ensureCorpStoreCache(); await ensureVendorCache();
+      const vendor=(VENDOR_CACHE||[]).find(v=>v.id===inv.vendor_id);
+      const nn=x=>String(x||"").normalize("NFKC").replace(/\s+/g,"").replace(/株式会社|有限会社|\(株\)|\(有\)|㈱|㈲/g,"");
+      const ids=(VENDOR_CACHE||[]).filter(v=>vendor&&nn(v.name)===nn(vendor.name)).map(v=>v.id); if(!ids.length&&inv.vendor_id) ids.push(inv.vendor_id);
+      const pr=await authed(`/rest/v1/invoices?vendor_id=in.(${ids.join(",")})&mf_journal_id=not.is.null&select=mf_journal_id,mf_tenant_id,invoice_number&order=created_at.desc&limit=4`);
+      const past=(pr.ok&&Array.isArray(pr.body))?pr.body:[];
+      if(!past.length){ el.innerHTML="この取引先の過去の仕訳が見つかりませんでした。下の欄に直接入力してください。"; return; }
+      const js=await Promise.all(past.map(p=>mfCall("get_journal",{journal_id:p.mf_journal_id,tenant_id:p.mf_tenant_id||"default"})));
+      const agg=new Map();
+      js.forEach((j,ji)=>{
+        if(!j.ok||!Array.isArray(j.body.branches)) return;
+        const branches=j.body.branches;
+        const deps=new Set(branches.map(b=>b.department_name||b.credit_department_name).filter(Boolean));
+        for(const b of branches){
+          const d=b.debit, c=b.credit; if(!d||!d.account_name) continue;
+          const key=[d.account_name,d.sub_account_name||"",c?c.account_name:"",c?c.sub_account_name||"":""].join("\u0001");
+          const a=agg.get(key)||{debit_account:d.account_name,debit_sub:d.sub_account_name||"",credit_account:c?c.account_name:"",credit_sub:c?c.sub_account_name||"":"",rates:new Set(),journals:new Set(),multiDept:false};
+          const m=String(b.tax_name||"").match(/(\d+)\s*%/); if(m) a.rates.add(Number(m[1]));
+          a.journals.add(ji); if(deps.size>1) a.multiDept=true; agg.set(key,a);
+        }
+      });
+      // 貸方が空の行（借方だけの行）は、同じ仕訳の貸方の行と合わせて1つの候補にする
+      const cands=[...agg.values()];
+      const withCredit=cands.filter(c=>c.credit_account);
+      for(const c of cands.filter(x=>!x.credit_account)){
+        const m=withCredit.find(w=>[...w.journals].some(j=>c.journals.has(j)));
+        if(m){ c.credit_account=m.credit_account; c.credit_sub=m.credit_sub; }
+      }
+      const uniq=new Map();
+      for(const c of cands){ if(!c.credit_account) continue; const k=[c.debit_account,c.debit_sub,c.credit_account,c.credit_sub].join("|"); const e=uniq.get(k); if(e){ c.journals.forEach(j=>e.journals.add(j)); c.rates.forEach(r=>e.rates.add(r)); e.multiDept=e.multiDept||c.multiDept; } else uniq.set(k,c); }
+      const list=[...uniq.values()].filter(c=>!/^(買掛金|未払金|普通預金)$/.test(c.debit_account)).sort((a,b)=>b.journals.size-a.journals.size);
+      if(!list.length){ el.innerHTML="過去の仕訳から候補を作れませんでした。下の欄に直接入力してください。"; return; }
+      const applyCand=c=>{
+        INVD_CAND=c;
+        const vname=(vendor&&vendor.name)||inv.vendor_name||"";
+        $("invd-acc").value=c.debit_account;
+        const sameAsVendor=c.debit_sub&&nn(c.debit_sub)===nn(vname);
+        $("invd-submode").value=!c.debit_sub?"none":(sameAsVendor?"vendor":"fixed");
+        $("invd-sub").value=(c.debit_sub&&!sameAsVendor)?c.debit_sub:"";
+        const cs=$("invd-credit"); if(![...cs.options].some(o=>o.value===c.credit_account)) cs.add(new Option(c.credit_account,c.credit_account)); cs.value=c.credit_account;
+        $("invd-dept").value=c.multiDept?"line_store":"line_store";
+        document.querySelectorAll(".invd-rate").forEach(x=>{ x.checked=c.rates.size?c.rates.has(Number(x.value)):true; });
+      };
+      el.innerHTML=`<div style="color:var(--ink);margin-bottom:4px"><b>過去の仕訳から見つかった候補</b>（選ぶと下の欄に入ります）</div>`+list.slice(0,4).map((c,i)=>`<label style="display:block;padding:6px 8px;border:1px solid var(--m-line);border-radius:8px;margin-bottom:4px;cursor:pointer;color:var(--ink)"><input type="radio" name="invd-cand" value="${i}" ${i===0?"checked":""} style="width:auto;margin-right:6px"><b>借方 ${esc(c.debit_account)}${c.debit_sub?"／"+esc(c.debit_sub):""}</b>　貸方 ${esc(c.credit_account)}${c.credit_sub?"／"+esc(c.credit_sub):""}${c.rates.size?`　税率 ${[...c.rates].join("・")}%`:""}　<span style="color:var(--muted)">（過去${c.journals.size}件の仕訳）</span></label>`).join("");
+      document.querySelectorAll("input[name=invd-cand]").forEach(r=>r.onchange=()=>applyCand(list[Number(r.value)]));
+      applyCand(list[0]);
+    }catch(e){ el.innerHTML="候補の取得に失敗しました。下の欄に直接入力してください。"; }
+  };
+  if(noRule) loadCands();
   if($("invd-manual")) $("invd-manual").onclick=async()=>{
     const reason=(prompt("自動処理を止めて手動で仕訳を作ります。理由を入力してください（必須）")||"").trim();
     if(!reason) return;
@@ -1015,7 +1071,7 @@ async function invdraftInit(invoiceId){
     if($("mfj-open")){ $("mfj-open").disabled=false; $("mfj-open").title=""; }
     invdraftInit(invoiceId);
   };
-  if($("invd-learn-toggle")) $("invd-learn-toggle").onclick=()=>{ const el=$("invd-learn"); el.style.display=el.style.display==="none"?"block":"none"; };
+  if($("invd-learn-toggle")) $("invd-learn-toggle").onclick=()=>{ const el=$("invd-learn"); el.style.display=el.style.display==="none"?"block":"none"; if(el.style.display==="block") loadCands(); };
   if($("invd-learn-save")) $("invd-learn-save").onclick=async()=>{
     const account=$("invd-acc").value.trim(); if(!account){ msg.className="err"; msg.textContent="借方の勘定科目を入力してください"; return; }
     const subMode=$("invd-submode").value, sub=$("invd-sub").value.trim();
@@ -1035,7 +1091,7 @@ async function invdraftInit(invoiceId){
     const vendor=(VENDOR_CACHE||[]).find(v=>v.id===inv.vendor_id);
     const vendorKey=(vendor&&vendor.name)||inv.vendor_name; 
     const fields={account_name:account,sub_account_mode:subMode,sub_account_name:subMode==="fixed"?sub:null,tax_mode:"by_line",expected_tax_rates:rates,
-      credit_account:creditAcc,credit_sub_mode:"vendor",dept_mode:$("invd-dept").value,vendor_id:inv.vendor_id};
+      credit_account:creditAcc,credit_sub_mode:(INVD_CAND&&INVD_CAND.credit_sub&&INVD_CAND.credit_sub!==vendorKey)?"fixed":"vendor",credit_sub_name:(INVD_CAND&&INVD_CAND.credit_sub&&INVD_CAND.credit_sub!==vendorKey)?INVD_CAND.credit_sub:null,dept_mode:$("invd-dept").value,vendor_id:inv.vendor_id};
     const rr=await authed("/rest/v1/rpc/save_vendor_line_rule",{method:"POST",body:JSON.stringify({p_vendor_key:vendorKey,p_tenant_id:tenantId,p_line_pattern:"*",p_fields:fields,p_source:"approved"})});
     if(!rr.ok){ msg.textContent="ルールの保存に失敗しました: "+((rr.body&&(rr.body.message||rr.body.error))||""); return; }
     // 取引先の別名（請求書上の名前が取引先マスタの名前と違うとき）と、既定の法人（未設定のとき）も一緒に覚える
@@ -5760,6 +5816,7 @@ function wireDetailActions(u){
   }
   async function adcostComputeAllocation(){
     const total=Number(invoice.amount)||0;
+    ADCOST_STATE.baseAmount=null;
     // a) 今組んでいる仕訳（🧾仕訳を作成）の明細行に部門（店舗）が設定されていれば、それをそのまま使う
     // （2026-08-31: 借方・貸方が別々の金額を持てるようになったため、部門が付く側＝通常は借方の金額を使う）
     const branchesWithDept=(MFJ_STATE.branches||[]).filter(b=>b.department_id&&(Number(b.debitAmount)>0||Number(b.creditAmount)>0));
@@ -5780,24 +5837,30 @@ function wireDetailActions(u){
     try{
       const [lr,lcr]=await Promise.all([
         authed(`/rest/v1/invoice_lines?invoice_id=eq.${invoice.id}&select=amount,tax_rate,resolved_store_id&order=line_no`),
-        authed(`/rest/v1/invoices?id=eq.${invoice.id}&select=lines_check`),
+        authed(`/rest/v1/invoices?id=eq.${invoice.id}&select=lines_check,subtotal_amount`),
       ]);
       const ls=(lr.ok&&Array.isArray(lr.body))?lr.body:[];
-      const lcheck=(lcr.ok&&Array.isArray(lcr.body)&&lcr.body[0]&&lcr.body[0].lines_check)||{};
+      const lcrow=(lcr.ok&&Array.isArray(lcr.body)&&lcr.body[0])||{};
+      const lcheck=lcrow.lines_check||{};
       if(ls.length&&ls.some(l=>l.amount!=null)){
+        // PL・広告費は税抜（税別）で反映する（ユーザー指示 2026-10-13）。請求書の明細は通常税抜。明細の金額が税込表記の請求書は、税抜合計に合わせて按分して税抜にする
         const incl=!!lcheck.line_amounts_include_tax;
+        const lineSum=ls.reduce((t,l)=>t+(Number(l.amount)||0),0);
+        const sub=(lcrow.subtotal_amount!=null?Number(lcrow.subtotal_amount):null);
+        const subtotal=incl&&sub?sub:lineSum;   // 税抜の合計（税込表記なら読み取った税抜合計）
+        const factor=incl&&lineSum>0?subtotal/lineSum:1;
         const byStore=new Map(); let unresolved=0;
         for(const l of ls){
-          const net=Number(l.amount)||0; const gross=incl?net:net+Math.floor(net*(Number(l.tax_rate)||0)/100);
-          if(!l.resolved_store_id){ unresolved+=gross; continue; }
-          byStore.set(l.resolved_store_id,(byStore.get(l.resolved_store_id)||0)+gross);
+          const net=Math.round((Number(l.amount)||0)*factor);
+          if(!l.resolved_store_id){ unresolved+=net; continue; }
+          byStore.set(l.resolved_store_id,(byStore.get(l.resolved_store_id)||0)+net);
         }
         const rows=[...byStore.entries()].map(([sid,amt])=>{ const st=ADCOST_STATE.stores.find(x=>x.id===sid); return {store_id:sid,store_name:st?st.name:"",amount:amt}; });
         if(rows.length){
-          const diff=total-(rows.reduce((t,x)=>t+x.amount,0)+unresolved);
+          const diff=subtotal-(rows.reduce((t,x)=>t+x.amount,0)+unresolved);
           if(diff!==0&&Math.abs(diff)<=5){ const big=rows.reduce((a,b)=>b.amount>a.amount?b:a); big.amount+=diff; }
           if(unresolved>0) rows.push({store_id:"",store_name:"",amount:unresolved});
-          ADCOST_STATE.rows=rows; ADCOST_STATE.source="invoice_lines";
+          ADCOST_STATE.rows=rows; ADCOST_STATE.source="invoice_lines"; ADCOST_STATE.baseAmount=subtotal;
           return;
         }
       }
@@ -5828,7 +5891,7 @@ function wireDetailActions(u){
   function adcostSourceLabel(){
     return {
       mf_department:"📊 今組んでいる仕訳（🧾仕訳を作成）の部門（店舗）別金額から自動で割り振りました。",
-      invoice_lines:"📊 請求書の明細（AIが読み取った店舗別の金額）から割り振りました。店舗が未確定の明細は、最後の「店舗を選択」の行にまとめています。",
+      invoice_lines:"📊 請求書の明細（AIが読み取った店舗別の金額・税抜）から割り振りました。店舗が未確定の明細は、最後の「店舗を選択」の行にまとめています。",
       prev_month_ratio:"📊 店舗別の内訳が請求書に無かったため、前月の同媒体の店舗比率から按分しています。",
       manual:"📊 参考にできる情報が無かったため、店舗を選んで金額を入力してください。",
     }[ADCOST_STATE.source]||"";
@@ -5843,7 +5906,7 @@ function wireDetailActions(u){
   }
   function adcostUpdateTotals(){
     const total=ADCOST_STATE.rows.reduce((s,r)=>s+(Number(r.amount)||0),0);
-    const invAmt=Number(invoice.amount)||0;
+    const invAmt=ADCOST_STATE.baseAmount!=null?ADCOST_STATE.baseAmount:(Number(invoice.amount)||0);
     const diff=invAmt-total;
     if($("adcost-total-sum")) $("adcost-total-sum").textContent=yen(total);
     const diffBox=$("adcost-diff-box");
@@ -5852,7 +5915,7 @@ function wireDetailActions(u){
   function adcostRenderForm(){
     const box=$("adcostbox");
     const total=ADCOST_STATE.rows.reduce((s,r)=>s+(Number(r.amount)||0),0);
-    const invAmt=Number(invoice.amount)||0;
+    const invAmt=ADCOST_STATE.baseAmount!=null?ADCOST_STATE.baseAmount:(Number(invoice.amount)||0);
     const diff=invAmt-total;
     const mediaOptions=["食べログ","ぐるなび","ホットペッパー","Retty","Google広告","LINE広告","その他"];
     if(ADCOST_STATE.media&&!mediaOptions.includes(ADCOST_STATE.media)) mediaOptions.unshift(ADCOST_STATE.media);
@@ -5873,7 +5936,7 @@ function wireDetailActions(u){
         <button id="adcost-recalc">🔄 割り振りを再計算</button>
       </div>
       <div class="adcost-total">
-        <span>請求書合計 <b>${yen(invAmt)}</b></span>
+        <span>請求書合計${ADCOST_STATE.baseAmount!=null?"（税抜）":""} <b>${yen(invAmt)}</b></span>${ADCOST_STATE.baseAmount!=null?`<span style="font-size:11px;color:var(--muted)">税込 ${yen(Number(invoice.amount)||0)}－消費税 ${yen((Number(invoice.amount)||0)-invAmt)}（PLは税抜で反映します）</span>`:""}
         <span>割り振り合計 <b id="adcost-total-sum">${yen(total)}</b></span>
         <span id="adcost-diff-box" class="${diff===0?"adcost-diff-ok":"adcost-diff-ng"}">差額 <b>${yen(diff)}</b> ${diff===0?"✓":""}</span>
       </div>
@@ -5902,8 +5965,8 @@ function wireDetailActions(u){
     const rows=ADCOST_STATE.rows.filter(r=>r.store_id&&Number(r.amount)>0);
     if(!rows.length){ msg.textContent="店舗と金額を入力してください"; return; }
     const total=rows.reduce((s,r)=>s+Number(r.amount),0);
-    const invAmt=Number(invoice.amount)||0;
-    if(total!==invAmt && !confirm(`割り振り合計（${yen(total)}）が請求書合計（${yen(invAmt)}）と一致していません。このまま反映しますか？`)) return;
+    const invAmt=ADCOST_STATE.baseAmount!=null?ADCOST_STATE.baseAmount:(Number(invoice.amount)||0);
+    if(total!==invAmt && !confirm(`割り振り合計（${yen(total)}）が請求書合計${ADCOST_STATE.baseAmount!=null?"（税抜）":""}（${yen(invAmt)}）と一致していません。このまま反映しますか？`)) return;
     $("adcost-confirm").disabled=true; msg.textContent="反映中…";
     const s=sess.get();
     const r=await fetch(SUPA_URL+"/functions/v1/ad-cost-reflect",{method:"POST",headers:{"Content-Type":"application/json","apikey":SUPA_KEY,"Authorization":"Bearer "+(s?s.at:"")},body:JSON.stringify({

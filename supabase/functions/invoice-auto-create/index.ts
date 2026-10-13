@@ -70,6 +70,15 @@ async function resolveCorporation(db: any, addressee: string | null): Promise<st
   return hit.size === 1 ? [...hit][0] : null;
 }
 
+// 取引先マスタに同じ名前の取引先が重複登録されていても重複を見逃さないよう、同名（会社名の揺れを除いて一致）の取引先IDを全部返す
+async function sameNameVendorIds(db: any, vendorId: string): Promise<string[]> {
+  const { data: vs } = await db.from("vendors").select("id, name");
+  const me = (vs ?? []).find((v: any) => v.id === vendorId);
+  if (!me) return [vendorId];
+  const n = normCompany(me.name);
+  return (vs ?? []).filter((v: any) => normCompany(v.name) === n).map((v: any) => v.id);
+}
+
 function bizKeyOf(vendorId: string | null, invoiceNumber: string | null, dueDate: string | null, amount: number | null): string | null {
   if (!vendorId) return null;
   if (invoiceNumber && norm(invoiceNumber)) return `${vendorId}|no:${norm(invoiceNumber)}`;
@@ -164,10 +173,12 @@ async function processEmail(db: any, emailId: string, secret: string, opts: { dr
     const bizKey = bizKeyOf(v?.id ?? null, invoiceNumber, dueDate, amount);
 
     // ③同じ業務キーの請求書が既にあれば作らず、到着の記録だけ残す（入口がメール・アップロード・自動取得のどれでも1件に集約）
-    if (v) {
-      let q = db.from("invoices").select("id, intake_source").eq("vendor_id", v.id).neq("invoice_status", "cancelled");
-      if (invoiceNumber) q = q.eq("invoice_number", invoiceNumber);
-      else if (dueDate && amount != null) q = q.eq("due_date", dueDate).eq("amount", amount);
+    if (v || invoiceNumber) {
+      const vids = v ? await sameNameVendorIds(db, v.id) : [];
+      let q = db.from("invoices").select("id, intake_source").neq("invoice_status", "cancelled");
+      if (invoiceNumber && v) q = q.in("vendor_id", vids).eq("invoice_number", invoiceNumber);
+      else if (invoiceNumber && amount != null) q = q.eq("invoice_number", invoiceNumber).eq("amount", amount);   // 取引先が未確定でも、同じ請求番号・同じ金額なら重複
+      else if (v && dueDate && amount != null) q = q.in("vendor_id", vids).eq("due_date", dueDate).eq("amount", amount);
       else q = q.eq("id", "00000000-0000-0000-0000-000000000000");
       const { data: dupInv } = await q.limit(1);
       if (dupInv?.length) {
