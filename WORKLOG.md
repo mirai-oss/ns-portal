@@ -4,6 +4,14 @@
 
 ---
 
+## 2026-10-13 担当C: インフォマートの取込口 `invoice-auto-ingest` 実装（**Edge Functionデプロイ待ち**・SQL変更なし・画面v101）
+- 担当Dの `infomart-invoice` が取引先1社×1か月ごとに送る口。仕様書: `docs/仕様_invoice-auto-ingest_インフォマート請求書の取込口_2026-10-13.md`（URL・認証=invoice_intake_secret・本文・戻り値・注意）。
+- 作るもの: 下書きinvoice(intake_source='infomart')＋明細行(CSV行→店舗コード・税抜金額・税率・税額)＋PDF証憑(invoice_attachments・source_attachment_id)。続けて店舗の突合→仕訳下書き→検算→承認待ちへ。
+- 二重防止: PDFのSHA-256／取引先(同名重複含む)×請求番号／取引先×対象月×税込合計。PDF必須(422)。合計の検算(Σgross=totals.gross・Σtax=totals.tax ±1円)。
+- 追随: invoice-journal-draft=行に税額があればその税額で税込を作る(CSVの税額そのまま)／invoice-check=PDF未添付はNG／承認画面=PDF未添付は登録不可(登録前チェックは可)／「自動処理中」ロックの対象にinfomartを追加(v101)。
+
+---
+
 ## 2026-10-13 担当C: 請求書自動処理 Phase8「承認でMF登録・反映」実装（v100・画面のみ。SQL/Edge変更なし・**実データでの登録は未実施＝初回はユーザー立会い**）
 - 承認画面の「✅承認してMFに登録」: ①直前に再確認(MF登録済み/手動切替)②MFの科目・補助・部門・税区分を名前から解決(無ければ登録せず理由表示)③借方=行ごと・貸方=1行(合計)で既存`mf-journal create`(承認ボタンからのみ・証憑は自分のPDFのみ)④current_stage=payment_waiting＋承認コメント⑤修正して承認→行ごとの内容が同じなら新版(approved)ルールとして保存(save_vendor_line_rule)⑥「PL・広告費・精算書にも反映（税抜）」(既定ON): 業務委託精算対象店舗=seisan_confirm(税率つき)／他=PL confirm(PL連携対象科目のみ)／広告宣伝費×食べログ等=ad-cost-reflectにも反映(従来の手動運用と同じ)。
 - 仕入高のPL反映は行わない（担当D案「請求書とsiire見込の差額調整」＝司令塔確認待ち。報告に明記）。

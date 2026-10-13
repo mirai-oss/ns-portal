@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-13-v100";
+const BUILD_TAG="2026-10-13-v101";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -1000,6 +1000,7 @@ async function apvApprove_(u,inv,d,modal,dry){
         orig:{account:l.debit.account||"",sub:l.debit.sub_account||"",dept:l.debit.department||"",rate:l.debit.tax?Number(l.debit.tax.rate):0}};
     });
     if(!lines.length||!d.credit) return fail("仕訳の下書きに明細・貸方がありません");
+    if(!inv.source_attachment_id&&!dry) return fail("この請求書のPDFが添付されていないため、登録できません（MFの証憑にPDFを付ける必要があります）。詳細画面からPDFを追加してください。");
     // MFのマスタ（科目・部門・税区分）を名前から解決
     msg.textContent="MFの科目・部門・税区分を確認中…";
     const [aR,dR,sR]=await Promise.all([mfCall("accounts",{tenant_id:d.tenant_id}),mfCall("list_departments",{tenant_id:d.tenant_id}),mfCall("journal_search",{vendor_name:"",tenant_id:d.tenant_id})]);
@@ -1169,7 +1170,7 @@ async function invdraftInit(invoiceId){
   const taxLbl=t=>t?`課税仕入 ${t.rate}%`:"—";
   const noRule=d&&(d.problems||[]).some(p=>/行ルールがありません/.test(p));
   const STAGE_LABEL={received:"受信",parsed:"読み取り済み",mapping:"店舗・取引先の確認中",journal_draft:"仕訳下書き（要確認）",ready_for_approval:"承認待ち",approved:"承認済み",payment_waiting:"支払待ち",paid:"支払済み",completed:"完了",error:"エラー"};
-  const autoLocked=inv.intake_source==="email_auto"&&inv.auto_mode==="auto"&&!!inv.current_stage&&!["approved","payment_waiting","paid","completed"].includes(inv.current_stage);
+  const autoLocked=["email_auto","infomart"].includes(inv.intake_source)&&inv.auto_mode==="auto"&&!!inv.current_stage&&!["approved","payment_waiting","paid","completed"].includes(inv.current_stage);
   // 自動処理中は手動の仕訳作成を無効にして二重処理を防ぐ（「手動に切り替え」で解除）
   if(autoLocked&&$("mfj-open")){ $("mfj-open").disabled=true; $("mfj-open").title="自動処理中です。手動で作る場合は「手動に切り替え」をしてください"; }
   const ck=inv.checks&&Array.isArray(inv.checks.checks)?inv.checks.checks:[];

@@ -111,7 +111,8 @@ Deno.serve(async (req: Request) => {
 
     const amount = l.amount != null ? Number(l.amount) : null;
     if (amount == null) { problems.push(`行${l.line_no}: 金額が読み取れていません`); continue; }
-    const gross = inclTax || rate == null ? amount : amount + Math.floor(amount * rate / 100);
+    // 税込: 税込表記の請求書はそのまま／行に税額が書かれていれば（インフォマートのCSV等）その税額を使う／無ければ税抜×税率の切捨て
+    const gross = inclTax || rate == null ? amount : (l.tax_amount != null ? amount + Math.round(Number(l.tax_amount)) : amount + Math.floor(amount * rate / 100));
 
     // 部門
     let deptName: string | null = null; let storeName: string | null = null;
