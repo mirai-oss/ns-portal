@@ -4,11 +4,12 @@
 
 ---
 
-## 2026-10-13 担当C: 請求書自動処理 Phase4「マッピング接続」実装（**SQL適用・Edge Functionデプロイ待ち**・画面はv92で公開済み）
-- `supabase/2026-10-13_invoice_lines_resolve_info.sql`（未適用）: invoice_lines.resolve_info jsonb を1列追加するだけ。
+## 2026-10-13 担当C: 請求書自動処理 Phase4「マッピング接続」実装（SQL適用・デプロイ済み 2026-10-13・画面v92）
+- `supabase/2026-10-13_invoice_lines_resolve_info.sql`（適用済み）: invoice_lines.resolve_info jsonb を1列追加するだけ。
 - `functions/invoice-resolve-lines`（新規・secretまたはユーザーJWT）: 明細の店舗表記を `resolve_store` で解決（自前の照合は書かない）。定期請求書10社（vendor_line_rulesあり）で店舗コードがあれば `resolve_store('infomart', p_code)`（★インフォマート06/08はハブstore_noと逆。store_noとして扱わない）→なければ `resolve_store('invoice', p_name)`。exact/highのみ確定(resolved_by='mapping')、lowは確定せず候補をresolve_infoに。店舗表記なしの行（1店舗請求書）は請求書の店舗→取引先の既定店舗(rule)。人が確定した行は触らない。未解決はresolve_storeがkd_unresolved_namesへ隔離記録。要約は invoices.lines_check.mapping。
 - `invoice-lines-ocr`: 明細保存後に invoice-resolve-lines を非同期起動（secret経由時）。
 - 画面(invoices.html v92): 請求書詳細に「📋 明細と店舗（自動読み取り）」パネル（検算結果・各行の店舗・「🔄店舗を再判定」・未解決行は店舗を選んで「この店舗として登録」=register_store_mapping('invoice',…)→同じ表記の行をまとめて人確定）。
+- 実機確認(食べログ2件): 1店舗請求書4行=鳥一代 新橋で確定／複数店舗18行=15行確定(鶏武者川崎・鶏武者新横浜・黒霧屋新横浜・匠味川崎→鶏武者川崎店[2枚看板]・うお蔵新横浜→黒霧屋新横浜[store_alias])、3行(「和食と個室居酒屋 匠味 新横浜店」)はlow(部分一致)で要確認。CureNext(店舗表記なし・既定店舗なし)は未解決→Phase5の部門の決め方(primary/hq)で扱う。
 - 宛先法人(corporation_aliases)・請求元(vendor_aliases)はPhase2の自動生成で接続済み。既存画面の自前正規化(mappingNormCompanyName_＝MF事業者の突合用)は影響範囲が大きいため今回は置換せず（順次）。
 
 ---
