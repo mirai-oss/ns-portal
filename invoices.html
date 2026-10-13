@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-13-v84";
+const BUILD_TAG="2026-10-13-v85";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -3234,7 +3234,7 @@ function arjApplyTemplateAsDefault_(tpl,expected,feeParts,dep,prefix){
 // 2026-10-13追加：売上入金（SMBC・PayPay）の自動仕訳を、登録せずに一括で組んで確認する（給与の「確認だけ」と同じ考え方）。
 async function arjDryRunAll(u){
   const ym=RECEIVABLE_STATE.yearMonth;
-  const rows=RECEIVABLE_STATE.receivables.filter(r=>r.year_month===ym&&ARJ_AUTO_RULES[r.source_name]&&!r.mf_journal_id);
+  const rows=RECEIVABLE_STATE.receivables.filter(r=>r.year_month===ym&&arjRuleFor_(r.source_name)&&!r.mf_journal_id);
   const modal=document.createElement("div");
   modal.className="modal-bg mail-shell"; modal.id="arjDryModal";
   modal.innerHTML=`<div class="modal" style="max-width:1000px"><div class="mhead"><h2>🔬 自動仕訳の一括確認（${esc(ym)}・登録はしません）</h2><button class="linkbtn" id="arjDryClose" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:13px">閉じる ×</button></div><div id="arj-dry-body">確認中…</div></div>`;
@@ -3296,9 +3296,11 @@ async function arjDryRunAll(u){
 const ARJ_AUTO_RULES={
   "PayPay加盟店":{receivable:"PayPay", salesSub:"PayPay売上", feeAccount:t=>t==="default"?"支払手数料":"カード手数料", feeSub:t=>t==="default"?"PayPay":null},
   "SMBC GMO PAYMENT（カード売上）":{receivable:"ステラカード", salesSub:"カード売上", feeAccount:()=>"カード手数料", feeSub:()=>null},
-  "ロケットナウ":{receivable:"ロケットなう", salesSub:"ロケットなう", feeAccount:()=>"支払手数料", feeSub:()=>"ロケットなう"},
+  "ロケットナウ":{receivable:"ロケットなう", salesAccount:"デリバリー売上", salesSub:"ロケットなう", feeAccount:()=>"支払手数料", feeSub:()=>"ロケットなう"},
+  "Uber Eats":{receivable:"Uber Eats", salesAccount:"デリバリー売上", salesSub:"Uber Eats", feeAccount:()=>"支払手数料", feeSub:()=>"Uber Eats"},
   "現金売上":{receivable:"現金売上", receivableByStore:true, salesSub:"現金売上", feeAccount:()=>"カード手数料", feeSub:()=>null},
 };
+function arjRuleFor_(source){ const k=String(source||""); return ARJ_AUTO_RULES[k]||(/uber/i.test(k)?ARJ_AUTO_RULES["Uber Eats"]:null); }
 function arjSalesAccountName_(tenantId){ return "飲食売上"; } // 2026-10-13: N-Styleもトーホーと同じ飲食売上
 function arjSubLabelForDept_(account,dept){
   const norm=x=>String(x||"").normalize("NFKC").replace(/[\s\/]/g,"");
@@ -3318,13 +3320,13 @@ function arjSubLabelForDept_(account,dept){
   return sub?`${account}/${sub}`:null;
 }
 function arjBuildAutoBranches_(prefix,expected,feeParts){
-  const row=ARJ_STATE.row, rule=ARJ_AUTO_RULES[row.source_name];
+  const row=ARJ_STATE.row, rule=arjRuleFor_(row.source_name);
   if(!rule) return null;
   const has=l=>ARJ_STATE.accountLabelMap&&ARJ_STATE.accountLabelMap.has(l);
   const t=ARJ_STATE.tenantId;
   const dept=(ARJ_STATE.departments||[]).find(d=>d.id===ARJ_STATE.storeDepartmentId)||null;
   const taxId=n=>{ const x=(ARJ_STATE.taxes||[]).find(v=>v&&v.name===n); return x?x.id:""; };
-  const sales=arjSalesAccountName_(t);
+  const sales=rule.salesAccount||arjSalesAccountName_(t);
   let arLabel=`売掛金/${rule.receivable}`;
   let arStoreMiss=false;
   if(rule.receivableByStore){ // 現金売上：借方の売掛金は店舗の補助科目
@@ -3707,7 +3709,7 @@ function arjRenderForm(){
     <datalist id="arj-account-datalist">${ARJ_STATE.accountNameDatalistHtml||""}</datalist>
     ${ARJ_STATE.tenants&&ARJ_STATE.tenants.length>1?`<div class="ai-field" style="margin-bottom:6px;font-size:11px;color:var(--muted)">登録先: <b>${esc(ARJ_STATE.tenantLabel||"")}</b> <button id="arj-change-tenant" style="font-size:10px">変更</button></div>`:""}
     ${ARJ_STATE.storeDepartmentMismatch?`<div class="err" style="margin-bottom:8px">⚠️ 店舗マスタに登録されている部門名「${esc(ARJ_STATE.storeDepartmentMismatch)}」と一致する部門がこの事業者（${esc(ARJ_STATE.tenantLabel||"")}）に見つかりませんでした。部門は下の表で手動で選んでください。直す場合は、①マネーフォワード側にまだこの部門が無ければ作成する、②登録先の事業者が違う場合は上の「変更」から選び直す、③それでも直らなければ設定タブ「法人・店舗・部門マッピング」の店舗名の表記を見直してください。</div>`:""}
-    ${(!ARJ_STATE.autoBuilt&&ARJ_AUTO_RULES[row.source_name])?`<div class="err" style="margin-bottom:8px">⚠️ ${esc(ARJ_STATE.autoFailReason||"自動で組む処理が動いていません。Cmd+Shift+Rで再読み込みしてください")}　（画面のbuild: ${esc(BUILD_TAG)}）</div>`:""}
+    ${(!ARJ_STATE.autoBuilt&&arjRuleFor_(row.source_name))?`<div class="err" style="margin-bottom:8px">⚠️ ${esc(ARJ_STATE.autoFailReason||"自動で組む処理が動いていません。Cmd+Shift+Rで再読み込みしてください")}　（画面のbuild: ${esc(BUILD_TAG)}）</div>`:""}
     ${ARJ_STATE.autoBuilt?`<div class="meta" style="margin-bottom:8px;color:var(--m-green,#1a7f37);font-size:12px">✅ 科目・部門・補助科目を店舗から自動で組みました（仕訳辞書は使っていません）。内容を確認して登録してください。</div>`:""}
     ${ARJ_STATE.creditSubAccountWarning?`<div class="err" style="margin-bottom:8px">⚠️ ${esc(ARJ_STATE.creditSubAccountWarning)}</div>`:""}
     <div class="mail-actions" style="margin-bottom:8px">
