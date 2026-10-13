@@ -950,16 +950,29 @@ async function invdraftCall_(fn,invoiceId){
 }
 async function invdraftInit(invoiceId){
   const box=$("invdraftbox"); if(!box) return;
-  const ir=await authed(`/rest/v1/invoices?id=eq.${invoiceId}&select=id,vendor_id,vendor_name,corporation_id,mf_journal_id,journal_draft,journal_draft_at,lines_extracted_at`);
+  const ir=await authed(`/rest/v1/invoices?id=eq.${invoiceId}&select=id,vendor_id,vendor_name,corporation_id,mf_journal_id,journal_draft,journal_draft_at,lines_extracted_at,current_stage,blocked_reason,checks,auto_mode,manual_reason,intake_source`);
   const inv=(ir.ok&&Array.isArray(ir.body)&&ir.body[0])||null;
   if(!inv||inv.mf_journal_id||(!inv.journal_draft&&!inv.lines_extracted_at)){ box.innerHTML=""; return; }
   const d=inv.journal_draft;
   const acc=x=>x?`${esc(x.account||"")}${x.sub_account?"／"+esc(x.sub_account):""}`:"—";
   const taxLbl=t=>t?`課税仕入 ${t.rate}%`:"—";
   const noRule=d&&(d.problems||[]).some(p=>/行ルールがありません/.test(p));
+  const STAGE_LABEL={received:"受信",parsed:"読み取り済み",mapping:"店舗・取引先の確認中",journal_draft:"仕訳下書き（要確認）",ready_for_approval:"承認待ち",approved:"承認済み",payment_waiting:"支払待ち",paid:"支払済み",completed:"完了",error:"エラー"};
+  const autoLocked=inv.intake_source==="email_auto"&&inv.auto_mode==="auto"&&!!inv.current_stage&&!["approved","payment_waiting","paid","completed"].includes(inv.current_stage);
+  // 自動処理中は手動の仕訳作成を無効にして二重処理を防ぐ（「手動に切り替え」で解除）
+  if(autoLocked&&$("mfj-open")){ $("mfj-open").disabled=true; $("mfj-open").title="自動処理中です。手動で作る場合は「手動に切り替え」をしてください"; }
+  const ck=inv.checks&&Array.isArray(inv.checks.checks)?inv.checks.checks:[];
+  const ckIcon={ok:"✅",warn:"⚠️",ng:"❌",na:"—"};
+  const checksHtml=ck.length?`<div style="margin:8px 0"><b style="font-size:12px">検算・判定</b>
+    <div style="font-size:12px;line-height:1.7">${ck.map(c=>`<div>${ckIcon[c.status]||""} ${esc(c.label)}${c.detail?`<span style="color:var(--muted)">　${esc(c.detail)}</span>`:""}</div>`).join("")}</div></div>`:"";
+  const stageHtml=inv.current_stage?`<div style="margin:6px 0;font-size:12px">処理の段階: <b>${esc(STAGE_LABEL[inv.current_stage]||inv.current_stage)}</b>
+    ${autoLocked?'<span class="invoice-status wait" style="margin-left:6px">🤖 自動処理中</span>':""}
+    ${inv.auto_mode==="manual"?`<span class="invoice-status gray" style="margin-left:6px">✋ 手動に切り替え済み</span><span style="color:var(--muted)">（${esc(inv.manual_reason||"")}）</span>`:""}
+    ${inv.blocked_reason?`<div style="color:#b45309;margin-top:2px">止まっている理由: ${esc(inv.blocked_reason)}</div>`:""}</div>`:"";
   box.innerHTML=`<details class="adcost-box" style="margin-bottom:10px" ${d&&(d.status!=="ok")?"open":""}>
     <summary style="cursor:pointer;font-size:13px;font-weight:600">📝 仕訳の下書き（自動）
       ${d?(d.status==="ok"?'<span style="color:#1a7f37;font-size:11px">要確認なし</span>':'<span style="color:#b45309;font-size:11px">要確認</span>'):'<span style="color:var(--muted);font-size:11px">未作成</span>'}</summary>
+    ${stageHtml}${checksHtml}
     ${d?`
     ${(d.problems||[]).length?`<div class="err" style="margin:6px 0">⚠️ ${d.problems.map(esc).join("<br>⚠️ ")}</div>`:""}
     ${(d.warnings||[]).length?`<div style="margin:6px 0;font-size:12px;color:#b45309">ℹ️ ${d.warnings.map(esc).join("<br>ℹ️ ")}</div>`:""}
@@ -971,6 +984,7 @@ async function invdraftInit(invoiceId){
     ${(d.adjustments||[]).length?`<div style="font-size:11px;color:var(--muted)">1円調整: ${d.adjustments.map(a=>`行${a.line_no} ${a.amount>0?"+":""}${a.amount}円`).join("、")}</div>`:""}`
     :`<div style="font-size:12px;color:var(--muted);margin:6px 0">まだ仕訳の下書きがありません。</div>`}
     <div class="mail-actions" style="margin-top:6px"><button class="hq-btn" id="invd-rerun" style="font-size:11px;padding:3px 8px">🔄 ${d?"下書きを作り直す":"下書きを作る"}</button>
+      ${autoLocked?`<button class="hq-btn" id="invd-manual" style="font-size:11px;padding:3px 8px">✋ 手動に切り替え</button>`:""}
       ${inv.vendor_id?`<button class="hq-btn" id="invd-learn-toggle" style="font-size:11px;padding:3px 8px">📚 今後この内容で処理する（ルール登録）</button>`:""}</div>
     <div id="invd-learn" style="display:${noRule?"block":"none"};margin-top:8px">
       <div class="meta" style="font-size:11px;color:var(--muted);margin-bottom:6px">この取引先の行ルールを登録すると、次回から同じ形で自動の下書きができます（科目名はMFに実在するものだけ登録できます。仕訳辞書は使いません）。</div>
@@ -990,6 +1004,15 @@ async function invdraftInit(invoiceId){
     msg.className="err"; msg.textContent="作成中…";
     const r=await invdraftCall_("invoice-journal-draft",invoiceId);
     if(!r.ok){ msg.textContent=r.body.error||"作成に失敗しました"; return; }
+    await invdraftCall_("invoice-check",invoiceId);
+    invdraftInit(invoiceId);
+  };
+  if($("invd-manual")) $("invd-manual").onclick=async()=>{
+    const reason=(prompt("自動処理を止めて手動で仕訳を作ります。理由を入力してください（必須）")||"").trim();
+    if(!reason) return;
+    const rr=await authed("/rest/v1/rpc/invoice_switch_to_manual",{method:"POST",body:JSON.stringify({p_invoice_id:invoiceId,p_reason:reason})});
+    if(!rr.ok){ msg.className="err"; msg.textContent="切り替えに失敗しました: "+((rr.body&&(rr.body.message||rr.body.error))||""); return; }
+    if($("mfj-open")){ $("mfj-open").disabled=false; $("mfj-open").title=""; }
     invdraftInit(invoiceId);
   };
   if($("invd-learn-toggle")) $("invd-learn-toggle").onclick=()=>{ const el=$("invd-learn"); el.style.display=el.style.display==="none"?"block":"none"; };
@@ -1024,6 +1047,7 @@ async function invdraftInit(invoiceId){
     }
     msg.textContent="登録しました。下書きを作り直します…";
     await invdraftCall_("invoice-journal-draft",invoiceId);
+    await invdraftCall_("invoice-check",invoiceId);
     invdraftInit(invoiceId);
   };
 }

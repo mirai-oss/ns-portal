@@ -180,5 +180,15 @@ Deno.serve(async (req: Request) => {
       note: `仕訳下書きを作成（${draft.status === "ok" ? "要確認なし" : "要確認: " + problems.join("／")}）`, new_value: { invoice_id: inv.id, status: draft.status },
     });
   }
+  // Phase6: 下書きができたので検算・異常判定・処理の段階を更新する（待たずに別Functionへ依頼。secret経由のときだけ）
+  if (body?.secret) {
+    const kick = fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/invoice-check`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", apikey: Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!, Authorization: `Bearer ${Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")}` },
+      body: JSON.stringify({ secret: body.secret, invoice_id: inv.id }),
+    }).catch((e) => console.error("検算の依頼に失敗: " + e));
+    const er = (globalThis as any).EdgeRuntime;
+    if (er?.waitUntil) er.waitUntil(kick);
+  }
   return json({ success: true, status: draft.status, lines: debitLines.length, problems, warnings, adjustments, totals: draft.totals });
 });

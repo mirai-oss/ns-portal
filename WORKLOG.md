@@ -4,6 +4,15 @@
 
 ---
 
+## 2026-10-13 担当C: 請求書自動処理 Phase6「検算・異常判定・処理の段階」実装（**SQL適用・Edge Functionデプロイ待ち**・画面はv94で公開）
+- `supabase/2026-10-13_invoice_stage_checks.sql`（未適用）: invoicesに current_stage(received→parsed→mapping→journal_draft→ready_for_approval→approved→payment_waiting→paid→completed/error)・blocked_reason・stage_updated_at・checks(jsonb)・auto_mode(auto/manual)・manual_reason/by/at、`invoice_switch_to_manual(請求書, 理由必須)`、automation_rule_settings `invoice_exception_tasks`(既定OFF)。既存請求書は変更なし。
+- `functions/invoice-check`（新規・secretまたはJWT）: 判定=①明細合計＝請求合計(±1円)②税の整合③取引先・法人・店舗の未解決ゼロ④仕訳下書き要確認なし⑤重複(既存疑い・同請求番号・同金額×期限・定期取引先の月1枚=2枚目)⑥前回比±30%(警告)⑦振込先と登録口座の一致(登録口座なし=未登録で警告・不一致=口座変更でNG・請求書に口座なし=対象外)⑧ルート振り分け(業務委託精算対象店舗=精算書／他=PL。黒霧屋新横浜は運営法人と請求書法人が同じならPL)。段階と止まっている理由を更新。人のロック(auto_mode=manual)・approved以降は書かない。例外タスクは設定ONのときだけ hq_create_exception_task(べき等・理由別)／解消で hq_resolve_exception_task。
+- `invoice-journal-draft`: 下書き作成後に invoice-check を非同期起動。
+- 画面(v94): 請求書詳細の仕訳下書きパネルに 処理の段階・「🤖自動処理中」バッジ・検算・判定一覧・止まっている理由・「✋手動に切り替え」(理由必須)。自動処理中は手動の「🧾仕訳を作成」ボタンを無効化（二重処理防止・§10）。
+- 未対応: 承認待ちタブ・承認ボタン(Phase7/8)。受入条件「同じ請求書を2入口から入れても1件」はPhase2の業務キーで実装済み。
+
+---
+
 ## 2026-10-13 担当C: 請求書自動処理 Phase5「仕訳下書き」実装（SQL適用・デプロイ済み 2026-10-13・画面v93）
 - `supabase/2026-10-13_invoice_journal_draft.sql`（適用済み）: invoices.journal_draft(jsonb)/journal_draft_at の2列を追加するだけ。
 - `functions/invoice-journal-draft`（新規・secretまたはユーザーJWT）: 明細(Phase3)・店舗解決(Phase4)・行ルール(vendor_line_rules・v_vendor_line_rule_status)から仕訳下書きを作る。借方=行ごとに 科目/補助/部門(行の店舗のMF部門)/税区分(行の税率)/金額(税込=税抜+切捨て税。税込表記の請求書はそのまま)＋出どころのルールid・版・source、貸方=ルールの貸方(買掛金/未払金)・補助=取引先名・額=請求の税込合計。税の1円調整=最大金額の行で±3円以内を調整(policy=largest_line_1yen)。要確認(needs_review)の条件=ルール無し/ルール不安定(90日2回以上修正)/店舗・法人・取引先未解決/税率不明・想定外/金額不一致/明細なし。証憑警告(プレコ=納品書がインボイス)はwarnings。MFのIDは承認時(Phase8)に名前から解決。MFには登録しない。仕訳辞書は使わない。
