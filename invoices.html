@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-13-v98";
+const BUILD_TAG="2026-10-13-v99";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -872,6 +872,105 @@ function plfeeFindStoreByName(stores,name){
   return stores.find(s=>norm(s.name)===n) || stores.find(s=>n.includes(norm(s.name))||norm(s.name).includes(n)) || null;
 }
 
+
+/* ============================================================
+   承認画面（請求書自動処理 Phase7・2026-10-13）
+   自動で検算・判定を通過した請求書（current_stage=ready_for_approval）を、人が確認して承認／差し戻しする画面。
+   ・請求書の要約（取引先・対象月・金額）／判定結果✓／明細単位の仕訳（行ごとに科目・補助・部門・税区分・金額）／反映先（PL／精算書）
+   ・仕訳辞書の選択は出さない（行ルールから作った下書きだけ。設計書§9-2）。AI工程の詳細は折りたたみ
+   ・行の科目・補助・部門・税率は直せる（修正して承認すると新しい版のルールとして保存＝Phase8で有効化）
+   ・「承認」でのMF登録・PL反映はPhase8。ここでは差し戻し（理由必須）まで動く
+   ============================================================ */
+async function openApprovalModal(u,invoiceId){
+  const r=await authed(`/rest/v1/invoices?id=eq.${invoiceId}&select=*,corp:corporations(name),vendor:vendors(name)`);
+  const inv=(r.ok&&Array.isArray(r.body)&&r.body[0])||null;
+  if(!inv){ alert("請求書が見つかりませんでした"); return; }
+  const d=inv.journal_draft;
+  if(!d){ alert("仕訳の下書きがまだありません。詳細画面で下書きを作ってください。"); openInvoiceDetail(u,invoiceId); return; }
+  const [attR,logR]=await Promise.all([
+    inv.source_attachment_id?authed(`/rest/v1/invoice_attachments?id=eq.${inv.source_attachment_id}&select=*`):Promise.resolve({ok:true,body:[]}),
+    authed(`/rest/v1/invoice_audit_logs?entity_id=eq.${inv.email_id||inv.id}&select=created_at,action,note&order=created_at.desc&limit=12`),
+  ]);
+  const att=(attR.ok&&Array.isArray(attR.body)&&attR.body[0])||null;
+  const logs=(logR.ok&&Array.isArray(logR.body))?logR.body:[];
+  const ck=inv.checks&&Array.isArray(inv.checks.checks)?inv.checks.checks:[];
+  const icon={ok:"✅",warn:"⚠️",ng:"❌",na:"—"};
+  const routes=(inv.checks&&inv.checks.routes)||[];
+  const routeOf=sid=>{ const x=routes.find(v=>v.store_id===sid); return x?(x.route==="seisan"?"精算書へ":"PLへ"):"—"; };
+  const modal=document.createElement("div");
+  modal.className="modal-bg mail-shell"; modal.id="apvModal";
+  const ym=(inv.target_year_month||"").slice(0,7);
+  const rowHtml=l=>`<tr data-apv-row="${l.line_no}">
+    <td>${l.line_no}</td>
+    <td>${esc(l.store_name||"—")}<div style="font-size:10px;color:var(--muted)">${esc(routeOf(l.store_id))}</div></td>
+    <td><input class="apv-acc" data-ln="${l.line_no}" list="apv-acc-dl" value="${esc(l.debit.account||"")}" style="width:110px"> <input class="apv-sub" data-ln="${l.line_no}" value="${esc(l.debit.sub_account||"")}" placeholder="補助" style="width:120px"></td>
+    <td><input class="apv-dept" data-ln="${l.line_no}" list="apv-dept-dl" value="${esc(l.debit.department||"")}" style="width:130px"></td>
+    <td><select class="apv-tax" data-ln="${l.line_no}">${[8,10,0].map(t=>`<option value="${t}" ${(l.debit.tax?Number(l.debit.tax.rate):0)===t?"selected":""}>${t?`課税仕入 ${t}%`:"対象外"}</option>`).join("")}</select></td>
+    <td style="text-align:right">${yen(l.debit.amount)}</td>
+    <td style="font-size:10px;color:var(--muted)">${esc({ledger:"元帳",approved:"承認",corrected:"修正"}[l.rule&&l.rule.source]||"")} v${l.rule?l.rule.version:""}</td></tr>`;
+  modal.innerHTML=`<div class="modal" style="max-width:1100px">
+    <div class="mhead"><h2>✅ 承認確認（${esc(inv.vendor_name||(inv.vendor&&inv.vendor.name)||"")}・${esc(ym)}）</h2><button class="linkbtn" id="apvClose" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:13px">閉じる ×</button></div>
+    <div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.3fr);gap:14px">
+      <div>
+        ${att?`<div class="attgrid">${attCardHtml(att)}</div>`:'<div class="meta" style="color:var(--muted)">この請求書のPDFが紐づいていません</div>'}
+      </div>
+      <div>
+        <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:8px;font-size:13px">
+          <div><small style="color:var(--muted)">取引先</small><br><b>${esc(inv.vendor_name||"")}</b></div>
+          <div><small style="color:var(--muted)">宛先法人</small><br><b>${esc((inv.corp&&inv.corp.name)||"—")}</b></div>
+          <div><small style="color:var(--muted)">対象月</small><br><b>${esc(ym||"—")}</b></div>
+          <div><small style="color:var(--muted)">請求額（税込）</small><br><b>${inv.amount!=null?yen(inv.amount):"—"}</b></div>
+          <div><small style="color:var(--muted)">支払期限</small><br><b>${esc(inv.due_date||"—")}</b></div>
+        </div>
+        <div style="margin:6px 0;font-size:12px;line-height:1.7"><b>判定結果</b>${ck.map(c=>`<div>${icon[c.status]||""} ${esc(c.label)}${c.detail?`<span style="color:var(--muted)">　${esc(c.detail)}</span>`:""}</div>`).join("")}</div>
+        ${(d.warnings||[]).length?`<div style="margin:6px 0;font-size:12px;color:#b45309">ℹ️ ${d.warnings.map(esc).join("<br>ℹ️ ")}</div>`:""}
+      </div>
+    </div>
+    <div style="margin-top:10px"><b style="font-size:13px">明細ごとの仕訳</b>　<span style="font-size:11px;color:var(--muted)">MF事業者: ${esc(d.tenant_id)}／計上日 ${esc(d.transaction_date||"")}／摘要 ${esc(d.remark||"")}</span>
+      <div id="apv-edited" style="display:none;margin:4px 0;font-size:12px;color:#b45309">✏️ 内容を修正しています（修正して承認すると、新しい版のルールとして保存されます）</div>
+      <div style="overflow-x:auto"><table class="invoice-table" style="font-size:12px"><thead><tr><th>#</th><th>店舗／反映先</th><th>借方（科目／補助）</th><th>部門</th><th>税区分</th><th style="text-align:right">金額（税込）</th><th>ルール</th></tr></thead><tbody>
+        ${(d.debit_lines||[]).map(rowHtml).join("")}
+        <tr style="background:var(--bg-soft,#f7f7f5)"><td></td><td colspan="4"><b>貸方</b> ${esc(d.credit?d.credit.account:"—")}${d.credit&&d.credit.sub_account?"／"+esc(d.credit.sub_account):""}</td><td style="text-align:right"><b>${d.credit&&d.credit.amount!=null?yen(d.credit.amount):"—"}</b></td><td></td></tr>
+      </tbody></table></div>
+      ${(d.adjustments||[]).length?`<div style="font-size:11px;color:var(--muted)">1円調整: ${d.adjustments.map(a=>`行${a.line_no} ${a.amount>0?"+":""}${a.amount}円`).join("、")}</div>`:""}
+      <datalist id="apv-acc-dl"></datalist><datalist id="apv-dept-dl"></datalist>
+    </div>
+    <details style="margin-top:10px"><summary style="cursor:pointer;font-size:12px;color:var(--muted)">AI工程の詳細（明細の読み取り・店舗の突合・処理履歴）</summary>
+      <div style="font-size:11px;color:var(--muted);margin:6px 0">明細の検算: ${inv.lines_check?esc(JSON.stringify({ok:inv.lines_check.ok,明細合計:inv.lines_check.sum_lines,税抜合計:inv.subtotal_amount,税額:inv.tax_amount,店舗の突合:inv.lines_check.mapping&&{確定:inv.lines_check.mapping.resolved,要確認:(inv.lines_check.mapping.low||0)+(inv.lines_check.mapping.unresolved||0)}})):"—"}</div>
+      <div style="font-size:11px">${logs.map(x=>`<div>${fmtDT(x.created_at)}　${esc(x.note||x.action)}</div>`).join("")||"履歴はありません"}</div>
+    </details>
+    <div class="mail-actions" style="margin-top:12px;flex-wrap:wrap">
+      <button class="primary" id="apv-approve" disabled title="MFへの登録（承認処理）は次のステップ（Phase8）で有効になります">✅ 承認（MF登録）※次のステップで有効化</button>
+      <button class="hq-btn" id="apv-reject-open">↩️ 差し戻し</button>
+      <button class="hq-btn" id="apv-detail">📄 詳細を開く</button>
+    </div>
+    <div id="apv-reject" style="display:none;margin-top:8px"><div class="ai-field"><small>差し戻しの理由（必須）</small><input id="apv-reject-reason" placeholder="例: 科目が違う／店舗を確認したい"></div>
+      <div class="mail-actions" style="margin-top:6px"><button class="primary" id="apv-reject-send">差し戻す</button></div></div>
+    <div class="err" id="apv-msg" style="margin-top:6px"></div>
+  </div>`;
+  document.body.appendChild(modal);
+  pushNav({modal:true});
+  modal.onclick=e=>{ if(e.target===modal) history.back(); };
+  $("apvClose").onclick=()=>history.back();
+  // PDFのプレビュー
+  if(att) signAttachmentUrls([att.storage_path]).then(map=>{ modal.querySelectorAll("[data-attpreview]").forEach(el=>{ const url=map[el.dataset.attpreview]; if(url) el.src=url; }); modal.querySelectorAll("[data-attpath]").forEach(el=>{ const url=map[el.dataset.attpath]; if(url) el.href=url; }); });
+  // 科目・部門の候補（MFに実在するもの）。辞書ではなくMFのマスタを使う
+  mfCall("accounts",{tenant_id:d.tenant_id}).then(a=>{ if(a.ok&&$("apv-acc-dl")){ const idx=mftBuildAccountIndex(a.body.accounts||[]); $("apv-acc-dl").innerHTML=[...idx.accountNameDatalistHtml?[idx.accountNameDatalistHtml]:[]].join(""); } });
+  mfCall("list_departments",{tenant_id:d.tenant_id}).then(a=>{ if(a.ok&&$("apv-dept-dl")) $("apv-dept-dl").innerHTML=(a.body.departments||[]).map(x=>`<option value="${esc(x.name)}">`).join(""); });
+  modal.querySelectorAll(".apv-acc,.apv-sub,.apv-dept,.apv-tax").forEach(el=>el.oninput=el.onchange=()=>{ $("apv-edited").style.display="block"; });
+  $("apv-detail").onclick=()=>{ history.back(); setTimeout(()=>openInvoiceDetail(u,invoiceId),50); };
+  $("apv-reject-open").onclick=()=>{ $("apv-reject").style.display="block"; };
+  $("apv-reject-send").onclick=async()=>{
+    const reason=$("apv-reject-reason").value.trim(); const msg=$("apv-msg");
+    if(!reason){ msg.className="err"; msg.textContent="差し戻しの理由を入力してください"; return; }
+    $("apv-reject-send").disabled=true; msg.className="err"; msg.textContent="差し戻し中…";
+    const pr=await authed(`/rest/v1/invoices?id=eq.${invoiceId}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({current_stage:"journal_draft",blocked_reason:"差し戻し: "+reason,stage_updated_at:new Date().toISOString()})});
+    if(!pr.ok){ msg.textContent="差し戻しに失敗しました"; $("apv-reject-send").disabled=false; return; }
+    await authed("/rest/v1/rpc/invoice_add_comment",{method:"POST",body:JSON.stringify({p_email_id:inv.email_id||null,p_invoice_id:inv.email_id?null:inv.id,p_body:"【承認画面で差し戻し】"+reason})});
+    history.back();
+    await renderUnifiedInvoiceTab(u);
+  };
+}
 /* ============================================================
    請求書の明細と店舗の突合（請求書自動処理 Phase4・2026-10-13）
    AIが読み取った明細行（invoice_lines）と、店舗マスタ正本(resolve_store)で結びつけた結果を表示する。
@@ -7073,7 +7172,7 @@ async function renderSalesListTab(u){ await renderFinancialListTab(u,"sales"); }
 // （unifiedFilteredRows参照。給与仕訳から自動作成される「給与：氏名（年月）」invoicesレコード
 // ＝is_payroll_related=trueは、この一覧には一切出てこない。確認は給与仕訳タブで行う）
 let UNIFIED_STATE={subTab:"review", search:"", yearMonth:"", reasonFilter:"", sortCol:"", sortDir:"desc", rows:[]};
-const UNIFIED_SUBTABS=[["review","要対応"],["all","すべて"],["accounting","会計待ち"],["payment","振込待ち"],["done","完了"]];
+const UNIFIED_SUBTABS=[["review","要対応"],["approval","承認待ち"],["all","すべて"],["accounting","会計待ち"],["payment","振込待ち"],["done","完了"]];
 const REASON_FILTER_LABELS={
   overdue:"支払期限超過", bank_change:"振込先口座変更", duplicate:"重複疑い", mf_error:"MF登録エラー",
   unknown_journal:"仕訳不明（未判定）", unknown_company:"法人不明", unknown_store:"店舗・部門不明", import_error:"取込エラー",
@@ -7167,6 +7266,7 @@ function unifiedNeedsAttention(r){ return unifiedAttentionReasons(r).length>0; }
 function unifiedMatchesSubTab(r,tab){
   if(tab==="all") return true;
   if(tab==="review") return unifiedNeedsAttention(r);
+  if(tab==="approval") return r.current_stage==="ready_for_approval"&&!r.mf_journal_id&&r.auto_mode!=="manual"; // 自動処理で検算・判定を通過した請求書（承認待ち）
   if(tab==="accounting") return !r.mf_journal_id;
   if(tab==="payment") return !!r.mf_journal_id&&["wait","csv","processing"].includes(r.payment_status);
   if(tab==="done") return !!r.payment_verified_at; // 支払確認まで終わって初めて「完了」タブに入る
@@ -7192,7 +7292,7 @@ async function renderUnifiedInvoiceTab(u){
   // 使っている列だけに絞った（請求書詳細モーダルは常に別途id指定でselect=*を取り直す設計の
   // ため、ここを絞っても詳細画面には一切影響しないことを調査済み）
   const [r,corpCache]=await perfTimed("unified_list_load",()=>Promise.all([
-    authed(`/rest/v1/invoices?select=id,created_at,due_date,invoice_status,amount,vendor_name,invoice_number,corporation_id,store_id,email_id,intake_source,ai_match_status,mf_journal_id,mf_journal_number,payment_status,payment_verified_at,duplicate_suspected,bank_account_change_detected,mf_registration_error,is_payroll_related,is_receivable_related,pl_fee_reflected_at,ad_cost_reflected_at,pl_fee_seisan_synced_at,email:invoice_emails(mail_kind),vendor:vendors(name),corp:corporations(name),store:stores!invoices_store_id_fkey(name),invoice_stores(store:stores(name)),linked_step:hq_task_steps!linked_hq_step_id(title)&order=created_at.desc&limit=500`),
+    authed(`/rest/v1/invoices?select=id,created_at,due_date,invoice_status,amount,vendor_name,invoice_number,corporation_id,store_id,email_id,intake_source,ai_match_status,mf_journal_id,mf_journal_number,payment_status,payment_verified_at,duplicate_suspected,bank_account_change_detected,mf_registration_error,is_payroll_related,is_receivable_related,pl_fee_reflected_at,ad_cost_reflected_at,pl_fee_seisan_synced_at,current_stage,blocked_reason,auto_mode,email:invoice_emails(mail_kind),vendor:vendors(name),corp:corporations(name),store:stores!invoices_store_id_fkey(name),invoice_stores(store:stores(name)),linked_step:hq_task_steps!linked_hq_step_id(title)&order=created_at.desc&limit=500`),
     ensureCorpStoreCache(),
   ]));
   const raw=(r.ok&&Array.isArray(r.body))?r.body:[];
@@ -7465,6 +7565,8 @@ function unifiedWireFilterClear(u){
 function unifiedWireRowActions(u){
   document.querySelectorAll(".unified-row").forEach(tr=>tr.onclick=e=>{
     if(e.target.closest("select,button")) return;
+    // 承認待ちタブでは、承認画面（請求書の要約・判定結果・明細ごとの仕訳・承認/差し戻し）を開く
+    if(UNIFIED_STATE.subTab==="approval") { openApprovalModal(u,tr.dataset.invoiceId); return; }
     openInvoiceDetail(u,tr.dataset.invoiceId);
   });
   document.querySelectorAll(".unified-corp").forEach(el=>el.onchange=()=>unifiedSetCorporation(u,el.dataset.id,el.value));
