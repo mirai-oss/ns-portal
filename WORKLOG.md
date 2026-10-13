@@ -4,11 +4,12 @@
 
 ---
 
-## 2026-10-13 担当C: 請求書自動処理 Phase5「仕訳下書き」実装（**SQL適用・Edge Functionデプロイ待ち**・画面はv93で公開）
-- `supabase/2026-10-13_invoice_journal_draft.sql`（未適用）: invoices.journal_draft(jsonb)/journal_draft_at の2列を追加するだけ。
+## 2026-10-13 担当C: 請求書自動処理 Phase5「仕訳下書き」実装（SQL適用・デプロイ済み 2026-10-13・画面v93）
+- `supabase/2026-10-13_invoice_journal_draft.sql`（適用済み）: invoices.journal_draft(jsonb)/journal_draft_at の2列を追加するだけ。
 - `functions/invoice-journal-draft`（新規・secretまたはユーザーJWT）: 明細(Phase3)・店舗解決(Phase4)・行ルール(vendor_line_rules・v_vendor_line_rule_status)から仕訳下書きを作る。借方=行ごとに 科目/補助/部門(行の店舗のMF部門)/税区分(行の税率)/金額(税込=税抜+切捨て税。税込表記の請求書はそのまま)＋出どころのルールid・版・source、貸方=ルールの貸方(買掛金/未払金)・補助=取引先名・額=請求の税込合計。税の1円調整=最大金額の行で±3円以内を調整(policy=largest_line_1yen)。要確認(needs_review)の条件=ルール無し/ルール不安定(90日2回以上修正)/店舗・法人・取引先未解決/税率不明・想定外/金額不一致/明細なし。証憑警告(プレコ=納品書がインボイス)はwarnings。MFのIDは承認時(Phase8)に名前から解決。MFには登録しない。仕訳辞書は使わない。
 - `invoice-resolve-lines`: 店舗突合後に仕訳下書きを非同期起動。
 - 画面(invoices.html v93): 請求書詳細に「📝 仕訳の下書き（自動）」パネル（行・貸方・1円調整・要確認の理由・警告・「下書きを作り直す」）＋「📚 今後この内容で処理する」(初回学習)=科目がMFに実在するか確認→save_vendor_line_rule(source=approved)＋取引先別名(register_vendor_alias)＋取引先の既定法人(未設定時)を一度に保存→下書きを作り直し。
+- 実機確認: ①ルール無し(食べログ・CureNext)は要確認＋理由表示。②染谷商店9月分(seedの店舗別税抜8行・8%)をテスト請求書で通し検証(確認後削除): 店舗コード01〜08→正式店舗→MF部門（06=06新横浜黒霧屋・08=08新横浜・匠味/鶏武者でインフォマート逆転も正）、借方=仕入高/㈲染谷商店・課税仕入8%・税込、貸方=買掛金/取引先名 ¥2,486,046、最大金額行で+3円調整し請求額と一致、status=ok・問題0。
 - 未対応: 承認画面での修正→新バージョン保存(corrected)・「ルール不安定」アラートの表示はPhase7。MF総勘定元帳の実績からの再学習(§9-1の①)は後続。
 
 ---

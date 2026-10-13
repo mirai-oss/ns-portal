@@ -100,7 +100,7 @@ Deno.serve(async (req: Request) => {
   let unstable = false;
   for (const l of lines ?? []) {
     const rule = pickRule(l);
-    if (!rule) { problems.push(`行${l.line_no}: 行ルールがありません`); continue; }
+    if (!rule) { if (rules.length) problems.push(`行${l.line_no}: この明細に合う行ルールがありません`); continue; }
     if (rule.unstable) unstable = true;
     // 税率: 行の税率→請求書の内訳が1つだけならそれ→ルールの想定が1つだけならそれ
     let rate: number | null = l.tax_rate != null ? Number(l.tax_rate) : null;
