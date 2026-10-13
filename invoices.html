@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-08-v78";
+const BUILD_TAG="2026-10-13-v79";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -3211,6 +3211,60 @@ function arjApplyTemplateAsDefault_(tpl,expected,feeParts,dep,prefix){
     };
   });
 }
+// 2026-10-13追加：ユーザー要望「SMBC・PayPayの入金も給料と同じ形で全て自動仕訳に。仕訳辞書ではなく勘定科目を
+// 決めておき、部門・補助科目は店舗から自動で付け、行は必要に応じて増減」に対応。
+// 科目の「型」はここで決める（仕訳辞書は参照しない）。部門＝店舗マスタの部門、補助科目＝その部門と同じ店舗の補助科目
+// （給与仕訳と同じ照合：名前一致→店舗番号一致）。SMBC・PayPay以外のsource（ロケットナウ等）は従来どおり。
+const ARJ_AUTO_RULES={
+  "PayPay加盟店":{receivable:"PayPay", feeAccount:t=>t==="default"?"支払手数料":"カード手数料", feeSub:t=>t==="default"?"PayPay":null},
+  "SMBC GMO PAYMENT（カード売上）":{receivable:"ステラカード", feeAccount:()=>"カード手数料", feeSub:()=>null},
+};
+function arjSalesAccountName_(tenantId){ return tenantId==="default"?"飲食売上":"売上高"; }
+function arjSubLabelForDept_(account,dept){
+  const norm=x=>String(x||"").normalize("NFKC").replace(/[\s\/]/g,"");
+  const names=(ARJ_STATE.subAccountsByAccountName&&ARJ_STATE.subAccountsByAccountName.get(account))||[];
+  if(!dept) return null;
+  const want=norm(dept.name);
+  let sub=names.find(n=>norm(n)===want);
+  if(!sub){
+    const code=(String(dept.name).match(/^(\d+)/)||[])[1];
+    if(code){ const c=names.filter(n=>/^\d/.test(norm(n))&&norm(n).startsWith(code)); if(c.length===1) sub=c[0]; }
+  }
+  return sub?`${account}/${sub}`:null;
+}
+function arjBuildAutoBranches_(prefix,expected,feeParts){
+  const row=ARJ_STATE.row, rule=ARJ_AUTO_RULES[row.source_name];
+  if(!rule) return null;
+  const has=l=>ARJ_STATE.accountLabelMap&&ARJ_STATE.accountLabelMap.has(l);
+  const t=ARJ_STATE.tenantId;
+  const dept=(ARJ_STATE.departments||[]).find(d=>d.id===ARJ_STATE.storeDepartmentId)||null;
+  const taxId=n=>{ const x=(ARJ_STATE.taxes||[]).find(v=>v&&v.name===n); return x?x.id:""; };
+  const sales=arjSalesAccountName_(t);
+  const arLabel=`売掛金/${rule.receivable}`;
+  const feeAcc=rule.feeAccount(t), feeSubFixed=rule.feeSub(t);
+  const feeLabelOf=()=>feeSubFixed?`${feeAcc}/${feeSubFixed}`:(arjSubLabelForDept_(feeAcc,dept)||feeAcc);
+  if(!has(sales)||!has(arLabel)||!has(feeAcc)) return null; // 科目がこの事業者に無い→従来方式
+  const warn=[];
+  let salesLabel=arjSubLabelForDept_(sales,dept);
+  if(!salesLabel){ salesLabel=sales; warn.push(`「${sales}」の補助科目に、部門（${dept?dept.name:"未解決"}）と同じ店舗が見つかりません。補助科目は空欄です`); }
+  const feeLabel=feeLabelOf();
+  if(feeLabel===feeAcc&&!feeSubFixed&&dept&&(ARJ_STATE.subAccountsByAccountName.get(feeAcc)||[]).length) warn.push(`「${feeAcc}」の補助科目に同じ店舗が見つかりません。補助科目は空欄です`);
+  ARJ_STATE.creditSubAccountWarning=warn.join("／");
+  const dep=dept?dept.id:"";
+  const feeTotal=feeParts.reduce((s,v)=>s+(Number(v)||0),0);
+  const out=[{debitLabel:arLabel,debitAmount:expected||"",creditLabel:salesLabel,creditAmount:(expected+feeTotal)||"",
+    department_id:dep,tax_id:"",credit_department_id:dep,credit_tax_id:taxId("課税売上 10%"),remark:prefix?`${prefix}　売上`:""}];
+  feeParts.forEach((f,i)=>{
+    if(!(Number(f)>0)) return; // 0円の手数料行は作らない
+    const split=feeParts.length>1;
+    const exempt=split&&i===1;
+    out.push({debitLabel:feeLabel,debitAmount:f,creditLabel:"",creditAmount:"",department_id:dep,
+      tax_id:exempt?taxId("対象外"):taxId("課税仕入 10%"),credit_department_id:"",credit_tax_id:"",
+      remark:prefix?`${prefix}　${split?`手数料${i+1}`:"手数料"}`:""});
+  });
+  ARJ_STATE.autoBuilt=true;
+  return out;
+}
 function arjSetDefaultBranches(){
   const row=ARJ_STATE.row;
   const ymLabel=ARJ_STATE.ymLabel||"";
@@ -3222,6 +3276,9 @@ function arjSetDefaultBranches(){
     ?[Number(row.fee_amount_taxable)||0,Number(row.fee_amount_exempt)||0]
     :[fee];
   const dep=ARJ_STATE.storeDepartmentId||"";
+  ARJ_STATE.autoBuilt=false;
+  const autoBr=arjBuildAutoBranches_(prefix,expected,feeParts);
+  if(autoBr){ ARJ_STATE.branches=autoBr; return; }
   const tpl=(ARJ_STATE.templates||[]).find(t=>t.receivable_source_name===row.source_name);
   if(tpl&&Array.isArray(tpl.branches)&&tpl.branches.length){
     ARJ_STATE.branches=arjApplyTemplateAsDefault_(tpl,expected,feeParts,dep,prefix);
@@ -3551,6 +3608,7 @@ function arjRenderForm(){
     <datalist id="arj-account-datalist">${ARJ_STATE.accountNameDatalistHtml||""}</datalist>
     ${ARJ_STATE.tenants&&ARJ_STATE.tenants.length>1?`<div class="ai-field" style="margin-bottom:6px;font-size:11px;color:var(--muted)">登録先: <b>${esc(ARJ_STATE.tenantLabel||"")}</b> <button id="arj-change-tenant" style="font-size:10px">変更</button></div>`:""}
     ${ARJ_STATE.storeDepartmentMismatch?`<div class="err" style="margin-bottom:8px">⚠️ 店舗マスタに登録されている部門名「${esc(ARJ_STATE.storeDepartmentMismatch)}」と一致する部門がこの事業者（${esc(ARJ_STATE.tenantLabel||"")}）に見つかりませんでした。部門は下の表で手動で選んでください。直す場合は、①マネーフォワード側にまだこの部門が無ければ作成する、②登録先の事業者が違う場合は上の「変更」から選び直す、③それでも直らなければ設定タブ「法人・店舗・部門マッピング」の店舗名の表記を見直してください。</div>`:""}
+    ${ARJ_STATE.autoBuilt?`<div class="meta" style="margin-bottom:8px;color:var(--m-green,#1a7f37);font-size:12px">✅ 科目・部門・補助科目を店舗から自動で組みました（仕訳辞書は使っていません）。内容を確認して登録してください。</div>`:""}
     ${ARJ_STATE.creditSubAccountWarning?`<div class="err" style="margin-bottom:8px">⚠️ ${esc(ARJ_STATE.creditSubAccountWarning)}</div>`:""}
     <div class="mail-actions" style="margin-bottom:8px">
       <button data-arjmode="journal" ${mode==="journal"?'class="primary"':""}>📖 過去の仕訳から選ぶ</button>
