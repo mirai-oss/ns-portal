@@ -14,7 +14,7 @@ resolve_store(
   p_log         boolean default true -- false にすると未解決を隔離表に記録しない（検証・比較用）
 ) returns table (store_id uuid, brand_id uuid, corporation_id uuid, confidence text, matched_by text)
 ```
-- **source_system の値**: `smaregi` / `smaregi_timecard` / `invoice` / `payroll`（MF部門）/ `settlement`（精算書）/ `ad` / `delivery` / `reservation` / `tabelog` / `hotpepper` / `gurunavi` / `gbp` / `dashboard` / `legacy_alias`（種別不明の旧別名）
+- **source_system の値**: `smaregi` / `smaregi_timecard` / `invoice` / `payroll`（MF部門）/ `settlement`（精算書）/ `ad` / `delivery` / `reservation` / `tabelog` / `hotpepper` / `gurunavi` / `gbp` / `dashboard` / `infomart`（インフォマート請求書の自社店舗コード01〜08・2026-10-13追加）/ `legacy_alias`（種別不明の旧別名）
 - 呼べる権限: ログイン済みユーザー・`service_role`（Edge Function / GAS）。匿名は不可。
 
 ## 2. 戻り値

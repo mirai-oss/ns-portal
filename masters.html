@@ -123,7 +123,7 @@ async function rpc(name,args){
 
 const SOURCES=[["smaregi","スマレジ（店舗ID）"],["smaregi_timecard","スマレジ・タイムカード（事業所）"],["invoice","請求書"],["payroll","給与（MF部門）"],
   ["settlement","精算書"],["ad","広告"],["delivery","デリバリー"],["reservation","予約"],["tabelog","食べログ"],["hotpepper","ホットペッパー"],
-  ["gurunavi","ぐるなび"],["gbp","Googleビジネス"],["dashboard","経営ダッシュボード/売上シート"],["legacy_alias","旧別名（種別不明）"]];
+  ["gurunavi","ぐるなび"],["gbp","Googleビジネス"],["dashboard","経営ダッシュボード/売上シート"],["infomart","インフォマート（請求書の自社店舗コード）"],["legacy_alias","旧別名（種別不明）"]];
 const SRC_LABEL=Object.fromEntries(SOURCES);
 const LOC_LABEL={store:"店舗",hq:"本社",central_kitchen:"セントラルキッチン",office:"事務所",warehouse:"倉庫"};
 const REL_LABEL={direct:"直営",outsourcing:"業務委託",sublease:"転貸"};

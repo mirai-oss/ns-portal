@@ -283,7 +283,7 @@ create table if not exists public.store_external_mappings (
   brand_id uuid references public.brands(id),
   source_system text not null check (source_system in
     ('smaregi','smaregi_timecard','invoice','tabelog','hotpepper','gurunavi','gbp','reservation','payroll',
-     'settlement','ad','delivery','dashboard','legacy_alias')),
+     'settlement','ad','delivery','dashboard','infomart','legacy_alias')),
   external_store_id text,
   external_store_code text,
   external_store_name text,

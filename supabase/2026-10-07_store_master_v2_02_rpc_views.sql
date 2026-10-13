@@ -175,7 +175,7 @@ declare
 begin
   if not store_master_can_edit() then raise exception '権限がありません（本部/社長/マスターのみ）'; end if;
   if p_source is null or p_source not in ('smaregi','smaregi_timecard','invoice','tabelog','hotpepper','gurunavi','gbp',
-       'reservation','payroll','settlement','ad','delivery','dashboard','legacy_alias') then
+       'reservation','payroll','settlement','ad','delivery','dashboard','infomart','legacy_alias') then
     raise exception 'source_system が不正です: %', p_source;
   end if;
   if not exists (select 1 from public.stores where id = p_store_id) then raise exception '店舗が存在しません'; end if;
@@ -186,11 +186,12 @@ begin
   select * into v_old from public.store_external_mappings m
     where m.source_system = p_source
       and ((nullif(btrim(p_external_id),'') is not null and m.external_store_id = btrim(p_external_id))
+        or (nullif(btrim(p_code),'') is not null and m.external_store_code = btrim(p_code))
         or (nullif(btrim(p_name),'') is not null and m.external_store_name = btrim(p_name)))
     order by m.is_active desc limit 1;
   if found then
     if v_old.is_active and v_old.store_id <> p_store_id then
-      raise exception 'この外部名/IDは既に別の店舗に登録されています（先に無効化してください）';
+      raise exception 'この外部名/ID/コードは既に別の店舗に登録されています（先に無効化してください）';
     end if;
     update public.store_external_mappings
        set store_id = p_store_id, brand_id = p_brand_id, is_active = true,
