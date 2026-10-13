@@ -32,7 +32,7 @@ async function resolveVendor(db: any, name: string | null): Promise<{ id: string
   const n = normCompany(name);
   if (!n) return null;
   const [{ data: vendors }, { data: aliases }] = await Promise.all([
-    db.from("vendors").select("id, name, name_aliases, default_corporation_id, is_active").eq("is_active", true),
+    db.from("vendors").select("id, name, name_aliases, default_corporation_id, is_active, created_at").eq("is_active", true),
     db.from("vendor_aliases").select("vendor_id, alias").eq("is_active", true),
   ]);
   const hit = new Map<string, string | null>();
@@ -43,7 +43,16 @@ async function resolveVendor(db: any, name: string | null): Promise<{ id: string
   for (const a of aliases ?? []) {
     if (normCompany(a.alias) === n && byId.has(a.vendor_id)) hit.set(a.vendor_id, (byId.get(a.vendor_id) as any).default_corporation_id ?? null);
   }
-  if (hit.size !== 1) return null; // 0件=未登録／複数=曖昧 → 取引先は未確定のまま（人が確認）
+  if (hit.size === 0) return null; // 未登録 → 取引先は未確定のまま（人が確認）
+  if (hit.size > 1) {
+    // 全く同じ名前の取引先が重複登録されている場合（例: 株式会社カカクコムが複数）は、同一取引先とみなして
+    // 「既定の法人が設定済み→最も古い登録」を採用する。名前が違う複数候補（本当に曖昧）は確定しない
+    const cands = [...hit.keys()].map((id) => byId.get(id) as any);
+    const names = new Set(cands.map((c) => normCompany(c.name)));
+    if (names.size !== 1) return null;
+    cands.sort((a, b) => (b.default_corporation_id ? 1 : 0) - (a.default_corporation_id ? 1 : 0) || String(a.created_at).localeCompare(String(b.created_at)));
+    return { id: cands[0].id, corp: cands[0].default_corporation_id ?? null };
+  }
   const [id, corp] = [...hit.entries()][0];
   return { id, corp };
 }
@@ -186,6 +195,14 @@ async function processEmail(db: any, emailId: string, secret: string, opts: { dr
     }
     first = false;
     created.push(ins!.id as string);
+    // Phase3: 作成した下書きの明細行を読み取る（時間がかかるため待たずに別Functionへ依頼。失敗しても下書きは残る）
+    const kick = fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/invoice-lines-ocr`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", apikey: Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!, Authorization: `Bearer ${Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")}` },
+      body: JSON.stringify({ secret, invoice_id: ins!.id }),
+    }).catch((e) => console.error("明細OCRの依頼に失敗: " + e));
+    const er = (globalThis as any).EdgeRuntime;
+    if (er?.waitUntil) er.waitUntil(kick);
     await logAudit(db, emailId, "auto_invoice_created",
       `自動で下書きを作成（取引先=${vendorName ?? "不明"}${v ? "・登録済み" : "・未登録/未確定"}／請求番号=${invoiceNumber ?? "なし"}／金額=${amount ?? "不明"}／期限=${dueDate ?? "不明"}）`,
       { invoice_id: ins!.id, vendor_id: v?.id ?? null, corporation_id: corporationId });

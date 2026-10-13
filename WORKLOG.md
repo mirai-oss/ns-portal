@@ -4,6 +4,15 @@
 
 ---
 
+## 2026-10-13 担当C: 請求書自動処理 Phase3「明細OCR」実装（**SQL適用・Edge Functionデプロイ待ち**）
+- ユーザー補足: 請求書は「複数店舗が混ざるもの」と「1店舗だけのもの」の両方がある。食べログの請求元は株式会社カカクコム。
+- `supabase/2026-10-13_invoice_lines.sql`（未適用）: `invoice_lines`（明細名・品目・店舗表記・店舗コード・ブランド・数量・単価・金額・税率・税額・備考・resolved_store_id/resolved_by=Phase4用）、invoicesに subtotal_amount/tax_amount/target_year_month/lines_check/lines_extracted_at、automation_rule_settingsに invoice_lines_ai（モデル名）。
+- `functions/invoice-lines-ocr`（新規・secretまたはユーザーJWT）: 請求書1枚の添付から ヘッダー(税抜/税/税込/対象年月/税率別内訳)＋明細行を読み取り保存。表→検算（明細合計=税抜合計±1円・税の整合・請求額一致・税率別内訳）を lines_check に記録。人が確定した行(resolved_by='human')は上書きしない。複数請求書PDFは請求番号・金額をヒントに1件に絞る。
+- `invoice-auto-create`: 下書き作成後に明細OCRを非同期で起動。取引先の名前一致が複数ある場合、完全同名の重複登録(例: 株式会社カカクコム×6)は「既定法人あり→最古」の1件に確定するよう改善（食べログの下書き2件のvendor_idを手当て済み）。
+- 取引先マスタに同名重複が複数ある（カカクコム6件など）→ 統合は別途ユーザー確認の上で。
+
+---
+
 ## 2026-10-13 担当C: 請求書自動処理 Phase2「invoice自動生成」実装（SQL適用・デプロイ済み 2026-10-13）
 - `supabase/2026-10-13_invoice_auto_create.sql`（適用済み）: invoicesに source_message_id/source_attachment_id/received_at/auto_ocr/biz_key、intake_sourceに'email_auto'追加、biz_keyの部分ユニーク索引(自動生成・取消でない行)、invoice_attachments.ocr_done_at、invoice_emails.auto_invoice_at/auto_invoice_note。既存データ不変。
 - `functions/invoice-auto-create`（新規・invoice_intake_secret認証）: auto_category='invoice_attachment'のメールを既存invoice-ocr(service role・複数請求書検出)で読み取り→下書きinvoice(draft・email_auto)を作成。取引先=vendors/vendor_aliasesの会社名正規化一致(1件に確定した時だけ)、法人=取引先既定→宛先(corporations/corporation_aliases)。二重処理防止=①ocr_done_atで同添付は再処理しない②同ハッシュは読まない③業務キー(取引先×請求番号／無ければ取引先×期限×金額)が既存請求書と同じなら作らず到着を記録④人が既にinvoiceを作っていれば何もしない⑤biz_keyの部分ユニーク索引。mail_kindがinvoice以外の人の分類は対象外。`{action:"scan",since,limit,dry_run}`で後追い処理。invoices.email_idは1メール1件uniqueのため2件目以降はemail_id=NULL（source_message_idで辿れる）。
