@@ -4,12 +4,13 @@
 
 ---
 
-## 2026-10-13 担当C: 請求書自動処理 Phase1「メール自動分類」実装（**SQL適用・Edge Functionデプロイ待ち**）
-- `supabase/2026-10-13_invoice_email_auto_category.sql`（未適用）: invoice_emailsに auto_category/auto_category_by/auto_confidence/auto_category_reason/auto_classified_at、`invoice_mail_rules`（既知送信元・件名・添付有無ルール＋初期13件）、`automation_rule_settings`に email_classify_ai（モデル名=Haiku/Sonnetをparamsで切替・確信度0.7）。
+## 2026-10-13 担当C: 請求書自動処理 Phase1「メール自動分類」実装（SQL適用・デプロイ済み 2026-10-13）
+- `supabase/2026-10-13_invoice_email_auto_category.sql`（適用済み）: invoice_emailsに auto_category/auto_category_by/auto_confidence/auto_category_reason/auto_classified_at、`invoice_mail_rules`（既知送信元・件名・添付有無ルール＋初期13件）、`automation_rule_settings`に email_classify_ai（モデル名=Haiku/Sonnetをparamsで切替・確信度0.7）。
 - `functions/_shared/mail-classify.ts` 新規: ①送信元ルール→②件名/添付ルール→③Haiku→④確信度低のみSonnet→要確認。結果は mail_kind が未分類(NULL)のときだけ mail_kind へ写す（人の手動分類が常に優先・履歴は invoice_audit_logs）。
 - `functions/invoice-intake/index.ts`: 新着メールを取込直後に分類（失敗しても取込は成功）＋ `{action:"classify_existing"}`（既存メールの後追い分類。auto_category系の列だけ書き、mail_kindは書き換えない＝検証用）。
 - ルール判定はNodeで確認済み。AI分類・DB書込は未デプロイのため未検証。既存メール(1386通)の mail_kind は変更しない。
-- 次: SQL適用→デプロイ→classify_existingで少数を分類して精度確認→ユーザー実機確認→Phase2（invoice自動生成）。
+- 実行結果: 既存メール70通を試し分類（mail_kind不変）。ルール当たり＋AI(Haiku)で請求書添付/通知/ダウンロード型/無関係を妥当に分類。初回、上位モデル(Sonnet 5.5)がtool_choice強制を拒否→autoで再試行する修正を追加し再デプロイ（エラー3件は再分類済み）。`invoice-intake`は--no-verify-jwtで維持（GASが共有シークレットで呼ぶため）。
+- 次: ユーザーに分類結果を確認してもらい→Phase2（invoice自動生成）。
 
 ---
 

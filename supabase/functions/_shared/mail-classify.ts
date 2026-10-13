@@ -67,16 +67,22 @@ async function askModel(apiKey: string, model: string, mail: MailInput): Promise
     ? mail.attachments.map((a) => `${a.file_name}（${a.mime_type ?? "不明"}）`).join("、")
     : "なし";
   const text = `送信元: ${mail.from_address ?? ""}\n件名: ${mail.subject ?? ""}\n添付ファイル: ${att}\n本文（先頭）:\n${String(mail.body_text ?? "").slice(0, 1500)}`;
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
+  // モデルによっては tool_choice の強制（type:"tool"）に未対応のため、400で拒否されたら自動選択(auto)で再試行する
+  const call = (toolChoice: unknown) => fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: { "content-type": "application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01" },
     body: JSON.stringify({
       model, max_tokens: 300,
-      system: "あなたは日本の飲食企業（有限会社トーホーエージェンシー等）の経理受付です。届いたメールが、支払うべき請求書に関するものか、入金・精算の明細か、無関係かを分類します。不明なら無理に決めず needs_review と低い確信度にしてください。",
-      tools: [TOOL], tool_choice: { type: "tool", name: "classify_mail" },
+      system: "あなたは日本の飲食企業（有限会社トーホーエージェンシー等）の経理受付です。届いたメールが、支払うべき請求書に関するものか、入金・精算の明細か、無関係かを分類します。不明なら無理に決めず needs_review と低い確信度にしてください。必ず classify_mail ツールで答えてください。",
+      tools: [TOOL], tool_choice: toolChoice,
       messages: [{ role: "user", content: text }],
     }),
   });
+  let res = await call({ type: "tool", name: "classify_mail" });
+  if (res.status === 400) {
+    const errText = await res.clone().text().catch(() => "");
+    if (errText.includes("tool_choice")) res = await call({ type: "auto" });
+  }
   if (!res.ok) throw new Error(`AI分類に失敗（${res.status}）: ${(await res.text().catch(() => "")).slice(0, 200)}`);
   const j = await res.json();
   const tu = (j.content ?? []).find((c: any) => c.type === "tool_use");
