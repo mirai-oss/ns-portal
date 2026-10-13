@@ -4,6 +4,14 @@
 
 ---
 
+## 2026-10-13 担当C: 担当Dからの共有（インフォマート請求書の自動取得ジョブ完成→取込口 `invoice-auto-ingest` の仕様待ち）
+- 担当D: `infomart-invoice`(Mac mini・毎日10:30)完成。9月分10社は4段検算通過。取引先1社につき1件を送る想定: source='infomart'・vendor_hint・target_ym・infomart_invoice_no・pdf(base64)+sha256・csv行(借方部門コード・税区分・税込金額・税額・補助科目)・合計。サービスキー認証。
+- 要件(ユーザー指示): PDF必須（PDF未添付の請求書は承認画面で登録不可）。二重防止=SHA-256／取引先×請求番号。
+- 担当C側の注意: ①部門コードは06/08がハブと逆→必ず resolve_store('infomart', code)。②科目・貸方は vendor_line_rules(seed)優先（RSSはseed=衛生管理費/おしぼり・未払金、CSV既定=仕入高/買掛金）。③PL反映は差額調整（担当Dの報告§2-1・司令塔確認待ち）。④プレコフーズは納品書も証憑として必要（未実装）。CSVの取引先は「借方取引先」列で集計し、金額は借方金額(税込)・借方税額から。
+- 状況: 取込口の仕様(URL・認証・項目)は未決定。ユーザーの指示を待つ（Phase6の承認待ちと並行）。
+
+---
+
 ## 2026-10-13 担当C: 請求書自動処理 Phase6「検算・異常判定・処理の段階」実装（**SQL適用・Edge Functionデプロイ待ち**・画面はv94で公開）
 - `supabase/2026-10-13_invoice_stage_checks.sql`（未適用）: invoicesに current_stage(received→parsed→mapping→journal_draft→ready_for_approval→approved→payment_waiting→paid→completed/error)・blocked_reason・stage_updated_at・checks(jsonb)・auto_mode(auto/manual)・manual_reason/by/at、`invoice_switch_to_manual(請求書, 理由必須)`、automation_rule_settings `invoice_exception_tasks`(既定OFF)。既存請求書は変更なし。
 - `functions/invoice-check`（新規・secretまたはJWT）: 判定=①明細合計＝請求合計(±1円)②税の整合③取引先・法人・店舗の未解決ゼロ④仕訳下書き要確認なし⑤重複(既存疑い・同請求番号・同金額×期限・定期取引先の月1枚=2枚目)⑥前回比±30%(警告)⑦振込先と登録口座の一致(登録口座なし=未登録で警告・不一致=口座変更でNG・請求書に口座なし=対象外)⑧ルート振り分け(業務委託精算対象店舗=精算書／他=PL。黒霧屋新横浜は運営法人と請求書法人が同じならPL)。段階と止まっている理由を更新。人のロック(auto_mode=manual)・approved以降は書かない。例外タスクは設定ONのときだけ hq_create_exception_task(べき等・理由別)／解消で hq_resolve_exception_task。
