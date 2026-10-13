@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-13-v82";
+const BUILD_TAG="2026-10-13-v83";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -3278,6 +3278,7 @@ async function arjDryRunAll(u){
 const ARJ_AUTO_RULES={
   "PayPay加盟店":{receivable:"PayPay", salesSub:"PayPay売上", feeAccount:t=>t==="default"?"支払手数料":"カード手数料", feeSub:t=>t==="default"?"PayPay":null},
   "SMBC GMO PAYMENT（カード売上）":{receivable:"ステラカード", salesSub:"カード売上", feeAccount:()=>"カード手数料", feeSub:()=>null},
+  "ロケットナウ":{receivable:"ロケットなう", salesSub:"ロケットなう", feeAccount:()=>"支払手数料", feeSub:()=>"ロケットなう"},
   "現金売上":{receivable:"現金売上", receivableByStore:true, salesSub:"現金売上", feeAccount:()=>"カード手数料", feeSub:()=>null},
 };
 function arjSalesAccountName_(tenantId){ return "飲食売上"; } // 2026-10-13: N-Styleもトーホーと同じ飲食売上
@@ -3321,7 +3322,8 @@ function arjBuildAutoBranches_(prefix,expected,feeParts){
   const warn=[];
   let salesLabel=`${sales}/${rule.salesSub}`;
   if(!has(salesLabel)){ salesLabel=sales; warn.push(`「${sales}」の補助科目「${rule.salesSub}」がMFに見つかりません。補助科目は空欄です（先にMFで作成してください）`); }
-  const feeLabel=feeNeeded?feeLabelOf():feeAcc;
+  let feeLabel=feeNeeded?feeLabelOf():feeAcc;
+  if(feeNeeded&&feeSubFixed&&!has(feeLabel)){ warn.push(`「${feeAcc}」の補助科目「${feeSubFixed}」がMFに見つかりません。補助科目は空欄です`); feeLabel=feeAcc; }
   if(feeNeeded&&feeLabel===feeAcc&&!feeSubFixed&&dept&&(ARJ_STATE.subAccountsByAccountName.get(feeAcc)||[]).length) warn.push(`「${feeAcc}」の補助科目に同じ店舗が見つかりません。補助科目は空欄です`);
   if(arStoreMiss) warn.push(`「売掛金」の補助科目に、部門（${dept?dept.name:"未解決"}）と同じ店舗が見つかりません。借方の補助科目は空欄です`);
   if(arMissing) warn.push(`「売掛金」の補助科目「${rule.receivable}」がMFに見つかりません。補助科目は空欄です（先にMFで作成してください）`);
