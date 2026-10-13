@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-13-v90";
+const BUILD_TAG="2026-10-13-v91";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -6970,7 +6970,7 @@ function unifiedFilteredRows(){
   }
   return list;
 }
-const INTAKE_SOURCE_LABEL={mail:"メール",paper:"紙",pdf:"PDF",infomart:"Infomart",api:"API",manual:"手動"};
+const INTAKE_SOURCE_LABEL={email_auto:"メール(自動)",mail:"メール",paper:"紙",pdf:"PDF",infomart:"Infomart",api:"API",manual:"手動"};
 function unifiedRowHtml(r){
   const ai=AI_STATUS_LABEL[r.ai_match_status]||["—","gray"];
   const pay=unifiedPaymentStageLabel(r);

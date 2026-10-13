@@ -194,6 +194,18 @@ Deno.serve(async (req: Request) => {
     console.error("自動分類エラー: " + e);
   }
 
+  // 2026-10-13 Phase2: 「請求書（添付あり）」と判定されたら、下書きinvoiceの自動生成を別Functionへ依頼する
+  // （AI読み取りに数秒〜数十秒かかるため、GASへの応答は待たせない。失敗しても取込は成功扱い・5分おきの再取込やscanで拾い直せる）
+  if (autoCategory === "invoice_attachment") {
+    const kick = fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/invoice-auto-create`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", apikey: Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!, Authorization: `Bearer ${Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")}` },
+      body: JSON.stringify({ secret: body.secret, email_id: emailId }),
+    }).catch((e) => console.error("自動生成の依頼に失敗: " + e));
+    const er = (globalThis as any).EdgeRuntime;
+    if (er?.waitUntil) er.waitUntil(kick);
+  }
+
   await db.from("invoice_audit_logs").insert({
     entity_type: "invoice_email", entity_id: emailId, action: "intake", actor_type: "human",
     new_value: { attachments: savedCount, duplicate_suspected: duplicateSuspected, attachments_failed: failed, auto_category: autoCategory },

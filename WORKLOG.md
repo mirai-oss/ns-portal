@@ -4,6 +4,14 @@
 
 ---
 
+## 2026-10-13 担当C: 請求書自動処理 Phase2「invoice自動生成」実装（**SQL適用・Edge Functionデプロイ待ち**）
+- `supabase/2026-10-13_invoice_auto_create.sql`（未適用）: invoicesに source_message_id/source_attachment_id/received_at/auto_ocr/biz_key、intake_sourceに'email_auto'追加、biz_keyの部分ユニーク索引(自動生成・取消でない行)、invoice_attachments.ocr_done_at、invoice_emails.auto_invoice_at/auto_invoice_note。既存データ不変。
+- `functions/invoice-auto-create`（新規・invoice_intake_secret認証）: auto_category='invoice_attachment'のメールを既存invoice-ocr(service role・複数請求書検出)で読み取り→下書きinvoice(draft・email_auto)を作成。取引先=vendors/vendor_aliasesの会社名正規化一致(1件に確定した時だけ)、法人=取引先既定→宛先(corporations/corporation_aliases)。二重処理防止=①ocr_done_atで同添付は再処理しない②同ハッシュは読まない③業務キー(取引先×請求番号／無ければ取引先×期限×金額)が既存請求書と同じなら作らず到着を記録④人が既にinvoiceを作っていれば何もしない⑤biz_keyの部分ユニーク索引。mail_kindがinvoice以外の人の分類は対象外。`{action:"scan",since,limit,dry_run}`で後追い処理。invoices.email_idは1メール1件uniqueのため2件目以降はemail_id=NULL（source_message_idで辿れる）。
+- `invoice-intake`: 分類が invoice_attachment なら invoice-auto-create を非同期で起動。画面: 取込元ラベルに「メール(自動)」(v91)。
+- 未対応: invoice_download（取得依頼の発行／例外タスク）は担当D・Eの受け口待ち。MF登録・仕訳下書き(Phase5)はまだ。
+
+---
+
 ## 2026-10-13 担当C: 担当Fから共有（10社の取引先・店舗コード対応が本番に入った）→ 行ルールを紐づけ
 - 担当F適用済み: store_external_mappings(infomart 01〜08)、vendor_aliases 19件、取引先マスタに10社、vendors.email_domains（空）。
 - 担当C: `vendor_line_rules` 10行・`vendor_invoice_policies` 10行の vendor_id を取引先マスタへ紐づけ済み（名前一致・未紐づけ0）。
