@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-13-v103";
+const BUILD_TAG="2026-10-13-v104";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -3169,7 +3169,7 @@ function receivableRender(u){
                 ${stores.map(s=>`<option value="${esc(s.id)}" ${RECEIVABLE_STATE.storeFilter===s.id?"selected":""}>${esc(s.name)}</option>`).join("")}
               </select></div>
           </div>
-          <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="hq-btn" id="receivable-plcatch-btn" title="MF仕訳が登録済みの入金の手数料を、その店舗のPLへ反映します（反映済みはスキップ）">📊 手数料をPLへ反映</button><button class="hq-btn" id="receivable-dry-btn" title="SMBC・PayPayの未登録分を、登録はせずに一括で仕訳案を組んで確認します">🔬 自動仕訳を一括確認</button><button class="hq-btn primary" id="receivable-add">＋ 入金を追加</button></div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="hq-btn" id="receivable-plreplace-btn" title="すでに税込でPLへ反映した手数料を、税抜に入れ替えます（確認画面が出ます）">🧾 手数料PLを税抜に入れ替え</button><button class="hq-btn" id="receivable-plcatch-btn" title="MF仕訳が登録済みの入金の手数料を、その店舗のPLへ反映します（反映済みはスキップ）">📊 手数料をPLへ反映</button><button class="hq-btn" id="receivable-dry-btn" title="SMBC・PayPayの未登録分を、登録はせずに一括で仕訳案を組んで確認します">🔬 自動仕訳を一括確認</button><button class="hq-btn primary" id="receivable-add">＋ 入金を追加</button></div>
         </div>
         <div class="mail-chips" style="margin-bottom:10px">
           ${RECEIVABLE_SUBTABS.map(([k,l])=>{
@@ -3201,6 +3201,7 @@ function receivableRender(u){
   wireCashRecon(u);
   if($("receivable-dry-btn")) $("receivable-dry-btn").onclick=()=>arjDryRunAll(u);
   if($("receivable-plcatch-btn")) $("receivable-plcatch-btn").onclick=()=>arjPlCatchUp(u);
+  if($("receivable-plreplace-btn")) $("receivable-plreplace-btn").onclick=()=>arjPlReplaceTaxExcl(u);
   document.querySelectorAll("[data-arj-open]").forEach(el=>el.onclick=()=>openReceivableJournalModal(u,el.dataset.arjOpen));
   // 2026-09-17新規：ユーザー報告「PL反映が出ない」に対応。仕訳登録済みの売上入金行から
   // 請求書詳細（PLへ反映パネルを含む）へ移動する手段が無かった（is_receivable_relatedの
@@ -3786,6 +3787,67 @@ async function arjPlCatchUp(u){
   const out=await arjPlRunBatch_(items,(i,n)=>{ if(btn) btn.textContent=`反映中… ${i}/${n}`; });
   alert(`PL反映の処理が終わりました（反映済み・対象外を含め正常 ${out.okCount}/${items.length}件）。`+(out.lines.length?"\n\n⚠️ 要確認:\n"+out.lines.join("\n"):""));
   if(btn){ btn.disabled=false; btn.textContent="📊 手数料をPLへ反映"; }
+}
+
+// 2026-10-13追加（ユーザー指示「PL反映済みの手数料を税別に入れ替え」）: すでにPLへ反映した売上入金の手数料（税込で反映した分）を、税抜に入れ替える。
+// 課税の手数料（課税仕入8%/10%）は税抜、非課税・対象外はそのまま。やり方は「いったん取り消し→税抜で反映し直し」（PL側は同じ請求書×月×科目×店舗の行を上書き＝二重計上にならない）。
+// 反映済みの金額と新しい金額が同じ（もともと非課税など）の行は何もしない。実行前に一覧（変更前→変更後）を見せて、確認後にだけ実行する。
+// 業務委託精算書の対象店舗（精算書経由）は対象外。
+async function arjPlReplaceTaxExcl(u){
+  const ym=RECEIVABLE_STATE.yearMonth;
+  const rows=RECEIVABLE_STATE.receivables.filter(r=>r.year_month===ym&&r.mf_journal_id&&!String(r.mf_journal_id).startsWith("pending:")&&r.linked_invoice_id&&arjRuleFor_(r.source_name));
+  const btn=$("receivable-plreplace-btn"); if(btn){ btn.disabled=true; btn.textContent="確認中…"; }
+  const done=()=>{ if(btn){ btn.disabled=false; btn.textContent="🧾 手数料PLを税抜に入れ替え"; } };
+  if(!rows.length){ alert("この月に、MF仕訳が登録済みで対象の入金元の行はありません。"); done(); return; }
+  await ensureCorpStoreCache();
+  const tRes=await mfCall("list_tenants"); const tenants=(tRes.ok&&tRes.body.tenants)||[];
+  const refR=await authed(`/rest/v1/invoice_pl_reflections?invoice_id=in.(${rows.map(r=>r.linked_invoice_id).join(",")})&select=id,invoice_id,account_name,sub_account_name,year_month,allocations,reflection_route`);
+  const refs=(refR.ok&&Array.isArray(refR.body))?refR.body.filter(x=>x.reflection_route!=="seisan"):[];
+  const plan=[]; const lines=[];
+  for(const r of rows){
+    const mine=refs.filter(x=>x.invoice_id===r.linked_invoice_id); if(!mine.length) continue;
+    const store=(CORP_STORE_CACHE.stores||[]).find(x=>x.id===r.store_id); if(!store||store.seisan_target||store.seisan_pl_categories_target) continue;
+    const tid=r.mf_tenant_id||arjPickTenantId(r,tenants);
+    const gj=await mfCall("get_journal",{journal_id:r.mf_journal_id,tenant_id:tid}); if(!gj.ok){ lines.push(`${store.name}（${r.source_name}）: MF仕訳を取得できず対象外`); continue; }
+    const groups=new Map();
+    for(const b of (gj.body.branches||[])){
+      const d=b.debit; if(!d||!d.account_name||!/手数料/.test(d.account_name)||!(Number(d.value)>0)) continue;
+      const value=Math.round(Number(d.value)); const m=String(b.tax_name||"").match(/課税仕入[^0-9]*(\d+)\s*%/); const rate=m?Number(m[1]):0;
+      const net=rate>0?value-Math.floor(value*rate/(100+rate)):value;
+      const k=d.account_name+"\u0001"+(d.sub_account_name||""); const g=groups.get(k)||{account:d.account_name,sub:d.sub_account_name||"",net:0}; g.net+=net; groups.set(k,g);
+    }
+    for(const g of groups.values()){
+      const ex=mine.find(x=>x.account_name===g.account&&(x.sub_account_name||"")===g.sub); if(!ex) continue;
+      const before=(ex.allocations||[]).reduce((t,a)=>t+(Number(a.amount)||0),0);
+      if(before===g.net) continue; // もともと税抜（または非課税）で反映済み
+      plan.push({r,store,ex,g,before,after:g.net,ym:String(ex.year_month||"").slice(0,7)+"-01"});
+    }
+  }
+  if(!plan.length){ alert("入れ替えが必要な反映済みの手数料はありません（すべて税抜、または非課税で反映済みです）。"+(lines.length?"\n\n"+lines.join("\n"):"")); done(); return; }
+  const tb=plan.reduce((t,x)=>t+x.before,0), ta=plan.reduce((t,x)=>t+x.after,0);
+  const modal=document.createElement("div"); modal.className="modal-bg mail-shell"; modal.id="plReplaceModal";
+  modal.innerHTML=`<div class="modal" style="max-width:900px"><div class="mhead"><h2>🧾 手数料のPLを税抜に入れ替え（${esc(ym)}）</h2><button class="linkbtn" id="plrClose" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:13px">閉じる ×</button></div>
+    <div class="meta" style="font-size:12px;color:var(--muted);margin-bottom:8px">税込で反映済みの手数料を、税抜に入れ替えます（変更前→変更後）。いったん取り消して反映し直します。PLの数字が変わるので、内容を確認してから実行してください。</div>
+    <div style="overflow-x:auto"><table class="invoice-table" style="font-size:12px"><thead><tr><th>入金元</th><th>店舗</th><th>科目</th><th style="text-align:right">変更前（税込）</th><th style="text-align:right">変更後（税抜）</th><th style="text-align:right">差</th></tr></thead><tbody>
+    ${plan.map(x=>`<tr><td>${esc(x.r.source_name)}</td><td>${esc(x.store.name)}</td><td>${esc(x.g.account)}${x.g.sub?"／"+esc(x.g.sub):""}</td><td style="text-align:right">${yen(x.before)}</td><td style="text-align:right">${yen(x.after)}</td><td style="text-align:right">${yen(x.after-x.before)}</td></tr>`).join("")}
+    <tr style="background:var(--bg-soft,#f7f7f5)"><td colspan="3"><b>合計（${plan.length}件）</b></td><td style="text-align:right"><b>${yen(tb)}</b></td><td style="text-align:right"><b>${yen(ta)}</b></td><td style="text-align:right"><b>${yen(ta-tb)}</b></td></tr></tbody></table></div>
+    ${lines.length?`<div class="err" style="margin-top:6px">${lines.map(esc).join("<br>")}</div>`:""}
+    <div class="mail-actions" style="margin-top:10px"><button class="primary" id="plrRun">この内容で入れ替える</button></div><div class="err" id="plrMsg" style="margin-top:6px"></div></div>`;
+  document.body.appendChild(modal); pushNav({modal:true}); modal.onclick=e=>{ if(e.target===modal) history.back(); }; $("plrClose").onclick=()=>history.back(); done();
+  $("plrRun").onclick=async()=>{
+    if(!confirm(`${plan.length}件の手数料のPLを、税込から税抜に入れ替えます（合計 ${yen(tb)} → ${yen(ta)}）。よろしいですか？`)) return;
+    $("plrRun").disabled=true; const msg=$("plrMsg"); const out=[]; let ok=0;
+    for(let i=0;i<plan.length;i++){
+      const x=plan[i]; msg.className="err"; msg.textContent=`入れ替え中… ${i+1}/${plan.length}`;
+      const un=await plFeeCall("unconfirm",{invoice_id:x.r.linked_invoice_id,reflection_id:x.ex.id});
+      if(!un.ok){ out.push(`${x.store.name}（${x.g.account}）: 取り消しに失敗（${(un.body&&un.body.error)||""}）`); continue; }
+      const cf=await plFeeCall("confirm",{invoice_id:x.r.linked_invoice_id,account_name:x.g.account,sub_account_name:x.g.sub||undefined,year_month:x.ym,allocations:[{store_id:x.store.id,store_name:x.store.name,amount:x.after}]});
+      if(cf.ok){ ok++; if(cf.body&&cf.body.sheet_synced===false) out.push(`${x.store.name}: 記録済み（PLシートへの書き込みエラー: ${(cf.body.sheet_error||"")}）`); }
+      else out.push(`⚠️${x.store.name}（${x.g.account}）: 反映し直しに失敗（${(cf.body&&cf.body.error)||""}）※取り消し済みです。「📊 手数料をPLへ反映」で反映し直してください`);
+    }
+    msg.className=out.length?"err":"err msg-ok"; msg.innerHTML=`入れ替え完了 ${ok}/${plan.length}件。`+(out.length?"<br>"+out.map(esc).join("<br>"):"");
+    $("plrRun").style.display="none";
+  };
 }
 // 2026-10-13追加：売上入金（SMBC・PayPay）の自動仕訳を、登録せずに一括で組んで確認する（給与の「確認だけ」と同じ考え方）。
 async function arjDryRunAll(u){
