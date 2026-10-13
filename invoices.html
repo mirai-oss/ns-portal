@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-13-v81";
+const BUILD_TAG="2026-10-13-v82";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -3278,15 +3278,20 @@ async function arjDryRunAll(u){
 const ARJ_AUTO_RULES={
   "PayPay加盟店":{receivable:"PayPay", salesSub:"PayPay売上", feeAccount:t=>t==="default"?"支払手数料":"カード手数料", feeSub:t=>t==="default"?"PayPay":null},
   "SMBC GMO PAYMENT（カード売上）":{receivable:"ステラカード", salesSub:"カード売上", feeAccount:()=>"カード手数料", feeSub:()=>null},
-  "現金売上":{receivable:"現金売上", salesSub:"現金売上", feeAccount:()=>"カード手数料", feeSub:()=>null},
+  "現金売上":{receivable:"現金売上", receivableByStore:true, salesSub:"現金売上", feeAccount:()=>"カード手数料", feeSub:()=>null},
 };
-function arjSalesAccountName_(tenantId){ return tenantId==="default"?"飲食売上":"売上高"; }
+function arjSalesAccountName_(tenantId){ return "飲食売上"; } // 2026-10-13: N-Styleもトーホーと同じ飲食売上
 function arjSubLabelForDept_(account,dept){
   const norm=x=>String(x||"").normalize("NFKC").replace(/[\s\/]/g,"");
   const names=(ARJ_STATE.subAccountsByAccountName&&ARJ_STATE.subAccountsByAccountName.get(account))||[];
   if(!dept) return null;
   const want=norm(dept.name);
   let sub=names.find(n=>norm(n)===want);
+  if(!sub){ // 「じんべぇ/川崎」⇔「川崎/じんべぇ」のように / の前後が逆の表記も同じ店舗とみなす
+    const key=x=>String(x||"").normalize("NFKC").split("/").map(v=>v.replace(/\s/g,"")).filter(Boolean).sort().join("/");
+    const k=key(dept.name);
+    if(k.includes("/")){ const c=names.filter(n=>key(n)===k); if(c.length===1) sub=c[0]; }
+  }
   if(!sub){
     const code=(String(dept.name).match(/^(\d+)/)||[])[1];
     if(code){ const c=names.filter(n=>/^\d/.test(norm(n))&&norm(n).startsWith(code)); if(c.length===1) sub=c[0]; }
@@ -3302,7 +3307,12 @@ function arjBuildAutoBranches_(prefix,expected,feeParts){
   const taxId=n=>{ const x=(ARJ_STATE.taxes||[]).find(v=>v&&v.name===n); return x?x.id:""; };
   const sales=arjSalesAccountName_(t);
   let arLabel=`売掛金/${rule.receivable}`;
-  const arMissing=!has(arLabel)&&has("売掛金");
+  let arStoreMiss=false;
+  if(rule.receivableByStore){ // 現金売上：借方の売掛金は店舗の補助科目
+    const l=arjSubLabelForDept_("売掛金",dept);
+    if(l) arLabel=l; else { arLabel="売掛金"; arStoreMiss=true; }
+  }
+  const arMissing=!rule.receivableByStore&&!has(arLabel)&&has("売掛金");
   if(arMissing) arLabel="売掛金";
   const feeAcc=rule.feeAccount(t), feeSubFixed=rule.feeSub(t);
   const feeLabelOf=()=>feeSubFixed?`${feeAcc}/${feeSubFixed}`:(arjSubLabelForDept_(feeAcc,dept)||feeAcc);
@@ -3313,6 +3323,7 @@ function arjBuildAutoBranches_(prefix,expected,feeParts){
   if(!has(salesLabel)){ salesLabel=sales; warn.push(`「${sales}」の補助科目「${rule.salesSub}」がMFに見つかりません。補助科目は空欄です（先にMFで作成してください）`); }
   const feeLabel=feeNeeded?feeLabelOf():feeAcc;
   if(feeNeeded&&feeLabel===feeAcc&&!feeSubFixed&&dept&&(ARJ_STATE.subAccountsByAccountName.get(feeAcc)||[]).length) warn.push(`「${feeAcc}」の補助科目に同じ店舗が見つかりません。補助科目は空欄です`);
+  if(arStoreMiss) warn.push(`「売掛金」の補助科目に、部門（${dept?dept.name:"未解決"}）と同じ店舗が見つかりません。借方の補助科目は空欄です`);
   if(arMissing) warn.push(`「売掛金」の補助科目「${rule.receivable}」がMFに見つかりません。補助科目は空欄です（先にMFで作成してください）`);
   ARJ_STATE.creditSubAccountWarning=warn.join("／");
   const dep=dept?dept.id:"";
