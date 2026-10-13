@@ -120,12 +120,15 @@ Deno.serve(async (req: Request) => {
   const bank = inv.auto_ocr ?? {};
   const hasInvBank = !!(bank.bank_account_number);
   if (inv.vendor_id) {
-    const { data: accts } = await db.from("vendor_bank_accounts").select("bank_name, account_number, is_current").eq("vendor_id", inv.vendor_id).eq("is_current", true);
+    // 取引先の登録口座（現在有効＋過去口座）。野村不動産コマースのように、店舗（物件）ごとに別の口座へ請求が来る取引先がある。
+    const { data: accts } = await db.from("vendor_bank_accounts").select("bank_name, account_number, is_current").eq("vendor_id", inv.vendor_id);
     if (!hasInvBank) checks.push({ key: "bank", label: "振込先が登録口座と一致", status: "na", detail: "請求書から振込先を読み取れていません" });
     else if (!accts?.length) checks.push({ key: "bank", label: "振込先が登録口座と一致", status: "warn", detail: "取引先に登録口座がありません（未登録扱い）" });
     else {
-      const same = accts.some((a: any) => digits(a.account_number) === digits(bank.bank_account_number));
-      checks.push({ key: "bank", label: "振込先が登録口座と一致", status: same ? "ok" : "ng", detail: same ? undefined : "請求書の口座が登録口座と異なります（口座変更の疑い）", reason: "bank_changed" });
+      const hit = accts.find((a: any) => digits(a.account_number) === digits(bank.bank_account_number));
+      if (hit && hit.is_current) checks.push({ key: "bank", label: "振込先が登録口座と一致", status: "ok" });
+      else if (hit) checks.push({ key: "bank", label: "振込先が登録口座と一致", status: "warn", detail: "請求書の口座は、この取引先の過去口座（別の店舗用など）と一致しています。現在有効な口座と違うので、振込先を確認してください" });
+      else checks.push({ key: "bank", label: "振込先が登録口座と一致", status: "ng", detail: "請求書の口座が登録口座と異なります（口座変更の疑い）", reason: "bank_changed" });
     }
   }
 
