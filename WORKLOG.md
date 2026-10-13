@@ -214,6 +214,8 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
+**★2026-10-13（担当Dスレッド）`infomart-invoice`の「振込分の本部タスク作成」を一時停止**: ユーザーが「自分が頼んだ機能だが、被っているなら一度止めてOK」と判断。`syncPaymentTask`（支払方法に基づく振込タスク作成・`vendor_payment_settings`への推定登録）を`PAYMENT_TASK_ENABLE=1`のときだけ動くようにし既定を停止（`ns-daily-import`push済み。**Mac miniが`git pull`するまで旧コードのまま**）。コード・SQL(`2026-10-13_vendor_payment_settings.sql`)は残置。検算・取得・結果報告は継続。被りの候補=担当Eの既存「振込－○○」繰り返しタスク（設計書Q2の並行→停止の対象）。再開時はPAYMENT_TASK_ENABLE=1。
+
 **★★2026-10-13（担当Dスレッド）`infomart-invoice`完成を確認・取込口の仕様を担当Cへ共有**: Mac mini側の報告を確認（`ns-daily-import`コミット`2ff08f3`、調査結果=[docs/調査結果_infomart請求書データ出力_2026-10-13.md](docs/調査結果_infomart請求書データ出力_2026-10-13.md)）。2026年9月分で対象10社すべて4段検算OK・月次完了（seedの金額と一致）。金額の正本は「会計データ出力」（MFインポート形式CSV）、PDFは証憑。取込口`invoice-auto-ingest`（担当C）への送信は未実装のため、受け渡しの前提（PDF必須・resolve_store経由・借方取引先で集計・seedの科目ルール優先・Q1=bは差額調整）を担当Cへ送付。**残り**: ①取込口の仕様確定→送信処理の追加 ②取引先別のsiire見込（店舗別取引先ごと）の列構成調査（Q1=bの差額調整用）③プレコフーズの納品書の取得 ④24社への拡張（10社完了後）。※Mac miniセッションは指示外の「支払方法に基づく振込分の本部タスク作成」（`2c3ccd2`・`1529272`。`vendor_payment_settings`のSQL適用待ち・`PAYMENT_TASK_DRY=1`で試走可）も追加している。ユーザー依頼によるものか要確認。
 
 **★2026-10-13（担当Dスレッド）Mac mini向け指示書を発行: `infomart-invoice`の実機調査と実装**: [docs/指示書_MacMini_infomart-invoice実機調査と実装_2026-10-13.md](docs/指示書_MacMini_infomart-invoice実機調査と実装_2026-10-13.md)。ステップ1=「請求書データ出力」「会計データ出力」「納品書一括出力」「取引先別のsiire見込」の実機調査（読み取りのみ）、ステップ2=`ns-daily-import/tasks/infomart-invoice.js`の実装（ドライラン＝ローカル保存・検算4段・CSVとPDFが両方取れた取引先だけ「取込可」・毎日チェックで10社が揃うまで。取込口は担当C未実装のため送信は後段）。Infomartの状態を変えるボタン（集計する・再集計・承認依頼）は押さない旨を明記。**Mac miniセッションでの実施待ち**。
