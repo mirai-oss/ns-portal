@@ -4,6 +4,14 @@
 
 ---
 
+## 2026-10-13 担当C: 担当Fから共有（10社の取引先・店舗コード対応が本番に入った）→ 行ルールを紐づけ
+- 担当F適用済み: store_external_mappings(infomart 01〜08)、vendor_aliases 19件、取引先マスタに10社、vendors.email_domains（空）。
+- 担当C: `vendor_line_rules` 10行・`vendor_invoice_policies` 10行の vendor_id を取引先マスタへ紐づけ済み（名前一致・未紐づけ0）。
+- ★注意（Phase4で必須）: ハブ`stores.store_no`とインフォマートのコードは06と08が逆（インフォマート06=黒霧屋新横浜・08=鶏武者新横浜／ハブは逆）。請求書の店舗コードをstore_noとして扱わず、必ず`resolve_store('infomart', p_code:=…)`を使う。
+- 未決: 「株式会社プレコ」(請求書1件・既存)と「株式会社プレコフーズ」(10社seed)が同一か→ユーザー確認が必要（同一なら別名「プレコ」を付けて統合）。「成瀬商店」はタジマフーズと別の業者。
+
+---
+
 ## 2026-10-13 担当C: 請求書自動処理 Phase1「メール自動分類」実装（SQL適用・デプロイ済み 2026-10-13）
 - `supabase/2026-10-13_invoice_email_auto_category.sql`（適用済み）: invoice_emailsに auto_category/auto_category_by/auto_confidence/auto_category_reason/auto_classified_at、`invoice_mail_rules`（既知送信元・件名・添付有無ルール＋初期13件）、`automation_rule_settings`に email_classify_ai（モデル名=Haiku/Sonnetをparamsで切替・確信度0.7）。
 - `functions/_shared/mail-classify.ts` 新規: ①送信元ルール→②件名/添付ルール→③Haiku→④確信度低のみSonnet→要確認。結果は mail_kind が未分類(NULL)のときだけ mail_kind へ写す（人の手動分類が常に優先・履歴は invoice_audit_logs）。
