@@ -4,6 +4,13 @@
 
 ---
 
+## 2026-10-13 担当A: スポット人件費をSupabase正本化(GASなし)・申請履歴に仕入れ移動の承認/却下
+- 発端: スポット人件費を削除しても消えない。原因=GAS deleteSpotEntryの`sh.deleteRow(i + 2)`が10/5のコミット(89c0ac1)で欠落。→GAS修正ではなく脱GAS(ユーザー指示「GASなしで」)。
+- 正本=Supabase spot_entries(supabase/2026-10-13_spot_entries_master.sql)。RPC spot_entry_save/spot_entry_delete(master/CEO/HQのみ)。トリガでkd_spot_entriesを即時更新、_spot_pl_rebuildで月次PLの『自動｜スポット人件費』(L)をpl_entriesに再計算(source_key=spot:年月:店舗)。履歴=spot_entries_history。
+- 切替: app_secrets.spot_source='entries'(Edge keiei-kd-refreshのbqGetSpotRowsが正本から読む・autoSyncFromStgPlは該当sourceを無視)。app.js v261 SPOT_SUPA_=true。旧10/5の1,000円の行は削除、GAS時代の自動計上行は無効化。GitHub Actions spot-labor-pl-sync.ymlは不要(既に非アクティブ)。
+- 戻す場合: delete from app_secrets where key='spot_source' ＋ app.js SPOT_SUPA_=false（正本に入れた分は戻らないので先に退避）。
+- 申請履歴: 仕入れ移動の承認待ちに『承認してPLへ反映/却下』(App.reqCtDecide・内部はGAS costTransferApprove/Reject＝未脱GAS)。退職申請は従来どおりnippoへのリンク。
+
 ## 2026-10-13 担当C: 売上入金タブに入金元ごとの残りチップ＋仕訳状態フィルタ、自動で組めない理由の表示（v84）
 - ユーザー報告: ロケットナウで自動仕訳されない(旧既定の普通預金/売上高が出た・再読み込み前の旧版の可能性)／入金元(PayPay/カード/ロケットナウ/UberEats)が混在して残りが見づらい。
 - 入金元チップ（未登録件数）・「仕訳の状態」プルダウン(未登録/登録済み)を追加。自動で組めないときは理由とbuildを画面に表示。
