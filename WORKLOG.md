@@ -265,6 +265,8 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
+**★★2026-10-13（担当Dスレッド）担当Cの取込口仕様を受領→Mac mini向け「送信追加」指示書を発行**: 担当Cが`invoice-auto-ingest`を本番デプロイ（version 1）し、仕様書を発行（[仕様_invoice-auto-ingest](docs/仕様_invoice-auto-ingest_インフォマート請求書の取込口_2026-10-13.md)。科目・貸方は取引先ごとの行ルール優先／仕入高のPL反映は差額調整の確定まで行わない）。これを受け、`infomart-invoice`の「取得OK」の取引先だけを取込口へ送る処理の指示書を作成: [docs/指示書_MacMini_infomart-invoice取込口への送信_2026-10-13.md](docs/指示書_MacMini_infomart-invoice取込口への送信_2026-10-13.md)。安全策=送信は`INGEST_ENABLE=1`のときだけ（既定オフ）・`INGEST_DRY=1`で試走・1社(アールエスエス)で本番確認→全社→定期実行へ、各段階でユーザー了承を取る（先の振込タスクの反省）。範囲はMF登録・PL反映・本部タスクを含まない。**Mac miniセッションでの実施待ち**。
+
 **★2026-10-13（担当Dスレッド）自動作成済みの振込タスクを削除（ユーザー承認）**: `infomart-invoice`が一時停止前に作っていた本部タスク「【振込】2026年9月分 インフォマート請求書の支払」（id=0f18bbf2…・工程9・完了0）を、ユーザーの「消して」の指示でソフトデリート（`hq_tasks.deleted_at`を設定・工程は残置・完了工程が無いことを条件に実行）。画面に出るインフォマート振込タスクは0件。支払方法の推定設定10社（`vendor_payment_settings`・全社`inferred`＝振込）は残置（無害）。担当Eの既存「振込－○○」との整理後に再開判断（`PAYMENT_TASK_ENABLE=1`）。戻す場合は`update hq_tasks set deleted_at=null where id='0f18bbf2-3ee5-4ced-bb1a-1fe829dd683f'`。
 
 **★2026-10-13（担当Dスレッド）`infomart-invoice`の「振込分の本部タスク作成」を一時停止**: ユーザーが「自分が頼んだ機能だが、被っているなら一度止めてOK」と判断。`syncPaymentTask`（支払方法に基づく振込タスク作成・`vendor_payment_settings`への推定登録）を`PAYMENT_TASK_ENABLE=1`のときだけ動くようにし既定を停止（`ns-daily-import`push済み。**Mac miniが`git pull`するまで旧コードのまま**）。コード・SQL(`2026-10-13_vendor_payment_settings.sql`)は残置。検算・取得・結果報告は継続。被りの候補=担当Eの既存「振込－○○」繰り返しタスク（設計書Q2の並行→停止の対象）。再開時はPAYMENT_TASK_ENABLE=1。
