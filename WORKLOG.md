@@ -4,6 +4,15 @@
 
 ---
 
+## 2026-10-13 担当C: 請求書自動処理 Phase1「メール自動分類」実装（**SQL適用・Edge Functionデプロイ待ち**）
+- `supabase/2026-10-13_invoice_email_auto_category.sql`（未適用）: invoice_emailsに auto_category/auto_category_by/auto_confidence/auto_category_reason/auto_classified_at、`invoice_mail_rules`（既知送信元・件名・添付有無ルール＋初期13件）、`automation_rule_settings`に email_classify_ai（モデル名=Haiku/Sonnetをparamsで切替・確信度0.7）。
+- `functions/_shared/mail-classify.ts` 新規: ①送信元ルール→②件名/添付ルール→③Haiku→④確信度低のみSonnet→要確認。結果は mail_kind が未分類(NULL)のときだけ mail_kind へ写す（人の手動分類が常に優先・履歴は invoice_audit_logs）。
+- `functions/invoice-intake/index.ts`: 新着メールを取込直後に分類（失敗しても取込は成功）＋ `{action:"classify_existing"}`（既存メールの後追い分類。auto_category系の列だけ書き、mail_kindは書き換えない＝検証用）。
+- ルール判定はNodeで確認済み。AI分類・DB書込は未デプロイのため未検証。既存メール(1386通)の mail_kind は変更しない。
+- 次: SQL適用→デプロイ→classify_existingで少数を分類して精度確認→ユーザー実機確認→Phase2（invoice自動生成）。
+
+---
+
 ## 2026-10-13 担当C: 担当Dからの共有（Phase8のPL反映「仕入高」の扱い・**司令塔の最終確認待ち**）
 - ユーザーが「確定月は請求書で置き換え」(Q1=b)と決定。PL原価はsiire(店舗合計)＋手入力の合計のため、請求書の仕入高を全額PL反映すると二重計上。→ 「10社分のsiire見込」と「請求書の確定額」の**差額だけ**を仕入高(F)の調整行としてpl-fee-reflectに乗せる案(プラスもマイナスもあり)。取引先×店舗×月で再計算して置換、取消は既存unconfirm。店舗×取引先別のsiire見込(月合計)は担当Dが供給。詳細: docs/報告_担当D_インフォマート請求書PDF自動取得案_2026-10-13.md §2-1。
 - 担当Cの対応: Phase8（承認時PL反映）に入れる際はこの差額方式を前提にする。方針確定までは実装しない（情報のみ受領）。

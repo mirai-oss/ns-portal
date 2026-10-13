@@ -16,6 +16,7 @@
 //     subject?, received_at?(ISO8601), body_text?, body_html?,
 //     attachments?: [{ file_name, mime_type?, size_bytes?, base64 }] }
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { classifyMail, saveClassification } from "../_shared/mail-classify.ts";
 
 const cors: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -69,6 +70,24 @@ Deno.serve(async (req: Request) => {
   if (secretErr) return json({ error: "シークレット確認に失敗しました: " + secretErr.message }, 500);
   if (!secretRow?.value || body?.secret !== secretRow.value) {
     return json({ error: "認証エラー" }, 401);
+  }
+
+  // 2026-10-13 Phase1: 既存メールの自動分類（後追い・検証用）。auto_category が未設定のメールだけを対象にし、
+  // 記録するのは auto_category 系の列のみ（mail_kind は書き換えない＝人の分類・既存の仕分けに影響しない）
+  if (body?.action === "classify_existing") {
+    const limit = Math.min(Number(body.limit) || 20, 100);
+    const { data: mails, error: mErr } = await db.from("invoice_emails")
+      .select("id, from_address, subject, body_text").is("auto_category", null)
+      .order("received_at", { ascending: false }).limit(limit);
+    if (mErr) return json({ error: "取得に失敗しました: " + mErr.message }, 500);
+    const out: any[] = [];
+    for (const m of mails ?? []) {
+      const { data: atts } = await db.from("invoice_attachments").select("file_name, mime_type").eq("email_id", m.id);
+      const r = await classifyMail(db, { from_address: m.from_address, subject: m.subject, body_text: m.body_text, attachments: atts ?? [] });
+      await saveClassification(db, m.id as string, r, false);
+      out.push({ id: m.id, subject: String(m.subject ?? "").slice(0, 40), category: r.category, by: r.by, confidence: r.confidence });
+    }
+    return json({ success: true, classified: out.length, results: out });
   }
 
   const gmailMessageId: string = body.gmail_message_id;
@@ -162,13 +181,26 @@ Deno.serve(async (req: Request) => {
     await db.from("invoice_emails").update({ duplicate_suspected: true }).eq("id", emailId);
   }
 
+  // 2026-10-13 Phase1: 取込直後にメールを自動分類（失敗しても取込自体は成功させる）。mail_kind は未分類のときだけ写す
+  let autoCategory: string | null = null;
+  try {
+    const r = await classifyMail(db, {
+      from_address: body.from_address, subject: body.subject, body_text: body.body_text,
+      attachments: attachments.filter((a) => a?.file_name).map((a) => ({ file_name: a.file_name, mime_type: a.mime_type })),
+    });
+    await saveClassification(db, emailId, r, true);
+    autoCategory = r.category;
+  } catch (e) {
+    console.error("自動分類エラー: " + e);
+  }
+
   await db.from("invoice_audit_logs").insert({
     entity_type: "invoice_email", entity_id: emailId, action: "intake", actor_type: "human",
-    new_value: { attachments: savedCount, duplicate_suspected: duplicateSuspected, attachments_failed: failed },
+    new_value: { attachments: savedCount, duplicate_suspected: duplicateSuspected, attachments_failed: failed, auto_category: autoCategory },
     note: failed.length ? "添付の一部が保存できませんでした: " + failed.map((f) => f.file_name + "(" + f.reason + ")").join(", ") : null,
   });
 
-  return json({ success: true, email_id: emailId, attachments_saved: savedCount, duplicate_suspected: duplicateSuspected, attachments_failed: failed });
+  return json({ success: true, email_id: emailId, attachments_saved: savedCount, duplicate_suspected: duplicateSuspected, attachments_failed: failed, auto_category: autoCategory });
 });
 
 async function saveAttachments(db: ReturnType<typeof createClient>, emailId: string, attachments: any[]) {
