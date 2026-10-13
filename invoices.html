@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-13-v94";
+const BUILD_TAG="2026-10-13-v95";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -5773,6 +5773,34 @@ function wireDetailActions(u){
       if(rows.length){ ADCOST_STATE.rows=rows; ADCOST_STATE.source="mf_department"; return; }
     }
     // b) 前月・同媒体で反映済みの請求書があれば、その店舗比率で今回の金額を按分する
+    // 2026-10-13追加（ユーザー報告「広告費として反映の内訳が全然違う」）: 自動で読み取った請求書の明細（invoice_lines）に
+    // 店舗別の金額があれば、それを最優先で使う（前月の比率による按分より正確）。税込＝税抜＋税(切捨て)で、請求額との端数差は最大の行で調整。
+    // 店舗が未確定の明細は合計して「店舗を選択」の1行にする（店舗を確定すると次回から自動で入る）
+    try{
+      const [lr,lcr]=await Promise.all([
+        authed(`/rest/v1/invoice_lines?invoice_id=eq.${invoice.id}&select=amount,tax_rate,resolved_store_id&order=line_no`),
+        authed(`/rest/v1/invoices?id=eq.${invoice.id}&select=lines_check`),
+      ]);
+      const ls=(lr.ok&&Array.isArray(lr.body))?lr.body:[];
+      const lcheck=(lcr.ok&&Array.isArray(lcr.body)&&lcr.body[0]&&lcr.body[0].lines_check)||{};
+      if(ls.length&&ls.some(l=>l.amount!=null)){
+        const incl=!!lcheck.line_amounts_include_tax;
+        const byStore=new Map(); let unresolved=0;
+        for(const l of ls){
+          const net=Number(l.amount)||0; const gross=incl?net:net+Math.floor(net*(Number(l.tax_rate)||0)/100);
+          if(!l.resolved_store_id){ unresolved+=gross; continue; }
+          byStore.set(l.resolved_store_id,(byStore.get(l.resolved_store_id)||0)+gross);
+        }
+        const rows=[...byStore.entries()].map(([sid,amt])=>{ const st=ADCOST_STATE.stores.find(x=>x.id===sid); return {store_id:sid,store_name:st?st.name:"",amount:amt}; });
+        if(rows.length){
+          const diff=total-(rows.reduce((t,x)=>t+x.amount,0)+unresolved);
+          if(diff!==0&&Math.abs(diff)<=5){ const big=rows.reduce((a,b)=>b.amount>a.amount?b:a); big.amount+=diff; }
+          if(unresolved>0) rows.push({store_id:"",store_name:"",amount:unresolved});
+          ADCOST_STATE.rows=rows; ADCOST_STATE.source="invoice_lines";
+          return;
+        }
+      }
+    }catch(e){ /* 明細が使えなければ従来の推定へ */ }
     if(ADCOST_STATE.media){
       const cur=new Date(ADCOST_STATE.yearMonth);
       const prev=new Date(cur.getFullYear(),cur.getMonth()-1,1);
@@ -5799,6 +5827,7 @@ function wireDetailActions(u){
   function adcostSourceLabel(){
     return {
       mf_department:"📊 今組んでいる仕訳（🧾仕訳を作成）の部門（店舗）別金額から自動で割り振りました。",
+      invoice_lines:"📊 請求書の明細（AIが読み取った店舗別の金額）から割り振りました。店舗が未確定の明細は、最後の「店舗を選択」の行にまとめています。",
       prev_month_ratio:"📊 店舗別の内訳が請求書に無かったため、前月の同媒体の店舗比率から按分しています。",
       manual:"📊 参考にできる情報が無かったため、店舗を選んで金額を入力してください。",
     }[ADCOST_STATE.source]||"";
