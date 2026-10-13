@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-13-v93";
+const BUILD_TAG="2026-10-13-v94";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -12390,6 +12390,7 @@ const SETTINGS_SUBTABS=[
   ["payrollBank","👥 従業員振込口座"],
   ["automation","🤖 自動処理ルール"],
   ["exclusion","🚫 メール除外設定"],
+  ["vendorPay","💴 支払方法（振込/引き落とし）"],
 ];
 // 2026-09-11更新：会計・請求ワークスペースUI刷新Step8。指示書§9-14「設定は定期請求・入金
 // マスタ/取引先マスタ/仕訳辞書/勘定科目・店舗・法人・PLマッピング/自動化レベル/自動取込
@@ -12400,7 +12401,7 @@ const SETTINGS_SUBTABS=[
 // 会計向けグループへ寄せず、取引先・店舗マッピング（口座情報という点で近い）に含めている
 const SETTINGS_GROUPS=[
   ["recurring","📅 定期請求・入金マスタ",["recurring"]],
-  ["vendorsMapping","🏢 取引先・店舗マッピング",["vendors","mapping","payrollBank"]],
+  ["vendorsMapping","🏢 取引先・店舗マッピング",["vendors","vendorPay","mapping","payrollBank"]],
   ["journalPl","📗 仕訳・勘定科目・PL",["journalRules","accounts","pl"]],
   ["automationRules","🤖 自動化・ルール",["automation","exclusion"]],
 ];
@@ -12429,12 +12430,91 @@ async function renderSettingsTab(u,subTab){
   if(SETTINGS_TAB==="recurring") await renderSettingsRecurringMaster();
   else if(SETTINGS_TAB==="journalRules") await renderSettingsJournalRules();
   else if(SETTINGS_TAB==="vendors") await renderSettingsVendors();
+  else if(SETTINGS_TAB==="vendorPay") await renderSettingsVendorPay();
   else if(SETTINGS_TAB==="accounts") await renderSettingsAccounts();
   else if(SETTINGS_TAB==="mapping") await renderSettingsMapping();
   else if(SETTINGS_TAB==="pl") await renderSettingsPl();
   else if(SETTINGS_TAB==="payrollBank") await renderSettingsPayrollBank();
   else if(SETTINGS_TAB==="automation") await renderSettingsAutomation();
   else if(SETTINGS_TAB==="exclusion") await renderSettingsExclusion(u);
+}
+// 2026-10-13新設（ユーザー要望）：取引先ごとの「支払方法（振込／引き落とし／現金）」を1回登録して自動で使い、
+// 変わった月だけ「この月だけ」変更できるようにする。振込の取引先だけが本部タスク（どの業者にいくら振込）に載る
+// （ns-daily-import/tasks/infomart-invoice.js が毎回この登録を読んでタスクを作る）。
+// テーブル: vendor_payment_settings（通常）・vendor_payment_overrides（取引先×年月の一時変更）。
+// SQL: supabase/2026-10-13_vendor_payment_settings.sql（適用前は未作成の案内を出す）。
+const VP_METHODS=[["bank_transfer","振込"],["direct_debit","引き落とし"],["cash","現金"]];
+let VP_STATE={ym:null,showAll:false,q:""};
+function vpDefaultYm(){ const d=new Date(); d.setDate(1); d.setMonth(d.getMonth()-1); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`; }
+async function renderSettingsVendorPay(){
+  if(!VP_STATE.ym) VP_STATE.ym=vpDefaultYm();
+  $("settingsBody").innerHTML=`<div class="spin">読み込み中…</div>`;
+  const [vR,sR,oR,aR]=await Promise.all([
+    authed(`/rest/v1/vendors?is_active=eq.true&select=id,name&order=name&limit=1000`),
+    authed(`/rest/v1/vendor_payment_settings?select=*`),
+    authed(`/rest/v1/vendor_payment_overrides?year_month=eq.${VP_STATE.ym}&select=*`),
+    authed(`/rest/v1/vendor_aliases?source=eq.seed_infomart_2026-10-11&is_active=eq.true&select=vendor_id`),
+  ]);
+  if(!sR.ok||!Array.isArray(sR.body)){
+    $("settingsBody").innerHTML=`<div class="card" style="padding:16px"><h3 style="font-size:14px">💴 支払方法（振込／引き落とし）</h3>
+      <div class="meta" style="color:var(--muted);font-size:12px;margin-top:8px">登録用のテーブルがまだ作成されていません（SQL未適用）。<code>supabase/2026-10-13_vendor_payment_settings.sql</code> を適用すると使えるようになります。</div></div>`;
+    return;
+  }
+  const vendors=(vR.ok&&Array.isArray(vR.body))?vR.body:[];
+  const settings=new Map(sR.body.map(x=>[x.vendor_id,x]));
+  const overrides=new Map((oR.ok&&Array.isArray(oR.body)?oR.body:[]).map(x=>[x.vendor_id,x]));
+  const infomart=new Set((aR.ok&&Array.isArray(aR.body)?aR.body:[]).map(x=>x.vendor_id));
+  const q=(VP_STATE.q||"").trim().toLowerCase();
+  const rows=vendors.filter(v=>(VP_STATE.showAll||infomart.has(v.id)||settings.has(v.id))&&(!q||v.name.toLowerCase().includes(q)));
+  const lab=Object.fromEntries(VP_METHODS);
+  const inferredCount=[...settings.values()].filter(x=>x.source==="inferred").length;
+  const methodSel=(cls,vid,cur,withNone)=>`<select class="${cls}" data-v="${esc(vid)}">${withNone?`<option value="">${withNone}</option>`:""}${VP_METHODS.map(([k,l])=>`<option value="${k}" ${cur===k?"selected":""}>${l}</option>`).join("")}</select>`;
+  $("settingsBody").innerHTML=`
+    <div class="card" style="padding:16px;margin-bottom:14px">
+      <h3 style="font-size:14px;margin-bottom:6px">💴 取引先の支払方法（振込／引き落とし／現金）</h3>
+      <div class="meta" style="color:var(--muted);font-size:12px;margin-bottom:10px">取引先ごとに<b>通常の支払方法を1回登録</b>しておくと、毎月それが自動で使われます。変わった月だけ「この月だけ」で変更できます（翌月は通常に戻ります）。<b>振込の取引先だけ</b>が本部タスク（どの業者にいくら振込）に載ります。登録元「推定」は請求書の内容（取引先の振込口座の記載の有無）から自動で入れたもので、確認して合っていれば触らなくて構いません（変更すると「手動」になります）。</div>
+      <div class="ctrl-row" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px">
+        <label style="font-size:12px">「この月だけ」の対象月 <input type="month" id="vp-ym" value="${esc(VP_STATE.ym)}"></label>
+        <input id="vp-q" placeholder="取引先名で絞り込み" value="${esc(VP_STATE.q||"")}" style="min-width:180px">
+        <label style="font-size:12px"><input type="checkbox" id="vp-all" ${VP_STATE.showAll?"checked":""}> すべての取引先を表示（既定はインフォマート対象＋登録済み）</label>
+        ${inferredCount?`<button class="hq-btn primary" id="vp-confirm-all" style="padding:6px 12px">推定の${inferredCount}社をすべて確認済みにする</button>`:""}
+      </div>
+      <table class="tbl" style="width:100%;font-size:12px">
+        <thead><tr><th>取引先</th><th>通常の支払方法</th><th>登録元</th><th>この月だけ（${esc(VP_STATE.ym)}）</th></tr></thead>
+        <tbody>${rows.length?rows.map(v=>{ const st=settings.get(v.id), ov=overrides.get(v.id); return `<tr>
+          <td>${esc(v.name)}${infomart.has(v.id)?' <span class="badge" style="font-size:10px">インフォマート</span>':""}</td>
+          <td>${methodSel("vp-set",v.id,st?st.payment_method:"","未登録")}</td>
+          <td>${st?(st.source==="inferred"?'<span style="color:#9a5b12">推定（要確認）</span>':"手動"):"—"}</td>
+          <td>${methodSel("vp-ov",v.id,ov?ov.payment_method:"","通常どおり")}${ov?`<span class="meta" style="color:#9a5b12;font-size:11px"> ← ${esc(lab[ov.payment_method]||"")}に変更中</span>`:""}</td>
+        </tr>`; }).join(""):`<tr><td colspan="4" class="meta">該当する取引先がありません</td></tr>`}</tbody>
+      </table>
+    </div>`;
+  $("vp-ym").onchange=e=>{ VP_STATE.ym=e.target.value||vpDefaultYm(); renderSettingsVendorPay(); };
+  $("vp-all").onchange=e=>{ VP_STATE.showAll=e.target.checked; renderSettingsVendorPay(); };
+  $("vp-q").onchange=e=>{ VP_STATE.q=e.target.value; renderSettingsVendorPay(); };
+  const cb=$("vp-confirm-all");
+  if(cb) cb.onclick=async()=>{
+    if(!confirm(`推定のまま残っている${inferredCount}社の支払方法を、いまの内容のまま「確認済み（手動）」にします。よろしいですか？\n（振込の取引先は、次回の取込から本部タスクに載ります）`)) return;
+    const r=await authed(`/rest/v1/vendor_payment_settings?source=eq.inferred`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({source:"manual"})});
+    if(!r.ok) alert(`保存に失敗しました（${r.status}）`);
+    renderSettingsVendorPay();
+  };
+  document.querySelectorAll(".vp-set").forEach(sel=>sel.onchange=async()=>{
+    const vid=sel.dataset.v, val=sel.value;
+    const r=val
+      ? await authed(`/rest/v1/vendor_payment_settings?on_conflict=vendor_id`,{method:"POST",headers:{Prefer:"resolution=merge-duplicates,return=minimal"},body:JSON.stringify({vendor_id:vid,payment_method:val,source:"manual"})})
+      : await authed(`/rest/v1/vendor_payment_settings?vendor_id=eq.${vid}`,{method:"DELETE"});
+    if(!r.ok){ alert(`保存に失敗しました（${r.status}）`); }
+    renderSettingsVendorPay();
+  });
+  document.querySelectorAll(".vp-ov").forEach(sel=>sel.onchange=async()=>{
+    const vid=sel.dataset.v, val=sel.value;
+    const r=val
+      ? await authed(`/rest/v1/vendor_payment_overrides?on_conflict=vendor_id,year_month`,{method:"POST",headers:{Prefer:"resolution=merge-duplicates,return=minimal"},body:JSON.stringify({vendor_id:vid,year_month:VP_STATE.ym,payment_method:val})})
+      : await authed(`/rest/v1/vendor_payment_overrides?vendor_id=eq.${vid}&year_month=eq.${VP_STATE.ym}`,{method:"DELETE"});
+    if(!r.ok){ alert(`保存に失敗しました（${r.status}）`); }
+    renderSettingsVendorPay();
+  });
 }
 // 2026-09-11新設：会計・請求ワークスペースUI刷新Step8。指示書§9-11/9-14「定期請求・入金
 // マスタ：取引先・入金元/種別/頻度/通常取得日/取得方法/自動化レベル/担当」に対応する管理画面。
