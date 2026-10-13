@@ -4,6 +4,13 @@
 
 ---
 
+## 2026-10-13 担当C: 精算書の税率(デリバリー売上=8%)と、同じ業者の8%/10%仕入を精算書へ両方反映（v90・Edge Functionデプロイ済み）
+- `pl-fee-reflect`: ①seisan_confirm_receivable の売上行=ロケットナウ/Uber Eatsは8%（手数料10%）②seisan_confirm が行ごとの税率(a.tax_rate)を受け、重複判定キーに税率を追加（従来は同一請求書・同一科目・同一店舗で税率違いが上書きされ1行になった）③statusがtax_rate/item_nameも返す。本番=リポジトリを再ダウンロードで確認。
+- invoices.html: PL反映パネルで仕訳の借方の税区分から税率を判定して行を分け、精算書の行ごとに税率を選択可。精算書登録済みの行は税率単位で候補から除外。
+- 過去月・振込済みの精算書には触れていない（既存行の書換え・バックフィルなし。振込済み月はGAS側のロックで更新不可）。別invoice_idの請求書は元々別sourceKey。
+
+---
+
 ## 2026-10-13 担当A: スポット人件費をSupabase正本化(GASなし)・申請履歴に仕入れ移動の承認/却下
 - 発端: スポット人件費を削除しても消えない。原因=GAS deleteSpotEntryの`sh.deleteRow(i + 2)`が10/5のコミット(89c0ac1)で欠落。→GAS修正ではなく脱GAS(ユーザー指示「GASなしで」)。
 - 正本=Supabase spot_entries(supabase/2026-10-13_spot_entries_master.sql)。RPC spot_entry_save/spot_entry_delete(master/CEO/HQのみ)。トリガでkd_spot_entriesを即時更新、_spot_pl_rebuildで月次PLの『自動｜スポット人件費』(L)をpl_entriesに再計算(source_key=spot:年月:店舗)。履歴=spot_entries_history。
