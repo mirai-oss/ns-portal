@@ -4,6 +4,12 @@
 
 ---
 
+## 2026-10-13 担当A: 店舗間の仕入れ移動もSupabaseに統一(GAS/DB_PLなし)・PLは『店舗間移動』1行に合算
+- RPC cost_transfer_add/cancel/list/pending_list/approve/reject(supabase/2026-10-13_cost_transfer_supabase.sql)。移動の行は正本pl_entriesに直接書く(source='店舗間移動'・memo『店舗間移動:<id>:<日付>』・F区分・source_key xfer:<id>:out|in)。承認は申請の状態更新と同一トランザクション。app.js v265 CT_SUPA_=true。
+- Edge keiei-kd-refresh autoSyncFromStgPlは source='店舗間移動'(と自動｜スポット人件費)を無視(Supabaseが正本・stg_plの古い行で消さない)。
+- 補助科目混入の原因はDB_PL G列に別連携の『名前　外部連携:ID』が入っていたこと(GAS側の根本原因は未特定)。pl_entriesの該当行はsub_itemを空に修正済み。PL画面は『店舗間移動』1行に合算表示。
+- 9月の移動(本店→芝 参鶏湯114個 101,460円)は復旧登録(手入力扱い)。
+
 ## 2026-10-13 担当C: 売上入金の全自動仕訳（v79〜v89のまとめ）
 - 仕訳辞書を使わず、入金元ごとの科目ルール(`ARJ_AUTO_RULES`)＋店舗の部門・補助科目で仕訳を自動組み立て。対象: PayPay加盟店／SMBC GMO PAYMENT／現金売上／ロケットナウ／Uber Eats(名前に"uber")。貸方=飲食売上/PayPay売上・カード売上・現金売上、デリバリー売上/ロケットなう・Uber Eats(税区分=軽減8%)。借方=売掛金/PayPay・ステラカード・現金売上は店舗補助・ロケットなう・Uber Eats。手数料行=PayPay(トーホー:支払手数料/PayPay、N-Style:カード手数料/店舗)・SMBC(カード手数料2行)・ロケットなう/Uber Eats(支払手数料/各名)。0円の行は作らない。
 - 売上入金タブ: 「🔬自動仕訳を一括確認」(登録なし)→✅の行を「🧾まとめてMFに登録」(二重登録防止の先行確保付き)、入金元チップ(未登録件数)、仕訳の状態フィルタ、「📊手数料をPLへ反映」(手数料のみ店舗PLへ自動反映。登録直後にも自動。未登録のPL連携対象科目は承認後に登録)。

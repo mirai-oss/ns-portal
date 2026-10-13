@@ -606,15 +606,15 @@ async function autoSyncFromStgPl(sb: any, dry = false): Promise<any> {
     for (let r = 1; r < raw.length; r++) {
       const row = raw[r] ?? [];
       const memo = String(row[5] ?? "").trim(); const source = plAutoSourceOf(memo);
-      if (!source || source === "自動｜スポット人件費") continue;   // スポット人件費はSupabase正本(spot_entries)から作る（2026-10-13）
+      if (!source || source === "自動｜スポット人件費" || source === "店舗間移動") continue;   // 店舗間移動もSupabaseが正本（cost_transfer_*・2026-10-13）   // スポット人件費はSupabase正本(spot_entries)から作る（2026-10-13）
       const ym = ymOf(row[0]); if (!ym) { badYm++; continue; }
       const nm = String(row[1] ?? "").trim(); let sid: string | null = null;
       if (nm) { const hit = lookupStore(maps, nm); if (!hit) { unresolved.add(nm); continue; } sid = hit.store_id; }
       const item = String(row[2] ?? "").trim() || "(未分類)";
-      rows.push({ year_month: ym, store_id: sid, item, category: plCatForEntries(row[3], item), amount: num(row[4]), memo, sub_item: String(row[6] ?? ""), source });
+      rows.push({ year_month: ym, store_id: sid, item, category: plCatForEntries(row[3], item), amount: num(row[4]), memo, sub_item: source === "店舗間移動" ? "" : String(row[6] ?? ""), source });   // 店舗間移動は補助科目を持たない（シートのG列に別連携の「名前　外部連携:ID」が混入していたため無視する・2026-10-13）
     }
     const old = await fetchAll((f, t) => sb.from("pl_entries").select("id,year_month,store_id,item,category,amount,memo,sub_item,source")
-      .is("deleted_at", null).neq("source", "手入力").neq("source", "自動｜スポット人件費").order("id").range(f, t));
+      .is("deleted_at", null).neq("source", "手入力").neq("source", "自動｜スポット人件費").neq("source", "店舗間移動").order("id").range(f, t));
     if (old.length >= 20 && rows.length < old.length * 0.5) throw new Error(`自動行が${rows.length}件（既存${old.length}件の半分未満）のため中止（部分応答の疑い）`);
     const sig = (x: any) => [x.store_id ?? "", x.item, x.category, Number(x.amount), x.memo, x.sub_item ?? ""].join("\u0001");
     const group = (list: any[]) => { const m = new Map<string, string[]>(); for (const x of list) { const k = `${x.source}\u0002${x.year_month}`; (m.get(k) ?? m.set(k, []).get(k)!).push(sig(x)); } for (const v of m.values()) v.sort(); return m; };
