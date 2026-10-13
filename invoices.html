@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-13-v88";
+const BUILD_TAG="2026-10-13-v89";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -3433,8 +3433,8 @@ async function arjBulkRegister(u,items){
 const ARJ_AUTO_RULES={
   "PayPay加盟店":{receivable:"PayPay", salesSub:"PayPay売上", feeAccount:t=>t==="default"?"支払手数料":"カード手数料", feeSub:t=>t==="default"?"PayPay":null},
   "SMBC GMO PAYMENT（カード売上）":{receivable:"ステラカード", salesSub:"カード売上", feeAccount:()=>"カード手数料", feeSub:()=>null},
-  "ロケットナウ":{receivable:"ロケットなう", salesAccount:"デリバリー売上", salesSub:"ロケットなう", feeAccount:()=>"支払手数料", feeSub:()=>"ロケットなう"},
-  "Uber Eats":{receivable:"Uber Eats", salesAccount:"デリバリー売上", salesSub:"Uber Eats", feeAccount:()=>"支払手数料", feeSub:()=>"Uber Eats"},
+  "ロケットナウ":{receivable:"ロケットなう", salesAccount:"デリバリー売上", reducedTax:true, salesSub:"ロケットなう", feeAccount:()=>"支払手数料", feeSub:()=>"ロケットなう"},
+  "Uber Eats":{receivable:"Uber Eats", salesAccount:"デリバリー売上", reducedTax:true, salesSub:"Uber Eats", feeAccount:()=>"支払手数料", feeSub:()=>"Uber Eats"},
   "現金売上":{receivable:"現金売上", receivableByStore:true, salesSub:"現金売上", feeAccount:()=>"カード手数料", feeSub:()=>null},
 };
 function arjRuleFor_(source){ const k=String(source||""); return ARJ_AUTO_RULES[k]||(/uber/i.test(k)?ARJ_AUTO_RULES["Uber Eats"]:null); }
@@ -3489,9 +3489,16 @@ function arjBuildAutoBranches_(prefix,expected,feeParts){
   if(arMissing) warn.push(`「売掛金」の補助科目「${rule.receivable}」がMFに見つかりません。補助科目は空欄です（先にMFで作成してください）`);
   ARJ_STATE.creditSubAccountWarning=warn.join("／");
   const dep=dept?dept.id:"";
+  // デリバリー売上は軽減税率8%（MFの税区分名は「課税売上 8%（軽減）」等。軽減を優先して探す）
+  let salesTaxId=taxId("課税売上 10%");
+  if(rule.reducedTax){
+    const tx=(ARJ_STATE.taxes||[]).filter(v=>v&&/課税売上/.test(v.name)&&/8\s*%/.test(v.name));
+    const pick=tx.find(v=>/軽減/.test(v.name))||tx[0];
+    if(pick) salesTaxId=pick.id; else { salesTaxId=""; warn.push("軽減税率8%の売上の税区分がMFに見つかりません。税区分は空欄です"); ARJ_STATE.creditSubAccountWarning=warn.join("／"); }
+  }
   const feeTotal=feeParts.reduce((s,v)=>s+(Number(v)||0),0);
   const out=[{debitLabel:arLabel,debitAmount:expected||"",creditLabel:salesLabel,creditAmount:(expected+feeTotal)||"",
-    department_id:dep,tax_id:"",credit_department_id:dep,credit_tax_id:taxId("課税売上 10%"),remark:prefix?`${prefix}　売上`:""}];
+    department_id:dep,tax_id:"",credit_department_id:dep,credit_tax_id:salesTaxId,remark:prefix?`${prefix}　売上`:""}];
   feeParts.forEach((f,i)=>{
     if(!(Number(f)>0)) return; // 0円の手数料行は作らない
     const split=feeParts.length>1;
