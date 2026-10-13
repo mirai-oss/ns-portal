@@ -12,11 +12,12 @@
 
 ---
 
-## 2026-10-13 担当C: 請求書自動処理 Phase6「検算・異常判定・処理の段階」実装（**SQL適用・Edge Functionデプロイ待ち**・画面はv94で公開）
-- `supabase/2026-10-13_invoice_stage_checks.sql`（未適用）: invoicesに current_stage(received→parsed→mapping→journal_draft→ready_for_approval→approved→payment_waiting→paid→completed/error)・blocked_reason・stage_updated_at・checks(jsonb)・auto_mode(auto/manual)・manual_reason/by/at、`invoice_switch_to_manual(請求書, 理由必須)`、automation_rule_settings `invoice_exception_tasks`(既定OFF)。既存請求書は変更なし。
+## 2026-10-13 担当C: 請求書自動処理 Phase6「検算・異常判定・処理の段階」実装（SQL適用・デプロイ済み 2026-10-13・画面v94）
+- `supabase/2026-10-13_invoice_stage_checks.sql`（適用済み）: invoicesに current_stage(received→parsed→mapping→journal_draft→ready_for_approval→approved→payment_waiting→paid→completed/error)・blocked_reason・stage_updated_at・checks(jsonb)・auto_mode(auto/manual)・manual_reason/by/at、`invoice_switch_to_manual(請求書, 理由必須)`、automation_rule_settings `invoice_exception_tasks`(既定OFF)。既存請求書は変更なし。
 - `functions/invoice-check`（新規・secretまたはJWT）: 判定=①明細合計＝請求合計(±1円)②税の整合③取引先・法人・店舗の未解決ゼロ④仕訳下書き要確認なし⑤重複(既存疑い・同請求番号・同金額×期限・定期取引先の月1枚=2枚目)⑥前回比±30%(警告)⑦振込先と登録口座の一致(登録口座なし=未登録で警告・不一致=口座変更でNG・請求書に口座なし=対象外)⑧ルート振り分け(業務委託精算対象店舗=精算書／他=PL。黒霧屋新横浜は運営法人と請求書法人が同じならPL)。段階と止まっている理由を更新。人のロック(auto_mode=manual)・approved以降は書かない。例外タスクは設定ONのときだけ hq_create_exception_task(べき等・理由別)／解消で hq_resolve_exception_task。
 - `invoice-journal-draft`: 下書き作成後に invoice-check を非同期起動。
 - 画面(v94): 請求書詳細の仕訳下書きパネルに 処理の段階・「🤖自動処理中」バッジ・検算・判定一覧・止まっている理由・「✋手動に切り替え」(理由必須)。自動処理中は手動の「🧾仕訳を作成」ボタンを無効化（二重処理防止・§10）。
+- 実機確認: 3下書き→カカクコム(1店舗)=仕訳下書き要確認(ルール無し)で止まる／食べログ(複数店舗)=店舗3行未確定でmapping／CureNext=店舗未確定でmapping（理由表示OK）。染谷商店9月分テスト請求書(確認後削除)=全判定OK→ready_for_approval(承認待ち)・反映先=全てPL。例外タスクは既定OFFのまま。
 - 未対応: 承認待ちタブ・承認ボタン(Phase7/8)。受入条件「同じ請求書を2入口から入れても1件」はPhase2の業務キーで実装済み。
 
 ---

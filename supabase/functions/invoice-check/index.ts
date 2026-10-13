@@ -72,7 +72,7 @@ Deno.serve(async (req: Request) => {
   checks.push({ key: "stores", label: "明細の店舗が全て確定", status: !lines?.length ? "na" : unresolvedLines ? "ng" : "ok", detail: unresolvedLines ? `${unresolvedLines}行が未確定` : undefined, reason: "store_unresolved" });
 
   // ④ 仕訳の下書き
-  checks.push({ key: "journal_draft", label: "仕訳の下書き（要確認なし）", status: !draft ? "na" : draft.status === "ok" ? "ok" : "ng", detail: draft && draft.status !== "ok" ? (draft.problems ?? []).slice(0, 3).join("／") : undefined, reason: "line_unknown" });
+  checks.push({ key: "journal_draft", label: "仕訳の下書き", status: !draft ? "na" : draft.status === "ok" ? "ok" : "ng", detail: draft && draft.status !== "ok" ? (draft.problems ?? []).slice(0, 3).join("／") : undefined, reason: "line_unknown" });
 
   // ⑤ 重複
   const dupNotes: string[] = [];
