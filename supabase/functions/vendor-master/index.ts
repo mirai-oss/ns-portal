@@ -64,6 +64,11 @@ async function isMasterOrHQ(userId: string | undefined): Promise<boolean> {
 function normalizeName(s: string): string {
   return String(s ?? "").replace(/\s+/g, "").toLowerCase();
 }
+// 2026-10-13追加: 会社名の揺れ（株式会社／(株)／㈱／有限会社…・空白・記号）を落として比べる。取引先の重複登録防止用
+function normalizeCompanyName(s: unknown): string {
+  return String(s ?? "").normalize("NFKC").replace(/\s+/g, "").toLowerCase()
+    .replace(/株式会社|有限会社|合同会社|合資会社|合名会社|\(株\)|\(有\)|\(合\)|\(同\)|㈱|㈲|㈳|\(株式\)/g, "").replace(/[()（）・\-ー]/g, "");
+}
 function findVendorMatches(vendors: any[], name: string): any[] {
   const n = normalizeName(name);
   if (!n) return [];
@@ -150,6 +155,26 @@ Deno.serve(async (req: Request) => {
         const { error } = await uc.from("vendors").update(row).eq("id", v.id);
         if (error) return json({ error: error.message }, 500);
         return json({ success: true, id: v.id });
+      }
+      // 重複登録の防止（2026-10-13）: 同じ会社名（株式会社等の表記ゆれ・登録済みの別名を含む）の有効な取引先が既にあれば、新しく作らず既存の取引先を返す。
+      // 請求書の取込・アップロードのたびに同名の取引先が増えていた（例: 株式会社カカクコム6件）ため。画面側は返ってきたidをそのまま使えばよい（existing:true）。
+      {
+        const key = normalizeCompanyName(name);
+        if (key) {
+        const db0 = svc();
+        const [{ data: vs }, { data: als }] = await Promise.all([
+          db0.from("vendors").select("id, name, name_aliases, created_at, default_corporation_id").eq("is_active", true),
+          db0.from("vendor_aliases").select("vendor_id, alias").eq("is_active", true),
+        ]);
+        const hit = new Set<string>();
+        for (const x of vs ?? []) if (normalizeCompanyName(x.name) === key || (x.name_aliases ?? []).some((a: string) => normalizeCompanyName(a) === key)) hit.add(x.id);
+        const activeIds = new Set((vs ?? []).map((x: any) => x.id));
+        for (const a of als ?? []) if (normalizeCompanyName(a.alias) === key && activeIds.has(a.vendor_id)) hit.add(a.vendor_id);
+        if (hit.size) {
+          const cands = (vs ?? []).filter((x: any) => hit.has(x.id)).sort((a: any, b: any) => (b.default_corporation_id ? 1 : 0) - (a.default_corporation_id ? 1 : 0) || String(a.created_at).localeCompare(String(b.created_at)));
+          return json({ success: true, id: cands[0].id, existing: true, name: cands[0].name });
+        }
+        }
       }
       row.created_by = user?.id ?? null;
       const { data, error } = await uc.from("vendors").insert(row).select("id").maybeSingle();

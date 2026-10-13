@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-13-v102";
+const BUILD_TAG="2026-10-13-v103";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -5763,8 +5763,10 @@ function wireDetailActions(u){
         const vr=await vendorCall("upsert_vendor",{vendor:{name}});
         if(!vr.ok||!vr.body.id){ msg.textContent=vr.body.error||"取引先の登録に失敗しました"; $("ivvl-save").disabled=false; $("ivvl-save").textContent="💾 登録して紐付ける"; return; }
         const vendorId=vr.body.id;
+        // 同じ名前の取引先が既にあるときは、新しく作らず既存の取引先に紐付ける（重複登録の防止）。口座は既存の登録を変えない
+        if(vr.body.existing){ msg.className="err msg-ok"; msg.textContent=`同じ名前の取引先「${vr.body.name||name}」が既に登録されているため、新しく作らず、その取引先に紐付けました。`+(anyBankField?"（入力された口座は登録していません。口座を変える場合は設定タブの取引先から行ってください）":""); }
         // 銀行情報が何か入力されていれば、設定タブと同じupsert_bank_accountで口座も一緒に登録する
-        if(anyBankField){
+        if(anyBankField&&!vr.body.existing){
           const ar=await vendorCall("upsert_bank_account",{account:{vendor_id:vendorId,bank_code:bankCode,bank_name:bankName,branch_code:branchCode,branch_name:branchName,account_type:$("ivvl-type").value,account_number:accNumber,account_holder_kana:holder}});
           if(!ar.ok){ msg.textContent="取引先は登録できましたが、口座の登録に失敗しました："+(ar.body.error||""); }
         }
@@ -13278,6 +13280,7 @@ function vendorRenderEditor(){
     if(!r.ok){ msg.textContent=r.body.error||"保存に失敗しました"; return; }
     // 2026-09-05：新規取引先を保存した直後は、続けてこの画面のまま振込先口座を登録できるよう
     // 編集モードのまま（新しく発行されたidで）再読み込みする（従来は保存すると一覧に戻っていた）
+    if(!ed.id && r.body&&r.body.existing){ alert(`同じ名前の取引先「${r.body.name||name}」が既に登録されているため、新しく作らず、既存の取引先を開きます。`); }
     if(!ed.id && r.body&&r.body.id){
       await renderSettingsVendors();
       const created=VENDOR_STATE.vendors.find(v=>v.id===r.body.id);
