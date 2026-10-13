@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-13-v79";
+const BUILD_TAG="2026-10-13-v80";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -2678,7 +2678,7 @@ function receivableRender(u){
                 ${stores.map(s=>`<option value="${esc(s.id)}" ${RECEIVABLE_STATE.storeFilter===s.id?"selected":""}>${esc(s.name)}</option>`).join("")}
               </select></div>
           </div>
-          <button class="hq-btn primary" id="receivable-add">＋ 入金を追加</button>
+          <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="hq-btn" id="receivable-dry-btn" title="SMBC・PayPayの未登録分を、登録はせずに一括で仕訳案を組んで確認します">🔬 自動仕訳を一括確認</button><button class="hq-btn primary" id="receivable-add">＋ 入金を追加</button></div>
         </div>
         <div class="mail-chips" style="margin-bottom:10px">
           ${RECEIVABLE_SUBTABS.map(([k,l])=>{
@@ -2706,6 +2706,7 @@ function receivableRender(u){
     RECEIVABLE_STATE.subTab=el.dataset.receivableSubtab; receivableRender(u);
   });
   wireCashRecon(u);
+  if($("receivable-dry-btn")) $("receivable-dry-btn").onclick=()=>arjDryRunAll(u);
   document.querySelectorAll("[data-arj-open]").forEach(el=>el.onclick=()=>openReceivableJournalModal(u,el.dataset.arjOpen));
   // 2026-09-17新規：ユーザー報告「PL反映が出ない」に対応。仕訳登録済みの売上入金行から
   // 請求書詳細（PLへ反映パネルを含む）へ移動する手段が無かった（is_receivable_relatedの
@@ -3210,6 +3211,65 @@ function arjApplyTemplateAsDefault_(tpl,expected,feeParts,dep,prefix){
       remark:prefix?`${prefix}　${suffixes[i]||""}`:"",
     };
   });
+}
+
+// 2026-10-13追加：売上入金（SMBC・PayPay）の自動仕訳を、登録せずに一括で組んで確認する（給与の「確認だけ」と同じ考え方）。
+async function arjDryRunAll(u){
+  const ym=RECEIVABLE_STATE.yearMonth;
+  const rows=RECEIVABLE_STATE.receivables.filter(r=>r.year_month===ym&&ARJ_AUTO_RULES[r.source_name]&&!r.mf_journal_id);
+  const modal=document.createElement("div");
+  modal.className="modal-bg mail-shell"; modal.id="arjDryModal";
+  modal.innerHTML=`<div class="modal" style="max-width:1000px"><div class="mhead"><h2>🔬 自動仕訳の一括確認（${esc(ym)}・登録はしません）</h2><button class="linkbtn" id="arjDryClose" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:13px">閉じる ×</button></div><div id="arj-dry-body">確認中…</div></div>`;
+  document.body.appendChild(modal);
+  pushNav({modal:true});
+  modal.onclick=e=>{ if(e.target===modal) history.back(); };
+  $("arjDryClose").onclick=()=>history.back();
+  const body=$("arj-dry-body");
+  if(!rows.length){ body.innerHTML="この月に、未登録のSMBC・PayPayの売上入金はありません。"; return; }
+  await ensureCorpStoreCache();
+  const tRes=await mfCall("list_tenants");
+  const tenants=(tRes.ok&&tRes.body.tenants)||[];
+  const saved=ARJ_STATE, ctx={}, results=[];
+  const norm=s=>String(s||"").trim().normalize("NFKC");
+  try{
+    for(const r of rows){
+      const tid=arjPickTenantId(r,tenants);
+      if(!ctx[tid]){
+        body.textContent=`確認中…（${(tenants.find(t=>t.id===tid)||{}).label||tid}のMFの科目・部門を取得）`;
+        const [acc,dep,sr]=await Promise.all([mfCall("accounts",{tenant_id:tid}),mfCall("list_departments",{tenant_id:tid}),mfCall("journal_search",{vendor_name:"",tenant_id:tid})]);
+        if(acc.ok){
+          const idx=mftBuildAccountIndex(acc.body.accounts||[]);
+          ctx[tid]={map:idx.map,subs:idx.subAccountsByAccountName,deps:(dep.ok&&dep.body.departments)||[],taxes:(sr.ok&&sr.body.taxes)||[]};
+        } else ctx[tid]={error:acc.body.error||"科目の取得に失敗"};
+      }
+      const c=ctx[tid], store=(CORP_STORE_CACHE.stores||[]).find(x=>x.id===r.store_id);
+      const res={r,storeName:receivableStoreName(r.store_id),tenant:(tenants.find(t=>t.id===tid)||{}).label||tid,problems:[],br:null};
+      if(c.error){ res.problems.push(c.error); results.push(res); continue; }
+      let depId="";
+      if(!store||!store.mf_department_name) res.problems.push("店舗マスタに部門名がありません");
+      else { const d=c.deps.find(x=>norm(x.name)===norm(store.mf_department_name)); if(d) depId=d.id; else res.problems.push(`MFに部門「${store.mf_department_name}」がありません`); }
+      ARJ_STATE={row:r,tenantId:tid,departments:c.deps,storeDepartmentId:depId,accountLabelMap:c.map,subAccountsByAccountName:c.subs,taxes:c.taxes,creditSubAccountWarning:""};
+      const expected=Number(r.expected_amount)||0, fee=Number(r.fee_amount)||0;
+      const feeParts=(r.fee_amount_taxable!=null||r.fee_amount_exempt!=null)?[Number(r.fee_amount_taxable)||0,Number(r.fee_amount_exempt)||0]:[fee];
+      const br=arjBuildAutoBranches_("",expected,feeParts);
+      if(!br) res.problems.push("この事業者のMFに必要な科目（売掛金・売上・手数料）が見つかりません");
+      else {
+        res.br=br;
+        if(ARJ_STATE.creditSubAccountWarning) res.problems.push(ARJ_STATE.creditSubAccountWarning);
+        const d=br.reduce((t,b)=>t+(Number(b.debitAmount)||0),0), cr=br.reduce((t,b)=>t+(Number(b.creditAmount)||0),0);
+        if(d!==cr) res.problems.push(`借方${yen(d)}と貸方${yen(cr)}が一致しません`);
+        if(!(expected>0)) res.problems.push("入金予定額が0円です");
+        const gross=Number(r.gross_amount)||0;
+        if(gross&&gross!==expected+feeParts.reduce((t,v)=>t+v,0)) res.problems.push(`売上決済額${yen(gross)}と入金予定額＋手数料${yen(expected+feeParts.reduce((t,v)=>t+v,0))}が違います`);
+      }
+      results.push(res);
+    }
+  } finally { ARJ_STATE=saved; }
+  const ok=results.filter(x=>!x.problems.length).length;
+  body.innerHTML=`<div style="margin-bottom:8px"><b style="color:#1a7f37">✅ そのまま登録できそう ${ok}件</b>　<b style="color:#b45309">⚠️ 要確認 ${results.length-ok}件</b></div>
+  <div style="overflow-x:auto"><table class="invoice-table"><thead><tr><th></th><th>入金元</th><th>事業者</th><th>店舗</th><th>入金予定額</th><th>手数料</th><th>貸方（売上）</th><th>手数料の借方</th><th>確認点</th></tr></thead><tbody>`+
+  results.sort((a,b)=>b.problems.length-a.problems.length).map(x=>`<tr><td>${x.problems.length?"⚠️":"✅"}</td><td>${esc(x.r.source_name)}</td><td>${esc(x.tenant)}</td><td>${esc(x.storeName)}</td><td>${yen(x.r.expected_amount)}</td><td>${yen(x.r.fee_amount)}</td><td>${esc(x.br?x.br[0].creditLabel:"—")}</td><td>${esc(x.br&&x.br[1]?x.br[1].debitLabel:"—")}</td><td style="color:#b45309">${esc(x.problems.join("／"))}</td></tr>`).join("")+
+  `</tbody></table></div><div class="meta" style="color:var(--muted);font-size:11px;margin-top:8px">確認だけです。MFへの登録は行っていません。⚠️の行は、各行の「MF仕訳」から個別に開いて直せます。</div>`;
 }
 // 2026-10-13追加：ユーザー要望「SMBC・PayPayの入金も給料と同じ形で全て自動仕訳に。仕訳辞書ではなく勘定科目を
 // 決めておき、部門・補助科目は店舗から自動で付け、行は必要に応じて増減」に対応。
