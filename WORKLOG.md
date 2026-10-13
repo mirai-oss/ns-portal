@@ -4,6 +4,12 @@
 
 ---
 
+## 2026-10-13 担当C: 担当Dからの共有（Phase8のPL反映「仕入高」の扱い・**司令塔の最終確認待ち**）
+- ユーザーが「確定月は請求書で置き換え」(Q1=b)と決定。PL原価はsiire(店舗合計)＋手入力の合計のため、請求書の仕入高を全額PL反映すると二重計上。→ 「10社分のsiire見込」と「請求書の確定額」の**差額だけ**を仕入高(F)の調整行としてpl-fee-reflectに乗せる案(プラスもマイナスもあり)。取引先×店舗×月で再計算して置換、取消は既存unconfirm。店舗×取引先別のsiire見込(月合計)は担当Dが供給。詳細: docs/報告_担当D_インフォマート請求書PDF自動取得案_2026-10-13.md §2-1。
+- 担当Cの対応: Phase8（承認時PL反映）に入れる際はこの差額方式を前提にする。方針確定までは実装しない（情報のみ受領）。
+
+---
+
 ## 2026-10-13 担当C: 請求書自動処理 Phase5「行ルール」の土台（Sync11反映・SQL適用済み 2026-10-13）
 - 現状確認: Phase1〜4（auto_category・invoice_lines・明細OCR）・担当Fの`vendor_aliases`は本番に未作成。`vendors`は10社中プレコ(株式会社プレコ)1社のみ。→ 承認画面(Phase7)・検算(Phase6)・journal_draft生成は前提が揃うまで着手不可。先に前提不要の土台だけ用意。
 - `supabase/2026-10-13_vendor_line_rules.sql`（適用済み。rules10行・policies10行・unstable0。save_vendor_line_rule()はロールバック付きで検証=同内容は何もしない/変更でversion2・corrected・修正回数1）: `vendor_line_rules`（source=ledger/approved/corrected・version・corrected_count_90d・last_corrected_at・有効1行＋履歴を残す）、`vendor_invoice_policies`（貸方・税1円調整=最大金額行・証憑警告）、`v_vendor_line_rule_status`（90日内修正2回以上=unstable）、`save_vendor_line_rule()`（同内容は何もしない／違えば新version=corrected）、10社seed（§3・§6 Q1〜Q4=a。プレコは納品書インボイス警告）。
