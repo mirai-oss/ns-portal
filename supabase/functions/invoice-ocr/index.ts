@@ -124,8 +124,16 @@ Deno.serve(async (req: Request) => {
   const mailKind = ["invoice", "sales"].includes(body?.mail_kind) ? body.mail_kind : "invoice";
   const isSales = mailKind === "sales";
 
+  // 2026-10-13追加（請求書自動処理Phase2）: invoice-auto-create（サーバー間）からの呼び出しは、共有シークレット
+  // （app_secrets.invoice_intake_secret）で認証し、ユーザーJWTの代わりにservice roleで読む（画面からの呼び出しは従来どおりRLS越し）
+  let internalOk = false;
+  if (body?.internal_secret) {
+    const { data: sr } = await svc().from("app_secrets").select("value").eq("key", "invoice_intake_secret").maybeSingle();
+    internalOk = !!sr?.value && body.internal_secret === sr.value;
+    if (!internalOk) return json({ error: "認証エラー" }, 401);
+  }
   // 呼び出し元がこのメール／請求書にアクセスできるか（=invoice_can_access()）をRLS越しに確認
-  const uc = userClient(req);
+  const uc = internalOk ? svc() : userClient(req);
   let subjectForPrompt = "(件名なし)";
   if (emailId) {
     const { data: emailRow, error: emailErr } = await uc

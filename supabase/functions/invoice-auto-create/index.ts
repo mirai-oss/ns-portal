@@ -78,7 +78,7 @@ async function markSkipped(db: any, emailId: string, reason: string, dryRun?: bo
   return { email_id: emailId, status: "skipped", reason };
 }
 
-async function processEmail(db: any, emailId: string, opts: { dryRun?: boolean } = {}) {
+async function processEmail(db: any, emailId: string, secret: string, opts: { dryRun?: boolean } = {}) {
   const { data: email } = await db.from("invoice_emails")
     .select("id, gmail_message_id, subject, received_at, mail_kind, auto_category").eq("id", emailId).maybeSingle();
   if (!email) return { email_id: emailId, status: "skipped", reason: "メールが見つかりません" };
@@ -125,7 +125,7 @@ async function processEmail(db: any, emailId: string, opts: { dryRun?: boolean }
       apikey: Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
       Authorization: `Bearer ${Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")}`,
     },
-    body: JSON.stringify({ email_id: emailId, mail_kind: "invoice" }),
+    body: JSON.stringify({ email_id: emailId, mail_kind: "invoice", internal_secret: secret }),
   });
   const ocr = await ocrRes.json().catch(() => ({}));
   if (!ocrRes.ok || !ocr.success) {
@@ -217,11 +217,11 @@ Deno.serve(async (req: Request) => {
         .order("received_at", { ascending: true }).limit(limit);
       if (error) return json({ error: "取得に失敗しました: " + error.message }, 500);
       const results = [];
-      for (const m of mails ?? []) results.push(await processEmail(db, m.id as string, { dryRun: !!body.dry_run }));
+      for (const m of mails ?? []) results.push(await processEmail(db, m.id as string, body.secret, { dryRun: !!body.dry_run }));
       return json({ success: true, dry_run: !!body.dry_run, processed: results.length, results });
     }
     if (!body?.email_id) return json({ error: "email_id が必要です" }, 400);
-    return json({ success: true, result: await processEmail(db, body.email_id) });
+    return json({ success: true, result: await processEmail(db, body.email_id, body.secret) });
   } catch (e) {
     return json({ error: "処理中にエラー: " + String((e as Error)?.message ?? e) }, 500);
   }
