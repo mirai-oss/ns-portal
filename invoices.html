@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-13-v86";
+const BUILD_TAG="2026-10-13-v87";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -3280,6 +3280,7 @@ async function arjDryRunAll(u){
         const gross=Number(r.gross_amount)||0;
         if(gross&&gross!==expected+feeParts.reduce((t,v)=>t+v,0)) res.problems.push(`売上決済額${yen(gross)}と入金予定額＋手数料${yen(expected+feeParts.reduce((t,v)=>t+v,0))}が違います`);
       }
+      res.tid=tid; res.map=c.map; res.ymLabel=(r.year_month||"").replace(/^(\d{4})-(\d{2})$/,"$1年$2月分");
       results.push(res);
     }
   } finally { ARJ_STATE=saved; }
@@ -3287,7 +3288,61 @@ async function arjDryRunAll(u){
   body.innerHTML=`<div style="margin-bottom:8px"><b style="color:#1a7f37">✅ そのまま登録できそう ${ok}件</b>　<b style="color:#b45309">⚠️ 要確認 ${results.length-ok}件</b></div>
   <div style="overflow-x:auto"><table class="invoice-table"><thead><tr><th></th><th>入金元</th><th>事業者</th><th>店舗</th><th>入金予定額</th><th>手数料</th><th>貸方（売上）</th><th>手数料の借方</th><th>確認点</th></tr></thead><tbody>`+
   results.sort((a,b)=>b.problems.length-a.problems.length).map(x=>`<tr><td>${x.problems.length?"⚠️":"✅"}</td><td>${esc(x.r.source_name)}</td><td>${esc(x.tenant)}</td><td>${esc(x.storeName)}</td><td>${yen(x.r.expected_amount)}</td><td>${yen(x.r.fee_amount)}</td><td>${esc(x.br?x.br[0].creditLabel:"—")}</td><td>${esc(x.br&&x.br[1]?x.br[1].debitLabel:"—")}</td><td style="color:#b45309">${esc(x.problems.join("／"))}</td></tr>`).join("")+
-  `</tbody></table></div><div class="meta" style="color:var(--muted);font-size:11px;margin-top:8px">確認だけです。MFへの登録は行っていません。⚠️の行は、各行の「MF仕訳」から個別に開いて直せます。</div>`;
+  `</tbody></table></div>
+  ${ok?`<div class="mail-actions" style="margin-top:10px"><button class="primary" id="arj-bulk-reg">🧾 ✅の${ok}件をまとめてMFに登録する</button></div>`:""}
+  <div class="err" id="arj-bulk-msg" style="margin-top:6px"></div>
+  <div class="meta" style="color:var(--muted);font-size:11px;margin-top:8px">この表は確認だけです（登録ボタンを押すまでMFには何も登録しません）。⚠️の行は登録の対象外で、各行の「MF仕訳」から個別に開いて直せます。</div>`;
+  if($("arj-bulk-reg")) $("arj-bulk-reg").onclick=()=>arjBulkRegister(u,results.filter(x=>!x.problems.length));
+}
+// 2026-10-13追加：確認で✅になった行だけを、人が内容を見て承認した上で一括登録する。
+// 二重登録防止：登録前に「mf_journal_idが空の行だけ」を条件付きPATCHで先に確保（0行しか更新されなければ他の人が処理中＝スキップ）。
+// MFへの登録が失敗したら確保を解除。通信が途中で切れて結果不明のときは確保を残し、MFで確認するよう表示する。
+async function arjBulkRegister(u,items){
+  const total=items.reduce((t,x)=>t+(Number(x.r.expected_amount)||0),0);
+  if(!confirm(`${items.length}件（入金予定額の合計 ${yen(total)}）をマネーフォワードに登録します。\n\n一度登録すると取り消しはMF側での手動対応になります。\n確認表の内容でよければ「OK」を押してください。`)) return;
+  const msg=$("arj-bulk-msg"), btn=$("arj-bulk-reg");
+  if(btn) btn.disabled=true;
+  const saved=ARJ_STATE; let okN=0; const fails=[];
+  try{
+    for(let i=0;i<items.length;i++){
+      const x=items[i], r=x.r;
+      msg.className="err"; msg.textContent=`登録中… ${i+1}/${items.length}（${r.source_name}・${x.storeName}）`;
+      const claim="pending:"+(crypto.randomUUID?crypto.randomUUID():Date.now()+"-"+i);
+      const cl=await authed(`/rest/v1/ar_receivables?id=eq.${r.id}&mf_journal_id=is.null`,{method:"PATCH",headers:{Prefer:"return=representation"},body:JSON.stringify({mf_journal_id:claim})});
+      if(!cl.ok||!Array.isArray(cl.body)||!cl.body.length){ fails.push(`${x.storeName}（${r.source_name}）: 既に登録済みか、他の人が処理中のためスキップ`); continue; }
+      const release=()=>authed(`/rest/v1/ar_receivables?id=eq.${r.id}&mf_journal_id=eq.${encodeURIComponent(claim)}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({mf_journal_id:null})});
+      try{
+        const branches=x.br.map(b=>({
+          debit:b.debitLabel?x.map.get(b.debitLabel):null, debitAmount:Number(b.debitAmount)||null,
+          credit:b.creditLabel?x.map.get(b.creditLabel):null, creditAmount:Number(b.creditAmount)||null,
+          department_id:b.department_id||null, tax_id:b.tax_id||null, credit_department_id:b.credit_department_id||null, credit_tax_id:b.credit_tax_id||null, remark:b.remark||undefined}));
+        if(branches.some((b,k)=>(x.br[k].debitLabel&&!b.debit)||(x.br[k].creditLabel&&!b.credit))) throw new Error("MFの科目が見つかりません（確認表と状態が変わりました）");
+        ARJ_STATE={row:r};
+        const voucherFiles=await arjFetchVoucherFiles();
+        const {ok,body:j}=await mfCall("create_standalone",{
+          is_receivable_related:true, vendor_name:r.source_name||"売上入金", tenant_id:x.tid,
+          branches:branches.map(b=>({
+            debit:b.debit?{account_id:b.debit.account_id,sub_account_id:b.debit.sub_account_id||undefined,value:b.debitAmount}:undefined,
+            credit:b.credit?{account_id:b.credit.account_id,sub_account_id:b.credit.sub_account_id||undefined,value:b.creditAmount}:undefined,
+            department_id:b.department_id, tax_id:b.tax_id, credit_department_id:b.credit_department_id, credit_tax_id:b.credit_tax_id, remark:b.remark})),
+          transaction_date:arjLastDayOfMonth(r.year_month), remark:`${x.ymLabel}　${r.source_name||""}`, attach_files:false,
+          debit_account_names:branches.filter(b=>b.debit).map(b=>mftLabelOf(b.debit)), voucher_files:voucherFiles,
+        });
+        if(!ok){ await release(); fails.push(`${x.storeName}（${r.source_name}）: ${(j&&j.error)||"MF登録に失敗"}`); continue; }
+        await authed(`/rest/v1/ar_receivables?id=eq.${r.id}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({linked_invoice_id:j.invoice_id||null,mf_journal_id:j.journal_id||null,mf_journal_number:j.journal_number??null,mf_journal_created_at:new Date().toISOString()})});
+        const sr=await plFeeCall("seisan_confirm_receivable",{receivable_id:r.id});
+        if(!sr.ok||(sr.body&&sr.body.success===false)) fails.push(`${x.storeName}（${r.source_name}）: MFには登録しましたが、業務委託精算書への反映に失敗（伝票${j.journal_number??"-"}）`);
+        okN++;
+      }catch(e){
+        // 通信断などで結果不明：確保は残す（二重登録を避ける）。MFで同じ入金が登録されていないか確認してもらう
+        fails.push(`${x.storeName}（${r.source_name}）: 結果が不明です。MFで登録済みか確認してください（${e.message||e}）`);
+      }
+    }
+  } finally { ARJ_STATE=saved; }
+  msg.className=fails.length?"err":"err msg-ok";
+  msg.innerHTML=`登録完了 ${okN}/${items.length}件。${fails.length?`<br>⚠️ 要確認：<br>${fails.map(esc).join("<br>")}`:""}`;
+  await Promise.all([receivableLoad(),loadAcBadgeCounts()]);
+  receivableRender(u);
 }
 // 2026-10-13追加：ユーザー要望「SMBC・PayPayの入金も給料と同じ形で全て自動仕訳に。仕訳辞書ではなく勘定科目を
 // 決めておき、部門・補助科目は店舗から自動で付け、行は必要に応じて増減」に対応。
