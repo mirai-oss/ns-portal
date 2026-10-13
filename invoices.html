@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-13-v83";
+const BUILD_TAG="2026-10-13-v84";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -2379,7 +2379,7 @@ function receivableYmDefault(){
   const d=new Date();
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
 }
-let RECEIVABLE_STATE={yearMonth:"",storeFilter:"",corpFilter:"",subTab:"pending",receivables:[],deposits:[],matches:[]};
+let RECEIVABLE_STATE={yearMonth:"",storeFilter:"",corpFilter:"",sourceFilter:"",jState:"",subTab:"pending",receivables:[],deposits:[],matches:[]};
 async function renderReceivableTab(u){
   $("tabbody").innerHTML=`<section class="invoice-list active"><div class="card" style="padding:16px"><div class="spin" style="padding:20px 0">読み込み中…</div></div></section>`;
   if(!RECEIVABLE_STATE.yearMonth) RECEIVABLE_STATE.yearMonth=receivableYmDefault();
@@ -2426,6 +2426,9 @@ function receivableFilteredRows(){
   let rows=RECEIVABLE_STATE.receivables;
   if(RECEIVABLE_STATE.storeFilter) rows=rows.filter(r=>r.store_id===RECEIVABLE_STATE.storeFilter);
   if(RECEIVABLE_STATE.corpFilter) rows=rows.filter(r=>receivableCorpId(r)===RECEIVABLE_STATE.corpFilter);
+  if(RECEIVABLE_STATE.sourceFilter) rows=rows.filter(r=>(r.source_name||"")===RECEIVABLE_STATE.sourceFilter);
+  if(RECEIVABLE_STATE.jState==="todo") rows=rows.filter(r=>!r.mf_journal_id);
+  if(RECEIVABLE_STATE.jState==="done") rows=rows.filter(r=>!!r.mf_journal_id);
   return rows.filter(r=>receivableRowState(r)===RECEIVABLE_STATE.subTab);
 }
 // 2026-09-15新規：ユーザー要望「店舗はあるんだけど、法人がないから法人も追加してほしい」に
@@ -2645,6 +2648,16 @@ function receivableUnjournaledByMonthHtml(){
     <div class="mail-chips">${chips}</div>
   </div>`;
 }
+// 2026-10-13追加：入金元（PayPay・カード・ロケットナウ・Uber Eats等）ごとの「MF仕訳 未登録」件数をチップで表示。クリックで絞り込み。
+function receivableSourceChipsHtml(){
+  const rows=RECEIVABLE_STATE.receivables;
+  const by=new Map();
+  rows.forEach(r=>{ const k=r.source_name||"（不明）"; const o=by.get(k)||{todo:0,all:0}; o.all++; if(!r.mf_journal_id) o.todo++; by.set(k,o); });
+  if(!by.size) return "";
+  const chip=(k,label,o)=>`<button class="mail-chip ${RECEIVABLE_STATE.sourceFilter===k?"active":""}" data-rcv-source="${esc(k)}" style="font-size:12px">${esc(label)} <b style="color:${o.todo?"#b45309":"#1a7f37"}">${o.todo?`未登録${o.todo}`:"✅完了"}</b><span style="color:var(--muted)">／${o.all}</span></button>`;
+  const total={todo:[...by.values()].reduce((t,o)=>t+o.todo,0),all:rows.length};
+  return `<div style="margin-bottom:10px"><div style="font-size:11px;color:var(--muted);margin-bottom:4px">入金元ごとのMF仕訳の残り（${esc(RECEIVABLE_STATE.yearMonth)}・クリックで絞り込み）</div><div class="mail-chips">${chip("","すべて",total)}${[...by.entries()].sort((a,b)=>b[1].todo-a[1].todo).map(([k,o])=>chip(k,k,o)).join("")}</div></div>`;
+}
 function receivableRender(u){
   const kpi=receivableKpis();
   const filtered=receivableFilteredRows();
@@ -2663,6 +2676,7 @@ function receivableRender(u){
       <div class="card" style="padding:16px">
         <div class="meta" style="color:var(--muted);font-size:12px;margin-bottom:10px">PayPay等の決済入金を「売上発生→入金予定→実入金→照合→消込」のフローで管理します（指示書§9-8/9-9）。データは自動取込タブ経由で登録された入金予定（<code>ar_receivables</code>）を表示しています。</div>
         ${receivableUnjournaledByMonthHtml()}
+        ${receivableSourceChipsHtml()}
         <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;margin-bottom:10px">
           <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end">
             <div><label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">対象月</label>
@@ -2672,6 +2686,8 @@ function receivableRender(u){
                 <option value="" ${!RECEIVABLE_STATE.corpFilter?"selected":""}>すべての法人</option>
                 ${corps.map(c=>`<option value="${esc(c.id)}" ${RECEIVABLE_STATE.corpFilter===c.id?"selected":""}>${esc(c.name)}</option>`).join("")}
               </select></div>
+            <div><label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">仕訳の状態</label>
+              <select id="receivable-jstate-filter"><option value="">すべて</option><option value="todo" ${RECEIVABLE_STATE.jState==="todo"?"selected":""}>MF仕訳 未登録</option><option value="done" ${RECEIVABLE_STATE.jState==="done"?"selected":""}>MF仕訳 登録済み</option></select></div>
             <div><label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">店舗で絞り込み</label>
               <select id="receivable-store-filter" style="max-width:220px">
                 <option value="" ${!RECEIVABLE_STATE.storeFilter?"selected":""}>すべての店舗</option>
@@ -2701,6 +2717,8 @@ function receivableRender(u){
     RECEIVABLE_STATE.yearMonth=el.dataset.rcvJumpYm; renderReceivableTab(u);
   });
   $("receivable-store-filter").onchange=()=>{ RECEIVABLE_STATE.storeFilter=$("receivable-store-filter").value; receivableRender(u); };
+  $("receivable-jstate-filter").onchange=()=>{ RECEIVABLE_STATE.jState=$("receivable-jstate-filter").value; receivableRender(u); };
+  document.querySelectorAll("[data-rcv-source]").forEach(el=>el.onclick=()=>{ RECEIVABLE_STATE.sourceFilter=el.dataset.rcvSource; receivableRender(u); });
   $("receivable-corp-filter").onchange=()=>{ RECEIVABLE_STATE.corpFilter=$("receivable-corp-filter").value; receivableRender(u); };
   document.querySelectorAll("[data-receivable-subtab]").forEach(el=>el.onclick=()=>{
     RECEIVABLE_STATE.subTab=el.dataset.receivableSubtab; receivableRender(u);
@@ -3318,7 +3336,10 @@ function arjBuildAutoBranches_(prefix,expected,feeParts){
   const feeAcc=rule.feeAccount(t), feeSubFixed=rule.feeSub(t);
   const feeLabelOf=()=>feeSubFixed?`${feeAcc}/${feeSubFixed}`:(arjSubLabelForDept_(feeAcc,dept)||feeAcc);
   const feeNeeded=feeParts.some(f=>Number(f)>0);
-  if(!has(sales)||!has(arLabel)||(feeNeeded&&!has(feeAcc))) return null; // 科目がこの事業者に無い→従来方式
+  if(!has(sales)||!has(arLabel)||(feeNeeded&&!has(feeAcc))){
+    ARJ_STATE.autoFailReason=`自動で組めませんでした：このMF事業者（${ARJ_STATE.tenantLabel||t}）に必要な科目が見つかりません（${[!has(sales)&&sales,!has(arLabel)&&arLabel,(feeNeeded&&!has(feeAcc))&&feeAcc].filter(Boolean).join("・")}）`;
+    return null;
+  } // 科目がこの事業者に無い→従来方式
   const warn=[];
   let salesLabel=`${sales}/${rule.salesSub}`;
   if(!has(salesLabel)){ salesLabel=sales; warn.push(`「${sales}」の補助科目「${rule.salesSub}」がMFに見つかりません。補助科目は空欄です（先にMFで作成してください）`); }
@@ -3354,7 +3375,7 @@ function arjSetDefaultBranches(){
     ?[Number(row.fee_amount_taxable)||0,Number(row.fee_amount_exempt)||0]
     :[fee];
   const dep=ARJ_STATE.storeDepartmentId||"";
-  ARJ_STATE.autoBuilt=false;
+  ARJ_STATE.autoBuilt=false; ARJ_STATE.autoFailReason="";
   const autoBr=arjBuildAutoBranches_(prefix,expected,feeParts);
   if(autoBr){ ARJ_STATE.branches=autoBr; return; }
   const tpl=(ARJ_STATE.templates||[]).find(t=>t.receivable_source_name===row.source_name);
@@ -3686,6 +3707,7 @@ function arjRenderForm(){
     <datalist id="arj-account-datalist">${ARJ_STATE.accountNameDatalistHtml||""}</datalist>
     ${ARJ_STATE.tenants&&ARJ_STATE.tenants.length>1?`<div class="ai-field" style="margin-bottom:6px;font-size:11px;color:var(--muted)">登録先: <b>${esc(ARJ_STATE.tenantLabel||"")}</b> <button id="arj-change-tenant" style="font-size:10px">変更</button></div>`:""}
     ${ARJ_STATE.storeDepartmentMismatch?`<div class="err" style="margin-bottom:8px">⚠️ 店舗マスタに登録されている部門名「${esc(ARJ_STATE.storeDepartmentMismatch)}」と一致する部門がこの事業者（${esc(ARJ_STATE.tenantLabel||"")}）に見つかりませんでした。部門は下の表で手動で選んでください。直す場合は、①マネーフォワード側にまだこの部門が無ければ作成する、②登録先の事業者が違う場合は上の「変更」から選び直す、③それでも直らなければ設定タブ「法人・店舗・部門マッピング」の店舗名の表記を見直してください。</div>`:""}
+    ${(!ARJ_STATE.autoBuilt&&ARJ_AUTO_RULES[row.source_name])?`<div class="err" style="margin-bottom:8px">⚠️ ${esc(ARJ_STATE.autoFailReason||"自動で組む処理が動いていません。Cmd+Shift+Rで再読み込みしてください")}　（画面のbuild: ${esc(BUILD_TAG)}）</div>`:""}
     ${ARJ_STATE.autoBuilt?`<div class="meta" style="margin-bottom:8px;color:var(--m-green,#1a7f37);font-size:12px">✅ 科目・部門・補助科目を店舗から自動で組みました（仕訳辞書は使っていません）。内容を確認して登録してください。</div>`:""}
     ${ARJ_STATE.creditSubAccountWarning?`<div class="err" style="margin-bottom:8px">⚠️ ${esc(ARJ_STATE.creditSubAccountWarning)}</div>`:""}
     <div class="mail-actions" style="margin-bottom:8px">
