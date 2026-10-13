@@ -94,6 +94,7 @@ const KINDS: Record<string, { table: string; columns: string; periodCol: string;
   target: { table: "kd_target_monthly_v", columns: TARGET_V_COLUMNS, periodCol: "year_month", periodKind: "ym", freshCol: "updated_at" },
   target_daily: { table: "dash_sales_target_daily", columns: TARGET_DAILY_COLUMNS, periodCol: "biz_date", periodKind: "day" },
   // 2026-10-06 行ミラー（担当A依頼: 媒体別売上・広告管理・PLをGASなしで）
+  delivery_daily: { table: "kd_delivery_daily", columns: "id,store_id,biz_date,channel,orders,net_sales", periodCol: "biz_date", periodKind: "day", tie: "id" },   // デリバリー(ロケットナウ等)の日次。PL売上高の内訳(補助科目)用（2026-10-13）
   media_daily: { table: "kd_media_daily", columns: MEDIA_DAILY_COLUMNS, periodCol: "biz_date", periodKind: "day", tie: "id" },
   pl_entries: { table: "kd_pl_entries", columns: PL_ENTRIES_COLUMNS, periodCol: "year_month", periodKind: "ym", tie: "id", commonVisible: true },
   spot: { table: "kd_spot_entries", columns: SPOT_COLUMNS, periodCol: "work_date", periodKind: "day", tie: "id" },
