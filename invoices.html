@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-13-v95";
+const BUILD_TAG="2026-10-13-v96";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -4586,7 +4586,8 @@ function attCardHtml(a){
     <div class="attcard-preview">${preview}</div>
     <div class="attcard-foot">
       <span class="fname">${esc(a.file_name)}</span>
-      <a data-attpath="${esc(a.storage_path)}" download="${esc(a.file_name)}" href="#" target="_blank" rel="noopener">開く</a>
+      <span><button class="linkbtn" data-attdel="${esc(a.id)}" data-attname="${esc(a.file_name)}" title="この添付を削除（同じ請求書が2つ添付されたときの片方削除用）" style="background:none;border:none;color:var(--m-red,#b42318);cursor:pointer;font-size:12px">🗑 削除</button>
+      <a data-attpath="${esc(a.storage_path)}" download="${esc(a.file_name)}" href="#" target="_blank" rel="noopener">開く</a></span>
     </div>
     ${isZip?(a.zip_extracted_at
       ?`<div class="meta" style="color:var(--muted);font-size:11px;padding:0 10px 8px">📦 展開済み（中のファイルはこのリストに個別に追加されています）</div>`
@@ -6728,6 +6729,16 @@ function wireDetailActions(u){
   // 2026-09-04新規：ZIP添付の展開ボタン（指示書§5-8）。展開後は同じ画面を再読込し、
   // 個別ファイルとして追加された証憑が一覧に増える（それ以降の「請求書として確定」判断は
   // 既存のAI自動入力＋C-8「➕他の請求書」機能に委ねる＝ここでは会計処理を一切行わない）
+  // 2026-10-13追加: 添付の削除（同じ請求書が名前違いで2つ添付されたときの片方削除）。MF仕訳登録済み・最後の1つは削除できない（DB側で拒否）
+  document.querySelectorAll("[data-attdel]").forEach(el=>el.onclick=async()=>{
+    const name=el.dataset.attname||"この添付";
+    const reason=prompt(`「${name}」を削除します。元のメールには影響しません。\n（同じ請求書が2つ添付されている場合の余分な方を削除する用途です）\n理由（任意）:`,"同じ請求書の重複添付");
+    if(reason===null) return;
+    el.disabled=true;
+    const r=await authed("/rest/v1/rpc/invoice_delete_attachment",{method:"POST",body:JSON.stringify({p_attachment_id:el.dataset.attdel,p_reason:reason||null})});
+    if(!r.ok){ alert("削除できませんでした: "+((r.body&&(r.body.message||r.body.error))||"原因不明")); el.disabled=false; return; }
+    await reloadDetail();
+  });
   document.querySelectorAll("[data-zipextract]").forEach(el=>el.onclick=async()=>{
     el.disabled=true; el.textContent="展開中…";
     const s=sess.get();

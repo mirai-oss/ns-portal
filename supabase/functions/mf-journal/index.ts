@@ -610,7 +610,7 @@ Deno.serve(async (req: Request) => {
       }
 
       // 呼び出し元が本当にこの請求書を見れるか（RLS経由で）確認してからemail_idを取得
-      const { data: inv, error: invErr } = await uc.from("invoices").select("id, email_id, mf_journal_id, vendor_name, linked_hq_step_id").eq("id", invoiceId).maybeSingle();
+      const { data: inv, error: invErr } = await uc.from("invoices").select("id, email_id, mf_journal_id, vendor_name, linked_hq_step_id, intake_source, source_attachment_id").eq("id", invoiceId).maybeSingle();
       if (invErr) return json({ error: "確認に失敗しました: " + invErr.message }, 500);
       if (!inv) return json({ error: "対象が見つからないか権限がありません" }, 403);
       if (inv.mf_journal_id) return json({ error: "この請求書は既に仕訳登録済みです（重複登録防止）" }, 409);
@@ -667,10 +667,16 @@ Deno.serve(async (req: Request) => {
         // .eq("email_id", inv.email_id) は email_id=eq.null となり0件しか返らず、
         // 証憑が自動添付されない不具合があった。invoice_idでも紐付けられるようになった
         // ため（invoice_attachments.invoice_id）、email_idが無ければinvoice_idで探す
-        const attQuery = db.from("invoice_attachments").select("file_name, storage_path, mime_type, size_bytes").order("created_at").limit(5);
-        const { data: atts } = inv.email_id
-          ? await attQuery.eq("email_id", inv.email_id)
-          : await attQuery.eq("invoice_id", invoiceId);
+        // 2026-10-13修正（請求書自動処理）: メール自動取込で作った請求書（email_auto）は、自分のPDF（source_attachment_id）だけを証憑にする
+        // （1通のメールに複数の請求書がある場合に、他の請求書のPDFまで添付されるのを防ぐ）。いずれの場合も、同じファイル（ハッシュ一致）は1つだけ添付する
+        const attQuery = db.from("invoice_attachments").select("id, file_name, storage_path, mime_type, size_bytes, file_hash").order("created_at").limit(10);
+        const { data: attsRaw } = (inv.intake_source === "email_auto" && inv.source_attachment_id)
+          ? await attQuery.eq("id", inv.source_attachment_id)
+          : inv.email_id
+            ? await attQuery.eq("email_id", inv.email_id)
+            : await attQuery.eq("invoice_id", invoiceId);
+        const seenHash = new Set<string>();
+        const atts = (attsRaw ?? []).filter((a: any) => { if (!a.file_hash) return true; if (seenHash.has(a.file_hash)) return false; seenHash.add(a.file_hash); return true; }).slice(0, 5);
         const files: { file_name: string; file_data: string }[] = [];
         for (const a of atts ?? []) {
           if ((a.size_bytes ?? 0) > 15 * 1024 * 1024) continue; // 大きすぎるものはスキップ（413対策）
