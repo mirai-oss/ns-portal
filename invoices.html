@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-13-v97";
+const BUILD_TAG="2026-10-13-v98";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -3503,7 +3503,12 @@ async function arjAutoPlReflect(r,tenantId){
     const d=b.debit;
     if(!d||!d.account_name||!/手数料/.test(d.account_name)||!(Number(d.value)>0)) continue;
     const k=d.account_name+"\u0001"+(d.sub_account_name||"");
-    const g=groups.get(k)||{account:d.account_name,sub:d.sub_account_name||"",amount:0}; g.amount+=Math.round(Number(d.value)); groups.set(k,g);
+    // PLは税別（税抜）で反映する（ユーザー指示 2026-10-13）: 課税の手数料（課税仕入 8%/10%）は税抜に直し、非課税・対象外はそのままの金額
+    const value=Math.round(Number(d.value));
+    const m=String(b.tax_name||"").match(/課税仕入[^0-9]*(\d+)\s*%/);
+    const rate=m?Number(m[1]):0;
+    const net=rate>0?value-Math.floor(value*rate/(100+rate)):value;
+    const g=groups.get(k)||{account:d.account_name,sub:d.sub_account_name||"",amount:0}; g.amount+=net; groups.set(k,g);
   }
   if(!groups.size) return {state:"skip",msg:"手数料の行がありません"};
   const ym=String(gj.body.transaction_date||"").slice(0,7)||String(r.year_month||"").slice(0,7);
