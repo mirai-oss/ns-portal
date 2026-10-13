@@ -4,6 +4,15 @@
 
 ---
 
+## 2026-10-13 担当C: 請求書自動処理 Phase5「仕訳下書き」実装（**SQL適用・Edge Functionデプロイ待ち**・画面はv93で公開）
+- `supabase/2026-10-13_invoice_journal_draft.sql`（未適用）: invoices.journal_draft(jsonb)/journal_draft_at の2列を追加するだけ。
+- `functions/invoice-journal-draft`（新規・secretまたはユーザーJWT）: 明細(Phase3)・店舗解決(Phase4)・行ルール(vendor_line_rules・v_vendor_line_rule_status)から仕訳下書きを作る。借方=行ごとに 科目/補助/部門(行の店舗のMF部門)/税区分(行の税率)/金額(税込=税抜+切捨て税。税込表記の請求書はそのまま)＋出どころのルールid・版・source、貸方=ルールの貸方(買掛金/未払金)・補助=取引先名・額=請求の税込合計。税の1円調整=最大金額の行で±3円以内を調整(policy=largest_line_1yen)。要確認(needs_review)の条件=ルール無し/ルール不安定(90日2回以上修正)/店舗・法人・取引先未解決/税率不明・想定外/金額不一致/明細なし。証憑警告(プレコ=納品書がインボイス)はwarnings。MFのIDは承認時(Phase8)に名前から解決。MFには登録しない。仕訳辞書は使わない。
+- `invoice-resolve-lines`: 店舗突合後に仕訳下書きを非同期起動。
+- 画面(invoices.html v93): 請求書詳細に「📝 仕訳の下書き（自動）」パネル（行・貸方・1円調整・要確認の理由・警告・「下書きを作り直す」）＋「📚 今後この内容で処理する」(初回学習)=科目がMFに実在するか確認→save_vendor_line_rule(source=approved)＋取引先別名(register_vendor_alias)＋取引先の既定法人(未設定時)を一度に保存→下書きを作り直し。
+- 未対応: 承認画面での修正→新バージョン保存(corrected)・「ルール不安定」アラートの表示はPhase7。MF総勘定元帳の実績からの再学習(§9-1の①)は後続。
+
+---
+
 ## 2026-10-13 担当C: 請求書自動処理 Phase4「マッピング接続」実装（SQL適用・デプロイ済み 2026-10-13・画面v92）
 - `supabase/2026-10-13_invoice_lines_resolve_info.sql`（適用済み）: invoice_lines.resolve_info jsonb を1列追加するだけ。
 - `functions/invoice-resolve-lines`（新規・secretまたはユーザーJWT）: 明細の店舗表記を `resolve_store` で解決（自前の照合は書かない）。定期請求書10社（vendor_line_rulesあり）で店舗コードがあれば `resolve_store('infomart', p_code)`（★インフォマート06/08はハブstore_noと逆。store_noとして扱わない）→なければ `resolve_store('invoice', p_name)`。exact/highのみ確定(resolved_by='mapping')、lowは確定せず候補をresolve_infoに。店舗表記なしの行（1店舗請求書）は請求書の店舗→取引先の既定店舗(rule)。人が確定した行は触らない。未解決はresolve_storeがkd_unresolved_namesへ隔離記録。要約は invoices.lines_check.mapping。

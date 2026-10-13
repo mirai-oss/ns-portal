@@ -103,5 +103,15 @@ Deno.serve(async (req: Request) => {
   }
   const mapping = { resolved, low, unresolved, skipped_human: skipped, unresolved_names: [...unresolvedNames], checked_at: new Date().toISOString() };
   await db.from("invoices").update({ lines_check: { ...(inv.lines_check ?? {}), mapping } }).eq("id", inv.id);
+  // Phase5: 店舗が決まったので仕訳の下書きを作る（待たずに別Functionへ依頼。secret経由のときだけ）
+  if (body?.secret) {
+    const kick = fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/invoice-journal-draft`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", apikey: Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!, Authorization: `Bearer ${Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")}` },
+      body: JSON.stringify({ secret: body.secret, invoice_id: inv.id }),
+    }).catch((e) => console.error("仕訳下書きの依頼に失敗: " + e));
+    const er = (globalThis as any).EdgeRuntime;
+    if (er?.waitUntil) er.waitUntil(kick);
+  }
   return json({ success: true, ...mapping });
 });

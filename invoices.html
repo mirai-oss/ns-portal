@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-13-v92";
+const BUILD_TAG="2026-10-13-v93";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -936,6 +936,96 @@ async function invlinesInit(invoiceId){
     }
     invlinesInit(invoiceId);
   });
+}
+
+/* ============================================================
+   仕訳の下書き（請求書自動処理 Phase5・2026-10-13）
+   取引先×明細の行ルール(vendor_line_rules)から自動で作った仕訳の下書き(invoices.journal_draft)を表示する。MFには登録しない。
+   ルールが無い取引先は「今後この内容で処理する」で初回学習（行ルール＋取引先別名＋既定の法人）。仕訳辞書は使わない。
+   ============================================================ */
+async function invdraftCall_(fn,invoiceId){
+  const s=sess.get();
+  const r=await fetch(SUPA_URL+"/functions/v1/"+fn,{method:"POST",headers:{"Content-Type":"application/json","apikey":SUPA_KEY,"Authorization":"Bearer "+(s?s.at:"")},body:JSON.stringify({invoice_id:invoiceId})});
+  return {ok:r.ok,body:await r.json().catch(()=>({}))};
+}
+async function invdraftInit(invoiceId){
+  const box=$("invdraftbox"); if(!box) return;
+  const ir=await authed(`/rest/v1/invoices?id=eq.${invoiceId}&select=id,vendor_id,vendor_name,corporation_id,mf_journal_id,journal_draft,journal_draft_at,lines_extracted_at`);
+  const inv=(ir.ok&&Array.isArray(ir.body)&&ir.body[0])||null;
+  if(!inv||inv.mf_journal_id||(!inv.journal_draft&&!inv.lines_extracted_at)){ box.innerHTML=""; return; }
+  const d=inv.journal_draft;
+  const acc=x=>x?`${esc(x.account||"")}${x.sub_account?"／"+esc(x.sub_account):""}`:"—";
+  const taxLbl=t=>t?`課税仕入 ${t.rate}%`:"—";
+  const noRule=d&&(d.problems||[]).some(p=>/行ルールがありません/.test(p));
+  box.innerHTML=`<details class="adcost-box" style="margin-bottom:10px" ${d&&(d.status!=="ok")?"open":""}>
+    <summary style="cursor:pointer;font-size:13px;font-weight:600">📝 仕訳の下書き（自動）
+      ${d?(d.status==="ok"?'<span style="color:#1a7f37;font-size:11px">要確認なし</span>':'<span style="color:#b45309;font-size:11px">要確認</span>'):'<span style="color:var(--muted);font-size:11px">未作成</span>'}</summary>
+    ${d?`
+    ${(d.problems||[]).length?`<div class="err" style="margin:6px 0">⚠️ ${d.problems.map(esc).join("<br>⚠️ ")}</div>`:""}
+    ${(d.warnings||[]).length?`<div style="margin:6px 0;font-size:12px;color:#b45309">ℹ️ ${d.warnings.map(esc).join("<br>ℹ️ ")}</div>`:""}
+    <div style="font-size:11px;color:var(--muted);margin:4px 0">MF事業者: ${esc(d.tenant_id)}／計上日 ${esc(d.transaction_date||"")}／摘要 ${esc(d.remark||"")}</div>
+    <div style="overflow-x:auto"><table class="invoice-table" style="font-size:12px"><thead><tr><th>#</th><th>借方（科目／補助）</th><th>部門</th><th>税区分</th><th style="text-align:right">金額</th><th>ルール</th></tr></thead><tbody>
+      ${(d.debit_lines||[]).map(l=>`<tr><td>${l.line_no}</td><td>${acc(l.debit)}</td><td>${esc(l.debit.department||"—")}</td><td>${taxLbl(l.debit.tax)}</td><td style="text-align:right">${yen(l.debit.amount)}</td><td style="font-size:10px;color:var(--muted)">${esc({ledger:"元帳",approved:"承認",corrected:"修正"}[l.rule&&l.rule.source]||"")} v${l.rule?l.rule.version:""}</td></tr>`).join("")}
+      <tr style="background:var(--bg-soft,#f7f7f5)"><td></td><td colspan="3"><b>貸方</b> ${acc(d.credit)}</td><td style="text-align:right"><b>${d.credit&&d.credit.amount!=null?yen(d.credit.amount):"—"}</b></td><td></td></tr>
+    </tbody></table></div>
+    ${(d.adjustments||[]).length?`<div style="font-size:11px;color:var(--muted)">1円調整: ${d.adjustments.map(a=>`行${a.line_no} ${a.amount>0?"+":""}${a.amount}円`).join("、")}</div>`:""}`
+    :`<div style="font-size:12px;color:var(--muted);margin:6px 0">まだ仕訳の下書きがありません。</div>`}
+    <div class="mail-actions" style="margin-top:6px"><button class="hq-btn" id="invd-rerun" style="font-size:11px;padding:3px 8px">🔄 ${d?"下書きを作り直す":"下書きを作る"}</button>
+      ${inv.vendor_id?`<button class="hq-btn" id="invd-learn-toggle" style="font-size:11px;padding:3px 8px">📚 今後この内容で処理する（ルール登録）</button>`:""}</div>
+    <div id="invd-learn" style="display:${noRule?"block":"none"};margin-top:8px">
+      <div class="meta" style="font-size:11px;color:var(--muted);margin-bottom:6px">この取引先の行ルールを登録すると、次回から同じ形で自動の下書きができます（科目名はMFに実在するものだけ登録できます。仕訳辞書は使いません）。</div>
+      <div class="ai-grid">
+        <div class="ai-field"><small>借方 勘定科目</small><input id="invd-acc" placeholder="例: 仕入高"></div>
+        <div class="ai-field"><small>借方 補助科目</small><select id="invd-submode"><option value="vendor">取引先名</option><option value="fixed">固定の名前</option><option value="none">なし</option></select> <input id="invd-sub" placeholder="固定の場合の補助科目名" style="margin-top:4px"></div>
+        <div class="ai-field"><small>貸方 勘定科目</small><select id="invd-credit"><option>買掛金</option><option>未払金</option></select></div>
+        <div class="ai-field"><small>部門の決め方</small><select id="invd-dept"><option value="line_store">明細の店舗</option><option value="primary_store">取引先の主な店舗</option><option value="hq">本部</option></select></div>
+        <div class="ai-field"><small>想定する税率（複数可）</small><label><input type="checkbox" class="invd-rate" value="8" checked>8%</label> <label><input type="checkbox" class="invd-rate" value="10" checked>10%</label></div>
+      </div>
+      <div class="mail-actions" style="margin-top:6px"><button class="primary" id="invd-learn-save">💾 この内容で今後処理する</button></div>
+    </div>
+    <div class="err" id="invd-msg" style="margin-top:6px"></div>
+  </details>`;
+  const msg=$("invd-msg");
+  $("invd-rerun").onclick=async()=>{
+    msg.className="err"; msg.textContent="作成中…";
+    const r=await invdraftCall_("invoice-journal-draft",invoiceId);
+    if(!r.ok){ msg.textContent=r.body.error||"作成に失敗しました"; return; }
+    invdraftInit(invoiceId);
+  };
+  if($("invd-learn-toggle")) $("invd-learn-toggle").onclick=()=>{ const el=$("invd-learn"); el.style.display=el.style.display==="none"?"block":"none"; };
+  if($("invd-learn-save")) $("invd-learn-save").onclick=async()=>{
+    const account=$("invd-acc").value.trim(); if(!account){ msg.className="err"; msg.textContent="借方の勘定科目を入力してください"; return; }
+    const subMode=$("invd-submode").value, sub=$("invd-sub").value.trim();
+    if(subMode==="fixed"&&!sub){ msg.className="err"; msg.textContent="補助科目の名前を入力してください"; return; }
+    const rates=[...document.querySelectorAll(".invd-rate:checked")].map(x=>Number(x.value));
+    await ensureCorpStoreCache(); await ensureVendorCache();
+    const corp=(CORP_STORE_CACHE.corporations||[]).find(c=>c.id===inv.corporation_id);
+    const tenantId=(d&&d.tenant_id)||(corp&&MF_TENANT_BY_CORP_CODE[corp.corp_code])||"default";
+    msg.className="err"; msg.textContent="MFの科目を確認中…";
+    const ar=await mfCall("accounts",{tenant_id:tenantId});
+    if(!ar.ok){ msg.textContent="MFの科目を取得できませんでした: "+((ar.body&&ar.body.error)||""); return; }
+    const idx=mftBuildAccountIndex(ar.body.accounts||[]);
+    const creditAcc=$("invd-credit").value;
+    const missing=[]; if(!idx.map.has(account)) missing.push(account); if(!idx.map.has(creditAcc)) missing.push(creditAcc);
+    if(subMode==="fixed"&&!idx.map.has(`${account}/${sub}`)) missing.push(`${account}/${sub}`);
+    if(missing.length){ msg.textContent="MFに見つからない科目があります: "+missing.join("、")+"（先にMF側で作成するか、名前を確認してください）"; return; }
+    const vendor=(VENDOR_CACHE||[]).find(v=>v.id===inv.vendor_id);
+    const vendorKey=(vendor&&vendor.name)||inv.vendor_name; 
+    const fields={account_name:account,sub_account_mode:subMode,sub_account_name:subMode==="fixed"?sub:null,tax_mode:"by_line",expected_tax_rates:rates,
+      credit_account:creditAcc,credit_sub_mode:"vendor",dept_mode:$("invd-dept").value,vendor_id:inv.vendor_id};
+    const rr=await authed("/rest/v1/rpc/save_vendor_line_rule",{method:"POST",body:JSON.stringify({p_vendor_key:vendorKey,p_tenant_id:tenantId,p_line_pattern:"*",p_fields:fields,p_source:"approved"})});
+    if(!rr.ok){ msg.textContent="ルールの保存に失敗しました: "+((rr.body&&(rr.body.message||rr.body.error))||""); return; }
+    // 取引先の別名（請求書上の名前が取引先マスタの名前と違うとき）と、既定の法人（未設定のとき）も一緒に覚える
+    if(inv.vendor_name&&vendor&&inv.vendor_name!==vendor.name){
+      await authed("/rest/v1/rpc/register_vendor_alias",{method:"POST",body:JSON.stringify({p_vendor_id:inv.vendor_id,p_alias:inv.vendor_name,p_source:"invoice_learn"})});
+    }
+    if(vendor&&!vendor.default_corporation_id&&inv.corporation_id){
+      await authed(`/rest/v1/vendors?id=eq.${inv.vendor_id}&default_corporation_id=is.null`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({default_corporation_id:inv.corporation_id})});
+    }
+    msg.textContent="登録しました。下書きを作り直します…";
+    await invdraftCall_("invoice-journal-draft",invoiceId);
+    invdraftInit(invoiceId);
+  };
 }
 /* ============================================================
    会計仕訳→PL自動反映パネル（ラウンド5指示書§6.1／設計書_広告費自動連携_§5・2026-09-01
@@ -5104,7 +5194,7 @@ function renderMailDetail(u){
                   <div style="font-size:12px;color:var(--m-blue);margin-top:4px">この店舗はこの請求書の対象法人（運営元法人と同じ）では直接支払い扱いのため、業務委託精算書には登録できません（下の「PLへ反映しますか？」欄から直接PLに反映してください）。対象法人が異なる請求書（立替払い）の場合は、代わりに精算書への登録が必要になります。</div>`:""}
                 </div>`;
               })()}
-              ${(invoice&&invoice.id)?`<div id="invlinesbox"></div>`:""}
+              ${(invoice&&invoice.id)?`<div id="invlinesbox"></div><div id="invdraftbox"></div>`:""}
               ${(invoice&&invoice.amount!=null)?`<div id="adcostbox"></div>`:`<div class="meta" style="color:var(--muted);font-size:12px">先に上の「請求情報」で金額を保存してください</div>`}
               ${(invoice&&invoice.mf_journal_id)?`<div id="plfeebox"></div>`:`<div class="meta" style="color:var(--muted);font-size:12px;margin-top:8px">PLへの反映は会計・仕訳の登録後に行えます</div>`}
               </div>
@@ -5774,6 +5864,7 @@ function wireDetailActions(u){
   }
   adcostInit();
   if(invoice&&invoice.id&&$("invlinesbox")) invlinesInit(invoice.id);
+  if(invoice&&invoice.id&&$("invdraftbox")) invdraftInit(invoice.id);
 
   // 会計仕訳→PL自動反映（ラウンド5指示書§6.1／設計書_広告費自動連携_§5・2026-09-01
   // →2026-09-03拡張: 仕訳登録済みの請求書すべてが対象。実際に登録済みの仕訳（get_journal）を
