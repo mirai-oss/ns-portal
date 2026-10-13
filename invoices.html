@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-13-v87";
+const BUILD_TAG="2026-10-13-v88";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -2694,7 +2694,7 @@ function receivableRender(u){
                 ${stores.map(s=>`<option value="${esc(s.id)}" ${RECEIVABLE_STATE.storeFilter===s.id?"selected":""}>${esc(s.name)}</option>`).join("")}
               </select></div>
           </div>
-          <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="hq-btn" id="receivable-dry-btn" title="SMBC・PayPayの未登録分を、登録はせずに一括で仕訳案を組んで確認します">🔬 自動仕訳を一括確認</button><button class="hq-btn primary" id="receivable-add">＋ 入金を追加</button></div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="hq-btn" id="receivable-plcatch-btn" title="MF仕訳が登録済みの入金の手数料を、その店舗のPLへ反映します（反映済みはスキップ）">📊 手数料をPLへ反映</button><button class="hq-btn" id="receivable-dry-btn" title="SMBC・PayPayの未登録分を、登録はせずに一括で仕訳案を組んで確認します">🔬 自動仕訳を一括確認</button><button class="hq-btn primary" id="receivable-add">＋ 入金を追加</button></div>
         </div>
         <div class="mail-chips" style="margin-bottom:10px">
           ${RECEIVABLE_SUBTABS.map(([k,l])=>{
@@ -2725,6 +2725,7 @@ function receivableRender(u){
   });
   wireCashRecon(u);
   if($("receivable-dry-btn")) $("receivable-dry-btn").onclick=()=>arjDryRunAll(u);
+  if($("receivable-plcatch-btn")) $("receivable-plcatch-btn").onclick=()=>arjPlCatchUp(u);
   document.querySelectorAll("[data-arj-open]").forEach(el=>el.onclick=()=>openReceivableJournalModal(u,el.dataset.arjOpen));
   // 2026-09-17新規：ユーザー報告「PL反映が出ない」に対応。仕訳登録済みの売上入金行から
   // 請求書詳細（PLへ反映パネルを含む）へ移動する手段が無かった（is_receivable_relatedの
@@ -3231,6 +3232,81 @@ function arjApplyTemplateAsDefault_(tpl,expected,feeParts,dep,prefix){
   });
 }
 
+
+// 2026-10-13追加：ユーザー要望「売上入金の手数料を、その店舗のPLへ自動で反映（今は手動）。売上は毎日の売上で反映済みなので不要」に対応。
+// 登録済みのMF仕訳（get_journal）の借方のうち「手数料」科目だけを、この入金の店舗のPLへ反映する（請求書のPL反映パネルと同じ pl-fee-reflect の confirm）。
+// 業務委託精算書の対象店舗は精算書経由でPLに入る（seisan_confirm_receivable）ため対象外（二重計上防止）。
+// 「PL連携対象科目」に未登録の手数料科目は、反映せず needReg として返す（呼び出し側で、人の承認後に登録→反映）。
+async function arjAutoPlReflect(r,tenantId){
+  if(!r.linked_invoice_id||!r.mf_journal_id||String(r.mf_journal_id).startsWith("pending:")) return {state:"skip",msg:"MF仕訳が未登録"};
+  const store=(CORP_STORE_CACHE&&CORP_STORE_CACHE.stores||[]).find(x=>x.id===r.store_id);
+  if(!store) return {state:"skip",msg:"店舗が未設定（共通費）"};
+  if(store.seisan_target||store.seisan_pl_categories_target) return {state:"seisan",msg:"業務委託精算書へ反映（PL直接反映は対象外）"};
+  const [gj,targets]=await Promise.all([mfCall("get_journal",{journal_id:r.mf_journal_id,tenant_id:tenantId}),plFeeTargetAccounts()]);
+  if(!gj.ok) return {state:"error",msg:"MF仕訳の取得に失敗: "+((gj.body&&gj.body.error)||"")};
+  const groups=new Map();
+  for(const b of (gj.body.branches||[])){
+    const d=b.debit;
+    if(!d||!d.account_name||!/手数料/.test(d.account_name)||!(Number(d.value)>0)) continue;
+    const k=d.account_name+"\u0001"+(d.sub_account_name||"");
+    const g=groups.get(k)||{account:d.account_name,sub:d.sub_account_name||"",amount:0}; g.amount+=Math.round(Number(d.value)); groups.set(k,g);
+  }
+  if(!groups.size) return {state:"skip",msg:"手数料の行がありません"};
+  const ym=String(gj.body.transaction_date||"").slice(0,7)||String(r.year_month||"").slice(0,7);
+  const needReg=[], done=[]; let err="";
+  for(const g of groups.values()){
+    if(!targets.some(t=>t.account_name===g.account&&(t.sub_account_name||"")===g.sub)){ needReg.push(g); continue; }
+    const c=await plFeeCall("confirm",{invoice_id:r.linked_invoice_id,account_name:g.account,sub_account_name:g.sub||undefined,year_month:`${ym}-01`,
+      allocations:[{store_id:store.id,store_name:store.name,amount:g.amount}]});
+    if(c.ok) done.push(g.account+(g.sub?"/"+g.sub:"")+(c.body.sheet_synced?"":"（記録のみ・PLシート書込エラー: "+(c.body.sheet_error||"")+"）"));
+    else if(/既にPLへ反映済み/.test((c.body&&c.body.error)||"")) done.push(g.account+(g.sub?"/"+g.sub:"")+"（反映済み）");
+    else err=(c.body&&c.body.error)||"PL反映に失敗";
+  }
+  if(err) return {state:"error",msg:err,needReg};
+  if(needReg.length&&!done.length) return {state:"needReg",msg:"PL連携対象科目に未登録",needReg};
+  return {state:"ok",msg:done.join("・")+(needReg.length?"／未登録科目あり":""),needReg};
+}
+// 複数件をまとめてPL反映。未登録の手数料科目があれば、一覧を見せて人が承認したときだけ「PL連携対象科目」へ登録して反映する。
+async function arjPlRunBatch_(items,onProgress){
+  const lines=[], needRegAll=new Map();
+  for(let i=0;i<items.length;i++){
+    const {r,tid,label}=items[i];
+    if(onProgress) onProgress(i+1,items.length);
+    const res=await arjAutoPlReflect(r,tid);
+    if(res.state==="error") lines.push(`${label}: PL反映に失敗（${res.msg}）`);
+    for(const g of (res.needReg||[])) needRegAll.set(g.account+"\u0001"+g.sub,g);
+    if(res.needReg&&res.needReg.length) items[i].retry=true;
+    if(res.state==="ok") items[i].ok=true;
+  }
+  if(needRegAll.size){
+    const names=[...needRegAll.values()].map(g=>g.account+(g.sub?"/"+g.sub:"")).join("\n・");
+    if(confirm(`次の手数料科目が「PL連携対象科目」に登録されていないため、PLに反映できていません。\n\n・${names}\n\nこれらを「PL連携対象科目」に登録して、PLに反映しますか？\n（手数料は費用科目です。設定タブの「PL連携対象科目」にも追加されます）`)){
+      for(const g of needRegAll.values()){
+        const a=await plFeeCall("add_target_account",{account_name:g.account,sub_account_name:g.sub||undefined});
+        if(!a.ok&&!/既に登録/.test((a.body&&a.body.error)||"")) lines.push(`${g.account}/${g.sub}: 科目の登録に失敗（${(a.body&&a.body.error)||""}）`);
+      }
+      PL_FEE_TARGET_ACCOUNTS=null;
+      for(const it of items.filter(x=>x.retry)){
+        const res=await arjAutoPlReflect(it.r,it.tid);
+        if(res.state==="error"||res.state==="needReg") lines.push(`${it.label}: PL反映に失敗（${res.msg}）`); else it.ok=true;
+      }
+    } else lines.push("未登録の手数料科目は、PLに反映していません（後で「📊 手数料をPLへ反映」から反映できます）");
+  }
+  return {lines,okCount:items.filter(x=>x.ok).length};
+}
+async function arjPlCatchUp(u){
+  const ym=RECEIVABLE_STATE.yearMonth;
+  const rows=RECEIVABLE_STATE.receivables.filter(r=>r.year_month===ym&&r.mf_journal_id&&!String(r.mf_journal_id).startsWith("pending:")&&r.linked_invoice_id&&arjRuleFor_(r.source_name));
+  if(!rows.length){ alert("この月に、MF仕訳が登録済みで対象の入金元（PayPay・カード・ロケットナウ・Uber Eats・現金）の行はありません。"); return; }
+  if(!confirm(`${ym}のMF仕訳登録済み ${rows.length}件について、手数料をその店舗のPLへ反映します（すでに反映済みの分は自動でスキップ）。\nよろしいですか？`)) return;
+  const btn=$("receivable-plcatch-btn"); if(btn) btn.disabled=true;
+  await ensureCorpStoreCache();
+  const tRes=await mfCall("list_tenants"); const tenants=(tRes.ok&&tRes.body.tenants)||[];
+  const items=rows.map(r=>({r,tid:r.mf_tenant_id||arjPickTenantId(r,tenants),label:`${receivableStoreName(r.store_id)}（${r.source_name}）`}));
+  const out=await arjPlRunBatch_(items,(i,n)=>{ if(btn) btn.textContent=`反映中… ${i}/${n}`; });
+  alert(`PL反映の処理が終わりました（反映済み・対象外を含め正常 ${out.okCount}/${items.length}件）。`+(out.lines.length?"\n\n⚠️ 要確認:\n"+out.lines.join("\n"):""));
+  if(btn){ btn.disabled=false; btn.textContent="📊 手数料をPLへ反映"; }
+}
 // 2026-10-13追加：売上入金（SMBC・PayPay）の自動仕訳を、登録せずに一括で組んで確認する（給与の「確認だけ」と同じ考え方）。
 async function arjDryRunAll(u){
   const ym=RECEIVABLE_STATE.yearMonth;
@@ -3302,7 +3378,7 @@ async function arjBulkRegister(u,items){
   if(!confirm(`${items.length}件（入金予定額の合計 ${yen(total)}）をマネーフォワードに登録します。\n\n一度登録すると取り消しはMF側での手動対応になります。\n確認表の内容でよければ「OK」を押してください。`)) return;
   const msg=$("arj-bulk-msg"), btn=$("arj-bulk-reg");
   if(btn) btn.disabled=true;
-  const saved=ARJ_STATE; let okN=0; const fails=[];
+  const saved=ARJ_STATE; let okN=0; const fails=[]; const plItems=[];
   try{
     for(let i=0;i<items.length;i++){
       const x=items[i], r=x.r;
@@ -3332,6 +3408,8 @@ async function arjBulkRegister(u,items){
         await authed(`/rest/v1/ar_receivables?id=eq.${r.id}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({linked_invoice_id:j.invoice_id||null,mf_journal_id:j.journal_id||null,mf_journal_number:j.journal_number??null,mf_journal_created_at:new Date().toISOString()})});
         const sr=await plFeeCall("seisan_confirm_receivable",{receivable_id:r.id});
         if(!sr.ok||(sr.body&&sr.body.success===false)) fails.push(`${x.storeName}（${r.source_name}）: MFには登録しましたが、業務委託精算書への反映に失敗（伝票${j.journal_number??"-"}）`);
+        r.linked_invoice_id=j.invoice_id||null; r.mf_journal_id=j.journal_id||null;
+        plItems.push({r,tid:x.tid,label:`${x.storeName}（${r.source_name}）`});
         okN++;
       }catch(e){
         // 通信断などで結果不明：確保は残す（二重登録を避ける）。MFで同じ入金が登録されていないか確認してもらう
@@ -3339,6 +3417,10 @@ async function arjBulkRegister(u,items){
       }
     }
   } finally { ARJ_STATE=saved; }
+  if(plItems.length){
+    const pl=await arjPlRunBatch_(plItems,(i,n)=>{ msg.className="err"; msg.textContent=`手数料をPLへ反映中… ${i}/${n}`; });
+    pl.lines.forEach(l=>fails.push(l));
+  }
   msg.className=fails.length?"err":"err msg-ok";
   msg.innerHTML=`登録完了 ${okN}/${items.length}件。${fails.length?`<br>⚠️ 要確認：<br>${fails.map(esc).join("<br>")}`:""}`;
   await Promise.all([receivableLoad(),loadAcBadgeCounts()]);
@@ -3902,8 +3984,14 @@ async function arjSubmitJournal(){
     ?`⚠️業務委託精算書への反映に失敗しました: ${seisanR.body.error||"不明なエラー"}（MoneyForwardへの仕訳登録自体は成功しています）`
     :(seisanR.body.skipped?"":(seisanR.body.success?"②業務委託精算書へPayPay売上・手数料を登録しました。":`⚠️業務委託精算書への反映に一部失敗しました: ${(seisanR.body.results||[]).filter(r=>!r.ok).map(r=>`${r.item}: ${r.error}`).join("／")}`));
 
+  // 手数料のPL反映（店舗PLへ自動）
+  let plNote="";
+  try{
+    const pr=await arjPlRunBatch_([{r:{...ARJ_STATE.row,linked_invoice_id:j.invoice_id||null,mf_journal_id:j.journal_id||null},tid:ARJ_STATE.tenantId,label:"この入金"}]);
+    plNote=pr.lines.length?`⚠️手数料のPL反映: ${pr.lines.join("／")}`:(pr.okCount?"③手数料をPLへ反映しました。":"");
+  }catch(e){ plNote="⚠️手数料のPL反映でエラー: "+(e.message||e); }
   msg.className="err msg-ok";
-  msg.textContent=`①MoneyForwardへ仕訳登録しました（伝票番号: ${j.journal_number??"-"}）`
+  msg.textContent=`①MoneyForwardへ仕訳登録しました（伝票番号: ${j.journal_number??"-"}）`+(plNote?`　${plNote}`:"")
     +(j.voucher_attached?`。証憑PDFも${j.voucher_attached}件添付しました`:(voucherFiles.length&&j.voucher_error)?`（証憑添付: ${j.voucher_error}）`:"")
     +(seisanNote?`　${seisanNote}`:"")
     +"。画面を更新します…";
