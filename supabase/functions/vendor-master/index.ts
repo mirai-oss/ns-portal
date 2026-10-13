@@ -250,6 +250,8 @@ Deno.serve(async (req: Request) => {
         confirmed_at: new Date().toISOString(),
         confirmed_by: user?.id ?? null,
       };
+      // 2026-10-13: 店舗ごとの口座（任意）。store_idが送られたときだけ設定／変更する（送られなければ従来どおり変更しない）
+      if (Object.prototype.hasOwnProperty.call(a, "store_id")) row.store_id = a.store_id || null;
       if (a.id) {
         const { error } = await db.from("vendor_bank_accounts").update(row).eq("id", a.id);
         if (error) return json({ error: error.message }, 500);
@@ -257,8 +259,11 @@ Deno.serve(async (req: Request) => {
       }
       // 新規に「現在有効な口座」として登録する場合、既存のis_current行があれば先に無効化する
       // （vba_current_uniqueの部分ユニークインデックスが1取引先1つのis_currentしか許さないため）
-      await db.from("vendor_bank_accounts").update({ is_current: false, valid_to: new Date().toISOString().slice(0, 10) }).eq("vendor_id", vendorId).eq("is_current", true);
-      const { data, error } = await db.from("vendor_bank_accounts").insert({ ...row, is_current: true, source: a.source || "manual" }).select("id").maybeSingle();
+      // 2026-10-13: 現在有効は(取引先×店舗)ごとに1件。同じ店舗（店舗なし同士）の現在有効だけを無効化する
+      let deact = db.from("vendor_bank_accounts").update({ is_current: false, valid_to: new Date().toISOString().slice(0, 10) }).eq("vendor_id", vendorId).eq("is_current", true);
+      deact = a.store_id ? deact.eq("store_id", a.store_id) : deact.is("store_id", null);
+      await deact;
+      const { data, error } = await db.from("vendor_bank_accounts").insert({ ...row, store_id: a.store_id || null, is_current: true, source: a.source || "manual" }).select("id").maybeSingle();
       if (error) return json({ error: error.message }, 500);
       return json({ success: true, id: data?.id });
     }

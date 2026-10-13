@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-13-v104";
+const BUILD_TAG="2026-10-13-v105";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -4764,7 +4764,7 @@ async function openMailDetail(u,emailId,skipHighlight){
     authed(`/rest/v1/invoice_attachments?email_id=eq.${emailId}&select=*&order=created_at`),
     authed(`/rest/v1/invoice_email_reads?email_id=eq.${emailId}&select=opened_at,reader:users(name)&order=opened_at.asc&limit=1`),
     authed(`/rest/v1/invoice_audit_logs?entity_id=eq.${emailId}&select=*,actor:users(name)&order=created_at.asc&limit=50`),
-    authed(`/rest/v1/invoices?email_id=eq.${emailId}&select=*,vendor:vendors(name,vendor_bank_accounts(id,payment_method,bank_code,bank_name,branch_code,branch_name,account_type,account_number,account_holder_kana,is_current)),linked_step:hq_task_steps!linked_hq_step_id(id,title,task:hq_tasks(title,corp)),linked_step_payment:hq_task_steps!linked_hq_step_id_payment(id,title,task:hq_tasks(title,corp)),invoice_stores(store_id)&order=created_at`),
+    authed(`/rest/v1/invoices?email_id=eq.${emailId}&select=*,vendor:vendors(name,vendor_bank_accounts(id,store_id,payment_method,bank_code,bank_name,branch_code,branch_name,account_type,account_number,account_holder_kana,is_current)),linked_step:hq_task_steps!linked_hq_step_id(id,title,task:hq_tasks(title,corp)),linked_step_payment:hq_task_steps!linked_hq_step_id_payment(id,title,task:hq_tasks(title,corp)),invoice_stores(store_id)&order=created_at`),
     authed(`/rest/v1/invoice_comments?email_id=eq.${emailId}&select=*,author:users(name)&order=created_at.asc`),
     ensureCorpStoreCache(),
     ensureVendorCache(),
@@ -4855,7 +4855,7 @@ async function openInvoiceDetail(u,invoiceId){
   const [,,ivr]=await perfTimed("invoice_detail_open",()=>Promise.all([
     ensureCorpStoreCache(),
     ensureVendorCache(),
-    authed(`/rest/v1/invoices?id=eq.${invoiceId}&select=*,vendor:vendors(name,vendor_bank_accounts(id,payment_method,bank_code,bank_name,branch_code,branch_name,account_type,account_number,account_holder_kana,is_current)),linked_step:hq_task_steps!linked_hq_step_id(id,title,task:hq_tasks(title,corp)),linked_step_payment:hq_task_steps!linked_hq_step_id_payment(id,title,task:hq_tasks(title,corp)),invoice_stores(store_id)`),
+    authed(`/rest/v1/invoices?id=eq.${invoiceId}&select=*,vendor:vendors(name,vendor_bank_accounts(id,store_id,payment_method,bank_code,bank_name,branch_code,branch_name,account_type,account_number,account_holder_kana,is_current)),linked_step:hq_task_steps!linked_hq_step_id(id,title,task:hq_tasks(title,corp)),linked_step_payment:hq_task_steps!linked_hq_step_id_payment(id,title,task:hq_tasks(title,corp)),invoice_stores(store_id)`),
   ]));
   const inv=(ivr.ok&&Array.isArray(ivr.body)&&ivr.body[0])||null;
   if(!inv){ alert("請求書が見つかりませんでした（削除された可能性があります）"); return; }
@@ -5049,7 +5049,9 @@ function invoiceAiTabHtml(invoice){
 // 1件だけ取り出す共通ヘルパー（1取引先につきis_current=trueは常に高々1件のDB制約がある）
 function currentVendorAccount(invoice){
   const accs=(invoice&&invoice.vendor&&Array.isArray(invoice.vendor.vendor_bank_accounts))?invoice.vendor.vendor_bank_accounts:[];
-  return accs.find(a=>a.is_current)||null;
+  // 店舗ごとに口座が違う取引先（例: 野村不動産コマース）: 請求書の店舗の口座→店舗なしの口座→（現在有効が1件だけなら）その口座
+  const cur=accs.filter(a=>a.is_current);
+  return cur.find(a=>invoice.store_id&&a.store_id===invoice.store_id)||cur.find(a=>!a.store_id)||(cur.length===1?cur[0]:null);
 }
 const BANK_TYPE_LABEL={"2":"当座","4":"貯蓄"};
 const PAYMENT_METHOD_LABEL={bank_transfer:"銀行振込",direct_debit:"引き落とし",cash:"現金払い",credit_card:"クレジット払い",other_bank_transfer:"他行口座から振込"};
@@ -5069,7 +5071,9 @@ function paymentMethodHasBankInfo(method){ return method==="bank_transfer"||meth
 // ＝payrollOpenBankModalの「現金手渡し」パターンと同じ考え方）
 function bankAccountEditFormHtml(acc){
   const method=(acc&&acc.payment_method)||"bank_transfer";
+  const storeOpts=`<option value="">（指定なし＝この取引先全体の口座）</option>`+((CORP_STORE_CACHE&&CORP_STORE_CACHE.stores)||[]).map(x=>`<option value="${esc(x.id)}" ${acc&&acc.store_id===x.id?"selected":""}>${esc(x.name)}</option>`).join("");
   return `<div class="card" style="padding:10px;border-color:var(--m-blue)">
+    <div class="ai-field" style="margin-bottom:10px"><small>この口座を使う店舗（店舗ごとに口座が違う取引先だけ指定。通常は指定なし）</small><select id="pbe-store">${storeOpts}</select></div>
     <div class="ai-field" style="margin-bottom:10px"><small>支払方法</small>
       <select id="pbe-method">
         <option value="bank_transfer" ${method==="bank_transfer"?"selected":""}>銀行振込（PayPay銀行CSVの対象になります）</option>
@@ -6308,7 +6312,7 @@ function wireDetailActions(u){
     if(emailId){ await openMailDetail(u,emailId,true); return; }
     const freshId=invoice&&invoice.id;
     if(!freshId) return;
-    const ivr2=await authed(`/rest/v1/invoices?id=eq.${freshId}&select=*,vendor:vendors(name,vendor_bank_accounts(id,payment_method,bank_code,bank_name,branch_code,branch_name,account_type,account_number,account_holder_kana,is_current)),linked_step:hq_task_steps!linked_hq_step_id(id,title,task:hq_tasks(title,corp)),linked_step_payment:hq_task_steps!linked_hq_step_id_payment(id,title,task:hq_tasks(title,corp)),invoice_stores(store_id)`);
+    const ivr2=await authed(`/rest/v1/invoices?id=eq.${freshId}&select=*,vendor:vendors(name,vendor_bank_accounts(id,store_id,payment_method,bank_code,bank_name,branch_code,branch_name,account_type,account_number,account_holder_kana,is_current)),linked_step:hq_task_steps!linked_hq_step_id(id,title,task:hq_tasks(title,corp)),linked_step_payment:hq_task_steps!linked_hq_step_id_payment(id,title,task:hq_tasks(title,corp)),invoice_stores(store_id)`);
     const freshInv=(ivr2.ok&&Array.isArray(ivr2.body)&&ivr2.body[0])||null;
     if(!freshInv){ $("mailDetail").innerHTML='<div class="empty">この請求書は削除されました</div>'; return; }
     await loadStandaloneIntoSelected(u,freshInv);
@@ -6394,6 +6398,7 @@ function wireDetailActions(u){
       msg.textContent="保存中…";
       $("pbe-save").disabled=true;
       if(acc) account.id=acc.id;
+      account.store_id=($("pbe-store")&&$("pbe-store").value)||null;
       const r=await vendorCall("upsert_bank_account",{account});
       if(!r.ok){ msg.textContent=r.body.error||"保存に失敗しました"; $("pbe-save").disabled=false; return; }
       await reloadDetail();
@@ -7788,7 +7793,7 @@ async function transferFetchData(){
   let accountsByVendor=new Map();
   if(vendorIds.length){
     const ar=await authed(`/rest/v1/vendor_bank_accounts?vendor_id=in.(${vendorIds.join(",")})&is_current=eq.true&select=*`);
-    if(ar.ok&&Array.isArray(ar.body)) for(const a of ar.body) accountsByVendor.set(a.vendor_id,a);
+    if(ar.ok&&Array.isArray(ar.body)) for(const a of ar.body){ const l=accountsByVendor.get(a.vendor_id)||[]; l.push(a); accountsByVendor.set(a.vendor_id,l); }
   }
   // 2026-09-08追加：ユーザー要望「支払い（振込）のところに法人毎で絞れるようにする」に対応。
   // corpFilterは絞り込みタブを行き来しても覚えておく（scheduleFilterと同じ扱い）
@@ -7800,8 +7805,13 @@ async function renderTransfersTab(u){
   transferRender(u);
 }
 let TRANSFERS_STATE={rows:[],accountsByVendor:new Map(),selected:new Set(),scheduleFilter:"",corpFilter:"",loaded:false};
+// 振込の口座選び: 請求書の店舗の口座→店舗なしの口座→（現在有効が1件だけなら）その口座（店舗ごとに口座が違う取引先に対応）
+function transferAccountOf(r){
+  const cur=TRANSFERS_STATE.accountsByVendor.get(r.vendor_id)||[];
+  return cur.find(a=>r.store_id&&a.store_id===r.store_id)||cur.find(a=>!a.store_id)||(cur.length===1?cur[0]:null);
+}
 function transferRowHtml(r){
-  const acc=TRANSFERS_STATE.accountsByVendor.get(r.vendor_id);
+  const acc=transferAccountOf(r);
   const blocked=r.bank_account_change_detected;
   const method=acc?(acc.payment_method||"bank_transfer"):null;
   // 2026-09-05追加：ユーザー報告「PayPay銀行CSVをアップロードしたら『銀行コードは必須入力
@@ -7938,7 +7948,7 @@ async function transferExportCsv(u){
   if(!selected.length){ $("transfer-msg").textContent="対象を選択してください"; return; }
   // 2026-09-07修正：CSV出力の対象はあくまで銀行振込（PayPay銀行）のみ。引き落とし・現金払いは
   // 銀行口座を持たないため、選択されていても静かに除外し、その旨を分かりやすく案内する
-  const accountOf=r=>TRANSFERS_STATE.accountsByVendor.get(r.vendor_id);
+  const accountOf=r=>transferAccountOf(r);
   const withAccount=selected.filter(r=>{
     const acc=accountOf(r);
     return acc&&(acc.payment_method||"bank_transfer")==="bank_transfer"&&acc.bank_code&&acc.branch_code; // 2026-09-05：銀行コード・支店コード未登録はCSV出力対象から除外（必ずエラーになるため）
@@ -7966,7 +7976,7 @@ async function transferExportCsv(u){
   const transferDate=await promptTransferDateModal();
   if(transferDate===null) return; // キャンセル
   const csv=buildPaypayCsv(withAccount.map(r=>{
-    const acc=TRANSFERS_STATE.accountsByVendor.get(r.vendor_id);
+    const acc=transferAccountOf(r);
     return { bankCode:acc.bank_code||"", branchCode:acc.branch_code||"", accountType:acc.account_type||"1", accountNumber:acc.account_number||"", holderKana:acc.account_holder_kana||"", amount:Number(r.amount)||0 };
   }),remitterName);
   const blob=paypayCsvToBlob(csv); // 2026-09-04：Shift-JISでエンコード（PayPay銀行アップロードエラー対応）

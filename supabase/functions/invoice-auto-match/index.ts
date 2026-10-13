@@ -155,7 +155,11 @@ Deno.serve(async (req: Request) => {
       account_holder: body?.bank_account_holder || null,
     };
     if (vendorId && (bankFields.account_number || bankFields.bank_name)) {
-      const { data: currentAccount } = await uc.from("vendor_bank_accounts").select("*").eq("vendor_id", vendorId).eq("is_current", true).maybeSingle();
+      // 2026-10-13: 店舗ごとに口座が違う取引先に対応。請求書の店舗の口座→店舗なしの口座→（1件だけなら）その口座、の順に選ぶ
+      const { data: curAccts } = await uc.from("vendor_bank_accounts").select("*").eq("vendor_id", vendorId).eq("is_current", true);
+      const currentAccount = (curAccts ?? []).find((x: any) => inv.store_id && x.store_id === inv.store_id)
+        ?? (curAccts ?? []).find((x: any) => !x.store_id)
+        ?? ((curAccts ?? []).length === 1 ? curAccts![0] : null);
       if (currentAccount) {
         const differs = (bankFields.account_number && bankFields.account_number !== currentAccount.account_number)
           || (bankFields.bank_name && currentAccount.bank_name && bankFields.bank_name !== currentAccount.bank_name);
