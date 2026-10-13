@@ -4,10 +4,11 @@
 
 ---
 
-## 2026-10-13 担当C: インフォマートの取込口 `invoice-auto-ingest` 実装（**Edge Functionデプロイ待ち**・SQL変更なし・画面v101）
+## 2026-10-13 担当C: インフォマートの取込口 `invoice-auto-ingest` 実装（デプロイ済み・SQL変更なし・画面v101）
 - 担当Dの `infomart-invoice` が取引先1社×1か月ごとに送る口。仕様書: `docs/仕様_invoice-auto-ingest_インフォマート請求書の取込口_2026-10-13.md`（URL・認証=invoice_intake_secret・本文・戻り値・注意）。
 - 作るもの: 下書きinvoice(intake_source='infomart')＋明細行(CSV行→店舗コード・税抜金額・税率・税額)＋PDF証憑(invoice_attachments・source_attachment_id)。続けて店舗の突合→仕訳下書き→検算→承認待ちへ。
 - 二重防止: PDFのSHA-256／取引先(同名重複含む)×請求番号／取引先×対象月×税込合計。PDF必須(422)。合計の検算(Σgross=totals.gross・Σtax=totals.tax ±1円)。
+- 実機確認(テスト請求書は確認後削除): 1回目=作成(取引先確定・3行)／2回目=重複(同PDF)／PDFなし=422／合計不一致=422。店舗01/06/08→鳥一代 本店/黒霧屋 新横浜/鶏武者 新横浜(06/08逆転も正)、部門=01本店/06新横浜黒霧屋/08新横浜・匠味/鶏武者、借方=CSVの税額どおり(942,060/52,458/273,747)＝貸方¥1,268,265、PDF検算OK→承認待ち。最初は『宛先の法人が未確定』で止まった→10社の既定法人(vendors.default_corporation_id)=トーホーを設定（seed§1の宛先法人。担当Cの分）して解消。
 - 追随: invoice-journal-draft=行に税額があればその税額で税込を作る(CSVの税額そのまま)／invoice-check=PDF未添付はNG／承認画面=PDF未添付は登録不可(登録前チェックは可)／「自動処理中」ロックの対象にinfomartを追加(v101)。
 
 ---
