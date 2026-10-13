@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-13-v91";
+const BUILD_TAG="2026-10-13-v92";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -870,6 +870,72 @@ function plfeeFindStoreByName(stores,name){
   const norm=s=>String(s||"").replace(/\s+/g,"");
   const n=norm(name);
   return stores.find(s=>norm(s.name)===n) || stores.find(s=>n.includes(norm(s.name))||norm(s.name).includes(n)) || null;
+}
+
+/* ============================================================
+   請求書の明細と店舗の突合（請求書自動処理 Phase4・2026-10-13）
+   AIが読み取った明細行（invoice_lines）と、店舗マスタ正本(resolve_store)で結びつけた結果を表示する。
+   未解決・自信が低い行は、人が店舗を選んで「この店舗として登録」すると register_store_mapping で外部マッピングに登録され、
+   次回から同じ表記が自動で結びつく（store_aliases には登録しない）。明細が無い請求書では何も表示しない。
+   ============================================================ */
+async function invlinesInit(invoiceId){
+  const box=$("invlinesbox"); if(!box) return;
+  const [lr,ir]=await Promise.all([
+    authed(`/rest/v1/invoice_lines?invoice_id=eq.${invoiceId}&select=*&order=line_no`),
+    authed(`/rest/v1/invoices?id=eq.${invoiceId}&select=lines_check,subtotal_amount,tax_amount,target_year_month`),
+  ]);
+  const lines=(lr.ok&&Array.isArray(lr.body))?lr.body:[];
+  if(!lines.length){ box.innerHTML=""; return; }
+  await ensureCorpStoreCache();
+  const stores=(CORP_STORE_CACHE&&CORP_STORE_CACHE.stores)||[];
+  const storeName=id=>{ const s=stores.find(x=>x.id===id); return s?s.name:""; };
+  const inv=(ir.ok&&Array.isArray(ir.body)&&ir.body[0])||{};
+  const chk=inv.lines_check||{}; const mp=chk.mapping||null;
+  const need=lines.filter(l=>!l.resolved_store_id&&(l.store_text||l.store_code));
+  const storeOpts=sel=>`<option value="">（店舗を選択）</option>`+stores.map(s=>`<option value="${esc(s.id)}" ${sel===s.id?"selected":""}>${esc(s.name)}</option>`).join("");
+  const rowHtml=l=>{
+    const info=l.resolve_info||{};
+    const resolvedCell=l.resolved_store_id
+      ?`<span style="color:var(--m-green,#1a7f37)">✓ ${esc(storeName(l.resolved_store_id))}</span> <small style="color:var(--muted)">${esc({mapping:"自動",rule:"既定",human:"手動",ai:"AI"}[l.resolved_by]||"")}</small>`
+      :(l.store_text||l.store_code)
+        ?`<select class="invl-store" data-line="${esc(l.id)}" data-text="${esc(l.store_text||"")}" data-code="${esc(l.store_code||"")}" style="max-width:150px">${storeOpts(info.candidate_store_id||"")}</select> <button class="hq-btn invl-reg" data-line="${esc(l.id)}" style="font-size:11px;padding:3px 6px">この店舗として登録</button>${info.confidence==="low"?'<div style="font-size:10px;color:#b45309">候補あり（自信が低いため要確認）</div>':""}`
+        :`<span style="color:var(--muted)">—</span>`;
+    return `<tr><td>${l.line_no}</td><td>${esc(l.store_text||l.store_code||"")}</td><td>${resolvedCell}</td><td>${esc(l.item||l.description||"")}</td><td style="text-align:right">${l.amount!=null?yen(l.amount):""}</td><td>${l.tax_rate!=null?l.tax_rate+"%":""}</td></tr>`;
+  };
+  const probs=(chk.problems||[]);
+  box.innerHTML=`<details class="adcost-box" style="margin-bottom:10px" ${need.length||probs.length?"open":""}>
+    <summary style="cursor:pointer;font-size:13px;font-weight:600">📋 明細と店舗（自動読み取り・${lines.length}行）
+      ${chk.ok===true?'<span style="color:#1a7f37;font-size:11px">検算OK</span>':(chk.ok===false?'<span style="color:#b45309;font-size:11px">検算要確認</span>':"")}
+      ${mp?`<span style="font-size:11px;color:var(--muted)">／店舗: 確定${mp.resolved}・要確認${(mp.low||0)+(mp.unresolved||0)}</span>`:""}</summary>
+    ${probs.length?`<div class="err" style="margin:6px 0">⚠️ ${probs.map(esc).join("／")}</div>`:""}
+    <div style="font-size:11px;color:var(--muted);margin:4px 0">税抜合計 ${inv.subtotal_amount!=null?yen(inv.subtotal_amount):"—"}／税額 ${inv.tax_amount!=null?yen(inv.tax_amount):"—"}／対象月 ${esc((inv.target_year_month||"—").slice(0,7))}　<button class="hq-btn" id="invl-rerun" style="font-size:11px;padding:3px 6px">🔄 店舗を再判定</button></div>
+    <div style="overflow-x:auto"><table class="invoice-table" style="font-size:12px"><thead><tr><th>#</th><th>請求書の店舗表記</th><th>店舗（正式）</th><th>品目</th><th style="text-align:right">金額</th><th>税</th></tr></thead><tbody>${lines.map(rowHtml).join("")}</tbody></table></div>
+    <div class="err" id="invl-msg" style="margin-top:6px"></div>
+  </details>`;
+  const msg=$("invl-msg");
+  if($("invl-rerun")) $("invl-rerun").onclick=async()=>{
+    msg.className="err"; msg.textContent="店舗を判定中…";
+    const s=sess.get();
+    const r=await fetch(SUPA_URL+"/functions/v1/invoice-resolve-lines",{method:"POST",headers:{"Content-Type":"application/json","apikey":SUPA_KEY,"Authorization":"Bearer "+(s?s.at:"")},body:JSON.stringify({invoice_id:invoiceId})});
+    const j=await r.json().catch(()=>({}));
+    if(!r.ok){ msg.textContent=j.error||"判定に失敗しました"; return; }
+    invlinesInit(invoiceId);
+  };
+  document.querySelectorAll(".invl-reg").forEach(btn=>btn.onclick=async()=>{
+    const lineId=btn.dataset.line, sel=document.querySelector(`.invl-store[data-line="${lineId}"]`);
+    const storeId=sel&&sel.value; const text=sel&&sel.dataset.text, code=sel&&sel.dataset.code;
+    if(!storeId){ msg.className="err"; msg.textContent="店舗を選んでください"; return; }
+    if(!confirm(`請求書の表記「${text||code}」を「${storeName(storeId)}」として登録します。\n次回から同じ表記は自動でこの店舗に結びつきます。よろしいですか？`)) return;
+    btn.disabled=true; msg.className="err"; msg.textContent="登録中…";
+    const rr=await authed("/rest/v1/rpc/register_store_mapping",{method:"POST",body:JSON.stringify({p_source:"invoice",p_external_id:null,p_code:code&&!text?code:null,p_name:text||null,p_store_id:storeId,p_brand_id:null})});
+    if(!rr.ok){ msg.textContent="登録に失敗しました: "+((rr.body&&(rr.body.message||rr.body.error))||JSON.stringify(rr.body||"").slice(0,200)); btn.disabled=false; return; }
+    // この請求書の同じ表記の行をまとめて確定（人が確定した行として残す）
+    const same=lines.filter(l=>!l.resolved_store_id&&(l.store_text||"")===(text||"")&&(l.store_code||"")===(code||""));
+    for(const l of same){
+      await authed(`/rest/v1/invoice_lines?id=eq.${l.id}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({resolved_store_id:storeId,resolved_by:"human",resolve_info:{confidence:"human",via:"register_store_mapping"}})});
+    }
+    invlinesInit(invoiceId);
+  });
 }
 /* ============================================================
    会計仕訳→PL自動反映パネル（ラウンド5指示書§6.1／設計書_広告費自動連携_§5・2026-09-01
@@ -5038,6 +5104,7 @@ function renderMailDetail(u){
                   <div style="font-size:12px;color:var(--m-blue);margin-top:4px">この店舗はこの請求書の対象法人（運営元法人と同じ）では直接支払い扱いのため、業務委託精算書には登録できません（下の「PLへ反映しますか？」欄から直接PLに反映してください）。対象法人が異なる請求書（立替払い）の場合は、代わりに精算書への登録が必要になります。</div>`:""}
                 </div>`;
               })()}
+              ${(invoice&&invoice.id)?`<div id="invlinesbox"></div>`:""}
               ${(invoice&&invoice.amount!=null)?`<div id="adcostbox"></div>`:`<div class="meta" style="color:var(--muted);font-size:12px">先に上の「請求情報」で金額を保存してください</div>`}
               ${(invoice&&invoice.mf_journal_id)?`<div id="plfeebox"></div>`:`<div class="meta" style="color:var(--muted);font-size:12px;margin-top:8px">PLへの反映は会計・仕訳の登録後に行えます</div>`}
               </div>
@@ -5706,6 +5773,7 @@ function wireDetailActions(u){
     setTimeout(()=>{ reloadDetail(); },1200);
   }
   adcostInit();
+  if(invoice&&invoice.id&&$("invlinesbox")) invlinesInit(invoice.id);
 
   // 会計仕訳→PL自動反映（ラウンド5指示書§6.1／設計書_広告費自動連携_§5・2026-09-01
   // →2026-09-03拡張: 仕訳登録済みの請求書すべてが対象。実際に登録済みの仕訳（get_journal）を

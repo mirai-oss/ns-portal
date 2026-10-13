@@ -226,5 +226,15 @@ Deno.serve(async (req: Request) => {
       note: `明細OCR: ${lines.length}行・検算${checks.ok ? "OK" : "要確認（" + problems.join("／") + "）"}`, new_value: { invoice_id: invoiceId, check: checks },
     });
   }
+  // Phase4: 明細の店舗表記を店舗マスタ正本(resolve_store)で結びつける（待たずに別Functionへ依頼。失敗しても明細は残る）
+  if (body?.secret && lines.length) {
+    const kick = fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/invoice-resolve-lines`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", apikey: Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!, Authorization: `Bearer ${Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")}` },
+      body: JSON.stringify({ secret: body.secret, invoice_id: invoiceId }),
+    }).catch((e) => console.error("店舗の突合の依頼に失敗: " + e));
+    const er = (globalThis as any).EdgeRuntime;
+    if (er?.waitUntil) er.waitUntil(kick);
+  }
   return json({ success: true, lines: lines.length, check: checks });
 });

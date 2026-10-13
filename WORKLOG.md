@@ -4,6 +4,15 @@
 
 ---
 
+## 2026-10-13 担当C: 請求書自動処理 Phase4「マッピング接続」実装（**SQL適用・Edge Functionデプロイ待ち**・画面はv92で公開済み）
+- `supabase/2026-10-13_invoice_lines_resolve_info.sql`（未適用）: invoice_lines.resolve_info jsonb を1列追加するだけ。
+- `functions/invoice-resolve-lines`（新規・secretまたはユーザーJWT）: 明細の店舗表記を `resolve_store` で解決（自前の照合は書かない）。定期請求書10社（vendor_line_rulesあり）で店舗コードがあれば `resolve_store('infomart', p_code)`（★インフォマート06/08はハブstore_noと逆。store_noとして扱わない）→なければ `resolve_store('invoice', p_name)`。exact/highのみ確定(resolved_by='mapping')、lowは確定せず候補をresolve_infoに。店舗表記なしの行（1店舗請求書）は請求書の店舗→取引先の既定店舗(rule)。人が確定した行は触らない。未解決はresolve_storeがkd_unresolved_namesへ隔離記録。要約は invoices.lines_check.mapping。
+- `invoice-lines-ocr`: 明細保存後に invoice-resolve-lines を非同期起動（secret経由時）。
+- 画面(invoices.html v92): 請求書詳細に「📋 明細と店舗（自動読み取り）」パネル（検算結果・各行の店舗・「🔄店舗を再判定」・未解決行は店舗を選んで「この店舗として登録」=register_store_mapping('invoice',…)→同じ表記の行をまとめて人確定）。
+- 宛先法人(corporation_aliases)・請求元(vendor_aliases)はPhase2の自動生成で接続済み。既存画面の自前正規化(mappingNormCompanyName_＝MF事業者の突合用)は影響範囲が大きいため今回は置換せず（順次）。
+
+---
+
 ## 2026-10-13 担当C: 請求書自動処理 Phase3「明細OCR」実装（SQL適用・デプロイ済み 2026-10-13）
 - ユーザー補足: 請求書は「複数店舗が混ざるもの」と「1店舗だけのもの」の両方がある。食べログの請求元は株式会社カカクコム。
 - `supabase/2026-10-13_invoice_lines.sql`（適用済み）: `invoice_lines`（明細名・品目・店舗表記・店舗コード・ブランド・数量・単価・金額・税率・税額・備考・resolved_store_id/resolved_by=Phase4用）、invoicesに subtotal_amount/tax_amount/target_year_month/lines_check/lines_extracted_at、automation_rule_settingsに invoice_lines_ai（モデル名）。
