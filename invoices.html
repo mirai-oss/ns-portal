@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-13-v99";
+const BUILD_TAG="2026-10-13-v100";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -940,7 +940,9 @@ async function openApprovalModal(u,invoiceId){
       <div style="font-size:11px">${logs.map(x=>`<div>${fmtDT(x.created_at)}　${esc(x.note||x.action)}</div>`).join("")||"履歴はありません"}</div>
     </details>
     <div class="mail-actions" style="margin-top:12px;flex-wrap:wrap">
-      <button class="primary" id="apv-approve" disabled title="MFへの登録（承認処理）は次のステップ（Phase8）で有効になります">✅ 承認（MF登録）※次のステップで有効化</button>
+      <button class="primary" id="apv-approve">✅ 承認してMFに登録</button>
+      <button class="hq-btn" id="apv-dry">🔎 登録前チェック（登録しない）</button>
+      <label style="display:inline-flex;gap:4px;align-items:center;font-size:12px"><input type="checkbox" id="apv-reflect" checked style="width:auto">PL・広告費・精算書にも反映する（税抜）</label>
       <button class="hq-btn" id="apv-reject-open">↩️ 差し戻し</button>
       <button class="hq-btn" id="apv-detail">📄 詳細を開く</button>
     </div>
@@ -959,6 +961,8 @@ async function openApprovalModal(u,invoiceId){
   mfCall("list_departments",{tenant_id:d.tenant_id}).then(a=>{ if(a.ok&&$("apv-dept-dl")) $("apv-dept-dl").innerHTML=(a.body.departments||[]).map(x=>`<option value="${esc(x.name)}">`).join(""); });
   modal.querySelectorAll(".apv-acc,.apv-sub,.apv-dept,.apv-tax").forEach(el=>el.oninput=el.onchange=()=>{ $("apv-edited").style.display="block"; });
   $("apv-detail").onclick=()=>{ history.back(); setTimeout(()=>openInvoiceDetail(u,invoiceId),50); };
+  $("apv-approve").onclick=()=>apvApprove_(u,inv,d,modal);
+  $("apv-dry").onclick=()=>apvApprove_(u,inv,d,modal,true);
   $("apv-reject-open").onclick=()=>{ $("apv-reject").style.display="block"; };
   $("apv-reject-send").onclick=async()=>{
     const reason=$("apv-reject-reason").value.trim(); const msg=$("apv-msg");
@@ -970,6 +974,113 @@ async function openApprovalModal(u,invoiceId){
     history.back();
     await renderUnifiedInvoiceTab(u);
   };
+}
+
+// 承認処理（請求書自動処理 Phase8）: 承認 → MF仕訳登録（既存のmf-journal create・承認ボタンからのみ）→ 承認の記録 → PL・広告費・精算書へ反映（税抜）
+// ・MFの科目・補助・部門・税区分は名前からMFのマスタを引いて解決する。見つからなければ登録せず理由を表示（登録前に止まる）
+// ・修正して承認したら、修正後の内容を新しい版（corrected）の行ルールとして保存する（行ごとに内容が違う場合は保存しない）
+// ・二重登録防止: 直前にMF登録済みか再確認／mf-journalも登録済みを拒否（409）。承認ボタンは押した瞬間に無効化
+// ・反映先は仕訳の行の店舗で決まる: 業務委託精算対象店舗=精算書(seisan_confirm)／それ以外=PL(confirm)。1行は1ルートだけ。
+//   広告宣伝費は広告費(ad-cost-reflect)にも反映（従来の手動運用と同じ）。仕入高のPL反映は「請求書とsiire見込の差額調整」方式の確定待ちのため行わない
+async function apvApprove_(u,inv,d,modal,dry){
+  const msg=$("apv-msg"), btn=$("apv-approve"); msg.className="err"; msg.textContent="";
+  btn.disabled=true;
+  const fail=t=>{ msg.className="err"; msg.innerHTML=t; btn.disabled=false; };
+  try{
+    // 直前の再確認（二重登録防止・人がロックしていないか）
+    const cur=await authed(`/rest/v1/invoices?id=eq.${inv.id}&select=mf_journal_id,auto_mode,current_stage`);
+    const c0=(cur.ok&&Array.isArray(cur.body)&&cur.body[0])||{};
+    if(c0.mf_journal_id) return fail("この請求書は既にMFへ登録済みです（二重登録防止）。画面を閉じて一覧を更新してください。");
+    if(c0.auto_mode==="manual") return fail("この請求書は手動に切り替えられています。詳細画面から処理してください。");
+    // 画面の（修正を含む）内容を集める
+    const lines=(d.debit_lines||[]).map(l=>{
+      const q=sel=>modal.querySelector(`${sel}[data-ln="${l.line_no}"]`);
+      return {line_no:l.line_no,store_id:l.store_id,store_name:l.store_name,remark:l.remark,amount:l.debit.amount,net:l.debit.net_amount,
+        account:(q(".apv-acc").value||"").trim(),sub:(q(".apv-sub").value||"").trim(),dept:(q(".apv-dept").value||"").trim(),rate:Number(q(".apv-tax").value),
+        orig:{account:l.debit.account||"",sub:l.debit.sub_account||"",dept:l.debit.department||"",rate:l.debit.tax?Number(l.debit.tax.rate):0}};
+    });
+    if(!lines.length||!d.credit) return fail("仕訳の下書きに明細・貸方がありません");
+    // MFのマスタ（科目・部門・税区分）を名前から解決
+    msg.textContent="MFの科目・部門・税区分を確認中…";
+    const [aR,dR,sR]=await Promise.all([mfCall("accounts",{tenant_id:d.tenant_id}),mfCall("list_departments",{tenant_id:d.tenant_id}),mfCall("journal_search",{vendor_name:"",tenant_id:d.tenant_id})]);
+    if(!aR.ok) return fail("MFの科目を取得できませんでした: "+((aR.body&&aR.body.error)||""));
+    const idx=mftBuildAccountIndex(aR.body.accounts||[]);
+    const nz=x=>String(x||"").trim().normalize("NFKC");
+    const depts=(dR.ok&&dR.body.departments)||[]; const taxes=(sR.ok&&sR.body.taxes)||[];
+    const labelOf=(a,sub)=>sub?`${a}/${sub}`:a;
+    const missing=[]; const mfLines=[];
+    const taxFor=rate=>{ if(!rate) return (taxes.find(t=>/対象外/.test(t.name))||{}).id||null;
+      const cs=taxes.filter(t=>/課税仕入/.test(t.name)&&new RegExp(`${rate}\\s*%`).test(t.name)&&!/旧|非適格|控除不可/.test(t.name)); const pick=(rate===8?cs.find(t=>/軽減/.test(t.name)):null)||cs[0]; return pick?pick.id:null; };
+    for(const l of lines){
+      const dl=idx.map.get(labelOf(l.account,l.sub)); if(!dl) missing.push(`行${l.line_no}: 科目「${labelOf(l.account,l.sub)}」`);
+      const dep=depts.find(x=>nz(x.name)===nz(l.dept)); if(!dep) missing.push(`行${l.line_no}: 部門「${l.dept}」`);
+      const tid=taxFor(l.rate); if(!tid) missing.push(`行${l.line_no}: 税区分（${l.rate?`課税仕入 ${l.rate}%`:"対象外"}）`);
+      mfLines.push({l,dl,dep,tid});
+    }
+    const cl=idx.map.get(labelOf(d.credit.account,d.credit.sub_account)); if(!cl) missing.push(`貸方「${labelOf(d.credit.account,d.credit.sub_account)}」`);
+    if(missing.length) return fail("MFに見つからない項目があるため、登録していません:<br>・"+missing.map(esc).join("<br>・")+"<br>（行の科目・部門などを直すか、MF側で作成してください）");
+    const total=lines.reduce((t,l)=>t+l.amount,0);
+    if(total!==Number(d.credit.amount)) return fail(`借方合計（${yen(total)}）と貸方（${yen(d.credit.amount)}）が一致しません。下書きを作り直してください。`);
+    if(dry){ btn.disabled=false; msg.className="err msg-ok"; msg.innerHTML=`✅ 登録前チェックOK（登録はしていません）: MFの科目・部門・税区分がすべて見つかり、借方${yen(total)}＝貸方です。「承認してMFに登録」で登録できる状態です。`; return; }
+    const reflect=$("apv-reflect").checked;
+    if(!confirm(`MFに仕訳を登録します（${lines.length}行・${yen(total)}・計上日 ${d.transaction_date}）。\n${reflect?"登録後、PL・広告費・精算書にも反映します（税抜）。":"PL・広告費・精算書への反映は行いません。"}\n\n一度登録すると、取り消しはMF側での対応になります。よろしいですか？`)){ btn.disabled=false; return; }
+    msg.textContent="MFへ登録中…";
+    const branches=mfLines.map(m=>({debit:{account_id:m.dl.account_id,sub_account_id:m.dl.sub_account_id||undefined,value:m.l.amount},department_id:m.dep.id,tax_id:m.tid,remark:m.l.remark||undefined}));
+    branches.push({credit:{account_id:cl.account_id,sub_account_id:cl.sub_account_id||undefined,value:total},remark:d.remark||undefined});
+    const {ok,body:j}=await perfTimed("仕訳登録",()=>mfCall("create",{invoice_id:inv.id,tenant_id:d.tenant_id,branches,transaction_date:d.transaction_date,remark:d.remark||inv.vendor_name||"",attach_files:true,
+      debit_account_names:mfLines.map(m=>labelOf(m.l.account,m.l.sub))}));
+    if(!ok) return fail("MF登録に失敗しました: "+esc((j&&j.error)||"")+"<br>（何も登録されていません。内容を直してもう一度お試しください）");
+    const results=[`①MFへ登録しました（伝票番号: ${j.journal_number??"-"}）${j.voucher_attached?`・証憑${j.voucher_attached}件添付`:(j.voucher_error?`（証憑添付: ${esc(j.voucher_error)}）`:"")}`];
+    // 処理の段階・承認の記録
+    await authed(`/rest/v1/invoices?id=eq.${inv.id}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({current_stage:"payment_waiting",blocked_reason:null,stage_updated_at:new Date().toISOString()})});
+    const edited=lines.some(l=>l.account!==l.orig.account||l.sub!==l.orig.sub||l.dept!==l.orig.dept||l.rate!==l.orig.rate);
+    await authed("/rest/v1/rpc/invoice_add_comment",{method:"POST",body:JSON.stringify({p_email_id:inv.email_id||null,p_invoice_id:inv.email_id?null:inv.id,p_body:`【承認】MF登録（伝票番号${j.journal_number??"-"}）${edited?"・内容を修正して承認":""}`})});
+    // 修正して承認 → 新しい版のルールとして保存（行ごとに内容が同じ場合のみ）
+    if(edited){
+      const first=lines[0]; const same=lines.every(l=>l.account===first.account&&l.sub===first.sub);
+      const vname=(inv.vendor&&inv.vendor.name)||inv.vendor_name||"";
+      if(same&&inv.vendor_id){
+        const fields={account_name:first.account,sub_account_mode:first.sub?(nz(first.sub)===nz(vname)?"vendor":"fixed"):"none",sub_account_name:first.sub&&nz(first.sub)!==nz(vname)?first.sub:null,vendor_id:inv.vendor_id};
+        const rr=await authed("/rest/v1/rpc/save_vendor_line_rule",{method:"POST",body:JSON.stringify({p_vendor_key:vname,p_tenant_id:d.tenant_id,p_line_pattern:"*",p_fields:fields,p_source:"approved"})});
+        results.push(rr.ok?"②修正した内容を新しい版のルールとして保存しました":"②ルールの保存に失敗しました（登録は完了しています）");
+      } else results.push("②行ごとに内容が違うため、ルールの更新は行っていません");
+    }
+    // PL・広告費・精算書への反映（税抜）
+    if(reflect){
+      const ym=(inv.target_year_month||d.transaction_date||"").slice(0,7)+"-01";
+      const stores=(CORP_STORE_CACHE&&CORP_STORE_CACHE.stores)||[]; await ensureCorpStoreCache();
+      const routeOfStore=sid=>{ const x=((inv.checks&&inv.checks.routes)||[]).find(v=>v.store_id===sid); return x?x.route:"pl"; };
+      const netOf=l=>l.net!=null?Math.round(l.net):(l.rate>0?l.amount-Math.floor(l.amount*l.rate/(100+l.rate)):l.amount);
+      const groups=new Map(); // key = route|account|sub|rate → store別
+      for(const l of lines){ if(!l.store_id) continue; const rt=routeOfStore(l.store_id); const k=[rt,l.account,l.sub,rt==="seisan"?l.rate:0].join("\u0001");
+        const g=groups.get(k)||{route:rt,account:l.account,sub:l.sub,rate:l.rate,byStore:new Map()}; const st=stores.find(x=>x.id===l.store_id);
+        const e=g.byStore.get(l.store_id)||{store_id:l.store_id,store_name:st?st.name:l.store_name,amount:0}; e.amount+=netOf(l); g.byStore.set(l.store_id,e); groups.set(k,g); }
+      const targets=await plFeeTargetAccounts(); const mediaList=["食べログ","ぐるなび","ホットペッパー","Retty"];
+      const adDone=new Set();
+      for(const g of groups.values()){
+        const allocs=[...g.byStore.values()].filter(a=>a.amount>0); if(!allocs.length) continue;
+        const name=labelOf(g.account,g.sub);
+        if(g.route==="seisan"){
+          const r=await plFeeCall("seisan_confirm",{invoice_id:inv.id,account_name:g.account,sub_account_name:g.sub||undefined,item_name:g.account,tax_rate:g.rate?`${g.rate}%`:"非課税",year_month:ym,allocations:allocs.map(a=>({...a,tax_rate:g.rate?`${g.rate}%`:"非課税"}))});
+          results.push(r.ok&&r.body.success!==false?`③精算書へ登録: ${esc(name)}`:`③⚠️精算書への登録に失敗: ${esc(name)}（${esc((r.body&&(r.body.error||(r.body.results||[]).filter(x=>!x.ok).map(x=>x.store+": "+x.error).join("／")))||"")}）`);
+          continue;
+        }
+        if(g.account==="仕入高"){ results.push(`③仕入高（${esc(g.sub||"")}）のPL反映は、請求書とsiire見込の差額調整方式の確定待ちのため行っていません`); continue; }
+        if(g.account==="広告宣伝費"&&mediaList.includes(g.sub)&&!adDone.has(g.sub)){
+          adDone.add(g.sub); const s2=sess.get();
+          const r=await fetch(SUPA_URL+"/functions/v1/ad-cost-reflect",{method:"POST",headers:{"Content-Type":"application/json","apikey":SUPA_KEY,"Authorization":"Bearer "+(s2?s2.at:"")},body:JSON.stringify({action:"confirm",invoice_id:inv.id,media:g.sub,year_month:ym,allocations:allocs})});
+          const jj=await r.json().catch(()=>({}));
+          results.push(r.ok?`③広告費へ反映: ${esc(g.sub)}`:`③⚠️広告費への反映に失敗: ${esc(jj.error||"")}`);
+        }
+        if(!targets.some(t=>t.account_name===g.account&&(t.sub_account_name||"")===(g.sub||""))){ results.push(`③${esc(name)}は「PL連携対象科目」に未登録のため、PLへは反映していません（設定タブで登録後、詳細画面から反映できます）`); continue; }
+        const r=await plFeeCall("confirm",{invoice_id:inv.id,account_name:g.account,sub_account_name:g.sub||undefined,year_month:ym,allocations:allocs});
+        results.push(r.ok?`③PLへ反映（税抜）: ${esc(name)}`:`③⚠️PLへの反映に失敗: ${esc(name)}（${esc((r.body&&r.body.error)||"")}）`);
+      }
+    }
+    btn.style.display="none";
+    msg.className="err msg-ok"; msg.innerHTML=results.join("<br>")+"<br><br>完了しました。画面を閉じて一覧を更新してください。";
+    setTimeout(()=>{},0);
+  }catch(e){ fail("エラーが発生しました: "+esc((e&&e.message)||e)); }
 }
 /* ============================================================
    請求書の明細と店舗の突合（請求書自動処理 Phase4・2026-10-13）
