@@ -164,7 +164,7 @@ Deno.serve(async (req: Request) => {
       // 返す。ユーザー報告「精算書の添付にファイルが無い」に対応し、反映履歴カードで
       // 添付の成否を確認できるようにするため
       const { data: refl, error: reflErr } = await uc.from("invoice_pl_reflections")
-        .select("id, account_name, sub_account_name, year_month, allocations, reflected_at, sheet_synced_at, sheet_sync_error, reflection_route, seisan_store_name, pl_status, pl_status_checked_at, attached_count, attachment_error")
+        .select("id, account_name, sub_account_name, year_month, allocations, reflected_at, sheet_synced_at, sheet_sync_error, reflection_route, seisan_store_name, pl_status, pl_status_checked_at, attached_count, attachment_error, tax_rate, item_name")
         .eq("invoice_id", invoiceId).order("reflected_at", { ascending: true });
       if (reflErr) return json({ error: "確認に失敗しました: " + reflErr.message }, 500);
       return json({ success: true, excluded_at: inv.pl_fee_excluded_at, reflections: refl ?? [] });
@@ -322,6 +322,8 @@ Deno.serve(async (req: Request) => {
         if (!a.store_id || !a.store_name || !Number.isFinite(amt) || amt <= 0) {
           return json({ error: "各行に店舗と金額（0円より大きい）を入力してください" }, 400);
         }
+        // 2026-10-13追加：同じ請求書・同じ科目でも8%と10%の仕入は別の行として精算書へ登録できるよう、行ごとの税率（a.tax_rate）を許可する（省略時は全体のtax_rate）
+        if (a.tax_rate != null && !["10%", "8%", "非課税"].includes(a.tax_rate)) return json({ error: "税率は10%/8%/非課税のいずれかです" }, 400);
       }
 
       const { data: inv, error: invErr } = await uc.from("invoices")
@@ -387,10 +389,12 @@ Deno.serve(async (req: Request) => {
 
       for (const a of allocations) {
         const s = storeMap.get(a.store_id);
-        // 重複防止（同じ請求書×科目×補助科目×店舗の既存行があれば、それを更新扱いにする＝同じsourceKeyで上書き）
+        // 重複防止（同じ請求書×科目×補助科目×店舗×税率の既存行があれば、それを更新扱いにする＝同じsourceKeyで上書き）
+        // 2026-10-13修正：税率もキーに含める。従来は税率違い（8%と10%）の仕入が同じキーになり、片方がもう片方を上書きして精算書に1行しか入らなかった
+        const lineTax: string = a.tax_rate || taxRate;
         let dupQuery = uc.from("invoice_pl_reflections").select("id, seisan_line_key")
           .eq("invoice_id", invoiceId).eq("account_name", accountName).eq("reflection_route", "seisan")
-          .eq("seisan_store_name", s.seisan_store_name);
+          .eq("seisan_store_name", s.seisan_store_name).eq("tax_rate", lineTax);
         dupQuery = subAccountName ? dupQuery.eq("sub_account_name", subAccountName) : dupQuery.is("sub_account_name", null);
         const { data: existing } = await dupQuery.maybeSingle();
 
@@ -401,20 +405,20 @@ Deno.serve(async (req: Request) => {
             invoice_id: invoiceId, account_name: accountName, sub_account_name: subAccountName || null,
             year_month: yearMonth, allocations: [a], reflected_by: userData?.user?.id ?? null,
             reflection_route: "seisan", seisan_store_name: s.seisan_store_name,
-            item_name: itemName, tax_rate: taxRate,
+            item_name: itemName, tax_rate: lineTax,
           }).select("id").maybeSingle();
           if (insErr) { results.push({ store: s.name, ok: false, error: "保存に失敗しました: " + insErr.message }); continue; }
           reflectionId = newRow?.id;
           sourceKey = `invoice:${invoiceId}:${reflectionId}`;
         } else {
           await db.from("invoice_pl_reflections").update({
-            allocations: [a], year_month: yearMonth, item_name: itemName, tax_rate: taxRate,
+            allocations: [a], year_month: yearMonth, item_name: itemName, tax_rate: lineTax,
           }).eq("id", reflectionId);
         }
 
         try {
           const gasRes = await seisanCall("sd_apiAddExternalLine", [tk, s.seisan_store_name, monthKey, {
-            sourceKey, item: itemName, amount: Number(a.amount), tax: taxRate,
+            sourceKey, item: itemName, amount: Number(a.amount), tax: lineTax,
             account: accountName, subAccount: subAccountName || undefined, note: body?.note || undefined,
           }]);
           if (!gasRes.ok) {
@@ -561,9 +565,11 @@ Deno.serve(async (req: Request) => {
       // 既定値'変動費'で保存されていた（PayPay等、既存のsource_nameすべてに共通する不具合。
       // 今回SMBC GMO PAYMENTのカード売上で顕在化して発覚）。売上行='売上'・手数料行='変動費'を
       // 明示的に渡すよう修正。
+      // 2026-10-13追加（ユーザー指示）：デリバリー売上（ロケットナウ・Uber Eats）は軽減税率8%。手数料は10%のまま。
+      const salesTax = /ロケット|uber/i.test(rcv.source_name || "") ? "8%" : "10%";
       const lines = [
-        { key: "sales", item: salesItem, account: "売上高", kubun: "売上", amount: Number(rcv.gross_amount) || 0 },
-        { key: "fee", item: feeItem, account: "支払手数料", kubun: "変動費", amount: Number(rcv.fee_amount) || 0 },
+        { key: "sales", item: salesItem, account: "売上高", kubun: "売上", amount: Number(rcv.gross_amount) || 0, tax: salesTax },
+        { key: "fee", item: feeItem, account: "支払手数料", kubun: "変動費", amount: Number(rcv.fee_amount) || 0, tax: "10%" },
       ].filter((l) => l.amount > 0);
       if (!lines.length) return json({ success: true, skipped: true, reason: "売上・手数料とも0円のため登録対象がありません" });
 
@@ -573,7 +579,7 @@ Deno.serve(async (req: Request) => {
         const sourceKey = `receivable:${receivableId}:${l.key}`;
         try {
           const gasRes = await seisanCall("sd_apiAddExternalLine", [tk, store.seisan_store_name, monthKey, {
-            sourceKey, item: l.item, amount: l.amount, tax: "10%", account: l.account, kubun: l.kubun,
+            sourceKey, item: l.item, amount: l.amount, tax: l.tax, account: l.account, kubun: l.kubun,
           }]);
           if (!gasRes.ok) {
             throw new Error(gasRes.error || (gasRes.locked ? "この月は振込済みのため精算書への登録・更新はできません" : "精算書側で失敗しました"));

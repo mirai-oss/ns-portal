@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-13-v89";
+const BUILD_TAG="2026-10-13-v90";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -951,7 +951,14 @@ async function plfeeLoadJournalGroups(){
   // 前にここが完了するため、上書きしても表示前に反映される）
   if(r.ok&&r.body.transaction_date) PLFEE_STATE.yearMonth=r.body.transaction_date.slice(0,7)+"-01";
   const branches=(r.ok&&Array.isArray(r.body.branches))?r.body.branches:[];
-  const already=new Set((PLFEE_STATE.reflections||[]).map(x=>(x.account_name||"")+""+(x.sub_account_name||"")));
+  // 2026-10-13修正：直接PL反映済みの科目だけを除外する。精算書へ登録済みの科目は、税率違い（8%/10%）の残りがあり得るため、行単位で後述の判定をする
+  const already=new Set((PLFEE_STATE.reflections||[]).filter(x=>x.reflection_route!=="seisan").map(x=>(x.account_name||"")+"\x01"+(x.sub_account_name||"")));
+  const taxRateOfBranch=(b)=>{ const n=String((b&&b.tax_name)||""); return /8\s*%/.test(n)?"8%":(/非課税|対象外|不課税/.test(n)?"非課税":"10%"); };
+  const seisanDone=(d,rate)=>{
+    const store=plfeeFindStoreByName(PLFEE_STATE.stores,d.department_name);
+    return !!store&&(PLFEE_STATE.reflections||[]).some(x=>x.reflection_route==="seisan"&&x.account_name===d.account_name&&(x.sub_account_name||"")===(d.sub_account_name||"")
+      &&(x.tax_rate||"10%")===rate&&((x.allocations||[])[0]||{}).store_id===store.id);
+  };
   // 2026-09-23追加: 部門(department_name)が業務委託精算書ルートの店舗を指す借方は、直接反映専用の
   // 「PL連携対象科目」ホワイトリスト判定の対象外にする（seisan_confirmはこのホワイトリストを見ないため、
   // 未登録でも精算書へは正しく登録できる。従来は科目未登録というだけでここで弾かれ、精算書登録時に
@@ -975,8 +982,11 @@ async function plfeeLoadJournalGroups(){
     if(!isSeisanBranch(d)&&!targets.some(t=>t.account_name===d.account_name&&(t.sub_account_name||"")===dSub)) continue; // PL科目として未登録の科目は対象外（精算書ルートの借方を除く）
     const key=d.account_name+""+(d.sub_account_name||"");
     if(already.has(key)) continue;
+    const rate=taxRateOfBranch(b);
+    // 精算書へ登録済みの行（同じ店舗・科目・税率）は候補から外す（税率違いの未登録分は残す）
+    if(isSeisanBranch(d)&&seisanDone(d,rate)) continue;
     if(!map.has(key)) map.set(key,{accountName:d.account_name, subAccountName:d.sub_account_name||"", branches:[]});
-    map.get(key).branches.push(d);
+    map.get(key).branches.push(Object.assign({},d,{_taxRate:rate}));
   }
   PLFEE_STATE.groups=Array.from(map.values());
 }
@@ -998,7 +1008,13 @@ async function plfeeComputeAllocation(group){
     for(const d of withDept){
       const store=plfeeFindStoreByName(PLFEE_STATE.stores,d.department_name);
       if(!store||!(Number(d.value)>0)) continue;
-      if(plfeeSeisanRoute(store,invoiceCorpId)==="seisan"){ seisanRows.push({store_id:store.id,store_name:store.name,amount:Math.round(Number(d.value))}); continue; }
+      if(plfeeSeisanRoute(store,invoiceCorpId)==="seisan"){
+        // 同じ店舗・同じ税率の行は合算、税率が違えば別の行のまま（精算書に8%と10%の両方を入れるため）
+        const rate=d._taxRate||"10%";
+        const ex=seisanRows.find(x=>x.store_id===store.id&&x.tax_rate===rate);
+        if(ex) ex.amount+=Math.round(Number(d.value)); else seisanRows.push({store_id:store.id,store_name:store.name,amount:Math.round(Number(d.value)),tax_rate:rate});
+        continue;
+      }
       rows.push({store_id:store.id,store_name:store.name,amount:Math.round(Number(d.value))});
     }
     PLFEE_STATE.seisanRows=seisanRows;
@@ -1073,6 +1089,7 @@ function plfeeSeisanRowHtml(row,idx){
   return `<tr data-idx="${idx}">
     <td><select class="plfee-seisan-store" data-idx="${idx}">${opts}</select></td>
     <td class="amt"><input type="number" class="plfee-seisan-amount" data-idx="${idx}" value="${row.amount}"></td>
+    <td><select class="plfee-seisan-rowtax" data-idx="${idx}">${["10%","8%","非課税"].map(t=>`<option value="${t}" ${(row.tax_rate||PLFEE_STATE.seisanTaxRate||"10%")===t?"selected":""}>${t}</option>`).join("")}</select></td>
     <td class="rm">${PLFEE_STATE.seisanRows.length>1?`<button data-plfeeseisanrm="${idx}" title="この行を削除">−</button>`:""}</td>
   </tr>`;
 }
@@ -1103,7 +1120,7 @@ function plfeeSeisanSectionHtml(){
       <div class="ai-field"><small>税率</small><select id="plfee-seisan-tax">${["10%","8%","非課税"].map(t=>`<option value="${t}" ${(PLFEE_STATE.seisanTaxRate||"10%")===t?"selected":""}>${t}</option>`).join("")}</select></div>
     </div>
     <table class="adcost-table">
-      <thead><tr><th>店舗</th><th style="text-align:right">金額</th><th></th></tr></thead>
+      <thead><tr><th>店舗</th><th style="text-align:right">金額</th><th>税率</th><th></th></tr></thead>
       <tbody id="plfee-seisan-rows">${rows.map((r,i)=>plfeeSeisanRowHtml(r,i)).join("")}</tbody>
     </table>
     <div class="mail-actions" style="margin-top:6px"><button id="plfee-seisan-add-row">＋ 店舗を追加</button></div>
@@ -1136,6 +1153,7 @@ function plfeeWireSeisanSection(){
     const sum=PLFEE_STATE.seisanRows.reduce((s,r)=>s+(Number(r.amount)||0),0);
     if($("plfee-seisan-total-sum")) $("plfee-seisan-total-sum").textContent=yen(sum);
   });
+  document.querySelectorAll(".plfee-seisan-rowtax").forEach(el=>el.onchange=()=>{ PLFEE_STATE.seisanRows[+el.dataset.idx].tax_rate=el.value; });
   document.querySelectorAll("[data-plfeeseisanrm]").forEach(el=>el.onclick=()=>{ PLFEE_STATE.seisanRows.splice(+el.dataset.plfeeseisanrm,1); plfeeRenderPanel(); });
   $("plfee-seisan-add-row").onclick=()=>{ PLFEE_STATE.seisanRows.push({store_id:"",store_name:"",amount:0}); plfeeRenderPanel(); };
   $("plfee-seisan-item").oninput=()=>{ PLFEE_STATE.seisanItemName=$("plfee-seisan-item").value; };
@@ -1159,7 +1177,7 @@ async function plfeeSeisanConfirm(){
   const r=await plFeeCall("seisan_confirm",{
     invoice_id:ctx.invoiceId, account_name:accountName, sub_account_name:subAccountName||undefined,
     item_name:itemName, tax_rate:taxRate, year_month:PLFEE_STATE.yearMonth,
-    allocations:rows.map(r=>({store_id:r.store_id,store_name:r.store_name,amount:Number(r.amount)})),
+    allocations:rows.map(r=>({store_id:r.store_id,store_name:r.store_name,amount:Number(r.amount),tax_rate:r.tax_rate||taxRate})),
   });
   if(!r.ok){ msg.textContent=r.body.error||"登録に失敗しました"; $("plfee-seisan-confirm").disabled=false; return; }
   const results=Array.isArray(r.body.results)?r.body.results:[];
