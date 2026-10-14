@@ -1250,6 +1250,8 @@ const KAIKEI_GROUP={cap:"会計",ico:"🧾", section:"kaikei", items:[
   // 2026-09-25: ユーザー指摘「未読バッジがどこの未読か分からない」に対応。この数字は請求書ではなく
   // 「売上入金のうちMF仕訳が未作成のもの」なので、バッジに「入金」の文字とホバー説明を付けた
   {key:"invoices",         sysKey:"invoices", ico:"🧾", label:"請求書",     url:"invoices.html?embed=1&tab=unified", countKey:"receivable", countLabel:"入金", countTitle:"売上入金のうち、MF仕訳がまだ作られていないもの（「売上入金」タブで確認）"},
+  // 2026-10-14: 自動取込の請求書の「承認待ち」を、サイドバーから直接開けるようにし、件数バッジを付けた（人が入力した請求書の「要対応」と混ざらないように）
+  {key:"invoiceApproval",  sysKey:"invoices", ico:"✅", label:"承認待ち",   url:"invoices.html?embed=1&tab=unified&sub=approval", countKey:"invApprove", countLabel:"承認待ち", countTitle:"自動取込で下書きが出来上がり、承認待ちの請求書（承認してMFに登録します）"},
   // --- 新UI未統合の既存機能（引き続き利用可。§9-15により給与仕訳は今回の刷新対象外） ---
   {key:"kaikei-dashboard", sysKey:"invoices", ico:"📊", label:"会計ダッシュボード", url:"invoices.html?embed=1&tab=dashboard"},
   {key:"kaikei-payroll",   sysKey:"invoices", ico:"💴", label:"給与仕訳",   url:"invoices.html?embed=1&tab=payroll"},
@@ -1429,7 +1431,7 @@ let ME=null, VIEW="home", CUR=null;
 let OPEN_GROUP="現場・日報"; // アコーディオン式に開いているグループは常に1つだけ（下のwireNav参照）
 let CUR_SECTION="genba"; // 2026-09-07: 上部の横タブで選んでいるカテゴリ（サイドバーはこれで絞り込む）
 let SIDEBAR_COLLAPSED=(()=>{ try{ return localStorage.getItem("portal_sidebar_collapsed")==="1"; }catch(e){ return false; } })();
-let NAV_HQ_CNT=0, NAV_INV_CNT=0, NAV_APPROVAL_CNT=0, NAV_RECEIVABLE_CNT=0;
+let NAV_HQ_CNT=0, NAV_INV_CNT=0, NAV_APPROVAL_CNT=0, NAV_RECEIVABLE_CNT=0, NAV_INV_APPROVE_CNT=0;
 // 2026-09-03 ユーザー要望: 経費申請の自分宛承認待ち／個人情報・社内システム変更申請の
 // 承認待ち（従来のNAV_APPROVAL_CNTを内訳ごとに分割）／自分の日報へのいいね・コメント通知
 let NAV_REQ_CNT=0; // 2026-10-05(A): 申請の承認待ち件数（スポット人件費の申請＋仕入れ移動の現場申請・退職はNAV_RETIRE_CNTでアカウント管理に出るため含めない）
@@ -1553,6 +1555,7 @@ function countOf(it){
   if(it.countKey==="hq") return NAV_HQ_CNT;
   if(it.countKey==="inv") return NAV_INV_CNT;
   if(it.countKey==="receivable") return NAV_RECEIVABLE_CNT;
+  if(it.countKey==="invApprove") return NAV_INV_APPROVE_CNT;
   if(it.countKey==="approval") return NAV_APPROVAL_CNT;
   if(it.countKey==="expense") return NAV_EXPENSE_CNT;
   if(it.countKey==="profileApproval") return NAV_PROFILE_APPROVAL_CNT;
@@ -2003,6 +2006,11 @@ async function renderHomeArea(u){
       const recR=await authed(`/rest/v1/ar_receivables?status=eq.pending&mf_journal_id=is.null&select=id`);
       NAV_RECEIVABLE_CNT=(recR.ok&&Array.isArray(recR.body))?recR.body.length:0;
     }catch(e){ NAV_RECEIVABLE_CNT=0; }
+    // 2026-10-14: 請求書の自動処理で「承認待ち」になった件数（MF未登録・手動切替でないもの）
+    try{
+      const apR=await authed(`/rest/v1/invoices?current_stage=eq.ready_for_approval&mf_journal_id=is.null&or=(auto_mode.is.null,auto_mode.neq.manual)&select=id`);
+      NAV_INV_APPROVE_CNT=(apR.ok&&Array.isArray(apR.body))?apR.body.length:0;
+    }catch(e){ NAV_INV_APPROVE_CNT=0; }
   }
   // 2026-09-01/03 ユーザー要望: 変更申請（requests.html）の承認待ちに気づけるよう、
   // 「社内情報管理」・「申請」グループ配下にバッジを追加。
@@ -2098,9 +2106,12 @@ async function main(){
 // （従来はホーム表示時にしか数え直さず、入金を削除・仕訳作成しても古い数字が残っていた）
 window.addEventListener("message",e=>{
   if(e.origin!==location.origin||!e.data||e.data.type!=="nsAcBadge"||!ME) return;
+  let changed=false;
   const n=Number(e.data.receivable);
-  if(!Number.isFinite(n)||n===NAV_RECEIVABLE_CNT) return;
-  NAV_RECEIVABLE_CNT=n; refreshNavActive(ME);
+  if(e.data.receivable!=null&&Number.isFinite(n)&&n!==NAV_RECEIVABLE_CNT){ NAV_RECEIVABLE_CNT=n; changed=true; }
+  const a=Number(e.data.approve);
+  if(e.data.approve!=null&&Number.isFinite(a)&&a!==NAV_INV_APPROVE_CNT){ NAV_INV_APPROVE_CNT=a; changed=true; }
+  if(changed) refreshNavActive(ME);
 });
 main();
 </script>

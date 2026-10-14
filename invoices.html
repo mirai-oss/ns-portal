@@ -7509,13 +7509,14 @@ async function renderSalesListTab(u){ await renderFinancialListTab(u,"sales"); }
 // 請求書一覧に入れないで欲しい」との報告を受け、切り替え無しで常に除外する方式に変更した
 // （unifiedFilteredRows参照。給与仕訳から自動作成される「給与：氏名（年月）」invoicesレコード
 // ＝is_payroll_related=trueは、この一覧には一切出てこない。確認は給与仕訳タブで行う）
-let UNIFIED_STATE={subTab:"review", search:"", yearMonth:"", reasonFilter:"", sortCol:"", sortDir:"desc", rows:[]};
+let UNIFIED_STATE={subTab:(()=>{ const s=new URLSearchParams(location.search).get("sub"); return ["review","approval","plpending","all","accounting","payment","done"].includes(s)?s:"review"; })(), src:"", search:"", yearMonth:"", reasonFilter:"", sortCol:"", sortDir:"desc", rows:[]};
 const UNIFIED_SUBTABS=[["review","要対応"],["approval","承認待ち"],["plpending","PL未反映"],["all","すべて"],["accounting","会計待ち"],["payment","振込待ち"],["done","完了"]];
 const REASON_FILTER_LABELS={
   overdue:"支払期限超過", bank_change:"振込先口座変更", duplicate:"重複疑い", mf_error:"MF登録エラー",
   unknown_journal:"仕訳不明（未判定）", unknown_company:"法人不明", unknown_store:"店舗・部門不明", import_error:"取込エラー",
   payment_unverified:"振込済み・支払確認待ち",
   incomplete_info:"金額・取引先など未入力",
+  auto_blocked:"自動処理が止まっている",
 };
 // 2026-09-04新規：会計ダッシュボードのカード・要対応内訳から🧾請求書一覧へ絞り込み付きで
 // 遷移するための共通関数（指示書§20-21）。ダッシュボード側は判定ロジックを一切持たず、
@@ -7580,7 +7581,22 @@ function unifiedStoreLabel(r){
 // まで進んだときだけ。振込済み・支払確認待ちの請求書を「完了済みだから今さら指摘しても
 // 仕方ない」と要対応から除外していたのが原因で見つけにくくなっていたため、新しい理由
 // payment_unverified（振込済み・支払確認待ち）を要対応に追加し、絞り込みで見つけられるようにした
+// 2026-10-14: 自動取込（メール自動・インフォマート）の請求書は、人が入力した請求書とは別の流れ（自動処理→承認待ち）。
+// 承認待ちに並んでいるだけのものは「要対応」に混ぜない。要対応に出すのは、自動処理が止まっているもの・重複・MFエラー等だけ。
+function unifiedIsAuto(r){ return ["email_auto","infomart"].includes(r.intake_source)&&r.auto_mode!=="manual"; }
+function unifiedAutoReasons(r){
+  const today=new Date().toISOString().slice(0,10); const reasons=[];
+  if(r.payment_verified_at) return reasons;
+  if(!r.mf_journal_id&&(r.current_stage==="error"||r.blocked_reason||["received","parsed","mapping","journal_draft"].includes(r.current_stage))) reasons.push("auto_blocked");
+  if(r.duplicate_suspected) reasons.push("duplicate");
+  if(r.bank_account_change_detected) reasons.push("bank_change");
+  if(r.mf_registration_error) reasons.push("mf_error");
+  if(r.payment_status==="paid") reasons.push("payment_unverified");
+  if(r.due_date&&r.due_date<today&&r.payment_status!=="paid") reasons.push("overdue");
+  return reasons;
+}
 function unifiedAttentionReasons(r){
+  if(unifiedIsAuto(r)) return unifiedAutoReasons(r);
   if(r.payment_verified_at) return []; // 支払確認まで終わった、本当の完了済みだけ対象外にする
   const today=new Date().toISOString().slice(0,10);
   const reasons=[];
@@ -7663,6 +7679,7 @@ function unifiedFilteredRows(){
   // invoices行（is_receivable_related）も、給与関連と同じ理由で🧾請求書一覧には出さない
   // （確認は売上入金タブの「MF仕訳」列で行う）
   list=list.filter(r=>!r.is_receivable_related);
+  if(UNIFIED_STATE.src==="auto") list=list.filter(unifiedIsAuto); else if(UNIFIED_STATE.src==="manual") list=list.filter(r=>!unifiedIsAuto(r));
   // 2026-09-04新規：会計ダッシュボードのカード・要対応内訳からの絞り込み遷移用
   // （overdue/bank_change/duplicate/mf_error/unknown_journal/unknown_company/unknown_store/import_error）
   if(UNIFIED_STATE.reasonFilter) list=list.filter(r=>unifiedAttentionReasons(r).includes(UNIFIED_STATE.reasonFilter));
@@ -7718,7 +7735,7 @@ function unifiedRowHtml(r){
     <td><b>${esc((r.vendor&&r.vendor.name)||r.vendor_name||"—")}</b>${riskNote?`<div class="danger-text" style="color:var(--m-red);font-size:10px;font-weight:800">${esc(riskNote)}</div>`:""}</td>
     <td>${esc(r.invoice_number||"—")}</td>
     <td>${yen(r.amount)}</td>
-    <td><span class="invoice-status gray">${esc(INTAKE_SOURCE_LABEL[r.intake_source]||(r.email_id?"メール":"手動"))}</span></td>
+    <td><span class="invoice-status ${unifiedIsAuto(r)?"check":"gray"}" title="${unifiedIsAuto(r)?"自動取込（自動で下書きまで作られ、承認待ちに並びます）":"人が取り込み・入力した請求書"}">${unifiedIsAuto(r)?"🤖 ":"✋ "}${esc(INTAKE_SOURCE_LABEL[r.intake_source]||(r.email_id?"メール":"手動"))}</span></td>
     <td><span class="invoice-status ${ai[1]}">${esc(ai[0])}</span></td>
     <td>${r.mf_journal_id?'<span class="invoice-status done">済</span>':'<span class="invoice-status wait">未</span>'}</td>
     <td>${r.pl_fee_reflected_at?'<span class="invoice-status done">済</span>':"—"}</td>
@@ -7789,6 +7806,7 @@ function unifiedRender(u){
   // 除いて数える（一覧には出てこないのに件数だけ多く見えてしまっていたのを修正）
   const countBase=UNIFIED_STATE.rows.filter(r=>!r.is_payroll_related&&!r.is_receivable_related);
   UNIFIED_SUBTABS.forEach(([k])=>{ counts[k]=countBase.filter(r=>unifiedMatchesSubTab(r,k)).length; });
+  try{ if(EMBED&&window.parent!==window) window.parent.postMessage({type:"nsAcBadge",approve:counts.approval},location.origin); }catch(e){}
   // 2026-09-11追加：実機フィードバック対応。SoT（3HTML統合版修正版.html）の請求書タブは
   // 一覧の前にKPI6枚（要対応/会計待ち/振込待ち/完了/自動処理/今月請求総額）が必ずあるが、
   // このタブにはこれが1枚も無かった（画面上部のmail-summary-barはStep2からEMBED時は隠す
@@ -7828,6 +7846,7 @@ function unifiedRender(u){
         </div>
         <button class="hq-btn primary" id="unified-add-invoice">＋ 請求書を追加</button>
       </div>
+      ${isPlp||isPayment?"":`<div style="display:flex;gap:6px;align-items:center;margin-bottom:8px;font-size:12px"><span style="color:var(--muted)">取得元:</span>${[["","すべて"],["auto","🤖 自動取込"],["manual","✋ 手動・その他"]].map(([k,l])=>`<button class="mail-tab ${(UNIFIED_STATE.src||"")===k?"active":""}" data-usrc="${k}">${l}（${countBase.filter(r=>unifiedMatchesSubTab(r,UNIFIED_STATE.subTab)&&(k===""||(k==="auto"?unifiedIsAuto(r):!unifiedIsAuto(r)))).length}）</button>`).join("")}</div>`}
       ${isPlp?plpBodyHtml_():isPayment?transferBodyHtml():`
       ${UNIFIED_STATE.subTab==="approval"?apbPanelHtml_():""}
       ${UNIFIED_STATE.subTab==="all"?ubdPanelHtml_():""}
@@ -7862,6 +7881,7 @@ function unifiedRender(u){
     if(UNIFIED_STATE.subTab==="plpending") await plpFetch_();
     unifiedRender(u);
   });
+  document.querySelectorAll("[data-usrc]").forEach(b=>b.onclick=()=>{ UNIFIED_STATE.src=b.dataset.usrc; unifiedRender(u); });
   $("unified-add-invoice").onclick=()=>openUploadModal(u);
   if(isPlp){
     plpWire_(u);

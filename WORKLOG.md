@@ -102,6 +102,14 @@
 
 ---
 
+## 2026-10-14 担当C: 自動取込と手動取込の分離（要対応／承認待ち）＋ポータルの承認待ちバッジ（v110・画面のみ／push前）
+- 問題: 自動取込（email_auto/infomart）の下書きが、ai_match_status未設定のため「要対応」にも入り、手動取込分と混ざって見えた。
+- invoices.html v110: unifiedIsAuto（自動取込かつ手動切替でない）。自動取込の要対応は「自動処理が止まっている(auto_blocked)・重複・MFエラー・口座変更・支払確認待ち・期限超過」だけ（承認待ちに並んでいるだけのものは要対応に出さない）。一覧に「取得元: すべて/🤖自動取込/✋手動・その他」の絞り込み（件数付き）と、行の取得元バッジ（🤖/✋）。URL ?sub=approval で承認待ちを直接開く。承認待ち件数をポータルへ通知（nsAcBadge.approve）。
+- portal.html（担当F管轄の最小変更）: 会計・請求に「✅承認待ち」項目（件数バッジ）。件数=invoices current_stage=ready_for_approval・MF未登録・手動切替でない。
+- 残（第1期）: 承認者列(approved_by/at・SQL要承認)／プレコ納品書証憑／ルール不安定アラート／MF総勘定元帳。
+
+---
+
 ## 2026-10-14 担当C: PLシート行の孤立（二重計上）の修正・デプロイ済み（pl-fee-reflect v22 / invoice-delete v2）
 - 発見: テストで古いRSS請求書(d348bc10)を削除→新請求書(dce00465)で再反映した結果、9月の衛生管理費/おしぼりが5店舗とも二重（+96,294円）。原因=writePlFeeは請求書ID単位のupsertで削除APIが無く、PL反映の取り消し/請求書削除をしてもDB_PLの行が孤立して残る（従来の既知の制約）。
 - 修正: _shared/pl-sheet.ts(zeroPlSheet=同キーで金額0を書く)。pl-fee-reflect: unconfirm時にシート行を0円化／管理用action zero_orphan(secret可)。invoice-delete: 直接反映済み(DB_PL)の行を先に0円化し、失敗時は削除中止。
