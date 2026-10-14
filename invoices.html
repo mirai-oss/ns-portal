@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-14-v109";
+const BUILD_TAG="2026-10-14-v110";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -13091,6 +13091,7 @@ const SETTINGS_SUBTABS=[
   ["automation","🤖 自動処理ルール"],
   ["exclusion","🚫 メール除外設定"],
   ["vendorPay","💴 支払方法（振込/引き落とし）"],
+  ["vendorNames","🔗 取引先の名前対応"],
 ];
 // 2026-09-11更新：会計・請求ワークスペースUI刷新Step8。指示書§9-14「設定は定期請求・入金
 // マスタ/取引先マスタ/仕訳辞書/勘定科目・店舗・法人・PLマッピング/自動化レベル/自動取込
@@ -13101,7 +13102,7 @@ const SETTINGS_SUBTABS=[
 // 会計向けグループへ寄せず、取引先・店舗マッピング（口座情報という点で近い）に含めている
 const SETTINGS_GROUPS=[
   ["recurring","📅 定期請求・入金マスタ",["recurring"]],
-  ["vendorsMapping","🏢 取引先・店舗マッピング",["vendors","vendorPay","mapping","payrollBank"]],
+  ["vendorsMapping","🏢 取引先・店舗マッピング",["vendors","vendorNames","vendorPay","mapping","payrollBank"]],
   ["journalPl","📗 仕訳・勘定科目・PL",["journalRules","accounts","pl"]],
   ["automationRules","🤖 自動化・ルール",["automation","exclusion"]],
 ];
@@ -13131,6 +13132,7 @@ async function renderSettingsTab(u,subTab){
   else if(SETTINGS_TAB==="journalRules") await renderSettingsJournalRules();
   else if(SETTINGS_TAB==="vendors") await renderSettingsVendors();
   else if(SETTINGS_TAB==="vendorPay") await renderSettingsVendorPay();
+  else if(SETTINGS_TAB==="vendorNames") await renderSettingsVendorNames();
   else if(SETTINGS_TAB==="accounts") await renderSettingsAccounts();
   else if(SETTINGS_TAB==="mapping") await renderSettingsMapping();
   else if(SETTINGS_TAB==="pl") await renderSettingsPl();
@@ -13215,6 +13217,154 @@ async function renderSettingsVendorPay(){
     if(!r.ok){ alert(`保存に失敗しました（${r.status}）`); }
     renderSettingsVendorPay();
   });
+}
+// 2026-10-14新設（ユーザー要望）：取引先の「名前の対応」。社内情報（info.suppliers）を正本とし、1社ごとに
+// 請求書での名前／明細での名前／通帳での名前／MFでの名前（法人別）／支店（担当者・発注する店舗）を並べて見る。
+// 名前の置き場所は既存のまま（vendor_aliases＝請求書・明細・通帳、vendor_line_rules＝MFの補助科目、
+// info.supplier_branches＝支店）。ここでは見る・名前を足す・用途と支店を直す、だけを行う。
+// 設計書: docs/設計書_取引先名の対応づけ_社内情報を正本に_2026-10-14.md
+// SQL: 2026-10-14_vendor_name_map.sql（kind列・ビュー）／2026-10-14_supplier_branches.sql（支店）／2026-10-14_vendor_name_rpc.sql（登録口）
+const VN_KINDS=[["invoice","請求書"],["statement","明細"],["bank","通帳"]];
+const VN_TENANT={default:"トーホー",toho:"トーホー",nstyle:"N-Style"};
+let VN_STATE={q:"",filter:"infomart",open:null};
+function vnKindLabel(k){ return (VN_KINDS.find(x=>x[0]===k)||[k,k])[1]; }
+async function renderSettingsVendorNames(){
+  $("settingsBody").innerHTML=`<div class="spin">読み込み中…</div>`;
+  const IP={headers:{"Accept-Profile":"info"}};
+  const [vc,mR,aR,bR,bsR,stR]=await Promise.all([
+    vendorCall("list_vendors"),
+    authed(`/rest/v1/v_vendor_name_map?kind=in.(mf_debit_sub,mf_credit_sub,mf_partner)&select=*&limit=5000`),
+    authed(`/rest/v1/vendor_aliases?is_active=eq.true&select=id,vendor_id,alias,source,kind,branch_id&limit=5000`),
+    authed(`/rest/v1/supplier_branches?select=*&limit=2000`,IP),
+    authed(`/rest/v1/supplier_branch_stores?select=branch_id,store_id&limit=5000`,IP),
+    authed(`/rest/v1/stores?select=id,name&limit=500`,IP),
+  ]);
+  if(!mR.ok||!Array.isArray(mR.body)||!aR.ok||!Array.isArray(aR.body)){
+    $("settingsBody").innerHTML=`<div class="card" style="padding:16px"><h3 style="font-size:14px">🔗 取引先の名前対応</h3>
+      <div class="meta" style="color:var(--muted);font-size:12px;margin-top:8px">名前対応用のSQLがまだ適用されていません。<code>supabase/2026-10-14_vendor_name_map.sql</code> を適用してください。</div></div>`;
+    return;
+  }
+  const vendors=((vc.ok&&vc.body&&vc.body.vendors)||[]).filter(v=>v.is_active!==false);
+  const branchesOk=bR.ok&&Array.isArray(bR.body);
+  const branches=branchesOk?bR.body:[];
+  const bBySup=new Map(); branches.forEach(b=>{ if(!bBySup.has(b.supplier_id)) bBySup.set(b.supplier_id,[]); bBySup.get(b.supplier_id).push(b); });
+  const storeName=new Map((stR.ok&&Array.isArray(stR.body)?stR.body:[]).map(s=>[s.id,s.name]));
+  const bStores=new Map(); (bsR.ok&&Array.isArray(bsR.body)?bsR.body:[]).forEach(x=>{ if(!bStores.has(x.branch_id)) bStores.set(x.branch_id,[]); bStores.get(x.branch_id).push(storeName.get(x.store_id)||"（不明な店舗）"); });
+  const branchById=new Map(branches.map(b=>[b.id,b]));
+  const aliasBy=new Map(); aR.body.forEach(a=>{ if(!aliasBy.has(a.vendor_id)) aliasBy.set(a.vendor_id,[]); aliasBy.get(a.vendor_id).push(a); });
+  const mfBy=new Map(); mR.body.forEach(m=>{ if(!mfBy.has(m.vendor_id)) mfBy.set(m.vendor_id,[]); mfBy.get(m.vendor_id).push(m); });
+  const isInfomart=v=>(aliasBy.get(v.id)||[]).some(a=>String(a.source||"").startsWith("seed_infomart"));
+  const q=(VN_STATE.q||"").trim().toLowerCase();
+  const textOf=v=>[v.name,v.info_supplier&&v.info_supplier.name,...(aliasBy.get(v.id)||[]).map(a=>a.alias),...(mfBy.get(v.id)||[]).map(m=>m.name)].join(" ").toLowerCase();
+  const rows=vendors.filter(v=>{
+    if(VN_STATE.filter==="infomart"&&!isInfomart(v)) return false;
+    if(VN_STATE.filter==="linked"&&!v.info_supplier_id) return false;
+    if(VN_STATE.filter==="unlinked"&&v.info_supplier_id) return false;
+    return !q||textOf(v).includes(q);
+  });
+  const total=vendors.length, linked=vendors.filter(v=>v.info_supplier_id).length;
+  const branchSel=(sid,cur,cls,extra="")=>{
+    const bs=bBySup.get(sid)||[];
+    return `<select class="${cls}" ${extra}><option value="">支店なし</option>${bs.map(b=>`<option value="${esc(b.id)}" ${cur===b.id?"selected":""}>${esc(b.name)}</option>`).join("")}</select>`;
+  };
+  const mfHtml=v=>{
+    const ms=mfBy.get(v.id)||[]; if(!ms.length) return `<span class="meta" style="color:var(--muted)">—</span>`;
+    const byT=new Map(); ms.forEach(m=>{ const t=m.tenant_id||"default"; if(!byT.has(t)) byT.set(t,[]); byT.get(t).push(m); });
+    return [...byT.entries()].map(([t,list])=>{
+      const dr=[...new Set(list.filter(m=>m.kind==="mf_debit_sub").map(m=>`${m.account_name||"仕入高"}/${m.name}`))];
+      const cr=[...new Set(list.filter(m=>m.kind==="mf_credit_sub").map(m=>`${m.account_name||"買掛金"}/${m.name}`))];
+      const pn=list.filter(m=>m.kind==="mf_partner").map(m=>m.name);
+      return `<div style="font-size:11px;line-height:1.5"><b>${esc(VN_TENANT[t]||t)}</b> ${dr.length?`借 ${dr.map(esc).join("・")}`:""}${dr.length&&cr.length?" ／ ":""}${cr.length?`貸 ${cr.map(esc).join("・")}`:""}${pn.length?` ／ MF取引先 ${pn.map(esc).join("・")}`:""}</div>`;
+    }).join("");
+  };
+  const namesHtml=v=>{
+    const as=aliasBy.get(v.id)||[];
+    if(!as.length) return `<span class="meta" style="color:var(--muted)">—</span>`;
+    return as.map(a=>{ const b=a.branch_id&&branchById.get(a.branch_id);
+      return `<span class="badge" style="font-size:11px;margin:1px 3px 1px 0;display:inline-block">${esc(a.alias)} <span style="color:var(--muted)">（${esc(vnKindLabel(a.kind))}${b?`・${esc(b.name)}`:""}）</span></span>`; }).join("");
+  };
+  const branchHtml=v=>{
+    const bs=bBySup.get(v.info_supplier_id)||[];
+    if(!v.info_supplier_id) return `<span class="meta" style="color:var(--muted)">社内情報に未紐付け</span>`;
+    if(!bs.length) return `<span class="meta" style="color:var(--muted)">支店なし</span>`;
+    return bs.map(b=>`<div style="font-size:11px;line-height:1.5"><b>${esc(b.name)}</b>${b.contact_name?` 担当 ${esc(b.contact_name)}`:" <span style='color:#9a5b12'>担当者未入力</span>"}<br><span style="color:var(--muted)">発注店舗: ${(bStores.get(b.id)||[]).length?esc((bStores.get(b.id)||[]).join("・")):"未設定"}</span></div>`).join("");
+  };
+  const detailHtml=v=>{
+    const as=aliasBy.get(v.id)||[];
+    const sid=v.info_supplier_id;
+    return `<tr><td colspan="6" style="background:var(--bg-soft,#f7f7f5);padding:12px">
+      <div style="font-weight:700;margin-bottom:6px">✏️ ${esc(v.name)} の名前</div>
+      <table class="tbl" style="width:100%;font-size:12px;margin-bottom:10px">
+        <thead><tr><th>名前</th><th>用途</th><th>支店</th><th>登録元</th><th></th></tr></thead>
+        <tbody>${as.length?as.map(a=>`<tr>
+          <td>${esc(a.alias)}</td>
+          <td><select class="vn-kind" data-id="${esc(a.id)}">${VN_KINDS.map(([k,l])=>`<option value="${k}" ${a.kind===k?"selected":""}>${l}</option>`).join("")}</select></td>
+          <td>${sid?branchSel(sid,a.branch_id,"vn-branch",`data-id="${esc(a.id)}"`):`<span class="meta" style="color:var(--muted)">（社内情報に紐付けると選べます）</span>`}</td>
+          <td class="meta" style="font-size:11px;color:var(--muted)">${esc(String(a.source||"").startsWith("seed")?"自動登録":(a.source==="manual"?"手動":(a.source||"")))}</td>
+          <td><button class="hq-btn vn-off" data-id="${esc(a.id)}" style="font-size:11px;padding:3px 8px">✕ 外す</button></td>
+        </tr>`).join(""):`<tr><td colspan="5" class="meta">登録された名前はありません</td></tr>`}</tbody>
+      </table>
+      <div class="ctrl-row" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <input id="vn-new-name" placeholder="追加する名前（例: ㈱○○ ／ ○○営業所）" style="min-width:240px">
+        <select id="vn-new-kind">${VN_KINDS.map(([k,l])=>`<option value="${k}">${l}の名前</option>`).join("")}</select>
+        ${sid?branchSel(sid,"","","id=\"vn-new-branch\""):""}
+        <button class="hq-btn primary" id="vn-add" data-v="${esc(v.id)}">＋ 名前を追加</button>
+      </div>
+      <div class="meta" style="color:var(--muted);font-size:11px;margin-top:8px">MFの名前（補助科目）は「📗 仕訳辞書」で直します。支店の担当者・発注店舗は社内情報の取引先で入力します（担当F）。</div>
+    </td></tr>`;
+  };
+  $("settingsBody").innerHTML=`
+    <div class="card" style="padding:16px;margin-bottom:14px">
+      <h3 style="font-size:14px;margin-bottom:6px">🔗 取引先の名前対応（社内情報を正本）</h3>
+      <div class="meta" style="color:var(--muted);font-size:12px;margin-bottom:10px">1社ごとに「<b>請求書での名前</b>／<b>明細での名前</b>／<b>MF（会計）での名前</b>／<b>支店</b>」を並べています。会社名は社内情報の<b>正式名称</b>が正本です。名前が違う請求書が来ても、ここで同じ取引先に結ばれます。社内情報と紐付いている取引先: <b>${linked}</b> / ${total}社。${branchesOk?"":" <span style='color:#9a5b12'>※支店のSQL未適用または権限なしのため、支店は表示していません。</span>"}</div>
+      <div class="ctrl-row" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px">
+        <select id="vn-filter">
+          <option value="infomart" ${VN_STATE.filter==="infomart"?"selected":""}>インフォマートの取引先</option>
+          <option value="linked" ${VN_STATE.filter==="linked"?"selected":""}>社内情報に紐付け済み</option>
+          <option value="unlinked" ${VN_STATE.filter==="unlinked"?"selected":""}>社内情報に未紐付け</option>
+          <option value="all" ${VN_STATE.filter==="all"?"selected":""}>すべて</option>
+        </select>
+        <input id="vn-q" placeholder="会社名・別名・MF名で絞り込み" value="${esc(VN_STATE.q||"")}" style="min-width:220px">
+        <span class="meta" style="font-size:12px;color:var(--muted)">${rows.length}社を表示</span>
+      </div>
+      <table class="tbl" style="width:100%;font-size:12px">
+        <thead><tr><th>取引先（社内情報の正式名）</th><th>登録名（会計側）</th><th>請求書・明細・通帳での名前</th><th>MFでの名前（法人別）</th><th>支店・担当・発注店舗</th><th></th></tr></thead>
+        <tbody>${rows.length?rows.map(v=>`<tr>
+          <td>${v.info_supplier?`<b>${esc(v.info_supplier.name)}</b>`:`<span style="color:#9a5b12">未紐付け</span>`}${v.info_supplier&&v.info_supplier.status&&v.info_supplier.status!=="取引中"?` <span class="badge" style="font-size:10px">${esc(v.info_supplier.status)}</span>`:""}</td>
+          <td>${esc(v.name)}</td>
+          <td>${namesHtml(v)}</td>
+          <td>${mfHtml(v)}</td>
+          <td>${branchHtml(v)}</td>
+          <td><button class="hq-btn vn-open" data-v="${esc(v.id)}" style="font-size:11px;padding:3px 8px">${VN_STATE.open===v.id?"閉じる":"✏️ 名前を直す"}</button></td>
+        </tr>${VN_STATE.open===v.id?detailHtml(v):""}`).join(""):`<tr><td colspan="6" class="meta">該当する取引先がありません</td></tr>`}</tbody>
+      </table>
+    </div>`;
+  const rerender=()=>renderSettingsVendorNames();
+  $("vn-filter").onchange=e=>{ VN_STATE.filter=e.target.value; VN_STATE.open=null; rerender(); };
+  $("vn-q").onchange=e=>{ VN_STATE.q=e.target.value; rerender(); };
+  document.querySelectorAll(".vn-open").forEach(b=>b.onclick=()=>{ VN_STATE.open=(VN_STATE.open===b.dataset.v?null:b.dataset.v); rerender(); });
+  const rpcErr=r=>(r.body&&(r.body.message||r.body.error))||`HTTP ${r.status}`;
+  const metaOf=id=>{ const k=document.querySelector(`.vn-kind[data-id="${id}"]`), b=document.querySelector(`.vn-branch[data-id="${id}"]`); return {p_id:id,p_kind:k?k.value:"invoice",p_branch_id:(b&&b.value)||null}; };
+  document.querySelectorAll(".vn-kind,.vn-branch").forEach(el=>el.onchange=async()=>{
+    const r=await authed(`/rest/v1/rpc/set_vendor_alias_meta`,{method:"POST",body:JSON.stringify(metaOf(el.dataset.id))});
+    if(!r.ok) alert(`保存に失敗しました: ${rpcErr(r)}\n（名前対応のSQL「2026-10-14_vendor_name_rpc.sql」が未適用の可能性があります）`);
+    rerender();
+  });
+  document.querySelectorAll(".vn-off").forEach(b=>b.onclick=async()=>{
+    if(!confirm("この名前を外します（この名前の請求書は取引先を自動で判定できなくなります）。よろしいですか？")) return;
+    const r=await authed(`/rest/v1/rpc/set_vendor_alias_active`,{method:"POST",body:JSON.stringify({p_id:b.dataset.id,p_active:false})});
+    if(!r.ok) alert(`保存に失敗しました: ${rpcErr(r)}`);
+    rerender();
+  });
+  const add=$("vn-add");
+  if(add) add.onclick=async()=>{
+    const name=$("vn-new-name").value.trim();
+    if(!name){ alert("追加する名前を入力してください"); return; }
+    const br=$("vn-new-branch");
+    const r=await authed(`/rest/v1/rpc/register_vendor_name`,{method:"POST",body:JSON.stringify({p_vendor_id:add.dataset.v,p_name:name,p_kind:$("vn-new-kind").value,p_branch_id:(br&&br.value)||null})});
+    if(!r.ok){ alert(`追加できませんでした: ${rpcErr(r)}\n（名前対応のSQL「2026-10-14_vendor_name_rpc.sql」が未適用の可能性があります）`); return; }
+    rerender();
+  };
 }
 // 2026-09-11新設：会計・請求ワークスペースUI刷新Step8。指示書§9-11/9-14「定期請求・入金
 // マスタ：取引先・入金元/種別/頻度/通常取得日/取得方法/自動化レベル/担当」に対応する管理画面。
