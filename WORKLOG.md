@@ -64,7 +64,7 @@
 
 ---
 
-## 2026-10-14 担当C: 仕入高の置き換え（インフォマート請求書の確定額でPLを置き換え）実装（v107・SQL/Edge未適用＝承認待ち）
+## 2026-10-14 担当C: 仕入高の置き換え（インフォマート請求書の確定額でPLを置き換え）実装（v107・SQL適用済み・keiei-kd-refreshデプロイ済み・push済み）
 - ユーザー決定: 店舗ごとの請求書金額を正本としてPLを置き換え／現金仕入れなどインフォマート以外は触らない／月の対象請求書がすべて承認済みになったら実行／取引先別が取れなければ差額調整。
 - 方式: 調整額 = 請求書の仕入高（税抜・MF登録済み・intake_source=infomart・精算書ルート除く）合計 − kd_pl_monthly_summary.cost_auto。PL正本pl_entriesに 仕入高/F の調整行（source=自動｜仕入高差額調整・source_key=siire-adjust:月:店舗）。請求書が無い店舗は調整しない。
 - 追加: supabase/2026-10-14_siire_adjust.sql（siire_adjust_preview/siire_adjust_apply。トランザクション内で作成・プレビュー動作を確認し巻き戻し済み）／keiei-kd-refresh: 自動同期で調整行を消さないよう除外追加／invoices.html「PL未反映」タブに「📦仕入高の置き換え」（確認→反映→取り消し）。
