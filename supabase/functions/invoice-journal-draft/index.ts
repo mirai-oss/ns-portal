@@ -80,9 +80,30 @@ Deno.serve(async (req: Request) => {
     rules = [{ id: null, version: 0, source: "proposed", line_pattern: "*", account_name: "仕入高", sub_account_mode: "vendor", sub_account_name: null,
       tax_mode: "by_line", expected_tax_rates: null, credit_account: "買掛金", credit_sub_mode: "vendor", credit_sub_name: null, dept_mode: "line_store", unstable: false }];
   }
+  // 2026-10-14: 行ルールが無い取引先（インフォマート以外：メール・アップロード）は、過去にMFへ登録した同じ取引先の仕訳（借方の科目・補助科目）を
+  // 「提案」として下書きに出す。貸方は科目で推定（仕入高→買掛金／それ以外→未払金・補助科目=取引先名）。提案は status='proposed'（承認待ちには進むが、
+  // 人が必ず内容を確認して承認する。承認すると行ルールとして保存され、次回から自動）。過去の仕訳が無ければ従来どおり要確認。
+  let proposedKind: "csv" | "history" | null = proposed ? "csv" : null;
+  if (!rules.length && vendor && !proposed) {
+    const { data: vs } = await db.from("vendors").select("id, name");
+    const nn = (s: unknown) => String(s ?? "").normalize("NFKC").replace(/\s+/g, "").replace(/株式会社|有限会社|合同会社|㈱|㈲|\(株\)|\(有\)/g, "").toLowerCase();
+    const ids = (vs ?? []).filter((x: any) => nn(x.name) === nn(vendor.name)).map((x: any) => x.id);
+    const { data: past } = await db.from("invoices").select("mf_debit_accounts, mf_journal_created_at").in("vendor_id", ids.length ? ids : [vendor.id])
+      .not("mf_journal_id", "is", null).not("mf_debit_accounts", "is", null).order("mf_journal_created_at", { ascending: false }).limit(5);
+    const label = (past ?? []).map((r: any) => (Array.isArray(r.mf_debit_accounts) ? r.mf_debit_accounts[0] : null)).find((x: any) => typeof x === "string" && x.length);
+    if (label) {
+      const i = String(label).indexOf("/"); const acc = i < 0 ? String(label) : String(label).slice(0, i); const sub = i < 0 ? "" : String(label).slice(i + 1);
+      const vn = nn(vendor.name);
+      rules = [{ id: null, version: 0, source: "proposed", line_pattern: "*", account_name: acc,
+        sub_account_mode: sub ? (nn(sub) === vn || vn.includes(nn(sub)) || nn(sub).includes(vn) ? "vendor" : "fixed") : "none", sub_account_name: sub || null,
+        tax_mode: "by_line", expected_tax_rates: null, credit_account: acc === "仕入高" ? "買掛金" : "未払金", credit_sub_mode: "vendor", credit_sub_name: null, dept_mode: "line_store", unstable: false }];
+      proposed = true; proposedKind = "history";
+    }
+  }
   const { data: policy } = vendor ? await db.from("vendor_invoice_policies").select("*").eq("vendor_id", vendor.id).eq("tenant_id", tenantId).maybeSingle() : { data: null };
   if (vendor && !rules.length) problems.push(`この取引先の行ルールがありません（「今後この内容で処理する」で登録すると次回から自動で作れます）`);
-  if (proposed) problems.push("この取引先の行ルールが未登録です。CSVの既定（仕入高／補助科目=取引先名／貸方=買掛金）を提案として出しています。内容を確認し、「今後この内容で処理する」で保存すると次回から自動で作れます");
+  if (proposed && proposedKind === "history") warnings.push("初回の提案です（過去にMFへ登録した同じ取引先の仕訳から、科目・補助科目を提案しています。貸方は科目から推定）。内容を確認して承認すると、次回から自動で作られます。");
+  else if (proposed) warnings.push("初回の提案です（CSVの既定：仕入高／補助科目=取引先名／貸方=買掛金）。内容を確認して承認すると、次回から自動で作られます。");
   if (policy?.evidence_warning) warnings.push(policy.evidence_warning);
 
   const pickRule = (l: any) => {
@@ -177,7 +198,7 @@ Deno.serve(async (req: Request) => {
   const transactionDate = ym ? monthEnd(ym) : monthEnd(String(inv.received_at ?? inv.created_at ?? new Date().toISOString()));
   if (!ym) warnings.push("対象年月が読み取れていないため、計上日は受信月の月末にしています（要確認）");
   const draft = {
-    version: 1, status: problems.length ? "needs_review" : "ok",
+    version: 1, status: problems.length ? "needs_review" : proposed ? "proposed" : "ok", proposed_kind: proposedKind,
     tenant_id: tenantId, corporation_id: corporationId, corp_code: corpCode,
     transaction_date: transactionDate, remark: [monthLabel, vendorSub].filter(Boolean).join("　"),
     debit_lines: debitLines, credit, totals: { debit: debitLines.reduce((t, d) => t + d.debit.amount, 0), credit: credit?.amount ?? null, invoice_total: total },

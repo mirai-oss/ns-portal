@@ -107,7 +107,7 @@ Deno.serve(async (req: Request) => {
     try {
       const hashBuf = await crypto.subtle.digest("SHA-256", bytes);
       const fileHash = Array.from(new Uint8Array(hashBuf)).map((b) => b.toString(16).padStart(2, "0")).join("");
-      const storagePath = `${att.email_id ? att.email_id : "standalone/" + att.invoice_id}/zip_${crypto.randomUUID()}_${baseName}`;
+      const storagePath = `${att.email_id ? att.email_id : "standalone/" + att.invoice_id}/zip_${crypto.randomUUID()}${(/\.[A-Za-z0-9]{1,10}$/.exec(baseName || "") || [""])[0].toLowerCase()}`; // 2026-10-14: 保存キーは英数字のみ（日本語のファイル名はInvalid key）
       const { error: upErr } = await db.storage.from(BUCKET).upload(storagePath, bytes, { contentType: mimeType });
       if (upErr) { skipped.push({ file_name: baseName, reason: "保存に失敗: " + upErr.message }); continue; }
       const { data: newAtt, error: insErr } = await db.from("invoice_attachments").insert({

@@ -74,6 +74,23 @@ Deno.serve(async (req: Request) => {
     return hit;
   };
 
+  // 2026-10-14: 店舗の表記が登録に無くても、この取引先が過去（直近3件のMF登録済み請求書）ずっと同じ1店舗宛だったなら、その店舗を「AIの推定」として当てる（承認で確認）
+  let historyStore: string | null = null;
+  if (inv.vendor_id) {
+    const { data: v0 } = await db.from("vendors").select("name").eq("id", inv.vendor_id).maybeSingle();
+    const { data: vs } = await db.from("vendors").select("id, name");
+    const nn = (s: unknown) => String(s ?? "").normalize("NFKC").replace(/\s+/g, "").replace(/株式会社|有限会社|合同会社|㈱|㈲|\(株\)|\(有\)/g, "").toLowerCase();
+    const ids = (vs ?? []).filter((x: any) => nn(x.name) === nn(v0?.name)).map((x: any) => x.id);
+    const { data: past } = await db.from("invoices").select("id, store_id").in("vendor_id", ids.length ? ids : [inv.vendor_id])
+      .not("mf_journal_id", "is", null).order("mf_journal_created_at", { ascending: false }).limit(3);
+    const per: (string | null)[] = [];
+    for (const pi of past ?? []) {
+      const { data: st } = await db.from("invoice_stores").select("store_id").eq("invoice_id", pi.id);
+      const set = new Set<string>((st ?? []).map((x: any) => x.store_id)); if (pi.store_id) set.add(pi.store_id);
+      per.push(set.size === 1 ? [...set][0] : null);
+    }
+    if (per.length && per.every((x) => x && x === per[0])) historyStore = per[0];
+  }
   let resolved = 0, low = 0, unresolved = 0, skipped = 0;
   const unresolvedNames = new Set<string>();
   for (const l of lines) {
@@ -96,6 +113,9 @@ Deno.serve(async (req: Request) => {
       low++;
     } else if (!l.store_text && !l.store_code && (inv.store_id || vendorDefaultStore)) {
       patch = { resolved_store_id: inv.store_id ?? vendorDefaultStore, resolved_by: "rule", resolve_info: { confidence: "rule", via: inv.store_id ? "invoice.store_id" : "vendor.default_store_id" } };
+      resolved++;
+    } else if (historyStore && (l.store_text || l.store_code)) {
+      patch = { resolved_store_id: historyStore, resolved_by: "ai", resolve_info: { confidence: "history", via: "vendor_history", note: "過去の請求書がすべて同じ1店舗だったため推定（要確認）" } };
       resolved++;
     } else {
       patch = { resolved_store_id: null, resolved_by: null, resolve_info: { confidence: "unresolved", via: via || (l.store_text || l.store_code ? "no_match" : "no_store_text") } };

@@ -78,7 +78,7 @@ Deno.serve(async (req: Request) => {
   }
 
   // ④ 仕訳の下書き
-  checks.push({ key: "journal_draft", label: "仕訳の下書き", status: !draft ? "na" : draft.status === "ok" ? "ok" : "ng", detail: draft && draft.status !== "ok" ? (draft.problems ?? []).slice(0, 3).join("／") : undefined, reason: "line_unknown" });
+  checks.push({ key: "journal_draft", label: "仕訳の下書き", status: !draft ? "na" : draft.status === "ok" ? "ok" : draft.status === "proposed" ? "warn" : "ng", detail: draft && draft.status === "proposed" ? "初回の提案です。内容を確認して承認すると、次回から自動になります" : draft && draft.status !== "ok" ? (draft.problems ?? []).slice(0, 3).join("／") : undefined, reason: "line_unknown" });
 
   // ⑤ 重複
   const dupNotes: string[] = [];

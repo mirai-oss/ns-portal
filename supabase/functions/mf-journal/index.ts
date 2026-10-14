@@ -834,7 +834,7 @@ Deno.serve(async (req: Request) => {
           const mimeType = ext === "pdf" ? "application/pdf" : ext === "png" ? "image/png" : (ext === "jpg" || ext === "jpeg") ? "image/jpeg" : undefined;
           const hashBuf = await crypto.subtle.digest("SHA-256", bytes);
           const fileHash = Array.from(new Uint8Array(hashBuf)).map((b) => b.toString(16).padStart(2, "0")).join("");
-          const storagePath = `standalone/${newInv.id}/${crypto.randomUUID()}_${f.file_name}`;
+          const storagePath = `standalone/${newInv.id}/${crypto.randomUUID()}${(/\.[A-Za-z0-9]{1,10}$/.exec(f.file_name || "") || [""])[0].toLowerCase()}`; // 2026-10-14: 日本語等のファイル名は保存キーに使えない（Invalid key）ため、保存キーは英数字のみ（元のファイル名は invoice_attachments.file_name に残る）
           const { error: upErr } = await db.storage.from("invoice-files").upload(storagePath, bytes, { contentType: mimeType });
           if (upErr) { localAttachErrors.push({ file_name: f.file_name, error: "アップロード失敗: " + upErr.message }); continue; }
           const { error: insAttErr } = await db.from("invoice_attachments").insert({
@@ -905,7 +905,7 @@ Deno.serve(async (req: Request) => {
           const mimeType = ext === "pdf" ? "application/pdf" : ext === "png" ? "image/png" : (ext === "jpg" || ext === "jpeg") ? "image/jpeg" : undefined;
           const hashBuf = await crypto.subtle.digest("SHA-256", bytes);
           const fileHash = Array.from(new Uint8Array(hashBuf)).map((b) => b.toString(16).padStart(2, "0")).join("");
-          const storagePath = `standalone/${newInv.id}/${crypto.randomUUID()}_${f.file_name}`;
+          const storagePath = `standalone/${newInv.id}/${crypto.randomUUID()}${(/\.[A-Za-z0-9]{1,10}$/.exec(f.file_name || "") || [""])[0].toLowerCase()}`; // 2026-10-14: 日本語等のファイル名は保存キーに使えない（Invalid key）ため、保存キーは英数字のみ（元のファイル名は invoice_attachments.file_name に残る）
           const { error: upErr } = await db.storage.from("invoice-files").upload(storagePath, bytes, { contentType: mimeType });
           if (upErr) { attachErrors.push({ file_name: f.file_name, error: "アップロード失敗: " + upErr.message }); continue; }
           const { error: insAttErr } = await db.from("invoice_attachments").insert({

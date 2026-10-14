@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-14-v111";
+const BUILD_TAG="2026-10-14-v112";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -1073,13 +1073,13 @@ async function apvRun_(inv,d,lines,o){
     const edited=lines.some(l=>l.account!==l.orig.account||l.sub!==l.orig.sub||l.dept!==l.orig.dept||l.rate!==l.orig.rate);
     await authed("/rest/v1/rpc/invoice_add_comment",{method:"POST",body:JSON.stringify({p_email_id:inv.email_id||null,p_invoice_id:inv.email_id?null:inv.id,p_body:`【承認】MF登録（伝票番号${j.journal_number??"-"}）${edited?"・内容を修正して承認":""}`})});
     // 修正して承認 → 新しい版のルールとして保存（行ごとに内容が同じ場合のみ）
-    if(edited){
+    if(edited||d.status==="proposed"){ // 2026-10-14: 初回の提案（行ルール無し）を承認したら、そのまま行ルールとして保存する（次回から自動）
       const first=lines[0]; const same=lines.every(l=>l.account===first.account&&l.sub===first.sub);
       const vname=(inv.vendor&&inv.vendor.name)||inv.vendor_name||"";
       if(same&&inv.vendor_id){
         const fields={account_name:first.account,sub_account_mode:first.sub?(nz(first.sub)===nz(vname)?"vendor":"fixed"):"none",sub_account_name:first.sub&&nz(first.sub)!==nz(vname)?first.sub:null,vendor_id:inv.vendor_id};
         const rr=await authed("/rest/v1/rpc/save_vendor_line_rule",{method:"POST",body:JSON.stringify({p_vendor_key:vname,p_tenant_id:d.tenant_id,p_line_pattern:"*",p_fields:fields,p_source:"approved"})});
-        results.push(rr.ok?"②修正した内容を新しい版のルールとして保存しました":"②ルールの保存に失敗しました（登録は完了しています）");
+        results.push(rr.ok?(edited?"②修正した内容を新しい版のルールとして保存しました":"②この内容を、この取引先の行ルールとして保存しました（次回から自動で作られます）"):"②ルールの保存に失敗しました（登録は完了しています）");
       } else results.push("②行ごとに内容が違うため、ルールの更新は行っていません");
     }
     // PL・広告費・精算書への反映（税抜）
@@ -1197,6 +1197,10 @@ async function apbOne_(id,opt){
   const lines=(d.debit_lines||[]).map(l=>({line_no:l.line_no,store_id:l.store_id,store_name:l.store_name,remark:l.remark,amount:l.debit.amount,net:l.debit.net_amount,
     account:l.debit.account||"",sub:l.debit.sub_account||"",dept:l.debit.department||"",rate:l.debit.tax?Number(l.debit.tax.rate):0,
     orig:{account:l.debit.account||"",sub:l.debit.sub_account||"",dept:l.debit.department||"",rate:l.debit.tax?Number(l.debit.tax.rate):0}}));
+  if(d.status==="proposed"){
+    if(!(opt&&opt.dry)) return {ok:false,html:"初回の提案のため、一括登録できません（承認画面で内容を確認して、個別に承認してください）"};
+    const r0=await apvRun_(inv,d,lines,opt); if(r0.ok) r0.proposed=true; if(r0.ok) r0.html+="<br>※初回の提案のため、<b>一括登録の対象外</b>です（承認画面で内容を確認して、個別に承認）。"; return r0;
+  }
   return apvRun_(inv,d,lines,opt);
 }
 function apbWire_(u){
@@ -1209,7 +1213,7 @@ function apbWire_(u){
     if(!A.sel.size){ alert("請求書を選んでください"); return; }
     $("apb-dry").disabled=true; $("apb-run").disabled=true; let ok=0,ng=0,n=0; const cache={};
     for(const id of [...A.sel]){ n++; log(`チェック中… ${n}/${A.sel.size}`);
-      const r=await apbOne_(id,{dry:true,cache}); A.res[id]=r; if(r.ok){ A.ok.add(id); ok++; } else { A.ok.delete(id); ng++; } }
+      const r=await apbOne_(id,{dry:true,cache}); A.res[id]=r; if(r.ok&&!r.proposed){ A.ok.add(id); ok++; } else { A.ok.delete(id); ng++; } }
     log(`チェック完了: OK ${ok}件／要確認 ${ng}件（登録はしていません）。要確認は、行を開いて内容を直してください。`);
     unifiedRender(u);
   };
