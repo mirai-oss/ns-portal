@@ -4,6 +4,12 @@
 
 ---
 
+## 2026-10-14 担当C: 社内情報へ未登録13社を追加＋「支店」の持ち方を設計（SQL未適用）
+- ユーザー指示で info.suppliers に13社を正式名・取引中・法人番号/所在地メモ付きで追加し vendors.info_supplier_id を設定（紐付け済み 12→25社）。Infomart上の支店・事業名はメモに記録（プレコエムユニット／野菜の丸平／リクエ事業／川崎営業所）。
+- ユーザー情報「取引先名は同じで支店があり、支店ごとに担当者と発注店舗が違う」→ 設計書§7＋SQL supabase/2026-10-14_supplier_branches.sql（info.supplier_branches・info.supplier_branch_stores・vendor_aliases.branch_id。権限は has_edit_perm(supplier)）。**未適用・ユーザー適用待ち**。画面は担当F。
+
+---
+
 ## 2026-10-14 担当C: 取引先の正本化 段階2（一致7＋候補4の11社を紐付け・社内情報の名前を正式名称へ）
 - 段階1のSQL（vendor_aliases.kind・v_vendor_name_map・v_vendor_link_status）をユーザーが本番適用済み。確認: invoice 47件・名前一覧 登録110/請求書名47/MF借方24/MF貸方24。
 - ユーザー指示: 一致7社は紐付け・候補4社は同じ会社・正本は正式な会社名にする。→ 請求書PDFの登録番号(T+法人番号)で国税庁 適格請求書発行事業者公表サイトを照会し24社全部の正式名称・本店所在地を取得（[docs/正式名称_Infomart24社_2026-10-14.md](docs/正式名称_Infomart24社_2026-10-14.md)）。
