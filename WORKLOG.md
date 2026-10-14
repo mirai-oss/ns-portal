@@ -4,6 +4,14 @@
 
 ---
 
+## 2026-10-14 担当C: 支店SQL適用済み・支店の初期データ6件投入・担当F指示書
+- ユーザーが supplier_branches のSQLを適用（確認済み: info.supplier_branches／supplier_branch_stores／vendor_aliases.branch_id）。
+- 初期データ: 支店6件（三菱食品=リクエ事業／丸大フード=川崎営業所／コカ・コーラ=セントラル富士／プレコフーズ=プレコエムユニット／フレッシュエージェント=野菜の丸平／西原商会=関東 川崎支店）＋発注店舗（9月分Infomart請求書の店舗別明細から・resolve_store(infomart,コード)経由）＋請求書の別名の branch_id 紐付け。担当者は未入力。
+- 課題: Infomart部門コード06/07/08が info.stores に無く、発注店舗に入らない分あり（info.stores は9件のみ）→担当F指示書の2。
+- 担当F指示書: [docs/指示書_担当F_取引先の支店と正式名称_2026-10-14.md](docs/指示書_担当F_取引先の支店と正式名称_2026-10-14.md)（旧依頼書は本書に置換）。
+
+---
+
 ## 2026-10-14 担当C: 社内情報へ未登録13社を追加＋「支店」の持ち方を設計（SQL未適用）
 - ユーザー指示で info.suppliers に13社を正式名・取引中・法人番号/所在地メモ付きで追加し vendors.info_supplier_id を設定（紐付け済み 12→25社）。Infomart上の支店・事業名はメモに記録（プレコエムユニット／野菜の丸平／リクエ事業／川崎営業所）。
 - ユーザー情報「取引先名は同じで支店があり、支店ごとに担当者と発注店舗が違う」→ 設計書§7＋SQL supabase/2026-10-14_supplier_branches.sql（info.supplier_branches・info.supplier_branch_stores・vendor_aliases.branch_id。権限は has_edit_perm(supplier)）。**未適用・ユーザー適用待ち**。画面は担当F。
