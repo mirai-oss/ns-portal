@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-14-v112";
+const BUILD_TAG="2026-10-14-v113";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -930,7 +930,8 @@ async function openApprovalModal(u,invoiceId){
       <div id="apv-edited" style="display:none;margin:4px 0;font-size:12px;color:#b45309">✏️ 内容を修正しています（修正して承認すると、新しい版のルールとして保存されます）</div>
       <div style="overflow-x:auto"><table class="invoice-table" style="font-size:12px"><thead><tr><th>#</th><th>店舗／反映先</th><th>借方（科目／補助）</th><th>部門</th><th>税区分</th><th style="text-align:right">金額（税込）</th><th>ルール</th></tr></thead><tbody>
         ${(d.debit_lines||[]).map(rowHtml).join("")}
-        <tr style="background:var(--bg-soft,#f7f7f5)"><td></td><td colspan="4"><b>貸方</b> ${esc(d.credit?d.credit.account:"—")}${d.credit&&d.credit.sub_account?"／"+esc(d.credit.sub_account):""}</td><td style="text-align:right"><b>${d.credit&&d.credit.amount!=null?yen(d.credit.amount):"—"}</b></td><td></td></tr>
+        ${(d.credit_lines||[]).map(c=>`<tr style="background:var(--bg-soft,#f7f7f5)"><td>貸${c.line_no}</td><td style="font-size:11px;color:var(--muted)">${esc(c.remark||"")}</td><td><b>貸方</b> ${esc(c.account)}${c.sub_account?"／"+esc(c.sub_account):""}</td><td>${esc(c.department||"")}</td><td>${esc(c.tax&&c.tax.name||"")}</td><td style="text-align:right">${yen(c.amount)}</td><td></td></tr>`).join("")}
+        ${d.credit?`<tr style="background:var(--bg-soft,#f7f7f5)"><td></td><td colspan="4"><b>貸方</b> ${esc(d.credit.account)}${d.credit.sub_account?"／"+esc(d.credit.sub_account):""}</td><td style="text-align:right"><b>${d.credit.amount!=null?yen(d.credit.amount):"—"}</b></td><td></td></tr>`:""}
       </tbody></table></div>
       ${(d.adjustments||[]).length?`<div style="font-size:11px;color:var(--muted)">1円調整: ${d.adjustments.map(a=>`行${a.line_no} ${a.amount>0?"+":""}${a.amount}円`).join("、")}</div>`:""}
       <datalist id="apv-acc-dl"></datalist><datalist id="apv-dept-dl"></datalist>
@@ -1034,7 +1035,8 @@ async function apvRun_(inv,d,lines,o){
     const c0=(cur.ok&&Array.isArray(cur.body)&&cur.body[0])||{};
     if(c0.mf_journal_id) return fail("この請求書は既にMFへ登録済みです（二重登録防止）。画面を閉じて一覧を更新してください。");
     if(c0.auto_mode==="manual") return fail("この請求書は手動に切り替えられています。詳細画面から処理してください。");
-    if(!lines.length||!d.credit) return fail("仕訳の下書きに明細・貸方がありません");
+    const cls=Array.isArray(d.credit_lines)?d.credit_lines:[]; const isSales=cls.length>0;
+    if(!lines.length||(!d.credit&&!isSales)) return fail("仕訳の下書きに明細・貸方がありません");
     if(!inv.source_attachment_id&&!dry) return fail("この請求書のPDFが添付されていないため、登録できません（MFの証憑にPDFを付ける必要があります）。詳細画面からPDFを追加してください。");
     // MFのマスタ（科目・部門・税区分）を名前から解決
     say("MFの科目・部門・税区分を確認中…");
@@ -1050,26 +1052,38 @@ async function apvRun_(inv,d,lines,o){
       const cs=taxes.filter(t=>/課税仕入/.test(t.name)&&new RegExp(`${rate}\\s*%`).test(t.name)&&!/旧|非適格|控除不可/.test(t.name)); const pick=(rate===8?cs.find(t=>/軽減/.test(t.name)):null)||cs[0]; return pick?pick.id:null; };
     for(const l of lines){
       const dl=idx.map.get(labelOf(l.account,l.sub)); if(!dl) missing.push(`行${l.line_no}: 科目「${labelOf(l.account,l.sub)}」`);
-      const dep=depts.find(x=>nz(x.name)===nz(l.dept)); if(!dep) missing.push(`行${l.line_no}: 部門「${l.dept}」`);
+      const dep=l.dept?depts.find(x=>nz(x.name)===nz(l.dept)):null; if(l.dept&&!dep) missing.push(`行${l.line_no}: 部門「${l.dept}」`);
       const tid=taxFor(l.rate); if(!tid) missing.push(`行${l.line_no}: 税区分（${l.rate?`課税仕入 ${l.rate}%`:"対象外"}）`);
       mfLines.push({l,dl,dep,tid});
     }
-    const cl=idx.map.get(labelOf(d.credit.account,d.credit.sub_account)); if(!cl) missing.push(`貸方「${labelOf(d.credit.account,d.credit.sub_account)}」`);
+    // 貸方: 売上入金（貸方が複数行）は credit_lines、通常の請求書は credit 1つ
+    const salesTaxFor=rate=>{ if(!rate) return (taxes.find(t=>/対象外/.test(t.name))||{}).id||null;
+      const cs=taxes.filter(t=>/課税売上/.test(t.name)&&new RegExp(`${rate}\\s*%`).test(t.name)&&!/旧|非適格|返還|貸倒/.test(t.name)); const pick=(rate===8?cs.find(t=>/軽減/.test(t.name)):null)||cs[0]; return pick?pick.id:null; };
+    const mfCredits=[]; let cl=null; let creditTotal=0;
+    if(isSales){
+      for(const c of cls){
+        const ca=idx.map.get(labelOf(c.account,c.sub_account)); if(!ca) missing.push(`貸方${c.line_no}: 科目「${labelOf(c.account,c.sub_account)}」`);
+        const cd=c.department?depts.find(x=>nz(x.name)===nz(c.department)):null; if(c.department&&!cd) missing.push(`貸方${c.line_no}: 部門「${c.department}」`);
+        const rate=c.tax?Number(c.tax.rate):0; const ct=salesTaxFor(rate); if(!ct) missing.push(`貸方${c.line_no}: 税区分（${rate?`課税売上 ${rate}%`:"対象外"}）`);
+        mfCredits.push({c,ca,cd,ct}); creditTotal+=Number(c.amount);
+      }
+    } else { cl=idx.map.get(labelOf(d.credit.account,d.credit.sub_account)); if(!cl) missing.push(`貸方「${labelOf(d.credit.account,d.credit.sub_account)}」`); creditTotal=Number(d.credit.amount); }
     if(missing.length) return fail("MFに見つからない項目があるため、登録していません:<br>・"+missing.map(esc).join("<br>・")+"<br>（行の科目・部門などを直すか、MF側で作成してください）");
     const total=lines.reduce((t,l)=>t+l.amount,0);
-    if(total!==Number(d.credit.amount)) return fail(`借方合計（${yen(total)}）と貸方（${yen(d.credit.amount)}）が一致しません。下書きを作り直してください。`);
+    if(total!==creditTotal) return fail(`借方合計（${yen(total)}）と貸方（${yen(creditTotal)}）が一致しません。下書きを作り直してください。`);
     if(dry) return {ok:true,dry:true,total,html:`✅ 登録前チェックOK（登録はしていません）: MFの科目・部門・税区分がすべて見つかり、借方${yen(total)}＝貸方です。`};
     const reflect=!!o.reflect;
     if(o.confirmFn&&!o.confirmFn({n:lines.length,total,date:d.transaction_date,reflect})) return {ok:false,cancelled:true,html:""};
     say("MFへ登録中…");
-    const branches=mfLines.map(m=>({debit:{account_id:m.dl.account_id,sub_account_id:m.dl.sub_account_id||undefined,value:m.l.amount},department_id:m.dep.id,tax_id:m.tid,remark:m.l.remark||undefined}));
-    branches.push({credit:{account_id:cl.account_id,sub_account_id:cl.sub_account_id||undefined,value:total},remark:d.remark||undefined});
+    const branches=mfLines.map(m=>({debit:{account_id:m.dl.account_id,sub_account_id:m.dl.sub_account_id||undefined,value:m.l.amount},department_id:m.dep?m.dep.id:undefined,tax_id:m.tid,remark:m.l.remark||undefined}));
+    if(isSales) mfCredits.forEach(m=>branches.push({credit:{account_id:m.ca.account_id,sub_account_id:m.ca.sub_account_id||undefined,value:Number(m.c.amount)},credit_department_id:m.cd?m.cd.id:undefined,credit_tax_id:m.ct,remark:m.c.remark||d.remark||undefined}));
+    else branches.push({credit:{account_id:cl.account_id,sub_account_id:cl.sub_account_id||undefined,value:total},remark:d.remark||undefined});
     const {ok,body:j}=await perfTimed("仕訳登録",()=>mfCall("create",{invoice_id:inv.id,tenant_id:d.tenant_id,branches,transaction_date:d.transaction_date,remark:d.remark||inv.vendor_name||"",attach_files:true,
       debit_account_names:mfLines.map(m=>labelOf(m.l.account,m.l.sub))}));
     if(!ok) return fail("MF登録に失敗しました: "+esc((j&&j.error)||"")+"<br>（何も登録されていません。内容を直してもう一度お試しください）");
     const results=[`①MFへ登録しました（伝票番号: ${j.journal_number??"-"}）${j.voucher_attached?`・証憑${j.voucher_attached}件添付`:(j.voucher_error?`（証憑添付: ${esc(j.voucher_error)}）`:"")}`];
     // 処理の段階・承認の記録
-    await authed(`/rest/v1/invoices?id=eq.${inv.id}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({current_stage:"payment_waiting",blocked_reason:null,stage_updated_at:new Date().toISOString()})});
+    await authed(`/rest/v1/invoices?id=eq.${inv.id}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({current_stage:isSales?"completed":"payment_waiting",blocked_reason:null,stage_updated_at:new Date().toISOString()})});
     const edited=lines.some(l=>l.account!==l.orig.account||l.sub!==l.orig.sub||l.dept!==l.orig.dept||l.rate!==l.orig.rate);
     await authed("/rest/v1/rpc/invoice_add_comment",{method:"POST",body:JSON.stringify({p_email_id:inv.email_id||null,p_invoice_id:inv.email_id?null:inv.id,p_body:`【承認】MF登録（伝票番号${j.journal_number??"-"}）${edited?"・内容を修正して承認":""}`})});
     // 修正して承認 → 新しい版のルールとして保存（行ごとに内容が同じ場合のみ）
@@ -7626,7 +7640,7 @@ function unifiedMatchesSubTab(r,tab){
   if(tab==="all") return true;
   if(tab==="review") return unifiedNeedsAttention(r);
   if(tab==="approval") return r.current_stage==="ready_for_approval"&&!r.mf_journal_id&&r.auto_mode!=="manual"; // 自動処理で検算・判定を通過した請求書（承認待ち）
-  if(tab==="plpending") return !!r.mf_journal_id&&["email_auto","infomart","upload_auto"].includes(r.intake_source)&&!r.pl_fee_reflected_at&&!r.ad_cost_reflected_at&&!r.pl_fee_seisan_synced_at&&!r.pl_fee_excluded_at; // 2026-10-14: MF登録済みなのにPL・広告費・精算書へ未反映（自動処理の請求書）
+  if(tab==="plpending") return !(r.email&&r.email.mail_kind==="sales")&&!!r.mf_journal_id&&["email_auto","infomart","upload_auto"].includes(r.intake_source)&&!r.pl_fee_reflected_at&&!r.ad_cost_reflected_at&&!r.pl_fee_seisan_synced_at&&!r.pl_fee_excluded_at; // 2026-10-14: MF登録済みなのにPL・広告費・精算書へ未反映（自動処理の請求書）
   if(tab==="accounting") return !r.mf_journal_id;
   if(tab==="payment") return !!r.mf_journal_id&&["wait","csv","processing"].includes(r.payment_status);
   if(tab==="done") return !!r.payment_verified_at; // 支払確認まで終わって初めて「完了」タブに入る
@@ -7657,7 +7671,7 @@ async function renderUnifiedInvoiceTab(u){
   ]));
   const raw=(r.ok&&Array.isArray(r.body))?r.body:[];
   // メール起点は種類=請求書のみ。アップロード（email無し）は全て対象
-  UNIFIED_STATE.rows=raw.filter(row=>!row.email||row.email.mail_kind==="invoice");
+  UNIFIED_STATE.rows=raw.filter(row=>!row.email||row.email.mail_kind==="invoice"||(row.intake_source==="email_auto"&&row.email.mail_kind==="sales")); // 売上入金メールの自動処理分も出す（2026-10-14）
   UNIFIED_STATE.corporations=corpCache.corporations;
   unifiedRender(u);
 }
@@ -7740,7 +7754,7 @@ function unifiedRowHtml(r){
     <td><b>${esc((r.vendor&&r.vendor.name)||r.vendor_name||"—")}</b>${riskNote?`<div class="danger-text" style="color:var(--m-red);font-size:10px;font-weight:800">${esc(riskNote)}</div>`:""}</td>
     <td>${esc(r.invoice_number||"—")}</td>
     <td>${yen(r.amount)}</td>
-    <td><span class="invoice-status ${unifiedIsAuto(r)?"check":"gray"}" title="${unifiedIsAuto(r)?"自動取込（自動で下書きまで作られ、承認待ちに並びます）":"人が取り込み・入力した請求書"}">${unifiedIsAuto(r)?"🤖 ":"✋ "}${esc(INTAKE_SOURCE_LABEL[r.intake_source]||(r.email_id?"メール":"手動"))}</span></td>
+    <td><span class="invoice-status ${unifiedIsAuto(r)?"check":"gray"}" title="${unifiedIsAuto(r)?"自動取込（自動で下書きまで作られ、承認待ちに並びます）":"人が取り込み・入力した請求書"}">${unifiedIsAuto(r)?"🤖 ":"✋ "}${esc(INTAKE_SOURCE_LABEL[r.intake_source]||(r.email_id?"メール":"手動"))}</span>${r.email&&r.email.mail_kind==="sales"?' <span class="invoice-status done" title="売上入金（入金の仕訳）">💰売上入金</span>':""}</td>
     <td><span class="invoice-status ${ai[1]}">${esc(ai[0])}</span></td>
     <td>${r.mf_journal_id?'<span class="invoice-status done">済</span>':'<span class="invoice-status wait">未</span>'}</td>
     <td>${r.pl_fee_reflected_at?'<span class="invoice-status done">済</span>':"—"}</td>

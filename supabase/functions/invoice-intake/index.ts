@@ -206,6 +206,17 @@ Deno.serve(async (req: Request) => {
     if (er?.waitUntil) er.waitUntil(kick);
   }
 
+  // 2026-10-14: 「売上入金」（不動産の送金明細など）と判定されたら、売上入金の自動処理（仕訳の下書き→承認待ち）を別Functionへ依頼する
+  if (autoCategory === "sales_deposit" && savedCount > 0) {
+    const kickS = fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/invoice-auto-sales`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", apikey: Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!, Authorization: `Bearer ${Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")}` },
+      body: JSON.stringify({ secret: body.secret, email_id: emailId }),
+    }).catch((e) => console.error("売上入金の自動処理の依頼に失敗: " + e));
+    const er2 = (globalThis as any).EdgeRuntime;
+    if (er2?.waitUntil) er2.waitUntil(kickS);
+  }
+
   await db.from("invoice_audit_logs").insert({
     entity_type: "invoice_email", entity_id: emailId, action: "intake", actor_type: "human",
     new_value: { attachments: savedCount, duplicate_suspected: duplicateSuspected, attachments_failed: failed, auto_category: autoCategory },
