@@ -270,6 +270,9 @@
 
 ---
 
+## 2026-10-14 Mac miniセッション: 9月分14件（10社以外）の取引先を確定し仕訳下書きを作り直し（ユーザー指示）
+- 送信済みの14件の`invoices`に、登録した取引先（vendor_id・vendor_name・corporation_id=トーホー）を設定し、送信時と同じ後続（`invoice-resolve-lines`→仕訳下書き→検算）を起動。結果: **14件すべて下書きstatus=ok・要確認なし**。借方=仕入高/<MF補助科目>・貸方=買掛金/<MF補助科目>（例: 三菱食品＝リクエ・16行）。MFには何も登録していない。9月分の仕訳はMFに既存のため、24件の下書きは引き続き担当Cが確認後に削除する前提。
+
 ## 2026-10-14 Mac miniセッション: インフォマート10社以外の14社を取引先マスタ・別名・行ルールへ登録（ユーザー指示「先に登録」）
 - 登録（本番Supabase）: `vendors` 14件（正式名=CSVの借方取引先名・既定法人=トーホー・notesに登録経緯）／`vendor_aliases` 28件（Infomart表記＋MF補助科目名・source=`seed_infomart_all_2026-10-14`）／`vendor_line_rules` 14件（tenant=default・line_pattern=*・借方=仕入高/<MF補助科目>・貸方=買掛金/<MF補助科目>・どちらもfixed・dept=line_store・tax=by_line・想定税率はMF元帳の税区分から・source=ledger）。
 - 根拠: MFの総勘定元帳CSV（2025/4〜2026/8）で14社とも「仕入高/名前」＝「買掛金/名前」が実在。名前対応は先のWORKLOG（三菱食品＝リクエ 等）。
