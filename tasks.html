@@ -522,7 +522,7 @@ const isMaster=u=>!!(u&&u.is_master);
 const canManage=u=>!!(u&&(u.is_master||u.role==="CEO"||u.role==="HQ"));
 // 機能ごとの利用可否。min_levelは master / manage（＝マスター・社長・本部） / team（＝＋チーム長）。
 // 未登録の機能は従来どおり manage 扱い。表示制御はここ、実際の強制はDB側のRLS（hq_feature_allowed）。
-const FEATURE_LABEL={templates:"⚙️ テンプレート管理",newtask:"＋ タスク追加",notify:"🔔 通知設定",corps:"🏢 法人管理"};
+const FEATURE_LABEL={templates:"⚙️ テンプレート管理",newtask:"＋ タスク追加",steps:"🪜 工程の作成・編集",notify:"🔔 通知設定",corps:"🏢 法人管理"};
 const LEVEL_LABEL={master:"マスターのみ",manage:"マスター・社長・本部",team:"マスター・社長・本部・チーム長"};
 function canFeature(u,key){
   if(!u) return false;
@@ -531,6 +531,9 @@ function canFeature(u,key){
   if(lv==="team") return !!(u.is_master||["CEO","HQ","TEAM"].includes(u.role));
   return canManage(u);
 }
+// 2026-10-14: 工程の作成・編集（追加・名前/担当/期限の変更・削除・添付・チェック項目）の権限。
+// 既定はチーム長まで（権限設定で変更可）。DB側はhq_feature_allowed('steps')で同じ条件を強制する
+const canEditSteps=u=>canFeature(u,"steps");
 const userName=id=>{const u=USERS.find(x=>x.id===id);return u?u.name:"—";};
 // 2026-09-04: 工程の担当者を複数人選べるようにする対応。DBはassignee_ids（配列・新設）と
 // assignee_id（単数・旧列。ポータル側index.html/portal.htmlの「自分のタスク」バッジが
@@ -1196,7 +1199,7 @@ function renderDetail(u){
     <div>
       <div class="dcard">
         <div class="head"><b>① 工程（サブタスク）</b><span class="meta">担当・期限・チェック・手順・資料</span></div>
-        <div class="body" id="steplist" style="padding:12px">${groupStoreSteps(steps).map(g=>stepOrGroupHtml(t,g,u)).join("")||'<div class="meta">工程がありません</div>'}${canEdit?stepAddHtml():""}</div>
+        <div class="body" id="steplist" style="padding:12px">${groupStoreSteps(steps).map(g=>stepOrGroupHtml(t,g,u)).join("")||'<div class="meta">工程がありません</div>'}${canEditSteps(u)?stepAddHtml():""}</div>
       </div>
       <div class="completebar">
         <div><b>タスク全体の完了</b><div class="meta">${t.status==="done"?"すべての工程が完了しました":"すべての工程が完了すると自動的に「完了」になります"}</div></div>
@@ -1575,12 +1578,12 @@ function checklistStepHtml(s,items,canTouch){
   </div>`;
 }
 function stepHtml(t,s,u){
-  const canTouch=canManage(u)||isStepAssignee(s,u.id)||(!stepAssigneeIds(s).length);
+  const canTouch=canManage(u)||canEditSteps(u)||isStepAssignee(s,u.id)||(!stepAssigneeIds(s).length);
   // Phase3(全面刷新・修正版): デザイン案を見直すと、担当・期限の編集フォーム(ownerline)は
   // 常時表示ではなく process-body ＝工程を開いたときに出てくる折りたたみパネルの中にある
   // （行の見出しには担当・期限の「summary」テキストだけが常時出ている）。PCはデザイン案の
   // この構造どおりに合わせ、添付・チェックリストと同じ1つのパネル(STEP_ATT_OPEN)へ統合する
-  const canEditAssign=canManage(u)&&!s.completed_at;
+  const canEditAssign=canEditSteps(u)&&!s.completed_at;
   let metaLine="";
   if(s.completed_at) metaLine=`担当: ${esc(stepAssigneeNames(s))} ／ 期限 ${fmtDD(s.due_date,s.due_time)} → ${fmtDT(s.completed_at)} 完了${esc(userName(s.completed_by)?" ("+userName(s.completed_by)+")":"")}`;
   else if(s._isCurrent) metaLine=`<span class="now-tag">いまここ</span> ／ 担当: ${esc(stepAssigneeNames(s))} ／ 期限 ${fmtDD(s.due_date,s.due_time)}`;
@@ -1588,7 +1591,7 @@ function stepHtml(t,s,u){
   const photos=stepPhotosFor(t,s.id);
   const links=stepLinksFor(t,s.id);
   const checklist=stepChecklistFor(t,s.id);
-  const attCanEdit=canManage(u);
+  const attCanEdit=canEditSteps(u);
   // 2026-08-25: 実機フィードバックで「工程を開く」「添付・マニュアルを開く」の2回クリックが
   // 手間だと指摘を受け、完了操作（判定・必須写真・完了ボタン）を添付・マニュアル欄と同じ
   // パネルへ統合。開閉は1つの状態（STEP_ATT_OPEN）に一本化し、行全体のクリックでも
@@ -1670,7 +1673,7 @@ function bulkDoneBtnHtml(rows,u){
   const rest=rows.filter(s=>!s.completed_at);
   if(rest.length<2) return "";
   if(rest.some(s=>s.requires_photo)) return `<div class="meta" style="padding:0 12px 6px">※ 写真必須のため一括完了はできません（店舗ごとに写真を添付してください）</div>`;
-  const canDo=s=>canManage(u)||isStepAssignee(s,u.id)||!stepAssigneeIds(s).length;
+  const canDo=s=>canManage(u)||canEditSteps(u)||isStepAssignee(s,u.id)||!stepAssigneeIds(s).length;
   if(!rest.every(canDo)) return "";
   const binary=rest.some(s=>s.is_binary);
   return `<div style="padding:0 12px 8px">
@@ -1693,7 +1696,7 @@ function stepOrGroupHtml(t,g,u){
     <div style="padding:0 12px 10px">
     ${sorted.map(s=>{
       const store=STORES.find(x=>x.id===s.store_id); const name=store?store.name:"店舗";
-      const canTouch=canManage(u)||isStepAssignee(s,u.id)||(!stepAssigneeIds(s).length);
+      const canTouch=canManage(u)||canEditSteps(u)||isStepAssignee(s,u.id)||(!stepAssigneeIds(s).length);
       const photos=stepPhotosFor(t,s.id);
       if(s.completed_at){
         const badge=s.judgement==="issue"?`<span style="color:var(--stall)">⚠ 異常あり</span>`:(s.is_binary?`<span style="color:var(--ok)">✓ OK</span>`:"✓");
@@ -1908,6 +1911,8 @@ async function syncTaskDueDate(t){
   if(!last) return;
   const due_date=last.due_date, due_time=last.due_time||null;
   if(due_date!==t.due_date||due_time!==(t.due_time||null)){
+    // 本部・社長・マスター以外（工程の編集だけ許可されたチーム長）はタスク本体を直接更新できないため、専用RPCで揃える
+    if(!canManage(ME)){ await authed("/rest/v1/rpc/hq_task_sync_due_date",{method:"POST",body:JSON.stringify({p_task_id:t.id})}); return; }
     await authed(`/rest/v1/hq_tasks?id=eq.${t.id}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({due_date,due_time})});
   }
 }
@@ -2558,7 +2563,7 @@ function wireDetail(t,u){
     CUR_TASK=await fetchTaskDetail(t.id); syncTaskIntoBoardList(CUR_TASK); renderDetail(u);
   });
   sortedSteps(t).forEach(s=>{
-    wireAttachBox(`tsatt-${s.id}`,{step_id:s.id},canManage(u),async()=>{ CUR_TASK=await fetchTaskDetail(t.id); syncTaskIntoBoardList(CUR_TASK); renderDetail(u); });
+    wireAttachBox(`tsatt-${s.id}`,{step_id:s.id},canEditSteps(u),async()=>{ CUR_TASK=await fetchTaskDetail(t.id); syncTaskIntoBoardList(CUR_TASK); renderDetail(u); });
   });
   if($("taskphoto")) $("taskphoto").onchange=async e=>{
     const f=e.target.files[0]; if(!f)return;
@@ -2794,7 +2799,7 @@ function dailyRowHtml(t,u,isPast){
   </div>`;
 }
 function dailyGroupHtml(g,u){
-  const canDo=s=>canManage(u)||isStepAssignee(s,u.id)||!stepAssigneeIds(s).length;
+  const canDo=s=>canManage(u)||canEditSteps(u)||isStepAssignee(s,u.id)||!stepAssigneeIds(s).length;
   if(!g.isGroup){
     const s=g.rows[0];
     if(s.completed_at){
