@@ -36,6 +36,7 @@
 //   - "list_target_accounts"/"add_target_account"/"remove_target_account": 設定タブ用。
 //     今後はここに登録した科目＝実際にPLへ反映できる科目そのもの（上記①）
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { zeroPlSheet } from "../_shared/pl-sheet.ts";
 
 const cors: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -117,10 +118,27 @@ Deno.serve(async (req: Request) => {
   const action = body?.action;
 
   const uc = userClient(req);
-  const { data: canAccess, error: accessErr } = await uc.rpc("invoice_can_access");
-  if (accessErr || canAccess !== true) return json({ error: "権限がありません" }, 403);
+  // 2026-10-14: zero_orphan（孤立したPLシート行を0円にする・管理用）だけは、サーバー間の共有シークレットでも呼べる
+  let bySecret = false;
+  if (action === "zero_orphan" && body?.secret) {
+    const { data: sr } = await svc().from("app_secrets").select("value").eq("key", "invoice_intake_secret").maybeSingle();
+    bySecret = !!sr?.value && body.secret === sr.value;
+  }
+  if (!bySecret) {
+    const { data: canAccess, error: accessErr } = await uc.rpc("invoice_can_access");
+    if (accessErr || canAccess !== true) return json({ error: "権限がありません" }, 403);
+  }
 
   try {
+    // 2026-10-14新設: 請求書が既に無い（または取り消し済み）のにDB_PLに残っている行（外部連携:<source_key>）を0円にする
+    if (action === "zero_orphan") {
+      const sk = String(body?.source_key ?? "").trim(); const acc = String(body?.account_name ?? "").trim();
+      const ym = String(body?.year_month ?? "").trim(); const names: string[] = Array.isArray(body?.store_names) ? body.store_names : [];
+      if (!sk || !acc || !/^\d{4}-\d{2}/.test(ym) || !names.length) return json({ error: "source_key・account_name・year_month・store_names は必須です" }, 400);
+      const r = await zeroPlSheet({ accountName: acc, subAccount: String(body?.sub_account_name ?? "").trim() || null, ym, storeNames: names, sourceId: sk });
+      return json({ success: r.ok, stores: r.stores, error: r.error ?? null }, r.ok ? 200 : 500);
+    }
+
     if (action === "list_target_accounts") {
       const db = svc();
       const { data, error } = await db.from("mf_pl_fee_accounts").select("*").order("account_name");
@@ -667,12 +685,19 @@ Deno.serve(async (req: Request) => {
       const invoiceId = body?.invoice_id;
       if (!reflectionId || !invoiceId) return json({ error: "reflection_id・invoice_idは必須です" }, 400);
       const { data: refl, error: reflErr } = await uc.from("invoice_pl_reflections")
-        .select("id, invoice_id, account_name, sub_account_name, year_month, allocations")
+        .select("id, invoice_id, account_name, sub_account_name, year_month, allocations, reflection_route")
         .eq("id", reflectionId).eq("invoice_id", invoiceId).maybeSingle();
       if (reflErr) return json({ error: "確認に失敗しました: " + reflErr.message }, 500);
       if (!refl) return json({ error: "対象の反映内容が見つからないか権限がありません" }, 403);
 
       const db = svc();
+      // 2026-10-14: 取り消し時にPLシート側の行も0円にして、二重・過大を防ぐ（精算書ルートは対象外）
+      let sheetZero: { ok: boolean; error?: string } = { ok: true };
+      if ((refl as any).reflection_route !== "seisan") {
+        const { data: invZ } = await uc.from("invoices").select("vendor_name").eq("id", invoiceId).maybeSingle();
+        sheetZero = await zeroPlSheet({ accountName: refl.account_name, subAccount: refl.sub_account_name, ym: String(refl.year_month),
+          storeNames: (Array.isArray(refl.allocations) ? refl.allocations : []).map((a: any) => a?.store_name), sourceId: invoiceId, vendorName: invZ?.vendor_name });
+      }
       const { error: delErr } = await db.from("invoice_pl_reflections").delete().eq("id", reflectionId);
       if (delErr) return json({ error: "取り消しに失敗しました: " + delErr.message }, 500);
 
@@ -688,7 +713,7 @@ Deno.serve(async (req: Request) => {
         note: `PL反映を取り消し（科目: ${refl.account_name}${refl.sub_account_name ? "/" + refl.sub_account_name : ""}／対象: ${String(refl.year_month).slice(0, 7)}／合計: ${total.toLocaleString()}円）。シート側は正しい内容で再登録するまで古い数字のまま残ります`,
       });
 
-      return json({ success: true });
+      return json({ success: true, sheet_zeroed: sheetZero.ok, sheet_error: sheetZero.ok ? null : sheetZero.error });
     }
 
     return json({ error: "不明なactionです" }, 400);

@@ -11,6 +11,7 @@
 // 解消）から本体削除までを1つの権限で確実に行う。invoices.attachment_idの循環参照解消も
 // あわせて含む。
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { zeroPlSheet } from "../_shared/pl-sheet.ts";
 
 const cors: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -51,6 +52,19 @@ Deno.serve(async (req: Request) => {
     await db.from("ar_receivables").update({
       linked_invoice_id: null, mf_journal_id: null, mf_journal_number: null, mf_journal_created_at: null,
     }).eq("linked_invoice_id", invoiceId);
+    // ②-2 2026-10-14: PLへ直接反映済み（DB_PL）の行は、請求書を消してもシートに残って二重・過大になるため、先に0円へ書き換える。
+    //     書き換えに失敗した場合は、孤立行を作らないよう削除を中止する（精算書ルートの反映は従来どおり）
+    {
+      const { data: refls } = await db.from("invoice_pl_reflections")
+        .select("account_name, sub_account_name, year_month, allocations, reflection_route").eq("invoice_id", invoiceId);
+      const { data: invV } = await db.from("invoices").select("vendor_name").eq("id", invoiceId).maybeSingle();
+      for (const rf of (refls ?? []) as any[]) {
+        if (rf.reflection_route === "seisan") continue;
+        const z = await zeroPlSheet({ accountName: rf.account_name, subAccount: rf.sub_account_name, ym: String(rf.year_month),
+          storeNames: (Array.isArray(rf.allocations) ? rf.allocations : []).map((a: any) => a?.store_name), sourceId: invoiceId, vendorName: invV?.vendor_name });
+        if (!z.ok) return json({ error: `PLシートの行（${rf.account_name}${rf.sub_account_name ? "/" + rf.sub_account_name : ""}）を0円にできなかったため、削除を中止しました: ${z.error}` }, 500);
+      }
+    }
     // ③この請求書に紐づく記録を削除
     await db.from("invoice_pl_reflections").delete().eq("invoice_id", invoiceId);
     await db.from("vendor_bank_account_change_requests").delete().eq("invoice_id", invoiceId);
