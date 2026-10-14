@@ -114,6 +114,15 @@
 
 ---
 
+## 2026-10-14 担当C: アップロード（スキャン請求書）も自動判別→仕訳下書き→承認待ちへ（v111・SQL/Edge未適用＝承認待ち）
+- ユーザー要望: 人がスキャンした請求書をアップロードするだけで、法人・取引先を判断し自動仕訳まで→承認だけ。
+- 実装: invoice-auto-create に action:process_invoice（ログインJWT=invoice_can_access でも呼べる）。既存の intake_upload で作った請求書(email_id無し)を invoice-ocr(invoice_id指定)で読み取り→取引先(resolveVendor)・宛先法人(resolveCorporation)判定→重複確認→請求書を更新(intake_source='upload_auto')→invoice-lines-ocr以降（店舗解決→仕訳下書き→検算→承認待ち）。人が入力した取引先・法人は優先。1ファイルに複数請求書→2件目以降は新規下書き。
+- SQL: supabase/2026-10-14_intake_source_upload_auto.sql（intake_source のCHECKに upload_auto 追加のみ）。invoice-check / mf-journal は upload_auto を自動取込扱い（PDF必須・自分のPDFのみ証憑）。
+- invoices.html v111: アップロード画面に「🤖自動で判別して仕訳の下書きまで作る」(既定ON)。ON→読み取り後に一覧(自動取込)へ。OFF/失敗→従来どおり詳細画面。要対応の判定は、作成15分以内の処理中を「止まっている」にしない。
+- 残: 売上入金メール(ゼン・ランド送金分ほか)の自動化は設計確認待ち。
+
+---
+
 ## 2026-10-14 担当C: 自動取込と手動取込の分離（要対応／承認待ち）＋ポータルの承認待ちバッジ（v110・画面のみ／push前）
 - 問題: 自動取込（email_auto/infomart）の下書きが、ai_match_status未設定のため「要対応」にも入り、手動取込分と混ざって見えた。
 - invoices.html v110: unifiedIsAuto（自動取込かつ手動切替でない）。自動取込の要対応は「自動処理が止まっている(auto_blocked)・重複・MFエラー・口座変更・支払確認待ち・期限超過」だけ（承認待ちに並んでいるだけのものは要対応に出さない）。一覧に「取得元: すべて/🤖自動取込/✋手動・その他」の絞り込み（件数付き）と、行の取得元バッジ（🤖/✋）。URL ?sub=approval で承認待ちを直接開く。承認待ち件数をポータルへ通知（nsAcBadge.approve）。

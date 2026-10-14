@@ -8,6 +8,9 @@
 //   ④人が既にこのメールに請求書を作っていれば何もしない ⑤部分ユニーク索引(biz_key)で同時実行でも1件に集約
 // ・人の手動分類(mail_kind)が invoice 以外のメールは対象外。
 //
+// 【2026-10-14追加】アップロード入口: { action:"process_invoice", invoice_id } … 人がスキャン/アップロードした請求書（invoices.intake_source='manual'・email_id無し）を、
+//   同じ流れに乗せる（読み取り→取引先・法人の判定→重複確認→明細・仕訳下書き・検算→承認待ち）。画面からはログインJWT（invoice_can_access）で呼べる。
+//   人が入力した取引先・法人・店舗は上書きしない。複数の請求書が1つのファイルに入っていれば、2件目以降は新しい下書きを作る。intake_source は 'upload_auto' に切り替える。
 // 認証: invoice-intake と同じ共有シークレット（app_secrets.invoice_intake_secret）。
 // 入力(JSON):
 //   { secret, email_id }                                  … 1通を処理（invoice-intakeが分類直後に呼ぶ）
@@ -94,6 +97,91 @@ async function logAudit(db: any, emailId: string, action: string, note: string, 
 async function markSkipped(db: any, emailId: string, reason: string, dryRun?: boolean) {
   if (!dryRun) await db.from("invoice_emails").update({ auto_invoice_at: new Date().toISOString(), auto_invoice_note: "作成なし: " + reason }).eq("id", emailId);
   return { email_id: emailId, status: "skipped", reason };
+}
+
+
+// ---- アップロード入口（2026-10-14）----
+async function processUploadedInvoice(db: any, invoiceId: string, secret: string) {
+  const { data: inv } = await db.from("invoices").select("*").eq("id", invoiceId).maybeSingle();
+  if (!inv) return { invoice_id: invoiceId, status: "skipped", reason: "請求書が見つかりません" };
+  if (inv.mf_journal_id) return { invoice_id: invoiceId, status: "skipped", reason: "MF登録済みです" };
+  if (inv.email_id) return { invoice_id: invoiceId, status: "skipped", reason: "メール由来の請求書は、メール側の自動処理で扱います" };
+  if (inv.auto_ocr || inv.current_stage) return { invoice_id: invoiceId, status: "skipped", reason: "既に自動処理済みです" };
+  if (inv.auto_mode === "manual") return { invoice_id: invoiceId, status: "skipped", reason: "手動に切り替えられています" };
+
+  const { data: atts } = await db.from("invoice_attachments").select("id, file_name, mime_type").eq("invoice_id", invoiceId).order("created_at");
+  const readable = (atts ?? []).filter((a: any) => { const mt = String(a.mime_type ?? ""); return mt === "application/pdf" || mt.startsWith("image/"); });
+  if (!readable.length) return { invoice_id: invoiceId, status: "skipped", reason: "PDF・画像の添付がありません" };
+
+  const ocrRes = await fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/invoice-ocr`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", apikey: Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!, Authorization: `Bearer ${Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")}` },
+    body: JSON.stringify({ invoice_id: invoiceId, mail_kind: "invoice", internal_secret: secret }),
+  });
+  const ocr = await ocrRes.json().catch(() => ({}));
+  if (!ocrRes.ok || !ocr.success) return { invoice_id: invoiceId, status: "error", reason: "AI読み取りに失敗: " + String(ocr.error ?? ocrRes.status).slice(0, 120) };
+  const found: any[] = Array.isArray(ocr.invoices) ? ocr.invoices : [];
+  const nowIso = new Date().toISOString();
+  await db.from("invoice_attachments").update({ ocr_done_at: nowIso }).in("id", readable.map((a: any) => a.id));
+  if (!found.length) return { invoice_id: invoiceId, status: "none_found", reason: "添付から請求書を検出できませんでした（手入力で処理してください）" };
+
+  const kick = (id: string) => {
+    const p = fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/invoice-lines-ocr`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", apikey: Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!, Authorization: `Bearer ${Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")}` },
+      body: JSON.stringify({ secret, invoice_id: id }),
+    }).catch((e) => console.error("明細OCRの依頼に失敗: " + e));
+    const er = (globalThis as any).EdgeRuntime; if (er?.waitUntil) er.waitUntil(p);
+  };
+  const created: string[] = []; const dups: string[] = []; let first = true;
+  for (const f of found) {
+    const vendorName: string | null = f.vendor_name ?? null;
+    const amount = f.amount != null && Number.isFinite(Number(f.amount)) ? Math.round(Number(f.amount)) : null;
+    const dueDate: string | null = /^\d{4}-\d{2}-\d{2}$/.test(String(f.due_date ?? "")) ? f.due_date : null;
+    const invoiceNumber: string | null = f.invoice_number ? String(f.invoice_number).trim() : null;
+    // 1件目は、人が入力した取引先・法人があればそれを優先
+    const v = first && inv.vendor_id ? { id: inv.vendor_id as string, corp: null as string | null } : await resolveVendor(db, vendorName);
+    const corporationId = (first && inv.corporation_id) ? inv.corporation_id : (v?.corp ?? await resolveCorporation(db, f.addressee_company ?? null));
+    const bizKey = bizKeyOf(v?.id ?? null, invoiceNumber, dueDate, amount);
+    // 同じ請求書が既にあれば（自分自身を除く）、重複として印だけ付ける
+    let dupId: string | null = null;
+    if (v || invoiceNumber) {
+      const vids = v ? await sameNameVendorIds(db, v.id) : [];
+      let q = db.from("invoices").select("id").neq("invoice_status", "cancelled").neq("id", invoiceId);
+      if (invoiceNumber && v) q = q.in("vendor_id", vids).eq("invoice_number", invoiceNumber);
+      else if (invoiceNumber && amount != null) q = q.eq("invoice_number", invoiceNumber).eq("amount", amount);
+      else if (v && dueDate && amount != null) q = q.in("vendor_id", vids).eq("due_date", dueDate).eq("amount", amount);
+      else q = q.eq("id", "00000000-0000-0000-0000-000000000000");
+      const { data: d1 } = await q.limit(1); dupId = d1?.[0]?.id ?? null;
+    }
+    const src = readable.find((a: any) => f.source_hint && String(a.file_name).includes(String(f.source_hint))) ?? readable[0];
+    const fields: Record<string, unknown> = {
+      vendor_name: vendorName ?? inv.vendor_name, invoice_number: invoiceNumber, amount, due_date: dueDate,
+      vendor_id: v?.id ?? null, corporation_id: corporationId ?? null, biz_key: dupId ? null : bizKey,
+      attachment_id: src?.id ?? null, source_attachment_id: src?.id ?? null,
+      intake_source: "upload_auto", auto_ocr: f, auto_mode: "auto", updated_at: nowIso,
+    };
+    if (first) {
+      if (inv.vendor_name && !vendorName) fields.vendor_name = inv.vendor_name;
+      if (dupId) fields.duplicate_suspected = true;
+      const { error: upErr } = await db.from("invoices").update(fields).eq("id", invoiceId);
+      if (upErr) {
+        if (String(upErr.code) === "23505") { await db.from("invoices").update({ ...fields, biz_key: null, duplicate_suspected: true }).eq("id", invoiceId); dups.push(invoiceId); }
+        else return { invoice_id: invoiceId, status: "error", reason: "下書きの更新に失敗: " + upErr.message.slice(0, 150) };
+      } else if (dupId) dups.push(invoiceId);
+      created.push(invoiceId);
+      if (!dupId) kick(invoiceId);
+      first = false;
+    } else {
+      if (dupId) { dups.push(dupId); continue; }
+      const { data: ins, error: insErr } = await db.from("invoices").insert({ ...fields, email_id: null, invoice_status: "draft", received_at: inv.received_at ?? null }).select("id").maybeSingle();
+      if (insErr) { if (String(insErr.code) === "23505") continue; continue; }
+      created.push(ins!.id as string); kick(ins!.id as string);
+    }
+  }
+  try { await db.from("invoice_audit_logs").insert({ entity_type: "invoice", entity_id: invoiceId, action: "auto_invoice_created", actor_type: "ai",
+    note: `アップロードされた請求書を自動処理（下書き${created.length}件／重複の疑い${dups.length}件）` }); } catch (_) { /* 履歴の失敗は処理に影響させない */ }
+  return { invoice_id: invoiceId, status: "processed", created, duplicates: dups.length };
 }
 
 async function processEmail(db: any, emailId: string, secret: string, opts: { dryRun?: boolean } = {}) {
@@ -234,6 +322,17 @@ Deno.serve(async (req: Request) => {
   const db = svc();
   const { data: secretRow, error: secretErr } = await db.from("app_secrets").select("value").eq("key", "invoice_intake_secret").maybeSingle();
   if (secretErr) return json({ error: "シークレット確認に失敗しました: " + secretErr.message }, 500);
+  // 2026-10-14: アップロード入口（process_invoice）だけは、ログインユーザー（invoice_can_access）でも呼べる
+  if (body?.action === "process_invoice" && !(secretRow?.value && body?.secret === secretRow.value)) {
+    const uc = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_ANON_KEY")!, { global: { headers: { Authorization: req.headers.get("Authorization") ?? "" } } });
+    const { data: ok } = await uc.rpc("invoice_can_access");
+    if (ok !== true) return json({ error: "権限がありません" }, 403);
+    if (!body?.invoice_id) return json({ error: "invoice_id が必要です" }, 400);
+    const { data: vis } = await uc.from("invoices").select("id").eq("id", body.invoice_id).maybeSingle();
+    if (!vis) return json({ error: "対象が見つからないか権限がありません" }, 403);
+    try { return json({ success: true, result: await processUploadedInvoice(db, body.invoice_id, secretRow!.value) }); }
+    catch (e) { return json({ error: "処理中にエラー: " + String((e as Error)?.message ?? e) }, 500); }
+  }
   if (!secretRow?.value || body?.secret !== secretRow.value) return json({ error: "認証エラー" }, 401);
 
   try {
@@ -248,6 +347,7 @@ Deno.serve(async (req: Request) => {
       for (const m of mails ?? []) results.push(await processEmail(db, m.id as string, body.secret, { dryRun: !!body.dry_run }));
       return json({ success: true, dry_run: !!body.dry_run, processed: results.length, results });
     }
+    if (body?.action === "process_invoice") { if (!body?.invoice_id) return json({ error: "invoice_id が必要です" }, 400); return json({ success: true, result: await processUploadedInvoice(db, body.invoice_id, body.secret) }); }
     if (!body?.email_id) return json({ error: "email_id が必要です" }, 400);
     return json({ success: true, result: await processEmail(db, body.email_id, body.secret) });
   } catch (e) {

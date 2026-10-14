@@ -670,7 +670,7 @@ Deno.serve(async (req: Request) => {
         // 2026-10-13修正（請求書自動処理）: メール自動取込で作った請求書（email_auto）は、自分のPDF（source_attachment_id）だけを証憑にする
         // （1通のメールに複数の請求書がある場合に、他の請求書のPDFまで添付されるのを防ぐ）。いずれの場合も、同じファイル（ハッシュ一致）は1つだけ添付する
         const attQuery = db.from("invoice_attachments").select("id, file_name, storage_path, mime_type, size_bytes, file_hash").order("created_at").limit(10);
-        const { data: attsRaw } = (inv.intake_source === "email_auto" && inv.source_attachment_id)
+        const { data: attsRaw } = (["email_auto", "upload_auto"].includes(inv.intake_source) && inv.source_attachment_id)
           ? await attQuery.eq("id", inv.source_attachment_id)
           : inv.email_id
             ? await attQuery.eq("email_id", inv.email_id)

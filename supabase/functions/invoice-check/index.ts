@@ -72,7 +72,7 @@ Deno.serve(async (req: Request) => {
   checks.push({ key: "stores", label: "明細の店舗が全て確定", status: !lines?.length ? "na" : unresolvedLines ? "ng" : "ok", detail: unresolvedLines ? `${unresolvedLines}行が未確定` : undefined, reason: "store_unresolved" });
 
   // PDF必須（証憑としてMFに添付する）。メール自動作成・インフォマート取込は、この請求書自身のPDFが無ければ承認に進めない
-  if (["email_auto", "infomart"].includes(inv.intake_source)) {
+  if (["email_auto", "infomart", "upload_auto"].includes(inv.intake_source)) {
     const { count: attCount } = await db.from("invoice_attachments").select("id", { count: "exact", head: true }).eq("id", inv.source_attachment_id ?? "00000000-0000-0000-0000-000000000000");
     checks.push({ key: "pdf", label: "請求書のPDFが添付されている", status: attCount ? "ok" : "ng", detail: attCount ? undefined : "PDFが添付されていません（MFの証憑に付けられません）", reason: "ocr_failed" });
   }

@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-14-v110";
+const BUILD_TAG="2026-10-14-v111";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -1317,7 +1317,7 @@ async function invdraftInit(invoiceId){
   const taxLbl=t=>t?`課税仕入 ${t.rate}%`:"—";
   const noRule=d&&(d.problems||[]).some(p=>/行ルールが(ありません|未登録)/.test(p));
   const STAGE_LABEL={received:"受信",parsed:"読み取り済み",mapping:"店舗・取引先の確認中",journal_draft:"仕訳下書き（要確認）",ready_for_approval:"承認待ち",approved:"承認済み",payment_waiting:"支払待ち",paid:"支払済み",completed:"完了",error:"エラー"};
-  const autoLocked=["email_auto","infomart"].includes(inv.intake_source)&&inv.auto_mode==="auto"&&!!inv.current_stage&&!["approved","payment_waiting","paid","completed"].includes(inv.current_stage);
+  const autoLocked=["email_auto","infomart","upload_auto"].includes(inv.intake_source)&&inv.auto_mode==="auto"&&!!inv.current_stage&&!["approved","payment_waiting","paid","completed"].includes(inv.current_stage);
   // 自動処理中は手動の仕訳作成を無効にして二重処理を防ぐ（「手動に切り替え」で解除）
   if(autoLocked&&$("mfj-open")){ $("mfj-open").disabled=true; $("mfj-open").title="自動処理中です。手動で作る場合は「手動に切り替え」をしてください"; }
   const ck=inv.checks&&Array.isArray(inv.checks.checks)?inv.checks.checks:[];
@@ -7583,11 +7583,12 @@ function unifiedStoreLabel(r){
 // payment_unverified（振込済み・支払確認待ち）を要対応に追加し、絞り込みで見つけられるようにした
 // 2026-10-14: 自動取込（メール自動・インフォマート）の請求書は、人が入力した請求書とは別の流れ（自動処理→承認待ち）。
 // 承認待ちに並んでいるだけのものは「要対応」に混ぜない。要対応に出すのは、自動処理が止まっているもの・重複・MFエラー等だけ。
-function unifiedIsAuto(r){ return ["email_auto","infomart"].includes(r.intake_source)&&r.auto_mode!=="manual"; }
+function unifiedIsAuto(r){ return ["email_auto","infomart","upload_auto"].includes(r.intake_source)&&r.auto_mode!=="manual"; }
 function unifiedAutoReasons(r){
   const today=new Date().toISOString().slice(0,10); const reasons=[];
   if(r.payment_verified_at) return reasons;
-  if(!r.mf_journal_id&&(r.current_stage==="error"||r.blocked_reason||["received","parsed","mapping","journal_draft"].includes(r.current_stage))) reasons.push("auto_blocked");
+  const aged=(Date.now()-new Date(r.created_at).getTime())>15*60e3; // 作成直後の処理中は「止まっている」扱いにしない
+  if(!r.mf_journal_id&&(r.current_stage==="error"||r.blocked_reason||["mapping","journal_draft"].includes(r.current_stage)||(aged&&["received","parsed"].includes(r.current_stage)))) reasons.push("auto_blocked");
   if(r.duplicate_suspected) reasons.push("duplicate");
   if(r.bank_account_change_detected) reasons.push("bank_change");
   if(r.mf_registration_error) reasons.push("mf_error");
@@ -7621,7 +7622,7 @@ function unifiedMatchesSubTab(r,tab){
   if(tab==="all") return true;
   if(tab==="review") return unifiedNeedsAttention(r);
   if(tab==="approval") return r.current_stage==="ready_for_approval"&&!r.mf_journal_id&&r.auto_mode!=="manual"; // 自動処理で検算・判定を通過した請求書（承認待ち）
-  if(tab==="plpending") return !!r.mf_journal_id&&["email_auto","infomart"].includes(r.intake_source)&&!r.pl_fee_reflected_at&&!r.ad_cost_reflected_at&&!r.pl_fee_seisan_synced_at&&!r.pl_fee_excluded_at; // 2026-10-14: MF登録済みなのにPL・広告費・精算書へ未反映（自動処理の請求書）
+  if(tab==="plpending") return !!r.mf_journal_id&&["email_auto","infomart","upload_auto"].includes(r.intake_source)&&!r.pl_fee_reflected_at&&!r.ad_cost_reflected_at&&!r.pl_fee_seisan_synced_at&&!r.pl_fee_excluded_at; // 2026-10-14: MF登録済みなのにPL・広告費・精算書へ未反映（自動処理の請求書）
   if(tab==="accounting") return !r.mf_journal_id;
   if(tab==="payment") return !!r.mf_journal_id&&["wait","csv","processing"].includes(r.payment_status);
   if(tab==="done") return !!r.payment_verified_at; // 支払確認まで終わって初めて「完了」タブに入る
@@ -7717,7 +7718,7 @@ function unifiedFilteredRows(){
   }
   return list;
 }
-const INTAKE_SOURCE_LABEL={email_auto:"メール(自動)",mail:"メール",paper:"紙",pdf:"PDF",infomart:"Infomart",api:"API",manual:"手動"};
+const INTAKE_SOURCE_LABEL={upload_auto:"アップロード(自動)",email_auto:"メール(自動)",mail:"メール",paper:"紙",pdf:"PDF",infomart:"Infomart",api:"API",manual:"手動"};
 function unifiedRowHtml(r){
   const ai=AI_STATUS_LABEL[r.ai_match_status]||["—","gray"];
   const pay=unifiedPaymentStageLabel(r);
@@ -9485,6 +9486,7 @@ function uploadFormHtml(){
         <input type="file" id="up-file" multiple style="margin-top:8px">
       </div>
       <div id="up-filelist" style="margin-top:8px;font-size:12px"></div>
+      <label style="display:flex;gap:6px;align-items:flex-start;margin-top:10px;font-size:12px"><input type="checkbox" id="up-auto" checked style="margin-top:2px"><span><b>🤖 自動で判別して、仕訳の下書きまで作る（おすすめ）</b><br><span style="color:var(--muted)">ファイルを選ぶだけで、どこの法人・どこの取引先の請求書か、明細の店舗、仕訳の内容まで自動で判定し、「承認待ち」に並べます。上の請求元・法人・店舗は、分かる場合だけ入力してください（入力した内容が優先されます）。</span></span></label>
       <button class="hq-btn primary" style="margin-top:10px;width:100%" id="up-submit">🧾 請求書として取込</button>
       <div class="err" id="up-msg" style="margin-top:6px"></div>`;
 }
@@ -9653,6 +9655,21 @@ function wireUploadInvoiceTab(u){
         msg.textContent=`請求書は取り込みましたが、証憑ファイルの保存に失敗しました：${j.attach_errors.map(e=>`${e.file_name}（${e.error}）`).join("、")}。お手数ですが、開いた請求書詳細の「証憑プレビュー」からファイルを追加し直してください。`;
       }else{
         msg.className="err msg-ok"; msg.textContent="取り込みました。続けて請求書一覧を開きます…";
+      }
+      // 2026-10-14: 自動判別ON → メール自動取込と同じ流れ（読み取り→取引先・法人の判定→明細・仕訳下書き→検算→承認待ち）に乗せる
+      if(j.invoice_id&&$("up-auto")&&$("up-auto").checked){
+        msg.className="err"; msg.textContent="請求書を読み取って、取引先・法人を判定しています…（30秒ほどかかります）";
+        const s2=sess.get();
+        const ar=await fetch(SUPA_URL+"/functions/v1/invoice-auto-create",{method:"POST",headers:{"Content-Type":"application/json","apikey":SUPA_KEY,"Authorization":"Bearer "+(s2?s2.at:"")},body:JSON.stringify({action:"process_invoice",invoice_id:j.invoice_id})}).catch(()=>null);
+        const aj=ar?await ar.json().catch(()=>({})):{};
+        const res=aj&&aj.result;
+        if(ar&&ar.ok&&res&&res.status==="processed"){
+          msg.className="err msg-ok"; msg.textContent=`自動で処理しました（${(res.created||[]).length}件）。明細の確認・仕訳の下書きを作っています。しばらくすると「承認待ち」に並びます。`;
+          setTimeout(async()=>{ const um=$("uploadModal"); if(um) um.remove(); UNIFIED_STATE.subTab="all"; UNIFIED_STATE.src="auto"; TAB="unified"; await renderTabBody(u); },900);
+          return;
+        }
+        msg.className="err"; msg.textContent="自動の判別ができませんでした（"+((res&&res.reason)||(aj&&aj.error)||"原因不明")+"）。請求書の詳細画面を開くので、内容を入力してください。";
+        await new Promise(r=>setTimeout(r,1500));
       }
       // 新規取込時のみ自動判定を実行（iv-saveの新規保存時と同じ流儀）。完了を待たずに進める
       if(j.invoice_id){
