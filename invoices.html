@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-14-v108";
+const BUILD_TAG="2026-10-14-v109";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -1110,6 +1110,66 @@ async function apvApprove_(u,inv,d,modal,dry){
    中身は承認画面と同じ apvRun_（MFの科目・部門・税区分の解決→貸借一致→登録→PL/広告費/精算書へ税抜反映）。仕訳の下書きの内容のまま登録する。
    登録は「このパネルで登録前チェックが通った請求書」だけ。登録済み・手動切替・PDF無しは自動で止まる。
    ============================================================ */
+
+/* ============================================================
+   一括解除（MFの仕訳も削除）（2026-10-14）…「すべて」タブの上のパネル
+   インフォマート取込の請求書でMF登録済みのものを、まとめて「MFの仕訳を削除 → 請求書を削除」する。テスト登録の後始末用。
+   ① 事前確認（削除しない）…決算期間を過ぎていないか・MF側に仕訳があるかを1件ずつ確認
+   ② 実行…事前確認が通ったものだけ、MFの仕訳を削除してから請求書を削除（PL・広告費・精算書へ反映済みのもの／支払確認済みのものは対象外）
+   ============================================================ */
+function ubdRows_(){ return UNIFIED_STATE.rows.filter(r=>r.intake_source==="infomart"&&!!r.mf_journal_id&&!r.payment_verified_at&&!r.pl_fee_reflected_at&&!r.ad_cost_reflected_at&&!r.pl_fee_seisan_synced_at); }
+function ubdPanelHtml_(){
+  const B=UNIFIED_STATE.ubd||(UNIFIED_STATE.ubd={sel:new Set(),ok:new Set(),res:{},log:""});
+  const rows=ubdRows_(); if(!rows.length) return "";
+  const body=rows.map(r=>{ const x=B.res[r.id]; const st=x?(x.ok?'<span style="color:#15803d">✅ 解除できます</span>':`<span style="color:#b91c1c">❌ ${esc(x.err||"")}</span>`):"";
+    return `<tr><td><input type="checkbox" class="ubd-chk" data-id="${esc(r.id)}" ${B.sel.has(r.id)?"checked":""}></td><td>${esc((r.vendor&&r.vendor.name)||r.vendor_name||"")}</td><td>${esc((r.target_year_month||"").slice(0,7))}</td><td style="text-align:right">${yen(r.amount)}</td><td>${esc(r.mf_journal_number??"")}</td><td style="font-size:12px">${st}</td></tr>`; }).join("");
+  return `<div class="card" style="padding:12px;margin-bottom:10px">
+    <div style="font-weight:700;margin-bottom:6px">🗑 一括解除（MFの仕訳も削除）— インフォマート取込でMF登録済み ${rows.length}件</div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:6px">テスト登録の後始末用です。PL・広告費・精算書へ反映済みのもの、支払確認済みのものは出ません。</div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+      <button class="hq-btn" id="ubd-all">全部選ぶ／解除</button>
+      <button class="hq-btn" id="ubd-dry">🔎 事前確認（削除しない）</button>
+      <button class="hq-btn" id="ubd-run" style="color:#b91c1c">🗑 事前確認OKのものを、MFの仕訳ごと削除</button>
+      <span id="ubd-count" style="font-size:12px;color:var(--muted)"></span>
+    </div>
+    <div id="ubd-log" style="margin-top:6px;font-size:12px;line-height:1.7">${B.log||""}</div>
+    <div class="hq-tablewrap" style="margin-top:6px"><table class="invoice-table"><thead><tr><th></th><th>取引先</th><th>対象月</th><th>金額（税込）</th><th>MF伝票番号</th><th>事前確認</th></tr></thead><tbody>${body}</tbody></table></div></div>`;
+}
+function ubdWire_(u){
+  const B=UNIFIED_STATE.ubd; if(!B||!$("ubd-dry")) return;
+  const upd=()=>{ const c=$("ubd-count"); if(c) c.textContent=`選択中 ${B.sel.size}件／事前確認OK ${[...B.sel].filter(i=>B.ok.has(i)).length}件`; };
+  const log=x=>{ B.log=x; if($("ubd-log")) $("ubd-log").innerHTML=x; };
+  document.querySelectorAll(".ubd-chk").forEach(el=>el.onchange=()=>{ if(el.checked) B.sel.add(el.dataset.id); else B.sel.delete(el.dataset.id); upd(); });
+  $("ubd-all").onclick=()=>{ const bx=[...document.querySelectorAll(".ubd-chk")]; const all=bx.length&&bx.every(b=>b.checked); bx.forEach(b=>{ b.checked=!all; if(b.checked) B.sel.add(b.dataset.id); else B.sel.delete(b.dataset.id); }); upd(); };
+  const tenantOf=async id=>{ const r=await authed(`/rest/v1/invoices?id=eq.${id}&select=journal_draft->>tenant_id`); const v=r.ok&&Array.isArray(r.body)&&r.body[0]&&r.body[0].tenant_id; return v||"default"; };
+  $("ubd-dry").onclick=async()=>{
+    if(!B.sel.size){ alert("請求書を選んでください"); return; }
+    $("ubd-dry").disabled=true; $("ubd-run").disabled=true; let ok=0,ng=0,n=0;
+    for(const id of [...B.sel]){ n++; log(`確認中… ${n}/${B.sel.size}`); const row=UNIFIED_STATE.rows.find(x=>x.id===id);
+      const pre=await mfDeleteJournal(row.mf_journal_id,{dryRun:true,tenantId:await tenantOf(id)});
+      if(pre.closed) B.res[id]={ok:false,err:"決算期間を過ぎているため削除できません"};
+      else if(pre.notTracked||(pre.ok&&pre.gone)) B.res[id]={ok:true,note:"MF側に仕訳なし"};
+      else if(!pre.ok) B.res[id]={ok:false,err:"MFの状態を確認できません: "+pre.error};
+      else B.res[id]={ok:true};
+      if(B.res[id].ok){ B.ok.add(id); ok++; } else { B.ok.delete(id); ng++; } }
+    log(`事前確認: 解除できる ${ok}件／できない ${ng}件（まだ何も削除していません）`); unifiedRender(u);
+  };
+  $("ubd-run").onclick=async()=>{
+    const ids=[...B.sel].filter(i=>B.ok.has(i));
+    if(!ids.length){ alert("先に「事前確認」を行い、OKの請求書を選んでください"); return; }
+    if(!confirm(`${ids.length}件について、マネーフォワードの仕訳を削除し、続けて請求書も削除します。\n\nMFの仕訳は元に戻せません（再登録は可能）。よろしいですか？`)) return;
+    $("ubd-dry").disabled=true; $("ubd-run").disabled=true; let ok=0,ng=0,n=0; const out=[];
+    for(const id of ids){ n++; log(`削除中… ${n}/${ids.length}`); const row=UNIFIED_STATE.rows.find(x=>x.id===id); const nm=esc((row&&((row.vendor&&row.vendor.name)||row.vendor_name))||id);
+      const d=await mfDeleteJournal(row.mf_journal_id,{tenantId:await tenantOf(id)});
+      if(!d.ok&&!(d.notTracked||d.gone)){ ng++; out.push(`❌ ${nm}: MFの仕訳を削除できませんでした（${esc(d.error)}）。請求書は残しています`); continue; }
+      const r=await deleteInvoiceRecord(id);
+      if(r.ok){ ok++; B.sel.delete(id); B.ok.delete(id); out.push(`✅ ${nm}: MFの仕訳と請求書を削除しました`); }
+      else { ng++; out.push(`⚠️ ${nm}: MFの仕訳は削除しましたが、請求書の削除に失敗しました（${esc((r.body&&(r.body.message||r.body.error))||"")}）`); } }
+    B.log=`<b>解除完了: ${ok}件／失敗 ${ng}件</b><br>`+out.join("<br>");
+    await renderUnifiedInvoiceTab(u);
+  };
+  upd();
+}
 function apbRows_(){ return UNIFIED_STATE.rows.filter(r=>!r.is_payroll_related&&!r.is_receivable_related&&unifiedMatchesSubTab(r,"approval")); }
 function apbPanelHtml_(){
   const A=UNIFIED_STATE.apb||(UNIFIED_STATE.apb={sel:new Set(),ok:new Set(),res:{},log:""});
@@ -7770,6 +7830,7 @@ function unifiedRender(u){
       </div>
       ${isPlp?plpBodyHtml_():isPayment?transferBodyHtml():`
       ${UNIFIED_STATE.subTab==="approval"?apbPanelHtml_():""}
+      ${UNIFIED_STATE.subTab==="all"?ubdPanelHtml_():""}
       <div class="card" style="padding:12px;margin-bottom:10px;display:flex;gap:10px;flex-wrap:wrap;align-items:end">
         <div><label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">検索</label><input id="unified-search" placeholder="🔎 取引先・請求書番号・法人・店舗" value="${esc(UNIFIED_STATE.search)}" style="max-width:280px"></div>
         <div><label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">対象年月（支払期限、無ければ受領日）</label><input type="month" id="unified-ym" value="${esc(UNIFIED_STATE.yearMonth)}"></div>
@@ -7828,7 +7889,7 @@ function unifiedRender(u){
     $("unified-ym").onchange=()=>{ UNIFIED_STATE.yearMonth=$("unified-ym").value; unifiedRender(u); };
     unifiedWireFilterClear(u);
     unifiedWireRowActions(u);
-    apbWire_(u);
+    apbWire_(u); ubdWire_(u);
   }
 }
 // 2026-09-10新設：unifiedRender()から検索専用の部分描画として切り出した。絞り込み解除ボタンの
