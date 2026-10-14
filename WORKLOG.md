@@ -114,7 +114,7 @@
 
 ---
 
-## 2026-10-14 担当C: アップロード（スキャン請求書）も自動判別→仕訳下書き→承認待ちへ（v111・SQL/Edge未適用＝承認待ち）
+## 2026-10-14 担当C: アップロード（スキャン請求書）も自動判別→仕訳下書き→承認待ちへ（v111・SQL適用済み・Edge3本デプロイ済み・push済み）
 - ユーザー要望: 人がスキャンした請求書をアップロードするだけで、法人・取引先を判断し自動仕訳まで→承認だけ。
 - 実装: invoice-auto-create に action:process_invoice（ログインJWT=invoice_can_access でも呼べる）。既存の intake_upload で作った請求書(email_id無し)を invoice-ocr(invoice_id指定)で読み取り→取引先(resolveVendor)・宛先法人(resolveCorporation)判定→重複確認→請求書を更新(intake_source='upload_auto')→invoice-lines-ocr以降（店舗解決→仕訳下書き→検算→承認待ち）。人が入力した取引先・法人は優先。1ファイルに複数請求書→2件目以降は新規下書き。
 - SQL: supabase/2026-10-14_intake_source_upload_auto.sql（intake_source のCHECKに upload_auto 追加のみ）。invoice-check / mf-journal は upload_auto を自動取込扱い（PDF必須・自分のPDFのみ証憑）。
