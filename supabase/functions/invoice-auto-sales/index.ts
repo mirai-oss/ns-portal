@@ -195,7 +195,7 @@ async function buildAndSave(db: any, email: any, att: any, ex: any): Promise<{ i
     for (const g of groups.values()) {
       creditLines.push({ line_no: cn++, account: rule.revenue_account, sub_account: rule.revenue_sub, department: rule.department_name,
         tax: { kind: "sales", rate: g.rate, name: g.rate ? `課税売上 ${g.rate}%` : "対象外" }, amount: g.gross,
-        remark: remarkBase.slice(0, 100) }); // MFの実際の仕訳に合わせ、摘要は全行「◯◯　9月分」（入居者名は入れない）
+        remark: [remarkBase, g.tenant].filter(Boolean).join("　").slice(0, 100) }); // 摘要=「◯◯　9月分　入居者名」（ユーザー指示: 入居者名も入れる）
     }
   }
   const debitTotal = debitLines.reduce((t, d) => t + d.debit.amount, 0), creditTotal = creditLines.reduce((t, c) => t + c.amount, 0);
