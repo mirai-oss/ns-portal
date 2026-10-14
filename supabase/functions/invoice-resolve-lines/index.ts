@@ -87,6 +87,7 @@ Deno.serve(async (req: Request) => {
     for (const pi of past ?? []) {
       const { data: st } = await db.from("invoice_stores").select("store_id").eq("invoice_id", pi.id);
       const set = new Set<string>((st ?? []).map((x: any) => x.store_id)); if (pi.store_id) set.add(pi.store_id);
+      if (set.size === 0) continue;   // 店舗が記録されていない過去分は判断材料にしない
       per.push(set.size === 1 ? [...set][0] : null);
     }
     if (per.length && per.every((x) => x && x === per[0])) historyStore = per[0];
