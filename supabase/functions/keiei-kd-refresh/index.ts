@@ -611,7 +611,7 @@ async function autoSyncFromStgPl(sb: any, dry = false): Promise<any> {
       const nm = String(row[1] ?? "").trim(); let sid: string | null = null;
       if (nm) { const hit = lookupStore(maps, nm); if (!hit) { unresolved.add(nm); continue; } sid = hit.store_id; }
       const item = String(row[2] ?? "").trim() || "(未分類)";
-      rows.push({ year_month: ym, store_id: sid, item, category: plCatForEntries(row[3], item), amount: num(row[4]), memo, sub_item: source === "店舗間移動" ? "" : String(row[6] ?? ""), source });   // 店舗間移動は補助科目を持たない（シートのG列に別連携の「名前　外部連携:ID」が混入していたため無視する・2026-10-13）
+      rows.push({ year_month: ym, store_id: sid, item, category: plCatForEntries(row[3], item), amount: num(row[4]), memo, sub_item: (source === "店舗間移動" || source === "媒体販促費（自動計上）") ? "" : String(row[6] ?? ""), source });   // 店舗間移動・媒体販促費（自動計上）は補助科目を持たない（2026-10-14: 後者はG列に別連携の「PayPay　外部連携:ID」が混入して表示された）（シートのG列に別連携の「名前　外部連携:ID」が混入していたため無視する・2026-10-13）
     }
     const old = await fetchAll((f, t) => sb.from("pl_entries").select("id,year_month,store_id,item,category,amount,memo,sub_item,source")
       .is("deleted_at", null).neq("source", "手入力").neq("source", "自動｜スポット人件費").neq("source", "店舗間移動").order("id").range(f, t));
