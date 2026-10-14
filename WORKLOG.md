@@ -138,6 +138,13 @@
 
 ---
 
+## 2026-10-14 担当C: アップロード自動処理の不具合2件の修正（日本語ファイル名／初回の取引先は「提案」で承認待ちへ）（v112・Edge未デプロイ＝承認待ち）
+- 不具合1（デプロイ・push済み）: 日本語のファイル名のPDFは保存キーが無効(Invalid key)でアップロードに失敗（添付0件）。保存キーを英数字のみに（mf-journal 2か所・invoice-zip-extract 1か所）。空の請求書1件を削除（東京ガス=MF登録済みは削除せず）。
+- 不具合2（本コミット）: 行ルール無し＋店舗表記が未登録の取引先は、承認待ちに進まなかった（試験: 東京ガス=過去のMF仕訳あり・川崎匠味が未登録）。①invoice-journal-draft: 行ルールが無い取引先は、過去にMF登録した同じ取引先の仕訳（mf_debit_accounts）から科目・補助科目を「初回の提案」として出す（貸方=仕入高→買掛金／他→未払金）。status='proposed'（承認待ちに進むが、検算は警告）。インフォマートのCSV既定提案も同様に proposed。②invoice-check: proposed は warn。③invoice-resolve-lines: 店舗表記が未登録でも、取引先の直近3件のMF登録済み請求書がすべて同じ1店舗なら、その店舗をAI推定(resolved_by=ai・via=vendor_history)で当てる。④invoices.html v112: 承認(MF登録)時、proposed は行ルール(approved)として保存＝次回から自動。一括登録は proposed を対象外（個別承認）。
+- 試験データ: 試験用の請求書2件（4145f267=アールエスエス風・31fc5dc5=東京ガス風）とストレージの standalone/c-test/ を作成。後始末が必要（デプロイ後の再試験のあとで削除）。
+
+---
+
 ## 2026-10-14 担当C: アップロード（スキャン請求書）も自動判別→仕訳下書き→承認待ちへ（v111・SQL適用済み・Edge3本デプロイ済み・push済み）
 - ユーザー要望: 人がスキャンした請求書をアップロードするだけで、法人・取引先を判断し自動仕訳まで→承認だけ。
 - 実装: invoice-auto-create に action:process_invoice（ログインJWT=invoice_can_access でも呼べる）。既存の intake_upload で作った請求書(email_id無し)を invoice-ocr(invoice_id指定)で読み取り→取引先(resolveVendor)・宛先法人(resolveCorporation)判定→重複確認→請求書を更新(intake_source='upload_auto')→invoice-lines-ocr以降（店舗解決→仕訳下書き→検算→承認待ち）。人が入力した取引先・法人は優先。1ファイルに複数請求書→2件目以降は新規下書き。

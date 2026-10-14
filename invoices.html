@@ -1174,7 +1174,7 @@ function apbRows_(){ return UNIFIED_STATE.rows.filter(r=>!r.is_payroll_related&&
 function apbPanelHtml_(){
   const A=UNIFIED_STATE.apb||(UNIFIED_STATE.apb={sel:new Set(),ok:new Set(),res:{},log:""});
   const rows=apbRows_(); if(!rows.length) return "";
-  const body=rows.map(r=>{ const x=A.res[r.id]; const st=x?(x.ok?`<span style="color:#15803d">✅ ${esc(x.dry?"チェックOK":"登録済み")}</span>`:`<span style="color:#b91c1c">❌ ${x.html||""}</span>`):"";
+  const body=rows.map(r=>{ const x=A.res[r.id]; const st=x?(x.ok?`<span style="color:#15803d">✅ ${esc(x.proposed?"初回提案（個別に承認）":x.dry?"チェックOK":"登録済み")}</span>`:`<span style="color:#b91c1c">❌ ${x.html||""}</span>`):"";
     return `<tr><td><input type="checkbox" class="apb-chk" data-id="${esc(r.id)}" ${A.sel.has(r.id)?"checked":""}></td><td>${esc((r.vendor&&r.vendor.name)||r.vendor_name||"")}</td><td>${esc((r.target_year_month||"").slice(0,7))}</td><td style="text-align:right">${yen(r.amount)}</td><td style="font-size:12px">${st}</td></tr>`; }).join("");
   return `<div class="card" style="padding:12px;margin-bottom:10px">
     <div style="font-weight:700;margin-bottom:6px">☑ 一括チェック・一括登録（承認待ち ${rows.length}件）</div>
