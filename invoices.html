@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-13-v105";
+const BUILD_TAG="2026-10-14-v106";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -982,6 +982,50 @@ async function openApprovalModal(u,invoiceId){
 // ・二重登録防止: 直前にMF登録済みか再確認／mf-journalも登録済みを拒否（409）。承認ボタンは押した瞬間に無効化
 // ・反映先は仕訳の行の店舗で決まる: 業務委託精算対象店舗=精算書(seisan_confirm)／それ以外=PL(confirm)。1行は1ルートだけ。
 //   広告宣伝費は広告費(ad-cost-reflect)にも反映（従来の手動運用と同じ）。仕入高のPL反映は「請求書とsiire見込の差額調整」方式の確定待ちのため行わない
+// 2026-10-14: 承認後・「PL未反映」一括反映の共通処理。MF登録済みの仕訳（lines）をPL・広告費・精算書へ税抜で反映し、結果の文を results に積む
+function plIsExpenseAccount_(name){
+  const n=String(name||"").normalize("NFKC");
+  if(/^(仕入高|売上高)$/.test(n)) return false;
+  return !/(現金|預金|売掛金|買掛金|未払|未収|前払費用|前受|仮払|仮受|預り金|立替金|貸付金|借入金|保証金|敷金|有形固定資産|建物|工具器具|ソフトウェア|資本金|繰越利益|事業主|受取|雑収入|売上)/.test(n)||/^長期前払費用$/.test(n);
+}
+async function plReflectInvoice_(inv,d,lines,results){
+  const labelOf=(a,sub)=>sub?`${a}/${sub}`:a;
+      const ym=(inv.target_year_month||d.transaction_date||"").slice(0,7)+"-01";
+    const stores=(CORP_STORE_CACHE&&CORP_STORE_CACHE.stores)||[]; await ensureCorpStoreCache();
+    const routeOfStore=sid=>{ const x=((inv.checks&&inv.checks.routes)||[]).find(v=>v.store_id===sid); return x?x.route:"pl"; };
+    const netOf=l=>l.net!=null?Math.round(l.net):(l.rate>0?l.amount-Math.floor(l.amount*l.rate/(100+l.rate)):l.amount);
+    const groups=new Map(); // key = route|account|sub|rate → store別
+    for(const l of lines){ if(!l.store_id) continue; const rt=routeOfStore(l.store_id); const k=[rt,l.account,l.sub,rt==="seisan"?l.rate:0].join("\u0001");
+      const g=groups.get(k)||{route:rt,account:l.account,sub:l.sub,rate:l.rate,byStore:new Map()}; const st=stores.find(x=>x.id===l.store_id);
+      const e=g.byStore.get(l.store_id)||{store_id:l.store_id,store_name:st?st.name:l.store_name,amount:0}; e.amount+=netOf(l); g.byStore.set(l.store_id,e); groups.set(k,g); }
+    const targets=await plFeeTargetAccounts(); const mediaList=["食べログ","ぐるなび","ホットペッパー","Retty"];
+    const adDone=new Set();
+    for(const g of groups.values()){
+      const allocs=[...g.byStore.values()].filter(a=>a.amount>0); if(!allocs.length) continue;
+      const name=labelOf(g.account,g.sub);
+      if(g.route==="seisan"){
+        const r=await plFeeCall("seisan_confirm",{invoice_id:inv.id,account_name:g.account,sub_account_name:g.sub||undefined,item_name:g.account,tax_rate:g.rate?`${g.rate}%`:"非課税",year_month:ym,allocations:allocs.map(a=>({...a,tax_rate:g.rate?`${g.rate}%`:"非課税"}))});
+        results.push(r.ok&&r.body.success!==false?`③精算書へ登録: ${esc(name)}`:`③⚠️精算書への登録に失敗: ${esc(name)}（${esc((r.body&&(r.body.error||(r.body.results||[]).filter(x=>!x.ok).map(x=>x.store+": "+x.error).join("／")))||"")}）`);
+        continue;
+      }
+      if(g.account==="仕入高"){ results.push(`③仕入高（${esc(g.sub||"")}）のPL反映は、請求書とsiire見込の差額調整方式の確定待ちのため行っていません`); continue; }
+      if(g.account==="広告宣伝費"&&mediaList.includes(g.sub)&&!adDone.has(g.sub)){
+        adDone.add(g.sub); const s2=sess.get();
+        const r=await fetch(SUPA_URL+"/functions/v1/ad-cost-reflect",{method:"POST",headers:{"Content-Type":"application/json","apikey":SUPA_KEY,"Authorization":"Bearer "+(s2?s2.at:"")},body:JSON.stringify({action:"confirm",invoice_id:inv.id,media:g.sub,year_month:ym,allocations:allocs})});
+        const jj=await r.json().catch(()=>({}));
+        results.push(r.ok?`③広告費へ反映: ${esc(g.sub)}`:`③⚠️広告費への反映に失敗: ${esc(jj.error||"")}`);
+      }
+      if(!targets.some(t=>t.account_name===g.account&&(t.sub_account_name||"")===(g.sub||""))){
+        // 2026-10-14: 費用科目ならMFの科目名のままPL連携対象に自動登録（資産・負債・売上などは従来どおり反映しない）
+        if(!plIsExpenseAccount_(g.account)){ results.push(`③${esc(name)}は費用科目ではないため、PLへは反映していません`); continue; }
+        const ad=await plFeeCall("add_target_account",{account_name:g.account,sub_account_name:g.sub||undefined});
+        if(!(ad.ok&&ad.body.success!==false)&&!/既に登録/.test((ad.body&&ad.body.error)||"")){ results.push(`③⚠️${esc(name)}をPL連携対象に登録できませんでした（${esc((ad.body&&ad.body.error)||"")}）`); continue; }
+        PL_FEE_TARGET_ACCOUNTS=null; targets.push({account_name:g.account,sub_account_name:g.sub||null}); results.push(`③${esc(name)}をPL連携対象科目に自動登録しました`);
+      }
+      const r=await plFeeCall("confirm",{invoice_id:inv.id,account_name:g.account,sub_account_name:g.sub||undefined,year_month:ym,allocations:allocs});
+      results.push(r.ok?`③PLへ反映（税抜）: ${esc(name)}`:`③⚠️PLへの反映に失敗: ${esc(name)}（${esc((r.body&&r.body.error)||"")}）`);
+    }
+}
 async function apvApprove_(u,inv,d,modal,dry){
   const msg=$("apv-msg"), btn=$("apv-approve"); msg.className="err"; msg.textContent="";
   btn.disabled=true;
@@ -1047,37 +1091,7 @@ async function apvApprove_(u,inv,d,modal,dry){
       } else results.push("②行ごとに内容が違うため、ルールの更新は行っていません");
     }
     // PL・広告費・精算書への反映（税抜）
-    if(reflect){
-      const ym=(inv.target_year_month||d.transaction_date||"").slice(0,7)+"-01";
-      const stores=(CORP_STORE_CACHE&&CORP_STORE_CACHE.stores)||[]; await ensureCorpStoreCache();
-      const routeOfStore=sid=>{ const x=((inv.checks&&inv.checks.routes)||[]).find(v=>v.store_id===sid); return x?x.route:"pl"; };
-      const netOf=l=>l.net!=null?Math.round(l.net):(l.rate>0?l.amount-Math.floor(l.amount*l.rate/(100+l.rate)):l.amount);
-      const groups=new Map(); // key = route|account|sub|rate → store別
-      for(const l of lines){ if(!l.store_id) continue; const rt=routeOfStore(l.store_id); const k=[rt,l.account,l.sub,rt==="seisan"?l.rate:0].join("\u0001");
-        const g=groups.get(k)||{route:rt,account:l.account,sub:l.sub,rate:l.rate,byStore:new Map()}; const st=stores.find(x=>x.id===l.store_id);
-        const e=g.byStore.get(l.store_id)||{store_id:l.store_id,store_name:st?st.name:l.store_name,amount:0}; e.amount+=netOf(l); g.byStore.set(l.store_id,e); groups.set(k,g); }
-      const targets=await plFeeTargetAccounts(); const mediaList=["食べログ","ぐるなび","ホットペッパー","Retty"];
-      const adDone=new Set();
-      for(const g of groups.values()){
-        const allocs=[...g.byStore.values()].filter(a=>a.amount>0); if(!allocs.length) continue;
-        const name=labelOf(g.account,g.sub);
-        if(g.route==="seisan"){
-          const r=await plFeeCall("seisan_confirm",{invoice_id:inv.id,account_name:g.account,sub_account_name:g.sub||undefined,item_name:g.account,tax_rate:g.rate?`${g.rate}%`:"非課税",year_month:ym,allocations:allocs.map(a=>({...a,tax_rate:g.rate?`${g.rate}%`:"非課税"}))});
-          results.push(r.ok&&r.body.success!==false?`③精算書へ登録: ${esc(name)}`:`③⚠️精算書への登録に失敗: ${esc(name)}（${esc((r.body&&(r.body.error||(r.body.results||[]).filter(x=>!x.ok).map(x=>x.store+": "+x.error).join("／")))||"")}）`);
-          continue;
-        }
-        if(g.account==="仕入高"){ results.push(`③仕入高（${esc(g.sub||"")}）のPL反映は、請求書とsiire見込の差額調整方式の確定待ちのため行っていません`); continue; }
-        if(g.account==="広告宣伝費"&&mediaList.includes(g.sub)&&!adDone.has(g.sub)){
-          adDone.add(g.sub); const s2=sess.get();
-          const r=await fetch(SUPA_URL+"/functions/v1/ad-cost-reflect",{method:"POST",headers:{"Content-Type":"application/json","apikey":SUPA_KEY,"Authorization":"Bearer "+(s2?s2.at:"")},body:JSON.stringify({action:"confirm",invoice_id:inv.id,media:g.sub,year_month:ym,allocations:allocs})});
-          const jj=await r.json().catch(()=>({}));
-          results.push(r.ok?`③広告費へ反映: ${esc(g.sub)}`:`③⚠️広告費への反映に失敗: ${esc(jj.error||"")}`);
-        }
-        if(!targets.some(t=>t.account_name===g.account&&(t.sub_account_name||"")===(g.sub||""))){ results.push(`③${esc(name)}は「PL連携対象科目」に未登録のため、PLへは反映していません（設定タブで登録後、詳細画面から反映できます）`); continue; }
-        const r=await plFeeCall("confirm",{invoice_id:inv.id,account_name:g.account,sub_account_name:g.sub||undefined,year_month:ym,allocations:allocs});
-        results.push(r.ok?`③PLへ反映（税抜）: ${esc(name)}`:`③⚠️PLへの反映に失敗: ${esc(name)}（${esc((r.body&&r.body.error)||"")}）`);
-      }
-    }
+    if(reflect) await plReflectInvoice_(inv,d,lines,results);
     btn.style.display="none";
     msg.className="err msg-ok"; msg.innerHTML=results.join("<br>")+"<br><br>完了しました。画面を閉じて一覧を更新してください。";
     setTimeout(()=>{},0);
@@ -7363,7 +7377,7 @@ async function renderSalesListTab(u){ await renderFinancialListTab(u,"sales"); }
 // （unifiedFilteredRows参照。給与仕訳から自動作成される「給与：氏名（年月）」invoicesレコード
 // ＝is_payroll_related=trueは、この一覧には一切出てこない。確認は給与仕訳タブで行う）
 let UNIFIED_STATE={subTab:"review", search:"", yearMonth:"", reasonFilter:"", sortCol:"", sortDir:"desc", rows:[]};
-const UNIFIED_SUBTABS=[["review","要対応"],["approval","承認待ち"],["all","すべて"],["accounting","会計待ち"],["payment","振込待ち"],["done","完了"]];
+const UNIFIED_SUBTABS=[["review","要対応"],["approval","承認待ち"],["plpending","PL未反映"],["all","すべて"],["accounting","会計待ち"],["payment","振込待ち"],["done","完了"]];
 const REASON_FILTER_LABELS={
   overdue:"支払期限超過", bank_change:"振込先口座変更", duplicate:"重複疑い", mf_error:"MF登録エラー",
   unknown_journal:"仕訳不明（未判定）", unknown_company:"法人不明", unknown_store:"店舗・部門不明", import_error:"取込エラー",
@@ -7458,6 +7472,7 @@ function unifiedMatchesSubTab(r,tab){
   if(tab==="all") return true;
   if(tab==="review") return unifiedNeedsAttention(r);
   if(tab==="approval") return r.current_stage==="ready_for_approval"&&!r.mf_journal_id&&r.auto_mode!=="manual"; // 自動処理で検算・判定を通過した請求書（承認待ち）
+  if(tab==="plpending") return !!r.mf_journal_id&&["email_auto","infomart"].includes(r.intake_source)&&!r.pl_fee_reflected_at&&!r.ad_cost_reflected_at&&!r.pl_fee_seisan_synced_at&&!r.pl_fee_excluded_at; // 2026-10-14: MF登録済みなのにPL・広告費・精算書へ未反映（自動処理の請求書）
   if(tab==="accounting") return !r.mf_journal_id;
   if(tab==="payment") return !!r.mf_journal_id&&["wait","csv","processing"].includes(r.payment_status);
   if(tab==="done") return !!r.payment_verified_at; // 支払確認まで終わって初めて「完了」タブに入る
@@ -7483,7 +7498,7 @@ async function renderUnifiedInvoiceTab(u){
   // 使っている列だけに絞った（請求書詳細モーダルは常に別途id指定でselect=*を取り直す設計の
   // ため、ここを絞っても詳細画面には一切影響しないことを調査済み）
   const [r,corpCache]=await perfTimed("unified_list_load",()=>Promise.all([
-    authed(`/rest/v1/invoices?select=id,created_at,due_date,invoice_status,amount,vendor_name,invoice_number,corporation_id,store_id,email_id,intake_source,ai_match_status,mf_journal_id,mf_journal_number,payment_status,payment_verified_at,duplicate_suspected,bank_account_change_detected,mf_registration_error,is_payroll_related,is_receivable_related,pl_fee_reflected_at,ad_cost_reflected_at,pl_fee_seisan_synced_at,current_stage,blocked_reason,auto_mode,email:invoice_emails(mail_kind),vendor:vendors(name),corp:corporations(name),store:stores!invoices_store_id_fkey(name),invoice_stores(store:stores(name)),linked_step:hq_task_steps!linked_hq_step_id(title)&order=created_at.desc&limit=500`),
+    authed(`/rest/v1/invoices?select=id,created_at,due_date,invoice_status,amount,vendor_name,invoice_number,corporation_id,store_id,email_id,intake_source,ai_match_status,mf_journal_id,mf_journal_number,payment_status,payment_verified_at,duplicate_suspected,bank_account_change_detected,mf_registration_error,is_payroll_related,is_receivable_related,pl_fee_reflected_at,pl_fee_excluded_at,ad_cost_reflected_at,pl_fee_seisan_synced_at,target_year_month,current_stage,blocked_reason,auto_mode,email:invoice_emails(mail_kind),vendor:vendors(name),corp:corporations(name),store:stores!invoices_store_id_fkey(name),invoice_stores(store:stores(name)),linked_step:hq_task_steps!linked_hq_step_id(title)&order=created_at.desc&limit=500`),
     ensureCorpStoreCache(),
   ]));
   const raw=(r.ok&&Array.isArray(r.body))?r.body:[];
@@ -7663,7 +7678,7 @@ function unifiedRender(u){
   // ③「請求書メールのUIは切り離す。請求書一覧とはつなげない」→旧「🏦振込一覧を開く」
   //   「その他の一覧」（受信トレイ等への橋渡し）は削除した（請求書メールは独立ページ化・
   //   下記renderInbox等のmailWsTabsHtml参照）
-  const isPayment=UNIFIED_STATE.subTab==="payment";
+  const isPayment=UNIFIED_STATE.subTab==="payment"; const isPlp=UNIFIED_STATE.subTab==="plpending";
   $("tabbody").innerHTML=`
     <section class="invoice-list active">
       <div class="kpis kpis6" style="margin-bottom:14px">
@@ -7680,7 +7695,7 @@ function unifiedRender(u){
         </div>
         <button class="hq-btn primary" id="unified-add-invoice">＋ 請求書を追加</button>
       </div>
-      ${isPayment?transferBodyHtml():`
+      ${isPlp?plpBodyHtml_():isPayment?transferBodyHtml():`
       <div class="card" style="padding:12px;margin-bottom:10px;display:flex;gap:10px;flex-wrap:wrap;align-items:end">
         <div><label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">検索</label><input id="unified-search" placeholder="🔎 取引先・請求書番号・法人・店舗" value="${esc(UNIFIED_STATE.search)}" style="max-width:280px"></div>
         <div><label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">対象年月（支払期限、無ければ受領日）</label><input type="month" id="unified-ym" value="${esc(UNIFIED_STATE.yearMonth)}"></div>
@@ -7703,15 +7718,19 @@ function unifiedRender(u){
   document.querySelectorAll("[data-unified-tab]").forEach(b=>b.onclick=async()=>{
     UNIFIED_STATE.subTab=b.dataset.unifiedTab;
     if(UNIFIED_STATE.subTab==="payment") await transferFetchData();
+    if(UNIFIED_STATE.subTab==="plpending") await plpFetch_();
     unifiedRender(u);
   });
   document.querySelectorAll("[data-ukpi]").forEach(el=>el.onclick=async()=>{
     UNIFIED_STATE.subTab=el.dataset.ukpi;
     if(UNIFIED_STATE.subTab==="payment") await transferFetchData();
+    if(UNIFIED_STATE.subTab==="plpending") await plpFetch_();
     unifiedRender(u);
   });
   $("unified-add-invoice").onclick=()=>openUploadModal(u);
-  if(isPayment){
+  if(isPlp){
+    plpWire_(u);
+  }else if(isPayment){
     transferWireBody(u);
   }else{
     document.querySelectorAll("[data-usort]").forEach(el=>el.onclick=()=>{
@@ -7753,6 +7772,78 @@ function unifiedWireFilterClear(u){
 }
 // 2026-09-05新規：行のどこをクリックしても詳細が開くようにする（一括選択バー廃止に伴う対応）。
 // 法人プルダウン・削除ボタンをクリックしたときだけは行を開かないよう除外する
+
+/* ============================================================
+   📊 PL未反映の一覧と一括反映（2026-10-14）
+   MFに登録済みなのに、PL・広告費・精算書へまだ反映されていない請求書（自動処理で取り込んだもの）を一覧にし、
+   選んだ請求書をまとめて反映する。反映の中身は承認画面と同じ plReflectInvoice_（税抜・費用科目は自動でPL連携対象に登録）。
+   仕訳の下書き（invoices.journal_draft）の内容で反映する。仕入高は差額調整（置き換え）の方式が決まるまで対象外。
+   ============================================================ */
+async function plpFetch_(){
+  const ids=UNIFIED_STATE.rows.filter(r=>!r.is_payroll_related&&!r.is_receivable_related&&unifiedMatchesSubTab(r,"plpending")).map(r=>r.id);
+  UNIFIED_STATE.plp={drafts:{},sel:new Set(),log:""};
+  if(!ids.length) return;
+  const r=await authed(`/rest/v1/invoices?id=in.(${ids.join(",")})&select=id,journal_draft,checks,target_year_month`);
+  if(r.ok&&Array.isArray(r.body)) r.body.forEach(x=>{ UNIFIED_STATE.plp.drafts[x.id]=x; });
+}
+function plpKind_(inv){ // "ok"=反映できる／"siire"=仕入高のみ（対象外）／"nodraft"=下書き無し
+  const d=inv&&inv.journal_draft; const ls=(d&&d.debit_lines)||[];
+  if(!ls.length) return "nodraft";
+  return ls.every(l=>l.debit&&l.debit.account==="仕入高")?"siire":"ok";
+}
+function plpRows_(){ return UNIFIED_STATE.rows.filter(r=>!r.is_payroll_related&&!r.is_receivable_related&&unifiedMatchesSubTab(r,"plpending")); }
+function plpBodyHtml_(){
+  const P=UNIFIED_STATE.plp||{drafts:{},sel:new Set(),log:""};
+  const rows=plpRows_();
+  const kindLabel={ok:"",siire:'<span class="hq-pill gray">仕入高（差額調整待ち・対象外）</span>',nodraft:'<span class="hq-pill amber">仕訳下書きなし</span>'};
+  const body=rows.map(r=>{ const inv=P.drafts[r.id]; const k=plpKind_(inv); const d=inv&&inv.journal_draft;
+    const accs=d?[...new Set((d.debit_lines||[]).map(l=>l.debit&&[l.debit.account,l.debit.sub_account].filter(Boolean).join("/")))].join("、"):"";
+    return `<tr>
+      <td>${k==="ok"?`<input type="checkbox" class="plp-chk" data-id="${esc(r.id)}" ${P.sel.has(r.id)?"checked":""}>`:""}</td>
+      <td>${esc((r.target_year_month||"").slice(0,7)||"")}</td>
+      <td>${esc((r.vendor&&r.vendor.name)||r.vendor_name||"")}</td>
+      <td style="text-align:right">${yen(r.amount)}</td>
+      <td>${esc(accs)}</td><td>${esc(r.mf_journal_number??"")}</td><td>${kindLabel[k]||""}</td></tr>`; }).join("");
+  const okN=rows.filter(r=>plpKind_(P.drafts[r.id])==="ok").length;
+  return `<div class="card" style="padding:12px;margin-bottom:10px">
+      <div style="font-size:13px;margin-bottom:8px">MFに登録済みで、PL・広告費・精算書へまだ反映されていない請求書です（${rows.length}件・うち一括反映できるもの${okN}件）。金額は<b>税抜</b>で反映し、費用科目はMFの科目名のままPL連携対象に自動登録します。</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <button class="hq-btn" id="plp-all">全部選ぶ／解除</button>
+        <button class="hq-btn primary" id="plp-run" ${okN?"":"disabled"}>📊 選んだ請求書をPLに一括反映</button>
+        <span id="plp-count" style="font-size:12px;color:var(--muted)"></span>
+      </div>
+      <div id="plp-log" style="margin-top:8px;font-size:12px;line-height:1.7">${P.log||""}</div>
+    </div>
+    <div class="card hq-tablewrap"><table class="invoice-table"><thead><tr><th></th><th>対象月</th><th>取引先</th><th>金額（税込）</th><th>借方（科目/補助）</th><th>伝票番号</th><th>備考</th></tr></thead>
+    <tbody>${body||'<tr><td colspan="7">PL未反映の請求書はありません</td></tr>'}</tbody></table></div>`;
+}
+function plpWire_(u){
+  const P=UNIFIED_STATE.plp||(UNIFIED_STATE.plp={drafts:{},sel:new Set(),log:""});
+  const upd=()=>{ const c=$("plp-count"); if(c) c.textContent=`選択中 ${P.sel.size}件`; };
+  document.querySelectorAll(".plp-chk").forEach(el=>el.onchange=()=>{ if(el.checked) P.sel.add(el.dataset.id); else P.sel.delete(el.dataset.id); upd(); });
+  $("plp-all").onclick=()=>{ const boxes=[...document.querySelectorAll(".plp-chk")]; const all=boxes.length&&boxes.every(b=>b.checked); boxes.forEach(b=>{ b.checked=!all; if(b.checked) P.sel.add(b.dataset.id); else P.sel.delete(b.dataset.id); }); upd(); };
+  $("plp-run").onclick=async()=>{
+    if(!P.sel.size){ alert("反映する請求書を選んでください"); return; }
+    if(!confirm(`選んだ${P.sel.size}件を、PL・広告費・精算書へ税抜で反映します（MFには何も登録しません）。よろしいですか？`)) return;
+    const btn=$("plp-run"); btn.disabled=true; const log=[]; const show=()=>{ $("plp-log").innerHTML=log.join("<br>"); };
+    await ensureCorpStoreCache();
+    for(const id of [...P.sel]){
+      const row=UNIFIED_STATE.rows.find(r=>r.id===id); const inv=P.drafts[id]; const d=inv&&inv.journal_draft; const nm=esc((row&&((row.vendor&&row.vendor.name)||row.vendor_name))||id);
+      if(!d){ log.push(`⚠️${nm}: 仕訳の下書きがありません`); show(); continue; }
+      const lines=(d.debit_lines||[]).map(l=>({line_no:l.line_no,store_id:l.store_id,store_name:l.store_name,remark:l.remark,amount:l.debit.amount,net:l.debit.net_amount,
+        account:l.debit.account||"",sub:l.debit.sub_account||"",dept:l.debit.department||"",rate:l.debit.tax?Number(l.debit.tax.rate):0}));
+      log.push(`<b>${nm}</b>`); show();
+      const res=[]; try{ await plReflectInvoice_({id,target_year_month:inv.target_year_month,checks:inv.checks},d,lines,res); }catch(e){ res.push("⚠️エラー: "+esc((e&&e.message)||e)); }
+      res.forEach(x=>log.push("　"+x)); show();
+      P.sel.delete(id);
+    }
+    log.push("<br>完了しました。画面を再読み込みすると一覧が更新されます。"); show();
+    const r2=await authed(`/rest/v1/invoices?select=id,pl_fee_reflected_at,pl_fee_excluded_at,ad_cost_reflected_at,pl_fee_seisan_synced_at&id=in.(${plpRows_().map(x=>x.id).join(",")||"00000000-0000-0000-0000-000000000000"})`);
+    if(r2.ok&&Array.isArray(r2.body)) r2.body.forEach(x=>{ const row=UNIFIED_STATE.rows.find(r=>r.id===x.id); if(row) Object.assign(row,x); });
+    P.log=log.join("<br>"); btn.disabled=false; unifiedRender(u);
+  };
+  upd();
+}
 function unifiedWireRowActions(u){
   document.querySelectorAll(".unified-row").forEach(tr=>tr.onclick=e=>{
     if(e.target.closest("select,button")) return;
