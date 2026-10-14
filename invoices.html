@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-14-v106";
+const BUILD_TAG="2026-10-14-v107";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -1008,7 +1008,7 @@ async function plReflectInvoice_(inv,d,lines,results){
         results.push(r.ok&&r.body.success!==false?`③精算書へ登録: ${esc(name)}`:`③⚠️精算書への登録に失敗: ${esc(name)}（${esc((r.body&&(r.body.error||(r.body.results||[]).filter(x=>!x.ok).map(x=>x.store+": "+x.error).join("／")))||"")}）`);
         continue;
       }
-      if(g.account==="仕入高"){ results.push(`③仕入高（${esc(g.sub||"")}）のPL反映は、請求書とsiire見込の差額調整方式の確定待ちのため行っていません`); continue; }
+      if(g.account==="仕入高"){ results.push(`③仕入高（${esc(g.sub||"")}）のPL反映は、月の請求書がすべて承認された後に「PL未反映」タブの「📦 仕入高の置き換え」でまとめて行います`); continue; }
       if(g.account==="広告宣伝費"&&mediaList.includes(g.sub)&&!adDone.has(g.sub)){
         adDone.add(g.sub); const s2=sess.get();
         const r=await fetch(SUPA_URL+"/functions/v1/ad-cost-reflect",{method:"POST",headers:{"Content-Type":"application/json","apikey":SUPA_KEY,"Authorization":"Bearer "+(s2?s2.at:"")},body:JSON.stringify({action:"confirm",invoice_id:inv.id,media:g.sub,year_month:ym,allocations:allocs})});
@@ -7795,7 +7795,7 @@ function plpRows_(){ return UNIFIED_STATE.rows.filter(r=>!r.is_payroll_related&&
 function plpBodyHtml_(){
   const P=UNIFIED_STATE.plp||{drafts:{},sel:new Set(),log:""};
   const rows=plpRows_();
-  const kindLabel={ok:"",siire:'<span class="hq-pill gray">仕入高（差額調整待ち・対象外）</span>',nodraft:'<span class="hq-pill amber">仕訳下書きなし</span>'};
+  const kindLabel={ok:"",siire:'<span class="hq-pill gray">仕入高（月の置き換えで反映）</span>',nodraft:'<span class="hq-pill amber">仕訳下書きなし</span>'};
   const body=rows.map(r=>{ const inv=P.drafts[r.id]; const k=plpKind_(inv); const d=inv&&inv.journal_draft;
     const accs=d?[...new Set((d.debit_lines||[]).map(l=>l.debit&&[l.debit.account,l.debit.sub_account].filter(Boolean).join("/")))].join("、"):"";
     return `<tr>
@@ -7805,7 +7805,7 @@ function plpBodyHtml_(){
       <td style="text-align:right">${yen(r.amount)}</td>
       <td>${esc(accs)}</td><td>${esc(r.mf_journal_number??"")}</td><td>${kindLabel[k]||""}</td></tr>`; }).join("");
   const okN=rows.filter(r=>plpKind_(P.drafts[r.id])==="ok").length;
-  return `<div class="card" style="padding:12px;margin-bottom:10px">
+  return siireAdjHtml_()+`<div class="card" style="padding:12px;margin-bottom:10px">
       <div style="font-size:13px;margin-bottom:8px">MFに登録済みで、PL・広告費・精算書へまだ反映されていない請求書です（${rows.length}件・うち一括反映できるもの${okN}件）。金額は<b>税抜</b>で反映し、費用科目はMFの科目名のままPL連携対象に自動登録します。</div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
         <button class="hq-btn" id="plp-all">全部選ぶ／解除</button>
@@ -7817,8 +7817,51 @@ function plpBodyHtml_(){
     <div class="card hq-tablewrap"><table class="invoice-table"><thead><tr><th></th><th>対象月</th><th>取引先</th><th>金額（税込）</th><th>借方（科目/補助）</th><th>伝票番号</th><th>備考</th></tr></thead>
     <tbody>${body||'<tr><td colspan="7">PL未反映の請求書はありません</td></tr>'}</tbody></table></div>`;
 }
+/* ---- 仕入高の置き換え（2026-10-14）：インフォマート請求書の確定額で、各店舗のPLの仕入高を置き換える ----
+   差額調整 = 請求書の仕入高（税抜）合計 − 日次取込（cost_auto）。PL正本 pl_entries に調整行として入る（取り消し可）。
+   その月のインフォマート請求書がすべてMF登録済み（承認済み）になるまで実行できない。 */
+function siireAdjHtml_(){
+  const S=UNIFIED_STATE.siire||(UNIFIED_STATE.siire={ym:(()=>{ const d=new Date(); d.setMonth(d.getMonth()-1); return d.toISOString().slice(0,7); })(),pv:null,msg:""});
+  const pv=S.pv; let body="";
+  if(pv){
+    const g=pv.gate||{}; const pend=(g.pending||[]);
+    const rows=(pv.stores||[]).map(s=>`<tr><td>${esc(s.store_name)}</td><td style="text-align:right">${s.siire_missing?"（データなし）":yen(s.siire)}</td><td style="text-align:right">${yen(s.invoice_total)}</td><td style="text-align:right;font-weight:600">${(s.adjust>0?"+":"")+yen(s.adjust)}</td><td style="text-align:right">${s.applied?yen(s.applied):"—"}</td><td>${s.invoice_count}件</td></tr>`).join("");
+    body=`<div style="font-size:12px;margin:8px 0">対象のインフォマート請求書 ${g.invoice_total_count||0}件（MF登録済み ${g.registered_count||0}件）${pend.length?`／<b style="color:#b45309">未承認 ${pend.length}件: ${esc(pend.map(x=>x.vendor).join("、"))}</b>`:""}</div>
+      <div class="hq-tablewrap"><table class="invoice-table"><thead><tr><th>店舗</th><th>日次取込（今のPL）</th><th>請求書の仕入高（税抜）</th><th>調整額</th><th>反映済みの調整</th><th>請求書</th></tr></thead><tbody>${rows||'<tr><td colspan="6">置き換え対象の仕入高（MF登録済み）がありません</td></tr>'}</tbody></table></div>
+      <div style="font-size:11px;color:var(--muted);margin-top:4px">調整後のPLの仕入高 ＝ 日次取込 ＋ 調整額 ＝ 請求書の金額。請求書が無い店舗・現金仕入れなど請求書以外・精算書の店舗は変わりません。</div>`;
+  }
+  return `<div class="card" style="padding:12px;margin-bottom:10px">
+    <div style="font-weight:700;margin-bottom:6px">📦 仕入高をインフォマート請求書の確定額に置き換える</div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+      <input type="month" id="siire-ym" value="${esc(S.ym)}">
+      <button class="hq-btn" id="siire-preview">🔎 内容を確認（反映しない）</button>
+      <button class="hq-btn primary" id="siire-apply" ${pv&&(pv.gate.pending||[]).length===0&&(pv.stores||[]).length?"":"disabled"}>✅ PLに反映する</button>
+      <button class="hq-btn" id="siire-remove" ${pv&&(pv.stores||[]).some(s=>s.applied)?"":"disabled"}>↩ この月の置き換えを取り消す</button>
+    </div>
+    <div id="siire-msg" style="margin-top:6px;font-size:12px;line-height:1.7">${S.msg||""}</div>${body}</div>`;
+}
+function siireAdjWire_(u){
+  const S=UNIFIED_STATE.siire; if(!S||!$("siire-preview")) return;
+  const rpc=(fn,args)=>authed("/rest/v1/rpc/"+fn,{method:"POST",body:JSON.stringify(args)});
+  const refresh=async()=>{ S.ym=$("siire-ym").value; const r=await rpc("siire_adjust_preview",{p_ym:S.ym}); if(r.ok){ S.pv=r.body; } else { S.pv=null; S.msg=`<span style="color:#b91c1c">確認に失敗しました: ${esc((r.body&&(r.body.message||r.body.error))||"")}</span>`; } };
+  $("siire-preview").onclick=async()=>{ S.msg="確認中…"; await refresh(); if(S.pv) S.msg=""; unifiedRender(u); };
+  $("siire-apply").onclick=async()=>{
+    if(!S.pv) return;
+    if(!confirm(`${S.ym} の仕入高を、インフォマート請求書の確定額に置き換えます（PLに調整行を入れます・取り消し可）。よろしいですか？`)) return;
+    const r=await rpc("siire_adjust_apply",{p_ym:S.ym,p_mode:"apply"});
+    S.msg=r.ok?`<span style="color:#15803d">✅ 反映しました（${r.body.rows}店舗）。PLは次の自動更新（または再読み込み）で変わります。</span>`:`<span style="color:#b91c1c">反映に失敗しました: ${esc((r.body&&(r.body.message||r.body.error))||"")}</span>`;
+    await refresh(); unifiedRender(u);
+  };
+  $("siire-remove").onclick=async()=>{
+    if(!confirm(`${S.ym} の置き換え（調整行）をすべて取り消し、日次取込のままに戻します。よろしいですか？`)) return;
+    const r=await rpc("siire_adjust_apply",{p_ym:S.ym,p_mode:"remove"});
+    S.msg=r.ok?`<span style="color:#15803d">↩ 取り消しました。</span>`:`<span style="color:#b91c1c">取り消しに失敗しました: ${esc((r.body&&(r.body.message||r.body.error))||"")}</span>`;
+    await refresh(); unifiedRender(u);
+  };
+}
 function plpWire_(u){
   const P=UNIFIED_STATE.plp||(UNIFIED_STATE.plp={drafts:{},sel:new Set(),log:""});
+  siireAdjWire_(u);
   const upd=()=>{ const c=$("plp-count"); if(c) c.textContent=`選択中 ${P.sel.size}件`; };
   document.querySelectorAll(".plp-chk").forEach(el=>el.onchange=()=>{ if(el.checked) P.sel.add(el.dataset.id); else P.sel.delete(el.dataset.id); upd(); });
   $("plp-all").onclick=()=>{ const boxes=[...document.querySelectorAll(".plp-chk")]; const all=boxes.length&&boxes.every(b=>b.checked); boxes.forEach(b=>{ b.checked=!all; if(b.checked) P.sel.add(b.dataset.id); else P.sel.delete(b.dataset.id); }); upd(); };
