@@ -37,17 +37,17 @@ const str = { type: ["string", "null"] };
 const money = { type: "object", properties: { net: num, tax: num, gross: num }, description: "税抜・消費税・税込（円・整数。書かれていない欄はnull）" };
 const TOOL = {
   name: "extract_remittance_statement",
-  description: "不動産の「送金明細書」（管理会社から送られる、賃料などの収入と管理委託料などの支出、送金額の明細）を読み取って返す。書かれていない項目はnull。推測で埋めない。",
+  description: "「送金明細書」（不動産の管理会社から送られる、賃料などの収入と管理委託料などの支出、送金額の明細）または「業務委託精算書」（施設の運営会社から送られる、入金項目・経費項目・業務委託費支払金額の精算書）を読み取って返す。複数ページあるPDFでは、最初の送金明細書／業務委託精算書だけを読む（同じPDFの中の御請求書・立替経費の請求書・立替経費の明細書は読まない）。書かれていない項目はnull。推測で埋めない。",
   input_schema: {
     type: "object",
     properties: {
-      property_name: { ...str, description: "物件名（「物件名 マンタビル」→マンタビル）" },
+      property_name: { ...str, description: "物件名または対象施設（「物件名 マンタビル」→マンタビル／「対象施設：龍馬池袋」→龍馬池袋）" },
       target_month: { ...str, description: "対象月 YYYY-MM（「対象月 2026年09月度」→2026-09。「08月集金分」などの括弧書きは無視）" },
-      remit_date: { ...str, description: "送金予定日 YYYY-MM-DD（無ければ作成日）" },
-      sender: { ...str, description: "送金者（管理業者）の会社名" },
+      remit_date: { ...str, description: "送金予定日（精算書なら精算日）YYYY-MM-DD（無ければ作成日）" },
+      sender: { ...str, description: "送金者（管理業者）／精算書の発行元の会社名" },
       income_items: {
         type: "array",
-        description: "収入の明細。入居者（賃借人）ごとの行だけを入れる（「収入内訳」の合計欄は入れない）。金額が「—」の行は入れない。同じ入居者の賃貸料・管理費・水道料などは行ごとに別々に入れる。",
+        description: "収入の明細（精算書なら入金項目）。入居者（賃借人）／入金元ごとの行だけを入れる（「収入内訳」「小計」の合計欄は入れない）。金額が「—」「0」の行は入れない。同じ入居者の賃貸料・管理費・水道料などは行ごとに別々に入れる。精算書で税抜金額しか書かれていない行は net だけ入れる。",
         items: {
           type: "object",
           properties: {
@@ -66,7 +66,7 @@ const TOOL = {
         items: { type: "object", properties: { payee: str, item: str, tax_class: { type: ["string", "null"], enum: ["taxable_10", "taxable_8", "exempt", null] }, net: num, tax: num, gross: num, note: str } },
       },
       expense_total: { ...money, description: "支出合計" },
-      remit_total: { ...money, description: "送金額（収入合計−支出合計）" },
+      remit_total: { ...money, description: "送金額（収入合計−支出合計）／精算書なら「業務委託費支払金額」" },
     },
     required: ["income_items", "income_total", "expense_items", "expense_total", "remit_total"],
   },
@@ -89,6 +89,7 @@ async function markSkipped(db: any, emailId: string, reason: string) {
 }
 
 const TAX_RATE: Record<string, number> = { taxable_10: 10, taxable_8: 8, exempt: 0 };
+const fillTpl = (tpl: string | null | undefined, def: string, vars: Record<string, string>) => String(tpl || def).replace(/\{(\w+)\}/g, (_m, k) => vars[k] ?? "").replace(/\s+$/g, "");
 const toInt = (v: unknown) => (v != null && Number.isFinite(Number(v)) ? Math.round(Number(v)) : null);
 const monthEnd = (ym: string) => { const [y, m] = ym.split("-").map(Number); return `${ym}-${String(new Date(y, m, 0).getDate()).padStart(2, "0")}`; };
 
@@ -155,47 +156,71 @@ async function buildAndSave(db: any, email: any, att: any, ex: any): Promise<{ i
   ck("corporation", "宛先の法人が確定", corporationId ? "ok" : "ng");
 
   // 金額の読み取りと検算
+  const layout: string = rule?.layout ?? "by_tenant";   // by_tenant=入居者×税区分ごとに貸方（ゼン・ランド）／total=収入合計・支出合計の1行ずつ（Thumzの業務委託精算書）
   const incomeItems: any[] = (Array.isArray(ex.income_items) ? ex.income_items : []).filter((x: any) => toInt(x?.gross) || toInt(x?.net));
   const expenseItems: any[] = (Array.isArray(ex.expense_items) ? ex.expense_items : []).filter((x: any) => toInt(x?.gross) || toInt(x?.net));
   const grossOf = (x: any) => toInt(x?.gross) ?? ((toInt(x?.net) ?? 0) + (toInt(x?.tax) ?? 0));
+  const netOf = (x: any) => toInt(x?.net) ?? ((toInt(x?.gross) ?? 0) - (toInt(x?.tax) ?? 0));
   const incomeSum = incomeItems.reduce((t, x) => t + grossOf(x), 0);
   const expenseSum = expenseItems.reduce((t, x) => t + grossOf(x), 0);
   const incomeTotal = toInt(ex.income_total?.gross), expenseTotal = toInt(ex.expense_total?.gross) ?? 0, remit = toInt(ex.remit_total?.gross);
-  if (!incomeItems.length || remit == null) ck("read", "送金明細の読み取り", "ng", "収入の明細または送金額を読み取れませんでした");
-  else ck("read", "送金明細の読み取り", "ok");
-  if (incomeTotal != null) ck("income_sum", "収入の明細合計＝収入合計", incomeSum === incomeTotal ? "ok" : "ng", incomeSum === incomeTotal ? undefined : `明細合計${incomeSum}／収入合計${incomeTotal}`);
-  if (remit != null && incomeTotal != null) ck("remit", "収入合計−支出合計＝送金額", incomeTotal - expenseTotal === remit ? "ok" : "ng", incomeTotal - expenseTotal === remit ? undefined : `${incomeTotal}−${expenseTotal}≠${remit}`);
-  if (expenseItems.length) ck("expense_sum", "支出の明細合計＝支出合計", expenseSum === expenseTotal ? "ok" : "ng", expenseSum === expenseTotal ? undefined : `明細合計${expenseSum}／支出合計${expenseTotal}`);
+  if (!incomeItems.length || remit == null) ck("read", "明細書の読み取り", "ng", "収入の明細または送金額（支払金額）を読み取れませんでした");
+  else ck("read", "明細書の読み取り", "ok");
+  if (layout === "total") {
+    // 精算書は明細が税抜で書かれているため、税抜の明細合計＝税抜の小計で確認する
+    const inNet = toInt(ex.income_total?.net), exNet = toInt(ex.expense_total?.net);
+    const inSumNet = incomeItems.reduce((t, x) => t + netOf(x), 0), exSumNet = expenseItems.reduce((t, x) => t + netOf(x), 0);
+    if (inNet != null) ck("income_sum", "収入（入金）の明細合計＝小計（税抜）", inSumNet === inNet ? "ok" : "ng", inSumNet === inNet ? undefined : `明細合計${inSumNet}／小計${inNet}`);
+    if (exNet != null && expenseItems.length) ck("expense_sum", "経費の明細合計＝小計（税抜）", exSumNet === exNet ? "ok" : "ng", exSumNet === exNet ? undefined : `明細合計${exSumNet}／小計${exNet}`);
+    const classes = new Set([...incomeItems, ...expenseItems].map((x) => String(x.tax_class ?? "taxable_10")));
+    ck("tax_class", "税区分が10%課税のみ", classes.size === 1 && classes.has("taxable_10") ? "ok" : "ng", classes.size === 1 && classes.has("taxable_10") ? undefined : "10%課税以外の行があります（この形式は未対応のため、人が確認してください）");
+  } else {
+    if (incomeTotal != null) ck("income_sum", "収入の明細合計＝収入合計", incomeSum === incomeTotal ? "ok" : "ng", incomeSum === incomeTotal ? undefined : `明細合計${incomeSum}／収入合計${incomeTotal}`);
+    if (expenseItems.length) ck("expense_sum", "支出の明細合計＝支出合計", expenseSum === expenseTotal ? "ok" : "ng", expenseSum === expenseTotal ? undefined : `明細合計${expenseSum}／支出合計${expenseTotal}`);
+  }
+  if (remit != null && incomeTotal != null) ck("remit", "収入合計−支出合計＝送金額（支払金額）", incomeTotal - expenseTotal === remit ? "ok" : "ng", incomeTotal - expenseTotal === remit ? undefined : `${incomeTotal}−${expenseTotal}≠${remit}`);
 
   const ym = /^\d{4}-\d{2}$/.test(String(ex.target_month ?? "")) ? String(ex.target_month) : null;
   if (!ym) warnings.push("対象月を読み取れませんでした（計上日は送金日にしています）");
-  const remitDate = /^\d{4}-\d{2}-\d{2}$/.test(String(ex.remit_date ?? "")) ? String(ex.remit_date) : (ym ? monthEnd(ym) : String(email.received_at ?? "").slice(0, 10));
+  const remitDate0 = /^\d{4}-\d{2}-\d{2}$/.test(String(ex.remit_date ?? "")) ? String(ex.remit_date) : (ym ? monthEnd(ym) : String(email.received_at ?? "").slice(0, 10));
+  const remitDate = rule?.date_basis === "month_end" && ym ? monthEnd(ym) : remitDate0;   // 計上日: 送金日（ゼン・ランド）／対象月の末日（Thumz）
   const month = ym ? Number(ym.slice(5, 7)) : null;
-  const remarkBase = [rule?.remark_label ?? ex.property_name ?? "", month ? `${month}月分` : ""].filter(Boolean).join("　");
+  const label = String(rule?.remark_label ?? ex.property_name ?? "");
+  const mm = month ? `${month}月分` : "";
+  const remarkBase = [label, mm].filter(Boolean).join("　");
+  const remarkRecv = fillTpl(rule?.remark_recv_tpl, "{label}　{m}", { label, m: mm });
+  const remarkFee = fillTpl(rule?.remark_fee_tpl, "{label}　{m}", { label, m: mm });
 
   // 仕訳の下書き
   const debitLines: any[] = []; const creditLines: any[] = [];
   if (rule && remit != null && incomeItems.length) {
     let ln = 1;
-    debitLines.push({ line_no: ln++, store_id: null, store_name: null, remark: remarkBase,
+    debitLines.push({ line_no: ln++, store_id: null, store_name: null, remark: remarkRecv,
       debit: { account: rule.receivable_account, sub_account: rule.receivable_sub, department: null, tax: { kind: "purchase", rate: 0 }, amount: remit, net_amount: remit }, rule: { source: "ledger", version: 1 } });
-    for (const x of expenseItems) {
-      const rate = TAX_RATE[String(x.tax_class ?? "taxable_10")] ?? 10; const g = grossOf(x);
-      debitLines.push({ line_no: ln++, store_id: null, store_name: null, remark: remarkBase,
-        debit: { account: rule.fee_account, sub_account: rule.fee_sub, department: rule.department_name, tax: { kind: "purchase", rate }, amount: g, net_amount: toInt(x.net) ?? g }, rule: { source: "ledger", version: 1 } });
-    }
-    // 貸方: 入居者×税区分ごとに売上高
-    const groups = new Map<string, { tenant: string; rate: number; gross: number }>();
-    for (const x of incomeItems) {
-      const rate = TAX_RATE[String(x.tax_class ?? "taxable_10")] ?? 10;
-      const key = `${x.tenant ?? ""}|${rate}`; const g = groups.get(key) ?? { tenant: String(x.tenant ?? ""), rate, gross: 0 };
-      g.gross += grossOf(x); groups.set(key, g);
-    }
-    let cn = 1;
-    for (const g of groups.values()) {
-      creditLines.push({ line_no: cn++, account: rule.revenue_account, sub_account: rule.revenue_sub, department: rule.department_name,
-        tax: { kind: "sales", rate: g.rate, name: g.rate ? `課税売上 ${g.rate}%` : "対象外" }, amount: g.gross,
-        remark: [remarkBase, g.tenant].filter(Boolean).join("　").slice(0, 100) }); // 摘要=「◯◯　9月分　入居者名」（ユーザー指示: 入居者名も入れる）
+    if (layout === "total") {
+      if (expenseTotal > 0) debitLines.push({ line_no: ln++, store_id: null, store_name: null, remark: remarkFee,
+        debit: { account: rule.fee_account, sub_account: rule.fee_sub, department: rule.department_name, tax: { kind: "purchase", rate: 10 }, amount: expenseTotal, net_amount: toInt(ex.expense_total?.net) ?? expenseTotal }, rule: { source: "ledger", version: 1 } });
+      if (incomeTotal != null) creditLines.push({ line_no: 1, account: rule.revenue_account, sub_account: rule.revenue_sub, department: rule.department_name,
+        tax: { kind: "sales", rate: 10, name: "課税売上 10%" }, amount: incomeTotal, remark: fillTpl(rule?.remark_rev_tpl, "{label}　{m}", { label, m: mm }) });
+    } else {
+      for (const x of expenseItems) {
+        const rate = TAX_RATE[String(x.tax_class ?? "taxable_10")] ?? 10; const g = grossOf(x);
+        debitLines.push({ line_no: ln++, store_id: null, store_name: null, remark: remarkFee,
+          debit: { account: rule.fee_account, sub_account: rule.fee_sub, department: rule.department_name, tax: { kind: "purchase", rate }, amount: g, net_amount: toInt(x.net) ?? g }, rule: { source: "ledger", version: 1 } });
+      }
+      // 貸方: 入居者×税区分ごとに売上高
+      const groups = new Map<string, { tenant: string; rate: number; gross: number }>();
+      for (const x of incomeItems) {
+        const rate = TAX_RATE[String(x.tax_class ?? "taxable_10")] ?? 10;
+        const key = `${x.tenant ?? ""}|${rate}`; const g = groups.get(key) ?? { tenant: String(x.tenant ?? ""), rate, gross: 0 };
+        g.gross += grossOf(x); groups.set(key, g);
+      }
+      let cn = 1;
+      for (const g of groups.values()) {
+        creditLines.push({ line_no: cn++, account: rule.revenue_account, sub_account: rule.revenue_sub, department: rule.department_name,
+          tax: { kind: "sales", rate: g.rate, name: g.rate ? `課税売上 ${g.rate}%` : "対象外" }, amount: g.gross,
+          remark: [remarkBase, g.tenant].filter(Boolean).join("　").slice(0, 100) }); // 摘要=「◯◯　9月分　入居者名」（ユーザー指示: 入居者名も入れる）
+      }
     }
   }
   const debitTotal = debitLines.reduce((t, d) => t + d.debit.amount, 0), creditTotal = creditLines.reduce((t, c) => t + c.amount, 0);
