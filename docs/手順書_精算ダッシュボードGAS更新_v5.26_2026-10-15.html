@@ -1,0 +1,67 @@
+<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>手順書 精算ダッシュボードの更新（v5.26）</title>
+<style>
+body{font-family:-apple-system,'Hiragino Sans','Yu Gothic',sans-serif;max-width:860px;margin:24px auto;padding:0 16px;line-height:1.9;color:#222;font-size:16px}
+h1{font-size:24px;border-bottom:3px solid #c0522a;padding-bottom:8px} h2{font-size:20px;margin-top:34px;background:#f6efe8;padding:8px 12px;border-left:6px solid #c0522a}
+.box{background:#fff8e6;border:1px solid #e6c96b;padding:10px 14px;border-radius:8px;margin:12px 0} .ok{background:#eaf7ec;border-color:#8fcf9b} .ng{background:#fdecec;border-color:#e59a9a}
+pre{background:#f4f4f4;border:1px solid #ddd;border-radius:6px;padding:10px;overflow-x:auto;font-size:13px;line-height:1.5;white-space:pre-wrap}
+ol li{margin-bottom:10px} code{font-family:Menlo,monospace} .small{font-size:13px;color:#666}
+</style></head><body>
+<h1>手順書：精算ダッシュボードを更新する（v5.26）</h1>
+<p>目的：<b>精算書を「発行・送信」した直後に、N-Style側の仕訳の下書きを、ポータルの承認待ちに出す</b>ための変更を入れます。所要時間は10分ほどです。（前回の v5.25 のときと、同じ作業です。）</p>
+<div class="box">大事なこと：<br>・入れ替えたあと、必ず<b>「デプロイを管理」→ ✏️ →「新バージョン」</b>でデプロイします。「新しいデプロイ」を選ぶと、アドレスが変わり、画面が動かなくなります。<br>・変更は小さく、<b>3か所だけ</b>です（方法Bなら、ファイルを開かなくてもできます）。</div>
+
+<h2>方法A：全部貼り替える（簡単）</h2>
+<ol>
+<li><b>コードをコピー</b>：添付の <code>SeisanDashboard_v5.26_paste.txt</code> を「テキストエディット」で開き、<b>⌘+A → ⌘+C</b>。</li>
+<li><b>精算ダッシュボードのスプレッドシート</b>を開き、<b>「拡張機能」→「Apps Script」</b>。</li>
+<li>左の一覧の <b><code>SeisanDashboard</code></b> をクリック → 右の大きな文字の場所をクリック → <b>⌘+A → ⌘+V</b> → 💾 保存。</li>
+<li><b>デプロイ</b>：右上「デプロイ」→「<b>デプロイを管理</b>」→ 今のデプロイの <b>✏️</b> →「バージョン」で<b>「新バージョン」</b>→「デプロイ」。</li>
+<li><b>確認</b>：次のアドレスを開く：<br><code>https://script.google.com/macros/s/AKfycbzwYN9uSEtcJHSKSVQCoQOrllhO7G6gR-E4dvP-V4o_VdGXr9VQx2mbYYPNyNEFSQCiKg/exec?action=ping</code><br><b><code>"ver":"v5.26-portal-issued"</code></b> と出れば成功です。</li>
+</ol>
+
+<h2>方法B：3か所だけ書き換える（ファイルが開けないとき）</h2>
+<p>Apps Scriptの画面で、<b>⌘+F（検索）</b>で場所を探します。置換は、検索窓の左の「▸」で出ます。</p>
+<ol>
+<li><b>【追加】</b> 次の行を探します（「sd_markIssued_(det, store, monthKey);」で検索すると、2か所出ます。<b>「sendMail」のif文の中</b>のほうです。<code>result.attachCount</code> の少し下です）：<br><code>      sd_markIssued_(det, store, monthKey);</code><br>その<b>すぐ下</b>に、次の1行を追加します：<pre><code>      result.portal = sd_notifyPortalIssued_(store, monthKey, blob, isResend); // 2026-10-15: N-Style側の仕訳の下書きをポータルへ（失敗しても発行は止めない）</code></pre></li>
+<li><b>【追加】</b> 次の行を探します：<br><code>function sd_markIssued_(det, store, monthKey) {</code><br>その<b>すぐ上</b>に、次のかたまり（関数）を、<b>そのまま全部</b>追加します：<pre><code>/* 2026-10-15: 精算書の「発行・送信」の直後に、ポータル（Supabase Edge Function invoice-auto-sales）へ通知する。
+ * ポータル側が、N-Style側の仕訳（運営委託費／未払金）の下書きを作って承認待ちに出す（精算書PDF付き）。
+ * 認証は PL_SYNC_TOKEN（スクリプトプロパティ・sd_apiTransferEx等と同じ共有トークン）。失敗しても精算書の発行は止めない。 */
+var SD_PORTAL_ISSUED_URL = &#x27;https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/invoice-auto-sales&#x27;;
+function sd_notifyPortalIssued_(store, monthKey, blob, isResend) {
+  try {
+    var tk = PropertiesService.getScriptProperties().getProperty(&#x27;PL_SYNC_TOKEN&#x27;);
+    if (!tk) return { ok: false, error: &#x27;PL_SYNC_TOKEN未設定&#x27; };
+    var det = sd_detect_();
+    var cfg = sd_config_(sd_masterStores_(det), det);
+    var st = null;
+    cfg.forEach(function (s) { if (s.name === store) st = s; });
+    if (!st || !st.db) return { ok: false, error: &#x27;店舗またはDBシートが見つかりません&#x27; };
+    var s = sd_settle_(sd_readRowsCached_(st.db), monthKey, st.rate, st.fixed, st.salesName);
+    var payload = {
+      action: &#x27;seisan_issued&#x27;, token: tk, store: store, month: monthKey,
+      transfer: s.transfer, transfer_ex: s.transferEx, tax: s.tax, resend: !!isResend,
+      pdf: { file_name: blob.getName(), base64: Utilities.base64Encode(blob.getBytes()) }
+    };
+    var res = UrlFetchApp.fetch(SD_PORTAL_ISSUED_URL, { method: &#x27;post&#x27;, contentType: &#x27;application/json&#x27;, payload: JSON.stringify(payload), muteHttpExceptions: true });
+    var code = res.getResponseCode();
+    var text = String(res.getContentText() || &#x27;&#x27;).slice(0, 300);
+    if (code !== 200) Logger.log(&#x27;ポータル通知に失敗（&#x27; + code + &#x27;）: &#x27; + text);
+    return { ok: code === 200, code: code, body: text };
+  } catch (e) {
+    Logger.log(&#x27;ポータル通知で例外: &#x27; + e);
+    return { ok: false, error: String(e) };
+  }
+}</code></pre></li>
+<li><b>【置換】</b> 検索：<code>var SD_VERSION = 'v5.25-roy-actual';</code><br>置換後：<code>var SD_VERSION = 'v5.26-portal-issued';</code></li>
+</ol>
+<p>終わったら、💾 保存 → 方法Aの手順4（デプロイ）→ 手順5（確認）。</p>
+
+<h2>うまくいかないとき</h2>
+<ul>
+<li><b>赤いエラーで保存できない</b>：貼り付けが途中で切れている可能性があります。もう一度やり直してください。</li>
+<li><b>ping で v5.25 のまま</b>：デプロイが終わっていません。手順4をやり直してください。</li>
+<li><b>元に戻したい</b>：「デプロイを管理」→ ✏️ →「バージョン」から前のバージョンを選んでデプロイ。</li>
+</ul>
+<div class="box ok">終わったら、私（担当C）に「GAS更新した」と伝えてください。次に精算書を発行したとき（9月分・18日ごろ）に、N-Style側の仕訳の下書きが、自動で承認待ちに出ます。</div>
+</body></html>
