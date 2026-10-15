@@ -54,9 +54,12 @@ const TOOL = {
       landlord_phone: { type: ["string", "null"], description: "貸主の電話番号" },
       tenant_name: { type: ["string", "null"], description: "借主（賃借人）の名称（会社名）。自社側の確認用" },
       property_address: { type: ["string", "null"], description: "物件（賃貸借の目的物）の所在地・建物名・号室" },
-      rent: { type: ["integer", "null"], description: "月額賃料（円・整数）。**消費税を含まない税別の金額**。共益費・管理費は含めない。契約書に税別の金額が書かれていればそれをそのまま使う。税込の金額しか書かれていない場合のみ、税率10%で税別に換算した整数（税込÷1.1の端数切捨て）を入れ、doubts に「税込から換算」と書く" },
-      rent_tax_note: { type: ["string", "null"], description: "賃料の税の扱い（例: 税別・税込・消費税別途）。契約書の記載のまま。税込金額・消費税額が書かれていればここに併記（例: 税込906,866円・消費税82,351円）" },
-      common_fee: { type: ["integer", "null"], description: "月額の共益費・管理費（円・整数）。賃料と同じく税別の金額（税込のみの記載なら税別に換算し doubts に書く）" },
+      rent_base: { type: ["integer", "null"], description: "賃料の本体（円・整数・**消費税を含まない税別**）。共益費・管理費・看板料などは含めない。税別の金額が書かれていればそのまま。税込しか書かれていない場合のみ税率10%で税別に換算（税込÷1.1の端数切捨て）し doubts に「税込から換算」と書く" },
+      rent_tax_note: { type: ["string", "null"], description: "賃料の税の扱い・消費税額（契約書の記載のまま。例: 税別・消費税額82,351円・税込906,866円）" },
+      common_fee: { type: ["integer", "null"], description: "月額の共益費・管理費（円・整数・税別）。「賃料に含む」と書かれている場合は null（0 ではない）にし、doubts に書く" },
+      signage_fee: { type: ["integer", "null"], description: "月額の看板料・看板使用料・広告塔使用料（円・整数・税別）。毎月支払うもののみ" },
+      other_monthly_fee: { type: ["integer", "null"], description: "上記以外に毎月支払う固定の金額の合計（駐車場・駐輪場・倉庫・設備使用料・水道光熱の定額など。円・整数・税別）。保証金・敷金・保証料・更新料のような毎月でない金額は含めない" },
+      other_monthly_note: { type: ["string", "null"], description: "other_monthly_fee の内訳（名称と金額）" },
       area_sqm: { type: ["number", "null"], description: "賃貸面積（㎡）。契約書の記載のまま" },
       tsubo: { type: ["number", "null"], description: "賃貸面積（坪）。契約書に坪の記載があればそのまま。㎡のみの場合は ㎡×0.3025 を小数第2位まで" },
       contract_type: { type: ["string", "null"], description: "契約の種類（例: 普通借家契約／定期借家契約）" },
@@ -186,8 +189,23 @@ Deno.serve(async (req) => {
     if (!Number.isFinite(n) || !Number.isInteger(n) || n < lo || n > hi) { warnings.push(`${k} の値が範囲外のため無視しました（${v}）`); return null; }
     return n;
   };
-  fields.rent = int("rent", 1, 20_000_000);
+  const base = int("rent_base", 1, 20_000_000);
+  fields.rent_base = base;
   fields.common_fee = int("common_fee", 0, 5_000_000);
+  fields.signage_fee = int("signage_fee", 0, 5_000_000);
+  fields.other_monthly_fee = int("other_monthly_fee", 0, 5_000_000);
+  fields.other_monthly_note = str("other_monthly_note");
+  // 毎月払う金額（税別）= 賃料本体 + 共益費 + 看板料 + その他の毎月の固定費。合計はAIでなくコードで計算する
+  if (base != null) {
+    fields.rent = base + Number(fields.common_fee ?? 0) + Number(fields.signage_fee ?? 0) + Number(fields.other_monthly_fee ?? 0);
+    const parts = [`賃料本体${base.toLocaleString("ja-JP")}`];
+    if (fields.common_fee) parts.push(`共益費${Number(fields.common_fee).toLocaleString("ja-JP")}`);
+    if (fields.signage_fee) parts.push(`看板料${Number(fields.signage_fee).toLocaleString("ja-JP")}`);
+    if (fields.other_monthly_fee) parts.push(`その他${Number(fields.other_monthly_fee).toLocaleString("ja-JP")}`);
+    fields.rent_breakdown = parts.join(" + ") + "（税別・毎月の支払額の合計）";
+  } else {
+    fields.rent = null; fields.rent_breakdown = null;
+  }
   const num = (k: string, lo: number, hi: number) => {
     const v = r[k];
     if (v == null) return null;
