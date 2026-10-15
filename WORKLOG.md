@@ -4,6 +4,11 @@
 
 ---
 
+## 2026-10-15 担当C: contract-extract version 2（賃料は税別で返す）
+- ユーザー確認: 賃料は税別で管理。→ rent／common_fee を税別の月額で返す（税込のみの契約書は10%で換算し「税込から換算」を要確認に出す）。version 2 を本番デプロイ済み。画面側は「賃料（税別）」表示（担当F指示書に追記）。
+
+---
+
 ## 2026-10-15 担当C: contract-extract を本番デプロイ・SQL適用（ユーザー承認・24時間PAT）＋実契約書2通で精度確認
 - 適用: info.contract_extractions（SQL 2026-10-14_contract_extractions.sql）／Edge Function contract-extract version 1（verify_jwt=true・プロジェクト uuvsxzhpxtghojoubjcc）。無認証=401・存在しない書類=403 を確認。ANTHROPIC_API_KEY は既存シークレットを共用。
 - 精度確認（契約書の本文は記載しない）: 既存の契約書2通（黒霧屋の賃貸借更新契約書／秋葉原の賃貸契約書）を同じプロンプトで読み取り。賃料・共益費・期間・更新日・敷金・更新料・解約予告・貸主/管理会社・面積が根拠条文つきで取れた。覚書・転貸借も注意点(doubts)で指摘。コスト: 入力7千〜2.3万トークン。
