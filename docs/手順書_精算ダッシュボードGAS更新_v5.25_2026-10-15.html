@@ -1,0 +1,94 @@
+<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>手順書 精算ダッシュボードの更新（v5.25）</title>
+<style>
+body{font-family:-apple-system,'Hiragino Sans','Yu Gothic',sans-serif;max-width:860px;margin:24px auto;padding:0 16px;line-height:1.9;color:#222;font-size:16px}
+h1{font-size:24px;border-bottom:3px solid #c0522a;padding-bottom:8px} h2{font-size:20px;margin-top:34px;background:#f6efe8;padding:8px 12px;border-left:6px solid #c0522a}
+.box{background:#fff8e6;border:1px solid #e6c96b;padding:10px 14px;border-radius:8px;margin:12px 0} .ok{background:#eaf7ec;border-color:#8fcf9b} .ng{background:#fdecec;border-color:#e59a9a}
+pre{background:#f4f4f4;border:1px solid #ddd;border-radius:6px;padding:10px;overflow-x:auto;font-size:13px;line-height:1.5;white-space:pre-wrap}
+ol li{margin-bottom:10px} code{font-family:Menlo,monospace} .small{font-size:13px;color:#666}
+</style></head><body>
+<h1>手順書：精算ダッシュボードを更新する（v5.25）</h1>
+<p>目的：<b>変動ロイヤリティを、レジ実績の売上から計算する</b>変更を、精算ダッシュボードに入れます（2026年9月分から）。所要時間は10分ほどです。</p>
+<div class="box">先にお伝えしておくこと：<br>
+・これはGoogleのスプレッドシートの中にあるプログラム（Apps Script）を、新しいものに入れ替える作業です。<br>
+・<b>入れ替えたあと、必ず「バージョンを新しくして」デプロイします</b>（手順4）。「新しいデプロイ」を選ぶと、アドレスが変わってしまい、画面が動かなくなります。</div>
+
+<h2>まず：どちらの方法でやるか</h2>
+<ul>
+<li><b>方法A（おすすめ・簡単）</b>：添付の <code>SeisanDashboard_v5.25_paste.txt</code> の中身を、全部コピーして、貼り替える。</li>
+<li><b>方法B（Aのファイルが開けないとき）</b>：この手順書の一番下（付録）にある、10か所の小さな書き換えを、1つずつ行う。</li>
+</ul>
+
+<h2>方法A：全部貼り替える</h2>
+<ol>
+<li><b>ファイルの中身をコピーする</b><br>
+添付の <code>SeisanDashboard_v5.25_paste.txt</code> を、Macの「テキストエディット」で開きます（ファイルを右クリック →「このアプリケーションで開く」→「テキストエディット」）。<br>
+開いたら、<b>⌘+A（全部選択）→ ⌘+C（コピー）</b>。<span class="small">（大きなファイルなので、開くのに数秒かかります。もし、どうしても開けないときは、方法Bにしてください。）</span></li>
+<li><b>精算ダッシュボードのスプレッドシートを開く</b><br>
+いつも、精算のデータを入れている、Googleスプレッドシートです。開いたら、上のメニューの <b>「拡張機能」→「Apps Script」</b> を押します。新しいタブでプログラムの画面が開きます。</li>
+<li><b>古いプログラムを、新しいものに入れ替える</b><br>
+左の「ファイル」の一覧に、<b><code>SeisanDashboard</code></b>（または <code>SeisanDashboard.gs</code>）があります。これをクリックします。<br>
+右の大きな文字の場所をクリックして、<b>⌘+A（全部選択）→ ⌘+V（さっきコピーしたものを貼り付け）</b>。<br>
+上の「💾 保存」（またはその右の保存アイコン）を押します。<br>
+<div class="box ng">⚠️ <code>SeisanDashboard</code> 以外のファイルが、一覧にあっても、触らないでください。</div></li>
+<li><b>デプロイする（ここが大事）</b><br>
+右上の青い <b>「デプロイ」</b> → <b>「デプロイを管理」</b> を押します。<br>
+今あるデプロイ（「ウェブアプリ」）の右の <b>✏️（えんぴつ）</b> を押します。<br>
+「バージョン」の欄を押して、<b>「新バージョン」</b>を選びます。<br>
+<b>「デプロイ」</b>を押して、完了です。<br>
+<div class="box ng">⚠️「新しいデプロイ」は<b>選ばないでください</b>（アドレスが変わります）。必ず「デプロイを管理」→ ✏️ → 「新バージョン」です。</div></li>
+<li><b>うまくいったか、確認する</b><br>
+次のアドレスを、ブラウザで開きます：<br>
+<code>https://script.google.com/macros/s/AKfycbzwYN9uSEtcJHSKSVQCoQOrllhO7G6gR-E4dvP-V4o_VdGXr9VQx2mbYYPNyNEFSQCiKg/exec?action=ping</code><br>
+画面に <b><code>"ver":"v5.25-roy-actual"</code></b> と出れば、成功です。<br>
+（古いままの場合は <code>v5.24-removeextline</code> と出ます。その場合は、手順4をやり直してください。）</li>
+</ol>
+<div class="box ok">これで完了です。完了したら、私（担当C）に「GAS更新した」と伝えてください。9月分の精算書の確認に進みます。</div>
+
+<h2>うまくいかないとき</h2>
+<ul>
+<li><b>権限の確認画面が出たとき</b>：「許可を確認」→ 自分のアカウントを選び →「詳細」→「（安全ではないページ）に移動」→「許可」。</li>
+<li><b>保存のときに赤いエラーが出たとき</b>：貼り付けの途中で切れている可能性があります。もう一度、⌘+A → ⌘+V でやり直してください。</li>
+<li><b>?action=ping を開いても、何も出ないとき</b>：デプロイが終わっていません。手順4をもう一度やってください。</li>
+<li><b>元に戻したいとき</b>：「デプロイ」→「デプロイを管理」→ ✏️ →「バージョン」から、前のバージョンを選んで、デプロイします。</li>
+</ul>
+
+<h2>付録：方法B（小さな書き換えを10か所）</h2>
+<p>Apps Scriptの画面で、<b>⌘+F（検索）</b>を使って、書き換える場所を探します。<b>「置換」</b>は、検索窓の左の「▸」を押すと出ます（または ⌘+⇧+H）。<br>書き換えが終わったら、方法Aの手順4（デプロイ）と5（確認）を行ってください。</p>
+<ol>
+<li><b>【追加】</b> 次の1行を探します：<br><code>var SD_START_MONTH = '2026-03';</code><br>その<b>すぐ下</b>に、次を追加します：<pre><code>// 2026-10-15: この月以降は、変動ロイヤリティを「精算書の売上合計」ではなく「売上シート（分析_日別店舗 S列 支払合計＝レジ実績）の月間売上」から計算する。
+// 売上シートは、毎月3日の月次照合（ns-daily-import cash-sales-monthly-check）でレジ(POS)と照合され、ずれていればレジの値に修正される。
+// 過去の月は従来どおり（精算書の売上合計×率）。売上シートの値が取れない店舗・月も従来の計算にフォールバックする。
+var SD_ROYALTY_ACTUAL_FROM = &#x27;2026-09&#x27;;
+var SD_ACTUAL_MEMO_ = {}; // 実行中のメモ: 対象月 → {店舗名(正規化): 月間売上} または null</code></pre></li>
+<li><b>【置き換え】</b> 次の1行を探します：<br><code>function sd_settle_(rows, monthKey, rateStr, fixed) {</code><br>これを、次の内容に<b>置き換え</b>ます（前に、新しい関数が加わります）：<pre><code>/* 変動ロイヤリティの基準にする「売上シート（レジ実績）の月間売上」。取れない・対象月より前なら null（従来の計算へ） */
+function sd_actualSalesFor_(salesName, monthKey) {
+  try {
+    if (!salesName || String(monthKey) &lt; SD_ROYALTY_ACTUAL_FROM) return null;
+    var map = SD_ACTUAL_MEMO_[monthKey];
+    if (map === undefined) {
+      var det = sd_detect_();
+      var cfg0 = sd_config_(sd_masterStores_(det), det);
+      map = sd_paySumsCached_(sd_extConfig_(), monthKey, cfg0) || null;
+      SD_ACTUAL_MEMO_[monthKey] = map;
+    }
+    if (!map) return null;
+    var v = map[sd_norm_(salesName)];
+    return (v != null &amp;&amp; Number(v) &gt; 0) ? Number(v) : null;
+  } catch (e) { return null; }
+}
+
+function sd_settle_(rows, monthKey, rateStr, fixed, salesName) {</code></pre></li>
+<li><b>【置き換え】</b> 次の1行を探します：<br><code>  var royV = Math.round(sales * rate);</code><br>これを、次の3行に置き換えます：<pre><code>  var actualSales = sd_actualSalesFor_(salesName, monthKey);
+  var royBase = actualSales != null ? actualSales : sales; // 2026-09分以降: レジ実績（売上シート）の月間売上。取れなければ精算書の売上合計
+  var royV = Math.round(royBase * rate);</code></pre></li>
+<li><b>【置き換え】</b> 次の1行を探します：<br><code>    sales: sales, varCost: varCost, royF: royF, royV: royV, royVarDb: royVarDb,</code><br>これを、次の1行に置き換えます：<pre><code>    sales: sales, varCost: varCost, royF: royF, royV: royV, royVarDb: royVarDb, royBase: royBase, royBaseActual: actualSales != null,</code></pre></li>
+<li><b>【すべて置換】</b> 検索：<code>sd_settle_(rows, monthKey, st.rate, st.fixed)</code><br>置換後：<code>sd_settle_(rows, monthKey, st.rate, st.fixed, st.salesName)</code><br><span class="small">（「すべて置換」を押します。3か所ほど書き換わります。）</span></li>
+<li><b>【すべて置換】</b> 検索：<code>sd_settle_(sd_readRowsCached_(st.db), monthKey, st.rate, st.fixed)</code><br>置換後：<code>sd_settle_(sd_readRowsCached_(st.db), monthKey, st.rate, st.fixed, st.salesName)</code></li>
+<li><b>【置換】</b> 検索：<code>sd_settle_(byMonth[mk] || [], mk, st.rate, fixed)</code><br>置換後：<code>sd_settle_(byMonth[mk] || [], mk, st.rate, fixed, st.salesName)</code></li>
+<li><b>【置き換え】</b> 次の1行を探します：<br><code>      royV: settleFull.royV, royVarDb: settleFull.royVarDb, adj: settleFull.adj,</code><br>これを、次の1行に置き換えます：<pre><code>      royV: settleFull.royV, royVarDb: settleFull.royVarDb, royBase: settleFull.royBase, royBaseActual: settleFull.royBaseActual, adj: settleFull.adj,</code></pre></li>
+<li><b>【追加】</b> 次の1行を探します（精算書のPDFを作る部分です）：<br><code>'&lt;tr&gt;&lt;td&gt;ロイヤリティ（変動 ' + sd_escHtml_(st.rate) + '）&lt;/td&gt;…</code>（「ロイヤリティ（変動」で検索すると見つかります）<br>その行の<b>すぐ下</b>に、次の1行を追加します：<pre><code>  +     (s.royBaseActual ? &#x27;&lt;tr&gt;&lt;td colspan=&quot;2&quot; style=&quot;font-size:9px;color:#666&quot;&gt;※変動ロイヤリティは、売上シート（レジ実績）の月間売上 &#x27; + sd_yen_(s.royBase) + &#x27; × &#x27; + sd_escHtml_(st.rate) + &#x27; で計算&lt;/td&gt;&lt;/tr&gt;&#x27; : &#x27;&#x27;)</code></pre></li>
+<li><b>【置き換え】</b> 検索：<code>var SD_VERSION = 'v5.24-removeextline';</code><br>置換後：<code>var SD_VERSION = 'v5.25-roy-actual';</code></li>
+</ol>
+<p class="small">以上。書き換え後は「💾 保存」→ 方法Aの手順4（デプロイ）→ 手順5（確認）へ。</p>
+</body></html>
