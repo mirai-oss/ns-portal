@@ -72,6 +72,25 @@ const TOOL = {
   },
 };
 
+const SEISAN_TOOL = {
+  name: "extract_seisan_statement",
+  description: "「業務委託精算書」（精算ダッシュボードが自動発行する、店舗ごとの月次の精算書。発行元=株式会社N-style、宛先=有限会社トーホーエージェンシー）の見出しの数字を読み取って返す。書かれていない項目はnull。推測で埋めない。",
+  input_schema: {
+    type: "object",
+    properties: {
+      store_name: { ...str, description: "店舗名（タイトル下の「新横浜　黒霧屋　2026年8月分」→新横浜　黒霧屋）" },
+      target_month: { ...str, description: "対象月 YYYY-MM（「2026年8月分」→2026-08）" },
+      issue_date: { ...str, description: "発行日 YYYY-MM-DD" },
+      addressee: { ...str, description: "宛先（御中の前）" },
+      issuer: { ...str, description: "発行元の会社名" },
+      fee_net: { ...num, description: "業務委託費（税抜）（円）" },
+      tax: { ...num, description: "消費税（円）" },
+      total_gross: { ...num, description: "振込金額（税込）（円）" },
+    },
+    required: ["store_name", "target_month", "fee_net", "tax", "total_gross"],
+  },
+};
+
 async function resolveVendor(db: any, name: string): Promise<{ id: string; name: string; corp: string | null } | null> {
   const n = normCompany(name); if (!n) return null;
   const { data: vendors } = await db.from("vendors").select("id, name, name_aliases, default_corporation_id").eq("is_active", true);
@@ -93,6 +112,89 @@ const fillTpl = (tpl: string | null | undefined, def: string, vars: Record<strin
 const toInt = (v: unknown) => (v != null && Number.isFinite(Number(v)) ? Math.round(Number(v)) : null);
 const monthEnd = (ym: string) => { const [y, m] = ym.split("-").map(Number); return `${ym}-${String(new Date(y, m, 0).getDate()).padStart(2, "0")}`; };
 
+
+// ---- 業務委託精算書（N-Style→トーホー）: 1通から2つの仕訳の下書き（トーホー=売上／N-Style=支払）を作る（2026-10-15）----
+async function buildSeisan(db: any, email: any, att: any, ex: any, firstEmailRow: boolean): Promise<{ ids: string[]; note: string }> {
+  const total = toInt(ex.total_gross), feeNet = toInt(ex.fee_net), tax = toInt(ex.tax);
+  const ym = /^\d{4}-\d{2}$/.test(String(ex.target_month ?? "")) ? String(ex.target_month) : null;
+  const store = norm(ex.store_name);
+  const { data: rules } = await db.from("seisan_statement_rules").select("*").eq("is_active", true);
+  const rule = (rules ?? []).find((r: any) => (r.store_patterns ?? []).some((p: string) => store.includes(norm(p))));
+  const mo = ym ? `${Number(ym.slice(5, 7))}月` : "";
+  const date = ym ? monthEnd(ym) : String(email.received_at ?? "").slice(0, 10);
+  const nowIso = new Date().toISOString();
+
+  const baseChecks = (checks: any[], problems: string[]) => {
+    const ck = (key: string, label: string, status: "ok" | "warn" | "ng" | "na", detail?: string) => { checks.push({ key, label, status, ...(detail ? { detail } : {}) }); if (status === "ng") problems.push(detail ? `${label}（${detail}）` : label); };
+    ck("read", "精算書の読み取り", total != null && feeNet != null && tax != null && ym ? "ok" : "ng", total != null && feeNet != null && tax != null && ym ? undefined : "金額または対象月を読み取れませんでした");
+    if (total != null && feeNet != null && tax != null) ck("sum", "業務委託費（税抜）＋消費税＝振込金額", feeNet + tax === total ? "ok" : "ng", feeNet + tax === total ? undefined : `${feeNet}+${tax}≠${total}`);
+    ck("rule", "店舗の仕訳の型がある", rule ? "ok" : "ng", rule ? String(rule.store_label ?? "") : `店舗「${ex.store_name ?? "不明"}」の仕訳の型が未登録です`);
+    ck("pdf", "精算書のPDFが添付されている", "ok");
+    return ck;
+  };
+
+  const ids: string[] = [];
+  const specs = rule && total != null ? [
+    { side: "sales", tenant: rule.sales_tenant, corp: rule.sales_corporation_id, vendor: rule.sales_customer_vendor },
+    { side: "expense", tenant: rule.exp_tenant, corp: rule.exp_corporation_id, vendor: rule.exp_payee_vendor },
+  ] : [{ side: "sales", tenant: "default", corp: null, vendor: "株式会社N-Style" }, { side: "expense", tenant: "nstyle", corp: null, vendor: "有限会社トーホーエージェンシー" }];
+  const notes: string[] = [];
+  let emailRowUsed = !firstEmailRow;
+  for (const sp of specs) {
+    const problems: string[] = []; const checks: any[] = []; const warnings: string[] = [];
+    const ck = baseChecks(checks, problems);
+    const v = await resolveVendor(db, sp.vendor);
+    ck("vendor", "取引先が確定", v ? "ok" : "ng", v ? undefined : `「${sp.vendor}」が取引先マスタにありません`);
+    ck("corporation", "法人が確定", sp.corp ? "ok" : "ng");
+    const debitLines: any[] = []; const creditLines: any[] = []; let credit: any = null;
+    if (rule && total != null) {
+      if (sp.side === "sales") {
+        debitLines.push({ line_no: 1, store_id: null, store_name: null, remark: fillTpl(rule.sales_remark_tpl, "{mo}分", { mo }),
+          debit: { account: rule.sales_receivable_account, sub_account: rule.sales_receivable_sub, department: null, tax: { kind: "purchase", rate: 0 }, amount: total, net_amount: total }, rule: { source: "ledger", version: 1 } });
+        creditLines.push({ line_no: 1, account: rule.sales_revenue_account, sub_account: rule.sales_revenue_sub, department: rule.sales_department,
+          tax: { kind: "sales", rate: 10, name: "課税売上 10%" }, amount: total, remark: fillTpl(rule.sales_remark_tpl, "{mo}分", { mo }) });
+      } else {
+        debitLines.push({ line_no: 1, store_id: null, store_name: null, remark: fillTpl(rule.exp_remark_tpl, "{mo}", { mo }),
+          debit: { account: rule.exp_account, sub_account: rule.exp_sub, department: rule.exp_department, tax: { kind: "purchase", rate: 10 }, amount: total, net_amount: feeNet ?? total }, rule: { source: "ledger", version: 1 } });
+        credit = { account: rule.exp_payable_account, sub_account: rule.exp_payable_sub, amount: total };
+      }
+    }
+    // 重複（同じ店舗×対象月×側）。同額なら作らない（再送信）。金額が違えば要確認として作る
+    const bizKey = v && rule && ym ? `${v.id}|seisan:${norm(rule.store_label)}|${ym}|${sp.side}` : null;
+    let skipSame = false;
+    if (bizKey) {
+      const { data: dup } = await db.from("invoices").select("id, amount").eq("biz_key", bizKey).neq("invoice_status", "cancelled").limit(1);
+      if (dup?.length) {
+        if (Number(dup[0].amount) === total) skipSame = true;
+        else ck("duplicate", "重複なし", "ng", `同じ対象月の精算書が既にあり、金額が違います（既存${dup[0].amount}円→今回${total}円。再送信で修正された可能性）`);
+      } else ck("duplicate", "重複なし", "ok");
+    } else ck("duplicate", "重複なし", "na");
+    if (skipSame) { notes.push(`${sp.side === "sales" ? "トーホー売上" : "N-Style支払"}: 同額の精算書が既にあるため作成せず（再送信）`); continue; }
+
+    const debitTotal = debitLines.reduce((t, d) => t + d.debit.amount, 0), creditTotal = creditLines.reduce((t, c) => t + c.amount, 0) + (credit?.amount ?? 0);
+    ck("balance", "仕訳の借方＝貸方", debitLines.length && debitTotal === creditTotal ? "ok" : "ng", debitLines.length ? (debitTotal === creditTotal ? undefined : `借方${debitTotal}／貸方${creditTotal}`) : "仕訳を作れませんでした");
+    const draft = {
+      version: 1, kind: sp.side === "sales" ? "sales_deposit" : "seisan_expense", status: problems.length ? "needs_review" : "ok", tenant_id: sp.tenant, corporation_id: sp.corp,
+      transaction_date: date, remark: debitLines[0]?.remark ?? "", debit_lines: debitLines, credit, credit_lines: creditLines,
+      totals: { debit: debitTotal, credit: creditTotal, invoice_total: total }, adjustments: [], problems, warnings, created_at: nowIso,
+    };
+    const stage = problems.length ? "journal_draft" : "ready_for_approval";
+    const row: Record<string, unknown> = {
+      email_id: emailRowUsed ? null : email.id, attachment_id: att.id, source_attachment_id: att.id, source_message_id: email.gmail_message_id ?? null, received_at: email.received_at ?? null,
+      vendor_name: v?.name ?? sp.vendor, vendor_id: v?.id ?? null, corporation_id: sp.corp, amount: total, due_date: date,
+      target_year_month: ym ? `${ym}-01` : null, invoice_status: "draft", intake_source: "email_auto", biz_key: problems.some((p) => p.startsWith("重複")) ? null : bizKey,
+      journal_draft: draft, journal_draft_at: nowIso, current_stage: stage, blocked_reason: problems.length ? problems.join("／") : null,
+      stage_updated_at: nowIso, checks: { checks, routes: [], checked_at: nowIso }, auto_ocr: ex, auto_mode: "auto",
+    };
+    const { data: ins, error } = await db.from("invoices").insert(row).select("id").maybeSingle();
+    if (error) { notes.push(`${sp.side}: 作成に失敗（${error.message.slice(0, 80)}）`); continue; }
+    emailRowUsed = true; ids.push(ins!.id as string);
+    await logAudit(db, email.id, "auto_invoice_created", `業務委託精算書を自動で下書き作成（${sp.side === "sales" ? "トーホー=売上" : "N-Style=支払"}／店舗=${ex.store_name ?? "不明"}／対象月=${ym ?? "不明"}／${total ?? "不明"}円）→ ${stage === "ready_for_approval" ? "承認待ち" : "要確認: " + problems.join("／")}`, { invoice_id: ins!.id, stage });
+    notes.push(`${sp.side === "sales" ? "トーホー売上" : "N-Style支払"}: ${stage === "ready_for_approval" ? "承認待ち" : "要確認で止めた"}`);
+  }
+  return { ids, note: notes.join("／") || "作成なし" };
+}
+
 async function processEmail(db: any, emailId: string, secret: string) {
   const { data: email } = await db.from("invoice_emails").select("id, gmail_message_id, subject, received_at, mail_kind, auto_category, from_address").eq("id", emailId).maybeSingle();
   if (!email) return { email_id: emailId, status: "skipped", reason: "メールが見つかりません" };
@@ -101,8 +203,10 @@ async function processEmail(db: any, emailId: string, secret: string) {
   if (existing?.length) return markSkipped(db, emailId, "このメールには既に請求書（売上入金）があります");
 
   const { data: atts } = await db.from("invoice_attachments").select("id, file_name, mime_type, storage_path, size_bytes, ocr_done_at").eq("email_id", emailId).order("created_at");
-  const pdfs = (atts ?? []).filter((a: any) => String(a.mime_type ?? "") === "application/pdf" && (a.size_bytes ?? 0) <= 15 * 1024 * 1024);
-  if (!pdfs.length) return markSkipped(db, emailId, "送金明細のPDFの添付がありません");
+  const isSeisan = /業務委託料精算書/.test(String(email.subject ?? ""));
+  // 精算書メールには NTT・電気料金・カード売上などの添付も付くため、「精算書」で始まる名前のPDFだけを読む
+  const pdfs = (atts ?? []).filter((a: any) => String(a.mime_type ?? "") === "application/pdf" && (a.size_bytes ?? 0) <= 15 * 1024 * 1024 && (!isSeisan || /^精算書/.test(String(a.file_name ?? ""))));
+  if (!pdfs.length) return markSkipped(db, emailId, isSeisan ? "精算書のPDFの添付がありません" : "送金明細のPDFの添付がありません");
 
   const apiKey = Deno.env.get("ANTHROPIC_API_KEY");
   if (!apiKey) return { email_id: emailId, status: "error", reason: "ANTHROPIC_API_KEY が未設定です" };
@@ -112,25 +216,31 @@ async function processEmail(db: any, emailId: string, secret: string) {
     const { data: blob, error: dlErr } = await db.storage.from("invoice-files").download(att.storage_path);
     if (dlErr || !blob) { notes.push(`${att.file_name}: ファイルを取得できませんでした`); continue; }
     const b64 = bytesToBase64(new Uint8Array(await blob.arrayBuffer()));
+    const tool = isSeisan ? SEISAN_TOOL : TOOL;
     const call = (toolChoice: unknown) => fetch("https://api.anthropic.com/v1/messages", {
       method: "POST", headers: { "content-type": "application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01" },
       body: JSON.stringify({
         model: "claude-sonnet-5-5", max_tokens: 4000,
         system: "あなたは不動産の送金明細書を読み取る経理アシスタントです。表の数字は一桁ずつ正確に読み、書かれていない項目はnullにします。収入の明細は入居者（賃借人）ごとの行だけを入れ、「収入内訳」という合計欄は入れません。必ず extract_remittance_statement ツールで答えてください。",
-        tools: [TOOL], tool_choice: toolChoice,
+        tools: [tool], tool_choice: toolChoice,
         messages: [{ role: "user", content: [{ type: "text", text: `メール件名: ${email.subject ?? ""}\n添付ファイル: ${att.file_name}\nこの送金明細書を読み取ってください。` }, { type: "document", source: { type: "base64", media_type: "application/pdf", data: b64 } }] }],
       }),
     });
-    let res = await call({ type: "tool", name: "extract_remittance_statement" });
+    let res = await call({ type: "tool", name: tool.name });
     if (res.status === 400 && (await res.clone().text().catch(() => "")).includes("tool_choice")) res = await call({ type: "auto" });
     if (!res.ok) { notes.push(`${att.file_name}: AI読み取りに失敗（${res.status}）`); continue; }
     const j = await res.json();
     const ex = (j.content ?? []).find((c: any) => c.type === "tool_use")?.input;
     if (!ex) { notes.push(`${att.file_name}: 読み取り結果が得られませんでした`); continue; }
 
-    const r = await buildAndSave(db, email, att, ex);
-    if (r.invoice_id) created.push(r.invoice_id);
-    notes.push(`${att.file_name}: ${r.note}`);
+    if (isSeisan) {
+      const rs = await buildSeisan(db, email, att, ex, created.length === 0);
+      created.push(...rs.ids); notes.push(`${att.file_name}: ${rs.note}`);
+    } else {
+      const r = await buildAndSave(db, email, att, ex);
+      if (r.invoice_id) created.push(r.invoice_id);
+      notes.push(`${att.file_name}: ${r.note}`);
+    }
     await db.from("invoice_attachments").update({ ocr_done_at: new Date().toISOString() }).eq("id", att.id);
   }
   await db.from("invoice_emails").update({ auto_invoice_at: new Date().toISOString(), auto_invoice_note: `売上入金: 下書き${created.length}件／${notes.join("／")}`.slice(0, 500) }).eq("id", emailId);
