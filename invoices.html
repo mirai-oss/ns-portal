@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-14-v113";
+const BUILD_TAG="2026-10-15-v114";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -3167,7 +3167,7 @@ async function cashReconLoad(){
   const run=(Array.isArray(rr.body)&&rr.body[0])||null;
   let items=[],fix=null;
   if(run){
-    const ir=await authed(`/rest/v1/cash_recon_items?run_id=eq.${run.id}&select=id,store_name,business_date,mgmt_cash,pos_cash,diff,status,fix_status,pos_source&order=store_name,business_date&limit=2000`);
+    const ir=await authed(`/rest/v1/cash_recon_items?run_id=eq.${run.id}&select=id,store_name,business_date,mgmt_cash,pos_cash,diff,status,fix_status,pos_source,mgmt_values,pos_values&order=store_name,business_date&limit=2000`);
     items=(ir.ok&&Array.isArray(ir.body))?ir.body:[];
     const fr=await authed(`/rest/v1/cash_recon_fix_requests?run_id=eq.${run.id}&select=*&order=requested_at.desc&limit=1`);
     fix=(fr.ok&&Array.isArray(fr.body)&&fr.body[0])||null;
@@ -3183,9 +3183,10 @@ function cashReconChipBadge(){
 function cashReconStores(){
   const m=new Map();
   for(const it of CASHRECON_STATE.items){
-    if(!m.has(it.store_name)) m.set(it.store_name,{store:it.store_name,mgmt:0,pos:0,diffDays:[],okDays:0});
+    if(!m.has(it.store_name)) m.set(it.store_name,{store:it.store_name,mgmt:0,pos:0,mgmtT:0,posT:0,diffDays:[],okDays:0});
     const s=m.get(it.store_name);
     s.mgmt+=Number(it.mgmt_cash)||0; s.pos+=Number(it.pos_cash)||0;
+    s.mgmtT+=Number(it.mgmt_values&&it.mgmt_values[5])||0; s.posT+=Number(it.pos_values&&it.pos_values[5])||0;   // 全体売上（支払合計）
     if(it.status==="ok") s.okDays++; else s.diffDays.push(it);
   }
   return [...m.values()].sort((a,b)=>a.store.localeCompare(b.store,"ja"));
@@ -3215,18 +3216,20 @@ function cashReconPanelHtml(){
       </div>
       <div id="cash-msg" class="err" style="margin-bottom:6px"></div>
       <div class="hq-tablewrap"><table class="invoice-table">
-        <thead><tr><th>店舗</th><th>管理システム</th><th>レジ（正）</th><th>差額（レジ−管理）</th><th>状態</th><th></th></tr></thead>
+        <thead><tr><th>店舗</th><th>現金：管理</th><th>現金：レジ（正）</th><th>差額</th><th>全体売上：管理</th><th>全体売上：レジ（正）</th><th>差額</th><th>状態</th><th></th></tr></thead>
         <tbody>${stores.map(s=>{
           const open=!!CASHRECON_STATE.expanded[s.store], d=s.pos-s.mgmt;
           const row=`<tr>
             <td><b>${esc(s.store)}</b></td><td>${yen(s.mgmt)}</td><td>${yen(s.pos)}</td>
             <td style="${d?"color:var(--m-red);font-weight:700":""}">${cashReconSigned(d)}</td>
+            <td>${yen(s.mgmtT)}</td><td>${yen(s.posT)}</td><td style="${s.posT-s.mgmtT?"color:var(--m-red);font-weight:700":""}">${cashReconSigned(s.posT-s.mgmtT)}</td>
             <td>${s.diffDays.length?`<span class="invoice-status err">要確認（${s.diffDays.length}日）</span>`:'<span class="invoice-status done">照合OK</span>'}</td>
             <td style="white-space:nowrap">${s.diffDays.length?`<button class="linkbtn" style="background:none;border:none;color:var(--accent);cursor:pointer;font-size:12px" data-cash-toggle="${esc(s.store)}">${open?"▲ 閉じる":"▼ 日別を見る"}</button> <button class="hq-btn" style="padding:4px 8px" data-cash-fix="${esc(s.store)}" ${fixOpen?"disabled":""}>この店舗を修正</button>`:""}</td></tr>`;
-          const det=(open&&s.diffDays.length)?`<tr><td colspan="6" style="background:#fbf9f5"><table class="invoice-table" style="margin:4px 0"><thead><tr><th>日付</th><th>管理システム</th><th>レジ</th><th>差額</th><th>内容</th></tr></thead><tbody>${s.diffDays.map(x=>{
+          const det=(open&&s.diffDays.length)?`<tr><td colspan="9" style="background:#fbf9f5"><table class="invoice-table" style="margin:4px 0"><thead><tr><th>日付</th><th>現金：管理</th><th>現金：レジ</th><th>差額</th><th>全体売上：管理</th><th>全体売上：レジ</th><th>差額</th><th>内容</th></tr></thead><tbody>${s.diffDays.map(x=>{
             const dd=(Number(x.pos_cash)||0)-(Number(x.mgmt_cash)||0);
             const kind={diff:"金額が違う",missing_mgmt:"管理システムにその日が無い",missing_pos:"管理システムにだけある日（自動では消しません・要確認）"}[x.status]||x.status;
-            return `<tr><td>${cashReconDayLabel(x.business_date)}</td><td>${x.mgmt_cash==null?"—":yen(x.mgmt_cash)}</td><td>${x.pos_cash==null?"—":yen(x.pos_cash)}</td><td style="color:var(--m-red)">${cashReconSigned(dd)}</td><td>${kind}${x.fix_status==="fixed"?" ✅修正済み":x.fix_status==="failed"?" ⚠️修正できず":""}</td></tr>`;
+            const mt=x.mgmt_values?x.mgmt_values[5]:null, pt=x.pos_values?x.pos_values[5]:null, dt=(Number(pt)||0)-(Number(mt)||0);
+            return `<tr><td>${cashReconDayLabel(x.business_date)}</td><td>${x.mgmt_cash==null?"—":yen(x.mgmt_cash)}</td><td>${x.pos_cash==null?"—":yen(x.pos_cash)}</td><td style="${dd?"color:var(--m-red)":""}">${cashReconSigned(dd)}</td><td>${mt==null?"—":yen(mt)}</td><td>${pt==null?"—":yen(pt)}</td><td style="${dt?"color:var(--m-red)":""}">${cashReconSigned(dt)}</td><td>${kind}${x.fix_status==="fixed"?" ✅修正済み":x.fix_status==="failed"?" ⚠️修正できず":""}</td></tr>`;
           }).join("")}</tbody></table></td></tr>`:"";
           return row+det;
         }).join("")}</tbody>
