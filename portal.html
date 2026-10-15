@@ -2008,7 +2008,7 @@ async function renderHomeArea(u){
     }catch(e){ NAV_RECEIVABLE_CNT=0; }
     // 2026-10-14: 請求書の自動処理で「承認待ち」になった件数（MF未登録・手動切替でないもの）
     try{
-      const apR=await authed(`/rest/v1/invoices?current_stage=eq.ready_for_approval&mf_journal_id=is.null&or=(auto_mode.is.null,auto_mode.neq.manual)&select=id`);
+      const apR=await authed(`/rest/v1/invoices?current_stage=eq.ready_for_approval&mf_journal_id=is.null&and=(or(auto_mode.is.null,auto_mode.neq.manual),or(journal_draft->>kind.is.null,journal_draft->>kind.neq.sales_deposit))&select=id`);
       NAV_INV_APPROVE_CNT=(apR.ok&&Array.isArray(apR.body))?apR.body.length:0;
     }catch(e){ NAV_INV_APPROVE_CNT=0; }
   }
