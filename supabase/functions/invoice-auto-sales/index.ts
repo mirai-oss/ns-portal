@@ -13,6 +13,7 @@
 // 入力(JSON): { secret, email_id } … 1通を処理（invoice-intakeが分類直後に呼ぶ）
 //             { secret, action:"scan", since?:ISO, limit?:number } … sales_deposit かつ未処理のメールをまとめて処理（既定=直近7日）
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { extractZipAttachment } from "../_shared/zip-extract.ts";
 
 const cors: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -202,10 +203,18 @@ async function processEmail(db: any, emailId: string, secret: string) {
   const { data: existing } = await db.from("invoices").select("id").eq("email_id", emailId).limit(1);
   if (existing?.length) return markSkipped(db, emailId, "このメールには既に請求書（売上入金）があります");
 
-  const { data: atts } = await db.from("invoice_attachments").select("id, file_name, mime_type, storage_path, size_bytes, ocr_done_at").eq("email_id", emailId).order("created_at");
+  let { data: atts } = await db.from("invoice_attachments").select("id, email_id, invoice_id, file_name, mime_type, storage_path, size_bytes, ocr_done_at, zip_extracted_at").eq("email_id", emailId).order("created_at");
+  // 2026-10-15: 精算書をZIPで送ってくる先（Thumz等）に対応。未展開のZIPは、ここで自動展開してから読む（従来は展開前に「PDFなし」で終わっていた）
+  const zips = (atts ?? []).filter((a: any) => !a.zip_extracted_at && (/\.zip$/i.test(String(a.file_name ?? "")) || String(a.mime_type ?? "").includes("zip")));
+  if (zips.length) {
+    for (const z of zips) { try { await extractZipAttachment(db, z); } catch (e) { console.error("ZIP展開に失敗: " + e); } }
+    ({ data: atts } = await db.from("invoice_attachments").select("id, email_id, invoice_id, file_name, mime_type, storage_path, size_bytes, ocr_done_at, zip_extracted_at").eq("email_id", emailId).order("created_at"));
+  }
   const isSeisan = /業務委託料精算書/.test(String(email.subject ?? ""));
   // 精算書メールには NTT・電気料金・カード売上などの添付も付くため、「精算書」で始まる名前のPDFだけを読む
-  const pdfs = (atts ?? []).filter((a: any) => String(a.mime_type ?? "") === "application/pdf" && (a.size_bytes ?? 0) <= 15 * 1024 * 1024 && (!isSeisan || /^精算書/.test(String(a.file_name ?? ""))));
+  let pdfs = (atts ?? []).filter((a: any) => String(a.mime_type ?? "") === "application/pdf" && (a.size_bytes ?? 0) <= 15 * 1024 * 1024 && (!isSeisan || /^精算書/.test(String(a.file_name ?? ""))));
+  // 1通にNTT・光熱費・手数料などの添付が何枚も入っている場合は、名前に「精算書」「送金明細」を含むPDFだけを読む（無ければ全部）
+  if (!isSeisan && pdfs.length > 2) { const hint = pdfs.filter((a: any) => /精算書|送金明細/.test(String(a.file_name ?? ""))); if (hint.length) pdfs = hint; }
   if (!pdfs.length) return markSkipped(db, emailId, isSeisan ? "精算書のPDFの添付がありません" : "送金明細のPDFの添付がありません");
 
   const apiKey = Deno.env.get("ANTHROPIC_API_KEY");
@@ -237,7 +246,7 @@ async function processEmail(db: any, emailId: string, secret: string) {
       const rs = await buildSeisan(db, email, att, ex, created.length === 0);
       created.push(...rs.ids); notes.push(`${att.file_name}: ${rs.note}`);
     } else {
-      const r = await buildAndSave(db, email, att, ex);
+      const r = await buildAndSave(db, email, att, ex, pdfs.length > 1);
       if (r.invoice_id) created.push(r.invoice_id);
       notes.push(`${att.file_name}: ${r.note}`);
     }
@@ -247,10 +256,14 @@ async function processEmail(db: any, emailId: string, secret: string) {
   return { email_id: emailId, status: created.length ? "created" : "none", created, notes };
 }
 
-async function buildAndSave(db: any, email: any, att: any, ex: any): Promise<{ invoice_id?: string; note: string }> {
+async function buildAndSave(db: any, email: any, att: any, ex: any, bundle = false): Promise<{ invoice_id?: string; note: string }> {
   const problems: string[] = []; const warnings: string[] = [];
   const checks: any[] = [];
   const ck = (key: string, label: string, status: "ok" | "warn" | "ng" | "na", detail?: string) => { checks.push({ key, label, status, ...(detail ? { detail } : {}) }); if (status === "ng") problems.push(detail ? `${label}（${detail}）` : label); };
+
+  // 送金明細・精算書ではない書類（光熱費の請求書など）は、下書きを作らない
+  const hasAmounts = (Array.isArray(ex.income_items) && ex.income_items.some((x: any) => toInt(x?.gross) || toInt(x?.net))) || toInt(ex.remit_total?.gross) != null;
+  if (!hasAmounts && bundle) return { note: "送金明細・精算書ではない書類のため、作成しませんでした" };   // 添付が複数ある通で金額が読めない書類＝別の書類。1通1枚で読めないときは、要確認として下書きを残す（見失わないため）
 
   // 送金者→取引先・法人
   const senderName = String(ex.sender ?? "株式会社ゼン・ランド");

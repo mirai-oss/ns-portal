@@ -20,7 +20,7 @@
 // 入力(JSON): { attachment_id }  ※対象はmime_typeがzip系、またはファイル名が.zipのもの
 // 出力(JSON): { success:true, extracted:[{id,file_name}], skipped:[{file_name,reason}] }
 import { createClient } from "npm:@supabase/supabase-js@2";
-import JSZip from "npm:jszip@3.10.1";
+import { extractZipAttachment } from "../_shared/zip-extract.ts";
 
 const cors: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -74,56 +74,9 @@ Deno.serve(async (req: Request) => {
   if (!looksZip) return json({ error: "この添付はZIPファイルではありません" }, 400);
   if (att.zip_extracted_at) return json({ error: "このZIPは展開済みです" }, 409);
 
-  const { data: blob, error: dlErr } = await db.storage.from(BUCKET).download(att.storage_path);
-  if (dlErr || !blob) return json({ error: "ZIPファイルの取得に失敗しました: " + (dlErr?.message ?? "") }, 500);
-
-  let zip: JSZip;
-  try {
-    zip = await JSZip.loadAsync(await blob.arrayBuffer());
-  } catch (e) {
-    return json({ error: "ZIPの読み取りに失敗しました（壊れているか非対応の形式です）: " + String(e) }, 400);
-  }
-
-  const extracted: { id: string; file_name: string }[] = [];
-  const skipped: { file_name: string; reason: string }[] = [];
-  let count = 0;
-
-  for (const entryName of Object.keys(zip.files)) {
-    if (count >= MAX_ENTRIES) { skipped.push({ file_name: entryName, reason: `上限（${MAX_ENTRIES}件）に達したためスキップ` }); continue; }
-    const entry = zip.files[entryName];
-    if (entry.dir) continue;
-    // macOS等が作る管理用ファイル・フォルダは無視
-    const baseName = entryName.split("/").pop() || entryName;
-    if (!baseName || baseName.startsWith(".") || entryName.includes("__MACOSX")) continue;
-    const ext = extOf(baseName);
-    const mimeType = mimeOf(ext);
-    if (!mimeType) { skipped.push({ file_name: baseName, reason: "PDF・画像以外のファイルのためスキップ" }); continue; }
-
-    let bytes: Uint8Array;
-    try { bytes = await entry.async("uint8array"); } catch (e) { skipped.push({ file_name: baseName, reason: "展開に失敗: " + String(e) }); continue; }
-    if (bytes.length === 0) { skipped.push({ file_name: baseName, reason: "空のファイルのためスキップ" }); continue; }
-    if (bytes.length > MAX_ENTRY_BYTES) { skipped.push({ file_name: baseName, reason: "サイズが大きすぎるためスキップ" }); continue; }
-
-    try {
-      const hashBuf = await crypto.subtle.digest("SHA-256", bytes);
-      const fileHash = Array.from(new Uint8Array(hashBuf)).map((b) => b.toString(16).padStart(2, "0")).join("");
-      const storagePath = `${att.email_id ? att.email_id : "standalone/" + att.invoice_id}/zip_${crypto.randomUUID()}${(/\.[A-Za-z0-9]{1,10}$/.exec(baseName || "") || [""])[0].toLowerCase()}`; // 2026-10-14: 保存キーは英数字のみ（日本語のファイル名はInvalid key）
-      const { error: upErr } = await db.storage.from(BUCKET).upload(storagePath, bytes, { contentType: mimeType });
-      if (upErr) { skipped.push({ file_name: baseName, reason: "保存に失敗: " + upErr.message }); continue; }
-      const { data: newAtt, error: insErr } = await db.from("invoice_attachments").insert({
-        email_id: att.email_id, invoice_id: att.invoice_id, file_name: baseName, mime_type: mimeType,
-        storage_path: storagePath, file_hash: fileHash, size_bytes: bytes.length,
-        extracted_from_zip_id: att.id,
-      }).select("id").single();
-      if (insErr) { skipped.push({ file_name: baseName, reason: "登録に失敗: " + insErr.message }); continue; }
-      extracted.push({ id: newAtt.id, file_name: baseName });
-      count++;
-    } catch (e) {
-      skipped.push({ file_name: baseName, reason: "予期しないエラー: " + String(e) });
-    }
-  }
-
-  await db.from("invoice_attachments").update({ zip_extracted_at: new Date().toISOString() }).eq("id", att.id);
+  const r = await extractZipAttachment(db, att);
+  if (!r.ok) return json({ error: r.error }, r.status);
+  const { extracted, skipped } = r;
   await db.from("mf_sync_logs").insert({
     action: "zip_extract", actor_type: "human",
     detail: { attachment_id: att.id, email_id: att.email_id, invoice_id: att.invoice_id, extracted: extracted.length, skipped: skipped.length },
