@@ -186,6 +186,12 @@
 
 ---
 
+## 2026-10-15 担当C: 精算書の発行時の下書き 本番デプロイ・試験OK／push済み（ns-portal v116・GAS v5.26）／他4店舗の型を追加準備（SQL/Edge未適用）
+- デプロイ・試験(本番・仮の発行通知・試験データ削除済み): invoice-auto-sales seisan_issued=新規→承認待ち／同額→重複(作らない)／金額違い・未登録→下書きを更新(再発行)／認証なし→認証エラー。pushは ns-portal(v116) と seisan-dashboard(v5.26)。**GASの貼替(v5.26)はユーザー作業待ち**。
+- 追加準備: ユーザーのMF画面(N-Style・8月): 743 秋葉原 肉寿司=運営委託費/肉寿司/秋葉原・部門 肉寿司/秋葉原・未払金/株）FAM Dining 3,143,341・摘要「8月/秋葉原肉寿司/運営委託費」／745 じんべぇ川崎9,666,041・じんべぇ新横浜7,667,168・エース本厚木7,952,793の3店舗を1つの複合仕訳(未払金/株）MostFun 25,286,002・摘要「運営委託費（MostFun）」)。ユーザー回答=店舗ごとの仕訳でよい。→ supabase/2026-10-15_seisan_statement_rules_more.sql（sales_enabled列＋4店舗の型）／invoice-auto-sales: sales_enabled=false の店舗は売上側の下書きを作らない。
+
+---
+
 ## 2026-10-15 担当C: N-Style側の業務委託精算書の仕訳を「精算書の発行時点」で作って承認待ちへ（v116／GAS v5.26／Edge未デプロイ＝承認待ち）
 - ユーザー要望: N-Style側の仕訳(運営委託費/未払金)を、精算書確定時点で作って承認まで持っていく。確定の時点=「精算書を発行・送信したとき」（ユーザー回答）。メールを待たない。
 - 実装: ①seisan-dashboard GAS v5.26-portal-issued: sd_issueAndSend の送信直後に sd_notifyPortalIssued_（PL_SYNC_TOKEN認証・失敗しても発行は止めない）が、店舗・月・振込金額(税込/税抜/税)・精算書PDF(base64)を Edge invoice-auto-sales の action=seisan_issued へ送る。②Edge invoice-auto-sales: seisanIssued — seisan_statement_rules の型でN-Style側の下書き(借方 運営委託費/補助・部門・課仕10%／貸方 未払金/有）トーホーエージェンシー)を作り、PDFを添付し、承認待ちへ（intake_source='api'）。同店舗×月の既存: 同額→作らない(PDFが無ければ付ける)／金額違い・未登録→下書きを更新(再発行)／金額違い・MF登録済み→要確認で新規。メール経路(buildSeisan)も同額の既存にPDFを付ける。③invoices.html v116: intake_source='api' を自動取込扱い(🤖・要対応の判定)・ラベル「精算書(自動)」。

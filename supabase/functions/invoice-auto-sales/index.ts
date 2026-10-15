@@ -141,7 +141,8 @@ async function buildSeisan(db: any, email: any, att: any, ex: any, firstEmailRow
   ] : [{ side: "sales", tenant: "default", corp: null, vendor: "株式会社N-Style" }, { side: "expense", tenant: "nstyle", corp: null, vendor: "有限会社トーホーエージェンシー" }];
   const notes: string[] = [];
   let emailRowUsed = !firstEmailRow;
-  for (const sp of specs) {
+  // 売上側（トーホー）の型が未確認の店舗は、売上の下書きを作らない（sales_enabled=false）
+  for (const sp of specs.filter((x) => !(rule && rule.sales_enabled === false && x.side === "sales"))) {
     const problems: string[] = []; const checks: any[] = []; const warnings: string[] = [];
     const ck = baseChecks(checks, problems);
     const v = await resolveVendor(db, sp.vendor);
