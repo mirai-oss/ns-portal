@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-15-v115";
+const BUILD_TAG="2026-10-15-v116";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -1335,7 +1335,7 @@ async function invdraftInit(invoiceId){
   const taxLbl=t=>t?`課税仕入 ${t.rate}%`:"—";
   const noRule=d&&(d.problems||[]).some(p=>/行ルールが(ありません|未登録)/.test(p));
   const STAGE_LABEL={received:"受信",parsed:"読み取り済み",mapping:"店舗・取引先の確認中",journal_draft:"仕訳下書き（要確認）",ready_for_approval:"承認待ち",approved:"承認済み",payment_waiting:"支払待ち",paid:"支払済み",completed:"完了",error:"エラー"};
-  const autoLocked=["email_auto","infomart","upload_auto"].includes(inv.intake_source)&&inv.auto_mode==="auto"&&!!inv.current_stage&&!["approved","payment_waiting","paid","completed"].includes(inv.current_stage);
+  const autoLocked=["email_auto","infomart","upload_auto","api"].includes(inv.intake_source)&&inv.auto_mode==="auto"&&!!inv.current_stage&&!["approved","payment_waiting","paid","completed"].includes(inv.current_stage);
   // 自動処理中は手動の仕訳作成を無効にして二重処理を防ぐ（「手動に切り替え」で解除）
   if(autoLocked&&$("mfj-open")){ $("mfj-open").disabled=true; $("mfj-open").title="自動処理中です。手動で作る場合は「手動に切り替え」をしてください"; }
   const ck=inv.checks&&Array.isArray(inv.checks.checks)?inv.checks.checks:[];
@@ -7677,7 +7677,7 @@ function unifiedStoreLabel(r){
 // payment_unverified（振込済み・支払確認待ち）を要対応に追加し、絞り込みで見つけられるようにした
 // 2026-10-14: 自動取込（メール自動・インフォマート）の請求書は、人が入力した請求書とは別の流れ（自動処理→承認待ち）。
 // 承認待ちに並んでいるだけのものは「要対応」に混ぜない。要対応に出すのは、自動処理が止まっているもの・重複・MFエラー等だけ。
-function unifiedIsAuto(r){ return ["email_auto","infomart","upload_auto"].includes(r.intake_source)&&r.auto_mode!=="manual"; }
+function unifiedIsAuto(r){ return ["email_auto","infomart","upload_auto","api"].includes(r.intake_source)&&r.auto_mode!=="manual"; }
 function unifiedAutoReasons(r){
   const today=new Date().toISOString().slice(0,10); const reasons=[];
   if(r.payment_verified_at) return reasons;
@@ -7716,7 +7716,7 @@ function unifiedMatchesSubTab(r,tab){
   if(tab==="all") return true;
   if(tab==="review") return unifiedNeedsAttention(r);
   if(tab==="approval") return r.current_stage==="ready_for_approval"&&!r.mf_journal_id&&r.auto_mode!=="manual"; // 自動処理で検算・判定を通過した請求書（承認待ち）
-  if(tab==="plpending") return !(r.email&&r.email.mail_kind==="sales")&&!!r.mf_journal_id&&["email_auto","infomart","upload_auto"].includes(r.intake_source)&&!r.pl_fee_reflected_at&&!r.ad_cost_reflected_at&&!r.pl_fee_seisan_synced_at&&!r.pl_fee_excluded_at; // 2026-10-14: MF登録済みなのにPL・広告費・精算書へ未反映（自動処理の請求書）
+  if(tab==="plpending") return !(r.email&&r.email.mail_kind==="sales")&&!!r.mf_journal_id&&["email_auto","infomart","upload_auto","api"].includes(r.intake_source)&&!r.pl_fee_reflected_at&&!r.ad_cost_reflected_at&&!r.pl_fee_seisan_synced_at&&!r.pl_fee_excluded_at; // 2026-10-14: MF登録済みなのにPL・広告費・精算書へ未反映（自動処理の請求書）
   if(tab==="accounting") return !r.mf_journal_id;
   if(tab==="payment") return !!r.mf_journal_id&&["wait","csv","processing"].includes(r.payment_status);
   if(tab==="done") return !!r.payment_verified_at; // 支払確認まで終わって初めて「完了」タブに入る
@@ -7812,7 +7812,7 @@ function unifiedFilteredRows(){
   }
   return list;
 }
-const INTAKE_SOURCE_LABEL={upload_auto:"アップロード(自動)",email_auto:"メール(自動)",mail:"メール",paper:"紙",pdf:"PDF",infomart:"Infomart",api:"API",manual:"手動"};
+const INTAKE_SOURCE_LABEL={upload_auto:"アップロード(自動)",email_auto:"メール(自動)",mail:"メール",paper:"紙",pdf:"PDF",infomart:"Infomart",api:"精算書(自動)",manual:"手動"};
 function unifiedRowHtml(r){
   const ai=AI_STATUS_LABEL[r.ai_match_status]||["—","gray"];
   const pay=unifiedPaymentStageLabel(r);

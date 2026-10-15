@@ -170,7 +170,11 @@ async function buildSeisan(db: any, email: any, att: any, ex: any, firstEmailRow
         else ck("duplicate", "重複なし", "ng", `同じ対象月の精算書が既にあり、金額が違います（既存${dup[0].amount}円→今回${total}円。再送信で修正された可能性）`);
       } else ck("duplicate", "重複なし", "ok");
     } else ck("duplicate", "重複なし", "na");
-    if (skipSame) { notes.push(`${sp.side === "sales" ? "トーホー売上" : "N-Style支払"}: 同額の精算書が既にあるため作成せず（再送信）`); continue; }
+    if (skipSame) {
+      // 精算書の発行時に作った下書き（PDFなし）があれば、このメールのPDFを付ける
+      if (sp.side === "expense" && bizKey) { const { data: ex2 } = await db.from("invoices").select("id, source_attachment_id").eq("biz_key", bizKey).neq("invoice_status", "cancelled").limit(1);
+        if (ex2?.[0] && !ex2[0].source_attachment_id) await db.from("invoices").update({ attachment_id: att.id, source_attachment_id: att.id }).eq("id", ex2[0].id); }
+      notes.push(`${sp.side === "sales" ? "トーホー売上" : "N-Style支払"}: 同額の精算書が既にあるため作成せず（発行時または再送信）`); continue; }
 
     const debitTotal = debitLines.reduce((t, d) => t + d.debit.amount, 0), creditTotal = creditLines.reduce((t, c) => t + c.amount, 0) + (credit?.amount ?? 0);
     ck("balance", "仕訳の借方＝貸方", debitLines.length && debitTotal === creditTotal ? "ok" : "ng", debitLines.length ? (debitTotal === creditTotal ? undefined : `借方${debitTotal}／貸方${creditTotal}`) : "仕訳を作れませんでした");
@@ -194,6 +198,79 @@ async function buildSeisan(db: any, email: any, att: any, ex: any, firstEmailRow
     notes.push(`${sp.side === "sales" ? "トーホー売上" : "N-Style支払"}: ${stage === "ready_for_approval" ? "承認待ち" : "要確認で止めた"}`);
   }
   return { ids, note: notes.join("／") || "作成なし" };
+}
+
+
+// ---- 精算書の発行時（精算ダッシュボードから）: N-Style側の仕訳（運営委託費／未払金）の下書きを作り、承認待ちへ（2026-10-15）----
+// 呼び出し: 精算ダッシュボード(GAS) sd_issueAndSend が「発行・送信」の直後に、PL_SYNC_TOKEN（サーバー間の共有トークン）つきで呼ぶ。
+// {action:"seisan_issued", token, store, month:"YYYY-MM", transfer(税込), transfer_ex(税抜), tax, resend?, pdf?:{file_name, base64}}
+// 同じ店舗×対象月の下書きが既にあれば: 同額→作らない（PDFが無ければ付ける）／金額違い＆未登録→その下書きを新しい内容に更新（再発行）／金額違い＆MF登録済み→要確認として新しい下書き
+async function seisanIssued(db: any, b: any) {
+  const store = String(b.store ?? ""); const ym = /^\d{4}-\d{2}$/.test(String(b.month ?? "")) ? String(b.month) : null;
+  const total = toInt(b.transfer), feeNet = toInt(b.transfer_ex), tax = toInt(b.tax);
+  if (!store || !ym || total == null || total <= 0) return { status: "skipped", reason: "店舗・対象月・金額が不正です" };
+  const { data: rules } = await db.from("seisan_statement_rules").select("*").eq("is_active", true);
+  const rule = (rules ?? []).find((r: any) => (r.store_patterns ?? []).some((p: string) => norm(store).includes(norm(p))));
+  if (!rule) return { status: "skipped", reason: `店舗「${store}」の仕訳の型が未登録です（seisan_statement_rules）` };
+  const mo = `${Number(ym.slice(5, 7))}月`;
+  const date = monthEnd(ym); const nowIso = new Date().toISOString();
+  const v = await resolveVendor(db, rule.exp_payee_vendor);
+  const problems: string[] = []; const checks: any[] = [];
+  const ck = (key: string, label: string, status: "ok" | "warn" | "ng" | "na", detail?: string) => { checks.push({ key, label, status, ...(detail ? { detail } : {}) }); if (status === "ng") problems.push(detail ? `${label}（${detail}）` : label); };
+  ck("source", "精算書の発行（確定）から作成", "ok");
+  if (feeNet != null && tax != null) ck("sum", "業務委託費（税抜）＋消費税＝振込金額", feeNet + tax === total ? "ok" : "ng", feeNet + tax === total ? undefined : `${feeNet}+${tax}≠${total}`);
+  ck("rule", "店舗の仕訳の型がある", "ok", String(rule.store_label ?? ""));
+  ck("vendor", "取引先が確定", v ? "ok" : "ng", v ? undefined : `「${rule.exp_payee_vendor}」が取引先マスタにありません`);
+  ck("corporation", "法人が確定", rule.exp_corporation_id ? "ok" : "ng");
+  const remark = fillTpl(rule.exp_remark_tpl, "{mo}", { mo });
+  const debitLines = [{ line_no: 1, store_id: null, store_name: null, remark,
+    debit: { account: rule.exp_account, sub_account: rule.exp_sub, department: rule.exp_department, tax: { kind: "purchase", rate: 10 }, amount: total, net_amount: feeNet ?? total }, rule: { source: "ledger", version: 1 } }];
+  const credit = { account: rule.exp_payable_account, sub_account: rule.exp_payable_sub, amount: total };
+  ck("balance", "仕訳の借方＝貸方", "ok");
+  const bizKey = v ? `${v.id}|seisan:${norm(rule.store_label)}|${ym}|expense` : null;
+
+  // 既存の下書き
+  let existing: any = null;
+  if (bizKey) { const { data: ex } = await db.from("invoices").select("id, amount, mf_journal_id, mf_journal_number, source_attachment_id, invoice_status").eq("biz_key", bizKey).neq("invoice_status", "cancelled").limit(1); existing = ex?.[0] ?? null; }
+  const attachPdf = async (invoiceId: string): Promise<string | null> => {
+    const pdf = b.pdf; if (!pdf?.base64) return null;
+    const bytes = Uint8Array.from(atob(String(pdf.base64)), (c) => c.charCodeAt(0));
+    const hashBuf = await crypto.subtle.digest("SHA-256", bytes);
+    const fileHash = Array.from(new Uint8Array(hashBuf)).map((x) => x.toString(16).padStart(2, "0")).join("");
+    const path = `standalone/${invoiceId}/${crypto.randomUUID()}.pdf`;
+    const { error: upErr } = await db.storage.from("invoice-files").upload(path, bytes, { contentType: "application/pdf" });
+    if (upErr) return null;
+    const { data: a } = await db.from("invoice_attachments").insert({ invoice_id: invoiceId, file_name: String(pdf.file_name ?? "精算書.pdf").slice(0, 200), mime_type: "application/pdf", storage_path: path, file_hash: fileHash, size_bytes: bytes.length }).select("id").maybeSingle();
+    return a?.id ?? null;
+  };
+  const audit = (id: string, note: string, nv?: unknown) => db.from("invoice_audit_logs").insert({ entity_type: "invoice", entity_id: id, action: "auto_invoice_created", actor_type: "ai", note, new_value: nv ?? null });
+
+  if (existing && Number(existing.amount) === total) {
+    if (!existing.source_attachment_id) { const aid = await attachPdf(existing.id); if (aid) await db.from("invoices").update({ attachment_id: aid, source_attachment_id: aid, updated_at: nowIso }).eq("id", existing.id); }
+    return { status: "duplicate", invoice_id: existing.id, reason: "同額の下書きが既にあります" };
+  }
+  if (existing && existing.mf_journal_id) ck("duplicate", "重複なし", "ng", `同じ対象月の精算書が既にMF登録済み（伝票${existing.mf_journal_number ?? "-"}・${existing.amount}円）で、金額が違います（再発行の可能性）`);
+  else ck("duplicate", "重複なし", "ok");
+
+  const draft = { version: 1, kind: "seisan_expense", status: problems.length ? "needs_review" : "ok", tenant_id: rule.exp_tenant, corporation_id: rule.exp_corporation_id,
+    transaction_date: date, remark, debit_lines: debitLines, credit, credit_lines: [], totals: { debit: total, credit: total, invoice_total: total }, adjustments: [], problems, warnings: [], created_at: nowIso };
+  const stage = problems.length ? "journal_draft" : "ready_for_approval";
+  const fields: Record<string, unknown> = {
+    vendor_name: v?.name ?? rule.exp_payee_vendor, vendor_id: v?.id ?? null, corporation_id: rule.exp_corporation_id, amount: total, due_date: date,
+    target_year_month: `${ym}-01`, journal_draft: draft, journal_draft_at: nowIso, current_stage: stage, blocked_reason: problems.length ? problems.join("／") : null,
+    stage_updated_at: nowIso, checks: { checks, routes: [], checked_at: nowIso }, auto_ocr: { source: "seisan_issued", store, month: ym, transfer: total, transfer_ex: feeNet, tax }, auto_mode: "auto", updated_at: nowIso,
+  };
+  if (existing && !existing.mf_journal_id) {   // 再発行（金額が変わった）: 未登録の下書きを新しい内容に更新
+    await db.from("invoices").update(fields).eq("id", existing.id);
+    const aid = await attachPdf(existing.id); if (aid) await db.from("invoices").update({ attachment_id: aid, source_attachment_id: aid }).eq("id", existing.id);
+    await audit(existing.id, `精算書の再発行に合わせて、N-Style側の下書きを更新（${existing.amount}円→${total}円）`, { invoice_id: existing.id, stage });
+    return { status: "updated", invoice_id: existing.id };
+  }
+  const { data: ins, error } = await db.from("invoices").insert({ ...fields, email_id: null, invoice_status: "draft", intake_source: "api", biz_key: existing ? null : bizKey }).select("id").maybeSingle();
+  if (error) return { status: "error", reason: error.message.slice(0, 150) };
+  const aid = await attachPdf(ins!.id as string); if (aid) await db.from("invoices").update({ attachment_id: aid, source_attachment_id: aid }).eq("id", ins!.id);
+  await audit(ins!.id as string, `精算書の発行（${store}・${ym}）から、N-Style側の仕訳（運営委託費／未払金）を自動で下書き作成 → ${stage === "ready_for_approval" ? "承認待ち" : "要確認: " + problems.join("／")}`, { invoice_id: ins!.id, stage });
+  return { status: "created", invoice_id: ins!.id, stage };
 }
 
 async function processEmail(db: any, emailId: string, secret: string) {
@@ -390,6 +467,15 @@ Deno.serve(async (req: Request) => {
   let body: any;
   try { body = await req.json(); } catch { return json({ error: "JSONの読み取りに失敗しました" }, 400); }
   const db = svc();
+  // 精算ダッシュボード(GAS)からの「精算書の発行」通知は、PL_SYNC_TOKEN（GASと同じ共有トークン）で認証する
+  if (body?.action === "seisan_issued") {
+    const tk = Deno.env.get("PL_SYNC_TOKEN");
+    let okAuth = !!tk && String(body?.token ?? "").trim() === tk.trim();
+    if (!okAuth && body?.secret) { const { data: sr0 } = await db.from("app_secrets").select("value").eq("key", "invoice_intake_secret").maybeSingle(); okAuth = !!sr0?.value && body.secret === sr0.value; }   // サーバー間の共有シークレットでも可（動作確認用）
+    if (!okAuth) return json({ error: "認証エラー" }, 401);
+    try { return json({ success: true, result: await seisanIssued(db, body) }); }
+    catch (e) { return json({ error: "処理中にエラー: " + String((e as Error)?.message ?? e) }, 500); }
+  }
   const { data: sr, error: se } = await db.from("app_secrets").select("value").eq("key", "invoice_intake_secret").maybeSingle();
   if (se) return json({ error: "シークレット確認に失敗しました: " + se.message }, 500);
   if (!sr?.value || body?.secret !== sr.value) return json({ error: "認証エラー" }, 401);
