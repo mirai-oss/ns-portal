@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-16-v133";
+const BUILD_TAG="2026-10-16-v134";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -3522,6 +3522,8 @@ async function rnCorrectRow_(u,id){
   }
   const r=await authed(`/rest/v1/ar_receivables?id=eq.${id}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({gross_amount:newGross,expected_amount:payout,linked_invoice_id:null,updated_at:new Date().toISOString()})});
   if(!r.ok){ alert("補正の保存に失敗しました: "+(r.body?.message||r.status)+(hasMf?"\n（MF側の仕訳は削除済みです。画面を更新して、仕訳を作り直してください）":"")); await receivableLoad(); receivableRender(u); return; }
+  // すでに旧金額（損失補償なし）で入金済みにしていた行は、実際の入金額＝支給額に直す（直さないと補正後に「差異あり」で残る）
+  try{ await authed(`/rest/v1/ar_deposits?receivable_id=eq.${id}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({amount:payout})}); }catch(e){ console.warn("入金済み金額の補正に失敗",e); }
   await Promise.all([receivableLoad(),loadAcBadgeCounts()]);
   receivableRender(u);
   if(hasMf){ openReceivableJournalModal(u,id); }
