@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-16-v120";
+const BUILD_TAG="2026-10-16-v121";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -936,7 +936,7 @@ async function openApprovalModal(u,invoiceId,opt){
         ${d.credit?`<tr style="background:var(--bg-soft,#f7f7f5)"><td></td><td colspan="4"><b>貸方</b> <input class="apv-cacc" list="apv-acc-dl" value="${esc(d.credit.account||"")}" style="width:110px"> <input class="apv-csub" value="${esc(d.credit.sub_account||"")}" placeholder="補助" style="width:140px"></td><td style="text-align:right"><b>${d.credit.amount!=null?yen(d.credit.amount):"—"}</b></td><td></td></tr>`:""}
       </tbody></table></div>
       ${(d.adjustments||[]).length?`<div style="font-size:11px;color:var(--muted)">1円調整: ${d.adjustments.map(a=>`行${a.line_no} ${a.amount>0?"+":""}${a.amount}円`).join("、")}</div>`:""}
-      <datalist id="apv-acc-dl"></datalist><datalist id="apv-dept-dl"></datalist>
+      <datalist id="apv-acc-dl"></datalist><datalist id="apv-dept-dl"></datalist><datalist id="apv-sub-dl"></datalist>
     </div>
     <details style="margin-top:10px"><summary style="cursor:pointer;font-size:12px;color:var(--muted)">AI工程の詳細（明細の読み取り・店舗の突合・処理履歴）</summary>
       <div style="font-size:11px;color:var(--muted);margin:6px 0">明細の検算: ${inv.lines_check?esc(JSON.stringify({ok:inv.lines_check.ok,明細合計:inv.lines_check.sum_lines,税抜合計:inv.subtotal_amount,税額:inv.tax_amount,店舗の突合:inv.lines_check.mapping&&{確定:inv.lines_check.mapping.resolved,要確認:(inv.lines_check.mapping.low||0)+(inv.lines_check.mapping.unresolved||0)}})):"—"}</div>
@@ -961,7 +961,14 @@ async function openApprovalModal(u,invoiceId,opt){
   // PDFのプレビュー
   if(att) signAttachmentUrls([att.storage_path]).then(map=>{ modal.querySelectorAll("[data-attpreview]").forEach(el=>{ const url=map[el.dataset.attpreview]; if(url) el.src=url; }); modal.querySelectorAll("[data-attpath]").forEach(el=>{ const url=map[el.dataset.attpath]; if(url) el.href=url; }); });
   // 科目・部門の候補（MFに実在するもの）。辞書ではなくMFのマスタを使う
-  mfCall("accounts",{tenant_id:d.tenant_id}).then(a=>{ if(a.ok&&$("apv-acc-dl")){ const idx=mftBuildAccountIndex(a.body.accounts||[]); $("apv-acc-dl").innerHTML=[...idx.accountNameDatalistHtml?[idx.accountNameDatalistHtml]:[]].join(""); } });
+  let apvSubMap=null;
+  // 補助科目: 選んだ勘定科目のMF上の補助科目だけを候補に出す（手入力でMFと合わなくなるのを防ぐ。MFに無い名前は赤枠で警告）
+  const apvSubRowAcc=el=>{ const tr=el.closest("tr"); const a=tr&&(tr.querySelector(".apv-acc")||tr.querySelector(".apv-cacc")); return a?(a.value||"").trim():""; };
+  const apvSubCheck=el=>{ const names=(apvSubMap&&apvSubMap.get(apvSubRowAcc(el)))||[]; const v=(el.value||"").trim(); el.style.borderColor=(v&&names.length&&!names.includes(v))?"#d33":""; el.title=(v&&names.length&&!names.includes(v))?"この名前はMFの補助科目にありません。候補から選んでください":""; };
+  const apvSubFill=el=>{ const dl=$("apv-sub-dl"); if(!dl) return; const names=(apvSubMap&&apvSubMap.get(apvSubRowAcc(el)))||[]; dl.innerHTML=names.map(n=>`<option value="${esc(n)}">`).join(""); el.setAttribute("list","apv-sub-dl"); };
+  modal.querySelectorAll(".apv-sub,.apv-csub").forEach(el=>{ el.addEventListener("focus",()=>apvSubFill(el)); el.addEventListener("input",()=>apvSubCheck(el)); el.addEventListener("change",()=>apvSubCheck(el)); });
+  modal.querySelectorAll(".apv-acc,.apv-cacc").forEach(el=>el.addEventListener("change",()=>{ const tr=el.closest("tr"); const sb=tr&&(tr.querySelector(".apv-sub")||tr.querySelector(".apv-csub")); if(sb) apvSubCheck(sb); }));
+  mfCall("accounts",{tenant_id:d.tenant_id}).then(a=>{ if(a.ok&&$("apv-acc-dl")){ const idx=mftBuildAccountIndex(a.body.accounts||[]); $("apv-acc-dl").innerHTML=[...idx.accountNameDatalistHtml?[idx.accountNameDatalistHtml]:[]].join(""); apvSubMap=idx.subAccountsByAccountName||null; modal.querySelectorAll(".apv-sub,.apv-csub").forEach(apvSubCheck); } });
   mfCall("list_departments",{tenant_id:d.tenant_id}).then(a=>{ if(a.ok&&$("apv-dept-dl")) $("apv-dept-dl").innerHTML=(a.body.departments||[]).map(x=>`<option value="${esc(x.name)}">`).join(""); });
   modal.querySelectorAll(".apv-acc,.apv-sub,.apv-dept,.apv-tax,.apv-cacc,.apv-csub").forEach(el=>el.oninput=el.onchange=()=>{ $("apv-edited").style.display="block"; });
   // 修正した内容を保存して、承認待ちへ移す（MFには登録しない）
