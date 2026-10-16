@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-16-v128";
+const BUILD_TAG="2026-10-16-v129";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -3113,7 +3113,7 @@ function receivableYmDefault(){
   const d=new Date();
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
 }
-let RECEIVABLE_STATE={yearMonth:"",storeFilter:"",corpFilter:"",sourceFilter:"",jState:"",subTab:"pending",receivables:[],deposits:[],matches:[]};
+let RECEIVABLE_STATE={yearMonth:"",storeFilter:"",corpFilter:"",sourceFilter:"",jState:"",overdueOnly:false,subTab:"pending",receivables:[],deposits:[],matches:[]};
 async function renderReceivableTab(u){
   $("tabbody").innerHTML=`<section class="invoice-list active"><div class="card" style="padding:16px"><div class="spin" style="padding:20px 0">読み込み中…</div></div></section>`;
   if(!RECEIVABLE_STATE.yearMonth) RECEIVABLE_STATE.yearMonth=receivableYmDefault();
@@ -3163,6 +3163,11 @@ function receivableFilteredRows(){
   if(RECEIVABLE_STATE.sourceFilter) rows=rows.filter(r=>(r.source_name||"")===RECEIVABLE_STATE.sourceFilter);
   if(RECEIVABLE_STATE.jState==="todo") rows=rows.filter(r=>!r.mf_journal_id);
   if(RECEIVABLE_STATE.jState==="done") rows=rows.filter(r=>!!r.mf_journal_id);
+  if(RECEIVABLE_STATE.overdueOnly){   // 期日を過ぎても入金されていないものだけ（期日アラートのボタンから）
+    const today=new Date(Date.now()+9*3600e3).toISOString().slice(0,10); const paid=new Set((RECEIVABLE_STATE.deposits||[]).map(d=>d.receivable_id));
+    const monthEnd=ym=>{ const [y,m]=ym.split("-").map(Number); return new Date(Date.UTC(y,m,0)).toISOString().slice(0,10); };
+    rows=rows.filter(r=>r.mf_journal_id&&Number(r.expected_amount)>0&&!paid.has(r.id)&&(r.expected_date||new Date(Date.parse(monthEnd(r.year_month))+14*86400e3).toISOString().slice(0,10))<today);
+  }
   return rows.filter(r=>receivableRowState(r)===RECEIVABLE_STATE.subTab);
 }
 // 2026-09-15新規：ユーザー要望「店舗はあるんだけど、法人がないから法人も追加してほしい」に
@@ -8618,6 +8623,7 @@ async function overdueAlertRender_(){
   if(!$("overdue-alert")) return;
   if(!d.pay.length&&!d.rec.length){ host.innerHTML=""; return; }
   const over=due=>Math.max(1,Math.round((Date.parse(d.today)-Date.parse(due))/86400e3));
+  const inRec=!!$("receivable-ym");
   const md=x=>`${Number(x.slice(5,7))}/${Number(x.slice(8,10))}`;
   const sumP=d.pay.reduce((t,r)=>t+(Number(r.amount)||0),0), sumR=d.rec.reduce((t,r)=>t+(Number(r.expected_amount)||0),0);
   const lines=[
@@ -8627,9 +8633,19 @@ async function overdueAlertRender_(){
   host.innerHTML=`<div style="background:#fdecea;border:2px solid #d33;border-radius:10px;padding:10px 14px;margin-bottom:12px;color:#8a1c1c">
     <div style="font-weight:700;font-size:14px">⏰ 期日を過ぎても残っています　${d.pay.length?`支払い ${d.pay.length}件（${yen(sumP)}）`:""}${d.pay.length&&d.rec.length?"　／　":""}${d.rec.length?`入金 ${d.rec.length}件（${yen(sumR)}）`:""}</div>
     <div style="font-size:12px;margin-top:4px;line-height:1.7">${lines.join("<br>")}${d.pay.length+d.rec.length>lines.length?`<br>…ほか ${d.pay.length+d.rec.length-lines.length}件`:""}</div>
-    <div style="margin-top:6px;display:flex;gap:8px;flex-wrap:wrap">${d.pay.length?'<button class="hq-btn" id="overdue-go-pay">🏦 振込待ちを開く</button>':""}${d.rec.length?'<button class="hq-btn" id="overdue-go-rec">💰 売上入金を開く</button>':""}</div></div>`;
+    <div style="margin-top:6px;display:flex;gap:8px;flex-wrap:wrap">${d.pay.length?'<button class="hq-btn" id="overdue-go-pay">🏦 振込待ちを開く</button>':""}${d.rec.length?`<button class="hq-btn" id="overdue-go-rec">${inRec?(RECEIVABLE_STATE.overdueOnly?"✖ 期日超過だけの表示をやめる":"💰 期日を過ぎた入金だけを表示する"):"💰 売上入金（期日超過）を開く"}</button>`:""}</div></div>`;
   if($("overdue-go-pay")) $("overdue-go-pay").onclick=()=>{ const b=document.querySelector('[data-ukpi="payment"]'); if(b) b.click(); else { const t=document.querySelector('.mail-tab[data-tab="unified"]'); if(t) t.click(); } };
-  if($("overdue-go-rec")) $("overdue-go-rec").onclick=()=>{ const t=document.querySelector('.mail-tab[data-tab="receivableSoon"]'); if(t) t.click(); };
+  if($("overdue-go-rec")) $("overdue-go-rec").onclick=()=>{
+    const first=[...d.rec].sort((a,b)=>a.due.localeCompare(b.due))[0];
+    if(inRec){
+      RECEIVABLE_STATE.overdueOnly=!RECEIVABLE_STATE.overdueOnly;
+      if(RECEIVABLE_STATE.overdueOnly){ RECEIVABLE_STATE.subTab="pending"; if(first&&first.year_month!==RECEIVABLE_STATE.yearMonth){ RECEIVABLE_STATE.yearMonth=first.year_month; renderReceivableTab(ME); return; } }
+      receivableRender(ME);
+    }else{
+      RECEIVABLE_STATE.overdueOnly=true; RECEIVABLE_STATE.subTab="pending"; if(first) RECEIVABLE_STATE.yearMonth=first.year_month;
+      const t=document.querySelector('.mail-tab[data-tab="receivableSoon"]'); if(t) t.click();
+    }
+  };
 }
 // 2026-10-16追加：引き落とし・他行口座から振込の「照合」。MFの仕訳（銀行連携で自動仕訳された出金を含む）から、
 // 金額・補助科目・摘要・日付が合う預金の出金を探して候補にする。MFには何も書かない。振込済みにするのは人が確認して選んだものだけ。
