@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-16-v127";
+const BUILD_TAG="2026-10-16-v128";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -3469,6 +3469,7 @@ function receivableRender(u){
   const corps=(CORP_STORE_CACHE&&CORP_STORE_CACHE.corporations)||[];
   $("tabbody").innerHTML=`
     <section class="invoice-list active">
+      <div id="overdue-alert"></div>
       <div class="kpis kpis6">
         <div class="card kpi" style="padding:14px"><small style="color:var(--muted);font-size:9px;display:block">今月入金予定</small><b style="font-size:20px;display:block;margin-top:5px">${kpi.pending.n}件</b><small style="color:var(--muted)">${yen(kpi.pending.amt)}</small></div>
         <div class="card kpi bad" style="padding:14px"><small style="color:var(--muted);font-size:9px;display:block">未入金</small><b style="font-size:20px;display:block;margin-top:5px">${kpi.overdue.n}件</b><small style="color:var(--muted)">${yen(kpi.overdue.amt)}</small></div>
@@ -3529,6 +3530,7 @@ function receivableRender(u){
     RECEIVABLE_STATE.subTab=el.dataset.receivableSubtab; receivableRender(u);
   });
   wireCashRecon(u);
+  overdueAlertRender_();
   mlsWire_(u);
   if($("receivable-dry-btn")) $("receivable-dry-btn").onclick=()=>arjDryRunAll(u);
   if($("receivable-plcatch-btn")) $("receivable-plcatch-btn").onclick=()=>arjPlCatchUp(u);
@@ -8002,6 +8004,7 @@ async function unifiedDeleteInvoice(u,invoiceId){
   await renderUnifiedInvoiceTab(u);
 }
 function unifiedRender(u){
+  setTimeout(()=>{ overdueAlertRender_(); },0);   // 期日超過のアラート（描画のあとで表示）
   const list=unifiedFilteredRows();
   const counts={};
   // 2026-09-10修正：タブの件数バッジも、一覧本体と同じく給与関連（is_payroll_related）を
@@ -8034,6 +8037,7 @@ function unifiedRender(u){
   const isPayment=UNIFIED_STATE.subTab==="payment"; const isPlp=UNIFIED_STATE.subTab==="plpending";
   $("tabbody").innerHTML=`
     <section class="invoice-list active">
+      <div id="overdue-alert"></div>
       <div class="kpis kpis6" style="margin-bottom:14px">
         <div class="card kpi bad" style="padding:14px;cursor:pointer" data-ukpi="review"><small style="color:var(--muted);font-size:9px;display:block">要対応</small><b style="font-size:20px;display:block;margin-top:5px">${unifiedKpi.needsAttn}件</b></div>
         <div class="card kpi warn" style="padding:14px;cursor:pointer" data-ukpi="accounting"><small style="color:var(--muted);font-size:9px;display:block">会計待ち</small><b style="font-size:20px;display:block;margin-top:5px">${unifiedKpi.accountingWaiting}件</b></div>
@@ -8590,6 +8594,42 @@ async function receivablePaymentScan(u){
     };
   }catch(e){ alert("照合中にエラーが発生しました: "+(e&&e.message||e)); }
   finally{ setBusy(""); }
+}
+// 2026-10-16追加：期日を過ぎても残っている支払い・入金のアラート（請求書一覧・売上入金の最上部に赤く表示。Larkにも毎日通知＝invoice-payment-scan）
+let OVERDUE_CACHE={at:0,data:null};
+async function overdueFetch_(force){
+  if(!force&&OVERDUE_CACHE.data&&Date.now()-OVERDUE_CACHE.at<60000) return OVERDUE_CACHE.data;
+  const today=new Date(Date.now()+9*3600e3).toISOString().slice(0,10);
+  const since=new Date(Date.now()-130*86400e3).toISOString().slice(0,7);
+  const [pr,ar]=await Promise.all([
+    authed(`/rest/v1/invoices?mf_journal_id=not.is.null&payment_status=in.(wait,csv,processing)&due_date=lt.${today}&select=id,amount,due_date,vendor:vendors(name)&order=due_date.asc&limit=300`),
+    authed(`/rest/v1/ar_receivables?mf_journal_id=not.is.null&expected_amount=gt.0&year_month=gte.${since}&select=id,source_name,year_month,expected_amount,expected_date&limit=500`),
+  ]);
+  const pay=(pr.ok&&Array.isArray(pr.body))?pr.body:[];
+  const monthEnd=ym=>{ const [y,m]=ym.split("-").map(Number); return new Date(Date.UTC(y,m,0)).toISOString().slice(0,10); };
+  let rec=(ar.ok&&Array.isArray(ar.body))?ar.body.map(r=>({...r,due:r.expected_date||new Date(Date.parse(monthEnd(r.year_month))+14*86400e3).toISOString().slice(0,10)})).filter(r=>r.due<today):[];
+  if(rec.length){ const paid=new Set(); for(let i=0;i<rec.length;i+=100){ const d=await authed(`/rest/v1/ar_deposits?receivable_id=in.(${rec.slice(i,i+100).map(r=>r.id).join(",")})&select=receivable_id`); if(d.ok&&Array.isArray(d.body)) d.body.forEach(x=>paid.add(x.receivable_id)); } rec=rec.filter(r=>!paid.has(r.id)); }
+  OVERDUE_CACHE={at:Date.now(),data:{pay,rec,today}};
+  return OVERDUE_CACHE.data;
+}
+async function overdueAlertRender_(){
+  const host=$("overdue-alert"); if(!host) return;
+  let d; try{ d=await overdueFetch_(); }catch(e){ return; }
+  if(!$("overdue-alert")) return;
+  if(!d.pay.length&&!d.rec.length){ host.innerHTML=""; return; }
+  const over=due=>Math.max(1,Math.round((Date.parse(d.today)-Date.parse(due))/86400e3));
+  const md=x=>`${Number(x.slice(5,7))}/${Number(x.slice(8,10))}`;
+  const sumP=d.pay.reduce((t,r)=>t+(Number(r.amount)||0),0), sumR=d.rec.reduce((t,r)=>t+(Number(r.expected_amount)||0),0);
+  const lines=[
+    ...[...d.pay].sort((a,b)=>a.due_date.localeCompare(b.due_date)).slice(0,4).map(r=>`🏦 ${esc((r.vendor&&r.vendor.name)||"—")} ${yen(Number(r.amount)||0)}（期日 ${md(r.due_date)}・${over(r.due_date)}日超過）`),
+    ...[...d.rec].sort((a,b)=>a.due.localeCompare(b.due)).slice(0,4).map(r=>`💰 ${esc(r.source_name)}（${esc(r.year_month)}）${yen(Number(r.expected_amount)||0)}（期日 ${md(r.due)}・${over(r.due)}日超過）`),
+  ];
+  host.innerHTML=`<div style="background:#fdecea;border:2px solid #d33;border-radius:10px;padding:10px 14px;margin-bottom:12px;color:#8a1c1c">
+    <div style="font-weight:700;font-size:14px">⏰ 期日を過ぎても残っています　${d.pay.length?`支払い ${d.pay.length}件（${yen(sumP)}）`:""}${d.pay.length&&d.rec.length?"　／　":""}${d.rec.length?`入金 ${d.rec.length}件（${yen(sumR)}）`:""}</div>
+    <div style="font-size:12px;margin-top:4px;line-height:1.7">${lines.join("<br>")}${d.pay.length+d.rec.length>lines.length?`<br>…ほか ${d.pay.length+d.rec.length-lines.length}件`:""}</div>
+    <div style="margin-top:6px;display:flex;gap:8px;flex-wrap:wrap">${d.pay.length?'<button class="hq-btn" id="overdue-go-pay">🏦 振込待ちを開く</button>':""}${d.rec.length?'<button class="hq-btn" id="overdue-go-rec">💰 売上入金を開く</button>':""}</div></div>`;
+  if($("overdue-go-pay")) $("overdue-go-pay").onclick=()=>{ const b=document.querySelector('[data-ukpi="payment"]'); if(b) b.click(); else { const t=document.querySelector('.mail-tab[data-tab="unified"]'); if(t) t.click(); } };
+  if($("overdue-go-rec")) $("overdue-go-rec").onclick=()=>{ const t=document.querySelector('.mail-tab[data-tab="receivableSoon"]'); if(t) t.click(); };
 }
 // 2026-10-16追加：引き落とし・他行口座から振込の「照合」。MFの仕訳（銀行連携で自動仕訳された出金を含む）から、
 // 金額・補助科目・摘要・日付が合う預金の出金を探して候補にする。MFには何も書かない。振込済みにするのは人が確認して選んだものだけ。

@@ -55,6 +55,9 @@ export type Candidate = { kind: "single" | "bundle" | "mismatch"; invoice_ids: s
 // 銀行の摘要ではカタカナの名前で出る入金元・支払先（標準の別名）。請求先名（正規化後）に key を含むとき、別名が摘要・補助科目にあれば結びつける
 const BUILTIN_ALIASES: { key: string; aliases: string[] }[] = [
   { key: "smbcgmopayment", aliases: ["エスエムビーシージーエムオーペイメント"] },
+  { key: "paypay", aliases: ["paypay"] },                                        // 例: PAYPAY振込 PAYPAY
+  { key: "ロケットナウ", aliases: ["シーピーワンジヤパン", "シーピーワンジャパン"] },   // 例: 振込 シ-ピ-ワンジヤパン(ド
+  { key: "ウーバー", aliases: ["ubereatsjapan"] }, { key: "ubereats", aliases: ["ubereatsjapan"] },   // 例: 振込 UBER EATS JAPAN (ド
 ];
 // 出金と請求先の結びつき: 借方の補助科目/取引先 → 摘要 → 覚えさせた名前 の順に強い
 function vendorEvidence(o: Outflow, it: PayItem, rules: Rule[]): { pts: number; why: string } | null {
@@ -119,6 +122,8 @@ export function matchPayments(items: PayItem[], outflows: Outflow[], rules: Rule
         const useTotal = list.length > 1 && Math.abs(total - o.amount) < Math.abs(near.it.amount - o.amount);
         const ids = useTotal ? list.map((x) => x.it.invoice_id) : [near.it.invoice_id];
         const inv = useTotal ? total : near.it.amount;
+        // 売上入金は、同じ入金元から別の目的の入金も多いため、予定額と5%以内のずれだけを「金額違い」にする（手数料差引・端数などの確認用）。支払いは金額を間違えた振込を拾うため制限しない
+        if (near.it.method === "in" && inv > 0 && Math.abs(o.amount - inv) / inv > 0.05) continue;
         out.push({ kind: "mismatch", invoice_ids: ids, journal_id: o.journal_id, transaction_date: o.transaction_date, outflow_amount: o.amount, invoice_total: inv, diff: o.amount - inv, score: 40 + near.pts, reasons: [`振込先は一致（${near.why}）ですが、金額が合いません`], summary: o.summary, remark: o.remark });
       }
     }

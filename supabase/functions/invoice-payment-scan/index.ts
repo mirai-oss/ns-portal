@@ -19,6 +19,9 @@ const svc = () => createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPA
 const yen = (n: number) => "¥" + Math.round(n).toLocaleString();
 // 同じ名前が続くときは「名前 ×件数」にまとめる（通知を読みやすくする）
 const groupNames = (names: string[]) => { const m = new Map<string, number>(); names.filter(Boolean).forEach((n) => m.set(n, (m.get(n) ?? 0) + 1)); return [...m].map(([n, c]) => (c > 1 ? `${n} ×${c}件` : n)).join("・"); };
+const todayJst = () => new Date(Date.now() + 9 * 3600e3).toISOString().slice(0, 10);
+const daysOver = (due: string) => Math.max(1, Math.round((Date.parse(todayJst()) - Date.parse(due)) / 86400e3));
+const md = (d: string) => `${Number(d.slice(5, 7))}/${Number(d.slice(8, 10))}`;
 const PORTAL = "https://mirai-oss.github.io/ns-portal/invoices.html";
 
 Deno.serve(async (req: Request) => {
@@ -88,6 +91,7 @@ Deno.serve(async (req: Request) => {
     }
 
     // ===== 売上入金（売掛金）の照合：預金への入金仕訳と、入金待ちの売掛金を照合する =====
+    let inOverdue: any[] = [];
     const inCreated: any[] = []; const autoDone: any[] = []; const inNames = new Map<string, string>();
     try {
       const since = new Date(Date.now() - 100 * 86400e3).toISOString().slice(0, 7);   // 直近約3か月
@@ -99,7 +103,10 @@ Deno.serve(async (req: Request) => {
         const { data: dps } = await db.from("ar_deposits").select("receivable_id").in("receivable_id", arIds.slice(i, i + 100));
         for (const d of dps ?? []) paidSet.add(d.receivable_id);
       }
+      const monthEnd = (ym: string) => { const [y, m] = ym.split("-").map(Number); return new Date(Date.UTC(y, m, 0)).toISOString().slice(0, 10); };
       const open = (ars ?? []).filter((r: any) => !paidSet.has(r.id) && (!body?.only_source || String(r.source_name ?? "").includes(body.only_source)));
+      // 期日を過ぎても入金されていない売掛金（期日が無いものは売上月の月末＋14日）
+      inOverdue = open.map((r: any) => ({ ...r, due: r.expected_date || new Date(Date.parse(monthEnd(r.year_month)) + 14 * 86400e3).toISOString().slice(0, 10) })).filter((r: any) => r.due < todayJst());
       const expMap = new Map<string, number>(open.map((r: any) => [r.id, Number(r.expected_amount) || 0]));
       const srcMap = new Map<string, string>(open.map((r: any) => [r.id, r.source_name ?? ""]));
       // 法人→MF事業者（法人名とMF事業者名の突き合わせ。1つに決まらなければトーホー側）
@@ -109,7 +116,6 @@ Deno.serve(async (req: Request) => {
       const corpName = new Map((corps ?? []).map((c: any) => [c.id, c.name]));
       const storeCorp = new Map((stores ?? []).map((x: any) => [x.id, x.corporation_id]));
       const tenantOf = (r: any) => { const cid = r.corporation_id || storeCorp.get(r.store_id); const n = norm(corpName.get(cid) ?? ""); const hits = (tens ?? []).filter((t: any) => { const tn = norm(t.label ?? ""); return tn && n && (n.includes(tn) || tn.includes(n)); }); return hits.length === 1 ? hits[0].id : "default"; };
-      const monthEnd = (ym: string) => { const [y, m] = ym.split("-").map(Number); return new Date(Date.UTC(y, m, 0)).toISOString().slice(0, 10); };
       const byT = new Map<string, any[]>();
       for (const r of open) { const t = tenantOf(r); const l = byT.get(t) ?? []; l.push(r); byT.set(t, l); inNames.set(r.id, `${r.source_name}（${r.year_month}）`); }
       const { data: confIn } = await db.from("payment_match_candidates").select("journal_id").eq("status", "confirmed").eq("direction", "in");
@@ -186,13 +192,23 @@ Deno.serve(async (req: Request) => {
       lines.push(`⚠️ 売上入金で金額が合わないもの ${inBad.length}件（入金元は一致）`);
       for (const c of inBad.slice(0, 15)) lines.push(`・${inLabel(c)} 予定 ${yen(c.invoice_total)} ／ 入金 ${yen(c.outflow_amount)}（差 ${c.diff > 0 ? "+" : ""}${yen(c.diff)}・MF ${c.transaction_date}）`);
     }
+    // 期日を過ぎても残っている支払い・入金（毎日の実行で通知。解消するまで毎日出る）
+    const payOverdue = body?.only_source ? [] : (invs ?? []).filter((r: any) => r.due_date && r.due_date < todayJst());
+    if (payOverdue.length) {
+      lines.push(`⏰ 期日を過ぎても支払い済みになっていないもの ${payOverdue.length}件（合計 ${yen(payOverdue.reduce((t: number, r: any) => t + (Number(r.amount) || 0), 0))}）`);
+      for (const r of [...payOverdue].sort((a: any, b: any) => a.due_date.localeCompare(b.due_date)).slice(0, 15)) lines.push(`・${r.vendor?.name ?? "（不明）"} ${yen(Number(r.amount) || 0)}（期日 ${md(r.due_date)}・${daysOver(r.due_date)}日超過）`);
+    }
+    if (inOverdue.length) {
+      lines.push(`⏰ 期日を過ぎても入金されていない売上入金 ${inOverdue.length}件（合計 ${yen(inOverdue.reduce((t: number, r: any) => t + (Number(r.expected_amount) || 0), 0))}）`);
+      for (const r of [...inOverdue].sort((a: any, b: any) => a.due.localeCompare(b.due)).slice(0, 15)) lines.push(`・${r.source_name}（${r.year_month}）${yen(Number(r.expected_amount) || 0)}（期日 ${md(r.due)}・${daysOver(r.due)}日超過）`);
+    }
     if (errors.length) lines.push(`❗ 一部のMFを確認できませんでした: ${errors.join(" / ")}`);
     let notified = false;
     if (lines.length && !body?.dry_run) {
       notified = await larkPost(db, `【引き落とし・他行振込の自動照合】\n${lines.join("\n")}\n${PORTAL}`);
       if (notified && (created.length || inCreated.length)) await db.from("payment_match_candidates").update({ notified_at: new Date().toISOString() }).in("cand_key", [...created, ...inCreated].map((c) => c.cand_key));
     }
-    const summary = { targets: targets.length, tenants: [...byTenant.keys()], ok: ok.length, mismatch: bad.length, in_ok: inOk.length, in_auto: autoDone.length, in_mismatch: inBad.length, errors, notified };
+    const summary = { targets: targets.length, tenants: [...byTenant.keys()], ok: ok.length, mismatch: bad.length, in_ok: inOk.length, in_auto: autoDone.length, in_mismatch: inBad.length, overdue_pay: payOverdue.length, overdue_in: inOverdue.length, errors, notified };
     if (run?.id) await db.from("payment_scan_runs").update({ finished_at: new Date().toISOString(), ok: errors.length === 0, summary }).eq("id", run.id);
     return json({ success: true, ...summary, ...(body?.dry_run ? { preview: [...created.map((c) => ({ ...c, _in: false })), ...inCreated.map((c) => ({ ...c, _in: true }))].map((c) => ({ kind: c.kind, vendor: c._in ? inLabel(c) : label(c), invoice_total: c.invoice_total, outflow: c.outflow_amount, diff: c.diff, date: c.transaction_date, score: c.score, summary: c.summary, remark: c.remark, reasons: c.reasons })), message: lines.join("\n") } : {}) });
   } catch (e) {
