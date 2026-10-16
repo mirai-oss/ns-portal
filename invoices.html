@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-16-v132";
+const BUILD_TAG="2026-10-16-v133";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -3125,7 +3125,9 @@ async function receivableLoad(){
   const r=await authed(`/rest/v1/ar_receivables?year_month=eq.${encodeURIComponent(ym)}&select=*&order=expected_date.asc.nullslast&limit=500`);
   const receivables=(r.ok&&Array.isArray(r.body))?r.body:[];
   RECEIVABLE_STATE.receivables=receivables;
-  { const sr=await authed(`/rest/v1/delivery_settlement_summary?period_start=gte.${encodeURIComponent(ym)}-01&period_start=lte.${encodeURIComponent(ym)}-31&select=store_id,period_start,payout,loss_compensation`); RECEIVABLE_STATE.rnSummary=(sr.ok&&Array.isArray(sr.body))?sr.body:[]; }
+  { // 2026-10-16: 月末日を-31固定にすると30日の月（4・6・9・11月）で不正な日付になり取得に失敗していた→「翌月1日より前」で絞る
+    const [yy,mm]=String(ym).split("-").map(Number); const nextFirst=mm===12?`${yy+1}-01-01`:`${yy}-${String(mm+1).padStart(2,"0")}-01`;
+    const sr=await authed(`/rest/v1/delivery_settlement_summary?period_start=gte.${ym}-01&period_start=lt.${nextFirst}&select=store_id,period_start,payout,loss_compensation`); RECEIVABLE_STATE.rnSummary=(sr.ok&&Array.isArray(sr.body))?sr.body:[]; if(!sr.ok) console.warn("精算履歴の取得に失敗",sr.status,sr.body); }
   const ids=receivables.map(x=>x.id);
   if(!ids.length){ RECEIVABLE_STATE.deposits=[]; RECEIVABLE_STATE.matches=[]; RECEIVABLE_STATE.attachments=[]; return; }
   const [dr,mr,ar]=await Promise.all([
