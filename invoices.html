@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-15-v116";
+const BUILD_TAG="2026-10-16-v117";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -7313,8 +7313,24 @@ function wireDetailActions(u){
       };
       const {ok,body:j}=await perfTimed("mfj_journal_create",()=>mfjCall("create",payload));
       if(!ok){ pmsg.textContent=j.error||"登録に失敗しました"; $("mfjPreviewSubmit").disabled=false; return; }
+      // 2026-10-16: 手入力で登録した仕訳を、同じ取引先の次回からの自動仕分けの元（行ルール）として保存する（借方が1種類・貸方が1種類のときだけ。失敗しても登録は完了済み）
+      let learned="";
+      try{
+        const inv0=SELECTED.invoice; const vid0=inv0&&inv0.vendor_id;
+        const debs0=branchesPayload.filter(b=>b.debit), crs0=branchesPayload.filter(b=>b.credit);
+        const dl0=[...new Set(debs0.map(b=>mfjLabelOf(b.debit)))], cl0=[...new Set(crs0.map(b=>mfjLabelOf(b.credit)))];
+        if(vid0&&dl0.length===1&&cl0.length===1&&!/^(売掛金|売上高|給料|雑給)/.test(dl0[0])){
+          const d0=debs0[0].debit, c0=crs0[0].credit; const vname0=(inv0.vendor&&inv0.vendor.name)||inv0.vendor_name||"";
+          const nz0=x=>String(x||"").trim().normalize("NFKC").replace(/\s+/g,"").replace(/株式会社|有限会社|㈱|㈲|\(株\)|\(有\)/g,"").toLowerCase();
+          const same0=sub=>{ const a=nz0(sub), v=nz0(vname0); return !!a&&!!v&&(a===v||v.includes(a)||a.includes(v)); };
+          const fields0={vendor_id:vid0,account_name:d0.account_name,sub_account_mode:d0.sub_account_name?(same0(d0.sub_account_name)?"vendor":"fixed"):"none",sub_account_name:d0.sub_account_name&&!same0(d0.sub_account_name)?d0.sub_account_name:null,
+            tax_mode:"by_line",credit_account:c0.account_name,credit_sub_mode:c0.sub_account_name?(same0(c0.sub_account_name)?"vendor":"fixed"):"none",credit_sub_name:c0.sub_account_name&&!same0(c0.sub_account_name)?c0.sub_account_name:null,dept_mode:"line_store"};
+          const lr=await authed("/rest/v1/rpc/save_vendor_line_rule",{method:"POST",body:JSON.stringify({p_vendor_key:vname0,p_tenant_id:MFJ_STATE.tenantId,p_line_pattern:"*",p_fields:fields0,p_source:"approved"})});
+          if(lr.ok) learned="。この内容を、この取引先の次回からの自動仕分け（行ルール）として保存しました";
+        }
+      }catch(e){}
       pmsg.className="err msg-ok";
-      pmsg.textContent=`登録しました（伝票番号: ${j.journal_number??"-"}）`
+      pmsg.textContent=`登録しました（伝票番号: ${j.journal_number??"-"}）${learned}`
         +(j.voucher_attached?`。添付ファイルも${j.voucher_attached}件添付しました`:j.voucher_error?`（添付: ${j.voucher_error}）`:"")
         +(LINKED_HQ_STEP?(j.hq_step_completed?"。紐付けた本部タスクの工程も完了にしました":j.hq_step_error?`（本部タスクの自動完了には失敗: ${j.hq_step_error}）`:""):"")
         +"。画面を更新します…";
