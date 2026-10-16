@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-16-v118";
+const BUILD_TAG="2026-10-16-v119";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -2104,7 +2104,7 @@ function plfeeRenderPanel(){
     }
     const btn=e.target.closest("[data-plfee-unconfirm]");
     if(!btn) return;
-    if(!confirm("このPL反映を取り消しますか？\n\nシート（Google Sheets）側の数字は、正しい内容で再度反映するまでは古いまま残ります（削除ではなく上書き方式のため）。金額や科目を直したい場合は、取り消した後にもう一度正しい内容で「PLに反映」してください。")) return;
+    if(!confirm("このPL反映を取り消しますか？\n\nPLの数字は取り消すと0円に戻ります（シート側の行も自動で0円になります）。日付・金額・科目を直したい場合は、取り消した後にもう一度、正しい内容で「PLに反映」してください。")) return;
     btn.disabled=true; btn.textContent="取り消し中…";
     const r=await plFeeCall("unconfirm",{invoice_id:PLFEE_STATE.ctx.invoiceId,reflection_id:btn.dataset.plfeeUnconfirm});
     if(!r.ok){ alert(r.body.error||"取り消しに失敗しました"); btn.disabled=false; btn.textContent="↩️ 取り消す"; return; }

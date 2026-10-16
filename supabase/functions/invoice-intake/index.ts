@@ -217,6 +217,18 @@ Deno.serve(async (req: Request) => {
     if (er2?.waitUntil) er2.waitUntil(kickS);
   }
 
+  // 2026-10-16: パスワード付きURLでダウンロードする請求書（k-mac）のメール、またはそのパスワード通知メールなら、自動取得を依頼する
+  // （URLメールとパスワードメールの2通が揃った時点で取得される。揃っていなければ待機し、後から届いたほうのメールで再度動く）
+  if (/smtp01\.k-mac\.jp\/get\//.test(String(body.body_text ?? "")) || (/【パスワード/.test(String(body.body_text ?? "")) && /件名/.test(String(body.body_text ?? "")))) {
+    const kickD = fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/invoice-download-fetch`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", apikey: Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!, Authorization: `Bearer ${Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")}` },
+      body: JSON.stringify({ secret: body.secret, email_id: emailId }),
+    }).catch((e) => console.error("請求書の自動ダウンロードの依頼に失敗: " + e));
+    const er3 = (globalThis as any).EdgeRuntime;
+    if (er3?.waitUntil) er3.waitUntil(kickD);
+  }
+
   await db.from("invoice_audit_logs").insert({
     entity_type: "invoice_email", entity_id: emailId, action: "intake", actor_type: "human",
     new_value: { attachments: savedCount, duplicate_suspected: duplicateSuspected, attachments_failed: failed, auto_category: autoCategory },
