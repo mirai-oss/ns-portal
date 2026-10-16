@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-16-v131";
+const BUILD_TAG="2026-10-16-v132";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -3125,6 +3125,7 @@ async function receivableLoad(){
   const r=await authed(`/rest/v1/ar_receivables?year_month=eq.${encodeURIComponent(ym)}&select=*&order=expected_date.asc.nullslast&limit=500`);
   const receivables=(r.ok&&Array.isArray(r.body))?r.body:[];
   RECEIVABLE_STATE.receivables=receivables;
+  { const sr=await authed(`/rest/v1/delivery_settlement_summary?period_start=gte.${encodeURIComponent(ym)}-01&period_start=lte.${encodeURIComponent(ym)}-31&select=store_id,period_start,payout,loss_compensation`); RECEIVABLE_STATE.rnSummary=(sr.ok&&Array.isArray(sr.body))?sr.body:[]; }
   const ids=receivables.map(x=>x.id);
   if(!ids.length){ RECEIVABLE_STATE.deposits=[]; RECEIVABLE_STATE.matches=[]; RECEIVABLE_STATE.attachments=[]; return; }
   const [dr,mr,ar]=await Promise.all([
@@ -3467,6 +3468,62 @@ function mlsWire_(u){
   };
   upd();
 }
+// 2026-10-16新設（ユーザー指示「損失補償入りの金額で取り込み直して」）：ロケットナウの売上入金を、精算履歴（settlement-report）の
+// 「支給額（損失補償を含む）」に合わせて補正する。月次精算資料（注文明細）には損失補償が入っておらず、入金予定額が実際の支給額より毎月少なかった。
+// 補正の中身: 売上決済額 += 損失補償 ／ 入金予定額 = 支給額 ／ 手数料は変えない（検算: 売上−手数料＝支給額）。
+// MF仕訳が登録済みの行は、MF側の仕訳を削除してから補正し、補正後の金額で仕訳作成画面を開く（登録はユーザーが画面で確認して押す）。
+// 保存元: delivery_settlement_summary（Mac miniの rocketnow-settlement-history ジョブが毎月20日に取込）。
+function rnSummaryFor_(row){
+  const sums=RECEIVABLE_STATE.rnSummary||[];
+  return sums.find(s=>s.store_id===row.store_id&&String(s.period_start||"").slice(0,7)===row.year_month)||null;
+}
+function rnFixRows_(){
+  return (RECEIVABLE_STATE.receivables||[]).filter(r=>{
+    if(r.source_table!=="stg_delivery_order"||r.source_name!=="ロケットナウ") return false;
+    const s=rnSummaryFor_(r); if(!s) return false;
+    const loss=Number(s.loss_compensation)||0;
+    return loss>0&&Math.round(Number(r.expected_amount))!==Math.round(Number(s.payout));
+  });
+}
+function rnLossPanelHtml_(){
+  const rows=rnFixRows_(); if(!rows.length) return "";
+  const total=rows.reduce((a,r)=>a+(Number(rnSummaryFor_(r).loss_compensation)||0),0);
+  return `<div class="risk-card warn" style="margin-bottom:12px;padding:12px">
+    <h5 style="margin:0 0 6px">💴 ロケットナウ：損失補償が入金予定額に入っていない行 ${rows.length}件（損失補償 合計 ${yen(total)}）</h5>
+    <div class="meta" style="color:var(--muted);font-size:12px;margin-bottom:8px">月次精算資料（注文明細）に損失補償が含まれないため、入金予定額が実際の支給額より少なくなっています。「補正する」で、売上決済額に損失補償を加え、入金予定額を支給額に合わせます。<b>MF仕訳が登録済みの行は、MF側の仕訳を削除してから補正し、補正後の金額で仕訳作成画面を開きます</b>（登録は画面で確認して押してください）。</div>
+    <table class="invoice-table" style="font-size:12px"><thead><tr><th>店舗</th><th>現在の入金予定額</th><th>支給額</th><th>損失補償</th><th>MF仕訳</th><th></th></tr></thead><tbody>
+    ${rows.map(r=>{ const s=rnSummaryFor_(r); return `<tr><td>${esc(receivableStoreName(r.store_id))}</td><td>${yen(r.expected_amount)}</td><td><b>${yen(s.payout)}</b></td><td>${yen(s.loss_compensation)}</td><td>${r.mf_journal_id?`登録済み（${esc(String(r.mf_journal_number??"-"))}）`:"未登録"}</td><td><button class="hq-btn primary" data-rn-fix="${esc(r.id)}" style="padding:4px 10px">補正する</button></td></tr>`; }).join("")}
+    </tbody></table></div>`;
+}
+async function rnCorrectRow_(u,id){
+  const row=(RECEIVABLE_STATE.receivables||[]).find(r=>r.id===id); const s=row&&rnSummaryFor_(row);
+  if(!row||!s){ alert("対象の行または精算履歴が見つかりません。画面を更新してください。"); return; }
+  const loss=Number(s.loss_compensation)||0, payout=Number(s.payout), gross=Number(row.gross_amount), fee=Number(row.fee_amount);
+  const newGross=gross+loss;
+  if(Math.round(newGross-fee)!==Math.round(payout)){ alert(`検算が合わないため補正しません（売上${yen(gross)}＋損失補償${yen(loss)}−手数料${yen(fee)}＝${yen(newGross-fee)}、支給額${yen(payout)}）。担当Cへ連絡してください。`); return; }
+  const store=receivableStoreName(row.store_id);
+  const hasMf=!!row.mf_journal_id;
+  if(!confirm(`${store}（${row.year_month}）を補正します。\n\n売上決済額 ${yen(gross)} → ${yen(newGross)}\n入金予定額 ${yen(row.expected_amount)} → ${yen(payout)}（損失補償 ${yen(loss)}）\n手数料 ${yen(fee)}（変更なし）\n`+(hasMf?`\n⚠️ マネーフォワードに登録済みの仕訳（伝票番号: ${row.mf_journal_number??"-"}）を削除し、補正後の金額で仕訳を作り直します（作成画面を開きます）。`:`\nMF仕訳は未登録です（金額だけ補正します）。`)+"\n\nよろしいですか？")) return;
+  if(hasMf){
+    const tenant=(()=>{ try{ return arjPickTenantId(row,[]); }catch(e){ return "default"; } })();
+    const pre=await mfDeleteJournal(row.mf_journal_id,{dryRun:true,tenantId:tenant});
+    if(pre.closed){ alert("この仕訳は決算期間を過ぎているため、削除・編集できません。補正を中止しました。"); return; }
+    if(!(pre.notTracked||(pre.ok&&pre.gone))){
+      if(!pre.ok){ alert("マネーフォワードの仕訳の状態を確認できなかったため、補正を中止しました。\n"+pre.error); return; }
+      const d=await mfDeleteJournal(row.mf_journal_id,{tenantId:tenant});
+      if(!d.ok){ alert("マネーフォワード側の仕訳を削除できなかったため、補正を中止しました。\n"+d.error); return; }
+    }
+    if(row.linked_invoice_id){
+      const r0=await deleteInvoiceRecord(row.linked_invoice_id);
+      if(!r0.ok) console.warn("旧仕訳に紐づく請求書記録の削除に失敗",r0);
+    }
+  }
+  const r=await authed(`/rest/v1/ar_receivables?id=eq.${id}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({gross_amount:newGross,expected_amount:payout,linked_invoice_id:null,updated_at:new Date().toISOString()})});
+  if(!r.ok){ alert("補正の保存に失敗しました: "+(r.body?.message||r.status)+(hasMf?"\n（MF側の仕訳は削除済みです。画面を更新して、仕訳を作り直してください）":"")); await receivableLoad(); receivableRender(u); return; }
+  await Promise.all([receivableLoad(),loadAcBadgeCounts()]);
+  receivableRender(u);
+  if(hasMf){ openReceivableJournalModal(u,id); }
+}
 function receivableRender(u){
   const kpi=receivableKpis();
   const filtered=receivableFilteredRows();
@@ -3485,6 +3542,7 @@ function receivableRender(u){
       </div>
       <div class="card" style="padding:16px">
         <div class="meta" style="color:var(--muted);font-size:12px;margin-bottom:10px">PayPay等の決済入金を「売上発生→入金予定→実入金→照合→消込」のフローで管理します（指示書§9-8/9-9）。データは自動取込タブ経由で登録された入金予定（<code>ar_receivables</code>）を表示しています。</div>
+        ${rnLossPanelHtml_()}
         ${receivableUnjournaledByMonthHtml()}
         ${receivableSourceChipsHtml()}
         <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;margin-bottom:10px">
@@ -3541,6 +3599,7 @@ function receivableRender(u){
   if($("receivable-plcatch-btn")) $("receivable-plcatch-btn").onclick=()=>arjPlCatchUp(u);
   if($("receivable-paymatch-btn")) $("receivable-paymatch-btn").onclick=()=>receivablePaymentScan(u);
   if($("receivable-plreplace-btn")) $("receivable-plreplace-btn").onclick=()=>arjPlReplaceTaxExcl(u);
+  document.querySelectorAll("[data-rn-fix]").forEach(el=>el.onclick=()=>rnCorrectRow_(u,el.dataset.rnFix));
   document.querySelectorAll("[data-arj-open]").forEach(el=>el.onclick=()=>openReceivableJournalModal(u,el.dataset.arjOpen));
   // 2026-09-17新規：ユーザー報告「PL反映が出ない」に対応。仕訳登録済みの売上入金行から
   // 請求書詳細（PLへ反映パネルを含む）へ移動する手段が無かった（is_receivable_relatedの
