@@ -4,6 +4,11 @@
 
 ---
 
+## 2026-10-16 担当C: 引き落とし・他行振込の照合 第2弾（まとめ払い・金額違いエラー・覚え込み・毎日自動照合＋Lark通知）v124【ローカルのみ・SQL/デプロイ/push承認待ち】
+- 新規: `_shared/payment-match.ts`（照合ロジック共通化: single/bundle(合計一致・12件まで)/mismatch(振込先一致・金額違い・期日±3日)・覚えさせた名前）、`invoice-payment-scan`（1日1回・日本時間9〜22時・Lark経理チャンネル通知・dry_run/forceあり）、`supabase/2026-10-16_payment_match.sql`（payment_match_rules / payment_match_candidates / payment_scan_runs・RLS=invoice_can_access）。
+- 変更: `mf-journal` payment_scan を共通ロジックに置換、`invoice-intake` から毎回 invoice-payment-scan を起動（実行判定は scan 側）、invoices.html v124（照合画面: まとめ払い/金額違い表示・確認時に摘要名を覚える・同じ出金の二重利用防止）。
+- 通知は「新しい候補だけ」（cand_key で重複防止）。振込済みにするのは人が確認してから（自動完了はしない）。
+
 ## 2026-10-16 担当C: v120〜v122（前払費用等の貸借科目をPL/精算書に反映しない／修正モードの補助科目をMF候補から選択／振込待ちに支払方法の絞り込み）＋invoice-intake本番デプロイ
 - v120: plReflectInvoice_ で費用科目以外（前払費用等）の行を除外。精算書の振込済み月は精算書GAS(sd_isLocked_)が自動追加を拒否する（既存・変更なし）。
 - v121: 承認/修正モーダルの補助科目欄にMF補助科目の候補(datalist)＋MFに無い名前は赤枠。

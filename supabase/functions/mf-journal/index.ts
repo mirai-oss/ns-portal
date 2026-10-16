@@ -48,6 +48,7 @@
 // マネーフォワードのアクセストークンは_shared/mf.tsのgetValidAccessToken()で取得（自動リフレッシュ込み）
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { getValidAccessToken, mfFetch } from "../_shared/mf.ts";
+import { dateRange, fetchOutflows, matchPayments, type PayItem, type Rule } from "../_shared/payment-match.ts";
 
 const cors: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -543,48 +544,21 @@ Deno.serve(async (req: Request) => {
     // 影響ゼロ）。ロジックは上のブロックと完全に同じ（意図的に重複させている。共通化して
     // 既存の3action側の挙動まで変えてしまうリスクを避けるため）
     // 2026-10-16新設：引き落とし・他行振込の自動照合（読み取りのみ。MFには何も書かない）。
-    // items=[{invoice_id, vendor_name, amount, due_date}] のそれぞれについて、MFの仕訳の中から
-    // 「貸方=預金系の科目で、金額が一致する出金」を探して候補にする。補助科目・摘要・日付が合うほど点数が高い。
+    // 照合ロジックは _shared/payment-match.ts（定期実行 invoice-payment-scan と共通）。
+    // 返す候補: single=1件に一致／bundle=まとめ払い／mismatch=振込先は合うが金額が合わない
     if (action === "payment_scan") {
-      const items: any[] = Array.isArray(body?.items) ? body.items.slice(0, 200) : [];
+      const items: PayItem[] = Array.isArray(body?.items) ? body.items.slice(0, 200) : [];
       if (!items.length) return json({ success: true, candidates: [], searched_count: 0 });
       const before = Number(body?.days_before ?? 5), after = Number(body?.days_after ?? 14);
-      const dayMs = 86400e3;
-      const dues = items.map((i) => Date.parse(i.due_date ?? "")).filter((t) => !isNaN(t));
-      const base = dues.length ? dues : [Date.now()];
-      const startD = new Date(Math.min(...base) - before * dayMs - 3 * dayMs).toISOString().slice(0, 10);
-      const endD = new Date(Math.min(Math.max(...base) + after * dayMs + 5 * dayMs, Date.now() + dayMs)).toISOString().slice(0, 10);
-      const journals: any[] = [];
-      for (let page = 1; page <= 10; page++) {
-        const r = await mfFetch(`/api/v3/journals?start_date=${startD}&end_date=${endD}&per_page=500&page=${page}`, accessToken);
-        const dj = await r.json();
-        if (!r.ok) return json({ error: "仕訳履歴の取得に失敗しました", detail: dj }, 502);
-        const list = dj.journals ?? [];
-        journals.push(...list);
-        if (list.length < 500) break;
-      }
-      const norm = (t: unknown) => String(t ?? "").normalize("NFKC").replace(/株式会社|有限会社|合同会社|[(（]?(株|有|カ|ユ|合)[)）]/g, "").replace(/\s+/g, "").toLowerCase();
-      const isDeposit = (n: string) => /預金|当座/.test(n ?? "");
-      const candidates: any[] = [];
-      for (const it of items) {
-        const amount = Number(it.amount), vn = norm(it.vendor_name), due = Date.parse(it.due_date ?? "");
-        for (const j of journals) {
-          for (const br of j.branches ?? []) {
-            const d = br.debitor, c = br.creditor;
-            if (!c || !isDeposit(c.account_name) || Number(c.value) !== amount) continue;   // 預金から出ていった、金額が同じ
-            let score = 50; const reasons = ["金額が一致（預金からの出金）"];
-            const text = norm([br.remark, d?.sub_account_name, d?.trade_partner_name, c?.sub_account_name].filter(Boolean).join(" "));
-            if (vn && (norm(d?.sub_account_name).includes(vn) || vn.includes(norm(d?.sub_account_name || "\u0000")) || norm(d?.trade_partner_name).includes(vn))) { score += 25; reasons.push("借方の補助科目/取引先が請求先と一致"); }
-            else if (vn && text.includes(vn)) { score += 15; reasons.push("摘要に請求先名を含む"); }
-            if (/買掛金|未払金|未払費用/.test(d?.account_name ?? "")) { score += 10; reasons.push(`借方が${d.account_name}`); }
-            const tdate = Date.parse(j.transaction_date ?? "");
-            if (!isNaN(due) && !isNaN(tdate)) { const diff = Math.round((tdate - due) / dayMs); if (Math.abs(diff) <= 3) { score += 15; reasons.push("日付が期日に近い"); } else if (diff >= -before && diff <= after) { score += 5; reasons.push("日付が期日の前後"); } else continue; }
-            candidates.push({ invoice_id: it.invoice_id, journal_id: j.id, transaction_date: j.transaction_date, score, reasons, summary: branchSummary(br), remark: br.remark ?? "" });
-          }
-        }
-      }
-      candidates.sort((a, b) => b.score - a.score);
-      return json({ success: true, candidates, searched_count: journals.length, range: { start: startD, end: endD } });
+      const range = dateRange(items, before, after);
+      const fo = await fetchOutflows(accessToken, range.start, range.end);
+      if ("error" in fo) return json({ error: fo.error, detail: fo.detail }, 502);
+      const dbp = svc();
+      const { data: rl } = await dbp.from("payment_match_rules").select("vendor_id, pattern").eq("tenant_id", tenantId);
+      const { data: done } = await dbp.from("payment_match_candidates").select("journal_id").eq("status", "confirmed");
+      const usedJ = new Set((done ?? []).map((x: any) => x.journal_id));
+      const candidates = matchPayments(items, fo.outflows.filter((o) => !usedJ.has(o.journal_id)), (rl ?? []) as Rule[], before, after);
+      return json({ success: true, candidates, searched_count: fo.searched, range });
     }
 
     if (action === "journal_search") {

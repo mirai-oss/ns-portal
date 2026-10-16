@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-16-v123";
+const BUILD_TAG="2026-10-16-v124";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -8510,7 +8510,10 @@ async function transferExportCsv(u){
   $("transfer-msg").textContent=`振込予定日: ${fmtD(transferDate)}／本部タスク「振込先を確認」を${taskOkCount}件（法人ごと）作成しました。`+(taskFailCount?`⚠️${taskFailCount}件は作成に失敗しました（振込CSV自体は正常に作成されています）。`:"");
 }
 // 2026-10-16追加：引き落とし・他行口座から振込の「照合」。MFの仕訳（銀行連携で自動仕訳された出金を含む）から、
-// 金額・補助科目・摘要・日付が合う預金の出金を探して候補にする。MFには何も書かない。振込済みにするのは人が確認して選んだものだけ
+// 金額・補助科目・摘要・日付が合う預金の出金を探して候補にする。MFには何も書かない。振込済みにするのは人が確認して選んだものだけ。
+// 候補の種類: single=請求書1件に一致／bundle=同じ請求先のまとめ払い／mismatch=振込先は合うが金額が合わない（エラー）
+// 確認した「摘要の名前⇔請求先」は payment_match_rules に覚えさせ、次回から候補の精度が上がる。毎朝の自動照合は invoice-payment-scan（Larkへ通知）
+function payRulePattern(t){ return String(t||"").normalize("NFKC").replace(/株式会社|有限会社|合同会社|[(（]?(株|有|カ|ユ|合)[)）]/g,"").replace(/\s+/g,"").toLowerCase().replace(/[0-9０-９]+(年|月|日|分)?/g,"").replace(/[\/\-・,、.。:：]/g,"").slice(0,40); }
 async function transferPaymentScan(u){
   const msg=$("transfer-msg"); msg.style.color="";
   const rows=transferFilteredRows().filter(r=>{ const m=transferMethodKey(r); return m==="direct_debit"||m==="other_bank_transfer"; });
@@ -8520,40 +8523,53 @@ async function transferPaymentScan(u){
   rows.forEach(r=>{ const t=(r.journal_draft&&r.journal_draft.tenant_id)||"default"; if(!byTenant.has(t)) byTenant.set(t,[]); byTenant.get(t).push(r); });
   const cands=[]; const errs=[];
   for(const [t,rs] of byTenant){
-    const items=rs.map(r=>({invoice_id:r.id,vendor_name:(r.vendor&&r.vendor.name)||"",amount:Number(r.amount)||0,due_date:r.due_date||""}));
+    const items=rs.map(r=>({invoice_id:r.id,vendor_id:r.vendor_id,vendor_name:(r.vendor&&r.vendor.name)||"",amount:Number(r.amount)||0,due_date:r.due_date||""}));
     const a=await mfCall("payment_scan",{tenant_id:t,items});
     if(a.ok&&a.body&&a.body.success) cands.push(...a.body.candidates.map(c=>({...c,tenant:t})));
     else errs.push(`${t==="nstyle"?"N-Style":"トーホー"}のMF：${(a.body&&a.body.error)||"取得に失敗しました"}`);
   }
   msg.textContent=errs.join(" / ");
-  // 請求書ごとに点数の高い候補を最大3件。同じMF仕訳が複数の請求書に当たる場合は警告
-  const byInv=new Map(); cands.forEach(c=>{ const l=byInv.get(c.invoice_id)||[]; l.push(c); byInv.set(c.invoice_id,l); });
-  const jUse=new Map(); cands.forEach(c=>jUse.set(c.journal_id,(jUse.get(c.journal_id)||0)+1));
-  const rowHtml=rows.map(r=>{
-    const l=(byInv.get(r.id)||[]).sort((x,y)=>y.score-x.score).slice(0,3);
-    const head=`<b>${esc((r.vendor&&r.vendor.name)||"—")}</b>　${yen(Number(r.amount)||0)}　期日 ${esc(r.due_date||"—")}`;
-    if(!l.length) return `<tr><td colspan="2" style="padding:8px 4px;border-top:1px solid var(--line)">${head}<div class="meta" style="color:var(--muted);font-size:12px">一致する出金仕訳が見つかりません（MFで仕訳になるまで2〜3日かかります）</div></td></tr>`;
-    return l.map((c,i)=>`<tr>
-      <td style="width:28px;padding:8px 4px;border-top:${i?"none":"1px solid var(--line)"}"><input type="checkbox" class="tps-check" data-id="${esc(r.id)}" ${i===0&&c.score>=75&&jUse.get(c.journal_id)===1?"checked":""}></td>
-      <td style="padding:8px 4px;border-top:${i?"none":"1px solid var(--line)"}">${i?"":head}<div class="meta" style="font-size:12px;color:var(--muted)">${esc(c.transaction_date)}　${esc(c.summary)}${c.remark?`　摘要：${esc(c.remark)}`:""}</div>
+  const rowById=new Map(rows.map(r=>[r.id,r]));
+  const nm=id=>{ const r=rowById.get(id); return r?`${esc((r.vendor&&r.vendor.name)||"—")} ${yen(Number(r.amount)||0)}`:"（不明）"; };
+  const jUse=new Map(); cands.filter(c=>c.kind!=="mismatch").forEach(c=>jUse.set(c.journal_id,(jUse.get(c.journal_id)||0)+1));
+  const okC=cands.filter(c=>c.kind!=="mismatch").sort((x,y)=>y.score-x.score);
+  const badC=cands.filter(c=>c.kind==="mismatch");
+  const matched=new Set(okC.flatMap(c=>c.invoice_ids)); const bad=new Set(badC.flatMap(c=>c.invoice_ids));
+  const none=rows.filter(r=>!matched.has(r.id)&&!bad.has(r.id));
+  const okHtml=okC.map((c,i)=>`<tr>
+      <td style="width:28px;padding:8px 4px;border-top:1px solid var(--line);vertical-align:top"><input type="checkbox" class="tps-check" data-ci="${cands.indexOf(c)}" ${c.score>=75&&jUse.get(c.journal_id)===1?"checked":""}></td>
+      <td style="padding:8px 4px;border-top:1px solid var(--line)"><b>${c.kind==="bundle"?"📦 まとめ払い：":""}</b>${c.invoice_ids.map(nm).join(" ＋ ")}
+        <div class="meta" style="font-size:12px;color:var(--muted)">MF ${esc(c.transaction_date)}　出金 ${yen(c.outflow_amount)}　${esc(c.summary)}${c.remark?`　摘要：${esc(c.remark)}`:""}</div>
         <div class="meta" style="font-size:11px;color:var(--muted)">点数 ${c.score}：${esc(c.reasons.join("・"))}${jUse.get(c.journal_id)>1?' <span style="color:var(--m-red,#c33)">⚠️同じ仕訳が複数の請求書に当たっています</span>':""}</div></td></tr>`).join("");
-  }).join("");
+  const badHtml=badC.map(c=>`<tr><td style="width:28px;border-top:1px solid var(--line)">⚠️</td><td style="padding:8px 4px;border-top:1px solid var(--line)"><b>${c.invoice_ids.map(nm).join(" ＋ ")}</b>
+        <div style="font-size:12px;color:var(--m-red,#c33)">請求 ${yen(c.invoice_total)} ／ 出金 ${yen(c.outflow_amount)}（差 ${c.diff>0?"+":""}${yen(c.diff)}）— 振込先は合っていますが、金額が違います。振込金額を確認してください</div>
+        <div class="meta" style="font-size:12px;color:var(--muted)">MF ${esc(c.transaction_date)}　${esc(c.summary)}${c.remark?`　摘要：${esc(c.remark)}`:""}</div></td></tr>`).join("");
+  const noneHtml=none.length?`<div class="meta" style="font-size:12px;color:var(--muted);margin-top:10px">一致する出金が見つからない請求書（MFで仕訳になるまで2〜3日かかります）：${none.map(r=>nm(r.id)).join("、")}</div>`:"";
   const modal=document.createElement("div"); modal.className="modal-bg mail-shell"; modal.id="transferPayScanModal";
-  modal.innerHTML=`<div class="modal" style="max-width:820px;max-height:86vh;overflow:auto">
+  modal.innerHTML=`<div class="modal" style="max-width:860px;max-height:86vh;overflow:auto">
     <div class="mhead"><h2>🔎 引き落とし・他行振込の照合結果</h2></div>
-    <div class="meta" style="color:var(--muted);font-size:12px;margin-bottom:8px">MFの仕訳（預金からの出金）と、金額・請求先・日付で照合した候補です。内容を確認して、正しいものにチェックを付けてください（点数75以上で1件だけに当たるものは最初からチェック済み）。チェックしたものだけを「振込済み」にします。MFには何も書き込みません。</div>
-    <table style="width:100%;border-collapse:collapse;font-size:13px">${rowHtml}</table>
+    <div class="meta" style="color:var(--muted);font-size:12px;margin-bottom:8px">MFの仕訳（預金からの出金）と、金額・請求先・日付で照合した候補です。正しいものにチェックを付けてください（点数75以上で1件だけに当たるものは最初からチェック済み）。チェックしたものだけを「振込済み」にして、その摘要の名前を次回のために覚えます。MFには何も書き込みません。</div>
+    ${okC.length?`<table style="width:100%;border-collapse:collapse;font-size:13px">${okHtml}</table>`:`<div class="meta" style="color:var(--muted)">照合できた候補はありません。</div>`}
+    ${badC.length?`<h3 style="font-size:14px;margin:14px 0 4px;color:var(--m-red,#c33)">⚠️ 金額が合わない出金（${badC.length}件）</h3><table style="width:100%;border-collapse:collapse;font-size:13px">${badHtml}</table>`:""}
+    ${noneHtml}
     <div class="err" id="tps-msg" style="margin-top:6px"></div>
-    <div class="mail-actions" style="margin-top:12px"><button class="primary" id="tps-ok">✅ チェックしたものを振込済みにする</button><button id="tps-cancel">閉じる</button></div>
+    <div class="mail-actions" style="margin-top:12px"><button class="primary" id="tps-ok" ${okC.length?"":"disabled"}>✅ チェックしたものを振込済みにする</button><button id="tps-cancel">閉じる</button></div>
   </div>`;
   document.body.appendChild(modal);
   $("tps-cancel").onclick=()=>modal.remove();
   $("tps-ok").onclick=async()=>{
-    const ids=[...new Set([...modal.querySelectorAll(".tps-check:checked")].map(x=>x.dataset.id))];
+    const chosen=[...modal.querySelectorAll(".tps-check:checked")].map(x=>cands[Number(x.dataset.ci)]).filter(Boolean);
+    const ids=[...new Set(chosen.flatMap(c=>c.invoice_ids))];
     if(!ids.length){ $("tps-msg").textContent="振込済みにするものにチェックを付けてください"; return; }
-    if(!confirm(`${ids.length}件を振込済みにします。よろしいですか？`)) return;
+    if(!confirm(`${ids.length}件の請求書を振込済みにします。よろしいですか？`)) return;
     const nowIso=new Date().toISOString();
     await authed(`/rest/v1/invoices?id=in.(${ids.join(",")})`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({payment_status:"paid",paid_at:nowIso,paid_by:ME.id})});
+    // 確認した出金を記録（同じ出金を別の請求書に二重で当てない）＋摘要の名前を覚えさせる（失敗しても振込済み自体は有効）
+    try{
+      await authed(`/rest/v1/payment_match_candidates?on_conflict=cand_key`,{method:"POST",headers:{Prefer:"resolution=merge-duplicates,return=minimal"},body:JSON.stringify(chosen.map(c=>({cand_key:[c.kind,c.tenant,c.journal_id,[...c.invoice_ids].sort().join(",")].join("|"),kind:c.kind,tenant_id:c.tenant,invoice_ids:c.invoice_ids,journal_id:c.journal_id,transaction_date:c.transaction_date,outflow_amount:c.outflow_amount,invoice_total:c.invoice_total,diff:c.diff,score:c.score,reasons:c.reasons,summary:c.summary,remark:c.remark,status:"confirmed",decided_by:ME.id,decided_at:nowIso})))});
+      const rules=[]; chosen.forEach(c=>{ const pat=payRulePattern(c.remark||""); if(pat.length<3) return; c.invoice_ids.forEach(id=>{ const r=rowById.get(id); if(r&&r.vendor_id) rules.push({vendor_id:r.vendor_id,tenant_id:c.tenant,pattern:pat,sample_remark:String(c.remark||"").slice(0,120),created_by:ME.id}); }); });
+      if(rules.length) await authed(`/rest/v1/payment_match_rules?on_conflict=vendor_id,tenant_id,pattern`,{method:"POST",headers:{Prefer:"resolution=ignore-duplicates,return=minimal"},body:JSON.stringify(rules)});
+    }catch(e){ console.warn("照合の記録に失敗",e); }
     await Promise.all(ids.map(id=>fireInvoiceEvent(id,"payment_completed").catch(()=>{})));
     modal.remove(); await renderTransfersTab(u);
   };

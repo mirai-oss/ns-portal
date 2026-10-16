@@ -72,6 +72,17 @@ Deno.serve(async (req: Request) => {
     return json({ error: "認証エラー" }, 401);
   }
 
+  // 2026-10-16: 引き落とし・他行振込の自動照合（1日1回・日本時間9時以降）。メール取込のたびに呼ぶが、実行判定は invoice-payment-scan 側（二重には動かない）
+  {
+    const kickP = fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/invoice-payment-scan`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", apikey: Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!, Authorization: `Bearer ${Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")}` },
+      body: JSON.stringify({ secret: body.secret }),
+    }).catch((e) => console.error("自動照合の起動に失敗: " + e));
+    const erP = (globalThis as any).EdgeRuntime;
+    if (erP?.waitUntil) erP.waitUntil(kickP);
+  }
+
   // 2026-10-13 Phase1: 既存メールの自動分類（後追い・検証用）。auto_category が未設定のメールだけを対象にし、
   // 記録するのは auto_category 系の列のみ（mail_kind は書き換えない＝人の分類・既存の仕分けに影響しない）
   if (body?.action === "classify_existing") {
