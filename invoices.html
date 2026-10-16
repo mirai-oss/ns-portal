@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-16-v124";
+const BUILD_TAG="2026-10-16-v125";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -8523,7 +8523,7 @@ async function transferPaymentScan(u){
   rows.forEach(r=>{ const t=(r.journal_draft&&r.journal_draft.tenant_id)||"default"; if(!byTenant.has(t)) byTenant.set(t,[]); byTenant.get(t).push(r); });
   const cands=[]; const errs=[];
   for(const [t,rs] of byTenant){
-    const items=rs.map(r=>({invoice_id:r.id,vendor_id:r.vendor_id,vendor_name:(r.vendor&&r.vendor.name)||"",amount:Number(r.amount)||0,due_date:r.due_date||""}));
+    const items=rs.map(r=>({invoice_id:r.id,vendor_id:r.vendor_id,vendor_name:(r.vendor&&r.vendor.name)||"",amount:Number(r.amount)||0,due_date:r.due_date||"",method:transferMethodKey(r)}));
     const a=await mfCall("payment_scan",{tenant_id:t,items});
     if(a.ok&&a.body&&a.body.success) cands.push(...a.body.candidates.map(c=>({...c,tenant:t})));
     else errs.push(`${t==="nstyle"?"N-Style":"トーホー"}のMF：${(a.body&&a.body.error)||"取得に失敗しました"}`);

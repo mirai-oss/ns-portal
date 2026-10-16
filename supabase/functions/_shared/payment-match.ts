@@ -2,7 +2,7 @@
 // MFには何も書かない（読み取りのみ）。
 import { mfFetch } from "./mf.ts";
 
-export type PayItem = { invoice_id: string; vendor_id?: string | null; vendor_name: string; amount: number; due_date?: string | null };
+export type PayItem = { invoice_id: string; vendor_id?: string | null; vendor_name: string; amount: number; due_date?: string | null; method?: string };
 export type Rule = { vendor_id: string; pattern: string };
 export type Outflow = { journal_id: string; transaction_date: string; amount: number; account: string; sub: string; partner: string; remark: string; summary: string };
 
@@ -36,11 +36,15 @@ export async function fetchOutflows(accessToken: string, startD: string, endD: s
   return { outflows, searched: journals.length };
 }
 
+// 引き落とし以外（他行口座から振込）は、期日より前の同じ月のうちに振り込まれることがあるため、期日の月の1日から探す
+const monthStartMs = (due: string) => { const t = Date.parse(due); if (isNaN(t)) return NaN; const d = new Date(t); return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1); };
+const isTransfer = (it: PayItem) => it.method !== "direct_debit";
 export function dateRange(items: PayItem[], before: number, after: number) {
+  const starts = items.map((i) => { const t = Date.parse(i.due_date ?? ""); if (isNaN(t)) return NaN; return isTransfer(i) ? Math.min(monthStartMs(i.due_date!), t - before * DAY) : t - before * DAY; }).filter((t) => !isNaN(t));
   const dues = items.map((i) => Date.parse(i.due_date ?? "")).filter((t) => !isNaN(t));
   const base = dues.length ? dues : [Date.now()];
   return {
-    start: new Date(Math.min(...base) - before * DAY - 3 * DAY).toISOString().slice(0, 10),
+    start: new Date((starts.length ? Math.min(...starts) : Math.min(...base)) - 3 * DAY).toISOString().slice(0, 10),
     end: new Date(Math.min(Math.max(...base) + after * DAY + 5 * DAY, Date.now() + DAY)).toISOString().slice(0, 10),
   };
 }
@@ -59,7 +63,13 @@ function vendorEvidence(o: Outflow, it: PayItem, rules: Rule[]): { pts: number; 
 
 export function matchPayments(items: PayItem[], outflows: Outflow[], rules: Rule[], before = 5, after = 14): Candidate[] {
   const out: Candidate[] = [];
-  const dateOk = (o: Outflow, it: PayItem) => { const due = Date.parse(it.due_date ?? ""), t = Date.parse(o.transaction_date); if (isNaN(due) || isNaN(t)) return { ok: true, near: false }; const diff = Math.round((t - due) / DAY); return { ok: diff >= -before && diff <= after, near: Math.abs(diff) <= 3 }; };
+  const dateOk = (o: Outflow, it: PayItem) => {
+    const due = Date.parse(it.due_date ?? ""), t = Date.parse(o.transaction_date); if (isNaN(due) || isNaN(t)) return { ok: true, near: false };
+    const diff = Math.round((t - due) / DAY);
+    // 他行口座から振込: 期日の月の1日〜期日（＋after日）に出金されていればよい。同じ月内なら「近い」扱い（金額違いのエラー対象）
+    if (isTransfer(it)) { const ms = monthStartMs(it.due_date!); const inMonth = t >= ms && diff <= after; return { ok: inMonth || (diff >= -before && diff <= after), near: inMonth }; }
+    return { ok: diff >= -before && diff <= after, near: Math.abs(diff) <= 3 };
+  };
   const singleUsed = new Set<string>();   // 1件の請求書にぴったり合った出金
   // ① 単独一致
   for (const it of items) for (const o of outflows) {
