@@ -32,6 +32,17 @@ Deno.serve(async (req: Request) => {
   const { data: sr } = await db.from("app_secrets").select("value").eq("key", "invoice_intake_secret").maybeSingle();
   if (!sr?.value || body?.secret !== sr.value) return json({ error: "認証エラー" }, 401);
 
+  // 調査用（読み取りのみ）: 指定した入金元の別名に当たる「預金への入金」を期間内でそのまま一覧する。例: {explain:{needle:"シーピーワンジヤパン", from:"2026-09-01", to:"2026-10-16", tenant:"default"}}
+  if (body?.explain) {
+    try {
+      const ex = body.explain; const { accessToken } = await getValidAccessToken(ex.tenant || "default");
+      const fo = await fetchOutflows(accessToken, ex.from, ex.to, "in");
+      if ("error" in fo) return json({ error: fo.error }, 502);
+      const fz = (t: string) => norm(t).replace(/[-‐-―－ｰ]/g, "ー"); const nd = fz(ex.needle).slice(0, 10);
+      return json({ success: true, deposits: fo.outflows.filter((o) => [o.remark, o.sub, o.partner].some((x) => fz(x ?? "").includes(nd))).map((o) => ({ date: o.transaction_date, amount: o.amount, remark: o.remark, summary: o.summary })) });
+    } catch (e) { return json({ error: String((e as Error)?.message ?? e) }, 500); }
+  }
+
   // 1日1回の判定（force/dry_run のときは無視）
   if (!body?.force && !body?.dry_run) {
     const jstHour = (new Date().getUTCHours() + 9) % 24;
