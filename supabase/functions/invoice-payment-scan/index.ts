@@ -115,7 +115,7 @@ Deno.serve(async (req: Request) => {
         for (const d of dps ?? []) paidSet.add(d.receivable_id);
       }
       const monthEnd = (ym: string) => { const [y, m] = ym.split("-").map(Number); return new Date(Date.UTC(y, m, 0)).toISOString().slice(0, 10); };
-      const open = (ars ?? []).filter((r: any) => !paidSet.has(r.id) && (!body?.only_source || String(r.source_name ?? "").includes(body.only_source)));
+      const open = (ars ?? []).filter((r: any) => !paidSet.has(r.id) && r.source_name !== "現金売上" && (!body?.only_source || String(r.source_name ?? "").includes(body.only_source)));
       // 期日を過ぎても入金されていない売掛金（期日が無いものは売上月の月末＋14日）
       inOverdue = open.map((r: any) => ({ ...r, due: r.expected_date || new Date(Date.parse(monthEnd(r.year_month)) + 14 * 86400e3).toISOString().slice(0, 10) })).filter((r: any) => r.due < todayJst());
       const expMap = new Map<string, number>(open.map((r: any) => [r.id, Number(r.expected_amount) || 0]));

@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-16-v130";
+const BUILD_TAG="2026-10-16-v131";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -3166,7 +3166,7 @@ function receivableFilteredRows(){
   if(RECEIVABLE_STATE.overdueOnly){   // 期日を過ぎても入金されていないものだけ（期日アラートのボタンから）
     const today=new Date(Date.now()+9*3600e3).toISOString().slice(0,10); const paid=new Set((RECEIVABLE_STATE.deposits||[]).map(d=>d.receivable_id));
     const monthEnd=ym=>{ const [y,m]=ym.split("-").map(Number); return new Date(Date.UTC(y,m,0)).toISOString().slice(0,10); };
-    rows=rows.filter(r=>r.mf_journal_id&&Number(r.expected_amount)>0&&!paid.has(r.id)&&(r.expected_date||new Date(Date.parse(monthEnd(r.year_month))+14*86400e3).toISOString().slice(0,10))<today);
+    rows=rows.filter(r=>r.mf_journal_id&&r.source_name!=="現金売上"&&Number(r.expected_amount)>0&&!paid.has(r.id)&&(r.expected_date||new Date(Date.parse(monthEnd(r.year_month))+14*86400e3).toISOString().slice(0,10))<today);
   }
   return rows.filter(r=>receivableRowState(r)===RECEIVABLE_STATE.subTab);
 }
@@ -8531,7 +8531,7 @@ async function receivablePaymentScan(u){
   const btn=$("receivable-paymatch-btn"); const orig=btn?btn.textContent:"";
   const setBusy=t=>{ if(btn){ btn.disabled=!!t; btn.textContent=t||orig; } };
   const depositIds=new Set((RECEIVABLE_STATE.deposits||[]).map(d=>d.receivable_id));
-  let rows=(RECEIVABLE_STATE.receivables||[]).filter(r=>r.mf_journal_id&&Number(r.expected_amount)>0&&!depositIds.has(r.id));
+  let rows=(RECEIVABLE_STATE.receivables||[]).filter(r=>r.mf_journal_id&&Number(r.expected_amount)>0&&!depositIds.has(r.id)&&r.source_name!=="現金売上");   // 現金売上は銀行入金の照合対象外
   if(RECEIVABLE_STATE.storeFilter) rows=rows.filter(r=>r.store_id===RECEIVABLE_STATE.storeFilter);
   if(RECEIVABLE_STATE.corpFilter) rows=rows.filter(r=>receivableCorpId(r)===RECEIVABLE_STATE.corpFilter);
   if(RECEIVABLE_STATE.sourceFilter) rows=rows.filter(r=>(r.source_name||"")===RECEIVABLE_STATE.sourceFilter);
@@ -8608,7 +8608,7 @@ async function overdueFetch_(force){
   const since=new Date(Date.now()-130*86400e3).toISOString().slice(0,7);
   const [pr,ar]=await Promise.all([
     authed(`/rest/v1/invoices?mf_journal_id=not.is.null&payment_status=in.(wait,csv,processing)&due_date=lt.${today}&select=id,amount,due_date,vendor:vendors(name)&order=due_date.asc&limit=300`),
-    authed(`/rest/v1/ar_receivables?mf_journal_id=not.is.null&expected_amount=gt.0&year_month=gte.${since}&select=id,source_name,year_month,expected_amount,expected_date&limit=500`),
+    authed(`/rest/v1/ar_receivables?mf_journal_id=not.is.null&source_name=neq.${encodeURIComponent("現金売上")}&expected_amount=gt.0&year_month=gte.${since}&select=id,source_name,year_month,expected_amount,expected_date&limit=500`),
   ]);
   const pay=(pr.ok&&Array.isArray(pr.body))?pr.body:[];
   const monthEnd=ym=>{ const [y,m]=ym.split("-").map(Number); return new Date(Date.UTC(y,m,0)).toISOString().slice(0,10); };
