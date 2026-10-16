@@ -194,7 +194,7 @@ Deno.serve(async (req: Request) => {
     }
     const summary = { targets: targets.length, tenants: [...byTenant.keys()], ok: ok.length, mismatch: bad.length, in_ok: inOk.length, in_auto: autoDone.length, in_mismatch: inBad.length, errors, notified };
     if (run?.id) await db.from("payment_scan_runs").update({ finished_at: new Date().toISOString(), ok: errors.length === 0, summary }).eq("id", run.id);
-    return json({ success: true, ...summary, ...(body?.dry_run ? { preview: [...created.map((c) => ({ ...c, _in: false })), ...inCreated.map((c) => ({ ...c, _in: true }))].map((c) => ({ kind: c.kind, vendor: c._in ? inLabel(c) : label(c), invoice_total: c.invoice_total, outflow: c.outflow_amount, diff: c.diff, date: c.transaction_date, score: c.score })), message: lines.join("\n") } : {}) });
+    return json({ success: true, ...summary, ...(body?.dry_run ? { preview: [...created.map((c) => ({ ...c, _in: false })), ...inCreated.map((c) => ({ ...c, _in: true }))].map((c) => ({ kind: c.kind, vendor: c._in ? inLabel(c) : label(c), invoice_total: c.invoice_total, outflow: c.outflow_amount, diff: c.diff, date: c.transaction_date, score: c.score, summary: c.summary, remark: c.remark, reasons: c.reasons })), message: lines.join("\n") } : {}) });
   } catch (e) {
     if (run?.id) await db.from("payment_scan_runs").update({ finished_at: new Date().toISOString(), ok: false, summary: { error: String((e as Error)?.message ?? e) } }).eq("id", run.id);
     return json({ error: "照合中にエラー: " + String((e as Error)?.message ?? e) }, 500);

@@ -52,12 +52,19 @@ export function dateRange(items: PayItem[], before: number, after: number) {
 
 export type Candidate = { kind: "single" | "bundle" | "mismatch"; invoice_ids: string[]; journal_id: string; transaction_date: string; outflow_amount: number; invoice_total: number; diff: number; score: number; reasons: string[]; summary: string; remark: string };
 
+// 銀行の摘要ではカタカナの名前で出る入金元・支払先（標準の別名）。請求先名（正規化後）に key を含むとき、別名が摘要・補助科目にあれば結びつける
+const BUILTIN_ALIASES: { key: string; aliases: string[] }[] = [
+  { key: "smbcgmopayment", aliases: ["エスエムビーシージーエムオーペイメント"] },
+];
 // 出金と請求先の結びつき: 借方の補助科目/取引先 → 摘要 → 覚えさせた名前 の順に強い
 function vendorEvidence(o: Outflow, it: PayItem, rules: Rule[]): { pts: number; why: string } | null {
   const vn = norm(it.vendor_name);
   const sub = norm(o.sub), par = norm(o.partner), rem = norm(o.remark);
   if (vn && ((sub && (sub.includes(vn) || vn.includes(sub))) || (par && (par.includes(vn) || vn.includes(par))))) return { pts: 25, why: "借方の補助科目/取引先が請求先と一致" };
   for (const r of rules) if (it.vendor_id && r.vendor_id === it.vendor_id && r.pattern && (rem.includes(r.pattern) || sub.includes(r.pattern))) return { pts: 30, why: "覚えさせた名前に一致" };
+  // 銀行の摘要は文字数制限で途中までになり、伸ばし棒が「-」になることがある → 伸ばし棒をそろえ、別名の先頭10文字で比べる
+  const fz = (t: string) => norm(t).replace(/[-‐-―－ｰ]/g, "ー");
+  for (const a of BUILTIN_ALIASES) if (vn.includes(a.key) && a.aliases.some((x) => { const nx = fz(x).slice(0, 10); return fz(o.remark).includes(nx) || fz(o.sub).includes(nx) || fz(o.partner).includes(nx); })) return { pts: 30, why: "摘要のカタカナ名が入金元（請求先）と一致" };
   if (vn && rem.includes(vn)) return { pts: 15, why: "摘要に請求先名を含む" };
   return null;
 }
@@ -113,6 +120,25 @@ export function matchPayments(items: PayItem[], outflows: Outflow[], rules: Rule
         const ids = useTotal ? list.map((x) => x.it.invoice_id) : [near.it.invoice_id];
         const inv = useTotal ? total : near.it.amount;
         out.push({ kind: "mismatch", invoice_ids: ids, journal_id: o.journal_id, transaction_date: o.transaction_date, outflow_amount: o.amount, invoice_total: inv, diff: o.amount - inv, score: 40 + near.pts, reasons: [`振込先は一致（${near.why}）ですが、金額が合いません`], summary: o.summary, remark: o.remark });
+      }
+    }
+  }
+  // ④ 合計金額での検索: 名前で結びつかなくても、同じ入金元・請求先の未処理分の合計が出金額と一致する組み合わせがあれば候補にする（点数は低め）
+  const covered = new Set(out.map((c) => c.journal_id));
+  const groups = new Map<string, PayItem[]>();
+  for (const it of items) { const k = norm(it.vendor_name); if (!k) continue; const l = groups.get(k) ?? []; l.push(it); groups.set(k, l); }
+  for (const o of outflows) {
+    if (covered.has(o.journal_id) || o.amount < 100000) continue;
+    for (const [, list0] of groups) {
+      const list = list0.filter((it) => dateOk(o, it).ok).slice(0, 12);
+      if (list.length < 2 || list.some((it) => it.amount === o.amount)) continue;
+      let hits = 0;
+      for (let m = 3; m < (1 << list.length) && hits < 2; m++) {
+        if ((m & (m - 1)) === 0) continue;
+        let sum = 0; for (let b = 0; b < list.length; b++) if (m & (1 << b)) sum += list[b].amount;
+        if (sum !== o.amount) continue;
+        const combo = list.filter((_, b) => m & (1 << b)); hits++;
+        out.push({ kind: "bundle", invoice_ids: combo.map((x) => x.invoice_id), journal_id: o.journal_id, transaction_date: o.transaction_date, outflow_amount: o.amount, invoice_total: o.amount, diff: 0, score: 55, reasons: [`同じ入金元・請求先の${combo.length}件の合計が一致（名前の一致なし。内容を確認してください）`], summary: o.summary, remark: o.remark });
       }
     }
   }
