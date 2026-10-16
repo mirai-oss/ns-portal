@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-16-v134";
+const BUILD_TAG="2026-10-16-v135";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -4442,7 +4442,7 @@ function arjBuildAutoBranches_(prefix,expected,feeParts){
   }
   const feeTotal=feeParts.reduce((s,v)=>s+(Number(v)||0),0);
   const out=[{debitLabel:arLabel,debitAmount:expected||"",creditLabel:salesLabel,creditAmount:(expected+feeTotal)||"",
-    department_id:dep,tax_id:"",credit_department_id:dep,credit_tax_id:salesTaxId,remark:prefix?`${prefix}　売上`:""}];
+    department_id:"",tax_id:"",credit_department_id:dep,credit_tax_id:salesTaxId,remark:prefix?`${prefix}　売上`:""}];   // 借方=売掛金（BS科目）には部門を付けない
   feeParts.forEach((f,i)=>{
     if(!(Number(f)>0)) return; // 0円の手数料行は作らない
     const split=feeParts.length>1;
@@ -4474,7 +4474,7 @@ function arjSetDefaultBranches(){
     return;
   }
   ARJ_STATE.branches=[
-    {debitLabel:"普通預金",debitAmount:expected||"",creditLabel:"売上高",creditAmount:expected||"",department_id:dep,tax_id:"",credit_department_id:dep,credit_tax_id:"",remark:prefix?`${prefix}　売上`:"入金分"},
+    {debitLabel:"普通預金",debitAmount:expected||"",creditLabel:"売上高",creditAmount:expected||"",department_id:"",tax_id:"",credit_department_id:dep,credit_tax_id:"",remark:prefix?`${prefix}　売上`:"入金分"},
     {debitLabel:"支払手数料",debitAmount:fee||"",creditLabel:"売上高",creditAmount:fee||"",department_id:dep,tax_id:"",credit_department_id:dep,credit_tax_id:"",remark:prefix?`${prefix}　手数料`:"手数料分"},
   ];
 }

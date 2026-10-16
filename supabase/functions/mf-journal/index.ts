@@ -149,7 +149,19 @@ function branchToTemplate(br: any) {
 // 後方互換: 呼び出し側が旧形式（{debit,credit,amount}=借方貸方同額のペア行）を送ってきても、
 // 各サイドのvalueが無ければ b.amount を使うフォールバックでそのまま動く。
 // 全体の貸借バランス（借方合計=貸方合計）は行ごとではなくbranches全体で検証する
-function buildFlexibleBranches(rawBranches: any[], defaultRemark: string, fallbackRemark: string):
+// 2026-10-16: 貸借対照表(BS)の科目（売掛金・買掛金・預金・前払費用など）には部門を付けない（ユーザー指示）。
+// 勘定科目IDから名前を引いて判定し、BS科目の側の部門IDは外してMFへ送る（損益の科目には従来どおり部門を付ける）。
+const BS_ACCOUNT_RE = /^(現金|.*預金|売掛金|買掛金|未払|未収|前払|長期前払|前受|仮払|仮受|預り|立替金|貸付金|短期貸付|長期貸付|借入金|短期借入|長期借入|差入保証金|保証金|敷金|有形固定|建物|機械|工具器具|車両|土地|ソフトウェア|資本金|資本剰余|利益剰余|繰越利益|事業主|棚卸|貯蔵品|受取手形|支払手形|電子記録|リース|社債|出資金|投資)/;
+async function fetchBsAccountIds(accessToken: string): Promise<Set<string>> {
+  const ids = new Set<string>();
+  try {
+    const res = await mfFetch("/api/v3/accounts", accessToken);
+    const data = await res.json();
+    if (res.ok) for (const a of data.accounts ?? []) if (BS_ACCOUNT_RE.test(String(a.name ?? "").normalize("NFKC"))) ids.add(String(a.id));
+  } catch (_) { /* 取得できなければ従来どおり（部門はそのまま） */ }
+  return ids;
+}
+function buildFlexibleBranches(rawBranches: any[], defaultRemark: string, fallbackRemark: string, bsIds: Set<string> = new Set()):
   { ok: true; branches: any[]; totalDebit: number; totalCredit: number } | { ok: false; error: string } {
   if (!rawBranches.length) return { ok: false, error: "明細行が0件です" };
   let totalDebit = 0, totalCredit = 0;
@@ -166,7 +178,7 @@ function buildFlexibleBranches(rawBranches: any[], defaultRemark: string, fallba
     if (hasCredit && (!b.credit.account_id || !Number.isFinite(cAmt) || (cAmt as number) <= 0)) {
       return { ok: false, error: "貸方の勘定科目・金額を正しく入力してください" };
     }
-    const departmentId = b.department_id || null;
+    const departmentId = (hasDebit && bsIds.has(String(b.debit.account_id))) ? null : (b.department_id || null);
     // 2026-09-02追加: 税区分（tax_id）のAPI連携。department_idと同じく明細行（branch）の階層に
     // 置く設計にした（invoices.html側の既存の部門選択と全く同じデータの流れ方に揃えるため）。
     // CRUDJournalLineDetailsのtax_idフィールド（公式OpenAPI仕様で確認済み）にそのまま渡す。
@@ -176,7 +188,7 @@ function buildFlexibleBranches(rawBranches: any[], defaultRemark: string, fallba
     // 税率とか出てこない」に対応）。department_id/tax_idは従来どおり借方用、貸方用は別の
     // credit_department_id/credit_tax_idで独立して指定できる（CRUDJournalLineDetailsは
     // debitor/creditorそれぞれが自分のdepartment_id/tax_idを持てる構造のため）
-    const creditDepartmentId = b.credit_department_id || null;
+    const creditDepartmentId = (hasCredit && bsIds.has(String(b.credit.account_id))) ? null : (b.credit_department_id || null);
     const creditTaxId = b.credit_tax_id || null;
     const remark = (b.remark || defaultRemark || fallbackRemark || "").slice(0, 100);
     const out: any = { remark };
@@ -637,7 +649,7 @@ Deno.serve(async (req: Request) => {
       // 画面上で選んだが「保存」を押す前に「仕訳を作成」した場合に備え、リクエストの値を優先する
       const linkedHqStepId: string | null = (body?.linked_hq_step_id !== undefined ? body.linked_hq_step_id : inv.linked_hq_step_id) || null;
 
-      const built = buildFlexibleBranches(rawBranches, defaultRemark, inv.vendor_name || "");
+      const built = buildFlexibleBranches(rawBranches, defaultRemark, inv.vendor_name || "", await fetchBsAccountIds(accessToken));
       if (!built.ok) return json({ error: built.error }, 400);
       const { branches } = built;
       const mfBody = { journal: { transaction_date: transactionDate, journal_type: "journal_entry", branches } };
@@ -786,7 +798,7 @@ Deno.serve(async (req: Request) => {
         if (!em) return json({ error: "対象のメールが見つからないか権限がありません" }, 403);
       }
 
-      const built = buildFlexibleBranches(rawBranches, defaultRemark, vendorName || "");
+      const built = buildFlexibleBranches(rawBranches, defaultRemark, vendorName || "", await fetchBsAccountIds(accessToken));
       if (!built.ok) return json({ error: built.error }, 400);
       const { branches, totalDebit: totalAmount } = built;
       const mfBody = { journal: { transaction_date: transactionDate, journal_type: "journal_entry", branches } };
