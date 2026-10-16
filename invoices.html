@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-16-v126";
+const BUILD_TAG="2026-10-16-v127";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -8545,15 +8545,17 @@ async function receivablePaymentScan(u){
     }
     const rowById=new Map(rows.map(r=>[r.id,r]));
     const nm=id=>{ const r=rowById.get(id); return r?`${esc(r.source_name||"—")}（${esc(r.year_month)}${r.store_id?` ${esc(((CORP_STORE_CACHE&&CORP_STORE_CACHE.stores)||[]).find(x=>x.id===r.store_id)?.name||"")}`:""}） 予定 ${yen(Number(r.expected_amount)||0)}`:"（不明）"; };
+    // 同じ入金元・同じ月の入金予定が複数あるときは「名前 ×件数」にまとめて表示する
+    const grp=ids=>{ if(ids.length===1) return nm(ids[0]); const m=new Map(); ids.forEach(id=>{ const r=rowById.get(id); const k=r?`${r.source_name||"—"}（${r.year_month}）`:"（不明）"; const v=m.get(k)||{n:0,sum:0}; v.n++; v.sum+=Number(r&&r.expected_amount)||0; m.set(k,v); }); return [...m].map(([k,v])=>`${esc(k)}${v.n>1?` ×${v.n}件`:""} 予定 ${yen(v.sum)}`).join(" ＋ "); };
     const jUse=new Map(); cands.filter(c=>c.kind!=="mismatch").forEach(c=>jUse.set(c.journal_id,(jUse.get(c.journal_id)||0)+1));
     const okC=cands.filter(c=>c.kind!=="mismatch").sort((x,y)=>y.score-x.score);
     const badC=cands.filter(c=>c.kind==="mismatch");
     const seen=new Set([...okC,...badC].flatMap(c=>c.invoice_ids)); const none=rows.filter(r=>!seen.has(r.id));
     const okHtml=okC.map(c=>`<tr><td style="width:28px;padding:8px 4px;border-top:1px solid var(--line);vertical-align:top"><input type="checkbox" class="rps-check" data-ci="${cands.indexOf(c)}" ${c.score>=75&&jUse.get(c.journal_id)===1?"checked":""}></td>
-      <td style="padding:8px 4px;border-top:1px solid var(--line)"><b>${c.kind==="bundle"?"📦 まとめ入金：":""}</b>${c.invoice_ids.map(nm).join(" ＋ ")}
+      <td style="padding:8px 4px;border-top:1px solid var(--line)"><b>${c.kind==="bundle"?"📦 まとめ入金：":""}</b>${grp(c.invoice_ids)}
         <div class="meta" style="font-size:12px;color:var(--muted)">MF ${esc(c.transaction_date)}　入金 ${yen(c.outflow_amount)}　${esc(c.summary)}${c.remark?`　摘要：${esc(c.remark)}`:""}</div>
         <div class="meta" style="font-size:11px;color:var(--muted)">点数 ${c.score}：${esc(c.reasons.join("・"))}${jUse.get(c.journal_id)>1?' <span style="color:var(--m-red,#c33)">⚠️同じ仕訳が複数の入金予定に当たっています</span>':""}</div></td></tr>`).join("");
-    const badHtml=badC.map(c=>`<tr><td style="width:28px;border-top:1px solid var(--line)">⚠️</td><td style="padding:8px 4px;border-top:1px solid var(--line)"><b>${c.invoice_ids.map(nm).join(" ＋ ")}</b>
+    const badHtml=badC.map(c=>`<tr><td style="width:28px;border-top:1px solid var(--line)">⚠️</td><td style="padding:8px 4px;border-top:1px solid var(--line)"><b>${grp(c.invoice_ids)}</b>
         <div style="font-size:12px;color:var(--m-red,#c33)">予定 ${yen(c.invoice_total)} ／ 入金 ${yen(c.outflow_amount)}（差 ${c.diff>0?"+":""}${yen(c.diff)}）— 入金元は合っていますが、金額が違います。手数料の差引や入金漏れがないか確認してください</div>
         <div class="meta" style="font-size:12px;color:var(--muted)">MF ${esc(c.transaction_date)}　${esc(c.summary)}${c.remark?`　摘要：${esc(c.remark)}`:""}</div></td></tr>`).join("");
     const noneHtml=none.length?`<div class="meta" style="font-size:12px;color:var(--muted);margin-top:10px">一致する入金が見つからない入金予定（MFで仕訳になるまで2〜3日かかります）：${none.map(r=>esc(r.source_name||"—")+" "+yen(Number(r.expected_amount)||0)).join("、")}</div>`:"";
@@ -8611,6 +8613,7 @@ async function transferPaymentScan(u){
   msg.textContent=errs.join(" / ");
   const rowById=new Map(rows.map(r=>[r.id,r]));
   const nm=id=>{ const r=rowById.get(id); return r?`${esc((r.vendor&&r.vendor.name)||"—")} ${yen(Number(r.amount)||0)}`:"（不明）"; };
+  const grp=ids=>{ if(ids.length===1) return nm(ids[0]); const m=new Map(); ids.forEach(id=>{ const r=rowById.get(id); const k=r?esc((r.vendor&&r.vendor.name)||"—"):"（不明）"; const v=m.get(k)||{n:0,sum:0}; v.n++; v.sum+=Number(r&&r.amount)||0; m.set(k,v); }); return [...m].map(([k,v])=>`${k}${v.n>1?` ×${v.n}件`:""} ${yen(v.sum)}`).join(" ＋ "); };
   const jUse=new Map(); cands.filter(c=>c.kind!=="mismatch").forEach(c=>jUse.set(c.journal_id,(jUse.get(c.journal_id)||0)+1));
   const okC=cands.filter(c=>c.kind!=="mismatch").sort((x,y)=>y.score-x.score);
   const badC=cands.filter(c=>c.kind==="mismatch");
@@ -8618,10 +8621,10 @@ async function transferPaymentScan(u){
   const none=rows.filter(r=>!matched.has(r.id)&&!bad.has(r.id));
   const okHtml=okC.map((c,i)=>`<tr>
       <td style="width:28px;padding:8px 4px;border-top:1px solid var(--line);vertical-align:top"><input type="checkbox" class="tps-check" data-ci="${cands.indexOf(c)}" ${c.score>=75&&jUse.get(c.journal_id)===1?"checked":""}></td>
-      <td style="padding:8px 4px;border-top:1px solid var(--line)"><b>${c.kind==="bundle"?"📦 まとめ払い：":""}</b>${c.invoice_ids.map(nm).join(" ＋ ")}
+      <td style="padding:8px 4px;border-top:1px solid var(--line)"><b>${c.kind==="bundle"?"📦 まとめ払い：":""}</b>${grp(c.invoice_ids)}
         <div class="meta" style="font-size:12px;color:var(--muted)">MF ${esc(c.transaction_date)}　出金 ${yen(c.outflow_amount)}　${esc(c.summary)}${c.remark?`　摘要：${esc(c.remark)}`:""}</div>
         <div class="meta" style="font-size:11px;color:var(--muted)">点数 ${c.score}：${esc(c.reasons.join("・"))}${jUse.get(c.journal_id)>1?' <span style="color:var(--m-red,#c33)">⚠️同じ仕訳が複数の請求書に当たっています</span>':""}</div></td></tr>`).join("");
-  const badHtml=badC.map(c=>`<tr><td style="width:28px;border-top:1px solid var(--line)">⚠️</td><td style="padding:8px 4px;border-top:1px solid var(--line)"><b>${c.invoice_ids.map(nm).join(" ＋ ")}</b>
+  const badHtml=badC.map(c=>`<tr><td style="width:28px;border-top:1px solid var(--line)">⚠️</td><td style="padding:8px 4px;border-top:1px solid var(--line)"><b>${grp(c.invoice_ids)}</b>
         <div style="font-size:12px;color:var(--m-red,#c33)">請求 ${yen(c.invoice_total)} ／ 出金 ${yen(c.outflow_amount)}（差 ${c.diff>0?"+":""}${yen(c.diff)}）— 振込先は合っていますが、金額が違います。振込金額を確認してください</div>
         <div class="meta" style="font-size:12px;color:var(--muted)">MF ${esc(c.transaction_date)}　${esc(c.summary)}${c.remark?`　摘要：${esc(c.remark)}`:""}</div></td></tr>`).join("");
   const noneHtml=none.length?`<div class="meta" style="font-size:12px;color:var(--muted);margin-top:10px">一致する出金が見つからない請求書（MFで仕訳になるまで2〜3日かかります）：${none.map(r=>nm(r.id)).join("、")}</div>`:"";

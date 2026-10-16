@@ -11,12 +11,14 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { getValidAccessToken } from "../_shared/mf.ts";
 import { larkPost } from "../_shared/cockpit.ts";
-import { counterpartyId, dateRange, fetchOutflows, matchPayments, norm, type PayItem, type Rule } from "../_shared/payment-match.ts";
+import { counterpartyId, dateRange, fetchOutflows, matchPayments, norm, rulePatternOf, type PayItem, type Rule } from "../_shared/payment-match.ts";
 
 const cors: Record<string, string> = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "authorization, content-type, apikey, x-client-info" };
 const json = (o: unknown, status = 200) => new Response(JSON.stringify(o), { status, headers: { ...cors, "Content-Type": "application/json" } });
 const svc = () => createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
 const yen = (n: number) => "¥" + Math.round(n).toLocaleString();
+// 同じ名前が続くときは「名前 ×件数」にまとめる（通知を読みやすくする）
+const groupNames = (names: string[]) => { const m = new Map<string, number>(); names.filter(Boolean).forEach((n) => m.set(n, (m.get(n) ?? 0) + 1)); return [...m].map(([n, c]) => (c > 1 ? `${n} ×${c}件` : n)).join("・"); };
 const PORTAL = "https://mirai-oss.github.io/ns-portal/invoices.html";
 
 Deno.serve(async (req: Request) => {
@@ -49,7 +51,7 @@ Deno.serve(async (req: Request) => {
       for (const a of accs ?? []) { const l = accByVendor.get(a.vendor_id) ?? []; l.push(a); accByVendor.set(a.vendor_id, l); }
     }
     const methodOf = (r: any) => { const cur = accByVendor.get(r.vendor_id) ?? []; const a = cur.find((x) => r.store_id && x.store_id === r.store_id) || cur.find((x) => !x.store_id) || (cur.length === 1 ? cur[0] : null); return a ? (a.payment_method || "bank_transfer") : null; };
-    const targets = (invs ?? []).filter((r: any) => ["direct_debit", "other_bank_transfer"].includes(methodOf(r) ?? ""));
+    const targets = body?.only_source ? [] : (invs ?? []).filter((r: any) => ["direct_debit", "other_bank_transfer"].includes(methodOf(r) ?? ""));
     const byTenant = new Map<string, any[]>();
     for (const r of targets) { const t = r.journal_draft?.tenant_id || "default"; const l = byTenant.get(t) ?? []; l.push(r); byTenant.set(t, l); }
     const nameOf = new Map<string, string>(targets.map((r: any) => [r.id, r.vendor?.name ?? "（不明）"]));
@@ -86,7 +88,7 @@ Deno.serve(async (req: Request) => {
     }
 
     // ===== 売上入金（売掛金）の照合：預金への入金仕訳と、入金待ちの売掛金を照合する =====
-    const inCreated: any[] = []; const inNames = new Map<string, string>();
+    const inCreated: any[] = []; const autoDone: any[] = []; const inNames = new Map<string, string>();
     try {
       const since = new Date(Date.now() - 100 * 86400e3).toISOString().slice(0, 7);   // 直近約3か月
       const { data: ars } = await db.from("ar_receivables").select("id, source_name, year_month, store_id, corporation_id, expected_amount, expected_date")
@@ -97,7 +99,9 @@ Deno.serve(async (req: Request) => {
         const { data: dps } = await db.from("ar_deposits").select("receivable_id").in("receivable_id", arIds.slice(i, i + 100));
         for (const d of dps ?? []) paidSet.add(d.receivable_id);
       }
-      const open = (ars ?? []).filter((r: any) => !paidSet.has(r.id));
+      const open = (ars ?? []).filter((r: any) => !paidSet.has(r.id) && (!body?.only_source || String(r.source_name ?? "").includes(body.only_source)));
+      const expMap = new Map<string, number>(open.map((r: any) => [r.id, Number(r.expected_amount) || 0]));
+      const srcMap = new Map<string, string>(open.map((r: any) => [r.id, r.source_name ?? ""]));
       // 法人→MF事業者（法人名とMF事業者名の突き合わせ。1つに決まらなければトーホー側）
       const [{ data: corps }, { data: stores }, { data: tens }] = await Promise.all([
         db.from("corporations").select("id, name"), db.from("stores").select("id, corporation_id"), db.from("mf_oauth_tokens").select("id, label"),
@@ -130,6 +134,23 @@ Deno.serve(async (req: Request) => {
           }
         } catch (e) { errors.push(`売上入金 ${tenant}: ${String((e as Error)?.message ?? e)}`); }
       }
+      // 自動で入金済みにする（問題なしの条件: 点数75以上・差額0円・同じ仕訳や入金予定が他の候補と重ならない）。人が取り消すときは売上入金タブから
+      if (!body?.dry_run && body?.auto_complete !== false) {
+        const jCount = new Map<string, number>(), idCount = new Map<string, number>();
+        for (const c of inCreated.filter((x) => x.kind !== "mismatch")) { jCount.set(c.journal_id, (jCount.get(c.journal_id) ?? 0) + 1); for (const id of c.invoice_ids) idCount.set(id, (idCount.get(id) ?? 0) + 1); }
+        const taken = new Set<string>();
+        for (const c of inCreated.filter((x) => x.kind !== "mismatch").sort((a, b) => b.score - a.score)) {
+          if (c.score < 75 || c.diff !== 0 || jCount.get(c.journal_id) !== 1 || c.invoice_ids.some((id: string) => idCount.get(id) !== 1 || taken.has(id))) continue;
+          const deps = c.invoice_ids.map((id: string) => ({ receivable_id: id, amount: c.kind === "single" ? c.outflow_amount : (expMap.get(id) ?? 0), deposit_date: c.transaction_date, bank_source: "MF仕訳から自動照合" }));
+          const { error: dErr } = await db.from("ar_deposits").insert(deps);
+          if (dErr) { errors.push("入金済みへの更新に失敗: " + dErr.message); continue; }
+          c.invoice_ids.forEach((id: string) => taken.add(id));
+          c._auto = true; autoDone.push(c);
+          await db.from("payment_match_candidates").update({ status: "confirmed", decided_at: new Date().toISOString() }).eq("cand_key", c.cand_key);
+          const pat = rulePatternOf(c.remark ?? "");
+          if (pat.length >= 3) { const rules = []; for (const id of c.invoice_ids) rules.push({ vendor_id: await counterpartyId(srcMap.get(id) ?? ""), tenant_id: c.tenant, pattern: pat, sample_remark: String(c.remark ?? "").slice(0, 120) }); await db.from("payment_match_rules").upsert(rules, { onConflict: "vendor_id,tenant_id,pattern", ignoreDuplicates: true }); }
+        }
+      }
       if (!body?.dry_run) {   // 入金済みになった売掛金だけの古い候補は片付ける
         const openIds = new Set(open.map((r: any) => r.id));
         const { data: oldIn } = await db.from("payment_match_candidates").select("id, invoice_ids").eq("status", "pending").eq("direction", "in");
@@ -139,7 +160,7 @@ Deno.serve(async (req: Request) => {
     } catch (e) { errors.push("売上入金の照合: " + String((e as Error)?.message ?? e)); }
 
     // Lark通知（新しい候補だけ）
-    const label = (c: any) => c.invoice_ids.map((i: string) => nameOf.get(i) ?? "").filter(Boolean).filter((v: string, i: number, a: string[]) => a.indexOf(v) === i).join("・");
+    const label = (c: any) => groupNames(c.invoice_ids.map((i: string) => nameOf.get(i) ?? ""));
     const ok = created.filter((c) => c.kind !== "mismatch");
     const bad = created.filter((c) => c.kind === "mismatch");
     const lines: string[] = [];
@@ -151,8 +172,12 @@ Deno.serve(async (req: Request) => {
       lines.push(`⚠️ 金額が合わない出金 ${bad.length}件（振込先は一致）`);
       for (const c of bad.slice(0, 15)) lines.push(`・${label(c)} 請求 ${yen(c.invoice_total)} ／ 出金 ${yen(c.outflow_amount)}（差 ${c.diff > 0 ? "+" : ""}${yen(c.diff)}・MF ${c.transaction_date}）`);
     }
-    const inOk = inCreated.filter((c) => c.kind !== "mismatch"), inBad = inCreated.filter((c) => c.kind === "mismatch");
-    const inLabel = (c: any) => c.invoice_ids.map((i: string) => inNames.get(i) ?? "").filter(Boolean).join("・");
+    const inOk = inCreated.filter((c) => c.kind !== "mismatch" && !c._auto), inBad = inCreated.filter((c) => c.kind === "mismatch");
+    const inLabel = (c: any) => groupNames(c.invoice_ids.map((i: string) => inNames.get(i) ?? ""));
+    if (autoDone.length) {
+      lines.push(`✅ 売上入金を自動で入金済みにしました ${autoDone.length}件（照合OK・取り消しは売上入金タブから）`);
+      for (const c of autoDone.slice(0, 15)) lines.push(`・${inLabel(c)} ${yen(c.outflow_amount)}（MF ${c.transaction_date}）${c.kind === "bundle" ? " ※まとめ入金" : ""}`);
+    }
     if (inOk.length) {
       lines.push(`💰 売上入金の照合OK候補 ${inOk.length}件（確認して「入金済み」にしてください）`);
       for (const c of inOk.slice(0, 15)) lines.push(`・${inLabel(c)} ${yen(c.outflow_amount)}（MF ${c.transaction_date}）${c.kind === "bundle" ? " ※まとめ入金" : ""}${c.score < 75 ? " ※要確認" : ""}`);
@@ -167,7 +192,7 @@ Deno.serve(async (req: Request) => {
       notified = await larkPost(db, `【引き落とし・他行振込の自動照合】\n${lines.join("\n")}\n${PORTAL}`);
       if (notified && (created.length || inCreated.length)) await db.from("payment_match_candidates").update({ notified_at: new Date().toISOString() }).in("cand_key", [...created, ...inCreated].map((c) => c.cand_key));
     }
-    const summary = { targets: targets.length, tenants: [...byTenant.keys()], ok: ok.length, mismatch: bad.length, in_ok: inOk.length, in_mismatch: inBad.length, errors, notified };
+    const summary = { targets: targets.length, tenants: [...byTenant.keys()], ok: ok.length, mismatch: bad.length, in_ok: inOk.length, in_auto: autoDone.length, in_mismatch: inBad.length, errors, notified };
     if (run?.id) await db.from("payment_scan_runs").update({ finished_at: new Date().toISOString(), ok: errors.length === 0, summary }).eq("id", run.id);
     return json({ success: true, ...summary, ...(body?.dry_run ? { preview: [...created.map((c) => ({ ...c, _in: false })), ...inCreated.map((c) => ({ ...c, _in: true }))].map((c) => ({ kind: c.kind, vendor: c._in ? inLabel(c) : label(c), invoice_total: c.invoice_total, outflow: c.outflow_amount, diff: c.diff, date: c.transaction_date, score: c.score })), message: lines.join("\n") } : {}) });
   } catch (e) {
