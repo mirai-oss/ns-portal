@@ -551,11 +551,12 @@ Deno.serve(async (req: Request) => {
       if (!items.length) return json({ success: true, candidates: [], searched_count: 0 });
       const before = Number(body?.days_before ?? 5), after = Number(body?.days_after ?? 14);
       const range = dateRange(items, before, after);
-      const fo = await fetchOutflows(accessToken, range.start, range.end);
+      const dir = body?.direction === "in" ? "in" : "out";
+      const fo = await fetchOutflows(accessToken, range.start, range.end, dir);
       if ("error" in fo) return json({ error: fo.error, detail: fo.detail }, 502);
       const dbp = svc();
       const { data: rl } = await dbp.from("payment_match_rules").select("vendor_id, pattern").eq("tenant_id", tenantId);
-      const { data: done } = await dbp.from("payment_match_candidates").select("journal_id").eq("status", "confirmed");
+      const { data: done } = await dbp.from("payment_match_candidates").select("journal_id").eq("status", "confirmed").eq("direction", dir);
       const usedJ = new Set((done ?? []).map((x: any) => x.journal_id));
       const candidates = matchPayments(items, fo.outflows.filter((o) => !usedJ.has(o.journal_id)), (rl ?? []) as Rule[], before, after);
       return json({ success: true, candidates, searched_count: fo.searched, range });

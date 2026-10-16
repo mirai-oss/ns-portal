@@ -49,3 +49,6 @@ drop policy if exists payment_match_candidates_all_inv on public.payment_match_c
 create policy payment_match_candidates_all_inv on public.payment_match_candidates for all using (invoice_can_access()) with check (invoice_can_access());
 drop policy if exists payment_scan_runs_read_inv on public.payment_scan_runs;
 create policy payment_scan_runs_read_inv on public.payment_scan_runs for select using (invoice_can_access());
+
+-- 売上入金（売掛金の入金照合）にも使えるよう、向き（out=支払い／in=入金）を持たせる
+alter table public.payment_match_candidates add column if not exists direction text not null default 'out' check (direction in ('out','in'));

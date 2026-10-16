@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-16-v125";
+const BUILD_TAG="2026-10-16-v126";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -3498,7 +3498,7 @@ function receivableRender(u){
                 ${stores.map(s=>`<option value="${esc(s.id)}" ${RECEIVABLE_STATE.storeFilter===s.id?"selected":""}>${esc(s.name)}</option>`).join("")}
               </select></div>
           </div>
-          <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="hq-btn" id="receivable-plreplace-btn" title="すでに税込でPLへ反映した手数料を、税抜に入れ替えます（確認画面が出ます）">🧾 手数料PLを税抜に入れ替え</button><button class="hq-btn" id="receivable-plcatch-btn" title="MF仕訳が登録済みの入金の手数料を、その店舗のPLへ反映します（反映済みはスキップ）">📊 手数料をPLへ反映</button><button class="hq-btn" id="receivable-dry-btn" title="SMBC・PayPayの未登録分を、登録はせずに一括で仕訳案を組んで確認します">🔬 自動仕訳を一括確認</button><button class="hq-btn primary" id="receivable-add">＋ 入金を追加</button></div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="hq-btn" id="receivable-paymatch-btn" title="入金待ちの売上入金を、MFの預金への入金仕訳と照合します（MFには何も書き込みません）">🔎 入金を照合</button><button class="hq-btn" id="receivable-plreplace-btn" title="すでに税込でPLへ反映した手数料を、税抜に入れ替えます（確認画面が出ます）">🧾 手数料PLを税抜に入れ替え</button><button class="hq-btn" id="receivable-plcatch-btn" title="MF仕訳が登録済みの入金の手数料を、その店舗のPLへ反映します（反映済みはスキップ）">📊 手数料をPLへ反映</button><button class="hq-btn" id="receivable-dry-btn" title="SMBC・PayPayの未登録分を、登録はせずに一括で仕訳案を組んで確認します">🔬 自動仕訳を一括確認</button><button class="hq-btn primary" id="receivable-add">＋ 入金を追加</button></div>
         </div>
         <div class="mail-chips" style="margin-bottom:10px">
           ${RECEIVABLE_SUBTABS.map(([k,l])=>{
@@ -3532,6 +3532,7 @@ function receivableRender(u){
   mlsWire_(u);
   if($("receivable-dry-btn")) $("receivable-dry-btn").onclick=()=>arjDryRunAll(u);
   if($("receivable-plcatch-btn")) $("receivable-plcatch-btn").onclick=()=>arjPlCatchUp(u);
+  if($("receivable-paymatch-btn")) $("receivable-paymatch-btn").onclick=()=>receivablePaymentScan(u);
   if($("receivable-plreplace-btn")) $("receivable-plreplace-btn").onclick=()=>arjPlReplaceTaxExcl(u);
   document.querySelectorAll("[data-arj-open]").forEach(el=>el.onclick=()=>openReceivableJournalModal(u,el.dataset.arjOpen));
   // 2026-09-17新規：ユーザー報告「PL反映が出ない」に対応。仕訳登録済みの売上入金行から
@@ -8508,6 +8509,85 @@ async function transferExportCsv(u){
   await renderTransfersTab(u);
   $("transfer-msg").className=taskFailCount?"err":"err msg-ok";
   $("transfer-msg").textContent=`振込予定日: ${fmtD(transferDate)}／本部タスク「振込先を確認」を${taskOkCount}件（法人ごと）作成しました。`+(taskFailCount?`⚠️${taskFailCount}件は作成に失敗しました（振込CSV自体は正常に作成されています）。`:"");
+}
+// 2026-10-16追加：売上入金（売掛金）の入金照合。入金待ちの売掛金を、MFの「預金への入金」仕訳（銀行連携の自動仕訳を含む）と
+// 金額・入金元・日付で照合し、確認した分だけ入金済み（ar_deposits）にする。MFには何も書かない。
+// 候補: single=1件に一致／bundle=まとめ入金／mismatch=入金元は合うが金額が違う（手数料差引など。確認が必要）
+async function payNorm(t){ return String(t||"").normalize("NFKC").replace(/株式会社|有限会社|合同会社|[(（]?(株|有|カ|ユ|合)[)）]/g,"").replace(/\s+/g,"").toLowerCase(); }
+async function payCounterpartyId(name){
+  const h=[...new Uint8Array(await crypto.subtle.digest("SHA-256",new TextEncoder().encode("ar:"+await payNorm(name))))].map(b=>b.toString(16).padStart(2,"0")).join("");
+  return `${h.slice(0,8)}-${h.slice(8,12)}-4${h.slice(13,16)}-a${h.slice(17,20)}-${h.slice(20,32)}`;
+}
+async function receivablePaymentScan(u){
+  const btn=$("receivable-paymatch-btn"); const orig=btn?btn.textContent:"";
+  const setBusy=t=>{ if(btn){ btn.disabled=!!t; btn.textContent=t||orig; } };
+  const depositIds=new Set((RECEIVABLE_STATE.deposits||[]).map(d=>d.receivable_id));
+  let rows=(RECEIVABLE_STATE.receivables||[]).filter(r=>r.mf_journal_id&&Number(r.expected_amount)>0&&!depositIds.has(r.id));
+  if(RECEIVABLE_STATE.storeFilter) rows=rows.filter(r=>r.store_id===RECEIVABLE_STATE.storeFilter);
+  if(RECEIVABLE_STATE.corpFilter) rows=rows.filter(r=>receivableCorpId(r)===RECEIVABLE_STATE.corpFilter);
+  if(RECEIVABLE_STATE.sourceFilter) rows=rows.filter(r=>(r.source_name||"")===RECEIVABLE_STATE.sourceFilter);
+  if(!rows.length){ alert("この月（今の絞り込み）に、入金待ちで仕訳登録済みの売上入金がありません。"); return; }
+  setBusy("MFの仕訳を検索中…");
+  try{
+    const tr=await mfCall("list_tenants"); const tenants=(tr.ok&&tr.body&&tr.body.tenants)||[];
+    await ensureCorpStoreCache();
+    const corps=(CORP_STORE_CACHE&&CORP_STORE_CACHE.corporations)||[];
+    const tenantOf=async r=>{ const cid=receivableCorpId(r); const c=corps.find(x=>x.id===cid); const n=await payNorm(c?c.name:""); const hits=[]; for(const t of tenants){ const tn=await payNorm(t.label||""); if(tn&&n&&(n.includes(tn)||tn.includes(n))) hits.push(t); } return hits.length===1?hits[0].id:(tenants.length===1?tenants[0].id:"default"); };
+    const monthEnd=ym=>{ const [y,m]=ym.split("-").map(Number); return new Date(Date.UTC(y,m,0)).toISOString().slice(0,10); };
+    const byTenant=new Map();
+    for(const r of rows){ const t=await tenantOf(r); if(!byTenant.has(t)) byTenant.set(t,[]); byTenant.get(t).push(r); }
+    const cands=[]; const errs=[];
+    for(const [t,rs] of byTenant){
+      const items=[]; for(const r of rs) items.push({invoice_id:r.id,vendor_id:await payCounterpartyId(r.source_name||""),vendor_name:r.source_name||"",amount:Number(r.expected_amount)||0,due_date:r.expected_date||monthEnd(r.year_month),method:"in"});
+      const a=await mfCall("payment_scan",{tenant_id:t,items,direction:"in",days_before:5,days_after:45});
+      if(a.ok&&a.body&&a.body.success) cands.push(...a.body.candidates.map(c=>({...c,tenant:t})));
+      else errs.push(`${t==="nstyle"?"N-Style":"トーホー"}のMF：${(a.body&&a.body.error)||"取得に失敗しました"}`);
+    }
+    const rowById=new Map(rows.map(r=>[r.id,r]));
+    const nm=id=>{ const r=rowById.get(id); return r?`${esc(r.source_name||"—")}（${esc(r.year_month)}${r.store_id?` ${esc(((CORP_STORE_CACHE&&CORP_STORE_CACHE.stores)||[]).find(x=>x.id===r.store_id)?.name||"")}`:""}） 予定 ${yen(Number(r.expected_amount)||0)}`:"（不明）"; };
+    const jUse=new Map(); cands.filter(c=>c.kind!=="mismatch").forEach(c=>jUse.set(c.journal_id,(jUse.get(c.journal_id)||0)+1));
+    const okC=cands.filter(c=>c.kind!=="mismatch").sort((x,y)=>y.score-x.score);
+    const badC=cands.filter(c=>c.kind==="mismatch");
+    const seen=new Set([...okC,...badC].flatMap(c=>c.invoice_ids)); const none=rows.filter(r=>!seen.has(r.id));
+    const okHtml=okC.map(c=>`<tr><td style="width:28px;padding:8px 4px;border-top:1px solid var(--line);vertical-align:top"><input type="checkbox" class="rps-check" data-ci="${cands.indexOf(c)}" ${c.score>=75&&jUse.get(c.journal_id)===1?"checked":""}></td>
+      <td style="padding:8px 4px;border-top:1px solid var(--line)"><b>${c.kind==="bundle"?"📦 まとめ入金：":""}</b>${c.invoice_ids.map(nm).join(" ＋ ")}
+        <div class="meta" style="font-size:12px;color:var(--muted)">MF ${esc(c.transaction_date)}　入金 ${yen(c.outflow_amount)}　${esc(c.summary)}${c.remark?`　摘要：${esc(c.remark)}`:""}</div>
+        <div class="meta" style="font-size:11px;color:var(--muted)">点数 ${c.score}：${esc(c.reasons.join("・"))}${jUse.get(c.journal_id)>1?' <span style="color:var(--m-red,#c33)">⚠️同じ仕訳が複数の入金予定に当たっています</span>':""}</div></td></tr>`).join("");
+    const badHtml=badC.map(c=>`<tr><td style="width:28px;border-top:1px solid var(--line)">⚠️</td><td style="padding:8px 4px;border-top:1px solid var(--line)"><b>${c.invoice_ids.map(nm).join(" ＋ ")}</b>
+        <div style="font-size:12px;color:var(--m-red,#c33)">予定 ${yen(c.invoice_total)} ／ 入金 ${yen(c.outflow_amount)}（差 ${c.diff>0?"+":""}${yen(c.diff)}）— 入金元は合っていますが、金額が違います。手数料の差引や入金漏れがないか確認してください</div>
+        <div class="meta" style="font-size:12px;color:var(--muted)">MF ${esc(c.transaction_date)}　${esc(c.summary)}${c.remark?`　摘要：${esc(c.remark)}`:""}</div></td></tr>`).join("");
+    const noneHtml=none.length?`<div class="meta" style="font-size:12px;color:var(--muted);margin-top:10px">一致する入金が見つからない入金予定（MFで仕訳になるまで2〜3日かかります）：${none.map(r=>esc(r.source_name||"—")+" "+yen(Number(r.expected_amount)||0)).join("、")}</div>`:"";
+    const modal=document.createElement("div"); modal.className="modal-bg mail-shell"; modal.id="receivablePayScanModal";
+    modal.innerHTML=`<div class="modal" style="max-width:860px;max-height:86vh;overflow:auto">
+      <div class="mhead"><h2>🔎 売上入金の照合結果（${esc(RECEIVABLE_STATE.yearMonth)}）</h2></div>
+      <div class="meta" style="color:var(--muted);font-size:12px;margin-bottom:8px">MFの仕訳（預金への入金）と、金額・入金元・日付で照合した候補です。正しいものにチェックを付けてください（点数75以上で1件だけに当たるものは最初からチェック済み）。チェックしたものだけを「入金済み」にして、入金元の名前を次回のために覚えます。MFには何も書き込みません。</div>
+      ${errs.length?`<div class="err">${esc(errs.join(" / "))}</div>`:""}
+      ${okC.length?`<table style="width:100%;border-collapse:collapse;font-size:13px">${okHtml}</table>`:`<div class="meta" style="color:var(--muted)">照合できた候補はありません。</div>`}
+      ${badC.length?`<h3 style="font-size:14px;margin:14px 0 4px;color:var(--m-red,#c33)">⚠️ 金額が合わない入金（${badC.length}件）</h3><table style="width:100%;border-collapse:collapse;font-size:13px">${badHtml}</table>`:""}
+      ${noneHtml}
+      <div class="err" id="rps-msg" style="margin-top:6px"></div>
+      <div class="mail-actions" style="margin-top:12px"><button class="primary" id="rps-ok" ${okC.length?"":"disabled"}>✅ チェックしたものを入金済みにする</button><button id="rps-cancel">閉じる</button></div>
+    </div>`;
+    document.body.appendChild(modal);
+    $("rps-cancel").onclick=()=>modal.remove();
+    $("rps-ok").onclick=async()=>{
+      const chosen=[...modal.querySelectorAll(".rps-check:checked")].map(x=>cands[Number(x.dataset.ci)]).filter(Boolean);
+      const ids=[...new Set(chosen.flatMap(c=>c.invoice_ids))];
+      if(!ids.length){ $("rps-msg").textContent="入金済みにするものにチェックを付けてください"; return; }
+      if(!confirm(`${ids.length}件の入金予定を入金済みにします。よろしいですか？`)) return;
+      const nowIso=new Date().toISOString(); const deps=[];
+      chosen.forEach(c=>c.invoice_ids.forEach(id=>{ const r=rowById.get(id); deps.push({receivable_id:id,amount:c.kind==="single"?c.outflow_amount:(Number(r&&r.expected_amount)||0),deposit_date:c.transaction_date,bank_source:"MF仕訳から照合"}); }));
+      const dr=await authed("/rest/v1/ar_deposits",{method:"POST",headers:{Prefer:"return=minimal"},body:JSON.stringify(deps)});
+      if(!dr.ok){ $("rps-msg").textContent="入金の登録に失敗しました"; return; }
+      try{
+        await authed(`/rest/v1/payment_match_candidates?on_conflict=cand_key`,{method:"POST",headers:{Prefer:"resolution=merge-duplicates,return=minimal"},body:JSON.stringify(chosen.map(c=>({cand_key:["in",c.kind,c.tenant,c.journal_id,[...c.invoice_ids].sort().join(",")].join("|"),direction:"in",kind:c.kind,tenant_id:c.tenant,invoice_ids:c.invoice_ids,journal_id:c.journal_id,transaction_date:c.transaction_date,outflow_amount:c.outflow_amount,invoice_total:c.invoice_total,diff:c.diff,score:c.score,reasons:c.reasons,summary:c.summary,remark:c.remark,status:"confirmed",decided_by:ME.id,decided_at:nowIso})))});
+        const rules=[]; for(const c of chosen){ const pat=payRulePattern(c.remark||""); if(pat.length<3) continue; for(const id of c.invoice_ids){ const r=rowById.get(id); if(r) rules.push({vendor_id:await payCounterpartyId(r.source_name||""),tenant_id:c.tenant,pattern:pat,sample_remark:String(c.remark||"").slice(0,120),created_by:ME.id}); } }
+        if(rules.length) await authed(`/rest/v1/payment_match_rules?on_conflict=vendor_id,tenant_id,pattern`,{method:"POST",headers:{Prefer:"resolution=ignore-duplicates,return=minimal"},body:JSON.stringify(rules)});
+      }catch(e){ console.warn("入金照合の記録に失敗",e); }
+      modal.remove(); await renderReceivableTab(u);
+    };
+  }catch(e){ alert("照合中にエラーが発生しました: "+(e&&e.message||e)); }
+  finally{ setBusy(""); }
 }
 // 2026-10-16追加：引き落とし・他行口座から振込の「照合」。MFの仕訳（銀行連携で自動仕訳された出金を含む）から、
 // 金額・補助科目・摘要・日付が合う預金の出金を探して候補にする。MFには何も書かない。振込済みにするのは人が確認して選んだものだけ。

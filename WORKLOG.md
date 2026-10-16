@@ -4,6 +4,12 @@
 
 ---
 
+## 2026-10-16 担当C: 照合 第3弾 v125〜v126（他行振込は期日の月内を対象・売上入金の入金照合）【ローカルのみ・SQL追加(direction列)/デプロイ/push承認待ち】
+- v125: 他行口座から振込は「期日の月の1日〜期日(+14日)」の出金を照合対象にし、金額違いはエラー候補に（引き落としは従来どおり期日±）。
+- v126: 売上入金タブに「🔎 入金を照合」。入金待ちの売掛金(ar_receivables・仕訳登録済み・ar_deposits無し)を、MFの預金への入金仕訳と照合（payment-match.ts を direction=in 対応）。確認した分だけ ar_deposits に登録（bank_source=「MF仕訳から照合」）。覚えさせる名前は入金元の名前から作るID(counterpartyId)。
+- invoice-payment-scan に売上入金の照合を追加（Lark: 💰売上入金の照合OK候補／⚠️金額が合わない）。法人→MF事業者は法人名とmf_oauth_tokens.labelの突き合わせ（1つに決まらなければdefault）。
+- SQL: payment_match_candidates.direction（out/in）を追加（`2026-10-16_payment_match.sql` 末尾・冪等）。**デプロイ前にSQL適用が必要**（mf-journal が direction 列を参照するため）。
+
 ## 2026-10-16 担当C: 引き落とし・他行振込の照合 第2弾（まとめ払い・金額違いエラー・覚え込み・毎日自動照合＋Lark通知）v124【ローカルのみ・SQL/デプロイ/push承認待ち】
 - 新規: `_shared/payment-match.ts`（照合ロジック共通化: single/bundle(合計一致・12件まで)/mismatch(振込先一致・金額違い・期日±3日)・覚えさせた名前）、`invoice-payment-scan`（1日1回・日本時間9〜22時・Lark経理チャンネル通知・dry_run/forceあり）、`supabase/2026-10-16_payment_match.sql`（payment_match_rules / payment_match_candidates / payment_scan_runs・RLS=invoice_can_access）。
 - 変更: `mf-journal` payment_scan を共通ロジックに置換、`invoice-intake` から毎回 invoice-payment-scan を起動（実行判定は scan 側）、invoices.html v124（照合画面: まとめ払い/金額違い表示・確認時に摘要名を覚える・同じ出金の二重利用防止）。

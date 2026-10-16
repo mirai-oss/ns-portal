@@ -12,7 +12,8 @@ export const norm = (t: unknown) => String(t ?? "").normalize("NFKC").replace(/�
 export const rulePatternOf = (remark: string) => norm(remark).replace(/[0-9０-９]+(年|月|日|分)?/g, "").replace(/[\/\-・,、.。:：]/g, "").slice(0, 40);
 const isDeposit = (n: string) => /預金|当座/.test(n ?? "");
 
-export async function fetchOutflows(accessToken: string, startD: string, endD: string): Promise<{ outflows: Outflow[]; searched: number } | { error: string; detail?: unknown }> {
+// dir="out": 預金からの出金（貸方が預金）／ dir="in": 預金への入金（借方が預金）。相手側の科目・補助科目・摘要を比べる
+export async function fetchOutflows(accessToken: string, startD: string, endD: string, dir: "out" | "in" = "out"): Promise<{ outflows: Outflow[]; searched: number } | { error: string; detail?: unknown }> {
   const journals: any[] = [];
   for (let page = 1; page <= 10; page++) {
     const r = await mfFetch(`/api/v3/journals?start_date=${startD}&end_date=${endD}&per_page=500&page=${page}`, accessToken);
@@ -24,13 +25,13 @@ export async function fetchOutflows(accessToken: string, startD: string, endD: s
   }
   const outflows: Outflow[] = [];
   for (const j of journals) for (const br of j.branches ?? []) {
-    const d = br.debitor, c = br.creditor;
+    const bank = dir === "in" ? br.debitor : br.creditor, d = dir === "in" ? br.creditor : br.debitor, c = bank;   // d=相手側、c=預金側
     if (!c || !isDeposit(c.account_name) || !(Number(c.value) > 0)) continue;
     const side = (s: any) => s ? `${s.account_name ?? "?"}${s.sub_account_name ? "/" + s.sub_account_name : ""} ${(s.value ?? 0).toLocaleString()}円` : "—";
     outflows.push({
       journal_id: String(j.id), transaction_date: j.transaction_date, amount: Number(c.value),
       account: d?.account_name ?? "", sub: d?.sub_account_name ?? "", partner: d?.trade_partner_name ?? "", remark: br.remark ?? "",
-      summary: `${side(d)} ／ ${side(c)}`,
+      summary: dir === "in" ? `${side(c)} ／ ${side(d)}` : `${side(d)} ／ ${side(c)}`,
     });
   }
   return { outflows, searched: journals.length };
@@ -38,7 +39,7 @@ export async function fetchOutflows(accessToken: string, startD: string, endD: s
 
 // 引き落とし以外（他行口座から振込）は、期日より前の同じ月のうちに振り込まれることがあるため、期日の月の1日から探す
 const monthStartMs = (due: string) => { const t = Date.parse(due); if (isNaN(t)) return NaN; const d = new Date(t); return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1); };
-const isTransfer = (it: PayItem) => it.method !== "direct_debit";
+const isTransfer = (it: PayItem) => it.method === "other_bank_transfer";
 export function dateRange(items: PayItem[], before: number, after: number) {
   const starts = items.map((i) => { const t = Date.parse(i.due_date ?? ""); if (isNaN(t)) return NaN; return isTransfer(i) ? Math.min(monthStartMs(i.due_date!), t - before * DAY) : t - before * DAY; }).filter((t) => !isNaN(t));
   const dues = items.map((i) => Date.parse(i.due_date ?? "")).filter((t) => !isNaN(t));
@@ -68,6 +69,8 @@ export function matchPayments(items: PayItem[], outflows: Outflow[], rules: Rule
     const diff = Math.round((t - due) / DAY);
     // 他行口座から振込: 期日の月の1日〜期日（＋after日）に出金されていればよい。同じ月内なら「近い」扱い（金額違いのエラー対象）
     if (isTransfer(it)) { const ms = monthStartMs(it.due_date!); const inMonth = t >= ms && diff <= after; return { ok: inMonth || (diff >= -before && diff <= after), near: inMonth }; }
+    // 売上入金（method="in"）: 入金は期日より後になりやすい。期日の少し前〜after日後まで、−3〜21日を「近い」とする
+    if (it.method === "in") return { ok: diff >= -before && diff <= after, near: diff >= -3 && diff <= 21 };
     return { ok: diff >= -before && diff <= after, near: Math.abs(diff) <= 3 };
   };
   const singleUsed = new Set<string>();   // 1件の請求書にぴったり合った出金
@@ -77,7 +80,7 @@ export function matchPayments(items: PayItem[], outflows: Outflow[], rules: Rule
     const dt = dateOk(o, it); if (!dt.ok) continue;
     let score = 50; const reasons = ["金額が一致（預金からの出金）"];
     const ev = vendorEvidence(o, it, rules); if (ev) { score += ev.pts; reasons.push(ev.why); }
-    if (/買掛金|未払金|未払費用/.test(o.account)) { score += 10; reasons.push(`借方が${o.account}`); }
+    if (/買掛金|未払金|未払費用|売掛金|未収/.test(o.account)) { score += 10; reasons.push(`相手科目が${o.account}`); }
     if (dt.near) { score += 15; reasons.push("日付が期日に近い"); } else score += 5;
     out.push({ kind: "single", invoice_ids: [it.invoice_id], journal_id: o.journal_id, transaction_date: o.transaction_date, outflow_amount: o.amount, invoice_total: it.amount, diff: 0, score, reasons, summary: o.summary, remark: o.remark });
     if (ev) singleUsed.add(o.journal_id);
@@ -114,4 +117,10 @@ export function matchPayments(items: PayItem[], outflows: Outflow[], rules: Rule
     }
   }
   return out.sort((a, b) => b.score - a.score);
+}
+
+// 売上入金（売掛金）には仕入先IDが無いため、「入金元の名前」から決まった形のID（uuid形式）を作り、覚えさせた名前(payment_match_rules)のキーにする
+export async function counterpartyId(name: string): Promise<string> {
+  const h = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode("ar:" + norm(name))))].map((b) => b.toString(16).padStart(2, "0")).join("");
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-4${h.slice(13, 16)}-a${h.slice(17, 20)}-${h.slice(20, 32)}`;
 }
