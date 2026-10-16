@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-16-v119";
+const BUILD_TAG="2026-10-16-v120";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -1022,7 +1022,7 @@ async function plReflectInvoice_(inv,d,lines,results){
     const routeOfStore=sid=>{ const x=((inv.checks&&inv.checks.routes)||[]).find(v=>v.store_id===sid); return x?x.route:"pl"; };
     const netOf=l=>l.net!=null?Math.round(l.net):(l.rate>0?l.amount-Math.floor(l.amount*l.rate/(100+l.rate)):l.amount);
     const groups=new Map(); // key = route|account|sub|rate → store別
-    for(const l of lines){ if(!l.store_id) continue; const rt=routeOfStore(l.store_id); const k=[rt,l.account,l.sub,rt==="seisan"?l.rate:0].join("\u0001");
+    for(const l of lines){ if(!l.store_id) continue; if(!plIsExpenseAccount_(l.account)) continue; /* 前払費用などの貸借科目はPL・精算書へ反映しない */ const rt=routeOfStore(l.store_id); const k=[rt,l.account,l.sub,rt==="seisan"?l.rate:0].join("\u0001");
       const g=groups.get(k)||{route:rt,account:l.account,sub:l.sub,rate:l.rate,byStore:new Map()}; const st=stores.find(x=>x.id===l.store_id);
       const e=g.byStore.get(l.store_id)||{store_id:l.store_id,store_name:st?st.name:l.store_name,amount:0}; e.amount+=netOf(l); g.byStore.set(l.store_id,e); groups.set(k,g); }
     const targets=await plFeeTargetAccounts(); const mediaList=["食べログ","ぐるなび","ホットペッパー","Retty"];
