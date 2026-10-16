@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-16-v121";
+const BUILD_TAG="2026-10-16-v122";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -8288,14 +8288,14 @@ async function transferFetchData(){
   }
   // 2026-09-08追加：ユーザー要望「支払い（振込）のところに法人毎で絞れるようにする」に対応。
   // corpFilterは絞り込みタブを行き来しても覚えておく（scheduleFilterと同じ扱い）
-  TRANSFERS_STATE={rows,accountsByVendor,selected:new Set(),scheduleFilter:TRANSFERS_STATE.scheduleFilter,corpFilter:TRANSFERS_STATE.corpFilter,loaded:true};
+  TRANSFERS_STATE={rows,accountsByVendor,selected:new Set(),scheduleFilter:TRANSFERS_STATE.scheduleFilter,corpFilter:TRANSFERS_STATE.corpFilter,methodFilter:TRANSFERS_STATE.methodFilter,loaded:true};
 }
 async function renderTransfersTab(u){
   $("tabbody").innerHTML=`<div class="spin">読み込み中…</div>`;
   await transferFetchData();
   transferRender(u);
 }
-let TRANSFERS_STATE={rows:[],accountsByVendor:new Map(),selected:new Set(),scheduleFilter:"",corpFilter:"",loaded:false};
+let TRANSFERS_STATE={rows:[],accountsByVendor:new Map(),selected:new Set(),scheduleFilter:"",corpFilter:"",methodFilter:"",loaded:false};
 // 振込の口座選び: 請求書の店舗の口座→店舗なしの口座→（現在有効が1件だけなら）その口座（店舗ごとに口座が違う取引先に対応）
 function transferAccountOf(r){
   const cur=TRANSFERS_STATE.accountsByVendor.get(r.vendor_id)||[];
@@ -8358,8 +8358,13 @@ function transferFilteredRows(){
   const cf=TRANSFERS_STATE.corpFilter||"";
   if(cf==="__unset__") rows=rows.filter(r=>!r.corporation_id);
   else if(cf) rows=rows.filter(r=>r.corporation_id===cf);
+  const mf=TRANSFERS_STATE.methodFilter||"";
+  if(mf) rows=rows.filter(r=>transferMethodKey(r)===mf);
   return rows;
 }
+// 支払方法の絞り込み用キー（請求先の振込先設定の支払方法。未登録は「__none__」）。bank_transferは実際の運用上PayPay銀行からの振込
+const TRANSFER_METHOD_FILTERS=[["bank_transfer","🏦 PayPay銀行から振込"],["other_bank_transfer","🏦 他行口座から振込"],["direct_debit","🔁 引き落とし"],["cash","💴 現金払い"],["credit_card","💳 クレジット払い"],["__none__","（支払方法 未登録）"]];
+function transferMethodKey(r){ const acc=transferAccountOf(r); return acc?(acc.payment_method||"bank_transfer"):"__none__"; }
 // 2026-09-14追加：ユーザー指示「振り込みのタブもなくしてしまって、請求書一覧の中の
 // 振り込み待ちのところにその振り込みタブで開いた画面を入れれば管理もしやすい」に対応し、
 // transferRenderの中身（KPI3・戻るボタンを除く本体部分）をunifiedRenderからも呼べる
@@ -8383,6 +8388,12 @@ function transferBodyHtml(){
               ${corpCounts.get("__unset__")?`<option value="__unset__" ${TRANSFERS_STATE.corpFilter==="__unset__"?"selected":""}>（法人未設定）（${corpCounts.get("__unset__")}件）</option>`:""}
             </select>
           </div>
+          <div><label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">支払方法で絞り込み</label>
+            <select id="transfer-method-filter" style="max-width:220px">
+              <option value="" ${!TRANSFERS_STATE.methodFilter?"selected":""}>すべての支払方法（${TRANSFERS_STATE.rows.length}件）</option>
+              ${TRANSFER_METHOD_FILTERS.map(([k,l])=>{ const n=TRANSFERS_STATE.rows.filter(r=>transferMethodKey(r)===k).length; return n||TRANSFERS_STATE.methodFilter===k?`<option value="${k}" ${TRANSFERS_STATE.methodFilter===k?"selected":""}>${l}（${n}件）</option>`:""; }).join("")}
+            </select>
+          </div>
           <div><label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">振込予定日で絞り込み</label>
           <select id="transfer-schedule-filter" style="max-width:220px">
             <option value="" ${!TRANSFERS_STATE.scheduleFilter?"selected":""}>すべて（${TRANSFERS_STATE.rows.length}件）</option>
@@ -8404,6 +8415,7 @@ function transferBodyHtml(){
 }
 function transferWireBody(u){
   $("transfer-corp-filter").onchange=()=>{ TRANSFERS_STATE.corpFilter=$("transfer-corp-filter").value; unifiedRender(u); };
+  if($("transfer-method-filter")) $("transfer-method-filter").onchange=()=>{ TRANSFERS_STATE.methodFilter=$("transfer-method-filter").value; unifiedRender(u); };
   $("transfer-schedule-filter").onchange=()=>{ TRANSFERS_STATE.scheduleFilter=$("transfer-schedule-filter").value; unifiedRender(u); };
   document.querySelectorAll(".transfer-check").forEach(el=>el.onchange=()=>{
     if(el.checked) TRANSFERS_STATE.selected.add(el.dataset.id); else TRANSFERS_STATE.selected.delete(el.dataset.id);
