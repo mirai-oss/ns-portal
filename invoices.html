@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-17-v137";
+const BUILD_TAG="2026-10-17-v138";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -4907,6 +4907,10 @@ async function arjSubmitJournal(){
   }
   if(!branchesPayload.length){ msg.textContent="明細行がありません"; return; }
   if(totalDebit!==totalCredit){ msg.textContent=`借方合計（${yen(totalDebit)}）と貸方合計（${yen(totalCredit)}）が一致していません`; return; }
+  // 2026-10-17: ユーザー報告「ロケットなう6月・芝の自動仕訳が間違っていた」への再発防止。支払手数料の行に補助科目（例: ロケットなう）が
+  // 入っていないまま登録すると、MFの仕訳もPL反映（手数料の内訳）も補助科目なしになる（6月・芝のみ発生）。登録前に確認する。
+  { const noSub=branchesPayload.filter(b=>b.debit&&/支払手数料/.test(mftLabelOf(b.debit))&&!b.debit.sub_account_id);
+    if(noSub.length&&!confirm("⚠️「支払手数料」の行に補助科目（例: ロケットなう）が入っていません。\n\nこのまま登録すると、MFの仕訳もPL反映も補助科目なしになります。\n\nOK＝このまま登録する\nキャンセル＝戻って補助科目を選ぶ")) return; }
   const date=$("arj-date").value, remark=$("arj-remark").value;
   $("arj-register").disabled=true; msg.textContent="登録中…";
   const voucherFiles=await arjFetchVoucherFiles();
