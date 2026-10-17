@@ -114,7 +114,7 @@ export const wantedRoleName = (userRole: string | null | undefined) => (userRole
 
 export async function fetchRoles(contractId: string, token: string, smaregiStoreIds: string[]): Promise<{ storeId: string; roleId: string; roleName: string }[]> {
   if (!smaregiStoreIds.length) return [];
-  const r = await fetch(`${API_BASE}/${contractId}/timecard/roles?store_id=${[...new Set(smaregiStoreIds)].join(",")}&limit=1000`, { headers: { Authorization: `Bearer ${token}` } });
+  const r = await fetch(`${API_BASE}/${contractId}/timecard/roles?store_id=${[...new Set(smaregiStoreIds)].join(",")}&limit=100`, { headers: { Authorization: `Bearer ${token}` } });
   const j = await r.json().catch(() => null);
   if (!r.ok) throw new Error(`役割一覧の取得に失敗(${r.status}): ${JSON.stringify(j).slice(0, 160)}`);
   const arr = Array.isArray(j) ? j : (j?.roles ?? []);
