@@ -72,6 +72,19 @@ export async function loadStoreMap(sb: any, c: Contract, asOf?: string): Promise
   return map;
 }
 
+// 手動の同期・賃金設定の反映用: 今日の対応が空で、これから有効になる対応（予約済み・例: LiveGateの黒霧屋＝11/1から）があれば、
+// その最も早い開始日の対応を使う（運営変更の前に、新しい契約へ先行登録・先行設定できるようにするため）。
+// 毎日の自動同期（affiliation-sync・attendance-sync）は今日（取込日）の対応だけを使うので、これは使わない。
+export async function loadStoreMapPending(sb: any, c: Contract): Promise<Record<string, string>> {
+  const today = new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10);
+  const now = await loadStoreMap(sb, c, today);
+  if (Object.keys(now).length || !c.corporation_hint) return now;
+  const { data } = await sb.from("store_external_mappings").select("effective_from")
+    .eq("source_system", "smaregi_timecard").eq("is_active", true).eq("corporation_hint", c.corporation_hint).gt("effective_from", today).order("effective_from").limit(1);
+  const next = data?.[0]?.effective_from as string | undefined;
+  return next ? await loadStoreMap(sb, c, next) : now;
+}
+
 // 店舗→（その日に有効な）契約とスマレジの事業所ID。シフト等は店舗単位の操作のため、店舗の運営（＝契約）で送り先を決める。
 // 店舗の対応（store_external_mappings smaregi_timecard）の有効期間(effective_from/to)で引くので、運営変更の前後で
 // 別契約・別の事業所IDに切り替わる。corporation_hintが空の既存行は既定の契約。対応が無ければ既定の契約のstores.smaregi_store_id。

@@ -18,7 +18,7 @@
 //   { action: "push_profile", user_id } → 2026-09-05追加。nippo側のemployee_profilesの内容を
 //     連携済みのスマレジへ反映（プッシュ方向。既に連携済みの人が対象。本人 or CEO/HQ）
 import { createClient } from "npm:@supabase/supabase-js@2";
-import { loadContracts, loadStoreMap, ID_BASE, API_BASE, fetchRoles, pickRoleId, putStaffStore, wantedRoleName } from "../_shared/smaregi-contracts.ts";
+import { loadContracts, loadStoreMap, loadStoreMapPending, ID_BASE, API_BASE, fetchRoles, pickRoleId, putStaffStore, wantedRoleName } from "../_shared/smaregi-contracts.ts";
 
 // 2026-10-17 担当D: 複数契約対応。契約は引数contract_id（省略時は既定の契約＝トーホー）で指定する。
 // sync(入社登録)・terminate(退職)・push_profile・test・staffs が契約ごとに動く。invite/invite_staffs（スマレジ→ポータルの招待）は
@@ -208,7 +208,7 @@ Deno.serve(async (req) => {
       const token = await getToken(C);
       const [staffs, smStoreMap] = await Promise.all([
         fetchAllStaffs(C, token),
-        loadStoreMap(svc(), reqContract), // スマレジの事業所ID→店舗UUID（契約ごと）
+        loadStoreMapPending(svc(), reqContract), // スマレジの事業所ID→店舗UUID（契約ごと）
       ]);
       // 2026-09-02追加: 店舗（事業所）ごとの所属を付与（一括招待画面での絞り込み用）
       const storeMap = await fetchStaffStoreMap(
@@ -621,7 +621,7 @@ Deno.serve(async (req) => {
       }
       if (!staffId) return json({ ok: false, error: "この契約のスマレジにまだ登録されていません" }, 400);
 
-      const storeMap = await loadStoreMap(sb, reqContract); // スマレジの事業所ID → 店舗UUID（この契約のもの）
+      const storeMap = await loadStoreMapPending(sb, reqContract); // スマレジの事業所ID → 店舗UUID（この契約のもの。今日が空なら予約済みの対応）
       const portalForContract = new Set(Object.values(storeMap));
       const reverse: Record<string, string> = {};            // 店舗UUID → スマレジの事業所ID
       for (const [smId, stId] of Object.entries(storeMap)) if (!reverse[stId]) reverse[stId] = smId;
@@ -731,7 +731,7 @@ Deno.serve(async (req) => {
         if (pr?.smaregi_staff_id) staffId = String(pr.smaregi_staff_id);
       }
       if (!staffId) return json({ ok: false, error: "この契約のスマレジにまだ登録されていません" }, 400);
-      const storeMap = await loadStoreMap(sb, reqContract);   // スマレジの事業所ID → 店舗UUID
+      const storeMap = await loadStoreMapPending(sb, reqContract);   // スマレジの事業所ID → 店舗UUID（今日が空なら予約済みの対応）
       const reverse: Record<string, string> = {};              // 店舗UUID → スマレジの事業所ID
       for (const [smId, stId] of Object.entries(storeMap)) if (!reverse[stId]) reverse[stId] = smId;
       const token = await getToken(C);
