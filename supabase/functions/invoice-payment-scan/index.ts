@@ -258,6 +258,9 @@ Deno.serve(async (req: Request) => {
       notified = await larkPost(db, `【引き落とし・他行振込の自動照合】\n${lines.join("\n")}\n${PORTAL}`);
       if (notified && (created.length || inCreated.length)) await db.from("payment_match_candidates").update({ notified_at: new Date().toISOString() }).in("cand_key", [...created, ...inCreated].map((c) => c.cand_key));
     }
+    if (!body?.dry_run && !body?.only_source) {   // 仕入高の月次確定の再判定（TK-222）。失敗しても照合は続ける
+      try { await fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/shiire-confirm-check`, { method: "POST", headers: { "Content-Type": "application/json", apikey: Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!, Authorization: `Bearer ${Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")}` }, body: JSON.stringify({ secret: body.secret }) }); } catch (_) { /* 無視 */ }
+    }
     const summary = { targets: targets.length, tenants: [...byTenant.keys()], ok: ok.length, mismatch: bad.length, in_ok: inOk.length, in_auto: autoDone.length, in_mismatch: inBad.length, overdue_pay: payOverdue.length, overdue_in: inOverdue.length, errors, notified };
     if (run?.id) await db.from("payment_scan_runs").update({ finished_at: new Date().toISOString(), ok: errors.length === 0, summary }).eq("id", run.id);
     return json({ success: true, ...summary, ...(body?.dry_run ? { preview: [...created.map((c) => ({ ...c, _in: false })), ...inCreated.map((c) => ({ ...c, _in: true }))].map((c) => ({ kind: c.kind, vendor: c._in ? inLabel(c) : label(c), invoice_total: c.invoice_total, outflow: c.outflow_amount, diff: c.diff, date: c.transaction_date, score: c.score, summary: c.summary, remark: c.remark, reasons: c.reasons })), message: lines.join("\n") } : {}) });

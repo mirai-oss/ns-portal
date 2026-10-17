@@ -689,6 +689,14 @@ Deno.serve(async (req: Request) => {
         ...(linkedHqStepId !== inv.linked_hq_step_id ? { linked_hq_step_id: linkedHqStepId } : {}), // 未保存の選択を反映
       }).eq("id", invoiceId);
       await db.from("mf_sync_logs").insert({ action: "journal_create", actor_type: "human", detail: { invoice_id: invoiceId, journal_id: journalId } });
+      // 2026-10-17（TK-222）: 承認のたびに、仕入高の月次確定（店舗×月・全取引先分が承認済みか）を判定させる。失敗しても登録は成功のまま
+      try {
+        const { data: sr } = await db.from("app_secrets").select("value").eq("key", "invoice_intake_secret").maybeSingle();
+        if (sr?.value) {
+          const kick = fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/shiire-confirm-check`, { method: "POST", headers: { "Content-Type": "application/json", apikey: Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!, Authorization: `Bearer ${Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")}` }, body: JSON.stringify({ secret: sr.value }) }).catch(() => {});
+          const er = (globalThis as any).EdgeRuntime; if (er?.waitUntil) er.waitUntil(kick);
+        }
+      } catch (_) { /* 判定の起動に失敗しても仕訳登録は成功 */ }
       await db.from("invoice_audit_logs").insert({
         entity_type: "invoice_email", entity_id: inv.email_id, action: "mf_journal_created", actor_type: "human",
         note: `マネーフォワードへ仕訳登録（伝票番号: ${journalNumber ?? "-"}）`,

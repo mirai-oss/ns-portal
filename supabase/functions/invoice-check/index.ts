@@ -167,9 +167,13 @@ Deno.serve(async (req: Request) => {
         const { data: corpsAll } = await db.from("corporations").select("id, name");
         const nm = (id: string | null) => (corpsAll ?? []).find((c: any) => c.id === id)?.name ?? (id ? "不明" : "未確定");
         const notes: string[] = []; let mismatch = false;
+        // インフォマート経由の仕入は、移行期間中は別の法人が立替払い（2026年内=トーホーのインフォマートで立替・2027年〜=N-Styleのインフォマートで請求→どちらも精算書でLiveGate宛）。
+        // 期待法人を「運営会社」ではなく設定の法人（params.infomart_expected_corp_code）にする（宛先がそれと違うときだけ要対応）
+        const imCode: string | undefined = inv.intake_source === "infomart" ? tp.infomart_expected_corp_code : undefined;
+        const imCorp = imCode ? (corpsAll ?? []).find((c: any) => c.corp_code === imCode)?.id ?? null : null;
         for (const s of hit) {
           const r = (rel ?? []).find((x: any) => x.store_id === s.id && (!x.effective_to || x.effective_to >= mEnd.slice(0, 8) + "01"));
-          const expected = r && r.operator_entity_type === "corporation" ? r.operator_entity_id : null;
+          const expected = imCorp ?? (r && r.operator_entity_type === "corporation" ? r.operator_entity_id : null);
           if (!expected) { mismatch = true; notes.push(`${s.name}: ${ymT}の運営会社が店舗マスタに未登録（期待法人を判定できません）`); continue; }
           if (expected !== inv.corporation_id) { mismatch = true; notes.push(`${s.name}: 宛先=${nm(inv.corporation_id)}・期待=${nm(expected)}（${ymT}の運営会社）`); }
           else notes.push(`${s.name}: 宛先=${nm(inv.corporation_id)}・期待=${nm(expected)}（一致）`);

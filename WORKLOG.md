@@ -40,6 +40,11 @@
 
 ---
 
+## 2026-10-17 担当C: TK-222（仕入高の月次確定）の書き込み側を実装＋黒霧屋の仕入の扱い【ローカルコミット・SQL/デプロイ/push承認待ち】
+- 新規Edge `shiire-confirm-check`: 店舗×月が「①月が終わっている ②承認済みの仕入高が1件以上 ③未承認の仕入高の請求書が無い ④届いている取引先＋前月承認済みの取引先が全て今月承認済み」なら `shiire_month_confirmations.confirmed=true`（vendor_total=想定取引先数・note・confirmed_by='shiire-confirm-check'）。崩れたら confirmed=false に戻す。除外: stores.seisan_target の店舗、invoices.checks.routes の route='seisan' の行（精算書→PLで入るため二重計上になる。黒霧屋の立替分を含む）。dry_run=true で書かずに一覧だけ確認可。起動: 承認のたび（mf-journal create）＋毎日（invoice-payment-scan）。置換の有効化は従来どおりレーンP（shiire_confirm_enabled=1）。
+- レーンPへ（view修正の依頼・未送信）: `v_shiire_approved_monthly` は精算書ルートの行を除いていない。黒霧屋のように使い分け店舗で宛先法人≠運営会社の請求書は route='seisan'（invoices.checks.routes[].route）→精算書経由でPLに入るため、cost_auto置換の合計から除外すること。
+- ユーザー確認（黒霧屋の仕入）: 2026年内=トーホーのインフォマートで立替払い（宛先=トーホー）／2027年〜=N-Styleのインフォマートの請求書（宛先=N-Style）。どちらも精算書でLiveGate宛。→ 経路は「請求書の宛先法人≠運営会社(LiveGate)」で seisan（運営会社を対象月の運営関係で引く実装のまま正しく動く）。法人移行期間の検算は、インフォマート由来の請求書だけ期待法人を「トーホー」にする（`automation_rule_settings.corp_transition.params.infomart_expected_corp_code='toho'`・SQL=2026-10-17_corp_transition_infomart.sql）。他の取引先は運営会社と比べる従来どおり。
+
 ## 2026-10-17 担当C: TK-216反映済み（SQL・Edge4本・push v142）＋再学習の試運転＋会計期間の切れ目の発見
 - 反映: `2026-10-17_tk216_approver_evidence.sql` 適用済み（列・プレコの方針=納品書必須を確認）。mf-journal/invoice-check/invoice-journal-draft/invoice-rules-relearn をデプロイ、v142 push。
 - 再学習の試運転（トーホー・直近6か月・MF仕訳5,690件）: 実績のある取引先24社すべてで行ルールと実績が一致＝提案0件。N-Styleは「会計期間をまたぐ範囲」でMFエラー。
