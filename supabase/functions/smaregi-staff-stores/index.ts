@@ -95,10 +95,18 @@ Deno.serve(async (req) => {
         const r = await api(contract, token, path);
         const raw = await r.json().catch(() => null);
         const key = path.split("?")[0].replace(/\/\d+$/, "/{id}");
-        // 個人情報を避けるため、一覧は ID・退職/有効フラグ・事業所IDだけに絞って返す
-        const slim = (x: any) => ({ staffId: x.staffId ?? x.staff?.staffId, storeId: x.storeId, termination: x.terminationFlag ?? x.termination ?? x.staff?.terminationFlag, active: x.activeFlag ?? x.staff?.activeFlag, display: x.displayFlag, appDisplay: x.applicationDisplayFlag });
+        // 個人情報（氏名・住所・電話・メール等）は絶対に返さない。ID・フラグだけに絞る（この関数の出力は公開リポジトリのActionsログに載るため）
+        const slim = (x: any) => ({ staffId: x?.staffId ?? x?.staff?.staffId, storeId: x?.storeId, termination: x?.terminationFlag ?? x?.termination ?? x?.staff?.terminationFlag, active: x?.activeFlag ?? x?.staff?.activeFlag, admin: x?.adminFlag, classification: x?.employeeClassificationId, display: x?.displayFlag, appDisplay: x?.applicationDisplayFlag });
+        let outBody: unknown;
+        if (!r.ok) outBody = JSON.stringify(raw).slice(0, 200).replace(/"(staffName|staffKana|mail|phone|address|birthday)":"[^"]*"/g, "");
+        else if (key === "/roles") outBody = raw;                                       // 役割（個人情報なし）
+        else if (key === "/employee_classifications") outBody = Array.isArray(raw) ? raw.map((x: any) => ({ id: x.employeeClassificationId, name: x.employeeClassificationName })) : raw;
+        else if (key === "/staffs/{id}") outBody = slim(raw);
+        else if (Array.isArray(raw)) outBody = raw.map(slim);
+        else if (Array.isArray(raw?.staffs)) outBody = { count: raw.count, staffs: raw.staffs.map(slim) };
+        else outBody = "（個人情報を含むため省略）";
         const keyQ = path.includes("store_id=") && (key === "/staffs" || key === "/staff_stores") ? key + "?store" : key;
-        out[keyQ] = { status: r.status, body: r.ok ? (Array.isArray(raw) && keyQ.includes("?store") ? raw.map(slim) : raw) : JSON.stringify(raw).slice(0, 300) };
+        out[keyQ] = { status: r.status, body: outBody };
       }
       return json({ ok: true, ...out });
     }
