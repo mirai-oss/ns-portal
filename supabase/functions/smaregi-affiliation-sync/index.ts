@@ -108,10 +108,11 @@ Deno.serve(async (req) => {
         let fetchFailed = 0;
         for (const st of smStoreList) {
           try {
-            const staffs = await pagedGet(c.contract_id, token, `/staffs?store_id=${encodeURIComponent(st.id)}`, "staffs");
-            for (const s of staffs) {
-              if (String(s.termination ?? "0") === "1") { smTerminated.add(String(s.staffId)); continue; }
+            // 注意: /staffs?store_id= は所属者が0人の事業所だと全員を返すことがあるため使わない。/staff_stores?store_id= で読む
+            const rows = await pagedGet(c.contract_id, token, `/staff_stores?store_id=${encodeURIComponent(st.id)}`, "staffStores");
+            for (const s of rows) {
               const k = String(s.staffId);
+              if (String(s.staff?.terminationFlag ?? "0") === "1") { smTerminated.add(k); continue; }
               if (!staffStores.has(k)) staffStores.set(k, new Set());
               staffStores.get(k)!.add(st.id);
             }

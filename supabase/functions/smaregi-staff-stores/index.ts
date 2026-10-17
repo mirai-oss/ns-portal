@@ -127,9 +127,10 @@ Deno.serve(async (req) => {
     const failed: string[] = [];
     for (const st of storeRows) {
       try {
-        const staffs = await pagedGet(contract, token, `/staffs?store_id=${encodeURIComponent(st.store_id)}`, "staffs");
-        for (const s of staffs) {
-          if (String(s.termination ?? "0") === "1") continue;
+        // 注意: /staffs?store_id= は所属者が0人の事業所だと全員を返すことがあるため使わない。/staff_stores?store_id= で読む
+        const rows = await pagedGet(contract, token, `/staff_stores?store_id=${encodeURIComponent(st.store_id)}`, "staffStores");
+        for (const s of rows) {
+          if (String(s.staff?.terminationFlag ?? "0") === "1") continue;
           staffRows.push({ smaregi_store_id: st.store_id, smaregi_staff_id: String(s.staffId) });
         }
       } catch (e) { failed.push(`${st.store_id}: ${String((e as Error).message ?? e).slice(0, 120)}`); }
