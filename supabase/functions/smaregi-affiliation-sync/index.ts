@@ -14,7 +14,7 @@
 //     一致しなければ隔離してLarkへ（人が「この店舗」or「新規店舗」を選ぶ）。自動登録できたとき、その店舗の「事業所を作成してください」タスクは自動完了にする。
 //   - 管理システムに店舗が増えたのにスマレジに事業所が無い → 本部タスク「スマレジ・タイムカードに事業所『○○』を作成してください（契約: ○○）」を1回だけ自動発行。
 //
-// 呼び出し: POST { mode?: "report"|"apply"（既定report）, contract_id?: string, force?: boolean }
+// 呼び出し: POST { mode?: "report"|"apply"（既定report）, contract_id?: string, user_id?: string（その1人だけ。初回の立会い確認用）, force?: boolean }
 //   report=試行（スマレジにも user_stores にも書かない。同期ログとLarkだけ）／apply=実際に反映
 // 認可: service_role直呼び、または CEO/HQ のJWT。
 // 応答は件数のみ（公開リポジトリのActionsログに氏名・店舗名を残さない）。名前を含む詳細はLark(社内)と staff_store_sync_log にだけ出す。
@@ -171,7 +171,8 @@ Deno.serve(async (req) => {
         for (const [smId, stId] of Object.entries(storeMap)) if (!reverse[stId]) reverse[stId] = smId;
         const contractStoreIds = new Set(Object.keys(reverse));
 
-        const links = await loadLinks(sb, c.contract_id, today, today);
+        const onlyUser = body.user_id ? String(body.user_id) : "";
+        const links = (await loadLinks(sb, c.contract_id, today, today)).filter((l: any) => !onlyUser || l.user_id === onlyUser);
         const userIds = links.map((l: any) => l.user_id);
         const { data: usAll } = userIds.length ? await sb.from("user_stores").select("user_id,store_id,is_primary").in("user_id", userIds) : { data: [] as any[] };
         const { data: ledgerAll } = userIds.length ? await sb.from("staff_store_sync").select("user_id,store_id,smaregi_staff_id").eq("contract_id", c.contract_id).in("user_id", userIds) : { data: [] as any[] };

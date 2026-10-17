@@ -23,6 +23,11 @@ on:
         required: false
         default: ''
         type: string
+      user_id:
+        description: '従業員ID（空欄＝全員。初回の立会い確認で1人だけ試すとき）'
+        required: false
+        default: ''
+        type: string
       force:
         description: '変更人数の上限(40人)を超えても反映する'
         required: false
@@ -40,10 +45,11 @@ jobs:
           SR_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           MODE: ${{ github.event.inputs.mode || vars.AFFILIATION_SYNC_MODE || 'report' }}
           CONTRACT: ${{ github.event.inputs.contract_id }}
+          USER_ID: ${{ github.event.inputs.user_id }}
           FORCE: ${{ github.event.inputs.force }}
         run: |
           if [ -z "$SR_KEY" ]; then echo "::error::SUPABASE_SERVICE_ROLE_KEY が未設定です"; exit 1; fi
-          BODY=$(node -e "console.log(JSON.stringify({mode: process.env.MODE, contract_id: process.env.CONTRACT||undefined, force: process.env.FORCE==='true'}))")
+          BODY=$(node -e "console.log(JSON.stringify({mode: process.env.MODE, contract_id: process.env.CONTRACT||undefined, user_id: process.env.USER_ID||undefined, force: process.env.FORCE==='true'}))")
           RES=$(curl -s -w "\n%{http_code}" -X POST \
             "https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/smaregi-affiliation-sync" \
             -H "Authorization: Bearer $SR_KEY" -H "Content-Type: application/json" -d "$BODY")
