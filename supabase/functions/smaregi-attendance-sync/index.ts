@@ -144,7 +144,7 @@ Deno.serve(async (req) => {
     try {
       token = await getContractToken(c.contract_id, SCOPES);
       links = await loadLinks(sb, c.contract_id, dateFrom.toISOString().slice(0, 10), dateTo.toISOString().slice(0, 10));
-      storeMap = await loadStoreMap(sb, c);
+      storeMap = await loadStoreMap(sb, c, dateTo.toISOString().slice(0, 10)); // 取込対象日で引く（運営変更の前後で店舗の対応が変わるため）
     } catch (e) { errors.push(`契約${tag}: ${String(e)}`); sum.errors++; contractsFailed++; continue; } // 契約単位で失敗を記録し他の契約は続行
     sum.staff = links.length; totalStaff += links.length;
     for (const p of links) {

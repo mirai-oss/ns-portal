@@ -1,0 +1,55 @@
+name: スマレジ所属の双方向同期
+
+# 2026-10-17 担当D新設。設計メモ_スマレジ複数契約対応 §11-2 / §11-5。
+# 管理システムの所属店舗(user_stores)とスマレジ・タイムカードの所属事業所を、契約ごとに3点比較で同期する。
+#   mode=report（既定）: 試行。スマレジにも user_stores にも書かない（同期ログとLark通知だけ）
+#   mode=apply         : 実際に反映する。反映の自動実行は、リポジトリ変数 AFFILIATION_SYNC_MODE=apply を設定したときだけ
+# 自動実行: 毎日の勤怠取込（smaregi-attendance-sync）が成功した後に続けて動く。手動実行も可。
+# ログには件数だけを出す（このリポジトリは公開のため、氏名・店舗名は出さない。詳細はLarkと staff_store_sync_log）。
+on:
+  workflow_run:
+    workflows: ["スマレジ勤怠実績の日次取込"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'report=試行（書き込みなし）／apply=反映'
+        required: false
+        default: 'report'
+        type: choice
+        options: [report, apply]
+      contract_id:
+        description: '契約ID（空欄＝有効な全契約）'
+        required: false
+        default: ''
+        type: string
+      force:
+        description: '変更人数の上限(40人)を超えても反映する'
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  affiliation-sync:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: smaregi-affiliation-syncを呼び出す
+        env:
+          SR_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          MODE: ${{ github.event.inputs.mode || vars.AFFILIATION_SYNC_MODE || 'report' }}
+          CONTRACT: ${{ github.event.inputs.contract_id }}
+          FORCE: ${{ github.event.inputs.force }}
+        run: |
+          if [ -z "$SR_KEY" ]; then echo "::error::SUPABASE_SERVICE_ROLE_KEY が未設定です"; exit 1; fi
+          BODY=$(node -e "console.log(JSON.stringify({mode: process.env.MODE, contract_id: process.env.CONTRACT||undefined, force: process.env.FORCE==='true'}))")
+          RES=$(curl -s -w "\n%{http_code}" -X POST \
+            "https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/smaregi-affiliation-sync" \
+            -H "Authorization: Bearer $SR_KEY" -H "Content-Type: application/json" -d "$BODY")
+          HTTP_CODE=$(echo "$RES" | tail -1)
+          BODY_TEXT=$(echo "$RES" | sed '$d')
+          echo "$BODY_TEXT"
+          if [ "$HTTP_CODE" != "200" ]; then echo "::error::失敗しました（HTTP $HTTP_CODE）"; exit 1; fi
+          OK=$(echo "$BODY_TEXT" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{console.log(JSON.parse(d).ok)}catch(e){console.log('false')}})")
+          if [ "$OK" != "true" ]; then echo "::error::一部でエラーまたは見送りがありました（上のJSON参照）"; exit 1; fi

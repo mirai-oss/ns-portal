@@ -49,20 +49,23 @@ export async function loadLinks(sb: any, contractId: string, from: string, to: s
 // その契約の「スマレジの事業所ID → 管理システムの店舗ID」。店舗IDは契約ごとに採番される（別契約で同じ番号が別店舗を指しうる）ため、
 // store_external_mappings(smaregi_timecard)を契約で絞る。corporation_hintが空の既存マッピングは既定の契約のもの。
 // 既定の契約だけ、互換のためstores.smaregi_store_idも併用する。
-export async function loadStoreMap(sb: any, c: Contract): Promise<Record<string, string>> {
+export async function loadStoreMap(sb: any, c: Contract, asOf?: string): Promise<Record<string, string>> {
   const map: Record<string, string> = {};
-  if (c.is_default) {
-    const { data: stores } = await sb.from("stores").select("id,smaregi_store_id").not("smaregi_store_id", "is", null);
-    (stores ?? []).forEach((s: any) => { map[String(s.smaregi_store_id)] = s.id; });
-  }
+  const day = asOf ?? new Date().toISOString().slice(0, 10);
   const { data: maps } = await sb.from("store_external_mappings")
     .select("external_store_id,store_id,corporation_hint,is_active,effective_from,effective_to")
     .eq("source_system", "smaregi_timecard");
-  const today = new Date().toISOString().slice(0, 10);
+  // 明示的な対応（期間つき）が1行でもある店舗は、既定契約の stores.smaregi_store_id へのフォールバック対象にしない
+  // （運営変更で期間が終わった店舗が、既定契約側に残り続けないようにするため）
+  const explicitStores = new Set<string>((maps ?? []).filter((m: any) => m.is_active !== false).map((m: any) => m.store_id));
+  if (c.is_default) {
+    const { data: stores } = await sb.from("stores").select("id,smaregi_store_id").not("smaregi_store_id", "is", null);
+    (stores ?? []).forEach((s: any) => { if (!explicitStores.has(s.id)) map[String(s.smaregi_store_id)] = s.id; });
+  }
   for (const m of maps ?? []) {
     if (m.is_active === false) continue;
-    if (m.effective_to && m.effective_to < today) continue;
-    if (m.effective_from && m.effective_from > today) continue;
+    if (m.effective_to && m.effective_to < day) continue;
+    if (m.effective_from && m.effective_from > day) continue;
     const mine = m.corporation_hint ? m.corporation_hint === c.corporation_hint : c.is_default;
     if (mine) map[String(m.external_store_id)] = m.store_id;
   }
