@@ -1904,7 +1904,7 @@ async function refreshReqBadge_(){
     const u=ME; if(!u||!(u.is_master||u.role==="HQ"||u.role==="CEO")) return;
     const [rp,rr]=await Promise.all([
       authed(`/rest/v1/rpc/request_pending_counts`,{method:"POST",body:"{}"}),
-      authed(`/rest/v1/hr_change_requests?kind=eq.retirement&status=eq.pending&select=id`)]);
+      authed(`/rest/v1/hr_change_requests?status=eq.pending&select=id`)]);
     const nReq=(rp.ok&&Array.isArray(rp.body))?rp.body.filter(x=>x.kind!=="retirement").reduce((t,x)=>t+(Number(x.n)||0),0):NAV_REQ_CNT;
     const nRet=(rr.ok&&Array.isArray(rr.body))?rr.body.length:NAV_RETIRE_CNT;
     if(nReq!==NAV_REQ_CNT||nRet!==NAV_RETIRE_CNT){ NAV_REQ_CNT=nReq; NAV_RETIRE_CNT=nRet; refreshNavActive(u); }
@@ -2063,7 +2063,7 @@ async function renderHomeArea(u){
   // 2026-10-03(B): 退職申請の承認待ち（承認できる人＝本部・社長・マスターだけ。SQL適用前でテーブルが無ければ0件）
   try{
     if(u.is_master||u.role==="HQ"||u.role==="CEO"){
-      const rr=await authed(`/rest/v1/hr_change_requests?kind=eq.retirement&status=eq.pending&select=id`);
+      const rr=await authed(`/rest/v1/hr_change_requests?status=eq.pending&select=id`);
       NAV_RETIRE_CNT=(rr.ok&&Array.isArray(rr.body))?rr.body.length:0;
     } else NAV_RETIRE_CNT=0;
   }catch(e){ NAV_RETIRE_CNT=0; }

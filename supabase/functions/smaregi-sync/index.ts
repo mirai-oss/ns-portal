@@ -594,6 +594,116 @@ Deno.serve(async (req) => {
       return json({ ok: false, status: res.status, contract_id: C, error: j }, 500);
     }
 
+    // ---- 2026-10-17 担当B: 所属店舗（管理システム）とスマレジの所属事業所を、1人×1契約で今すぐ一致させる（従業員編集の「今すぐ同期」）----
+    //   { action:"store_sync", user_id, contract_id?, direction:"portal_to_smaregi"|"smaregi_to_portal", dry_run? }
+    //   direction=portal_to_smaregi: 管理システムの所属を正にして、スマレジへ PUT/DELETE /staffs/{id}/staff_stores/{store_id}（既定。設計メモ§11-5＝基本は管理システムが正本）
+    //   direction=smaregi_to_portal: スマレジの所属を正にして、管理システムの user_stores をこの契約の店舗の範囲で置き換える
+    //   dry_run=true: 何も変えず、スマレジの最新の所属（事業所ごとの所属スタッフ一覧を店舗数ぶん呼んで判定）と差分だけ返す
+    //   比べる範囲は「この契約に対応のある店舗」だけ（兼務の人のトーホー側・LiveGate側を混ぜない）。除外リスト(smaregi_store_ignore)の事業所は無視。
+    //   安全弁: 正にする側の所属が0件のときは、反対側を全部消してしまうため実行しない。
+    //   結果は同期台帳 staff_store_sync（この人×契約の行を作り直す）と スナップショット(smaregi_staff_stores_snapshot)のこの人の行に反映する。
+    //   ※スマレジの staff_stores 書き込みAPIは本番で未検証（初回は立会いで dry_run→実行）。認可: CEO/HQ
+    if (body.action === "store_sync") {
+      if (!isAdmin) return json({ ok: false, error: "forbidden" }, 403);
+      const uid = String(body.user_id ?? "");
+      if (!uid) return json({ ok: false, error: "user_id required" }, 400);
+      const direction = String(body.direction ?? "portal_to_smaregi");
+      if (!["portal_to_smaregi", "smaregi_to_portal"].includes(direction)) return json({ ok: false, error: "direction が不正です" }, 400);
+      const dry = body.dry_run === true;
+      const sb = svc();
+      // スタッフID（その契約の有効なリンク。既定の契約はリンク表が無い環境のためemployee_profilesへ互換フォールバック）
+      let staffId = "";
+      const { data: lk } = await sb.from("employee_smaregi_links").select("smaregi_staff_id").eq("user_id", uid).eq("contract_id", C).is("effective_to", null).maybeSingle();
+      if (lk?.smaregi_staff_id) staffId = String(lk.smaregi_staff_id);
+      else if (IS_DEFAULT) {
+        const { data: pr } = await sb.from("employee_profiles").select("smaregi_staff_id").eq("user_id", uid).maybeSingle();
+        if (pr?.smaregi_staff_id) staffId = String(pr.smaregi_staff_id);
+      }
+      if (!staffId) return json({ ok: false, error: "この契約のスマレジにまだ登録されていません" }, 400);
+
+      const storeMap = await loadStoreMap(sb, reqContract); // スマレジの事業所ID → 店舗UUID（この契約のもの）
+      const portalForContract = new Set(Object.values(storeMap));
+      const reverse: Record<string, string> = {};            // 店舗UUID → スマレジの事業所ID
+      for (const [smId, stId] of Object.entries(storeMap)) if (!reverse[stId]) reverse[stId] = smId;
+      const { data: ign } = await sb.from("smaregi_store_ignore").select("store_id").eq("contract_id", C);
+      const ignored = new Set((ign ?? []).map((r: any) => String(r.store_id)));
+
+      const token = await getToken(C);
+      // スマレジ側の所属（最新）: 事業所一覧→事業所ごとの所属スタッフに自分がいるか
+      const stRes = await api(C, token, "/stores");
+      const stRaw = await stRes.json().catch(() => null);
+      if (!stRes.ok) return json({ ok: false, error: "事業所一覧を取得できません: " + JSON.stringify(stRaw).slice(0, 200) }, 500);
+      const smStores: any[] = Array.isArray(stRaw) ? stRaw : (stRaw?.stores ?? []);
+      const smaregiNow = new Set<string>();            // スマレジの事業所ID（除外を除く）
+      for (const st of smStores) {
+        const sid = String(st.storeId);
+        if (ignored.has(sid)) continue;
+        for (let page = 1; page <= 10; page++) {
+          const r = await api(C, token, `/staffs?store_id=${encodeURIComponent(sid)}&limit=100&page=${page}`);
+          const raw = await r.json().catch(() => null);
+          if (!r.ok) return json({ ok: false, error: `事業所${sid}の所属を取得できません(${r.status})` }, 500);
+          const arr = Array.isArray(raw) ? raw : (raw?.staffs ?? []);
+          if (arr.some((x: any) => String(x.staffId) === staffId)) { smaregiNow.add(sid); break; }
+          const pageCount = Array.isArray(raw) ? (arr.length < 100 ? page : page + 1) : (raw?.pageCount ?? page);
+          if (page >= Number(pageCount) || arr.length === 0) break;
+        }
+      }
+      const smaregiStoreIds = new Set<string>();       // 店舗UUIDに変換できたもの
+      const unmapped: string[] = [];
+      for (const sid of smaregiNow) { if (storeMap[sid]) smaregiStoreIds.add(storeMap[sid]); else unmapped.push(sid); }
+      const { data: us } = await sb.from("user_stores").select("store_id").eq("user_id", uid);
+      const portalIds = new Set<string>((us ?? []).map((r: any) => r.store_id).filter((x: string) => portalForContract.has(x)));
+      const onlyPortal = [...portalIds].filter((x) => !smaregiStoreIds.has(x));
+      const onlySmaregi = [...smaregiStoreIds].filter((x) => !portalIds.has(x));
+      const allIds = [...new Set([...onlyPortal, ...onlySmaregi])];
+      const names: Record<string, string> = {};
+      if (allIds.length) { const { data: nm } = await sb.from("stores").select("id,name").in("id", allIds); (nm ?? []).forEach((r: any) => { names[r.id] = r.name; }); }
+      const label = (ids: string[]) => ids.map((i) => names[i] ?? i);
+      const diff = { only_portal: label(onlyPortal), only_smaregi: label(onlySmaregi), unmapped_smaregi_stores: unmapped, in_sync: !onlyPortal.length && !onlySmaregi.length };
+      if (dry) return json({ ok: true, dry_run: true, contract_id: C, staffId, ...diff });
+      if (diff.in_sync) { /* 既に一致。台帳だけ最新にする */ }
+
+      let addedToSmaregi = 0, removedFromSmaregi = 0, addedToPortal = 0, removedFromPortal = 0;
+      if (direction === "portal_to_smaregi") {
+        if (!portalIds.size && smaregiStoreIds.size) return json({ ok: false, error: "管理システム側のこの契約の所属が0件のため実行しません（スマレジの所属を全部消してしまうため）。反対向き（スマレジに合わせる）を選ぶか、所属を登録してください" }, 400);
+        for (const st of onlyPortal) {
+          const smId = reverse[st];
+          const r = await api(C, token, `/staffs/${staffId}/staff_stores/${encodeURIComponent(smId)}`, { method: "PUT", body: JSON.stringify({}) });
+          if (!r.ok) return json({ ok: false, error: `スマレジへの所属追加に失敗(${r.status}): ${(await r.text()).slice(0, 200)}`, added: addedToSmaregi, removed: removedFromSmaregi }, 500);
+          addedToSmaregi++;
+        }
+        for (const st of onlySmaregi) {
+          const smId = reverse[st];
+          const r = await api(C, token, `/staffs/${staffId}/staff_stores/${encodeURIComponent(smId)}`, { method: "DELETE" });
+          if (!r.ok) return json({ ok: false, error: `スマレジからの所属解除に失敗(${r.status}): ${(await r.text()).slice(0, 200)}`, added: addedToSmaregi, removed: removedFromSmaregi }, 500);
+          removedFromSmaregi++;
+        }
+      } else {
+        if (!smaregiStoreIds.size && portalIds.size) return json({ ok: false, error: "スマレジ側のこの契約の所属が0件のため実行しません（管理システムの所属を全部消してしまうため）" }, 400);
+        for (const st of onlySmaregi) {
+          const { error } = await sb.from("user_stores").insert({ user_id: uid, store_id: st });
+          if (error) return json({ ok: false, error: "管理システムへの所属追加に失敗: " + error.message }, 500);
+          addedToPortal++;
+        }
+        for (const st of onlyPortal) {
+          const { error } = await sb.from("user_stores").delete().eq("user_id", uid).eq("store_id", st);
+          if (error) return json({ ok: false, error: "管理システムの所属解除に失敗: " + error.message }, 500);
+          removedFromPortal++;
+        }
+      }
+      // 台帳・スナップショットを「一致した状態」に更新（この人×契約）
+      const finalIds = direction === "portal_to_smaregi" ? [...portalIds] : [...smaregiStoreIds];
+      const now = new Date().toISOString();
+      await sb.from("staff_store_sync").delete().eq("user_id", uid).eq("contract_id", C);
+      if (finalIds.length) {
+        await sb.from("staff_store_sync").insert(finalIds.map((st) => ({ user_id: uid, contract_id: C, store_id: st, smaregi_staff_id: staffId, smaregi_store_id: reverse[st] ?? null, last_synced_at: now, synced_hash: null })));
+      }
+      await sb.from("smaregi_staff_stores_snapshot").delete().eq("contract_id", C).eq("smaregi_staff_id", staffId);
+      const snapIds = finalIds.map((st) => reverse[st]).filter(Boolean);
+      if (snapIds.length) await sb.from("smaregi_staff_stores_snapshot").insert(snapIds.map((sm) => ({ contract_id: C, smaregi_staff_id: staffId, smaregi_store_id: sm, fetched_at: now })));
+      return json({ ok: true, contract_id: C, staffId, direction, added_to_smaregi: addedToSmaregi, removed_from_smaregi: removedFromSmaregi, added_to_portal: addedToPortal, removed_from_portal: removedFromPortal, ...diff });
+    }
+
     return json({ ok: false, error: "unknown action" }, 400);
   } catch (e) {
     return json({ ok: false, error: String(e) }, 500);

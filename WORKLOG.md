@@ -4,6 +4,15 @@
 
 ---
 
+**★★★★★2026-10-17（担当Bスレッド・TK-232/TK-239）黒霧屋運営変更 §4・§9・§10: nippo側を実装（ローカルコミット済み・SQL v6/smaregi-sync/workflowはpush・本番未適用）**:
+- **種別**: `hr_change_requests.kind`に`transfer`(移籍)・`concurrent`(兼務追加)＋列`from_contract_id`/`to_contract_id`。申請フォーム(nippo退職申請)に種別・移行先契約・開始日。承認=`hr_approve_contract_change`（記録のみ・アカウント/退職日は触らない）→画面からsmaregi-sync（contract_id指定）。**⚠️既存`hr_approve_retirement`は種別を見ず、移籍の申請を承認すると退職になってしまう→v6で種別チェックを追加**（hr_cancel_retirementも）。
+- **反映の順序（指示書から1点変更）**: 移行先の`sync`(入社登録・LiveGate契約)→`store_sync`(所属事業所)→移籍なら旧契約`terminate(contract_id=旧, date=開始日の前日)`。指示書は「terminate→sync」だが、先にterminateして移行先のsyncが失敗すると旧契約も新契約も無い人ができるため、**登録を先**にした（失敗時は旧契約に触らない・再実行可）。旧契約の打刻OFFは、開始日の前日が過去なら即時・未来なら毎朝の`hr-termination-apply.yml`（新ステップ・`hr_due_transfer_deactivations`）が翌日に実行。
+- **画面(nippo)**: 従業員管理に「🏢 他法人スマレジへの入社登録（移籍・兼務）」（契約選択・区分・開始日・チェックして一括・結果とスタッフID表示・登録済み一覧）と「⚠️ 所属のズレ」（人×契約・全員を管理システムに合わせる）、従業員編集に「🔗 スマレジ所属（契約ごと）」（スタッフID・有効期間・管理システム/スマレジの所属・✓一致/⚠️ズレ・向き選択・最新で確認・今すぐ同期・1人の入社登録）。契約マスタ(担当D Phase1)が本番に無い間は`smReady=false`で出さない。結果は担当Dの`sync`が`employee_smaregi_links`へ保存（LiveGateはis_primary=false）。
+- **所属の一致の根拠**: `hr_staff_store_status`(RPC・本部のみ)＝管理システムのuser_stores（その契約に対応のある店舗だけ）vs 担当Dの棚卸しスナップショット(`smaregi_staff_stores_snapshot`・除外リスト反映)vs 台帳`staff_store_sync`。担当Dの表はauthenticatedから読めないためSECURITY DEFINERで読む（書かない）。**今すぐ同期**は`smaregi-sync`の新action `store_sync`（`user_id, contract_id, direction=portal_to_smaregi|smaregi_to_portal, dry_run`）。最新の所属は`/staffs?store_id=`を事業所ごとに呼んで判定（既存fetchStaffStoreMapと同じ方式）。書き込みは`PUT/DELETE /staffs/{id}/staff_stores/{store_id}`（**本番未検証**=初回は立会いでdry_run→実行）。同期後は台帳・スナップショットのこの人の行を更新。0件の側に合わせる操作は安全弁で拒否。
+- **担当Dへ**: ①`smaregi-sync`に`store_sync`を追加した（D所有ファイルの末尾・デプロイは一緒に）。②`terminate`が移籍の旧契約に`effective_to`を入れる動き・`sync`がLiveGateのリンクを`is_primary=false`で作る動きはそのまま利用。③移籍後`employee_profiles.smaregi_staff_id`（主契約の写し）は旧契約のままなので、必要なら主契約の付け替え（互換トリガーはトーホー固定）を検討。④毎日の双方向同期ジョブができたら、画面の「一致状況」はそのまま使える（台帳/スナップショットの更新が前提）。
+- **未了**: SQL v6の事前報告→ユーザー適用／smaregi-syncデプロイ（D分と一緒）／実機確認（LiveGate契約sdm155v1・黒霧屋のスタッフ）／D依頼の`hq_create_payroll_tasks`・`cash_handoff_targets`の兼務対応（Phase2前・現行の本番定義の確認が要る＝PAT待ち）。
+
+
 ## 2026-10-17 担当A: 黒霧屋 新横浜の運営変更(トーホー→LiveGate・2026-11-01) §6実装
 - ①精算ダッシュボード(seisan-dashboard v5.27-client-period): 新シート『委託先の期間設定』(店舗名・適用開始月・委託先・法人・インボイス・代表者)。sd_clientInfoAt_(st,月)で対象月に応じた委託先を返し、精算書PDF宛先・振込管理(月別の法人単位)・ロック判定(sd_isLocked_)・振込完了メール/リマインド・ダッシュボードの法人グルーピングに反映。過去月(〜2026-10)はマスターの値のまま＝振込済み/ロックは不変。既定で『黒霧屋 新横浜 / 2026-11 / LiveGate』の1行を自動作成(名称・インボイス・代表者はユーザーが確定)。運営委託費の自動連携は変更なし(OFFのまま)。手順書=scratchpad/seisan-client-period-guide.md ＋貼り付け用コード全文。**ユーザーのGAS貼替・デプロイ待ち**。
 - ②経営D: Edge keiei-kd-refresh の loadStoreMaps に期間別の法人(store_operation_relations・operator_entity_type='corporation'・effective_from/to)を追加。corpByStoreId.get(storeId, 'YYYY-MM'|日付)で月別解決(該当なし・非法人運営・キー無しは stores.corporation_id)。kd_dashboard_daily/store_monthly/pl_monthly/media/deposit/ad の corporation_id に適用。デプロイ済み・現状は差0(担当Fが運営関係にLiveGate行を入れた後、次回更新で2026-11〜が切り替わる)。
