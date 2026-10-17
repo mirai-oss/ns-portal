@@ -761,6 +761,13 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
+**★★★★★2026-10-17（担当D・TK-231）スマレジ複数契約 Phase1 適用済み／LiveGate接続OK／契約ループ版ジョブ4本デプロイ（smaregi-syncのみ保留）**
+- Phase1適用（`supabase/2026-10-17d_…phase1.sql`）: 適用前確認＝employee_profilesの連携143件・sf_payroll_sync363行。適用後＝smaregi_contracts 1→2件（トーホー既定＋LiveGate追加）、employee_smaregi_links 143件、sf_payroll_sync 363行すべて contract_id=sez093z1、一意索引4本（契約マスタ既定1件・リンク有効スタッフ/有効ユーザー契約・sf_payroll_sync(user,年月,契約)）作成済み、同期トリガー1本。**旧一意制約は残したまま（Phase2は別途事前報告→承認）。**
+- 契約マスタに LiveGate（sdm155v1・法人LiveGate・hint=livegate・非既定）を登録。**接続確認OK（U1完了）**: トークン取得可・事業所3件取得可（黒霧屋 新横浜＝事業所ID 4、コード空）。LiveGateの所属スタッフは4人（8行）。→ 店舗ID「4」を担当Fへ送付済み（TK-230）。担当Fの「適用済み」宣言までLiveGate側の勤怠ジョブ有効化は待つ（現状はLiveGateにリンク0件なので何も取り込まれない）。
+- デプロイ（本番ソースがリポジトリの変更前版と完全一致なのを確認してから）: smaregi-payroll-sync・smaregi-attendance-sync・smaregi-payroll-reconcile・smaregi-shift-sync（契約ループ版）。実行確認: payroll-sync手動実行＝トーホー108件同期/35件スキップ/エラー0、LiveGate 0件。attendance-sync手動実行＝トーホー143人・59件取込・エラー0、LiveGate 0人。
+- **smaregi-sync は未デプロイ（保留）**: 作業コピーに担当Bの未コミットの `store_sync` アクション（スマレジの所属をPUT/DELETEする・本番未検証）が入っており、それを一緒に出さないため。担当Bがコミット→dry_run立会い確認後に、契約対応版と合わせてデプロイする。HEADの契約対応版だけを出す場合は担当Bに確認。
+- 次: ①担当Fの店舗マッピング適用宣言 → 勤怠ジョブのLiveGate有効化（リンク作成）②(D)所属の双方向同期ジョブ ③11/1初回同期のLark監視 ④Phase2（旧一意制約の削除）は担当Bの兼務SQL対応後に事前報告。
+
 **★★2026-10-17（レーンP）TK-224完了／TK-222を店舗月次にも拡張（既定OFF）**
 - 担当A回答: F2残りのうち入金明細(deposit_dailyのentriesで足りる)・営業日区分(画面内蔵の祝日表〜2027)は不要＝TK-224本体は完了。口コミ件数・ダイニー点数のkd化は別TK（低優先）に分離
 - TK-222: kd_store_monthly_summary にも shiire_status／cost_siire を追加し、確定月は原価(cost)を承認済み請求書の仕入高合計に置換（原価率・FL率・粗利が連動＝PLとホームKPIの食い違い防止）。API kind:'store' に2列追加。画面のPL管理タブ・F率はD.daily＋pl_entriesから計算しているため、担当Aが画面側でも確定月は shiire_invoice_amount で置換・差額(cost_auto_siire)表示を入れる
