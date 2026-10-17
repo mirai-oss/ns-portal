@@ -316,8 +316,9 @@ function mapResultsHtml(){
   const rows=S.D.mappings.filter(m=>(S.mapShowOff||m.is_active)&&(!S.mapSrc||m.source_system===S.mapSrc)
     &&(!q||[m.external_store_id,m.external_store_code,m.external_store_name,storeName(m.store_id),m.note].some(v=>String(v||"").toLowerCase().includes(q))));
   return `<div class="note" style="margin-bottom:6px">${rows.length}件${rows.length>300?"（先頭300件を表示）":""}</div>
-    <div class="scroll"><table><thead><tr><th>システム</th><th>外部ID</th><th>外部コード</th><th>外部の名前</th><th>→ 店舗</th><th>状態</th><th>メモ</th><th></th></tr></thead><tbody>
+    <div class="scroll"><table><thead><tr><th>システム</th><th>契約・法人</th><th>外部ID</th><th>外部コード</th><th>外部の名前</th><th>→ 店舗</th><th>状態</th><th>メモ</th><th></th></tr></thead><tbody>
     ${rows.slice(0,300).map(m=>`<tr style="${m.is_active?"":"opacity:.5"}"><td>${esc(SRC_LABEL[m.source_system]||m.source_system)}</td>
+      <td class="note">${esc(m.corporation_hint||"")}${m.effective_to?`<div>〜${esc(fmtD(m.effective_to))}</div>`:""}</td>
       <td>${esc(m.external_store_id||"")}</td><td>${esc(m.external_store_code||"")}</td><td>${esc(m.external_store_name||"")}</td>
       <td><b>${esc(storeName(m.store_id))}</b>${m.brand_id?`<div class="note">ブランド: ${esc(brandName(m.brand_id))}</div>`:""}</td>
       <td><span class="pill ${m.is_active?"ok":"off"}">${m.is_active?"有効":"無効"}</span></td><td class="note">${esc(m.note||"")}</td>
