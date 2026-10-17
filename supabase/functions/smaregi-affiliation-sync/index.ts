@@ -177,7 +177,7 @@ Deno.serve(async (req) => {
         const { data: usAll } = userIds.length ? await sb.from("user_stores").select("user_id,store_id,is_primary").in("user_id", userIds) : { data: [] as any[] };
         const { data: ledgerAll } = userIds.length ? await sb.from("staff_store_sync").select("user_id,store_id,smaregi_staff_id").eq("contract_id", c.contract_id).in("user_id", userIds) : { data: [] as any[] };
         const { data: userNames } = userIds.length ? await sb.from("users").select("id,name").in("id", userIds) : { data: [] as any[] };
-        // 退職日を過ぎた人は同期の対象外（スマレジ側も退職扱いで所属が無く、店舗を足しても意味がないため）
+        // 退職日を過ぎた人・無効化されたユーザーは同期の対象外（スマレジ側も退職扱いで所属が無く、店舗を足しても意味がないため）
         const { data: profs } = userIds.length ? await sb.from("employee_profiles").select("user_id,termination_date").in("user_id", userIds) : { data: [] as any[] };
         const terminated = new Set((profs ?? []).filter((r: any) => r.termination_date && r.termination_date < today).map((r: any) => r.user_id));
         const uname: Record<string, string> = {}; (userNames ?? []).forEach((r: any) => { uname[r.id] = r.name; });
@@ -186,7 +186,7 @@ Deno.serve(async (req) => {
         const plans: Plan[] = [];
         for (const lk of links) {
           const userId = lk.user_id as string;
-          if (terminated.has(userId)) { cs.terminated = (cs.terminated ?? 0) + 1; continue; }
+          if (terminated.has(userId) || lk.users?.is_active === false) { cs.terminated = (cs.terminated ?? 0) + 1; continue; }
           cs.users++; const staffId = String(lk.smaregi_staff_id);
           const M = new Set<string>((usAll ?? []).filter((r: any) => r.user_id === userId && contractStoreIds.has(r.store_id)).map((r: any) => r.store_id));
           const smNow = staffStores.get(staffId) ?? new Set<string>();
