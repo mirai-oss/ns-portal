@@ -78,6 +78,20 @@ Deno.serve(async (req: Request) => {
     checks.push({ key: "pdf", label: "請求書のPDFが添付されている", status: attCount ? "ok" : "ng", detail: attCount ? undefined : "PDFが添付されていません（MFの証憑に付けられません）", reason: "ocr_failed" });
   }
 
+  // ③-2 必要な証憑（TK-216④）: 取引先の方針(vendor_invoice_policies.required_evidence)に「納品書」などがあれば、その種類の添付があるか確認する（例: プレコフーズ＝納品書がインボイス）
+  if (inv.vendor_id) {
+    const { data: pol } = await db.from("vendor_invoice_policies").select("required_evidence, evidence_warning").eq("vendor_id", inv.vendor_id).eq("tenant_id", (draft?.tenant_id as string) || "default").maybeSingle();
+    const need: string[] = Array.isArray(pol?.required_evidence) ? pol!.required_evidence : [];
+    if (need.length) {
+      const { data: haveRows } = await db.from("invoice_attachments").select("attachment_kind").eq("invoice_id", inv.id);
+      const have = new Set((haveRows ?? []).map((r: any) => r.attachment_kind));
+      const missing = need.filter((k) => !have.has(k));
+      const KIND_LABEL: Record<string, string> = { delivery_note: "納品書", invoice: "請求書" };
+      checks.push({ key: "evidence", label: `必要な証憑（${need.map((k) => KIND_LABEL[k] ?? k).join("・")}）が添付されている`, status: missing.length ? "ng" : "ok",
+        detail: missing.length ? `${missing.map((k) => KIND_LABEL[k] ?? k).join("・")}が添付されていません。${pol?.evidence_warning ?? ""}`.trim() : undefined, reason: "evidence_missing" });
+    }
+  }
+
   // ④ 仕訳の下書き
   checks.push({ key: "journal_draft", label: "仕訳の下書き", status: !draft ? "na" : draft.status === "ok" ? "ok" : draft.status === "proposed" ? "warn" : "ng", detail: draft && draft.status === "proposed" ? "初回の提案です。内容を確認して承認すると、次回から自動になります" : draft && draft.status !== "ok" ? (draft.problems ?? []).slice(0, 3).join("／") : undefined, reason: "line_unknown" });
 

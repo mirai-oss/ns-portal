@@ -31,6 +31,13 @@
 
 ---
 
+## 2026-10-17 担当C: TK-216の残り（②承認者列・④納品書の証憑・⑤ルール不安定アラート・⑥元帳再学習）v142【ローカルコミット・SQL/デプロイ/push承認待ち】
+- ②承認者: `invoices.approved_by/approved_at`。mf-journal `create`（承認→MF仕訳登録）が、ログイン中の人と時刻を記録。一覧の取引先セルに「承認: 名前 月/日」。
+- ④納品書の証憑（プレコフーズ＝納品書がインボイス）: `vendor_invoice_policies.required_evidence`（プレコフーズ=['delivery_note']）と `invoice_attachments.attachment_kind`。invoice-check に check `evidence`（必要な証憑が無ければ ng＝要対応）。mf-journal に action `add_attachment`（請求書に証憑を追加。MF登録時にその請求書の全添付が証憑として付く）。承認画面に「📎 納品書を追加」ボタン→追加後に自動で再チェック。（Mac miniのインフォマート「納品書一括出力」からの自動取得は担当D側の今後の拡張）
+- ⑤ルール不安定: `invoices.rule_unstable`（invoice-journal-draft が立てる）→一覧に「⚠️ルール不安定（毎回確認）」。
+- ⑥元帳再学習: Edge `invoice-rules-relearn`（新規・読み取りのみ）= 取引先の行ルール(借方の科目・補助科目)とMFの実仕訳(直近3〜12か月)を比べて「実績と違うもの」を提案。設定>仕訳・勘定科目・PL>「🔁 行ルールの再学習」から、事業者を選んで実行→「このルールに更新」で `save_vendor_line_rule(p_source='ledger')`（人が確認して反映）。
+- SQL: `supabase/2026-10-17_tk216_approver_evidence.sql`（列追加＋プレコの方針）。適用前に画面(v142)を出すと一覧が壊れる（approved_by等の列が無い）→SQL→Edge→push の順。
+
 ## 2026-10-17 担当C: 給与仕訳を法人（MF事業者）切替に対応（指示書§5-2・③）v140【ローカルコミット済み・SQL/push承認待ち】
 - 画面: 給与仕訳の「対象月」の下に **法人ボタン（トーホー／LiveGate）**。選んだ法人に合わせて、MF事業者（tenant）・部門一覧・勘定科目・仕訳の型（mf_journal_templates.tenant_id）・店舗の絞り込み・登録先・登録記録を切り替える。選択は localStorage に保存。
 - 行の分け方: `sf_payroll_sync.contract_id`→`smaregi_contracts.corporation_id`（担当D Phase1で作成済み）で法人ごとの行に絞る。契約不明の行はトーホー扱い（従来どおり）。契約表が読めないときはトーホー以外は空にして他法人の行を出さない。

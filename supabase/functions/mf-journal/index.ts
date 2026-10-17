@@ -678,8 +678,11 @@ Deno.serve(async (req: Request) => {
       const debitAccountNames: string[] = Array.isArray(body?.debit_account_names)
         ? body.debit_account_names.filter((x: any) => typeof x === "string" && x)
         : [];
+      let approverId: string | null = null;
+      try { const { data: au } = await uc.auth.getUser((req.headers.get("Authorization") ?? "").replace(/^Bearer\s+/i, "")); approverId = au?.user?.id ?? null; } catch (_) { /* 取得できなくても登録は成功させる */ }
       await db.from("invoices").update({
         mf_journal_id: journalId, mf_journal_number: journalNumber, mf_journal_created_at: new Date().toISOString(), mf_tenant_id: tenantId,
+        ...(approverId ? { approved_by: approverId, approved_at: new Date().toISOString() } : {}),   // 2026-10-17: 承認者（TK-216②）
         mf_registration_error: null, mf_registration_error_at: null, // 登録成功。過去のエラー記録があればクリアする
         ...(debitAccountNames.length ? { mf_debit_accounts: debitAccountNames } : {}),
         ...(linkedHqStepId !== inv.linked_hq_step_id ? { linked_hq_step_id: linkedHqStepId } : {}), // 未保存の選択を反映
@@ -951,6 +954,32 @@ Deno.serve(async (req: Request) => {
       await db.from("mf_sync_logs").insert({ action: "invoice_intake_upload", actor_type: "human", detail: { invoice_id: newInv.id, files_attached: attached, attach_errors: attachErrors } });
 
       return json({ success: true, invoice_id: newInv.id, files_attached: attached, attach_errors: attachErrors });
+    }
+
+    // 2026-10-17（TK-216④）: 既存の請求書に証憑ファイルを追加する。例: プレコフーズは本請求書がインボイスではなく納品書がインボイスのため、納品書を証憑に付ける
+    // （MFへの仕訳登録時に、その請求書の全添付が証憑としてMFへ添付される）。kind=delivery_note は取引先の方針（必要な証憑）の判定に使う
+    if (action === "add_attachment") {
+      const invId: string = body?.invoice_id; const f = body?.voucher_file;
+      const kind: string = body?.kind === "delivery_note" ? "delivery_note" : "invoice";
+      if (!invId || !f?.file_data || !f?.file_name) return json({ error: "請求書とファイルを指定してください" }, 400);
+      const db = svc();
+      const { data: inv0 } = await db.from("invoices").select("id, mf_journal_id").eq("id", invId).maybeSingle();
+      if (!inv0) return json({ error: "請求書が見つかりません" }, 404);
+      const bytes = Uint8Array.from(atob(f.file_data), (c) => c.charCodeAt(0));
+      if (bytes.length > 15 * 1024 * 1024) return json({ error: "ファイルが大きすぎます（15MBまで）" }, 413);
+      const ext = (String(f.file_name).split(".").pop() || "").toLowerCase();
+      const mimeType = ext === "pdf" ? "application/pdf" : ext === "png" ? "image/png" : (ext === "jpg" || ext === "jpeg") ? "image/jpeg" : undefined;
+      const hashBuf = await crypto.subtle.digest("SHA-256", bytes);
+      const fileHash = Array.from(new Uint8Array(hashBuf)).map((b) => b.toString(16).padStart(2, "0")).join("");
+      const { data: dup } = await db.from("invoice_attachments").select("id").eq("invoice_id", invId).eq("file_hash", fileHash).limit(1);
+      if (dup?.length) return json({ success: true, duplicate: true, message: "同じファイルが既に添付されています" });
+      const storagePath = `standalone/${invId}/${crypto.randomUUID()}${(/\.[A-Za-z0-9]{1,10}$/.exec(String(f.file_name)) || [""])[0].toLowerCase()}`;
+      const { error: upErr } = await db.storage.from("invoice-files").upload(storagePath, bytes, { contentType: mimeType });
+      if (upErr) return json({ error: "アップロードに失敗しました: " + upErr.message }, 500);
+      const { error: insErr } = await db.from("invoice_attachments").insert({ invoice_id: invId, file_name: f.file_name, mime_type: mimeType ?? null, storage_path: storagePath, file_hash: fileHash, size_bytes: bytes.length, attachment_kind: kind });
+      if (insErr) return json({ error: "添付の記録に失敗しました: " + insErr.message }, 500);
+      await db.from("mf_sync_logs").insert({ action: "invoice_add_attachment", actor_type: "human", detail: { invoice_id: invId, kind, file_name: f.file_name } });
+      return json({ success: true, already_registered: !!inv0.mf_journal_id, message: inv0.mf_journal_id ? "この請求書はMF登録済みのため、MFの証憑には付きません（管理システム上の添付だけ追加しました）" : undefined });
     }
 
     return json({ error: "不明なactionです" }, 400);

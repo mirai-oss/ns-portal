@@ -219,7 +219,7 @@ Deno.serve(async (req: Request) => {
     debit_lines: debitLines, credit, totals: { debit: debitLines.reduce((t, d) => t + d.debit.amount, 0), credit: credit?.amount ?? null, invoice_total: total },
     adjustments, problems, warnings, created_at: new Date().toISOString(),
   };
-  await db.from("invoices").update({ journal_draft: draft, journal_draft_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq("id", inv.id);
+  await db.from("invoices").update({ journal_draft: draft, journal_draft_at: new Date().toISOString(), rule_unstable: unstable, updated_at: new Date().toISOString() }).eq("id", inv.id);
   if (inv.email_id) {
     await db.from("invoice_audit_logs").insert({
       entity_type: "invoice_email", entity_id: inv.email_id, action: "journal_draft", actor_type: "ai",

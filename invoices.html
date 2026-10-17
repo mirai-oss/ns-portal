@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-17-v140";
+const BUILD_TAG="2026-10-17-v142";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -934,7 +934,7 @@ async function openApprovalModal(u,invoiceId,opt){
           <div><small style="color:var(--muted)">請求額（税込）</small><br><b>${inv.amount!=null?yen(inv.amount):"—"}</b></div>
           <div><small style="color:var(--muted)">支払期限</small><br><b>${esc(inv.due_date||"—")}</b></div>
         </div>
-        <div style="margin:6px 0;font-size:12px;line-height:1.7"><b>判定結果</b>${ck.map(c=>`<div>${icon[c.status]||""} ${esc(c.label)}${c.detail?`<span style="color:var(--muted)">　${esc(c.detail)}</span>`:""}</div>`).join("")}</div>
+        <div style="margin:6px 0;font-size:12px;line-height:1.7"><b>判定結果</b>${ck.map(c=>`<div>${icon[c.status]||""} ${esc(c.label)}${c.detail?`<span style="color:var(--muted)">　${esc(c.detail)}</span>`:""}</div>`).join("")}${ck.some(c=>c.key==="evidence")?`<div style="margin-top:6px"><button class="hq-btn" id="apv-add-dn">📎 納品書を追加（証憑としてMFに添付）</button><input type="file" id="apv-dn-file" accept=".pdf,.png,.jpg,.jpeg" style="display:none"> <span id="apv-dn-msg" style="font-size:11px;color:var(--muted)"></span></div>`:""}</div>
         ${(d.warnings||[]).length?`<div style="margin:6px 0;font-size:12px;color:#b45309">ℹ️ ${d.warnings.map(esc).join("<br>ℹ️ ")}</div>`:""}
       </div>
     </div>
@@ -969,6 +969,21 @@ async function openApprovalModal(u,invoiceId,opt){
   pushNav({modal:true});
   modal.onclick=e=>{ if(e.target===modal) history.back(); };
   $("apvClose").onclick=()=>history.back();
+  // 2026-10-17（TK-216④）納品書の追加。プレコフーズなど「納品書がインボイス」の取引先は、納品書を証憑として添付する（MF登録時に請求書の全添付が証憑になる）
+  if($("apv-add-dn")){
+    $("apv-add-dn").onclick=()=>$("apv-dn-file").click();
+    $("apv-dn-file").onchange=async()=>{
+      const f=$("apv-dn-file").files[0]; if(!f) return; const msgEl=$("apv-dn-msg"); msgEl.textContent="追加中…";
+      try{
+        const b64=await uploadFileToBase64(f);
+        const r=await mfCall("add_attachment",{invoice_id:inv.id,kind:"delivery_note",voucher_file:{file_name:f.name,file_data:b64}});
+        if(!(r.ok&&r.body&&r.body.success)){ msgEl.textContent="追加に失敗しました: "+((r.body&&r.body.error)||r.body&&r.body.message||"不明なエラー"); return; }
+        msgEl.textContent=(r.body.message||"追加しました")+"。再チェックします…";
+        await invdraftCall_("invoice-check",inv.id);
+        modal.remove(); await openApprovalModal(u,invoiceId,opt);
+      }catch(e){ msgEl.textContent="追加に失敗しました: "+(e&&e.message||e); }
+    };
+  }
   // PDFのプレビュー
   if(att) signAttachmentUrls([att.storage_path]).then(map=>{ modal.querySelectorAll("[data-attpreview]").forEach(el=>{ const url=map[el.dataset.attpreview]; if(url) el.src=url; }); modal.querySelectorAll("[data-attpath]").forEach(el=>{ const url=map[el.dataset.attpath]; if(url) el.href=url; }); });
   // 科目・部門の候補（MFに実在するもの）。辞書ではなくMFのマスタを使う
@@ -7961,11 +7976,16 @@ async function renderUnifiedInvoiceTab(u){
   // 使っている列だけに絞った（請求書詳細モーダルは常に別途id指定でselect=*を取り直す設計の
   // ため、ここを絞っても詳細画面には一切影響しないことを調査済み）
   const [r,corpCache]=await perfTimed("unified_list_load",()=>Promise.all([
-    authed(`/rest/v1/invoices?select=id,created_at,due_date,invoice_status,amount,vendor_name,invoice_number,corporation_id,store_id,email_id,intake_source,ai_match_status,mf_journal_id,mf_journal_number,payment_status,payment_verified_at,duplicate_suspected,bank_account_change_detected,mf_registration_error,is_payroll_related,is_receivable_related,pl_fee_reflected_at,pl_fee_excluded_at,ad_cost_reflected_at,pl_fee_seisan_synced_at,target_year_month,current_stage,blocked_reason,auto_mode,corp_transition,email:invoice_emails(mail_kind),vendor:vendors(name),corp:corporations(name),store:stores!invoices_store_id_fkey(name),invoice_stores(store:stores(name)),linked_step:hq_task_steps!linked_hq_step_id(title)&order=created_at.desc&limit=500`),
+    authed(`/rest/v1/invoices?select=id,created_at,due_date,invoice_status,amount,vendor_name,invoice_number,corporation_id,store_id,email_id,intake_source,ai_match_status,mf_journal_id,mf_journal_number,payment_status,payment_verified_at,duplicate_suspected,bank_account_change_detected,mf_registration_error,is_payroll_related,is_receivable_related,pl_fee_reflected_at,pl_fee_excluded_at,ad_cost_reflected_at,pl_fee_seisan_synced_at,target_year_month,current_stage,blocked_reason,auto_mode,corp_transition,rule_unstable,approved_by,approved_at,email:invoice_emails(mail_kind),vendor:vendors(name),corp:corporations(name),store:stores!invoices_store_id_fkey(name),invoice_stores(store:stores(name)),linked_step:hq_task_steps!linked_hq_step_id(title)&order=created_at.desc&limit=500`),
     ensureCorpStoreCache(),
   ]));
   const raw=(r.ok&&Array.isArray(r.body))?r.body:[];
   // メール起点は種類=請求書のみ。アップロード（email無し）は全て対象
+  { // 承認者の名前（TK-216②）。一覧に出た承認者のIDだけ users から引く
+    const aids=[...new Set(raw.map(x=>x.approved_by).filter(Boolean))];
+    if(aids.length){ const ur=await authed(`/rest/v1/users?id=in.(${aids.join(",")})&select=id,name`); UNIFIED_STATE.userNames=new Map((ur.ok&&Array.isArray(ur.body))?ur.body.map(x=>[x.id,x.name]):[]); }
+    else UNIFIED_STATE.userNames=new Map();
+  }
   UNIFIED_STATE.rows=raw.filter(row=>!row.email||row.email.mail_kind==="invoice"); // 売上入金メールの自動処理分は「売上入金」タブの「📧メールの売上入金」に出す（2026-10-15）
   UNIFIED_STATE.corporations=corpCache.corporations;
   unifiedRender(u);
@@ -8048,7 +8068,7 @@ function unifiedRowHtml(r){
     <td>${dueBadgeHtml(r)}</td>
     <td><select class="unified-corp" data-id="${r.id}" style="font-size:11px;${r.corporation_id?"":"color:var(--m-amber)"}"><option value="">（未設定）</option>${(UNIFIED_STATE.corporations||[]).map(c=>`<option value="${esc(c.id)}" ${r.corporation_id===c.id?"selected":""}>${esc(c.name)}</option>`).join("")}</select></td>
     <td>${unifiedStoreLabel(r)}</td>
-    <td><b>${esc((r.vendor&&r.vendor.name)||r.vendor_name||"—")}</b>${unifiedHasCorpTransition_(r)?`<div style="color:#b45309;font-size:10px;font-weight:800">🏢 法人移行期間（宛先法人を確認）</div>`:""}${riskNote?`<div class="danger-text" style="color:var(--m-red);font-size:10px;font-weight:800">${esc(riskNote)}</div>`:""}</td>
+    <td><b>${esc((r.vendor&&r.vendor.name)||r.vendor_name||"—")}</b>${unifiedHasCorpTransition_(r)?`<div style="color:#b45309;font-size:10px;font-weight:800">🏢 法人移行期間（宛先法人を確認）</div>`:""}${r.rule_unstable&&!r.mf_journal_id?`<div style="color:#b45309;font-size:10px;font-weight:800" title="直近90日に2回以上修正された取引先×明細です。毎回内容を確認してください">⚠️ ルール不安定（毎回確認）</div>`:""}${r.approved_by?`<div style="color:var(--muted);font-size:10px">承認: ${esc((UNIFIED_STATE.userNames&&UNIFIED_STATE.userNames.get(r.approved_by))||"—")} ${esc(String(r.approved_at||"").slice(5,10).replace("-","/"))}</div>`:""}${riskNote?`<div class="danger-text" style="color:var(--m-red);font-size:10px;font-weight:800">${esc(riskNote)}</div>`:""}</td>
     <td>${esc(r.invoice_number||"—")}</td>
     <td>${yen(r.amount)}</td>
     <td><span class="invoice-status ${unifiedIsAuto(r)?"check":"gray"}" title="${unifiedIsAuto(r)?"自動取込（自動で下書きまで作られ、承認待ちに並びます）":"人が取り込み・入力した請求書"}">${unifiedIsAuto(r)?"🤖 ":"✋ "}${esc(INTAKE_SOURCE_LABEL[r.intake_source]||(r.email_id?"メール":"手動"))}</span>${r.email&&r.email.mail_kind==="sales"?' <span class="invoice-status done" title="売上入金（入金の仕訳）">💰売上入金</span>':""}</td>
@@ -13732,6 +13752,7 @@ const SETTINGS_SUBTABS=[
   ["exclusion","🚫 メール除外設定"],
   ["vendorPay","💴 支払方法（振込/引き落とし）"],
   ["vendorNames","🔗 取引先の名前対応"],
+  ["relearn","🔁 行ルールの再学習"],
 ];
 // 2026-09-11更新：会計・請求ワークスペースUI刷新Step8。指示書§9-14「設定は定期請求・入金
 // マスタ/取引先マスタ/仕訳辞書/勘定科目・店舗・法人・PLマッピング/自動化レベル/自動取込
@@ -13743,7 +13764,7 @@ const SETTINGS_SUBTABS=[
 const SETTINGS_GROUPS=[
   ["recurring","📅 定期請求・入金マスタ",["recurring"]],
   ["vendorsMapping","🏢 取引先・店舗マッピング",["vendors","vendorNames","vendorPay","mapping","payrollBank"]],
-  ["journalPl","📗 仕訳・勘定科目・PL",["journalRules","accounts","pl"]],
+  ["journalPl","📗 仕訳・勘定科目・PL",["journalRules","accounts","pl","relearn"]],
   ["automationRules","🤖 自動化・ルール",["automation","exclusion"]],
 ];
 function settingsGroupOf(tab){ return SETTINGS_GROUPS.find(([,,members])=>members.includes(tab))||SETTINGS_GROUPS[0]; }
@@ -13779,6 +13800,7 @@ async function renderSettingsTab(u,subTab){
   else if(SETTINGS_TAB==="payrollBank") await renderSettingsPayrollBank();
   else if(SETTINGS_TAB==="automation") await renderSettingsAutomation();
   else if(SETTINGS_TAB==="exclusion") await renderSettingsExclusion(u);
+  else if(SETTINGS_TAB==="relearn") await renderSettingsRelearn();
 }
 // 2026-10-13新設（ユーザー要望）：取引先ごとの「支払方法（振込／引き落とし／現金）」を1回登録して自動で使い、
 // 変わった月だけ「この月だけ」変更できるようにする。振込の取引先だけが本部タスク（どの業者にいくら振込）に載る
@@ -14134,6 +14156,57 @@ async function renderSettingsJournalRules(){
   renderMftSection();
 }
 
+// 2026-10-17（TK-216⑥・設計書§9-1①）行ルールの再学習: MFの実際の仕訳（総勘定元帳）と、取引先の行ルール（借方の科目・補助科目）を比べ、実績のほうが違うものを提案する。
+// 比べるだけ（MFにも行ルールにも書かない）。「このルールに更新」を押した分だけ、新しい版（source=ledger）として保存する＝人が確認して反映する
+let RELEARN_STATE={tenant:"default",months:6,res:null,busy:false};
+async function renderSettingsRelearn(){
+  const T=RELEARN_STATE;
+  const tr=await mfCall("list_tenants"); const tenants=(tr.ok&&tr.body&&tr.body.tenants)||[{id:"default",label:"トーホー"}];
+  const resHtml=()=>{
+    if(!T.res) return "";
+    if(T.res.error) return `<div class="err">${esc(T.res.error)}</div>`;
+    const ps=T.res.proposals||[];
+    if(!ps.length) return `<div class="meta" style="color:var(--muted);font-size:12px;margin-top:10px">実績と違う行ルールはありませんでした（MFの仕訳 ${T.res.journals}件・実績のある取引先 ${T.res.checked}社を確認）。</div>`;
+    const sub=(a,b)=>esc(a||"")+(b?"/"+esc(b):"");
+    return `<div class="meta" style="color:var(--muted);font-size:12px;margin:10px 0 6px">MFの仕訳 ${T.res.journals}件（${esc(T.res.range.start)}〜${esc(T.res.range.end)}）・実績のある取引先 ${T.res.checked}社を確認。<b>実績と違うもの ${ps.length}件</b>。「強い」は実績が2件以上で6割以上＝更新をおすすめします。</div>
+    <div class="hq-tablewrap"><table class="invoice-table"><thead><tr><th>取引先</th><th>今のルール（借方）</th><th>MFの実績（件数・最終日）</th><th>提案</th><th></th></tr></thead><tbody>${ps.map((p,i)=>`<tr>
+      <td><b>${esc(p.vendor_key)}</b>${p.current.unstable?'<div style="color:#b45309;font-size:10px">⚠️ルール不安定</div>':""}</td>
+      <td>${sub(p.current.account,p.current.sub)}</td>
+      <td>${p.observed.map(o=>`<div style="font-size:12px">${sub(o.account,o.sub)}　<span style="color:var(--muted)">${o.count}件・${esc(o.last)}</span></div>`).join("")}</td>
+      <td>${p.status==="differs"?'<span class="invoice-status ok">強い</span>':'<span class="invoice-status gray">参考</span>'}　${sub(p.recommend.account,p.recommend.sub_account_name)}</td>
+      <td><button class="hq-btn ${p.status==="differs"?"primary":""}" data-relearn-apply="${i}">このルールに更新</button></td></tr>`).join("")}</tbody></table></div>`;
+  };
+  $("settingsBody").innerHTML=`<div class="card" style="padding:16px">
+    <h3 style="font-size:14px;margin-bottom:6px">🔁 行ルールの再学習（MFの仕訳実績から）</h3>
+    <div class="meta" style="color:var(--muted);font-size:12px;margin-bottom:10px">取引先ごとの行ルール（借方の科目・補助科目）を、MFにある<b>実際の仕訳</b>と比べて、実績のほうが違うものを提案します。<b>比べるだけで、MFにも行ルールにも何も書き込みません</b>。「このルールに更新」を押した分だけ、新しい版（元帳）として保存し、次回の自動仕訳から使います。</div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
+      <div><label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">MF事業者</label><select id="relearn-tenant">${tenants.map(t=>`<option value="${esc(t.id)}" ${T.tenant===t.id?"selected":""}>${esc(t.label||t.id)}</option>`).join("")}</select></div>
+      <div><label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">見る期間</label><select id="relearn-months">${[3,6,9,12].map(m=>`<option value="${m}" ${T.months===m?"selected":""}>直近${m}か月</option>`).join("")}</select></div>
+      <button class="hq-btn primary" id="relearn-run" ${T.busy?"disabled":""}>🔎 MFの実績と比べる</button>
+    </div>
+    <div id="relearn-msg" class="err" style="margin-top:6px"></div>
+    <div id="relearn-res">${resHtml()}</div>
+  </div>`;
+  $("relearn-tenant").onchange=()=>{ T.tenant=$("relearn-tenant").value; T.res=null; renderSettingsRelearn(); };
+  $("relearn-months").onchange=()=>{ T.months=Number($("relearn-months").value); };
+  $("relearn-run").onclick=async()=>{
+    T.busy=true; $("relearn-run").disabled=true; $("relearn-msg").textContent="MFの仕訳を読み込み中…（数十秒かかります）";
+    try{
+      const ss=sess.get(); const r=await fetch(SUPA_URL+"/functions/v1/invoice-rules-relearn",{method:"POST",headers:{"Content-Type":"application/json",apikey:SUPA_KEY,Authorization:"Bearer "+(ss?ss.at:"")},body:JSON.stringify({tenant_id:T.tenant,months:T.months})});
+      const j=await r.json().catch(()=>({})); T.res=r.ok?j:{error:j.error||"取得に失敗しました"};
+    }catch(e){ T.res={error:"取得に失敗しました: "+(e&&e.message||e)}; }
+    T.busy=false; renderSettingsRelearn();
+  };
+  document.querySelectorAll("[data-relearn-apply]").forEach(el=>el.onclick=async()=>{
+    const p=(T.res.proposals||[])[Number(el.dataset.relearnApply)]; if(!p) return;
+    if(!confirm(`「${p.vendor_key}」の行ルールを更新します。\n\n${p.current.account}${p.current.sub?"/"+p.current.sub:""}\n　→ ${p.recommend.account}${p.recommend.sub_account_name?"/"+p.recommend.sub_account_name:""}\n\n（MFの実績に合わせた新しい版として保存します。次回の自動仕訳から使われます）`)) return;
+    el.disabled=true;
+    const fields={account_name:p.recommend.account,sub_account_mode:p.recommend.sub_account_mode,sub_account_name:p.recommend.sub_account_name,vendor_id:p.vendor_id};
+    const rr=await authed("/rest/v1/rpc/save_vendor_line_rule",{method:"POST",body:JSON.stringify({p_vendor_key:p.vendor_key,p_tenant_id:T.tenant,p_line_pattern:"*",p_fields:fields,p_source:"ledger"})});
+    if(rr.ok){ el.textContent="✅ 更新しました"; }
+    else{ el.disabled=false; alert("更新に失敗しました: "+((rr.body&&(rr.body.message||rr.body.error))||rr.status)); }
+  });
+}
 async function renderSettingsPl(){
   $("settingsBody").innerHTML=`<div class="card" style="padding:16px">
     <h3 style="font-size:14px;margin-bottom:6px">📊 PL連携対象科目（PL科目の定義）</h3>
