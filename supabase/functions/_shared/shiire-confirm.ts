@@ -1,7 +1,7 @@
 // 仕入高の月次確定の判定ロジック（純粋関数・DBに触らない。shiire-confirm-check から使う）— TK-222 担当C・2026-10-17
 export const APPROVED_STAGES = ["approved", "payment_waiting", "paid", "completed"];
 export type Inv = { id: string; vendor_id: string | null; vendor_name: string | null; target_year_month: string | null; current_stage: string | null; mf_journal_id: string | null; journal_draft: any; checks: any };
-export type StoreInfo = { id: string; name: string; seisan_target?: boolean };
+export type StoreInfo = { id: string; name: string; seisan_target?: boolean; seisan_pl_categories_target?: boolean };
 export function evaluateShiire(invs: Inv[], stores: StoreInfo[], curYm: string) {
   type Cell = { approved: Map<string, { name: string; net: number; inv: string[] }>; pending: Map<string, { name: string; inv: string[] }>; received: Set<string> };
   const cells = new Map<string, Cell>();
@@ -26,7 +26,7 @@ export function evaluateShiire(invs: Inv[], stores: StoreInfo[], curYm: string) 
   const results: any[] = [];
   for (const [k, c] of cells) {
     const [sid, ym] = k.split("|");
-    const st = storeMap.get(sid); if (!st || st.seisan_target) continue;
+    const st = storeMap.get(sid); if (!st || st.seisan_target || st.seisan_pl_categories_target) continue;   // 精算書の対象店舗（使い分け店舗を含む）は対象外（レーンPのビューと同じ条件。黒霧屋はPLへは精算書経由）
     const prev = cells.get(`${sid}|${prevYm(ym)}`);
     const expected = new Set<string>([...c.received, ...(prev ? [...prev.approved.keys()] : [])]);
     const missing = [...expected].filter((v) => !c.approved.has(v));

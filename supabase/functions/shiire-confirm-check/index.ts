@@ -40,7 +40,7 @@ Deno.serve(async (req: Request) => {
       .select("id, vendor_id, vendor_name, target_year_month, current_stage, invoice_status, mf_journal_id, journal_draft, checks, created_at")
       .neq("invoice_status", "cancelled").not("journal_draft", "is", null).gte("created_at", sinceDate).limit(2000);
     if (ie) return json({ error: "請求書の取得に失敗: " + ie.message }, 500);
-    const { data: stores } = await db.from("stores").select("id, name, seisan_target");
+    const { data: stores } = await db.from("stores").select("id, name, seisan_target, seisan_pl_categories_target");
     let results = evaluateShiire((invs ?? []) as any, (stores ?? []) as any, curYm);
     results = results.filter((r) => (!body?.store_id || r.store_id === body.store_id) && (!body?.year_month || r.ym === body.year_month));
     if (!body?.dry_run) {

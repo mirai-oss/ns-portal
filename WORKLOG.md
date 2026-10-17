@@ -40,6 +40,10 @@
 
 ---
 
+## 2026-10-17 担当C: レーンPへ引き継ぎ送信→P側が v_shiire_approved_monthly を修正して本番適用／Cの判定を同じ条件に
+- 送信: TK-222の反映内容＋view修正依頼。P回答: ①checks.routes の route='seisan' の行を除外 ②stores.seisan_target **または seisan_pl_categories_target** の店舗を丸ごと除外（黒霧屋 新横浜は使い分け店舗のため全行が対象外＝PLへは精算書経由）。有効化(shiire_confirm_enabled=1)はP側・初回の実データ承認(TK-226)立会い＋shiire_preview確認のあと。
+- C側の修正: `_shared/shiire-confirm.ts` の対象外条件に seisan_pl_categories_target を追加（ビューと同じ条件。食い違うと「確定=true なのにビューの合計0円」で原価が0に置換される恐れ）。架空データで試験OK。**コミットのみ・未デプロイ**（shiire-confirm-check の切り出し分＋この条件を、次のデプロイでまとめて反映）。
+
 ## 2026-10-17 担当C: LiveGateのMF準備を確認OK＋LiveGate専用の給与の型を作成（SQL・push承認待ち）
 - ユーザーがLiveGateのMFを準備完了。確認: 会計期間は 2026-10〜2027-01 の範囲が通る（次期作成済み）／勘定科目「衛生管理費」あり／補助科目「新横浜/黒霧屋」が 給料手当・雑給・法定福利費 にあり／部門「08（タブ）黒霧屋 新横浜」あり。
 - 経路の試験（実データの運営関係で）: 黒霧屋 新横浜の運営会社は 2026-10まで=トーホー・2026-11以降=LiveGate。請求書の宛先別: 2026-10=トーホー→PL直接・N-Style/LiveGate→精算書／2026-11以降=LiveGate→PL直接・**トーホー（立替）→精算書・N-Style→精算書**。ユーザー確認の運営（今年内=トーホーのインフォマートで立替・2027年〜=N-Styleの請求書・N-Style側が立て替えた経費は全て精算書へ・精算書でLiveGate宛）と一致。
