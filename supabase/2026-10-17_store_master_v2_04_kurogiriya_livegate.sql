@@ -18,7 +18,9 @@
 --      B1 スマレジ系ID行（smaregi / smaregi_timecard）の corporation_hint を 'toho'（現在の契約）に補完（hint空の行のみ）
 --      B2 一意索引をスマレジ系だけ「(source, 契約, ID/コード/名前)」に作り直す（他のsourceは従来どおり）
 --      B3 resolve_store の①〜③を契約対応に（呼び出し方・戻り値は同じ。スマレジ系で法人ヒントを渡すとその契約の店舗だけに当たる。
---         ヒント無しで複数店舗に当たる場合は誤って当てず未解決扱い）
+--         ヒント無しで複数店舗に当たる場合は誤って当てず未解決扱い）＋基準日 p_as_of を追加（省略=今日。旧6引数版を7引数版に置換・≤6引数の呼び出しはそのまま動く）
+--   C. LiveGate契約sdm155v1の黒霧屋 新横浜=スマレジ事業所ID 4（smaregi / smaregi_timecard の2行・hint=livegate・2026-11-01開始）を追加し、
+--      トーホー契約側（ID 8）の2行は effective_to=2026-10-31。LiveGateのID 4 はトーホー契約のID 4（鳥一代 恵比寿）と同番号＝Bがないと登録できない
 -- 既存データへの影響: 店舗・法人・既存の運営関係の値は変更しない（黒霧屋の旧行は終了日が入るだけ）。resolve_store の現在の解決結果は変わらない
 --   （全てのスマレジ行がトーホー契約の1本だけのため）。
 -- ※ 黒霧屋の resolve_store(...).corporation_id は 店舗の既存列 stores.corporation_id（=トーホー）のまま。運営法人は v_store_current_relations.operator_* を使うこと。
@@ -113,19 +115,21 @@ revoke all on function public.smv2_pick_mapping(text,text,text,uuid,date) from p
 grant execute on function public.smv2_pick_mapping(text,text,text,uuid,date) to authenticated, service_role;
 
 -- resolve_store（①〜③のみ契約対応に。④以降・戻り値・引数は変更なし）
+drop function if exists public.resolve_store(text,text,text,text,text,boolean);
 create or replace function public.resolve_store(
   p_source text,
   p_external_id text default null,
   p_code text default null,
   p_name text default null,
   p_corp_hint text default null,
-  p_log boolean default true
+  p_log boolean default true,
+  p_as_of date default null          -- 基準日（省略=今日）。過去の勤怠・給与を後から取り込む時に、その日時点の対応で引く
 ) returns table (store_id uuid, brand_id uuid, corporation_id uuid, confidence text, matched_by text)
 language plpgsql security definer
 set search_path to 'public'
 as $$
 declare
-  v_today date := (now() at time zone 'Asia/Tokyo')::date;
+  v_today date := coalesce(p_as_of, (now() at time zone 'Asia/Tokyo')::date);
   v_hint_corp uuid := smv2_corp_id_from_hint(p_corp_hint);
   v_n text := smv2_norm(p_name);
   v_store uuid; v_brand uuid; v_map public.store_external_mappings%rowtype;
@@ -208,8 +212,32 @@ begin
   store_id := v_store; brand_id := v_brand; confidence := v_conf; matched_by := v_by;
   return next;
 end $$;
-revoke all on function public.resolve_store(text,text,text,text,text,boolean) from public;
-grant execute on function public.resolve_store(text,text,text,text,text,boolean) to authenticated, service_role;
+revoke all on function public.resolve_store(text,text,text,text,text,boolean,date) from public;
+grant execute on function public.resolve_store(text,text,text,text,text,boolean,date) to authenticated, service_role;
+
+-- ---------------------------------------------------------------------
+-- C. LiveGateのスマレジ契約（sdm155v1）の「黒霧屋 新横浜」: スマレジの事業所ID=4（担当Dが /stores を読んで確認・2026-10-17）
+--    トーホー契約（sez093z1）側の黒霧屋はID 8 → 2026-10-31で終了。smaregi / smaregi_timecard の2行ずつ。
+--    ※LiveGate契約のID 2（【不動産】グットレジデンス横浜店）・3（本社）は店舗マスタに無いためマッピングしない（未対応のまま隔離）
+--    ※LiveGateのID 4 は、トーホー契約のID 4（鳥一代 恵比寿）と同じ番号＝B2の契約別の一意索引がないと登録できない
+-- ---------------------------------------------------------------------
+update public.store_external_mappings m
+   set effective_to = date '2026-10-31',
+       note = concat_ws(' / ', m.note, '2026-11-01から運営がLiveGateへ変更（トーホー契約側のこの行は2026-10-31で終了）')
+  from public.stores s
+ where m.store_id = s.id and s.name = '黒霧屋 新横浜'
+   and m.source_system in ('smaregi','smaregi_timecard') and m.external_store_id = '8'
+   and m.corporation_hint = 'toho' and m.effective_to is null;
+
+insert into public.store_external_mappings
+  (store_id, source_system, external_store_id, corporation_hint, effective_from, note)
+select s.id, src.sys, '4', 'livegate', date '2026-11-01',
+       'LiveGate契約sdm155v1の店舗「黒霧屋 新横浜」のスマレジ事業所ID=4（担当Dが/storesで確認 2026-10-17）'
+  from public.stores s
+ cross join (values ('smaregi'), ('smaregi_timecard')) as src(sys)
+ where s.name = '黒霧屋 新横浜'
+   and not exists (select 1 from public.store_external_mappings x
+                    where x.source_system = src.sys and x.corporation_hint = 'livegate' and x.external_store_id = '4');
 
 -- ---------------------------------------------------------------------
 -- rollback:
@@ -219,4 +247,7 @@ grant execute on function public.resolve_store(text,text,text,text,text,boolean)
 --   -- B（契約対応を戻す）: 索引を (source, ID) に戻し、resolve_store は 02 の定義へ（02のファイルを再実行）
 --   drop index if exists public.store_external_mappings_uq_id_contract, public.store_external_mappings_uq_name_contract, public.store_external_mappings_uq_code_contract;
 --   drop function if exists public.smv2_pick_mapping(text,text,text,uuid,date);
+--   -- C: delete from public.store_external_mappings where corporation_hint='livegate' and external_store_id='4' and source_system in ('smaregi','smaregi_timecard');
+--   --    update public.store_external_mappings set effective_to=null where corporation_hint='toho' and external_store_id='8' and effective_to=date '2026-10-31' and source_system in ('smaregi','smaregi_timecard');
+--   -- resolve_store を6引数版へ戻す: drop function public.resolve_store(text,text,text,text,text,boolean,date); のあと 02 のファイルを再実行
 -- ---------------------------------------------------------------------
