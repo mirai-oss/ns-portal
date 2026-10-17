@@ -90,11 +90,15 @@ Deno.serve(async (req) => {
       const stores = await pagedGet(contract, token, "/stores", "stores");
       const ids = stores.map((x: any) => String(x.storeId)).join(",");
       const paths = [`/roles?store_id=${ids}`, "/employee_classifications", ...(body.staff_id ? [`/staff_stores?staff_id=${encodeURIComponent(String(body.staff_id))}`, `/staffs/${encodeURIComponent(String(body.staff_id))}`] : [])];
+      if (body.store_id) paths.push(`/staffs?store_id=${encodeURIComponent(String(body.store_id))}&limit=100`, `/staff_stores?store_id=${encodeURIComponent(String(body.store_id))}&limit=100`);
       for (const path of paths) {
         const r = await api(contract, token, path);
         const raw = await r.json().catch(() => null);
         const key = path.split("?")[0].replace(/\/\d+$/, "/{id}");
-        out[key] = { status: r.status, body: r.ok ? raw : JSON.stringify(raw).slice(0, 300) };
+        // 個人情報を避けるため、一覧は ID・退職/有効フラグ・事業所IDだけに絞って返す
+        const slim = (x: any) => ({ staffId: x.staffId ?? x.staff?.staffId, storeId: x.storeId, termination: x.terminationFlag ?? x.termination ?? x.staff?.terminationFlag, active: x.activeFlag ?? x.staff?.activeFlag, display: x.displayFlag, appDisplay: x.applicationDisplayFlag });
+        const keyQ = path.includes("store_id=") && (key === "/staffs" || key === "/staff_stores") ? key + "?store" : key;
+        out[keyQ] = { status: r.status, body: r.ok ? (Array.isArray(raw) && keyQ.includes("?store") ? raw.map(slim) : raw) : JSON.stringify(raw).slice(0, 300) };
       }
       return json({ ok: true, ...out });
     }
