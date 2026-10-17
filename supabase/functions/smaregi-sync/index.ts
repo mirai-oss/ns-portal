@@ -717,8 +717,10 @@ Deno.serve(async (req) => {
     //     スマレジ側の既存設定（GET /staffs/{id} の wageApply）から同じ 区分×事業所×適用開始日 を探して PUT する。1行ずつ結果を表へ保存（失敗しても他の行は続行）
     //   { action:"wage_pull", user_id, contract_id?, import? }  スマレジの現在の賃金設定(wageApply)を返す。import=true なら、管理システムに無い行を synced として取り込む
     //     （管理システム側に反映待ちの行がある 区分×事業所×適用開始日 は上書きしない＝ズレとして返す）。日給(1)・営業時間帯別(3)は対象外（件数だけ返す）
-    //   ※スマレジの賃金設定API（POST/PUT /staffs/{id}/wage_apply）は本番で未検証。初回は立会いで1人から。認可: CEO/HQ
-    if (body.action === "wage_push" || body.action === "wage_pull") {
+    //   { action:"wage_update", user_id, contract_id, id, wage?, holiday_wage?, effective_date? }  既存の賃金設定の金額・休日賃金・適用開始日を直して、スマレジへも反映（区分・店舗は変えない＝変えるときは削除して入れ直す）
+    //   { action:"wage_delete", user_id, contract_id, id }  スマレジの賃金設定を削除(DELETE /staffs/{id}/wage_apply/{wage_apply_id}。404は削除済み扱い)してから管理システムの行を消す
+    //   ※スマレジの賃金設定API（POST/PUT/DELETE /staffs/{id}/wage_apply）。POST/PUT は本番で確認済み(2026-10-17)。認可: CEO/HQ
+    if (body.action === "wage_push" || body.action === "wage_pull" || body.action === "wage_update" || body.action === "wage_delete") {
       if (!isAdmin) return json({ ok: false, error: "forbidden" }, 403);
       const uid = String(body.user_id ?? "");
       if (!uid) return json({ ok: false, error: "user_id required" }, 400);
@@ -784,8 +786,38 @@ Deno.serve(async (req) => {
         return json({ ok: true, contract_id: C, staffId, count: list.length, imported, skipped, conflicts, unsupported, wages: out });
       }
 
+      // ---- wage_update / wage_delete（1行の修正・削除）----
+      if (body.action === "wage_delete" || body.action === "wage_update") {
+        const id = String(body.id ?? "");
+        const { data: row } = await sb.from("employee_wage_settings").select("*").eq("id", id).eq("user_id", uid).eq("contract_id", C).maybeSingle();
+        if (!row) return json({ ok: false, error: "賃金設定が見つかりません" }, 404);
+        if (body.action === "wage_delete") {
+          if (row.smaregi_wage_apply_id) {
+            const dr = await api(C, token, `/staffs/${staffId}/wage_apply/${encodeURIComponent(String(row.smaregi_wage_apply_id))}`, { method: "DELETE" });
+            if (!dr.ok && dr.status !== 404) return json({ ok: false, error: `スマレジの賃金設定を削除できません(${dr.status}): ${await errText(dr)}` }, 500);
+          }
+          const { error: de } = await sb.from("employee_wage_settings").delete().eq("id", id);
+          if (de) return json({ ok: false, error: "管理システムの行を削除できません: " + de.message }, 500);
+          return json({ ok: true, deleted: true });
+        }
+        // wage_update: 検証して行を更新（反映待ちへ）→ 下の wage_push と同じ処理でこの1行だけ反映
+        const wage = body.wage === undefined ? row.wage : Number(body.wage);
+        const holiday = body.holiday_wage === undefined ? row.holiday_wage : (body.holiday_wage === null || body.holiday_wage === "" ? null : Number(body.holiday_wage));
+        const date = body.effective_date === undefined ? row.effective_date : String(body.effective_date).slice(0, 10);
+        if (!Number.isInteger(wage) || wage <= 0 || wage > 100000000) return json({ ok: false, error: "金額が不正です" }, 400);
+        if (row.division === 0 && wage > 100000) return json({ ok: false, error: `時給が大きすぎます（${wage}円）。月給は「月給」で入力してください` }, 400);
+        if (holiday !== null && (!Number.isInteger(holiday) || holiday < 0)) return json({ ok: false, error: "休日賃金が不正です" }, 400);
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || date < "2000-01-01") return json({ ok: false, error: "適用開始日が不正です" }, 400);
+        if (row.division === 2 && date.slice(8) !== "01") return json({ ok: false, error: "月給の適用開始日は月初日（1日）にしてください" }, 400);
+        const { error: ue } = await sb.from("employee_wage_settings").update({ wage, holiday_wage: row.division === 0 ? holiday : null, effective_date: date, sync_status: "pending", sync_error: null, updated_at: new Date().toISOString() }).eq("id", id);
+        if (ue) return json({ ok: false, error: /duplicate|unique/i.test(ue.message) ? "同じ条件（区分・店舗・適用開始日）の賃金設定が既にあります" : ue.message }, 400);
+        body.id = id; // ↓で、この1行だけを反映
+      }
+
       // ---- wage_push ----
-      const { data: rows } = await sb.from("employee_wage_settings").select("*").eq("user_id", uid).eq("contract_id", C).in("sync_status", ["pending", "error"]).order("effective_date");
+      let rowsQ = sb.from("employee_wage_settings").select("*").eq("user_id", uid).eq("contract_id", C).in("sync_status", ["pending", "error"]);
+      if (body.action === "wage_update" && body.id) rowsQ = rowsQ.eq("id", String(body.id));
+      const { data: rows } = await rowsQ.order("effective_date");
       if (!rows?.length) return json({ ok: true, contract_id: C, staffId, pushed: 0, failed: 0, results: [] });
       const results: any[] = [];
       let existing: any[] | null = null;
