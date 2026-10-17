@@ -31,6 +31,12 @@
 
 ---
 
+## 2026-10-17 担当C: LiveGate MF認可（U3）完了・疎通確認OK＋LiveGate側の部門・科目の実態調査
+- U3: ユーザーが認可完了（mf_oauth_tokens id=livegate・label=株式会社LiveGate・scope全7件）。詰まりどころ=アプリポータルで「アプリ連携権限」の下の「クラウド会計・確定申告」にチェックが必要だった（手順書に追記）。
+- ②疎通確認OK: `invoice-payment-scan` explain(tenant=livegate) で部門・勘定科目・補助科目を取得できた。**LiveGateのMFには部門「08（タブ）黒霧屋 新横浜」が既にある**（名前の「08」と「黒霧屋」の間にタブ文字）→ トーホーと同名で新規作成する案をやめ、店舗×MF事業者ごとの部門名テーブル `store_tenant_departments`（`supabase/2026-10-17_store_tenant_departments.sql`・黒霧屋×livegate=上記の名前を登録）を追加し、invoice-journal-draft が事業者別の部門名を使う。
+- LiveGateの命名: 給料手当/雑給/法定福利費の補助科目は「新横浜/匠味」形式（地域/店名）→黒霧屋は「新横浜/黒霧屋」を作る。通勤手当は 旅費交通費/通勤手当交通費、預り金/給与源泉所得税・雇用保険・社会保険料、未払金/給与 が既存。勘定科目で無いのは「衛生管理費」のみ。仕入高/広告宣伝費/通信費/販売促進費の補助科目は大半が既存（足りないものを手順書U4に一覧）。→ **給与仕訳（③）はトーホーの型と科目の書き方が違うため、LiveGate専用の型が必要**。
+- 手順書U4を実態に合わせて改訂。
+
 ## 2026-10-17 担当C: 黒霧屋 新横浜の運営変更（2026-11-01）準備 — 指示書§5（①②④⑤⑥を実装・③給与は設計中）【ローカルコミット済み・SQL/デプロイ/push承認待ち】
 - ①手順書: [docs/手順書_MF_LiveGate事業者の認可と部門科目_U3U4_2026-10-17.html](docs/手順書_MF_LiveGate事業者の認可と部門科目_U3U4_2026-10-17.html)（push済み）。U3=`mf-oauth-authorize?tenant_id=livegate&label=株式会社LiveGate`（成功画面「マネーフォワード（株式会社LiveGate）との連携が完了しました」）／U4=部門`06新横浜黒霧屋`（トーホーと同名＝店舗マスタ`stores.mf_department_name`で名前一致するためコード変更なし）＋給与の補助科目＋よく使う仕入・広告等の補助科目（トーホーMFの7〜10月実績から抽出）。②疎通確認は認可後（`invoice-payment-scan` の explain で LiveGate の部門/科目を確認）。
 - ④法人移行期間: `invoice-check` に check `corp_transition`（automation_rule_settings.corp_transition: store_names/from=2026-11/to=2026-12）。対象店舗の明細を含む請求書は、宛先法人と、対象月の運営関係から期待される法人を比較し、一致=warn・不一致/未登録=ng（要対応・理由明示）。`invoices.corp_transition` フラグ列を追加（SQL）。画面: 一覧に「🏢法人移行期間」バッジ・一括承認の対象外（個別に承認）。仕訳の法人は宛先法人に従う（`MF_TENANT_BY_CORP` に livegate を追加）。

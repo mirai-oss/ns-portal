@@ -130,6 +130,11 @@ Deno.serve(async (req: Request) => {
   if (storeIds.length) {
     const { data: ss } = await db.from("stores").select("id, name, mf_department_name").in("id", storeIds as string[]);
     for (const s of ss ?? []) stores.set(s.id, s);
+    // 店舗×MF事業者ごとの部門名（黒霧屋 新横浜の運営変更: LiveGateのMFでは部門名が違う）。無ければ従来どおり店舗マスタの部門名
+    if (tenantId !== "default") {
+      const { data: td } = await db.from("store_tenant_departments").select("store_id, department_name").eq("tenant_id", tenantId).in("store_id", storeIds as string[]);
+      for (const t of td ?? []) { const st = stores.get(t.store_id); if (st) stores.set(t.store_id, { ...st, mf_department_name: t.department_name }); }
+    }
   }
   const ym = inv.target_year_month ? String(inv.target_year_month).slice(0, 7) : null;
   const monthLabel = ym ? `${Number(ym.slice(5, 7))}月分` : "";
@@ -163,7 +168,9 @@ Deno.serve(async (req: Request) => {
       if (!sid) problems.push(`行${l.line_no}: 取引先の主な店舗が未設定です`);
       else {
         const { data: st } = await db.from("stores").select("id, name, mf_department_name").eq("id", sid).maybeSingle();
-        storeName = st?.name ?? null; deptName = st?.mf_department_name ?? null;
+        let tdn: string | null = null;
+        if (tenantId !== "default") { const { data: td1 } = await db.from("store_tenant_departments").select("department_name").eq("tenant_id", tenantId).eq("store_id", sid).maybeSingle(); tdn = td1?.department_name ?? null; }
+        storeName = st?.name ?? null; deptName = tdn ?? st?.mf_department_name ?? null;
         if (!deptName) problems.push(`行${l.line_no}: 主な店舗にMF部門名がありません`);
       }
     } else { deptName = "本部"; }
