@@ -463,7 +463,7 @@ let SEARCH_RESULTS=null;  // 検索中はこちらを表示
 // 2026-09-09: FILTER.assignee=「工程のどれかに自分が入っているタスク」（先の工程だけ
 // 自分が担当のものも含む）。それとは別に、FILTER.currentOnly=「“いま”動いている工程が
 // 自分の担当のタスクだけ」という、ユーザーから明確に区別を求められた絞り込み
-let FILTER={corp:null,freq:null,assignee:null,creator:null,signal:null,type:null,currentOnly:false};
+let FILTER={corp:null,freq:null,assignee:null,creator:null,signal:null,type:null,reason:null,currentOnly:false};
 let SORT_MODE=localStorage.getItem("hq_sort")||"due";  // due | created | stalled（このブラウザだけに効く。DB保存なし）
 const SORT_LABEL={due:"期限が近い順（既定）",created:"作成が新しい順",stalled:"停滞が長い順"};
 let BOARD_VIEW=localStorage.getItem("hq_boardview")||"kanban"; // kanban | list | calendar（B6・全面刷新Phase2でカレンダー追加・ブラウザだけに効く）
@@ -687,7 +687,24 @@ function isOnboardingTask(t){ return (t.title||"").indexOf("入社登録（")===
 // 2026-09-11（司令塔・実装指示書_会計請求ワークスペースUI刷新_2026-09-11.md §1・TK-52）:
 // 入社登録タブを支えていたタイトル判定に加え、新設のhq_tasks.task_category列（会計の
 // 例外連携タスク=hq_create_exception_taskが設定）にも対応させ、送金/入金/請求書タブを追加
+// 2026-10-17(TK-224): 会計・店舗マスタの例外理由コード（hq_tasks.exception_reason）。invoice-check等が
+// コードを渡す。未登録の文字列（旧来の自由記述など）はそのまま表示する。invoices.htmlの自動化管理にも同じ一覧がある
+const EXC_REASON={
+  store_unresolved:{label:"店舗が確定できない",hint:"明細の店舗を選んで確定してください"},
+  corp_unresolved:{label:"法人が確定できない",hint:"宛先の法人を選んで確定してください"},
+  vendor_unknown:{label:"取引先が不明",hint:"取引先マスタに登録するか、既存の取引先に紐づけてください"},
+  line_unknown:{label:"明細の行が不明",hint:"明細の科目・内容を確認して直してください"},
+  amount_mismatch:{label:"金額が合わない",hint:"請求書の合計と明細の合計を見比べて直してください"},
+  duplicate_suspected:{label:"重複の疑い",hint:"同じ請求書が二重に届いていないか確認してください"},
+  ocr_failed:{label:"読み取り失敗",hint:"PDFを開いて手入力するか、取り込み直してください"},
+  ai_undecided:{label:"AIが判断できない",hint:"AIの確信度が足りません。人が内容を確認して決めてください"},
+  bank_changed:{label:"振込先口座が変わった",hint:"取引先に口座変更の確認をしてから進めてください"},
+  download_unsupported:{label:"自動ダウンロード非対応",hint:"手動で請求書を取得して取り込んでください"},
+  smaregi_store_missing:{label:"スマレジに事業所を作成してください",hint:"スマレジに該当の事業所を作ってから、店舗マスタと紐づけてください"},
+};
+const excReasonLabel=c=>(EXC_REASON[c]&&EXC_REASON[c].label)||c||"";
 function matchesTaskCategory(t,cat){
+  if(cat==="exception") return !!t.exception_reason;
   if(cat==="onboarding") return isOnboardingTask(t)||t.task_category==="onboarding";
   return t.task_category===cat;
 }
@@ -711,6 +728,7 @@ function applyFilters(list){
     if(FILTER.corp && t.corp!==FILTER.corp) return false;
     if(FILTER.freq && t.freq!==FILTER.freq) return false;
     if(FILTER.type && !matchesTaskCategory(t,FILTER.type)) return false;
+    if(FILTER.reason && t.exception_reason!==FILTER.reason) return false;
     if(FILTER.assignee){
       const match=sortedSteps(t).some(s=>isStepAssignee(s,FILTER.assignee));
       if(!match) return false;
@@ -758,6 +776,17 @@ function onboardingOpenCount(){
 }
 // 2026-09-11: 種別タブ（送金/入金/請求書）の件数バッジ。急ぎ（is_urgent）が1件でも
 // あればバッジの色を最重要色に変え、通常の未完了件数バッジと見分けられるようにする
+// 「要確認」タブの理由別の絞り込み（未完了の例外タスクの件数つき）
+function excReasonChipsHtml(){
+  const open=TASKS.filter(t=>t.status!=="done"&&t.exception_reason);
+  const cnt={}; open.forEach(t=>{cnt[t.exception_reason]=(cnt[t.exception_reason]||0)+1;});
+  const codes=Object.keys(cnt).sort((a,b)=>cnt[b]-cnt[a]);
+  if(!codes.length) return `<div class="meta" style="margin-top:8px">いま要確認のタスクはありません</div>`;
+  return `<div class="chiprow" id="reasonchips" style="margin-top:8px">
+    <span class="chip ${!FILTER.reason?'active':''}" data-reason="">理由: すべて（${open.length}）</span>
+    ${codes.map(c=>`<span class="chip ${FILTER.reason===c?'active':''}" data-reason="${esc(c)}">${esc(excReasonLabel(c))}（${cnt[c]}）</span>`).join("")}
+  </div>`;
+}
 function typeTabBadgeHtml(cat){
   const openList=TASKS.filter(t=>t.status!=="done" && matchesTaskCategory(t,cat));
   if(!openList.length) return "";
@@ -780,7 +809,7 @@ function taskCardHtml(t){
          見づらいという要望のため、工程期日（バッジ・並び替えと同じ基準）を主役にして全体は添える -->
     ${sig.cur?`<div class="meta"><b>工程期日 ${fmtDD(sig.cur.due_date,sig.cur.due_time)}</b> ／ 全体 ${fmtDD(t.due_date,t.due_time)}</div>`:`<div class="meta">期限 ${fmtDD(t.due_date,t.due_time)}</div>`}
     ${steps.length?`<div class="meta">工程 ${doneCount}/${steps.length} 完了</div>`:""}
-    ${t.exception_reason?`<div class="meta">⚠️ ${esc(t.exception_reason)}</div>`:""}
+    ${t.exception_reason?`<div class="meta">⚠️ ${esc(excReasonLabel(t.exception_reason))}</div>`:""}
     ${t.memo?`<div class="memo-line">📝 ${esc((t.memo.split("\n")[0]||"").slice(0,60))}</div>`:""}
     ${sig.cur?`<div class="now">いま: ${esc(sig.cur.title)}（${esc(stepAssigneeNames(sig.cur))}）</div>`:""}
   </div>`;
@@ -975,7 +1004,9 @@ function renderBoard(u){
     <span class="chip ${FILTER.type==='transfer'?'active':''}" data-type="transfer">💸 送金${typeTabBadgeHtml('transfer')}</span>
     <span class="chip ${FILTER.type==='deposit'?'active':''}" data-type="deposit">💰 入金${typeTabBadgeHtml('deposit')}</span>
     <span class="chip ${FILTER.type==='invoice'?'active':''}" data-type="invoice">🧾 請求書${typeTabBadgeHtml('invoice')}</span>
+    <span class="chip ${FILTER.type==='exception'?'active':''}" data-type="exception">⚠️ 要確認${typeTabBadgeHtml('exception')}</span>
   </div>
+  ${FILTER.type==="exception"?excReasonChipsHtml():""}
   <div class="toprow" style="margin-top:10px">
     <div></div>
     <div>
@@ -1021,7 +1052,8 @@ function wireBoard(u){
   if($("cwnudgeclose"))$("cwnudgeclose").onclick=()=>{CW_NUDGE_DISMISSED=true; renderBoard(u);};
   document.querySelectorAll("[data-corp]").forEach(c=>c.onclick=()=>{FILTER.corp=c.dataset.corp||null;renderBoard(u);});
   document.querySelectorAll("[data-freq]").forEach(c=>c.onclick=()=>{FILTER.freq=c.dataset.freq||null;renderBoard(u);});
-  document.querySelectorAll("[data-type]").forEach(c=>c.onclick=()=>{FILTER.type=c.dataset.type||null;renderBoard(u);});
+  document.querySelectorAll("[data-type]").forEach(c=>c.onclick=()=>{FILTER.type=c.dataset.type||null;FILTER.reason=null;renderBoard(u);});
+  document.querySelectorAll("[data-reason]").forEach(c=>c.onclick=()=>{FILTER.reason=c.dataset.reason||null;renderBoard(u);});
   $("assigneesel").onchange=e=>{FILTER.assignee=e.target.value||null;renderBoard(u);};
   $("creatorsel").onchange=e=>{FILTER.creator=e.target.value||null;renderBoard(u);};
   $("sortsel").onchange=e=>{SORT_MODE=e.target.value; localStorage.setItem("hq_sort",SORT_MODE); renderBoard(u);};
@@ -1173,7 +1205,7 @@ function renderDetail(u){
       <div class="meta">工程 ${doneCount} / ${steps.length} 完了 ／ 対象日 ${fmtD(t.target_date)} ／ 期限 ${fmtDD(t.due_date,t.due_time)}${t.status==="done"?" ／ "+fmtDT(t.completed_at)+" 完了":""}</div>
       <!-- 2026-09-11: 会計処理の例外連携で自動発行されたタスクは、発生理由・元画面リンクを
            表示する（§9-13「タスクにinvoice_id/receivable_id・発生理由...元画面リンクを持たせる」） -->
-      ${t.exception_reason?`<div class="notes-box" style="margin-top:8px">⚠️ 発生理由: ${esc(t.exception_reason)}${t.exception_source_url?` ／ <a href="${esc(t.exception_source_url)}" target="_blank" rel="noopener">元の画面を見る →</a>`:""}</div>`:""}
+      ${t.exception_reason?`<div class="notes-box" style="margin-top:8px">⚠️ 発生理由: ${esc(excReasonLabel(t.exception_reason))}${EXC_REASON[t.exception_reason]?` ／ ${esc(EXC_REASON[t.exception_reason].hint)}`:""}${t.exception_source_url?` ／ <a href="${esc(t.exception_source_url)}" target="_blank" rel="noopener">元の画面を見る →</a>`:""}</div>`:""}
       <!-- 2026-09-10: 「急ぎのタスクを最重要としてボタンで押せるように・絶対漏れないように」
            という要望対応。押せる人はcanManage・タスクの依頼者・いまの工程の担当者（＝実際に
            緊急だと気づく可能性が高い人たち）に限定し、誰でも無制限に押せるようにはしていない -->
@@ -2991,6 +3023,47 @@ async function fetchTemplates(){
 }
 function tplStepCount(tpl){ return tpl.hq_task_template_steps?.[0]?.count??0; }
 let TPL_FILTER={freq:"",corp:"",q:""};
+/* 2026-10-17(TK-224): 請求書の自動処理（メール取込→仕訳承認→振込待ち）と並行運用している、手作業用の
+   「会計入力」「振込」系の繰り返しテンプレートの一覧と、停止解禁日（2026-12-11）以降のまとめて停止。
+   テンプレート名は「【振込トーホー】家賃」「【トーホー】10日請求書」のような形のため、名前の規則で種別を判定する
+   （請求書を含む=会計入力／振込を含む=振込／口振・口座振替=引き落とし〔新フローの対象外・参考〕）。
+   判定できないテンプレートは対象外。停止=is_active:false（生成済みのタスクは残る・あとで再開も可能） */
+const ACCT_STOP_FROM="2026-12-11";
+function tplAcctKind(t){
+  const s=t.title||"";
+  if(s.includes("請求書")) return "journal";
+  if(s.includes("振込")) return "transfer";
+  if(/口振|口座振替/.test(s)) return "debit";
+  return null;
+}
+const ACCT_KIND_LABEL={journal:"会計入力",transfer:"振込",debit:"口座振替（参考）"};
+function tplVendorLabel(t){
+  const v=(t.title||"").replace(/^【[^】]*】\s*/,"").trim();
+  return v||"（法人まとめ）";
+}
+function acctTplPanelHtml(){
+  const rows=TEMPLATES.map(t=>({t,kind:tplAcctKind(t)})).filter(x=>x.kind)
+    .sort((a,b)=>["journal","transfer","debit"].indexOf(a.kind)-["journal","transfer","debit"].indexOf(b.kind)||(a.t.corp||"").localeCompare(b.t.corp||"")||(a.t.title||"").localeCompare(b.t.title||""));
+  if(!rows.length) return "";
+  const cnt=k=>rows.filter(x=>x.kind===k).length, act=k=>rows.filter(x=>x.kind===k&&x.t.is_active).length;
+  const days=Math.ceil((new Date(ACCT_STOP_FROM+"T00:00:00")-new Date(todayStr()+"T00:00:00"))/86400000);
+  const canStop=days<=0;
+  return `<div class="card" style="margin-bottom:12px" id="acctpanel">
+    <h3 style="margin:0 0 6px">🧾 会計入力・振込の繰り返し（新しい自動処理と並行運用中）</h3>
+    <div class="meta" style="margin-bottom:8px">会計入力 ${cnt("journal")}件（稼働中 ${act("journal")}）／ 振込 ${cnt("transfer")}件（稼働中 ${act("transfer")}）／ 口座振替 ${cnt("debit")}件（稼働中 ${act("debit")}・新しい自動処理の対象外なので初期は選んでいません）。
+      <b>${ACCT_STOP_FROM}</b> までは、手作業用と自動処理を並行して動かします。${ACCT_STOP_FROM}以降に、下の「まとめて停止」で止められます（止めても生成済みのタスクは残り、いつでも再開できます）。</div>
+    <div class="tablewrap" style="overflow-x:auto;max-height:320px;overflow-y:auto"><table class="rp-table"><thead><tr><th></th><th>種別</th><th>取引先・内容</th><th>法人</th><th>頻度</th><th>状態</th></tr></thead><tbody>
+    ${rows.map(x=>`<tr><td><input type="checkbox" class="acct-chk" value="${x.t.id}" ${x.t.is_active&&x.kind!=="debit"?"checked":""} ${x.t.is_active?"":"disabled"}></td>
+      <td>${esc(ACCT_KIND_LABEL[x.kind])}</td><td>${esc(tplVendorLabel(x.t))}</td><td>${esc(x.t.corp)}</td><td>${esc(tplFreqLabel(x.t))}</td>
+      <td>${x.t.is_active?"稼働中":'<span class="tag">停止中</span>'}</td></tr>`).join("")}
+    </tbody></table></div>
+    <div style="margin-top:10px">
+      <button class="btn sm" id="acct-stop" ${canStop?"":"disabled"} style="${canStop?"":"opacity:.5;cursor:not-allowed"}">🛑 チェックしたものをまとめて停止</button>
+      <span class="meta" style="margin-left:8px">${canStop?"チェックを入れたテンプレートだけが停止します":`${ACCT_STOP_FROM}以降に押せます（あと${days}日）`}</span>
+      <div class="err" id="acct-msg"></div>
+    </div>
+  </div>`;
+}
 function filteredTemplates(){
   const q=TPL_FILTER.q.trim().toLowerCase();
   return TEMPLATES.filter(t=>{
@@ -3012,6 +3085,13 @@ function refreshTplList(u){
   </div>`:`<div class="card">${TEMPLATES.length?"条件に合うテンプレートはありません":"テンプレートはまだありません"}</div>`;
   document.querySelectorAll("[data-tpledit]").forEach(b=>b.onclick=()=>openTplEdit(u,TEMPLATES.find(x=>x.id===b.dataset.tpledit)));
   document.querySelectorAll("[data-tplcopy]").forEach(b=>b.onclick=()=>duplicateTemplate(u,TEMPLATES.find(x=>x.id===b.dataset.tplcopy)));
+  document.querySelectorAll("[data-tpltoggle]").forEach(b=>b.onclick=async()=>{
+    const tpl=TEMPLATES.find(x=>x.id===b.dataset.tpltoggle); if(!tpl) return;
+    if(tpl.is_active&&!confirm(`「${tpl.title}」を停止します（生成済みのタスクは残ります。あとで再開できます）。よろしいですか？`)) return;
+    const r=await authed(`/rest/v1/hq_task_templates?id=eq.${tpl.id}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({is_active:!tpl.is_active})});
+    if(!r.ok){ alert("変更できませんでした（権限を確認してください）"); return; }
+    await fetchTemplates(); renderTemplates(u);
+  });
   document.querySelectorAll("[data-tpldel]").forEach(b=>b.onclick=async()=>{
     if(!confirm("このテンプレートを削除しますか？（生成済みのタスクは残ります）"))return;
     await authed(`/rest/v1/hq_task_templates?id=eq.${b.dataset.tpldel}`,{method:"DELETE"});
@@ -3042,8 +3122,21 @@ function renderTemplates(u){
     </div>
     <div class="searchbox" style="margin:10px 0 0"><span class="mag">🔍</span><input id="tf-q" type="search" placeholder="フリーワード（テンプレ名・注意事項・概要）" value="${esc(TPL_FILTER.q)}"></div>
   </div>
+  ${acctTplPanelHtml()}
   <div id="tpl-list"></div>`;
   $("back").onclick=()=>goBack(u);
+  if($("acct-stop")) $("acct-stop").onclick=async()=>{
+    const ids=[...document.querySelectorAll(".acct-chk:checked")].map(c=>c.value);
+    const msg=$("acct-msg"); msg.className="err";
+    if(!ids.length){ msg.textContent="停止するテンプレートにチェックを入れてください"; return; }
+    if(todayStr()<ACCT_STOP_FROM){ msg.textContent=ACCT_STOP_FROM+"以降に押せます"; return; }
+    if(!confirm(`${ids.length}件のテンプレートを停止します（生成済みのタスクは残ります。あとで再開できます）。よろしいですか？`)) return;
+    msg.textContent="停止中…";
+    const r=await authed(`/rest/v1/hq_task_templates?id=in.(${ids.join(",")})`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({is_active:false})});
+    if(!r.ok){ msg.textContent="停止できませんでした（権限を確認してください）"; return; }
+    await fetchTemplates(); renderTemplates(u);
+    $("acct-msg").className="err msg-ok"; $("acct-msg").textContent=`${ids.length}件を停止しました`;
+  };
   $("tpl-new").onclick=()=>openTplEdit(u,null);
   $("tpl-csv").onclick=()=>{pushNav(); VIEW="csvimport";renderCsvImport(u);};
   $("tpl-csvexport").onclick=()=>exportTemplatesCsv();
@@ -3065,6 +3158,7 @@ function tplRowHtml(tpl){
     <td style="white-space:nowrap">
       <button class="linkbtn" data-tpledit="${tpl.id}">編集</button>
       <button class="linkbtn" data-tplcopy="${tpl.id}">複製</button>
+      <button class="linkbtn" data-tpltoggle="${tpl.id}">${tpl.is_active?"停止":"再開"}</button>
       <button class="linkbtn" data-tpldel="${tpl.id}">削除</button>
     </td>
   </tr>`;
@@ -4076,6 +4170,7 @@ async function main(){
   if(PAGE==="perms"&&isMaster(u)){ VIEW="perms"; renderPerms(u); return; }
   if(PAGE==="corps"&&canFeature(u,"corps")){ VIEW="corps"; renderCorps(u); return; }
   if(PAGE==="notify"&&canFeature(u,"notify")){ VIEW="notify"; $("app").innerHTML='<div class="spin">読み込み中…</div>'; await fetchNotifySettings(); renderNotify(u); return; }
+  if(PAGE==="templates"&&canFeature(u,"templates")){ VIEW="templates"; $("app").innerHTML='<div class="spin">読み込み中…</div>'; await fetchTemplates(); renderTemplates(u); return; } // 手順書のリンク用（?page=templates）
   if(PAGE==="past"){ VIEW="past"; $("app").innerHTML='<div class="spin">読み込み中…</div>'; await fetchPastMonths(); renderPast(u); return; }
   renderBoard(u);
 }

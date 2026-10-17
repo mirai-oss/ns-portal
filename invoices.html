@@ -3008,11 +3008,26 @@ function automationKpis(){
   const rate=rateDenom?Math.round((doneToday/rateDenom)*100):0;
   return {needAttn,running,doneToday,overdue,errToday,rate};
 }
-function automationTaskCategoryLabel(cat){ return {invoice:"🧾請求書",deposit:"💰入金",transfer:"💸送金"}[cat]||cat||"—"; }
+function automationTaskCategoryLabel(cat){ return {invoice:"🧾請求書",deposit:"💰入金",transfer:"💸送金",master:"🏪店舗マスタ"}[cat]||cat||"—"; }
+// 2026-10-17(担当E・TK-224): 会計・店舗マスタの例外理由コード（hq_tasks.exception_reason）のラベル。
+// tasks.htmlのEXC_REASONと同じ一覧。未登録の文字列（旧来の自由記述）はそのまま表示する
+const AUTOMATION_EXC_LABEL={
+  store_unresolved:"店舗が確定できない",corp_unresolved:"法人が確定できない",vendor_unknown:"取引先が不明",line_unknown:"明細の行が不明",
+  amount_mismatch:"金額が合わない",duplicate_suspected:"重複の疑い",ocr_failed:"読み取り失敗",ai_undecided:"AIが判断できない",
+  bank_changed:"振込先口座が変わった",download_unsupported:"自動ダウンロード非対応",smaregi_store_missing:"スマレジに事業所を作成してください",
+};
+function automationExcLabel(c){ return AUTOMATION_EXC_LABEL[c]||c||"—"; }
+// 要確認を理由別にまとめて表示（件数の多い理由が上）
+function automationExcGroupsHtml(list){
+  const groups={};
+  list.forEach(t=>{ const k=t.exception_reason||""; (groups[k]=groups[k]||[]).push(t); });
+  return Object.keys(groups).sort((a,b)=>groups[b].length-groups[a].length).map(k=>
+    `<div style="font-size:11px;font-weight:700;margin:8px 0 4px;color:var(--m-red)">${esc(automationExcLabel(k))}（${groups[k].length}）</div>${groups[k].map(automationExcCardHtml).join("")}`).join("");
+}
 function automationExcCardHtml(t){
   return `<div class="card" style="padding:10px 12px;margin-bottom:8px;border-left:3px solid var(--m-red)">
     <b style="font-size:12px;display:block">${esc(t.title||"（無題）")}</b>
-    <p style="font-size:11px;color:var(--muted);margin:4px 0">${esc(t.exception_reason||"—")}${t.corp?"／"+esc(t.corp):""}</p>
+    <p style="font-size:11px;color:var(--muted);margin:4px 0">${esc(automationExcLabel(t.exception_reason))}${t.corp?"／"+esc(t.corp):""}</p>
     <div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px">
       <span class="invoice-status err" style="font-size:10px">${automationTaskCategoryLabel(t.task_category)}</span>
       ${t.exception_source_url?`<a class="hq-btn" style="font-size:11px;padding:5px 8px" href="${esc(t.exception_source_url)}" target="_blank" rel="noopener">対応する</a>`
@@ -3083,7 +3098,7 @@ function automationRender(u){
         <b>基本方針：</b> AIが処理できるものはタスク化しません。人間の判断が必要になった時だけ、本部タスクを自動発行します（指示書§9-12/9-13）。
       </div>
       <div class="dash-grid-4" style="margin-bottom:16px">
-        <div><h3 style="font-size:12px;margin-bottom:8px">⚠️ 要確認（${AUTOMATION_STATE.exceptionTasks.length}）</h3>${AUTOMATION_STATE.exceptionTasks.length?AUTOMATION_STATE.exceptionTasks.map(automationExcCardHtml).join(""):'<div style="font-size:11px;color:var(--muted)">現在ありません</div>'}</div>
+        <div><h3 style="font-size:12px;margin-bottom:8px">⚠️ 要確認（${AUTOMATION_STATE.exceptionTasks.length}）</h3>${AUTOMATION_STATE.exceptionTasks.length?automationExcGroupsHtml(AUTOMATION_STATE.exceptionTasks):'<div style="font-size:11px;color:var(--muted)">現在ありません</div>'}</div>
         <div><h3 style="font-size:12px;margin-bottom:8px">⚙️ 自動処理中（${runningRuns.length}）</h3>${runningRuns.length?runningRuns.map(r=>automationRunCardHtml(r,"running")).join(""):'<div style="font-size:11px;color:var(--muted)">現在ありません</div>'}</div>
         <div><h3 style="font-size:12px;margin-bottom:8px">✅ 自動完了（本日${doneRuns.length}）</h3>${doneRuns.length?doneRuns.slice(0,8).map(r=>automationRunCardHtml(r,"done")).join(""):'<div style="font-size:11px;color:var(--muted)">まだありません</div>'}</div>
         <div><h3 style="font-size:12px;margin-bottom:8px">📋 手動タスク（${AUTOMATION_STATE.manualTasks.length}）</h3>${AUTOMATION_STATE.manualTasks.length?AUTOMATION_STATE.manualTasks.map(automationManualCardHtml).join(""):'<div style="font-size:11px;color:var(--muted)">現在ありません</div>'}</div>
