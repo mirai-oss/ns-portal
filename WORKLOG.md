@@ -787,6 +787,7 @@
 - 試行の結果: トーホー143人中135人一致・8人は「管理システムの所属をスマレジへ追加」予定（初回の一致でスマレジ側に対応する事業所が無かった人。スマレジのstaff_stores書き込みAPIは本番未検証のため、反映は1人ずつ立会いで開始する）。LiveGate: 対象0人。隔離された事業所3件（ID2・3は対象外、ID4は11/1から有効のため）。
 - 試行の再実行: 退職日を過ぎた5人を同期対象外に修正（smaregi-affiliation-sync）。反映予定は3人。うち在職は西浦萌真さんのみ（残り2人は退職済みだが退職日が未入力＝担当Bに入力依頼）。**smaregi-sync を契約対応版＋store_sync込みでデプロイ（v32・ユーザー許可済み）**。nippoの「管理システムに合わせる」が失敗していた原因は、本番smaregi-syncが旧版でstore_syncが無かったため。
 - **スマレジ所属追加の不具合を修正（smaregi-sync v33相当・affiliation-sync）**: スマレジの `PUT /staffs/{id}/staff_stores/{store}` は役割ID(roleId)が必須（空ボディで400「役割IDは…」）。役割は事業所ごと（事業所管理者／社員／アルバイト）。AL=アルバイト・それ以外=社員（管理者権限は自動付与しない）を、追加先の事業所ごとに /roles?store_id= で引いて送る。共通処理は _shared/smaregi-contracts.ts（fetchRoles/pickRoleId/putStaffStore）。smaregi-staff-stores に読み取り専用の probe（役割一覧の確認）を追加。西浦萌真さん1人で立会い確認中。
+- **スマレジ所属追加の動作確認OK（西浦萌真さん1人・本番）**: 公式仕様の必須項目（roleId=文字列・applicationDisplayFlag・mailFlag=真偽）を送る形に修正（役割一覧の取得上限は100）。affiliation-syncをapplyで1人実行→スマレジに「鳥一代 本店」が追加されたことをAPIで確認。通常スタッフに合わせ アプリ表示=true・メール通知=true・役割=アルバイト（AL）/社員。**残りの自動反映（AFFILIATION_SYNC_MODE=apply）はまだOFF。**
 - 店舗マップを基準日対応に修正（運営変更で期間が終わった店舗が既定契約に残らないように）。勤怠取込に反映・再デプロイ・実行確認済み（59件・エラー0）。
 - 次: ①担当Fの店舗マッピング適用宣言 → 勤怠ジョブのLiveGate有効化（リンク作成）②(D)所属の双方向同期ジョブ ③11/1初回同期のLark監視 ④Phase2（旧一意制約の削除）は担当Bの兼務SQL対応後に事前報告。
 
