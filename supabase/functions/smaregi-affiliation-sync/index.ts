@@ -216,6 +216,7 @@ Deno.serve(async (req) => {
           summary.push(cs); continue;
         }
 
+        const fixed = new Set<string>();   // この実行で反映に成功した人（ズレ一覧から外す）
         const nm = (ids: string[]) => ids.map((i) => storeName[i] ?? i).join("、") || "なし";
         for (const p of plans) {
           if (p.kind === "none") { cs.in_sync++; continue; }
@@ -285,6 +286,7 @@ Deno.serve(async (req) => {
             await log(c.contract_id, p.userId, "error", { reason: String((e as Error).message ?? e).slice(0, 200) });
             larkLines.push(`❌ ${label}: ${who}さんの所属同期に失敗: ${String((e as Error).message ?? e).slice(0, 100)}`);
           }
+          if (ok && apply) fixed.add(p.userId);
           // 台帳(前回同期時点)を「一致した状態」に更新
           if (ok && apply) {
             const finalSet = toSm ? p.M : p.S;
@@ -310,6 +312,22 @@ Deno.serve(async (req) => {
               })));
             }
           }
+        }
+
+        // ---- 3.5) 「所属のズレ」の現在の一覧を作り直す（画面の未読バッジ用。試行モードでも更新）----
+        {
+          const nowIso = new Date().toISOString();
+          const rows = plans.filter((p) => p.kind !== "none" && !fixed.has(p.userId)).map((p) => ({
+            user_id: p.userId, contract_id: c.contract_id,
+            only_portal: minus(p.M, p.S).map((i) => storeName[i] ?? i), only_smaregi: minus(p.S, p.M).map((i) => storeName[i] ?? i),
+            reason: p.reason ?? null, updated_at: nowIso,
+          }));
+          const { data: old } = await sb.from("staff_store_mismatch").select("user_id,detected_at").eq("contract_id", c.contract_id);
+          const since: Record<string, string> = {}; (old ?? []).forEach((r: any) => { since[r.user_id] = r.detected_at; });
+          let del = sb.from("staff_store_mismatch").delete().eq("contract_id", c.contract_id);
+          if (onlyUser) del = del.eq("user_id", onlyUser);
+          await del;
+          if (rows.length) await sb.from("staff_store_mismatch").insert(rows.map((r) => ({ ...r, detected_at: since[r.user_id] ?? nowIso })));
         }
 
         // ---- 4) スナップショットを最新化（次回の新規事業所検知・棚卸し用） ----
