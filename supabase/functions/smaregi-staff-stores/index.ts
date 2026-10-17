@@ -78,11 +78,18 @@ Deno.serve(async (req) => {
     //   スマレジの PUT /staffs/{id}/staff_stores/{store_id} が役割IDを要求するため、正しい値を調べる用（2026-10-17）
     if (body.action === "probe") {
       const contract = String(body.contract_id || DEFAULT_CONTRACT);
-      const token = await getToken(contract);
       const out: Record<string, unknown> = {};
+      // 入社登録(smaregi-sync)が使う権限で取れるかを確認する（書き込み権限がアプリに許可されているか）
+      const WRITE_SCOPES = "timecard.staffs:read timecard.staffs:write timecard.stores:read timecard.settings:read";
+      for (const sc of [WRITE_SCOPES, "timecard.staffs:read timecard.stores:read", "timecard.staffs:write", "timecard.settings:read"]) {
+        const tr = await fetch(`${ID_BASE}/app/${contract}/token`, { method: "POST", headers: { Authorization: "Basic " + btoa(`${CID}:${SECRET}`), "Content-Type": "application/x-www-form-urlencoded" }, body: "grant_type=client_credentials&scope=" + encodeURIComponent(sc) });
+        const tj = await tr.json().catch(() => ({}));
+        out["token:" + sc.replace(/timecard\./g, "").replace(/ /g, ",")] = { status: tr.status, ok: !!tj.access_token, scope: tj.scope ?? null, error: tj.access_token ? null : JSON.stringify(tj).slice(0, 200) };
+      }
+      const token = await getToken(contract);
       const stores = await pagedGet(contract, token, "/stores", "stores");
       const ids = stores.map((x: any) => String(x.storeId)).join(",");
-      const paths = [`/roles?store_id=${ids}`, ...(body.staff_id ? [`/staff_stores?staff_id=${encodeURIComponent(String(body.staff_id))}`, `/staffs/${encodeURIComponent(String(body.staff_id))}`] : [])];
+      const paths = [`/roles?store_id=${ids}`, "/employee_classifications", ...(body.staff_id ? [`/staff_stores?staff_id=${encodeURIComponent(String(body.staff_id))}`, `/staffs/${encodeURIComponent(String(body.staff_id))}`] : [])];
       for (const path of paths) {
         const r = await api(contract, token, path);
         const raw = await r.json().catch(() => null);
