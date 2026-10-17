@@ -703,6 +703,8 @@ Deno.serve(async (req) => {
       if (finalIds.length) {
         await sb.from("staff_store_sync").insert(finalIds.map((st) => ({ user_id: uid, contract_id: C, store_id: st, smaregi_staff_id: staffId, smaregi_store_id: reverse[st] ?? null, last_synced_at: now, synced_hash: null })));
       }
+      // 所属のズレ一覧(未読バッジ用)から、この人×契約の行を消す（次の日次実行を待たずにバッジを減らす）
+      await sb.from("staff_store_mismatch").delete().eq("user_id", uid).eq("contract_id", C);
       await sb.from("smaregi_staff_stores_snapshot").delete().eq("contract_id", C).eq("smaregi_staff_id", staffId);
       const snapIds = finalIds.map((st) => reverse[st]).filter(Boolean);
       if (snapIds.length) await sb.from("smaregi_staff_stores_snapshot").insert(snapIds.map((sm) => ({ contract_id: C, smaregi_staff_id: staffId, smaregi_store_id: sm, fetched_at: now })));
