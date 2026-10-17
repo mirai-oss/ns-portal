@@ -629,24 +629,15 @@ Deno.serve(async (req) => {
       const ignored = new Set((ign ?? []).map((r: any) => String(r.store_id)));
 
       const token = await getToken(C);
-      // スマレジ側の所属（最新）: 事業所一覧→事業所ごとの所属スタッフに自分がいるか
-      const stRes = await api(C, token, "/stores");
-      const stRaw = await stRes.json().catch(() => null);
-      if (!stRes.ok) return json({ ok: false, error: "事業所一覧を取得できません: " + JSON.stringify(stRaw).slice(0, 200) }, 500);
-      const smStores: any[] = Array.isArray(stRaw) ? stRaw : (stRaw?.stores ?? []);
+      // スマレジ側の所属（最新）: この人の所属を直接読む。
+      //   ※ /staffs?store_id= は所属者が0人の事業所だと全員を返すことがあり、「既に所属している」と誤判定して書き込みが行われなかったため使わない
       const smaregiNow = new Set<string>();            // スマレジの事業所ID（除外を除く）
-      for (const st of smStores) {
-        const sid = String(st.storeId);
-        if (ignored.has(sid)) continue;
-        for (let page = 1; page <= 10; page++) {
-          const r = await api(C, token, `/staffs?store_id=${encodeURIComponent(sid)}&limit=100&page=${page}`);
-          const raw = await r.json().catch(() => null);
-          if (!r.ok) return json({ ok: false, error: `事業所${sid}の所属を取得できません(${r.status})` }, 500);
-          const arr = Array.isArray(raw) ? raw : (raw?.staffs ?? []);
-          if (arr.some((x: any) => String(x.staffId) === staffId)) { smaregiNow.add(sid); break; }
-          const pageCount = Array.isArray(raw) ? (arr.length < 100 ? page : page + 1) : (raw?.pageCount ?? page);
-          if (page >= Number(pageCount) || arr.length === 0) break;
-        }
+      const ssRes = await api(C, token, `/staff_stores?staff_id=${encodeURIComponent(staffId)}`);
+      const ssRaw = await ssRes.json().catch(() => null);
+      if (!ssRes.ok) return json({ ok: false, error: "スマレジの所属を取得できません(" + ssRes.status + "): " + JSON.stringify(ssRaw).slice(0, 160) }, 500);
+      for (const x of (Array.isArray(ssRaw) ? ssRaw : (ssRaw?.staffStores ?? []))) {
+        const sid = String(x.storeId);
+        if (String(x.staffId) === staffId && !ignored.has(sid)) smaregiNow.add(sid);
       }
       const smaregiStoreIds = new Set<string>();       // 店舗UUIDに変換できたもの
       const unmapped: string[] = [];
