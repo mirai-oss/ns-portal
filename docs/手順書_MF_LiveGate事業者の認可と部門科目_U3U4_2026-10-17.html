@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>手順書 MF LiveGate事業者の認可と部門・科目（U3・U4）</title>
+<style>
+  body{font-family:-apple-system,"Hiragino Sans",sans-serif;max-width:860px;margin:24px auto;padding:0 16px;color:#231f1a;line-height:1.8;background:#faf8f4}
+  h1{font-size:22px;border-bottom:3px solid #c0451a;padding-bottom:6px}
+  h2{font-size:18px;margin-top:32px;background:#fff;border-left:6px solid #c0451a;padding:6px 12px}
+  h3{font-size:15px;margin-top:20px}
+  .box{background:#fff;border:1px solid #e4ddd0;border-radius:10px;padding:12px 16px;margin:12px 0}
+  .warn{background:#fff4e5;border-color:#f0b35a}
+  .ok{background:#eefaf0;border-color:#8fcf9b}
+  table{border-collapse:collapse;width:100%;background:#fff;font-size:14px}
+  th,td{border:1px solid #d9d2c5;padding:6px 8px;text-align:left;vertical-align:top}
+  th{background:#f1ece2}
+  code{background:#f1ece2;padding:1px 6px;border-radius:4px;font-size:13px;word-break:break-all}
+  .url{display:block;background:#231f1a;color:#fff;padding:10px 12px;border-radius:8px;font-size:13px;word-break:break-all;margin:8px 0}
+  .must{color:#c0451a;font-weight:700}
+  ol li,ul li{margin:4px 0}
+</style>
+</head>
+<body>
+
+<h1>手順書：黒霧屋 新横浜の運営変更（2026-11-01）に向けた、MF（マネーフォワード）LiveGate事業者の準備</h1>
+<p>作成：担当C（請求書・MF連携）／2026-10-17　<br>やること：<b>U3（MFのAPI認可）</b>と<b>U4（部門・勘定科目・補助科目の用意）</b>。この2つが済むと、11月分から黒霧屋の仕訳・請求書が、LiveGate（株式会社LiveGate）のMFに入るようになります。</p>
+
+<div class="box">
+  <b>期限の目安</b>
+  <ul>
+    <li>U3（認可）… <span class="must">10/24（金）まで</span></li>
+    <li>U4（部門・科目）… <span class="must">10/28（火）まで</span>（11/1の最初の請求書登録の前に済んでいれば間に合います）</li>
+  </ul>
+  <b>ご自身でやること</b>は、<u>ブラウザでURLを開いて「許可」を押すこと</u>と、<u>MFの画面で部門・科目を作ること</u>だけです。パスワード等をこちらに送る必要はありません。
+</div>
+
+<h2>U3　MFのLiveGate事業者を、管理システムにつなぐ（API認可）</h2>
+
+<div class="box warn">
+  <b>先に確認してください（大切）</b>
+  <ul>
+    <li>マネーフォワード クラウド会計に、<b>「株式会社LiveGate」の事業者</b>が既にあり、あなたのMFアカウントで開ける状態であること。</li>
+    <li>認可のとき、<b>事業者は必ず「株式会社LiveGate」を選ぶ</b>こと。トーホー・N-Styleを間違って選ぶと、LiveGateとして誤った事業者がつながってしまいます（その場合はやり直しできます。下の「困ったとき」参照）。</li>
+  </ul>
+</div>
+
+<h3>手順</h3>
+<ol>
+  <li>Chromeなどで、<b>マネーフォワード クラウドにログイン</b>しておきます（いつもの管理者アカウント）。</li>
+  <li>下のURLを、同じブラウザの新しいタブに貼り付けて開きます。<br>
+    <span class="url">https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/mf-oauth-authorize?tenant_id=livegate&amp;label=株式会社LiveGate</span>
+    <small>（URLは変更しないでください。<code>tenant_id=livegate</code> が「LiveGateとしてつなぐ」という意味です）</small>
+  </li>
+  <li>マネーフォワードの<b>許可の画面</b>が出ます。<br>
+    ・<b>事業者の選択</b>が出たら <b>「株式会社LiveGate」</b> を選びます。<br>
+    ・内容（仕訳・勘定科目・部門などへのアクセス）を確認して <b>「許可する」</b> を押します。</li>
+  <li>画面に <b>「✅ マネーフォワード（株式会社LiveGate）との連携が完了しました」</b> と出れば終了です（このタブは閉じてOK）。かっこの中が「株式会社LiveGate」になっているか確認してください。</li>
+  <li>終わったら、<b>「U3を認可しました」</b>とお知らせください。私の側で、つながったか（部門一覧が取れるか）を確認します。</li>
+</ol>
+
+<div class="box ok">
+  <b>こちらで確認すること（認可のあと）</b>：LiveGateの事業者として部門一覧が取れること／トーホー・N-Styleの部門（<code>01本店</code>など）が混ざっていないこと。<br>
+  もし違う事業者がつながっていたら、すぐお知らせします（上書きでやり直せます）。
+</div>
+
+<h3>困ったとき</h3>
+<ul>
+  <li><b>「許可」画面に「株式会社LiveGate」が出ない</b>…そのMFアカウントにLiveGateの権限がありません。LiveGateの管理者権限があるアカウントでログインし直してください。</li>
+  <li><b>間違った事業者を選んでしまった</b>…もう一度上のURLを開き、今度は「株式会社LiveGate」を選べば、<b>上書きされて正しくなります</b>（トーホー・N-Styleのつながりには影響しません）。</li>
+  <li><b>エラー画面が出た</b>…画面のスクリーンショットを送ってください。</li>
+</ul>
+
+<h2>U4　LiveGateのMFに、部門と勘定科目・補助科目を用意する</h2>
+
+<div class="box">
+  <b>ポイント：名前を「トーホー側と同じ」にします</b><br>
+  管理システムは、店舗と部門を<b>名前の一致</b>で結びつけています（黒霧屋 新横浜 ＝ <code>06新横浜黒霧屋</code>）。LiveGateのMFにも、<b>同じ名前の部門</b>と<b>同じ名前の補助科目</b>を作っておけば、プログラムの変更なしで、そのまま自動で組めます。
+</div>
+
+<h3>① 部門（1つだけ）</h3>
+<table>
+  <tr><th>作るもの</th><th>名前（<b>この通りに</b>）</th><th>備考</th></tr>
+  <tr><td>部門</td><td><code>06新横浜黒霧屋</code></td><td>トーホーのMFにある部門と<b>同じ表記</b>（先頭の数字<code>06</code>も含める）。LiveGateでは1店舗だけでも、この名前にします。</td></tr>
+</table>
+<p>※MFの画面：「設定」→「部門」→「追加」。</p>
+
+<h3>② 勘定科目（既にある科目は作らなくてOK）</h3>
+<p>LiveGateのMFに、次の科目があるか確認し、<b>無いものだけ</b>追加してください。</p>
+<table>
+  <tr><th>区分</th><th>勘定科目</th><th>使い道</th></tr>
+  <tr><td>給与</td><td>給料手当／雑給／通勤手当／法定福利費</td><td>黒霧屋スタッフの給与仕訳（社員＝給料手当、アルバイト＝雑給）</td></tr>
+  <tr><td>給与（貸方）</td><td>預り金／未払金</td><td>源泉所得税・給料の振込額</td></tr>
+  <tr><td>仕入・経費</td><td>仕入高／買掛金／広告宣伝費／販売促進費／衛生管理費／通信費／修繕費／支払手数料／備品・消耗品費／水道光熱費／地代家賃</td><td>黒霧屋の請求書（仕入・広告・清掃など）</td></tr>
+</table>
+
+<h3>③ 補助科目</h3>
+<p><b>まず必要なもの（給与仕訳に必須）</b>：以下の名前で作ります（勘定科目ごと）。</p>
+<table>
+  <tr><th>勘定科目</th><th>補助科目（<b>この通りに</b>）</th></tr>
+  <tr><td>給料手当</td><td><code>06新横浜黒霧屋</code></td></tr>
+  <tr><td>雑給</td><td><code>06/新横浜黒霧屋</code></td></tr>
+  <tr><td>通勤手当</td><td><code>06/新横浜黒霧屋</code></td></tr>
+  <tr><td>法定福利費</td><td><code>06/新横浜黒霧屋</code></td></tr>
+  <tr><td>預り金</td><td><code>源泉所得税</code></td></tr>
+  <tr><td>未払金</td><td><code>給料</code></td></tr>
+</table>
+<small>※トーホー側では、給料手当は <code>06新横浜黒霧屋</code>、それ以外は <code>06/新横浜黒霧屋</code>（スラッシュ付き）の表記です。これも<b>そのまま同じに</b>してください（表記の揺れもトーホー側に合わせます）。</small>
+
+<p><b>請求書の登録で使うもの（任意・必要になったときで大丈夫）</b>：請求書を登録するとき、補助科目がMFに無いと「補助科目がMFに見つかりません」と画面に出ます。その都度作る形でも構いませんが、下の「黒霧屋で実際によく使っている」補助科目を先に作っておくと楽です（トーホー側の7月〜10月の実績から抽出）。</p>
+<table>
+  <tr><th>勘定科目</th><th>補助科目の例（取引先・媒体の名前）</th></tr>
+  <tr><td>仕入高</td><td>㈱プレコフーズ／㈱西原商会／リクエ／成瀬商店／㈲伊勢五本店／㈲森和／㈲染谷商店／コカ・コーラボトラーズ／ティーポールサービス／丸大フード／吉川商店／日本食研㈱／内田米店／㈲ユタカチクサン／豊栄</td></tr>
+  <tr><td>広告宣伝費</td><td>食べログ／ぐるなび／リクルート/ホットペッパー／TLマーケティング／JAPAN SELECT／RETTY</td></tr>
+  <tr><td>販売促進費</td><td>㈱WOLF＆CO.／合）ReBORN</td></tr>
+  <tr><td>衛生管理費</td><td>害虫駆除／ゴミ処理／おしぼり</td></tr>
+  <tr><td>通信費</td><td>㈱ダイニー／第一興商／NTT</td></tr>
+</table>
+<small>※取引先の請求書の宛先が11月分から LiveGate に変わるかは、取引先ごとに違います。宛先が変わった取引先から順に必要になります。</small>
+
+<h3>終わったら</h3>
+<ol>
+  <li>「U4を済ませました」とお知らせください。</li>
+  <li>こちらで、LiveGateの部門一覧に <code>06新横浜黒霧屋</code> があること、給与で使う科目・補助科目が揃っていることを確認します。足りないものがあれば、一覧にしてお伝えします。</li>
+</ol>
+
+<h2>このあとの流れ（参考）</h2>
+<table>
+  <tr><th>いつ</th><th>何が起きるか</th></tr>
+  <tr><td>10/24まで</td><td>U3（認可）→ 私が疎通確認</td></tr>
+  <tr><td>10/28まで</td><td>U4（部門・科目）→ 私が揃っているか確認</td></tr>
+  <tr><td>11/1〜</td><td>黒霧屋の11月分の給与仕訳は、LiveGateのMF（部門 06新横浜黒霧屋）に入ります。請求書は、宛先法人を毎回確認する「法人移行期間」の扱い（11〜12月）で、承認画面に表示します。</td></tr>
+</table>
+
+</body>
+</html>
