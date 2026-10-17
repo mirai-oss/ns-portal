@@ -49,6 +49,11 @@ where i.current_stage in ('approved','payment_waiting','paid','completed')
   and i.mf_journal_id is not null
   and l->'debit'->>'account' = '仕入高'
   and nullif(l->>'store_id','') is not null
+  -- 精算書ルート（担当C・invoice-checkが checks->'routes' に付与）の行は除外＝精算書→PLで入るため二重計上になる。
+  -- 黒霧屋 新横浜（2026-11-01〜運営会社LiveGate）のような使い分け店舗も、この判定で自動的に外れる。
+  and coalesce((select r->>'route' from jsonb_array_elements(coalesce(i.checks->'routes','[]'::jsonb)) r where r->>'store_id' = l->>'store_id' limit 1), 'pl') <> 'seisan'
+  -- 精算書の対象店舗（stores.seisan_target / seisan_pl_categories_target）も対象外（§11-3）
+  and not exists (select 1 from public.stores st where st.id = (l->>'store_id')::uuid and (coalesce(st.seisan_target, false) or coalesce(st.seisan_pl_categories_target, false)))
 group by 1, 2, 3, 4, 5;
 revoke all on public.v_shiire_approved_monthly from public, anon, authenticated;
 grant select on public.v_shiire_approved_monthly to service_role;
