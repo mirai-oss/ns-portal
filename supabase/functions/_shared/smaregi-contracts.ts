@@ -106,3 +106,29 @@ export async function staffIdsByUser(sb: any, contractId: string, userIds: strin
   for (const r of data ?? []) out[r.user_id] = String(r.smaregi_staff_id);
   return out;
 }
+
+// ---- 所属(staff_stores)の書き込み用: 役割ID ----
+// スマレジの PUT /staffs/{id}/staff_stores/{store_id} は役割ID(roleId)が必須。役割は事業所ごとに持つ（事業所管理者／社員／アルバイト）。
+// 管理システムの区分 → スマレジの役割名: AL=アルバイト、それ以外=社員（管理者権限は自動では付けない）。
+export const wantedRoleName = (userRole: string | null | undefined) => (userRole === "AL" ? "アルバイト" : "社員");
+
+export async function fetchRoles(contractId: string, token: string, smaregiStoreIds: string[]): Promise<{ storeId: string; roleId: string; roleName: string }[]> {
+  if (!smaregiStoreIds.length) return [];
+  const r = await fetch(`${API_BASE}/${contractId}/timecard/roles?store_id=${[...new Set(smaregiStoreIds)].join(",")}&limit=1000`, { headers: { Authorization: `Bearer ${token}` } });
+  const j = await r.json().catch(() => null);
+  if (!r.ok) throw new Error(`役割一覧の取得に失敗(${r.status}): ${JSON.stringify(j).slice(0, 160)}`);
+  const arr = Array.isArray(j) ? j : (j?.roles ?? []);
+  return arr.map((x: any) => ({ storeId: String(x.storeId), roleId: String(x.roleId), roleName: String(x.roleName ?? "") }));
+}
+
+export const pickRoleId = (roles: { storeId: string; roleId: string; roleName: string }[], smaregiStoreId: string, roleName: string): string | null =>
+  roles.find((x) => x.storeId === String(smaregiStoreId) && x.roleName === roleName)?.roleId ?? null;
+
+// 所属の追加。roleIdは文字列で送り、400（型の指摘）なら整数で1回だけ再送する
+export async function putStaffStore(contractId: string, token: string, staffId: string, smaregiStoreId: string, roleId: string): Promise<{ ok: boolean; status: number; text: string }> {
+  const url = `${API_BASE}/${contractId}/timecard/staffs/${staffId}/staff_stores/${encodeURIComponent(smaregiStoreId)}`;
+  const send = (rid: string | number) => fetch(url, { method: "PUT", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ roleId: rid }) });
+  let r = await send(roleId);
+  if (r.status === 400) r = await send(Number(roleId));
+  return { ok: r.ok, status: r.status, text: r.ok ? "" : (await r.text()).slice(0, 200) };
+}

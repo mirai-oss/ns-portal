@@ -19,7 +19,7 @@
 // 認可: service_role直呼び、または CEO/HQ のJWT。
 // 応答は件数のみ（公開リポジトリのActionsログに氏名・店舗名を残さない）。名前を含む詳細はLark(社内)と staff_store_sync_log にだけ出す。
 import { createClient } from "npm:@supabase/supabase-js@2";
-import { loadContracts, getContractToken, loadLinks, loadStoreMap, API_BASE } from "../_shared/smaregi-contracts.ts";
+import { loadContracts, getContractToken, loadLinks, loadStoreMap, API_BASE, fetchRoles, pickRoleId, putStaffStore, wantedRoleName } from "../_shared/smaregi-contracts.ts";
 import { larkPost } from "../_shared/cockpit.ts";
 
 const SCOPES = "timecard.staffs:read timecard.staffs:write timecard.stores:read";
@@ -176,11 +176,12 @@ Deno.serve(async (req) => {
         const userIds = links.map((l: any) => l.user_id);
         const { data: usAll } = userIds.length ? await sb.from("user_stores").select("user_id,store_id,is_primary").in("user_id", userIds) : { data: [] as any[] };
         const { data: ledgerAll } = userIds.length ? await sb.from("staff_store_sync").select("user_id,store_id,smaregi_staff_id").eq("contract_id", c.contract_id).in("user_id", userIds) : { data: [] as any[] };
-        const { data: userNames } = userIds.length ? await sb.from("users").select("id,name").in("id", userIds) : { data: [] as any[] };
+        const { data: userNames } = userIds.length ? await sb.from("users").select("id,name,role").in("id", userIds) : { data: [] as any[] };
         // 退職日を過ぎた人・無効化されたユーザーは同期の対象外（スマレジ側も退職扱いで所属が無く、店舗を足しても意味がないため）
         const { data: profs } = userIds.length ? await sb.from("employee_profiles").select("user_id,termination_date").in("user_id", userIds) : { data: [] as any[] };
         const terminated = new Set((profs ?? []).filter((r: any) => r.termination_date && r.termination_date < today).map((r: any) => r.user_id));
-        const uname: Record<string, string> = {}; (userNames ?? []).forEach((r: any) => { uname[r.id] = r.name; });
+        const uname: Record<string, string> = {}; const urole: Record<string, string> = {};
+        (userNames ?? []).forEach((r: any) => { uname[r.id] = r.name; urole[r.id] = r.role; });
 
         type Plan = { userId: string; staffId: string; M: Set<string>; S: Set<string>; L: Set<string> | null; kind: "push" | "import" | "conflict" | "skip" | "none"; reason?: string };
         const plans: Plan[] = [];
@@ -231,9 +232,14 @@ Deno.serve(async (req) => {
               // 管理システム → スマレジ
               const adds = minus(p.M, p.S), dels = minus(p.S, p.M);
               if (apply) {
+                // 追加には役割ID(roleId)が必須（AL=アルバイト／それ以外=社員。追加先の事業所ごとに引く）
+                const roles = adds.length ? await fetchRoles(c.contract_id, token, adds.map((st) => reverse[st])) : [];
+                const want = wantedRoleName(urole[p.userId]);
                 for (const st of adds) {
-                  const r = await tcApi(c.contract_id, token, `/staffs/${p.staffId}/staff_stores/${encodeURIComponent(reverse[st])}`, { method: "PUT", body: JSON.stringify({}) });
-                  if (!r.ok) throw new Error(`スマレジへの所属追加に失敗(${r.status}): ${(await r.text()).slice(0, 120)}`);
+                  const roleId = pickRoleId(roles, reverse[st], want);
+                  if (!roleId) throw new Error(`スマレジの事業所${reverse[st]}に役割「${want}」が見つかりません`);
+                  const r = await putStaffStore(c.contract_id, token, p.staffId, reverse[st], roleId);
+                  if (!r.ok) throw new Error(`スマレジへの所属追加に失敗(${r.status}): ${r.text}`);
                 }
                 for (const st of dels) {
                   const r = await tcApi(c.contract_id, token, `/staffs/${p.staffId}/staff_stores/${encodeURIComponent(reverse[st])}`, { method: "DELETE" });

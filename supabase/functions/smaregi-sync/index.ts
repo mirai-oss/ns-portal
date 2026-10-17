@@ -18,7 +18,7 @@
 //   { action: "push_profile", user_id } → 2026-09-05追加。nippo側のemployee_profilesの内容を
 //     連携済みのスマレジへ反映（プッシュ方向。既に連携済みの人が対象。本人 or CEO/HQ）
 import { createClient } from "npm:@supabase/supabase-js@2";
-import { loadContracts, loadStoreMap, ID_BASE, API_BASE } from "../_shared/smaregi-contracts.ts";
+import { loadContracts, loadStoreMap, ID_BASE, API_BASE, fetchRoles, pickRoleId, putStaffStore, wantedRoleName } from "../_shared/smaregi-contracts.ts";
 
 // 2026-10-17 担当D: 複数契約対応。契約は引数contract_id（省略時は既定の契約＝トーホー）で指定する。
 // sync(入社登録)・terminate(退職)・push_profile・test・staffs が契約ごとに動く。invite/invite_staffs（スマレジ→ポータルの招待）は
@@ -666,10 +666,15 @@ Deno.serve(async (req) => {
       let addedToSmaregi = 0, removedFromSmaregi = 0, addedToPortal = 0, removedFromPortal = 0;
       if (direction === "portal_to_smaregi") {
         if (!portalIds.size && smaregiStoreIds.size) return json({ ok: false, error: "管理システム側のこの契約の所属が0件のため実行しません（スマレジの所属を全部消してしまうため）。反対向き（スマレジに合わせる）を選ぶか、所属を登録してください" }, 400);
+        // 追加には役割ID(roleId)が必須。区分に合う役割（AL=アルバイト／それ以外=社員）を、追加先の事業所ごとに引く
+        const { data: urole } = await sb.from("users").select("role").eq("id", uid).maybeSingle();
+        const roles = onlyPortal.length ? await fetchRoles(C, token, onlyPortal.map((st) => reverse[st])) : [];
         for (const st of onlyPortal) {
           const smId = reverse[st];
-          const r = await api(C, token, `/staffs/${staffId}/staff_stores/${encodeURIComponent(smId)}`, { method: "PUT", body: JSON.stringify({}) });
-          if (!r.ok) return json({ ok: false, error: `スマレジへの所属追加に失敗(${r.status}): ${(await r.text()).slice(0, 200)}`, added: addedToSmaregi, removed: removedFromSmaregi }, 500);
+          const roleId = pickRoleId(roles, smId, wantedRoleName(urole?.role));
+          if (!roleId) return json({ ok: false, error: `スマレジの事業所${smId}に役割「${wantedRoleName(urole?.role)}」が見つかりません`, added: addedToSmaregi, removed: removedFromSmaregi }, 500);
+          const r = await putStaffStore(C, token, staffId, smId, roleId);
+          if (!r.ok) return json({ ok: false, error: `スマレジへの所属追加に失敗(${r.status}): ${r.text}`, added: addedToSmaregi, removed: removedFromSmaregi }, 500);
           addedToSmaregi++;
         }
         for (const st of onlySmaregi) {
