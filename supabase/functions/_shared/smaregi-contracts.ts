@@ -124,11 +124,13 @@ export async function fetchRoles(contractId: string, token: string, smaregiStore
 export const pickRoleId = (roles: { storeId: string; roleId: string; roleName: string }[], smaregiStoreId: string, roleName: string): string | null =>
   roles.find((x) => x.storeId === String(smaregiStoreId) && x.roleName === roleName)?.roleId ?? null;
 
-// 所属の追加。roleIdは文字列で送り、400（型の指摘）なら整数で1回だけ再送する
+// 所属の追加（公式仕様: roleId=文字列・必須、applicationDisplayFlag=真偽・必須、mailFlag=真偽・必須、displayFlag=任意）。
+// 既存の一般スタッフに合わせて、アプリに表示する(applicationDisplayFlag=true)・シフト通知を受け取る(mailFlag=true)・事業所内に表示する(displayFlag=true)。
 export async function putStaffStore(contractId: string, token: string, staffId: string, smaregiStoreId: string, roleId: string): Promise<{ ok: boolean; status: number; text: string }> {
   const url = `${API_BASE}/${contractId}/timecard/staffs/${staffId}/staff_stores/${encodeURIComponent(smaregiStoreId)}`;
-  const send = (rid: string | number) => fetch(url, { method: "PUT", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ roleId: rid }) });
-  let r = await send(roleId);
-  if (r.status === 400) r = await send(Number(roleId));
+  const r = await fetch(url, {
+    method: "PUT", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ roleId: String(roleId), applicationDisplayFlag: true, mailFlag: true, displayFlag: true }),
+  });
   return { ok: r.ok, status: r.status, text: r.ok ? "" : (await r.text()).slice(0, 200) };
 }
