@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-17-v136";
+const BUILD_TAG="2026-10-17-v137";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -3877,6 +3877,11 @@ function arjLastDayOfMonth(yearMonth){
   const last=new Date(+m[1],+m[2],0); // 月初日を0にすると前月＝指定月の最終日になる
   return `${last.getFullYear()}-${String(last.getMonth()+1).padStart(2,"0")}-${String(last.getDate()).padStart(2,"0")}`;
 }
+// 2026-10-17追加：ユーザー指示「摘要に前半/後半が分かるように・前半は会計計上日を15日、後半は月末」。
+// カード売上(SMBC等)は月2回の明細で、備考(note)に「2026-10前半分」「後半分」と入る。前半なら15日・後半(または区別なし)なら月末
+function arjHalfOf_(row){ const m=String((row&&row.note)||"").match(/(前半|後半)分/); return m?m[1]:""; }
+function arjYmLabel_(row){ const base=(row.year_month||"").replace(/^(\d{4})-(\d{2})$/,"$1年$2月"); if(!base) return ""; const h=arjHalfOf_(row); return `${base}${h?h:""}分`; }
+function arjTxnDate_(row){ if(arjHalfOf_(row)==="前半"){ const m=String(row.year_month||"").match(/^(\d{4})-(\d{2})$/); if(m) return `${m[1]}-${m[2]}-15`; } return arjLastDayOfMonth(row.year_month); }
 async function arjLoadForTenant(tenantId,tenants){
   const body=$("arj-body");
   if(!body) return;
@@ -3920,7 +3925,7 @@ async function arjLoadForTenant(tenantId,tenants){
   }
   const tenantLabel=(tenants||[]).find(t=>t.id===tenantId)?.label||tenantId;
   const idx=mftBuildAccountIndex(accRes.body.accounts||[]); // 設定タブの仕訳辞書編集と共通の索引ビルダーをそのまま流用
-  const ymLabel=(row.year_month||"").replace(/^(\d{4})-(\d{2})$/,"$1年$2月分");
+  const ymLabel=arjYmLabel_(row);
   // 2026-09-17追加：ユーザー報告「PLに反映は出てきたけど、金額（店舗）が違う。自動で仕訳と
   // 同じ勘定科目・店舗で反映されるようにしてほしい」に対応。PL反映パネル（plfeeComputeAllocation）
   // は、登録済み仕訳の借方の部門名（department_name）から店舗を特定して自動で割り振る仕組み
@@ -3974,7 +3979,7 @@ async function arjLoadForTenant(tenantId,tenants){
     // 2026-09-17修正：ユーザー要望「会計計上日を摘要に入る月と同じ月に自動でなるように
     // してほしい。7月であれば7/31で」に対応。従来は常に今日の日付が既定値だったため、
     // 過去月分のデータ（年月をまたいで処理する場合等）では毎回手で直す必要があった
-    date:arjLastDayOfMonth(row.year_month),
+    date:arjTxnDate_(row),
   };
   arjSetDefaultBranches();
   arjRenderForm();
@@ -4300,7 +4305,7 @@ async function arjDryRunAll(u){
         const gross=Number(r.gross_amount)||0;
         if(gross&&gross!==expected+feeParts.reduce((t,v)=>t+v,0)) res.problems.push(`売上決済額${yen(gross)}と入金予定額＋手数料${yen(expected+feeParts.reduce((t,v)=>t+v,0))}が違います`);
       }
-      res.tid=tid; res.map=c.map; res.ymLabel=(r.year_month||"").replace(/^(\d{4})-(\d{2})$/,"$1年$2月分");
+      res.tid=tid; res.map=c.map; res.ymLabel=arjYmLabel_(r);
       results.push(res);
     }
   } finally { ARJ_STATE=saved; }
@@ -4345,7 +4350,7 @@ async function arjBulkRegister(u,items){
             debit:b.debit?{account_id:b.debit.account_id,sub_account_id:b.debit.sub_account_id||undefined,value:b.debitAmount}:undefined,
             credit:b.credit?{account_id:b.credit.account_id,sub_account_id:b.credit.sub_account_id||undefined,value:b.creditAmount}:undefined,
             department_id:b.department_id, tax_id:b.tax_id, credit_department_id:b.credit_department_id, credit_tax_id:b.credit_tax_id, remark:b.remark})),
-          transaction_date:arjLastDayOfMonth(r.year_month), remark:`${x.ymLabel}　${r.source_name||""}`, attach_files:false,
+          transaction_date:arjTxnDate_(r), remark:`${x.ymLabel}　${r.source_name||""}`, attach_files:false,
           debit_account_names:branches.filter(b=>b.debit).map(b=>mftLabelOf(b.debit)), voucher_files:voucherFiles,
         });
         if(!ok){ await release(); fails.push(`${x.storeName}（${r.source_name}）: ${(j&&j.error)||"MF登録に失敗"}`); continue; }
