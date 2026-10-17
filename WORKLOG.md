@@ -740,6 +740,14 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
+**★★★★2026-10-17（レーンP）TK-222 仕入高の月次確定: 置換ロジックまで実装（既定OFF・実データ待ち）／TK-224・TK-207の現状整理**
+- TK-222（設計書§12・Sync13）: `supabase/2026-10-17_shiire_month_confirm.sql`（事前報告様式つき）= 確定記録 `shiire_month_confirmations`（店舗×月・confirmed・vendor_total）／承認済み仕入高ビュー `v_shiire_approved_monthly`（invoices.journal_draft.debit_lines の勘定科目=仕入高・店舗=行のstore_id・月=target_year_monthなければ取引日・税抜優先）／kd_pl_monthly_summaryに `shiire_status('confirmed'|'partial')・shiire_vendors_approved・shiire_vendors_total・shiire_invoice_amount・cost_auto_siire(置換前の速報)`。
+- 動き: `app_secrets.shiire_confirm_enabled='1'` のときだけ有効（既定OFF＝従来どおり）。確定(confirmed=true)の店舗×月は cost_auto を承認済み請求書の仕入高合計に置換（cost_total/粗利/営業利益も連動）。未確定でも承認済みがあれば shiire_status='partial'（置換せず進捗n/全社だけ）。API `kind:'pl'` に5列を追加。診断 `op=shiire_preview`（速報・請求書合計・n/全社・差・確定を店舗×月で一覧）。
+- 現状: 承認済みで仕入高の仕訳明細を持つ請求書は0件（自動処理の本番承認が立会い待ち）＝何も起きない。有効化の条件=①担当Cが全社承認完了で `shiire_month_confirmations.confirmed=true` を書く ②初回は shiire_preview で請求書合計とsiire速報の差（税抜/税込・月の振り分け）を確認 ③担当Aが「確定 n/全社」を表示。
+- 未決（要判断）: 「全社」の定義（想定取引先数をCが宣言する案）／金額の基準（税抜）／kd_store_monthly_summary（F率・FL率）も同様に置換するか（PLと食い違うため置換推奨）。
+- TK-224（ledger上は担当E「会計例外カテゴリ」で別件）: 依頼_レーンP_経営D_F2用kd追加の#1〜#5と media_daily/広告/目標/PL行/スポット/借入は10/5〜10/7に完了済み。残りは任意の営業日区分(holidays)・入金明細・口コミ/ダイニー点数（Aに要否確認）。
+- TK-207（本日売上15分更新）: 10/3にユーザー回答「前日分でよい・リアルタイム不要」で中止済み（データ元がMac miniの1日1回CSVのため15分更新で新しい値が入らない）。台帳のreadyは古い→中止の確認待ち。
+
 **★★★★★2026-10-17（担当F・TK-230）黒霧屋 新横浜の運営変更（トーホー→LiveGate・11/1）§2: SQL作成・検証済み・push済み（`e84d300`）／⚠️本番SQLはユーザー確認待ち（未適用）／LiveGateの店舗ID待ち**: 指示書`指示書_黒霧屋運営変更_2026-11-01_準備_2026-10-17.md`§2。
 - **①運営関係の切替**（[supabase/2026-10-17_store_master_v2_04_kurogiriya_livegate.sql](supabase/2026-10-17_store_master_v2_04_kurogiriya_livegate.sql) のA）: 旧トーホー運営行に`effective_to=2026-10-31`、LiveGate運営行を`effective_from=2026-11-01`で追加（relation_type=outsourcing・名義N-Style・入金先N-Style・契約期間は未登録）。上書きなし・冪等。検証用DBで 2026-10-31=トーホー／2026-11-01=LiveGate を確認（`v_store_current_relations`は今日の日付で判定するので11/1に自動で切り替わる）。
 - **②管理画面での登録**: 同じ「終了日＋新しい行」を管理画面（運営関係→関係を変更）のRPC`smv2_add_operation_relation`で実行できることを検証用DBで確認（旧行に終了日=開始日の前日が入る・開始日が既存より前なら拒否）。今回はSQLで実施。
