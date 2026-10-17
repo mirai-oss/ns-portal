@@ -15,10 +15,10 @@
 //
 // 入力(JSON): { secret, store_id?, year_month?, dry_run? }  認証: invoice_intake_secret（サーバー間）または ログインユーザー(invoice_can_access)
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { evaluateShiire } from "../_shared/shiire-confirm.ts";
 
 const cors: Record<string, string> = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "authorization, content-type, apikey, x-client-info" };
 const json = (o: unknown, status = 200) => new Response(JSON.stringify(o), { status, headers: { ...cors, "Content-Type": "application/json" } });
-const APPROVED = ["approved", "payment_waiting", "paid", "completed"];
 
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: cors });
@@ -40,48 +40,9 @@ Deno.serve(async (req: Request) => {
       .select("id, vendor_id, vendor_name, target_year_month, current_stage, invoice_status, mf_journal_id, journal_draft, checks, created_at")
       .neq("invoice_status", "cancelled").not("journal_draft", "is", null).gte("created_at", sinceDate).limit(2000);
     if (ie) return json({ error: "請求書の取得に失敗: " + ie.message }, 500);
-    // 店舗×月ごとに集計
-    type Cell = { approved: Map<string, { name: string; net: number; inv: string[] }>; pending: Map<string, { name: string; inv: string[] }>; received: Set<string> };
-    const cells = new Map<string, Cell>();
-    const cell = (sid: string, ym: string) => { const k = `${sid}|${ym}`; let c = cells.get(k); if (!c) { c = { approved: new Map(), pending: new Map(), received: new Set() }; cells.set(k, c); } return c; };
-    for (const inv of invs ?? []) {
-      const d: any = inv.journal_draft; const lines: any[] = Array.isArray(d?.debit_lines) ? d.debit_lines : [];
-      const ym = inv.target_year_month ? String(inv.target_year_month).slice(0, 7) : (/^\d{4}-\d{2}/.test(String(d?.transaction_date ?? "")) ? String(d.transaction_date).slice(0, 7) : null);
-      if (!ym) continue;
-      const routes: any[] = Array.isArray(inv.checks?.routes) ? inv.checks.routes : [];
-      const isApproved = APPROVED.includes(inv.current_stage) && !!inv.mf_journal_id;
-      for (const l of lines) {
-        if (l?.debit?.account !== "仕入高" || !l.store_id) continue;
-        if (routes.find((r) => r.store_id === l.store_id)?.route === "seisan") continue;   // 精算書ルートの行は対象外（精算書→PLで入る）
-        const c = cell(l.store_id, ym); const vkey = inv.vendor_id ?? inv.vendor_name ?? inv.id; const net = Number(l.debit.net_amount ?? l.debit.amount) || 0;
-        c.received.add(vkey);
-        if (isApproved) { const v = c.approved.get(vkey) ?? { name: inv.vendor_name ?? "", net: 0, inv: [] }; v.net += net; if (!v.inv.includes(inv.id)) v.inv.push(inv.id); c.approved.set(vkey, v); }
-        else { const v = c.pending.get(vkey) ?? { name: inv.vendor_name ?? "", inv: [] }; if (!v.inv.includes(inv.id)) v.inv.push(inv.id); c.pending.set(vkey, v); }
-      }
-    }
-    // 業務委託精算の店舗は除外
     const { data: stores } = await db.from("stores").select("id, name, seisan_target");
-    const storeMap = new Map((stores ?? []).map((s: any) => [s.id, s]));
-    const prevYm = (ym: string) => { const [y, m] = ym.split("-").map(Number); return new Date(Date.UTC(y, m - 2, 1)).toISOString().slice(0, 7); };
-    const results: any[] = [];
-    for (const [k, c] of cells) {
-      const [sid, ym] = k.split("|");
-      if (body?.store_id && body.store_id !== sid) continue; if (body?.year_month && body.year_month !== ym) continue;
-      const st: any = storeMap.get(sid); if (!st || st.seisan_target) continue;
-      const prev = cells.get(`${sid}|${prevYm(ym)}`);
-      const expected = new Set<string>([...c.received, ...(prev ? [...prev.approved.keys()] : [])]);
-      const missing = [...expected].filter((v) => !c.approved.has(v));
-      const monthOver = ym < curYm;
-      const confirmed = monthOver && c.approved.size > 0 && c.pending.size === 0 && missing.length === 0;
-      const reasons: string[] = [];
-      if (!monthOver) reasons.push("月がまだ終わっていません");
-      if (!c.approved.size) reasons.push("承認済みの仕入高がありません");
-      if (c.pending.size) reasons.push(`未承認の請求書あり（${[...c.pending.values()].map((v) => v.name).join("・")}）`);
-      const nameOf = (v: string) => c.approved.get(v)?.name ?? c.pending.get(v)?.name ?? prev?.approved.get(v)?.name ?? v;
-      if (missing.length) reasons.push(`承認済みになっていない取引先: ${missing.map(nameOf).join("・")}`);
-      const net = [...c.approved.values()].reduce((t, v) => t + v.net, 0);
-      results.push({ store: st.name, store_id: sid, ym, confirmed, approved: c.approved.size, total: expected.size, net, reasons });
-    }
+    let results = evaluateShiire((invs ?? []) as any, (stores ?? []) as any, curYm);
+    results = results.filter((r) => (!body?.store_id || r.store_id === body.store_id) && (!body?.year_month || r.ym === body.year_month));
     if (!body?.dry_run) {
       for (const r of results) {
         const { data: ex } = await db.from("shiire_month_confirmations").select("id, confirmed").eq("store_id", r.store_id).eq("year_month", r.ym).maybeSingle();

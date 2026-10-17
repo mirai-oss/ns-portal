@@ -40,6 +40,11 @@
 
 ---
 
+## 2026-10-17 担当C: TK-222 本番反映済み（SQL・Edge4本・push）＋判定ロジックの試験
+- 反映: `2026-10-17_corp_transition_infomart.sql`（移行期間にinfomart_expected_corp_code=toho）・shiire-confirm-check（新規）/mf-journal/invoice-payment-scan/invoice-check をデプロイ・push。
+- 試運転(dry_run): 現時点で仕入高の請求書は0件（インフォマートの10月分はこれから）→判定対象0・shiire_month_confirmations=0件。何も書かれていない。
+- 判定ロジックを `_shared/shiire-confirm.ts`（純粋関数）に切り出し、架空データ7パターンで試験: 全社承認済み=確定／1社未承認=未確定／月が終わっていない=未確定／前月にいた取引先が今月未着=未確定／精算書ルートの行=対象外／精算店=対象外／承認済みでもMF未登録=未承認扱い。いずれも期待どおり。※この切り出し（動作は同じ）は**コミットのみ・未デプロイ**（本番は切り出し前の同じ動作のまま。次回のデプロイで揃える）。
+
 ## 2026-10-17 担当C: TK-222（仕入高の月次確定）の書き込み側を実装＋黒霧屋の仕入の扱い【ローカルコミット・SQL/デプロイ/push承認待ち】
 - 新規Edge `shiire-confirm-check`: 店舗×月が「①月が終わっている ②承認済みの仕入高が1件以上 ③未承認の仕入高の請求書が無い ④届いている取引先＋前月承認済みの取引先が全て今月承認済み」なら `shiire_month_confirmations.confirmed=true`（vendor_total=想定取引先数・note・confirmed_by='shiire-confirm-check'）。崩れたら confirmed=false に戻す。除外: stores.seisan_target の店舗、invoices.checks.routes の route='seisan' の行（精算書→PLで入るため二重計上になる。黒霧屋の立替分を含む）。dry_run=true で書かずに一覧だけ確認可。起動: 承認のたび（mf-journal create）＋毎日（invoice-payment-scan）。置換の有効化は従来どおりレーンP（shiire_confirm_enabled=1）。
 - レーンPへ（view修正の依頼・未送信）: `v_shiire_approved_monthly` は精算書ルートの行を除いていない。黒霧屋のように使い分け店舗で宛先法人≠運営会社の請求書は route='seisan'（invoices.checks.routes[].route）→精算書経由でPLに入るため、cost_auto置換の合計から除外すること。
