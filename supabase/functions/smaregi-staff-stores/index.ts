@@ -80,10 +80,14 @@ Deno.serve(async (req) => {
       const contract = String(body.contract_id || DEFAULT_CONTRACT);
       const token = await getToken(contract);
       const out: Record<string, unknown> = {};
-      for (const path of ["/roles", ...(body.staff_id ? [`/staffs/${encodeURIComponent(String(body.staff_id))}/staff_stores`] : [])]) {
+      const stores = await pagedGet(contract, token, "/stores", "stores");
+      const ids = stores.map((x: any) => String(x.storeId)).join(",");
+      const paths = [`/roles?store_id=${ids}`, ...(body.staff_id ? [`/staff_stores?staff_id=${encodeURIComponent(String(body.staff_id))}`, `/staffs/${encodeURIComponent(String(body.staff_id))}`] : [])];
+      for (const path of paths) {
         const r = await api(contract, token, path);
         const raw = await r.json().catch(() => null);
-        out[path.replace(/\/\d+\//, "/{id}/")] = { status: r.status, body: r.ok ? raw : JSON.stringify(raw).slice(0, 300) };
+        const key = path.split("?")[0].replace(/\/\d+$/, "/{id}");
+        out[key] = { status: r.status, body: r.ok ? raw : JSON.stringify(raw).slice(0, 300) };
       }
       return json({ ok: true, ...out });
     }
