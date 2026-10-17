@@ -21,11 +21,14 @@ create table if not exists public.smaregi_contracts (
   corporation_id uuid references public.corporations(id),
   contract_id text not null unique,           -- スマレジの契約ID（例 sez093z1）
   label text,
+  corporation_hint text,                      -- store_external_mappings.corporation_hint と対応する識別子（'toho' / 'livegate'）。店舗IDは契約ごとに採番されるため、契約ごとの店舗対応の絞り込みに使う
+  is_default boolean not null default false,  -- 既定の契約（corporation_hintがnullの既存マッピングはこの契約のもの＝互換。1つだけtrue）
   is_active boolean not null default true,
   created_at timestamptz not null default now()
 );
-insert into public.smaregi_contracts (corporation_id, contract_id, label)
-select c.id, 'sez093z1', 'トーホー（スマレジ・タイムカード本番）'
+create unique index if not exists smaregi_contracts_one_default_key on public.smaregi_contracts (is_default) where is_default;
+insert into public.smaregi_contracts (corporation_id, contract_id, label, corporation_hint, is_default)
+select c.id, 'sez093z1', 'トーホー（スマレジ・タイムカード本番）', 'toho', true
 from public.corporations c where c.name = 'トーホー'
 on conflict (contract_id) do nothing;
 

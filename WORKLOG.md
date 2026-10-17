@@ -740,6 +740,8 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
+**★2026-10-17（担当Dスレッド）(C)5本のジョブの契約ループ化をコード準備（未デプロイ・Phase1適用待ち）**: `smaregi-payroll-sync`・`-reconcile`・`smaregi-attendance-sync`・`smaregi-shift-sync`・`smaregi-sync`（sync/terminate/push_profile/test/staffsに`contract_id`）と共通ヘルパー`_shared/smaregi-contracts.ts`。**Deno型チェックで新たな型エラー無し**（reconcile・smaregi-syncの残りはHEADから存在する既存分）。設計: 店舗は契約ごとの対応（`store_external_mappings`のcorporation_hint・有効期間）で解決／シフト結果IDは既定契約=素・他契約=`契約ID:ID`前置で衝突回避／shift-syncは店舗の運営（契約）で送り先を決め判定日はシフト日付／terminateは`contract_id`指定=その契約だけ（移籍）・省略=全契約（退職）。Phase1 SQLに契約マスタの`corporation_hint`・`is_default`を追加（ドライラン再確認済み）。詳細・デプロイ順=[事前報告§7](docs/事前報告_スマレジ複数契約対応Phase1_契約マスタと契約キー_2026-10-17.md)。**【担当Bへ】移籍の承認は`smaregi-sync terminate`に旧契約の`contract_id`を必ず付ける／入社登録ボタンは`sync`にLiveGateの`contract_id`を付ける**。次=ユーザーのPhase1適用承認→適用→順次デプロイ。
+
 **★2026-10-17（担当Dスレッド）(C)Phase1の司令塔レビュー反映・担当Bへ依頼**: 司令塔確認=Phase1は設計と整合OK（旧UNIQUEをPhase2に分ける調整を採用・順序=Phase1適用→契約ループ版payroll-syncデプロイ→Phase2）。ユーザーの適用承認待ち。**【担当Bへ依頼】Phase2適用の前に、`sf_payroll_sync`を人×年月で結合する本番SQL関数2本を兼務（2行）対応にしてください**: ①`hq_create_payroll_tasks`の`join sf_payroll_sync … net_pay>0`→`exists`（人で1回・金額は使わない）②`cash_handoff_targets`の`left join sf_payroll_sync`→`user_id,year_month`で`sum(net_pay)`した副問い合わせ（人で合算）。詳細・理由=[事前報告§3-1](docs/事前報告_スマレジ複数契約対応Phase1_契約マスタと契約キー_2026-10-17.md)。LiveGate法人別の給与タスク/手渡しが必要になったら契約で絞る引数を追加。今後のprogressはTK-231。
 
 **★2026-10-17（司令塔スレッド・続き）所属店舗の初回一致=担当Dが適用完了（user_stores 215→237行・バックアップ表あり・同期台帳212行初期化・主たる店舗が外れた2人は残る所属1つ=本部/黒霧屋）。複数契約対応Phase1の事前報告を司令塔レビュー=設計整合OK（追加のみ・旧UNIQUEはPhase2で外す調整を採用）→**ユーザーの適用承認待ち**（SQL=`supabase/2026-10-17d_smaregi_contracts_links_phase1.sql`・報告=`docs/事前報告_スマレジ複数契約対応Phase1_契約マスタと契約キー_2026-10-17.md`）。Phase2で行が2倍になりうるSQL関数3本の扱いは事前報告§3へ追記依頼。

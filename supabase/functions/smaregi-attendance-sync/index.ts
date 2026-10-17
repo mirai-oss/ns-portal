@@ -20,13 +20,10 @@
 //     現状はservice_role権限での呼び出し（launchd/cron等の内部呼び出し）を主眼に、
 //     人が確認のため叩く場合は認証済みCEO/HQ/マスターのJWTを必須にする。
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { loadContracts, getContractToken, loadLinks, loadStoreMap, API_BASE } from "../_shared/smaregi-contracts.ts";
 
-const IS_PROD = Deno.env.get("SMAREGI_ENV") === "prod";
-const ID_BASE = IS_PROD ? "https://id.smaregi.jp" : "https://id.smaregi.dev";
-const API_BASE = IS_PROD ? "https://api.smaregi.jp" : "https://api.smaregi.dev";
-const CONTRACT = Deno.env.get("SMAREGI_CONTRACT_ID") ?? "";
-const CID = Deno.env.get("SMAREGI_CLIENT_ID") ?? "";
-const SECRET = Deno.env.get("SMAREGI_CLIENT_SECRET") ?? "";
+// 2026-10-17 担当D: 複数契約対応。契約（smaregi_contracts）ごとにループし、従業員×契約リンクのスタッフIDと
+// 契約ごとの店舗対応（store_external_mappings）で勤怠を取り込む（契約が違えば同じ番号の事業所IDが別店舗を指すため）。
 const SCOPES = "timecard.shifts:read timecard.shifts:write";
 
 const cors: Record<string, string> = {
@@ -45,23 +42,9 @@ function jwtUid(req: Request): string {
   } catch (_) { return ""; }
 }
 
-async function getToken(): Promise<string> {
-  const res = await fetch(`${ID_BASE}/app/${CONTRACT}/token`, {
-    method: "POST",
-    headers: {
-      Authorization: "Basic " + btoa(`${CID}:${SECRET}`),
-      "Content-Type": "application/x-www-form-urlencoded",
-    },
-    body: "grant_type=client_credentials&scope=" + encodeURIComponent(SCOPES),
-  });
-  const j = await res.json();
-  if (!res.ok || !j.access_token) throw new Error("スマレジ認証に失敗しました: " + JSON.stringify(j));
-  return j.access_token;
-}
-
 // {y}-{m} の月ごとにdaily(division=result)を取得。年月をまたぐ範囲指定はこの関数の外でループする
-async function fetchMonthResults(token: string, staffId: string, year: number, month: number) {
-  const url = `${API_BASE}/${CONTRACT}/timecard/shifts/staffs/${staffId}/daily?division=result&year=${year}&month=${String(month).padStart(2, "0")}`;
+async function fetchMonthResults(token: string, contract: string, staffId: string, year: number, month: number) {
+  const url = `${API_BASE}/${contract}/timecard/shifts/staffs/${staffId}/daily?division=result&year=${year}&month=${String(month).padStart(2, "0")}`;
   const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
   if (!res.ok) {
     const t = await res.text();
@@ -126,12 +109,6 @@ Deno.serve(async (req) => {
     const dateFrom = new Date(body.date_from || yesterdayStr);
     const dateTo = new Date(body.date_to || yesterdayStr);
 
-    const { data: profs } = await sb.from("employee_profiles").select("user_id,smaregi_staff_id").not("smaregi_staff_id", "is", null);
-    const { data: stores } = await sb.from("stores").select("id,smaregi_store_id").not("smaregi_store_id", "is", null);
-    const storeMap: Record<string, string> = {};
-    (stores ?? []).forEach((s: any) => { storeMap[s.smaregi_store_id] = s.id; });
-
-    const token = await getToken();
     const monthsSeen = new Set<string>();
     let cur = new Date(dateFrom);
     const months: Array<{ y: number; m: number }> = [];
@@ -153,15 +130,32 @@ Deno.serve(async (req) => {
     //   1日1行でupsertする（onConflictも(user_id,work_date)に変更）
     const attendanceByDay = new Map<string, { user_id: string; store_id: string; work_date: string; clock_in: string | null; clock_out: string | null }>();
 
-    for (const p of profs ?? []) {
+    const contracts = await loadContracts(sb, body.contract_id ? String(body.contract_id) : undefined);
+    if (!contracts.length) return json({ ok: false, error: "有効なスマレジ契約がありません（smaregi_contracts または環境変数）" }, 500);
+    const byContract: any[] = [];
+    let contractsFailed = 0;
+    let totalStaff = 0;
+
+    for (const c of contracts) {
+    const tag = `…${c.contract_id.slice(-3)}`;
+    const sum = { contract: tag, label: c.label, staff: 0, inserted: 0, errors: 0 };
+    byContract.push(sum);
+    let token: string, links: any[], storeMap: Record<string, string>;
+    try {
+      token = await getContractToken(c.contract_id, SCOPES);
+      links = await loadLinks(sb, c.contract_id, dateFrom.toISOString().slice(0, 10), dateTo.toISOString().slice(0, 10));
+      storeMap = await loadStoreMap(sb, c);
+    } catch (e) { errors.push(`契約${tag}: ${String(e)}`); sum.errors++; contractsFailed++; continue; } // 契約単位で失敗を記録し他の契約は続行
+    sum.staff = links.length; totalStaff += links.length;
+    for (const p of links) {
       for (const { y, m } of months) {
         try {
-          const recs = await fetchMonthResults(token, p.smaregi_staff_id, y, m);
+          const recs = await fetchMonthResults(token, c.contract_id, p.smaregi_staff_id, y, m);
           for (const r of recs) {
             const d = new Date(r.date);
             if (d < dateFrom || d > dateTo) continue; // 月単位取得なので範囲外は捨てる
             const storeId = storeMap[r.storeIdSmaregi];
-            if (!storeId) { errors.push(`store未対応: smaregi_store_id=${r.storeIdSmaregi}`); continue; }
+            if (!storeId) { errors.push(`store未対応: 契約${tag} smaregi_store_id=${r.storeIdSmaregi}`); sum.errors++; continue; }
             if (!r.shiftResultId) { skipped++; continue; }
 
             // attendance_records用に日別でまとめる（実際のupsertはループの外で1日1回だけ行う）
@@ -174,6 +168,8 @@ Deno.serve(async (req) => {
               if (r.leaving && (!cur.clock_out || r.leaving > cur.clock_out)) cur.clock_out = r.leaving;
             }
 
+            // スマレジのシフト結果IDは契約ごとの採番（別契約で同じ番号がありうる）。既定の契約は従来どおり素のID、それ以外は契約IDを前置して衝突を防ぐ
+            const shiftKey = c.is_default ? r.shiftResultId : `${c.contract_id}:${r.shiftResultId}`;
             // labor_cost_daily（集計・見積もり。computed_costの自前計算は次フェーズ）
             const { error: lcErr } = await sb.from("labor_cost_daily").upsert({
               user_id: p.user_id,
@@ -185,14 +181,14 @@ Deno.serve(async (req) => {
               tardy: r.tardy,
               early_leaving: r.earlyLeaving,
               smaregi_estimate_cost: r.personnelExpenses,
-              smaregi_shift_result_id: r.shiftResultId,
+              smaregi_shift_result_id: shiftKey,
               smaregi_staff_id: p.smaregi_staff_id,
               source: "smaregi",
               updated_at: new Date().toISOString(),
             }, { onConflict: "smaregi_shift_result_id" });
             if (lcErr) { errors.push(`labor_cost_daily upsert失敗 (${r.shiftResultId}): ${lcErr.message}`); continue; }
 
-            inserted++;
+            inserted++; sum.inserted++;
           }
         } catch (e) {
           // 2026-09-09追加: スマレジ側にそもそも存在しないstaff_id（400 Bad Request「所属事業所が存在しません。ID: xxx」）は、
@@ -209,6 +205,8 @@ Deno.serve(async (req) => {
       }
     }
 
+    } // for contracts
+
     // attendance_records（生ログ）は1日1行にまとめてから書き込む
     for (const rec of attendanceByDay.values()) {
       const { error: arErr } = await sb.from("attendance_records").upsert({
@@ -223,10 +221,11 @@ Deno.serve(async (req) => {
     }
 
     return json({
-      ok: true,
+      ok: contractsFailed < contracts.length,
+      contracts: byContract,
       dateFrom: dateFrom.toISOString().slice(0, 10),
       dateTo: dateTo.toISOString().slice(0, 10),
-      staffCount: (profs ?? []).length,
+      staffCount: totalStaff,
       inserted,
       skipped,
       staffNotFoundCount: staffNotFound.length,

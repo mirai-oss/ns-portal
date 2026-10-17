@@ -2,13 +2,10 @@
 // docs/シフト打刻_設計書.md v1.0 §4e
 // v2.6.82: 個別削除(delete_one)・スマレジ側の既存予定を取り込む(import_from_smaregi)を追加
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { getContractToken, resolveStoreContract, staffIdsByUser, API_BASE } from "../_shared/smaregi-contracts.ts";
 
-const IS_PROD = Deno.env.get("SMAREGI_ENV") === "prod";
-const ID_BASE = IS_PROD ? "https://id.smaregi.jp" : "https://id.smaregi.dev";
-const API_BASE = IS_PROD ? "https://api.smaregi.jp" : "https://api.smaregi.dev";
-const CONTRACT = Deno.env.get("SMAREGI_CONTRACT_ID") ?? "";
-const CID = Deno.env.get("SMAREGI_CLIENT_ID") ?? "";
-const SECRET = Deno.env.get("SMAREGI_CLIENT_SECRET") ?? "";
+// 2026-10-17 担当D: 複数契約対応。シフトは店舗単位の操作なので、店舗の運営（＝スマレジ契約）で送り先の契約を決める
+// （店舗の対応は store_external_mappings の有効期間で引く＝運営変更の前後で別契約に切り替わる。判定日はシフトの日付）。
 const SCOPES = "timecard.shifts:read timecard.shifts:write";
 
 const cors: Record<string, string> = {
@@ -33,20 +30,6 @@ function jwtUid(req: Request): string {
     const jwt = (req.headers.get("Authorization") ?? "").replace(/^Bearer\s+/i, "");
     return JSON.parse(atob(jwt.split(".")[1].replace(/-/g, "+").replace(/_/g, "/"))).sub ?? "";
   } catch (_) { return ""; }
-}
-
-async function getToken(): Promise<string> {
-  const res = await fetch(`${ID_BASE}/app/${CONTRACT}/token`, {
-    method: "POST",
-    headers: {
-      Authorization: "Basic " + btoa(`${CID}:${SECRET}`),
-      "Content-Type": "application/x-www-form-urlencoded",
-    },
-    body: "grant_type=client_credentials&scope=" + encodeURIComponent(SCOPES),
-  });
-  const j = await res.json();
-  if (!res.ok || !j.access_token) throw new Error("token error: " + JSON.stringify(j));
-  return j.access_token;
 }
 
 // マスター/CEO/HQ/TEAMは常に可、TENCHOは自店舗のみ
@@ -84,13 +67,15 @@ Deno.serve(async (req) => {
     if (action === "delete_one") {
       const shiftId = String(body.shift_id ?? "");
       if (!shiftId) return json({ ok: false, error: "shift_id required" }, 400);
-      const { data: row } = await sb.from("sf_shifts").select("id,store_id,smaregi_shift_result_id").eq("id", shiftId).maybeSingle();
+      const { data: row } = await sb.from("sf_shifts").select("id,store_id,work_date,smaregi_shift_result_id").eq("id", shiftId).maybeSingle();
       if (!row) return json({ ok: true }); // 既に無ければ削除済み扱い
       if (!(await callerAllowed(sb, uid, row.store_id))) return json({ ok: false, error: "forbidden" }, 403);
       if (row.smaregi_shift_result_id) {
+        const rcDel = await resolveStoreContract(sb, row.store_id, String(row.work_date));
+        if (!rcDel) return json({ ok: false, error: "店舗のスマレジ契約・店舗IDが特定できません" }, 400);
         let token: string;
-        try { token = await getToken(); } catch (e) { return json({ ok: false, error: "スマレジ認証に失敗しました: " + String(e) }, 502); }
-        const res = await fetch(`${API_BASE}/${CONTRACT}/timecard/shifts/${row.smaregi_shift_result_id}`, {
+        try { token = await getContractToken(rcDel.contract.contract_id, SCOPES); } catch (e) { return json({ ok: false, error: "スマレジ認証に失敗しました: " + String(e) }, 502); }
+        const res = await fetch(`${API_BASE}/${rcDel.contract.contract_id}/timecard/shifts/${row.smaregi_shift_result_id}`, {
           method: "DELETE",
           headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
           body: JSON.stringify({ division: "schedule" }),
@@ -111,8 +96,12 @@ Deno.serve(async (req) => {
     if (!periodKey || !storeId) return json({ ok: false, error: "period_key and store_id required" }, 400);
     if (!(await callerAllowed(sb, uid, storeId))) return json({ ok: false, error: "forbidden" }, 403);
 
-    const { data: store } = await sb.from("stores").select("smaregi_store_id").eq("id", storeId).single();
-    const smStoreId = store?.smaregi_store_id;
+    // 期間の開始日で契約・事業所IDを決める（A=1日〜／B=16日〜。期間は運営変更日(月初)をまたがない）
+    const pr0 = periodRange(periodKey);
+    const periodStart = pr0 ? `${pr0.year}-${String(pr0.month).padStart(2, "0")}-${String(pr0.fromDay).padStart(2, "0")}` : new Date().toISOString().slice(0, 10);
+    const rc = await resolveStoreContract(sb, storeId, periodStart);
+    const smStoreId = rc?.smaregiStoreId;
+    const contractId = rc?.contract.contract_id ?? "";
 
     // ---- スマレジと常に同じ状態に合わせる（Smaregi→ポータルの一方向リコンサイル。追加・時刻の食い違い修正・スマレジ側で消えた分の削除） ----
     if (action === "import_from_smaregi") {
@@ -124,9 +113,9 @@ Deno.serve(async (req) => {
       const userIds = [...new Set((members ?? []).map((m: any) => m.user_id))];
       if (!userIds.length) return json({ ok: true, added: 0, updated: 0, removed: 0 });
 
-      const { data: profs } = await sb.from("employee_profiles").select("user_id,smaregi_staff_id").in("user_id", userIds);
+      const userToStaff = await staffIdsByUser(sb, contractId, userIds as string[], periodStart);
       const staffToUser: Record<string, string> = {};
-      (profs ?? []).forEach((p: any) => { if (p.smaregi_staff_id) staffToUser[p.smaregi_staff_id] = p.user_id; });
+      Object.entries(userToStaff).forEach(([uid2, sid]) => { staffToUser[sid] = uid2; });
       const staffIds = Object.keys(staffToUser);
       if (!staffIds.length) return json({ ok: true, added: 0, updated: 0, removed: 0 });
 
@@ -152,7 +141,7 @@ Deno.serve(async (req) => {
       const conflicts: string[] = [];
 
       let token: string;
-      try { token = await getToken(); } catch (e) { return json({ ok: false, error: "スマレジ認証に失敗しました: " + String(e) }, 502); }
+      try { token = await getContractToken(contractId, SCOPES); } catch (e) { return json({ ok: false, error: "スマレジ認証に失敗しました: " + String(e) }, 502); }
 
       // スマレジ側の現状（この店舗・対象スタッフ・対象月）を1人1日1件に正規化
       const smaregiByKey: Record<string, { shiftResultId: string; start: string; end: string }> = {};
@@ -161,7 +150,7 @@ Deno.serve(async (req) => {
         let res: Response;
         try {
           res = await fetch(
-            `${API_BASE}/${CONTRACT}/timecard/shifts/staffs/${staffId}/daily?division=schedule&year=${range.year}&month=${String(range.month).padStart(2, "0")}&store_id=${smStoreId}`,
+            `${API_BASE}/${contractId}/timecard/shifts/staffs/${staffId}/daily?division=schedule&year=${range.year}&month=${String(range.month).padStart(2, "0")}&store_id=${smStoreId}`,
             { headers: { Authorization: `Bearer ${token}` } },
           );
         } catch (_e) { continue; }
@@ -259,13 +248,11 @@ Deno.serve(async (req) => {
     }
 
     const userIds = [...new Set(shifts.map((s) => s.user_id))];
-    const { data: profs } = await sb.from("employee_profiles").select("user_id,smaregi_staff_id").in("user_id", userIds);
-    const staffMap: Record<string, string> = {};
-    (profs ?? []).forEach((p: any) => { if (p.smaregi_staff_id) staffMap[p.user_id] = p.smaregi_staff_id; });
+    const staffMap = await staffIdsByUser(sb, contractId, userIds as string[], periodStart);
 
     let token: string;
     try {
-      token = await getToken();
+      token = await getContractToken(contractId, SCOPES);
     } catch (e) {
       return json({ ok: false, error: "スマレジ認証に失敗しました: " + String(e) }, 502);
     }
@@ -297,13 +284,13 @@ Deno.serve(async (req) => {
         };
         let res: Response;
         if (s.smaregi_shift_result_id) {
-          res = await fetch(`${API_BASE}/${CONTRACT}/timecard/shifts/${s.smaregi_shift_result_id}`, {
+          res = await fetch(`${API_BASE}/${contractId}/timecard/shifts/${s.smaregi_shift_result_id}`, {
             method: "PUT",
             headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
             body: JSON.stringify(payload),
           });
         } else {
-          res = await fetch(`${API_BASE}/${CONTRACT}/timecard/shifts/${smStoreId}/${staffId}`, {
+          res = await fetch(`${API_BASE}/${contractId}/timecard/shifts/${smStoreId}/${staffId}`, {
             method: "POST",
             headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
             body: JSON.stringify(payload),

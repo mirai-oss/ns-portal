@@ -18,11 +18,12 @@
 //   { action: "push_profile", user_id } → 2026-09-05追加。nippo側のemployee_profilesの内容を
 //     連携済みのスマレジへ反映（プッシュ方向。既に連携済みの人が対象。本人 or CEO/HQ）
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { loadContracts, loadStoreMap, ID_BASE, API_BASE } from "../_shared/smaregi-contracts.ts";
 
+// 2026-10-17 担当D: 複数契約対応。契約は引数contract_id（省略時は既定の契約＝トーホー）で指定する。
+// sync(入社登録)・terminate(退職)・push_profile・test・staffs が契約ごとに動く。invite/invite_staffs（スマレジ→ポータルの招待）は
+// invitationsに契約の列が無いため既定の契約のみ（LiveGateの人は管理システムの入社登録=sync→employee_smaregi_linksで連携する）。
 const IS_PROD = Deno.env.get("SMAREGI_ENV") === "prod";
-const ID_BASE = IS_PROD ? "https://id.smaregi.jp" : "https://id.smaregi.dev";
-const API_BASE = IS_PROD ? "https://api.smaregi.jp" : "https://api.smaregi.dev";
-const CONTRACT = Deno.env.get("SMAREGI_CONTRACT_ID") ?? "";
 const CID = Deno.env.get("SMAREGI_CLIENT_ID") ?? "";
 const SECRET = Deno.env.get("SMAREGI_CLIENT_SECRET") ?? "";
 const SCOPES = "timecard.staffs:read timecard.staffs:write timecard.stores:read timecard.settings:read";
@@ -52,8 +53,8 @@ async function callerRole(req: Request): Promise<{ uid: string; role: string }> 
   return { uid, role: data && data.is_active ? data.role : "" };
 }
 
-async function getToken(): Promise<string> {
-  const res = await fetch(`${ID_BASE}/app/${CONTRACT}/token`, {
+async function getToken(C: string): Promise<string> {
+  const res = await fetch(`${ID_BASE}/app/${C}/token`, {
     method: "POST",
     headers: {
       Authorization: "Basic " + btoa(`${CID}:${SECRET}`),
@@ -66,8 +67,8 @@ async function getToken(): Promise<string> {
   return j.access_token;
 }
 
-const api = (token: string, path: string, init: RequestInit = {}) =>
-  fetch(`${API_BASE}/${CONTRACT}/timecard${path}`, {
+const api = (C: string, token: string, path: string, init: RequestInit = {}) =>
+  fetch(`${API_BASE}/${C}/timecard${path}`, {
     ...init,
     headers: {
       Authorization: `Bearer ${token}`,
@@ -77,14 +78,14 @@ const api = (token: string, path: string, init: RequestInit = {}) =>
   });
 
 // スタッフ全件（ページング・退職者除外）
-async function fetchAllStaffs(token: string) {
-  const clsRaw = await api(token, "/employee_classifications").then((r) => r.json());
+async function fetchAllStaffs(C: string, token: string) {
+  const clsRaw = await api(C, token, "/employee_classifications").then((r) => r.json());
   const clsArr = Array.isArray(clsRaw) ? clsRaw : (clsRaw?.employeeClassifications ?? []);
   const clsMap: Record<string, string> = {};
   for (const c of clsArr) clsMap[String(c.employeeClassificationId)] = c.employeeClassificationName;
   const staffs: any[] = [];
   for (let page = 1; page <= 20; page++) {
-    const r = await api(token, `/staffs?limit=100&page=${page}`);
+    const r = await api(C, token, `/staffs?limit=100&page=${page}`);
     const raw = await r.json().catch(() => null);
     if (!r.ok) throw new Error("staffs error: " + JSON.stringify(raw));
     const arr = Array.isArray(raw) ? raw : (raw?.staffs ?? []);
@@ -117,13 +118,13 @@ async function fetchAllStaffs(token: string) {
 // store_id で店舗ごとに絞り込んだ一覧を店舗の数だけ呼び、staffId→所属店舗(複数可)の対応表を作る。
 // ユーザー要望「事業所で分かれるようにできない？」（一括招待でどの店舗を選べばいいか分からない）への対応。
 // storeList: [{ id: 内部store UUID, smaregiStoreId: スマレジ側のstore_id(文字列) }]
-async function fetchStaffStoreMap(token: string, storeList: { id: string; smaregiStoreId: string }[]) {
+async function fetchStaffStoreMap(C: string, token: string, storeList: { id: string; smaregiStoreId: string }[]) {
   const map: Record<string, string[]> = {}; // staffId -> [内部store UUID, ...]
   for (const st of storeList) {
     if (!st.smaregiStoreId) continue;
     try {
       for (let page = 1; page <= 5; page++) {
-        const r = await api(token, `/staffs?store_id=${encodeURIComponent(st.smaregiStoreId)}&limit=100&page=${page}`);
+        const r = await api(C, token, `/staffs?store_id=${encodeURIComponent(st.smaregiStoreId)}&limit=100&page=${page}`);
         const raw = await r.json().catch(() => null);
         if (!r.ok) break;
         const arr = Array.isArray(raw) ? raw : (raw?.staffs ?? []);
@@ -140,11 +141,11 @@ async function fetchStaffStoreMap(token: string, storeList: { id: string; smareg
 }
 
 // v2.6.14: スマレジ側で使用中の社員番号を集める（重複を避けるため。退職者も含める）
-async function fetchStaffCodes(token: string): Promise<Set<string>> {
+async function fetchStaffCodes(C: string, token: string): Promise<Set<string>> {
   const set = new Set<string>();
   try {
     for (let page = 1; page <= 20; page++) {
-      const r = await api(token, `/staffs?limit=100&page=${page}`);
+      const r = await api(C, token, `/staffs?limit=100&page=${page}`);
       const raw = await r.json().catch(() => null);
       if (!r.ok) break;
       const arr = Array.isArray(raw) ? raw : (raw?.staffs ?? []);
@@ -161,6 +162,15 @@ Deno.serve(async (req) => {
   try {
     const body = await req.json().catch(() => ({}));
 
+    // 契約の解決（契約IDは契約マスタに登録済みのものだけ許可。省略時は既定の契約＝トーホー）
+    const allContracts = await loadContracts(svc());
+    const reqContract = body.contract_id
+      ? allContracts.find((x) => x.contract_id === String(body.contract_id))
+      : (allContracts.find((x) => x.is_default) ?? allContracts[0]);
+    if (!reqContract) return json({ ok: false, error: body.contract_id ? "未登録のスマレジ契約IDです" : "有効なスマレジ契約がありません" }, 400);
+    const C = reqContract.contract_id;
+    const IS_DEFAULT = reqContract.is_default;
+
     // ---- 未連携スタッフの名前一覧（未ログイン・有効な招待トークン必須） ----
     if (body.action === "invite_staffs") {
       const t = String(body.invite_token ?? "");
@@ -170,8 +180,8 @@ Deno.serve(async (req) => {
       if (!inv || inv.used_at || new Date(inv.expires_at) < new Date()) {
         return json({ ok: false, error: "invalid invite" }, 403);
       }
-      const token = await getToken();
-      const staffs = await fetchAllStaffs(token);
+      const token = await getToken(C);
+      const staffs = await fetchAllStaffs(C, token);
       const { data: profs } = await sb.from("employee_profiles").select("smaregi_staff_id").not("smaregi_staff_id", "is", null);
       const linked = new Set((profs ?? []).map((p: any) => String(p.smaregi_staff_id)));
       // 未連携のみ・個人情報は名前とフリガナだけ返す
@@ -185,25 +195,25 @@ Deno.serve(async (req) => {
 
     if (body.action === "test") {
       if (!isAdmin) return json({ ok: false, error: "forbidden" }, 403);
-      const token = await getToken();
+      const token = await getToken(C);
       const [stores, cls] = await Promise.all([
-        api(token, "/stores").then((r) => r.json()),
-        api(token, "/employee_classifications").then((r) => r.json()),
+        api(C, token, "/stores").then((r) => r.json()),
+        api(C, token, "/employee_classifications").then((r) => r.json()),
       ]);
-      return json({ ok: true, env: IS_PROD ? "prod" : "dev", contract: CONTRACT, stores, classifications: cls });
+      return json({ ok: true, env: IS_PROD ? "prod" : "dev", contract: C, stores, classifications: cls });
     }
 
     if (body.action === "staffs") {
       if (!isAdmin) return json({ ok: false, error: caller.uid ? "forbidden" : "unauthorized" }, caller.uid ? 403 : 401);
-      const token = await getToken();
-      const [staffs, { data: storeRows }] = await Promise.all([
-        fetchAllStaffs(token),
-        svc().from("stores").select("id,smaregi_store_id").not("smaregi_store_id", "is", null),
+      const token = await getToken(C);
+      const [staffs, smStoreMap] = await Promise.all([
+        fetchAllStaffs(C, token),
+        loadStoreMap(svc(), reqContract), // スマレジの事業所ID→店舗UUID（契約ごと）
       ]);
       // 2026-09-02追加: 店舗（事業所）ごとの所属を付与（一括招待画面での絞り込み用）
       const storeMap = await fetchStaffStoreMap(
-        token,
-        (storeRows ?? []).map((s: any) => ({ id: s.id, smaregiStoreId: String(s.smaregi_store_id) })),
+        C, token,
+        Object.entries(smStoreMap).map(([smId, id]) => ({ id, smaregiStoreId: String(smId) })),
       );
       for (const s of staffs) s.storeIds = storeMap[s.staffId] ?? [];
       return json({ ok: true, staffs });
@@ -226,8 +236,8 @@ Deno.serve(async (req) => {
       const { data: profs } = await profQuery;
       if (!profs || !profs.length) return json({ ok: true, updated: [], skipped: [], errorCount: 0, errors: [] });
 
-      const token = await getToken();
-      const staffs = await fetchAllStaffs(token);
+      const token = await getToken(C);
+      const staffs = await fetchAllStaffs(C, token);
       const byStaffId: Record<string, any> = {};
       for (const s of staffs) byStaffId[s.staffId] = s;
 
@@ -279,8 +289,8 @@ Deno.serve(async (req) => {
       if (exists) return json({ ok: false, error: "このスタッフは既にアプリと連携済みです" }, 409);
 
       // スタッフ詳細（メール・氏名）
-      const token = await getToken();
-      const sRes = await api(token, `/staffs/${staffId}`);
+      const token = await getToken(C);
+      const sRes = await api(C, token, `/staffs/${staffId}`);
       const sRaw = await sRes.json().catch(() => null);
       if (!sRes.ok) return json({ ok: false, error: sRaw ?? `HTTP ${sRes.status}` }, 500);
       const staff = Array.isArray(sRaw) ? sRaw[0] : (sRaw?.staffId ? sRaw : (sRaw?.staffs?.[0] ?? sRaw));
@@ -387,35 +397,50 @@ Deno.serve(async (req) => {
       const deactivateOnly = body.deactivate_only === true;
       if (!uid) return json({ ok: false, error: "user_id required" }, 400);
       const sb = svc();
-      const { data: prof } = await sb.from("employee_profiles").select("smaregi_staff_id").eq("user_id", uid).single();
-      const staffId = prof?.smaregi_staff_id;
-      if (!staffId) return json({ ok: true, skipped: "スマレジ未連携のためスキップ" });
-
-      const token = await getToken();
-      if (!deactivateOnly) {
-        const res = await api(token, `/staffs/${staffId}`, {
-          method: "PATCH",
-          body: JSON.stringify({ terminationDate: date }),
-        });
-        const j = await res.json().catch(() => ({}));
-        if (!res.ok) return json({ ok: false, status: res.status, error: j }, 500);
+      // 対象の契約: contract_id指定があればその契約だけ（移籍＝旧契約だけ終了）、省略なら有効なリンクすべて（退職＝全契約を終了）
+      // deactivate_only（退職日の翌日の自動の打刻OFF）は、退職日でリンクが閉じた後に呼ばれるため、閉じたリンクも対象にする
+      const { data: linkRowsAll } = await sb.from("employee_smaregi_links").select("contract_id,smaregi_staff_id,effective_to").eq("user_id", uid);
+      const linkRows = (linkRowsAll ?? []).filter((l: any) => deactivateOnly || !l.effective_to);
+      let targets: { contract: string; staffId: string }[] = linkRows.map((l: any) => ({ contract: l.contract_id, staffId: String(l.smaregi_staff_id) }));
+      if (!targets.length) { // リンク表が未整備の環境向けの互換（employee_profilesの主契約）
+        const { data: prof } = await sb.from("employee_profiles").select("smaregi_staff_id").eq("user_id", uid).single();
+        if (prof?.smaregi_staff_id) targets = [{ contract: allContracts.find((x) => x.is_default)?.contract_id ?? C, staffId: String(prof.smaregi_staff_id) }];
       }
+      if (body.contract_id) targets = targets.filter((t) => t.contract === C);
+      if (!targets.length) return json({ ok: true, skipped: "スマレジ未連携のためスキップ" });
 
-      // 退職日を設定したときは打刻も利用OFF、取り消したときはON（失敗しても退職処理自体は成功扱い）。
-      // deactivate=false(承認時)は打刻を触らない。deactivate_only=trueは必ず打刻OFF
-      let activeResult = "skip";
-      if (deactivateOnly || deactivate) {
-        try {
-          const ar = await api(token, `/staffs/${staffId}/active`, {
-            method: "PUT",
-            body: JSON.stringify({ activeFlag: deactivateOnly ? false : (date ? false : true) }),
+      const results: any[] = [];
+      for (const t of targets) {
+        const token = await getToken(t.contract);
+        if (!deactivateOnly) {
+          const res = await api(t.contract, token, `/staffs/${t.staffId}`, {
+            method: "PATCH",
+            body: JSON.stringify({ terminationDate: date }),
           });
-          activeResult = ar.ok ? "ok" : `HTTP ${ar.status}`;
-        } catch (_) { activeResult = "error"; }
-      }
-      if (deactivateOnly && activeResult !== "ok") return json({ ok: false, staffId, active: activeResult, error: "打刻OFFに失敗しました" }, 500);
+          const j = await res.json().catch(() => ({}));
+          if (!res.ok) return json({ ok: false, contract: t.contract.slice(-3), status: res.status, error: j }, 500);
+        }
 
-      return json({ ok: true, staffId, terminationDate: deactivateOnly ? undefined : date, active: activeResult });
+        // 退職日を設定したときは打刻も利用OFF、取り消したときはON（失敗しても退職処理自体は成功扱い）。
+        // deactivate=false(承認時)は打刻を触らない。deactivate_only=trueは必ず打刻OFF
+        let activeResult = "skip";
+        if (deactivateOnly || deactivate) {
+          try {
+            const ar = await api(t.contract, token, `/staffs/${t.staffId}/active`, {
+              method: "PUT",
+              body: JSON.stringify({ activeFlag: deactivateOnly ? false : (date ? false : true) }),
+            });
+            activeResult = ar.ok ? "ok" : `HTTP ${ar.status}`;
+          } catch (_) { activeResult = "error"; }
+        }
+        if (deactivateOnly && activeResult !== "ok") return json({ ok: false, staffId: t.staffId, active: activeResult, error: "打刻OFFに失敗しました" }, 500);
+        // リンクの期間を更新（退職日を入れたら有効期間をその日で閉じる。取り消し=null指定なら再び有効に）
+        if (!deactivateOnly && linkRows.length) {
+          if (date) await sb.from("employee_smaregi_links").update({ effective_to: date }).eq("user_id", uid).eq("contract_id", t.contract).is("effective_to", null);
+        }
+        results.push({ contract: t.contract.slice(-3), staffId: t.staffId, active: activeResult });
+      }
+      return json({ ok: true, staffId: results[0]?.staffId, terminationDate: deactivateOnly ? undefined : date, active: results[0]?.active, contracts: results });
     }
 
     // 2026-09-05追加: nippo側で住所・生年月日・電話番号等を編集したら、既に連携済みの
@@ -428,7 +453,12 @@ Deno.serve(async (req) => {
       if (!caller.uid || (caller.uid !== uid && !isAdmin)) return json({ ok: false, error: "forbidden" }, 403);
       const sb = svc();
       const { data: prof } = await sb.from("employee_profiles").select("*").eq("user_id", uid).maybeSingle();
-      if (!prof || !prof.smaregi_staff_id) return json({ ok: true, skipped: "スマレジ未連携のためスキップ" });
+      // 反映先: 有効な契約リンクすべて（兼務の人は両方の契約のスマレジへ）。リンク表が未整備なら主契約のみ
+      const { data: pLinks } = await sb.from("employee_smaregi_links").select("contract_id,smaregi_staff_id").eq("user_id", uid).is("effective_to", null);
+      let pushTargets: { contract: string; staffId: string }[] = (pLinks ?? []).map((l: any) => ({ contract: l.contract_id, staffId: String(l.smaregi_staff_id) }));
+      if (!pushTargets.length && prof?.smaregi_staff_id) pushTargets = [{ contract: allContracts.find((x) => x.is_default)?.contract_id ?? C, staffId: String(prof.smaregi_staff_id) }];
+      if (body.contract_id) pushTargets = pushTargets.filter((t) => t.contract === C);
+      if (!prof || !pushTargets.length) return json({ ok: true, skipped: "スマレジ未連携のためスキップ" });
 
       const patch: Record<string, unknown> = {};
       if (prof.name_kana) patch.staffKana = String(prof.name_kana).slice(0, 50);
@@ -441,11 +471,15 @@ Deno.serve(async (req) => {
       if (prof.gender && genderMap[prof.gender]) patch.gender = genderMap[prof.gender];
       if (!Object.keys(patch).length) return json({ ok: true, skipped: "反映する項目がありません" });
 
-      const token = await getToken();
-      const res = await api(token, `/staffs/${prof.smaregi_staff_id}`, { method: "PATCH", body: JSON.stringify(patch) });
-      const j = await res.json().catch(() => ({}));
-      if (!res.ok) return json({ ok: false, status: res.status, error: j }, 500);
-      return json({ ok: true, staffId: prof.smaregi_staff_id, pushed: Object.keys(patch) });
+      const pushed: any[] = [];
+      for (const t of pushTargets) {
+        const token = await getToken(t.contract);
+        const res = await api(t.contract, token, `/staffs/${t.staffId}`, { method: "PATCH", body: JSON.stringify(patch) });
+        const j = await res.json().catch(() => ({}));
+        if (!res.ok) return json({ ok: false, contract: t.contract.slice(-3), status: res.status, error: j }, 500);
+        pushed.push({ contract: t.contract.slice(-3), staffId: t.staffId });
+      }
+      return json({ ok: true, staffId: pushed[0].staffId, pushed: Object.keys(patch), contracts: pushed });
     }
 
     if (body.action === "sync") {
@@ -462,13 +496,19 @@ Deno.serve(async (req) => {
       // 既に連携済みなら二重登録しない（v2.6.14まではここで終わっていたが、2026-09-05追記:
       // 個人情報の更新は上のaction:"push_profile"が担当するようになったため、ここでの役割は
       // 「初回のスマレジ新規登録」のみに変更なし）
-      if (prof.smaregi_sync_status === "synced" && prof.smaregi_staff_id) {
-        return json({ ok: true, staffId: prof.smaregi_staff_id, already: true });
+      // 2026-10-17: 契約ごとに判定。既定の契約は従来どおりemployee_profiles、それ以外の契約はemployee_smaregi_linksの有効行
+      if (IS_DEFAULT) {
+        if (prof.smaregi_sync_status === "synced" && prof.smaregi_staff_id) {
+          return json({ ok: true, staffId: prof.smaregi_staff_id, already: true, contract_id: C });
+        }
+      } else {
+        const { data: existLink } = await sb.from("employee_smaregi_links").select("smaregi_staff_id").eq("user_id", uid).eq("contract_id", C).is("effective_to", null).maybeSingle();
+        if (existLink) return json({ ok: true, staffId: existLink.smaregi_staff_id, already: true, contract_id: C });
       }
 
-      const token = await getToken();
+      const token = await getToken(C);
       // 役職 → スマレジ従業員区分（名前一致、なければ先頭）
-      const cls = await api(token, "/employee_classifications").then((r) => r.json());
+      const cls = await api(C, token, "/employee_classifications").then((r) => r.json());
       const roleMap: Record<string, string> = {
         AL: "アルバイト", SHAIN: "正社員", TENCHO: "正社員", TEAM: "管理職", HQ: "管理職", CEO: "管理職",
       };
@@ -477,7 +517,7 @@ Deno.serve(async (req) => {
         ? (cls.find((c: any) => c.employeeClassificationName === want) ?? cls[0])
         : null;
       if (!pick) {
-        await sb.from("employee_profiles").update({ smaregi_sync_status: "error", smaregi_error: "従業員区分が取得できません" }).eq("user_id", uid);
+        if (IS_DEFAULT) await sb.from("employee_profiles").update({ smaregi_sync_status: "error", smaregi_error: "従業員区分が取得できません" }).eq("user_id", uid);
         return json({ ok: false, error: "no employee classification" }, 500);
       }
 
@@ -503,7 +543,7 @@ Deno.serve(async (req) => {
         if (sc) staffCode = String(sc);
       }
       if (staffCode) {
-        const used = await fetchStaffCodes(token);
+        const used = await fetchStaffCodes(C, token);
         let guard = 0;
         while (used.has(staffCode) && guard++ < 500) {
           const m = staffCode.match(/^(\d{4})-(\d+)$/);
@@ -530,21 +570,28 @@ Deno.serve(async (req) => {
       const adminMemo = memoLines.join("\n").slice(0, 1000);
       if (adminMemo) payload.adminMemo = adminMemo;
 
-      let res = await api(token, "/staffs", { method: "POST", body: JSON.stringify(payload) });
+      let res = await api(C, token, "/staffs", { method: "POST", body: JSON.stringify(payload) });
       let j = await res.json().catch(() => ({}));
       // v2.6.14: 社員番号の重複で弾かれたら、社員番号を外して登録し直す（登録自体を優先）
       if (res.status === 400 && String(j?.detail ?? "").includes("社員番号") && payload.staffCode) {
         delete payload.staffCode;
         await sb.from("employee_profiles").update({ staff_code: null }).eq("user_id", uid);
-        res = await api(token, "/staffs", { method: "POST", body: JSON.stringify(payload) });
+        res = await api(C, token, "/staffs", { method: "POST", body: JSON.stringify(payload) });
         j = await res.json().catch(() => ({}));
       }
       if (res.status === 201 && j.staffId) {
-        await sb.from("employee_profiles").update({ smaregi_sync_status: "synced", smaregi_staff_id: String(j.staffId), smaregi_error: null }).eq("user_id", uid);
-        return json({ ok: true, staffId: j.staffId });
+        if (IS_DEFAULT) {
+          // 既定の契約: 従来どおり主契約の写し(employee_profiles)へ。トリガーがトーホー契約のリンクにも反映する
+          await sb.from("employee_profiles").update({ smaregi_sync_status: "synced", smaregi_staff_id: String(j.staffId), smaregi_error: null }).eq("user_id", uid);
+        } else {
+          // それ以外の契約（LiveGate等）: employee_profilesの主契約は変えず、従業員×契約リンクへ保存（兼務なら有効行が2本並ぶ）
+          const { error: lerr } = await sb.from("employee_smaregi_links").insert({ user_id: uid, contract_id: C, smaregi_staff_id: String(j.staffId), is_primary: false });
+          if (lerr) return json({ ok: false, staffId: j.staffId, contract_id: C, error: "スマレジには登録しましたが、リンクの保存に失敗しました: " + lerr.message }, 500);
+        }
+        return json({ ok: true, staffId: j.staffId, contract_id: C });
       }
-      await sb.from("employee_profiles").update({ smaregi_sync_status: "error", smaregi_error: (JSON.stringify(j) || `HTTP ${res.status}`).slice(0, 500) }).eq("user_id", uid);
-      return json({ ok: false, status: res.status, error: j }, 500);
+      if (IS_DEFAULT) await sb.from("employee_profiles").update({ smaregi_sync_status: "error", smaregi_error: (JSON.stringify(j) || `HTTP ${res.status}`).slice(0, 500) }).eq("user_id", uid);
+      return json({ ok: false, status: res.status, contract_id: C, error: j }, 500);
     }
 
     return json({ ok: false, error: "unknown action" }, 400);

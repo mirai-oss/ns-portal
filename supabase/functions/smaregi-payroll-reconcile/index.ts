@@ -24,11 +24,9 @@
 //   バッチ処理からの呼び出しには向かない。テーブルは共有するが関数としては独立させる）。
 //   宛先は users.role が CEO/HQ かつ line_user_id 連携済みの人全員（2026-08-22時点はCEO本人のみ想定）。
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { loadContracts, getContractToken, loadLinks, API_BASE } from "../_shared/smaregi-contracts.ts";
 
-const IS_PROD = Deno.env.get("SMAREGI_ENV") === "prod";
-const ID_BASE = IS_PROD ? "https://id.smaregi.jp" : "https://id.smaregi.dev";
-const API_BASE = IS_PROD ? "https://api.smaregi.jp" : "https://api.smaregi.dev";
-const CONTRACT = Deno.env.get("SMAREGI_CONTRACT_ID") ?? "";
+// 2026-10-17 担当D: 複数契約対応。契約ごとに、その契約で打刻された勤怠(labor_cost_daily)とその契約の給与明細を突合する。
 const CID = Deno.env.get("SMAREGI_CLIENT_ID") ?? "";
 const SECRET = Deno.env.get("SMAREGI_CLIENT_SECRET") ?? "";
 const SCOPES = "timecard.salaries:read";
@@ -52,23 +50,9 @@ function jwtUid(req: Request): string {
   } catch (_) { return ""; }
 }
 
-async function getToken(): Promise<string> {
-  const res = await fetch(`${ID_BASE}/app/${CONTRACT}/token`, {
-    method: "POST",
-    headers: {
-      Authorization: "Basic " + btoa(`${CID}:${SECRET}`),
-      "Content-Type": "application/x-www-form-urlencoded",
-    },
-    body: "grant_type=client_credentials&scope=" + encodeURIComponent(SCOPES),
-  });
-  const j = await res.json();
-  if (!res.ok || !j.access_token) throw new Error("スマレジ認証に失敗しました: " + JSON.stringify(j));
-  return j.access_token;
-}
-
 // store_id=0 を指定すると「総合給与」（全店舗合算）が取れる（2026-08-22 使い捨てEdge Functionで確認済み）
-async function fetchMonthlyBudget(token: string, staffId: string, year: number, month: number) {
-  const url = `${API_BASE}/${CONTRACT}/timecard/budgets/monthly/0/${staffId}?year=${year}&month=${String(month).padStart(2, "0")}`;
+async function fetchMonthlyBudget(token: string, contract: string, staffId: string, year: number, month: number) {
+  const url = `${API_BASE}/${contract}/timecard/budgets/monthly/0/${staffId}?year=${year}&month=${String(month).padStart(2, "0")}`;
   const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
   if (!res.ok) {
     const t = await res.text();
@@ -138,47 +122,57 @@ Deno.serve(async (req) => {
     const nextMonth = month === 12 ? { y: year + 1, m: 1 } : { y: year, m: month + 1 };
     const monthEnd = `${nextMonth.y}-${String(nextMonth.m).padStart(2, "0")}-01`;
 
-    const { data: profs } = await sb.from("employee_profiles")
-      .select("user_id,smaregi_staff_id,users(name)")
-      .not("smaregi_staff_id", "is", null);
-
-    const token = await getToken();
+    const contracts = await loadContracts(sb, body.contract_id ? String(body.contract_id) : undefined);
+    if (!contracts.length) return json({ ok: false, error: "有効なスマレジ契約がありません（smaregi_contracts または環境変数）" }, 500);
     const mismatches: any[] = [];
     const checked: any[] = [];
     const excluded: any[] = [];
     const errors: string[] = [];
+    let contractsFailed = 0;
+    const lastDayOfMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
 
-    for (const p of profs ?? []) {
-      const staffId = p.smaregi_staff_id as string;
-      const name = (p as any).users?.name ?? `smaregi_staff_id=${staffId}`;
-      if (EXCLUDE_STAFF_IDS.has(staffId)) continue;
+    for (const c of contracts) {
+      const tag = `…${c.contract_id.slice(-3)}`;
+      let token: string, links: any[];
       try {
-        const { data: rows } = await sb.from("labor_cost_daily")
-          .select("smaregi_estimate_cost,worked_minutes")
-          .eq("user_id", p.user_id)
-          .gte("work_date", monthStart)
-          .lt("work_date", monthEnd);
-        if (!rows?.length) { continue; } // その月に勤務実績が無い人は突合対象外
+        token = await getContractToken(c.contract_id, SCOPES);
+        links = await loadLinks(sb, c.contract_id, monthStart, `${year}-${String(month).padStart(2, "0")}-${String(lastDayOfMonth).padStart(2, "0")}`);
+      } catch (e) { errors.push(`契約${tag}: ${String(e)}`); contractsFailed++; continue; }
+      for (const p of links) {
+        const staffId = p.smaregi_staff_id as string;
+        const name = p.users?.name ?? `smaregi_staff_id=${staffId}`;
+        if (EXCLUDE_STAFF_IDS.has(staffId)) continue;
+        try {
+          // 勤怠はシフト結果IDで契約を判別（既定の契約=素のID／それ以外=「契約ID:」を前置。smaregi-attendance-syncの採番）
+          let q = sb.from("labor_cost_daily")
+            .select("smaregi_estimate_cost,worked_minutes")
+            .eq("user_id", p.user_id)
+            .gte("work_date", monthStart)
+            .lt("work_date", monthEnd);
+          q = c.is_default ? q.not("smaregi_shift_result_id", "like", "%:%") : q.like("smaregi_shift_result_id", `${c.contract_id}:%`);
+          const { data: rows } = await q;
+          if (!rows?.length) { continue; } // その月に勤務実績が無い人は突合対象外
 
-        const estimateSum = rows.reduce((s, r: any) => s + Number(r.smaregi_estimate_cost ?? 0), 0);
-        const workedMinutes = rows.reduce((s, r: any) => s + Number(r.worked_minutes ?? 0), 0);
+          const estimateSum = rows.reduce((s, r: any) => s + Number(r.smaregi_estimate_cost ?? 0), 0);
+          const workedMinutes = rows.reduce((s, r: any) => s + Number(r.worked_minutes ?? 0), 0);
 
-        // 2026-08-22 ユーザー確認: 打刻はあるが見積もり(smaregi_estimate_cost)が常に0円の人は
-        // 月給制（固定残業等が別付きで、単純な金額一致確認になじまない）と推定し、突合対象から除外する。
-        // 給与明細API呼び出し自体を省略できるので、判定はlabor_cost_dailyの情報だけで完結させている。
-        if (workedMinutes > 0 && estimateSum === 0) {
-          excluded.push({ name, staffId, reason: "打刻はあるが見積もりが常に0円（月給制と推定）" });
-          continue;
+          // 2026-08-22 ユーザー確認: 打刻はあるが見積もり(smaregi_estimate_cost)が常に0円の人は
+          // 月給制（固定残業等が別付きで、単純な金額一致確認になじまない）と推定し、突合対象から除外する。
+          // 給与明細API呼び出し自体を省略できるので、判定はlabor_cost_dailyの情報だけで完結させている。
+          if (workedMinutes > 0 && estimateSum === 0) {
+            excluded.push({ name, staffId, contract: tag, reason: "打刻はあるが見積もりが常に0円（月給制と推定）" });
+            continue;
+          }
+
+          const budget = await fetchMonthlyBudget(token, c.contract_id, staffId, year, month);
+          const diff = Math.round(estimateSum) - Math.round(budget.regularWage);
+          checked.push({ name, staffId, contract: tag, estimateSum, regularWage: budget.regularWage, diff });
+          if (Math.abs(diff) >= ALERT_THRESHOLD_YEN) {
+            mismatches.push({ name, staffId, contract: tag, estimateSum, regularWage: budget.regularWage, diff });
+          }
+        } catch (e) {
+          errors.push(`staff ${staffId} (契約${tag}): ${String(e)}`);
         }
-
-        const budget = await fetchMonthlyBudget(token, staffId, year, month);
-        const diff = Math.round(estimateSum) - Math.round(budget.regularWage);
-        checked.push({ name, staffId, estimateSum, regularWage: budget.regularWage, diff });
-        if (Math.abs(diff) >= ALERT_THRESHOLD_YEN) {
-          mismatches.push({ name, staffId, estimateSum, regularWage: budget.regularWage, diff });
-        }
-      } catch (e) {
-        errors.push(`staff ${staffId}: ${String(e)}`);
       }
     }
 
@@ -192,7 +186,7 @@ Deno.serve(async (req) => {
     }
 
     return json({
-      ok: true,
+      ok: contractsFailed < contracts.length,
       year, month,
       staffChecked: checked.length,
       checked,
