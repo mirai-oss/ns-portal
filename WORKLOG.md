@@ -740,6 +740,8 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
+**★2026-10-17（司令塔スレッド・続き）U1完了: LiveGateのスマレジ・タイムカード契約ID=`sdm155v1`をユーザーから受領→担当Dへ（Phase1適用後に契約マスタへ登録・事業所一覧の取得で接続確認。未連携なら手順書を添えてユーザーへ返す）。U2（店舗「黒霧屋 新横浜」登録・10/28）は未。**
+
 **★2026-10-17（司令塔スレッド・続き）スマレジ複数契約対応Phase1=ユーザー承認「適用OK」→担当Dへ実行指示**（件数再確認→SQL適用→契約ループ版payroll-syncデプロイ。Phase2の旧UNIQUE解除は別途承認）。
 
 **★2026-10-17（担当Dスレッド）(C)5本のジョブの契約ループ化をコード準備（未デプロイ・Phase1適用待ち）**: `smaregi-payroll-sync`・`-reconcile`・`smaregi-attendance-sync`・`smaregi-shift-sync`・`smaregi-sync`（sync/terminate/push_profile/test/staffsに`contract_id`）と共通ヘルパー`_shared/smaregi-contracts.ts`。**Deno型チェックで新たな型エラー無し**（reconcile・smaregi-syncの残りはHEADから存在する既存分）。設計: 店舗は契約ごとの対応（`store_external_mappings`のcorporation_hint・有効期間）で解決／シフト結果IDは既定契約=素・他契約=`契約ID:ID`前置で衝突回避／shift-syncは店舗の運営（契約）で送り先を決め判定日はシフト日付／terminateは`contract_id`指定=その契約だけ（移籍）・省略=全契約（退職）。Phase1 SQLに契約マスタの`corporation_hint`・`is_default`を追加（ドライラン再確認済み）。詳細・デプロイ順=[事前報告§7](docs/事前報告_スマレジ複数契約対応Phase1_契約マスタと契約キー_2026-10-17.md)。**【担当Bへ】移籍の承認は`smaregi-sync terminate`に旧契約の`contract_id`を必ず付ける／入社登録ボタンは`sync`にLiveGateの`contract_id`を付ける**。次=ユーザーのPhase1適用承認→適用→順次デプロイ。
