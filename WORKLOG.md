@@ -745,6 +745,11 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
+**★★2026-10-17（レーンP）TK-224完了／TK-222を店舗月次にも拡張（既定OFF）**
+- 担当A回答: F2残りのうち入金明細(deposit_dailyのentriesで足りる)・営業日区分(画面内蔵の祝日表〜2027)は不要＝TK-224本体は完了。口コミ件数・ダイニー点数のkd化は別TK（低優先）に分離
+- TK-222: kd_store_monthly_summary にも shiire_status／cost_siire を追加し、確定月は原価(cost)を承認済み請求書の仕入高合計に置換（原価率・FL率・粗利が連動＝PLとホームKPIの食い違い防止）。API kind:'store' に2列追加。画面のPL管理タブ・F率はD.daily＋pl_entriesから計算しているため、担当Aが画面側でも確定月は shiire_invoice_amount で置換・差額(cost_auto_siire)表示を入れる
+- 注意: 担当Aの黒霧屋 法人切替対応（loadStoreMapsの期間別法人・corpByStoreId.get(storeId, 期間)）が keiei-kd-refresh/index.ts に入っている。今後Edgeを編集・デプロイするときは消さない（私の編集は上に重ねてあり保持済み）
+
 **★★★★2026-10-17（レーンP）TK-222 仕入高の月次確定: 置換ロジックまで実装（既定OFF・実データ待ち）／TK-224・TK-207の現状整理**
 - TK-222（設計書§12・Sync13）: `supabase/2026-10-17_shiire_month_confirm.sql`（事前報告様式つき）= 確定記録 `shiire_month_confirmations`（店舗×月・confirmed・vendor_total）／承認済み仕入高ビュー `v_shiire_approved_monthly`（invoices.journal_draft.debit_lines の勘定科目=仕入高・店舗=行のstore_id・月=target_year_monthなければ取引日・税抜優先）／kd_pl_monthly_summaryに `shiire_status('confirmed'|'partial')・shiire_vendors_approved・shiire_vendors_total・shiire_invoice_amount・cost_auto_siire(置換前の速報)`。
 - 動き: `app_secrets.shiire_confirm_enabled='1'` のときだけ有効（既定OFF＝従来どおり）。確定(confirmed=true)の店舗×月は cost_auto を承認済み請求書の仕入高合計に置換（cost_total/粗利/営業利益も連動）。未確定でも承認済みがあれば shiire_status='partial'（置換せず進捗n/全社だけ）。API `kind:'pl'` に5列を追加。診断 `op=shiire_preview`（速報・請求書合計・n/全社・差・確定を店舗×月で一覧）。
