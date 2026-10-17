@@ -740,6 +740,12 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
+**★★★★★2026-10-17（担当F・TK-230）黒霧屋 新横浜の運営変更（トーホー→LiveGate・11/1）§2: SQL作成・検証済み・push済み（`e84d300`）／⚠️本番SQLはユーザー確認待ち（未適用）／LiveGateの店舗ID待ち**: 指示書`指示書_黒霧屋運営変更_2026-11-01_準備_2026-10-17.md`§2。
+- **①運営関係の切替**（[supabase/2026-10-17_store_master_v2_04_kurogiriya_livegate.sql](supabase/2026-10-17_store_master_v2_04_kurogiriya_livegate.sql) のA）: 旧トーホー運営行に`effective_to=2026-10-31`、LiveGate運営行を`effective_from=2026-11-01`で追加（relation_type=outsourcing・名義N-Style・入金先N-Style・契約期間は未登録）。上書きなし・冪等。検証用DBで 2026-10-31=トーホー／2026-11-01=LiveGate を確認（`v_store_current_relations`は今日の日付で判定するので11/1に自動で切り替わる）。
+- **②管理画面での登録**: 同じ「終了日＋新しい行」を管理画面（運営関係→関係を変更）のRPC`smv2_add_operation_relation`で実行できることを検証用DBで確認（旧行に終了日=開始日の前日が入る・開始日が既存より前なら拒否）。今回はSQLで実施。
+- **③に先立つ重要な下準備（同じSQLのB）**: スマレジの店舗IDは契約ごとに採番され、LiveGate契約のIDがトーホー側の別店舗の番号と同じになりうる→従来の一意索引(source, ID)だと登録できない／resolve_storeが取り違える。smaregi/smaregi_timecardの行だけ(source, 契約=corporation_hint, ID)で一意にし、既存行のcorporation_hintを'toho'に補完、`resolve_store`①〜③を契約対応に（呼び方・戻り値は同じ。p_corp_hintに'toho'/'livegate'を渡すとその契約の店舗だけに当たる・ヒント無しで複数店舗なら未解決＝誤って当てない）。既存の解決結果の変化0件を確認。**担当Dはスマレジ系の店舗解決に契約のヒントを必ず渡すこと**（連絡済み）。`resolve_store`が返すcorporation_idは店舗の既存列（黒霧屋はトーホーのまま）なので、運営法人は`v_store_current_relations.operator_*`を使う。
+- **次**: ユーザーが手順書でSQL適用→担当DからLiveGate契約`sdm155v1`の店舗ID受領→`store_external_mappings`にsmaregi/smaregi_timecardの2行（hint=livegate・effective_from=2026-11-01）＋トーホー側(ID 8)をeffective_to=2026-10-31（事前報告→適用）→`v_store_current_relations`確認→担当B/C/Dへ宣言。
+
 **★2026-10-17（司令塔スレッド・続き）U2完了: ユーザーがLiveGate契約（sdm155v1）に店舗「黒霧屋 新横浜」を登録→担当Dが接続確認時にLiveGate側の店舗IDを取得し担当Fへ→`store_external_mappings`（TK-230）へ登録の流れ。**
 
 **★2026-10-17（司令塔スレッド・続き）U1完了: LiveGateのスマレジ・タイムカード契約ID=`sdm155v1`をユーザーから受領→担当Dへ（Phase1適用後に契約マスタへ登録・事業所一覧の取得で接続確認。未連携なら手順書を添えてユーザーへ返す）。U2（店舗「黒霧屋 新横浜」登録・10/28）は未。**
