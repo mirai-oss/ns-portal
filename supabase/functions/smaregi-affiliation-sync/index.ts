@@ -19,7 +19,7 @@
 // 認可: service_role直呼び、または CEO/HQ のJWT。
 // 応答は件数のみ（公開リポジトリのActionsログに氏名・店舗名を残さない）。名前を含む詳細はLark(社内)と staff_store_sync_log にだけ出す。
 import { createClient } from "npm:@supabase/supabase-js@2";
-import { loadContracts, getContractToken, loadLinks, loadStoreMap, API_BASE, fetchRoles, pickRoleId, putStaffStore, wantedRoleName } from "../_shared/smaregi-contracts.ts";
+import { loadContracts, getContractToken, loadLinks, loadStoreMap, loadStoreMapPending, API_BASE, fetchRoles, pickRoleId, putStaffStore, wantedRoleName } from "../_shared/smaregi-contracts.ts";
 import { larkPost } from "../_shared/cockpit.ts";
 
 const SCOPES = "timecard.staffs:read timecard.staffs:write timecard.stores:read";
@@ -104,12 +104,13 @@ Deno.serve(async (req) => {
         const smStores = await pagedGet(c.contract_id, token, "/stores", "stores");
         const smStoreList = smStores.map((s: any) => ({ id: String(s.storeId), name: String(s.storeName ?? "") }));
         const staffStores = new Map<string, Set<string>>();   // smaregi_staff_id → 事業所ID
+        const smTerminated = new Set<string>();               // スマレジ側で退職扱い(termination=1)のスタッフID（所属は一覧に出ないため同期しない）
         let fetchFailed = 0;
         for (const st of smStoreList) {
           try {
             const staffs = await pagedGet(c.contract_id, token, `/staffs?store_id=${encodeURIComponent(st.id)}`, "staffs");
             for (const s of staffs) {
-              if (String(s.termination ?? "0") === "1") continue;
+              if (String(s.termination ?? "0") === "1") { smTerminated.add(String(s.staffId)); continue; }
               const k = String(s.staffId);
               if (!staffStores.has(k)) staffStores.set(k, new Set());
               staffStores.get(k)!.add(st.id);
@@ -124,7 +125,7 @@ Deno.serve(async (req) => {
         const { data: prevSnap } = await sb.from("smaregi_stores_snapshot").select("store_id").eq("contract_id", c.contract_id);
         const prevIds = new Set((prevSnap ?? []).map((r: any) => String(r.store_id)));
 
-        let storeMap = await loadStoreMap(sb, c, today);   // 事業所ID → 店舗UUID
+        let storeMap = body.pending === true ? await loadStoreMapPending(sb, c) : await loadStoreMap(sb, c, today);   // 事業所ID → 店舗UUID（pending=trueは運営変更前の先行テスト用）
         const unmappedSm = smStoreList.filter((s) => !ignored.has(s.id) && !storeMap[s.id]);
 
         // 新規の事業所で、名前が一致する店舗(その契約の運営法人の店舗)が1件だけなら自動で対応づける
@@ -187,6 +188,7 @@ Deno.serve(async (req) => {
         const plans: Plan[] = [];
         for (const lk of links) {
           const userId = lk.user_id as string;
+          if (smTerminated.has(String(lk.smaregi_staff_id))) { cs.smaregi_terminated = (cs.smaregi_terminated ?? 0) + 1; continue; }
           if (terminated.has(userId) || lk.users?.is_active === false) { cs.terminated = (cs.terminated ?? 0) + 1; continue; }
           cs.users++; const staffId = String(lk.smaregi_staff_id);
           const M = new Set<string>((usAll ?? []).filter((r: any) => r.user_id === userId && contractStoreIds.has(r.store_id)).map((r: any) => r.store_id));
@@ -232,6 +234,7 @@ Deno.serve(async (req) => {
             if (toSm) {
               // 管理システム → スマレジ
               const adds = minus(p.M, p.S), dels = minus(p.S, p.M);
+              const putLog: any[] = [];
               if (apply) {
                 // 追加には役割ID(roleId)が必須（AL=アルバイト／それ以外=社員。追加先の事業所ごとに引く）
                 const roles = adds.length ? await fetchRoles(c.contract_id, token, adds.map((st) => reverse[st])) : [];
@@ -240,6 +243,7 @@ Deno.serve(async (req) => {
                   const roleId = pickRoleId(roles, reverse[st], want);
                   if (!roleId) throw new Error(`スマレジの事業所${reverse[st]}に役割「${want}」が見つかりません`);
                   const r = await putStaffStore(c.contract_id, token, p.staffId, reverse[st], roleId);
+                  putLog.push({ store: storeName[st], status: r.status, role: roleId, res: r.text.slice(0, 200) });
                   if (!r.ok) throw new Error(`スマレジへの所属追加に失敗(${r.status}): ${r.text}`);
                 }
                 for (const st of dels) {
@@ -248,7 +252,7 @@ Deno.serve(async (req) => {
                 }
               }
               cs.push++;
-              await log(c.contract_id, p.userId, "push", { added: adds.map((i) => storeName[i]), removed: dels.map((i) => storeName[i]), reason: p.reason ?? null, applied: apply });
+              await log(c.contract_id, p.userId, "push", { added: adds.map((i) => storeName[i]), removed: dels.map((i) => storeName[i]), reason: p.reason ?? null, applied: apply, puts: putLog });
               if (p.kind === "conflict" && p.L) {
                 // スマレジ側で変えられていた内容（前回→今）を、上書きする前に残す
                 const smAdded = minus(p.S, p.L), smRemoved = minus(p.L, p.S);

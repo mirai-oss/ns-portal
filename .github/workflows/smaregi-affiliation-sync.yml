@@ -28,6 +28,11 @@ on:
         required: false
         default: ''
         type: string
+      pending:
+        description: '運営変更前の先行テスト: 今日の店舗対応が空なら、予約済み（これから有効）の対応を使う'
+        required: false
+        default: false
+        type: boolean
       force:
         description: '変更人数の上限(40人)を超えても反映する'
         required: false
@@ -47,9 +52,10 @@ jobs:
           CONTRACT: ${{ github.event.inputs.contract_id }}
           USER_ID: ${{ github.event.inputs.user_id }}
           FORCE: ${{ github.event.inputs.force }}
+          PENDING: ${{ github.event.inputs.pending }}
         run: |
           if [ -z "$SR_KEY" ]; then echo "::error::SUPABASE_SERVICE_ROLE_KEY が未設定です"; exit 1; fi
-          BODY=$(node -e "console.log(JSON.stringify({mode: process.env.MODE, contract_id: process.env.CONTRACT||undefined, user_id: process.env.USER_ID||undefined, force: process.env.FORCE==='true'}))")
+          BODY=$(node -e "console.log(JSON.stringify({mode: process.env.MODE, contract_id: process.env.CONTRACT||undefined, user_id: process.env.USER_ID||undefined, force: process.env.FORCE==='true', pending: process.env.PENDING==='true'}))")
           RES=$(curl -s -w "\n%{http_code}" -X POST \
             "https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/smaregi-affiliation-sync" \
             -H "Authorization: Bearer $SR_KEY" -H "Content-Type: application/json" -d "$BODY")

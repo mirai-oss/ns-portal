@@ -145,5 +145,5 @@ export async function putStaffStore(contractId: string, token: string, staffId: 
     method: "PUT", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
     body: JSON.stringify({ roleId: String(roleId), applicationDisplayFlag: true, mailFlag: true, displayFlag: true }),
   });
-  return { ok: r.ok, status: r.status, text: r.ok ? "" : (await r.text()).slice(0, 200) };
+  return { ok: r.ok, status: r.status, text: (await r.text()).slice(0, 300) };
 }
