@@ -1,0 +1,37 @@
+name: スマレジ所属スタッフのスナップショット取得（読み取り専用）
+
+# 2026-10-17 担当D新設。設計メモ_スマレジ複数契約対応 §11-4「初回の一致」の棚卸し用。
+# スマレジ・タイムカードの「事業所×所属スタッフ」を読み取り、スナップショット表へ保存するだけ
+# （スマレジへの書き込み・管理システムのuser_storesの変更は一切しない）。
+# ログには件数だけを出す（このリポジトリは公開のため、氏名などの個人情報は出さない）。
+# 手動実行: GitHubのActionsタブ → 本workflow → Run workflow（contract_idは空欄でトーホー契約）。
+on:
+  workflow_dispatch:
+    inputs:
+      contract_id:
+        description: '契約ID（空欄＝環境変数のトーホー契約）'
+        required: false
+        default: ''
+        type: string
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: smaregi-staff-storesを呼び出す
+        env:
+          SR_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          CONTRACT: ${{ github.event.inputs.contract_id }}
+        run: |
+          if [ -z "$SR_KEY" ]; then echo "::error::SUPABASE_SERVICE_ROLE_KEY が未設定です"; exit 1; fi
+          BODY=$(node -e "console.log(JSON.stringify({action:'snapshot', contract_id: process.env.CONTRACT||undefined}))")
+          RES=$(curl -s -w "\n%{http_code}" -X POST \
+            "https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/smaregi-staff-stores" \
+            -H "Authorization: Bearer $SR_KEY" -H "Content-Type: application/json" -d "$BODY")
+          HTTP_CODE=$(echo "$RES" | tail -1)
+          BODY_TEXT=$(echo "$RES" | sed '$d')
+          echo "$BODY_TEXT"
+          if [ "$HTTP_CODE" != "200" ]; then echo "::error::失敗しました（HTTP $HTTP_CODE）"; exit 1; fi
+          OK=$(echo "$BODY_TEXT" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{console.log(JSON.parse(d).ok)}catch(e){console.log('false')}})")
+          if [ "$OK" != "true" ]; then echo "::error::一部の事業所で取得に失敗しました（上のJSON参照）"; exit 1; fi
