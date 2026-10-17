@@ -40,6 +40,12 @@
 
 ---
 
+## 2026-10-17 担当C: LiveGateのMF準備を確認OK＋LiveGate専用の給与の型を作成（SQL・push承認待ち）
+- ユーザーがLiveGateのMFを準備完了。確認: 会計期間は 2026-10〜2027-01 の範囲が通る（次期作成済み）／勘定科目「衛生管理費」あり／補助科目「新横浜/黒霧屋」が 給料手当・雑給・法定福利費 にあり／部門「08（タブ）黒霧屋 新横浜」あり。
+- 経路の試験（実データの運営関係で）: 黒霧屋 新横浜の運営会社は 2026-10まで=トーホー・2026-11以降=LiveGate。請求書の宛先別: 2026-10=トーホー→PL直接・N-Style/LiveGate→精算書／2026-11以降=LiveGate→PL直接・**トーホー（立替）→精算書・N-Style→精算書**。ユーザー確認の運営（今年内=トーホーのインフォマートで立替・2027年〜=N-Styleの請求書・N-Style側が立て替えた経費は全て精算書へ・精算書でLiveGate宛）と一致。
+- LiveGate専用の給与の型: `supabase/2026-10-17_livegate_payroll_templates.sql`（社員=給料手当/新横浜/黒霧屋・アルバイト=雑給/新横浜/黒霧屋・旅費交通費/通勤手当交通費・預り金/給与源泉所得税・住民税・法定福利費/新横浜/黒霧屋・未払金/給与。LiveGateのMFの実際の給与仕訳の書き方に合わせた）。MFの科目・補助科目・部門のIDは invoice-payment-scan の explain(with_ids) で取得（read-only診断・デプロイ済み）。画面(v143): 旅費交通費は部門別の補助科目に差し替えない（警告抑制）。
+- 未了: LiveGateのスマレジ給与データ（担当D Phase2・契約IDはユーザー待ち）。データが入るまでLiveGateタブは空。
+
 ## 2026-10-17 担当C: TK-222 本番反映済み（SQL・Edge4本・push）＋判定ロジックの試験
 - 反映: `2026-10-17_corp_transition_infomart.sql`（移行期間にinfomart_expected_corp_code=toho）・shiire-confirm-check（新規）/mf-journal/invoice-payment-scan/invoice-check をデプロイ・push。
 - 試運転(dry_run): 現時点で仕入高の請求書は0件（インフォマートの10月分はこれから）→判定対象0・shiire_month_confirmations=0件。何も書かれていない。

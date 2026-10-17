@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-17-v142";
+const BUILD_TAG="2026-10-17-v143";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -11358,6 +11358,7 @@ function payrollSubAccountLabelForDept(baseLabel,dept){
   const account=i>=0?lb.slice(0,i):lb;
   const norm=x=>String(x||"").normalize("NFKC").replace(/[\s\/]/g,"");
   const names=(PAYROLL_STATE.subAccountsByAccountName&&PAYROLL_STATE.subAccountsByAccountName.get(account.trim()))||[];
+  if(account.trim()==="旅費交通費") return {label:lb,found:true,changed:false,by:"fixed"};   // LiveGateの通勤手当は「旅費交通費/通勤手当交通費」（店舗別の補助科目ではない）＝部門に合わせた差し替えはしない
   // 店舗×MF事業者の指定（例: LiveGateの黒霧屋 新横浜 → 補助科目「新横浜/黒霧屋」）があれば、MFにその補助科目がある場合それを使う
   const ovSub=PAYROLL_STATE.deptSubByDeptId&&PAYROLL_STATE.deptSubByDeptId.get(dept.id);
   if(ovSub&&names.includes(ovSub)){ const label=`${account}/${ovSub}`; return {label,found:true,changed:label!==lb,sub:ovSub,by:"mapping"}; }

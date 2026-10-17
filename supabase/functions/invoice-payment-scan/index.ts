@@ -56,7 +56,7 @@ Deno.serve(async (req: Request) => {
       const ex = body.explain; const { accessToken } = await getValidAccessToken(ex.tenant || "default");
       if (ex.accounts) {
         const r = await mfFetch("/api/v3/accounts", accessToken); const dj = await r.json();
-        return json({ success: true, accounts: (dj.accounts ?? []).filter((a: any) => ex.accounts.includes(a.name)).map((a: any) => ({ name: a.name, subs: (a.sub_accounts ?? []).map((x: any) => x.name) })) });
+        return json({ success: true, accounts: (dj.accounts ?? []).filter((a: any) => ex.accounts.includes(a.name)).map((a: any) => ({ name: a.name, id: ex.with_ids ? a.id : undefined, subs: (a.sub_accounts ?? []).map((x: any) => ex.with_ids ? { name: x.name, id: x.id } : x.name) })) });
       }
       const rows: any[] = [];
       for (let page = 1; page <= 10; page++) {
