@@ -33,6 +33,24 @@ Deno.serve(async (req: Request) => {
   if (!sr?.value || body?.secret !== sr.value) return json({ error: "認証エラー" }, 401);
 
   // 調査用（読み取りのみ）: 指定した入金元の別名に当たる「預金への入金」を期間内でそのまま一覧する。例: {explain:{needle:"シーピーワンジヤパン", from:"2026-09-01", to:"2026-10-16", tenant:"default"}}
+  if (body?.explain?.departments || body?.explain?.agg) {   // 調査用: 部門一覧／ある部門の仕訳を科目・補助科目ごとに集計（読み取りのみ）
+    try {
+      const ex = body.explain; const { accessToken } = await getValidAccessToken(ex.tenant || "default");
+      if (ex.departments) { const r = await mfFetch("/api/v3/departments", accessToken); const dj = await r.json(); return json({ success: true, departments: (dj.departments ?? []).map((d: any) => ({ id: d.id, name: d.name, code: d.code })) }); }
+      const g = new Map<string, any>();
+      for (let page = 1; page <= 20; page++) {
+        const r = await mfFetch(`/api/v3/journals?start_date=${ex.agg.from}&end_date=${ex.agg.to}&per_page=500&page=${page}`, accessToken); const dj = await r.json();
+        if (!r.ok) return json({ error: "取得失敗", detail: dj }, 502);
+        for (const j of dj.journals ?? []) for (const br of j.branches ?? []) for (const [side, x] of [["借方", br.debitor], ["貸方", br.creditor]] as any) {
+          if (!x || !String(x.department_name ?? "").includes(ex.agg.dept_needle)) continue;
+          const k = `${side}|${x.account_name}|${x.sub_account_name ?? ""}|${x.department_name}`; const v = g.get(k) ?? { side, account: x.account_name, sub: x.sub_account_name ?? "", dept: x.department_name, n: 0, sum: 0, ex: br.remark ?? "" };
+          v.n++; v.sum += Number(x.value) || 0; g.set(k, v);
+        }
+        if ((dj.journals ?? []).length < 500) break;
+      }
+      return json({ success: true, rows: [...g.values()].sort((a, b) => b.n - a.n) });
+    } catch (e) { return json({ error: String((e as Error)?.message ?? e) }, 500); }
+  }
   if (body?.explain?.raw || body?.explain?.accounts) {   // 調査用: 仕訳の明細を科目・補助科目の名前で検索／勘定科目の補助科目一覧
     try {
       const ex = body.explain; const { accessToken } = await getValidAccessToken(ex.tenant || "default");

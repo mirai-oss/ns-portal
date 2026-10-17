@@ -135,11 +135,11 @@ function normStoreName(s: string): string {
 async function loadStoreMaps(sb: any) {
   const { data: storeRows } = await sb.from("stores").select("id,name,dash_store_name,corporation_id");
   const idByName = new Map<string, string>();
-  const corpByStoreId = new Map<string, string | null>();
+  const corpStatic = new Map<string, string | null>();
   (storeRows ?? []).forEach((s: any) => {
     if (s.dash_store_name) idByName.set(String(s.dash_store_name).trim(), s.id);
     if (!idByName.has(String(s.name).trim())) idByName.set(String(s.name).trim(), s.id);
-    corpByStoreId.set(s.id, s.corporation_id ?? null);
+    corpStatic.set(s.id, s.corporation_id ?? null);
   });
   // 店舗名ゲートウェイ(store_aliases): kind='name'=同一店舗の別表記→idByNameへ。kind='listing'=2枚看板等の別掲載名
   // →listingByName（親店舗のidを返し、看板名は呼び出し側がbrandとして保持する）
@@ -150,6 +150,29 @@ async function loadStoreMaps(sb: any) {
     if (a.kind === "listing") listingByName.set(al, a.store_id);
     else if (!idByName.has(al)) idByName.set(al, a.store_id);
   });
+  // 法人は「期間で変わる」（2026-10-17・黒霧屋 新横浜 トーホー→LiveGate 2026-11-01）。運営関係(store_operation_relations)の
+  // effective_from〜effective_to の期間に当たる運営法人（operator_entity_type='corporation'）をその期間の法人にする。
+  // 期間キーは 'YYYY-MM'（月の1日で判定）か 'YYYY-MM-DD'。該当する運営関係が無い・法人でない運営(vendor等)・キー無しは、従来どおり stores.corporation_id。
+  const rels = new Map<string, { from: string; to: string | null; corp: string }[]>();
+  try {
+    const { data: relRows } = await sb.from("store_operation_relations").select("store_id,operator_entity_type,operator_entity_id,effective_from,effective_to");
+    (relRows ?? []).forEach((r: any) => {
+      if (r.operator_entity_type !== "corporation" || !r.operator_entity_id || !r.effective_from) return;
+      const a = rels.get(r.store_id) ?? []; a.push({ from: String(r.effective_from).slice(0, 10), to: r.effective_to ? String(r.effective_to).slice(0, 10) : null, corp: r.operator_entity_id }); rels.set(r.store_id, a);
+    });
+  } catch (_) { /* 取得できなければ従来どおり stores.corporation_id */ }
+  const corpByStoreId = {
+    get(storeId: string, key?: string): string | null {
+      const base = corpStatic.get(storeId) ?? null;
+      const list = rels.get(storeId);
+      if (!list || !key) return base;
+      const k = String(key).trim(); const d = k.length === 7 ? k + "-01" : k.slice(0, 10);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return base;
+      let hit: { from: string; to: string | null; corp: string } | null = null;
+      for (const r of list) { if (r.from <= d && (r.to == null || d <= r.to) && (!hit || r.from > hit.from)) hit = r; }
+      return hit ? hit.corp : base;
+    },
+  };
   return { idByName, corpByStoreId, listingByName };
 }
 // 生の名前→正規化した名前の順に引く。見つからなければnull（呼び出し側がkd_unresolved_namesへ隔離）
@@ -239,7 +262,7 @@ async function refreshReservationDaily(sb: any, body: any) {
     const upserts = days.map((d) => {
       const avgCheck = avgCheckMap.get(`${d.store_id}|${d.period_date}`);
       return {
-        store_id: d.store_id, corporation_id: corpByStoreId.get(d.store_id) ?? null, period_date: d.period_date,
+        store_id: d.store_id, corporation_id: corpByStoreId.get(d.store_id, d.period_date) ?? null, period_date: d.period_date,
         reservation_count: d.reservation_count, party_size_sum: d.party_size_sum,
         same_day_count: d.same_day_count, same_day_party: d.same_day_party,
         walkin_count: d.walkin_count, walkin_party: d.walkin_party,
@@ -392,7 +415,7 @@ async function refreshDashboardDaily(sb: any, body: any) {
       const priorDate = addDays(p.period_date, -364);
       const priorSales = priorMap.get(`${p.store_id}|${priorDate}`);
       return {
-        store_id: p.store_id, corporation_id: corpByStoreId.get(p.store_id) ?? null, period_date: p.period_date,
+        store_id: p.store_id, corporation_id: corpByStoreId.get(p.store_id, p.period_date) ?? null, period_date: p.period_date,
         net_sales: p.net_sales, guests: p.guests, parties: p.parties, cost: p.cost, labor: p.labor,
         labor_pa: p.labor_pa, labor_emp: p.labor_emp,
         cash: p.cash, employee_salary_bonus: p.employee_salary_bonus, statutory_welfare: p.statutory_welfare, commute_allowance: p.commute_allowance,
@@ -507,7 +530,7 @@ async function refreshStoreMonthly(sb: any) {
       const laborRate = b.sales ? laborTotal / b.sales : null;
       const budgetSales = budgetByKey.get(`${b.store_id}|${b.year_month}`) ?? null;
       return {
-        store_id: b.store_id, corporation_id: corpByStoreId.get(b.store_id) ?? null, year_month: b.year_month,
+        store_id: b.store_id, corporation_id: corpByStoreId.get(b.store_id, b.year_month) ?? null, year_month: b.year_month,
         sales: b.sales, cost: b.cost, cost_rate: costRate,
         labor_pa: b.labor_pa, labor_emp: b.labor_emp, labor_other: b.labor - b.labor_pa - b.labor_emp, labor_spot: b.labor_spot, labor_total: laborTotal, labor_rate: laborRate,
         fl_rate: costRate != null && laborRate != null ? costRate + laborRate : null,
@@ -802,6 +825,7 @@ async function refreshPlMonthly(sb: any, body: any = {}) {
       if (!byKey.has(key)) byKey.set(key, newBucket(r.store_id, ym));
     });
 
+    const shiire = await loadShiireInfo(sb);   // TK-222: 無効(既定)なら何もしない
     const upserts = [...byKey.values()].map((b) => {
       // 注意: kd_dashboard_daily_summaryはop=dashboard_dailyのmonthsパラメータ分（既定2〜3ヶ月）しか
       // 保持していないため、それより古い年月はauto=undefined（sales/cost_auto/labor_autoは全てnull
@@ -809,8 +833,20 @@ async function refreshPlMonthly(sb: any, body: any = {}) {
       // 何年前でも取得できるため、古い月でもF/L/A/R/O自体は正しく集計される。
       const auto = b.store_id ? autoByKey.get(`${b.store_id}|${b.year_month}`) : undefined;
       const sales = auto ? auto.sales : null;
-      const costAuto = auto ? auto.cost : null;
+      let costAuto = auto ? auto.cost : null;
       const laborAuto = auto ? auto.labor : null;
+      // TK-222: 確定月は承認済み請求書の仕入高合計で原価(自動)を置換。未確定でも承認済みがあれば進捗(partial)だけ載せる
+      const sh = shiire.enabled && b.store_id ? shiire.byKey.get(`${b.store_id}|${b.year_month}`) : undefined;
+      const shiireCols: Record<string, unknown> = {};
+      if (shiire.enabled) {
+        if (sh && sh.confirmed && auto) {
+          shiireCols.cost_auto_siire = costAuto; costAuto = sh.amount; shiireCols.shiire_status = "confirmed";
+        } else if (sh && (sh.vendors > 0 || sh.confirmed)) {
+          shiireCols.shiire_status = "partial"; shiireCols.cost_auto_siire = null;
+        } else { shiireCols.shiire_status = null; shiireCols.cost_auto_siire = null; }
+        shiireCols.shiire_vendors_approved = sh ? sh.vendors : null; shiireCols.shiire_vendors_total = sh ? sh.vendorTotal : null;
+        shiireCols.shiire_invoice_amount = sh ? sh.amount : null;
+      }
       const costTotal = b.store_id && costAuto != null ? costAuto + b.cost_manual : null;
       const laborTotal = b.store_id && laborAuto != null ? laborAuto + b.labor_manual : null;
       const grossProfit = sales != null && costTotal != null ? sales - costTotal : null;
@@ -819,12 +855,13 @@ async function refreshPlMonthly(sb: any, body: any = {}) {
       const sga = laborTotal != null ? laborTotal + b.ad_manual + b.rent + b.other : null;
       const operatingProfit = sales != null && costTotal != null && sga != null ? sales - costTotal - sga : null;
       return {
-        store_id: b.store_id, corporation_id: b.store_id ? corpByStoreId.get(b.store_id) ?? null : null,
+        store_id: b.store_id, corporation_id: b.store_id ? corpByStoreId.get(b.store_id, b.year_month) ?? null : null,
         year_month: b.year_month, sales,
         cost_auto: costAuto, cost_manual: b.cost_manual, cost_total: costTotal,
         labor_auto: laborAuto, labor_manual: b.labor_manual, labor_total: laborTotal,
         ad_manual: b.ad_manual, rent: b.rent, other: b.other,
         gross_profit: grossProfit, sga, operating_profit: operatingProfit,
+        ...shiireCols,
         pl_item_breakdown: b.breakdown,
         seisan_synced_breakdown: b.seisanSynced,
         seisan_pending_total: b.seisanPending || null,
@@ -1011,6 +1048,61 @@ async function refreshEntries(sb: any, body: any) {
   return { ok, job: "entries", kinds, results: out };
 }
 
+// ============== TK-222 仕入高の月次確定（設計書_請求書メール自動処理 §12・2026-10-17） ==============
+// 経営PLの原価(cost_auto)はinfomart-siire速報。店舗×月が「確定」（shiire_month_confirmations.confirmed=true＝担当Cが全社分承認済みと宣言）の月だけ、
+// 承認済み請求書の仕入高合計（v_shiire_approved_monthly・税抜優先）で cost_auto を置換する。未確定でも承認済みがあれば shiire_status='partial'（置換せず進捗のみ）。
+// 有効化: app_secrets.shiire_confirm_enabled='1'（既定は無効＝列は触らず従来の値のまま）。精算書店舗(4店舗)は仕入高が請求書に出ない前提で対象外。
+type ShiireInfo = { amount: number; vendors: number; hasNet: boolean; confirmed: boolean; vendorTotal: number | null };
+async function loadShiireInfo(sb: any): Promise<{ enabled: boolean; byKey: Map<string, ShiireInfo> }> {
+  const { data: flag } = await sb.from("app_secrets").select("value").eq("key", "shiire_confirm_enabled").maybeSingle();
+  const enabled = (flag?.value ?? "").trim() === "1";
+  const byKey = new Map<string, ShiireInfo>();
+  if (!enabled) return { enabled, byKey };
+  const rows = await fetchAll((f, t) => sb.from("v_shiire_approved_monthly").select("store_id,year_month,vendor_id,invoice_id,net_amount,has_net")
+    .order("store_id").order("year_month").order("invoice_id").range(f, t));
+  const vend = new Map<string, Set<string>>();
+  for (const r of rows) {
+    const k = `${r.store_id}|${r.year_month}`;
+    const b = byKey.get(k) ?? { amount: 0, vendors: 0, hasNet: true, confirmed: false, vendorTotal: null };
+    b.amount += Number(r.net_amount) || 0; b.hasNet = b.hasNet && r.has_net !== false;
+    byKey.set(k, b);
+    (vend.get(k) ?? vend.set(k, new Set()).get(k)!).add(String(r.vendor_id ?? r.invoice_id));
+  }
+  for (const [k, v] of vend) byKey.get(k)!.vendors = v.size;
+  const conf = await fetchAll((f, t) => sb.from("shiire_month_confirmations").select("store_id,year_month,confirmed,vendor_total").order("id").range(f, t));
+  for (const c of conf) {
+    const k = `${c.store_id}|${c.year_month}`;
+    const b = byKey.get(k) ?? { amount: 0, vendors: 0, hasNet: true, confirmed: false, vendorTotal: null };
+    b.confirmed = c.confirmed === true; b.vendorTotal = c.vendor_total ?? null;
+    byKey.set(k, b);
+  }
+  return { enabled, byKey };
+}
+// op=shiire_preview: 読み取り専用の診断。店舗×月ごとに 速報(cost_auto)・承認済み請求書合計・n/全社・差・確定状態 を返す（確定の可否を人が判断する材料）
+async function shiirePreview(sb: any, body: any) {
+  const from = typeof body.from === "string" ? body.from : "2000-01";
+  const rows = await fetchAll((f, t) => sb.from("v_shiire_approved_monthly").select("store_id,year_month,vendor_id,invoice_id,net_amount,has_net")
+    .gte("year_month", from).order("store_id").order("year_month").order("invoice_id").range(f, t));
+  const conf = await fetchAll((f, t) => sb.from("shiire_month_confirmations").select("store_id,year_month,confirmed,vendor_total").order("id").range(f, t));
+  const by = new Map<string, { amount: number; vendors: Set<string>; hasNet: boolean }>();
+  for (const r of rows) {
+    const k = `${r.store_id}|${r.year_month}`; const b = by.get(k) ?? { amount: 0, vendors: new Set<string>(), hasNet: true };
+    b.amount += Number(r.net_amount) || 0; b.vendors.add(String(r.vendor_id ?? r.invoice_id)); b.hasNet = b.hasNet && r.has_net !== false; by.set(k, b);
+  }
+  const confBy = new Map<string, any>(conf.map((c: any) => [`${c.store_id}|${c.year_month}`, c]));
+  for (const k of confBy.keys()) if (!by.has(k)) by.set(k, { amount: 0, vendors: new Set(), hasNet: true });
+  const { data: st } = await sb.from("stores").select("id,name"); const nameBy = new Map<string, string>((st ?? []).map((x: any) => [x.id, x.name]));
+  const pl = await fetchAll((f, t) => sb.from("kd_pl_monthly_summary").select("store_id,year_month,cost_auto,cost_auto_siire,shiire_status").not("store_id", "is", null).gte("year_month", from).order("id").range(f, t));
+  const plBy = new Map<string, any>(pl.map((x: any) => [`${x.store_id}|${x.year_month}`, x]));
+  const out = [...by.entries()].map(([k, b]) => {
+    const [store_id, year_month] = k.split("|"); const c = confBy.get(k); const p = plBy.get(k);
+    const siire = p ? (p.cost_auto_siire ?? p.cost_auto) : null;   // 置換前の速報値
+    return { store: nameBy.get(store_id) ?? store_id, year_month, invoice_amount: b.amount, vendors_approved: b.vendors.size, vendors_total: c?.vendor_total ?? null,
+      confirmed: c?.confirmed === true, has_net: b.hasNet, siire_amount: siire, diff: siire != null ? b.amount - Number(siire) : null, current_status: p?.shiire_status ?? null };
+  }).sort((a, b) => (a.year_month < b.year_month ? 1 : a.year_month > b.year_month ? -1 : a.store.localeCompare(b.store)));
+  return { ok: true, rows: out.length, items: out.slice(0, 400) };
+}
+
 // ============== op=media_monthly: kd_media_monthly_summary ==============
 async function bqGetMediaRows(sb: any, months: number): Promise<any[][]> {
   const res = await dashAuthed(sb, "bqGetMedia", { months: months + 1 });
@@ -1052,7 +1144,7 @@ async function refreshMediaMonthly(sb: any, body: any) {
       byKey.set(key, b);
     }
     const upserts = [...byKey.values()].map((b) => ({
-      store_id: b.store_id, corporation_id: corpByStoreId.get(b.store_id) ?? null,
+      store_id: b.store_id, corporation_id: corpByStoreId.get(b.store_id, b.year_month) ?? null,
       year_month: b.year_month, media_name: b.media_name,
       net_sales: b.net_sales, guests: b.guests, parties: b.parties,
       source_updated_at: new Date().toISOString(), computed_at: new Date().toISOString(),
@@ -1129,7 +1221,7 @@ async function refreshDepositMonthly(sb: any) {
     const upserts = [...byKey.values()].map((b) => {
       const salesTotal = salesByKey.get(`${b.store_id}|${b.year_month}`) ?? null;
       return {
-        store_id: b.store_id, corporation_id: corpByStoreId.get(b.store_id) ?? null, year_month: b.year_month,
+        store_id: b.store_id, corporation_id: corpByStoreId.get(b.store_id, b.year_month) ?? null, year_month: b.year_month,
         deposit_total: b.total, deposit_count: b.count, sales_total: salesTotal,
         diff: salesTotal != null ? b.total - salesTotal : null,
         source_updated_at: new Date().toISOString(), computed_at: new Date().toISOString(),
@@ -1141,7 +1233,7 @@ async function refreshDepositMonthly(sb: any) {
       if (upErr) throw new Error("upsert失敗: " + upErr.message);
     }
     const dayUpserts = [...dayMap.values()].map((d) => ({
-      store_id: d.store_id, corporation_id: corpByStoreId.get(d.store_id) ?? null, deposit_date: d.deposit_date,
+      store_id: d.store_id, corporation_id: corpByStoreId.get(d.store_id, d.deposit_date) ?? null, deposit_date: d.deposit_date,
       amount: d.amount, deposit_count: d.count, entries: d.entries,
       source_updated_at: new Date().toISOString(), computed_at: new Date().toISOString(), source_count: d.count, sync_run_id: runId,
     }));
@@ -1304,7 +1396,7 @@ async function refreshAdMonthly(sb: any) {
 
     const upserts = [...byKey.values()].map((b) => {
       const row: Record<string, unknown> = {
-        store_id: b.store_id, corporation_id: corpByStoreId.get(b.store_id) ?? null, year_month: b.ym, media_name: b.media, brand_name: b.brand,
+        store_id: b.store_id, corporation_id: corpByStoreId.get(b.store_id, b.ym) ?? null, year_month: b.ym, media_name: b.media, brand_name: b.brand,
         ad_cost: b.cost, plan_breakdown: b.plan,
         source_updated_at: new Date().toISOString(), computed_at: new Date().toISOString(), source_count: b.n, sync_run_id: runId,
       };
@@ -1736,6 +1828,7 @@ Deno.serve(async (req) => {
       case "media_monthly": result = await refreshMediaMonthly(sb, body); break;
       case "entries": result = await refreshEntries(sb, body); break;
       case "gas_sync": result = await gasSync(body); break;
+      case "shiire_preview": result = await shiirePreview(sb, body); break;
       case "dash_target_sync": {   // dash-syncの目標・目標月次だけ反映を起動（BQ_LOAD_TOKEN認証）。完了を待つ
         const tk = Deno.env.get("BQ_LOAD_TOKEN") ?? "";
         const r = await fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/dash-sync`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "target_sync", token: tk }) });
