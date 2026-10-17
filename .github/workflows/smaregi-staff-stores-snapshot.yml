@@ -13,6 +13,17 @@ on:
         required: false
         default: ''
         type: string
+      action:
+        description: 'snapshot（既定）／probe（役割一覧と指定スタッフの所属の持ち方を読むだけ）'
+        required: false
+        default: 'snapshot'
+        type: choice
+        options: [snapshot, probe]
+      staff_id:
+        description: 'probe用: スマレジのスタッフID'
+        required: false
+        default: ''
+        type: string
 
 jobs:
   snapshot:
@@ -23,9 +34,11 @@ jobs:
         env:
           SR_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           CONTRACT: ${{ github.event.inputs.contract_id }}
+          ACTION: ${{ github.event.inputs.action }}
+          STAFF_ID: ${{ github.event.inputs.staff_id }}
         run: |
           if [ -z "$SR_KEY" ]; then echo "::error::SUPABASE_SERVICE_ROLE_KEY が未設定です"; exit 1; fi
-          BODY=$(node -e "console.log(JSON.stringify({action:'snapshot', contract_id: process.env.CONTRACT||undefined}))")
+          BODY=$(node -e "console.log(JSON.stringify({action: process.env.ACTION||'snapshot', contract_id: process.env.CONTRACT||undefined, staff_id: process.env.STAFF_ID||undefined}))")
           RES=$(curl -s -w "\n%{http_code}" -X POST \
             "https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/smaregi-staff-stores" \
             -H "Authorization: Bearer $SR_KEY" -H "Content-Type: application/json" -d "$BODY")

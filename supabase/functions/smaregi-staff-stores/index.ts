@@ -16,7 +16,7 @@ const API_BASE = IS_PROD ? "https://api.smaregi.jp" : "https://api.smaregi.dev";
 const DEFAULT_CONTRACT = Deno.env.get("SMAREGI_CONTRACT_ID") ?? "";
 const CID = Deno.env.get("SMAREGI_CLIENT_ID") ?? "";
 const SECRET = Deno.env.get("SMAREGI_CLIENT_SECRET") ?? "";
-const SCOPES = "timecard.staffs:read timecard.stores:read";
+const SCOPES = "timecard.staffs:read timecard.stores:read timecard.settings:read";
 
 const cors: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -74,7 +74,20 @@ Deno.serve(async (req) => {
       const { data: u } = await sb.from("users").select("role,is_active,is_master").eq("id", uid).maybeSingle();
       if (!u?.is_active || !(u.is_master || ["CEO", "HQ"].includes(u.role))) return json({ ok: false, error: "権限がありません（CEO/HQのみ）" }, 403);
     }
-    if (body.action !== "snapshot") return json({ ok: false, error: "action は snapshot のみ対応" }, 400);
+    // probe: 役割(roles)の一覧と、指定スタッフの所属(staff_stores)の持ち方を読むだけ（個人情報は返さない。役割ID・事業所IDのみ）
+    //   スマレジの PUT /staffs/{id}/staff_stores/{store_id} が役割IDを要求するため、正しい値を調べる用（2026-10-17）
+    if (body.action === "probe") {
+      const contract = String(body.contract_id || DEFAULT_CONTRACT);
+      const token = await getToken(contract);
+      const out: Record<string, unknown> = {};
+      for (const path of ["/roles", ...(body.staff_id ? [`/staffs/${encodeURIComponent(String(body.staff_id))}/staff_stores`] : [])]) {
+        const r = await api(contract, token, path);
+        const raw = await r.json().catch(() => null);
+        out[path.replace(/\/\d+\//, "/{id}/")] = { status: r.status, body: r.ok ? raw : JSON.stringify(raw).slice(0, 300) };
+      }
+      return json({ ok: true, ...out });
+    }
+    if (body.action !== "snapshot") return json({ ok: false, error: "action は snapshot / probe のみ対応" }, 400);
 
     const contract = String(body.contract_id || DEFAULT_CONTRACT);
     if (!contract) return json({ ok: false, error: "契約IDが未設定です" }, 400);
