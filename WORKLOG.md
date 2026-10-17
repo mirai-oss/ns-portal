@@ -31,6 +31,13 @@
 
 ---
 
+## 2026-10-17 担当C: 黒霧屋 新横浜の運営変更（2026-11-01）準備 — 指示書§5（①②④⑤⑥を実装・③給与は設計中）【ローカルコミット済み・SQL/デプロイ/push承認待ち】
+- ①手順書: [docs/手順書_MF_LiveGate事業者の認可と部門科目_U3U4_2026-10-17.html](docs/手順書_MF_LiveGate事業者の認可と部門科目_U3U4_2026-10-17.html)（push済み）。U3=`mf-oauth-authorize?tenant_id=livegate&label=株式会社LiveGate`（成功画面「マネーフォワード（株式会社LiveGate）との連携が完了しました」）／U4=部門`06新横浜黒霧屋`（トーホーと同名＝店舗マスタ`stores.mf_department_name`で名前一致するためコード変更なし）＋給与の補助科目＋よく使う仕入・広告等の補助科目（トーホーMFの7〜10月実績から抽出）。②疎通確認は認可後（`invoice-payment-scan` の explain で LiveGate の部門/科目を確認）。
+- ④法人移行期間: `invoice-check` に check `corp_transition`（automation_rule_settings.corp_transition: store_names/from=2026-11/to=2026-12）。対象店舗の明細を含む請求書は、宛先法人と、対象月の運営関係から期待される法人を比較し、一致=warn・不一致/未登録=ng（要対応・理由明示）。`invoices.corp_transition` フラグ列を追加（SQL）。画面: 一覧に「🏢法人移行期間」バッジ・一括承認の対象外（個別に承認）。仕訳の法人は宛先法人に従う（`MF_TENANT_BY_CORP` に livegate を追加）。
+- ⑤部門・行ルール: LiveGate事業者に行ルールが無い取引先は、トーホーの行ルールを「提案」として流用（proposed_kind=tenant_copy・承認で事業者別ルールとして保存）。部門は店舗の`mf_department_name`を宛先法人のMF事業者で名前一致（LiveGate側に同名部門を作る前提）。
+- ⑥精算書/PL経路: `_shared/store-operator.ts`＋画面`plfeeOperatorCorpAt_`: 運営会社が時期で変わる店舗（運営関係に法人が2つ以上）は、請求書の対象月の運営会社で direct(PL)/seisan(精算書)を判定。それ以外は従来どおり stores.corporation_id（他店舗の挙動は不変）。精算書の相手先そのものはGAS側（精算ダッシュボードの店舗×法人設定・担当A）。
+- 適用順: SQL(`2026-10-17_corp_transition_rule.sql`)→Edge(invoice-check/invoice-journal-draft/pl-fee-reflect)→push(v139)。SQL前にUI/invoice-checkを出すと corp_transition 列が無く一覧・チェックが壊れる。
+
 ## 2026-10-17 担当C: SMBC(トーホー)の自動仕訳の補助科目を修正・9月前半分の重複取込を処理済みに（v136）
 - 原因: トーホーMFの 売掛金の補助科目は「ステラカード（全店舗分」・カード手数料の補助科目は「カード手数料」（N-Styleは「ステラカード」）。ルール(ARJ_AUTO_RULES)がテナント別になっておらず「見つかりません」で自動仕訳が空欄になっていた → receivable/feeSub をテナント別に（default=トーホー）。
 - 9月前半分(トーホー・MP20260917・7件・計15,856,616円)は、MFに手入力で処理済み(売上 #5212・入金 #5194)なのに、10/16 23:12のジョブが再取込（前半分の台帳が無かったため新規作成）。7件を ar_deposits 入金済み(9/17)＋mf_journal_id='manual-5212' で処理済み扱い（ジョブはMF仕訳済み行を上書きしないため再作成されない）。

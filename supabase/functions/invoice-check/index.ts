@@ -10,6 +10,7 @@
 // 例外タスク: automation_rule_settings.invoice_exception_tasks が ON のときだけ、止まった理由を hq_create_exception_task（べき等）で発行／解消で自動完了。
 // 認証: 共有シークレットまたはユーザーJWT（invoice_can_access）。入力: { secret?, invoice_id }
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { operatorCorpMap } from "../_shared/store-operator.ts";
 
 const cors: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -134,15 +135,47 @@ Deno.serve(async (req: Request) => {
     }
   }
 
+  // ⑦-2 法人移行期間の検算（設計メモ_スマレジ複数契約対応 §10・黒霧屋 新横浜の運営変更 2026-11-01）
+  // 対象: 設定(automation_rule_settings.corp_transition)の店舗の明細を含み、対象年月が期間内の請求書。宛先法人（請求書の宛先）と、その月の運営関係から期待される法人を比べる。
+  // 一致しても不一致でも「法人移行期間」として必ず人が確認（一括承認の対象外にする）。不一致は理由を明示して要対応にする。仕訳の法人は宛先法人に従う（invoice-journal-draft）。
+  try {
+    const { data: tr } = await db.from("automation_rule_settings").select("enabled, params").eq("key", "corp_transition").maybeSingle();
+    const ymT = String(inv.target_year_month ?? "").slice(0, 7);
+    const tp: any = tr?.params ?? {};
+    if (tr?.enabled && ymT && tp.from && tp.to && ymT >= tp.from && ymT <= tp.to && lines?.length) {
+      const { data: tstores } = await db.from("stores").select("id, name").in("name", tp.store_names ?? []);
+      const tIds = new Set((tstores ?? []).map((s: any) => s.id));
+      const hit = (tstores ?? []).filter((s: any) => (lines ?? []).some((l: any) => l.resolved_store_id === s.id));
+      if (tIds.size && hit.length) {
+        const [yy, mm] = ymT.split("-").map(Number); const mEnd = new Date(Date.UTC(yy, mm, 0)).toISOString().slice(0, 10);
+        const { data: rel } = await db.from("store_operation_relations").select("store_id, operator_entity_type, operator_entity_id, effective_from, effective_to")
+          .in("store_id", hit.map((s: any) => s.id)).lte("effective_from", mEnd).order("effective_from", { ascending: false });
+        const { data: corpsAll } = await db.from("corporations").select("id, name");
+        const nm = (id: string | null) => (corpsAll ?? []).find((c: any) => c.id === id)?.name ?? (id ? "不明" : "未確定");
+        const notes: string[] = []; let mismatch = false;
+        for (const s of hit) {
+          const r = (rel ?? []).find((x: any) => x.store_id === s.id && (!x.effective_to || x.effective_to >= mEnd.slice(0, 8) + "01"));
+          const expected = r && r.operator_entity_type === "corporation" ? r.operator_entity_id : null;
+          if (!expected) { mismatch = true; notes.push(`${s.name}: ${ymT}の運営会社が店舗マスタに未登録（期待法人を判定できません）`); continue; }
+          if (expected !== inv.corporation_id) { mismatch = true; notes.push(`${s.name}: 宛先=${nm(inv.corporation_id)}・期待=${nm(expected)}（${ymT}の運営会社）`); }
+          else notes.push(`${s.name}: 宛先=${nm(inv.corporation_id)}・期待=${nm(expected)}（一致）`);
+        }
+        checks.push({ key: "corp_transition", label: "法人移行期間（宛先法人を確認）", status: mismatch ? "ng" : "warn",
+          detail: `${notes.join("／")}。移行期間のため、宛先法人を確認して承認してください（仕訳は宛先法人のMF事業者に作ります）`, reason: "corp_transition" });
+      }
+    }
+  } catch (e) { console.error("法人移行期間の検算に失敗: " + e); }
+
   // ⑧ ルート振り分け（1行は1ルート。業務委託精算対象の店舗は精算書、それ以外はPL）
   const routes: any[] = [];
   const sids = [...new Set((lines ?? []).map((l: any) => l.resolved_store_id).filter(Boolean))] as string[];
   if (sids.length) {
     const { data: ss } = await db.from("stores").select("id, name, corporation_id, seisan_target, seisan_pl_categories_target").in("id", sids);
+    const opMap = await operatorCorpMap(db, sids, inv.target_year_month);   // 運営会社が時期で変わる店舗（黒霧屋 新横浜）は、その月の運営会社で判定
     for (const s of ss ?? []) {
       let route = "pl";
       if (s.seisan_target) route = "seisan";
-      else if (s.seisan_pl_categories_target) route = inv.corporation_id && inv.corporation_id === s.corporation_id ? "pl" : "seisan";
+      else if (s.seisan_pl_categories_target) route = inv.corporation_id && inv.corporation_id === (opMap.get(s.id) ?? s.corporation_id) ? "pl" : "seisan";
       routes.push({ store_id: s.id, store_name: s.name, route });
     }
   }
@@ -165,7 +198,7 @@ Deno.serve(async (req: Request) => {
   }
 
   const result = { checks, routes, stage, blocked_reason: blocked, checked_at: new Date().toISOString() };
-  await db.from("invoices").update({ checks: result, current_stage: stage, blocked_reason: blocked, stage_updated_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq("id", inv.id);
+  await db.from("invoices").update({ checks: result, current_stage: stage, blocked_reason: blocked, corp_transition: checks.some((c) => c.key === "corp_transition"), stage_updated_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq("id", inv.id);
   if (inv.email_id) {
     await db.from("invoice_audit_logs").insert({
       entity_type: "invoice_email", entity_id: inv.email_id, action: "auto_checked", actor_type: "ai",

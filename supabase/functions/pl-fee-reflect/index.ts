@@ -37,6 +37,7 @@
 //     今後はここに登録した科目＝実際にPLへ反映できる科目そのもの（上記①）
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { zeroPlSheet } from "../_shared/pl-sheet.ts";
+import { operatorCorpMap } from "../_shared/store-operator.ts";
 
 const cors: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -248,7 +249,8 @@ Deno.serve(async (req: Request) => {
         const { data: candStores, error: seisanErr } = await uc.from("stores")
           .select("id, name, corporation_id, seisan_target, seisan_pl_categories_target").in("id", storeIds);
         if (seisanErr) return json({ error: "店舗の確認に失敗しました: " + seisanErr.message }, 500);
-        const blockedStores = (candStores ?? []).filter((s: any) => plSeisanRoute(s, inv.corporation_id) === "seisan");
+        const opMap = await operatorCorpMap(svc(), storeIds, body?.year_month);   // 運営会社が時期で変わる店舗（黒霧屋 新横浜）は、その月の運営会社で判定
+        const blockedStores = (candStores ?? []).filter((s: any) => plSeisanRoute({ ...s, corporation_id: opMap.get(s.id) ?? s.corporation_id }, inv.corporation_id) === "seisan");
         if (blockedStores.length) {
           const names = blockedStores.map((s: any) => s.name).join("・");
           return json({ error: `${names}は精算対象店舗のため、ここではPLに反映できません（精算書に入力すると自動でPLにも反映されるため、二重計上になってしまいます）。精算書側で入力してください` }, 400);
@@ -357,7 +359,8 @@ Deno.serve(async (req: Request) => {
       const { data: storeRows, error: storeErr } = await uc.from("stores")
         .select("id, name, corporation_id, seisan_target, seisan_pl_categories_target, seisan_store_name").in("id", storeIds);
       if (storeErr) return json({ error: "店舗の確認に失敗しました: " + storeErr.message }, 500);
-      const storeMap = new Map((storeRows ?? []).map((s: any) => [s.id, s]));
+      const opMap2 = await operatorCorpMap(svc(), storeIds, yearMonth);   // 運営会社が時期で変わる店舗（黒霧屋 新横浜）は、その月の運営会社で判定
+      const storeMap = new Map((storeRows ?? []).map((s: any) => [s.id, { ...s, corporation_id: opMap2.get(s.id) ?? s.corporation_id }]));
       for (const a of allocations) {
         const s = storeMap.get(a.store_id);
         if (!s) return json({ error: `店舗が見つかりません（${a.store_name}）` }, 400);

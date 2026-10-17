@@ -25,7 +25,7 @@ const userClient = (req: Request) =>
     global: { headers: { Authorization: req.headers.get("Authorization") ?? "" } },
   });
 
-const MF_TENANT_BY_CORP: Record<string, string> = { nstyle: "nstyle", toho: "default" };
+const MF_TENANT_BY_CORP: Record<string, string> = { nstyle: "nstyle", toho: "default", livegate: "livegate" };   // 2026-10-17: LiveGate事業者を追加（黒霧屋 新横浜の運営変更 2026-11-01）
 
 function monthEnd(ym: string): string { // 'YYYY-MM' or 'YYYY-MM-DD' → その月の末日
   const [y, m] = ym.slice(0, 7).split("-").map(Number);
@@ -75,6 +75,13 @@ Deno.serve(async (req: Request) => {
   // インフォマート（CSV）由来で行ルールが無い取引先: CSVの既定（仕入高／補助科目=取引先名／貸方=買掛金）を「提案」として下書きに出す。
   // 提案は常に要確認（自動OKにしない）。人が確認して「今後この内容で処理する」を保存するとルールになり、次回から自動で作れる。
   let proposed = false;
+  // 2026-10-17 法人移行（黒霧屋 運営変更）: このMF事業者（例: LiveGate）に取引先の行ルールがまだ無いときは、トーホーの行ルールの科目・補助科目を「提案」として流用する
+  // （部門は店舗のMF部門名で宛先法人のMF事業者に対して解決されるため、同じ部門名をLiveGate側に作れば同じ形で組める）。人が内容を確認して承認すると、その事業者の行ルールとして保存される
+  let tenantCopy = false;
+  if (!rules.length && vendor && tenantId !== "default") {
+    const { data: base } = await db.from("v_vendor_line_rule_status").select("*").eq("vendor_id", vendor.id).eq("tenant_id", "default");
+    if (base?.length) { rules = base.map((r: any) => ({ ...r, id: null, version: 0, source: "proposed", unstable: false })); proposed = true; tenantCopy = true; }
+  }
   if (!rules.length && vendor && inv.intake_source === "infomart") {
     proposed = true;
     rules = [{ id: null, version: 0, source: "proposed", line_pattern: "*", account_name: "仕入高", sub_account_mode: "vendor", sub_account_name: null,
@@ -83,7 +90,7 @@ Deno.serve(async (req: Request) => {
   // 2026-10-14: 行ルールが無い取引先（インフォマート以外：メール・アップロード）は、過去にMFへ登録した同じ取引先の仕訳（借方の科目・補助科目）を
   // 「提案」として下書きに出す。貸方は科目で推定（仕入高→買掛金／それ以外→未払金・補助科目=取引先名）。提案は status='proposed'（承認待ちには進むが、
   // 人が必ず内容を確認して承認する。承認すると行ルールとして保存され、次回から自動）。過去の仕訳が無ければ従来どおり要確認。
-  let proposedKind: "csv" | "history" | null = proposed ? "csv" : null;
+  let proposedKind: "csv" | "history" | "tenant_copy" | null = tenantCopy ? "tenant_copy" : proposed ? "csv" : null;
   if (!rules.length && vendor && !proposed) {
     const { data: vs } = await db.from("vendors").select("id, name");
     const nn = (s: unknown) => String(s ?? "").normalize("NFKC").replace(/\s+/g, "").replace(/株式会社|有限会社|合同会社|㈱|㈲|\(株\)|\(有\)/g, "").toLowerCase();
@@ -102,7 +109,8 @@ Deno.serve(async (req: Request) => {
   }
   const { data: policy } = vendor ? await db.from("vendor_invoice_policies").select("*").eq("vendor_id", vendor.id).eq("tenant_id", tenantId).maybeSingle() : { data: null };
   if (vendor && !rules.length) problems.push(`この取引先の行ルールがありません（「今後この内容で処理する」で登録すると次回から自動で作れます）`);
-  if (proposed && proposedKind === "history") warnings.push("初回の提案です（過去にMFへ登録した同じ取引先の仕訳から、科目・補助科目を提案しています。貸方は科目から推定）。内容を確認して承認すると、次回から自動で作られます。");
+  if (proposed && proposedKind === "tenant_copy") warnings.push("法人が変わった（またはこのMF事業者では初めての）取引先です。トーホーの行ルール（科目・補助科目）を流用して提案しています。宛先法人のMF事業者に同じ補助科目・部門があるか確認して承認してください（承認すると、この事業者の行ルールとして保存されます）。");
+  else if (proposed && proposedKind === "history") warnings.push("初回の提案です（過去にMFへ登録した同じ取引先の仕訳から、科目・補助科目を提案しています。貸方は科目から推定）。内容を確認して承認すると、次回から自動で作られます。");
   else if (proposed) warnings.push("初回の提案です（CSVの既定：仕入高／補助科目=取引先名／貸方=買掛金）。内容を確認して承認すると、次回から自動で作られます。");
   if (policy?.evidence_warning) warnings.push(policy.evidence_warning);
 

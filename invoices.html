@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-17-v138";
+const BUILD_TAG="2026-10-17-v139";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -859,10 +859,21 @@ async function plFeeTargetAccounts(){
 //       直接支払っている（立替ではない）ので"direct"、対象法人が異なる＝別法人が立替払いを
 //       している（後で精算が必要）ので"seisan"
 //   - どちらのフラグも無い店舗 → "normal"（精算とは無関係の通常店舗）
-function plfeeSeisanRoute(store,invoiceCorpId){
+// 2026-10-17（黒霧屋 新横浜の運営変更 2026-11-01）：運営会社が時期で変わる店舗は、その月の運営会社で判定する。
+// 運営関係の行に法人が2つ以上ある店舗（＝運営会社が変わった店舗）だけが対象で、それ以外は従来どおり stores.corporation_id。対象月は引数ymか、PL反映パネルの対象年月
+function plfeeOperatorCorpAt_(store,ym){
+  const rels=((CORP_STORE_CACHE&&CORP_STORE_CACHE.relations)||[]).filter(x=>x.store_id===store.id&&x.operator_entity_type==="corporation");
+  if(new Set(rels.map(x=>x.operator_entity_id)).size<2) return store.corporation_id;
+  const m=String(ym||(typeof PLFEE_STATE!=="undefined"&&PLFEE_STATE&&PLFEE_STATE.yearMonth)||"").slice(0,7);
+  const today=new Date(Date.now()+9*3600e3).toISOString().slice(0,10);
+  const mStart=m?`${m}-01`:today; const mEnd=m?new Date(Date.UTC(+m.slice(0,4),+m.slice(5,7),0)).toISOString().slice(0,10):today;
+  const hit=rels.filter(x=>x.effective_from<=mEnd&&(!x.effective_to||x.effective_to>=mStart)).sort((a,b)=>a.effective_from<b.effective_from?1:-1)[0];
+  return hit?hit.operator_entity_id:store.corporation_id;
+}
+function plfeeSeisanRoute(store,invoiceCorpId,ym){
   if(!store) return "normal";
   if(store.seisan_target) return "seisan";
-  if(store.seisan_pl_categories_target) return (invoiceCorpId&&invoiceCorpId===store.corporation_id)?"direct":"seisan";
+  if(store.seisan_pl_categories_target) return (invoiceCorpId&&invoiceCorpId===plfeeOperatorCorpAt_(store,ym))?"direct":"seisan";
   return "normal";
 }
 function plfeeFindStoreByName(stores,name){
@@ -1251,6 +1262,10 @@ async function apbOne_(id,opt){
   const lines=(d.debit_lines||[]).map(l=>({line_no:l.line_no,store_id:l.store_id,store_name:l.store_name,remark:l.remark,amount:l.debit.amount,net:l.debit.net_amount,
     account:l.debit.account||"",sub:l.debit.sub_account||"",dept:l.debit.department||"",rate:l.debit.tax?Number(l.debit.tax.rate):0,
     orig:{account:l.debit.account||"",sub:l.debit.sub_account||"",dept:l.debit.department||"",rate:l.debit.tax?Number(l.debit.tax.rate):0}}));
+  if(unifiedHasCorpTransition_(inv)){   // 法人移行期間（黒霧屋 運営変更）は必ず個別に宛先法人を確認して承認する
+    if(!(opt&&opt.dry)) return {ok:false,html:"法人移行期間のため、一括登録できません（承認画面で宛先法人を確認して、個別に承認してください）"};
+    const r1=await apvRun_(inv,d,lines,opt); if(r1.ok) r1.proposed=true; if(r1.ok) r1.html+="<br>※<b>法人移行期間</b>のため、一括登録の対象外です（承認画面で宛先法人を確認して、個別に承認）。"; return r1;
+  }
   if(d.status==="proposed"){
     if(!(opt&&opt.dry)) return {ok:false,html:"初回の提案のため、一括登録できません（承認画面で内容を確認して、個別に承認してください）"};
     const r0=await apvRun_(inv,d,lines,opt); if(r0.ok) r0.proposed=true; if(r0.ok) r0.html+="<br>※初回の提案のため、<b>一括登録の対象外</b>です（承認画面で内容を確認して、個別に承認）。"; return r0;
@@ -4986,13 +5001,15 @@ let MFJ_STATE={}; // マネーフォワード仕訳作成モーダルの一時�
 let CORP_STORE_CACHE=null;
 async function ensureCorpStoreCache(){
   if(CORP_STORE_CACHE) return CORP_STORE_CACHE;
-  const [corpRes,storeRes]=await Promise.all([
+  const [corpRes,storeRes,relRes]=await Promise.all([
     authed("/rest/v1/corporations?select=id,name,corp_code&order=name"),
     authed("/rest/v1/stores?select=id,name,corporation_id,mf_department_name,seisan_target,seisan_pl_categories_target,seisan_store_name&order=name"),
+    authed("/rest/v1/store_operation_relations?select=store_id,operator_entity_type,operator_entity_id,effective_from,effective_to"),   // 運営会社の期間履歴（黒霧屋 新横浜の運営変更の経路判定用）
   ]);
   CORP_STORE_CACHE={
     corporations:(corpRes.ok&&Array.isArray(corpRes.body))?corpRes.body:[],
     stores:(storeRes.ok&&Array.isArray(storeRes.body))?storeRes.body:[],
+    relations:(relRes.ok&&Array.isArray(relRes.body))?relRes.body:[],
   };
   return CORP_STORE_CACHE;
 }
@@ -7944,7 +7961,7 @@ async function renderUnifiedInvoiceTab(u){
   // 使っている列だけに絞った（請求書詳細モーダルは常に別途id指定でselect=*を取り直す設計の
   // ため、ここを絞っても詳細画面には一切影響しないことを調査済み）
   const [r,corpCache]=await perfTimed("unified_list_load",()=>Promise.all([
-    authed(`/rest/v1/invoices?select=id,created_at,due_date,invoice_status,amount,vendor_name,invoice_number,corporation_id,store_id,email_id,intake_source,ai_match_status,mf_journal_id,mf_journal_number,payment_status,payment_verified_at,duplicate_suspected,bank_account_change_detected,mf_registration_error,is_payroll_related,is_receivable_related,pl_fee_reflected_at,pl_fee_excluded_at,ad_cost_reflected_at,pl_fee_seisan_synced_at,target_year_month,current_stage,blocked_reason,auto_mode,email:invoice_emails(mail_kind),vendor:vendors(name),corp:corporations(name),store:stores!invoices_store_id_fkey(name),invoice_stores(store:stores(name)),linked_step:hq_task_steps!linked_hq_step_id(title)&order=created_at.desc&limit=500`),
+    authed(`/rest/v1/invoices?select=id,created_at,due_date,invoice_status,amount,vendor_name,invoice_number,corporation_id,store_id,email_id,intake_source,ai_match_status,mf_journal_id,mf_journal_number,payment_status,payment_verified_at,duplicate_suspected,bank_account_change_detected,mf_registration_error,is_payroll_related,is_receivable_related,pl_fee_reflected_at,pl_fee_excluded_at,ad_cost_reflected_at,pl_fee_seisan_synced_at,target_year_month,current_stage,blocked_reason,auto_mode,corp_transition,email:invoice_emails(mail_kind),vendor:vendors(name),corp:corporations(name),store:stores!invoices_store_id_fkey(name),invoice_stores(store:stores(name)),linked_step:hq_task_steps!linked_hq_step_id(title)&order=created_at.desc&limit=500`),
     ensureCorpStoreCache(),
   ]));
   const raw=(r.ok&&Array.isArray(r.body))?r.body:[];
@@ -8015,6 +8032,8 @@ function unifiedFilteredRows(){
   return list;
 }
 const INTAKE_SOURCE_LABEL={upload_auto:"アップロード(自動)",email_auto:"メール(自動)",mail:"メール",paper:"紙",pdf:"PDF",infomart:"Infomart",api:"精算書(自動)",manual:"手動"};
+// 2026-10-17: 黒霧屋 新横浜の運営変更（2026-11-01）の法人移行期間。invoice-check が checks に corp_transition を付けた請求書は、必ず人が宛先法人を確認する（一括承認の対象外）
+function unifiedHasCorpTransition_(r){ if(r&&r.corp_transition) return true; const ck=r&&r.checks&&Array.isArray(r.checks.checks)?r.checks.checks:[]; return ck.some(c=>c.key==="corp_transition"); }
 function unifiedRowHtml(r){
   const ai=AI_STATUS_LABEL[r.ai_match_status]||["—","gray"];
   const pay=unifiedPaymentStageLabel(r);
@@ -8029,7 +8048,7 @@ function unifiedRowHtml(r){
     <td>${dueBadgeHtml(r)}</td>
     <td><select class="unified-corp" data-id="${r.id}" style="font-size:11px;${r.corporation_id?"":"color:var(--m-amber)"}"><option value="">（未設定）</option>${(UNIFIED_STATE.corporations||[]).map(c=>`<option value="${esc(c.id)}" ${r.corporation_id===c.id?"selected":""}>${esc(c.name)}</option>`).join("")}</select></td>
     <td>${unifiedStoreLabel(r)}</td>
-    <td><b>${esc((r.vendor&&r.vendor.name)||r.vendor_name||"—")}</b>${riskNote?`<div class="danger-text" style="color:var(--m-red);font-size:10px;font-weight:800">${esc(riskNote)}</div>`:""}</td>
+    <td><b>${esc((r.vendor&&r.vendor.name)||r.vendor_name||"—")}</b>${unifiedHasCorpTransition_(r)?`<div style="color:#b45309;font-size:10px;font-weight:800">🏢 法人移行期間（宛先法人を確認）</div>`:""}${riskNote?`<div class="danger-text" style="color:var(--m-red);font-size:10px;font-weight:800">${esc(riskNote)}</div>`:""}</td>
     <td>${esc(r.invoice_number||"—")}</td>
     <td>${yen(r.amount)}</td>
     <td><span class="invoice-status ${unifiedIsAuto(r)?"check":"gray"}" title="${unifiedIsAuto(r)?"自動取込（自動で下書きまで作られ、承認待ちに並びます）":"人が取り込み・入力した請求書"}">${unifiedIsAuto(r)?"🤖 ":"✋ "}${esc(INTAKE_SOURCE_LABEL[r.intake_source]||(r.email_id?"メール":"手動"))}</span>${r.email&&r.email.mail_kind==="sales"?' <span class="invoice-status done" title="売上入金（入金の仕訳）">💰売上入金</span>':""}</td>
