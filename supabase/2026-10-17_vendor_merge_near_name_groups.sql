@@ -61,7 +61,7 @@ update public.vendors d set is_active = false, updated_at = now(),
 -- rollback（統合前は重複側の口座は全て「現在の口座」だった。付け替えた請求書・口座・有効状態・別名を戻す）:
 --   update public.invoices i set vendor_id = l.dup_vendor_id, updated_at = now() from public.vendor_merge_log l
 --    where l.invoice_id = i.id and l.merged_at >= timestamp '2026-10-17';
---   update public.vendor_bank_accounts set is_current = true where vendor_id in (select id from public.vendors where notes like '%（2026-10-17）に統合%');
---   update public.vendors set is_active = true where notes like '%（2026-10-17）に統合%';
+--   update public.vendor_bank_accounts set is_current = true where vendor_id in (select id from public.vendors where notes like '%に統合（2026-10-17）%');
+--   update public.vendors set is_active = true where notes like '%に統合（2026-10-17）%';
 --   delete from public.vendor_aliases where source = 'merge_2026-10-17';
 --   delete from public.vendor_merge_log where merged_at >= timestamp '2026-10-17';
