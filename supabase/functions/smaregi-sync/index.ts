@@ -820,7 +820,7 @@ Deno.serve(async (req) => {
               if (!existing) existing = await fetchWageApply();
               const hit = existing.find((w) => w.division === r.division && (w.storeId ?? null) === (smStore ?? null) && w.effectiveDate === r.effective_date);
               if (!hit) throw new Error(`賃金設定の登録に失敗(400): ${await errText(rr)}`);
-              applyId = hit.id; await put(applyId);
+              applyId = hit.id; await put(hit.id);
             } else throw new Error(`賃金設定の登録に失敗(${rr.status}): ${await errText(rr)}`);
           }
           await mark(r.id, { sync_status: "synced", sync_error: null, synced_at: new Date().toISOString(), smaregi_wage_apply_id: applyId });
