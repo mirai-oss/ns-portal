@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-16-v135";
+const BUILD_TAG="2026-10-17-v136";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -4376,7 +4376,7 @@ async function arjBulkRegister(u,items){
 // （給与仕訳と同じ照合：名前一致→店舗番号一致）。SMBC・PayPay以外のsource（ロケットナウ等）は従来どおり。
 const ARJ_AUTO_RULES={
   "PayPay加盟店":{receivable:"PayPay", salesSub:"PayPay売上", feeAccount:t=>t==="default"?"支払手数料":"カード手数料", feeSub:t=>t==="default"?"PayPay":null},
-  "SMBC GMO PAYMENT（カード売上）":{receivable:"ステラカード", salesSub:"カード売上", feeAccount:()=>"カード手数料", feeSub:()=>null},
+  "SMBC GMO PAYMENT（カード売上）":{receivable:t=>t==="default"?"ステラカード（全店舗分":"ステラカード", salesSub:"カード売上", feeAccount:()=>"カード手数料", feeSub:t=>t==="default"?"カード手数料":null},   // トーホー(default)のMFは、売掛金の補助科目が「ステラカード（全店舗分」・カード手数料の補助科目が「カード手数料」
   "ロケットナウ":{receivable:"ロケットなう", salesAccount:"デリバリー売上", reducedTax:true, salesSub:"ロケットなう", feeAccount:()=>"支払手数料", feeSub:()=>"ロケットなう"},
   "Uber Eats":{receivable:"Uber Eats", salesAccount:"デリバリー売上", reducedTax:true, salesSub:"Uber Eats", feeAccount:()=>"支払手数料", feeSub:()=>"Uber Eats"},
   "現金売上":{receivable:"現金売上", receivableByStore:true, salesSub:"現金売上", feeAccount:()=>"カード手数料", feeSub:()=>null},
@@ -4408,7 +4408,8 @@ function arjBuildAutoBranches_(prefix,expected,feeParts){
   const dept=(ARJ_STATE.departments||[]).find(d=>d.id===ARJ_STATE.storeDepartmentId)||null;
   const taxId=n=>{ const x=(ARJ_STATE.taxes||[]).find(v=>v&&v.name===n); return x?x.id:""; };
   const sales=rule.salesAccount||arjSalesAccountName_(t);
-  let arLabel=`売掛金/${rule.receivable}`;
+  const recvSub=typeof rule.receivable==="function"?rule.receivable(t):rule.receivable;
+  let arLabel=`売掛金/${recvSub}`;
   let arStoreMiss=false;
   if(rule.receivableByStore){ // 現金売上：借方の売掛金は店舗の補助科目
     const l=arjSubLabelForDept_("売掛金",dept);
@@ -4430,7 +4431,7 @@ function arjBuildAutoBranches_(prefix,expected,feeParts){
   if(feeNeeded&&feeSubFixed&&!has(feeLabel)){ warn.push(`「${feeAcc}」の補助科目「${feeSubFixed}」がMFに見つかりません。補助科目は空欄です`); feeLabel=feeAcc; }
   if(feeNeeded&&feeLabel===feeAcc&&!feeSubFixed&&dept&&(ARJ_STATE.subAccountsByAccountName.get(feeAcc)||[]).length) warn.push(`「${feeAcc}」の補助科目に同じ店舗が見つかりません。補助科目は空欄です`);
   if(arStoreMiss) warn.push(`「売掛金」の補助科目に、部門（${dept?dept.name:"未解決"}）と同じ店舗が見つかりません。借方の補助科目は空欄です`);
-  if(arMissing) warn.push(`「売掛金」の補助科目「${rule.receivable}」がMFに見つかりません。補助科目は空欄です（先にMFで作成してください）`);
+  if(arMissing) warn.push(`「売掛金」の補助科目「${recvSub}」がMFに見つかりません。補助科目は空欄です（先にMFで作成してください）`);
   ARJ_STATE.creditSubAccountWarning=warn.join("／");
   const dep=dept?dept.id:"";
   // デリバリー売上は軽減税率8%（MFの税区分名は「課税売上 8%（軽減）」等。軽減を優先して探す）

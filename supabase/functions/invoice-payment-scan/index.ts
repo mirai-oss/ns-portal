@@ -9,7 +9,7 @@
 // 認証: invoice_intake_secret。入力: { secret, force?: boolean, dry_run?: boolean }
 //   force なし＝「1日1回（日本時間9時以降・前回から20時間以上）」のときだけ実行（invoice-intake のメール取込から毎回呼ばれても二重に動かない）
 import { createClient } from "npm:@supabase/supabase-js@2";
-import { getValidAccessToken } from "../_shared/mf.ts";
+import { getValidAccessToken, mfFetch } from "../_shared/mf.ts";
 import { larkPost } from "../_shared/cockpit.ts";
 import { counterpartyId, dateRange, fetchOutflows, matchPayments, norm, rulePatternOf, type PayItem, type Rule } from "../_shared/payment-match.ts";
 
@@ -33,6 +33,27 @@ Deno.serve(async (req: Request) => {
   if (!sr?.value || body?.secret !== sr.value) return json({ error: "認証エラー" }, 401);
 
   // 調査用（読み取りのみ）: 指定した入金元の別名に当たる「預金への入金」を期間内でそのまま一覧する。例: {explain:{needle:"シーピーワンジヤパン", from:"2026-09-01", to:"2026-10-16", tenant:"default"}}
+  if (body?.explain?.raw || body?.explain?.accounts) {   // 調査用: 仕訳の明細を科目・補助科目の名前で検索／勘定科目の補助科目一覧
+    try {
+      const ex = body.explain; const { accessToken } = await getValidAccessToken(ex.tenant || "default");
+      if (ex.accounts) {
+        const r = await mfFetch("/api/v3/accounts", accessToken); const dj = await r.json();
+        return json({ success: true, accounts: (dj.accounts ?? []).filter((a: any) => ex.accounts.includes(a.name)).map((a: any) => ({ name: a.name, subs: (a.sub_accounts ?? []).map((x: any) => x.name) })) });
+      }
+      const rows: any[] = [];
+      for (let page = 1; page <= 10; page++) {
+        const r = await mfFetch(`/api/v3/journals?start_date=${ex.raw.from}&end_date=${ex.raw.to}&per_page=500&page=${page}`, accessToken); const dj = await r.json();
+        if (!r.ok) return json({ error: "取得失敗", detail: dj }, 502);
+        for (const j of dj.journals ?? []) for (const br of j.branches ?? []) {
+          const sd = (x: any) => x ? `${x.account_name ?? ""}${x.sub_account_name ? "/" + x.sub_account_name : ""}${x.department_name ? "[" + x.department_name + "]" : ""} ${x.value}` : "";
+          const txt = `${sd(br.debitor)} ${sd(br.creditor)} ${br.remark ?? ""}`;
+          if (txt.includes(ex.raw.needle)) rows.push({ date: j.transaction_date, no: j.number, debit: sd(br.debitor), credit: sd(br.creditor), remark: br.remark });
+        }
+        if ((dj.journals ?? []).length < 500) break;
+      }
+      return json({ success: true, rows });
+    } catch (e) { return json({ error: String((e as Error)?.message ?? e) }, 500); }
+  }
   if (body?.explain) {
     try {
       const ex = body.explain; const { accessToken } = await getValidAccessToken(ex.tenant || "default");
