@@ -4,7 +4,7 @@
 
 ---
 
-**★★★★★2026-10-17（担当Bスレッド・TK-232/TK-239）黒霧屋運営変更 §4・§9・§10: nippo側を実装（ローカルコミット済み・SQL v6/smaregi-sync/workflowはpush・本番未適用）**:
+**★★★★★2026-10-17（担当Bスレッド・TK-232/TK-239）黒霧屋運営変更 §4・§9・§10: nippo側を実装・公開済み(e0dcf66)／SQL v6はユーザー適用済み（関数・列の存在確認済み）／smaregi-sync(担当D契約対応版＋store_sync)のデプロイはユーザー了承待ち（デプロイは担当D）**:
 - **種別**: `hr_change_requests.kind`に`transfer`(移籍)・`concurrent`(兼務追加)＋列`from_contract_id`/`to_contract_id`。申請フォーム(nippo退職申請)に種別・移行先契約・開始日。承認=`hr_approve_contract_change`（記録のみ・アカウント/退職日は触らない）→画面からsmaregi-sync（contract_id指定）。**⚠️既存`hr_approve_retirement`は種別を見ず、移籍の申請を承認すると退職になってしまう→v6で種別チェックを追加**（hr_cancel_retirementも）。
 - **反映の順序（指示書から1点変更）**: 移行先の`sync`(入社登録・LiveGate契約)→`store_sync`(所属事業所)→移籍なら旧契約`terminate(contract_id=旧, date=開始日の前日)`。指示書は「terminate→sync」だが、先にterminateして移行先のsyncが失敗すると旧契約も新契約も無い人ができるため、**登録を先**にした（失敗時は旧契約に触らない・再実行可）。旧契約の打刻OFFは、開始日の前日が過去なら即時・未来なら毎朝の`hr-termination-apply.yml`（新ステップ・`hr_due_transfer_deactivations`）が翌日に実行。
 - **画面(nippo)**: 従業員管理に「🏢 他法人スマレジへの入社登録（移籍・兼務）」（契約選択・区分・開始日・チェックして一括・結果とスタッフID表示・登録済み一覧）と「⚠️ 所属のズレ」（人×契約・全員を管理システムに合わせる）、従業員編集に「🔗 スマレジ所属（契約ごと）」（スタッフID・有効期間・管理システム/スマレジの所属・✓一致/⚠️ズレ・向き選択・最新で確認・今すぐ同期・1人の入社登録）。契約マスタ(担当D Phase1)が本番に無い間は`smReady=false`で出さない。結果は担当Dの`sync`が`employee_smaregi_links`へ保存（LiveGateはis_primary=false）。
