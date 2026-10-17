@@ -8,6 +8,7 @@
 // 出力: { proposals:[{ vendor_key, rule_id, current:{account, sub, sub_mode}, observed:[{account, sub, count, last_date, total}], recommend:{account, sub_account_mode, sub_account_name}, status }], checked, journals }
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { getValidAccessToken, mfFetch } from "../_shared/mf.ts";
+import { splitByFiscalYear } from "../_shared/mf-fiscal.ts";
 
 const cors: Record<string, string> = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "authorization, content-type, apikey, x-client-info" };
 const json = (o: unknown, status = 200) => new Response(JSON.stringify(o), { status, headers: { ...cors, "Content-Type": "application/json" } });
@@ -35,10 +36,12 @@ Deno.serve(async (req: Request) => {
     const end = new Date(Date.now() + 9 * 3600e3).toISOString().slice(0, 10);
     const start = new Date(Date.now() - months * 31 * 86400e3).toISOString().slice(0, 10);
     const journals: any[] = [];
-    for (let page = 1; page <= 20; page++) {
-      const r = await mfFetch(`/api/v3/journals?start_date=${start}&end_date=${end}&per_page=500&page=${page}`, accessToken); const dj = await r.json();
-      if (!r.ok) return json({ error: "MFの仕訳の取得に失敗しました", detail: dj }, 502);
-      journals.push(...(dj.journals ?? [])); if ((dj.journals ?? []).length < 500) break;
+    for (const rg of splitByFiscalYear(tenant, start, end)) {   // 会計期間をまたぐ範囲はMFがエラーにするため、期間ごとに分けて取得
+      for (let page = 1; page <= 20; page++) {
+        const r = await mfFetch(`/api/v3/journals?start_date=${rg.start}&end_date=${rg.end}&per_page=500&page=${page}`, accessToken); const dj = await r.json();
+        if (!r.ok) return json({ error: "MFの仕訳の取得に失敗しました", detail: dj }, 502);
+        journals.push(...(dj.journals ?? [])); if ((dj.journals ?? []).length < 500) break;
+      }
     }
     // 取引先ごとに、借方の（科目, 補助科目）の実績を数える。取引先は「借方の補助科目／取引先名／摘要」で結びつける
     const proposals: any[] = []; let checked = 0;

@@ -1,6 +1,7 @@
 // 引き落とし・他行振込の照合ロジック（mf-journal の手動照合と、invoice-payment-scan の定期実行で共通に使う）
 // MFには何も書かない（読み取りのみ）。
 import { mfFetch } from "./mf.ts";
+import { splitByFiscalYear } from "./mf-fiscal.ts";
 
 export type PayItem = { invoice_id: string; vendor_id?: string | null; vendor_name: string; amount: number; due_date?: string | null; method?: string };
 export type Rule = { vendor_id: string; pattern: string };
@@ -13,15 +14,17 @@ export const rulePatternOf = (remark: string) => norm(remark).replace(/[0-9０-�
 const isDeposit = (n: string) => /預金|当座/.test(n ?? "");
 
 // dir="out": 預金からの出金（貸方が預金）／ dir="in": 預金への入金（借方が預金）。相手側の科目・補助科目・摘要を比べる
-export async function fetchOutflows(accessToken: string, startD: string, endD: string, dir: "out" | "in" = "out"): Promise<{ outflows: Outflow[]; searched: number } | { error: string; detail?: unknown }> {
+export async function fetchOutflows(accessToken: string, startD: string, endD: string, dir: "out" | "in" = "out", tenant = "default"): Promise<{ outflows: Outflow[]; searched: number } | { error: string; detail?: unknown }> {
   const journals: any[] = [];
-  for (let page = 1; page <= 10; page++) {
-    const r = await mfFetch(`/api/v3/journals?start_date=${startD}&end_date=${endD}&per_page=500&page=${page}`, accessToken);
-    const dj = await r.json();
-    if (!r.ok) return { error: "仕訳履歴の取得に失敗しました", detail: dj };
-    const list = dj.journals ?? [];
-    journals.push(...list);
-    if (list.length < 500) break;
+  for (const rg of splitByFiscalYear(tenant, startD, endD)) {   // 会計期間をまたぐ範囲はMFがエラーにするため、期間ごとに分けて取得する
+    for (let page = 1; page <= 10; page++) {
+      const r = await mfFetch(`/api/v3/journals?start_date=${rg.start}&end_date=${rg.end}&per_page=500&page=${page}`, accessToken);
+      const dj = await r.json();
+      if (!r.ok) return { error: "仕訳履歴の取得に失敗しました", detail: dj };
+      const list = dj.journals ?? [];
+      journals.push(...list);
+      if (list.length < 500) break;
+    }
   }
   const outflows: Outflow[] = [];
   for (const j of journals) for (const br of j.branches ?? []) {

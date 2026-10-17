@@ -40,6 +40,12 @@
 
 ---
 
+## 2026-10-17 担当C: TK-216反映済み（SQL・Edge4本・push v142）＋再学習の試運転＋会計期間の切れ目の発見
+- 反映: `2026-10-17_tk216_approver_evidence.sql` 適用済み（列・プレコの方針=納品書必須を確認）。mf-journal/invoice-check/invoice-journal-draft/invoice-rules-relearn をデプロイ、v142 push。
+- 再学習の試運転（トーホー・直近6か月・MF仕訳5,690件）: 実績のある取引先24社すべてで行ルールと実績が一致＝提案0件。N-Styleは「会計期間をまたぐ範囲」でMFエラー。
+- **会計期間の期首（実機確認）**: トーホー=4月・N-Style=8月・**LiveGate=11月**（2025-10〜11の範囲だけエラー）。→ `_shared/mf-fiscal.ts`（splitByFiscalYear）で取得範囲を会計期間ごとに分けて読む（payment-match・relearn）／mf-journal の FISCAL_YEAR_START_MONTH に livegate:11 を追加。**LiveGateのMFには2026-11-01以降の会計期間がまだ無い**（11月分の日付はMFがエラーにする）→ 11/1までにユーザーがMFで次期の会計期間を作成する必要あり（手順書U4に追記）。
+- 上記の修正はコミット済み・未デプロイ（mf-journal / invoice-payment-scan / invoice-rules-relearn）。
+
 ## 2026-10-17 担当C: TK-216の残り（②承認者列・④納品書の証憑・⑤ルール不安定アラート・⑥元帳再学習）v142【ローカルコミット・SQL/デプロイ/push承認待ち】
 - ②承認者: `invoices.approved_by/approved_at`。mf-journal `create`（承認→MF仕訳登録）が、ログイン中の人と時刻を記録。一覧の取引先セルに「承認: 名前 月/日」。
 - ④納品書の証憑（プレコフーズ＝納品書がインボイス）: `vendor_invoice_policies.required_evidence`（プレコフーズ=['delivery_note']）と `invoice_attachments.attachment_kind`。invoice-check に check `evidence`（必要な証憑が無ければ ng＝要対応）。mf-journal に action `add_attachment`（請求書に証憑を追加。MF登録時にその請求書の全添付が証憑として付く）。承認画面に「📎 納品書を追加」ボタン→追加後に自動で再チェック。（Mac miniのインフォマート「納品書一括出力」からの自動取得は担当D側の今後の拡張）

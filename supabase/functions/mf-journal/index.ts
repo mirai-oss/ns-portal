@@ -78,6 +78,7 @@ const userClient = (req: Request) =>
 const FISCAL_YEAR_START_MONTH: Record<string, number> = {
   default: 4,
   nstyle: 8,
+  livegate: 11,   // 2026-10-17: LiveGateのMF（実機確認: 2025-10〜11の範囲だけエラー＝期首は11月）
 };
 function fiscalYearStartMonth(tenantId: string): number {
   return FISCAL_YEAR_START_MONTH[tenantId] ?? 4;
@@ -564,7 +565,7 @@ Deno.serve(async (req: Request) => {
       const before = Number(body?.days_before ?? 5), after = Number(body?.days_after ?? 14);
       const range = dateRange(items, before, after);
       const dir = body?.direction === "in" ? "in" : "out";
-      const fo = await fetchOutflows(accessToken, range.start, range.end, dir);
+      const fo = await fetchOutflows(accessToken, range.start, range.end, dir, tenantId);
       if ("error" in fo) return json({ error: fo.error, detail: fo.detail }, 502);
       const dbp = svc();
       const { data: rl } = await dbp.from("payment_match_rules").select("vendor_id, pattern").eq("tenant_id", tenantId);

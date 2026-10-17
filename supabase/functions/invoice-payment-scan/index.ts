@@ -117,7 +117,7 @@ Deno.serve(async (req: Request) => {
         const items: PayItem[] = rs.map((r: any) => ({ invoice_id: r.id, vendor_id: r.vendor_id, vendor_name: r.vendor?.name ?? "", amount: Number(r.amount) || 0, due_date: r.due_date, method: methodOf(r) ?? undefined }));
         const range = dateRange(items, 5, 14);
         const { accessToken } = await getValidAccessToken(tenant);
-        const fo = await fetchOutflows(accessToken, range.start, range.end);
+        const fo = await fetchOutflows(accessToken, range.start, range.end, "out", tenant);
         if ("error" in fo) { errors.push(`${tenant}: ${fo.error}`); continue; }
         const { data: rl } = await db.from("payment_match_rules").select("vendor_id, pattern").eq("tenant_id", tenant);
         const cands = matchPayments(items, fo.outflows.filter((o) => !usedJ.has(o.journal_id)), (rl ?? []) as Rule[]);
@@ -176,7 +176,7 @@ Deno.serve(async (req: Request) => {
           for (const r of rs) items.push({ invoice_id: r.id, vendor_id: await counterpartyId(r.source_name ?? ""), vendor_name: r.source_name ?? "", amount: Number(r.expected_amount) || 0, due_date: r.expected_date || monthEnd(r.year_month), method: "in" });
           const range = dateRange(items, 5, 45);
           const { accessToken } = await getValidAccessToken(tenant);
-          const fo = await fetchOutflows(accessToken, range.start, range.end, "in");
+          const fo = await fetchOutflows(accessToken, range.start, range.end, "in", tenant);
           if ("error" in fo) { errors.push(`売上入金 ${tenant}: ${fo.error}`); continue; }
           const { data: rl } = await db.from("payment_match_rules").select("vendor_id, pattern").eq("tenant_id", tenant);
           const cands = matchPayments(items, fo.outflows.filter((o) => !usedIn.has(o.journal_id)), (rl ?? []) as Rule[], 5, 45);
