@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-17-v139";
+const BUILD_TAG="2026-10-17-v140";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -10299,8 +10299,49 @@ async function renderPayrollTab(u){
   payrollRender();
   updateMailSummaryBar(); // データ読込後に人数・件数が確定するので再描画
 }
+// ===== 給与仕訳の法人切替（黒霧屋 新横浜の運営変更 2026-11-01・指示書§5-2）=====
+// 画面の「法人」で、トーホー（MF事業者=default）／LiveGate（MF事業者=livegate）を切り替える。
+// 行はスマレジの契約（sf_payroll_sync.contract_id→smaregi_contracts.corporation_id）で分け、MFの事業者・部門・科目・仕訳の型・登録記録は選んだ法人ごとに扱う。
+// 運営会社（店舗の運営関係）は「その月の末日」で引く（10月分=トーホー・11月分以降=LiveGate）。
+const PAYROLL_CORPS=[{key:"toho",label:"トーホー",code:"toho",tenant:"default"},{key:"livegate",label:"LiveGate",code:"livegate",tenant:"livegate"}];
+function payrollCorpDef_(){ let k=PAYROLL_STATE.corpKey; if(!k){ try{ k=localStorage.getItem("payrollCorpKey")||"toho"; }catch(e){ k="toho"; } PAYROLL_STATE.corpKey=k; } return PAYROLL_CORPS.find(c=>c.key===k)||PAYROLL_CORPS[0]; }
+function payrollTenantId(){ return payrollCorpDef_().tenant; }
+function payrollCorpIdOf_(code){ const c=(PAYROLL_STATE.corporations||[]).find(x=>x.corp_code===code); return c?c.id:null; }
+function payrollCorpId(){ return payrollCorpIdOf_(payrollCorpDef_().code); }
+// 行（sf_payroll_sync）がどの法人の給与か: 契約→法人。契約が不明な行はトーホー扱い（従来どおり）
+function payrollRowCorpId_(row){
+  const c=(PAYROLL_STATE.contracts||[]).find(x=>x.contract_id===row.contract_id);
+  return (c&&c.corporation_id)||payrollCorpIdOf_("toho");
+}
+// 対象月の末日で有効な運営関係（店舗→運営法人）。無い店舗は従来の「現在の運営関係」を使う
+function payrollRelationsAt_(ym){
+  const m=String(ym||"").slice(0,7); if(!m||!(PAYROLL_STATE.relationsAll||[]).length) return PAYROLL_STATE.relationsNow||[];
+  const mEnd=new Date(Date.UTC(+m.slice(0,4),+m.slice(5,7),0)).toISOString().slice(0,10), mStart=`${m}-01`;
+  const out=[]; const seen=new Set();
+  for(const r of [...PAYROLL_STATE.relationsAll].sort((a,b)=>a.effective_from<b.effective_from?1:-1)){
+    if(seen.has(r.store_id)) continue;
+    if(r.effective_from<=mEnd&&(!r.effective_to||r.effective_to>=mStart)){
+      seen.add(r.store_id);
+      const now=(PAYROLL_STATE.relationsNow||[]).find(x=>x.store_id===r.store_id&&x.operator_entity_id===r.operator_entity_id);
+      const cn=(PAYROLL_STATE.corporations||[]).find(c=>c.id===r.operator_entity_id);
+      out.push({store_id:r.store_id,relation_type:r.relation_type,operator_entity_type:r.operator_entity_type,operator_entity_id:r.operator_entity_id,operator_name:(now&&now.operator_name)||(cn&&(cn.display_name||cn.name))||""});
+    }
+  }
+  for(const x of (PAYROLL_STATE.relationsNow||[])) if(!seen.has(x.store_id)) out.push(x);
+  return out;
+}
+function payrollWireCorpPills_(){
+  document.querySelectorAll(".payroll-corp-pill").forEach(el=>el.onclick=async()=>{
+    const k=el.dataset.corpkey; if(k===payrollCorpDef_().key) return;
+    PAYROLL_STATE.corpKey=k; try{ localStorage.setItem("payrollCorpKey",k); }catch(e){}
+    PAYROLL_STATE.autoResults=new Map(); PAYROLL_STATE.autoResultsYm=null; PAYROLL_STATE.dryResults=null; PAYROLL_STATE.dryResultsYm=null;   // 法人を変えたら一括生成などの結果は破棄
+    $("tabbody").innerHTML=`<section class="invoice-list active"><div class="card" style="padding:16px"><div class="spin" style="padding:20px 0">読み込み中…（${esc(payrollCorpDef_().label)}）</div></div></section>`;
+    await payrollLoad(); payrollRender(); updateMailSummaryBar();
+  });
+}
 async function payrollLoad(){
   const ym=PAYROLL_STATE.yearMonth;
+  const tenant=payrollTenantId();
   if(PAYROLL_STATE.dryResultsYm&&PAYROLL_STATE.dryResultsYm!==ym){ PAYROLL_STATE.dryResults=null; PAYROLL_STATE.dryResultsYm=null; }
   if(PAYROLL_STATE.autoResultsYm&&PAYROLL_STATE.autoResultsYm!==ym){ PAYROLL_STATE.autoResults=new Map(); PAYROLL_STATE.autoResultsYm=null; } // 月を切り替えたら一括生成の結果は破棄
   const fetchSync=()=>authed(`/rest/v1/sf_payroll_sync?year_month=eq.${ym}&select=*,user:users(name,role,is_active)&order=user(name)`);
@@ -10308,8 +10349,8 @@ async function payrollLoad(){
     fetchSync(),
     authed(`/rest/v1/payroll_journal_records?year_month=eq.${ym}&select=*`),
     authed(`/rest/v1/payroll_journal_assignments?select=*`),
-    authed(`/rest/v1/mf_journal_templates?tenant_id=eq.default&select=id,label,branches,payroll_kind,payroll_corporation_id&order=label`),
-    mfCall("list_departments",{tenant_id:"default"}),
+    authed(`/rest/v1/mf_journal_templates?tenant_id=eq.${tenant}&select=id,label,branches,payroll_kind,payroll_corporation_id&order=label`),
+    mfCall("list_departments",{tenant_id:tenant}),
     // 2026-09-10追加：amountも取得する（店舗別の給料・交通費集計に使う。従来は店舗の特定にしか
     // 使っておらず、複数店舗に按分されている人の「その店舗ぶんの金額」が取れていなかった）
     authed(`/rest/v1/sf_payroll_allocations?period_key=like.${ym}*&select=user_id,store_id,kind,amount`),
@@ -10318,7 +10359,7 @@ async function payrollLoad(){
     // こちらでも参照する（2026-09-02・担当Bからの依頼②。表側の実体は共有のためテーブル新設不要）
     authed(`/rest/v1/sf_payroll_hidden?year_month=eq.${ym}&select=user_id`),
     // 2026-09-02: 給与仕訳プレビューで明細行を追加できるように、勘定科目一覧も取得しておく
-    mfCall("accounts",{tenant_id:"default"}),
+    mfCall("accounts",{tenant_id:tenant}),
     // 2026-09-02: 一時保存（下書き）機能。「途中で消えてしまう」対策
     authed(`/rest/v1/payroll_journal_drafts?year_month=eq.${ym}&select=*`),
     // 2026-09-05追加：振込予定日（振込CSV出力時にユーザーが入力）。無ければ未設定のまま
@@ -10333,11 +10374,12 @@ async function payrollLoad(){
   // 2026-10-06（§4）：payroll_kind/payroll_corporation_id列（supabase/2026-10-06_payroll_template_kind_corp.sql）が
   // まだ本番に無い場合は取得が失敗するため、従来の列だけで取り直す（給与仕訳タブ自体が動かなくなるのを防ぐ）
   if(!(tplR.ok&&Array.isArray(tplR.body))){
-    tplR=await authed(`/rest/v1/mf_journal_templates?tenant_id=eq.default&select=id,label,branches&order=label`);
+    tplR=await authed(`/rest/v1/mf_journal_templates?tenant_id=eq.${tenant}&select=id,label,branches&order=label`);
   }
   const syncOk=syncR.ok&&Array.isArray(syncR.body);
   if(syncOk){
     PAYROLL_STATE.rows=syncR.body;
+    PAYROLL_STATE.rowsAll=syncR.body;   // 全法人ぶん（下で選んだ法人の契約の行だけに絞る）
     PAYROLL_STATE.loadedYearMonth=ym;
     PAYROLL_STATE.loadError=false;
   }else if(PAYROLL_STATE.loadedYearMonth!==ym){
@@ -10395,7 +10437,7 @@ async function payrollLoad(){
     PAYROLL_STATE.subAccountsByAccountName=subsByAccount;
     PAYROLL_STATE.subAccountNamesAll=[...subNamesAll];
   }
-  if(!PAYROLL_STATE.stores){
+  if(!PAYROLL_STATE.storesRaw){
     // 2026-09-09追加：ユーザー要望「AI判定の事業所名と会計の部門名が一致しない店舗を登録して
     // おけば、次回から同じ店舗と認識して反映されるようにしてほしい」に対応。設定タブ
     // 「法人・店舗・部門マッピング」で既に用意されていたstores.mf_department_name（店舗↔MF部門名の
@@ -10411,12 +10453,13 @@ async function payrollLoad(){
     // 法人（グループ会社か）、従業員の所属店舗（user_stores）を読む。取得できなければ従来どおり stores.corporation_id で判定する
     await Promise.all([
       authed("/rest/v1/v_store_current_relations?select=store_id,relation_type,operator_entity_type,operator_entity_id,operator_name"),
-      authed("/rest/v1/corporations?select=id,name,legal_name,display_name,is_group_company"),
+      authed("/rest/v1/corporations?select=id,name,legal_name,display_name,is_group_company,corp_code"),
       authed("/rest/v1/user_stores?select=user_id,store_id,is_primary"),
       authed("/rest/v1/corporation_aliases?is_active=eq.true&select=corporation_id,alias"),
     ]).then(([a,b,c,d])=>{
       PAYROLL_STATE.corpAliases=(d.ok&&Array.isArray(d.body))?d.body:[];
-      PAYROLL_STATE.relations=(a.ok&&Array.isArray(a.body))?a.body:[];
+      PAYROLL_STATE.relationsNow=(a.ok&&Array.isArray(a.body))?a.body:[];
+      PAYROLL_STATE.relations=PAYROLL_STATE.relationsNow;
       PAYROLL_STATE.corporations=(b.ok&&Array.isArray(b.body))?b.body:[];
       PAYROLL_STATE.userStores=(c.ok&&Array.isArray(c.body))?c.body:[];
     }).catch(()=>{});
@@ -10426,9 +10469,35 @@ async function payrollLoad(){
       // 2026-10-07：店舗・法人・運営関係の正本（担当F Phase1）の外部名マッピング。給与の事業所名・MF部門名で使う
       authed("/rest/v1/store_external_mappings?is_active=eq.true&source_system=in.(smaregi_timecard,payroll)&select=store_id,source_system,external_store_id,external_store_name"),
     ]);
-    PAYROLL_STATE.stores=(r.ok&&Array.isArray(r.body))?r.body:[];
+    PAYROLL_STATE.storesRaw=(r.ok&&Array.isArray(r.body))?r.body:[];
     PAYROLL_STATE.storeAliases=(ar.ok&&Array.isArray(ar.body))?ar.body:[];
     PAYROLL_STATE.externalMappings=(xr.ok&&Array.isArray(xr.body))?xr.body:[];
+  }
+  // 2026-10-17 法人切替（黒霧屋 新横浜の運営変更）: 契約・運営関係の期間履歴・店舗×MF事業者の部門名を読み、選んだ法人に合わせて行・店舗・部門名を切り替える
+  if(!PAYROLL_STATE.contracts||!PAYROLL_STATE.relationsAll||!PAYROLL_STATE.storeTenantDepts){
+    const [cr,rr,sd]=await Promise.all([
+      authed("/rest/v1/smaregi_contracts?select=contract_id,corporation_id"),
+      authed("/rest/v1/store_operation_relations?select=store_id,relation_type,operator_entity_type,operator_entity_id,effective_from,effective_to"),
+      authed("/rest/v1/store_tenant_departments?select=store_id,tenant_id,department_name,payroll_sub_name"),
+    ]);
+    PAYROLL_STATE.contracts=(cr.ok&&Array.isArray(cr.body))?cr.body:[];
+    PAYROLL_STATE.relationsAll=(rr.ok&&Array.isArray(rr.body))?rr.body:[];
+    PAYROLL_STATE.storeTenantDepts=(sd.ok&&Array.isArray(sd.body))?sd.body:[];
+  }
+  PAYROLL_STATE.relations=payrollRelationsAt_(ym);
+  { // 店舗の部門名をMF事業者ごとに差し替える（無い事業者・店舗は店舗マスタの部門名のまま）。補助科目の指定（payroll_sub_name）は部門IDに結びつけて持つ
+    const tdm=new Map((PAYROLL_STATE.storeTenantDepts||[]).filter(x=>x.tenant_id===tenant).map(x=>[x.store_id,x]));
+    PAYROLL_STATE.stores=(PAYROLL_STATE.storesRaw||[]).map(st=>{ const t=tdm.get(st.id); return t?{...st,mf_department_name:t.department_name}:st; });
+    PAYROLL_STATE.deptSubByDeptId=new Map();
+    for(const st of PAYROLL_STATE.stores){
+      const t=tdm.get(st.id); if(!t||!t.payroll_sub_name) continue;
+      const dp=(PAYROLL_STATE.departments||[]).find(d=>String(d.name||"").trim().normalize("NFKC")===String(t.department_name||"").trim().normalize("NFKC"));
+      if(dp) PAYROLL_STATE.deptSubByDeptId.set(dp.id,t.payroll_sub_name);
+    }
+  }
+  if(syncOk){   // 選んだ法人の契約の行だけにする（契約が不明な行はトーホー）。契約の表が読めないときは、トーホー以外の法人は空にして、他法人の行を出さない
+    if((PAYROLL_STATE.contracts||[]).length){ const want=payrollCorpId(); PAYROLL_STATE.rows=(PAYROLL_STATE.rowsAll||[]).filter(r=>payrollRowCorpId_(r)===want); }
+    else if(payrollCorpDef_().key!=="toho") PAYROLL_STATE.rows=[];
   }
   // 給与明細PDF（担当Bが用意したStorageバケット payroll-pdfs・{user_id}/{year_month}[_n].pdf規約。
   // 2026-09-07: 複数枚対応のためファイル一覧を保持するよう変更）が
@@ -10620,9 +10689,9 @@ function payrollStoreHasPayroll(storeId){ return payrollStoreOperatorInfo_(store
 function payrollPayrollStores(){ return (PAYROLL_STATE.stores||[]).filter(st=>payrollStoreHasPayroll(st.id)); }
 // 給与仕訳タブは有限会社トーホーエージェンシー分のみ。給料が発生する店舗のうち、運営会社がトーホー（または運営会社を持たない本部・セントラルキッチン）のものだけを選択肢に出す
 // （N-Style 本社などは給料の人がいないため出さない）
-function payrollTohoStores(){
-  const toho=(PAYROLL_STATE.corporations||[]).find(c=>c.name==="トーホー");
-  return payrollPayrollStores().filter(st=>{ const o=payrollStoreOperatorInfo_(st.id); return !toho||!o.corpId||o.corpId===toho.id; });
+function payrollTohoStores(){   // 名前は従来のまま。実際は「画面で選んだ法人（トーホー／LiveGate）が運営する店舗」
+  const cid=payrollCorpId(); const isToho=payrollCorpDef_().key==="toho";
+  return payrollPayrollStores().filter(st=>{ const o=payrollStoreOperatorInfo_(st.id); return !cid||(isToho&&!o.corpId)||o.corpId===cid; });
 }
 function payrollUserPrimaryStoreId(userId){
   const us=(PAYROLL_STATE.userStores||[]).filter(x=>x.user_id===userId);
@@ -10634,6 +10703,7 @@ function payrollUserPrimaryStoreId(userId){
   return [...by.entries()].sort((a,b)=>b[1]-a[1])[0][0];
 }
 function payrollUserCorporationId(userId){
+  const picked=payrollCorpId(); if(picked) return picked;   // 2026-10-17: 行は選んだ法人の契約の行だけ。その法人の給与として扱う
   const sid=payrollUserPrimaryStoreId(userId);
   return sid?payrollStoreOperatorInfo_(sid).corpId:null;
 }
@@ -10668,7 +10738,7 @@ function payrollAssignmentFor(userId){
   const man=payrollManualAssignmentFor(userId);
   if(payrollAutoAssignOn()){
     const t=payrollAutoTemplateFor(userId);
-    if(t) return {user_id:userId,tenant_id:"default",template_id:t.id,auto:true,kind:payrollEffectiveKind(userId),overridden:!!payrollKindOverrideFor(userId)};
+    if(t) return {user_id:userId,tenant_id:payrollTenantId(),template_id:t.id,auto:true,kind:payrollEffectiveKind(userId),overridden:!!payrollKindOverrideFor(userId)};
   }
   // 区分の型（区分付きの仕訳辞書）がまだ無い場合だけ、従来の人ごとの仕訳辞書の割当を使う（移行期間の保険）
   return man&&man.template_id?man:man;
@@ -10680,7 +10750,7 @@ function payrollRegistrantLabel(rec){
   let t=""; try{ t=new Date(rec.created_at).toLocaleString("ja-JP",{month:"numeric",day:"numeric",hour:"2-digit",minute:"2-digit"}); }catch(e){}
   return [nm?`登録者: ${nm}`:"",t?`登録: ${t}`:""].filter(Boolean).join(" ");
 }
-function payrollRecordFor(userId){ return PAYROLL_STATE.records.find(r=>r.user_id===userId); }
+function payrollRecordFor(userId){ const t=payrollTenantId(); return PAYROLL_STATE.records.find(r=>r.user_id===userId&&(r.tenant_id||"default")===t); }   // 兼務の人はMF事業者ごとに1件ずつ
 function payrollDraftFor(userId){ return (PAYROLL_STATE.drafts||[]).find(d=>d.user_id===userId); }
 function payrollFindDeptForUser(userId){
   const alloc=(PAYROLL_STATE.allocations||[]).find(a=>a.user_id===userId&&a.store_id);
@@ -10999,7 +11069,7 @@ function payrollBuildAutoJournalPlan(row,branches,storeTotals,pdfSummary){
   // 一致するかを確認する。別の会社の明細・登録されていない会社名のときは自動では入れない
   let companyNote="";
   if(sm&&typeof sm.company_name==="string"&&sm.company_name.trim()){
-    const toho=(PAYROLL_STATE.corporations||[]).find(c=>c.name==="トーホー");
+    const toho=(PAYROLL_STATE.corporations||[]).find(c=>c.id===payrollCorpId())||(PAYROLL_STATE.corporations||[]).find(c=>c.name==="トーホー");
     const expectId=row._expectedCorpId||(toho?toho.id:null);
     const gotId=payrollCorpFromCompanyName_(sm.company_name);
     const expectName=((PAYROLL_STATE.corporations||[]).find(c=>c.id===expectId)||{}).name||"トーホー";
@@ -11224,7 +11294,7 @@ async function payrollEnsureCreditRows(branches,row,userId){
     const r=await authed(`/rest/v1/payroll_journal_records?user_id=eq.${userId}&mf_journal_id=not.is.null&year_month=lt.${PAYROLL_STATE.yearMonth}&select=mf_journal_id,year_month&order=year_month.desc&limit=1`);
     const jid=(r.ok&&Array.isArray(r.body)&&r.body[0])?r.body[0].mf_journal_id:null;
     if(jid){
-      const gj=await mfCall("get_journal",{journal_id:jid,tenant_id:"default"});
+      const gj=await mfCall("get_journal",{journal_id:jid,tenant_id:payrollTenantId()});
       if(gj.ok&&Array.isArray(gj.body.branches)){
         labels=[...new Set(gj.body.branches.filter(b=>b.credit&&b.credit.account_name).map(b=>mftLabelOf(b.credit)))];
         src=`前月（${r.body[0].year_month}）の登録済み仕訳`;
@@ -11268,6 +11338,9 @@ function payrollSubAccountLabelForDept(baseLabel,dept){
   const account=i>=0?lb.slice(0,i):lb;
   const norm=x=>String(x||"").normalize("NFKC").replace(/[\s\/]/g,"");
   const names=(PAYROLL_STATE.subAccountsByAccountName&&PAYROLL_STATE.subAccountsByAccountName.get(account.trim()))||[];
+  // 店舗×MF事業者の指定（例: LiveGateの黒霧屋 新横浜 → 補助科目「新横浜/黒霧屋」）があれば、MFにその補助科目がある場合それを使う
+  const ovSub=PAYROLL_STATE.deptSubByDeptId&&PAYROLL_STATE.deptSubByDeptId.get(dept.id);
+  if(ovSub&&names.includes(ovSub)){ const label=`${account}/${ovSub}`; return {label,found:true,changed:label!==lb,sub:ovSub,by:"mapping"}; }
   const want=norm(dept.name);
   const sub=names.find(n=>norm(n)===want);
   if(sub){ const label=`${account}/${sub}`; return {label,found:true,changed:label!==lb,sub,by:"name"}; }
@@ -11570,7 +11643,7 @@ async function payrollEditAction(kind){
     if(!targets.length){ alert(`振込済みにできる人がいません（仕訳が未登録: ${noRec}名／すでに振込済み: ${already}名）。振込済みにできるのは「仕訳登録済み・振込待ち」の人だけです。`); return; }
     if(!confirm(`${targets.length}名を「振込済み」にします。\n（仕訳未登録のため対象外: ${noRec}名／すでに振込済み: ${already}名）\n\nよろしいですか？`)) return;
     const now=new Date().toISOString();
-    const r=await authed(`/rest/v1/payroll_journal_records?year_month=eq.${ym}&user_id=${inList(targets)}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({paid_at:now,paid_by:ME.id})});
+    const r=await authed(`/rest/v1/payroll_journal_records?year_month=eq.${ym}&tenant_id=eq.${payrollTenantId()}&user_id=${inList(targets)}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({paid_at:now,paid_by:ME.id})});
     if(!r.ok){ alert("振込済みの記録に失敗しました"); return; }
     targets.forEach(id=>{ const rec=payrollRecordFor(id); if(rec){ rec.paid_at=now; rec.paid_by=ME.id; } const uname=nameOf(id);
       authed("/rest/v1/rpc/hq_check_payroll_task_item",{method:"POST",body:JSON.stringify({p_year_month:ym,p_kind:"transfer",p_person_name:uname})}).catch(()=>{}); });
@@ -11599,9 +11672,9 @@ async function payrollEditAction(kind){
       done.push(id);
     }
     if(done.length){
-      const r=await authed(`/rest/v1/payroll_journal_records?year_month=eq.${ym}&user_id=${inList(done)}`,{method:"DELETE"});
+      const r=await authed(`/rest/v1/payroll_journal_records?year_month=eq.${ym}&tenant_id=eq.${payrollTenantId()}&user_id=${inList(done)}`,{method:"DELETE"});
       if(!r.ok){ alert("MF側の削除後、この画面の記録の解除に失敗しました。画面を更新して確認してください"); }
-      PAYROLL_STATE.records=(PAYROLL_STATE.records||[]).filter(rc=>!(rc.year_month===ym&&done.includes(rc.user_id)));
+      PAYROLL_STATE.records=(PAYROLL_STATE.records||[]).filter(rc=>!(rc.year_month===ym&&done.includes(rc.user_id)&&(rc.tenant_id||"default")===payrollTenantId()));
     }
     if(btn){ btn.textContent="🗑 削除（仕訳登録の解除）"; }
     const parts=[`${done.length}名の仕訳登録を解除しました。`];
@@ -11633,7 +11706,7 @@ function payrollRowHtml(row){
   const draft=payrollDraftFor(row.user_id);
   let status;
   const who=rec?payrollRegistrantLabel(rec):"";
-  const journalViewAttr=rec&&rec.mf_journal_id?` style="cursor:pointer" data-journal-view="${esc(rec.mf_journal_id)}" data-journal-tenant="default" title="クリックすると登録した仕訳の内容を確認できます${who?`（${esc(who)}）`:""}"`:"";
+  const journalViewAttr=rec&&rec.mf_journal_id?` style="cursor:pointer" data-journal-view="${esc(rec.mf_journal_id)}" data-journal-tenant="${esc((rec&&rec.tenant_id)||"default")}" title="クリックすると登録した仕訳の内容を確認できます${who?`（${esc(who)}）`:""}"`:"";
   if(rec&&!rec.mf_journal_id){ status=`<span class="pr-status warn" title="他の人が登録処理中、または途中で止まっています。しばらくして画面を更新しても変わらず、MFにも仕訳が無い場合は「仕訳登録を解除」してからやり直してください${who?`（${esc(who)}）`:""}">⏳登録処理中</span>`; }
   else if(rec&&rec.paid_at){ status=`<span class="pr-status ok"${journalViewAttr}>✓ 振込済（伝票番号:${esc(String(rec.mf_journal_number??"-"))}）${rec.mf_journal_id?"🔍":""}</span>`; }
   else if(rec){ status=`<span class="pr-status wait"${journalViewAttr}>● 仕訳登録済み・振込待ち（伝票番号:${esc(String(rec.mf_journal_number??"-"))}）${rec.mf_journal_id?"🔍":""}</span>`; }
@@ -11783,6 +11856,7 @@ function payrollRender(){
           <div class="card pr-hero-side">
             <label>対象月を変更</label>
             <input id="payroll-ym" type="month" value="${esc(PAYROLL_STATE.yearMonth)}" max="${payrollYmDefault()}">
+            <div class="pr-corp-pills" style="margin-top:8px"><label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">法人（MF事業者）</label>${PAYROLL_CORPS.map(c=>`<button class="hq-btn payroll-corp-pill${payrollCorpDef_().key===c.key?" primary":""}" data-corpkey="${c.key}" style="margin-right:6px">${esc(c.label)}</button>`).join("")}</div>
           </div>
         </div>
       </section>`;
@@ -11791,6 +11865,7 @@ function payrollRender(){
       $("tabbody").innerHTML=`<section class="invoice-list active"><div class="card" style="padding:16px"><div class="spin" style="padding:20px 0">読み込み中…</div></div></section>`;
       await payrollLoad(); payrollRender(); updateMailSummaryBar();
     };
+    payrollWireCorpPills_();
     return;
   }
   if(!PAYROLL_STATE.sortMode) PAYROLL_STATE.sortMode="pendingFirst"; // 既定で振込完了は下へ
@@ -11811,11 +11886,12 @@ function payrollRender(){
         <div class="card pr-hero-main">
           <div class="eyebrow">現在処理している対象月</div>
           <div class="pr-hero-title"><div class="month">${esc(PAYROLL_STATE.yearMonth.replace("-","年"))}月</div><div class="label">給与振込</div>${PAYROLL_STATE.transferScheduledDate?`<div class="label" style="background:var(--m-bluesoft);color:var(--m-blue)">📅振込予定日: ${esc(fmtD(PAYROLL_STATE.transferScheduledDate))}</div>`:""}</div>
-          <p>まだ<b>有限会社トーホーエージェンシー分のみ</b>対応しています（SK側は未対応）。「仕訳辞書パターン」は設定タブで「給与仕訳での用途」を設定したテンプレートだけが選べます。${PAYROLL_STATE.transferScheduledDate?"":"（振込CSVを出力すると振込予定日を入力でき、ここに表示されます）"}</p>
+          <p><b>法人（MF事業者）を、上の「法人」ボタンで切り替えられます</b>（トーホー／LiveGate。SK側は未対応）。「仕訳辞書パターン」は設定タブで「給与仕訳での用途」を設定したテンプレートだけが選べます。${PAYROLL_STATE.transferScheduledDate?"":"（振込CSVを出力すると振込予定日を入力でき、ここに表示されます）"}</p>
         </div>
         <div class="card pr-hero-side">
           <label>対象月を変更</label>
           <input id="payroll-ym" type="month" value="${esc(PAYROLL_STATE.yearMonth)}" max="${payrollYmDefault()}">
+          <div class="pr-corp-pills" style="margin-top:8px"><label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">法人（MF事業者）</label>${PAYROLL_CORPS.map(c=>`<button class="hq-btn payroll-corp-pill${payrollCorpDef_().key===c.key?" primary":""}" data-corpkey="${c.key}" style="margin-right:6px">${esc(c.label)}</button>`).join("")}</div>
           <div class="pr-sync-box"><span>給与データ<br><b>✓ 取得済み</b></span><button class="btn" id="payroll-sync-now">🔄 スマレジから今すぐ取得</button></div>
           <div class="err" id="payroll-sync-msg" style="margin-top:6px"></div>
           <button data-payroll-finalize class="hq-btn primary" style="margin-top:10px;width:100%">✅ 給料確定（本部タスクを自動発行）</button>
@@ -11935,6 +12011,7 @@ function payrollRender(){
     $("tabbody").innerHTML=`<section class="invoice-list active"><div class="card" style="padding:16px"><div class="spin" style="padding:20px 0">読み込み中…</div></div></section>`;
     await payrollLoad(); payrollRender(); updateMailSummaryBar();
   };
+  payrollWireCorpPills_();
   if($("payroll-retry")) $("payroll-retry").onclick=async()=>{
     $("tabbody").innerHTML=`<section class="invoice-list active"><div class="card" style="padding:16px"><div class="spin" style="padding:20px 0">読み込み中…</div></div></section>`;
     await payrollLoad(); payrollRender(); updateMailSummaryBar();
@@ -12132,7 +12209,7 @@ function wirePayrollRowActions(){
   document.querySelectorAll("[data-payroll-pay]").forEach(el=>el.onclick=async()=>{
     const userId=el.dataset.payrollPay;
     el.disabled=true;
-    const r=await authed(`/rest/v1/payroll_journal_records?user_id=eq.${userId}&year_month=eq.${PAYROLL_STATE.yearMonth}`,{
+    const r=await authed(`/rest/v1/payroll_journal_records?user_id=eq.${userId}&year_month=eq.${PAYROLL_STATE.yearMonth}&tenant_id=eq.${payrollTenantId()}`,{
       method:"PATCH",headers:{Prefer:"return=minimal"},
       body:JSON.stringify({paid_at:new Date().toISOString(),paid_by:ME.id}),
     });
@@ -12154,7 +12231,7 @@ function wirePayrollRowActions(){
   document.querySelectorAll("[data-payroll-unpay]").forEach(el=>el.onclick=async()=>{
     const userId=el.dataset.payrollUnpay;
     if(!confirm("振込完了を取り消しますか？（誤って押した場合の取り消し用）")) return;
-    const r=await authed(`/rest/v1/payroll_journal_records?user_id=eq.${userId}&year_month=eq.${PAYROLL_STATE.yearMonth}`,{
+    const r=await authed(`/rest/v1/payroll_journal_records?user_id=eq.${userId}&year_month=eq.${PAYROLL_STATE.yearMonth}&tenant_id=eq.${payrollTenantId()}`,{
       method:"PATCH",headers:{Prefer:"return=minimal"},
       body:JSON.stringify({paid_at:null,paid_by:null}),
     });
@@ -12176,9 +12253,9 @@ function wirePayrollRowActions(){
       if(d.closed){ alert(`${name}さんの仕訳は決算期間を過ぎているため、削除・解除できません。`); el.disabled=false; return; }
       if(!d.ok&&!d.notTracked){ alert("マネーフォワード側の仕訳を削除できなかったため、解除を中止しました。\n"+d.error); el.disabled=false; return; }
     }
-    const r=await authed(`/rest/v1/payroll_journal_records?user_id=eq.${userId}&year_month=eq.${PAYROLL_STATE.yearMonth}`,{method:"DELETE"});
+    const r=await authed(`/rest/v1/payroll_journal_records?user_id=eq.${userId}&year_month=eq.${PAYROLL_STATE.yearMonth}&tenant_id=eq.${payrollTenantId()}`,{method:"DELETE"});
     if(!r.ok){ alert("解除に失敗しました"); el.disabled=false; return; }
-    PAYROLL_STATE.records=(PAYROLL_STATE.records||[]).filter(rc=>!(rc.user_id===userId&&rc.year_month===PAYROLL_STATE.yearMonth));
+    PAYROLL_STATE.records=(PAYROLL_STATE.records||[]).filter(rc=>!(rc.user_id===userId&&rc.year_month===PAYROLL_STATE.yearMonth&&(rc.tenant_id||"default")===payrollTenantId()));
     payrollRender(); updateMailSummaryBar();
   });
   // 2026-09-02: 一覧のPDF列から直接開けるように（ユーザー要望「削除しかできないので開けるように」）。
@@ -12618,7 +12695,7 @@ function payrollBulkListsHtml(){
   const okList=payrollBulkAutoOk();
   const okHtml=okList.length?`<details open style="width:100%;margin-top:6px"><summary style="cursor:pointer;font-size:12px"><b>✅ 自動OKの人（${okList.length}名）</b>　<button type="button" class="linkbtn" id="payroll-bulk-all-on" style="font-size:11px;background:none;border:none;color:var(--blue);cursor:pointer">全員チェック</button><button type="button" class="linkbtn" id="payroll-bulk-all-off" style="font-size:11px;background:none;border:none;color:var(--blue);cursor:pointer">全員はずす</button></summary>
     <div style="font-size:11px;line-height:1.7;margin-top:4px;columns:3;column-gap:16px">${okList.map(r=>`<div>${r.checked?"☑":"☐"} ${esc(r.name||nameOf(r.userId))}　${yen(r.netPay)}</div>`).join("")}</div></details>`:"";
-  const bulkRecs=(PAYROLL_STATE.records||[]).filter(r=>r.registered_via==="bulk").sort((a,b)=>String(a.created_at).localeCompare(String(b.created_at)));
+  const bulkRecs=(PAYROLL_STATE.records||[]).filter(r=>r.registered_via==="bulk"&&(r.tenant_id||"default")===payrollTenantId()).sort((a,b)=>String(a.created_at).localeCompare(String(b.created_at)));
   const fmt=t=>{ try{ return new Date(t).toLocaleString("ja-JP",{month:"numeric",day:"numeric",hour:"2-digit",minute:"2-digit"}); }catch(e){ return ""; } };
   const doneHtml=bulkRecs.length?`<details style="width:100%;margin-top:6px"><summary style="cursor:pointer;font-size:12px"><b>🤖 一括登録で登録した人（${bulkRecs.length}名）</b></summary>
     <div style="font-size:11px;line-height:1.7;margin-top:4px;columns:3;column-gap:16px">${bulkRecs.map(r=>`<div>${esc(nameOf(r.user_id))}　伝票${esc(String(r.mf_journal_number??"-"))}　${esc(fmt(r.created_at))}</div>`).join("")}</div></details>`:"";
@@ -12754,7 +12831,7 @@ async function payrollAutoPrepareAll(onProgress){
   const [py,pm]=ym.split("-").map(Number);
   const prev=pm===1?`${py-1}-12`:`${py}-${String(pm-1).padStart(2,"0")}`;
   const [pr,pn]=await Promise.all([
-    authed(`/rest/v1/payroll_journal_records?year_month=eq.${prev}&mf_journal_id=not.is.null&select=user_id`),
+    authed(`/rest/v1/payroll_journal_records?year_month=eq.${prev}&tenant_id=eq.${payrollTenantId()}&mf_journal_id=not.is.null&select=user_id`),
     authed(`/rest/v1/sf_payroll_sync?year_month=eq.${prev}&select=user_id,net_pay`),
   ]);
   const ctx={
@@ -12796,7 +12873,7 @@ async function payrollDryRunAll(onProgress){
   const [py,pm]=ym.split("-").map(Number);
   const prev=pm===1?`${py-1}-12`:`${py}-${String(pm-1).padStart(2,"0")}`;
   const [pr,pn]=await Promise.all([
-    authed(`/rest/v1/payroll_journal_records?year_month=eq.${prev}&mf_journal_id=not.is.null&select=user_id`),
+    authed(`/rest/v1/payroll_journal_records?year_month=eq.${prev}&tenant_id=eq.${payrollTenantId()}&mf_journal_id=not.is.null&select=user_id`),
     authed(`/rest/v1/sf_payroll_sync?year_month=eq.${prev}&select=user_id,net_pay`),
   ]);
   const ctx={
@@ -12930,7 +13007,7 @@ async function payrollDiagnose(){
   const depts=PAYROLL_STATE.departments||[];
   const accMap=PAYROLL_STATE.accountLabelMap||new Map();
   // 給料が発生する店舗＝運営がトーホー（グループ会社含む）の店舗。運営が業務委託先（グループ外）の店舗は対象外（診断にも出さない）
-  const stores=payrollPayrollStores().filter(st=>{ const o=payrollStoreOperatorInfo_(st.id); return !toho||!o.corpId||o.corpId===toho.id; });
+  const stores=payrollTohoStores();
   const other=(PAYROLL_STATE.stores||[]).length-stores.length;
   const rows=stores.map(st=>{
     const set=(st.mf_department_name||"").trim();
@@ -13007,7 +13084,7 @@ async function payrollDiagnose(){
 // batch={id}を渡すと、登録記録に一括登録の識別（batch_id・registered_via）を残す（列がある場合のみ）
 async function payrollRegisterCore({userId,name,templateId,branches,date,pdfFiles,defaultRemark,batch}){
   const payload={
-    tenant_id:"default", vendor_name:`給与：${name}（${PAYROLL_STATE.yearMonth}）`,
+    tenant_id:payrollTenantId(), vendor_name:`給与：${name}（${PAYROLL_STATE.yearMonth}）`,
     branches: branches.map(b=>({
       debit:b.debit?{account_id:b.debit.account_id,sub_account_id:b.debit.sub_account_id||undefined,value:b.debitAmount}:undefined,
       credit:b.credit?{account_id:b.credit.account_id,sub_account_id:b.credit.sub_account_id||undefined,value:b.creditAmount}:undefined,
@@ -13026,7 +13103,7 @@ async function payrollRegisterCore({userId,name,templateId,branches,date,pdfFile
   // やり直し等で2回目の登録操作をすると、MFには2本目の仕訳が作られ、記録だけが弾かれていた（実例: 14:27:50に
   // 1本目・81秒後に2本目）。順序を逆にし、MFへ登録する前に先に登録記録の「枠」を確保する（一意制約で
   // 確保できるのは1人だけ）。確保できなければMFへは一切送らない。MFが失敗したら枠を解放し、成功したら記録を完成させる
-  const lockRow={user_id:userId,year_month:PAYROLL_STATE.yearMonth,tenant_id:"default",template_id:templateId,created_by:ME.id};
+  const lockRow={user_id:userId,year_month:PAYROLL_STATE.yearMonth,tenant_id:payrollTenantId(),template_id:templateId,created_by:ME.id};
   if(batch&&batch.id&&batch.hasCols){ lockRow.batch_id=batch.id; lockRow.registered_via="bulk"; }
   const lr=await authed("/rest/v1/payroll_journal_records",{method:"POST",headers:{Prefer:"return=representation"},body:JSON.stringify(lockRow)});
   if(!lr.ok||!Array.isArray(lr.body)||!lr.body[0]){

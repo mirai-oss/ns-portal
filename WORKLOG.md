@@ -31,6 +31,15 @@
 
 ---
 
+## 2026-10-17 担当C: 給与仕訳を法人（MF事業者）切替に対応（指示書§5-2・③）v140【ローカルコミット済み・SQL/push承認待ち】
+- 画面: 給与仕訳の「対象月」の下に **法人ボタン（トーホー／LiveGate）**。選んだ法人に合わせて、MF事業者（tenant）・部門一覧・勘定科目・仕訳の型（mf_journal_templates.tenant_id）・店舗の絞り込み・登録先・登録記録を切り替える。選択は localStorage に保存。
+- 行の分け方: `sf_payroll_sync.contract_id`→`smaregi_contracts.corporation_id`（担当D Phase1で作成済み）で法人ごとの行に絞る。契約不明の行はトーホー扱い（従来どおり）。契約表が読めないときはトーホー以外は空にして他法人の行を出さない。
+- 運営会社は**対象月の末日**で引く（`store_operation_relations`の期間履歴・無い店舗は従来の現在値）→10月分=トーホー運営・11月分以降=LiveGate運営。
+- 店舗×MF事業者の部門名（`store_tenant_departments`）を給与の部門解決に適用。給与の補助科目は `payroll_sub_name`（LiveGateの黒霧屋=「新横浜/黒霧屋」）をMFにその補助科目があれば優先（部門名と補助科目名の表記が違うLiveGateの流儀に対応）。
+- 記録: `payrollRecordFor` と更新・削除を tenant_id つきに。SQL（`2026-10-17_payroll_multi_corp.sql`）で `payroll_journal_records` の一意制約を (user_id,year_month)→(user_id,year_month,tenant_id) に（兼務＝契約ごとに仕訳2本・Q2=a）＋ `payroll_sub_name` 列。既存224件は全て default。※ `payroll_journal_drafts`（一時保存）は従来どおり人×月で1件（兼務で両法人を同時に下書きすると上書きされる制約が残る）。
+- **未了**: LiveGate専用の給与の型（mf_journal_templates, tenant=livegate・区分=社員/アルバイト・payroll_corporation_id=LiveGate）。U4（LiveGateのMFに補助科目「新横浜/黒霧屋」等）が済んだら、LiveGateの既存給与仕訳（科目: 給料手当/雑給・預り金/給与源泉所得税・雇用保険・社会保険料・住民税・未払金/給与・旅費交通費/通勤手当交通費）に合わせて作成。LiveGateのスマレジ給与行（contract_id）は担当D Phase2待ち。
+- TK-221（取引先の同名重複統合・安全5グループ）は担当Fが本番で実施済み（7行→5行・vendor_merge_log・別名登録）と連絡あり。「株式会社プレコ」と「プレコフーズ」はユーザー判断待ち（TK-227）。
+
 ## 2026-10-17 担当C: LiveGate MF認可（U3）完了・疎通確認OK＋LiveGate側の部門・科目の実態調査
 - U3: ユーザーが認可完了（mf_oauth_tokens id=livegate・label=株式会社LiveGate・scope全7件）。詰まりどころ=アプリポータルで「アプリ連携権限」の下の「クラウド会計・確定申告」にチェックが必要だった（手順書に追記）。
 - ②疎通確認OK: `invoice-payment-scan` explain(tenant=livegate) で部門・勘定科目・補助科目を取得できた。**LiveGateのMFには部門「08（タブ）黒霧屋 新横浜」が既にある**（名前の「08」と「黒霧屋」の間にタブ文字）→ トーホーと同名で新規作成する案をやめ、店舗×MF事業者ごとの部門名テーブル `store_tenant_departments`（`supabase/2026-10-17_store_tenant_departments.sql`・黒霧屋×livegate=上記の名前を登録）を追加し、invoice-journal-draft が事業者別の部門名を使う。
