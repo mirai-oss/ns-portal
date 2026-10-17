@@ -28,6 +28,11 @@ on:
         required: false
         default: ''
         type: string
+      allow_empty:
+        description: 'user_id指定時のみ: 管理システムの所属が0件のとき、スマレジの所属も全部外す（テスト後の片付け用）'
+        required: false
+        default: false
+        type: boolean
       pending:
         description: '運営変更前の先行テスト: 今日の店舗対応が空なら、予約済み（これから有効）の対応を使う'
         required: false
@@ -53,9 +58,10 @@ jobs:
           USER_ID: ${{ github.event.inputs.user_id }}
           FORCE: ${{ github.event.inputs.force }}
           PENDING: ${{ github.event.inputs.pending }}
+          ALLOW_EMPTY: ${{ github.event.inputs.allow_empty }}
         run: |
           if [ -z "$SR_KEY" ]; then echo "::error::SUPABASE_SERVICE_ROLE_KEY が未設定です"; exit 1; fi
-          BODY=$(node -e "console.log(JSON.stringify({mode: process.env.MODE, contract_id: process.env.CONTRACT||undefined, user_id: process.env.USER_ID||undefined, force: process.env.FORCE==='true', pending: process.env.PENDING==='true'}))")
+          BODY=$(node -e "console.log(JSON.stringify({mode: process.env.MODE, contract_id: process.env.CONTRACT||undefined, user_id: process.env.USER_ID||undefined, force: process.env.FORCE==='true', pending: process.env.PENDING==='true', allow_empty: process.env.ALLOW_EMPTY==='true'}))")
           RES=$(curl -s -w "\n%{http_code}" -X POST \
             "https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/smaregi-affiliation-sync" \
             -H "Authorization: Bearer $SR_KEY" -H "Content-Type: application/json" -d "$BODY")

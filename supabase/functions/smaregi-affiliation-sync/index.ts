@@ -14,7 +14,7 @@
 //     一致しなければ隔離してLarkへ（人が「この店舗」or「新規店舗」を選ぶ）。自動登録できたとき、その店舗の「事業所を作成してください」タスクは自動完了にする。
 //   - 管理システムに店舗が増えたのにスマレジに事業所が無い → 本部タスク「スマレジ・タイムカードに事業所『○○』を作成してください（契約: ○○）」を1回だけ自動発行。
 //
-// 呼び出し: POST { mode?: "report"|"apply"（既定report）, contract_id?: string, user_id?: string（その1人だけ。初回の立会い確認用）, force?: boolean }
+// 呼び出し: POST { mode?: "report"|"apply"（既定report）, contract_id?: string, user_id?: string（その1人だけ。初回の立会い確認用）, allow_empty?: boolean（user_id指定時のみ。管理システムの所属が0件のとき、スマレジの所属も全部外す）, force?: boolean }
 //   report=試行（スマレジにも user_stores にも書かない。同期ログとLarkだけ）／apply=実際に反映
 // 認可: service_role直呼び、または CEO/HQ のJWT。
 // 応答は件数のみ（公開リポジトリのActionsログに氏名・店舗名を残さない）。名前を含む詳細はLark(社内)と staff_store_sync_log にだけ出す。
@@ -206,7 +206,7 @@ Deno.serve(async (req) => {
             continue;
           }
           const mCh = !eq(M, L), sCh = !eq(S, L);
-          if (mCh && !sCh) plans.push({ userId, staffId, M, S, L, kind: M.size === 0 ? "skip" : "push", reason: M.size === 0 ? "管理システム側が0件のためスマレジを空にしない" : undefined });
+          if (mCh && !sCh) plans.push({ userId, staffId, M, S, L, kind: M.size === 0 && !(onlyUser && body.allow_empty === true) ? "skip" : "push", reason: M.size === 0 ? (onlyUser && body.allow_empty === true ? "管理システム側の所属が0件（ユーザー許可・この1人のみ）" : "管理システム側が0件のためスマレジを空にしない") : undefined });
           else if (!mCh && sCh) plans.push({ userId, staffId, M, S, L, kind: S.size === 0 ? "skip" : "import", reason: S.size === 0 ? "スマレジ側が0件のため管理システムを空にしない" : undefined });
           else plans.push({ userId, staffId, M, S, L, kind: M.size === 0 ? "skip" : "conflict", reason: M.size === 0 ? "管理システム側が0件のためスマレジを空にしない" : undefined });
         }
