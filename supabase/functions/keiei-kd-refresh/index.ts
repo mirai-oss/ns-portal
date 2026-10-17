@@ -522,7 +522,14 @@ async function refreshStoreMonthly(sb: any) {
       });
     }
 
+    const shiireS = await loadShiireInfo(sb);   // TK-222: 無効(既定)なら何もしない。確定月は原価を承認済み請求書の仕入高合計に置換（PLと同じ）
     const upserts = [...byKey.values()].map((b) => {
+      const shS = shiireS.enabled ? shiireS.byKey.get(`${b.store_id}|${b.year_month}`) : undefined;
+      const shiireCols: Record<string, unknown> = {};
+      if (shiireS.enabled) {
+        if (shS && shS.confirmed) { shiireCols.cost_siire = b.cost; b.cost = shS.amount; shiireCols.shiire_status = "confirmed"; }
+        else { shiireCols.cost_siire = null; shiireCols.shiire_status = shS && shS.vendors > 0 ? "partial" : null; }
+      }
       // 人件費合計はapp.js stat()と同じ定義＝fact_daily_store.labor_cost_total(日次のlabor列の和)+スポット。
       // PA+社員の和ではない（API切替前の月は賞与・法定福利・通勤手当等を含むため和の2倍超になる月がある）。
       const laborTotal = b.labor + b.labor_spot;
@@ -531,6 +538,7 @@ async function refreshStoreMonthly(sb: any) {
       const budgetSales = budgetByKey.get(`${b.store_id}|${b.year_month}`) ?? null;
       return {
         store_id: b.store_id, corporation_id: corpByStoreId.get(b.store_id, b.year_month) ?? null, year_month: b.year_month,
+        ...shiireCols,
         sales: b.sales, cost: b.cost, cost_rate: costRate,
         labor_pa: b.labor_pa, labor_emp: b.labor_emp, labor_other: b.labor - b.labor_pa - b.labor_emp, labor_spot: b.labor_spot, labor_total: laborTotal, labor_rate: laborRate,
         fl_rate: costRate != null && laborRate != null ? costRate + laborRate : null,

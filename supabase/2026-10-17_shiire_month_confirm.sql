@@ -60,3 +60,8 @@ alter table public.kd_pl_monthly_summary
   add column if not exists shiire_invoice_amount numeric,      -- 承認済み請求書の仕入高合計（税抜優先）
   add column if not exists cost_auto_siire numeric;            -- 置換前のsiire速報値（確定月のみ。差=shiire_invoice_amount−cost_auto_siire の検算用）
 comment on column public.kd_pl_monthly_summary.shiire_status is 'TK-222 仕入高の月次確定。confirmed=cost_autoを承認済み請求書の仕入高合計で置換済み';
+
+-- 追記（2026-10-17・担当A確認）: 店舗月次(kd_store_monthly_summary: 原価率・FL率・粗利。ホームKPIが使用)も確定月は同じ請求書合計で置換し、PLと食い違わせない
+alter table public.kd_store_monthly_summary
+  add column if not exists shiire_status text,
+  add column if not exists cost_siire numeric;     -- 置換前のsiire速報の原価（確定月のみ）
