@@ -128,7 +128,7 @@ Deno.serve(async (req) => {
   }
 
   // タスク更新（task_status / progress_percent / blocker が来たときだけ）
-  if (task && (b.task_status || b.task_assignee || b.task_unblocks !== undefined || b.task_note || b.progress_percent !== undefined || b.blocker !== undefined)) {
+  if (task && (b.task_status || b.task_assignee || b.task_unblocks !== undefined || b.task_note || b.task_due || b.progress_percent !== undefined || b.blocker !== undefined)) {
     const tp: Record<string, unknown> = { updated_at: now };
     if (b.task_assignee) { tp.assignee_name = String(b.task_assignee); tp.assignee_type = b.task_assignee === "中山" ? "human" : "ai"; }
     if (b.task_unblocks !== undefined && b.task_unblocks !== null) tp.unblocks = String(b.task_unblocks);
