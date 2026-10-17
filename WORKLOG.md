@@ -4,6 +4,15 @@
 
 ---
 
+**★★★★2026-10-17（担当Bスレッド）賃金設定（時給・月給）→スマレジ自動反映 Phase1（ユーザー確定: A案・LINEで最終形・社員月給も・店舗別時給あり）／SQL・smaregi-sync(wage_push/wage_pull)は本番未適用・未デプロイ（nippoは公開済み・表が無い間は非表示）**:
+- **スマレジAPIの調査（公式仕様）**: 書ける=賃金設定 `POST/PUT/DELETE /staffs/{id}/wage_apply`（時給0/日給1/月給2・適用開始日・休日賃金・事業所別settings）。**書けない=メール・交通費・源泉所得税・個別Web給与明細表示**（staffs PATCH/POSTに項目なし。GET staffには mail/transportationCostApply/withholdingIncomeTaxes/personalWebStatementScreenDisplayFlag があり読み取りのみ）→手作業のまま・入社登録タスクの該当チェック項目は残す。
+- **DB（`supabase/2026-10-17_employee_wage_settings.sql`・事前報告済み）**: 表`employee_wage_settings`（人×契約×区分(0時給/2月給)×店舗(空=共通)×適用開始日・金額・休日賃金・`smaregi_wage_apply_id`・反映状況pending/synced/error・本部/社長/マスターのみ閲覧）＋RPC `hr_save_wage`/`hr_delete_wage`。
+- **smaregi-sync**: `wage_push`（pending/errorの行をPOST/PUT。400なら既存の同一区分×事業所×適用開始日を探してPUT。1行ずつ結果保存）・`wage_pull`（スマレジの現在の賃金設定を返す／import=trueで取り込み）。**本番未検証=初回は立会いで1人から**。時給の「事業所未指定」と「事業所別」を同じ適用開始日に並べられるかは未確認。
+- **nippo(公開済み)**: 従業員編集に「💴 賃金設定」（契約ごと・区分・店舗・金額・休日賃金・適用開始日→保存してスマレジに反映／未反映の再反映／スマレジの今の設定を確認・取り込む）。
+- **次(Phase2)**: 入社登録の通知を公式LINEで本部へ→LINE返信「時給 1200」等で登録→スマレジ反映（line-webhookに返信解釈と確認の往復を追加）。**将来すべての通知・確認先をSlackに統一する可能性（ユーザー明言）→通知先を1か所に寄せる設計にする**（memory: project-wage-sync-line-flow）。
+- **Phase3**: 入社登録の本部タスクの「給与・明細設定」から「時給」チェック項目を外す（交通費・源泉・Web明細は残す）。「所属事業所を入力」工程の廃止SQL（`2026-10-17_hq_onboarding_task_no_affiliation_step.sql`）は担当Dの所属同期がapplyになってから適用。
+
+
 **★★★★★2026-10-17（担当Bスレッド・TK-232/TK-239）黒霧屋運営変更 §4・§9・§10: nippo側を実装・公開済み(e0dcf66)／SQL v6はユーザー適用済み（関数・列の存在確認済み）／smaregi-sync(担当D契約対応版＋store_sync)のデプロイはユーザー了承待ち（デプロイは担当D）**:
 - **種別**: `hr_change_requests.kind`に`transfer`(移籍)・`concurrent`(兼務追加)＋列`from_contract_id`/`to_contract_id`。申請フォーム(nippo退職申請)に種別・移行先契約・開始日。承認=`hr_approve_contract_change`（記録のみ・アカウント/退職日は触らない）→画面からsmaregi-sync（contract_id指定）。**⚠️既存`hr_approve_retirement`は種別を見ず、移籍の申請を承認すると退職になってしまう→v6で種別チェックを追加**（hr_cancel_retirementも）。
 - **反映の順序（指示書から1点変更）**: 移行先の`sync`(入社登録・LiveGate契約)→`store_sync`(所属事業所)→移籍なら旧契約`terminate(contract_id=旧, date=開始日の前日)`。指示書は「terminate→sync」だが、先にterminateして移行先のsyncが失敗すると旧契約も新契約も無い人ができるため、**登録を先**にした（失敗時は旧契約に触らない・再実行可）。旧契約の打刻OFFは、開始日の前日が過去なら即時・未来なら毎朝の`hr-termination-apply.yml`（新ステップ・`hr_due_transfer_deactivations`）が翌日に実行。

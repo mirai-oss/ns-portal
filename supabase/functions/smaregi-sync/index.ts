@@ -711,6 +711,130 @@ Deno.serve(async (req) => {
       return json({ ok: true, contract_id: C, staffId, direction, added_to_smaregi: addedToSmaregi, removed_from_smaregi: removedFromSmaregi, added_to_portal: addedToPortal, removed_from_portal: removedFromPortal, ...diff });
     }
 
+    // ---- 2026-10-17 担当B: 賃金設定（時給・月給）の反映／取り込み。管理システム employee_wage_settings が正本 → スマレジ wage_apply ----
+    //   { action:"wage_push", user_id, contract_id? }  反映待ち(pending)・失敗(error)の行をスマレジへ。時給=division 0（店舗なし=事業所未指定／店舗あり=事業所別settings）・月給=division 2。
+    //     既にスマレジの賃金設定ID(smaregi_wage_apply_id)がある行は PUT で更新、無ければ POST。POSTが400（同じ適用開始日の重複など）なら、
+    //     スマレジ側の既存設定（GET /staffs/{id} の wageApply）から同じ 区分×事業所×適用開始日 を探して PUT する。1行ずつ結果を表へ保存（失敗しても他の行は続行）
+    //   { action:"wage_pull", user_id, contract_id?, import? }  スマレジの現在の賃金設定(wageApply)を返す。import=true なら、管理システムに無い行を synced として取り込む
+    //     （管理システム側に反映待ちの行がある 区分×事業所×適用開始日 は上書きしない＝ズレとして返す）。日給(1)・営業時間帯別(3)は対象外（件数だけ返す）
+    //   ※スマレジの賃金設定API（POST/PUT /staffs/{id}/wage_apply）は本番で未検証。初回は立会いで1人から。認可: CEO/HQ
+    if (body.action === "wage_push" || body.action === "wage_pull") {
+      if (!isAdmin) return json({ ok: false, error: "forbidden" }, 403);
+      const uid = String(body.user_id ?? "");
+      if (!uid) return json({ ok: false, error: "user_id required" }, 400);
+      const sb = svc();
+      let staffId = "";
+      const { data: lk } = await sb.from("employee_smaregi_links").select("smaregi_staff_id").eq("user_id", uid).eq("contract_id", C).is("effective_to", null).maybeSingle();
+      if (lk?.smaregi_staff_id) staffId = String(lk.smaregi_staff_id);
+      else if (IS_DEFAULT) {
+        const { data: pr } = await sb.from("employee_profiles").select("smaregi_staff_id").eq("user_id", uid).maybeSingle();
+        if (pr?.smaregi_staff_id) staffId = String(pr.smaregi_staff_id);
+      }
+      if (!staffId) return json({ ok: false, error: "この契約のスマレジにまだ登録されていません" }, 400);
+      const storeMap = await loadStoreMap(sb, reqContract);   // スマレジの事業所ID → 店舗UUID
+      const reverse: Record<string, string> = {};              // 店舗UUID → スマレジの事業所ID
+      for (const [smId, stId] of Object.entries(storeMap)) if (!reverse[stId]) reverse[stId] = smId;
+      const token = await getToken(C);
+      const errText = async (r: Response) => { const t = await r.text(); try { const j = JSON.parse(t); return `${j.title ?? ""} ${j.detail ?? ""}`.trim() || t.slice(0, 200); } catch (_) { return t.slice(0, 200); } };
+      // スマレジの現在の賃金設定（正規化）
+      const fetchWageApply = async () => {
+        const r = await api(C, token, `/staffs/${staffId}`);
+        const raw = await r.json().catch(() => null);
+        if (!r.ok) throw new Error(`スマレジの従業員情報を取得できません(${r.status}): ${JSON.stringify(raw).slice(0, 160)}`);
+        const st = Array.isArray(raw) ? raw[0] : raw;
+        const list: any[] = st?.wageApply ?? [];
+        return list.map((w) => ({
+          id: String(w.wageApplyId), division: Number(w.division), storeId: w.storeId ? String(w.storeId) : null,
+          effectiveDate: String(w.effectiveDate ?? "").slice(0, 10), wage: Number(w.wage), holidayWage: w.holidayWage === null || w.holidayWage === undefined || w.holidayWage === "" ? null : Number(w.holidayWage),
+        }));
+      };
+
+      if (body.action === "wage_pull") {
+        let list;
+        try { list = await fetchWageApply(); } catch (e) { return json({ ok: false, error: String((e as Error).message ?? e) }, 500); }
+        const { data: mine } = await sb.from("employee_wage_settings").select("*").eq("user_id", uid).eq("contract_id", C);
+        const keyOf = (division: number, storeUuid: string | null, d: string) => `${division}|${storeUuid ?? ""}|${d}`;
+        const have: Record<string, any> = {};
+        for (const m of mine ?? []) have[keyOf(m.division, m.store_id, m.effective_date)] = m;
+        const names: Record<string, string> = {};
+        const { data: stn } = await sb.from("stores").select("id,name"); (stn ?? []).forEach((x: any) => { names[x.id] = x.name; });
+        const out: any[] = []; let imported = 0, skipped = 0, conflicts = 0, unsupported = 0;
+        for (const w of list) {
+          if (![0, 2].includes(w.division)) { unsupported++; out.push({ ...w, note: "日給・営業時間帯別は取り込み対象外" }); continue; }
+          const storeUuid = w.storeId ? (storeMap[w.storeId] ?? null) : null;
+          if (w.storeId && !storeUuid) { skipped++; out.push({ ...w, note: "管理システムに対応する店舗がありません" }); continue; }
+          const k = keyOf(w.division, storeUuid, w.effectiveDate), ex = have[k];
+          const row = { ...w, store_id: storeUuid, store_name: storeUuid ? names[storeUuid] : null };
+          if (ex && (ex.wage !== w.wage || (ex.holiday_wage ?? null) !== (w.holidayWage ?? null))) {
+            if (ex.sync_status === "synced") { // 管理システムも反映済み扱い→スマレジの値を正として更新
+              if (body.import === true) await sb.from("employee_wage_settings").update({ wage: w.wage, holiday_wage: w.holidayWage, smaregi_wage_apply_id: w.id, synced_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq("id", ex.id);
+              imported += body.import === true ? 1 : 0; out.push({ ...row, note: "スマレジの値で更新" + (body.import === true ? "" : "（未実行）") });
+            } else { conflicts++; out.push({ ...row, note: `管理システム側に未反映の値があります（${ex.wage}円）` }); }
+          } else if (!ex) {
+            if (body.import === true) {
+              await sb.from("employee_wage_settings").insert({ user_id: uid, contract_id: C, division: w.division, store_id: storeUuid, wage: w.wage, holiday_wage: w.division === 0 ? w.holidayWage : null, effective_date: w.effectiveDate, smaregi_wage_apply_id: w.id, sync_status: "synced", synced_at: new Date().toISOString() });
+              imported++;
+            }
+            out.push({ ...row, note: body.import === true ? "取り込みました" : "取り込み対象" });
+          } else {
+            if (!ex.smaregi_wage_apply_id && body.import === true) await sb.from("employee_wage_settings").update({ smaregi_wage_apply_id: w.id, sync_status: "synced", sync_error: null, synced_at: new Date().toISOString() }).eq("id", ex.id);
+            out.push({ ...row, note: "一致" });
+          }
+        }
+        return json({ ok: true, contract_id: C, staffId, count: list.length, imported, skipped, conflicts, unsupported, wages: out });
+      }
+
+      // ---- wage_push ----
+      const { data: rows } = await sb.from("employee_wage_settings").select("*").eq("user_id", uid).eq("contract_id", C).in("sync_status", ["pending", "error"]).order("effective_date");
+      if (!rows?.length) return json({ ok: true, contract_id: C, staffId, pushed: 0, failed: 0, results: [] });
+      const results: any[] = [];
+      let existing: any[] | null = null;
+      const mark = async (id: string, patch: Record<string, unknown>) => { await sb.from("employee_wage_settings").update({ ...patch, updated_at: new Date().toISOString() }).eq("id", id); };
+      for (const r of rows) {
+        try {
+          let applyId: string | null = r.smaregi_wage_apply_id ? String(r.smaregi_wage_apply_id) : null;
+          const smStore = r.store_id ? (reverse[r.store_id] ?? null) : null;
+          if (r.division === 0 && r.store_id && !smStore) throw new Error("この契約に対応するスマレジの事業所がありません（店舗の対応を確認してください）");
+          const putBody: Record<string, unknown> = r.division === 2
+            ? { division: 2, effectiveDate: r.effective_date, wage: r.wage }
+            : { division: 0, effectiveDate: r.effective_date, wage: r.wage, ...(smStore ? { storeId: smStore } : {}), ...(r.holiday_wage !== null && r.holiday_wage !== undefined ? { holidayWage: r.holiday_wage } : {}) };
+          const put = async (id: string) => {
+            const rr = await api(C, token, `/staffs/${staffId}/wage_apply/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify(putBody) });
+            if (!rr.ok) throw new Error(`賃金設定の更新に失敗(${rr.status}): ${await errText(rr)}`);
+          };
+          if (applyId) {
+            await put(applyId);
+          } else {
+            const postBody = r.division === 2
+              ? { division: 2, effectiveDate: r.effective_date, wage: r.wage }
+              : smStore
+                ? { division: 0, effectiveDate: r.effective_date, settings: [{ storeId: smStore, wage: r.wage, ...(r.holiday_wage !== null && r.holiday_wage !== undefined ? { holidayWage: r.holiday_wage } : {}) }] }
+                : { division: 0, effectiveDate: r.effective_date, wage: r.wage };
+            const rr = await api(C, token, `/staffs/${staffId}/wage_apply`, { method: "POST", body: JSON.stringify(postBody) });
+            if (rr.status === 201) {
+              const j = await rr.json().catch(() => ({}));
+              applyId = String((j.wageApplyIds ?? [])[0] ?? "") || null;
+              // 事業所未指定の時給は、登録時に休日賃金を送れないため、休日賃金があれば作成直後に更新で入れる
+              if (applyId && r.division === 0 && !smStore && r.holiday_wage !== null && r.holiday_wage !== undefined) await put(applyId);
+            } else if (rr.status === 400) { // 同じ適用開始日の設定が既にある等: 既存を探して更新
+              if (!existing) existing = await fetchWageApply();
+              const hit = existing.find((w) => w.division === r.division && (w.storeId ?? null) === (smStore ?? null) && w.effectiveDate === r.effective_date);
+              if (!hit) throw new Error(`賃金設定の登録に失敗(400): ${await errText(rr)}`);
+              applyId = hit.id; await put(applyId);
+            } else throw new Error(`賃金設定の登録に失敗(${rr.status}): ${await errText(rr)}`);
+          }
+          await mark(r.id, { sync_status: "synced", sync_error: null, synced_at: new Date().toISOString(), smaregi_wage_apply_id: applyId });
+          results.push({ id: r.id, ok: true, wageApplyId: applyId });
+        } catch (e) {
+          const msg = String((e as Error).message ?? e).slice(0, 300);
+          await mark(r.id, { sync_status: "error", sync_error: msg });
+          results.push({ id: r.id, ok: false, error: msg });
+        }
+      }
+      const failed = results.filter((x) => !x.ok).length;
+      return json({ ok: failed === 0, contract_id: C, staffId, pushed: results.length - failed, failed, results }, failed ? 500 : 200);
+    }
+
     return json({ ok: false, error: "unknown action" }, 400);
   } catch (e) {
     return json({ ok: false, error: String(e) }, 500);
