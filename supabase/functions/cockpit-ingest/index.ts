@@ -35,7 +35,10 @@ Deno.serve(async (req) => {
   // タスク一覧（読み取り専用）: AIセッションが「ユーザーの完了報告を代理完了する」際に
   // TK番号を確認するためのアクション（2026-08-31追加。ai-cockpit list から呼ばれる）
   if (b.list_tasks) {
-    let q = sb.from("ck_tasks").select("task_no,title,status,assignee_name,priority,blocker").order("task_no");
+    const cols = b.full
+      ? "task_no,title,status,assignee_name,priority,blocker,on_done_note,unblocks,due_at"
+      : "task_no,title,status,assignee_name,priority,blocker";
+    let q = sb.from("ck_tasks").select(cols).order("task_no");
     if (!b.include_done) q = q.not("status", "in", "(done,cancelled)");
     const { data: rows } = await q;
     return json({ ok: true, tasks: rows ?? [] });
@@ -131,6 +134,10 @@ Deno.serve(async (req) => {
     if (b.task_unblocks !== undefined && b.task_unblocks !== null) tp.unblocks = String(b.task_unblocks);
     if (b.task_note) tp.on_done_note = String(b.task_note);
     if (["highest", "high", "mid", "low"].includes(b.task_priority)) tp.priority = b.task_priority;
+    if (b.task_due) {
+      const d = String(b.task_due);
+      tp.due_at = /^\d{4}-\d{2}-\d{2}$/.test(d) ? d + "T00:00:00+09:00" : d;
+    }
     if (b.task_status) { tp.status = b.task_status; if (b.task_status === "done") { tp.completed_at = now; tp.progress_percent = 100; } }
     if (b.progress_percent !== undefined && b.progress_percent !== null) tp.progress_percent = b.progress_percent;
     if (b.blocker !== undefined && b.blocker !== null) tp.blocker = b.blocker;

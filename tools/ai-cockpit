@@ -215,7 +215,8 @@ def main():
         req = urllib.request.Request(
             conf["INGEST_URL"],
             data=json.dumps({"token": conf["TOKEN"], "list_tasks": 1,
-                             "include_done": 1 if "all" in flags else 0}).encode("utf-8"),
+                             "include_done": 1 if ("all" in flags or "full" in flags) else 0,
+                             "full": 1 if "full" in flags else 0}).encode("utf-8"),
             headers={"Content-Type": "application/json"}, method="POST")
         try:
             with urllib.request.urlopen(req, timeout=8) as res:
@@ -223,6 +224,10 @@ def main():
                 for t in body.get("tasks", []):
                     print(f'TK-{t["task_no"]} [{t["status"]}] {t.get("assignee_name") or "未割当"}: {t["title"]}'
                           + (f'  ⛔{t["blocker"]}' if t.get("blocker") else ""))
+                    if "full" in flags:
+                        for k, label in (("due_at", "due"), ("unblocks", "unblocks"), ("on_done_note", "note")):
+                            if t.get(k):
+                                print(f'    {label}: {str(t[k])[:160]}')
                 if not body.get("tasks"):
                     print("未完了タスクはありません")
         except Exception as e:
@@ -343,6 +348,7 @@ def main():
         if flags.get("unblocks") is not None: payload["task_unblocks"] = flags["unblocks"]
         if flags.get("note"): payload["task_note"] = flags["note"]
         if flags.get("priority"): payload["task_priority"] = flags["priority"]
+        if flags.get("due"): payload["task_due"] = flags["due"]  # YYYY-MM-DD
     # --quiet: 過去分の一括反映用。Lark通知とunblocks自動処理を抑制（新規の完了報告には使わない）
     if flags.get("quiet"): payload["quiet"] = 1
     if cmd == "approval-request":
