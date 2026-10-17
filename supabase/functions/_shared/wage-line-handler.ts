@@ -103,7 +103,8 @@ export function makeDb(sb: any, supabaseUrl: string, serviceKey: string): WageDb
     },
     async clearConfirm(lineId) { await sb.from("hr_wage_pending_confirm").delete().eq("line_user_id", lineId); },
     async pendingRequests() {
-      const { data } = await sb.from("hr_wage_requests").select("id,user_id,created_at,users(name)").eq("status", "pending").order("created_at");
+      const { data, error } = await sb.from("hr_wage_requests").select("id,user_id,created_at,users!hr_wage_requests_user_id_fkey(name)").eq("status", "pending").order("created_at"); // done_byも users を指すため、結合先の外部キーを名指しする
+      if (error) throw new Error("hr_wage_requests取得失敗: " + error.message);
       return (data ?? []).map((r: any) => ({ id: r.id, user_id: r.user_id, name: r.users?.name ?? "" }));
     },
     async requestByMessage(lineId, messageId) {
@@ -112,7 +113,7 @@ export function makeDb(sb: any, supabaseUrl: string, serviceKey: string): WageDb
     },
     async activeStores() { const { data } = await sb.from("stores").select("id,name").eq("is_active", true); return (data ?? []) as Store[]; },
     async getRequest(id) {
-      const { data } = await sb.from("hr_wage_requests").select("id,user_id,status,users(name)").eq("id", id).maybeSingle();
+      const { data } = await sb.from("hr_wage_requests").select("id,user_id,status,users!hr_wage_requests_user_id_fkey(name)").eq("id", id).maybeSingle();
       return data ? { id: data.id, user_id: data.user_id, status: data.status, name: data.users?.name ?? "" } : null;
     },
     async otherRecipients(requestId, exceptLineId) {
