@@ -19,13 +19,10 @@
 //   実データ検証済み: 青山純さん totalAllowance(293984)-transportation(13480)-交通費allowance(504)
 //   =280,000円=regularWage(220,000)+fixedOvertimeWage(60,000)と完全一致
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { loadContracts, getContractToken, loadLinks, API_BASE } from "../_shared/smaregi-contracts.ts";
 
-const IS_PROD = Deno.env.get("SMAREGI_ENV") === "prod";
-const ID_BASE = IS_PROD ? "https://id.smaregi.jp" : "https://id.smaregi.dev";
-const API_BASE = IS_PROD ? "https://api.smaregi.jp" : "https://api.smaregi.dev";
-const CONTRACT = Deno.env.get("SMAREGI_CONTRACT_ID") ?? "";
-const CID = Deno.env.get("SMAREGI_CLIENT_ID") ?? "";
-const SECRET = Deno.env.get("SMAREGI_CLIENT_SECRET") ?? "";
+// 2026-10-17 担当D: 複数契約対応。契約ごと（smaregi_contracts）にループし、従業員×契約リンク（employee_smaregi_links）の
+// スタッフIDで給与明細を取得して、契約ごとに1行（sf_payroll_sync.contract_id）で保存する。兼務の人は契約ごとに2行になる。
 const SCOPES = "timecard.salaries:read";
 
 const cors: Record<string, string> = {
@@ -44,23 +41,9 @@ function jwtUid(req: Request): string {
   } catch (_) { return ""; }
 }
 
-async function getToken(): Promise<string> {
-  const res = await fetch(`${ID_BASE}/app/${CONTRACT}/token`, {
-    method: "POST",
-    headers: {
-      Authorization: "Basic " + btoa(`${CID}:${SECRET}`),
-      "Content-Type": "application/x-www-form-urlencoded",
-    },
-    body: "grant_type=client_credentials&scope=" + encodeURIComponent(SCOPES),
-  });
-  const j = await res.json();
-  if (!res.ok || !j.access_token) throw new Error("スマレジ認証に失敗しました: " + JSON.stringify(j));
-  return j.access_token;
-}
-
 // store_id=0 = 「総合給与」（全店舗合算）。店舗別の振り分けはsf_payroll_allocations（マスター手動入力）で行う
-async function fetchMonthlyBudget(token: string, staffId: string, year: number, month: number) {
-  const url = `${API_BASE}/${CONTRACT}/timecard/budgets/monthly/0/${staffId}?year=${year}&month=${String(month).padStart(2, "0")}`;
+async function fetchMonthlyBudget(token: string, contract: string, staffId: string, year: number, month: number) {
+  const url = `${API_BASE}/${contract}/timecard/budgets/monthly/0/${staffId}?year=${year}&month=${String(month).padStart(2, "0")}`;
   const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
   if (res.status === 404) return null; // その月の給与明細が無い（未確定 or 対象外）
   if (!res.ok) {
@@ -121,49 +104,65 @@ Deno.serve(async (req) => {
     const month = Number(body.month) || nowJst.getUTCMonth() + 1;
     const yearMonth = `${year}-${String(month).padStart(2, "0")}`;
 
-    const { data: profs } = await sb.from("employee_profiles")
-      .select("user_id,smaregi_staff_id,users(name,is_active)")
-      .not("smaregi_staff_id", "is", null);
+    // 対象月の期間（移籍で旧契約のリンクが月途中に閉じる場合も、その月の分は旧契約から取得する）
+    const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
+    const monthFrom = `${yearMonth}-01`, monthTo = `${yearMonth}-${String(lastDay).padStart(2, "0")}`;
+    const contracts = await loadContracts(sb, body.contract_id ? String(body.contract_id) : undefined);
+    if (!contracts.length) return json({ ok: false, error: "有効なスマレジ契約がありません（smaregi_contracts または環境変数）" }, 500);
 
-    const token = await getToken();
     const synced: any[] = [];
     const skipped: any[] = [];
     const errors: string[] = [];
+    const byContract: any[] = [];
+    let contractsFailed = 0; // 認証・リンク取得そのものに失敗した契約の数
 
-    for (const p of profs ?? []) {
-      const staffId = p.smaregi_staff_id as string;
-      const name = (p as any).users?.name ?? `smaregi_staff_id=${staffId}`;
-      if (!(p as any).users?.is_active) { skipped.push({ name, reason: "非アクティブ" }); continue; }
+    for (const c of contracts) {
+      const tag = `…${c.contract_id.slice(-3)}`;
+      const sum = { contract: tag, label: c.label, synced: 0, skipped: 0, errors: 0 };
+      byContract.push(sum);
+      let token: string;
+      let links: any[];
       try {
-        const budget = await fetchMonthlyBudget(token, staffId, year, month);
-        if (!budget) { skipped.push({ name, reason: "その月の給与明細なし（404）" }); continue; }
-        const { error } = await sb.from("sf_payroll_sync").upsert({
-          user_id: p.user_id,
-          year_month: yearMonth,
-          regular_wage: budget.regularWage,
-          working_day_count: budget.workingDayCount,
-          total_working_minutes: budget.totalWorkingTime,
-          taxable_amount: budget.taxableAmount,
-          total_allowance: budget.totalAllowance,
-          fixed_salary_amount: budget.fixedSalaryAmount,
-          fixed_overtime_wage: budget.fixedOvertimeWage,
-          commute_allowance: budget.commuteAllowance,
-          deduction_total: budget.deductionTotal,
-          deductions: budget.deductions,
-          net_pay: budget.netPay,
-          paid_holiday_used_days: budget.paidHolidayUsedDays,
-          remaining_paid_holiday_days: budget.remainingPaidHolidayDays,
-          raw: budget.raw,
-          synced_at: new Date().toISOString(),
-        }, { onConflict: "user_id,year_month" });
-        if (error) { errors.push(`${name}: 保存エラー ${error.message}`); continue; }
-        synced.push({ name, staffId, fixedSalaryAmount: budget.fixedSalaryAmount, totalAllowance: budget.totalAllowance, regularWage: budget.regularWage, fixedOvertimeWage: budget.fixedOvertimeWage, commuteAllowance: budget.commuteAllowance, workingDayCount: budget.workingDayCount });
-      } catch (e) {
-        errors.push(`${name} (staff ${staffId}): ${String(e)}`);
+        token = await getContractToken(c.contract_id, SCOPES);
+        links = await loadLinks(sb, c.contract_id, monthFrom, monthTo);
+      } catch (e) { errors.push(`契約${tag}: ${String(e)}`); sum.errors++; contractsFailed++; continue; } // 契約単位で失敗を記録し、他の契約は続行
+      for (const p of links) {
+        const staffId = p.smaregi_staff_id as string;
+        const name = p.users?.name ?? `smaregi_staff_id=${staffId}`;
+        if (!p.users?.is_active) { skipped.push({ name, contract: tag, reason: "非アクティブ" }); sum.skipped++; continue; }
+        try {
+          const budget = await fetchMonthlyBudget(token, c.contract_id, staffId, year, month);
+          if (!budget) { skipped.push({ name, contract: tag, reason: "その月の給与明細なし（404）" }); sum.skipped++; continue; }
+          const { error } = await sb.from("sf_payroll_sync").upsert({
+            user_id: p.user_id,
+            year_month: yearMonth,
+            contract_id: c.contract_id,
+            regular_wage: budget.regularWage,
+            working_day_count: budget.workingDayCount,
+            total_working_minutes: budget.totalWorkingTime,
+            taxable_amount: budget.taxableAmount,
+            total_allowance: budget.totalAllowance,
+            fixed_salary_amount: budget.fixedSalaryAmount,
+            fixed_overtime_wage: budget.fixedOvertimeWage,
+            commute_allowance: budget.commuteAllowance,
+            deduction_total: budget.deductionTotal,
+            deductions: budget.deductions,
+            net_pay: budget.netPay,
+            paid_holiday_used_days: budget.paidHolidayUsedDays,
+            remaining_paid_holiday_days: budget.remainingPaidHolidayDays,
+            raw: budget.raw,
+            synced_at: new Date().toISOString(),
+          }, { onConflict: "user_id,year_month,contract_id" });
+          if (error) { errors.push(`${name}: 保存エラー ${error.message}`); sum.errors++; continue; }
+          synced.push({ name, contract: tag, staffId, fixedSalaryAmount: budget.fixedSalaryAmount, totalAllowance: budget.totalAllowance });
+          sum.synced++;
+        } catch (e) {
+          errors.push(`${name} (契約${tag} staff ${staffId}): ${String(e)}`); sum.errors++;
+        }
       }
     }
 
-    return json({ ok: true, year, month, syncedCount: synced.length, synced, skippedCount: skipped.length, skipped, errorCount: errors.length, errors });
+    return json({ ok: contractsFailed < contracts.length, year, month, contracts: byContract, syncedCount: synced.length, synced, skippedCount: skipped.length, skipped, errorCount: errors.length, errors });
   } catch (e) {
     return json({ ok: false, error: String(e) }, 500);
   }
