@@ -1,4 +1,5 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { handleWageReply, makeDb as makeWageDb } from "../_shared/wage-line-handler.ts";
 import { linePushOrderGroup } from "../_shared/line.ts";
 // 2026-08-21: 平文ハードコードだった合言葉をapp_secretsへ移行（データ基盤Day2 タスク4）。
 // secrets()内で取得し、呼び出し時は intakeSecret を使う。body.secretの検証は新旧どちらでも通す。
@@ -147,6 +148,17 @@ Deno.serve(async (req)=>{
         // こちらから勝手に自動返信しない（あいさつはLINE側の設定にまかせる）
         if (ev.type === "follow") continue;
         if (ev.type !== "message" || ev.message?.type !== "text") continue;
+        // 2026-10-17追加(担当B): 入社登録の通知への賃金の返信（「時給 1200」等）。本部・社長・マスターが、通知への返信・名前つき・
+        //   賃金の書き方に完全に合う文面を送ったときだけ反応する。それ以外はfalseで、従来の処理（求人・連携の合言葉）へ渡す。失敗しても従来処理を止めない
+        try {
+          const handled = await handleWageReply(
+            makeWageDb(sb, Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!),
+            ev,
+            async (text) => { await lineReply(token, ev.replyToken, text); },
+            async (to, text) => { await linePush(token, to, text); },
+          );
+          if (handled) continue;
+        } catch (e) { console.warn("賃金返信の処理:", e); }
         const { data: r } = await sb.rpc("line_intake", {
           p_secret: intakeSecret,
           p_line_user_id: uid,

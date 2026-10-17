@@ -712,7 +712,9 @@ Deno.serve(async (req) => {
     //   { action:"wage_delete", user_id, contract_id, id }  スマレジの賃金設定を削除(DELETE /staffs/{id}/wage_apply/{wage_apply_id}。404は削除済み扱い)してから管理システムの行を消す
     //   ※スマレジの賃金設定API（POST/PUT/DELETE /staffs/{id}/wage_apply）。POST/PUT は本番で確認済み(2026-10-17)。認可: CEO/HQ
     if (body.action === "wage_push" || body.action === "wage_pull" || body.action === "wage_update" || body.action === "wage_delete") {
-      if (!isAdmin) return json({ ok: false, error: "forbidden" }, 403);
+      // 認可: CEO/HQ。加えて wage_push だけは service_role キーからも呼べる（LINEの返信で賃金を登録する line-webhook が内部から呼ぶ。賃金の保存と本人確認はline-webhook側で済んでいる）
+      const isServiceWage = body.action === "wage_push" && (req.headers.get("Authorization") ?? "").includes(Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? " ");
+      if (!isAdmin && !isServiceWage) return json({ ok: false, error: "forbidden" }, 403);
       const uid = String(body.user_id ?? "");
       if (!uid) return json({ ok: false, error: "user_id required" }, 400);
       const sb = svc();

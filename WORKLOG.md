@@ -4,6 +4,14 @@
 
 ---
 
+**★★★★2026-10-17（担当Bスレッド）賃金 Phase2: 入社登録→本部のLINEへ通知→返信「時給 1200」等で賃金登録→スマレジ反映（コード準備済み・SQL/新Edge Function/line-webhook/smaregi-sync 未適用・未デプロイ）**:
+- **Phase1は本番で動作確認済み**（ユーザー: 賃金の取り込み・修正・反映・LiveGateの所属一致いずれもOK。smaregi-sync v39）。返信の書き方（ユーザー承認）: 「時給 1200」「時給 1200 休日 1300」「月給 250000」「新橋 1400」（店舗名の一部でその店舗だけの時給）。
+- **流れ**: 入社登録(本人の画面/本部の代理発行どちらも `hqNotifyOnboarding`)→`hr-wage-notify`(新Edge Function・verify_jwt無し・1人1回・作成3日以内・賃金設定が無い人のみ)が本部/社長/マスター(LINE連携済み)へ通知し、メッセージIDを保存→返信を`line-webhook`が判定（通知への引用返信／先頭に名前／賃金の書き方に完全一致＋承認待ち1人、のいずれか。他は従来処理へ素通し）→確認メッセージ(「はい」で登録・3時間で失効)→`employee_wage_settings`に保存(適用開始日=入社日・月給は月初日／契約=その人の主契約リンク)→`smaregi-sync wage_push`(service_roleキーで内部呼び出し=この1アクションだけservice許可)。他の本部の人へ「◯◯さんが登録しました」。
+- **ファイル**: `supabase/2026-10-17_hr_wage_requests.sql`(表3つ・RLSでEdge専用)／`supabase/functions/_shared/wage-line.ts`(解析・単体テスト済み)／`_shared/wage-line-handler.ts`(返信の処理・模擬DBで全シナリオ検証済み)／`hr-wage-notify/`／`line-webhook`に判定を差し込み(失敗しても従来処理を止めない)。
+- **将来Slack統一の可能性**: 送信は`hr-wage-notify`のsend()と`wage-line-handler`のsay/push(コールバック)に集約してあり、差し替え可能。
+- **未了**: SQL適用→3つのEdge Functionデプロイ(hr-wage-notify新規・line-webhook・smaregi-sync。ユーザー了承→デプロイ)→実機(自分宛LINE)で確認。Phase3=入社登録の本部タスクの「給与・明細設定」から「時給」チェックを外す。
+
+
 **★★★★2026-10-17（担当Bスレッド）賃金設定（時給・月給）→スマレジ自動反映 Phase1（ユーザー確定: A案・LINEで最終形・社員月給も・店舗別時給あり）／SQLはユーザー適用済み(表・RPC・RLS確認済み)・smaregi-sync(wage_push/wage_pull)は未デプロイ（デプロイは担当D・ユーザー了承待ち）・nippo公開済み**:
 - **スマレジAPIの調査（公式仕様）**: 書ける=賃金設定 `POST/PUT/DELETE /staffs/{id}/wage_apply`（時給0/日給1/月給2・適用開始日・休日賃金・事業所別settings）。**書けない=メール・交通費・源泉所得税・個別Web給与明細表示**（staffs PATCH/POSTに項目なし。GET staffには mail/transportationCostApply/withholdingIncomeTaxes/personalWebStatementScreenDisplayFlag があり読み取りのみ）→手作業のまま・入社登録タスクの該当チェック項目は残す。
 - **DB（`supabase/2026-10-17_employee_wage_settings.sql`・事前報告済み）**: 表`employee_wage_settings`（人×契約×区分(0時給/2月給)×店舗(空=共通)×適用開始日・金額・休日賃金・`smaregi_wage_apply_id`・反映状況pending/synced/error・本部/社長/マスターのみ閲覧）＋RPC `hr_save_wage`/`hr_delete_wage`。
