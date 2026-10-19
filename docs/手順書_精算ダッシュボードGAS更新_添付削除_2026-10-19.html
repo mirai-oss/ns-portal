@@ -1,0 +1,3651 @@
+<!DOCTYPE html><html lang="ja"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>手順書 精算ダッシュボードのGAS更新</title>
+<style>body{font-family:-apple-system,"Hiragino Sans",sans-serif;max-width:860px;margin:0 auto;padding:20px 16px 80px;line-height:1.9;color:#26221e;background:#faf8f4}
+h1{font-size:22px}h2{font-size:18px;margin-top:30px;border-left:6px solid #1f5fbf;padding-left:10px}
+.step{background:#fff;border:1px solid #e7e3dc;border-radius:12px;padding:12px 18px;margin:12px 0}
+.num{display:inline-block;background:#1f5fbf;color:#fff;border-radius:99px;width:26px;height:26px;text-align:center;line-height:26px;font-weight:700;margin-right:8px}
+.ok{background:#e9f6ef;border:1px solid #bfe3cd;border-radius:10px;padding:8px 14px;margin:8px 0}.warn{background:#fff4e5;border:1px solid #f0b35a;border-radius:10px;padding:8px 14px;margin:8px 0}
+.bh{display:flex;justify-content:space-between;align-items:center}button.copy{background:#1f5fbf;color:#fff;border:0;border-radius:8px;padding:10px 18px;font-size:15px;cursor:pointer}
+textarea{width:100%;height:180px;font-size:11px;font-family:Menlo,monospace;border:1px solid #cfc8bb;border-radius:8px;box-sizing:border-box}.cpmsg{font-size:14px;margin-top:6px}
+a.big{display:inline-block;background:#1f5fbf;color:#fff;padding:8px 16px;border-radius:8px;text-decoration:none}</style></head><body>
+<h1>手順書：精算ダッシュボードの「裏側のプログラム（GAS）」を新しくする</h1>
+<p>これをすると、精算書の<b>添付ファイルを削除できる</b>ようになり、<b>別の経費の添付が入れ替わる問題</b>が直ります。所要時間は5分ほどです。やることは「コピーして、貼って、保存して、デプロイ」だけです。</p>
+<div class="warn"><b>コピーボタンが効かないとき</b>：下の黒い枠をクリック → <b>⌘+A</b>（全部選ぶ）→ <b>⌘+C</b>（コピー）でもできます。</div>
+
+<h2>やること</h2>
+<div class="step"><span class="num">1</span>下の青いボタンで、精算ダッシュボードの<b>Apps Script</b>を開きます。<br>
+（いつもGASを直すときに開く、<b>精算ダッシュボードのスプレッドシート</b>の「拡張機能 → Apps Script」からでもOKです）</div>
+
+<div class="step"><span class="num">2</span>下の枠の右上の <b>「📋 コピー」</b> を押します。（プログラムの全部がコピーされます）
+<div class="bh"><b>プログラム全文（SeisanDashboard）</b><button class="copy" onclick="cp(this)">📋 コピー</button></div>
+<textarea id="code" readonly spellcheck="false" onclick="this.select()">/**********************************************************************
+ * 精算ダッシュボード バックエンド（GAS = JSON APIのみ）
+ *
+ * 画面（UI）はこのプロジェクトの外、GitHub Pagesで配信される静的サイトです。
+ * このファイルは「データを読み書きするAPI」としてのみ動作します。
+ * doGet/doPost が fn（関数名）と args（引数配列）を受け取り、
+ * SD_API_WHITELIST に載っている sd_ 関数だけを呼び出してJSONを返します。
+ *
+ * こうしている理由: GASのHtmlServiceでUIごと配信すると、Google Workspace
+ * 管理者の「Apps Scriptサービス制限」等でスマホから開けなくなることがある。
+ * UIを外部の静的サイトにして、データ取得だけを軽いfetch(JSON)にすることで
+ * この制約を回避する（参考: 売上ダッシュボード tori-dashboard と同じ構成）。
+ *
+ * 全関数 sd_ プレフィックス（doGet/doPost のみ例外）。
+ *
+ * ★「次のユーザーとして実行: 自分」「アクセスできるユーザー: 全員」でデプロイしてください。
+ * ★ 初回は sd_authorize を一度実行して権限を承認してください。
+ **********************************************************************/
+
+var SD_VERSION = &#x27;v5.27-client-period&#x27;;
+
+// 統合アカウント（N-Styleポータル / 日報Supabase）でのログイン用。
+// キーは公開用publishableキー（秘密情報ではない）。トークン検証はSupabase側で行う。
+// ※業務委託先は統合アカウントを持たない方針のため、SSOで入れるのは本部・マスターのみ。
+var SD_SSO_SUPA_URL = &#x27;https://uuvsxzhpxtghojoubjcc.supabase.co&#x27;;
+var SD_SSO_SUPA_KEY = &#x27;sb_publishable_MrwPJAx_Ws_fdRutprKCiQ_dg3wCiTr&#x27;;
+var SD_START_MONTH = &#x27;2026-03&#x27;; // これより前の月はプルダウンに出さない
+// 2026-10-15: この月以降は、変動ロイヤリティを「精算書の売上合計」ではなく「売上シート（分析_日別店舗 S列 支払合計＝レジ実績）の月間売上」から計算する。
+// 売上シートは、毎月3日の月次照合（ns-daily-import cash-sales-monthly-check）でレジ(POS)と照合され、ずれていればレジの値に修正される。
+// 過去の月は従来どおり（精算書の売上合計×率）。売上シートの値が取れない店舗・月も従来の計算にフォールバックする。
+var SD_ROYALTY_ACTUAL_FROM = &#x27;2026-09&#x27;;
+var SD_ACTUAL_MEMO_ = {}; // 実行中のメモ: 対象月 → {店舗名(正規化): 月間売上} または null
+var SD_PAID_SHEET = &#x27;振込管理_精算ダッシュボード&#x27;;
+var SD_NO_CLIENT_LABEL = &#x27;（委託先未設定）&#x27;; // 委託先（法人）が未設定の店舗をグルーピングする際の仮キー
+var SD_CORP_SHEET = &#x27;法人設定_精算ダッシュボード&#x27;;
+var SD_PERIOD_SHEET = &#x27;委託先の期間設定&#x27;; // 2026-10-17: 店舗の委託先（法人）を「適用開始月」から切り替える（黒霧屋 新横浜 トーホー→LiveGate 2026-11分〜）
+var SD_CONFIG_SHEET = &#x27;設定_精算ダッシュボード&#x27;;
+var SD_EXT_SHEET = &#x27;設定_外部連携&#x27;;
+var SD_AUTH_SHEET = &#x27;権限_精算ダッシュボード&#x27;;
+var SD_RECUR_SHEET = &#x27;定期費目_精算ダッシュボード&#x27;;
+var SD_LOG_SHEET = &#x27;発行ログ_精算ダッシュボード&#x27;;
+var SD_CHECK_SHEET = &#x27;✅入力チェック表&#x27;;
+var SD_PLSYNC_LOG_SHEET = &#x27;PL反映ログ_精算ダッシュボード&#x27;; // 2026-09-05追加（invoice連携・9-2の6状態モデル用）
+var SD_MAPPING_SHEET = &#x27;PLマッピング_精算ダッシュボード&#x27;;   // 2026-09-05追加（MF勘定科目→PL表示科目の学習型マッピング）
+var SD_TZ = &#x27;Asia/Tokyo&#x27;;
+var SD_TAX_OPTIONS = [&#x27;10%&#x27;, &#x27;8%&#x27;, &#x27;対象外&#x27;];
+var SD_KUBUN_OPTIONS = [&#x27;売上&#x27;, &#x27;変動費&#x27;, &#x27;固定ロイヤリティ&#x27;, &#x27;変動ロイヤリティ&#x27;, &#x27;固定調整&#x27;];
+
+/* ---------- Webアプリ入口（JSON APIのみ） ----------
+ * 呼べる関数はここに明示的に列挙したものだけ（それ以外は拒否）。
+ * sd_login 以外は全て第1引数がtoken（内部の sd_auth_ が権限検証する）。 */
+var SD_API_WHITELIST = [
+  &#x27;sd_login&#x27;, &#x27;sd_supaLogin&#x27;, &#x27;sd_getDashboard&#x27;, &#x27;sd_addRows&#x27;, &#x27;sd_updateRow&#x27;, &#x27;sd_deleteRow&#x27;, &#x27;sd_setPaid&#x27;,
+  &#x27;sd_pdfPreview&#x27;, &#x27;sd_issueAndSend&#x27;, &#x27;sd_cashPreview&#x27;, &#x27;sd_cashApply&#x27;,
+  &#x27;sd_prepareMonth&#x27;, &#x27;sd_setupAutoPrep&#x27;, &#x27;sd_uploadAttachment&#x27;, &#x27;sd_listAttachments&#x27;,
+  &#x27;sd_getPdfB64&#x27;, &#x27;sd_updateCheckSheet&#x27;, &#x27;sd_bulkAdd&#x27;, &#x27;sd_getSettings&#x27;,
+  &#x27;sd_saveAccount&#x27;, &#x27;sd_saveCorp&#x27;, &#x27;sd_testChatwork&#x27;, &#x27;sd_apiTransferEx&#x27;,
+  &#x27;sd_saveStoreRate&#x27;, &#x27;sd_saveRecurStatus&#x27;, &#x27;sd_saveOpsSettings&#x27;, &#x27;sd_getOpsSettings&#x27;,
+  &#x27;sd_suggestAccount&#x27;, &#x27;sd_bulkCategorize&#x27;, &#x27;sd_apiCategorizedLines&#x27;, &#x27;sd_apiAddExternalLine&#x27;,
+  &#x27;sd_apiGetLines&#x27;, &#x27;sd_apiMarkPlSynced&#x27;, &#x27;sd_apiSuggestMapping&#x27;, &#x27;sd_apiConfirmMapping&#x27;,
+  &#x27;sd_apiUploadAttachment&#x27;, &#x27;sd_apiDebugExtRef&#x27;, &#x27;sd_apiCashSync&#x27;, &#x27;sd_apiRemoveExternalLine&#x27;,
+  &#x27;sd_deleteAttachment&#x27;
+];
+
+function sd_apiFnMap_() {
+  return {
+    sd_login: sd_login, sd_supaLogin: sd_supaLogin, sd_getDashboard: sd_getDashboard, sd_addRows: sd_addRows,
+    sd_updateRow: sd_updateRow, sd_deleteRow: sd_deleteRow, sd_setPaid: sd_setPaid, sd_pdfPreview: sd_pdfPreview,
+    sd_issueAndSend: sd_issueAndSend, sd_cashPreview: sd_cashPreview, sd_cashApply: sd_cashApply,
+    sd_prepareMonth: sd_prepareMonth, sd_setupAutoPrep: sd_setupAutoPrep,
+    sd_uploadAttachment: sd_uploadAttachment, sd_listAttachments: sd_listAttachments,
+    sd_getPdfB64: sd_getPdfB64, sd_updateCheckSheet: sd_updateCheckSheet,
+    sd_bulkAdd: sd_bulkAdd, sd_getSettings: sd_getSettings,
+    sd_saveAccount: sd_saveAccount, sd_saveCorp: sd_saveCorp, sd_testChatwork: sd_testChatwork,
+    sd_apiTransferEx: sd_apiTransferEx,
+    sd_saveStoreRate: sd_saveStoreRate, sd_saveRecurStatus: sd_saveRecurStatus,
+    sd_saveOpsSettings: sd_saveOpsSettings, sd_getOpsSettings: sd_getOpsSettings,
+    sd_suggestAccount: sd_suggestAccount, sd_bulkCategorize: sd_bulkCategorize,
+    sd_apiCategorizedLines: sd_apiCategorizedLines, sd_apiAddExternalLine: sd_apiAddExternalLine,
+    sd_apiGetLines: sd_apiGetLines, sd_apiMarkPlSynced: sd_apiMarkPlSynced,
+    sd_apiSuggestMapping: sd_apiSuggestMapping, sd_apiConfirmMapping: sd_apiConfirmMapping,
+    sd_apiUploadAttachment: sd_apiUploadAttachment, sd_apiDebugExtRef: sd_apiDebugExtRef,
+    sd_apiCashSync: sd_apiCashSync, sd_apiRemoveExternalLine: sd_apiRemoveExternalLine,
+    sd_deleteAttachment: sd_deleteAttachment
+  };
+}
+
+function sd_jsonOut_(obj) {
+  return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);
+}
+
+function sd_handleApi_(fn, args) {
+  if (SD_API_WHITELIST.indexOf(fn) &lt; 0) return { ok: false, error: &#x27;許可されていない呼び出しです: &#x27; + fn };
+  var f = sd_apiFnMap_()[fn];
+  try {
+    var result = f.apply(null, args || []);
+    return { ok: true, result: result };
+  } catch (e) {
+    return { ok: false, error: String((e &amp;&amp; e.message) || e) };
+  }
+}
+
+function doGet(e) {
+  var p = (e &amp;&amp; e.parameter) || {};
+  if (p.action === &#x27;ping&#x27;) return sd_jsonOut_({ ok: true, ver: SD_VERSION });
+  if (p.fn) {
+    var args = [];
+    try { args = JSON.parse(p.args || &#x27;[]&#x27;); } catch (err) { /* 空配列のまま */ }
+    return sd_jsonOut_(sd_handleApi_(p.fn, args));
+  }
+  return sd_jsonOut_({ ok: false, error: &#x27;このエンドポイントはJSON APIです。画面はGitHub Pages側をご利用ください。&#x27; });
+}
+
+function doPost(e) {
+  var payload = {};
+  try { payload = JSON.parse(e.postData.contents); } catch (err) {
+    return sd_jsonOut_({ ok: false, error: &#x27;リクエストの解析に失敗しました&#x27; });
+  }
+  return sd_jsonOut_(sd_handleApi_(payload.fn, payload.args));
+}
+
+/* ---------- 業務委託費の外部連携（PL自動連携用・2026-08-23追加、2026-08-24: paid判定を追加） ----------
+ * 経営ダッシュボードのPLタブへ「運営委託費（自動）」として反映するため、指定店舗・月の
+ * 業務委託費（税抜）だけを返す軽量API。ログインセッションとは別の専用トークン認証
+ * （tori-dashboard側のBQ_LOAD_TOKENと同じ考え方）。既存のsd_settle_・
+ * sd_buildSeisanHtml_と同じ計算ロジックを流用するだけで、書き込みは一切行わない。
+ * paid: 振込済み（sd_isLocked_）かどうか。呼び出し側（tori-dashboard）は
+ * paid===falseの店舗をPL反映から除外する（未確定の金額をPLに載せないため）。
+ * 呼び出し例: POST {fn:&#x27;sd_apiTransferEx&#x27;, args:[token, &#x27;秋葉原 肉寿司&#x27;, &#x27;2026-07&#x27;]}
+ */
+function sd_apiTransferEx(token, store, monthKey) {
+  var tk = PropertiesService.getScriptProperties().getProperty(&#x27;PL_SYNC_TOKEN&#x27;);
+  var got = String(token || &#x27;&#x27;).trim(), want = String(tk || &#x27;&#x27;).trim();
+  if (!tk || got !== want) {
+    // 値そのものは出さず、文字数だけ比較してどちら側の設定が怪しいか分かるようにする（一時的な診断用）
+    throw new Error(&#x27;unauthorized（診断: 受信した長さ=&#x27; + got.length + &#x27; / 期待する長さ=&#x27; + want.length +
+      &#x27; / PL_SYNC_TOKEN未設定=&#x27; + (!tk));
+  }
+  var det = sd_detect_();
+  var cfg = sd_config_(sd_masterStores_(det), det);
+  var st = null;
+  cfg.forEach(function (s) { if (s.name === store) st = s; });
+  // 「見つからない理由」を区別して返す（一時的な診断用）: 店舗マスタに無い／DBシートが特定できない／
+  // 見つかったが対象月の売上行が0件、のどれかで原因が全く違うため。
+  if (!st) return { found: false, reason: &#x27;店舗マスタに「&#x27; + store + &#x27;」という名前が見つかりません（表記ゆれの可能性）&#x27;, masterNames: cfg.map(function (s) { return s.name; }) };
+  if (!st.db) return { found: false, reason: &#x27;店舗は見つかったが、データシートが自動特定できていません（設定シートでDBシート名の紐付けが必要）&#x27; };
+  var rows = sd_readRowsCached_(st.db);
+  var s = sd_settle_(rows, monthKey, st.rate, st.fixed, st.salesName);
+  if (!s.hasSales) return { found: true, hasSales: false, reason: monthKey + &#x27;分の売上行が0件でした（&#x27; + st.db.sheet + &#x27;シート）&#x27;, rowCountAllMonths: rows.length };
+  var paid = sd_isLocked_(store, monthKey);
+  if (!paid) return { found: true, hasSales: true, paid: false, reason: monthKey + &#x27;分はまだ振込済みではありません（未確定のためPL反映対象外）&#x27;, transferEx: s.transferEx, transfer: s.transfer };
+  return { found: true, hasSales: true, paid: true, transferEx: s.transferEx, transfer: s.transfer };
+}
+
+/* ---------- 現金売上の外部連携（レジ照合後の反映・2026-09-26追加） ----------
+ * 現金売上の月次照合（ns-daily-import cash-sales-monthly-check）で、管理システム（売上DB→分析_日別店舗）の
+ * 現金売上がレジの正しい値に修正された後、精算書の「N月現金売上」行を最新の値へ更新する（既に行があれば
+ * 上書き更新・無ければ登録＝sd_cashApplyCoreの手動実行(skipIfExists=false)と同じ）。専用トークン(PL_SYNC_TOKEN)認証。
+ * 精算対象外の店舗（sd_config_に無い店舗）は何もしない。振込済み(sd_isLocked_)の月・店舗は更新せず
+ * results に「手動で確認」と返す（確定済みの精算書を自動で書き換えないため）。
+ * 呼び出し例: POST {fn:&#x27;sd_apiCashSync&#x27;, args:[token, &#x27;2026-08&#x27;, [&#x27;秋葉原 肉寿司&#x27;]]}
+ *   （tori-dashboardの seisanCashSync 経由。呼び出し元がSEISAN_WEBAPP_URLとPL_SYNC_TOKENを持つ） */
+function sd_apiCashSync(token, monthKey, storeNames) {
+  var tk = PropertiesService.getScriptProperties().getProperty(&#x27;PL_SYNC_TOKEN&#x27;);
+  if (!tk || String(token || &#x27;&#x27;).trim() !== String(tk).trim()) throw new Error(&#x27;unauthorized&#x27;);
+  if (!/^\d{4}-\d{2}$/.test(String(monthKey || &#x27;&#x27;))) throw new Error(&#x27;monthKey は YYYY-MM 形式&#x27;);
+  var names = (storeNames || []).map(function (n) { return String(n || &#x27;&#x27;).trim(); }).filter(Boolean);
+  if (!names.length) return { ok: true, results: [&#x27;対象店舗がありません&#x27;] };
+  var results = [], allowed = [];
+  names.forEach(function (n) {
+    if (sd_isLocked_(n, monthKey)) results.push(n + &#x27;: 振込済みのため更新しません（精算書の現金売上は手動で確認してください）&#x27;);
+    else allowed.push(n);
+  });
+  if (!allowed.length) return { ok: true, results: results };
+  var res = sd_cashApplyCore_(monthKey, allowed, &#x27;レジ照合(自動)&#x27;, false);
+  return { ok: true, results: results.concat(res.results) };
+}
+
+/* ---------- 初回承認用（エディタから一度実行） ---------- */
+
+function sd_authorize() {
+  SpreadsheetApp.getActive().getName();
+  DriveApp.getRootFolder().getName();
+  GmailApp.getAliases();
+  ScriptApp.getOAuthToken();
+  var ext = sd_extConfig_();
+  if (ext[&#x27;売上スプレッドシートID&#x27;]) {
+    try { SpreadsheetApp.openById(ext[&#x27;売上スプレッドシートID&#x27;]).getName(); }
+    catch (err) { Logger.log(&#x27;売上シートを開けません: &#x27; + err.message); }
+  }
+  Logger.log(&#x27;承認OK（&#x27; + SD_VERSION + &#x27;）&#x27;);
+}
+
+/* ---------- ユーティリティ ---------- */
+
+function sd_norm_(s) {
+  return String(s == null ? &#x27;&#x27; : s).replace(/[\s　]+/g, &#x27;&#x27;).replace(/％/g, &#x27;%&#x27;);
+}
+function sd_fmtMonth_(d) { return Utilities.formatDate(d, SD_TZ, &#x27;yyyy-MM&#x27;); }
+function sd_monthKeyToDate_(key) {
+  var m = String(key).match(/^(\d{4})-(\d{2})$/);
+  if (!m) throw new Error(&#x27;対象月の形式が不正です: &#x27; + key);
+  return new Date(Number(m[1]), Number(m[2]) - 1, 1);
+}
+function sd_addMonths_(key, n) {
+  var d = sd_monthKeyToDate_(key);
+  return sd_fmtMonth_(new Date(d.getFullYear(), d.getMonth() + n, 1));
+}
+function sd_monthLabel_(key) {
+  var d = sd_monthKeyToDate_(key);
+  return d.getFullYear() + &#x27;年&#x27; + (d.getMonth() + 1) + &#x27;月&#x27;;
+}
+function sd_monthDot_(key) { // &#x27;2026-06&#x27; -&gt; &#x27;2026.06&#x27;
+  return key.replace(&#x27;-&#x27;, &#x27;.&#x27;);
+}
+function sd_thisMonthKey_() { return sd_fmtMonth_(new Date()); }
+/* プルダウン・マトリクス用の月リスト。
+ * SD_START_MONTH から、max(対象月, 今月)+6ヶ月先まで（先の月も選べる）。 */
+function sd_monthList_(anchorKey) {
+  var start = SD_START_MONTH;
+  var thisM = sd_thisMonthKey_();
+  var endBase = (anchorKey &amp;&amp; anchorKey &gt; thisM) ? anchorKey : thisM;
+  var end = sd_addMonths_(endBase, 6);
+  var out = [], k = start, guard = 0;
+  if (start &gt; end) return [start];
+  while (k &lt;= end &amp;&amp; guard &lt; 240) { out.push(k); k = sd_addMonths_(k, 1); guard++; }
+  return out;
+}
+function sd_colLetterToNum_(letter) {
+  var s = String(letter || &#x27;&#x27;).toUpperCase().replace(/[^A-Z]/g, &#x27;&#x27;);
+  var n = 0;
+  for (var i = 0; i &lt; s.length; i++) n = n * 26 + (s.charCodeAt(i) - 64);
+  return n || 0;
+}
+
+/* ---------- シート構造の自動検出（v1と同じ） ---------- */
+
+/* 全シートを毎回スキャンするsd_detectRaw_は重い（実測で秒単位）。
+ * 店舗構成が変わるのは稀なので10分キャッシュする（店舗追加直後は最大10分反映が遅れる）。 */
+function sd_detect_() {
+  var cache = CacheService.getScriptCache();
+  var hit = cache.get(&#x27;sd_detect_v1&#x27;);
+  if (hit) { try { return JSON.parse(hit); } catch (e) { /* 壊れていたら作り直す */ } }
+  var res = sd_detectRaw_();
+  try { cache.put(&#x27;sd_detect_v1&#x27;, JSON.stringify(res), 600); } catch (e) { /* 100KB超なら諦めてキャッシュしない */ }
+  return res;
+}
+/* 2026-08-31追加（ユーザー報告「手動で勘定科目を保存しても反映されない」で発覚したバグの修正）:
+ * sd_ensureCategoryCols_等が列を新規挿入してcolMapを更新しても、その変更は呼び出し元が
+ * 保持するdetオブジェクト（そのリクエスト限りのローカルコピー）にしか反映されず、
+ * sd_detect_の10分間CacheServiceキャッシュには反映されないままだった。そのため、
+ * 列挿入直後〜キャッシュ失効までの最大10分間は「保存はできたが読み直すと空欄に見える」
+ * 「もう一度保存すると列が重複して増える」といった不整合が起きていた。列を新規作成した
+ * 直後は必ずこの関数でキャッシュを破棄し、次回呼び出しで最新のシート構造を読み直させる。 */
+function sd_clearDetectCache_() {
+  try { CacheService.getScriptCache().remove(&#x27;sd_detect_v1&#x27;); } catch (e) { /* noop */ }
+}
+
+function sd_detectRaw_() {
+  var ss = SpreadsheetApp.getActive();
+  var res = { master: null, dbs: [], statusSheet: null, mailSheet: null, sendSheet: null };
+  var own = [SD_CONFIG_SHEET, SD_EXT_SHEET, SD_AUTH_SHEET, SD_RECUR_SHEET, SD_LOG_SHEET, SD_CHECK_SHEET, SD_PERIOD_SHEET];
+  ss.getSheets().forEach(function (sh) {
+    var name = sh.getName();
+    if (own.indexOf(name) &gt; -1) return;
+    var rows = Math.min(sh.getLastRow(), 12);
+    var cols = Math.min(sh.getLastColumn(), 25);
+    if (rows &lt; 1 || cols &lt; 2) return;
+    var vals = sh.getRange(1, 1, rows, cols).getDisplayValues();
+    for (var r = 0; r &lt; rows; r++) {
+      var line = vals[r].map(sd_norm_);
+      if (!res.master &amp;&amp; line.indexOf(&#x27;店舗名&#x27;) &gt; -1 &amp;&amp;
+          line.some(function (v) { return v.indexOf(&#x27;ロイヤリティ率&#x27;) &gt; -1; })) {
+        res.master = { sheet: name, headerRow: r + 1 };
+      }
+      if (!res.statusSheet &amp;&amp; line.indexOf(&#x27;店舗名&#x27;) &gt; -1 &amp;&amp;
+          line.some(function (v) { return v.indexOf(&#x27;未発行月数&#x27;) &gt; -1; })) {
+        res.statusSheet = { sheet: name, headerRow: r + 1 };
+      }
+      if (!res.mailSheet &amp;&amp; line.indexOf(&#x27;店舗名&#x27;) &gt; -1 &amp;&amp;
+          line.some(function (v) { return v.indexOf(&#x27;To（&#x27;) === 0 || v === &#x27;To&#x27;; })) {
+        res.mailSheet = { sheet: name, headerRow: r + 1 };
+      }
+      if (!res.sendSheet &amp;&amp; line.some(function (v) { return v.indexOf(&#x27;★店舗を選択&#x27;) &gt; -1; })) {
+        res.sendSheet = { sheet: name };
+      }
+      if (line.indexOf(&#x27;年月&#x27;) &gt; -1 &amp;&amp; line.indexOf(&#x27;区分&#x27;) &gt; -1 &amp;&amp; line.indexOf(&#x27;費目名&#x27;) &gt; -1) {
+        var colMap = {};
+        vals[r].forEach(function (v, i) {
+          var n = sd_norm_(v);
+          if (n === &#x27;年月&#x27;) colMap.ym = i + 1;
+          else if (n === &#x27;区分&#x27;) colMap.kubun = i + 1;
+          else if (n === &#x27;費目名&#x27;) colMap.item = i + 1;
+          else if (!colMap.amount &amp;&amp; n.indexOf(&#x27;金額&#x27;) === 0) colMap.amount = i + 1;
+          else if (n === &#x27;税率&#x27;) colMap.tax = i + 1;
+          else if (!colMap.note &amp;&amp; n.indexOf(&#x27;備考&#x27;) === 0) colMap.note = i + 1;
+          else if (n === &#x27;入力者&#x27;) colMap.editor = i + 1;
+          else if (n === &#x27;入力日時&#x27;) colMap.at = i + 1;
+          else if (n === &#x27;支払済&#x27;) colMap.paid = i + 1;
+          else if (n === &#x27;リンク&#x27;) colMap.link = i + 1;
+          else if (n === &#x27;修正日&#x27;) colMap.edited = i + 1;
+          else if (n === &#x27;勘定科目&#x27;) colMap.account = i + 1;
+          else if (n === &#x27;補助科目&#x27;) colMap.subAccount = i + 1;
+          else if (n === &#x27;外部参照ID&#x27;) colMap.extRef = i + 1; // 2026-09-05追加（invoice連携の冪等キー専用列）
+        });
+        if (colMap.ym &amp;&amp; colMap.kubun &amp;&amp; colMap.item &amp;&amp; colMap.amount) {
+          var title = name;
+          for (var rr = 0; rr &lt; Math.min(rows, 6) &amp;&amp; title === name; rr++) {
+            for (var c = 0; c &lt; cols; c++) {
+              if (String(vals[rr][c]).indexOf(&#x27;精算入力DB&#x27;) &gt; -1) { title = String(vals[rr][c]); break; }
+            }
+          }
+          res.dbs.push({ sheet: name, title: title, headerRow: r + 1, colMap: colMap });
+        }
+        break;
+      }
+    }
+  });
+  return res;
+}
+
+function sd_masterStores_(det) {
+  if (!det.master) throw new Error(&#x27;「店舗設定マスター」が見つかりません&#x27;);
+  var sh = SpreadsheetApp.getActive().getSheetByName(det.master.sheet);
+  var hr = det.master.headerRow;
+  var lastR = sh.getLastRow(), lastC = sh.getLastColumn();
+  if (lastR &lt;= hr) return [];
+  var header = sh.getRange(hr, 1, 1, lastC).getDisplayValues()[0].map(sd_norm_);
+  var iName = header.indexOf(&#x27;店舗名&#x27;);
+  var iClient = header.indexOf(&#x27;委託先&#x27;);
+  var iCorp = header.indexOf(&#x27;法人&#x27;);
+  var iInv = -1, iRep = -1;
+  var iRate = -1, iRent = -1, iIns = -1, iSss = -1, iF4 = -1, iF5 = -1;
+  header.forEach(function (h, i) {
+    if (iInv &lt; 0 &amp;&amp; (h.indexOf(&#x27;インボイス&#x27;) &gt; -1 || h.indexOf(&#x27;登録番号&#x27;) &gt; -1)) iInv = i;
+    if (iRep &lt; 0 &amp;&amp; h.indexOf(&#x27;代表者&#x27;) &gt; -1) iRep = i;
+    if (iRate &lt; 0 &amp;&amp; h.indexOf(&#x27;ロイヤリティ率&#x27;) &gt; -1) iRate = i;
+    if (iRent &lt; 0 &amp;&amp; h === &#x27;家賃&#x27;) iRent = i;
+    if (iIns &lt; 0 &amp;&amp; h.indexOf(&#x27;物件保険&#x27;) &gt; -1) iIns = i;
+    if (iSss &lt; 0 &amp;&amp; (h.indexOf(&#x27;SSS&#x27;) &gt; -1 || h.indexOf(&#x27;経理手数料&#x27;) &gt; -1)) iSss = i;
+    if (iF4 &lt; 0 &amp;&amp; h.indexOf(&#x27;固定④&#x27;) &gt; -1) iF4 = i;
+    if (iF5 &lt; 0 &amp;&amp; h.indexOf(&#x27;固定⑤&#x27;) &gt; -1) iF5 = i;
+  });
+  function num(row, idx) {
+    if (idx &lt; 0) return 0;
+    return Number(String(row[idx] || &#x27;&#x27;).replace(/[¥￥,，\s]/g, &#x27;&#x27;)) || 0;
+  }
+  var vals = sh.getRange(hr + 1, 1, lastR - hr, lastC).getDisplayValues();
+  var out = [];
+  for (var i = 0; i &lt; vals.length; i++) {
+    var nm = String(vals[i][iName] || &#x27;&#x27;).trim();
+    if (!nm) break;
+    var fixed = {
+      rent: num(vals[i], iRent), ins: num(vals[i], iIns), sss: num(vals[i], iSss),
+      f4: num(vals[i], iF4), f5: num(vals[i], iF5)
+    };
+    fixed.total = fixed.rent + fixed.ins + fixed.sss + fixed.f4 + fixed.f5;
+    out.push({
+      name: nm,
+      client: iClient &gt; -1 ? String(vals[i][iClient] || &#x27;&#x27;).trim() : &#x27;&#x27;,
+      corp: iCorp &gt; -1 ? String(vals[i][iCorp] || &#x27;&#x27;).trim() : &#x27;&#x27;,
+      invoice: iInv &gt; -1 ? String(vals[i][iInv] || &#x27;&#x27;).trim() : &#x27;&#x27;,
+      rep: iRep &gt; -1 ? String(vals[i][iRep] || &#x27;&#x27;).trim() : &#x27;&#x27;,
+      rate: iRate &gt; -1 ? String(vals[i][iRate] || &#x27;&#x27;).trim() : &#x27;&#x27;,
+      fixed: fixed
+    });
+  }
+  return out;
+}
+
+function sd_autoMap_(storeName, dbs) {
+  var tokens = String(storeName).split(/[\s　]+/).filter(String).map(sd_norm_);
+  for (var i = 0; i &lt; dbs.length; i++) {
+    var t = sd_norm_(dbs[i].title) + &#x27;|&#x27; + sd_norm_(dbs[i].sheet);
+    var ok = tokens.every(function (tok) { return t.indexOf(tok) &gt; -1; });
+    if (ok) return dbs[i];
+  }
+  return null;
+}
+
+/* ---------- 設定シート群 ---------- */
+
+/* 店舗マッピング（列を4本に拡張。既存v1シートには不足列を自動追加） */
+function sd_config_(master, det) {
+  var ss = SpreadsheetApp.getActive();
+  var sh = ss.getSheetByName(SD_CONFIG_SHEET);
+  var HEAD = [&#x27;店舗名&#x27;, &#x27;DBシート名（自動検出・変更可）&#x27;, &#x27;必須費目（カンマ区切り・任意）&#x27;, &#x27;売上シート店舗名（現金売上取込用）&#x27;];
+  if (!sh) {
+    sh = ss.insertSheet(SD_CONFIG_SHEET);
+    sh.getRange(1, 1, 1, HEAD.length).setValues([HEAD]);
+    sh.setFrozenRows(1);
+    var rows = master.map(function (st) {
+      var db = sd_autoMap_(st.name, det.dbs);
+      return [st.name, db ? db.sheet : &#x27;&#x27;, &#x27;&#x27;, sd_defaultSalesName_(st.name)];
+    });
+    if (rows.length) sh.getRange(2, 1, rows.length, HEAD.length).setValues(rows);
+    sh.autoResizeColumns(1, HEAD.length);
+  } else if (sh.getLastColumn() &lt; 4) {
+    sh.getRange(1, 4).setValue(HEAD[3]);
+    var lastR0 = sh.getLastRow();
+    for (var r0 = 2; r0 &lt;= lastR0; r0++) {
+      var nm0 = String(sh.getRange(r0, 1).getValue() || &#x27;&#x27;).trim();
+      if (nm0) sh.getRange(r0, 4).setValue(sd_defaultSalesName_(nm0));
+    }
+  }
+  var lastR = sh.getLastRow();
+  var data = lastR &gt; 1 ? sh.getRange(2, 1, lastR - 1, 4).getDisplayValues() : [];
+  return master.map(function (st) {
+    var row = null;
+    for (var i = 0; i &lt; data.length; i++) {
+      if (sd_norm_(data[i][0]) === sd_norm_(st.name)) { row = data[i]; break; }
+    }
+    var db = null;
+    if (row &amp;&amp; row[1]) {
+      for (var j = 0; j &lt; det.dbs.length; j++) {
+        if (det.dbs[j].sheet === String(row[1]).trim()) { db = det.dbs[j]; break; }
+      }
+    }
+    if (!db) db = sd_autoMap_(st.name, det.dbs);
+    var required = row ? String(row[2] || &#x27;&#x27;).split(/[,、，]/).map(function (s) { return s.trim(); }).filter(String) : [];
+    var salesName = row &amp;&amp; row[3] ? String(row[3]).trim() : sd_defaultSalesName_(st.name);
+    return {
+      name: st.name, client: st.client, corp: st.corp, invoice: st.invoice, rep: st.rep,
+      rate: st.rate, fixed: st.fixed, db: db, required: required, salesName: salesName
+    };
+  });
+}
+
+/* ---------- 精算計算（共通ロジック：ダッシュボード表示・PDF生成で共用） ---------- */
+
+/* 変動ロイヤリティの基準にする「売上シート（レジ実績）の月間売上」。取れない・対象月より前なら null（従来の計算へ） */
+function sd_actualSalesFor_(salesName, monthKey) {
+  try {
+    if (!salesName || String(monthKey) &lt; SD_ROYALTY_ACTUAL_FROM) return null;
+    var map = SD_ACTUAL_MEMO_[monthKey];
+    if (map === undefined) {
+      var det = sd_detect_();
+      var cfg0 = sd_config_(sd_masterStores_(det), det);
+      map = sd_paySumsCached_(sd_extConfig_(), monthKey, cfg0) || null;
+      SD_ACTUAL_MEMO_[monthKey] = map;
+    }
+    if (!map) return null;
+    var v = map[sd_norm_(salesName)];
+    return (v != null &amp;&amp; Number(v) &gt; 0) ? Number(v) : null;
+  } catch (e) { return null; }
+}
+
+function sd_settle_(rows, monthKey, rateStr, fixed, salesName) {
+  var rate = (parseFloat(String(rateStr).replace(/[%％]/g, &#x27;&#x27;)) || 0) / 100;
+  fixed = fixed || { rent: 0, ins: 0, sss: 0, f4: 0, f5: 0, total: 0 };
+  var mrows = rows.filter(function (r) { return r.ym === monthKey; });
+  var salesRows = [], varRows = [];
+  var sales = 0, varCost = 0, royF = 0, royVarDb = 0, adj = 0;
+  mrows.forEach(function (r) {
+    var k = sd_norm_(r.kubun);
+    if (k === &#x27;売上&#x27;) { sales += r.amount; salesRows.push(r); }
+    else if (k === &#x27;固定ロイヤリティ&#x27;) royF += r.amount;
+    else if (k === &#x27;変動ロイヤリティ&#x27;) { royVarDb += r.amount; varRows.push(r); }
+    else if (k === &#x27;固定調整&#x27;) adj += r.amount;
+    else { varCost += r.amount; varRows.push(r); }
+  });
+  var actualSales = sd_actualSalesFor_(salesName, monthKey);
+  var royBase = actualSales != null ? actualSales : sales; // 2026-09分以降: レジ実績（売上シート）の月間売上。取れなければ精算書の売上合計
+  var royV = Math.round(royBase * rate);
+  var fixedSub = fixed.total + adj;
+  var costTotal = fixedSub + varCost + royF + royV;
+  var transfer = sales - costTotal;
+  var ex = Math.round(transfer / 1.1);
+  return {
+    sales: sales, varCost: varCost, royF: royF, royV: royV, royVarDb: royVarDb, royBase: royBase, royBaseActual: actualSales != null,
+    adj: adj, fixedSub: fixedSub, costTotal: costTotal,
+    transfer: transfer, transferEx: ex, tax: transfer - ex,
+    ns: royF + royV, hasSales: sales &gt; 0, count: mrows.length,
+    salesRows: salesRows, varRows: varRows
+  };
+}
+
+/* ---------- 振込管理・法人設定 ---------- */
+
+function sd_paidSheet_() {
+  var ss = SpreadsheetApp.getActive();
+  var sh = ss.getSheetByName(SD_PAID_SHEET);
+  if (!sh) {
+    sh = ss.insertSheet(SD_PAID_SHEET);
+    sh.getRange(1, 1, 1, 6).setValues([[&#x27;対象（法人名）&#x27;, &#x27;対象月&#x27;, &#x27;振込済み&#x27;, &#x27;日付&#x27;, &#x27;記録者&#x27;, &#x27;振込金額&#x27;]]);
+    sh.setFrozenRows(1);
+  } else if (String(sh.getRange(1, 6).getValue()) !== &#x27;振込金額&#x27;) {
+    sh.getRange(1, 6).setValue(&#x27;振込金額&#x27;); // 旧シート（5列）を6列に拡張
+  }
+  return sh;
+}
+
+/* 振込済みシートは「1行=1状態」ではなく「操作イベントの履歴」として積み上げる。
+ * 振込済みにする操作のたびに1行追加され、振込金額はそのイベントごとの入力額。
+ * 解除操作には金額が付かず、累計（total）はリセットしない
+ * （精算修正→再振込のときに差額分だけ追加入力できるようにするため）。
+ * v5.8以降は列Aに「法人名」を書き込む（振込は法人単位でまとめて行われるため）。
+ * v5.7以前の店舗名で書かれた行も、後方互換のため引き続き読み取る（sd_paidStatusMap_参照）。 */
+function sd_paidMap_() {
+  var sh = sd_paidSheet_();
+  var lastR = sh.getLastRow();
+  var out = {};
+  if (lastR &lt; 2) return out;
+  sh.getRange(2, 1, lastR - 1, 6).getDisplayValues().forEach(function (r) {
+    var key = sd_norm_(r[0]), mk = String(r[1]).trim();
+    if (!key || !mk) return;
+    out[key] = out[key] || {};
+    var cur = out[key][mk] || { done: false, date: &#x27;&#x27;, by: &#x27;&#x27;, total: 0 };
+    var isPaidEvent = sd_norm_(r[2]).toUpperCase() === &#x27;TRUE&#x27; || r[2] === &#x27;✅&#x27;;
+    cur.done = isPaidEvent; // 行は時系列順に並ぶため、最後に読んだ行が現在の状態
+    cur.date = r[3];
+    cur.by = r[4];
+    if (isPaidEvent) {
+      var amt = Number(String(r[5]).replace(/[^0-9.\-]/g, &#x27;&#x27;));
+      if (amt) cur.total += amt;
+    }
+    out[key][mk] = cur;
+  });
+  return out;
+}
+
+/* 店舗名 → 委託先（法人名）。未設定はSD_NO_CLIENT_LABELに丸める。
+ * 店舗設定マスターの全件走査（sd_detect_+sd_masterStores_）が必要なため、10分キャッシュする。 */
+function sd_clientOfMap_() {
+  var cache = CacheService.getScriptCache();
+  var hit = cache.get(&#x27;sd_clientOfMap&#x27;);
+  if (hit) { try { return JSON.parse(hit); } catch (e) { /* 壊れていたら作り直す */ } }
+  var det = sd_detect_();
+  var map = {};
+  sd_masterStores_(det).forEach(function (s) { map[sd_norm_(s.name)] = s.client ? s.client : SD_NO_CLIENT_LABEL; });
+  cache.put(&#x27;sd_clientOfMap&#x27;, JSON.stringify(map), 600);
+  return map;
+}
+function sd_clientOf_(store) {
+  return sd_clientOfMap_()[sd_norm_(store)] || SD_NO_CLIENT_LABEL;
+}
+
+/* ---------- 委託先（法人）の期間設定（2026-10-17・黒霧屋 新横浜の運営変更 トーホー→LiveGate 2026-11分〜） ----------
+ * 「店舗設定マスター」の委託先・法人・インボイス・代表者は「今の値」。運営変更で相手先が変わる店舗は、このシート
+ * （委託先の期間設定）に「店舗名・適用開始月（YYYY-MM）・委託先・法人・インボイス・代表者」を1行足す。
+ * 対象月が適用開始月以降なら、その行（開始月が最も新しいもの）の値を使い、それより前の月はマスターの値のまま
+ * ＝過去月の精算書・振込状態・ロックは変わらない。行の4項目は丸ごと置き換え（空欄は空欄＝旧法人のインボイス番号等を引き継がない）。 */
+var SD_PERIOD_MEMO_ = null; // 実行中のメモ（シートの読み直し防止）
+function sd_periodRows_() {
+  if (SD_PERIOD_MEMO_) return SD_PERIOD_MEMO_;
+  var ss = SpreadsheetApp.getActive();
+  var sh = ss.getSheetByName(SD_PERIOD_SHEET);
+  if (!sh) {
+    sh = ss.insertSheet(SD_PERIOD_SHEET);
+    sh.getRange(1, 1, 1, 7).setValues([[&#x27;店舗名&#x27;, &#x27;適用開始月（例 2026-11）&#x27;, &#x27;委託先（法人名）&#x27;, &#x27;法人&#x27;, &#x27;インボイス登録番号&#x27;, &#x27;代表者&#x27;, &#x27;備考&#x27;]]);
+    sh.setFrozenRows(1);
+    sh.getRange(2, 1, 1, 7).setValues([[&#x27;新横浜黒霧屋&#x27;, &#x27;2026-11&#x27;, &#x27;LiveGate&#x27;, &#x27;&#x27;, &#x27;&#x27;, &#x27;&#x27;, &#x27;運営変更(トーホー→LiveGate)。委託先の名前は法人設定シートの名前と同じにする&#x27;]]);
+    sh.autoResizeColumns(1, 7);
+  }
+  var out = [];
+  var lastR = sh.getLastRow();
+  if (lastR &gt; 1) {
+    sh.getRange(2, 1, lastR - 1, 7).getDisplayValues().forEach(function (r) {
+      var from = String(r[1] || &#x27;&#x27;).trim().replace(&#x27;/&#x27;, &#x27;-&#x27;);
+      if (/^\d{4}-\d$/.test(from)) from = from.slice(0, 5) + &#x27;0&#x27; + from.slice(5);
+      if (!String(r[0] || &#x27;&#x27;).trim() || !/^\d{4}-\d{2}$/.test(from) || !String(r[2] || &#x27;&#x27;).trim()) return;
+      out.push({ store: String(r[0]).trim(), from: from, client: String(r[2]).trim(), corp: String(r[3] || &#x27;&#x27;).trim(), invoice: String(r[4] || &#x27;&#x27;).trim(), rep: String(r[5] || &#x27;&#x27;).trim() });
+    });
+  }
+  SD_PERIOD_MEMO_ = out;
+  return out;
+}
+/* 店舗st（設定の1件）の、対象月monthKeyにおける {client, corp, invoice, rep}。期間設定が無ければマスターの値 */
+function sd_clientInfoAt_(st, monthKey) {
+  var base = { client: st.client, corp: st.corp, invoice: st.invoice, rep: st.rep };
+  if (!monthKey) return base;
+  var best = null;
+  sd_periodRows_().forEach(function (r) {
+    if (sd_norm_(r.store) === sd_norm_(st.name) &amp;&amp; r.from &lt;= monthKey &amp;&amp; (!best || r.from &gt; best.from)) best = r;
+  });
+  return best ? { client: best.client, corp: best.corp, invoice: best.invoice, rep: best.rep } : base;
+}
+/* 店舗名＋対象月だけ分かっている場面用（ロック判定など）。マスターの委託先に期間設定を重ねた委託先名を返す */
+function sd_clientAtByName_(store, monthKey) {
+  var base = sd_clientOf_(store);
+  var best = null;
+  sd_periodRows_().forEach(function (r) {
+    if (sd_norm_(r.store) === sd_norm_(store) &amp;&amp; r.from &lt;= monthKey &amp;&amp; (!best || r.from &gt; best.from)) best = r;
+  });
+  return best ? best.client : base;
+}
+
+/* 振込状態は法人（委託先）単位が正。旧・店舗単位の記録（v5.7以前）もフォールバックとして見る。 */
+function sd_paidStatusMap_(store, client, paidAll) {
+  var byClient = (paidAll[sd_norm_(client || SD_NO_CLIENT_LABEL)] || {});
+  var byStore = (paidAll[sd_norm_(store)] || {});
+  var months = {};
+  Object.keys(byStore).forEach(function (mk) { months[mk] = true; });
+  Object.keys(byClient).forEach(function (mk) { months[mk] = true; });
+  var out = {};
+  Object.keys(months).forEach(function (mk) {
+    // 法人単位の記録が一度でもあればそれが正（true/falseどちらでも優先）。
+    // 旧・店舗単位の記録（v5.7以前）は、その月に法人単位の記録が一切無いときだけフォールバックで見る。
+    out[mk] = byClient[mk] || byStore[mk];
+  });
+  return out;
+}
+
+/* client: 法人名（委託先未設定の店舗群はSD_NO_CLIENT_LABEL）。振込はその法人配下の全店舗分をまとめて記録する。 */
+function sd_setPaid(token, client, monthKey, done, sendMail, amount) {
+  var user = sd_auth_(token, true);
+  var det = sd_detect_();
+  var cfg = sd_config_(sd_masterStores_(det), det);
+  var members = cfg.filter(function (s) { var c0 = sd_clientInfoAt_(s, monthKey).client; return sd_norm_(c0 ? c0 : SD_NO_CLIENT_LABEL) === sd_norm_(client); });
+  if (!members.length) throw new Error(&#x27;「&#x27; + client + &#x27;」に該当する店舗が見つかりません&#x27;);
+
+  // 振込済み→未振込に戻す（ロック解除）操作はマスターのみ許可。振込済みにする操作（ロック開始）は本部でも可。
+  if (!done &amp;&amp; members.some(function (s) { return sd_isLocked_(s.name, monthKey); })) sd_requireMaster_(user);
+
+  var amt = 0;
+  if (done) {
+    amt = Number(amount);
+    if (!isFinite(amt)) throw new Error(&#x27;振込金額を入力してください&#x27;);
+  }
+
+  var sh = sd_paidSheet_();
+  var rec = [client, monthKey, done ? &#x27;TRUE&#x27; : &#x27;FALSE&#x27;,
+    done ? Utilities.formatDate(new Date(), SD_TZ, &#x27;yyyy-MM-dd&#x27;) : &#x27;&#x27;, user.name,
+    done ? amt : &#x27;&#x27;];
+  sh.appendRow(rec); // 履歴として毎回追加（上書きしない）
+
+  var result = { ok: true, client: client, month: monthKey, done: !!done, mailed: false, amount: done ? amt : null, mailedStores: [] };
+  if (done &amp;&amp; sendMail) {
+    var ext = sd_extConfig_();
+    var d = sd_monthKeyToDate_(monthKey);
+    var mLabel = (d.getMonth() + 1) + &#x27;月&#x27;;
+    var sender = ext[&#x27;メール送信者名&#x27;] || &#x27;株式会社N-Style&#x27;;
+    members.forEach(function (st) {
+      try {
+        var ms = sd_mailSettings_(det, st.name);
+        if (!ms || !ms.to) return; // 宛先未登録の店舗はスキップ（法人内の他店舗は続行）
+        var settle = st.db ? sd_settle_(sd_readRowsCached_(st.db), monthKey, st.rate, st.fixed, st.salesName) : null;
+        var amountLine = (settle &amp;&amp; settle.hasSales) ? &#x27;■振込金額（税込）：&#x27; + sd_yen_(settle.transfer) + &#x27;\n&#x27; : &#x27;&#x27;;
+        var subject = &#x27;【お知らせ】&#x27; + mLabel + &#x27;分業務委託料 お振込完了のご連絡（&#x27; + st.name + &#x27;）&#x27;;
+        var body = &#x27;ご担当者様\n\nいつも大変お世話になっております。\n&#x27; + sender + &#x27;です。\n\n&#x27;
+          + mLabel + &#x27;分の業務委託料につきまして、お振込が完了いたしましたのでご連絡申し上げます。\n\n&#x27;
+          + &#x27;■対象店舗：&#x27; + st.name + &#x27;\n&#x27;
+          + amountLine
+          + &#x27;\nご査収のほど、よろしくお願い申し上げます。&#x27;;
+        if (ext[&#x27;ダッシュボードURL&#x27;]) {
+          body += &#x27;\n\n──────────────────\n■ 精算ダッシュボード（過去分の精算書もこちらでご確認いただけます）\n&#x27; + ext[&#x27;ダッシュボードURL&#x27;] + &#x27;\n※ スマホで開けない場合は、リンクを長押しして「Safari/Chromeで開く」を選ぶか、ブラウザにURLを貼り付けてお開きください。&#x27;;
+        }
+        var opts = { name: sender };
+        if (ms.cc) opts.cc = ms.cc;
+        GmailApp.sendEmail(ms.to, subject, body, opts);
+        sd_log_(&#x27;振込完了メール&#x27;, st.name, monthKey, subject, &#x27;&#x27;, &#x27;&#x27;, user.name, ms.to);
+        result.mailedStores.push(st.name);
+      } catch (e) {
+        sd_log_(&#x27;振込完了メールエラー&#x27;, st.name, monthKey, String((e &amp;&amp; e.message) || e), &#x27;&#x27;, &#x27;&#x27;, user.name, &#x27;&#x27;);
+      }
+    });
+    result.mailed = result.mailedStores.length &gt; 0;
+  }
+  // 全店舗の振込が完了したらLarkに月次完了報告（この月で初めて完了したときだけ送信）
+  if (done) {
+    try {
+      var n = sd_maybeNotifyComplete_(monthKey);
+      if (n &amp;&amp; n.sent) result.larkNotified = true;
+    } catch (e) { sd_log_(&#x27;Lark完了報告エラー&#x27;, &#x27;全店舗&#x27;, monthKey, String((e &amp;&amp; e.message) || e), &#x27;&#x27;, &#x27;&#x27;, user.name, &#x27;&#x27;); }
+  }
+  return result;
+}
+
+/* 対象月の「精算対象の全店舗（＝売上入力済みの店舗）」が全て振込済みになったら
+ * Larkに完了報告を送る。既にこの月の報告を送っていれば何もしない（二重送信防止）。 */
+function sd_maybeNotifyComplete_(monthKey) {
+  // 既送信チェック
+  var already = sd_logRows_().some(function (r) {
+    return r.action === &#x27;Lark完了報告&#x27; &amp;&amp; r.month === monthKey;
+  });
+  if (already) return { sent: false, reason: &#x27;送信済み&#x27; };
+
+  var det = sd_detect_();
+  var cfg = sd_config_(sd_masterStores_(det), det);
+  var paid = sd_paidMap_();
+
+  var targets = []; // 精算対象（売上入力あり）の店舗
+  var allPaid = true;
+  cfg.forEach(function (st) {
+    if (!st.db) return;
+    var settle = sd_settle_(sd_readRowsCached_(st.db), monthKey, st.rate, st.fixed, st.salesName);
+    if (!settle.hasSales) return; // 売上未入力＝まだ精算対象でない
+    var status = sd_paidStatusMap_(st.name, sd_clientInfoAt_(st, monthKey).client, paid)[monthKey];
+    var isPaid = !!(status &amp;&amp; status.done);
+    targets.push({ name: st.name, transfer: settle.transfer, paid: isPaid });
+    if (!isPaid) allPaid = false;
+  });
+
+  if (targets.length === 0 || !allPaid) return { sent: false, reason: &#x27;未完了&#x27; };
+
+  var total = targets.reduce(function (a, t) { return a + t.transfer; }, 0);
+  return sd_notifyLarkComplete_(monthKey, targets, total);
+}
+
+function sd_notifyLarkComplete_(monthKey, targets, total) {
+  var ext = sd_extConfig_();
+  var url = ext[&#x27;Lark完了報告Webhook&#x27;];
+  if (!url) { Logger.log(&#x27;Lark完了報告Webhookが未設定のため送信をスキップしました&#x27;); return { sent: false, reason: &#x27;Webhook未設定&#x27; }; }
+  var kw = ext[&#x27;Larkキーワード&#x27;] || &#x27;&#x27;;
+  var lines = targets.map(function (t) { return &#x27;・&#x27; + t.name + &#x27;：&#x27; + sd_yen_(t.transfer); });
+  var text = (kw ? kw + &#x27;\n&#x27; : &#x27;&#x27;) // カスタムキーワード設定がある場合は先頭に含める
+    + &#x27;✅【精算完了報告】&#x27; + sd_monthLabel_(monthKey) + &#x27;分\n&#x27;
+    + &#x27;全&#x27; + targets.length + &#x27;店舗の精算書発行・お振込が完了しました。\n\n&#x27;
+    + lines.join(&#x27;\n&#x27;) + &#x27;\n\n&#x27;
+    + &#x27;合計振込額（税込）：&#x27; + sd_yen_(total);
+  var res = UrlFetchApp.fetch(url, {
+    method: &#x27;post&#x27;, contentType: &#x27;application/json&#x27;,
+    payload: JSON.stringify({ msg_type: &#x27;text&#x27;, content: { text: text } }),
+    muteHttpExceptions: true
+  });
+  var code = res.getResponseCode();
+  var bodyText = res.getContentText();
+  var okFlag = false;
+  try { okFlag = (JSON.parse(bodyText).code === 0) || (JSON.parse(bodyText).StatusCode === 0); } catch (e) { /* 解析不可 */ }
+  if (code === 200 &amp;&amp; okFlag) {
+    sd_log_(&#x27;Lark完了報告&#x27;, &#x27;全店舗&#x27;, monthKey, &#x27;全&#x27; + targets.length + &#x27;店舗完了 合計&#x27; + sd_yen_(total), &#x27;&#x27;, &#x27;&#x27;, &#x27;自動&#x27;, &#x27;&#x27;);
+    return { sent: true };
+  }
+  sd_log_(&#x27;Lark完了報告エラー&#x27;, &#x27;全店舗&#x27;, monthKey, &#x27;HTTP&#x27; + code + &#x27; &#x27; + bodyText, &#x27;&#x27;, &#x27;&#x27;, &#x27;自動&#x27;, &#x27;&#x27;);
+  return { sent: false, reason: &#x27;Lark送信失敗: &#x27; + bodyText };
+}
+
+/* エディタから手動でLark送信をテストする用（強制送信・二重送信チェックなし） */
+function sd_testLarkComplete() {
+  var now = new Date();
+  var monthKey = sd_fmtMonth_(new Date(now.getFullYear(), now.getMonth() - 1, 1));
+  var r = sd_notifyLarkComplete_(monthKey, [{ name: &#x27;テスト店舗&#x27;, transfer: 1000000 }], 1000000);
+  Logger.log(JSON.stringify(r));
+}
+
+function sd_corpMap_(cfg) {
+  var ss = SpreadsheetApp.getActive();
+  var sh = ss.getSheetByName(SD_CORP_SHEET);
+  if (!sh) {
+    sh = ss.insertSheet(SD_CORP_SHEET);
+    sh.getRange(1, 1, 1, 3).setValues([[&#x27;委託先（法人名）&#x27;, &#x27;振込先口座&#x27;, &#x27;備考&#x27;]]);
+    sh.setFrozenRows(1);
+    var seen = {}, rows = [];
+    cfg.forEach(function (st) {
+      if (st.client &amp;&amp; !seen[sd_norm_(st.client)]) { seen[sd_norm_(st.client)] = true; rows.push([st.client, &#x27;&#x27;, &#x27;&#x27;]); }
+    });
+    if (rows.length) sh.getRange(2, 1, rows.length, 3).setValues(rows);
+    sh.autoResizeColumns(1, 3);
+  }
+  var out = {};
+  var lastR = sh.getLastRow();
+  if (lastR &gt; 1) {
+    sh.getRange(2, 1, lastR - 1, 3).getDisplayValues().forEach(function (r) {
+      if (r[0]) out[sd_norm_(r[0])] = { account: String(r[1]).trim(), note: String(r[2]).trim() };
+    });
+  }
+  return out;
+}
+
+function sd_defaultSalesName_(storeName) {
+  var map = {
+    &#x27;秋葉原肉寿司&#x27;: &#x27;秋葉原 肉寿司&#x27;,
+    &#x27;川崎じんべぇ&#x27;: &#x27;じんべえ 川崎店&#x27;,
+    &#x27;新横浜じんべぇ&#x27;: &#x27;じんべえ 新横浜店&#x27;,
+    &#x27;新横浜黒霧屋&#x27;: &#x27;黒霧屋 新横浜&#x27;,
+    &#x27;本厚木エース&#x27;: &#x27;横濱ホルモン会館　エース　本厚木店&#x27;
+  };
+  return map[sd_norm_(storeName)] || storeName;
+}
+
+/* 外部連携設定（キー・値） */
+function sd_extConfig_() {
+  var ss = SpreadsheetApp.getActive();
+  var sh = ss.getSheetByName(SD_EXT_SHEET);
+  var DEFAULTS = [
+    [&#x27;売上スプレッドシートID&#x27;, &#x27;&#x27;],
+    [&#x27;売上シート名&#x27;, &#x27;分析_日別店舗&#x27;],
+    [&#x27;売上_日付列&#x27;, &#x27;A&#x27;],
+    [&#x27;売上_店舗名列&#x27;, &#x27;J&#x27;],
+    [&#x27;売上_現金列&#x27;, &#x27;T&#x27;],
+    [&#x27;売上_支払合計列&#x27;, &#x27;S&#x27;],
+    [&#x27;添付親フォルダID&#x27;, &#x27;&#x27;],
+    [&#x27;メール送信者名&#x27;, &#x27;&#x27;],
+    [&#x27;発行元_会社名&#x27;, &#x27;&#x27;],
+    [&#x27;発行元_郵便番号&#x27;, &#x27;&#x27;],
+    [&#x27;発行元_住所&#x27;, &#x27;&#x27;],
+    [&#x27;発行元_電話&#x27;, &#x27;&#x27;],
+    [&#x27;発行元_登録番号&#x27;, &#x27;&#x27;],
+    [&#x27;発行元_振込先&#x27;, &#x27;&#x27;],
+    [&#x27;リマインド送信先&#x27;, &#x27;&#x27;],
+    [&#x27;ダッシュボードURL&#x27;, &#x27;&#x27;],
+    [&#x27;Lark完了報告Webhook&#x27;, &#x27;&#x27;],
+    [&#x27;Larkキーワード&#x27;, &#x27;&#x27;],
+    [&#x27;ChatWork APIトークン&#x27;, &#x27;&#x27;],
+    [&#x27;ChatWorkルームID（振込リマインド用）&#x27;, &#x27;&#x27;]
+  ];
+  if (!sh) {
+    sh = ss.insertSheet(SD_EXT_SHEET);
+    sh.getRange(1, 1, 1, 2).setValues([[&#x27;設定キー&#x27;, &#x27;値&#x27;]]);
+    sh.getRange(2, 1, DEFAULTS.length, 2).setValues(DEFAULTS);
+    sh.setFrozenRows(1);
+    sh.autoResizeColumns(1, 2);
+  }
+  var out = {};
+  var lastR = sh.getLastRow();
+  if (lastR &gt; 1) {
+    sh.getRange(2, 1, lastR - 1, 2).getDisplayValues().forEach(function (r) {
+      if (r[0]) out[String(r[0]).trim()] = String(r[1]).trim();
+    });
+  }
+  // 既存シートに不足している設定キーを追記（発行元情報など後から追加した項目）
+  var missing = DEFAULTS.filter(function (d) { return !(d[0] in out); });
+  if (missing.length) {
+    sh.getRange(sh.getLastRow() + 1, 1, missing.length, 2).setValues(missing);
+    missing.forEach(function (d) { out[d[0]] = d[1]; });
+  }
+  return out;
+}
+
+/* 権限（アカウント）シート */
+function sd_authSheet_() {
+  var ss = SpreadsheetApp.getActive();
+  var sh = ss.getSheetByName(SD_AUTH_SHEET);
+  if (!sh) {
+    sh = ss.insertSheet(SD_AUTH_SHEET);
+    sh.getRange(1, 1, 1, 7).setValues([[&#x27;ログインID&#x27;, &#x27;パスワード&#x27;, &#x27;表示名&#x27;, &#x27;権限（マスター/本部/委託先）&#x27;, &#x27;担当店舗（カンマ区切り／全店）&#x27;, &#x27;有効（TRUE/FALSE）&#x27;, &#x27;メール（統合ログイン用）&#x27;]]);
+    var initPw = Utilities.getUuid().split(&#x27;-&#x27;)[0];       // ランダムな初期パスワード（実行ログに1回だけ出力）
+    var initPwM = Utilities.getUuid().split(&#x27;-&#x27;)[0];
+    sh.getRange(2, 1, 3, 6).setValues([
+      [&#x27;master&#x27;, initPwM, &#x27;マスター&#x27;, &#x27;マスター&#x27;, &#x27;全店&#x27;, &#x27;TRUE&#x27;],
+      [&#x27;honbu&#x27;, initPw, &#x27;本部&#x27;, &#x27;本部&#x27;, &#x27;全店&#x27;, &#x27;TRUE&#x27;],
+      [&#x27;（例）委託先ID&#x27;, &#x27;（例）パスワード&#x27;, &#x27;委託先の表示名&#x27;, &#x27;委託先&#x27;, &#x27;担当店舗名をカンマ区切りで&#x27;, &#x27;FALSE&#x27;]
+    ]);
+    Logger.log(&#x27;マスターアカウントの初期パスワードを発行しました: master / &#x27; + initPwM + &#x27;（必ずログイン後に変更してください）&#x27;);
+    Logger.log(&#x27;本部アカウントの初期パスワードを発行しました: honbu / &#x27; + initPw + &#x27;（必ずログイン後に変更してください）&#x27;);
+    sh.setFrozenRows(1);
+    sh.autoResizeColumns(1, 7);
+  } else if (String(sh.getRange(1, 7).getDisplayValue()).trim() === &#x27;&#x27;) {
+    // 既存シートにG列「メール」が無ければ見出しを追加（統合ログインの突き合わせ用）
+    sh.getRange(1, 7).setValue(&#x27;メール（統合ログイン用）&#x27;);
+    sh.getRange(1, 7).setNote(&#x27;N-Styleポータル／日報と共通のメールアドレス。\nここに入れると「統合アカウントでログイン」でこの行の権限が使えます。\n空欄＝統合ログイン不可（従来のID/パスワードのみ）。\n※業務委託先は統合アカウントの対象外です。&#x27;);
+  }
+  return sh;
+}
+
+/* 権限（本部）シートの生の役職文字列を正規化。マスター &gt; 本部 &gt; 委託先 の3段階。 */
+function sd_normRole_(raw) {
+  var n = sd_norm_(raw);
+  if (n === &#x27;マスター&#x27; || n === &#x27;ﾏｽﾀｰ&#x27;) return &#x27;マスター&#x27;;
+  if (n === &#x27;本部&#x27;) return &#x27;本部&#x27;;
+  return &#x27;委託先&#x27;;
+}
+
+function sd_findAccount_(id) {
+  var sh = sd_authSheet_();
+  var lastR = sh.getLastRow();
+  if (lastR &lt; 2) return null;
+  var vals = sh.getRange(2, 1, lastR - 1, 7).getDisplayValues();
+  for (var i = 0; i &lt; vals.length; i++) {
+    if (String(vals[i][0]).trim() === String(id).trim()) {
+      return {
+        id: String(vals[i][0]).trim(),
+        pw: String(vals[i][1]),
+        name: String(vals[i][2]).trim() || String(vals[i][0]).trim(),
+        role: sd_normRole_(vals[i][3]),
+        storesRaw: String(vals[i][4]).trim(),
+        enabled: sd_norm_(vals[i][5]).toUpperCase() !== &#x27;FALSE&#x27;,
+        email: String(vals[i][6] || &#x27;&#x27;).trim().toLowerCase()
+      };
+    }
+  }
+  return null;
+}
+
+/* メールから権限行を探す（統合ログイン用） */
+function sd_findAccountByEmail_(email) {
+  var sh = sd_authSheet_();
+  var lastR = sh.getLastRow();
+  if (lastR &lt; 2) return null;
+  var target = String(email || &#x27;&#x27;).trim().toLowerCase();
+  if (!target) return null;
+  var vals = sh.getRange(2, 1, lastR - 1, 7).getDisplayValues();
+  for (var i = 0; i &lt; vals.length; i++) {
+    if (String(vals[i][6] || &#x27;&#x27;).trim().toLowerCase() === target) {
+      return {
+        id: String(vals[i][0]).trim(),
+        name: String(vals[i][2]).trim() || String(vals[i][0]).trim(),
+        role: sd_normRole_(vals[i][3]),
+        storesRaw: String(vals[i][4]).trim(),
+        enabled: sd_norm_(vals[i][5]).toUpperCase() !== &#x27;FALSE&#x27;,
+        email: target
+      };
+    }
+  }
+  return null;
+}
+
+/* ---------- ログイン／セッション ---------- */
+
+// === セッション保存（A-11b・2026-09-19: 経営D（tori-dashboard/gas/Code.gs:535〜）と同じ
+// ds_sessions（Supabase・A-11でレーンPが用意・両GAS共通）を正本へ移行。新旧併用フラグ
+// SESSION_BACKEND（スクリプトプロパティ）で段階切替する:
+//   &#x27;supabase&#x27; = 読み取りはds_sessions優先（無ければPropertiesへフォールバック）
+//   未設定/それ以外 = 従来どおりPropertiesServiceのみで読み取り（既定・安全側）
+// 書き込みは常に両方へ行う（ベストエフォート。Supabase書き込み失敗でもログイン自体は失敗させない）。
+// 背景: 従来のCacheService（1キー最大21600秒=6時間固定・使うたびの延長ロジックが無い）が
+// 原因で、作業中でも6時間経過すると強制ログアウトされていた。ds_sessions移行後は
+// PropertiesServiceと同じsliding TTL（読むたびに+SD_TOKEN_HOURS延長）になる。
+// sessには経営D側との突き合わせ・監査のためemailを必須で含める（ID/PW欄ログインでも
+// 権限シートG列に登録があればsd_findAccount_が拾う。未登録なら空文字）。===
+var SD_TOKEN_HOURS = 336;
+function sd_sessionBackend_(){ return PropertiesService.getScriptProperties().getProperty(&#x27;SESSION_BACKEND&#x27;) || &#x27;properties&#x27;; }
+function sd_sessionStore_(){ return PropertiesService.getScriptProperties(); }
+function sd_sessionSupaHeaders_(){
+  var url = PropertiesService.getScriptProperties().getProperty(&#x27;SUPABASE_URL&#x27;);
+  var key = PropertiesService.getScriptProperties().getProperty(&#x27;SUPABASE_SERVICE_KEY&#x27;);
+  if (!url || !key) return null;
+  return { url: url, headers: { apikey: key, Authorization: &#x27;Bearer &#x27; + key, &#x27;Content-Type&#x27;: &#x27;application/json&#x27;, Prefer: &#x27;resolution=merge-duplicates&#x27; } };
+}
+function sd_sessionSupaPut_(token, sess, exp){
+  var h = sd_sessionSupaHeaders_(); if (!h) return false;
+  try {
+    UrlFetchApp.fetch(h.url + &#x27;/rest/v1/ds_sessions&#x27;, {
+      method: &#x27;post&#x27;, headers: h.headers, muteHttpExceptions: true,
+      payload: JSON.stringify({ token: token, sess: sess, expires_at: new Date(exp).toISOString(), last_seen_at: new Date().toISOString() })
+    });
+    return true;
+  } catch (e) { return false; }
+}
+function sd_sessionSupaGet_(token){
+  var h = sd_sessionSupaHeaders_(); if (!h) return null;
+  try {
+    var res = UrlFetchApp.fetch(h.url + &#x27;/rest/v1/ds_sessions?token=eq.&#x27; + encodeURIComponent(token) + &#x27;&amp;select=sess,expires_at&#x27;, { headers: h.headers, muteHttpExceptions: true });
+    if (res.getResponseCode() !== 200) return null;
+    var rows = JSON.parse(res.getContentText() || &#x27;[]&#x27;);
+    if (!rows.length) return null;
+    var exp = new Date(rows[0].expires_at).getTime();
+    if (!exp || new Date().getTime() &gt; exp) { sd_sessionSupaDel_(token); return null; }
+    return { sess: rows[0].sess, exp: exp };
+  } catch (e) { return null; }
+}
+function sd_sessionSupaDel_(token){
+  var h = sd_sessionSupaHeaders_(); if (!h) return;
+  try { UrlFetchApp.fetch(h.url + &#x27;/rest/v1/ds_sessions?token=eq.&#x27; + encodeURIComponent(token), { method: &#x27;delete&#x27;, headers: h.headers, muteHttpExceptions: true }); } catch (e) {}
+}
+function sd_sessionPut_(token, sess){
+  var exp = new Date().getTime() + SD_TOKEN_HOURS * 3600 * 1000;
+  sd_sessionStore_().setProperty(&#x27;sdtok_&#x27; + token, JSON.stringify({ sess: sess, exp: exp }));  // 常に書く（フォールバック・安全網として維持）
+  sd_sessionSupaPut_(token, sess, exp);   // ベストエフォートで複製
+}
+function sd_sessionGet_(token){
+  if (sd_sessionBackend_() === &#x27;supabase&#x27;) {
+    var hit = sd_sessionSupaGet_(token);
+    if (hit) {
+      var expS = new Date().getTime() + SD_TOKEN_HOURS * 3600 * 1000;   // 使うたびに期限を延長（Propertiesと同じsliding TTL）
+      sd_sessionSupaPut_(token, hit.sess, expS);
+      sd_sessionStore_().setProperty(&#x27;sdtok_&#x27; + token, JSON.stringify({ sess: hit.sess, exp: expS }));   // Propertiesにも同期
+      return hit.sess;
+    }
+    // ds_sessionsに無い＝移行前の古いセッション、またはSupabase側の一時不調。Propertiesへフォールバック
+  }
+  var store = sd_sessionStore_();
+  var raw = store.getProperty(&#x27;sdtok_&#x27; + token);
+  if (!raw) return null;
+  var obj; try { obj = JSON.parse(raw); } catch (e) { return null; }
+  if (!obj.exp || new Date().getTime() &gt; obj.exp) { store.deleteProperty(&#x27;sdtok_&#x27; + token); return null; }
+  obj.exp = new Date().getTime() + SD_TOKEN_HOURS * 3600 * 1000; // 使うたびに期限を延長
+  store.setProperty(&#x27;sdtok_&#x27; + token, JSON.stringify(obj));
+  sd_sessionSupaPut_(token, obj.sess, obj.exp);   // Propertiesにしかなかった旧セッションもここでSupabaseへ複製
+  return obj.sess;
+}
+function sd_sessionDel_(token){ sd_sessionStore_().deleteProperty(&#x27;sdtok_&#x27; + token); sd_sessionSupaDel_(token); }
+
+function sd_login(id, pw) {
+  var acc = sd_findAccount_(id);
+  if (!acc || !acc.enabled || String(acc.pw) !== String(pw)) {
+    Utilities.sleep(500);
+    throw new Error(&#x27;IDまたはパスワードが違います&#x27;);
+  }
+  var token = Utilities.getUuid();
+  var user = { id: acc.id, name: acc.name, role: acc.role, storesRaw: acc.storesRaw, email: acc.email || &#x27;&#x27; };
+  sd_sessionPut_(token, user);
+  return { token: token, name: acc.name, role: acc.role };
+}
+
+/* 統合アカウント（N-Styleポータル／日報Supabase）でログイン。
+ * ブラウザ側がSupabaseにメール+パスワードでログインして得た access_token を受け取り、
+ * Supabaseの /auth/v1/user で検証する（＝パスワードはこのGASを通らない）。
+ * 検証OKなら権限シートG列「メール」と突き合わせて、通常と同じセッションを発行する。
+ * 業務委託先は統合アカウントの対象外（本部・マスターのみ）。 */
+function sd_supaLogin(stoken) {
+  if (!stoken) throw new Error(&#x27;統合アカウントのトークンがありません&#x27;);
+  var res;
+  try {
+    res = UrlFetchApp.fetch(SD_SSO_SUPA_URL + &#x27;/auth/v1/user&#x27;, {
+      headers: { apikey: SD_SSO_SUPA_KEY, Authorization: &#x27;Bearer &#x27; + stoken },
+      muteHttpExceptions: true
+    });
+  } catch (e) {
+    throw new Error(&#x27;統合アカウントの確認に失敗しました: &#x27; + e.message);
+  }
+  if (res.getResponseCode() !== 200) throw new Error(&#x27;統合アカウントの認証が無効です。もう一度ログインしてください&#x27;);
+  var email = &#x27;&#x27;;
+  try { email = String(JSON.parse(res.getContentText()).email || &#x27;&#x27;).trim().toLowerCase(); } catch (e) { /* 下で弾く */ }
+  if (!email) throw new Error(&#x27;統合アカウントのメールアドレスを取得できませんでした&#x27;);
+
+  var acc = sd_findAccountByEmail_(email);
+  if (!acc) throw new Error(&#x27;このメール（&#x27; + email + &#x27;）に対応する精算ダッシュボードのアカウントがありません。設定タブの「メール」欄に登録してください&#x27;);
+  if (!acc.enabled) throw new Error(&#x27;このアカウントは無効化されています&#x27;);
+  if (acc.role === &#x27;委託先&#x27;) throw new Error(&#x27;業務委託先アカウントは統合ログインの対象外です。従来のIDとパスワードでログインしてください&#x27;);
+
+  var token = Utilities.getUuid();
+  var user = { id: acc.id, name: acc.name, role: acc.role, storesRaw: acc.storesRaw, email: acc.email || email };
+  sd_sessionPut_(token, user);
+  return { token: token, name: acc.name, role: acc.role };
+}
+
+function sd_auth_(token, needHonbu) {
+  var user = token ? sd_sessionGet_(token) : null;
+  if (!user) throw new Error(&#x27;AUTH&#x27;); // クライアント側で再ログイン誘導
+  if (needHonbu &amp;&amp; user.role !== &#x27;本部&#x27; &amp;&amp; user.role !== &#x27;マスター&#x27;) throw new Error(&#x27;この操作は本部アカウントのみ実行できます&#x27;);
+  return user;
+}
+
+function sd_requireMaster_(user) {
+  if (user.role !== &#x27;マスター&#x27;) throw new Error(&#x27;この操作はマスターアカウントのみ実行できます&#x27;);
+}
+
+/* 振込済みロック: 対象店舗の属する法人・月が振込済みだと、マスター以外は編集不可
+ * （振込は法人単位でまとめて行われるため、ロックも法人配下の全店舗にかかる） */
+function sd_isLocked_(store, monthKey) {
+  var paid = sd_paidMap_();
+  var client = sd_clientAtByName_(store, monthKey);
+  var rec = sd_paidStatusMap_(store, client, paid)[monthKey];
+  return !!(rec &amp;&amp; rec.done);
+}
+/* 振込済み後の編集権限レベル。既定は「マスターのみ」。設定タブ（sd_saveOpsSettings）で
+ * &#x27;admin&#x27;（本部以上）に変更できる。マスターへの昇格や振込ロックそのものの解除
+ * （sd_requireMaster_系）はここには含めない＝権限昇格の抜け道にしない。 */
+function sd_lockLevel_() {
+  var v = PropertiesService.getScriptProperties().getProperty(&#x27;SD_LOCK_LEVEL&#x27;);
+  return (v === &#x27;admin&#x27;) ? &#x27;admin&#x27; : &#x27;master&#x27;;
+}
+function sd_canEditLocked_(user) {
+  if (user.role === &#x27;マスター&#x27;) return true;
+  if (sd_lockLevel_() === &#x27;admin&#x27; &amp;&amp; user.role === &#x27;本部&#x27;) return true;
+  return false;
+}
+function sd_requireUnlocked_(user, store, monthKey) {
+  if (sd_canEditLocked_(user)) return;
+  if (sd_isLocked_(store, monthKey)) {
+    var need = sd_lockLevel_() === &#x27;admin&#x27; ? &#x27;本部以上の&#x27; : &#x27;マスター&#x27;;
+    throw new Error(&#x27;🔒「&#x27; + store + &#x27;」&#x27; + sd_monthLabel_(monthKey) + &#x27;分は振込済みでロックされています。編集には&#x27; + need + &#x27;アカウントが必要です。&#x27;);
+  }
+}
+
+function sd_allowedStores_(user, cfg) {
+  if (user.role === &#x27;本部&#x27; || sd_norm_(user.storesRaw) === &#x27;全店&#x27; || !user.storesRaw) return cfg;
+  var names = user.storesRaw.split(/[,、，]/).map(function (s) { return sd_norm_(s); }).filter(String);
+  return cfg.filter(function (st) { return names.indexOf(sd_norm_(st.name)) &gt; -1; });
+}
+
+/* ---------- DB読み取り／入力漏れ判定（v1と同じ） ---------- */
+
+/* DB読み取りのキャッシュ版（月切替の高速化用・10分）。
+ * 明細を変更したら sd_clearRowsCache_ で必ずクリアすること。
+ *
+ * CacheServiceは1キーあたり100KBまでしか保存できない。以前は95KBを超える
+ * 店舗（明細が多い・運用が長い店舗）は「キャッシュに入らない」まま黙って
+ * 素通りしていたため、その店舗だけ毎回シートを丸ごと読み直して常に遅く
+ * なっていた。ここでは複数キーに分割して保存することで上限を回避する。 */
+var SD_ROWS_CACHE_TTL = 600; // 秒
+var SD_ROWS_CACHE_CHUNK = 90000; // 1キーあたりの文字数（100KB上限に余裕を持たせる）
+
+function sd_readRowsCached_(db) {
+  var cache = CacheService.getScriptCache();
+  var metaKey = &#x27;sdrows_&#x27; + db.sheet + &#x27;_n&#x27;;
+  var n = Number(cache.get(metaKey) || 0);
+  if (n &gt; 0) {
+    try {
+      var keys = [];
+      for (var i = 0; i &lt; n; i++) keys.push(&#x27;sdrows_&#x27; + db.sheet + &#x27;_&#x27; + i);
+      var parts = cache.getAll(keys);
+      var ok = keys.every(function (k) { return parts[k] != null; });
+      if (ok) return JSON.parse(keys.map(function (k) { return parts[k]; }).join(&#x27;&#x27;));
+    } catch (e) { /* 壊れていたら読み直す */ }
+  }
+  var rows = sd_readRows_(db);
+  try {
+    var s = JSON.stringify(rows);
+    var count = Math.max(1, Math.ceil(s.length / SD_ROWS_CACHE_CHUNK));
+    var toPut = {};
+    for (var c = 0; c &lt; count; c++) toPut[&#x27;sdrows_&#x27; + db.sheet + &#x27;_&#x27; + c] = s.substr(c * SD_ROWS_CACHE_CHUNK, SD_ROWS_CACHE_CHUNK);
+    toPut[metaKey] = String(count);
+    cache.putAll(toPut, SD_ROWS_CACHE_TTL);
+  } catch (e) { /* キャッシュ失敗（極端に大きい等）は無視して素通り */ }
+  return rows;
+}
+function sd_clearRowsCache_(sheetName) {
+  try {
+    var cache = CacheService.getScriptCache();
+    var metaKey = &#x27;sdrows_&#x27; + sheetName + &#x27;_n&#x27;;
+    var n = Number(cache.get(metaKey) || 0);
+    var keys = [metaKey, &#x27;sdrows_&#x27; + sheetName]; // 旧形式キーも念のため掃除
+    for (var i = 0; i &lt; n; i++) keys.push(&#x27;sdrows_&#x27; + sheetName + &#x27;_&#x27; + i);
+    cache.removeAll(keys);
+  } catch (e) { /* 無視 */ }
+}
+function sd_clearAllRowsCache_(det) {
+  try {
+    (det || sd_detect_()).dbs.forEach(function (db) { sd_clearRowsCache_(db.sheet); });
+  } catch (e) { /* 無視 */ }
+}
+
+function sd_readRows_(db) {
+  var sh = SpreadsheetApp.getActive().getSheetByName(db.sheet);
+  var hr = db.headerRow, cm = db.colMap;
+  var lastR = sh.getLastRow();
+  if (lastR &lt;= hr) return [];
+  var width = 0;
+  Object.keys(cm).forEach(function (k) { if (cm[k] &gt; width) width = cm[k]; });
+  var rng = sh.getRange(hr + 1, 1, lastR - hr, width);
+  var vals = rng.getValues();
+  var disp = rng.getDisplayValues();
+  var rows = [];
+  for (var i = 0; i &lt; vals.length; i++) {
+    var v = vals[i], d = disp[i];
+    var item = String(d[cm.item - 1] || &#x27;&#x27;).trim();
+    var ymRaw = v[cm.ym - 1];
+    if (!item &amp;&amp; !ymRaw) continue;
+    var key = &#x27;&#x27;;
+    if (ymRaw instanceof Date) key = sd_fmtMonth_(ymRaw);
+    else {
+      var m = String(d[cm.ym - 1]).match(/(\d{4})[\/\-年.](\d{1,2})/);
+      if (m) key = m[1] + &#x27;-&#x27; + (&#x27;0&#x27; + m[2]).slice(-2);
+    }
+    if (!key) continue;
+    var amt = v[cm.amount - 1];
+    if (typeof amt !== &#x27;number&#x27;) amt = Number(String(d[cm.amount - 1]).replace(/[¥￥,，\s]/g, &#x27;&#x27;)) || 0;
+    rows.push({
+      row: hr + 1 + i, ym: key,
+      kubun: String(d[cm.kubun - 1] || &#x27;&#x27;).trim(),
+      item: item, amount: amt,
+      tax: sd_norm_(d[cm.tax - 1] || &#x27;&#x27;),
+      note: cm.note ? String(d[cm.note - 1] || &#x27;&#x27;) : &#x27;&#x27;,
+      editor: cm.editor ? String(d[cm.editor - 1] || &#x27;&#x27;) : &#x27;&#x27;,
+      at: cm.at ? String(d[cm.at - 1] || &#x27;&#x27;) : &#x27;&#x27;,
+      paid: cm.paid ? String(d[cm.paid - 1] || &#x27;&#x27;) : &#x27;&#x27;,
+      edited: cm.edited ? String(d[cm.edited - 1] || &#x27;&#x27;) : &#x27;&#x27;,
+      account: cm.account ? String(d[cm.account - 1] || &#x27;&#x27;).trim() : &#x27;&#x27;,
+      subAccount: cm.subAccount ? String(d[cm.subAccount - 1] || &#x27;&#x27;).trim() : &#x27;&#x27;,
+      extRef: cm.extRef ? String(d[cm.extRef - 1] || &#x27;&#x27;).trim() : &#x27;&#x27; // 2026-09-05追加（invoice連携）
+    });
+  }
+  return rows;
+}
+
+function sd_issuedMap_(det) {
+  var out = {};
+  if (!det.statusSheet) return out;
+  var sh = SpreadsheetApp.getActive().getSheetByName(det.statusSheet.sheet);
+  var hr = det.statusSheet.headerRow;
+  var lastR = sh.getLastRow(), lastC = sh.getLastColumn();
+  if (lastR &lt;= hr) return out;
+  var hVals = sh.getRange(hr, 1, 1, lastC).getValues()[0];
+  var hDisp = sh.getRange(hr, 1, 1, lastC).getDisplayValues()[0];
+  var monthCols = [];
+  var nameCol = -1;
+  hDisp.forEach(function (h, i) {
+    if (nameCol &lt; 0 &amp;&amp; sd_norm_(h) === &#x27;店舗名&#x27;) nameCol = i;
+    var key = &#x27;&#x27;;
+    if (hVals[i] instanceof Date) key = sd_fmtMonth_(hVals[i]);
+    else if (/^\d{4}[-\/]\d{1,2}$/.test(String(h).trim())) {
+      var p = String(h).trim().split(/[-\/]/);
+      key = p[0] + &#x27;-&#x27; + (&#x27;0&#x27; + p[1]).slice(-2);
+    }
+    if (key) monthCols.push({ i: i, key: key });
+  });
+  if (nameCol &lt; 0) return out;
+  var vals = sh.getRange(hr + 1, 1, lastR - hr, lastC).getDisplayValues();
+  vals.forEach(function (row) {
+    var nm = String(row[nameCol] || &#x27;&#x27;).trim();
+    if (!nm) return;
+    out[sd_norm_(nm)] = monthCols.reduce(function (acc, mc) {
+      acc[mc.key] = String(row[mc.i]).indexOf(&#x27;✅&#x27;) &gt; -1;
+      return acc;
+    }, {});
+  });
+  return out;
+}
+
+function sd_missing_(byMonth, monthKey, required) {
+  var curRows = byMonth[monthKey] || [];
+  var cur = {}, curKubun = {};
+  curRows.forEach(function (r) { cur[sd_norm_(r.item)] = true; curKubun[sd_norm_(r.kubun)] = true; });
+  var prevKeys = [sd_addMonths_(monthKey, -1), sd_addMonths_(monthKey, -2), sd_addMonths_(monthKey, -3)];
+  var cnt = {}, label = {};
+  prevKeys.forEach(function (pk) {
+    var seen = {};
+    (byMonth[pk] || []).forEach(function (r) {
+      var n = sd_norm_(r.item);
+      if (!n || seen[n]) return;
+      seen[n] = true;
+      cnt[n] = (cnt[n] || 0) + 1;
+      label[n] = r.item;
+    });
+  });
+  var missing = [];
+  Object.keys(cnt).forEach(function (n) { if (cnt[n] &gt;= 2 &amp;&amp; !cur[n]) missing.push(label[n]); });
+  (required || []).forEach(function (x) {
+    var n = sd_norm_(x);
+    if (!n || cur[n]) return;
+    var lb = label[n] || x;
+    if (missing.indexOf(lb) &lt; 0) missing.push(lb);
+  });
+  var catWarn = [];
+  [&#x27;売上&#x27;, &#x27;固定ロイヤリティ&#x27;].forEach(function (k) {
+    var had = prevKeys.some(function (pk) {
+      return (byMonth[pk] || []).some(function (r) { return sd_norm_(r.kubun) === k; });
+    });
+    if (had &amp;&amp; !curKubun[k]) catWarn.push(&#x27;区分「&#x27; + k + &#x27;」が未入力&#x27;);
+  });
+  missing.sort();
+  return { missing: missing, catWarn: catWarn };
+}
+
+/* ---------- API: ダッシュボード ---------- */
+
+function sd_getDashboard(token, monthKey) {
+  var timer = sd_timer_();
+  var user = sd_auth_(token, false);
+  timer.mark(&#x27;auth&#x27;);
+  var ss = SpreadsheetApp.getActive();
+  var det = sd_detect_();
+  var master = sd_masterStores_(det);
+  var cfg = sd_allowedStores_(user, sd_config_(master, det));
+  timer.mark(&#x27;detectSheets&#x27;);
+  var issued = sd_issuedMap_(det);
+  var sentLog = sd_sentMap_();
+  timer.mark(&#x27;issuedSent&#x27;);
+
+  if (!monthKey) {
+    var now = new Date();
+    monthKey = sd_fmtMonth_(new Date(now.getFullYear(), now.getMonth() - 1, 1));
+  }
+  if (monthKey &lt; SD_START_MONTH) monthKey = SD_START_MONTH;
+  var months = sd_monthList_(monthKey);
+
+  var kubunSet = {};
+  SD_KUBUN_OPTIONS.forEach(function (k) { kubunSet[k] = true; });
+  var paidAll = sd_paidMap_();
+  var corps = sd_corpMap_(cfg);
+  var ext = sd_extConfig_();
+  var payMap = sd_paySumsCached_(ext, monthKey, cfg); // 売上シートS列の対象月合計（未設定ならnull）
+  timer.mark(&#x27;paidCorpsPayMap&#x27;);
+
+  var stores = cfg.map(function (st) {
+    var rows = st.db ? sd_readRowsCached_(st.db) : [];
+    timer.mark(&#x27;店舗:&#x27; + st.name);
+    var byMonth = {};
+    rows.forEach(function (r) {
+      (byMonth[r.ym] = byMonth[r.ym] || []).push(r);
+      if (r.kubun) kubunSet[r.kubun] = true;
+    });
+    var fixed = st.fixed || { rent: 0, ins: 0, sss: 0, f4: 0, f5: 0, total: 0 };
+
+    // 精算計算（共通関数 sd_settle_ を使用）
+    function settleFor(mk) {
+      return sd_settle_(byMonth[mk] || [], mk, st.rate, fixed, st.salesName);
+    }
+
+    // 法人単位（同じ法人の店舗は同じ状態を共有）。委託先が期間で変わる店舗は、月ごとにその月の法人の記録を引く
+    var paidByMonth = {};
+    months.concat([monthKey]).forEach(function (mk) { paidByMonth[mk] = sd_paidStatusMap_(st.name, sd_clientInfoAt_(st, mk).client, paidAll)[mk]; });
+    var matrix = {};
+    months.forEach(function (mk) {
+      var s = settleFor(mk);
+      var sent = (sentLog[sd_norm_(st.name)] || {})[mk];
+      matrix[mk] = {
+        count: s.count, cost: s.varCost + s.royF,
+        sales: s.sales, transfer: s.hasSales ? s.transfer : null,
+        ns: s.hasSales ? s.ns : null,
+        sent: !!sent, paid: !!(paidByMonth[mk] &amp;&amp; paidByMonth[mk].done),
+        paidTotal: (paidByMonth[mk] &amp;&amp; paidByMonth[mk].total) || 0 // 振込済み累計額（差額アラート用）
+      };
+    });
+    var chk = st.db ? sd_missing_(byMonth, monthKey, st.required) : { missing: [], catWarn: [&#x27;DBシート未検出&#x27;] };
+    var curRows = (byMonth[monthKey] || []).map(function (r) {
+      return { row: r.row, kubun: r.kubun, item: r.item, amount: r.amount, tax: r.tax, note: r.note, editor: r.editor, at: r.at, edited: r.edited, account: r.account, subAccount: r.subAccount, extRef: r.extRef || &#x27;&#x27; };
+    });
+    var settleFull = settleFor(monthKey);
+    var settle = {
+      sales: settleFull.sales, varCost: settleFull.varCost, royF: settleFull.royF,
+      royV: settleFull.royV, royVarDb: settleFull.royVarDb, royBase: settleFull.royBase, royBaseActual: settleFull.royBaseActual, adj: settleFull.adj,
+      fixedSub: settleFull.fixedSub, costTotal: settleFull.costTotal,
+      transfer: settleFull.transfer, transferEx: settleFull.transferEx, tax: settleFull.tax,
+      ns: settleFull.ns, hasSales: settleFull.hasSales, count: settleFull.count
+    };
+    var sentInfo = (sentLog[sd_norm_(st.name)] || {})[monthKey] || null;
+    var isIssued = (issued[sd_norm_(st.name)] || {})[monthKey] === true || !!sentInfo;
+
+    // 売上照合: 売上シートの支払合計（実売上）と、精算書に入力された売上合計を突き合わせる
+    var salesCheck = null;
+    if (payMap) {
+      var src = payMap[sd_norm_(st.salesName)];
+      if (src != null) {
+        salesCheck = {
+          source: src,               // 売上シート S列 支払合計（実売上）
+          entered: settle.sales,     // 精算書に入力された売上合計
+          diff: settle.sales - src,  // ＋=精算書が多い ／ −=精算書が少ない（入力漏れの可能性）
+          salesName: st.salesName
+        };
+      }
+    }
+
+    return {
+      name: st.name, client: sd_clientInfoAt_(st, monthKey).client, rate: st.rate,
+      fixed: fixed,
+      dbSheet: st.db ? st.db.sheet : &#x27;&#x27;, hasDb: !!st.db,
+      matrix: matrix,
+      issued: (issued[sd_norm_(st.name)] || {}),
+      detail: {
+        rows: curRows, sales: settle.sales, cost: settle.costTotal, count: curRows.length,
+        settle: settle,
+        missing: chk.missing, catWarn: chk.catWarn,
+        issuedThis: isIssued,
+        sent: sentInfo, // {at, fileId, fileName, to} or null
+        paid: paidByMonth[monthKey] || null, // {done, date, by} or null
+        locked: !!(paidByMonth[monthKey] &amp;&amp; paidByMonth[monthKey].done), // 振込済み＝編集ロック中
+        salesCheck: salesCheck // {source, entered, diff, salesName} or null
+      }
+    };
+  });
+
+  timer.mark(&#x27;storesLoop（&#x27; + stores.length + &#x27;店舗）&#x27;);
+  return {
+    ver: SD_VERSION,
+    user: { name: user.name, role: user.role },
+    month: monthKey,
+    monthLabel: sd_monthLabel_(monthKey),
+    months: months,
+    stores: stores,
+    corps: corps, // 法人名(正規化) → {account, note}
+    kubunOptions: Object.keys(kubunSet),
+    taxOptions: SD_TAX_OPTIONS,
+    accountOptions: SD_ACCOUNT_LIST, // A-9: 勘定科目の選択肢（明細を入力タブの科目列で使用）
+    sheetUrl: user.role === &#x27;本部&#x27; ? ss.getUrl() : &#x27;&#x27;,
+    updatedAt: Utilities.formatDate(new Date(), SD_TZ, &#x27;yyyy-MM-dd HH:mm&#x27;),
+    _ms: timer.breakdown()
+  };
+}
+
+/* ---------- API: 明細追加（本部のみ） ---------- */
+
+/* 簡易タイマー: どの処理に時間がかかっているか計測してレスポンスに含める（速度計測用）。
+ * 本番運用の妨げにならないよう、計算コストはほぼゼロ（Date.now()呼び出しのみ）。 */
+function sd_timer_() {
+  var t0 = Date.now(), last = t0, marks = [];
+  return {
+    mark: function (label) { var now = Date.now(); marks.push([label, now - last]); last = now; },
+    breakdown: function () {
+      var obj = {}; marks.forEach(function (m) { obj[m[0]] = m[1]; });
+      obj.total = Date.now() - t0; return obj;
+    }
+  };
+}
+
+function sd_addRows(token, payload) {
+  var timer = sd_timer_();
+  var user = sd_auth_(token, true);
+  timer.mark(&#x27;auth&#x27;);
+  var lock = LockService.getDocumentLock();
+  lock.waitLock(20000);
+  timer.mark(&#x27;lockWait&#x27;);
+  try {
+    var det = sd_detect_();
+    var master = sd_masterStores_(det);
+    var cfg = sd_config_(master, det);
+    timer.mark(&#x27;detectSheets&#x27;);
+    var st = null;
+    cfg.forEach(function (s) { if (s.name === payload.store) st = s; });
+    if (!st) throw new Error(&#x27;店舗が見つかりません: &#x27; + payload.store);
+    if (!st.db) throw new Error(&#x27;店舗「&#x27; + payload.store + &#x27;」のDBシートが見つかりません。「&#x27; + SD_CONFIG_SHEET + &#x27;」で指定してください。&#x27;);
+    sd_requireUnlocked_(user, payload.store, payload.month);
+
+    var ymDate = sd_monthKeyToDate_(payload.month);
+    var rows = (payload.rows || []).filter(function (r) { return String(r.item || &#x27;&#x27;).trim(); });
+    if (!rows.length) throw new Error(&#x27;明細が入力されていません&#x27;);
+    rows.forEach(function (r) {
+      if (r.amount === &#x27;&#x27; || r.amount == null || isNaN(Number(r.amount))) {
+        throw new Error(&#x27;金額が数値ではありません: &#x27; + r.item);
+      }
+    });
+
+    if (!payload.force) {
+      var existing = sd_readRows_(st.db).filter(function (r) { return r.ym === payload.month; });
+      timer.mark(&#x27;dupCheckRead&#x27;);
+      var dups = [];
+      rows.forEach(function (r) {
+        var hit = existing.some(function (e) {
+          return sd_norm_(e.item) === sd_norm_(r.item) &amp;&amp; Number(e.amount) === Number(r.amount);
+        });
+        if (hit) dups.push(r.item + &#x27;（¥&#x27; + Number(r.amount).toLocaleString() + &#x27;）&#x27;);
+      });
+      if (dups.length) return { ok: false, dup: dups, _ms: timer.breakdown() };
+    }
+
+    sd_ensureCategoryCols_(st.db);
+    var added = sd_appendRows_(st.db, ymDate, rows, payload.editor || user.name);
+    timer.mark(&#x27;write&#x27;);
+    sd_clearRowsCache_(st.db.sheet);
+    timer.mark(&#x27;cacheClear&#x27;);
+    return { ok: true, added: added, sheet: st.db.sheet, month: payload.month, _ms: timer.breakdown() };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/* ---------- API: 明細修正（本部のみ） ----------
+ * 誤修正防止のため、元の費目名・金額が一致するかをサーバー側でも検証してから上書きする。
+ * 修正日はDBの「修正日」列（無ければ自動作成）に記録される。 */
+function sd_updateRow(token, payload) {
+  // payload = { store, row, orig:{item, amount}, kubun, item, amount, tax, note }
+  var timer = sd_timer_();
+  var user = sd_auth_(token, true);
+  timer.mark(&#x27;auth&#x27;);
+  var lock = LockService.getDocumentLock();
+  lock.waitLock(20000);
+  timer.mark(&#x27;lockWait&#x27;);
+  try {
+    var det = sd_detect_();
+    var cfg = sd_config_(sd_masterStores_(det), det);
+    var st = null;
+    cfg.forEach(function (s) { if (s.name === payload.store) st = s; });
+    if (!st || !st.db) throw new Error(&#x27;店舗のDBシートが見つかりません: &#x27; + payload.store);
+    var sh = SpreadsheetApp.getActive().getSheetByName(st.db.sheet);
+    var cm = st.db.colMap;
+    var row = Number(payload.row);
+    if (!row || row &lt;= st.db.headerRow) throw new Error(&#x27;行番号が不正です&#x27;);
+    timer.mark(&#x27;detectSheets&#x27;);
+
+    // 修正日列が無ければヘッダー行に自動作成（列幅が変わるので、行の一括読み込みより先に確定させる）
+    // 2026-08-31修正: 従来はwidth0+1へ直接setValueしており、colMapが認識しない既存の
+    // 「備考・スクラッチ用」列と衝突する恐れがあった（勘定科目列で実際に発生した事故と同じ原因）。
+    // sd_ensureCategoryCols_と同じinsertColumnAfterパターンに統一し、キャッシュも破棄する。
+    if (!cm.edited) {
+      var width0 = 0;
+      Object.keys(cm).forEach(function (k) { if (cm[k] &gt; width0) width0 = cm[k]; });
+      sh.insertColumnAfter(width0);
+      sh.getRange(st.db.headerRow, width0 + 1).setValue(&#x27;修正日&#x27;);
+      cm.edited = width0 + 1;
+      sd_clearDetectCache_();
+    }
+    sd_ensureCategoryCols_(st.db); // 勘定科目・補助科目列も同様に自動作成（A-9）
+    var width = 0;
+    Object.keys(cm).forEach(function (k) { if (cm[k] &gt; width) width = cm[k]; });
+
+    // 行全体を1回で読み込む（セルごとに読むと通信回数が増えて遅くなるため）
+    var rowRange = sh.getRange(row, 1, 1, width);
+    var vals = rowRange.getValues()[0];
+    var disp = rowRange.getDisplayValues()[0];
+    timer.mark(&#x27;readRow&#x27;);
+
+    // 元データの一致確認（他の人が同時に編集した場合の誤上書き防止）
+    var curItem = String(disp[cm.item - 1]).trim();
+    var curAmtRaw = vals[cm.amount - 1];
+    var curAmt = (typeof curAmtRaw === &#x27;number&#x27;) ? curAmtRaw
+      : Number(String(curAmtRaw).replace(/[¥￥,，\s]/g, &#x27;&#x27;)) || 0;
+    if (sd_norm_(curItem) !== sd_norm_(payload.orig.item) || Math.round(curAmt) !== Math.round(Number(payload.orig.amount))) {
+      throw new Error(&#x27;この行は別の場所で変更されています。再読込してからもう一度修正してください（現在: &#x27; + curItem + &#x27; ¥&#x27; + curAmt.toLocaleString() + &#x27;）&#x27;);
+    }
+    // 対象行の年月を読み、その月が振込済みならマスター以外は編集不可
+    var rowYm = &#x27;&#x27;;
+    var ymRaw = vals[cm.ym - 1];
+    if (ymRaw instanceof Date) rowYm = sd_fmtMonth_(ymRaw);
+    else {
+      var mm = String(disp[cm.ym - 1]).match(/(\d{4})[\/\-年.](\d{1,2})/);
+      if (mm) rowYm = mm[1] + &#x27;-&#x27; + (&#x27;0&#x27; + mm[2]).slice(-2);
+    }
+    if (rowYm) sd_requireUnlocked_(user, payload.store, rowYm);
+    var newItem = String(payload.item || &#x27;&#x27;).trim();
+    if (!newItem) throw new Error(&#x27;費目名が空です&#x27;);
+    var newAmt = Number(String(payload.amount).replace(/[¥￥,，\s]/g, &#x27;&#x27;));
+    if (isNaN(newAmt)) throw new Error(&#x27;金額が数値ではありません&#x27;);
+
+    // 変更するセルだけ書き換えて、行全体を1回で書き戻す
+    vals[cm.kubun - 1] = payload.kubun || &#x27;変動費&#x27;;
+    vals[cm.item - 1] = newItem;
+    vals[cm.amount - 1] = newAmt;
+    if (cm.tax) vals[cm.tax - 1] = payload.tax || &#x27;10%&#x27;;
+    if (cm.note) vals[cm.note - 1] = String(payload.note || &#x27;&#x27;);
+    if (cm.account) vals[cm.account - 1] = String(payload.account || &#x27;&#x27;);
+    if (cm.subAccount) vals[cm.subAccount - 1] = String(payload.subAccount || &#x27;&#x27;);
+    vals[cm.edited - 1] = Utilities.formatDate(new Date(), SD_TZ, &#x27;M/d&#x27;) + &#x27; &#x27; + user.name;
+    rowRange.setValues([vals]);
+    timer.mark(&#x27;write&#x27;);
+    sd_clearRowsCache_(st.db.sheet);
+    timer.mark(&#x27;cacheClear&#x27;);
+    return { ok: true, row: row, item: newItem, _ms: timer.breakdown() };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/* ---------- API: 明細削除（本部/マスター。振込済みロック中はマスターのみ） ----------
+ * 誤削除防止のため、削除前に元の費目名・金額が一致するかをサーバー側でも検証する。 */
+function sd_deleteRow(token, payload) {
+  // payload = { store, row, orig:{item, amount} }
+  var timer = sd_timer_();
+  var user = sd_auth_(token, true);
+  timer.mark(&#x27;auth&#x27;);
+  var lock = LockService.getDocumentLock();
+  lock.waitLock(20000);
+  timer.mark(&#x27;lockWait&#x27;);
+  try {
+    var det = sd_detect_();
+    var cfg = sd_config_(sd_masterStores_(det), det);
+    var st = null;
+    cfg.forEach(function (s) { if (s.name === payload.store) st = s; });
+    if (!st || !st.db) throw new Error(&#x27;店舗のDBシートが見つかりません: &#x27; + payload.store);
+    var sh = SpreadsheetApp.getActive().getSheetByName(st.db.sheet);
+    var cm = st.db.colMap;
+    var row = Number(payload.row);
+    if (!row || row &lt;= st.db.headerRow) throw new Error(&#x27;行番号が不正です&#x27;);
+    timer.mark(&#x27;detectSheets&#x27;);
+
+    // 行全体を1回で読み込む（セルごとに読むと通信回数が増えて遅くなるため）
+    var width = 0;
+    Object.keys(cm).forEach(function (k) { if (cm[k] &gt; width) width = cm[k]; });
+    var rowRange = sh.getRange(row, 1, 1, width);
+    var vals = rowRange.getValues()[0];
+    var disp = rowRange.getDisplayValues()[0];
+    timer.mark(&#x27;readRow&#x27;);
+
+    // 元データの一致確認（他の人が同時に編集した場合の誤削除防止）
+    var curItem = String(disp[cm.item - 1]).trim();
+    var curAmtRaw = vals[cm.amount - 1];
+    var curAmt = (typeof curAmtRaw === &#x27;number&#x27;) ? curAmtRaw
+      : Number(String(curAmtRaw).replace(/[¥￥,，\s]/g, &#x27;&#x27;)) || 0;
+    if (sd_norm_(curItem) !== sd_norm_(payload.orig.item) || Math.round(curAmt) !== Math.round(Number(payload.orig.amount))) {
+      throw new Error(&#x27;この行は別の場所で変更されています。再読込してからもう一度削除してください（現在: &#x27; + curItem + &#x27; ¥&#x27; + curAmt.toLocaleString() + &#x27;）&#x27;);
+    }
+    // 対象行の年月を読み、その月が振込済みならマスター以外は削除不可
+    var rowYm = &#x27;&#x27;;
+    var ymRaw = vals[cm.ym - 1];
+    if (ymRaw instanceof Date) rowYm = sd_fmtMonth_(ymRaw);
+    else {
+      var mm = String(disp[cm.ym - 1]).match(/(\d{4})[\/\-年.](\d{1,2})/);
+      if (mm) rowYm = mm[1] + &#x27;-&#x27; + (&#x27;0&#x27; + mm[2]).slice(-2);
+    }
+    if (rowYm) sd_requireUnlocked_(user, payload.store, rowYm);
+
+    sh.deleteRow(row);
+    timer.mark(&#x27;deleteRow&#x27;);
+    sd_clearRowsCache_(st.db.sheet);
+    sd_log_(&#x27;明細削除&#x27;, payload.store, rowYm, curItem + &#x27;（¥&#x27; + curAmt.toLocaleString() + &#x27;）&#x27;, &#x27;&#x27;, &#x27;&#x27;, user.name, &#x27;&#x27;);
+    timer.mark(&#x27;log&#x27;);
+    return { ok: true, item: curItem, amount: curAmt, _ms: timer.breakdown() };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/* ================== A-9: 勘定科目・補助科目→PL自動連携（2026-08-31追加） ==================
+ * 設計書_広告費自動連携と精算書PL科目連携_2026-08-31.md §2・§4。
+ * 精算書の明細に勘定科目・補助科目を付け、tori-dashboard側のsyncSeisanCategoriesToPl
+ * （PL_SYNC_TOKEN認証・sd_apiCategorizedLinesを呼ぶ）がDB_PLへ自動計上する。
+ * 科目リストはtori-dashboard/app.jsのPL_ITEM_CATと同じ24科目（勘定科目の区分＝S/F/L/A/R/O/Xの
+ * 判定はtori-dashboard側が担当するため、こちら側は科目名の一覧だけ持てば十分）。
+ * 「対象外」はPLに送らない明細（固定ロイヤリティ等）用の特別値。「運営委託費」は既存の
+ * syncSeisanFeeToPl（業務委託費の自動連携）と役割が重なるため、一覧には残すが同期側で除外される。
+ * ※ tori-dashboard/app.jsのPL_ITEM_CATを変更した場合はこちらも手動で合わせること（自動同期はしない
+ * ＝ほぼ変わらない固定リストのため、常時同期の仕組みを作るのは過剰実装と判断）。 */
+var SD_ACCOUNT_LIST = [
+  &#x27;対象外&#x27;,
+  &#x27;役員報酬&#x27;, &#x27;法定福利費&#x27;, &#x27;通勤手当&#x27;, &#x27;旅費交通費&#x27;, &#x27;賞与積立&#x27;, &#x27;退職金等&#x27;,
+  &#x27;家賃&#x27;, &#x27;リース料&#x27;, &#x27;家賃更新按分&#x27;, &#x27;広告宣伝費&#x27;, &#x27;販売促進費&#x27;,
+  &#x27;水道光熱費&#x27;, &#x27;通信費&#x27;, &#x27;消耗品・備品費&#x27;, &#x27;修繕費&#x27;, &#x27;衛生管理費&#x27;, &#x27;カード手数料&#x27;, &#x27;支払手数料&#x27;,
+  &#x27;支払報酬料&#x27;, &#x27;採用教育費&#x27;, &#x27;接待交際費&#x27;, &#x27;会議費&#x27;, &#x27;慶弔見舞費&#x27;, &#x27;保険料&#x27;, &#x27;租税公課&#x27;,
+  &#x27;減価償却費&#x27;, &#x27;福利厚生費&#x27;, &#x27;諸会費&#x27;, &#x27;雑費&#x27;, &#x27;本部経費（按分）&#x27;,
+  &#x27;その他売上&#x27;, &#x27;銀行返済&#x27;, &#x27;仕入（食材・飲料）&#x27;, &#x27;運営委託費&#x27;,
+  &#x27;業務委託料&#x27; // 2026-09-05追加（invoice連携。既存の自動連携科目「運営委託費」とは別物として扱う）
+];
+/* 費目名からの科目推定（「既定値の自動提案」①項目名からの推定）。よくある表記のキーワード一致のみ。
+ * ここに無ければ提案なし（空欄のまま・人が選ぶ）＝過剰な誤爆推定はしない。 */
+var SD_ACCOUNT_GUESS_ = [
+  [/電気|ガス|水道/, &#x27;水道光熱費&#x27;], [/インターネット|電話|通信|プロバイダ/, &#x27;通信費&#x27;],
+  [/家賃|賃料/, &#x27;家賃&#x27;], [/リース/, &#x27;リース料&#x27;],
+  [/広告|求人|採用媒体/, &#x27;広告宣伝費&#x27;], [/販促|クーポン|チラシ/, &#x27;販売促進費&#x27;],
+  [/仕入|食材|飲料|GOSSO/, &#x27;仕入（食材・飲料）&#x27;], [/清掃|衛生|害虫/, &#x27;衛生管理費&#x27;],
+  [/修繕|修理/, &#x27;修繕費&#x27;], [/カード手数料|決済手数料/, &#x27;カード手数料&#x27;], [/振込手数料|銀行手数料/, &#x27;支払手数料&#x27;],
+  [/税理士|社労士|顧問料|報酬/, &#x27;支払報酬料&#x27;], [/研修|教育/, &#x27;採用教育費&#x27;],
+  [/接待|交際/, &#x27;接待交際費&#x27;], [/会議|打合せ/, &#x27;会議費&#x27;], [/保険/, &#x27;保険料&#x27;],
+  [/租税|税金|印紙/, &#x27;租税公課&#x27;], [/福利厚生/, &#x27;福利厚生費&#x27;], [/会費/, &#x27;諸会費&#x27;],
+  [/消耗品|備品/, &#x27;消耗品・備品費&#x27;]
+];
+function sd_guessAccount_(item) {
+  var s = String(item || &#x27;&#x27;);
+  for (var i = 0; i &lt; SD_ACCOUNT_GUESS_.length; i++) if (SD_ACCOUNT_GUESS_[i][0].test(s)) return SD_ACCOUNT_GUESS_[i][1];
+  return &#x27;&#x27;;
+}
+/* 勘定科目・補助科目列（無ければヘッダー行の末尾に自動作成）。sd_updateRowの「修正日列が無ければ
+ * 自動作成」と同じ自己修復パターン。書き込み系API（sd_addRows/sd_updateRow/sd_bulkAdd/
+ * sd_bulkCategorize）から呼ぶこと。 */
+// 2026-08-31修正（ユーザー報告「勘定科目に全然違う値が入っている」で発覚した重大バグの修正）:
+// 従来は「colMapが知っている列の最大値+1」を空き列とみなして直接setValueしていたが、実際の
+// 店舗DBシートには修正日列より右側に、colMapが認識しない「備考・スクラッチ用」の列（内容は
+// 店舗ごとにバラバラ・会社情報や別行の内容が紛れ込んでいるように見えるものもある）が既に
+// 存在しており、そこへ無条件に上書きしてしまっていた。sh.insertColumnAfter()でヘッダー列の
+// 直後に新しい列を物理的に挿入し、既存の列（内容不明でも）をすべて右にずらして退避させる
+// 方式に変更。これなら既存データに一切触れずに安全に新列を確保できる。
+// 2026-09-23修正（秋葉原肉寿司2026-08の4行で発覚したバグ: 「勘定科目」「補助科目」列が
+// 重複して複数作られ、シート側が「列名が重複しています」という検証エラーを出す状態になった）。
+// 原因: この関数に渡される db.colMap は、呼び出し元が（LockService.getDocumentLockを取得する
+// 前後を問わず）sd_detect_()の10分キャッシュ経由で取得したものであり、呼び出しのタイミング
+// によっては「他の同時実行がついさっき列を作った」という最新状態を反映していないことがあった。
+// 古いcolMapを信じて「列が無い」と誤判定すると、既にある列の隣にもう1セット列を挿入して
+// しまう。ここでは呼び出し元のcolMapを信用せず、この関数の実行時点（ロックを保持している間）
+// のヘッダー行を直接読み直し、本当に無いかどうかをその場で確認してから挿入する。
+function sd_ensureCategoryCols_(db) {
+  var cm = db.colMap;
+  var sh = SpreadsheetApp.getActive().getSheetByName(db.sheet);
+  // sd_detectRaw_と同じ「同名の見出しが複数あれば一番右（後着）を採用」規則に合わせる
+  // （読み書きの列判定がここだけ食い違うと、新規追加はこちらの列・既存データの読み込みは
+  // あちらの列、という二重管理事故になるため）。
+  var liveHeader = sh.getRange(db.headerRow, 1, 1, Math.max(1, sh.getLastColumn())).getDisplayValues()[0];
+  liveHeader.forEach(function (v, i) {
+    var n = sd_norm_(v);
+    if (n === &#x27;勘定科目&#x27;) cm.account = i + 1;
+    else if (n === &#x27;補助科目&#x27;) cm.subAccount = i + 1;
+    else if (n === &#x27;外部参照ID&#x27;) cm.extRef = i + 1;
+  });
+  if (cm.account &amp;&amp; cm.subAccount &amp;&amp; cm.extRef) return;
+  var width = 0;
+  Object.keys(cm).forEach(function (k) { if (cm[k] &gt; width) width = cm[k]; });
+  if (!cm.account) {
+    sh.insertColumnAfter(width);
+    sh.getRange(db.headerRow, width + 1).setValue(&#x27;勘定科目&#x27;);
+    cm.account = width + 1;
+    width += 1; // 補助科目はこの直後に挿入するので、その位置計算に反映させる
+  }
+  if (!cm.subAccount) {
+    sh.insertColumnAfter(width);
+    sh.getRange(db.headerRow, width + 1).setValue(&#x27;補助科目&#x27;);
+    cm.subAccount = width + 1;
+    width += 1; // 外部参照IDはこの直後に挿入するので、その位置計算に反映させる
+  }
+  // 2026-09-05追加（invoice連携）: 冪等キー（sourceKey）専用の列。従来は「備考」列に
+  // `外部連携:&lt;sourceKey&gt;`と書き込んで代用していたが、本来の備考が書けなくなる問題があったため分離した
+  // （設計書_業務委託精算書自動連携_2026-09-04.md 5-1章）。旧形式の行はsd_apiAddExternalLine側の
+  // フォールバック検索で引き続き見つけられるので、このシート自体の移行作業は不要。
+  if (!cm.extRef) {
+    sh.insertColumnAfter(width);
+    sh.getRange(db.headerRow, width + 1).setValue(&#x27;外部参照ID&#x27;);
+    cm.extRef = width + 1;
+  }
+  sd_clearDetectCache_(); // 列構成が変わったので、10分キャッシュを次回呼び出し用に破棄する
+}
+/* 「既定値の自動提案」②前月の同項目の科目を引き継ぐ。直近で同じ費目名に付けた科目・補助科目を
+ * そのDBシートの全行から探す（月をまたいでも一番新しい行を優先＝実質「前回選んだもの」）。 */
+function sd_suggestAccount(token, store, item) {
+  sd_auth_(token, true);
+  var det = sd_detect_();
+  var cfg = sd_config_(sd_masterStores_(det), det);
+  var st = null;
+  cfg.forEach(function (s) { if (s.name === store) st = s; });
+  if (!st || !st.db) return { account: sd_guessAccount_(item), subAccount: &#x27;&#x27;, source: &#x27;guess&#x27; };
+  var rows = sd_readRows_(st.db).filter(function (r) { return sd_norm_(r.item) === sd_norm_(item) &amp;&amp; r.account &amp;&amp; r.account !== &#x27;対象外&#x27;; });
+  if (rows.length) {
+    // rowはシート上の行番号順（＝入力順）で並んでいるはずなので、末尾＝最新とみなす
+    var last = rows[rows.length - 1];
+    return { account: last.account, subAccount: last.subAccount || &#x27;&#x27;, source: &#x27;history&#x27; };
+  }
+  var guess = sd_guessAccount_(item);
+  return { account: guess, subAccount: &#x27;&#x27;, source: guess ? &#x27;guess&#x27; : &#x27;none&#x27; };
+}
+/* さかのぼり付与モード（Q4確定仕様）: 指定店舗・期間内の「勘定科目が空の行」に、既定値の自動提案
+ * （履歴引き継ぎ→キーワード推定の順）をまとめて書き込む。判定に迷う行（提案が無い行）は空欄のまま
+ * 残し、人が「明細を入力」画面の✏修正から確認・修正する（＝全自動で確定させない）。 */
+function sd_bulkCategorize(token, payload) {
+  var user = sd_auth_(token, true);
+  var storeName = String((payload || {}).store || &#x27;&#x27;).trim();
+  var fromMonth = String((payload || {}).fromMonth || &#x27;&#x27;).trim();
+  var toMonth = String((payload || {}).toMonth || &#x27;&#x27;).trim();
+  if (!/^\d{4}-\d{2}$/.test(fromMonth) || !/^\d{4}-\d{2}$/.test(toMonth)) throw new Error(&#x27;対象期間が不正です&#x27;);
+  var det = sd_detect_();
+  var cfg = sd_config_(sd_masterStores_(det), det);
+  var targets = storeName ? cfg.filter(function (s) { return s.name === storeName; }) : cfg;
+  if (storeName &amp;&amp; !targets.length) throw new Error(&#x27;店舗が見つかりません: &#x27; + storeName);
+  var lock = LockService.getDocumentLock();
+  lock.waitLock(30000);
+  try {
+    var results = [];
+    targets.forEach(function (st) {
+      if (!st.db) { results.push(st.name + &#x27;: DBシート未検出のためスキップ&#x27;); return; }
+      sd_ensureCategoryCols_(st.db);
+      var sh = SpreadsheetApp.getActive().getSheetByName(st.db.sheet);
+      var cm = st.db.colMap;
+      var rows = sd_readRows_(st.db).filter(function (r) { return r.ym &gt;= fromMonth &amp;&amp; r.ym &lt;= toMonth; });
+      // 履歴引き継ぎは「その時点までに確定している一番新しい科目」を使う（月の並び順どおりに処理）。
+      var lastAccountByItem = {};
+      // 期間より前の既存の科目も引き継ぎ元にする
+      sd_readRows_(st.db).filter(function (r) { return r.ym &lt; fromMonth &amp;&amp; r.account &amp;&amp; r.account !== &#x27;対象外&#x27;; })
+        .forEach(function (r) { lastAccountByItem[sd_norm_(r.item)] = { account: r.account, subAccount: r.subAccount }; });
+      var filled = 0, skipped = 0;
+      rows.sort(function (a, b) { return a.row - b.row; }).forEach(function (r) {
+        if (r.account) { // 既に付いている行は履歴の元として使うだけ・上書きしない
+          if (r.account !== &#x27;対象外&#x27;) lastAccountByItem[sd_norm_(r.item)] = { account: r.account, subAccount: r.subAccount };
+          skipped++; return;
+        }
+        var key = sd_norm_(r.item);
+        var pick = lastAccountByItem[key] || (sd_guessAccount_(r.item) ? { account: sd_guessAccount_(r.item), subAccount: &#x27;&#x27; } : null);
+        if (!pick) { skipped++; return; }
+        sh.getRange(r.row, cm.account).setValue(pick.account);
+        if (pick.subAccount) sh.getRange(r.row, cm.subAccount).setValue(pick.subAccount);
+        lastAccountByItem[key] = pick;
+        filled++;
+      });
+      if (filled) sd_clearRowsCache_(st.db.sheet);
+      results.push(st.name + &#x27;: &#x27; + filled + &#x27;件に科目を付与（&#x27; + skipped + &#x27;件はスキップ＝既に科目あり or 提案なし）&#x27;);
+    });
+    sd_log_(&#x27;さかのぼり科目付与&#x27;, storeName || &#x27;全店&#x27;, fromMonth + &#x27;〜&#x27; + toMonth, results.join(&#x27; / &#x27;), &#x27;&#x27;, &#x27;&#x27;, user.name, &#x27;&#x27;);
+    return { ok: true, results: results };
+  } finally {
+    lock.releaseLock();
+  }
+}
+/* tori-dashboardのsyncSeisanCategoriesToPlから呼ばれる専用API（PL_SYNC_TOKEN認証・
+ * sd_apiTransferExと同じ方式）。指定店舗・月の明細を勘定科目×補助科目で集計して返す。
+ * 「対象外」「運営委託費」（＝既存のsyncSeisanFeeToPl連携と役割が重複）は除外する
+ * （設計書§4「新連携は対象外・運営委託費以外の科目のみを送る」）。
+ * 未確定の金額を送らないよう、sd_apiTransferExと同じく振込済み（sd_isLocked_）の月だけを対象にする。 */
+function sd_apiCategorizedLines(token, store, monthKey) {
+  var tk = PropertiesService.getScriptProperties().getProperty(&#x27;PL_SYNC_TOKEN&#x27;);
+  var got = String(token || &#x27;&#x27;).trim(), want = String(tk || &#x27;&#x27;).trim();
+  if (!tk || got !== want) throw new Error(&#x27;unauthorized&#x27;);
+  var det = sd_detect_();
+  var cfg = sd_config_(sd_masterStores_(det), det);
+  var st = null;
+  cfg.forEach(function (s) { if (s.name === store) st = s; });
+  if (!st) return { found: false, reason: &#x27;店舗マスタに「&#x27; + store + &#x27;」という名前が見つかりません&#x27; };
+  if (!st.db) return { found: false, reason: &#x27;データシートが自動特定できていません&#x27; };
+  var rows = sd_readRows_(st.db).filter(function (r) { return r.ym === monthKey; });
+  if (!rows.length) return { found: true, hasSales: false, reason: monthKey + &#x27;分の明細が0件でした&#x27; };
+  var paid = sd_isLocked_(store, monthKey);
+  if (!paid) return { found: true, hasSales: true, paid: false, reason: monthKey + &#x27;分はまだ振込済みではありません（未確定のためPL反映対象外）&#x27;, lines: [] };
+  var taxRate = { &#x27;10%&#x27;: 1.1, &#x27;8%&#x27;: 1.08, &#x27;非課税&#x27;: 1 };
+  var agg = {};
+  rows.forEach(function (r) {
+    var account = String(r.account || &#x27;&#x27;).trim();
+    if (!account || account === &#x27;対象外&#x27; || account === &#x27;運営委託費&#x27;) return;
+    var sub = String(r.subAccount || &#x27;&#x27;).trim();
+    var rate = taxRate[sd_norm_(r.tax)] || 1.1;
+    var key = account + &#x27;\t&#x27; + sub;
+    agg[key] = (agg[key] || 0) + (Number(r.amount) || 0) / rate;
+  });
+  var lines = Object.keys(agg).map(function (k) {
+    var p = k.split(&#x27;\t&#x27;);
+    return { account: p[0], subAccount: p[1], amountEx: Math.round(agg[k]) };
+  });
+  return { found: true, hasSales: true, paid: true, lines: lines };
+}
+
+/* API: 外部（tori-dashboard・A-8拡張の勘定科目汎用アクション、および2026-09-05からns-portal請求書の
+ * 業務委託精算対象invoice）から精算書へ明細を自動追加/更新する
+ * （設計書_広告費自動連携と精算書PL科目連携_2026-08-31.md §5・設計書_業務委託精算書自動連携_2026-09-04.md 5-1章）。
+ * sd_apiCategorizedLinesと同じPL_SYNC_TOKEN認証（ログイン不要・サーバー間呼び出し用）。
+ * line.sourceKey（例: &#x27;mf-journal:12345&#x27;、invoiceなら&#x27;invoice:&lt;invoice_id&gt;:&lt;line_no&gt;&#x27;）で冪等：
+ * 同じsourceKeyの行は金額等を上書き、無ければ新規追加。同じ仕訳・同じinvoiceから二重に呼ばれても行が増えない。
+ * 振込済み（ロック中）の月は追加・更新できない（確定済みの精算書を後から書き換えないため）。
+ *
+ * 【2026-09-05拡張・後方互換に関する重要事項】
+ * ①冪等キーの保存場所: 従来は「備考」列に`外部連携:&lt;sourceKey&gt;`と書き込んで代用していたが、本来の
+ *   備考が書けなくなる問題があったため「外部参照ID」列（sd_ensureCategoryCols_が自動作成）に分離した。
+ *   検索は「外部参照ID列」→見つからなければ「備考列の旧形式」の順にフォールバックするので、過去に
+ *   カード手数料連携等で作られた既存行も引き続き同じsourceKeyで正しく上書きできる（データ移行不要）。
+ * ②備考: 今回から`line.note`をそのまま備考列に書く（sourceKeyとは独立。既存呼び出し元はnoteを渡さない
+ *   ため、既存行の備考は今後は空になる＝意図した変更。本来の備考として自由に使えるようにするため）。
+ * ③勘定科目の自動解決: `line.account`を明示的に渡す従来の呼び出し方は完全に維持（最優先でそのまま使う）。
+ *   今回追加: `line.account`を省略し代わりに`line.mfAccount`（Money Forward正式勘定科目）を渡した場合、
+ *   sd_resolveMapping_で自動解決を試みる（設計書10-5章の優先順位）。解決できなければ勘定科目は空欄のまま
+ *   行を作成/更新し、レスポンスに`needsMapping:true`を返す（精算書の「明細を入力」画面で人が選ぶまで
+ *   PL自動連携の対象からは自然に除外される＝sd_apiCategorizedLinesが空欄の勘定科目を無視する既存挙動）。
+ *   既存呼び出し元（tori-dashboardのwriteAccountCostToPl_）は常にaccountを明示的に渡すため、この新しい
+ *   分岐には入らず動作は一切変わらない。
+ * 呼び出し例（従来どおり）: POST {fn:&#x27;sd_apiAddExternalLine&#x27;, args:[token, store, monthKey,
+ *   {item, amount, tax, account, subAccount, sourceKey, note}]}
+ * 呼び出し例（新規・invoice連携でmfAccountから自動解決させる場合）: args:[token, store, monthKey,
+ *   {item, amount, tax, mfAccount, mfSubAccount, vendor, subAccount, sourceKey, note}] */
+function sd_apiAddExternalLine(token, store, monthKey, line) {
+  var tk = PropertiesService.getScriptProperties().getProperty(&#x27;PL_SYNC_TOKEN&#x27;);
+  var got = String(token || &#x27;&#x27;).trim(), want = String(tk || &#x27;&#x27;).trim();
+  if (!tk || got !== want) return { ok: false, error: &#x27;unauthorized&#x27; };
+  if (!/^\d{4}-\d{2}$/.test(String(monthKey || &#x27;&#x27;))) return { ok: false, error: &#x27;年月が不正です（例: 2026-08）&#x27; };
+  line = line || {};
+  var item = String(line.item || &#x27;&#x27;).trim();
+  if (!item) return { ok: false, error: &#x27;費目名（item）が空です&#x27; };
+  var amount = Number(line.amount);
+  if (!isFinite(amount) || amount &lt; 0) return { ok: false, error: &#x27;金額が不正です&#x27; };
+  // 2026-09-23修正（重大バグ）: invoice連携のsourceKeyは&#x27;invoice:&lt;uuid&gt;:&lt;uuid&gt;&#x27;形式で常に81文字
+  // だが、ここが80文字に切り詰めていたため保存時に末尾1文字が必ず欠落し、読み取り側
+  // （sd_apiGetLinesの完全一致比較）とは絶対に一致しなくなっていた（秋葉原肉寿司の4件で発覚・
+  // 担当Cが文字コード単位の突合で特定）。invoice連携全体に影響する構造的な不具合だったため、
+  // 十分な余裕を持たせて200文字までに拡張する。
+  var sourceKey = String(line.sourceKey || &#x27;&#x27;).trim().slice(0, 200);
+  if (!sourceKey) return { ok: false, error: &#x27;sourceKey（冪等キー）が空です&#x27; };
+  var legacyNoteTag = &#x27;外部連携:&#x27; + sourceKey; // 旧形式（備考列）。フォールバック検索専用。
+  // 2026-09-30修正（ユーザー指摘「カード売上が変動費で入ってしまっている」）: 区分（kubun）が常に
+  // &#x27;変動費&#x27;に固定されていた（呼び出し元が売上の明細を送っても区別できなかった）。呼び出し元が
+  // line.kubunを指定していればそれを使う（SD_KUBUN_OPTIONS=&#x27;売上&#x27;/&#x27;変動費&#x27;/...）。省略時は
+  // 従来どおり&#x27;変動費&#x27;（writeAccountCostToPl_等の既存呼び出し元は経費のみを送っているため無影響）。
+  var kubun = String(line.kubun || &#x27;変動費&#x27;).trim() || &#x27;変動費&#x27;;
+
+  var account = String(line.account || &#x27;&#x27;).trim();
+  var needsMapping = false;
+  var mappingSource = account ? &#x27;explicit&#x27; : &#x27;&#x27;;
+  if (!account) {
+    // mfAccountが無くても、費目名(item)だけで3.過去実績・5.キーワード推定は試す
+    // （設計書10-5の優先順位どおり。名称一致[4]はmfAccountが無ければ判定できないため自然にスキップされる）
+    var resolved = sd_resolveMapping_(store, String(line.mfAccount || &#x27;&#x27;).trim(),
+      String(line.mfSubAccount || &#x27;&#x27;).trim(), String(line.vendor || &#x27;&#x27;).trim(), item);
+    if (resolved) { account = resolved.account; mappingSource = resolved.source; }
+    else needsMapping = true; // 何も解決できない＝人間確認が必要（空欄のまま作成する。AIで勝手に決めない）
+  }
+
+  var result;
+  var lock = LockService.getDocumentLock();
+  lock.waitLock(20000);
+  try {
+    var det = sd_detect_();
+    var cfg = sd_config_(sd_masterStores_(det), det);
+    var st = null;
+    cfg.forEach(function (s) { if (s.name === store) st = s; });
+    if (!st) return { ok: false, error: &#x27;店舗マスタに「&#x27; + store + &#x27;」という名前が見つかりません&#x27; };
+    if (!st.db) return { ok: false, error: &#x27;店舗「&#x27; + store + &#x27;」のDBシートが見つかりません&#x27; };
+    if (sd_isLocked_(store, monthKey)) {
+      return { ok: false, error: monthKey + &#x27;分は振込済み（確定済み）のため自動追加できません&#x27;, locked: true };
+    }
+    sd_ensureCategoryCols_(st.db);
+
+    // 同じsourceKeyの行が既にあれば上書き（冪等）。「外部参照ID」列→見つからなければ旧形式（備考列）の順。
+    var allRows = sd_readRows_(st.db).filter(function (r) { return r.ym === monthKey; });
+    var rows = allRows.filter(function (r) { return r.extRef === sourceKey; });
+    if (!rows.length) rows = allRows.filter(function (r) { return !r.extRef &amp;&amp; r.note === legacyNoteTag; });
+    var note = String(line.note || &#x27;&#x27;);
+    if (rows.length) {
+      var sh = SpreadsheetApp.getActive().getSheetByName(st.db.sheet);
+      var cm = st.db.colMap;
+      var target = rows[0].row;
+      if (cm.kubun) sh.getRange(target, cm.kubun).setValue(kubun);
+      sh.getRange(target, cm.item).setValue(item);
+      sh.getRange(target, cm.amount).setValue(amount);
+      if (cm.tax) sh.getRange(target, cm.tax).setValue(line.tax || &#x27;10%&#x27;);
+      if (cm.account) sh.getRange(target, cm.account).setValue(account);
+      if (cm.subAccount) sh.getRange(target, cm.subAccount).setValue(String(line.subAccount || &#x27;&#x27;));
+      if (cm.note) sh.getRange(target, cm.note).setValue(note);
+      if (cm.extRef) sh.getRange(target, cm.extRef).setValue(sourceKey);
+      sd_clearRowsCache_(st.db.sheet);
+      result = { ok: true, row: target, updated: true, account: account, needsMapping: needsMapping, mappingSource: mappingSource };
+    } else {
+      var ymDate = sd_monthKeyToDate_(monthKey);
+      sd_appendRows_(st.db, ymDate, [{
+        kubun: kubun, item: item, amount: amount, tax: line.tax || &#x27;10%&#x27;,
+        note: note, account: account, subAccount: String(line.subAccount || &#x27;&#x27;), extRef: sourceKey
+      }], &#x27;自動連携（A-8/A-10）&#x27;);
+      sd_clearRowsCache_(st.db.sheet);
+      result = { ok: true, updated: false, account: account, needsMapping: needsMapping, mappingSource: mappingSource };
+    }
+  } finally {
+    lock.releaseLock();
+  }
+
+  // 2026-09-05追加（対象店舗変更対応）: line.previousStoreが指定され今回のstoreと異なる場合、
+  // 旧店舗側に残っている同じsourceKeyの行を削除する（消し忘れによる孤立行・二重計上防止）。
+  // 新店舗への登録が成功した後に行う（先に消してしまうと新規登録が失敗した際にデータが消失するため）。
+  var previousStore = String(line.previousStore || &#x27;&#x27;).trim();
+  if (result &amp;&amp; result.ok &amp;&amp; previousStore &amp;&amp; previousStore !== store) {
+    result.previousStoreCleanup = sd_removeExternalLine_(previousStore, monthKey, sourceKey);
+  }
+  return result;
+}
+/* previousStore側に残った同じsourceKeyの行を削除する。振込済み（ロック中）の場合は確定済みの
+ * 精算書を書き換えないため削除せず、warningとして呼び出し元に伝える（新規登録自体は失敗させない）。 */
+function sd_removeExternalLine_(store, monthKey, sourceKey) {
+  var lock = LockService.getDocumentLock();
+  lock.waitLock(20000);
+  try {
+    var det = sd_detect_();
+    var cfg = sd_config_(sd_masterStores_(det), det);
+    var st = null;
+    cfg.forEach(function (s) { if (s.name === store) st = s; });
+    if (!st || !st.db) return { removed: false, reason: &#x27;旧店舗「&#x27; + store + &#x27;」のDBシートが見つかりません&#x27; };
+    if (sd_isLocked_(store, monthKey)) {
+      return { removed: false, reason: monthKey + &#x27;分は振込済みのため旧店舗側の行は削除されませんでした。手動確認が必要です&#x27;, locked: true };
+    }
+    var legacyNoteTag = &#x27;外部連携:&#x27; + sourceKey;
+    var rows = sd_readRows_(st.db).filter(function (r) { return r.ym === monthKey &amp;&amp; (r.extRef === sourceKey || (!r.extRef &amp;&amp; r.note === legacyNoteTag)); });
+    if (!rows.length) return { removed: false, reason: &#x27;旧店舗側に該当行が見つかりませんでした（既に削除済みの可能性）&#x27; };
+    var sh = SpreadsheetApp.getActive().getSheetByName(st.db.sheet);
+    // 複数行ヒットする異常系に備え、行番号の大きい順に消す（先に消すと後の行番号がずれるため）
+    rows.sort(function (a, b) { return b.row - a.row; }).forEach(function (r) { sh.deleteRow(r.row); });
+    sd_clearRowsCache_(st.db.sheet);
+    return { removed: true, rows: rows.length };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+// sd_removeExternalLine_（内部ヘルパー）の公開版。2026-10-01追加：SMBC GMO PAYMENTのカード売上を
+// 自動取込時点で精算書へ反映していたが、「仕訳を作成」時に汎用の仕組み（seisan_confirm_receivable）
+// が別のsourceKeyで同じ内容を二重登録してしまうことが判明（ユーザー指摘）。取込時点の反映は廃止し
+// 「仕訳を作成」時の反映に一本化したため、取込時点で作ってしまった行（sourceKey先頭&#x27;smbc-card:&#x27;）
+// の掃除に使う。token認証（PL_SYNC_TOKEN）。
+function sd_apiRemoveExternalLine(token, store, monthKey, sourceKey) {
+  var tk = PropertiesService.getScriptProperties().getProperty(&#x27;PL_SYNC_TOKEN&#x27;);
+  if (!tk || String(token || &#x27;&#x27;).trim() !== String(tk).trim()) return { ok: false, error: &#x27;unauthorized&#x27; };
+  return { ok: true, result: sd_removeExternalLine_(store, monthKey, sourceKey) };
+}
+
+/* ================== 2026-09-05追加: MF勘定科目→PL表示科目マッピング（設計書_業務委託精算書自動連携_2026-09-04.md 10章） ==================
+ * Money Forward会計＝正式な勘定科目、精算書/PL＝経営管理上の表示科目、を別概念のまま管理する。
+ * 判定優先順位（設計書10-5・ユーザー確定): 1.明示的な既存マッピング（取引先指定） 2.取引先ごとの
+ * 確定ルール（1と同じ表・取引先の有無で区別） 3.過去実績（同じ店舗・同じ費目名の直近の科目） 4.名称が
+ * そのままPL科目名と一致（構造的デフォルト。約22科目が該当） 5.費目・摘要からのキーワード推定
+ * （既存sd_guessAccount_）。ここで解決できなければ6.人間確認（seisan-dashboard「明細を入力」画面 or
+ * ns-portal側のAI候補→人間確認UIへ委ねる。AIによる自動確定はこのファイルでは一切行わない）。 */
+var SD_MAPPING_HEAD_ = [&#x27;MF勘定科目&#x27;, &#x27;MF補助科目&#x27;, &#x27;取引先&#x27;, &#x27;PL対象ON/OFF&#x27;, &#x27;PL表示科目&#x27;, &#x27;更新日時&#x27;, &#x27;更新者&#x27;];
+// 初期シード（設計書10-1・10-2章。ユーザー確定分のみ。判断が付かない科目=雑損失等はあえて入れない＝人間確認に回す）
+var SD_MAPPING_SEED_ = [
+  [&#x27;仕入高&#x27;, &#x27;&#x27;, &#x27;&#x27;, &#x27;ON&#x27;, &#x27;仕入（食材・飲料）&#x27;],
+  [&#x27;地代家賃&#x27;, &#x27;&#x27;, &#x27;&#x27;, &#x27;ON&#x27;, &#x27;家賃&#x27;],
+  [&#x27;備品・消耗品費&#x27;, &#x27;&#x27;, &#x27;&#x27;, &#x27;ON&#x27;, &#x27;消耗品・備品費&#x27;],
+  [&#x27;退職金&#x27;, &#x27;&#x27;, &#x27;&#x27;, &#x27;ON&#x27;, &#x27;退職金等&#x27;],
+  [&#x27;研修採用費&#x27;, &#x27;&#x27;, &#x27;&#x27;, &#x27;ON&#x27;, &#x27;採用教育費&#x27;],
+  [&#x27;雑給&#x27;, &#x27;&#x27;, &#x27;&#x27;, &#x27;OFF&#x27;, &#x27;&#x27;],        // 給与は別経路(スマレジ→MF給与→N-Style給与振込管理)。原則対象外
+  [&#x27;給料手当&#x27;, &#x27;&#x27;, &#x27;&#x27;, &#x27;OFF&#x27;, &#x27;&#x27;],     // 同上
+  [&#x27;賞与&#x27;, &#x27;&#x27;, &#x27;&#x27;, &#x27;OFF&#x27;, &#x27;&#x27;],        // 同上
+  [&#x27;支払利息&#x27;, &#x27;&#x27;, &#x27;&#x27;, &#x27;OFF&#x27;, &#x27;&#x27;]      // 既存の銀行借入利息PL連携(A-5)と二重計上になるため対象外
+];
+function sd_mappingSheet_() {
+  var ss = SpreadsheetApp.getActive();
+  var sh = ss.getSheetByName(SD_MAPPING_SHEET);
+  if (!sh) {
+    sh = ss.insertSheet(SD_MAPPING_SHEET);
+    sh.getRange(1, 1, 1, SD_MAPPING_HEAD_.length).setValues([SD_MAPPING_HEAD_]);
+    var seedRows = SD_MAPPING_SEED_.map(function (r) { return [r[0], r[1], r[2], r[3], r[4], Utilities.formatDate(new Date(), SD_TZ, &#x27;yyyy-MM-dd&#x27;), &#x27;(初期シード)&#x27;]; });
+    sh.getRange(2, 1, seedRows.length, SD_MAPPING_HEAD_.length).setValues(seedRows);
+    // 2026-09-05修正（実機E2Eで発覚した重大バグ）: insertSheet()直後にgetLastRow()を呼ぶと、
+    // 直前のsetValues()がまだ反映されておらず古い値（0等）を返すことがあるGASの既知の挙動により、
+    // 後続のsd_mappingRows_やsd_apiConfirmMappingの追記処理がヘッダー行(1行目)を追記のつもりで
+    // 上書きしてしまう事故が起きた（PL反映ログ側の同種バグで実機確認済み）。SpreadsheetApp.flush()で
+    // 書き込みを確定させてから返すことで、以降のgetLastRow()が正しい値を返すようにする。
+    SpreadsheetApp.flush();
+  }
+  return sh;
+}
+function sd_mappingRows_() {
+  var sh = sd_mappingSheet_();
+  var lastR = sh.getLastRow();
+  if (lastR &lt; 2) return [];
+  var vals = sh.getRange(2, 1, lastR - 1, SD_MAPPING_HEAD_.length).getValues();
+  var out = [];
+  for (var i = 0; i &lt; vals.length; i++) {
+    var v = vals[i];
+    if (!String(v[0] || &#x27;&#x27;).trim()) continue;
+    out.push({
+      row: i + 2, mfAccount: String(v[0] || &#x27;&#x27;).trim(), mfSubAccount: String(v[1] || &#x27;&#x27;).trim(),
+      vendor: String(v[2] || &#x27;&#x27;).trim(), onOff: String(v[3] || &#x27;&#x27;).trim().toUpperCase() !== &#x27;OFF&#x27;,
+      plAccount: String(v[4] || &#x27;&#x27;).trim()
+    });
+  }
+  return out;
+}
+/* mfAccount(+補助科目+取引先)から確定マッピングを引く。取引先指定行を優先、次に取引先無指定（一般）行。
+ * 補助科目は「行が空欄=どの補助科目でも一致」「行に値あり=完全一致のみ」。 */
+function sd_mappingLookup_(mfAccount, mfSubAccount, vendor) {
+  var rows = sd_mappingRows_().filter(function (r) { return r.mfAccount === mfAccount &amp;&amp; (!r.mfSubAccount || r.mfSubAccount === mfSubAccount); });
+  if (!rows.length) return null;
+  var withVendor = vendor ? rows.filter(function (r) { return r.vendor === vendor; }) : [];
+  var hit = withVendor.length ? withVendor[0] : rows.filter(function (r) { return !r.vendor; })[0];
+  if (!hit) return null;
+  return { account: hit.onOff ? hit.plAccount : &#x27;対象外&#x27;, source: hit.vendor ? &#x27;mapping-vendor&#x27; : &#x27;mapping-general&#x27; };
+}
+/* 優先順位1〜5をこの順で試す。店舗が分かれば3(過去実績)も試す。resolved:nullなら人間確認が必要。 */
+function sd_resolveMapping_(store, mfAccount, mfSubAccount, vendor, item) {
+  if (mfAccount) {
+    var hit = sd_mappingLookup_(mfAccount, mfSubAccount, vendor);
+    if (hit) return hit;
+  }
+  if (store &amp;&amp; item) {
+    try {
+      var det = sd_detect_();
+      var cfg = sd_config_(sd_masterStores_(det), det);
+      var st = null;
+      cfg.forEach(function (s) { if (s.name === store) st = s; });
+      if (st &amp;&amp; st.db) {
+        var hist = sd_readRows_(st.db).filter(function (r) { return sd_norm_(r.item) === sd_norm_(item) &amp;&amp; r.account &amp;&amp; r.account !== &#x27;対象外&#x27;; });
+        if (hist.length) return { account: hist[hist.length - 1].account, source: &#x27;history&#x27; };
+      }
+    } catch (eH) { /* 履歴が引けなくても他の手段にフォールバックする */ }
+  }
+  if (mfAccount &amp;&amp; SD_ACCOUNT_LIST.indexOf(mfAccount) &gt;= 0) return { account: mfAccount, source: &#x27;name-match&#x27; };
+  if (item) {
+    var guess = sd_guessAccount_(item);
+    if (guess) return { account: guess, source: &#x27;keyword&#x27; };
+  }
+  return null;
+}
+/* ns-portal等から「このMF科目・この費目ならPL科目は何か」を事前に問い合わせるための読み取り専用API。
+ * 呼び出し側はこの結果が resolved:false のときだけ自前のAI候補提示→人間確認へ進む
+ * （設計書10-5: AIが分からないものを勝手に分類しない・ここでは常に確定済みルールの範囲でのみ答える）。
+ * 呼び出し例: POST {fn:&#x27;sd_apiSuggestMapping&#x27;, args:[token,
+ *   {store, mfAccount, mfSubAccount, vendor, item}]} */
+function sd_apiSuggestMapping(token, params) {
+  var tk = PropertiesService.getScriptProperties().getProperty(&#x27;PL_SYNC_TOKEN&#x27;);
+  if (!tk || String(token || &#x27;&#x27;).trim() !== String(tk).trim()) return { ok: false, error: &#x27;unauthorized&#x27; };
+  params = params || {};
+  var resolved = sd_resolveMapping_(String(params.store || &#x27;&#x27;), String(params.mfAccount || &#x27;&#x27;).trim(),
+    String(params.mfSubAccount || &#x27;&#x27;).trim(), String(params.vendor || &#x27;&#x27;).trim(), String(params.item || &#x27;&#x27;).trim());
+  if (!resolved) return { ok: true, resolved: false };
+  return { ok: true, resolved: true, account: resolved.account, source: resolved.source };
+}
+/* 人間が未設定項目のPL科目を確定した結果を、次回以降のデフォルトとして書き戻す
+ * （設計書10-5: 人間が確定した結果は次回以降の候補・ルールとして再利用できる設計にする）。
+ * vendorを指定すれば取引先限定ルール、空文字なら一般ルールとして保存する（既存の同一キーの行があれば上書き）。
+ * 呼び出し例: POST {fn:&#x27;sd_apiConfirmMapping&#x27;, args:[token,
+ *   {mfAccount, mfSubAccount, vendor, account, onOff, user}]} */
+function sd_apiConfirmMapping(token, params) {
+  var tk = PropertiesService.getScriptProperties().getProperty(&#x27;PL_SYNC_TOKEN&#x27;);
+  if (!tk || String(token || &#x27;&#x27;).trim() !== String(tk).trim()) return { ok: false, error: &#x27;unauthorized&#x27; };
+  params = params || {};
+  var mfAccount = String(params.mfAccount || &#x27;&#x27;).trim();
+  if (!mfAccount) return { ok: false, error: &#x27;mfAccountが空です&#x27; };
+  var onOff = params.onOff !== false &amp;&amp; params.onOff !== &#x27;OFF&#x27;;
+  var account = String(params.account || &#x27;&#x27;).trim();
+  if (onOff &amp;&amp; !account) return { ok: false, error: &#x27;PL対象ONの場合はaccount（PL表示科目）が必須です&#x27; };
+  var mfSubAccount = String(params.mfSubAccount || &#x27;&#x27;).trim();
+  var vendor = String(params.vendor || &#x27;&#x27;).trim();
+  var lock = LockService.getDocumentLock();
+  lock.waitLock(15000);
+  try {
+    var sh = sd_mappingSheet_();
+    var rows = sd_mappingRows_();
+    var hit = rows.filter(function (r) { return r.mfAccount === mfAccount &amp;&amp; r.mfSubAccount === mfSubAccount &amp;&amp; r.vendor === vendor; })[0];
+    var now = Utilities.formatDate(new Date(), SD_TZ, &#x27;yyyy-MM-dd HH:mm&#x27;);
+    var user = String(params.user || &#x27;&#x27;);
+    if (hit) {
+      sh.getRange(hit.row, 4, 1, 4).setValues([[onOff ? &#x27;ON&#x27; : &#x27;OFF&#x27;, onOff ? account : &#x27;&#x27;, now, user]]);
+    } else {
+      var lastR = sh.getLastRow();
+      sh.getRange(lastR + 1, 1, 1, 7).setValues([[mfAccount, mfSubAccount, vendor, onOff ? &#x27;ON&#x27; : &#x27;OFF&#x27;, onOff ? account : &#x27;&#x27;, now, user]]);
+    }
+    return { ok: true };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/* ================== 2026-09-05追加: PL反映ログ（設計書_業務委託精算書自動連携_2026-09-04.md 9-2/5-3章) ==================
+ * tori-dashboard側のsyncSeisanCategoriesToPlが店舗×月の同期を試みるたびに結果を書き戻す。
+ * ここでは「店舗×月」単位でしか成否が分からない（現在のPL連携が集計後の値をまとめて書く方式のため）ので、
+ * 個別明細1件ごとの反映有無は断定しない（sd_apiGetLinesのplStatus参照）。 */
+var SD_PLSYNC_HEAD_ = [&#x27;店舗名&#x27;, &#x27;対象月&#x27;, &#x27;最終試行結果&#x27;, &#x27;最終成功日時&#x27;, &#x27;最終エラー内容&#x27;, &#x27;更新日時&#x27;];
+function sd_plSyncLogSheet_() {
+  var ss = SpreadsheetApp.getActive();
+  var sh = ss.getSheetByName(SD_PLSYNC_LOG_SHEET);
+  if (!sh) {
+    sh = ss.insertSheet(SD_PLSYNC_LOG_SHEET);
+    sh.getRange(1, 1, 1, SD_PLSYNC_HEAD_.length).setValues([SD_PLSYNC_HEAD_]);
+    // 2026-09-05修正（実機E2Eで発覚した別の重大バグ）: sd_mappingSheet_と同じ理由でflush()が必要。
+    // これが無いと、直後のsd_plSyncLogSet_内のgetLastRow()が0を誤って返し、初回書き込みが
+    // ヘッダー行(1行目)を追記のつもりで上書きしてしまい、以降ずっと「同期ログが見つからない」
+    // （plStatusが常にPL同期待ちのまま進まない）という不具合になっていた。
+    SpreadsheetApp.flush();
+  }
+  // 2026-09-05修正: 「対象月」列（B列）に&quot;2026-08&quot;を書き込むと、Google Sheetsが自動的に
+  // 日付として解釈・変換してしまい（表示上は分からないがgetValues()で読むとDateオブジェクトになる）、
+  // 文字列比較のsd_plSyncLogGet_が常に一致せずログが見つからない不具合の原因になっていた。
+  // 列をプレーンテキスト書式にしておくことで、今後の書き込みでは変換されなくなる（新規作成時だけでなく
+  // 既存シートに対しても毎回かけ直す＝既に自動変換されてしまっている環境を後から救済するため。
+  // 既存の壊れた行自体はsd_plSyncLogAll_側でDate/文字列どちらでも読めるようにして救済する）。
+  sh.getRange(2, 2, Math.max(sh.getMaxRows() - 1, 1), 1).setNumberFormat(&#x27;@&#x27;);
+  return sh;
+}
+function sd_plSyncLogAll_() {
+  var sh = sd_plSyncLogSheet_();
+  var lastR = sh.getLastRow();
+  if (lastR &lt; 2) return [];
+  var vals = sh.getRange(2, 1, lastR - 1, SD_PLSYNC_HEAD_.length).getValues();
+  var out = [];
+  for (var i = 0; i &lt; vals.length; i++) {
+    var v = vals[i];
+    if (!String(v[0] || &#x27;&#x27;).trim()) continue;
+    // 対象月がGoogle Sheetsによって日付型に自動変換されてしまった既存行も読めるようにする
+    // （sd_plSyncLogSheet_のプレーンテキスト書式修正より前に書かれた行の救済）。
+    var mk = (v[1] instanceof Date) ? sd_fmtMonth_(v[1]) : String(v[1] || &#x27;&#x27;).trim();
+    out.push({
+      row: i + 2, store: String(v[0] || &#x27;&#x27;).trim(), monthKey: mk,
+      lastAttemptOk: String(v[2] || &#x27;&#x27;) === &#x27;OK&#x27;, lastOkAt: v[3] ? String(v[3]) : &#x27;&#x27;,
+      lastError: String(v[4] || &#x27;&#x27;)
+    });
+  }
+  return out;
+}
+function sd_plSyncLogGet_(store, monthKey) {
+  var rows = sd_plSyncLogAll_().filter(function (r) { return r.store === store &amp;&amp; r.monthKey === monthKey; });
+  return rows.length ? rows[0] : null;
+}
+function sd_plSyncLogSet_(store, monthKey, result) {
+  var lock = LockService.getDocumentLock();
+  lock.waitLock(15000);
+  try {
+    var sh = sd_plSyncLogSheet_();
+    var existing = sd_plSyncLogGet_(store, monthKey);
+    var now = new Date().toISOString();
+    var ok = !!(result &amp;&amp; result.ok);
+    var syncedAt = (result &amp;&amp; result.syncedAt) || now;
+    if (existing) {
+      sh.getRange(existing.row, 3, 1, 4).setValues([[
+        ok ? &#x27;OK&#x27; : &#x27;ERROR&#x27;,
+        ok ? syncedAt : existing.lastOkAt, // 失敗時は直近の成功日時をそのまま残す（過去の成功実績を消さない）
+        ok ? &#x27;&#x27; : String((result &amp;&amp; result.error) || &#x27;&#x27;),
+        now
+      ]]);
+    } else {
+      var lastR = sh.getLastRow();
+      sh.getRange(lastR + 1, 1, 1, 6).setValues([[store, monthKey, ok ? &#x27;OK&#x27; : &#x27;ERROR&#x27;, ok ? syncedAt : &#x27;&#x27;, ok ? &#x27;&#x27; : String((result &amp;&amp; result.error) || &#x27;&#x27;), now]]);
+    }
+    return true;
+  } finally {
+    lock.releaseLock();
+  }
+}
+/* tori-dashboard側のsyncSeisanCategoriesToPlから、店舗×月の同期試行結果を都度書き戻してもらうAPI。
+ * 呼び出し例: POST {fn:&#x27;sd_apiMarkPlSynced&#x27;, args:[token, store, monthKey, {ok, error, syncedAt}]} */
+function sd_apiMarkPlSynced(token, store, monthKey, result) {
+  var tk = PropertiesService.getScriptProperties().getProperty(&#x27;PL_SYNC_TOKEN&#x27;);
+  if (!tk || String(token || &#x27;&#x27;).trim() !== String(tk).trim()) return { ok: false, error: &#x27;unauthorized&#x27; };
+  if (!/^\d{4}-\d{2}$/.test(String(monthKey || &#x27;&#x27;))) return { ok: false, error: &#x27;年月が不正です（例: 2026-08）&#x27; };
+  if (!store) return { ok: false, error: &#x27;店舗名が空です&#x27; };
+  sd_plSyncLogSet_(store, monthKey, result || {});
+  return { ok: true };
+}
+
+/* ================== 2026-09-05追加: invoice連携の状態取得（設計書5-2・9-2章) ==================
+ * ns-portalが登録済み明細を(store,monthKey,sourceKey)の組で問い合わせ、現在値とPL反映状態(6状態モデル。
+ * 「PL反映済み（個別確認済み）」は現段階の実装では絶対に返さない＝店舗×月の集計同期以上の粒度を
+ * 保証できないため)をまとめて取得するための読み取り専用API。store単位でグルーピングしシート読み込みを
+ * 最小化する。呼び出し例: POST {fn:&#x27;sd_apiGetLines&#x27;, args:[token, [{store,monthKey,sourceKey},...]]} */
+function sd_deriveLineStatus_(store, monthKey, row) {
+  if (!row) return null;
+  var account = row.account || &#x27;&#x27;;
+  if (!account) return &#x27;PL科目未設定&#x27;;
+  if (account === &#x27;対象外&#x27;) return &#x27;PL対象外&#x27;;
+  if (!sd_isLocked_(store, monthKey)) return &#x27;振込確定待ち&#x27;;
+  var log = sd_plSyncLogGet_(store, monthKey);
+  if (!log) return &#x27;PL同期待ち&#x27;;
+  if (!log.lastAttemptOk) return &#x27;PLエラー&#x27;;
+  // 注: ここでは「店舗×月の同期が最後に成功した」ことしか分からず、この明細個別が実際にDB_PLへ
+  // 入ったことまでは検証できない（現在のPL連携が勘定科目×補助科目の集計値をまとめて書く方式のため。
+  // 設計書2章末尾）。ユーザー指示のとおり「PL反映済み（個別確認済み）」は絶対に返さない。
+  return &#x27;店舗月次PL同期実行済み（個別反映未検証）&#x27;;
+}
+function sd_apiGetLines(token, items) {
+  var tk = PropertiesService.getScriptProperties().getProperty(&#x27;PL_SYNC_TOKEN&#x27;);
+  if (!tk || String(token || &#x27;&#x27;).trim() !== String(tk).trim()) return { ok: false, error: &#x27;unauthorized&#x27; };
+  items = Array.isArray(items) ? items : [];
+  if (!items.length) return { ok: true, lines: [] };
+  var det = sd_detect_();
+  var cfg = sd_config_(sd_masterStores_(det), det);
+  var byStore = {};
+  items.forEach(function (it) { (byStore[it.store] = byStore[it.store] || []).push(it); });
+  var rowsByStore = {}; // store -&gt; sd_readRows_結果（1回だけ読む）
+  var out = [];
+  Object.keys(byStore).forEach(function (storeName) {
+    var st = null;
+    cfg.forEach(function (s) { if (s.name === storeName) st = s; });
+    var reqs = byStore[storeName];
+    if (!st || !st.db) {
+      reqs.forEach(function (it) { out.push({ store: storeName, monthKey: it.monthKey, sourceKey: it.sourceKey, found: false, error: &#x27;店舗またはDBシートが見つかりません&#x27; }); });
+      return;
+    }
+    if (!rowsByStore[storeName]) rowsByStore[storeName] = sd_readRowsCached_(st.db);
+    var allRows = rowsByStore[storeName];
+    reqs.forEach(function (it) {
+      var monthKey = it.monthKey, sourceKey = it.sourceKey;
+      var candidates = allRows.filter(function (r) { return r.ym === monthKey &amp;&amp; r.extRef === sourceKey; });
+      if (!candidates.length) candidates = allRows.filter(function (r) { return r.ym === monthKey &amp;&amp; !r.extRef &amp;&amp; r.note === &#x27;外部連携:&#x27; + sourceKey; });
+      var row = candidates[0];
+      if (!row) { out.push({ store: storeName, monthKey: monthKey, sourceKey: sourceKey, found: false }); return; }
+      out.push({
+        store: storeName, monthKey: monthKey, sourceKey: sourceKey, found: true,
+        item: row.item, amount: row.amount, tax: row.tax, account: row.account, subAccount: row.subAccount, note: row.note,
+        locked: sd_isLocked_(storeName, monthKey), plStatus: sd_deriveLineStatus_(storeName, monthKey, row)
+      });
+    });
+  });
+  return { ok: true, lines: out };
+}
+
+/* 2026-09-23追加（秋葉原肉寿司2026-08の4行が found:false になる件の切り分け用・一時診断）。
+ * sd_apiGetLinesと違って完全一致判定をせず、対象店舗×月の全行のext参照ID等を生の文字コード
+ * 込みで返す。見た目は同じでも全角/半角・見えない文字が混ざっていないかを確認するのが目的。
+ * 調査が終わったらSD_API_WHITELIST/sd_apiFnMap_ともどもこの関数ごと削除してよい。 */
+function sd_apiDebugExtRef(token, store, monthKey) {
+  var tk = PropertiesService.getScriptProperties().getProperty(&#x27;PL_SYNC_TOKEN&#x27;);
+  if (!tk || String(token || &#x27;&#x27;).trim() !== String(tk).trim()) return { ok: false, error: &#x27;unauthorized&#x27; };
+  var det = sd_detect_();
+  var cfg = sd_config_(sd_masterStores_(det), det);
+  var st = null;
+  cfg.forEach(function (s) { if (s.name === store) st = s; });
+  if (!st || !st.db) return { ok: false, error: &#x27;店舗またはDBシートが見つかりません: &#x27; + store };
+  var colMap = st.db.colMap;
+  var rows = sd_readRows_(st.db).filter(function (r) { return r.ym === monthKey; });
+  var out = rows.map(function (r) {
+    var codes = [];
+    for (var i = 0; i &lt; r.extRef.length; i++) codes.push(r.extRef.charCodeAt(i));
+    return { row: r.row, item: r.item, account: r.account, extRef: r.extRef, extRefLen: r.extRef.length, extRefCharCodes: codes, note: r.note };
+  });
+  return { ok: true, colMap: colMap, rows: out };
+}
+
+/* DBシートへの行追加（共通） */
+function sd_appendRows_(db, ymDate, rows, editor) {
+  var sh = SpreadsheetApp.getActive().getSheetByName(db.sheet);
+  var cm = db.colMap, hr = db.headerRow;
+  var width = 0;
+  Object.keys(cm).forEach(function (k) { if (cm[k] &gt; width) width = cm[k]; });
+  var lastR = sh.getLastRow();
+  var lastData = hr;
+  if (lastR &gt; hr) {
+    var vals = sh.getRange(hr + 1, 1, lastR - hr, width).getValues();
+    for (var i = vals.length - 1; i &gt;= 0; i--) {
+      var v = vals[i];
+      if (v[cm.ym - 1] || String(v[cm.item - 1]).trim() || String(v[cm.kubun - 1]).trim()) {
+        lastData = hr + 1 + i;
+        break;
+      }
+    }
+  }
+  var atStr = Utilities.formatDate(new Date(), SD_TZ, &#x27;M/d&#x27;);
+  var out = rows.map(function (r) {
+    var arr = [];
+    for (var c = 0; c &lt; width; c++) arr.push(&#x27;&#x27;);
+    arr[cm.ym - 1] = ymDate;
+    arr[cm.kubun - 1] = r.kubun || &#x27;変動費&#x27;;
+    arr[cm.item - 1] = String(r.item).trim();
+    arr[cm.amount - 1] = Number(r.amount);
+    if (cm.tax) arr[cm.tax - 1] = r.tax || &#x27;10%&#x27;;
+    if (cm.note) arr[cm.note - 1] = String(r.note || &#x27;&#x27;);
+    if (cm.editor) arr[cm.editor - 1] = String(editor || &#x27;&#x27;);
+    if (cm.at) arr[cm.at - 1] = atStr;
+    if (cm.account) arr[cm.account - 1] = String(r.account || &#x27;&#x27;);
+    if (cm.subAccount) arr[cm.subAccount - 1] = String(r.subAccount || &#x27;&#x27;);
+    if (cm.extRef) arr[cm.extRef - 1] = String(r.extRef || &#x27;&#x27;); // 2026-09-05追加（invoice連携）
+    return arr;
+  });
+  sh.getRange(lastData + 1, 1, out.length, width).setValues(out);
+  return out.length;
+}
+
+/* ---------- ① 現金売上の自動取込 ---------- */
+
+function sd_cashPreview(token, monthKey) {
+  var user = sd_auth_(token, true);
+  var ext = sd_extConfig_();
+  var det = sd_detect_();
+  var cfg = sd_config_(sd_masterStores_(det), det);
+  var sums = sd_cashSums_(ext, monthKey, cfg);
+  var out = cfg.map(function (st) {
+    var rows = st.db ? sd_readRows_(st.db).filter(function (r) {
+      return r.ym === monthKey &amp;&amp; sd_norm_(r.kubun) === &#x27;売上&#x27; &amp;&amp; sd_norm_(r.item).indexOf(&#x27;現金売上&#x27;) &gt; -1;
+    }) : [];
+    return {
+      store: st.name,
+      salesName: st.salesName,
+      amount: sums[sd_norm_(st.salesName)] != null ? sums[sd_norm_(st.salesName)] : null,
+      days: sums[&#x27;days_&#x27; + sd_norm_(st.salesName)] || 0,
+      already: rows.length ? rows.map(function (r) { return r.item + &#x27;（¥&#x27; + r.amount.toLocaleString() + &#x27;）&#x27;; }) : []
+    };
+  });
+  return { month: monthKey, monthLabel: sd_monthLabel_(monthKey), items: out };
+}
+
+function sd_cashApply(token, monthKey, storeNames) {
+  var user = sd_auth_(token, true);
+  // 振込済みの店舗はマスター以外は対象外にする（エラーにせずスキップ）
+  var skipped = [];
+  if (user.role !== &#x27;マスター&#x27;) {
+    var allowed = [];
+    (storeNames || []).forEach(function (nm) {
+      if (sd_isLocked_(nm, monthKey)) skipped.push(nm + &#x27;: 🔒振込済みのためスキップ&#x27;);
+      else allowed.push(nm);
+    });
+    storeNames = allowed;
+    if (!storeNames.length) return { ok: true, results: skipped.length ? skipped : [&#x27;対象店舗がありません&#x27;] };
+  }
+  var res = sd_cashApplyCore_(monthKey, storeNames, user.name, false);
+  res.results = skipped.concat(res.results);
+  return res;
+}
+
+/* 現金売上の取込コア（手動API・自動トリガーの両方から使用）。
+ * storeNames が null の場合は全店舗を対象にする。
+ * skipIfExists=true のときは、既に現金売上が入っている月・店舗はスキップ（自動取込の二重登録防止）。 */
+function sd_cashApplyCore_(monthKey, storeNames, editorName, skipIfExists) {
+  var lock = LockService.getDocumentLock();
+  lock.waitLock(20000);
+  try {
+    var ext = sd_extConfig_();
+    var det = sd_detect_();
+    var cfg = sd_config_(sd_masterStores_(det), det);
+    var sums = sd_cashSums_(ext, monthKey, cfg);
+    var d = sd_monthKeyToDate_(monthKey);
+    var results = [];
+    cfg.forEach(function (st) {
+      if (storeNames &amp;&amp; storeNames.indexOf(st.name) &lt; 0) return;
+      if (!st.db) { results.push(st.name + &#x27;: DBシート未検出&#x27;); return; }
+      var existingCashRows = sd_readRows_(st.db).filter(function (r) {
+        return r.ym === monthKey &amp;&amp; sd_norm_(r.kubun) === &#x27;売上&#x27; &amp;&amp; sd_norm_(r.item).indexOf(&#x27;現金売上&#x27;) &gt; -1;
+      });
+      if (skipIfExists) {
+        if (existingCashRows.length) { results.push(st.name + &#x27;: 既に現金売上あり（スキップ）&#x27;); return; }
+      }
+      var amt = sums[sd_norm_(st.salesName)];
+      if (amt == null) { results.push(st.name + &#x27;: 売上シートにデータなし&#x27;); return; }
+      var item = (d.getMonth() + 1) + &#x27;月現金売上&#x27;;
+      if (existingCashRows.length) {
+        // 既に現金売上の行があれば、新規追加せず上書き更新する（重複防止）
+        sd_updateCashRow_(st.db, existingCashRows[0].row, item, amt, editorName);
+        sd_clearRowsCache_(st.db.sheet);
+        var dupNote = existingCashRows.length &gt; 1 ? &#x27;　※他に&#x27; + (existingCashRows.length - 1) + &#x27;件の重複行あり・要確認&#x27; : &#x27;&#x27;;
+        results.push(st.name + &#x27;: ¥&#x27; + amt.toLocaleString() + &#x27; に更新&#x27; + dupNote);
+        return;
+      }
+      sd_appendRows_(st.db, d, [{
+        kubun: &#x27;売上&#x27;, item: item, amount: amt, tax: &#x27;10%&#x27;,
+        note: &#x27;分析_日別店舗より自動取込&#x27;
+      }], editorName);
+      sd_clearRowsCache_(st.db.sheet);
+      results.push(st.name + &#x27;: ¥&#x27; + amt.toLocaleString() + &#x27; を登録&#x27;);
+    });
+    return { ok: true, results: results };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/* 既存の現金売上行を上書き更新（現金取込の再実行で重複行が増えないようにするため） */
+function sd_updateCashRow_(db, row, item, amt, editorName) {
+  var sh = SpreadsheetApp.getActive().getSheetByName(db.sheet);
+  var cm = db.colMap;
+  if (!cm.edited) {
+    var width = 0;
+    Object.keys(cm).forEach(function (k) { if (cm[k] &gt; width) width = cm[k]; });
+    sh.getRange(db.headerRow, width + 1).setValue(&#x27;修正日&#x27;);
+    cm.edited = width + 1;
+  }
+  sh.getRange(row, cm.item).setValue(item);
+  sh.getRange(row, cm.amount).setValue(amt);
+  if (cm.note) sh.getRange(row, cm.note).setValue(&#x27;分析_日別店舗より自動取込（更新）&#x27;);
+  if (cm.editor) sh.getRange(row, cm.editor).setValue(String(editorName || &#x27;&#x27;));
+  if (cm.at) sh.getRange(row, cm.at).setValue(Utilities.formatDate(new Date(), SD_TZ, &#x27;M/d&#x27;));
+  sh.getRange(row, cm.edited).setValue(Utilities.formatDate(new Date(), SD_TZ, &#x27;M/d&#x27;) + &#x27; &#x27; + (editorName || &#x27;&#x27;));
+}
+
+function sd_cashSums_(ext, monthKey, cfg) {
+  var sid = ext[&#x27;売上スプレッドシートID&#x27;];
+  if (!sid) throw new Error(&#x27;設定_外部連携 に売上スプレッドシートIDがありません&#x27;);
+  var ss;
+  try { ss = SpreadsheetApp.openById(sid); }
+  catch (e) { throw new Error(&#x27;売上スプレッドシートを開けません。共有設定を確認してください（&#x27; + e.message + &#x27;）&#x27;); }
+  var sh = ss.getSheetByName(ext[&#x27;売上シート名&#x27;] || &#x27;分析_日別店舗&#x27;);
+  if (!sh) throw new Error(&#x27;売上シート「&#x27; + (ext[&#x27;売上シート名&#x27;] || &#x27;分析_日別店舗&#x27;) + &#x27;」が見つかりません&#x27;);
+  var cDate = sd_colLetterToNum_(ext[&#x27;売上_日付列&#x27;] || &#x27;A&#x27;);
+  var cStore = sd_colLetterToNum_(ext[&#x27;売上_店舗名列&#x27;] || &#x27;J&#x27;);
+  var cCash = sd_colLetterToNum_(ext[&#x27;売上_現金列&#x27;] || &#x27;T&#x27;);
+  var lastR = sh.getLastRow();
+  var width = Math.max(cDate, cStore, cCash);
+  var wanted = {};
+  cfg.forEach(function (st) { wanted[sd_norm_(st.salesName)] = true; });
+  var mDate = sd_monthKeyToDate_(monthKey);
+  var y = mDate.getFullYear(), mo = mDate.getMonth();
+  var sums = {};
+  var CHUNK = 5000;
+  for (var start = 2; start &lt;= lastR; start += CHUNK) {
+    var n = Math.min(CHUNK, lastR - start + 1);
+    var vals = sh.getRange(start, 1, n, width).getValues();
+    for (var i = 0; i &lt; vals.length; i++) {
+      var dt = vals[i][cDate - 1];
+      if (!(dt instanceof Date) || dt.getFullYear() !== y || dt.getMonth() !== mo) continue;
+      var nm = sd_norm_(vals[i][cStore - 1]);
+      if (!wanted[nm]) continue;
+      var v = Number(vals[i][cCash - 1]) || 0;
+      sums[nm] = (sums[nm] || 0) + v;
+      sums[&#x27;days_&#x27; + nm] = (sums[&#x27;days_&#x27; + nm] || 0) + (v !== 0 ? 1 : 0);
+    }
+  }
+  Object.keys(sums).forEach(function (k) {
+    if (k.indexOf(&#x27;days_&#x27;) !== 0) sums[k] = Math.round(sums[k]);
+  });
+  return sums;
+}
+
+/* ---------- 売上照合（S列 支払合計 の月合計を店舗別に集計） ----------
+ * 精算書に入力された売上合計と、売上シート側の実売上（支払合計）を突き合わせる指標。
+ * 月切替のたびに呼ばれるので CacheService に10分キャッシュ。 */
+function sd_paySums_(ext, monthKey, cfg) {
+  var sid = ext[&#x27;売上スプレッドシートID&#x27;];
+  if (!sid) return null; // 売上シート未設定なら照合しない
+  var ss;
+  try { ss = SpreadsheetApp.openById(sid); } catch (e) { return null; }
+  var sh = ss.getSheetByName(ext[&#x27;売上シート名&#x27;] || &#x27;分析_日別店舗&#x27;);
+  if (!sh) return null;
+  var cDate = sd_colLetterToNum_(ext[&#x27;売上_日付列&#x27;] || &#x27;A&#x27;);
+  var cStore = sd_colLetterToNum_(ext[&#x27;売上_店舗名列&#x27;] || &#x27;J&#x27;);
+  var cPay = sd_colLetterToNum_(ext[&#x27;売上_支払合計列&#x27;] || &#x27;S&#x27;);
+  var lastR = sh.getLastRow();
+  var width = Math.max(cDate, cStore, cPay);
+  var wanted = {};
+  cfg.forEach(function (st) { wanted[sd_norm_(st.salesName)] = true; });
+  var mDate = sd_monthKeyToDate_(monthKey);
+  var y = mDate.getFullYear(), mo = mDate.getMonth();
+  var sums = {};
+  var CHUNK = 5000;
+  for (var start = 2; start &lt;= lastR; start += CHUNK) {
+    var n = Math.min(CHUNK, lastR - start + 1);
+    var vals = sh.getRange(start, 1, n, width).getValues();
+    for (var i = 0; i &lt; vals.length; i++) {
+      var dt = vals[i][cDate - 1];
+      if (!(dt instanceof Date) || dt.getFullYear() !== y || dt.getMonth() !== mo) continue;
+      var nm = sd_norm_(vals[i][cStore - 1]);
+      if (!wanted[nm]) continue;
+      sums[nm] = (sums[nm] || 0) + (Number(vals[i][cPay - 1]) || 0);
+    }
+  }
+  Object.keys(sums).forEach(function (k) { sums[k] = Math.round(sums[k]); });
+  return sums;
+}
+
+function sd_paySumsCached_(ext, monthKey, cfg) {
+  if (!ext[&#x27;売上スプレッドシートID&#x27;]) return null;
+  var cache = CacheService.getScriptCache();
+  var key = &#x27;sdpay_&#x27; + monthKey;
+  var hit = cache.get(key);
+  if (hit) { try { return JSON.parse(hit); } catch (e) { /* 読み直す */ } }
+  var sums = sd_paySums_(ext, monthKey, cfg);
+  if (sums) { try { cache.put(key, JSON.stringify(sums), 600); } catch (e) { /* 無視 */ } }
+  return sums;
+}
+
+/* ---------- ② PDFプレビュー／メール送信／翌月準備 ---------- */
+
+function sd_sendSheetInfo_(det) {
+  if (!det.sendSheet) throw new Error(&#x27;精算書の送付シート（「★ 店舗を選択」があるシート）が見つかりません&#x27;);
+  var sh = SpreadsheetApp.getActive().getSheetByName(det.sendSheet.sheet);
+  var rows = Math.min(sh.getLastRow(), 15);
+  var cols = Math.min(sh.getLastColumn(), 12);
+  var vals = sh.getRange(1, 1, rows, cols).getDisplayValues();
+  var info = { sheet: sh, gid: sh.getSheetId(), storeCell: null, monthCell: null, titleRow: 0 };
+  for (var r = 0; r &lt; rows; r++) {
+    for (var c = 0; c &lt; cols; c++) {
+      var t = sd_norm_(vals[r][c]);
+      if (!info.storeCell &amp;&amp; t.indexOf(&#x27;★店舗を選択&#x27;) &gt; -1) info.storeCell = [r + 1, c + 2];
+      if (!info.monthCell &amp;&amp; t.indexOf(&#x27;★対象月を選択&#x27;) &gt; -1) info.monthCell = [r + 1, c + 2];
+      if (!info.titleRow &amp;&amp; String(vals[r][c]).indexOf(&#x27;業務委託精算書&#x27;) &gt; -1) info.titleRow = r + 1;
+    }
+  }
+  if (!info.storeCell || !info.monthCell) throw new Error(&#x27;送付シートの「★ 店舗を選択」「★ 対象月を選択」セルが見つかりません&#x27;);
+  if (!info.titleRow) info.titleRow = Math.max(info.monthCell[0] + 2, 7);
+  return info;
+}
+
+/* ---------- 精算書PDFの自前生成（ダッシュボードの正しい計算から） ----------
+ * 既存の「精算書 送付」シートの数式に依存せず、DBを直接集計してHTML→PDF化。
+ * これにより売上明細が何件でも正確に反映され、空欄も出ない。
+ */
+function sd_escHtml_(s) {
+  return String(s == null ? &#x27;&#x27; : s).replace(/[&amp;&lt;&gt;&quot;&#x27;]/g, function (c) {
+    return { &#x27;&amp;&#x27;: &#x27;&amp;amp;&#x27;, &#x27;&lt;&#x27;: &#x27;&amp;lt;&#x27;, &#x27;&gt;&#x27;: &#x27;&amp;gt;&#x27;, &#x27;&quot;&#x27;: &#x27;&amp;quot;&#x27;, &quot;&#x27;&quot;: &#x27;&amp;#39;&#x27; }[c];
+  });
+}
+function sd_yen_(n) { return &#x27;¥&#x27; + Math.round(Number(n) || 0).toLocaleString(&#x27;en-US&#x27;); }
+
+function sd_buildSeisanHtml_(store, monthKey) {
+  var det = sd_detect_();
+  var ext = sd_extConfig_();
+  var cfg = sd_config_(sd_masterStores_(det), det);
+  var st = null;
+  cfg.forEach(function (s) { if (s.name === store) st = s; });
+  if (!st) throw new Error(&#x27;店舗が見つかりません: &#x27; + store);
+  if (!st.db) throw new Error(&#x27;店舗「&#x27; + store + &#x27;」のDBシートが見つかりません&#x27;);
+
+  var ci = sd_clientInfoAt_(st, monthKey); // 対象月の委託先（運営変更で切り替わる店舗は期間設定を反映）
+  var rows = sd_readRowsCached_(st.db);
+  var s = sd_settle_(rows, monthKey, st.rate, st.fixed, st.salesName);
+  var d = sd_monthKeyToDate_(monthKey);
+  var monthLabel = d.getFullYear() + &#x27;年&#x27; + (d.getMonth() + 1) + &#x27;月&#x27;;
+  var today = Utilities.formatDate(new Date(), SD_TZ, &#x27;yyyy/M/d&#x27;);
+
+  function taxDisp(t) { t = sd_norm_(t); return t || &#x27;10%&#x27;; }
+  function rowsHtml(list) {
+    return list.map(function (r) {
+      return &#x27;&lt;tr&gt;&lt;td&gt;&#x27; + sd_escHtml_(r.item) + &#x27;&lt;/td&gt;&#x27;
+        + &#x27;&lt;td class=&quot;num&quot;&gt;&#x27; + sd_yen_(r.amount) + &#x27;&lt;/td&gt;&#x27;
+        + &#x27;&lt;td class=&quot;c&quot;&gt;&#x27; + sd_escHtml_(taxDisp(r.tax)) + &#x27;&lt;/td&gt;&#x27;
+        + &#x27;&lt;td&gt;&#x27; + sd_escHtml_(r.note || &#x27;&#x27;) + &#x27;&lt;/td&gt;&lt;/tr&gt;&#x27;;
+    }).join(&#x27;&#x27;);
+  }
+  var f = st.fixed || {};
+  var fixedRows = &#x27;&#x27;;
+  function fr(label, v) { return v ? &#x27;&lt;tr&gt;&lt;td&gt;&#x27; + label + &#x27;&lt;/td&gt;&lt;td class=&quot;num&quot;&gt;&#x27; + sd_yen_(v) + &#x27;&lt;/td&gt;&lt;/tr&gt;&#x27; : &#x27;&#x27;; }
+  fixedRows += fr(&#x27;家賃&#x27;, f.rent);
+  fixedRows += fr(&#x27;物件保険料&#x27;, f.ins);
+  fixedRows += fr(&#x27;SSS経理処理手数料&#x27;, f.sss);
+  fixedRows += fr(&#x27;固定④&#x27;, f.f4);
+  fixedRows += fr(&#x27;固定⑤&#x27;, f.f5);
+  if (s.adj) fixedRows += &#x27;&lt;tr&gt;&lt;td&gt;固定調整額&lt;/td&gt;&lt;td class=&quot;num&quot;&gt;&#x27; + sd_yen_(s.adj) + &#x27;&lt;/td&gt;&lt;/tr&gt;&#x27;;
+
+  var html =
+  &#x27;&lt;html&gt;&lt;head&gt;&lt;meta charset=&quot;utf-8&quot;&gt;&lt;style&gt;&#x27;
+  + &#x27;@page{size:A4 portrait;margin:8mm;}&#x27;
+  + &#x27;*{box-sizing:border-box;}&#x27;
+  + &#x27;body{font-family:&quot;Noto Sans JP&quot;,&quot;Hiragino Sans&quot;,sans-serif;color:#1a1a1a;background:#ffffff;font-size:9.5px;margin:0;padding:0;}&#x27;
+  + &#x27;.sheet{width:100%;}&#x27;
+  + &#x27;h1{font-size:16px;text-align:center;margin:0 0 3px;letter-spacing:2px;}&#x27;
+  + &#x27;.sub{text-align:center;color:#555;font-size:11px;margin-bottom:8px;}&#x27;
+  + &#x27;.parties{width:100%;border-collapse:collapse;margin-bottom:8px;}&#x27;
+  + &#x27;.parties td{vertical-align:top;width:50%;padding:0 6px;font-size:9.5px;line-height:1.5;}&#x27;
+  + &#x27;.parties .to{font-size:12px;font-weight:700;border-bottom:1px solid #333;padding-bottom:2px;margin-bottom:3px;}&#x27;
+  + &#x27;.headline{background:#f0f4fb;border:1.5px solid #2f6fed;border-radius:5px;text-align:center;padding:7px;margin:6px 0 10px;}&#x27;
+  + &#x27;.headline .lab{font-size:10px;color:#333;}&#x27;
+  + &#x27;.headline .amt{font-size:22px;font-weight:800;color:#12336e;letter-spacing:1px;}&#x27;
+  + &#x27;.cols{display:flex;gap:10px;align-items:flex-start;}&#x27;
+  + &#x27;.cols&gt;div{flex:1;min-width:0;}&#x27;
+  + &#x27;h2{font-size:10px;background:#2f3a4d;color:#fff;padding:3px 6px;margin:8px 0 0;border-radius:3px 3px 0 0;}&#x27;
+  + &#x27;table.detail{width:100%;border-collapse:collapse;margin-bottom:2px;}&#x27;
+  + &#x27;table.detail th{background:#eef1f5;font-size:8.5px;text-align:left;padding:2px 5px;border:1px solid #d7dce4;}&#x27;
+  + &#x27;table.detail td{padding:2px 5px;border:1px solid #e3e6ec;font-size:9px;}&#x27;
+  + &#x27;table.detail td.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap;}&#x27;
+  + &#x27;table.detail td.c{text-align:center;}&#x27;
+  + &#x27;tr.sum td{font-weight:700;background:#f7f9fc;}&#x27;
+  + &#x27;.summary{width:100%;border-collapse:collapse;margin-top:2px;}&#x27;
+  + &#x27;.summary td{padding:3px 6px;border-bottom:1px solid #e3e6ec;}&#x27;
+  + &#x27;.summary td.num{text-align:right;font-variant-numeric:tabular-nums;}&#x27;
+  + &#x27;.summary tr.grand td{font-size:13px;font-weight:800;color:#12336e;border-top:2px solid #2f3a4d;border-bottom:none;background:#f0f4fb;}&#x27;
+  + &#x27;.note{color:#888;font-size:8px;margin-top:10px;text-align:right;}&#x27;
+  + &#x27;&lt;/style&gt;&lt;/head&gt;&lt;body&gt;&lt;div class=&quot;sheet&quot;&gt;&#x27;
+  + &#x27;&lt;h1&gt;業 務 委 託 精 算 書&lt;/h1&gt;&#x27;
+  + &#x27;&lt;div class=&quot;sub&quot;&gt;&#x27; + sd_escHtml_(store) + &#x27;　&#x27; + monthLabel + &#x27;分&lt;/div&gt;&#x27;
+  + &#x27;&lt;table class=&quot;parties&quot;&gt;&lt;tr&gt;&lt;td&gt;&#x27;
+  +   &#x27;&lt;div class=&quot;to&quot;&gt;&#x27; + sd_escHtml_(ci.client || &#x27;&#x27;) + &#x27;　御中&lt;/div&gt;&#x27;
+  +   (st.name ? sd_escHtml_(st.name) + &#x27;&lt;br&gt;&#x27; : &#x27;&#x27;)
+  +   (ci.rep ? sd_escHtml_(ci.rep) + &#x27;　様&lt;br&gt;&#x27; : &#x27;&#x27;)
+  +   (ci.invoice ? sd_escHtml_(ci.invoice) : &#x27;&#x27;)
+  + &#x27;&lt;/td&gt;&lt;td&gt;&#x27;
+  +   &#x27;&lt;div style=&quot;text-align:right&quot;&gt;発行日：&#x27; + today + &#x27;&lt;/div&gt;&#x27;
+  +   &#x27;&lt;b&gt;&#x27; + sd_escHtml_(ext[&#x27;発行元_会社名&#x27;] || &#x27;株式会社N-style&#x27;) + &#x27;&lt;/b&gt;&lt;br&gt;&#x27;
+  +   (ext[&#x27;発行元_郵便番号&#x27;] ? &#x27;〒&#x27; + sd_escHtml_(ext[&#x27;発行元_郵便番号&#x27;]) + &#x27;&lt;br&gt;&#x27; : &#x27;&#x27;)
+  +   (ext[&#x27;発行元_住所&#x27;] ? sd_escHtml_(ext[&#x27;発行元_住所&#x27;]) + &#x27;&lt;br&gt;&#x27; : &#x27;&#x27;)
+  +   (ext[&#x27;発行元_電話&#x27;] ? &#x27;電話：&#x27; + sd_escHtml_(ext[&#x27;発行元_電話&#x27;]) + &#x27;&lt;br&gt;&#x27; : &#x27;&#x27;)
+  +   (ext[&#x27;発行元_登録番号&#x27;] ? &#x27;登録番号：&#x27; + sd_escHtml_(ext[&#x27;発行元_登録番号&#x27;]) : &#x27;&#x27;)
+  + &#x27;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;&#x27;
+  + &#x27;&lt;div style=&quot;font-size:9.5px;margin-bottom:4px&quot;&gt;下記のとおり清算のご報告を申し上げます。&lt;/div&gt;&#x27;
+  + &#x27;&lt;div class=&quot;headline&quot;&gt;&lt;span class=&quot;lab&quot;&gt;業務委託費（消費税込）　振込金額&lt;/span&gt;&lt;br&gt;&#x27;
+  +   &#x27;&lt;span class=&quot;amt&quot;&gt;&#x27; + sd_yen_(s.transfer) + &#x27;&lt;/span&gt;&lt;/div&gt;&#x27;
+  + &#x27;&lt;h2&gt;売上（預かり金）&lt;/h2&gt;&#x27;
+  + &#x27;&lt;table class=&quot;detail&quot;&gt;&lt;tr&gt;&lt;th&gt;費目名&lt;/th&gt;&lt;th style=&quot;text-align:right&quot;&gt;金額（税込）&lt;/th&gt;&lt;th style=&quot;text-align:center&quot;&gt;税率&lt;/th&gt;&lt;th&gt;備考&lt;/th&gt;&lt;/tr&gt;&#x27;
+  +   rowsHtml(s.salesRows)
+  +   &#x27;&lt;tr class=&quot;sum&quot;&gt;&lt;td&gt;売上合計&lt;/td&gt;&lt;td class=&quot;num&quot;&gt;&#x27; + sd_yen_(s.sales) + &#x27;&lt;/td&gt;&lt;td&gt;&lt;/td&gt;&lt;td&gt;&lt;/td&gt;&lt;/tr&gt;&#x27;
+  + &#x27;&lt;/table&gt;&#x27;
+  + &#x27;&lt;h2&gt;変動費明細（入力データから自動）&lt;/h2&gt;&#x27;
+  + &#x27;&lt;table class=&quot;detail&quot;&gt;&lt;tr&gt;&lt;th&gt;費目名&lt;/th&gt;&lt;th style=&quot;text-align:right&quot;&gt;金額（税込）&lt;/th&gt;&lt;th style=&quot;text-align:center&quot;&gt;税率&lt;/th&gt;&lt;th&gt;備考&lt;/th&gt;&lt;/tr&gt;&#x27;
+  +   (s.varRows.length ? rowsHtml(s.varRows) : &#x27;&lt;tr&gt;&lt;td colspan=&quot;4&quot;&gt;なし&lt;/td&gt;&lt;/tr&gt;&#x27;)
+  +   &#x27;&lt;tr class=&quot;sum&quot;&gt;&lt;td&gt;変動費 合計&lt;/td&gt;&lt;td class=&quot;num&quot;&gt;&#x27; + sd_yen_(s.varCost + s.royVarDb) + &#x27;&lt;/td&gt;&lt;td&gt;&lt;/td&gt;&lt;td&gt;&lt;/td&gt;&lt;/tr&gt;&#x27;
+  + &#x27;&lt;/table&gt;&#x27;
+  + &#x27;&lt;div class=&quot;cols&quot;&gt;&lt;div&gt;&#x27;
+  +   &#x27;&lt;h2&gt;固定経費（店舗設定マスターから自動）&lt;/h2&gt;&#x27;
+  +   &#x27;&lt;table class=&quot;detail&quot;&gt;&#x27; + (fixedRows || &#x27;&lt;tr&gt;&lt;td colspan=&quot;2&quot;&gt;なし&lt;/td&gt;&lt;/tr&gt;&#x27;)
+  +     &#x27;&lt;tr class=&quot;sum&quot;&gt;&lt;td&gt;固定経費 小計&lt;/td&gt;&lt;td class=&quot;num&quot;&gt;&#x27; + sd_yen_(s.fixedSub) + &#x27;&lt;/td&gt;&lt;/tr&gt;&#x27;
+  +   &#x27;&lt;/table&gt;&#x27;
+  + &#x27;&lt;/div&gt;&lt;div&gt;&#x27;
+  +   &#x27;&lt;h2&gt;精算集計&lt;/h2&gt;&#x27;
+  +   &#x27;&lt;table class=&quot;summary&quot;&gt;&#x27;
+  +     &#x27;&lt;tr&gt;&lt;td&gt;売上（預かり金）&lt;/td&gt;&lt;td class=&quot;num&quot;&gt;&#x27; + sd_yen_(s.sales) + &#x27;&lt;/td&gt;&lt;/tr&gt;&#x27;
+  +     &#x27;&lt;tr&gt;&lt;td&gt;固定経費 小計&lt;/td&gt;&lt;td class=&quot;num&quot;&gt;&#x27; + sd_yen_(s.fixedSub) + &#x27;&lt;/td&gt;&lt;/tr&gt;&#x27;
+  +     &#x27;&lt;tr&gt;&lt;td&gt;変動費 合計&lt;/td&gt;&lt;td class=&quot;num&quot;&gt;&#x27; + sd_yen_(s.varCost + s.royVarDb) + &#x27;&lt;/td&gt;&lt;/tr&gt;&#x27;
+  +     &#x27;&lt;tr&gt;&lt;td&gt;固定ロイヤリティ&lt;/td&gt;&lt;td class=&quot;num&quot;&gt;&#x27; + sd_yen_(s.royF) + &#x27;&lt;/td&gt;&lt;/tr&gt;&#x27;
+  +     &#x27;&lt;tr&gt;&lt;td&gt;ロイヤリティ（変動 &#x27; + sd_escHtml_(st.rate) + &#x27;）&lt;/td&gt;&lt;td class=&quot;num&quot;&gt;&#x27; + sd_yen_(s.royV) + &#x27;&lt;/td&gt;&lt;/tr&gt;&#x27;
+  +     (s.royBaseActual ? &#x27;&lt;tr&gt;&lt;td colspan=&quot;2&quot; style=&quot;font-size:9px;color:#666&quot;&gt;※変動ロイヤリティは、売上シート（レジ実績）の月間売上 &#x27; + sd_yen_(s.royBase) + &#x27; × &#x27; + sd_escHtml_(st.rate) + &#x27; で計算&lt;/td&gt;&lt;/tr&gt;&#x27; : &#x27;&#x27;)
+  +     &#x27;&lt;tr&gt;&lt;td&gt;経費合計&lt;/td&gt;&lt;td class=&quot;num&quot;&gt;&#x27; + sd_yen_(s.costTotal) + &#x27;&lt;/td&gt;&lt;/tr&gt;&#x27;
+  +     &#x27;&lt;tr&gt;&lt;td&gt;業務委託費（税抜）&lt;/td&gt;&lt;td class=&quot;num&quot;&gt;&#x27; + sd_yen_(s.transferEx) + &#x27;&lt;/td&gt;&lt;/tr&gt;&#x27;
+  +     &#x27;&lt;tr&gt;&lt;td&gt;消費税（10%）&lt;/td&gt;&lt;td class=&quot;num&quot;&gt;&#x27; + sd_yen_(s.tax) + &#x27;&lt;/td&gt;&lt;/tr&gt;&#x27;
+  +     &#x27;&lt;tr class=&quot;grand&quot;&gt;&lt;td&gt;振込金額（税込）&lt;/td&gt;&lt;td class=&quot;num&quot;&gt;&#x27; + sd_yen_(s.transfer) + &#x27;&lt;/td&gt;&lt;/tr&gt;&#x27;
+  +   &#x27;&lt;/table&gt;&#x27;
+  + &#x27;&lt;/div&gt;&lt;/div&gt;&#x27;
+  + (ext[&#x27;発行元_振込先&#x27;] ? &#x27;&lt;div style=&quot;margin-top:6px;font-size:9.5px&quot;&gt;お振込先：&#x27; + sd_escHtml_(ext[&#x27;発行元_振込先&#x27;]) + &#x27;&lt;/div&gt;&#x27; : &#x27;&#x27;)
+  + &#x27;&lt;div class=&quot;note&quot;&gt;本精算書は精算ダッシュボードから自動発行されました（&#x27; + today + &#x27;）&lt;/div&gt;&#x27;
+  + &#x27;&lt;/div&gt;&lt;/body&gt;&lt;/html&gt;&#x27;;
+  return { html: html, settle: s };
+}
+
+function sd_renderPdf_(store, monthKey) {
+  var built = sd_buildSeisanHtml_(store, monthKey);
+  var fileName = &#x27;精算書_&#x27; + sd_monthDot_(monthKey) + &#x27;_&#x27; + store + &#x27;.pdf&#x27;;
+  var blob = Utilities.newBlob(built.html, &#x27;text/html&#x27;, &#x27;seisan.html&#x27;).getAs(&#x27;application/pdf&#x27;);
+  return blob.setName(fileName);
+}
+
+function sd_pdfPreview(token, store, monthKey) {
+  var user = sd_auth_(token, false);
+  var det = sd_detect_();
+  var cfg = sd_allowedStores_(user, sd_config_(sd_masterStores_(det), det));
+  if (!cfg.some(function (s) { return s.name === store; })) throw new Error(&#x27;この店舗の閲覧権限がありません&#x27;);
+  var lock = LockService.getDocumentLock();
+  lock.waitLock(30000);
+  try {
+    var blob = sd_renderPdf_(store, monthKey);
+    return { fileName: blob.getName(), b64: Utilities.base64Encode(blob.getBytes()) };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function sd_mailSettings_(det, store) {
+  if (!det.mailSheet) return null;
+  var sh = SpreadsheetApp.getActive().getSheetByName(det.mailSheet.sheet);
+  var hr = det.mailSheet.headerRow;
+  var lastR = sh.getLastRow(), lastC = sh.getLastColumn();
+  var header = sh.getRange(hr, 1, 1, lastC).getDisplayValues()[0].map(sd_norm_);
+  var iName = header.indexOf(&#x27;店舗名&#x27;);
+  var iTo = -1, iCc = -1, iSubj = -1, iBody = -1;
+  header.forEach(function (h, i) {
+    if (iTo &lt; 0 &amp;&amp; h.indexOf(&#x27;To&#x27;) === 0) iTo = i;
+    if (iCc &lt; 0 &amp;&amp; h.indexOf(&#x27;CC&#x27;) === 0) iCc = i;
+    if (iSubj &lt; 0 &amp;&amp; h.indexOf(&#x27;件名&#x27;) &gt; -1) iSubj = i;
+    if (iBody &lt; 0 &amp;&amp; h.indexOf(&#x27;本文&#x27;) &gt; -1) iBody = i;
+  });
+  if (iName &lt; 0 || iTo &lt; 0) return null;
+  var vals = sh.getRange(hr + 1, 1, lastR - hr, lastC).getDisplayValues();
+  for (var i = 0; i &lt; vals.length; i++) {
+    if (sd_norm_(vals[i][iName]) === sd_norm_(store)) {
+      return {
+        to: String(vals[i][iTo]).trim(),
+        cc: iCc &gt; -1 ? String(vals[i][iCc]).trim() : &#x27;&#x27;,
+        subject: iSubj &gt; -1 ? String(vals[i][iSubj]).trim() : &#x27;&#x27;,
+        body: iBody &gt; -1 ? String(vals[i][iBody]).trim() : &#x27;&#x27;
+      };
+    }
+  }
+  return null;
+}
+
+function sd_issueAndSend(token, store, monthKey, sendMail) {
+  var user = sd_auth_(token, true);
+  var lock = LockService.getDocumentLock();
+  lock.waitLock(30000);
+  try {
+    var det = sd_detect_();
+    var ext = sd_extConfig_();
+
+    // 既にメール送信済みなら「再送信」扱い（件名・PDF名に明記）
+    var prev = (sd_sentMap_()[sd_norm_(store)] || {})[monthKey];
+    var isResend = !!(sendMail &amp;&amp; prev &amp;&amp; prev.action === &#x27;メール送信&#x27;);
+
+    var blob = sd_renderPdf_(store, monthKey);
+    if (isResend) {
+      blob.setName(&#x27;精算書_&#x27; + sd_monthDot_(monthKey) + &#x27;_&#x27; + store + &#x27;_再送信.pdf&#x27;);
+    }
+
+    // Driveへ保存: 親フォルダ/2026年6月/店舗名/
+    var folder = sd_folderFor_(ext, monthKey, store);
+    var file = folder.createFile(blob);
+    var result = { ok: true, fileName: blob.getName(), fileId: file.getId(), url: file.getUrl(), mailed: false, resend: isResend };
+
+    if (sendMail) {
+      var ms = sd_mailSettings_(det, store);
+      if (!ms || !ms.to) throw new Error(&#x27;メール設定シートに「&#x27; + store + &#x27;」の宛先(To)がありません&#x27;);
+      var d = sd_monthKeyToDate_(monthKey);
+      var mLabel = (d.getMonth() + 1) + &#x27;月&#x27;;
+      var subject = (ms.subject || &#x27;【重要】 〇月分業務委託料精算書のご送付&#x27;).replace(/〇月/g, mLabel);
+      var body = (ms.body || &#x27;&#x27;).replace(/〇月/g, mLabel);
+      if (isResend) {
+        subject = &#x27;【再送信】&#x27; + subject;
+        body = &#x27;※本メールは、内容修正に伴う精算書の再送信です。お手数ですが最新版（添付）をご確認ください。\n\n&#x27; + body;
+      }
+      // 精算書PDF＋その月・店舗の添付ファイルを全て添付（Gmail上限25MBを超えない範囲）
+      var attachments = [blob];
+      var attachNames = [];
+      var totalSize = blob.getBytes().length;
+      var it2 = folder.getFiles();
+      while (it2.hasNext()) {
+        var af = it2.next();
+        if (af.getId() === file.getId()) continue; // 今作った精算書自身は除外
+        if (String(af.getName()).indexOf(&#x27;精算書_&#x27;) === 0) continue; // 過去に保存した精算書PDFは除外
+        var sz = af.getSize();
+        if (totalSize + sz &gt; 24 * 1024 * 1024) { attachNames.push(&#x27;（容量超過のため未添付: &#x27; + af.getName() + &#x27;）&#x27;); continue; }
+        attachments.push(af.getBlob());
+        attachNames.push(af.getName());
+        totalSize += sz;
+      }
+      if (attachNames.length) {
+        body += &#x27;\n\n■添付書類\n・&#x27; + blob.getName() + &#x27;（精算書）\n・&#x27; + attachNames.join(&#x27;\n・&#x27;);
+      }
+      if (ext[&#x27;ダッシュボードURL&#x27;]) {
+        body += &#x27;\n\n──────────────────\n■ 精算ダッシュボード（過去分の精算書もこちらでご確認いただけます）\n&#x27; + ext[&#x27;ダッシュボードURL&#x27;] + &#x27;\n※ スマホで開けない場合は、リンクを長押しして「Safari/Chromeで開く」を選ぶか、ブラウザにURLを貼り付けてお開きください。&#x27;;
+      }
+      var opts = { attachments: attachments, name: ext[&#x27;メール送信者名&#x27;] || &#x27;株式会社N-Style&#x27; };
+      if (ms.cc) opts.cc = ms.cc;
+      GmailApp.sendEmail(ms.to, subject, body, opts);
+      result.mailed = true;
+      result.to = ms.to;
+      result.attachCount = attachments.length;
+      sd_markIssued_(det, store, monthKey);
+      result.portal = sd_notifyPortalIssued_(store, monthKey, blob, isResend); // 2026-10-15: N-Style側の仕訳の下書きをポータルへ（失敗しても発行は止めない）
+    }
+    sd_log_(sendMail ? &#x27;メール送信&#x27; : &#x27;PDF保存&#x27;, store, monthKey, blob.getName(), file.getId(), file.getUrl(), user.name, sendMail ? (result.to || &#x27;&#x27;) : &#x27;&#x27;);
+    return result;
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/* 2026-10-15: 精算書の「発行・送信」の直後に、ポータル（Supabase Edge Function invoice-auto-sales）へ通知する。
+ * ポータル側が、N-Style側の仕訳（運営委託費／未払金）の下書きを作って承認待ちに出す（精算書PDF付き）。
+ * 認証は PL_SYNC_TOKEN（スクリプトプロパティ・sd_apiTransferEx等と同じ共有トークン）。失敗しても精算書の発行は止めない。 */
+var SD_PORTAL_ISSUED_URL = &#x27;https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/invoice-auto-sales&#x27;;
+function sd_notifyPortalIssued_(store, monthKey, blob, isResend) {
+  try {
+    var tk = PropertiesService.getScriptProperties().getProperty(&#x27;PL_SYNC_TOKEN&#x27;);
+    if (!tk) return { ok: false, error: &#x27;PL_SYNC_TOKEN未設定&#x27; };
+    var det = sd_detect_();
+    var cfg = sd_config_(sd_masterStores_(det), det);
+    var st = null;
+    cfg.forEach(function (s) { if (s.name === store) st = s; });
+    if (!st || !st.db) return { ok: false, error: &#x27;店舗またはDBシートが見つかりません&#x27; };
+    var s = sd_settle_(sd_readRowsCached_(st.db), monthKey, st.rate, st.fixed, st.salesName);
+    var payload = {
+      action: &#x27;seisan_issued&#x27;, token: tk, store: store, month: monthKey,
+      transfer: s.transfer, transfer_ex: s.transferEx, tax: s.tax, resend: !!isResend,
+      pdf: { file_name: blob.getName(), base64: Utilities.base64Encode(blob.getBytes()) }
+    };
+    var res = UrlFetchApp.fetch(SD_PORTAL_ISSUED_URL, { method: &#x27;post&#x27;, contentType: &#x27;application/json&#x27;, payload: JSON.stringify(payload), muteHttpExceptions: true });
+    var code = res.getResponseCode();
+    var text = String(res.getContentText() || &#x27;&#x27;).slice(0, 300);
+    if (code !== 200) Logger.log(&#x27;ポータル通知に失敗（&#x27; + code + &#x27;）: &#x27; + text);
+    return { ok: code === 200, code: code, body: text };
+  } catch (e) {
+    Logger.log(&#x27;ポータル通知で例外: &#x27; + e);
+    return { ok: false, error: String(e) };
+  }
+}
+
+function sd_markIssued_(det, store, monthKey) {
+  try {
+    if (!det.statusSheet) return;
+    var sh = SpreadsheetApp.getActive().getSheetByName(det.statusSheet.sheet);
+    var hr = det.statusSheet.headerRow;
+    var lastC = sh.getLastColumn(), lastR = sh.getLastRow();
+    var hVals = sh.getRange(hr, 1, 1, lastC).getValues()[0];
+    var hDisp = sh.getRange(hr, 1, 1, lastC).getDisplayValues()[0];
+    var nameCol = -1, mCol = -1;
+    hDisp.forEach(function (h, i) {
+      if (nameCol &lt; 0 &amp;&amp; sd_norm_(h) === &#x27;店舗名&#x27;) nameCol = i;
+      var key = &#x27;&#x27;;
+      if (hVals[i] instanceof Date) key = sd_fmtMonth_(hVals[i]);
+      else if (/^\d{4}[-\/]\d{1,2}$/.test(String(h).trim())) {
+        var p = String(h).trim().split(/[-\/]/);
+        key = p[0] + &#x27;-&#x27; + (&#x27;0&#x27; + p[1]).slice(-2);
+      }
+      if (key === monthKey) mCol = i;
+    });
+    if (nameCol &lt; 0 || mCol &lt; 0) return;
+    for (var r = hr + 1; r &lt;= lastR; r++) {
+      if (sd_norm_(sh.getRange(r, nameCol + 1).getDisplayValue()) === sd_norm_(store)) {
+        var cell = sh.getRange(r, mCol + 1);
+        if (!cell.getFormula()) cell.setValue(&#x27;✅&#x27;);
+        return;
+      }
+    }
+  } catch (e) { /* 発行状況の更新失敗は致命的でないため握りつぶす */ }
+}
+
+/* 定期費目のセット（前月の固定ロイヤリティ＋定期費目シート） */
+function sd_prepareMonth(token, monthKey) {
+  var user = sd_auth_(token, true);
+  var lock = LockService.getDocumentLock();
+  lock.waitLock(20000);
+  try {
+    return sd_prepareMonthCore_(monthKey, user.name, user.role !== &#x27;マスター&#x27;);
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/* skipLocked=true のとき、振込済み（ロック中）の店舗はスキップする */
+function sd_prepareMonthCore_(monthKey, editorName, skipLocked) {
+  var det = sd_detect_();
+  var cfg = sd_config_(sd_masterStores_(det), det);
+  var recur = sd_recurRows_();
+  var d = sd_monthKeyToDate_(monthKey);
+  var prevKey = sd_addMonths_(monthKey, -1);
+  var results = [];
+  cfg.forEach(function (st) {
+    if (!st.db) return;
+    if (skipLocked &amp;&amp; sd_isLocked_(st.name, monthKey)) { results.push(st.name + &#x27;: 🔒振込済みのためスキップ&#x27;); return; }
+    var rows = sd_readRows_(st.db);
+    var cur = {}, toAdd = [];
+    rows.forEach(function (r) { if (r.ym === monthKey) cur[sd_norm_(r.kubun) + &#x27;|&#x27; + sd_norm_(r.item)] = true; });
+    // 前月の固定ロイヤリティを引き継ぐ
+    rows.forEach(function (r) {
+      if (r.ym !== prevKey || sd_norm_(r.kubun) !== &#x27;固定ロイヤリティ&#x27;) return;
+      var key = sd_norm_(r.kubun) + &#x27;|&#x27; + sd_norm_(r.item);
+      if (cur[key]) return;
+      cur[key] = true;
+      toAdd.push({ kubun: r.kubun, item: r.item, amount: r.amount, tax: r.tax || &#x27;10%&#x27;, note: r.note });
+    });
+    // 定期費目シート（状態=停止の行はスキップ）
+    recur.forEach(function (rc) {
+      if (sd_norm_(rc.store) !== sd_norm_(st.name)) return;
+      if (rc.status === &#x27;停止&#x27;) return;
+      var key = sd_norm_(rc.kubun) + &#x27;|&#x27; + sd_norm_(rc.item);
+      if (cur[key]) return;
+      cur[key] = true;
+      toAdd.push({ kubun: rc.kubun, item: rc.item, amount: rc.amount, tax: rc.tax || &#x27;10%&#x27;, note: rc.note || &#x27;定期費目（自動）&#x27; });
+    });
+    if (toAdd.length) {
+      sd_appendRows_(st.db, d, toAdd, editorName || &#x27;自動&#x27;);
+      sd_clearRowsCache_(st.db.sheet);
+      results.push(st.name + &#x27;: &#x27; + toAdd.map(function (r) { return r.item; }).join(&#x27;、&#x27;) + &#x27; を追加&#x27;);
+    }
+  });
+  if (!results.length) results.push(&#x27;追加する定期費目はありませんでした（すべて入力済み）&#x27;);
+  return { ok: true, results: results };
+}
+
+/* 状態列（7列目・有効/停止・既定=有効）を持たない旧シートには自動でヘッダーを追加する。
+ * v3.x UI刷新で「定期費目の毎月／停止」切替を追加するために2026-08-31導入。 */
+function sd_recurEnsureStatusCol_(sh) {
+  var header = sh.getRange(1, 1, 1, Math.max(7, sh.getLastColumn())).getDisplayValues()[0];
+  if (sd_norm_(header[6]) !== &#x27;状態&#x27;) {
+    sh.getRange(1, 7).setValue(&#x27;状態&#x27;);
+  }
+}
+
+function sd_recurRows_() {
+  var ss = SpreadsheetApp.getActive();
+  var sh = ss.getSheetByName(SD_RECUR_SHEET);
+  if (!sh) {
+    sh = ss.insertSheet(SD_RECUR_SHEET);
+    sh.getRange(1, 1, 1, 7).setValues([[&#x27;店舗名&#x27;, &#x27;区分&#x27;, &#x27;費目名&#x27;, &#x27;金額（税込）&#x27;, &#x27;税率&#x27;, &#x27;備考&#x27;, &#x27;状態&#x27;]]);
+    sh.setFrozenRows(1);
+    sh.getRange(2, 1, 1, 7).setValues([[&#x27;（例）秋葉原 肉寿司&#x27;, &#x27;固定ロイヤリティ&#x27;, &#x27;固定ロイヤリティ&#x27;, 440000, &#x27;10%&#x27;, &#x27;新契約に伴う委託料　※行頭の（例）を消すと有効&#x27;, &#x27;有効&#x27;]]);
+    sh.autoResizeColumns(1, 7);
+    return [];
+  }
+  sd_recurEnsureStatusCol_(sh);
+  var lastR = sh.getLastRow();
+  if (lastR &lt; 2) return [];
+  var out = [];
+  sh.getRange(2, 1, lastR - 1, 7).getDisplayValues().forEach(function (r, i) {
+    var store = String(r[0]).trim();
+    if (!store || store.indexOf(&#x27;（例）&#x27;) === 0) return;
+    out.push({
+      row: i + 2,
+      store: store, kubun: String(r[1]).trim() || &#x27;変動費&#x27;, item: String(r[2]).trim(),
+      amount: Number(String(r[3]).replace(/[¥￥,，\s]/g, &#x27;&#x27;)) || 0,
+      tax: sd_norm_(r[4]) || &#x27;10%&#x27;, note: String(r[5]).trim(),
+      status: sd_norm_(r[6]) === &#x27;停止&#x27; ? &#x27;停止&#x27; : &#x27;有効&#x27;
+    });
+  });
+  return out.filter(function (r) { return r.item; });
+}
+
+/* 定期費目の「毎月／停止」切替（設定タブ）。マスター/本部のみ。行が無ければ何もしない
+ * （新規追加はスプレッドシートを直接編集する既存フローのまま＝過剰実装を避ける）。 */
+function sd_saveRecurStatus(token, store, item, status) {
+  sd_auth_(token, true);
+  var st = sd_norm_(status) === &#x27;停止&#x27; ? &#x27;停止&#x27; : &#x27;有効&#x27;;
+  var ss = SpreadsheetApp.getActive();
+  var sh = ss.getSheetByName(SD_RECUR_SHEET);
+  if (!sh) throw new Error(&#x27;「&#x27; + SD_RECUR_SHEET + &#x27;」シートが見つかりません&#x27;);
+  sd_recurEnsureStatusCol_(sh);
+  var lastR = sh.getLastRow();
+  if (lastR &lt; 2) throw new Error(&#x27;該当する定期費目が見つかりません: &#x27; + store + &#x27; / &#x27; + item);
+  var vals = sh.getRange(2, 1, lastR - 1, 3).getDisplayValues();
+  var row = 0;
+  for (var i = 0; i &lt; vals.length; i++) {
+    if (sd_norm_(vals[i][0]) === sd_norm_(store) &amp;&amp; sd_norm_(vals[i][2]) === sd_norm_(item)) { row = i + 2; break; }
+  }
+  if (!row) throw new Error(&#x27;該当する定期費目が見つかりません: &#x27; + store + &#x27; / &#x27; + item);
+  sh.getRange(row, 7).setValue(st);
+  return { ok: true, store: store, item: item, status: st };
+}
+
+/* 自動処理のセットアップ:
+ *  - 毎月1日 9時: 精算対象月（＝前月）の定期費目を自動セット
+ *  - 毎月5日 9時: 前月分の現金売上を自動取込
+ *  - 毎日9時: 振込期限（20日）の3日前・当日・超過後は毎日、ChatWorkへリマインド（判定はsd_remindTick内） */
+function sd_setupAutoPrep(token) {
+  sd_auth_(token, true);
+  var triggers = ScriptApp.getProjectTriggers();
+  var hasPrep = triggers.some(function (t) { return t.getHandlerFunction() === &#x27;sd_autoPrepTick&#x27;; });
+  var hasCash = triggers.some(function (t) { return t.getHandlerFunction() === &#x27;sd_cashAutoTick&#x27;; });
+  var made = [];
+  if (!hasPrep) {
+    ScriptApp.newTrigger(&#x27;sd_autoPrepTick&#x27;).timeBased().onMonthDay(1).atHour(9).create();
+    made.push(&#x27;毎月1日9時 定期費目セット&#x27;);
+  }
+  if (!hasCash) {
+    ScriptApp.newTrigger(&#x27;sd_cashAutoTick&#x27;).timeBased().onMonthDay(5).atHour(9).create();
+    made.push(&#x27;毎月5日9時 現金売上の自動取込&#x27;);
+  }
+  // 期限リマインドは日付・未対応店舗の有無をsd_remindTick内で毎日判定する方式に変更したため、
+  // トリガー自体は「毎日9時」に統一する。GAS側にはトリガーの詳細スケジュールを取得するAPIが無く
+  // 「旧バージョン（毎月18日のみ）が残っているか」を判別できないため、毎回作り直して確実に揃える。
+  var remindTriggers = triggers.filter(function (t) { return t.getHandlerFunction() === &#x27;sd_remindTick&#x27;; });
+  remindTriggers.forEach(function (t) { ScriptApp.deleteTrigger(t); });
+  ScriptApp.newTrigger(&#x27;sd_remindTick&#x27;).timeBased().everyDays(1).atHour(9).create();
+  made.push(&#x27;毎日9時 振込期限リマインド（17日・20日・21日以降は未対応があれば毎日ChatWorkへ通知）&#x27;);
+  return { ok: true, message: made.length ? made.join(&#x27;＋&#x27;) + &#x27; を設定しました&#x27; : &#x27;自動処理は設定済みです（毎月1日 定期費目セット／毎月5日 現金売上取込／毎日 期限リマインド判定）&#x27; };
+}
+
+function sd_autoPrepTick() {
+  var now = new Date();
+  var monthKey = sd_fmtMonth_(new Date(now.getFullYear(), now.getMonth() - 1, 1));
+  var res = sd_prepareMonthCore_(monthKey, &#x27;自動(毎月1日)&#x27;);
+  sd_log_(&#x27;定期費目自動セット&#x27;, &#x27;全店舗&#x27;, monthKey, res.results.join(&#x27; / &#x27;), &#x27;&#x27;, &#x27;&#x27;, &#x27;自動&#x27;, &#x27;&#x27;);
+}
+
+/* 毎月5日: 前月分の現金売上を全店舗に自動取込（既に現金売上が入っている店舗はスキップ） */
+function sd_cashAutoTick() {
+  var now = new Date();
+  var monthKey = sd_fmtMonth_(new Date(now.getFullYear(), now.getMonth() - 1, 1));
+  try {
+    var res = sd_cashApplyCore_(monthKey, null, &#x27;自動(毎月5日)&#x27;, true);
+    sd_log_(&#x27;現金売上自動取込&#x27;, &#x27;全店舗&#x27;, monthKey, res.results.join(&#x27; / &#x27;), &#x27;&#x27;, &#x27;&#x27;, &#x27;自動&#x27;, &#x27;&#x27;);
+  } catch (e) {
+    sd_log_(&#x27;現金売上自動取込エラー&#x27;, &#x27;全店舗&#x27;, monthKey, String((e &amp;&amp; e.message) || e), &#x27;&#x27;, &#x27;&#x27;, &#x27;自動&#x27;, &#x27;&#x27;);
+  }
+}
+
+/* ChatWorkへメッセージ送信（APIトークン・ルームIDは設定_外部連携シートで管理） */
+function sd_notifyChatwork_(message) {
+  var ext = sd_extConfig_();
+  var token = ext[&#x27;ChatWork APIトークン&#x27;];
+  var roomId = ext[&#x27;ChatWorkルームID（振込リマインド用）&#x27;];
+  if (!token || !roomId) {
+    return { sent: false, reason: &#x27;ChatWork未設定（設定_外部連携シートで「ChatWork APIトークン」「ChatWorkルームID（振込リマインド用）」を設定してください）&#x27; };
+  }
+  var res = UrlFetchApp.fetch(&#x27;https://api.chatwork.com/v2/rooms/&#x27; + roomId + &#x27;/messages&#x27;, {
+    method: &#x27;post&#x27;,
+    headers: { &#x27;X-ChatWorkToken&#x27;: token },
+    payload: { body: message },
+    muteHttpExceptions: true
+  });
+  var code = res.getResponseCode();
+  if (code === 200) return { sent: true };
+  return { sent: false, reason: &#x27;ChatWork送信失敗: HTTP&#x27; + code + &#x27; &#x27; + res.getContentText() };
+}
+
+/* ⚙️設定タブの「ChatWorkテスト送信」ボタンから呼ばれる。設定が正しいかその場で確認できるようにする。 */
+function sd_testChatwork(token) {
+  sd_auth_(token, true);
+  var result = sd_notifyChatwork_(&#x27;[info][title]🔔 ChatWork連携テスト[/title]この通知が届いていれば、精算ダッシュボードからのChatWork連携設定は正常です。[/info]&#x27;);
+  return { ok: result.sent, reason: result.reason };
+}
+
+/* 毎日9時に実行（トリガーはsd_setupAutoPrepで作成）。
+ * 振込期限（毎月20日）の3日前（17日）・当日（20日）・超過後（21日以降）は毎日、未対応店舗があればChatWorkへ通知する。
+ * それ以外の日、および対応が必要な店舗が0件のときは何もしない（送信しない）。 */
+function sd_remindTick() {
+  var now = new Date();
+  var day = now.getDate();
+  var overdue = day &gt; 20;
+  if (!(day === 17 || day === 20 || overdue)) return { ok: true, message: &#x27;対象日ではないためスキップ（17日・20日・21日以降のみ）&#x27; };
+
+  var monthKey = sd_fmtMonth_(new Date(now.getFullYear(), now.getMonth() - 1, 1)); // 精算対象月＝前月
+  var det = sd_detect_();
+  var cfg = sd_config_(sd_masterStores_(det), det);
+  var issued = sd_issuedMap_(det);
+  var sent = sd_sentMap_();
+  var paid = sd_paidMap_();
+  var d = sd_monthKeyToDate_(monthKey);
+  var mLabel = d.getFullYear() + &#x27;年&#x27; + (d.getMonth() + 1) + &#x27;月&#x27;;
+
+  var lines = [];
+  var needCount = 0;
+  cfg.forEach(function (st) {
+    if (!st.db) { lines.push(&#x27;■ &#x27; + st.name + &#x27;：⚠ DBシート未検出&#x27;); needCount++; return; }
+    var rows = sd_readRows_(st.db);
+    var byMonth = {};
+    rows.forEach(function (r) { (byMonth[r.ym] = byMonth[r.ym] || []).push(r); });
+    var s = sd_settle_(rows, monthKey, st.rate, st.fixed, st.salesName);
+    var chk = sd_missing_(byMonth, monthKey, st.required);
+    var isSent = !!((sent[sd_norm_(st.name)] || {})[monthKey]) || (issued[sd_norm_(st.name)] || {})[monthKey] === true;
+    var paidStatus = sd_paidStatusMap_(st.name, sd_clientInfoAt_(st, monthKey).client, paid)[monthKey];
+    var isPaid = !!(paidStatus &amp;&amp; paidStatus.done);
+    var status = isPaid ? &#x27;💰振込済み&#x27; : (isSent ? &#x27;✅発行済み（振込待ち）&#x27; : (s.count &gt; 0 ? &#x27;🟡入力中 &#x27; + s.count + &#x27;件&#x27; : &#x27;❌未入力&#x27;));
+    var warns = chk.catWarn.concat(chk.missing);
+    if (isPaid &amp;&amp; !warns.length) return; // 完了店舗は省略
+    var line = &#x27;■ &#x27; + st.name + &#x27;：&#x27; + status;
+    if (s.hasSales) line += &#x27;　振込金額(税込) &#x27; + sd_yen_(s.transfer);
+    if (warns.length) { line += &#x27;\n　└ 入力漏れの疑い: &#x27; + warns.join(&#x27;、&#x27;); }
+    if (!isPaid) needCount++;
+    lines.push(line);
+  });
+
+  if (needCount === 0) return { ok: true, message: &#x27;対応が必要な店舗はありません（送信スキップ）&#x27; };
+
+  var headline = overdue
+    ? &#x27;🚨 &#x27; + mLabel + &#x27;分の振込期限（20日）を過ぎています！至急ご対応ください。&#x27;
+    : (day === 20 ? &#x27;⏰ 本日が&#x27; + mLabel + &#x27;分の振込期限（20日）です。&#x27; : &#x27;📅 &#x27; + mLabel + &#x27;分の振込期限（20日）まであと3日です。&#x27;);
+  var message = &#x27;[info][title]💰 業務委託料 振込リマインド（対応必要: &#x27; + needCount + &#x27;店舗）[/title]&#x27;
+    + headline + &#x27;\n\n&#x27;
+    + lines.join(&#x27;\n\n&#x27;)
+    + &#x27;[/info]&#x27;;
+  var result = sd_notifyChatwork_(message);
+  sd_log_(&#x27;期限リマインド&#x27;, &#x27;全店舗&#x27;, monthKey, message, &#x27;&#x27;, &#x27;&#x27;, &#x27;自動&#x27;, result.sent ? &#x27;ChatWork&#x27; : (&#x27;送信失敗: &#x27; + result.reason));
+  return { ok: result.sent, needCount: needCount, reason: result.reason };
+}
+
+/* ---------- ③ 添付ファイル ---------- */
+
+/* 月・店舗フォルダのIDを10分キャッシュ（毎回2段階のフォルダ検索をするとDrive APIの往復が
+ * 積み重なって遅くなるため。フォルダ自体を作り直した場合は最大10分古い情報を見る可能性あり）。 */
+function sd_folderFor_(ext, monthKey, store) {
+  var cacheKey = &#x27;sdfolder_&#x27; + monthKey + &#x27;_&#x27; + store;
+  var cache = CacheService.getScriptCache();
+  var cachedId = cache.get(cacheKey);
+  if (cachedId) {
+    try { return DriveApp.getFolderById(cachedId); } catch (e) { /* フォルダが消えていたら通常経路へ */ }
+  }
+  var parent;
+  try {
+    parent = DriveApp.getFolderById(ext[&#x27;添付親フォルダID&#x27;]);
+  } catch (e) {
+    throw new Error(&#x27;添付親フォルダにアクセスできません。「&#x27; + SD_EXT_SHEET + &#x27;」シートの添付親フォルダIDを確認してください&#x27;);
+  }
+  var mName = sd_monthLabel_(monthKey); // 例: 2026年6月
+  var mFolder = sd_childFolder_(parent, mName);
+  var storeFolder = sd_childFolder_(mFolder, store);
+  try { cache.put(cacheKey, storeFolder.getId(), 600); } catch (e) { /* キャッシュ失敗は無視 */ }
+  return storeFolder;
+}
+
+function sd_childFolder_(parent, name) {
+  var it = parent.getFoldersByName(name);
+  return it.hasNext() ? it.next() : parent.createFolder(name);
+}
+
+function sd_uploadAttachment(token, payload) {
+  // payload = { store, month, kind, fileName, mimeType, b64, revised }
+  // revised=true のときは、同名ファイルが既にあれば上書きせず「【再】費目名_…」で保存する
+  var timer = sd_timer_();
+  var user = sd_auth_(token, true);
+  sd_requireUnlocked_(user, payload.store, payload.month);
+  timer.mark(&#x27;auth&#x27;);
+  var ext = sd_extConfig_();
+  var kind = String(payload.kind || &#x27;&#x27;).trim();
+  if (!kind) throw new Error(&#x27;何の書類か（例: カード売上）を入力してください&#x27;);
+  var extMatch = String(payload.fileName || &#x27;&#x27;).match(/\.[A-Za-z0-9]+$/);
+  var extension = extMatch ? extMatch[0] : &#x27;&#x27;;
+  var folder = sd_folderFor_(ext, payload.month, payload.store);
+  timer.mark(&#x27;folderLookup&#x27;);
+
+  var baseName = kind + &#x27;_&#x27; + sd_monthDot_(payload.month) + &#x27;_&#x27; + payload.store;
+  var newName = baseName + extension;
+  if (payload.revised &amp;&amp; folder.getFilesByName(newName).hasNext()) {
+    // 既存があれば 【再】→【再2】→… と接頭辞を付けて修正版とわかるようにする
+    var prefix = &#x27;【再】&#x27;, n = 2;
+    while (folder.getFilesByName(prefix + baseName + extension).hasNext()) {
+      prefix = &#x27;【再&#x27; + n + &#x27;】&#x27;; n++;
+    }
+    newName = prefix + baseName + extension;
+  }
+  timer.mark(&#x27;dupCheck&#x27;);
+  var bytes = Utilities.base64Decode(payload.b64);
+  var blob = Utilities.newBlob(bytes, payload.mimeType || &#x27;application/octet-stream&#x27;, newName);
+  timer.mark(&#x27;decode&#x27;);
+  var file = folder.createFile(blob);
+  timer.mark(&#x27;driveCreate&#x27;);
+  sd_log_(payload.revised ? &#x27;添付（修正版）&#x27; : &#x27;添付アップロード&#x27;, payload.store, payload.month, newName, file.getId(), file.getUrl(), user.name, &#x27;&#x27;);
+  timer.mark(&#x27;log&#x27;);
+  return { ok: true, name: newName, url: file.getUrl(), folder: sd_monthLabel_(payload.month) + &#x27;／&#x27; + payload.store, _ms: timer.breakdown() };
+}
+
+/* API: 外部（ns-portal・業務委託精算書自動連携）から、sd_apiAddExternalLineで登録した明細行に
+ * 添付ファイル（請求書の証憑等）を自動アップロードする。sd_uploadAttachmentと同じ命名規則
+ * （費目名_年.月_店舗名）・同じDriveフォルダ置き場を使うので、人間が精算書画面で「📎 添付を見る」
+ * から見たときに自動連携の行かどうかを意識せず開ける。
+ * PL_SYNC_TOKEN認証（ログイン不要・サーバー間呼び出し用。sd_apiAddExternalLineと同じ）。
+ * 振込済み（ロック中）の月はアップロードしない（sd_apiAddExternalLine側で既に行の追加自体が
+ * 拒否されるはずだが、念のためここでも二重チェックする）。
+ * 冪等: 同名ファイルが既にあれば削除してから作り直す（自動連携の再送・請求書の編集し直しで
+ * 何度呼ばれても、同じ費目・店舗・月には常に最新の1ファイルだけが残る。人間がアップロードする
+ * sd_uploadAttachment（revised時に【再】接頭辞で履歴を残す方式）とは意図的に挙動を変えている）。
+ * 呼び出し例: POST {fn:&#x27;sd_apiUploadAttachment&#x27;, args:[token, store, monthKey,
+ *   {kind, fileName, mimeType, b64}]}
+ * 2026-09-10新設（担当Cからの依頼・ns-portal請求書のPL反映添付ファイル自動連携）。 */
+function sd_apiUploadAttachment(token, store, monthKey, payload) {
+  var tk = PropertiesService.getScriptProperties().getProperty(&#x27;PL_SYNC_TOKEN&#x27;);
+  var got = String(token || &#x27;&#x27;).trim(), want = String(tk || &#x27;&#x27;).trim();
+  if (!tk || got !== want) return { ok: false, error: &#x27;unauthorized&#x27; };
+  if (!/^\d{4}-\d{2}$/.test(String(monthKey || &#x27;&#x27;))) return { ok: false, error: &#x27;年月が不正です（例: 2026-08）&#x27; };
+  payload = payload || {};
+  var kind = String(payload.kind || &#x27;&#x27;).trim();
+  if (!kind) return { ok: false, error: &#x27;費目名（kind）が空です&#x27; };
+  if (!payload.b64) return { ok: false, error: &#x27;ファイルデータ（b64）が空です&#x27; };
+  if (sd_isLocked_(store, monthKey)) {
+    return { ok: false, error: monthKey + &#x27;分は振込済み（確定済み）のためアップロードできません&#x27;, locked: true };
+  }
+  var lock = LockService.getDocumentLock();
+  lock.waitLock(20000);
+  try {
+    var ext = sd_extConfig_();
+    var extMatch = String(payload.fileName || &#x27;&#x27;).match(/\.[A-Za-z0-9]+$/);
+    var extension = extMatch ? extMatch[0] : &#x27;&#x27;;
+    var folder = sd_folderFor_(ext, monthKey, store);
+    var baseName = kind + &#x27;_&#x27; + sd_monthDot_(monthKey) + &#x27;_&#x27; + store;
+    // 2026-10-19: 同じ費目名の別請求書が、互いの添付を上書き（ゴミ箱送り）して「添付が入れ替わる」問題への対応。
+    // 請求書ごとの識別子（uniq・英数字8文字まで）を名前の末尾に付け、別の請求書の添付は別ファイルとして残す
+    var uniq = String(payload.uniq || &#x27;&#x27;).replace(/[^0-9A-Za-z]/g, &#x27;&#x27;).slice(0, 8);
+    if (uniq) baseName += &#x27;__&#x27; + uniq;
+    var newName = baseName + extension;
+    // 冪等: 同名の既存ファイルがあれば先にゴミ箱へ移動してから作り直す（重複蓄積を防ぐ）
+    var existing = folder.getFilesByName(newName);
+    while (existing.hasNext()) { existing.next().setTrashed(true); }
+    var bytes = Utilities.base64Decode(payload.b64);
+    var blob = Utilities.newBlob(bytes, payload.mimeType || &#x27;application/octet-stream&#x27;, newName);
+    var file = folder.createFile(blob);
+    sd_log_(&#x27;添付アップロード（自動連携）&#x27;, store, monthKey, newName, file.getId(), file.getUrl(), &#x27;自動連携&#x27;, &#x27;&#x27;);
+    return { ok: true, name: newName, url: file.getUrl() };
+  } catch (e) {
+    return { ok: false, error: String(e &amp;&amp; e.message || e) };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/* 間違えて添付したファイルの削除（2026-10-19新設）。本部以上のみ。振込済みロック中はマスター等のみ。
+ * Driveのゴミ箱に移すだけ（30日以内ならDriveの「ゴミ箱」から元に戻せる）。この店舗・月のフォルダ内のファイルだけが対象 */
+function sd_deleteAttachment(token, store, monthKey, fileId) {
+  var user = sd_auth_(token, true);
+  sd_requireUnlocked_(user, store, monthKey);
+  var det = sd_detect_();
+  var cfg = sd_allowedStores_(user, sd_config_(sd_masterStores_(det), det));
+  if (!cfg.some(function (s) { return s.name === store; })) throw new Error(&#x27;この店舗の権限がありません&#x27;);
+  var ext = sd_extConfig_();
+  var folder = sd_folderFor_(ext, monthKey, store);
+  var it = folder.getFiles(), target = null;
+  while (it.hasNext()) { var f = it.next(); if (f.getId() === fileId) { target = f; break; } }
+  if (!target) throw new Error(&#x27;この店舗・月のフォルダにそのファイルは見つかりません（すでに削除された可能性があります）&#x27;);
+  var name = target.getName();
+  target.setTrashed(true);
+  sd_log_(&#x27;添付削除&#x27;, store, monthKey, name, fileId, &#x27;&#x27;, user.name, &#x27;&#x27;);
+  return { ok: true, name: name };
+}
+
+function sd_listAttachments(token, store, monthKey) {
+  var user = sd_auth_(token, false);
+  var det = sd_detect_();
+  var cfg = sd_allowedStores_(user, sd_config_(sd_masterStores_(det), det));
+  if (!cfg.some(function (s) { return s.name === store; })) throw new Error(&#x27;この店舗の閲覧権限がありません&#x27;);
+  var ext = sd_extConfig_();
+  var out = [];
+  try {
+    var folder = sd_folderFor_(ext, monthKey, store);
+    var it = folder.getFiles();
+    while (it.hasNext()) {
+      var f = it.next();
+      out.push({ name: f.getName(), url: f.getUrl(), id: f.getId(), date: Utilities.formatDate(f.getDateCreated(), SD_TZ, &#x27;M/d HH:mm&#x27;) });
+    }
+  } catch (e) { /* フォルダ未作成なら空 */ }
+  out.sort(function (a, b) { return a.name &lt; b.name ? -1 : 1; });
+  return out;
+}
+
+/* 委託先向け: 発行済みPDFのダウンロード（権限チェック付き） */
+function sd_getPdfB64(token, fileId) {
+  var user = sd_auth_(token, false);
+  var log = sd_logRows_().filter(function (r) { return r.fileId === fileId; });
+  if (!log.length) throw new Error(&#x27;ファイルが見つかりません&#x27;);
+  var det = sd_detect_();
+  var cfg = sd_allowedStores_(user, sd_config_(sd_masterStores_(det), det));
+  if (!cfg.some(function (s) { return sd_norm_(s.name) === sd_norm_(log[0].store); })) {
+    throw new Error(&#x27;この店舗の閲覧権限がありません&#x27;);
+  }
+  var file = DriveApp.getFileById(fileId);
+  return { fileName: file.getName(), b64: Utilities.base64Encode(file.getBlob().getBytes()) };
+}
+
+/* ---------- 発行ログ ---------- */
+
+function sd_logSheet_() {
+  var ss = SpreadsheetApp.getActive();
+  var sh = ss.getSheetByName(SD_LOG_SHEET);
+  if (!sh) {
+    sh = ss.insertSheet(SD_LOG_SHEET);
+    sh.getRange(1, 1, 1, 9).setValues([[&#x27;日時&#x27;, &#x27;操作&#x27;, &#x27;店舗&#x27;, &#x27;対象月&#x27;, &#x27;ファイル名&#x27;, &#x27;fileId&#x27;, &#x27;URL&#x27;, &#x27;実行者&#x27;, &#x27;送信先&#x27;]]);
+    sh.setFrozenRows(1);
+  }
+  return sh;
+}
+
+function sd_log_(action, store, monthKey, fileName, fileId, url, who, to) {
+  sd_logSheet_().appendRow([
+    Utilities.formatDate(new Date(), SD_TZ, &#x27;yyyy-MM-dd HH:mm:ss&#x27;),
+    action, store, monthKey, fileName, fileId, url, who, to
+  ]);
+}
+
+function sd_logRows_() {
+  var sh = sd_logSheet_();
+  var lastR = sh.getLastRow();
+  if (lastR &lt; 2) return [];
+  return sh.getRange(2, 1, lastR - 1, 9).getDisplayValues().map(function (r) {
+    return { at: r[0], action: r[1], store: r[2], month: r[3], fileName: r[4], fileId: r[5], url: r[6], who: r[7], to: r[8] };
+  });
+}
+
+/* 店舗×月 → 最新の送信/保存記録 */
+function sd_sentMap_() {
+  var out = {};
+  sd_logRows_().forEach(function (r) {
+    if (r.action !== &#x27;メール送信&#x27; &amp;&amp; r.action !== &#x27;PDF保存&#x27;) return;
+    var k = sd_norm_(r.store);
+    out[k] = out[k] || {};
+    var prev = out[k][r.month];
+    if (!prev || r.at &gt; prev.at || (r.action === &#x27;メール送信&#x27; &amp;&amp; prev.action !== &#x27;メール送信&#x27;)) {
+      out[k][r.month] = { at: r.at, action: r.action, fileId: r.fileId, fileName: r.fileName, to: r.to };
+    }
+  });
+  return out;
+}
+
+/* ---------- ⑤ 先の月への一括計上（本部のみ） ---------- */
+
+function sd_bulkAdd(token, payload) {
+  // payload = { store, kubun, item, amount, tax, note, fromMonth, toMonth }
+  var user = sd_auth_(token, true);
+  var lock = LockService.getDocumentLock();
+  lock.waitLock(30000);
+  try {
+    var det = sd_detect_();
+    var cfg = sd_config_(sd_masterStores_(det), det);
+    var st = null;
+    cfg.forEach(function (s) { if (s.name === payload.store) st = s; });
+    if (!st) throw new Error(&#x27;店舗が見つかりません: &#x27; + payload.store);
+    if (!st.db) throw new Error(&#x27;店舗「&#x27; + payload.store + &#x27;」のDBシートが見つかりません&#x27;);
+    var item = String(payload.item || &#x27;&#x27;).trim();
+    if (!item) throw new Error(&#x27;費目名を入力してください&#x27;);
+    var amt = Number(String(payload.amount).replace(/[¥￥,，\s]/g, &#x27;&#x27;));
+    if (isNaN(amt)) throw new Error(&#x27;金額が数値ではありません&#x27;);
+    if (payload.fromMonth &gt; payload.toMonth) throw new Error(&#x27;開始月が終了月より後になっています&#x27;);
+
+    var months = [];
+    var k = payload.fromMonth, guard = 0;
+    while (k &lt;= payload.toMonth &amp;&amp; guard &lt; 60) { months.push(k); k = sd_addMonths_(k, 1); guard++; }
+    if (!months.length) throw new Error(&#x27;対象月がありません&#x27;);
+
+    // 振込済みの月はマスター以外スキップ
+    var lockedMonths = [];
+    if (user.role !== &#x27;マスター&#x27;) {
+      var open = [];
+      months.forEach(function (mk) {
+        if (sd_isLocked_(payload.store, mk)) lockedMonths.push(mk); else open.push(mk);
+      });
+      months = open;
+      if (!months.length) throw new Error(&#x27;🔒 指定された月はすべて振込済みでロックされています（マスターアカウントが必要です）&#x27;);
+    }
+
+    sd_ensureCategoryCols_(st.db);
+    var row = { kubun: payload.kubun || &#x27;変動費&#x27;, item: item, amount: amt, tax: payload.tax || &#x27;10%&#x27;, note: payload.note || &#x27;一括計上&#x27;, account: payload.account || &#x27;&#x27;, subAccount: payload.subAccount || &#x27;&#x27; };
+    months.forEach(function (mk) {
+      sd_appendRows_(st.db, sd_monthKeyToDate_(mk), [row], user.name);
+    });
+    sd_clearRowsCache_(st.db.sheet);
+    sd_log_(&#x27;一括計上&#x27;, payload.store, months[0] + &#x27;〜&#x27; + months[months.length - 1], item + &#x27; ¥&#x27; + amt + &#x27; ×&#x27; + months.length + &#x27;ヶ月&#x27;, &#x27;&#x27;, &#x27;&#x27;, user.name, &#x27;&#x27;);
+    return { ok: true, months: months, item: item, amount: amt, store: payload.store, lockedSkipped: lockedMonths };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/* ---------- ③ アカウント・法人の管理（本部のみ、設定タブ） ---------- */
+
+function sd_getSettings(token) {
+  var user = sd_auth_(token, true);
+  var det = sd_detect_();
+  var master = sd_masterStores_(det);
+  var cfg = sd_config_(master, det);
+
+  var accSh = sd_authSheet_();
+  var accounts = [];
+  var lastR = accSh.getLastRow();
+  if (lastR &gt; 1) {
+    accSh.getRange(2, 1, lastR - 1, 7).getDisplayValues().forEach(function (r) {
+      if (String(r[0]).trim()) accounts.push({
+        id: String(r[0]).trim(), pw: String(r[1]), name: String(r[2]).trim(),
+        role: sd_normRole_(r[3]),
+        stores: String(r[4]).trim(), enabled: sd_norm_(r[5]).toUpperCase() !== &#x27;FALSE&#x27;,
+        email: String(r[6] || &#x27;&#x27;).trim().toLowerCase()
+      });
+    });
+  }
+  var corps = sd_corpMap_(cfg);
+  var corpList = [];
+  var seen = {};
+  var clientNames = cfg.map(function (st) { return st.client || &#x27;&#x27;; }).concat(sd_periodRows_().map(function (r) { return r.client; })); // 期間設定の委託先（LiveGate等）も振込先の登録対象に出す
+  clientNames.forEach(function (c) {
+    if (c &amp;&amp; !seen[sd_norm_(c)]) {
+      seen[sd_norm_(c)] = true;
+      var info = corps[sd_norm_(c)] || {};
+      corpList.push({ client: c, account: info.account || &#x27;&#x27;, note: info.note || &#x27;&#x27; });
+    }
+  });
+  // 定期費目（🔁設定タブ用。店舗×費目の一覧に状態(有効/停止)を添えて返す。書き込みはsd_saveRecurStatus）
+  var recur = sd_recurRows_().map(function (r) {
+    return { store: r.store, kubun: r.kubun, item: r.item, amount: r.amount, status: r.status };
+  });
+  return {
+    accounts: accounts,
+    corps: corpList,
+    stores: cfg.map(function (s) { return { name: s.name, client: s.client, rate: s.rate, hasDb: !!s.db }; }),
+    recur: recur,
+    ops: { lockLevel: sd_lockLevel_(), autoSendMode: sd_autoSendMode_() },
+    masterSheetUrl: SpreadsheetApp.getActive().getUrl()
+  };
+}
+
+function sd_saveAccount(token, acc) {
+  var user = sd_auth_(token, true);
+  if (!acc || !String(acc.id || &#x27;&#x27;).trim()) throw new Error(&#x27;ログインIDを入力してください&#x27;);
+  if (!String(acc.pw || &#x27;&#x27;).trim()) throw new Error(&#x27;パスワードを入力してください&#x27;);
+  var newRole = sd_normRole_(acc.role);
+  // マスター権限の付与・既存マスターの編集はマスターのみ
+  var existing = sd_findAccount_(String(acc.id).trim());
+  if (newRole === &#x27;マスター&#x27; || (existing &amp;&amp; existing.role === &#x27;マスター&#x27;)) sd_requireMaster_(user);
+
+  var sh = sd_authSheet_();
+  var lastR = sh.getLastRow();
+  var row = 0;
+  if (lastR &gt; 1) {
+    var ids = sh.getRange(2, 1, lastR - 1, 1).getDisplayValues();
+    for (var i = 0; i &lt; ids.length; i++) {
+      if (String(ids[i][0]).trim() === String(acc.id).trim()) { row = i + 2; break; }
+    }
+  }
+  // 委託先は統合アカウントの対象外なのでメールは保存しない
+  var email = newRole === &#x27;委託先&#x27; ? &#x27;&#x27; : String(acc.email || &#x27;&#x27;).trim().toLowerCase();
+  var rec = [
+    String(acc.id).trim(), String(acc.pw), String(acc.name || acc.id).trim(),
+    newRole,
+    String(acc.stores || &#x27;&#x27;).trim() || (newRole !== &#x27;委託先&#x27; ? &#x27;全店&#x27; : &#x27;&#x27;),
+    acc.enabled === false ? &#x27;FALSE&#x27; : &#x27;TRUE&#x27;,
+    email
+  ];
+  if (row) sh.getRange(row, 1, 1, 7).setValues([rec]);
+  else sh.appendRow(rec);
+  return { ok: true, id: rec[0], updated: !!row };
+}
+
+function sd_saveCorp(token, corp) {
+  var user = sd_auth_(token, true);
+  var client = String(corp.client || &#x27;&#x27;).trim();
+  if (!client) throw new Error(&#x27;法人名が空です&#x27;);
+  var ss = SpreadsheetApp.getActive();
+  var sh = ss.getSheetByName(SD_CORP_SHEET);
+  if (!sh) { sd_corpMap_(sd_config_(sd_masterStores_(sd_detect_()), sd_detect_())); sh = ss.getSheetByName(SD_CORP_SHEET); }
+  var lastR = sh.getLastRow();
+  var row = 0;
+  if (lastR &gt; 1) {
+    var names = sh.getRange(2, 1, lastR - 1, 1).getDisplayValues();
+    for (var i = 0; i &lt; names.length; i++) {
+      if (sd_norm_(names[i][0]) === sd_norm_(client)) { row = i + 2; break; }
+    }
+  }
+  var rec = [client, String(corp.account || &#x27;&#x27;).trim(), String(corp.note || &#x27;&#x27;).trim()];
+  if (row) sh.getRange(row, 1, 1, 3).setValues([rec]);
+  else sh.appendRow(rec);
+  return { ok: true, client: client, updated: !!row };
+}
+
+/* ロイヤリティ率設定（設定タブ）。「店舗設定マスター」シートの該当行・ロイヤリティ率列を直接
+ * 書き換える。従来は本シートを手で開いて編集していたのをUIから可能にする。マスター/本部のみ。 */
+function sd_saveStoreRate(token, store, rate) {
+  sd_auth_(token, true);
+  var det = sd_detect_();
+  if (!det.master) throw new Error(&#x27;「店舗設定マスター」が見つかりません&#x27;);
+  var sh = SpreadsheetApp.getActive().getSheetByName(det.master.sheet);
+  var hr = det.master.headerRow;
+  var lastR = sh.getLastRow(), lastC = sh.getLastColumn();
+  if (lastR &lt;= hr) throw new Error(&#x27;店舗設定マスターにデータがありません&#x27;);
+  var header = sh.getRange(hr, 1, 1, lastC).getDisplayValues()[0].map(sd_norm_);
+  var iName = header.indexOf(&#x27;店舗名&#x27;);
+  var iRate = -1;
+  header.forEach(function (h, i) { if (iRate &lt; 0 &amp;&amp; h.indexOf(&#x27;ロイヤリティ率&#x27;) &gt; -1) iRate = i; });
+  if (iName &lt; 0 || iRate &lt; 0) throw new Error(&#x27;店舗設定マスターに「店舗名」または「ロイヤリティ率」列が見つかりません&#x27;);
+  var vals = sh.getRange(hr + 1, 1, lastR - hr, lastC).getDisplayValues();
+  var row = 0;
+  for (var i = 0; i &lt; vals.length; i++) {
+    var nm = String(vals[i][iName] || &#x27;&#x27;).trim();
+    if (!nm) break;
+    if (sd_norm_(nm) === sd_norm_(store)) { row = hr + 1 + i; break; }
+  }
+  if (!row) throw new Error(&#x27;店舗設定マスターに「&#x27; + store + &#x27;」が見つかりません&#x27;);
+  sh.getRange(row, iRate + 1).setValue(String(rate));
+  return { ok: true, store: store, rate: String(rate) };
+}
+
+/* ⚙自動処理・権限（設定タブ）。SD_LOCK_LEVEL（振込済み後の編集権限。master=マスターのみ／
+ * admin=本部以上）とSD_AUTOSEND_MODE（発行モーダルの送信チェックボックスの既定値。manual/auto）
+ * をScript Propertiesに保存するだけの軽量設定。承認フローや自動送信そのものを新設するものではない。 */
+function sd_saveOpsSettings(token, settings) {
+  var user = sd_auth_(token, true);
+  sd_requireMaster_(user);
+  var s = settings || {};
+  var lockLevel = s.lockLevel === &#x27;admin&#x27; ? &#x27;admin&#x27; : &#x27;master&#x27;;
+  var autoSendMode = s.autoSendMode === &#x27;auto&#x27; ? &#x27;auto&#x27; : &#x27;manual&#x27;;
+  var props = PropertiesService.getScriptProperties();
+  props.setProperty(&#x27;SD_LOCK_LEVEL&#x27;, lockLevel);
+  props.setProperty(&#x27;SD_AUTOSEND_MODE&#x27;, autoSendMode);
+  return { ok: true, lockLevel: lockLevel, autoSendMode: autoSendMode };
+}
+
+function sd_getOpsSettings(token) {
+  sd_auth_(token, true);
+  return { ok: true, lockLevel: sd_lockLevel_(), autoSendMode: sd_autoSendMode_() };
+}
+function sd_autoSendMode_() {
+  var v = PropertiesService.getScriptProperties().getProperty(&#x27;SD_AUTOSEND_MODE&#x27;);
+  return (v === &#x27;auto&#x27;) ? &#x27;auto&#x27; : &#x27;manual&#x27;;
+}
+
+/* ---------- シート版チェック表（本部） ---------- */
+
+function sd_updateCheckSheet(token, monthKey) {
+  var data = sd_getDashboard(token, monthKey || null);
+  sd_auth_(token, true);
+  var ss = SpreadsheetApp.getActive();
+  var sh = ss.getSheetByName(SD_CHECK_SHEET);
+  if (!sh) sh = ss.insertSheet(SD_CHECK_SHEET, 0);
+  sh.clear();
+  var rows = [];
+  rows.push([&#x27;精算 入力チェック表&#x27;, &#x27;&#x27;, &#x27;&#x27;, &#x27;&#x27;, &#x27;&#x27;, &#x27;&#x27;]);
+  rows.push([&#x27;対象月: &#x27; + data.monthLabel + &#x27;　（更新: &#x27; + data.updatedAt + &#x27;）&#x27;, &#x27;&#x27;, &#x27;&#x27;, &#x27;&#x27;, &#x27;&#x27;, &#x27;&#x27;]);
+  rows.push([&#x27;&#x27;, &#x27;&#x27;, &#x27;&#x27;, &#x27;&#x27;, &#x27;&#x27;, &#x27;&#x27;]);
+  rows.push([&#x27;店舗&#x27;, &#x27;状態&#x27;, &#x27;明細件数&#x27;, &#x27;売上合計&#x27;, &#x27;経費合計&#x27;, &#x27;入力漏れの疑い&#x27;]);
+  data.stores.forEach(function (st) {
+    var d = st.detail;
+    var state = d.issuedThis ? &#x27;✅ 発行済み&#x27; : (d.count &gt; 0 ? &#x27;🟡 入力中&#x27; : &#x27;❌ 未入力&#x27;);
+    var warn = d.missing.concat(d.catWarn).join(&#x27;、 &#x27;) || &#x27;－&#x27;;
+    rows.push([st.name, state, d.count, d.sales, d.cost, warn]);
+  });
+  rows.push([&#x27;&#x27;, &#x27;&#x27;, &#x27;&#x27;, &#x27;&#x27;, &#x27;&#x27;, &#x27;&#x27;]);
+  rows.push([&#x27;※「入力漏れの疑い」= 直近3ヶ月のうち2ヶ月以上入力があるのに、対象月にまだ無い費目&#x27;, &#x27;&#x27;, &#x27;&#x27;, &#x27;&#x27;, &#x27;&#x27;, &#x27;&#x27;]);
+  sh.getRange(1, 1, rows.length, 6).setValues(rows);
+  sh.getRange(4, 1, 1, 6).setFontWeight(&#x27;bold&#x27;).setBackground(&#x27;#efefef&#x27;);
+  sh.getRange(1, 1).setFontWeight(&#x27;bold&#x27;).setFontSize(14);
+  sh.setColumnWidth(1, 160);
+  sh.setColumnWidths(2, 4, 110);
+  sh.setColumnWidth(6, 480);
+  sh.getRange(5, 4, data.stores.length, 2).setNumberFormat(&#x27;¥#,##0&#x27;);
+  return SD_CHECK_SHEET + &#x27; を更新しました（&#x27; + data.monthLabel + &#x27;）&#x27;;
+}
+
+/* ---------- 動作確認 ---------- */
+
+/* 既に権限シートがある環境にマスターアカウントを追加する（エディタから1回実行）。
+ * 既に master がいる場合は何もしない。パスワードは実行ログに出力。 */
+function sd_createMasterAccount() {
+  var sh = sd_authSheet_();
+  var existing = sd_findAccount_(&#x27;master&#x27;);
+  if (existing) {
+    Logger.log(&#x27;master アカウントは既に存在します（権限: &#x27; + existing.role + &#x27;）。パスワードは権限_精算ダッシュボードシートで確認・変更してください。&#x27;);
+    return;
+  }
+  var pw = Utilities.getUuid().split(&#x27;-&#x27;)[0];
+  sh.appendRow([&#x27;master&#x27;, pw, &#x27;マスター&#x27;, &#x27;マスター&#x27;, &#x27;全店&#x27;, &#x27;TRUE&#x27;]);
+  Logger.log(&#x27;マスターアカウントを作成しました: master / &#x27; + pw + &#x27;（必ずログイン後に変更してください）&#x27;);
+}
+
+/* 2026-09-23一時復旧用（エディタから1回だけ手動実行。呼び出しAPIには登録しない）。
+ * sd_apiAddExternalLineの.slice(0,80)切り詰めバグ（修正済み）により、秋葉原肉寿司2026-08の
+ * GOSSO株式会社3明細の「外部参照ID」列が末尾1文字欠けた値のまま保存されてしまっていた行を、
+ * 正しい81文字のsourceKeyへ書き戻す。安全のため、セルの現在値が「欠けている前提の80文字値」に
+ * 完全一致する場合だけ上書きする（既に直っている・想定と違う値のセルには一切触れない）。
+ * 実行後、Logger（表示→ログ）で結果を確認し、この関数ごと削除してよい。 */
+function sd_fixTruncatedExtRef_akihabara_20260923() {
+  var FIXES = [
+    { truncated: &#x27;invoice:6e3520e4-1698-4a7e-b735-2b7ea8ad244e:14cc9355-1b15-4b22-8efb-df65fb28d69&#x27;,
+      correct:   &#x27;invoice:6e3520e4-1698-4a7e-b735-2b7ea8ad244e:14cc9355-1b15-4b22-8efb-df65fb28d690&#x27; },
+    { truncated: &#x27;invoice:6e3520e4-1698-4a7e-b735-2b7ea8ad244e:89ef29ec-414c-4bda-9cc9-99f9f539158&#x27;,
+      correct:   &#x27;invoice:6e3520e4-1698-4a7e-b735-2b7ea8ad244e:89ef29ec-414c-4bda-9cc9-99f9f5391582&#x27; },
+    { truncated: &#x27;invoice:6e3520e4-1698-4a7e-b735-2b7ea8ad244e:e08d4b74-eea4-4c4f-b271-4136ab46e61&#x27;,
+      correct:   &#x27;invoice:6e3520e4-1698-4a7e-b735-2b7ea8ad244e:e08d4b74-eea4-4c4f-b271-4136ab46e612&#x27; }
+  ];
+  var store = &#x27;秋葉原 肉寿司&#x27;, monthKey = &#x27;2026-08&#x27;;
+  var det = sd_detect_();
+  var cfg = sd_config_(sd_masterStores_(det), det);
+  var st = null;
+  cfg.forEach(function (s) { if (s.name === store) st = s; });
+  if (!st || !st.db) { Logger.log(&#x27;店舗またはDBシートが見つかりません: &#x27; + store); return; }
+  var sh = SpreadsheetApp.getActive().getSheetByName(st.db.sheet);
+  var cm = st.db.colMap;
+  if (!cm.extRef) { Logger.log(&#x27;外部参照ID列が見つかりません&#x27;); return; }
+  var rows = sd_readRows_(st.db).filter(function (r) { return r.ym === monthKey; });
+  var fixed = 0, skipped = [];
+  FIXES.forEach(function (fx) {
+    var hit = rows.filter(function (r) { return r.extRef === fx.truncated; });
+    if (!hit.length) { skipped.push(&#x27;見つからず（既に直っているか値が違う）: ...&#x27; + fx.truncated.slice(-16)); return; }
+    hit.forEach(function (r) {
+      sh.getRange(r.row, cm.extRef).setValue(fx.correct);
+      fixed++;
+      Logger.log(&#x27;行&#x27; + r.row + &#x27;（&#x27; + r.item + &#x27;）を修正: &#x27; + fx.truncated + &#x27; → &#x27; + fx.correct);
+    });
+  });
+  sd_clearRowsCache_(st.db.sheet);
+  Logger.log(&#x27;=== 完了: &#x27; + fixed + &#x27;件修正 ===&#x27;);
+  skipped.forEach(function (s) { Logger.log(s); });
+}
+
+function sd_diagnose() {
+  var det = sd_detect_();
+  var master = sd_masterStores_(det);
+  var cfg = sd_config_(master, det);
+  var ext = sd_extConfig_();
+  sd_authSheet_(); sd_recurRows_(); sd_logSheet_();
+  Logger.log(&#x27;バージョン: %s&#x27;, SD_VERSION);
+  Logger.log(&#x27;店舗設定マスター: %s&#x27;, det.master &amp;&amp; det.master.sheet);
+  Logger.log(&#x27;発行状況: %s / メール設定: %s / 送付シート: %s&#x27;,
+    det.statusSheet &amp;&amp; det.statusSheet.sheet,
+    det.mailSheet &amp;&amp; det.mailSheet.sheet,
+    det.sendSheet &amp;&amp; det.sendSheet.sheet);
+  cfg.forEach(function (st) {
+    Logger.log(&#x27;店舗「%s」 → DB: %s ／ 売上シート名: %s&#x27;, st.name, st.db ? st.db.sheet : &#x27;（未検出）&#x27;, st.salesName);
+  });
+  Logger.log(&#x27;売上スプレッドシートID: %s&#x27;, ext[&#x27;売上スプレッドシートID&#x27;]);
+  Logger.log(&#x27;添付親フォルダID: %s&#x27;, ext[&#x27;添付親フォルダID&#x27;]);
+}
+
+/* 「精算書 送付」シートの売上一覧の数式を調べる（PDFの金額とDBの金額が
+ * 合わない原因調査用）。エディタで実行し、ログを確認してください。 */
+function sd_diagnoseSalesFormula(store, monthKey) {
+  var det = sd_detect_();
+  var info = sd_sendSheetInfo_(det);
+  if (store) {
+    info.sheet.getRange(info.storeCell[0], info.storeCell[1]).setValue(store);
+  }
+  if (monthKey) {
+    var d = sd_monthKeyToDate_(monthKey);
+    info.sheet.getRange(info.monthCell[0], info.monthCell[1]).setValue(d.getFullYear() + &#x27;/&#x27; + (d.getMonth() + 1));
+  }
+  SpreadsheetApp.flush();
+  Utilities.sleep(500);
+
+  var sh = info.sheet;
+  var lastR = Math.min(sh.getLastRow(), 200);
+  var lastC = Math.min(sh.getLastColumn(), 8);
+  var vals = sh.getRange(1, 1, lastR, lastC).getDisplayValues();
+  var formulas = sh.getRange(1, 1, lastR, lastC).getFormulas();
+
+  var salesRow = -1, sumRow = -1;
+  for (var r = 0; r &lt; lastR; r++) {
+    for (var c = 0; c &lt; lastC; c++) {
+      var t = sd_norm_(vals[r][c]);
+      if (salesRow &lt; 0 &amp;&amp; t.indexOf(&#x27;売上（預かり金）&#x27;) &gt; -1) salesRow = r;
+      if (salesRow &gt; -1 &amp;&amp; sumRow &lt; 0 &amp;&amp; t === &#x27;売上合計&#x27;) { sumRow = r; break; }
+    }
+    if (sumRow &gt; -1) break;
+  }
+  if (salesRow &lt; 0) { Logger.log(&#x27;「売上（預かり金）」ブロックが見つかりません&#x27;); return; }
+  if (sumRow &lt; 0) sumRow = Math.min(salesRow + 12, lastR - 1);
+
+  Logger.log(&#x27;===== 売上（預かり金）ブロック 行%s〜%s =====&#x27;, salesRow + 1, sumRow + 1);
+  for (var rr = salesRow; rr &lt;= sumRow; rr++) {
+    var rowVals = vals[rr].join(&#x27; | &#x27;);
+    var rowFormulas = formulas[rr].filter(function (f) { return f; }).join(&#x27; , &#x27;);
+    Logger.log(&#x27;行%s: 値=[%s] 数式=[%s]&#x27;, rr + 1, rowVals, rowFormulas || &#x27;(数式なし・静的値)&#x27;);
+  }
+
+  Logger.log(&#x27;===== 対応する精算入力DBの「売上」区分・対象月ぶん =====&#x27;);
+  var cfgAll = sd_config_(sd_masterStores_(det), det);
+  var target = null;
+  cfgAll.forEach(function (s) { if (!store || sd_norm_(s.name) === sd_norm_(store)) if (!target) target = s; });
+  if (target &amp;&amp; target.db) {
+    var mk = monthKey || sd_fmtMonth_(new Date());
+    var rows = sd_readRows_(target.db).filter(function (r) { return r.ym === mk &amp;&amp; sd_norm_(r.kubun) === &#x27;売上&#x27;; });
+    var total = 0;
+    rows.forEach(function (r) {
+      total += r.amount;
+      Logger.log(&#x27;DB行%s: %s ¥%s（税率%s）&#x27;, r.row, r.item, r.amount, r.tax);
+    });
+    Logger.log(&#x27;DB上の売上合計: ¥%s（%s件）&#x27;, total, rows.length);
+  }
+}
+</textarea>
+<div class="cpmsg" id="cpmsg"></div></div>
+
+<div class="step"><span class="num">3</span>Apps Script の画面の左側で <b>SeisanDashboard</b> のファイルを開きます。<br>
+真ん中の文字の上で <b>⌘+A</b>（全部選ぶ）→ <b>⌘+V</b>（貼り付け）。<b>古い中身が全部消えて、新しい中身に入れ替わります。</b></div>
+
+<div class="step"><span class="num">4</span><b>⌘+S</b>（保存）を押します。（上の方のフロッピーのマークでもOK）</div>
+
+<div class="step"><span class="num">5</span>右上の青い <b>「デプロイ」</b> を押す → <b>「デプロイを管理」</b> を選びます。</div>
+
+<div class="step"><span class="num">6</span>出てきた画面の右上の <b>えんぴつマーク（編集）</b> を押します。<br>
+「バージョン」のところを <b>「新バージョン」</b> にして、右下の <b>「デプロイ」</b> を押します。</div>
+<div class="warn"><b>気をつけること</b>：「新しいデプロイ」は<b>選ばないでください</b>。「デプロイを管理」→ えんぴつ → 新バージョン、です。こうするとURLが変わらず、いつもの画面がそのまま使えます。</div>
+
+<div class="step"><span class="num">7</span>「完了」と出たら終わりです。</div>
+
+<h2>うまくいったか確認する</h2>
+<div class="step">
+1. 精算ダッシュボードを開いて、<b>Cmd+Shift+R</b>（強く再読み込み）。<br>
+2. どれかの店舗の <b>「📎 添付」</b> を押します。<br>
+3. 一覧の各ファイルの横に <b>「🗑 削除」</b> が出ていれば成功です。<br>
+4. 間違ったファイルの「🗑 削除」を押し、確認の画面で「OK」を押すと消えます。<br>
+<div class="ok">消したファイルは、Googleドライブの<b>ゴミ箱</b>に入るだけです。30日以内なら、ドライブのゴミ箱から元に戻せます。</div></div>
+
+<h2>困ったとき</h2>
+<div class="step">
+・<b>「削除エラー」と出る</b>：手順の5〜6（新バージョンでデプロイ）がまだのことが多いです。もう一度やってみてください。<br>
+・<b>「🗑 削除」が出ない</b>：Cmd+Shift+R をもう一度。それでも出ないときは、振込済みの月（ロック中）か、本部アカウントではない可能性があります。<br>
+・<b>エラーの画面が出た</b>：画面を撮って送ってください。
+</div>
+<script>
+function cp(b){var t=document.getElementById('code'),m=document.getElementById('cpmsg');t.focus();t.select();t.setSelectionRange(0,t.value.length);var ok=false;try{ok=document.execCommand('copy')}catch(e){}
+if(!ok&&navigator.clipboard){navigator.clipboard.writeText(t.value).then(function(){m.textContent='✅ コピーしました';},function(){m.textContent='⚠ コピーできませんでした。枠をクリック→⌘+A→⌘+C を押してください';});return;}
+m.textContent=ok?'✅ コピーしました。Apps Script に貼り付けてください':'⚠ コピーできませんでした。枠をクリック→⌘+A→⌘+C を押してください';}
+</script></body></html>
