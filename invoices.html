@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-19-v147";
+const BUILD_TAG="2026-10-19-v148";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -8087,7 +8087,7 @@ async function renderUnifiedInvoiceTab(u){
     if(aids.length){ const ur=await authed(`/rest/v1/users?id=in.(${aids.join(",")})&select=id,name`); UNIFIED_STATE.userNames=new Map((ur.ok&&Array.isArray(ur.body))?ur.body.map(x=>[x.id,x.name]):[]); }
     else UNIFIED_STATE.userNames=new Map();
   }
-  UNIFIED_STATE.rows=raw.filter(row=>!row.email||row.email.mail_kind==="invoice"); // 売上入金メールの自動処理分は「売上入金」タブの「📧メールの売上入金」に出す（2026-10-15）
+  UNIFIED_STATE.rows=raw.filter(row=>!row.email||!row.email.mail_kind||row.email.mail_kind==="invoice"); // 売上入金メールの自動処理分は「売上入金」タブの「📧メールの売上入金」に出す（2026-10-15）
   UNIFIED_STATE.corporations=corpCache.corporations;
   unifiedRender(u);
 }
@@ -9686,7 +9686,7 @@ async function renderAccountingDashboardTab(u){
   // 🧾請求書一覧（renderUnifiedInvoiceTab）と全く同じ対象定義（メール起点は種類=請求書のみ・
   // アップロード等は全て対象）。ここが違うと「請求書一覧は7件・ダッシュボードは6件」のような
   // 不整合（指示書§36が最も懸念している事態）が起きるため、意図的に同じフィルタにしている
-  DASH_STATE.allRows=(r.body||[]).filter(row=>!row.email||row.email.mail_kind==="invoice");
+  DASH_STATE.allRows=(r.body||[]).filter(row=>!row.email||!row.email.mail_kind||row.email.mail_kind==="invoice");
   DASH_STATE.error=null;
   if(!DASH_STATE.yearMonth) DASH_STATE.yearMonth=dashYmDefault();
   const arRows=(arR.ok&&Array.isArray(arR.body))?arR.body:[];
