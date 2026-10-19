@@ -144,6 +144,19 @@ Deno.serve(async (req: Request) => {
   }
   const mapping = { resolved, low, unresolved, skipped_human: skipped, unresolved_names: [...unresolvedNames], checked_at: new Date().toISOString() };
   await db.from("invoices").update({ lines_check: { ...(inv.lines_check ?? {}), mapping } }).eq("id", inv.id);
+  // 2026-10-19: 明細から確定した店舗を、請求書の「対象店舗」（invoice_stores）にも反映する。人が選んだ店舗（既に何かある場合）は上書きしない。
+  //  これが空だと一覧で「店舗不明」の要対応になり、PL・広告費の反映も店舗を引けなかった
+  try {
+    const { count: hasStores } = await db.from("invoice_stores").select("*", { count: "exact", head: true }).eq("invoice_id", inv.id);
+    if (!hasStores) {
+      const { data: rl } = await db.from("invoice_lines").select("resolved_store_id").eq("invoice_id", inv.id).not("resolved_store_id", "is", null);
+      const sids = [...new Set((rl ?? []).map((x: any) => x.resolved_store_id as string))];
+      if (sids.length) {
+        await db.from("invoice_stores").insert(sids.map((sid) => ({ invoice_id: inv.id, store_id: sid })));
+        if (sids.length === 1 && !inv.store_id) await db.from("invoices").update({ store_id: sids[0] }).eq("id", inv.id);
+      }
+    }
+  } catch (e) { console.error("対象店舗の反映に失敗: " + e); }
   // Phase5: 店舗が決まったので仕訳の下書きを作る（待たずに別Functionへ依頼。secret経由のときだけ）
   if (body?.secret) {
     const kick = fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/invoice-journal-draft`, {
