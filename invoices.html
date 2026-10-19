@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-19-v151";
+const BUILD_TAG="2026-10-19-v152";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -940,6 +940,26 @@ function apvRecalc_(modal){
   const credit=(Math.round(Number(cm.value)||0))+ex;
   if(bal) bal.innerHTML=`借方 <b>${yen(debit)}</b>　貸方 <b>${yen(credit)}</b>　${debit===credit?'<span style="color:#15803d">✅ 一致</span>':`<span style="color:#b91c1c">⚠️ 差 ${yen(debit-credit)}（一致しないと登録できません）</span>`}`;
 }
+// 承認画面の「PL・広告費・精算書への反映」欄：今の行の内容から、店舗ごとの反映先と金額（税抜）を要約する
+function apvPlSummary_(modal,d,inv){
+  const box=modal.querySelector("#apv-plsum"); if(!box) return;
+  const col=apvCollect_(modal,d); const stores=(CORP_STORE_CACHE&&CORP_STORE_CACHE.stores)||[];
+  const mediaSubs=["食べログ","ぐるなび","ホットペッパー","Retty"];
+  const exp=col.lines.filter(l=>plIsExpenseAccount_(l.account)&&l.account!=="仕入高");
+  const noStore=exp.filter(l=>!l.store_id);
+  const by=new Map();
+  exp.filter(l=>l.store_id).forEach(l=>{
+    const st=stores.find(x=>x.id===l.store_id); const rt=plfeeSeisanRoute(st,inv.corporation_id,inv.target_year_month)==="seisan"?"精算書":(l.account==="広告宣伝費"&&mediaSubs.includes(l.sub)?"広告費":"PL");
+    const net=l.net!=null?Math.round(l.net):(l.rate>0?l.amount-Math.floor(l.amount*l.rate/(100+l.rate)):l.amount);
+    const k=l.store_name+"｜"+rt+"｜"+(l.sub?l.account+"/"+l.sub:l.account); by.set(k,(by.get(k)||0)+net);
+  });
+  const skipped=col.lines.filter(l=>l.account==="仕入高");
+  box.innerHTML=(by.size?[...by.entries()].map(([k,v])=>{const [sn,rt,ac]=k.split("｜"); return `<div>・<b>${esc(sn)}</b> → ${esc(rt)}（${esc(ac)}）${yen(v)}</div>`;}).join(""):'<div style="color:var(--muted)">反映の対象になる費用の行がありません</div>')
+    +(noStore.length?`<div style="color:#b91c1c">⚠️ 店舗が未選択の行が ${noStore.length}件あります（反映するには、店舗を選んでください）</div>`:"")
+    +(skipped.length?'<div style="color:var(--muted)">※仕入高は、月の請求書がすべて承認された後にまとめて反映します</div>':"");
+  // 反映の対象が無いときは、既定を「反映しない」にする
+  if(!exp.length&&!modal.dataset.plTouched){ const r=modal.querySelector('input[name="apv-plmode"][value="no"]'); if(r&&!r.checked){ r.checked=true; modal.querySelector("#apv-plno").style.display="inline"; const rs=modal.querySelector("#apv-plreason"); if(rs&&!rs.value) rs.value="PLの対象外の費用（資産・立替など）"; } }
+}
 async function openApprovalModal(u,invoiceId,opt){
   const r=await authed(`/rest/v1/invoices?id=eq.${invoiceId}&select=*,corp:corporations(name),vendor:vendors(name)`);
   const inv=(r.ok&&Array.isArray(r.body)&&r.body[0])||null;
@@ -962,9 +982,10 @@ async function openApprovalModal(u,invoiceId,opt){
   const ym=(inv.target_year_month||"").slice(0,7);
   const canEditLines=!((d.credit_lines||[]).length);   // 売上入金（貸方が複数行の下書き）は、従来どおり行の追加はできない
   await ensureCorpStoreCache();
+  const apvStoreOpts_=((CORP_STORE_CACHE&&CORP_STORE_CACHE.stores)||[]).slice().sort((a,b)=>String(a.name).localeCompare(String(b.name),"ja"));
   const rowHtml=l=>`<tr data-apv-row="${l.line_no}" data-store-id="${esc(l.store_id||"")}" data-store-name="${esc(l.store_name||"")}" data-remark="${esc(l.remark||"")}" data-amt0="${Number(l.debit.amount)||0}" data-net0="${l.debit.net_amount!=null?Number(l.debit.net_amount):""}" data-rate0="${l.debit.tax?Number(l.debit.tax.rate):0}">
     <td>${l.line_no}</td>
-    <td>${esc(l.store_name||"—")}<div style="font-size:10px;color:var(--muted)">${esc(routeOf(l.store_id))}</div></td>
+    <td>${canEditLines?`<select class="apv-store" style="max-width:150px"><option value="">（店舗を選ぶ）</option>${apvStoreOpts_.map(x=>`<option value="${esc(x.id)}" ${x.id===l.store_id?"selected":""}>${esc(x.name)}</option>`).join("")}</select>`:esc(l.store_name||"—")}<div style="font-size:10px;color:var(--muted)">${esc(routeOf(l.store_id))}</div></td>
     <td><input class="apv-acc" data-ln="${l.line_no}" list="apv-acc-dl" value="${esc(l.debit.account||"")}" style="width:110px"> <input class="apv-sub" data-ln="${l.line_no}" value="${esc(l.debit.sub_account||"")}" placeholder="補助" style="width:120px"></td>
     <td><input class="apv-dept" data-ln="${l.line_no}" list="apv-dept-dl" value="${esc(l.debit.department||"")}" style="width:130px"></td>
     <td><select class="apv-tax" data-ln="${l.line_no}">${[8,10,0].map(t=>`<option value="${t}" ${(l.debit.tax?Number(l.debit.tax.rate):0)===t?"selected":""}>${t?`課税仕入 ${t}%`:"対象外"}</option>`).join("")}</select></td>
@@ -1005,11 +1026,20 @@ async function openApprovalModal(u,invoiceId,opt){
       <div style="font-size:11px;color:var(--muted);margin:6px 0">明細の検算: ${inv.lines_check?esc(JSON.stringify({ok:inv.lines_check.ok,明細合計:inv.lines_check.sum_lines,税抜合計:inv.subtotal_amount,税額:inv.tax_amount,店舗の突合:inv.lines_check.mapping&&{確定:inv.lines_check.mapping.resolved,要確認:(inv.lines_check.mapping.low||0)+(inv.lines_check.mapping.unresolved||0)}})):"—"}</div>
       <div style="font-size:11px">${logs.map(x=>`<div>${fmtDT(x.created_at)}　${esc(x.note||x.action)}</div>`).join("")||"履歴はありません"}</div>
     </details>
+    <div id="apv-pl" style="margin-top:12px;padding:10px 12px;border:1px solid var(--line,#e4ddd0);border-radius:10px;background:#fbfaf6">
+      <div style="font-weight:700;font-size:13px;margin-bottom:4px">📊 PL・広告費・精算書への反映（承認と同時に行います）</div>
+      <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:center;font-size:13px">
+        <label style="display:inline-flex;gap:4px;align-items:center"><input type="radio" name="apv-plmode" value="yes" checked style="width:auto">反映する（税抜）</label>
+        <label style="display:inline-flex;gap:4px;align-items:center"><input type="radio" name="apv-plmode" value="no" style="width:auto">反映しない</label>
+        <span id="apv-plno" style="display:none">理由：<select id="apv-plreason"><option value="">（選んでください）</option><option>精算書側で処理する・処理済み</option><option>PLの対象外の費用（資産・立替など）</option><option>別の方法で反映する</option><option value="other">その他（下に入力）</option></select> <input id="apv-plreason-txt" placeholder="その他の理由" style="width:200px;display:none"></span>
+      </div>
+      <div id="apv-plsum" style="margin-top:6px;font-size:12px;line-height:1.7"></div>
+      <div style="font-size:11px;color:var(--muted)">店舗は自動で候補を入れています。違う場合は、上の表の「店舗」を直してください（部門もあわせて確認してください）。</div>
+    </div>
     <div class="mail-actions" style="margin-top:12px;flex-wrap:wrap">
       <button class="primary" id="apv-approve">${opt&&opt.edit?"✅ この内容でMFに登録（次回から自動）":"✅ 承認してMFに登録"}</button>
       <button class="hq-btn" id="apv-save">💾 修正を保存（承認待ちへ）</button>
       <button class="hq-btn" id="apv-dry">🔎 登録前チェック（登録しない）</button>
-      <label style="display:inline-flex;gap:4px;align-items:center;font-size:12px"><input type="checkbox" id="apv-reflect" checked style="width:auto">PL・広告費・精算書にも反映する（税抜）</label>
       <button class="hq-btn" id="apv-reject-open">↩️ 差し戻し</button>
       <button class="hq-btn" id="apv-detail">📄 詳細を開く</button>
     </div>
@@ -1021,6 +1051,14 @@ async function openApprovalModal(u,invoiceId,opt){
   pushNav({modal:true});
   modal.onclick=e=>{ if(e.target===modal) history.back(); };
   $("apvClose").onclick=()=>history.back();
+  // PL・広告費・精算書への反映欄
+  { const plm=()=>modal.querySelector('input[name="apv-plmode"]:checked').value;
+    const upd=()=>{ modal.querySelector("#apv-plno").style.display=plm()==="no"?"inline":"none"; const rs=$("apv-plreason"); $("apv-plreason-txt").style.display=(rs&&rs.value==="other")?"inline":"none"; };
+    modal.querySelectorAll('input[name="apv-plmode"]').forEach(r=>r.onchange=()=>{ modal.dataset.plTouched="1"; upd(); });
+    $("apv-plreason").onchange=upd;
+    modal.addEventListener("change",e=>{ if(e.target&&e.target.matches&&e.target.matches(".apv-store,.apv-acc,.apv-sub,.apv-tax")) apvPlSummary_(modal,d,inv); });
+    modal.addEventListener("input",e=>{ if(e.target&&e.target.matches&&e.target.matches(".apv-amt")) apvPlSummary_(modal,d,inv); });
+    upd(); apvPlSummary_(modal,d,inv); }
   // 明細の行の追加・削除・金額の修正（借方・貸方）
   if(canEditLines&&$("apv-add-d")){
     const stores=((CORP_STORE_CACHE&&CORP_STORE_CACHE.stores)||[]).slice().sort((a,b)=>String(a.name).localeCompare(String(b.name),"ja"));
@@ -1243,7 +1281,7 @@ async function apvRun_(inv,d,lines,o){
     await authed(`/rest/v1/invoices?id=eq.${inv.id}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({current_stage:isSales?"completed":"payment_waiting",blocked_reason:null,stage_updated_at:new Date().toISOString()})});
     const credEdited=!!(d.credit&&d._credit0&&(d.credit.account!==d._credit0.account||(d.credit.sub_account||"")!==d._credit0.sub_account));
     const edited=credEdited||!!o.structureChanged||lines.some(l=>l.account!==l.orig.account||l.sub!==l.orig.sub||l.dept!==l.orig.dept||l.rate!==l.orig.rate);
-    await authed("/rest/v1/rpc/invoice_add_comment",{method:"POST",body:JSON.stringify({p_email_id:inv.email_id||null,p_invoice_id:inv.email_id?null:inv.id,p_body:`【承認】MF登録（伝票番号${j.journal_number??"-"}）${edited?"・内容を修正して承認":""}`})});
+    await authed("/rest/v1/rpc/invoice_add_comment",{method:"POST",body:JSON.stringify({p_email_id:inv.email_id||null,p_invoice_id:inv.email_id?null:inv.id,p_body:`【承認】MF登録（伝票番号${j.journal_number??"-"}）${edited?"・内容を修正して承認":""}${(!reflect&&o.plReason)?`・PL反映なし（理由: ${o.plReason}）`:""}`})});
     // 修正して承認 → 新しい版のルールとして保存（行ごとに内容が同じ場合のみ）
     if(o.structureChanged&&(edited||d.status==="proposed")){
       results.push("②行を増やした・減らした、または貸方を分けたため、行ルールの更新は行っていません（この請求書だけの内容です）");
@@ -1264,6 +1302,7 @@ async function apvRun_(inv,d,lines,o){
     if(!isSales){ try{ const q=await autoQueuePayment_(inv); if(q) results.push(q); }catch(_){} }
     // PL・広告費・精算書への反映（税抜）
     if(reflect) await plReflectInvoice_(inv,d,lines,results);
+    else if(o.plReason){ try{ await plFeeCall("exclude",{invoice_id:inv.id}); results.push(`③PL・広告費・精算書へは反映しません（理由: ${esc(o.plReason)}）`); }catch(_){ results.push("③PL反映なしの記録に失敗しました（詳細画面から設定してください）"); } }
     return {ok:true,html:results.join("<br>")};
   }catch(e){ return fail("エラーが発生しました: "+esc((e&&e.message)||e)); }
 }
@@ -1288,11 +1327,21 @@ async function apvApprove_(u,inv,d,modal,dry){
   d.extra_credits=col.extras.filter(x=>x.account||x.amount);   // 追加の貸方（通常は無し）
   if(lines.some(l=>!l.account)){ btn.disabled=false; msg.className="err"; msg.textContent="借方の勘定科目が空の行があります"; return; }
   if(lines.some(l=>l.added&&!l.store_id)){ btn.disabled=false; msg.className="err"; msg.textContent="追加した行の店舗を選んでください（PL・精算書への反映に使います）"; return; }
+  // 2026-10-19: PL・広告費・精算書への反映は、承認画面の「反映する／しない」で決める。「する」なら費用の行すべてに店舗が必要、「しない」なら理由が必要
+  const plMode=(modal.querySelector('input[name="apv-plmode"]:checked')||{}).value||"yes";
+  let plReason="";
+  if(plMode==="yes"){
+    const miss=lines.filter(l=>plIsExpenseAccount_(l.account)&&l.account!=="仕入高"&&!l.store_id);
+    if(miss.length){ btn.disabled=false; msg.className="err"; msg.textContent=`PL・広告費へ反映するには、店舗が未選択の行（${miss.map(l=>"#"+l.line_no).join("、")}）に店舗を選んでください。反映しない場合は「反映しない」を選んで理由を入れてください。`; return; }
+  }else{
+    const rs=$("apv-plreason").value; plReason=rs==="other"?($("apv-plreason-txt").value||"").trim():rs;
+    if(!plReason){ btn.disabled=false; msg.className="err"; msg.textContent="「反映しない」を選んだときは、理由を選ぶ（その他なら入力する）必要があります"; return; }
+  }
   // 追加した行の店舗が、PLか精算書かを、請求書の宛先法人と対象月の運営会社から決める（invoice-checkと同じ判定）
   { const routes=((inv.checks&&inv.checks.routes)||[]).slice(); await ensureCorpStoreCache();
-    for(const l of lines.filter(x=>x.added&&x.store_id)){ if(routes.some(r=>r.store_id===l.store_id)) continue; const st=(CORP_STORE_CACHE.stores||[]).find(x=>x.id===l.store_id); routes.push({store_id:l.store_id,store_name:l.store_name,route:(st&&plfeeSeisanRoute(st,inv.corporation_id,inv.target_year_month)==="seisan")?"seisan":"pl"}); }
+    for(const l of lines.filter(x=>x.store_id)){ if(routes.some(r=>r.store_id===l.store_id)) continue; const st=(CORP_STORE_CACHE.stores||[]).find(x=>x.id===l.store_id); routes.push({store_id:l.store_id,store_name:l.store_name,route:(st&&plfeeSeisanRoute(st,inv.corporation_id,inv.target_year_month)==="seisan")?"seisan":"pl"}); }
     inv.checks={...(inv.checks||{}),routes}; }
-  const r=await apvRun_(inv,d,lines,{dry,structureChanged:col.structureChanged,reflect:!!($("apv-reflect")&&$("apv-reflect").checked),say:x=>{ msg.textContent=x; },
+  const r=await apvRun_(inv,d,lines,{dry,structureChanged:col.structureChanged,reflect:plMode==="yes",plReason,say:x=>{ msg.textContent=x; },
     confirmFn:c=>confirm(`MFに仕訳を登録します（${c.n}行・${yen(c.total)}・計上日 ${c.date}）。\n${c.reflect?"登録後、PL・広告費・精算書にも反映します（税抜）。":"PL・広告費・精算書への反映は行いません。"}\n\n一度登録すると、取り消しはMF側での対応になります。よろしいですか？`)});
   if(r.cancelled){ btn.disabled=false; return; }
   if(!r.ok){ msg.className="err"; msg.innerHTML=r.html; btn.disabled=false; return; }
