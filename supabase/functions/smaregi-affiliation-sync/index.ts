@@ -257,6 +257,14 @@ Deno.serve(async (req) => {
           const L = ledgerValid ? new Set<string>(led.map((r: any) => r.store_id).filter((x: string) => contractStoreIds.has(x))) : null;
 
           if (eq(M, S)) { plans.push({ userId, staffId, M, S, L, kind: "none" }); continue; }
+          // スマレジに所属が1つも見えない人は、スマレジ側で退職扱い（所属が一覧に出ない）かもしれない。本人を直接見て、退職扱いなら同期しない
+          if (S.size === 0) {
+            try {
+              const gr = await tcApi(c.contract_id, token, `/staffs/${staffId}`);
+              const gj = await gr.json().catch(() => null);
+              if (gr.ok && String(gj?.terminationFlag ?? "0") === "1") { cs.smaregi_terminated = (cs.smaregi_terminated ?? 0) + 1; continue; }
+            } catch (_) { /* 取得できなければ通常どおり判定 */ }
+          }
           if (L === null) {
             if (M.size === 0) plans.push({ userId, staffId, M, S, L, kind: "import", reason: "初回・管理システム側に所属なし" });
             else plans.push({ userId, staffId, M, S, L, kind: "push", reason: "初回・管理システム優先" });
