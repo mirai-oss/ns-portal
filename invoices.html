@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-19-v150";
+const BUILD_TAG="2026-10-19-v151";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -1260,10 +1260,25 @@ async function apvRun_(inv,d,lines,o){
         results.push(rr.ok?(edited?"②修正した内容を新しい版のルールとして保存しました":"②この内容を、この取引先の行ルールとして保存しました（次回から自動で作られます）"):"②ルールの保存に失敗しました（登録は完了しています）");
       } else results.push("②行ごとに内容が違うため、ルールの更新は行っていません");
     }
+    // 2026-10-19: 支払方法が設定済みの取引先は、MF登録と同時に自動で振込待ちへ（「振込一覧へ追加」の手作業をなくす）
+    if(!isSales){ try{ const q=await autoQueuePayment_(inv); if(q) results.push(q); }catch(_){} }
     // PL・広告費・精算書への反映（税抜）
     if(reflect) await plReflectInvoice_(inv,d,lines,results);
     return {ok:true,html:results.join("<br>")};
   }catch(e){ return fail("エラーが発生しました: "+esc((e&&e.message)||e)); }
+}
+async function autoQueuePayment_(inv){
+  if(!inv||!inv.vendor_id) return "";
+  const fr=await authed(`/rest/v1/invoices?id=eq.${inv.id}&select=payment_status,duplicate_suspected,bank_account_change_detected,store_id`);
+  const f=(fr.ok&&Array.isArray(fr.body)&&fr.body[0])||null;
+  if(!f||f.payment_status!=="not_ready"||f.duplicate_suspected||f.bank_account_change_detected) return "";
+  const ar=await authed(`/rest/v1/vendor_bank_accounts?vendor_id=eq.${inv.vendor_id}&is_current=eq.true&select=store_id,payment_method`);
+  const cur=(ar.ok&&Array.isArray(ar.body))?ar.body:[];
+  const a=cur.find(x=>f.store_id&&x.store_id===f.store_id)||cur.find(x=>!x.store_id)||(cur.length===1?cur[0]:null);
+  if(!a||!a.payment_method) return "③支払方法が未設定のため、振込待ちには入れていません（取引先に支払方法を設定すると入ります）";
+  await authed(`/rest/v1/invoices?id=eq.${inv.id}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({payment_status:"wait",updated_at:new Date().toISOString()})});
+  fireInvoiceEvent(inv.id,"payment_ready").catch(()=>{});
+  return "③支払方法が設定済みのため、自動で振込待ちに入れました";
 }
 async function apvApprove_(u,inv,d,modal,dry){
   const msg=$("apv-msg"), btn=$("apv-approve"); msg.className="err"; msg.textContent="";
@@ -5540,8 +5555,7 @@ function invoiceWorkflowSteps(invoice,mail){
     {key:"info",label:"請求情報",done:!!(invoice&&invoice.amount!=null)},
     {key:"accounting",label:"会計・仕訳",done:!!(invoice&&invoice.mf_journal_id)},
     {key:"pl",label:"PL・精算",done:!!(invoice&&invoice.mf_journal_id&&(invoice.pl_fee_reflected_at||invoice.pl_fee_excluded_at||invoice.ad_cost_reflected_at||invoice.pl_fee_seisan_synced_at))},
-    {key:"payment",label:"振込",done:!!(invoice&&invoice.payment_status==="paid")},
-    {key:"verified",label:"支払確認",done:!!(invoice&&invoice.payment_verified_at)},
+    {key:"payment",label:"振込・完了",done:!!(invoice&&invoice.payment_status==="paid")},
   ];
   let currentSet=false;
   for(const s of steps){ if(!s.done&&!currentSet){ s.current=true; currentSet=true; } }
@@ -5712,8 +5726,10 @@ function invoicePaymentTabHtml(invoice){
     actionHtml=`<div class="meta" style="color:var(--muted);font-size:12px;margin-bottom:8px">実際の着金・支払完了を確認できたら、下のボタンを押してください。</div>
       <div class="mail-actions"><button id="payment-verify">✅ 支払を確認済みにする</button><button id="payment-unmark-paid" style="color:var(--m-red)">↩️ 振込済みを取り消す</button></div>`;
   }else if(invoice.payment_verified_at){
-    stateLine=`<span class="pl-state done">✓支払確認済み</span>`;
-    actionHtml=`<div class="meta" style="color:var(--muted);font-size:12px">${fmtDT(invoice.payment_verified_at)}に確認済みにしました。</div>`;
+    stateLine=`<span class="pl-state done">✓振込済み（完了）</span>`;
+    // 2026-10-19: 「支払確認済み」の2回目のボタンは廃止。振込済みにした時点で完了。間違いは取り消しで戻せる
+    actionHtml=`<div class="meta" style="color:var(--muted);font-size:12px;margin-bottom:8px">${fmtDT(invoice.payment_verified_at)}に振込済み（完了）になりました。</div>
+      <div class="mail-actions"><button id="payment-unmark-paid" style="color:var(--m-red)">↩️ 振込済みを取り消す</button></div>`;
   }else{
     // 2026-09-05追加：振込予定日（PayPay銀行CSV出力時に入力・銀行の仕組み上、当日振り込みは
     // できないため）が分かっている場合はここに表示する
@@ -8041,7 +8057,7 @@ function unifiedAutoReasons(r){
   if(r.bank_account_change_detected) reasons.push("bank_change");
   if(r.mf_registration_error) reasons.push("mf_error");
   if(r.payment_status==="paid") reasons.push("payment_unverified");
-  if(r.due_date&&r.due_date<today&&r.payment_status!=="paid") reasons.push("overdue");
+  if(r.due_date&&r.due_date<today&&r.payment_status!=="paid"&&!(r.email&&r.email.mail_kind==="sales")) reasons.push("overdue");   // 2026-10-19: 売上入金のメールは支払いが無いので期限超過にしない
   return reasons;
 }
 function unifiedAttentionReasons(r){
@@ -8062,7 +8078,7 @@ function unifiedAttentionReasons(r){
   else if(!r.ai_match_status) reasons.push("unknown_journal"); // 自動判定が未実施＝仕訳の当たりが付いていない
   if(!r.corporation_id) reasons.push("unknown_company");
   if(unifiedStoreCount(r)===0) reasons.push("unknown_store");
-  if(r.due_date && r.due_date<today && r.payment_status!=="paid") reasons.push("overdue");
+  if(r.due_date && r.due_date<today && r.payment_status!=="paid" && !(r.email&&r.email.mail_kind==="sales")) reasons.push("overdue");
   return reasons;
 }
 function unifiedNeedsAttention(r){ return unifiedAttentionReasons(r).length>0; }
@@ -8960,7 +8976,7 @@ async function transferPaymentScan(u){
       const rules=[]; chosen.forEach(c=>{ const pat=payRulePattern(c.remark||""); if(pat.length<3) return; c.invoice_ids.forEach(id=>{ const r=rowById.get(id); if(r&&r.vendor_id) rules.push({vendor_id:r.vendor_id,tenant_id:c.tenant,pattern:pat,sample_remark:String(c.remark||"").slice(0,120),created_by:ME.id}); }); });
       if(rules.length) await authed(`/rest/v1/payment_match_rules?on_conflict=vendor_id,tenant_id,pattern`,{method:"POST",headers:{Prefer:"resolution=ignore-duplicates,return=minimal"},body:JSON.stringify(rules)});
     }catch(e){ console.warn("照合の記録に失敗",e); }
-    await Promise.all(ids.map(id=>fireInvoiceEvent(id,"payment_completed").catch(()=>{})));
+    await Promise.all(ids.map(id=>fireInvoiceEvent(id,"payment_completed").then(()=>fireInvoiceEvent(id,"payment_verified")).catch(()=>{})));
     modal.remove(); await renderTransfersTab(u);
   };
 }
@@ -8972,7 +8988,7 @@ async function transferMarkPaid(u){
   await authed(`/rest/v1/invoices?id=in.(${selected.map(r=>r.id).join(",")})`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({payment_status:"paid",paid_at:nowIso,paid_by:ME.id})});
   // 2026-09-04：振込完了イベント→本部タスク工程の自動完了。invoice_fire_task_event RPC経由に
   // 統一（invoice_id×event_typeの冪等性＋invoice_task_eventsへの監査記録がRPC側で保証される）
-  await Promise.all(selected.map(r=>fireInvoiceEvent(r.id,"payment_completed").catch(()=>{})));
+  await Promise.all(selected.map(r=>fireInvoiceEvent(r.id,"payment_completed").then(()=>fireInvoiceEvent(r.id,"payment_verified")).catch(()=>{})));
   await renderTransfersTab(u);
 }
 
