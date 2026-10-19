@@ -1,0 +1,215 @@
+<!DOCTYPE html><html lang="ja"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>手順書 PL書き込みの鍵と作り直し（tori-dashboard GAS）</title>
+<style>body{font-family:-apple-system,"Hiragino Sans",sans-serif;max-width:860px;margin:0 auto;padding:20px 16px 80px;line-height:1.9;color:#26221e;background:#faf8f4}h1{font-size:21px}h2{font-size:17px;margin-top:26px;border-left:6px solid #1f5fbf;padding-left:10px}
+.step{background:#fff;border:1px solid #e7e3dc;border-radius:12px;padding:12px 18px;margin:12px 0}.warn{background:#fff4e5;border:1px solid #f0b35a;border-radius:10px;padding:8px 14px;margin:8px 0}.ok{background:#e9f6ef;border:1px solid #bfe3cd;border-radius:10px;padding:8px 14px;margin:8px 0}
+.bh{display:flex;justify-content:space-between;align-items:center;gap:8px}button.copy{background:#1f5fbf;color:#fff;border:0;border-radius:8px;padding:10px 18px;font-size:15px;cursor:pointer}textarea{width:100%;height:170px;font-size:11px;font-family:Menlo,monospace;border:1px solid #cfc8bb;border-radius:8px;box-sizing:border-box}.cpmsg{font-size:14px;margin-top:6px}code{background:#f1ece2;padding:1px 6px;border-radius:4px}</style></head><body>
+<h1>手順書：tori-dashboard の Apps Script に「PL書き込みの鍵」と「作り直し機能」を入れる</h1>
+<p>これをすると、PLへの書き込みが<b>同時に1つしか動かなくなり</b>、補助科目がずれる原因がなくなります。あわせて、ずれてしまった分を<b>請求書の記録から作り直す機能</b>が使えるようになります。所要時間は10分ほどです。</p>
+<div class="warn"><b>コピーできないとき</b>：枠をクリック → <b>⌘+A</b> → <b>⌘+C</b>。<br><b>大事</b>：ファイル全部を置き換えるのではなく、<b>下の3つの関数だけ</b>を入れ替え・追加します（本番のエディタとリポジトリの中身が少し違うことがあるため）。</div>
+<h2>やること</h2>
+<div class="step"><b>1.</b> tori-dashboard（鳥一代ダッシュボード）のスプレッドシートを開き、<b>拡張機能 → Apps Script</b> を開きます。左のファイル一覧から <code>Code.gs</code> を開きます。</div>
+<div class="step"><b>2.</b> 上のほうにある <code>function doGet(e) {</code> の<b>すぐ上</b>に、下の <b>① withPlLock_</b> を貼り付けます（新しく足すだけ）。</div>
+<div class="step"><div class="bh"><b>① withPlLock_（新しい関数。doGetの上あたりに足す）</b><button class="copy" onclick="cp('b1')">📋 コピー</button></div><textarea id="b1" readonly spellcheck="false" onclick="this.select()">/* 2026-10-19: DB_PL / PL管理システム（✍販管費入力）へ書き込む処理を、同時に1つしか動かさないための鍵。
+ * これらは「シート全体を読む→書き換える→全部消して書き戻す」方式で、特にPL管理システム側は列(A-C / E-F / G)を3回に分けて書き戻すため、
+ * 一括承認などで書き込みが重なると、金額は正しいのに補助科目(G列)だけが別の行のものになる不具合の原因になっていた。
+ * 取れなかった場合は、呼び出し側が再試行できるようエラーを返す（invoices側 pl-fee-reflect は sheet_sync_error に残し、retry_sheet_sync でやり直せる）。 */
+function withPlLock_(fn) {
+  var lock = LockService.getDocumentLock();
+  try { lock.waitLock(240000); } catch (e) { return { ok: false, error: &#x27;他のPL書き込みが実行中です。少し待って再実行してください&#x27; }; }
+  try { return fn(); } finally { try { lock.releaseLock(); } catch (e2) { /* 解放済み */ } }
+}
+</textarea><div class="cpmsg" id="b1m"></div></div>
+<div class="step"><b>3.</b> <code>function handle(p) {</code> から、その関数が終わる <code>}</code> までを<b>選んで消し</b>、下の <b>② handle</b> を貼り付けます（丸ごと置き換え）。<br><small>（選びやすいように: <code>function handle(p) {</code> の行をクリック → 関数の終わりの <code>}</code> の行まで、Shiftを押しながらクリックして範囲を選びます）</small></div>
+<div class="step"><div class="bh"><b>② handle（今ある handle 関数を、丸ごとこの内容に置き換える）</b><button class="copy" onclick="cp('b2')">📋 コピー</button></div><textarea id="b2" readonly spellcheck="false" onclick="this.select()">function handle(p) {
+  var action = p.action || &#x27;data&#x27;;
+  try {
+    if (action === &#x27;ping&#x27;)   return out({ ok: true, ping: &#x27;pong&#x27;, ver: &#x27;token-336h-v1-c19-pllock&#x27;, time: new Date().toISOString() }); // a6p34=bqGetDeliveryOrdersに媒体(channel)列を追加（デリバリーの媒体別比較用・Uber Eats追加に備える・2026-10-06）。 a6p33=bqGetDeliveryOrdersのSQLで予約語ATをエイリアスに使っていたためBigQuery構文エラーになっていたのを修正（2026-10-06）。 a6p32=バージョン重複の解消（別セッションのbqDetailItemDailyForSync修正とデリバリー注文取得bqGetDeliveryOrdersが両方ともa6p31を名乗っていたため、本番がどちらを含むか判別できなくなっていた。両方を含む版・2026-10-06）。 a6p31=bqDetailItemDailyForSync追加（明細の日次分解・トークン認証・レーンP用・2026-10-05）。a6p30=costTransferList（🔀仕入れ移動モーダルの直近の移動履歴）にPLキャッシュ世代(bqCacheGen_(&#x27;pl&#x27;))を使った10分キャッシュを追加（ユーザー報告「毎回読み込みが遅い」。DB_PLを変更する処理は全てbqSyncPL経由で既にこの世代を進めているため安全に流用できる・2026-10-05）。a6p29=仕入れ移動公開フォームのSupabase直結化（担当: Supabase化・2026-10-05）: costTransferPublicInfo/Submit/TokenOk_/notifyOrderLine_を削除（公開フォームはブラウザから直接Supabase/Edge Function cost-transfer-submitを叩くようになったためGAS側のこの経路は不要に）。costTransferItemsRaw_/ItemSave/ItemDelete/LinkInfo/LinkRegenerate/RequestsRaw_/PendingList/Approve/Rejectは中身をスプレッドシート読み書きからSUPABASE_URL/SUPABASE_SERVICE_KEY直読み書き（cost_transfer_items/cost_transfer_requests/app_secrets）に差し替え（ds_sessions向けsessionSupaPut_等と同じ既存パターン）。管理画面側のaction名・戻り値の形・ログイン/isAdmin認証は変更なし。品目の識別子がスプレッドシート行番号(row)からSupabaseのUUID(id)に変わったためapp.js側の対応箇所も合わせて変更（HANDOFF.md参照）。a6p28=smbcRemoveDupLines追加（smbcCardSeisanSyncの精算書二重計上を解消した際、2026-09以前に自動取込経路で既に入ってしまったsmbc-card:…sourceKeyの明細を削除するための一時運用関数。専用トークン認証・精算GAS sd_apiRemoveExternalLineへ中継・2026-10-01）。a6p4=bqGetReservationNamesにUser-Agent追加(2026-09-04)+bqFetchReservationRows_のORDER BY削除(92000行超でstatement timeout・2026-09-05)。a6p5=syncSeisanCategoriesToPlが店舗×月の同期結果を精算書側(sd_apiMarkPlSynced)へ書き戻すように追加（2026-09-05・業務委託精算書自動連携）。a6p6=dbPlDiag追加（実機E2E不一致の一時調査用）。a6p7=syncSeisanCategoriesToPlの対象店舗判定をseisan_target→seisan_pl_categories_targetに変更（運営委託費と経費PL反映を別々にON/OFFできるように・黒霧屋 新横浜対応）。a6p8=diagDepositsPerf追加（PayPay銀行取込46分化の原因切り分け用一時診断・2026-09-07）。a6p9=apiSetAdExclude追加（媒体販促費を手入力で確定させたあとPL画面だけ自動連携分を除外できるように・DB_広告除外設定シート新設・2026-09-07）。a6p10=importDepositsにLockServiceを追加（並行実行による入金二重計上バグを修正・2026-09-08）。a6p11=diagDepositDupScan追加（入金DBの重複行を行番号付きで列挙する読み取り専用診断・2026-09-08）。a6p12=cleanupDepositDuplicates追加（特定済み重複11件をユーザー承認のうえ削除・2026-09-08）。a6p13=cleanupDepositDuplicatesの認証をトークン→セッションに変更（トークン認証で原因不明のunauthorized・実行して重複11件×2シートの削除完了確認済み・2026-09-08）。a6p14=bqFetchReservationRows_をOFFSET(Rangeヘッダー)ページングからid（主キー・索引あり）によるkeysetページングに変更（rsv_reservationsが93000行超に増えOFFSET方式でも再度statement timeoutが発生したため・2026-09-05のORDER BY削除とは別問題＝あの時は無索引3列複合ソートが原因、今回はidという主キー＝索引ありの列でORDER BYするので同じ罠には当たらない。実測でOFFSET方式の同条件比1039ms→keyset方式299msを確認済み・2026-09-09）。a6p15=writeAccountCostToPl_の補助科目消失バグを修正（担当CからPL内訳UUID表示バグの申し送り。G列に冪等キー(noteTag)だけを書いていてsubAccountを一切保存していなかったため、補助科目の代わりにsourceKeyがそのまま表示されていた。列を増やすと他のPL自動連携が壊れるため増やさず、G列の値を「&lt;subAccount&gt;　&lt;noteTag&gt;」の複合形式にしてapp.js側で表示時に分離する方式に変更・2026-09-10）。a6p16=担当Cからの申し送り（続き83）対応の一時action追加・詳細は関数コメント参照・2026-09-10。a6p17=cleanupPlLegacyCombined_の結果をalert()ではなくスプレッドシートの新タブへ書き出すよう変更（コピーしづらいとのユーザー指摘対応・行番号つき）・2026-09-10。a6p18=fetchStoreDirectory_を実行内メモ化（PayPay銀行取込が2026-09-10に全店舗連鎖失敗した件の真因修正。importDeposits_locked_が入金DB既存行ごとにnormStoreName_→fetchStoreDirectory_→CacheService往復を繰り返し、入金DBが4800行超に増えた結果1回の取込で実測345秒かかりNode側5分タイムアウトで連鎖失敗していた。実行スコープ変数で1回だけ取得するよう変更・2026-09-11）。a6p19=判定_高速化検証と実装GO §2-1対応（担当A）: dataFreshness()をBigQuery全件スキャン＋スプレッドシート走査からkd_sync_status_v（新設ビュー）直読みへ置換（軽量化・D提案）。bqGetAdCost追加（stg_ad_cost読み取り・BQ_LOAD_TOKEN認証・レーンPのkd_pl広告費充填用）・2026-09-11。a6p20=bqLoadDeliveryOrders追加（デリバリー売上=ロケットナウ等の明細をBQ sales.stg_delivery_orderへMERGE投入。担当D・設計書_デリバリー売上取込_ロケットナウ_2026-09-11.md §3-1・実データ2本で検証済みのns-daily-import/tasks/delivery-sales.jsから呼ばれる想定）・2026-09-11。a6p21=a6p20で追加したbqLoadDeliveryOrders一式が、その後の別セッション経由のユーザー手動貼替（診断ボタン追加のための全文貼替）で編集画面から消失していたのをMac miniセッションが検知・再挿入（本番デプロイのアクティブバージョンには残っていたため実害は限定的だったが、次に貼替が起きると再度失われる状態だった）・2026-09-11。詳細はHANDOFF.md参照。a6p23=supaLoginを拡張（担当D・ユーザー要望「ポータルでアカウント発行したら役職ごとにダッシュボードにも自動で入れるようにしたい」）: アカウント管理シートに個別登録が無い統合アカウントは、ポータル側Supabase（users.role・user_stores→stores.name。SUPABASE_SERVICE_KEY使用）を正本にrole/storesを自動組み立てするportalAutoAccount_を追加。役職対応=CEO→社長・HQ→本部（全店固定）・TEAM→マネージャー・TENCHO/SHAIN→店舗（いずれもuser_stores基準の担当店舗のみ。0件なら非対応）・AL→非対応（従来どおり個別登録が必要）。シート個別登録がある場合はそちらを最優先（無変更）。PL等の機密タブは既存のROLE_TABS/ROLE_FEATURESが役職別に絞るため、この変換だけで店舗ロールはPL非表示のまま・2026-09-17 a6p24=cashReconRead/paymentDailyReplace/seisanCashSync追加（現金売上の月次照合＝レジ再取得との突合用の読み取りと、レジの正しい値へ店舗×日の売上（支払いDB1行）を書き換える修正用。専用トークン認証・書き換えは修正ログ付き・LockService・2026-09-26）。a6p25=smbcCardSeisanSync追加（SMBC GMO PAYMENT・N-Style分のカード売上/手数料を精算対象店舗の精算書へ明細追加。専用トークン認証・精算GAS sd_apiAddExternalLineへ中継・DB_PLへは書かない。振込明細書が月2回（前半1-15日・後半16日-末）発行されるためlines[].halfLabelで区別しsourceKey衝突を回避・2026-09-30）。a6p26=smbcCardSeisanSyncの対象店舗判定をseisan_target→seisan_pl_categories_targetに変更（ユーザー指摘「黒霧屋 新横浜もこれは対象」・a6p7と同じ理由で黒霧屋 新横浜を含める・2026-09-30）。a6p27=smbcCardSeisanSyncが精算GASへ渡すsd_apiAddExternalLineの引数にkubunを追加（ユーザー指摘「カード売上が変動費で入っている」。精算GAS側(v5.23)がkubun未指定時に常に&#x27;変動費&#x27;固定だったバグとセットで修正。カード売上=&#x27;売上&#x27;・カード手数料=&#x27;変動費&#x27;・2026-09-30）。
+    if (action === &#x27;plSeisanDiag&#x27;) return out(plSeisanDiag(p)); // 運営委託費の二重計上診断（専用トークン認証・読み取り専用・一時的）
+    if (action === &#x27;dbPlDiag&#x27;) return out(dbPlDiag(p)); // 2026-09-05一時追加: DB_PLシートの生データを店舗×月で確認（読み取り専用・原因特定でき次第削除）
+    if (action === &#x27;storeMapDiag&#x27;) return out(storeMapDiag(p)); // DB_店舗ID対応とfact_daily_storeの店舗名突合診断（専用トークン認証・読み取り専用・一時的）
+    if (action === &#x27;roleDefDiag&#x27;) return out(roleDefDiag(p)); // DB_権限定義シートの内容を返す（専用トークン認証・読み取り専用。2026-09-02追加）
+    if (action === &#x27;storeNameAudit&#x27;) return out(storeNameAudit(p)); // BQミラー全8テーブルの店舗名をstore_aliasesと突合し未登録表記を洗い出す（専用トークン認証・読み取り専用。2026-08-28追加）
+    if (action === &#x27;detailVsDailyDiag&#x27;) return out(detailVsDailyDiag(p)); // 明細分析とダッシュボードの売上・客数・組数の差を実測で突合（専用トークン認証・読み取り専用・一時的）
+    if (action === &#x27;bqPerfDiag&#x27;) return out(bqPerfDiag(p)); // BQモード各アクションの所要時間計測（専用トークン認証・読み取り専用・一時的）
+    if (action === &#x27;dataKeysDiag&#x27;) return out(dataKeysDiag(p)); // getData()が実際にどのキーを返すか確認（専用トークン認証・読み取り専用・一時的）
+    if (action === &#x27;mediaDateRangeDiag&#x27;) return out(mediaDateRangeDiag(p)); // stg_media（媒体別日次）の最古/最新日付を確認（担当D依頼の前年比調査用・専用トークン認証・読み取り専用・一時的）
+    if (action === &#x27;rsvDateRangeDiag&#x27;) return out(rsvDateRangeDiag_(p)); // stg_reservation（予約）の店舗別最新日付・件数を確認（専用トークン認証・読み取り専用。2026-08-31追加）
+    if (action === &#x27;syncSeisanFeeToPl&#x27;) return out(withPlLock_(function () { return syncSeisanFeeToPl(p); })); // 運営委託費のPL自動連携（専用トークン認証・ログイン不要。2026-08-23追加）
+    if (action === &#x27;syncSeisanCategoriesToPl&#x27;) return out(withPlLock_(function () { return syncSeisanCategoriesToPl(p); })); // 精算書の勘定科目→PL自動連携（専用トークン認証・ログイン不要。2026-08-31追加・A-9）
+    if (action === &#x27;syncSpotLaborToPl&#x27;) return out(syncSpotLaborToPl(p)); // スポット人件費の月次PL自動連携（専用トークン認証・ログイン不要。2026-08-23追加）
+    if (action === &#x27;syncBankLoanToPl&#x27;) return out(syncBankLoanToPl(p)); // 銀行借入 利息・元金のPL自動連携（専用トークン認証・ログイン不要。2026-08-26追加・A-5）
+    if (action === &#x27;bqLoadOrders&#x27;) return out(bqLoadOrders(p)); // 明細のBQ投入（専用トークン認証・ログイン不要）
+    if (action === &#x27;bqLoadDeliveryOrders&#x27;) return out(bqLoadDeliveryOrders(p)); // デリバリー売上(ロケットナウ等)のBQ投入（専用トークン認証・ログイン不要。2026-09-11・担当D）
+    if (action === &#x27;bqSetupSalesDataset&#x27;) return out(bqSetupSalesDataset(p)); // salesデータセット作成（初回のみ・専用トークン認証）
+    if (action === &#x27;bqSyncSales&#x27;) return out(bqSyncAllSales(p)); // 分析_日別店舗ほかのBQミラー（専用トークン認証・ログイン不要）
+    if (action === &#x27;bqDailyStoreForSync&#x27;) return out(bqDailyStoreForSync(p)); // dash-sync用の軽量BQ問い合わせ（専用トークン認証・ログイン不要・スプレッドシート不使用）
+    if (action === &#x27;reportDataBQ&#x27;) return out(reportDataBQ(p)); // Lark/Chatwork自動配信用の軽量レポート数値（専用トークン認証・ログイン不要・スプレッドシート不使用。2026-08-23追加）
+    if (action === &#x27;bqReconcileSales&#x27;) return out(bqReconcileSales(p)); // BQとシートの突合（専用トークン認証・ログイン不要）
+    if (action === &#x27;cashReconRead&#x27;) return out(cashReconRead(p)); // 現金売上照合用: 支払いDBの指定月の店舗×日の行を返す（専用トークン認証・読み取り専用）
+    if (action === &#x27;paymentDailyReplace&#x27;) return out(paymentDailyReplace(p)); // レジの正しい値で支払いDBの店舗×日の1行を書き換え/追加（専用トークン認証・修正ログ付き・dryRun対応）
+    if (action === &#x27;seisanCashSync&#x27;) return out(seisanCashSync(p)); // レジ照合で現金売上が修正された店舗の精算書「N月現金売上」行を更新（専用トークン認証。精算GAS sd_apiCashSyncへ中継）
+    if (action === &#x27;smbcCardSeisanSync&#x27;) return out(smbcCardSeisanSync(p)); // SMBC GMO PAYMENTのカード売上・手数料を精算対象店舗の精算書へ追加（専用トークン認証・精算GAS sd_apiAddExternalLineへ中継。2026-09-30）
+    if (action === &#x27;smbcRemoveDupLines&#x27;) return out(smbcRemoveDupLines(p)); // smbc-card:…sourceKeyの精算書二重計上明細を削除する一時運用関数（専用トークン認証・精算GAS sd_apiRemoveExternalLineへ中継。2026-10-01）
+    if (action === &#x27;bqSyncPL&#x27;) return out(bqSyncPL(p)); // PL経費(DB_PL)のBQミラー同期（専用トークン認証・ログイン不要）
+    if (action === &#x27;writeAdCost&#x27;) return out(withPlLock_(function () { return writeAdCost(p); })); // A-8: 広告費書き込み（invoices側ad-cost-reflectから・AD_COST_WRITE_TOKEN認証・ログイン不要。2026-08-31追加）
+    if (action === &#x27;writePlFee&#x27;) return out(withPlLock_(function () { return writePlFee(p); }));
+    if (action === &#x27;repairPlAutoRows&#x27;) return out(withPlLock_(function () { return repairPlAutoRows(p); })); // 2026-10-19: 請求書由来の自動行の作り直し（G列ずれの修復。AD_COST_WRITE_TOKEN認証） // A-8拡張: 勘定科目汎用のPL自動計上（invoices側pl-fee-reflectから・AD_COST_WRITE_TOKEN認証・ログイン不要。2026-09-01追加・設計書§5）
+    if (action === &#x27;bqSyncAdCost&#x27;) return out(bqSyncAdCost(p)); // 💾広告費DBのBQミラー同期（専用トークン認証・ログイン不要。writeAdCostから毎回自動で呼ばれるほか単独でも可。2026-08-31追加・A-8）
+    if (action === &#x27;bqGetAdCost&#x27;) return out(bqGetAdCost(p)); // stg_ad_costの読み取り（専用トークン認証・ログイン不要・サーバー間呼び出し専用）。レーンPのkd_pl広告費充填用。2026-09-11追加
+    if (action === &#x27;bqDetailItemDailyForSync&#x27;) return out(bqDetailItemDailyForSync(p)); // 明細(商品・時間帯)の日次分解を返す読み取り専用（BQ_LOAD_TOKEN認証・レーンPのkd_detail_*用）。2026-10-05追加
+    if (action === &#x27;bqSyncReservation&#x27;) return out(bqSyncReservation(p)); // 予約(stg_reservation)のBQミラー同期（専用トークン認証・ログイン不要。2026-08-28追加・A-6）
+    if (action === &#x27;perf&#x27;) return out(perfDiag(p)); // パフォーマンス計測（専用トークン認証・ログイン不要・数字は返さず時間だけ）
+    setupIfNeeded();
+    if (action === &#x27;login&#x27;)  return out(login(p));
+    if (action === &#x27;supalogin&#x27;) return out(supaLogin(p)); // 統合アカウント（Supabaseトークン）でログイン
+    if (action === &#x27;checkInvite&#x27;)      return out(checkInvite(p));      // 招待リンクの確認（未ログイン）
+    if (action === &#x27;registerFromInvite&#x27;) return out(registerFromInvite(p)); // 招待から自己登録（未ログイン）
+    if (action === &#x27;logout&#x27;) return out(logout(p));
+    if (action === &#x27;saveArenaEvents&#x27;) return out(saveArenaEvents(p)); // イベント自動取得（専用トークン認証・ログイン不要）
+    // スマホ等から取込タスクを依頼するキュー（3アクションとも専用トークン認証・ログイン不要）
+    if (action === &#x27;queueTask&#x27;)    return out(queueTask(p));    // スマホ側：タスクを依頼（TASK_QUEUE_TOKEN）
+    if (action === &#x27;queueStatus&#x27;)  return out(queueStatus(p));  // スマホ側：直近の依頼状況（TASK_QUEUE_TOKEN）
+    if (action === &#x27;pendingTasks&#x27;) return out(pendingTasks(p)); // Mac側：未処理を取得して受領済みに（BQ_LOAD_TOKEN）
+    if (action === &#x27;ackTask&#x27;)      return out(ackTask(p));      // Mac側：完了/失敗を報告（BQ_LOAD_TOKEN）
+
+    // ここから先はログイン必須
+    var session = requireSession(p);
+    if (action === &#x27;version&#x27;)  return out({ ok: true, version: dataVersion() }); // 軽量：変更検知用の署名だけ返す
+    if (action === &#x27;data&#x27;)     return out(getData(p, session));
+    if (action === &#x27;depositCarry&#x27;) return out(depositCarry(p, session)); // 入金の繰越（開始残高）だけ全期間で計算
+    if (action === &#x27;bqDetail&#x27;) return out(bqDetail(p, session)); // 明細分析：期間・店舗で絞ってBQ集計
+    if (action === &#x27;bqDailyStore&#x27;) return out(bqDailyStore(p, session)); // 推移分析：分析_日別店舗のBQミラーを読む（データソース切替フラグ用）
+    if (action === &#x27;bqGetPL&#x27;) return out(bqGetPL(p, session)); // PLタブ：DB_PLのBQミラーを読む（データソース切替フラグ用）
+    if (action === &#x27;bqGetSpot&#x27;) return out(bqGetSpot(p, session)); // スポット人件費：DB_スポット人件費のBQミラーを読む（2026-08-23追加）
+    if (action === &#x27;bqGetLoanPrincipal&#x27;) return out(bqGetLoanPrincipal(p, session)); // 簡易キャッシュフロー：DB_借入返済元金のBQミラーを読む（2026-08-26追加・A-5）
+    if (action === &#x27;saveSpotEntry&#x27;) return out(saveSpotEntry(p, session)); // スポット人件費の保存（ID一致なら更新・無ければ追加）
+    if (action === &#x27;deleteSpotEntry&#x27;) return out(deleteSpotEntry(p, session)); // スポット人件費の削除
+    if (action === &#x27;refreshSpotPl&#x27;) return out(refreshSpotPl(p, session)); // スポット人件費→月次PLへ今すぐ反映（画面の更新ボタン用）
+    if (action === &#x27;bqGetDeposit&#x27;) return out(bqGetDeposit(p, session)); // 入金管理タブ：入金DBのBQミラーを読む（データソース切替フラグ用）
+    if (action === &#x27;bqGetMedia&#x27;) return out(bqGetMedia(p, session)); // 媒体別日次：媒体別DBのBQミラーを読む（ログイン直後の同期エラー対策・2026-08-23追加）
+    if (action === &#x27;bqGetDelivery&#x27;) return out(bqGetDelivery(p, session)); // デリバリー売上(ロケットナウ等)をstg_delivery_orderから店舗×日で集計・媒体名&#x27;ロケットナウ&#x27;として返す（2026-09-14追加・指示書_デリバリー売上取込_担当別）
+    if (action === &#x27;bqGetDeliveryOrders&#x27;) return out(bqGetDeliveryOrders(p, session)); // デリバリー分析タブ用: stg_delivery_orderの注文明細（時刻・注文内容つき）を返す。bqGetDeliveryと同じ店舗スコープ制限（2026-10-06追加）
+    if (action === &#x27;diagDeliverySettlementBreakdown&#x27;) return out(diagDeliverySettlementBreakdown(p, session)); // 一時診断: 精算内訳(クーポン/消費税/手数料割引込み)の差異調査（2026-09-15・読み取り専用）
+    if (action === &#x27;bqGetReservation&#x27;) return out(bqGetReservation(p, session)); // 予約タブ：stg_reservationのBQミラーを読む（2026-08-28追加・A-6）
+    if (action === &#x27;bqGetReservationNames&#x27;) return out(bqGetReservationNames(p, session)); // 予約詳細：お客様名を都度Supabaseから取得（ログイン必須・店舗スコープ制限。2026-08-31追加・A-6 Phase2）
+    if (action === &#x27;bqGetSeatMaster&#x27;) return out(bqGetSeatMaster(p, session)); // 予約タブ：店舗ごとの卓一覧（DB_席マスタ）を読む（2026-08-28追加・A-6）
+    if (action === &#x27;dataFreshness&#x27;) return out(dataFreshness(p, session)); // データ最新日・BQ同期時刻の表示用（実装指示書_ダッシュボード高速化タスク1・2026-08-23追加）
+    if (action === &#x27;bootstrap&#x27;) return out(bootstrapDashboard_(p, session)); // W1: 初回表示のGAS往復10回→1回に集約（実装指示書_表示集計層kdと高速化実行計画§10.1 W1・2026-09-02追加）
+    if (action === &#x27;accounts&#x27;) return out(listAccounts(session));
+    if (action === &#x27;saveAccount&#x27;)   return out(saveAccount(p, session));
+    if (action === &#x27;deleteAccount&#x27;) return out(deleteAccount(p, session));
+    if (action === &#x27;saveTargets&#x27;) return out(saveTargets(p, session)); // 目標（日別売上＋月次）保存
+    if (action === &#x27;saveTargetDay&#x27;) return out(saveTargetDay(p, session)); // 日別売上目標を1日だけ修正
+    if (action === &#x27;saveEvent&#x27;)   return out(saveEvent(p, session));   // イベント保存
+    if (action === &#x27;deleteEvent&#x27;) return out(deleteEvent(p, session)); // イベント削除
+    if (action === &#x27;importDeposits&#x27;) return out(importDeposits(p, session)); // 口座CSVの入金取込（入金管理タブ）
+    if (action === &#x27;diagDepositsPerf&#x27;) return out(diagDepositsPerf_(p, session)); // 一時診断: importDepositsの遅延切り分け（2026-09-07・書き込みなし）
+    if (action === &#x27;diagDepositDupScan&#x27;) return out(diagDepositDupScan_(p, session)); // 一時診断: 入金DBの重複行を行番号付きで列挙（2026-09-08・読み取り専用）
+    if (action === &#x27;diagDailyRange&#x27;) return out(diagDailyRange_(p, session)); // 一時診断: 推移分析「年初来でも3ヶ月分しか出ない」の原因切り分け。dailyシートの最古/最新日付・件数のみ返す（2026-09-11・読み取り専用）
+    if (action === &#x27;cleanupDepositDuplicates&#x27;) return out(cleanupDepositDuplicates_(p, session)); // 2026-09-08一時対応: 特定済みの重複11件をユーザー承認のうえ削除（セッション認証・1回きりの想定。当初トークン認証で原因不明のunauthorizedが出たためセッション認証に変更）
+    if (action === &#x27;cleanupPlLegacyCombined&#x27;) return out(cleanupPlLegacyCombined_(p, session)); // 2026-09-10一時対応: 勘定科目/補助科目が分離される前の結合形式のまま計上されていた9件をユーザー承認のうえ削除（担当Cからの申し送り・続き83。dryRun既定true・読み取りのみ）
+    if (action === &#x27;savePlEntries&#x27;) return out(withPlLock_(function () { return savePlEntries(p, session); })); // PL経費の手入力（PL管理システム＋DB_PL両反映）
+    if (action === &#x27;setAdExclude&#x27;) return out(apiSetAdExclude(p, session)); // 広告費（自動連携）をPL表示だけから除外する設定（2026-09-07追加）
+    if (action === &#x27;savePlBulk&#x27;) return out(withPlLock_(function () { return savePlBulk(p, session); })); // PL経費の期間一括計上（例: 家賃を12ヶ月分）
+    if (action === &#x27;costTransferList&#x27;) return out(costTransferList(p, session)); // 店舗間仕入れ移動：一覧取得（2026-09-23追加）
+    if (action === &#x27;costTransferAdd&#x27;) return out(costTransferAdd(p, session)); // 店舗間仕入れ移動：登録
+    if (action === &#x27;costTransferCancel&#x27;) return out(costTransferCancel(p, session)); // 店舗間仕入れ移動：取り消し
+    if (action === &#x27;costTransferItemList&#x27;) return out(costTransferItemList(p, session)); // 仕入れ移動：品目マスタ一覧（2026-10-02追加）
+    if (action === &#x27;costTransferItemSave&#x27;) return out(costTransferItemSave(p, session)); // 仕入れ移動：品目マスタ登録/更新
+    if (action === &#x27;costTransferItemDelete&#x27;) return out(costTransferItemDelete(p, session)); // 仕入れ移動：品目マスタ削除
+    if (action === &#x27;costTransferLinkInfo&#x27;) return out(costTransferLinkInfo(p, session)); // 仕入れ移動：公開リンクの現在のトークン確認
+    if (action === &#x27;costTransferLinkRegenerate&#x27;) return out(costTransferLinkRegenerate(p, session)); // 仕入れ移動：公開リンクの再発行（旧リンクは即失効）
+    if (action === &#x27;costTransferPendingList&#x27;) return out(costTransferPendingList(p, session)); // 仕入れ移動：承認待ち申請一覧
+    if (action === &#x27;costTransferApprove&#x27;) return out(costTransferApprove(p, session)); // 仕入れ移動：申請を承認（DB_PLへ反映）
+    if (action === &#x27;costTransferReject&#x27;) return out(costTransferReject(p, session)); // 仕入れ移動：申請を却下
+    if (action === &#x27;mfConfirmImport&#x27;) return out(mfConfirmImport(p, session)); // MF取込：プレビューで確定した行をDB_PLへ反映
+    if (action === &#x27;saveAdFee&#x27;) return out(saveAdFee(p, session)); // 広告費の手入力（管理シート💾広告費DBへupsert）
+    if (action === &#x27;saveAdSales&#x27;) return out(saveAdSales(p, session)); // 売上・反響の手入力（管理シート💾売上DBへupsert）
+    if (action === &#x27;importReservations&#x27;) return out(importReservations(p, session)); // 予約CSV取込（管理シート💾予約DBへ追記）
+    if (action === &#x27;saveTanka&#x27;)   return out(saveTanka(p, session));   // 単価設定の保存（管理シート⚙単価設定へupsert。2026-08-30追加）
+    if (action === &#x27;deleteTanka&#x27;) return out(deleteTanka(p, session)); // 単価設定の削除（2026-08-30追加）
+    if (action === &#x27;saveMediaFee&#x27;)   return out(saveMediaFee(p, session));   // 媒体手数料設定の保存（管理シート⚙媒体手数料設定へupsert。A-6 Phase2・2026-08-31追加）
+    if (action === &#x27;deleteMediaFee&#x27;) return out(deleteMediaFee(p, session)); // 媒体手数料設定の削除（A-6 Phase2・2026-08-31追加）
+    if (action === &#x27;saveDepNote&#x27;) return out(saveDepNote(p, session)); // 入金備考の保存（社長・本部のみ）
+    if (action === &#x27;setPlTaxRate&#x27;) return out(setPlTaxRate(p, session)); // 簡易キャッシュフローの法人税率設定（社長・本部のみ。2026-08-26追加・A-5）
+    if (action === &#x27;saveWeekly&#x27;)   return out(saveWeekly(p, session));   // 週報の提出・更新
+    if (action === &#x27;saveFeedback&#x27;) return out(saveFeedback(p, session)); // 週報へのフィードバック
+    if (action === &#x27;createInvite&#x27;) return out(createInvite(p, session)); // 招待リンク発行（社長・本部）
+    return out({ ok: false, error: &#x27;unknown action: &#x27; + action });
+  } catch (err) {
+    return out({ ok: false, error: String(err &amp;&amp; err.message || err) });
+  }
+}
+</textarea><div class="cpmsg" id="b2m"></div></div>
+<div class="step"><b>4.</b> ファイルの<b>いちばん下</b>に、下の <b>③ repairPlAutoRows</b> を貼り付けます（新しく足すだけ）。</div>
+<div class="step"><div class="bh"><b>③ repairPlAutoRows（新しい関数。ファイルのどこか下のほうに足す）</b><button class="copy" onclick="cp('b3')">📋 コピー</button></div><textarea id="b3" readonly spellcheck="false" onclick="this.select()">/* 2026-10-19新設: 請求書由来の自動計上行（メモ「自動｜&lt;科目&gt;」＋補助科目セルの「外部連携:&lt;請求書ID&gt;」）の作り直し。
+ * 書き込みの重なりで補助科目(G列)＋請求書IDが別の行のものになった行を、請求書側の正しい記録（ns-portal invoice_pl_reflections）から入れ直す。
+ * 入力: { token(AD_COST_WRITE_TOKEN), months:[&#x27;2026-08&#x27;,...], invoice_ids:[...], rows:[{ym,store,account,sub,amount,source}], dry? }
+ * 動き: 対象月×メモが「自動｜」で始まる×G列に invoice_ids のどれかの外部連携タグがある行を全て外し、rows を入れ直す。dry=true なら書き込まず差分だけ返す。 */
+function repairPlAutoRows(p) {
+  var tk = PropertiesService.getScriptProperties().getProperty(&#x27;AD_COST_WRITE_TOKEN&#x27;);
+  if (!tk || String((p || {}).token || &#x27;&#x27;).trim() !== String(tk).trim()) return { ok: false, error: &#x27;unauthorized&#x27; };
+  var months = (Array.isArray(p.months) ? p.months : []).map(String);
+  var ids = {}; (Array.isArray(p.invoice_ids) ? p.invoice_ids : []).forEach(function (x) { ids[String(x)] = true; });
+  var want = Array.isArray(p.rows) ? p.rows : [];
+  if (!months.length || !Object.keys(ids).length) return { ok: false, error: &#x27;months と invoice_ids は必須です&#x27; };
+  var monthSet = {}; months.forEach(function (m) { monthSet[m.slice(0, 4) + &#x27;/&#x27; + m.slice(5, 7)] = true; });
+  var tagOf = function (cell) { var m = String(cell || &#x27;&#x27;).match(/外部連携:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/); return m ? m[1] : &#x27;&#x27;; };
+  var isTarget = function (ymCell, memo, subCell) {
+    return !!monthSet[bqPlYm_(ymCell)] &amp;&amp; String(memo).indexOf(&#x27;自動｜&#x27;) === 0 &amp;&amp; !!ids[tagOf(subCell)];
+  };
+  var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(&#x27;DB_PL&#x27;);
+  if (!sh) return { ok: false, error: &#x27;DB_PLシートがありません&#x27; };
+  var lastRow = sh.getLastRow(), lastCol = Math.max(sh.getLastColumn(), 7);
+  var all = lastRow &gt;= 2 ? sh.getRange(2, 1, lastRow - 1, lastCol).getValues() : [];
+  var keep = [], removed = [];
+  all.forEach(function (r) {
+    if (r[0] === &#x27;&#x27; &amp;&amp; r[1] === &#x27;&#x27; &amp;&amp; r[2] === &#x27;&#x27;) return;
+    if (isTarget(r[0], r[5], r[6])) removed.push({ ym: bqPlYm_(r[0]), store: r[1], account: r[2], amount: r[4], sub: String(r[6]) });
+    else keep.push(r);
+  });
+  var added = want.map(function (w) {
+    var y = Number(String(w.ym).slice(0, 4)), mo = Number(String(w.ym).slice(5, 7));
+    var tag = &#x27;外部連携:&#x27; + w.source;
+    return [new Date(y, mo - 1, 1), String(w.store), String(w.account), plSeisanGuessCat_(String(w.account)), Number(w.amount), &#x27;自動｜&#x27; + w.account, w.sub ? (String(w.sub) + &#x27;　&#x27; + tag) : tag];
+  });
+  if (p.dry) return { ok: true, dry: true, removed: removed.length, added: added.length, removed_rows: removed.slice(0, 400), added_rows: added.slice(0, 400).map(function (a) { return { ym: bqPlYm_(a[0]), store: a[1], account: a[2], amount: a[4], sub: a[6] }; }) };
+  var out = keep.concat(added);
+  if (lastRow &gt;= 2) sh.getRange(2, 1, lastRow - 1, lastCol).clearContent();
+  if (out.length) { sh.getRange(2, 1, out.length, 7).setValues(out); sh.getRange(2, 1, out.length, 1).setNumberFormat(&#x27;yyyy/m/d&#x27;); }
+  // PL管理システム（✍販管費入力）も同じ条件で入れ直す
+  var plsys = &#x27;&#x27;;
+  try {
+    var pshS = SpreadsheetApp.openById(PL_SYSTEM_ID).getSheetByName(PL_INPUT_SHEET);
+    if (pshS) {
+      var lastRS = pshS.getLastRow(), nRS = Math.max(lastRS - 2, 0);
+      var AS = nRS &gt; 0 ? pshS.getRange(3, 1, nRS, 3).getValues() : [];
+      var ES = nRS &gt; 0 ? pshS.getRange(3, 5, nRS, 2).getValues() : [];
+      var GS = nRS &gt; 0 ? pshS.getRange(3, 7, nRS, 1).getValues() : [];
+      var keepPS = [];
+      for (var iS = 0; iS &lt; nRS; iS++) {
+        if (String(AS[iS][0]) === &#x27;&#x27; &amp;&amp; String(AS[iS][2]) === &#x27;&#x27;) continue;
+        if (isTarget(AS[iS][0], ES[iS][1], GS[iS][0])) continue;
+        keepPS.push([AS[iS][0], AS[iS][1], AS[iS][2], ES[iS][0], ES[iS][1], GS[iS][0]]);
+      }
+      added.forEach(function (a) { var ymS = bqPlYm_(a[0]); keepPS.push([ymS, a[1], a[2], a[4], a[5], a[6]]); });
+      if (nRS &gt; 0) { pshS.getRange(3, 1, nRS, 3).clearContent(); pshS.getRange(3, 5, nRS, 2).clearContent(); pshS.getRange(3, 7, nRS, 1).clearContent(); }
+      if (keepPS.length) {
+        pshS.getRange(3, 1, keepPS.length, 3).setValues(keepPS.map(function (r3) { return [r3[0], r3[1], r3[2]]; }));
+        pshS.getRange(3, 5, keepPS.length, 2).setValues(keepPS.map(function (r3) { return [r3[3], r3[4]]; }));
+        pshS.getRange(3, 7, keepPS.length, 1).setValues(keepPS.map(function (r3) { return [r3[5]]; }));
+      }
+      plsys = &#x27;PL管理システムにも反映しました&#x27;;
+    } else plsys = &#x27;PL管理システムに「&#x27; + PL_INPUT_SHEET + &#x27;」シートが見つかりません（DB_PLのみ反映）&#x27;;
+  } catch (eP) { plsys = &#x27;PL管理システムへの反映に失敗（DB_PLのみ反映）: &#x27; + String(eP &amp;&amp; eP.message || eP); }
+  var bq = null;
+  try { bq = bqSyncPL({ token: PropertiesService.getScriptProperties().getProperty(&#x27;BQ_LOAD_TOKEN&#x27;) }); } catch (eB) { bq = { ok: false, error: String(eB &amp;&amp; eB.message || eB) }; }
+  return { ok: true, removed: removed.length, added: added.length, plsys: plsys, bq: bq };
+}
+</textarea><div class="cpmsg" id="b3m"></div></div>
+<div class="step"><b>5.</b> <b>⌘+S</b> で保存します。</div>
+<div class="step"><b>6.</b> 右上の <b>デプロイ → デプロイを管理 → えんぴつ → 新バージョン → デプロイ</b> を押します。（「新しいデプロイ」は選ばないでください。）</div>
+<div class="ok"><b>うまくいったか確認</b>：デプロイのあと、私が動作確認用に応答を見ます。画面の <code>ping</code> の版が <code>token-336h-v1-c19-pllock</code> に変われば、貼り替えは成功です。</div>
+<h2>終わったら</h2><div class="step">「<b>tori-dashboardのGASを更新しました</b>」とお知らせください。次に、作り直す行の<b>一覧を先に見ていただいて</b>（実際には何も変えません）、よければ実行します。</div>
+<script>function cp(id){var t=document.getElementById(id),m=document.getElementById(id+'m');t.focus();t.select();t.setSelectionRange(0,t.value.length);var ok=false;try{ok=document.execCommand('copy')}catch(e){}
+if(!ok&&navigator.clipboard){navigator.clipboard.writeText(t.value).then(function(){m.textContent='✅ コピーしました'},function(){m.textContent='⚠ 枠をクリック→⌘+A→⌘+C'});return}
+m.textContent=ok?'✅ コピーしました':'⚠ 枠をクリック→⌘+A→⌘+C'}</script></body></html>
