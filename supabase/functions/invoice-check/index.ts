@@ -67,7 +67,13 @@ Deno.serve(async (req: Request) => {
   }
 
   // ③ 取引先・法人・店舗の解決
-  const unresolvedLines = (lines ?? []).filter((l: any) => !l.resolved_store_id).length;
+  // 2026-10-19: 店舗マスタに店舗を持たない法人（SKの不動産など）は、仕訳案の借方にMFの部門が手で入っている行を「確定」とみなす（店舗マスタは触らない）
+  let deptOkLineIds = new Set<string>();
+  if (inv.corporation_id && (lines ?? []).some((l: any) => !l.resolved_store_id)) {
+    const { count: corpStores } = await db.from("stores").select("id", { count: "exact", head: true }).eq("corporation_id", inv.corporation_id);
+    if (!corpStores) deptOkLineIds = new Set<string>(((draft?.debit_lines ?? []) as any[]).filter((d) => d?.source_line_id && d?.debit?.department).map((d) => String(d.source_line_id)));
+  }
+  const unresolvedLines = (lines ?? []).filter((l: any) => !l.resolved_store_id && !deptOkLineIds.has(String(l.id))).length;
   checks.push({ key: "vendor", label: "取引先が確定", status: inv.vendor_id ? "ok" : "ng", detail: inv.vendor_id ? undefined : "取引先マスタに結びついていません", reason: "vendor_unknown" });
   checks.push({ key: "corporation", label: "宛先の法人が確定", status: inv.corporation_id ? "ok" : "ng", reason: "corp_unresolved" });
   checks.push({ key: "stores", label: "明細の店舗が全て確定", status: !lines?.length ? "na" : unresolvedLines ? "ng" : "ok", detail: unresolvedLines ? `${unresolvedLines}行が未確定` : undefined, reason: "store_unresolved" });
