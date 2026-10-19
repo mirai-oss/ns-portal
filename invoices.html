@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-19-v146";
+const BUILD_TAG="2026-10-19-v147";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -15024,6 +15024,8 @@ window.addEventListener("message",async(e)=>{
   if(!ME) return; // 初回ブートストラップがまだ終わっていなければ何もしない（通常は起こらないはず）
   if(!d.tab||!TAB_WHITELIST.includes(d.tab)) return;
   TAB=d.tab;
+  // 2026-10-19: サイドバーの「承認待ち」等は sub（一覧のサブタブ）も一緒に送ってくる。従来は無視していたため、開いても前回のサブタブのまま承認待ちが出なかった
+  if(TAB==="unified"&&typeof UNIFIED_STATE!=="undefined"&&["review","approval","plpending","all","accounting","payment","done"].includes(d.sub)){ UNIFIED_STATE.subTab=d.sub; UNIFIED_STATE.reasonFilter=""; if(d.sub==="payment"){ try{ await transferFetchData(); }catch(_){} } }
   pushNav();
   document.querySelectorAll(".mail-tab").forEach(x=>x.classList.toggle("active",x.dataset.tab===TAB));
   document.querySelectorAll("#acwsTabs button").forEach(x=>x.classList.toggle("active",x.dataset.acgroup===acActiveGroup()));
