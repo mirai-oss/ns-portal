@@ -65,6 +65,8 @@ Deno.serve(async (req: Request) => {
     const { data: c } = await db.from("corporations").select("corp_code").eq("id", corporationId).maybeSingle();
     corpCode = c?.corp_code ?? null;
     tenantId = (corpCode && MF_TENANT_BY_CORP[corpCode]) || "default";
+    // 2026-10-19: MF未連携の法人（SKなど）をトーホーのMFへ誤って登録しないよう、無言のdefault落ちをやめて要対応にする
+    if (corpCode && !MF_TENANT_BY_CORP[corpCode]) problems.push(`この法人（${corpCode}）はマネーフォワードに未連携です。連携するまで仕訳登録に進めません（トーホーのMFには登録しません）`);
   } else problems.push("宛先の法人が未確定です");
 
   // 行ルール（有効な最新版。直近90日の修正回数つきのビュー）と取引先の決まり
