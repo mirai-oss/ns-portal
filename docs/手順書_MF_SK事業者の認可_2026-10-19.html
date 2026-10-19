@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>手順書 MF SK事業者の認可</title>
+<style>
+  body{font-family:-apple-system,"Hiragino Sans",sans-serif;max-width:860px;margin:24px auto;padding:0 16px;color:#231f1a;line-height:1.8;background:#faf8f4}
+  h1{font-size:22px;border-bottom:3px solid #c0451a;padding-bottom:6px}
+  h2{font-size:18px;margin-top:32px;background:#fff;border-left:6px solid #c0451a;padding:6px 12px}
+  h3{font-size:15px;margin-top:20px}
+  .box{background:#fff;border:1px solid #e4ddd0;border-radius:10px;padding:12px 16px;margin:12px 0}
+  .warn{background:#fff4e5;border-color:#f0b35a}
+  .ok{background:#eefaf0;border-color:#8fcf9b}
+  code{background:#f1ece2;padding:1px 6px;border-radius:4px;font-size:13px;word-break:break-all}
+  .url{display:block;background:#231f1a;color:#fff;padding:10px 12px;border-radius:8px;font-size:13px;word-break:break-all;margin:8px 0}
+  .must{color:#c0451a;font-weight:700}
+  ol li,ul li{margin:4px 0}
+</style>
+</head>
+<body>
+
+<h1>手順書：SK（不動産）のMF（マネーフォワード）を、管理システムにつなぐ</h1>
+<p>作成：担当C（請求書・MF連携）／2026-10-19<br>
+やること：<b>SKのMF事業者を「許可」して、請求書の仕訳をSKのMFに登録できるようにする</b>こと。<br>
+いま、SK宛の請求書（例：Cure Next ¥55,000）は、MFにつながっていないため<b>承認画面の手前で止まっています</b>（トーホーのMFに間違って入らないように止めています）。</p>
+
+<div class="box">
+  <b>ご自身でやること</b>は、<u>ブラウザでURLを開いて「許可」を押すこと</u>だけです（最大でも下の「A」「B」が必要なときだけ追加）。パスワード等をこちらに送る必要はありません。
+</div>
+
+<h2>先に確認してください</h2>
+<div class="box warn">
+  <ul>
+    <li>マネーフォワード クラウド会計に、<b>SKの事業者</b>があり、あなたのMFアカウントで開ける状態であること。<br>
+      <small>（SKはまだMFを使っていない場合は、ここで止めて教えてください。MF以外の扱いを一緒に決めます）</small></li>
+    <li>認可のとき、<b>事業者は必ずSKを選ぶ</b>こと（トーホー・N-Style・LiveGateを選ぶと、SKとして誤ってつながります。間違えてもやり直せます）。</li>
+  </ul>
+</div>
+
+<h2>手順</h2>
+<ol>
+  <li>Chromeなどで、<b>マネーフォワード クラウドにログイン</b>しておきます（いつもの管理者アカウント）。</li>
+  <li>下のURLを、同じブラウザの新しいタブに貼り付けて開きます。<br>
+    <span class="url">https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/mf-oauth-authorize?tenant_id=sk&amp;label=SK</span>
+    <small>（URLは変更しないでください。<code>tenant_id=sk</code> が「SKとしてつなぐ」という意味です）</small></li>
+  <li>マネーフォワードの<b>許可の画面</b>が出ます。<br>
+    ・<b>事業者の選択</b>が出たら <b>SKの事業者</b> を選びます。<br>
+    ・内容（仕訳・勘定科目・部門などへのアクセス）を確認して <b>「許可する」</b> を押します。</li>
+  <li>画面に <b>「✅ マネーフォワード（SK）との連携が完了しました」</b> と出れば終了です（このタブは閉じてOK）。</li>
+  <li>終わったら、<b>「SKを認可しました」</b>とお知らせください。次は私の側で、つながったか（部門一覧が取れるか）を確認し、SK宛の請求書をSKのMFに入れる設定（コードの対応表）を追加します。<b>この設定を入れるまでは、SK宛はまだ止まったままです</b>（それで正常です）。</li>
+</ol>
+
+<h2>困ったとき</h2>
+<div class="box warn">
+  <b>A．「アプリ連携権限が必要です。アプリポータルから権限を付与してください。」と赤く出た場合</b>
+  <p>→ 認可の失敗ではなく、<b>あなたのMFアカウントに「アプリ連携」の権限がまだ無い</b>という意味です（トーホー・N-Style・LiveGateのときと同じ作業です）。</p>
+  <ol>
+    <li>赤い枠の青い文字 <b>「アプリポータル」</b> をクリック（または <code>https://portal.biz.moneyforward.com/</code> を開く）。</li>
+    <li>事業者 <b>SK</b> を選び、<b>ユーザー・権限の管理</b>を開きます。</li>
+    <li>ご自身のアカウントに <b>「アプリ連携」の権限</b> をONにして保存します（変更できるのは、その事業者の管理者です）。</li>
+    <li>もう一度、上の手順のURLを開いて「許可する」を押します。</li>
+  </ol>
+</div>
+<ul>
+  <li><b>B．事業者の選択にSKが出ない</b>…そのMFアカウントにSKの権限がありません。SKの管理者権限があるアカウントでログインし直してください。</li>
+  <li><b>間違った事業者を選んでしまった</b>…もう一度上のURLを開き、今度はSKを選べば<b>上書きされて正しくなります</b>（ほかの会社のつながりには影響しません）。</li>
+  <li><b>エラー画面が出た</b>…画面のスクリーンショットを送ってください。</li>
+</ul>
+
+<h2>このあとの流れ（こちらでやります）</h2>
+<ol>
+  <li>つながったか確認（SKの部門・勘定科目が読めること／他社の部門が混ざっていないこと）。</li>
+  <li>SK宛の請求書をSKのMFに入れる対応表を追加（確認のうえ、Edge Function反映とpush）。</li>
+  <li>SKのMFに足りない勘定科目・補助科目・部門があれば、一覧にしてお渡しします。</li>
+  <li>止まっているCure Next（¥55,000）の店舗を決めて、承認画面へ進めます。</li>
+</ol>
+<div class="box ok">会計期間（決算月）がほかの会社と違う場合があります。つなげたあと、こちらで日付が受け付けられるか確認します。</div>
+
+</body>
+</html>
