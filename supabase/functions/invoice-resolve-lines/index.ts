@@ -92,6 +92,20 @@ Deno.serve(async (req: Request) => {
     }
     if (per.length && per.every((x) => x && x === per[0])) historyStore = per[0];
   }
+  // 2026-10-19: 店名の前後に説明が付く表記（例:「和食と個室居酒屋 匠味 新横浜店」）は、resolve_store では部分一致（low）になり人の確認に回っていた。
+  // 登録済みの店名・表示名・別名（4文字以上）が文中に含まれ、含まれる名前の持ち主がちょうど1店舗のときだけ、確定扱いにする（紛らわしいものは従来どおり人の確認）
+  const nzs = (t: unknown) => String(t ?? "").normalize("NFKC").replace(/[\s　・･\-－ー()（）「」『』\[\]【】/]/g, "").toLowerCase();
+  const tokens: { sid: string; tok: string }[] = [];
+  { const { data: ss } = await db.from("stores").select("id, name, display_name"); const { data: as } = await db.from("store_aliases").select("store_id, alias");
+    for (const s of ss ?? []) for (const n of [s.name, s.display_name]) { const t = nzs(n); if (t.length >= 4) tokens.push({ sid: s.id, tok: t }); }
+    for (const a of as ?? []) { const t = nzs(a.alias); if (t.length >= 4) tokens.push({ sid: a.store_id, tok: t }); } }
+  const containedOwner = (text: string): string | null => {
+    const t = nzs(text); const hits = tokens.filter((x) => t.includes(x.tok));
+    if (!hits.length) return null;
+    const longest = Math.max(...hits.map((x) => x.tok.length));
+    const owners = new Set(hits.filter((x) => x.tok.length === longest).map((x) => x.sid));   // 一番長く当たった名前の持ち主
+    return owners.size === 1 ? [...owners][0] : null;
+  };
   let resolved = 0, low = 0, unresolved = 0, skipped = 0;
   const unresolvedNames = new Set<string>();
   for (const l of lines) {
@@ -109,13 +123,16 @@ Deno.serve(async (req: Request) => {
     if (hit && (hit.confidence === "exact" || hit.confidence === "high")) {
       patch = { resolved_store_id: hit.store_id, resolved_by: "mapping", resolve_info: { confidence: hit.confidence, matched_by: hit.matched_by, via, brand_id: hit.brand_id ?? null } };
       resolved++;
+    } else if (hit && l.store_text && containedOwner(String(l.store_text)) === hit.store_id) {
+      patch = { resolved_store_id: hit.store_id, resolved_by: "mapping", resolve_info: { confidence: "high", matched_by: "contains_name", via, brand_id: hit.brand_id ?? null, note: "店名・別名が文中に含まれるため確定（他の店舗と紛れません）" } };
+      resolved++;
     } else if (hit) {
       patch = { resolved_store_id: null, resolved_by: null, resolve_info: { confidence: "low", matched_by: hit.matched_by, via, candidate_store_id: hit.store_id } };
       low++;
     } else if (!l.store_text && !l.store_code && (inv.store_id || vendorDefaultStore)) {
       patch = { resolved_store_id: inv.store_id ?? vendorDefaultStore, resolved_by: "rule", resolve_info: { confidence: "rule", via: inv.store_id ? "invoice.store_id" : "vendor.default_store_id" } };
       resolved++;
-    } else if (historyStore && (l.store_text || l.store_code)) {
+    } else if (historyStore) {   // 2026-10-19: 店名の記載が無い行（毎月同じ取引先の請求書）にも使う。承認すると店舗が記録され、次回から続く
       patch = { resolved_store_id: historyStore, resolved_by: "ai", resolve_info: { confidence: "history", via: "vendor_history", note: "過去の請求書がすべて同じ1店舗だったため推定（要確認）" } };
       resolved++;
     } else {
