@@ -73,7 +73,7 @@ Deno.serve(async (req: Request) => {
     const { count: corpStores } = await db.from("stores").select("id", { count: "exact", head: true }).eq("corporation_id", inv.corporation_id);
     if (!corpStores) deptOkLineIds = new Set<string>(((draft?.debit_lines ?? []) as any[]).filter((d) => d?.source_line_id && d?.debit?.department).map((d) => String(d.source_line_id)));
   }
-  const unresolvedLines = (lines ?? []).filter((l: any) => !l.resolved_store_id && !deptOkLineIds.has(String(l.id))).length;
+  const unresolvedLines = (lines ?? []).filter((l: any) => !l.resolved_store_id && !deptOkLineIds.has(String(l.id)) && !l.resolve_info?.no_store_needed).length;   // 人が「店舗は不要」とした行は確定扱い
   checks.push({ key: "vendor", label: "取引先が確定", status: inv.vendor_id ? "ok" : "ng", detail: inv.vendor_id ? undefined : "取引先マスタに結びついていません", reason: "vendor_unknown" });
   checks.push({ key: "corporation", label: "宛先の法人が確定", status: inv.corporation_id ? "ok" : "ng", reason: "corp_unresolved" });
   checks.push({ key: "stores", label: "明細の店舗が全て確定", status: !lines?.length ? "na" : unresolvedLines ? "ng" : "ok", detail: unresolvedLines ? `${unresolvedLines}行が未確定` : undefined, reason: "store_unresolved" });

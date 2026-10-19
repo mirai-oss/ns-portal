@@ -163,7 +163,7 @@ Deno.serve(async (req: Request) => {
     let deptName: string | null = null; let storeName: string | null = null;
     if (rule.dept_mode === "line_store") {
       const st = l.resolved_store_id ? stores.get(l.resolved_store_id) : null;
-      if (!st) problems.push(`行${l.line_no}: 店舗が未確定です（${l.store_text ?? l.store_code ?? "店舗の記載なし"}）`);
+      if (!st) { if (!l.resolve_info?.no_store_needed) problems.push(`行${l.line_no}: 店舗が未確定です（${l.store_text ?? l.store_code ?? "店舗の記載なし"}）`); }   // 2026-10-19: 人が「店舗は不要」とした行（精算書・経費へ入力済み等）は止めない
       else { storeName = st.name; deptName = st.mf_department_name ?? null; if (!deptName) problems.push(`行${l.line_no}: 店舗「${st.name}」にMF部門名が登録されていません`); }
     } else if (rule.dept_mode === "primary_store") {
       const sid = inv.store_id ?? vendor?.default_store_id ?? null;
