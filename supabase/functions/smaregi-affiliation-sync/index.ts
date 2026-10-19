@@ -14,7 +14,7 @@
 //     一致しなければ隔離してLarkへ（人が「この店舗」or「新規店舗」を選ぶ）。自動登録できたとき、その店舗の「事業所を作成してください」タスクは自動完了にする。
 //   - 管理システムに店舗が増えたのにスマレジに事業所が無い → 本部タスク「スマレジ・タイムカードに事業所『○○』を作成してください（契約: ○○）」を1回だけ自動発行。
 //
-// 呼び出し: POST { mode?: "report"|"apply"（既定report）, contract_id?: string, user_id?: string（その1人だけ。初回の立会い確認用）, allow_empty?: boolean（user_id指定時のみ。管理システムの所属が0件のとき、スマレジの所属も全部外す）, cutover_apply?: boolean（運営変更の後始末だけ実行する。mode=reportでも）, force?: boolean }
+// 呼び出し: POST { mode?: "report"|"apply"（既定report）, contract_id?: string, user_id?: string（その1人だけ。初回の立会い確認用）, allow_empty?: boolean（user_id指定時のみ。管理システムの所属が0件のとき、スマレジの所属も全部外す）, cutover_apply?: boolean（運営変更の後始末だけ実行する。mode=reportでも）, apply_new?: boolean（台帳の無い新しい人だけ、mode=reportでも管理システム優先で反映する）, force?: boolean }
 //   report=試行（スマレジにも user_stores にも書かない。同期ログとLarkだけ）／apply=実際に反映
 // 認可: service_role直呼び、または CEO/HQ のJWT。
 // 応答は件数のみ（公開リポジトリのActionsログに氏名・店舗名を残さない）。名前を含む詳細はLark(社内)と staff_store_sync_log にだけ出す。
@@ -277,23 +277,30 @@ Deno.serve(async (req) => {
         }
 
         const fixed = new Set<string>();   // この実行で反映に成功した人（ズレ一覧から外す）
+        // 所属を反映できなかった人に、未完了の入社登録タスクがあれば「所属をスマレジで確認・入力」の工程を足す（担当Bの関数・べき等。関数が未作成でも無視）
+        const addStep = async (userId: string, reason: string) => {
+          try { await sb.rpc("hq_add_onboarding_affiliation_step", { p_user: userId, p_reason: reason }); } catch (_) { /* 関数未作成など */ }
+        };
         const nm = (ids: string[]) => ids.map((i) => storeName[i] ?? i).join("、") || "なし";
         for (const p of plans) {
           if (p.kind === "none") { cs.in_sync++; continue; }
           const who = uname[p.userId] ?? p.userId;
           if (p.kind === "skip") {
             cs.skipped++; await log(c.contract_id, p.userId, "skip", { reason: p.reason });
+            await addStep(p.userId, String(p.reason ?? "所属を反映できませんでした"));
             larkLines.push(`⏸ ${label}: ${who}さんの所属が管理システムとスマレジで違いますが、${p.reason}ため何もしませんでした`);
             continue;
           }
           const toSm = p.kind === "push" || p.kind === "conflict";
+          // apply_new=true: 台帳の無い新しい人（入社登録したばかり）だけ、試行モードでも管理システム優先で反映する
+          const act = apply || (body.apply_new === true && p.L === null && toSm);
           let ok = true;
           try {
             if (toSm) {
               // 管理システム → スマレジ
               const adds = minus(p.M, p.S), dels = minus(p.S, p.M);
               const putLog: any[] = [];
-              if (apply) {
+              if (act) {
                 // 追加には役割ID(roleId)が必須（AL=アルバイト／それ以外=社員。追加先の事業所ごとに引く）
                 const roles = adds.length ? await fetchRoles(c.contract_id, token, adds.map((st) => reverse[st])) : [];
                 const want = wantedRoleName(urole[p.userId]);
@@ -310,20 +317,20 @@ Deno.serve(async (req) => {
                 }
               }
               cs.push++;
-              await log(c.contract_id, p.userId, "push", { added: adds.map((i) => storeName[i]), removed: dels.map((i) => storeName[i]), reason: p.reason ?? null, applied: apply, puts: putLog });
+              await log(c.contract_id, p.userId, "push", { added: adds.map((i) => storeName[i]), removed: dels.map((i) => storeName[i]), reason: p.reason ?? null, applied: act, puts: putLog });
               if (p.kind === "conflict" && p.L) {
                 // スマレジ側で変えられていた内容（前回→今）を、上書きする前に残す
                 const smAdded = minus(p.S, p.L), smRemoved = minus(p.L, p.S);
                 cs.conflict_overwritten++;
-                await log(c.contract_id, p.userId, "conflict_overwrite", { smaregi_side_added: smAdded.map((i) => storeName[i]), smaregi_side_removed: smRemoved.map((i) => storeName[i]), applied: apply });
-                larkLines.push(`${apply ? "🔁" : "（試行）"} ${label}: ${who}さんの所属が管理システムとスマレジの両方で変更されていたため、管理システムの内容（${nm([...p.M])}）でスマレジを上書きしました。上書きされたスマレジ側の変更: 追加=${nm(smAdded)} ／ 解除=${nm(smRemoved)}`);
+                await log(c.contract_id, p.userId, "conflict_overwrite", { smaregi_side_added: smAdded.map((i) => storeName[i]), smaregi_side_removed: smRemoved.map((i) => storeName[i]), applied: act });
+                larkLines.push(`${act ? "🔁" : "（試行）"} ${label}: ${who}さんの所属が管理システムとスマレジの両方で変更されていたため、管理システムの内容（${nm([...p.M])}）でスマレジを上書きしました。上書きされたスマレジ側の変更: 追加=${nm(smAdded)} ／ 解除=${nm(smRemoved)}`);
               } else if (adds.length || dels.length) {
-                larkLines.push(`${apply ? "➡️" : "（試行）"} ${label}: ${who}さんの所属をスマレジへ反映: 追加=${nm(adds)} ／ 解除=${nm(dels)}`);
+                larkLines.push(`${act ? "➡️" : "（試行）"} ${label}: ${who}さんの所属をスマレジへ反映: 追加=${nm(adds)} ／ 解除=${nm(dels)}`);
               }
             } else {
               // スマレジ → 管理システム
               const adds = minus(p.S, p.M), dels = minus(p.M, p.S);
-              if (apply) {
+              if (act) {
                 for (const st of adds) {
                   const { error } = await sb.from("user_stores").insert({ user_id: p.userId, store_id: st, is_primary: false });
                   if (error) throw new Error("管理システムへの所属追加に失敗: " + error.message);
@@ -340,17 +347,18 @@ Deno.serve(async (req) => {
                 }
               }
               cs.import++;
-              await log(c.contract_id, p.userId, "import", { added: adds.map((i) => storeName[i]), removed: dels.map((i) => storeName[i]), reason: p.reason ?? null, applied: apply });
-              larkLines.push(`${apply ? "⬅️" : "（試行）"} ${label}: スマレジ側で${who}さんの所属が変更されたため管理システムに取り込みました: 追加=${nm(adds)} ／ 解除=${nm(dels)}`);
+              await log(c.contract_id, p.userId, "import", { added: adds.map((i) => storeName[i]), removed: dels.map((i) => storeName[i]), reason: p.reason ?? null, applied: act });
+              larkLines.push(`${act ? "⬅️" : "（試行）"} ${label}: スマレジ側で${who}さんの所属が変更されたため管理システムに取り込みました: 追加=${nm(adds)} ／ 解除=${nm(dels)}`);
             }
           } catch (e) {
             ok = false; cs.errors++;
             await log(c.contract_id, p.userId, "error", { reason: String((e as Error).message ?? e).slice(0, 200) });
+            await addStep(p.userId, "スマレジへの所属反映に失敗: " + String((e as Error).message ?? e).slice(0, 80));
             larkLines.push(`❌ ${label}: ${who}さんの所属同期に失敗: ${String((e as Error).message ?? e).slice(0, 100)}`);
           }
-          if (ok && apply) fixed.add(p.userId);
+          if (ok && act) fixed.add(p.userId);
           // 台帳(前回同期時点)を「一致した状態」に更新
-          if (ok && apply) {
+          if (ok && act) {
             const finalSet = toSm ? p.M : p.S;
             await sb.from("staff_store_sync").delete().eq("user_id", p.userId).eq("contract_id", c.contract_id);
             if (finalSet.size) {
