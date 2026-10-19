@@ -466,6 +466,7 @@ Deno.serve(async (req: Request) => {
             try {
               const upRes = await seisanCall("sd_apiUploadAttachment", [tk, s.seisan_store_name, monthKey, {
                 kind, fileName: f.file_name, mimeType: f.mime_type || undefined, b64: f.b64,
+                uniq: String(invoiceId).replace(/-/g, "").slice(0, 8),   // 2026-10-19: 請求書ごとに別ファイルにする（同じ費目名の別請求書の添付を上書きしない）
               }]);
               if (upRes.ok) attachedCount++;
               else if (!attachmentError) attachmentError = upRes.error || "精算書側で添付の保存に失敗しました";
