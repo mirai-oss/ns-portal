@@ -25,7 +25,7 @@ const userClient = (req: Request) =>
     global: { headers: { Authorization: req.headers.get("Authorization") ?? "" } },
   });
 
-const MF_TENANT_BY_CORP: Record<string, string> = { nstyle: "nstyle", toho: "default", livegate: "livegate" };   // 2026-10-17: LiveGate事業者を追加（黒霧屋 新横浜の運営変更 2026-11-01）
+const MF_TENANT_BY_CORP: Record<string, string> = { nstyle: "nstyle", toho: "default", livegate: "livegate", sk: "sk" };   // 2026-10-17: LiveGate事業者を追加（黒霧屋 新横浜の運営変更 2026-11-01）
 
 function monthEnd(ym: string): string { // 'YYYY-MM' or 'YYYY-MM-DD' → その月の末日
   const [y, m] = ym.slice(0, 7).split("-").map(Number);

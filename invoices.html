@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-19-v144";
+const BUILD_TAG="2026-10-19-v145";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -1513,7 +1513,7 @@ async function invdraftSkeleton_(inv,old){
   }
   const vname=(inv.vendor&&inv.vendor.name)||inv.vendor_name||"";
   const corp=corps.find(c=>c.id===inv.corporation_id);
-  const tenant=(old&&old.tenant_id)||(corp&&corp.corp_code==="nstyle"?"nstyle":"default");
+  const tenant=(old&&old.tenant_id)||(corp&&MF_TENANT_BY_CORP_CODE[corp.corp_code])||"default";
   const total=inv.amount!=null?Number(inv.amount):0;
   const lc=inv.lines_check||{}; const incl=lc.line_amounts_include_tax===true;
   let dl=[];
@@ -3995,7 +3995,7 @@ async function openReceivableJournalModal(u,receivableId){
 //   ①法人コード→事業者IDの対応（corporations.corp_code → mf_oauth_tokens.id）
 //   ②事業者名に法人名が含まれる（例: 株式会社N-Style ⊃ N-Style）  ③どちらも無ければ従来どおり先頭
 // 法人は行のcorporation_id、無ければ店舗マスタの法人。画面上部の「変更」で手動切替も引き続き可能。
-const MF_TENANT_BY_CORP_CODE={nstyle:"nstyle",toho:"default"};
+const MF_TENANT_BY_CORP_CODE={nstyle:"nstyle",toho:"default",livegate:"livegate",sk:"sk"};
 function arjPickTenantId(row,tenants){
   if(!tenants.length) return "default";
   const corps=(CORP_STORE_CACHE&&CORP_STORE_CACHE.corporations)||[];
