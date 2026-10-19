@@ -157,10 +157,10 @@ Deno.serve(async (req: Request) => {
         const sum = (arr: any[]) => { const m = new Map<string, number>(); for (const x of arr) { const k = `${x.ym}|${x.store}|${x.account}`; m.set(k, (m.get(k) ?? 0) + Number(x.amount)); } return m; };
         const rm = sum(j.removed_rows ?? []), ad = sum(j.added_rows ?? []); const diff: string[] = [];
         for (const k of new Set([...rm.keys(), ...ad.keys()])) { const d = (ad.get(k) ?? 0) - (rm.get(k) ?? 0); if (d !== 0) diff.push(`${k} ${d > 0 ? "+" : ""}${d}`); }
-        return json({ success: true, dry: true, removed: j.removed, added: j.added, total_diff_by_store_account: diff, removed_rows: j.removed_rows, added_rows: j.added_rows });
+        return json({ success: true, dry: true, removed: j.removed, added: j.added, unknown: j.unknown, unknown_rows: j.unknown_rows, total_diff_by_store_account: diff, removed_rows: j.removed_rows, added_rows: j.added_rows });
       }
       if (reflIds.length) await db.from("invoice_pl_reflections").update({ sheet_synced_at: new Date().toISOString(), sheet_sync_error: null }).in("id", reflIds);
-      return json({ success: true, removed: j.removed, added: j.added, plsys: j.plsys, bq: j.bq });
+      return json({ success: true, removed: j.removed, added: j.added, unknown: j.unknown, plsys: j.plsys, bq: j.bq });
     }
     // 2026-10-19新設: PLシートへの書き込みが一時的なGASの不調（HTMLが返る等）で失敗したまま残っている直接反映（direct）を、保存済みの内容でやり直す。
     //   body: { secret, action:"retry_sheet_sync", dry?:true, ids?:[反映ID] }。書き込みは writePlFee（請求書IDで冪等に差し替え）と同じ

@@ -1,0 +1,87 @@
+<!DOCTYPE html><html lang="ja"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>手順書 repairPlAutoRows の差し替え</title>
+<style>body{font-family:-apple-system,"Hiragino Sans",sans-serif;max-width:860px;margin:0 auto;padding:20px 16px 80px;line-height:1.9;color:#26221e;background:#faf8f4}h1{font-size:21px}.step{background:#fff;border:1px solid #e7e3dc;border-radius:12px;padding:12px 18px;margin:12px 0}.warn{background:#fff4e5;border:1px solid #f0b35a;border-radius:10px;padding:8px 14px;margin:8px 0}.bh{display:flex;justify-content:space-between;align-items:center}button.copy{background:#1f5fbf;color:#fff;border:0;border-radius:8px;padding:10px 18px;font-size:15px;cursor:pointer}textarea{width:100%;height:200px;font-size:11px;font-family:Menlo,monospace;border:1px solid #cfc8bb;border-radius:8px;box-sizing:border-box}code{background:#f1ece2;padding:1px 6px;border-radius:4px}</style></head><body>
+<h1>手順書：repairPlAutoRows を新しい版に差し替える（1つの関数だけ）</h1>
+<p>前に入れた <code>repairPlAutoRows</code> を、より安全な版に入れ替えます。<b>同じ金額・店舗・科目の行だけを1対1で入れ替え</b>、請求書IDが欠けている行が二重に残らないようにしました。所要時間は3分ほどです。</p>
+<div class="warn">コピーできないときは、枠をクリック → ⌘+A → ⌘+C。</div>
+<div class="step"><b>1.</b> Apps Script の <code>Code.gs</code> で、<code>function repairPlAutoRows(p) {</code> の行を探します（その上の <code>/* 2026-10-19新設…</code> という説明の文章も一緒です）。</div>
+<div class="step"><b>2.</b> その説明の文章の先頭から、関数が終わる <code>}</code> までを<b>選んで消し</b>、下の内容を貼り付けます。<br>
+<div class="bh"><b>repairPlAutoRows（新しい版）</b><button class="copy" onclick="cp()">📋 コピー</button></div><textarea id="t" readonly spellcheck="false" onclick="this.select()">/* 2026-10-19新設: 請求書由来の自動計上行（メモ「自動｜&lt;科目&gt;」＋補助科目セルの「外部連携:&lt;請求書ID&gt;」）の作り直し。
+ * 書き込みの重なりで補助科目(G列)＋請求書IDが別の行のものになった行を、請求書側の正しい記録（ns-portal invoice_pl_reflections）から入れ直す。
+ * 入力: { token(AD_COST_WRITE_TOKEN), months:[&#x27;2026-08&#x27;,...], invoice_ids:[...], rows:[{ym,store,account,sub,amount,source}], dry? }
+ * 動き: 対象月×メモが「自動｜」で始まる×G列に invoice_ids のどれかの外部連携タグがある行を全て外し、rows を入れ直す。dry=true なら書き込まず差分だけ返す。 */
+function repairPlAutoRows(p) {
+  var tk = PropertiesService.getScriptProperties().getProperty(&#x27;AD_COST_WRITE_TOKEN&#x27;);
+  if (!tk || String((p || {}).token || &#x27;&#x27;).trim() !== String(tk).trim()) return { ok: false, error: &#x27;unauthorized&#x27; };
+  var months = (Array.isArray(p.months) ? p.months : []).map(String);
+  var ids = {}; (Array.isArray(p.invoice_ids) ? p.invoice_ids : []).forEach(function (x) { ids[String(x)] = true; });
+  var want = Array.isArray(p.rows) ? p.rows : [];
+  if (!months.length) return { ok: false, error: &#x27;months は必須です&#x27; };
+  var monthSet = {}; months.forEach(function (m) { monthSet[m.slice(0, 4) + &#x27;/&#x27; + m.slice(5, 7)] = true; });
+  var tagOf = function (cell) { var m = String(cell || &#x27;&#x27;).match(/外部連携:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/); return m ? m[1] : &#x27;&#x27;; };
+  var keyOf = function (ym, store, account, amount) { return [ym, String(store).trim(), String(account).trim(), Math.round(Number(amount) || 0)].join(&#x27;|&#x27;); };
+  // 取り除く行の決め方: 対象月×メモが「自動｜」で始まる行のうち、(年月・店舗・科目・金額)が請求書側の正しい行と同じものを、1対1で外す。
+  // 補助科目や請求書IDがずれている行・請求書IDが欠けた行も、金額・店舗・科目が合えば外して入れ直す。どれにも当たらない行は触らない（レポートだけ返す）
+  var left = {};
+  want.forEach(function (w) { var k = keyOf(String(w.ym).slice(0, 4) + &#x27;/&#x27; + String(w.ym).slice(5, 7), w.store, w.account, w.amount); left[k] = (left[k] || 0) + 1; });
+  var isAuto = function (ymCell, memo) { return !!monthSet[bqPlYm_(ymCell)] &amp;&amp; String(memo).indexOf(&#x27;自動｜&#x27;) === 0; };
+  var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(&#x27;DB_PL&#x27;);
+  if (!sh) return { ok: false, error: &#x27;DB_PLシートがありません&#x27; };
+  var lastRow = sh.getLastRow(), lastCol = Math.max(sh.getLastColumn(), 7);
+  var all = lastRow &gt;= 2 ? sh.getRange(2, 1, lastRow - 1, lastCol).getValues() : [];
+  var keep = [], removed = [], unknown = [];
+  all.forEach(function (r) {
+    if (r[0] === &#x27;&#x27; &amp;&amp; r[1] === &#x27;&#x27; &amp;&amp; r[2] === &#x27;&#x27;) return;
+    if (isAuto(r[0], r[5])) {
+      var k = keyOf(bqPlYm_(r[0]), r[1], r[2], r[4]);
+      if (left[k] &gt; 0) { left[k]--; removed.push({ ym: bqPlYm_(r[0]), store: r[1], account: r[2], amount: r[4], sub: String(r[6]) }); return; }
+      if (ids[tagOf(r[6])] &amp;&amp; Number(r[4]) !== 0) unknown.push({ ym: bqPlYm_(r[0]), store: r[1], account: r[2], amount: r[4], sub: String(r[6]) });
+    }
+    keep.push(r);
+  });
+  var added = want.map(function (w) {
+    var y = Number(String(w.ym).slice(0, 4)), mo = Number(String(w.ym).slice(5, 7));
+    var tag = &#x27;外部連携:&#x27; + w.source;
+    return [new Date(y, mo - 1, 1), String(w.store), String(w.account), plSeisanGuessCat_(String(w.account)), Number(w.amount), &#x27;自動｜&#x27; + w.account, w.sub ? (String(w.sub) + &#x27;　&#x27; + tag) : tag];
+  });
+  if (p.dry) return { ok: true, dry: true, removed: removed.length, added: added.length, unknown: unknown.length, unknown_rows: unknown.slice(0, 100), removed_rows: removed.slice(0, 400), added_rows: added.slice(0, 400).map(function (a) { return { ym: bqPlYm_(a[0]), store: a[1], account: a[2], amount: a[4], sub: a[6] }; }) };
+  var out = keep.concat(added);
+  if (lastRow &gt;= 2) sh.getRange(2, 1, lastRow - 1, lastCol).clearContent();
+  if (out.length) { sh.getRange(2, 1, out.length, 7).setValues(out); sh.getRange(2, 1, out.length, 1).setNumberFormat(&#x27;yyyy/m/d&#x27;); }
+  // PL管理システム（✍販管費入力）も同じ決め方で入れ直す
+  var plsys = &#x27;&#x27;;
+  try {
+    var pshS = SpreadsheetApp.openById(PL_SYSTEM_ID).getSheetByName(PL_INPUT_SHEET);
+    if (pshS) {
+      var left2 = {};
+      want.forEach(function (w) { var k2 = keyOf(String(w.ym).slice(0, 4) + &#x27;/&#x27; + String(w.ym).slice(5, 7), w.store, w.account, w.amount); left2[k2] = (left2[k2] || 0) + 1; });
+      var lastRS = pshS.getLastRow(), nRS = Math.max(lastRS - 2, 0);
+      var AS = nRS &gt; 0 ? pshS.getRange(3, 1, nRS, 3).getValues() : [];
+      var ES = nRS &gt; 0 ? pshS.getRange(3, 5, nRS, 2).getValues() : [];
+      var GS = nRS &gt; 0 ? pshS.getRange(3, 7, nRS, 1).getValues() : [];
+      var keepPS = [];
+      for (var iS = 0; iS &lt; nRS; iS++) {
+        if (String(AS[iS][0]) === &#x27;&#x27; &amp;&amp; String(AS[iS][2]) === &#x27;&#x27;) continue;
+        if (isAuto(AS[iS][0], ES[iS][1])) {
+          var k3 = keyOf(bqPlYm_(AS[iS][0]), AS[iS][1], AS[iS][2], ES[iS][0]);
+          if (left2[k3] &gt; 0) { left2[k3]--; continue; }
+        }
+        keepPS.push([AS[iS][0], AS[iS][1], AS[iS][2], ES[iS][0], ES[iS][1], GS[iS][0]]);
+      }
+      added.forEach(function (a) { keepPS.push([bqPlYm_(a[0]), a[1], a[2], a[4], a[5], a[6]]); });
+      if (nRS &gt; 0) { pshS.getRange(3, 1, nRS, 3).clearContent(); pshS.getRange(3, 5, nRS, 2).clearContent(); pshS.getRange(3, 7, nRS, 1).clearContent(); }
+      if (keepPS.length) {
+        pshS.getRange(3, 1, keepPS.length, 3).setValues(keepPS.map(function (r3) { return [r3[0], r3[1], r3[2]]; }));
+        pshS.getRange(3, 5, keepPS.length, 2).setValues(keepPS.map(function (r3) { return [r3[3], r3[4]]; }));
+        pshS.getRange(3, 7, keepPS.length, 1).setValues(keepPS.map(function (r3) { return [r3[5]]; }));
+      }
+      plsys = &#x27;PL管理システムにも反映しました&#x27;;
+    } else plsys = &#x27;PL管理システムに「&#x27; + PL_INPUT_SHEET + &#x27;」シートが見つかりません（DB_PLのみ反映）&#x27;;
+  } catch (eP) { plsys = &#x27;PL管理システムへの反映に失敗（DB_PLのみ反映）: &#x27; + String(eP &amp;&amp; eP.message || eP); }
+  var bq = null;
+  try { bq = bqSyncPL({ token: PropertiesService.getScriptProperties().getProperty(&#x27;BQ_LOAD_TOKEN&#x27;) }); } catch (eB) { bq = { ok: false, error: String(eB &amp;&amp; eB.message || eB) }; }
+  return { ok: true, removed: removed.length, added: added.length, unknown: unknown.length, plsys: plsys, bq: bq };
+}
+</textarea><div id="m"></div></div>
+<div class="step"><b>3.</b> ⌘+S で保存 →「デプロイ → デプロイを管理 → えんぴつ → 新バージョン → デプロイ」。</div>
+<div class="step">終わったら「<b>repairPlAutoRowsを差し替えました</b>」とお知らせください。</div>
+<script>function cp(){var t=document.getElementById('t'),m=document.getElementById('m');t.focus();t.select();t.setSelectionRange(0,t.value.length);var ok=false;try{ok=document.execCommand('copy')}catch(e){}m.textContent=ok?'✅ コピーしました':'⚠ 枠をクリック→⌘+A→⌘+C'}</script></body></html>
