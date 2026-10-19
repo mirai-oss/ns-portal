@@ -206,6 +206,7 @@ async function buildSeisan(db: any, email: any, att: any, ex: any, firstEmailRow
 // 呼び出し: 精算ダッシュボード(GAS) sd_issueAndSend が「発行・送信」の直後に、PL_SYNC_TOKEN（サーバー間の共有トークン）つきで呼ぶ。
 // {action:"seisan_issued", token, store, month:"YYYY-MM", transfer(税込), transfer_ex(税抜), tax, resend?, pdf?:{file_name, base64}}
 // 同じ店舗×対象月の下書きが既にあれば: 同額→作らない（PDFが無ければ付ける）／金額違い＆未登録→その下書きを新しい内容に更新（再発行）／金額違い＆MF登録済み→要確認として新しい下書き
+const SEISAN_API_URL = "https://script.google.com/macros/s/AKfycbzwYN9uSEtcJHSKSVQCoQOrllhO7G6gR-E4dvP-V4o_VdGXr9VQx2mbYYPNyNEFSQCiKg/exec";
 async function seisanIssued(db: any, b: any) {
   const store = String(b.store ?? ""); const ym = /^\d{4}-\d{2}$/.test(String(b.month ?? "")) ? String(b.month) : null;
   const total = toInt(b.transfer), feeNet = toInt(b.transfer_ex), tax = toInt(b.tax);
@@ -481,6 +482,24 @@ Deno.serve(async (req: Request) => {
   if (se) return json({ error: "シークレット確認に失敗しました: " + se.message }, 500);
   if (!sr?.value || body?.secret !== sr.value) return json({ error: "認証エラー" }, 401);
   try {
+    // 2026-10-19: すでに発行済みで下書きが作られなかった精算書の後追い作成（店舗名のルール不一致で飛ばされた分）。
+    // 精算ダッシュボードから金額だけを取り（メールは送らない）、seisanIssuedで下書きを作る。dry=trueなら金額確認だけ。PDFは付かない
+    if (body?.action === "seisan_backfill") {
+      const tk = Deno.env.get("PL_SYNC_TOKEN"); if (!tk) return json({ error: "PL_SYNC_TOKEN が未設定です" }, 500);
+      const out: any[] = [];
+      for (const it of (Array.isArray(body.items) ? body.items : [])) {
+        const store = String(it.store ?? ""), month = String(it.month ?? "");
+        try {
+          const gr = await fetch(SEISAN_API_URL, { method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" }, body: JSON.stringify({ fn: "sd_apiTransferEx", args: [tk, store, month] }) });
+          const outer: any = JSON.parse(await gr.text()); const t = outer?.result ?? outer;
+          if (!t?.found || !t?.hasSales) { out.push({ store, month, status: "skipped", reason: t?.reason ?? outer?.error ?? "金額を取得できません" }); continue; }
+          const info = { store, month, paid: !!t.paid, transfer: t.transfer, transfer_ex: t.transferEx, tax: Number(t.transfer) - Number(t.transferEx) };
+          if (body.dry) { out.push({ ...info, status: "dry" }); continue; }
+          out.push({ ...info, status: "done", result: await seisanIssued(db, { store, month, transfer: t.transfer, transfer_ex: t.transferEx, tax: info.tax }) });
+        } catch (e) { out.push({ store, month, status: "error", reason: String((e as Error)?.message ?? e) }); }
+      }
+      return json({ success: true, items: out });
+    }
     if (body?.action === "scan") {
       const since = body.since ? new Date(body.since).toISOString() : new Date(Date.now() - 7 * 86400e3).toISOString();
       const limit = Math.min(Number(body.limit) || 10, 30);

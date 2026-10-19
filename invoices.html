@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-19-v149";
+const BUILD_TAG="2026-10-19-v150";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -3561,6 +3561,21 @@ async function mlsLoad_(){
   S.mailSales=(r.ok&&Array.isArray(r.body))?r.body:[];
   S.mls=S.mls||{sel:new Set(),ok:new Set(),res:{},log:""};
 }
+// 2026-10-19: メールで届いた売上入金（承認待ち・要確認）を、売上入金タブの一番上に「何月の何が来ているか」付きで並べ、押すとその承認画面へ飛ぶ
+function mlsBannerHtml_(){
+  const items=(RECEIVABLE_STATE.mailSales||[]).filter(x=>!x.mf_journal_id).sort((a,b)=>String(a.target_year_month||"").localeCompare(String(b.target_year_month||"")));
+  if(!items.length) return "";
+  const row=x=>{ const d=x.journal_draft||{}; const pend=x.current_stage==="ready_for_approval";
+    return `<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:6px 0;border-top:1px solid #f0d9a8">
+      <b style="min-width:70px">${esc((x.target_year_month||"").slice(0,7))}</b>
+      <span style="flex:1;min-width:200px">${esc(d.remark||x.vendor_name||"")}<span style="color:var(--muted);font-size:12px">　${esc(x.vendor_name||"")}　MF: ${esc(d.tenant_id||"")}</span></span>
+      <b>${yen(x.amount)}</b>
+      <span class="invoice-status ${pend?"wait":"err"}">${pend?"🟡 承認待ち":"⚠️ 要確認"}</span>
+      <button class="hq-btn primary" data-mls-jump="${esc(x.id)}">確認して承認 →</button></div>`; };
+  return `<div class="card" style="padding:10px 14px;margin-bottom:10px;background:#fff8e6;border:1px solid #f0b35a">
+    <div style="font-weight:700;margin-bottom:2px">📧 メールで届いた売上入金が ${items.length}件、承認待ちです</div>
+    ${items.map(row).join("")}</div>`;
+}
 function mlsPendingCount_(){ return (RECEIVABLE_STATE.mailSales||[]).filter(x=>!x.mf_journal_id&&x.current_stage==="ready_for_approval").length; }
 function mlsPanelHtml_(){
   const S=RECEIVABLE_STATE, M=S.mls||(S.mls={sel:new Set(),ok:new Set(),res:{},log:""});
@@ -3682,6 +3697,7 @@ function receivableRender(u){
   $("tabbody").innerHTML=`
     <section class="invoice-list active">
       <div id="overdue-alert"></div>
+      ${mlsBannerHtml_()}
       <div class="kpis kpis6">
         <div class="card kpi" style="padding:14px"><small style="color:var(--muted);font-size:9px;display:block">今月入金予定</small><b style="font-size:20px;display:block;margin-top:5px">${kpi.pending.n}件</b><small style="color:var(--muted)">${yen(kpi.pending.amt)}</small></div>
         <div class="card kpi bad" style="padding:14px"><small style="color:var(--muted);font-size:9px;display:block">未入金</small><b style="font-size:20px;display:block;margin-top:5px">${kpi.overdue.n}件</b><small style="color:var(--muted)">${yen(kpi.overdue.amt)}</small></div>
@@ -3741,6 +3757,9 @@ function receivableRender(u){
   $("receivable-corp-filter").onchange=()=>{ RECEIVABLE_STATE.corpFilter=$("receivable-corp-filter").value; receivableRender(u); };
   document.querySelectorAll("[data-receivable-subtab]").forEach(el=>el.onclick=()=>{
     RECEIVABLE_STATE.subTab=el.dataset.receivableSubtab; receivableRender(u);
+  });
+  document.querySelectorAll("[data-mls-jump]").forEach(el=>el.onclick=()=>{
+    const id=el.dataset.mlsJump; RECEIVABLE_STATE.subTab="mailSales"; receivableRender(u); openApprovalModal(u,id);
   });
   wireCashRecon(u);
   overdueAlertRender_();
