@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-19-v148";
+const BUILD_TAG="2026-10-19-v149";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -8781,7 +8781,7 @@ async function receivablePaymentScan(u){
       const items=[]; for(const r of rs) items.push({invoice_id:r.id,vendor_id:await payCounterpartyId(r.source_name||""),vendor_name:r.source_name||"",amount:Number(r.expected_amount)||0,due_date:r.expected_date||monthEnd(r.year_month),method:"in"});
       const a=await mfCall("payment_scan",{tenant_id:t,items,direction:"in",days_before:5,days_after:45});
       if(a.ok&&a.body&&a.body.success) cands.push(...a.body.candidates.map(c=>({...c,tenant:t})));
-      else errs.push(`${t==="nstyle"?"N-Style":"トーホー"}のMF：${(a.body&&a.body.error)||"取得に失敗しました"}`);
+      else errs.push(`${({nstyle:"N-Style",livegate:"LiveGate",sk:"SK"})[t]||"トーホー"}のMF：${(a.body&&a.body.error)||"取得に失敗しました"}`);
     }
     const rowById=new Map(rows.map(r=>[r.id,r]));
     const nm=id=>{ const r=rowById.get(id); return r?`${esc(r.source_name||"—")}（${esc(r.year_month)}${r.store_id?` ${esc(((CORP_STORE_CACHE&&CORP_STORE_CACHE.stores)||[]).find(x=>x.id===r.store_id)?.name||"")}`:""}） 予定 ${yen(Number(r.expected_amount)||0)}`:"（不明）"; };
@@ -8896,7 +8896,7 @@ async function transferPaymentScan(u){
     const items=rs.map(r=>({invoice_id:r.id,vendor_id:r.vendor_id,vendor_name:(r.vendor&&r.vendor.name)||"",amount:Number(r.amount)||0,due_date:r.due_date||"",method:transferMethodKey(r)}));
     const a=await mfCall("payment_scan",{tenant_id:t,items});
     if(a.ok&&a.body&&a.body.success) cands.push(...a.body.candidates.map(c=>({...c,tenant:t})));
-    else errs.push(`${t==="nstyle"?"N-Style":"トーホー"}のMF：${(a.body&&a.body.error)||"取得に失敗しました"}`);
+    else errs.push(`${({nstyle:"N-Style",livegate:"LiveGate",sk:"SK"})[t]||"トーホー"}のMF：${(a.body&&a.body.error)||"取得に失敗しました"}`);
   }
   msg.textContent=errs.join(" / ");
   const rowById=new Map(rows.map(r=>[r.id,r]));
