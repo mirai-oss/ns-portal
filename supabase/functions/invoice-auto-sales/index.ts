@@ -510,7 +510,14 @@ Deno.serve(async (req: Request) => {
           if (!t?.found || !t?.hasSales) { out.push({ store, month, status: "skipped", reason: t?.reason ?? outer?.error ?? "金額を取得できません" }); continue; }
           const info = { store, month, paid: !!t.paid, transfer: t.transfer, transfer_ex: t.transferEx, tax: Number(t.transfer) - Number(t.transferEx) };
           if (body.dry) { out.push({ ...info, status: "dry" }); continue; }
-          out.push({ ...info, status: "done", result: await seisanIssued(db, { store, month, transfer: t.transfer, transfer_ex: t.transferEx, tax: info.tax }) });
+          let pdf: any = undefined;   // with_pdf=true: 精算ダッシュボードから精算書PDFを作り直して受け取り、請求書に添付する
+          if (body.with_pdf) {
+            const pr = await fetch(SEISAN_API_URL, { method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" }, body: JSON.stringify({ fn: "sd_apiGetSettlementPdf", args: [tk, store, month] }) });
+            const po: any = JSON.parse(await pr.text()); const pt = po?.result ?? po;
+            if (!pt?.ok) { out.push({ ...info, status: "error", reason: "精算書PDFを取得できません: " + (pt?.error ?? po?.error ?? "不明") }); continue; }
+            pdf = { file_name: pt.file_name, base64: pt.base64 };
+          }
+          out.push({ ...info, status: "done", result: await seisanIssued(db, { store, month, transfer: t.transfer, transfer_ex: t.transferEx, tax: info.tax, pdf }) });
         } catch (e) { out.push({ store, month, status: "error", reason: String((e as Error)?.message ?? e) }); }
       }
       return json({ success: true, items: out });
