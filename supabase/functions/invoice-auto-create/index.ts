@@ -17,6 +17,7 @@
 //   { secret, action:"scan", since?:ISO, limit?:number, dry_run?:boolean }
 //                                                         … auto_category='invoice_attachment' かつ未処理のメールをまとめて処理（既定=直近48時間）
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { extractZipAttachment } from "../_shared/zip-extract.ts";
 
 const cors: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -194,6 +195,13 @@ async function processEmail(db: any, emailId: string, secret: string, opts: { dr
   const { data: existing } = await db.from("invoices").select("id").eq("email_id", emailId).limit(1);
   if (existing?.length) return markSkipped(db, emailId, "このメールには既に請求書があります（人が作成済み・処理済み）", opts.dryRun);
 
+  // 2026-10-19: 請求書をZIPで送ってくる先（SSS等）に対応。未展開のZIPは、ここで自動展開してから読む（従来は展開前に「PDFなし」で終わり、請求書が作られなかった）
+  if (!opts.dryRun) {
+    const { data: za } = await db.from("invoice_attachments").select("id, email_id, invoice_id, file_name, mime_type, storage_path, size_bytes, zip_extracted_at").eq("email_id", emailId);
+    for (const z of (za ?? []).filter((a: any) => !a.zip_extracted_at && (/\.zip$/i.test(String(a.file_name ?? "")) || String(a.mime_type ?? "").includes("zip")))) {
+      try { await extractZipAttachment(db, z); } catch (e) { console.error("ZIP展開に失敗: " + e); }
+    }
+  }
   const { data: atts } = await db.from("invoice_attachments")
     .select("id, file_name, mime_type, file_hash, ocr_done_at, size_bytes").eq("email_id", emailId).order("created_at");
   const readable = (atts ?? []).filter((a: any) => {
