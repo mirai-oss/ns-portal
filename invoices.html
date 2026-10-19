@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-17-v143";
+const BUILD_TAG="2026-10-19-v144";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -892,6 +892,54 @@ function plfeeFindStoreByName(stores,name){
    ・行の科目・補助・部門・税率は直せる（修正して承認すると新しい版のルールとして保存＝Phase8で有効化）
    ・「承認」でのMF登録・PL反映はPhase8。ここでは差し戻し（理由必須）まで動く
    ============================================================ */
+// ===== 承認画面: 仕訳の明細（借方・貸方）の行を増やす・減らす・金額を直す（2026-10-19・ユーザー要望）=====
+// 借方: 「＋ 借方の行を追加」で行を足せる（店舗・科目・補助・部門・税区分・金額）。×で削除。金額は全行直せる。
+// 貸方: 通常は1行（金額は借方の合計に自動で合わせる）。「＋ 貸方の行を追加」で分けられる（例: 買掛金と未払金に分ける）。貸方の合計＝借方の合計になるまで登録できない。
+// 売上入金（貸方が複数行の下書き）は従来どおり（行の追加なし）。
+function apvExtraCreditRowHtml_(c){
+  return `<tr class="apv-cextra" style="background:var(--bg-soft,#f7f7f5)"><td></td><td colspan="4"><b>貸方</b> <input class="apv-cacc" data-extra="1" list="apv-acc-dl" value="${esc((c&&c.account)||"")}" style="width:110px"> <input class="apv-csub" data-extra="1" value="${esc((c&&c.sub_account)||"")}" placeholder="補助" style="width:140px"></td><td style="text-align:right"><input class="apv-camt" data-extra="1" type="number" value="${Number(c&&c.amount)||0}" style="width:100px;text-align:right;font-weight:700"></td><td><button type="button" class="hq-btn apv-cdel" title="この行を削除" style="padding:0 6px">×</button></td></tr>`;
+}
+function apvAddedDebitRowHtml_(ln,tpl,stores,defStoreId){
+  const rate=tpl?Number(tpl.rate):10;
+  const so=`<option value="">（店舗を選ぶ）</option>`+stores.map(x=>`<option value="${esc(x.id)}" ${x.id===defStoreId?"selected":""}>${esc(x.name)}</option>`).join("");
+  return `<tr data-apv-row="${ln}" data-added="1" data-remark="${esc((tpl&&tpl.remark)||"")}" data-amt0="0" data-net0="" data-rate0="-1">
+    <td>${ln}</td>
+    <td><select class="apv-store" style="max-width:150px">${so}</select><div style="font-size:10px;color:#b45309">追加した行</div></td>
+    <td><input class="apv-acc" data-ln="${ln}" list="apv-acc-dl" value="${esc((tpl&&tpl.account)||"")}" style="width:110px"> <input class="apv-sub" data-ln="${ln}" value="${esc((tpl&&tpl.sub)||"")}" placeholder="補助" style="width:120px"></td>
+    <td><input class="apv-dept" data-ln="${ln}" list="apv-dept-dl" value="${esc((tpl&&tpl.dept)||"")}" style="width:130px"></td>
+    <td><select class="apv-tax" data-ln="${ln}">${[8,10,0].map(t=>`<option value="${t}" ${rate===t?"selected":""}>${t?`課税仕入 ${t}%`:"対象外"}</option>`).join("")}</select></td>
+    <td style="text-align:right"><input class="apv-amt" data-ln="${ln}" type="number" value="0" style="width:100px;text-align:right"></td>
+    <td style="font-size:10px;color:var(--muted)">追加 <button type="button" class="hq-btn apv-del" title="この行を削除" style="padding:0 6px">×</button></td></tr>`;
+}
+// 画面の入力から、借方の行・貸方（主＋追加）を集める
+function apvCollect_(modal,d){
+  const lines=[];
+  modal.querySelectorAll("tr[data-apv-row]").forEach(tr=>{
+    const ln=Number(tr.dataset.apvRow), g=sel=>tr.querySelector(sel); const added=tr.dataset.added==="1";
+    const amount=Math.round(Number(g(".apv-amt")?g(".apv-amt").value:tr.dataset.amt0)||0), rate=Number(g(".apv-tax").value);
+    const o=(d.debit_lines||[]).find(x=>x.line_no===ln); const storeSel=g(".apv-store");
+    const net0=tr.dataset.net0, amt0=Number(tr.dataset.amt0), rate0=Number(tr.dataset.rate0);
+    lines.push({line_no:ln,source_line_id:o&&o.source_line_id,added,store_id:storeSel?(storeSel.value||null):(tr.dataset.storeId||null),
+      store_name:storeSel?((storeSel.options[storeSel.selectedIndex]||{}).text||"").replace(/^（店舗を選ぶ）$/,""):(tr.dataset.storeName||""),
+      remark:tr.dataset.remark||"",amount,net:(!added&&net0!==""&&amount===amt0&&rate===rate0)?Number(net0):null,
+      account:(g(".apv-acc").value||"").trim(),sub:(g(".apv-sub").value||"").trim(),dept:(g(".apv-dept").value||"").trim(),rate,
+      orig:added?{account:"",sub:"",dept:"",rate:-1}:{account:(o&&o.debit.account)||"",sub:(o&&o.debit.sub_account)||"",dept:(o&&o.debit.department)||"",rate:(o&&o.debit.tax)?Number(o.debit.tax.rate):0}});
+  });
+  const main=modal.querySelector(".apv-cmain"); let credit=null;
+  if(main){ const m=sel=>main.querySelector(sel); credit={account:(m(".apv-cacc").value||"").trim(),sub_account:(m(".apv-csub").value||"").trim(),amount:Math.round(Number(m(".apv-camt")?m(".apv-camt").value:(d.credit&&d.credit.amount))||0)}; }
+  const extras=[...modal.querySelectorAll("tr.apv-cextra")].map(tr=>({account:(tr.querySelector(".apv-cacc").value||"").trim(),sub_account:(tr.querySelector(".apv-csub").value||"").trim(),amount:Math.round(Number(tr.querySelector(".apv-camt").value)||0)}));
+  const structureChanged=lines.length!==((d.debit_lines||[]).length)||lines.some(l=>l.added)||extras.length>0;
+  return {lines,credit,extras,structureChanged};
+}
+// 貸借の表示と、主の貸方の金額の自動調整（借方の合計−追加の貸方）
+function apvRecalc_(modal){
+  const bal=modal.querySelector("#apv-bal"); const main=modal.querySelector(".apv-cmain"); if(!main||!main.querySelector(".apv-camt")) return;
+  const debit=[...modal.querySelectorAll(".apv-amt")].reduce((t,x)=>t+(Math.round(Number(x.value)||0)),0);
+  const ex=[...modal.querySelectorAll("tr.apv-cextra .apv-camt")].reduce((t,x)=>t+(Math.round(Number(x.value)||0)),0);
+  const cm=main.querySelector(".apv-camt"); if(cm.dataset.auto==="1") cm.value=Math.max(0,debit-ex);
+  const credit=(Math.round(Number(cm.value)||0))+ex;
+  if(bal) bal.innerHTML=`借方 <b>${yen(debit)}</b>　貸方 <b>${yen(credit)}</b>　${debit===credit?'<span style="color:#15803d">✅ 一致</span>':`<span style="color:#b91c1c">⚠️ 差 ${yen(debit-credit)}（一致しないと登録できません）</span>`}`;
+}
 async function openApprovalModal(u,invoiceId,opt){
   const r=await authed(`/rest/v1/invoices?id=eq.${invoiceId}&select=*,corp:corporations(name),vendor:vendors(name)`);
   const inv=(r.ok&&Array.isArray(r.body)&&r.body[0])||null;
@@ -912,14 +960,16 @@ async function openApprovalModal(u,invoiceId,opt){
   const modal=document.createElement("div");
   modal.className="modal-bg mail-shell"; modal.id="apvModal";
   const ym=(inv.target_year_month||"").slice(0,7);
-  const rowHtml=l=>`<tr data-apv-row="${l.line_no}">
+  const canEditLines=!((d.credit_lines||[]).length);   // 売上入金（貸方が複数行の下書き）は、従来どおり行の追加はできない
+  await ensureCorpStoreCache();
+  const rowHtml=l=>`<tr data-apv-row="${l.line_no}" data-store-id="${esc(l.store_id||"")}" data-store-name="${esc(l.store_name||"")}" data-remark="${esc(l.remark||"")}" data-amt0="${Number(l.debit.amount)||0}" data-net0="${l.debit.net_amount!=null?Number(l.debit.net_amount):""}" data-rate0="${l.debit.tax?Number(l.debit.tax.rate):0}">
     <td>${l.line_no}</td>
     <td>${esc(l.store_name||"—")}<div style="font-size:10px;color:var(--muted)">${esc(routeOf(l.store_id))}</div></td>
     <td><input class="apv-acc" data-ln="${l.line_no}" list="apv-acc-dl" value="${esc(l.debit.account||"")}" style="width:110px"> <input class="apv-sub" data-ln="${l.line_no}" value="${esc(l.debit.sub_account||"")}" placeholder="補助" style="width:120px"></td>
     <td><input class="apv-dept" data-ln="${l.line_no}" list="apv-dept-dl" value="${esc(l.debit.department||"")}" style="width:130px"></td>
     <td><select class="apv-tax" data-ln="${l.line_no}">${[8,10,0].map(t=>`<option value="${t}" ${(l.debit.tax?Number(l.debit.tax.rate):0)===t?"selected":""}>${t?`課税仕入 ${t}%`:"対象外"}</option>`).join("")}</select></td>
-    <td style="text-align:right">${yen(l.debit.amount)}</td>
-    <td style="font-size:10px;color:var(--muted)">${esc({ledger:"元帳",approved:"承認",corrected:"修正",proposed:"提案"}[l.rule&&l.rule.source]||"")} v${l.rule?l.rule.version:""}</td></tr>`;
+    <td style="text-align:right">${canEditLines?`<input class="apv-amt" data-ln="${l.line_no}" type="number" value="${Number(l.debit.amount)||0}" style="width:100px;text-align:right">`:yen(l.debit.amount)}</td>
+    <td style="font-size:10px;color:var(--muted)">${esc({ledger:"元帳",approved:"承認",corrected:"修正",proposed:"提案"}[l.rule&&l.rule.source]||"")} v${l.rule?l.rule.version:""}${canEditLines?' <button type="button" class="hq-btn apv-del" title="この行を削除" style="padding:0 6px">×</button>':""}</td></tr>`;
   modal.innerHTML=`<div class="modal" style="max-width:1100px">
     <div class="mhead"><h2>✅ 承認確認（${esc(inv.vendor_name||(inv.vendor&&inv.vendor.name)||"")}・${esc(ym)}）</h2><button class="linkbtn" id="apvClose" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:13px">閉じる ×</button></div>
     <div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.3fr);gap:14px">
@@ -944,8 +994,10 @@ async function openApprovalModal(u,invoiceId,opt){
       <div style="overflow-x:auto"><table class="invoice-table" style="font-size:12px"><thead><tr><th>#</th><th>店舗／反映先</th><th>借方（科目／補助）</th><th>部門</th><th>税区分</th><th style="text-align:right">金額（税込）</th><th>ルール</th></tr></thead><tbody>
         ${(d.debit_lines||[]).map(rowHtml).join("")}
         ${(d.credit_lines||[]).map(c=>`<tr style="background:var(--bg-soft,#f7f7f5)"><td>貸${c.line_no}</td><td style="font-size:11px;color:var(--muted)">${esc(c.remark||"")}</td><td><b>貸方</b> ${esc(c.account)}${c.sub_account?"／"+esc(c.sub_account):""}</td><td>${esc(c.department||"")}</td><td>${esc(c.tax&&c.tax.name||"")}</td><td style="text-align:right">${yen(c.amount)}</td><td></td></tr>`).join("")}
-        ${d.credit?`<tr style="background:var(--bg-soft,#f7f7f5)"><td></td><td colspan="4"><b>貸方</b> <input class="apv-cacc" list="apv-acc-dl" value="${esc(d.credit.account||"")}" style="width:110px"> <input class="apv-csub" value="${esc(d.credit.sub_account||"")}" placeholder="補助" style="width:140px"></td><td style="text-align:right"><b>${d.credit.amount!=null?yen(d.credit.amount):"—"}</b></td><td></td></tr>`:""}
+        ${d.credit?`<tr class="apv-cmain" style="background:var(--bg-soft,#f7f7f5)"><td></td><td colspan="4"><b>貸方</b> <input class="apv-cacc" list="apv-acc-dl" value="${esc(d.credit.account||"")}" style="width:110px"> <input class="apv-csub" value="${esc(d.credit.sub_account||"")}" placeholder="補助" style="width:140px"></td><td style="text-align:right">${canEditLines?`<input class="apv-camt" type="number" data-auto="1" value="${Number(d.credit.amount)||0}" style="width:100px;text-align:right;font-weight:700">`:`<b>${d.credit.amount!=null?yen(d.credit.amount):"—"}</b>`}</td><td></td></tr>`:""}
+        ${canEditLines?(d.extra_credits||[]).map(apvExtraCreditRowHtml_).join(""):""}
       </tbody></table></div>
+      ${canEditLines?`<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:6px"><button type="button" class="hq-btn" id="apv-add-d">＋ 借方の行を追加</button><button type="button" class="hq-btn" id="apv-add-c">＋ 貸方の行を追加</button><span id="apv-bal" style="font-size:12px"></span></div>`:""}
       ${(d.adjustments||[]).length?`<div style="font-size:11px;color:var(--muted)">1円調整: ${d.adjustments.map(a=>`行${a.line_no} ${a.amount>0?"+":""}${a.amount}円`).join("、")}</div>`:""}
       <datalist id="apv-acc-dl"></datalist><datalist id="apv-dept-dl"></datalist><datalist id="apv-sub-dl"></datalist>
     </div>
@@ -969,6 +1021,38 @@ async function openApprovalModal(u,invoiceId,opt){
   pushNav({modal:true});
   modal.onclick=e=>{ if(e.target===modal) history.back(); };
   $("apvClose").onclick=()=>history.back();
+  // 明細の行の追加・削除・金額の修正（借方・貸方）
+  if(canEditLines&&$("apv-add-d")){
+    const stores=((CORP_STORE_CACHE&&CORP_STORE_CACHE.stores)||[]).slice().sort((a,b)=>String(a.name).localeCompare(String(b.name),"ja"));
+    const markEdited=()=>{ const e=$("apv-edited"); if(e) e.style.display="block"; };
+    const fixDelButtons=()=>{ const n=modal.querySelectorAll("tr[data-apv-row]").length; modal.querySelectorAll(".apv-del").forEach(b=>{ b.style.visibility=n>1?"visible":"hidden"; }); };
+    $("apv-add-d").onclick=()=>{
+      const rows=[...modal.querySelectorAll("tr[data-apv-row]")]; const last=rows[rows.length-1];
+      const ln=Math.max(...rows.map(r=>Number(r.dataset.apvRow)),0)+1;
+      const tpl=last?{account:last.querySelector(".apv-acc").value,sub:last.querySelector(".apv-sub").value,dept:last.querySelector(".apv-dept").value,rate:last.querySelector(".apv-tax").value,remark:last.dataset.remark}:null;
+      last.insertAdjacentHTML("afterend",apvAddedDebitRowHtml_(ln,tpl,stores,last&&last.dataset.storeId));
+      markEdited(); fixDelButtons(); apvRecalc_(modal);
+    };
+    $("apv-add-c").onclick=()=>{
+      const main=modal.querySelector(".apv-cmain"); const ex=modal.querySelectorAll("tr.apv-cextra"); const lastC=ex.length?ex[ex.length-1]:main;
+      lastC.insertAdjacentHTML("afterend",apvExtraCreditRowHtml_({account:main.querySelector(".apv-cacc").value,sub_account:main.querySelector(".apv-csub").value,amount:0}));
+      markEdited(); apvRecalc_(modal);
+    };
+    modal.addEventListener("click",e=>{
+      const del=e.target.closest(".apv-del"), cdel=e.target.closest(".apv-cdel");
+      if(del){ if(modal.querySelectorAll("tr[data-apv-row]").length>1){ del.closest("tr").remove(); markEdited(); fixDelButtons(); apvRecalc_(modal); } }
+      else if(cdel){ cdel.closest("tr").remove(); markEdited(); apvRecalc_(modal); }
+    });
+    modal.addEventListener("input",e=>{
+      const t=e.target; if(!t||!t.classList) return;
+      if(t.classList.contains("apv-camt")&&!t.dataset.extra) t.dataset.auto="0";   // 主の貸方の金額を直接直したら、自動調整をやめる
+      if(t.classList.contains("apv-amt")||t.classList.contains("apv-camt")) apvRecalc_(modal);
+      if(t.matches&&t.matches(".apv-acc,.apv-sub,.apv-dept,.apv-tax,.apv-cacc,.apv-csub,.apv-amt,.apv-camt,.apv-store")) markEdited();
+    });
+    // 追加した行の補助科目にも、MFの補助科目の候補を出す
+    modal.addEventListener("focusin",e=>{ const t=e.target; if(t&&t.matches&&t.matches(".apv-sub,.apv-csub")) apvSubFill(t); });
+    fixDelButtons(); apvRecalc_(modal);
+  }
   // 2026-10-17（TK-216④）納品書の追加。プレコフーズなど「納品書がインボイス」の取引先は、納品書を証憑として添付する（MF登録時に請求書の全添付が証憑になる）
   if($("apv-add-dn")){
     $("apv-add-dn").onclick=()=>$("apv-dn-file").click();
@@ -1001,18 +1085,24 @@ async function openApprovalModal(u,invoiceId,opt){
   $("apv-save").onclick=async()=>{
     const msg=$("apv-msg"); msg.className="err"; msg.textContent="保存中…";
     const d2=JSON.parse(JSON.stringify(d)); delete d2._credit0;
-    let sum=0;
-    d2.debit_lines=(d.debit_lines||[]).map(l=>{
-      const q=sel=>modal.querySelector(`${sel}[data-ln="${l.line_no}"]`);
-      const acc=(q(".apv-acc").value||"").trim(), sub=(q(".apv-sub").value||"").trim(), dept=(q(".apv-dept").value||"").trim(), rate=Number(q(".apv-tax").value);
-      sum+=Number(l.debit.amount)||0;
-      return {...l,debit:{...l.debit,account:acc,sub_account:sub,department:dept,tax:{kind:"purchase",rate}}};
+    const col=apvCollect_(modal,d);
+    // 借方: 画面の行（追加・削除・金額の修正を含む）で作り直す。既存の行は元の情報（元の明細・ルールなど）を引き継ぐ
+    d2.debit_lines=col.lines.map(l=>{
+      const o=(d.debit_lines||[]).find(x=>x.line_no===l.line_no);
+      const base=o?{...o}:{line_no:l.line_no,source_line_id:null,remark:l.remark||"",rule:{source:"corrected",version:0}};
+      return {...base,store_id:l.store_id||null,store_name:l.store_name||null,debit:{...(o?o.debit:{}),account:l.account,sub_account:l.sub,department:l.dept,tax:{kind:"purchase",rate:l.rate},amount:l.amount,net_amount:l.net}};
     });
-    const ca=modal.querySelector(".apv-cacc"), cs=modal.querySelector(".apv-csub");
-    if(d2.credit&&ca) d2.credit={...d2.credit,account:(ca.value||"").trim(),sub_account:((cs&&cs.value)||"").trim()};
+    const sum=col.lines.reduce((t,l)=>t+l.amount,0);
+    if(d2.credit&&col.credit){ d2.credit={...d2.credit,account:col.credit.account,sub_account:col.credit.sub_account,amount:col.credit.amount}; }
+    d2.extra_credits=col.extras.filter(x=>x.account||x.amount);
+    const creditSum=(d2.credit?Number(d2.credit.amount):0)+d2.extra_credits.reduce((t,x)=>t+(Number(x.amount)||0),0);
     if(d2.debit_lines.some(l=>!l.debit.account)){ msg.textContent="借方の勘定科目が空の行があります"; return; }
+    if(col.lines.some(l=>l.added&&!l.store_id)){ msg.textContent="追加した行の店舗を選んでください"; return; }
     if(d2.credit&&!d2.credit.account){ msg.textContent="貸方の勘定科目を入力してください"; return; }
-    if(d2.credit&&Number(d2.credit.amount)!==sum){ msg.textContent=`借方合計（${yen(sum)}）と貸方（${yen(d2.credit.amount)}）が一致しません`; return; }
+    if(d2.extra_credits.some(x=>!x.account)){ msg.textContent="追加した貸方の勘定科目を入力してください"; return; }
+    if(d2.credit&&creditSum!==sum){ msg.textContent=`借方合計（${yen(sum)}）と貸方合計（${yen(creditSum)}）が一致しません`; return; }
+    d2.totals={...(d.totals||{}),debit:sum,credit:creditSum};
+    if(col.structureChanged) d2.structure_changed=true;
     d2.status="proposed"; d2.problems=[]; d2.edited_by_human=true;
     d2.warnings=[...(d.warnings||[]).filter(w=>!/人が修正/.test(w)),"人が修正した内容です。承認（MF登録）すると、この内容が、この取引先の次回からの自動仕分けとして保存されます"];
     const now=new Date().toISOString();
@@ -1119,6 +1209,7 @@ async function apvRun_(inv,d,lines,o){
     const salesTaxFor=rate=>{ if(!rate) return (taxes.find(t=>/対象外/.test(t.name))||{}).id||null;
       const cs=taxes.filter(t=>/課税売上/.test(t.name)&&new RegExp(`${rate}\\s*%`).test(t.name)&&!/旧|非適格|返還|貸倒/.test(t.name)); const pick=(rate===8?cs.find(t=>/軽減/.test(t.name)):null)||cs[0]; return pick?pick.id:null; };
     const mfCredits=[]; let cl=null; let creditTotal=0;
+    const extraCr=(!isSales&&Array.isArray(d.extra_credits))?d.extra_credits:[]; const extraMf=[];
     if(isSales){
       for(const c of cls){
         const ca=idx.map.get(labelOf(c.account,c.sub_account)); if(!ca) missing.push(`貸方${c.line_no}: 科目「${labelOf(c.account,c.sub_account)}」`);
@@ -1126,17 +1217,24 @@ async function apvRun_(inv,d,lines,o){
         const rate=c.tax?Number(c.tax.rate):0; const ct=salesTaxFor(rate); if(!ct) missing.push(`貸方${c.line_no}: 税区分（${rate?`課税売上 ${rate}%`:"対象外"}）`);
         mfCredits.push({c,ca,cd,ct}); creditTotal+=Number(c.amount);
       }
-    } else { cl=idx.map.get(labelOf(d.credit.account,d.credit.sub_account)); if(!cl) missing.push(`貸方「${labelOf(d.credit.account,d.credit.sub_account)}」`); creditTotal=Number(d.credit.amount); }
+    } else {
+      cl=idx.map.get(labelOf(d.credit.account,d.credit.sub_account)); if(!cl) missing.push(`貸方「${labelOf(d.credit.account,d.credit.sub_account)}」`); creditTotal=Number(d.credit.amount);
+      // 追加の貸方（承認画面で「＋ 貸方の行を追加」したもの）
+      for(const [i,x] of extraCr.entries()){ const ca=idx.map.get(labelOf(x.account,x.sub_account)); if(!ca) missing.push(`追加の貸方${i+1}: 科目「${labelOf(x.account,x.sub_account)}」`); if(!(Number(x.amount)>0)) missing.push(`追加の貸方${i+1}: 金額`); extraMf.push({x,ca}); creditTotal+=Number(x.amount)||0; }
+    }
     if(missing.length) return fail("MFに見つからない項目があるため、登録していません:<br>・"+missing.map(esc).join("<br>・")+"<br>（行の科目・部門などを直すか、MF側で作成してください）");
     const total=lines.reduce((t,l)=>t+l.amount,0);
-    if(total!==creditTotal) return fail(`借方合計（${yen(total)}）と貸方（${yen(creditTotal)}）が一致しません。下書きを作り直してください。`);
+    if(total!==creditTotal) return fail(`借方合計（${yen(total)}）と貸方合計（${yen(creditTotal)}）が一致しません（差 ${yen(total-creditTotal)}）。${o.structureChanged||lines.some(l=>l.added)?"画面の金額を直して、借方と貸方の合計を合わせてください。":"下書きを作り直してください。"}`);
     if(dry) return {ok:true,dry:true,total,html:`✅ 登録前チェックOK（登録はしていません）: MFの科目・部門・税区分がすべて見つかり、借方${yen(total)}＝貸方です。`};
     const reflect=!!o.reflect;
     if(o.confirmFn&&!o.confirmFn({n:lines.length,total,date:d.transaction_date,reflect})) return {ok:false,cancelled:true,html:""};
     say("MFへ登録中…");
     const branches=mfLines.map(m=>({debit:{account_id:m.dl.account_id,sub_account_id:m.dl.sub_account_id||undefined,value:m.l.amount},department_id:m.dep?m.dep.id:undefined,tax_id:m.tid,remark:m.l.remark||undefined}));
     if(isSales) mfCredits.forEach(m=>branches.push({credit:{account_id:m.ca.account_id,sub_account_id:m.ca.sub_account_id||undefined,value:Number(m.c.amount)},credit_department_id:m.cd?m.cd.id:undefined,credit_tax_id:m.ct,remark:m.c.remark||d.remark||undefined}));
-    else branches.push({credit:{account_id:cl.account_id,sub_account_id:cl.sub_account_id||undefined,value:total},remark:d.remark||undefined});
+    else{
+      branches.push({credit:{account_id:cl.account_id,sub_account_id:cl.sub_account_id||undefined,value:Number(d.credit.amount)},remark:d.remark||undefined});
+      extraMf.forEach(m=>branches.push({credit:{account_id:m.ca.account_id,sub_account_id:m.ca.sub_account_id||undefined,value:Number(m.x.amount)},remark:d.remark||undefined}));
+    }
     const {ok,body:j}=await perfTimed("仕訳登録",()=>mfCall("create",{invoice_id:inv.id,tenant_id:d.tenant_id,branches,transaction_date:d.transaction_date,remark:d.remark||inv.vendor_name||"",attach_files:true,
       debit_account_names:mfLines.map(m=>labelOf(m.l.account,m.l.sub))}));
     if(!ok) return fail("MF登録に失敗しました: "+esc((j&&j.error)||"")+"<br>（何も登録されていません。内容を直してもう一度お試しください）");
@@ -1144,10 +1242,12 @@ async function apvRun_(inv,d,lines,o){
     // 処理の段階・承認の記録
     await authed(`/rest/v1/invoices?id=eq.${inv.id}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({current_stage:isSales?"completed":"payment_waiting",blocked_reason:null,stage_updated_at:new Date().toISOString()})});
     const credEdited=!!(d.credit&&d._credit0&&(d.credit.account!==d._credit0.account||(d.credit.sub_account||"")!==d._credit0.sub_account));
-    const edited=credEdited||lines.some(l=>l.account!==l.orig.account||l.sub!==l.orig.sub||l.dept!==l.orig.dept||l.rate!==l.orig.rate);
+    const edited=credEdited||!!o.structureChanged||lines.some(l=>l.account!==l.orig.account||l.sub!==l.orig.sub||l.dept!==l.orig.dept||l.rate!==l.orig.rate);
     await authed("/rest/v1/rpc/invoice_add_comment",{method:"POST",body:JSON.stringify({p_email_id:inv.email_id||null,p_invoice_id:inv.email_id?null:inv.id,p_body:`【承認】MF登録（伝票番号${j.journal_number??"-"}）${edited?"・内容を修正して承認":""}`})});
     // 修正して承認 → 新しい版のルールとして保存（行ごとに内容が同じ場合のみ）
-    if(edited||d.status==="proposed"){ // 2026-10-14: 初回の提案（行ルール無し）を承認したら、そのまま行ルールとして保存する（次回から自動）
+    if(o.structureChanged&&(edited||d.status==="proposed")){
+      results.push("②行を増やした・減らした、または貸方を分けたため、行ルールの更新は行っていません（この請求書だけの内容です）");
+    } else if(edited||d.status==="proposed"){ // 2026-10-14: 初回の提案（行ルール無し）を承認したら、そのまま行ルールとして保存する（次回から自動）
       const first=lines[0]; const same=lines.every(l=>l.account===first.account&&l.sub===first.sub);
       const vname=(inv.vendor&&inv.vendor.name)||inv.vendor_name||"";
       if(same&&inv.vendor_id){
@@ -1168,15 +1268,16 @@ async function apvRun_(inv,d,lines,o){
 async function apvApprove_(u,inv,d,modal,dry){
   const msg=$("apv-msg"), btn=$("apv-approve"); msg.className="err"; msg.textContent="";
   btn.disabled=true;
-  const lines=(d.debit_lines||[]).map(l=>{
-    const q=sel=>modal.querySelector(`${sel}[data-ln="${l.line_no}"]`);
-    return {line_no:l.line_no,store_id:l.store_id,store_name:l.store_name,remark:l.remark,amount:l.debit.amount,net:l.debit.net_amount,
-      account:(q(".apv-acc").value||"").trim(),sub:(q(".apv-sub").value||"").trim(),dept:(q(".apv-dept").value||"").trim(),rate:Number(q(".apv-tax").value),
-      orig:{account:l.debit.account||"",sub:l.debit.sub_account||"",dept:l.debit.department||"",rate:l.debit.tax?Number(l.debit.tax.rate):0}};
-  });
-  const ca0=modal.querySelector(".apv-cacc"), cs0=modal.querySelector(".apv-csub");
-  if(ca0&&d.credit) d.credit={...d.credit,account:(ca0.value||"").trim(),sub_account:((cs0&&cs0.value)||"").trim()};
-  const r=await apvRun_(inv,d,lines,{dry,reflect:!!($("apv-reflect")&&$("apv-reflect").checked),say:x=>{ msg.textContent=x; },
+  const col=apvCollect_(modal,d); const lines=col.lines;
+  if(col.credit&&d.credit) d.credit={...d.credit,account:col.credit.account,sub_account:col.credit.sub_account,amount:col.credit.amount};
+  d.extra_credits=col.extras.filter(x=>x.account||x.amount);   // 追加の貸方（通常は無し）
+  if(lines.some(l=>!l.account)){ btn.disabled=false; msg.className="err"; msg.textContent="借方の勘定科目が空の行があります"; return; }
+  if(lines.some(l=>l.added&&!l.store_id)){ btn.disabled=false; msg.className="err"; msg.textContent="追加した行の店舗を選んでください（PL・精算書への反映に使います）"; return; }
+  // 追加した行の店舗が、PLか精算書かを、請求書の宛先法人と対象月の運営会社から決める（invoice-checkと同じ判定）
+  { const routes=((inv.checks&&inv.checks.routes)||[]).slice(); await ensureCorpStoreCache();
+    for(const l of lines.filter(x=>x.added&&x.store_id)){ if(routes.some(r=>r.store_id===l.store_id)) continue; const st=(CORP_STORE_CACHE.stores||[]).find(x=>x.id===l.store_id); routes.push({store_id:l.store_id,store_name:l.store_name,route:(st&&plfeeSeisanRoute(st,inv.corporation_id,inv.target_year_month)==="seisan")?"seisan":"pl"}); }
+    inv.checks={...(inv.checks||{}),routes}; }
+  const r=await apvRun_(inv,d,lines,{dry,structureChanged:col.structureChanged,reflect:!!($("apv-reflect")&&$("apv-reflect").checked),say:x=>{ msg.textContent=x; },
     confirmFn:c=>confirm(`MFに仕訳を登録します（${c.n}行・${yen(c.total)}・計上日 ${c.date}）。\n${c.reflect?"登録後、PL・広告費・精算書にも反映します（税抜）。":"PL・広告費・精算書への反映は行いません。"}\n\n一度登録すると、取り消しはMF側での対応になります。よろしいですか？`)});
   if(r.cancelled){ btn.disabled=false; return; }
   if(!r.ok){ msg.className="err"; msg.innerHTML=r.html; btn.disabled=false; return; }
