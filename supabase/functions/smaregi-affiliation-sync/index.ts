@@ -14,7 +14,7 @@
 //     一致しなければ隔離してLarkへ（人が「この店舗」or「新規店舗」を選ぶ）。自動登録できたとき、その店舗の「事業所を作成してください」タスクは自動完了にする。
 //   - 管理システムに店舗が増えたのにスマレジに事業所が無い → 本部タスク「スマレジ・タイムカードに事業所『○○』を作成してください（契約: ○○）」を1回だけ自動発行。
 //
-// 呼び出し: POST { mode?: "report"|"apply"（既定report）, contract_id?: string, user_id?: string（その1人だけ。初回の立会い確認用）, allow_empty?: boolean（user_id指定時のみ。管理システムの所属が0件のとき、スマレジの所属も全部外す）, force?: boolean }
+// 呼び出し: POST { mode?: "report"|"apply"（既定report）, contract_id?: string, user_id?: string（その1人だけ。初回の立会い確認用）, allow_empty?: boolean（user_id指定時のみ。管理システムの所属が0件のとき、スマレジの所属も全部外す）, cutover_apply?: boolean（運営変更の後始末だけ実行する。mode=reportでも）, force?: boolean }
 //   report=試行（スマレジにも user_stores にも書かない。同期ログとLarkだけ）／apply=実際に反映
 // 認可: service_role直呼び、または CEO/HQ のJWT。
 // 応答は件数のみ（公開リポジトリのActionsログに氏名・店舗名を残さない）。名前を含む詳細はLark(社内)と staff_store_sync_log にだけ出す。
@@ -166,6 +166,63 @@ Deno.serve(async (req) => {
         for (const sm of newOnes) {
           if (storeMap[sm.id]) continue; // 自動で対応づけた分は上で通知済み
           larkLines.push(`🆕 ${label}: スマレジに新しい事業所「${sm.name}」(ID ${sm.id}) ができましたが、管理システムの店舗と対応がありません。店舗を選ぶか新規店舗として作成してください（それまでこの事業所の所属は同期しません）`);
+        }
+
+        // ---- 3.0) 運営変更の後始末（11/1以降に動く。店舗の対応の期間が終わった後だけ働く）----
+        //   X1: 対応の期間が終わった事業所（例: トーホーの黒霧屋＝10/31まで）に、まだ所属している「有効な契約リンクの人」（兼務で残る人）の所属を外す
+        //   X2: 契約リンクが終わった（effective_to＜今日）のに、スマレジ側でまだ打刻ONのスタッフ（移籍した人のトーホー側）の打刻をOFFにする
+        //   どちらも「直近31日以内に終わったもの」だけが対象。管理システムのアカウント(users)・所属店舗(user_stores)は触らない
+        //   実行は mode=apply または cutover_apply=true のときだけ（それ以外は試行＝ログとLarkのみ）
+        {
+          const cutApply = apply || body.cutover_apply === true;
+          const since = new Date(Date.now() + 9 * 3600 * 1000 - 31 * 86400000).toISOString().slice(0, 10);
+          const { data: mps } = await sb.from("store_external_mappings").select("external_store_id,store_id,corporation_hint,effective_to,is_active")
+            .eq("source_system", "smaregi_timecard").lt("effective_to", today).gte("effective_to", since);
+          const expiredSm = new Set<string>((mps ?? []).filter((m: any) => m.is_active !== false && (m.corporation_hint ? m.corporation_hint === c.corporation_hint : c.is_default)).map((m: any) => String(m.external_store_id)));
+          const activeLinks = await loadLinks(sb, c.contract_id, today, today);
+          const activeStaff = new Map<string, string>(); activeLinks.forEach((l: any) => activeStaff.set(String(l.smaregi_staff_id), l.user_id));
+          const { data: nmU } = activeLinks.length ? await sb.from("users").select("id,name").in("id", activeLinks.map((l: any) => l.user_id)) : { data: [] as any[] };
+          const nmX: Record<string, string> = {}; (nmU ?? []).forEach((r: any) => { nmX[r.id] = r.name; });
+          for (const sid of expiredSm) {
+            const sname = smStoreList.find((x) => x.id === sid)?.name ?? sid;
+            for (const [staffId, set] of staffStores) {
+              if (!set.has(sid) || !activeStaff.has(staffId)) continue;
+              const uid = activeStaff.get(staffId)!;
+              try {
+                if (cutApply) {
+                  const r = await tcApi(c.contract_id, token, `/staffs/${staffId}/staff_stores/${encodeURIComponent(sid)}`, { method: "DELETE" });
+                  if (!r.ok) throw new Error(`所属解除に失敗(${r.status}): ${(await r.text()).slice(0, 120)}`);
+                  set.delete(sid);
+                }
+                cs.retired_memberships = (cs.retired_memberships ?? 0) + 1;
+                await log(c.contract_id, uid, "push", { removed: [sname], reason: "運営変更: 店舗の対応期間が終了", applied: cutApply });
+                larkLines.push(`${cutApply ? "🔚" : "（試行）"} ${label}: ${nmX[uid] ?? uid}さんの「${sname}」の所属をスマレジから外しました（この契約での運営が終わったため）`);
+              } catch (e) {
+                cs.errors++; await log(c.contract_id, uid, "error", { reason: String((e as Error).message ?? e).slice(0, 200) });
+              }
+            }
+          }
+          const { data: closed } = await sb.from("employee_smaregi_links").select("user_id,smaregi_staff_id,effective_to,users(name,is_active)")
+            .eq("contract_id", c.contract_id).lt("effective_to", today).gte("effective_to", since);
+          for (const l of closed ?? []) {
+            if ((l as any).users?.is_active === false) continue; // 退職（アカウント停止）の人は毎朝の退職処理が担当
+            const stf = String((l as any).smaregi_staff_id);
+            try {
+              const gr = await tcApi(c.contract_id, token, `/staffs/${stf}`);
+              const gj = await gr.json().catch(() => null);
+              if (!gr.ok) throw new Error(`従業員を取得できません(${gr.status})`);
+              if (String(gj?.activeFlag ?? "0") !== "1") continue; // 既に打刻OFF
+              if (cutApply) {
+                const ar = await tcApi(c.contract_id, token, `/staffs/${stf}/active`, { method: "PUT", body: JSON.stringify({ activeFlag: false }) });
+                if (!ar.ok) throw new Error(`打刻OFFに失敗(${ar.status})`);
+              }
+              cs.deactivated = (cs.deactivated ?? 0) + 1;
+              await log(c.contract_id, (l as any).user_id, "push", { removed: [], reason: "契約終了日を過ぎたため打刻をOFF（移籍）", applied: cutApply });
+              larkLines.push(`${cutApply ? "⏹" : "（試行）"} ${label}: ${(l as any).users?.name ?? ""}さんのこの契約での打刻をOFFにしました（契約終了日 ${String((l as any).effective_to).slice(0, 10)}）`);
+            } catch (e) {
+              cs.errors++; await log(c.contract_id, (l as any).user_id, "error", { reason: String((e as Error).message ?? e).slice(0, 200) });
+            }
+          }
         }
 
         // ---- 3) 人ごとの3点比較 ----

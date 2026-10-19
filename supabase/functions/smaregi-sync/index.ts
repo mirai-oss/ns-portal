@@ -474,7 +474,11 @@ Deno.serve(async (req) => {
       const pushed: any[] = [];
       for (const t of pushTargets) {
         const token = await getToken(t.contract);
-        const res = await api(t.contract, token, `/staffs/${t.staffId}`, { method: "PATCH", body: JSON.stringify(patch) });
+        // 入社日は契約ごとに違う（新契約の入社日は契約変更の開始日）ため、既定の契約以外へは送らない
+        const body2: Record<string, unknown> = { ...patch };
+        if (!allContracts.find((x) => x.contract_id === t.contract)?.is_default) delete body2.hireDate;
+        if (!Object.keys(body2).length) { pushed.push({ contract: t.contract.slice(-3), staffId: t.staffId }); continue; }
+        const res = await api(t.contract, token, `/staffs/${t.staffId}`, { method: "PATCH", body: JSON.stringify(body2) });
         const j = await res.json().catch(() => ({}));
         if (!res.ok) return json({ ok: false, contract: t.contract.slice(-3), status: res.status, error: j }, 500);
         pushed.push({ contract: t.contract.slice(-3), staffId: t.staffId });
@@ -531,6 +535,13 @@ Deno.serve(async (req) => {
       if (prof.postal_code) payload.postCode = String(prof.postal_code).slice(0, 10);
       if (prof.address) payload.address = String(prof.address).slice(0, 200);
       if (prof.hire_date) payload.hireDate = prof.hire_date;
+      // 他契約（既定以外）への入社登録は、契約変更（移籍・兼務追加）の開始日を入社日にする（例: LiveGateは2026-11-01）。
+      // プロフィールの入社日はトーホー入社時のものなので、そのまま送ると新契約の入社日が過去になるため
+      if (!IS_DEFAULT) {
+        const { data: chg } = await sb.from("hr_change_requests").select("effective_date").eq("user_id", uid).eq("to_contract_id", C)
+          .eq("status", "approved").neq("sync_status", "synced").order("created_at", { ascending: false }).limit(1).maybeSingle();
+        if (chg?.effective_date) payload.hireDate = String(chg.effective_date).slice(0, 10);
+      }
 
       // v2.6.7-1: 性別（未入力ならスマレジ側の既定「未選択」）
       const genderMap: Record<string, string> = { male: "0", female: "1", none: "9" };
