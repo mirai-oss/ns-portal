@@ -121,7 +121,7 @@ Deno.serve(async (req: Request) => {
   const uc = userClient(req);
   // 2026-10-14: zero_orphan（孤立したPLシート行を0円にする・管理用）だけは、サーバー間の共有シークレットでも呼べる
   let bySecret = false;
-  if (action === "zero_orphan" && body?.secret) {
+  if ((action === "zero_orphan" || action === "retry_sheet_sync" || action === "rebuild_pl_rows") && body?.secret) {
     const { data: sr } = await svc().from("app_secrets").select("value").eq("key", "invoice_intake_secret").maybeSingle();
     bySecret = !!sr?.value && body.secret === sr.value;
   }
@@ -131,6 +131,67 @@ Deno.serve(async (req: Request) => {
   }
 
   try {
+    // 2026-10-19新設: 請求書由来のPL自動行の作り直し（書き込みの重なりで補助科目+請求書IDが別行のものになった行の修復）。
+    //   body: { secret, action:"rebuild_pl_rows", months:["2026-08",...], dry?:true }。正しい内容は invoice_pl_reflections（direct）から作る。
+    //   dry=true は書き込まず、取り除く行・入れる行・店舗×科目ごとの合計の差を返す。実行すると、成功した反映の同期エラー表示も消す
+    if (action === "rebuild_pl_rows") {
+      const db = svc();
+      const months: string[] = (Array.isArray(body?.months) && body.months.length ? body.months : ["2026-08", "2026-09", "2026-10"]).map(String);
+      const { data: all } = await db.from("invoice_pl_reflections").select("id, invoice_id, account_name, sub_account_name, year_month, allocations, reflection_route").eq("reflection_route", "direct");
+      const rows: any[] = []; const idSet = new Set<string>(); const reflIds: string[] = [];
+      for (const r of all ?? []) {
+        idSet.add(String(r.invoice_id));
+        if (!months.includes(String(r.year_month).slice(0, 7))) continue;
+        reflIds.push(r.id);
+        for (const a of (r.allocations ?? [])) if (Number(a.amount) > 0) rows.push({ ym: String(r.year_month).slice(0, 7), store: a.store_name, account: r.account_name, sub: r.sub_account_name || "", amount: Number(a.amount), source: r.invoice_id });
+      }
+      const tk = Deno.env.get("AD_COST_WRITE_TOKEN"); if (!tk) return json({ error: "AD_COST_WRITE_TOKEN が未設定です" }, 500);
+      let text = "", j: any = null;
+      for (let attempt = 1; attempt <= 4 && !j; attempt++) {
+        const res = await fetch(DASH_API_URL, { method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" }, body: JSON.stringify({ action: "repairPlAutoRows", token: tk, months, invoice_ids: [...idSet], rows, dry: !!body?.dry }) });
+        text = await res.text(); try { j = JSON.parse(text); } catch { j = null; await new Promise((rs) => setTimeout(rs, 3000 * attempt)); }
+      }
+      if (!j) return json({ error: "GASの応答を読めませんでした: " + text.slice(0, 200) }, 502);
+      if (!j.ok) return json({ error: j.error || "GAS側で失敗しました", detail: j }, 502);
+      if (body?.dry) {
+        const sum = (arr: any[]) => { const m = new Map<string, number>(); for (const x of arr) { const k = `${x.ym}|${x.store}|${x.account}`; m.set(k, (m.get(k) ?? 0) + Number(x.amount)); } return m; };
+        const rm = sum(j.removed_rows ?? []), ad = sum(j.added_rows ?? []); const diff: string[] = [];
+        for (const k of new Set([...rm.keys(), ...ad.keys()])) { const d = (ad.get(k) ?? 0) - (rm.get(k) ?? 0); if (d !== 0) diff.push(`${k} ${d > 0 ? "+" : ""}${d}`); }
+        return json({ success: true, dry: true, removed: j.removed, added: j.added, total_diff_by_store_account: diff, removed_rows: j.removed_rows, added_rows: j.added_rows });
+      }
+      if (reflIds.length) await db.from("invoice_pl_reflections").update({ sheet_synced_at: new Date().toISOString(), sheet_sync_error: null }).in("id", reflIds);
+      return json({ success: true, removed: j.removed, added: j.added, plsys: j.plsys, bq: j.bq });
+    }
+    // 2026-10-19新設: PLシートへの書き込みが一時的なGASの不調（HTMLが返る等）で失敗したまま残っている直接反映（direct）を、保存済みの内容でやり直す。
+    //   body: { secret, action:"retry_sheet_sync", dry?:true, ids?:[反映ID] }。書き込みは writePlFee（請求書IDで冪等に差し替え）と同じ
+    if (action === "retry_sheet_sync") {
+      const db = svc();
+      let q = db.from("invoice_pl_reflections").select("id, invoice_id, account_name, sub_account_name, year_month, allocations, reflection_route, sheet_sync_error")
+        .not("sheet_sync_error", "is", null).eq("reflection_route", "direct").limit(100);
+      if (Array.isArray(body?.ids) && body.ids.length) q = q.in("id", body.ids);
+      const { data: rows } = await q;
+      const tk = Deno.env.get("AD_COST_WRITE_TOKEN"); if (!tk) return json({ error: "AD_COST_WRITE_TOKEN が未設定です" }, 500);
+      const out: any[] = [];
+      for (const r of rows ?? []) {
+        const { data: inv } = await db.from("invoices").select("vendor_name").eq("id", r.invoice_id).maybeSingle();
+        const label = `${r.account_name}${r.sub_account_name ? "/" + r.sub_account_name : ""}（${inv?.vendor_name ?? ""}・${String(r.year_month).slice(0, 7)}）`;
+        if (body?.dry) { out.push({ id: r.id, label, before: String(r.sheet_sync_error).slice(0, 60) }); continue; }
+        let ok = false, err: string | null = null;
+        for (let attempt = 1; attempt <= 3 && !ok; attempt++) {
+          try {
+            const res = await fetch(DASH_API_URL, { method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" }, body: JSON.stringify({
+              action: "writePlFee", token: tk, year_month: String(r.year_month).slice(0, 7), account_name: r.account_name, sub_account: r.sub_account_name || undefined,
+              allocations: (r.allocations ?? []).map((a: any) => ({ store_name: a.store_name, amount: Number(a.amount) })), source_invoice_id: r.invoice_id, vendor_name: inv?.vendor_name }) });
+            const text = await res.text(); let j: any; try { j = JSON.parse(text); } catch { throw new Error("GASの応答を読めませんでした"); }
+            if (!j.ok) throw new Error(j.error || "GAS側で失敗しました");
+            ok = true; err = null;
+          } catch (e) { err = String((e as Error)?.message ?? e); await new Promise((rs) => setTimeout(rs, 3000 * attempt)); }
+        }
+        await db.from("invoice_pl_reflections").update({ sheet_synced_at: ok ? new Date().toISOString() : null, sheet_sync_error: ok ? null : err }).eq("id", r.id);
+        out.push({ id: r.id, label, ok, error: err });
+      }
+      return json({ success: true, count: out.length, items: out });
+    }
     // 2026-10-14新設: 請求書が既に無い（または取り消し済み）のにDB_PLに残っている行（外部連携:<source_key>）を0円にする
     if (action === "zero_orphan") {
       const sk = String(body?.source_key ?? "").trim(); const acc = String(body?.account_name ?? "").trim();
