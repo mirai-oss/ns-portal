@@ -46,6 +46,7 @@
 - **精算書の添付**: 費目名の前方一致で別経費の添付が混ざる/同名上書きされる問題を修正(GAS 照合厳格化・請求書ごとのuniq・削除API sd_deleteAttachment・修正画面に削除ボタン)。同じ請求書を複数店舗に分けた場合のメール添付(共有ファイル)の除外案は未実施。
 - **精算書→PL**: 経費(seisan-category-pl-sync)と運営委託費(seisan-fee-sync)は別ワークフロー・週1(月曜)。GAS sd_setPaid で振込済み時に両方を起動(要GH_TOKEN・登録済み)。売上行(区分=売上/売上高/その他売上)はPLへ反映しない。
 - **PLの補助科目・勘定科目ずれ(重要)**: tori-dashboard gas/Code.gs の PL書き込み(writePlFee/writeAdCost/syncSeisan*/savePl*)が排他制御なし→10/8朝以降、同時実行でG列(補助科目+外部連携ID)や科目がずれた(9月: 自動行の41/55が請求書記録と不一致)。対策: withPlLock_(DocumentLock)追加・ping ver=token-336h-v1-c19-pllock。修復: repairPlAutoRows(GAS)＋pl-fee-reflect の rebuild_pl_rows(請求書記録 invoice_pl_reflections から8〜10月を作り直し、区分をPL_ITEM_CATでそろえる)＋retry_sheet_sync(書き込み失敗の再試行)。実施後の不一致: 8月1/9月8/10月2(多くは0円行)。余分な行は zero_orphan で0円化(おしぼり d348bc10・本店食べログ 2ec19a63)。**残: 9月 本店 支払手数料¥343,670『スマレジタイムカード』(印なし)の重複行をユーザーがDB_PLで手動削除予定。** レーンP(10/8以降の変更履歴で時刻確認)・担当Aと共有済み。
+- **仕入高の差額調整は一本化（司令塔決定・10/20）**: 実績は請求書→pl_entries直接(Q5=a)に一本化。差額調整(siire_adjust)は設定画面の手動ボタンのみで自動実行は無し(cron無し)→**10月分以降は押さない**。9月の8件は着地予想PLが本番に乗るまで残置。TK-222の書き込み側(shiire-confirm-check)は有効化しない(shiire_confirm_enabled 未設定=OFFのまま確認済み)。
 - **次の課題**: 仮確定PL/実際PL(店舗プルダウン横で切替・仮の計算式)は【設計】へ依頼済み。請求書由来の自動行をSupabase pl_entriesへ直接書く案(担当A提案)。精算書のSupabase移行(棚卸しから)。支払方法未設定の取引先を承認画面で選べる機能、取引先の支払方法・口座の一括登録(ユーザーが表を作成中)。
 
 ## 2026-10-17 担当A: 黒霧屋 新横浜の運営変更(トーホー→LiveGate・2026-11-01) §6実装
