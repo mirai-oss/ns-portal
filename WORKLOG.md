@@ -37,6 +37,17 @@
 - **未了**: SQL v6の事前報告→ユーザー適用／smaregi-syncデプロイ（D分と一緒）／実機確認（LiveGate契約sdm155v1・黒霧屋のスタッフ）／D依頼の`hq_create_payroll_tasks`・`cash_handoff_targets`の兼務対応（Phase2前・現行の本番定義の確認が要る＝PAT待ち）。
 
 
+## 2026-10-19〜20 担当C: 請求書フロー整理・SK/MostFun/SSS・PL書き込みずれの修復（ユーザー承認の上で実施）
+- **SKのMF連携**: tenant_id=sk を認可済み。MF_TENANT_BY_CORP(invoice-journal-draft)・MF_TENANT_BY_CORP_CODE(invoices.html)に sk/livegate を追加。未連携法人は要対応で止める(トーホーへ誤登録しない)。SKは店舗マスタに店舗なし→invoice-checkで「店舗マスタに店舗を持たない法人は、仕訳案に部門があれば店舗確定」とみなす。Cure Next(SK宛¥55,000)承認・照合まで完了。
+- **請求書フロー簡素化**: 振込済み=完了(SQL 2026-10-19_payment_auto_complete.sql のトリガ・支払確認ボタン廃止・取消可)、承認時に支払方法設定済みなら自動で振込待ち(autoQueuePayment_)、売上入金メールは期限超過にしない。承認画面にPL・広告費・精算書の反映確認(する/しない・理由・店舗選択・本部追加)を統合(v152〜v153)。メール種別が未判定の請求書も一覧に出す(v148)。サイドバーの承認待ち等の sub 指定を反映(v147)。売上入金タブ上部にメール売上入金の承認待ちバナー(v150)。法人で絞り込み(v146)。
+- **MostFun**: 精算書ルールの店舗名パターンに逆順(新横浜じんべぇ等)を追加。3店舗を法人で1件・1仕訳にまとめる(invoice-auto-sales の grouped)。精算書PDFはGAS sd_apiGetSettlementPdf で取得し添付(seisan_backfill with_pdf)。9月分承認・MF登録済み。
+- **食べログ店舗振り分け**: invoice-resolve-lines が確定した店舗を invoice_stores にも反映。旧店名(うお蔵/匠味)は確定(18/18)。
+- **SSS**: ZIP添付を invoice-auto-create で自動展開。株式会社SSSをN-Style台帳(info.suppliers)+vendors+他行振込で登録。明細の「店舗不要」(resolve_info.no_store_needed)で止めない。請求書2件(8月¥23,387/9月¥547,127)はユーザーが手入力で仕訳するため残置。
+- **精算書の添付**: 費目名の前方一致で別経費の添付が混ざる/同名上書きされる問題を修正(GAS 照合厳格化・請求書ごとのuniq・削除API sd_deleteAttachment・修正画面に削除ボタン)。同じ請求書を複数店舗に分けた場合のメール添付(共有ファイル)の除外案は未実施。
+- **精算書→PL**: 経費(seisan-category-pl-sync)と運営委託費(seisan-fee-sync)は別ワークフロー・週1(月曜)。GAS sd_setPaid で振込済み時に両方を起動(要GH_TOKEN・登録済み)。売上行(区分=売上/売上高/その他売上)はPLへ反映しない。
+- **PLの補助科目・勘定科目ずれ(重要)**: tori-dashboard gas/Code.gs の PL書き込み(writePlFee/writeAdCost/syncSeisan*/savePl*)が排他制御なし→10/8朝以降、同時実行でG列(補助科目+外部連携ID)や科目がずれた(9月: 自動行の41/55が請求書記録と不一致)。対策: withPlLock_(DocumentLock)追加・ping ver=token-336h-v1-c19-pllock。修復: repairPlAutoRows(GAS)＋pl-fee-reflect の rebuild_pl_rows(請求書記録 invoice_pl_reflections から8〜10月を作り直し、区分をPL_ITEM_CATでそろえる)＋retry_sheet_sync(書き込み失敗の再試行)。実施後の不一致: 8月1/9月8/10月2(多くは0円行)。余分な行は zero_orphan で0円化(おしぼり d348bc10・本店食べログ 2ec19a63)。**残: 9月 本店 支払手数料¥343,670『スマレジタイムカード』(印なし)の重複行をユーザーがDB_PLで手動削除予定。** レーンP(10/8以降の変更履歴で時刻確認)・担当Aと共有済み。
+- **次の課題**: 仮確定PL/実際PL(店舗プルダウン横で切替・仮の計算式)は【設計】へ依頼済み。請求書由来の自動行をSupabase pl_entriesへ直接書く案(担当A提案)。精算書のSupabase移行(棚卸しから)。支払方法未設定の取引先を承認画面で選べる機能、取引先の支払方法・口座の一括登録(ユーザーが表を作成中)。
+
 ## 2026-10-17 担当A: 黒霧屋 新横浜の運営変更(トーホー→LiveGate・2026-11-01) §6実装
 - ①精算ダッシュボード(seisan-dashboard v5.27-client-period): 新シート『委託先の期間設定』(店舗名・適用開始月・委託先・法人・インボイス・代表者)。sd_clientInfoAt_(st,月)で対象月に応じた委託先を返し、精算書PDF宛先・振込管理(月別の法人単位)・ロック判定(sd_isLocked_)・振込完了メール/リマインド・ダッシュボードの法人グルーピングに反映。過去月(〜2026-10)はマスターの値のまま＝振込済み/ロックは不変。既定で『黒霧屋 新横浜 / 2026-11 / LiveGate』の1行を自動作成(名称・インボイス・代表者はユーザーが確定)。運営委託費の自動連携は変更なし(OFFのまま)。手順書=scratchpad/seisan-client-period-guide.md ＋貼り付け用コード全文。**ユーザーのGAS貼替・デプロイ待ち**。
 - ②経営D: Edge keiei-kd-refresh の loadStoreMaps に期間別の法人(store_operation_relations・operator_entity_type='corporation'・effective_from/to)を追加。corpByStoreId.get(storeId, 'YYYY-MM'|日付)で月別解決(該当なし・非法人運営・キー無しは stores.corporation_id)。kd_dashboard_daily/store_monthly/pl_monthly/media/deposit/ad の corporation_id に適用。デプロイ済み・現状は差0(担当Fが運営関係にLiveGate行を入れた後、次回更新で2026-11〜が切り替わる)。
