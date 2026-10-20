@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-19-v152";
+const BUILD_TAG="2026-10-19-v153";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -982,7 +982,7 @@ async function openApprovalModal(u,invoiceId,opt){
   const ym=(inv.target_year_month||"").slice(0,7);
   const canEditLines=!((d.credit_lines||[]).length);   // 売上入金（貸方が複数行の下書き）は、従来どおり行の追加はできない
   await ensureCorpStoreCache();
-  const apvStoreOpts_=((CORP_STORE_CACHE&&CORP_STORE_CACHE.stores)||[]).slice().sort((a,b)=>String(a.name).localeCompare(String(b.name),"ja"));
+  const apvStoreOpts_=(()=>{ const l=((CORP_STORE_CACHE&&CORP_STORE_CACHE.stores)||[]).slice(); if(!l.some(x=>x.name==="本部")) l.push({id:"7750652c-6766-4246-9855-a20fe97c0c37",name:"本部"}); return l.sort((a,b)=>String(a.name).localeCompare(String(b.name),"ja")); })();   // 2026-10-19: 本部経費を選べるように「本部」を追加
   const rowHtml=l=>`<tr data-apv-row="${l.line_no}" data-store-id="${esc(l.store_id||"")}" data-store-name="${esc(l.store_name||"")}" data-remark="${esc(l.remark||"")}" data-amt0="${Number(l.debit.amount)||0}" data-net0="${l.debit.net_amount!=null?Number(l.debit.net_amount):""}" data-rate0="${l.debit.tax?Number(l.debit.tax.rate):0}">
     <td>${l.line_no}</td>
     <td>${canEditLines?`<select class="apv-store" style="max-width:150px"><option value="">（店舗を選ぶ）</option>${apvStoreOpts_.map(x=>`<option value="${esc(x.id)}" ${x.id===l.store_id?"selected":""}>${esc(x.name)}</option>`).join("")}</select>`:esc(l.store_name||"—")}<div style="font-size:10px;color:var(--muted)">${esc(routeOf(l.store_id))}</div></td>
@@ -1061,7 +1061,7 @@ async function openApprovalModal(u,invoiceId,opt){
     upd(); apvPlSummary_(modal,d,inv); }
   // 明細の行の追加・削除・金額の修正（借方・貸方）
   if(canEditLines&&$("apv-add-d")){
-    const stores=((CORP_STORE_CACHE&&CORP_STORE_CACHE.stores)||[]).slice().sort((a,b)=>String(a.name).localeCompare(String(b.name),"ja"));
+    const stores=apvStoreOpts_.slice();
     const markEdited=()=>{ const e=$("apv-edited"); if(e) e.style.display="block"; };
     const fixDelButtons=()=>{ const n=modal.querySelectorAll("tr[data-apv-row]").length; modal.querySelectorAll(".apv-del").forEach(b=>{ b.style.visibility=n>1?"visible":"hidden"; }); };
     $("apv-add-d").onclick=()=>{
