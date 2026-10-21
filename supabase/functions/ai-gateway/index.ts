@@ -79,9 +79,9 @@ async function infoLink(sb: any, p: any) {
   if (!q) throw new Error("params.q に探す言葉（サービス名・店舗名・人名など）を入れてください");
   const info = sb.schema("info");
   const { data: corps } = await info.from("corporations").select("id,code,name");
-  const corpOf = new Map((corps ?? []).map((c: any) => [c.id, c]));
+  const corpOf = new Map<string, any>((corps ?? []).map((c: any) => [c.id, c]));
   const { data: stores } = await sb.from("stores").select("id,name");
-  const storeName = new Map((stores ?? []).map((s: any) => [s.id, s.name]));
+  const storeName = new Map<string, string>((stores ?? []).map((s: any) => [s.id, String(s.name)]));
   const like = `%${q.replace(/[%_]/g, "")}%`;
   const out: any[] = [];
   const corpQ = (id: string) => `corp=${encodeURIComponent(corpOf.get(id)?.code ?? "")}`;
@@ -103,7 +103,7 @@ async function infoLink(sb: any, p: any) {
   if (kind === "auto" || kind === "property") {
     const { data: ps } = await info.from("properties").select("id,corporation_id,store_id,management_company,renewal_date");
     for (const pr of ps ?? []) {
-      const sn = storeName.get(pr.store_id) ?? "";
+      const sn: string = storeName.get(pr.store_id) ?? "";
       if (!sn.includes(q) && !String(pr.management_company ?? "").includes(q)) continue;
       out.push({ kind: "物件契約", title: sn, management_company: pr.management_company, renewal_date: pr.renewal_date, link: `${INFO_BASE}/properties?${corpQ(pr.corporation_id)}` });
     }
