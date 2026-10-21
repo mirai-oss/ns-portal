@@ -80,7 +80,8 @@ async function infoLink(sb: any, p: any) {
   const info = sb.schema("info");
   const { data: corps } = await info.from("corporations").select("id,code,name");
   const corpOf = new Map<string, any>((corps ?? []).map((c: any) => [c.id, c]));
-  const { data: stores } = await sb.from("stores").select("id,name");
+  // 従業員・物件の store_id は info.stores（社内情報側の店舗マスタ）を指す。hub の stores とは id が異なる
+  const { data: stores } = await info.from("stores").select("id,name,store_code");
   const storeName = new Map<string, string>((stores ?? []).map((s: any) => [s.id, String(s.name)]));
   const like = `%${q.replace(/[%_]/g, "")}%`;
   const out: any[] = [];
