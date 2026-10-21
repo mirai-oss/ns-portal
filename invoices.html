@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-21-v155";
+const BUILD_TAG="2026-10-21-v156";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -7090,8 +7090,23 @@ function wireDetailActions(u){
     await reloadDetail();
   };
   if($("act-complete")) $("act-complete").onclick=()=>{ $("completebox").style.display="block"; };
+  // 2026-10-21: 請求書が1件も作られていないメールは完了にできない（メールが消えて請求書も無い状態を防ぐ）。画面からAIで請求書を自動作成できる
+  const autoCreateInvoices=async()=>{
+    const s2=sess.get(); $("act-msg").textContent="請求書をAIで作成中…（30秒ほどかかります）";
+    const rr=await fetch(SUPA_URL+"/functions/v1/invoice-auto-create",{method:"POST",headers:{"Content-Type":"application/json","apikey":SUPA_KEY,"Authorization":"Bearer "+(s2?s2.at:"")},body:JSON.stringify({action:"process_email_manual",email_id:emailId})});
+    const jj=await rr.json().catch(()=>({}));
+    const res=jj&&jj.result;
+    if(!rr.ok||!res||res.status!=="created"){ $("act-msg").textContent="請求書を作成できませんでした: "+((jj&&jj.error)||(res&&(res.reason||res.status))||"原因不明")+"（添付が請求書でない場合は「対象外にする」を使ってください）"; return false; }
+    $("act-msg").textContent=`請求書を${(res.created||[]).length}件作成しました（承認待ち・要確認の一覧に出ます）`; return true;
+  };
   if($("complete-send")) $("complete-send").onclick=async()=>{
     $("complete-send").disabled=true; $("act-msg").textContent="処理中…";
+    const cnt=await authed(`/rest/v1/invoices?email_id=eq.${emailId}&select=id&limit=1`);
+    const hasInv=cnt.ok&&Array.isArray(cnt.body)&&cnt.body.length>0;
+    if(!hasInv&&(mail.mail_kind==="invoice"||mail.auto_category==="invoice_attachment"||mail.auto_category==="invoice_notice")){
+      if(!confirm("このメールには、まだ請求書が1件も作られていません。\nこのまま完了すると、メールは受信トレイから消え、請求書も残りません。\n\n［OK］AIで請求書を自動作成してから完了する\n［キャンセル］やめる（請求書ではないメールは「対象外にする」を使ってください）")){ $("act-msg").textContent=""; $("complete-send").disabled=false; return; }
+      const made=await autoCreateInvoices(); if(!made){ $("complete-send").disabled=false; return; }
+    }
     const r=await authed("/rest/v1/rpc/invoice_complete",{method:"POST",body:JSON.stringify({p_email_id:emailId,p_note:$("complete-note").value.trim()||null})});
     if(!r.ok){ $("act-msg").textContent=(r.body&&r.body.message)||"完了できませんでした"; $("complete-send").disabled=false; return; }
     await reloadDetail();

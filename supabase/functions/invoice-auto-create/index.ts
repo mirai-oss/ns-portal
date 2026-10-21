@@ -185,11 +185,11 @@ async function processUploadedInvoice(db: any, invoiceId: string, secret: string
   return { invoice_id: invoiceId, status: "processed", created, duplicates: dups.length };
 }
 
-async function processEmail(db: any, emailId: string, secret: string, opts: { dryRun?: boolean } = {}) {
+async function processEmail(db: any, emailId: string, secret: string, opts: { dryRun?: boolean; force?: boolean } = {}) {
   const { data: email } = await db.from("invoice_emails")
     .select("id, gmail_message_id, subject, received_at, mail_kind, auto_category").eq("id", emailId).maybeSingle();
   if (!email) return { email_id: emailId, status: "skipped", reason: "メールが見つかりません" };
-  if (email.auto_category !== "invoice_attachment") return { email_id: emailId, status: "skipped", reason: `自動分類が請求書（添付あり）ではありません（${email.auto_category ?? "未分類"}）` };
+  if (email.auto_category !== "invoice_attachment" && !opts.force) return { email_id: emailId, status: "skipped", reason: `自動分類が請求書（添付あり）ではありません（${email.auto_category ?? "未分類"}）` };
   if (email.mail_kind && email.mail_kind !== "invoice") return markSkipped(db, emailId, `人が「${email.mail_kind}」に分類済みです`, opts.dryRun);
 
   const { data: existing } = await db.from("invoices").select("id").eq("email_id", emailId).limit(1);
@@ -206,7 +206,7 @@ async function processEmail(db: any, emailId: string, secret: string, opts: { dr
     .select("id, file_name, mime_type, file_hash, ocr_done_at, size_bytes").eq("email_id", emailId).order("created_at");
   const readable = (atts ?? []).filter((a: any) => {
     const mt = String(a.mime_type ?? "");
-    return (mt === "application/pdf" || mt.startsWith("image/")) && !a.ocr_done_at;
+    return (mt === "application/pdf" || mt.startsWith("image/")) && (!a.ocr_done_at || opts.force);   // force（画面の「請求書を自動作成」）は、読み取り済みでも請求書が無ければやり直す
   });
   if (!readable.length) return markSkipped(db, emailId, "未処理のPDF・画像の添付がありません", opts.dryRun);
 
@@ -331,6 +331,17 @@ Deno.serve(async (req: Request) => {
   const { data: secretRow, error: secretErr } = await db.from("app_secrets").select("value").eq("key", "invoice_intake_secret").maybeSingle();
   if (secretErr) return json({ error: "シークレット確認に失敗しました: " + secretErr.message }, 500);
   // 2026-10-14: アップロード入口（process_invoice）だけは、ログインユーザー（invoice_can_access）でも呼べる
+  // 2026-10-21: 画面の「請求書を自動作成」（メールに請求書が1件も無いとき）。ログインユーザー（invoice_can_access）で呼べる。自動分類が「請求書(添付あり)」でなくても、人が請求書メールとして処理中のものは作成する
+  if (body?.action === "process_email_manual" && !(secretRow?.value && body?.secret === secretRow.value)) {
+    const uc = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_ANON_KEY")!, { global: { headers: { Authorization: req.headers.get("Authorization") ?? "" } } });
+    const { data: ok } = await uc.rpc("invoice_can_access");
+    if (ok !== true) return json({ error: "権限がありません" }, 403);
+    if (!body?.email_id) return json({ error: "email_id が必要です" }, 400);
+    const { data: vis } = await uc.from("invoice_emails").select("id").eq("id", body.email_id).maybeSingle();
+    if (!vis) return json({ error: "対象が見つからないか権限がありません" }, 403);
+    try { return json({ success: true, result: await processEmail(db, body.email_id, secretRow!.value, { force: true }) }); }
+    catch (e) { return json({ error: "処理中にエラー: " + String((e as Error)?.message ?? e) }, 500); }
+  }
   if (body?.action === "process_invoice" && !(secretRow?.value && body?.secret === secretRow.value)) {
     const uc = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_ANON_KEY")!, { global: { headers: { Authorization: req.headers.get("Authorization") ?? "" } } });
     const { data: ok } = await uc.rpc("invoice_can_access");
