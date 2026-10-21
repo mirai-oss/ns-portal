@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-21-v154";
+const BUILD_TAG="2026-10-21-v155";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -5725,6 +5725,14 @@ function bankAccountEditFormHtml(acc){
         <option value="credit_card" ${method==="credit_card"?"selected":""}>クレジット払い（銀行口座の登録は不要です）</option>
       </select>
     </div>
+    <div id="pbe-debit-box" style="display:none;margin-bottom:10px">
+      <div class="ai-field"><small>引き落とし元の口座（MFの預金口座）。期日を過ぎても残ったときに、どの口座のMF入力が止まっているか判断するために使います</small>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:4px">
+          <select id="pbe-dtenant"><option value="default" ${acc&&acc.mf_debit_tenant==="default"?"selected":""}>トーホー（MF）</option><option value="nstyle" ${acc&&acc.mf_debit_tenant==="nstyle"?"selected":""}>N-Style（MF）</option><option value="livegate" ${acc&&acc.mf_debit_tenant==="livegate"?"selected":""}>LiveGate（MF）</option><option value="sk" ${acc&&acc.mf_debit_tenant==="sk"?"selected":""}>SK（MF）</option></select>
+          <select id="pbe-dacct" data-cur="${esc(acc&&acc.mf_debit_account?acc.mf_debit_account+"\t"+(acc.mf_debit_sub_account||""):"")}"><option value="">（読み込み中…）</option></select>
+        </div>
+      </div>
+    </div>
     <div id="pbe-bank-fields">
       <div class="ai-grid">
         <div class="ai-field"><small>銀行コード（4桁の数字。通帳・キャッシュカードに記載）</small><input id="pbe-bankcode" value="${esc((acc&&acc.bank_code)||"")}" placeholder="例: 0033" maxlength="4"></div>
@@ -7015,7 +7023,21 @@ function wireDetailActions(u){
     // 口座情報の入力欄が必要な支払方法として扱う（paymentMethodHasBankInfo参照）
     const toggleBankFields=()=>{ $("pbe-bank-fields").style.display=paymentMethodHasBankInfo($("pbe-method").value)?"block":"none"; };
     toggleBankFields();
-    $("pbe-method").onchange=toggleBankFields;
+    // 2026-10-21: 引き落としのときだけ、引き落とし元のMF口座（預金科目×補助科目）を選べるようにする。MF事業者を変えるたびにMFの口座一覧を取り直す
+    const MFACC_CACHE=(window.__mfAcctCache=window.__mfAcctCache||{});
+    const loadDebitAccts=async()=>{
+      const sel=$("pbe-dacct"); const tn=$("pbe-dtenant").value; const cur=sel.dataset.cur||"";
+      sel.innerHTML='<option value="">（読み込み中…）</option>';
+      if(!MFACC_CACHE[tn]){ const r=await mfCall("accounts",{tenant_id:tn}); MFACC_CACHE[tn]=(r.ok&&r.body&&Array.isArray(r.body.accounts))?r.body.accounts:null; }
+      const list=MFACC_CACHE[tn];
+      if(!list){ sel.innerHTML='<option value="">（このMF事業者の口座を取得できませんでした）</option>'; return; }
+      const opts=[]; list.filter(a=>/預金/.test(a.name||"")).forEach(a=>{ const subs=(a.sub_accounts||[]); if(!subs.length) opts.push([a.name,""]); subs.forEach(x=>opts.push([a.name,x.name])); });
+      sel.innerHTML='<option value="">（口座を選んでください）</option>'+opts.map(([a,b])=>`<option value="${esc(a+"\t"+b)}" ${(a+"\t"+b)===cur?"selected":""}>${esc(b?a+"／"+b:a)}</option>`).join("");
+    };
+    const toggleDebit=()=>{ const on=$("pbe-method").value==="direct_debit"; $("pbe-debit-box").style.display=on?"block":"none"; if(on) loadDebitAccts(); };
+    $("pbe-dtenant").onchange=()=>{ $("pbe-dacct").dataset.cur=""; loadDebitAccts(); };
+    toggleDebit();
+    $("pbe-method").onchange=()=>{ toggleBankFields(); toggleDebit(); };
     $("pbe-save").onclick=async()=>{
       const msg=$("pbe-msg"); msg.className="err"; msg.textContent="";
       const method=$("pbe-method").value;
@@ -7043,6 +7065,8 @@ function wireDetailActions(u){
       $("pbe-save").disabled=true;
       if(acc) account.id=acc.id;
       account.store_id=($("pbe-store")&&$("pbe-store").value)||null;
+      { const dv=method==="direct_debit"?String($("pbe-dacct").value||""):""; const [da,ds]=dv?dv.split("\t"):["",""];
+        account.mf_debit_tenant=dv?$("pbe-dtenant").value:null; account.mf_debit_account=da||null; account.mf_debit_sub_account=ds||null; }
       const r=await vendorCall("upsert_bank_account",{account});
       if(!r.ok){ msg.textContent=r.body.error||"保存に失敗しました"; $("pbe-save").disabled=false; return; }
       await reloadDetail();
@@ -8630,6 +8654,12 @@ function transferAccountOf(r){
   const cur=TRANSFERS_STATE.accountsByVendor.get(r.vendor_id)||[];
   return cur.find(a=>r.store_id&&a.store_id===r.store_id)||cur.find(a=>!a.store_id)||(cur.length===1?cur[0]:null);
 }
+// 引き落とし元のMF口座の表示名（例: トーホー／普通預金／【代表】PAYPAY銀行/300）。未選択なら空
+function debitAcctLabel_(acc){
+  if(!acc||!acc.mf_debit_account) return "";
+  const tn={default:"トーホー",nstyle:"N-Style",livegate:"LiveGate",sk:"SK"}[acc.mf_debit_tenant]||acc.mf_debit_tenant||"";
+  return `${tn?tn+"／":""}${acc.mf_debit_account}${acc.mf_debit_sub_account?"／"+acc.mf_debit_sub_account:""}`;
+}
 function transferRowHtml(r){
   const acc=transferAccountOf(r);
   const blocked=r.bank_account_change_detected;
@@ -8647,7 +8677,7 @@ function transferRowHtml(r){
   // まとめて「口座登録不要」にする。2026-09-08修正：他行口座から振込（other_bank_transfer）は
   // 銀行口座情報を持つため、bank_transferと同じく口座欄を表示する（paymentMethodHasBankInfo参照）
   const bankCellsHtml=(method&&!paymentMethodHasBankInfo(method))
-    ?`<td colspan="3" style="color:var(--muted)">口座登録不要</td>`
+    ?`<td colspan="3" style="color:var(--muted)">${method==="direct_debit"?(debitAcctLabel_(acc)?`引き落とし口座：${esc(debitAcctLabel_(acc))}`:'<span class="invoice-status err">引き落とし口座が未選択</span>（MFの口座を選んでください）'):"口座登録不要"}</td>`
     :`<td>${acc?esc(acc.bank_name||"—"):(blocked?'<span class="invoice-status err">口座変更未承認</span>':'<span class="invoice-status gray">未登録</span>')}${missingCodes?' <span class="invoice-status err">コード未登録</span>':''}</td>
       <td>${acc?esc(acc.branch_name||"—"):"—"}</td>
       <td>${acc?esc(acc.account_number||"—"):"—"}</td>`;
@@ -8926,10 +8956,15 @@ async function overdueFetch_(force){
   const today=new Date(Date.now()+9*3600e3).toISOString().slice(0,10);
   const since=new Date(Date.now()-130*86400e3).toISOString().slice(0,7);
   const [pr,ar]=await Promise.all([
-    authed(`/rest/v1/invoices?mf_journal_id=not.is.null&payment_status=in.(wait,csv,processing)&due_date=lt.${today}&select=id,amount,due_date,vendor:vendors(name)&order=due_date.asc&limit=300`),
+    authed(`/rest/v1/invoices?mf_journal_id=not.is.null&payment_status=in.(wait,csv,processing)&due_date=lt.${today}&select=id,vendor_id,amount,due_date,vendor:vendors(name)&order=due_date.asc&limit=300`),
     authed(`/rest/v1/ar_receivables?mf_journal_id=not.is.null&source_name=neq.${encodeURIComponent("現金売上")}&expected_amount=gt.0&year_month=gte.${since}&select=id,source_name,year_month,expected_amount,expected_date&limit=500`),
   ]);
   const pay=(pr.ok&&Array.isArray(pr.body))?pr.body:[];
+  // 2026-10-21: 引き落としの請求書には、引き落とし元のMF口座を付ける（どの口座のMF入力が止まっているかの判断用）
+  const vids=[...new Set(pay.map(r=>r.vendor_id).filter(Boolean))];
+  if(vids.length){ const br=await authed(`/rest/v1/vendor_bank_accounts?vendor_id=in.(${vids.join(",")})&is_current=eq.true&payment_method=eq.direct_debit&select=vendor_id,mf_debit_tenant,mf_debit_account,mf_debit_sub_account`);
+    const m=new Map(); if(br.ok&&Array.isArray(br.body)) br.body.forEach(a=>{ if(!m.has(a.vendor_id)) m.set(a.vendor_id,a); });
+    pay.forEach(r=>{ const a=m.get(r.vendor_id); if(a){ r.debit=true; r.debit_label=debitAcctLabel_(a); } }); }
   const monthEnd=ym=>{ const [y,m]=ym.split("-").map(Number); return new Date(Date.UTC(y,m,0)).toISOString().slice(0,10); };
   let rec=(ar.ok&&Array.isArray(ar.body))?ar.body.map(r=>({...r,due:r.expected_date||new Date(Date.parse(monthEnd(r.year_month))+14*86400e3).toISOString().slice(0,10)})).filter(r=>r.due<today):[];
   if(rec.length){ const paid=new Set(); for(let i=0;i<rec.length;i+=100){ const d=await authed(`/rest/v1/ar_deposits?receivable_id=in.(${rec.slice(i,i+100).map(r=>r.id).join(",")})&select=receivable_id`); if(d.ok&&Array.isArray(d.body)) d.body.forEach(x=>paid.add(x.receivable_id)); } rec=rec.filter(r=>!paid.has(r.id)); }
@@ -8946,7 +8981,7 @@ async function overdueAlertRender_(){
   const md=x=>`${Number(x.slice(5,7))}/${Number(x.slice(8,10))}`;
   const sumP=d.pay.reduce((t,r)=>t+(Number(r.amount)||0),0), sumR=d.rec.reduce((t,r)=>t+(Number(r.expected_amount)||0),0);
   const lines=[
-    ...[...d.pay].sort((a,b)=>a.due_date.localeCompare(b.due_date)).slice(0,4).map(r=>`🏦 ${esc((r.vendor&&r.vendor.name)||"—")} ${yen(Number(r.amount)||0)}（期日 ${md(r.due_date)}・${over(r.due_date)}日超過）`),
+    ...[...d.pay].sort((a,b)=>a.due_date.localeCompare(b.due_date)).slice(0,4).map(r=>`🏦 ${esc((r.vendor&&r.vendor.name)||"—")} ${yen(Number(r.amount)||0)}（期日 ${md(r.due_date)}・${over(r.due_date)}日超過）${r.debit?`<span style="color:#8a1c1c">　🔁 引き落とし口座: ${r.debit_label?esc(r.debit_label):"<b>未選択</b>"}</span>`:""}`),
     ...[...d.rec].sort((a,b)=>a.due.localeCompare(b.due)).slice(0,4).map(r=>`💰 ${esc(r.source_name)}（${esc(r.year_month)}）${yen(Number(r.expected_amount)||0)}（期日 ${md(r.due)}・${over(r.due)}日超過）`),
   ];
   host.innerHTML=`<div style="background:#fdecea;border:2px solid #d33;border-radius:10px;padding:10px 14px;margin-bottom:12px;color:#8a1c1c">

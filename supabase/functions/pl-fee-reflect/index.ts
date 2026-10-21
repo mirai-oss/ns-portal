@@ -56,6 +56,43 @@ const userClient = (req: Request) =>
 // 同じ値がある＝秘密情報ではない）
 const DASH_API_URL = "https://script.google.com/macros/s/AKfycbwW0qhyEr0-uQWTaLg7MkQhurHq6wMoaOKL7uCCnI_bgnAsGB5-auqG_dm_Q9uJc3Kc/exec";
 
+// 2026-10-21新設: 請求書由来のPL自動行を pl_entries へ直接書く（設計書 仮確定PLと実際PL §8 Q5=a・docs/調査_着地予想PL_請求書の直接書き込み設計）。
+// 切替フラグ app_secrets.pl_direct_write='1' かつ 対象年月が 2026-10 以降のときだけ有効（既定=無効＝従来のGAS経由）。
+// 行の形: source/memo='自動｜請求書'、source_key='inv:<請求書ID>:<反映ID>:<store_id>'（冪等キー）、item=MFの勘定科目、sub_item=MFの補助科目。
+const PL_DIRECT_FROM = "2026-10";
+const PL_CAT: Record<string, string> = {
+  "役員報酬": "L", "法定福利費": "L", "通勤手当": "L", "旅費交通費": "L", "賞与積立": "L", "退職金等": "L",
+  "家賃": "R", "リース料": "R", "家賃更新按分": "R", "広告宣伝費": "A", "販売促進費": "A",
+  "その他売上": "S", "銀行返済": "X", "仕入（食材・飲料）": "F",
+};
+function plCat(name: string): string {   // tori-dashboard plSeisanGuessCat_ と同じ判定（未登録は O）
+  if (PL_CAT[name]) return PL_CAT[name];
+  if (/給料|雑給|人件費|法定福利|通勤/.test(name)) return "L";
+  if (/広告|販促/.test(name)) return "A";
+  if (/家賃|賃料/.test(name)) return "R";
+  if (/仕入/.test(name)) return "F";
+  if (/売上/.test(name)) return "S";
+  return "O";
+}
+async function plDirectOn(db: any, ym: string): Promise<boolean> {
+  if (String(ym).slice(0, 7) < PL_DIRECT_FROM) return false;
+  const { data } = await db.from("app_secrets").select("value").eq("key", "pl_direct_write").maybeSingle();
+  return String(data?.value ?? "").trim() === "1";
+}
+function plDirectRows(invoiceId: string, reflectionId: string, account: string, sub: string | null, ym: string, allocations: any[]) {
+  return allocations.filter((a) => Number(a.amount) > 0 && a.store_id).map((a) => ({
+    year_month: String(ym).slice(0, 7), store_id: a.store_id, item: account, category: plCat(account), amount: Number(a.amount),
+    memo: "自動｜請求書", sub_item: sub || "", source: "自動｜請求書", source_key: `inv:${invoiceId}:${reflectionId}:${a.store_id}`,
+  }));
+}
+async function plDirectWrite(db: any, rows: any[]): Promise<{ ok: boolean; error?: string }> {
+  if (!rows.length) return { ok: true };
+  const { data, error } = await db.rpc("pl_entries_bulk_upsert", { p_rows: rows, p_mode: "upsert", p_dry_run: false, p_actor: "invoice-direct", p_scope: [] });
+  if (error) return { ok: false, error: error.message };
+  if (!data?.ok) return { ok: false, error: JSON.stringify(data?.errors ?? data?.error).slice(0, 300) };
+  return { ok: true };
+}
+
 // 2026-09-05新設：業務委託精算書自動連携（設計書_業務委託精算書自動連携_2026-09-04.md）。
 // seisan-dashboardのGAS Web App URL（担当A実装・11章で本番デプロイ済み。DASH_API_URLとは別の
 // GASプロジェクト＝別トークンPL_SYNC_TOKENで認証する）
@@ -121,7 +158,7 @@ Deno.serve(async (req: Request) => {
   const uc = userClient(req);
   // 2026-10-14: zero_orphan（孤立したPLシート行を0円にする・管理用）だけは、サーバー間の共有シークレットでも呼べる
   let bySecret = false;
-  if ((action === "zero_orphan" || action === "retry_sheet_sync" || action === "rebuild_pl_rows") && body?.secret) {
+  if ((action === "zero_orphan" || action === "retry_sheet_sync" || action === "rebuild_pl_rows" || action === "direct_rebuild") && body?.secret) {
     const { data: sr } = await svc().from("app_secrets").select("value").eq("key", "invoice_intake_secret").maybeSingle();
     bySecret = !!sr?.value && body.secret === sr.value;
   }
@@ -131,6 +168,33 @@ Deno.serve(async (req: Request) => {
   }
 
   try {
+    // 2026-10-21新設: 請求書由来の確定行を pl_entries へ直接書く切替の準備・比較レポート（設計書 Q-C3）。
+    //   body: { secret, action:"direct_rebuild", months:["2026-10",...], dry?:true }。2026-10以降のみ。
+    //   dry=true: 書かずに、店舗×科目ごとの「いまのpl_entries（旧GAS由来の自動行）」と「請求書記録から作る直接行」の合計を比べて返す。
+    //   dry=false: 直接行を upsert（冪等キー inv:…）。旧GAS由来行の除去は切替日の手順で別に行う（二重計上に注意）。
+    if (action === "direct_rebuild") {
+      const db = svc();
+      const months: string[] = (Array.isArray(body?.months) && body.months.length ? body.months : [PL_DIRECT_FROM]).map(String).filter((m) => m >= PL_DIRECT_FROM);
+      if (!months.length) return json({ error: "2026-10以降の月を指定してください" }, 400);
+      const { data: refls } = await db.from("invoice_pl_reflections").select("id, invoice_id, account_name, sub_account_name, year_month, allocations, reflection_route").eq("reflection_route", "direct");
+      const rows: any[] = [];
+      for (const r of refls ?? []) if (months.includes(String(r.year_month).slice(0, 7))) rows.push(...plDirectRows(r.invoice_id, r.id, r.account_name, r.sub_account_name, r.year_month, r.allocations ?? []));
+      if (body?.dry) {
+        const { data: cur } = await db.from("pl_entries").select("year_month, store_id, item, amount, source, sub_item").is("deleted_at", null).in("year_month", months).like("source", "自動｜%").neq("source", "自動｜精算書").neq("source", "自動｜仕入高差額調整").neq("source", "自動｜スポット人件費");
+        const key = (x: any) => `${x.year_month}|${x.store_id}|${x.item}`;
+        const a = new Map<string, number>(), b = new Map<string, number>();
+        for (const x of cur ?? []) if (x.source !== "自動｜請求書") a.set(key(x), (a.get(key(x)) ?? 0) + Number(x.amount));
+        for (const x of rows) b.set(key(x), (b.get(key(x)) ?? 0) + Number(x.amount));
+        const { data: st } = await db.from("stores").select("id, name");
+        const nm = new Map((st ?? []).map((x: any) => [x.id, x.name]));
+        const diff: string[] = [];
+        for (const k of new Set([...a.keys(), ...b.keys()])) { const d = (b.get(k) ?? 0) - (a.get(k) ?? 0); const [ym, sid, item] = k.split("|"); if (d !== 0) diff.push(`${ym}|${nm.get(sid) ?? sid}|${item}｜旧GAS由来 ${a.get(k) ?? 0} → 直接 ${b.get(k) ?? 0}（差 ${d > 0 ? "+" : ""}${d}）`); }
+        return json({ success: true, dry: true, direct_rows: rows.length, old_rows: (cur ?? []).length, mismatches: diff.length, diff });
+      }
+      const wr = await plDirectWrite(db, rows);
+      if (!wr.ok) return json({ error: "pl_entriesへの書き込みに失敗: " + wr.error }, 500);
+      return json({ success: true, written: rows.length });
+    }
     // 2026-10-19新設: 請求書由来のPL自動行の作り直し（書き込みの重なりで補助科目+請求書IDが別行のものになった行の修復）。
     //   body: { secret, action:"rebuild_pl_rows", months:["2026-08",...], dry?:true }。正しい内容は invoice_pl_reflections（direct）から作る。
     //   dry=true は書き込まず、取り除く行・入れる行・店舗×科目ごとの合計の差を返す。実行すると、成功した反映の同期エラー表示も消す
@@ -346,7 +410,11 @@ Deno.serve(async (req: Request) => {
       });
 
       let sheetSynced = false, sheetError: string | null = null;
-      try {
+      const directOn = await plDirectOn(db, yearMonth);
+      if (directOn) {   // 2026-10-21: pl_entries へ直接書く（GAS経由は使わない）
+        const wr = await plDirectWrite(db, plDirectRows(invoiceId, reflRow?.id, accountName, subAccountName || null, yearMonth, allocations));
+        sheetSynced = wr.ok; sheetError = wr.ok ? null : wr.error ?? "pl_entriesへの書き込みに失敗";
+      } else try {
         const tk = Deno.env.get("AD_COST_WRITE_TOKEN"); // writeAdCostと同じ共有トークン（担当AのwritePlFee action用）
         if (!tk) throw new Error("AD_COST_WRITE_TOKEN が未設定です");
         const res = await fetch(DASH_API_URL, {
@@ -758,7 +826,12 @@ Deno.serve(async (req: Request) => {
       const db = svc();
       // 2026-10-14: 取り消し時にPLシート側の行も0円にして、二重・過大を防ぐ（精算書ルートは対象外）
       let sheetZero: { ok: boolean; error?: string } = { ok: true };
-      if ((refl as any).reflection_route !== "seisan") {
+      // 2026-10-21: pl_entries へ直接書いた行（source_key='inv:<請求書ID>:<反映ID>:…'）があれば、それを取り消す（deleted_at）。無ければ従来どおりシート側を0円にする
+      const { data: directRows } = await db.from("pl_entries").select("id").like("source_key", `inv:${invoiceId}:${reflectionId}:%`).is("deleted_at", null);
+      if (directRows?.length) {
+        const { error: dErr } = await db.rpc("pl_entries_delete", { p_ids: directRows.map((x: any) => x.id), p_actor: "invoice-direct" });
+        sheetZero = dErr ? { ok: false, error: dErr.message } : { ok: true };
+      } else if ((refl as any).reflection_route !== "seisan") {
         const { data: invZ } = await uc.from("invoices").select("vendor_name").eq("id", invoiceId).maybeSingle();
         sheetZero = await zeroPlSheet({ accountName: refl.account_name, subAccount: refl.sub_account_name, ym: String(refl.year_month),
           storeNames: (Array.isArray(refl.allocations) ? refl.allocations : []).map((a: any) => a?.store_name), sourceId: invoiceId, vendorName: invZ?.vendor_name });

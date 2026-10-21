@@ -252,6 +252,13 @@ Deno.serve(async (req: Request) => {
       };
       // 2026-10-13: 店舗ごとの口座（任意）。store_idが送られたときだけ設定／変更する（送られなければ従来どおり変更しない）
       if (Object.prototype.hasOwnProperty.call(a, "store_id")) row.store_id = a.store_id || null;
+      // 2026-10-21: 引き落とし元口座（MFの預金口座）。送られてきたときだけ設定／変更する（支払方法が引き落とし以外に変わったら空にする）
+      if (Object.prototype.hasOwnProperty.call(a, "mf_debit_account")) {
+        const on = paymentMethod === "direct_debit";
+        row.mf_debit_tenant = on ? (a.mf_debit_tenant || null) : null;
+        row.mf_debit_account = on ? (a.mf_debit_account || null) : null;
+        row.mf_debit_sub_account = on ? (a.mf_debit_sub_account || null) : null;
+      }
       if (a.id) {
         const { error } = await db.from("vendor_bank_accounts").update(row).eq("id", a.id);
         if (error) return json({ error: error.message }, 500);
