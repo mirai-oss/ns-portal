@@ -621,6 +621,9 @@ function plCatForEntries(cat: unknown, item: string): string {
   if (/広告|販促|販売促進/.test(item)) return "A"; if (/家賃|賃料|地代|リース/.test(item)) return "R";
   return "O";
 }
+// stg_plには来ても取り込まない自動行のsource（その行はSupabaseが正本で、pl_entriesへ直接書かれる。2026-10-13〜）。ここを増やすときは取込側・既存行の洗い替え側の両方に効く。
+//   スポット人件費・店舗間移動・仕入高差額調整＝Supabase正本（spot_entries / cost_transfer_*）／請求書由来の確定行＝pl-fee-reflect が pl_entries へ直接書く（Q-C3・担当C・2026-10-21〜）
+const PL_AUTO_IGNORE_SOURCES = ["自動｜スポット人件費", "店舗間移動", "自動｜仕入高差額調整", "自動｜請求書"];
 // ハイブリッド同期: stg_pl(GAS bqGetPL)の「自動連携行」だけを正本pl_entriesへ反映（(source×年月)単位のreplace_source）。
 // 手入力(source='手入力')には触れない。内容が変わった(source×年月)だけを入れ替える（毎時回しても履歴・ソフト削除行が増えない）。
 // 安全装置: 既存の自動行が20行以上で、今回の自動行が半分未満なら（取得の部分応答の疑い）中止。
@@ -637,7 +640,7 @@ async function autoSyncFromStgPl(sb: any, dry = false): Promise<any> {
     for (let r = 1; r < raw.length; r++) {
       const row = raw[r] ?? [];
       const memo = String(row[5] ?? "").trim(); const source = plAutoSourceOf(memo);
-      if (!source || source === "自動｜スポット人件費" || source === "店舗間移動" || source === "自動｜仕入高差額調整") continue;   // 仕入高差額調整・店舗間移動もSupabaseが正本（cost_transfer_*・2026-10-13）   // スポット人件費はSupabase正本(spot_entries)から作る（2026-10-13）
+      if (!source || PL_AUTO_IGNORE_SOURCES.includes(source)) continue;   // 仕入高差額調整・店舗間移動もSupabaseが正本（cost_transfer_*・2026-10-13）   // スポット人件費はSupabase正本(spot_entries)から作る（2026-10-13）
       const ym = ymOf(row[0]); if (!ym) { badYm++; continue; }
       const nm = String(row[1] ?? "").trim(); let sid: string | null = null;
       if (nm) { const hit = lookupStore(maps, nm); if (!hit) { unresolved.add(nm); continue; } sid = hit.store_id; }
@@ -645,7 +648,7 @@ async function autoSyncFromStgPl(sb: any, dry = false): Promise<any> {
       rows.push({ year_month: ym, store_id: sid, item, category: plCatForEntries(row[3], item), amount: num(row[4]), memo, sub_item: (source === "店舗間移動" || source === "媒体販促費（自動計上）") ? "" : String(row[6] ?? ""), source });   // 店舗間移動・媒体販促費（自動計上）は補助科目を持たない（2026-10-14: 後者はG列に別連携の「PayPay　外部連携:ID」が混入して表示された）（シートのG列に別連携の「名前　外部連携:ID」が混入していたため無視する・2026-10-13）
     }
     const old = await fetchAll((f, t) => sb.from("pl_entries").select("id,year_month,store_id,item,category,amount,memo,sub_item,source")
-      .is("deleted_at", null).neq("source", "手入力").neq("source", "自動｜スポット人件費").neq("source", "店舗間移動").neq("source", "自動｜仕入高差額調整").order("id").range(f, t));
+      .is("deleted_at", null).neq("source", "手入力").not("source", "in", `(${PL_AUTO_IGNORE_SOURCES.map((x) => `"${x}"`).join(",")})`).order("id").range(f, t));
     if (old.length >= 20 && rows.length < old.length * 0.5) throw new Error(`自動行が${rows.length}件（既存${old.length}件の半分未満）のため中止（部分応答の疑い）`);
     const sig = (x: any) => [x.store_id ?? "", x.item, x.category, Number(x.amount), x.memo, x.sub_item ?? ""].join("\u0001");
     const group = (list: any[]) => { const m = new Map<string, string[]>(); for (const x of list) { const k = `${x.source}\u0002${x.year_month}`; (m.get(k) ?? m.set(k, []).get(k)!).push(sig(x)); } for (const v of m.values()) v.sort(); return m; };
