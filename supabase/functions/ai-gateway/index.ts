@@ -69,6 +69,52 @@ async function salesDaily(sb: any, p: any) {
   return { note: "金額は円。last_year_same_weekday=前年の同じ曜日（364日前）。当日分は翌朝の同期後に確定", ...(data ?? {}) };
 }
 
+// 2026-10-21追加（ユーザー指示「ID/PW・従業員情報など直接答えられないものはリンクを送る」）
+// 社内情報管理システム（infoスキーマ）の該当ページへのリンクだけを返す。秘密（パスワード・ユーザー名・住所・電話・
+// 生年月日・給与・口座）は一切返さない。返すのは「何の項目が存在するか」と、ログインが必要なページのURL。
+const INFO_BASE = "https://ns-info-system.vercel.app";
+async function infoLink(sb: any, p: any) {
+  const q = String(p?.q ?? "").trim();
+  const kind = String(p?.kind ?? "auto");
+  if (!q) throw new Error("params.q に探す言葉（サービス名・店舗名・人名など）を入れてください");
+  const info = sb.schema("info");
+  const { data: corps } = await info.from("corporations").select("id,code,name");
+  const corpOf = new Map((corps ?? []).map((c: any) => [c.id, c]));
+  const { data: stores } = await sb.from("stores").select("id,name");
+  const storeName = new Map((stores ?? []).map((s: any) => [s.id, s.name]));
+  const like = `%${q.replace(/[%_]/g, "")}%`;
+  const out: any[] = [];
+  const corpQ = (id: string) => `corp=${encodeURIComponent(corpOf.get(id)?.code ?? "")}`;
+  if (kind === "auto" || kind === "credential") {
+    const { data } = await info.from("credentials").select("id,corporation_id,category,service_name,status").ilike("service_name", like).limit(10);
+    for (const c of data ?? []) out.push({ kind: "ID/PW", title: c.service_name, category: c.category, corporation: corpOf.get(c.corporation_id)?.name, status: c.status,
+      link: `${INFO_BASE}/credentials?${corpQ(c.corporation_id)}&q=${encodeURIComponent(c.service_name)}` });
+  }
+  if (kind === "auto" || kind === "employee") {
+    const { data } = await info.from("employees").select("id,corporation_id,store_id,name,role_title,employment_type,status").or(`name.ilike.${like},kana.ilike.${like}`).limit(10);
+    for (const e of data ?? []) out.push({ kind: "従業員", title: e.name, role: e.role_title, employment_type: e.employment_type, store: storeName.get(e.store_id) ?? null, status: e.status,
+      link: `${INFO_BASE}/employees?${corpQ(e.corporation_id)}&q=${encodeURIComponent(e.name)}&st=${encodeURIComponent("すべて")}` });
+  }
+  if (kind === "auto" || kind === "supplier") {
+    const { data } = await info.from("suppliers").select("id,corporation_id,name,kind,status").ilike("name", like).limit(10);
+    for (const s of data ?? []) out.push({ kind: "取引先", title: s.name, category: s.kind, corporation: corpOf.get(s.corporation_id)?.name, status: s.status,
+      link: `${INFO_BASE}/suppliers?${corpQ(s.corporation_id)}&q=${encodeURIComponent(s.name)}` });
+  }
+  if (kind === "auto" || kind === "property") {
+    const { data: ps } = await info.from("properties").select("id,corporation_id,store_id,management_company,renewal_date");
+    for (const pr of ps ?? []) {
+      const sn = storeName.get(pr.store_id) ?? "";
+      if (!sn.includes(q) && !String(pr.management_company ?? "").includes(q)) continue;
+      out.push({ kind: "物件契約", title: sn, management_company: pr.management_company, renewal_date: pr.renewal_date, link: `${INFO_BASE}/properties?${corpQ(pr.corporation_id)}` });
+    }
+  }
+  return {
+    query: q, matches: out.slice(0, 20),
+    note: out.length ? "中身（パスワード・連絡先・住所・給与など）はこのAPIでは返しません。リンク先は社内情報管理システム（ログイン必須・閲覧ログが残る）です。利用者にはリンクを送ってください"
+                     : "該当する項目が見つかりませんでした。社内情報管理システムの検索ページ: " + `${INFO_BASE}/search?q=${encodeURIComponent(q)}`,
+  };
+}
+
 async function nippoStatus(sb: any, p: any) {
   const date = p?.date ?? jstToday();
   const [{ data: users }, { data: reps }] = await Promise.all([
@@ -192,6 +238,7 @@ const CATALOG: Record<string, (sb: any, p: any) => Promise<any>> = {
   sales_daily: salesDaily,
   schema: schemaInfo,
   sql: runSql,
+  info_link: infoLink,
   nippo_status: nippoStatus,
   checklist_status: checklistStatus,
   tasks_status: (sb, _p) => tasksStatus(sb),
