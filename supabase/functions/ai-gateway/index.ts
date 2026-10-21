@@ -2,7 +2,8 @@
 // ai-gateway — AI窓口（Hermes等）専用の読み取り専用データ経路（フェーズC-1）
 // 要件定義書§18準拠:
 //  - AIにはこの関数の専用トークン(AI_GATEWAY_TOKEN)だけを渡す（service_roleは渡さない）
-//  - 実行できるのは下のカタログに定義済みの照会だけ（自由SQL不可）
+//  - 実行できるのは下のカタログに定義済みの照会と、ai_sql（許可テーブル限定・読み取り専用SQL。2026-10-21追加・ユーザー承認済み）
+//    ai_sql はDB側で ai_reader ロールに降格して実行するため、ai_table_policy で拒否した機密テーブルは読めない
 //  - 全呼び出しを ai_audit_logs に記録
 //  - 機密（給与・口座・契約書・ID/PW金庫=infoスキーマ）へは一切アクセスしない
 //  - 書き込み系は sales_backfill（自テーブルの履歴補充・管理用）のみ
@@ -43,6 +44,29 @@ async function salesSummary(sb: any, p: any) {
     ...r,
     yoy_pct: ly > 0 ? Math.round(tm / ly * 1000) / 10 : null,
   };
+}
+
+// 2026-10-21追加（ユーザー指示・承認済み「管理システムに入っているデータは基本すべて答えられるように」）
+// 許可テーブル一覧と列（AIがSQLを組み立てる前に見る）。p.table で1テーブルに絞れる
+async function schemaInfo(sb: any, p: any) {
+  const { data, error } = await sb.rpc("ai_schema", { p_table: p?.table ?? null });
+  if (error) throw new Error(error.message);
+  return { tables: data ?? [], note: "ここに無いテーブルは機密（給与・口座・個人情報・秘密鍵・私信）または未判定のため読めません。店舗名は stores に join（store_id→stores.id）。日付列は 'YYYY-MM-DD'" };
+}
+// 読み取り専用SQL（SELECT/WITHのみ・8秒・500行まで）。DB側 ai_sql が ai_reader ロールに降格して実行するため、
+// ai_table_policy で拒否したテーブルは権限エラーになる（この関数自体はSQLを検査しない＝検査はDB側に一本化）
+async function runSql(sb: any, p: any) {
+  const sql = String(p?.sql ?? "").trim();
+  if (!sql) throw new Error("params.sql にSQLを入れてください");
+  const { data, error } = await sb.rpc("ai_sql", { p_sql: sql });
+  if (error) throw new Error(error.message);
+  return data;
+}
+// 日別・店舗別売上（既定=昨日）。前年の同じ曜日との比較つき
+async function salesDaily(sb: any, p: any) {
+  const { data, error } = await sb.rpc("ai_sales_daily", { p_date: p?.date ?? null, p_store: p?.store ?? null });
+  if (error) throw new Error(error.message);
+  return { note: "金額は円。last_year_same_weekday=前年の同じ曜日（364日前）。当日分は翌朝の同期後に確定", ...(data ?? {}) };
 }
 
 async function nippoStatus(sb: any, p: any) {
@@ -165,6 +189,9 @@ async function salesBackfill(sb: any, p: any) {
 const CATALOG: Record<string, (sb: any, p: any) => Promise<any>> = {
   store_directory: (sb, _p) => storeDirectory(sb),
   sales_summary: salesSummary,
+  sales_daily: salesDaily,
+  schema: schemaInfo,
+  sql: runSql,
   nippo_status: nippoStatus,
   checklist_status: checklistStatus,
   tasks_status: (sb, _p) => tasksStatus(sb),
