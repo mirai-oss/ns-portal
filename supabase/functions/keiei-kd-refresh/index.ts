@@ -627,14 +627,18 @@ const PL_AUTO_IGNORE_SOURCES = ["自動｜スポット人件費", "店舗間移�
 // ハイブリッド同期: stg_pl(GAS bqGetPL)の「自動連携行」だけを正本pl_entriesへ反映（(source×年月)単位のreplace_source）。
 // 手入力(source='手入力')には触れない。内容が変わった(source×年月)だけを入れ替える（毎時回しても履歴・ソフト削除行が増えない）。
 // 安全装置: 既存の自動行が20行以上で、今回の自動行が半分未満なら（取得の部分応答の疑い）中止。
-async function autoSyncFromStgPl(sb: any, dry = false): Promise<any> {
+async function autoSyncFromStgPl(sb: any, dry = false, ignoreFromOverride?: string): Promise<any> {
   const runId = dry ? "dry" : await startRun(sb, "kd_pl_auto_sync");
   try {
     const res = await dashAuthed(sb, "bqGetPL");
     if (!res.ok) throw new Error("bqGetPL取得に失敗: " + (res.error ?? ""));
     const raw: any[][] = res.sheets?.PL ?? [];
     const maps = await loadStoreMaps(sb);
-    const unresolved = new Set<string>(); let badYm = 0;
+    const unresolved = new Set<string>(); let badYm = 0; let ignoredInvoiceGas = 0;
+    // 請求書由来のPL確定行をpl_entriesへ直接書く切替（担当C・Q-C3）後は、旧GAS(writePlFee)が出す「補助科目に『外部連携:』を含む」行を取り込まない。
+    // app_secrets.pl_ignore_invoice_gas_from='YYYY-MM' を入れた時点から有効（その年月以降の行が対象）。未設定なら何もしない。切替の連絡があるまで入れない。
+    let ignoreFrom = ignoreFromOverride ?? "";
+    if (!ignoreFrom) { const { data: ig } = await sb.from("app_secrets").select("value").eq("key", "pl_ignore_invoice_gas_from").maybeSingle(); ignoreFrom = (ig?.value ?? "").trim(); }
     type R = { year_month: string; store_id: string | null; item: string; category: string; amount: number; memo: string; sub_item: string; source: string };
     const rows: R[] = [];
     for (let r = 1; r < raw.length; r++) {
@@ -642,6 +646,7 @@ async function autoSyncFromStgPl(sb: any, dry = false): Promise<any> {
       const memo = String(row[5] ?? "").trim(); const source = plAutoSourceOf(memo);
       if (!source || PL_AUTO_IGNORE_SOURCES.includes(source)) continue;   // 仕入高差額調整・店舗間移動もSupabaseが正本（cost_transfer_*・2026-10-13）   // スポット人件費はSupabase正本(spot_entries)から作る（2026-10-13）
       const ym = ymOf(row[0]); if (!ym) { badYm++; continue; }
+      if (ignoreFrom && /^\d{4}-\d{2}$/.test(ignoreFrom) && ym >= ignoreFrom && String(row[6] ?? "").includes("外部連携:")) { ignoredInvoiceGas++; continue; }
       const nm = String(row[1] ?? "").trim(); let sid: string | null = null;
       if (nm) { const hit = lookupStore(maps, nm); if (!hit) { unresolved.add(nm); continue; } sid = hit.store_id; }
       const item = String(row[2] ?? "").trim() || "(未分類)";
@@ -658,7 +663,7 @@ async function autoSyncFromStgPl(sb: any, dry = false): Promise<any> {
     for (const k of gOld.keys()) if (!gNew.has(k)) changed.add(k);
     if (dry) {   // 検証用: 書かずに差分だけ返す
       const bySrc: Record<string, number> = {}; for (const x of rows) bySrc[x.source] = (bySrc[x.source] ?? 0) + 1;
-      return { ok: true, dry: true, auto_rows: rows.length, existing_auto: old.length, changed_groups: changed.size, changed_sample: [...changed].slice(0, 12).map((k) => k.replace("\u0002", " / ")), by_source: bySrc, unresolved: [...unresolved], bad_ym: badYm };
+      return { ok: true, dry: true, auto_rows: rows.length, ignored_invoice_gas: ignoredInvoiceGas, ignore_from: ignoreFrom || null, existing_auto: old.length, changed_groups: changed.size, changed_sample: [...changed].slice(0, 12).map((k) => k.replace("\u0002", " / ")), by_source: bySrc, unresolved: [...unresolved], bad_ym: badYm };
     }
     let result: any = { inserted: 0, updated: 0, deleted: 0 };
     if (changed.size) {
@@ -674,7 +679,7 @@ async function autoSyncFromStgPl(sb: any, dry = false): Promise<any> {
     }
     const note = [unresolved.size ? `店舗名未対応(取込せず): ${[...unresolved].join("、")}` : "", badYm ? `年月不正で除外${badYm}行` : ""].filter(Boolean).join(" / ");
     await finishRun(sb, runId, true, rows.length, note || undefined);
-    return { ok: true, auto_rows: rows.length, changed_groups: changed.size, ...result, unresolved: [...unresolved], bad_ym: badYm };
+    return { ok: true, auto_rows: rows.length, ignored_invoice_gas: ignoredInvoiceGas, changed_groups: changed.size, ...result, unresolved: [...unresolved], bad_ym: badYm };
   } catch (e) {
     await finishRun(sb, runId, false, 0, String(e), "kd_pl_auto_sync");
     throw e;
@@ -1851,7 +1856,7 @@ Deno.serve(async (req) => {
         result = r?.ok ? { ok: true, sheets: Object.fromEntries(Object.entries(r.sheets ?? {}).map(([k, v]: any) => [k, { rows: (v as any[]).length, header: (v as any[])[0], sample: (v as any[]).slice(1, 3) }])) } : { ok: false, error: r?.error ?? "取得失敗" };
         break;
       }
-      case "pl_auto_sync": result = await autoSyncFromStgPl(sb, body.dry === true); break;
+      case "pl_auto_sync": result = await autoSyncFromStgPl(sb, body.dry === true, body.dry === true && typeof body.ignore_from === "string" ? body.ignore_from : undefined); break;
       case "pl_import": {   // 正本pl_entriesへの1回限りの取り込み（kd_pl_entriesから）。force=trueで既存があっても追加
         const { data, error } = await sb.rpc("pl_entries_import_from_kd", { p_actor: String(body.actor ?? "import"), p_force: body.force === true, p_reset: body.reset === true });
         result = error ? { ok: false, error: error.message } : data; break;
