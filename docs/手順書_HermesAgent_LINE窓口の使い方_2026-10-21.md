@@ -157,3 +157,29 @@ tail -5 ~/.hermes/logs/line-stack.log       # 最新の起動で「LINE webhook�
 - 設定変更後に初めて使うときは、まず **`/new`** を送って会話をリセットしてから質問する（古い「止める」状態を引きずらないため）。
 - もし「承認が必要」と言われたら（query.sh 以外のコマンドを実行しようとしたとき）、LINE で **`yes`** と送ると承認、**`no`** で拒否になる。何も送らないと5分で自動的に拒否される。
 - 聞き方は §2 の例文のとおりで、「売上教えて」でも動く。店舗を絞るときは「恵比寿の今月の売上」。
+
+---
+
+## 10. 2026-10-21 追記: 「管理システムに入っているデータは基本すべて答えられる」設計（準備済み・本番未反映）
+
+ユーザー指示「基本的に管理システムに入っているデータは、全て回答できるような状態に設計してほしい」への対応。
+固定カタログ7本では「昨日の店舗別売上」のような質問に答えられなかった（実際にLINEで「取得できません」と返答）。
+
+**設計（要件定義§18を維持: Read Only・service_roleを渡さない・ホワイトリスト・監査ログ）**
+
+| 部品 | 内容 |
+|---|---|
+| DBロール `ai_reader` | ログイン不可。public の**許可テーブルにだけ SELECT**。info スキーマ（ID/PW・契約・給与体系）は権限なし |
+| `ai_table_policy` | テーブルごとの許可/拒否と日本語説明。**拒否＝秘密鍵・トークン／給与・人件費の個人別／口座／従業員・応募者の個人情報／チャット私信／メール本文**。`users` は氏名・役割・所属だけのビュー `ai_users_v` で公開。**新しく作られたテーブルは「未判定＝拒否」**（`ai_reader_sync()` で権限を同期） |
+| RPC `ai_sql(p_sql)` | SELECT/WITH のみ・`;`不可・更新系キーワード拒否・**実行前に `set local role ai_reader` へ降格**・8秒・500行で打ち切り |
+| RPC `ai_schema()` | 読めるテーブルと列・説明の一覧（AIがSQLを組み立てる前に見る） |
+| RPC `ai_sales_daily()` | 特定日（既定=昨日）の店舗別売上・原価・人件費＋前年同曜日比 |
+| Edge Function `ai-gateway` | カタログに `schema` / `sql` / `sales_daily` を追加（全呼び出しは従来どおり `ai_audit_logs` に記録。SQL本文も params に残る） |
+| Hermes スキル | `query.sh schema [table]` / `query.sh sql "select ..."` を追加。トークンはスクリプト埋め込みをやめ `~/.config/ns-portal/ai_gateway_token` から読む（反映済み・既存照会の動作確認済み）。SKILL.md に「schema→sql」の手順と注意（join・日付・500行・permission denied＝機密）を追記 |
+
+**ファイル**: `supabase/2026-10-21_ai_reader_sql.sql`（ロール・ポリシー・RPC一式、確認用SQL付き）。`supabase/functions/ai-gateway/index.ts` への `schema`/`sql`/`sales_daily` 関数追加は、このセッションのツール権限で拒否されたため**未反映**（追加内容は `ai_schema`/`ai_sql`/`ai_sales_daily` を呼ぶだけの薄い関数3本＋CATALOGに3キー）。
+
+**本番反映に必要なこと（ユーザー作業 or 承認）**
+1. 拒否リスト（上表）の承認。追加で隠したい／開けたいテーブルがあれば指定。
+2. Supabase の Management API 用トークン（PAT）の再発行 → `~/.config/ns-portal/supabase_pat` に保存（現在のものは失効＝401）。これが無いと SQL 適用も Edge Function デプロイもできない。代替: SQL Editor で上記SQLを実行し、Edge Function は `npx supabase functions deploy ai-gateway --no-verify-jwt --project-ref uuvsxzhpxtghojoubjcc`（要 `npx supabase login`）。
+3. 反映後の確認: `query.sh schema dash_sales_daily` → 列が返る／`query.sh sql "select * from sf_payroll_sync limit 1"` → permission denied／`query.sh sql "delete from stores"` → エラー／LINEで「昨日の店舗別売上」→ 数字が返る。
