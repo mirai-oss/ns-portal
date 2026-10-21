@@ -106,10 +106,10 @@ on conflict (table_name) do update set description = excluded.description;
 create or replace function ai_reader_sync()
 returns table(table_name text, allowed boolean, action text)
 language plpgsql security definer set search_path = public as $$
-declare r record; v_allowed boolean;
+declare r record; v_allowed boolean; v_has_pol boolean;
 begin
   for r in
-    select c.relname as tname, c.relkind
+    select c.relname as tname, c.relkind, c.relrowsecurity as rls
     from pg_class c join pg_namespace n on n.oid = c.relnamespace
     where n.nspname = 'public' and c.relkind in ('r','v','m','p') and c.relname not like 'pg_%'
   loop
@@ -119,11 +119,17 @@ begin
       insert into ai_table_policy(table_name, allowed, reason) values (r.tname, false, '未判定（新規テーブル・既定は拒否）') on conflict do nothing;
       v_allowed := false;
     end if;
+    select exists(select 1 from pg_policies pp where pp.schemaname='public' and pp.tablename = r.tname and pp.policyname='ai_reader_read') into v_has_pol;
     if v_allowed then
       execute format('grant select on %I to ai_reader', r.tname);
+      -- RLSが有効なテーブルは、GRANTだけでは行が見えない（ポリシー無し=0行）。ai_reader 専用の SELECT ポリシー（全行・読み取りのみ）を付ける
+      if r.relkind in ('r','p') and r.rls and not v_has_pol then
+        execute format('create policy ai_reader_read on %I for select to ai_reader using (true)', r.tname);
+      end if;
       table_name := r.tname; allowed := true; action := 'grant'; return next;
     else
       execute format('revoke all on %I from ai_reader', r.tname);
+      if v_has_pol then execute format('drop policy ai_reader_read on %I', r.tname); end if;
       table_name := r.tname; allowed := false; action := 'revoke'; return next;
     end if;
   end loop;
@@ -148,22 +154,34 @@ begin
   v_sql := btrim(coalesce(p_sql, ''));
   v_sql := regexp_replace(v_sql, ';\s*$', '');
   if v_sql = '' then raise exception 'SQLが空です'; end if;
-  if v_sql ~* '^\s*(select|with)\b' is not true then raise exception 'SELECT / WITH で始まる読み取り専用SQLだけ実行できます'; end if;
+  -- 注意: PostgreSQL の正規表現では \b は単語境界ではない（\y / \m / \M を使う）
+  if v_sql !~* '^\s*(select|with)\y' then raise exception 'SELECT / WITH で始まる読み取り専用SQLだけ実行できます'; end if;
   if position(';' in v_sql) > 0 then raise exception '複数の文は実行できません（; を含めない）'; end if;
-  if v_sql ~* '\m(insert|update|delete|truncate|drop|alter|create|grant|revoke|copy|call|do|vacuum|analyze|refresh|lock|set|reset|pg_sleep|pg_read|lo_|dblink)\M' then
-    raise exception '読み取り以外の命令が含まれています';
+  -- generate_series は FROM 句で一時ファイルに実体化され、巨大指定でディスクを食い潰した実績（2026-10-21検証時）があるため禁止
+  if v_sql ~* '\m(insert|update|delete|truncate|drop|alter|create|grant|revoke|copy|call|do|vacuum|analyze|refresh|lock|set|reset|pg_sleep|pg_read|lo_|dblink|generate_series)\M' then
+    raise exception '読み取り以外の命令、または重い生成関数が含まれています';
   end if;
-  -- 権限を ai_reader に降格（security definer の権限では実行しない）
-  execute 'set local role ai_reader';
+  -- 権限の降格: security definer 関数内では SET ROLE が禁止（42501）のため、この関数の「所有者」を ai_reader にする
+  -- （下の alter function ... owner to ai_reader）。security definer は所有者の権限で動くので、結果として ai_reader の権限で実行される
   execute 'set local statement_timeout = ''8000''';
-  execute 'set local search_path = public';
-  execute format('select coalesce(jsonb_agg(t), ''[]''::jsonb), count(*) from (%s) t', v_sql) into v_rows, v_count;
+  execute 'set local work_mem = ''16MB''';
+  -- temp_file_limit はスーパーユーザー専用で設定不可（42501）。巨大な一時ファイルは generate_series 禁止＋8秒で抑える
+  -- 501行だけ取り、500を超えていたら打ち切りフラグ（クエリの再実行はしない）
+  execute format('select coalesce(jsonb_agg(t), ''[]''::jsonb), count(*) from (select * from (%s) q0 limit 501) t', v_sql) into v_rows, v_count;
   if v_count > 500 then
-    execute format('select coalesce(jsonb_agg(t), ''[]''::jsonb) from (select * from (%s) q limit 500) t', v_sql) into v_rows;
+    v_rows := (select jsonb_agg(e) from (select e from jsonb_array_elements(v_rows) e limit 500) s);
   end if;
-  return jsonb_build_object('rows', v_rows, 'row_count', least(v_count, 500), 'total_count', v_count, 'truncated', v_count > 500);
+  return jsonb_build_object('rows', v_rows, 'row_count', least(v_count, 500), 'truncated', v_count > 500,
+                            'note', case when v_count > 500 then '500行で打ち切り。集計やWHEREで絞ってください' else null end);
 end $$;
+-- ※ 既に ai_reader 所有で存在する場合、postgres は CREATE OR REPLACE できない（must be owner）。
+--    再作成するときは先に `set role ai_reader; drop function ai_sql(text); reset role;` を実行する
+grant ai_reader to postgres with set true, inherit false;  -- postgres が所有者変更できるように（SET権限のみ・継承なし）
+grant create on schema public to ai_reader;        -- 所有者になるには一時的にスキーマのCREATEが必要
+alter function ai_sql(text) owner to ai_reader;   -- ← これが権限降格の実体
+revoke create on schema public from ai_reader;     -- 所有者変更が済んだらすぐ戻す
 revoke all on function ai_sql(text) from public, anon, authenticated;
+grant execute on function ai_sql(text) to service_role, postgres;
 
 -- ---------- 5. スキーマ案内 ----------
 create or replace function ai_schema(p_table text default null)
