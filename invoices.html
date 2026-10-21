@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-19-v153";
+const BUILD_TAG="2026-10-21-v154";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -8173,6 +8173,10 @@ async function renderUnifiedInvoiceTab(u){
   }
   UNIFIED_STATE.rows=raw.filter(row=>!row.email||!row.email.mail_kind||row.email.mail_kind==="invoice"); // 売上入金メールの自動処理分は「売上入金」タブの「📧メールの売上入金」に出す（2026-10-15）
   UNIFIED_STATE.corporations=corpCache.corporations;
+  // 2026-10-19: 期限超過のバナーの「振込待ちを開く」や、サイドバー・URLから振込待ち／PL未反映のサブタブを直接開いたとき、そのデータを読み込まずに描画していたため
+  // 件数は出るのに一覧が空（該当する請求書はありません）になっていた。サブタブを開く入口がどれでも、先にデータを取得する
+  if(UNIFIED_STATE.subTab==="payment") await transferFetchData();
+  if(UNIFIED_STATE.subTab==="plpending") await plpFetch_();
   unifiedRender(u);
 }
 // 一覧の「法人」列をその場で選べるようにする（2026-09-03追加。ユーザー報告
