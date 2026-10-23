@@ -59,6 +59,12 @@
 - **未了**: SQL v6の事前報告→ユーザー適用／smaregi-syncデプロイ（D分と一緒）／実機確認（LiveGate契約sdm155v1・黒霧屋のスタッフ）／D依頼の`hq_create_payroll_tasks`・`cash_handoff_targets`の兼務対応（Phase2前・現行の本番定義の確認が要る＝PAT待ち）。
 
 
+## 2026-10-23 担当C: 請求書のPL確定行を pl_entries へ直接書く切替を実施（ユーザー承認済み）
+- app_secrets.pl_direct_write='1'（2026-10以降のconfirmは pl_entries 直接。GAS writePlFeeは請求書分で呼ばない・戻すときはフラグを消す）。source='自動｜請求書'、source_key='inv:<請求書ID>:<反映ID>:<store_id>'、modeはupsert。取消=pl_entries_delete（unconfirm）。
+- direct_rebuild(2026-10〜12)で直接行30行(10月21行¥1,333,004・11月9行¥461,546)を投入。比較レポート: 10月は旧GAS由来21行とほぼ一致（差=本部通信費¥3,437のみ・請求書記録の無いずれ残り）。11月は通信費8店舗が直接のみ。
+- レーンP: autoSyncFromStgPlの無視リストに'自動｜請求書'追加済み。**app_secrets.pl_ignore_invoice_gas_from='2026-10'（旧GAS行の取込停止）の投入をレーンPに依頼済み**（投入までは旧GAS行と二重に見える）。投入後にpl_monthlyで月別合計を突合。2026-09以前は従来のGAS由来のまま。
+- 請求書の支払方法を4つ(銀行振込/引き落とし/現金払い/クレジット払い)に整理(PayPay銀行CSVは給与専用・SQL適用済み)。引き落とし元のMF口座を選べる(vendor_bank_accounts.mf_debit_*)。請求書0件のメールは完了不可(SQL)＋画面から自動作成。
+
 ## 2026-10-19〜20 担当C: 請求書フロー整理・SK/MostFun/SSS・PL書き込みずれの修復（ユーザー承認の上で実施）
 - **SKのMF連携**: tenant_id=sk を認可済み。MF_TENANT_BY_CORP(invoice-journal-draft)・MF_TENANT_BY_CORP_CODE(invoices.html)に sk/livegate を追加。未連携法人は要対応で止める(トーホーへ誤登録しない)。SKは店舗マスタに店舗なし→invoice-checkで「店舗マスタに店舗を持たない法人は、仕訳案に部門があれば店舗確定」とみなす。Cure Next(SK宛¥55,000)承認・照合まで完了。
 - **請求書フロー簡素化**: 振込済み=完了(SQL 2026-10-19_payment_auto_complete.sql のトリガ・支払確認ボタン廃止・取消可)、承認時に支払方法設定済みなら自動で振込待ち(autoQueuePayment_)、売上入金メールは期限超過にしない。承認画面にPL・広告費・精算書の反映確認(する/しない・理由・店舗選択・本部追加)を統合(v152〜v153)。メール種別が未判定の請求書も一覧に出す(v148)。サイドバーの承認待ち等の sub 指定を反映(v147)。売上入金タブ上部にメール売上入金の承認待ちバナー(v150)。法人で絞り込み(v146)。
