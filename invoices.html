@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-21-v156";
+const BUILD_TAG="2026-10-21-v157";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -5696,7 +5696,10 @@ function currentVendorAccount(invoice){
   return cur.find(a=>invoice.store_id&&a.store_id===invoice.store_id)||cur.find(a=>!a.store_id)||(cur.length===1?cur[0]:null);
 }
 const BANK_TYPE_LABEL={"2":"当座","4":"貯蓄"};
-const PAYMENT_METHOD_LABEL={bank_transfer:"銀行振込",direct_debit:"引き落とし",cash:"現金払い",credit_card:"クレジット払い",other_bank_transfer:"他行口座から振込"};
+const PAYMENT_METHOD_LABEL={bank_transfer:"銀行振込",direct_debit:"引き落とし",cash:"現金払い",credit_card:"クレジット払い",other_bank_transfer:"銀行振込"};   // 2026-10-21: 請求書の支払方法の「銀行振込」は旧「他行口座から振込」（PayPay銀行CSVは給与の支払い専用に変更）
+// 支払方法の色（一覧の左端で、振込と引き落としが一目で分かるように）: 銀行振込=青／引き落とし=オレンジ／現金=緑／クレジット=紫
+const PAYMETHOD_COLOR={bank_transfer:["#1d4ed8","#dbeafe"],other_bank_transfer:["#1d4ed8","#dbeafe"],direct_debit:["#c2410c","#ffedd5"],cash:["#15803d","#dcfce7"],credit_card:["#7e22ce","#f3e8ff"]};
+function payMethodPill_(m){ const c=PAYMETHOD_COLOR[m]||["#555","#eee"]; return `<span style="display:inline-block;padding:2px 10px;border-radius:999px;font-size:12px;font-weight:700;color:${c[0]};background:${c[1]};border:1px solid ${c[0]}33;white-space:nowrap">${esc(PAYMENT_METHOD_LABEL[m]||m)}</span>`; }
 // 2026-09-08新設：ユーザー要望「支払い方法にクレジット払い・他行口座から振込を追加する」に対応。
 // bank_transfer（PayPay銀行CSVでまとめて振込）とother_bank_transfer（PayPay銀行CSVの対象外・
 // 別の銀行から手動で振込）は、どちらも振込先の銀行口座情報が必要な点は同じ（＝銀行口座の入力欄を
@@ -5712,14 +5715,13 @@ function paymentMethodHasBankInfo(method){ return method==="bank_transfer"||meth
 // 銀行振込以外を選んだ場合は口座情報の入力欄を隠す（給与の振込先口座登録
 // ＝payrollOpenBankModalの「現金手渡し」パターンと同じ考え方）
 function bankAccountEditFormHtml(acc){
-  const method=(acc&&acc.payment_method)||"bank_transfer";
+  const method0=(acc&&acc.payment_method)||"other_bank_transfer"; const method=method0==="bank_transfer"?"other_bank_transfer":method0;   // 旧「PayPay銀行CSV」の銀行振込は、新しい「銀行振込」として扱う
   const storeOpts=`<option value="">（指定なし＝この取引先全体の口座）</option>`+((CORP_STORE_CACHE&&CORP_STORE_CACHE.stores)||[]).map(x=>`<option value="${esc(x.id)}" ${acc&&acc.store_id===x.id?"selected":""}>${esc(x.name)}</option>`).join("");
   return `<div class="card" style="padding:10px;border-color:var(--m-blue)">
     <div class="ai-field" style="margin-bottom:10px"><small>この口座を使う店舗（店舗ごとに口座が違う取引先だけ指定。通常は指定なし）</small><select id="pbe-store">${storeOpts}</select></div>
     <div class="ai-field" style="margin-bottom:10px"><small>支払方法</small>
       <select id="pbe-method">
-        <option value="bank_transfer" ${method==="bank_transfer"?"selected":""}>銀行振込（PayPay銀行CSVの対象になります）</option>
-        <option value="other_bank_transfer" ${method==="other_bank_transfer"?"selected":""}>他行口座から振込（PayPay銀行CSVの対象外・手動で振込）</option>
+        <option value="other_bank_transfer" ${method==="other_bank_transfer"?"selected":""}>銀行振込（口座情報を登録して、手動で振込）</option>
         <option value="direct_debit" ${method==="direct_debit"?"selected":""}>引き落とし（銀行口座の登録は不要です）</option>
         <option value="cash" ${method==="cash"?"selected":""}>現金払い（銀行口座の登録は不要です）</option>
         <option value="credit_card" ${method==="credit_card"?"selected":""}>クレジット払い（銀行口座の登録は不要です）</option>
@@ -5815,7 +5817,7 @@ function invoicePaymentTabHtml(invoice){
       ?`<div class="meta" style="color:var(--muted);font-size:12px;margin-top:2px">${acc.bank_code?esc(acc.bank_code)+"　":""}${esc(acc.bank_name||"—")} ${acc.branch_code?esc(acc.branch_code)+"　":""}${esc(acc.branch_name||"")} ${BANK_TYPE_LABEL[acc.account_type]||"普通"} ${esc(acc.account_number||"—")}（${esc(acc.account_holder_kana||"—")}）</div>`
       :`<div class="meta" style="color:var(--muted);font-size:12px;margin-top:2px"><span class="invoice-status gray">${esc(PAYMENT_METHOD_LABEL[method]||method)}</span>（銀行口座の登録は不要です）</div>`;
     bankBoxHtml=`<div class="ai-field" style="margin-bottom:10px" id="pay-bankbox"><small>取引先・振込先口座</small>
-      <b>${esc(vendorLinkedName)}</b>　<span class="invoice-status ${method==="bank_transfer"?"gray":"check"}" style="margin-left:4px">${esc(PAYMENT_METHOD_LABEL[method]||method)}</span>
+      <b>${esc(vendorLinkedName)}</b>　<span style="margin-left:4px">${payMethodPill_(method)}</span>
       ${accDetailHtml}
       ${missingCodes?'<div class="meta" style="color:var(--m-red);font-size:11px;margin-top:4px">⚠️ 銀行コード・支店コードが未登録です。PayPay銀行への振込CSV作成でエラーになるため、下の「編集する」から入力してください。</div>':""}
       <div class="mail-actions" style="margin-top:6px"><button class="hq-btn" id="pay-bank-edit">✏️ 支払方法・口座情報を編集する</button><button class="hq-btn" id="pay-vendor-relink-toggle" style="font-size:11px;color:var(--muted)">🔗 取引先の紐付けを変更する</button></div>
@@ -8678,7 +8680,7 @@ function debitAcctLabel_(acc){
 function transferRowHtml(r){
   const acc=transferAccountOf(r);
   const blocked=r.bank_account_change_detected;
-  const method=acc?(acc.payment_method||"bank_transfer"):null;
+  const method=acc?transferMethodKey(r):null;
   // 2026-09-05追加：ユーザー報告「PayPay銀行CSVをアップロードしたら『銀行コードは必須入力
   // 項目です』とエラーが出た」に対応。銀行コード・支店コードが未登録の口座はCSV出力すると
   // 必ずエラーになるため、選択できないようにして事前に気付けるようにする。
@@ -8687,7 +8689,7 @@ function transferRowHtml(r){
   // 選択不可にしないようにする）
   const missingCodes=method==="bank_transfer"&&(!acc.bank_code||!acc.branch_code);
   const pay=PAYMENT_STATUS_LABEL[r.payment_status]||PAYMENT_STATUS_LABEL.not_ready;
-  const methodCell=method?`<span class="invoice-status ${method==="bank_transfer"?"gray":"check"}">${esc(PAYMENT_METHOD_LABEL[method]||method)}</span>`:"—";
+  const methodCell=method?payMethodPill_(method):"—";
   // 引き落とし・現金払い・クレジット払いは銀行口座欄そのものが不要なので3列（銀行・支店・口座番号）を
   // まとめて「口座登録不要」にする。2026-09-08修正：他行口座から振込（other_bank_transfer）は
   // 銀行口座情報を持つため、bank_transferと同じく口座欄を表示する（paymentMethodHasBankInfo参照）
@@ -8737,8 +8739,8 @@ function transferFilteredRows(){
   return rows;
 }
 // 支払方法の絞り込み用キー（請求先の振込先設定の支払方法。未登録は「__none__」）。bank_transferは実際の運用上PayPay銀行からの振込
-const TRANSFER_METHOD_FILTERS=[["bank_transfer","🏦 PayPay銀行から振込"],["other_bank_transfer","🏦 他行口座から振込"],["direct_debit","🔁 引き落とし"],["cash","💴 現金払い"],["credit_card","💳 クレジット払い"],["__none__","（支払方法 未登録）"]];
-function transferMethodKey(r){ const acc=transferAccountOf(r); return acc?(acc.payment_method||"bank_transfer"):"__none__"; }
+const TRANSFER_METHOD_FILTERS=[["other_bank_transfer","🏦 銀行振込"],["direct_debit","🔁 引き落とし"],["cash","💴 現金払い"],["credit_card","💳 クレジット払い"],["__none__","（支払方法 未登録）"]];
+function transferMethodKey(r){ const acc=transferAccountOf(r); if(!acc) return "__none__"; const m=acc.payment_method||"other_bank_transfer"; return m==="bank_transfer"?"other_bank_transfer":m; }   // 旧bank_transferも銀行振込として扱う
 // 2026-09-14追加：ユーザー指示「振り込みのタブもなくしてしまって、請求書一覧の中の
 // 振り込み待ちのところにその振り込みタブで開いた画面を入れれば管理もしやすい」に対応し、
 // transferRenderの中身（KPI3・戻るボタンを除く本体部分）をunifiedRenderからも呼べる
@@ -8781,7 +8783,6 @@ function transferBodyHtml(){
           <tbody>${filtered.length?filtered.map(transferRowHtml).join(""):'<tr><td colspan="12">該当する請求書はありません</td></tr>'}</tbody>
         </table></div>
         <div class="mail-actions" style="margin-top:10px">
-          <button class="hq-btn blue" id="transfer-export-csv">📥 PayPay銀行CSVを出力</button>
           <button class="hq-btn primary" id="transfer-mark-paid">✅ 選択を振込済みにする</button>
           <button class="hq-btn" id="transfer-pay-scan" title="引き落とし・他行口座から振込の請求書を、MFに入っている預金の出金仕訳と照合します（MFには何も書き込みません）">🔎 引き落とし・他行振込を照合</button>
         </div>
@@ -8798,7 +8799,7 @@ function transferWireBody(u){
   document.querySelectorAll("[data-transfer-open]").forEach(el=>el.onclick=()=>{
     openInvoiceDetail(u,el.dataset.transferOpen);
   });
-  $("transfer-export-csv").onclick=()=>transferExportCsv(u);
+  if($("transfer-export-csv")) $("transfer-export-csv").onclick=()=>transferExportCsv(u);
   $("transfer-mark-paid").onclick=()=>transferMarkPaid(u);
   if($("transfer-pay-scan")) $("transfer-pay-scan").onclick=()=>transferPaymentScan(u);
 }
@@ -14868,13 +14869,12 @@ let VB_STATE={vendorId:null,accounts:[]};
 // 無ければ従来どおり「追加」（新しい現在有効な口座として登録＝既存の現在有効な口座は
 // 自動的に過去口座になる）
 function vbShowAccountEditor(vendorId,existingAccount){
-  const method0=(existingAccount&&existingAccount.payment_method)||"bank_transfer";
+  const method0=(()=>{ const m=(existingAccount&&existingAccount.payment_method)||"other_bank_transfer"; return m==="bank_transfer"?"other_bank_transfer":m; })();
   $("vb-editor").innerHTML=`<div class="card" style="padding:12px;border-color:var(--m-blue)">
     ${existingAccount?`<div class="meta" style="color:var(--muted);font-size:11px;margin-bottom:8px">✏️ 既存の${existingAccount.is_current?"現在有効な":"過去の"}口座を編集します（内容を直すだけで、履歴（現在有効／過去口座の区別）は変わりません）</div>`:""}
     <div class="ai-field" style="margin-bottom:10px"><small>支払方法</small>
       <select id="vb-method">
-        <option value="bank_transfer" ${method0==="bank_transfer"?"selected":""}>銀行振込（PayPay銀行CSVの対象になります）</option>
-        <option value="other_bank_transfer" ${method0==="other_bank_transfer"?"selected":""}>他行口座から振込（PayPay銀行CSVの対象外・手動で振込）</option>
+        <option value="other_bank_transfer" ${method0==="other_bank_transfer"?"selected":""}>銀行振込（口座情報を登録して、手動で振込）</option>
         <option value="direct_debit" ${method0==="direct_debit"?"selected":""}>引き落とし（銀行口座の登録は不要です）</option>
         <option value="cash" ${method0==="cash"?"selected":""}>現金払い（銀行口座の登録は不要です）</option>
         <option value="credit_card" ${method0==="credit_card"?"selected":""}>クレジット払い（銀行口座の登録は不要です）</option>

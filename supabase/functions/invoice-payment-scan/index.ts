@@ -103,7 +103,7 @@ Deno.serve(async (req: Request) => {
       const { data: accs } = await db.from("vendor_bank_accounts").select("vendor_id, store_id, payment_method").in("vendor_id", vendorIds).eq("is_current", true);
       for (const a of accs ?? []) { const l = accByVendor.get(a.vendor_id) ?? []; l.push(a); accByVendor.set(a.vendor_id, l); }
     }
-    const methodOf = (r: any) => { const cur = accByVendor.get(r.vendor_id) ?? []; const a = cur.find((x) => r.store_id && x.store_id === r.store_id) || cur.find((x) => !x.store_id) || (cur.length === 1 ? cur[0] : null); return a ? (a.payment_method || "bank_transfer") : null; };
+    const methodOf = (r: any) => { const cur = accByVendor.get(r.vendor_id) ?? []; const a = cur.find((x) => r.store_id && x.store_id === r.store_id) || cur.find((x) => !x.store_id) || (cur.length === 1 ? cur[0] : null); return a ? (a.payment_method === "bank_transfer" || !a.payment_method ? "other_bank_transfer" : a.payment_method) : null; };   // 2026-10-21: 旧bank_transferは銀行振込(other_bank_transfer)として照合する
     const targets = body?.only_source ? [] : (invs ?? []).filter((r: any) => ["direct_debit", "other_bank_transfer"].includes(methodOf(r) ?? ""));
     const byTenant = new Map<string, any[]>();
     for (const r of targets) { const t = r.journal_draft?.tenant_id || "default"; const l = byTenant.get(t) ?? []; l.push(r); byTenant.set(t, l); }

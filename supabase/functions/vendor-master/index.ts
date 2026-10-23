@@ -236,7 +236,8 @@ Deno.serve(async (req: Request) => {
       // 対応。銀行振込以外（引き落とし・現金払い）は銀行口座情報が不要なため、送られてこなければ
       // nullのまま保存する（payroll_bank_accountsの現金払いパターンと同じ考え方）。
       // 2026-09-08追加：クレジット払い・他行口座から振込を追加（ユーザー要望）
-      const paymentMethod = ["bank_transfer", "direct_debit", "cash", "credit_card", "other_bank_transfer"].includes(a.payment_method) ? a.payment_method : "bank_transfer";
+      // 2026-10-21: 請求書の支払方法は 銀行振込(other_bank_transfer)/引き落とし/現金払い/クレジット払い の4つ。PayPay銀行CSV(bank_transfer)は給与の支払い専用になったため、請求書側では受け付けず銀行振込に寄せる
+      const paymentMethod = ["direct_debit", "cash", "credit_card", "other_bank_transfer"].includes(a.payment_method) ? a.payment_method : "other_bank_transfer";
       const row: Record<string, unknown> = {
         vendor_id: vendorId,
         payment_method: paymentMethod,
