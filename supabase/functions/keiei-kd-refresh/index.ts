@@ -646,7 +646,8 @@ async function autoSyncFromStgPl(sb: any, dry = false, ignoreFromOverride?: stri
       const memo = String(row[5] ?? "").trim(); const source = plAutoSourceOf(memo);
       if (!source || PL_AUTO_IGNORE_SOURCES.includes(source)) continue;   // 仕入高差額調整・店舗間移動もSupabaseが正本（cost_transfer_*・2026-10-13）   // スポット人件費はSupabase正本(spot_entries)から作る（2026-10-13）
       const ym = ymOf(row[0]); if (!ym) { badYm++; continue; }
-      if (ignoreFrom && /^\d{4}-\d{2}$/.test(ignoreFrom) && ym >= ignoreFrom && String(row[6] ?? "").includes("外部連携:")) { ignoredInvoiceGas++; continue; }
+      // 対象は pl-fee-reflect 系の旧GAS行＝source が「自動｜<科目>」。広告費の自動計上（媒体販促費（自動計上））や運営委託費（自動計上）も補助科目に『外部連携:』を持つが、請求書のpl直接書込の対象外なので無視しない
+      if (ignoreFrom && /^\d{4}-\d{2}$/.test(ignoreFrom) && ym >= ignoreFrom && source.startsWith("自動｜") && String(row[6] ?? "").includes("外部連携:")) { ignoredInvoiceGas++; continue; }
       const nm = String(row[1] ?? "").trim(); let sid: string | null = null;
       if (nm) { const hit = lookupStore(maps, nm); if (!hit) { unresolved.add(nm); continue; } sid = hit.store_id; }
       const item = String(row[2] ?? "").trim() || "(未分類)";

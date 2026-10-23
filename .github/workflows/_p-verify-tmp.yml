@@ -11,4 +11,4 @@ jobs:
           SR_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: |
           U="https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/keiei-kd-refresh"
-          curl -s -m 280 -w "\nHTTP %{http_code}\n" -X POST "$U" -H "Authorization: Bearer $SR_KEY" -H "Content-Type: application/json" -d '{"op":"diag_pl_rows","ym":"2026-10","memo":"媒体販促費"}' | cut -c1-600
+          curl -s -m 280 -w "\nHTTP %{http_code}\n" -X POST "$U" -H "Authorization: Bearer $SR_KEY" -H "Content-Type: application/json" -d '{"op":"pl_monthly"}' | cut -c1-600
