@@ -1844,6 +1844,13 @@ Deno.serve(async (req) => {
       case "media_monthly": result = await refreshMediaMonthly(sb, body); break;
       case "entries": result = await refreshEntries(sb, body); break;
       case "gas_sync": result = await gasSync(body); break;
+      case "diag_pl_rows": {   // 診断(読み取りのみ): GAS bqGetPL(stg_pl)の生の行を年月・メモ部分一致で絞って返す
+        const r = await dashAuthed(sb, "bqGetPL");
+        const rows: any[][] = r?.sheets?.PL ?? [];
+        const ym = String(body.ym ?? ""); const memoLike = String(body.memo ?? ""); const storeLike = String(body.store ?? "");
+        result = { ok: !!r?.ok, total: rows.length, rows: rows.slice(1).filter((x) => (!ym || ymOf(x[0]) === ym) && (!memoLike || String(x[5] ?? "").includes(memoLike)) && (!storeLike || String(x[1] ?? "").includes(storeLike))).slice(0, 60) };
+        break;
+      }
       case "shiire_preview": result = await shiirePreview(sb, body); break;
       case "dash_target_sync": {   // dash-syncの目標・目標月次だけ反映を起動（BQ_LOAD_TOKEN認証）。完了を待つ
         const tk = Deno.env.get("BQ_LOAD_TOKEN") ?? "";
