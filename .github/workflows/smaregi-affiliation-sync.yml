@@ -34,7 +34,7 @@ on:
         default: false
         type: boolean
       cutover_apply:
-        description: '運営変更の後始末（終わった店舗の所属解除・移籍した人の打刻OFF）だけ実行する（mode=reportでも）'
+        description: '運営変更の後始末（終わった店舗の所属解除）だけ実行する（mode=reportでも）'
         required: false
         default: false
         type: boolean
@@ -69,11 +69,12 @@ jobs:
           FORCE: ${{ github.event.inputs.force }}
           PENDING: ${{ github.event.inputs.pending }}
           CUTOVER: ${{ github.event.inputs.cutover_apply || vars.AFFILIATION_CUTOVER_APPLY }}
+          CUTOVER_DEACT: ${{ vars.AFFILIATION_CUTOVER_DEACTIVATE }}
           APPLY_NEW: ${{ github.event.inputs.apply_new || vars.AFFILIATION_APPLY_NEW }}
           ALLOW_EMPTY: ${{ github.event.inputs.allow_empty }}
         run: |
           if [ -z "$SR_KEY" ]; then echo "::error::SUPABASE_SERVICE_ROLE_KEY が未設定です"; exit 1; fi
-          BODY=$(node -e "console.log(JSON.stringify({mode: process.env.MODE, contract_id: process.env.CONTRACT||undefined, user_id: process.env.USER_ID||undefined, force: process.env.FORCE==='true', pending: process.env.PENDING==='true', allow_empty: process.env.ALLOW_EMPTY==='true', cutover_apply: process.env.CUTOVER==='true', apply_new: process.env.APPLY_NEW==='true'}))")
+          BODY=$(node -e "console.log(JSON.stringify({mode: process.env.MODE, contract_id: process.env.CONTRACT||undefined, user_id: process.env.USER_ID||undefined, force: process.env.FORCE==='true', pending: process.env.PENDING==='true', allow_empty: process.env.ALLOW_EMPTY==='true', cutover_apply: process.env.CUTOVER==='true', cutover_deactivate: process.env.CUTOVER_DEACT==='true', apply_new: process.env.APPLY_NEW==='true'}))")
           RES=$(curl -s -w "\n%{http_code}" -X POST \
             "https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/smaregi-affiliation-sync" \
             -H "Authorization: Bearer $SR_KEY" -H "Content-Type: application/json" -d "$BODY")

@@ -14,7 +14,7 @@
 //     一致しなければ隔離してLarkへ（人が「この店舗」or「新規店舗」を選ぶ）。自動登録できたとき、その店舗の「事業所を作成してください」タスクは自動完了にする。
 //   - 管理システムに店舗が増えたのにスマレジに事業所が無い → 本部タスク「スマレジ・タイムカードに事業所『○○』を作成してください（契約: ○○）」を1回だけ自動発行。
 //
-// 呼び出し: POST { mode?: "report"|"apply"（既定report）, contract_id?: string, user_id?: string（その1人だけ。初回の立会い確認用）, allow_empty?: boolean（user_id指定時のみ。管理システムの所属が0件のとき、スマレジの所属も全部外す）, cutover_apply?: boolean（運営変更の後始末だけ実行する。mode=reportでも）, apply_new?: boolean（台帳の無い新しい人だけ、mode=reportでも管理システム優先で反映する）, force?: boolean }
+// 呼び出し: POST { mode?: "report"|"apply"（既定report）, contract_id?: string, user_id?: string（その1人だけ。初回の立会い確認用）, allow_empty?: boolean（user_id指定時のみ。管理システムの所属が0件のとき、スマレジの所属も全部外す）, cutover_apply?: boolean（運営変更の後始末X1=終わった店舗の所属解除だけ実行する。mode=reportでも）, cutover_deactivate?: boolean（X2=契約終了後の打刻OFF。既定オフ）, apply_new?: boolean（台帳の無い新しい人だけ、mode=reportでも管理システム優先で反映する）, force?: boolean }
 //   report=試行（スマレジにも user_stores にも書かない。同期ログとLarkだけ）／apply=実際に反映
 // 認可: service_role直呼び、または CEO/HQ のJWT。
 // 応答は件数のみ（公開リポジトリのActionsログに氏名・店舗名を残さない）。名前を含む詳細はLark(社内)と staff_store_sync_log にだけ出す。
@@ -202,8 +202,11 @@ Deno.serve(async (req) => {
               }
             }
           }
-          const { data: closed } = await sb.from("employee_smaregi_links").select("user_id,smaregi_staff_id,effective_to,users(name,is_active)")
-            .eq("contract_id", c.contract_id).lt("effective_to", today).gte("effective_to", since);
+          // X2は body.cutover_deactivate=true のときだけ動く（既定オフ）。移籍者の利用停止（打刻OFF）は、退職手続きタスク（源泉徴収票のアップ→完了）の既存ロジックが行う
+          const { data: closed } = body.cutover_deactivate === true
+            ? await sb.from("employee_smaregi_links").select("user_id,smaregi_staff_id,effective_to,users(name,is_active)")
+              .eq("contract_id", c.contract_id).lt("effective_to", today).gte("effective_to", since)
+            : { data: [] as any[] };
           for (const l of closed ?? []) {
             if ((l as any).users?.is_active === false) continue; // 退職（アカウント停止）の人は毎朝の退職処理が担当
             const stf = String((l as any).smaregi_staff_id);
