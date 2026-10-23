@@ -726,7 +726,8 @@ Deno.serve(async (req) => {
     //   { action:"wage_pull_all", contract_id?, offset?, limit?(既定15・最大30) }  1回の呼び出しで limit 人ずつ処理。画面が done=true になるまで offset=next_offset で繰り返し呼ぶ。
     //   対象=その契約の有効なリンクがあり、管理システムのアカウントが有効な人。取り込むのは「現在有効（適用開始日が今日以前で最新）＋これから適用（未来日）」の
     //   時給(0)・月給(2)だけ（過去の履歴・日給(1)・営業時間帯別(3)・固定残業代は対象外＝件数だけ返す）。
-    //   管理システムに無い行は synced として追加／管理システムが反映済み(synced)で値が違う行はスマレジの値で更新／管理システム側に未反映(pending/error)の行は上書きしない（conflictsとして数える）。
+    //   【正本は管理システム（ユーザー確定 2026-10-23）】取り込みは「管理システムに無い行を synced として追加」するだけ（初期投入）。管理システムにある行は上書きしない:
+    //   値がスマレジと違うものは drift（ズレ）として返す（直すのは画面の「管理システムに合わせる」＝wage_update でスマレジを管理システムの値に直す）。
     //   スマレジに書き込みはしない（読み取りのみ）。認可: CEO/HQ。応答には氏名を含めない（人数・件数のみ）
     if (body.action === "wage_pull_all") {
       if (!isAdmin) return json({ ok: false, error: "forbidden" }, 403);
@@ -740,7 +741,8 @@ Deno.serve(async (req) => {
       const total = links.length;
       const slice = links.slice(offset, offset + limit);
       const token = await getToken(C);
-      let imported = 0, updated = 0, matched = 0, conflicts = 0, skippedStore = 0, unsupported = 0, persons = 0, withWage = 0;
+      let imported = 0, drift = 0, matched = 0, conflicts = 0, skippedStore = 0, unsupported = 0, persons = 0, withWage = 0;
+      const driftRows: { user_id: string; row_id: string; contract_id: string }[] = [];
       const errors: string[] = [];
       const jst = () => new Date().toISOString();
       for (const l of slice) {
@@ -778,7 +780,8 @@ Deno.serve(async (req) => {
               const { error } = await sb.from("employee_wage_settings").insert({ user_id: l.user_id, contract_id: C, division: w.division, store_id: storeUuid, wage: w.wage, holiday_wage: hol, effective_date: w.effectiveDate, smaregi_wage_apply_id: w.id, sync_status: "synced", synced_at: jst() });
               if (error) errors.push(`スタッフ${l.smaregi_staff_id}: 取り込めません(${error.message.slice(0, 80)})`); else imported++;
             } else if (ex.wage !== w.wage || (ex.holiday_wage ?? null) !== (hol ?? null)) {
-              if (ex.sync_status === "synced") { await sb.from("employee_wage_settings").update({ wage: w.wage, holiday_wage: hol, smaregi_wage_apply_id: w.id, synced_at: jst(), updated_at: jst() }).eq("id", ex.id); updated++; }
+              // 正本は管理システム: 上書きしない。ズレとして返す（未反映の入力がある行は conflicts）
+              if (ex.sync_status === "synced") { drift++; if (driftRows.length < 300) driftRows.push({ user_id: l.user_id, row_id: ex.id, contract_id: C }); }
               else conflicts++;
             } else {
               if (!ex.smaregi_wage_apply_id) await sb.from("employee_wage_settings").update({ smaregi_wage_apply_id: w.id, sync_status: "synced", sync_error: null, synced_at: jst() }).eq("id", ex.id);
@@ -788,7 +791,7 @@ Deno.serve(async (req) => {
         } catch (e) { errors.push(`スタッフ${l.smaregi_staff_id}: ${String((e as Error).message ?? e).slice(0, 100)}`); }
       }
       const next = offset + slice.length;
-      return json({ ok: true, contract_id: C, total, offset, next_offset: next, done: next >= total, processed: slice.length, persons, with_wage: withWage, imported, updated, matched, conflicts, skipped_unmapped_store: skippedStore, unsupported_rows: unsupported, errors });
+      return json({ ok: true, contract_id: C, total, offset, next_offset: next, done: next >= total, processed: slice.length, persons, with_wage: withWage, imported, drift, drift_rows: driftRows, matched, conflicts, skipped_unmapped_store: skippedStore, unsupported_rows: unsupported, errors });
     }
 
     if (body.action === "wage_push" || body.action === "wage_pull" || body.action === "wage_update" || body.action === "wage_delete") {
@@ -841,9 +844,8 @@ Deno.serve(async (req) => {
           const k = keyOf(w.division, storeUuid, w.effectiveDate), ex = have[k];
           const row = { ...w, store_id: storeUuid, store_name: storeUuid ? names[storeUuid] : null };
           if (ex && (ex.wage !== w.wage || (ex.holiday_wage ?? null) !== (w.holidayWage ?? null))) {
-            if (ex.sync_status === "synced") { // 管理システムも反映済み扱い→スマレジの値を正として更新
-              if (body.import === true) await sb.from("employee_wage_settings").update({ wage: w.wage, holiday_wage: w.holidayWage, smaregi_wage_apply_id: w.id, synced_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq("id", ex.id);
-              imported += body.import === true ? 1 : 0; out.push({ ...row, note: "スマレジの値で更新" + (body.import === true ? "" : "（未実行）") });
+            if (ex.sync_status === "synced") { // 正本は管理システム: 上書きしない。ズレとして返す（直すときは wage_update で管理システムの値をスマレジへ）
+              conflicts++; out.push({ ...row, note: `スマレジの値が管理システムと違います（管理システム ${ex.wage}円）`, drift: true, row_id: ex.id });
             } else { conflicts++; out.push({ ...row, note: `管理システム側に未反映の値があります（${ex.wage}円）` }); }
           } else if (!ex) {
             if (body.import === true) {
