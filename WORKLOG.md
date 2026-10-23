@@ -885,6 +885,8 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
+**★2026-10-23（司令塔スレッド・続き）Node.js脆弱性: MacBookは司令塔がbrewで26.12.1へ更新済み。Mac miniは担当Dの指示書`指示書_MacMini_Nodejs更新_重大脆弱性_2026-10-23.md`（launchdのnodeパス確認を含む）をユーザーがMac miniセッションへ貼って実施（10/25目標）。公式裏取り=nodejs.org 2026-10-21 Security Releases（Brotli RCE・TLSホスト名検証迂回）。
+
 **★★2026-10-23（司令塔スレッド）スマレジ・デベロッパーズ脆弱性通知（PHP CVE-2026-109618/109619・Node.js修正版22.23.4/24.22.1/26.12.1・回答期限10/26 11:00・未回答はAPI制限の可能性）への対応**: 実査=PHPは全リポジトリで使用なし／スマレジAPIを直接呼ぶ本体=Supabase Edge Functions（Deno）で対象外／Node.js使用=Mac miniのns-daily-import（Playwrightジョブ・版は担当Dが確認・更新）、MacBook開発機（Homebrew node 26.4.0→更新）、ns-info-system（Next.js・Vercelホスティング=ランタイムはVercel管理）。回答案をユーザーへ提示（フォーム送信はユーザー）。質問一覧U-13。
 
 **★★★★2026-10-23（レーンP）請求書由来PL確定行の直接書込への切替を実施（ユーザー承認）: `pl_ignore_invoice_gas_from='2026-10'` 投入・突合OK。投入直後に自分の実装の巻き込みを発見し即修正**
