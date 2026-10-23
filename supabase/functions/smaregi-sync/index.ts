@@ -722,6 +722,75 @@ Deno.serve(async (req) => {
     //   { action:"wage_update", user_id, contract_id, id, wage?, holiday_wage?, effective_date? }  既存の賃金設定の金額・休日賃金・適用開始日を直して、スマレジへも反映（区分・店舗は変えない＝変えるときは削除して入れ直す）
     //   { action:"wage_delete", user_id, contract_id, id }  スマレジの賃金設定を削除(DELETE /staffs/{id}/wage_apply/{wage_apply_id}。404は削除済み扱い)してから管理システムの行を消す
     //   ※スマレジの賃金設定API（POST/PUT/DELETE /staffs/{id}/wage_apply）。POST/PUT は本番で確認済み(2026-10-17)。認可: CEO/HQ
+    // ---- 2026-10-23 担当B: スマレジの賃金設定を、契約内の在職者全員ぶん管理システムへ取り込む（スマレジ→管理システム） ----
+    //   { action:"wage_pull_all", contract_id?, offset?, limit?(既定15・最大30) }  1回の呼び出しで limit 人ずつ処理。画面が done=true になるまで offset=next_offset で繰り返し呼ぶ。
+    //   対象=その契約の有効なリンクがあり、管理システムのアカウントが有効な人。取り込むのは「現在有効（適用開始日が今日以前で最新）＋これから適用（未来日）」の
+    //   時給(0)・月給(2)だけ（過去の履歴・日給(1)・営業時間帯別(3)・固定残業代は対象外＝件数だけ返す）。
+    //   管理システムに無い行は synced として追加／管理システムが反映済み(synced)で値が違う行はスマレジの値で更新／管理システム側に未反映(pending/error)の行は上書きしない（conflictsとして数える）。
+    //   スマレジに書き込みはしない（読み取りのみ）。認可: CEO/HQ。応答には氏名を含めない（人数・件数のみ）
+    if (body.action === "wage_pull_all") {
+      if (!isAdmin) return json({ ok: false, error: "forbidden" }, 403);
+      const sb = svc();
+      const offset = Math.max(0, Number(body.offset ?? 0) || 0);
+      const limit = Math.min(30, Math.max(1, Number(body.limit ?? 15) || 15));
+      const storeMap = await loadStoreMapPending(sb, reqContract);
+      const today = new Date(Date.now() + 9 * 3600e3).toISOString().slice(0, 10);
+      const { data: linksAll } = await sb.from("employee_smaregi_links").select("user_id,smaregi_staff_id,effective_to,users(is_active)").eq("contract_id", C).order("user_id");
+      const links = (linksAll ?? []).filter((l: any) => (!l.effective_to || l.effective_to >= today) && l.users?.is_active);
+      const total = links.length;
+      const slice = links.slice(offset, offset + limit);
+      const token = await getToken(C);
+      let imported = 0, updated = 0, matched = 0, conflicts = 0, skippedStore = 0, unsupported = 0, persons = 0, withWage = 0;
+      const errors: string[] = [];
+      const jst = () => new Date().toISOString();
+      for (const l of slice) {
+        try {
+          const r = await api(C, token, `/staffs/${l.smaregi_staff_id}`);
+          const raw = await r.json().catch(() => null);
+          if (!r.ok) { errors.push(`スタッフ${l.smaregi_staff_id}: 取得失敗(${r.status})`); continue; }
+          const st = Array.isArray(raw) ? raw[0] : raw;
+          const list = ((st?.wageApply ?? []) as any[]).map((w) => ({
+            id: String(w.wageApplyId), division: Number(w.division), storeId: w.storeId ? String(w.storeId) : null,
+            effectiveDate: String(w.effectiveDate ?? "").slice(0, 10), wage: Number(w.wage),
+            holidayWage: w.holidayWage === null || w.holidayWage === undefined || w.holidayWage === "" ? null : Number(w.holidayWage),
+          }));
+          persons++;
+          // 現在有効（区分×事業所ごとに今日以前で最新）＋これから適用
+          const cur: Record<string, any> = {}; const keep: any[] = [];
+          for (const w of list) {
+            if (![0, 2].includes(w.division)) { unsupported++; continue; }
+            if (w.effectiveDate > today) { keep.push(w); continue; }
+            const k = `${w.division}|${w.storeId ?? ""}`;
+            if (!cur[k] || cur[k].effectiveDate < w.effectiveDate) cur[k] = w;
+          }
+          keep.push(...Object.values(cur));
+          if (!keep.length) continue;
+          withWage++;
+          const { data: mine } = await sb.from("employee_wage_settings").select("*").eq("user_id", l.user_id).eq("contract_id", C);
+          const have: Record<string, any> = {};
+          for (const m of mine ?? []) have[`${m.division}|${m.store_id ?? ""}|${m.effective_date}`] = m;
+          for (const w of keep) {
+            const storeUuid = w.storeId ? (storeMap[w.storeId] ?? null) : null;
+            if (w.storeId && !storeUuid) { skippedStore++; continue; }
+            const ex = have[`${w.division}|${storeUuid ?? ""}|${w.effectiveDate}`];
+            const hol = w.division === 0 ? w.holidayWage : null;
+            if (!ex) {
+              const { error } = await sb.from("employee_wage_settings").insert({ user_id: l.user_id, contract_id: C, division: w.division, store_id: storeUuid, wage: w.wage, holiday_wage: hol, effective_date: w.effectiveDate, smaregi_wage_apply_id: w.id, sync_status: "synced", synced_at: jst() });
+              if (error) errors.push(`スタッフ${l.smaregi_staff_id}: 取り込めません(${error.message.slice(0, 80)})`); else imported++;
+            } else if (ex.wage !== w.wage || (ex.holiday_wage ?? null) !== (hol ?? null)) {
+              if (ex.sync_status === "synced") { await sb.from("employee_wage_settings").update({ wage: w.wage, holiday_wage: hol, smaregi_wage_apply_id: w.id, synced_at: jst(), updated_at: jst() }).eq("id", ex.id); updated++; }
+              else conflicts++;
+            } else {
+              if (!ex.smaregi_wage_apply_id) await sb.from("employee_wage_settings").update({ smaregi_wage_apply_id: w.id, sync_status: "synced", sync_error: null, synced_at: jst() }).eq("id", ex.id);
+              matched++;
+            }
+          }
+        } catch (e) { errors.push(`スタッフ${l.smaregi_staff_id}: ${String((e as Error).message ?? e).slice(0, 100)}`); }
+      }
+      const next = offset + slice.length;
+      return json({ ok: true, contract_id: C, total, offset, next_offset: next, done: next >= total, processed: slice.length, persons, with_wage: withWage, imported, updated, matched, conflicts, skipped_unmapped_store: skippedStore, unsupported_rows: unsupported, errors });
+    }
+
     if (body.action === "wage_push" || body.action === "wage_pull" || body.action === "wage_update" || body.action === "wage_delete") {
       // 認可: CEO/HQ。加えて wage_push だけは service_role キーからも呼べる（LINEの返信で賃金を登録する line-webhook が内部から呼ぶ。賃金の保存と本人確認はline-webhook側で済んでいる）
       const isServiceWage = body.action === "wage_push" && (req.headers.get("Authorization") ?? "").includes(Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? " ");
