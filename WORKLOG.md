@@ -9,6 +9,7 @@
 - 成果物: [設計書_Slack通知基盤_Phase1_2026-10-29.md](docs/設計書_Slack通知基盤_Phase1_2026-10-29.md)／[slack/app-manifest.yaml](docs/slack/app-manifest.yaml)／[手順書_Slackアプリ作成とトークン保存_2026-10-29.md](docs/手順書_Slackアプリ作成とトークン保存_2026-10-29.md)／`supabase/2026-10-29_slack_notify_phase1.sql`（未適用）／`supabase/functions/notify-slack/`・`slack-interact/`（未デプロイ）／復元: `supabase/restored/2026-10-29_notify_functions_prod_snapshot.sql`（22関数）・`supabase/functions/notify-chatwork/index.ts`（本番v13）／要件定義書 §28／📋(1c) TK-240〜251。
 - 調査で分かった事実: `notify_route_send` の Chatwork 送信は `smaregi-sync` の `notify_chatwork` アクションへ中継（EF `notify-chatwork` はポータル画面専用・JWT必須・env `CHATWORK_API_TOKEN`）／`hq_*` 通知関数は送らずに宛先一覧を返し `tasks.html` 等が送る／`users` はALTER禁止（Slack IDは `user_slack`）／経営レポート group1〜3 は店舗集合が異なる（g2とg3は川崎・黒霧屋が重複）／既存の勤怠修正入口は `sf_attendance_correction_requests`（申請→承認）＋`sf_can_manage(store_id)`、役割は CEO/HQ/TENCHO/TEAM/SHAIN/AL。
 - 本番変更なし（SQL未適用・未デプロイ・設定テーブル無変更）。
+- 同日続き: ユーザー依頼「私がやることの手順書を小学生でもわかりやすいように」→ 手順書を全面改訂（5ステップ・画面ごとのボタン名・できたか確認・困ったとき表・カギを貼ってしまった時の作り直し手順）。
 
 **★★★★2026-10-23（担当Bスレッド）移籍者の停止の確認（司令塔依頼①〜③）**:
 - **DB確認(③)**: 移籍(kind=transfer・承認済み)は30人（＋従業員編集の「移籍に切り替え」で移籍にしたチマルシナさん1人＝計31人）。**全員 users.is_active=true・employee_profiles.termination_date=null**（0人が無効・0人が退職日あり）。同期は全員synced・旧契約terminate成功30/30・トーホーのリンクは全員2026-10-31終了・退職手続きタスクは30人に1件ずつ（二重なし）。チマルシナさんの申請記録は兼務のまま残っていたため、データ修正で kind=transfer・from_contract_id=sez093z1・terminate済みに直した。兼務は9件（中山さん・黒霧屋の兼務ほか）。
