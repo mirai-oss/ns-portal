@@ -885,6 +885,8 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
+**★★★2026-10-29（このスレッド・続き）通知の整理を実施＋方針「通知先はSlackに統一したい」を受領**: ユーザー承認「Aは全部削除・Bはおすすめで」。実施: A1 `hq_notify_rules` の壊れたルール削除／A2 `hq_user_chatwork` の room_id がURLになっていた行（本部メンバー1名）削除／A3 `lark_routes` 無効の旧応募通知削除／A4 Hermes完了済みジョブ削除（未実行のリマインド1件は残置）／B5 入社登録通知を Chatwork「入社通知」に一本化（中山通知専用Larkから `join_registered` を除外）／B6 `cockpit-ingest` の定期ジョブ失敗Lark通知を停止（デプロイ済み `709af7d`）／B7 `morning-refresh`（08:45）の差額通知停止・11:00側に一本化（ns-daily-import `46e1e60`）。復旧情報は通知一覧§4.5。**新方針: 今後の通知先は Slack に統一したい（ユーザー発言）** → 要件定義の通知方針（Chatwork寄せ）を Slack に書き換える必要あり。移行対象と順序は通知一覧の件数ベースで別途計画（Slack Incoming Webhook/Bot の準備・`lark_routes`/`hq_notify_channels`/`report_channels` に kind=slack 追加・Mac mini/GitHub Actions の送信関数に Slack 追加・LINE の従業員向けは対象外のはず＝要確認）。
+
 **★★2026-10-29（このスレッド）通知の棚卸し: Chatwork12種・Lark31種・LINE22種・メール2種を一覧化**: ユーザー依頼「管理システムからChatwork・Lark・LINEへ出している通知の目的と内容のリストを全て」。6リポジトリのコード＋本番設定テーブル（`lark_routes`/`hq_notify_channels`/`hq_notify_rules`/`report_channels`/`hq_user_chatwork`）を突き合わせ、[docs/通知一覧_Chatwork_Lark_LINE_2026-10-29.md](docs/通知一覧_Chatwork_Lark_LINE_2026-10-29.md) を作成。気づき: ①`hq_notify_rules`に削除済みチャンネル参照のルール1件・`hq_user_chatwork`に room_id がURLの行1件（届かない可能性）②本部タスクの期限アラートは cron でなく tasks.html を開いた時に発火 ③Lark Webhookが用途別6本以上 ④入社登録・取込失敗は2経路に重複 ⑤EF `notify-chatwork`・DB関数 `notify_lark`/`trg_lark_notify` のソースがリポジトリ未管理。コード変更なし。
 
 **★2026-10-23（司令塔スレッド・続き）スマレジ脆弱性通知の回答フォーム=ユーザー送信済み（デベロッパーズ契約ID sb_skt715y2・利用言語=該当なし〔サーバーサイドはSupabase Edge Functions/Deno〕・対応状況=該当なし）。LiveGate側はアプリを使う側（本番契約sdm155v1）のためsb_は無し。Mac mini/MacBookのNode.js更新はフォームとは別に継続（MacBook完了・Mac miniは10/25）。
