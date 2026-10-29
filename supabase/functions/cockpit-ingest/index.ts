@@ -98,7 +98,9 @@ Deno.serve(async (req) => {
                     duration_sec: d ?? null, at: jr.at ?? "", agent: "job-watch" },
       });
       inserted++;
-      if (jr.status === "failure") {
+      // 2026-10-29 ユーザー指示（通知の重複整理）: 定期ジョブ失敗の Lark 通知は停止。
+      // 同じ内容は ns-daily-import の「日次取込まとめ」「[タスク] 失敗」通知で届くため。ck_events への記録（画面表示）は従来どおり。
+      if (false && jr.status === "failure") {
         await larkPost(sb, `【AI開発コックピット】🚨 定期ジョブ失敗: ${jr.job ?? ""}（${jr.source ?? ""}）\n${String(jr.message ?? "").slice(0, 300)}\nhttps://mirai-oss.github.io/ns-portal/portal.html`);
       }
     }
