@@ -885,6 +885,8 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
+**★★2026-10-29（このスレッド）通知の棚卸し: Chatwork12種・Lark31種・LINE22種・メール2種を一覧化**: ユーザー依頼「管理システムからChatwork・Lark・LINEへ出している通知の目的と内容のリストを全て」。6リポジトリのコード＋本番設定テーブル（`lark_routes`/`hq_notify_channels`/`hq_notify_rules`/`report_channels`/`hq_user_chatwork`）を突き合わせ、[docs/通知一覧_Chatwork_Lark_LINE_2026-10-29.md](docs/通知一覧_Chatwork_Lark_LINE_2026-10-29.md) を作成。気づき: ①`hq_notify_rules`に削除済みチャンネル参照のルール1件・`hq_user_chatwork`に room_id がURLの行1件（届かない可能性）②本部タスクの期限アラートは cron でなく tasks.html を開いた時に発火 ③Lark Webhookが用途別6本以上 ④入社登録・取込失敗は2経路に重複 ⑤EF `notify-chatwork`・DB関数 `notify_lark`/`trg_lark_notify` のソースがリポジトリ未管理。コード変更なし。
+
 **★2026-10-23（司令塔スレッド・続き）スマレジ脆弱性通知の回答フォーム=ユーザー送信済み（デベロッパーズ契約ID sb_skt715y2・利用言語=該当なし〔サーバーサイドはSupabase Edge Functions/Deno〕・対応状況=該当なし）。LiveGate側はアプリを使う側（本番契約sdm155v1）のためsb_は無し。Mac mini/MacBookのNode.js更新はフォームとは別に継続（MacBook完了・Mac miniは10/25）。
 
 **★2026-10-23（司令塔スレッド・続き）Node.js脆弱性: MacBookは司令塔がbrewで26.12.1へ更新済み。Mac miniは担当Dの指示書`指示書_MacMini_Nodejs更新_重大脆弱性_2026-10-23.md`（launchdのnodeパス確認を含む）をユーザーがMac miniセッションへ貼って実施（10/25目標）。公式裏取り=nodejs.org 2026-10-21 Security Releases（Brotli RCE・TLSホスト名検証迂回）。
