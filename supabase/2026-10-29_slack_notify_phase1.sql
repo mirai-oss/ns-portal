@@ -28,9 +28,9 @@ comment on table slack_channels is 'Slack通知の宛先マスタ。channel_key 
 insert into slack_channels (channel_key, slack_channel_id, display_name, purpose, replaces) values
   -- 2026-10-30 ユーザー決定: 経営レポートは「一部店舗だけ見せたい人がいない」ため 3 グループを 1 つに統合し、N-Style 4 店舗だけ別チャンネル
   ('keiei.report',        'C0CDGJ7TP0R', '#経営-レポート',         '経営D 日報/週報/月報（鳥一代グループ8店: 本店・はなれ・芝・新橋・恵比寿・鶏武者川崎・鶏武者新横浜・黒霧屋新横浜）', 'Lark report_channels group1+group2+group3 (GitHub Secret LARK_WEBHOOK_GROUP1〜3) を統合'),
-  ('keiei.report.nstyle', '', '#経営-レポート-nstyle',  '経営D 日報/週報/月報（N-Style 4店: じんべぇ新横浜・じんべぇ川崎・エース本厚木・秋葉原肉寿司）', '旧宛先なし（現状どのグループにも未割当。Slack化で新規に配信）'),
-  ('hq.keiri_kanshi', '', '#本部-経理・監視', '日次取込の結果/失敗・売上突合・請求書/入金・AI利用料・経理向け監視', 'Lark 経理チャンネル(Mac mini LARK_WEBHOOK / app_secrets.cockpit_lark_webhook)'),
-  ('hq.dev_system',   '', '#本部-開発・システム', 'GitHub Actions/Edge Function の失敗・コックピット・インフラ監視', 'Lark 監視用(app_secrets.lark_webhook_url / GitHub Secret LARK_WEBHOOK_URL)'),
+  ('keiei.report.nstyle', 'C0CDJDVQDC4', '#経営-レポート-nstyle',  '経営D 日報/週報/月報（N-Style 4店: じんべぇ新横浜・じんべぇ川崎・エース本厚木・秋葉原肉寿司）', '旧宛先なし（現状どのグループにも未割当。Slack化で新規に配信）'),
+  ('hq.keiri_kanshi', 'C0CDEHM2T7U', '#本部-経理監視', '日次取込の結果/失敗・売上突合・請求書/入金・AI利用料・経理向け監視', 'Lark 経理チャンネル(Mac mini LARK_WEBHOOK / app_secrets.cockpit_lark_webhook)'),
+  ('hq.dev_system',   'C0CD9EJ596H', '#本部-開発システム', 'GitHub Actions/Edge Function の失敗・コックピット・インフラ監視', 'Lark 監視用(app_secrets.lark_webhook_url / GitHub Secret LARK_WEBHOOK_URL)'),
   ('hq.jinji',        '', '#本部-人事・入社', '入社登録・応募・退職申請などの人事イベント（4つ目のチャンネル。不要なら hq.keiri_kanshi に寄せる）', 'Chatwork 入社通知ルーム / lark_routes 入社・応募系')
 on conflict (channel_key) do nothing;
 
