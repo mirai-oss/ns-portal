@@ -13,7 +13,7 @@
 | 2 | Slack App / Bot は 1 つ |
 | 3 | Bot Token は Slack 送信専用 Edge Function `notify-slack` だけが保持する |
 | 4 | 各送信元は `notify-slack` へ「channel_key ＋ payload」を渡す（直接 Slack API を叩かない） |
-| 5 | 経営レポートは現在の閲覧対象に合わせて 3 チャンネルに分ける |
+| 5 | 経営レポートは **2 チャンネル**（鳥一代グループ 8 店＝1 つに統合／N-Style 4 店＝別）。※当初「現在の 3 グループのまま」としていたが、2026-10-30 にユーザーが「一部店舗だけ見せたい人はいない」と確定し統合 |
 | 6 | Phase 1〜3 を先行。アルバイト全員への Slack 展開は結果と費用を見て Phase 4 で判断 |
 | 7 | `notify_route_send`・`notify-chatwork` は本番から完全復元し、差分確認後に変更する（復元済み・§14） |
 | 8 | Slack user ID は `users:read.email` でメール自動照合（users は ALTER 禁止のため別表 `user_slack`） |
@@ -108,9 +108,8 @@ Manifest: [slack/app-manifest.yaml](slack/app-manifest.yaml)（貼り付ける�
 
 | channel_key | Slack チャンネル（表示名は変更可） | 置き換える旧宛先 | 流すもの |
 |---|---|---|---|
-| `keiei.report.g1` | `#経営-レポート-g1` | Lark group1（本店・はなれ・芝・新橋） | 経営D 日報/週報/月報 |
-| `keiei.report.g2` | `#経営-レポート-g2` | Lark group2（恵比寿・鶏武者川崎・黒霧屋新横浜） | 同上 |
-| `keiei.report.g3` | `#経営-レポート-g3` | Lark group3（鶏武者新横浜・鶏武者川崎・黒霧屋新横浜） | 同上 |
+| `keiei.report` | `#経営-レポート` | Lark group1+2+3 を統合（鳥一代 本店・はなれ・芝・新橋・恵比寿／鶏武者 川崎・新横浜／黒霧屋 新横浜 の 8 店） | 経営D 日報/週報/月報 |
+| `keiei.report.nstyle` | `#経営-レポート-nstyle` | **旧宛先なし**（じんべぇ 新横浜・じんべぇ 川崎・エース 本厚木・秋葉原 肉寿司。現状はどの report group にも未割当＝未配信） | 同上（Slack 化で新規配信） |
 | `hq.keiri_kanshi` | `#本部-経理・監視` | Lark 経理（Mac mini `LARK_WEBHOOK`／`cockpit_lark_webhook`）・社長専用 `lark_webhook` の経理分 | 日次取込まとめ/失敗・売上突合差額・請求書/入金・AI 利用料・現金差異 |
 | `hq.dev_system` | `#本部-開発・システム` | Lark 監視（`lark_webhook_url`／GitHub `LARK_WEBHOOK_URL`） | GitHub Actions/EF 失敗・コックピット・watchdog |
 | `hq.jinji` | `#本部-人事・入社`（**4 つ目・要判断**） | Chatwork「入社通知」・`lark_routes` の入社/応募系 | 入社登録・応募・退職申請 |
@@ -129,7 +128,7 @@ SQL: `supabase/2026-10-29_slack_notify_phase1.sql` §2。
 | `source` / `event` | 送信元と種別（通知一覧の種別名を使う: `report_daily`・`join_registered`・`import_failed`・`attendance_alert`…） |
 | `channel_key` → `slack_channel_id` → `slack_ts`（＋`thread_ts`） | 宛先の解決結果と送信結果。`chat.update`・スレッド返信・再送の鍵 |
 | `delivery_status` | `queued`→`sent`／`failed`→（再送）／`updated`（ボタン操作後の差し替え）／`skipped` |
-| `dedupe_key` | 二重送信防止（例 `report_daily:2026-10-29:keiei.report.g1`、`attendance_alert:<alert_id>`） |
+| `dedupe_key` | 二重送信防止（例 `report_daily:2026-10-29:keiei.report`、`attendance_alert:<alert_id>`） |
 | `ref_table` / `ref_id` | 元レコード（`hq_tasks`・`sf_attendance_*`・`invoices`…） |
 | `legacy_kind` / `legacy_sent` | 並行運用の照合（同じ通知が Lark/Chatwork でも出たか） |
 | `action_state` | ボタン操作の結果（誰が・いつ・何を） |
@@ -314,6 +313,7 @@ select pg_get_functiondef('public.notify_route_send(text,text,text)'::regprocedu
 
 1. **Slack ワークスペース**の有無（無ければ作成）とプラン（無料は履歴 90 日・有料は人数課金。Phase 4 の判断材料）。
 2. **アプリ作成とトークン保存**: [手順書](手順書_Slackアプリ作成とトークン保存_2026-10-29.md) のとおり。
-3. **チャンネル作成**: `#経営-レポート-g1/g2/g3`・`#本部-経理・監視`・`#本部-開発・システム`（＋推奨 `#本部-人事・入社`）。各チャンネルに Bot を招待し、チャンネル ID をチャットで送る（秘密ではない）。
+3. **チャンネル作成**: `#経営-レポート`・`#経営-レポート-nstyle`・`#本部-経理・監視`・`#本部-開発・システム`（`#本部-人事・入社` は Phase 3 で判断）。各チャンネルに Bot を招待し、チャンネル ID をチャットで送る（秘密ではない）。
 4. 判断: 入社・応募通知の行き先（4 つ目のチャンネルを作るか、経理・監視に寄せるか）。
-5. 判断: 経営レポート 3 チャンネルの参加者（閲覧対象が違う前提なので、それぞれ誰を入れるか）。
+5. ~~判断: 経営レポート 3 チャンネルの参加者~~ → **2026-10-30 決定**: 一部店舗だけ見せたい人はいないため 1 つに統合。ただし N-Style 4 店（じんべぇ新横浜・じんべぇ川崎・エース本厚木・秋葉原肉寿司）は別チャンネル。
+   - 影響（TK-245）: `report_channels` の slack 行は **2 行**（`keiei.report` に 8 店／`keiei.report.nstyle` に 4 店）。旧 Lark 3 グループと 1 対 1 ではないため、並行運用の件数比較は「店舗×日付」単位で行う（§11）。N-Style 4 店は旧配信がないので比較対象なし＝Slack 側の `failed=0` のみで判定。

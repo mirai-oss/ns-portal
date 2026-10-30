@@ -10,6 +10,8 @@
 - 調査で分かった事実: `notify_route_send` の Chatwork 送信は `smaregi-sync` の `notify_chatwork` アクションへ中継（EF `notify-chatwork` はポータル画面専用・JWT必須・env `CHATWORK_API_TOKEN`）／`hq_*` 通知関数は送らずに宛先一覧を返し `tasks.html` 等が送る／`users` はALTER禁止（Slack IDは `user_slack`）／経営レポート group1〜3 は店舗集合が異なる（g2とg3は川崎・黒霧屋が重複）／既存の勤怠修正入口は `sf_attendance_correction_requests`（申請→承認）＋`sf_can_manage(store_id)`、役割は CEO/HQ/TENCHO/TEAM/SHAIN/AL。
 - 本番変更なし（SQL未適用・未デプロイ・設定テーブル無変更）。
 - 同日続き: ユーザー依頼「私がやることの手順書を小学生でもわかりやすいように」→ 手順書を全面改訂（5ステップ・画面ごとのボタン名・できたか確認・困ったとき表・カギを貼ってしまった時の作り直し手順）。
+- **2026-10-30（同スレッド）TK-240 ユーザー作業の伴走**: Slack の manifest 画面で 3 回エラー → 修正: ①`long_description` の複数行(`>-`)不可 ②同項目は 175 文字以上必須のため**削除** ③`bot_user.display_name` は英小文字/数字/ハイフンのみ → **`nstyle-notify`**（招待コマンドは `/invite @nstyle-notify`。送信者名として見えるのは `name: N-Style 通知Bot`）。「Create and Install」のインストール段で失敗が続き**同名アプリが 6 個**できた（A0CDE0BCQCS を残し他 5 個をユーザーが削除予定。インストールは OAuth & Permissions → Install to NSグループ で実施）。Bot Token(59字 xoxb-)・Signing Secret(32字) を `~/.config/ns-portal/` に 600 で保存済み（初回はクリップボード入れ替わりでコマンド文字列が保存されていたため、手順を「コマンドを貼る→Slackで Copy→return」の順に修正）。⚠️ ユーザーのターミナル履歴に Supabase PAT が平文表示・正体不明の長文字列（`ron7tAx…`）が誤実行された跡あり → PAT の作り直しを後日提案。
+- **ユーザー決定（2026-10-30）経営レポートのチャンネル分け**: 旧 Lark の 3 グループ（group2/3 は店舗重複）は閲覧者の名残で、「一部店舗だけ見せたい人はいない」ため **`keiei.report`（鳥一代グループ 8 店）1 つに統合**。ただし **N-Style 4 店（じんべぇ新横浜・じんべぇ川崎・エース本厚木・秋葉原肉寿司）は `keiei.report.nstyle` に別チャンネル**。この 4 店は現状どの report group にも未割当（＝レポート未配信）で、Slack 化で新規配信になる。SQL ドラフト seed・設計書 §0/§5/§16・手順書のチャンネル表（6→4 本、人事・入社は Phase 3 で判断）・TK-240/245 を更新。
 
 **★★★★2026-10-23（担当Bスレッド）移籍者の停止の確認（司令塔依頼①〜③）**:
 - **DB確認(③)**: 移籍(kind=transfer・承認済み)は30人（＋従業員編集の「移籍に切り替え」で移籍にしたチマルシナさん1人＝計31人）。**全員 users.is_active=true・employee_profiles.termination_date=null**（0人が無効・0人が退職日あり）。同期は全員synced・旧契約terminate成功30/30・トーホーのリンクは全員2026-10-31終了・退職手続きタスクは30人に1件ずつ（二重なし）。チマルシナさんの申請記録は兼務のまま残っていたため、データ修正で kind=transfer・from_contract_id=sez093z1・terminate済みに直した。兼務は9件（中山さん・黒霧屋の兼務ほか）。
@@ -3783,12 +3785,12 @@ A-6 Phase2着手直後、ユーザーから「精算書のPL反映がおそら�
 
 | TK | 担当 | 内容 | 前提 | 状態 |
 |---|---|---|---|---|
-| TK-240 | **ユーザー** | Slackアプリ作成（manifest貼付）・Bot Token / Signing Secret を `~/.config/ns-portal/` に保存・チャンネル6本作成＋Bot招待・チャンネルIDを連絡（[手順書](docs/手順書_Slackアプリ作成とトークン保存_2026-10-29.md)）。判断: 4つ目 `#本部-人事・入社` を作るか／経営レポート3chの参加者 | — | 未着手 |
+| TK-240 | **ユーザー** | Slackアプリ作成（manifest貼付）・Bot Token / Signing Secret を `~/.config/ns-portal/` に保存・チャンネル4本作成＋Bot招待・チャンネルIDを連絡（[手順書](docs/手順書_Slackアプリ作成とトークン保存_2026-10-29.md)）。~~判断: 4つ目 `#本部-人事・入社` を作るか／経営レポート3chの参加者~~ → 2026-10-30 決定: 経営レポートは `keiei.report`(鳥一代G 8店) + `keiei.report.nstyle`(N-Style 4店) の2ch、人事・入社は Phase 3 で判断 | — | **進行中**（アプリ作成・Bot Token/Signing Secret 保存まで完了 2026-10-30） |
 | TK-241 | 司令塔 | secrets投入: `SLACK_BOT_TOKEN`・`SLACK_SIGNING_SECRET`・`NOTIFY_SLACK_SECRET`（生成）を Edge Function へ、同値を `app_secrets.notify_slack_secret`・Mac mini `.env`・tori-dashboard GitHub Secrets へ。`slack_channels.slack_channel_id` を埋める | TK-240 | 未着手 |
 | TK-242 | 司令塔 | SQL `2026-10-29_slack_notify_phase1.sql` 適用（事前に `notify_route_send` の lark/chatwork 分岐をスナップショットと diff→ユーザー承認） | TK-241 | 未着手 |
 | TK-243 | 司令塔 | `notify-slack` デプロイ（`--no-verify-jwt`）・`health`・`#本部-開発・システム` へテスト送信1通・台帳に sent が残ることを確認 | TK-242 | 未着手 |
 | TK-244 | 担当B（nippo） | Phase1-a: `lark_routes` に kind='slack' 行を追加（webhook_url=channel_key）・nippo「🔔通知を設定する」に Slack 種別（ラベル「チャンネルキー」）。`trg_lark_notify`/`notify_report_lark` は無変更 | TK-243 | 未着手 |
-| TK-245 | 担当A（tori-dashboard） | Phase1-b: `report_channels` に slack 行（secret_name=channel_key・store割当は既存g1〜3を複製）・`lark-report.mjs`/`lark-report.yml` に `CHANNEL_KIND=slack`→`notify-slack` POST（`dedupe_key=report_<kind>:<日付>:<channel_key>`）・nippo配信グループ画面に Slack 種別 | TK-243 | 未着手 |
+| TK-245 | 担当A（tori-dashboard） | Phase1-b: `report_channels` に slack 行 **2行**（`keiei.report`=鳥一代G 8店／`keiei.report.nstyle`=N-Style 4店。旧g1〜3の複製ではない・並行比較は店舗×日付単位）・`lark-report.mjs`/`lark-report.yml` に `CHANNEL_KIND=slack`→`notify-slack` POST（`dedupe_key=report_<kind>:<日付>:<channel_key>`）・nippo配信グループ画面に Slack 種別 | TK-243 | 未着手 |
 | TK-246 | ポータル担当 | Phase1-c: `hq_notify_step_event`/`hq_notify_comment`/`hq_notify_task_urgent`/`hq_check_alerts` の kind 絞り込みに 'slack' 追加（スナップショットから diff 最小・新規SQL）・`tasks.html`/`expenses.html`/`requests.html` の送信分岐に `channel_kind='slack'`→`notify-slack`（ユーザーJWT）・通知設定UIに Slack 種別 | TK-243 | 未着手 |
 | TK-247 | 司令塔 | 並行運用の突合（設計書§11のクエリ・毎日）→通知ごとに14日欠落ゼロで旧行 `is_active=false`。復旧情報を通知一覧§4.5に追記 | TK-244〜246 | 未着手 |
 | TK-248 | 担当D（Mac mini）／ポータル担当 | Phase2 監視系: ns-daily-import `notify()` に `slack`/`all`（`sendSlack`・`.env` `NOTIFY_SLACK_SECRET`/`SLACK_CHANNEL_KEY`）・`_shared/cockpit.ts` に `slackPost`・GitHub watchdog 2本・`notify_lark()` 利用2関数・`api-cost-report-notify` | TK-247 | 未着手 |
