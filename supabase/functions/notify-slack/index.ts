@@ -143,7 +143,18 @@ async function doSend(sb: any, b: SendBody, actor: string) {
     legacy_kind: b.legacy?.kind ?? null, legacy_sent: b.legacy?.sent ?? null,
   };
   if (id) {
-    await sb.from("notification_deliveries").update({ ...base, updated_at: new Date().toISOString() }).eq("id", id);
+    // 既存行（DB トリガー経由の queued 行）があれば更新。呼び出し側が指定しなかった source/event は DB 側の値を残す。
+    // 行が無ければ（外部の送信元が自分で notification_id を採番した場合）その id で新規作成する。
+    // ※ 2026-10-30 の初回テストで「update だけで行が作られず台帳が空→dedupe も効かない」不具合を修正
+    const upd: Record<string, unknown> = { ...base, updated_at: new Date().toISOString() };
+    if (b.source === undefined) delete upd.source;
+    if (b.event === undefined) delete upd.event;
+    const { data: updated, error: updErr } = await sb.from("notification_deliveries").update(upd).eq("id", id).select("id");
+    if (updErr) return json({ ok: false, error: "台帳を更新できません: " + updErr.message }, 500);
+    if (!updated || updated.length === 0) {
+      const { error } = await sb.from("notification_deliveries").insert({ id, ...base }).select("id").single();
+      if (error) return json({ ok: false, error: "台帳に書けません: " + error.message }, 500);
+    }
   } else {
     const { data: ins, error } = await sb.from("notification_deliveries").insert(base).select("id").single();
     if (error) return json({ ok: false, error: "台帳に書けません: " + error.message }, 500);
