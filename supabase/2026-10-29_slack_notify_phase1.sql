@@ -138,8 +138,9 @@ select
   rc.chatwork_room_id,
   rc.keyword,
   rc.report_kinds,
-  case when rc.kind = 'slack' then rc.secret_name end as channel_key,
-  string_agg(s.name || '|' || coalesce(s.file_key, ''), ',' order by rcs.sort_order, s.sort_order) as stores
+  string_agg(s.name || '|' || coalesce(s.file_key, ''), ',' order by rcs.sort_order, s.sort_order) as stores,
+  -- 新列は末尾に置く（create or replace view は既存列の順を変えられない。2026-10-30 の空振り実行で検出）
+  case when rc.kind = 'slack' then rc.secret_name end as channel_key
 from public.report_channels rc
 join public.report_channel_stores rcs on rcs.channel_id = rc.id
 join public.stores s on s.id = rcs.store_id
