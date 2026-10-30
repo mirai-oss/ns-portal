@@ -9,17 +9,14 @@
 #   `slack-interact`（署名検証つき）に固定する。Phase 1 の通知にはボタンを付けないので、
 #   この関数が未デプロイでも通知は影響を受けない（ボタン付き通知は Phase 3 以降に出す）。
 # - Event Subscriptions（メッセージ受信など）は使わない。Hermes/Mirai の窓口は別アプリで載せる。
+# - long_description は Slack の画面が複数行(>-)を受け付けないため 1 行で書く（2026-10-30 修正）
 # - トークン類はこのファイルには一切含まれない（Bot Token は作成後に画面でコピー→ローカルの秘密ファイルへ）。
 # =============================================================
 display_information:
   name: N-Style 通知Bot
   description: 管理システム（ポータル・nippo・経営ダッシュボード・日次取込）からの業務通知
   background_color: "#2c3e50"
-  long_description: >-
-    N-Styleグループの社内管理システムからの通知を Slack に届ける Bot です。
-    経営レポート・経理/取込の監視・開発/システム監視を Phase 1 で、
-    本部メンバー個人への承認依頼や申請確認（DM）を Phase 3 で扱います。
-    通知の正本は管理システム側にあり、Slack は通知と簡易操作の入口です。
+  long_description: "N-Styleグループの社内管理システムからの通知を Slack に届ける Bot です。経営レポート・経理/取込の監視・開発/システム監視を Phase 1 で、本部メンバー個人への承認依頼や申請確認（DM）を Phase 3 で扱います。通知の正本は管理システム側にあり、Slack は通知と簡易操作の入口です。"
 features:
   bot_user:
     display_name: N-Style通知
