@@ -18,7 +18,7 @@ display_information:
   background_color: "#2c3e50"
 features:
   bot_user:
-    display_name: N-Style通知
+    display_name: nstyle-notify   # 英小文字・数字・ハイフンのみ可（Slack制約・2026-10-30）。送信者として見える名前は上の name
     always_online: true
 oauth_config:
   scopes:
