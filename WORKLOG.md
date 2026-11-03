@@ -918,6 +918,11 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
+**★★★★★★2026-11-05（担当D・TK-231）Phase2＝sf_payroll_syncの旧一意制約(人×年月)を削除・適用完了（ユーザー直接指示「Phase2を適用して」）**
+- 適用前: 重複0件・新しい一意（人×年月×契約）あり。適用後: 旧制約 `sf_payroll_sync_user_id_year_month_key` が消え、一意は `sf_payroll_sync_user_ym_contract_key` と主キーのみ。行数439のまま（データ変更なし）。
+- 適用直後の給与取込（手動実行）: 2026-11はトーホー61・LiveGate 17・**エラー0**（以前は兼務の1人が重複エラー）。2026-10はエラー0。人×年月で2行ある人=1人（兼務で両契約に給与がある人）。
+- **⚠️前提の残り（12月の給与確定の前に必須）**: 担当Bの差し替えSQL（振込タスク＝法人（契約）ごと／現金手渡し＝user_id×contract_id・法人ごとに分け合算しない）の適用がまだ。兼務の人は給与2行になったため、**それが無いまま給料確定ボタンを押すと、振込・現金手渡しが二重になる**。ユーザーが先にPhase2を指示したため順番が逆になったが、給料確定は12月なので間に合う。呼び出し側の法人（invoices.html payrollDetermineTargetCorp＝店舗の法人）を契約の法人に揃える件（担当C）も同様に必要。
+
 **★2026-11-03（司令塔スレッド・続き）担当B: 法人別方針でSQL差し替え（`2026-11-03_payroll_funcs_concurrent_staff.sql`: cash_handoff_targets=人×契約1行〔drop→create・contract_id/corp_name追加〕・sf_cash_handoff_signaturesにcontract_id列（既定=トーホー）＋一意を(user,ym,contract)へ・cash_handoff_completeにp_contract_id・hq_create_payroll_tasks=p_corpの契約の行だけ〔対応契約が無い呼び方は従来どおり=互換〕）。nippo現金手渡し画面は法人別対応で公開済み。司令塔レビュー=OK（破壊的操作なし）→U-17①の承認待ち。担当Cの給料確定ボタン（法人ごとに呼ぶ）は①適用後でも安全。
 
 **★2026-11-03（司令塔スレッド・続き）担当D補足を受け担当B/Cへ: 契約→法人の結合（sf_payroll_sync.contract_id→smaregi_contracts.corporation_id→corporations.name）／hq_create_payroll_tasksの既定値p_corp='N-Style'は法人絞り込み後0件になるため必須引数化／呼び出し側（invoices.html 給料確定ボタン）は店舗の法人ではなく契約の法人（給与仕訳の「法人」選択）を渡す（黒霧屋対策）＝担当C。
