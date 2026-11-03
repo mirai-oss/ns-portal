@@ -121,8 +121,12 @@ Deno.serve(async (req) => {
             ["修繕完了（完了写真を添付）", "quote:done", true, null],
             ["支払い完了", "quote:pay", false, null],
           ];
+          // 担当者: 決める・修繕日・修繕完了=申請者 / 支払い完了=原 美香
+          const { data: allU } = await sb.from("users").select("id,name").eq("is_active", true);
+          const hara = (allU ?? []).find((u: any) => String(u.name ?? "").replace(/[\s　]+/g, "") === "原美香")?.id ?? null;
           for (let i = 0; i < steps.length; i++) {
-            await sb.from("hq_task_steps").insert({ task_id: task.id, title: steps[i][0], due_date: steps[i][3], sort_order: (i + 1) * 10, kind: "step", is_binary: false, requires_photo: steps[i][2], procedure_note: steps[i][1] });
+            const who = steps[i][1] === "quote:pay" ? hara : ru.id;
+            await sb.from("hq_task_steps").insert({ task_id: task.id, title: steps[i][0], due_date: steps[i][3], sort_order: (i + 1) * 10, kind: "step", is_binary: false, requires_photo: steps[i][2], procedure_note: steps[i][1], assignee_id: who, assignee_ids: who ? [who] : null });
           }
           for (const o of opRows ?? []) for (const ph of o.photo_paths ?? []) await sb.from("hq_task_photos").insert({ task_id: task.id, storage_path: ph });
           await sb.from("hq_task_activity").insert({ task_id: task.id, actor_id: null, kind: "create", detail: "見積もりフォームの送信により自動作成" });
