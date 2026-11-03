@@ -4,6 +4,12 @@
 
 ---
 
+**★★★★2026-11-03（担当Bスレッド・続き）移籍・兼務のタスクと源泉徴収票の件数確認（司令塔経由のユーザー質問。件数のみ）**:
+- ①移籍32人: **退職手続きタスク(トーホー)=32/32あり・二重0・状態は全件done**／**入社登録タスク(LiveGate)=32/32あり**。 ②兼務8人: 入社登録タスク(LiveGate)=**7/8**（不足1人=LiveGateの最初のテスト登録(10/17・タスク自動発行の機能が出来る前)の1件。必要なら従業員編集の「📌 LiveGateの入社登録本部タスクを発行」で作れる）。入社登録(LiveGate)39件はすべてdone・二重0。
+- ③**源泉徴収票の実体(hr_documents・移籍者・全年)=0人**（本人マイページ「自分の書類」に出る数＝0。hr_documents全体は別の3件）。④**工程「源泉徴収票」が本体なしで完了=32/32**（10/23 青山純さんが完了）。→ 再オープン(U-16)はユーザーの直接返信待ち。
+- 不足の発行手段: 従業員編集→「🔗 スマレジ所属（契約ごと）」のLiveGate欄「📌 入社登録タスクを発行（未発行のときだけ）」。
+
+
 **★★★★2026-11-03（担当Bスレッド・続き）方針変更（ユーザー確定）: 給料の支払い・現金手渡しは「法人ごと」に分ける（合算しない）→SQL案を差し替え・nippoの現金手渡し画面を法人別に更新予定**:
 - `supabase/2026-11-03_payroll_funcs_concurrent_staff.sql`（差し替え・未適用）: ①`cash_handoff_targets`＝人×契約(支払法人)ごとに1行（戻り値にcontract_id・corp_nameを追加）②`sf_cash_handoff_signatures`に`contract_id`列を追加し一意を(user_id,year_month,contract_id)に③`cash_handoff_complete`に`p_contract_id`（給与仕訳の「振込完了」印はその法人のMF事業者tenantの記録だけ。toho→default）④`hq_create_payroll_tasks`＝p_corpに対応する契約(smaregi_contracts.corporation_id→corporations.name)の給与行だけ・1法人内で1人1回。p_corpに対応する契約が無い呼び方（従来の'N-Style'既定など）は契約で絞らず従来どおり（互換）。兼務の人はトーホーのタスクとLiveGateのタスクの両方に出る。
 - **残り**: nippoの現金手渡し・サイン画面（`cashHandoffView`ほか約20か所＝user_id単位→user_id×contract_id単位。サイン画像のパスにも契約）を法人別に更新（SQL適用と同時・12/1の表示までに）／担当Cの給料確定ボタンが法人ごと（契約の法人）に`hq_create_payroll_tasks`を呼ぶ変更（黒霧屋は店舗の法人がトーホーのままのため、契約の法人を渡す）。nippoの給与参考値(固定給・通勤手当)の合算(1b0f100)は、法人別の内訳表示に直す予定。
