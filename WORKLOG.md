@@ -929,6 +929,14 @@
 - ⑤**黒霧屋タブレットのLiveGate切替**: LiveGate側の打刻が11/1以降に取り込まれている（11/1=LiveGate 6件）ため切替は実質進んでいる見込みだが、**ユーザーによる完了確認は未取得**（確認依頼済み）。
 - ⑥**TK-231（Phase2=旧UNIQUE解除）**: 未適用。**事前報告を作成**（docs/事前報告_スマレジ複数契約対応Phase2_旧一意制約の削除_2026-11-03.md）。実害=兼務の給与行が1つしか保存できず毎日エラー1件。12月の給与処理の前までに適用。前提=担当Bの兼務対応（hq_create_payroll_tasks／cash_handoff_targets）の確認→ユーザー承認待ち。**TK-238（所属双方向同期）**: ジョブ`smaregi-affiliation-sync`は本番稼働（日次・試行モード）。バッジ（nippo・ポータル）・同期ログ・ズレ一覧は稼働。**未決=自動反映のON範囲（A=新規者のみ先行／B=数日後に全員／C=当面試行）をユーザー回答待ち**。AFFILIATION_CUTOVER_APPLY=true（兼務の所属解除のみ）は有効。ズレ=0件。
 - **【Phase2の前提確認・担当D 2026-11-03】本番の関数定義とリポジトリ最新版が一致**: `hq_create_payroll_tasks`＝2026-10-07版と本文一致／`cash_handoff_targets`＝2026-09-14版と本文一致。担当BのSQL（2026-11-03_payroll_funcs_concurrent_staff.sql）の変更は、振込の対象者の選び方（exists化）と現金の合算（user_idごとにnet_pay合算）の意図した箇所だけ。`sf_payroll_sync`を読むSQLは他に`labor_cost_apply_payroll`（担当A・user_idごとに合算済みで兼務2行でも問題なし）のみ（ビュー0・Edge Functionは`smaregi-payroll-sync`のみ）。画面側（nippo・invoices.html）は2行対応済み。→順番=①担当BのSQL適用→②Phase2（旧一意制約の削除）。承認待ち（質問一覧U-17）。
+- **【契約→法人の対応表（担当B・C向け・担当D 2026-11-03）】** 給与を法人（契約）ごとに分ける方針（ユーザー指示）に向けた確認。`sf_payroll_sync.contract_id` → `smaregi_contracts.contract_id` → `smaregi_contracts.corporation_id` → `corporations.name`（＝`hq_tasks.corp`／`hq_create_payroll_tasks(p_corp)` の文字列と同一）で必ず引ける。
+  | contract_id | 法人（corporations.name・p_corp） | corporation_id | 給与行数(2026-11-03) |
+  |---|---|---|---|
+  | sez093z1 | トーホー（既定の契約） | 9f3f5239-d346-42b9-86cf-144e246cebeb | 426（全行が契約マスタに存在） |
+  | sdm155v1 | LiveGate | d5d1c4ac-660c-43cf-9f9b-36b7cdfcc32b | 13（全行が契約マスタに存在） |
+  - 引き方の例: `join smaregi_contracts c on c.contract_id=s.contract_id join corporations co on co.id=c.corporation_id where co.name = p_corp`。契約が不明な行は無い（contract_idはnot null・既定'sez093z1'）。
+  - **注意①**: 現行の`hq_create_payroll_tasks`は `p_corp` を**ラベルにしか使っておらず対象者を絞っていない**（過去の4件はすべて corp='トーホー'）。法人で絞る変更を入れると、`p_corp='N-Style'`（関数の既定値）では対象が0件になる。呼び出し側は必ず「トーホー」「LiveGate」のいずれかを渡すこと。
+  - **注意②**: 呼び出し側（invoices.html の給料確定ボタン）の法人は `payrollDetermineTargetCorp`＝**対象者の所属店舗の法人**から決めている。黒霧屋は店舗の法人が「トーホー」のまま（運営法人はLiveGate）なので、LiveGateの給与を**店舗の法人で渡すと「トーホー」になり契約の法人と食い違う**。新しい絞り込み（契約の法人）に合わせて、呼び出し側も**契約の法人（給与仕訳の「法人」ボタンの選択）**を渡すように揃える必要がある（担当C）。
 
 **★★2026-11-03（司令塔スレッド）11/1切替後の状況確認を開始（10/24〜11/3は📍に各レーンの記録がほぼ無い）**: 担当D（X1実行結果・LiveGate同期初回・兼務5人・Node更新・タブレット・TK-231/238）と担当B（U-12 SQL適用・移籍者打刻OFFの現状・退職手続きタスク進捗）へ状況報告を依頼。担当Cの提案「2026-08/09の請求書由来PL自動行もpl_entries直接へ前倒し（旧経路で10/21に補助科目が再ずれ）」に司令塔賛成→ユーザー承認は質問一覧U-14として司令塔経由。
 
