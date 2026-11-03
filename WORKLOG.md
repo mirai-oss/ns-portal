@@ -98,6 +98,11 @@
 - **未了**: SQL v6の事前報告→ユーザー適用／smaregi-syncデプロイ（D分と一緒）／実機確認（LiveGate契約sdm155v1・黒霧屋のスタッフ）／D依頼の`hq_create_payroll_tasks`・`cash_handoff_targets`の兼務対応（Phase2前・現行の本番定義の確認が要る＝PAT待ち）。
 
 
+## 2026-11-03 担当C: 給料確定ボタンを「給与仕訳で選んだ法人（契約の法人）」で呼ぶよう修正（v158・push済み）
+- 給料確定（hq_create_payroll_tasks）の p_corp は、給与仕訳の法人ピル（トーホー/LiveGate）で選んだ法人の corporations.name を渡す。従来の「対象者の所属店舗の法人」判定(payrollDetermineTargetCorp)と既定'N-Style'は使わない。法人ごとに法人ピルを切り替えて各1回押す運用。担当BのSQL(U-17①)適用と同時期の反映が必要（push済み・動作確認は担当BのSQL適用後）。
+- 給与データは契約ごとに取り込み済み: sf_payroll_sync 2026-11 = LiveGate(sdm155v1)17名・トーホー(sez093z1)61名。2026-09/10 はトーホー契約のみ(黒霧屋は10月までトーホー)。11月分の給与は12月に入ってから給与仕訳に表示（対象年月＞＝今月は非表示の仕様）。
+- 仕入高の差額調整は10月分以降作らない・請求書PL直接書き込みは2026-10以降(10/23切替・開始月は app_secrets.pl_direct_from で変更可＝2026-08/09への前倒しは司令塔承認待ち U-14)。
+
 ## 2026-10-23 担当C: 請求書のPL確定行を pl_entries へ直接書く切替を実施（ユーザー承認済み）
 - app_secrets.pl_direct_write='1'（2026-10以降のconfirmは pl_entries 直接。GAS writePlFeeは請求書分で呼ばない・戻すときはフラグを消す）。source='自動｜請求書'、source_key='inv:<請求書ID>:<反映ID>:<store_id>'、modeはupsert。取消=pl_entries_delete（unconfirm）。
 - direct_rebuild(2026-10〜12)で直接行30行(10月21行¥1,333,004・11月9行¥461,546)を投入。比較レポート: 10月は旧GAS由来21行とほぼ一致（差=本部通信費¥3,437のみ・請求書記録の無いずれ残り）。11月は通信費8店舗が直接のみ。
