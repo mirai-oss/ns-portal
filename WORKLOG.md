@@ -913,6 +913,8 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
+**★2026-11-03（司令塔スレッド・続き）担当D補足を受け担当B/Cへ: 契約→法人の結合（sf_payroll_sync.contract_id→smaregi_contracts.corporation_id→corporations.name）／hq_create_payroll_tasksの既定値p_corp='N-Style'は法人絞り込み後0件になるため必須引数化／呼び出し側（invoices.html 給料確定ボタン）は店舗の法人ではなく契約の法人（給与仕訳の「法人」選択）を渡す（黒霧屋対策）＝担当C。
+
 **★2026-11-03（司令塔スレッド・続き）ユーザー指示: 兼務の人の給与は支払法人が違うため、現金手渡し・振込タスクは**法人（契約）ごとに分ける（合算しない）**→担当BのSQL（cash_handoff_targets=user_id×contract_id／hq_create_payroll_tasks=その法人の契約の行だけ）と画面（法人別の行・内訳表示）を差し替え依頼。U-17①は差し替え後に承認を取り直す。担当Dへも通知。
 
 **★2026-11-03（司令塔スレッド・続き）担当B: Phase2前提の兼務対応を確認→SQL案`2026-11-03_payroll_funcs_concurrent_staff.sql`（振込タスク=1人1回・現金手渡し=合算・scope_fallbackは対応不要・labor_cost_applyは問題なし・nippo画面3か所は合算に修正公開済み）。司令塔: ①B SQL→②D Phase2 の順でユーザー承認（U-17を2段に更新）。
