@@ -4,6 +4,14 @@
 
 ---
 
+**★★★★★2026-11-03（担当Bスレッド）黒霧屋の運営変更の現状（司令塔依頼①〜④）／⚠️LiveGateの賃金が30人分未設定**:
+- **①U-12(移籍者の打刻OFFを源泉徴収票の工程後に)**: 適用有無は私のDB権限(service key)からは判別不可（関数定義を読むトークンなし）。**影響は無し**: 移籍32人は全員 旧契約(トーホー)の打刻OFF済み(`old_deactivated`=true・32/32)・`hr_due_transfer_deactivations`の返却は0件・毎朝のhr-termination-applyは成功（11/1 08:58JST実行=1m39s）。理由=移籍32人の「源泉徴収票」工程は**10/23 17:57〜18:09(JST)に青山純さんがまとめて完了**にしており(hr_slip_pending=false)、SQLの有無にかかわらず11/1以降にOFFになる状態だった。管理システムのアカウントは32人とも有効・termination_dateなし（確認済み）。
+- **②退職手続きタスク(移籍分)**: 32件すべてdone・源泉徴収票の工程32/32完了。ただし**源泉徴収票の本体(hr_documents)は0人分**（工程だけ完了）。トーホー分の源泉徴収票は最終給与確定後に必要なはず→要確認（タスクはdoneなので催促は出ない）。
+- **③兼務**: 竹内ひかり・鍋倉由里子・関凌太郎・カルキランジタ・鍋倉巧の5人は全員LiveGate登録済み(kind=concurrent・synced・トーホー/LiveGateの2リンク)。LiveGate有効リンク計40人（移籍32＋兼務8）。関凌太郎さんは兼務で登録済み（移籍/兼務の最終確認は司令塔側）。
+- **⚠️④ 残り（最優先）**: **LiveGate登録40人のうち30人に、LiveGate側の賃金設定が無い**（賃金ありは10人。30人ともトーホーの賃金はある＝コピー可能）。11/1からLiveGateで打刻しているため、LiveGateの給与計算で賃金0になる恐れ。→ 一括登録画面の「💴 登録済みの人へ、元の契約の賃金をコピー」（開始日2026-11-01）をユーザーが実行すれば解消（nippo公開済み 482e799）。また細谷旺佑さんのLiveGate時給1,279円(11/1〜)がエラー（スマレジの『初期設定のため適用開始時期は変更できません』=新規スタッフの初期賃金設定(1970-01-01)を更新しようとして400）→要調査（私が次に直す）。
+- 他の残り: 賃金LINE返信の実機確認（西崎さん宛・ユーザーの返信待ち）／入社登録タスクの「所属事業所を入力」工程の廃止SQL（担当Dが所属同期のapply切替をユーザーに確認後）／U-12のSQL適用確認／従業員一覧CSVの賃金列の実機確認。
+
+
 ## 2026-10-29（通知整理スレッド・続き）Slack通知基盤 Phase 1: 設計・本番復元・準備（通知先は未切替）
 - ユーザー確定（ChatGPT案をこちらの実構成で修正→承認）: Socket Mode/App Token不使用・Bot1つ・Bot Tokenは `notify-slack` だけ・各送信元は channel_key＋payload・経営レポートは3ch・Phase1〜3先行/Phase4は費用と結果で判断・復元後にdiff・`users:read.email` 自動照合・14日並行→欠落ゼロで旧停止・Hermes連携は同基盤に後載せ。追加確定: **通知1件ごとに notification_id**、**アクション付き通知**（勤怠アラート「合っている/修正する/詳細を見る」、Slack→EF→権限確認→既存RPC→DB、既存RBAC、Modal・署名検証・ts保存・action_id を先に決める）。
 - 成果物: [設計書_Slack通知基盤_Phase1_2026-10-29.md](docs/設計書_Slack通知基盤_Phase1_2026-10-29.md)／[slack/app-manifest.yaml](docs/slack/app-manifest.yaml)／[手順書_Slackアプリ作成とトークン保存_2026-10-29.md](docs/手順書_Slackアプリ作成とトークン保存_2026-10-29.md)／`supabase/2026-10-29_slack_notify_phase1.sql`（未適用）／`supabase/functions/notify-slack/`・`slack-interact/`（未デプロイ）／復元: `supabase/restored/2026-10-29_notify_functions_prod_snapshot.sql`（22関数）・`supabase/functions/notify-chatwork/index.ts`（本番v13）／要件定義書 §28／📋(1c) TK-240〜251。
