@@ -111,7 +111,7 @@ Deno.serve(async (req) => {
         const { data: task } = await sb.from("hq_tasks").insert({
           title: `見積もり: ${subject}（${store.name}）`, corp: "N-Style", freq: "once", target_date: today, due_date: plus(7), status: "todo", visibility: "all",
           notes: `申請者: ${ru.name}／見積日: ${date}\n${lines.join("\n")}\n※見積書の写真・PDFは下の「写真」に付いています。会社の決定・保留・却下は ダッシュボードの「申請履歴 → 見積もり」で行います。`,
-          memo: "見積もりフォームから自動作成", exception_key: "quote:" + q.id,
+          memo: "見積もりフォームから自動作成", exception_key: "quote:" + q.id, is_urgent: true,   // 見積もりのタスクは全て最重要
         }).select("id").single();
         if (task) {
           await sb.from("quote_requests").update({ task_id: task.id }).eq("id", q.id);
