@@ -56,3 +56,11 @@ jobs:
             fi
           done
           if [ -n "$FAILED" ]; then echo "::error::失敗したop:$FAILED"; exit 1; fi
+
+      - name: 従業員経費の月次タスク（毎月1〜10日・前月分・冪等。担当=原 美香・期限=5日）
+        env:
+          SR_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          DAY=$(TZ=Asia/Tokyo date +%-d)
+          if [ "$DAY" -gt 10 ]; then echo "JST${DAY}日のためスキップ（対象は1〜10日）"; exit 0; fi
+          curl -s -m 60 -X POST "https://uuvsxzhpxtghojoubjcc.supabase.co/rest/v1/rpc/hq_expense_monthly_task" -H "apikey: $SR_KEY" -H "Authorization: Bearer $SR_KEY" -H "Content-Type: application/json" -d '{}' || true; echo
