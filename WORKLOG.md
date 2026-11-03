@@ -4,6 +4,11 @@
 
 ---
 
+**★★★★2026-11-03（担当Bスレッド・続き）方針変更（ユーザー確定）: 給料の支払い・現金手渡しは「法人ごと」に分ける（合算しない）→SQL案を差し替え・nippoの現金手渡し画面を法人別に更新予定**:
+- `supabase/2026-11-03_payroll_funcs_concurrent_staff.sql`（差し替え・未適用）: ①`cash_handoff_targets`＝人×契約(支払法人)ごとに1行（戻り値にcontract_id・corp_nameを追加）②`sf_cash_handoff_signatures`に`contract_id`列を追加し一意を(user_id,year_month,contract_id)に③`cash_handoff_complete`に`p_contract_id`（給与仕訳の「振込完了」印はその法人のMF事業者tenantの記録だけ。toho→default）④`hq_create_payroll_tasks`＝p_corpに対応する契約(smaregi_contracts.corporation_id→corporations.name)の給与行だけ・1法人内で1人1回。p_corpに対応する契約が無い呼び方（従来の'N-Style'既定など）は契約で絞らず従来どおり（互換）。兼務の人はトーホーのタスクとLiveGateのタスクの両方に出る。
+- **残り**: nippoの現金手渡し・サイン画面（`cashHandoffView`ほか約20か所＝user_id単位→user_id×contract_id単位。サイン画像のパスにも契約）を法人別に更新（SQL適用と同時・12/1の表示までに）／担当Cの給料確定ボタンが法人ごと（契約の法人）に`hq_create_payroll_tasks`を呼ぶ変更（黒霧屋は店舗の法人がトーホーのままのため、契約の法人を渡す）。nippoの給与参考値(固定給・通勤手当)の合算(1b0f100)は、法人別の内訳表示に直す予定。
+
+
 **★★★★2026-11-03（担当Bスレッド）担当D Phase2(sf_payroll_syncの旧UNIQUE削除)の前提: 兼務の人が給与2行になっても二重にならないか確認・修正（SQL案あり・未適用）**:
 - **確認結果（リポジトリの最新定義で確認。本番の定義との一致は未確認＝適用前に担当D/Cが確認）**: ①`hq_create_payroll_tasks`(担当C 2026-10-07版)は振込対象を`payroll_bank_accounts×users×sf_payroll_sync`のjoinで集めるため、**兼務の人は名前が2回入る**（チェックリスト・人数が二重）。現金は`cash_handoff_targets`を使う。②`cash_handoff_targets`(2026-09-14版)は`left join sf_payroll_sync`で**兼務の人は2行返る**（金額も分かれる）。③`team_role_store_scope_fallback`は現行版では`sf_payroll_sync`を参照していない（古いcash_handoff_targetsを含むだけで、2026-09-14版に置き換わっている）→対応不要。④他の参照: `labor_cost_apply_payroll`(担当A)は`user_id`で`sum`しており問題なし。⑤nippoの画面3か所（シフト調整の給与参考値・給与配分）は`payrollByUser[user_id]=row`（後勝ち）で兼務の片方だけ表示される→**合算に修正・公開済み(1b0f100)**。
 - **SQL案**: `supabase/2026-11-03_payroll_funcs_concurrent_staff.sql`（①振込=existsで1人1回 ②現金=net_payをuser_idで合算した副問い合わせ）。兼務の人がいない月は結果不変。ユーザー適用待ち（手順書をユーザーへ）。担当DのPhase2は、このSQL適用の確認後。
