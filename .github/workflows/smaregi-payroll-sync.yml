@@ -86,14 +86,14 @@ jobs:
             echo "::warning::$ERR_COUNT 件のエラーがありました（未対応のstaff_idなど。ログ参照）"
           fi
 
-      - name: 月またぎ再取込（JST当月1〜3日のみ・手動指定時はスキップ）
+      - name: 月またぎ再取込（JST当月1〜10日・手動指定時はスキップ）
         if: ${{ github.event.inputs.year == '' && github.event.inputs.month == '' }}
         env:
           SR_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: |
           DAY=$(TZ=Asia/Tokyo date +%-d)
-          if [ "$DAY" -gt 3 ]; then
-            echo "本日はJST${DAY}日のため月またぎ再取込はスキップ（対象は1〜3日）"
+          if [ "$DAY" -gt 10 ]; then
+            echo "本日はJST${DAY}日のため月またぎ再取込はスキップ（対象は1〜10日）"
             exit 0
           fi
           PREV_YEAR=$(TZ=Asia/Tokyo date -d "$(TZ=Asia/Tokyo date +%Y-%m-01) -1 month" +%Y)
@@ -112,3 +112,17 @@ jobs:
             echo "::warning::月またぎ再取込が失敗しました（HTTP $HTTP_CODE）。翌日以降の再実行に期待する"
             exit 0
           fi
+
+      - name: 給与明細ベースの補正（labor_cost_apply_payroll・当月＋JST1〜10日は前月も）
+        if: ${{ github.event.inputs.year == '' && github.event.inputs.month == '' }}
+        env:
+          SR_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          CUR=$(TZ=Asia/Tokyo date +%Y-%m)
+          PREV=$(TZ=Asia/Tokyo date -d "$(TZ=Asia/Tokyo date +%Y-%m-01) -1 month" +%Y-%m)
+          DAY=$(TZ=Asia/Tokyo date +%-d)
+          MONTHS="$CUR"; if [ "$DAY" -le 10 ]; then MONTHS="$PREV $CUR"; fi
+          for YM in $MONTHS; do
+            echo "補正: $YM"
+            curl -s -X POST "https://uuvsxzhpxtghojoubjcc.supabase.co/rest/v1/rpc/labor_cost_apply_payroll" -H "apikey: $SR_KEY" -H "Authorization: Bearer $SR_KEY" -H "Content-Type: application/json" -d "{\"p_ym\":\"$YM\"}"; echo
+          done

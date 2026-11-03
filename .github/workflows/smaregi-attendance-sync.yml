@@ -154,3 +154,28 @@ jobs:
           if [ "$ANOMALY_COUNT" -gt "0" ]; then
             echo "::warning::$ANOMALY_COUNT 件の異常値（1時間以内／13時間超え／24時間超え）が見つかりました。LINEに通知済みのはずです"
           fi
+
+      - name: 当月分の再取込（月初〜昨日・毎日）＋給与明細ベースの補正（2026-11-03・ユーザー指示）
+        env:
+          SR_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          # ①当月を月初〜昨日まで毎日取り直す（過去日の打刻修正を反映）。月初1日は当月分がまだ無いので、下の前月分の再取込に任せる
+          MONTH_START=$(TZ=Asia/Tokyo date +%Y-%m-01)
+          YESTERDAY=$(TZ=Asia/Tokyo date -d "yesterday" +%Y-%m-%d)
+          if [ "$YESTERDAY" \> "$MONTH_START" ] || [ "$YESTERDAY" = "$MONTH_START" ]; then
+            echo "当月再取込: $MONTH_START 〜 $YESTERDAY"
+            BODY=$(F="$MONTH_START" T="$YESTERDAY" node -e "console.log(JSON.stringify({date_from: process.env.F, date_to: process.env.T}))")
+            RES=$(curl -s -w "\n%{http_code}" -X POST "https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/smaregi-attendance-sync" -H "Authorization: Bearer $SR_KEY" -H "Content-Type: application/json" -d "$BODY")
+            echo "$(echo "$RES" | sed '$d' | cut -c1-300)"; echo "HTTP $(echo "$RES" | tail -1)"
+          else
+            echo "本日は月初のため当月分の再取込はスキップ"
+          fi
+          # ②給与明細(sf_payroll_sync)の総支給額に合わせて日次の人件費を按分（当月＋JST1〜10日は前月も）
+          CUR=$(TZ=Asia/Tokyo date +%Y-%m)
+          PREV=$(TZ=Asia/Tokyo date -d "$(TZ=Asia/Tokyo date +%Y-%m-01) -1 month" +%Y-%m)
+          DAY=$(TZ=Asia/Tokyo date +%-d)
+          MONTHS="$CUR"; if [ "$DAY" -le 10 ]; then MONTHS="$PREV $CUR"; fi
+          for YM in $MONTHS; do
+            echo "補正: $YM"
+            curl -s -X POST "https://uuvsxzhpxtghojoubjcc.supabase.co/rest/v1/rpc/labor_cost_apply_payroll" -H "apikey: $SR_KEY" -H "Authorization: Bearer $SR_KEY" -H "Content-Type: application/json" -d "{\"p_ym\":\"$YM\"}"; echo
+          done
