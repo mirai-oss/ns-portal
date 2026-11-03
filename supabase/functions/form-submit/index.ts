@@ -22,7 +22,7 @@ function decodePhoto(s: string): { bytes: Uint8Array; type: string } | null {
 const extOf = (t: string) => (t.includes("png") ? "png" : t.includes("webp") ? "webp" : t.includes("pdf") ? "pdf" : t.includes("spreadsheetml") ? "xlsx" : t.includes("wordprocessingml") ? "docx" : t.includes("ms-excel") ? "xls" : t.includes("msword") ? "doc" : "jpg");
 const rand = () => Math.random().toString(36).slice(2, 8);
 
-async function uploadAll(sb: any, bucket: string, prefix: string, photos: unknown): Promise<string[]> {
+async function uploadAll(sb: any, bucket: string, prefix: string, photos: unknown, mirror?: string): Promise<string[]> {
   const out: string[] = [];
   for (const p of Array.isArray(photos) ? photos.slice(0, 5) : []) {
     const d = decodePhoto(p as string);
@@ -30,6 +30,7 @@ async function uploadAll(sb: any, bucket: string, prefix: string, photos: unknow
     const path = `${prefix}_${Date.now()}_${rand()}.${extOf(d.type)}`;
     const { error } = await sb.storage.from(bucket).upload(path, d.bytes, { contentType: d.type });
     if (error) throw new Error("写真の保存に失敗しました: " + error.message);
+    if (mirror) await sb.storage.from(mirror).upload(path, d.bytes, { contentType: d.type });   // 本部タスクの写真表示用（report-photos）にも置く
     out.push(path);
   }
   return out;
@@ -89,7 +90,7 @@ Deno.serve(async (req) => {
         let n = 0;
         for (const o of used) {
           n++;
-          const paths = await uploadAll(sb, "quote-photos", `${q.id}/${n}`, o.photos);
+          const paths = await uploadAll(sb, "quote-photos", `${q.id}/${n}`, o.photos, "report-photos");
           const amt = Number(o.amount);
           const { error: e2 } = await sb.from("quote_options").insert({
             request_id: q.id, sort_no: n, vendor_name: String(o.vendor ?? "").trim().slice(0, 100) || null,
@@ -101,6 +102,32 @@ Deno.serve(async (req) => {
         await sb.from("quote_requests").delete().eq("id", q.id);   // 途中で失敗したら丸ごと取り消す（中途半端な申請を残さない）
         return json({ ok: false, error: String((e as Error).message ?? e) }, 500);
       }
+      // 本部タスクを作る（工程: 会社を決める → 修繕日確定 → 修繕完了(写真) → 支払い完了）。失敗しても見積もり自体は残す
+      try {
+        const { data: opRows } = await sb.from("quote_options").select("vendor_name,amount,note,photo_paths,sort_no").eq("request_id", q.id).order("sort_no");
+        const lines = (opRows ?? []).map((o: any, i: number) => `${i + 1}社目: ${o.vendor_name ?? "（業者名なし）"} ／ ${o.amount != null ? Math.round(o.amount).toLocaleString("ja-JP") + "円" : "金額未入力"}${o.note ? " ／ " + o.note : ""}`);
+        const today = new Date(now + 9 * 3600e3).toISOString().slice(0, 10);
+        const plus = (n: number) => new Date(now + 9 * 3600e3 + n * 86400e3).toISOString().slice(0, 10);
+        const { data: task } = await sb.from("hq_tasks").insert({
+          title: `見積もり: ${subject}（${store.name}）`, corp: "N-Style", freq: "once", target_date: today, due_date: plus(7), status: "todo", visibility: "all",
+          notes: `申請者: ${ru.name}／見積日: ${date}\n${lines.join("\n")}\n※見積書の写真・PDFは下の「写真」に付いています。会社の決定・保留・却下は ダッシュボードの「申請履歴 → 見積もり」で行います。`,
+          memo: "見積もりフォームから自動作成", exception_key: "quote:" + q.id,
+        }).select("id").single();
+        if (task) {
+          await sb.from("quote_requests").update({ task_id: task.id }).eq("id", q.id);
+          const steps: [string, string, boolean, string | null][] = [
+            ["見積もりを比較して、どの会社にするか決める（" + used.length + "社）", "quote:select", false, plus(3)],
+            ["修繕日（工事日）を確定する", "quote:date", false, null],
+            ["修繕完了（完了写真を添付）", "quote:done", true, null],
+            ["支払い完了", "quote:pay", false, null],
+          ];
+          for (let i = 0; i < steps.length; i++) {
+            await sb.from("hq_task_steps").insert({ task_id: task.id, title: steps[i][0], due_date: steps[i][3], sort_order: (i + 1) * 10, kind: "step", is_binary: false, requires_photo: steps[i][2], procedure_note: steps[i][1] });
+          }
+          for (const o of opRows ?? []) for (const ph of o.photo_paths ?? []) await sb.from("hq_task_photos").insert({ task_id: task.id, storage_path: ph });
+          await sb.from("hq_task_activity").insert({ task_id: task.id, actor_id: null, kind: "create", detail: "見積もりフォームの送信により自動作成" });
+        }
+      } catch (_) { /* タスク作成の失敗は握りつぶす（見積もりは保存済み・申請履歴から確認できる） */ }
       return json({ ok: true, id: q.id });
     }
 
