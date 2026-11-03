@@ -907,7 +907,24 @@ Deno.serve(async (req) => {
             : { division: 0, effectiveDate: r.effective_date, wage: r.wage, ...(smStore ? { storeId: smStore } : {}), ...(r.holiday_wage !== null && r.holiday_wage !== undefined ? { holidayWage: r.holiday_wage } : {}) };
           const put = async (id: string) => {
             const rr = await api(C, token, `/staffs/${staffId}/wage_apply/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify(putBody) });
-            if (!rr.ok) throw new Error(`賃金設定の更新に失敗(${rr.status}): ${await errText(rr)}`);
+            if (rr.ok) return;
+            const t = await errText(rr);
+            // スマレジの「初期設定」（新しく登録したスタッフに自動で付く賃金設定）は適用開始時期を変えられない（400「初期設定のため適用開始時期は変更できません」）。
+            //   その初期設定の本当の適用開始時期を読み直し、その日付で金額だけ更新する。管理システム側の適用開始日はスマレジの実際の日付に合わせる（同じ条件の行が既にあれば更新できないのでエラーのまま）
+            if (rr.status === 400 && /初期設定/.test(t)) {
+              if (!existing) existing = await fetchWageApply();
+              const init = existing.find((w) => w.id === id);
+              if (init && init.effectiveDate && init.effectiveDate !== r.effective_date) {
+                const retry = await api(C, token, `/staffs/${staffId}/wage_apply/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify({ ...putBody, effectiveDate: init.effectiveDate }) });
+                if (retry.ok) {
+                  const { error: de } = await sb.from("employee_wage_settings").update({ effective_date: init.effectiveDate, updated_at: new Date().toISOString() }).eq("id", r.id);
+                  if (de) throw new Error(`スマレジは更新しましたが、管理システムの適用開始日を ${init.effectiveDate} に直せませんでした（同じ条件の行が既にあります）`);
+                  return;
+                }
+                throw new Error(`賃金設定の更新に失敗(${retry.status}): ${await errText(retry)}`);
+              }
+            }
+            throw new Error(`賃金設定の更新に失敗(${rr.status}): ${t}`);
           };
           if (applyId) {
             await put(applyId);
