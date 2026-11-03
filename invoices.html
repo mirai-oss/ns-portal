@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-10-21-v157";
+const BUILD_TAG="2026-11-03-v158";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -12338,20 +12338,14 @@ function payrollRender(){
   // またがるようになった場合は、その場でどちらの法人名を使うか確認する
   document.querySelectorAll("[data-payroll-finalize]").forEach(el=>el.onclick=async()=>{
     el.disabled=true;
-    const {corpNames,unresolved}=await payrollDetermineTargetCorp(PAYROLL_STATE.yearMonth);
+    // 2026-10-23: 兼務の人の給与は支払法人（契約の法人）ごとに分ける方針（ユーザー確定）。担当Bの hq_create_payroll_tasks が「渡された法人の契約の行だけ」を対象にするため、
+    // 給与仕訳で選んでいる法人（契約の法人）をそのまま渡す。従来の「対象者の所属店舗の法人」で決める方法だと、黒霧屋（店舗の法人=トーホー・運営=LiveGate）の給与が
+    // トーホーのタスクに入ってしまうため使わない。既定値の'N-Style'も使わず、必ず法人名を渡す
+    await ensureCorpStoreCache();
+    const def=payrollCorpDef_(); const corpRow=(CORP_STORE_CACHE.corporations||[]).find(c=>c.corp_code===def.code);
     el.disabled=false;
-    let corp;
-    if(corpNames.length===1){
-      corp=corpNames[0];
-    }else if(corpNames.length===0){
-      alert("対象者の所属法人を特定できませんでした（店舗マスタの法人設定をご確認ください）。本部タスクの自動発行は中止しました。");
-      return;
-    }else{
-      const picked=prompt(`対象者の所属法人が複数（${corpNames.join("・")}）に分かれています。\nこの本部タスクは1回につき1つの法人名でしか作成できません。\nどちらの法人名でタスクを作成しますか？\n（${corpNames.join(" / ")}のいずれかを入力）`,corpNames[0]);
-      if(!picked||!corpNames.includes(picked)) return;
-      corp=picked;
-    }
-    if(unresolved>0&&!confirm(`${unresolved}名は所属店舗・法人を特定できませんでした（店舗未設定等）。それでも法人「${corp}」として本部タスクを発行しますか？`)) return;
+    if(!corpRow||!corpRow.name){ alert("給与仕訳で選んでいる法人（"+def.label+"）の法人名を特定できませんでした。本部タスクの自動発行は中止しました。"); return; }
+    const corp=corpRow.name;
     if(!confirm(`${PAYROLL_STATE.yearMonth}分の給与を確定し、本部タスク（給料振込・現金手渡し）を法人「${corp}」で自動発行しますか？\n※既に発行済みの場合は重複作成されません。`)) return;
     el.disabled=true;
     const r=await authed("/rest/v1/rpc/hq_create_payroll_tasks",{
