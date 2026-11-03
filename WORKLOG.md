@@ -4,6 +4,12 @@
 
 ---
 
+**★★★★2026-11-03（担当Bスレッド）担当D Phase2(sf_payroll_syncの旧UNIQUE削除)の前提: 兼務の人が給与2行になっても二重にならないか確認・修正（SQL案あり・未適用）**:
+- **確認結果（リポジトリの最新定義で確認。本番の定義との一致は未確認＝適用前に担当D/Cが確認）**: ①`hq_create_payroll_tasks`(担当C 2026-10-07版)は振込対象を`payroll_bank_accounts×users×sf_payroll_sync`のjoinで集めるため、**兼務の人は名前が2回入る**（チェックリスト・人数が二重）。現金は`cash_handoff_targets`を使う。②`cash_handoff_targets`(2026-09-14版)は`left join sf_payroll_sync`で**兼務の人は2行返る**（金額も分かれる）。③`team_role_store_scope_fallback`は現行版では`sf_payroll_sync`を参照していない（古いcash_handoff_targetsを含むだけで、2026-09-14版に置き換わっている）→対応不要。④他の参照: `labor_cost_apply_payroll`(担当A)は`user_id`で`sum`しており問題なし。⑤nippoの画面3か所（シフト調整の給与参考値・給与配分）は`payrollByUser[user_id]=row`（後勝ち）で兼務の片方だけ表示される→**合算に修正・公開済み(1b0f100)**。
+- **SQL案**: `supabase/2026-11-03_payroll_funcs_concurrent_staff.sql`（①振込=existsで1人1回 ②現金=net_payをuser_idで合算した副問い合わせ）。兼務の人がいない月は結果不変。ユーザー適用待ち（手順書をユーザーへ）。担当DのPhase2は、このSQL適用の確認後。
+- 契約(法人)ごとに分けて渡す運用が必要になったら、契約で絞る引数を追加する（今回はしない）。
+
+
 **★★★★★2026-11-03（担当Bスレッド）黒霧屋の運営変更の現状（司令塔依頼①〜④）／⚠️LiveGateの賃金が30人分未設定**:
 - **①U-12(移籍者の打刻OFFを源泉徴収票の工程後に)**: 適用有無は私のDB権限(service key)からは判別不可（関数定義を読むトークンなし）。**影響は無し**: 移籍32人は全員 旧契約(トーホー)の打刻OFF済み(`old_deactivated`=true・32/32)・`hr_due_transfer_deactivations`の返却は0件・毎朝のhr-termination-applyは成功（11/1 08:58JST実行=1m39s）。理由=移籍32人の「源泉徴収票」工程は**10/23 17:57〜18:09(JST)に青山純さんがまとめて完了**にしており(hr_slip_pending=false)、SQLの有無にかかわらず11/1以降にOFFになる状態だった。管理システムのアカウントは32人とも有効・termination_dateなし（確認済み）。
 - **②退職手続きタスク(移籍分)**: 32件すべてdone・源泉徴収票の工程32/32完了。ただし**源泉徴収票の本体(hr_documents)は0人分**（工程だけ完了）。トーホー分の源泉徴収票は最終給与確定後に必要なはず→要確認（タスクはdoneなので催促は出ない）。
