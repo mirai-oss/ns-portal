@@ -106,7 +106,7 @@ begin
   end if;
   for rec in
     select e.applicant_id, u.name, sum(e.amount) total, count(*) n from public.expense_requests e join public.users u on u.id = e.applicant_id
-    where e.status = 'approved' and e.payment_type = 'tatekae' and e.use_date >= v_from and e.use_date < v_to group by e.applicant_id, u.name order by u.name
+    where replace(replace(u.name, '　', ''), ' ', '') <> '佐藤俊一' and e.status = 'approved' and e.payment_type = 'tatekae' and e.use_date >= v_from and e.use_date < v_to group by e.applicant_id, u.name order by u.name
   loop
     i := i + 1;
     if exists (select 1 from public.hq_task_steps s where s.task_id = v_task and s.procedure_note = 'expense_user:' || rec.applicant_id::text) then
