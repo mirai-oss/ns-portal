@@ -613,6 +613,29 @@ function plAutoSourceOf(memo: unknown): string | null {
   return null;
 }
 // 区分が空/「？」等の行を S/F/L/A/R/O/X に寄せる（supabase/2026-10-06_pl_entries_master.sql の pl_entries_import_from_kd と同じ規則）
+// 勘定科目→区分の正（2026-11-03 ユーザー確定・MFの考え方に合わせた。旅費交通費=O／通勤手当=L）。account_items(科目マスタ)と同じ。
+// 取込時にこの表で区分を上書きする（GAS側・シート側の区分が誤っていても、画面では科目マスタどおりになる）。
+const PL_ITEM_CAT_FINAL: Record<string, string> = {
+  "役員報酬": "L", "法定福利費": "L", "通勤手当": "L", "賞与積立": "L", "退職金等": "L",
+  "家賃": "R", "リース料": "R", "家賃更新按分": "R", "広告宣伝費": "A", "販売促進費": "A",
+  "水道光熱費": "O", "通信費": "O", "消耗品・備品費": "O", "修繕費": "O", "衛生管理費": "O", "カード手数料": "O", "支払手数料": "O", "支払報酬料": "O",
+  "採用教育費": "O", "接待交際費": "O", "会議費": "O", "慶弔見舞費": "O", "保険料": "O", "租税公課": "O", "減価償却費": "O", "福利厚生費": "O",
+  "諸会費": "O", "雑費": "O", "本部経費（按分）": "O", "媒体販促費（自動）": "O", "運営委託費": "O", "旅費交通費": "O",
+  "その他売上": "S", "銀行返済": "X", "仕入（食材・飲料）": "F",
+};
+// 科目名のゆれ（取込時に正規化）。『支払手数料/Mostfun』のように科目名に補助科目が付いたものは 科目=スラッシュ前・補助科目=スラッシュ後 に分ける
+const PL_ITEM_ALIAS: Record<string, string> = { "備品・消耗品費": "消耗品・備品費", "消耗品費": "消耗品・備品費" };
+function plNormalizeItem(item: string, sub: string): { item: string; sub: string } {
+  let it = item, sb = sub;
+  const i = it.indexOf("/");
+  if (i > 0 && PL_ITEM_CAT_FINAL[it.slice(0, i)]) { const tail = it.slice(i + 1).trim(); it = it.slice(0, i); if (!sb || /^外部連携:/.test(sb)) sb = tail + (sb ? "　" + sb : ""); }
+  if (PL_ITEM_ALIAS[it]) it = PL_ITEM_ALIAS[it];
+  return { item: it, sub: sb };
+}
+function plCatByItem(cat: unknown, item: string, sub: string): string {
+  if (item === "旅費交通費" && /通勤手当/.test(sub)) return "L";   // MF: 旅費交通費の補助科目『通勤手当』は人件費(L)
+  return PL_ITEM_CAT_FINAL[item] ?? plCatForEntries(cat, item);
+}
 function plCatForEntries(cat: unknown, item: string): string {
   const s = String(cat ?? "").trim().toUpperCase().replace(/[Ａ-Ｚ]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xFEE0));
   if (["S", "F", "L", "A", "R", "O", "X"].includes(s)) return s;
@@ -650,8 +673,10 @@ async function autoSyncFromStgPl(sb: any, dry = false, ignoreFromOverride?: stri
       if (ignoreFrom && /^\d{4}-\d{2}$/.test(ignoreFrom) && ym >= ignoreFrom && source.startsWith("自動｜") && String(row[6] ?? "").includes("外部連携:")) { ignoredInvoiceGas++; continue; }
       const nm = String(row[1] ?? "").trim(); let sid: string | null = null;
       if (nm) { const hit = lookupStore(maps, nm); if (!hit) { unresolved.add(nm); continue; } sid = hit.store_id; }
-      const item = String(row[2] ?? "").trim() || "(未分類)";
-      rows.push({ year_month: ym, store_id: sid, item, category: plCatForEntries(row[3], item), amount: num(row[4]), memo, sub_item: (source === "店舗間移動" || source === "媒体販促費（自動計上）") ? "" : String(row[6] ?? ""), source });   // 店舗間移動・媒体販促費（自動計上）は補助科目を持たない（2026-10-14: 後者はG列に別連携の「PayPay　外部連携:ID」が混入して表示された）（シートのG列に別連携の「名前　外部連携:ID」が混入していたため無視する・2026-10-13）
+      const item0 = String(row[2] ?? "").trim() || "(未分類)";
+      const sub0 = (source === "店舗間移動" || source === "媒体販促費（自動計上）") ? "" : String(row[6] ?? "");
+      const nz = plNormalizeItem(item0, sub0); const item = nz.item;
+      rows.push({ year_month: ym, store_id: sid, item, category: plCatByItem(row[3], item, nz.sub), amount: num(row[4]), memo, sub_item: nz.sub, source });   // 店舗間移動・媒体販促費（自動計上）は補助科目を持たない（2026-10-14: 後者はG列に別連携の「PayPay　外部連携:ID」が混入して表示された）（シートのG列に別連携の「名前　外部連携:ID」が混入していたため無視する・2026-10-13）
     }
     const old = await fetchAll((f, t) => sb.from("pl_entries").select("id,year_month,store_id,item,category,amount,memo,sub_item,source")
       .is("deleted_at", null).neq("source", "手入力").not("source", "in", `(${PL_AUTO_IGNORE_SOURCES.map((x) => `"${x}"`).join(",")})`).order("id").range(f, t));
