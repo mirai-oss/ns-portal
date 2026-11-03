@@ -918,6 +918,8 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
+**★2026-11-03（司令塔スレッド・続き）担当B: 法人別方針でSQL差し替え（`2026-11-03_payroll_funcs_concurrent_staff.sql`: cash_handoff_targets=人×契約1行〔drop→create・contract_id/corp_name追加〕・sf_cash_handoff_signaturesにcontract_id列（既定=トーホー）＋一意を(user,ym,contract)へ・cash_handoff_completeにp_contract_id・hq_create_payroll_tasks=p_corpの契約の行だけ〔対応契約が無い呼び方は従来どおり=互換〕）。nippo現金手渡し画面は法人別対応で公開済み。司令塔レビュー=OK（破壊的操作なし）→U-17①の承認待ち。担当Cの給料確定ボタン（法人ごとに呼ぶ）は①適用後でも安全。
+
 **★2026-11-03（司令塔スレッド・続き）担当D補足を受け担当B/Cへ: 契約→法人の結合（sf_payroll_sync.contract_id→smaregi_contracts.corporation_id→corporations.name）／hq_create_payroll_tasksの既定値p_corp='N-Style'は法人絞り込み後0件になるため必須引数化／呼び出し側（invoices.html 給料確定ボタン）は店舗の法人ではなく契約の法人（給与仕訳の「法人」選択）を渡す（黒霧屋対策）＝担当C。
 
 **★2026-11-03（司令塔スレッド・続き）ユーザー指示: 兼務の人の給与は支払法人が違うため、現金手渡し・振込タスクは**法人（契約）ごとに分ける（合算しない）**→担当BのSQL（cash_handoff_targets=user_id×contract_id／hq_create_payroll_tasks=その法人の契約の行だけ）と画面（法人別の行・内訳表示）を差し替え依頼。U-17①は差し替え後に承認を取り直す。担当Dへも通知。
