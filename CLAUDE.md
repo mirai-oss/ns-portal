@@ -30,7 +30,7 @@
 
 ## その他の鉄則（詳細は`WORKLOG.md`参照）
 
-- 本番Supabaseへの SQL実行・Edge Functionのデプロイはユーザー確認を得てから行う。
+- 本番Supabaseへの SQL実行・Edge Functionのデプロイはユーザー確認を得てから行う。デプロイは `supabase functions deploy <name> --project-ref uuvsxzhpxtghojoubjcc --yes`（2026-11 の CLI から本番は確認プロンプトが出る。パイプ/非対話では `--yes` が無いと何もせず終わる）。SQL は `python3 scripts/apply_sql.py <file> [--dry-run]`。
 - 既存のマイグレーションSQLファイルは編集しない（新しい変更は日付入りの新規ファイルを追加）。
 - 既存の本番Edge Function（`line-webhook`・`smaregi-sync`・`smaregi-shift-sync`等）を書き換えるときは、本番バイナリから完全なソースを復元しdiffで既存部分が無変更であることを確認してからデプロイする。
 - 本番データを直接テストに使わない。テストは使い捨てユーザー・使い捨てデータで行い、作業後に完全削除して0件を確認する。
