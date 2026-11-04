@@ -1,6 +1,6 @@
 -- 【事前報告様式（DB変更）】
 -- 目的: ①申請履歴(経営DのRPC request_history)に「経費申請」(expense_requests)を追加（承認・絞り込み・CSVは画面側）。承認待ち件数(request_pending_counts)にも追加。
---       ②毎月、前月分の従業員経費（承認済み・立替・利用日が該当月）を従業員ごとに合計した本部タスク「<M>月分従業員経費」を自動作成（期限=翌月5日・担当=原 美香）。
+--       ②毎月、前月分の従業員経費（承認済み・立替・承認日が該当月）を従業員ごとに合計した本部タスク「<M>月分従業員経費」を自動作成（期限=翌月5日・担当=原 美香）。
 -- 変更: request_history／request_pending_counts を差し替え（既存列・既存の種類は無変更・経費だけ追加）。新規: hq_expense_monthly_task(p_ym)。
 -- ロールバック: request_history/request_pending_counts を 2026-10-05_request_forms.sql / request_pending_counts.sql の定義に戻す・drop function hq_expense_monthly_task.
 -- 実行: supabase db query --linked -f supabase/2026-11-04_expense_history_and_monthly_task.sql
@@ -81,7 +81,7 @@ grant execute on function public.request_pending_counts() to authenticated;
 create or replace function public.hq_expense_monthly_task(p_ym text default null) returns jsonb
 language plpgsql security definer set search_path = public as $$
 declare v_claims jsonb; v_ym text; v_from date; v_to date; v_key text; v_task uuid; v_assignee uuid; v_due date; v_title text;
-  rec record; i int := 0; n_new int := 0; n_upd int := 0; v_cnt int; v_pending int;
+  rec record; v_title2 text; i int := 0; n_new int := 0; n_upd int := 0; v_cnt int; v_pending int;
 begin
   begin v_claims := nullif(current_setting('request.jwt.claims', true), '')::jsonb; exception when others then v_claims := null; end;
   if coalesce(v_claims->>'role', '') <> 'service_role' and not public._is_request_admin() then return jsonb_build_object('ok', false, 'error', 'forbidden'); end if;
@@ -92,33 +92,39 @@ begin
   v_key := 'expense-monthly:' || v_ym;
   v_title := (substr(v_ym, 6, 2)::int)::text || '月分従業員経費';
   select id into v_assignee from public.users where replace(replace(name, '　', ''), ' ', '') = '原美香' and is_active limit 1;
-  select count(*) into v_cnt from public.expense_requests e where e.status = 'approved' and e.payment_type = 'tatekae' and e.use_date >= v_from and e.use_date < v_to;
-  select count(*) into v_pending from public.expense_requests e where e.status = 'pending' and e.use_date >= v_from and e.use_date < v_to;
+  select count(*) into v_cnt from public.expense_requests e where e.status = 'approved' and e.payment_type = 'tatekae' and (e.decided_at at time zone 'Asia/Tokyo')::date >= v_from and (e.decided_at at time zone 'Asia/Tokyo')::date < v_to;
+  select count(*) into v_pending from public.expense_requests e where e.status = 'pending' and (e.applied_at at time zone 'Asia/Tokyo')::date >= v_from and (e.applied_at at time zone 'Asia/Tokyo')::date < v_to;
   if v_cnt = 0 then return jsonb_build_object('ok', true, 'created', false, 'reason', '承認済みの立替経費がありません', 'pending', v_pending); end if;
 
   select id into v_task from public.hq_tasks where exception_key = v_key and deleted_at is null limit 1;
   if v_task is null then
     insert into public.hq_tasks (title, corp, freq, target_date, due_date, status, visibility, notes, memo, exception_key, is_urgent)
     values (v_title, 'N-Style', 'monthly', (v_to - 1), v_due, 'todo', 'all',
-            '承認済みの立替経費（利用日が' || v_ym || '）を従業員ごとに合計。承認待ちは含みません（承認されると工程の金額が更新されます）。',
+            '承認済みの立替経費（承認日が' || v_ym || '）を従業員ごとに合計。承認待ちは含みません（承認されると工程の金額が更新されます）。',
             '従業員経費の月次集計（自動作成）', v_key, false) returning id into v_task;
     insert into public.hq_task_activity (task_id, actor_id, kind, detail) values (v_task, null, 'create', '月末の従業員経費の集計として自動作成');
   end if;
   for rec in
     select e.applicant_id, u.name, sum(e.amount) total, count(*) n from public.expense_requests e join public.users u on u.id = e.applicant_id
-    where replace(replace(u.name, '　', ''), ' ', '') <> '佐藤俊一' and e.status = 'approved' and e.payment_type = 'tatekae' and e.use_date >= v_from and e.use_date < v_to group by e.applicant_id, u.name order by u.name
+    where replace(replace(u.name, '　', ''), ' ', '') <> '佐藤俊一' and e.status = 'approved' and e.payment_type = 'tatekae' and (e.decided_at at time zone 'Asia/Tokyo')::date >= v_from and (e.decided_at at time zone 'Asia/Tokyo')::date < v_to group by e.applicant_id, u.name order by u.name
   loop
     i := i + 1;
-    if exists (select 1 from public.hq_task_steps s where s.task_id = v_task and s.procedure_note = 'expense_user:' || rec.applicant_id::text) then
-      update public.hq_task_steps s set title = rec.name || '　' || to_char(rec.total, 'FM999,999,999') || '円（' || rec.n || '件）', updated_at = now()
-        where s.task_id = v_task and s.procedure_note = 'expense_user:' || rec.applicant_id::text and s.completed_at is null
-          and s.title is distinct from (rec.name || '　' || to_char(rec.total, 'FM999,999,999') || '円（' || rec.n || '件）');
-      if found then n_upd := n_upd + 1; end if;
+    v_title2 := rec.name || '　' || to_char(rec.total, 'FM999,999,999') || '円（' || rec.n || '件）';
+    if exists (select 1 from public.hq_task_steps s where s.task_id = v_task and s.procedure_note = 'expense_user:' || rec.applicant_id::text and s.title = v_title2) then
+      null;   -- 変化なし
+    elsif exists (select 1 from public.hq_task_steps s where s.task_id = v_task and s.procedure_note = 'expense_user:' || rec.applicant_id::text and s.completed_at is not null) then
+      null;   -- 完了済みの工程は触らない
     else
+      -- 金額が変わった未完了の工程は作り直す（工程の直接編集は画面権限のトリガーで止まるため、削除→追加にしている）
+      if exists (select 1 from public.hq_task_steps s where s.task_id = v_task and s.procedure_note = 'expense_user:' || rec.applicant_id::text) then
+        delete from public.hq_task_steps s where s.task_id = v_task and s.procedure_note = 'expense_user:' || rec.applicant_id::text and s.completed_at is null;
+        n_upd := n_upd + 1;
+      else
+        n_new := n_new + 1;
+      end if;
       insert into public.hq_task_steps (task_id, title, assignee_id, assignee_ids, due_date, sort_order, kind, is_binary, requires_photo, procedure_note)
-        values (v_task, rec.name || '　' || to_char(rec.total, 'FM999,999,999') || '円（' || rec.n || '件）', v_assignee, case when v_assignee is null then null else array[v_assignee] end,
+        values (v_task, v_title2, v_assignee, case when v_assignee is null then null else array[v_assignee] end,
                 v_due, i * 10, 'step', false, false, 'expense_user:' || rec.applicant_id::text);
-      n_new := n_new + 1;
     end if;
   end loop;
   return jsonb_build_object('ok', true, 'task_id', v_task, 'title', v_title, 'due', v_due, 'assignee', v_assignee, 'steps_new', n_new, 'steps_updated', n_upd, 'pending_excluded', v_pending);
