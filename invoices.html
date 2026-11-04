@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-11-03-v158";
+const BUILD_TAG="2026-11-04-v159";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -4613,7 +4613,7 @@ const ARJ_AUTO_RULES={
   "SMBC GMO PAYMENT（カード売上）":{receivable:t=>t==="default"?"ステラカード（全店舗分":"ステラカード", salesSub:"カード売上", feeAccount:()=>"カード手数料", feeSub:t=>t==="default"?"カード手数料":null},   // トーホー(default)のMFは、売掛金の補助科目が「ステラカード（全店舗分」・カード手数料の補助科目が「カード手数料」
   "ロケットナウ":{receivable:"ロケットなう", salesAccount:"デリバリー売上", reducedTax:true, salesSub:"ロケットなう", feeAccount:()=>"支払手数料", feeSub:()=>"ロケットなう"},
   "Uber Eats":{receivable:"Uber Eats", salesAccount:"デリバリー売上", reducedTax:true, salesSub:"Uber Eats", feeAccount:()=>"支払手数料", feeSub:()=>"Uber Eats"},
-  "現金売上":{receivable:"現金売上", receivableByStore:true, salesSub:"現金売上", feeAccount:()=>"カード手数料", feeSub:()=>null},
+  "現金売上":{receivable:"現金売上", receivableByStore:true, cashAccount:t=>t==="default"?"売上現金":null, salesSub:"現金売上", feeAccount:()=>"カード手数料", feeSub:()=>null},
 };
 function arjRuleFor_(source){ const k=String(source||""); return ARJ_AUTO_RULES[k]||(/uber/i.test(k)?ARJ_AUTO_RULES["Uber Eats"]:null); }
 function arjSalesAccountName_(tenantId){ return "飲食売上"; } // 2026-10-13: N-Styleもトーホーと同じ飲食売上
@@ -4645,11 +4645,13 @@ function arjBuildAutoBranches_(prefix,expected,feeParts){
   const recvSub=typeof rule.receivable==="function"?rule.receivable(t):rule.receivable;
   let arLabel=`売掛金/${recvSub}`;
   let arStoreMiss=false;
-  if(rule.receivableByStore){ // 現金売上：借方の売掛金は店舗の補助科目
+  const cashAcc=rule.cashAccount?rule.cashAccount(t):null;
+  if(cashAcc){ arLabel=cashAcc; } // 現金売上（トーホー）：借方は勘定科目「売上現金」（売掛金は使わない・補助科目なし）
+  else if(rule.receivableByStore){ // 現金売上（N-Style）：借方の売掛金は店舗の補助科目
     const l=arjSubLabelForDept_("売掛金",dept);
     if(l) arLabel=l; else { arLabel="売掛金"; arStoreMiss=true; }
   }
-  const arMissing=!rule.receivableByStore&&!has(arLabel)&&has("売掛金");
+  const arMissing=!rule.receivableByStore&&!cashAcc&&!has(arLabel)&&has("売掛金");
   if(arMissing) arLabel="売掛金";
   const feeAcc=rule.feeAccount(t), feeSubFixed=rule.feeSub(t);
   const feeLabelOf=()=>feeSubFixed?`${feeAcc}/${feeSubFixed}`:(arjSubLabelForDept_(feeAcc,dept)||feeAcc);

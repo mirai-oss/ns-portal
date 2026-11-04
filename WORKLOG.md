@@ -4,6 +4,12 @@
 
 ---
 
+*2026-11-04（担当C）現金売上の仕訳: トーホーは借方を「売上現金」に（invoices.html v159）**:
+- ユーザー指示: トーホー7店舗の現金売上の仕訳は、借方を「売掛金/店舗」ではなく勘定科目「売上現金」にする（10月分から・今後も）。N-Styleは従来どおり。
+- `ARJ_AUTO_RULES["現金売上"].cashAccount`（tenant=defaultのみ「売上現金」）。MFに科目「売上現金」が無い場合は「自動で組めませんでした：…売上現金」と表示して従来方式へ。借方には部門・補助科目を付けない。
+- 黒霧屋 新横浜の現金売上は法人をN-Styleに（ns-daily-import lib/cash-journal.js CORP_OVERRIDE。既存9・10月行も更新）。
+- 10月分のトーホー7店舗の入金予定（ar_receivables）はMF仕訳前＝画面の「仕訳を作成」から新しい組み方で作れる。9月分は登録済み（5646〜5659）のため触っていない。
+
 **★★★2026-11-04（担当A）経費申請・見積もりの申請フォーム(URL)／申請履歴に経費・見積もり／見積もりの決定・保留・却下と本部タスク連動**:
 - 新: tori-dashboard expense-form.html・quote-form.html、Edge form-submit、DB(quote_requests/quote_options/quote-photosバケット・RPC quote_list/quote_decide・request_form_linkにexpense/quote)。申請履歴は経費の承認/差戻し・検索・絞り込み・CSV・見積もり比較に対応。PDF/Excel/Word添付可(4MB)。
 - 見積もり受信→本部タスク(最重要)自動作成。工程: 決める(申請者)→修繕日(申請者)→修繕完了(写真・申請者)→支払い完了(原美香)。保留中も未読バッジが残る。毎月の「N月分従業員経費」タスク(佐藤俊一は除外)も稼働。
