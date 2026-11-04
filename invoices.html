@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-11-04-v159";
+const BUILD_TAG="2026-11-04-v160";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -4646,8 +4646,10 @@ function arjBuildAutoBranches_(prefix,expected,feeParts){
   let arLabel=`売掛金/${recvSub}`;
   let arStoreMiss=false;
   const cashAcc=rule.cashAccount?rule.cashAccount(t):null;
-  if(cashAcc){ arLabel=cashAcc; } // 現金売上（トーホー）：借方は勘定科目「売上現金」（売掛金は使わない・補助科目なし）
-  else if(rule.receivableByStore){ // 現金売上（N-Style）：借方の売掛金は店舗の補助科目
+  if(cashAcc){ // 現金売上（トーホー）：借方は勘定科目「売上現金」＋店舗の補助科目（売掛金は使わない）
+    const l=arjSubLabelForDept_(cashAcc,dept);
+    if(l) arLabel=l; else { arLabel=cashAcc; arStoreMiss=true; }
+  } else if(rule.receivableByStore){ // 現金売上（N-Style）：借方の売掛金は店舗の補助科目
     const l=arjSubLabelForDept_("売掛金",dept);
     if(l) arLabel=l; else { arLabel="売掛金"; arStoreMiss=true; }
   }
@@ -4666,7 +4668,7 @@ function arjBuildAutoBranches_(prefix,expected,feeParts){
   let feeLabel=feeNeeded?feeLabelOf():feeAcc;
   if(feeNeeded&&feeSubFixed&&!has(feeLabel)){ warn.push(`「${feeAcc}」の補助科目「${feeSubFixed}」がMFに見つかりません。補助科目は空欄です`); feeLabel=feeAcc; }
   if(feeNeeded&&feeLabel===feeAcc&&!feeSubFixed&&dept&&(ARJ_STATE.subAccountsByAccountName.get(feeAcc)||[]).length) warn.push(`「${feeAcc}」の補助科目に同じ店舗が見つかりません。補助科目は空欄です`);
-  if(arStoreMiss) warn.push(`「売掛金」の補助科目に、部門（${dept?dept.name:"未解決"}）と同じ店舗が見つかりません。借方の補助科目は空欄です`);
+  if(arStoreMiss) warn.push(`「${cashAcc||"売掛金"}」の補助科目に、部門（${dept?dept.name:"未解決"}）と同じ店舗が見つかりません。借方の補助科目は空欄です`);
   if(arMissing) warn.push(`「売掛金」の補助科目「${recvSub}」がMFに見つかりません。補助科目は空欄です（先にMFで作成してください）`);
   ARJ_STATE.creditSubAccountWarning=warn.join("／");
   const dep=dept?dept.id:"";
