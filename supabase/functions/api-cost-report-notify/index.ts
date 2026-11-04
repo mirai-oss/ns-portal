@@ -13,6 +13,7 @@
 //   forceは動作確認用（本来の曜日/日付条件を無視して強制送信させる）
 //   認可: CEO/HQ/マスターのユーザーJWT、またはservice_role直呼び（他のD担当関数と同じ方針）
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { slackPost } from "../_shared/slack.ts";
 
 const cors: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -38,6 +39,7 @@ function usd(n: number): string {
 }
 
 async function sendLark(sb: ReturnType<typeof createClient>, text: string) {
+  await slackPost(sb, "hq.dev_system", text, { source: "edge", event: "api_cost" }); // 2026-11-04 Slack にも並行送信（#本部-開発システム）
   const { data: sec } = await sb.from("app_secrets").select("value").eq("key", "lark_webhook_url").maybeSingle();
   const url = (sec?.value ?? "").trim();
   if (!url) return { ok: false, reason: "app_secretsにlark_webhook_url未設定" };

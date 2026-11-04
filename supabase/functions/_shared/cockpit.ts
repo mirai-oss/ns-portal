@@ -8,6 +8,7 @@
 // Lark webhookは app_secrets の cockpit_lark_webhook（ダイニー取込と同じ経理チャンネル）。
 // キーワード制限付きボットの場合は cockpit_lark_keyword を先頭に付ける。
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { slackPost } from "./slack.ts";
 
 export const svc = () =>
   createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
@@ -20,7 +21,10 @@ export async function getSecret(sb: any, key: string): Promise<string> {
 }
 
 // Larkカスタムボットへテキスト送信。webhook未登録・送信失敗でも throw しない（本処理を止めない）
-export async function larkPost(sb: any, text: string): Promise<boolean> {
+// 2026-11-04（Slack通知基盤 Phase 2）: 同じ本文を Slack にも並行送信する。channelKey は slack_channels の channel_key
+//   （既定 hq.keiri_kanshi＝#本部-経理監視。コックピット系の通知は hq.dev_system）。Lark 側の挙動は従来どおり。
+export async function larkPost(sb: any, text: string, channelKey = "hq.keiri_kanshi"): Promise<boolean> {
+  await slackPost(sb, channelKey, text, { source: "edge", event: channelKey === "hq.dev_system" ? "cockpit" : "keiri" });
   try {
     const webhook = await getSecret(sb, "cockpit_lark_webhook");
     if (!webhook) return false;
@@ -96,5 +100,5 @@ export async function notifyTaskEvent(
   if (unblockedNote) lines.push(`▼自動で動かしました\n${unblockedNote}`);
   lines.push(PORTAL_URL);
 
-  await larkPost(sb, lines.join("\n"));
+  await larkPost(sb, lines.join("\n"), "hq.dev_system");
 }

@@ -25,6 +25,7 @@
 // 空、を受けたレーンPの調査で発覚。あわせて、失敗時にHTTP 200を返してしまいkd_sync_runsの
 // failedがGitHub Actions側から見えなくなるバグも同時発見・修正済み）。
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { slackPost } from "../_shared/slack.ts";
 
 const cors: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -121,6 +122,7 @@ async function finishRun(sb: any, runId: string, ok: boolean, rows: number, erro
 }
 
 async function sendLark(sb: any, text: string) {
+  await slackPost(sb, "hq.dev_system", text, { source: "edge", event: "kd_refresh" }); // 2026-11-04 Slack にも並行送信（#本部-開発システム）
   const { data: sec } = await sb.from("app_secrets").select("value").eq("key", "lark_webhook_url").maybeSingle();
   const url = (sec?.value ?? "").trim();
   if (!url) return { ok: false, reason: "app_secretsにlark_webhook_url未設定" };

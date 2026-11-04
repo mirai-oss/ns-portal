@@ -21,6 +21,7 @@
 //
 // Lark送信先: app_secrets.lark_webhook_url（D-3見張り番・D-4等の既存Lark配信と同じWebhookを流用）
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { slackPost } from "../_shared/slack.ts";
 
 const cors: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -47,6 +48,7 @@ function clamp(n: number, lo: number, hi: number): number {
 }
 
 async function sendLark(sb: ReturnType<typeof createClient>, text: string) {
+  await slackPost(sb, "hq.dev_system", text, { source: "edge", event: "perflog" }); // 2026-11-04 Slack にも並行送信（#本部-開発システム）
   const { data: sec } = await sb.from("app_secrets").select("value").eq("key", "lark_webhook_url").maybeSingle();
   const url = (sec?.value ?? "").trim();
   if (!url) return { ok: false, reason: "app_secretsにlark_webhook_url未設定" };
