@@ -111,7 +111,7 @@ Deno.serve(async (req: Request) => {
     const { data: allV } = await db.from("vendors").select("id, name");
     const meV = (allV ?? []).find((v: any) => v.id === inv.vendor_id);
     const vids = meV ? (allV ?? []).filter((v: any) => normC(v.name) === normC(meV.name)).map((v: any) => v.id) : [inv.vendor_id];
-    const { data: others } = await db.from("invoices").select("id, invoice_number, amount, due_date, target_year_month, created_at, invoice_status")
+    const { data: others } = await db.from("invoices").select("id, invoice_number, amount, due_date, target_year_month, created_at, invoice_status, intake_source")
       .in("vendor_id", vids).neq("id", inv.id).neq("invoice_status", "cancelled");
     for (const o of others ?? []) {
       if (inv.invoice_number && o.invoice_number && o.invoice_number === inv.invoice_number) { dupNg = true; dupNotes.push(`同じ請求番号の請求書があります（${o.id}）`); }
@@ -120,7 +120,10 @@ Deno.serve(async (req: Request) => {
     // 定期取引先（行ルールあり）は月1枚が既定。同じ対象年月に先に作られた請求書があれば2枚目
     const { count: ruleCount } = await db.from("vendor_line_rules").select("id", { count: "exact", head: true }).eq("vendor_id", inv.vendor_id).eq("is_active", true);
     if (ruleCount && inv.target_year_month) {
-      const same = (others ?? []).filter((o: any) => o.target_year_month === inv.target_year_month && String(o.created_at) < String(inv.created_at));
+      // 2026-11-05: インフォマートは取引先（相手の支店・事業）ごとに別の請求書が来る。同じ取引先の支店違い（請求書番号が違う）は2枚目とみなさない
+      // （例: (株)まつの の ＤＤプラス と センター）。請求書番号が同じ場合は上の「同じ請求番号」で別途検出される。
+      const sameVendorBranches = (o: any) => inv.intake_source === "infomart" && o.intake_source === "infomart" && !!inv.invoice_number && !!o.invoice_number && o.invoice_number !== inv.invoice_number;
+      const same = (others ?? []).filter((o: any) => o.target_year_month === inv.target_year_month && String(o.created_at) < String(inv.created_at) && !sameVendorBranches(o));
       if (same.length) { dupNg = true; dupNotes.push("定期請求書の取引先は月1枚が既定です（同じ対象月の請求書が先にあります＝2枚目）"); }
     }
   }
