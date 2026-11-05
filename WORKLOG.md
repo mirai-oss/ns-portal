@@ -12,7 +12,7 @@
 
 **2026-11-05（担当C）まつの（インフォマート新規取引先）を「支店」として登録／支店違いを月2枚目の重複にしない（invoice-check・本番デプロイ待ち）**:
 - 取引先マスタ vendors「(株)まつの」（旧「(株)まつの　（ＤＤプラス）」を改名）に、支店 ＤＤプラス・センター を登録（info.suppliers=要確認・正式名称は未確認／info.supplier_branches／branch_stores=鳥一代 本店／vendor_aliases=Infomart表記2つ→各支店）。仕訳ルール=仕入高・補助㈱まつの・貸方買掛金・部門=行の店舗（MFの補助科目「㈱まつの」の有無は承認時に確認）。法人=トーホー。
-- センターの請求書(22705732-1)に取引先・法人を紐付け→仕訳下書き生成（問題なし）。ただし invoice-check が「同じ取引先の月2枚目」と判定して止まる → `supabase/functions/invoice-check/index.ts` を修正（インフォマートで請求書番号が違う＝支店違いは2枚目にしない）。**本番デプロイ待ち**（要PAT）。デプロイ後: センターの invoices.duplicate_suspected を false に戻し invoice-check を再実行。
+- センターの請求書(22705732-1)に取引先・法人を紐付け→仕訳下書き生成（問題なし）。ただし invoice-check が「同じ取引先の月2枚目」と判定して止まる → `supabase/functions/invoice-check/index.ts` を修正（インフォマートで請求書番号が違う＝支店違いは2枚目にしない）。**2026-11-05 本番デプロイ済み（invoice-check v15）**。センターは duplicate_suspected を戻して再判定→承認待ち(ready_for_approval)に進んだ。MFの補助科目は「㈱まつの」に統一済み（ユーザー）。
 - 元データ: scratchpad matsuno_vendor_before.json
 
 **★★★2026-11-04（担当A）経費申請・見積もりの申請フォーム(URL)／申請履歴に経費・見積もり／見積もりの決定・保留・却下と本部タスク連動**:
