@@ -14,6 +14,7 @@
 - 取引先マスタ vendors「(株)まつの」（旧「(株)まつの　（ＤＤプラス）」を改名）に、支店 ＤＤプラス・センター を登録（info.suppliers=要確認・正式名称は未確認／info.supplier_branches／branch_stores=鳥一代 本店／vendor_aliases=Infomart表記2つ→各支店）。仕訳ルール=仕入高・補助㈱まつの・貸方買掛金・部門=行の店舗（MFの補助科目「㈱まつの」の有無は承認時に確認）。法人=トーホー。
 - センターの請求書(22705732-1)に取引先・法人を紐付け→仕訳下書き生成（問題なし）。ただし invoice-check が「同じ取引先の月2枚目」と判定して止まる → `supabase/functions/invoice-check/index.ts` を修正（インフォマートで請求書番号が違う＝支店違いは2枚目にしない）。**2026-11-05 本番デプロイ済み（invoice-check v15）**。センターは duplicate_suspected を戻して再判定→承認待ち(ready_for_approval)に進んだ。MFの補助科目は「㈱まつの」に統一済み（ユーザー）。
 - 元データ: scratchpad matsuno_vendor_before.json
+- 正式名称確定（ユーザー提供のT番号 T1010801017216→国税庁公表サイト 2026-11-05）: 株式会社まつの／法人番号1010801017216／東京都大田区平和島6-1-1。vendors・info.suppliers（要確認→取引中）・仕訳ルールのvendor_keyを更新。
 
 **★★★2026-11-04（担当A）経費申請・見積もりの申請フォーム(URL)／申請履歴に経費・見積もり／見積もりの決定・保留・却下と本部タスク連動**:
 - 新: tori-dashboard expense-form.html・quote-form.html、Edge form-submit、DB(quote_requests/quote_options/quote-photosバケット・RPC quote_list/quote_decide・request_form_linkにexpense/quote)。申請履歴は経費の承認/差戻し・検索・絞り込み・CSV・見積もり比較に対応。PDF/Excel/Word添付可(4MB)。
