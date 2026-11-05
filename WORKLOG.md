@@ -10,6 +10,11 @@
 - 黒霧屋 新横浜の現金売上は法人をN-Styleに（ns-daily-import lib/cash-journal.js CORP_OVERRIDE。既存9・10月行も更新）。
 - 10月分のトーホー7店舗の入金予定（ar_receivables）はMF仕訳前＝画面の「仕訳を作成」から新しい組み方で作れる。9月分は登録済み（5646〜5659）のため触っていない。
 
+**2026-11-05（担当C）まつの（インフォマート新規取引先）を「支店」として登録／支店違いを月2枚目の重複にしない（invoice-check・本番デプロイ待ち）**:
+- 取引先マスタ vendors「(株)まつの」（旧「(株)まつの　（ＤＤプラス）」を改名）に、支店 ＤＤプラス・センター を登録（info.suppliers=要確認・正式名称は未確認／info.supplier_branches／branch_stores=鳥一代 本店／vendor_aliases=Infomart表記2つ→各支店）。仕訳ルール=仕入高・補助㈱まつの・貸方買掛金・部門=行の店舗（MFの補助科目「㈱まつの」の有無は承認時に確認）。法人=トーホー。
+- センターの請求書(22705732-1)に取引先・法人を紐付け→仕訳下書き生成（問題なし）。ただし invoice-check が「同じ取引先の月2枚目」と判定して止まる → `supabase/functions/invoice-check/index.ts` を修正（インフォマートで請求書番号が違う＝支店違いは2枚目にしない）。**本番デプロイ待ち**（要PAT）。デプロイ後: センターの invoices.duplicate_suspected を false に戻し invoice-check を再実行。
+- 元データ: scratchpad matsuno_vendor_before.json
+
 **★★★2026-11-04（担当A）経費申請・見積もりの申請フォーム(URL)／申請履歴に経費・見積もり／見積もりの決定・保留・却下と本部タスク連動**:
 - 新: tori-dashboard expense-form.html・quote-form.html、Edge form-submit、DB(quote_requests/quote_options/quote-photosバケット・RPC quote_list/quote_decide・request_form_linkにexpense/quote)。申請履歴は経費の承認/差戻し・検索・絞り込み・CSV・見積もり比較に対応。PDF/Excel/Word添付可(4MB)。
 - 見積もり受信→本部タスク(最重要)自動作成。工程: 決める(申請者)→修繕日(申請者)→修繕完了(写真・申請者)→支払い完了(原美香)。保留中も未読バッジが残る。毎月の「N月分従業員経費」タスク(佐藤俊一は除外)も稼働。
