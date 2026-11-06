@@ -1752,7 +1752,8 @@ async function planDue(sb: any) {
   }
   due.push("home_kpi");   // Supabase内で完結(平均3秒)・本部タスク滞留数などの鮮度のため毎回
   due.push("sessions_cleanup");
-  due.push("events");   // DB_イベントの鏡（kd_events）。GAS 1回・数十行なので毎回（2026-11-06）
+  due.push("events");
+  due.push("reviews");  // ダイニー回答・Google口コミの鏡（GAS 1回・2026-11-06）   // DB_イベントの鏡（kd_events）。GAS 1回・数十行なので毎回（2026-11-06）
   return { ok: true, due, reasons };
 }
 
@@ -1808,6 +1809,66 @@ async function refreshEvents(sb: any) {
     return { ok: true, rows: upserts.length, deleted, unknown_venues: [...unknownVenues], unresolved_stores: [...unresolvedStores] };
   } catch (e) {
     await finishRun(sb, runId, false, 0, String(e), "kd_events");
+    return { ok: false, error: String(e) };
+  }
+}
+
+// ============== op=reviews: ダイニーDB（来店アンケート）と 口コミ推移ログ（Google口コミ）を kd_ に鏡写し（2026-11-06・画像日報 v3）==============
+// 見出しの探し方は app.js ingestDinii / ingestReview と同じ（店舗名・来店日時・「また来たい」列／取得日・店舗名・累計・平均星・前回比）。
+function colAnyR(H: string[], names: string[]): number { for (const n of names) { const i = H.findIndex((h) => h === n); if (i >= 0) return i; } for (const n of names) { const i = H.findIndex((h) => h.includes(n)); if (i >= 0) return i; } return -1; }
+function parseJstTs(v: unknown): string | null {
+  if (v === null || v === undefined || v === "") return null;
+  const s = String(v).trim();
+  const m = s.match(/^(\d{4})[-\/](\d{1,2})[-\/](\d{1,2})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?/);
+  if (m) return `${m[1]}-${m[2].padStart(2, "0")}-${m[3].padStart(2, "0")}T${(m[4] ?? "0").padStart(2, "0")}:${m[5] ?? "00"}:${m[6] ?? "00"}+09:00`;
+  const d = new Date(s); return isNaN(d.getTime()) ? null : d.toISOString();
+}
+async function refreshReviews(sb: any) {
+  const runId = await startRun(sb, "kd_reviews");
+  const startedAt = new Date().toISOString();
+  try {
+    const r = await dashAuthed(sb, "data", { keys: "dinii,review", months: 4 });
+    if (!r?.ok) throw new Error("GAS data(dinii,review) 失敗: " + (r?.error ?? ""));
+    const maps = await loadStoreMaps(sb);
+    const unresolved = new Set<string>();
+    // --- ダイニー来店アンケート ---
+    const dr: any[][] = (r.sheets?.dinii ?? []) as any[][];
+    let hi = 0; for (let i = 0; i < Math.min(dr.length, 12); i++) { const line = (dr[i] ?? []).map((x: unknown) => String(x ?? "")).join(","); if (/また来|またき/.test(line) && /店舗/.test(line)) { hi = i; break; } }
+    const DH = (dr[hi] ?? []).map((h: unknown) => String(h ?? "").trim());
+    const iS = colAnyR(DH, ["店舗名", "店舗"]), iV = colAnyR(DH, ["来店日時", "来店日", "来店", "日付", "営業日"]), iA = colAnyR(DH, ["回答日時", "回答日", "タイムスタンプ"]), iL = colAnyR(DH, ["LINE ID", "LINEID", "LINE"]);
+    let iQ = DH.findIndex((h: string) => /また来|またき/.test(h)); if (iQ < 0 && DH.length > 6) iQ = 6;
+    const dinii: any[] = []; let diniiSkipped = 0;
+    if (iS >= 0 && iQ >= 0) for (const row of dr.slice(hi + 1)) {
+      const st = String(row[iS] ?? "").trim(); if (!st) continue;
+      const raw = String(row[iQ] ?? "").trim().replace(/[０-９]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xFEE0));
+      if (raw === "" || !/[0-9]/.test(raw)) { diniiSkipped++; continue; }   // 0点は有効・空欄と未回答テキストだけ除外（app.js と同じ）
+      const hit = lookupStore(maps, st); if (!hit) { unresolved.add(st); continue; }
+      const visited = iV >= 0 ? parseJstTs(row[iV]) : null, answered = iA >= 0 ? parseJstTs(row[iA]) : null;
+      const key = `${st}|${iV >= 0 ? String(row[iV] ?? "") : ""}|${iL >= 0 ? String(row[iL] ?? "") : ""}`;
+      dinii.push({ response_key: "dn_" + eventHash(key) + eventHash(key.split("").reverse().join("")), store_id: hit.store_id, store_name_raw: st, visited_at: visited, answered_at: answered, score: Number(raw.match(/-?\d+(?:\.\d+)?/)?.[0] ?? NaN), synced_at: startedAt });
+    }
+    const dmap = new Map(dinii.filter((x) => !isNaN(x.score)).map((x) => [x.response_key, x]));
+    const dlist = [...dmap.values()];
+    for (let i = 0; i < dlist.length; i += 500) { const { error } = await sb.from("kd_dinii_responses").upsert(dlist.slice(i, i + 500), { onConflict: "response_key" }); if (error) throw new Error("kd_dinii_responses upsert失敗: " + error.message); }
+    // --- Google 口コミ スナップショット ---
+    const rr: any[][] = (r.sheets?.review ?? []) as any[][];
+    let rh = 0; for (let i = 0; i < Math.min(rr.length, 6); i++) { const line = (rr[i] ?? []).map((x: unknown) => String(x ?? "")).join(","); if (/店舗/.test(line) && /平均星|星/.test(line)) { rh = i; break; } }
+    const RH = (rr[rh] ?? []).map((h: unknown) => String(h ?? "").trim());
+    const jD = colAnyR(RH, ["取得日", "日付"]), jS = colAnyR(RH, ["店舗名", "店舗"]), jC = colAnyR(RH, ["累計", "件数"]), jSt = colAnyR(RH, ["平均星", "星", "評価"]), jDl = colAnyR(RH, ["前回比"]);
+    const snaps = new Map<string, any>();
+    if (jS >= 0 && jD >= 0) for (const row of rr.slice(rh + 1)) {
+      const st = String(row[jS] ?? "").trim(); if (!st) continue;
+      const d = toDateStr(row[jD]); if (!d) continue;
+      const hit = lookupStore(maps, st); if (!hit) { unresolved.add(st); continue; }
+      snaps.set(`${hit.store_id}|${d}`, { store_id: hit.store_id, fetched_on: d, store_name_raw: st, total_count: jC >= 0 ? Math.round(num(row[jC])) : null, avg_star: jSt >= 0 ? num(row[jSt]) : null, delta: jDl >= 0 ? Math.round(num(row[jDl])) : null, synced_at: startedAt });
+    }
+    const slist = [...snaps.values()];
+    for (let i = 0; i < slist.length; i += 500) { const { error } = await sb.from("kd_google_review_snapshots").upsert(slist.slice(i, i + 500), { onConflict: "store_id,fetched_on" }); if (error) throw new Error("kd_google_review_snapshots upsert失敗: " + error.message); }
+    const note = [unresolved.size ? `店舗名未対応: ${[...unresolved].join("、")}` : "", dr.length ? "" : "ダイニーDB 0行", rr.length ? "" : "口コミ推移ログ 0行"].filter(Boolean).join(" / ");
+    await finishRun(sb, runId, true, dlist.length + slist.length, note || undefined);
+    return { ok: true, dinii_rows: dlist.length, dinii_skipped: diniiSkipped, dinii_header: DH.slice(0, 8), review_rows: slist.length, review_header: RH, unresolved: [...unresolved] };
+  } catch (e) {
+    await finishRun(sb, runId, false, 0, String(e), "kd_reviews");
     return { ok: false, error: String(e) };
   }
 }
@@ -1959,7 +2020,8 @@ Deno.serve(async (req) => {
       case "run_status": result = await runStatus(sb, body); break;
       case "diag_detail_cov": result = await diagDetailCov(sb); break;
       case "verify_carry": result = await verifyCarry(sb, body); break;
-      case "events": result = await refreshEvents(sb); break;   // DB_イベント→kd_events（画像日報 v2・2026-11-06）
+      case "events": result = await refreshEvents(sb); break;
+      case "reviews": result = await refreshReviews(sb); break;   // ダイニーDB・口コミ推移ログ→kd_（画像日報 v3・2026-11-06）   // DB_イベント→kd_events（画像日報 v2・2026-11-06）
       default: return json({ ok: false, error: "opは'reservation_daily'|'dashboard_daily'|'home_kpi'|'unresolved_notify'|'pl_monthly'|'media_monthly'|'deposit_monthly'|'store_monthly'|'ad_monthly'|'delivery_daily'|'detail_daily'|'entries'|'sessions_cleanup'|'due'のいずれかが必須です" }, 400);
     }
     // 2026-09-03修正: ok:falseの結果をHTTP 200で返してしまうとGitHub Actions側のHTTP_CODEチェックを
