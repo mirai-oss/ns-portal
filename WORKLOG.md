@@ -15,6 +15,7 @@
 - 3 店テスト送信（`#本部-開発システム`・11/5・dedupe :v5a）: 本店 +1件/2,353・黒霧屋 新横浜 **+37件**（黒霧屋+1(275)／うお蔵+37(686)／彩−1(40)・累計 1,001・最終取得 11/6）・鶏武者 新横浜 +9件/2,410。画像スクリプトは無変更で VM v5 のキーをそのまま表示。
 - Cron SQL ②適用（pg_cron 有効化＋`google-reviews-daily` 0 23 * * * UTC＝08:00 JST）。`google_reviews_fetch_trigger()` を手動で 1 回起動し pg_net 経路を確認。明朝 08:00 から自動。**旧 GAS（1/8/15/22/29）は止めない**＝14 日並行（11/8・11/15 が比較点。`google_review_legacy_compare_v`）。
 - 残: Step 13 ダッシュボード直読（GAS data(review) をハブ読みに）／並行比較の報告（11/8 以降）／旧トリガ停止判断／管理画面（別タスク）／`google_address` は Details の FieldMask に無いので confirm 時は candidates から補完する仕様（次回 EF 修正時に formattedAddress を追加しても可）。
+- **Step 13 ダッシュボード直読（同日・ユーザー不在のため GAS 貼替待ち）**: ハブに View `google_review_log_v`（`supabase/2026-11-06_google_review_log_v.sql`・適用済み・anon 読み可＝Google の公開数値のみ）。旧シート「口コミ推移ログ」と同じ 8 列（店舗名＝掲載名・前回比は lag・取得元 'API自動(Supabase)'/'旧シート引継'）。tori-dashboard `gas/Code.gs` a7pc: getData の key='review' で `fetchReviewLog_(months)` → 取れたらシートの値を上書き・失敗時はシートのまま（10 分キャッシュ）。app.js は無変更（ingestReview の列名一致・取得日−1 の扱いも同じ）。**本番反映はユーザーの貼替＋再デプロイ**（手順 `tori-dashboard/gas/貼替手順_2026-11-06_a7pc.md`）。列名に括弧があると PostgREST の select が壊れる（PGRST200）ため View 列は「前回比」。
 - 制約メモ: classifier が GAS data エンドポイントの呼び出し（手元トークン）を拒否 → 口コミPlaceID シートの中身は未読。照合は旧履歴の件数・星で代替（設計書 §4）。
 
 **2026-11-06（このスレッド）画像日報 v4: 口コミ件数を看板（Google掲載）ごとに持ち、2枚・3枚看板の店舗は内訳を表示（本番反映済み・実データ一致確認）**:
@@ -1029,7 +1030,7 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
-**★★★★2026-11-06 17:00（このスレッド）Google口コミ取得の Supabase 直結化 ①: 本番稼働開始**（ns-portal `bc964b1`〜）: 設計書 `docs/設計書_Google口コミSupabase直結_2026-11-06.md`。マスタ 12 掲載すべて active（Place ID 確定済み）・初回取得 12/12・Cron `google-reviews-daily` 08:00 JST 稼働・日報 VM v5（基準日=取得日−1・マイナス保持）で 3 店テスト送信済み。旧 GAS（売上DB・1/8/15/22/29）は並行継続中。**次**: 11/8・11/15 に `google_review_legacy_compare_v` で旧新比較を報告 → 停止判断（ユーザー）→ Step 13 ダッシュボード直読（GAS data(review) をハブ読みへ）→ 管理画面は別タスク。画像日報 v2〜v4 は本番稼働中（12:00 配信）。残: 店舗別 Slack チャンネル ID 待ち・DAILY_CARD_MODE 切替判断・PAT 再発行提案中。
+**★★★★2026-11-06 17:00（このスレッド）Google口コミ取得の Supabase 直結化 ①: 本番稼働開始**（ns-portal `bc964b1`〜）: 設計書 `docs/設計書_Google口コミSupabase直結_2026-11-06.md`。マスタ 12 掲載すべて active（Place ID 確定済み）・初回取得 12/12・Cron `google-reviews-daily` 08:00 JST 稼働・日報 VM v5（基準日=取得日−1・マイナス保持）で 3 店テスト送信済み。旧 GAS（売上DB・1/8/15/22/29）は並行継続中。Step 13（ダッシュボード直読）は View `google_review_log_v` 適用済み・GAS a7pc は**ユーザーの貼替待ち**。**次**: 11/8・11/15 に `google_review_legacy_compare_v` で旧新比較を報告 → 停止判断（ユーザー）→ Step 13 ダッシュボード直読（GAS data(review) をハブ読みへ）→ 管理画面は別タスク。画像日報 v2〜v4 は本番稼働中（12:00 配信）。残: 店舗別 Slack チャンネル ID 待ち・DAILY_CARD_MODE 切替判断・PAT 再発行提案中。
 
 **★2026-11-05（司令塔スレッド・続き）担当B: U-16=ユーザー直接指示で源泉徴収票未提出の工程33件（移籍32＋通常退職1）を未完了に戻し（バックアップ済み・再停止なし）。期限はDB側で編集不可のため元のまま（移籍=11/18・通常退職=10/18超過）→画面調整 or 担当Eに編集経路確認。U-17①=法人別SQL適用済み（sf_cash_handoff_signatures.contract_id確認）・12/1に兼務の現金手渡し画面を確認予定。
 
