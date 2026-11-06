@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-11-06-v162";
+const BUILD_TAG="2026-11-06-v163";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -725,7 +725,7 @@ async function api(path,opt={},token){
     "apikey":SUPA_KEY,...(opt.isBinary?{}:{"Content-Type":"application/json"}),
     ...(token?{"Authorization":"Bearer "+token}:{}),...(opt.headers||{})}});
   let body=null; const tx=await r.text(); try{body=tx?JSON.parse(tx):null}catch(e){}
-  return {ok:r.ok,status:r.status,body};
+  return {ok:r.ok,status:r.status,body,range:r.headers.get("content-range")};
 }
 async function authed(path,opt={}){
   const s=sess.get(); if(!s) return {ok:false,status:401,body:null};
@@ -2846,11 +2846,17 @@ window.addEventListener("popstate",e=>{
    受信トレイ（一覧マスタ）
    ============================================================ */
 async function loadInboxMaster(){
-  // 2026-08-24: limitが500件のままだと総件数がそれを超えたときに古いメールが
-  // 一覧・絞り込みから欠落する（KPIバッジとの件数不一致の指摘で発覚）。
-  // 実運用の総件数(1000件強)を見込んで余裕を持たせた
-  const r=await authed(`/rest/v1/invoice_emails?select=id,from_address,subject,body_text,received_at,mail_status,mail_kind,duplicate_suspected,is_important,processing_user_id,completed_at,completion_note,updated_at,processor:users!invoice_emails_processing_user_id_fkey(name),atts:invoice_attachments(id)&order=received_at.desc&limit=5000`);
-  MASTER_MAILS=(r.ok&&Array.isArray(r.body))?r.body:[];
+  // 2026-11-06: 全体が1000件を超え、PostgRESTの1リクエスト上限(1000行)で古い未処理メール（2〜4月分など）が一覧に出ず、
+  // 「未処理23件」なのに一覧には1件しか出ない不具合があった。未処理・処理中は全件、その他（完了・対象外）は新しい順に取得して合わせる。
+  const sel="id,from_address,subject,body_text,received_at,mail_status,mail_kind,duplicate_suspected,is_important,processing_user_id,completed_at,completion_note,updated_at,processor:users!invoice_emails_processing_user_id_fkey(name),atts:invoice_attachments(id)";
+  const [open,rest]=await Promise.all([
+    authed(`/rest/v1/invoice_emails?select=${sel}&mail_status=in.(unread,read,processing)&order=received_at.desc&limit=1000`),
+    authed(`/rest/v1/invoice_emails?select=${sel}&mail_status=in.(completed,archived)&order=received_at.desc&limit=1000`),
+  ]);
+  const seen=new Set(), all=[];
+  for(const r of [open,rest]) if(r.ok&&Array.isArray(r.body)) for(const m of r.body){ if(!seen.has(m.id)){ seen.add(m.id); all.push(m); } }
+  all.sort((a,b)=>String(b.received_at||"").localeCompare(String(a.received_at||"")));
+  MASTER_MAILS=all;
   MASTER_MAILS_LOADED=true;
 }
 // KPIカード（未処理・処理中・今月完了）は、MASTER_MAILSがlimitで切り詰められる可能性を
@@ -2869,20 +2875,16 @@ async function loadKpiCounts(){
   // unprocessed/processing/completedThisMonthと同じ仕組みに乗せることで、他タブでの
   // 処理完了後にこの値も自動的に最新化される＝loadKpiCounts()の既存呼び出し元4箇所を
   // そのまま使い回せる）
-  const [unprocR,procR,doneR,archR,autoR]=await Promise.all([
-    authed(`/rest/v1/invoice_emails?mail_status=in.(unread,read)&select=id`),
-    authed(`/rest/v1/invoice_emails?mail_status=eq.processing&select=id`),
-    authed(`/rest/v1/invoice_emails?mail_status=eq.completed&completed_at=gte.${startOfMonth}&or=(completion_note.is.null,completion_note.not.like.${AUTO_NOTE_PREFIX}*)&select=id`),
-    authed(`/rest/v1/invoice_emails?mail_status=eq.archived&select=id`),
-    authed(`/rest/v1/invoice_emails?mail_status=eq.completed&completion_note=like.${AUTO_NOTE_PREFIX}*&completed_at=gte.${startOfMonth}&select=id`),
+  // 2026-11-06: 件数は配列の長さではなく Content-Range の総数で数える（PostgRESTは1リクエスト最大1000行のため、対象外が1000件で頭打ちになっていた）
+  const cnt=async f=>{ const r=await authed(`/rest/v1/invoice_emails?${f}&select=id`,{headers:{"Prefer":"count=exact","Range":"0-0"}}); const m=String(r.range||"").match(/\/(\d+)$/); return m?Number(m[1]):((r.ok&&Array.isArray(r.body))?r.body.length:0); };
+  const [unprocessed,processing,completedThisMonth,archived,auto]=await Promise.all([
+    cnt("mail_status=in.(unread,read)"),
+    cnt("mail_status=eq.processing"),
+    cnt(`mail_status=eq.completed&completed_at=gte.${startOfMonth}&or=(completion_note.is.null,completion_note.not.like.${AUTO_NOTE_PREFIX}*)`),
+    cnt("mail_status=eq.archived"),
+    cnt(`mail_status=eq.completed&completion_note=like.${AUTO_NOTE_PREFIX}*&completed_at=gte.${startOfMonth}`),
   ]);
-  KPI_COUNTS={
-    unprocessed:(unprocR.ok&&Array.isArray(unprocR.body))?unprocR.body.length:0,
-    processing:(procR.ok&&Array.isArray(procR.body))?procR.body.length:0,
-    completedThisMonth:(doneR.ok&&Array.isArray(doneR.body))?doneR.body.length:0,
-    archived:(archR.ok&&Array.isArray(archR.body))?archR.body.length:0,
-    auto:(autoR.ok&&Array.isArray(autoR.body))?autoR.body.length:0,
-  };
+  KPI_COUNTS={unprocessed,processing,completedThisMonth,archived,auto};
 }
 function kpiCounts(){ return KPI_COUNTS; }
 function filteredMails(){
