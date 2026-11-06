@@ -4,11 +4,12 @@
 
 ---
 
-**2026-11-06（このスレッド）画像日報 v4: 口コミ件数を看板（Google掲載）ごとに持ち、2枚・3枚看板の店舗は内訳を表示（コード完成・SQL適用と keiei-kd-refresh 再デプロイはユーザー実行待ち）**:
+**2026-11-06（このスレッド）画像日報 v4: 口コミ件数を看板（Google掲載）ごとに持ち、2枚・3枚看板の店舗は内訳を表示（本番反映済み・実データ一致確認）**:
 - ユーザー指示「ダブル看板・トリプル看板の店舗は口コミ件数の各看板ごとの詳細も出したい（UIが崩れない範囲で）」。例: 黒霧屋 → +12件／黒霧屋+10件（600）／彩+3件（100）／うお蔵+2件（150）／最終取得 11/1。
 - 調査で判明した**不具合**: 口コミ推移ログ（正本・314 行）は 1 行＝1 Google 掲載（黒霧屋 新横浜／カラオケ 彩-irodori 新横浜アリーナ通り店／うお蔵 新横浜 など、店舗 8 ＋子看板 5）だが、v3 の op=reviews は店舗ID×取得日で 1 行に潰していたため最後に読んだ看板だけが残り（黒霧屋 新横浜＝うお蔵 新横浜の 649 件のみ・鶏武者 新横浜＝匠味 新横浜のみ）、画像の累計・月間増加は看板合計のダッシュボード（`reviewIncrease`＝親＋`REVIEW_CHILDREN`）と食い違っていた。v3 の「元データ＝VM＝画像」確認は、うお蔵の行と突き合わせていたため気づけなかった。
 - 実装: ns-portal `1c94fda`（SQL `2026-11-06_daily_report_card_v4_review_listings.sql`＝`kd_google_review_listings`(store_id,listing_name,fetched_on)・`store_aliases.display_name`（彩／うお蔵／匠味／鶏武者）・VM v4: 店舗合計＝看板ごとの「当日以前の最新累計」の合計、月間増加＝合計−月初前合計（起点が 1 つも無ければ null）、`google_review_listings[]`{name,label,total,month_increase,updated_at}・`google_review_listing_count`。listings が無い店舗は従来の店舗合計スナップショットを 1 看板として扱うので EF が旧版の間も壊れない／EF op=reviews: 看板ごと upsert＋店舗合計（星は件数加重）を `kd_google_review_snapshots` に）。tori-dashboard `6ebdad0`（口コミ列: 2 看板以上で最大 3 行「黒霧屋+10件（600）」＋「ほかN看板」、起点なし→「—件」。列幅 1.45fr に広げ 16px・nowrap。fixtures scratchpad fx4 A〜D で崩れ無し確認）。
-- **次（ユーザー実行）**: `python3 scripts/apply_sql.py supabase/2026-11-06_daily_report_card_v4_review_listings.sql` → `supabase functions deploy keiei-kd-refresh --project-ref uuvsxzhpxtghojoubjcc` → こちらで `gh workflow run keiei-kd-hourly.yml` で op=reviews を回し、黒霧屋 新横浜・鶏武者 新横浜の内訳（シートの行と一致）を確認して hq.dev_system へ送信。
+- 本番反映 2026-11-06 14:06: SQL 適用・keiei-kd-refresh version 57（この Mac mini は `supabase` 単体が無く **`npx supabase functions deploy … --yes`**。npx の「Ok to proceed? (y)」で止まるので y が必要）。取込後 `kd_google_review_listings` 240 行・12 看板（8 店＋匠味 川崎／匠味 新横浜／うお蔵 新横浜／カラオケ 彩-irodori…）。「Google名称」列は取れていない（google_name null・表示には未使用）。
+- 実データ検証（11/5）: 黒霧屋 新横浜＝黒霧屋 274→274(+0)／うお蔵 637→649(+12)／彩 40→41(+1) → 合計 964・月間 +13（v3 では うお蔵のみ +12／649 だった）。鶏武者 新横浜＝鶏武者 1146→1147(+1)／匠味 1251→1254(+3) → 2401・+4。両店を hq.dev_system に送信 sent。
 
 **2026-11-06（このスレッド）画像日報 v3: 今月累計に Google口コミ件数・ダイニー点数（点数＋件数）を正本から表示（本番反映済み・実データ一致確認）**:
 - 指示書（ユーザー「日報画像 KPI表示修正指示書」）。§4 調査: ダイニー＝ダッシュボードのシート「ダイニーDB」（ns-daily-import dinii-questionnaire が毎日 Dinii 管理画面の CSV を取込。1行=1回答、列: 店舗名・来店日時・回答日時・LINE ID・来店回数・年代・「当店にまた来たいと思いますか？」…）。**点数の尺度は 0〜100（5刻み）**。ダッシュボード diniiStats は期間内回答の平均（小数2桁）＋件数。Google口コミ＝シート「口コミ推移ログ」（取得日・店舗名・累計・平均星・前回比。週1回スナップショット・10/1,10/8,…,11/1。8店）。ダッシュボードの目標は「月間増加」（reviewIncrease＝期間末スナップショット−月初前スナップショット）。BQ・Supabase に正本なし → ハブへ鏡写し。
