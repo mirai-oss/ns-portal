@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-11-06-v161";
+const BUILD_TAG="2026-11-06-v162";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -5273,11 +5273,16 @@ async function renderInbox(u){
           `<button class="mail-chip ${KIND_FILTER===k?'active':''}" data-kindchip="${k}">${l}</button>`).join("")}
       </div>
       <div class="kpis" style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin:12px 0 14px">
-        <div class="card kpi bad" style="padding:14px;cursor:pointer" data-chip="unprocessed"><small style="color:var(--muted);font-size:9px;display:block">未処理</small><b style="font-size:22px;display:block;margin-top:5px">${kc.unprocessed}件</b></div>
-        <div class="card kpi info" style="padding:14px;cursor:pointer" data-chip="processing"><small style="color:var(--muted);font-size:9px;display:block">処理中</small><b style="font-size:22px;display:block;margin-top:5px">${kc.processing}件</b></div>
-        <div class="card kpi good" style="padding:14px;cursor:pointer" data-chip="completed"><small style="color:var(--muted);font-size:9px;display:block">完了</small><b style="font-size:22px;display:block;margin-top:5px">${kc.completedThisMonth}件</b></div>
-        <div class="card kpi" style="padding:14px;cursor:pointer" data-chip="auto" title="請求書が自動で作られ、承認待ちへ移ったメール（今月）"><small style="color:var(--muted);font-size:9px;display:block">🤖 自動処理済み</small><b style="font-size:22px;display:block;margin-top:5px">${kc.auto}件</b></div>
+        <div class="card kpi bad" style="padding:14px;cursor:pointer;${CHIP==='unprocessed'?'outline:2px solid var(--accent)':''}" data-chip="unprocessed"><small style="color:var(--muted);font-size:9px;display:block">未処理</small><b style="font-size:22px;display:block;margin-top:5px">${kc.unprocessed}件</b></div>
+        <div class="card kpi info" style="padding:14px;cursor:pointer;${CHIP==='processing'?'outline:2px solid var(--accent)':''}" data-chip="processing"><small style="color:var(--muted);font-size:9px;display:block">処理中</small><b style="font-size:22px;display:block;margin-top:5px">${kc.processing}件</b></div>
+        <div class="card kpi good" style="padding:14px;cursor:pointer;${CHIP==='completed'?'outline:2px solid var(--accent)':''}" data-chip="completed"><small style="color:var(--muted);font-size:9px;display:block">完了</small><b style="font-size:22px;display:block;margin-top:5px">${kc.completedThisMonth}件</b></div>
+        <div class="card kpi" style="padding:14px;cursor:pointer;${CHIP==='auto'?'outline:2px solid var(--accent)':''}" data-chip="auto" title="請求書が自動で作られ、承認待ちへ移ったメール（今月）"><small style="color:var(--muted);font-size:9px;display:block">🤖 自動処理済み</small><b style="font-size:22px;display:block;margin-top:5px">${kc.auto}件</b></div>
         <div class="card kpi" style="padding:14px;cursor:pointer" id="kpi-goto-archived"><small style="color:var(--muted);font-size:9px;display:block">対象外</small><b style="font-size:22px;display:block;margin-top:5px">${kc.archived}件</b></div>
+      </div>
+      <div class="mail-chips" id="mailStatusChips" style="margin:0 0 10px">
+        <span style="font-size:11px;color:var(--muted);align-self:center;margin-right:2px">表示：</span>
+        ${[["unprocessed","未処理",kc.unprocessed],["processing","処理中",kc.processing],["completed","完了（今月）",kc.completedThisMonth],["auto","🤖 自動処理済み（今月）",kc.auto],["all","すべて",null]].map(([k,l,n])=>
+          `<button class="mail-chip ${CHIP===k?'active':''}" data-chip="${k}">${l}${n==null?"":` ${n}件`}</button>`).join("")}
       </div>
       <div class="mail-layout" id="mailLayout">
         <div class="card mail-list-card">
