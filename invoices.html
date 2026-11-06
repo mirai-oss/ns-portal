@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-11-06-v163";
+const BUILD_TAG="2026-11-06-v164";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -2887,17 +2887,26 @@ async function loadKpiCounts(){
   KPI_COUNTS={unprocessed,processing,completedThisMonth,archived,auto};
 }
 function kpiCounts(){ return KPI_COUNTS; }
+// 2026-11-06: 検索ボックスに「未読」「未処理」「処理中」「完了」「自動処理済み」と入れると、その状態のメールを一括で絞り込む
+// （状態の単語は他の単語とも組み合わせ可。例: 「未読 レスラク」）。状態の単語を使うと、上の状態チップの選択より優先する
+const MAIL_STATUS_WORDS={"未読":"unprocessed","未処理":"unprocessed","is:unread":"unprocessed","処理中":"processing","完了":"completed","自動処理済み":"auto","自動処理":"auto"};
+function parseMailQuery(q){
+  const words=String(q||"").trim().split(/\s+/).filter(Boolean); let status=null; const rest=[];
+  for(const w of words){ const k=MAIL_STATUS_WORDS[w.toLowerCase()]; if(k&&!status) status=k; else rest.push(w); }
+  return {status,text:rest.join(" ")};
+}
 function filteredMails(){
   let list=MASTER_MAILS;
-  if(CHIP==="unprocessed") list=list.filter(m=>m.mail_status==="unread"||m.mail_status==="read");
-  else if(CHIP==="processing") list=list.filter(m=>m.mail_status==="processing");
-  else if(CHIP==="completed") list=list.filter(m=>m.mail_status==="completed"&&!isAutoMail(m));
-  else if(CHIP==="auto") list=list.filter(isAutoMail);
+  const pq=parseMailQuery(SEARCH_Q); const chip=pq.status||CHIP;
+  if(chip==="unprocessed") list=list.filter(m=>m.mail_status==="unread"||m.mail_status==="read");
+  else if(chip==="processing") list=list.filter(m=>m.mail_status==="processing");
+  else if(chip==="completed") list=list.filter(m=>m.mail_status==="completed"&&!isAutoMail(m));
+  else if(chip==="auto") list=list.filter(isAutoMail);
   if(KIND_FILTER==="unclassified") list=list.filter(m=>!m.mail_kind);
   else if(KIND_FILTER!=="all") list=list.filter(m=>m.mail_kind===KIND_FILTER);
-  if(SEARCH_Q.trim()){
+  if(pq.text.trim()){
     // 2026-08-24 Phase1.5: 件名・送信元に加え本文も検索対象にする（フリーワード検索強化）
-    const q=SEARCH_Q.trim().toLowerCase();
+    const q=pq.text.trim().toLowerCase();
     list=list.filter(m=>(m.from_address||"").toLowerCase().includes(q)
       ||(m.subject||"").toLowerCase().includes(q)
       ||(m.body_text||"").toLowerCase().includes(q));
@@ -5289,7 +5298,7 @@ async function renderInbox(u){
       <div class="mail-layout" id="mailLayout">
         <div class="card mail-list-card">
           <div class="mail-toolbar">
-            <input id="mailSearch" placeholder="🔎 送信元・件名・本文を検索" value="${esc(SEARCH_Q)}">
+            <input id="mailSearch" placeholder="🔎 送信元・件名・本文（「未読」「処理中」「完了」で状態の絞り込み）" value="${esc(SEARCH_Q)}">
             <button class="hq-btn" id="mailSearchBtn">検索</button>
             <div class="toolbar-dates">
               <input type="date" id="mailDateFrom" value="${esc(DATE_FROM)}" title="受信日（開始）">〜
