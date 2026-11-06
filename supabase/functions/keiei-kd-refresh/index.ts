@@ -1850,23 +1850,39 @@ async function refreshReviews(sb: any) {
     const dmap = new Map(dinii.filter((x) => !isNaN(x.score)).map((x) => [x.response_key, x]));
     const dlist = [...dmap.values()];
     for (let i = 0; i < dlist.length; i += 500) { const { error } = await sb.from("kd_dinii_responses").upsert(dlist.slice(i, i + 500), { onConflict: "response_key" }); if (error) throw new Error("kd_dinii_responses upsert失敗: " + error.message); }
-    // --- Google 口コミ スナップショット ---
+    // --- Google 口コミ スナップショット（看板＝Google掲載ごと。2026-11-06 v4）---
+    // 口コミ推移ログは 1行＝1掲載（例: 黒霧屋 新横浜／カラオケ 彩-irodori 新横浜アリーナ通り店／うお蔵 新横浜）。
+    // 看板ごとの行を kd_google_review_listings に、店舗合計（看板の合計・星は件数加重平均）を kd_google_review_snapshots に書く。
+    // v3 までは店舗ID×取得日で 1 行に潰していて最後の看板だけが残っていた（黒霧屋＝うお蔵のみ）。
     const rr: any[][] = (r.sheets?.review ?? []) as any[][];
     let rh = 0; for (let i = 0; i < Math.min(rr.length, 6); i++) { const line = (rr[i] ?? []).map((x: unknown) => String(x ?? "")).join(","); if (/店舗/.test(line) && /平均星|星/.test(line)) { rh = i; break; } }
     const RH = (rr[rh] ?? []).map((h: unknown) => String(h ?? "").trim());
-    const jD = colAnyR(RH, ["取得日", "日付"]), jS = colAnyR(RH, ["店舗名", "店舗"]), jC = colAnyR(RH, ["累計", "件数"]), jSt = colAnyR(RH, ["平均星", "星", "評価"]), jDl = colAnyR(RH, ["前回比"]);
-    const snaps = new Map<string, any>();
+    const jD = colAnyR(RH, ["取得日", "日付"]), jS = colAnyR(RH, ["店舗名", "店舗"]), jC = colAnyR(RH, ["累計", "件数"]), jSt = colAnyR(RH, ["平均星", "星", "評価"]), jDl = colAnyR(RH, ["前回比"]), jG = colAnyR(RH, ["Google名称", "Google名"]);
+    const listings = new Map<string, any>();
     if (jS >= 0 && jD >= 0) for (const row of rr.slice(rh + 1)) {
       const st = String(row[jS] ?? "").trim(); if (!st) continue;
       const d = toDateStr(row[jD]); if (!d) continue;
       const hit = lookupStore(maps, st); if (!hit) { unresolved.add(st); continue; }
-      snaps.set(`${hit.store_id}|${d}`, { store_id: hit.store_id, fetched_on: d, store_name_raw: st, total_count: jC >= 0 ? Math.round(num(row[jC])) : null, avg_star: jSt >= 0 ? num(row[jSt]) : null, delta: jDl >= 0 ? Math.round(num(row[jDl])) : null, synced_at: startedAt });
+      const dl = jDl >= 0 && String(row[jDl] ?? "").trim() !== "" ? Math.round(num(row[jDl])) : null;
+      listings.set(`${hit.store_id}|${st}|${d}`, { store_id: hit.store_id, listing_name: st, fetched_on: d, total_count: jC >= 0 ? Math.round(num(row[jC])) : null, avg_star: jSt >= 0 ? num(row[jSt]) : null, delta: dl, google_name: jG >= 0 ? String(row[jG] ?? "").trim() || null : null, synced_at: startedAt });
     }
-    const slist = [...snaps.values()];
+    const llist = [...listings.values()];
+    for (let i = 0; i < llist.length; i += 500) { const { error } = await sb.from("kd_google_review_listings").upsert(llist.slice(i, i + 500), { onConflict: "store_id,listing_name,fetched_on" }); if (error) throw new Error("kd_google_review_listings upsert失敗: " + error.message); }
+    // 店舗合計（同じ取得日の看板を合算）
+    const snaps = new Map<string, any>();
+    for (const l of llist) {
+      const k = `${l.store_id}|${l.fetched_on}`;
+      const a = snaps.get(k) ?? { store_id: l.store_id, fetched_on: l.fetched_on, names: [] as string[], total: 0, hasTotal: false, starW: 0, starN: 0, delta: 0, hasDelta: false, synced_at: startedAt };
+      a.names.push(l.listing_name);
+      if (l.total_count !== null && !isNaN(l.total_count)) { a.total += l.total_count; a.hasTotal = true; if (l.avg_star !== null && !isNaN(l.avg_star)) { a.starW += l.avg_star * l.total_count; a.starN += l.total_count; } }
+      if (l.delta !== null && !isNaN(l.delta)) { a.delta += l.delta; a.hasDelta = true; }
+      snaps.set(k, a);
+    }
+    const slist = [...snaps.values()].map((a) => ({ store_id: a.store_id, fetched_on: a.fetched_on, store_name_raw: a.names.join("+"), total_count: a.hasTotal ? a.total : null, avg_star: a.starN > 0 ? Math.round((a.starW / a.starN) * 100) / 100 : null, delta: a.hasDelta ? a.delta : null, synced_at: a.synced_at }));
     for (let i = 0; i < slist.length; i += 500) { const { error } = await sb.from("kd_google_review_snapshots").upsert(slist.slice(i, i + 500), { onConflict: "store_id,fetched_on" }); if (error) throw new Error("kd_google_review_snapshots upsert失敗: " + error.message); }
     const note = [unresolved.size ? `店舗名未対応: ${[...unresolved].join("、")}` : "", dr.length ? "" : "ダイニーDB 0行", rr.length ? "" : "口コミ推移ログ 0行"].filter(Boolean).join(" / ");
-    await finishRun(sb, runId, true, dlist.length + slist.length, note || undefined);
-    return { ok: true, dinii_rows: dlist.length, dinii_skipped: diniiSkipped, dinii_header: DH.slice(0, 8), review_rows: slist.length, review_header: RH, unresolved: [...unresolved] };
+    await finishRun(sb, runId, true, dlist.length + llist.length, note || undefined);
+    return { ok: true, dinii_rows: dlist.length, dinii_skipped: diniiSkipped, dinii_header: DH.slice(0, 8), review_rows: slist.length, review_listing_rows: llist.length, review_header: RH, unresolved: [...unresolved] };
   } catch (e) {
     await finishRun(sb, runId, false, 0, String(e), "kd_reviews");
     return { ok: false, error: String(e) };
