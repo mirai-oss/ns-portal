@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-11-04-v160";
+const BUILD_TAG="2026-11-06-v161";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -2849,14 +2849,18 @@ async function loadInboxMaster(){
   // 2026-08-24: limitが500件のままだと総件数がそれを超えたときに古いメールが
   // 一覧・絞り込みから欠落する（KPIバッジとの件数不一致の指摘で発覚）。
   // 実運用の総件数(1000件強)を見込んで余裕を持たせた
-  const r=await authed(`/rest/v1/invoice_emails?select=id,from_address,subject,body_text,received_at,mail_status,mail_kind,duplicate_suspected,is_important,processing_user_id,completed_at,updated_at,processor:users!invoice_emails_processing_user_id_fkey(name),atts:invoice_attachments(id)&order=received_at.desc&limit=5000`);
+  const r=await authed(`/rest/v1/invoice_emails?select=id,from_address,subject,body_text,received_at,mail_status,mail_kind,duplicate_suspected,is_important,processing_user_id,completed_at,completion_note,updated_at,processor:users!invoice_emails_processing_user_id_fkey(name),atts:invoice_attachments(id)&order=received_at.desc&limit=5000`);
   MASTER_MAILS=(r.ok&&Array.isArray(r.body))?r.body:[];
   MASTER_MAILS_LOADED=true;
 }
 // KPIカード（未処理・処理中・今月完了）は、MASTER_MAILSがlimitで切り詰められる可能性を
 // 考慮せず常に正確な値を出すため、一覧とは別にDBへ直接件数を問い合わせて求める
 // （ポータル側の未処理件数バッジと同じ方式に統一＝表示がズレていた問題への対応）
-let KPI_COUNTS={unprocessed:0,processing:0,completedThisMonth:0,archived:0};
+let KPI_COUNTS={unprocessed:0,processing:0,completedThisMonth:0,archived:0,auto:0};
+// 2026-11-06: 請求書が自動で作られて「承認待ち」に移った請求書メールは、自動で完了にして「自動処理済み」に振り分ける
+// （ns-daily-import の sweep が completion_note='自動処理: …' を付けて完了にする）。未処理の件数・手動の完了件数に混ざらないようにする
+const AUTO_NOTE_PREFIX="自動処理";
+const isAutoMail=m=>m&&m.mail_status==="completed"&&String(m.completion_note||"").startsWith(AUTO_NOTE_PREFIX);
 async function loadKpiCounts(){
   const now=new Date();
   const startOfMonth=new Date(now.getFullYear(),now.getMonth(),1).toISOString();
@@ -2865,17 +2869,19 @@ async function loadKpiCounts(){
   // unprocessed/processing/completedThisMonthと同じ仕組みに乗せることで、他タブでの
   // 処理完了後にこの値も自動的に最新化される＝loadKpiCounts()の既存呼び出し元4箇所を
   // そのまま使い回せる）
-  const [unprocR,procR,doneR,archR]=await Promise.all([
+  const [unprocR,procR,doneR,archR,autoR]=await Promise.all([
     authed(`/rest/v1/invoice_emails?mail_status=in.(unread,read)&select=id`),
     authed(`/rest/v1/invoice_emails?mail_status=eq.processing&select=id`),
-    authed(`/rest/v1/invoice_emails?mail_status=eq.completed&completed_at=gte.${startOfMonth}&select=id`),
+    authed(`/rest/v1/invoice_emails?mail_status=eq.completed&completed_at=gte.${startOfMonth}&or=(completion_note.is.null,completion_note.not.like.${AUTO_NOTE_PREFIX}*)&select=id`),
     authed(`/rest/v1/invoice_emails?mail_status=eq.archived&select=id`),
+    authed(`/rest/v1/invoice_emails?mail_status=eq.completed&completion_note=like.${AUTO_NOTE_PREFIX}*&completed_at=gte.${startOfMonth}&select=id`),
   ]);
   KPI_COUNTS={
     unprocessed:(unprocR.ok&&Array.isArray(unprocR.body))?unprocR.body.length:0,
     processing:(procR.ok&&Array.isArray(procR.body))?procR.body.length:0,
     completedThisMonth:(doneR.ok&&Array.isArray(doneR.body))?doneR.body.length:0,
     archived:(archR.ok&&Array.isArray(archR.body))?archR.body.length:0,
+    auto:(autoR.ok&&Array.isArray(autoR.body))?autoR.body.length:0,
   };
 }
 function kpiCounts(){ return KPI_COUNTS; }
@@ -2883,7 +2889,8 @@ function filteredMails(){
   let list=MASTER_MAILS;
   if(CHIP==="unprocessed") list=list.filter(m=>m.mail_status==="unread"||m.mail_status==="read");
   else if(CHIP==="processing") list=list.filter(m=>m.mail_status==="processing");
-  else if(CHIP==="completed") list=list.filter(m=>m.mail_status==="completed");
+  else if(CHIP==="completed") list=list.filter(m=>m.mail_status==="completed"&&!isAutoMail(m));
+  else if(CHIP==="auto") list=list.filter(isAutoMail);
   if(KIND_FILTER==="unclassified") list=list.filter(m=>!m.mail_kind);
   else if(KIND_FILTER!=="all") list=list.filter(m=>m.mail_kind===KIND_FILTER);
   if(SEARCH_Q.trim()){
@@ -5265,10 +5272,11 @@ async function renderInbox(u){
         ${[["all","種類：すべて"],["unclassified","❔未分類"],["invoice","📄請求書"],["sales","💰売上"],["contract","📃契約書"]].map(([k,l])=>
           `<button class="mail-chip ${KIND_FILTER===k?'active':''}" data-kindchip="${k}">${l}</button>`).join("")}
       </div>
-      <div class="kpis" style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:12px 0 14px">
+      <div class="kpis" style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin:12px 0 14px">
         <div class="card kpi bad" style="padding:14px;cursor:pointer" data-chip="unprocessed"><small style="color:var(--muted);font-size:9px;display:block">未処理</small><b style="font-size:22px;display:block;margin-top:5px">${kc.unprocessed}件</b></div>
         <div class="card kpi info" style="padding:14px;cursor:pointer" data-chip="processing"><small style="color:var(--muted);font-size:9px;display:block">処理中</small><b style="font-size:22px;display:block;margin-top:5px">${kc.processing}件</b></div>
         <div class="card kpi good" style="padding:14px;cursor:pointer" data-chip="completed"><small style="color:var(--muted);font-size:9px;display:block">完了</small><b style="font-size:22px;display:block;margin-top:5px">${kc.completedThisMonth}件</b></div>
+        <div class="card kpi" style="padding:14px;cursor:pointer" data-chip="auto" title="請求書が自動で作られ、承認待ちへ移ったメール（今月）"><small style="color:var(--muted);font-size:9px;display:block">🤖 自動処理済み</small><b style="font-size:22px;display:block;margin-top:5px">${kc.auto}件</b></div>
         <div class="card kpi" style="padding:14px;cursor:pointer" id="kpi-goto-archived"><small style="color:var(--muted);font-size:9px;display:block">対象外</small><b style="font-size:22px;display:block;margin-top:5px">${kc.archived}件</b></div>
       </div>
       <div class="mail-layout" id="mailLayout">
@@ -5282,7 +5290,7 @@ async function renderInbox(u){
               ${(DATE_FROM||DATE_TO)?'<button class="hq-btn" id="mailDateClear" style="padding:6px 9px;font-size:11px">×</button>':''}
             </div>
           </div>
-          ${CHIP!=="unprocessed"?`<div class="meta" style="color:var(--muted);font-size:11px;padding:0 12px 6px">絞り込み中：${{processing:"処理中",completed:"完了",all:"すべて"}[CHIP]||CHIP}　<a href="javascript:void(0)" id="chip-reset" style="color:var(--accent)">解除</a></div>`:""}
+          ${CHIP!=="unprocessed"?`<div class="meta" style="color:var(--muted);font-size:11px;padding:0 12px 6px">絞り込み中：${{processing:"処理中",completed:"完了",auto:"自動処理済み（承認待ちへ移行）",all:"すべて"}[CHIP]||CHIP}　<a href="javascript:void(0)" id="chip-reset" style="color:var(--accent)">解除</a></div>`:""}
           <div class="bulkbar" id="bulkbar">
             <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)"><input type="checkbox" id="bulk-selectall">全選択</label>
             <span id="bulk-count" style="font-size:12px;color:var(--muted)"></span>
@@ -5386,7 +5394,7 @@ function mailItemHtml(m){
     <div class="mail-from">${esc(m.from_address||"—")}</div>
     <div class="mail-subject">${m.mail_kind?MAIL_KIND_LABEL[m.mail_kind]+" ":"❔ "}${m.is_important?"⭐ ":""}${esc(m.subject||"（件名なし）")}</div>
     <div class="mail-preview">${esc(preview)}</div>
-    <div class="mail-meta"><span>${metaLeft}</span><span>${fmtDT(m.received_at)}</span></div>
+    <div class="mail-meta"><span>${isAutoMail(m)?"🤖 自動処理済み":metaLeft}</span><span>${fmtDT(m.received_at)}</span></div>
   </div>`;
 }
 
@@ -7138,6 +7146,7 @@ function wireDetailActions(u){
     if(invoice&&invoice.mf_journal_id){
       confirmMsg="⚠️この請求書は既にマネーフォワードへ仕訳登録済みです。未処理に戻して内容を変更しても、登録済みの仕訳は自動では変わりません（別途手動での修正が必要になる場合があります）。それでも未処理に戻しますか？";
     }
+    if(isAutoMail(mail)) confirmMsg="🤖 このメールは、請求書が自動で作られて承認待ちへ移っています。未処理に戻して手動でもう一度取り込むと、同じ請求書が重複して作られる恐れがあります。\n\n"+confirmMsg;
     if(!confirm(confirmMsg)) return;
     $("act-reopen").disabled=true; $("act-msg").textContent="処理中…";
     const reason=prompt("戻す理由（任意）")||null;
