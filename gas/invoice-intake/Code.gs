@@ -45,8 +45,14 @@ const PROCESSED_LABEL_NAME = "請求書取込済"; // 取込済みの印（こ�
 // 2026-08-26 C-5追加: toho.info@ns0314.com宛も取込対象に追加（同一アカウントのエイリアス、
 // 実機確認済み）。ALIASESに追加すればSEARCH_QUERY・target_alias判定とも自動的に対応する
 const ALIASES = ["info@ns0314.com", "toho.info@ns0314.com"];
-const SEARCH_QUERY = '(' + ALIASES.map(function (a) { return 'to:' + a + ' OR cc:' + a; }).join(' OR ')
-  + ' OR label:' + SOURCE_LABEL_NAME + ') -to:shunji.nakayama@ns0314.com -label:' + PROCESSED_LABEL_NAME;
+// 2026-11-06修正: ガーデン(k-mac)の請求書URLメールが、宛先に shunji.nakayama@ns0314.com を含む形（To: info、本人、福島）に変わり、
+// 下の「本人宛を除外」に当たって取り込まれず、パスワード通知メールだけが取り込まれて請求書が作られなかった。
+// 請求書のURL/パスワードを送ってくるk-mac.jpからのメールは、宛先に本人が含まれていても取り込む（ALWAYS_FROM）。
+const ALWAYS_FROM = ["k-mac.jp"];
+const SEARCH_QUERY = '(((' + ALIASES.map(function (a) { return 'to:' + a + ' OR cc:' + a; }).join(' OR ')
+  + ' OR label:' + SOURCE_LABEL_NAME + ') -to:shunji.nakayama@ns0314.com)'
+  + ALWAYS_FROM.map(function (f) { return ' OR from:' + f; }).join('')
+  + ') -label:' + PROCESSED_LABEL_NAME;
 const FROM_ALIAS = "info@ns0314.com";
 
 // 実際にどのエイリアス宛だったかをinvoice_emails.target_aliasへ記録するための判定

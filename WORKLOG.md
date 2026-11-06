@@ -39,6 +39,12 @@
 - 指示書: [docs/指示書_設計_売上データのスプレッドシート脱却_2026-11-05.md](docs/指示書_設計_売上データのスプレッドシート脱却_2026-11-05.md)（設計書だけ作る依頼・実装なし）。現状: BQの売上はシート「売上DB」の写し（シート→GASで分析再生成→BQ全件コピー→GAS bqDailyStore→Supabase kd_*）。人件費は2026-10分からBQ(勤怠API)が正でシートと別物。
 - 暫定対応（ns-daily-import `9dc944e`）: 朝の取込8本が出そろった直後・遅れて終わった時に分析再生成→BQ同期を実行／人件費のシートvsBQ突合を対象外に。11/5は07:32のdinii-mediaが約2.5時間止まり反映漏れ→手動で再反映済み。
 
+**2026-11-06（担当C）ガーデン(k-mac)の10月度請求書が取り込まれない件: 原因=GASの「本人宛を除外」／修正=gas/invoice-intake/Code.gs（ユーザー貼替待ち）**:
+- 症状: パスワード通知メール（2通）だけが取込済みで、請求書のURLメールが invoice_emails に無く、請求書が作られず「請求元未入力」の要対応が残った。
+- 原因: 10/6〜11/4はURLメールの宛先が info@ のみだったが、11/6のURLメールは To: info・shunji.nakayama(本人)・福島 に変わり、GAS の検索条件 `-to:shunji.nakayama@ns0314.com`（本人宛を除外）に当たって取り込まれなかった（パスワード通知は同スレッドに info 宛コピーがあり取り込まれた）。URLメールは Gmail に「請求書取込済」なしで残っている。
+- 修正: SEARCH_QUERY に `OR from:k-mac.jp`（本人宛でも k-mac.jp 発は取込）を追加（Gmailの検索で、未取込のURLスレッドだけに一致することを確認済み）。**GASの貼替が必要**。貼替後は5分以内に取り込み→invoice-download-fetch が自動で取得→承認待ちへ。
+- 補足: 自動取得(invoice-download-fetch)は10/16から。9月度(10/7)は人が手入力で処理しており、自動で動くのは今回が初の本番。
+
 **★★★2026-11-04（担当A）経費申請・見積もりの申請フォーム(URL)／申請履歴に経費・見積もり／見積もりの決定・保留・却下と本部タスク連動**:
 - 新: tori-dashboard expense-form.html・quote-form.html、Edge form-submit、DB(quote_requests/quote_options/quote-photosバケット・RPC quote_list/quote_decide・request_form_linkにexpense/quote)。申請履歴は経費の承認/差戻し・検索・絞り込み・CSV・見積もり比較に対応。PDF/Excel/Word添付可(4MB)。
 - 見積もり受信→本部タスク(最重要)自動作成。工程: 決める(申請者)→修繕日(申請者)→修繕完了(写真・申請者)→支払い完了(原美香)。保留中も未読バッジが残る。毎月の「N月分従業員経費」タスク(佐藤俊一は除外)も稼働。
