@@ -1752,7 +1752,64 @@ async function planDue(sb: any) {
   }
   due.push("home_kpi");   // Supabase内で完結(平均3秒)・本部タスク滞留数などの鮮度のため毎回
   due.push("sessions_cleanup");
+  due.push("events");   // DB_イベントの鏡（kd_events）。GAS 1回・数十行なので毎回（2026-11-06）
   return { ok: true, due, reasons };
+}
+
+// ============== op=events: DB_イベント（経営ダッシュボードのスプレッドシート）を kd_events に鏡写し（2026-11-06・画像日報 v2）==============
+// GAS action=data keys=イベント（ID,日付,イベント名,会場,対象店舗,メモ）を全期間取得して kd_events を洗い替える。
+// 会場→エリアは event_venues（ハブ側マスタ）で解決。対象店舗名は stores の名前/別名で store_id に解決（名前一致はここだけ。画像側は event_area で判定）。
+function eventHash(s: string): string { let h = 5381; for (let i = 0; i < s.length; i++) h = ((h * 33) ^ s.charCodeAt(i)) >>> 0; return h.toString(16).padStart(8, "0").slice(0, 6); }
+async function refreshEvents(sb: any) {
+  const runId = await startRun(sb, "kd_events");
+  const startedAt = new Date().toISOString();
+  try {
+    const r = await dashAuthed(sb, "data", { keys: "イベント", months: 0 });
+    if (!r?.ok) throw new Error("GAS data(イベント) 失敗: " + (r?.error ?? ""));
+    const rows: any[][] = (r.sheets?.["イベント"] ?? []) as any[][];
+    const H = (rows[0] ?? []).map((h: unknown) => String(h ?? "").trim());
+    const col = (names: string[]) => H.findIndex((h: string) => names.includes(h));
+    const iId = col(["ID", "id"]), iD = col(["日付"]), iN = col(["イベント名", "イベント"]), iV = col(["会場"]), iS = col(["対象店舗", "店舗"]), iM = col(["メモ"]);
+    if (iD < 0 || iN < 0) throw new Error("DB_イベント の見出しに 日付/イベント名 がありません: " + H.join(","));
+    const maps = await loadStoreMaps(sb);
+    const { data: venues } = await sb.from("event_venues").select("venue_key,name,area");
+    const venueByName = new Map<string, any>(((venues ?? []) as any[]).map((v) => [String(v.name).trim(), v]));
+    const upserts: any[] = []; const unresolvedStores = new Set<string>(); const unknownVenues = new Set<string>();
+    for (const row of rows.slice(1)) {
+      const date = toDateStr(row[iD]); const name = String(row[iN] ?? "").trim();
+      if (!date || !name) continue;
+      const venueName = iV >= 0 ? String(row[iV] ?? "").trim() : "";
+      const v = venueName ? venueByName.get(venueName) : null;
+      if (venueName && !v) unknownVenues.add(venueName);
+      const names = (iS >= 0 ? String(row[iS] ?? "") : "").split(/[,、]/).map((x) => x.trim()).filter(Boolean);
+      const ids: string[] = [];
+      for (const n of names) { const hit = lookupStore(maps, n); if (hit) ids.push(hit.store_id); else unresolvedStores.add(n); }
+      const memo = iM >= 0 ? String(row[iM] ?? "").trim() : "";
+      const rawId = iId >= 0 ? String(row[iId] ?? "").trim() : "";
+      upserts.push({
+        event_id: rawId || `ev_${date.replace(/-/g, "")}_${eventHash(name)}`,
+        venue_key: v?.venue_key ?? null, venue_name: venueName || null, event_name: name, event_date: date,
+        area: v?.area ?? null, source: memo === "自動取得" || rawId.startsWith("ya_") ? "auto" : "manual", confirmed: true,
+        target_store_ids: [...new Set(ids)], target_store_names: names, memo: memo || null, synced_at: startedAt,
+      });
+    }
+    for (let i = 0; i < upserts.length; i += 500) {
+      const { error } = await sb.from("kd_events").upsert(upserts.slice(i, i + 500), { onConflict: "event_id" });
+      if (error) throw new Error("kd_events upsert失敗: " + error.message);
+    }
+    // 今回の取得に無かった行（シートから消えた＝掲載終了/削除）は落とす。取得が空のときは安全のため消さない
+    let deleted = 0;
+    if (upserts.length > 0) {
+      const { data: gone } = await sb.from("kd_events").delete().lt("synced_at", startedAt).select("event_id");
+      deleted = gone?.length ?? 0;
+    }
+    const note = [unknownVenues.size ? `会場未登録(event_venues): ${[...unknownVenues].join("、")}` : "", unresolvedStores.size ? `店舗名未対応: ${[...unresolvedStores].join("、")}` : ""].filter(Boolean).join(" / ");
+    await finishRun(sb, runId, true, upserts.length, note || undefined);
+    return { ok: true, rows: upserts.length, deleted, unknown_venues: [...unknownVenues], unresolved_stores: [...unresolvedStores] };
+  } catch (e) {
+    await finishRun(sb, runId, false, 0, String(e), "kd_events");
+    return { ok: false, error: String(e) };
+  }
 }
 
 // ============== op=verify_carry: 入金の繰越をGAS(depositCarry)とkd_deposit_carry_vで突合（読み取り専用・2026-10-05） ==============
@@ -1902,6 +1959,7 @@ Deno.serve(async (req) => {
       case "run_status": result = await runStatus(sb, body); break;
       case "diag_detail_cov": result = await diagDetailCov(sb); break;
       case "verify_carry": result = await verifyCarry(sb, body); break;
+      case "events": result = await refreshEvents(sb); break;   // DB_イベント→kd_events（画像日報 v2・2026-11-06）
       default: return json({ ok: false, error: "opは'reservation_daily'|'dashboard_daily'|'home_kpi'|'unresolved_notify'|'pl_monthly'|'media_monthly'|'deposit_monthly'|'store_monthly'|'ad_monthly'|'delivery_daily'|'detail_daily'|'entries'|'sessions_cleanup'|'due'のいずれかが必須です" }, 400);
     }
     // 2026-09-03修正: ok:falseの結果をHTTP 200で返してしまうとGitHub Actions側のHTTP_CODEチェックを
