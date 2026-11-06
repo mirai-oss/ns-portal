@@ -4,13 +4,17 @@
 
 ---
 
-**2026-11-06（このスレッド）Google口コミ取得の Supabase 直結化 ①（コード完成・本番反映はユーザー作業待ち）**:
+**2026-11-06（このスレッド）Google口コミ取得の Supabase 直結化 ①（本番稼働開始: 12 掲載の Place ID 確定・初回取得・3 店テスト送信・Cron 08:00 JST 稼働）**:
 - ユーザー指示書（ChatGPT 案 50 項目）を既存コードと突き合わせて 12 点指摘 → ユーザー決定: ②並行期間は**比較専用テーブルで分離** ④スケジュールは **Supabase Cron** ⑧**N-Style 4 店は対象外** ＋「掲載名をキーにせず自社発行 `listing_id` → `place_id` を固定キー」。設計書: [docs/設計書_Google口コミSupabase直結_2026-11-06.md](docs/設計書_Google口コミSupabase直結_2026-11-06.md)（§9 にユーザー作業の順番）。
 - 調査結果: 口コミ推移ログの書き手は**売上DB の GAS**（`NStyle-AI/gas-backup/sales-db/コード.gs` 1980 行〜 `fetchGoogleReviews`／`fetchReviewsScheduled`＝毎月 1/8/15/22/29 の 9 時台）。`口コミPlaceID` B 列が `ChIJ…` なら Place Details、URL なら店名で Text Search して **1 件目を無条件採用**。Place ID はどこにも保存されていない。ハブに pg_cron は未導入（pg_net 0.20.4 あり。`create extension pg_cron` は SQL で通る＝管理画面操作は不要）。経営ダッシュボードは `ingestReview` で**取得日を 1 日前に寄せて**集計している（新設計もこれに合わせ基準日＝取得日−1）。
 - 成果物 `bc964b1`: SQL `supabase/2026-11-06_google_reviews_direct.sql`（`google_place_listings` マスタ・`google_review_snapshots` 日次履歴(listing_id×fetched_on・as_of_date=fetched_on−1)・`google_review_fetch_runs`・seed 12 掲載(pending)・旧鏡 240 行の一回限り引き継ぎ(source=legacy_sheet)・`google_review_store_kpi(店舗,日付)`（今日/今週(火〜月)/今月・看板別・**マイナス保持**）・View `google_review_store_daily_v`/`google_review_kpi_v`/`google_review_legacy_compare_v`・**`daily_report_card_vm` v5**（口コミ部分を関数に置換・greatest(0,…) 廃止・キー互換＋week/day/as_of 追加。画像スクリプトは無変更）。dry-run OK・本番データでロールバック検算 OK（黒霧屋 964＝274+649+41・鶏武者新横浜 2,401・本店 2,352。11/1 取得が 10 月末の起点になるので今月増加は全店 0 から始まる＝定義変更。v4 は 10/29→11/1 の +13 を 11 月に乗せていた）。月跨ぎ 10/31→11/1・週跨ぎ 11/3(火) の切替も確認。
 - EF `supabase/functions/google-reviews-fetch/index.ts`（deno check OK・**未デプロイ**）: op=fetch（Details のみ・冪等 upsert・429/5xx 3 回再試行・404→invalid・失敗/名称変更は hq.dev_system 通知）／resolve（Text Search→名前+住所で候補 1 件→Details の件数が旧履歴 ±max(5,3%)・星 ±0.3 で一致→active、他は needs_review＋候補保存）／confirm／health。認証は x-notify-secret か service_role。キーは secrets `GOOGLE_PLACES_API_KEY`。
 - Cron SQL `supabase/2026-11-06_google_reviews_cron.sql`（dry-run OK・**未適用**）: pg_cron 有効化＋`google_reviews_fetch_trigger()`（pg_net・合言葉は app_secrets.notify_slack_secret）＋ジョブ `google-reviews-daily` 08:00 JST。手元用 `scripts/google_reviews_call.py health|resolve|fetch|confirm`。
 - **次（ユーザー）**: ①API キーを secrets へ（env ファイル経由）②GCP でキーが Places API (New) 限定か確認 ③SQL ①適用 ④EF デプロイ（`--no-verify-jwt --yes`）→ **私が resolve → 人間確認一覧 → fetch → 3 店テスト送信** → ⑤Cron SQL 適用 → 14 日並行（旧 GAS 11/8・11/15 と比較）→ 旧トリガ停止判断 → Step 13 ダッシュボード直読（GAS data(review) をハブ読みに）。
+- **本番反映 2026-11-06 16:22〜**: ユーザーが新キーを GCP `tori-analytics` に作成（旧キーの所在プロジェクトは別アカウントで不明のため新規。Places API (New) のみに制限）→ secrets 投入・SQL ①適用・EF デプロイ（version 1・verify_jwt=false・関数内で合言葉照合）。`resolve --dry-run` → 本実行: **10 掲載が自動確定**（候補 1 件＋件数が 11/1 旧履歴と数件以内で一致）、2 掲載が人間確認（彩=「カラオケ」で始まる候補 4 件／うお蔵=649→686 で許容 3% 超）→ ユーザー「2つともOK」→ `confirm` で確定（住所は candidates から補完）。**初回 fetch 12/12 成功・Text Search 0**。彩は 41→40 の**マイナス（−1 件）を保持**。
+- 3 店テスト送信（`#本部-開発システム`・11/5・dedupe :v5a）: 本店 +1件/2,353・黒霧屋 新横浜 **+37件**（黒霧屋+1(275)／うお蔵+37(686)／彩−1(40)・累計 1,001・最終取得 11/6）・鶏武者 新横浜 +9件/2,410。画像スクリプトは無変更で VM v5 のキーをそのまま表示。
+- Cron SQL ②適用（pg_cron 有効化＋`google-reviews-daily` 0 23 * * * UTC＝08:00 JST）。`google_reviews_fetch_trigger()` を手動で 1 回起動し pg_net 経路を確認。明朝 08:00 から自動。**旧 GAS（1/8/15/22/29）は止めない**＝14 日並行（11/8・11/15 が比較点。`google_review_legacy_compare_v`）。
+- 残: Step 13 ダッシュボード直読（GAS data(review) をハブ読みに）／並行比較の報告（11/8 以降）／旧トリガ停止判断／管理画面（別タスク）／`google_address` は Details の FieldMask に無いので confirm 時は candidates から補完する仕様（次回 EF 修正時に formattedAddress を追加しても可）。
 - 制約メモ: classifier が GAS data エンドポイントの呼び出し（手元トークン）を拒否 → 口コミPlaceID シートの中身は未読。照合は旧履歴の件数・星で代替（設計書 §4）。
 
 **2026-11-06（このスレッド）画像日報 v4: 口コミ件数を看板（Google掲載）ごとに持ち、2枚・3枚看板の店舗は内訳を表示（本番反映済み・実データ一致確認）**:
@@ -1025,7 +1029,7 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
-**★★★★2026-11-06 23:00（このスレッド）Google口コミ取得の Supabase 直結化 ①: コード完成（ns-portal `bc964b1`）・本番反映はユーザー作業待ち**: 設計書 `docs/設計書_Google口コミSupabase直結_2026-11-06.md`。決定: 比較専用テーブル分離／Supabase Cron（08:00 JST）／N-Style 対象外／listing_id→place_id 固定キー。SQL ①`2026-11-06_google_reviews_direct.sql`（マスタ・履歴・KPI 関数・VM v5）と ②`_cron.sql` は dry-run 済み**未適用**、EF `google-reviews-fetch` は deno check 済み**未デプロイ**。ユーザー作業（設計書 §9 の順）: API キー→secrets／GCP キー制限確認／SQL ①適用／EF デプロイ → 私が resolve（Place ID 確定・人間確認一覧）→ 初回 fetch → 3 店テスト送信 → Cron SQL 適用 → 14 日並行比較（`google_review_legacy_compare_v`）→ 旧 GAS トリガ停止 → Step 13 ダッシュボード直読。画像日報 v2〜v4 は本番稼働中（keiei-kd-refresh v57・12:00 配信）。残: 店舗別 Slack チャンネル ID 待ち・DAILY_CARD_MODE 切替判断・PAT 再発行提案中。
+**★★★★2026-11-06 17:00（このスレッド）Google口コミ取得の Supabase 直結化 ①: 本番稼働開始**（ns-portal `bc964b1`〜）: 設計書 `docs/設計書_Google口コミSupabase直結_2026-11-06.md`。マスタ 12 掲載すべて active（Place ID 確定済み）・初回取得 12/12・Cron `google-reviews-daily` 08:00 JST 稼働・日報 VM v5（基準日=取得日−1・マイナス保持）で 3 店テスト送信済み。旧 GAS（売上DB・1/8/15/22/29）は並行継続中。**次**: 11/8・11/15 に `google_review_legacy_compare_v` で旧新比較を報告 → 停止判断（ユーザー）→ Step 13 ダッシュボード直読（GAS data(review) をハブ読みへ）→ 管理画面は別タスク。画像日報 v2〜v4 は本番稼働中（12:00 配信）。残: 店舗別 Slack チャンネル ID 待ち・DAILY_CARD_MODE 切替判断・PAT 再発行提案中。
 
 **★2026-11-05（司令塔スレッド・続き）担当B: U-16=ユーザー直接指示で源泉徴収票未提出の工程33件（移籍32＋通常退職1）を未完了に戻し（バックアップ済み・再停止なし）。期限はDB側で編集不可のため元のまま（移籍=11/18・通常退職=10/18超過）→画面調整 or 担当Eに編集経路確認。U-17①=法人別SQL適用済み（sf_cash_handoff_signatures.contract_id確認）・12/1に兼務の現金手渡し画面を確認予定。
 
