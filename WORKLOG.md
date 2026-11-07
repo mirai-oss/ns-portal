@@ -28,6 +28,7 @@
 - スクリプト: `scripts/decision_ask.py "質問" a=A案 b=B案 [--hours] [--roles] [--channel] [--preview] / --cancel <id>`（PAT で pending 行 insert → notify-slack send（`notification_id` 先採番・event=decision_request・ref=decision_requests）→ 行に notification_id。送信失敗は cancelled＋context に記録）／`scripts/decision_wait.py <id> | --list`（読むだけ。終了コード 0=answered/2=pending/3=expired・cancelled/4=無し。ポーリングは呼び出し側）。
 - 手順書: [docs/手順書_Slackで判断を受け取る_2026-11-07.md](docs/手順書_Slackで判断を受け取る_2026-11-07.md)（①本番に入れる 6 ステップ＝SQL 2 本→EF デプロイ `--no-verify-jwt --yes`→Slack 側 URL 確認→テスト送信→テスト行削除／②使い方）。
 - **次（ユーザー承認後）**: SQL 2 本適用 → `slack-interact` デプロイ → `#本部-開発システム` へテスト 1 通 → 押す → `decision_wait.py` で answered を確認 → テスト行削除・0 件確認。注意: 押せるのは CEO/HQ/master（`--roles` で変更可）。
+- **ユーザー決定（11/7 13:50）**: ①Slack から管理システムに指示（判断依頼の回答）を出せるのは**中山さんだけ**（`is_master`。既定 `allow_roles` を空に変更・rollback 内で再検証: TEAM 佐藤=forbidden／HQ 青山=forbidden／master 中山=ok・master は 1 人）。②`user_slack` の 4 人紐付けは「誰が押したか」の特定用で権限は付かない。入れる理由は**将来の勤怠確認ボタン**（TK-250）を各店長が押せるようにするため。③勤怠の想定フロー（設計書 §10-5 に承認段を追加する必要あり）: 「11/6（金）鳥一代 本店 Aさん 10:00−翌10:00（24時間）→ ○ / ×→修正時間入力」が店長に届く → 店長が修正を送る → **管理者（中山さん）の Slack に承認が飛ぶ → 承認で管理システムに反映**。現行設計は TENCHO/TEAM が自店舗分を直接確定する形なので、TK-250 着手時に「店長=申請・マスター=承認」へ直す。
 - 未解決（別タスク）: 文章回答（Phase 2・Events API か Hermes 経由）／期限切れ行の status 自動更新（今は読む側が expired 扱い・RPC が押下時に更新）／hq.jinji・keiei.team_report のチャンネル ID は未設定のまま。
 
 ---
@@ -1069,7 +1070,7 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
-**★★★2026-11-07 13:30（Slack 判断依頼スレッド）Claude→Slack ボタン→ユーザー判断の仕組み: コード完成・dry-run 済み・本番適用待ち**（ns-portal `7ae5e2f`）: SQL `2026-11-07_decision_requests.sql`（表＋RPC `decision_request_answer`・rollback 内で動作検証済み）＋`2026-11-07_user_slack_seed.sql`（user_slack 0 件→4 人。メール一致確認済み）／EF `slack-interact` に `decision.request.*`（**本番未デプロイ＝初回デプロイ**。復元 diff 不要）／`scripts/decision_ask.py`・`decision_wait.py`／手順書 `docs/手順書_Slackで判断を受け取る_2026-11-07.md`。**次=ユーザー**: 手順書①の 6 ステップ（SQL 2 本→デプロイ→テスト→テスト行削除）。文章回答は Phase 2。
+**★★★2026-11-07 13:30（Slack 判断依頼スレッド）Claude→Slack ボタン→ユーザー判断の仕組み: コード完成・dry-run 済み・本番適用待ち**（ns-portal `7ae5e2f`）: SQL `2026-11-07_decision_requests.sql`（表＋RPC `decision_request_answer`・rollback 内で動作検証済み）＋`2026-11-07_user_slack_seed.sql`（user_slack 0 件→4 人。メール一致確認済み）／EF `slack-interact` に `decision.request.*`（**本番未デプロイ＝初回デプロイ**。復元 diff 不要）／`scripts/decision_ask.py`・`decision_wait.py`／手順書 `docs/手順書_Slackで判断を受け取る_2026-11-07.md`。**ユーザー決定 11/7**: 答えられるのはマスター（中山さん）だけ・4 人の紐付けは特定用（権限なし）・勤怠は「店長=○×/修正申請 → マスター承認 → 反映」の形で TK-250 を設計し直す（`394b700`）。**次=ユーザー**: 手順書①の 6 ステップ（SQL 2 本→デプロイ→テスト→テスト行削除）。文章回答は Phase 2。
 
 **★★★★2026-11-06 17:00（このスレッド）Google口コミ取得の Supabase 直結化 ①: 本番稼働開始**（ns-portal `bc964b1`〜）: 設計書 `docs/設計書_Google口コミSupabase直結_2026-11-06.md`。マスタ 12 掲載すべて active（Place ID 確定済み）・初回取得 12/12・Cron `google-reviews-daily` 08:00 JST 稼働・日報 VM v5（基準日=取得日−1・マイナス保持）で 3 店テスト送信済み。旧 GAS（売上DB・1/8/15/22/29）は並行継続中。Step 13（ダッシュボード直読）は View `google_review_log_v` 適用済み・GAS a7pc は**ユーザーの貼替待ち**。**次**: 11/8・11/15 に `google_review_legacy_compare_v` で旧新比較を報告 → 停止判断（ユーザー）→ Step 13 ダッシュボード直読（GAS data(review) をハブ読みへ）→ 管理画面は別タスク。画像日報 v2〜v4 は本番稼働中（12:00 配信）。残: 店舗別 Slack チャンネル ID 待ち・DAILY_CARD_MODE 切替判断・PAT 再発行提案中。
 
