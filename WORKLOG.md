@@ -19,6 +19,19 @@
 
 ---
 
+**2026-11-07（このスレッド・Slack 判断依頼）Claude セッションが Slack のボタンでユーザーの判断を受け取る仕組み（コード完成・dry-run 済み・本番適用はユーザー承認待ち）**:
+- ユーザー要望（11/6）「結果を Slack に通知し、判断が必要なものは Slack の通知で指示できる状態にしてほしい。ボタンでも文章で選ぶでもいい」→ まずボタン。文章（スレッド返信を Events API で拾う）は Phase 2。
+- 調査で判明: `slack-interact` は**本番未デプロイ**（functions download が 404。復元 diff は不要＝初回デプロイ）／`user_slack` は **0 件**（notify-slack の users_sync は手元の鍵では 401）。手元で Slack users.list とハブ users.email を照合 → **4 人全員一致・不一致 0**／Secrets `SLACK_SIGNING_SECRET`・`SLACK_BOT_TOKEN`・`NOTIFY_SLACK_SECRET` は投入済み／manifest の Interactivity Request URL は slack-interact。
+- 成果物: SQL `supabase/2026-11-07_decision_requests.sql`（表 `decision_requests`＝id/asked_by/channel_key/question/options jsonb/status pending|answered|expired|cancelled/answer・answer_label/answered_by→users/notification_id→notification_deliveries/allow_roles 既定 CEO,HQ（master 常に可）/expires_at 既定 24h。選択肢の形は `decision_options_valid()` で check。RLS=authenticated select のみ・書き込みポリシー無し。**RPC `decision_request_answer(p_request_id,p_answer,p_actor,p_via)`**（security definer・service_role のみ実行可。操作者有効/存在/先に答え済み/締切/期限切れ/権限/選択肢の順に検査して answered に更新・結果 jsonb）。dry-run OK・**rollback 内で RPC を実検証**（不正選択肢→invalid_option／TEAM→forbidden／CEO→ok／2 回目→already_answered「中山 俊士 さんが先に「A案」を選んでいます」／無い id→not_found。本番には何も残っていない）。
+- SQL `supabase/2026-11-07_user_slack_seed.sql`（4 人の users.id↔Slack ID。メールは書かず適用時に users から補う。on conflict do nothing。dry-run OK）。
+- EF `supabase/functions/slack-interact/index.ts`（deno check OK・**未デプロイ**）: `decision.request.<key>` を前方一致で振り分け → RPC → `notify-slack update` で「✅ ○○ が「A」を選択しました（日時）＋質問の引用」に差し替え（ボタン消える）。既存の `ephemeral()` は block_actions の HTTP 応答本文を Slack が無視するため **`response_url` へ POST** するよう改修（紐付け無し・未対応操作・失敗時の案内が本人に見えるようになる）。勤怠 `attendance.*` の骨組みは無変更（RPC 未作成のまま）。
+- スクリプト: `scripts/decision_ask.py "質問" a=A案 b=B案 [--hours] [--roles] [--channel] [--preview] / --cancel <id>`（PAT で pending 行 insert → notify-slack send（`notification_id` 先採番・event=decision_request・ref=decision_requests）→ 行に notification_id。送信失敗は cancelled＋context に記録）／`scripts/decision_wait.py <id> | --list`（読むだけ。終了コード 0=answered/2=pending/3=expired・cancelled/4=無し。ポーリングは呼び出し側）。
+- 手順書: [docs/手順書_Slackで判断を受け取る_2026-11-07.md](docs/手順書_Slackで判断を受け取る_2026-11-07.md)（①本番に入れる 6 ステップ＝SQL 2 本→EF デプロイ `--no-verify-jwt --yes`→Slack 側 URL 確認→テスト送信→テスト行削除／②使い方）。
+- **次（ユーザー承認後）**: SQL 2 本適用 → `slack-interact` デプロイ → `#本部-開発システム` へテスト 1 通 → 押す → `decision_wait.py` で answered を確認 → テスト行削除・0 件確認。注意: 押せるのは CEO/HQ/master（`--roles` で変更可）。
+- 未解決（別タスク）: 文章回答（Phase 2・Events API か Hermes 経由）／期限切れ行の status 自動更新（今は読む側が expired 扱い・RPC が押下時に更新）／hq.jinji・keiei.team_report のチャンネル ID は未設定のまま。
+
+---
+
 **2026-11-07（このスレッド）プレコフーズの請求書が「PL対象外→振込待ち」に進んだ不具合を修正（invoices.html v165）**:
 - ユーザー報告: インフォマート取得のプレコフーズが「要確認」に入り、承認後はPL未反映に行かず振込待ちへ進んだ。
 - 原因①（要確認）: プレコフーズは取引先方針（vendor_invoice_policies.required_evidence=納品書）で「本請求書はインボイスではない」ため、納品書の添付が無いと invoice-check の evidence が ng。これは仕様（インボイス要件）であり不具合ではない。他の取込済み取引先には方針が無いので承認待ちに直行していた。
@@ -1055,6 +1068,8 @@
 - 入金タブをkd_deposit速報で即表示（v237）。PL速報(viewPLFast_)は既存。目標/広告/媒体/明細は確定データ(GAS)待ちのまま＝次はkd追加(F2・レーンP)待ち。社員人件費反映はユーザー確認済み。
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
+
+**★★★2026-11-07 13:30（Slack 判断依頼スレッド）Claude→Slack ボタン→ユーザー判断の仕組み: コード完成・dry-run 済み・本番適用待ち**（ns-portal `7ae5e2f`）: SQL `2026-11-07_decision_requests.sql`（表＋RPC `decision_request_answer`・rollback 内で動作検証済み）＋`2026-11-07_user_slack_seed.sql`（user_slack 0 件→4 人。メール一致確認済み）／EF `slack-interact` に `decision.request.*`（**本番未デプロイ＝初回デプロイ**。復元 diff 不要）／`scripts/decision_ask.py`・`decision_wait.py`／手順書 `docs/手順書_Slackで判断を受け取る_2026-11-07.md`。**次=ユーザー**: 手順書①の 6 ステップ（SQL 2 本→デプロイ→テスト→テスト行削除）。文章回答は Phase 2。
 
 **★★★★2026-11-06 17:00（このスレッド）Google口コミ取得の Supabase 直結化 ①: 本番稼働開始**（ns-portal `bc964b1`〜）: 設計書 `docs/設計書_Google口コミSupabase直結_2026-11-06.md`。マスタ 12 掲載すべて active（Place ID 確定済み）・初回取得 12/12・Cron `google-reviews-daily` 08:00 JST 稼働・日報 VM v5（基準日=取得日−1・マイナス保持）で 3 店テスト送信済み。旧 GAS（売上DB・1/8/15/22/29）は並行継続中。Step 13（ダッシュボード直読）は View `google_review_log_v` 適用済み・GAS a7pc は**ユーザーの貼替待ち**。**次**: 11/8・11/15 に `google_review_legacy_compare_v` で旧新比較を報告 → 停止判断（ユーザー）→ Step 13 ダッシュボード直読（GAS data(review) をハブ読みへ）→ 管理画面は別タスク。画像日報 v2〜v4 は本番稼働中（12:00 配信）。残: 店舗別 Slack チャンネル ID 待ち・DAILY_CARD_MODE 切替判断・PAT 再発行提案中。
 
