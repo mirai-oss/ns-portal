@@ -85,8 +85,7 @@ Deno.serve(async (req: Request) => {
   }
 
   // ③-2 必要な証憑（TK-216④）: 取引先の方針(vendor_invoice_policies.required_evidence)に「納品書」などがあれば、その種類の添付があるか確認する（例: プレコフーズ＝納品書がインボイス）
-  // 2026-11-07: インフォマート取込の請求書は、Infomart上で認識済み（CSV＋請求書PDF＋店舗別明細で検算済み）なので納品書は不要（ユーザー指示）。メール等で来た場合だけ納品書を求める
-  if (inv.vendor_id && inv.intake_source !== "infomart") {
+  if (inv.vendor_id) {
     const { data: pol } = await db.from("vendor_invoice_policies").select("required_evidence, evidence_warning").eq("vendor_id", inv.vendor_id).eq("tenant_id", (draft?.tenant_id as string) || "default").maybeSingle();
     const need: string[] = Array.isArray(pol?.required_evidence) ? pol!.required_evidence : [];
     if (need.length) {

@@ -114,7 +114,7 @@ Deno.serve(async (req: Request) => {
   if (proposed && proposedKind === "tenant_copy") warnings.push("法人が変わった（またはこのMF事業者では初めての）取引先です。トーホーの行ルール（科目・補助科目）を流用して提案しています。宛先法人のMF事業者に同じ補助科目・部門があるか確認して承認してください（承認すると、この事業者の行ルールとして保存されます）。");
   else if (proposed && proposedKind === "history") warnings.push("初回の提案です（過去にMFへ登録した同じ取引先の仕訳から、科目・補助科目を提案しています。貸方は科目から推定）。内容を確認して承認すると、次回から自動で作られます。");
   else if (proposed) warnings.push("初回の提案です（CSVの既定：仕入高／補助科目=取引先名／貸方=買掛金）。内容を確認して承認すると、次回から自動で作られます。");
-  if (policy?.evidence_warning && inv.intake_source !== "infomart") warnings.push(policy.evidence_warning);   // 2026-11-07: インフォマート取込は納品書の注意を出さない
+  if (policy?.evidence_warning) warnings.push(policy.evidence_warning);
 
   const pickRule = (l: any) => {
     const text = `${l.description ?? ""} ${l.item ?? ""}`;
