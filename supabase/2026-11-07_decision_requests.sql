@@ -11,6 +11,7 @@
 --   scripts/decision_wait.py … status を読むだけ（ポーリングは呼び出し側）
 --
 -- RLS: authenticated は select のみ。書き込みは service_role（slack-interact・PAT の運用スクリプト）だけ。
+-- 誰が答えられるか: is_master のユーザーだけ（既定）。依頼ごとに allow_roles で広げられるが、通常は使わない（ユーザー決定 2026-11-07）。
 -- =============================================================
 
 -- 選択肢の形を検査する関数（check 制約から呼ぶ。[{"key":"a","label":"A案"},…] key は英小文字・数字・_ の 1〜32 字で重複なし）
@@ -41,7 +42,7 @@ create table if not exists decision_requests (
   answered_via    text,                                             -- 'slack' ほか
   answered_at     timestamptz,
   notification_id uuid references notification_deliveries(id),     -- 送った Slack メッセージ（台帳）
-  allow_roles     text[] not null default array['CEO','HQ'],        -- 答えてよい役割。is_master は常に可
+  allow_roles     text[] not null default '{}'::text[],             -- 追加で答えてよい役割（既定=空）。is_master（マスター）は常に可。2026-11-07 ユーザー決定: Slack から指示できるのはマスターだけ
   context         jsonb,                                            -- 質問の背景（秘密情報は入れない）
   expires_at      timestamptz not null default now() + interval '24 hours',
   created_at      timestamptz not null default now(),

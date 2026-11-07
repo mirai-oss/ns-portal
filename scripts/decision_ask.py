@@ -3,10 +3,10 @@
 """Claude セッションから Slack に「質問＋選択肢ボタン」を送り、ユーザーの判断を待てる状態にする小さな道具。
 使い方:
   python3 scripts/decision_ask.py "質問文" a=A案 b=B案 [c=見送り] [--channel hq.dev_system] [--hours 24]
-                                  [--by claude:<セッション名>] [--roles CEO,HQ] [--preview]
+                                  [--by claude:<セッション名>] [--roles HQ] [--preview]
   python3 scripts/decision_ask.py --cancel <request_id>        … まだ答えが無い依頼を取り消す（Slack の本文も差し替える）
   選択肢は key=表示名（key は英小文字・数字・_ の 1〜32 字、2〜5 個、表示名 75 字まで）。
-  --preview は送らずに Block Kit の中身を表示するだけ。
+  --preview は送らずに Block Kit の中身を表示するだけ。答えられるのは既定でマスター（is_master）だけ。--roles は例外的に広げるとき。
 出力: 1 行目に request_id（この値を scripts/decision_wait.py に渡す）。
 仕組み: decision_requests に pending 行を insert（PAT）→ notify-slack send（合言葉）→ 行に notification_id を書く。
 鍵: ~/.config/ns-portal/supabase_pat と notify_slack_secret から読む（画面には出さない）。
@@ -75,7 +75,7 @@ def main(argv):
     channel = take('--channel', 'hq.dev_system')
     hours = int(take('--hours', '24'))
     asked_by = take('--by', 'claude:' + os.environ.get('CLAUDE_SESSION', os.environ.get('USER', 'cli')))
-    roles = [r.strip() for r in take('--roles', 'CEO,HQ').split(',') if r.strip()]
+    roles = [r.strip() for r in take('--roles', '').split(',') if r.strip()]   # 既定=空（マスターだけが答えられる）。--roles で広げるのは例外
     question = argv[0]
     options = []
     for a in argv[1:]:
