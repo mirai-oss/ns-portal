@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-11-07-v165";
+const BUILD_TAG="2026-11-07-v166";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -8329,7 +8329,7 @@ function unifiedRowHtml(r){
     <td>${dueBadgeHtml(r)}</td>
     <td><select class="unified-corp" data-id="${r.id}" style="font-size:11px;${r.corporation_id?"":"color:var(--m-amber)"}"><option value="">（未設定）</option>${(UNIFIED_STATE.corporations||[]).map(c=>`<option value="${esc(c.id)}" ${r.corporation_id===c.id?"selected":""}>${esc(c.name)}</option>`).join("")}</select></td>
     <td>${unifiedStoreLabel(r)}</td>
-    <td><b>${esc((r.vendor&&r.vendor.name)||r.vendor_name||"—")}</b>${unifiedHasCorpTransition_(r)?`<div style="color:#b45309;font-size:10px;font-weight:800">🏢 法人移行期間（宛先法人を確認）</div>`:""}${r.rule_unstable&&!r.mf_journal_id?`<div style="color:#b45309;font-size:10px;font-weight:800" title="直近90日に2回以上修正された取引先×明細です。毎回内容を確認してください">⚠️ ルール不安定（毎回確認）</div>`:""}${r.approved_by?`<div style="color:var(--muted);font-size:10px">承認: ${esc((UNIFIED_STATE.userNames&&UNIFIED_STATE.userNames.get(r.approved_by))||"—")} ${esc(String(r.approved_at||"").slice(5,10).replace("-","/"))}</div>`:""}${riskNote?`<div class="danger-text" style="color:var(--m-red);font-size:10px;font-weight:800">${esc(riskNote)}</div>`:""}</td>
+    <td><b>${esc((r.vendor&&r.vendor.name)||r.vendor_name||"—")}</b>${r.intake_source==="infomart"?` <span class="invoice-status check" style="font-size:10px" title="インフォマートから自動取込（CSV・請求書PDF・店舗別明細で検算済み）。仕入高は、日次取込との差額でPLを置き換える対象です">🏪 Infomart</span>`:""}${unifiedHasCorpTransition_(r)?`<div style="color:#b45309;font-size:10px;font-weight:800">🏢 法人移行期間（宛先法人を確認）</div>`:""}${r.rule_unstable&&!r.mf_journal_id?`<div style="color:#b45309;font-size:10px;font-weight:800" title="直近90日に2回以上修正された取引先×明細です。毎回内容を確認してください">⚠️ ルール不安定（毎回確認）</div>`:""}${r.approved_by?`<div style="color:var(--muted);font-size:10px">承認: ${esc((UNIFIED_STATE.userNames&&UNIFIED_STATE.userNames.get(r.approved_by))||"—")} ${esc(String(r.approved_at||"").slice(5,10).replace("-","/"))}</div>`:""}${riskNote?`<div class="danger-text" style="color:var(--m-red);font-size:10px;font-weight:800">${esc(riskNote)}</div>`:""}</td>
     <td>${esc(r.invoice_number||"—")}</td>
     <td>${yen(r.amount)}</td>
     <td><span class="invoice-status ${unifiedIsAuto(r)?"check":"gray"}" title="${unifiedIsAuto(r)?"自動取込（自動で下書きまで作られ、承認待ちに並びます）":"人が取り込み・入力した請求書"}">${unifiedIsAuto(r)?"🤖 ":"✋ "}${esc(INTAKE_SOURCE_LABEL[r.intake_source]||(r.email_id?"メール":"手動"))}</span>${r.email&&r.email.mail_kind==="sales"?' <span class="invoice-status done" title="売上入金（入金の仕訳）">💰売上入金</span>':""}</td>
