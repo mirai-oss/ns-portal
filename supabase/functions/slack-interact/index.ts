@@ -54,6 +54,7 @@ async function resolveActor(sb: any, slackUserId: string): Promise<Actor | null>
 //   attendance.alert.fix       勤怠確認「× 修正する」          → モーダル attendance.fix.modal を開く（出勤・退勤 datetimepicker・理由）
 //   attendance.fix.modal       修正モーダルの送信              → RPC sf_attendance_fix_request → マスターへ承認依頼 DM
 //   attendance.fix.approve / .reject   マスターの承認 / 却下   → RPC sf_attendance_fix_decide（承認で labor_cost_daily / attendance_records に反映）
+//   attendance.change.ack      スマレジ側の直接修正の通知「○ 確認した」→ RPC sf_attendance_change_ack
 //   invoice.approval.approve / .fix / .hold      （将来）
 //   cash.diff.confirm / .fix                      （将来）
 //   shift.missing.remind / .extend                （将来）
@@ -122,6 +123,15 @@ const handlers: Record<string, Handler> = {
     // 承認メッセージの台帳 id を控える（状態ではなく連絡の記録。状態遷移は RPC のみ）
     if (ids.length) await sb.from("sf_attendance_alerts").update({ approval_notification_ids: ids, updated_at: new Date().toISOString() }).eq("id", data.alert_id);
     return json({ response_action: "clear" });
+  },
+  // スマレジ側の直接修正の通知「○ 確認した」（2026-11-07）
+  "attendance.change.ack": async ({ sb, actor, payload, value }) => {
+    const ru: string | undefined = payload.response_url;
+    const { data, error } = await sb.rpc("sf_attendance_change_ack", { p_change_id: value?.change_id, p_actor: actor.user_id, p_via: "slack" });
+    if (error) return ephemeral(`記録できませんでした: ${error.message}`, ru);
+    if (!data?.ok) return ephemeral(data?.message ?? "記録できませんでした", ru);
+    await updateMany(data.notification_ids, `✅ 確認済み（${actor.name}・${nowJst()}）\n✏️ スマレジ側で直接修正: ${data.summary}\n${data.diff_text}`);
+    return text("");
   },
   // マスターの承認 / 却下
   "attendance.fix.approve": (ctx) => attendanceDecide(ctx, true),

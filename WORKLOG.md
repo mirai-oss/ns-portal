@@ -48,6 +48,13 @@
   - EF `slack-interact`: モーダルに休憩1・2 の開始/終了（任意・初期値=今の休憩）＋「この勤務は休憩なしにする」チェック（datetimepicker は消せないため）。RPC へ休憩 4 引数。invalid_break は休憩1 終了欄にエラー表示。
   - EF `smaregi-attendance-fix`: PUT に申請の休憩（無ければ null で消す）。遅刻/早退フラグだけ現在値を引き継ぐ。
   - **次（ユーザー）**: SQL ③適用 → EF 4 本デプロイ（sync・anomaly-check・fix・slack-interact、すべて `--no-verify-jwt`）。翌朝の実アラートで休憩表示を確認。
+- **本番反映③ 2026-11-07 14:45（ユーザー「できた」）**: SQL ③適用・EF 4 本デプロイ（sync v21・anomaly-check v16・fix v3・slack-interact v4）。休憩入りのテスト行（休憩 15:00−16:00）を kintai.check へ送信（前回と同じ dedupe キーで duplicate になったためキーにサフィックス追加）→ ユーザー操作待ち。
+- **ユーザー決定（14:50）アラート条件＝全店舗共通で 5 つ**: ①1h 以内 ②12h 以上（休憩除く） ③翌朝 6 時以降の退勤 ④退勤打刻なし ⑤休憩が長すぎる。＋**「スマレジ側で直接修正されたら同じくアラート」**。
+  - SQL `supabase/2026-11-07_attendance_alert_kinds.sql`（**未適用**・dry-run OK）: alerts の kind check を short/long/extreme/late_leave/no_clock_out/break_long に拡張＋`reasons text[]`／summary を退勤なし・休憩終了なしに対応／**表 `sf_attendance_smaregi_changes`**（labor_cost_daily_id・before/after jsonb・diff_text・open→acknowledged・notification_ids・RLS 読み=本人 or sf_can_manage）＋RPC `sf_attendance_change_ack`（sf_can_manage_as）。
+  - EF `smaregi-attendance-anomaly-check`（**未デプロイ**）: しきい値 LONG=12h（休憩除く＝(退勤−出勤)−break_minutes。休憩不明なら worked_minutes）・LATE_LEAVE_HOUR=6（退勤日が勤務日より後で 6 時以降）・BREAK_LONG=120 分（または休憩の終了なし）・no_clock_out（clock_out null で勤務日 < 今日。旧「退勤前は対象外」を撤回）・extreme=24h 超は維持（13h 超は廃止）。1 勤務に複数該当でも Slack 1 通（kind=先頭・reasons 全部・本文に全部）。LINE 本文も同じ理由を列挙。
+  - EF `smaregi-attendance-sync`（**未デプロイ**・v21 と差分は検知部の追加のみ）: 取込前に対象期間の既存行を 1 回読み（smaregi_shift_result_id → 行）、`detectChange`（出勤・退勤は常に、休憩は前回取込で break_minutes があった行だけ比較。手修正ロック中・前回退勤なし・今回退勤なしは対象外）→ `sf_attendance_smaregi_changes` に insert → kintai.check へ「✏️ スマレジ・タイムカード側で直接修正されました／出勤 10:00 → 10:30／… [○ 確認した]」（同じ行の未確認通知があれば出さない）。応答に smaregiChangeCount。
+  - EF `slack-interact`（**未デプロイ**）: `attendance.change.ack` → RPC → 本文を「✅ 確認済み」に。
+  - **次（ユーザー）**: SQL ④ → sync・anomaly-check・slack-interact をデプロイ（`--no-verify-jwt`）。休憩テストの × → 承認後にテスト行削除。翌朝 08:00 の実行で新条件と直接修正検知の初回を確認。
 - 残: LINE の異常値アラートとの並行停止判断／TENCHO 3 人の Slack 参加（参加すれば ○× を押せる。権限は RPC が判定）／承認の却下理由入力（今は無し）／nippo 側の修正申請一覧との連携。
 
 ---
@@ -1104,7 +1111,7 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
-**★★★2026-11-07 13:40（Slack 勤怠確認ボタン）店長 ○× → 修正申請 → マスター承認 → ハブ反映 = 本番稼働・テスト全経路 OK。承認後の「スマレジ勤務実績への書き戻し」も本番投入（SQL ②・smaregi-attendance-fix v1・slack-interact v3）。失敗経路テスト OK・テスト行 0 件・2 契約の切り分け確認済み。**休憩対応（SQL ③＋EF 4 本）はコード完成・ユーザーの適用/デプロイ待ち**: SQL `2026-11-07_sf_attendance_alerts.sql`（表・labor_cost_daily 手修正ロック・RPC 3 本・kintai.check=C0CFQLYUM1Q。rollback 内で全ケース検証済み）／EF `smaregi-attendance-anomaly-check`（本番と無差分確認済み→Slack 送信追加）・`slack-interact` v2（attendance.* 本実装）／手順書 `docs/手順書_Slack勤怠確認ボタン_2026-11-07.md`。**次=ユーザー**: SQL ③ `2026-11-07_attendance_breaks.sql` → EF 4 本（sync・anomaly-check・fix・slack-interact）を `--no-verify-jwt` でデプロイ／アラート条件の追加（12h 以上・退勤打刻なし・休憩が長い）を選ぶ。実データ初回は翌朝 08:00 の実アラートで確認。
+**★★★2026-11-07 13:40（Slack 勤怠確認ボタン）店長 ○× → 修正申請 → マスター承認 → ハブ反映 = 本番稼働・テスト全経路 OK。承認後の「スマレジ勤務実績への書き戻し」も本番投入（SQL ②・smaregi-attendance-fix v1・slack-interact v3）。失敗経路テスト OK・テスト行 0 件・2 契約の切り分け確認済み。休憩対応（SQL ③＋EF 4 本）は本番投入済み。**アラート 5 条件（1h 以内・12h 以上休憩除く・翌朝 6 時以降退勤・退勤なし・休憩が長い）＋スマレジ側の直接修正の検知（SQL ④＋EF 3 本）はコード完成・ユーザーの適用/デプロイ待ち**: SQL `2026-11-07_sf_attendance_alerts.sql`（表・labor_cost_daily 手修正ロック・RPC 3 本・kintai.check=C0CFQLYUM1Q。rollback 内で全ケース検証済み）／EF `smaregi-attendance-anomaly-check`（本番と無差分確認済み→Slack 送信追加）・`slack-interact` v2（attendance.* 本実装）／手順書 `docs/手順書_Slack勤怠確認ボタン_2026-11-07.md`。**次=ユーザー**: SQL ④ `2026-11-07_attendance_alert_kinds.sql` → EF 3 本（sync・anomaly-check・slack-interact）を `--no-verify-jwt` でデプロイ／休憩テストの × → 承認 → テスト行削除。実データ初回は翌朝 08:00 の実行で確認（新条件＋直接修正検知）。
 
 **★★★2026-11-07 12:20（Slack 判断依頼スレッド）Claude→Slack ボタン→ユーザー判断の仕組み: 本番稼働開始（SQL 適用・slack-interact v1・テスト押下 OK・テスト行削除済み 0 件）**（ns-portal `7ae5e2f`）: SQL `2026-11-07_decision_requests.sql`（表＋RPC `decision_request_answer`・rollback 内で動作検証済み）＋`2026-11-07_user_slack_seed.sql`（user_slack 0 件→4 人。メール一致確認済み）／EF `slack-interact` に `decision.request.*`（**本番未デプロイ＝初回デプロイ**。復元 diff 不要）／`scripts/decision_ask.py`・`decision_wait.py`／手順書 `docs/手順書_Slackで判断を受け取る_2026-11-07.md`。**ユーザー決定 11/7**: 答えられるのはマスター（中山さん）だけ・4 人の紐付けは特定用（権限なし）・勤怠は「店長=○×/修正申請 → マスター承認 → 反映」の形で TK-250 を設計し直す（`394b700`）。**使い方**: `python3 scripts/decision_ask.py "質問" a=A案 b=B案` → `decision_wait.py <id>`（0=answered）。答えられるのはマスターのみ。次: 文章回答（Phase 2）／勤怠ボタン（TK-250・店長=申請→マスター承認）。
 

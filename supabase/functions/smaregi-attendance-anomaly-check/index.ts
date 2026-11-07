@@ -17,6 +17,12 @@
 //   ・1440分超（24時間超え） → 明らかにおかしい勤務（要確認・上の780分超にも該当するため二重に出さない）
 //   ※まだ退勤打刻（clock_out）が無い「勤務中」のレコードは対象外（誤検知防止）
 //
+// 2026-11-07 条件の追加（ユーザー決定「全店舗共通」）:
+//   short=1時間以内／long=12時間以上（休憩除く＝(退勤−出勤)−休憩。休憩が無ければ worked_minutes）／extreme=24時間超
+//   late_leave=翌朝 6 時以降の退勤／no_clock_out=退勤打刻なし（勤務日の翌朝になっても退勤が無い＝旧「対象外」を対象に）
+//   break_long=休憩合計 120 分超、または休憩の終了打刻なし
+//   1 勤務に複数該当しても Slack は 1 通（kind=先頭・reasons に全部）。
+//
 // 2026-11-07 追記（Slack 勤怠確認ボタン・ユーザー決定）: 異常値を sf_attendance_alerts に積み、勤怠確認チャンネル
 //   （slack_channels 'kintai.check'＝C0CFQLYUM1Q・店長が参加）へ「○ 合っている / × 修正する」を送る。
 //   ボタンの先は slack-interact → RPC（設計書 §10-5・SQL 2026-11-07_sf_attendance_alerts.sql）。押せる人は RPC が判定（店長=自店舗・TEAM/HQ/CEO）。
@@ -24,8 +30,10 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
 
 const SHORT_MINUTES = 60;
-const LONG_MINUTES = 13 * 60; // 780
-const EXTREME_MINUTES = 24 * 60; // 1440
+const LONG_MINUTES = 12 * 60;      // 2026-11-07 ユーザー決定: 12 時間以上（休憩除く）。旧 13 時間超から変更
+const EXTREME_MINUTES = 24 * 60;   // 1440
+const LATE_LEAVE_HOUR = 6;         // 翌朝 6 時以降の退勤
+const BREAK_LONG_MINUTES = 120;    // 休憩合計がこれを超えたら「長すぎる」（押し忘れの可能性）
 
 const cors: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -83,12 +91,12 @@ function alertText(a: any) {
   const [y, m, d] = String(a.work_date).split("-").map(Number);
   const wd = WD[new Date(Date.UTC(y, m - 1, d)).getUTCDay()];
   const ci = jstParts(a.clock_in), co = jstParts(a.clock_out);
-  const outTxt = co ? ((co.date > a.work_date ? "翌" : "") + co.hm) : "-";
+  const outTxt = co ? ((co.date > a.work_date ? "翌" : "") + co.hm) : "退勤なし";
   const title = `${m}/${d}（${wd}）　${a.store}`;
-  const brk = (s: string | null, e: string | null) => (s && e) ? `${jstParts(s)!.hm}−${jstParts(e)!.hm}` : null;
+  const brk = (s: string | null, e: string | null) => s ? `${jstParts(s)!.hm}−${e ? jstParts(e)!.hm : "終了なし"}` : null;
   const breaks = [brk(a.b1s, a.b1e), brk(a.b2s, a.b2e)].filter(Boolean);
   const breakTxt = breaks.length ? `休憩 ${breaks.join("・")}` : "休憩なし";
-  const line = `*${a.name}*　${ci?.hm ?? "-"}−${outTxt}（${fmtHM(a.worked_minutes)}・${breakTxt}）`;
+  const line = `*${a.name}*　${ci?.hm ?? "-"}−${outTxt}（${a.worked_minutes == null ? "-" : fmtHM(a.worked_minutes)}・${breakTxt}）`;
   return { title, line, ci, co };
 }
 // 勤怠確認の宛先: slack_channels の 'kintai.check'（ユーザー指定 2026-11-07・C0CFQLYUM1Q）。ID の変更は slack_channels を直すだけ
@@ -105,7 +113,7 @@ async function slackAlert(sb: any, a: any) {
   // アラート行を確保（同じ勤怠実績には 1 行。既に通知済みなら送らない）
   await sb.from("sf_attendance_alerts").upsert({
     labor_cost_daily_id: a.id, user_id: a.user_id, store_id: a.store_id, work_date: a.work_date,
-    clock_in: a.clock_in, clock_out: a.clock_out, worked_minutes: a.worked_minutes, kind: a.kind_code,
+    clock_in: a.clock_in, clock_out: a.clock_out, worked_minutes: a.worked_minutes, kind: a.kind_code, reasons: a.reasons ?? null,
     break_start_1: a.b1s ?? null, break_end_1: a.b1e ?? null, break_start_2: a.b2s ?? null, break_end_2: a.b2e ?? null,
   }, { onConflict: "labor_cost_daily_id", ignoreDuplicates: true });
   const { data: alert } = await sb.from("sf_attendance_alerts").select("id,status,notification_ids").eq("labor_cost_daily_id", a.id).maybeSingle();
@@ -130,7 +138,7 @@ async function slackAlert(sb: any, a: any) {
       { type: "context", elements: [{ type: "mrkdwn", text: `確認 \`${alert.id.slice(0, 8)}\`・修正はマスターの承認後に管理システムへ反映（スマレジ側の打刻は別途修正）` }] },
     ];
     const r = await notifySlack({
-      action: "send", notification_id: nid, channel_key: ch, text: `⚠️ 勤怠確認 ${title} ${a.name} ${fmtHM(a.worked_minutes)}`, blocks,
+      action: "send", notification_id: nid, channel_key: ch, text: `⚠️ 勤怠確認 ${title} ${a.name} ${a.kind}`, blocks,
       event: "attendance_alert", source: "ef:smaregi-attendance-anomaly-check", dedupe_key: `attendance_alert:${alert.id}:${ch}`,
       ref: { table: "sf_attendance_alerts", id: alert.id }, username: "勤怠確認", icon_emoji: ":alarm_clock:",
     });
@@ -176,32 +184,45 @@ Deno.serve(async (req) => {
     const { data: rows } = await sb.from("labor_cost_daily")
       .select("id,user_id,store_id,work_date,clock_in,clock_out,worked_minutes,break_start_1,break_end_1,break_start_2,break_end_2,break_minutes,users(name),stores(name)")
       .gte("work_date", dateFrom)
-      .lte("work_date", dateTo)
-      .not("clock_out", "is", null); // 退勤前(勤務中)のレコードは誤検知防止のため対象外
+      .lte("work_date", dateTo); // 2026-11-07: 退勤なし（clock_out null）も対象（勤務日の翌朝以降に残っていれば打刻忘れ）
 
     const anomalies: any[] = [];
     for (const r of rows ?? []) {
       const mins = Number((r as any).worked_minutes ?? 0);
       const name = (r as any).users?.name ?? "(不明)";
       const store = (r as any).stores?.name ?? "(不明)";
-      const base = { name, store, work_date: r.work_date, worked_minutes: mins,
-        id: (r as any).id, user_id: (r as any).user_id, store_id: (r as any).store_id, clock_in: (r as any).clock_in, clock_out: (r as any).clock_out,
-        b1s: (r as any).break_start_1, b1e: (r as any).break_end_1, b2s: (r as any).break_start_2, b2e: (r as any).break_end_2, break_minutes: (r as any).break_minutes };
-      if (mins <= SHORT_MINUTES) {
-        anomalies.push({ ...base, kind: "短すぎる勤務（1時間以内）", kind_code: "short" });
-      } else if (mins > EXTREME_MINUTES) {
-        anomalies.push({ ...base, kind: "24時間超え（要確認）", kind_code: "extreme" });
-      } else if (mins > LONG_MINUTES) {
-        anomalies.push({ ...base, kind: "長すぎる勤務（13時間超え）", kind_code: "long" });
+      const x = r as any;
+      const base = { name, store, work_date: r.work_date, worked_minutes: (x.worked_minutes == null ? null : mins),
+        id: x.id, user_id: x.user_id, store_id: x.store_id, clock_in: x.clock_in, clock_out: x.clock_out,
+        b1s: x.break_start_1, b1e: x.break_end_1, b2s: x.break_start_2, b2e: x.break_end_2, break_minutes: x.break_minutes };
+      const reasons: { code: string; label: string }[] = [];
+      const todayJst = nowJst.toISOString().slice(0, 10);
+      if (!x.clock_out) {
+        // 勤務日の翌日以降（＝毎朝 08:00 の実行時点で前日の勤務が開いたまま）なら退勤打刻なし
+        if (String(r.work_date) < todayJst) reasons.push({ code: "no_clock_out", label: "退勤打刻なし" });
+      } else {
+        const span = (new Date(x.clock_out).getTime() - new Date(x.clock_in).getTime()) / 60000;
+        const net = x.break_minutes != null ? span - Number(x.break_minutes) : mins;   // 休憩除く
+        if (span > EXTREME_MINUTES) reasons.push({ code: "extreme", label: "24時間超え（要確認）" });
+        else if (net >= LONG_MINUTES) reasons.push({ code: "long", label: `12時間以上の勤務（休憩除く ${fmtHM(Math.round(net))}）` });
+        if (mins <= SHORT_MINUTES) reasons.push({ code: "short", label: "短すぎる勤務（1時間以内）" });
+        const co = jstParts(x.clock_out);
+        if (co && co.date > String(r.work_date) && Number(co.hm.slice(0, 2)) >= LATE_LEAVE_HOUR) reasons.push({ code: "late_leave", label: `翌朝 ${LATE_LEAVE_HOUR} 時以降の退勤（${co.hm}）` });
+      }
+      const breakOpen = (x.break_start_1 && !x.break_end_1) || (x.break_start_2 && !x.break_end_2);
+      if (breakOpen) reasons.push({ code: "break_long", label: "休憩の終了打刻なし" });
+      else if (x.break_minutes != null && Number(x.break_minutes) > BREAK_LONG_MINUTES) reasons.push({ code: "break_long", label: `休憩が長すぎる（${fmtHM(Number(x.break_minutes))}）` });
+      if (reasons.length) {
+        anomalies.push({ ...base, kind: reasons.map((q) => q.label).join("・"), kind_code: reasons[0].code, reasons: reasons.map((q) => q.label) });
       }
     }
 
     let notified = null;
     if (anomalies.length && body.line !== false) {
       const lines = anomalies.map((a) =>
-        `${a.work_date} ${a.name}（${a.store}）: ${a.kind} ${fmtHM(a.worked_minutes)}`
+        `${a.work_date} ${a.name}（${a.store}）: ${a.kind}${a.worked_minutes == null ? "" : " " + fmtHM(a.worked_minutes)}`
       );
-      const text = `⚠️ 勤怠の異常値アラート（${dateFrom}〜${dateTo}）\n${anomalies.length}件見つかりました。打刻ミスの可能性があります。\n\n${lines.join("\n")}`;
+      const text = `⚠️ 勤怠の異常値アラート（${dateFrom}〜${dateTo}）\n${anomalies.length}件見つかりました。打刻ミスの可能性があります（Slack の勤怠確認にもボタン付きで届いています）。\n\n${lines.join("\n")}`;
       notified = await linePush(sb, text);
     }
 
