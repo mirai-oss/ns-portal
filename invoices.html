@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-11-07-v166";
+const BUILD_TAG="2026-11-07-v167";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -1370,8 +1370,8 @@ function ubdPanelHtml_(){
   const body=rows.map(r=>{ const x=B.res[r.id]; const st=x?(x.ok?'<span style="color:#15803d">✅ 解除できます</span>':`<span style="color:#b91c1c">❌ ${esc(x.err||"")}</span>`):"";
     return `<tr><td><input type="checkbox" class="ubd-chk" data-id="${esc(r.id)}" ${B.sel.has(r.id)?"checked":""}></td><td>${esc((r.vendor&&r.vendor.name)||r.vendor_name||"")}</td><td>${esc((r.target_year_month||"").slice(0,7))}</td><td style="text-align:right">${yen(r.amount)}</td><td>${esc(r.mf_journal_number??"")}</td><td style="font-size:12px">${st}</td></tr>`; }).join("");
   return `<div class="card" style="padding:12px;margin-bottom:10px">
-    <div style="font-weight:700;margin-bottom:6px">🗑 一括解除（MFの仕訳も削除）— インフォマート取込でMF登録済み ${rows.length}件</div>
-    <div style="font-size:12px;color:var(--muted);margin-bottom:6px">テスト登録の後始末用です。PL・広告費・精算書へ反映済みのもの、支払確認済みのものは出ません。</div>
+    <div style="font-weight:700;margin-bottom:6px">🗑 一括解除（MFの仕訳も削除）— 削除できる請求書 ${rows.length}件</div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:6px">インフォマート取込でMF登録済みの請求書 ${UNIFIED_STATE.rows.filter(r=>r.intake_source==="infomart"&&!!r.mf_journal_id).length}件のうち、削除できるものだけを出しています（PL・広告費・精算書へ反映済み、支払確認済みのものは対象外＝${UNIFIED_STATE.rows.filter(r=>r.intake_source==="infomart"&&!!r.mf_journal_id).length-rows.length}件）。テスト登録の後始末用です。</div>
     <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
       <button class="hq-btn" id="ubd-all">全部選ぶ／解除</button>
       <button class="hq-btn" id="ubd-dry">🔎 事前確認（削除しない）</button>
