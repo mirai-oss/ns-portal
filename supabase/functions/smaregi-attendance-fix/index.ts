@@ -10,7 +10,8 @@
 // 呼び出し: { alert_id } 認証は service_role（Authorization: Bearer）か x-notify-secret（slack-interact・手元の確認用）
 // 結果: 成功 → alerts.smaregi_sync_status='synced'・labor_cost_daily の手修正ロック解除（以後はスマレジが正）
 //       失敗 → 'failed'＋smaregi_error（Slack に表示し、手で直す）
-// デプロイ: supabase functions deploy smaregi-attendance-fix --project-ref uuvsxzhpxtghojoubjcc --yes
+// デプロイ: supabase functions deploy smaregi-attendance-fix --no-verify-jwt --project-ref uuvsxzhpxtghojoubjcc --yes
+//   （認証は関数内で行う。--no-verify-jwt が無いとゲートウェイが Authorization 無しの呼び出しを 401 にする＝2026-11-07 初回デプロイで確認）
 // =============================================================
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { getContractToken, API_BASE } from "../_shared/smaregi-contracts.ts";
@@ -66,8 +67,18 @@ Deno.serve(async (req) => {
   // 契約の特定: 従業員×契約リンクのうち、この行のスタッフIDと一致し勤務日に有効なもの
   const { data: links } = await sb.from("employee_smaregi_links").select("contract_id,smaregi_staff_id,effective_from,effective_to")
     .eq("user_id", a.user_id).eq("smaregi_staff_id", String(l.smaregi_staff_id));
-  const link = (links ?? []).find((x: any) => (!x.effective_from || x.effective_from <= a.work_date) && (!x.effective_to || x.effective_to >= a.work_date)) ?? (links ?? [])[0];
-  if (!link?.contract_id) return await fail("no_contract", "この従業員のスマレジ契約（employee_smaregi_links）が見つかりません");
+  const effective = (links ?? []).filter((x: any) => (!x.effective_from || x.effective_from <= a.work_date) && (!x.effective_to || x.effective_to >= a.work_date));
+  // 2 契約（トーホー sez093z1 / LiveGate sdm155v1）の切り分け: 店舗の契約（store_external_mappings の corporation_hint・勤務日時点）と一致するリンクを優先。
+  // 例: 黒霧屋 新横浜は 2026-11-01 から livegate。兼務者は両契約にリンクがあるため、店舗側で決める。
+  const { data: maps } = await sb.from("store_external_mappings").select("corporation_hint,effective_from,effective_to,is_active")
+    .eq("source_system", "smaregi_timecard").eq("store_id", a.store_id);
+  const storeHint = (maps ?? []).find((m: any) => m.is_active !== false && (!m.effective_from || m.effective_from <= a.work_date) && (!m.effective_to || m.effective_to >= a.work_date))?.corporation_hint ?? null;
+  const { data: contracts } = await sb.from("smaregi_contracts").select("contract_id,corporation_hint,is_default").eq("is_active", true);
+  const storeContract = storeHint
+    ? (contracts ?? []).find((c: any) => c.corporation_hint === storeHint)?.contract_id ?? null
+    : (contracts ?? []).find((c: any) => c.is_default)?.contract_id ?? null;
+  const link = effective.find((x: any) => storeContract && x.contract_id === storeContract) ?? (effective.length === 1 ? effective[0] : null);
+  if (!link?.contract_id) return await fail("no_contract", `この従業員のスマレジ契約を特定できません（店舗の契約=${storeContract ?? "不明"}・有効なリンク=${effective.map((x: any) => String(x.contract_id).slice(-3)).join("/") || "なし"}）`);
 
   let token: string;
   try { token = await getContractToken(link.contract_id, SCOPES); } catch (e) { return await fail("auth", "スマレジ認証に失敗: " + String(e).slice(0, 200)); }
