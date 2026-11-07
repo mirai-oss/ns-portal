@@ -55,6 +55,7 @@ async function resolveActor(sb: any, slackUserId: string): Promise<Actor | null>
 //   attendance.fix.modal       修正モーダルの送信              → RPC sf_attendance_fix_request → マスターへ承認依頼 DM
 //   attendance.fix.approve / .reject   マスターの承認 / 却下   → RPC sf_attendance_fix_decide（承認で labor_cost_daily / attendance_records に反映）
 //   attendance.change.ack      スマレジ側の直接修正の通知「○ 確認した」→ RPC sf_attendance_change_ack
+//   attendance.request.approve / .reject   フォーム申請（勤怠追加・修正）の承認 / 却下 → RPC sf_attendance_request_decide → EF smaregi-attendance-fix(request_id)
 //   invoice.approval.approve / .fix / .hold      （将来）
 //   cash.diff.confirm / .fix                      （将来）
 //   shift.missing.remind / .extend                （将来）
@@ -136,6 +137,9 @@ const handlers: Record<string, Handler> = {
   // マスターの承認 / 却下
   "attendance.fix.approve": (ctx) => attendanceDecide(ctx, true),
   "attendance.fix.reject": (ctx) => attendanceDecide(ctx, false),
+  // フォーム申請（勤怠追加・修正）の承認 / 却下（2026-11-07）
+  "attendance.request.approve": (ctx) => requestDecide(ctx, true),
+  "attendance.request.reject": (ctx) => requestDecide(ctx, false),
   // Claude セッションの判断依頼（2026-11-07）。action_id は 'decision.request.<選択肢key>' で前方一致（下の入口で振り分け）。
   // 権限・状態（先に誰かが答えた/期限切れ/取消）・選択肢の検査と更新は RPC 側。ここは結果をメッセージに反映するだけ。
   "decision.request.*": async ({ sb, actor, payload, value, notificationId }) => {
@@ -226,17 +230,43 @@ async function attendanceDecide({ sb, actor, payload, value }: Ctx, approve: boo
   waitUntil(after);
   return text("");
 }
+// フォーム申請の承認 / 却下。承認: RPC がハブに反映 → EF smaregi-attendance-fix（request_id）でスマレジへ（修正=PUT・追加=POST）
+async function requestDecide({ sb, actor, payload, value }: Ctx, approve: boolean) {
+  const ru: string | undefined = payload.response_url;
+  const { data, error } = await sb.rpc("sf_attendance_request_decide", { p_request_id: value?.request_id, p_actor: actor.user_id, p_approve: approve, p_note: null, p_via: "slack" });
+  if (error) return ephemeral(`記録できませんでした: ${error.message}`, ru);
+  if (!data?.ok) return ephemeral(data?.message ?? "記録できませんでした", ru);
+  const when = nowJst();
+  const kindLabel = data.kind === "add" ? "勤怠追加" : "勤怠修正";
+  if (!approve) {
+    await updateMany(data.approval_notification_ids, `❌ 却下しました（${actor.name}・${when}）\n${data.summary}\n申請: ${data.requested_by_name}　理由: ${data.reason}`);
+    await updateMany(data.notice_notification_ids, `❌ ${kindLabel}の申請は却下されました（${actor.name}・${when}）\n${data.summary}\n申請: ${data.requested_by_name}`);
+    return text("");
+  }
+  const head = `✅ 承認しました（${actor.name}・${when}）\n${data.summary}\n申請: ${data.requested_by_name}　理由: ${data.reason}\n管理システムに反映済み。`;
+  const headN = `✅ ${kindLabel}が承認され、管理システムに反映されました（${when}）\n${data.summary}\n申請: ${data.requested_by_name}\n`;
+  const after = (async () => {
+    await updateMany(data.approval_notification_ids, head + "スマレジへ反映中…");
+    await updateMany(data.notice_notification_ids, headN + "スマレジへ反映中…");
+    const r = await smaregiFix(data.request_id, "request_id");
+    const tail = r.ok ? "✅ スマレジの勤務実績にも反映済み" : `⚠️ スマレジへの反映に失敗: ${r.error ?? "不明"}\nスマレジの管理画面から直してください（管理システム側は反映済み・ロック中）`;
+    await updateMany(data.approval_notification_ids, head + tail);
+    await updateMany(data.notice_notification_ids, headN + tail);
+  })();
+  waitUntil(after);
+  return text("");
+}
 declare const EdgeRuntime: { waitUntil(p: Promise<unknown>): void } | undefined;
 function waitUntil(p: Promise<unknown>) {
   try { if (typeof EdgeRuntime !== "undefined" && EdgeRuntime?.waitUntil) { EdgeRuntime.waitUntil(p); return; } } catch (_) { /* fallthrough */ }
   p.catch(() => {});
 }
-async function smaregiFix(alertId: string): Promise<{ ok: boolean; error?: string }> {
+async function smaregiFix(id: string, field: "alert_id" | "request_id" = "alert_id"): Promise<{ ok: boolean; error?: string }> {
   try {
     const key = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
     const res = await fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/smaregi-attendance-fix`, {
       method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}`, apikey: key },
-      body: JSON.stringify({ alert_id: alertId }),
+      body: JSON.stringify({ [field]: id }),
     });
     const j = await res.json().catch(() => null);
     return { ok: !!j?.ok, error: j?.error ?? (res.ok ? undefined : `HTTP ${res.status}`) };

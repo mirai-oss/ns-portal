@@ -1222,6 +1222,9 @@ const TOP_ITEMS=[
 // そのアカウント自身の承認待ち件数になる（ログイン中ユーザー基準で都度計算するため）
 const SHINSEI_GROUP={cap:"申請",ico:"🔁", section:"genba", items:[
   {key:"expenses",sysKey:"expenses",ico:"🧾",label:"経費申請",url:"expenses.html",countKey:"expense"},
+  // 2026-11-07 勤怠の追加・修正申請（店長が申請→マスターが Slack で承認→スマレジと管理システムに反映）。
+  // 申請できる人は kintai.html 側（RPC）で判定するため、ここでは出し分けしない
+  {key:"kintai",ico:"⏰",label:"勤怠の追加・修正",url:"kintai.html"},
   // sysKeyは設定しない（notice等と同じ「sysKeyなし＝全員に見える」パターン。
   // アルバイトも含め全従業員が使える機能のため）
   {key:"myrequests-personal",ico:"📋",label:"個人情報変更",url:"requests.html?tab=personal",countKey:"profileApproval"},

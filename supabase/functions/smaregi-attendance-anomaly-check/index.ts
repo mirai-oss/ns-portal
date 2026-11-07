@@ -135,7 +135,7 @@ async function slackAlert(sb: any, a: any) {
           value: v({ in: ci?.unix ?? null, out: co?.unix ?? null, title: `${title}　${a.name}`,
             b1s: jstParts(a.b1s)?.unix ?? null, b1e: jstParts(a.b1e)?.unix ?? null, b2s: jstParts(a.b2s)?.unix ?? null, b2e: jstParts(a.b2e)?.unix ?? null }) },
       ] },
-      { type: "context", elements: [{ type: "mrkdwn", text: `確認 \`${alert.id.slice(0, 8)}\`・修正はマスターの承認後に管理システムへ反映（スマレジ側の打刻は別途修正）` }] },
+      { type: "context", elements: [{ type: "mrkdwn", text: `確認 \`${alert.id.slice(0, 8)}\`・修正はマスターの承認後に管理システムとスマレジへ反映。別の日や打刻が無い日の申請は <https://mirai-oss.github.io/ns-portal/kintai.html|勤怠の追加・修正フォーム>` }] },
     ];
     const r = await notifySlack({
       action: "send", notification_id: nid, channel_key: ch, text: `⚠️ 勤怠確認 ${title} ${a.name} ${a.kind}`, blocks,
