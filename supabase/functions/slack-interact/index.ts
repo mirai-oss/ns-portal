@@ -1,6 +1,7 @@
 // =============================================================
 // slack-interact — Slack からのボタン押下・モーダル送信を受ける Edge Function（骨組み・2026-10-29）
-// 状態: ★ 未デプロイ ★（Phase 3 で実装完了。設計: docs/設計書_Slack通知基盤_Phase1_2026-10-29.md §10）
+// 状態: ★ 未デプロイ ★（設計: docs/設計書_Slack通知基盤_Phase1_2026-10-29.md §10）
+// 2026-11-07: Claude セッションの判断依頼（decision.request.<選択肢key>）を追加。勤怠（attendance.*）は骨組みのまま（RPC 未作成）。
 //
 // 鉄則（ユーザー確定・2026-10-29）: Slack から DB を直接更新しない。必ず
 //   Slack interaction → この関数 → 署名検証 → 操作者の特定(user_slack) → 権限確認(既存RBAC)
@@ -53,6 +54,8 @@ async function resolveActor(sb: any, slackUserId: string): Promise<Actor | null>
 //   cash.diff.confirm / .fix                      （将来）
 //   shift.missing.remind / .extend                （将来）
 //   hqtask.item.done / .extend                    （将来）
+//   decision.request.<選択肢key>  Claude セッションの判断依頼（2026-11-07）→ RPC decision_request_answer
+//                                 value = {"request_id","notification_id","key"}。選択肢 key は ^[a-z0-9_]{1,32}$
 type Handler = (ctx: Ctx) => Promise<Response>;
 type Ctx = { sb: any; payload: any; actor: Actor; notificationId: string | null; value: any };
 
@@ -81,10 +84,33 @@ const handlers: Record<string, Handler> = {
     await updateMessage(notificationId, data?.applied ? `✅ 修正済み（${actor.name}・${start}〜${end}）` : `📝 修正申請を受け付けました（${actor.name}）`);
     return json({ response_action: "clear" });
   },
+  // Claude セッションの判断依頼（2026-11-07）。action_id は 'decision.request.<選択肢key>' で前方一致（下の入口で振り分け）。
+  // 権限・状態（先に誰かが答えた/期限切れ/取消）・選択肢の検査と更新は RPC 側。ここは結果をメッセージに反映するだけ。
+  "decision.request.*": async ({ sb, actor, payload, value, notificationId }) => {
+    const actionId: string = payload.actions?.[0]?.action_id ?? "";
+    const key = actionId.slice("decision.request.".length);
+    const requestId = value?.request_id;
+    const ru: string | undefined = payload.response_url;
+    if (!requestId || !/^[a-z0-9_]{1,32}$/.test(key)) return ephemeral("この判断依頼のボタンは読めませんでした", ru);
+    const { data, error } = await sb.rpc("decision_request_answer", { p_request_id: requestId, p_answer: key, p_actor: actor.user_id, p_via: "slack" });
+    if (error) return ephemeral(`記録できませんでした: ${error.message}`, ru);
+    if (!data?.ok) return ephemeral(data?.message ?? "記録できませんでした", ru);
+    const when = new Date().toLocaleString("ja-JP", { timeZone: "Asia/Tokyo", hour12: false });
+    await updateMessage(notificationId ?? data.notification_id ?? null,
+      `✅ ${actor.name} が「${data.label}」を選択しました（${when}）\n> ${String(data.question ?? "").replace(/\n/g, "\n> ")}`);
+    return text("");
+  },
 };
 
 // ---- 4. Slack 応答のヘルパー ----
-function ephemeral(msg: string) { return json({ response_type: "ephemeral", replace_original: false, text: msg }); }
+// ボタン押下（block_actions）への HTTP 応答本文は Slack に無視されるため、response_url があればそこへ送る（本人だけに見える）。
+function ephemeral(msg: string, responseUrl?: string) {
+  if (responseUrl) {
+    fetch(responseUrl, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ response_type: "ephemeral", replace_original: false, text: msg }) }).catch(() => {});
+    return text("");
+  }
+  return json({ response_type: "ephemeral", replace_original: false, text: msg });
+}
 async function openModal(triggerId: string, view: unknown) {
   const token = Deno.env.get("SLACK_BOT_TOKEN"); // 注: views.open だけは Bot Token が要る。notify-slack 経由にするか Phase 3 で決める
   await fetch("https://slack.com/api/views.open", {
@@ -125,7 +151,7 @@ Deno.serve(async (req) => {
   const payload = JSON.parse(new URLSearchParams(raw).get("payload") ?? "{}");
   const sb = svc();
   const actor = await resolveActor(sb, payload.user?.id ?? "");
-  if (!actor) return ephemeral("あなたの Slack アカウントは管理システムに紐付いていません。本部に連絡してください。");
+  if (!actor) return ephemeral("あなたの Slack アカウントは管理システムに紐付いていません。本部に連絡してください。", payload.response_url);
 
   let key = "", value: any = null;
   if (payload.type === "block_actions") {
@@ -144,11 +170,11 @@ Deno.serve(async (req) => {
     action_state: { last_action: key, by: actor.user_id, at: new Date().toISOString() }, updated_at: new Date().toISOString(),
   }).eq("id", notificationId ?? "00000000-0000-0000-0000-000000000000");
 
-  const h = handlers[key];
-  if (!h) return ephemeral(`この操作（${key}）はまだ対応していません`);
+  const h = handlers[key] ?? (key.startsWith("decision.request.") ? handlers["decision.request.*"] : undefined);
+  if (!h) return ephemeral(`この操作（${key}）はまだ対応していません`, payload.response_url);
   try {
     return await h({ sb, payload, actor, notificationId, value });
   } catch (e) {
-    return ephemeral("処理に失敗しました: " + String(e).slice(0, 200));
+    return ephemeral("処理に失敗しました: " + String(e).slice(0, 200), payload.response_url);
   }
 });
