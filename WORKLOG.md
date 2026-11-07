@@ -2,6 +2,14 @@
 
 このファイル（`ns-portal/WORKLOG.md`）が**プロジェクト全体（ns-portal・nippo・tori-dashboard・seisan-dashboard・ns-info-system横断）の唯一の正**。作業内容はここに時系列で追記し続ける。新しいスレッド・別のPCで作業を始めるときは、まず下の「📍現在の状況」とこの下の最新エントリを読むこと。詳細な引継ぎ書・実装指示書（`docs/`配下）を作る場合も、存在と要点は必ずここに一行追記してリンクする（WORKLOGを見ればどこに何があるか分かる状態を保つ）。
 
+
+---
+
+**2026-11-07（このスレッド）インフォマート取込は納品書を求めない／一覧に「🏪 Infomart」バッジ（invoices.html v166）**:
+- ユーザー判断: インフォマートとして認識されていれば納品書は不要。日次取込と請求書の仕入高の照合（siire_adjust_preview: infomart・MF登録済み・仕入高・店舗確定の行）に入っていればよく、請求書が全て揃った時点でPLを置き換える。
+- 変更: invoice-check（infomart取込は「必要な証憑」を判定しない）・invoice-journal-draft（infomart取込は納品書の注意文を出さない）。**⚠️Edge Function 2本の本番デプロイは未実施**（自動モードの安全判定で止まったためユーザー確認待ち。`npx supabase functions deploy invoice-check invoice-journal-draft --project-ref uuvsxzhpxtghojoubjcc --yes`）。デプロイ前は、納品書が必要な取引先（プレコフーズ）の11月分が再び要確認に入る。
+- プレコフーズ10月分: 納品書の注意文と判定項目を除去済み（データ修正）。ns-daily-import 側の納品書自動取得は既定停止（DELIVERY_NOTE_FETCH=1 で再開）。
+
 ---
 
 **2026-11-07（このスレッド）プレコフーズの請求書が「PL対象外→振込待ち」に進んだ不具合を修正（invoices.html v165）**:
