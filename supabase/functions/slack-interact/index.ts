@@ -3,6 +3,7 @@
 // 状態: ★ 未デプロイ ★（設計: docs/設計書_Slack通知基盤_Phase1_2026-10-29.md §10）
 // 2026-11-07: Claude セッションの判断依頼（decision.request.<選択肢key>）を追加。
 // 2026-11-07: 勤怠確認ボタン（attendance.alert.confirm / .fix → モーダル attendance.fix.modal → マスター承認 attendance.fix.approve / .reject）を本実装。
+//   承認後は EF smaregi-attendance-fix でスマレジの勤務実績にも書き戻す（EdgeRuntime.waitUntil で 3 秒制限の外）。
 //   フロー（ユーザー決定）: 店長が ○ or ×（修正時刻・理由）→ マスターの Slack へ承認依頼 → 承認で RPC が labor_cost_daily / attendance_records に反映。
 //
 // 鉄則（ユーザー確定・2026-10-29）: Slack から DB を直接更新しない。必ず
@@ -180,13 +181,40 @@ async function attendanceDecide({ sb, actor, payload, value }: Ctx, approve: boo
   if (error) return ephemeral(`記録できませんでした: ${error.message}`, ru);
   if (!data?.ok) return ephemeral(data?.message ?? "記録できませんでした", ru);
   const when = nowJst();
-  await updateMany(data.approval_notification_ids, approve
-    ? `✅ 承認しました（${actor.name}・${when}）\n${data.summary}\n→ 修正後 ${data.proposed}（理由: ${data.reason}）\n管理システムの勤怠実績に反映済み。スマレジ側の打刻も直してください`
-    : `❌ 却下しました（${actor.name}・${when}）\n${data.summary}\n→ 申請 ${data.proposed}（理由: ${data.reason}）`);
-  await updateMany(data.notification_ids, approve
-    ? `✅ 修正が承認され、管理システムに反映されました（${when}）\n${data.summary}\n→ 修正後 ${data.proposed}`
-    : `❌ 修正申請は却下されました（${actor.name}・${when}）\n${data.summary}\n→ 申請 ${data.proposed}`);
+  if (!approve) {
+    await updateMany(data.approval_notification_ids, `❌ 却下しました（${actor.name}・${when}）\n${data.summary}\n→ 申請 ${data.proposed}（理由: ${data.reason}）`);
+    await updateMany(data.notification_ids, `❌ 修正申請は却下されました（${actor.name}・${when}）\n${data.summary}\n→ 申請 ${data.proposed}`);
+    return text("");
+  }
+  // 承認: ハブは RPC で反映済み。スマレジへの書き戻し（EF smaregi-attendance-fix・数秒かかる）は Slack の 3 秒制限の外で行う
+  const head = `✅ 承認しました（${actor.name}・${when}）\n${data.summary}\n→ 修正後 ${data.proposed}（理由: ${data.reason}）\n管理システムに反映済み。`;
+  const headMgr = `✅ 修正が承認され、管理システムに反映されました（${when}）\n${data.summary}\n→ 修正後 ${data.proposed}\n`;
+  const after = (async () => {
+    await updateMany(data.approval_notification_ids, head + "スマレジへ反映中…");
+    await updateMany(data.notification_ids, headMgr + "スマレジへ反映中…");
+    const r = await smaregiFix(data.alert_id);
+    const tail = r.ok ? "✅ スマレジの勤務実績にも反映済み" : `⚠️ スマレジへの反映に失敗: ${r.error ?? "不明"}\nスマレジの管理画面から直してください（管理システム側は反映済み・ロック中）`;
+    await updateMany(data.approval_notification_ids, head + tail);
+    await updateMany(data.notification_ids, headMgr + tail);
+  })();
+  waitUntil(after);
   return text("");
+}
+declare const EdgeRuntime: { waitUntil(p: Promise<unknown>): void } | undefined;
+function waitUntil(p: Promise<unknown>) {
+  try { if (typeof EdgeRuntime !== "undefined" && EdgeRuntime?.waitUntil) { EdgeRuntime.waitUntil(p); return; } } catch (_) { /* fallthrough */ }
+  p.catch(() => {});
+}
+async function smaregiFix(alertId: string): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const key = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
+    const res = await fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/smaregi-attendance-fix`, {
+      method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}`, apikey: key },
+      body: JSON.stringify({ alert_id: alertId }),
+    });
+    const j = await res.json().catch(() => null);
+    return { ok: !!j?.ok, error: j?.error ?? (res.ok ? undefined : `HTTP ${res.status}`) };
+  } catch (e) { return { ok: false, error: String(e).slice(0, 200) }; }
 }
 function nowJst() { return new Date().toLocaleString("ja-JP", { timeZone: "Asia/Tokyo", hour12: false }); }
 async function updateMany(ids: unknown, newText: string) {
