@@ -22,6 +22,7 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { loadContracts, getContractToken, loadLinks, loadStoreMap, API_BASE } from "../_shared/smaregi-contracts.ts";
 
+// 2026-11-07: 休憩（breakStartTime1〜breakEndTime2）を labor_cost_daily の break_* 列へ。取込・判定ロジックは無変更（列の追加のみ）。
 // 2026-10-17 担当D: 複数契約対応。契約（smaregi_contracts）ごとにループし、従業員×契約リンクのスタッフIDと
 // 契約ごとの店舗対応（store_external_mappings）で勤怠を取り込む（契約が違えば同じ番号の事業所IDが別店舗を指すため）。
 const SCOPES = "timecard.shifts:read timecard.shifts:write";
@@ -68,10 +69,24 @@ async function fetchMonthResults(token: string, contract: string, staffId: strin
         earlyLeaving: rec.earlyLeavingFlag === "1",
         dutyMinute: rec.dutyMinute ?? null,
         personnelExpenses: entry?.personnelExpenses ? Number(entry.personnelExpenses) : null,
+        // 2026-11-07 休憩（ユーザー指示「休憩時間も取得」。Slack 勤怠確認の表示・修正・書き戻しに使う）
+        breakStart1: rec.breakStartTime1 || null, breakEnd1: rec.breakEndTime1 || null,
+        breakStart2: rec.breakStartTime2 || null, breakEnd2: rec.breakEndTime2 || null,
       });
     }
   }
   return out;
+}
+
+// 休憩合計（分）。開始・終了がそろった休憩だけ数える（2026-11-07）
+function breakMinutes(r: any): number | null {
+  let total = 0, any = false;
+  for (const [s, e] of [[r.breakStart1, r.breakEnd1], [r.breakStart2, r.breakEnd2]]) {
+    if (!s || !e) continue;
+    const m = (new Date(e).getTime() - new Date(s).getTime()) / 60000;
+    if (Number.isFinite(m) && m > 0) { total += m; any = true; }
+  }
+  return any ? Math.round(total) : (r.breakStart1 || r.breakStart2 ? null : 0);
 }
 
 Deno.serve(async (req) => {
@@ -184,6 +199,8 @@ Deno.serve(async (req) => {
               smaregi_shift_result_id: shiftKey,
               smaregi_staff_id: p.smaregi_staff_id,
               source: "smaregi",
+              break_start_1: r.breakStart1, break_end_1: r.breakEnd1, break_start_2: r.breakStart2, break_end_2: r.breakEnd2,
+              break_minutes: breakMinutes(r),
               updated_at: new Date().toISOString(),
             }, { onConflict: "smaregi_shift_result_id" });
             if (lcErr) { errors.push(`labor_cost_daily upsert失敗 (${r.shiftResultId}): ${lcErr.message}`); continue; }

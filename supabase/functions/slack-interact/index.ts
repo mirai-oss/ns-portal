@@ -4,6 +4,7 @@
 // 2026-11-07: Claude セッションの判断依頼（decision.request.<選択肢key>）を追加。
 // 2026-11-07: 勤怠確認ボタン（attendance.alert.confirm / .fix → モーダル attendance.fix.modal → マスター承認 attendance.fix.approve / .reject）を本実装。
 //   承認後は EF smaregi-attendance-fix でスマレジの勤務実績にも書き戻す（EdgeRuntime.waitUntil で 3 秒制限の外）。
+//   2026-11-07: モーダルに休憩1・2（開始/終了）と「休憩なし」チェックを追加。RPC sf_attendance_fix_request に休憩 4 引数。
 //   フロー（ユーザー決定）: 店長が ○ or ×（修正時刻・理由）→ マスターの Slack へ承認依頼 → 承認で RPC が labor_cost_daily / attendance_records に反映。
 //
 // 鉄則（ユーザー確定・2026-10-29）: Slack から DB を直接更新しない。必ず
@@ -82,13 +83,20 @@ const handlers: Record<string, Handler> = {
     const v = payload.view?.state?.values ?? {};
     const start = v.start?.start?.selected_date_time, end = v.end?.end?.selected_date_time, reason = (v.reason?.reason?.value ?? "").trim();
     if (!start || !end || !reason) return json({ response_action: "errors", errors: { reason: "出勤・退勤・理由をすべて入れてください" } });
+    // 休憩: 「休憩なし」にチェックがあれば全部 null。無ければ入力された休憩（datetimepicker は消せないため、消したいときはチェックで）
+    const noBreak = (v.nobreak?.nobreak?.selected_options ?? []).length > 0;
+    const pick = (b: string) => noBreak ? null : (v[b]?.[b]?.selected_date_time ? new Date(Number(v[b][b].selected_date_time) * 1000).toISOString() : null);
     const { data, error } = await sb.rpc("sf_attendance_fix_request", {
       p_alert_id: meta.alert_id, p_actor: actor.user_id,
       p_clock_in: new Date(Number(start) * 1000).toISOString(), p_clock_out: new Date(Number(end) * 1000).toISOString(),
       p_reason: reason, p_via: "slack",
+      p_break_start_1: pick("b1s"), p_break_end_1: pick("b1e"), p_break_start_2: pick("b2s"), p_break_end_2: pick("b2e"),
     });
     if (error) return json({ response_action: "errors", errors: { reason: error.message } });
-    if (!data?.ok) return json({ response_action: "errors", errors: { [data?.code === "invalid_time" ? "end" : "reason"]: data?.message ?? "申請できませんでした" } });
+    if (!data?.ok) {
+      const block = data?.code === "invalid_time" ? "end" : data?.code === "invalid_break" ? "b1e" : "reason";
+      return json({ response_action: "errors", errors: { [block]: data?.message ?? "申請できませんでした" } });
+    }
     await updateMany(data.notification_ids, `📝 修正を申請しました（${actor.name}・${nowJst()}）\n${data.summary}\n→ 修正後 ${data.proposed}　理由: ${data.reason}\n承認待ち（マスター）`);
     // マスターへ承認依頼（user_slack 紐付けのあるマスターの DM。居なければ hq.keiri_kanshi）
     const channels = await masterChannels(sb);
@@ -171,6 +179,14 @@ function attendanceFixModal(value: any, notificationId: string | null) {
       { type: "section", text: { type: "mrkdwn", text: `*${value?.title ?? ""}*\n正しい出勤・退勤の日時と理由を入れてください。マスターの承認後に管理システムへ反映されます。` } },
       { type: "input", block_id: "start", label: { type: "plain_text", text: "正しい出勤（日時）" }, element: { type: "datetimepicker", action_id: "start", initial_date_time: Number(value?.in) || now } },
       { type: "input", block_id: "end", label: { type: "plain_text", text: "正しい退勤（日時）" }, element: { type: "datetimepicker", action_id: "end", initial_date_time: Number(value?.out) || now } },
+      { type: "divider" },
+      { type: "section", text: { type: "mrkdwn", text: "*休憩*（任意。入れた休憩がそのまま記録されます。休憩を無しにするときは下にチェック）" } },
+      { type: "input", optional: true, block_id: "b1s", label: { type: "plain_text", text: "休憩1 開始" }, element: { type: "datetimepicker", action_id: "b1s", ...(value?.b1s ? { initial_date_time: Number(value.b1s) } : {}) } },
+      { type: "input", optional: true, block_id: "b1e", label: { type: "plain_text", text: "休憩1 終了" }, element: { type: "datetimepicker", action_id: "b1e", ...(value?.b1e ? { initial_date_time: Number(value.b1e) } : {}) } },
+      { type: "input", optional: true, block_id: "b2s", label: { type: "plain_text", text: "休憩2 開始" }, element: { type: "datetimepicker", action_id: "b2s", ...(value?.b2s ? { initial_date_time: Number(value.b2s) } : {}) } },
+      { type: "input", optional: true, block_id: "b2e", label: { type: "plain_text", text: "休憩2 終了" }, element: { type: "datetimepicker", action_id: "b2e", ...(value?.b2e ? { initial_date_time: Number(value.b2e) } : {}) } },
+      { type: "input", optional: true, block_id: "nobreak", label: { type: "plain_text", text: "休憩の扱い" }, element: { type: "checkboxes", action_id: "nobreak", options: [{ text: { type: "plain_text", text: "この勤務は休憩なしにする（上の休憩欄は無視）" }, value: "none" }] } },
+      { type: "divider" },
       { type: "input", block_id: "reason", label: { type: "plain_text", text: "修正理由" }, element: { type: "plain_text_input", action_id: "reason", multiline: true, max_length: 300, placeholder: { type: "plain_text", text: "例: 退勤の打刻忘れ" } } },
     ],
   };

@@ -85,7 +85,10 @@ function alertText(a: any) {
   const ci = jstParts(a.clock_in), co = jstParts(a.clock_out);
   const outTxt = co ? ((co.date > a.work_date ? "翌" : "") + co.hm) : "-";
   const title = `${m}/${d}（${wd}）　${a.store}`;
-  const line = `*${a.name}*　${ci?.hm ?? "-"}−${outTxt}（${fmtHM(a.worked_minutes)}）`;
+  const brk = (s: string | null, e: string | null) => (s && e) ? `${jstParts(s)!.hm}−${jstParts(e)!.hm}` : null;
+  const breaks = [brk(a.b1s, a.b1e), brk(a.b2s, a.b2e)].filter(Boolean);
+  const breakTxt = breaks.length ? `休憩 ${breaks.join("・")}` : "休憩なし";
+  const line = `*${a.name}*　${ci?.hm ?? "-"}−${outTxt}（${fmtHM(a.worked_minutes)}・${breakTxt}）`;
   return { title, line, ci, co };
 }
 // 勤怠確認の宛先: slack_channels の 'kintai.check'（ユーザー指定 2026-11-07・C0CFQLYUM1Q）。ID の変更は slack_channels を直すだけ
@@ -103,6 +106,7 @@ async function slackAlert(sb: any, a: any) {
   await sb.from("sf_attendance_alerts").upsert({
     labor_cost_daily_id: a.id, user_id: a.user_id, store_id: a.store_id, work_date: a.work_date,
     clock_in: a.clock_in, clock_out: a.clock_out, worked_minutes: a.worked_minutes, kind: a.kind_code,
+    break_start_1: a.b1s ?? null, break_end_1: a.b1e ?? null, break_start_2: a.b2s ?? null, break_end_2: a.b2e ?? null,
   }, { onConflict: "labor_cost_daily_id", ignoreDuplicates: true });
   const { data: alert } = await sb.from("sf_attendance_alerts").select("id,status,notification_ids").eq("labor_cost_daily_id", a.id).maybeSingle();
   if (!alert) return { labor_cost_daily_id: a.id, error: "alert row not found" };
@@ -120,7 +124,8 @@ async function slackAlert(sb: any, a: any) {
       { type: "actions", block_id: "attendance", elements: [
         { type: "button", style: "primary", text: { type: "plain_text", text: "○ 合っている", emoji: true }, action_id: "attendance.alert.confirm", value: v() },
         { type: "button", text: { type: "plain_text", text: "× 修正する", emoji: true }, action_id: "attendance.alert.fix",
-          value: v({ in: ci?.unix ?? null, out: co?.unix ?? null, title: `${title}　${a.name}` }) },
+          value: v({ in: ci?.unix ?? null, out: co?.unix ?? null, title: `${title}　${a.name}`,
+            b1s: jstParts(a.b1s)?.unix ?? null, b1e: jstParts(a.b1e)?.unix ?? null, b2s: jstParts(a.b2s)?.unix ?? null, b2e: jstParts(a.b2e)?.unix ?? null }) },
       ] },
       { type: "context", elements: [{ type: "mrkdwn", text: `確認 \`${alert.id.slice(0, 8)}\`・修正はマスターの承認後に管理システムへ反映（スマレジ側の打刻は別途修正）` }] },
     ];
@@ -169,7 +174,7 @@ Deno.serve(async (req) => {
     const dateTo = body.date_to || yesterday.toISOString().slice(0, 10);
 
     const { data: rows } = await sb.from("labor_cost_daily")
-      .select("id,user_id,store_id,work_date,clock_in,clock_out,worked_minutes,users(name),stores(name)")
+      .select("id,user_id,store_id,work_date,clock_in,clock_out,worked_minutes,break_start_1,break_end_1,break_start_2,break_end_2,break_minutes,users(name),stores(name)")
       .gte("work_date", dateFrom)
       .lte("work_date", dateTo)
       .not("clock_out", "is", null); // 退勤前(勤務中)のレコードは誤検知防止のため対象外
@@ -180,7 +185,8 @@ Deno.serve(async (req) => {
       const name = (r as any).users?.name ?? "(不明)";
       const store = (r as any).stores?.name ?? "(不明)";
       const base = { name, store, work_date: r.work_date, worked_minutes: mins,
-        id: (r as any).id, user_id: (r as any).user_id, store_id: (r as any).store_id, clock_in: (r as any).clock_in, clock_out: (r as any).clock_out };
+        id: (r as any).id, user_id: (r as any).user_id, store_id: (r as any).store_id, clock_in: (r as any).clock_in, clock_out: (r as any).clock_out,
+        b1s: (r as any).break_start_1, b1e: (r as any).break_end_1, b2s: (r as any).break_start_2, b2e: (r as any).break_end_2, break_minutes: (r as any).break_minutes };
       if (mins <= SHORT_MINUTES) {
         anomalies.push({ ...base, kind: "短すぎる勤務（1時間以内）", kind_code: "short" });
       } else if (mins > EXTREME_MINUTES) {
@@ -212,7 +218,7 @@ Deno.serve(async (req) => {
       dateFrom, dateTo,
       checked: (rows ?? []).length,
       anomalyCount: anomalies.length,
-      anomalies: anomalies.map(({ id: _i, user_id: _u, store_id: _s, clock_in: _ci, clock_out: _co, kind_code: _k, ...rest }) => rest),
+      anomalies: anomalies.map(({ id: _i, user_id: _u, store_id: _s, clock_in: _ci, clock_out: _co, kind_code: _k, b1s: _a, b1e: _b, b2s: _c, b2e: _d, ...rest }) => rest),
       notified,
       slack,
     });

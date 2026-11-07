@@ -5,7 +5,7 @@
 // スマレジ API: PUT /{contract_id}/timecard/shifts/{shift_result_id}
 //   body { shiftDate, division: "result", attendance, leaving, breakStartTime1.., tardyFlag, earlyLeavingFlag }
 //   scope: timecard.shifts:write（シフト同期と同じ。新規申請不要）。締め済み期間は 409。
-//   休憩・遅刻/早退フラグは現在の実績（GET …/shifts/staffs/{staff_id}/daily?division=result）から引き継ぐ（出勤・退勤だけを変える）。
+//   遅刻/早退フラグは現在の実績（GET …/shifts/staffs/{staff_id}/daily?division=result）から引き継ぐ。休憩は申請の値（無ければ null）。
 //
 // 呼び出し: { alert_id } 認証は service_role（Authorization: Bearer）か x-notify-secret（slack-interact・手元の確認用）
 // 結果: 成功 → alerts.smaregi_sync_status='synced'・labor_cost_daily の手修正ロック解除（以後はスマレジが正）
@@ -55,7 +55,7 @@ Deno.serve(async (req) => {
     return json({ ok: false, code, error, ...extra }, 200);
   };
 
-  const { data: a } = await sb.from("sf_attendance_alerts").select("id,status,user_id,store_id,work_date,labor_cost_daily_id,proposed_clock_in,proposed_clock_out,smaregi_sync_status").eq("id", alertId).maybeSingle();
+  const { data: a } = await sb.from("sf_attendance_alerts").select("id,status,user_id,store_id,work_date,labor_cost_daily_id,proposed_clock_in,proposed_clock_out,proposed_break_start_1,proposed_break_end_1,proposed_break_start_2,proposed_break_end_2,smaregi_sync_status").eq("id", alertId).maybeSingle();
   if (!a) return json({ ok: false, error: "アラートが見つかりません" }, 404);
   if (a.status !== "approved") return json({ ok: false, code: "not_approved", error: `承認済みではありません（${a.status}）` }, 409);
   if (a.smaregi_sync_status === "synced") return json({ ok: true, code: "already_synced" });
@@ -97,13 +97,13 @@ Deno.serve(async (req) => {
     }
   } catch (_) { /* 引き継ぎ情報が取れなくても出勤・退勤だけで更新する */ }
 
+  // 休憩は申請の値をそのまま送る（申請で休憩なしなら null で消す。2026-11-07 ユーザー指示「修正依頼に休憩も」）
+  const bk = (v: string | null) => (v ? jstIso(v) : null);
   const payload: Record<string, unknown> = {
     shiftDate: a.work_date, division: "result",
     attendance: jstIso(a.proposed_clock_in), leaving: jstIso(a.proposed_clock_out),
-    ...(cur?.breakStartTime1 ? { breakStartTime1: cur.breakStartTime1 } : {}),
-    ...(cur?.breakEndTime1 ? { breakEndTime1: cur.breakEndTime1 } : {}),
-    ...(cur?.breakStartTime2 ? { breakStartTime2: cur.breakStartTime2 } : {}),
-    ...(cur?.breakEndTime2 ? { breakEndTime2: cur.breakEndTime2 } : {}),
+    breakStartTime1: bk(a.proposed_break_start_1), breakEndTime1: bk(a.proposed_break_end_1),
+    breakStartTime2: bk(a.proposed_break_start_2), breakEndTime2: bk(a.proposed_break_end_2),
     ...(cur?.tardyFlag != null ? { tardyFlag: String(cur.tardyFlag) } : {}),
     ...(cur?.earlyLeavingFlag != null ? { earlyLeavingFlag: String(cur.earlyLeavingFlag) } : {}),
   };
