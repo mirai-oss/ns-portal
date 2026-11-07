@@ -1,7 +1,9 @@
 // =============================================================
 // slack-interact — Slack からのボタン押下・モーダル送信を受ける Edge Function（骨組み・2026-10-29）
 // 状態: ★ 未デプロイ ★（設計: docs/設計書_Slack通知基盤_Phase1_2026-10-29.md §10）
-// 2026-11-07: Claude セッションの判断依頼（decision.request.<選択肢key>）を追加。勤怠（attendance.*）は骨組みのまま（RPC 未作成）。
+// 2026-11-07: Claude セッションの判断依頼（decision.request.<選択肢key>）を追加。
+// 2026-11-07: 勤怠確認ボタン（attendance.alert.confirm / .fix → モーダル attendance.fix.modal → マスター承認 attendance.fix.approve / .reject）を本実装。
+//   フロー（ユーザー決定）: 店長が ○ or ×（修正時刻・理由）→ マスターの Slack へ承認依頼 → 承認で RPC が labor_cost_daily / attendance_records に反映。
 //
 // 鉄則（ユーザー確定・2026-10-29）: Slack から DB を直接更新しない。必ず
 //   Slack interaction → この関数 → 署名検証 → 操作者の特定(user_slack) → 権限確認(既存RBAC)
@@ -46,10 +48,10 @@ async function resolveActor(sb: any, slackUserId: string): Promise<Actor | null>
 }
 
 // ---- 3. action_id / callback_id の規約: '<領域>.<対象>.<操作>'（設計書§10-3）----
-//   attendance.alert.confirm   勤怠アラート「合っている」      → RPC sf_attendance_alert_confirm(p_alert_id)
-//   attendance.alert.fix       勤怠アラート「修正する」        → モーダル attendance.fix.modal を開く
-//   attendance.alert.open      「詳細を見る」(URLボタン・サーバー処理なし)
-//   attendance.fix.modal       修正モーダルの送信              → 既存の勤怠修正RPC/EF → スマレジ同期 → 監査ログ → メッセージ更新
+//   attendance.alert.confirm   勤怠確認「○ 合っている」        → RPC sf_attendance_alert_confirm(p_alert_id, p_actor)
+//   attendance.alert.fix       勤怠確認「× 修正する」          → モーダル attendance.fix.modal を開く（出勤・退勤 datetimepicker・理由）
+//   attendance.fix.modal       修正モーダルの送信              → RPC sf_attendance_fix_request → マスターへ承認依頼 DM
+//   attendance.fix.approve / .reject   マスターの承認 / 却下   → RPC sf_attendance_fix_decide（承認で labor_cost_daily / attendance_records に反映）
 //   invoice.approval.approve / .fix / .hold      （将来）
 //   cash.diff.confirm / .fix                      （将来）
 //   shift.missing.remind / .extend                （将来）
@@ -60,30 +62,61 @@ type Handler = (ctx: Ctx) => Promise<Response>;
 type Ctx = { sb: any; payload: any; actor: Actor; notificationId: string | null; value: any };
 
 const handlers: Record<string, Handler> = {
-  // 例: 勤怠アラート「合っている」。ここで DB を直接 update しない。RPC が権限確認と監査ログまで行う。
-  "attendance.alert.confirm": async ({ sb, actor, value, notificationId }) => {
-    const { error } = await sb.rpc("sf_attendance_alert_confirm", { p_alert_id: value?.alert_id, p_actor: actor.user_id, p_via: "slack" });
-    if (error) return ephemeral(`確認できませんでした: ${error.message}`);
-    await updateMessage(notificationId, `✅ 確認済み（${actor.name}）`);
+  // 勤怠確認「○ 合っている」。権限・状態は RPC 側。結果を店長向けメッセージ（複数可）に反映する。
+  "attendance.alert.confirm": async ({ sb, actor, payload, value }) => {
+    const ru: string | undefined = payload.response_url;
+    const { data, error } = await sb.rpc("sf_attendance_alert_confirm", { p_alert_id: value?.alert_id, p_actor: actor.user_id, p_via: "slack" });
+    if (error) return ephemeral(`記録できませんでした: ${error.message}`, ru);
+    if (!data?.ok) return ephemeral(data?.message ?? "記録できませんでした", ru);
+    await updateMany(data.notification_ids, `✅ 合っている（${actor.name}・${nowJst()}）\n${data.summary}`);
     return text("");
   },
+  // 勤怠確認「× 修正する」。trigger_id は 3 秒で失効するため、モーダルを最初に開く
   "attendance.alert.fix": async ({ payload, value, notificationId }) => {
-    // trigger_id は 3 秒で失効するため、モーダルは最初に開く
     return await openModal(payload.trigger_id, attendanceFixModal(value, notificationId));
   },
-  "attendance.fix.modal": async ({ sb, actor, payload, notificationId }) => {
+  // 修正モーダルの送信 → 修正申請（反映はしない）→ マスターへ承認依頼
+  "attendance.fix.modal": async ({ sb, actor, payload }) => {
     const meta = JSON.parse(payload.view?.private_metadata ?? "{}");
     const v = payload.view?.state?.values ?? {};
-    const start = v.start?.start?.selected_time, end = v.end?.end?.selected_time, reason = v.reason?.reason?.value;
+    const start = v.start?.start?.selected_date_time, end = v.end?.end?.selected_date_time, reason = (v.reason?.reason?.value ?? "").trim();
     if (!start || !end || !reason) return json({ response_action: "errors", errors: { reason: "出勤・退勤・理由をすべて入れてください" } });
-    // 既存の勤怠修正入口（本人=申請のみ／店長・本部=修正）。RPC 名は Phase 3 着手時に確定（設計書§10-5）
-    const { data, error } = await sb.rpc("sf_attendance_fix_from_slack", {
-      p_alert_id: meta.alert_id, p_actor: actor.user_id, p_start: start, p_end: end, p_reason: reason,
+    const { data, error } = await sb.rpc("sf_attendance_fix_request", {
+      p_alert_id: meta.alert_id, p_actor: actor.user_id,
+      p_clock_in: new Date(Number(start) * 1000).toISOString(), p_clock_out: new Date(Number(end) * 1000).toISOString(),
+      p_reason: reason, p_via: "slack",
     });
     if (error) return json({ response_action: "errors", errors: { reason: error.message } });
-    await updateMessage(notificationId, data?.applied ? `✅ 修正済み（${actor.name}・${start}〜${end}）` : `📝 修正申請を受け付けました（${actor.name}）`);
+    if (!data?.ok) return json({ response_action: "errors", errors: { [data?.code === "invalid_time" ? "end" : "reason"]: data?.message ?? "申請できませんでした" } });
+    await updateMany(data.notification_ids, `📝 修正を申請しました（${actor.name}・${nowJst()}）\n${data.summary}\n→ 修正後 ${data.proposed}　理由: ${data.reason}\n承認待ち（マスター）`);
+    // マスターへ承認依頼（user_slack 紐付けのあるマスターの DM。居なければ hq.keiri_kanshi）
+    const channels = await masterChannels(sb);
+    const ids: string[] = [];
+    for (const ch of channels) {
+      const nid = crypto.randomUUID();
+      const val = JSON.stringify({ alert_id: data.alert_id, notification_id: nid });
+      const r = await sendSlack({
+        action: "send", notification_id: nid, channel_key: ch, event: "attendance_fix_request", source: "ef:slack-interact",
+        text: `🙋 勤怠修正の承認依頼 ${data.summary} → ${data.proposed}`,
+        blocks: [
+          { type: "section", text: { type: "mrkdwn", text: `🙋 *勤怠修正の承認依頼*\n${data.summary}\n申請: ${actor.name}\n*修正後: ${data.proposed}*\n理由: ${data.reason}` } },
+          { type: "actions", block_id: "attendance_fix", elements: [
+            { type: "button", style: "primary", text: { type: "plain_text", text: "✅ 承認", emoji: true }, action_id: "attendance.fix.approve", value: val },
+            { type: "button", style: "danger", text: { type: "plain_text", text: "❌ 却下", emoji: true }, action_id: "attendance.fix.reject", value: val },
+          ] },
+          { type: "context", elements: [{ type: "mrkdwn", text: `確認 \`${String(data.alert_id).slice(0, 8)}\`・承認すると管理システムの勤怠実績に反映（スマレジ側の打刻は別途修正）` }] },
+        ],
+        dedupe_key: `attendance_fix:${data.alert_id}:${ch}`, ref: { table: "sf_attendance_alerts", id: data.alert_id }, username: "勤怠確認", icon_emoji: ":alarm_clock:",
+      });
+      if (r?.ok && r.notification_id) ids.push(r.notification_id);
+    }
+    // 承認メッセージの台帳 id を控える（状態ではなく連絡の記録。状態遷移は RPC のみ）
+    if (ids.length) await sb.from("sf_attendance_alerts").update({ approval_notification_ids: ids, updated_at: new Date().toISOString() }).eq("id", data.alert_id);
     return json({ response_action: "clear" });
   },
+  // マスターの承認 / 却下
+  "attendance.fix.approve": (ctx) => attendanceDecide(ctx, true),
+  "attendance.fix.reject": (ctx) => attendanceDecide(ctx, false),
   // Claude セッションの判断依頼（2026-11-07）。action_id は 'decision.request.<選択肢key>' で前方一致（下の入口で振り分け）。
   // 権限・状態（先に誰かが答えた/期限切れ/取消）・選択肢の検査と更新は RPC 側。ここは結果をメッセージに反映するだけ。
   "decision.request.*": async ({ sb, actor, payload, value, notificationId }) => {
@@ -112,7 +145,7 @@ function ephemeral(msg: string, responseUrl?: string) {
   return json({ response_type: "ephemeral", replace_original: false, text: msg });
 }
 async function openModal(triggerId: string, view: unknown) {
-  const token = Deno.env.get("SLACK_BOT_TOKEN"); // 注: views.open だけは Bot Token が要る。notify-slack 経由にするか Phase 3 で決める
+  const token = Deno.env.get("SLACK_BOT_TOKEN"); // views.open は Bot Token が要る。secrets はプロジェクト共通なので notify-slack と同じ値が入る（2026-11-07 確認）
   await fetch("https://slack.com/api/views.open", {
     method: "POST", headers: { "Content-Type": "application/json; charset=utf-8", Authorization: `Bearer ${token}` },
     body: JSON.stringify({ trigger_id: triggerId, view }),
@@ -128,17 +161,54 @@ async function updateMessage(notificationId: string | null, newText: string) {
   });
 }
 function attendanceFixModal(value: any, notificationId: string | null) {
+  const now = Math.floor(Date.now() / 1000);
   return {
     type: "modal", callback_id: "attendance.fix.modal",
     private_metadata: JSON.stringify({ alert_id: value?.alert_id, notification_id: notificationId }),
-    title: { type: "plain_text", text: "勤怠の修正" }, submit: { type: "plain_text", text: "送信" }, close: { type: "plain_text", text: "やめる" },
+    title: { type: "plain_text", text: "勤怠の修正" }, submit: { type: "plain_text", text: "承認を依頼" }, close: { type: "plain_text", text: "やめる" },
     blocks: [
-      { type: "section", text: { type: "mrkdwn", text: `*${value?.staff_name ?? ""}*　${value?.work_date ?? ""}\n予定 ${value?.planned ?? "-"}　実績 ${value?.actual ?? "-"}` } },
-      { type: "input", block_id: "start", label: { type: "plain_text", text: "正しい出勤時刻" }, element: { type: "timepicker", action_id: "start", initial_time: value?.actual_start ?? "17:00" } },
-      { type: "input", block_id: "end", label: { type: "plain_text", text: "正しい退勤時刻" }, element: { type: "timepicker", action_id: "end", initial_time: value?.actual_end ?? "23:00" } },
-      { type: "input", block_id: "reason", label: { type: "plain_text", text: "修正理由" }, element: { type: "plain_text_input", action_id: "reason", multiline: true, max_length: 300 } },
+      { type: "section", text: { type: "mrkdwn", text: `*${value?.title ?? ""}*\n正しい出勤・退勤の日時と理由を入れてください。マスターの承認後に管理システムへ反映されます。` } },
+      { type: "input", block_id: "start", label: { type: "plain_text", text: "正しい出勤（日時）" }, element: { type: "datetimepicker", action_id: "start", initial_date_time: Number(value?.in) || now } },
+      { type: "input", block_id: "end", label: { type: "plain_text", text: "正しい退勤（日時）" }, element: { type: "datetimepicker", action_id: "end", initial_date_time: Number(value?.out) || now } },
+      { type: "input", block_id: "reason", label: { type: "plain_text", text: "修正理由" }, element: { type: "plain_text_input", action_id: "reason", multiline: true, max_length: 300, placeholder: { type: "plain_text", text: "例: 退勤の打刻忘れ" } } },
     ],
   };
+}
+async function attendanceDecide({ sb, actor, payload, value }: Ctx, approve: boolean) {
+  const ru: string | undefined = payload.response_url;
+  const { data, error } = await sb.rpc("sf_attendance_fix_decide", { p_alert_id: value?.alert_id, p_actor: actor.user_id, p_approve: approve, p_note: null, p_via: "slack" });
+  if (error) return ephemeral(`記録できませんでした: ${error.message}`, ru);
+  if (!data?.ok) return ephemeral(data?.message ?? "記録できませんでした", ru);
+  const when = nowJst();
+  await updateMany(data.approval_notification_ids, approve
+    ? `✅ 承認しました（${actor.name}・${when}）\n${data.summary}\n→ 修正後 ${data.proposed}（理由: ${data.reason}）\n管理システムの勤怠実績に反映済み。スマレジ側の打刻も直してください`
+    : `❌ 却下しました（${actor.name}・${when}）\n${data.summary}\n→ 申請 ${data.proposed}（理由: ${data.reason}）`);
+  await updateMany(data.notification_ids, approve
+    ? `✅ 修正が承認され、管理システムに反映されました（${when}）\n${data.summary}\n→ 修正後 ${data.proposed}`
+    : `❌ 修正申請は却下されました（${actor.name}・${when}）\n${data.summary}\n→ 申請 ${data.proposed}`);
+  return text("");
+}
+function nowJst() { return new Date().toLocaleString("ja-JP", { timeZone: "Asia/Tokyo", hour12: false }); }
+async function updateMany(ids: unknown, newText: string) {
+  const list = Array.isArray(ids) ? ids.filter((x) => typeof x === "string") as string[] : [];
+  await Promise.all(list.map((id) => updateMessage(id, newText)));
+}
+async function sendSlack(body: Record<string, unknown>): Promise<any> {
+  const res = await fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/notify-slack`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-notify-secret": Deno.env.get("NOTIFY_SLACK_SECRET") ?? "", apikey: Deno.env.get("SUPABASE_ANON_KEY") ?? "" },
+    body: JSON.stringify(body),
+  });
+  return await res.json();
+}
+// 承認者＝マスター（is_master）。Slack 紐付けのある人の DM へ。居なければ hq.keiri_kanshi
+async function masterChannels(sb: any): Promise<string[]> {
+  const { data: masters } = await sb.from("users").select("id").eq("is_master", true).eq("is_active", true);
+  const ids = (masters ?? []).map((m: any) => m.id);
+  if (!ids.length) return ["hq.keiri_kanshi"];
+  const { data: linked } = await sb.from("user_slack").select("user_id").in("user_id", ids);
+  const out = (linked ?? []).map((r: any) => `user:${r.user_id}`);
+  return out.length ? out : ["hq.keiri_kanshi"];
 }
 
 // ---- 5. 入口 ----

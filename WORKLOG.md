@@ -26,6 +26,18 @@
 
 ---
 
+**2026-11-07（このスレッド・Slack 勤怠確認ボタン）店長が ○× → 修正申請 → マスター承認 → ハブの勤怠実績に反映（コード完成・dry-run/rollback 検証済み・SQL 適用と EF 2 本のデプロイはユーザー実行待ち）**:
+- ユーザー指示「勤怠のまるばつボタンも、この流れで進めて」＋勤怠確認チャンネル **C0CFQLYUM1Q**（店長が参加）。想定: 「11/6（金）鳥一代 本店 Aさん 10:00−翌10:00（24時間）→ ○ / ×→修正時間入力」→ 店長が修正を送る → 中山さんの Slack に承認 → 承認で反映。承認はマスターのみ。
+- 調査で確定: 勤怠アラートの表は無かった（anomaly-check は LINE 本文のみ）／`sf_attendance_correction_requests` は本人申請用（時刻列なし・スマレジ書換不可の前提）／**スマレジの打刻 API（timecard.attendances:write）は未申請**＝スマレジ側は直せない → 反映先はハブの `labor_cost_daily`＋`attendance_records`／同期ワークフローは**当月分を毎日再取込**（月初〜昨日）＋1〜10 日は前月も → 手修正が翌日に戻る → **手修正ロック**（BEFORE UPDATE トリガ）を追加／個人 DM は本番初使用で疎通 OK（D0CDJ49U3D2）／店長 TENCHO 3 人は Slack 未参加・TEAM 3 人は参加（user_stores で担当店舗あり）。
+- 成果物 `supabase/2026-11-07_sf_attendance_alerts.sql`（**未適用**・dry-run OK）: `slack_channels` に `kintai.check`=C0CFQLYUM1Q／表 `sf_attendance_alerts`（labor_cost_daily_id 一意・status open→confirmed / fix_requested→approved / rejected・notification_ids / approval_notification_ids・RLS 読み=本人 or sf_can_manage）／`labor_cost_daily` に `manual_fixed_at/by`・`manual_fix_alert_id`・`orig_clock_in/out/worked_minutes/smaregi_estimate_cost` 列＋トリガ `labor_cost_daily_keep_manual_fix`（manual_fixed_at を変えない更新＝同期の upsert では打刻・分・概算を OLD のまま守る。解除は NULL 更新）／`sf_can_manage_as(p_actor, store)`（sf_can_manage と同じ規則を p_actor で）／`sf_attendance_alert_summary`／RPC `sf_attendance_alert_confirm`・`sf_attendance_fix_request`（退勤>出勤・24h 以内・勤務日±1 日・理由 300 字）・`sf_attendance_fix_decide`（is_master のみ。承認で labor_cost_daily を更新＝orig_* 退避・概算は分に比例按分・ロック、attendance_records の clock_in/out も更新）。すべて service_role のみ実行可。**rollback 内で検証**: 他店 TENCHO の修正=forbidden／TEAM の ○=ok／2 回目=already／退勤<出勤=invalid_time／TEAM の申請=ok／TEAM の承認=forbidden／master 承認=ok（1440→720 分・概算 24000→12000）／同期を模した上書き後も 720 分・ロック維持。本番には何も残っていない。
+- EF `smaregi-attendance-anomaly-check`（本番 v を download → リポジトリと**無差分**を確認）: 判定・LINE は無変更。異常値ごとに `sf_attendance_alerts` へ upsert（重複送信なし）→ `kintai.check` へ Block Kit（○ 合っている=attendance.alert.confirm／× 修正する=attendance.alert.fix・value に alert_id/notification_id/in/out/title）→ notification_ids を記録。body `{slack:false}` / `{line:false}` で片方を止められる。型エラー 4 件は既存 LINE 部の型注釈（本番ソースでも同じ）。**未デプロイ**。
+- EF `slack-interact`（deno check OK・**未デプロイ v2**）: confirm → RPC → 店長向け全メッセージを「✅ 合っている」／fix → モーダル（datetimepicker 出勤・退勤＋理由。「承認を依頼」）／modal 送信 → RPC fix_request → 店長向けを「📝 修正を申請しました…承認待ち」＋マスター（is_master＆user_slack）の DM へ「🙋 承認依頼 [✅ 承認][❌ 却下]」（approval_notification_ids を記録）／approve・reject → RPC fix_decide → 両方のメッセージを更新。views.open の Bot Token は secrets がプロジェクト共通なので追加設定不要。
+- 手順書: [docs/手順書_Slack勤怠確認ボタン_2026-11-07.md](docs/手順書_Slack勤怠確認ボタン_2026-11-07.md)。テスト用スクリプト（scratchpad・使い捨て行 2020-01-01 中山/本店 24h を作って kintai.check へ送る／status／cleanup）はリポジトリ外。
+- **次（ユーザー）**: ①SQL 適用（自動実行は classifier に止められた）②勤怠確認チャンネルに Bot 招待（`/invite @nstyle-notify`。conversations.info が channel_not_found＝未参加）③EF 2 本デプロイ → ④テスト送信 → × → 承認 → 反映確認 → テスト行削除 0 件。
+- 残: LINE の異常値アラートとの並行停止判断／TENCHO 3 人の Slack 参加（参加すれば ○× を押せる。権限は RPC が判定）／承認の却下理由入力（今は無し）／nippo 側の修正申請一覧との連携。
+
+---
+
 **2026-11-07（このスレッド・Slack 判断依頼）Claude セッションが Slack のボタンでユーザーの判断を受け取る仕組み（コード完成・dry-run 済み・本番適用はユーザー承認待ち）**:
 - ユーザー要望（11/6）「結果を Slack に通知し、判断が必要なものは Slack の通知で指示できる状態にしてほしい。ボタンでも文章で選ぶでもいい」→ まずボタン。文章（スレッド返信を Events API で拾う）は Phase 2。
 - 調査で判明: `slack-interact` は**本番未デプロイ**（functions download が 404。復元 diff は不要＝初回デプロイ）／`user_slack` は **0 件**（notify-slack の users_sync は手元の鍵では 401）。手元で Slack users.list とハブ users.email を照合 → **4 人全員一致・不一致 0**／Secrets `SLACK_SIGNING_SECRET`・`SLACK_BOT_TOKEN`・`NOTIFY_SLACK_SECRET` は投入済み／manifest の Interactivity Request URL は slack-interact。
@@ -1077,6 +1089,8 @@
 - 入金タブをkd_deposit速報で即表示（v237）。PL速報(viewPLFast_)は既存。目標/広告/媒体/明細は確定データ(GAS)待ちのまま＝次はkd追加(F2・レーンP)待ち。社員人件費反映はユーザー確認済み。
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
+
+**★★★2026-11-07 13:10（Slack 勤怠確認ボタン）店長 ○× → 修正申請 → マスター承認 → ハブ反映: コード完成・SQL 適用と EF 2 本デプロイはユーザー実行待ち**: SQL `2026-11-07_sf_attendance_alerts.sql`（表・labor_cost_daily 手修正ロック・RPC 3 本・kintai.check=C0CFQLYUM1Q。rollback 内で全ケース検証済み）／EF `smaregi-attendance-anomaly-check`（本番と無差分確認済み→Slack 送信追加）・`slack-interact` v2（attendance.* 本実装）／手順書 `docs/手順書_Slack勤怠確認ボタン_2026-11-07.md`。**次=ユーザー**: SQL 適用 → Bot をチャンネルに招待 → デプロイ 2 本 → テスト（使い捨て行）。事実: スマレジ打刻 API は未申請＝反映はハブのみ・スマレジ側は手で直す。
 
 **★★★2026-11-07 12:20（Slack 判断依頼スレッド）Claude→Slack ボタン→ユーザー判断の仕組み: 本番稼働開始（SQL 適用・slack-interact v1・テスト押下 OK・テスト行削除済み 0 件）**（ns-portal `7ae5e2f`）: SQL `2026-11-07_decision_requests.sql`（表＋RPC `decision_request_answer`・rollback 内で動作検証済み）＋`2026-11-07_user_slack_seed.sql`（user_slack 0 件→4 人。メール一致確認済み）／EF `slack-interact` に `decision.request.*`（**本番未デプロイ＝初回デプロイ**。復元 diff 不要）／`scripts/decision_ask.py`・`decision_wait.py`／手順書 `docs/手順書_Slackで判断を受け取る_2026-11-07.md`。**ユーザー決定 11/7**: 答えられるのはマスター（中山さん）だけ・4 人の紐付けは特定用（権限なし）・勤怠は「店長=○×/修正申請 → マスター承認 → 反映」の形で TK-250 を設計し直す（`394b700`）。**使い方**: `python3 scripts/decision_ask.py "質問" a=A案 b=B案` → `decision_wait.py <id>`（0=answered）。答えられるのはマスターのみ。次: 文章回答（Phase 2）／勤怠ボタン（TK-250・店長=申請→マスター承認）。
 
