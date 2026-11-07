@@ -4,6 +4,15 @@
 
 ---
 
+**2026-11-07（このスレッド）プレコフーズの請求書が「PL対象外→振込待ち」に進んだ不具合を修正（invoices.html v165）**:
+- ユーザー報告: インフォマート取得のプレコフーズが「要確認」に入り、承認後はPL未反映に行かず振込待ちへ進んだ。
+- 原因①（要確認）: プレコフーズは取引先方針（vendor_invoice_policies.required_evidence=納品書）で「本請求書はインボイスではない」ため、納品書の添付が無いと invoice-check の evidence が ng。これは仕様（インボイス要件）であり不具合ではない。他の取込済み取引先には方針が無いので承認待ちに直行していた。
+- 原因②（PL未反映に行かない）: 承認画面の既定が「反映の対象になる費用の行が無ければ『反映しない』（理由=PLの対象外の費用）」で、仕入高だけの請求書でも発動 → 承認時に pl_fee_excluded_at が付き、PL未反映から外れた。仕入高は月の請求書がそろった後の置き換え（siire_adjust）で反映する対象なので、既定を「反映しない」にするのは誤り。
+- 修正: 承認画面で仕入高の行がある請求書は既定を「反映しない」にしない（`!skipped.length` を条件に追加）。プレコフーズの請求書（6f1f8e44…）は pl_fee_excluded_at/by を解除してPL未反映に戻した（振込待ち payment_status=wait はそのまま）。
+- 補足: (株)まつの（センター）も payment_status=wait（支払方法が設定済みの取引先は承認時に自動で振込待ち）。PL除外は付いていない。
+
+---
+
 **2026-11-06（このスレッド）Google口コミ取得の Supabase 直結化 ①（本番稼働開始: 12 掲載の Place ID 確定・初回取得・3 店テスト送信・Cron 08:00 JST 稼働）**:
 - ユーザー指示書（ChatGPT 案 50 項目）を既存コードと突き合わせて 12 点指摘 → ユーザー決定: ②並行期間は**比較専用テーブルで分離** ④スケジュールは **Supabase Cron** ⑧**N-Style 4 店は対象外** ＋「掲載名をキーにせず自社発行 `listing_id` → `place_id` を固定キー」。設計書: [docs/設計書_Google口コミSupabase直結_2026-11-06.md](docs/設計書_Google口コミSupabase直結_2026-11-06.md)（§9 にユーザー作業の順番）。
 - 調査結果: 口コミ推移ログの書き手は**売上DB の GAS**（`NStyle-AI/gas-backup/sales-db/コード.gs` 1980 行〜 `fetchGoogleReviews`／`fetchReviewsScheduled`＝毎月 1/8/15/22/29 の 9 時台）。`口コミPlaceID` B 列が `ChIJ…` なら Place Details、URL なら店名で Text Search して **1 件目を無条件採用**。Place ID はどこにも保存されていない。ハブに pg_cron は未導入（pg_net 0.20.4 あり。`create extension pg_cron` は SQL で通る＝管理画面操作は不要）。経営ダッシュボードは `ingestReview` で**取得日を 1 日前に寄せて**集計している（新設計もこれに合わせ基準日＝取得日−1）。

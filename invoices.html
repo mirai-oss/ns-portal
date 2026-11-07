@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-11-06-v164";
+const BUILD_TAG="2026-11-07-v165";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -958,7 +958,8 @@ function apvPlSummary_(modal,d,inv){
     +(noStore.length?`<div style="color:#b91c1c">⚠️ 店舗が未選択の行が ${noStore.length}件あります（反映するには、店舗を選んでください）</div>`:"")
     +(skipped.length?'<div style="color:var(--muted)">※仕入高は、月の請求書がすべて承認された後にまとめて反映します</div>':"");
   // 反映の対象が無いときは、既定を「反映しない」にする
-  if(!exp.length&&!modal.dataset.plTouched){ const r=modal.querySelector('input[name="apv-plmode"][value="no"]'); if(r&&!r.checked){ r.checked=true; modal.querySelector("#apv-plno").style.display="inline"; const rs=modal.querySelector("#apv-plreason"); if(rs&&!rs.value) rs.value="PLの対象外の費用（資産・立替など）"; } }
+  // 2026-11-07: 仕入高の行がある請求書は「反映しない」にしない（仕入高は月の請求書が承認された後にまとめて反映する対象。プレコフーズが誤ってPL対象外→振込待ちに進んだ）
+  if(!exp.length&&!skipped.length&&!modal.dataset.plTouched){ const r=modal.querySelector('input[name="apv-plmode"][value="no"]'); if(r&&!r.checked){ r.checked=true; modal.querySelector("#apv-plno").style.display="inline"; const rs=modal.querySelector("#apv-plreason"); if(rs&&!rs.value) rs.value="PLの対象外の費用（資産・立替など）"; } }
 }
 async function openApprovalModal(u,invoiceId,opt){
   const r=await authed(`/rest/v1/invoices?id=eq.${invoiceId}&select=*,corp:corporations(name),vendor:vendors(name)`);
