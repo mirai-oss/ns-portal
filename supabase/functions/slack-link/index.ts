@@ -2,7 +2,7 @@
 // slack-link — 従業員と Slack の紐づけ（2026-11-08 新規）
 //   op=sync        Slack のメンバー一覧（users.list・users:read.email）と users.email を突き合わせて user_slack に登録（既に紐づいている人は表示名だけ更新）
 //   op=members     Slack のメンバー一覧（Bot・削除済みを除く）＋どの従業員に紐づいているか。手で紐づけるときの候補用（メールは伏せ字）
-//   op=invite      { user_id, channel: line|email|auto|copy } 招待リンク（app_settings 'slack_invite'）を本人の LINE かメール（info@ns0314.com の Gmail・請求書メールと同じ GAS 経路）で送る／copy=文面だけ返す
+//   op=invite      { user_id, channel: line|email|both|auto|copy }（auto=初回は both・以後 LINE か メール） 招待リンク（app_settings 'slack_invite'）を本人の LINE かメール（info@ns0314.com の Gmail・請求書メールと同じ GAS 経路）で送る／copy=文面だけ返す
 //   op=link        { user_id, slack_user_id } 手で紐づけ（matched_by=manual）／ op=unlink { user_id }
 //   op=set_invite  { url } 招待リンクを保存（Slack の「メンバーを招待 → 招待リンクをコピー」で作ったもの）
 //   op=status      { user_id? } 紐づけ状態と招待の履歴
@@ -172,7 +172,18 @@ Deno.serve(async (req) => {
         await sb.from("slack_invite_log").insert({ user_id: uid, sent_by: actorId, channel: "email" });
         return json({ ok: true, sent_via: "email" });
       }
-      if (b.channel === "auto") b.channel = u.line_user_id ? "line" : "email";
+      // auto: 初回（まだ一度も送っていない）は LINE とメールの両方（LINE をブロックしている人がいるため・ユーザー指示 2026-11-08）。2 回目以降は LINE があれば LINE、無ければメール
+      if (b.channel === "auto") {
+        const { count } = await sb.from("slack_invite_log").select("id", { count: "exact", head: true }).eq("user_id", uid).in("channel", ["line", "email"]);
+        b.channel = (count ?? 0) === 0 ? "both" : (u.line_user_id ? "line" : "email");
+      }
+      if (b.channel === "both") {
+        const via: string[] = []; const errs: string[] = [];
+        if (u.line_user_id) { const r = await linePush(sb, u.line_user_id, text); if (r.ok) { via.push("line"); await sb.from("slack_invite_log").insert({ user_id: uid, sent_by: actorId, channel: "line" }); } else errs.push("LINE: " + r.error); }
+        if (u.email) { const r = await emailSend(u.email, "【鳥一代グループ】Slack 登録のお願い", text); if (r.ok) { via.push("email"); await sb.from("slack_invite_log").insert({ user_id: uid, sent_by: actorId, channel: "email" }); } else errs.push(r.error ?? "メール失敗"); }
+        if (!via.length) return json({ ok: false, error: errs.join("／") || "送り先がありません（LINE もメールも無い）", invite_url: inv.url, text }, 502);
+        return json({ ok: true, sent_via: via.join("+"), warnings: errs });
+      }
       if (b.channel === "email") {   // auto でメールに倒れたとき
         const r = await emailSend(u.email, "【鳥一代グループ】Slack 登録のお願い", text);
         if (!r.ok) return json({ ok: false, error: r.error, invite_url: inv.url, text }, 502);
