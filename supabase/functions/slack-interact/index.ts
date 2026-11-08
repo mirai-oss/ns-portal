@@ -72,7 +72,8 @@ const handlers: Record<string, Handler> = {
     const { data, error } = await sb.rpc("sf_attendance_alert_confirm", { p_alert_id: value?.alert_id, p_actor: actor.user_id, p_via: "slack" });
     if (error) return ephemeral(`記録できませんでした: ${error.message}`, ru);
     if (!data?.ok) return ephemeral(data?.message ?? "記録できませんでした", ru);
-    await updateMany(data.notification_ids, `✅ 合っている（${actor.name}・${nowJst()}）\n${data.summary}`);
+    // 2026-11-08: Slack は 3 秒以内の返事を要求（スマホは特に厳しく「なかなか接続できません」になる）→ メッセージ更新は返事の後で
+    waitUntil(updateMany(data.notification_ids, `✅ 合っている（${actor.name}・${nowJst()}）\n${data.summary}`));
     return text("");
   },
   // 勤怠確認「× 修正する」。trigger_id は 3 秒で失効するため、モーダルを最初に開く
@@ -99,6 +100,8 @@ const handlers: Record<string, Handler> = {
       const block = data?.code === "invalid_time" ? "end" : data?.code === "invalid_break" ? "b1e" : "reason";
       return json({ response_action: "errors", errors: { [block]: data?.message ?? "申請できませんでした" } });
     }
+    // 2026-11-08: 申請は RPC で記録済み。Slack の 3 秒制限（スマホで「なかなか接続できません」）を避けるため、ここで先にモーダルを閉じて残りは後で行う
+    waitUntil((async () => {
     await updateMany(data.notification_ids, `📝 修正を申請しました（${actor.name}・${nowJst()}）\n${data.summary}\n→ 修正後 ${data.proposed}　理由: ${data.reason}\n承認待ち（マスター）`);
     // マスターへ承認依頼（user_slack 紐付けのあるマスターの DM。居なければ hq.keiri_kanshi）
     const channels = await masterChannels(sb);
@@ -123,6 +126,7 @@ const handlers: Record<string, Handler> = {
     }
     // 承認メッセージの台帳 id を控える（状態ではなく連絡の記録。状態遷移は RPC のみ）
     if (ids.length) await sb.from("sf_attendance_alerts").update({ approval_notification_ids: ids, updated_at: new Date().toISOString() }).eq("id", data.alert_id);
+    })());
     return json({ response_action: "clear" });
   },
   // スマレジ側の直接修正の通知「○ 確認した」（2026-11-07）
@@ -131,7 +135,7 @@ const handlers: Record<string, Handler> = {
     const { data, error } = await sb.rpc("sf_attendance_change_ack", { p_change_id: value?.change_id, p_actor: actor.user_id, p_via: "slack" });
     if (error) return ephemeral(`記録できませんでした: ${error.message}`, ru);
     if (!data?.ok) return ephemeral(data?.message ?? "記録できませんでした", ru);
-    await updateMany(data.notification_ids, `✅ 確認済み（${actor.name}・${nowJst()}）\n✏️ スマレジ側で直接修正: ${data.summary}\n${data.diff_text}`);
+    waitUntil(updateMany(data.notification_ids, `✅ 確認済み（${actor.name}・${nowJst()}）\n✏️ スマレジ側で直接修正: ${data.summary}\n${data.diff_text}`));
     return text("");
   },
   // マスターの承認 / 却下
@@ -153,10 +157,12 @@ const handlers: Record<string, Handler> = {
     if (!data?.ok) return ephemeral(data?.message ?? "記録できませんでした", ru);
     const when = new Date().toLocaleString("ja-JP", { timeZone: "Asia/Tokyo", hour12: false });
     const done = `✅ ${actor.name} が「${data.label}」を選択しました（${when}）\n> ${String(data.question ?? "").replace(/\n/g, "\n> ")}`;
-    await updateMessage(notificationId ?? data.notification_id ?? null, done);
-    // リマインド（EF pending-reminders）で再送したコピーも「済」にする（2026-11-08）
-    const { data: dr } = await sb.from("decision_requests").select("notification_id,reminder_notification_ids").eq("id", requestId).maybeSingle();
-    await updateMany([dr?.notification_id, ...(dr?.reminder_notification_ids ?? [])].filter((x: unknown) => typeof x === "string" && x !== (notificationId ?? data.notification_id)), done);
+    waitUntil((async () => {
+      await updateMessage(notificationId ?? data.notification_id ?? null, done);
+      // リマインド（EF pending-reminders）で再送したコピーも「済」にする（2026-11-08）
+      const { data: dr } = await sb.from("decision_requests").select("notification_id,reminder_notification_ids").eq("id", requestId).maybeSingle();
+      await updateMany([dr?.notification_id, ...(dr?.reminder_notification_ids ?? [])].filter((x: unknown) => typeof x === "string" && x !== (notificationId ?? data.notification_id)), done);
+    })());
     return text("");
   },
 };
@@ -215,8 +221,10 @@ async function attendanceDecide({ sb, actor, payload, value }: Ctx, approve: boo
   if (!data?.ok) return ephemeral(data?.message ?? "記録できませんでした", ru);
   const when = nowJst();
   if (!approve) {
-    await updateMany(data.approval_notification_ids, `❌ 却下しました（${actor.name}・${when}）\n${data.summary}\n→ 申請 ${data.proposed}（理由: ${data.reason}）`);
-    await updateMany(data.notification_ids, `❌ 修正申請は却下されました（${actor.name}・${when}）\n${data.summary}\n→ 申請 ${data.proposed}`);
+    waitUntil((async () => {
+      await updateMany(data.approval_notification_ids, `❌ 却下しました（${actor.name}・${when}）\n${data.summary}\n→ 申請 ${data.proposed}（理由: ${data.reason}）`);
+      await updateMany(data.notification_ids, `❌ 修正申請は却下されました（${actor.name}・${when}）\n${data.summary}\n→ 申請 ${data.proposed}`);
+    })());
     return text("");
   }
   // 承認: ハブは RPC で反映済み。スマレジへの書き戻し（EF smaregi-attendance-fix・数秒かかる）は Slack の 3 秒制限の外で行う
@@ -242,8 +250,10 @@ async function requestDecide({ sb, actor, payload, value }: Ctx, approve: boolea
   const when = nowJst();
   const kindLabel = data.kind === "add" ? "勤怠追加" : "勤怠修正";
   if (!approve) {
-    await updateMany(data.approval_notification_ids, `❌ 却下しました（${actor.name}・${when}）\n${data.summary}\n申請: ${data.requested_by_name}　理由: ${data.reason}`);
-    await updateMany(data.notice_notification_ids, `❌ ${kindLabel}の申請は却下されました（${actor.name}・${when}）\n${data.summary}\n申請: ${data.requested_by_name}`);
+    waitUntil((async () => {
+      await updateMany(data.approval_notification_ids, `❌ 却下しました（${actor.name}・${when}）\n${data.summary}\n申請: ${data.requested_by_name}　理由: ${data.reason}`);
+      await updateMany(data.notice_notification_ids, `❌ ${kindLabel}の申請は却下されました（${actor.name}・${when}）\n${data.summary}\n申請: ${data.requested_by_name}`);
+    })());
     return text("");
   }
   const head = `✅ 承認しました（${actor.name}・${when}）\n${data.summary}\n申請: ${data.requested_by_name}　理由: ${data.reason}\n管理システムに反映済み。`;
