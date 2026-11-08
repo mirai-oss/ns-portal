@@ -185,11 +185,14 @@ Deno.serve(async (req) => {
     const dateFrom = body.date_from || yesterday.toISOString().slice(0, 10);
     const dateTo = body.date_to || yesterday.toISOString().slice(0, 10);
 
-    const { data: rows } = await sb.from("labor_cost_daily")
-      .select("id,user_id,store_id,work_date,clock_in,clock_out,worked_minutes,break_start_1,break_end_1,break_start_2,break_end_2,break_minutes,users(name),stores(name)")
+    // 2026-11-08 修正: labor_cost_daily は users を 2 本参照する（user_id と manual_fixed_by=手修正ロック 2026-11-07）ため
+    // `users(name)` だと PostgREST が「どちらか分からない」で失敗し、エラーを握りつぶして checked=0 になっていた（11/7 昼〜11/8 朝の実損）。参照名を明示する
+    const { data: rows, error: qErr } = await sb.from("labor_cost_daily")
+      .select("id,user_id,store_id,work_date,clock_in,clock_out,worked_minutes,break_start_1,break_end_1,break_start_2,break_end_2,break_minutes,users!labor_cost_daily_user_id_fkey(name),stores!labor_cost_daily_store_id_fkey(name)")
       .gte("work_date", dateFrom)
       .lte("work_date", dateTo); // 2026-11-07: 退勤なし（clock_out null）も対象（勤務日の翌朝以降に残っていれば打刻忘れ）
 
+    if (qErr) return json({ ok: false, error: "labor_cost_daily を読めません: " + qErr.message, dateFrom, dateTo }, 500);
     const anomalies: any[] = [];
     for (const r of rows ?? []) {
       const mins = Number((r as any).worked_minutes ?? 0);
