@@ -97,7 +97,22 @@ function alertText(a: any) {
   const breaks = [brk(a.b1s, a.b1e), brk(a.b2s, a.b2e)].filter(Boolean);
   const breakTxt = breaks.length ? `休憩 ${breaks.join("・")}` : "休憩なし";
   const line = `*${a.name}*　${ci?.hm ?? "-"}−${outTxt}（${a.worked_minutes == null ? "-" : fmtHM(a.worked_minutes)}・${breakTxt}）`;
-  return { title, line, ci, co };
+  // 2026-11-08 ユーザー要望「もっと分かりやすい表記に」: 1 行 1 項目。異常のある項目の頭に ⚠️
+  const codes: string[] = a.reason_codes ?? [];
+  const has = (...c: string[]) => codes.some((x) => c.includes(x));
+  const brkMin = a.break_minutes != null ? Number(a.break_minutes)
+    : [[a.b1s, a.b1e], [a.b2s, a.b2e]].reduce((acc, [s0, e0]) => (s0 && e0) ? acc + Math.round((new Date(e0).getTime() - new Date(s0).getTime()) / 60000) : acc, 0);
+  const breakLine = breaks.length ? `${breaks.join("・")}（${fmtHM(brkMin)}）` : "なし";
+  const body = [
+    `${title}　*${a.name}*`,
+    `打刻時間：${ci?.hm ?? "-"}−${outTxt}`,
+    `出勤時間：${ci?.hm ?? "-"}`,
+    `${has("late_leave", "no_clock_out") ? "⚠️" : ""}退勤時間：${co ? outTxt : "なし（打刻忘れ？）"}`,
+    `${has("short", "long", "extreme") ? "⚠️" : ""}勤務時間：${a.worked_minutes == null ? "-" : fmtHM(a.worked_minutes)}${breaks.length ? "（休憩除く）" : ""}`,
+    `${has("break_long") ? "⚠️" : ""}休憩時間：${breakLine}`,
+    ...((a.reasons ?? []) as string[]).map((r) => `⚠️ ${r}。打刻は合っていますか？`),
+  ].join("\n");
+  return { title, line, ci, co, body };
 }
 // 勤怠確認の宛先: slack_channels の 'kintai.check'（ユーザー指定 2026-11-07・C0CFQLYUM1Q）。ID の変更は slack_channels を直すだけ
 const ATTENDANCE_CHANNEL_KEY = "kintai.check";
@@ -120,7 +135,7 @@ async function slackAlert(sb: any, a: any) {
   if (!alert) return { labor_cost_daily_id: a.id, error: "alert row not found" };
   if (alert.status !== "open" || (alert.notification_ids ?? []).length) return { alert_id: alert.id, skipped: alert.status };
 
-  const { title, line, ci, co } = alertText(a);
+  const { title, ci, co, body } = alertText(a);
   const channels = [ATTENDANCE_CHANNEL_KEY];
   const sent: { channel_key: string; ok: boolean; notification_id?: string; error?: string }[] = [];
   const ids: string[] = [];
@@ -128,7 +143,7 @@ async function slackAlert(sb: any, a: any) {
     const nid = crypto.randomUUID();
     const v = (extra: Record<string, unknown> = {}) => JSON.stringify({ alert_id: alert.id, notification_id: nid, ...extra });
     const blocks = [
-      { type: "section", text: { type: "mrkdwn", text: `⚠️ *勤怠確認*\n${title}\n${line}\n${a.kind}。打刻は合っていますか？` } },
+      { type: "section", text: { type: "mrkdwn", text: `⚠️ *勤怠確認*\n${body}` } },
       { type: "actions", block_id: "attendance", elements: [
         { type: "button", style: "primary", text: { type: "plain_text", text: "○ 合っている", emoji: true }, action_id: "attendance.alert.confirm", value: v() },
         { type: "button", text: { type: "plain_text", text: "× 修正する", emoji: true }, action_id: "attendance.alert.fix",
@@ -220,7 +235,7 @@ Deno.serve(async (req) => {
       if (breakOpen) reasons.push({ code: "break_long", label: "休憩の終了打刻なし" });
       else if (x.break_minutes != null && Number(x.break_minutes) > BREAK_LONG_MINUTES) reasons.push({ code: "break_long", label: `休憩が長すぎる（${fmtHM(Number(x.break_minutes))}）` });
       if (reasons.length) {
-        anomalies.push({ ...base, kind: reasons.map((q) => q.label).join("・"), kind_code: reasons[0].code, reasons: reasons.map((q) => q.label) });
+        anomalies.push({ ...base, kind: reasons.map((q) => q.label).join("・"), kind_code: reasons[0].code, reasons: reasons.map((q) => q.label), reason_codes: reasons.map((q) => q.code) });
       }
     }
 
