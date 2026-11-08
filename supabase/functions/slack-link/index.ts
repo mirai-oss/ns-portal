@@ -2,7 +2,7 @@
 // slack-link — 従業員と Slack の紐づけ（2026-11-08 新規）
 //   op=sync        Slack のメンバー一覧（users.list・users:read.email）と users.email を突き合わせて user_slack に登録（既に紐づいている人は表示名だけ更新）
 //   op=members     Slack のメンバー一覧（Bot・削除済みを除く）＋どの従業員に紐づいているか。手で紐づけるときの候補用（メールは伏せ字）
-//   op=invite      { user_id } 招待リンク（app_settings 'slack_invite'）を本人の LINE に送る（LINE 未連携なら送れない＝リンクを返すのでコピーして渡す）
+//   op=invite      { user_id, channel: line|email|copy } 招待リンク（app_settings 'slack_invite'）を本人の LINE かメール（Resend）で送る／copy=文面だけ返す（手渡し用）
 //   op=link        { user_id, slack_user_id } 手で紐づけ（matched_by=manual）／ op=unlink { user_id }
 //   op=set_invite  { url } 招待リンクを保存（Slack の「メンバーを招待 → 招待リンクをコピー」で作ったもの）
 //   op=status      { user_id? } 紐づけ状態と招待の履歴
@@ -15,6 +15,15 @@ const cors = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers
 const json = (o: unknown, status = 200) => new Response(JSON.stringify(o), { status, headers: { ...cors, "Content-Type": "application/json" } });
 const svc = () => createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
 const mask = (em: string) => em.replace(/^(.).*(@.*)$/, "$1***$2");
+const RESEND_KEY = Deno.env.get("RESEND_API_KEY") ?? "";
+const RESEND_FROM = Deno.env.get("RESEND_FROM") ?? "鳥一代グループ 日報システム <onboarding@resend.dev>";
+async function emailSend(to: string, subject: string, text: string): Promise<{ ok: boolean; error?: string }> {
+  if (!RESEND_KEY) return { ok: false, error: "RESEND_API_KEY 未設定" };
+  const html = `<div style="font-family:sans-serif;line-height:1.8;font-size:15px">${text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/(https?:\/\/\S+)/g, '<a href="$1">$1</a>').replace(/\n/g, "<br>")}</div>`;
+  const r = await fetch("https://api.resend.com/emails", { method: "POST", headers: { Authorization: `Bearer ${RESEND_KEY}`, "Content-Type": "application/json" }, body: JSON.stringify({ from: RESEND_FROM, to, subject, html, text }) });
+  if (!r.ok) return { ok: false, error: `メール送信エラー(${r.status}) ${(await r.text()).slice(0, 120)}` };
+  return { ok: true };
+}
 
 function timingSafeEqual(a: string, b: string) {
   if (a.length !== b.length) return false;
@@ -144,7 +153,21 @@ Deno.serve(async (req) => {
         await sb.from("slack_invite_log").insert({ user_id: uid, sent_by: actorId, channel: "copy" });
         return json({ ok: true, sent_via: "copy", invite_url: inv.url, text });
       }
-      if (!u.line_user_id) return json({ ok: false, code: "no_line", error: "この人は LINE 未連携なので LINE では送れません。招待リンクをコピーして本人に渡してください", invite_url: inv.url, text });
+      if (b.channel === "email") {
+        if (!u.email) return json({ ok: false, code: "no_email", error: "この人はメールが登録されていません", invite_url: inv.url, text });
+        const r = await emailSend(u.email, "【鳥一代グループ】Slack 登録のお願い", text);
+        if (!r.ok) return json({ ok: false, error: r.error, invite_url: inv.url, text }, 502);
+        await sb.from("slack_invite_log").insert({ user_id: uid, sent_by: actorId, channel: "email" });
+        return json({ ok: true, sent_via: "email" });
+      }
+      if (b.channel === "auto") b.channel = u.line_user_id ? "line" : "email";
+      if (b.channel === "email") {   // auto でメールに倒れたとき
+        const r = await emailSend(u.email, "【鳥一代グループ】Slack 登録のお願い", text);
+        if (!r.ok) return json({ ok: false, error: r.error, invite_url: inv.url, text }, 502);
+        await sb.from("slack_invite_log").insert({ user_id: uid, sent_by: actorId, channel: "email" });
+        return json({ ok: true, sent_via: "email" });
+      }
+      if (!u.line_user_id) return json({ ok: false, code: "no_line", error: "この人は LINE 未連携なので LINE では送れません。「メールで送る」か、文面をコピーして渡してください", invite_url: inv.url, text });
       const r = await linePush(sb, u.line_user_id, text);
       if (!r.ok) return json({ ok: false, error: "LINE 送信に失敗: " + r.error, invite_url: inv.url, text }, 502);
       await sb.from("slack_invite_log").insert({ user_id: uid, sent_by: actorId, channel: "line" });
