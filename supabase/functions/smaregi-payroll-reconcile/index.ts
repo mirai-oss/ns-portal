@@ -66,32 +66,26 @@ async function fetchMonthlyBudget(token: string, contract: string, staffId: stri
   };
 }
 
-async function linePush(sb: ReturnType<typeof createClient>, text: string) {
-  const { data: sec } = await sb.from("app_secrets").select("key,value").eq("key", "line_channel_token").maybeSingle();
-  const token = (sec?.value ?? "").trim();
-  if (!token) return { ok: false, reason: "line_channel_token未設定" };
-
-  const { data: recipients } = await sb.from("users")
-    .select("id,name,line_user_id,role")
-    .in("role", ["CEO", "HQ"])
-    .eq("is_active", true)
-    .not("line_user_id", "is", null);
-
-  if (!recipients?.length) return { ok: false, reason: "LINE連携済みのCEO/HQがいません" };
-
-  const results = [];
-  for (const r of recipients) {
-    const res = await fetch("https://api.line.me/v2/bot/message/push", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ to: r.line_user_id, messages: [{ type: "text", text: text.slice(0, 4900) }] }),
-    });
-    const bodyText = res.ok ? "" : (await res.text()).slice(0, 300);
-    results.push({ name: r.name, ok: res.ok, status: res.status, body: bodyText });
-  }
-  return { ok: results.some((r) => r.ok), results };
+async function linePush(sb: any, text: string) {
+  // 2026-11-08: LINE（CEO/HQ 個人）→ Slack 人事チャンネル hq.jinji へ変更（ユーザー指示）。関数名は呼び出し側を変えないため据え置き
+  void sb;
+  const r = await slackHq(text, "payroll_reconcile", `payroll_reconcile:${new Date().toISOString().slice(0, 10)}:${text.length}`);
+  return r.ok ? { ok: true, results: [{ name: "Slack #本部-人事", ok: true }] } : { ok: false, reason: r.error ?? "slack_error" };
 }
 
+
+// 2026-11-08: 通知先を LINE → Slack の人事チャンネル（slack_channels 'hq.jinji' = C0CFE1Y9HC7）へ（ユーザー指示）。notify-slack を service_role で呼ぶ
+async function slackHq(text: string, event: string, dedupeKey: string): Promise<{ ok: boolean; error?: string }> {
+  const key = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
+  try {
+    const res = await fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/notify-slack`, {
+      method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}`, apikey: key },
+      body: JSON.stringify({ action: "send", channel_key: "hq.jinji", event, source: "ef:smaregi-payroll-reconcile", text: text.slice(0, 3900), dedupe_key: dedupeKey, username: "N-Style 通知Bot", icon_emoji: ":office:" }),
+    });
+    const j = await res.json().catch(() => null);
+    return { ok: !!j?.ok, error: j?.error ?? (res.ok ? undefined : `HTTP ${res.status}`) };
+  } catch (e) { return { ok: false, error: String(e).slice(0, 200) }; }
+}
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
   try {

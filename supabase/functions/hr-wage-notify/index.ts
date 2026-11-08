@@ -25,6 +25,19 @@ async function send(token: string, to: string, text: string): Promise<{ ok: bool
   return { ok: true, messageId: j?.sentMessages?.[0]?.id ?? null };
 }
 
+
+// 2026-11-08: 通知先を LINE → Slack の人事チャンネル（slack_channels 'hq.jinji' = C0CFE1Y9HC7）へ（ユーザー指示）。notify-slack を service_role で呼ぶ
+async function slackHq(text: string, event: string, dedupeKey: string): Promise<{ ok: boolean; error?: string }> {
+  const key = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
+  try {
+    const res = await fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/notify-slack`, {
+      method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}`, apikey: key },
+      body: JSON.stringify({ action: "send", channel_key: "hq.jinji", event, source: "ef:hr-wage-notify", text: text.slice(0, 3900), dedupe_key: dedupeKey, username: "N-Style 通知Bot", icon_emoji: ":office:" }),
+    });
+    const j = await res.json().catch(() => null);
+    return { ok: !!j?.ok, error: j?.error ?? (res.ok ? undefined : `HTTP ${res.status}`) };
+  } catch (e) { return { ok: false, error: String(e).slice(0, 200) }; }
+}
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
   try {
@@ -43,34 +56,24 @@ Deno.serve(async (req) => {
     const { data: reqRow, error: ie } = await sb.from("hr_wage_requests").insert({ user_id: uid }).select("id").maybeSingle();
     if (ie || !reqRow) return json({ ok: true, skipped: "通知済み" });
 
-    const { data: sec } = await sb.from("app_secrets").select("key,value").eq("key", "line_channel_token").maybeSingle();
-    const token = (sec?.value ?? "").trim();
-    if (!token) return json({ ok: false, error: "line_channel_token未設定" }, 500);
-
-    const [{ data: us }, { data: prof }, { data: recips }] = await Promise.all([
+    const [{ data: us }, { data: prof }] = await Promise.all([
       sb.from("user_stores").select("stores(name)").eq("user_id", uid),
       sb.from("employee_profiles").select("hire_date").eq("user_id", uid).maybeSingle(),
-      sb.from("users").select("id,line_user_id,name").eq("is_active", true).not("line_user_id", "is", null).or("is_master.eq.true,role.in.(CEO,HQ)"),
     ]);
     const storeNames = (us ?? []).map((x: any) => x.stores?.name).filter(Boolean).join("・") || "所属なし";
     const kind = u.role === "AL" ? "アルバイト" : "社員";
     const text =
       `【入社登録】${u.name}さん（${kind}／${storeNames}）が入社登録しました。\n` +
       (prof?.hire_date ? `入社日: ${String(prof.hire_date).replace(/-/g, "/")}\n` : "") +
-      `\n賃金を、このメッセージに返信してください（スマレジに自動で登録します）。\n` +
-      `例:\n・時給 1200\n・時給 1200 休日 1300\n・月給 250000\n・新橋 1400（その店舗だけの時給）\n` +
-      `\n※複数の方が待ちのときは、このメッセージを長押し→「返信」するか、先頭に名前を付けてください。`;
+      `\n賃金（時給・月給）の登録をお願いします: nippo → 従業員管理 → ${u.name}さん → 賃金設定（スマレジに反映されます）。\n` +
+      `https://mirai-oss.github.io/nippo/?page=admin&u=${uid}\n` +
+      `※Slack 上でそのまま時給を入れられる仕組みは準備中です。`;
 
-    let sent = 0, failed = 0;
-    for (const r of recips ?? []) {
-      const s = await send(token, r.line_user_id, text);
-      if (s.ok) {
-        sent++;
-        await sb.from("hr_wage_request_msgs").upsert({ request_id: reqRow.id, line_user_id: r.line_user_id, message_id: s.messageId });
-      } else failed++;
-    }
+    // 2026-11-08: LINE（CEO/HQ 個人・返信で登録）→ Slack 人事チャンネルへ（ユーザー指示）。返信での自動登録は Slack 版を後日
+    const s = await slackHq(text, "hr_wage_request", `hr_wage_request:${reqRow.id}`);
+    const sent = s.ok ? 1 : 0, failed = s.ok ? 0 : 1;
     await sb.from("hr_wage_requests").update({ notified_at: new Date().toISOString() }).eq("id", reqRow.id);
-    return json({ ok: true, sent, failed, recipients: (recips ?? []).length });
+    return json({ ok: true, sent, failed, recipients: 1, channel: "hq.jinji", error: s.error });
   } catch (e) {
     return json({ ok: false, error: String(e) }, 500);
   }

@@ -14,6 +14,19 @@ const json = (o: unknown, status = 200) =>
 
 const APP_URL = "https://mirai-oss.github.io/nippo/?page=admin&m=retire";
 
+
+// 2026-11-08: 通知先を LINE → Slack の人事チャンネル（slack_channels 'hq.jinji' = C0CFE1Y9HC7）へ（ユーザー指示）。notify-slack を service_role で呼ぶ
+async function slackHq(text: string, event: string, dedupeKey: string): Promise<{ ok: boolean; error?: string }> {
+  const key = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
+  try {
+    const res = await fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/notify-slack`, {
+      method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}`, apikey: key },
+      body: JSON.stringify({ action: "send", channel_key: "hq.jinji", event, source: "ef:hr-retire-notify", text: text.slice(0, 3900), dedupe_key: dedupeKey, username: "N-Style 通知Bot", icon_emoji: ":office:" }),
+    });
+    const j = await res.json().catch(() => null);
+    return { ok: !!j?.ok, error: j?.error ?? (res.ok ? undefined : `HTTP ${res.status}`) };
+  } catch (e) { return { ok: false, error: String(e).slice(0, 200) }; }
+}
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
   try {
@@ -26,10 +39,6 @@ Deno.serve(async (req) => {
     if (error) return json({ ok: false, error: error.message }, 500);
     if (!claim || !claim.claimed) return json({ ok: true, skipped: claim?.reason ?? "対象外" });
 
-    const { data: sec } = await sb.from("app_secrets").select("key,value").eq("key", "line_channel_token").maybeSingle();
-    const token = (sec?.value ?? "").trim();
-    if (!token) return json({ ok: false, error: "line_channel_token未設定" }, 500);
-
     const d = String(claim.effective_date ?? "").replace(/-/g, "/");
     const text =
       `【退職申請】${claim.store_name}\n` +
@@ -38,16 +47,9 @@ Deno.serve(async (req) => {
       (claim.note ? `備考: ${claim.note}\n` : "") +
       `\n退職申請一覧で確認・承認してください。\n${APP_URL}`;
 
-    let sent = 0, failed = 0;
-    for (const lineId of (claim.recipients ?? []) as string[]) {
-      const res = await fetch("https://api.line.me/v2/bot/message/push", {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ to: lineId, messages: [{ type: "text", text }] }),
-      });
-      if (res.ok) sent++; else failed++;
-    }
-    return json({ ok: true, sent, failed, recipients: (claim.recipients ?? []).length });
+    // 2026-11-08: LINE（承認者個人）→ Slack 人事チャンネルへ（ユーザー指示）。Slack 上での承認ボタンは後日
+    const s = await slackHq(text, "hr_retire_request", `hr_retire_request:${requestId}`);
+    return json({ ok: true, sent: s.ok ? 1 : 0, failed: s.ok ? 0 : 1, channel: "hq.jinji", error: s.error });
   } catch (e) {
     return json({ ok: false, error: String(e) }, 500);
   }
