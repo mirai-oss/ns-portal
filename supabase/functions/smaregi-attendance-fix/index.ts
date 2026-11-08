@@ -91,7 +91,15 @@ Deno.serve(async (req) => {
   const contractId = rc.contract.contract_id;
   const staffMap = await staffIdsByUser(sb, contractId, [target.user_id], target.work_date);
   const staffId = staffMap[target.user_id];
-  if (!staffId) return await fail("no_staff", `この従業員の契約…${contractId.slice(-3)} でのスマレジ・スタッフ ID（employee_smaregi_links）が見つかりません`);
+  if (!staffId) {
+    // 紐づけ自体はあるが勤務日が有効期間外（例: 入社前の日付）なのか、紐づけが無いのかを分けて伝える
+    const { data: anyLinks } = await sb.from("employee_smaregi_links").select("effective_from,effective_to").eq("contract_id", contractId).eq("user_id", target.user_id);
+    if (anyLinks?.length) {
+      const spans = anyLinks.map((l: any) => `${l.effective_from ?? "?"}〜${l.effective_to ?? ""}`).join(", ");
+      return await fail("staff_out_of_range", `この従業員のスマレジ・スタッフ ID はありますが、勤務日 ${target.work_date} が紐づけの有効期間（${spans}）の外です`);
+    }
+    return await fail("no_staff", `この従業員の契約…${contractId.slice(-3)} でのスマレジ・スタッフ ID（employee_smaregi_links）が見つかりません`);
+  }
 
   let token: string;
   try { token = await getContractToken(contractId, SCOPES); } catch (e) { return await fail("auth", "スマレジ認証に失敗: " + String(e).slice(0, 200)); }
