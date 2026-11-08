@@ -164,7 +164,11 @@ Deno.serve(async (req) => {
 
     const authHeader = req.headers.get("Authorization") ?? "";
     const isServiceRole = authHeader.includes(Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? " ");
-    if (!isServiceRole) {
+    // 2026-11-08: pg_cron（毎朝 10:00 JST・attendance_anomaly_check_trigger）からは x-notify-secret で呼ぶ（他の cron 起動 EF と同じ）
+    const secret = (Deno.env.get("NOTIFY_SLACK_SECRET") ?? "").trim();
+    const hdr = (req.headers.get("x-notify-secret") ?? "").trim();
+    const isCronSecret = !!(secret && hdr && secret.length === hdr.length && [...secret].every((c, i) => c === hdr[i]));
+    if (!isServiceRole && !isCronSecret) {
       const uid = jwtUid(req);
       const { data: u } = await sb.from("users").select("role,is_master,is_active").eq("id", uid).maybeSingle();
       if (!u?.is_active || !(u.is_master || ["CEO", "HQ"].includes(u.role))) {
@@ -234,6 +238,16 @@ Deno.serve(async (req) => {
         try { slack.push(await slackAlert(sb, a)); } catch (e) { slack.push({ labor_cost_daily_id: a.id, error: String(e).slice(0, 200) }); }
       }
     }
+
+    // 2026-11-08: 実行記録（対象の終わりの日ごと）。10:00 の時点で昨日の行が無かった（checked=0）ときは
+    // attendance_anomaly_catchup()（pg_cron 15 分おき）が行の到着を見て流し直す
+    try {
+      await sb.from("sf_attendance_anomaly_runs").upsert({
+        date_to: dateTo, date_from: dateFrom, checked: (rows ?? []).length, anomaly_count: anomalies.length,
+        slack_sent: slack.filter((x: any) => x && !x.error).length, ran_at: new Date().toISOString(),
+        trigger: body.trigger ?? (isServiceRole ? "service_role" : isCronSecret ? "cron" : "user"),
+      }, { onConflict: "date_to" });
+    } catch (_) { /* 記録の失敗は結果に影響させない */ }
 
     return json({
       ok: true,

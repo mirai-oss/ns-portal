@@ -128,32 +128,10 @@ jobs:
             echo "::warning::月またぎ再取込で$ERR_COUNT 件のエラーがありました（未対応のstaff_id/store_idなど。ログ参照）"
           fi
 
-      - name: smaregi-attendance-anomaly-checkを呼び出す（異常値チェック・失敗しても取込自体は成功扱い）
-        env:
-          SR_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-          DATE_FROM: ${{ github.event.inputs.date_from }}
-          DATE_TO: ${{ github.event.inputs.date_to }}
-        run: |
-          BODY="{}"
-          if [ -n "$DATE_FROM" ] || [ -n "$DATE_TO" ]; then
-            BODY=$(node -e "console.log(JSON.stringify({date_from: process.env.DATE_FROM || undefined, date_to: process.env.DATE_TO || undefined}))")
-          fi
-          RES=$(curl -s -w "\n%{http_code}" -X POST \
-            "https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/smaregi-attendance-anomaly-check" \
-            -H "Authorization: Bearer $SR_KEY" \
-            -H "Content-Type: application/json" \
-            -d "$BODY")
-          HTTP_CODE=$(echo "$RES" | tail -1)
-          BODY_TEXT=$(echo "$RES" | sed '$d')
-          echo "$BODY_TEXT"
-          if [ "$HTTP_CODE" != "200" ]; then
-            echo "::warning::smaregi-attendance-anomaly-checkが失敗しました（HTTP $HTTP_CODE）。取込自体は成功しているのでジョブは失敗にしない"
-            exit 0
-          fi
-          ANOMALY_COUNT=$(echo "$BODY_TEXT" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{console.log(JSON.parse(d).anomalyCount||0)}catch(e){console.log(0)}})")
-          if [ "$ANOMALY_COUNT" -gt "0" ]; then
-            echo "::warning::$ANOMALY_COUNT 件の異常値（1時間以内／13時間超え／24時間超え）が見つかりました。LINEに通知済みのはずです"
-          fi
+      # 2026-11-08: 異常値チェック（smaregi-attendance-anomaly-check）はここから外した。
+      #   理由: 取込 EF が 150 秒のゲートウェイ上限で 504 になる日があり、書き込み完了前にチェックが走って「対象 0 件」になった（11/8 朝に実測）。
+      #   いまは pg_cron `attendance-anomaly-check`（毎朝 10:00 JST = 01:00 UTC）→ public.attendance_anomaly_check_trigger() → EF の順で、取込完了後に走る。
+      #   手で流すとき: select public.attendance_anomaly_check_trigger('2026-11-06','2026-11-07');（SQL）。通知は Slack の勤怠確認チャンネル（LINE は停止）。
 
       - name: 当月分の再取込（月初〜昨日・毎日）＋給与明細ベースの補正（2026-11-03・ユーザー指示）
         env:
