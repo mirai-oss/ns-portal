@@ -6,7 +6,7 @@
 //   op=link        { user_id, slack_user_id } 手で紐づけ（matched_by=manual）／ op=unlink { user_id }
 //   op=set_invite  { url } 招待リンクを保存（Slack の「メンバーを招待 → 招待リンクをコピー」で作ったもの）
 //   op=status      { user_id? } 紐づけ状態と招待の履歴
-// 認証: JWT（CEO/HQ/マスター）。op=sync だけは x-notify-secret（pg_cron 毎朝 09:30）と service_role でも可
+// 認証: JWT（CEO/HQ/マスター）。op=sync と op=invite は x-notify-secret（pg_cron 毎朝 09:30／手元のテスト送信）と service_role でも可
 // デプロイ: supabase functions deploy slack-link --no-verify-jwt --project-ref uuvsxzhpxtghojoubjcc --yes
 // =============================================================
 import { createClient } from "npm:@supabase/supabase-js@2";
@@ -135,7 +135,8 @@ Deno.serve(async (req) => {
   const op = String(b.op ?? "");
   try {
     if (op === "sync") return json(await sync(sb));
-    if (a.mode === "secret") return json({ ok: false, error: "この操作はログインが必要です" }, 403);
+    // x-notify-secret（内部鍵）は sync と invite だけ許す（invite は Claude 側からのテスト送信・手元運用用。送れるのは招待の案内のみ）2026-11-08
+    if (a.mode === "secret" && op !== "invite") return json({ ok: false, error: "この操作はログインが必要です" }, 403);
     const actorId = a.actor?.id ?? null;
 
     if (op === "members") {
