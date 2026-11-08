@@ -3,6 +3,9 @@
 //   op=staff  { store_id }            … その店舗の従業員（RPC sf_attendance_form_staff・ログインユーザー権限）
 //   op=submit { kind, store_id, user_id, work_date, clock_in, clock_out, break_start_1.., reason }
 //             … RPC sf_attendance_request_submit（申請者=JWT のユーザー）→ マスターの Slack DM に承認依頼 → 勤怠確認チャンネルに「申請あり」
+//   op=decide { request_id, approve: true|false, note? }   … 2026-11-08 管理システム（tori-dashboard 申請履歴）からの承認/却下
+//             … RPC sf_attendance_request_decide（p_actor=JWT のユーザー・マスターのみ・p_via='portal'）→ Slack の承認依頼・申請あり
+//               メッセージを「✅/❌」に書き換え → 承認なら smaregi-attendance-fix で勤務実績へ書き戻し（Slack のボタンと同じ流れ）
 // 認証: Authorization: Bearer <ログインユーザーの JWT>（ポータルの nsportal_session_v1）。service_role は不可（申請者が要る）
 // デプロイ: supabase functions deploy attendance-request --no-verify-jwt --project-ref uuvsxzhpxtghojoubjcc --yes（JWT は関数内で検証）
 // =============================================================
@@ -63,7 +66,8 @@ Deno.serve(async (req) => {
     if (error) return json({ ok: false, error: error.message }, 400);
     return json({ ok: true, staff: data ?? [] });
   }
-  if (b.op !== "submit") return json({ ok: false, error: "op は staff か submit" }, 400);
+  if (b.op === "decide") return await decide(sb, actor, b);
+  if (b.op !== "submit") return json({ ok: false, error: "op は staff / submit / decide" }, 400);
 
   const { data, error } = await sb.rpc("sf_attendance_request_submit", {
     p_actor: actor.id, p_kind: String(b.kind ?? ""), p_store_id: b.store_id ?? null, p_user_id: b.user_id ?? null, p_work_date: b.work_date ?? null,
@@ -106,3 +110,50 @@ Deno.serve(async (req) => {
   await sb.from("sf_attendance_requests").update({ approval_notification_ids: ids, notice_notification_ids: noticeIds, updated_at: new Date().toISOString() }).eq("id", data.request_id);
   return json({ ok: true, request_id: data.request_id, summary: data.summary, approvers_notified: ids.length, form_url: FORM_URL });
 });
+
+// ---- 承認 / 却下（管理システムから）。slack-interact の requestDecide と同じ後処理 ----
+declare const EdgeRuntime: { waitUntil(p: Promise<unknown>): void } | undefined;
+function waitUntil(p: Promise<unknown>) {
+  try { if (typeof EdgeRuntime !== "undefined" && EdgeRuntime?.waitUntil) { EdgeRuntime.waitUntil(p); return; } } catch (_) { /* fallthrough */ }
+  p.catch(() => {});
+}
+async function updateMany(ids: unknown, text: string) {
+  const list = Array.isArray(ids) ? ids.filter((x) => typeof x === "string") as string[] : [];
+  await Promise.all(list.map((id) => notifySlack({ action: "update", notification_id: id, text })));
+}
+async function smaregiFix(requestId: string): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const key = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
+    const res = await fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/smaregi-attendance-fix`, {
+      method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}`, apikey: key }, body: JSON.stringify({ request_id: requestId }),
+    });
+    const j = await res.json().catch(() => null);
+    return { ok: !!j?.ok, error: j?.error ?? (res.ok ? undefined : `HTTP ${res.status}`) };
+  } catch (e) { return { ok: false, error: String(e).slice(0, 200) }; }
+}
+async function decide(sb: any, actor: { id: string; name: string }, b: any) {
+  const approve = b.approve === true || b.approve === "true";
+  const note = typeof b.note === "string" && b.note.trim() ? b.note.trim().slice(0, 300) : null;
+  const { data, error } = await sb.rpc("sf_attendance_request_decide", { p_request_id: String(b.request_id ?? ""), p_actor: actor.id, p_approve: approve, p_note: note, p_via: "portal" });
+  if (error) return json({ ok: false, error: error.message }, 400);
+  if (!data?.ok) return json({ ok: false, error: data?.message ?? "処理できませんでした", code: data?.code }, 400);
+  const when = new Date().toLocaleString("ja-JP", { timeZone: "Asia/Tokyo", hour12: false });
+  const kindLabel = data.kind === "add" ? "勤怠追加" : "勤怠修正";
+  const via = "（管理システムから）";
+  if (!approve) {
+    await updateMany(data.approval_notification_ids, `❌ 却下しました（${actor.name}・${when}${via}）\n${data.summary}\n申請: ${data.requested_by_name}　理由: ${data.reason}${note ? `\n却下理由: ${note}` : ""}`);
+    await updateMany(data.notice_notification_ids, `❌ ${kindLabel}の申請は却下されました（${actor.name}・${when}）\n${data.summary}\n申請: ${data.requested_by_name}`);
+    return json({ ok: true, approved: false, request_id: data.request_id });
+  }
+  const head = `✅ 承認しました（${actor.name}・${when}${via}）\n${data.summary}\n申請: ${data.requested_by_name}　理由: ${data.reason}\n管理システムに反映済み。`;
+  const headN = `✅ ${kindLabel}が承認され、管理システムに反映されました（${when}）\n${data.summary}\n申請: ${data.requested_by_name}\n`;
+  waitUntil((async () => {
+    await updateMany(data.approval_notification_ids, head + "スマレジへ反映中…");
+    await updateMany(data.notice_notification_ids, headN + "スマレジへ反映中…");
+    const r = await smaregiFix(data.request_id);
+    const tail = r.ok ? "✅ スマレジの勤務実績にも反映済み" : `⚠️ スマレジへの反映に失敗: ${r.error ?? "不明"}\nスマレジの管理画面から直してください（管理システム側は反映済み・ロック中）`;
+    await updateMany(data.approval_notification_ids, head + tail);
+    await updateMany(data.notice_notification_ids, headN + tail);
+  })());
+  return json({ ok: true, approved: true, request_id: data.request_id, summary: data.summary });
+}
