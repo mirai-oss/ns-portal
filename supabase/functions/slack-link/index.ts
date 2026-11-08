@@ -2,7 +2,7 @@
 // slack-link — 従業員と Slack の紐づけ（2026-11-08 新規）
 //   op=sync        Slack のメンバー一覧（users.list・users:read.email）と users.email を突き合わせて user_slack に登録（既に紐づいている人は表示名だけ更新）
 //   op=members     Slack のメンバー一覧（Bot・削除済みを除く）＋どの従業員に紐づいているか。手で紐づけるときの候補用（メールは伏せ字）
-//   op=invite      { user_id, channel: line|email|copy } 招待リンク（app_settings 'slack_invite'）を本人の LINE かメール（Resend）で送る／copy=文面だけ返す（手渡し用）
+//   op=invite      { user_id, channel: line|email|auto|copy } 招待リンク（app_settings 'slack_invite'）を本人の LINE かメール（info@ns0314.com の Gmail・請求書メールと同じ GAS 経路）で送る／copy=文面だけ返す
 //   op=link        { user_id, slack_user_id } 手で紐づけ（matched_by=manual）／ op=unlink { user_id }
 //   op=set_invite  { url } 招待リンクを保存（Slack の「メンバーを招待 → 招待リンクをコピー」で作ったもの）
 //   op=status      { user_id? } 紐づけ状態と招待の履歴
@@ -17,8 +17,19 @@ const svc = () => createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPA
 const mask = (em: string) => em.replace(/^(.).*(@.*)$/, "$1***$2");
 const RESEND_KEY = Deno.env.get("RESEND_API_KEY") ?? "";
 const RESEND_FROM = Deno.env.get("RESEND_FROM") ?? "鳥一代グループ 日報システム <onboarding@resend.dev>";
-async function emailSend(to: string, subject: string, text: string): Promise<{ ok: boolean; error?: string }> {
-  if (!RESEND_KEY) return { ok: false, error: "RESEND_API_KEY 未設定" };
+// メール送信: 請求書メールの「メール作成」と同じ経路（GAS invoice-intake WebApp → GmailApp・差出人 info@ns0314.com）。
+//   ユーザー確認 2026-11-08: 会社のメールはこの仕組みで送れている。GAS の設定が無いときだけ Resend にフォールバック
+async function emailSend(to: string, subject: string, text: string): Promise<{ ok: boolean; error?: string; via?: string }> {
+  const gasUrl = Deno.env.get("INVOICE_GAS_WEBAPP_URL") ?? "", gasSecret = Deno.env.get("INVOICE_INTAKE_SECRET") ?? "";
+  if (gasUrl && gasSecret) {
+    try {
+      const r = await fetch(gasUrl, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token: gasSecret, mode: "compose", to, subject, body: text }) });
+      const j = await r.json().catch(() => null);
+      if (r.ok && j?.success) return { ok: true, via: "gmail" };
+      return { ok: false, error: "Gmail 送信エラー: " + (j?.error ?? `HTTP ${r.status}`) };
+    } catch (e) { return { ok: false, error: "Gmail 送信エラー: " + String(e).slice(0, 120) }; }
+  }
+  if (!RESEND_KEY) return { ok: false, error: "メール送信の設定がありません（INVOICE_GAS_WEBAPP_URL / RESEND_API_KEY）" };
   const html = `<div style="font-family:sans-serif;line-height:1.8;font-size:15px">${text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/(https?:\/\/\S+)/g, '<a href="$1">$1</a>').replace(/\n/g, "<br>")}</div>`;
   const r = await fetch("https://api.resend.com/emails", { method: "POST", headers: { Authorization: `Bearer ${RESEND_KEY}`, "Content-Type": "application/json" }, body: JSON.stringify({ from: RESEND_FROM, to, subject, html, text }) });
   if (!r.ok) return { ok: false, error: `メール送信エラー(${r.status}) ${(await r.text()).slice(0, 120)}` };
