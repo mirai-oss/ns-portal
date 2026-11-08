@@ -2,11 +2,12 @@ import { createClient } from "npm:@supabase/supabase-js@2";
 import { handleWageReply, makeDb as makeWageDb } from "../_shared/wage-line-handler.ts";
 import { linePushOrderGroup } from "../_shared/line.ts";
 // 2026-08-21: 平文ハードコードだった合言葉をapp_secretsへ移行（データ基盤Day2 タスク4）。
-// secrets()内で取得し、呼び出し時は intakeSecret を使う。body.secretの検証は新旧どちらでも通す。
+// secrets()内で取得し、呼び出し時は intakeSecret を使う（E: 内部RPC用）。
+// 2026-11-08 P0-1(C): GAS からの action=daily は専用ヘッダ X-Intake-Secret（Vault の recruit_intake_secret）で判定する。
 const APP_URL = Deno.env.get("APP_URL") ?? "https://mirai-oss.github.io/nippo/";
 const cors = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, content-type, apikey, x-client-info, x-line-signature"
+  "Access-Control-Allow-Headers": "authorization, content-type, apikey, x-client-info, x-line-signature, x-intake-secret"
 };
 const json = (o, status = 200)=>new Response(JSON.stringify(o), {
     status,
@@ -29,7 +30,6 @@ async function secrets(sb) {
     "line_channel_token",
     "line_channel_secret",
     "checklist_intake_secret",
-    "checklist_intake_secret_prev",
     "line_order_push_secret"
   ]);
   const m = {};
@@ -40,7 +40,6 @@ async function secrets(sb) {
     token: m.line_channel_token ?? "",
     secret: m.line_channel_secret ?? "",
     intakeSecret: m.checklist_intake_secret ?? "",
-    intakeSecretPrev: m.checklist_intake_secret_prev ?? "",
     // 2026-10-03追加（店舗間の仕入れ移動＝発注情報を「発注グループ」LINEへ通知する機能）:
     // 既存のchecklist_intake_secret（求人・入社用）とは用途が違うため専用の合言葉を分ける。
     // line_order_group_idは2026-10-05に_shared/line.tsのlinePushOrderGroup内で自前取得する
@@ -116,7 +115,7 @@ Deno.serve(async (req)=>{
       body = {};
     }
     const sb = svc();
-    const { token, secret, intakeSecret, intakeSecretPrev, orderPushSecret } = await secrets(sb);
+    const { token, secret, intakeSecret, orderPushSecret } = await secrets(sb);
     // ---------------- 1) LINEからのWebhook ----------------
     if (Array.isArray(body.events)) {
       const sig = req.headers.get("x-line-signature") ?? "";
@@ -192,7 +191,15 @@ Deno.serve(async (req)=>{
     // ---------------- 2) 毎日の点検（GASから合言葉つきで呼ばれる） ----------------
     // ③ 面接日を過ぎた人のお知らせ ＋ ④ 入社登録フォーム未提出のリマインドLINE
     if (body.action === "daily") {
-      if (body.secret !== intakeSecret && body.secret !== intakeSecretPrev) return json({
+      // 2026-11-08 P0-1(C): 合言葉は専用ヘッダ X-Intake-Secret。判定は Vault を読む DB関数 recruit_intake_secret_ok に任せる
+      // （値はここにも app_secrets にも置かない）。判定前に書き込み・送信はしない。
+      const given = (req.headers.get("x-intake-secret") ?? "").trim();
+      let okNew = false;
+      if (given) {
+        const { data: okd } = await sb.rpc("recruit_intake_secret_ok", { p_secret: given });
+        okNew = okd === true;
+      }
+      if (!okNew) return json({
         ok: false,
         error: "認証エラー"
       }, 403);
