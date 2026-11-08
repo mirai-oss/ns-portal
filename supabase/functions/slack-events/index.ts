@@ -68,7 +68,7 @@ Deno.serve(async (req) => {
   if (body.type !== "event_callback") return new Response("", { status: 200 });
   const ev = body.event ?? {};
   if (ev.type !== "team_join" && ev.type !== "user_change") {
-    waitUntil(svc().from("slack_event_log").insert({ event_type: String(ev.type ?? "?"), result: "ignored", raw: { event_id: body.event_id ?? null } }).then(() => {}));
+    waitUntil((async () => { await svc().from("slack_event_log").insert({ event_type: String(ev.type ?? "?"), result: "ignored", raw: { event_id: body.event_id ?? null } }); })());
   }
   if (ev.type === "team_join" || ev.type === "user_change") {
     waitUntil((async () => {
