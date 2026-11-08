@@ -5,6 +5,7 @@
 //   op=submit { kind, store_id, user_id, work_date, clock_in, clock_out, break_start_1.., reason }
 //             … RPC sf_attendance_request_submit（申請者=JWT のユーザー）→ マスターの Slack DM に承認依頼 → 勤怠確認チャンネルに「申請あり」
 //   op=decide { request_id, approve: true|false, note? }   … 2026-11-08 管理システム（tori-dashboard 申請履歴）からの承認/却下
+//   op=decide { alert_id, approve, note? }                 … 2026-11-08(2) 勤怠確認アラートからの修正/打刻削除の承認/却下（RPC sf_attendance_fix_decide・slack-interact の attendanceDecide と同じ後処理）
 //             … RPC sf_attendance_request_decide（p_actor=JWT のユーザー・マスターのみ・p_via='portal'）→ Slack の承認依頼・申請あり
 //               メッセージを「✅/❌」に書き換え → 承認なら smaregi-attendance-fix で勤務実績へ書き戻し（Slack のボタンと同じ流れ）
 // 認証: Authorization: Bearer <ログインユーザーの JWT>（ポータルの nsportal_session_v1）。service_role は不可（申請者が要る）
@@ -75,6 +76,7 @@ Deno.serve(async (req) => {
     if (error) return json({ ok: false, error: error.message }, 400);
     return json({ ok: true, rows: data ?? [] });
   }
+  if (b.op === "decide" && /^[0-9a-f-]{36}$/.test(String(b.alert_id ?? ""))) return await decideAlert(sb, actor, b);   // 2026-11-08(2) アラート由来（修正/打刻削除）
   if (b.op === "decide") return await decide(sb, actor, b);
   if (b.op !== "submit") return json({ ok: false, error: "op は staff / day / submit / decide" }, 400);
 
@@ -165,4 +167,50 @@ async function decide(sb: any, actor: { id: string; name: string }, b: any) {
     await updateMany(data.notice_notification_ids, headN + tail);
   })());
   return json({ ok: true, approved: true, request_id: data.request_id, summary: data.summary });
+}
+
+// ---- アラート由来（店長の × 修正 / 🗑 打刻削除）の承認 / 却下。slack-interact の attendanceDecide と同じ文言・後処理 ----
+async function smaregiFixAlert(alertId: string): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const key = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
+    const res = await fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/smaregi-attendance-fix`, {
+      method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}`, apikey: key }, body: JSON.stringify({ alert_id: alertId }),
+    });
+    const j = await res.json().catch(() => null);
+    return { ok: !!j?.ok, error: j?.error ?? (res.ok ? undefined : `HTTP ${res.status}`) };
+  } catch (e) { return { ok: false, error: String(e).slice(0, 200) }; }
+}
+async function decideAlert(sb: any, actor: { id: string; name: string }, b: any) {
+  const approve = b.approve === true || b.approve === "true";
+  const note = typeof b.note === "string" && b.note.trim() ? b.note.trim().slice(0, 300) : null;
+  const { data, error } = await sb.rpc("sf_attendance_fix_decide", { p_alert_id: String(b.alert_id), p_actor: actor.id, p_approve: approve, p_note: note, p_via: "portal" });
+  if (error) return json({ ok: false, error: error.message }, 400);
+  if (!data?.ok) return json({ ok: false, error: data?.message ?? "処理できませんでした", code: data?.code }, 400);
+  const when = new Date().toLocaleString("ja-JP", { timeZone: "Asia/Tokyo", hour12: false }) + "（管理システムから）";
+  const isDel = data.request_kind === "delete";
+  if (!approve) {
+    waitUntil((async () => {
+      await updateMany(data.approval_notification_ids, `❌ 却下しました（${actor.name}・${when}）\n${data.summary}\n→ 申請 ${data.proposed}（理由: ${data.reason}）${note ? `\n却下理由: ${note}` : ""}`);
+      await updateMany(data.notification_ids, `❌ ${isDel ? "打刻削除の申請" : "修正申請"}は却下されました（${actor.name}・${when}）\n${data.summary}\n→ 申請 ${data.proposed}`);
+    })());
+    return json({ ok: true, approved: false, alert_id: data.alert_id });
+  }
+  const head = isDel
+    ? `✅ 承認しました（${actor.name}・${when}）\n${data.summary}\n→ 打刻削除（理由: ${data.reason}）\n管理システムの勤怠実績を削除済み。`
+    : `✅ 承認しました（${actor.name}・${when}）\n${data.summary}\n→ 修正後 ${data.proposed}（理由: ${data.reason}）\n管理システムに反映済み。`;
+  const headMgr = isDel
+    ? `🗑 打刻の削除が承認され、管理システムの勤怠実績を削除しました（${when}）\n${data.summary}\n`
+    : `✅ 修正が承認され、管理システムに反映されました（${when}）\n${data.summary}\n→ 修正後 ${data.proposed}\n`;
+  const doing = isDel ? "スマレジの勤務実績を削除中…" : "スマレジへ反映中…";
+  waitUntil((async () => {
+    await updateMany(data.approval_notification_ids, head + doing);
+    await updateMany(data.notification_ids, headMgr + doing);
+    const r = await smaregiFixAlert(data.alert_id);
+    const tail = r.ok ? (isDel ? "✅ スマレジの勤務実績も削除済み" : "✅ スマレジの勤務実績にも反映済み")
+      : (isDel ? `⚠️ スマレジ側の削除に失敗: ${r.error ?? "不明"}\nスマレジの管理画面から消してください（管理システム側は削除済み。消さないと翌朝の取込で戻ります）`
+               : `⚠️ スマレジへの反映に失敗: ${r.error ?? "不明"}\nスマレジの管理画面から直してください（管理システム側は反映済み・ロック中）`);
+    await updateMany(data.approval_notification_ids, head + tail);
+    await updateMany(data.notification_ids, headMgr + tail);
+  })());
+  return json({ ok: true, approved: true, alert_id: data.alert_id, summary: data.summary, request_kind: data.request_kind });
 }
