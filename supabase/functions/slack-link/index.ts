@@ -88,7 +88,7 @@ async function sync(sb: any) {
   const byEmail = new Map<string, Member>();
   for (const m of members) if (m.email) byEmail.set(m.email, m);
   const { data: users } = await sb.from("users").select("id,email,name,is_active").eq("is_active", true);
-  const { data: links } = await sb.from("user_slack").select("user_id,slack_user_id,matched_by");
+  const { data: links } = await sb.from("user_slack").select("user_id,slack_user_id,matched_by,matched_email,matched_at");
   const linked = new Map<string, any>((links ?? []).map((l: any) => [l.user_id, l]));
   const now = new Date().toISOString();
   const newly: { user_id: string; name: string; slack_user_id: string }[] = [];
@@ -99,7 +99,8 @@ async function sync(sb: any) {
     const cur = linked.get(u.id);
     if (cur) {
       const mm = members.find((x) => x.id === cur.slack_user_id);
-      if (mm) rows.push({ user_id: u.id, slack_user_id: cur.slack_user_id, matched_by: cur.matched_by ?? "email", slack_name: mm.real_name, slack_display_name: mm.display_name, updated_at: now });
+      // 2026-11-08 修正: upsert は無い列を null で送るため matched_at（not null）も必ず入れる（初回実行で not-null 違反になった）
+      if (mm) rows.push({ user_id: u.id, slack_user_id: cur.slack_user_id, matched_by: cur.matched_by ?? "email", matched_email: cur.matched_email ?? mm.email ?? null, matched_at: cur.matched_at ?? now, slack_name: mm.real_name, slack_display_name: mm.display_name, updated_at: now });
       continue;
     }
     if (m) { rows.push({ user_id: u.id, slack_user_id: m.id, matched_by: "email", matched_email: em, matched_at: now, slack_name: m.real_name, slack_display_name: m.display_name, updated_at: now }); newly.push({ user_id: u.id, name: u.name, slack_user_id: m.id }); }
