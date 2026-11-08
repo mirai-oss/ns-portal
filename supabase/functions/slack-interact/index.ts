@@ -53,6 +53,8 @@ async function resolveActor(sb: any, slackUserId: string): Promise<Actor | null>
 //   attendance.alert.confirm   勤怠確認「○ 合っている」        → RPC sf_attendance_alert_confirm(p_alert_id, p_actor)
 //   attendance.alert.fix       勤怠確認「× 修正する」          → モーダル attendance.fix.modal を開く（出勤・退勤 datetimepicker・理由）
 //   attendance.fix.modal       修正モーダルの送信              → RPC sf_attendance_fix_request → マスターへ承認依頼 DM
+//   attendance.alert.delete / attendance.delete.modal   「🗑 打刻を消す」→ 理由モーダル → RPC sf_attendance_delete_request → マスターへ承認依頼 DM（2026-11-08）
+//                              承認は attendance.fix.approve と同じ RPC（request_kind=delete で管理システムの行を削除 → EF smaregi-attendance-fix が DELETE）
 //   attendance.fix.approve / .reject   マスターの承認 / 却下   → RPC sf_attendance_fix_decide（承認で labor_cost_daily / attendance_records に反映）
 //   attendance.change.ack      スマレジ側の直接修正の通知「○ 確認した」→ RPC sf_attendance_change_ack
 //   attendance.request.approve / .reject   フォーム申請（勤怠追加・修正）の承認 / 却下 → RPC sf_attendance_request_decide → EF smaregi-attendance-fix(request_id)
@@ -75,6 +77,43 @@ const handlers: Record<string, Handler> = {
     // 2026-11-08: Slack は 3 秒以内の返事を要求（スマホは特に厳しく「なかなか接続できません」になる）→ メッセージ更新は返事の後で
     waitUntil(updateMany(data.notification_ids, `✅ 合っている（${actor.name}・${nowJst()}）\n${data.summary}`));
     return text("");
+  },
+  // 勤怠確認「🗑 打刻を消す」（2026-11-08）: 理由だけのモーダル → RPC sf_attendance_delete_request → マスターへ承認依頼
+  "attendance.alert.delete": async ({ payload, value, notificationId }) => {
+    return await openModal(payload.trigger_id, attendanceDeleteModal(value, notificationId));
+  },
+  "attendance.delete.modal": async ({ sb, actor, payload }) => {
+    const meta = JSON.parse(payload.view?.private_metadata ?? "{}");
+    const v = payload.view?.state?.values ?? {};
+    const reason = (v.reason?.reason?.value ?? "").trim();
+    if (!reason) return json({ response_action: "errors", errors: { reason: "削除の理由を入れてください" } });
+    const { data, error } = await sb.rpc("sf_attendance_delete_request", { p_alert_id: meta.alert_id, p_actor: actor.user_id, p_reason: reason, p_via: "slack" });
+    if (error) return json({ response_action: "errors", errors: { reason: error.message } });
+    if (!data?.ok) return json({ response_action: "errors", errors: { reason: data?.message ?? "申請できませんでした" } });
+    waitUntil((async () => {
+      await updateMany(data.notification_ids, `🗑 打刻の削除を申請しました（${actor.name}・${nowJst()}）\n${data.summary}\n理由: ${data.reason}\n承認待ち（マスター）`);
+      const ids: string[] = [];
+      for (const ch of await masterChannels(sb)) {
+        const nid = crypto.randomUUID();
+        const val = JSON.stringify({ alert_id: data.alert_id, notification_id: nid });
+        const r = await sendSlack({
+          action: "send", notification_id: nid, channel_key: ch, event: "attendance_delete_request", source: "ef:slack-interact",
+          text: `🗑 打刻削除の承認依頼 ${data.summary}`,
+          blocks: [
+            { type: "section", text: { type: "mrkdwn", text: `🗑 *打刻削除の承認依頼*\n${data.summary}\n申請: ${actor.name}\n*この日の勤務を取り消します（出勤していなかった等）*\n理由: ${data.reason}` } },
+            { type: "actions", block_id: "attendance_fix", elements: [
+              { type: "button", style: "danger", text: { type: "plain_text", text: "✅ 承認して削除", emoji: true }, action_id: "attendance.fix.approve", value: val },
+              { type: "button", text: { type: "plain_text", text: "❌ 却下", emoji: true }, action_id: "attendance.fix.reject", value: val },
+            ] },
+            { type: "context", elements: [{ type: "mrkdwn", text: `確認 \`${String(data.alert_id).slice(0, 8)}\`・承認すると管理システムの勤怠実績を削除し、スマレジ・タイムカードの勤務実績も削除します` }] },
+          ],
+          dedupe_key: `attendance_delete:${data.alert_id}:${ch}:${nid.slice(0, 8)}`, ref: { table: "sf_attendance_alerts", id: data.alert_id }, username: "勤怠確認", icon_emoji: ":alarm_clock:",
+        });
+        if (r?.ok && r.notification_id) ids.push(r.notification_id);
+      }
+      if (ids.length) await sb.from("sf_attendance_alerts").update({ approval_notification_ids: ids, updated_at: new Date().toISOString() }).eq("id", data.alert_id);
+    })());
+    return json({ response_action: "clear" });
   },
   // 勤怠確認「× 修正する」。trigger_id は 3 秒で失効するため、モーダルを最初に開く
   "attendance.alert.fix": async ({ payload, value, notificationId }) => {
@@ -192,6 +231,17 @@ async function updateMessage(notificationId: string | null, newText: string) {
     body: JSON.stringify({ action: "update", notification_id: notificationId, text: newText }),
   });
 }
+function attendanceDeleteModal(value: any, notificationId: string | null) {
+  return {
+    type: "modal", callback_id: "attendance.delete.modal",
+    private_metadata: JSON.stringify({ alert_id: value?.alert_id, notification_id: notificationId }),
+    title: { type: "plain_text", text: "打刻を消す" }, submit: { type: "plain_text", text: "承認を依頼" }, close: { type: "plain_text", text: "やめる" },
+    blocks: [
+      { type: "section", text: { type: "mrkdwn", text: `*${value?.title ?? ""}*\nこの日の勤務を取り消します（本人が出勤していなかった・誤って打刻した等）。理由を入れてください。マスターの承認後に管理システムとスマレジの勤務実績から削除されます。` } },
+      { type: "input", block_id: "reason", label: { type: "plain_text", text: "削除の理由" }, element: { type: "plain_text_input", action_id: "reason", multiline: true, max_length: 300, placeholder: { type: "plain_text", text: "例: この日は出勤していない（別の人の打刻）" } } },
+    ],
+  };
+}
 function attendanceFixModal(value: any, notificationId: string | null) {
   const now = Math.floor(Date.now() / 1000);
   return {
@@ -220,10 +270,24 @@ async function attendanceDecide({ sb, actor, payload, value }: Ctx, approve: boo
   if (error) return ephemeral(`記録できませんでした: ${error.message}`, ru);
   if (!data?.ok) return ephemeral(data?.message ?? "記録できませんでした", ru);
   const when = nowJst();
+  const isDel = data.request_kind === "delete";   // 2026-11-08 打刻削除
   if (!approve) {
     waitUntil((async () => {
       await updateMany(data.approval_notification_ids, `❌ 却下しました（${actor.name}・${when}）\n${data.summary}\n→ 申請 ${data.proposed}（理由: ${data.reason}）`);
-      await updateMany(data.notification_ids, `❌ 修正申請は却下されました（${actor.name}・${when}）\n${data.summary}\n→ 申請 ${data.proposed}`);
+      await updateMany(data.notification_ids, `❌ ${isDel ? "打刻削除の申請" : "修正申請"}は却下されました（${actor.name}・${when}）\n${data.summary}\n→ 申請 ${data.proposed}`);
+    })());
+    return text("");
+  }
+  if (isDel) {
+    const headD = `✅ 承認しました（${actor.name}・${when}）\n${data.summary}\n→ 打刻削除（理由: ${data.reason}）\n管理システムの勤怠実績を削除済み。`;
+    const headDM = `🗑 打刻の削除が承認され、管理システムの勤怠実績を削除しました（${when}）\n${data.summary}\n`;
+    waitUntil((async () => {
+      await updateMany(data.approval_notification_ids, headD + "スマレジの勤務実績を削除中…");
+      await updateMany(data.notification_ids, headDM + "スマレジの勤務実績を削除中…");
+      const r = await smaregiFix(data.alert_id);
+      const tail = r.ok ? "✅ スマレジの勤務実績も削除済み" : `⚠️ スマレジ側の削除に失敗: ${r.error ?? "不明"}\nスマレジの管理画面から消してください（管理システム側は削除済み。消さないと翌朝の取込で戻ります）`;
+      await updateMany(data.approval_notification_ids, headD + tail);
+      await updateMany(data.notification_ids, headDM + tail);
     })());
     return text("");
   }

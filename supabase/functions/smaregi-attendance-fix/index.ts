@@ -45,7 +45,8 @@ function jstIso(iso: string): string {
 
 
 type Target = {
-  table: "sf_attendance_alerts" | "sf_attendance_requests"; id: string; kind: "fix" | "add";
+  table: "sf_attendance_alerts" | "sf_attendance_requests"; id: string; kind: "fix" | "add" | "delete";
+  deleted_key?: string | null;   // 2026-11-08 打刻削除: 承認時に消した行の smaregi_shift_result_id（'sdm155v1:123' 形式あり）
   user_id: string; store_id: string; work_date: string; labor_cost_daily_id: string | null;
   clock_in: string; clock_out: string; b1s: string | null; b1e: string | null; b2s: string | null; b2e: string | null;
 };
@@ -62,11 +63,11 @@ Deno.serve(async (req) => {
   // ---- 対象の読み込み（アラート or フォーム申請）----
   let t: Target | null = null;
   if (/^[0-9a-f-]{36}$/.test(String(body.alert_id ?? ""))) {
-    const { data: a } = await sb.from("sf_attendance_alerts").select("id,status,user_id,store_id,work_date,labor_cost_daily_id,proposed_clock_in,proposed_clock_out,proposed_break_start_1,proposed_break_end_1,proposed_break_start_2,proposed_break_end_2,smaregi_sync_status").eq("id", body.alert_id).maybeSingle();
+    const { data: a } = await sb.from("sf_attendance_alerts").select("request_kind,deleted_shift_result_id,id,status,user_id,store_id,work_date,labor_cost_daily_id,proposed_clock_in,proposed_clock_out,proposed_break_start_1,proposed_break_end_1,proposed_break_start_2,proposed_break_end_2,smaregi_sync_status").eq("id", body.alert_id).maybeSingle();
     if (!a) return json({ ok: false, error: "アラートが見つかりません" }, 404);
     if (a.status !== "approved") return json({ ok: false, code: "not_approved", error: `承認済みではありません（${a.status}）` }, 409);
     if (a.smaregi_sync_status === "synced") return json({ ok: true, code: "already_synced" });
-    t = { table: "sf_attendance_alerts", id: a.id, kind: "fix", user_id: a.user_id, store_id: a.store_id, work_date: a.work_date, labor_cost_daily_id: a.labor_cost_daily_id,
+    t = { table: "sf_attendance_alerts", id: a.id, kind: a.request_kind === "delete" ? "delete" : "fix", deleted_key: a.deleted_shift_result_id ?? null, user_id: a.user_id, store_id: a.store_id, work_date: a.work_date, labor_cost_daily_id: a.labor_cost_daily_id,
       clock_in: a.proposed_clock_in, clock_out: a.proposed_clock_out, b1s: a.proposed_break_start_1, b1e: a.proposed_break_end_1, b2s: a.proposed_break_start_2, b2e: a.proposed_break_end_2 };
   } else if (/^[0-9a-f-]{36}$/.test(String(body.request_id ?? ""))) {
     const { data: r } = await sb.from("sf_attendance_requests").select("id,kind,status,user_id,store_id,work_date,labor_cost_daily_id,clock_in,clock_out,break_start_1,break_end_1,break_start_2,break_end_2,smaregi_sync_status").eq("id", body.request_id).maybeSingle();
@@ -89,6 +90,30 @@ Deno.serve(async (req) => {
   const rc = await resolveStoreContract(sb, target.store_id, target.work_date);
   if (!rc) return await fail("no_contract", "この店舗のスマレジ契約／事業所 ID（store_external_mappings）が見つかりません");
   const contractId = rc.contract.contract_id;
+
+  // ---- 打刻削除（2026-11-08）: ハブ側は承認 RPC で削除済み。スマレジの勤務実績を DELETE（締め済みは 409）----
+  if (target.kind === "delete") {
+    const key = target.deleted_key ?? "";
+    if (!key || key.startsWith("req:")) {
+      // スマレジに無い行（フォーム追加がまだ反映前など）→ 消すものが無い
+      await sb.from(target.table).update({ smaregi_sync_status: "skipped", smaregi_synced_at: now(), smaregi_error: null, updated_at: now() }).eq("id", target.id);
+      return json({ ok: true, code: "no_smaregi_record", mode: "delete" });
+    }
+    let dtoken: string;
+    try { dtoken = await getContractToken(contractId, SCOPES); } catch (e) { return await fail("auth", "スマレジ認証に失敗: " + String(e).slice(0, 200)); }
+    const did = stripContract(key, contractId);
+    const dres = await fetch(`${API_BASE}/${contractId}/timecard/shifts/${did}`, { method: "DELETE", headers: { Authorization: `Bearer ${dtoken}`, "Content-Type": "application/json" }, body: JSON.stringify({ division: "result" }) });
+    const dj = await dres.json().catch(() => null);
+    if (!dres.ok && dres.status !== 404) {
+      const detail = dj?.detail ?? dj?.title ?? (dj ? JSON.stringify(dj).slice(0, 200) : "");
+      const hint = dres.status === 409 ? "（締め済みの期間のため、スマレジの管理画面から消してください）" : "";
+      return await fail("smaregi_" + dres.status, `スマレジの勤務実績の削除に失敗 HTTP ${dres.status} ${detail}${hint}`, { response: dj, status: dres.status });
+    }
+    // 404＝スマレジ側にもう無い → 消えている状態なので成功扱い
+    await sb.from(target.table).update({ smaregi_sync_status: "synced", smaregi_synced_at: now(), smaregi_error: null, smaregi_response: dj ?? { status: dres.status }, updated_at: now() }).eq("id", target.id);
+    return json({ ok: true, code: dres.status === 404 ? "already_deleted" : "deleted", mode: "delete", contract: contractId.slice(-3), shift_result_id: did });
+  }
+
   const staffMap = await staffIdsByUser(sb, contractId, [target.user_id], target.work_date);
   const staffId = staffMap[target.user_id];
   if (!staffId) {
