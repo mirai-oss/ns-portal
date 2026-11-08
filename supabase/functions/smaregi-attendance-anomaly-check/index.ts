@@ -26,7 +26,7 @@
 // 2026-11-07 追記（Slack 勤怠確認ボタン・ユーザー決定）: 異常値を sf_attendance_alerts に積み、勤怠確認チャンネル
 //   （slack_channels 'kintai.check'＝C0CFQLYUM1Q・店長が参加）へ「○ 合っている / × 修正する」を送る。
 //   ボタンの先は slack-interact → RPC（設計書 §10-5・SQL 2026-11-07_sf_attendance_alerts.sql）。押せる人は RPC が判定（店長=自店舗・TEAM/HQ/CEO）。
-//   既存の LINE 通知と判定ロジックは無変更。body の { slack: false } で Slack を、{ line: false } で LINE を止められる（テスト用）。
+//   判定ロジックは無変更。通知は Slack（勤怠確認チャンネル・ボタン付き）。LINE は 2026-11-08 に停止（body { line: true } で一時的に送れる）。body { slack: false } で Slack を止められる（テスト用）。
 import { createClient } from "npm:@supabase/supabase-js@2";
 
 const SHORT_MINUTES = 60;
@@ -218,7 +218,8 @@ Deno.serve(async (req) => {
     }
 
     let notified = null;
-    if (anomalies.length && body.line !== false) {
+    // 2026-11-08 ユーザー決定「LINE の異常値アラートは止めて Slack だけで運用」: LINE は body { line: true } のときだけ送る
+    if (anomalies.length && body.line === true) {
       const lines = anomalies.map((a) =>
         `${a.work_date} ${a.name}（${a.store}）: ${a.kind}${a.worked_minutes == null ? "" : " " + fmtHM(a.worked_minutes)}`
       );
