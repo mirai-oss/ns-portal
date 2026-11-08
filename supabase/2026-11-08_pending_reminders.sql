@@ -9,8 +9,10 @@
 --         sf_attendance_requests(pending=マスターの承認待ち)
 --         sf_attendance_smaregi_changes(open=「確認した」待ち)
 --         decision_requests(pending かつ期限内=Claude の判断依頼。期限切れは expired にして締める)
--- 間隔: 毎日 10:00 と 17:00（JST）。最後の連絡から 3 時間たっていないものは飛ばす（届いたばかりの二重送りを防ぐ）。
---   変更は cron.alter_job か、EF 呼び出し body の min_age_hours で。
+-- 間隔（2026-11-08 ユーザー決定）: 最後の連絡（最初の通知 or 前回のリマインド）から 12 時間たったら送り、完了するまで 12 時間おきに送り続ける。
+--   実装: pg_cron を 08:00〜22:00 JST の毎時 0 分に回し（深夜は送らない。夜中に 12 時間を越えたものは朝 8 時に送る）、EF に min_age_hours=12 を渡す。
+--   例: 朝 8:00 のアラート → 20:00 → 翌 8:00 → 20:00 …／15:00 のフォーム申請 → 翌 8:00（3:00 は夜間なので送らない）→ 20:00 …
+--   変更は cron.alter_job（時間帯）か pending_reminders_trigger() の min_age_hours（間隔）で。
 -- =============================================================
 
 -- 1) リマインド回数・最終リマインド時刻（状態ではなく連絡の記録）
@@ -45,17 +47,17 @@ begin
       'apikey', c_anon,
       'Authorization', 'Bearer ' || c_anon,
       'x-notify-secret', trim(v_secret)),
-    body := jsonb_build_object('trigger', 'pg_cron'),
+    body := jsonb_build_object('trigger', 'pg_cron', 'min_age_hours', 12),
     timeout_milliseconds := 120000
   ) into v_req;
 end $$;
 revoke all on function public.pending_reminders_trigger() from public, anon, authenticated;
 
--- 3) 毎日 10:00・17:00 JST（= 01:00・08:00 UTC）
+-- 3) 08:00〜22:00 JST の毎時 0 分（= 23:00・00:00〜13:00 UTC）。深夜は回さない
 do $$
 begin
   if exists (select 1 from cron.job where jobname = 'pending-reminders') then
     perform cron.unschedule('pending-reminders');
   end if;
-  perform cron.schedule('pending-reminders', '0 1,8 * * *', $cmd$select public.pending_reminders_trigger()$cmd$);
+  perform cron.schedule('pending-reminders', '0 23,0-13 * * *', $cmd$select public.pending_reminders_trigger()$cmd$);
 end $$;

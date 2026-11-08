@@ -2,8 +2,9 @@
 // pending-reminders — 押されていない Slack のボタン（○×・承認/却下・確認・判断依頼）をまとめてリマインドする
 // 2026-11-08 新規（ユーザー指示「承認、却下等選ぶものは全て完了してないものを今後リマインドで流してください」）
 //
-// 呼び出し: pg_cron → public.pending_reminders_trigger()（毎日 10:00・17:00 JST）／手元から x-notify-secret 付き POST
-//   body: { min_age_hours?: number (既定 3), max_per_run?: number (既定 30), dry_run?: boolean, only?: string[] }
+// 呼び出し: pg_cron → public.pending_reminders_trigger()（08:00〜22:00 JST の毎時。body に min_age_hours=12）／手元から x-notify-secret 付き POST
+//   間隔（ユーザー決定 2026-11-08）: 最後の連絡から 12 時間で送り、完了するまで 12 時間おき。深夜（22〜8 時）は cron を回さない＝朝 8 時に送る。
+//   body: { min_age_hours?: number (既定 12), max_per_run?: number (既定 30), dry_run?: boolean, only?: string[] }
 //   only は "alert_open" | "alert_approval" | "request" | "change" | "decision" の配列（指定なし=全部）
 //
 // やり方: 最初に送ったメッセージの台帳（notification_deliveries.payload）からボタン付きブロックをそのまま取り出し、
@@ -100,7 +101,7 @@ Deno.serve(async (req) => {
   if (!authorized(req)) return json({ ok: false, error: "認証がありません" }, 401);
   let body: any = {};
   try { body = await req.json(); } catch { body = {}; }
-  const minAgeMs = Math.max(0, Number(body.min_age_hours ?? 3)) * 3600000;
+  const minAgeMs = Math.max(0, Number(body.min_age_hours ?? 12)) * 3600000;
   const maxPerRun = Math.min(100, Math.max(1, Number(body.max_per_run ?? 30)));
   const dryRun = !!body.dry_run;
   const only = Array.isArray(body.only) && body.only.length ? new Set<string>(body.only.map(String)) : null;
