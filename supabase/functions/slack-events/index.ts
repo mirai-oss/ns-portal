@@ -67,10 +67,18 @@ Deno.serve(async (req) => {
   if (!(await verifySlackSignature(req, raw))) return new Response("bad signature", { status: 401 });
   if (body.type !== "event_callback") return new Response("", { status: 200 });
   const ev = body.event ?? {};
+  if (ev.type !== "team_join" && ev.type !== "user_change") {
+    waitUntil(svc().from("slack_event_log").insert({ event_type: String(ev.type ?? "?"), result: "ignored", raw: { event_id: body.event_id ?? null } }).then(() => {}));
+  }
   if (ev.type === "team_join" || ev.type === "user_change") {
     waitUntil((async () => {
       const sb = svc();
       const r = await linkMember(sb, ev.user);
+      // 2026-11-08: 届いたイベントは全部記録（「届いているのに紐づかない」と「届いていない」を見分けるため）
+      try {
+        const em = String(ev.user?.profile?.email ?? "");
+        await sb.from("slack_event_log").insert({ event_type: ev.type, slack_user_id: ev.user?.id ?? null, email_masked: em ? em.replace(/^(.).*(@.*)$/, "$1***$2") : null, result: r.linked ? "linked" : (r.reason ?? "?"), user_id: r.user?.id ?? null, raw: { team: body.team_id ?? null, event_id: body.event_id ?? null, event_time: body.event_time ?? null, real_name: ev.user?.real_name ?? null, is_bot: !!ev.user?.is_bot, deleted: !!ev.user?.deleted } });
+      } catch (_) { /* 記録の失敗は無視 */ }
       if (r.linked && ev.type === "team_join") {
         await notifySlack({ action: "send", channel_key: `user:${r.user.id}`, event: "slack_link_welcome", source: "ef:slack-events",
           text: `👋 ${r.user.name}さん、N-Style の Slack へようこそ。管理システムの従業員情報と自動で紐づきました。\n勤怠確認のボタンや申請のやりとりがここに届きます。`,

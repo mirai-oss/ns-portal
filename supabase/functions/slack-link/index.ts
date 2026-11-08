@@ -60,6 +60,13 @@ async function auth(req: Request): Promise<{ mode: "user" | "secret" | "service"
   return { mode: "user", actor: { id: u.id, name: u.name, role: u.role, is_master: !!u.is_master } };
 }
 
+async function notifySlackSvc(body: Record<string, unknown>): Promise<any> {
+  const key = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
+  try {
+    const res = await fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/notify-slack`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}`, apikey: key }, body: JSON.stringify(body) });
+    return await res.json().catch(() => null);
+  } catch { return null; }
+}
 async function slackApi(method: string, params: Record<string, string> = {}): Promise<any> {
   const token = Deno.env.get("SLACK_BOT_TOKEN") ?? "";
   const qs = new URLSearchParams(params).toString();
@@ -106,6 +113,14 @@ async function sync(sb: any) {
     if (m) { rows.push({ user_id: u.id, slack_user_id: m.id, matched_by: "email", matched_email: em, matched_at: now, slack_name: m.real_name, slack_display_name: m.display_name, updated_at: now }); newly.push({ user_id: u.id, name: u.name, slack_user_id: m.id }); }
   }
   if (rows.length) { const { error } = await sb.from("user_slack").upsert(rows, { onConflict: "user_id" }); if (error) throw new Error(error.message); }
+  // 2026-11-08: 新しく紐づいた人には、その場で本人の Slack に案内（Slack の参加イベントが届かなくても 10 分おきの照合でここに来る）
+  for (const n of newly) {
+    await notifySlackSvc({ action: "send", channel_key: `user:${n.user_id}`, event: "slack_link_welcome", source: "ef:slack-link",
+      text: `👋 ${n.name}さん、N-Style の Slack へようこそ。管理システムの従業員情報と自動で紐づきました。\n勤怠確認のボタンや申請のやりとりがここに届きます。`,
+      dedupe_key: `slack_link_welcome:${n.user_id}`, username: "N-Style 通知Bot" });
+    await notifySlackSvc({ action: "send", channel_key: "hq.dev_system", event: "slack_link", source: "ef:slack-link",
+      text: `🔗 Slack 紐づけ: ${n.name} ↔ ${n.slack_user_id}（照合・メール一致）`, dedupe_key: `slack_link:${n.user_id}:${n.slack_user_id}` });
+  }
   const linkedSlack = new Set(rows.map((r) => r.slack_user_id));
   const unmatchedSlack = members.filter((m) => !linkedSlack.has(m.id)).map((m) => ({ id: m.id, name: m.real_name, email: m.email ? mask(m.email) : "" }));
   const unlinkedUsers = (users ?? []).filter((u: any) => !rows.some((r) => r.user_id === u.id)).length;
