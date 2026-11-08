@@ -4,12 +4,14 @@
 // これにより「ログイン→スプレッドシート全読み」という遅い経路は無くなる（GAS自体は残るが軽い問い合わせのみ）。
 // 目標/目標月次（手入力のためBQ未ミラー）は引き続き従来どおりのログイン経由（dashCall/action=data）で取得する。
 import { createClient } from "npm:@supabase/supabase-js@2";
-const INTAKE_SECRET = "4259598a7ce747d54e2bf84326131129f21eb77f54dfdcdd";
+// 2026-11-08 P0-1: GAS からの日次同期（action=daily）の合言葉は Supabase Secrets（環境変数 DASH_SYNC_DAILY_SECRET）
+// に置き、専用ヘッダ X-Intake-Secret で受ける。コードや本文には値を書かない。
+const DAILY_SECRET = (Deno.env.get("DASH_SYNC_DAILY_SECRET") ?? "").trim();
 // tori-dashboardのGAS Web App URL（公開リポジトリのapp.jsに同じ値がある。秘密情報ではない）
 const DASH_API_URL = "https://script.google.com/macros/s/AKfycbwW0qhyEr0-uQWTaLg7MkQhurHq6wMoaOKL7uCCnI_bgnAsGB5-auqG_dm_Q9uJc3Kc/exec";
 const cors = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, content-type, apikey, x-client-info",
+  "Access-Control-Allow-Headers": "authorization, content-type, apikey, x-client-info, x-intake-secret",
 };
 const json = (o: unknown, status = 200) =>
   new Response(JSON.stringify(o), { status, headers: { ...cors, "Content-Type": "application/json" } });
@@ -209,9 +211,12 @@ Deno.serve(async (req) => {
     let body: any = {};
     try { body = JSON.parse(raw || "{}"); } catch (_) { body = {}; }
     const sb = svc();
-    // ---------------- GASから1日1回（合言葉で認証・ログイン不要） ----------------
+    // ---------------- GASから1日1回（専用ヘッダ X-Intake-Secret で認証・ログイン不要） ----------------
+    // 判定より前に書き込み・外部呼び出しはしない（無関係な値での 403 確認を安全に行えるようにするため）
     if (body.action === "daily") {
-      if (body.secret !== INTAKE_SECRET) return json({ ok: false, error: "認証エラー" }, 403);
+      const given = (req.headers.get("x-intake-secret") ?? "").trim();
+      if (!DAILY_SECRET) return json({ ok: false, error: "受け口の設定がありません（DASH_SYNC_DAILY_SECRET 未設定）" }, 503);
+      if (!given || given !== DAILY_SECRET) return json({ ok: false, error: "認証エラー" }, 403);
       const result = await runSync(sb);
       return json(result, result.ok ? 200 : 500);
     }
