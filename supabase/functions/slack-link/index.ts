@@ -6,6 +6,7 @@
 //   op=link        { user_id, slack_user_id } 手で紐づけ（matched_by=manual）／ op=unlink { user_id }
 //   op=set_invite  { url } 招待リンクを保存（Slack の「メンバーを招待 → 招待リンクをコピー」で作ったもの）
 //   op=status      { user_id? } 紐づけ状態と招待の履歴
+//   op=remind      Slack 未連携の従業員一覧を hq.slack_unlinked へ（pg_cron 毎朝 09:45・x-notify-secret）
 // 認証: JWT（CEO/HQ/マスター）。op=sync と op=invite は x-notify-secret（pg_cron 毎朝 09:30／手元のテスト送信）と service_role でも可
 // デプロイ: supabase functions deploy slack-link --no-verify-jwt --project-ref uuvsxzhpxtghojoubjcc --yes
 // =============================================================
@@ -110,6 +111,41 @@ async function sync(sb: any) {
   return { ok: true, slack_members: members.length, linked: rows.length, newly_linked: newly, unlinked_users: unlinkedUsers, unmatched_slack: unmatchedSlack };
 }
 
+// 毎朝のリマインド（2026-11-08 ユーザー指示）: 管理システムに登録済みで Slack 未連携の人を hq.slack_unlinked（C0CFE1Y9HC7）へ。0 人なら送らない
+//   除外: 名前に「連携用」「テスト」を含むアカウント（システム用・テスト用）
+async function remind(sb: any) {
+  const { data: users } = await sb.from("users").select("id,name,role,email,line_user_id").eq("is_active", true);
+  const { data: links } = await sb.from("user_slack").select("user_id");
+  const linked = new Set((links ?? []).map((l: any) => l.user_id));
+  const targets = (users ?? []).filter((u: any) => !linked.has(u.id) && !/連携用|テスト/.test(String(u.name ?? "")));
+  if (!targets.length) return { ok: true, sent: false, unlinked: 0 };
+  const ids = targets.map((u: any) => u.id);
+  const { data: us } = await sb.from("user_stores").select("user_id,stores(name)").in("user_id", ids);
+  const storeOf = new Map<string, string[]>();
+  for (const r of us ?? []) { const arr = storeOf.get(r.user_id) ?? []; const n = (r as any).stores?.name; if (n && !arr.includes(n)) arr.push(n); storeOf.set(r.user_id, arr); }
+  const { data: logs } = await sb.from("slack_invite_log").select("user_id,sent_at,channel").in("user_id", ids).in("channel", ["line", "email"]).order("sent_at", { ascending: false });
+  const lastSent = new Map<string, string>();
+  for (const l of logs ?? []) if (!lastSent.has(l.user_id)) lastSent.set(l.user_id, l.sent_at);
+  const ROLE: Record<string, string> = { CEO: "社長", HQ: "本部", TEAM: "チーム長", TENCHO: "店長", SHAIN: "社員", AL: "アルバイト" };
+  const fmt = (u: any) => `${u.name}（${ROLE[u.role] ?? u.role}・${(storeOf.get(u.id) ?? []).join("・") || "店舗なし"}）`;
+  const jd = (iso: string) => new Date(iso).toLocaleDateString("ja-JP", { timeZone: "Asia/Tokyo", month: "numeric", day: "numeric" });
+  const order: Record<string, number> = { CEO: 0, HQ: 1, TEAM: 2, TENCHO: 3, SHAIN: 4, AL: 5 };
+  targets.sort((x: any, y: any) => (order[x.role] ?? 9) - (order[y.role] ?? 9) || String(x.name).localeCompare(String(y.name), "ja"));
+  const invited = targets.filter((u: any) => lastSent.has(u.id)), notYet = targets.filter((u: any) => !lastSent.has(u.id));
+  const cap = (arr: any[], f: (u: any) => string, max = 40) => arr.slice(0, max).map(f).join("\n") + (arr.length > max ? `\n…ほか ${arr.length - max} 名` : "");
+  const text = [
+    `🔔 *Slack 未連携の従業員: ${targets.length} 名*（管理システムに登録済みで、まだ Slack と紐づいていない人）`,
+    invited.length ? `\n*招待済み・登録待ち ${invited.length} 名*（登録メールが違う可能性もあり → 従業員管理の「Slack のメンバーから選んで紐づける」）\n${cap(invited, (u) => `・${fmt(u)}　最終招待 ${jd(lastSent.get(u.id)!)}`)}` : "",
+    notYet.length ? `\n*まだ招待していない ${notYet.length} 名*\n${cap(notYet, (u) => `・${fmt(u)}`)}` : "",
+    `\n招待は nippo → 従業員管理 →「未連携・未提出だけ探す」→ 💬 Slack未連携のみ → 一斉送信（初回は LINE＋メール）。<https://mirai-oss.github.io/nippo/?page=admin|従業員管理を開く>`,
+  ].filter(Boolean).join("\n");
+  const r = await fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/notify-slack`, {
+    method: "POST", headers: { "Content-Type": "application/json", "x-notify-secret": Deno.env.get("NOTIFY_SLACK_SECRET") ?? "", apikey: Deno.env.get("SUPABASE_ANON_KEY") ?? "" },
+    body: JSON.stringify({ action: "send", channel_key: "hq.slack_unlinked", event: "slack_unlinked_remind", source: "ef:slack-link", text, dedupe_key: `slack_unlinked_remind:${new Date().toISOString().slice(0, 10)}`, username: "N-Style 通知Bot", icon_emoji: ":bell:" }),
+  });
+  const j = await r.json().catch(() => null);
+  return { ok: !!j?.ok, sent: !!j?.ok, unlinked: targets.length, invited: invited.length, not_yet: notYet.length, error: j?.error };
+}
 async function linePush(sb: any, lineUserId: string, text: string): Promise<{ ok: boolean; error?: string }> {
   const { data: sec } = await sb.from("app_secrets").select("value").eq("key", "line_channel_token").maybeSingle();
   const token = (sec?.value ?? "").trim();
@@ -136,6 +172,7 @@ Deno.serve(async (req) => {
   try {
     if (op === "sync") return json(await sync(sb));
     // x-notify-secret（内部鍵）は sync と invite だけ許す（invite は Claude 側からのテスト送信・手元運用用。送れるのは招待の案内のみ）2026-11-08
+    if (op === "remind") return json(await remind(sb));
     if (a.mode === "secret" && op !== "invite") return json({ ok: false, error: "この操作はログインが必要です" }, 403);
     const actorId = a.actor?.id ?? null;
 
