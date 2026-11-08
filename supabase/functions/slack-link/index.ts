@@ -7,6 +7,7 @@
 //   op=set_invite  { url } 招待リンクを保存（Slack の「メンバーを招待 → 招待リンクをコピー」で作ったもの）
 //   op=status      { user_id? } 紐づけ状態と招待の履歴
 //   op=remind      Slack 未連携の従業員一覧を hq.slack_unlinked へ（pg_cron 毎朝 09:45・x-notify-secret）
+//   op=remind_employees  本人へ自動再送（招待から 3 日→以後 7 日おき→最大 3 回・LINE＋メール。pg_cron 毎朝 10:00）
 // 認証: JWT（CEO/HQ/マスター）。op=sync と op=invite は x-notify-secret（pg_cron 毎朝 09:30／手元のテスト送信）と service_role でも可
 // デプロイ: supabase functions deploy slack-link --no-verify-jwt --project-ref uuvsxzhpxtghojoubjcc --yes
 // =============================================================
@@ -139,19 +140,21 @@ async function remind(sb: any) {
   const { data: us } = await sb.from("user_stores").select("user_id,stores(name)").in("user_id", ids);
   const storeOf = new Map<string, string[]>();
   for (const r of us ?? []) { const arr = storeOf.get(r.user_id) ?? []; const n = (r as any).stores?.name; if (n && !arr.includes(n)) arr.push(n); storeOf.set(r.user_id, arr); }
-  const { data: logs } = await sb.from("slack_invite_log").select("user_id,sent_at,channel").in("user_id", ids).in("channel", ["line", "email"]).order("sent_at", { ascending: false });
-  const lastSent = new Map<string, string>();
-  for (const l of logs ?? []) if (!lastSent.has(l.user_id)) lastSent.set(l.user_id, l.sent_at);
+  const { data: logs } = await sb.from("slack_invite_log").select("user_id,sent_at,channel,resend_no").in("user_id", ids).in("channel", ["line", "email"]).order("sent_at", { ascending: false });
+  const lastSent = new Map<string, string>(); const resends = new Map<string, number>();
+  for (const l of logs ?? []) { if (!lastSent.has(l.user_id)) lastSent.set(l.user_id, l.sent_at); resends.set(l.user_id, Math.max(resends.get(l.user_id) ?? 0, Number(l.resend_no ?? 0))); }
   const ROLE: Record<string, string> = { CEO: "社長", HQ: "本部", TEAM: "チーム長", TENCHO: "店長", SHAIN: "社員", AL: "アルバイト" };
   const fmt = (u: any) => `${u.name}（${ROLE[u.role] ?? u.role}・${(storeOf.get(u.id) ?? []).join("・") || "店舗なし"}）`;
   const jd = (iso: string) => new Date(iso).toLocaleDateString("ja-JP", { timeZone: "Asia/Tokyo", month: "numeric", day: "numeric" });
   const order: Record<string, number> = { CEO: 0, HQ: 1, TEAM: 2, TENCHO: 3, SHAIN: 4, AL: 5 };
   targets.sort((x: any, y: any) => (order[x.role] ?? 9) - (order[y.role] ?? 9) || String(x.name).localeCompare(String(y.name), "ja"));
-  const invited = targets.filter((u: any) => lastSent.has(u.id)), notYet = targets.filter((u: any) => !lastSent.has(u.id));
+  const followUp = targets.filter((u: any) => lastSent.has(u.id) && (resends.get(u.id) ?? 0) >= RESEND_MAX);
+  const invited = targets.filter((u: any) => lastSent.has(u.id) && (resends.get(u.id) ?? 0) < RESEND_MAX), notYet = targets.filter((u: any) => !lastSent.has(u.id));
   const cap = (arr: any[], f: (u: any) => string, max = 40) => arr.slice(0, max).map(f).join("\n") + (arr.length > max ? `\n…ほか ${arr.length - max} 名` : "");
   const text = [
     `🔔 *Slack 未連携の従業員: ${targets.length} 名*（管理システムに登録済みで、まだ Slack と紐づいていない人）`,
-    invited.length ? `\n*招待済み・登録待ち ${invited.length} 名*（登録メールが違う可能性もあり → 従業員管理の「Slack のメンバーから選んで紐づける」）\n${cap(invited, (u) => `・${fmt(u)}　最終招待 ${jd(lastSent.get(u.id)!)}`)}` : "",
+    followUp.length ? `\n*⚠️ 要フォロー ${followUp.length} 名*（再送 ${RESEND_MAX} 回しても未連携。店長・本部から声をかけてください。登録メールが違う可能性もあり → 従業員管理の「Slack のメンバーから選んで紐づける」）\n${cap(followUp, (u) => `・${fmt(u)}　最終送信 ${jd(lastSent.get(u.id)!)}`)}` : "",
+    invited.length ? `\n*招待済み・登録待ち ${invited.length} 名*（3 日後に自動で再送、以後 1 週間おき・最大 3 回）\n${cap(invited, (u) => `・${fmt(u)}　最終送信 ${jd(lastSent.get(u.id)!)}${(resends.get(u.id) ?? 0) ? `（再送 ${resends.get(u.id)} 回）` : ""}`)}` : "",
     notYet.length ? `\n*まだ招待していない ${notYet.length} 名*\n${cap(notYet, (u) => `・${fmt(u)}`)}` : "",
     `\n招待は nippo → 従業員管理 →「未連携・未提出だけ探す」→ 💬 Slack未連携のみ → 一斉送信（初回は LINE＋メール）。<https://mirai-oss.github.io/nippo/?page=admin|従業員管理を開く>`,
   ].filter(Boolean).join("\n");
@@ -160,7 +163,7 @@ async function remind(sb: any) {
     body: JSON.stringify({ action: "send", channel_key: "hq.slack_unlinked", event: "slack_unlinked_remind", source: "ef:slack-link", text, dedupe_key: `slack_unlinked_remind:${new Date().toISOString().slice(0, 10)}`, username: "N-Style 通知Bot", icon_emoji: ":bell:" }),
   });
   const j = await r.json().catch(() => null);
-  return { ok: !!j?.ok, sent: !!j?.ok, unlinked: targets.length, invited: invited.length, not_yet: notYet.length, error: j?.error };
+  return { ok: !!j?.ok, sent: !!j?.ok, unlinked: targets.length, invited: invited.length, not_yet: notYet.length, follow_up: followUp.length, error: j?.error };
 }
 async function linePush(sb: any, lineUserId: string, text: string): Promise<{ ok: boolean; error?: string }> {
   const { data: sec } = await sb.from("app_secrets").select("value").eq("key", "line_channel_token").maybeSingle();
@@ -171,6 +174,47 @@ async function linePush(sb: any, lineUserId: string, text: string): Promise<{ ok
   return { ok: true };
 }
 const SLACK_GUIDE_URL_DEFAULT = "https://mirai-oss.github.io/ns-portal/docs/guide_slack_setup.pdf";   // Slack の登録のしかた（顔写真の登録など）PDF（ユーザー提供 2026-11-08・docs に公開）
+function inviteText(u: { name: string; email: string }, inv: { url: string; note: string; guide_url: string }, prefix = ""): string {
+  return `${prefix}【${u.name}さん】会社の連絡を Slack に移します。下のリンクから Slack に登録してください。\n\n${inv.url}\n\n★登録するときのメールは、管理システムに登録している「${u.email}」にしてください（同じメールだと自動で管理システムと紐づきます）。\n\n📄 登録のしかた・顔写真の登録方法（PDF）:\n${inv.guide_url}${inv.note ? "\n" + inv.note : ""}`;
+}
+// 本人への自動再送（ユーザー決定 2026-11-08）: 最初の招待から 3 日たっても未連携 → 再送 1 回目。以後 7 日おき。最大 3 回。LINE＋メール
+const RESEND_FIRST_DAYS = 3, RESEND_EVERY_DAYS = 7, RESEND_MAX = 3;
+async function remindEmployees(sb: any, actorId: string | null) {
+  const inv = await inviteSetting(sb);
+  if (!inv) return { ok: false, error: "招待リンク未設定" };
+  const { data: users } = await sb.from("users").select("id,name,email,line_user_id,is_active").eq("is_active", true);
+  const { data: links } = await sb.from("user_slack").select("user_id");
+  const linked = new Set((links ?? []).map((l: any) => l.user_id));
+  const targets = (users ?? []).filter((u: any) => !linked.has(u.id) && !/連携用|テスト/.test(String(u.name ?? "")));
+  const ids = targets.map((u: any) => u.id);
+  if (!ids.length) return { ok: true, sent: 0 };
+  const { data: logs } = await sb.from("slack_invite_log").select("user_id,sent_at,channel,resend_no").in("user_id", ids).in("channel", ["line", "email"]);
+  const byUser = new Map<string, { first: number; last: number; resends: number }>();
+  for (const l of logs ?? []) {
+    const t = new Date(l.sent_at).getTime();
+    const cur = byUser.get(l.user_id) ?? { first: t, last: t, resends: 0 };
+    cur.first = Math.min(cur.first, t); cur.last = Math.max(cur.last, t); cur.resends = Math.max(cur.resends, Number(l.resend_no ?? 0));
+    byUser.set(l.user_id, cur);
+  }
+  const now = Date.now(), day = 86400000;
+  const results: any[] = [];
+  let sent = 0;
+  for (const u of targets) {
+    const st = byUser.get(u.id);
+    if (!st) continue;                               // まだ一度も招待していない人は対象外（本部が送る）
+    if (st.resends >= RESEND_MAX) continue;          // 3 回送ったら止める（要フォローとして朝の一覧へ）
+    const due = st.resends === 0 ? st.first + RESEND_FIRST_DAYS * day : st.last + RESEND_EVERY_DAYS * day;
+    if (now < due) continue;
+    const n = st.resends + 1;
+    const text = inviteText(u, inv, `【再送 ${n} 回目】Slack の登録がまだ確認できていません。\n`);
+    const via: string[] = [];
+    if (u.line_user_id) { const r = await linePush(sb, u.line_user_id, text); if (r.ok) { via.push("line"); await sb.from("slack_invite_log").insert({ user_id: u.id, sent_by: actorId, channel: "line", resend_no: n, note: "auto" }); } }
+    if (u.email) { const r = await emailSend(u.email, `【鳥一代グループ】Slack 登録のお願い（再送 ${n} 回目）`, text); if (r.ok) { via.push("email"); await sb.from("slack_invite_log").insert({ user_id: u.id, sent_by: actorId, channel: "email", resend_no: n, note: "auto" }); } }
+    if (via.length) sent++;
+    results.push({ name: u.name, resend_no: n, via: via.join("+") || "failed" });
+  }
+  return { ok: true, sent, results };
+}
 async function inviteSetting(sb: any): Promise<{ url: string; note: string; guide_url: string } | null> {
   const { data } = await sb.from("app_settings").select("value").eq("key", "slack_invite").maybeSingle();
   const v = data?.value ?? null;
@@ -190,6 +234,7 @@ Deno.serve(async (req) => {
     if (op === "sync") return json(await sync(sb));
     // x-notify-secret（内部鍵）は sync と invite だけ許す（invite は Claude 側からのテスト送信・手元運用用。送れるのは招待の案内のみ）2026-11-08
     if (op === "remind") return json(await remind(sb));
+    if (op === "remind_employees") return json(await remindEmployees(sb, a.actor?.id ?? null));
     if (a.mode === "secret" && op !== "invite") return json({ ok: false, error: "この操作はログインが必要です" }, 403);
     const actorId = a.actor?.id ?? null;
 
@@ -214,7 +259,7 @@ Deno.serve(async (req) => {
       if (!u) return json({ ok: false, error: "従業員が見つかりません" }, 404);
       const inv = await inviteSetting(sb);
       if (!inv) return json({ ok: false, code: "no_invite_url", error: "Slack の招待リンクがまだ登録されていません（従業員一覧の「Slack の招待リンクを設定」から入れてください）" }, 400);
-      const text = `【${u.name}さん】会社の連絡を Slack に移します。下のリンクから Slack に登録してください。\n\n${inv.url}\n\n★登録するときのメールは、管理システムに登録している「${u.email}」にしてください（同じメールだと自動で管理システムと紐づきます）。\n\n📄 登録のしかた・顔写真の登録方法（PDF）:\n${inv.guide_url}${inv.note ? "\n" + inv.note : ""}`;
+      const text = inviteText(u, inv);
       if (b.channel === "copy") {
         await sb.from("slack_invite_log").insert({ user_id: uid, sent_by: actorId, channel: "copy" });
         return json({ ok: true, sent_via: "copy", invite_url: inv.url, text });
