@@ -117,7 +117,7 @@ const handlers: Record<string, Handler> = {
           ] },
           { type: "context", elements: [{ type: "mrkdwn", text: `確認 \`${String(data.alert_id).slice(0, 8)}\`・承認すると管理システムの勤怠実績に反映（スマレジ側の打刻は別途修正）` }] },
         ],
-        dedupe_key: `attendance_fix:${data.alert_id}:${ch}`, ref: { table: "sf_attendance_alerts", id: data.alert_id }, username: "勤怠確認", icon_emoji: ":alarm_clock:",
+        dedupe_key: `attendance_fix:${data.alert_id}:${ch}:${nid.slice(0, 8)}`, // 2026-11-08: 同じアラートに 2 度目の申請が来たとき（テストの再利用など）に「重複」で送られない事故を防ぐ ref: { table: "sf_attendance_alerts", id: data.alert_id }, username: "勤怠確認", icon_emoji: ":alarm_clock:",
       });
       if (r?.ok && r.notification_id) ids.push(r.notification_id);
     }
@@ -152,8 +152,11 @@ const handlers: Record<string, Handler> = {
     if (error) return ephemeral(`記録できませんでした: ${error.message}`, ru);
     if (!data?.ok) return ephemeral(data?.message ?? "記録できませんでした", ru);
     const when = new Date().toLocaleString("ja-JP", { timeZone: "Asia/Tokyo", hour12: false });
-    await updateMessage(notificationId ?? data.notification_id ?? null,
-      `✅ ${actor.name} が「${data.label}」を選択しました（${when}）\n> ${String(data.question ?? "").replace(/\n/g, "\n> ")}`);
+    const done = `✅ ${actor.name} が「${data.label}」を選択しました（${when}）\n> ${String(data.question ?? "").replace(/\n/g, "\n> ")}`;
+    await updateMessage(notificationId ?? data.notification_id ?? null, done);
+    // リマインド（EF pending-reminders）で再送したコピーも「済」にする（2026-11-08）
+    const { data: dr } = await sb.from("decision_requests").select("notification_id,reminder_notification_ids").eq("id", requestId).maybeSingle();
+    await updateMany([dr?.notification_id, ...(dr?.reminder_notification_ids ?? [])].filter((x: unknown) => typeof x === "string" && x !== (notificationId ?? data.notification_id)), done);
     return text("");
   },
 };
