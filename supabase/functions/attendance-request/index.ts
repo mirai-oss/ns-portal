@@ -1,6 +1,7 @@
 // =============================================================
 // attendance-request — 勤怠の追加・修正申請フォーム（kintai.html）の受け口（2026-11-07 新規）
 //   op=staff  { store_id }            … その店舗の従業員（RPC sf_attendance_form_staff・ログインユーザー権限）
+//   op=day    { store_id, work_date } … その日・その店舗の勤怠一覧＝修正前の値（RPC sf_attendance_form_day・2026-11-08）
 //   op=submit { kind, store_id, user_id, work_date, clock_in, clock_out, break_start_1.., reason }
 //             … RPC sf_attendance_request_submit（申請者=JWT のユーザー）→ マスターの Slack DM に承認依頼 → 勤怠確認チャンネルに「申請あり」
 //   op=decide { request_id, approve: true|false, note? }   … 2026-11-08 管理システム（tori-dashboard 申請履歴）からの承認/却下
@@ -66,8 +67,16 @@ Deno.serve(async (req) => {
     if (error) return json({ ok: false, error: error.message }, 400);
     return json({ ok: true, staff: data ?? [] });
   }
+  if (b.op === "day") {
+    // 2026-11-08: その日・その店舗の勤怠一覧（修正前の値）。RPC はログインユーザーの権限で（管理できる店舗は全員分、他は自分だけ）
+    const jwt = (req.headers.get("authorization") ?? "").replace(/^Bearer\s+/i, "").trim();
+    const asUser = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_ANON_KEY")!, { global: { headers: { Authorization: `Bearer ${jwt}` } } });
+    const { data, error } = await asUser.rpc("sf_attendance_form_day", { p_store_id: String(b.store_id ?? ""), p_work_date: String(b.work_date ?? "") });
+    if (error) return json({ ok: false, error: error.message }, 400);
+    return json({ ok: true, rows: data ?? [] });
+  }
   if (b.op === "decide") return await decide(sb, actor, b);
-  if (b.op !== "submit") return json({ ok: false, error: "op は staff / submit / decide" }, 400);
+  if (b.op !== "submit") return json({ ok: false, error: "op は staff / day / submit / decide" }, 400);
 
   const { data, error } = await sb.rpc("sf_attendance_request_submit", {
     p_actor: actor.id, p_kind: String(b.kind ?? ""), p_store_id: b.store_id ?? null, p_user_id: b.user_id ?? null, p_work_date: b.work_date ?? null,

@@ -29,6 +29,10 @@ textarea{resize:vertical}
 .staff-list div{padding:9px 12px;border-bottom:1px solid var(--line);cursor:pointer;font-size:15px}
 .staff-list div:last-child{border-bottom:none}.staff-list div.sel{background:var(--soft);color:var(--accent);font-weight:700}
 .staff-list .empty{color:var(--muted);cursor:default}
+.staff-list div.ro{cursor:default;color:var(--muted)}
+.staff-list .sub{display:block;font-size:12px;color:var(--muted);font-weight:400}
+.staff-list div.sel .sub{color:var(--accent)}
+.before{background:var(--soft);border-radius:8px;padding:8px 10px;font-size:13px;margin-top:8px;line-height:1.6}
 .hist{font-size:13px}.hist div{padding:7px 0;border-bottom:1px solid var(--line)}.hist div:last-child{border-bottom:none}
 .pill{display:inline-block;border-radius:99px;padding:1px 8px;font-size:11px;margin-right:6px}
 .pill.pending{background:#fdf5e0;color:var(--warn)}.pill.approved{background:#e9f6ef;color:var(--ok)}.pill.rejected{background:#fdecec;color:var(--bad)}
@@ -67,52 +71,95 @@ async function refresh(){
 async function fetchMe(){const s=sess.get();if(!s)return null;const r=await authed(`/rest/v1/users?id=eq.${s.uid}&select=id,name,role,is_active`);return (r.ok&&r.body?.[0])||null;}
 
 /* 状態 */
-let ME=null,STORES=[],STAFF=[],KIND="fix",STORE="",USER="",Q="";
+let ME=null,STORES=[],STAFF=[],KIND="fix",STORE="",USER="",Q="",DATE="",DAY=[],DAYLOAD=false,BEFORE=null;   // DATE=勤務日・DAY=その日の勤怠一覧（修正前の値）・BEFORE=選んだ人の修正前
 const ROLE_NAME={CEO:"社長",HQ:"本部",TEAM:"チーム長",TENCHO:"店長",SHAIN:"社員",AL:"アルバイト"};
 const todayJst=()=>new Date(Date.now()+9*3600*1000).toISOString().slice(0,10);
 const addDays=(d,n)=>{const x=new Date(d+"T00:00:00Z");x.setUTCDate(x.getUTCDate()+n);return x.toISOString().slice(0,10)};
 
 function renderLogin(){$("app").innerHTML=`<div class="card"><p style="margin-bottom:10px">ログインが必要です。ポータルからログインしてから、もう一度この画面を開いてください。</p><a class="btn" href="index.html">← ポータルへ</a></div>`;}
 
+function fmtRow(r){   // 一覧の 1 行: 出勤−退勤（勤務 n時間n分・休憩 …）
+  const hm=t=>t?t.slice(11):"";
+  const nd=(t)=>t&&r.clock_in&&t.slice(0,10)>r.clock_in.slice(0,10)?"翌":"";
+  const out=r.clock_out?nd(r.clock_out)+hm(r.clock_out):"退勤なし";
+  const brk=[[r.break_start_1,r.break_end_1],[r.break_start_2,r.break_end_2]].filter(x=>x[0]).map(x=>`${hm(x[0])}−${x[1]?nd(x[1])+hm(x[1]):"終了なし"}`);
+  const w=r.worked_minutes==null?"":`勤務 ${Math.floor(r.worked_minutes/60)}時間${r.worked_minutes%60}分`;
+  return `${hm(r.clock_in)||"-"}−${out}${w||brk.length?`（${[w,brk.length?"休憩 "+brk.join("・"):"休憩なし"].filter(Boolean).join("・")}）`:""}`;
+}
+function dayListHtml(){
+  if(!STORE||!DATE) return `<div class="empty">先に店舗と勤務日を選んでください</div>`;
+  if(DAYLOAD) return `<div class="empty">読み込み中…</div>`;
+  if(!DAY.length) return `<div class="empty">この日の勤怠はありません${KIND==="fix"?"（打刻が無い日は「➕ 勤怠追加」で申請してください）":""}</div>`;
+  return DAY.map(r=>KIND==="fix"
+    ?`<div class="${r.user_id===USER?"sel":""}" onclick="pickRow('${r.user_id}')">${esc(r.name)}${r.pending?" <span style='font-size:12px;color:var(--bad)'>承認待ちの申請あり</span>":""}${r.locked?" <span style='font-size:12px'>🔒修正済</span>":""}<span class="sub">${esc(fmtRow(r))}</span></div>`
+    :`<div class="ro">${esc(r.name)}<span class="sub">${esc(fmtRow(r))}（すでに勤怠あり → 直すときは「✏️ 勤怠修正」）</span></div>`).join("");
+}
 function render(){
   const stOpts=STORES.map(s=>`<option value="${s.id}" ${s.id===STORE?"selected":""}>${esc(s.name)}</option>`).join("");
   const q=Q.trim().toLowerCase();
   const list=STAFF.filter(u=>!q||String(u.name).toLowerCase().includes(q)||String(u.name).replace(/[\s　]/g,"").toLowerCase().includes(q.replace(/[\s　]/g,"")));
+  const v=id=>$(id)?.value||"";
+  const keep={cin:v("cin"),cout:v("cout"),b1s:v("b1s"),b1e:v("b1e"),b2s:v("b2s"),b2e:v("b2e"),reason:v("reason")};
   $("app").innerHTML=`
   <div class="card"><h1>⏰ 勤怠の追加・修正申請</h1><div class="who">${esc(ME.name)}（${ROLE_NAME[ME.role]||ME.role}）・承認されるとスマレジと管理システムに反映されます</div></div>
   <div class="card">
     <label>申請の種類<span class="req">必須</span></label>
     <div class="seg"><button type="button" class="${KIND==="add"?"active":""}" onclick="setKind('add')">➕ 勤怠追加</button><button type="button" class="${KIND==="fix"?"active":""}" onclick="setKind('fix')">✏️ 勤怠修正</button></div>
-    <div class="note">${KIND==="add"?"打刻が無かった日の勤務を新しく登録します。":"すでにある勤務の出勤・退勤・休憩を直します。"}</div>
+    <div class="note">${KIND==="add"?"打刻が無かった日の勤務を新しく登録します。":"すでにある勤務の出勤・退勤・休憩を直します。日付と店舗を選ぶとその日の勤怠が出るので、直す人を選んでください。"}</div>
     <label>店舗<span class="req">必須</span></label>
     <select id="store" onchange="setStore(this.value)"><option value="">選んでください</option>${stOpts}</select>
+    <label>勤務日<span class="req">必須</span></label>
+    <input id="date" type="date" max="${todayJst()}" value="${esc(DATE)}" onchange="setDate(this.value)">
+    ${KIND==="fix"?`
+    <label>直す人（この日の勤怠）<span class="req">必須</span></label>
+    <div class="staff-list">${dayListHtml()}</div>
+    ${BEFORE&&BEFORE.user_id===USER?`<div class="before">修正前（${esc(BEFORE.name)}）: ${esc(fmtRow(BEFORE))}<br><span style="color:var(--muted)">下の欄にこの値が入っています。直したいところだけ変えてください。</span></div>`:""}`
+    :`
     <label>従業員<span class="req">必須</span></label>
     <input id="q" type="search" placeholder="名前で絞り込み（ひらがな・漢字どちらでも）" value="${esc(Q)}" oninput="setQ(this.value)" ${STORE?"":"disabled"}>
     <div class="staff-list">${!STORE?`<div class="empty">先に店舗を選んでください</div>`:STAFF.length===0?`<div class="empty">読み込み中…または所属者がいません</div>`:list.length===0?`<div class="empty">該当なし</div>`:list.map(u=>`<div class="${u.id===USER?"sel":""}" onclick="setUser('${u.id}')">${esc(u.name)} <span style="color:var(--muted);font-size:12px">${ROLE_NAME[u.role]||u.role||""}</span></div>`).join("")}</div>
-    <label>勤務日<span class="req">必須</span></label>
-    <input id="date" type="date" max="${todayJst()}" value="${$("date")?.value||addDays(todayJst(),-1)}">
+    ${STORE&&DATE&&(DAYLOAD||DAY.length)?`<label>この日すでに勤怠がある人（参考）</label><div class="staff-list">${dayListHtml()}</div>`:""}`}
     <div class="row2">
-      <div><label>出勤時刻<span class="req">必須</span></label><input id="cin" type="time" value="${$("cin")?.value||"17:00"}"></div>
-      <div><label>退勤時刻<span class="req">必須</span></label><input id="cout" type="time" value="${$("cout")?.value||"23:00"}"></div>
+      <div><label>出勤時刻<span class="req">必須</span></label><input id="cin" type="time" value="${keep.cin||"17:00"}"></div>
+      <div><label>退勤時刻<span class="req">必須</span></label><input id="cout" type="time" value="${keep.cout||"23:00"}"></div>
     </div>
     <div class="note">退勤が出勤より早い時刻なら翌日の退勤として扱います（例: 18:00 → 翌 02:00）。</div>
     <label>休憩1（任意）</label>
-    <div class="row2"><div><input id="b1s" type="time" value="${$("b1s")?.value||""}"></div><div><input id="b1e" type="time" value="${$("b1e")?.value||""}"></div></div>
+    <div class="row2"><div><input id="b1s" type="time" value="${keep.b1s}"></div><div><input id="b1e" type="time" value="${keep.b1e}"></div></div>
     <label>休憩2（任意）</label>
-    <div class="row2"><div><input id="b2s" type="time" value="${$("b2s")?.value||""}"></div><div><input id="b2e" type="time" value="${$("b2e")?.value||""}"></div></div>
+    <div class="row2"><div><input id="b2s" type="time" value="${keep.b2s}"></div><div><input id="b2e" type="time" value="${keep.b2e}"></div></div>
     <div class="note">休憩は開始と終了をセットで。無ければ空のままで OK（休憩なしとして申請）。</div>
     <label>理由<span class="req">必須</span></label>
-    <textarea id="reason" rows="2" placeholder="例: 退勤の打刻忘れ">${esc($("reason")?.value||"")}</textarea>
+    <textarea id="reason" rows="2" placeholder="例: 退勤の打刻忘れ">${esc(keep.reason)}</textarea>
     <button class="btn" id="submit" onclick="submit()">承認を依頼する</button>
     <div id="msg"></div>
   </div>
   <div class="card"><div style="font-weight:700;font-size:14px;margin-bottom:6px">最近の申請</div><div class="hist" id="hist">読み込み中…</div></div>`;
   loadHist();
 }
-function setKind(k){KIND=k;render();}
-async function setStore(id){STORE=id;USER="";STAFF=[];Q="";render();if(!id)return;
+function setKind(k){KIND=k;USER="";BEFORE=null;render();}
+function setDate(v){DATE=v;USER="";BEFORE=null;render();loadDay();}
+async function setStore(id){STORE=id;USER="";BEFORE=null;STAFF=[];Q="";render();if(!id)return;
+  loadDay();
   const r=await authed(FN_URL,{method:"POST",body:JSON.stringify({op:"staff",store_id:id})});
   STAFF=(r.ok&&r.body?.staff)||[];render();}
+/* その日・その店舗の勤怠一覧（修正前の値）。店舗か勤務日が変わるたびに取り直す */
+async function loadDay(){
+  DAY=[];if(!STORE||!DATE){DAYLOAD=false;render();return;}
+  DAYLOAD=true;render();
+  const st=STORE,dt0=DATE;
+  const r=await authed(FN_URL,{method:"POST",body:JSON.stringify({op:"day",store_id:st,work_date:dt0})});
+  if(st!==STORE||dt0!==DATE)return;   // 取っている間に変わっていたら捨てる
+  DAYLOAD=false;DAY=(r.ok&&r.body?.rows)||[];render();
+}
+/* 修正する人を選ぶ: 修正前の出勤・退勤・休憩を入力欄に入れる */
+function pickRow(uid){
+  const r=DAY.find(x=>x.user_id===uid);if(!r)return;
+  USER=uid;BEFORE=r;render();
+  const hm=t=>t?t.slice(11):"";
+  $("cin").value=hm(r.clock_in);$("cout").value=hm(r.clock_out);
+  $("b1s").value=hm(r.break_start_1);$("b1e").value=hm(r.break_end_1);$("b2s").value=hm(r.break_start_2);$("b2e").value=hm(r.break_end_2);
+}
 function setQ(v){Q=v;const q=v.trim().toLowerCase();const el=document.querySelector(".staff-list");if(!el)return;
   const list=STAFF.filter(u=>!q||String(u.name).toLowerCase().includes(q)||String(u.name).replace(/[\s　]/g,"").toLowerCase().includes(q.replace(/[\s　]/g,"")));
   el.innerHTML=list.length?list.map(u=>`<div class="${u.id===USER?"sel":""}" onclick="setUser('${u.id}')">${esc(u.name)} <span style="color:var(--muted);font-size:12px">${ROLE_NAME[u.role]||u.role||""}</span></div>`).join(""):`<div class="empty">該当なし</div>`;}
@@ -121,9 +168,9 @@ function setUser(id){USER=id;document.querySelectorAll(".staff-list div").forEac
 /* 時刻 → "YYYY-MM-DDTHH:MM"（JST）。退勤・休憩は出勤より前の時刻なら翌日 */
 function dt(date,hm,baseHm){if(!hm)return null;const nextDay=baseHm&&hm<baseHm;return `${nextDay?addDays(date,1):date}T${hm}`;}
 async function submit(){
-  const date=$("date").value,cin=$("cin").value,cout=$("cout").value,reason=$("reason").value.trim();
+  const date=DATE||$("date").value,cin=$("cin").value,cout=$("cout").value,reason=$("reason").value.trim();
   const msg=$("msg");msg.innerHTML="";
-  if(!STORE||!USER||!date||!cin||!cout||!reason){msg.innerHTML=`<div class="msg-err">店舗・従業員・勤務日・出勤・退勤・理由を入れてください</div>`;return;}
+  if(!STORE||!USER||!date||!cin||!cout||!reason){msg.innerHTML=`<div class="msg-err">${KIND==="fix"?"店舗・勤務日・直す人・出勤・退勤・理由を入れてください":"店舗・従業員・勤務日・出勤・退勤・理由を入れてください"}</div>`;return;}
   const b1s=$("b1s").value,b1e=$("b1e").value,b2s=$("b2s").value,b2e=$("b2e").value;
   if((!!b1s)!==(!!b1e)||(!!b2s)!==(!!b2e)){msg.innerHTML=`<div class="msg-err">休憩は開始と終了の両方を入れてください</div>`;return;}
   const body={op:"submit",kind:KIND,store_id:STORE,user_id:USER,work_date:date,
@@ -134,7 +181,7 @@ async function submit(){
   $("submit").disabled=false;$("submit").textContent="承認を依頼する";
   if(!r.ok||!r.body?.ok){msg.innerHTML=`<div class="msg-err">${esc(r.body?.error||("送信に失敗しました（HTTP "+r.status+"）"))}</div>`;return;}
   msg.innerHTML=`<div class="msg-ok">✅ 申請しました。マスターの承認後にスマレジと管理システムへ反映されます。<br>${esc(r.body.summary)}</div>`;
-  $("reason").value="";loadHist();
+  $("reason").value="";loadHist();loadDay();
 }
 async function loadHist(){
   const r=await authed(`/rest/v1/sf_attendance_requests?select=kind,work_date,status,reason,requested_at,smaregi_sync_status,users!sf_attendance_requests_user_id_fkey(name),stores(name)&order=requested_at.desc&limit=10`);
@@ -149,6 +196,7 @@ async function main(){
   const r=await authed(`/rest/v1/stores?select=id,name,sort_order&is_active=eq.true&order=sort_order.asc.nullslast,name.asc`);
   STORES=(r.ok&&Array.isArray(r.body)?r.body:[]).filter(s=>s.name!=="本部");
   const p=new URLSearchParams(location.search);if(p.get("kind")==="add")KIND="add";
+  DATE=addDays(todayJst(),-1);
   render();
 }
 main();
