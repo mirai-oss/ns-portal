@@ -276,7 +276,8 @@ Deno.serve(async (req)=>{
         const { data: linked } = await sb.from("user_slack").select("user_id").eq("user_id", userId).maybeSingle();
         if (linked) return "";
         const { data: uu } = await sb.from("users").select("email").eq("id", userId).maybeSingle();
-        return `\n\n💬 これからの会社の連絡は Slack に届きます。下のリンクから Slack に登録してください。\n${url}\n★登録するときのメールは「${(uu as any)?.email ?? ""}」（管理システムに登録したメール）にしてください。同じメールだと自動で管理システムと紐づきます。`;
+        const guide = (inv as any)?.value?.guide_url || "https://mirai-oss.github.io/ns-portal/docs/guide_slack_setup.pdf";
+        return `\n\n💬 これからの会社の連絡は Slack に届きます。下のリンクから Slack に登録してください。\n${url}\n★登録するときのメールは「${(uu as any)?.email ?? ""}」（管理システムに登録したメール）にしてください。同じメールだと自動で管理システムと紐づきます。\n📄 登録のしかた・顔写真の登録方法（PDF）: ${guide}`;
       } catch (_) { return ""; }
     };
     if (body.action === "join_done") {

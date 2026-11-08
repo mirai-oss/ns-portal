@@ -155,10 +155,11 @@ async function linePush(sb: any, lineUserId: string, text: string): Promise<{ ok
   if (!r.ok) return { ok: false, error: `LINE ${r.status} ${(await r.text()).slice(0, 160)}` };
   return { ok: true };
 }
-async function inviteSetting(sb: any): Promise<{ url: string; note: string } | null> {
+const SLACK_GUIDE_URL_DEFAULT = "https://mirai-oss.github.io/ns-portal/docs/guide_slack_setup.pdf";   // Slack の登録のしかた（顔写真の登録など）PDF（ユーザー提供 2026-11-08・docs に公開）
+async function inviteSetting(sb: any): Promise<{ url: string; note: string; guide_url: string } | null> {
   const { data } = await sb.from("app_settings").select("value").eq("key", "slack_invite").maybeSingle();
   const v = data?.value ?? null;
-  return v?.url ? { url: String(v.url), note: String(v.note ?? "") } : null;
+  return v?.url ? { url: String(v.url), note: String(v.note ?? ""), guide_url: String(v.guide_url ?? SLACK_GUIDE_URL_DEFAULT) } : null;
 }
 
 Deno.serve(async (req) => {
@@ -198,7 +199,7 @@ Deno.serve(async (req) => {
       if (!u) return json({ ok: false, error: "従業員が見つかりません" }, 404);
       const inv = await inviteSetting(sb);
       if (!inv) return json({ ok: false, code: "no_invite_url", error: "Slack の招待リンクがまだ登録されていません（従業員一覧の「Slack の招待リンクを設定」から入れてください）" }, 400);
-      const text = `【${u.name}さん】会社の連絡を Slack に移します。下のリンクから Slack に登録してください。\n\n${inv.url}\n\n★登録するときのメールは、管理システムに登録している「${u.email}」にしてください（同じメールだと自動で管理システムと紐づきます）。${inv.note ? "\n" + inv.note : ""}`;
+      const text = `【${u.name}さん】会社の連絡を Slack に移します。下のリンクから Slack に登録してください。\n\n${inv.url}\n\n★登録するときのメールは、管理システムに登録している「${u.email}」にしてください（同じメールだと自動で管理システムと紐づきます）。\n\n📄 登録のしかた・顔写真の登録方法（PDF）:\n${inv.guide_url}${inv.note ? "\n" + inv.note : ""}`;
       if (b.channel === "copy") {
         await sb.from("slack_invite_log").insert({ user_id: uid, sent_by: actorId, channel: "copy" });
         return json({ ok: true, sent_via: "copy", invite_url: inv.url, text });
