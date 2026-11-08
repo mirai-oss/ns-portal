@@ -265,6 +265,20 @@ Deno.serve(async (req)=>{
     // 入社登録を終えた本人の画面から呼ばれる。まだログインしていないので、
     // 招待トークン（本人しか知らないURLの一部）を身分証がわりにする。
     // 同じ人に二度送らないよう join_msg_sent_at で1回だけにしている。
+    // 2026-11-08追加: 入社案内の末尾に Slack 登録の案内（方針: 入社後の連絡は Slack。登録メール＝管理システムのメールで自動紐づけ）
+    //   招待リンク（app_settings.slack_invite）が未設定、または既に紐づいている人には足さない
+    const slackInviteSection = async (userId: string | null | undefined): Promise<string> => {
+      try {
+        if (!userId) return "";
+        const { data: inv } = await sb.from("app_settings").select("value").eq("key", "slack_invite").maybeSingle();
+        const url = (inv as any)?.value?.url;
+        if (!url) return "";
+        const { data: linked } = await sb.from("user_slack").select("user_id").eq("user_id", userId).maybeSingle();
+        if (linked) return "";
+        const { data: uu } = await sb.from("users").select("email").eq("id", userId).maybeSingle();
+        return `\n\n💬 これからの会社の連絡は Slack に届きます。下のリンクから Slack に登録してください。\n${url}\n★登録するときのメールは「${(uu as any)?.email ?? ""}」（管理システムに登録したメール）にしてください。同じメールだと自動で管理システムと紐づきます。`;
+      } catch (_) { return ""; }
+    };
     if (body.action === "join_done") {
       const tk = String(body.invite_token ?? "").trim();
       if (!tk) return json({
@@ -295,7 +309,7 @@ Deno.serve(async (req)=>{
         const { data: usRows } = await sb.from("user_stores").select("stores(name)").eq("user_id", u.id);
         const storeNames = (usRows ?? []).map((r) => r.stores?.name).filter(Boolean).join("・") || "所属未設定";
         const text2 = `🐔 ${u.name}さん\n\n入社登録が完了しました！\n所属店舗: ${storeNames}\n\nこれからよろしくお願いいたします。シフト提出の締切が近いときなどにこちらへお知らせします。`;
-        const sent2 = await linePush(token, u.line_user_id, text2);
+        const sent2 = await linePush(token, u.line_user_id, text2 + await slackInviteSection(u.id));
         if (sent2.ok) await sb.from("employee_profiles").update({
           join_welcome_sent_at: new Date().toISOString()
         }).eq("user_id", u.id);
@@ -325,7 +339,9 @@ Deno.serve(async (req)=>{
           error: `文面を作れませんでした（SQL v2_6_53 が未実行かもしれません）: ${mErr?.message ?? ""}`
         }, 500);
       }
-      const sent = await linePush(token, ap.line_user_id, String(text));
+      const { data: inv1 } = await sb.from("invitations").select("used_by").eq("token", tk).maybeSingle();
+      const guideText = String(text) + await slackInviteSection((inv1 as any)?.used_by);
+      const sent = await linePush(token, ap.line_user_id, guideText);
       if (!sent.ok) return json({
         ok: false,
         error: `LINEの応答: ${sent.status} ${sent.body}`
@@ -333,7 +349,7 @@ Deno.serve(async (req)=>{
       await sb.rpc("line_log_out", {
         p_secret: intakeSecret,
         p_applicant: ap.id,
-        p_text: String(text)
+        p_text: guideText
       });
       await sb.from("applicants").update({
         join_msg_sent_at: new Date().toISOString()
