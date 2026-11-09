@@ -325,6 +325,7 @@ const handlers: Record<string, Handler> = {
     if (!old) return ephemeral("元のジョブが見つかりません", payload.response_url);
     const { data, error } = await sb.rpc("ui_job_enqueue", { p_workflow: value.workflow_id, p_kind: old.kind, p_payload: old.payload, p_actor: actor.user_id, p_dry_run: false });
     if (error) return ephemeral(`再実行を登録できませんでした: ${error.message}`, payload.response_url);
+    if (!data?.ok) return ephemeral(data?.error ?? "再実行を登録できませんでした（自動書き込みが未有効化の可能性）", payload.response_url);
     waitUntil(onboardingNotify({ op: "thread", workflow_id: value.workflow_id, text: `🔁 ${old.kind} の自動設定を再実行します（${actor.name}・${nowJst()}）${data?.duplicate ? "（既に待機中のジョブがあります）" : ""}`, event: "onboarding_ui_retry" }));
     return text("");
   },

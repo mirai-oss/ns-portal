@@ -20,6 +20,7 @@ select 'commute_rules', jsonb_build_object(
   'tolerance_pct', 20,          -- 同上（％。どちらか大きい方）
   'al_cap_yen', 6000,           -- AL の上限（単位は cap_unit。スマレジ仕様の確認まで unknown）
   'cap_unit', 'unknown',        -- 'month' | 'shift' | 'unknown'
+  'smaregi_write_enabled', false, -- ★ スマレジへの交通費書き込み（Mac 自動操作ジョブの作成）を許可するか。実 API・実機の検証が終わるまで false（ユーザー指示 2026-11-10）
   'bus_needs_review', true,     -- バスを含む経路は本部確認待ち
   'night_needs_review', true    -- 深夜（終電後）の勤務が多い店舗は本部確認待ち（Phase 2 後半）
 )
@@ -256,6 +257,39 @@ end $$;
 grant execute on function public.onboarding_commute_decide(uuid, text, integer, text, uuid) to authenticated, service_role;
 
 -- -------------------------------------------------------------
+-- 4b) 移行: SQL 未適用の間に nippo が employee_profiles.extra に控えた通勤情報（通勤手段/通勤経路/片道交通費/バス利用/通勤特記）を employee_commute へ。
+--     冪等（既に行がある人は触らない）。適用時に全員ぶん 1 回実行し、以後も nippo が extra にだけ書いた場合の保険として呼べる
+-- -------------------------------------------------------------
+create or replace function public.onboarding_import_commute_from_extra(p_user uuid default null)
+returns jsonb
+language plpgsql security definer set search_path to 'public'
+as $$
+declare r record; n int := 0; v_method text; v_fare int; v_wf uuid;
+begin
+  if not (public.onboarding_is_service() or public.hq_can_manage()) then raise exception '権限がありません'; end if;
+  for r in
+    select p.user_id, p.extra from employee_profiles p
+     where (p_user is null or p.user_id = p_user) and p.extra is not null
+       and (p.extra ? '通勤手段' or p.extra ? '片道交通費' or p.extra ? '通勤経路')
+       and not exists (select 1 from employee_commute c where c.user_id = p.user_id)
+  loop
+    v_method := case r.extra ->> '通勤手段' when '電車' then 'train' when '電車＋バス' then 'train_bus' when 'バス' then 'bus' when '自転車' then 'bike' when '徒歩' then 'walk' when '車・バイク' then 'car' when 'その他' then 'other' else null end;
+    v_fare := nullif(regexp_replace(coalesce(r.extra ->> '片道交通費', ''), '[^0-9]', '', 'g'), '')::int;
+    select id into v_wf from onboarding_workflows where user_id = r.user_id;
+    insert into employee_commute(user_id, workflow_id, method, home_station, route_text, claimed_oneway_fare, uses_bus, special_note, submitted_at, submitted_via)
+    values (r.user_id, v_wf, v_method, split_part(coalesce(r.extra ->> '最寄り駅', ''), '／', 1), r.extra ->> '通勤経路', v_fare, (r.extra ->> 'バス利用') = 'あり', r.extra ->> '通勤特記', now(), 'extra_import');
+    n := n + 1;
+  end loop;
+  return jsonb_build_object('ok', true, 'imported', n);
+end $$;
+grant execute on function public.onboarding_import_commute_from_extra(uuid) to authenticated, service_role;
+-- 適用時に 1 回（service_role の文脈は適用時には無いので、関数内の権限確認を通すため claims を設定して呼ぶ）
+do $$ begin
+  perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
+  perform public.onboarding_import_commute_from_extra(null);
+end $$;
+
+-- -------------------------------------------------------------
 -- 5) RPC: 交通費設定の確定（Slack モーダル / nippo）→ Playwright ジョブを積む
 -- -------------------------------------------------------------
 create or replace function public.ui_job_enqueue(p_workflow uuid, p_kind text, p_payload jsonb, p_actor uuid default null, p_dry_run boolean default false)
@@ -268,6 +302,11 @@ begin
   elsif public.onboarding_is_service() then v_actor := p_actor;
   else raise exception '認証が必要です'; end if;
   if p_kind not in ('smaregi_commute','smaregi_tax','smaregi_payslip','smaregi_email','smaregi_read') then raise exception '不正なジョブ種類です'; end if;
+  -- ★ 安全スイッチ: app_settings.commute_rules.smaregi_write_enabled が true になるまで、書き込みジョブは作らない（読むだけ smaregi_read / dry_run は可）
+  if not coalesce(p_dry_run, false) and p_kind <> 'smaregi_read'
+     and coalesce((select value ->> 'smaregi_write_enabled' from app_settings where key = 'commute_rules'), 'false') <> 'true' then
+    return jsonb_build_object('ok', false, 'disabled', true, 'error', 'スマレジへの自動書き込みはまだ有効化されていません（実機検証後に app_settings.commute_rules.smaregi_write_enabled を true に）');
+  end if;
   select * into wf from onboarding_workflows where id = p_workflow;
   if wf.id is null then raise exception 'ワークフローが見つかりません'; end if;
   -- 操作対象は従業員 ID で特定（主契約の有効なリンク）
@@ -315,7 +354,13 @@ begin
   returning id into v_id;
   v_payload := jsonb_build_object('setting_id', v_id, 'pay_type', p_pay_type, 'effective_date', p_effective_date, 'scope', p_scope, 'amount', p_amount, 'store_amounts', p_store_amounts, 'cap_amount', p_cap_amount, 'cap_unit', coalesce(p_cap_unit, 'unknown'));
   v_job := ui_job_enqueue(p_workflow, 'smaregi_commute', v_payload, v_actor, false);
-  update employee_commute_settings set ui_job_id = (v_job ->> 'job_id')::uuid, sync_status = 'queued', updated_at = now() where id = v_id;
+  if coalesce(v_job ->> 'ok', 'false') = 'true' then
+    update employee_commute_settings set ui_job_id = (v_job ->> 'job_id')::uuid, sync_status = 'queued', updated_at = now() where id = v_id;
+  else
+    -- 自動書き込みが未有効化（または作れない）: 確定値は残し、手動で管理画面に入れる（項目は manual_required）
+    update employee_commute_settings set sync_status = 'manual', sync_error = v_job ->> 'error', updated_at = now() where id = v_id;
+    perform onboarding_set_item(p_workflow, 'commute_set', 'manual_required', v_payload || jsonb_build_object('manual', true), v_actor, case when auth.uid() is null then 'slack' else 'nippo' end, coalesce(v_job ->> 'error', '自動反映なし'));
+  end if;
   insert into onboarding_events(workflow_id, item_key, kind, actor_id, via, after) values (p_workflow, 'commute_set', 'commute.setting_saved', v_actor, case when auth.uid() is null then 'slack' else 'nippo' end, v_payload);
   return jsonb_build_object('ok', true, 'setting_id', v_id, 'job', v_job);
 end $$;

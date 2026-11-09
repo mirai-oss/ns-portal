@@ -308,7 +308,11 @@ Deno.serve(async (req) => {
         const { data: s } = await sb.from("employee_commute_settings").select("*").eq("id", body.setting_id).maybeSingle();
         const who = await actorName(sb, isUuid(body.actor_id) ? body.actor_id : null);
         const scope = s?.scope === "per_store" ? "事業所別" : "全事業所";
-        await thread(sb, wf, `🚌 交通費の設定を登録しました（${who}・${nowJst()}）\n・${PAY_TYPE_LABEL[s?.pay_type] ?? s?.pay_type}／${scope}／${s?.scope === "per_store" ? JSON.stringify(s?.store_amounts) : yen(s?.amount)}${s?.cap_amount != null ? `／上限 ${yen(s.cap_amount)}` : ""}（${jpDate(s?.effective_date)}から）\n⏳ Mac の自動操作でスマレジに反映します（数分〜）。結果はこのスレッドに届きます${body.duplicate ? "\nℹ️ 同じ人の未完了ジョブがあるため、そのジョブに相乗りします" : ""}`, undefined, "onboarding_commute_setting");
+        const line = `・${PAY_TYPE_LABEL[s?.pay_type] ?? s?.pay_type}／${scope}／${s?.scope === "per_store" ? JSON.stringify(s?.store_amounts) : yen(s?.amount)}${s?.cap_amount != null ? `／上限 ${yen(s.cap_amount)}` : ""}（${jpDate(s?.effective_date)}から）`;
+        const tail = s?.sync_status === "manual"
+          ? `🙋 スマレジへの自動反映はまだ有効化されていません（実機検証後に有効化）。*スマレジ管理画面でこの値を入力*し、本部タスクの「交通費」に ✓ を付けてください`
+          : `⏳ Mac の自動操作でスマレジに反映します（数分〜）。結果はこのスレッドに届きます${body.duplicate ? "\nℹ️ 同じ人の未完了ジョブがあるため、そのジョブに相乗りします" : ""}`;
+        await thread(sb, wf, `🚌 交通費の設定を登録しました（${who}・${nowJst()}）\n${line}\n${tail}`, undefined, "onboarding_commute_setting");
         await refreshParent(sb, wf);
         return json({ ok: true });
       }
