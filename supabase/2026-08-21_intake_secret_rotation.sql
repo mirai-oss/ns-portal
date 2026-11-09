@@ -1,7 +1,7 @@
 -- =====================================================================
 -- 内部連携シークレットのローテーション — データ基盤Day2 タスク4（前半）
 -- =====================================================================
--- 背景: 同じ合言葉'4259598a7ce747d54e2bf84326131129f21eb77f54dfdcdd'が、
+-- 背景: 同じ合言葉（値は削除済み）が、
 --   公開リポ(ns-portal)の2つのSQLファイルとline-webhook/index.tsに平文で
 --   ハードコードされていた（データ基盤監査レポート2026-08-21 リスクR6）。
 --   調査の結果、DB上には同じ合言葉を使う関数がさらに5つ存在し（line_intake／
@@ -24,15 +24,12 @@
 -- 実行場所: Supabase SQL Editor / Management API（何度実行しても壊れません）
 -- =====================================================================
 
--- 新しい合言葉を保存（値はapp_secretsのみに置き、コード上には書かない）
-insert into app_secrets (key, value, updated_at)
-values ('checklist_intake_secret', '__NEW_SECRET__', now())
-on conflict (key) do update set value = excluded.value, updated_at = now();
-
--- 旧い合言葉も一時的に保存（移行期間用。呼び出し元が判明し更新され次第、削除する）
-insert into app_secrets (key, value, updated_at)
-values ('checklist_intake_secret_prev', '__OLD_SECRET__', now())
-on conflict (key) do update set value = excluded.value, updated_at = now();
+-- 2026-11-09 P0-1(B): このファイルは適用済みの記録です。合言葉を app_secrets へ登録する2文は削除した
+-- （プレースホルダーのまま再実行すると既知の文字列が合言葉になってしまうため）。再実行はここで必ず停止する。
+-- 現行の定義は 2026-11-08_intake_secret_split_acd_*.sql（Vault / Supabase Secrets 方式）。
+do $$ begin
+  raise exception 'このSQLは失効済みの記録です。再実行できません（現行: 2026-11-08_intake_secret_split_acd_*.sql）';
+end $$;
 
 -- 共通チェック関数: 新しい値・旧い値のどちらでも通す
 create or replace function checklist_intake_secret_ok(p_secret text) returns boolean

@@ -84,8 +84,8 @@ create or replace function checklist_overdue_check(p_secret text) returns jsonb
 language plpgsql security definer set search_path = public as $$
 declare v_alerted int := 0; r record; v_body text;
 begin
-  if p_secret is distinct from '4259598a7ce747d54e2bf84326131129f21eb77f54dfdcdd' then
-    raise exception '認証エラー';
+  if true then  -- 2026-11-09 P0-1(B): 旧合言葉は失効。この旧定義は再実行しても必ず認証エラー（HTTP 403）で停止する
+    raise sqlstate 'PT403' using message = '認証エラー（失効した旧定義です。現行の定義を適用してください）';
   end if;
 
   for r in

@@ -46,8 +46,8 @@ create or replace function public.line_intake_user(p_secret text, p_line_user_id
  language plpgsql security definer set search_path = public as $$
 declare v_uid uuid; v_uname text; v_code text;
 begin
-  if p_secret is distinct from '4259598a7ce747d54e2bf84326131129f21eb77f54dfdcdd' then
-    raise exception '認証エラー';
+  if true then  -- 2026-11-09 P0-1(B): 旧合言葉は失効。この旧定義は再実行しても必ず認証エラー（HTTP 403）で停止する
+    raise sqlstate 'PT403' using message = '認証エラー（失効した旧定義です。現行の定義を適用してください）';
   end if;
   if p_line_user_id is null or length(btrim(p_line_user_id)) = 0 then
     return jsonb_build_object('ok', false);
