@@ -7,6 +7,18 @@
 
 ---
 
+**2026-11-09 13:55（Slack 勤怠スレッド・続き）入社登録: 駅すぱあとキー待ち中の実装＝コード完成・本番未反映（EF 4 本の改修は未デプロイ・Phase 5 準備 SQL 未適用・nippo 未 push。Mac 側は push 済みだがフラグ OFF）**:
+- ユーザー指示「キー到着時点で接続設定と実 API 検証だけが残る状態に。立会いは私の操作を最小限に。自動承認・スマレジ書き込み・Mac 自動操作は承認なしに有効化しない」。
+- **日付の訂正**: 前回までの「2026-11-10」表記の作業（Phase 2/3 本番投入ほか）は実際には 2026-11-09（本番 EF のデプロイ時刻 11-09 11:58 JST で確認）。本番の実バージョンは commute-route v2・smaregi-sync v50・slack-interact v15・onboarding-notify v4（前回の v1/v49/v14/v3 は数え違い）。4 本とも本番 download とリポジトリ HEAD が無差分。
+- 現状: `onboarding_workflows` 0 行（切替 A 以降の実入社なし）。ekispert_key 未設定。スマレジ API の GET staffs に本人アカウント登録状況の項目は無い（公開リファレンスで確認）・上限の単位は記載なし。
+- ハブ（ns-portal）: `supabase/2026-11-09_onboarding_phase5_prep.sql`（未適用: auto_approve 設定 OFF・alerts フラグ false・last_stale_alert_at・stale trigger 関数・error_kind not_supported・ビュー security_invoker）／`_shared/commute-judge.ts` に autoJudge（既定 shadow）と normalizeStationName／`_shared/commute-mock.ts`（駅すぱあと応答の想定モック）＋ `commute-judge.test.ts` **11 件 OK**／commute-route: 正規化・自動承認判定の記録・dry_run のモック入力／onboarding-notify: op person_contact・account_check・stale_alert・自動承認経路（enabled 時のみ）／slack-interact: 📨 本人へ連絡・🔎 スマレジ照合・↩️ 取り消し／smaregi-sync staff_get に x-notify-secret／`scripts/set_secret.py`・`ekispert_smoke.py`・`commute_compare.py`。
+- 検証: EF をローカル起動しモック 6 シナリオを dry_run（書き込み 0）／本番 DB の rollback 内で使い捨てユーザー（auth.users から作成）の結合テスト 43 項目 OK／deno check OK。
+- Mac（ns-daily-import `e4d16b9`・push 済み）: セレクタを `config/smaregi-ui-selectors.json`（全 null）・仮定のモック画面で Playwright 18＋ジョブ 10＋偵察 1 件 OK・偵察 `tasks/smaregi-ui-recon.js`（未実行）・専用プロファイル ns-ui-jobs。nippo（`69258a8`・**未 push**）: 通勤カード（本部/本人）・入社フォーム改良・離脱の記録・離脱集計。
+- 文書: `docs/手順書_スマレジ管理画面立会い_2026-11-09.md`（新規）・進捗一覧 §5（完了/実機済み/キー待ち/要承認/有効化前）・実装報告 末尾・Phase2-3 手順書 §1-1/§1-6。
+- **次（ユーザー承認）**: A. EF 4 本の再デプロイ＋Phase 5 準備 SQL 適用 B. nippo push C. 立会いの日時 D. キー到着の連絡。
+
+---
+
 **2026-11-07（このスレッド）「一括解除」パネルの見出しを分かりやすく（invoices.html v167）**:
 - ユーザー疑問「Infomart取込は24件なのにMF登録済み23件と出る」。原因は、このパネルが“削除できるもの”だけを数えていて、PL反映済み（アールエスエス・おしぼり=衛生管理費）を除いて24→23になっていたこと。取込・MF登録は24件そろっている。
 - 見出しを「削除できる請求書 N件」、説明に「Infomart取込でMF登録済み M件のうち、削除できるものだけ（反映済み・支払確認済みは対象外＝M−N件）」と表示。
@@ -1161,6 +1173,8 @@
 - 入金タブをkd_deposit速報で即表示（v237）。PL速報(viewPLFast_)は既存。目標/広告/媒体/明細は確定データ(GAS)待ちのまま＝次はkd追加(F2・レーンP)待ち。社員人件費反映はユーザー確認済み。
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
+
+**★★★2026-11-09 13:55（Slack 勤怠スレッド・続き）入社登録: 駅すぱあとキー待ち中の実装＝コード完成・本番未反映。** ハブ: EF 4 本の改修（自動承認 shadow・📨 本人へ連絡・🔎 スマレジ照合・停滞アラート・最寄り駅の正規化・dry_run モック）＝**未デプロイ**／SQL `2026-11-09_onboarding_phase5_prep.sql`＝**未適用**（全フラグ false）／テスト: deno 11 件・EF ローカル モック 6 シナリオ・rollback 結合 43 項目 OK。Mac `e4d16b9` push 済み（モック画面で 29 件 OK・`SMAREGI_UI_JOBS` OFF・偵察スクリプト未実行）。nippo `69258a8` **未 push**。本番の実バージョン: commute-route v2／smaregi-sync v50／slack-interact v15／onboarding-notify v4（11-09 11:58。前回表記の 11-10 は日付の書き違い）。実入社 0 件（workflows 0 行）。**承認待ち**: A. EF 再デプロイ＋SQL 適用 B. nippo push C. 立会い（`docs/手順書_スマレジ管理画面立会い_2026-11-09.md`） D. キー到着。ns-portal 直近コミットはこの下の git log 参照。
 
 **★★★2026-11-10 12:10（Slack 勤怠スレッド・続き）入社登録 Phase 2〜4 の土台＝本番投入済み・未有効化（SQL 2 本適用・EF commute-route v1／smaregi-sync v49／slack-interact v14／onboarding-notify v3。駅すぱあとキー未設定・スマレジ書き込みスイッチ `commute_rules.smaregi_write_enabled=false`・Mac フラグ OFF）。Phase 1 は切替 A で並行運用中（実入社 1〜2 名の確認待ち・B 以降未承認）。** 承認条件①〜⑥の確認: 既存件数不変・切り戻し（データ保全版 `2026-11-10_onboarding_phase2_3_rollback.sql`）検証 OK・extra→employee_commute 移行 RPC（冪等）・旧版 EF を restored/ に保存・Phase 1 回帰 33 項目再実行 OK・使い捨て（スマレジ無し）で親メッセージ自動作成〜再検索〜承認〜設定(manual)〜中止を実機確認→後始末 0。fix1: 通勤情報がワークフローより先に保存されたときの紐づけ（トリガー）。報告 `docs/実装報告_入社登録Phase1_2026-11-09.md` 末尾。**次（ユーザー）: 駅すぱあと評価版申込／スマレジ管理画面の立会い（私が確認・実装。ログインと承認だけ依頼）／実入社 1〜2 名の確認。**
 

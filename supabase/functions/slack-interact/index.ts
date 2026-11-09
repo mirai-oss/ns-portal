@@ -18,7 +18,7 @@
 //   （Slack は JWT を付けないため、署名検証がこの関数の唯一の認証）
 // =============================================================
 import { createClient } from "npm:@supabase/supabase-js@2";
-import { wageModal, commuteSettingModal, cancelModal, yen } from "../_shared/onboarding-blocks.ts";
+import { wageModal, commuteSettingModal, cancelModal, personContactModal, personContactTemplate, yen } from "../_shared/onboarding-blocks.ts";
 
 const svc = () => createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
 const text = (s: string, status = 200) => new Response(s, { status, headers: { "Content-Type": "text/plain; charset=utf-8" } });
@@ -71,6 +71,9 @@ async function resolveActor(sb: any, slackUserId: string): Promise<Actor | null>
 //   hr.onboarding.wage.confirm    適用開始日がスマレジ側の日付に変わった賃金（確認待ち 🙋）の「✅ この日付で確定」→ EF onboarding-notify op=wage_confirm
 //   hr.onboarding.refresh         「🔄 表示を更新」→ EF onboarding-notify op=refresh
 //   hr.onboarding.link            URL ボタン（従業員ページ・本部タスク）の押下通知。何もしない
+//   hr.onboarding.contact / .contact.modal   「📨 本人へ連絡」→ 種類と文面のモーダル → EF onboarding-notify op=person_contact（2026-11-09。既定は送らず文面をスレッドに出すだけ）
+//   hr.onboarding.account.check   「🔎 スマレジ照合」→ EF onboarding-notify op=account_check（GET で登録済みの項目を ✓）
+//   hr.onboarding.commute.undo    自動承認の「↩️ 取り消して本部で確認」→ RPC onboarding_commute_decide(rejected) → op=commute_decided
 //                                 value = {"workflow_id","notification_id"}。権限: マスター / CEO / HQ（hrAllowed）
 type Handler = (ctx: Ctx) => Promise<Response>;
 type Ctx = { sb: any; payload: any; actor: Actor; notificationId: string | null; value: any };
@@ -270,7 +273,54 @@ const handlers: Record<string, Handler> = {
     const wf = await wfRow(sb, value?.workflow_id); if (!wf) return ephemeral("ワークフローが見つかりません", payload.response_url);
     const { error } = await sb.rpc("onboarding_commute_decide", { p_user: wf.user_id, p_decision: "person_review", p_fare: null, p_note: null, p_actor: actor.user_id });
     if (error) return ephemeral(`記録できませんでした: ${error.message}`, payload.response_url);
-    waitUntil(onboardingNotify({ op: "commute_decided", workflow_id: wf.id, actor_id: actor.user_id, decision: "person_review" }));
+    // 本人への確認文も続けて作る（person_notify_enabled=false のあいだはスレッドに文面を出すだけ。true なら Slack DM → LINE の順で送る）
+    waitUntil((async () => {
+      await onboardingNotify({ op: "commute_decided", workflow_id: wf.id, actor_id: actor.user_id, decision: "person_review" });
+      await onboardingNotify({ op: "person_contact", workflow_id: wf.id, actor_id: actor.user_id, kind: "commute_question" });
+    })());
+    return text("");
+  },
+  // 自動承認の取り消し（2026-11-09）: 差し戻し扱いにして「本部の確認が必要」へ戻す（approved_fare は履歴として残る）
+  "hr.onboarding.commute.undo": async ({ sb, actor, payload, value }) => {
+    if (!hrAllowed(actor)) return ephemeral("入社手続きの操作は本部・社長・マスターのみです", payload.response_url);
+    const wf = await wfRow(sb, value?.workflow_id); if (!wf) return ephemeral("ワークフローが見つかりません", payload.response_url);
+    const note = "自動承認を取り消し（本部で確認）";
+    const { error } = await sb.rpc("onboarding_commute_decide", { p_user: wf.user_id, p_decision: "rejected", p_fare: null, p_note: note, p_actor: actor.user_id });
+    if (error) return ephemeral(`取り消せませんでした: ${error.message}`, payload.response_url);
+    waitUntil(onboardingNotify({ op: "commute_decided", workflow_id: wf.id, actor_id: actor.user_id, decision: "rejected", note }));
+    return text("");
+  },
+  // 本人へ連絡（2026-11-09）: 種類のひな型を入れたモーダル → op=person_contact
+  "hr.onboarding.contact": async ({ sb, actor, payload, value, notificationId }) => {
+    const ru: string | undefined = payload.response_url;
+    if (!hrAllowed(actor)) return ephemeral("本人への連絡は本部・社長・マスターのみです", ru);
+    const wf = await wfRow(sb, value?.workflow_id); if (!wf?.user_id) return ephemeral("ワークフローが見つかりません", ru);
+    const [{ data: cm }, { data: us }, { data: u }, { data: st }, { data: items }] = await Promise.all([
+      sb.from("employee_commute").select("claimed_oneway_fare,computed_oneway_fare,route_text,judgement").eq("user_id", wf.user_id).maybeSingle(),
+      sb.from("user_slack").select("slack_user_id").eq("user_id", wf.user_id).maybeSingle(),
+      sb.from("users").select("line_user_id").eq("id", wf.user_id).maybeSingle(),
+      sb.from("app_settings").select("value").eq("key", "onboarding_alerts").maybeSingle(),
+      sb.from("onboarding_items").select("item_key,state").eq("workflow_id", wf.id),
+    ]);
+    const kind = cm?.judgement === "person_review" ? "commute_question" : (items ?? []).some((i: any) => ["slack_link", "smaregi_account"].includes(i.item_key) && i.state !== "completed") ? "welcome" : "custom";
+    const channels = [us?.slack_user_id ? "Slack" : null, u?.line_user_id ? "LINE" : null].filter(Boolean) as string[];
+    const textBody = personContactTemplate(kind, { name: wf.user_name ?? "", claimed: cm?.claimed_oneway_fare ?? null, computed: cm?.computed_oneway_fare ?? null, route_text: cm?.route_text ?? null });
+    return await openModal(payload.trigger_id, personContactModal({ workflow_id: wf.id, notification_id: notificationId }, { name: wf.user_name ?? "", kind, text: textBody, channels, live: st?.value?.person_notify_enabled === true }));
+  },
+  "hr.onboarding.contact.modal": async ({ actor, payload }) => {
+    const meta = JSON.parse(payload.view?.private_metadata ?? "{}");
+    const v = payload.view?.state?.values ?? {};
+    const kind = v.kind?.kind?.selected_option?.value ?? "custom";
+    const body = (v.text?.text?.value ?? "").trim();
+    if (!body) return json({ response_action: "errors", errors: { text: "文面を入れてください" } });
+    waitUntil(onboardingNotify({ op: "person_contact", workflow_id: meta.workflow_id, actor_id: actor.user_id, kind, text: body }));
+    return json({ response_action: "clear" });
+  },
+  // スマレジ照合（2026-11-09）: GET で登録済みの項目を ✓（本人アカウントは UI 読み取りへ）
+  "hr.onboarding.account.check": async ({ actor, payload, value }) => {
+    if (!hrAllowed(actor)) return ephemeral("入社手続きの操作は本部・社長・マスターのみです", payload.response_url);
+    if (!value?.workflow_id) return ephemeral("ワークフローの id が読めませんでした", payload.response_url);
+    waitUntil(onboardingNotify({ op: "account_check", workflow_id: value.workflow_id, actor_id: actor.user_id }));
     return text("");
   },
   "hr.onboarding.commute.research": async ({ actor, payload, value }) => {

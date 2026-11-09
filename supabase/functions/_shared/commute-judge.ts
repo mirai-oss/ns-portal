@@ -48,3 +48,57 @@ export function judge(cands: Candidate[], claimed: number | null, rules: Rules):
   return { judgement, reasons, reasonable, computed };
 }
 
+
+// =============================================================
+// 自動承認の判定（2026-11-09・設計検討 → 実装。★ 既定は OFF（記録だけ＝shadow）。有効化はユーザー承認後に app_settings.commute_rules.auto_approve.enabled=true）
+//   方針（ユーザー指示）: 「API 算出額と会社規定が一致する通常申請だけ自動承認し、例外は本部確認」。
+//   ここでは「条件を満たすか」を返すだけで、承認（RPC onboarding_commute_decide）は呼び出し側が enabled のときだけ行う。
+//   金額は API の応答と本人の申請だけから決める（AI が運賃を推測しない）。否認は絶対に自動でしない（満たさなければ従来どおり人が見る）。
+// =============================================================
+export type AutoRules = {
+  enabled: boolean;            // true で実際に承認する（既定 false）
+  shadow: boolean;             // true なら「もし有効なら自動承認したか」を記録だけする（既定 true）
+  max_oneway_yen: number;      // 片道がこれを超えたら人が見る（既定 1,500 円）
+  allow_bus: boolean;          // 最安の合理的経路がバスを含んでも可とするか（既定 false）
+  allowed_methods: string[];   // 本人の通勤手段がこれ以外なら人が見る（既定 ['train']）
+  require_home_station: boolean; // 本人の最寄り駅が登録されていること（住所からの推定経路は人が見る）
+  require_exact_match: boolean;  // true なら 申請額 == 算出額 のときだけ。false なら 申請額 <= 算出額（既定 false）
+};
+export const DEFAULT_AUTO: AutoRules = { enabled: false, shadow: true, max_oneway_yen: 1500, allow_bus: false, allowed_methods: ["train"], require_home_station: true, require_exact_match: false };
+
+export type AutoInput = { claimed: number | null; method: string | null; home_station_known: boolean; store_station_known: boolean };
+export type AutoResult = { mode: "off" | "shadow" | "live"; eligible: boolean; fare: number | null; reasons: string[] };
+
+/** 自動承認の条件判定（純粋関数）。eligible=true でも mode が live のときだけ呼び出し側が承認する */
+export function autoJudge(j: { judgement: string; computed: Candidate | null; reasonable: Candidate[] }, input: AutoInput, auto: Partial<AutoRules> | null | undefined): AutoResult {
+  const a: AutoRules = { ...DEFAULT_AUTO, ...(auto ?? {}) };
+  const mode: AutoResult["mode"] = a.enabled ? "live" : a.shadow ? "shadow" : "off";
+  const no: string[] = [];
+  if (j.judgement !== "auto_approvable") no.push(`仮判定が「自動承認できます」ではない（${j.judgement}）`);
+  if (input.claimed === null || input.claimed === undefined) no.push("本人の申請額がない");
+  if (!j.computed || j.computed.fare === null) no.push("API の算出額がない");
+  if (j.computed && j.computed.fare !== null && input.claimed !== null && input.claimed !== undefined) {
+    if (a.require_exact_match ? input.claimed !== j.computed.fare : input.claimed > j.computed.fare) no.push(`申請額 ${input.claimed} 円 が算出額 ${j.computed.fare} 円 と${a.require_exact_match ? "一致しない" : "合わない（申請額が上回る）"}`);
+    if (j.computed.fare > a.max_oneway_yen) no.push(`片道 ${j.computed.fare} 円 が上限 ${a.max_oneway_yen} 円 を超える`);
+    if (j.computed.uses_bus && !a.allow_bus) no.push("最安の経路がバスを含む");
+  }
+  if (input.method && !a.allowed_methods.includes(input.method)) no.push(`通勤手段が ${input.method}（自動承認は ${a.allowed_methods.join("/")} のみ）`);
+  if (!input.method) no.push("通勤手段が未記入");
+  if (a.require_home_station && !input.home_station_known) no.push("本人の最寄り駅が未登録（住所からの推定）");
+  if (!input.store_station_known) no.push("店舗の最寄り駅が未登録");
+  const eligible = no.length === 0 && mode !== "off";
+  const fare = eligible && input.claimed !== null && input.claimed !== undefined ? input.claimed : null;
+  const reasons = eligible ? [`申請額 ${fare} 円 ≦ API 算出額 ${j.computed?.fare} 円・片道 ${a.max_oneway_yen} 円以内・バスなし・通勤手段 ${input.method}`] : no;
+  return { mode, eligible, fare, reasons };
+}
+
+/** 本人の「最寄り駅」欄（自由記入）を駅名検索に使える形へ。例: "大口駅（JR横浜線）" → "大口"、"橋本駅（JR横浜線）／電車で40ほど" → "橋本"、"電車40分" → ""（駅名なし＝住所から探す） */
+export function normalizeStationName(raw: unknown): string {
+  let s = String(raw ?? "").trim();
+  if (!s) return "";
+  s = s.split(/[／/、,・\n]/)[0].trim();                  // 複数書いてあれば先頭
+  s = s.replace(/[（(][^）)]*[）)]/g, "").trim();           // （JR横浜線）などの括弧
+  s = s.replace(/\s*(駅|えき)$/u, "").trim();              // 末尾の「駅」
+  if (!s || /^\d/.test(s) || /^(電車|バス|徒歩|自転車|車|約|なし|無し|不明)/.test(s) || /\d+\s*分/.test(s) || s.length > 20) return "";
+  return s;
+}

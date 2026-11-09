@@ -12,10 +12,16 @@
 //     thread     { workflow_id, text, blocks?, event? } スレッドに 1 件投稿
 //     wage_sync  { workflow_id, actor_id, contract_id? } 反映待ちの賃金を smaregi-sync wage_push → wage_pull で照合 → 項目を完了/失敗 → スレッド＋親更新
 //     status     { workflow_id | user_id }             状態を返す（確認用）
+//   2026-11-09（Phase 5 の土台。★ いずれも既定フラグ OFF＝本人に自動送信しない・停滞アラートを送らない）:
+//     person_contact { workflow_id, kind, text?, actor_id }  本人への連絡（onboarding_alerts.person_notify_enabled=true のときだけ Slack DM → LINE の順で送る。false は文面をスレッドに出すだけ）
+//     account_check  { workflow_id, actor_id }               スマレジ GET（staff_get）でメール・源泉・Web明細・交通費の登録を照合し、登録済みなら項目を自動 ✓。本人アカウント登録状況は API に項目が無い → UI 読み取りジョブ（account_ui_read_enabled=true のとき）
+//     stale_alert    { dry_run? }                            停滞アラート（pg_cron から）。onboarding_alerts.enabled=false か dry_run なら候補を返すだけで送らない
+//     commute_check は auto_approve.enabled=true のときだけ自動承認（取り消しボタン付き）。既定は shadow＝参考表示と記録だけ
 //   デプロイ: supabase functions deploy onboarding-notify --no-verify-jwt --project-ref uuvsxzhpxtghojoubjcc --yes（関数内で認証するため）
 // =============================================================
 import { createClient } from "npm:@supabase/supabase-js@2";
-import { parentMessage, wageFailedBlocks, wageDateAdjustedBlocks, wageLine, nowJst, commuteCheckBlocks, uiJobResultBlocks, PAY_TYPE_LABEL, JUDGEMENT_LABEL, yen, jpDate, type WorkflowView } from "../_shared/onboarding-blocks.ts";
+import { parentMessage, wageFailedBlocks, wageDateAdjustedBlocks, wageLine, nowJst, commuteCheckBlocks, uiJobResultBlocks, autoApprovedBlocks, personContactTemplate, personContactResultBlocks, staleAlertThreadText, staleAlertSummaryBlocks, ITEM_ORDER, PAY_TYPE_LABEL, JUDGEMENT_LABEL, yen, jpDate, type WorkflowView } from "../_shared/onboarding-blocks.ts";
+import { linePush } from "../_shared/line.ts";
 
 const cors = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "authorization, content-type, apikey, x-client-info, x-notify-secret" };
 const json = (o: unknown, status = 200) => new Response(JSON.stringify(o), { status, headers: { ...cors, "Content-Type": "application/json" } });
@@ -94,6 +100,20 @@ async function actorName(sb: any, id: string | null): Promise<string> {
   const { data } = await sb.from("users").select("name").eq("id", id).maybeSingle();
   return data?.name ?? "本部";
 }
+
+async function alertSettings(sb: any): Promise<Record<string, any>> {
+  const { data } = await sb.from("app_settings").select("value").eq("key", "onboarding_alerts").maybeSingle();
+  return data?.value ?? {};
+}
+// 本人の連絡先（Slack 紐づけ・LINE 連携）。値そのものは返さず「使えるか」と送信に必要な ID だけ
+async function personChannels(sb: any, userId: string): Promise<{ slack: boolean; line_user_id: string | null }> {
+  const [{ data: us }, { data: u }] = await Promise.all([
+    sb.from("user_slack").select("slack_user_id").eq("user_id", userId).maybeSingle(),
+    sb.from("users").select("line_user_id").eq("id", userId).maybeSingle(),
+  ]);
+  return { slack: !!us?.slack_user_id, line_user_id: u?.line_user_id ?? null };
+}
+const jstHour = () => Number(new Date().toLocaleString("en-US", { timeZone: "Asia/Tokyo", hour: "2-digit", hour12: false }).replace(/\D/g, "")) % 24;
 
 // ---- op=open ----
 async function opOpen(sb: any, userId: string, source: string) {
@@ -266,7 +286,7 @@ Deno.serve(async (req) => {
         if (!wf?.user_id) return json({ ok: false, error: "見つかりません" }, 404);
         const res = await fetch(`${SUPABASE_URL}/functions/v1/commute-route`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${SERVICE_KEY}`, apikey: SERVICE_KEY }, body: JSON.stringify({ user_id: wf.user_id, store_id: body.store_id ?? null }) });
         const r = await res.json().catch(() => ({ ok: false, error: `HTTP ${res.status}` }));
-        const { data: cm } = await sb.from("employee_commute").select("method,route_text,uses_bus,claimed_oneway_fare").eq("user_id", wf.user_id).maybeSingle();
+        const { data: cm } = await sb.from("employee_commute").select("method,route_text,uses_bus,claimed_oneway_fare,judgement").eq("user_id", wf.user_id).maybeSingle();
         const { data: pn } = await sb.from("onboarding_workflows").select("slack_parent_notification_id").eq("id", wf.id).maybeSingle();
         const nid = pn?.slack_parent_notification_id ?? null;
         if (!r?.ok) {
@@ -283,9 +303,21 @@ Deno.serve(async (req) => {
           return json({ ok: false, error: r?.error, judgement: "search_failed" });
         }
         await thread(sb, wf, `🚃 交通費の確認: ${JUDGEMENT_LABEL[r.judgement] ?? r.judgement}（申請 ${cm?.claimed_oneway_fare != null ? yen(cm.claimed_oneway_fare) : "未申請"}／検索最安 ${r.computed ? yen(r.computed.fare) : "—"}）`,
-          commuteCheckBlocks(wf, nid, { judgement: r.judgement, reasons: r.reasons ?? [], claimed: r.claimed ?? null, computed: r.computed ?? null, reasonable: r.reasonable ?? [], from: r.from, to: r.to, store_name: r.store?.name, method: cm?.method, route_text: cm?.route_text, uses_bus: cm?.uses_bus }), "onboarding_commute_check");
+          commuteCheckBlocks(wf, nid, { judgement: r.judgement, reasons: r.reasons ?? [], claimed: r.claimed ?? null, computed: r.computed ?? null, reasonable: r.reasonable ?? [], from: r.from, to: r.to, store_name: r.store?.name, method: cm?.method, route_text: cm?.route_text, uses_bus: cm?.uses_bus, auto: r.auto ?? null }), "onboarding_commute_check");
+        // 自動承認（2026-11-09）: app_settings.commute_rules.auto_approve.enabled=true のときだけ。条件は commute-route（autoJudge）が判定し、金額は本人の申請額（≦ API 算出額）。既に承認済みなら触らない
+        let autoApproved = false;
+        if (r.auto?.mode === "live" && r.auto.eligible && r.auto.fare != null && cm && (cm as any).judgement !== "approved") {
+          const { data: d, error: de } = await sb.rpc("onboarding_commute_decide", { p_user: wf.user_id, p_decision: "approved", p_fare: r.auto.fare, p_note: "自動承認（申請額 ≦ API 算出額・規定内）", p_actor: null });
+          if (!de && d?.ok) {
+            autoApproved = true;
+            await event(sb, wf, "commute.auto_approved", { fare: r.auto.fare, reasons: r.auto.reasons, computed_fare: r.computed?.fare ?? null }, null, "commute_check");
+            await thread(sb, wf, `🤖 交通費を自動承認しました（片道 ${yen(r.auto.fare)}）`, autoApprovedBlocks(wf, nid, { fare: r.auto.fare, reasons: r.auto.reasons ?? [], from: r.from, to: r.to, computed_fare: r.computed?.fare ?? null }), "onboarding_commute_auto_approved");
+          } else {
+            await thread(sb, wf, `⚠️ 自動承認の条件を満たしましたが記録できませんでした（${de?.message ?? "不明"}）。上のボタンで承認してください`, undefined, "onboarding_commute_auto_failed");
+          }
+        }
         await refreshParent(sb, (await loadView(sb, wf.id)) ?? wf);
-        return json({ ok: true, judgement: r.judgement, computed: r.computed?.fare ?? null, claimed: r.claimed ?? null });
+        return json({ ok: true, judgement: r.judgement, computed: r.computed?.fare ?? null, claimed: r.claimed ?? null, auto: r.auto ?? null, auto_approved: autoApproved });
       }
       case "commute_decided": {
         // RPC onboarding_commute_decide のあと（slack-interact から）。スレッド＋親更新
@@ -351,6 +383,13 @@ Deno.serve(async (req) => {
           } else summary = `（照合できず: ${g?.error ?? "不明"}）`;
         } else if (job.status === "success" && job.dry_run) {
           summary = `読み取り結果: ${JSON.stringify(job.result ?? {}).slice(0, 300)}`;
+          // 読むだけジョブ（smaregi_read）が「本人アカウント登録状況」を返したら項目を判定（★ 画面の項目名・値は立会いで確定。Mac 側 tasks/smaregi-ui-settings.js の readOnly が account_status を返す前提）
+          const acc = String((job.result as any)?.account_status ?? "");
+          if (job.kind === "smaregi_read" && acc) {
+            const it = wf.items?.smaregi_account;
+            if (/registered|登録済/.test(acc) && it?.state !== "completed") { await setItem(sb, wf.id, "smaregi_account", "completed", { ui_job_id: job.id, account_status: acc, verified: true }, null, "auto"); summary += "／本人アカウント: 登録済み → ✅"; }
+            else if (!/registered|登録済/.test(acc)) summary += `／本人アカウント: ${acc}（未登録）`;
+          }
         } else if (job.status === "failed") {
           const title = `手動対応: ${({ smaregi_commute: "交通費", smaregi_tax: "源泉所得税", smaregi_payslip: "個別Web給与明細", smaregi_email: "メールアドレス" } as Record<string, string>)[job.kind] ?? job.kind}をスマレジ管理画面で設定`;
           await sb.rpc("onboarding_add_manual_step", { p_workflow: wf.id, p_title: title, p_reason: String(job.error ?? "").slice(0, 200) });
@@ -369,6 +408,107 @@ Deno.serve(async (req) => {
         await thread(sb, wf, `⛔ 入社手続きを中止しました（${who}・${nowJst()}）\n理由: ${label[String(body.reason)] ?? body.reason}${body.note ? `\nメモ: ${String(body.note).slice(0, 300)}` : ""}\n未完了の項目と自動操作は止めました。スマレジの従業員は削除していません（必要なら管理画面で利用 OFF）。本部タスクは手で完了または削除してください。`, undefined, "onboarding_cancelled");
         await refreshParent(sb, wf);
         return json({ ok: true });
+      }
+      // ---- Phase 2 後半: 本人への連絡（2026-11-09）。既定 person_notify_enabled=false＝文面を作ってスレッドに出すだけ ----
+      case "person_contact": {
+        if (!isUuid(body.workflow_id)) return json({ ok: false, error: "workflow_id が不正です" }, 400);
+        const wf = await loadView(sb, body.workflow_id);
+        if (!wf?.user_id) return json({ ok: false, error: "見つかりません" }, 404);
+        const kind = String(body.kind ?? "custom");
+        const settings = await alertSettings(sb);
+        const live = settings.person_notify_enabled === true;
+        const who = await actorName(sb, isUuid(body.actor_id) ? body.actor_id : null);
+        const { data: cm } = await sb.from("employee_commute").select("claimed_oneway_fare,computed_oneway_fare,route_text").eq("user_id", wf.user_id).maybeSingle();
+        const stale = Object.entries(wf.items ?? {}).filter(([, v]: any) => ["pending", "manual_required", "failed", "retry_wait"].includes(v?.state)).map(([k]) => ITEM_ORDER.find((o) => o.key === k)?.label ?? k);
+        const text = String(body.text ?? "").trim() || personContactTemplate(kind, { name: wf.user_name ?? "", claimed: cm?.claimed_oneway_fare ?? null, computed: cm?.computed_oneway_fare ?? null, route_text: cm?.route_text ?? null, store_name: wf.store_names, stale_items: stale });
+        const ch = await personChannels(sb, wf.user_id);
+        const order: string[] = Array.isArray(settings.person_channel_order) ? settings.person_channel_order : ["slack", "line"];
+        const available = order.filter((c) => (c === "slack" && ch.slack) || (c === "line" && !!ch.line_user_id)).map((c) => (c === "slack" ? "Slack" : "LINE"));
+        let sent = false; let channel: string | null = available[0] ?? null; let err: string | null = null;
+        if (live && available.length) {
+          for (const c of order) {
+            if (c === "slack" && ch.slack) {
+              const r = await slackSend({ action: "send", channel_key: `user:${wf.user_id}`, event: "onboarding_person_contact", source: "ef:onboarding-notify", text, ref: { table: "onboarding_workflows", id: wf.id }, ...BOT });
+              if (r?.ok) { sent = true; channel = "Slack"; break; } err = `Slack: ${r?.error ?? "失敗"}`;
+            } else if (c === "line" && ch.line_user_id) {
+              const { data: tk } = await sb.from("app_secrets").select("value").eq("key", "line_channel_token").maybeSingle();
+              if (!tk?.value) { err = "LINE: トークン未設定"; continue; }
+              const r = await linePush(String(tk.value).trim(), ch.line_user_id, text);
+              if (r.ok) { sent = true; channel = "LINE"; break; } err = `LINE: ${r.status} ${r.body}`;
+            }
+          }
+        }
+        await event(sb, wf, "person.contact", { kind, channel, sent, live, text, error: err }, isUuid(body.actor_id) ? body.actor_id : null, kind === "commute_question" ? "commute_check" : null);
+        await thread(sb, wf, sent ? `📨 本人へ送信（${channel}）: ${text.slice(0, 80)}` : `📨 本人への連絡文を作成（${channel ?? "送信先なし"}）`, personContactResultBlocks(wf, { kind, channel, sent, text, error: err, actor: who }), "onboarding_person_contact");
+        return json({ ok: true, sent, channel, live, available, text });
+      }
+      // ---- Phase 5: スマレジ GET で API 非対応項目（メール・源泉・Web 明細・交通費）の登録を照合し、登録済みなら項目を ✓。本人アカウントは UI 読み取りへ ----
+      case "account_check": {
+        if (!isUuid(body.workflow_id)) return json({ ok: false, error: "workflow_id が不正です" }, 400);
+        const wf = await loadView(sb, body.workflow_id);
+        if (!wf?.user_id) return json({ ok: false, error: "見つかりません" }, 404);
+        const who = await actorName(sb, isUuid(body.actor_id) ? body.actor_id : null);
+        const actor = isUuid(body.actor_id) ? body.actor_id : null;
+        if (!wf.smaregi_staff_id || !wf.contract_id) { await thread(sb, wf, `🔎 スマレジ照合: スマレジ従業員がまだ作成されていません（${who}・${nowJst()}）`, undefined, "onboarding_account_check"); return json({ ok: false, error: "スマレジ未作成" }); }
+        const g = await smaregi("staff_get", { smaregi_staff_id: wf.smaregi_staff_id, contract_id: wf.contract_id });
+        if (!g?.ok) { await thread(sb, wf, `🔎 スマレジ照合に失敗: ${g?.error ?? "不明"}（${who}・${nowJst()}）`, undefined, "onboarding_account_check"); return json({ ok: false, error: g?.error }); }
+        const items = wf.items ?? {};
+        const lines: string[] = []; const done: string[] = [];
+        const mark = async (key: string, ok: boolean, label: string, detail: string, payload: Record<string, unknown>) => {
+          const st = items[key]?.state;
+          if (ok && st !== "completed" && st !== "cancelled") { await setItem(sb, wf.id, key, "completed", { ...payload, verified: true, verified_by: "staff_get", verified_at: new Date().toISOString() }, actor, actor ? "slack" : "auto"); done.push(label); }
+          lines.push(`${ok ? "✅" : "⬜"} ${label}: ${detail}`);
+        };
+        const tc: any[] = Array.isArray(g.transportationCostApply) ? g.transportationCostApply : [];
+        const wt: any[] = Array.isArray(g.withholdingIncomeTaxes) ? g.withholdingIncomeTaxes : [];
+        await mark("email", !!g.mail_set, "メールアドレス", g.mail_set ? `登録済み（${g.mail_masked ?? "***"}）` : "未登録", { mail_masked: g.mail_masked ?? null });
+        await mark("withholding_tax", wt.length > 0, "源泉所得税", wt.length ? `登録済み（区分 ${wt.map((x) => (Number(x.type) === 1 ? "甲" : Number(x.type) === 2 ? "乙" : x.type)).join("/")}）` : "未登録", { withholding: wt.map((x) => ({ type: x.type, dependent: x.dependent, applicationYm: x.applicationYm })) });
+        await mark("web_payslip", g.personalWebStatementScreenDisplayFlag === true, "個別Web給与明細の表示", g.personalWebStatementScreenDisplayFlag === true ? "ON" : g.personalWebStatementScreenDisplayFlag === false ? "OFF（未設定）" : "不明", { flag: g.personalWebStatementScreenDisplayFlag ?? null });
+        await mark("commute_set", tc.length > 0, "交通費", tc.length ? `登録済み（${tc.map((t) => `${({ "0": "勤務回数ごと", "1": "月額", "2": "勤務日数ごと" } as Record<string, string>)[String(t.division)] ?? t.division} ${yen(t.transportationCost)}${t.transportationCostLimit != null ? `／上限 ${yen(t.transportationCostLimit)}` : ""}`).join("、")}）` : "未登録", { transportation: tc });
+        // 本人アカウント登録状況: API（GET staffs）に項目が無い（2026-11-09 公開リファレンスで確認）→ 管理画面の読み取りジョブ（立会い後・account_ui_read_enabled=true）
+        const settings = await alertSettings(sb);
+        let accNote = "";
+        if (items.smaregi_account?.state === "completed") accNote = "✅ 本人アカウント登録: 確認済み";
+        else if (settings.account_ui_read_enabled === true) {
+          const { data: jb, error: je } = await sb.rpc("ui_job_enqueue", { p_workflow: wf.id, p_kind: "smaregi_read", p_payload: { read: ["account_status"] }, p_actor: actor, p_dry_run: true });
+          accNote = je ? `⚠️ 本人アカウント登録: 読み取りジョブを作れません（${je.message}）` : jb?.ok ? `⏳ 本人アカウント登録: 管理画面の読み取りジョブを登録しました${jb.duplicate ? "（既に待機中）" : ""}（Mac の自動操作が結果を返します）` : `⚠️ 本人アカウント登録: ${jb?.error ?? "読み取りジョブを作れません"}`;
+        } else accNote = "⬜ 本人アカウント登録: API に項目が無いため自動確認できません（管理画面の読み取りは立会い後に有効化）。管理画面で確認し本部タスクで ✓";
+        lines.push(accNote);
+        if (g.activeFlag !== null && g.activeFlag !== undefined) lines.push(`ℹ️ スマレジの利用: ${String(g.activeFlag) === "1" || g.activeFlag === true ? "利用可能" : "利用不可"}${g.terminationFlag && String(g.terminationFlag) === "1" ? "・退職済み" : ""}`);
+        await event(sb, wf, "account.checked", { done, mail_set: !!g.mail_set, tax: wt.length, payslip: g.personalWebStatementScreenDisplayFlag ?? null, commute: tc.length }, actor);
+        await thread(sb, wf, `🔎 スマレジ照合（${who}・${nowJst()}）\n${lines.join("\n")}${done.length ? `\n→ ${done.join("・")} を ✅ にしました（スマレジ GET で登録を確認）` : ""}`, undefined, "onboarding_account_check");
+        await refreshParent(sb, (await loadView(sb, wf.id)) ?? wf);
+        return json({ ok: true, done, lines });
+      }
+      // ---- Phase 5: 停滞アラート（pg_cron → onboarding_stale_alert_trigger）。enabled=false か dry_run は候補を返すだけ ----
+      case "stale_alert": {
+        const settings = await alertSettings(sb);
+        const staleH = Number(settings.stale_hours ?? 48), repeatH = Number(settings.repeat_hours ?? 24);
+        const qFrom = Number(settings.quiet_from ?? 22), qTo = Number(settings.quiet_to ?? 8);
+        const ignore: string[] = Array.isArray(settings.ignore_items) ? settings.ignore_items : [];
+        const h = jstHour();
+        const quiet = qFrom > qTo ? (h >= qFrom || h < qTo) : (h >= qFrom && h < qTo);
+        const { data: rows } = await sb.from("onboarding_stale_v").select("*").gte("hours_stalled", staleH);
+        const byWf = new Map<string, any[]>();
+        for (const r of rows ?? []) { if (ignore.includes(r.item_key)) continue; const a = byWf.get(r.workflow_id) ?? []; a.push(r); byWf.set(r.workflow_id, a); }
+        const ids = [...byWf.keys()];
+        const { data: wfs } = ids.length ? await sb.from("onboarding_workflows").select("id,last_stale_alert_at,slack_parent_ts,user_id").in("id", ids) : { data: [] };
+        const cutoff = Date.now() - repeatH * 3600_000;
+        const targets = (wfs ?? []).filter((w: any) => !w.last_stale_alert_at || new Date(w.last_stale_alert_at).getTime() < cutoff);
+        const candidates = targets.map((w: any) => { const its = byWf.get(w.id) ?? []; return { workflow_id: w.id, user_name: its[0]?.user_name ?? null, hire_date: its[0]?.hire_date ?? null, user_id: w.user_id, has_parent: !!w.slack_parent_ts, items: its.map((i: any) => ({ key: i.item_key, label: ITEM_ORDER.find((o) => o.key === i.item_key)?.label ?? i.item_key, state: i.state, hours: Number(i.hours_stalled), last_error: i.last_error })), hours: Math.max(...its.map((i: any) => Number(i.hours_stalled))) }; });
+        const live = settings.enabled === true && body.dry_run !== true;
+        if (!live) return json({ ok: true, sent: false, reason: settings.enabled !== true ? "disabled" : "dry_run", quiet, candidates });
+        if (quiet) return json({ ok: true, sent: false, reason: "quiet_hours", candidates });
+        const summary: any[] = [];
+        for (const c of candidates) {
+          const wf = await loadView(sb, c.workflow_id); if (!wf) continue;
+          if (c.has_parent) await thread(sb, wf, staleAlertThreadText(c.items, wf.hire_date), undefined, "onboarding_stale_alert");
+          await sb.from("onboarding_workflows").update({ last_stale_alert_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq("id", c.workflow_id);
+          await event(sb, wf, "stale.alerted", { items: c.items.map((i: any) => i.key), hours: c.hours });
+          summary.push({ name: wf.user_name ?? "（氏名不明）", hire_date: wf.hire_date, items: c.items.map((i: any) => i.label), hours: c.hours, link: wf.user_id ? `https://mirai-oss.github.io/nippo/?page=admin&u=${wf.user_id}` : null });
+        }
+        if (summary.length) await slackSend({ action: "send", channel_key: settings.channel_key ?? "hq.jinji", event: "onboarding_stale_summary", source: "ef:onboarding-notify", text: `⏰ 入社手続きの停滞 ${summary.length} 人`, blocks: staleAlertSummaryBlocks(summary), dedupe_key: `onboarding:stale:${new Date().toISOString().slice(0, 10)}`, ...BOT });
+        return json({ ok: true, sent: true, count: summary.length, candidates });
       }
       case "status": {
         let q = sb.from("onboarding_workflow_v").select("*");

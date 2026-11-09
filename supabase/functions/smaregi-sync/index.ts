@@ -200,7 +200,10 @@ Deno.serve(async (req) => {
     // 2026-11-10 Phase 3: 保存後の照合用に従業員 1 人の設定（メール・交通費・源泉所得税・個別Web給与明細・賃金）を読むだけ。service_role（EF onboarding-notify）か CEO/HQ
     //   個人情報は返さない（氏名・住所・電話・生年月日は落とす。メールは伏せ字）
     if (body.action === "staff_get") {
-      const isService = (req.headers.get("Authorization") ?? "").includes(Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? " ");
+      // 2026-11-09: 運用スクリプト（scripts/commute_compare.py＝駅すぱあと評価版での 20〜30 人比較）からも呼べるよう x-notify-secret も可（他 EF と同じ合言葉）
+      const nsec = (Deno.env.get("NOTIFY_SLACK_SECRET") ?? "").trim();
+      const bySecret = !!nsec && (req.headers.get("x-notify-secret") ?? "").trim() === nsec;
+      const isService = bySecret || (req.headers.get("Authorization") ?? "").includes(Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? " ");
       if (!isAdmin && !isService) return json({ ok: false, error: "forbidden" }, 403);
       const sid = String(body.smaregi_staff_id ?? "");
       if (!/^\d{1,10}$/.test(sid)) return json({ ok: false, error: "smaregi_staff_id が不正です" }, 400);

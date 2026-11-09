@@ -5,7 +5,9 @@
 //   鉄則（ユーザー指示）: AI が運賃を推測して金額を決めない（金額は API の応答だけ）。最安だけで自動否認しない（最終判断は人）。住所は Slack に出さない。
 //   キー: app_secrets.ekispert_key（未設定なら判定 search_failed・理由 no_api_key。落ちない）
 //   認証: Authorization: Bearer <service_role> または x-notify-secret
-//   body: { user_id, store_id?, dry_run? }   dry_run=true は保存せず結果だけ返す（検証用）
+//   body: { user_id, store_id?, dry_run?, mock_result_set? }   dry_run=true は保存せず結果だけ返す（検証用）
+//         mock_result_set は dry_run=true のときだけ有効: 駅すぱあとを呼ばず、渡された ResultSet（_shared/commute-mock.ts の形）で判定だけ行う（キー未着でも結合テストできる）
+//   自動承認（2026-11-09）: app_settings.commute_rules.auto_approve（既定 enabled=false・shadow=true）。ここは「条件を満たすか」を返すだけ。承認は onboarding-notify が enabled のときだけ RPC で行う
 //   駅すぱあと: GET /v1/json/search/course/plain?key=&from=&to=&bus=  （平均待ち時間探索。from/to は駅コード・住所・座標）
 //               GET /v1/json/station?key=&name=  （駅名→駅コード）
 //   出典: https://docs.ekispert.com/v1/api/search/course/plain.html  https://docs.ekispert.com/v1/api/station.html
@@ -27,7 +29,7 @@ function authorized(req: Request): boolean {
   return !!bearer && bearer === SERVICE_KEY;
 }
 
-import { parseCourses, judge, DEFAULT_RULES, arr, type Rules, type Candidate } from "../_shared/commute-judge.ts";
+import { parseCourses, judge, autoJudge, normalizeStationName, DEFAULT_RULES, arr, type Rules, type Candidate, type AutoResult } from "../_shared/commute-judge.ts";
 
 async function eki(path: string, params: Record<string, string>): Promise<any> {
   const u = new URL(`${EKI}${path}`);
@@ -63,35 +65,48 @@ Deno.serve(async (req) => {
     const rules: Rules = { ...DEFAULT_RULES, ...(rulesRow?.value ?? {}) };
     const stores = (us ?? []).map((x: any) => x.stores).filter(Boolean).sort((a: any, b: any) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
     const store = body.store_id ? stores.find((s: any) => s.id === body.store_id) : stores[0];
-    const homeStation = (cm?.home_station ?? prof?.extra?.["最寄り駅"] ?? "").split(/[／/]/)[0].trim();
-    const workStation = String(store?.nearest_station ?? "").split(/[、,]/)[0].trim();
-    const claimed = cm?.claimed_oneway_fare ?? null;
+    // 最寄り駅は自由記入（例: "大口駅（JR横浜線）"・"電車40分"）→ 駅名だけに正規化。駅名が取れなければ住所から探す
+    const homeStationRaw = String(cm?.home_station ?? prof?.extra?.["最寄り駅"] ?? "");
+    const homeStation = normalizeStationName(homeStationRaw);
+    const workStation = normalizeStationName(store?.nearest_station);
+    // dry_run のときだけ申請額を差し替えられる（結合テスト用。保存はしない）
+    const claimed: number | null = body.dry_run === true && body.mock_claimed !== undefined && body.mock_claimed !== null && Number.isFinite(Number(body.mock_claimed)) ? Number(body.mock_claimed) : (cm?.claimed_oneway_fare ?? null);
     const key = (keyRow?.value ?? "").trim();
+    const autoRules = (rulesRow?.value as any)?.auto_approve ?? null;
+    const mock = body.dry_run === true && body.mock_result_set ? body.mock_result_set : null;
     const fail = async (reason: string, code: string) => {
-      const result = { provider: "ekispert", searched_at: new Date().toISOString(), store_id: store?.id ?? null, store_name: store?.name ?? null, from: homeStation || null, to: workStation || null, error: reason, error_code: code, candidates: [] };
+      const auto: AutoResult = autoJudge({ judgement: "search_failed", computed: null, reasonable: [] }, { claimed, method: cm?.method ?? null, home_station_known: !!homeStation, store_station_known: !!workStation }, autoRules);
+      const result = { provider: "ekispert", searched_at: new Date().toISOString(), store_id: store?.id ?? null, store_name: store?.name ?? null, from: homeStation || null, to: workStation || null, error: reason, error_code: code, candidates: [], auto };
       if (!body.dry_run) {
         await sb.from("employee_commute").upsert({ user_id: uid, search_result: result, judgement: "search_failed", judgement_reasons: [reason], judged_at: new Date().toISOString(), updated_at: new Date().toISOString() }, { onConflict: "user_id" });
         await setItem(sb, cm?.workflow_id ?? null, uid, "commute_check", "manual_required", { judgement: "search_failed", reason }, reason);
       }
-      return json({ ok: false, judgement: "search_failed", error: reason, error_code: code, result });
+      return json({ ok: false, judgement: "search_failed", error: reason, error_code: code, result, auto: result.auto });
     };
     if (!store) return await fail("所属店舗がありません", "no_store");
     if (!workStation) return await fail(`店舗「${store.name}」の最寄り駅が未設定です（nippo の店舗管理で登録）`, "no_store_station");
     if (!homeStation && !prof?.address) return await fail("本人の最寄り駅・住所がありません", "no_home");
-    if (!key) return await fail("駅すぱあと API のキーが未設定です（app_secrets.ekispert_key）", "no_api_key");
+    if (!key && !mock) return await fail("駅すぱあと API のキーが未設定です（app_secrets.ekispert_key）", "no_api_key");
 
-    // 出発: 最寄り駅があれば駅コード、無ければ住所（住所は API にだけ送り、結果には残さない）
-    let from = "";
-    if (homeStation) from = (await stationCode(key, homeStation)) ?? "";
-    if (!from && prof?.address) from = String(prof.address);
-    const to = await stationCode(key, workStation);
-    if (!from || !to) return await fail(`駅が見つかりません（${!from ? "本人: " + homeStation : ""}${!to ? " 店舗: " + workStation : ""}）`, "station_not_found");
-    const rs = await eki("/search/course/plain", { key, from, to, bus: "true", answerCount: "6" });
+    let rs: any;
+    if (mock) {
+      rs = mock?.ResultSet ?? mock;   // 結合テスト用（dry_run のみ）。駅すぱあとは呼ばない
+    } else {
+      // 出発: 最寄り駅があれば駅コード、無ければ住所（住所は API にだけ送り、結果には残さない）
+      let from = "";
+      if (homeStation) from = (await stationCode(key, homeStation)) ?? "";
+      if (!from && prof?.address) from = String(prof.address);
+      const to = await stationCode(key, workStation);
+      if (!from || !to) return await fail(`駅が見つかりません（${!from ? "本人: " + homeStation : ""}${!to ? " 店舗: " + workStation : ""}）`, "station_not_found");
+      rs = await eki("/search/course/plain", { key, from, to, bus: "true", answerCount: "6" });
+    }
     const cands = parseCourses(rs).map((c) => ({ ...c }));
     const j = judge(cands, claimed, rules);
+    // 自動承認の条件判定（記録だけ。承認は呼び出し側が enabled のときだけ）
+    const auto = autoJudge(j, { claimed, method: cm?.method ?? null, home_station_known: !!homeStation, store_station_known: !!workStation }, autoRules);
     const result = {
-      provider: "ekispert", searched_at: new Date().toISOString(), store_id: store.id, store_name: store.name, from: homeStation || "（住所から）", to: workStation,
-      candidates: cands, reasonable_indexes: j.reasonable.map((c) => c.index), computed_index: j.computed?.index ?? null, rules,
+      provider: mock ? "mock" : "ekispert", searched_at: new Date().toISOString(), store_id: store.id, store_name: store.name, from: homeStation || "（住所から）", to: workStation,
+      candidates: cands, reasonable_indexes: j.reasonable.map((c) => c.index), computed_index: j.computed?.index ?? null, rules, auto,
     };
     if (!body.dry_run) {
       await sb.from("employee_commute").upsert({
@@ -100,9 +115,11 @@ Deno.serve(async (req) => {
         judgement: cm?.judgement === "approved" ? "approved" : j.judgement, judgement_reasons: j.reasons, judged_at: new Date().toISOString(), updated_at: new Date().toISOString(),
       }, { onConflict: "user_id" });
       // 項目: 判定結果は人が見て押す → manual_required（判定を payload に）。承認済みなら触らない
-      if (cm?.judgement !== "approved") await setItem(sb, cm?.workflow_id ?? null, uid, "commute_check", "manual_required", { judgement: j.judgement, reasons: j.reasons, computed_fare: j.computed?.fare ?? null, claimed }, j.reasons[0] ?? null);
+      if (cm?.judgement !== "approved") await setItem(sb, cm?.workflow_id ?? null, uid, "commute_check", "manual_required", { judgement: j.judgement, reasons: j.reasons, computed_fare: j.computed?.fare ?? null, claimed, auto }, j.reasons[0] ?? null);
+      // 自動承認の判定を記録（shadow でも残す＝有効化前に「どれだけ自動承認できたか」を集計できる）
+      if (auto.mode !== "off" && cm?.workflow_id) await sb.from("onboarding_events").insert({ workflow_id: cm.workflow_id, item_key: "commute_check", kind: "commute.auto_judged", via: "auto", payload: { ...auto, judgement: j.judgement, claimed, computed_fare: j.computed?.fare ?? null } });
     }
-    return json({ ok: true, judgement: j.judgement, reasons: j.reasons, claimed, computed: j.computed, reasonable: j.reasonable, candidates: cands, store: { id: store.id, name: store.name }, from: homeStation || "（住所から）", to: workStation });
+    return json({ ok: true, judgement: j.judgement, reasons: j.reasons, claimed, computed: j.computed, reasonable: j.reasonable, candidates: cands, auto, store: { id: store.id, name: store.name }, from: homeStation || "（住所から）", to: workStation, mock: !!mock });
   } catch (e) {
     return json({ ok: false, error: String((e as Error).message ?? e).slice(0, 300) }, 500);
   }
