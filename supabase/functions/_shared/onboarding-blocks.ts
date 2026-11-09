@@ -3,7 +3,7 @@
 // 個人情報の扱い（ユーザー指示）: 住所・電話・生年月日・税情報は出さない。出すのは 氏名・区分・所属・入社日・スマレジ契約/ID・各項目の状態 だけ。
 
 export type ItemState = "pending" | "running" | "completed" | "retry_wait" | "manual_required" | "manual_running" | "cancelled" | "failed";
-export type ItemInfo = { state: ItemState; attempts?: number; last_error?: string | null; payload?: any; completed_at?: string | null };
+export type ItemInfo = { state: ItemState; attempts?: number; last_error?: string | null; payload?: any; completed_at?: string | null; completion_source?: string | null };
 export type WorkflowView = {
   id: string; user_id: string | null; status: string; hire_date: string | null; role: string | null;
   contract_id: string | null; contract_label: string | null; smaregi_staff_id: string | null; hq_task_id: string | null;
@@ -57,12 +57,18 @@ export function parentMessage(wf: WorkflowView, notificationId: string): { text:
     const it = items[key];
     const st: ItemState = (it?.state ?? "pending") as ItemState;
     let extra = "";
-    if (key === "wage" && st === "completed" && Array.isArray(it?.payload?.rows)) extra = "　" + it.payload.rows.map((r: any) => wageLine(r)).join("／");
+    // 完了の見分け: ✅=スマレジに保存し GET で一致確認済み（or システム判定）／☑️=本部タスクで人が手動 ✓（スマレジ反映は未確認）／✅+注記=保存したが照合できず
+    const src = it?.completion_source ?? null;
+    let emoji = STATE_EMOJI[st];
+    if (st === "completed" && (src === "manual_check" || src === "manual_step")) { emoji = "☑️"; extra = "　_（本部タスクで手動 ✓・スマレジ反映は未確認）_"; }
+    if (key === "wage" && st === "completed" && Array.isArray(it?.payload?.rows) && src !== "manual_check" && src !== "manual_step") {
+      extra = "　" + it.payload.rows.map((r: any) => wageLine(r)).join("／") + (src === "smaregi_verified" ? "　_スマレジ照合済み_" : src === "smaregi_unverified" ? "　_（保存済み・照合は未確認）_" : "");
+    }
     if (st === "failed" && it?.last_error) extra = `　_${String(it.last_error).slice(0, 80)}_`;
     if (st === "pending" && ["commute_set", "withholding_tax", "web_payslip"].includes(key)) extra = "　_（今は手作業。本部タスクの ✓ で反映）_";
     else if (st === "pending" && key === "email") extra = "　_（今は手作業。本部タスク工程①の完了で反映）_";
     else if (st === "pending" && phase > 1) extra = "　_（Phase 2 以降で自動化）_";
-    return `${STATE_EMOJI[st]} ${label}${extra}`;
+    return `${emoji} ${label}${extra}`;
   });
   const value = JSON.stringify({ workflow_id: wf.id, notification_id: notificationId });
   const blocks: unknown[] = [
@@ -111,7 +117,7 @@ export function wageModal(meta: { workflow_id: string; user_id: string; notifica
       type: "static_select", action_id: "division", initial_option: { text: { type: "plain_text", text: "時給" }, value: "0" },
       options: [
         { text: { type: "plain_text", text: "時給" }, value: "0" },
-        { text: { type: "plain_text", text: "日給" }, value: "1" },
+        { text: { type: "plain_text", text: "日給（適用開始日は月初日）" }, value: "1" },
         { text: { type: "plain_text", text: "月給（適用開始日は月初日）" }, value: "2" },
       ],
     } },

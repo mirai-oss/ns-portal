@@ -240,7 +240,7 @@ const handlers: Record<string, Handler> = {
     const wage = Number(v.wage?.wage?.value ?? "");
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return json({ response_action: "errors", errors: { date: "適用開始日を選んでください" } });
     if (!Number.isInteger(wage) || wage <= 0) return json({ response_action: "errors", errors: { wage: "金額（円）を整数で入れてください" } });
-    if (division === 2 && date.slice(8) !== "01") return json({ response_action: "errors", errors: { date: "月給の適用開始日は月初日（1日）にしてください" } });
+    if ((division === 2 || division === 1) && date.slice(8) !== "01") return json({ response_action: "errors", errors: { date: `${division === 2 ? "月給" : "日給"}の適用開始日は月初日（1日）にしてください（スマレジの仕様）` } });
     if (division === 0 && wage > 100000) return json({ response_action: "errors", errors: { wage: "時給が大きすぎます。月給は「月給」を選んでください" } });
     if (!meta.workflow_id || !meta.user_id) return json({ response_action: "errors", errors: { wage: "対象が読めませんでした。もう一度ボタンから開いてください" } });
     let contract: string | null = v.contract?.contract?.selected_option?.value ?? null;

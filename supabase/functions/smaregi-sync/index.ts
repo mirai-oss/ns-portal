@@ -888,7 +888,7 @@ Deno.serve(async (req) => {
         if (row.division === 0 && wage > 100000) return json({ ok: false, error: `時給が大きすぎます（${wage}円）。月給は「月給」で入力してください` }, 400);
         if (holiday !== null && (!Number.isInteger(holiday) || holiday < 0)) return json({ ok: false, error: "休日賃金が不正です" }, 400);
         if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || date < "2000-01-01") return json({ ok: false, error: "適用開始日が不正です" }, 400);
-        if (row.division === 2 && date.slice(8) !== "01") return json({ ok: false, error: "月給の適用開始日は月初日（1日）にしてください" }, 400);
+        if ((row.division === 2 || row.division === 1) && date.slice(8) !== "01") return json({ ok: false, error: `${row.division === 2 ? "月給" : "日給"}の適用開始日は月初日（1日）にしてください` }, 400);
         const { error: ue } = await sb.from("employee_wage_settings").update({ wage, holiday_wage: row.division === 0 ? holiday : null, effective_date: date, sync_status: "pending", sync_error: null, updated_at: new Date().toISOString() }).eq("id", id);
         if (ue) return json({ ok: false, error: /duplicate|unique/i.test(ue.message) ? "同じ条件（区分・店舗・適用開始日）の賃金設定が既にあります" : ue.message }, 400);
         body.id = id; // ↓で、この1行だけを反映

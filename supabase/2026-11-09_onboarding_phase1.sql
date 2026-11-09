@@ -89,6 +89,9 @@ create table if not exists public.onboarding_items (
   payload            jsonb,                       -- 最後の結果（例: 賃金なら division/wage/effective_date/wageApplyId/verified）
   hq_task_step_id    uuid references public.hq_task_steps(id) on delete set null,
   hq_checklist_item_id uuid references public.hq_step_checklist_items(id) on delete set null,
+  completion_source  text check (completion_source is null or completion_source in ('smaregi_verified','smaregi_unverified','auto','manual_check','manual_step')),
+                     -- 完了のしかた: smaregi_verified=スマレジに保存し GET で一致確認済み／smaregi_unverified=保存したが照合できず／auto=システム判定（フォーム・連携など）
+                     --              manual_check=本部タスクのチェック欄を人が ✓／manual_step=本部タスクの工程を人が完了。manual_* は「スマレジ反映済み」を意味しない
   completed_at       timestamptz,
   updated_at         timestamptz not null default now(),
   unique (workflow_id, item_key)
@@ -264,7 +267,9 @@ begin
     p_holiday := null;
   end if;
   if p_division = 1 then
+    -- スマレジ公式仕様（2026-11-09 確認）: 日給の適用開始日は月初日。事業所別は API 上は可能だが管理システムでは全事業所共通のみ・休日賃金なし
     if p_store is not null then raise exception '日給は店舗を指定できません（全事業所共通）'; end if;
+    if extract(day from p_date) <> 1 then raise exception '日給の適用開始日は月初日（1日）にしてください（スマレジの仕様）'; end if;
     if p_wage > 1000000 then raise exception '日給が大きすぎます（%円）', p_wage; end if;
     p_holiday := null;
   end if;
@@ -292,6 +297,7 @@ begin
   return jsonb_build_object('ok', true, 'id', v_id, 'actor', v_actor);
 end $$;
 grant execute on function public.hr_save_wage(uuid, text, integer, uuid, integer, integer, date, uuid) to authenticated, service_role;
+revoke execute on function public.hr_save_wage(uuid, text, integer, uuid, integer, integer, date, uuid) from public, anon;   -- 旧版と同じ（anon は実行不可）
 
 -- -------------------------------------------------------------
 -- 7) onboarding_start: 入社フォーム完了（または本部の代理登録）時に 1 行作る。何度呼んでも同じ行（冪等）
@@ -355,7 +361,7 @@ begin
   on conflict (workflow_id, item_key) do nothing;
 
   -- 自動で分かるものは完了にする（入社フォーム＝この時点で済・スマレジ従業員＝ID があれば済・Slack 連携＝user_slack があれば済）
-  update onboarding_items set state = 'completed', completed_at = coalesce(completed_at, now()), updated_at = now()
+  update onboarding_items set state = 'completed', completed_at = coalesce(completed_at, now()), completion_source = 'auto', updated_at = now()
    where workflow_id = v_wf.id and state = 'pending' and (
      item_key = 'join_form'
      or (item_key = 'smaregi_staff' and v_wf.smaregi_staff_id is not null)
@@ -383,14 +389,14 @@ begin
         from (values ('wage','時給'), ('commute_set','交通費'), ('withholding_tax','源泉所得税の適用'), ('web_payslip','個別Web給与明細表示設定')) m(item_key, title)
        where oi.workflow_id = v_wf.id and oi.item_key = m.item_key and oi.hq_checklist_item_id is null;
       -- 人が既に ✓ 済みなら項目も完了に
-      update onboarding_items oi set state = 'completed', completed_at = coalesce(oi.completed_at, c.checked_at), updated_at = now()
+      update onboarding_items oi set state = 'completed', completed_at = coalesce(oi.completed_at, c.checked_at), completion_source = 'manual_check', updated_at = now()
         from hq_step_checklist_items c
        where oi.workflow_id = v_wf.id and oi.hq_checklist_item_id = c.id and c.checked_at is not null and oi.state in ('pending','failed','retry_wait','manual_required');
     end if;
     select id into v_step from hq_task_steps where task_id = v_wf.hq_task_id and title like 'メールアドレスを登録%' limit 1;
     if v_step is not null then
       update onboarding_items set hq_task_step_id = v_step, updated_at = now() where workflow_id = v_wf.id and item_key = 'email' and hq_task_step_id is null;
-      update onboarding_items oi set state = 'completed', completed_at = coalesce(oi.completed_at, s.completed_at), updated_at = now()
+      update onboarding_items oi set state = 'completed', completed_at = coalesce(oi.completed_at, s.completed_at), completion_source = 'manual_step', updated_at = now()
         from hq_task_steps s where oi.workflow_id = v_wf.id and oi.item_key = 'email' and s.id = v_step and s.completed_at is not null and oi.state = 'pending';
     end if;
   end if;
@@ -437,6 +443,11 @@ begin
     payload = coalesce(p_payload, payload),
     last_error = case when p_state in ('failed','retry_wait','manual_required') then coalesce(p_error, last_error) when p_state = 'completed' then null else last_error end,
     completed_at = case when p_state = 'completed' then coalesce(completed_at, now()) else null end,
+    -- 完了のしかた（手動 ✓ と区別する）: payload.verified が true ならスマレジ照合済み、false ならスマレジ保存のみ、それ以外はシステム判定
+    completion_source = case when p_state <> 'completed' then null
+                             when coalesce(p_payload, payload) ->> 'verified' = 'true' then 'smaregi_verified'
+                             when coalesce(p_payload, payload) ->> 'verified' = 'false' then 'smaregi_unverified'
+                             else 'auto' end,
     updated_at = now()
   where id = it.id returning * into it;
 
@@ -494,7 +505,8 @@ begin
   select * into it from onboarding_items where hq_checklist_item_id = new.id limit 1;
   if it.id is null then return null; end if;
   if new.checked_at is not null and old.checked_at is null and it.state <> 'completed' then
-    update onboarding_items set state = 'completed', completed_at = coalesce(completed_at, new.checked_at), last_error = null, updated_at = now() where id = it.id;
+    -- 人の ✓ ＝ manual_check（スマレジに反映したことを意味しない。表示では「手動 ✓・反映未確認」になる）
+    update onboarding_items set state = 'completed', completed_at = coalesce(completed_at, new.checked_at), completion_source = 'manual_check', last_error = null, updated_at = now() where id = it.id;
     insert into onboarding_events(workflow_id, item_key, kind, actor_id, via, before, after)
     values (it.workflow_id, it.item_key, 'item.state', coalesce(new.checked_by, auth.uid()), 'hq_task',
             jsonb_build_object('state', it.state), jsonb_build_object('state', 'completed', 'by', 'hq_task_checklist'));
@@ -503,7 +515,7 @@ begin
     end if;
   elsif new.checked_at is null and old.checked_at is not null and it.state = 'completed' then
     -- ✓ を外した: 項目を pending に戻す（自動処理の結果 payload は残す）
-    update onboarding_items set state = 'pending', completed_at = null, updated_at = now() where id = it.id;
+    update onboarding_items set state = 'pending', completed_at = null, completion_source = null, updated_at = now() where id = it.id;
     insert into onboarding_events(workflow_id, item_key, kind, actor_id, via, before, after)
     values (it.workflow_id, it.item_key, 'item.state', auth.uid(), 'hq_task', jsonb_build_object('state', 'completed'), jsonb_build_object('state', 'pending', 'by', 'hq_task_checklist_unchecked'));
     update onboarding_workflows set status = 'registering', updated_at = now() where id = it.workflow_id and status = 'completed';
@@ -523,14 +535,14 @@ begin
   select * into it from onboarding_items where hq_task_step_id = new.id and item_key = 'email' limit 1;
   if it.id is null then return null; end if;
   if new.completed_at is not null and old.completed_at is null and it.state <> 'completed' then
-    update onboarding_items set state = 'completed', completed_at = coalesce(completed_at, new.completed_at), last_error = null, updated_at = now() where id = it.id;
+    update onboarding_items set state = 'completed', completed_at = coalesce(completed_at, new.completed_at), completion_source = 'manual_step', last_error = null, updated_at = now() where id = it.id;
     insert into onboarding_events(workflow_id, item_key, kind, actor_id, via, before, after)
     values (it.workflow_id, 'email', 'item.state', coalesce(new.completed_by, auth.uid()), 'hq_task', jsonb_build_object('state', it.state), jsonb_build_object('state', 'completed', 'by', 'hq_task_step'));
     if (select bool_and(state = 'completed') from onboarding_items where workflow_id = it.workflow_id and state <> 'cancelled') then
       update onboarding_workflows set status = 'completed', completed_at = coalesce(completed_at, now()), updated_at = now() where id = it.workflow_id and status = 'registering';
     end if;
   elsif new.completed_at is null and old.completed_at is not null and it.state = 'completed' then
-    update onboarding_items set state = 'pending', completed_at = null, updated_at = now() where id = it.id;
+    update onboarding_items set state = 'pending', completed_at = null, completion_source = null, updated_at = now() where id = it.id;
     insert into onboarding_events(workflow_id, item_key, kind, actor_id, via, before, after)
     values (it.workflow_id, 'email', 'item.state', auth.uid(), 'hq_task', jsonb_build_object('state', 'completed'), jsonb_build_object('state', 'pending', 'by', 'hq_task_step_reopened'));
     update onboarding_workflows set status = 'registering', updated_at = now() where id = it.workflow_id and status = 'completed';
@@ -547,7 +559,7 @@ create trigger trg_onboarding_hq_step_sync after update of completed_at on publi
 create or replace view public.onboarding_workflow_v as
 select w.*, u.name as user_name, u.email as user_email, u.is_active as user_active,
        (select string_agg(s.name, '・' order by s.sort_order) from stores s where s.id = any(w.store_ids)) as store_names,
-       (select jsonb_object_agg(i.item_key, jsonb_build_object('state', i.state, 'attempts', i.attempts, 'last_error', i.last_error, 'payload', i.payload, 'completed_at', i.completed_at))
+       (select jsonb_object_agg(i.item_key, jsonb_build_object('state', i.state, 'attempts', i.attempts, 'last_error', i.last_error, 'payload', i.payload, 'completed_at', i.completed_at, 'completion_source', i.completion_source))
           from onboarding_items i where i.workflow_id = w.id) as items,
        (select c.label from smaregi_contracts c where c.contract_id = w.contract_id limit 1) as contract_label
   from onboarding_workflows w left join users u on u.id = w.user_id;
