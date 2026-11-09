@@ -25,6 +25,25 @@
 --   payroll_task_links の主キーを (year_month,kind) に戻し列 corporation_id を削除（法人2件以上のタスクが入る前なら可）
 -- ============================================================
 
+-- ---------- 安全ガード: 本番の現在の定義が「土台にした版」と一致するか（指紋md5）。1つでも違えば例外で止まり何も変更されない（本文は出さない）----------
+--   土台: cash_handoff_complete=復元SQL(適用済み)／cash_handoff_targets・hq_create_payroll_tasks=11-03版／hq_check_payroll_task_item=9-08版
+do $$
+declare r record; v_bad text := ''; v_n int;
+begin
+  for r in select * from (values
+      ('cash_handoff_complete', 1, '7e9e342818eddad200731cb606c0d3b3'),
+      ('cash_handoff_targets', 1, '961fac8690a6627074a24e67a00eb635'),
+      ('hq_create_payroll_tasks', 1, '8c12bcabeb0b9de8c21e53f972d96fd0'),
+      ('hq_check_payroll_task_item', 1, 'b5051b2222a347e4a0b55e8ed5734434')) as x(fname, cnt, fp) loop
+    select count(*) into v_n from pg_proc where proname = r.fname and pronamespace = 'public'::regnamespace;
+    if v_n <> r.cnt then v_bad := v_bad || E'\n  '||r.fname||': 本数='||v_n||'（想定'||r.cnt||'）'; continue; end if;
+    if (select md5(prosrc) from pg_proc where proname = r.fname and pronamespace = 'public'::regnamespace) <> r.fp then
+      v_bad := v_bad || E'\n  '||r.fname||': 本文の指紋が想定と違います（本番='||(select md5(prosrc) from pg_proc where proname = r.fname and pronamespace = 'public'::regnamespace)||'）';
+    end if;
+  end loop;
+  if v_bad <> '' then raise exception '停止: 本番の関数が土台にした版と一致しません。何も変更していません。担当Bに報告してください:%', v_bad; end if;
+end $$;
+
 -- ---------- 0. 新テーブル ----------
 create table if not exists payroll_finalized (
   year_month text not null check (year_month ~ '^\d{4}-\d{2}$'),
