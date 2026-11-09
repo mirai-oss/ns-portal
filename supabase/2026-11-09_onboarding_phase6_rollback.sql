@@ -90,3 +90,5 @@ select w.*, u.name as user_name, u.email as user_email, u.is_active as user_acti
   from onboarding_workflows w left join users u on u.id = w.user_id;
 alter view public.onboarding_workflow_v set (security_invoker = true);
 grant select on public.onboarding_workflow_v to authenticated, service_role;
+
+drop function if exists public.post_join_request_snapshot(uuid, integer, uuid);

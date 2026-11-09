@@ -7,6 +7,17 @@
 
 ---
 
+**2026-11-09 20:30（Slack 勤怠スレッド・続き）入社登録 Phase 6 v2＝コード完成・テスト完了・本番未反映（ユーザー最終方針①〜⑨＋追加指示: 契約ID の確実な識別・書き込み前 3 点確認・取り込みだけでは提出済みにしない）**:
+- 方針: 社員・アルバイト全員がフォーム対象。必須・リマインド・期限・年度・対象判定は「雇用区分の標準ルール（post_join_rules）＋従業員個別の上書き（post_join_overrides・理由必須）」、履歴（post_join_policy_history。users.role の区分変更も記録・税務情報は消さない）。扶養と年末調整は別トラック・年度付き。リマインドは「必須かつ未完了」だけ（期限前後で間隔変更・提出/対象外/不要で停止・自動送信 OFF）。提出 → 本部が Slack で承認 → スマレジ反映 → 再取得照合（扶養は氏名・続柄・生年月日）。既存従業員は 1 人ずつ snapshot 取り込み（status は変えない）。一括操作なし。「任意＝法令上の免除ではない」を UI・設計書に注記。
+- ハブ ns-portal `d8f1846`＋追補（`post_join_request_snapshot`）: SQL `2026-11-09_onboarding_phase6.sql`（v2・**未適用**・dry-run OK）／rollback（データ保全版・検証済み）／EF onboarding-notify・slack-interact・blocks（**未デプロイ**・deno check/test OK）／設計書 v2。rollback 内テスト 85 項目 OK（社員・AL・個別必須・区分変更・既存従業員 snapshot・年度更新・承認前後・期限前後の間隔・対象外）。`ui_job_enqueue` が expected_contract_id/expected_staff_id/expected_stores を payload に付与。
+- nippo `75a066b`（**未 push**）: 入社フォーム「今入力する／後から入力する」＋法令注記、設定ページの本人フォーム（必須/任意・期限・年度・snapshot 初期値）、本部の個別設定カード＋履歴、マスター/CEO の標準ルール画面。RPC 引数名はハブ定義に合わせ済み。
+- Mac ns-daily-import `1e51942`（push 済み・フラグ OFF）: 契約ID は `<smaregi-header contract-id>` 属性で確実に識別（文字列検索廃止・トーホー/LiveGate 実機 OK）。書き込み前 3 点確認（契約ID・従業員ID・所属事業所 expected_stores）＝1 つでも確認できなければ中止。扶養は氏名・続柄・生年月日で照合（実画面の行の書式は未検証＝登録のある従業員が手元に無い）。テスト 32 件。LiveGate ログインは `.env` の SMAREGI_LIVEGATE_ID/PASSWORD（ユーザー投入済み）。
+- 切替 B の SQL `2026-11-09_onboarding_switch_B.sql`（ユーザー実行待ち）・親メッセージ先頭の状態 1 行表示（EF 未デプロイ）。
+- **承認待ち**: A. Phase 6 SQL 適用（利用の少ない時間）→ EF smaregi-sync・onboarding-notify・slack-interact デプロイ B. nippo push C. 切替 B D. 使い捨て確認（本人フォーム→Slack 提出表示→承認→manual）E. 各フラグ有効化（個別）。
+
+
+---
+
 **2026-11-09 18:00（Slack 勤怠スレッド・続き）スマレジ管理画面の立会い＝完了・交通費の自動書き込みを実機で一気通貫確認（Slack 🚌 → ジョブ → Mac Playwright → 管理画面 → GET 照合一致 → 項目 ✅ → 本部タスク ✓）。書き込みスイッチは OFF に戻した（ユーザー実行）**:
 - 立会い: ユーザー提供の画面収録（3440×1440・H.264）を内蔵ブラウザで再生して切り出し、`tasks/smaregi-ui-recon.js`（読むだけ）＋`tasks/smaregi-ui-explore.js`（モーダルを開いてキャンセル）で実 DOM を確定。テスト従業員 380「テスト 立会い」（ユーザーが nippo から作成・鳥一代 本店）。
 - 確定: 給与設定ページ `/staffs/edit_payroll/{ID}`（交通費モーダル: 支給形態 radio value 0/2/1＝API と同じ・適用開始 YYYY/MM・金額/上限（**上限は月額**）・「追加」→ページ「設定を保存」→ **確認ダイアログ `#JSFlashMessage a.confirmBtn`「はい」**→ 詳細 `/staffs/detail/{ID}#group_payroll`＋「従業員を保存しました。」）／源泉モーダル（区分 1/2・配偶者 0/1/2・親族数・適用開始月）／Web 明細 radio `#personalWebStatementpScreenDisplayFlag1`／メールは基本情報 `#StaffTmpEmail`（**本人登録完了まで API の mail に出ない＝仮メール**。詳細ページの「登録されていません。認証メールをお送りしております」で本人アカウント＝招待済みと判定可）。
@@ -1206,6 +1217,8 @@
 - 入金タブをkd_deposit速報で即表示（v237）。PL速報(viewPLFast_)は既存。目標/広告/媒体/明細は確定データ(GAS)待ちのまま＝次はkd追加(F2・レーンP)待ち。社員人件費反映はユーザー確認済み。
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
+
+**★★★2026-11-09 20:30（Slack 勤怠スレッド・続き）入社登録 Phase 6 v2（社員・AL 全員対象の扶養・年末調整フォーム＝標準ルール＋個別上書き＋履歴＋年度＋承認後反映／源泉 Slack 画面統一／事業所自動作成）＝コード完成・テスト完了・本番未反映。** ハブ `d8f1846`＋追補（SQL 未適用・EF 未デプロイ・rollback 85 項目 OK）／nippo `75a066b` 未 push／Mac `1e51942` push 済み（契約ID 属性識別・書き込み前 3 点確認・フラグ OFF）。立会い済み（交通費の実書き込み一気通貫 OK・スイッチ OFF 戻し済み）。**承認待ち**: A. Phase 6 SQL→EF 3 本 B. nippo push C. 切替 B（通知 1 通化） D. 使い捨て確認 E. フラグ有効化。直近コミット: ns-portal この下の git log／nippo `75a066b`／ns-daily-import `1e51942`。
 
 **★★★2026-11-09 18:30（Slack 勤怠スレッド・続き）入社登録: 立会い完了＝交通費の自動書き込みを実機で一気通貫確認（スイッチは OFF に戻し済み・Mac フラグ OFF）。Phase 6（扶養・年末調整の入社後フォーム／源泉 Slack 画面統一／スマレジ事業所の自動作成）＝コード完成・本番未反映（ハブ `c8fcd0c`: SQL `2026-11-09_onboarding_phase6.sql` 未適用・EF 3 本未デプロイ／nippo 未 push／Mac `d7c3b5c` push 済み）。** 本番 EF: onboarding-notify v9（ユーザー実行）。承認待ち: A. Phase 6 SQL→EF 3 本 B. nippo push C. 使い捨て確認 D. 各フラグ有効化。直近コミット: ns-portal この下の git log／nippo ローカル HEAD／ns-daily-import `d7c3b5c`。
 

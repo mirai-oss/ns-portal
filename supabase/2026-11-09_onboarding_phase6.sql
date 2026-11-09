@@ -170,7 +170,7 @@ create table if not exists public.post_join_policy_history (
   class        text,
   track        text,
   target_year  integer,
-  kind         text not null check (kind in ('rule_changed','override_set','override_cleared','class_changed','status_changed','approved','rejected','skipped','choice','snapshot_imported')),
+  kind         text not null check (kind in ('rule_changed','override_set','override_cleared','class_changed','status_changed','approved','rejected','skipped','choice','snapshot_imported','snapshot_requested')),
   before       jsonb,
   after        jsonb,
   reason       text,
@@ -885,3 +885,24 @@ revoke all on function public.onboarding_post_join_remind_trigger() from public,
 -- cron（承認後に手で。EF 側も onboarding_alerts.post_join_remind_enabled=true でないと送らない）:
 --   select cron.schedule('onboarding-post-join-remind', '30 0 * * *', $$select public.onboarding_post_join_remind_trigger()$$);   -- 09:30 JST
 --   止める: select cron.unschedule('onboarding-post-join-remind');
+
+-- -------------------------------------------------------------
+-- v2 追補（2026-11-09）: 「スマレジの内容を取り込む」の依頼（本人 or 本部）。取り込み自体は Slack の 🔎（EF post_join_snapshot）で 1 人ずつ行う。履歴に残すだけ
+-- -------------------------------------------------------------
+create or replace function public.post_join_request_snapshot(p_user uuid, p_year integer default null, p_actor uuid default null)
+returns jsonb
+language plpgsql security definer set search_path to 'public'
+as $$
+declare v_actor uuid; v_year integer;
+begin
+  if auth.uid() is not null then
+    if auth.uid() <> p_user and not public.hq_can_manage() then raise exception '権限がありません'; end if;
+    v_actor := auth.uid();
+  elsif public.onboarding_is_service() then v_actor := p_actor;
+  else raise exception '認証が必要です'; end if;
+  v_year := coalesce(p_year, public.post_join_year_default());
+  insert into post_join_policy_history(user_id, track, target_year, kind, after, reason, actor_id)
+  values (p_user, 'year_end', v_year, 'snapshot_requested', jsonb_build_object('requested_by', case when v_actor = p_user then 'self' else 'hq' end), 'スマレジの登録内容の取り込みを依頼（Slack の 🔎 で本部が実行）', v_actor);
+  return jsonb_build_object('ok', true, 'note', '取り込みは本部が Slack の「🔎 スマレジと比較」で 1 人ずつ行います');
+end $$;
+grant execute on function public.post_join_request_snapshot(uuid, integer, uuid) to authenticated, service_role;
