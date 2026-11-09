@@ -287,9 +287,9 @@ function buildPriceLookup(rows: UnitPriceRow[], mediaAliasMap: Map<string, strin
 const LOAN_REPAYMENT_FEED_URL = "https://ns-info-system.vercel.app/api/loan-repayment-feed";
 type LoanFeedRow = { corporationId: string; corporationName: string; storeId: string | null; storeName: string | null; yearMonth: string; interestAmount: number; principalAmount: number };
 async function fetchLoanRepayment(sb: any, periodFrom: string, periodTo: string): Promise<LoanFeedRow[]> {
-  const { data: sec } = await sb.from("app_secrets").select("value").eq("key", "loan_repayment_feed_token").maybeSingle();
-  const token = (sec?.value ?? "").trim();
-  if (!token) throw new Error("app_secretsにloan_repayment_feed_tokenが未設定です");
+  // 2026-11-09: トークンは Supabase Secrets（環境変数 LOAN_REPAYMENT_FEED_TOKEN）から読む（app_secrets の平文保存を廃止）
+  const token = (Deno.env.get("LOAN_REPAYMENT_FEED_TOKEN") ?? "").trim();
+  if (!token) throw new Error("LOAN_REPAYMENT_FEED_TOKEN（Supabase Secrets）が未設定です");
   const url = `${LOAN_REPAYMENT_FEED_URL}?from=${periodFrom}&to=${periodTo}`;
   const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
   if (!res.ok) throw new Error(`loan-repayment-feed取得に失敗: HTTP ${res.status}`);
