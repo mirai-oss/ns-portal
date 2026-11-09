@@ -126,7 +126,7 @@ create table if not exists public.post_join_rules (
   remind_enabled                      boolean not null default false,   -- リマインド
   deadline_days                       integer,                          -- 扶養: 入社日から n 日（null=期限なし）
   payroll_closing_day                 integer check (payroll_closing_day is null or payroll_closing_day between 1 and 31),  -- 扶養: 給与締め日（31=末日）。入社後最初の締め日 − payroll_lead_days を「初回給与処理に必要な期限」とし、deadline_days と早い方を採用（2026-11-09 ユーザー指示）
-  payroll_lead_days                   integer not null default 5,       -- 締め日の何日前までに扶養情報が必要か
+  payroll_lead_days                   integer not null default 0,       -- 締め日の何日前までに扶養情報が必要か（末日締め・翌月 15 日払い → 0）
   deadline_month_day                  text,                             -- 年末調整: 対象年度の 'MM-DD'（null=期限なし）
   remind_interval_days                integer not null default 3,       -- 期限前の間隔
   remind_interval_after_deadline_days integer not null default 1,       -- 期限後の間隔
@@ -145,8 +145,8 @@ insert into public.post_join_rules(class, track, form_enabled, invite_on_join, r
   ('AL',    'dependents', true, true, false, false, null, null,    'アルバイト: 利用可・初期は任意・リマインドなし（本部が個別に必須へ変更可）'),
   ('AL',    'year_end',   true, true, false, false, null, '11-30', 'アルバイト: 利用可・初期は任意・リマインドなし（本部が個別に必須へ変更可）')
 on conflict (class, track) do nothing;
--- 社員の扶養: 給与締め日（★仮置き: 末日締め・5 日前。実際の締め日と給与処理のリード日数はユーザー確認後に標準ルール画面で変更）
-update public.post_join_rules set payroll_closing_day = 31, payroll_lead_days = 5 where class = 'SHAIN' and track = 'dependents' and payroll_closing_day is null;
+-- 社員の扶養: 給与は末日締め・翌月 15 日払い（祝日は前倒し。ユーザー確認 2026-11-09）→ 締め日（末日）までに扶養情報が必要＝リード 0 日。変更は標準ルール画面（post_join_set_rule の payroll_closing_day / payroll_lead_days）
+update public.post_join_rules set payroll_closing_day = 31, payroll_lead_days = 0 where class = 'SHAIN' and track = 'dependents' and payroll_closing_day is null;
 
 -- 従業員個別の上書き（null の項目は標準ルール）。理由必須・変更は履歴へ
 create table if not exists public.post_join_overrides (
