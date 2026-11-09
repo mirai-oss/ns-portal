@@ -453,6 +453,11 @@ $function$;
 revoke all on function public.hq_create_payroll_tasks(text, text, uuid) from public, anon;
 grant execute on function public.hq_create_payroll_tasks(text, text, uuid) to authenticated;
 
+-- ---------- 7b. 関連5関数の権限を揃える（PUBLIC・anon を外し authenticated のみ。内部に auth.uid()+ロール判定があるが多重防御）----------
+--   （cash_handoff_complete / hq_check_payroll_task_item / hq_create_payroll_tasks / cash_handoff_targets は上で個別に設定済み。残りの cash_handoff_can_write をここで）
+revoke all on function public.cash_handoff_can_write(uuid) from public, anon;
+grant execute on function public.cash_handoff_can_write(uuid) to authenticated;
+
 -- ---------- 8. 適用後の確認（結果を担当B→司令塔へ報告） ----------
 -- 同名関数が1本ずつであること（オーバーロードが残っていない）
 select proname, count(*) as 本数, string_agg(pg_get_function_identity_arguments(oid), ' / ') as 引数
@@ -467,3 +472,9 @@ select c.relname, c.relrowsecurity as rls, a.grantee::regrole::text as grantee, 
   from pg_class c left join lateral aclexplode(coalesce(c.relacl, acldefault('r', c.relowner))) a on true
  where c.relname in ('payroll_finalized','sf_cash_handoff_cancellations','payroll_task_links') and c.relnamespace = 'public'::regnamespace
  order by 1, 3, 4;
+-- 関連5関数の権限表（PUBLIC・anon が無いこと）
+select p.proname, a.grantee::regrole::text as grantee, a.privilege_type
+  from pg_proc p, aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) a
+ where p.pronamespace = 'public'::regnamespace
+   and p.proname in ('cash_handoff_complete','cash_handoff_targets','hq_create_payroll_tasks','hq_check_payroll_task_item','cash_handoff_can_write','cash_handoff_cancel','cash_handoff_targets_raw','cash_handoff_finalized_corps')
+ order by 1, 2;
