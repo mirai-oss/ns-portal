@@ -1,7 +1,9 @@
 -- ============================================================
 -- 2026-11-09 担当B（nippo）— ①cash_handoff_complete の退行修正 ②給料確定の「確定の印」（法人IDキー）
 --   ③現金手渡し対象者を確定済み(月×法人)に限定 ④手渡し取消（サイン等のリセット＋取消履歴）
--- 【状態】事前報告（未適用）。設計(U-23/U-24=全部推奨)・修正4点を反映。U-25の回答待ち（本ファイルは「既存11月テンプレタスクへの工程追加」「paid_atリセット」を既定OFFで用意）
+-- 【状態】事前報告（未適用）。設計(U-23/U-24=全部推奨)・修正4点を反映。U-25=推奨で回答済み（2026-11-09）:
+--   ①既存の11月テンプレ振込タスクに確認工程を足して紐づける ②取消時に給与仕訳の「振込完了」印も戻す（MF登録済み仕訳は消さず注意通知）。
+--   ユーザー方針「連携・自動化は全部やる。ミスが起きたらアラートで分かるように」→ 確定・取消・チェック連携失敗・毎朝の整合チェックでLark/Slack通知
 -- 【前提】2026-11-03_payroll_funcs_concurrent_staff.sql 適用済み ＋ 2026-11-09_cash_handoff_complete_restore.sql（退行修正・先に適用）。
 --   本ファイルの§5（cash_handoff_complete）はその復元版を法人ID対応にして置き換える
 --
@@ -221,7 +223,7 @@ set search_path to 'public'
 as $function$
 declare
   v_row sf_cash_handoff_signatures%rowtype; v_synced_rows integer := 0; v_contract text; v_tenant text;
-  v_already_done boolean; v_uname text; v_total int; v_done int; v_corp uuid; v_corp_name text; v_def text;
+  v_already_done boolean; v_uname text; v_total int; v_done int; v_corp uuid; v_corp_name text; v_def text; v_chk jsonb;
 begin
   if not exists(select 1 from users where id = auth.uid() and is_active and (is_master or role in ('CEO','HQ','TENCHO','TEAM'))) then
     raise exception '権限がありません';
@@ -251,8 +253,15 @@ begin
   if not v_already_done then
     begin                                                                              -- (b) 復元: 本部タスクのチェックリスト連携（法人別）
       select name into v_uname from users where id = p_user_id;
-      if v_uname is not null then perform hq_check_payroll_task_item(p_year_month, 'cash', v_uname, v_corp); end if;
-    exception when others then null;
+      if v_uname is not null then
+        v_chk := hq_check_payroll_task_item(p_year_month, 'cash', v_uname, v_corp);
+        -- 自動連携が効かなかったときは黙らず通知（本部タスクの手動チェックが必要）
+        if not coalesce((v_chk->>'ok')::boolean, false) then
+          perform notify_lark('⚠️ 現金手渡し: 本部タスクのチェックを自動で付けられませんでした（'||p_year_month||'・'||coalesce(v_corp_name,'')||'・'||v_uname||'さん）。理由: '||coalesce(v_chk->>'reason','不明')||'。本部タスクを手動で確認してください');
+        end if;
+      end if;
+    exception when others then
+      begin perform notify_lark('⚠️ 現金手渡し: 本部タスクの自動チェックでエラーが出ました（'||p_year_month||'・'||coalesce(v_corp_name,'')||'）。本部タスクを手動で確認してください'); exception when others then null; end;
     end;
     begin                                                                              -- (c) 復元: この月×この契約の対象者が全員完了したら通知
       select count(distinct pba.user_id) into v_total
@@ -281,7 +290,7 @@ grant execute on function public.cash_handoff_complete(uuid, text, text) to auth
 --  ・サイン画像は消さない: 画面側(nippo)が cash-signatures 内で archive 名へコピーし、そのパスを p_archived で渡す（履歴に保存）
 --  ・paid_at は p_reset_paid=true のときだけ、この人×月×この契約の法人(tenant)の給与仕訳だけ戻す（既定false＝U-25の回答待ち）。mf_* 等の項目は触らない
 --  ・本部タスクのチェックも戻す（対象人のチェックを外し、工程の完了印も外す）。失敗しても取消自体は止めない
-create or replace function public.cash_handoff_cancel(p_user_id uuid, p_year_month text, p_contract_id text default null, p_reason text default null, p_archived jsonb default '{}'::jsonb, p_reset_paid boolean default false)
+create or replace function public.cash_handoff_cancel(p_user_id uuid, p_year_month text, p_contract_id text default null, p_reason text default null, p_archived jsonb default '{}'::jsonb, p_reset_paid boolean default true)
 returns jsonb
 language plpgsql
 security definer
@@ -289,7 +298,7 @@ set search_path to 'public'
 as $function$
 declare
   v_row sf_cash_handoff_signatures%rowtype; v_contract text; v_def text; v_tenant text; v_corp uuid; v_reset int := 0;
-  v_uname text; v_link payroll_task_links%rowtype; v_reason text := btrim(coalesce(p_reason,''));
+  v_uname text; v_link payroll_task_links%rowtype; v_reason text := btrim(coalesce(p_reason,'')); v_mf int := 0; v_corp_name text;
 begin
   select sc.contract_id into v_def from smaregi_contracts sc where sc.is_default limit 1;
   v_contract := coalesce(p_contract_id, v_def);
@@ -304,8 +313,13 @@ begin
   select sc.corporation_id, case sc.corporation_hint when 'toho' then 'default' else sc.corporation_hint end into v_corp, v_tenant
     from smaregi_contracts sc where sc.contract_id = v_contract;
 
+  select c.name into v_corp_name from corporations c where c.id = v_corp;
   if p_reset_paid then
     begin
+      -- 会計ソフト(MF)へ登録済みの仕訳は自動では消さない（印だけ戻す）。登録済みの件数を数えて注意を出す
+      select count(*) into v_mf from payroll_journal_records
+       where user_id = p_user_id and year_month = p_year_month and paid_at is not null and mf_journal_id is not null
+         and (v_tenant is null or tenant_id = v_tenant);
       update payroll_journal_records set paid_at = null, paid_by = null
        where user_id = p_user_id and year_month = p_year_month and paid_at is not null
          and (v_tenant is null or tenant_id = v_tenant);
@@ -338,7 +352,13 @@ begin
   exception when others then null;
   end;
 
-  return jsonb_build_object('ok', true, 'paid_at_reset', v_reset);
+  begin
+    perform notify_lark('↩️ 現金手渡しを取り消しました: '||p_year_month||'・'||coalesce(v_corp_name,'')||'・'||coalesce(v_uname,'')||'さん／理由: '||v_reason
+      ||case when v_reset > 0 then '／給与仕訳の「振込完了」印を'||v_reset||'件戻しました' else '' end
+      ||case when v_mf > 0 then E'\n⚠️ 会計ソフト(MF)に登録済みの仕訳が'||v_mf||'件あります。自動では消していないので、必要なら会計側で確認してください' else '' end);
+  exception when others then null;
+  end;
+  return jsonb_build_object('ok', true, 'paid_at_reset', v_reset, 'mf_registered', v_mf);
 end;
 $function$;
 revoke all on function public.cash_handoff_cancel(uuid, text, text, text, jsonb, boolean) from public, anon;
@@ -362,6 +382,7 @@ declare
   v_name text; v_sort int; v_assignees uuid[];
   v_existing payroll_task_links%rowtype;
   v_contracts text[]; v_corp_id uuid;
+  v_tpl uuid[]; v_ttask hq_tasks%rowtype; v_attached boolean := false; v_warn text := '';
 begin
   select * into v_caller from users u0 where u0.id = auth.uid() and u0.is_active;
   if v_caller.id is null or not (v_caller.is_master or v_caller.role in ('CEO','HQ')) then
@@ -409,18 +430,45 @@ begin
   elsif v_transfer_names is not null and array_length(v_transfer_names,1) > 0 then
     select coalesce(array_agg(id), array[]::uuid[]) into v_assignees
       from users where is_active and replace(replace(name,' ',''),chr(12288),'') = any(array['青山純','原美香','中山俊士']);
-    insert into hq_tasks(title, corp, freq, target_date, due_date, notes, description, visibility, created_by)
-    values (v_mon||'月分　給料振込　'||p_corp, p_corp, 'once', current_date, v_transfer_due, '',
-      '給料確定ボタンにより自動発行（対象'||array_length(v_transfer_names,1)||'名）', 'all', auth.uid())
-    returning id into v_transfer_task;
-    insert into hq_task_steps(task_id, title, assignee_ids, due_date, sort_order, kind)
-    values (v_transfer_task, '振込完了を確認', v_assignees, v_transfer_due, 10, 'step') returning id into v_transfer_step;
-    v_sort := 10;
-    foreach v_name in array v_transfer_names loop
-      insert into hq_step_checklist_items(step_id, title, sort_order) values (v_transfer_step, v_name, v_sort);
-      v_sort := v_sort + 10;
-    end loop;
-    insert into payroll_task_links(year_month, kind, task_id, step_id, corporation_id) values (p_year_month, 'transfer', v_transfer_task, v_transfer_step, v_corp_id);
+    -- 月次テンプレ由来の既存「【振込◯◯】給料」タスク（同じ月・同じ法人・未削除）があれば新規に作らず、そこに確認工程を足して紐づける（二重防止・U-25①）
+    select array_agg(t.id) into v_tpl from hq_tasks t
+     where t.corp = p_corp and t.template_id is not null and t.deleted_at is null
+       and t.title ~ ('^'||v_mon||'月分[[:space:]　]*【振込[^】]*】給料$') and t.title not like '%口振%'
+       and t.due_date >= v_month_start and t.due_date <= (v_month_start + 75);
+    if v_tpl is not null and array_length(v_tpl,1) > 1 then
+      v_warn := v_warn || '既存の振込タスクが'||array_length(v_tpl,1)||'件見つかったため、自動では紐づけず新規作成もしていません。本部で整理してください。';
+    elsif v_tpl is not null then
+      select * into v_ttask from hq_tasks where id = v_tpl[1];
+      if v_ttask.status = 'done' then
+        v_warn := v_warn || '既存の振込タスクが完了済みのため、紐づけも新規作成もしていません。';
+      else
+        v_transfer_task := v_ttask.id;
+        insert into hq_task_steps(task_id, title, assignee_ids, due_date, sort_order, kind)
+        values (v_transfer_task, '振込対象者の確認（給料確定リスト）', v_assignees, v_ttask.due_date,
+                (select coalesce(max(sort_order),0) + 10 from hq_task_steps where task_id = v_transfer_task), 'step')
+        returning id into v_transfer_step;
+        v_sort := 10;
+        foreach v_name in array v_transfer_names loop
+          insert into hq_step_checklist_items(step_id, title, sort_order) values (v_transfer_step, v_name, v_sort);
+          v_sort := v_sort + 10;
+        end loop;
+        insert into payroll_task_links(year_month, kind, task_id, step_id, corporation_id) values (p_year_month, 'transfer', v_transfer_task, v_transfer_step, v_corp_id);
+        v_attached := true;
+      end if;
+    else
+      insert into hq_tasks(title, corp, freq, target_date, due_date, notes, description, visibility, created_by)
+      values (v_mon||'月分　給料振込　'||p_corp, p_corp, 'once', current_date, v_transfer_due, '',
+        '給料確定ボタンにより自動発行（対象'||array_length(v_transfer_names,1)||'名）', 'all', auth.uid())
+      returning id into v_transfer_task;
+      insert into hq_task_steps(task_id, title, assignee_ids, due_date, sort_order, kind)
+      values (v_transfer_task, '振込完了を確認', v_assignees, v_transfer_due, 10, 'step') returning id into v_transfer_step;
+      v_sort := 10;
+      foreach v_name in array v_transfer_names loop
+        insert into hq_step_checklist_items(step_id, title, sort_order) values (v_transfer_step, v_name, v_sort);
+        v_sort := v_sort + 10;
+      end loop;
+      insert into payroll_task_links(year_month, kind, task_id, step_id, corporation_id) values (p_year_month, 'transfer', v_transfer_task, v_transfer_step, v_corp_id);
+    end if;
   end if;
 
   select * into v_existing from payroll_task_links where year_month = p_year_month and kind = 'cash' and corporation_id = v_corp_id;
@@ -443,8 +491,19 @@ begin
     insert into payroll_task_links(year_month, kind, task_id, step_id, corporation_id) values (p_year_month, 'cash', v_cash_task, v_cash_step, v_corp_id);
   end if;
 
+  -- 確定の結果を通知。0名・紐づけ失敗などは ⚠️ を付けて知らせる（黙って終わらせない）
+  if coalesce(array_length(v_transfer_names,1),0) = 0 and coalesce(array_length(v_cash_names,1),0) = 0 then
+    v_warn := v_warn || '振込・現金とも対象者が0名でした。給与データの取り込み漏れがないか確認してください。';
+  end if;
+  begin
+    perform notify_lark('💰 給料確定: '||p_year_month||'（'||p_corp||'） 振込'||coalesce(array_length(v_transfer_names,1),0)||'名・現金'||coalesce(array_length(v_cash_names,1),0)||'名'
+      ||case when v_attached then '（既存の振込タスクに確認工程を追加）' else '' end
+      ||case when v_warn <> '' then E'\n⚠️ '||v_warn else '' end);
+  exception when others then null;
+  end;
+
   return jsonb_build_object(
-    'corporation_id', v_corp_id,
+    'corporation_id', v_corp_id, 'transfer_attached', v_attached, 'warning', nullif(v_warn, ''),
     'transfer_task_id', v_transfer_task, 'transfer_due', v_transfer_due, 'transfer_count', coalesce(array_length(v_transfer_names,1),0),
     'cash_task_id', v_cash_task, 'cash_due', v_cash_due, 'cash_count', coalesce(array_length(v_cash_names,1),0)
   );
@@ -457,6 +516,51 @@ grant execute on function public.hq_create_payroll_tasks(text, text, uuid) to au
 --   （cash_handoff_complete / hq_check_payroll_task_item / hq_create_payroll_tasks / cash_handoff_targets は上で個別に設定済み。残りの cash_handoff_can_write をここで）
 revoke all on function public.cash_handoff_can_write(uuid) from public, anon;
 grant execute on function public.cash_handoff_can_write(uuid) to authenticated;
+
+-- ---------- 7c. 毎朝の整合チェック（ミスや取りこぼしを黙らせない。件数のみ通知）----------
+--   ①手渡し完了済みなのに本部タスクのチェックが未 ②手渡し完了済みなのに給与仕訳の「振込完了」印が未
+--   ③給料確定済みなのに対象者がいてタスクが1件も無い。直近3か月が対象。解消されるまで毎朝通知。実行は cron（別SQL: 2026-11-09_payroll_consistency_cron.sql）
+create or replace function public.payroll_consistency_check(p_notify boolean default true)
+returns jsonb
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_from text := to_char((now() at time zone 'Asia/Tokyo') - interval '3 months', 'YYYY-MM');
+  c1 int; c2 int; c3 int; v_msg text := '';
+begin
+  select count(*) into c1
+    from sf_cash_handoff_signatures s
+    join users u on u.id = s.user_id
+    join smaregi_contracts sc on sc.contract_id = s.contract_id
+    join payroll_task_links l on l.year_month = s.year_month and l.kind = 'cash' and l.corporation_id = sc.corporation_id
+    join hq_step_checklist_items i on i.step_id = l.step_id
+         and replace(replace(i.title,' ',''),chr(12288),'') = replace(replace(u.name,' ',''),chr(12288),'') and i.checked_at is null
+   where s.completed_at is not null and s.year_month >= v_from;
+  select count(*) into c2
+    from sf_cash_handoff_signatures s
+    join smaregi_contracts sc on sc.contract_id = s.contract_id
+   where s.completed_at is not null and s.year_month >= v_from
+     and exists (select 1 from payroll_journal_records j where j.user_id = s.user_id and j.year_month = s.year_month
+                    and j.tenant_id = (case sc.corporation_hint when 'toho' then 'default' else sc.corporation_hint end) and j.paid_at is null);
+  select count(*) into c3
+    from payroll_finalized f
+   where f.year_month >= v_from
+     and not exists (select 1 from payroll_task_links l where l.year_month = f.year_month and l.corporation_id = f.corporation_id)
+     and exists (select 1 from sf_payroll_sync sp join smaregi_contracts sc on sc.contract_id = sp.contract_id
+                  where sp.year_month = f.year_month and sc.corporation_id = f.corporation_id and coalesce(sp.net_pay,0) > 0);
+  if c1 > 0 then v_msg := v_msg || E'\n・手渡し完了済みなのに本部タスクのチェックが付いていない人: '||c1||'名'; end if;
+  if c2 > 0 then v_msg := v_msg || E'\n・手渡し完了済みなのに給与仕訳の「振込完了」印が付いていない人: '||c2||'名'; end if;
+  if c3 > 0 then v_msg := v_msg || E'\n・給料確定済みなのに本部タスクが1件も無い月×法人: '||c3||'件'; end if;
+  if v_msg <> '' and p_notify then
+    perform notify_lark('⚠️ 給与・現金手渡しの整合チェック（毎朝・直近3か月）'||v_msg||E'\n解消されるまで毎朝お知らせします。nippo「現金手渡し・サイン」と本部タスクを確認してください');
+  end if;
+  return jsonb_build_object('tasks_unchecked', c1, 'paid_unmarked', c2, 'finalized_without_tasks', c3);
+end;
+$function$;
+revoke all on function public.payroll_consistency_check(boolean) from public, anon, authenticated;
+grant execute on function public.payroll_consistency_check(boolean) to service_role;
 
 -- ---------- 8. 適用後の確認（結果を担当B→司令塔へ報告） ----------
 -- 同名関数が1本ずつであること（オーバーロードが残っていない）
@@ -476,5 +580,5 @@ select c.relname, c.relrowsecurity as rls, a.grantee::regrole::text as grantee, 
 select p.proname, a.grantee::regrole::text as grantee, a.privilege_type
   from pg_proc p, aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) a
  where p.pronamespace = 'public'::regnamespace
-   and p.proname in ('cash_handoff_complete','cash_handoff_targets','hq_create_payroll_tasks','hq_check_payroll_task_item','cash_handoff_can_write','cash_handoff_cancel','cash_handoff_targets_raw','cash_handoff_finalized_corps')
+   and p.proname in ('cash_handoff_complete','cash_handoff_targets','hq_create_payroll_tasks','hq_check_payroll_task_item','cash_handoff_can_write','cash_handoff_cancel','cash_handoff_targets_raw','cash_handoff_finalized_corps','payroll_consistency_check')
  order by 1, 2;
