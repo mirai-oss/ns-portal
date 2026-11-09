@@ -68,6 +68,7 @@ async function resolveActor(sb: any, slackUserId: string): Promise<Actor | null>
 //   hr.onboarding.wage / .wage.modal   入社登録（2026-11-09 Phase 1）: 親メッセージ「💴 賃金を設定」→ モーダル（時給/日給/月給・適用開始日・金額）
 //                                 → RPC hr_save_wage(p_actor) → EF onboarding-notify op=wage_sync（smaregi-sync wage_push → wage_pull 照合 → スレッド＋親更新）
 //   hr.onboarding.retry           失敗したスレッドの「🔁 もう一度反映」→ EF onboarding-notify op=wage_sync
+//   hr.onboarding.wage.confirm    適用開始日がスマレジ側の日付に変わった賃金（確認待ち 🙋）の「✅ この日付で確定」→ EF onboarding-notify op=wage_confirm
 //   hr.onboarding.refresh         「🔄 表示を更新」→ EF onboarding-notify op=refresh
 //   hr.onboarding.link            URL ボタン（従業員ページ・本部タスク）の押下通知。何もしない
 //                                 value = {"workflow_id","notification_id"}。権限: マスター / CEO / HQ（hrAllowed）
@@ -255,6 +256,16 @@ const handlers: Record<string, Handler> = {
     if (!data?.ok) return json({ response_action: "errors", errors: { wage: "保存できませんでした" } });
     waitUntil(onboardingNotify({ op: "wage_sync", workflow_id: meta.workflow_id, actor_id: actor.user_id, contract_id: contract }));
     return json({ response_action: "clear" });
+  },
+  // 救済処理で適用開始日がスマレジ側の日付に変わった賃金（確認待ち）を、人が確認して確定する（2026-11-09）
+  "hr.onboarding.wage.confirm": async ({ actor, payload, value }) => {
+    if (!hrAllowed(actor)) return ephemeral("入社手続きの操作は本部・社長・マスターのみです", payload.response_url);
+    if (!value?.workflow_id) return ephemeral("ワークフローの id が読めませんでした", payload.response_url);
+    waitUntil((async () => {
+      const r = await onboardingNotify({ op: "wage_confirm", workflow_id: value.workflow_id, actor_id: actor.user_id });
+      if (!r?.ok) ephemeral(`確定できませんでした: ${r?.error ?? "不明"}`, payload.response_url);
+    })());
+    return text("");
   },
   "hr.onboarding.retry": async ({ actor, payload, value }) => {
     if (!hrAllowed(actor)) return ephemeral("入社手続きの操作は本部・社長・マスターのみです", payload.response_url);

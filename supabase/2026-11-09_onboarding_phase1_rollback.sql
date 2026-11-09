@@ -1,25 +1,33 @@
 -- =============================================================
--- 2026-11-09 入社登録ワークフロー Phase 1 の切り戻し（2026-11-09_onboarding_phase1.sql を元に戻す）
---   使いどころ: 適用後に不具合が出て Phase 1 の DB を丸ごと戻したいとき。通知だけ止めるなら 2026-11-09_onboarding_switch.sql の「戻し方」で足りる（こちらは不要）。
---   注意: 日給(1) の賃金行が employee_wage_settings にあると制約を (0,2) に戻せない → 先に削除（スマレジ側は手で確認）か、制約の戻しだけ飛ばす。
---   関数の旧定義は supabase/restored/2026-11-09_onboarding_prod_snapshot.sql（本番から取得）と同じ。
+-- 2026-11-09 入社登録ワークフロー Phase 1 の切り戻し（データ保全版）
+--   方針（ユーザー指示 2026-11-09）: 適用後に作られた入社ワークフロー（onboarding_workflows / onboarding_items）と監査履歴（onboarding_events）は消さない。
+--   この SQL がやること: 新しい仕組みを「止める」（トリガー・RPC・ビューを外し、変更した 3 関数を適用前の定義に戻す）。表と行はそのまま残る（本部・社長・マスターは引き続き読める）。
+--   やらないこと: 表の drop・行の削除・列の削除。完全に消したいときだけ、最後の「完全削除（任意・別承認）」を使う。その場合も先にアーカイブ表へ写す。
+--   使いどころ: 適用後に不具合が出て Phase 1 の DB 側を無効化したいとき。通知だけ止めるなら 2026-11-09_onboarding_switch.sql の「戻し方」で足りる（こちらは不要）。
+--   関数の旧定義は supabase/restored/2026-11-09_onboarding_prod_snapshot.sql（適用前に本番から取得）と同じ。
 --   実行: python3 scripts/apply_sql.py supabase/2026-11-09_onboarding_phase1_rollback.sql [--dry-run]
 -- =============================================================
+
+-- 0) まず新しい仕組みを止める（通知フラグ OFF。EF が残っていても親メッセージは作られない）
+update public.app_settings set value = coalesce(value, '{}'::jsonb) || jsonb_build_object('enabled', false, 'legacy_wage_text', true, 'rolled_back_at', now()), updated_at = now() where key = 'onboarding_slack';
+
+-- 1) 本部タスクとの双方向連動（トリガー）を外す
 drop trigger if exists trg_onboarding_hq_checklist_sync on public.hq_step_checklist_items;
 drop trigger if exists trg_onboarding_hq_step_sync on public.hq_task_steps;
 drop function if exists public.onboarding_hq_checklist_sync();
 drop function if exists public.onboarding_hq_step_sync();
+
+-- 2) RPC・ビューを外す（表は残す）
 drop view if exists public.onboarding_workflow_v;
 drop function if exists public.onboarding_set_item(uuid, text, text, jsonb, uuid, text, text);
 drop function if exists public.onboarding_start(uuid, text, uuid);
-drop table if exists public.onboarding_events;
-drop table if exists public.onboarding_items;
-drop table if exists public.onboarding_workflows;
--- 新シグネチャを落として旧定義へ
+
+-- 3) 変更した 3 関数を適用前の定義へ（新シグネチャを落として旧定義を作る。nippo の名前付き呼び出しは旧版に解決される）
 drop function if exists public.hr_save_wage(uuid, text, integer, uuid, integer, integer, date, uuid);
 drop function if exists public.hq_create_onboarding_task(text, text, text, text, date, uuid);
 drop function if exists public.onboarding_resolve_actor(uuid);
 drop function if exists public.onboarding_is_service();
+
 CREATE OR REPLACE FUNCTION public.hire_applicant(p_applicant uuid, p_role text, p_store_ids uuid[] DEFAULT '{}'::uuid[], p_days integer DEFAULT 14)
  RETURNS text
  LANGUAGE plpgsql
@@ -143,11 +151,21 @@ end;
 $function$;
 
 grant execute on function public.hr_save_wage(uuid, text, integer, uuid, integer, integer, date) to authenticated, service_role;
+revoke execute on function public.hr_save_wage(uuid, text, integer, uuid, integer, integer, date) from public, anon;
 grant execute on function public.hq_create_onboarding_task(text, text, text, text, date) to authenticated, service_role;
--- 制約を (0,2) に戻す（日給行があると失敗する。その場合はこの 2 行を飛ばす）
-alter table public.employee_wage_settings drop constraint if exists employee_wage_settings_division_check;
-alter table public.employee_wage_settings add constraint employee_wage_settings_division_check check (division in (0, 2));
--- 設定・列は残しても害が無い（必要なら）:
--- delete from public.app_settings where key = 'onboarding_slack';
--- alter table public.applicants drop column if exists hired_at;
--- alter table public.hr_wage_requests drop column if exists workflow_id;
+
+-- 4) 残すもの（意図的）: 表 onboarding_workflows / onboarding_items / onboarding_events とその行・RLS（読み＝本部・社長・マスター）、
+--    列 applicants.hired_at / hr_wage_requests.workflow_id、設定行 app_settings.onboarding_slack（enabled=false に戻した）。
+--    制約 employee_wage_settings_division_check も (0,1,2) のまま残す（日給行があると戻せない・残しても既存の時給/月給の動きは変わらない）。
+--    どうしても (0,2) に戻すときは、日給行が 0 件であることを確認してから:
+--      alter table public.employee_wage_settings drop constraint if exists employee_wage_settings_division_check;
+--      alter table public.employee_wage_settings add constraint employee_wage_settings_division_check check (division in (0, 2));
+
+-- 5) 完全削除（任意・別承認・通常は実行しない）: 先にアーカイブ表へ写してから落とす
+-- create schema if not exists archive;
+-- create table archive.onboarding_workflows_20261109 as select * from public.onboarding_workflows;
+-- create table archive.onboarding_items_20261109     as select * from public.onboarding_items;
+-- create table archive.onboarding_events_20261109    as select * from public.onboarding_events;
+-- drop table public.onboarding_events; drop table public.onboarding_items; drop table public.onboarding_workflows;
+
+select '切り戻し（データ保全版）を適用しました: 新しい仕組みは停止・表と履歴は残っています' as note;

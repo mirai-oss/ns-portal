@@ -905,6 +905,7 @@ Deno.serve(async (req) => {
       for (const r of rows) {
         try {
           let applyId: string | null = r.smaregi_wage_apply_id ? String(r.smaregi_wage_apply_id) : null;
+          let dateAdjusted: { requested: string; applied: string } | null = null;   // 2026-11-09: 救済で適用開始日がスマレジ側の日付に変わったとき（呼び出し側が確認待ちにする）
           const smStore = r.store_id ? (reverse[r.store_id] ?? null) : null;
           if (r.division === 0 && r.store_id && !smStore) throw new Error("この契約に対応するスマレジの事業所がありません（店舗の対応を確認してください）");
           // 月給(2)・日給(1) は事業所なし・休日賃金なし（2026-11-09 日給を追加。POST/PUT の body は月給と同じ形）
@@ -925,6 +926,7 @@ Deno.serve(async (req) => {
                 if (retry.ok) {
                   const { error: de } = await sb.from("employee_wage_settings").update({ effective_date: init.effectiveDate, updated_at: new Date().toISOString() }).eq("id", r.id);
                   if (de) throw new Error(`スマレジは更新しましたが、管理システムの適用開始日を ${init.effectiveDate} に直せませんでした（同じ条件の行が既にあります）`);
+                  dateAdjusted = { requested: r.effective_date, applied: init.effectiveDate };   // 2026-11-09: 「成功」ではなく差異として返す（ユーザー指示）
                   return;
                 }
                 throw new Error(`賃金設定の更新に失敗(${retry.status}): ${await errText(retry)}`);
@@ -954,7 +956,7 @@ Deno.serve(async (req) => {
             } else throw new Error(`賃金設定の登録に失敗(${rr.status}): ${await errText(rr)}`);
           }
           await mark(r.id, { sync_status: "synced", sync_error: null, synced_at: new Date().toISOString(), smaregi_wage_apply_id: applyId });
-          results.push({ id: r.id, ok: true, wageApplyId: applyId });
+          results.push({ id: r.id, ok: true, wageApplyId: applyId, ...(dateAdjusted ? { date_adjusted: dateAdjusted } : {}) });
         } catch (e) {
           const msg = String((e as Error).message ?? e).slice(0, 300);
           await mark(r.id, { sync_status: "error", sync_error: msg });
@@ -962,7 +964,8 @@ Deno.serve(async (req) => {
         }
       }
       const failed = results.filter((x) => !x.ok).length;
-      return json({ ok: failed === 0, contract_id: C, staffId, pushed: results.length - failed, failed, results }, failed ? 500 : 200);
+      const dateAdjustedCount = results.filter((x) => x.date_adjusted).length;   // 2026-11-09: 適用開始日がスマレジ側の初期設定の日付に変わった行の数（0 以外なら呼び出し側で確認を促す）
+      return json({ ok: failed === 0, contract_id: C, staffId, pushed: results.length - failed, failed, date_adjusted: dateAdjustedCount, results }, failed ? 500 : 200);
     }
 
     return json({ ok: false, error: "unknown action" }, 400);

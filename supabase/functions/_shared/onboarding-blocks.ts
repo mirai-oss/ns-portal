@@ -64,7 +64,7 @@ export function parentMessage(wf: WorkflowView, notificationId: string): { text:
     if (key === "wage" && st === "completed" && Array.isArray(it?.payload?.rows) && src !== "manual_check" && src !== "manual_step") {
       extra = "　" + it.payload.rows.map((r: any) => wageLine(r)).join("／") + (src === "smaregi_verified" ? "　_スマレジ照合済み_" : src === "smaregi_unverified" ? "　_（保存済み・照合は未確認）_" : "");
     }
-    if (st === "failed" && it?.last_error) extra = `　_${String(it.last_error).slice(0, 80)}_`;
+    if ((st === "failed" || st === "manual_required") && it?.last_error) extra = `　_${String(it.last_error).slice(0, 80)}_`;
     if (st === "pending" && ["commute_set", "withholding_tax", "web_payslip"].includes(key)) extra = "　_（今は手作業。本部タスクの ✓ で反映）_";
     else if (st === "pending" && key === "email") extra = "　_（今は手作業。本部タスク工程①の完了で反映）_";
     else if (st === "pending" && phase > 1) extra = "　_（Phase 2 以降で自動化）_";
@@ -130,6 +130,19 @@ export function wageModal(meta: { workflow_id: string; user_id: string; notifica
     title: { type: "plain_text", text: "賃金の設定" }, submit: { type: "plain_text", text: "登録してスマレジに反映" }, close: { type: "plain_text", text: "やめる" },
     blocks,
   };
+}
+
+/** 適用開始日がスマレジ側の「初期設定」の日付に変わったとき（確認待ち）。確定か直すかを人が選ぶ */
+export function wageDateAdjustedBlocks(wf: WorkflowView, notificationId: string | null, adjusted: { requested: string; applied: string; line: string }[], actorName: string) {
+  const value = JSON.stringify({ workflow_id: wf.id, notification_id: notificationId, item_key: "wage" });
+  const lines = adjusted.map((a) => `・${a.line}\n　　指定した適用開始日 ${jpDate(a.requested)} → スマレジに入った適用開始日 *${jpDate(a.applied)}*`).join("\n");
+  return [
+    { type: "section", text: { type: "mrkdwn", text: `🙋 *賃金はスマレジに保存されましたが、適用開始日が指定と違います*（${actorName}・${nowJst()}）\n${lines}\nスマレジが新しい従業員に自動で付ける「初期設定」の賃金行は適用開始時期を変えられないため、その日付で金額だけ更新されています。管理システム側の適用開始日もスマレジに合わせてあります。\nこの日付でよければ「確定」を、変えたい場合は「賃金を直す」（別の適用開始日で新しい行を追加）を押してください。` } },
+    { type: "actions", block_id: "onboarding_wage_confirm", elements: [
+      { type: "button", style: "primary", text: { type: "plain_text", text: "✅ この日付で確定", emoji: true }, action_id: "hr.onboarding.wage.confirm", value },
+      { type: "button", text: { type: "plain_text", text: "💴 賃金を直す", emoji: true }, action_id: "hr.onboarding.wage", value },
+    ] },
+  ];
 }
 
 /** 失敗時のスレッド投稿（再試行・賃金を直すボタン付き） */

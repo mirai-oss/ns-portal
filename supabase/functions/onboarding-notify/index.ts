@@ -15,7 +15,7 @@
 //   デプロイ: supabase functions deploy onboarding-notify --no-verify-jwt --project-ref uuvsxzhpxtghojoubjcc --yes（関数内で認証するため）
 // =============================================================
 import { createClient } from "npm:@supabase/supabase-js@2";
-import { parentMessage, wageFailedBlocks, wageLine, nowJst, type WorkflowView } from "../_shared/onboarding-blocks.ts";
+import { parentMessage, wageFailedBlocks, wageDateAdjustedBlocks, wageLine, nowJst, type WorkflowView } from "../_shared/onboarding-blocks.ts";
 
 const cors = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "authorization, content-type, apikey, x-client-info, x-notify-secret" };
 const json = (o: unknown, status = 200) => new Response(JSON.stringify(o), { status, headers: { ...cors, "Content-Type": "application/json" } });
@@ -159,6 +159,20 @@ async function opWageSync(sb: any, wfId: string, actorId: string | null, contrac
   const payloadRows = pushedRows.map((r: any) => ({ division: r.division, wage: r.wage, holiday_wage: r.holiday_wage, effective_date: r.effective_date, store_name: r.store_id ? names[r.store_id] ?? null : null, wageApplyId: r.smaregi_wage_apply_id }));
   // 全行が synced のときだけ完了（failed が混ざれば失敗）
   const pending = (rows ?? []).filter((r: any) => r.sync_status !== "synced");
+  // 2026-11-09: 救済処理で適用開始日がスマレジ側（初期設定）の日付に変わった行がある → 「成功」にせず確認待ち（manual_required）。人が「✅ この日付で確定」を押すと完了
+  const adjusted = results.filter((x) => x.ok && x.date_adjusted).map((x) => {
+    const row = payloadRows.find((p: any) => String(p.wageApplyId) === String(x.wageApplyId)) ?? (rows ?? []).find((r: any) => String(r.id) === String(x.id));
+    return { requested: String(x.date_adjusted.requested), applied: String(x.date_adjusted.applied), line: row ? wageLine(row) : "賃金" };
+  });
+  if (!pending.length && adjusted.length) {
+    const err = `適用開始日がスマレジ側の初期設定の日付に変わりました（${adjusted.map((a) => `${a.requested}→${a.applied}`).join("、")}）。確認待ち`;
+    await setItem(sb, wfId, "wage", "manual_required", { contract_id: C, rows: payloadRows, verified, date_adjusted: adjusted }, actorId, actorId ? "slack" : "auto", err);
+    const wf2 = (await loadView(sb, wfId)) ?? wf;
+    const { data: pn } = await sb.from("onboarding_workflows").select("slack_parent_notification_id").eq("id", wfId).maybeSingle();
+    await thread(sb, wf2, `🙋 賃金はスマレジに保存されましたが適用開始日が指定と違います（確認待ち）`, wageDateAdjustedBlocks(wf2, pn?.slack_parent_notification_id ?? null, adjusted, who), "onboarding_wage_date_adjusted");
+    await refreshParent(sb, wf2);
+    return json({ ok: true, pushed: push.pushed, verified, rows: payloadRows, date_adjusted: adjusted, state: "manual_required" });
+  }
   if (pending.length) {
     const err = pending.map((r: any) => r.sync_error).filter(Boolean).join(" / ") || "未反映の行があります";
     await setItem(sb, wfId, "wage", "failed", { contract_id: C, rows: payloadRows, verified }, actorId, actorId ? "slack" : "auto", String(err).slice(0, 300));
@@ -207,6 +221,21 @@ Deno.serve(async (req) => {
       case "wage_sync": {
         if (!isUuid(body.workflow_id)) return json({ ok: false, error: "workflow_id が不正です" }, 400);
         return await opWageSync(sb, body.workflow_id, isUuid(body.actor_id) ? body.actor_id : null, body.contract_id ? String(body.contract_id) : null);
+      }
+      case "wage_confirm": {
+        // 「✅ この日付で確定」: manual_required（適用開始日の差異）の賃金項目を、人の確認のうえ完了にする（payload の rows/verified はそのまま）
+        if (!isUuid(body.workflow_id) || !isUuid(body.actor_id)) return json({ ok: false, error: "workflow_id と actor_id が必要です" }, 400);
+        const wf = await loadView(sb, body.workflow_id);
+        if (!wf) return json({ ok: false, error: "見つかりません" }, 404);
+        const it = wf.items?.wage;
+        if (it?.state !== "manual_required") return json({ ok: false, error: `賃金の項目は確認待ちではありません（${it?.state ?? "なし"}）` }, 409);
+        const who = await actorName(sb, body.actor_id);
+        await setItem(sb, body.workflow_id, "wage", "completed", { ...(it.payload ?? {}), confirmed_by: body.actor_id, confirmed_at: new Date().toISOString() }, body.actor_id, "slack");
+        const wf2 = (await loadView(sb, body.workflow_id)) ?? wf;
+        const rows: any[] = Array.isArray(it.payload?.rows) ? it.payload.rows : [];
+        await thread(sb, wf2, `✅ 適用開始日の差異を確認し、賃金を確定しました（${who}・${nowJst()}）\n` + rows.map((r) => `・${wageLine(r)}`).join("\n") + (wf2.hq_task_id ? "\n🗂 本部タスク「時給」に ✓ を付けました" : ""), undefined, "onboarding_wage_confirmed");
+        await refreshParent(sb, wf2);
+        return json({ ok: true });
       }
       case "status": {
         let q = sb.from("onboarding_workflow_v").select("*");
