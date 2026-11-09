@@ -18,6 +18,7 @@
 //   （Slack は JWT を付けないため、署名検証がこの関数の唯一の認証）
 // =============================================================
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { wageModal } from "../_shared/onboarding-blocks.ts";
 
 const svc = () => createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
 const text = (s: string, status = 200) => new Response(s, { status, headers: { "Content-Type": "text/plain; charset=utf-8" } });
@@ -64,6 +65,12 @@ async function resolveActor(sb: any, slackUserId: string): Promise<Actor | null>
 //   hqtask.item.done / .extend                    （将来）
 //   decision.request.<選択肢key>  Claude セッションの判断依頼（2026-11-07）→ RPC decision_request_answer
 //                                 value = {"request_id","notification_id","key"}。選択肢 key は ^[a-z0-9_]{1,32}$
+//   hr.onboarding.wage / .wage.modal   入社登録（2026-11-09 Phase 1）: 親メッセージ「💴 賃金を設定」→ モーダル（時給/日給/月給・適用開始日・金額）
+//                                 → RPC hr_save_wage(p_actor) → EF onboarding-notify op=wage_sync（smaregi-sync wage_push → wage_pull 照合 → スレッド＋親更新）
+//   hr.onboarding.retry           失敗したスレッドの「🔁 もう一度反映」→ EF onboarding-notify op=wage_sync
+//   hr.onboarding.refresh         「🔄 表示を更新」→ EF onboarding-notify op=refresh
+//   hr.onboarding.link            URL ボタン（従業員ページ・本部タスク）の押下通知。何もしない
+//                                 value = {"workflow_id","notification_id"}。権限: マスター / CEO / HQ（hrAllowed）
 type Handler = (ctx: Ctx) => Promise<Response>;
 type Ctx = { sb: any; payload: any; actor: Actor; notificationId: string | null; value: any };
 
@@ -204,7 +211,81 @@ const handlers: Record<string, Handler> = {
     })());
     return text("");
   },
+
+  // ---- 入社登録ワークフロー（2026-11-09 Phase 1）。業務ロジックは RPC（hr_save_wage / onboarding_*）と EF onboarding-notify 側。ここは受付と振り分けだけ ----
+  "hr.onboarding.link": async () => text(""),
+  "hr.onboarding.refresh": async ({ actor, payload, value }) => {
+    if (!hrAllowed(actor)) return ephemeral("入社手続きの操作は本部・社長・マスターのみです", payload.response_url);
+    if (!value?.workflow_id) return ephemeral("ワークフローの id が読めませんでした", payload.response_url);
+    waitUntil(onboardingNotify({ op: "refresh", workflow_id: value.workflow_id }));
+    return text("");
+  },
+  "hr.onboarding.wage": async ({ sb, actor, payload, value, notificationId }) => {
+    const ru: string | undefined = payload.response_url;
+    if (!hrAllowed(actor)) return ephemeral("賃金の設定は本部・社長・マスターのみです", ru);
+    const wfId = value?.workflow_id;
+    if (!wfId) return ephemeral("ワークフローの id が読めませんでした", ru);
+    const { data: wf } = await sb.from("onboarding_workflow_v").select("id,user_id,user_name,hire_date,status").eq("id", wfId).maybeSingle();
+    if (!wf?.user_id) return ephemeral("入社ワークフローが見つかりません", ru);
+    if (wf.status === "cancelled") return ephemeral("この入社手続きは中止されています", ru);
+    const contracts = await activeContracts(sb, wf.user_id);
+    if (!contracts.length) return ephemeral("スマレジにまだ登録されていないため、賃金を反映できません。先に nippo の従業員ページからスマレジに登録してください。", ru);
+    return await openModal(payload.trigger_id, wageModal({ workflow_id: wf.id, user_id: wf.user_id, notification_id: notificationId }, { name: wf.user_name ?? "", hire_date: wf.hire_date, contracts }));
+  },
+  "hr.onboarding.wage.modal": async ({ sb, actor, payload }) => {
+    const meta = JSON.parse(payload.view?.private_metadata ?? "{}");
+    const v = payload.view?.state?.values ?? {};
+    const division = Number(v.division?.division?.selected_option?.value ?? "0");
+    const date: string = v.date?.date?.selected_date ?? "";
+    const wage = Number(v.wage?.wage?.value ?? "");
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return json({ response_action: "errors", errors: { date: "適用開始日を選んでください" } });
+    if (!Number.isInteger(wage) || wage <= 0) return json({ response_action: "errors", errors: { wage: "金額（円）を整数で入れてください" } });
+    if (division === 2 && date.slice(8) !== "01") return json({ response_action: "errors", errors: { date: "月給の適用開始日は月初日（1日）にしてください" } });
+    if (division === 0 && wage > 100000) return json({ response_action: "errors", errors: { wage: "時給が大きすぎます。月給は「月給」を選んでください" } });
+    if (!meta.workflow_id || !meta.user_id) return json({ response_action: "errors", errors: { wage: "対象が読めませんでした。もう一度ボタンから開いてください" } });
+    let contract: string | null = v.contract?.contract?.selected_option?.value ?? null;
+    if (!contract) {
+      const cs = await activeContracts(sb, meta.user_id);
+      if (cs.length !== 1) return json({ response_action: "errors", errors: { wage: cs.length ? "スマレジの契約を選んでください" : "スマレジに登録されていません" } });
+      contract = cs[0].contract_id;
+    }
+    // 保存は正規の RPC（権限・検証は RPC 側。日給(1) は 2026-11-09 から許可）。反映（数秒）はモーダルを閉じたあとに
+    const { data, error } = await sb.rpc("hr_save_wage", { p_user: meta.user_id, p_contract: contract, p_division: division, p_store: null, p_wage: wage, p_holiday: null, p_date: date, p_actor: actor.user_id });
+    if (error) return json({ response_action: "errors", errors: { wage: error.message } });
+    if (!data?.ok) return json({ response_action: "errors", errors: { wage: "保存できませんでした" } });
+    waitUntil(onboardingNotify({ op: "wage_sync", workflow_id: meta.workflow_id, actor_id: actor.user_id, contract_id: contract }));
+    return json({ response_action: "clear" });
+  },
+  "hr.onboarding.retry": async ({ actor, payload, value }) => {
+    if (!hrAllowed(actor)) return ephemeral("入社手続きの操作は本部・社長・マスターのみです", payload.response_url);
+    if (!value?.workflow_id) return ephemeral("ワークフローの id が読めませんでした", payload.response_url);
+    waitUntil(onboardingNotify({ op: "wage_sync", workflow_id: value.workflow_id, actor_id: actor.user_id }));
+    return text("");
+  },
 };
+
+// 入社手続き（人事）の操作権限: マスター / CEO / HQ（既存の hr_save_wage と同じ）
+const hrAllowed = (a: Actor) => a.is_master || a.role === "CEO" || a.role === "HQ";
+// その人の有効なスマレジ契約（employee_smaregi_links。主契約を先頭に）
+async function activeContracts(sb: any, userId: string): Promise<{ contract_id: string; label: string; staff_id: string }[]> {
+  const [{ data: links }, { data: cs }] = await Promise.all([
+    sb.from("employee_smaregi_links").select("contract_id,smaregi_staff_id,is_primary").eq("user_id", userId).is("effective_to", null).order("is_primary", { ascending: false }),
+    sb.from("smaregi_contracts").select("contract_id,label").eq("is_active", true),
+  ]);
+  const labels: Record<string, string> = {};
+  for (const c of cs ?? []) labels[c.contract_id] = c.label ?? c.contract_id;
+  return (links ?? []).filter((l: any) => labels[l.contract_id]).map((l: any) => ({ contract_id: l.contract_id, label: labels[l.contract_id], staff_id: String(l.smaregi_staff_id) }));
+}
+// EF onboarding-notify（親メッセージの更新・スレッド投稿・賃金のスマレジ反映と照合）を service_role で呼ぶ。失敗しても throw しない
+async function onboardingNotify(body: Record<string, unknown>): Promise<any> {
+  try {
+    const key = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
+    const res = await fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/onboarding-notify`, {
+      method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}`, apikey: key }, body: JSON.stringify(body),
+    });
+    return await res.json().catch(() => ({ ok: false, error: `HTTP ${res.status}` }));
+  } catch (e) { return { ok: false, error: String(e).slice(0, 200) }; }
+}
 
 // ---- 4. Slack 応答のヘルパー ----
 // ボタン押下（block_actions）への HTTP 応答本文は Slack に無視されるため、response_url があればそこへ送る（本人だけに見える）。
@@ -401,7 +482,7 @@ Deno.serve(async (req) => {
     action_state: { last_action: key, by: actor.user_id, at: new Date().toISOString() }, updated_at: new Date().toISOString(),
   }).eq("id", notificationId ?? "00000000-0000-0000-0000-000000000000");
 
-  const h = handlers[key] ?? (key.startsWith("decision.request.") ? handlers["decision.request.*"] : undefined);
+  const h = handlers[key] ?? (key.startsWith("decision.request.") ? handlers["decision.request.*"] : key.startsWith("hr.onboarding.link") ? handlers["hr.onboarding.link"] : undefined);
   if (!h) return ephemeral(`この操作（${key}）はまだ対応していません`, payload.response_url);
   try {
     return await h({ sb, payload, actor, notificationId, value });

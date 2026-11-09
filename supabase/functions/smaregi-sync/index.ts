@@ -53,6 +53,10 @@ async function callerRole(req: Request): Promise<{ uid: string; role: string }> 
   return { uid, role: data && data.is_active ? data.role : "" };
 }
 
+// 管理システムで扱う賃金設定: 時給(0)・月給(2)・日給(1。全事業所共通・休日賃金なしだけ＝employee_wage_settings の CHECK と同じ）。営業時間帯別(3)は対象外（2026-11-09 日給を追加）
+const wageSupported = (w: { division: number; storeId: string | null; holidayWage: number | null }) =>
+  w.division === 0 || w.division === 2 || (w.division === 1 && !w.storeId && (w.holidayWage === null || w.holidayWage === undefined));
+
 async function getToken(C: string): Promise<string> {
   const res = await fetch(`${ID_BASE}/app/${C}/token`, {
     method: "POST",
@@ -714,7 +718,7 @@ Deno.serve(async (req) => {
     }
 
     // ---- 2026-10-17 担当B: 賃金設定（時給・月給）の反映／取り込み。管理システム employee_wage_settings が正本 → スマレジ wage_apply ----
-    //   { action:"wage_push", user_id, contract_id? }  反映待ち(pending)・失敗(error)の行をスマレジへ。時給=division 0（店舗なし=事業所未指定／店舗あり=事業所別settings）・月給=division 2。
+    //   { action:"wage_push", user_id, contract_id? }  反映待ち(pending)・失敗(error)の行をスマレジへ。時給=division 0（店舗なし=事業所未指定／店舗あり=事業所別settings）・日給=division 1（2026-11-09 追加・全事業所共通）・月給=division 2。
     //     既にスマレジの賃金設定ID(smaregi_wage_apply_id)がある行は PUT で更新、無ければ POST。POSTが400（同じ適用開始日の重複など）なら、
     //     スマレジ側の既存設定（GET /staffs/{id} の wageApply）から同じ 区分×事業所×適用開始日 を探して PUT する。1行ずつ結果を表へ保存（失敗しても他の行は続行）
     //   { action:"wage_pull", user_id, contract_id?, import? }  スマレジの現在の賃金設定(wageApply)を返す。import=true なら、管理システムに無い行を synced として取り込む
@@ -760,7 +764,7 @@ Deno.serve(async (req) => {
           // 現在有効（区分×事業所ごとに今日以前で最新）＋これから適用
           const cur: Record<string, any> = {}; const keep: any[] = [];
           for (const w of list) {
-            if (![0, 2].includes(w.division)) { unsupported++; continue; }
+            if (!wageSupported(w)) { unsupported++; continue; }
             if (w.effectiveDate > today) { keep.push(w); continue; }
             const k = `${w.division}|${w.storeId ?? ""}`;
             if (!cur[k] || cur[k].effectiveDate < w.effectiveDate) cur[k] = w;
@@ -795,8 +799,9 @@ Deno.serve(async (req) => {
     }
 
     if (body.action === "wage_push" || body.action === "wage_pull" || body.action === "wage_update" || body.action === "wage_delete") {
-      // 認可: CEO/HQ。加えて wage_push だけは service_role キーからも呼べる（LINEの返信で賃金を登録する line-webhook が内部から呼ぶ。賃金の保存と本人確認はline-webhook側で済んでいる）
-      const isServiceWage = body.action === "wage_push" && (req.headers.get("Authorization") ?? "").includes(Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? " ");
+      // 認可: CEO/HQ。加えて wage_push・wage_pull（読み取り）は service_role キーからも呼べる（LINEの返信で賃金を登録する line-webhook、
+      //   2026-11-09 からは Slack 入社ワークフローの EF onboarding-notify が内部から呼ぶ。賃金の保存と操作者の権限確認は呼び出し側＝RPC hr_save_wage で済んでいる）
+      const isServiceWage = (body.action === "wage_push" || body.action === "wage_pull") && (req.headers.get("Authorization") ?? "").includes(Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? " ");
       if (!isAdmin && !isServiceWage) return json({ ok: false, error: "forbidden" }, 403);
       const uid = String(body.user_id ?? "");
       if (!uid) return json({ ok: false, error: "user_id required" }, 400);
@@ -838,7 +843,7 @@ Deno.serve(async (req) => {
         const { data: stn } = await sb.from("stores").select("id,name"); (stn ?? []).forEach((x: any) => { names[x.id] = x.name; });
         const out: any[] = []; let imported = 0, skipped = 0, conflicts = 0, unsupported = 0;
         for (const w of list) {
-          if (![0, 2].includes(w.division)) { unsupported++; out.push({ ...w, note: "日給・営業時間帯別は取り込み対象外" }); continue; }
+          if (!wageSupported(w)) { unsupported++; out.push({ ...w, note: "営業時間帯別・事業所別や休日賃金つきの日給は取り込み対象外" }); continue; }
           const storeUuid = w.storeId ? (storeMap[w.storeId] ?? null) : null;
           if (w.storeId && !storeUuid) { skipped++; out.push({ ...w, note: "管理システムに対応する店舗がありません" }); continue; }
           const k = keyOf(w.division, storeUuid, w.effectiveDate), ex = have[k];
@@ -902,8 +907,9 @@ Deno.serve(async (req) => {
           let applyId: string | null = r.smaregi_wage_apply_id ? String(r.smaregi_wage_apply_id) : null;
           const smStore = r.store_id ? (reverse[r.store_id] ?? null) : null;
           if (r.division === 0 && r.store_id && !smStore) throw new Error("この契約に対応するスマレジの事業所がありません（店舗の対応を確認してください）");
-          const putBody: Record<string, unknown> = r.division === 2
-            ? { division: 2, effectiveDate: r.effective_date, wage: r.wage }
+          // 月給(2)・日給(1) は事業所なし・休日賃金なし（2026-11-09 日給を追加。POST/PUT の body は月給と同じ形）
+          const putBody: Record<string, unknown> = r.division === 2 || r.division === 1
+            ? { division: r.division, effectiveDate: r.effective_date, wage: r.wage }
             : { division: 0, effectiveDate: r.effective_date, wage: r.wage, ...(smStore ? { storeId: smStore } : {}), ...(r.holiday_wage !== null && r.holiday_wage !== undefined ? { holidayWage: r.holiday_wage } : {}) };
           const put = async (id: string) => {
             const rr = await api(C, token, `/staffs/${staffId}/wage_apply/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify(putBody) });
@@ -929,8 +935,8 @@ Deno.serve(async (req) => {
           if (applyId) {
             await put(applyId);
           } else {
-            const postBody = r.division === 2
-              ? { division: 2, effectiveDate: r.effective_date, wage: r.wage }
+            const postBody = r.division === 2 || r.division === 1
+              ? { division: r.division, effectiveDate: r.effective_date, wage: r.wage }
               : smStore
                 ? { division: 0, effectiveDate: r.effective_date, settings: [{ storeId: smStore, wage: r.wage, ...(r.holiday_wage !== null && r.holiday_wage !== undefined ? { holidayWage: r.holiday_wage } : {}) }] }
                 : { division: 0, effectiveDate: r.effective_date, wage: r.wage };
