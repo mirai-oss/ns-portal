@@ -17,6 +17,12 @@
 - **次（ユーザー承認）**: A. Phase 6 SQL 適用（onboarding_workflow_v を作り直すため利用の少ない時間）→ EF 3 本デプロイ B. nippo push C. 使い捨てで本人フォーム→🧾 モーダル→manual の確認 D. 有効化（post_join_remind・cron・smaregi_write・Mac フラグ）は個別承認。
 
 
+**2026-11-09 17:20（担当B）現金手渡し cash_handoff_complete の退行を修正＝本番適用済み（ユーザー実行）・U-23/U-24 本体は未適用**
+- 退行: 11/3のSQLで古い版を土台に作り直し、(a)completed_at上書きガード (b)本部タスクのチェック連携 (c)全員完了のLark/Slack通知が失われていた。実害（完了済みなのに未チェック）は0件（8月0・9月0・10月はタスク未発行）。同種の退行は他の関数に無し（点検済み）
+- 適用: `supabase/2026-11-09_cash_handoff_complete_restore.sql`（本番の指紋ガード付き）。結果: 本数1・security definer・3機能true・権限は authenticated のみ（PUBLIC/anon を外した）
+- 未適用（U-25回答待ち）: `2026-11-09_payroll_finalized_cash_cancel.sql`（確定の印=法人ID・手渡し取消履歴・関連5関数の権限揃え・hq_create_payroll_tasksの法人ID対応）。nippo側は別ブランチ `cash-cancel-hold` に作成済み・未公開
+- 今後のルール: create or replace の前に本番定義の指紋確認（ガード）を必ず入れる
+
 ---
 
 **2026-11-09 16:35（Slack 勤怠スレッド・続き）入社登録 Phase 5 準備＝本番反映済み（ユーザー承認①〜④）・nippo 公開済み・フラグ全 OFF**:
