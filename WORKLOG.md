@@ -352,6 +352,12 @@
 - **未了**: SQL v6の事前報告→ユーザー適用／smaregi-syncデプロイ（D分と一緒）／実機確認（LiveGate契約sdm155v1・黒霧屋のスタッフ）／D依頼の`hq_create_payroll_tasks`・`cash_handoff_targets`の兼務対応（Phase2前・現行の本番定義の確認が要る＝PAT待ち）。
 
 
+## 2026-11-09 担当C: 給料の本部タスクを給料確定の後だけにする（U-23①②・ユーザー承認のうえ実施）
+- 月次テンプレ『【振込トーホー】給料』(87e15434)『【振込Live】給料』(e2b144a5)『【振込SK】給料』(9a16cf44)を is_active=false に停止（毎月1日の自動作成をやめ、給料確定ボタン=hq_create_payroll_tasks に一本化）。『給料計算』(2292b88c・毎月11日)は有効のまま。SQL: supabase/2026-11-09_hq_payroll_templates_stop.sql（戻し方つき）。
+- 11月分 【振込SK】給料(1a0bc84a・未着手・工程完了0)を論理削除。【振込トーホー】(1c87cccd・進行中1/4)・【振込Live】(42f148dd・進行中3/4)は未変更。
+- 残り（担当B）: 現金手渡し・サインを確定済みの月×法人だけに限定（U-23③）、取消時にサインを消して再サイン可（画像は履歴用に別名保管・U-24）、hq_create_payroll_tasks を法人ID受け取り化（確定後に invoices.html を法人IDを渡す形へ＝担当C）。それまで トーホー・Live の11月分は給料確定ボタンを案内しない。
+- 請求書メール: 毎月同じ請求番号の取引先が重複扱いで手動になる不具合を修正（invoice-auto-create/invoice-check/invoice-lines-ocr）。藤ビルメンテナンスで確認済み。
+
 ## 2026-11-03 担当C: 給料確定ボタンを「給与仕訳で選んだ法人（契約の法人）」で呼ぶよう修正（v158・push済み）
 - 給料確定（hq_create_payroll_tasks）の p_corp は、給与仕訳の法人ピル（トーホー/LiveGate）で選んだ法人の corporations.name を渡す。従来の「対象者の所属店舗の法人」判定(payrollDetermineTargetCorp)と既定'N-Style'は使わない。法人ごとに法人ピルを切り替えて各1回押す運用。担当BのSQL(U-17①)適用と同時期の反映が必要（push済み・動作確認は担当BのSQL適用後）。
 - 給与データは契約ごとに取り込み済み: sf_payroll_sync 2026-11 = LiveGate(sdm155v1)17名・トーホー(sez093z1)61名。2026-09/10 はトーホー契約のみ(黒霧屋は10月までトーホー)。11月分の給与は12月に入ってから給与仕訳に表示（対象年月＞＝今月は非表示の仕様）。
