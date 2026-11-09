@@ -2,7 +2,8 @@
 -- 2026-11-09 担当B（nippo）— ①cash_handoff_complete の退行修正 ②給料確定の「確定の印」（法人IDキー）
 --   ③現金手渡し対象者を確定済み(月×法人)に限定 ④手渡し取消（サイン等のリセット＋取消履歴）
 -- 【状態】事前報告（未適用）。設計(U-23/U-24=全部推奨)・修正4点を反映。U-25の回答待ち（本ファイルは「既存11月テンプレタスクへの工程追加」「paid_atリセット」を既定OFFで用意）
--- 【前提】2026-11-03_payroll_funcs_concurrent_staff.sql 適用済み（本番はこの状態）
+-- 【前提】2026-11-03_payroll_funcs_concurrent_staff.sql 適用済み ＋ 2026-11-09_cash_handoff_complete_restore.sql（退行修正・先に適用）。
+--   本ファイルの§5（cash_handoff_complete）はその復元版を法人ID対応にして置き換える
 --
 -- 【① 退行の修正】11-03のSQLで cash_handoff_complete を作り直した際、09-08版にあった次の3点を落としていた:
 --    (a) 既に完了済みの再実行で completed_at を上書きしない（二重通知ガード）
@@ -344,7 +345,9 @@ revoke all on function public.cash_handoff_cancel(uuid, text, text, text, jsonb,
 grant execute on function public.cash_handoff_cancel(uuid, text, text, text, jsonb, boolean) to authenticated;
 
 -- ---------- 7. hq_create_payroll_tasks（法人ID版）: 確定の印を付け、タスクを法人別に発行 ----------
-create or replace function public.hq_create_payroll_tasks(p_year_month text, p_corp text default 'N-Style')
+-- 引数を増やすので旧シグネチャ(text,text)を同じトランザクションで drop し、既定値つき末尾引数の1本だけにする（同名オーバーロードを残さない）
+drop function if exists public.hq_create_payroll_tasks(text, text);
+create or replace function public.hq_create_payroll_tasks(p_year_month text, p_corp text default null, p_corp_id uuid default null)
 returns jsonb
 language plpgsql
 security definer
@@ -371,9 +374,17 @@ begin
   v_transfer_due := jp_prev_business_day((v_due_month_start + 14)::date);
   v_cash_due := jp_prev_business_day((v_due_month_start + 24)::date);
 
-  -- 法人: 表示名(p_corp)→corporations.id。見つからない従来の呼び方は既定契約の法人（トーホー）
-  select c.id into v_corp_id from corporations c where c.name = p_corp limit 1;
-  if v_corp_id is null then select sc.corporation_id into v_corp_id from smaregi_contracts sc where sc.is_default limit 1; end if;
+  -- 法人の決め方（担当C確認: ボタンが渡す名前は corporations.name と完全一致）:
+  --   ① p_corp_id（法人ID）があればそれを優先（実在しなければエラー） ② 無ければ p_corp（名前）→ID。名前が無い呼び出し（引数なし）だけ従来の既定 'N-Style'
+  --   ID も名前も解決できないときは既定へ落とさずエラーで止める（別法人の確定をトーホー等として記録する事故を防ぐ）
+  if p_corp_id is not null then
+    select c.id, c.name into v_corp_id, p_corp from corporations c where c.id = p_corp_id;
+    if v_corp_id is null then raise exception '法人IDが見つかりません'; end if;
+  else
+    p_corp := coalesce(p_corp, 'N-Style');
+    select c.id into v_corp_id from corporations c where c.name = p_corp limit 1;
+    if v_corp_id is null then raise exception '法人名「%」が見つかりません（corporations.name と一致する名前、または法人IDを指定してください）', p_corp; end if;
+  end if;
   select array_agg(sc.contract_id) into v_contracts from smaregi_contracts sc where sc.corporation_id = v_corp_id and sc.is_active;
   if v_contracts is not null and array_length(v_contracts, 1) = 0 then v_contracts := null; end if;
 
@@ -439,9 +450,15 @@ begin
   );
 end;
 $function$;
-grant execute on function public.hq_create_payroll_tasks(text, text) to authenticated;
+revoke all on function public.hq_create_payroll_tasks(text, text, uuid) from public, anon;
+grant execute on function public.hq_create_payroll_tasks(text, text, uuid) to authenticated;
 
 -- ---------- 8. 適用後の確認（結果を担当B→司令塔へ報告） ----------
+-- 同名関数が1本ずつであること（オーバーロードが残っていない）
+select proname, count(*) as 本数, string_agg(pg_get_function_identity_arguments(oid), ' / ') as 引数
+  from pg_proc where pronamespace = 'public'::regnamespace
+   and proname in ('hq_create_payroll_tasks','hq_check_payroll_task_item','cash_handoff_complete','cash_handoff_targets','cash_handoff_cancel')
+ group by proname order by 1;
 -- 移行件数
 select 'payroll_finalized' as t, year_month, count(*) from payroll_finalized group by year_month
 union all select 'task_links', year_month, count(*) from payroll_task_links group by year_month order by 1, 2;
