@@ -85,7 +85,8 @@ async function sameNameVendorIds(db: any, vendorId: string): Promise<string[]> {
 
 function bizKeyOf(vendorId: string | null, invoiceNumber: string | null, dueDate: string | null, amount: number | null): string | null {
   if (!vendorId) return null;
-  if (invoiceNumber && norm(invoiceNumber)) return `${vendorId}|no:${norm(invoiceNumber)}`;
+  // 2026-11-09: 毎月同じ「請求番号」（実際は顧客番号。例: 藤ビルメンテナンス 9504103）を書く取引先があり、番号だけで重複扱いにすると、翌月分が「重複」で自動作成されなかった。番号＋金額で見る
+  if (invoiceNumber && norm(invoiceNumber)) return amount != null ? `${vendorId}|no:${norm(invoiceNumber)}|amt:${Math.round(amount)}` : `${vendorId}|no:${norm(invoiceNumber)}`;
   if (dueDate && amount != null) return `${vendorId}|due:${dueDate}|amt:${Math.round(amount)}`;
   return null;
 }
@@ -149,7 +150,7 @@ async function processUploadedInvoice(db: any, invoiceId: string, secret: string
     if (v || invoiceNumber) {
       const vids = v ? await sameNameVendorIds(db, v.id) : [];
       let q = db.from("invoices").select("id").neq("invoice_status", "cancelled").neq("id", invoiceId);
-      if (invoiceNumber && v) q = q.in("vendor_id", vids).eq("invoice_number", invoiceNumber);
+      if (invoiceNumber && v) { q = q.in("vendor_id", vids).eq("invoice_number", invoiceNumber); if (amount != null) q = q.eq("amount", amount); }   // 同じ請求番号でも金額が違えば別の請求書（毎月同じ番号の取引先）
       else if (invoiceNumber && amount != null) q = q.eq("invoice_number", invoiceNumber).eq("amount", amount);
       else if (v && dueDate && amount != null) q = q.in("vendor_id", vids).eq("due_date", dueDate).eq("amount", amount);
       else q = q.eq("id", "00000000-0000-0000-0000-000000000000");
@@ -272,7 +273,7 @@ async function processEmail(db: any, emailId: string, secret: string, opts: { dr
     if (v || invoiceNumber) {
       const vids = v ? await sameNameVendorIds(db, v.id) : [];
       let q = db.from("invoices").select("id, intake_source").neq("invoice_status", "cancelled");
-      if (invoiceNumber && v) q = q.in("vendor_id", vids).eq("invoice_number", invoiceNumber);
+      if (invoiceNumber && v) { q = q.in("vendor_id", vids).eq("invoice_number", invoiceNumber); if (amount != null) q = q.eq("amount", amount); }   // 同じ請求番号でも金額が違えば別の請求書（毎月同じ番号の取引先）
       else if (invoiceNumber && amount != null) q = q.eq("invoice_number", invoiceNumber).eq("amount", amount);   // 取引先が未確定でも、同じ請求番号・同じ金額なら重複
       else if (v && dueDate && amount != null) q = q.in("vendor_id", vids).eq("due_date", dueDate).eq("amount", amount);
       else q = q.eq("id", "00000000-0000-0000-0000-000000000000");
