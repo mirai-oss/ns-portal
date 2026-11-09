@@ -90,8 +90,19 @@ export function parentMessage(wf: WorkflowView, notificationId: string): { text:
   const value = JSON.stringify({ workflow_id: wf.id, notification_id: notificationId });
   // Phase 6: 入社後の提出（年末調整・扶養家族）は別トラックとして下に並べる（完了判定には入れない）
   const postJoin = wf.status === "cancelled" ? [] : ["", "*入社後の提出*（入社登録の完了とは別。未提出は定期リマインド）", ...postJoinLines(wf)];
+  // 2026-11-09 ユーザー指示「完了したか・途中で止まっているかがすぐ分かるように」: 先頭に 完了数／止まっている項目／次にやること を 1 行で
+  const total = ITEM_ORDER.length;
+  const done = ITEM_ORDER.filter(({ key }) => items[key]?.state === "completed").length;
+  const blocked = ITEM_ORDER.filter(({ key }) => ["manual_required", "failed", "retry_wait"].includes(items[key]?.state ?? "")).map(({ key, label }) => `${label}${items[key]?.last_error ? `（${String(items[key].last_error).slice(0, 40)}）` : ""}`);
+  const nextItem = ITEM_ORDER.find(({ key }) => (items[key]?.state ?? "pending") === "pending");
+  const glance = wf.status === "completed" ? `✅ *完了*（${done}/${total}）`
+    : wf.status === "cancelled" ? `⛔ *中止*${wf.cancelled_reason ? `（${wf.cancelled_reason}）` : ""}`
+    : blocked.length ? `🛑 *止まっています*（${done}/${total} 完了）: ${blocked.join("・")}`
+    : `🟢 *進行中*（${done}/${total} 完了）${nextItem ? `　▶ 次: ${nextItem.label}` : ""}`;
+  const headEmoji = wf.status === "completed" ? "✅" : wf.status === "cancelled" ? "⛔" : blocked.length ? "🛑" : "🟢";
   const blocks: unknown[] = [
-    { type: "header", text: { type: "plain_text", text: `🧑‍💼 入社登録：${name}さん`, emoji: true } },
+    { type: "header", text: { type: "plain_text", text: `${headEmoji} 入社登録：${name}さん`, emoji: true } },
+    { type: "section", text: { type: "mrkdwn", text: glance } },
     { type: "section", fields: [
       { type: "mrkdwn", text: `*区分*\n${kind || "—"}` },
       { type: "mrkdwn", text: `*所属*\n${stores}` },
@@ -116,7 +127,7 @@ export function parentMessage(wf: WorkflowView, notificationId: string): { text:
     blocks.push({ type: "actions", block_id: "onboarding_actions", elements: actions });
   }
   blocks.push({ type: "context", elements: [{ type: "mrkdwn", text: `進捗・結果・エラーはこのスレッドに届きます。ワークフロー \`${wf.id.slice(0, 8)}\`・更新 ${nowJst()}` }] });
-  return { text: `入社登録：${name}さん（${kind}／${stores}）${wf.status === "completed" ? " 完了" : ""}`, blocks };
+  return { text: `${headEmoji} 入社登録：${name}さん（${kind}／${stores}）${wf.status === "completed" ? " 完了" : wf.status === "cancelled" ? " 中止" : blocked.length ? ` 止まっています: ${blocked.join("・")}` : ` 進行中 ${done}/${total}`}`, blocks };
 }
 
 /** 賃金モーダル。contracts が 2 つ以上のときだけ契約の選択を出す */
