@@ -125,6 +125,8 @@ create table if not exists public.post_join_rules (
   required                            boolean not null default false,   -- 提出必須（社内運用上）
   remind_enabled                      boolean not null default false,   -- リマインド
   deadline_days                       integer,                          -- 扶養: 入社日から n 日（null=期限なし）
+  payroll_closing_day                 integer check (payroll_closing_day is null or payroll_closing_day between 1 and 31),  -- 扶養: 給与締め日（31=末日）。入社後最初の締め日 − payroll_lead_days を「初回給与処理に必要な期限」とし、deadline_days と早い方を採用（2026-11-09 ユーザー指示）
+  payroll_lead_days                   integer not null default 5,       -- 締め日の何日前までに扶養情報が必要か
   deadline_month_day                  text,                             -- 年末調整: 対象年度の 'MM-DD'（null=期限なし）
   remind_interval_days                integer not null default 3,       -- 期限前の間隔
   remind_interval_after_deadline_days integer not null default 1,       -- 期限後の間隔
@@ -138,11 +140,13 @@ alter table public.post_join_rules enable row level security;
 drop policy if exists post_join_rules_read on public.post_join_rules;
 create policy post_join_rules_read on public.post_join_rules for select to authenticated using (true);
 insert into public.post_join_rules(class, track, form_enabled, invite_on_join, required, remind_enabled, deadline_days, deadline_month_day, note) values
-  ('SHAIN', 'dependents', true, true, true,  true,  14,   null,    '社員: 扶養フォームは社内運用上 提出必須。入社 14 日以内'),
+  ('SHAIN', 'dependents', true, true, true,  true,  14,   null,    '社員: 扶養フォームは社内運用上 提出必須。期限＝入社 14 日後 と 初回給与処理に必要な期限（入社後最初の締め日 − リード日数）の早い方'),
   ('SHAIN', 'year_end',   true, true, true,  true,  null, '11-30', '社員: 年末調整は対象年度ごとに対象判定（既定 all）。対象者は提出必須。11/30 まで'),
   ('AL',    'dependents', true, true, false, false, null, null,    'アルバイト: 利用可・初期は任意・リマインドなし（本部が個別に必須へ変更可）'),
   ('AL',    'year_end',   true, true, false, false, null, '11-30', 'アルバイト: 利用可・初期は任意・リマインドなし（本部が個別に必須へ変更可）')
 on conflict (class, track) do nothing;
+-- 社員の扶養: 給与締め日（★仮置き: 末日締め・5 日前。実際の締め日と給与処理のリード日数はユーザー確認後に標準ルール画面で変更）
+update public.post_join_rules set payroll_closing_day = 31, payroll_lead_days = 5 where class = 'SHAIN' and track = 'dependents' and payroll_closing_day is null;
 
 -- 従業員個別の上書き（null の項目は標準ルール）。理由必須・変更は履歴へ
 create table if not exists public.post_join_overrides (
@@ -302,12 +306,28 @@ revoke all on function public.onboarding_self_or_hq(uuid, uuid) from public, ano
 -- 6) 実効ポリシー（class のルール + 個別上書き + 状態）
 -- -------------------------------------------------------------
 -- 内部版（権限確認なし。ビューと他の関数から使う）
+-- 初回給与処理に必要な期限: 入社日以降で最初の給与締め日（closing_day=31 は月末）− lead_days。それが入社 2 日未満なら次の締め日で計算
+create or replace function public.post_join_payroll_deadline(p_hire date, p_closing_day integer, p_lead_days integer)
+returns date language plpgsql immutable as $$
+declare v_close date; v_dl date; v_month date;
+begin
+  if p_hire is null or p_closing_day is null then return null; end if;
+  v_month := date_trunc('month', p_hire)::date;
+  for i in 0..2 loop
+    v_close := least((v_month + interval '1 month' - interval '1 day')::date, v_month + (p_closing_day - 1));
+    v_dl := v_close - coalesce(p_lead_days, 0);
+    if v_close >= p_hire and v_dl >= p_hire + 2 then return v_dl; end if;
+    v_month := (v_month + interval '1 month')::date;
+  end loop;
+  return v_dl;
+end $$;
+
 create or replace function public.post_join_effective_i(p_user uuid, p_track text, p_year integer default null)
 returns jsonb
 language plpgsql stable security definer set search_path to 'public'
 as $$
 declare v_role text; v_class text; r post_join_rules%rowtype; o post_join_overrides%rowtype; s employee_post_join_status%rowtype;
-        v_year int; v_hire date; v_deadline date; v_required bool; v_remind bool; v_enabled bool; v_invite bool; v_target bool; v_src text := 'rule'; v_status text;
+        v_year int; v_hire date; v_deadline date; v_payroll date; v_deadline_reason text; v_required bool; v_remind bool; v_enabled bool; v_invite bool; v_target bool; v_src text := 'rule'; v_status text;
 begin
   if p_track not in ('dependents','year_end') then raise exception 'track が不正です'; end if;
   v_year := case when p_track = 'dependents' then 0 else coalesce(p_year, public.post_join_year_default()) end;
@@ -322,14 +342,23 @@ begin
   v_target  := coalesce(o.target, case when p_track = 'year_end' then coalesce(r.year_end_target_rule, 'all') = 'all' else true end);
   v_required := coalesce(o.required, r.required, false) and v_target;
   v_remind   := coalesce(o.remind_enabled, r.remind_enabled, false) and v_required;
-  v_deadline := coalesce(o.deadline,
-                  case when p_track = 'dependents' then (case when r.deadline_days is null then null else v_hire + r.deadline_days end)
-                       else (case when r.deadline_month_day is null then null else to_date(v_year::text || '-' || r.deadline_month_day, 'YYYY-MM-DD') end) end);
+  -- 扶養の期限: 「入社 n 日後」と「初回給与処理に必要な期限（入社後最初の給与締め日 − リード日数。入社から 2 日未満になるなら次の締め日）」の早い方（2026-11-09 ユーザー指示）
+  if p_track = 'dependents' then
+    v_deadline := case when r.deadline_days is null then null else v_hire + r.deadline_days end;
+    if r.payroll_closing_day is not null and v_hire is not null then
+      v_payroll := public.post_join_payroll_deadline(v_hire, r.payroll_closing_day, coalesce(r.payroll_lead_days, 0));
+      if v_deadline is null or v_payroll < v_deadline then v_deadline := v_payroll; v_deadline_reason := 'payroll'; else v_deadline_reason := 'days'; end if;
+    elsif v_deadline is not null then v_deadline_reason := 'days'; end if;
+  else
+    v_deadline := case when r.deadline_month_day is null then null else to_date(v_year::text || '-' || r.deadline_month_day, 'YYYY-MM-DD') end;
+    if v_deadline is not null then v_deadline_reason := 'year_end'; end if;
+  end if;
+  if o.deadline is not null then v_deadline := o.deadline; v_deadline_reason := 'override'; end if;
   if o.user_id is not null then v_src := 'override'; end if;
   select * into s from employee_post_join_status where user_id = p_user and track = p_track and target_year = v_year;
   v_status := coalesce(s.status, case when not v_target then 'not_target' else 'pending' end);
   return jsonb_build_object('user_id', p_user, 'track', p_track, 'target_year', v_year, 'class', v_class, 'role', v_role, 'hire_date', v_hire,
-    'form_enabled', v_enabled, 'invite_on_join', v_invite, 'target', v_target, 'required', v_required, 'remind_enabled', v_remind, 'deadline', v_deadline,
+    'form_enabled', v_enabled, 'invite_on_join', v_invite, 'target', v_target, 'required', v_required, 'remind_enabled', v_remind, 'deadline', v_deadline, 'deadline_reason', v_deadline_reason,
     'source_of_required', v_src, 'override_reason', o.reason, 'status', v_status, 'submitted_at', s.submitted_at, 'approved_at', s.approved_at,
     'last_reminded_at', s.last_reminded_at, 'remind_count', coalesce(s.remind_count, 0),
     'remind_interval_days', coalesce(r.remind_interval_days, 3), 'remind_interval_after_deadline_days', coalesce(r.remind_interval_after_deadline_days, 1),
@@ -407,6 +436,8 @@ begin
     form_enabled = coalesce((p_patch ->> 'form_enabled')::boolean, form_enabled), invite_on_join = coalesce((p_patch ->> 'invite_on_join')::boolean, invite_on_join),
     required = coalesce((p_patch ->> 'required')::boolean, required), remind_enabled = coalesce((p_patch ->> 'remind_enabled')::boolean, remind_enabled),
     deadline_days = case when p_patch ? 'deadline_days' then nullif(p_patch ->> 'deadline_days', '')::int else deadline_days end,
+    payroll_closing_day = case when p_patch ? 'payroll_closing_day' then nullif(p_patch ->> 'payroll_closing_day', '')::int else payroll_closing_day end,
+    payroll_lead_days = coalesce((p_patch ->> 'payroll_lead_days')::int, payroll_lead_days),
     deadline_month_day = case when p_patch ? 'deadline_month_day' then nullif(p_patch ->> 'deadline_month_day', '') else deadline_month_day end,
     remind_interval_days = coalesce((p_patch ->> 'remind_interval_days')::int, remind_interval_days),
     remind_interval_after_deadline_days = coalesce((p_patch ->> 'remind_interval_after_deadline_days')::int, remind_interval_after_deadline_days),

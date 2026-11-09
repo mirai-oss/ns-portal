@@ -92,3 +92,5 @@ alter view public.onboarding_workflow_v set (security_invoker = true);
 grant select on public.onboarding_workflow_v to authenticated, service_role;
 
 drop function if exists public.post_join_request_snapshot(uuid, integer, uuid);
+
+drop function if exists public.post_join_payroll_deadline(date, integer, integer);
