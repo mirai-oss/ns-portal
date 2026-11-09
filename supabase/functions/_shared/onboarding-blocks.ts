@@ -9,7 +9,23 @@ export type WorkflowView = {
   contract_id: string | null; contract_label: string | null; smaregi_staff_id: string | null; hq_task_id: string | null;
   user_name: string | null; store_names: string | null; items: Record<string, ItemInfo> | null;
   cancelled_reason?: string | null; completed_at?: string | null;
+  // Phase 6（2026-11-09）: 入社後の提出（年末調整・扶養家族）。入社登録の完了は止めない別トラック
+  year_end?: { status: string; submitted_at?: string | null; sync_status?: string | null; verified_at?: string | null } | null;
+  dependents?: { status: string; submitted_at?: string | null; count?: number | null; synced?: number | null; relationships?: number[] | null } | null;
 };
+export const RELATIONSHIP_LABEL: Record<number, string> = { 0: "本人", 1: "配偶者", 2: "息子", 3: "娘", 4: "父", 5: "母", 6: "兄", 7: "姉", 8: "弟", 9: "妹", 10: "祖父", 11: "祖母", 12: "孫", 13: "義父", 14: "義母", 99: "その他" };
+export const POST_JOIN_STATUS_LABEL: Record<string, string> = { pending: "未提出", submitted: "提出済み（スマレジ未反映）", none: "扶養なし", synced: "スマレジ反映済み", skipped: "不要" };
+/** 入社後の提出 2 件の表示行（個人情報なし: 件数と続柄だけ） */
+export function postJoinLines(wf: WorkflowView): string[] {
+  const ye = wf.year_end ?? { status: "pending" }; const dp = wf.dependents ?? { status: "pending" };
+  const yeMark = ye.status === "synced" || ye.sync_status === "synced" ? "✅" : ye.status === "skipped" ? "➖" : ye.status === "submitted" ? "📝" : "⬜";
+  const dpMark = dp.status === "synced" || dp.status === "none" || dp.status === "skipped" ? (dp.status === "none" ? "✅" : dp.status === "skipped" ? "➖" : "✅") : dp.status === "submitted" ? "📝" : "⬜";
+  const rel = Array.isArray(dp.relationships) && dp.relationships.length ? `（${dp.relationships.map((r) => RELATIONSHIP_LABEL[r] ?? r).join("・")}）` : "";
+  return [
+    `${yeMark} 年末調整の情報（本人提出）　_${ye.sync_status === "synced" ? "スマレジ反映済み" : POST_JOIN_STATUS_LABEL[ye.status] ?? ye.status}_`,
+    `${dpMark} 扶養家族（本人提出）　_${dp.status === "none" ? "扶養なし" : POST_JOIN_STATUS_LABEL[dp.status] ?? dp.status}${dp.count ? `・${dp.count} 人${rel}${dp.synced ? `・反映 ${dp.synced} 人` : ""}` : ""}_`,
+  ];
+}
 
 export const ITEM_ORDER: { key: string; label: string; phase: number }[] = [
   { key: "join_form", label: "入社フォーム", phase: 1 },
@@ -72,6 +88,8 @@ export function parentMessage(wf: WorkflowView, notificationId: string): { text:
     return `${emoji} ${label}${extra}`;
   });
   const value = JSON.stringify({ workflow_id: wf.id, notification_id: notificationId });
+  // Phase 6: 入社後の提出（年末調整・扶養家族）は別トラックとして下に並べる（完了判定には入れない）
+  const postJoin = wf.status === "cancelled" ? [] : ["", "*入社後の提出*（入社登録の完了とは別。未提出は定期リマインド）", ...postJoinLines(wf)];
   const blocks: unknown[] = [
     { type: "header", text: { type: "plain_text", text: `🧑‍💼 入社登録：${name}さん`, emoji: true } },
     { type: "section", fields: [
@@ -80,12 +98,13 @@ export function parentMessage(wf: WorkflowView, notificationId: string): { text:
       { type: "mrkdwn", text: `*入社日*\n${jpDate(wf.hire_date)}` },
       { type: "mrkdwn", text: `*スマレジ*\n${wf.contract_label ?? wf.contract_id ?? "契約未定"}${wf.smaregi_staff_id ? `／従業員ID ${wf.smaregi_staff_id}` : "／未作成"}` },
     ] },
-    { type: "section", text: { type: "mrkdwn", text: `*${statusText}*\n${lines.join("\n")}` } },
+    { type: "section", text: { type: "mrkdwn", text: `*${statusText}*\n${lines.concat(postJoin).join("\n")}` } },
   ];
   if (wf.status !== "cancelled") {
     const actions: unknown[] = [
       { type: "button", style: "primary", text: { type: "plain_text", text: "💴 賃金を設定", emoji: true }, action_id: "hr.onboarding.wage", value },
       { type: "button", text: { type: "plain_text", text: "🚌 交通費を設定", emoji: true }, action_id: "hr.onboarding.commute.set", value },
+      { type: "button", text: { type: "plain_text", text: "🧾 源泉所得税", emoji: true }, action_id: "hr.onboarding.tax", value },
       { type: "button", text: { type: "plain_text", text: "📨 本人へ連絡", emoji: true }, action_id: "hr.onboarding.contact", value },
       { type: "button", text: { type: "plain_text", text: "🔎 スマレジ照合", emoji: true }, action_id: "hr.onboarding.account.check", value },
       { type: "button", text: { type: "plain_text", text: "🔄 表示を更新", emoji: true }, action_id: "hr.onboarding.refresh", value },
@@ -195,7 +214,8 @@ export function autoApprovedBlocks(wf: WorkflowView, notificationId: string | nu
 }
 
 // ---- 本人への連絡（Phase 2 後半・2026-11-09）。既定 person_notify_enabled=false＝文面をスレッドに出すだけ（人がコピーして送る） ----
-export const CONTACT_KIND_LABEL: Record<string, string> = { commute_question: "交通費の経路確認", welcome: "入社手続きの案内（Slack/スマレジ登録のお願い）", stale_nudge: "手続きが止まっている人へのお願い", custom: "自由入力" };
+export const CONTACT_KIND_LABEL: Record<string, string> = { commute_question: "交通費の経路確認", welcome: "入社手続きの案内（Slack/スマレジ登録のお願い）", stale_nudge: "手続きが止まっている人へのお願い", post_join_form: "扶養・年末調整フォームのお願い", custom: "自由入力" };
+export const POST_JOIN_FORM_URL = "https://mirai-oss.github.io/nippo/?page=settings#postjoin";
 /** 連絡文のひな型（個人情報は入れない。金額・経路メモ・氏名だけ） */
 export function personContactTemplate(kind: string, ctx: { name: string; claimed?: number | null; computed?: number | null; route_text?: string | null; store_name?: string | null; stale_items?: string[]; nippo_url?: string }): string {
   const n = ctx.name || "";
@@ -210,6 +230,10 @@ export function personContactTemplate(kind: string, ctx: { name: string; claimed
         `① Slack の登録: 届いている招待メールから参加してください（届いていなければ返信で教えてください）。\n` +
         `② スマレジ・タイムカードの登録: スマレジから届くメールの案内に沿って本人登録を済ませてください。\n` +
         `分からないことがあれば、このまま返信してください。`;
+    case "post_join_form":
+      return `${n}さん、お疲れさまです。N-Style 本部です。\n入社手続きの残りとして、年末調整と扶養家族の情報の登録をお願いします（扶養家族がいない場合も「いない」で送ってください）。\n` +
+        `▶ ${nippo.replace(/\/$/, "")}/?page=settings#postjoin（ログイン後の「設定」ページ）\n` +
+        `スマレジ・タイムカードの画面と同じ項目です。5 分ほどで終わります。分からない項目はそのまま送って、返信で教えてください。`;
     case "stale_nudge":
       return `${n}さん、お疲れさまです。N-Style 本部です。\n入社手続きで止まっている項目があります: ${(ctx.stale_items ?? []).join("・") || "—"}\n` +
         `お手数ですが対応をお願いします。やり方が分からなければ返信で教えてください。`;
@@ -319,4 +343,42 @@ export function wageFailedBlocks(wf: WorkflowView, notificationId: string | null
       { type: "button", text: { type: "plain_text", text: "💴 賃金を直す", emoji: true }, action_id: "hr.onboarding.wage", value },
     ] },
   ];
+}
+
+// ---- Phase 6（2026-11-09）: 源泉所得税の設定モーダル（スマレジの「源泉所得税設定を追加」と同じ 4 項目・同じ文言）----
+export function taxSettingModal(meta: { workflow_id: string; notification_id: string | null }, opts: { name: string; application_ym: string; tax_category: "kou" | "otsu"; spouse_division: number; dependents_count: number; note?: string | null }) {
+  const spouseOpts = [
+    { text: { type: "plain_text", text: "対象でない" }, value: "0" },
+    { text: { type: "plain_text", text: "源泉控除対象(配偶者控除対象)" }, value: "1" },
+    { text: { type: "plain_text", text: "源泉控除対象(配偶者特別控除対象)" }, value: "2" },
+  ];
+  const typeOpts = [{ text: { type: "plain_text", text: "甲" }, value: "kou" }, { text: { type: "plain_text", text: "乙" }, value: "otsu" }];
+  return {
+    type: "modal", callback_id: "hr.onboarding.tax.modal", private_metadata: JSON.stringify(meta),
+    title: { type: "plain_text", text: "源泉所得税設定を追加" }, submit: { type: "plain_text", text: "追加してスマレジに反映" }, close: { type: "plain_text", text: "キャンセル" },
+    blocks: [
+      { type: "section", text: { type: "mrkdwn", text: `*${opts.name}さん* の源泉所得税（スマレジ・タイムカードの「源泉所得税設定を追加」と同じ項目です）${opts.note ? `\n${opts.note}` : ""}` } },
+      { type: "input", block_id: "ym", label: { type: "plain_text", text: "適用開始月（例）2026/11）" }, element: { type: "plain_text_input", action_id: "ym", initial_value: opts.application_ym, placeholder: { type: "plain_text", text: "2026/11" }, max_length: 7 } },
+      { type: "input", block_id: "type", label: { type: "plain_text", text: "区分" }, element: { type: "static_select", action_id: "type", initial_option: typeOpts[opts.tax_category === "otsu" ? 1 : 0], options: typeOpts } },
+      { type: "input", block_id: "spouse", label: { type: "plain_text", text: "源泉控除対象配偶者区分" }, element: { type: "static_select", action_id: "spouse", initial_option: spouseOpts[[0, 1, 2].includes(opts.spouse_division) ? opts.spouse_division : 0], options: spouseOpts } },
+      { type: "input", block_id: "dep", label: { type: "plain_text", text: "源泉控除対象親族の数（人）" }, element: { type: "number_input", action_id: "dep", is_decimal_allowed: false, min_value: "0", max_value: "20", initial_value: String(Math.max(0, opts.dependents_count | 0)) } },
+      { type: "context", elements: [{ type: "mrkdwn", text: "初期値: 適用開始月＝入社月、配偶者区分＝本人提出の年末調整（配偶者あり→配偶者控除対象）、親族の数＝本人提出の扶養家族の人数。違っていれば直してください。" }] },
+    ],
+  };
+}
+/** 本人が年末調整／扶養家族を提出したときのスレッド投稿（個人情報なし）＋「スマレジに反映」ボタン */
+export function postJoinSubmittedBlocks(wf: WorkflowView, notificationId: string | null, kind: "year_end" | "dependents", info: { count?: number | null; relationships?: number[] | null; spouse_flag?: boolean | null; student_flag?: boolean | null; via?: string | null }) {
+  const value = JSON.stringify({ workflow_id: wf.id, notification_id: notificationId });
+  const rel = Array.isArray(info.relationships) && info.relationships.length ? info.relationships.map((r) => RELATIONSHIP_LABEL[r] ?? r).join("・") : "";
+  const head = kind === "year_end"
+    ? `📝 *本人が年末調整の情報を提出しました*（${nowJst()}）\n配偶者: ${info.spouse_flag ? "あり" : "なし"}／勤労学生: ${info.student_flag ? "該当" : "該当しない"}（金額などは nippo の従業員編集で確認）`
+    : info.count ? `📝 *本人が扶養家族を提出しました*（${info.count} 人・${rel}・${nowJst()}）\n氏名・住所は nippo の従業員編集で確認（Slack には出しません）` : `📝 *本人が「扶養家族なし」で提出しました*（${nowJst()}）`;
+  const blocks: unknown[] = [{ type: "section", text: { type: "mrkdwn", text: head } }];
+  if (kind === "year_end" || (kind === "dependents" && info.count)) {
+    blocks.push({ type: "actions", block_id: `onboarding_post_join_${kind}`, elements: [
+      { type: "button", style: "primary", text: { type: "plain_text", text: kind === "year_end" ? "🧾 年末調整をスマレジに反映" : "👪 扶養家族をスマレジに反映", emoji: true }, action_id: kind === "year_end" ? "hr.onboarding.yearend.sync" : "hr.onboarding.dependents.sync", value },
+      ...(kind === "dependents" ? [{ type: "button", text: { type: "plain_text", text: "🧾 源泉所得税を更新", emoji: true }, action_id: "hr.onboarding.tax", value }] : []),
+    ] });
+  }
+  return blocks;
 }

@@ -17,10 +17,15 @@
 //     account_check  { workflow_id, actor_id }               スマレジ GET（staff_get）でメール・源泉・Web明細・交通費の登録を照合し、登録済みなら項目を自動 ✓。本人アカウント登録状況は API に項目が無い → UI 読み取りジョブ（account_ui_read_enabled=true のとき）
 //     stale_alert    { dry_run? }                            停滞アラート（pg_cron から）。onboarding_alerts.enabled=false か dry_run なら候補を返すだけで送らない
 //     commute_check は auto_approve.enabled=true のときだけ自動承認（取り消しボタン付き）。既定は shadow＝参考表示と記録だけ
+//   2026-11-09 Phase 6（扶養・年末調整・事業所）:
+//     post_join_submitted { user_id, kind: 'year_end'|'dependents' }   本人提出のあと（nippo から呼べないので、本部の「🔄 表示を更新」か cron の post_join_remind が拾う／slack-interact 経由）スレッドに「📝 提出」＋「スマレジに反映」ボタン
+//     tax_setting_saved   { workflow_id, actor_id }                      源泉所得税の設定（RPC onboarding_set_tax_setting）のあと。スレッドに内容
+//     post_join_remind    { dry_run? }                                   未提出者へのリマインド（onboarding_alerts.post_join_remind_enabled=false なら候補だけ返す）
+//     ui_job_result は kind smaregi_year_end（staff_get.yearEnd と照合）/ smaregi_dependents（画面の行数と照合）/ smaregi_store（対応表に登録して hq.jinji へ）にも対応
 //   デプロイ: supabase functions deploy onboarding-notify --no-verify-jwt --project-ref uuvsxzhpxtghojoubjcc --yes（関数内で認証するため）
 // =============================================================
 import { createClient } from "npm:@supabase/supabase-js@2";
-import { parentMessage, wageFailedBlocks, wageDateAdjustedBlocks, wageLine, nowJst, commuteCheckBlocks, uiJobResultBlocks, autoApprovedBlocks, personContactTemplate, personContactResultBlocks, staleAlertThreadText, staleAlertSummaryBlocks, ITEM_ORDER, PAY_TYPE_LABEL, JUDGEMENT_LABEL, yen, jpDate, type WorkflowView } from "../_shared/onboarding-blocks.ts";
+import { parentMessage, wageFailedBlocks, wageDateAdjustedBlocks, wageLine, nowJst, commuteCheckBlocks, uiJobResultBlocks, autoApprovedBlocks, personContactTemplate, personContactResultBlocks, staleAlertThreadText, staleAlertSummaryBlocks, postJoinSubmittedBlocks, RELATIONSHIP_LABEL, ITEM_ORDER, PAY_TYPE_LABEL, JUDGEMENT_LABEL, yen, jpDate, type WorkflowView } from "../_shared/onboarding-blocks.ts";
 import { linePush } from "../_shared/line.ts";
 
 const cors = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "authorization, content-type, apikey, x-client-info, x-notify-secret" };
@@ -354,6 +359,19 @@ Deno.serve(async (req) => {
         const { data: job } = await sb.from("ui_automation_jobs").select("*").eq("id", body.job_id).maybeSingle();
         if (!job) return json({ ok: false, error: "ジョブが見つかりません" }, 404);
         const wf = job.workflow_id ? await loadView(sb, job.workflow_id) : null;
+        if (!wf && job.kind === "smaregi_store") {
+          // 事業所の作成（店舗ジョブ）: 成功なら対応表（store_external_mappings）に登録し、人事チャンネルへ
+          const p = job.payload ?? {}; const ext = String((job.result as any)?.external_store_id ?? "");
+          let line = "";
+          if (job.status === "success" && ext) {
+            const { data: m, error: me } = await sb.rpc("smaregi_store_mapping_upsert", { p_store: p.store_id, p_contract: job.contract_id, p_external_store_id: ext, p_name: p.store_name });
+            line = me ? `⚠️ 事業所『${p.store_name}』はスマレジに作成しましたが対応表に登録できませんでした（${me.message}）` : `🏪 スマレジ・タイムカード（${job.contract_id}）に事業所『${p.store_name}』を作成しました（事業所ID ${ext}${m?.exists ? "・対応表は登録済み" : "・対応表に登録"}）。所属の同期は次回の smaregi-affiliation-sync から有効です`;
+          } else if (job.status === "success") line = `⚠️ 事業所『${p.store_name}』を作成しましたが新しい事業所IDが読めませんでした。スマレジの事業所一覧を確認し、nippo の店舗管理で紐付けてください`;
+          else if (job.status === "failed") line = `🙋 事業所『${p.store_name}』の自動作成に失敗（${String(job.error ?? "").slice(0, 160)}）。スマレジ管理画面「事業所 → 新しい事業所を作成」で手で作ってください`;
+          else line = `⏳ 事業所『${p.store_name}』の自動作成に失敗し、あとで再試行します（${job.attempts}/${job.max_attempts}）`;
+          await slackSend({ action: "send", channel_key: "hq.jinji", event: "onboarding_store_job", source: "ef:onboarding-notify", text: line, ref: { table: "ui_automation_jobs", id: job.id }, ...BOT });
+          return json({ ok: true, status: job.status, external_store_id: ext || null });
+        }
         if (!wf) return json({ ok: true, note: "ワークフロー無しのジョブ（通知なし）" });
         const { data: pn } = await sb.from("onboarding_workflows").select("slack_parent_notification_id").eq("id", wf.id).maybeSingle();
         let verified: boolean | null = null; let summary = "";
@@ -364,16 +382,34 @@ Deno.serve(async (req) => {
             const p = job.payload ?? {};
             if (job.kind === "smaregi_commute") {
               const div = { per_shift: "0", monthly: "1", per_day: "2" }[p.pay_type as string];
-              const hit = (g.transportationCostApply ?? []).find((t: any) => String(t.division) === div && String(t.effectiveDate ?? "").slice(0, 10) === String(p.effective_date ?? "").slice(0, 10) && Number(t.transportationCost) === Number(p.amount));
-              verified = !!hit; summary = `${PAY_TYPE_LABEL[p.pay_type] ?? p.pay_type}／${yen(p.amount)}（${jpDate(p.effective_date)}から）`;
+              // 管理画面の適用開始は「月」単位（YYYY/MM → API は月初日）なので年月で照合（2026-11-09 立会いで確認）
+              const hit = (g.transportationCostApply ?? []).find((t: any) => String(t.division) === div && String(t.effectiveDate ?? "").slice(0, 7) === String(p.effective_date ?? "").slice(0, 7) && Number(t.transportationCost) === Number(p.amount) && (p.cap_amount == null || Number(t.transportationCostLimit ?? -1) === Number(p.cap_amount)));
+              verified = !!hit; summary = `${PAY_TYPE_LABEL[p.pay_type] ?? p.pay_type}／${yen(p.amount)}${p.cap_amount != null ? `／上限 ${yen(p.cap_amount)}（月額）` : ""}（${String(p.effective_date ?? "").slice(0, 7).replace("-", "/")} から）`;
             } else if (job.kind === "smaregi_tax") {
               const t = { kou: 1, otsu: 2 }[p.tax_category as string];
-              const hit = (g.withholdingIncomeTaxes ?? []).find((x: any) => Number(x.type) === t && (p.dependents_count == null || Number(x.dependent) === Number(p.dependents_count)));
-              verified = !!hit; summary = `区分 ${p.tax_category === "kou" ? "甲" : "乙"}${p.dependents_count != null ? `／扶養 ${p.dependents_count} 人` : ""}`;
+              const hit = (g.withholdingIncomeTaxes ?? []).find((x: any) => Number(x.type) === t && (p.dependents_count == null || Number(x.dependent) === Number(p.dependents_count)) && (!p.application_ym || String(x.applicationYm ?? "").slice(0, 7) === String(p.application_ym).slice(0, 7)));
+              verified = !!hit; summary = `区分 ${p.tax_category === "kou" ? "甲" : "乙"}${p.dependents_count != null ? `／扶養 ${p.dependents_count} 人` : ""}${p.application_ym ? `（${String(p.application_ym).slice(0, 7).replace("-", "/")} から）` : ""}`;
             } else if (job.kind === "smaregi_payslip") {
               verified = g.personalWebStatementScreenDisplayFlag === (p.flag !== false); summary = `個別Web給与明細の表示 ${p.flag !== false ? "ON" : "OFF"}`;
+            } else if (job.kind === "smaregi_year_end") {
+              // 年末調整: API（GET staffs）の年末調整項目と指示値を照合（世帯主名は先頭 1 文字だけ比べる）
+              const y = g.yearEnd ?? {};
+              const same = (a: unknown, b: unknown) => String(a ?? "") === String(b ?? "");
+              const checks = [same(y.householdHeaderRelationship, p.household_header_relationship), same(!!y.spouseFlag, !!p.spouse_flag), same(Number(y.estimateIncome ?? 0), Number(p.estimate_income ?? 0)),
+                same(Number(y.retirementIncome ?? 0), Number(p.retirement_income ?? 0)), same(y.handicappedDivision, p.handicapped_division), same(y.widowDivision2, p.widow_division2), same(!!y.studentFlag, !!p.student_flag),
+                !p.household_header_name || same(String(y.householdHeaderName ?? "").slice(0, 1), String(p.household_header_name).slice(0, 1))];
+              verified = checks.every(Boolean); summary = `年末調整（配偶者 ${p.spouse_flag ? "あり" : "なし"}・合計所得見積額 ${yen(p.estimate_income ?? 0)}・勤労学生 ${p.student_flag ? "該当" : "該当しない"}）`;
+              await sb.from("employee_year_end").update({ sync_status: verified ? "synced" : "error", sync_error: verified ? null : "保存後の照合で不一致", verified_at: verified ? new Date().toISOString() : null, verified_value: y, updated_at: new Date().toISOString() }).eq("ui_job_id", job.id);
+              if (verified) await sb.from("employee_post_join_status").update({ year_end_status: "synced", updated_at: new Date().toISOString() }).eq("user_id", job.user_id);
+            } else if (job.kind === "smaregi_dependents") {
+              // 扶養: API に項目が無いので、画面の読み直し（rows_after）が指示した人数以上なら一致とみなす
+              const want = Array.isArray(p.rows) ? p.rows.length : 0; const got = Number((job.result as any)?.rows_after ?? -1);
+              verified = got >= want && want > 0; summary = `扶養家族 ${want} 人（画面の行数 ${got < 0 ? "不明" : got}）`;
+              if (verified) { await sb.from("employee_dependents").update({ smaregi_synced_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq("ui_job_id", job.id).eq("is_active", true); await sb.from("employee_post_join_status").update({ dependents_status: "synced", updated_at: new Date().toISOString() }).eq("user_id", job.user_id); }
             } else if (job.kind === "smaregi_email") {
-              verified = !!g.mail_set; summary = `メールアドレス（${g.mail_masked ?? "—"}）`;
+              // 立会いで確認: 管理画面で入れたメールは本人が登録を完了するまで API の mail に出ない（仮メール）。UI で保存できていれば「仮登録」として完了扱い
+              const tmp = !!(job.result as any)?.tmp_email_set;
+              verified = !!g.mail_set || tmp; summary = g.mail_set ? `メールアドレス（${g.mail_masked ?? "—"}）` : tmp ? `メールアドレス（仮登録。本人が認証メールの URL から登録を完了すると確定）` : "メールアドレス（未設定）";
             }
             if (verified !== null && job.item_key) {
               await setItem(sb, wf.id, job.item_key, verified ? "completed" : "failed", { ui_job_id: job.id, verified, result: job.result }, null, "auto", verified ? null : "保存後の照合で不一致（スマレジの値が指示と違う）");
@@ -387,8 +423,9 @@ Deno.serve(async (req) => {
           const acc = String((job.result as any)?.account_status ?? "");
           if (job.kind === "smaregi_read" && acc) {
             const it = wf.items?.smaregi_account;
+            const accJp = String((job.result as any)?.account_status_jp ?? acc);
             if (/registered|登録済/.test(acc) && it?.state !== "completed") { await setItem(sb, wf.id, "smaregi_account", "completed", { ui_job_id: job.id, account_status: acc, verified: true }, null, "auto"); summary += "／本人アカウント: 登録済み → ✅"; }
-            else if (!/registered|登録済/.test(acc)) summary += `／本人アカウント: ${acc}（未登録）`;
+            else if (!/registered|登録済/.test(acc)) summary += `／本人アカウント: ${accJp}${acc === "invited" ? "（本人が認証メールの URL から登録を完了すると ✅）" : ""}`;
           }
         } else if (job.status === "failed") {
           const title = `手動対応: ${({ smaregi_commute: "交通費", smaregi_tax: "源泉所得税", smaregi_payslip: "個別Web給与明細", smaregi_email: "メールアドレス" } as Record<string, string>)[job.kind] ?? job.kind}をスマレジ管理画面で設定`;
@@ -511,6 +548,64 @@ Deno.serve(async (req) => {
         }
         if (summary.length) await slackSend({ action: "send", channel_key: settings.channel_key ?? "hq.jinji", event: "onboarding_stale_summary", source: "ef:onboarding-notify", text: `⏰ 入社手続きの停滞 ${summary.length} 人`, blocks: staleAlertSummaryBlocks(summary), dedupe_key: `onboarding:stale:${new Date().toISOString().slice(0, 10)}`, ...BOT });
         return json({ ok: true, sent: true, count: summary.length, candidates });
+      }
+      // ---- Phase 6: 本人提出（年末調整・扶養）のあと ----
+      case "post_join_submitted": {
+        const kind = String(body.kind ?? "");
+        if (!["year_end", "dependents"].includes(kind)) return json({ ok: false, error: "kind は year_end か dependents" }, 400);
+        let wf: WorkflowView | null = null;
+        if (isUuid(body.workflow_id)) wf = await loadView(sb, body.workflow_id);
+        else if (isUuid(body.user_id)) { const { data } = await sb.from("onboarding_workflow_v").select("*").eq("user_id", body.user_id).maybeSingle(); wf = (data as WorkflowView) ?? null; }
+        if (!wf?.user_id) return json({ ok: false, error: "ワークフローが見つかりません" }, 404);
+        const { data: pn } = await sb.from("onboarding_workflows").select("slack_parent_notification_id").eq("id", wf.id).maybeSingle();
+        const info: any = {};
+        if (kind === "year_end") { const { data: y } = await sb.from("employee_year_end").select("spouse_flag,student_flag,submitted_via").eq("user_id", wf.user_id).maybeSingle(); Object.assign(info, { spouse_flag: y?.spouse_flag ?? null, student_flag: y?.student_flag ?? null, via: y?.submitted_via ?? null }); }
+        else { const { data: ds } = await sb.from("employee_dependents").select("relationship").eq("user_id", wf.user_id).eq("is_active", true); Object.assign(info, { count: (ds ?? []).length, relationships: (ds ?? []).map((d: any) => d.relationship) }); }
+        await thread(sb, wf, kind === "year_end" ? "📝 本人が年末調整の情報を提出しました" : `📝 本人が扶養家族を提出しました（${info.count ?? 0} 人）`, postJoinSubmittedBlocks(wf, pn?.slack_parent_notification_id ?? null, kind as "year_end" | "dependents", info), "onboarding_post_join_submitted");
+        await event(sb, wf, "post_join.notified", { kind, ...info });
+        await refreshParent(sb, wf);
+        return json({ ok: true, kind, info });
+      }
+      case "tax_setting_saved": {
+        if (!isUuid(body.workflow_id)) return json({ ok: false, error: "workflow_id が不正です" }, 400);
+        const wf = await loadView(sb, body.workflow_id);
+        if (!wf?.user_id) return json({ ok: false, error: "見つかりません" }, 404);
+        const { data: t } = await sb.from("employee_tax_settings").select("tax_category,application_ym,spouse_deduction_division,dependents_count,sync_status,sync_error").eq("user_id", wf.user_id).maybeSingle();
+        const who = await actorName(sb, isUuid(body.actor_id) ? body.actor_id : null);
+        const spouse = ({ 0: "対象でない", 1: "源泉控除対象(配偶者控除対象)", 2: "源泉控除対象(配偶者特別控除対象)" } as Record<number, string>)[Number(t?.spouse_deduction_division ?? 0)] ?? "—";
+        const line = `・適用開始月 ${String(t?.application_ym ?? "").replace("-", "/")}／区分 ${t?.tax_category === "otsu" ? "乙" : "甲"}／配偶者区分 ${spouse}／親族の数 ${t?.dependents_count ?? 0} 人`;
+        const tail = t?.sync_status === "manual" ? "🙋 スマレジへの自動反映はまだ有効化されていません。*スマレジ管理画面（給与設定 → 源泉所得税設定を追加）にこの値を入力*し、本部タスクの「源泉所得税」に ✓ を付けてください" : "⏳ Mac の自動操作でスマレジに反映します（数分〜）。結果はこのスレッドに届きます";
+        await thread(sb, wf, `🧾 源泉所得税の設定を登録しました（${who}・${nowJst()}）\n${line}\n${tail}`, undefined, "onboarding_tax_setting");
+        await refreshParent(sb, wf);
+        return json({ ok: true });
+      }
+      case "post_join_remind": {
+        // 未提出者へのリマインド（既定 OFF）。person_contact と同じ経路（Slack DM → LINE）。repeat_days おき
+        const settings = await alertSettings(sb);
+        const days = Number(settings.post_join_remind_days ?? 3), repeat = Number(settings.post_join_repeat_days ?? 3);
+        const { data: targets, error: te } = await sb.rpc("onboarding_post_join_targets", { p_days: days });
+        if (te) return json({ ok: false, error: te.message }, 500);
+        const cutoff = Date.now() - repeat * 86400_000;
+        const due = (targets ?? []).filter((t: any) => !t.last_reminded_at || new Date(t.last_reminded_at).getTime() < cutoff);
+        const live = settings.post_join_remind_enabled === true && body.dry_run !== true;
+        const h = jstHour(); const qFrom = Number(settings.quiet_from ?? 22), qTo = Number(settings.quiet_to ?? 8);
+        const quiet = qFrom > qTo ? (h >= qFrom || h < qTo) : (h >= qFrom && h < qTo);
+        if (!live) return json({ ok: true, sent: 0, reason: settings.post_join_remind_enabled !== true ? "disabled" : "dry_run", candidates: due.map((t: any) => ({ user_id: t.user_id, name: t.name, hire_date: t.hire_date, missing: t.missing, has_slack: t.has_slack, has_line: t.has_line, remind_count: t.remind_count })) });
+        if (quiet) return json({ ok: true, sent: 0, reason: "quiet_hours", candidates: due.length });
+        let sent = 0; const results: any[] = [];
+        for (const t of due) {
+          const wf = await loadView(sb, t.workflow_id); if (!wf) continue;
+          const text = personContactTemplate("post_join_form", { name: wf.user_name ?? "" });
+          const ch = await personChannels(sb, t.user_id);
+          let channel: string | null = null; let ok = false; let err: string | null = null;
+          if (ch.slack) { const r = await slackSend({ action: "send", channel_key: `user:${t.user_id}`, event: "onboarding_post_join_remind", source: "ef:onboarding-notify", text, ref: { table: "onboarding_workflows", id: wf.id }, ...BOT }); ok = !!r?.ok; channel = "Slack"; err = ok ? null : r?.error ?? "失敗"; }
+          if (!ok && ch.line_user_id) { const { data: tk } = await sb.from("app_secrets").select("value").eq("key", "line_channel_token").maybeSingle(); if (tk?.value) { const r = await linePush(String(tk.value).trim(), ch.line_user_id, text); ok = r.ok; channel = "LINE"; err = ok ? null : `${r.status}`; } }
+          await event(sb, wf, "post_join.reminded", { channel, sent: ok, missing: t.missing, error: err });
+          if (ok) { sent++; await sb.rpc("onboarding_post_join_reminded", { p_user: t.user_id }); await thread(sb, wf, `📨 扶養・年末調整フォームのお願いを本人へ送りました（${channel}・${(t.remind_count ?? 0) + 1} 回目・未提出: ${(t.missing ?? []).map((m: string) => (m === "year_end" ? "年末調整" : "扶養家族")).join("・")}）`, undefined, "onboarding_post_join_remind"); }
+          else await thread(sb, wf, `⚠️ 扶養・年末調整フォームのお願いを送れませんでした（Slack/LINE とも未連携か失敗: ${err ?? "連絡先なし"}）。店長から声かけをお願いします`, undefined, "onboarding_post_join_remind");
+          results.push({ user_id: t.user_id, channel, sent: ok });
+        }
+        return json({ ok: true, sent, results });
       }
       case "status": {
         let q = sb.from("onboarding_workflow_v").select("*");

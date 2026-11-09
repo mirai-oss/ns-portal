@@ -18,7 +18,7 @@
 //   （Slack は JWT を付けないため、署名検証がこの関数の唯一の認証）
 // =============================================================
 import { createClient } from "npm:@supabase/supabase-js@2";
-import { wageModal, commuteSettingModal, cancelModal, personContactModal, personContactTemplate, yen } from "../_shared/onboarding-blocks.ts";
+import { wageModal, commuteSettingModal, cancelModal, personContactModal, personContactTemplate, taxSettingModal, yen } from "../_shared/onboarding-blocks.ts";
 
 const svc = () => createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
 const text = (s: string, status = 200) => new Response(s, { status, headers: { "Content-Type": "text/plain; charset=utf-8" } });
@@ -74,6 +74,9 @@ async function resolveActor(sb: any, slackUserId: string): Promise<Actor | null>
 //   hr.onboarding.contact / .contact.modal   「📨 本人へ連絡」→ 種類と文面のモーダル → EF onboarding-notify op=person_contact（2026-11-09。既定は送らず文面をスレッドに出すだけ）
 //   hr.onboarding.account.check   「🔎 スマレジ照合」→ EF onboarding-notify op=account_check（GET で登録済みの項目を ✓）
 //   hr.onboarding.commute.undo    自動承認の「↩️ 取り消して本部で確認」→ RPC onboarding_commute_decide(rejected) → op=commute_decided
+//   hr.onboarding.tax / .tax.modal   「🧾 源泉所得税」（2026-11-09 Phase 6）→ スマレジと同じ 4 項目のモーダル → RPC onboarding_set_tax_setting → op=tax_setting_saved
+//   hr.onboarding.yearend.sync / .dependents.sync   本人提出の年末調整／扶養家族を「スマレジに反映」→ RPC onboarding_enqueue_year_end / _dependents → スレッド
+//   hr.onboarding.post_join.remind   「📨 フォームのお願い」→ op=person_contact kind=post_join_form（既定は文面だけ）
 //                                 value = {"workflow_id","notification_id"}。権限: マスター / CEO / HQ（hrAllowed）
 type Handler = (ctx: Ctx) => Promise<Response>;
 type Ctx = { sb: any; payload: any; actor: Actor; notificationId: string | null; value: any };
@@ -315,6 +318,66 @@ const handlers: Record<string, Handler> = {
     if (!body) return json({ response_action: "errors", errors: { text: "文面を入れてください" } });
     waitUntil(onboardingNotify({ op: "person_contact", workflow_id: meta.workflow_id, actor_id: actor.user_id, kind, text: body }));
     return json({ response_action: "clear" });
+  },
+  // ---- Phase 6（2026-11-09）: 源泉所得税（スマレジと同じ 4 項目）----
+  "hr.onboarding.tax": async ({ sb, actor, payload, value, notificationId }) => {
+    const ru: string | undefined = payload.response_url;
+    if (!hrAllowed(actor)) return ephemeral("源泉所得税の設定は本部・社長・マスターのみです", ru);
+    const wf = await wfRow(sb, value?.workflow_id); if (!wf?.user_id) return ephemeral("ワークフローが見つかりません", ru);
+    const contracts = await activeContracts(sb, wf.user_id);
+    if (!contracts.length) return ephemeral("スマレジにまだ登録されていないため、源泉所得税を設定できません。", ru);
+    const [{ data: t }, { data: y }, { data: ds }] = await Promise.all([
+      sb.from("employee_tax_settings").select("tax_category,application_ym,spouse_deduction_division,dependents_count").eq("user_id", wf.user_id).maybeSingle(),
+      sb.from("employee_year_end").select("spouse_flag,estimate_income").eq("user_id", wf.user_id).maybeSingle(),
+      sb.from("employee_dependents").select("relationship").eq("user_id", wf.user_id).eq("is_active", true),
+    ]);
+    const hire = String(wf.hire_date ?? new Date().toISOString().slice(0, 10)).slice(0, 7).replace("-", "/");
+    const depCount = (ds ?? []).length;
+    const spouseGuess = t?.spouse_deduction_division ?? (y?.spouse_flag ? 1 : 0);
+    const note = y ? "本人提出の年末調整あり" : "本人提出の年末調整はまだありません（初期値は推定）";
+    return await openModal(payload.trigger_id, taxSettingModal({ workflow_id: wf.id, notification_id: notificationId }, { name: wf.user_name ?? "", application_ym: String(t?.application_ym ?? "").replace("-", "/") || hire, tax_category: t?.tax_category === "otsu" ? "otsu" : "kou", spouse_division: Number(spouseGuess), dependents_count: t?.dependents_count ?? depCount, note }));
+  },
+  "hr.onboarding.tax.modal": async ({ sb, actor, payload }) => {
+    const meta = JSON.parse(payload.view?.private_metadata ?? "{}");
+    const v = payload.view?.state?.values ?? {};
+    const ym = String(v.ym?.ym?.value ?? "").trim().replace("/", "-");
+    const type = v.type?.type?.selected_option?.value ?? "kou";
+    const spouse = Number(v.spouse?.spouse?.selected_option?.value ?? 0);
+    const dep = Number(v.dep?.dep?.value ?? 0);
+    if (!/^\d{4}-\d{2}$/.test(ym)) return json({ response_action: "errors", errors: { ym: "YYYY/MM の形で入れてください（例: 2026/11）" } });
+    if (!Number.isInteger(dep) || dep < 0 || dep > 20) return json({ response_action: "errors", errors: { dep: "0〜20 の整数" } });
+    waitUntil((async () => {
+      const { data, error } = await sb.rpc("onboarding_set_tax_setting", { p_workflow: meta.workflow_id, p_application_ym: ym, p_tax_category: type, p_spouse_division: spouse, p_dependents_count: dep, p_actor: actor.user_id });
+      if (error || !data?.ok) { await onboardingNotify({ op: "thread", workflow_id: meta.workflow_id, text: `⚠️ 源泉所得税の設定を記録できませんでした（${actor.name}）: ${error?.message ?? "不明"}`, event: "onboarding_tax_failed" }); return; }
+      await onboardingNotify({ op: "tax_setting_saved", workflow_id: meta.workflow_id, actor_id: actor.user_id });
+    })());
+    return json({ response_action: "clear" });
+  },
+  "hr.onboarding.yearend.sync": async ({ sb, actor, payload, value }) => {
+    if (!hrAllowed(actor)) return ephemeral("入社手続きの操作は本部・社長・マスターのみです", payload.response_url);
+    if (!value?.workflow_id) return ephemeral("ワークフローの id が読めませんでした", payload.response_url);
+    const { data, error } = await sb.rpc("onboarding_enqueue_year_end", { p_workflow: value.workflow_id, p_actor: actor.user_id });
+    if (error) return ephemeral(`登録できませんでした: ${error.message}`, payload.response_url);
+    if (!data?.ok) return ephemeral(data?.error ?? "登録できませんでした", payload.response_url);
+    const j = data.job ?? {};
+    waitUntil(onboardingNotify({ op: "thread", workflow_id: value.workflow_id, text: j.ok ? `🧾 年末調整をスマレジに反映します（${actor.name}・${nowJst()}）。結果はこのスレッドに届きます${j.duplicate ? "（既に待機中のジョブがあります）" : ""}` : `🙋 年末調整: 自動反映は未有効化です（${actor.name}）。スマレジ管理画面「年末調整 → 設定を編集」に nippo の従業員編集の内容を入力してください`, event: "onboarding_year_end_sync" }));
+    return text("");
+  },
+  "hr.onboarding.dependents.sync": async ({ sb, actor, payload, value }) => {
+    if (!hrAllowed(actor)) return ephemeral("入社手続きの操作は本部・社長・マスターのみです", payload.response_url);
+    if (!value?.workflow_id) return ephemeral("ワークフローの id が読めませんでした", payload.response_url);
+    const { data, error } = await sb.rpc("onboarding_enqueue_dependents", { p_workflow: value.workflow_id, p_actor: actor.user_id });
+    if (error) return ephemeral(`登録できませんでした: ${error.message}`, payload.response_url);
+    if (!data?.ok) return ephemeral(data?.error ?? "登録できませんでした", payload.response_url);
+    const j = data.job ?? {};
+    waitUntil(onboardingNotify({ op: "thread", workflow_id: value.workflow_id, text: j.ok ? `👪 扶養家族 ${data.count} 人をスマレジに反映します（${actor.name}・${nowJst()}）。結果はこのスレッドに届きます${j.duplicate ? "（既に待機中のジョブがあります）" : ""}` : `🙋 扶養家族: 自動反映は未有効化です（${actor.name}）。スマレジ管理画面「扶養設定 → 設定を編集 → 扶養親族を追加」に nippo の従業員編集の内容を入力してください（マイナンバーは本人画面）`, event: "onboarding_dependents_sync" }));
+    return text("");
+  },
+  "hr.onboarding.post_join.remind": async ({ actor, payload, value }) => {
+    if (!hrAllowed(actor)) return ephemeral("入社手続きの操作は本部・社長・マスターのみです", payload.response_url);
+    if (!value?.workflow_id) return ephemeral("ワークフローの id が読めませんでした", payload.response_url);
+    waitUntil(onboardingNotify({ op: "person_contact", workflow_id: value.workflow_id, actor_id: actor.user_id, kind: "post_join_form" }));
+    return text("");
   },
   // スマレジ照合（2026-11-09）: GET で登録済みの項目を ✓（本人アカウントは UI 読み取りへ）
   "hr.onboarding.account.check": async ({ actor, payload, value }) => {

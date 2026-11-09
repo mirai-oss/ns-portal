@@ -218,6 +218,10 @@ Deno.serve(async (req) => {
         activeFlag: st?.activeFlag ?? null, terminationFlag: st?.terminationFlag ?? null,
         transportationCostApply: st?.transportationCostApply ?? null, withholdingIncomeTaxes: st?.withholdingIncomeTaxes ?? null,
         personalWebStatementScreenDisplayFlag: st?.personalWebStatementScreenDisplayFlag ?? null,
+        // 2026-11-09 Phase 6: 年末調整の照合用（API は読み取りのみ。世帯主名は先頭 1 文字だけ）
+        yearEnd: { householdHeaderName: st?.householdHeaderName ? String(st.householdHeaderName).slice(0, 1) + "***" : null, householdHeaderRelationship: st?.householdHeaderRelationship ?? null,
+          spouseFlag: st?.spouseFlag ?? null, estimateIncome: st?.estimateIncome ?? null, retirementIncome: st?.retirementIncome ?? null, handicappedDivision: st?.handicappedDivision ?? null,
+          widowDivision2: st?.widowDivision2 ?? null, widowDivision: st?.widowDivision ?? null, studentFlag: st?.studentFlag ?? null },
         wageApply: (st?.wageApply ?? []).map((w: any) => ({ id: String(w.wageApplyId), division: Number(w.division), storeId: w.storeId ?? null, effectiveDate: String(w.effectiveDate ?? "").slice(0, 10), wage: Number(w.wage) })),
       });
     }
