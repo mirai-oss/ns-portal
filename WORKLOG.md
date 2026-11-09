@@ -7,6 +7,15 @@
 
 ---
 
+**2026-11-09 16:35（Slack 勤怠スレッド・続き）入社登録 Phase 5 準備＝本番反映済み（ユーザー承認①〜④）・nippo 公開済み・フラグ全 OFF**:
+- 事前: 旧版 EF を `supabase/restored/2026-11-09_*_prod_v{50,2,15,4}.ts` に保存／回帰テスト 2 本（Phase 1 RPC）を新 SQL 適用の rollback 内で全 OK／切り戻し `2026-11-09_onboarding_phase5_prep_rollback.sql`（データ保全版）を rollback 内で検証。
+- 反映: SQL `2026-11-09_onboarding_phase5_prep.sql` 適用（件数不変・フラグ false・cron 未登録）→ EF smaregi-sync **v51**・commute-route **v3**・slack-interact **v16**・onboarding-notify **v7**（v5 → 実機で見つけた「スマレジの交通費初期行（金額 0・1970）」の誤判定修正 v6 → 型修正 v7）。
+- 確認: 読むだけスモーク 6 種＋使い捨て（テスト 準備確認）15 手順（親に 📨/🔎・再検索・照合・連絡文・本人確認・停滞 dry_run・承認・設定 manual・更新・中止）すべて OK。Slack 10 件削除・DB 残留 0・既存件数不変。
+- nippo `69258a8` push（回帰確認後）。配信・ログイン画面・招待フォームのエラー 0 を確認。ログイン後画面は未確認。
+- 残: 実入社 1〜2 名の確認（0 件）／立会い（手順書あり）／駅すぱあとキー／各フラグの有効化は個別承認。
+
+---
+
 **2026-11-09 13:55（Slack 勤怠スレッド・続き）入社登録: 駅すぱあとキー待ち中の実装＝コード完成・本番未反映（EF 4 本の改修は未デプロイ・Phase 5 準備 SQL 未適用・nippo 未 push。Mac 側は push 済みだがフラグ OFF）**:
 - ユーザー指示「キー到着時点で接続設定と実 API 検証だけが残る状態に。立会いは私の操作を最小限に。自動承認・スマレジ書き込み・Mac 自動操作は承認なしに有効化しない」。
 - **日付の訂正**: 前回までの「2026-11-10」表記の作業（Phase 2/3 本番投入ほか）は実際には 2026-11-09（本番 EF のデプロイ時刻 11-09 11:58 JST で確認）。本番の実バージョンは commute-route v2・smaregi-sync v50・slack-interact v15・onboarding-notify v4（前回の v1/v49/v14/v3 は数え違い）。4 本とも本番 download とリポジトリ HEAD が無差分。
@@ -1173,6 +1182,8 @@
 - 入金タブをkd_deposit速報で即表示（v237）。PL速報(viewPLFast_)は既存。目標/広告/媒体/明細は確定データ(GAS)待ちのまま＝次はkd追加(F2・レーンP)待ち。社員人件費反映はユーザー確認済み。
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
+
+**★★★2026-11-09 16:35（Slack 勤怠スレッド・続き）入社登録 Phase 5 準備＝本番反映済み（SQL 適用・EF smaregi-sync v51／commute-route v3／slack-interact v16／onboarding-notify v7）・nippo `69258a8` 公開済み・Mac `e4d16b9`（`SMAREGI_UI_JOBS` OFF）。フラグ全 OFF（auto_approve・alerts.enabled・person_notify・account_ui_read・smaregi_write）・cron 未登録。使い捨て実機 15 手順 OK・残留 0。実入社 0 件。** 残: 立会い（`docs/手順書_スマレジ管理画面立会い_2026-11-09.md`）／駅すぱあとキー（届いたら `scripts/set_secret.py` → `ekispert_smoke.py` → `commute_compare.py`）／有効化は個別承認。旧版 EF は `supabase/restored/2026-11-09_*`。直近コミット: ns-portal この下の git log／nippo `69258a8`／ns-daily-import `e4d16b9`。
 
 **★★★2026-11-09 13:55（Slack 勤怠スレッド・続き）入社登録: 駅すぱあとキー待ち中の実装＝コード完成・本番未反映。** ハブ: EF 4 本の改修（自動承認 shadow・📨 本人へ連絡・🔎 スマレジ照合・停滞アラート・最寄り駅の正規化・dry_run モック）＝**未デプロイ**／SQL `2026-11-09_onboarding_phase5_prep.sql`＝**未適用**（全フラグ false）／テスト: deno 11 件・EF ローカル モック 6 シナリオ・rollback 結合 43 項目 OK。Mac `e4d16b9` push 済み（モック画面で 29 件 OK・`SMAREGI_UI_JOBS` OFF・偵察スクリプト未実行）。nippo `69258a8` **未 push**。本番の実バージョン: commute-route v2／smaregi-sync v50／slack-interact v15／onboarding-notify v4（11-09 11:58。前回表記の 11-10 は日付の書き違い）。実入社 0 件（workflows 0 行）。**承認待ち**: A. EF 再デプロイ＋SQL 適用 B. nippo push C. 立会い（`docs/手順書_スマレジ管理画面立会い_2026-11-09.md`） D. キー到着。直近コミット: ns-portal `f3378a9`／nippo `69258a8`（未 push）／ns-daily-import `e4d16b9`。
 

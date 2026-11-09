@@ -459,8 +459,10 @@ Deno.serve(async (req) => {
           if (ok && st !== "completed" && st !== "cancelled") { await setItem(sb, wf.id, key, "completed", { ...payload, verified: true, verified_by: "staff_get", verified_at: new Date().toISOString() }, actor, actor ? "slack" : "auto"); done.push(label); }
           lines.push(`${ok ? "✅" : "⬜"} ${label}: ${detail}`);
         };
-        const tc: any[] = Array.isArray(g.transportationCostApply) ? g.transportationCostApply : [];
-        const wt: any[] = Array.isArray(g.withholdingIncomeTaxes) ? g.withholdingIncomeTaxes : [];
+        // 実機で確認（2026-11-09・従業員 378）: 未設定でもスマレジは transportationCostApply に「division 0・金額 0・effectiveDate 1970-01-01」の初期行を返す → 金額 0 かつ 1970 年の行は「未登録」とみなす
+        const tcAll: any[] = Array.isArray(g.transportationCostApply) ? g.transportationCostApply : [];
+        const tc: any[] = tcAll.filter((t) => Number(t?.transportationCost ?? 0) > 0 || (String(t?.effectiveDate ?? "").slice(0, 4) > "1990" && t?.transportationCostLimit != null));
+        const wt: any[] = (Array.isArray(g.withholdingIncomeTaxes) ? g.withholdingIncomeTaxes : []).filter((x: any) => x && (Number(x.type) === 1 || Number(x.type) === 2));
         await mark("email", !!g.mail_set, "メールアドレス", g.mail_set ? `登録済み（${g.mail_masked ?? "***"}）` : "未登録", { mail_masked: g.mail_masked ?? null });
         await mark("withholding_tax", wt.length > 0, "源泉所得税", wt.length ? `登録済み（区分 ${wt.map((x) => (Number(x.type) === 1 ? "甲" : Number(x.type) === 2 ? "乙" : x.type)).join("/")}）` : "未登録", { withholding: wt.map((x) => ({ type: x.type, dependent: x.dependent, applicationYm: x.applicationYm })) });
         await mark("web_payslip", g.personalWebStatementScreenDisplayFlag === true, "個別Web給与明細の表示", g.personalWebStatementScreenDisplayFlag === true ? "ON" : g.personalWebStatementScreenDisplayFlag === false ? "OFF（未設定）" : "不明", { flag: g.personalWebStatementScreenDisplayFlag ?? null });
