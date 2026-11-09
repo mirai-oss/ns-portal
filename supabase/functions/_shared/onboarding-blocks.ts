@@ -96,7 +96,7 @@ export function parentMessage(wf: WorkflowView, notificationId: string): { text:
 }
 
 /** 賃金モーダル。contracts が 2 つ以上のときだけ契約の選択を出す */
-export function wageModal(meta: { workflow_id: string; user_id: string; notification_id: string | null }, opts: {
+export function wageModal(meta: { workflow_id: string; user_id: string; notification_id: string | null; contract_id?: string | null }, opts: {
   name: string; hire_date: string | null; contracts: { contract_id: string; label: string; staff_id: string }[];
 }) {
   const today = new Date(Date.now() + 9 * 3600e3).toISOString().slice(0, 10);

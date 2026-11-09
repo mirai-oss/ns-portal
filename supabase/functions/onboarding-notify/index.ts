@@ -222,6 +222,27 @@ Deno.serve(async (req) => {
         if (!isUuid(body.workflow_id)) return json({ ok: false, error: "workflow_id が不正です" }, 400);
         return await opWageSync(sb, body.workflow_id, isUuid(body.actor_id) ? body.actor_id : null, body.contract_id ? String(body.contract_id) : null);
       }
+      case "wage_save_sync": {
+        // 2026-11-09: Slack のモーダル送信は 3 秒以内に返事が要る（スマホは特に厳しい）ため、保存（RPC hr_save_wage）と反映を slack-interact の返事の後ろ＝ここで行う。
+        //   保存エラー（権限・重複・月初日など）はモーダルに出せないので、スレッドに ⚠️＋「💴 賃金を直す」で知らせる
+        if (!isUuid(body.workflow_id) || !isUuid(body.actor_id)) return json({ ok: false, error: "workflow_id と actor_id が必要です" }, 400);
+        const wf = await loadView(sb, body.workflow_id);
+        if (!wf?.user_id) return json({ ok: false, error: "見つかりません" }, 404);
+        const division = Number(body.division), wage = Number(body.wage), date = String(body.date ?? ""), C = body.contract_id ? String(body.contract_id) : wf.contract_id;
+        const who = await actorName(sb, body.actor_id);
+        const { data, error } = await sb.rpc("hr_save_wage", { p_user: wf.user_id, p_contract: C, p_division: division, p_store: null, p_wage: wage, p_holiday: null, p_date: date, p_actor: body.actor_id });
+        if (error || !data?.ok) {
+          const msg = error?.message ?? "保存できませんでした";
+          const { data: pn } = await sb.from("onboarding_workflows").select("slack_parent_notification_id").eq("id", wf.id).maybeSingle();
+          await event(sb, wf, "wage.save_failed", { division, wage, date, contract_id: C, error: msg }, body.actor_id, "wage");
+          await thread(sb, wf, `⚠️ 賃金を保存できませんでした: ${msg}`, [
+            { type: "section", text: { type: "mrkdwn", text: `⚠️ *賃金を保存できませんでした*（${who}・${nowJst()}）\n入力: ${wageLine({ division, wage, effective_date: date })}\n理由: ${msg.slice(0, 300)}` } },
+            { type: "actions", block_id: "onboarding_wage_fix", elements: [{ type: "button", style: "primary", text: { type: "plain_text", text: "💴 賃金を直す", emoji: true }, action_id: "hr.onboarding.wage", value: JSON.stringify({ workflow_id: wf.id, notification_id: pn?.slack_parent_notification_id ?? null }) }] },
+          ], "onboarding_wage_save_failed");
+          return json({ ok: false, error: msg });
+        }
+        return await opWageSync(sb, body.workflow_id, body.actor_id, C);
+      }
       case "wage_confirm": {
         // 「✅ この日付で確定」: manual_required（適用開始日の差異）の賃金項目を、人の確認のうえ完了にする（payload の rows/verified はそのまま）
         if (!isUuid(body.workflow_id) || !isUuid(body.actor_id)) return json({ ok: false, error: "workflow_id と actor_id が必要です" }, 400);

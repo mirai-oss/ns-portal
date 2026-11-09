@@ -231,7 +231,8 @@ const handlers: Record<string, Handler> = {
     if (wf.status === "cancelled") return ephemeral("この入社手続きは中止されています", ru);
     const contracts = await activeContracts(sb, wf.user_id);
     if (!contracts.length) return ephemeral("スマレジにまだ登録されていないため、賃金を反映できません。先に nippo の従業員ページからスマレジに登録してください。", ru);
-    return await openModal(payload.trigger_id, wageModal({ workflow_id: wf.id, user_id: wf.user_id, notification_id: notificationId }, { name: wf.user_name ?? "", hire_date: wf.hire_date, contracts }));
+    // 契約が 1 つならここで決めて private_metadata に入れる（送信時に DB を引かない＝3 秒以内に返事するため）
+    return await openModal(payload.trigger_id, wageModal({ workflow_id: wf.id, user_id: wf.user_id, notification_id: notificationId, contract_id: contracts.length === 1 ? contracts[0].contract_id : null }, { name: wf.user_name ?? "", hire_date: wf.hire_date, contracts }));
   },
   "hr.onboarding.wage.modal": async ({ sb, actor, payload }) => {
     const meta = JSON.parse(payload.view?.private_metadata ?? "{}");
@@ -244,17 +245,11 @@ const handlers: Record<string, Handler> = {
     if ((division === 2 || division === 1) && date.slice(8) !== "01") return json({ response_action: "errors", errors: { date: `${division === 2 ? "月給" : "日給"}の適用開始日は月初日（1日）にしてください（スマレジの仕様）` } });
     if (division === 0 && wage > 100000) return json({ response_action: "errors", errors: { wage: "時給が大きすぎます。月給は「月給」を選んでください" } });
     if (!meta.workflow_id || !meta.user_id) return json({ response_action: "errors", errors: { wage: "対象が読めませんでした。もう一度ボタンから開いてください" } });
-    let contract: string | null = v.contract?.contract?.selected_option?.value ?? null;
-    if (!contract) {
-      const cs = await activeContracts(sb, meta.user_id);
-      if (cs.length !== 1) return json({ response_action: "errors", errors: { wage: cs.length ? "スマレジの契約を選んでください" : "スマレジに登録されていません" } });
-      contract = cs[0].contract_id;
-    }
-    // 保存は正規の RPC（権限・検証は RPC 側。日給(1) は 2026-11-09 から許可）。反映（数秒）はモーダルを閉じたあとに
-    const { data, error } = await sb.rpc("hr_save_wage", { p_user: meta.user_id, p_contract: contract, p_division: division, p_store: null, p_wage: wage, p_holiday: null, p_date: date, p_actor: actor.user_id });
-    if (error) return json({ response_action: "errors", errors: { wage: error.message } });
-    if (!data?.ok) return json({ response_action: "errors", errors: { wage: "保存できませんでした" } });
-    waitUntil(onboardingNotify({ op: "wage_sync", workflow_id: meta.workflow_id, actor_id: actor.user_id, contract_id: contract }));
+    const contract: string | null = v.contract?.contract?.selected_option?.value ?? meta.contract_id ?? null;
+    if (!contract) return json({ response_action: "errors", errors: { wage: "スマレジの契約を選んでください（登録されていない場合は先に nippo からスマレジ登録）" } });
+    // 2026-11-09: 実機（スマホ）で「Slack になかなか接続できません」＝3 秒超。保存（RPC hr_save_wage・権限と検証は RPC 側）もスマレジ反映も返事の後ろ（EF onboarding-notify op=wage_save_sync）で行い、
+    //   保存エラーはスレッドに ⚠️ で届く。ここでは形式チェックだけして先にモーダルを閉じる
+    waitUntil(onboardingNotify({ op: "wage_save_sync", workflow_id: meta.workflow_id, actor_id: actor.user_id, contract_id: contract, division, wage, date }));
     return json({ response_action: "clear" });
   },
   // 救済処理で適用開始日がスマレジ側の日付に変わった賃金（確認待ち）を、人が確認して確定する（2026-11-09）
