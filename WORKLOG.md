@@ -7,6 +7,18 @@
 
 ---
 
+**2026-11-09 19:00（Slack 勤怠スレッド・続き）入社登録 Phase 6 v2＝本番反映（A: SQL 適用＋EF 3 本／B: nippo 公開／D: 使い捨て確認）完了。フラグは全部 OFF・cron 未登録・既存データ不変**:
+- 事前: 本番 EF を download して `supabase/restored/2026-11-09_{smaregi-sync_prod_v51, onboarding-notify_prod_v9, slack-interact_prod_v16, onboarding-blocks_prod_v9}.ts` に保存。件数スナップショット（applicants 863／profiles 148／賃金 217／本部タスク 503）。切り戻し SQL は rollback 内で検証済み。v2 テスト 85 項目を最終 SQL で再実行（期待どおり）。
+- 期限ルール追加（ユーザー指摘）: 社員の扶養は「入社 14 日後」と「初回給与処理に必要な期限＝入社後最初の給与締め日（末日）− リード 0 日」の早い方（給与は末日締め・翌月 15 日払い＝ユーザー確認）。`post_join_rules.payroll_closing_day / payroll_lead_days`・関数 `post_join_payroll_deadline`・effective に deadline_reason。
+- A: SQL `2026-11-09_onboarding_phase6.sql` 適用（関数 18→48・標準ルール 4 行・表 7・ビュー再作成 33 列・件数不変・フラグ false・cron なし）→ EF smaregi-sync **v52**・onboarding-notify **v10→v11**（API の年末調整項目が文字列 "0"/"1" で返るため真偽値解釈を修正）・slack-interact **v17**。スモーク: status／stale dry／post_join_remind dry（disabled・候補に既存社員が並ぶ＝一括通知の危険があるため有効化前に対象の絞り込みが必要）／staff_get.yearEnd（実機で項目名確認）。
+- B: nippo `75a066b` push・配信確認。
+- D: 使い捨て「テスト 社員確認」（SHAIN・入社 11/20）: 登録→親メッセージ→「今入力する」choice→年末調整提出→扶養 1 人提出（status submitted・期限 11/30＝payroll）→ Slack に 📝 提出 ×2 → 承認（approved）→ enqueue はスイッチ OFF で disabled（manual）→ 源泉設定 manual（項目 manual_required）→ 個別必須の上書き（履歴 override_set）→ remind dry 0 → 親メッセージに「入社後の提出」2 行と先頭の状態 1 行。**使い捨ては未削除（ユーザーが Slack で確認後に削除）**。
+- 気づき: `onboarding_slack.legacy_wage_text` が **false** になっていた（切替 B 相当。私は適用していない＝ユーザー実行？要確認）。
+- 残る未検証: 扶養の実機データ行の読み取り・照合（登録のある従業員が無い）／事業所作成後の画面遷移／nippo ログイン後画面（公開済み・ユーザー確認待ち）／年末調整・扶養・事業所の実書き込み（承認制）。
+
+
+---
+
 **2026-11-09 20:30（Slack 勤怠スレッド・続き）入社登録 Phase 6 v2＝コード完成・テスト完了・本番未反映（ユーザー最終方針①〜⑨＋追加指示: 契約ID の確実な識別・書き込み前 3 点確認・取り込みだけでは提出済みにしない）**:
 - 方針: 社員・アルバイト全員がフォーム対象。必須・リマインド・期限・年度・対象判定は「雇用区分の標準ルール（post_join_rules）＋従業員個別の上書き（post_join_overrides・理由必須）」、履歴（post_join_policy_history。users.role の区分変更も記録・税務情報は消さない）。扶養と年末調整は別トラック・年度付き。リマインドは「必須かつ未完了」だけ（期限前後で間隔変更・提出/対象外/不要で停止・自動送信 OFF）。提出 → 本部が Slack で承認 → スマレジ反映 → 再取得照合（扶養は氏名・続柄・生年月日）。既存従業員は 1 人ずつ snapshot 取り込み（status は変えない）。一括操作なし。「任意＝法令上の免除ではない」を UI・設計書に注記。
 - ハブ ns-portal `d8f1846`＋追補（`post_join_request_snapshot`）: SQL `2026-11-09_onboarding_phase6.sql`（v2・**未適用**・dry-run OK）／rollback（データ保全版・検証済み）／EF onboarding-notify・slack-interact・blocks（**未デプロイ**・deno check/test OK）／設計書 v2。rollback 内テスト 85 項目 OK（社員・AL・個別必須・区分変更・既存従業員 snapshot・年度更新・承認前後・期限前後の間隔・対象外）。`ui_job_enqueue` が expected_contract_id/expected_staff_id/expected_stores を payload に付与。
@@ -1217,6 +1229,8 @@
 - 入金タブをkd_deposit速報で即表示（v237）。PL速報(viewPLFast_)は既存。目標/広告/媒体/明細は確定データ(GAS)待ちのまま＝次はkd追加(F2・レーンP)待ち。社員人件費反映はユーザー確認済み。
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
+
+**★★★2026-11-09 19:00（Slack 勤怠スレッド・続き）入社登録 Phase 6 v2＝本番反映済み（SQL 適用・EF smaregi-sync v52／onboarding-notify v11／slack-interact v17・nippo `75a066b` 公開）。フラグ全 OFF（smaregi_write・auto_approve・alerts・person_notify・post_join_remind）・cron 未登録・Mac `SMAREGI_UI_JOBS` OFF。使い捨て D 確認済み（提出→Slack→承認→manual）・使い捨て「テスト 社員確認」は削除待ち。** 保留: 切替 B（ただし legacy_wage_text は既に false＝要確認）・各フラグ有効化（有効化前にリマインド対象を新入社に絞る設定が必要）。未検証: 扶養の実機行読み取り／事業所作成後の遷移／nippo ログイン後画面／実書き込み。直近コミット: ns-portal この下の git log／nippo `75a066b`／ns-daily-import `1e51942`。
 
 **★★★2026-11-09 20:30（Slack 勤怠スレッド・続き）入社登録 Phase 6 v2（社員・AL 全員対象の扶養・年末調整フォーム＝標準ルール＋個別上書き＋履歴＋年度＋承認後反映／源泉 Slack 画面統一／事業所自動作成）＝コード完成・テスト完了・本番未反映。** ハブ `d8f1846`＋追補（SQL 未適用・EF 未デプロイ・rollback 85 項目 OK）／nippo `75a066b` 未 push／Mac `1e51942` push 済み（契約ID 属性識別・書き込み前 3 点確認・フラグ OFF）。立会い済み（交通費の実書き込み一気通貫 OK・スイッチ OFF 戻し済み）。**承認待ち**: A. Phase 6 SQL→EF 3 本 B. nippo push C. 切替 B（通知 1 通化） D. 使い捨て確認 E. フラグ有効化。直近コミット: ns-portal この下の git log／nippo `75a066b`／ns-daily-import `1e51942`。
 
