@@ -7,6 +7,18 @@
 
 ---
 
+**2026-11-09 18:00（Slack 勤怠スレッド・続き）スマレジ管理画面の立会い＝完了・交通費の自動書き込みを実機で一気通貫確認（Slack 🚌 → ジョブ → Mac Playwright → 管理画面 → GET 照合一致 → 項目 ✅ → 本部タスク ✓）。書き込みスイッチは OFF に戻した（ユーザー実行）**:
+- 立会い: ユーザー提供の画面収録（3440×1440・H.264）を内蔵ブラウザで再生して切り出し、`tasks/smaregi-ui-recon.js`（読むだけ）＋`tasks/smaregi-ui-explore.js`（モーダルを開いてキャンセル）で実 DOM を確定。テスト従業員 380「テスト 立会い」（ユーザーが nippo から作成・鳥一代 本店）。
+- 確定: 給与設定ページ `/staffs/edit_payroll/{ID}`（交通費モーダル: 支給形態 radio value 0/2/1＝API と同じ・適用開始 YYYY/MM・金額/上限（**上限は月額**）・「追加」→ページ「設定を保存」→ **確認ダイアログ `#JSFlashMessage a.confirmBtn`「はい」**→ 詳細 `/staffs/detail/{ID}#group_payroll`＋「従業員を保存しました。」）／源泉モーダル（区分 1/2・配偶者 0/1/2・親族数・適用開始月）／Web 明細 radio `#personalWebStatementpScreenDisplayFlag1`／メールは基本情報 `#StaffTmpEmail`（**本人登録完了まで API の mail に出ない＝仮メール**。詳細ページの「登録されていません。認証メールをお送りしております」で本人アカウント＝招待済みと判定可）。
+- 実機: 読むだけジョブ成功（アカウント=招待済み）→ 書き込み 1 回目 save_failed（確認ダイアログ）→ 2 回目 save_failed（セレクタ違い）→ 3 回目成功（再試行の仕組みも実機で確認）。スマレジに「2026/12〜 勤務回数ごと 1,000 円・上限 6,000 円」。GET 照合一致・commute_set completed/smaregi_verified・本部タスク ✓・スレッド通知。
+- ns-daily-import `61a8ac2`→`3d19646`→`cfdaf3a`（セレクタ JSON 実値・4 操作を実画面の流れに書き直し・モック/テスト 27 件・確認ダイアログ対応）。ハブ onboarding-notify **v9**（ユーザー実行デプロイ: 年月で照合・上限照合・仮メール・本人アカウント jp 表示）。スイッチ ON/OFF はユーザー実行（`supabase/2026-11-09_commute_write_switch_{on,off}.sql`）。
+- スマレジ API 公開リファレンス再確認: 事業所は GET のみ（登録 API なし）／扶養の項目なし／年末調整は GET のみ（householdHeaderName 等）／源泉・交通費・社保の更新 API なし → いずれも管理画面の自動操作で対応。
+- **ユーザー追加要望（Phase 6・着手）**: ①店舗登録→スマレジ事業所の自動作成 ②入社フォームでは扶養・年末調整を飛ばし、入社後に本人フォーム（スマレジと同じ UI）→ 管理システム保存 → Playwright、未提出者に定期リマインド、Slack で追跡 ③源泉所得税の Slack 画面をスマレジと同じ 4 項目に ④社員の社会保険は後。偵察で年末調整（`/staffs/edit_year_end/{ID}`）・扶養（`/staffs/edit_dependent/{ID}`＋モーダル）・事業所作成（`/stores/add`）の実 DOM を取得。3 系統の実装完了: ハブ `c8fcd0c`（SQL `2026-11-09_onboarding_phase6.sql` **未適用**・EF smaregi-sync/onboarding-notify/slack-interact **未デプロイ**・設計書 `docs/設計書_入社登録Phase6_扶養年末調整_事業所_2026-11-09.md`・rollback 内 30 項目 OK）／nippo `f971bbd`＋提出状況の読み先修正（**未 push**）／Mac `d7c3b5c`（push 済み・テスト 30 件・フラグ OFF）。扶養・年末調整は入社登録の完了判定を止めないよう `employee_post_join_status` の別トラック（親メッセージに「入社後の提出」2 行）。
+- **次（ユーザー承認）**: A. Phase 6 SQL 適用（onboarding_workflow_v を作り直すため利用の少ない時間）→ EF 3 本デプロイ B. nippo push C. 使い捨てで本人フォーム→🧾 モーダル→manual の確認 D. 有効化（post_join_remind・cron・smaregi_write・Mac フラグ）は個別承認。
+
+
+---
+
 **2026-11-09 16:35（Slack 勤怠スレッド・続き）入社登録 Phase 5 準備＝本番反映済み（ユーザー承認①〜④）・nippo 公開済み・フラグ全 OFF**:
 - 事前: 旧版 EF を `supabase/restored/2026-11-09_*_prod_v{50,2,15,4}.ts` に保存／回帰テスト 2 本（Phase 1 RPC）を新 SQL 適用の rollback 内で全 OK／切り戻し `2026-11-09_onboarding_phase5_prep_rollback.sql`（データ保全版）を rollback 内で検証。
 - 反映: SQL `2026-11-09_onboarding_phase5_prep.sql` 適用（件数不変・フラグ false・cron 未登録）→ EF smaregi-sync **v51**・commute-route **v3**・slack-interact **v16**・onboarding-notify **v7**（v5 → 実機で見つけた「スマレジの交通費初期行（金額 0・1970）」の誤判定修正 v6 → 型修正 v7）。
@@ -1188,6 +1200,8 @@
 - 入金タブをkd_deposit速報で即表示（v237）。PL速報(viewPLFast_)は既存。目標/広告/媒体/明細は確定データ(GAS)待ちのまま＝次はkd追加(F2・レーンP)待ち。社員人件費反映はユーザー確認済み。
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
+
+**★★★2026-11-09 18:30（Slack 勤怠スレッド・続き）入社登録: 立会い完了＝交通費の自動書き込みを実機で一気通貫確認（スイッチは OFF に戻し済み・Mac フラグ OFF）。Phase 6（扶養・年末調整の入社後フォーム／源泉 Slack 画面統一／スマレジ事業所の自動作成）＝コード完成・本番未反映（ハブ `c8fcd0c`: SQL `2026-11-09_onboarding_phase6.sql` 未適用・EF 3 本未デプロイ／nippo 未 push／Mac `d7c3b5c` push 済み）。** 本番 EF: onboarding-notify v9（ユーザー実行）。承認待ち: A. Phase 6 SQL→EF 3 本 B. nippo push C. 使い捨て確認 D. 各フラグ有効化。直近コミット: ns-portal この下の git log／nippo ローカル HEAD／ns-daily-import `d7c3b5c`。
 
 **★★★2026-11-09 16:35（Slack 勤怠スレッド・続き）入社登録 Phase 5 準備＝本番反映済み（SQL 適用・EF smaregi-sync v51／commute-route v3／slack-interact v16／onboarding-notify v7）・nippo `69258a8` 公開済み・Mac `e4d16b9`（`SMAREGI_UI_JOBS` OFF）。フラグ全 OFF（auto_approve・alerts.enabled・person_notify・account_ui_read・smaregi_write）・cron 未登録。使い捨て実機 15 手順 OK・残留 0。実入社 0 件。** 残: 立会い（`docs/手順書_スマレジ管理画面立会い_2026-11-09.md`）／駅すぱあとキー（届いたら `scripts/set_secret.py` → `ekispert_smoke.py` → `commute_compare.py`）／有効化は個別承認。旧版 EF は `supabase/restored/2026-11-09_*`。直近コミット: ns-portal この下の git log／nippo `69258a8`／ns-daily-import `e4d16b9`。
 
