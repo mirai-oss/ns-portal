@@ -165,9 +165,21 @@ Deno.serve(async (req: Request) => {
 
   // 検算: 明細合計=税抜合計（±1円）。税の内訳があれば税率別にも見る
   const sumLines = lines.reduce((t, l) => t + (toNum(l.amount) ?? 0), 0);
-  const subtotal = toNum(header.subtotal_amount);
+  let subtotal = toNum(header.subtotal_amount);
   const tax = toNum(header.tax_amount);
   const total = toNum(header.total_amount);
+  // 2026-11-09: 税抜合計や行ごとの税率が書かれていない請求書（藤ビルメンテナンス等。末尾に消費税合計だけ）への対応。
+  //  ①税抜合計が無くても、税込合計−消費税＝明細合計（±1円）なら、それを税抜合計とみなす ②全行の税率が無いとき、税率の内訳が1種類、または 消費税÷明細合計 が10%/8%に一致するなら、その税率を全行に付ける
+  if (header.line_amounts_include_tax !== true) {
+    if (subtotal == null && tax != null && total != null && Math.abs((total - tax) - sumLines) <= 1) subtotal = total - tax;
+    if (lines.length && lines.every((l) => toNum(l.tax_rate) == null)) {
+      let r: number | null = null;
+      const tbs = Array.isArray(header.tax_breakdown) ? header.tax_breakdown.filter((b: any) => toNum(b.rate) != null) : [];
+      if (tbs.length === 1) r = toNum(tbs[0].rate);
+      else if (tax != null && sumLines > 0) { const q = tax / sumLines; if (Math.abs(q - 0.10) < 0.002) r = 10; else if (Math.abs(q - 0.08) < 0.002) r = 8; }
+      if (r != null) lines.forEach((l) => { l.tax_rate = r; });
+    }
+  }
   const checks: Record<string, unknown> = { sum_lines: sumLines, line_count: lines.length, truncated: !!result.truncated };
   const problems: string[] = [];
   if (!lines.length) problems.push("明細行を読み取れませんでした");

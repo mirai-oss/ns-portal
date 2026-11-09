@@ -114,7 +114,8 @@ Deno.serve(async (req: Request) => {
     const { data: others } = await db.from("invoices").select("id, invoice_number, amount, due_date, target_year_month, created_at, invoice_status, intake_source")
       .in("vendor_id", vids).neq("id", inv.id).neq("invoice_status", "cancelled");
     for (const o of others ?? []) {
-      if (inv.invoice_number && o.invoice_number && o.invoice_number === inv.invoice_number) { dupNg = true; dupNotes.push(`同じ請求番号の請求書があります（${o.id}）`); }
+      // 2026-11-09: 毎月同じ「請求番号」（実は顧客番号）を書く取引先がある。番号が同じでも、金額が両方分かっていて違えば別の請求書（金額が不明なら従来どおり番号だけで判定）
+      if (inv.invoice_number && o.invoice_number && o.invoice_number === inv.invoice_number && (inv.amount == null || o.amount == null || Number(o.amount) === Number(inv.amount))) { dupNg = true; dupNotes.push(`同じ請求番号の請求書があります（${o.id}）`); }
       else if (inv.amount != null && o.amount != null && Number(o.amount) === Number(inv.amount) && o.due_date && inv.due_date && o.due_date === inv.due_date) { dupNg = true; dupNotes.push(`同じ金額・期限の請求書があります（${o.id}）`); }
     }
     // 定期取引先（行ルールあり）は月1枚が既定。同じ対象年月に先に作られた請求書があれば2枚目
