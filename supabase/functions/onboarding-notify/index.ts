@@ -398,8 +398,10 @@ Deno.serve(async (req) => {
               // 年末調整: API（GET staffs）の年末調整項目と指示値を照合（世帯主名は先頭 1 文字だけ比べる）
               const y = g.yearEnd ?? {};
               const same = (a: unknown, b: unknown) => String(a ?? "") === String(b ?? "");
-              const checks = [same(y.householdHeaderRelationship, p.household_header_relationship), same(!!y.spouseFlag, !!p.spouse_flag), same(Number(y.estimateIncome ?? 0), Number(p.estimate_income ?? 0)),
-                same(Number(y.retirementIncome ?? 0), Number(p.retirement_income ?? 0)), same(y.handicappedDivision, p.handicapped_division), same(y.widowDivision2, p.widow_division2), same(!!y.studentFlag, !!p.student_flag),
+              // 実機（2026-11-09）: API は studentFlag "0"／estimateIncome "0"／handicappedDivision "1" のように文字列で返す → "0" を true にしないよう真偽値は明示的に解釈
+              const bool = (v: unknown) => v === true || v === 1 || v === "1" || v === "true";
+              const checks = [same(y.householdHeaderRelationship ?? "", p.household_header_relationship ?? ""), same(bool(y.spouseFlag), bool(p.spouse_flag)), same(Number(y.estimateIncome ?? 0), Number(p.estimate_income ?? 0)),
+                same(Number(y.retirementIncome ?? 0), Number(p.retirement_income ?? 0)), same(Number(y.handicappedDivision ?? 1), Number(p.handicapped_division ?? 1)), same(Number(y.widowDivision2 ?? 1), Number(p.widow_division2 ?? 1)), same(bool(y.studentFlag), bool(p.student_flag)),
                 !p.household_header_name || same(String(y.householdHeaderName ?? "").slice(0, 1), String(p.household_header_name).slice(0, 1))];
               verified = checks.every(Boolean); summary = `年末調整（配偶者 ${p.spouse_flag ? "あり" : "なし"}・合計所得見積額 ${yen(p.estimate_income ?? 0)}・勤労学生 ${p.student_flag ? "該当" : "該当しない"}）`;
               await sb.from("employee_year_end").update({ sync_status: verified ? "synced" : "error", sync_error: verified ? null : "保存後の照合で不一致", verified_at: verified ? new Date().toISOString() : null, verified_value: y, updated_at: new Date().toISOString() }).eq("ui_job_id", job.id);
