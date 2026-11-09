@@ -30,7 +30,7 @@
    **成功の見分け方**: `適用OK:` と出る。
    - この時点では **通知の動きは何も変わりません**（切替スイッチは OFF で入ります）。
 
-### 1-2. Edge Function（サーバー側の処理）を 4 本デプロイする
+### 1-2. Edge Function（サーバー側の処理）を 4 本デプロイする　✅ 2026-11-09 11:00 デプロイ済み（onboarding-notify v2／slack-interact v13／hr-wage-notify v8／smaregi-sync v48。すべて `--no-verify-jwt`＝従来設定どおり）
 
 1 本ずつ実行します。どれも `Deployed Functions on project uuvsxzhpxtghojoubjcc` のような表示が出れば成功です。
 
@@ -44,12 +44,16 @@ npx supabase functions deploy slack-interact --no-verify-jwt --project-ref uuvsx
 npx supabase functions deploy hr-wage-notify --no-verify-jwt --project-ref uuvsxzhpxtghojoubjcc --yes
 ```
 ```bash
-npx supabase functions deploy smaregi-sync --project-ref uuvsxzhpxtghojoubjcc --yes
+npx supabase functions deploy smaregi-sync --no-verify-jwt --project-ref uuvsxzhpxtghojoubjcc --yes
+```
+- デプロイ直後の 1 回目は起動に時間がかかって失敗（503）することがあります。デプロイしたら、誰かが入社登録する前に次を 1 回流して温めてください（失敗しても害はありません）。
+```bash
+curl -s -X POST https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/smaregi-sync -H 'Content-Type: application/json' -d '{"action":"test"}'
 ```
 - `smaregi-sync` には、リポジトリにあって本番に未反映だった改善（「初期設定」の賃金は実際の適用日で金額だけ更新する）も一緒に入ります。
 - 失敗したら、表示されたエラーをそのまま私に貼ってください。
 
-### 1-3. nippo を公開する（日給の選択肢・本部タスクの重複防止）
+### 1-3. nippo を公開する（日給の選択肢・本部タスクの重複防止）　✅ 公開済み（`346f4fa`）
 
 nippo の変更は、私（Claude）が `git push` してよいと言っていただいてから公開します。SQL より先に公開しても壊れないように作ってあります（SQL が入る前は従来どおりの呼び方に自動で戻ります）。
 
