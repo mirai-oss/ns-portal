@@ -15,7 +15,7 @@
 //   デプロイ: supabase functions deploy onboarding-notify --no-verify-jwt --project-ref uuvsxzhpxtghojoubjcc --yes（関数内で認証するため）
 // =============================================================
 import { createClient } from "npm:@supabase/supabase-js@2";
-import { parentMessage, wageFailedBlocks, wageDateAdjustedBlocks, wageLine, nowJst, type WorkflowView } from "../_shared/onboarding-blocks.ts";
+import { parentMessage, wageFailedBlocks, wageDateAdjustedBlocks, wageLine, nowJst, commuteCheckBlocks, uiJobResultBlocks, PAY_TYPE_LABEL, JUDGEMENT_LABEL, yen, jpDate, type WorkflowView } from "../_shared/onboarding-blocks.ts";
 
 const cors = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "authorization, content-type, apikey, x-client-info, x-notify-secret" };
 const json = (o: unknown, status = 200) => new Response(JSON.stringify(o), { status, headers: { ...cors, "Content-Type": "application/json" } });
@@ -256,6 +256,114 @@ Deno.serve(async (req) => {
         const rows: any[] = Array.isArray(it.payload?.rows) ? it.payload.rows : [];
         await thread(sb, wf2, `✅ 適用開始日の差異を確認し、賃金を確定しました（${who}・${nowJst()}）\n` + rows.map((r) => `・${wageLine(r)}`).join("\n") + (wf2.hq_task_id ? "\n🗂 本部タスク「時給」に ✓ を付けました" : ""), undefined, "onboarding_wage_confirmed");
         await refreshParent(sb, wf2);
+        return json({ ok: true });
+      }
+      // ---- Phase 2: 交通費 ----
+      case "commute_check": {
+        // 経路検索（EF commute-route）→ 判定をスレッドへ（承認は人が押す）
+        if (!isUuid(body.workflow_id)) return json({ ok: false, error: "workflow_id が不正です" }, 400);
+        const wf = await loadView(sb, body.workflow_id);
+        if (!wf?.user_id) return json({ ok: false, error: "見つかりません" }, 404);
+        const res = await fetch(`${SUPABASE_URL}/functions/v1/commute-route`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${SERVICE_KEY}`, apikey: SERVICE_KEY }, body: JSON.stringify({ user_id: wf.user_id, store_id: body.store_id ?? null }) });
+        const r = await res.json().catch(() => ({ ok: false, error: `HTTP ${res.status}` }));
+        const { data: cm } = await sb.from("employee_commute").select("method,route_text,uses_bus,claimed_oneway_fare").eq("user_id", wf.user_id).maybeSingle();
+        const { data: pn } = await sb.from("onboarding_workflows").select("slack_parent_notification_id").eq("id", wf.id).maybeSingle();
+        const nid = pn?.slack_parent_notification_id ?? null;
+        if (!r?.ok) {
+          const value = JSON.stringify({ workflow_id: wf.id, notification_id: nid });
+          await thread(sb, wf, `🚃 交通費の経路検索ができませんでした: ${r?.error ?? "不明"}`, [
+            { type: "section", text: { type: "mrkdwn", text: `🚃 *交通費の経路検索ができませんでした*（${nowJst()}）\n${String(r?.error ?? "不明").slice(0, 300)}\n本人の申請: 片道 ${cm?.claimed_oneway_fare != null ? yen(cm.claimed_oneway_fare) : "未申請"}${cm?.route_text ? `／経路メモ: ${cm.route_text.slice(0, 100)}` : ""}\n経路は人が確認して承認してください。` } },
+            { type: "actions", block_id: "onboarding_commute", elements: [
+              { type: "button", style: "primary", text: { type: "plain_text", text: cm?.claimed_oneway_fare != null ? `✅ 申請額 ${yen(cm.claimed_oneway_fare)} で承認` : "✅ 承認（金額を入力）", emoji: true }, action_id: "hr.onboarding.commute.approve", value },
+              { type: "button", text: { type: "plain_text", text: "🙋 本人に確認", emoji: true }, action_id: "hr.onboarding.commute.person", value },
+              { type: "button", text: { type: "plain_text", text: "🔁 再検索", emoji: true }, action_id: "hr.onboarding.commute.research", value },
+            ] },
+          ], "onboarding_commute_failed");
+          await refreshParent(sb, (await loadView(sb, wf.id)) ?? wf);
+          return json({ ok: false, error: r?.error, judgement: "search_failed" });
+        }
+        await thread(sb, wf, `🚃 交通費の確認: ${JUDGEMENT_LABEL[r.judgement] ?? r.judgement}（申請 ${cm?.claimed_oneway_fare != null ? yen(cm.claimed_oneway_fare) : "未申請"}／検索最安 ${r.computed ? yen(r.computed.fare) : "—"}）`,
+          commuteCheckBlocks(wf, nid, { judgement: r.judgement, reasons: r.reasons ?? [], claimed: r.claimed ?? null, computed: r.computed ?? null, reasonable: r.reasonable ?? [], from: r.from, to: r.to, store_name: r.store?.name, method: cm?.method, route_text: cm?.route_text, uses_bus: cm?.uses_bus }), "onboarding_commute_check");
+        await refreshParent(sb, (await loadView(sb, wf.id)) ?? wf);
+        return json({ ok: true, judgement: r.judgement, computed: r.computed?.fare ?? null, claimed: r.claimed ?? null });
+      }
+      case "commute_decided": {
+        // RPC onboarding_commute_decide のあと（slack-interact から）。スレッド＋親更新
+        if (!isUuid(body.workflow_id)) return json({ ok: false, error: "workflow_id が不正です" }, 400);
+        const wf = await loadView(sb, body.workflow_id);
+        if (!wf) return json({ ok: false, error: "見つかりません" }, 404);
+        const who = await actorName(sb, isUuid(body.actor_id) ? body.actor_id : null);
+        const d = String(body.decision ?? "");
+        const text = d === "approved" ? `✅ 交通費の片道額を *${yen(body.fare)}* で承認しました（${who}・${nowJst()}）${body.note ? `\nメモ: ${String(body.note).slice(0, 200)}` : ""}\n▶ 次: 親メッセージの「🚌 交通費を設定」でスマレジに入れる値（支給形態・適用開始日・金額）を決めてください`
+          : d === "person_review" ? `🙋 本人に経路と金額を確認することにしました（${who}・${nowJst()}）。本人への連絡（LINE/メール）は Phase 2 後半で自動化。返答が来たらスレッドに書き、「🔁 再検索」または「✅ 承認」を押してください`
+          : `↩️ 交通費を差し戻しました（${who}・${nowJst()}）${body.note ? `\n理由: ${String(body.note).slice(0, 200)}` : ""}`;
+        await thread(sb, wf, text, undefined, "onboarding_commute_decided");
+        await refreshParent(sb, wf);
+        return json({ ok: true });
+      }
+      case "commute_setting_saved": {
+        if (!isUuid(body.workflow_id) || !isUuid(body.setting_id)) return json({ ok: false, error: "workflow_id と setting_id が必要です" }, 400);
+        const wf = await loadView(sb, body.workflow_id);
+        if (!wf) return json({ ok: false, error: "見つかりません" }, 404);
+        const { data: s } = await sb.from("employee_commute_settings").select("*").eq("id", body.setting_id).maybeSingle();
+        const who = await actorName(sb, isUuid(body.actor_id) ? body.actor_id : null);
+        const scope = s?.scope === "per_store" ? "事業所別" : "全事業所";
+        await thread(sb, wf, `🚌 交通費の設定を登録しました（${who}・${nowJst()}）\n・${PAY_TYPE_LABEL[s?.pay_type] ?? s?.pay_type}／${scope}／${s?.scope === "per_store" ? JSON.stringify(s?.store_amounts) : yen(s?.amount)}${s?.cap_amount != null ? `／上限 ${yen(s.cap_amount)}` : ""}（${jpDate(s?.effective_date)}から）\n⏳ Mac の自動操作でスマレジに反映します（数分〜）。結果はこのスレッドに届きます${body.duplicate ? "\nℹ️ 同じ人の未完了ジョブがあるため、そのジョブに相乗りします" : ""}`, undefined, "onboarding_commute_setting");
+        await refreshParent(sb, wf);
+        return json({ ok: true });
+      }
+      // ---- Phase 3: UI ジョブの結果（Mac から）: GET で照合 → 項目の状態 → スレッド → 親更新 ----
+      case "ui_job_result": {
+        if (!isUuid(body.job_id)) return json({ ok: false, error: "job_id が不正です" }, 400);
+        const { data: job } = await sb.from("ui_automation_jobs").select("*").eq("id", body.job_id).maybeSingle();
+        if (!job) return json({ ok: false, error: "ジョブが見つかりません" }, 404);
+        const wf = job.workflow_id ? await loadView(sb, job.workflow_id) : null;
+        if (!wf) return json({ ok: true, note: "ワークフロー無しのジョブ（通知なし）" });
+        const { data: pn } = await sb.from("onboarding_workflows").select("slack_parent_notification_id").eq("id", wf.id).maybeSingle();
+        let verified: boolean | null = null; let summary = "";
+        if (job.status === "success" && !job.dry_run) {
+          // 保存後の照合: スマレジ GET（smaregi-sync staff_get）と指示値を比べる
+          const g = await smaregi("staff_get", { smaregi_staff_id: job.smaregi_staff_id, contract_id: job.contract_id });
+          if (g?.ok) {
+            const p = job.payload ?? {};
+            if (job.kind === "smaregi_commute") {
+              const div = { per_shift: "0", monthly: "1", per_day: "2" }[p.pay_type as string];
+              const hit = (g.transportationCostApply ?? []).find((t: any) => String(t.division) === div && String(t.effectiveDate ?? "").slice(0, 10) === String(p.effective_date ?? "").slice(0, 10) && Number(t.transportationCost) === Number(p.amount));
+              verified = !!hit; summary = `${PAY_TYPE_LABEL[p.pay_type] ?? p.pay_type}／${yen(p.amount)}（${jpDate(p.effective_date)}から）`;
+            } else if (job.kind === "smaregi_tax") {
+              const t = { kou: 1, otsu: 2 }[p.tax_category as string];
+              const hit = (g.withholdingIncomeTaxes ?? []).find((x: any) => Number(x.type) === t && (p.dependents_count == null || Number(x.dependent) === Number(p.dependents_count)));
+              verified = !!hit; summary = `区分 ${p.tax_category === "kou" ? "甲" : "乙"}${p.dependents_count != null ? `／扶養 ${p.dependents_count} 人` : ""}`;
+            } else if (job.kind === "smaregi_payslip") {
+              verified = g.personalWebStatementScreenDisplayFlag === (p.flag !== false); summary = `個別Web給与明細の表示 ${p.flag !== false ? "ON" : "OFF"}`;
+            } else if (job.kind === "smaregi_email") {
+              verified = !!g.mail_set; summary = `メールアドレス（${g.mail_masked ?? "—"}）`;
+            }
+            if (verified !== null && job.item_key) {
+              await setItem(sb, wf.id, job.item_key, verified ? "completed" : "failed", { ui_job_id: job.id, verified, result: job.result }, null, "auto", verified ? null : "保存後の照合で不一致（スマレジの値が指示と違う）");
+              if (job.kind === "smaregi_commute") await sb.from("employee_commute_settings").update({ sync_status: verified ? "synced" : "error", sync_error: verified ? null : "保存後の照合で不一致", verified_at: verified ? new Date().toISOString() : null, verified_value: g.transportationCostApply ?? null, updated_at: new Date().toISOString() }).eq("ui_job_id", job.id);
+              if (job.kind === "smaregi_tax") await sb.from("employee_tax_settings").update({ sync_status: verified ? "synced" : "error", sync_error: verified ? null : "保存後の照合で不一致", verified_at: verified ? new Date().toISOString() : null, verified_value: g.withholdingIncomeTaxes ?? null, updated_at: new Date().toISOString() }).eq("ui_job_id", job.id);
+            }
+          } else summary = `（照合できず: ${g?.error ?? "不明"}）`;
+        } else if (job.status === "success" && job.dry_run) {
+          summary = `読み取り結果: ${JSON.stringify(job.result ?? {}).slice(0, 300)}`;
+        } else if (job.status === "failed") {
+          const title = `手動対応: ${({ smaregi_commute: "交通費", smaregi_tax: "源泉所得税", smaregi_payslip: "個別Web給与明細", smaregi_email: "メールアドレス" } as Record<string, string>)[job.kind] ?? job.kind}をスマレジ管理画面で設定`;
+          await sb.rpc("onboarding_add_manual_step", { p_workflow: wf.id, p_title: title, p_reason: String(job.error ?? "").slice(0, 200) });
+        }
+        await thread(sb, wf, `${job.status === "success" ? "✅" : job.status === "failed" ? "🙋" : "⏳"} スマレジ自動設定（${job.kind}）: ${job.status}${verified === true ? "・照合一致" : verified === false ? "・照合不一致" : ""}`, uiJobResultBlocks(wf, pn?.slack_parent_notification_id ?? null, job, verified, summary), "onboarding_ui_job");
+        await refreshParent(sb, (await loadView(sb, wf.id)) ?? wf);
+        return json({ ok: true, status: job.status, verified });
+      }
+      // ---- Phase 4: 中止のあと ----
+      case "cancelled": {
+        if (!isUuid(body.workflow_id)) return json({ ok: false, error: "workflow_id が不正です" }, 400);
+        const wf = await loadView(sb, body.workflow_id);
+        if (!wf) return json({ ok: false, error: "見つかりません" }, 404);
+        const who = await actorName(sb, isUuid(body.actor_id) ? body.actor_id : null);
+        const label: Record<string, string> = { declined_by_person: "本人から入社辞退", no_contact_after_hire: "採用後連絡不通", dropped_during_registration: "入社登録途中離脱", company_reason: "会社都合中止", other: "その他" };
+        await thread(sb, wf, `⛔ 入社手続きを中止しました（${who}・${nowJst()}）\n理由: ${label[String(body.reason)] ?? body.reason}${body.note ? `\nメモ: ${String(body.note).slice(0, 300)}` : ""}\n未完了の項目と自動操作は止めました。スマレジの従業員は削除していません（必要なら管理画面で利用 OFF）。本部タスクは手で完了または削除してください。`, undefined, "onboarding_cancelled");
+        await refreshParent(sb, wf);
         return json({ ok: true });
       }
       case "status": {

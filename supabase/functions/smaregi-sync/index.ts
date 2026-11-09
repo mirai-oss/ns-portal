@@ -197,6 +197,28 @@ Deno.serve(async (req) => {
     const caller = await callerRole(req);
     const isAdmin = caller.role === "CEO" || caller.role === "HQ";
 
+    // 2026-11-10 Phase 3: 保存後の照合用に従業員 1 人の設定（メール・交通費・源泉所得税・個別Web給与明細・賃金）を読むだけ。service_role（EF onboarding-notify）か CEO/HQ
+    //   個人情報は返さない（氏名・住所・電話・生年月日は落とす。メールは伏せ字）
+    if (body.action === "staff_get") {
+      const isService = (req.headers.get("Authorization") ?? "").includes(Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? " ");
+      if (!isAdmin && !isService) return json({ ok: false, error: "forbidden" }, 403);
+      const sid = String(body.smaregi_staff_id ?? "");
+      if (!/^\d{1,10}$/.test(sid)) return json({ ok: false, error: "smaregi_staff_id が不正です" }, 400);
+      const token = await getToken(C);
+      const r = await api(C, token, `/staffs/${sid}`);
+      const raw = await r.json().catch(() => null);
+      if (!r.ok) return json({ ok: false, error: `取得失敗(${r.status})` }, r.status === 404 ? 404 : 502);
+      const st = Array.isArray(raw) ? raw[0] : raw;
+      const mail = String(st?.mail ?? "");
+      return json({ ok: true, contract_id: C, staffId: sid,
+        mail_masked: mail ? mail.replace(/^(.).*(@.*)$/, "$1***$2") : null, mail_set: !!mail,
+        activeFlag: st?.activeFlag ?? null, terminationFlag: st?.terminationFlag ?? null,
+        transportationCostApply: st?.transportationCostApply ?? null, withholdingIncomeTaxes: st?.withholdingIncomeTaxes ?? null,
+        personalWebStatementScreenDisplayFlag: st?.personalWebStatementScreenDisplayFlag ?? null,
+        wageApply: (st?.wageApply ?? []).map((w: any) => ({ id: String(w.wageApplyId), division: Number(w.division), storeId: w.storeId ?? null, effectiveDate: String(w.effectiveDate ?? "").slice(0, 10), wage: Number(w.wage) })),
+      });
+    }
+
     if (body.action === "test") {
       if (!isAdmin) return json({ ok: false, error: "forbidden" }, 403);
       const token = await getToken(C);

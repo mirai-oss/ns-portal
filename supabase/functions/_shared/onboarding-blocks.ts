@@ -84,7 +84,9 @@ export function parentMessage(wf: WorkflowView, notificationId: string): { text:
   if (wf.status !== "cancelled") {
     const actions: unknown[] = [
       { type: "button", style: "primary", text: { type: "plain_text", text: "💴 賃金を設定", emoji: true }, action_id: "hr.onboarding.wage", value },
+      { type: "button", text: { type: "plain_text", text: "🚌 交通費を設定", emoji: true }, action_id: "hr.onboarding.commute.set", value },
       { type: "button", text: { type: "plain_text", text: "🔄 表示を更新", emoji: true }, action_id: "hr.onboarding.refresh", value },
+      { type: "button", text: { type: "plain_text", text: "⛔ 中止", emoji: true }, action_id: "hr.onboarding.cancel", value, confirm: { title: { type: "plain_text", text: "入社手続きの中止" }, text: { type: "plain_text", text: "理由を選ぶ画面を開きます" }, confirm: { type: "plain_text", text: "開く" }, deny: { type: "plain_text", text: "やめる" } } },
     ];
     // URL ボタンも押下通知が slack-interact に届く（action_id は同じブロック内で一意にする必要がある→ .nippo / .task）
     if (wf.user_id) actions.push({ type: "button", text: { type: "plain_text", text: "従業員ページ", emoji: true }, action_id: "hr.onboarding.link.nippo", url: `${NIPPO_URL}?page=admin&u=${wf.user_id}`, value });
@@ -143,6 +145,91 @@ export function wageDateAdjustedBlocks(wf: WorkflowView, notificationId: string 
       { type: "button", text: { type: "plain_text", text: "💴 賃金を直す", emoji: true }, action_id: "hr.onboarding.wage", value },
     ] },
   ];
+}
+
+// =============================================================
+// Phase 2（交通費）・Phase 3（UI ジョブ）・Phase 4（中止）の表示部品（2026-11-10）
+// =============================================================
+export const JUDGEMENT_LABEL: Record<string, string> = { auto_approvable: "自動承認できます", hq_review: "本部の確認が必要", person_review: "本人に確認が必要", search_failed: "経路検索ができません", approved: "承認済み", rejected: "差し戻し" };
+export const PAY_TYPE_LABEL: Record<string, string> = { per_shift: "勤務回数ごと", per_day: "勤務日数ごと", monthly: "月額" };
+
+/** 交通費の確認（経路候補・申請額・判定）。承認は人が押す */
+export function commuteCheckBlocks(wf: WorkflowView, notificationId: string | null, c: {
+  judgement: string; reasons: string[]; claimed: number | null; computed: { fare: number | null; summary: string; time_min: number | null; transfers: number | null } | null;
+  reasonable: { fare: number | null; summary: string; time_min: number | null; transfers: number | null; uses_bus: boolean; teiki1?: number | null }[]; from: string; to: string; store_name?: string | null; method?: string | null; route_text?: string | null; uses_bus?: boolean | null;
+}) {
+  const value = JSON.stringify({ workflow_id: wf.id, notification_id: notificationId });
+  const cands = c.reasonable.slice(0, 4).map((r, i) => `${i + 1}. ${r.summary}　${yen(r.fare)}／${r.time_min ?? "?"}分／乗換${r.transfers ?? "?"}${r.uses_bus ? "／バス" : ""}${r.teiki1 ? `／定期1か月 ${yen(r.teiki1)}` : ""}`).join("\n");
+  const head = `🚃 *交通費の確認*（${c.from} → ${c.to}${c.store_name ? "・" + c.store_name : ""}）\n` +
+    `本人の申請: *片道 ${c.claimed != null ? yen(c.claimed) : "未申請"}*${c.method ? `／通勤手段: ${c.method}` : ""}${c.uses_bus ? "／バス利用" : ""}${c.route_text ? `\n本人の経路メモ: ${c.route_text.slice(0, 120)}` : ""}\n` +
+    `検索の最安（合理的な経路）: *${c.computed ? yen(c.computed.fare) : "—"}*\n判定（仮の基準）: *${JUDGEMENT_LABEL[c.judgement] ?? c.judgement}*\n${c.reasons.map((r) => "・" + r).join("\n")}`;
+  const blocks: unknown[] = [
+    { type: "section", text: { type: "mrkdwn", text: head } },
+    ...(cands ? [{ type: "section", text: { type: "mrkdwn", text: "*経路の候補*\n" + cands } }] : []),
+    { type: "actions", block_id: "onboarding_commute", elements: [
+      { type: "button", style: "primary", text: { type: "plain_text", text: c.claimed != null ? `✅ 申請額 ${yen(c.claimed)} で承認` : "✅ 承認（金額を入力）", emoji: true }, action_id: "hr.onboarding.commute.approve", value },
+      ...(c.computed?.fare != null && c.claimed != null && c.computed.fare !== c.claimed ? [{ type: "button", text: { type: "plain_text", text: `✅ 検索額 ${yen(c.computed.fare)} で承認`, emoji: true }, action_id: "hr.onboarding.commute.approve_computed", value }] : []),
+      { type: "button", text: { type: "plain_text", text: "🙋 本人に確認", emoji: true }, action_id: "hr.onboarding.commute.person", value },
+      { type: "button", text: { type: "plain_text", text: "🔁 再検索", emoji: true }, action_id: "hr.onboarding.commute.research", value },
+    ] },
+    { type: "context", elements: [{ type: "mrkdwn", text: "最安というだけで否認はしません。承認すると次は「🚌 交通費を設定」（支給形態・適用開始日・金額）です。" }] },
+  ];
+  return blocks;
+}
+
+/** 交通費の設定モーダル（支給形態・適用開始日・適用事業所・金額・上限） */
+export function commuteSettingModal(meta: { workflow_id: string; user_id: string; notification_id: string | null; contract_id: string | null }, opts: {
+  name: string; hire_date: string | null; approved_fare: number | null; stores: { id: string; name: string }[]; cap_default: number | null; cap_unit: string;
+}) {
+  const today = new Date(Date.now() + 9 * 3600e3).toISOString().slice(0, 10);
+  const initDate = opts.hire_date && /^\d{4}-\d{2}-\d{2}$/.test(opts.hire_date) ? opts.hire_date : today;
+  return {
+    type: "modal", callback_id: "hr.onboarding.commute.set.modal", private_metadata: JSON.stringify(meta),
+    title: { type: "plain_text", text: "交通費の設定" }, submit: { type: "plain_text", text: "登録してスマレジに反映" }, close: { type: "plain_text", text: "やめる" },
+    blocks: [
+      { type: "section", text: { type: "mrkdwn", text: `*${opts.name}さん* の交通費をスマレジに設定します（API では書けないため Mac の自動操作で反映。結果はスレッドに届きます）。${opts.approved_fare != null ? `\n承認済みの片道額: *${yen(opts.approved_fare)}*` : ""}` } },
+      { type: "input", block_id: "pay_type", label: { type: "plain_text", text: "支給形態" }, element: { type: "static_select", action_id: "pay_type", initial_option: { text: { type: "plain_text", text: "勤務回数ごと" }, value: "per_shift" }, options: [
+        { text: { type: "plain_text", text: "勤務回数ごと" }, value: "per_shift" }, { text: { type: "plain_text", text: "勤務日数ごと" }, value: "per_day" }, { text: { type: "plain_text", text: "月額" }, value: "monthly" } ] } },
+      { type: "input", block_id: "date", label: { type: "plain_text", text: "適用開始日（初期値は入社日）" }, element: { type: "datepicker", action_id: "date", initial_date: initDate } },
+      { type: "input", block_id: "scope", label: { type: "plain_text", text: "適用事業所" }, element: { type: "static_select", action_id: "scope", initial_option: { text: { type: "plain_text", text: "全事業所" }, value: "all" }, options: [
+        { text: { type: "plain_text", text: "全事業所" }, value: "all" }, ...opts.stores.slice(0, 20).map((s) => ({ text: { type: "plain_text", text: `${s.name} だけ` }, value: `store:${s.id}` })) ] } },
+      { type: "input", block_id: "amount", label: { type: "plain_text", text: "金額（円）。勤務回数ごと＝往復額、月額＝1か月分" }, element: { type: "number_input", action_id: "amount", is_decimal_allowed: false, min_value: "0", max_value: "999999", ...(opts.approved_fare != null ? { initial_value: String(opts.approved_fare * 2) } : {}) } },
+      { type: "input", optional: true, block_id: "cap", label: { type: "plain_text", text: `上限（円・任意${opts.cap_unit === "unknown" ? "。単位はスマレジ仕様の確認中" : opts.cap_unit === "month" ? "・月額" : "・1回"}）` }, element: { type: "number_input", action_id: "cap", is_decimal_allowed: false, min_value: "0", max_value: "999999", ...(opts.cap_default != null ? { initial_value: String(opts.cap_default) } : {}) } },
+      { type: "input", optional: true, block_id: "note", label: { type: "plain_text", text: "メモ（任意）" }, element: { type: "plain_text_input", action_id: "note", max_length: 200 } },
+    ],
+  };
+}
+
+/** UI ジョブ（Mac の自動操作）の結果。失敗（打ち切り）なら再実行・手動対応のボタン */
+export function uiJobResultBlocks(wf: WorkflowView, notificationId: string | null, job: { id: string; kind: string; status: string; attempts: number; max_attempts: number; error?: string | null; error_kind?: string | null; dry_run?: boolean }, verified: boolean | null, summary: string) {
+  const value = JSON.stringify({ workflow_id: wf.id, notification_id: notificationId, job_id: job.id, kind: job.kind });
+  const label: Record<string, string> = { smaregi_commute: "交通費", smaregi_tax: "源泉所得税", smaregi_payslip: "個別Web給与明細", smaregi_email: "メールアドレス", smaregi_read: "読み取り" };
+  const name = label[job.kind] ?? job.kind;
+  if (job.status === "success") {
+    return [{ type: "section", text: { type: "mrkdwn", text: `${verified === false ? "⚠️" : "✅"} *${name}をスマレジに${job.dry_run ? "読み取りました" : "設定しました"}*（自動操作・${nowJst()}）\n${summary}\n${verified === true ? "🔍 保存後にスマレジから読み直して一致を確認しました" : verified === false ? "⚠️ 保存後の読み直しで値が一致しません。スマレジ管理画面で確認してください" : "ℹ️ 照合は行っていません"}` } }];
+  }
+  const final = job.status === "failed";
+  return [
+    { type: "section", text: { type: "mrkdwn", text: `${final ? "🙋" : "⏳"} *${name}の自動設定が${final ? "失敗しました（手動対応が必要）" : "失敗し、あとで再試行します"}*（${job.attempts}/${job.max_attempts} 回・${nowJst()}）\n理由: ${(job.error ?? "不明").slice(0, 300)}${job.error_kind ? `（${job.error_kind}）` : ""}${final ? "\n本部タスクに「手動対応」の工程を追加しました。スマレジ管理画面で設定したら、その工程を完了にしてください（GET で照合します）。" : ""}` } },
+    ...(final ? [{ type: "actions", block_id: "onboarding_ui_retry", elements: [
+      { type: "button", style: "primary", text: { type: "plain_text", text: "🔁 もう一度自動で試す", emoji: true }, action_id: "hr.onboarding.ui.retry", value },
+    ] }] : []),
+  ];
+}
+
+/** 入社手続き中止モーダル */
+export function cancelModal(meta: { workflow_id: string; notification_id: string | null }, name: string) {
+  return {
+    type: "modal", callback_id: "hr.onboarding.cancel.modal", private_metadata: JSON.stringify(meta),
+    title: { type: "plain_text", text: "入社手続きの中止" }, submit: { type: "plain_text", text: "中止する" }, close: { type: "plain_text", text: "やめる" },
+    blocks: [
+      { type: "section", text: { type: "mrkdwn", text: `*${name}さん* の入社手続きを中止します。未完了の項目と自動操作は止まります。スマレジの従業員は削除しません（必要なら管理画面で利用 OFF）。` } },
+      { type: "input", block_id: "reason", label: { type: "plain_text", text: "理由" }, element: { type: "static_select", action_id: "reason", options: [
+        { text: { type: "plain_text", text: "本人から入社辞退" }, value: "declined_by_person" }, { text: { type: "plain_text", text: "採用後連絡不通" }, value: "no_contact_after_hire" },
+        { text: { type: "plain_text", text: "入社登録途中離脱" }, value: "dropped_during_registration" }, { text: { type: "plain_text", text: "会社都合中止" }, value: "company_reason" }, { text: { type: "plain_text", text: "その他" }, value: "other" } ] } },
+      { type: "input", optional: true, block_id: "note", label: { type: "plain_text", text: "メモ（任意）" }, element: { type: "plain_text_input", action_id: "note", multiline: true, max_length: 300 } },
+    ],
+  };
 }
 
 /** 失敗時のスレッド投稿（再試行・賃金を直すボタン付き） */

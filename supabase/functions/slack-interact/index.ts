@@ -18,7 +18,7 @@
 //   （Slack は JWT を付けないため、署名検証がこの関数の唯一の認証）
 // =============================================================
 import { createClient } from "npm:@supabase/supabase-js@2";
-import { wageModal } from "../_shared/onboarding-blocks.ts";
+import { wageModal, commuteSettingModal, cancelModal, yen } from "../_shared/onboarding-blocks.ts";
 
 const svc = () => createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
 const text = (s: string, status = 200) => new Response(s, { status, headers: { "Content-Type": "text/plain; charset=utf-8" } });
@@ -262,6 +262,91 @@ const handlers: Record<string, Handler> = {
     })());
     return text("");
   },
+  // ---- Phase 2: 交通費（2026-11-10）。判断は RPC onboarding_commute_decide、通知は onboarding-notify ----
+  "hr.onboarding.commute.approve": (ctx) => commuteApprove(ctx, "claimed"),
+  "hr.onboarding.commute.approve_computed": (ctx) => commuteApprove(ctx, "computed"),
+  "hr.onboarding.commute.person": async ({ sb, actor, payload, value }) => {
+    if (!hrAllowed(actor)) return ephemeral("入社手続きの操作は本部・社長・マスターのみです", payload.response_url);
+    const wf = await wfRow(sb, value?.workflow_id); if (!wf) return ephemeral("ワークフローが見つかりません", payload.response_url);
+    const { error } = await sb.rpc("onboarding_commute_decide", { p_user: wf.user_id, p_decision: "person_review", p_fare: null, p_note: null, p_actor: actor.user_id });
+    if (error) return ephemeral(`記録できませんでした: ${error.message}`, payload.response_url);
+    waitUntil(onboardingNotify({ op: "commute_decided", workflow_id: wf.id, actor_id: actor.user_id, decision: "person_review" }));
+    return text("");
+  },
+  "hr.onboarding.commute.research": async ({ actor, payload, value }) => {
+    if (!hrAllowed(actor)) return ephemeral("入社手続きの操作は本部・社長・マスターのみです", payload.response_url);
+    if (!value?.workflow_id) return ephemeral("ワークフローの id が読めませんでした", payload.response_url);
+    waitUntil(onboardingNotify({ op: "commute_check", workflow_id: value.workflow_id }));
+    return text("");
+  },
+  "hr.onboarding.commute.set": async ({ sb, actor, payload, value, notificationId }) => {
+    const ru: string | undefined = payload.response_url;
+    if (!hrAllowed(actor)) return ephemeral("交通費の設定は本部・社長・マスターのみです", ru);
+    const wf = await wfRow(sb, value?.workflow_id); if (!wf?.user_id) return ephemeral("ワークフローが見つかりません", ru);
+    const contracts = await activeContracts(sb, wf.user_id);
+    if (!contracts.length) return ephemeral("スマレジにまだ登録されていないため、交通費を設定できません。", ru);
+    const [{ data: cm }, { data: rules }, { data: us }] = await Promise.all([
+      sb.from("employee_commute").select("approved_fare,judgement").eq("user_id", wf.user_id).maybeSingle(),
+      sb.from("app_settings").select("value").eq("key", "commute_rules").maybeSingle(),
+      sb.from("user_stores").select("stores(id,name)").eq("user_id", wf.user_id),
+    ]);
+    const stores = (us ?? []).map((x: any) => x.stores).filter(Boolean);
+    const capDefault = wf.role === "AL" ? Number(rules?.value?.al_cap_yen ?? 6000) : null;
+    return await openModal(payload.trigger_id, commuteSettingModal({ workflow_id: wf.id, user_id: wf.user_id, notification_id: notificationId, contract_id: contracts[0].contract_id },
+      { name: wf.user_name ?? "", hire_date: wf.hire_date, approved_fare: cm?.approved_fare ?? null, stores, cap_default: capDefault, cap_unit: String(rules?.value?.cap_unit ?? "unknown") }));
+  },
+  "hr.onboarding.commute.set.modal": async ({ sb, actor, payload }) => {
+    const meta = JSON.parse(payload.view?.private_metadata ?? "{}");
+    const v = payload.view?.state?.values ?? {};
+    const payType = v.pay_type?.pay_type?.selected_option?.value ?? "per_shift";
+    const date: string = v.date?.date?.selected_date ?? "";
+    const scopeV: string = v.scope?.scope?.selected_option?.value ?? "all";
+    const amount = Number(v.amount?.amount?.value ?? "");
+    const capRaw = v.cap?.cap?.value; const cap = capRaw === undefined || capRaw === null || capRaw === "" ? null : Number(capRaw);
+    const note = (v.note?.note?.value ?? "").trim() || null;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return json({ response_action: "errors", errors: { date: "適用開始日を選んでください" } });
+    if (!Number.isInteger(amount) || amount < 0) return json({ response_action: "errors", errors: { amount: "金額（円）を整数で入れてください" } });
+    if (cap !== null && (!Number.isInteger(cap) || cap < 0)) return json({ response_action: "errors", errors: { cap: "上限は整数で" } });
+    const scope = scopeV.startsWith("store:") ? "per_store" : "all";
+    const storeAmounts = scope === "per_store" ? { [scopeV.slice(6)]: amount } : null;
+    // 3 秒制限: 保存（RPC）とスレッド通知は返事の後ろ
+    waitUntil((async () => {
+      const { data, error } = await sb.rpc("onboarding_set_commute_setting", { p_workflow: meta.workflow_id, p_contract: meta.contract_id, p_pay_type: payType, p_effective_date: date, p_scope: scope, p_amount: scope === "all" ? amount : null, p_store_amounts: storeAmounts, p_cap_amount: cap, p_cap_unit: null, p_note: note, p_actor: actor.user_id });
+      if (error || !data?.ok) { await onboardingNotify({ op: "thread", workflow_id: meta.workflow_id, text: `⚠️ 交通費の設定を保存できませんでした（${actor.name}）: ${error?.message ?? "不明"}`, event: "onboarding_commute_setting_failed" }); return; }
+      await onboardingNotify({ op: "commute_setting_saved", workflow_id: meta.workflow_id, setting_id: data.setting_id, actor_id: actor.user_id, duplicate: !!data.job?.duplicate });
+    })());
+    return json({ response_action: "clear" });
+  },
+  // ---- Phase 3: UI ジョブの再実行（失敗・打ち切りのあと）----
+  "hr.onboarding.ui.retry": async ({ sb, actor, payload, value }) => {
+    if (!hrAllowed(actor)) return ephemeral("入社手続きの操作は本部・社長・マスターのみです", payload.response_url);
+    if (!value?.workflow_id || !value?.job_id) return ephemeral("ジョブの id が読めませんでした", payload.response_url);
+    const { data: old } = await sb.from("ui_automation_jobs").select("kind,payload").eq("id", value.job_id).maybeSingle();
+    if (!old) return ephemeral("元のジョブが見つかりません", payload.response_url);
+    const { data, error } = await sb.rpc("ui_job_enqueue", { p_workflow: value.workflow_id, p_kind: old.kind, p_payload: old.payload, p_actor: actor.user_id, p_dry_run: false });
+    if (error) return ephemeral(`再実行を登録できませんでした: ${error.message}`, payload.response_url);
+    waitUntil(onboardingNotify({ op: "thread", workflow_id: value.workflow_id, text: `🔁 ${old.kind} の自動設定を再実行します（${actor.name}・${nowJst()}）${data?.duplicate ? "（既に待機中のジョブがあります）" : ""}`, event: "onboarding_ui_retry" }));
+    return text("");
+  },
+  // ---- Phase 4: 入社手続きの中止 ----
+  "hr.onboarding.cancel": async ({ sb, actor, payload, value, notificationId }) => {
+    if (!hrAllowed(actor)) return ephemeral("入社手続きの中止は本部・社長・マスターのみです", payload.response_url);
+    const wf = await wfRow(sb, value?.workflow_id); if (!wf) return ephemeral("ワークフローが見つかりません", payload.response_url);
+    return await openModal(payload.trigger_id, cancelModal({ workflow_id: wf.id, notification_id: notificationId }, wf.user_name ?? ""));
+  },
+  "hr.onboarding.cancel.modal": async ({ sb, actor, payload }) => {
+    const meta = JSON.parse(payload.view?.private_metadata ?? "{}");
+    const v = payload.view?.state?.values ?? {};
+    const reason = v.reason?.reason?.selected_option?.value ?? "";
+    const note = (v.note?.note?.value ?? "").trim() || null;
+    if (!reason) return json({ response_action: "errors", errors: { reason: "理由を選んでください" } });
+    waitUntil((async () => {
+      const { error } = await sb.rpc("onboarding_cancel", { p_workflow: meta.workflow_id, p_reason: reason, p_note: note, p_actor: actor.user_id });
+      if (error) { await onboardingNotify({ op: "thread", workflow_id: meta.workflow_id, text: `⚠️ 中止を記録できませんでした（${actor.name}）: ${error.message}`, event: "onboarding_cancel_failed" }); return; }
+      await onboardingNotify({ op: "cancelled", workflow_id: meta.workflow_id, actor_id: actor.user_id, reason, note });
+    })());
+    return json({ response_action: "clear" });
+  },
   "hr.onboarding.retry": async ({ actor, payload, value }) => {
     if (!hrAllowed(actor)) return ephemeral("入社手続きの操作は本部・社長・マスターのみです", payload.response_url);
     if (!value?.workflow_id) return ephemeral("ワークフローの id が読めませんでした", payload.response_url);
@@ -272,6 +357,25 @@ const handlers: Record<string, Handler> = {
 
 // 入社手続き（人事）の操作権限: マスター / CEO / HQ（既存の hr_save_wage と同じ）
 const hrAllowed = (a: Actor) => a.is_master || a.role === "CEO" || a.role === "HQ";
+async function wfRow(sb: any, wfId: unknown): Promise<any | null> {
+  if (typeof wfId !== "string" || !/^[0-9a-f-]{36}$/i.test(wfId)) return null;
+  const { data } = await sb.from("onboarding_workflow_v").select("id,user_id,user_name,hire_date,status,role,contract_id").eq("id", wfId).maybeSingle();
+  return data ?? null;
+}
+// 交通費の承認: mode=claimed（申請額）/ computed（検索の最安）。金額は employee_commute から読む（ボタンの value に金額を載せない＝改ざん防止）
+async function commuteApprove({ sb, actor, payload, value }: Ctx, mode: "claimed" | "computed") {
+  const ru: string | undefined = payload.response_url;
+  if (!hrAllowed(actor)) return ephemeral("交通費の承認は本部・社長・マスターのみです", ru);
+  const wf = await wfRow(sb, value?.workflow_id); if (!wf?.user_id) return ephemeral("ワークフローが見つかりません", ru);
+  const { data: cm } = await sb.from("employee_commute").select("claimed_oneway_fare,computed_oneway_fare,judgement").eq("user_id", wf.user_id).maybeSingle();
+  const fare = mode === "claimed" ? cm?.claimed_oneway_fare : cm?.computed_oneway_fare;
+  if (fare === null || fare === undefined) return ephemeral(mode === "claimed" ? "本人の申請額がありません。nippo の従業員ページで片道額を入れてから承認してください" : "検索の最安額がありません（再検索してください）", ru);
+  const { data, error } = await sb.rpc("onboarding_commute_decide", { p_user: wf.user_id, p_decision: "approved", p_fare: fare, p_note: mode === "computed" ? "検索の最安額で承認" : "申請額で承認", p_actor: actor.user_id });
+  if (error) return ephemeral(`記録できませんでした: ${error.message}`, ru);
+  if (!data?.ok) return ephemeral("記録できませんでした", ru);
+  waitUntil(onboardingNotify({ op: "commute_decided", workflow_id: wf.id, actor_id: actor.user_id, decision: "approved", fare, note: mode === "computed" ? "検索の最安額で承認" : null }));
+  return text("");
+}
 // その人の有効なスマレジ契約（employee_smaregi_links。主契約を先頭に）
 async function activeContracts(sb: any, userId: string): Promise<{ contract_id: string; label: string; staff_id: string }[]> {
   const [{ data: links }, { data: cs }] = await Promise.all([
