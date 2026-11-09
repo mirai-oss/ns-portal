@@ -84,7 +84,7 @@ create or replace function checklist_overdue_check(p_secret text) returns jsonb
 language plpgsql security definer set search_path = public as $$
 declare v_alerted int := 0; r record; v_body text;
 begin
-  if p_secret is distinct from '4259598a7ce747d54e2bf84326131129f21eb77f54dfdcdd' then
+  if p_secret is distinct from '__OLD_SECRET_REMOVED_2026-11-08__' then
     raise exception '認証エラー';
   end if;
 

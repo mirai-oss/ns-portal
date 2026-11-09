@@ -46,7 +46,7 @@ create or replace function public.line_intake_user(p_secret text, p_line_user_id
  language plpgsql security definer set search_path = public as $$
 declare v_uid uuid; v_uname text; v_code text;
 begin
-  if p_secret is distinct from '4259598a7ce747d54e2bf84326131129f21eb77f54dfdcdd' then
+  if p_secret is distinct from '__OLD_SECRET_REMOVED_2026-11-08__' then
     raise exception '認証エラー';
   end if;
   if p_line_user_id is null or length(btrim(p_line_user_id)) = 0 then
