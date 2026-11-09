@@ -75,7 +75,8 @@ async function resolveActor(sb: any, slackUserId: string): Promise<Actor | null>
 //   hr.onboarding.account.check   「🔎 スマレジ照合」→ EF onboarding-notify op=account_check（GET で登録済みの項目を ✓）
 //   hr.onboarding.commute.undo    自動承認の「↩️ 取り消して本部で確認」→ RPC onboarding_commute_decide(rejected) → op=commute_decided
 //   hr.onboarding.tax / .tax.modal   「🧾 源泉所得税」（2026-11-09 Phase 6）→ スマレジと同じ 4 項目のモーダル → RPC onboarding_set_tax_setting → op=tax_setting_saved
-//   hr.onboarding.yearend.sync / .dependents.sync   本人提出の年末調整／扶養家族を「スマレジに反映」→ RPC onboarding_enqueue_year_end / _dependents → スレッド
+//   hr.onboarding.yearend.sync / .dependents.sync   承認済みの年末調整／扶養家族を「スマレジに反映」→ RPC onboarding_enqueue_year_end / _dependents → スレッド
+//   hr.onboarding.yearend.approve / .reject / .compare（dependents も同じ）  v2（2026-11-09）: 本部の承認（RPC onboarding_post_join_approve → 承認後に enqueue）／差し戻し（RPC onboarding_post_join_reject）／スマレジと比較（op=post_join_compare）
 //   hr.onboarding.post_join.remind   「📨 フォームのお願い」→ op=person_contact kind=post_join_form（既定は文面だけ）
 //                                 value = {"workflow_id","notification_id"}。権限: マスター / CEO / HQ（hrAllowed）
 type Handler = (ctx: Ctx) => Promise<Response>;
@@ -373,6 +374,23 @@ const handlers: Record<string, Handler> = {
     waitUntil(onboardingNotify({ op: "thread", workflow_id: value.workflow_id, text: j.ok ? `👪 扶養家族 ${data.count} 人をスマレジに反映します（${actor.name}・${nowJst()}）。結果はこのスレッドに届きます${j.duplicate ? "（既に待機中のジョブがあります）" : ""}` : `🙋 扶養家族: 自動反映は未有効化です（${actor.name}）。スマレジ管理画面「扶養設定 → 設定を編集 → 扶養親族を追加」に nippo の従業員編集の内容を入力してください（マイナンバーは本人画面）`, event: "onboarding_dependents_sync" }));
     return text("");
   },
+  // ---- Phase 6 v2: 承認／差し戻し／比較（本部のみ）。承認後にだけスマレジへ ----
+  "hr.onboarding.yearend.approve": (ctx) => postJoinDecide(ctx, "year_end", "approved"),
+  "hr.onboarding.dependents.approve": (ctx) => postJoinDecide(ctx, "dependents", "approved"),
+  "hr.onboarding.yearend.reject": (ctx) => postJoinDecide(ctx, "year_end", "rejected"),
+  "hr.onboarding.dependents.reject": (ctx) => postJoinDecide(ctx, "dependents", "rejected"),
+  "hr.onboarding.yearend.compare": async ({ actor, payload, value }) => {
+    if (!hrAllowed(actor)) return ephemeral("入社手続きの操作は本部・社長・マスターのみです", payload.response_url);
+    if (!value?.workflow_id) return ephemeral("ワークフローの id が読めませんでした", payload.response_url);
+    waitUntil(onboardingNotify({ op: "post_join_compare", workflow_id: value.workflow_id, track: "year_end", target_year: value.target_year ?? null, actor_id: actor.user_id }));
+    return text("");
+  },
+  "hr.onboarding.dependents.compare": async ({ actor, payload, value }) => {
+    if (!hrAllowed(actor)) return ephemeral("入社手続きの操作は本部・社長・マスターのみです", payload.response_url);
+    if (!value?.workflow_id) return ephemeral("ワークフローの id が読めませんでした", payload.response_url);
+    waitUntil(onboardingNotify({ op: "post_join_compare", workflow_id: value.workflow_id, track: "dependents", actor_id: actor.user_id }));
+    return text("");
+  },
   "hr.onboarding.post_join.remind": async ({ actor, payload, value }) => {
     if (!hrAllowed(actor)) return ephemeral("入社手続きの操作は本部・社長・マスターのみです", payload.response_url);
     if (!value?.workflow_id) return ephemeral("ワークフローの id が読めませんでした", payload.response_url);
@@ -488,6 +506,26 @@ async function commuteApprove({ sb, actor, payload, value }: Ctx, mode: "claimed
   if (error) return ephemeral(`記録できませんでした: ${error.message}`, ru);
   if (!data?.ok) return ephemeral("記録できませんでした", ru);
   waitUntil(onboardingNotify({ op: "commute_decided", workflow_id: wf.id, actor_id: actor.user_id, decision: "approved", fare, note: mode === "computed" ? "検索の最安額で承認" : null }));
+  return text("");
+}
+// 入社後フォーム（年末調整・扶養）の承認／差し戻し。承認は RPC onboarding_post_join_approve → 承認できたら enqueue（スイッチ OFF なら manual）→ op=post_join_decided
+async function postJoinDecide({ sb, actor, payload, value }: Ctx, track: "year_end" | "dependents", decision: "approved" | "rejected") {
+  const ru: string | undefined = payload.response_url;
+  if (!hrAllowed(actor)) return ephemeral("承認・差し戻しは本部・社長・マスターのみです", ru);
+  const wf = await wfRow(sb, value?.workflow_id); if (!wf?.user_id) return ephemeral("ワークフローが見つかりません", ru);
+  const year = track === "year_end" ? (Number.isInteger(value?.target_year) ? value.target_year : null) : 0;
+  const fn = decision === "approved" ? "onboarding_post_join_approve" : "onboarding_post_join_reject";
+  const { data, error } = await sb.rpc(fn, { p_user: wf.user_id, p_track: track, p_year: year, p_actor: actor.user_id, p_note: null });
+  if (error) return ephemeral(`記録できませんでした: ${error.message}`, ru);
+  if (!data?.ok) return ephemeral(data?.error ?? "記録できませんでした", ru);
+  waitUntil((async () => {
+    let job: any = undefined;
+    if (decision === "approved") {
+      if (data.can_enqueue === false) job = null;
+      else { const { data: eq, error: ee } = await sb.rpc(track === "year_end" ? "onboarding_enqueue_year_end" : "onboarding_enqueue_dependents", track === "year_end" ? { p_workflow: wf.id, p_actor: actor.user_id, p_year: data.target_year ?? null } : { p_workflow: wf.id, p_actor: actor.user_id }); job = ee ? { ok: false, error: ee.message } : (eq?.ok ? eq.job : { ok: false, error: eq?.error }); }
+    }
+    await onboardingNotify({ op: "post_join_decided", workflow_id: wf.id, track, target_year: data.target_year ?? null, decision, actor_id: actor.user_id, job });
+  })());
   return text("");
 }
 // その人の有効なスマレジ契約（employee_smaregi_links。主契約を先頭に）

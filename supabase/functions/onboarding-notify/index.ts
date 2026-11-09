@@ -20,12 +20,15 @@
 //   2026-11-09 Phase 6（扶養・年末調整・事業所）:
 //     post_join_submitted { user_id, kind: 'year_end'|'dependents' }   本人提出のあと（nippo から呼べないので、本部の「🔄 表示を更新」か cron の post_join_remind が拾う／slack-interact 経由）スレッドに「📝 提出」＋「スマレジに反映」ボタン
 //     tax_setting_saved   { workflow_id, actor_id }                      源泉所得税の設定（RPC onboarding_set_tax_setting）のあと。スレッドに内容
-//     post_join_remind    { dry_run? }                                   未提出者へのリマインド（onboarding_alerts.post_join_remind_enabled=false なら候補だけ返す）
+//     post_join_remind    { dry_run? }                                   未提出者へのリマインド（v2: 必須かつ未完了だけ＝RPC onboarding_post_join_targets。post_join_remind_enabled=false なら候補だけ返す）
+//     post_join_decided   { workflow_id, track, target_year?, decision 'approved'|'rejected', actor_id, note?, job? }  本部の承認／差し戻しのあと（slack-interact から）
+//     post_join_compare   { workflow_id, track, target_year?, actor_id }     年末調整＝API と提出内容の差分をスレッドへ／扶養＝読むだけジョブ（snapshot）を積む
+//     post_join_snapshot  { workflow_id|user_id, actor_id }                   既存従業員: スマレジの内容を 1 人ぶん取り込む（年末調整＝API、扶養＝読むだけジョブ）。本人の提出状況は変えない
 //     ui_job_result は kind smaregi_year_end（staff_get.yearEnd と照合）/ smaregi_dependents（画面の行数と照合）/ smaregi_store（対応表に登録して hq.jinji へ）にも対応
 //   デプロイ: supabase functions deploy onboarding-notify --no-verify-jwt --project-ref uuvsxzhpxtghojoubjcc --yes（関数内で認証するため）
 // =============================================================
 import { createClient } from "npm:@supabase/supabase-js@2";
-import { parentMessage, wageFailedBlocks, wageDateAdjustedBlocks, wageLine, nowJst, commuteCheckBlocks, uiJobResultBlocks, autoApprovedBlocks, personContactTemplate, personContactResultBlocks, staleAlertThreadText, staleAlertSummaryBlocks, postJoinSubmittedBlocks, RELATIONSHIP_LABEL, ITEM_ORDER, PAY_TYPE_LABEL, JUDGEMENT_LABEL, yen, jpDate, type WorkflowView } from "../_shared/onboarding-blocks.ts";
+import { parentMessage, wageFailedBlocks, wageDateAdjustedBlocks, wageLine, nowJst, commuteCheckBlocks, uiJobResultBlocks, autoApprovedBlocks, personContactTemplate, personContactResultBlocks, staleAlertThreadText, staleAlertSummaryBlocks, postJoinSubmittedBlocks, yearEndCompareText, POST_JOIN_TRACK_LABEL, POST_JOIN_STATUS_LABEL, RELATIONSHIP_LABEL, ITEM_ORDER, PAY_TYPE_LABEL, JUDGEMENT_LABEL, yen, jpDate, type WorkflowView } from "../_shared/onboarding-blocks.ts";
 import { linePush } from "../_shared/line.ts";
 
 const cors = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "authorization, content-type, apikey, x-client-info, x-notify-secret" };
@@ -400,12 +403,15 @@ Deno.serve(async (req) => {
                 !p.household_header_name || same(String(y.householdHeaderName ?? "").slice(0, 1), String(p.household_header_name).slice(0, 1))];
               verified = checks.every(Boolean); summary = `年末調整（配偶者 ${p.spouse_flag ? "あり" : "なし"}・合計所得見積額 ${yen(p.estimate_income ?? 0)}・勤労学生 ${p.student_flag ? "該当" : "該当しない"}）`;
               await sb.from("employee_year_end").update({ sync_status: verified ? "synced" : "error", sync_error: verified ? null : "保存後の照合で不一致", verified_at: verified ? new Date().toISOString() : null, verified_value: y, updated_at: new Date().toISOString() }).eq("ui_job_id", job.id);
-              if (verified) await sb.from("employee_post_join_status").update({ year_end_status: "synced", updated_at: new Date().toISOString() }).eq("user_id", job.user_id);
+              await sb.from("employee_post_join_status").update({ status: verified ? "synced" : "error", updated_at: new Date().toISOString() }).eq("user_id", job.user_id).eq("track", "year_end").eq("target_year", Number(p.target_year ?? new Date().getFullYear()));
             } else if (job.kind === "smaregi_dependents") {
-              // 扶養: API に項目が無いので、画面の読み直し（rows_after）が指示した人数以上なら一致とみなす
-              const want = Array.isArray(p.rows) ? p.rows.length : 0; const got = Number((job.result as any)?.rows_after ?? -1);
-              verified = got >= want && want > 0; summary = `扶養家族 ${want} 人（画面の行数 ${got < 0 ? "不明" : got}）`;
-              if (verified) { await sb.from("employee_dependents").update({ smaregi_synced_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq("ui_job_id", job.id).eq("is_active", true); await sb.from("employee_post_join_status").update({ dependents_status: "synced", updated_at: new Date().toISOString() }).eq("user_id", job.user_id); }
+              // 扶養: API に項目が無い → Mac が保存後に画面を読み直し、氏名・続柄・生年月日で突き合わせた結果（rows_matched / rows_unmatched）で判定（方針⑦）。無ければ行数で判定
+              const want = Array.isArray(p.rows) ? p.rows.length : 0; const res: any = job.result ?? {};
+              const matched = Number(res.rows_matched ?? -1), unmatched = Number(res.rows_unmatched ?? -1), got = Number(res.rows_after ?? -1);
+              verified = want > 0 && (matched >= 0 ? (matched >= want && unmatched === 0) : got >= want);
+              summary = `扶養家族 ${want} 人（${matched >= 0 ? `氏名・続柄・生年月日の一致 ${matched} 人／不一致 ${Math.max(unmatched, 0)} 人` : `画面の行数 ${got < 0 ? "不明" : got}`}）`;
+              if (verified) await sb.from("employee_dependents").update({ smaregi_synced_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq("ui_job_id", job.id).eq("is_active", true);
+              await sb.from("employee_post_join_status").update({ status: verified ? "synced" : "error", updated_at: new Date().toISOString() }).eq("user_id", job.user_id).eq("track", "dependents").eq("target_year", 0);
             } else if (job.kind === "smaregi_email") {
               // 立会いで確認: 管理画面で入れたメールは本人が登録を完了するまで API の mail に出ない（仮メール）。UI で保存できていれば「仮登録」として完了扱い
               const tmp = !!(job.result as any)?.tmp_email_set;
@@ -418,7 +424,17 @@ Deno.serve(async (req) => {
             }
           } else summary = `（照合できず: ${g?.error ?? "不明"}）`;
         } else if (job.status === "success" && job.dry_run) {
-          summary = `読み取り結果: ${JSON.stringify(job.result ?? {}).slice(0, 300)}`;
+          const rr: any = job.result ?? {};
+          summary = `読み取り結果: ${JSON.stringify({ ...rr, dependents_rows: Array.isArray(rr.dependents_rows) ? `${rr.dependents_rows.length} 行（氏名は Slack に出しません）` : undefined, screenshot: undefined }).slice(0, 300)}`;
+          // 読むだけジョブが扶養の表（氏名・続柄・生年月日）を返したら、その 1 人ぶんだけ参考値（snapshot）として取り込む。提出状況は変えない（方針⑥。一括禁止）
+          if (job.kind === "smaregi_read" && Array.isArray(rr.dependents_rows) && job.user_id) {
+            const { error: ie } = await sb.rpc("post_join_import_snapshot", { p_user: job.user_id, p_year_end: null, p_dependents: rr.dependents_rows, p_actor: null, p_year: null });
+            const { data: mine } = await sb.from("employee_dependents").select("name,relationship,birthday").eq("user_id", job.user_id).eq("is_active", true).neq("source", "smaregi_snapshot");
+            const key = (x: any) => `${String(x?.name ?? "").replace(/\s+/g, "")}|${x?.relationship ?? ""}|${String(x?.birthday ?? "").slice(0, 10)}`;
+            const smr = new Set(rr.dependents_rows.map(key)); const ours = (mine ?? []).map(key);
+            const onlyOurs = ours.filter((k) => !smr.has(k)).length, onlySmr = rr.dependents_rows.filter((x: any) => !ours.includes(key(x))).length;
+            summary += ie ? `／扶養の取り込みに失敗（${ie.message}）` : `／扶養: スマレジ ${rr.dependents_rows.length} 人を参考値として取り込み${mine?.length ? `（提出 ${mine.length} 人と比べて 提出のみ ${onlyOurs}・スマレジのみ ${onlySmr}）` : "（本人の提出はまだ）"}`;
+          }
           // 読むだけジョブ（smaregi_read）が「本人アカウント登録状況」を返したら項目を判定（★ 画面の項目名・値は立会いで確定。Mac 側 tasks/smaregi-ui-settings.js の readOnly が account_status を返す前提）
           const acc = String((job.result as any)?.account_status ?? "");
           if (job.kind === "smaregi_read" && acc) {
@@ -428,10 +444,13 @@ Deno.serve(async (req) => {
             else if (!/registered|登録済/.test(acc)) summary += `／本人アカウント: ${accJp}${acc === "invited" ? "（本人が認証メールの URL から登録を完了すると ✅）" : ""}`;
           }
         } else if (job.status === "failed") {
-          const title = `手動対応: ${({ smaregi_commute: "交通費", smaregi_tax: "源泉所得税", smaregi_payslip: "個別Web給与明細", smaregi_email: "メールアドレス" } as Record<string, string>)[job.kind] ?? job.kind}をスマレジ管理画面で設定`;
+          const preCheck = job.error_kind === "screen_changed" && /^事前確認/.test(String(job.error ?? ""));
+          const title = `手動対応${preCheck ? "（書き込み前の確認で中止）" : ""}: ${({ smaregi_commute: "交通費", smaregi_tax: "源泉所得税", smaregi_payslip: "個別Web給与明細", smaregi_email: "メールアドレス", smaregi_year_end: "年末調整", smaregi_dependents: "扶養家族" } as Record<string, string>)[job.kind] ?? job.kind}をスマレジ管理画面で設定`;
           await sb.rpc("onboarding_add_manual_step", { p_workflow: wf.id, p_title: title, p_reason: String(job.error ?? "").slice(0, 200) });
+          if (job.kind === "smaregi_year_end") await sb.from("employee_post_join_status").update({ status: "error", updated_at: new Date().toISOString() }).eq("user_id", job.user_id).eq("track", "year_end").eq("target_year", Number((job.payload as any)?.target_year ?? new Date().getFullYear()));
+          if (job.kind === "smaregi_dependents") await sb.from("employee_post_join_status").update({ status: "error", updated_at: new Date().toISOString() }).eq("user_id", job.user_id).eq("track", "dependents").eq("target_year", 0);
         }
-        await thread(sb, wf, `${job.status === "success" ? "✅" : job.status === "failed" ? "🙋" : "⏳"} スマレジ自動設定（${job.kind}）: ${job.status}${verified === true ? "・照合一致" : verified === false ? "・照合不一致" : ""}`, uiJobResultBlocks(wf, pn?.slack_parent_notification_id ?? null, job, verified, summary), "onboarding_ui_job");
+        await thread(sb, wf, `${job.status === "success" ? "✅" : job.status === "failed" ? (job.error_kind === "screen_changed" && /^事前確認/.test(String(job.error ?? "")) ? "🛑" : "🙋") : "⏳"} スマレジ自動設定（${job.kind}）: ${job.status}${verified === true ? "・照合一致" : verified === false ? "・照合不一致" : ""}`, uiJobResultBlocks(wf, pn?.slack_parent_notification_id ?? null, job, verified, summary), "onboarding_ui_job");
         await refreshParent(sb, (await loadView(sb, wf.id)) ?? wf);
         return json({ ok: true, status: job.status, verified });
       }
@@ -559,12 +578,70 @@ Deno.serve(async (req) => {
         if (!wf?.user_id) return json({ ok: false, error: "ワークフローが見つかりません" }, 404);
         const { data: pn } = await sb.from("onboarding_workflows").select("slack_parent_notification_id").eq("id", wf.id).maybeSingle();
         const info: any = {};
-        if (kind === "year_end") { const { data: y } = await sb.from("employee_year_end").select("spouse_flag,student_flag,submitted_via").eq("user_id", wf.user_id).maybeSingle(); Object.assign(info, { spouse_flag: y?.spouse_flag ?? null, student_flag: y?.student_flag ?? null, via: y?.submitted_via ?? null }); }
-        else { const { data: ds } = await sb.from("employee_dependents").select("relationship").eq("user_id", wf.user_id).eq("is_active", true); Object.assign(info, { count: (ds ?? []).length, relationships: (ds ?? []).map((d: any) => d.relationship) }); }
-        await thread(sb, wf, kind === "year_end" ? "📝 本人が年末調整の情報を提出しました" : `📝 本人が扶養家族を提出しました（${info.count ?? 0} 人）`, postJoinSubmittedBlocks(wf, pn?.slack_parent_notification_id ?? null, kind as "year_end" | "dependents", info), "onboarding_post_join_submitted");
+        const year = Number.isInteger(body.target_year) ? Number(body.target_year) : null;
+        const { data: pol } = await sb.rpc("post_join_effective_i", { p_user: wf.user_id, p_track: kind, p_year: kind === "year_end" ? year : 0 });
+        info.policy = pol ?? null; info.status = pol?.status ?? "submitted"; info.target_year = kind === "year_end" ? (pol?.target_year ?? year) : null;
+        if (kind === "year_end") { const { data: y } = await sb.from("employee_year_end").select("spouse_flag,student_flag,submitted_via").eq("user_id", wf.user_id).eq("target_year", info.target_year ?? pol?.target_year).maybeSingle(); Object.assign(info, { spouse_flag: y?.spouse_flag ?? null, student_flag: y?.student_flag ?? null, via: y?.submitted_via ?? null }); }
+        else { const { data: ds } = await sb.from("employee_dependents").select("relationship").eq("user_id", wf.user_id).eq("is_active", true).neq("source", "smaregi_snapshot"); Object.assign(info, { count: (ds ?? []).length, relationships: (ds ?? []).map((d: any) => d.relationship) }); }
+        await thread(sb, wf, kind === "year_end" ? `📝 本人が年末調整${info.target_year ? ` ${info.target_year} 年度` : ""}の情報を提出しました` : `📝 本人が扶養家族を提出しました（${info.count ?? 0} 人）`, postJoinSubmittedBlocks(wf, pn?.slack_parent_notification_id ?? null, kind as "year_end" | "dependents", info), "onboarding_post_join_submitted");
         await event(sb, wf, "post_join.notified", { kind, ...info });
         await refreshParent(sb, wf);
         return json({ ok: true, kind, info });
+      }
+      // 承認／差し戻しのあと（slack-interact が RPC を呼んだあとに通知）
+      case "post_join_decided": {
+        if (!isUuid(body.workflow_id)) return json({ ok: false, error: "workflow_id が不正です" }, 400);
+        const wf = await loadView(sb, body.workflow_id);
+        if (!wf?.user_id) return json({ ok: false, error: "見つかりません" }, 404);
+        const who = await actorName(sb, isUuid(body.actor_id) ? body.actor_id : null);
+        const track = String(body.track ?? ""); const label = POST_JOIN_TRACK_LABEL[track] ?? track; const yr = body.target_year ? ` ${body.target_year} 年度` : "";
+        const j = body.job ?? null;
+        const text = body.decision === "approved"
+          ? `✅ ${label}${yr}の提出を承認しました（${who}・${nowJst()}）${body.note ? `\nメモ: ${String(body.note).slice(0, 200)}` : ""}\n` +
+            (j === null ? "（扶養なしのためスマレジへの反映はありません）" : j?.ok ? `⏳ Mac の自動操作でスマレジに反映します（数分〜）。結果はこのスレッドに届きます${j.duplicate ? "（既に待機中のジョブがあります）" : ""}` : `🙋 スマレジへの自動反映は未有効化です。*スマレジ管理画面（${track === "year_end" ? "年末調整 → 設定を編集" : "扶養設定 → 設定を編集 → 扶養親族を追加"}）に nippo の従業員編集の内容を入力*してください${j?.error ? `（${String(j.error).slice(0, 120)}）` : ""}`)
+          : `↩️ ${label}${yr}の提出を差し戻しました（${who}・${nowJst()}）${body.note ? `\n理由: ${String(body.note).slice(0, 200)}` : ""}\n本人に「📨 本人へ連絡」で直してもらう内容を伝えてください（提出内容は残っています）`;
+        await thread(sb, wf, text, undefined, "onboarding_post_join_decided");
+        await refreshParent(sb, wf);
+        return json({ ok: true });
+      }
+      // スマレジと比較: 年末調整＝API の値と提出内容の差分。扶養＝読むだけジョブ（画面の表を読む）を積む
+      case "post_join_compare": {
+        if (!isUuid(body.workflow_id)) return json({ ok: false, error: "workflow_id が不正です" }, 400);
+        const wf = await loadView(sb, body.workflow_id);
+        if (!wf?.user_id) return json({ ok: false, error: "見つかりません" }, 404);
+        const who = await actorName(sb, isUuid(body.actor_id) ? body.actor_id : null);
+        const track = String(body.track ?? "");
+        if (!wf.smaregi_staff_id || !wf.contract_id) { await thread(sb, wf, `🔎 比較: スマレジ従業員がまだ作成されていません（${who}）`, undefined, "onboarding_post_join_compare"); return json({ ok: false, error: "スマレジ未作成" }); }
+        if (track === "year_end") {
+          const { data: pol } = await sb.rpc("post_join_effective_i", { p_user: wf.user_id, p_track: "year_end", p_year: Number.isInteger(body.target_year) ? body.target_year : null });
+          const year = pol?.target_year;
+          const [{ data: y }, g] = await Promise.all([sb.from("employee_year_end").select("*").eq("user_id", wf.user_id).eq("target_year", year).maybeSingle(), smaregi("staff_get", { smaregi_staff_id: wf.smaregi_staff_id, contract_id: wf.contract_id })]);
+          if (!g?.ok) { await thread(sb, wf, `🔎 比較に失敗: ${g?.error ?? "不明"}（${who}）`, undefined, "onboarding_post_join_compare"); return json({ ok: false, error: g?.error }); }
+          if (g.yearEnd) await sb.rpc("post_join_import_snapshot", { p_user: wf.user_id, p_year_end: g.yearEnd, p_dependents: null, p_actor: isUuid(body.actor_id) ? body.actor_id : null, p_year: year });
+          const text = y ? `🔎 *年末調整 ${year} 年度: 提出内容 と スマレジの今の値*（${who}・${nowJst()}）\n${yearEndCompareText(y, g.yearEnd ?? null)}` : `🔎 年末調整 ${year} 年度: 本人の提出はまだありません。スマレジの今の値を参考値として取り込みました（本人フォームの初期値に出ます）`;
+          await thread(sb, wf, text, undefined, "onboarding_post_join_compare");
+          return json({ ok: true, snapshot: !!g.yearEnd });
+        }
+        const { data: jb, error: je } = await sb.rpc("ui_job_enqueue", { p_workflow: wf.id, p_kind: "smaregi_read", p_payload: { read: ["dependents"], snapshot: true }, p_actor: isUuid(body.actor_id) ? body.actor_id : null, p_dry_run: true });
+        await thread(sb, wf, je ? `🔎 扶養家族の読み取りジョブを作れません（${je.message}）` : jb?.ok ? `🔎 扶養家族: スマレジ管理画面の扶養設定を読み取るジョブを登録しました（${who}・${nowJst()}）。読めたら参考値として取り込み、提出内容との差をこのスレッドに出します${jb.duplicate ? "（既に待機中）" : ""}` : `🔎 扶養家族: ${jb?.error ?? "読み取りジョブを作れません"}`, undefined, "onboarding_post_join_compare");
+        return json({ ok: !je && !!jb?.ok, job: jb ?? null });
+      }
+      // 既存従業員: スマレジの内容を 1 人ぶん取り込む（年末調整＝API・扶養＝読むだけジョブ）。本人の提出状況は変えない（方針⑥）
+      case "post_join_snapshot": {
+        let wf: WorkflowView | null = null;
+        if (isUuid(body.workflow_id)) wf = await loadView(sb, body.workflow_id);
+        else if (isUuid(body.user_id)) { const { data } = await sb.from("onboarding_workflow_v").select("*").eq("user_id", body.user_id).maybeSingle(); wf = (data as WorkflowView) ?? null; }
+        const userId = wf?.user_id ?? (isUuid(body.user_id) ? body.user_id : null);
+        if (!userId) return json({ ok: false, error: "user_id か workflow_id" }, 400);
+        const { data: link } = await sb.from("employee_smaregi_links").select("contract_id,smaregi_staff_id").eq("user_id", userId).is("effective_to", null).order("is_primary", { ascending: false }).limit(1).maybeSingle();
+        if (!link) return json({ ok: false, error: "スマレジに紐づいていません" });
+        const g = await smaregi("staff_get", { smaregi_staff_id: String(link.smaregi_staff_id), contract_id: link.contract_id });
+        if (!g?.ok) return json({ ok: false, error: g?.error ?? "取得失敗" });
+        const { data: imp, error: ie } = await sb.rpc("post_join_import_snapshot", { p_user: userId, p_year_end: g.yearEnd ?? null, p_dependents: null, p_actor: isUuid(body.actor_id) ? body.actor_id : null, p_year: null });
+        let job: any = null;
+        if (wf) { const { data: jb } = await sb.rpc("ui_job_enqueue", { p_workflow: wf.id, p_kind: "smaregi_read", p_payload: { read: ["dependents"], snapshot: true }, p_actor: isUuid(body.actor_id) ? body.actor_id : null, p_dry_run: true }); job = jb ?? null; }
+        if (wf) await thread(sb, wf, `📥 スマレジの内容を参考値として取り込みました（年末調整: ${g.yearEnd ? "取得" : "なし"}／扶養: ${job?.ok ? "読み取りジョブを登録" : "ワークフロー無しのため手動"}）。本人の提出状況は変えていません`, undefined, "onboarding_post_join_snapshot");
+        return json({ ok: !ie, imported: imp ?? null, job, error: ie?.message });
       }
       case "tax_setting_saved": {
         if (!isUuid(body.workflow_id)) return json({ ok: false, error: "workflow_id が不正です" }, 400);
@@ -580,30 +657,37 @@ Deno.serve(async (req) => {
         return json({ ok: true });
       }
       case "post_join_remind": {
-        // 未提出者へのリマインド（既定 OFF）。person_contact と同じ経路（Slack DM → LINE）。repeat_days おき
+        // v2: 必須かつ未完了（RPC onboarding_post_join_targets＝雇用区分の標準ルール＋個別上書き、期限前後で間隔が変わる）。既定 OFF。Slack DM → LINE の順
         const settings = await alertSettings(sb);
-        const days = Number(settings.post_join_remind_days ?? 3), repeat = Number(settings.post_join_repeat_days ?? 3);
-        const { data: targets, error: te } = await sb.rpc("onboarding_post_join_targets", { p_days: days });
+        const startDays = Number(settings.post_join_remind_days ?? 3);
+        const { data: targets, error: te } = await sb.rpc("onboarding_post_join_targets", { p_now: new Date().toISOString(), p_start_days: startDays });
         if (te) return json({ ok: false, error: te.message }, 500);
-        const cutoff = Date.now() - repeat * 86400_000;
-        const due = (targets ?? []).filter((t: any) => !t.last_reminded_at || new Date(t.last_reminded_at).getTime() < cutoff);
+        // 1 人にまとめる（扶養・年末調整の両方が対象なら 1 通）
+        const byUser = new Map<string, any>();
+        for (const t of targets ?? []) { const a = byUser.get(t.user_id) ?? { ...t, tracks: [] as any[] }; a.tracks.push(t); byUser.set(t.user_id, a); }
+        const due = [...byUser.values()];
         const live = settings.post_join_remind_enabled === true && body.dry_run !== true;
         const h = jstHour(); const qFrom = Number(settings.quiet_from ?? 22), qTo = Number(settings.quiet_to ?? 8);
         const quiet = qFrom > qTo ? (h >= qFrom || h < qTo) : (h >= qFrom && h < qTo);
-        if (!live) return json({ ok: true, sent: 0, reason: settings.post_join_remind_enabled !== true ? "disabled" : "dry_run", candidates: due.map((t: any) => ({ user_id: t.user_id, name: t.name, hire_date: t.hire_date, missing: t.missing, has_slack: t.has_slack, has_line: t.has_line, remind_count: t.remind_count })) });
+        const summarize = (u: any) => ({ user_id: u.user_id, name: u.name, class: u.class, hire_date: u.hire_date, tracks: u.tracks.map((t: any) => ({ track: t.track, target_year: t.target_year, deadline: t.deadline, required_source: t.required_source, interval_days: t.interval_days, remind_count: t.remind_count })), has_slack: u.has_slack, has_line: u.has_line });
+        if (!live) return json({ ok: true, sent: 0, reason: settings.post_join_remind_enabled !== true ? "disabled" : "dry_run", candidates: due.map(summarize) });
         if (quiet) return json({ ok: true, sent: 0, reason: "quiet_hours", candidates: due.length });
         let sent = 0; const results: any[] = [];
-        for (const t of due) {
-          const wf = await loadView(sb, t.workflow_id); if (!wf) continue;
-          const text = personContactTemplate("post_join_form", { name: wf.user_name ?? "" });
-          const ch = await personChannels(sb, t.user_id);
+        for (const u of due) {
+          const wf = u.workflow_id ? await loadView(sb, u.workflow_id) : null;
+          const items = u.tracks.map((t: any) => POST_JOIN_TRACK_LABEL[t.track] + (t.target_year ? ` ${t.target_year} 年度` : ""));
+          const deadlines = u.tracks.map((t: any) => t.deadline).filter(Boolean).sort();
+          const text = personContactTemplate("post_join_form", { name: u.name ?? "", stale_items: items, deadline: deadlines[0] ? jpDate(deadlines[0]) : null });
+          const ch = await personChannels(sb, u.user_id);
           let channel: string | null = null; let ok = false; let err: string | null = null;
-          if (ch.slack) { const r = await slackSend({ action: "send", channel_key: `user:${t.user_id}`, event: "onboarding_post_join_remind", source: "ef:onboarding-notify", text, ref: { table: "onboarding_workflows", id: wf.id }, ...BOT }); ok = !!r?.ok; channel = "Slack"; err = ok ? null : r?.error ?? "失敗"; }
+          if (ch.slack) { const r = await slackSend({ action: "send", channel_key: `user:${u.user_id}`, event: "onboarding_post_join_remind", source: "ef:onboarding-notify", text, ref: wf ? { table: "onboarding_workflows", id: wf.id } : undefined, ...BOT }); ok = !!r?.ok; channel = "Slack"; err = ok ? null : r?.error ?? "失敗"; }
           if (!ok && ch.line_user_id) { const { data: tk } = await sb.from("app_secrets").select("value").eq("key", "line_channel_token").maybeSingle(); if (tk?.value) { const r = await linePush(String(tk.value).trim(), ch.line_user_id, text); ok = r.ok; channel = "LINE"; err = ok ? null : `${r.status}`; } }
-          await event(sb, wf, "post_join.reminded", { channel, sent: ok, missing: t.missing, error: err });
-          if (ok) { sent++; await sb.rpc("onboarding_post_join_reminded", { p_user: t.user_id }); await thread(sb, wf, `📨 扶養・年末調整フォームのお願いを本人へ送りました（${channel}・${(t.remind_count ?? 0) + 1} 回目・未提出: ${(t.missing ?? []).map((m: string) => (m === "year_end" ? "年末調整" : "扶養家族")).join("・")}）`, undefined, "onboarding_post_join_remind"); }
-          else await thread(sb, wf, `⚠️ 扶養・年末調整フォームのお願いを送れませんでした（Slack/LINE とも未連携か失敗: ${err ?? "連絡先なし"}）。店長から声かけをお願いします`, undefined, "onboarding_post_join_remind");
-          results.push({ user_id: t.user_id, channel, sent: ok });
+          if (ok) { sent++; for (const t of u.tracks) await sb.rpc("onboarding_post_join_reminded", { p_user: u.user_id, p_track: t.track, p_year: t.target_year ?? 0 }); }
+          if (wf) {
+            await event(sb, wf, "post_join.reminded", { channel, sent: ok, tracks: u.tracks.map((t: any) => t.track), error: err });
+            await thread(sb, wf, ok ? `📨 ${items.join("・")}のフォームのお願いを本人へ送りました（${channel}・${(u.tracks[0]?.remind_count ?? 0) + 1} 回目・必須: ${u.tracks.map((t: any) => t.required_source === "override" ? "個別設定" : "標準ルール").join("/")}）` : `⚠️ ${items.join("・")}のフォームのお願いを送れませんでした（Slack/LINE とも未連携か失敗: ${err ?? "連絡先なし"}）。店長から声かけをお願いします`, undefined, "onboarding_post_join_remind");
+          }
+          results.push({ user_id: u.user_id, channel, sent: ok, tracks: u.tracks.length });
         }
         return json({ ok: true, sent, results });
       }
