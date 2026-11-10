@@ -1,17 +1,20 @@
 -- ============================================================
--- 2026-11-10 担当B（nippo）— U-27「給料確定ボタンを押した後に取り消せるようにしたい」: hq_cancel_payroll_tasks
+-- 2026-11-10 担当B（nippo）— U-27「給料確定ボタンを押した後に取り消せるようにしたい」
 -- 【状態】事前報告（未適用・実装はユーザー承認後）。前提: 2026-11-09_payroll_finalized_cash_cancel.sql 適用済み
--- 【シグネチャ】hq_cancel_payroll_tasks(p_year_month text, p_corp_id uuid, p_reason text) returns jsonb
---   権限は hq_create_payroll_tasks と同じ（マスター・本部・社長）。理由必須（200文字まで）
--- 【動き】①その月×法人が確定済みか確認 ②現金手渡しのサイン記録(その月×法人の契約)に、渡した側/受取側/完了/引き出しのどれかがあれば取消不可（先に現金手渡し画面で個別取消）
---   ③確定が作った本部タスク（payroll_task_links）を点検:
---     ・確定が新規に作ったタスク（テンプレ由来でない）: 「未着手 かつ 工程完了0 かつ チェック済み0」なら論理削除（deleted_at）。1件でも進んでいれば【エラーで停止】し何も変えない（進捗は消さない）
---     ・テンプレ由来に工程を足して紐づけたもの: 足した工程だけ外す（チェック済み0・未完了のとき）。タスク本体は残す。進んでいれば停止
---   ④linksを削除 ⑤payroll_finalized の該当行を削除（＝現金手渡し画面から消える） ⑥取消履歴(payroll_finalize_cancellations)に 誰が・いつ・理由・対象タスク を記録
---   ⑦#本部-経理監視へ通知（月・法人・理由。氏名なし）。全部同一トランザクション（途中で失敗すれば何も変わらない）
--- 【再確定】取消後に給料確定ボタンを押せば、linksが無いので新規に作り直す／テンプレ由来には工程を足し直す（二重にならない）
--- 【paid_at】給与仕訳の「振込完了」印は戻さない（確定の取消とは別の事実）。印が付いた仕訳が残っている場合は通知と戻り値で知らせる
--- 【rollback】drop function hq_cancel_payroll_tasks; drop table payroll_finalize_cancellations（取消した確定は、同じ月×法人で給料確定ボタンを押し直せば戻る）
+-- 【仕様（ユーザー回答 2026-11-10）】確定の取消で、本部タスク（進行中も含む）と現金手渡しのサインも自動で取り消す。1トランザクション・失敗時は全て戻す
+-- 【RPC】権限=確定(hq_create_payroll_tasks)と同じ（マスター・本部・社長）
+--   ① hq_cancel_payroll_preview(p_year_month text, p_corp_id uuid) returns jsonb   … 確認ダイアログ用の事前件数（何も変更しない）
+--      {finalized, corporation, tasks_total, tasks_in_progress, tasks_delete, steps_remove, sign_people, sign_completed, paid_marked, mf_registered}
+--   ② hq_cancel_payroll_tasks(p_year_month text, p_corp_id uuid, p_reason text) returns jsonb   … 実行（理由必須・200文字まで）
+--      {ok, corporation, tasks_deleted, steps_removed, sign_cancelled, paid_reset, mf_registered}
+-- 【動き】
+--   本部タスク: 確定が新規に作ったタスク=論理削除（進行中も対象・deleted_at）／テンプレ由来に足した「振込対象者の確認」工程=工程だけ外す（タスク本体は残す）→ payroll_task_links を削除
+--   現金手渡し: その月×法人の契約のサイン記録のうち、サイン・確認・完了・引き出しのどれかがある行を cash_handoff_cancel と同じ扱いで取消（理由「給料確定の取消: …」・履歴に戻す前の状態と元の画像パス）
+--     サイン画像は消さない（storage上にそのまま残し、履歴にorig_*パスを保存。SQLからはstorageの別名コピーができないため。画面からの個別取消ではarchive名へコピーする）
+--   paid_at: 取り消したサインの人×その月×その法人の給与仕訳の「振込完了」印を戻す（cash_handoff_cancelの p_reset_paid=true と同じ）。MF登録済み仕訳は消さず件数を通知
+--   最後に payroll_finalized の該当行を削除（＝現金手渡し画面から消える）→ 取消履歴(payroll_finalize_cancellations)に記録 → #本部-経理監視へ件数＋月・法人（氏名なし）
+-- 【再確定】取消後に給料確定ボタンを押せば作り直せる（linksが無い＝新規作成／テンプレ由来には工程を足し直す。二重にならない）
+-- 【rollback】drop function hq_cancel_payroll_tasks(text,uuid,text); drop function hq_cancel_payroll_preview(text,uuid); drop table payroll_finalize_cancellations;
 -- ============================================================
 
 create table if not exists payroll_finalize_cancellations (
@@ -23,8 +26,10 @@ create table if not exists payroll_finalize_cancellations (
   reason text not null,
   finalized_at timestamptz,
   finalized_by uuid references users(id),
-  tasks jsonb not null default '[]'::jsonb,   -- [{kind, task_id, mode: 'deleted'|'step_removed'|'already_gone'}]
-  paid_marked integer not null default 0      -- 取消時点で「振込完了」印が付いたままの給与仕訳の件数
+  tasks jsonb not null default '[]'::jsonb,   -- [{kind, task_id, mode: 'deleted'|'step_removed'|'already_gone', was_in_progress}]
+  sign_cancelled integer not null default 0,
+  paid_reset integer not null default 0,
+  mf_registered integer not null default 0
 );
 comment on table payroll_finalize_cancellations is '給料確定の取消履歴（担当B・2026-11-10）。書き込みは hq_cancel_payroll_tasks 経由のみ';
 alter table payroll_finalize_cancellations enable row level security;
@@ -35,6 +40,64 @@ create policy payroll_finalize_cancellations_read on payroll_finalize_cancellati
 );
 grant select on payroll_finalize_cancellations to authenticated;
 
+-- ① 事前件数（何も変更しない）
+create or replace function public.hq_cancel_payroll_preview(p_year_month text, p_corp_id uuid)
+returns jsonb
+language plpgsql
+stable
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_caller users%rowtype; v_fin payroll_finalized%rowtype; v_corp_name text; v_contracts text[]; v_tenants text[];
+  v_link record; v_task hq_tasks%rowtype; v_prog int; v_total int := 0; v_inprog int := 0; v_del int := 0; v_step int := 0;
+  v_sign int; v_signdone int; v_paid int := 0; v_mf int := 0;
+begin
+  select * into v_caller from users u0 where u0.id = auth.uid() and u0.is_active;
+  if v_caller.id is null or not (v_caller.is_master or v_caller.role in ('CEO','HQ')) then
+    raise exception '権限がありません（マスター・本部・社長のみ）';
+  end if;
+  select * into v_fin from payroll_finalized where year_month = p_year_month and corporation_id = p_corp_id;
+  select name into v_corp_name from corporations where id = p_corp_id;
+  select array_agg(sc.contract_id), array_agg(distinct case sc.corporation_hint when 'toho' then 'default' else sc.corporation_hint end)
+    into v_contracts, v_tenants from smaregi_contracts sc where sc.corporation_id = p_corp_id and sc.is_active;
+  for v_link in select * from payroll_task_links where year_month = p_year_month and corporation_id = p_corp_id loop
+    select * into v_task from hq_tasks where id = v_link.task_id;
+    if v_task.id is null or v_task.deleted_at is not null then continue; end if;
+    v_total := v_total + 1;
+    if v_task.template_id is not null then
+      v_step := v_step + 1;
+      select count(*) into v_prog from hq_step_checklist_items where step_id = v_link.step_id and checked_at is not null;
+    else
+      v_del := v_del + 1;
+      select (select count(*) from hq_task_steps st where st.task_id = v_task.id and st.completed_at is not null)
+           + (select count(*) from hq_step_checklist_items i join hq_task_steps st on st.id = i.step_id where st.task_id = v_task.id and i.checked_at is not null)
+        into v_prog;
+      if v_task.status <> 'todo' then v_prog := v_prog + 1; end if;
+    end if;
+    if coalesce(v_prog,0) > 0 then v_inprog := v_inprog + 1; end if;
+  end loop;
+  select count(*), count(*) filter (where s.completed_at is not null) into v_sign, v_signdone
+    from sf_cash_handoff_signatures s
+   where s.year_month = p_year_month and s.contract_id = any(coalesce(v_contracts, array[]::text[]))
+     and (s.payer_checked_at is not null or s.receiver_checked_at is not null or s.completed_at is not null or s.withdrawn_at is not null);
+  begin
+    select count(*) filter (where j.paid_at is not null), count(*) filter (where j.paid_at is not null and j.mf_journal_id is not null) into v_paid, v_mf
+      from payroll_journal_records j
+     where j.year_month = p_year_month and j.tenant_id = any(coalesce(v_tenants, array[]::text[]))
+       and j.user_id in (select s.user_id from sf_cash_handoff_signatures s where s.year_month = p_year_month and s.contract_id = any(coalesce(v_contracts, array[]::text[]))
+                          and (s.payer_checked_at is not null or s.receiver_checked_at is not null or s.completed_at is not null or s.withdrawn_at is not null));
+  exception when undefined_table then v_paid := 0; v_mf := 0;
+  end;
+  return jsonb_build_object('finalized', v_fin.year_month is not null, 'corporation', v_corp_name,
+    'tasks_total', v_total, 'tasks_in_progress', v_inprog, 'tasks_delete', v_del, 'steps_remove', v_step,
+    'sign_people', v_sign, 'sign_completed', v_signdone, 'paid_marked', v_paid, 'mf_registered', v_mf);
+end;
+$function$;
+revoke all on function public.hq_cancel_payroll_preview(text, uuid) from public, anon;
+grant execute on function public.hq_cancel_payroll_preview(text, uuid) to authenticated;
+
+-- ② 実行
 create or replace function public.hq_cancel_payroll_tasks(p_year_month text, p_corp_id uuid, p_reason text)
 returns jsonb
 language plpgsql
@@ -44,8 +107,8 @@ as $function$
 declare
   v_caller users%rowtype; v_reason text := btrim(coalesce(p_reason,''));
   v_fin payroll_finalized%rowtype; v_corp_name text; v_contracts text[]; v_tenants text[];
-  v_sign int; v_link record; v_task hq_tasks%rowtype; v_step hq_task_steps%rowtype;
-  v_prog int; v_errs text := ''; v_plan jsonb := '[]'::jsonb; v_paid int := 0; v_label text;
+  v_link record; v_task hq_tasks%rowtype; v_plan jsonb := '[]'::jsonb; v_prog int; v_inprog boolean;
+  v_row sf_cash_handoff_signatures%rowtype; v_sign int := 0; v_paid int := 0; v_mf int := 0; v_n int; v_del int := 0; v_stp int := 0;
 begin
   select * into v_caller from users u0 where u0.id = auth.uid() and u0.is_active;
   if v_caller.id is null or not (v_caller.is_master or v_caller.role in ('CEO','HQ')) then
@@ -53,81 +116,82 @@ begin
   end if;
   if p_year_month !~ '^\d{4}-\d{2}$' then raise exception 'year_monthは YYYY-MM 形式で指定してください'; end if;
   if length(v_reason) < 1 or length(v_reason) > 200 then raise exception '取消の理由を入力してください（200文字まで）'; end if;
-
   select * into v_fin from payroll_finalized where year_month = p_year_month and corporation_id = p_corp_id;
   if v_fin.year_month is null then raise exception 'この月・この会社は給料確定されていません'; end if;
   select name into v_corp_name from corporations where id = p_corp_id;
   select array_agg(sc.contract_id), array_agg(distinct case sc.corporation_hint when 'toho' then 'default' else sc.corporation_hint end)
     into v_contracts, v_tenants from smaregi_contracts sc where sc.corporation_id = p_corp_id and sc.is_active;
 
-  -- (c) 現金手渡しのサイン記録が進んでいれば取消不可（先に個別取消）
-  select count(*) into v_sign from sf_cash_handoff_signatures s
-   where s.year_month = p_year_month and s.contract_id = any(coalesce(v_contracts, array[]::text[]))
-     and (s.payer_checked_at is not null or s.receiver_checked_at is not null or s.completed_at is not null or s.withdrawn_at is not null);
-  if v_sign > 0 then
-    raise exception '現金手渡しの記録（サイン・引き出し確認など）が%件あるため、給料確定は取り消せません。先に「現金手渡し・サイン」画面で個別に取り消してください', v_sign;
-  end if;
-
-  -- (b) 1周目: 点検だけ（1件でも進んでいれば何も変えずに止める）
+  -- 本部タスク
   for v_link in select * from payroll_task_links where year_month = p_year_month and corporation_id = p_corp_id loop
-    v_label := case v_link.kind when 'transfer' then '給料振込' else '現金手渡し' end;
     select * into v_task from hq_tasks where id = v_link.task_id;
-    if v_task.id is null or v_task.deleted_at is not null then continue; end if;      -- 既に消えている／手動で削除済みは対象外（linksだけ外す）
-    if v_task.template_id is not null then
-      select * into v_step from hq_task_steps where id = v_link.step_id;
+    if v_task.id is null or v_task.deleted_at is not null then
+      v_plan := v_plan || jsonb_build_object('kind', v_link.kind, 'task_id', v_link.task_id, 'mode', 'already_gone', 'was_in_progress', false);
+    elsif v_task.template_id is not null then
       select count(*) into v_prog from hq_step_checklist_items where step_id = v_link.step_id and checked_at is not null;
-      if coalesce(v_prog,0) > 0 or v_step.completed_at is not null then
-        v_errs := v_errs || E'\n・'||v_label||'（既存タスクに足した確認工程）が進んでいます（チェック済み '||coalesce(v_prog,0)||'件）';
-      end if;
+      delete from hq_task_steps where id = v_link.step_id;                               -- 足した工程だけ外す（チェック項目はcascade）。タスク本体は残す
+      v_stp := v_stp + 1;
+      v_plan := v_plan || jsonb_build_object('kind', v_link.kind, 'task_id', v_link.task_id, 'mode', 'step_removed', 'was_in_progress', coalesce(v_prog,0) > 0);
     else
       select (select count(*) from hq_task_steps st where st.task_id = v_task.id and st.completed_at is not null)
            + (select count(*) from hq_step_checklist_items i join hq_task_steps st on st.id = i.step_id where st.task_id = v_task.id and i.checked_at is not null)
         into v_prog;
-      if v_task.status <> 'todo' or coalesce(v_prog,0) > 0 then
-        v_errs := v_errs || E'\n・'||v_label||'タスクが進行中です（状態='||v_task.status||'・完了/チェック済み '||coalesce(v_prog,0)||'件）';
-      end if;
-    end if;
-  end loop;
-  if v_errs <> '' then
-    raise exception '本部タスクが進んでいるため、給料確定は取り消せません。進捗は消しません。該当タスクを個別に対応してください:%', v_errs;
-  end if;
-
-  -- 2周目: 実行
-  for v_link in select * from payroll_task_links where year_month = p_year_month and corporation_id = p_corp_id loop
-    select * into v_task from hq_tasks where id = v_link.task_id;
-    if v_task.id is null or v_task.deleted_at is not null then
-      v_plan := v_plan || jsonb_build_object('kind', v_link.kind, 'task_id', v_link.task_id, 'mode', 'already_gone');
-    elsif v_task.template_id is not null then
-      delete from hq_task_steps where id = v_link.step_id;                             -- チェック項目は cascade で一緒に消える（チェック済み0を確認済み）
-      v_plan := v_plan || jsonb_build_object('kind', v_link.kind, 'task_id', v_link.task_id, 'mode', 'step_removed');
-    else
-      update hq_tasks set deleted_at = now() where id = v_task.id;                      -- 論理削除（一覧から消えるだけ）
-      v_plan := v_plan || jsonb_build_object('kind', v_link.kind, 'task_id', v_link.task_id, 'mode', 'deleted');
+      v_inprog := coalesce(v_prog,0) > 0 or v_task.status <> 'todo';
+      update hq_tasks set deleted_at = now() where id = v_task.id;                        -- 論理削除（進行中も）
+      v_del := v_del + 1;
+      v_plan := v_plan || jsonb_build_object('kind', v_link.kind, 'task_id', v_link.task_id, 'mode', 'deleted', 'was_in_progress', v_inprog);
     end if;
   end loop;
   delete from payroll_task_links where year_month = p_year_month and corporation_id = p_corp_id;
-  delete from payroll_finalized where year_month = p_year_month and corporation_id = p_corp_id;
 
-  begin
-    select count(*) into v_paid from payroll_journal_records j
-     where j.year_month = p_year_month and j.paid_at is not null and j.tenant_id = any(coalesce(v_tenants, array[]::text[]));
-  exception when undefined_table then v_paid := 0;
-  end;
-  insert into payroll_finalize_cancellations(year_month, corporation_id, cancelled_by, reason, finalized_at, finalized_by, tasks, paid_marked)
-  values (p_year_month, p_corp_id, auth.uid(), v_reason, v_fin.finalized_at, v_fin.finalized_by, v_plan, v_paid);
+  -- 現金手渡しのサイン（cash_handoff_cancel と同じ扱い）
+  for v_row in select * from sf_cash_handoff_signatures s
+                where s.year_month = p_year_month and s.contract_id = any(coalesce(v_contracts, array[]::text[]))
+                  and (s.payer_checked_at is not null or s.receiver_checked_at is not null or s.completed_at is not null or s.withdrawn_at is not null) loop
+    insert into sf_cash_handoff_cancellations(user_id, year_month, contract_id, corporation_id, cancelled_by, reason,
+        prev_payer_id, prev_payer_checked_at, prev_receiver_checked_at, prev_completed_at, archived_paths, paid_at_reset)
+    values (v_row.user_id, v_row.year_month, v_row.contract_id, p_corp_id, auth.uid(), '給料確定の取消: '||v_reason,
+        v_row.payer_id, v_row.payer_checked_at, v_row.receiver_checked_at, v_row.completed_at,
+        jsonb_build_object('orig_payer_signature', v_row.payer_signature_path, 'orig_receiver_signature', v_row.receiver_signature_path, 'orig_handoff_photo', v_row.handoff_photo_path), 0);
+    update sf_cash_handoff_signatures set
+        payer_id = null, payer_checked_at = null, payer_signature_path = null, handoff_photo_path = null,
+        receiver_checked_at = null, receiver_signature_path = null, completed_at = null,
+        withdrawn_at = null, withdrawn_by = null, withdrawn_photo_path = null, updated_at = now()
+     where id = v_row.id;
+    v_sign := v_sign + 1;
+    begin
+      select count(*) into v_n from payroll_journal_records j
+       where j.user_id = v_row.user_id and j.year_month = p_year_month and j.paid_at is not null and j.mf_journal_id is not null
+         and j.tenant_id = any(coalesce(v_tenants, array[]::text[]));
+      v_mf := v_mf + coalesce(v_n,0);
+      update payroll_journal_records set paid_at = null, paid_by = null
+       where user_id = v_row.user_id and year_month = p_year_month and paid_at is not null
+         and tenant_id = any(coalesce(v_tenants, array[]::text[]));
+      get diagnostics v_n = row_count;
+      v_paid := v_paid + v_n;
+    exception when undefined_table then null;
+    end;
+  end loop;
+
+  delete from payroll_finalized where year_month = p_year_month and corporation_id = p_corp_id;
+  insert into payroll_finalize_cancellations(year_month, corporation_id, cancelled_by, reason, finalized_at, finalized_by, tasks, sign_cancelled, paid_reset, mf_registered)
+  values (p_year_month, p_corp_id, auth.uid(), v_reason, v_fin.finalized_at, v_fin.finalized_by, v_plan, v_sign, v_paid, v_mf);
 
   begin
     perform notify_lark('↩️ 給料確定を取消しました: '||p_year_month||'・'||coalesce(v_corp_name,'')||'／理由: '||v_reason
-      ||case when v_paid > 0 then E'\n⚠️ 「振込完了」印が付いた給与仕訳が'||v_paid||'件残っています（印は戻していません）' else '' end);
+      ||E'\n本部タスク削除'||v_del||'件・工程の取り外し'||v_stp||'件・現金手渡しサイン取消'||v_sign||'名・振込完了印を戻した給与仕訳'||v_paid||'件'
+      ||case when v_mf > 0 then E'\n⚠️ 会計ソフト(MF)に登録済みの仕訳が'||v_mf||'件あります。自動では消していないので、必要なら会計側で確認してください' else '' end);
   exception when others then null;
   end;
-  return jsonb_build_object('ok', true, 'corporation', v_corp_name, 'tasks', v_plan, 'paid_marked', v_paid);
+  return jsonb_build_object('ok', true, 'corporation', v_corp_name, 'tasks_deleted', v_del, 'steps_removed', v_stp,
+    'sign_cancelled', v_sign, 'paid_reset', v_paid, 'mf_registered', v_mf);
 end;
 $function$;
 revoke all on function public.hq_cancel_payroll_tasks(text, uuid, text) from public, anon;
 grant execute on function public.hq_cancel_payroll_tasks(text, uuid, text) to authenticated;
 
 -- ■適用後の確認（読み取り・実データの取消は押さない）
-select proname, pg_get_function_identity_arguments(oid) as 引数, prosecdef from pg_proc where proname = 'hq_cancel_payroll_tasks' and pronamespace = 'public'::regnamespace;
-select a.grantee::regrole::text as grantee, a.privilege_type from pg_proc p, aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) a
- where p.proname = 'hq_cancel_payroll_tasks' and p.pronamespace = 'public'::regnamespace order by 1;
+select proname, pg_get_function_identity_arguments(oid) as 引数, prosecdef from pg_proc
+ where proname in ('hq_cancel_payroll_tasks','hq_cancel_payroll_preview') and pronamespace = 'public'::regnamespace order by 1;
+select p.proname, a.grantee::regrole::text as grantee, a.privilege_type from pg_proc p, aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) a
+ where p.proname in ('hq_cancel_payroll_tasks','hq_cancel_payroll_preview') and p.pronamespace = 'public'::regnamespace order by 1, 2;
