@@ -468,6 +468,9 @@ async function bqGetSpotRows(sb: any): Promise<any[][]> {
   return (res.sheets?.["スポット人件費"] ?? Object.values(res.sheets ?? {})[0] ?? []) as any[][];
 }
 
+// デリバリー売上の税抜換算率（税込8%）。DBの fl_delivery_tax_divisor() と同じ値。変更する時は両方（Q11の最終回答）
+const FL_DELIVERY_TAX_DIVISOR = 1.08;
+
 async function refreshStoreMonthly(sb: any) {
   const runId = await startRun(sb, "kd_store_monthly_summary");
   try {
@@ -524,6 +527,15 @@ async function refreshStoreMonthly(sb: any) {
       });
     }
 
+    // ④デリバリー売上（kd_delivery_daily・TK-252 店舗日報v2）: F/L/FL の分母＝FL計算用売上＝店内売上＋デリバリー÷1.08（税込8%→税抜）。sales列は店内のまま
+    //    換算率は DB の fl_delivery_tax_divisor() と同じ値（FL_DELIVERY_TAX_DIVISOR）。丸めずに合計する
+    const deliveryByKey = new Map<string, number>();
+    const dvRows = await fetchAll((f, t) => sb.from("kd_delivery_daily").select("store_id,biz_date,net_sales").order("biz_date").order("store_id").range(f, t));
+    for (const r of (dvRows ?? []) as any[]) {
+      const key = `${r.store_id}|${String(r.biz_date).slice(0, 7)}`;
+      deliveryByKey.set(key, (deliveryByKey.get(key) ?? 0) + (Number(r.net_sales) || 0));
+    }
+
     const shiireS = await loadShiireInfo(sb);   // TK-222: 無効(既定)なら何もしない。確定月は原価を承認済み請求書の仕入高合計に置換（PLと同じ）
     const upserts = [...byKey.values()].map((b) => {
       const shS = shiireS.enabled ? shiireS.byKey.get(`${b.store_id}|${b.year_month}`) : undefined;
@@ -535,13 +547,15 @@ async function refreshStoreMonthly(sb: any) {
       // 人件費合計はapp.js stat()と同じ定義＝fact_daily_store.labor_cost_total(日次のlabor列の和)+スポット。
       // PA+社員の和ではない（API切替前の月は賞与・法定福利・通勤手当等を含むため和の2倍超になる月がある）。
       const laborTotal = b.labor + b.labor_spot;
-      const costRate = b.sales ? b.cost / b.sales : null;
-      const laborRate = b.sales ? laborTotal / b.sales : null;
+      const flDelivery = (deliveryByKey.get(`${b.store_id}|${b.year_month}`) ?? 0) / FL_DELIVERY_TAX_DIVISOR;
+      const flSales = b.sales + flDelivery;   // FL計算用売上（デリバリーなしの店舗・月は sales と同じ＝従来と同じ値）
+      const costRate = flSales > 0 ? b.cost / flSales : null;
+      const laborRate = flSales > 0 ? laborTotal / flSales : null;
       const budgetSales = budgetByKey.get(`${b.store_id}|${b.year_month}`) ?? null;
       return {
         store_id: b.store_id, corporation_id: corpByStoreId.get(b.store_id, b.year_month) ?? null, year_month: b.year_month,
         ...shiireCols,
-        sales: b.sales, cost: b.cost, cost_rate: costRate,
+        sales: b.sales, fl_sales: flSales, fl_delivery_sales: flDelivery, cost: b.cost, cost_rate: costRate,
         labor_pa: b.labor_pa, labor_emp: b.labor_emp, labor_other: b.labor - b.labor_pa - b.labor_emp, labor_spot: b.labor_spot, labor_total: laborTotal, labor_rate: laborRate,
         fl_rate: costRate != null && laborRate != null ? costRate + laborRate : null,
         gross_profit: b.sales - b.cost,
