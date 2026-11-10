@@ -7,6 +7,15 @@
 
 ---
 
+**2026-11-10 深夜（Slack 勤怠スレッド・続き）ステップ 3 を「口座変更の運用方針」に合わせて修正（開発・テストのみ・本番未適用）**:
+- ユーザー確定方針: 給与支給のたびの口座確認・承認はしない／申請があった人だけ本部に確認・承認タスク／本部の直接変更も履歴＋承認フロー／承認時に支給回を確定／指定の回から自動適用／出力時に使用口座を自動記録（人の承認なし）／確定済みの振込データは登録口座が変わっても自動変更しない／例外＝出力後の変更だけ個別の確認・承認／通知は申請時だけ（Slack・本部タスク。口座番号は出さない）／対応を求めるのは承認漏れ・同期エラー・競合だけ。
+- SQL `supabase/2026-11-10_pay_change_requests.sql`（**未適用のまま書き直し**・rollback も更新）: 承認 `hr_pay_change_review` に `p_year_month`（ここで支給回を確定）／出力済み（支給日前）の回は理由つきの個別承認だけ（`hr_bank_change_apply_exception`＝登録口座と控えを差し替え・前の控えと理由を残す）／控え `payroll_transfer_account_snapshots` は最初の出力時点で固定（出し直しで上書きしない）／`hr_payroll_transfer_prepare`（振込画面用: 時期が来た変更の反映・出力済みの月の控え・対応が必要なもの）／`hr_pay_change_attention`（承認漏れ・同期エラー・競合だけ。口座番号なし）／`hr_pay_change_config`／申請時だけ本部タスク（既存 `hq_tasks`）と Slack（`pay_change_notify` → EF）・承認/却下/取り下げでタスク自動完了／フラグは `bank_approval_required`・`wage_approval_required`・`pay_request_notify_enabled`（全部既定 false。旧 `pay_approval_required` は廃止）。
+- EF ソース（**未デプロイ**）: `_shared/onboarding-blocks.ts` に `payChangeBlocks/payChangeText`、`onboarding-notify` に `op=pay_change`（申請の中身は読まない・フラグ OFF なら送らない・dedupe_key で二重防止）。deno テスト 31 件 OK。★本番の onboarding-notify は古いまま。別件でデプロイすると `pay_change` も一緒に出る（SQL 未適用・フラグ OFF のあいだは送信しない）。
+- nippo `27d4cd1`（**ローカルのみ・未 push**。`598c7cd` の上）: 承認ボタンの横で支給回を選ぶ・出力済みの回は理由を聞いて個別承認・選び直し・フラグ ON で登録済み口座の編集を申請に回す。SQL 未適用なら何も変わらない。
+- 振込画面（`invoices.html`）は公開ファイルのため**パッチで保管**: `supabase/pending/2026-11-10_invoices_pay_change.patch`（作成時点の HEAD に当たることを確認。口座を読む前に prepare／出力済みの月は控えの口座／出力直前に読み直し／対応が必要なときだけ注意／フラグ ON で編集を申請へ）。本番反映の承認後に `git apply` する（その時点の invoices.html とずれていたら当て直す）。
+- テスト: DB 11 項目（本番 DB の取引内・全て取り消し・残留なし。適用だけでは口座データ・フラグ・申請・本部タスクが変わらないこと、rollback で全消去も確認）／通知文面／nippo カード／振込画面のパッチ。設計書 §9.1 に方針と実装の対応表。
+- **次（承認待ち）**: ステップ 3 の本番反映（SQL → onboarding-notify → nippo → 振込画面のパッチ → フラグ 2 つを ON にするか）。賃金の直接編集の禁止は、システム処理の扱いを決めてから。
+
 **★★★2026-11-11（担当A）TK-252 店舗日報v2＋FL評価: ①②本番適用済み／③VM v6・Edge・app.js・画像v2・FL評価設定パネルは作成済み（未公開・未デプロイ）**:
 - 本番適用済み: fl_metrics_common・fl_rating_thresholds（新規関数15本・表3・kd_store_monthly_summaryに列2つ。司令塔が読み取りレビュー済み＝巻き戻し不要）。**未適用**: ③daily_report_card_vm_v6（指紋ガード・PUBLIC revoke同梱）・fl_tests.sql＝ユーザー承認待ち。
 - 作成のみ（push済み・未デプロイ）: keiei-kd-refresh月次(fl_sales分母)・keiei-api-home(mtdFlRate)・dashboard-summary(列追加)。
@@ -1296,7 +1305,7 @@
 
 **★★★2026-11-10 13:30（司令塔）Slack 店舗日報画像 v2 ＋ F/L/FL 評価基準管理＝設計 v1.1 確定（売上KPIは店内のみ・F/L/FL の分母だけ店内＋デリバリー〈税抜換算は Q11 判断待ち〉・月間のみ4段階評価・暫定固定・ダイニー低評価・店舗別Slack配信・停止は日報のみ承認制）。担当A へ実装指示（docs/実装指示書_担当A_店舗日報画像v2_FL評価_2026-11-10.md）。本番未変更。**　同日: P0-1 B マージ済み・融資トークン切替完了（定時実行 11/10 05:00 成功）・給与 U-23/24 の①②適用済み・U-25 本体SQL は担当B で承認待ち。
 
-**★★★2026-11-10 夜（Slack 勤怠スレッド・続き）従業員情報変更の連動 ステップ 1・2＝本番稼働（SQL `2026-11-10_employee_change_events.sql` 適用・onboarding-notify デプロイ・nippo `cc36202` 公開。変更は必ず履歴に残り、住所・最寄り駅・所属・雇用形態の変更で交通費の再確認が 1 人 1 件起動。旧交通費は不変・Slack 通知フラグ OFF）。ステップ 3（賃金・口座の承認と履歴）は開発・テスト完了で未適用（SQL `2026-11-10_pay_change_requests.sql`・nippo `598c7cd` 未 push）。** 交通費テスト A の行（380・2027/01）は保持・B 保留。フラグ全 OFF。設計書 `docs/設計書_従業員情報変更の連動_2026-11-10.md` §8〜§10。
+**★★★2026-11-10 深夜（Slack 勤怠スレッド・続き）従業員情報変更の連動 ステップ 1・2＝本番稼働（SQL `2026-11-10_employee_change_events.sql` 適用・onboarding-notify デプロイ・nippo `cc36202` 公開。変更は必ず履歴に残り、住所・最寄り駅・所属・雇用形態の変更で交通費の再確認が 1 人 1 件起動。旧交通費は不変・Slack 通知フラグ OFF）。ステップ 3（賃金・口座の承認と履歴）は、口座変更の運用方針（毎月の振込に承認は足さない・申請があった人だけ確認と承認・承認時に支給回を確定・出力時の口座は自動で控え・出力済みの回は個別承認のみ・通知は申請時だけで口座番号なし）に合わせて作り直し、開発・テスト完了で★本番未適用（SQL `2026-11-10_pay_change_requests.sql`／nippo `598c7cd`・`27d4cd1` 未 push／振込画面は `supabase/pending/2026-11-10_invoices_pay_change.patch`＝未適用のパッチ／`onboarding-notify` の `pay_change` はソースのみ・未デプロイ＝本番の EF は古いまま）。** 交通費テスト A の行（380・2027/01）は保持・B 保留。フラグ全 OFF。設計書 `docs/設計書_従業員情報変更の連動_2026-11-10.md` §8〜§10（口座の方針は §9.1）。次＝ステップ 3 の本番反映の承認待ち（SQL → EF → nippo → 振込画面のパッチ → フラグ `bank_approval_required`・`pay_request_notify_enabled` を ON にするか）。
 
 **★★★2026-11-10 夕方（Slack 勤怠スレッド・続き）入社登録: 交通費の実書き込みテスト A 成功（スマレジ 380 に 2027/01・勤務日数ごと・500・上限 6,000 を 1 行追加。既存 3 行不変・事業所 ID 照合・スイッチ OFF 済み。SQL `2026-11-10_ui_job_expected_store_ids.sql` 適用済み）。従業員情報変更の共通連動 ステップ 1・2 は開発・テスト完了で本番未反映（SQL `2026-11-10_employee_change_events.sql` 未適用／onboarding-notify の op=change_effect 未デプロイ＝リポジトリのソースが本番より先行／nippo `cc36202` 未 push）。** 承認待ち: ステップ 1・2 の本番反映／A の追加行の扱いと B／賃金・口座の承認（順 3）。フラグ全 OFF。設計書 `docs/設計書_従業員情報変更の連動_2026-11-10.md`。
 
