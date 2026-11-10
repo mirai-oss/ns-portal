@@ -626,7 +626,8 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-11-10-v168";
+const BUILD_TAG="2026-11-11-v169";
+const PAYROLL_CANCEL_READY=false;
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -12194,7 +12195,9 @@ function payrollRender(){
           <div class="pr-corp-pills" style="margin-top:8px"><label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">法人（MF事業者）</label>${PAYROLL_CORPS.map(c=>`<button class="hq-btn payroll-corp-pill${payrollCorpDef_().key===c.key?" primary":""}" data-corpkey="${c.key}" style="margin-right:6px">${esc(c.label)}</button>`).join("")}</div>
           <div class="pr-sync-box"><span>給与データ<br><b>✓ 取得済み</b></span><button class="btn" id="payroll-sync-now">🔄 スマレジから今すぐ取得</button></div>
           <div class="err" id="payroll-sync-msg" style="margin-top:6px"></div>
-          <button data-payroll-finalize class="hq-btn primary" style="margin-top:10px;width:100%">✅ 給料確定（本部タスクを自動発行）</button>
+          <div data-payroll-status style="margin-top:10px;padding:6px 10px;border-radius:8px;font-size:12px;background:#eee;color:#666">確定状態を確認中…</div>
+          <button data-payroll-finalize class="hq-btn primary" style="margin-top:6px;width:100%" disabled>✅ 給料確定する（本部タスクを自動発行）</button>
+          <button data-payroll-cancel class="hq-btn" style="margin-top:6px;width:100%;display:none;color:#b3261e">↩️ 給料確定を取り消す</button>
         </div>
       </div>
 
@@ -12393,7 +12396,63 @@ function payrollRender(){
     if(!r.ok){ alert("法人を特定できませんでした。本部タスクの自動発行は行っていません。\n（詳細: "+(r.body&&r.body.message||JSON.stringify(r.body))+"）"); return; }
     const d=r.body;
     alert(`本部タスクを発行しました（法人: ${corp}）。\n・給料振込：対象${d.transfer_count}名／期日${d.transfer_due}\n・現金手渡し：対象${d.cash_count}名／期日${d.cash_due}\n\n本部タスク（tasks.html）で内容を確認してください。`);
+    payrollRender();
   });
+  // 2026-11-10追加: 給料確定の取消（担当B設計のRPC hq_cancel_payroll_preview / hq_cancel_payroll_tasks）。確定済みの月×法人のときだけボタンを出す
+  (async()=>{
+    const btn=document.querySelector("[data-payroll-cancel]"); if(!btn) return;
+    try{
+      await ensureCorpStoreCache();
+      const def=payrollCorpDef_(); const corpRow=(CORP_STORE_CACHE.corporations||[]).find(c=>c.corp_code===def.code); if(!corpRow) return;
+      const ym=PAYROLL_STATE.yearMonth;
+      const f=await authed(`/rest/v1/payroll_finalized?select=year_month,finalized_at,finalized_by&year_month=eq.${encodeURIComponent(ym)}&corporation_id=eq.${corpRow.id}&limit=1`);
+      const st=document.querySelector("[data-payroll-status]"), fin=document.querySelector("[data-payroll-finalize]");
+      if(!f.ok||!Array.isArray(f.body)){
+        // 取得できないときは誤押下防止のため確定ボタンを押せないままにする
+        if(st){ st.style.background="#fdecea"; st.style.color="#b3261e"; st.textContent="状態を確認できませんでした（画面を再読み込みしてください）"; }
+      }else if(f.body.length){
+        const dt=f.body[0].finalized_at?new Date(f.body[0].finalized_at):null;
+        const ds=dt&&!isNaN(dt)?`${dt.getMonth()+1}/${dt.getDate()} ${String(dt.getHours()).padStart(2,"0")}:${String(dt.getMinutes()).padStart(2,"0")}`:"";
+        if(st){ st.style.background="#e3f4e6"; st.style.color="#1b6b2c"; st.innerHTML=`<b>確定済み</b>${ds?`（${esc(ds)}）`:""}　${esc(corpRow.name)} ${esc(ym)}分`; }
+        if(fin){ fin.disabled=true; fin.textContent="✅ 確定済み"; }
+        if(PAYROLL_CANCEL_READY) btn.style.display="";   // 取消RPC（担当B）の本番適用後にtrueにする
+      }else{
+        if(st){ st.style.background="#eee"; st.style.color="#555"; st.innerHTML=`この月・法人は <b>未確定</b>（${esc(corpRow.name)} ${esc(ym)}分）`; }
+        if(fin){ fin.disabled=false; fin.textContent="✅ 給料確定する（本部タスクを自動発行）"; }
+      }
+    }catch(e){
+      const st=document.querySelector("[data-payroll-status]");
+      if(st){ st.style.background="#fdecea"; st.style.color="#b3261e"; st.textContent="状態を確認できませんでした（画面を再読み込みしてください）"; }
+    }
+    btn.onclick=async()=>{
+      btn.disabled=true;
+      try{
+        const def=payrollCorpDef_(); const corpRow=(CORP_STORE_CACHE.corporations||[]).find(c=>c.corp_code===def.code);
+        if(!corpRow){ alert("法人を特定できませんでした。取り消しは行っていません。"); return; }
+        const ym=PAYROLL_STATE.yearMonth;
+        const pv=await authed("/rest/v1/rpc/hq_cancel_payroll_preview",{method:"POST",body:JSON.stringify({p_year_month:ym,p_corp_id:corpRow.id})});
+        if(!pv.ok){ alert("取り消し内容の確認に失敗しました。取り消しは行っていません。\n（詳細: "+(pv.body&&pv.body.message||JSON.stringify(pv.body))+"）"); return; }
+        const d=pv.body||{};
+        if(!d.finalized){ alert(`${ym}分（${corpRow.name}）は給料確定されていません。`); btn.style.display="none"; return; }
+        const names=(d.signed||[]).map(x=>x.name).join("、");
+        let cancelSign=false;
+        let msg=`${ym}分の給料確定を取り消します（法人: ${corpRow.name}）。\n\n・本部タスク：${d.tasks_delete??d.tasks??0}件を取り消し（うち進行中${d.tasks_in_progress||0}件）\n・工程の取り外し：${d.steps_remove||0}件\n・現金手渡しのサイン済み：${d.sign_people||0}人${names?"（"+names+"）":""}\n・MFに登録済みの仕訳：${d.mf_registered||0}件（自動では消えません。必要ならMFで手動対応）`;
+        if(!confirm(msg+"\n\nこのまま進みますか？")) return;
+        if((d.sign_people||0)>0){
+          cancelSign=confirm(`現金手渡しのサインをもらった人が${d.sign_people}人います。\n\n［OK］サインも取り消す（新しくサインをもらい直す。画像は履歴に残ります）\n［キャンセル］サインは残す\n　※残す場合も確定の印は外れるため、サイン記録は残りますが、現金手渡し画面からは一時的に見えなくなります（再確定すると再表示されます）`);
+        }
+        const reason=(prompt("取り消す理由を入力してください（必須・200文字まで）","")||"").trim();
+        if(!reason){ alert("理由が空のため、取り消しは行っていません。"); return; }
+        if(reason.length>200){ alert("理由は200文字までです。取り消しは行っていません。"); return; }
+        const r=await authed("/rest/v1/rpc/hq_cancel_payroll_tasks",{method:"POST",body:JSON.stringify({p_year_month:ym,p_corp_id:corpRow.id,p_reason:reason,p_cancel_signatures:cancelSign})});
+        if(!r.ok){ alert("取り消しに失敗しました（何も変更されていません）。\n（詳細: "+(r.body&&r.body.message||JSON.stringify(r.body))+"）"); return; }
+        const x=r.body||{};
+        alert(`給料確定を取り消しました（法人: ${x.corporation||corpRow.name}）。\n・本部タスク：${x.tasks_deleted??x.tasks_cancelled??0}件取り消し（うち進行中${x.tasks_in_progress_cancelled||0}件）\n・工程の取り外し：${x.steps_removed||0}件\n・サイン：${x.signatures_cancelled||0}人取り消し／${x.signatures_kept||0}人残した\n・振込完了の印を戻した件数：${x.paid_reset||0}\n・MF登録済み仕訳：${x.mf_registered||0}件（自動では消していません）`);
+        btn.style.display="none"; payrollRender();
+      }catch(e){ alert("取り消し中にエラーが発生しました: "+String(e&&e.message||e)); }
+      finally{ btn.disabled=false; }
+    };
+  })();
   if($("payroll-bulk-gen")) $("payroll-bulk-gen").onclick=async()=>{
     const b=$("payroll-bulk-gen");
     if(!confirm("登録前の全員分について、給与明細PDFのAI読み取り・検算・前月比チェックを行い、自動OKの人は下書き保存します。\n（マネーフォワードへはまだ登録しません。人数によって数分かかります）\nよろしいですか？")) return;
