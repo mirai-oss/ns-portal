@@ -307,12 +307,12 @@ begin
   if v_corp2 is not null then insert into payroll_finalized(year_month, corporation_id, finalized_by) values (ym, v_corp2, v_master); end if;
   -- 確定が新規に作った現金手渡しタスク（進行中: 工程1つ完了・チェック1つ済み）
   insert into hq_tasks(title, corp, freq, target_date, due_date, notes, description, visibility, created_by, status)
-  values ('TEST 現金手渡し', v_cname, 'once', current_date, current_date, '', '給料確定ボタンにより自動発行（テスト）', 'all', v_master, 'doing') returning id into v_tc;
+  values ('TEST 現金手渡し', v_cname, 'once', date '2099-01-01', date '2099-01-01', '', '給料確定ボタンにより自動発行（テスト）', 'all', v_master, 'doing') returning id into v_tc;
   insert into hq_task_steps(task_id, title, assignee_ids, due_date, sort_order, kind, completed_at) values (v_tc, '手渡し完了を確認', array[]::uuid[], current_date, 10, 'step', now()) returning id into v_sc;
   insert into hq_step_checklist_items(step_id, title, sort_order, checked_at) values (v_sc, 'A', 10, now()), (v_sc, 'B', 20, null);
   -- テンプレ由来の既存タスクに確認工程を足したもの（足した工程のチェックは未）
   insert into hq_tasks(title, corp, freq, target_date, due_date, notes, description, visibility, created_by, template_id)
-  values ('TEST 振込', v_cname, 'once', current_date, current_date, '', 'テンプレ由来', 'all', v_master, v_tmpl) returning id into v_tt;
+  values ('TEST 振込', v_cname, 'once', date '2099-01-01', date '2099-01-01', '', 'テンプレ由来', 'all', v_master, v_tmpl) returning id into v_tt;
   insert into hq_task_steps(task_id, title, assignee_ids, due_date, sort_order, kind) values (v_tt, '元の工程', array[]::uuid[], current_date, 10, 'step');
   insert into hq_task_steps(task_id, title, assignee_ids, due_date, sort_order, kind) values (v_tt, '振込対象者の確認（給料確定リスト）', array[]::uuid[], current_date, 20, 'step') returning id into v_st;
   insert into hq_step_checklist_items(step_id, title, sort_order) values (v_st, 'A', 10);
@@ -362,7 +362,7 @@ begin
 
   -- ---- 実行B: サインも取り消す（再確定した状態を作り直す） ----
   insert into payroll_finalized(year_month, corporation_id, finalized_by) values (ym, v_corp, v_master);
-  insert into hq_tasks(title, corp, freq, target_date, due_date, notes, description, visibility, created_by) values ('TEST 現金手渡し2', v_cname, 'once', current_date, current_date, '', '給料確定ボタンにより自動発行（テスト）', 'all', v_master) returning id into v_tc2;
+  insert into hq_tasks(title, corp, freq, target_date, due_date, notes, description, visibility, created_by) values ('TEST 現金手渡し2', v_cname, 'once', date '2099-01-01', date '2099-01-01', '', '給料確定ボタンにより自動発行（テスト）', 'all', v_master) returning id into v_tc2;
   insert into hq_task_steps(task_id, title, assignee_ids, due_date, sort_order, kind) values (v_tc2, '手渡し完了を確認', array[]::uuid[], current_date, 10, 'step') returning id into v_sc2;
   insert into payroll_task_links(year_month, kind, task_id, step_id, corporation_id) values (ym, 'cash', v_tc2, v_sc2, v_corp);
   r := pg_temp.call_as(format('select public.hq_cancel_payroll_tasks(%L, %L::uuid, %L, true)', ym, v_corp, 'テスト取消'), v_master);
