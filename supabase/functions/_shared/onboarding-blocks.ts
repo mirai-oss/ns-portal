@@ -2,6 +2,7 @@
 // onboarding-notify（親メッセージの作成・更新・スレッド投稿）から使う。業務ロジックは持たない（表示だけ）。
 // 個人情報の扱い（ユーザー指示）: 住所・電話・生年月日・税情報は出さない。出すのは 氏名・区分・所属・入社日・スマレジ契約/ID・各項目の状態 だけ。
 
+import { methodJa } from "./commute-judge.ts";
 export type ItemState = "pending" | "running" | "completed" | "retry_wait" | "manual_required" | "manual_running" | "cancelled" | "failed";
 export type ItemInfo = { state: ItemState; attempts?: number; last_error?: string | null; payload?: any; completed_at?: string | null; completion_source?: string | null };
 export type WorkflowView = {
@@ -217,7 +218,7 @@ export function commuteCheckBlocks(wf: WorkflowView, notificationId: string | nu
   const value = JSON.stringify({ workflow_id: wf.id, notification_id: notificationId });
   const cands = c.reasonable.slice(0, 4).map((r, i) => `${i + 1}. ${r.summary}　${yen(r.fare)}／${r.time_min ?? "?"}分／乗換${r.transfers ?? "?"}${r.uses_bus ? "／バス" : ""}${r.teiki1 ? `／定期1か月 ${yen(r.teiki1)}` : ""}`).join("\n");
   const head = `🚃 *交通費の確認*（${c.from} → ${c.to}${c.store_name ? "・" + c.store_name : ""}）\n` +
-    `本人の申告（参考）: *片道 ${c.claimed != null ? yen(c.claimed) : "なし"}*${c.method ? `／通勤手段: ${c.method}` : ""}${c.uses_bus ? "／バス利用" : ""}${c.route_text ? `\n本人の経路メモ: ${c.route_text.slice(0, 120)}` : ""}\n` +
+    `本人の申告（参考）: *片道 ${c.claimed != null ? yen(c.claimed) : "なし"}*${c.method ? `／通勤手段: ${methodJa(c.method)}` : ""}${c.uses_bus ? "／バス利用" : ""}${c.route_text ? `\n本人の経路メモ: ${c.route_text.slice(0, 120)}` : ""}\n` +
     `検索の最安（合理的な経路）: *${c.computed ? yen(c.computed.fare) : "—"}*${c.pay_plan?.text ? `\n*支給額（会社ルール: IC・1 日上限あり）*\n${c.pay_plan.text}${c.bus_allowed ? "\n🚌 バス例外あり（バスを含めて検索）" : ""}` : c.pay_hint?.text ? `\n支給方法の目安: ${c.pay_hint.text}` : ""}\n判定（仮の基準）: *${JUDGEMENT_LABEL[c.judgement] ?? c.judgement}*\n${c.reasons.map((r) => "・" + r).join("\n")}`;
   const blocks: unknown[] = [
     { type: "section", text: { type: "mrkdwn", text: head } },

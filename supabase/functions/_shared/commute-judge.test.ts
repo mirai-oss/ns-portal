@@ -203,3 +203,12 @@ Deno.test("探索条件: IC/切符 × バス可否 の 4 通り。既定は IC�
   assertEquals(conditionFor(DEFAULT_RULES, true), "T11211132113191:F332112112000010:A23121141:");
   assert(conditionFor({ ...DEFAULT_RULES, fare_type: "ticket" }, false).includes("F332112212000010"));
 });
+
+Deno.test("通勤手段は日本語で表示（英字のキーを Slack・判定理由に出さない）", async () => {
+  const m = await import("./commute-judge.ts");
+  if (m.methodJa("train_bus") !== "電車＋バス" || m.methodJa("train") !== "電車" || m.methodJa(null) !== "" || m.methodJa("zzz") !== "zzz") throw new Error("methodJa");
+  const a = m.autoJudge({ judgement: "hq_review", computed: { index: 0, fare: 349 } as any, reasonable: [] } as any, { claimed: 350, method: "train_bus", home_station_known: true, store_station_known: true } as any, undefined as any);
+  const txt = JSON.stringify(a);
+  if (txt.includes("train_bus") && !/"method"/.test(txt)) throw new Error("英字の通勤手段が理由に残っています: " + txt);
+  if (!a.reasons.join(" ").includes("電車＋バス")) throw new Error("理由に日本語の通勤手段がありません: " + a.reasons.join(" / "));
+});

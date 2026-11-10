@@ -72,6 +72,9 @@ export function judge(cands: Candidate[], claimed: number | null, rules: Rules):
 //   ここでは「条件を満たすか」を返すだけで、承認（RPC onboarding_commute_decide）は呼び出し側が enabled のときだけ行う。
 //   金額は API の応答と本人の申請だけから決める（AI が運賃を推測しない）。否認は絶対に自動でしない（満たさなければ従来どおり人が見る）。
 // =============================================================
+// 通勤手段の表示名（nippo の入社フォームと同じ言い方。Slack・判定理由に英字のキーを出さない）
+export const METHOD_JA: Record<string, string> = { train: "電車", train_bus: "電車＋バス", bus: "バス", bike: "自転車", walk: "徒歩", car: "車・バイク", other: "その他" };
+export function methodJa(m: string | null | undefined): string { return m ? (METHOD_JA[m] ?? m) : ""; }
 export type AutoRules = {
   enabled: boolean;            // true で実際に承認する（既定 false）
   shadow: boolean;             // true なら「もし有効なら自動承認したか」を記録だけする（既定 true）
@@ -99,13 +102,13 @@ export function autoJudge(j: { judgement: string; computed: Candidate | null; re
     if (j.computed.fare > a.max_oneway_yen) no.push(`片道 ${j.computed.fare} 円 が上限 ${a.max_oneway_yen} 円 を超える`);
     if (j.computed.uses_bus && !a.allow_bus) no.push("最安の経路がバスを含む");
   }
-  if (input.method && !a.allowed_methods.includes(input.method)) no.push(`通勤手段が ${input.method}（自動承認は ${a.allowed_methods.join("/")} のみ）`);
+  if (input.method && !a.allowed_methods.includes(input.method)) no.push(`通勤手段が ${methodJa(input.method)}（自動承認は ${a.allowed_methods.map(methodJa).join("/")} のみ）`);
   if (!input.method) no.push("通勤手段が未記入");
   if (a.require_home_station && !input.home_station_known) no.push("本人の最寄り駅が未登録（住所からの推定）");
   if (!input.store_station_known) no.push("店舗の最寄り駅が未登録");
   const eligible = no.length === 0 && mode !== "off";
   const fare = eligible && input.claimed !== null && input.claimed !== undefined ? input.claimed : null;
-  const reasons = eligible ? [`申請額 ${fare} 円 ≦ API 算出額 ${j.computed?.fare} 円・片道 ${a.max_oneway_yen} 円以内・バスなし・通勤手段 ${input.method}`] : no;
+  const reasons = eligible ? [`申請額 ${fare} 円 ≦ API 算出額 ${j.computed?.fare} 円・片道 ${a.max_oneway_yen} 円以内・バスなし・通勤手段 ${methodJa(input.method)}`] : no;
   return { mode, eligible, fare, reasons };
 }
 
