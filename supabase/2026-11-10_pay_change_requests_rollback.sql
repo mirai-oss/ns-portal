@@ -3,6 +3,7 @@ drop trigger if exists employee_change_pay_guard on employee_wage_settings;
 drop trigger if exists employee_change_pay_guard on payroll_bank_accounts;
 drop trigger if exists payroll_transfer_schedule_after on payroll_transfer_schedule;
 drop trigger if exists pay_change_request_after on profile_change_requests;
+drop trigger if exists payroll_transfer_schedule_guard on payroll_transfer_schedule;
 -- review_profile_change_request を変更前の定義に戻す
 CREATE OR REPLACE FUNCTION public.review_profile_change_request(p_request_id uuid, p_approve boolean, p_reason text DEFAULT NULL::text)
  RETURNS void
@@ -74,13 +75,17 @@ begin
   end if;
 end $function$;
 drop function if exists hr_payroll_transfer_prepare(text);
-drop function if exists hr_pay_change_config();
+drop function if exists hr_pay_change_config(uuid);
 drop function if exists hr_pay_change_attention(text);
 drop function if exists hr_pay_change_attention_internal(text);
 drop function if exists pay_change_trg_request();
 drop function if exists pay_change_task_close(uuid);
 drop function if exists pay_change_task_open(uuid);
 drop function if exists pay_change_notify(uuid, text);
+drop function if exists pay_change_notify_op(text, jsonb);
+drop function if exists pay_transfer_hold_task_sync(text);
+drop function if exists payroll_transfer_schedule_guard();
+drop function if exists employee_change_pay_direct_allowed(text, uuid, text);
 drop function if exists hr_pay_change_list(uuid, boolean);
 drop function if exists hr_pay_change_cancel(uuid, uuid);
 drop function if exists hr_bank_change_reschedule(uuid, text, uuid, boolean, text);
@@ -94,6 +99,8 @@ drop function if exists hr_pay_change_request(uuid, text, jsonb, date, text, tex
 drop function if exists employee_change_pay_guard();
 drop function if exists payroll_transfer_schedule_after();
 drop function if exists pay_run_next_open(date);
+drop function if exists pay_transfer_pending_holds(text);
+drop function if exists pay_run_user_state(text, uuid, date);
 drop function if exists pay_run_closed(text, date);
 drop function if exists pay_run_state(text, date);
 drop function if exists pay_run_date(text);
@@ -102,6 +109,8 @@ returns text language sql immutable as $$
   select case p_field when 'name' then 'name' when 'kana' then 'name' when 'phone' then 'contact' when 'contact_email' then 'contact' when 'address' then 'address' when 'bank_account' then 'bank_account' else null end
 $$;
 drop table if exists payroll_transfer_account_snapshots;
+drop function if exists payroll_transfer_account_snapshots_guard();
+drop table if exists payroll_transfer_holds;
 drop index if exists profile_change_requests_bank_pending;
 drop index if exists profile_change_requests_bank_scheduled;
 delete from profile_change_requests where field = 'wage';
@@ -113,5 +122,5 @@ alter table profile_change_requests drop constraint if exists profile_change_req
 alter table profile_change_requests add constraint profile_change_requests_status_check check (status = any (array['pending','approved','rejected']));
 alter table profile_change_requests drop column if exists payload, drop column if exists effective_date, drop column if exists effective_year_month, drop column if exists effective_pay_date,
   drop column if exists request_reason, drop column if exists apply_status, drop column if exists applied_at, drop column if exists apply_note, drop column if exists apply_ref, drop column if exists hq_task_id, drop column if exists notify_log;
-update app_settings set value = value - 'bank_approval_required' - 'wage_approval_required' - 'pay_request_notify_enabled' where key = 'employee_change';
--- ※ 申請時に作られた本部タスク（hq_tasks「口座変更の確認・承認」）は残る。不要なら本部タスクボードで完了／削除する
+update app_settings set value = value - 'bank_approval_required' - 'wage_approval_required' - 'pay_request_notify_enabled' - 'transfer_pending_mode' where key = 'employee_change';
+-- ※ 申請時に作られた本部タスク（hq_tasks「口座変更／賃金変更の確認・承認」「【振込漏れ注意】…」）は残る。不要なら本部タスクボードで完了／削除する

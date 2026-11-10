@@ -79,17 +79,30 @@ Deno.test("情報変更→交通費の再確認の通知: 項目名だけ出す�
   if (!m.changeEffectText(base as any).includes("交通費の再確認が必要")) throw new Error("text");
 });
 
-Deno.test("口座変更の申請の通知: 口座の中身は出さない・承認まで今の口座のまま・通常の振込に追加の承認なし／競合は選び直しか個別承認", async () => {
+Deno.test("口座・賃金の変更申請の通知: 口座の中身・金額は出さない／競合は対応の選択肢／振込データからの除外は氏名だけ", async () => {
   const m = await import("./onboarding-blocks.ts");
-  const base = { id: "r1", user_id: "u1", user_name: "テスト 立会い", store_names: "鳥一代 本店", event: "requested", requested_by_name: "テスト 立会い", by_self: true, year_month: "2026-11", pay_date: "2026-12-15", run_state: "open" };
+  const base = { id: "r1", user_id: "u1", user_name: "テスト 立会い", store_names: "鳥一代 本店", field: "bank_account", event: "requested", requested_by_name: "テスト 立会い", by_self: true, year_month: "2026-11", pay_date: "2026-12-15", run_state: "open", effective_date: null };
   const txt = JSON.stringify(m.payChangeBlocks(base as any));
-  for (const need of ["給与振込口座の変更申請", "申請: 本人", "2026-11 月分の給与（2026-12-15 支給）", "いまの口座のまま振り込みます", "別の人が承認", "page=admin&u=u1", "口座番号などはここには表示しません", "通常の給与振込に追加の承認はありません"]) if (!txt.includes(need)) throw new Error("不足: " + need);
+  for (const need of ["給与振込口座の変更申請", "申請: 本人", "2026-11 月分の給与（2026-12-15 支給）", "この人の振込データは確定しません", "別の人が承認", "page=admin&u=u1", "口座番号・金額はここには表示しません", "通常の給与振込に追加の承認はありません"]) if (!txt.includes(need)) throw new Error("不足: " + need);
   if (/account_number|bank_code|branch|\d{7}/.test(txt)) throw new Error("口座の中身が出ている");
   const t2 = JSON.stringify(m.payChangeBlocks({ ...base, by_self: false, requested_by_name: "本部 太郎", year_month: null, pay_date: null, run_state: null } as any));
-  for (const need of ["申請: 本部 太郎", "次の未出力の支給回"]) if (!t2.includes(need)) throw new Error("不足: " + need);
+  for (const need of ["申請: 本部 太郎", "指定なし（承認する人が選びます）"]) if (!t2.includes(need)) throw new Error("不足: " + need);
   const t3 = JSON.stringify(m.payChangeBlocks({ ...base, run_state: "exported" } as any));
   if (!t3.includes("振込データを出力済み") || !t3.includes("個別の確認・承認")) throw new Error("出力済みの注意");
   const t4 = JSON.stringify(m.payChangeBlocks({ ...base, event: "conflict" } as any));
   for (const need of ["振込データと競合", "自動では反映していません", "選び直す", "個別の確認・承認", "出し直す"]) if (!t4.includes(need)) throw new Error("不足: " + need);
   if (!m.payChangeText(base as any).includes("確認・承認が必要") || !m.payChangeText({ ...base, event: "conflict" } as any).includes("未反映")) throw new Error("text");
+  // 賃金: 適用開始日は出すが、金額は型に無い＝出ない
+  const w = { ...base, field: "wage", by_self: false, requested_by_name: "本部 太郎", year_month: null, pay_date: null, run_state: null, effective_date: "2027-03-01" };
+  const tw = JSON.stringify(m.payChangeBlocks(w as any));
+  for (const need of ["賃金の変更申請", "申請: 本部 太郎", "適用開始日: 2027-03-01", "賃金は変わりません", "別の人が承認"]) if (!tw.includes(need)) throw new Error("不足: " + need);
+  if (/¥|円|\d{4,}円|wage"/.test(tw)) throw new Error("金額が出ている");
+  const twc = JSON.stringify(m.payChangeBlocks({ ...w, event: "conflict" } as any));
+  for (const need of ["賃金変更が未反映", "給与が確定済み", "マスターが理由を入れて承認"]) if (!twc.includes(need)) throw new Error("不足: " + need);
+  if (!m.payChangeText(w as any).includes("賃金の変更申請")) throw new Error("wage text");
+  // 振込データからの除外
+  const h = { year_month: "2026-11", pay_date: "2026-12-15", names: ["テスト 立会い", "テスト 太郎"] };
+  const th = JSON.stringify(m.transferHoldBlocks(h));
+  for (const need of ["振込漏れ注意", "2026-11 月分（2026-12-15 支給）", "除外", "テスト 立会いさん", "テスト 太郎さん", "除外していた人の分を出力", "通常どおり"]) if (!th.includes(need)) throw new Error("不足: " + need);
+  if (!m.transferHoldText(h).includes("2 名を振込データから除外")) throw new Error("hold text");
 });

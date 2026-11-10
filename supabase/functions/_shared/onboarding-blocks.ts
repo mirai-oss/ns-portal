@@ -511,32 +511,60 @@ export function changeEffectBlocks(v: ChangeEffectView): unknown[] {
 }
 
 // =============================================================
-// 口座変更の申請（2026-11-10 ステップ 3）。本部向けの通知。申請があったときと、振込データと競合したときだけ。
-//   口座番号・銀行名などは出さない（この型に口座の中身を持たせない＝EF も申請の中身を読まない）
+// 口座・賃金の変更申請（2026-11-10 ステップ 3）。本部向けの通知。申請があったとき・競合したとき・振込データから除外したときだけ。
+//   口座番号・銀行名・賃金の金額は出さない（この型に中身を持たせない＝EF も申請の中身を読まない）
 // =============================================================
 export type PayChangeView = {
-  id: string; user_id: string; user_name: string; store_names: string | null; event: "requested" | "conflict";
-  requested_by_name: string | null; by_self: boolean; year_month: string | null; pay_date: string | null; run_state: string | null;
+  id: string; user_id: string; user_name: string; store_names: string | null; field: "bank_account" | "wage"; event: "requested" | "conflict";
+  requested_by_name: string | null; by_self: boolean; year_month: string | null; pay_date: string | null; run_state: string | null; effective_date: string | null;
 };
-const payRunLabel = (v: PayChangeView) => v.year_month ? `${v.year_month} 月分の給与（${v.pay_date ?? "—"} 支給）` : "次の未出力の支給回";
+const payRunLabel = (v: PayChangeView) => v.year_month ? `${v.year_month} 月分の給与（${v.pay_date ?? "—"} 支給）` : "指定なし（承認する人が選びます）";
 export function payChangeText(v: PayChangeView): string {
+  const what = v.field === "wage" ? "賃金変更" : "口座変更";
   return v.event === "conflict"
-    ? `⚠️ ${v.user_name}さんの口座変更が未反映です（決めた支給回は振込データ出力済み）→ 本部の対応が必要です`
-    : `🏦 ${v.user_name}さんの給与振込口座の変更申請があります → 本部の確認・承認が必要です`;
+    ? `⚠️ ${v.user_name}さんの${what}が未反映です（${v.field === "wage" ? "適用開始月の給与が確定済み" : "決めた支給回は振込データ出力済み"}）→ 本部の対応が必要です`
+    : `${v.field === "wage" ? "💴" : "🏦"} ${v.user_name}さんの${v.field === "wage" ? "賃金" : "給与振込口座"}の変更申請があります → 本部の確認・承認が必要です`;
 }
 export function payChangeBlocks(v: PayChangeView): unknown[] {
   const who = `*${v.user_name}さん*${v.store_names ? `（${v.store_names}）` : ""}`;
-  const blocks: unknown[] = v.event === "conflict"
-    ? [
-      { type: "section", text: { type: "mrkdwn", text: `⚠️ *口座変更が振込データと競合しています*\n${who}の口座変更は承認済みですが、決めた支給回（${payRunLabel(v)}）の振込データがすでに出力されているため、*自動では反映していません*。` } },
-      { type: "section", text: { type: "mrkdwn", text: "▶ 進め方: 従業員ページの「賃金・口座の変更申請（承認）」で、①次の支給回からにする（選び直す） または ②この回から変える（理由を入れて個別の確認・承認 → 振込データを出し直す） のどちらかを選んでください。" } },
-    ]
-    : [
-      { type: "section", text: { type: "mrkdwn", text: `🏦 *給与振込口座の変更申請*\n${who}の振込口座の変更申請があります（申請: ${v.by_self ? "本人" : (v.requested_by_name ?? "本部")}）。` } },
-      { type: "section", text: { type: "mrkdwn", text: `希望の開始: ${payRunLabel(v)}${v.run_state === "exported" ? "\n⚠️ この回は振込データを出力済みです（この回から変えるには、理由を入れた個別の確認・承認が必要です）" : ""}\n*承認されるまで、いまの口座のまま振り込みます。*` } },
-      { type: "section", text: { type: "mrkdwn", text: "▶ 進め方: 従業員ページの「賃金・口座の変更申請（承認）」で内容を確認 → どの支給回から新しい口座にするかを決めて承認（または却下）。申請した人とは別の人が承認します。" } },
-    ];
+  const by = v.by_self ? "本人" : (v.requested_by_name ?? "本部");
+  let blocks: unknown[];
+  if (v.field === "wage") {
+    blocks = v.event === "conflict"
+      ? [
+        { type: "section", text: { type: "mrkdwn", text: `⚠️ *賃金変更が未反映です*\n${who}の賃金変更（適用開始日 ${v.effective_date ?? "—"}）は、適用開始月の給与が確定済みのため、*自動では反映していません*。` } },
+        { type: "section", text: { type: "mrkdwn", text: "▶ 進め方: 従業員ページの「賃金・口座の変更申請（承認）」で、①適用開始日を変えて申請し直す または ②マスターが理由を入れて承認する のどちらかを選んでください。" } },
+      ]
+      : [
+        { type: "section", text: { type: "mrkdwn", text: `💴 *賃金の変更申請*\n${who}の賃金（時給・日給・月給）の変更申請があります（申請: ${by}）。` } },
+        { type: "section", text: { type: "mrkdwn", text: `適用開始日: ${v.effective_date ?? "—"}\n*承認されるまで、賃金は変わりません（スマレジにも送りません）。*` } },
+        { type: "section", text: { type: "mrkdwn", text: "▶ 進め方: 従業員ページの「賃金・口座の変更申請（承認）」で内容を確認して承認（または却下）。申請した人とは別の人が承認します。" } },
+      ];
+  } else {
+    blocks = v.event === "conflict"
+      ? [
+        { type: "section", text: { type: "mrkdwn", text: `⚠️ *口座変更が振込データと競合しています*\n${who}の口座変更は承認済みですが、決めた支給回（${payRunLabel(v)}）の振込データがすでに出力されているため、*自動では反映していません*。` } },
+        { type: "section", text: { type: "mrkdwn", text: "▶ 進め方: 従業員ページの「賃金・口座の変更申請（承認）」で、①次の支給回からにする（選び直す） または ②この回から変える（理由を入れて個別の確認・承認 → 振込データを出し直す） のどちらかを選んでください。" } },
+      ]
+      : [
+        { type: "section", text: { type: "mrkdwn", text: `🏦 *給与振込口座の変更申請*\n${who}の振込口座の変更申請があります（申請: ${by}）。` } },
+        { type: "section", text: { type: "mrkdwn", text: `希望の開始: ${payRunLabel(v)}${v.run_state === "exported" ? "\n⚠️ この回は振込データを出力済みです（この回から変えるには、理由を入れた個別の確認・承認が必要です）" : ""}\n*承認されるまで、この人の振込データは確定しません（振込漏れに注意）。*` } },
+        { type: "section", text: { type: "mrkdwn", text: "▶ 進め方: 従業員ページの「賃金・口座の変更申請（承認）」で内容を確認 → どの支給回から新しい口座にするかを選んで承認（または却下）。申請した人とは別の人が承認します。" } },
+      ];
+  }
   blocks.push({ type: "actions", block_id: "pay_change_actions", elements: [{ type: "button", text: { type: "plain_text", text: "従業員ページ", emoji: true }, action_id: "hr.onboarding.link.nippo", url: `${NIPPO_URL}?page=admin&u=${v.user_id}`, value: JSON.stringify({ request_id: v.id }) }] });
-  blocks.push({ type: "context", elements: [{ type: "mrkdwn", text: "口座番号などはここには表示しません（従業員ページで確認）。この通知は口座変更の申請があったときだけ届きます。通常の給与振込に追加の承認はありません。" }] });
+  blocks.push({ type: "context", elements: [{ type: "mrkdwn", text: "口座番号・金額はここには表示しません（従業員ページで確認）。この通知は変更申請があったときだけ届きます。通常の給与振込に追加の承認はありません。" }] });
   return blocks;
+}
+// 振込データの出力で、口座変更の承認待ちの人を除外したとき（振込漏れ防止）
+export type TransferHoldView = { year_month: string; pay_date: string | null; names: string[] };
+export function transferHoldText(v: TransferHoldView): string {
+  return `🚨 ${v.year_month} 月分の給与振込: 口座変更の承認待ちのため ${v.names.length} 名を振込データから除外しました → このままでは振り込まれません`;
+}
+export function transferHoldBlocks(v: TransferHoldView): unknown[] {
+  return [
+    { type: "section", text: { type: "mrkdwn", text: `🚨 *【振込漏れ注意】${v.year_month} 月分（${v.pay_date ?? "—"} 支給）の給与振込*\n口座変更の申請が承認待ちのため、次の人を振込データから*除外*しました。このままでは振り込まれません。\n${v.names.map((n) => `・${n}さん`).join("\n")}` } },
+    { type: "section", text: { type: "mrkdwn", text: "▶ 進め方: ①従業員ページで口座変更の申請を承認（どの支給回からかを選ぶ）または却下 ②振込画面で「除外していた人の分を出力」して振り込む。本部タスク「【振込漏れ注意】」にも同じ内容があります。" } },
+    { type: "context", elements: [{ type: "mrkdwn", text: "口座番号などはここには表示しません。除外していない人の振込データは通常どおりです。" }] },
+  ];
 }
