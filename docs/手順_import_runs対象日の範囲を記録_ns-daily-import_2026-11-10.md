@@ -7,17 +7,18 @@
 
 ## 記録する形（`import_runs.items`・jsonb・既存列は変更なし）
 ```json
-{ "date_from": "2026-11-09", "date_to": "2026-11-09", "rows": 13, "stores": 4, "store_ids": ["…uuid…"], "parsed_rows": 13, "skipped_rows": 0 }
+{ "date_from": "2026-11-09", "date_to": "2026-11-09", "rows": 13, "stores": 4, "store_ids": ["…uuid…"], "parsed_rows": 15, "skipped_rows": 2,
+  "skipped_stores": [ { "channel": "ubereats", "channel_store_id": "B", "name": "（外部名）" } ] }
 ```
 - `date_from`／`date_to`: 取り込もうとした期間（日次は同じ日付）。`rows`: 投入した行数。`stores`: 行のあった店舗数（`store_ids` が店舗ID）。
-- **判定の読み方**: `job='rocketnow-sales'` かつ `status in ('success','partial')` の行で、`date_from <= 対象日 <= date_to` なら「対象日は取込済み」。そのうえで対象店舗の行が無ければ「注文なし（0円）」、`rows=0` でも成功ならその期間は全店「注文なし」。該当する行が無い・`status='failed'` なら「未取得」。
-- 失敗した実行にも `{date_from,date_to,rows:0,stores:0,failed:true}` を残す（`status='failed'` で判定する）。`status` は従来どおり success／failed／partial（変更なし）。
+- **判定の読み方**: `job='rocketnow-sales'` かつ `status in ('success','partial')` の行で、`date_from <= 対象日 <= date_to` なら「対象日は取込済み」。そのうえで対象店舗の行が無ければ「注文なし（0円）」、`rows=0` でも成功ならその期間は全店「注文なし」。**`skipped_stores` に入っている店舗（マスタ未登録）だけは「未取得」扱い**。該当する行が無い・`status='failed'` なら「未取得」。
+- 失敗した実行にも `{date_from,date_to,rows:0,stores:0,failed:true}` を残す（`status='failed'` で判定する）。`status` は success／failed／partial。**2026-11-10（司令塔確定）: 店舗ID未対応でスキップした行がある日は status='partial'**（`items.skipped_rows`＝スキップした行数、`items.skipped_stores`＝未対応の店舗（マスタに無いので外部名・チャネル・チャネル店舗ID））。Lark等の通知本文（`detail`）には「店舗ID未対応: N店（M行スキップ）」と件数だけを入れ、店舗名は入れない。
 
 ## 変更ファイル（ブランチ `feat/import-runs-date-range`・コミット 76e5c93・mainには未マージ）
 | ファイル | 変更 |
 |---|---|
-| `tasks/rocketnow-sales.js` | 成功時に `items`（上の形）を返す。失敗時は例外に `items` を付ける（`failed:true`） |
-| `tasks/delivery-sales.js` | `processBuffer`／`buildCsv` が件数・店舗IDの統計 `stats` を追加で返す（既存の戻り値 `detail`／`status` は変更なし）。手動アップロード（会計WS）も同じ関数なので統計が付くだけで動作は同じ |
+| `tasks/rocketnow-sales.js` | `status`（一部失敗＝partial）と `items`（上の形）を返す。失敗時は例外に `items` を付ける（`failed:true`） |
+| `tasks/delivery-sales.js` | `processBuffer`／`buildCsv` が件数・店舗ID・未対応店舗の統計 `stats` を追加で返す。`detail` の文言を「店舗ID未対応: N店（M行スキップ）」に変更（店舗名は入れない）。手動アップロード（会計WS）も同じ関数なので統計が付くだけ（status は従来どおり） |
 | `run.js` | 失敗時に例外の `items` を `finishRun` に渡す（無ければ従来どおり null） |
 - `lib/import-tracker.js`（`finishRun` は既に `items` を受けて保存する作り）と、DBの列は**変更なし**。構文チェック（`node --check`）済み。実機（ログイン・ダウンロード）での動作は、反映後の翌朝の実行で確認する。
 
@@ -32,6 +33,7 @@
 ## 戻し方
 - `git checkout main`（Mac mini）。`items` が入らなくなるだけで、他の動作は元のまま（過去に入った `items` はそのまま残って害は無い）。
 
-## 補足（今回は変更していない・相談事項）
-1. **`rocketnow-sales` は現在、`processBuffer` の `status`（「一部失敗」）を捨てている**（`return { detail }` のみ）。そのため、店舗ID未対応で行をスキップした日も `status='success'` になる。「取込が成功したか」の判定を厳密にするなら、`status` も返す修正（＝一部失敗がLark通知される副作用あり）が別途必要。**ご判断ください**（今回は依頼どおり status の扱いは変えていない）。
-2. **他のジョブ（依頼の「可能なら全ジョブ」）**: 今回は rocketnow-sales と共通の `delivery-sales` のみ。他は、日付の持ち方がジョブごとに違うため個別対応が要る: `infomart-siire`（当月累計＝date_from=月初・date_to=取得日／1〜10日は前月も）、`smaregi-payroll`（対象月）、`dinii-*`（昨日の1日）、`zeroregi-akihabara`（昨日）。rocketnow-sales の反映・確認後に、優先度の高いものから同じ形で追加する。
+## 補足
+1. **status の扱い（2026-11-10に実施）**: 従来 `rocketnow-sales` は `processBuffer` の status（一部失敗）を捨てていたため、店舗ID未対応の行をスキップした日も success だった。司令塔の確定で、**status も返す**ように修正済み（`run.js` が「一部」を partial として記録し、Lark等へ通知する既存ルールのまま）。通知は、店舗ID未対応の日（直すべき事象）に出る。
+2. 動作確認: 通信を差し替えた簡易テストで、`buildCsv` が「投入1・スキップ2・未対応店舗1（外部名つき）」を正しく集計することを確認済み。実機（ログイン・ダウンロード）での確認は、反映後の翌朝の実行で行う。
+3. **他のジョブ（依頼の「可能なら全ジョブ」）**: 今回は rocketnow-sales と共通の `delivery-sales` のみ。他は日付の持ち方がジョブごとに違う: `infomart-siire`（当月累計＝date_from=月初・date_to=取得日／1〜10日は前月も）、`smaregi-payroll`（対象月）、`dinii-*`（昨日の1日）、`zeroregi-akihabara`（昨日）。rocketnow-sales の反映・確認後に、同じ形で追加する。
