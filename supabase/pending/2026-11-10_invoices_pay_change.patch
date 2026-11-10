@@ -1,0 +1,108 @@
+--- a/invoices.html
++++ b/invoices.html
+@@ -10638,6 +10638,7 @@
+   if(PAYROLL_STATE.dryResultsYm&&PAYROLL_STATE.dryResultsYm!==ym){ PAYROLL_STATE.dryResults=null; PAYROLL_STATE.dryResultsYm=null; }
+   if(PAYROLL_STATE.autoResultsYm&&PAYROLL_STATE.autoResultsYm!==ym){ PAYROLL_STATE.autoResults=new Map(); PAYROLL_STATE.autoResultsYm=null; } // 月を切り替えたら一括生成の結果は破棄
+   const fetchSync=()=>authed(`/rest/v1/sf_payroll_sync?year_month=eq.${ym}&select=*,user:users(name,role,is_active)&order=user(name)`);
++  await payrollTransferPrepare(ym); // 2026-11-10: 口座変更の運用（人の承認は挟まない・自動）。必ず口座の読み込みより前
+   let [syncR,recR,asgR,tplR,deptR,allocR,bankR,hiddenR,accR,draftR,scheduleR]=await Promise.all([
+     fetchSync(),
+     authed(`/rest/v1/payroll_journal_records?year_month=eq.${ym}&select=*`),
+@@ -11766,7 +11767,29 @@
+   }
+   return removed;
+ }
+-function payrollBankFor(userId){ return (PAYROLL_STATE.bankAccounts||[]).find(b=>b.user_id===userId); }
++// 2026-11-10: 振込データを出力済みの月は、出力した時点の口座の控え（payroll_transfer_account_snapshots）を使う。
++// あとで登録口座が変わっても、確定済みの振込データは自動では変わらない（変えるのは本部の個別の確認・承認があったときだけ＝控えが差し替わる）。
++// 控えに無い人（出力後に口座を登録した人）と、まだ出力していない月は、登録口座をそのまま使う。
++function payrollBankMaster(userId){ return (PAYROLL_STATE.bankAccounts||[]).find(b=>b.user_id===userId); }
++function payrollBankFor(userId){ const s=PAYROLL_STATE.transferSnapshot; return (s&&s[userId])||payrollBankMaster(userId); }
++async function payrollTransferPrepare(ym){
++  PAYROLL_STATE.transferSnapshot=null; PAYROLL_STATE.payAttention=[]; PAYROLL_STATE.bankApprovalRequired=false;
++  try{
++    const r=await authed("/rest/v1/rpc/hr_payroll_transfer_prepare",{method:"POST",body:JSON.stringify({p_year_month:ym})});
++    if(!(r.ok&&r.body&&r.body.ok)) return; // ハブ側が未適用・権限なし → 従来どおり（登録口座を使う）
++    PAYROLL_STATE.transferSnapshot=r.body.snapshot||null;
++    PAYROLL_STATE.payAttention=Array.isArray(r.body.attention)?r.body.attention:[];
++    PAYROLL_STATE.bankApprovalRequired=!!r.body.bank_approval_required;
++  }catch(e){}
++}
++// 対応が必要なもの（口座・賃金の変更申請の承認漏れ／同期エラー／出力済みデータとの競合）があるときだけ出す注意。振込の操作は止めない（承認の手順は足さない）
++function payrollAttentionHtml(){
++  const a=PAYROLL_STATE.payAttention||[]; if(!a.length) return "";
++  return `<div id="payroll-pay-attn" style="margin:0 0 10px;padding:8px 10px;border:1px solid var(--m-amber,#d97706);border-radius:8px;font-size:12px">
++    <b>⚠️ 対応が必要な変更申請があります（${a.length}件）</b>　<span style="color:var(--muted)">振込データの出力はこのままできます。承認されていない変更は反映されず、いまの口座・賃金のままです。</span>
++    ${a.map(x=>`<div style="margin-top:4px">・<a href="https://mirai-oss.github.io/nippo/?page=admin&u=${esc(x.user_id)}" target="_blank" rel="noopener">${esc(x.user_name||"—")}さん</a>: ${esc(x.message||"")}</div>`).join("")}
++  </div>`;
++}
+ // 一覧の並び替え・絞り込み（2026-09-01: ユーザー要望「振込済みが1番下に行くように・絞れるように」）
+ // 2026-09-02: この月は対象外にした人（sf_payroll_hidden・担当Bからの依頼②）は一覧から常に除外し、
+ // 検索キーワード（氏名の部分一致・依頼③）も同時にここで反映する
+@@ -12290,6 +12313,7 @@
+       </div>
+       ${(()=>{ const extra=`${payrollBulkSummaryHtml()}${payrollBulkListsHtml()}${PAYROLL_STATE.diagHtml||""}${payrollDryRunHtml()}`; return extra.trim()?`<div id="payroll-bulk-bar" style="margin:0 0 12px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--panel-2,#fafafa)">${extra}</div>`:""; })()}
+       ${payrollEditPanelHtml()}
++      ${payrollAttentionHtml()}
+       <div class="err" id="payroll-csv-msg" style="margin-bottom:8px"></div>
+ 
+       <div class="card hq-tablewrap">
+@@ -12660,7 +12684,7 @@
+    ---------------------------------------------------------- */
+ function payrollOpenBankModal(userId){
+   const row=PAYROLL_STATE.rows.find(r=>r.user_id===userId);
+-  const bank=payrollBankFor(userId)||{};
++  const bank=payrollBankMaster(userId)||{}; // 編集するのは登録口座（出力済みの月の控えではない）
+   const name=(row&&row.user&&row.user.name)||"—";
+   const method=bank.payment_method||"bank_transfer";
+   const modal=document.createElement("div");
+@@ -12724,12 +12748,25 @@
+         account_type:$("pb-accounttype").value, account_number:accountNumber, account_holder_kana:holderKana,
+         updated_by:ME.id, updated_at:new Date().toISOString(),
+       };
++    }
++    // 2026-11-10: 口座の直接編集の禁止フラグが ON で、すでに登録がある人の変更は「申請 → 別の人の承認」に回す（初回の登録は従来どおり）。承認されるまで今の口座のまま
++    if(PAYROLL_STATE.bankApprovalRequired&&payrollBankMaster(userId)){
++      const why=prompt("登録済みの支払方法・口座の変更は「申請 → 別の人の承認」が必要です。\n変更の理由を入れてください（例: 本人から口座変更の連絡）。\n承認されるまで、いまの口座のまま振り込みます。");
++      if(!why||!why.trim()) return;
++      const {user_id:_u,updated_by:_b,updated_at:_a,...acct}=payload;
++      $("pb-save").disabled=true; msg.textContent="申請中…";
++      const rq=await authed("/rest/v1/rpc/hr_pay_change_request",{method:"POST",body:JSON.stringify({p_user:userId,p_kind:"bank_account",p_payload:acct,p_reason:why.trim()})});
++      if(!rq.ok){ msg.textContent=(rq.body&&rq.body.message)||"申請できませんでした"; $("pb-save").disabled=false; return; }
++      msg.className="err msg-ok"; msg.textContent="口座変更を申請しました（別の人の承認待ち）。どの支給回から変えるかは承認のときに決まります。";
++      setTimeout(async()=>{ history.back(); await payrollLoad(); payrollRender(); updateMailSummaryBar(); },1500);
++      return;
+     }
+     $("pb-save").disabled=true; msg.textContent="保存中…";
+     const r=await authed("/rest/v1/payroll_bank_accounts",{method:"POST",headers:{Prefer:"resolution=merge-duplicates,return=minimal"},body:JSON.stringify(payload)});
+     if(!r.ok){ msg.textContent="保存に失敗しました"; $("pb-save").disabled=false; return; }
+-    msg.className="err msg-ok"; msg.textContent="保存しました。画面を更新します…";
+-    setTimeout(async()=>{ history.back(); await payrollLoad(); payrollRender(); updateMailSummaryBar(); },700);
++    const kept=!!(PAYROLL_STATE.transferSnapshot&&PAYROLL_STATE.transferSnapshot[userId]); // この月は出力済み → この月の一覧と出し直しは出力時の口座のまま
++    msg.className="err msg-ok"; msg.textContent=kept?"保存しました。この月は振込データ出力済みのため、この月の振込は出力時の口座のままです（次の支給回から新しい口座）。":"保存しました。画面を更新します…";
++    setTimeout(async()=>{ history.back(); await payrollLoad(); payrollRender(); updateMailSummaryBar(); },kept?2500:700);
+   };
+   if($("pb-delete")) $("pb-delete").onclick=async()=>{
+     if(!confirm(`${name}さんの支払方法の登録を削除しますか？`)) return;
+@@ -12903,6 +12940,12 @@
+ // 振込の実行はしない＝生成したCSVをダウンロードするだけ（人が確認してPayPay銀行の画面で実行する）
+ async function payrollExportCsv(){
+   const msg=$("payroll-csv-msg"); msg.className="err"; msg.textContent="";
++  // 2026-11-10: 出力の直前に、時期が来た口座変更の反映と口座の読み直しをする（人の承認は挟まない）。読み直しに失敗したら、画面を開いた時点の口座のまま出さずに止める
++  await payrollTransferPrepare(PAYROLL_STATE.yearMonth);
++  const bankFresh=await authed(`/rest/v1/payroll_bank_accounts?select=*`);
++  if(!(bankFresh.ok&&Array.isArray(bankFresh.body))){ msg.textContent="振込口座を読み直せませんでした。画面を再読み込みしてからやり直してください"; return; }
++  PAYROLL_STATE.bankAccounts=bankFresh.body;
++  const usedSnapshot=!!PAYROLL_STATE.transferSnapshot;
+   const skipped=[];
+   const csvRows=[];
+   const paidNames=[];
+@@ -12944,7 +12987,7 @@
+   payrollRender();
+   const msg2=$("payroll-csv-msg");
+   msg2.className="err msg-ok";
+-  msg2.textContent=`${count}件・合計${yen(total)}のCSVをダウンロードしました（振込予定日: ${fmtD(transferDate)}）。`+(taskR.ok?"本部タスク「振込先を確認」も作成しました。":"⚠️本部タスクの自動作成に失敗しました（振込CSV自体は正常に作成されています）。")+(skipped.length?` スキップ: ${skipped.join("、")}`:"");
++  msg2.textContent=`${count}件・合計${yen(total)}のCSVをダウンロードしました（振込予定日: ${fmtD(transferDate)}）。`+(taskR.ok?"本部タスク「振込先を確認」も作成しました。":"⚠️本部タスクの自動作成に失敗しました（振込CSV自体は正常に作成されています）。")+(usedSnapshot?" ※この月は出力済みのため、最初に出力した時点の口座で作りました（その後に変わった登録口座は、次の支給回から使います）。":"")+(skipped.length?` スキップ: ${skipped.join("、")}`:"");
+ }
+ // 対象年月（"YYYY-MM"）の末日を"YYYY-MM-DD"で返す（2026-09-02追加。ユーザー要望
+ // 「会計計上日は対象月の末日が既定値になるように」に対応。従来は常に「今日の日付」だった）

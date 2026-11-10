@@ -14,7 +14,16 @@
 --                                     口座＝その支給回の振込データが出力済み・支給日を過ぎていれば反映しない（本部が支給回を選び直す）
 --     ・口座は「前の支給回の振込データが出力されるまで」現在の口座を書き換えない（予約）。出力の直後に自動で切り替わる（承認済みの予約の実行）
 --     ・振込データを出力した時点の口座の控え payroll_transfer_account_snapshots
---     ・直接編集の禁止（承認必須化）は app_settings.employee_change.pay_approval_required（既定 false＝これまでどおり直接編集も可・履歴は残る）
+--     ・直接編集の禁止（承認必須化）は app_settings.employee_change の bank_approval_required／wage_approval_required（既定 false＝これまでどおり直接編集も可・履歴は残る）
+--
+--   ★ 口座変更の運用方針（2026-11-10 夜・確定）に合わせた点:
+--     ・通常の給与振込に承認の手順は足さない。登録済み（承認済み）の口座をそのまま使う。変更申請が無い人には何も起きない
+--     ・申請があった人だけ、本部に確認・承認のタスクと通知（Slack・本部タスク。口座番号などは出さない。フラグ pay_request_notify_enabled・既定 false）
+--     ・どの支給回から新しい口座にするかは「承認のとき」に確定する（申請の月は希望。未指定なら次の未出力の回）
+--     ・承認済みの変更は、決めた支給回から自動で切り替わる（前の回の出力直後／振込画面を開いたとき hr_payroll_transfer_prepare）
+--     ・振込データを出力した時点の口座は自動で控えを取り（人の承認なし）、あとで登録口座が変わっても控えは自動では変わらない。出し直しは控えの口座を使う
+--     ・例外: 出力済みの回の口座を変える必要があるときだけ、本部の個別の確認・承認（理由つき）。控えに「個別承認」として残る
+--     ・本部に対応を求めるのは 承認漏れ・同期エラー・出力済みデータとの競合 があるときだけ（hr_pay_change_attention）
 
 -- ============ 1. 申請の表を拡張 ============
 alter table profile_change_requests add column if not exists payload jsonb;
@@ -26,6 +35,8 @@ alter table profile_change_requests add column if not exists apply_status text n
 alter table profile_change_requests add column if not exists applied_at timestamptz;
 alter table profile_change_requests add column if not exists apply_note text;
 alter table profile_change_requests add column if not exists apply_ref jsonb;
+alter table profile_change_requests add column if not exists hq_task_id uuid;                -- 申請時に作った本部タスク（承認・却下・取り下げで自動完了）
+alter table profile_change_requests add column if not exists notify_log jsonb not null default '{}'::jsonb;   -- Slack 通知の二重防止（{"requested": 時刻, "conflict": 時刻}）
 alter table profile_change_requests drop constraint if exists profile_change_requests_field_check;
 alter table profile_change_requests add constraint profile_change_requests_field_check check (field = any (array['name','kana','phone','address','bank_account','contact_email','id_document','wage']));
 alter table profile_change_requests drop constraint if exists profile_change_requests_status_check;
@@ -39,21 +50,27 @@ create unique index if not exists profile_change_requests_bank_scheduled on prof
 create table if not exists payroll_transfer_account_snapshots (
   year_month text not null, user_id uuid not null references users(id) on delete cascade,
   account jsonb not null, taken_at timestamptz not null default now(), taken_by uuid,
+  source text not null default 'export' check (source in ('export', 'exception')),   -- export=出力時に自動で取った控え／exception=出力後に個別承認で差し替えた
+  request_id uuid, previous_account jsonb, note text,
   primary key (year_month, user_id)
 );
 alter table payroll_transfer_account_snapshots enable row level security;
 drop policy if exists payroll_transfer_account_snapshots_read on payroll_transfer_account_snapshots;
 create policy payroll_transfer_account_snapshots_read on payroll_transfer_account_snapshots for select using (is_profile_approver());
 
-update app_settings set value = value || '{"pay_approval_required": false}'::jsonb where key = 'employee_change' and not (value ? 'pay_approval_required');
+update app_settings set value = '{"bank_approval_required": false, "wage_approval_required": false, "pay_request_notify_enabled": false}'::jsonb || value where key = 'employee_change';
 
 -- ============ 2. 支給回の補助（給与は末日締め・翌月 15 日払い） ============
 create or replace function pay_run_date(p_year_month text) returns date language sql stable security definer set search_path = public as $$
   select coalesce((select scheduled_date from payroll_transfer_schedule where year_month = p_year_month), (to_date(p_year_month || '-01', 'YYYY-MM-DD') + interval '1 month' + interval '14 days')::date)
 $$;
--- その支給回は「もう変えられない」か（振込データを出力済み、または支給日を過ぎた）
+-- 支給回の状態: open=まだ出力していない／exported=振込データを出力済み（支給日前）／paid=支給日を過ぎた
+create or replace function pay_run_state(p_year_month text, p_today date default current_date) returns text language sql stable security definer set search_path = public as $$
+  select case when p_today > pay_run_date(p_year_month) then 'paid' when exists (select 1 from payroll_transfer_schedule where year_month = p_year_month) then 'exported' else 'open' end
+$$;
+-- その支給回は「もう自動では変えられない」か（振込データを出力済み、または支給日を過ぎた）
 create or replace function pay_run_closed(p_year_month text, p_today date default current_date) returns boolean language sql stable security definer set search_path = public as $$
-  select exists (select 1 from payroll_transfer_schedule where year_month = p_year_month) or p_today > pay_run_date(p_year_month)
+  select pay_run_state(p_year_month, p_today) <> 'open'
 $$;
 -- 次に変えられる支給回（まだ出力していない最も早い月）
 create or replace function pay_run_next_open(p_today date default current_date) returns text language sql stable security definer set search_path = public as $$
@@ -97,9 +114,11 @@ begin
       raise exception '口座の内容（銀行コード・支店コード・口座番号・名義カナ）が足りません';
     end if;
     if exists (select 1 from profile_change_requests where user_id = p_user and field = 'bank_account' and status = 'pending') then raise exception '口座変更の申請がすでに承認待ちです'; end if;
+    -- 月は「希望」（どの支給回からにするかは承認のときに確定する）。未指定なら次の未出力の回
     v_ym := coalesce(nullif(trim(coalesce(p_year_month, '')), ''), pay_run_next_open());
     if v_ym !~ '^\d{4}-\d{2}$' then raise exception '適用する月（YYYY-MM）が不正です'; end if;
-    if pay_run_closed(v_ym) then raise exception '% 月分の給与（% 支給）は振込データを出力済みか支給日を過ぎています。次の支給回を選んでください', v_ym, pay_run_date(v_ym); end if;
+    if pay_run_state(v_ym) = 'paid' then raise exception '% 月分の給与（% 支給）は支給日を過ぎています。次の支給回を選んでください', v_ym, pay_run_date(v_ym); end if;
+    if pay_run_state(v_ym) = 'exported' then v_warn := v_warn || text '希望の支給回は振込データを出力済みです（この回から変えるには、本部の個別の確認・承認が必要です）'; end if;
     select to_jsonb(b) - 'created_at' - 'updated_at' - 'updated_by' - 'user_id' into v_old from payroll_bank_accounts b where b.user_id = p_user;
     insert into profile_change_requests(user_id, field, old_value, new_value, payload, effective_year_month, effective_pay_date, request_reason, requested_by)
     values (p_user, 'bank_account', v_old::text, p_payload::text, p_payload, v_ym, pay_run_date(v_ym), nullif(trim(coalesce(p_reason, '')), ''), v_actor) returning id into v_id;
@@ -108,44 +127,73 @@ begin
 end $$;
 
 -- ============ 4. 口座の反映（承認済みの申請だけ。締め済みは書かない・前の支給回が済むまで予約） ============
+-- 登録口座への書き込み（承認の処理からだけ呼ぶ）＋履歴に申請者・承認者をひも付ける
+create or replace function hr_bank_change_write(p_request uuid, p_actor uuid default null)
+returns void language plpgsql security definer set search_path = public as $$
+declare q profile_change_requests%rowtype; b jsonb;
+begin
+  select * into q from profile_change_requests where id = p_request;
+  b := coalesce(q.payload, q.new_value::jsonb);
+  perform set_config('employee_change.via_approval', q.id::text, true);
+  insert into payroll_bank_accounts(user_id, bank_code, bank_name, branch_code, branch_name, account_type, account_number, account_holder_kana, payment_method, updated_by, updated_at)
+  values (q.user_id, b ->> 'bank_code', b ->> 'bank_name', b ->> 'branch_code', b ->> 'branch_name', coalesce(b ->> 'account_type', '1'), b ->> 'account_number', b ->> 'account_holder_kana', coalesce(b ->> 'payment_method', 'bank_transfer'), coalesce(q.reviewed_by, p_actor), now())
+  on conflict (user_id) do update set bank_code = excluded.bank_code, bank_name = excluded.bank_name, branch_code = excluded.branch_code, branch_name = excluded.branch_name, account_type = excluded.account_type,
+    account_number = excluded.account_number, account_holder_kana = excluded.account_holder_kana, payment_method = excluded.payment_method, updated_by = excluded.updated_by, updated_at = excluded.updated_at;
+  perform set_config('employee_change.via_approval', '', true);
+  update employee_change_events set source = 'request', request_table = 'profile_change_requests', request_id = q.id, requested_by = q.requested_by, requested_at = q.requested_at,
+         approved_by = q.reviewed_by, approved_at = q.reviewed_at, effective_date = q.effective_pay_date
+   where user_id = q.user_id and field_group = 'bank_account' and txid = txid_current();
+end $$;
+-- 例外: 振込データを出力済み（支給日前）の回から口座を変える。本部の個別の確認・承認（理由つき）があるときだけ呼ばれる。
+--   登録口座をすぐ書き換え、その回の控えを「個別承認」として差し替える（前の控えも残す）。出力済みのファイル自体は変わらない＝出し直しが必要
+create or replace function hr_bank_change_apply_exception(p_request uuid, p_year_month text, p_actor uuid, p_reason text)
+returns text language plpgsql security definer set search_path = public as $$
+declare q profile_change_requests%rowtype; v_new jsonb;
+begin
+  select * into q from profile_change_requests where id = p_request for update;
+  if q.id is null or q.field <> 'bank_account' or q.status <> 'approved' then raise exception '対象が見つかりません'; end if;
+  if pay_run_state(p_year_month) <> 'exported' then raise exception 'この支給回は個別承認の対象ではありません'; end if;
+  if nullif(trim(coalesce(p_reason, '')), '') is null then raise exception '個別の確認・承認には理由が必要です'; end if;
+  update profile_change_requests set effective_year_month = p_year_month, effective_pay_date = pay_run_date(p_year_month) where id = q.id;
+  perform hr_bank_change_write(q.id, p_actor);
+  select to_jsonb(b) - 'created_at' - 'updated_at' - 'updated_by' - 'user_id' into v_new from payroll_bank_accounts b where b.user_id = q.user_id;
+  insert into payroll_transfer_account_snapshots(year_month, user_id, account, taken_by, source, request_id, note)
+  values (p_year_month, q.user_id, v_new, p_actor, 'exception', q.id, trim(p_reason))
+  on conflict (year_month, user_id) do update set previous_account = payroll_transfer_account_snapshots.account, account = excluded.account, taken_at = now(), taken_by = excluded.taken_by, source = 'exception', request_id = excluded.request_id, note = excluded.note;
+  update profile_change_requests set apply_status = 'applied', applied_at = now(),
+         apply_note = p_year_month || ' 月分（' || pay_run_date(p_year_month) || ' 支給）は振込データ出力済み → 個別の確認・承認で反映（理由: ' || trim(p_reason) || '）。出力済みの振込ファイルは自動では変わりません。振込データを出し直してください' where id = q.id;
+  return 'applied';
+end $$;
 create or replace function hr_bank_change_try_apply(p_request uuid, p_actor uuid default null)
 returns text language plpgsql security definer set search_path = public as $$
-declare q profile_change_requests%rowtype; b jsonb; v_prev text; v_status text;
+declare q profile_change_requests%rowtype; v_prev text; v_status text;
 begin
   select * into q from profile_change_requests where id = p_request for update;
   if q.id is null or q.field <> 'bank_account' or q.status <> 'approved' or q.apply_status = 'applied' then return q.apply_status; end if;
-  b := coalesce(q.payload, q.new_value::jsonb);
   if q.effective_year_month is null then
     update profile_change_requests set effective_year_month = pay_run_next_open(), effective_pay_date = pay_run_date(pay_run_next_open()) where id = q.id returning * into q;
   end if;
   v_prev := to_char(to_date(q.effective_year_month || '-01', 'YYYY-MM-DD') - interval '1 month', 'YYYY-MM');
   if pay_run_closed(q.effective_year_month) then
-    v_status := 'blocked_exported';   -- その支給回は出力済み／支給日を過ぎた → 自動では書かない
-    update profile_change_requests set apply_status = v_status, apply_note = q.effective_year_month || ' 月分（' || pay_run_date(q.effective_year_month) || ' 支給）は振込データを出力済みか支給日を過ぎています。支給回を選び直してください' where id = q.id;
+    v_status := 'blocked_exported';   -- その支給回は出力済み／支給日を過ぎた → 自動では書かない（競合。本部に対応を求める）
+    update profile_change_requests set apply_status = v_status, apply_note = q.effective_year_month || ' 月分（' || pay_run_date(q.effective_year_month) || ' 支給）は振込データを出力済みか支給日を過ぎています。支給回を選び直すか、個別の確認・承認をしてください' where id = q.id;
   elsif not pay_run_closed(v_prev) then
     v_status := 'scheduled';          -- 前の支給回がまだ → 今の口座は書き換えない（前の回の振込データを出力した直後に切り替わる）
     update profile_change_requests set apply_status = v_status, apply_note = v_prev || ' 月分の振込データを出力したあとに切り替わります（' || pay_run_date(q.effective_year_month) || ' 支給分から新しい口座）' where id = q.id;
   else
-    perform set_config('employee_change.via_approval', q.id::text, true);
-    insert into payroll_bank_accounts(user_id, bank_code, bank_name, branch_code, branch_name, account_type, account_number, account_holder_kana, payment_method, updated_by, updated_at)
-    values (q.user_id, b ->> 'bank_code', b ->> 'bank_name', b ->> 'branch_code', b ->> 'branch_name', coalesce(b ->> 'account_type', '1'), b ->> 'account_number', b ->> 'account_holder_kana', coalesce(b ->> 'payment_method', 'bank_transfer'), coalesce(q.reviewed_by, p_actor), now())
-    on conflict (user_id) do update set bank_code = excluded.bank_code, bank_name = excluded.bank_name, branch_code = excluded.branch_code, branch_name = excluded.branch_name, account_type = excluded.account_type,
-      account_number = excluded.account_number, account_holder_kana = excluded.account_holder_kana, payment_method = excluded.payment_method, updated_by = excluded.updated_by, updated_at = excluded.updated_at;
-    perform set_config('employee_change.via_approval', '', true);
+    perform hr_bank_change_write(q.id, p_actor);
     v_status := 'applied';
     update profile_change_requests set apply_status = v_status, applied_at = now(), apply_note = pay_run_date(q.effective_year_month) || ' 支給分から新しい口座' where id = q.id;
-    -- 履歴（ステップ 1 の記録）に申請者・承認者をひも付ける
-    update employee_change_events set source = 'request', request_table = 'profile_change_requests', request_id = q.id, requested_by = q.requested_by, requested_at = q.requested_at,
-           approved_by = q.reviewed_by, approved_at = q.reviewed_at, effective_date = q.effective_pay_date
-     where user_id = q.user_id and field_group = 'bank_account' and txid = txid_current();
   end if;
   return v_status;
 end $$;
 
 -- ============ 5. 承認・却下 ============
-create or replace function hr_pay_change_review(p_request uuid, p_approve boolean, p_reason text default null, p_actor uuid default null, p_force_closed boolean default false)
+--   口座: p_year_month＝どの支給回（何月分の給与）から新しい口座にするか。ここで確定する（未指定なら申請の希望、それも無ければ次の未出力の回）
+--         出力済み（支給日前）の回を選ぶのは例外 → p_force_closed=true と理由があるときだけ（本部の個別の確認・承認）
+create or replace function hr_pay_change_review(p_request uuid, p_approve boolean, p_reason text default null, p_actor uuid default null, p_force_closed boolean default false, p_year_month text default null)
 returns jsonb language plpgsql security definer set search_path = public as $$
-declare v_actor uuid; q profile_change_requests%rowtype; v_master boolean; v_corp uuid; v_ym text; r jsonb; v_apply text;
+declare v_actor uuid; q profile_change_requests%rowtype; v_master boolean; v_corp uuid; v_ym text; r jsonb; v_apply text; v_state text;
 begin
   v_actor := public.onboarding_resolve_actor(p_actor);
   select coalesce(is_master, false) into v_master from users where id = v_actor;
@@ -180,9 +228,24 @@ begin
     -- スマレジへの同期はここでは行わない（登録された行は sync_status=pending。既存の賃金同期＝wage_push → 読み戻し wage_pull が拾う）
     return jsonb_build_object('ok', true, 'status', 'approved', 'apply_status', 'applied', 'wage_setting_id', r ->> 'id', 'sync', 'pending');
   end if;
-  update profile_change_requests set status = 'approved', reviewed_by = v_actor, reviewed_at = now(), reject_reason = null where id = q.id;
-  v_apply := hr_bank_change_try_apply(q.id, v_actor);
-  return jsonb_build_object('ok', true, 'status', 'approved', 'apply_status', v_apply, 'note', (select apply_note from profile_change_requests where id = q.id));
+  -- 口座: ここで支給回を確定する
+  v_ym := coalesce(nullif(trim(coalesce(p_year_month, '')), ''), q.effective_year_month, pay_run_next_open());
+  if v_ym !~ '^\d{4}-\d{2}$' then raise exception '適用する月（YYYY-MM）が不正です'; end if;
+  v_state := pay_run_state(v_ym);
+  if v_state = 'paid' and nullif(trim(coalesce(p_year_month, '')), '') is null then v_ym := pay_run_next_open(); v_state := 'open'; end if;   -- 希望の回がもう支給済み → 次の未出力の回
+  if v_state = 'paid' then raise exception '% 月分の給与（% 支給）は支給日を過ぎています。次の支給回を選んでください', v_ym, pay_run_date(v_ym); end if;
+  if v_state = 'exported' then
+    if not (coalesce(p_force_closed, false) and nullif(trim(coalesce(p_reason, '')), '') is not null) then
+      return jsonb_build_object('ok', false, 'blocked', 'exported', 'year_month', v_ym, 'pay_date', pay_run_date(v_ym), 'next_open', pay_run_next_open(),
+        'error', v_ym || ' 月分（' || pay_run_date(v_ym) || ' 支給）は振込データを出力済みです。次の支給回からにするか、個別の確認・承認（理由つき）をしてください');
+    end if;
+    update profile_change_requests set status = 'approved', reviewed_by = v_actor, reviewed_at = now(), reject_reason = null where id = q.id;
+    v_apply := hr_bank_change_apply_exception(q.id, v_ym, v_actor, p_reason);
+  else
+    update profile_change_requests set status = 'approved', reviewed_by = v_actor, reviewed_at = now(), reject_reason = null, effective_year_month = v_ym, effective_pay_date = pay_run_date(v_ym) where id = q.id;
+    v_apply := hr_bank_change_try_apply(q.id, v_actor);
+  end if;
+  return jsonb_build_object('ok', true, 'status', 'approved', 'apply_status', v_apply, 'year_month', v_ym, 'pay_date', pay_run_date(v_ym), 'note', (select apply_note from profile_change_requests where id = q.id));
 end $$;
 
 -- 予約中の口座変更のうち、前の支給回が済んだものを反映（振込データの出力直後に自動で呼ばれる。本部が手で呼ぶこともできる）
@@ -199,14 +262,24 @@ begin
   perform public.onboarding_resolve_actor(p_actor);
   return jsonb_build_object('ok', true, 'applied', hr_apply_due_bank_changes_internal());
 end $$;
--- 出力済みで止まった口座変更の支給回を選び直す
-create or replace function hr_bank_change_reschedule(p_request uuid, p_year_month text, p_actor uuid default null) returns jsonb language plpgsql security definer set search_path = public as $$
-declare v_actor uuid; q profile_change_requests%rowtype;
+-- 出力済みで止まった（競合）／予約中の口座変更の支給回を選び直す。出力済み（支給日前）の回にするのは例外＝個別の確認・承認（理由つき）
+create or replace function hr_bank_change_reschedule(p_request uuid, p_year_month text, p_actor uuid default null, p_force_closed boolean default false, p_reason text default null) returns jsonb language plpgsql security definer set search_path = public as $$
+declare v_actor uuid; q profile_change_requests%rowtype; v_master boolean; v_state text;
 begin
   v_actor := public.onboarding_resolve_actor(p_actor);
+  select coalesce(is_master, false) into v_master from users where id = v_actor;
   select * into q from profile_change_requests where id = p_request and field = 'bank_account' and status = 'approved' and apply_status in ('blocked_exported', 'scheduled') for update;
   if q.id is null then raise exception '対象が見つかりません'; end if;
-  if p_year_month !~ '^\d{4}-\d{2}$' or pay_run_closed(p_year_month) then raise exception 'その支給回は選べません（出力済みか支給日を過ぎています）'; end if;
+  if p_year_month !~ '^\d{4}-\d{2}$' then raise exception '適用する月（YYYY-MM）が不正です'; end if;
+  v_state := pay_run_state(p_year_month);
+  if v_state = 'paid' then raise exception 'その支給回は選べません（支給日を過ぎています）'; end if;
+  if v_state = 'exported' then
+    if not (coalesce(p_force_closed, false) and nullif(trim(coalesce(p_reason, '')), '') is not null) then
+      return jsonb_build_object('ok', false, 'blocked', 'exported', 'error', p_year_month || ' 月分は振込データを出力済みです。別の支給回にするか、個別の確認・承認（理由つき）をしてください');
+    end if;
+    if (q.requested_by = v_actor or q.user_id = v_actor) and not v_master then raise exception '個別の確認・承認は、申請した人・本人とは別の人が行ってください'; end if;
+    return jsonb_build_object('ok', true, 'apply_status', hr_bank_change_apply_exception(q.id, p_year_month, v_actor, p_reason));
+  end if;
   update profile_change_requests set effective_year_month = p_year_month, effective_pay_date = pay_run_date(p_year_month), apply_status = 'none' where id = q.id;
   return jsonb_build_object('ok', true, 'apply_status', hr_bank_change_try_apply(q.id, v_actor));
 end $$;
@@ -227,7 +300,7 @@ begin
   begin
     insert into payroll_transfer_account_snapshots(year_month, user_id, account, taken_by)
     select new.year_month, b.user_id, to_jsonb(b) - 'created_at' - 'updated_at' - 'updated_by' - 'user_id', auth.uid() from payroll_bank_accounts b
-    on conflict (year_month, user_id) do update set account = excluded.account, taken_at = now(), taken_by = excluded.taken_by;
+    on conflict (year_month, user_id) do nothing;   -- 控えは最初の出力時点のもの。出し直しても自動では変えない（出力後に口座を登録した人だけ足される）
     perform hr_apply_due_bank_changes_internal();   -- この回の出力が済んだので、次の回からの予約を反映
   exception when others then perform employee_change_log_error('payroll_transfer_schedule', lower(tg_op), null, sqlerrm);
   end;
@@ -240,7 +313,7 @@ create trigger payroll_transfer_schedule_after after insert or update on payroll
 create or replace function employee_change_pay_guard() returns trigger language plpgsql security definer set search_path = public as $$
 declare v_on boolean; v_user uuid; v_initial boolean;
 begin
-  select coalesce((value ->> 'pay_approval_required')::boolean, false) into v_on from app_settings where key = 'employee_change';
+  select coalesce((value ->> case when tg_table_name = 'payroll_bank_accounts' then 'bank_approval_required' else 'wage_approval_required' end)::boolean, false) into v_on from app_settings where key = 'employee_change';
   if not coalesce(v_on, false) then return coalesce(new, old); end if;
   if coalesce(current_setting('employee_change.via_approval', true), '') <> '' then return coalesce(new, old); end if;   -- 承認の処理からの書き込み
   if auth.uid() is null then return coalesce(new, old); end if;                                                          -- システム処理（スマレジ同期・Slack の入社時の賃金設定）
@@ -258,6 +331,142 @@ drop trigger if exists employee_change_pay_guard on employee_wage_settings;
 create trigger employee_change_pay_guard before insert or update or delete on employee_wage_settings for each row execute function employee_change_pay_guard();
 drop trigger if exists employee_change_pay_guard on payroll_bank_accounts;
 create trigger employee_change_pay_guard before insert or update or delete on payroll_bank_accounts for each row execute function employee_change_pay_guard();
+
+-- ============ 7b. 本部に対応を求めるもの（これがあるときだけ）: 承認漏れ・同期エラー・出力済みデータとの競合 ============
+--   口座番号などは返さない（氏名と項目名だけ）。p_year_month を渡すと、その月の振込に関係する賃金の承認待ちだけに絞る
+create or replace function hr_pay_change_attention_internal(p_year_month text default null)
+returns jsonb language sql stable security definer set search_path = public as $$
+  select coalesce(jsonb_agg(jsonb_build_object('kind', x.kind, 'field', x.field, 'request_id', x.id, 'user_id', x.user_id, 'user_name', x.user_name, 'message', x.message) order by x.ord, x.requested_at), '[]'::jsonb)
+  from (
+    select q.id, q.field, q.user_id, q.requested_at, (select name from users u where u.id = q.user_id) user_name,
+      case when q.apply_status in ('blocked_exported', 'blocked_finalized') then 'conflict'
+           when q.status = 'pending' then 'unapproved' else 'sync_error' end kind,
+      case when q.apply_status in ('blocked_exported', 'blocked_finalized') then 1 when q.status = 'pending' then 2 else 3 end ord,
+      case when q.apply_status = 'blocked_exported' then '口座変更が未反映です（決めた支給回は振込データ出力済み）。支給回を選び直すか、個別の確認・承認をしてください'
+           when q.apply_status = 'blocked_finalized' then '賃金変更が未反映です（適用開始月の給与が確定済み）'
+           when q.status = 'pending' and q.field = 'bank_account' then '口座変更の申請が承認待ちです（承認されるまで今の口座のまま振り込みます）'
+           when q.status = 'pending' then '賃金変更の申請が承認待ちです（適用開始日 ' || coalesce(q.effective_date::text, '—') || '）'
+           else 'スマレジへの賃金の同期がエラーです（賃金カードから再実行してください）' end message
+    from profile_change_requests q
+    where q.field in ('wage', 'bank_account') and (
+         (q.status = 'approved' and q.apply_status in ('blocked_exported', 'blocked_finalized'))
+      or (q.status = 'pending' and (q.field = 'bank_account' or p_year_month is null or q.effective_date <= (to_date(p_year_month || '-01', 'YYYY-MM-DD') + interval '1 month' - interval '1 day')::date))
+      or (q.status = 'approved' and q.field = 'wage' and q.apply_status = 'applied' and exists (select 1 from employee_wage_settings w where w.id = nullif(q.apply_ref ->> 'wage_setting_id', '')::uuid and w.sync_status = 'error')))
+  ) x
+$$;
+create or replace function hr_pay_change_attention(p_year_month text default null)
+returns jsonb language plpgsql stable security definer set search_path = public as $$
+begin
+  if not (hq_can_manage() or invoice_can_access() or onboarding_is_service()) then raise exception '権限がありません'; end if;
+  return hr_pay_change_attention_internal(p_year_month);
+end $$;
+
+-- 画面用の設定（切り替えフラグと、選べる支給回の一覧）
+create or replace function hr_pay_change_config()
+returns jsonb language plpgsql stable security definer set search_path = public as $$
+declare v jsonb;
+begin
+  if not (hq_can_manage() or invoice_can_access() or onboarding_is_service()) then raise exception '権限がありません'; end if;
+  select value into v from app_settings where key = 'employee_change';
+  return jsonb_build_object('ok', true,
+    'bank_approval_required', coalesce((v ->> 'bank_approval_required')::boolean, false), 'wage_approval_required', coalesce((v ->> 'wage_approval_required')::boolean, false),
+    'next_open', pay_run_next_open(),
+    'runs', (select jsonb_agg(jsonb_build_object('year_month', to_char(m, 'YYYY-MM'), 'pay_date', pay_run_date(to_char(m, 'YYYY-MM')), 'state', pay_run_state(to_char(m, 'YYYY-MM'))) order by m)
+               from generate_series(date_trunc('month', current_date) - interval '2 month', date_trunc('month', current_date) + interval '2 month', interval '1 month') m
+              where pay_run_state(to_char(m, 'YYYY-MM')) <> 'paid'));
+end $$;
+
+-- 振込の画面を開いたとき・出力の直前に呼ぶ（人の承認は挟まない・自動）:
+--   ①承認済みで時期が来た口座変更を反映 ②その月が出力済みなら、出力時点の口座の控えを返す（出し直しは控えを使う＝あとで登録口座が変わっても自動では変わらない）
+--   ③対応が必要なもの（承認漏れ・同期エラー・競合）があれば返す。無ければ空
+create or replace function hr_payroll_transfer_prepare(p_year_month text)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare v_applied integer := 0; v_snap jsonb;
+begin
+  if not (invoice_can_access() or onboarding_is_service()) then raise exception '権限がありません'; end if;
+  if p_year_month !~ '^\d{4}-\d{2}$' then raise exception '月（YYYY-MM）が不正です'; end if;
+  begin v_applied := hr_apply_due_bank_changes_internal();
+  exception when others then perform employee_change_log_error('payroll_transfer_prepare', 'apply_due', null, sqlerrm); end;
+  -- 口座の控えは、登録口座を読める人（マスター・本部）にだけ返す
+  if (is_profile_approver() or onboarding_is_service()) and exists (select 1 from payroll_transfer_schedule where year_month = p_year_month) then
+    select jsonb_object_agg(s.user_id, s.account || jsonb_build_object('user_id', s.user_id, '_source', s.source)) into v_snap from payroll_transfer_account_snapshots s where s.year_month = p_year_month;
+  end if;
+  return jsonb_build_object('ok', true, 'year_month', p_year_month, 'state', pay_run_state(p_year_month), 'pay_date', pay_run_date(p_year_month), 'applied', v_applied,
+    'snapshot', v_snap, 'attention', hr_pay_change_attention_internal(p_year_month),
+    'bank_approval_required', coalesce((select (value ->> 'bank_approval_required')::boolean from app_settings where key = 'employee_change'), false));
+end $$;
+
+-- ============ 7c. 通知と本部タスク（口座変更の申請があったときだけ。フラグ pay_request_notify_enabled・既定 false） ============
+-- Slack（EF onboarding-notify op=pay_change を呼ぶだけ。文面に口座番号などは入らない＝EF は申請の中身を読まない）
+create or replace function pay_change_notify(p_request uuid, p_event text)
+returns void language plpgsql security definer set search_path = public, net, extensions as $$
+declare
+  c_fn   constant text := 'https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/onboarding-notify';
+  c_anon constant text := 'sb_publishable_MrwPJAx_Ws_fdRutprKCiQ_dg3wCiTr';
+  v_secret text;
+begin
+  select value into v_secret from app_secrets where key = 'notify_slack_secret';
+  if v_secret is null or length(trim(v_secret)) = 0 then raise warning 'pay_change_notify: notify_slack_secret 未設定'; return; end if;
+  perform net.http_post(url := c_fn,
+    headers := jsonb_build_object('Content-Type', 'application/json', 'apikey', c_anon, 'Authorization', 'Bearer ' || c_anon, 'x-notify-secret', trim(v_secret)),
+    body := jsonb_build_object('op', 'pay_change', 'request_id', p_request, 'event', p_event), timeout_milliseconds := 60000);
+end $$;
+-- 本部タスク（既存の本部タスクボード hq_tasks に 1 件。題名は「誰の口座変更か」だけ・口座の中身は書かない）
+create or replace function pay_change_task_open(p_request uuid)
+returns uuid language plpgsql security definer set search_path = public as $$
+declare q profile_change_requests%rowtype; v_name text; v_corp text; v_task uuid; v_assignee uuid;
+begin
+  select * into q from profile_change_requests where id = p_request;
+  if q.id is null or q.field <> 'bank_account' then return null; end if;
+  if q.hq_task_id is not null then return q.hq_task_id; end if;
+  select name into v_name from users where id = q.user_id;
+  select c.name into v_corp from user_stores us join stores s on s.id = us.store_id join corporations c on c.id = s.corporation_id where us.user_id = q.user_id order by us.is_primary desc, s.sort_order limit 1;
+  -- 担当は既存の本部タスク（入社登録・振込確認）と同じ人から。申請した人・本人は承認できないので外す
+  select u.id into v_assignee from users u where u.name in ('青山純', '原　美香', '齋藤　隆治') and u.is_active and u.id <> q.requested_by and u.id <> q.user_id
+   order by array_position(array['青山純', '原　美香', '齋藤　隆治'], u.name) limit 1;
+  insert into hq_tasks(title, corp, freq, target_date, due_date, notes, description, visibility, created_by)
+  values ('口座変更の確認・承認（' || coalesce(v_name, '—') || 'さん）', coalesce(v_corp, 'トーホー'), 'once', current_date, current_date + 3, '',
+          '給与の振込口座の変更申請があります。' || E'\n' || '従業員ページの「賃金・口座の変更申請（承認）」で内容を確認し、どの支給回から新しい口座にするかを決めて、承認または却下してください（申請した人とは別の人が承認します）。'
+          || E'\n' || 'https://mirai-oss.github.io/nippo/?page=admin&u=' || q.user_id || E'\n' || '※ 口座番号などはここには表示しません。承認・却下・取り下げで、このタスクは自動で完了になります。',
+          'all', q.requested_by)
+  returning id into v_task;
+  insert into hq_task_steps(task_id, title, assignee_id, sort_order, kind, due_date) values (v_task, '申請内容を確認し、支給回を決めて承認（または却下）', v_assignee, 10, 'step', current_date + 3);
+  insert into hq_task_activity(task_id, actor_id, kind, detail) values (v_task, q.requested_by, 'create', '口座変更の申請により自動作成');
+  update profile_change_requests set hq_task_id = v_task where id = q.id;
+  return v_task;
+end $$;
+create or replace function pay_change_task_close(p_request uuid)
+returns void language plpgsql security definer set search_path = public as $$
+declare q profile_change_requests%rowtype;
+begin
+  select * into q from profile_change_requests where id = p_request;
+  if q.hq_task_id is null then return; end if;
+  update hq_task_steps set completed_at = now(), completed_by = q.reviewed_by where task_id = q.hq_task_id and completed_at is null;
+  insert into hq_task_activity(task_id, actor_id, kind, detail)
+  values (q.hq_task_id, q.reviewed_by, 'step_complete', '口座変更の申請が' || case q.status when 'approved' then '承認' when 'rejected' then '却下' else '取り下げ' end || 'されたため自動で完了');
+end $$;
+-- 申請が出来たとき／状態が変わったとき。通知やタスクが失敗しても、申請・承認そのものは止めない（エラーは employee_change_errors に残す）
+create or replace function pay_change_trg_request() returns trigger language plpgsql security definer set search_path = public as $$
+declare v_on boolean;
+begin
+  if new.field <> 'bank_account' then return null; end if;
+  begin
+    select coalesce((value ->> 'pay_request_notify_enabled')::boolean, false) into v_on from app_settings where key = 'employee_change';
+    if tg_op = 'INSERT' then
+      if new.status = 'pending' and coalesce(v_on, false) then
+        perform pay_change_task_open(new.id);
+        perform pay_change_notify(new.id, 'requested');
+      end if;
+    else
+      if old.status = 'pending' and new.status <> 'pending' and new.hq_task_id is not null then perform pay_change_task_close(new.id); end if;
+      if new.apply_status = 'blocked_exported' and old.apply_status is distinct from 'blocked_exported' and coalesce(v_on, false) then perform pay_change_notify(new.id, 'conflict'); end if;
+    end if;
+  exception when others then perform employee_change_log_error('profile_change_requests', 'pay_notify', new.user_id, sqlerrm);
+  end;
+  return null;
+end $$;
+drop trigger if exists pay_change_request_after on profile_change_requests;
+create trigger pay_change_request_after after insert or update on profile_change_requests for each row execute function pay_change_trg_request();
 
 -- ============ 8. 一覧（本部系）。口座番号は マスター・本部以外には下 3 桁だけ ============
 create or replace function hr_pay_change_list(p_user uuid default null, p_only_open boolean default false)
@@ -306,7 +515,8 @@ begin
 
   -- 2026-11-10 ステップ 3: 銀行口座・賃金は「適用する支給回／適用開始日・締め済みの確認・2 人目の承認」を通す共通の承認へ回す
   if v_req.field in ('bank_account', 'wage') then
-    perform hr_pay_change_review(p_request_id, p_approve, p_reason, null, false);
+    v_bank := hr_pay_change_review(p_request_id, p_approve, p_reason, null, false, null);   -- 支給回は申請の希望（無ければ次の未出力の回）で確定
+    if coalesce((v_bank ->> 'ok')::boolean, false) is not true then raise exception '%', coalesce(v_bank ->> 'error', '反映できませんでした'); end if;
     return;
   end if;
 
@@ -361,18 +571,39 @@ begin
 end $function$;
 
 revoke all on function hr_bank_change_try_apply(uuid, uuid) from public, anon, authenticated;
+revoke all on function hr_bank_change_write(uuid, uuid) from public, anon, authenticated;
+revoke all on function hr_bank_change_apply_exception(uuid, text, uuid, text) from public, anon, authenticated;
 revoke all on function hr_apply_due_bank_changes_internal() from public, anon, authenticated;
+revoke all on function hr_pay_change_attention_internal(text) from public, anon, authenticated;
 revoke all on function payroll_transfer_schedule_after() from public, anon, authenticated;
 revoke all on function employee_change_pay_guard() from public, anon, authenticated;
+revoke all on function pay_change_notify(uuid, text) from public, anon, authenticated;
+revoke all on function pay_change_task_open(uuid) from public, anon, authenticated;
+revoke all on function pay_change_task_close(uuid) from public, anon, authenticated;
+revoke all on function pay_change_trg_request() from public, anon, authenticated;
+revoke all on function pay_run_date(text) from public, anon;
+revoke all on function pay_run_state(text, date) from public, anon;
+revoke all on function pay_run_closed(text, date) from public, anon;
+revoke all on function pay_run_next_open(date) from public, anon;
+grant execute on function pay_run_date(text) to authenticated, service_role;
+grant execute on function pay_run_state(text, date) to authenticated, service_role;
+grant execute on function pay_run_closed(text, date) to authenticated, service_role;
+grant execute on function pay_run_next_open(date) to authenticated, service_role;
 revoke all on function hr_pay_change_request(uuid, text, jsonb, date, text, text, uuid) from public, anon;
-revoke all on function hr_pay_change_review(uuid, boolean, text, uuid, boolean) from public, anon;
+revoke all on function hr_pay_change_review(uuid, boolean, text, uuid, boolean, text) from public, anon;
 revoke all on function hr_apply_due_bank_changes(uuid) from public, anon;
-revoke all on function hr_bank_change_reschedule(uuid, text, uuid) from public, anon;
+revoke all on function hr_bank_change_reschedule(uuid, text, uuid, boolean, text) from public, anon;
 revoke all on function hr_pay_change_cancel(uuid, uuid) from public, anon;
 revoke all on function hr_pay_change_list(uuid, boolean) from public, anon;
+revoke all on function hr_pay_change_attention(text) from public, anon;
+revoke all on function hr_pay_change_config() from public, anon;
+revoke all on function hr_payroll_transfer_prepare(text) from public, anon;
 grant execute on function hr_pay_change_request(uuid, text, jsonb, date, text, text, uuid) to authenticated, service_role;
-grant execute on function hr_pay_change_review(uuid, boolean, text, uuid, boolean) to authenticated, service_role;
+grant execute on function hr_pay_change_review(uuid, boolean, text, uuid, boolean, text) to authenticated, service_role;
 grant execute on function hr_apply_due_bank_changes(uuid) to authenticated, service_role;
-grant execute on function hr_bank_change_reschedule(uuid, text, uuid) to authenticated, service_role;
+grant execute on function hr_bank_change_reschedule(uuid, text, uuid, boolean, text) to authenticated, service_role;
 grant execute on function hr_pay_change_cancel(uuid, uuid) to authenticated, service_role;
 grant execute on function hr_pay_change_list(uuid, boolean) to authenticated, service_role;
+grant execute on function hr_pay_change_attention(text) to authenticated, service_role;
+grant execute on function hr_pay_change_config() to authenticated, service_role;
+grant execute on function hr_payroll_transfer_prepare(text) to authenticated, service_role;

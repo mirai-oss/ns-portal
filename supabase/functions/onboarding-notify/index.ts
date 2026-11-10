@@ -28,7 +28,7 @@
 //   デプロイ: supabase functions deploy onboarding-notify --no-verify-jwt --project-ref uuvsxzhpxtghojoubjcc --yes（関数内で認証するため）
 // =============================================================
 import { createClient } from "npm:@supabase/supabase-js@2";
-import { changeEffectBlocks, changeEffectText, parentMessage, wageFailedBlocks, wageDateAdjustedBlocks, wageLine, nowJst, commuteCheckBlocks, uiJobResultBlocks, autoApprovedBlocks, personContactTemplate, personContactResultBlocks, staleAlertThreadText, staleAlertSummaryBlocks, postJoinSubmittedBlocks, yearEndCompareText, POST_JOIN_TRACK_LABEL, POST_JOIN_STATUS_LABEL, RELATIONSHIP_LABEL, ITEM_ORDER, PAY_TYPE_LABEL, JUDGEMENT_LABEL, yen, jpDate, type WorkflowView } from "../_shared/onboarding-blocks.ts";
+import { changeEffectBlocks, changeEffectText, payChangeBlocks, payChangeText, parentMessage, wageFailedBlocks, wageDateAdjustedBlocks, wageLine, nowJst, commuteCheckBlocks, uiJobResultBlocks, autoApprovedBlocks, personContactTemplate, personContactResultBlocks, staleAlertThreadText, staleAlertSummaryBlocks, postJoinSubmittedBlocks, yearEndCompareText, POST_JOIN_TRACK_LABEL, POST_JOIN_STATUS_LABEL, RELATIONSHIP_LABEL, ITEM_ORDER, PAY_TYPE_LABEL, JUDGEMENT_LABEL, yen, jpDate, type WorkflowView } from "../_shared/onboarding-blocks.ts";
 import { linePush } from "../_shared/line.ts";
 
 const cors = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "authorization, content-type, apikey, x-client-info, x-notify-secret" };
@@ -750,6 +750,38 @@ Deno.serve(async (req) => {
         if (!r?.ok) { await sb.from("employee_change_effects").update({ notified_at: null }).eq("id", f.id); return json({ ok: false, error: r?.error ?? "送信できませんでした" }, 502); }
         if (r.notification_id) await sb.from("employee_change_effects").update({ notification_id: r.notification_id }).eq("id", f.id);
         return json({ ok: true, sent: true, to: hasThread ? "thread" : "hq.jinji" });
+      }
+      case "pay_change": {
+        // 口座変更の申請があったとき（requested）／振込データと競合したとき（conflict）だけ、本部へ。口座の中身（payload・new_value・old_value）は読まない
+        if (!isUuid(body.request_id)) return json({ ok: false, error: "request_id が不正です" }, 400);
+        const ev = body.event === "conflict" ? "conflict" : "requested";
+        const { data: q } = await sb.from("profile_change_requests").select("id,user_id,field,status,apply_status,requested_by,effective_year_month,notify_log").eq("id", body.request_id).maybeSingle();
+        if (!q || q.field !== "bank_account") return json({ ok: false, error: "見つかりません" }, 404);
+        const [{ data: u }, { data: rb }, { data: us }, { data: st }] = await Promise.all([
+          sb.from("users").select("name").eq("id", q.user_id).maybeSingle(),
+          sb.from("users").select("name").eq("id", q.requested_by).maybeSingle(),
+          sb.from("user_stores").select("stores(name,sort_order)").eq("user_id", q.user_id),
+          sb.from("app_settings").select("value").eq("key", "employee_change").maybeSingle(),
+        ]);
+        let payDate: string | null = null, runState: string | null = null;
+        if (q.effective_year_month) {
+          const [{ data: d }, { data: s2 }] = await Promise.all([sb.rpc("pay_run_date", { p_year_month: q.effective_year_month }), sb.rpc("pay_run_state", { p_year_month: q.effective_year_month })]);
+          payDate = d ?? null; runState = s2 ?? null;
+        }
+        const pv = { id: q.id, user_id: q.user_id, user_name: u?.name ?? "（不明）", store_names: (us ?? []).map((x: any) => x.stores).filter(Boolean).sort((a: any, b: any) => (a.sort_order ?? 0) - (b.sort_order ?? 0)).map((x: any) => x.name).join("・") || null,
+          event: ev as "requested" | "conflict", requested_by_name: rb?.name ?? null, by_self: q.requested_by === q.user_id, year_month: q.effective_year_month ?? null, pay_date: payDate, run_state: runState };
+        const pBlocks = payChangeBlocks(pv), pText = payChangeText(pv);
+        if (body.dry_run === true) return json({ ok: true, dry_run: true, text: pText, blocks: pBlocks, to: "hq.jinji" });
+        if (st?.value?.pay_request_notify_enabled !== true) return json({ ok: true, skipped: "disabled" });
+        if (ev === "requested" ? q.status !== "pending" : q.apply_status !== "blocked_exported") return json({ ok: true, skipped: "not_open" });
+        const log = (q.notify_log ?? {}) as Record<string, string>;
+        if (log[ev]) return json({ ok: true, skipped: "already_notified" });
+        // 二重送信は Slack 送信側の dedupe_key で止まる（同じ申請×同じ種類は 1 回だけ）。送れたら申請の行にも印を残す
+        const r = await slackSend({ action: "send", channel_key: "hq.jinji", event: "pay_change_request", source: "ef:onboarding-notify", text: pText, blocks: pBlocks,
+          ref: { table: "profile_change_requests", id: q.id }, dedupe_key: `pay_change:${ev}:${q.id}`, ...BOT });
+        if (!r?.ok) return json({ ok: false, error: r?.error ?? "送信できませんでした" }, 502);
+        await sb.from("profile_change_requests").update({ notify_log: { ...log, [ev]: new Date().toISOString() } }).eq("id", q.id);
+        return json({ ok: true, sent: true, to: "hq.jinji" });
       }
       case "status": {
         let q = sb.from("onboarding_workflow_v").select("*");

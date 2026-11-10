@@ -509,3 +509,34 @@ export function changeEffectBlocks(v: ChangeEffectView): unknown[] {
   blocks.push({ type: "context", elements: [{ type: "mrkdwn", text: "旧交通費は、本部が再承認して設定するまで変わりません。住所などの値はここには表示しません（従業員ページで確認）。" }] });
   return blocks;
 }
+
+// =============================================================
+// 口座変更の申請（2026-11-10 ステップ 3）。本部向けの通知。申請があったときと、振込データと競合したときだけ。
+//   口座番号・銀行名などは出さない（この型に口座の中身を持たせない＝EF も申請の中身を読まない）
+// =============================================================
+export type PayChangeView = {
+  id: string; user_id: string; user_name: string; store_names: string | null; event: "requested" | "conflict";
+  requested_by_name: string | null; by_self: boolean; year_month: string | null; pay_date: string | null; run_state: string | null;
+};
+const payRunLabel = (v: PayChangeView) => v.year_month ? `${v.year_month} 月分の給与（${v.pay_date ?? "—"} 支給）` : "次の未出力の支給回";
+export function payChangeText(v: PayChangeView): string {
+  return v.event === "conflict"
+    ? `⚠️ ${v.user_name}さんの口座変更が未反映です（決めた支給回は振込データ出力済み）→ 本部の対応が必要です`
+    : `🏦 ${v.user_name}さんの給与振込口座の変更申請があります → 本部の確認・承認が必要です`;
+}
+export function payChangeBlocks(v: PayChangeView): unknown[] {
+  const who = `*${v.user_name}さん*${v.store_names ? `（${v.store_names}）` : ""}`;
+  const blocks: unknown[] = v.event === "conflict"
+    ? [
+      { type: "section", text: { type: "mrkdwn", text: `⚠️ *口座変更が振込データと競合しています*\n${who}の口座変更は承認済みですが、決めた支給回（${payRunLabel(v)}）の振込データがすでに出力されているため、*自動では反映していません*。` } },
+      { type: "section", text: { type: "mrkdwn", text: "▶ 進め方: 従業員ページの「賃金・口座の変更申請（承認）」で、①次の支給回からにする（選び直す） または ②この回から変える（理由を入れて個別の確認・承認 → 振込データを出し直す） のどちらかを選んでください。" } },
+    ]
+    : [
+      { type: "section", text: { type: "mrkdwn", text: `🏦 *給与振込口座の変更申請*\n${who}の振込口座の変更申請があります（申請: ${v.by_self ? "本人" : (v.requested_by_name ?? "本部")}）。` } },
+      { type: "section", text: { type: "mrkdwn", text: `希望の開始: ${payRunLabel(v)}${v.run_state === "exported" ? "\n⚠️ この回は振込データを出力済みです（この回から変えるには、理由を入れた個別の確認・承認が必要です）" : ""}\n*承認されるまで、いまの口座のまま振り込みます。*` } },
+      { type: "section", text: { type: "mrkdwn", text: "▶ 進め方: 従業員ページの「賃金・口座の変更申請（承認）」で内容を確認 → どの支給回から新しい口座にするかを決めて承認（または却下）。申請した人とは別の人が承認します。" } },
+    ];
+  blocks.push({ type: "actions", block_id: "pay_change_actions", elements: [{ type: "button", text: { type: "plain_text", text: "従業員ページ", emoji: true }, action_id: "hr.onboarding.link.nippo", url: `${NIPPO_URL}?page=admin&u=${v.user_id}`, value: JSON.stringify({ request_id: v.id }) }] });
+  blocks.push({ type: "context", elements: [{ type: "mrkdwn", text: "口座番号などはここには表示しません（従業員ページで確認）。この通知は口座変更の申請があったときだけ届きます。通常の給与振込に追加の承認はありません。" }] });
+  return blocks;
+}
