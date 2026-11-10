@@ -1,7 +1,7 @@
 // =============================================================
 // daily-report-card — Slack 画像日報の「データ出し」と「画像の保存」だけを担う Edge Function（2026-11-05）
 //   vm     : 店舗×日付の ViewModel（RPC daily_report_card_vm。正本＝経営ダッシュボードの日次集計・予算）
-//   upload : 描画済み PNG（base64）を Storage バケット daily-report（非公開）に保存し、期限付き署名 URL を返す
+//   upload : 描画済み PNG（base64）を Storage バケット daily-report（非公開）に保存し、期限付き署名 URL を返す（同日2回目以降は別名保存＝上書きしない・vm を渡すと配信時スナップショットも保存／TK-252）
 //   prune  : 保存から一定日数（既定 400 日）を過ぎた日付フォルダの画像を削除する（週1回程度、GitHub Actions から）
 //   health : 疎通
 // 認証: --no-verify-jwt でデプロイするが「認証不要」ではない。関数側で以下だけを通す（それ以外は 401）。
@@ -88,13 +88,29 @@ Deno.serve(async (req) => {
       if (!b.png_base64) return json({ ok: false, error: "png_base64 が必要です" }, 400);
       const bytes = b64ToBytes(String(b.png_base64));
       if (bytes.length < 1000 || bytes.length > 5 * 1024 * 1024) return json({ ok: false, error: `PNG のサイズが不正です (${bytes.length} bytes)` }, 400);
-      const path = `${date}/${key}.png`;
-      const up = await sb.storage.from(BUCKET).upload(path, bytes, { contentType: "image/png", upsert: true, cacheControl: "300" });
+      // 配信済み画像は上書きしない（TK-252）: 同じ日・同じ店の2回目以降は `<key>_2.png`, `_3.png` … の別名で保存する（1回目は従来どおり `<key>.png`）
+      const { data: existing } = await sb.storage.from(BUCKET).list(date, { limit: 1000 });
+      const names = new Set((existing ?? []).map((x: any) => String(x.name)));
+      let deliveryNo = 1, path = `${date}/${key}.png`;
+      while (names.has(`${key}${deliveryNo === 1 ? "" : "_" + deliveryNo}.png`) && deliveryNo < 50) {
+        deliveryNo++; path = `${date}/${key}_${deliveryNo}.png`;
+      }
+      const up = await sb.storage.from(BUCKET).upload(path, bytes, { contentType: "image/png", upsert: false, cacheControl: "300" });
       if (up.error) return json({ ok: false, error: "保存に失敗: " + up.error.message }, 500);
+      // 配信時の VM（評価基準・評価結果込み）を保存して、過去日報を当時の基準で再現できるようにする。失敗しても画像の保存は成功扱い
+      let snapshot = false;
+      try {
+        const vm = b.vm && typeof b.vm === "object" ? b.vm : null;
+        const sid = vm && typeof vm.store_id === "string" && UUID_RE.test(vm.store_id) ? vm.store_id : null;
+        if (vm && sid) {
+          const { error: se } = await sb.from("daily_report_card_snapshots").insert({ store_id: sid, date, vm, delivery_no: deliveryNo });
+          snapshot = !se;
+        }
+      } catch { /* noop */ }
       // 非公開バケットなので署名 URL で返す（発行ごとにトークンが変わるため、同じパスを上書きしても Slack 側のキャッシュは混ざらない）
       const url = await signedUrl(sb, path);
       if (!url) return json({ ok: false, error: "署名 URL を発行できません" }, 500);
-      return json({ ok: true, path, url, expires_in: SIGNED_TTL, bytes: bytes.length });
+      return json({ ok: true, path, url, expires_in: SIGNED_TTL, bytes: bytes.length, delivery_no: deliveryNo, snapshot });
     }
 
     if (action === "sign") {
