@@ -1,5 +1,5 @@
 -- 2026-11-11 担当A（TK-252 B）: daily_report_card_vm v6.2 草案（売上内訳の正本を営業区分別売上＝kd_media_daily へ）。★未適用★ 前提: v6.1 適用済み。
--- 変更: VM に breakdown{status,lunch,dinner,total,has_lunch,source} を追加（既存キー不変）。明細（kd_detail_hour_daily）での代用・按分は廃止（画像側の閾値判定も撤廃）。
+-- 変更: VM に breakdown{status,lunch,dinner,total,has_lunch,source,media_total,media_diff,consigned} を追加（既存キー不変）。業務委託4店（stores.seisan_target）の特例あり。明細（kd_detail_hour_daily）での代用・按分は廃止（画像側の閾値判定も撤廃）。
 --   媒体データが無い日・店は status='missing'（未取得）。デリバリーは従来どおり別系統（delivery キー）。本日の売上KPIにデリバリーは含めない。
 -- 【指紋ガード】本番VMが v6.1（delivery_ingest_ok を含み breakdown をまだ含まない）でなければ中止。
 -- 【rollback】v6.1 の関数定義（2026-11-11_daily_report_card_vm_v6_1.sql の関数部分）で create or replace し直す。
@@ -28,7 +28,7 @@ declare
   ym text := to_char(p_date, 'YYYY-MM');
   v_enabled boolean := exists (select 1 from public.delivery_store_map m where m.store_id = p_store and m.active);
   v_dn int := (fd->>'delivery_rows')::int;
-  v_med_n int; v_med_lunch numeric; v_med_total numeric; v_dv_last date; v_dv_mtd_missing boolean; v_dv_day_missing boolean; v_dv_miss_days int; v_dv_day_status text;
+  v_med_n int; v_med_lunch numeric; v_med_total numeric; v_seisan boolean; v_bdpos numeric; v_bd_status text; v_bd_lunch numeric; v_bd_dinner numeric; v_dv_last date; v_dv_mtd_missing boolean; v_dv_day_missing boolean; v_dv_miss_days int; v_dv_day_status text;
   v_n int; v_pos int;
   v_days_to_holiday int;
   v_rat jsonb := '{}'::jsonb;
@@ -67,6 +67,20 @@ begin
     from public.kd_media_daily m
    where m.store_id = p_store and m.biz_date = p_date and not (coalesce(m.media_raw, m.media_name) ~ 'デリバリ|ロケットナウ|出前');
 
+  --   【業務委託4店の特例】媒体データが無くても、POS確定売上が取れていれば ランチ0円／ディナー＝POS全額／合計＝POS とする。
+  --     対象は既存の店舗マスタ属性 stores.seisan_target（業務委託精算書の対象店舗＝エース本厚木・じんべぇ川崎・じんべぇ新横浜・秋葉原肉寿司の4店）に限定（新テーブル・新列は作らない）。
+  --     通常店で媒体データが無い日は status='missing'（未取得）のまま。POS をディナーへ無条件に振り替えない。
+  --   【保証】ランチ＋ディナー＝POS確定売上（デリバリーは含めない）。媒体がある店は ディナー＝POS−ランチ媒体（媒体合計とPOSは直近31日で全店日一致）。media_total/media_diff は監査用
+  v_bdpos := nullif((v5->>'sales_today'), '')::numeric;
+  select coalesce(s.seisan_target, false) into v_seisan from public.stores s where s.id = p_store;
+  if v_bdpos is not null and v_bdpos >= 0 and v_med_n > 0 then
+    v_bd_status := 'ok'; v_bd_lunch := least(v_med_lunch, v_bdpos); v_bd_dinner := v_bdpos - v_bd_lunch;
+  elsif v_bdpos is not null and v_bdpos >= 0 and coalesce(v_seisan, false) then
+    v_bd_status := 'ok'; v_bd_lunch := 0; v_bd_dinner := v_bdpos;
+  else
+    v_bd_status := 'missing';
+  end if;
+
   -- 月間の4段階評価（月間累計の丸め前の比率で判定）。基準が3境界値そろっていなければ unset
   foreach mt in array array['labor', 'food', 'fl'] loop
     select * into th from public.fl_rating_thresholds t where t.store_id = p_store and t.year_month = ym and t.metric = mt;
@@ -104,9 +118,10 @@ begin
     'ratings', v_rat,
     'fl_reference_today', coalesce(v_dv_day_missing, false),   -- true=デリバリー未取得のため店内のみで計算した参考値
     'fl_reference_mtd', coalesce(v_dv_mtd_missing, false),
-    'breakdown', jsonb_build_object('status', case when v_med_n > 0 then 'ok' else 'missing' end, 'source', 'kd_media_daily',
-      'lunch', case when v_med_n > 0 then v_med_lunch end, 'dinner', case when v_med_n > 0 then v_med_total - v_med_lunch end, 'total', case when v_med_n > 0 then v_med_total end,
-      'has_lunch', v_med_lunch > 0),
+    'breakdown', jsonb_build_object('status', v_bd_status, 'source', case when v_med_n > 0 then 'kd_media_daily' when v_bd_status = 'ok' then 'pos_consigned' end,
+      'lunch', case when v_bd_status = 'ok' then v_bd_lunch end, 'dinner', case when v_bd_status = 'ok' then v_bd_dinner end, 'total', case when v_bd_status = 'ok' then v_bdpos end,
+      'has_lunch', coalesce(v_bd_lunch, 0) > 0, 'media_total', case when v_med_n > 0 then v_med_total end, 'media_diff', case when v_med_n > 0 and v_bdpos is not null then v_med_total - v_bdpos end,
+      'consigned', coalesce(v_seisan, false)),
     'mtd_status', '暫定',
     'mtd_dinii_low_count', v_low
   );
