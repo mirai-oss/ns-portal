@@ -32,6 +32,14 @@
 --        一度決めた回・確定した振込先（控え）は、理由つきの例外承認（申請者・本人とは別の人）なしに変えられない
 --     ③ 賃金の変更申請も本部タスクと Slack 通知に連動（申請で 1 件・承認／却下／取り下げで自動完了・二重に作らない。金額は出さない）
 --     ④ 本部の直接編集も承認の対象にできる（フラグ ON 時）。ただし 入社時の初期登録・入社手続き中・スマレジ同期／取込（システム処理）は止めない
+--
+--   ★ 本番切り替えの安全対策（2026-11-11。画面より先に DB 側で守る）:
+--     ⑤ 振込 CSV 出力の一時停止 transfer_export_paused。★この SQL を適用した瞬間から true（停止）で始まる。全画面の更新と動作確認のあと、手順書の SQL で false（再開）にする。
+--        停止中は、出力の記録を受け付けず、振込口座の直接の読み出しも返さない（＝古い画面を開き直しても CSV を作れない）
+--     ⑥ 新しい振込画面は、出力の直前に「準備」（hr_payroll_transfer_prepare）で 1 回かぎりの出力の印（export_token）を受け取り、出力の記録に付ける。
+--        印の無い記録＝古い画面・直接の API からの出力 → 確定として扱わない（控え・除外の処理をしない）＋【要確認】の本部タスクと「対応が必要」
+--     ⑦ 口座変更の申請が承認待ちの人の登録口座は、画面からの直接の読み出しでは返さない（古い画面でも、その人は振込データに入らない）。直接の書き換えもできない
+--     ⑧ 口座・賃金の申請の行（profile_change_requests）は、画面・API から直接は書けない（申請・承認の関数だけが書く）
 
 -- ============ 1. 申請の表を拡張 ============
 alter table profile_change_requests add column if not exists payload jsonb;
@@ -67,6 +75,21 @@ drop policy if exists payroll_transfer_account_snapshots_read on payroll_transfe
 create policy payroll_transfer_account_snapshots_read on payroll_transfer_account_snapshots for select using (is_profile_approver());
 
 update app_settings set value = '{"bank_approval_required": false, "wage_approval_required": false, "pay_request_notify_enabled": false, "transfer_pending_mode": "exclude"}'::jsonb || jsonb_build_object('transfer_guard_since', now()) || value where key = 'employee_change';
+-- ⑤ 振込 CSV 出力の一時停止。適用した瞬間から停止（true）で始める。再開は docs/手順書_ステップ3-4_本番切り替え_2026-11-11.md の手順で false にする
+update app_settings set value = value || '{"transfer_export_paused": true}'::jsonb where key = 'employee_change' and not (value ? 'transfer_export_paused');
+create or replace function pay_transfer_paused() returns boolean language sql stable security definer set search_path = public as $$
+  select coalesce((select (value ->> 'transfer_export_paused')::boolean from app_settings where key = 'employee_change'), false)
+$$;
+-- ⑥ 出力の印（新しい振込画面が「準備」で受け取り、出力の記録に付ける。1 回かぎり・2 時間有効）。hold_users＝その出力で除外するよう画面に伝えた人
+create table if not exists payroll_transfer_export_tokens (
+  token uuid primary key default gen_random_uuid(), year_month text not null, user_id uuid not null, hold_users uuid[] not null default '{}',
+  issued_at timestamptz not null default now(), used_at timestamptz
+);
+alter table payroll_transfer_export_tokens enable row level security;   -- 方針なし＝画面からは読めない・書けない（関数だけ）
+alter table payroll_transfer_schedule add column if not exists export_token uuid;
+alter table payroll_transfer_schedule add column if not exists export_ok boolean;            -- null=この仕組みより前の記録／true=正しい手順の出力／false=印の無い出力（確定として扱わない）
+alter table payroll_transfer_schedule add column if not exists invalid_export_at timestamptz;   -- 印の無い出力（古い画面・直接の API）があった時刻
+alter table payroll_transfer_schedule add column if not exists invalid_task_id uuid;
 
 -- 振込データから外した人（未承認の口座変更申請がその支給回に影響する人）。held=除外中／ready=申請が片付いた（その人の分の振込データを出す）／done=出力済み
 create table if not exists payroll_transfer_holds (
@@ -94,7 +117,7 @@ create or replace function pay_run_date(p_year_month text) returns date language
 $$;
 -- 支給回の状態: open=まだ出力していない／exported=振込データを出力済み（支給日前）／paid=支給日を過ぎた
 create or replace function pay_run_state(p_year_month text, p_today date default current_date) returns text language sql stable security definer set search_path = public as $$
-  select case when p_today > pay_run_date(p_year_month) then 'paid' when exists (select 1 from payroll_transfer_schedule where year_month = p_year_month) then 'exported' else 'open' end
+  select case when p_today > pay_run_date(p_year_month) then 'paid' when exists (select 1 from payroll_transfer_schedule where year_month = p_year_month and export_ok is not false) then 'exported' else 'open' end
 $$;
 -- その支給回は「もう自動では変えられない」か（振込データを出力済み、または支給日を過ぎた）
 create or replace function pay_run_closed(p_year_month text, p_today date default current_date) returns boolean language sql stable security definer set search_path = public as $$
@@ -112,6 +135,8 @@ create or replace function pay_transfer_pending_holds(p_year_month text)
 returns table(user_id uuid, request_id uuid) language sql stable security definer set search_path = public as $$
   select q.user_id, q.id from profile_change_requests q
    where q.field = 'bank_account' and q.status = 'pending' and (q.effective_year_month is null or q.effective_year_month <= p_year_month)
+     -- いま銀行振込の口座が登録されている人だけ（口座が未登録・現金手渡しの人は、もともと振込データに入らない＝従来どおりの扱い）
+     and exists (select 1 from payroll_bank_accounts b where b.user_id = q.user_id and coalesce(b.payment_method, 'bank_transfer') <> 'cash')
      and not exists (select 1 from payroll_transfer_schedule t where t.year_month = p_year_month
                       and t.created_at < coalesce((select (value ->> 'transfer_guard_since')::timestamptz from app_settings where key = 'employee_change'), '-infinity'::timestamptz))
      and not exists (select 1 from payroll_transfer_account_snapshots s where s.year_month = p_year_month and s.user_id = q.user_id)
@@ -346,17 +371,54 @@ begin
 end $$;
 
 -- ============ 6. 振込データの出力（既存: payroll_transfer_schedule に行が出来る）に合わせて、口座の控え・除外の記録・予約の実行 ============
--- 全員分が必要な運用（transfer_pending_mode='block_all'）: 未承認の口座変更がこの回に影響する人がいるあいだ、最初の出力（確定）を止める
+-- 出力の記録の前処理: ⑤停止中は受け付けない ⑥出力の印を確かめる（無ければ「確定として扱わない」印を付ける）
+--   全員分が必要な運用（transfer_pending_mode='block_all'）: 未承認の口座変更がこの回に影響する人がいるあいだ、確定を止める
 create or replace function payroll_transfer_schedule_guard() returns trigger language plpgsql security definer set search_path = public as $$
-declare v_names text;
+declare v_names text; v_tok payroll_transfer_export_tokens%rowtype; v_valid boolean := false;
 begin
-  if coalesce((select value ->> 'transfer_pending_mode' from app_settings where key = 'employee_change'), 'exclude') <> 'block_all' then return new; end if;
-  select string_agg((select name from users u where u.id = h.user_id), '、') into v_names from pay_transfer_pending_holds(new.year_month) h;
-  if v_names is not null then raise exception '% 月分の振込データは確定できません。口座変更の申請が承認待ちの人がいます（%）。承認または却下してから出力してください', new.year_month, v_names; end if;
+  if coalesce(current_setting('employee_change.schedule_internal', true), '') <> '' then return new; end if;   -- 【要確認】タスクの印を付けるだけの内部の更新
+  if pay_transfer_paused() then raise exception '切り替え作業中のため、振込 CSV の出力は一時停止しています。この CSV は使わないでください。再開の連絡のあと、画面を再読み込みしてから出力してください'; end if;
+  if new.export_token is not null and (tg_op = 'INSERT' or new.export_token is distinct from old.export_token) then
+    select * into v_tok from payroll_transfer_export_tokens t where t.token = new.export_token and t.year_month = new.year_month and t.user_id = auth.uid() and t.used_at is null and t.issued_at > now() - interval '2 hours' for update;
+    v_valid := v_tok.token is not null;
+  end if;
+  if not v_valid then
+    -- 古い画面・直接の API からの出力。記録は残すが、確定としては扱わない（控え・除外の処理をしない）。後処理で【要確認】のタスクを出す
+    new.export_ok := case when tg_op = 'UPDATE' then old.export_ok else false end;
+    new.export_token := case when tg_op = 'UPDATE' then old.export_token else null end;
+    new.invalid_export_at := clock_timestamp();
+    return new;
+  end if;
+  if coalesce((select value ->> 'transfer_pending_mode' from app_settings where key = 'employee_change'), 'exclude') = 'block_all' then
+    select string_agg((select name from users u where u.id = h.user_id), '、') into v_names from pay_transfer_pending_holds(new.year_month) h;
+    if v_names is not null then raise exception '% 月分の振込データは確定できません。口座変更の申請が承認待ちの人がいます（%）。承認または却下してから出力してください', new.year_month, v_names; end if;
+  end if;
+  new.export_ok := true;   -- 印を「使用済み」にするのは後処理で（画面の記録は「追加 → 既にあれば更新」の 2 段階で、前処理が 2 回走るため）
   return new;
 end $$;
 drop trigger if exists payroll_transfer_schedule_guard on payroll_transfer_schedule;
-create trigger payroll_transfer_schedule_guard before insert on payroll_transfer_schedule for each row execute function payroll_transfer_schedule_guard();
+create trigger payroll_transfer_schedule_guard before insert or update on payroll_transfer_schedule for each row execute function payroll_transfer_schedule_guard();
+
+-- 印の無い出力（古い画面・直接の API）があったときの本部タスク。そのファイルは除外・控えの確認を通っていない
+create or replace function pay_transfer_invalid_export_task(p_year_month text) returns uuid language plpgsql security definer set search_path = public as $$
+declare v_task uuid; v_assignee uuid;
+begin
+  select s.invalid_task_id into v_task from payroll_transfer_schedule s join hq_tasks k on k.id = s.invalid_task_id where s.year_month = p_year_month and k.status <> 'done' and k.deleted_at is null;
+  if v_task is not null then return v_task; end if;   -- 開いているタスクがあれば二重に作らない
+  select u.id into v_assignee from users u where u.name in ('青山純', '原　美香', '齋藤　隆治') and u.is_active order by array_position(array['青山純', '原　美香', '齋藤　隆治'], u.name) limit 1;
+  insert into hq_tasks(title, corp, freq, target_date, due_date, notes, description, visibility, created_by, is_urgent)
+  values ('【要確認】' || p_year_month || ' 月分の給与振込 CSV が、古い画面から出力されました', 'トーホー', 'once', current_date, current_date, '',
+          p_year_month || ' 月分の給与振込 CSV が、更新前の古い画面（または正しい手順を通らない操作）から出力されました。' || E'\n'
+          || 'そのファイルは、口座変更の承認待ちの人の除外や、確定済みの振込先の確認を通っていません。' || E'\n'
+          || '① そのファイルは銀行に取り込まない（取り込み済みなら、すぐに本部の責任者へ連絡）② 振込画面を再読み込み（Cmd+Shift+R）してから、もう一度出力する ③ 確認できたら、このタスクを完了にする。', 'all', auth.uid(), true)
+  returning id into v_task;
+  insert into hq_task_steps(task_id, title, assignee_id, sort_order, kind, due_date) values (v_task, '古い画面から出力したファイルを使っていないことを確認し、出力し直す', v_assignee, 10, 'step', current_date);
+  insert into hq_task_activity(task_id, actor_id, kind, detail) values (v_task, auth.uid(), 'create', '印の無い振込 CSV 出力を検知したため自動作成');
+  perform set_config('employee_change.schedule_internal', '1', true);
+  update payroll_transfer_schedule set invalid_task_id = v_task where year_month = p_year_month;
+  perform set_config('employee_change.schedule_internal', '', true);
+  return v_task;
+end $$;
 
 -- 除外した人がいるときの本部タスク（振込漏れ防止）。支給回ごとに 1 件・人ごとにチェック項目。出力という人の操作の結果なので、通知フラグに関係なく作る
 create or replace function pay_transfer_hold_task_sync(p_year_month text) returns uuid language plpgsql security definer set search_path = public as $$
@@ -424,22 +486,38 @@ drop trigger if exists payroll_transfer_confirm_step_guard on hq_task_steps;
 create trigger payroll_transfer_confirm_step_guard before update of completed_at on hq_task_steps for each row execute function payroll_transfer_confirm_step_guard();
 
 create or replace function payroll_transfer_schedule_after() returns trigger language plpgsql security definer set search_path = public as $$
-declare v_new int := 0; v_on boolean;
+declare v_new int := 0; v_on boolean; v_holds uuid[];
 begin
+  if coalesce(current_setting('employee_change.schedule_internal', true), '') <> '' then return null; end if;   -- 【要確認】タスクの印を付けるだけの内部の更新
   begin
-    -- ① 未承認の口座変更がこの回に影響する人は、確定しない（控えを取らない）＝除外として記録
+    if new.invalid_export_at is not null and (tg_op = 'INSERT' or new.invalid_export_at is distinct from old.invalid_export_at) then
+      -- ⑥ 印の無い出力: 確定として扱わない（控え・除外の処理をしない）。本部に知らせる
+      perform pay_transfer_invalid_export_task(new.year_month);
+      return null;
+    end if;
+    if new.export_ok is not true then return null; end if;
+    if exists (select 1 from payroll_transfer_export_tokens t where t.token = new.export_token and t.used_at is not null) then return null; end if;   -- 同じ印では 1 回だけ処理する
+    update payroll_transfer_export_tokens set used_at = now() where token = new.export_token;
+    -- ① 画面に「除外する」と伝えた人（出力の印に控えてある）を、除外として記録。その後に申請が片付いていれば「その人の分が未出力」から始める
+    select t.hold_users into v_holds from payroll_transfer_export_tokens t where t.token = new.export_token;
     with ins as (
-      insert into payroll_transfer_holds(year_month, user_id, request_id) select new.year_month, h.user_id, h.request_id from pay_transfer_pending_holds(new.year_month) h
-      on conflict (year_month, user_id) do update set request_id = excluded.request_id, status = 'held', resolved_at = null where payroll_transfer_holds.status <> 'held'
+      insert into payroll_transfer_holds(year_month, user_id, request_id, status, resolved_at)
+      select new.year_month, u.id,
+             (select q.id from profile_change_requests q where q.user_id = u.id and q.field = 'bank_account' order by (q.status = 'pending') desc, q.requested_at desc limit 1),
+             case when exists (select 1 from profile_change_requests q where q.user_id = u.id and q.field = 'bank_account' and q.status = 'pending') then 'held' else 'ready' end,
+             case when exists (select 1 from profile_change_requests q where q.user_id = u.id and q.field = 'bank_account' and q.status = 'pending') then null else now() end
+        from unnest(coalesce(v_holds, '{}')) as u(id)
+       where not exists (select 1 from payroll_transfer_account_snapshots sn where sn.year_month = new.year_month and sn.user_id = u.id)
+      on conflict (year_month, user_id) do update set request_id = excluded.request_id, status = excluded.status, resolved_at = excluded.resolved_at where payroll_transfer_holds.status <> excluded.status and payroll_transfer_holds.status <> 'done'
       returning 1)
     select count(*) into v_new from ins;
     -- ② それ以外の人の口座の控え（最初の出力時点のもの。出し直しても自動では変えない。出力後に口座を登録した人・除外が解けた人だけ足される）
     insert into payroll_transfer_account_snapshots(year_month, user_id, account, taken_by)
     select new.year_month, b.user_id, to_jsonb(b) - 'created_at' - 'updated_at' - 'updated_by' - 'user_id', auth.uid() from payroll_bank_accounts b
-     where not exists (select 1 from payroll_transfer_holds h where h.year_month = new.year_month and h.user_id = b.user_id and h.status = 'held')
+     where not (b.user_id = any(coalesce(v_holds, '{}')))
     on conflict (year_month, user_id) do nothing;
     -- ③ 除外が解けていた人（ready）は、今回の出力で振込データに入った＝完了
-    update payroll_transfer_holds h set status = 'done', done_at = now() where h.year_month = new.year_month and h.status = 'ready'
+    update payroll_transfer_holds h set status = 'done', done_at = now() where h.year_month = new.year_month and h.status = 'ready' and not (h.user_id = any(coalesce(v_holds, '{}')))
        and exists (select 1 from payroll_transfer_account_snapshots s where s.year_month = h.year_month and s.user_id = h.user_id);
     perform pay_transfer_hold_task_sync(new.year_month);
     if v_new > 0 then
@@ -453,6 +531,25 @@ begin
 end $$;
 drop trigger if exists payroll_transfer_schedule_after on payroll_transfer_schedule;
 create trigger payroll_transfer_schedule_after after insert or update on payroll_transfer_schedule for each row execute function payroll_transfer_schedule_after();
+
+-- ⑦ 口座変更の申請が承認待ちの人の登録口座は、画面からの直接の読み出しでは返さない（古い画面でも、その人は振込データに入らない）。
+--    ⑤ 出力の一時停止中は、誰の口座も直接は返さない。承認の処理・控え・一覧の関数は影響を受けない（関数の中から読むため）
+create or replace function pay_bank_row_visible(p_user uuid) returns boolean language sql stable security definer set search_path = public as $$
+  select not pay_transfer_paused() and not exists (select 1 from profile_change_requests q where q.user_id = p_user and q.field = 'bank_account' and q.status = 'pending')
+$$;
+drop policy if exists pba_pay_change_guard on payroll_bank_accounts;
+create policy pba_pay_change_guard on payroll_bank_accounts as restrictive for select to authenticated using (pay_bank_row_visible(user_id));
+
+-- ⑧ 口座・賃金の申請の行は、画面・API から直接は書けない（申請・承認の関数だけが書く）。氏名・住所などの申請の行は従来どおり
+create or replace function pay_change_request_direct_guard() returns trigger language plpgsql as $$
+begin
+  if current_user = 'authenticated' and coalesce(case when tg_op = 'DELETE' then old.field else new.field end, '') in ('bank_account', 'wage') then
+    raise exception '口座・賃金の変更申請は、申請・承認の画面からだけ操作できます（直接の書き換えはできません）';
+  end if;
+  return coalesce(new, old);
+end $$;
+drop trigger if exists pay_change_request_direct_guard on profile_change_requests;
+create trigger pay_change_request_direct_guard before insert or update or delete on profile_change_requests for each row execute function pay_change_request_direct_guard();
 
 -- ============ 7. 直接編集の禁止（承認必須化）。既定 OFF＝これまでどおり（履歴は残る） ============
 -- 直接の登録・編集を通してよいか（フラグ ON のとき）: 入社手続き中の人／その人（賃金はその契約）の初回の登録
@@ -517,6 +614,11 @@ returns jsonb language sql stable security definer set search_path = public as $
            else h.year_month || ' 月分の振込データが未出力です（口座変更の申請は処理済み）。振込画面で「除外していた人の分を出力」してください' end
       || case when pay_run_state(h.year_month) = 'paid' then '【支給日（' || pay_run_date(h.year_month) || '）を過ぎています】' else '' end
     from payroll_transfer_holds h where h.status in ('held', 'ready')   -- 振込が済む（done）まで、支給日を過ぎても出し続ける
+    union all
+    -- 古い画面・直接の API からの出力（【要確認】のタスクを完了にするまで出し続ける）
+    select null::uuid, 'bank_account', null::uuid, sc.invalid_export_at, '振込画面', 'invalid_export', 0,
+      sc.year_month || ' 月分の振込 CSV が古い画面から出力されました。そのファイルは使わず、画面を再読み込みして出力し直してください（本部タスク【要確認】を確認）'
+    from payroll_transfer_schedule sc where sc.invalid_export_at is not null and exists (select 1 from hq_tasks k where k.id = sc.invalid_task_id and k.status <> 'done' and k.deleted_at is null)
   ) x
 $$;
 create or replace function hr_pay_change_attention(p_year_month text default null)
@@ -550,17 +652,26 @@ end $$;
 --   ③対応が必要なもの（承認漏れ・同期エラー・競合）があれば返す。無ければ空
 create or replace function hr_payroll_transfer_prepare(p_year_month text)
 returns jsonb language plpgsql security definer set search_path = public as $$
-declare v_applied integer := 0; v_snap jsonb;
+declare v_applied integer := 0; v_snap jsonb; v_token uuid; v_hold uuid[];
 begin
   if not (invoice_can_access() or onboarding_is_service()) then raise exception '権限がありません'; end if;
   if p_year_month !~ '^\d{4}-\d{2}$' then raise exception '月（YYYY-MM）が不正です'; end if;
+  if pay_transfer_paused() then   -- ⑤ 切り替え作業中: 何もしないで「停止中」だけ返す
+    return jsonb_build_object('ok', true, 'paused', true, 'year_month', p_year_month, 'attention', '[]'::jsonb, 'hold', '[]'::jsonb, 'ready', '[]'::jsonb, 'hold_records', '[]'::jsonb);
+  end if;
   begin v_applied := hr_apply_due_bank_changes_internal();
   exception when others then perform employee_change_log_error('payroll_transfer_prepare', 'apply_due', null, sqlerrm); end;
   -- 口座の控えは、登録口座を読める人（マスター・本部）にだけ返す
-  if (is_profile_approver() or onboarding_is_service()) and exists (select 1 from payroll_transfer_schedule where year_month = p_year_month) then
+  if (is_profile_approver() or onboarding_is_service()) and exists (select 1 from payroll_transfer_schedule where year_month = p_year_month and export_ok is not false) then
     select jsonb_object_agg(s.user_id, s.account || jsonb_build_object('user_id', s.user_id, '_source', s.source)) into v_snap from payroll_transfer_account_snapshots s where s.year_month = p_year_month;
   end if;
-  return jsonb_build_object('ok', true, 'year_month', p_year_month, 'state', pay_run_state(p_year_month), 'pay_date', pay_run_date(p_year_month), 'applied', v_applied,
+  -- ⑥ 出力の印を発行（この呼び出しのあとの出力 1 回ぶん。除外するよう伝えた人を控える）
+  select coalesce(array_agg(h.user_id), '{}') into v_hold from pay_transfer_pending_holds(p_year_month) h;
+  if auth.uid() is not null then
+    delete from payroll_transfer_export_tokens where issued_at < now() - interval '2 days';
+    insert into payroll_transfer_export_tokens(year_month, user_id, hold_users) values (p_year_month, auth.uid(), v_hold) returning token into v_token;
+  end if;
+  return jsonb_build_object('ok', true, 'paused', false, 'export_token', v_token, 'year_month', p_year_month, 'state', pay_run_state(p_year_month), 'pay_date', pay_run_date(p_year_month), 'applied', v_applied,
     'snapshot', v_snap, 'attention', hr_pay_change_attention_internal(p_year_month),
     -- hold=この回の振込データに入れてはいけない人（未承認の口座変更が影響）／ready=除外していたが申請が片付いた人（その人の分を出す）
     'hold', (select coalesce(jsonb_agg(jsonb_build_object('user_id', h.user_id, 'user_name', (select name from users u where u.id = h.user_id), 'request_id', h.request_id)), '[]'::jsonb) from pay_transfer_pending_holds(p_year_month) h),
@@ -796,6 +907,12 @@ revoke all on function pay_transfer_pending_holds(text) from public, anon, authe
 revoke all on function pay_transfer_hold_task_sync(text) from public, anon, authenticated;
 revoke all on function payroll_transfer_schedule_guard() from public, anon, authenticated;
 revoke all on function payroll_transfer_confirm_step_guard() from public, anon, authenticated;
+revoke all on function pay_transfer_invalid_export_task(text) from public, anon, authenticated;
+revoke all on function pay_change_request_direct_guard() from public, anon, authenticated;
+revoke all on function pay_transfer_paused() from public, anon;
+revoke all on function pay_bank_row_visible(uuid) from public, anon;
+grant execute on function pay_transfer_paused() to authenticated, service_role;
+grant execute on function pay_bank_row_visible(uuid) to authenticated, service_role;
 revoke all on function payroll_transfer_account_snapshots_guard() from public, anon, authenticated;
 revoke all on function pay_change_notify_op(text, jsonb) from public, anon, authenticated;
 revoke all on function employee_change_pay_direct_allowed(text, uuid, text) from public, anon, authenticated;
