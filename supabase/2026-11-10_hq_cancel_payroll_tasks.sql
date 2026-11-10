@@ -16,7 +16,8 @@
 --   paid_at: 取り消したサインの人×その月×その法人の給与仕訳の「振込完了」印を戻す（cash_handoff_cancelの p_reset_paid=true と同じ）。MF登録済み仕訳は消さず件数を通知
 --   最後に payroll_finalized の該当行を削除（＝現金手渡し画面から消える）→ 取消履歴(payroll_finalize_cancellations)に記録 → #本部-経理監視へ件数＋月・法人（氏名なし）
 -- 【再確定】取消後に給料確定ボタンを押せば作り直せる（linksが無い＝新規作成／テンプレ由来には工程を足し直す。二重にならない）
--- 【rollback】drop function hq_cancel_payroll_tasks(text,uuid,text,boolean); drop function hq_cancel_payroll_preview(text,uuid); drop table payroll_finalize_cancellations;
+-- 【③】payroll_finalized_status(p_year_month text, p_corp_id uuid) returns jsonb … 給料確定ボタンの状態表示用の読み取り（同じ権限）
+-- 【rollback】drop function payroll_finalized_status(text,uuid); drop function hq_cancel_payroll_tasks(text,uuid,text,boolean); drop function hq_cancel_payroll_preview(text,uuid); drop table payroll_finalize_cancellations;
 -- ============================================================
 
 create table if not exists payroll_finalize_cancellations (
@@ -200,8 +201,36 @@ $function$;
 revoke all on function public.hq_cancel_payroll_tasks(text, uuid, text, boolean) from public, anon;
 grant execute on function public.hq_cancel_payroll_tasks(text, uuid, text, boolean) to authenticated;
 
+-- ③ 確定状態の読み取り（invoices.html の給料確定ボタンの表示用・担当C。権限=確定ボタンと同じ）
+--   payroll_finalized_status(p_year_month text, p_corp_id uuid) → {finalized, finalized_at, finalized_by_name, task_count, last_cancelled_at}
+--   task_count = 確定が紐づけた本部タスク（links）のうち、まだ生きているもの。finalized_by_name は過去月のbackfill行ではnull
+create or replace function public.payroll_finalized_status(p_year_month text, p_corp_id uuid)
+returns jsonb
+language plpgsql
+stable
+security definer
+set search_path to 'public'
+as $function$
+declare v_caller users%rowtype; v_fin payroll_finalized%rowtype; v_name text; v_tasks int; v_last timestamptz;
+begin
+  select * into v_caller from users u0 where u0.id = auth.uid() and u0.is_active;
+  if v_caller.id is null or not (v_caller.is_master or v_caller.role in ('CEO','HQ')) then
+    raise exception '権限がありません（マスター・本部・社長のみ）';
+  end if;
+  select * into v_fin from payroll_finalized where year_month = p_year_month and corporation_id = p_corp_id;
+  if v_fin.finalized_by is not null then select name into v_name from users where id = v_fin.finalized_by; end if;
+  select count(*) into v_tasks from payroll_task_links l join hq_tasks t on t.id = l.task_id and t.deleted_at is null
+   where l.year_month = p_year_month and l.corporation_id = p_corp_id;
+  select max(cancelled_at) into v_last from payroll_finalize_cancellations where year_month = p_year_month and corporation_id = p_corp_id;
+  return jsonb_build_object('finalized', v_fin.year_month is not null, 'finalized_at', v_fin.finalized_at,
+    'finalized_by_name', v_name, 'task_count', v_tasks, 'last_cancelled_at', v_last);
+end;
+$function$;
+revoke all on function public.payroll_finalized_status(text, uuid) from public, anon;
+grant execute on function public.payroll_finalized_status(text, uuid) to authenticated;
+
 -- ■適用後の確認（読み取り・実データの取消は押さない）
 select proname, pg_get_function_identity_arguments(oid) as 引数, prosecdef from pg_proc
- where proname in ('hq_cancel_payroll_tasks','hq_cancel_payroll_preview') and pronamespace = 'public'::regnamespace order by 1;
+ where proname in ('hq_cancel_payroll_tasks','hq_cancel_payroll_preview','payroll_finalized_status') and pronamespace = 'public'::regnamespace order by 1;
 select p.proname, a.grantee::regrole::text as grantee, a.privilege_type from pg_proc p, aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) a
- where p.proname in ('hq_cancel_payroll_tasks','hq_cancel_payroll_preview') and p.pronamespace = 'public'::regnamespace order by 1, 2;
+ where p.proname in ('hq_cancel_payroll_tasks','hq_cancel_payroll_preview','payroll_finalized_status') and p.pronamespace = 'public'::regnamespace order by 1, 2;

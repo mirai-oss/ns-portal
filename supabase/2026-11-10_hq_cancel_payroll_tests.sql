@@ -30,7 +30,8 @@ begin perform set_config('test.last_notify', p_text, true); end $s$;
 --   paid_at: 取り消したサインの人×その月×その法人の給与仕訳の「振込完了」印を戻す（cash_handoff_cancelの p_reset_paid=true と同じ）。MF登録済み仕訳は消さず件数を通知
 --   最後に payroll_finalized の該当行を削除（＝現金手渡し画面から消える）→ 取消履歴(payroll_finalize_cancellations)に記録 → #本部-経理監視へ件数＋月・法人（氏名なし）
 -- 【再確定】取消後に給料確定ボタンを押せば作り直せる（linksが無い＝新規作成／テンプレ由来には工程を足し直す。二重にならない）
--- 【rollback】drop function hq_cancel_payroll_tasks(text,uuid,text,boolean); drop function hq_cancel_payroll_preview(text,uuid); drop table payroll_finalize_cancellations;
+-- 【③】payroll_finalized_status(p_year_month text, p_corp_id uuid) returns jsonb … 給料確定ボタンの状態表示用の読み取り（同じ権限）
+-- 【rollback】drop function payroll_finalized_status(text,uuid); drop function hq_cancel_payroll_tasks(text,uuid,text,boolean); drop function hq_cancel_payroll_preview(text,uuid); drop table payroll_finalize_cancellations;
 -- ============================================================
 
 create table if not exists payroll_finalize_cancellations (
@@ -214,6 +215,34 @@ $function$;
 revoke all on function public.hq_cancel_payroll_tasks(text, uuid, text, boolean) from public, anon;
 grant execute on function public.hq_cancel_payroll_tasks(text, uuid, text, boolean) to authenticated;
 
+-- ③ 確定状態の読み取り（invoices.html の給料確定ボタンの表示用・担当C。権限=確定ボタンと同じ）
+--   payroll_finalized_status(p_year_month text, p_corp_id uuid) → {finalized, finalized_at, finalized_by_name, task_count, last_cancelled_at}
+--   task_count = 確定が紐づけた本部タスク（links）のうち、まだ生きているもの。finalized_by_name は過去月のbackfill行ではnull
+create or replace function public.payroll_finalized_status(p_year_month text, p_corp_id uuid)
+returns jsonb
+language plpgsql
+stable
+security definer
+set search_path to 'public'
+as $function$
+declare v_caller users%rowtype; v_fin payroll_finalized%rowtype; v_name text; v_tasks int; v_last timestamptz;
+begin
+  select * into v_caller from users u0 where u0.id = auth.uid() and u0.is_active;
+  if v_caller.id is null or not (v_caller.is_master or v_caller.role in ('CEO','HQ')) then
+    raise exception '権限がありません（マスター・本部・社長のみ）';
+  end if;
+  select * into v_fin from payroll_finalized where year_month = p_year_month and corporation_id = p_corp_id;
+  if v_fin.finalized_by is not null then select name into v_name from users where id = v_fin.finalized_by; end if;
+  select count(*) into v_tasks from payroll_task_links l join hq_tasks t on t.id = l.task_id and t.deleted_at is null
+   where l.year_month = p_year_month and l.corporation_id = p_corp_id;
+  select max(cancelled_at) into v_last from payroll_finalize_cancellations where year_month = p_year_month and corporation_id = p_corp_id;
+  return jsonb_build_object('finalized', v_fin.year_month is not null, 'finalized_at', v_fin.finalized_at,
+    'finalized_by_name', v_name, 'task_count', v_tasks, 'last_cancelled_at', v_last);
+end;
+$function$;
+revoke all on function public.payroll_finalized_status(text, uuid) from public, anon;
+grant execute on function public.payroll_finalized_status(text, uuid) to authenticated;
+
 
 -- ③④ テスト
 create function pg_temp.call_as(p_sql text, p_uid uuid, p_role text default 'authenticated') returns jsonb language plpgsql as $h$
@@ -304,6 +333,10 @@ begin
   assert (r->>'finalized')::boolean and (r->>'tasks')::int = 2 and (r->>'tasks_in_progress')::int = 1 and (r->>'tasks_delete')::int = 1 and (r->>'steps_remove')::int = 1, 'T2 preview(タスク): 2件・進行中1・削除1・工程取り外し1 → '||r::text;
   assert (r->>'sign_people')::int = 2 and (r->>'sign_completed')::int = 1 and jsonb_array_length(r->'signed') = 2 and (r->>'paid_marked')::int = 1 and (r->>'mf_registered')::int = 1, 'T3 preview(サイン・仕訳) → '||r::text;
 
+  r := pg_temp.call_as(format('select public.payroll_finalized_status(%L, %L::uuid)', ym, v_corp), v_master);
+  assert (r->>'finalized')::boolean and (r->>'task_count')::int = 2 and r->>'finalized_by_name' is not null and r->'last_cancelled_at' = 'null'::jsonb, 'T2b 確定状態(確定済み): finalized・task_count=2・確定者名あり → '||r::text;
+  perform pg_temp.expect_err(format('select public.payroll_finalized_status(%L, %L::uuid)', ym, v_corp), '42501', v_master, 'anon');
+  if v_tencho is not null then perform pg_temp.expect_err(format('select public.payroll_finalized_status(%L, %L::uuid)', ym, v_corp), '%権限がありません%', v_tencho); end if;
   -- ---- 原子性: 最後のINSERTで失敗させ、全部戻ること ----
   alter table payroll_finalize_cancellations add constraint t_fail check (false) not valid;
   perform pg_temp.expect_err(format('select public.hq_cancel_payroll_tasks(%L, %L::uuid, %L, true)', ym, v_corp, 'テスト'), '%t_fail%', v_master);
@@ -323,6 +356,9 @@ begin
      and not exists (select 1 from sf_cash_handoff_cancellations where year_month = ym), 'T9 サインと振込完了印は残る・サイン取消履歴は作られない';
   assert (select cancel_signatures = false and signatures_kept = 2 from payroll_finalize_cancellations where year_month = ym order by cancelled_at desc limit 1), 'T10 取消履歴に「残した」が記録される';
   assert v_corp2 is null or exists (select 1 from payroll_finalized where year_month = ym and corporation_id = v_corp2), 'T11 別法人の確定の印は触れない';
+
+  r := pg_temp.call_as(format('select public.payroll_finalized_status(%L, %L::uuid)', ym, v_corp), v_master);
+  assert not (r->>'finalized')::boolean and (r->>'task_count')::int = 0 and r->>'last_cancelled_at' is not null, 'T11b 確定状態(取消後): finalized=false・task_count=0・取消日時あり → '||r::text;
 
   -- ---- 実行B: サインも取り消す（再確定した状態を作り直す） ----
   insert into payroll_finalized(year_month, corporation_id, finalized_by) values (ym, v_corp, v_master);
@@ -351,5 +387,5 @@ select (select count(*) from payroll_finalized where year_month = '2099-01') as 
        (select count(*) from payroll_task_links where year_month = '2099-01') as links,
        (select count(*) from sf_cash_handoff_signatures where year_month = '2099-01') as サイン,
        (select count(*) from hq_tasks where title like 'TEST %') as テストタスク,
-       (select count(*) from pg_proc where proname in ('hq_cancel_payroll_tasks','hq_cancel_payroll_preview')) as U27関数が残っているか,
+       (select count(*) from pg_proc where proname in ('hq_cancel_payroll_tasks','hq_cancel_payroll_preview','payroll_finalized_status')) as U27関数が残っているか,
        (select prosrc like '%test.last_notify%' from pg_proc where proname = 'notify_lark' and pronamespace = 'public'::regnamespace) as 通知関数が差し替えのまま;
