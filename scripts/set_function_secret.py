@@ -26,7 +26,7 @@ if not val or '\n' in val:
 fd, path = tempfile.mkstemp(prefix='fnsecret_', suffix='.env'); os.close(fd); os.chmod(path, 0o600)
 try:
     with open(path, 'w', encoding='utf-8') as f: f.write(f'{name}={val}\n')
-    r = subprocess.run(['npx', 'supabase', 'secrets', 'set', '--env-file', path, '--remote=uuvsxzhpxtghojoubjcc'], capture_output=True, text=True, cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    r = subprocess.run(['npx', 'supabase', 'secrets', 'set', '--env-file', path, '--remote=uuvsxzhpxtghojoubjcc', '--yes'], capture_output=True, text=True, cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     ok = r.returncode == 0 and '"_tag":"Error"' not in (r.stdout or '')
     if ok: print(f'保存OK: {name}（長さ {len(val)}）')
     else: print('エラー:', ((r.stderr or '') + (r.stdout or '')).replace(val, '***')[-500:]); sys.exit(1)
