@@ -29,6 +29,24 @@ alter table public.employee_commute add column if not exists policy_reason text;
 alter table public.employee_commute add column if not exists policy_by uuid;
 alter table public.employee_commute add column if not exists policy_at timestamptz;
 
+-- 支給方法・バス例外・月額上限（個別）の変更履歴（追記のみ。入社ワークフローが無い既存従業員の分もここに必ず残る）。
+--   基本支給に戻しても、消えるのは「いま適用している値」だけ。過去の設定・変更理由・操作者はこの表に残る
+create table if not exists public.employee_commute_policy_history (
+  id          uuid primary key default gen_random_uuid(),
+  user_id     uuid not null references public.users(id) on delete cascade,
+  before      jsonb,            -- 変更前: pay_policy / bus_exception / monthly_cap_override / reason / by / at
+  after       jsonb not null,   -- 変更後
+  reason      text,
+  actor_id    uuid,
+  via         text,
+  created_at  timestamptz not null default now()
+);
+create index if not exists employee_commute_policy_history_user_idx on public.employee_commute_policy_history(user_id, created_at desc);
+alter table public.employee_commute_policy_history enable row level security;
+drop policy if exists employee_commute_policy_history_read on public.employee_commute_policy_history;
+create policy employee_commute_policy_history_read on public.employee_commute_policy_history for select to authenticated using (public.hq_can_manage());
+revoke insert, update, delete on public.employee_commute_policy_history from anon, authenticated;
+
 -- 個別の支給方法を決める（本部・社長・マスターだけ。従業員は不可）。基本（1 日上限）以外やバス例外は理由必須。変更は onboarding_events に履歴として残る
 create or replace function public.onboarding_set_commute_policy(p_user uuid, p_policy text, p_bus_exception boolean, p_reason text, p_actor uuid default null, p_monthly_cap integer default null)
 returns jsonb
@@ -46,10 +64,14 @@ begin
   if c.user_id is null then
     insert into employee_commute(user_id, workflow_id, submitted_via) values (p_user, v_wf, 'hq_policy') returning * into c;
   end if;
-  v_before := jsonb_build_object('pay_policy', c.pay_policy, 'bus_exception', c.bus_exception, 'monthly_cap_override', c.monthly_cap_override, 'reason', c.policy_reason);
+  v_before := jsonb_build_object('pay_policy', c.pay_policy, 'bus_exception', c.bus_exception, 'monthly_cap_override', c.monthly_cap_override, 'reason', c.policy_reason, 'by', c.policy_by, 'at', c.policy_at);
   update employee_commute set pay_policy = p_policy, bus_exception = coalesce(p_bus_exception, false), monthly_cap_override = p_monthly_cap,
          policy_reason = nullif(trim(coalesce(p_reason, '')), ''), policy_by = v_actor, policy_at = now(), updated_at = now()
    where user_id = p_user;
+  -- 履歴（必ず残す。ワークフローの有無に関係なく）
+  insert into employee_commute_policy_history(user_id, before, after, reason, actor_id, via)
+  values (p_user, v_before, jsonb_build_object('pay_policy', p_policy, 'bus_exception', coalesce(p_bus_exception, false), 'monthly_cap_override', p_monthly_cap),
+          nullif(trim(coalesce(p_reason, '')), ''), v_actor, case when auth.uid() is null then 'slack' else 'nippo' end);
   if coalesce(c.workflow_id, v_wf) is not null then
     insert into onboarding_events(workflow_id, item_key, kind, actor_id, via, before, after)
     values (coalesce(c.workflow_id, v_wf), 'commute_check', 'commute.policy_set', v_actor, case when auth.uid() is null then 'slack' else 'nippo' end, v_before,
