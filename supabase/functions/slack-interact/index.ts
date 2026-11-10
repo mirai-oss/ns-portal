@@ -18,7 +18,7 @@
 //   （Slack は JWT を付けないため、署名検証がこの関数の唯一の認証）
 // =============================================================
 import { createClient } from "npm:@supabase/supabase-js@2";
-import { wageModal, commuteSettingModal, cancelModal, personContactModal, personContactTemplate, taxSettingModal, yen } from "../_shared/onboarding-blocks.ts";
+import { wageModal, commuteSettingModal, cancelModal, personContactModal, personContactTemplate, taxSettingModal, yen, commutePolicyModal } from "../_shared/onboarding-blocks.ts";
 
 const svc = () => createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
 const text = (s: string, status = 200) => new Response(s, { status, headers: { "Content-Type": "text/plain; charset=utf-8" } });
@@ -417,14 +417,43 @@ const handlers: Record<string, Handler> = {
     const contracts = await activeContracts(sb, wf.user_id);
     if (!contracts.length) return ephemeral("スマレジにまだ登録されていないため、交通費を設定できません。", ru);
     const [{ data: cm }, { data: rules }, { data: us }] = await Promise.all([
-      sb.from("employee_commute").select("approved_fare,judgement").eq("user_id", wf.user_id).maybeSingle(),
+      sb.from("employee_commute").select("approved_fare,judgement,search_result").eq("user_id", wf.user_id).maybeSingle(),
       sb.from("app_settings").select("value").eq("key", "commute_rules").maybeSingle(),
       sb.from("user_stores").select("stores(id,name)").eq("user_id", wf.user_id),
     ]);
     const stores = (us ?? []).map((x: any) => x.stores).filter(Boolean);
     const capDefault = wf.role === "AL" ? Number(rules?.value?.al_cap_yen ?? 6000) : null;
     return await openModal(payload.trigger_id, commuteSettingModal({ workflow_id: wf.id, user_id: wf.user_id, notification_id: notificationId, contract_id: contracts[0].contract_id },
-      { name: wf.user_name ?? "", hire_date: wf.hire_date, approved_fare: cm?.approved_fare ?? null, stores, cap_default: capDefault, cap_unit: String(rules?.value?.cap_unit ?? "unknown") }));
+      { name: wf.user_name ?? "", hire_date: wf.hire_date, approved_fare: cm?.approved_fare ?? null, stores, cap_default: capDefault, cap_unit: String(rules?.value?.cap_unit ?? "unknown"), plan: (cm as any)?.search_result?.pay_plan ?? null }));
+  },
+  // 支給方法（個別設定・2026-11-10 会社ルール）: 1 日上限（基本）／定期代支給／全額支給・出勤日数の見込み・バス例外 → RPC onboarding_set_commute_policy → 再検索
+  "hr.onboarding.commute.policy": async ({ sb, actor, payload, value, notificationId }) => {
+    const ru: string | undefined = payload.response_url;
+    if (!hrAllowed(actor)) return ephemeral("支給方法の変更は本部・社長・マスターのみです", ru);
+    const wf = await wfRow(sb, value?.workflow_id); if (!wf?.user_id) return ephemeral("ワークフローが見つかりません", ru);
+    const [{ data: cm }, { data: rules }] = await Promise.all([
+      sb.from("employee_commute").select("*").eq("user_id", wf.user_id).maybeSingle(),
+      sb.from("app_settings").select("value").eq("key", "commute_rules").maybeSingle(),
+    ]);
+    return await openModal(payload.trigger_id, commutePolicyModal({ workflow_id: wf.id, user_id: wf.user_id, notification_id: notificationId },
+      { name: wf.user_name ?? "", policy: String((cm as any)?.pay_policy ?? "daily_cap"), days: (cm as any)?.expected_days_per_month ?? null, bus_exception: (cm as any)?.bus_exception === true, cap: Number(rules?.value?.daily_cap_round_yen ?? 500), plan_text: (cm as any)?.search_result?.pay_plan?.text ?? null }));
+  },
+  "hr.onboarding.commute.policy.modal": async ({ sb, actor, payload }) => {
+    const meta = JSON.parse(payload.view?.private_metadata ?? "{}");
+    const v = payload.view?.state?.values ?? {};
+    const policy = v.policy?.policy?.selected_option?.value ?? "daily_cap";
+    const daysRaw = (v.days?.days?.value ?? "").trim(); const days = daysRaw === "" ? null : Number(daysRaw);
+    const bus = (v.bus?.bus?.selected_options ?? []).length > 0;
+    const reason = (v.reason?.reason?.value ?? "").trim() || null;
+    if ((policy !== "daily_cap" || bus) && !reason) return json({ response_action: "errors", errors: { reason: "基本ルールと違う扱いにするときは理由を入れてください" } });
+    waitUntil((async () => {
+      const { error } = await sb.rpc("onboarding_set_commute_policy", { p_user: meta.user_id, p_policy: policy, p_days: days, p_bus_exception: bus, p_reason: reason, p_actor: actor.user_id });
+      if (error) { await onboardingNotify({ op: "thread", workflow_id: meta.workflow_id, text: `⚠️ 支給方法を保存できませんでした（${actor.name}）: ${error.message}`, event: "onboarding_commute_policy_failed" }); return; }
+      const label = ({ daily_cap: "1 日上限（基本）", teiki: "定期代支給", full: "全額支給" } as Record<string, string>)[policy] ?? policy;
+      await onboardingNotify({ op: "thread", workflow_id: meta.workflow_id, text: `⚙️ 交通費の支給方法を「${label}」にしました（${actor.name}・${nowJst()}）${days ? `／月 ${days} 日見込み` : ""}${bus ? "／バス例外あり" : ""}${reason ? `\n理由: ${reason}` : ""}\n経路を再検索して支給額を計算し直します`, event: "onboarding_commute_policy" });
+      await onboardingNotify({ op: "commute_check", workflow_id: meta.workflow_id });
+    })());
+    return json({ response_action: "clear" });
   },
   "hr.onboarding.commute.set.modal": async ({ sb, actor, payload }) => {
     const meta = JSON.parse(payload.view?.private_metadata ?? "{}");

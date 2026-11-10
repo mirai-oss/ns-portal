@@ -2,7 +2,7 @@
 //   実行: deno test supabase/functions/_shared/commute-judge.test.ts
 //   ★ モックは公開ドキュメントから想定した形。実 API の形はキー到着後に検証（commute-mock.ts 冒頭）。
 import { assertEquals, assert } from "jsr:@std/assert@1";
-import { parseCourses, judge, autoJudge, normalizeStationName, pickStation, payHint, DEFAULT_RULES, DEFAULT_AUTO } from "./commute-judge.ts";
+import { parseCourses, judge, autoJudge, normalizeStationName, pickStation, payHint, payPlan, conditionFor, DEFAULT_RULES, DEFAULT_AUTO } from "./commute-judge.ts";
 import REAL from "./fixtures/ekispert-real-2026-11-10.json" with { type: "json" };
 import { SCENARIOS, mockResultSet } from "./commute-mock.ts";
 
@@ -145,4 +145,42 @@ Deno.test("実応答: 同名駅は会社のエリア（東京・神奈川…）�
   assertEquals(k?.name, "川崎"); assertEquals(k?.ambiguous, false);
   assertEquals(pickStation((REAL as any).station_none.Point, "名古屋"), null);
   assertEquals(pickStation((REAL as any).station_nihonbashi.Point, "日本橋", ["北海道"]), null);
+});
+
+// ---- 2026-11-10: 会社ルール（IC・1 日上限 500 円・定期と実費の安い方・バス原則不可） ----
+Deno.test("会社ルール: IC 運賃（大口→新横浜 片道 199＝往復 398）は上限 500 以内 → 1 日 398 円", () => {
+  const c = parseCourses((REAL as any).ic_ooguchi_shinyokohama);
+  const j = judge(c, 199, DEFAULT_RULES);
+  assertEquals(j.computed?.fare, 199); assertEquals(j.judgement, "auto_approvable");
+  const p = payPlan(j.computed);
+  assertEquals(p.round, 398); assertEquals(p.daily, 398); assertEquals(p.over_cap, false); assertEquals(p.recommend?.pay_type, "per_day"); assertEquals(p.recommend?.amount, 398);
+  assertEquals(p.break_even_days, 15);   // 5890 / 398 → 15 日以上なら定期
+});
+Deno.test("会社ルール: 往復が 500 円を超える人（新横浜→田町 IC 528×2=1056）は 1 日 500 円。個別に全額・定期へ切替可", () => {
+  const c = parseCourses((REAL as any).ic_shinyokohama_tamachi);
+  const j = judge(c, 528, DEFAULT_RULES);
+  assertEquals(j.computed?.fare, 528);
+  const cap = payPlan(j.computed);
+  assertEquals(cap.round, 1056); assertEquals(cap.daily, 500); assertEquals(cap.over_cap, true); assert(cap.text.includes("超過"));
+  const full = payPlan(j.computed, { policy: "full" });
+  assertEquals(full.daily, 1056); assertEquals(full.recommend?.amount, 1056);
+  const teiki = payPlan(j.computed, { policy: "teiki" });
+  assertEquals(teiki.recommend?.pay_type, "monthly"); assertEquals(teiki.recommend?.amount, 15600);
+});
+Deno.test("会社ルール④: 出勤日数の見込みがあれば 定期 と 実費 の安い方を選ぶ", () => {
+  const c = parseCourses((REAL as any).ic_ooguchi_shinyokohama); const j = judge(c, 199, DEFAULT_RULES);
+  const few = payPlan(j.computed, { days: 8 });      // 398×8=3,184 < 5,890 → 実費
+  assertEquals(few.recommend?.pay_type, "per_day"); assertEquals(few.monthly_by_days, 3184);
+  const many = payPlan(j.computed, { days: 20 });    // 398×20=7,960 > 5,890 → 定期
+  assertEquals(many.recommend?.pay_type, "monthly"); assertEquals(many.recommend?.amount, 5890);
+  // 上限適用の人（1 日 500）: 500×20=10,000 < 定期 15,600 → 実費（上限）のまま
+  const c2 = parseCourses((REAL as any).ic_shinyokohama_tamachi); const j2 = judge(c2, 528, DEFAULT_RULES);
+  assertEquals(payPlan(j2.computed, { days: 20 }).recommend?.pay_type, "per_day");
+  // 全額支給の人: 1,056×20=21,120 > 15,600 → 定期
+  assertEquals(payPlan(j2.computed, { policy: "full", days: 20 }).recommend?.pay_type, "monthly");
+});
+Deno.test("探索条件: IC/切符 × バス可否 の 4 通り。既定は IC・バスなし", () => {
+  assertEquals(conditionFor(DEFAULT_RULES, false), "T11211111113191:F332112112000010:A23121141:");
+  assertEquals(conditionFor(DEFAULT_RULES, true), "T11211132113191:F332112112000010:A23121141:");
+  assert(conditionFor({ ...DEFAULT_RULES, fare_type: "ticket" }, false).includes("F332112212000010"));
 });

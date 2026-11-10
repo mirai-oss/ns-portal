@@ -2,9 +2,17 @@
 // ルール（数値）は app_settings.commute_rules。AI が運賃を推測して金額を決めることはしない（金額は API の応答だけ）。最安だけで否認しない（最終判断は人）。
 // 2026-11-10 実 API で確認: Line.Type は "train" / "walk" の文字列か、{text:"bus",detail:"local"}・{text:"train",detail:"shinkansen"} のオブジェクト。
 //   新幹線・特急は運賃（FareSummary）とは別に料金（ChargeSummary）が付く → 「運賃だけ」で最安と誤判定しないよう、既定では新幹線・特急の経路を候補から外す（allow_express=false）
-export type Rules = { max_extra_minutes: number; max_transfers: number; max_walk_m: number; tolerance_yen: number; tolerance_pct: number; bus_needs_review: boolean; allow_express?: boolean; pref_order?: string[]; use_address_lookup?: boolean };
+// 2026-11-10 会社ルール（中山さん回答）: 運賃は IC／新幹線なし／バスは原則不可（例外のみ個別に許可）／1 日上限 500 円（往復）が基本。超える人は個別に「定期代支給」か「全額支給」／定期と実費は安い方
+export type Rules = { max_extra_minutes: number; max_transfers: number; max_walk_m: number; tolerance_yen: number; tolerance_pct: number; bus_needs_review: boolean; allow_express?: boolean; pref_order?: string[]; use_address_lookup?: boolean;
+  fare_type?: "ic" | "ticket"; allow_bus?: boolean; daily_cap_round_yen?: number };
 export type Candidate = { index: number; summary: string; fare: number | null; round: number | null; time_min: number | null; transfers: number | null; walk_min: number | null; uses_bus: boolean; teiki1: number | null; teiki3: number | null; teiki6: number | null; charge?: number | null; uses_express?: boolean; cost?: number | null };
-export const DEFAULT_RULES: Rules = { max_extra_minutes: 15, max_transfers: 2, max_walk_m: 1500, tolerance_yen: 100, tolerance_pct: 20, bus_needs_review: true, allow_express: false, pref_order: ["東京都", "神奈川県", "埼玉県", "千葉県"], use_address_lookup: false };
+export const DEFAULT_RULES: Rules = { max_extra_minutes: 15, max_transfers: 2, max_walk_m: 1500, tolerance_yen: 100, tolerance_pct: 20, bus_needs_review: true, allow_express: false, pref_order: ["東京都", "神奈川県", "埼玉県", "千葉県"], use_address_lookup: false, fare_type: "ic", allow_bus: false, daily_cap_round_yen: 500 };
+// 駅すぱあとの探索条件（/toolbox/course/condition で生成した値。2026-11-10 取得）: 新幹線・特急・飛行機・船・ライナー・高速/深夜バスは使わない。IC／切符、路線バスの可否で 4 通り
+export const EKI_CONDITION = {
+  ic_nobus: "T11211111113191:F332112112000010:A23121141:", ic_bus: "T11211132113191:F332112112000010:A23121141:",
+  ticket_nobus: "T11211111113191:F332112212000010:A23121141:", ticket_bus: "T11211132113191:F332112212000010:A23121141:",
+} as const;
+export const conditionFor = (rules: Rules, busAllowed: boolean): string => EKI_CONDITION[`${rules.fare_type === "ticket" ? "ticket" : "ic"}_${busAllowed ? "bus" : "nobus"}` as keyof typeof EKI_CONDITION];
 const lineType = (l: any): { text: string; detail: string } => { const t = l?.Type ?? l?.type; return typeof t === "object" && t !== null ? { text: String(t.text ?? "").toLowerCase(), detail: String(t.detail ?? "").toLowerCase() } : { text: String(t ?? "").toLowerCase(), detail: "" }; };
 
 export const arr = (x: unknown): any[] => (x === undefined || x === null ? [] : Array.isArray(x) ? x : [x]);
@@ -136,4 +144,43 @@ export function payHint(c: Candidate | null): { round: number | null; teiki1: nu
   const be = round && teiki1 ? Math.ceil(teiki1 / round) : null;
   const yen = (n: number) => "¥" + n.toLocaleString("ja-JP");
   return { round, teiki1, break_even_days: be, text: round == null ? "" : `往復 ${yen(round)}${teiki1 != null ? `／定期 1 か月 ${yen(teiki1)}${be ? `（月 ${be} 日以上の出勤なら定期が安い）` : ""}` : ""}` };
+}
+
+// =============================================================
+// 2026-11-10 支給額の計算（会社ルール）。金額は API の運賃・定期代と設定値だけから出す（推測しない）。最終決定は本部
+//   policy: daily_cap＝1 日上限（基本 500 円・往復）／full＝全額支給／teiki＝定期代支給
+//   days: 月の出勤日数の見込み（分かるときだけ）。定期と実費の安い方（ルール④）の判定に使う
+// =============================================================
+export type PayPolicy = "daily_cap" | "full" | "teiki";
+export type PayPlan = { policy: PayPolicy; round: number | null; cap: number; daily: number | null; over_cap: boolean; teiki1: number | null; teiki3: number | null; teiki6: number | null; days: number | null;
+  monthly_by_days: number | null; break_even_days: number | null; recommend: { pay_type: "per_day" | "monthly"; amount: number; reason: string } | null; text: string };
+export function payPlan(c: Candidate | null, opts: { policy?: PayPolicy | null; cap?: number | null; days?: number | null } = {}): PayPlan {
+  const policy: PayPolicy = (opts.policy ?? "daily_cap") as PayPolicy; const cap = Number(opts.cap ?? DEFAULT_RULES.daily_cap_round_yen ?? 500);
+  const days = opts.days != null && Number(opts.days) > 0 ? Math.round(Number(opts.days)) : null;
+  const round = c?.fare != null ? c.fare * 2 : null;   // IC は片道×2（往復割引は対象外）
+  const teiki1 = c?.teiki1 ?? null, teiki3 = c?.teiki3 ?? null, teiki6 = c?.teiki6 ?? null;
+  const yen = (n: number) => "¥" + n.toLocaleString("ja-JP");
+  if (round === null) return { policy, round, cap, daily: null, over_cap: false, teiki1, teiki3, teiki6, days, monthly_by_days: null, break_even_days: null, recommend: null, text: "" };
+  const over = round > cap;
+  const daily = policy === "daily_cap" ? Math.min(round, cap) : round;
+  const monthly = days != null ? daily * days : null;
+  const be = teiki1 != null && daily > 0 ? Math.ceil(teiki1 / daily) : null;
+  let recommend: PayPlan["recommend"] = null; const lines: string[] = [];
+  lines.push(`往復 ${yen(round)}（片道 ${yen(c!.fare!)}）`);
+  if (policy === "teiki") {
+    if (teiki1 != null) { recommend = { pay_type: "monthly", amount: teiki1, reason: "定期代支給（個別設定）" }; lines.push(`定期代支給: 1 か月 ${yen(teiki1)}${teiki3 != null ? `／3 か月 ${yen(teiki3)}` : ""}${teiki6 != null ? `／6 か月 ${yen(teiki6)}` : ""}`); }
+    else lines.push("定期代が取得できません（本部で確認）");
+  } else {
+    lines.push(policy === "daily_cap" ? (over ? `1 日上限 ${yen(cap)} を適用 → 1 日 *${yen(daily)}*（上限を ${yen(round - cap)} 超過。超える分を出す場合は「⚙️ 支給方法」で定期代支給か全額支給に）` : `1 日 *${yen(daily)}*（上限 ${yen(cap)} 以内）`) : `全額支給（個別設定）: 1 日 *${yen(daily)}*`);
+    // ルール④: 定期と実費の安い方。出勤日数の見込みがあれば比較して決める。無ければ分岐日数だけ示す
+    if (teiki1 != null && days != null) {
+      if (teiki1 < monthly!) { recommend = { pay_type: "monthly", amount: teiki1, reason: `月 ${days} 日なら定期 1 か月（${yen(teiki1)}）の方が 実費 ${yen(monthly!)} より安い` }; }
+      else recommend = { pay_type: "per_day", amount: daily, reason: `月 ${days} 日なら実費 ${yen(monthly!)} の方が 定期 1 か月（${yen(teiki1)}）より安い` };
+      lines.push(`安い方: ${recommend.reason}`);
+    } else {
+      recommend = { pay_type: "per_day", amount: daily, reason: "出勤日数の見込みが未入力のため 1 日あたりで支給" };
+      if (teiki1 != null && be != null) lines.push(`定期 1 か月 ${yen(teiki1)}（月 ${be} 日以上の出勤なら定期の方が安い）`);
+    }
+  }
+  return { policy, round, cap, daily, over_cap: over, teiki1, teiki3, teiki6, days, monthly_by_days: monthly, break_even_days: be, recommend, text: lines.join("\n") };
 }

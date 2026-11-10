@@ -31,7 +31,7 @@ function authorized(req: Request): boolean {
   return !!bearer && bearer === SERVICE_KEY;
 }
 
-import { parseCourses, judge, autoJudge, normalizeStationName, pickStation, payHint, DEFAULT_RULES, arr, type Rules, type Candidate, type AutoResult } from "../_shared/commute-judge.ts";
+import { parseCourses, judge, autoJudge, normalizeStationName, pickStation, payHint, payPlan, conditionFor, DEFAULT_RULES, arr, type Rules, type Candidate, type AutoResult, type PayPolicy } from "../_shared/commute-judge.ts";
 
 async function eki(path: string, params: Record<string, string>): Promise<any> {
   const u = new URL(`${EKI}${path}`);
@@ -83,7 +83,7 @@ async function selftest(sb: any, body: any) {
   const out: any = { ok: false, key_source: source, engine: st1.rs?.engineVersion ?? null, api_version: st1.rs?.apiVersion ?? null,
     station: [{ name: fromName, http: st1.status, candidates: p1.length, first: p1[0]?.Station?.Name ?? null, first_type: p1[0]?.Station?.Type ?? null, code_found: !!c1, error: st1.error }, { name: toName, http: st2.status, candidates: p2.length, first: p2[0]?.Station?.Name ?? null, code_found: !!c2, error: st2.error }] };
   if (c1 && c2) {
-    const cr = await ekiRaw("/search/course/plain", { key, from: c1, to: c2, bus: "true" });
+    const cr = await ekiRaw("/search/course/extreme", { key, viaList: `${c1}:${c2}`, searchType: "plain", answerCount: "8", sort: "price", conditionDetail: conditionFor(DEFAULT_RULES, false) });
     const courses = arr(cr.rs?.Course);
     const cands = parseCourses(cr.rs ?? {});
     out.course = { http: cr.status, error: cr.error, course_is_array: Array.isArray(cr.rs?.Course), count: courses.length,
@@ -154,6 +154,8 @@ Deno.serve(async (req) => {
 
     let rs: any;
     const stationNotes: string[] = [];
+    const busAllowed = rules.allow_bus === true || (cm as any)?.bus_exception === true;
+    if (!busAllowed && (cm?.uses_bus === true || /bus/.test(String(cm?.method ?? "")))) stationNotes.push("本人はバス利用を申請しています（会社ルール: バスは原則不可。認める場合は「⚙️ 支給方法」でバス例外を付けて再検索）");
     if (mock) {
       rs = mock?.ResultSet ?? mock;   // 結合テスト用（dry_run のみ）。駅すぱあとは呼ばない
     } else {
@@ -164,9 +166,9 @@ Deno.serve(async (req) => {
       const toSt = await findStation(key, workStation, pref);
       if (!fromSt || !toSt) return await fail(`駅を特定できません（${!fromSt ? (homeStation ? "本人: " + homeStation : "本人の最寄り駅が未登録") : ""}${!toSt ? " 店舗: " + workStation : ""}）。同名駅や表記ゆれの可能性があるため人が確認してください`, "station_not_found");
       if (fromSt.ambiguous && homeStation) stationNotes.push(`本人の最寄り駅「${homeStation}」は同名の駅が複数あります（${fromSt.name} で検索）`);
-      // 会社ルール: 新幹線・特急・飛行機（別料金）は既定で使わない
-      const noExp: Record<string, string> = rules.allow_express === true ? {} : { shinkansen: "false", limitedExpress: "false", plane: "false" };
-      rs = await eki("/search/course/plain", { key, from: fromSt.code, to: toSt.code, bus: "true", ...noExp });
+      // 会社ルール（2026-11-10）: IC 運賃・新幹線/特急/飛行機なし。バスは原則不可（本部が個別に「バス例外」を付けた人か、ルールで許可したときだけ探索に含める）
+      //   /search/course/extreme を平均待ち時間（searchType=plain）で使い、探索条件 conditionDetail で IC とバス可否を指定。安い順に最大 8 件
+      rs = await eki("/search/course/extreme", { key, viaList: `${fromSt.code}:${toSt.code}`, searchType: "plain", answerCount: "8", sort: "price", conditionDetail: conditionFor(rules, busAllowed) });
     }
     const cands = parseCourses(rs).map((c) => ({ ...c }));
     const j = judge(cands, claimed, rules);
@@ -174,9 +176,11 @@ Deno.serve(async (req) => {
     if (stationNotes.length) { j.reasons.push(...stationNotes); if (j.judgement === "auto_approvable") j.judgement = "hq_review"; }
     // 自動承認の条件判定（記録だけ。承認は呼び出し側が enabled のときだけ）
     const auto = autoJudge(j, { claimed, method: cm?.method ?? null, home_station_known: !!homeStation, store_station_known: !!workStation }, autoRules);
+    // 支給額の計算（会社ルール: 1 日上限・個別の支給方法・定期と実費の安い方）
+    const plan = payPlan(j.computed, { policy: ((cm as any)?.pay_policy ?? "daily_cap") as PayPolicy, cap: Number(rules.daily_cap_round_yen ?? 500), days: (cm as any)?.expected_days_per_month ?? null });
     const result = {
       provider: mock ? "mock" : "ekispert", searched_at: new Date().toISOString(), store_id: store.id, store_name: store.name, from: homeStation || "（住所から）", to: workStation,
-      candidates: cands, reasonable_indexes: j.reasonable.map((c) => c.index), computed_index: j.computed?.index ?? null, rules, auto, pay_hint: payHint(j.computed),
+      candidates: cands, reasonable_indexes: j.reasonable.map((c) => c.index), computed_index: j.computed?.index ?? null, rules, auto, pay_hint: payHint(j.computed), pay_plan: plan, fare_type: rules.fare_type ?? "ic", bus_allowed: busAllowed,
     };
     if (!body.dry_run) {
       await sb.from("employee_commute").upsert({
@@ -189,7 +193,7 @@ Deno.serve(async (req) => {
       // 自動承認の判定を記録（shadow でも残す＝有効化前に「どれだけ自動承認できたか」を集計できる）
       if (auto.mode !== "off" && cm?.workflow_id) await sb.from("onboarding_events").insert({ workflow_id: cm.workflow_id, item_key: "commute_check", kind: "commute.auto_judged", via: "auto", payload: { ...auto, judgement: j.judgement, claimed, computed_fare: j.computed?.fare ?? null } });
     }
-    return json({ ok: true, judgement: j.judgement, reasons: j.reasons, claimed, computed: j.computed, reasonable: j.reasonable, candidates: cands, auto, pay_hint: payHint(j.computed), store: { id: store.id, name: store.name }, from: homeStation || "（住所から）", to: workStation, mock: !!mock });
+    return json({ ok: true, judgement: j.judgement, reasons: j.reasons, claimed, computed: j.computed, reasonable: j.reasonable, candidates: cands, auto, pay_hint: payHint(j.computed), pay_plan: plan, fare_type: rules.fare_type ?? "ic", bus_allowed: busAllowed, store: { id: store.id, name: store.name }, from: homeStation || "（住所から）", to: workStation, mock: !!mock });
   } catch (e) {
     return json({ ok: false, error: String((e as Error).message ?? e).slice(0, 300) }, 500);
   }
