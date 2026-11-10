@@ -473,3 +473,39 @@ export function commutePolicyModal(meta: { workflow_id: string; user_id: string;
     ],
   };
 }
+
+// =============================================================
+// 従業員情報の変更 → 交通費の再確認（2026-11-10 ステップ 2）。本部向けの通知。個人情報の値（住所など）は出さない＝「何が変わったか」は項目名だけ
+// =============================================================
+export type ChangeEffectView = {
+  id: string; user_id: string; user_name: string; store_names: string | null; reasons: string[]; change_date: string | null; retroactive: boolean; suggested_effective_date: string | null;
+  date_note: string | null; snapshot: any; has_workflow: boolean; workflow_id: string | null; notification_id?: string | null;
+};
+export function changeEffectText(v: ChangeEffectView): string {
+  return `🔔 ${v.user_name}さんの${v.reasons.join("・")}が変わりました → 通勤経路・交通費の再確認が必要です`;
+}
+export function changeEffectBlocks(v: ChangeEffectView): unknown[] {
+  const s = v.snapshot ?? {}; const set = s.latest_setting ?? null;
+  const payType = ({ per_day: "勤務日数ごと", per_shift: "勤務回数ごと", monthly: "月額" } as Record<string, string>)[set?.pay_type] ?? "";
+  const now = s.has_commute_record === false
+    ? "いまの交通費: 管理システムに未登録（スマレジの現在の設定を確認してください）"
+    : `いまの交通費（*変更していません*）: 承認済みの片道 ${s.approved_fare != null ? yen(Number(s.approved_fare)) : "なし"}` + (set ? `／設定 ${payType} ${set.amount != null ? yen(Number(set.amount)) : "—"}${set.cap_amount != null ? `・月額上限 ${yen(Number(set.cap_amount))}` : ""}` : "／設定なし");
+  const dates = v.change_date
+    ? `変更日: ${v.change_date}${v.retroactive ? "（*過去にさかのぼる変更*）" : ""}／適用開始の目安: ${v.suggested_effective_date ?? "—"}${v.date_note ? `\n⚠️ ${v.date_note}` : ""}`
+    : "変更日: 未入力（従業員ページで入力すると、適用開始の目安が出ます）";
+  const steps = v.has_workflow
+    ? "▶ 進め方: ①本人が nippo の通勤カードから経路を申請し直す（最寄り駅・経路が変わらない場合もその旨で申請）②このスレッドに「🚃 交通費の確認」が届く ③本部が承認 ④金額が変わる場合だけ「🚌 交通費を設定」で適用開始日を決める"
+    : "▶ 進め方: 本人に最寄り駅・経路が変わるかを確認 → 従業員ページの「情報変更の履歴と連動」で、交通費を見直す／変わらない（理由つきで完了）を記録";
+  const blocks: unknown[] = [
+    { type: "section", text: { type: "mrkdwn", text: `🔔 *従業員情報の変更 → 交通費の再確認*\n*${v.user_name}さん*${v.store_names ? `（${v.store_names}）` : ""}の *${v.reasons.join("・")}* が変わりました。` } },
+    { type: "section", text: { type: "mrkdwn", text: `${now}\n${dates}` } },
+    { type: "section", text: { type: "mrkdwn", text: steps } },
+  ];
+  const value = JSON.stringify({ workflow_id: v.workflow_id, notification_id: v.notification_id ?? null, effect_id: v.id });
+  const elements: unknown[] = [];
+  if (v.has_workflow && s.has_commute_record !== false) elements.push({ type: "button", text: { type: "plain_text", text: "🔁 いまの申請で再検索", emoji: true }, action_id: "hr.onboarding.commute.research", value });
+  elements.push({ type: "button", text: { type: "plain_text", text: "従業員ページ", emoji: true }, action_id: "hr.onboarding.link.nippo", url: `${NIPPO_URL}?page=admin&u=${v.user_id}`, value });
+  blocks.push({ type: "actions", block_id: "change_effect_actions", elements });
+  blocks.push({ type: "context", elements: [{ type: "mrkdwn", text: "旧交通費は、本部が再承認して設定するまで変わりません。住所などの値はここには表示しません（従業員ページで確認）。" }] });
+  return blocks;
+}

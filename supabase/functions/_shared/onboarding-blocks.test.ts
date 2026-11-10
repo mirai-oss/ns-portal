@@ -66,3 +66,15 @@ Deno.test("期限の表示: 社内期限と法定期限（目安）を分けて�
   assertEquals(postJoinPolicyText({ status: "pending", required: false, deadline: null, legal_deadline: "2026-12-14" }), "任意・法定の目安 12/14");
   assertEquals(postJoinPolicyText({ status: "pending", required: false }), "任意");
 });
+
+Deno.test("情報変更→交通費の再確認の通知: 項目名だけ出す（住所などの値は出さない）・旧交通費は「変更していません」・さかのぼりの注意", async () => {
+  const m = await import("./onboarding-blocks.ts");
+  const base = { id: "e1", user_id: "u1", user_name: "テスト 立会い", store_names: "鳥一代 本店", reasons: ["住所", "最寄り駅・通勤手段"], change_date: "2026-09-20", retroactive: true, suggested_effective_date: "2026-11-01",
+    date_note: "変更日が締め済みの月です。2026/09〜前月分の差額は自動では直しません（精算するかは本部が判断）", snapshot: { has_commute_record: true, approved_fare: 349, home_station: "中目黒", route_text: "中目黒→田町", latest_setting: { pay_type: "per_day", amount: 500, cap_amount: 6000 } }, has_workflow: true, workflow_id: "w1" };
+  const txt = JSON.stringify(m.changeEffectBlocks(base as any));
+  for (const need of ["住所・最寄り駅・通勤手段", "変更していません", "¥349", "勤務日数ごと", "¥6,000", "過去にさかのぼる変更", "2026-11-01", "hr.onboarding.commute.research", "page=admin&u=u1"]) if (!txt.includes(need)) throw new Error("無い: " + need);
+  if (txt.includes("中目黒")) throw new Error("旧経路・駅名（値）が通知に出ています");
+  const t2 = JSON.stringify(m.changeEffectBlocks({ ...base, has_workflow: false, workflow_id: null, change_date: null, retroactive: false, date_note: null, snapshot: { has_commute_record: false } } as any));
+  if (t2.includes("hr.onboarding.commute.research") || !t2.includes("管理システムに未登録") || !t2.includes("変更日: 未入力")) throw new Error("ワークフロー無し・未登録の表示");
+  if (!m.changeEffectText(base as any).includes("交通費の再確認が必要")) throw new Error("text");
+});

@@ -28,7 +28,7 @@
 //   デプロイ: supabase functions deploy onboarding-notify --no-verify-jwt --project-ref uuvsxzhpxtghojoubjcc --yes（関数内で認証するため）
 // =============================================================
 import { createClient } from "npm:@supabase/supabase-js@2";
-import { parentMessage, wageFailedBlocks, wageDateAdjustedBlocks, wageLine, nowJst, commuteCheckBlocks, uiJobResultBlocks, autoApprovedBlocks, personContactTemplate, personContactResultBlocks, staleAlertThreadText, staleAlertSummaryBlocks, postJoinSubmittedBlocks, yearEndCompareText, POST_JOIN_TRACK_LABEL, POST_JOIN_STATUS_LABEL, RELATIONSHIP_LABEL, ITEM_ORDER, PAY_TYPE_LABEL, JUDGEMENT_LABEL, yen, jpDate, type WorkflowView } from "../_shared/onboarding-blocks.ts";
+import { changeEffectBlocks, changeEffectText, parentMessage, wageFailedBlocks, wageDateAdjustedBlocks, wageLine, nowJst, commuteCheckBlocks, uiJobResultBlocks, autoApprovedBlocks, personContactTemplate, personContactResultBlocks, staleAlertThreadText, staleAlertSummaryBlocks, postJoinSubmittedBlocks, yearEndCompareText, POST_JOIN_TRACK_LABEL, POST_JOIN_STATUS_LABEL, RELATIONSHIP_LABEL, ITEM_ORDER, PAY_TYPE_LABEL, JUDGEMENT_LABEL, yen, jpDate, type WorkflowView } from "../_shared/onboarding-blocks.ts";
 import { linePush } from "../_shared/line.ts";
 
 const cors = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "authorization, content-type, apikey, x-client-info, x-notify-secret" };
@@ -721,6 +721,35 @@ Deno.serve(async (req) => {
           results.push({ user_id: u.user_id, channel, sent: ok, tracks: u.tracks.length, scope: u.scope ?? null });
         }
         return json({ ok: true, sent, results, max_per_run: maxPerRun });
+      }
+      // ---- 従業員情報の変更 → 交通費の再確認（2026-11-10 ステップ 2）。DB（employee_change_dispatch → pg_net）から呼ばれる。
+      //      app_settings.employee_change.notify_enabled=true のときだけ送る（既定 false）。dry_run は内容を返すだけ。二重送信は notified_at で防ぐ
+      case "change_effect": {
+        if (!isUuid(body.effect_id)) return json({ ok: false, error: "effect_id が不正です" }, 400);
+        const { data: f } = await sb.from("employee_change_effects").select("*").eq("id", body.effect_id).maybeSingle();
+        if (!f) return json({ ok: false, error: "見つかりません" }, 404);
+        const [{ data: u }, { data: us }, { data: wfRow }, { data: st }] = await Promise.all([
+          sb.from("users").select("name").eq("id", f.user_id).maybeSingle(),
+          sb.from("user_stores").select("stores(name,sort_order)").eq("user_id", f.user_id),
+          sb.from("onboarding_workflows").select("id,slack_parent_ts,slack_channel_key,status").eq("user_id", f.user_id).maybeSingle(),
+          sb.from("app_settings").select("value").eq("key", "employee_change").maybeSingle(),
+        ]);
+        const { data: hint } = await sb.rpc("employee_change_effective_hint", { p_change_date: f.change_date });
+        const hasThread = !!wfRow?.slack_parent_ts && wfRow?.status !== "cancelled";
+        const view = { id: f.id, user_id: f.user_id, user_name: u?.name ?? "（不明）", store_names: (us ?? []).map((x: any) => x.stores).filter(Boolean).sort((a: any, b: any) => (a.sort_order ?? 0) - (b.sort_order ?? 0)).map((x: any) => x.name).join("・") || null,
+          reasons: f.reasons ?? [], change_date: f.change_date, retroactive: !!f.retroactive, suggested_effective_date: f.suggested_effective_date, date_note: hint?.note ?? null, snapshot: f.snapshot, has_workflow: hasThread, workflow_id: wfRow?.id ?? null };
+        const blocks = changeEffectBlocks(view), text = changeEffectText(view);
+        if (body.dry_run === true) return json({ ok: true, dry_run: true, text, blocks, to: hasThread ? "thread" : "hq.jinji" });
+        if (st?.value?.notify_enabled !== true) return json({ ok: true, skipped: "disabled" });
+        if (f.effect_key !== "commute_recheck" || !["pending", "in_progress"].includes(f.status)) return json({ ok: true, skipped: "not_open" });
+        // 先に「通知済み」を取る（同時に 2 回呼ばれても 1 回しか送らない）
+        const { data: claimed } = await sb.from("employee_change_effects").update({ notified_at: new Date().toISOString() }).eq("id", f.id).is("notified_at", null).select("id");
+        if (!claimed?.length) return json({ ok: true, skipped: "already_notified" });
+        const r = await slackSend({ action: "send", channel_key: hasThread ? (wfRow.slack_channel_key ?? "hq.jinji") : "hq.jinji", ...(hasThread ? { thread_ts: wfRow.slack_parent_ts } : {}), event: "employee_change_effect", source: "ef:onboarding-notify", text, blocks,
+          ref: { table: "employee_change_effects", id: f.id }, dedupe_key: `employee_change_effect:${f.id}`, ...BOT });
+        if (!r?.ok) { await sb.from("employee_change_effects").update({ notified_at: null }).eq("id", f.id); return json({ ok: false, error: r?.error ?? "送信できませんでした" }, 502); }
+        if (r.notification_id) await sb.from("employee_change_effects").update({ notification_id: r.notification_id }).eq("id", f.id);
+        return json({ ok: true, sent: true, to: hasThread ? "thread" : "hq.jinji" });
       }
       case "status": {
         let q = sb.from("onboarding_workflow_v").select("*");
