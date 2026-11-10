@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-11-07-v167";
+const BUILD_TAG="2026-11-10-v168";
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -1364,6 +1364,12 @@ async function apvApprove_(u,inv,d,modal,dry){
    ② 実行…事前確認が通ったものだけ、MFの仕訳を削除してから請求書を削除（PL・広告費・精算書へ反映済みのもの／支払確認済みのものは対象外）
    ============================================================ */
 function ubdRows_(){ return UNIFIED_STATE.rows.filter(r=>r.intake_source==="infomart"&&!!r.mf_journal_id&&!r.payment_verified_at&&!r.pl_fee_reflected_at&&!r.ad_cost_reflected_at&&!r.pl_fee_seisan_synced_at); }
+// 2026-11-10: 一括解除（MFの仕訳も削除）の欄は、見づらいので一覧の一番上から外し、一番下の折りたたみにした（開けば今までどおり選んで削除できる）
+function ubdPanelFolded_(){
+  const n=ubdRows_().length; if(!n) return "";
+  const inner=ubdPanelHtml_();
+  return `<details style="margin-top:14px"><summary style="cursor:pointer;font-size:12px;color:var(--muted)">🗑 インフォマート請求書の一括解除（MFの仕訳も削除）— 削除できる請求書 ${n}件（ここを開くと選んで削除できます）</summary><div style="margin-top:8px">${inner}</div></details>`;
+}
 function ubdPanelHtml_(){
   const B=UNIFIED_STATE.ubd||(UNIFIED_STATE.ubd={sel:new Set(),ok:new Set(),res:{},log:""});
   const rows=ubdRows_(); if(!rows.length) return "";
@@ -8448,7 +8454,6 @@ function unifiedRender(u){
       ${isPlp||isPayment?"":`<div style="display:flex;gap:6px;align-items:center;margin-bottom:8px;font-size:12px"><span style="color:var(--muted)">取得元:</span>${[["","すべて"],["auto","🤖 自動取込"],["manual","✋ 手動・その他"]].map(([k,l])=>`<button class="mail-tab ${(UNIFIED_STATE.src||"")===k?"active":""}" data-usrc="${k}">${l}（${countBase.filter(r=>unifiedMatchesSubTab(r,UNIFIED_STATE.subTab)&&(k===""||(k==="auto"?unifiedIsAuto(r):!unifiedIsAuto(r)))).length}）</button>`).join("")}</div>`}
       ${isPlp?plpBodyHtml_():isPayment?transferBodyHtml():`
       ${UNIFIED_STATE.subTab==="approval"?apbPanelHtml_():""}
-      ${UNIFIED_STATE.subTab==="all"?ubdPanelHtml_():""}
       <div class="card" style="padding:12px;margin-bottom:10px;display:flex;gap:10px;flex-wrap:wrap;align-items:end">
         <div><label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">検索</label><input id="unified-search" placeholder="🔎 取引先・請求書番号・法人・店舗" value="${esc(UNIFIED_STATE.search)}" style="max-width:280px"></div>
         <div><label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">法人</label><select id="unified-corp"><option value="">すべて</option>${(((CORP_STORE_CACHE&&CORP_STORE_CACHE.corporations)||[])).map(c=>`<option value="${esc(c.id)}" ${UNIFIED_STATE.corpId===c.id?"selected":""}>${esc(c.name)}</option>`).join("")}</select></div>
@@ -8467,7 +8472,8 @@ function unifiedRender(u){
           </tr></thead>
           <tbody>${list.length?list.map(unifiedRowHtml).join(""):'<tr><td colspan="17">該当する請求書はありません</td></tr>'}</tbody>
         </table>
-      </div>`}
+      </div>
+      ${UNIFIED_STATE.subTab==="all"?ubdPanelFolded_():""}`}
     </section>`;
   document.querySelectorAll("[data-unified-tab]").forEach(b=>b.onclick=async()=>{
     UNIFIED_STATE.subTab=b.dataset.unifiedTab;
@@ -12380,10 +12386,11 @@ function payrollRender(){
     el.disabled=true;
     const r=await authed("/rest/v1/rpc/hq_create_payroll_tasks",{
       method:"POST",
-      body:JSON.stringify({p_year_month:PAYROLL_STATE.yearMonth,p_corp:corp})
+      body:JSON.stringify({p_year_month:PAYROLL_STATE.yearMonth,p_corp_id:corpRow.id})   // 2026-11-09: 法人IDを渡す（表示名は改名・表記ゆれでずれるため。p_corpは送らない）
     });
     el.disabled=false;
-    if(!r.ok){ alert("本部タスクの自動発行に失敗しました: "+(r.body&&r.body.message||JSON.stringify(r.body))); return; }
+    // 法人を特定できないとき（担当Bの関数がエラーを返す）は、黙って成功扱いにせず止める
+    if(!r.ok){ alert("法人を特定できませんでした。本部タスクの自動発行は行っていません。\n（詳細: "+(r.body&&r.body.message||JSON.stringify(r.body))+"）"); return; }
     const d=r.body;
     alert(`本部タスクを発行しました（法人: ${corp}）。\n・給料振込：対象${d.transfer_count}名／期日${d.transfer_due}\n・現金手渡し：対象${d.cash_count}名／期日${d.cash_due}\n\n本部タスク（tasks.html）で内容を確認してください。`);
   });
