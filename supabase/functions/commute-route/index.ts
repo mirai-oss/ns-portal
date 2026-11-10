@@ -77,7 +77,7 @@ async function selftest(sb: any, body: any) {
   const out: any = { ok: false, key_source: source, engine: st1.rs?.engineVersion ?? null, api_version: st1.rs?.apiVersion ?? null,
     station: [{ name: fromName, http: st1.status, candidates: p1.length, first: p1[0]?.Station?.Name ?? null, first_type: p1[0]?.Station?.Type ?? null, code_found: !!c1, error: st1.error }, { name: toName, http: st2.status, candidates: p2.length, first: p2[0]?.Station?.Name ?? null, code_found: !!c2, error: st2.error }] };
   if (c1 && c2) {
-    const cr = await ekiRaw("/search/course/plain", { key, from: c1, to: c2, bus: "true", answerCount: "6" });
+    const cr = await ekiRaw("/search/course/plain", { key, from: c1, to: c2, bus: "true" });
     const courses = arr(cr.rs?.Course);
     const cands = parseCourses(cr.rs ?? {});
     out.course = { http: cr.status, error: cr.error, course_is_array: Array.isArray(cr.rs?.Course), count: courses.length,
@@ -96,6 +96,19 @@ Deno.serve(async (req) => {
   if (!authorized(req)) return json({ ok: false, error: "unauthorized" }, 401);
   const body = await req.json().catch(() => ({}));
   if (body.op === "selftest") return await selftest(createClient(SUPABASE_URL, SERVICE_KEY), body);
+  // 仕様調査用（2026-11-10）: 許可した GET エンドポイントだけを任意パラメータで呼び、応答（キーは含まれない）を返す。評価版の制限・応答の形の確認に使う
+  if (body.op === "probe") {
+    const allow = ["/station", "/station/light", "/search/course/plain", "/search/course/extreme", "/search/course/light", "/geo/station", "/address/station", "/dataversion", "/toolbox/course/condition", "/operationLine", "/railmap/list", "/course/passStation"];
+    const path = String(body.path ?? "");
+    if (!allow.includes(path)) return json({ ok: false, error: "許可されていない path", allow }, 400);
+    const { key, source } = await loadKey(createClient(SUPABASE_URL, SERVICE_KEY));
+    if (!key) return json({ ok: false, key_source: source, error: "キーが未設定です" });
+    const params: Record<string, string> = {};
+    for (const [k, v] of Object.entries(body.params ?? {})) if (k !== "key" && /^[A-Za-z0-9_]{1,40}$/.test(k)) params[k] = String(v).slice(0, 300);
+    const r = await ekiRaw(path, { key, ...params });
+    const text = JSON.stringify(r.rs ?? null);
+    return json({ ok: r.status === 200 && !r.error, http: r.status, error: r.error, length: text.length, result: JSON.parse(text.slice(0, 0) || "null") ?? undefined, raw: text.slice(0, Math.min(Number(body.max_chars ?? 6000), 40000)) });
+  }
   const uid = String(body.user_id ?? "");
   if (!/^[0-9a-f-]{36}$/i.test(uid)) return json({ ok: false, error: "user_id が不正です" }, 400);
   const sb = createClient(SUPABASE_URL, SERVICE_KEY);
@@ -143,7 +156,7 @@ Deno.serve(async (req) => {
       if (!from && prof?.address) from = String(prof.address);
       const to = await stationCode(key, workStation);
       if (!from || !to) return await fail(`駅が見つかりません（${!from ? "本人: " + homeStation : ""}${!to ? " 店舗: " + workStation : ""}）`, "station_not_found");
-      rs = await eki("/search/course/plain", { key, from, to, bus: "true", answerCount: "6" });
+      rs = await eki("/search/course/plain", { key, from, to, bus: "true" });
     }
     const cands = parseCourses(rs).map((c) => ({ ...c }));
     const j = judge(cands, claimed, rules);
