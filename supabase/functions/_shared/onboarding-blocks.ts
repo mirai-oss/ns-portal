@@ -16,19 +16,22 @@ export type WorkflowView = {
 };
 export type PostJoinTrack = {
   status: string; target_year?: number | null; required?: boolean | null; remind_enabled?: boolean | null; deadline?: string | null; target?: boolean | null; form_enabled?: boolean | null;
+  // 2026-11-10 v3: deadline＝社内期限（internal_deadline と同じ値。リマインド・必須管理に使う）／legal_deadline＝法定期限の目安（参考表示のみ）
+  internal_deadline?: string | null; legal_deadline?: string | null; legal_deadline_basis?: string | null; legal_deadline_note?: string | null;
   source_of_required?: string | null; class?: string | null; submitted_at?: string | null; approved_at?: string | null; sync_status?: string | null; verified_at?: string | null;
   count?: number | null; synced?: number | null; relationships?: number[] | null;
 };
 export const RELATIONSHIP_LABEL: Record<number, string> = { 0: "本人", 1: "配偶者", 2: "息子", 3: "娘", 4: "父", 5: "母", 6: "兄", 7: "姉", 8: "弟", 9: "妹", 10: "祖父", 11: "祖母", 12: "孫", 13: "義父", 14: "義母", 99: "その他" };
 export const POST_JOIN_STATUS_LABEL: Record<string, string> = { pending: "未提出", submitted: "提出済み（本部の承認待ち）", approved: "承認済み（スマレジ未反映）", queued: "スマレジ反映の順番待ち", synced: "スマレジ反映済み", error: "反映エラー", none: "扶養なし", skipped: "不要（本部確認済み）", not_target: "対象外" };
 export const POST_JOIN_TRACK_LABEL: Record<string, string> = { year_end: "年末調整", dependents: "扶養家族" };
-/** 必須／任意・期限の短い表示（例「必須・期限 11/30」「任意」「対象外」） */
+/** 必須／任意・期限の短い表示（例「必須・社内期限 11/30（法定の目安 12/14）」「任意」「対象外」）。社内期限と法定期限は別の概念（2026-11-10 ユーザー指示） */
 export function postJoinPolicyText(t: PostJoinTrack | null | undefined): string {
   if (!t) return "任意";
   if (t.target === false || t.status === "not_target") return "対象外";
   if (t.form_enabled === false) return "フォーム停止中";
   const req = t.required ? "必須" : "任意";
-  const dl = t.deadline ? `・期限 ${jpDate(t.deadline).slice(5)}` : "";
+  const legal = t.legal_deadline ? `（法定の目安 ${jpDate(t.legal_deadline).slice(5)}）` : "";
+  const dl = t.deadline ? `・社内期限 ${jpDate(t.deadline).slice(5)}${legal}` : (legal ? `・法定の目安 ${jpDate(t.legal_deadline).slice(5)}` : "");
   const src = t.source_of_required === "override" ? "（個別設定）" : "";
   return `${req}${dl}${src}`;
 }
@@ -259,7 +262,7 @@ export function personContactTemplate(kind: string, ctx: { name: string; claimed
         `② スマレジ・タイムカードの登録: スマレジから届くメールの案内に沿って本人登録を済ませてください。\n` +
         `分からないことがあれば、このまま返信してください。`;
     case "post_join_form":
-      return `${n}さん、お疲れさまです。N-Style 本部です。\n${ctx.stale_items && ctx.stale_items.length ? `${ctx.stale_items.join("・")}の情報の登録をお願いします` : "年末調整と扶養家族の情報の登録をお願いします"}（扶養家族がいない場合も「いない」で送ってください）。${ctx.deadline ? `期限は ${ctx.deadline} です。` : ""}\n` +
+      return `${n}さん、お疲れさまです。N-Style 本部です。\n${ctx.stale_items && ctx.stale_items.length ? `${ctx.stale_items.join("・")}の情報の登録をお願いします` : "年末調整と扶養家族の情報の登録をお願いします"}（扶養家族がいない場合も「いない」で送ってください）。${ctx.deadline ? `社内の期限は ${ctx.deadline} です。` : ""}\n` +
         `▶ ${nippo.replace(/\/$/, "")}/?page=settings#postjoin（ログイン後の「設定」ページ）\n` +
         `スマレジ・タイムカードの画面と同じ項目です。5 分ほどで終わります。分からない項目はそのまま送って、返信で教えてください。`;
     case "stale_nudge":

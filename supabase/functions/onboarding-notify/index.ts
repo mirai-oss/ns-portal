@@ -659,39 +659,68 @@ Deno.serve(async (req) => {
         return json({ ok: true });
       }
       case "post_join_remind": {
-        // v2: 必須かつ未完了（RPC onboarding_post_join_targets＝雇用区分の標準ルール＋個別上書き、期限前後で間隔が変わる）。既定 OFF。Slack DM → LINE の順
+        // v3（2026-11-10）: 対象は RPC onboarding_post_join_targets（必須かつ未完了 ＋ 「新規入社者」か「承認済みの対象リスト」の人だけ。既存従業員は未提出というだけでは対象にしない）。
+        //   一括通知の防止: 1 回の送信人数が上限（onboarding_alerts.post_join_max_per_run）を超えたら誰にも送らず hq.jinji に知らせる。安全装置の関数が無ければ送らない（fail closed）。
+        //   文面は DB 関数 post_join_remind_text（dry-run 画面と同じもの）。既定 OFF。Slack DM → LINE の順
         const settings = await alertSettings(sb);
         const startDays = Number(settings.post_join_remind_days ?? 3);
-        const { data: targets, error: te } = await sb.rpc("onboarding_post_join_targets", { p_now: new Date().toISOString(), p_start_days: startDays });
+        const nowIso = new Date().toISOString();
+        const { data: targets, error: te } = await sb.rpc("onboarding_post_join_targets", { p_now: nowIso, p_start_days: startDays });
         if (te) return json({ ok: false, error: te.message }, 500);
         // 1 人にまとめる（扶養・年末調整の両方が対象なら 1 通）
         const byUser = new Map<string, any>();
         for (const t of targets ?? []) { const a = byUser.get(t.user_id) ?? { ...t, tracks: [] as any[] }; a.tracks.push(t); byUser.set(t.user_id, a); }
         const due = [...byUser.values()];
+        const { data: guard, error: ge } = await sb.rpc("post_join_remind_guard", { p_count: due.length });
+        const guardOk = !ge && guard && typeof guard.max_per_run === "number";
+        const maxPerRun = guardOk ? Number(guard.max_per_run) : Number(settings.post_join_max_per_run ?? 10);
+        const overLimit = guardOk ? !!guard.over_limit : due.length > maxPerRun;
         const live = settings.post_join_remind_enabled === true && body.dry_run !== true;
         const h = jstHour(); const qFrom = Number(settings.quiet_from ?? 22), qTo = Number(settings.quiet_to ?? 8);
         const quiet = qFrom > qTo ? (h >= qFrom || h < qTo) : (h >= qFrom && h < qTo);
-        const summarize = (u: any) => ({ user_id: u.user_id, name: u.name, class: u.class, hire_date: u.hire_date, tracks: u.tracks.map((t: any) => ({ track: t.track, target_year: t.target_year, deadline: t.deadline, required_source: t.required_source, interval_days: t.interval_days, remind_count: t.remind_count })), has_slack: u.has_slack, has_line: u.has_line });
-        if (!live) return json({ ok: true, sent: 0, reason: settings.post_join_remind_enabled !== true ? "disabled" : "dry_run", candidates: due.map(summarize) });
+        const trackLabel = (t: any) => POST_JOIN_TRACK_LABEL[t.track] + (t.target_year ? ` ${t.target_year} 年度` : "");
+        const textOf = async (u: any): Promise<string> => {
+          const { data: tx, error: xe } = await sb.rpc("post_join_remind_text", { p_name: u.name ?? "", p_tracks: u.tracks.map((t: any) => ({ track: t.track, target_year: t.target_year, deadline: t.deadline })) });
+          if (!xe && typeof tx === "string" && tx) return tx;
+          const deadlines = u.tracks.map((t: any) => t.deadline).filter(Boolean).sort();
+          return personContactTemplate("post_join_form", { name: u.name ?? "", stale_items: u.tracks.map(trackLabel), deadline: deadlines[0] ? jpDate(deadlines[0]) : null });
+        };
+        const summarize = (u: any) => ({ user_id: u.user_id, name: u.name, class: u.class, hire_date: u.hire_date, scope: u.scope ?? null, batch_id: u.batch_id ?? null, tracks: u.tracks.map((t: any) => ({ track: t.track, target_year: t.target_year, deadline: t.deadline, required_source: t.required_source, interval_days: t.interval_days, remind_count: t.remind_count })), has_slack: u.has_slack, has_line: u.has_line });
+        if (!live) {
+          // dry-run／無効: 何も送らない。対象人数・対象者・文面・送らない人の内訳を返す（nippo の確認画面と同じ RPC）
+          const { data: sum } = await sb.rpc("onboarding_post_join_preview_summary", { p_now: nowIso });
+          const willSend = Array.isArray(sum?.will_send) ? sum.will_send : await Promise.all(due.map(async (u) => ({ ...summarize(u), channel: u.has_slack ? "Slack" : u.has_line ? "LINE" : "送信先なし", text: await textOf(u) })));
+          return json({ ok: true, sent: 0, reason: settings.post_join_remind_enabled !== true ? "disabled" : "dry_run", enabled: settings.post_join_remind_enabled === true,
+            max_per_run: maxPerRun, over_limit: overLimit, guard_available: guardOk, new_hire_from: sum?.new_hire_from ?? settings.post_join_new_hire_from ?? null,
+            will_send_count: due.length, will_send: willSend, excluded_count: sum?.excluded_count ?? null, excluded_summary: sum?.excluded_summary ?? null, candidates: due.map(summarize) });
+        }
         if (quiet) return json({ ok: true, sent: 0, reason: "quiet_hours", candidates: due.length });
+        if (!guardOk) return json({ ok: false, sent: 0, reason: "guard_missing", error: "安全装置（post_join_remind_guard）が使えないため送信しません（SQL 2026-11-10_post_join_remind_scope.sql の適用を確認）" }, 500);
+        if (overLimit) {
+          // 上限超過: 誰にも送らない。本部チャンネルに 1 日 1 回だけ知らせる
+          await slackSend({ action: "send", channel_key: settings.channel_key ?? "hq.jinji", event: "onboarding_post_join_over_limit", source: "ef:onboarding-notify",
+            text: `⚠️ 扶養・年末調整フォームのリマインド対象が上限を超えたため、送信を止めました（対象 ${due.length} 人 > 上限 ${maxPerRun} 人）。対象リストを分けるか、上限（post_join_max_per_run）を見直してください。誰にも送っていません。`,
+            dedupe_key: `onboarding:post_join_over_limit:${nowIso.slice(0, 10)}`, ...BOT });
+          return json({ ok: true, sent: 0, reason: "over_limit", count: due.length, max_per_run: maxPerRun });
+        }
         let sent = 0; const results: any[] = [];
         for (const u of due) {
           const wf = u.workflow_id ? await loadView(sb, u.workflow_id) : null;
-          const items = u.tracks.map((t: any) => POST_JOIN_TRACK_LABEL[t.track] + (t.target_year ? ` ${t.target_year} 年度` : ""));
-          const deadlines = u.tracks.map((t: any) => t.deadline).filter(Boolean).sort();
-          const text = personContactTemplate("post_join_form", { name: u.name ?? "", stale_items: items, deadline: deadlines[0] ? jpDate(deadlines[0]) : null });
+          const items = u.tracks.map(trackLabel);
+          const text = await textOf(u);
           const ch = await personChannels(sb, u.user_id);
           let channel: string | null = null; let ok = false; let err: string | null = null;
           if (ch.slack) { const r = await slackSend({ action: "send", channel_key: `user:${u.user_id}`, event: "onboarding_post_join_remind", source: "ef:onboarding-notify", text, ref: wf ? { table: "onboarding_workflows", id: wf.id } : undefined, ...BOT }); ok = !!r?.ok; channel = "Slack"; err = ok ? null : r?.error ?? "失敗"; }
           if (!ok && ch.line_user_id) { const { data: tk } = await sb.from("app_secrets").select("value").eq("key", "line_channel_token").maybeSingle(); if (tk?.value) { const r = await linePush(String(tk.value).trim(), ch.line_user_id, text); ok = r.ok; channel = "LINE"; err = ok ? null : `${r.status}`; } }
           if (ok) { sent++; for (const t of u.tracks) await sb.rpc("onboarding_post_join_reminded", { p_user: u.user_id, p_track: t.track, p_year: t.target_year ?? 0 }); }
           if (wf) {
-            await event(sb, wf, "post_join.reminded", { channel, sent: ok, tracks: u.tracks.map((t: any) => t.track), error: err });
-            await thread(sb, wf, ok ? `📨 ${items.join("・")}のフォームのお願いを本人へ送りました（${channel}・${(u.tracks[0]?.remind_count ?? 0) + 1} 回目・必須: ${u.tracks.map((t: any) => t.required_source === "override" ? "個別設定" : "標準ルール").join("/")}）` : `⚠️ ${items.join("・")}のフォームのお願いを送れませんでした（Slack/LINE とも未連携か失敗: ${err ?? "連絡先なし"}）。店長から声かけをお願いします`, undefined, "onboarding_post_join_remind");
+            const scopeText = u.scope === "batch" ? "対象リスト（本部が登録・承認）" : "新規入社";
+            await event(sb, wf, "post_join.reminded", { channel, sent: ok, tracks: u.tracks.map((t: any) => t.track), scope: u.scope ?? null, batch_id: u.batch_id ?? null, error: err });
+            await thread(sb, wf, ok ? `📨 ${items.join("・")}のフォームのお願いを本人へ送りました（${channel}・${(u.tracks[0]?.remind_count ?? 0) + 1} 回目・必須: ${u.tracks.map((t: any) => t.required_source === "override" ? "個別設定" : "標準ルール").join("/")}・対象: ${scopeText}）` : `⚠️ ${items.join("・")}のフォームのお願いを送れませんでした（Slack/LINE とも未連携か失敗: ${err ?? "連絡先なし"}）。店長から声かけをお願いします`, undefined, "onboarding_post_join_remind");
           }
-          results.push({ user_id: u.user_id, channel, sent: ok, tracks: u.tracks.length });
+          results.push({ user_id: u.user_id, channel, sent: ok, tracks: u.tracks.length, scope: u.scope ?? null });
         }
-        return json({ ok: true, sent, results });
+        return json({ ok: true, sent, results, max_per_run: maxPerRun });
       }
       case "status": {
         let q = sb.from("onboarding_workflow_v").select("*");

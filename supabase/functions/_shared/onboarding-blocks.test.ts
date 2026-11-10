@@ -9,7 +9,7 @@ const wf: WorkflowView = { id: "11111111-1111-1111-1111-111111111111", user_id: 
 Deno.test("親メッセージ: 入社後の提出 2 行（必須・期限・状態・人数・続柄）と「🧾 源泉所得税」ボタン。氏名以外の個人情報は出ない", () => {
   const m = parentMessage(wf, "nid");
   const txt = JSON.stringify(m.blocks);
-  assert(txt.includes("入社後の提出")); assert(txt.includes("年末調整 2026 年度: 必須・期限 11/30")); assert(txt.includes("扶養家族: 必須・期限 11/23（個別設定）")); assert(txt.includes("配偶者・息子")); assert(txt.includes("2 人"));
+  assert(txt.includes("入社後の提出")); assert(txt.includes("年末調整 2026 年度: 必須・社内期限 11/30")); assert(txt.includes("扶養家族: 必須・社内期限 11/23（個別設定）")); assert(txt.includes("配偶者・息子")); assert(txt.includes("2 人"));
   assert(txt.includes("税法上の義務を免除するものではありません"));
   assert(txt.includes("hr.onboarding.tax")); assert(txt.includes("hr.onboarding.contact"));
   assert(!txt.includes("1990"), "生年月日は出ない");
@@ -17,7 +17,7 @@ Deno.test("親メッセージ: 入社後の提出 2 行（必須・期限・状�
 Deno.test("postJoinLines / postJoinPolicyText: 任意・対象外・反映済み・扶養なし・承認待ち", () => {
   assertEquals(postJoinPolicyText({ status: "pending", required: false }), "任意");
   assertEquals(postJoinPolicyText({ status: "not_target", target: false }), "対象外");
-  assertEquals(postJoinPolicyText({ status: "pending", required: true, deadline: "2026-12-09", source_of_required: "override" }), "必須・期限 12/09（個別設定）");
+  assertEquals(postJoinPolicyText({ status: "pending", required: true, deadline: "2026-12-09", source_of_required: "override" }), "必須・社内期限 12/09（個別設定）");
   const l = postJoinLines({ ...wf, year_end: { status: "synced", target_year: 2026, required: true }, dependents: { status: "none", required: false } });
   assert(l[0].startsWith("✅") && l[0].includes("スマレジ反映済み")); assert(l[1].startsWith("✅") && l[1].includes("扶養なし") && l[1].includes("任意"));
   const p = postJoinLines({ ...wf, year_end: null, dependents: null });
@@ -36,7 +36,7 @@ Deno.test("源泉所得税モーダル: スマレジと同じ 4 項目・同じ�
 Deno.test("提出のスレッド表示: 提出済み＝承認／差し戻し／比較ボタン。承認済み＝反映ボタン。扶養なし＝ボタンなし。個人情報なし", () => {
   const b1 = JSON.stringify(postJoinSubmittedBlocks(wf, null, "dependents", { count: 2, relationships: [1, 3], status: "submitted", policy: wf.dependents }));
   assert(b1.includes("2 人") && b1.includes("配偶者・娘") && b1.includes("hr.onboarding.dependents.approve") && b1.includes("hr.onboarding.dependents.reject") && b1.includes("hr.onboarding.dependents.compare") && !b1.includes("dependents.sync"));
-  assert(b1.includes("必須・期限 11/23"));
+  assert(b1.includes("必須・社内期限 11/23"));
   const b2 = JSON.stringify(postJoinSubmittedBlocks(wf, null, "dependents", { count: 0, status: "none" }));
   assert(b2.includes("扶養家族なし") && !b2.includes("approve") && b2.includes("反映はありません"));
   const b3 = JSON.stringify(postJoinSubmittedBlocks(wf, null, "year_end", { spouse_flag: true, student_flag: false, target_year: 2026, status: "approved" }));
@@ -59,4 +59,10 @@ Deno.test("UI ジョブ結果: 書き込み前の確認で中止したときは 
   assert(a.includes("書き込み前の確認で中止") && !a.includes("hr.onboarding.ui.retry") && a.includes("扶養家族"));
   const b = JSON.stringify(uiJobResultBlocks(wf, null, { id: "j", kind: "smaregi_year_end", status: "failed", attempts: 3, max_attempts: 3, error: "SAVE_FAILED", error_kind: "save_failed" }, null, ""));
   assert(b.includes("hr.onboarding.ui.retry") && b.includes("年末調整"));
+});
+
+Deno.test("期限の表示: 社内期限と法定期限（目安）を分けて出す", () => {
+  assertEquals(postJoinPolicyText({ status: "pending", required: true, deadline: "2026-11-30", legal_deadline: "2026-12-14" }), "必須・社内期限 11/30（法定の目安 12/14）");
+  assertEquals(postJoinPolicyText({ status: "pending", required: false, deadline: null, legal_deadline: "2026-12-14" }), "任意・法定の目安 12/14");
+  assertEquals(postJoinPolicyText({ status: "pending", required: false }), "任意");
 });
