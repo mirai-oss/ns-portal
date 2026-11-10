@@ -1,0 +1,95 @@
+--- a/requests.html
++++ b/requests.html
+@@ -177,7 +177,7 @@
+ const CRED_FIELDS=[{v:"username",l:"ID（ログインID）"},{v:"secret",l:"パスワード"},{v:"login_url",l:"ログインURL"},{v:"status",l:"状態"},{v:"memo",l:"メモ"}];
+ const CRED_STATUS_VALUES=["使用中","要確認","解約済"];
+ const NEW_CATEGORIES=["レジ・決済","広告媒体","通信・Wi-Fi","クラウド","銀行","その他"];
+-const EMP_FIELD_LABELS={name:"氏名",kana:"フリガナ",phone:"電話番号",address:"住所",bank_account:"給与振込口座",contact_email:"連絡用メールアドレス",id_document:"身分証明書の提出"};
++const EMP_FIELD_LABELS={name:"氏名",kana:"フリガナ",phone:"電話番号",address:"住所",bank_account:"給与振込口座",contact_email:"連絡用メールアドレス",id_document:"身分証明書の提出",wage:"賃金"};
+ const CRED_FIELD_LABELS={username:"ID",secret:"パスワード",login_url:"ログインURL",status:"状態",memo:"メモ"};
+ const STATUS_PILL={pending:["承認待ち","pending"],approved:["承認済み","approved"],rejected:["却下","rejected"],done:["対応済み","done"]};
+ 
+@@ -258,6 +258,9 @@
+   if(field==="id_document"){
+     try{ return JSON.parse(value).doc_type||value; }catch(e){ return value; }
+   }
++  if(field==="wage"){ // 2026-11-10: 賃金の変更申請（承認する人＝本部・マスターだけが見る画面）
++    try{ const w=JSON.parse(value); return `${({0:"時給",1:"日給",2:"月給"})[w.division]||""} ${Number(w.wage).toLocaleString()}円`; }catch(e){ return value; }
++  }
+   return value;
+ }
+ function bankAttachmentPath(field,value){
+@@ -267,11 +270,29 @@
+     return v.proof_file_path||v.file_path||null;
+   }catch(e){ return null; }
+ }
+-async function loadApprovePanel(){
+-  const r=await authed(`/rest/v1/profile_change_requests?status=eq.pending&order=requested_at.asc&select=id,user_id,field,old_value,new_value,requested_at,target:users!profile_change_requests_user_id_fkey(name)`);
++// 2026-11-10: 口座変更の承認は「どの支給回から新しい口座にするか」を承認する人が必ず選ぶ（自動では決めない）。
++//   選べる支給回は従業員ごと（hr_pay_change_config）。出力済みの回は、理由を入れた個別の確認・承認だけ。ハブ側が未適用なら従来どおり
++let PAY_RUNS={};
++async function loadApprovePanel(){
++  const base="/rest/v1/profile_change_requests?status=eq.pending&order=requested_at.asc&select=id,user_id,field,old_value,new_value,requested_at,target:users!profile_change_requests_user_id_fkey(name)";
++  let r=await authed(base+",effective_year_month,effective_date,request_reason,apply_note");
++  if(!(r.ok&&Array.isArray(r.body))) r=await authed(base); // ハブ側が未適用（列が無い）ときは従来の読み方
+   PENDING_PROFILE=(r.ok&&Array.isArray(r.body))?r.body:[];
++  PAY_RUNS={};
++  for(const q of PENDING_PROFILE.filter(x=>x.field==="bank_account")){
++    try{ const c=await authed("/rest/v1/rpc/hr_pay_change_config",{method:"POST",body:JSON.stringify({p_user:q.user_id})}); if(c.ok&&c.body&&c.body.ok) PAY_RUNS[q.id]=c.body.runs||[]; }catch(e){}
++  }
+   renderApprovePanel();
+ }
++function payRunSelectHtml(r){
++  const runs=PAY_RUNS[r.id]; if(!runs) return "";
++  const hope=r.effective_year_month&&runs.some(x=>x.year_month===r.effective_year_month)?r.effective_year_month:"";
++  return `<div style="margin-top:8px;font-size:13px">どの支給回から新しい口座にしますか？（承認する人が選びます）<br>
++    <select id="payrun-${r.id}" style="margin-top:4px;padding:6px;max-width:100%">
++      <option value=""${hope?"":" selected"}>支給回を選ぶ…</option>
++      ${runs.map(x=>`<option value="${esc(x.year_month)}" data-state="${esc(x.state)}"${x.year_month===hope?" selected":""}>${esc(x.year_month)} 月分（${esc(x.pay_date)} 支給）${x.state==="exported"?"※振込データ出力済み":""}${x.year_month===r.effective_year_month?"［希望］":""}</option>`).join("")}
++    </select></div>`;
++}
+ function renderApprovePanel(){
+   const el=$("approvePanel"); if(!el) return;
+   if(!PENDING_PROFILE||PENDING_PROFILE.length===0){ el.innerHTML=""; return; }
+@@ -290,6 +311,9 @@
+           → <span>${esc(formatFieldValue(r.field,r.new_value))}</span>
+           ${path?`<button type="button" onclick="viewAttachment('${path.replace(/'/g,"\\'")}')" style="width:auto;padding:3px 8px;font-size:11px;border-radius:6px;border:1px solid var(--accent);color:var(--accent);background:none;margin-left:6px">📎添付を見る</button>`:""}
+         </div>
++        ${r.field==="wage"&&r.effective_date?`<div style="margin-top:4px;font-size:12px;color:var(--muted)">適用開始日: ${esc(r.effective_date)}${r.request_reason?`／理由: ${esc(r.request_reason)}`:""}</div>`:""}
++        ${r.apply_note?`<div style="margin-top:4px;font-size:12px;color:var(--warn)">${esc(r.apply_note)}</div>`:""}
++        ${r.field==="bank_account"?payRunSelectHtml(r):""}
+         <div style="margin-top:8px;display:flex;gap:8px">
+           <button class="btn" style="width:auto;padding:8px 16px;background:var(--ok)" onclick="reviewProfileRequest('${r.id}',true)">✅ 承認する</button>
+           <button class="btn" style="width:auto;padding:8px 16px;background:none;color:var(--bad);border:1px solid var(--bad)" onclick="reviewProfileRequest('${r.id}',false)">却下する</button>
+@@ -304,6 +328,31 @@
+   else alert("添付を開けませんでした");
+ }
+ async function reviewProfileRequest(id,approve){
++  const req=(PENDING_PROFILE||[]).find(x=>x.id===id);
++  const msg0=$("approveMsg");
++  // 2026-11-10: 口座・賃金の変更は、共通の承認（hr_pay_change_review）に通す。口座は支給回を選ぶ・却下は理由が必須
++  if(req&&(req.field==="wage"||(req.field==="bank_account"&&PAY_RUNS[id]))){
++    const args={p_request:id,p_approve:approve};
++    if(!approve){
++      const why=prompt("却下の理由を入れてください（必須）"); if(!why||!why.trim()) return;
++      args.p_reason=why.trim();
++    }else if(req.field==="bank_account"){
++      const sel=$("payrun-"+id), ym=sel?sel.value:"";
++      if(!ym){ if(msg0) msg0.innerHTML=`<div class="msg-err">どの支給回から新しい口座にするかを選んでから、承認してください</div>`; return; }
++      args.p_year_month=ym;
++      const label=sel.options[sel.selectedIndex].text;
++      if(sel.options[sel.selectedIndex].dataset.state==="exported"){
++        const why=prompt(`${ym} 月分は振込データを出力済みです。\nこの回から口座を変えるのは例外です（個別の確認・承認）。理由を入れてください。\n※ 出力済みの振込ファイルは自動では変わりません。承認のあと、振込データを出し直してください。`);
++        if(!why||!why.trim()) return;
++        args.p_force_closed=true; args.p_reason=why.trim();
++      }else if(!confirm(`この口座変更を承認しますか？\n${label} から新しい口座で振り込みます。それより前の支給回は、いまの口座のままです。`)) return;
++    }else if(!confirm("この賃金変更を承認しますか？（承認すると登録され、スマレジへの同期の対象になります）")) return;
++    const r2=await authed("/rest/v1/rpc/hr_pay_change_review",{method:"POST",body:JSON.stringify(args)});
++    if(!r2.ok||(r2.body&&r2.body.ok===false)){ if(msg0) msg0.innerHTML=`<div class="msg-err">${esc((r2.body&&(r2.body.error||r2.body.message))||"処理できませんでした")}</div>`; return; }
++    await loadApprovePanel();
++    const m1=$("approveMsg"); if(m1&&approve&&r2.body&&r2.body.note) m1.innerHTML=`<div class="msg-ok">${esc(r2.body.note)}</div>`;
++    return;
++  }
+   if(approve&&!confirm("この内容で承認し、実際の値を書き換えますか？")) return;
+   let reason=null;
+   if(!approve){ reason=prompt("却下理由（任意）")||""; }

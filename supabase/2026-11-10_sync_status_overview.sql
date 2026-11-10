@@ -88,7 +88,7 @@ language sql stable security definer set search_path = public as $$
     from profile_change_requests q where q.status in ('pending', 'approved') and q.apply_status in ('blocked_exported', 'blocked_finalized')
   union all
   select h.user_id, 'sync_error', 'transfer_hold:' || h.year_month || ':' || h.user_id, h.year_month || ' 月分の振込データから除外中（振込漏れに注意）', h.created_at, true
-    from payroll_transfer_holds h where h.status in ('held', 'ready') and pay_run_state(h.year_month) <> 'paid'
+    from payroll_transfer_holds h where h.status in ('held', 'ready')
   -- 情報不一致（読み取りの照合で見つかったもの。既存の所属照合と、照合結果の表）
   union all
   select m.user_id, 'mismatch', 'store:' || m.user_id || ':' || m.contract_id, '所属店舗がスマレジと不一致', m.detected_at, false from staff_store_mismatch m

@@ -4,6 +4,8 @@ drop trigger if exists employee_change_pay_guard on payroll_bank_accounts;
 drop trigger if exists payroll_transfer_schedule_after on payroll_transfer_schedule;
 drop trigger if exists pay_change_request_after on profile_change_requests;
 drop trigger if exists payroll_transfer_schedule_guard on payroll_transfer_schedule;
+drop trigger if exists payroll_transfer_confirm_step_guard on hq_task_steps;
+drop function if exists payroll_transfer_confirm_step_guard();
 -- review_profile_change_request を変更前の定義に戻す
 CREATE OR REPLACE FUNCTION public.review_profile_change_request(p_request_id uuid, p_approve boolean, p_reason text DEFAULT NULL::text)
  RETURNS void
@@ -122,5 +124,5 @@ alter table profile_change_requests drop constraint if exists profile_change_req
 alter table profile_change_requests add constraint profile_change_requests_status_check check (status = any (array['pending','approved','rejected']));
 alter table profile_change_requests drop column if exists payload, drop column if exists effective_date, drop column if exists effective_year_month, drop column if exists effective_pay_date,
   drop column if exists request_reason, drop column if exists apply_status, drop column if exists applied_at, drop column if exists apply_note, drop column if exists apply_ref, drop column if exists hq_task_id, drop column if exists notify_log;
-update app_settings set value = value - 'bank_approval_required' - 'wage_approval_required' - 'pay_request_notify_enabled' - 'transfer_pending_mode' where key = 'employee_change';
+update app_settings set value = value - 'bank_approval_required' - 'wage_approval_required' - 'pay_request_notify_enabled' - 'transfer_pending_mode' - 'transfer_guard_since' where key = 'employee_change';
 -- ※ 申請時に作られた本部タスク（hq_tasks「口座変更／賃金変更の確認・承認」「【振込漏れ注意】…」）は残る。不要なら本部タスクボードで完了／削除する
