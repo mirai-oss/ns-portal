@@ -492,6 +492,21 @@ returns jsonb language sql stable security definer set search_path = public as $
                             'reasons', (select f.reasons from employee_change_effects f where f.user_id = auth.uid() and f.effect_key = 'commute_recheck' and f.status in ('pending','in_progress') limit 1))
 $$;
 
+-- 内部用（トリガー・補助）は外から呼べないようにする。公開する RPC はログイン済みだけ（中で権限を確認）
+revoke all on function employee_change_stores_state(uuid) from public, anon, authenticated;
+revoke all on function employee_change_work_store(jsonb) from public, anon, authenticated;
+revoke all on function employee_change_group_of_request(text) from public, anon, authenticated;
+revoke all on function employee_change_trg_users() from public, anon, authenticated;
+revoke all on function employee_change_trg_profiles() from public, anon, authenticated;
+revoke all on function employee_change_trg_user_stores() from public, anon, authenticated;
+revoke all on function employee_change_trg_bank() from public, anon, authenticated;
+revoke all on function employee_change_trg_wage() from public, anon, authenticated;
+revoke all on function employee_change_trg_profile_request() from public, anon, authenticated;
+revoke all on function employee_change_trg_commute() from public, anon, authenticated;
+revoke all on function employee_change_set_dates(uuid, date, date, uuid) from public, anon;
+revoke all on function employee_change_effect_resolve(uuid, text, text, uuid) from public, anon;
+revoke all on function employee_change_list(uuid, integer) from public, anon;
+revoke all on function employee_change_my_recheck() from public, anon;
 revoke all on function employee_change_record(uuid, text, text, text, jsonb, jsonb, date) from public, anon, authenticated;
 revoke all on function employee_change_dispatch(uuid) from public, anon, authenticated;
 revoke all on function employee_change_retract(uuid) from public, anon, authenticated;
