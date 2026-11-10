@@ -89,5 +89,12 @@ grant execute on function public.daily_report_card_vm(uuid, date) to service_rol
 revoke all on function public.daily_report_card_vm_v5(uuid, date) from public, anon, authenticated;
 grant execute on function public.daily_report_card_vm_v5(uuid, date) to service_role;
 
+-- ①②で作った純粋関数・トリガー関数が PUBLIC/anon 実行可のままだったため、方針（PUBLIC不可）に合わせて閉じる（司令塔レビューの指摘）。service_role は維持
+revoke all on function public.fl_delivery_tax_divisor() from public, anon, authenticated;
+revoke all on function public.fl_metrics_calc(numeric, numeric, numeric, numeric) from public, anon, authenticated;
+revoke all on function public.fl_rating_grade(numeric, numeric, numeric, numeric) from public, anon, authenticated;
+revoke all on function public.fl_rating_thresholds_log() from public, anon, authenticated;
+grant execute on function public.fl_delivery_tax_divisor(), public.fl_metrics_calc(numeric, numeric, numeric, numeric), public.fl_rating_grade(numeric, numeric, numeric, numeric) to service_role;
+
 -- 確認用SELECT（適用後）: 非デリバリー店で v5 と置換4キーが一致すること／キー数が増えていること
 --   select (public.daily_report_card_vm(s.id, current_date - 1) ->> 'mtd_labor_ratio') = (public.daily_report_card_vm_v5(s.id, current_date - 1) ->> 'mtd_labor_ratio') from stores s where s.is_active limit 5;
