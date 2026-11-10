@@ -47,6 +47,9 @@ $function$;
 revoke all on function public.payroll_consistency_check(boolean) from public, anon, authenticated;
 grant execute on function public.payroll_consistency_check(boolean) to service_role;
 
+-- 【追加2】payroll_task_links に残っていた anon の参照権限を外す（方針=PUBLIC/anonなし。画面はログイン後=authenticatedで読むので影響なし）
+revoke all on public.payroll_task_links from anon;
+
 do $$
 begin
   if exists (select 1 from cron.job where jobname = 'payroll-consistency-check') then perform cron.unschedule('payroll-consistency-check'); end if;
