@@ -7,6 +7,12 @@
 
 ---
 
+**★★★2026-11-10〜11（担当A）TK-252 店舗日報v2: 第1段階(参照側3本デプロイ+月次再計算)完了／VM v6.1・v6.2 本番適用・検証済み**:
+- Edge: keiei-kd-refresh v64・keiei-api-home v11・keiei-api-dashboard-summary v23（verify_jwt=false維持）。store_monthly 307行再計算（fl_sales列・デリバリー店のみ率が変化・fl_consistency_check 24行OK）。
+- DB: daily_report_card_vm v6.1（取込成功日=¥0／未取得=import_runs判定・missing_days・評価hold）→ v6.2（breakdown＝営業区分別売上: kd_media_daily由来・業務委託4店=stores.seisan_target の特例はランチ0/ディナー=POS・通常店の媒体欠損日は未取得）。検証: 直近31日×全店 369店日で ランチ+ディナー=POS 不一致0・媒体由来247日で媒体合計=POS・業務委託121日=ディナー=POS・通常店の媒体欠損1日（黒霧屋）=未取得・既存59キー全店不変。
+- 経営D(tori-dashboard main): a9b9a65/4f615c2（v=278/279）kdで取れた日次・入金・PL・スポット・借入をスプレッドシート由来で上書きしない・店舗名のマスタ名正規化。
+- 未承認: 画面公開(FL評価設定・FL分母・ヘッダー表記)・Slack配信・Mac mini・通知停止・Uber新規連携・休業表。
+
 **2026-11-10 深夜（Slack 勤怠スレッド・続き）ステップ 3 を「口座変更の運用方針」に合わせて修正（開発・テストのみ・本番未適用）**:
 - ユーザー確定方針: 給与支給のたびの口座確認・承認はしない／申請があった人だけ本部に確認・承認タスク／本部の直接変更も履歴＋承認フロー／承認時に支給回を確定／指定の回から自動適用／出力時に使用口座を自動記録（人の承認なし）／確定済みの振込データは登録口座が変わっても自動変更しない／例外＝出力後の変更だけ個別の確認・承認／通知は申請時だけ（Slack・本部タスク。口座番号は出さない）／対応を求めるのは承認漏れ・同期エラー・競合だけ。
 - SQL `supabase/2026-11-10_pay_change_requests.sql`（**未適用のまま書き直し**・rollback も更新）: 承認 `hr_pay_change_review` に `p_year_month`（ここで支給回を確定）／出力済み（支給日前）の回は理由つきの個別承認だけ（`hr_bank_change_apply_exception`＝登録口座と控えを差し替え・前の控えと理由を残す）／控え `payroll_transfer_account_snapshots` は最初の出力時点で固定（出し直しで上書きしない）／`hr_payroll_transfer_prepare`（振込画面用: 時期が来た変更の反映・出力済みの月の控え・対応が必要なもの）／`hr_pay_change_attention`（承認漏れ・同期エラー・競合だけ。口座番号なし）／`hr_pay_change_config`／申請時だけ本部タスク（既存 `hq_tasks`）と Slack（`pay_change_notify` → EF）・承認/却下/取り下げでタスク自動完了／フラグは `bank_approval_required`・`wage_approval_required`・`pay_request_notify_enabled`（全部既定 false。旧 `pay_approval_required` は廃止）。
