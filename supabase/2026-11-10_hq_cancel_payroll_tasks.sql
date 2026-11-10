@@ -6,9 +6,9 @@
 -- 【RPC】権限=確定(hq_create_payroll_tasks)と同じ（マスター・本部・社長）
 --   ① hq_cancel_payroll_preview(p_year_month text, p_corp_id uuid) returns jsonb   … 確認ダイアログ用の事前件数（何も変更しない）
 --      {finalized, corporation, tasks, tasks_in_progress, tasks_delete, steps_remove, signed:[{user_id,name,completed}], sign_people, sign_completed, paid_marked, mf_registered}
---   ② hq_cancel_payroll_tasks(p_year_month text, p_corp_id uuid, p_reason text, p_cancel_signatures boolean default false) returns jsonb   … 実行（理由必須・200文字まで）
+--   ② hq_cancel_payroll_tasks(p_year_month text, p_corp_id uuid, p_reason text, p_cancel_signatures boolean default true) returns jsonb   … 実行（理由必須・200文字まで）
 --      {ok, corporation, tasks_cancelled, tasks_in_progress_cancelled, steps_removed, signatures_cancelled, finalized_removed, paid_reset, mf_registered}
---      p_cancel_signatures=false（既定）: サインは残す（データは残るが、確定を外すので手渡し画面からは隠れ、再確定で再表示）。paid_atにも触れない
+--      p_cancel_signatures=false: サインは残す（データは残るが、確定を外すので手渡し画面からは隠れ、再確定で再表示）。paid_atにも触れない
 -- 【動き】
 --   本部タスク: 確定が新規に作ったタスク=論理削除（進行中も対象・deleted_at）／テンプレ由来に足した「振込対象者の確認」工程=工程だけ外す（タスク本体は残す）→ payroll_task_links を削除
 --   現金手渡し: その月×法人の契約のサイン記録のうち、サイン・確認・完了・引き出しのどれかがある行を cash_handoff_cancel と同じ扱いで取消（理由「給料確定の取消: …」・履歴に戻す前の状態と元の画像パス）
@@ -30,6 +30,7 @@ create table if not exists payroll_finalize_cancellations (
   finalized_by uuid references users(id),
   tasks jsonb not null default '[]'::jsonb,   -- [{kind, task_id, mode: 'deleted'|'step_removed'|'already_gone', was_in_progress}]
   sign_cancelled integer not null default 0,
+  cancel_signatures boolean not null default true,   -- 画面で「取り消す」を選んだか（false=サインは残した）
   signatures_kept integer not null default 0,   -- 「そのまま残す」を選んだサイン記録の人数
   paid_reset integer not null default 0,
   mf_registered integer not null default 0
@@ -105,7 +106,7 @@ revoke all on function public.hq_cancel_payroll_preview(text, uuid) from public,
 grant execute on function public.hq_cancel_payroll_preview(text, uuid) to authenticated;
 
 -- ② 実行
-create or replace function public.hq_cancel_payroll_tasks(p_year_month text, p_corp_id uuid, p_reason text, p_cancel_signatures boolean default false)
+create or replace function public.hq_cancel_payroll_tasks(p_year_month text, p_corp_id uuid, p_reason text, p_cancel_signatures boolean default true)
 returns jsonb
 language plpgsql
 security definer
@@ -155,7 +156,7 @@ begin
   for v_row in select * from sf_cash_handoff_signatures s
                 where s.year_month = p_year_month and s.contract_id = any(coalesce(v_contracts, array[]::text[]))
                   and (s.payer_checked_at is not null or s.receiver_checked_at is not null or s.completed_at is not null or s.withdrawn_at is not null) loop
-    if not coalesce(p_cancel_signatures, false) then v_kept := v_kept + 1; continue; end if;   -- 「そのまま残す」
+    if not coalesce(p_cancel_signatures, true) then v_kept := v_kept + 1; continue; end if;   -- 「そのまま残す」
     insert into sf_cash_handoff_cancellations(user_id, year_month, contract_id, corporation_id, cancelled_by, reason,
         prev_payer_id, prev_payer_checked_at, prev_receiver_checked_at, prev_completed_at, archived_paths, paid_at_reset)
     values (v_row.user_id, v_row.year_month, v_row.contract_id, p_corp_id, auth.uid(), '給料確定の取消: '||v_reason,
@@ -182,8 +183,8 @@ begin
   end loop;
 
   delete from payroll_finalized where year_month = p_year_month and corporation_id = p_corp_id;
-  insert into payroll_finalize_cancellations(year_month, corporation_id, cancelled_by, reason, finalized_at, finalized_by, tasks, sign_cancelled, signatures_kept, paid_reset, mf_registered)
-  values (p_year_month, p_corp_id, auth.uid(), v_reason, v_fin.finalized_at, v_fin.finalized_by, v_plan, v_sign, v_kept, v_paid, v_mf);
+  insert into payroll_finalize_cancellations(year_month, corporation_id, cancelled_by, reason, finalized_at, finalized_by, tasks, sign_cancelled, cancel_signatures, signatures_kept, paid_reset, mf_registered)
+  values (p_year_month, p_corp_id, auth.uid(), v_reason, v_fin.finalized_at, v_fin.finalized_by, v_plan, v_sign, coalesce(p_cancel_signatures, true), v_kept, v_paid, v_mf);
 
   begin
     perform notify_lark('↩️ 給料確定を取消しました: '||p_year_month||'・'||coalesce(v_corp_name,'')||'／理由: '||v_reason
@@ -192,7 +193,7 @@ begin
   exception when others then null;
   end;
   return jsonb_build_object('ok', true, 'corporation', v_corp_name, 'tasks_cancelled', v_del + v_stp, 'tasks_in_progress_cancelled', v_inprog_n,
-    'tasks_deleted', v_del, 'steps_removed', v_stp, 'signatures_cancelled', v_sign, 'signatures_kept', v_kept, 'finalized_removed', true,
+    'tasks_deleted', v_del, 'steps_removed', v_stp, 'signatures_cancelled', v_sign, 'sign_cancelled', v_sign, 'signatures_kept', v_kept, 'sign_kept', v_kept, 'finalized_removed', true,
     'paid_reset', v_paid, 'mf_registered', v_mf);
 end;
 $function$;
