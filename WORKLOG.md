@@ -7,6 +7,18 @@
 
 ---
 
+**2026-11-10（Slack 勤怠スレッド・続き）入社登録: リマインド安全対策 v3・駅すぱあと接続・交通費の会社ルール＝コード完成（SQL 2 本は未適用・nippo 未 push。EF はユーザーがデプロイ済み分あり）**:
+- ① リマインド安全対策（ハブ `c93d29e`・nippo `48b1d19` 未 push）: 対象＝新規入社者（`post_join_new_hire_from` 以降のワークフロー）＋本部が登録しマスター/CEO が承認した対象リスト（`post_join_remind_batches/_members`）。既存従業員は未提出だけでは対象外（本番 dry-run: 既存 19 人は existing_unlisted）。上限 `post_join_max_per_run`（10）超過で全停止。nippo に確認専用画面。SQL `2026-11-10_post_join_remind_scope.sql` **未適用**。
+- ⑤ 社内期限（月末基本・個別変更可）と法定の目安（参考表示）を分離（同 SQL。post_join_rules 4 行が更新される）。
+- ② 扶養の実機読み取り: 以前の「LiveGate に扶養 2 名」は行数の数え間違い（訂正）。API（源泉の扶養人数・配偶者フラグ）で候補を探し、トーホーの 1 人で読むだけ検証 → `td.person-info` の `.person_name/.person-kana/.person-birth/.fl_right` から氏名・続柄・生年月日を取得（ns-daily-import `78f773d`）。③ 権限: AL として 25 項目を rollback 内で検証（他人分は読めず変更不可）。④ `legacy_wage_text=false` は 11/09 18:10 に変更済み（ユーザー実行）・通知 1 通で正常 → 維持。
+- 駅すぱあと: キーは Edge Function シークレット `EKISPERT_API_KEY`（`scripts/set_function_secret.py`＝伏せ字ダイアログ・`--yes`）。commute-route に `op=selftest`／`op=probe`（許可 GET のみ・キーは返さない）。評価版はエリア限定（東京・神奈川・大阪・北海道。名古屋 0 件）。実応答で判明: バスは `Type:{text:'bus'}`・新幹線は別料金（ChargeSummary）・同名駅（日本橋は大阪が先頭）・`/search/course/plain` に answerCount は無い。IC 運賃とバス可否は `/toolbox/course/condition` の条件文字列を `/search/course/extreme`（searchType=plain）に渡す。実応答フィクスチャ `_shared/fixtures/ekispert-real-2026-11-10.json`。
+- 会社ルール（ユーザー回答 11/10）: IC・新幹線なし・バス原則不可（例外のみ）・**1 日上限 500 円（往復）**が基本、超える人は個別に定期代支給/全額支給・定期と実費は安い方・不支給ルールなし。実装 `14df750`→本コミット: `payPlan`・`conditionFor`・`pickStation`、Slack「⚙️ 支給方法」（`hr.onboarding.commute.policy`）、SQL `2026-11-10_commute_company_rules.sql`（**未適用**: commute_rules 追記・employee_commute に pay_policy/expected_days_per_month/bus_exception・RPC `onboarding_set_commute_policy`）。読み取りのみの比較（14 人）: 算出 12・ルール適用後の 1 日額と一致 4・2 円差（切符と IC）3・その他は個別事情と思われる差。
+- 本番 EF（ユーザー実行）: commute-route v7・onboarding-notify v12・slack-interact v18・smaregi-sync v53。**今回の会社ルール分は未デプロイ**。
+- **次**: SQL 2 本の適用承認 → EF 3 本デプロイ → nippo `48b1d19` push → テスト従業員「テスト 立会い」で 申請→実 API 検索→Slack 確認→支給方法→承認→設定（manual）の E2E。テストデータ「テスト 社員確認」は削除承認待ち。
+
+
+---
+
 **2026-11-09 19:00（Slack 勤怠スレッド・続き）入社登録 Phase 6 v2＝本番反映（A: SQL 適用＋EF 3 本／B: nippo 公開／D: 使い捨て確認）完了。フラグは全部 OFF・cron 未登録・既存データ不変**:
 - 事前: 本番 EF を download して `supabase/restored/2026-11-09_{smaregi-sync_prod_v51, onboarding-notify_prod_v9, slack-interact_prod_v16, onboarding-blocks_prod_v9}.ts` に保存。件数スナップショット（applicants 863／profiles 148／賃金 217／本部タスク 503）。切り戻し SQL は rollback 内で検証済み。v2 テスト 85 項目を最終 SQL で再実行（期待どおり）。
 - 期限ルール追加（ユーザー指摘）: 社員の扶養は「入社 14 日後」と「初回給与処理に必要な期限＝入社後最初の給与締め日（末日）− リード 0 日」の早い方（給与は末日締め・翌月 15 日払い＝ユーザー確認）。`post_join_rules.payroll_closing_day / payroll_lead_days`・関数 `post_join_payroll_deadline`・effective に deadline_reason。
@@ -1229,6 +1241,8 @@
 - 入金タブをkd_deposit速報で即表示（v237）。PL速報(viewPLFast_)は既存。目標/広告/媒体/明細は確定データ(GAS)待ちのまま＝次はkd追加(F2・レーンP)待ち。社員人件費反映はユーザー確認済み。
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
+
+**★★★2026-11-10（Slack 勤怠スレッド・続き）入社登録: 駅すぱあと接続 OK（キー＝EF シークレット EKISPERT_API_KEY）・交通費の会社ルール（IC・1 日上限 500 円・個別に定期/全額・バス原則不可）とリマインド安全対策 v3 がコード完成。未適用 SQL 2 本（`2026-11-10_post_join_remind_scope.sql`・`2026-11-10_commute_company_rules.sql`）・未デプロイ（commute-route/onboarding-notify/slack-interact の会社ルール分）・nippo `48b1d19` 未 push。フラグ全 OFF 維持。** 本番 EF: commute-route v7／onboarding-notify v12／slack-interact v18／smaregi-sync v53（ユーザー実行）。直近コミット: ns-portal この下の git log／nippo `48b1d19`（ローカル）／ns-daily-import `78f773d`。
 
 **★★★2026-11-09 19:00（Slack 勤怠スレッド・続き）入社登録 Phase 6 v2＝本番反映済み（SQL 適用・EF smaregi-sync v52／onboarding-notify v11／slack-interact v17・nippo `75a066b` 公開）。フラグ全 OFF（smaregi_write・auto_approve・alerts・person_notify・post_join_remind）・cron 未登録・Mac `SMAREGI_UI_JOBS` OFF。使い捨て D 確認済み（提出→Slack→承認→manual）・使い捨て「テスト 社員確認」は削除待ち。** 保留: 切替 B（ただし legacy_wage_text は既に false＝要確認）・各フラグ有効化（有効化前にリマインド対象を新入社に絞る設定が必要）。未検証: 扶養の実機行読み取り／事業所作成後の遷移／nippo ログイン後画面／実書き込み。直近コミット: ns-portal この下の git log／nippo `75a066b`／ns-daily-import `1e51942`。
 
