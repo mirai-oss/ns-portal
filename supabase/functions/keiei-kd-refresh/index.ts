@@ -484,7 +484,18 @@ async function refreshStoreMonthly(sb: any) {
       store_id: string; year_month: string; sales: number; cost: number; labor: number; labor_pa: number; labor_emp: number; labor_spot: number;
     };
     const byKey = new Map<string, Bucket>();
+    // 当月途中の過大対策（TK-252）: 売上がまだ無い未来日の仕入・人件費の「予定値」まで月合計に入れると率が高く出るため、
+    //   店舗ごとに「売上のある最終日」までの行だけを集計する（過去月は最終日が月末以降なので全行が対象＝値は不変）。売上が一度も無い店は従来どおり全行
+    const lastSalesDate = new Map<string, string>();
     for (const r of (dashRows ?? []) as any[]) {
+      if ((Number(r.net_sales) || 0) > 0) {
+        const d = String(r.period_date).slice(0, 10);
+        if (!lastSalesDate.has(r.store_id) || d > (lastSalesDate.get(r.store_id) as string)) lastSalesDate.set(r.store_id, d);
+      }
+    }
+    const beforeCutoff = (storeId: string, date: unknown) => { const lim = lastSalesDate.get(storeId); return !lim || String(date).slice(0, 10) <= lim; };
+    for (const r of (dashRows ?? []) as any[]) {
+      if (!beforeCutoff(r.store_id, r.period_date)) continue;
       const ym = String(r.period_date).slice(0, 7);
       const key = `${r.store_id}|${ym}`;
       const b = byKey.get(key) ?? { store_id: r.store_id, year_month: ym, sales: 0, cost: 0, labor: 0, labor_pa: 0, labor_emp: 0, labor_spot: 0 };
@@ -504,6 +515,7 @@ async function refreshStoreMonthly(sb: any) {
       if (!storeName || !dateStr) continue;
       const storeId = idByName.get(storeName);
       if (!storeId) { unmatched.add(storeName); continue; }
+      if (!beforeCutoff(storeId, dateStr)) continue;   // スポット人件費も同じ最終日まで
       const ym = dateStr.slice(0, 7);
       const key = `${storeId}|${ym}`;
       const b = byKey.get(key) ?? { store_id: storeId, year_month: ym, sales: 0, cost: 0, labor: 0, labor_pa: 0, labor_emp: 0, labor_spot: 0 };
