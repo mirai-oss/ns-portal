@@ -167,17 +167,23 @@ Deno.test("会社ルール: 往復が 500 円を超える人（新横浜→田�
   const teiki = payPlan(j.computed, { policy: "teiki" });
   assertEquals(teiki.recommend?.pay_type, "monthly"); assertEquals(teiki.recommend?.amount, 15600);
 });
-Deno.test("会社ルール④: 出勤日数の見込みがあれば 定期 と 実費 の安い方を選ぶ", () => {
+Deno.test("運用方針: 定期と実費の比較は判断材料。安い方へ自動では切り替えない（支給方法は本部が決めたものだけ）", () => {
   const c = parseCourses((REAL as any).ic_ooguchi_shinyokohama); const j = judge(c, 199, DEFAULT_RULES);
-  const few = payPlan(j.computed, { days: 8 });      // 398×8=3,184 < 5,890 → 実費
-  assertEquals(few.recommend?.pay_type, "per_day"); assertEquals(few.monthly_by_days, 3184);
-  const many = payPlan(j.computed, { days: 20 });    // 398×20=7,960 > 5,890 → 定期
-  assertEquals(many.recommend?.pay_type, "monthly"); assertEquals(many.recommend?.amount, 5890);
-  // 上限適用の人（1 日 500）: 500×20=10,000 < 定期 15,600 → 実費（上限）のまま
-  const c2 = parseCourses((REAL as any).ic_shinyokohama_tamachi); const j2 = judge(c2, 528, DEFAULT_RULES);
-  assertEquals(payPlan(j2.computed, { days: 20 }).recommend?.pay_type, "per_day");
-  // 全額支給の人: 1,056×20=21,120 > 15,600 → 定期
-  assertEquals(payPlan(j2.computed, { policy: "full", days: 20 }).recommend?.pay_type, "monthly");
+  const stats = { this_month: "2026-11", next_month: "2026-12", last_month: "2026-10", shift_days_this_month: 8, shift_days_next_month: 20, actual_days_last_month: 18, actual_days_3m: 45, actual_months_3m: 3 };
+  const p = payPlan(j.computed, { stats });
+  // 来月シフト 20 日なら定期（5,890）の方が実費（7,960）より安い、という材料は出すが…
+  assertEquals(p.comparisons.find((x) => x.label.includes("2026-12"))?.cheaper, "teiki");
+  assertEquals(p.comparisons.find((x) => x.label.includes("2026-11"))?.cheaper, "actual");
+  assertEquals(p.comparisons.find((x) => x.label.includes("平均"))?.days, 15);
+  // …支給方法は基本（1 日あたり）のまま。定期には変わらない
+  assertEquals(p.policy, "daily_cap"); assertEquals(p.recommend?.pay_type, "per_day"); assertEquals(p.recommend?.amount, 398);
+  assert(p.text.includes("自動では変わりません"));
+  // 本部が定期代支給に決めたときだけ月額になる
+  const t = payPlan(j.computed, { policy: "teiki", stats });
+  assertEquals(t.recommend?.pay_type, "monthly"); assertEquals(t.recommend?.amount, 5890);
+  // シフト・実績が無ければ比較なし（推測しない）
+  assertEquals(payPlan(j.computed, { stats: { shift_days_this_month: 0, shift_days_next_month: 0, actual_days_last_month: 0 } }).comparisons.length, 0);
+  assertEquals(payPlan(j.computed).comparisons.length, 0);
 });
 Deno.test("探索条件: IC/切符 × バス可否 の 4 通り。既定は IC・バスなし", () => {
   assertEquals(conditionFor(DEFAULT_RULES, false), "T11211111113191:F332112112000010:A23121141:");

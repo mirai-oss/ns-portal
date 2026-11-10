@@ -147,40 +147,56 @@ export function payHint(c: Candidate | null): { round: number | null; teiki1: nu
 }
 
 // =============================================================
-// 2026-11-10 支給額の計算（会社ルール）。金額は API の運賃・定期代と設定値だけから出す（推測しない）。最終決定は本部
-//   policy: daily_cap＝1 日上限（基本 500 円・往復）／full＝全額支給／teiki＝定期代支給
-//   days: 月の出勤日数の見込み（分かるときだけ）。定期と実費の安い方（ルール④）の判定に使う
+// 2026-11-10 支給額の計算（会社ルール・運用方針）。金額は API の運賃・定期代と設定値だけから出す（推測しない）
+//   ★ 支給方法（policy）は本部が決めたものだけを使う。従業員は選べない。定期と実費の比較は「判断材料」として並べるだけで、安い方へ自動では切り替えない
+//   policy: daily_cap＝1 日上限（基本 500 円・往復）／full＝全額支給／teiki＝定期代支給（本部の明示的な承認があるときだけ）
+//   days: 出勤日数。自己申告ではなく、シフト（sf_shifts）と出勤実績（labor_cost_daily）から（DB 関数 commute_days_stats）
 // =============================================================
 export type PayPolicy = "daily_cap" | "full" | "teiki";
-export type PayPlan = { policy: PayPolicy; round: number | null; cap: number; daily: number | null; over_cap: boolean; teiki1: number | null; teiki3: number | null; teiki6: number | null; days: number | null;
-  monthly_by_days: number | null; break_even_days: number | null; recommend: { pay_type: "per_day" | "monthly"; amount: number; reason: string } | null; text: string };
-export function payPlan(c: Candidate | null, opts: { policy?: PayPolicy | null; cap?: number | null; days?: number | null } = {}): PayPlan {
+export type DaysStats = { this_month?: string; next_month?: string; last_month?: string; shift_days_this_month?: number | null; shift_days_next_month?: number | null; actual_days_last_month?: number | null; actual_days_3m?: number | null; actual_months_3m?: number | null } | null;
+export type PayComparison = { basis: "shift" | "actual"; label: string; days: number; actual_cost: number; teiki1: number; cheaper: "teiki" | "actual" | "same"; diff: number };
+export type PayPlan = { policy: PayPolicy; round: number | null; cap: number; daily: number | null; over_cap: boolean; teiki1: number | null; teiki3: number | null; teiki6: number | null;
+  break_even_days: number | null; comparisons: PayComparison[]; recommend: { pay_type: "per_day" | "monthly"; amount: number; reason: string } | null; text: string };
+export function payPlan(c: Candidate | null, opts: { policy?: PayPolicy | null; cap?: number | null; stats?: DaysStats } = {}): PayPlan {
   const policy: PayPolicy = (opts.policy ?? "daily_cap") as PayPolicy; const cap = Number(opts.cap ?? DEFAULT_RULES.daily_cap_round_yen ?? 500);
-  const days = opts.days != null && Number(opts.days) > 0 ? Math.round(Number(opts.days)) : null;
-  const round = c?.fare != null ? c.fare * 2 : null;   // IC は片道×2（往復割引は対象外）
+  const round = c?.fare != null ? c.fare * 2 : null;   // IC は片道×2
   const teiki1 = c?.teiki1 ?? null, teiki3 = c?.teiki3 ?? null, teiki6 = c?.teiki6 ?? null;
   const yen = (n: number) => "¥" + n.toLocaleString("ja-JP");
-  if (round === null) return { policy, round, cap, daily: null, over_cap: false, teiki1, teiki3, teiki6, days, monthly_by_days: null, break_even_days: null, recommend: null, text: "" };
+  if (round === null) return { policy, round, cap, daily: null, over_cap: false, teiki1, teiki3, teiki6, break_even_days: null, comparisons: [], recommend: null, text: "" };
   const over = round > cap;
   const daily = policy === "daily_cap" ? Math.min(round, cap) : round;
-  const monthly = days != null ? daily * days : null;
   const be = teiki1 != null && daily > 0 ? Math.ceil(teiki1 / daily) : null;
-  let recommend: PayPlan["recommend"] = null; const lines: string[] = [];
-  lines.push(`往復 ${yen(round)}（片道 ${yen(c!.fare!)}）`);
+  const lines: string[] = [`IC 往復 ${yen(round)}（片道 ${yen(c!.fare!)}）`];
+  // 設定の初期値は「本部が決めた支給方法」だけから作る（比較結果では変えない）
+  let recommend: PayPlan["recommend"] = null;
   if (policy === "teiki") {
-    if (teiki1 != null) { recommend = { pay_type: "monthly", amount: teiki1, reason: "定期代支給（個別設定）" }; lines.push(`定期代支給: 1 か月 ${yen(teiki1)}${teiki3 != null ? `／3 か月 ${yen(teiki3)}` : ""}${teiki6 != null ? `／6 か月 ${yen(teiki6)}` : ""}`); }
-    else lines.push("定期代が取得できません（本部で確認）");
+    if (teiki1 != null) { recommend = { pay_type: "monthly", amount: teiki1, reason: "定期代支給（本部が個別に承認）" }; lines.push(`支給方法: *定期代支給*（本部の個別承認）→ 月額 *${yen(teiki1)}*${teiki3 != null ? `（3 か月 ${yen(teiki3)}` : ""}${teiki6 != null ? `・6 か月 ${yen(teiki6)}）` : teiki3 != null ? "）" : ""}`); }
+    else lines.push("支給方法: 定期代支給 → 定期代が取得できません（本部で確認）");
+  } else if (policy === "full") {
+    recommend = { pay_type: "per_day", amount: daily, reason: "全額支給（本部が個別に承認）" }; lines.push(`支給方法: *全額支給*（本部の個別承認）→ 1 日 *${yen(daily)}*`);
   } else {
-    lines.push(policy === "daily_cap" ? (over ? `1 日上限 ${yen(cap)} を適用 → 1 日 *${yen(daily)}*（上限を ${yen(round - cap)} 超過。超える分を出す場合は「⚙️ 支給方法」で定期代支給か全額支給に）` : `1 日 *${yen(daily)}*（上限 ${yen(cap)} 以内）`) : `全額支給（個別設定）: 1 日 *${yen(daily)}*`);
-    // ルール④: 定期と実費の安い方。出勤日数の見込みがあれば比較して決める。無ければ分岐日数だけ示す
-    if (teiki1 != null && days != null) {
-      if (teiki1 < monthly!) { recommend = { pay_type: "monthly", amount: teiki1, reason: `月 ${days} 日なら定期 1 か月（${yen(teiki1)}）の方が 実費 ${yen(monthly!)} より安い` }; }
-      else recommend = { pay_type: "per_day", amount: daily, reason: `月 ${days} 日なら実費 ${yen(monthly!)} の方が 定期 1 か月（${yen(teiki1)}）より安い` };
-      lines.push(`安い方: ${recommend.reason}`);
-    } else {
-      recommend = { pay_type: "per_day", amount: daily, reason: "出勤日数の見込みが未入力のため 1 日あたりで支給" };
-      if (teiki1 != null && be != null) lines.push(`定期 1 か月 ${yen(teiki1)}（月 ${be} 日以上の出勤なら定期の方が安い）`);
-    }
+    recommend = { pay_type: "per_day", amount: daily, reason: over ? `基本ルール（1 日上限 ${yen(cap)}）` : "基本ルール（1 日上限以内）" };
+    lines.push(over ? `支給方法: 基本（1 日上限 ${yen(cap)}）→ 1 日 *${yen(daily)}*（往復は上限を ${yen(round - cap)} 超過）` : `支給方法: 基本（1 日上限 ${yen(cap)}）→ 1 日 *${yen(daily)}*（上限以内）`);
   }
-  return { policy, round, cap, daily, over_cap: over, teiki1, teiki3, teiki6, days, monthly_by_days: monthly, break_even_days: be, recommend, text: lines.join("\n") };
+  // 判断材料: 定期 1 か月 と 実費（1 日額×出勤日数）。日数はシフトと出勤実績から
+  const comparisons: PayComparison[] = [];
+  const st = opts.stats ?? null;
+  const add = (basis: "shift" | "actual", label: string, days: number | null | undefined) => {
+    if (teiki1 == null || days == null || !(Number(days) > 0)) return;
+    const d = Math.round(Number(days)); const cost = daily * d;
+    comparisons.push({ basis, label, days: d, actual_cost: cost, teiki1, cheaper: teiki1 < cost ? "teiki" : teiki1 > cost ? "actual" : "same", diff: Math.abs(teiki1 - cost) });
+  };
+  if (st) {
+    add("shift", `シフト ${st.next_month ?? "来月"}`, st.shift_days_next_month);
+    add("shift", `シフト ${st.this_month ?? "今月"}`, st.shift_days_this_month);
+    add("actual", `出勤実績 ${st.last_month ?? "先月"}`, st.actual_days_last_month);
+    if (st.actual_months_3m && st.actual_days_3m) add("actual", "出勤実績 直近 3 か月の平均", Math.round(Number(st.actual_days_3m) / Number(st.actual_months_3m)));
+  }
+  if (teiki1 != null) {
+    lines.push(`_判断材料_ 定期 1 か月 ${yen(teiki1)}${be ? `（1 日 ${yen(daily)} なら月 ${be} 日以上で定期の方が安い）` : ""}`);
+    for (const x of comparisons) lines.push(`・${x.label} ${x.days} 日: 実費 ${yen(x.actual_cost)} ／ 定期 ${yen(x.teiki1)} → ${x.cheaper === "teiki" ? `定期の方が ${yen(x.diff)} 安い` : x.cheaper === "actual" ? `実費の方が ${yen(x.diff)} 安い` : "同額"}`);
+    if (!comparisons.length) lines.push("・シフト・出勤実績がまだ無いため日数での比較はできません");
+    lines.push("※ 比較は判断材料です。支給方法は本部が「⚙️ 支給方法」で決めます（自動では変わりません）");
+  }
+  return { policy, round, cap, daily, over_cap: over, teiki1, teiki3, teiki6, break_even_days: be, comparisons, recommend, text: lines.join("\n") };
 }

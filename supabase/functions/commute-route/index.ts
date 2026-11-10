@@ -177,7 +177,9 @@ Deno.serve(async (req) => {
     // 自動承認の条件判定（記録だけ。承認は呼び出し側が enabled のときだけ）
     const auto = autoJudge(j, { claimed, method: cm?.method ?? null, home_station_known: !!homeStation, store_station_known: !!workStation }, autoRules);
     // 支給額の計算（会社ルール: 1 日上限・個別の支給方法・定期と実費の安い方）
-    const plan = payPlan(j.computed, { policy: ((cm as any)?.pay_policy ?? "daily_cap") as PayPolicy, cap: Number(rules.daily_cap_round_yen ?? 500), days: (cm as any)?.expected_days_per_month ?? null });
+    //   出勤日数は自己申告ではなく、シフトと出勤実績から（DB 関数 commute_days_stats。無ければ比較なし）。支給方法は本部が決めた pay_policy だけを使う
+    const { data: stats } = await sb.rpc("commute_days_stats", { p_user: uid });
+    const plan = payPlan(j.computed, { policy: ((cm as any)?.pay_policy ?? "daily_cap") as PayPolicy, cap: Number(rules.daily_cap_round_yen ?? 500), stats: stats ?? null });
     const result = {
       provider: mock ? "mock" : "ekispert", searched_at: new Date().toISOString(), store_id: store.id, store_name: store.name, from: homeStation || "（住所から）", to: workStation,
       candidates: cands, reasonable_indexes: j.reasonable.map((c) => c.index), computed_index: j.computed?.index ?? null, rules, auto, pay_hint: payHint(j.computed), pay_plan: plan, fare_type: rules.fare_type ?? "ic", bus_allowed: busAllowed,

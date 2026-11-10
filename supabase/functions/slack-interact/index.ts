@@ -436,21 +436,21 @@ const handlers: Record<string, Handler> = {
       sb.from("app_settings").select("value").eq("key", "commute_rules").maybeSingle(),
     ]);
     return await openModal(payload.trigger_id, commutePolicyModal({ workflow_id: wf.id, user_id: wf.user_id, notification_id: notificationId },
-      { name: wf.user_name ?? "", policy: String((cm as any)?.pay_policy ?? "daily_cap"), days: (cm as any)?.expected_days_per_month ?? null, bus_exception: (cm as any)?.bus_exception === true, cap: Number(rules?.value?.daily_cap_round_yen ?? 500), plan_text: (cm as any)?.search_result?.pay_plan?.text ?? null }));
+      { name: wf.user_name ?? "", policy: String((cm as any)?.pay_policy ?? "daily_cap"), bus_exception: (cm as any)?.bus_exception === true, cap: Number(rules?.value?.daily_cap_round_yen ?? 500), plan_text: (cm as any)?.search_result?.pay_plan?.text ?? null,
+        bus_request: (cm as any)?.uses_bus ? String((cm as any)?.special_note ?? "（理由の記入なし）") : null }));
   },
   "hr.onboarding.commute.policy.modal": async ({ sb, actor, payload }) => {
     const meta = JSON.parse(payload.view?.private_metadata ?? "{}");
     const v = payload.view?.state?.values ?? {};
     const policy = v.policy?.policy?.selected_option?.value ?? "daily_cap";
-    const daysRaw = (v.days?.days?.value ?? "").trim(); const days = daysRaw === "" ? null : Number(daysRaw);
     const bus = (v.bus?.bus?.selected_options ?? []).length > 0;
     const reason = (v.reason?.reason?.value ?? "").trim() || null;
     if ((policy !== "daily_cap" || bus) && !reason) return json({ response_action: "errors", errors: { reason: "基本ルールと違う扱いにするときは理由を入れてください" } });
     waitUntil((async () => {
-      const { error } = await sb.rpc("onboarding_set_commute_policy", { p_user: meta.user_id, p_policy: policy, p_days: days, p_bus_exception: bus, p_reason: reason, p_actor: actor.user_id });
+      const { error } = await sb.rpc("onboarding_set_commute_policy", { p_user: meta.user_id, p_policy: policy, p_bus_exception: bus, p_reason: reason, p_actor: actor.user_id });
       if (error) { await onboardingNotify({ op: "thread", workflow_id: meta.workflow_id, text: `⚠️ 支給方法を保存できませんでした（${actor.name}）: ${error.message}`, event: "onboarding_commute_policy_failed" }); return; }
-      const label = ({ daily_cap: "1 日上限（基本）", teiki: "定期代支給", full: "全額支給" } as Record<string, string>)[policy] ?? policy;
-      await onboardingNotify({ op: "thread", workflow_id: meta.workflow_id, text: `⚙️ 交通費の支給方法を「${label}」にしました（${actor.name}・${nowJst()}）${days ? `／月 ${days} 日見込み` : ""}${bus ? "／バス例外あり" : ""}${reason ? `\n理由: ${reason}` : ""}\n経路を再検索して支給額を計算し直します`, event: "onboarding_commute_policy" });
+      const label = ({ daily_cap: "基本（1 日上限）", teiki: "定期代支給（本部承認）", full: "全額支給（本部承認）" } as Record<string, string>)[policy] ?? policy;
+      await onboardingNotify({ op: "thread", workflow_id: meta.workflow_id, text: `⚙️ 交通費の支給方法を「${label}」にしました（${actor.name}・${nowJst()}）${bus ? "／バス例外を承認" : ""}${reason ? `\n理由: ${reason}` : ""}\n経路を再検索して支給額を計算し直します`, event: "onboarding_commute_policy" });
       await onboardingNotify({ op: "commute_check", workflow_id: meta.workflow_id });
     })());
     return json({ response_action: "clear" });

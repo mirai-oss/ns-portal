@@ -217,14 +217,15 @@ export function commuteCheckBlocks(wf: WorkflowView, notificationId: string | nu
   const value = JSON.stringify({ workflow_id: wf.id, notification_id: notificationId });
   const cands = c.reasonable.slice(0, 4).map((r, i) => `${i + 1}. ${r.summary}　${yen(r.fare)}／${r.time_min ?? "?"}分／乗換${r.transfers ?? "?"}${r.uses_bus ? "／バス" : ""}${r.teiki1 ? `／定期1か月 ${yen(r.teiki1)}` : ""}`).join("\n");
   const head = `🚃 *交通費の確認*（${c.from} → ${c.to}${c.store_name ? "・" + c.store_name : ""}）\n` +
-    `本人の申請: *片道 ${c.claimed != null ? yen(c.claimed) : "未申請"}*${c.method ? `／通勤手段: ${c.method}` : ""}${c.uses_bus ? "／バス利用" : ""}${c.route_text ? `\n本人の経路メモ: ${c.route_text.slice(0, 120)}` : ""}\n` +
+    `本人の申告（参考）: *片道 ${c.claimed != null ? yen(c.claimed) : "なし"}*${c.method ? `／通勤手段: ${c.method}` : ""}${c.uses_bus ? "／バス利用" : ""}${c.route_text ? `\n本人の経路メモ: ${c.route_text.slice(0, 120)}` : ""}\n` +
     `検索の最安（合理的な経路）: *${c.computed ? yen(c.computed.fare) : "—"}*${c.pay_plan?.text ? `\n*支給額（会社ルール: IC・1 日上限あり）*\n${c.pay_plan.text}${c.bus_allowed ? "\n🚌 バス例外あり（バスを含めて検索）" : ""}` : c.pay_hint?.text ? `\n支給方法の目安: ${c.pay_hint.text}` : ""}\n判定（仮の基準）: *${JUDGEMENT_LABEL[c.judgement] ?? c.judgement}*\n${c.reasons.map((r) => "・" + r).join("\n")}`;
   const blocks: unknown[] = [
     { type: "section", text: { type: "mrkdwn", text: head } },
     ...(cands ? [{ type: "section", text: { type: "mrkdwn", text: "*経路の候補*\n" + cands } }] : []),
     { type: "actions", block_id: "onboarding_commute", elements: [
-      { type: "button", style: "primary", text: { type: "plain_text", text: c.claimed != null ? `✅ 申請額 ${yen(c.claimed)} で承認` : "✅ 承認（金額を入力）", emoji: true }, action_id: "hr.onboarding.commute.approve", value },
-      ...(c.computed?.fare != null && c.claimed != null && c.computed.fare !== c.claimed ? [{ type: "button", text: { type: "plain_text", text: `✅ 検索額 ${yen(c.computed.fare)} で承認`, emoji: true }, action_id: "hr.onboarding.commute.approve_computed", value }] : []),
+      // 2026-11-10 運用方針: 金額は会社のルール（IC 運賃）で本部が確定する。本人の申告額は参考（違うときだけ別ボタン）
+      ...(c.computed?.fare != null ? [{ type: "button", style: "primary", text: { type: "plain_text", text: `✅ 経路を承認（IC 片道 ${yen(c.computed.fare)}）`, emoji: true }, action_id: "hr.onboarding.commute.approve_computed", value }] : []),
+      ...(c.claimed != null && c.claimed !== c.computed?.fare ? [{ type: "button", ...(c.computed?.fare == null ? { style: "primary" } : {}), text: { type: "plain_text", text: `本人の申告額 ${yen(c.claimed)} で承認`, emoji: true }, action_id: "hr.onboarding.commute.approve", value }] : []),
       { type: "button", text: { type: "plain_text", text: "⚙️ 支給方法", emoji: true }, action_id: "hr.onboarding.commute.policy", value },
       { type: "button", text: { type: "plain_text", text: "🙋 本人に確認", emoji: true }, action_id: "hr.onboarding.commute.person", value },
       { type: "button", text: { type: "plain_text", text: "🔁 再検索", emoji: true }, action_id: "hr.onboarding.commute.research", value },
@@ -451,20 +452,19 @@ export function yearEndCompareText(submitted: Record<string, unknown>, smaregi: 
 }
 
 /** 支給方法（個別設定）のモーダル（2026-11-10・会社ルール）: 基本は 1 日上限 500 円。超える人は定期代支給か全額支給。月の出勤日数の見込み・バス例外。理由つきで履歴に残る */
-export function commutePolicyModal(meta: { workflow_id: string; user_id: string; notification_id: string | null }, opts: { name: string; policy: string; days: number | null; bus_exception: boolean; cap: number; plan_text?: string | null }) {
+export function commutePolicyModal(meta: { workflow_id: string; user_id: string; notification_id: string | null }, opts: { name: string; policy: string; bus_exception: boolean; cap: number; plan_text?: string | null; bus_request?: string | null }) {
   const options = [
     { text: { type: "plain_text", text: `1 日上限 ${yen(opts.cap)}（往復・基本）` }, value: "daily_cap" },
-    { text: { type: "plain_text", text: "定期代支給（月額）" }, value: "teiki" },
-    { text: { type: "plain_text", text: "全額支給（上限なし）" }, value: "full" },
+    { text: { type: "plain_text", text: "定期代支給（月額・本部承認）" }, value: "teiki" },
+    { text: { type: "plain_text", text: "全額支給（1 日上限なし・本部承認）" }, value: "full" },
   ];
   return {
     type: "modal", callback_id: "hr.onboarding.commute.policy.modal", private_metadata: JSON.stringify(meta),
     title: { type: "plain_text", text: "交通費の支給方法" }, submit: { type: "plain_text", text: "保存して再計算" }, close: { type: "plain_text", text: "やめる" },
     blocks: [
-      { type: "section", text: { type: "mrkdwn", text: `*${opts.name}さん* の支給方法を決めます。基本は「1 日上限 ${yen(opts.cap)}（往復）」。保存すると経路を再検索して支給額を計算し直します。${opts.plan_text ? `\n_いまの計算_\n${opts.plan_text}` : ""}` } },
+      { type: "section", text: { type: "mrkdwn", text: `*${opts.name}さん* の支給方法を決めます。基本は「1 日上限 ${yen(opts.cap)}（往復）」。支給方法と金額を決められるのは本部だけです（従業員は選べません）。定期代支給・全額支給・バス例外は理由が必要で、履歴に残ります。保存すると経路を再検索して計算し直します。${opts.bus_request ? `\n🚌 本人からのバス利用の申請: ${opts.bus_request.slice(0, 200)}` : ""}${opts.plan_text ? `\n_いまの計算_\n${opts.plan_text}` : ""}` } },
       { type: "input", block_id: "policy", label: { type: "plain_text", text: "支給方法" }, element: { type: "static_select", action_id: "policy", initial_option: options.find((o) => o.value === opts.policy) ?? options[0], options } },
-      { type: "input", optional: true, block_id: "days", label: { type: "plain_text", text: "月の出勤日数の見込み（分かれば。定期と実費の安い方の判定に使います）" }, element: { type: "number_input", action_id: "days", is_decimal_allowed: false, min_value: "1", max_value: "31", ...(opts.days != null ? { initial_value: String(opts.days) } : {}) } },
-      { type: "input", optional: true, block_id: "bus", label: { type: "plain_text", text: "バス（原則は認めない）" }, element: { type: "checkboxes", action_id: "bus", options: [{ text: { type: "plain_text", text: "この人はバス利用を例外として認める" }, value: "yes" }], ...(opts.bus_exception ? { initial_options: [{ text: { type: "plain_text", text: "この人はバス利用を例外として認める" }, value: "yes" }] } : {}) } },
+      { type: "input", optional: true, block_id: "bus", label: { type: "plain_text", text: "バス（原則は認めない。本人の理由申請を確認して承認）" }, element: { type: "checkboxes", action_id: "bus", options: [{ text: { type: "plain_text", text: "この人はバス利用を例外として認める" }, value: "yes" }], ...(opts.bus_exception ? { initial_options: [{ text: { type: "plain_text", text: "この人はバス利用を例外として認める" }, value: "yes" }] } : {}) } },
       { type: "input", optional: true, block_id: "reason", label: { type: "plain_text", text: "理由（基本ルールと違う扱いにするときは必須）" }, element: { type: "plain_text_input", action_id: "reason", max_length: 200 } },
     ],
   };
