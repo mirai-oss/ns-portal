@@ -2,7 +2,8 @@
 //   実行: deno test supabase/functions/_shared/commute-judge.test.ts
 //   ★ モックは公開ドキュメントから想定した形。実 API の形はキー到着後に検証（commute-mock.ts 冒頭）。
 import { assertEquals, assert } from "jsr:@std/assert@1";
-import { parseCourses, judge, autoJudge, normalizeStationName, DEFAULT_RULES, DEFAULT_AUTO } from "./commute-judge.ts";
+import { parseCourses, judge, autoJudge, normalizeStationName, pickStation, payHint, DEFAULT_RULES, DEFAULT_AUTO } from "./commute-judge.ts";
+import REAL from "./fixtures/ekispert-real-2026-11-10.json" with { type: "json" };
 import { SCENARIOS, mockResultSet } from "./commute-mock.ts";
 
 const input = (claimed: number | null, method = "train", home = true, store = true) => ({ claimed, method, home_station_known: home, store_station_known: store });
@@ -109,4 +110,39 @@ Deno.test("最寄り駅の自由記入を駅名に正規化（本番の extra �
   assertEquals(normalizeStationName("新横浜駅"), "新横浜");
   assertEquals(normalizeStationName(" 川崎 (JR) "), "川崎");
   assertEquals(normalizeStationName(null), "");
+});
+
+// ---- 2026-11-10: 実 API の応答（fixtures/ekispert-real-2026-11-10.json。個人情報なし）での検証 ----
+Deno.test("実応答: 田町→新橋。経路 5 件・最安 160 円・定期 1/3/6 が読める", () => {
+  const c = parseCourses((REAL as any).tamachi_shinbashi);
+  assertEquals(c.length, 5); assertEquals(c[0].fare, 160); assertEquals(c[0].round, 320); assertEquals(c[0].teiki1, 4910); assertEquals(c[0].teiki3, 13960); assertEquals(c[0].teiki6, 26620);
+  const j = judge(c, 160, DEFAULT_RULES);
+  assertEquals(j.judgement, "auto_approvable"); assertEquals(j.computed?.fare, 160);
+  assertEquals(payHint(j.computed).break_even_days, 16);
+});
+Deno.test("実応答: バスは Type がオブジェクト {text:'bus'} → uses_bus を正しく判定。運賃なし（徒歩のみ）は候補外", () => {
+  const c = parseCourses((REAL as any).honatsugi_bus);
+  assert(c.some((x) => x.uses_bus)); assert(c.some((x) => x.fare === null));
+  const j = judge(c, 230, DEFAULT_RULES);
+  assertEquals(j.computed?.uses_bus, true); assertEquals(j.judgement, "hq_review");   // 最安の経路がバス → 本部確認
+});
+Deno.test("実応答: 新幹線（別料金 870 円）は既定で候補にしない。運賃だけ安く見える経路を最安にしない", () => {
+  const all = parseCourses((REAL as any).shinyokohama_tamachi_all);
+  assert(all.some((x) => x.uses_express && x.charge === 870));
+  const j = judge(all, 570, DEFAULT_RULES);
+  assert(j.reasonable.every((x) => !x.uses_express)); assertEquals(j.computed?.fare, 570);
+  const j2 = judge(all, 430, DEFAULT_RULES);   // 新幹線の運賃（430）で申請しても自動承認にならない（430 ≦ 570 だが…）
+  assertEquals(j2.computed?.fare, 570);
+  const allow = judge(all, 1300, { ...DEFAULT_RULES, allow_express: true, max_extra_minutes: 60 });
+  assert(allow.reasonable.some((x) => x.uses_express)); assert(allow.reasonable.filter((x) => x.uses_express).every((x) => (x.fare ?? 0) >= 1300));   // 許可時は 運賃＋料金 で比較
+  const noexp = parseCourses((REAL as any).shinyokohama_tamachi_noexp);
+  assert(noexp.every((x) => !x.uses_express)); assertEquals(Math.min(...noexp.map((x) => x.fare ?? 9e9)), 530);
+});
+Deno.test("実応答: 同名駅は会社のエリア（東京・神奈川…）を優先。エリア外しか無ければ null（推測しない）", () => {
+  const n = pickStation((REAL as any).station_nihonbashi.Point, "日本橋");
+  assertEquals(n?.name, "日本橋(東京都)"); assertEquals(n?.ambiguous, true);
+  const k = pickStation((REAL as any).station_kawasaki.Point, "川崎");
+  assertEquals(k?.name, "川崎"); assertEquals(k?.ambiguous, false);
+  assertEquals(pickStation((REAL as any).station_none.Point, "名古屋"), null);
+  assertEquals(pickStation((REAL as any).station_nihonbashi.Point, "日本橋", ["北海道"]), null);
 });

@@ -211,12 +211,13 @@ export function commuteCheckBlocks(wf: WorkflowView, notificationId: string | nu
   judgement: string; reasons: string[]; claimed: number | null; computed: { fare: number | null; summary: string; time_min: number | null; transfers: number | null } | null;
   reasonable: { fare: number | null; summary: string; time_min: number | null; transfers: number | null; uses_bus: boolean; teiki1?: number | null }[]; from: string; to: string; store_name?: string | null; method?: string | null; route_text?: string | null; uses_bus?: boolean | null;
   auto?: { mode: string; eligible: boolean; fare: number | null; reasons: string[] } | null;
+  pay_hint?: { text: string } | null;
 }) {
   const value = JSON.stringify({ workflow_id: wf.id, notification_id: notificationId });
   const cands = c.reasonable.slice(0, 4).map((r, i) => `${i + 1}. ${r.summary}　${yen(r.fare)}／${r.time_min ?? "?"}分／乗換${r.transfers ?? "?"}${r.uses_bus ? "／バス" : ""}${r.teiki1 ? `／定期1か月 ${yen(r.teiki1)}` : ""}`).join("\n");
   const head = `🚃 *交通費の確認*（${c.from} → ${c.to}${c.store_name ? "・" + c.store_name : ""}）\n` +
     `本人の申請: *片道 ${c.claimed != null ? yen(c.claimed) : "未申請"}*${c.method ? `／通勤手段: ${c.method}` : ""}${c.uses_bus ? "／バス利用" : ""}${c.route_text ? `\n本人の経路メモ: ${c.route_text.slice(0, 120)}` : ""}\n` +
-    `検索の最安（合理的な経路）: *${c.computed ? yen(c.computed.fare) : "—"}*\n判定（仮の基準）: *${JUDGEMENT_LABEL[c.judgement] ?? c.judgement}*\n${c.reasons.map((r) => "・" + r).join("\n")}`;
+    `検索の最安（合理的な経路）: *${c.computed ? yen(c.computed.fare) : "—"}*${c.pay_hint?.text ? `\n支給方法の目安: ${c.pay_hint.text}` : ""}\n判定（仮の基準）: *${JUDGEMENT_LABEL[c.judgement] ?? c.judgement}*\n${c.reasons.map((r) => "・" + r).join("\n")}`;
   const blocks: unknown[] = [
     { type: "section", text: { type: "mrkdwn", text: head } },
     ...(cands ? [{ type: "section", text: { type: "mrkdwn", text: "*経路の候補*\n" + cands } }] : []),

@@ -31,7 +31,7 @@ function authorized(req: Request): boolean {
   return !!bearer && bearer === SERVICE_KEY;
 }
 
-import { parseCourses, judge, autoJudge, normalizeStationName, DEFAULT_RULES, arr, type Rules, type Candidate, type AutoResult } from "../_shared/commute-judge.ts";
+import { parseCourses, judge, autoJudge, normalizeStationName, pickStation, payHint, DEFAULT_RULES, arr, type Rules, type Candidate, type AutoResult } from "../_shared/commute-judge.ts";
 
 async function eki(path: string, params: Record<string, string>): Promise<any> {
   const u = new URL(`${EKI}${path}`);
@@ -42,10 +42,16 @@ async function eki(path: string, params: Record<string, string>): Promise<any> {
   if (j?.ResultSet?.Error) throw new Error(`駅すぱあと ${path}: ${JSON.stringify(j.ResultSet.Error).slice(0, 200)}`);
   return j?.ResultSet ?? j;
 }
-async function stationCode(key: string, name: string): Promise<string | null> {
+// 駅名 → 駅（同名駅は会社のエリアを優先。エリア外しか無い・見つからないときは null＝推測しない）
+async function findStation(key: string, name: string, prefOrder: string[]): Promise<{ code: string; name: string; ambiguous: boolean } | null> {
   const rs = await eki("/station", { key, name, type: "train" });
+  return pickStation(rs?.Point, name, prefOrder);
+}
+// 住所 → 最寄りの鉄道駅（commute_rules.use_address_lookup=true のときだけ。住所は API にだけ送り、結果・ログには残さない）
+async function nearestStationByAddress(key: string, address: string): Promise<{ code: string; name: string } | null> {
+  const rs = await eki("/address/station", { key, address, type: "train" });
   const p = arr(rs?.Point)[0];
-  return p?.Station?.code ? String(p.Station.code) : null;
+  return p?.Station?.code ? { code: String(p.Station.code), name: String(p.Station.Name ?? "") } : null;
 }
 
 // キーの取得: シークレット（env）優先 → app_secrets
@@ -143,28 +149,34 @@ Deno.serve(async (req) => {
     };
     if (!store) return await fail("所属店舗がありません", "no_store");
     if (!workStation) return await fail(`店舗「${store.name}」の最寄り駅が未設定です（nippo の店舗管理で登録）`, "no_store_station");
-    if (!homeStation && !prof?.address) return await fail("本人の最寄り駅・住所がありません", "no_home");
+    if (!homeStation && !(rules.use_address_lookup === true && prof?.address)) return await fail("本人の最寄り駅（駅名）が登録されていません。本人に最寄り駅を確認してください", "no_home");
     if (!key && !mock) return await fail("駅すぱあと API のキーが未設定です（EKISPERT_API_KEY）", "no_api_key");
 
     let rs: any;
+    const stationNotes: string[] = [];
     if (mock) {
       rs = mock?.ResultSet ?? mock;   // 結合テスト用（dry_run のみ）。駅すぱあとは呼ばない
     } else {
-      // 出発: 最寄り駅があれば駅コード、無ければ住所（住所は API にだけ送り、結果には残さない）
-      let from = "";
-      if (homeStation) from = (await stationCode(key, homeStation)) ?? "";
-      if (!from && prof?.address) from = String(prof.address);
-      const to = await stationCode(key, workStation);
-      if (!from || !to) return await fail(`駅が見つかりません（${!from ? "本人: " + homeStation : ""}${!to ? " 店舗: " + workStation : ""}）`, "station_not_found");
-      rs = await eki("/search/course/plain", { key, from, to, bus: "true" });
+      // 出発: 本人の最寄り駅（駅名）。駅名が無いときは、設定 use_address_lookup=true の場合だけ住所から最寄りの鉄道駅を引く（既定は引かない＝本人に最寄り駅を確認）
+      const pref = Array.isArray(rules.pref_order) ? rules.pref_order : (DEFAULT_RULES.pref_order ?? []);
+      let fromSt = homeStation ? await findStation(key, homeStation, pref) : null;
+      if (!fromSt && !homeStation && rules.use_address_lookup === true && prof?.address) { const n = await nearestStationByAddress(key, String(prof.address)); if (n) { fromSt = { ...n, ambiguous: true }; stationNotes.push("本人の最寄り駅は住所からの推定です（本人に確認）"); } }
+      const toSt = await findStation(key, workStation, pref);
+      if (!fromSt || !toSt) return await fail(`駅を特定できません（${!fromSt ? (homeStation ? "本人: " + homeStation : "本人の最寄り駅が未登録") : ""}${!toSt ? " 店舗: " + workStation : ""}）。同名駅や表記ゆれの可能性があるため人が確認してください`, "station_not_found");
+      if (fromSt.ambiguous && homeStation) stationNotes.push(`本人の最寄り駅「${homeStation}」は同名の駅が複数あります（${fromSt.name} で検索）`);
+      // 会社ルール: 新幹線・特急・飛行機（別料金）は既定で使わない
+      const noExp: Record<string, string> = rules.allow_express === true ? {} : { shinkansen: "false", limitedExpress: "false", plane: "false" };
+      rs = await eki("/search/course/plain", { key, from: fromSt.code, to: toSt.code, bus: "true", ...noExp });
     }
     const cands = parseCourses(rs).map((c) => ({ ...c }));
     const j = judge(cands, claimed, rules);
+    // 駅の特定にあいまいさがあれば自動承認可能にはしない（本部確認）
+    if (stationNotes.length) { j.reasons.push(...stationNotes); if (j.judgement === "auto_approvable") j.judgement = "hq_review"; }
     // 自動承認の条件判定（記録だけ。承認は呼び出し側が enabled のときだけ）
     const auto = autoJudge(j, { claimed, method: cm?.method ?? null, home_station_known: !!homeStation, store_station_known: !!workStation }, autoRules);
     const result = {
       provider: mock ? "mock" : "ekispert", searched_at: new Date().toISOString(), store_id: store.id, store_name: store.name, from: homeStation || "（住所から）", to: workStation,
-      candidates: cands, reasonable_indexes: j.reasonable.map((c) => c.index), computed_index: j.computed?.index ?? null, rules, auto,
+      candidates: cands, reasonable_indexes: j.reasonable.map((c) => c.index), computed_index: j.computed?.index ?? null, rules, auto, pay_hint: payHint(j.computed),
     };
     if (!body.dry_run) {
       await sb.from("employee_commute").upsert({
@@ -177,7 +189,7 @@ Deno.serve(async (req) => {
       // 自動承認の判定を記録（shadow でも残す＝有効化前に「どれだけ自動承認できたか」を集計できる）
       if (auto.mode !== "off" && cm?.workflow_id) await sb.from("onboarding_events").insert({ workflow_id: cm.workflow_id, item_key: "commute_check", kind: "commute.auto_judged", via: "auto", payload: { ...auto, judgement: j.judgement, claimed, computed_fare: j.computed?.fare ?? null } });
     }
-    return json({ ok: true, judgement: j.judgement, reasons: j.reasons, claimed, computed: j.computed, reasonable: j.reasonable, candidates: cands, auto, store: { id: store.id, name: store.name }, from: homeStation || "（住所から）", to: workStation, mock: !!mock });
+    return json({ ok: true, judgement: j.judgement, reasons: j.reasons, claimed, computed: j.computed, reasonable: j.reasonable, candidates: cands, auto, pay_hint: payHint(j.computed), store: { id: store.id, name: store.name }, from: homeStation || "（住所から）", to: workStation, mock: !!mock });
   } catch (e) {
     return json({ ok: false, error: String((e as Error).message ?? e).slice(0, 300) }, 500);
   }

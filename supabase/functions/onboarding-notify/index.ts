@@ -311,7 +311,7 @@ Deno.serve(async (req) => {
           return json({ ok: false, error: r?.error, judgement: "search_failed" });
         }
         await thread(sb, wf, `🚃 交通費の確認: ${JUDGEMENT_LABEL[r.judgement] ?? r.judgement}（申請 ${cm?.claimed_oneway_fare != null ? yen(cm.claimed_oneway_fare) : "未申請"}／検索最安 ${r.computed ? yen(r.computed.fare) : "—"}）`,
-          commuteCheckBlocks(wf, nid, { judgement: r.judgement, reasons: r.reasons ?? [], claimed: r.claimed ?? null, computed: r.computed ?? null, reasonable: r.reasonable ?? [], from: r.from, to: r.to, store_name: r.store?.name, method: cm?.method, route_text: cm?.route_text, uses_bus: cm?.uses_bus, auto: r.auto ?? null }), "onboarding_commute_check");
+          commuteCheckBlocks(wf, nid, { judgement: r.judgement, reasons: r.reasons ?? [], claimed: r.claimed ?? null, computed: r.computed ?? null, reasonable: r.reasonable ?? [], from: r.from, to: r.to, store_name: r.store?.name, method: cm?.method, route_text: cm?.route_text, uses_bus: cm?.uses_bus, auto: r.auto ?? null, pay_hint: r.pay_hint ?? null }), "onboarding_commute_check");
         // 自動承認（2026-11-09）: app_settings.commute_rules.auto_approve.enabled=true のときだけ。条件は commute-route（autoJudge）が判定し、金額は本人の申請額（≦ API 算出額）。既に承認済みなら触らない
         let autoApproved = false;
         if (r.auto?.mode === "live" && r.auto.eligible && r.auto.fare != null && cm && (cm as any).judgement !== "approved") {
