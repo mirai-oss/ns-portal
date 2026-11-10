@@ -7,6 +7,12 @@
 
 ---
 
+**★★★2026-11-11（担当A）TK-252 店舗日報v2＋FL評価: ①②本番適用済み／③VM v6・Edge・app.js・画像v2・FL評価設定パネルは作成済み（未公開・未デプロイ）**:
+- 本番適用済み: fl_metrics_common・fl_rating_thresholds（新規関数15本・表3・kd_store_monthly_summaryに列2つ。司令塔が読み取りレビュー済み＝巻き戻し不要）。**未適用**: ③daily_report_card_vm_v6（指紋ガード・PUBLIC revoke同梱）・fl_tests.sql＝ユーザー承認待ち。
+- 作成のみ（push済み・未デプロイ）: keiei-kd-refresh月次(fl_sales分母)・keiei-api-home(mtdFlRate)・dashboard-summary(列追加)。
+- tori-dashboardは別worktree/ブランチ tk-252-flv2（../tori-dashboard-tk252）。app.js: F/L/FL分母を flSalesOf_() に共通化・FL評価設定パネル。scripts/daily-report-card.mjs: 確定デザインv2。プレビュー=NStyle-AI/docs/design/preview_v2（非公開側）。mainへは未反映（承認後にindex.htmlのバージョン競合を整理して取り込み）。
+- 承認後の手順: ③適用→fl_tests→権限表SELECT→Edgeデプロイ3本→kd-refresh→比較表再確認→app.js公開→画像workflow（Slack配信は別承認）。
+
 **★★★2026-11-11（担当A）TK-252 店舗日報v2＋FL評価: 第0弾（調査）完了・第1弾SQLを作成（本番未適用）**:
 - 第0弾: デリバリー売上は税込(8%)と判断し÷1.08（売上側に税額列なし・精算金額の式で確認・10/13ユーザー指示）。経営DのD.mediaデリバリー＝kd_delivery_daily.net_sales（同一）。
 - 第1弾（supabase/2026-11-11_*.sql）: fl_metrics_common／fl_rating_thresholds／daily_report_card_vm_v6（v5を改名して残す・指紋ガード）／fl_tests／fl_compare_before_after。提出物の説明=docs/店舗日報v2_第1弾_提出物_担当A_2026-11-11.md。比較表(読み取り)はデリバリーなし店は変更前後で差0。
