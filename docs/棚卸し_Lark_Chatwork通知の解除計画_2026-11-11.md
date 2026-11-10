@@ -74,4 +74,6 @@
 - 各担当の本番変更は、設計スレッドの承認に加えて **各担当セッションでユーザー本人の承認** を取ってから実行する。
 
 ## 進捗
-- 2026-11-11: 棚卸し完了（A 分は確認中）。ユーザー回答済み。①の実行を B（1〜7 notify_lark）・C（8・9 cockpit larkPost）・D（10〜14）へ指示。②③は設計案待ち。
+- 27（追加・担当A）: 経営レポート 週報・月報（tori-dashboard Actions lark-report.yml report ジョブ＋group1〜3）: L＋S(#経営-レポート・#経営-レポート-nstyle) 並行済み → ①相当。止め方=report_channels group1〜3 の report_kinds を {daily} に／report ジョブに weekly/monthly を送らない条件（約5行）。次回週報 11/15・月報 12/1 → 11/14 までに反映が望ましい。戻し方=report_kinds を戻す・条件を外す。**日報は対象外**。ユーザー承認待ち。
+- 19・20（精算 GAS）の Slack 送信は C のローカル未コミット（本番 GAS 未反映・プロパティ未登録・到着確認 0 件）。手順書（GAS 差分のみ）→プロパティ登録→sd_testSlack 1 回→到着確認→承認→設定シート 3 セル（Lark完了報告Webhook・ChatWork APIトークン・ルームID）を空に。
+- 2026-11-11: 棚卸し完了（A 分も受領）。ユーザー回答済み。①の実行を B（1〜7 notify_lark）・C（8・9 cockpit larkPost）・D（10〜14）へ指示。②③は設計案待ち。
