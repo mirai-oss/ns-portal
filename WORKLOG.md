@@ -7,6 +7,14 @@
 
 ---
 
+**2026-11-11（担当B）給料確定の印・手渡し取消・自動チェックを本番反映／10月誤サイン8件を取消／nippo公開（ee43cc4）**
+- 適用済み（ユーザー実行）: 本体SQL `2026-11-09_payroll_finalized_cash_cancel.sql`（確定の印=法人ID・取消履歴・5関数の権限をauthenticatedのみに・U-25推奨=既存振込タスクに確認工程を足す/取消で振込完了印も戻す・通知）、`2026-11-10_oct_wrong_sign_fix.sql`（2026-10の誤サイン8件を取消・10月を確定前へ）
+- nippo公開: 現金手渡し画面の取消（理由必須・履歴）・確定前の案内。ロールバック=git revert ee43cc4 71c6397
+- 未適用/未実行: 毎朝の整合チェックcron（`2026-11-09_payroll_consistency_cron.sql`）／U-27 給料確定の取消（`2026-11-10_hq_cancel_payroll_tasks.sql`・テスト `…_tests.sql` はROLLBACK前提）
+- 残: 本体SQLの権限表の画面確認・取消の動作確認の対象者決定・本部ロールでの画面確認
+
+---
+
 **★★★2026-11-10〜11（担当A）TK-252 店舗日報v2: 第1段階(参照側3本デプロイ+月次再計算)完了／VM v6.1・v6.2 本番適用・検証済み**:
 - Edge: keiei-kd-refresh v64・keiei-api-home v11・keiei-api-dashboard-summary v23（verify_jwt=false維持）。store_monthly 307行再計算（fl_sales列・デリバリー店のみ率が変化・fl_consistency_check 24行OK）。
 - DB: daily_report_card_vm v6.1（取込成功日=¥0／未取得=import_runs判定・missing_days・評価hold）→ v6.2（breakdown＝営業区分別売上: kd_media_daily由来・業務委託4店=stores.seisan_target の特例はランチ0/ディナー=POS・通常店の媒体欠損日は未取得）。検証: 直近31日×全店 369店日で ランチ+ディナー=POS 不一致0・媒体由来247日で媒体合計=POS・業務委託121日=ディナー=POS・通常店の媒体欠損1日（黒霧屋）=未取得・既存59キー全店不変。
