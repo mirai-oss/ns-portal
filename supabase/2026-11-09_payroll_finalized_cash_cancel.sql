@@ -566,6 +566,7 @@ begin
   select count(*) into c3
     from payroll_finalized f
    where f.year_month >= v_from
+     and f.finalized_by is not null   -- 過去分のbackfill行(finalized_by無し)は対象外（ボタン未使用の過去月で誤警報にしない）
      and not exists (select 1 from payroll_task_links l where l.year_month = f.year_month and l.corporation_id = f.corporation_id)
      and exists (select 1 from sf_payroll_sync sp join smaregi_contracts sc on sc.contract_id = sp.contract_id
                   where sp.year_month = f.year_month and sc.corporation_id = f.corporation_id and coalesce(sp.net_pay,0) > 0);
