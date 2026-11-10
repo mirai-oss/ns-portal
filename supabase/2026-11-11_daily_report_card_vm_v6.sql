@@ -19,6 +19,13 @@ begin
 end
 $guard$;
 
+-- ダイニー低評価のしきい値（1か所の定数）: 100点満点中 この点数「以下」（ちょうどを含む）を低評価とする。当社独自の管理基準（ダイニーの5段階とは別物）。
+-- VM・集計API・画面のどこにもハードコードしない。変更する時はこの関数だけ直す（ユーザー確定 2026-11-11: 75）。
+create or replace function public.dinii_low_score_max() returns numeric
+language sql immutable as $$ select 75::numeric $$;
+revoke all on function public.dinii_low_score_max() from public, anon, authenticated;
+grant execute on function public.dinii_low_score_max() to service_role;
+
 alter function public.daily_report_card_vm(uuid, date) rename to daily_report_card_vm_v5;
 
 create or replace function public.daily_report_card_vm(p_store uuid, p_date date)
@@ -35,6 +42,7 @@ declare
   ym text := to_char(p_date, 'YYYY-MM');
   v_enabled boolean := exists (select 1 from public.delivery_store_map m where m.store_id = p_store and m.active);
   v_dn int := (fd->>'delivery_rows')::int;
+  v_dv_last date; v_dv_mtd_missing boolean; v_dv_day_missing boolean;
   v_n int; v_pos int;
   v_days_to_holiday int;
   v_rat jsonb := '{}'::jsonb;
@@ -44,18 +52,24 @@ begin
   -- 祝日までの日数（直近14日以内・翌日以降）。祝前日＝翌日が祝日
   select min(n) into v_days_to_holiday from generate_series(1, 14) n where public.jp_holiday_name(p_date + n) is not null;
 
+  -- デリバリー欠損の判定（取扱店のみ）。日次: 当日の行が無い＝未取得。月間: 月初〜当日に行が1件も無い、または最終行の日付が当日の3日以上前＝欠け（一部日欠け含む）
+  --   欠けがあれば F/L/FL は「店内のみで計算した参考値」とし、4段階評価は「保留(hold)」にする
+  select max(biz_date) into v_dv_last from public.kd_delivery_daily where store_id = p_store and biz_date between date_trunc('month', p_date)::date and p_date;
+  v_dv_day_missing := v_enabled and v_dn = 0;
+  v_dv_mtd_missing := v_enabled and (v_dv_last is null or p_date - v_dv_last >= 3);
+
   -- 月間の4段階評価（月間累計の丸め前の比率で判定）。基準が3境界値そろっていなければ unset
   foreach mt in array array['labor', 'food', 'fl'] loop
     select * into th from public.fl_rating_thresholds t where t.store_id = p_store and t.year_month = ym and t.metric = mt;
     val := case mt when 'labor' then (fm->>'l_rate')::numeric when 'food' then (fm->>'f_rate')::numeric else (fm->>'fl_ratio')::numeric end;
-    g := public.fl_rating_grade(val, th.excellent_max, th.normal_max, th.warn_max);
+    g := case when v_dv_mtd_missing then 'hold' else public.fl_rating_grade(val, th.excellent_max, th.normal_max, th.warn_max) end;   -- hold=デリバリー欠けのため評価保留
     v_rat := v_rat || jsonb_build_object(mt, jsonb_build_object('grade', g, 'value', val,
               'thresholds', case when th.store_id is null then null else jsonb_build_object('excellent_max', th.excellent_max, 'normal_max', th.normal_max, 'warn_max', th.warn_max) end));
   end loop;
 
-  -- ダイニー低評価（月初〜当日の来店分）。kd_dinii_responses.score は 0〜100（5点刻み）のため、5段階の「2以下」＝スコア40以下と換算（★要確認 Q13）。0点も含む
+  -- ダイニー低評価（月初〜当日の来店分）。kd_dinii_responses.score は 0〜100（5点刻み）。しきい値は dinii_low_score_max()（100点満点中75点以下・ちょうどを含む）。0点（回答日時あり）も含む
   select count(*) into v_low from public.kd_dinii_responses r
-   where r.store_id = p_store and r.score is not null and r.score <= 40
+   where r.store_id = p_store and r.score is not null and r.score <= public.dinii_low_score_max()
      and (r.visited_at at time zone 'Asia/Tokyo')::date between date_trunc('month', p_date)::date and p_date;
 
   return v5 || jsonb_build_object(
@@ -73,11 +87,14 @@ begin
       'sales_gross', case when v_enabled then fd->'delivery_sales_gross' end, -- 換算前（プラットフォーム上の売上）
       'orders', case when v_enabled then fd->'delivery_orders' end,
       'mtd_sales', case when v_enabled then fm->'delivery_sales' end,
+      'mtd_incomplete', coalesce(v_dv_mtd_missing, false), 'last_date', v_dv_last,
       'status', case when not v_enabled then null when v_dn = 0 then 'missing' when (fd->>'delivery_sales_gross')::numeric = 0 then 'zero' else 'ok' end,
       'budget_ratio', null),                                                -- デリバリー予算は無い（金額のみ表示）
     'is_holiday_eve', public.jp_holiday_name(p_date + 1) is not null,
     'days_to_holiday', v_days_to_holiday,
     'ratings', v_rat,
+    'fl_reference_today', coalesce(v_dv_day_missing, false),   -- true=デリバリー未取得のため店内のみで計算した参考値
+    'fl_reference_mtd', coalesce(v_dv_mtd_missing, false),
     'mtd_status', '暫定',
     'mtd_dinii_low_count', v_low
   );

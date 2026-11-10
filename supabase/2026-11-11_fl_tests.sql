@@ -31,6 +31,8 @@ begin
   assert public.fl_rating_grade(0.2, null, null, null) = 'unset' and public.fl_rating_grade(null, 18, 20, 23) = 'unset', '未設定・値なしはunset';
   -- ⑨ 丸める前の値で判定（20.04% は表示で20.0%でも要改善側）
   assert public.fl_rating_grade(0.20004, 18, 20, 23) = 'warn', '丸め前で判定';
+  -- ⑩ ダイニー低評価のしきい値（③適用後に有効）: 100点満点中75点以下（ちょうどを含む）
+  assert public.dinii_low_score_max() = 75, 'ダイニー低評価=75点以下';
   raise notice 'fl tests: 全て合格';
 end
 $t$;
