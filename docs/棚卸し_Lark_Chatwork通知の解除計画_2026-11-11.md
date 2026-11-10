@@ -63,5 +63,15 @@
 - その他②（18〜23）: Slack チャンネル・通知の流れができたら止める（Slack 化 → 到着確認 → 承認 → 停止）
 - ③個人宛（24〜26）: **それぞれの個人の Slack DM へ変更**（タスク割当・個人 Chatwork の通知先）。ID は docs/チャットに書かず、ユーザーが直接登録
 
+## 実施方法の決定（2026-11-11・設計）
+- 10〜12（lark_webhook_url）: 空にせず **キー名を `lark_webhook_url__disabled_20261111` に付け替えて無効化**（値は誰も見ず DB に残る・戻すときはキー名を戻す・全停止後の失効時に行を削除）。読むのは EF 3 本のみ（DB 関数は別キー lark_webhook）。
+- 13・14（tori-dashboard Actions・公開リポ）: Lark 送信削除＋**Slack 送信を必須化**（未設定・非200 で exit 1）。Lark だけ削ると Slack 失敗が素通りするため。差分に値・チャンネル ID を含めない。
+- 8・9（cockpit larkPost）: 共有ファイルの Lark 部を削除（C）。再デプロイ: C=cockpit-ingest・cockpit-notify・invoice-payment-scan、D=smaregi-affiliation-sync（21 の Slack 化と同時）。keiei-kd-refresh・api-cost-report-notify・keiei-api-perflog は cockpit.ts 不使用（10〜12 で停止）。
+- 19・20（精算書 GAS）: 宛先 #本部-経理監視。GAS→既存 EF notify-slack（x-notify-secret・dedupe_key 例 seisan_complete:YYYY-MM / seisan_remind:YYYY-MM-DD）。GAS プロパティはユーザーが画面で直接登録。テスト関数で到着確認→承認→Lark webhook 設定・Chatwork ルームを空に。
+- 21（所属同期）: #本部-人事（失敗・見送りは #本部-開発システム）。EF から notify-slack を service_role で呼ぶ（設定追加なし）。
+- 22（週次バックアップ）・23（Mac mini）: **新しい秘密は作らない**。既に持っている service_role 資格情報で notify-slack を呼ぶ（案 c）。「処理ごとに別 Secret」原則の例外は「元から service_role を保持している呼び出し元」に限る。条件: ログに鍵・URL を出さない／dedupe_key／失敗を握りつぶさない（22 は job 失敗、23 はメール経路併存）／23 は NOTIFY_CHANNEL 現在値を確認してから。
+- 24〜26（個人宛 Slack DM）: 宛先は既存 user_slack（user_id↔slack_user_id・自動紐づけ）を使い新保管場所なし。経費申請の提出者→承認者通知は RPC 内から notify_route_send('slack','user:<承認者id>') で DB 側送信（画面から送らない）。本部タスク通知（hq_notify_*）と合わせて 1 本の設計を B・C が提示→承認後に実装。
+- 各担当の本番変更は、設計スレッドの承認に加えて **各担当セッションでユーザー本人の承認** を取ってから実行する。
+
 ## 進捗
 - 2026-11-11: 棚卸し完了（A 分は確認中）。ユーザー回答済み。①の実行を B（1〜7 notify_lark）・C（8・9 cockpit larkPost）・D（10〜14）へ指示。②③は設計案待ち。
