@@ -123,6 +123,9 @@ function budgetTargetFrom(rows: HomeRow[]): number {
   }, 0);
 }
 
+// デリバリー売上の税抜換算率（税込8%）。DBの fl_delivery_tax_divisor() と同じ値（TK-252・店舗日報v2）
+const FL_DELIVERY_TAX_DIVISOR = 1.08;
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
   try {
@@ -173,7 +176,7 @@ Deno.serve(async (req) => {
     ).in("store_id", storeIds).eq("period_date", asOf);
     const dataDate: string = ((homeRes.data ?? []) as HomeRow[]).find((r) => r.data_date)?.data_date ?? asOf;
     const dataStart = monthStart(dataDate);
-    const [dashRes, rsvRes, mtdRes] = await Promise.all([
+    const [dashRes, rsvRes, mtdRes, dvRes] = await Promise.all([
       sb.from("kd_dashboard_daily_summary").select(
         "store_id,period_date,net_sales,guests,parties,avg_check,prior_year_same_weekday_sales,prior_year_same_weekday_ratio",
       ).in("store_id", storeIds).eq("period_date", dataDate),
@@ -181,8 +184,10 @@ Deno.serve(async (req) => {
         .in("store_id", storeIds).eq("period_date", asOf),
       sb.from("kd_dashboard_daily_summary").select("store_id,net_sales,cost,labor")
         .in("store_id", storeIds).gte("period_date", dataStart).lte("period_date", dataDate),
+      // TK-252: FL計算用売上の分母に足すデリバリー売上（kd_delivery_daily・税込8%→税抜は÷FL_DELIVERY_TAX_DIVISOR）
+      sb.from("kd_delivery_daily").select("store_id,net_sales").in("store_id", storeIds).gte("biz_date", dataStart).lte("biz_date", dataDate),
     ]);
-    for (const r of [homeRes, dashRes, rsvRes, mtdRes]) {
+    for (const r of [homeRes, dashRes, rsvRes, mtdRes, dvRes]) {
       if (r.error) return json({ ok: false, error: "ホームスナップショットの取得に失敗しました: " + r.error.message }, 500);
     }
 
@@ -200,6 +205,12 @@ Deno.serve(async (req) => {
         acc.cost += n(r.cost); acc.labor += n(r.labor);
         mtdByStore.set(r.store_id, acc);
         mtdCostTotal += n(r.cost); mtdLaborTotal += n(r.labor);
+      }
+      const dvExByStore = new Map<string, number>();
+      let dvExTotal = 0;
+      for (const r of (dvRes.data ?? []) as Array<{ store_id: string; net_sales: number | null }>) {
+        const v = n(r.net_sales) / FL_DELIVERY_TAX_DIVISOR;
+        dvExByStore.set(r.store_id, (dvExByStore.get(r.store_id) ?? 0) + v); dvExTotal += v;
       }
       const targetTotal = budgetTargetFrom(homeRows);
       const salesTotal = homeRows.reduce((a, r) => a + n(r.mtd_sales), 0);
@@ -219,6 +230,7 @@ Deno.serve(async (req) => {
         const mtd = mtdByStore.get(s.id) ?? { cost: 0, labor: 0 };
         const gross = mtdSales - mtd.cost;
         const fl = mtd.cost + mtd.labor;
+        const flSales = mtdSales + (dvExByStore.get(s.id) ?? 0);   // FL計算用売上（店内＋デリバリー税抜）。売上表示のmtdSalesは店内のまま
         return {
           storeId: s.id,
           storeName: s.dash_store_name || s.name,
@@ -246,7 +258,8 @@ Deno.serve(async (req) => {
           mtdGross: gross,
           mtdGrossRate: div(gross, mtdSales),
           mtdFl: fl,
-          mtdFlRate: div(fl, mtdSales),
+          mtdFlSales: flSales,
+          mtdFlRate: div(fl, flSales),
         };
       });
       return json({
@@ -281,7 +294,8 @@ Deno.serve(async (req) => {
           mtdGross: salesTotal - mtdCostTotal,
           mtdGrossRate: div(salesTotal - mtdCostTotal, salesTotal),
           mtdFl: mtdCostTotal + mtdLaborTotal,
-          mtdFlRate: div(mtdCostTotal + mtdLaborTotal, salesTotal),
+          mtdFlSales: salesTotal + dvExTotal,
+          mtdFlRate: div(mtdCostTotal + mtdLaborTotal, salesTotal + dvExTotal),
         },
         stores: storeSummaries,
         scope: { role, restrictedStoreIds },
