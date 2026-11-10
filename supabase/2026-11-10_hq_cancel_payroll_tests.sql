@@ -152,6 +152,7 @@ begin
       v_plan := v_plan || jsonb_build_object('kind', v_link.kind, 'task_id', v_link.task_id, 'mode', 'already_gone', 'was_in_progress', false);
     elsif v_task.template_id is not null then
       select count(*) into v_prog from hq_step_checklist_items where step_id = v_link.step_id and checked_at is not null;
+      delete from payroll_task_links where year_month = p_year_month and corporation_id = p_corp_id and kind = v_link.kind;   -- 工程を消す前に対応表の行を外す（外部キー payroll_task_links.step_id のため）
       delete from hq_task_steps where id = v_link.step_id;                               -- 足した工程だけ外す（チェック項目はcascade）。タスク本体は残す
       v_stp := v_stp + 1;
       v_plan := v_plan || jsonb_build_object('kind', v_link.kind, 'task_id', v_link.task_id, 'mode', 'step_removed', 'was_in_progress', coalesce(v_prog,0) > 0);
