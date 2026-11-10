@@ -316,8 +316,10 @@ export function staleAlertSummaryBlocks(rows: { name: string; hire_date: string 
 /** 交通費の設定モーダル（支給形態・適用開始日・適用事業所・金額・上限） */
 export function commuteSettingModal(meta: { workflow_id: string; user_id: string; notification_id: string | null; contract_id: string | null }, opts: {
   name: string; hire_date: string | null; approved_fare: number | null; stores: { id: string; name: string }[]; cap_default: number | null; cap_unit: string;
-  plan?: { recommend?: { pay_type: string; amount: number; reason: string } | null; text?: string } | null;
+  plan?: { recommend?: { pay_type: string; amount: number; reason: string } | null; text?: string; monthly_cap?: number | null; monthly_cap_source?: string } | null;
 }) {
+  // 月額上限の初期値: 計算結果（支給方法・雇用区分・個別設定に連動）があればそれを使う。無ければ従来の既定（アルバイト 6,000）
+  const capInit: number | null = opts.plan && opts.plan.monthly_cap_source ? (opts.plan.monthly_cap ?? null) : opts.cap_default;
   const PT: Record<string, string> = { per_shift: "勤務回数ごと", per_day: "勤務日数ごと", monthly: "月額" };
   const initType = opts.plan?.recommend?.pay_type && PT[opts.plan.recommend.pay_type] ? opts.plan.recommend.pay_type : "per_day";   // 会社の標準は「勤務日数ごと」（1 日あたり・上限 500 円）
   const initAmount = opts.plan?.recommend?.amount ?? (opts.approved_fare != null ? Math.min(opts.approved_fare * 2, 500) : null);
@@ -334,7 +336,7 @@ export function commuteSettingModal(meta: { workflow_id: string; user_id: string
       { type: "input", block_id: "scope", label: { type: "plain_text", text: "適用事業所" }, element: { type: "static_select", action_id: "scope", initial_option: { text: { type: "plain_text", text: "全事業所" }, value: "all" }, options: [
         { text: { type: "plain_text", text: "全事業所" }, value: "all" }, ...opts.stores.slice(0, 20).map((s) => ({ text: { type: "plain_text", text: `${s.name} だけ` }, value: `store:${s.id}` })) ] } },
       { type: "input", block_id: "amount", label: { type: "plain_text", text: "金額（円）。勤務日数ごと／回数ごと＝1 日（1 回）の往復額（上限適用後）、月額＝定期 1 か月分" }, element: { type: "number_input", action_id: "amount", is_decimal_allowed: false, min_value: "0", max_value: "999999", ...(initAmount != null ? { initial_value: String(initAmount) } : {}) } },
-      { type: "input", optional: true, block_id: "cap", label: { type: "plain_text", text: `上限（円・任意${opts.cap_unit === "unknown" ? "。単位はスマレジ仕様の確認中" : opts.cap_unit === "month" ? "・月額" : "・1回"}）` }, element: { type: "number_input", action_id: "cap", is_decimal_allowed: false, min_value: "0", max_value: "999999", ...(opts.cap_default != null ? { initial_value: String(opts.cap_default) } : {}) } },
+      { type: "input", optional: true, block_id: "cap", label: { type: "plain_text", text: `上限（円・任意${opts.cap_unit === "unknown" ? "。単位はスマレジ仕様の確認中" : opts.cap_unit === "month" ? "・月額" : "・1回"}）` }, element: { type: "number_input", action_id: "cap", is_decimal_allowed: false, min_value: "0", max_value: "999999", ...(capInit != null ? { initial_value: String(capInit) } : {}) } },
       { type: "input", optional: true, block_id: "note", label: { type: "plain_text", text: "メモ（任意）" }, element: { type: "plain_text_input", action_id: "note", max_length: 200 } },
     ],
   };
@@ -452,7 +454,7 @@ export function yearEndCompareText(submitted: Record<string, unknown>, smaregi: 
 }
 
 /** 支給方法（個別設定）のモーダル（2026-11-10・会社ルール）: 基本は 1 日上限 500 円。超える人は定期代支給か全額支給。月の出勤日数の見込み・バス例外。理由つきで履歴に残る */
-export function commutePolicyModal(meta: { workflow_id: string; user_id: string; notification_id: string | null }, opts: { name: string; policy: string; bus_exception: boolean; cap: number; plan_text?: string | null; bus_request?: string | null }) {
+export function commutePolicyModal(meta: { workflow_id: string; user_id: string; notification_id: string | null }, opts: { name: string; policy: string; bus_exception: boolean; cap: number; plan_text?: string | null; bus_request?: string | null; monthly_cap_override?: number | null; standard_note?: string }) {
   const options = [
     { text: { type: "plain_text", text: `1 日上限 ${yen(opts.cap)}（往復・基本）` }, value: "daily_cap" },
     { text: { type: "plain_text", text: "定期代支給（月額・本部承認）" }, value: "teiki" },
@@ -464,6 +466,7 @@ export function commutePolicyModal(meta: { workflow_id: string; user_id: string;
     blocks: [
       { type: "section", text: { type: "mrkdwn", text: `*${opts.name}さん* の支給方法を決めます。基本は「1 日上限 ${yen(opts.cap)}（往復）」。支給方法と金額を決められるのは本部だけです（従業員は選べません）。定期代支給・全額支給・バス例外は理由が必要で、履歴に残ります。保存すると経路を再検索して計算し直します。${opts.bus_request ? `\n🚌 本人からのバス利用の申請: ${opts.bus_request.slice(0, 200)}` : ""}${opts.plan_text ? `\n_いまの計算_\n${opts.plan_text}` : ""}` } },
       { type: "input", block_id: "policy", label: { type: "plain_text", text: "支給方法" }, element: { type: "static_select", action_id: "policy", initial_option: options.find((o) => o.value === opts.policy) ?? options[0], options } },
+      { type: "input", optional: true, block_id: "mcap", label: { type: "plain_text", text: "月額上限の個別設定（円・空欄＝標準）" }, hint: { type: "plain_text", text: opts.standard_note ?? "標準: アルバイトの基本＝6,000 円／社員の基本＝なし／定期代・全額支給＝なし。入力するとその金額がスマレジの月額上限になります（理由必須）" }, element: { type: "number_input", action_id: "mcap", is_decimal_allowed: false, min_value: "0", max_value: "999999", ...(opts.monthly_cap_override != null ? { initial_value: String(opts.monthly_cap_override) } : {}) } },
       { type: "input", optional: true, block_id: "bus", label: { type: "plain_text", text: "バス（原則は認めない。本人の理由申請を確認して承認）" }, element: { type: "checkboxes", action_id: "bus", options: [{ text: { type: "plain_text", text: "この人はバス利用を例外として認める" }, value: "yes" }], ...(opts.bus_exception ? { initial_options: [{ text: { type: "plain_text", text: "この人はバス利用を例外として認める" }, value: "yes" }] } : {}) } },
       { type: "input", optional: true, block_id: "reason", label: { type: "plain_text", text: "理由（基本ルールと違う扱いにするときは必須）" }, element: { type: "plain_text_input", action_id: "reason", max_length: 200 } },
     ],

@@ -2,7 +2,7 @@
 //   実行: deno test supabase/functions/_shared/commute-judge.test.ts
 //   ★ モックは公開ドキュメントから想定した形。実 API の形はキー到着後に検証（commute-mock.ts 冒頭）。
 import { assertEquals, assert } from "jsr:@std/assert@1";
-import { parseCourses, judge, autoJudge, normalizeStationName, pickStation, payHint, payPlan, conditionFor, DEFAULT_RULES, DEFAULT_AUTO } from "./commute-judge.ts";
+import { parseCourses, judge, autoJudge, normalizeStationName, pickStation, payHint, payPlan, monthlyCapFor, conditionFor, DEFAULT_RULES, DEFAULT_AUTO } from "./commute-judge.ts";
 import REAL from "./fixtures/ekispert-real-2026-11-10.json" with { type: "json" };
 import { SCENARIOS, mockResultSet } from "./commute-mock.ts";
 
@@ -167,23 +167,36 @@ Deno.test("会社ルール: 往復が 500 円を超える人（新横浜→田�
   const teiki = payPlan(j.computed, { policy: "teiki" });
   assertEquals(teiki.recommend?.pay_type, "monthly"); assertEquals(teiki.recommend?.amount, 15600);
 });
-Deno.test("運用方針: 定期と実費の比較は判断材料。安い方へ自動では切り替えない（支給方法は本部が決めたものだけ）", () => {
-  const c = parseCourses((REAL as any).ic_ooguchi_shinyokohama); const j = judge(c, 199, DEFAULT_RULES);
+Deno.test("運用方針: 比較は ①IC 実費総額 ②基本ルール適用後 ③定期 ④差額。安い方へ自動では切り替えない", () => {
+  const c = parseCourses((REAL as any).ic_shinyokohama_tamachi); const j = judge(c, 528, DEFAULT_RULES);   // IC 片道 528・往復 1,056・定期 15,600
   const stats = { this_month: "2026-11", next_month: "2026-12", last_month: "2026-10", shift_days_this_month: 8, shift_days_next_month: 20, actual_days_last_month: 18, actual_days_3m: 45, actual_months_3m: 3 };
-  const p = payPlan(j.computed, { stats });
-  // 来月シフト 20 日なら定期（5,890）の方が実費（7,960）より安い、という材料は出すが…
-  assertEquals(p.comparisons.find((x) => x.label.includes("2026-12"))?.cheaper, "teiki");
-  assertEquals(p.comparisons.find((x) => x.label.includes("2026-11"))?.cheaper, "actual");
+  const p = payPlan(j.computed, { klass: "AL", stats });
+  const dec = p.comparisons.find((x) => x.label.includes("2026-12"))!;
+  assertEquals(dec.actual_total, 21120);            // ① 1,056 × 20
+  assertEquals(dec.basic_total, 6000);              // ② 500 × 20 = 10,000 → アルバイトの月額上限 6,000
+  assertEquals(dec.teiki1, 15600);                  // ③
+  assertEquals(dec.diff_basic_vs_actual, -15120); assertEquals(dec.diff_teiki_vs_actual, -5520); assertEquals(dec.diff_teiki_vs_basic, 9600);   // ④
   assertEquals(p.comparisons.find((x) => x.label.includes("平均"))?.days, 15);
-  // …支給方法は基本（1 日あたり）のまま。定期には変わらない
-  assertEquals(p.policy, "daily_cap"); assertEquals(p.recommend?.pay_type, "per_day"); assertEquals(p.recommend?.amount, 398);
-  assert(p.text.includes("自動では変わりません"));
-  // 本部が定期代支給に決めたときだけ月額になる
-  const t = payPlan(j.computed, { policy: "teiki", stats });
-  assertEquals(t.recommend?.pay_type, "monthly"); assertEquals(t.recommend?.amount, 5890);
+  // 定期の方が実費総額より安くても、支給方法は基本のまま
+  assertEquals(p.policy, "daily_cap"); assertEquals(p.recommend?.pay_type, "per_day"); assertEquals(p.recommend?.amount, 500);
+  assert(p.text.includes("自動では変わりません")); assert(p.text.includes("就業規則との整合は未確認"));
+  // 社員は月額上限なし → ② は 500 × 20 = 10,000
+  assertEquals(payPlan(j.computed, { klass: "SHAIN", stats }).comparisons.find((x) => x.label.includes("2026-12"))?.basic_total, 10000);
   // シフト・実績が無ければ比較なし（推測しない）
   assertEquals(payPlan(j.computed, { stats: { shift_days_this_month: 0, shift_days_next_month: 0, actual_days_last_month: 0 } }).comparisons.length, 0);
-  assertEquals(payPlan(j.computed).comparisons.length, 0);
+});
+Deno.test("月額上限: AL 基本=6,000／社員 基本=なし／定期・全額=標準上限なし／個別設定が最優先。支給方法を変えると連動して切り替わる", () => {
+  assertEquals(monthlyCapFor("daily_cap", "AL", 6000, null), { cap: 6000, source: "standard_al", standard: 6000 });
+  assertEquals(monthlyCapFor("daily_cap", "SHAIN", 6000, null), { cap: null, source: "none_shain", standard: null });
+  assertEquals(monthlyCapFor("teiki", "AL", 6000, null).cap, null); assertEquals(monthlyCapFor("full", "AL", 6000, null).source, "none_policy");
+  assertEquals(monthlyCapFor("teiki", "AL", 6000, 12000), { cap: 12000, source: "individual", standard: 6000 });
+  assertEquals(monthlyCapFor("daily_cap", "SHAIN", 6000, 8000).cap, 8000);
+  const c = parseCourses((REAL as any).ic_shinyokohama_tamachi); const j = judge(c, 528, DEFAULT_RULES);
+  const basic = payPlan(j.computed, { klass: "AL" }); assertEquals(basic.monthly_cap, 6000); assert(basic.text.includes("アルバイトの標準"));
+  const teiki = payPlan(j.computed, { klass: "AL", policy: "teiki" }); assertEquals(teiki.monthly_cap, null); assertEquals(teiki.recommend?.amount, 15600); assert(teiki.text.includes("標準上限を適用しない"));
+  const full = payPlan(j.computed, { klass: "AL", policy: "full" }); assertEquals(full.monthly_cap, null); assertEquals(full.daily, 1056);
+  const fullCap = payPlan(j.computed, { klass: "AL", policy: "full", monthlyCapOverride: 15000 }); assertEquals(fullCap.monthly_cap, 15000); assert(fullCap.text.includes("個別設定"));
+  assertEquals(payPlan(j.computed, { klass: "SHAIN" }).monthly_cap, null);
 });
 Deno.test("探索条件: IC/切符 × バス可否 の 4 通り。既定は IC・バスなし", () => {
   assertEquals(conditionFor(DEFAULT_RULES, false), "T11211111113191:F332112112000010:A23121141:");

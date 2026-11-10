@@ -179,7 +179,9 @@ Deno.serve(async (req) => {
     // 支給額の計算（会社ルール: 1 日上限・個別の支給方法・定期と実費の安い方）
     //   出勤日数は自己申告ではなく、シフトと出勤実績から（DB 関数 commute_days_stats。無ければ比較なし）。支給方法は本部が決めた pay_policy だけを使う
     const { data: stats } = await sb.rpc("commute_days_stats", { p_user: uid });
-    const plan = payPlan(j.computed, { policy: ((cm as any)?.pay_policy ?? "daily_cap") as PayPolicy, cap: Number(rules.daily_cap_round_yen ?? 500), stats: stats ?? null });
+    const { data: urow } = await sb.from("users").select("role").eq("id", uid).maybeSingle();
+    const plan = payPlan(j.computed, { policy: ((cm as any)?.pay_policy ?? "daily_cap") as PayPolicy, cap: Number(rules.daily_cap_round_yen ?? 500), stats: stats ?? null,
+      klass: urow?.role === "AL" ? "AL" : "SHAIN", alCap: (rules as any).al_cap_yen === undefined ? 6000 : (rules as any).al_cap_yen, monthlyCapOverride: (cm as any)?.monthly_cap_override ?? null });
     const result = {
       provider: mock ? "mock" : "ekispert", searched_at: new Date().toISOString(), store_id: store.id, store_name: store.name, from: homeStation || "（住所から）", to: workStation,
       candidates: cands, reasonable_indexes: j.reasonable.map((c) => c.index), computed_index: j.computed?.index ?? null, rules, auto, pay_hint: payHint(j.computed), pay_plan: plan, fare_type: rules.fare_type ?? "ic", bus_allowed: busAllowed,
