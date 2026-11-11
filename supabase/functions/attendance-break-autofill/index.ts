@@ -60,11 +60,11 @@ async function smaregiAutoBreak(contractId: string): Promise<{ state: "enabled" 
   const out = { state: "unknown" as "enabled" | "disabled" | "unknown", stores: [] as { id: string; name: string; on: boolean }[], classifications: [] as { id: string; name: string; on: boolean }[], error: undefined as string | undefined };
   try {
     const t1 = await getContractToken(contractId, "timecard.stores:read");
-    const r1 = await fetch(`${API_BASE}/${contractId}/timecard/stores?limit=1000`, { headers: { Authorization: `Bearer ${t1}` } });
+    const r1 = await fetch(`${API_BASE}/${contractId}/timecard/stores?limit=100`, { headers: { Authorization: `Bearer ${t1}` } });
     if (!r1.ok) { out.error = `事業所の設定を読めません HTTP ${r1.status}`; return out; }
     for (const s of ((await r1.json()) ?? []) as any[]) out.stores.push({ id: String(s.storeId ?? s.id ?? ""), name: String(s.storeName ?? s.name ?? ""), on: autoBreakOn(s) });
     const t2 = await getContractToken(contractId, "timecard.settings:read");
-    const r2 = await fetch(`${API_BASE}/${contractId}/timecard/employee_classifications?limit=1000`, { headers: { Authorization: `Bearer ${t2}` } });
+    const r2 = await fetch(`${API_BASE}/${contractId}/timecard/employee_classifications?limit=100`, { headers: { Authorization: `Bearer ${t2}` } });
     if (!r2.ok) { out.error = `従業員区分の設定を読めません HTTP ${r2.status}`; return out; }
     for (const c of ((await r2.json()) ?? []) as any[]) {
       const id = String(c.employeeClassificationId ?? c.id ?? ""); let on = false;

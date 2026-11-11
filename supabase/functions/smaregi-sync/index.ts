@@ -776,13 +776,13 @@ Deno.serve(async (req) => {
       const errs = out.errors as string[];
       try {
         const t1 = await getContractToken(C, "timecard.stores:read");
-        const r1 = await fetch(`${API_BASE}/${C}/timecard/stores?limit=1000`, { headers: { Authorization: `Bearer ${t1}` } });
+        const r1 = await fetch(`${API_BASE}/${C}/timecard/stores?limit=100`, { headers: { Authorization: `Bearer ${t1}` } });
         if (!r1.ok) errs.push(`事業所の設定を読めません HTTP ${r1.status} ${(await r1.text()).slice(0, 160)}`);
         else out.stores = ((await r1.json()) ?? []).map((x: any) => ({ id: String(x.storeId ?? x.id ?? ""), name: String(x.storeName ?? x.name ?? ""), enabled: isOn(x), setting: pick(x) }));
       } catch (e) { errs.push("事業所: " + String((e as Error).message ?? e).slice(0, 200)); }
       try {
         const t2 = await getContractToken(C, "timecard.settings:read");
-        const r2 = await fetch(`${API_BASE}/${C}/timecard/employee_classifications?limit=1000`, { headers: { Authorization: `Bearer ${t2}` } });
+        const r2 = await fetch(`${API_BASE}/${C}/timecard/employee_classifications?limit=100`, { headers: { Authorization: `Bearer ${t2}` } });
         if (!r2.ok) errs.push(`従業員区分の設定を読めません HTTP ${r2.status} ${(await r2.text()).slice(0, 160)}`);
         else {
           const list: unknown[] = [];
