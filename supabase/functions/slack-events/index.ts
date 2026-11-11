@@ -84,8 +84,7 @@ Deno.serve(async (req) => {
           text: `👋 ${r.user.name}さん、N-Style の Slack へようこそ。管理システムの従業員情報と自動で紐づきました。\n勤怠確認のボタンや申請のやりとりがここに届きます。`,
           dedupe_key: `slack_link_welcome:${r.user.id}`, username: "N-Style 通知Bot" });
       }
-      if (r.linked) await notifySlack({ action: "send", channel_key: "hq.dev_system", event: "slack_link", source: "ef:slack-events",
-        text: `🔗 Slack 紐づけ: ${r.user.name} ↔ ${ev.user?.real_name ?? ev.user?.id}（${ev.type}・メール一致）`, dedupe_key: `slack_link:${r.user.id}:${ev.user?.id}` });
+      // 2026-11-11（ユーザー決定）: 紐づけできた記録は Slack に出さない（人の対応が要らないため。紐づけは user_slack に残る）
     })());
   }
   return new Response("", { status: 200 });

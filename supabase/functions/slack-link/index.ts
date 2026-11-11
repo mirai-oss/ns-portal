@@ -119,8 +119,7 @@ async function sync(sb: any) {
     await notifySlackSvc({ action: "send", channel_key: `user:${n.user_id}`, event: "slack_link_welcome", source: "ef:slack-link",
       text: `👋 ${n.name}さん、N-Style の Slack へようこそ。管理システムの従業員情報と自動で紐づきました。\n勤怠確認のボタンや申請のやりとりがここに届きます。`,
       dedupe_key: `slack_link_welcome:${n.user_id}`, username: "N-Style 通知Bot" });
-    await notifySlackSvc({ action: "send", channel_key: "hq.dev_system", event: "slack_link", source: "ef:slack-link",
-      text: `🔗 Slack 紐づけ: ${n.name} ↔ ${n.slack_user_id}（照合・メール一致）`, dedupe_key: `slack_link:${n.user_id}:${n.slack_user_id}` });
+    // 2026-11-11（ユーザー決定）: 紐づけできた記録は Slack に出さない（人の対応が要らないため。紐づけは user_slack に残る）
   }
   const linkedSlack = new Set(rows.map((r) => r.slack_user_id));
   const unmatchedSlack = members.filter((m) => !linkedSlack.has(m.id)).map((m) => ({ id: m.id, name: m.real_name, email: m.email ? mask(m.email) : "" }));

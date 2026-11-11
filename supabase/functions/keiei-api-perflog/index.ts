@@ -21,7 +21,7 @@
 //
 // Lark送信先: app_secrets.lark_webhook_url（D-3見張り番・D-4等の既存Lark配信と同じWebhookを流用）
 import { createClient } from "npm:@supabase/supabase-js@2";
-import { slackPost } from "../_shared/slack.ts";
+import { slackPost, slackPostThread } from "../_shared/slack.ts";
 
 const cors: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -169,10 +169,15 @@ async function notifyDailyRanking(sb: ReturnType<typeof createClient>, body: any
   const targetLabel = new Date(targetJstMidnightUtcMs).toISOString().slice(0, 10);
 
   const rows = await fetchDayRows(sb, fromUtc.toISOString(), toUtc.toISOString());
+  // 2026-11-11（ユーザー決定）: 毎日の計測レポートは Slack に出さない（計測は続ける）。基準を超えた日と、計測が 1 件も届かない日（＝計測か監視が止まっている）だけ知らせる。
+  //   基準は app_settings.monitor_thresholds（無ければ下の既定）。実測（10/28〜11/11）: 1 日の失敗率 0.4〜3.8%／主な読み込み（tori-dashboard:data）の中央値 15〜19 秒。
+  const th = await monitorThresholds(sb);
+  const md = targetLabel.slice(5).replace("-", "/");
   if (!rows.length) {
-    const text = `📊 経営D/精算D 計測レポート（${targetLabel}）\nデータがありません（計測フックがまだ届いていない可能性があります）`;
-    const sent = await sendLark(sb, text);
-    return { ok: true, date: targetLabel, rows: 0, sent };
+    const text = `📊 経営D/精算D 計測（${targetLabel}）\n計測データが 1 件も届いていません。計測のしくみか、この監視が止まっている可能性があります。`;
+    if (body.dry_run) return { ok: true, date: targetLabel, rows: 0, dry_run: true, notify: true, text };
+    const sent = await slackPostThread(sb, "hq.dev_system", `⚠️ システム監視｜経営ダッシュボードの計測｜${md}｜要確認`, text, { source: "edge", event: "perflog", dedupe_key: `perflog:${targetLabel}` });
+    return { ok: true, date: targetLabel, rows: 0, notified: true, sent };
   }
 
   type Agg = { key: string; count: number; failCount: number; sumMs: number; maxMs: number };
@@ -217,11 +222,32 @@ async function notifyDailyRanking(sb: ReturnType<typeof createClient>, body: any
     lines.push("", `🚀 起動時間の集計に失敗しました: ${String(e).slice(0, 120)}`);
   }
 
-  const text = lines.join("\n");
-  // dry_run:true は動作確認用。Larkへは送らず本文だけ返す（本番チャンネルにテスト投稿を出さないため）
-  if (body.dry_run) return { ok: true, date: targetLabel, rows: totalCalls, fail: totalFail, dry_run: true, text };
-  const sent = await sendLark(sb, text);
-  return { ok: true, date: targetLabel, rows: totalCalls, fail: totalFail, sent };
+  // 知らせるかどうかの判定（基準を超えたものだけ理由に入れる）
+  const failPct = totalCalls ? totalFail / totalCalls * 100 : 0;
+  const mainMs = rows.filter((r) => r.app === "tori-dashboard" && r.action === "data" && r.ok).map((r) => Number(r.ms) || 0).sort((a, b) => a - b);
+  const mainMedian = mainMs.length >= th.main_min_calls ? percentile(mainMs, 50) : null;
+  const reasons: string[] = [];
+  if (totalCalls >= th.min_calls && failPct >= th.daily_fail_pct) reasons.push(`失敗率 ${failPct.toFixed(1)}%（基準 ${th.daily_fail_pct}% 以上）`);
+  if (mainMedian != null && mainMedian >= th.main_median_ms) reasons.push(`主な読み込みの中央値 ${fmtMs(mainMedian)}（基準 ${fmtMs(th.main_median_ms)} 以上）`);
+  const text = (reasons.length ? `⚠️ 基準を超えた項目: ${reasons.join("／")}\n\n` : "") + lines.join("\n");
+  // dry_run:true は動作確認用。送らずに本文と判定だけ返す（本番チャンネルにテスト投稿を出さないため）
+  if (body.dry_run) return { ok: true, date: targetLabel, rows: totalCalls, fail: totalFail, dry_run: true, notify: reasons.length > 0, reasons, text };
+  // 基準内の日は Slack に出さない（body.always=true のときだけ、今までどおり毎回送る）
+  if (!reasons.length && body.always !== true) return { ok: true, date: targetLabel, rows: totalCalls, fail: totalFail, notified: false, reasons };
+  const sent = await slackPostThread(sb, "hq.dev_system", `⚠️ システム監視｜経営ダッシュボード｜${md}${reasons.length ? "｜要確認" : ""}`, text, { source: "edge", event: "perflog", dedupe_key: `perflog:${targetLabel}` });
+  return { ok: true, date: targetLabel, rows: totalCalls, fail: totalFail, notified: true, reasons, sent };
+}
+
+// 監視の基準（app_settings.monitor_thresholds。無い項目は既定）
+async function monitorThresholds(sb: ReturnType<typeof createClient>) {
+  const d = { daily_fail_pct: 5, min_calls: 100, main_median_ms: 40000, main_min_calls: 10 };
+  try {
+    // deno-lint-ignore no-explicit-any
+    const { data } = await (sb as any).from("app_settings").select("value").eq("key", "monitor_thresholds").maybeSingle();
+    const v = (data?.value ?? {}) as Record<string, unknown>;
+    const n = (k: keyof typeof d) => (Number.isFinite(Number(v[k])) && Number(v[k]) > 0 ? Number(v[k]) : d[k]);
+    return { daily_fail_pct: n("daily_fail_pct"), min_calls: n("min_calls"), main_median_ms: n("main_median_ms"), main_min_calls: n("main_min_calls") };
+  } catch (_) { return d; }
 }
 
 Deno.serve(async (req) => {
