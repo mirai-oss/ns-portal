@@ -192,3 +192,15 @@ Deno.test("RPC がまだ無いときの判定（PGRST202 / 42883）と文言", (
   assert(!isMissingRpc(null));
   assertEquals(BREAK_NOT_READY, "この機能はまだ使えません");
 });
+
+import { sameTimes } from "./attendance-fix-notify.ts";
+Deno.test("変更が無い修正申請の判定: 分の単位まで同じなら同じ。休憩の有無・1 分の違いは変更", () => {
+  const cur = { clock_in: "2026-11-10T06:00:00+00:00", clock_out: "2026-11-10T15:10:00+00:00", break_start_1: "2026-11-10T10:00:00+00:00", break_end_1: "2026-11-10T11:00:00+00:00", break_start_2: null, break_end_2: null };
+  assertEquals(sameTimes(cur, { ...cur }), true);
+  assertEquals(sameTimes(cur, { ...cur, clock_in: "2026-11-10T15:00:30+09:00" }), true, "秒の違い・時刻の書き方の違いは同じ扱い");
+  assertEquals(sameTimes(cur, { ...cur, clock_out: "2026-11-10T15:11:00+00:00" }), false);
+  assertEquals(sameTimes(cur, { ...cur, break_start_1: null, break_end_1: null }), false, "休憩なしにするのは変更");
+  assertEquals(sameTimes({ ...cur, break_start_1: null, break_end_1: null }, cur), false, "休憩を足すのは変更");
+  assertEquals(sameTimes(cur, { ...cur, break_start_2: "2026-11-10T12:00:00+00:00", break_end_2: "2026-11-10T12:10:00+00:00" }), false);
+  assertEquals(sameTimes(null, cur), false, "いまの勤怠が無い（追加）ときは止めない");
+});

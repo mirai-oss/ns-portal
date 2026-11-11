@@ -5,6 +5,7 @@
 //   op:
 //     run   { dry_run?, from?, to?, limit? }   対象の勤怠（RPC attendance_break_autofill_scan）に、60 分の休憩（推定）を補完してスマレジへ同期する。
 //           実際に書くのは、設定 app_settings.attendance_break_autofill.enabled=true かつ dry_run!==true のときだけ。それ以外は「試し実行」＝何も書かずに件数だけ返す。
+//     test_one { labor_cost_daily_id }         実機テスト用: テスト用の従業員（設定 test_user_ids）の勤怠 1 件だけを、enabled に関係なく実際に補完する
 //     smaregi_settings { }                     スマレジ側の「休憩時間自動設定」（事業所・従業員区分）を読むだけ。有効なものがあれば一覧を返す
 //   二重登録・二重控除・同期ループを防ぐしくみ:
 //     ・同じ勤怠には 1 回だけ（RPC attendance_break_autofill_begin が、勤怠の行をロックして条件を確かめ直し、履歴に 1 行だけ作る）
@@ -108,12 +109,19 @@ Deno.serve(async (req) => {
     for (const c of contractIds) res[c] = await smaregiAutoBreak(c);
     return json({ ok: true, contracts: res, confirmed_off: cfg.smaregi_auto_break_confirmed_off === true });
   }
-  if ((body.op ?? "run") !== "run") return json({ ok: false, error: "不明な op" }, 400);
+  // test_one { labor_cost_daily_id }: 実機テスト用。設定 test_user_ids に入っているテスト用の従業員の勤怠 1 件だけを、設定 enabled に関係なく実際に補完する（本部タスクは作らない）
+  const isTest = body.op === "test_one";
+  if ((body.op ?? "run") !== "run" && !isTest) return json({ ok: false, error: "不明な op" }, 400);
+  if (isTest && !/^[0-9a-f-]{36}$/i.test(String(body.labor_cost_daily_id ?? ""))) return json({ ok: false, error: "labor_cost_daily_id が必要です" }, 400);
 
-  const live = cfg.enabled === true && body.dry_run !== true;
-  const { data: scan, error: scanErr } = await sb.rpc("attendance_break_autofill_scan", { p_from: body.from ?? null, p_to: body.to ?? null });
+  const live = isTest ? true : (cfg.enabled === true && body.dry_run !== true);
+  const { data: scan, error: scanErr } = await sb.rpc("attendance_break_autofill_scan", { p_from: body.from ?? null, p_to: body.to ?? null, p_only_labor: isTest ? body.labor_cost_daily_id : null });
   if (scanErr) return json({ ok: false, error: "対象を読めません: " + scanErr.message }, 500);
   const rows = ((scan ?? []) as any[]).sort((a, b) => String(a.work_date).localeCompare(String(b.work_date)));
+  if (isTest) {
+    const testIds = Array.isArray(cfg.test_user_ids) ? cfg.test_user_ids.map(String) : [];
+    if (rows.length !== 1 || !testIds.includes(String(rows[0].user_id))) return json({ ok: false, error: "テスト用の従業員の勤怠ではありません（または、補完の対象の条件を満たしていません）", rows: rows.length, skip_reason: rows[0]?.skip_reason ?? null }, 400);
+  }
   const skipCounts: Record<string, number> = {};
   for (const r of rows) if (!r.eligible) skipCounts[r.skip_reason] = (skipCounts[r.skip_reason] ?? 0) + 1;
   const limit = Math.min(100, Math.max(1, Number(body.limit ?? cfg.max_per_run ?? 30)));
@@ -142,7 +150,7 @@ Deno.serve(async (req) => {
     }
     return storeBlock[k];
   };
-  if (live) { const { data: sup } = await sb.rpc("attendance_break_autofill_reconcile"); summary.superseded = Number(sup ?? 0); }
+  if (live && !isTest) { const { data: sup } = await sb.rpc("attendance_break_autofill_reconcile"); summary.superseded = Number(sup ?? 0); }
 
   const tokens: Record<string, string> = {}; const months: Record<string, Awaited<ReturnType<typeof fetchMonth>>> = {};
   const bump = (k: string) => { summary.results[k] = (summary.results[k] ?? 0) + 1; };
@@ -191,6 +199,6 @@ Deno.serve(async (req) => {
       console.error("break autofill", String((e as Error).message ?? e).slice(0, 200));
     }
   }
-  if (live) { const { data: tk } = await sb.rpc("attendance_break_autofill_task_sync"); summary.task = tk ?? null; }
+  if (live && !isTest) { const { data: tk } = await sb.rpc("attendance_break_autofill_task_sync"); summary.task = tk ?? null; }
   return json(summary);   // 氏名・金額は返さない（件数だけ）
 });

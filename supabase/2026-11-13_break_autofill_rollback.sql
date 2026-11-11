@@ -12,7 +12,7 @@ drop function if exists attendance_break_source(uuid);
 drop function if exists attendance_break_autofill_reconcile();
 drop function if exists attendance_break_autofill_finish(uuid, text, text, jsonb, numeric, numeric);
 drop function if exists attendance_break_autofill_begin(uuid, timestamptz, timestamptz, jsonb, text, text);
-drop function if exists attendance_break_autofill_scan(date, date);
+drop function if exists attendance_break_autofill_scan(date, date, uuid);
 drop function if exists attendance_break_autofill_cfg();
 drop table if exists attendance_break_exceptions;
 drop table if exists attendance_break_autofills;

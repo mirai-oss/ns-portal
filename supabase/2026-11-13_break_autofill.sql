@@ -15,7 +15,7 @@
 --       人が管理画面で確認した印（設定 smaregi_auto_break_confirmed_off=true）が無ければ動かない。そのうえで、勤怠ごとにも「休憩が入っていないか・勤務時間が引かれていないか」を確かめる
 
 insert into app_settings(key, value) values ('attendance_break_autofill',
-  '{"enabled": false, "roles": ["SHAIN", "TENCHO"], "min_span_minutes": 360, "break_minutes": 60, "lookback_days": 35, "max_per_run": 30, "max_attempts": 3, "deducted_tolerance_minutes": 30, "smaregi_auto_break_confirmed_off": false}'::jsonb)
+  '{"enabled": false, "roles": ["SHAIN", "TENCHO"], "min_span_minutes": 360, "break_minutes": 60, "lookback_days": 35, "max_per_run": 30, "max_attempts": 3, "deducted_tolerance_minutes": 30, "test_user_ids": []}'::jsonb)
 on conflict (key) do nothing;
 
 -- ============ 1. 補完の履歴（1 勤怠 1 行） ============
@@ -69,13 +69,14 @@ drop policy if exists attendance_break_exceptions_read on attendance_break_excep
 create policy attendance_break_exceptions_read on attendance_break_exceptions for select using (hq_can_manage() or user_id = auth.uid() or declared_by = auth.uid());
 
 create or replace function attendance_break_autofill_cfg() returns jsonb language sql stable security definer set search_path = public as $$
-  select '{"enabled": false, "roles": ["SHAIN", "TENCHO"], "min_span_minutes": 360, "break_minutes": 60, "lookback_days": 35, "max_per_run": 30, "max_attempts": 3, "deducted_tolerance_minutes": 30, "smaregi_auto_break_confirmed_off": false}'::jsonb
+  select '{"enabled": false, "roles": ["SHAIN", "TENCHO"], "min_span_minutes": 360, "break_minutes": 60, "lookback_days": 35, "max_per_run": 30, "max_attempts": 3, "deducted_tolerance_minutes": 30, "test_user_ids": []}'::jsonb
          || coalesce((select value from app_settings where key = 'attendance_break_autofill'), '{}'::jsonb)
 $$;
 
 -- ============ 3. 対象の判定（ここ 1 か所） ============
 --   休憩が未登録で、6 時間を超える、社員・店長の勤怠を返す。eligible＝補完してよい／skip_reason＝補完しない理由
-create or replace function attendance_break_autofill_scan(p_from date default null, p_to date default null)
+-- p_only_labor: その 1 件だけを見る（実機テスト用。設定 test_user_ids に入っているテスト用の従業員は、この指定があるときだけ、役割・賃金の種類に関係なく対象になる）
+create or replace function attendance_break_autofill_scan(p_from date default null, p_to date default null, p_only_labor uuid default null)
 returns table(labor_cost_daily_id uuid, user_id uuid, store_id uuid, work_date date, clock_in timestamptz, clock_out timestamptz, span_minutes numeric, worked_minutes numeric,
               smaregi_shift_result_id text, contract_id text, eligible boolean, skip_reason text)
 language sql stable security definer set search_path = public as $$
@@ -85,7 +86,8 @@ language sql stable security definer set search_path = public as $$
     select l.id, l.user_id, l.store_id, l.work_date, l.clock_in, l.clock_out, extract(epoch from (l.clock_out - l.clock_in)) / 60 span, l.worked_minutes, l.smaregi_shift_result_id, l.manual_fixed_at,
            case when l.smaregi_shift_result_id like '%:%' then split_part(l.smaregi_shift_result_id, ':', 1) else (select contract_id from def) end contract_id
       from labor_cost_daily l join users u on u.id = l.user_id, cfg
-     where u.is_active and u.role in (select jsonb_array_elements_text(cfg.c -> 'roles'))
+     where u.is_active and (p_only_labor is null or l.id = p_only_labor)
+       and (u.role in (select jsonb_array_elements_text(cfg.c -> 'roles')) or (p_only_labor is not null and u.id::text in (select jsonb_array_elements_text(coalesce(cfg.c -> 'test_user_ids', '[]'::jsonb)))))
        and l.clock_in is not null and l.clock_out is not null
        and l.break_start_1 is null and l.break_end_1 is null and l.break_start_2 is null and l.break_end_2 is null and coalesce(l.break_minutes, 0) = 0
        and extract(epoch from (l.clock_out - l.clock_in)) / 60 > (cfg.c ->> 'min_span_minutes')::numeric
@@ -103,6 +105,7 @@ language sql stable security definer set search_path = public as $$
       when exists (select 1 from payroll_finalized f join smaregi_contracts sc on sc.corporation_id = f.corporation_id where sc.contract_id = b.contract_id and f.year_month = to_char(b.work_date, 'YYYY-MM')) then 'finalized'
       when b.worked_minutes is not null and b.span - b.worked_minutes >= (cfg.c ->> 'deducted_tolerance_minutes')::numeric then 'deducted'
       -- 賃金の種類（2026-11-11 ユーザー指示）: 月給の人だけ。日給の人は対象外。時給だけの人・賃金の登録が無い人も補完しない（その勤務日に有効な賃金で見る）
+      when p_only_labor is not null and b.user_id::text in (select jsonb_array_elements_text(coalesce(cfg.c -> 'test_user_ids', '[]'::jsonb))) then null   -- テスト用の従業員（1 件指定のとき）は、賃金の種類を見ない
       when exists (select 1 from employee_wage_settings w where w.user_id = b.user_id and w.division = 1 and w.effective_date <= b.work_date
                      and not exists (select 1 from employee_wage_settings w2 where w2.user_id = w.user_id and w2.contract_id = w.contract_id and w2.division = 1 and w2.effective_date <= b.work_date and w2.effective_date > w.effective_date)) then 'daily_wage'
       when not exists (select 1 from employee_wage_settings w where w.user_id = b.user_id and w.division = 2 and w.effective_date <= b.work_date) then 'not_monthly'
@@ -119,7 +122,7 @@ begin
   if p_status not in ('syncing', 'skipped', 'conflict') then raise exception '不正な状態です'; end if;
   select * into l from labor_cost_daily where id = p_labor for update;
   if l.id is null then return jsonb_build_object('ok', false, 'reason', 'not_found'); end if;
-  select * into s from attendance_break_autofill_scan(l.work_date, l.work_date) x where x.labor_cost_daily_id = p_labor;
+  select * into s from attendance_break_autofill_scan(l.work_date, l.work_date, p_labor) x where x.labor_cost_daily_id = p_labor;
   if s.labor_cost_daily_id is null then return jsonb_build_object('ok', false, 'reason', 'not_target'); end if;    -- 休憩が入った・短い・対象外の人 など
   if not s.eligible then return jsonb_build_object('ok', false, 'reason', s.skip_reason); end if;
   if p_status = 'syncing' and (p_est_start is null or p_est_end is null or p_est_start < l.clock_in or p_est_end > l.clock_out or p_est_end <= p_est_start) then raise exception '推定の休憩が勤務時間の外です'; end if;
@@ -251,9 +254,9 @@ begin
     'exceptions', (select count(*) from attendance_break_exceptions e where e.work_date >= v_from and e.cancelled_at is null));
 end $$;
 
-revoke all on function attendance_break_autofill_cfg(), attendance_break_autofill_scan(date, date), attendance_break_autofill_begin(uuid, timestamptz, timestamptz, jsonb, text, text),
+revoke all on function attendance_break_autofill_cfg(), attendance_break_autofill_scan(date, date, uuid), attendance_break_autofill_begin(uuid, timestamptz, timestamptz, jsonb, text, text),
   attendance_break_autofill_finish(uuid, text, text, jsonb, numeric, numeric), attendance_break_autofill_reconcile(), attendance_break_source(uuid), sf_break_exception_submit(uuid, date, text, integer, text, uuid),
   attendance_break_autofill_task_sync(), hr_break_autofill_status(integer) from public, anon, authenticated;
-grant execute on function attendance_break_autofill_cfg(), attendance_break_autofill_scan(date, date), attendance_break_autofill_begin(uuid, timestamptz, timestamptz, jsonb, text, text),
+grant execute on function attendance_break_autofill_cfg(), attendance_break_autofill_scan(date, date, uuid), attendance_break_autofill_begin(uuid, timestamptz, timestamptz, jsonb, text, text),
   attendance_break_autofill_finish(uuid, text, text, jsonb, numeric, numeric), attendance_break_autofill_reconcile(), sf_break_exception_submit(uuid, date, text, integer, text, uuid), attendance_break_autofill_task_sync() to service_role;
 grant execute on function attendance_break_source(uuid), hr_break_autofill_status(integer) to authenticated, service_role;

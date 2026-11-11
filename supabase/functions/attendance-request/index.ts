@@ -16,7 +16,7 @@
 // デプロイ: supabase functions deploy attendance-request --no-verify-jwt --project-ref uuvsxzhpxtghojoubjcc --yes（JWT は関数内で検証）
 // =============================================================
 import { createClient } from "npm:@supabase/supabase-js@2";
-import { isUuid, jstLocalToIso, fixRequestArgs, fixRequestedParentText, fixApprovalSend, alertStatusMessage, alertFormRow, isMissingRpc, BREAK_NOT_READY, breakDeclareArgs } from "../_shared/attendance-fix-notify.ts";
+import { isUuid, jstLocalToIso, fixRequestArgs, fixRequestedParentText, fixApprovalSend, alertStatusMessage, alertFormRow, isMissingRpc, BREAK_NOT_READY, breakDeclareArgs, sameTimes, NO_CHANGE_MESSAGE } from "../_shared/attendance-fix-notify.ts";
 
 const cors = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "authorization, content-type, apikey, x-client-info", "Access-Control-Allow-Methods": "POST, OPTIONS" };
 const json = (o: unknown, status = 200) => new Response(JSON.stringify(o), { status, headers: { ...cors, "Content-Type": "application/json" } });
@@ -89,6 +89,14 @@ Deno.serve(async (req) => {
   if (b.op === "break_declare") return await breakDeclare(sb, actor, b);
   if (b.op !== "submit") return json({ ok: false, error: "op は staff / day / submit / decide" }, 400);
 
+  // 2026-11-11（ユーザー決定）: 勤怠修正で、変更前後が同じ申請は受け付けない（その人・その日・その店舗の勤怠が 1 件に決まるときだけ確かめる）
+  if (String(b.kind ?? "") === "fix" && b.user_id && b.work_date) {
+    let q = sb.from("labor_cost_daily").select("clock_in,clock_out,break_start_1,break_end_1,break_start_2,break_end_2").eq("user_id", b.user_id).eq("work_date", b.work_date);
+    if (b.store_id) q = q.eq("store_id", b.store_id);
+    const { data: curRows } = await q.limit(2);
+    if (curRows && curRows.length === 1 && sameTimes(curRows[0], { clock_in: toIso(b.clock_in), clock_out: toIso(b.clock_out), break_start_1: toIso(b.break_start_1), break_end_1: toIso(b.break_end_1), break_start_2: toIso(b.break_start_2), break_end_2: toIso(b.break_end_2) }))
+      return json({ ok: false, code: "no_change", error: NO_CHANGE_MESSAGE }, 400);
+  }
   const { data, error } = await sb.rpc("sf_attendance_request_submit", {
     p_actor: actor.id, p_kind: String(b.kind ?? ""), p_store_id: b.store_id ?? null, p_user_id: b.user_id ?? null, p_work_date: b.work_date ?? null,
     p_clock_in: toIso(b.clock_in), p_clock_out: toIso(b.clock_out), p_reason: String(b.reason ?? ""),
@@ -268,6 +276,13 @@ async function alertFix(sb: any, actor: { id: string; name: string }, b: any) {
     const iso = jstLocalToIso(raw);
     if (!iso) return json({ ok: false, code: "invalid_break", error: "休憩の時刻を読めません。入れ直してください" }, 400);
     breaks[k] = iso;
+  }
+  // 2026-11-11（ユーザー決定）: 変更前後が同じ申請は受け付けない（いまの勤怠と、分の単位まで同じ）
+  {
+    const { data: al } = await sb.from("sf_attendance_alerts").select("labor_cost_daily_id").eq("id", id).maybeSingle();
+    const { data: cur } = al?.labor_cost_daily_id ? await sb.from("labor_cost_daily").select("clock_in,clock_out,break_start_1,break_end_1,break_start_2,break_end_2").eq("id", al.labor_cost_daily_id).maybeSingle() : { data: null };
+    const prop = { clock_in: clockIn, clock_out: clockOut, break_start_1: noBreak ? null : breaks.b1s, break_end_1: noBreak ? null : breaks.b1e, break_start_2: noBreak ? null : breaks.b2s, break_end_2: noBreak ? null : breaks.b2e };
+    if (sameTimes(cur, prop)) return json({ ok: false, code: "no_change", error: NO_CHANGE_MESSAGE }, 400);
   }
   const { data, error } = await sb.rpc("sf_attendance_fix_request", fixRequestArgs({ alertId: id, actorId: actor.id, clockIn, clockOut, reason, via: "form", breaks, noBreak }));
   if (error) return json({ ok: false, error: error.message }, 400);

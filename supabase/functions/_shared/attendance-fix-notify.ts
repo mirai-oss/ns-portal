@@ -187,3 +187,13 @@ export function breakDeclareArgs(b: Record<string, unknown>, actorId: string): {
   if (len < 1 || len > 300) return { error: "理由を 300 字以内で入れてください" };
   return { args: { p_user: user, p_work_date: date, p_kind: kind, p_minutes: minutes, p_reason: reason, p_actor: actorId } };
 }
+
+// ---- 変更が無い修正申請は受け付けない（2026-11-11 ユーザー決定。画面でも止めるが、受け口でも確かめる） ----
+//   出勤・退勤・休憩 1・休憩 2 が、いまの勤怠と分の単位まで同じなら true
+export type TimesLike = { clock_in?: string | null; clock_out?: string | null; break_start_1?: string | null; break_end_1?: string | null; break_start_2?: string | null; break_end_2?: string | null };
+export function sameTimes(cur: TimesLike | null | undefined, prop: TimesLike): boolean {
+  if (!cur) return false;
+  const m = (v: string | null | undefined) => { if (!v) return null; const t = new Date(v).getTime(); return Number.isFinite(t) ? Math.floor(t / 60000) : NaN; };
+  return (["clock_in", "clock_out", "break_start_1", "break_end_1", "break_start_2", "break_end_2"] as const).every((k) => m(cur[k]) === m(prop[k]));
+}
+export const NO_CHANGE_MESSAGE = "修正前から変わっていません。直す時刻を入れてから申請してください";
