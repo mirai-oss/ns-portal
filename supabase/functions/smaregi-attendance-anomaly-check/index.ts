@@ -105,12 +105,14 @@ function alertText(a: any) {
   const brkMin = a.break_minutes != null ? Number(a.break_minutes)
     : [[a.b1s, a.b1e], [a.b2s, a.b2e]].reduce((acc, [s0, e0]) => (s0 && e0) ? acc + Math.round((new Date(e0).getTime() - new Date(s0).getTime()) / 60000) : acc, 0);
   const breakLine = breaks.length ? `${breaks.join("・")}（${fmtHM(brkMin)}）` : "なし";
+  // 2026-11-14: worked_minutes は拘束時間（退勤−出勤）。「（休憩除く）」と書き添えるときは、拘束時間から休憩を引いた値を出す（休憩が無いときは今までどおり worked_minutes）。判定は変えていない
+  const workTxt = a.worked_minutes == null ? "-" : fmtHM(breaks.length ? Math.max(0, Number(a.worked_minutes) - brkMin) : a.worked_minutes);
   const body = [
     `${title}　*${a.name}*`,
     `打刻時間：${ci?.hm ?? "-"}−${outTxt}`,
     `出勤時間：${ci?.hm ?? "-"}`,
     `${has("late_leave", "no_clock_out") ? "⚠️" : ""}退勤時間：${co ? outTxt : "なし（打刻忘れ？）"}`,
-    `${has("short", "long", "extreme") ? "⚠️" : ""}勤務時間：${a.worked_minutes == null ? "-" : fmtHM(a.worked_minutes)}${breaks.length ? "（休憩除く）" : ""}`,
+    `${has("short", "long", "extreme") ? "⚠️" : ""}勤務時間：${workTxt}${breaks.length ? "（休憩除く）" : ""}`,
     `${has("break_long") ? "⚠️" : ""}休憩時間：${breakLine}`,
     ...((a.reasons ?? []) as string[]).map((r) => `⚠️ ${r}。打刻は合っていますか？`),
   ].join("\n");

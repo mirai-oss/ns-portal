@@ -166,9 +166,13 @@ function rangeText(date,T){
   const d1=addDays(date,T.cin.off),d2=addDays(date,T.cout.off);
   return `${mdwText(d1)}${T.cin.hm} 〜 ${d2===d1?"":(d2>d1?"翌 ":"")+mdwText(d2)}${T.cout.hm}`;
 }
-/* 修正前の実働（分）: 勤怠実績の worked_minutes。無ければ修正前の時刻から計算。出せなければ null */
+/* 修正前の実働（分）: 勤怠実績の worked_minutes（＝拘束時間。退勤−出勤）から break_minutes（休憩の合計）を引いた値。休憩が無ければ worked_minutes のまま。
+   worked_minutes が無ければ修正前の時刻から計算。出せなければ null（2026-11-14: worked_minutes を拘束時間にそろえたため、実働は「拘束−休憩」で出す） */
 function beforeNet(row,BT){
-  if(row&&row.worked_minutes!=null&&row.worked_minutes!=="")return Number(row.worked_minutes);
+  if(row&&row.worked_minutes!=null&&row.worked_minutes!==""){
+    const brk=row.break_minutes==null||row.break_minutes===""?0:Number(row.break_minutes);
+    return Math.max(0,Number(row.worked_minutes)-(Number.isFinite(brk)?brk:0));
+  }
   return BT?calc(BT).net:null;
 }
 /* 「勤務 ◯時間◯分 − 休憩 ◯分 ＝ 実働 ◯時間◯分（修正前 ◯時間◯分）」 */

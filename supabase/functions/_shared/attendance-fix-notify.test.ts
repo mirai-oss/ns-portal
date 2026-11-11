@@ -147,11 +147,11 @@ Deno.test("op=alert の中身: 勤怠実績の今の値を JST の文字列で�
   assertEquals(same, { id: ALERT, status: "open", request_kind: "fix", user_id: USER, name: "テスト 太郎", store_id: "s1", store_name: "テスト店", work_date: "2026-11-10",
     clock_in: "2026-11-10T17:00", clock_out: null, break_start_1: null, break_end_1: null, break_start_2: null, break_end_2: null,
     worked_minutes: null, break_minutes: null, locked: false, changed_since_alert: false });
-  // アラートの後に退勤が打たれた（翌 01:30）・休憩あり
-  const later = alertFormRow(alert, { clock_in: "2026-11-10T08:00:00Z", clock_out: "2026-11-10T16:30:00Z", break_start_1: "2026-11-10T11:00:00Z", break_end_1: "2026-11-10T12:00:00Z", worked_minutes: "450", break_minutes: 60, manual_fixed_at: "2026-11-11T00:00:00Z" }, { user: null, store: null });
+  // アラートの後に退勤が打たれた（翌 01:30）・休憩あり。worked_minutes は拘束時間（退勤−出勤＝17:00〜翌 01:30＝510 分。休憩 60 分は引かない）。alertFormRow は値をそのまま返すだけ
+  const later = alertFormRow(alert, { clock_in: "2026-11-10T08:00:00Z", clock_out: "2026-11-10T16:30:00Z", break_start_1: "2026-11-10T11:00:00Z", break_end_1: "2026-11-10T12:00:00Z", worked_minutes: "510", break_minutes: 60, manual_fixed_at: "2026-11-11T00:00:00Z" }, { user: null, store: null });
   assertEquals(later.clock_out, "2026-11-11T01:30");
   assertEquals([later.break_start_1, later.break_end_1], ["2026-11-10T20:00", "2026-11-10T21:00"]);
-  assertEquals([later.worked_minutes, later.break_minutes, later.locked, later.changed_since_alert], [450, 60, true, true]);
+  assertEquals([later.worked_minutes, later.break_minutes, later.locked, later.changed_since_alert], [510, 60, true, true]);
   assertEquals([later.name, later.store_name], ["", ""]);
   assertEquals(alertFormRow({ ...alert, request_kind: null }, {}, { user: "a", store: "b" }).request_kind, "fix");
 });
