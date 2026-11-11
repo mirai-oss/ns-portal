@@ -77,7 +77,10 @@
 - 15 入社通知: nippo「Lark通知設定」で Slack 行（hq.jinji）を ON → 同画面の「テスト送信」で #本部-人事 到着確認 → Chatwork 行 OFF。
 - 24 中山個人宛: notify-slack は channel_key='user:<users.id>' で user_slack から Slack ID を引き DM 送信できる（実装済み・14 人紐づけ済み）。lark_routes に Slack DM 行（同 4 イベント・is_active=false）追加 → ON → テスト送信 → Lark 行 OFF。ID は docs に書かない。
 - 25 個人 Chatwork 3 人（全員 user_slack 紐づけ済み）: 各通知関数（hq_notify_comment/step_event/task_urgent・hq_check_alerts・expense_submit/approve/reject）に notify_route_send('slack','user:'||user_id,…) を並行送信として追加 → DM 到着確認 → Chatwork 送信を外す。hq_user_notify_routes の拡張は不要。まず 1 人・1 イベントで確認してから全員へ。
-- 1〜7 notify_lark の Slack 一本化 SQL（2026-11-11_notify_lark_slack_only.sql）は作成済み・未適用。ユーザーが B の作業を一時停止（理由確認中）。
+- 1〜7 notify_lark の Slack 一本化: **11/11 適用済み**（ユーザー実行・司令塔読み取り: md5 c0c94565…・本文に lark_webhook なし・slack あり・PUBLIC/anon 不可・authenticated 可・1本）。現金手渡し・給料確定・毎朝チェックの通知は Slack #本部-経理監視 のみに。ユーザー報告「現金手渡しの通知が求人応募のところに来る」は Lark 側グループの話で、本件で解消。
+- 15 入社通知: ユーザー回答（B セッション）「入社処理を Slack で対応する別タスクを作っているので通知は不要」→ Slack 行は有効化せず、Chatwork『入社通知』行を無効化（ユーザーが画面で操作）。
+- 24 中山個人宛: lark_routes に Slack DM 行（is_active=false）追加済み（ユーザー適用）。次: テスト送信→DM 到着→有効化→Lark 行 OFF。
+- 運用注意（11/11 事故）: 共有の ~/ns-portal 作業ツリーで `git pull --rebase --autostash` を使い、他担当の未コミット編集が stash に退避された（C が v171 で復旧・実害なし）。**各担当は自分の worktree で作業し、共有作業ツリーで pull/rebase/autostash をしない。**
 
 ## 進捗
 - 27（追加・担当A）: 経営レポート 週報・月報（tori-dashboard Actions lark-report.yml report ジョブ＋group1〜3）: L＋S(#経営-レポート・#経営-レポート-nstyle) 並行済み → ①相当。止め方=report_channels group1〜3 の report_kinds を {daily} に／report ジョブに weekly/monthly を送らない条件（約5行）。次回週報 11/15・月報 12/1 → 11/14 までに反映が望ましい。戻し方=report_kinds を戻す・条件を外す。**日報は対象外**。ユーザー承認待ち。
