@@ -321,6 +321,10 @@ begin
   if not exists (select 1 from users u where u.id = auth.uid() and u.is_active and (u.is_master or u.role in ('CEO', 'HQ', 'TENCHO', 'TEAM'))) then raise exception '権限がありません'; end if;
   return jsonb_build_object('enabled', payroll_wage_guard_enabled(),
     'hold_user_ids', coalesce((select jsonb_agg(w.user_id) from payroll_wage_holds(p_year_month) w), '[]'::jsonb),
+    -- 人×契約（兼務の人は、保留になっている法人の契約だけ）
+    'hold_pairs', coalesce((select jsonb_agg(jsonb_build_object('user_id', (h ->> 'user_id')::uuid, 'contract_id', sc.contract_id))
+                              from smaregi_contracts sc, lateral jsonb_array_elements(payroll_wage_guard_i(p_year_month, sc.corporation_id) -> 'holds') h
+                             where sc.corporation_id is not null and coalesce(sc.is_active, true) and payroll_wage_guard_enabled()), '[]'::jsonb),
     'stop_contract_ids', coalesce((select jsonb_agg(sc.contract_id) from jsonb_array_elements(payroll_wage_stop(p_year_month)) s join smaregi_contracts sc on sc.corporation_id = (s ->> 'corporation_id')::uuid), '[]'::jsonb));
 end $$;
 
@@ -330,14 +334,18 @@ returns jsonb language plpgsql stable security definer set search_path = public 
 begin
   if not (hq_can_manage() or invoice_can_access() or onboarding_is_service()) then raise exception '権限がありません'; end if;
   return jsonb_build_object('enabled', payroll_wage_guard_enabled(), 'year_month', p_year_month,
+    'max_age_hours', coalesce((select (value ->> 'wage_guard_max_age_hours')::numeric from app_settings where key = 'employee_change'), 24),
     'corporations', coalesce((select jsonb_agg(
         g.j || jsonb_build_object('corp_name', (select name from corporations k where k.id = c.corporation_id),
           'holds', coalesce((select jsonb_agg(h || jsonb_build_object('user_name', (select name from users u where u.id = (h ->> 'user_id')::uuid),
                      'reason_labels', (select jsonb_agg(payroll_wage_guard_label(x)) from jsonb_array_elements_text(h -> 'reasons') x))) from jsonb_array_elements(g.j -> 'holds') h), '[]'::jsonb),
           'released', coalesce((select jsonb_agg(h || jsonb_build_object('user_name', (select name from users u where u.id = (h ->> 'user_id')::uuid))) from jsonb_array_elements(g.j -> 'released') h), '[]'::jsonb),
           'releases', coalesce((select jsonb_agg(jsonb_build_object('id', x.id, 'scope', x.scope, 'user_id', x.user_id, 'user_name', (select name from users u where u.id = x.user_id), 'reason', x.reason, 'status', x.status,
-                     'requested_by_name', (select name from users u where u.id = x.requested_by), 'requested_at', x.requested_at,
-                     'decided_by_name', (select name from users u where u.id = x.decided_by), 'decided_at', x.decided_at, 'decide_note', x.decide_note) order by x.requested_at desc)
+                     'requested_by', x.requested_by, 'requested_by_name', (select name from users u where u.id = x.requested_by), 'requested_at', x.requested_at,
+                     'decided_by', x.decided_by, 'decided_by_name', (select name from users u where u.id = x.decided_by), 'decided_at', x.decided_at, 'decide_note', x.decide_note,
+                     -- 履歴（申請・承認・却下・取り下げ／取り消し。だれが・いつ・コメント）
+                     'log', coalesce((select jsonb_agg(jsonb_build_object('action', g2.action, 'actor_name', (select name from users u where u.id = g2.actor_id), 'actor_role', g2.actor_role, 'at', g2.at, 'comment', g2.comment) order by g2.at)
+                                       from payroll_wage_hold_release_log g2 where g2.release_id = x.id), '[]'::jsonb)) order by x.requested_at desc)
                    from payroll_wage_hold_releases x where x.year_month = p_year_month and x.corporation_id = c.corporation_id), '[]'::jsonb)) order by c.corporation_id)
       from (select distinct sc.corporation_id from smaregi_contracts sc where sc.corporation_id is not null and coalesce(sc.is_active, true) and (p_corp_id is null or sc.corporation_id = p_corp_id)) c,
            lateral (select payroll_wage_guard_i(p_year_month, c.corporation_id) j) g), '[]'::jsonb));

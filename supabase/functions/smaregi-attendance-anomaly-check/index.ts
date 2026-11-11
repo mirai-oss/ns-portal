@@ -28,6 +28,7 @@
 //   ボタンの先は slack-interact → RPC（設計書 §10-5・SQL 2026-11-07_sf_attendance_alerts.sql）。押せる人は RPC が判定（店長=自店舗・TEAM/HQ/CEO）。
 //   判定ロジックは無変更。通知は Slack（勤怠確認チャンネル・ボタン付き）。LINE は 2026-11-08 に停止（body { line: true } で一時的に送れる）。body { slack: false } で Slack を止められる（テスト用）。
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { alertFixButton } from "../_shared/attendance-fix-notify.ts";   // 2026-11-12: 「修正する」はフォームを開く url 付きボタン（定義は共通部品・単体テストあり）
 
 const SHORT_MINUTES = 60;
 const LONG_MINUTES = 12 * 60;      // 2026-11-07 ユーザー決定: 12 時間以上（休憩除く）。旧 13 時間超から変更
@@ -146,9 +147,9 @@ async function slackAlert(sb: any, a: any) {
       { type: "section", text: { type: "mrkdwn", text: `⚠️ *勤怠確認*\n${body}` } },
       { type: "actions", block_id: "attendance", elements: [
         { type: "button", style: "primary", text: { type: "plain_text", text: "○ 合っている", emoji: true }, action_id: "attendance.alert.confirm", value: v() },
-        { type: "button", text: { type: "plain_text", text: "× 修正する", emoji: true }, action_id: "attendance.alert.fix",
-          value: v({ in: ci?.unix ?? null, out: co?.unix ?? null, title: `${title}　${a.name}`,
-            b1s: jstParts(a.b1s)?.unix ?? null, b1e: jstParts(a.b1e)?.unix ?? null, b2s: jstParts(a.b2s)?.unix ?? null, b2e: jstParts(a.b2e)?.unix ?? null }) },
+        // 2026-11-12（ユーザー決定）: 修正の入力は管理システムのフォームに一本化。押すと kintai.html?alert=<id> が開く（action_id は従来どおり attendance.alert.fix）
+        alertFixButton({ alertId: alert.id, notificationId: nid, title: `${title}　${a.name}`, in: ci?.unix ?? null, out: co?.unix ?? null,
+          b1s: jstParts(a.b1s)?.unix ?? null, b1e: jstParts(a.b1e)?.unix ?? null, b2s: jstParts(a.b2s)?.unix ?? null, b2e: jstParts(a.b2e)?.unix ?? null }),
         // 2026-11-08 本人が出勤していなかった等: 理由だけ入れて削除を申請（マスター承認後に管理システムとスマレジから削除）
         { type: "button", style: "danger", text: { type: "plain_text", text: "🗑 打刻を消す", emoji: true }, action_id: "attendance.alert.delete", value: v({ title: `${title}　${a.name}` }) },
       ] },

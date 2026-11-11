@@ -6,6 +6,8 @@
 //   承認後は EF smaregi-attendance-fix でスマレジの勤務実績にも書き戻す（EdgeRuntime.waitUntil で 3 秒制限の外）。
 //   2026-11-07: モーダルに休憩1・2（開始/終了）と「休憩なし」チェックを追加。RPC sf_attendance_fix_request に休憩 4 引数。
 //   フロー（ユーザー決定）: 店長が ○ or ×（修正時刻・理由）→ マスターの Slack へ承認依頼 → 承認で RPC が labor_cost_daily / attendance_records に反映。
+// 2026-11-12: 勤怠修正の入力をポータルのフォーム（kintai.html?alert=<id>）に一本化（ユーザー決定）。「× 修正する」はモーダルを開かず、フォームのリンクを返す。
+//   モーダルの送信処理（attendance.fix.modal）は、切り替えの瞬間に開いていたモーダルのために残す。承認依頼の文面は _shared/attendance-fix-notify.ts（フォームと共通）。
 //
 // 鉄則（ユーザー確定・2026-10-29）: Slack から DB を直接更新しない。必ず
 //   Slack interaction → この関数 → 署名検証 → 操作者の特定(user_slack) → 権限確認(既存RBAC)
@@ -19,6 +21,7 @@
 // =============================================================
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { wageModal, commuteSettingModal, cancelModal, personContactModal, personContactTemplate, taxSettingModal, yen, commutePolicyModal } from "../_shared/onboarding-blocks.ts";
+import { isFormLinkPress, fixFormLinkText, fixRequestArgs, fixRequestedParentText, fixApprovalSend, unixToIso, isUuid } from "../_shared/attendance-fix-notify.ts";
 
 const svc = () => createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
 const text = (s: string, status = 200) => new Response(s, { status, headers: { "Content-Type": "text/plain; charset=utf-8" } });
@@ -52,8 +55,8 @@ async function resolveActor(sb: any, slackUserId: string): Promise<Actor | null>
 
 // ---- 3. action_id / callback_id の規約: '<領域>.<対象>.<操作>'（設計書§10-3）----
 //   attendance.alert.confirm   勤怠確認「○ 合っている」        → RPC sf_attendance_alert_confirm(p_alert_id, p_actor)
-//   attendance.alert.fix       勤怠確認「× 修正する」          → モーダル attendance.fix.modal を開く（出勤・退勤 datetimepicker・理由）
-//   attendance.fix.modal       修正モーダルの送信              → RPC sf_attendance_fix_request → マスターへ承認依頼 DM
+//   attendance.alert.fix       勤怠確認「× 修正する」          → 2026-11-12 以降: フォーム kintai.html?alert=<id> を開く（新しいボタンは url 付き＝何も返さない／古いボタンにはリンクを返信）
+//   attendance.fix.modal       修正モーダルの送信              → RPC sf_attendance_fix_request → マスターへ承認依頼 DM（2026-11-12 以降は新規には開かない。残っている送信のために残す）
 //   attendance.alert.delete / attendance.delete.modal   「🗑 打刻を消す」→ 理由モーダル → RPC sf_attendance_delete_request → マスターへ承認依頼 DM（2026-11-08）
 //                              承認は attendance.fix.approve と同じ RPC（request_kind=delete で管理システムの行を削除 → EF smaregi-attendance-fix が DELETE）
 //   attendance.fix.approve / .reject   マスターの承認 / 却下   → RPC sf_attendance_fix_decide（承認で labor_cost_daily / attendance_records に反映）
@@ -130,11 +133,33 @@ const handlers: Record<string, Handler> = {
     })());
     return json({ response_action: "clear" });
   },
-  // 勤怠確認「× 修正する」。trigger_id は 3 秒で失効するため、モーダルを最初に開く
-  "attendance.alert.fix": async ({ payload, value, notificationId }) => {
-    return await openModal(payload.trigger_id, attendanceFixModal(value, notificationId));
+  // 勤怠確認「× 修正する」。2026-11-12（ユーザー決定）: Slack の入力画面（モーダル）はやめ、ポータルのフォーム（kintai.html?alert=<id>）に一本化。
+  //   新しいボタン（url 付き・value に form:1）: Slack がフォームを開くので、ここは何も返さない。
+  //   古いボタン（2026-11-12 より前のメッセージと、それを複製したリマインド）: 押した人だけに見える返信でフォームのリンクを返す。
+  //   権限は RPC sf_attendance_fix_request と同じ判定（sf_can_manage_as）を先に見て、同じ文言で断る。状態はフォーム（op=alert）と同じく open だけ通す。
+  "attendance.alert.fix": async ({ sb, actor, payload, value }) => {
+    if (isFormLinkPress(value)) return text("");
+    const ru: string | undefined = payload.response_url;
+    // Slack は 3 秒以内の返事を要求する（2026-11-08 の「なかなか接続できません」）→ 先に返事をして、確認（DB 2 往復）とリンクの返信は後ろで行う
+    waitUntil((async () => {
+      let msg: string;
+      try {
+        const alertId = value?.alert_id;
+        const { data: a } = isUuid(alertId) ? await sb.from("sf_attendance_alerts").select("id,status,store_id").eq("id", alertId).maybeSingle() : { data: null };
+        if (!a) msg = "この勤怠確認は見つかりません";
+        else {
+          const { data: can } = await sb.rpc("sf_can_manage_as", { p_actor: actor.user_id, p_store_id: a.store_id });
+          msg = can !== true ? "この店舗の勤怠を修正する権限がありません"
+            : a.status !== "open" ? `この勤怠確認はすでに処理されています（${a.status}）`
+            : fixFormLinkText(alertId, value?.title);
+        }
+      } catch (e) { msg = "処理に失敗しました: " + String(e).slice(0, 200); }
+      await ephemeralLater(msg, ru);
+    })());
+    return text("");
   },
   // 修正モーダルの送信 → 修正申請（反映はしない）→ マスターへ承認依頼
+  // ★ 2026-11 以降は新規には開かない。残っている送信のために残す（切り替えの瞬間に開いていたモーダル・古いクライアント）。消さないこと。
   "attendance.fix.modal": async ({ sb, actor, payload }) => {
     const meta = JSON.parse(payload.view?.private_metadata ?? "{}");
     const v = payload.view?.state?.values ?? {};
@@ -142,13 +167,12 @@ const handlers: Record<string, Handler> = {
     if (!start || !end || !reason) return json({ response_action: "errors", errors: { reason: "出勤・退勤・理由をすべて入れてください" } });
     // 休憩: 「休憩なし」にチェックがあれば全部 null。無ければ入力された休憩（datetimepicker は消せないため、消したいときはチェックで）
     const noBreak = (v.nobreak?.nobreak?.selected_options ?? []).length > 0;
-    const pick = (b: string) => noBreak ? null : (v[b]?.[b]?.selected_date_time ? new Date(Number(v[b][b].selected_date_time) * 1000).toISOString() : null);
-    const { data, error } = await sb.rpc("sf_attendance_fix_request", {
-      p_alert_id: meta.alert_id, p_actor: actor.user_id,
-      p_clock_in: new Date(Number(start) * 1000).toISOString(), p_clock_out: new Date(Number(end) * 1000).toISOString(),
-      p_reason: reason, p_via: "slack",
-      p_break_start_1: pick("b1s"), p_break_end_1: pick("b1e"), p_break_start_2: pick("b2s"), p_break_end_2: pick("b2e"),
-    });
+    const pick = (b: string) => v[b]?.[b]?.selected_date_time ? unixToIso(v[b][b].selected_date_time) : null;
+    // 引数の作り方はフォーム（EF attendance-request op=alert_fix）と共通（_shared/attendance-fix-notify.ts）
+    const { data, error } = await sb.rpc("sf_attendance_fix_request", fixRequestArgs({
+      alertId: meta.alert_id, actorId: actor.user_id, clockIn: unixToIso(start)!, clockOut: unixToIso(end)!, reason, via: "slack",
+      breaks: { b1s: pick("b1s"), b1e: pick("b1e"), b2s: pick("b2s"), b2e: pick("b2e") }, noBreak,
+    }));
     if (error) return json({ response_action: "errors", errors: { reason: error.message } });
     if (!data?.ok) {
       const block = data?.code === "invalid_time" ? "end" : data?.code === "invalid_break" ? "b1e" : "reason";
@@ -156,26 +180,16 @@ const handlers: Record<string, Handler> = {
     }
     // 2026-11-08: 申請は RPC で記録済み。Slack の 3 秒制限（スマホで「なかなか接続できません」）を避けるため、ここで先にモーダルを閉じて残りは後で行う
     waitUntil((async () => {
-    await updateMany(data.notification_ids, `📝 修正を申請しました（${actor.name}・${nowJst()}）\n${data.summary}\n→ 修正後 ${data.proposed}　理由: ${data.reason}\n承認待ち（マスター）`);
+    const req = { alertId: data.alert_id, summary: data.summary, proposed: data.proposed, reason: data.reason, actorName: actor.name };
+    await updateMany(data.notification_ids, fixRequestedParentText({ ...req, when: nowJst() }));
     // マスターへ承認依頼（user_slack 紐付けのあるマスターの DM。居なければ hq.keiri_kanshi）
     const channels = await masterChannels(sb);
     const ids: string[] = [];
     for (const ch of channels) {
       const nid = crypto.randomUUID();
-      const val = JSON.stringify({ alert_id: data.alert_id, notification_id: nid });
-      const r = await sendSlack({
-        action: "send", notification_id: nid, channel_key: ch, event: "attendance_fix_request", source: "ef:slack-interact",
-        text: `🙋 勤怠修正の承認依頼 ${data.summary} → ${data.proposed}`,
-        blocks: [
-          { type: "section", text: { type: "mrkdwn", text: `🙋 *勤怠修正の承認依頼*\n${data.summary}\n申請: ${actor.name}\n*修正後: ${data.proposed}*\n理由: ${data.reason}` } },
-          { type: "actions", block_id: "attendance_fix", elements: [
-            { type: "button", style: "primary", text: { type: "plain_text", text: "✅ 承認", emoji: true }, action_id: "attendance.fix.approve", value: val },
-            { type: "button", style: "danger", text: { type: "plain_text", text: "❌ 却下", emoji: true }, action_id: "attendance.fix.reject", value: val },
-          ] },
-          { type: "context", elements: [{ type: "mrkdwn", text: `確認 \`${String(data.alert_id).slice(0, 8)}\`・承認すると管理システムの勤怠実績に反映（スマレジ側の打刻は別途修正）` }] },
-        ],
-        dedupe_key: `attendance_fix:${data.alert_id}:${ch}:${nid.slice(0, 8)}`, // 2026-11-08: 同じアラートに 2 度目の申請が来たとき（テストの再利用など）に「重複」で送られない事故を防ぐ ref: { table: "sf_attendance_alerts", id: data.alert_id }, username: "勤怠確認", icon_emoji: ":alarm_clock:",
-      });
+      // 2026-11-12 修正: 以前はここに直接書いた send の本体で、dedupe_key の行末の // コメントが同じ行の ref・username・icon_emoji を飲み込み、
+      //   3 つとも送られていなかった（台帳の ref_table / ref_id が空・表示名とアイコンが Bot の既定）。本体は共通部品で組み立てる。
+      const r = await sendSlack(fixApprovalSend({ ...req, notificationId: nid, channelKey: ch, source: "ef:slack-interact" }));
       if (r?.ok && r.notification_id) ids.push(r.notification_id);
     }
     // 承認メッセージの台帳 id を控える（状態ではなく連絡の記録。状態遷移は RPC のみ）
@@ -589,6 +603,11 @@ function ephemeral(msg: string, responseUrl?: string) {
   }
   return json({ response_type: "ephemeral", replace_original: false, text: msg });
 }
+// 返事（3 秒以内）の後ろから、押した人だけに見える返信を送る（waitUntil の中で使う。送り終わるまで待つ）
+async function ephemeralLater(msg: string, responseUrl?: string) {
+  if (!responseUrl) return;
+  await fetch(responseUrl, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ response_type: "ephemeral", replace_original: false, text: msg }) }).catch(() => {});
+}
 async function openModal(triggerId: string, view: unknown) {
   const token = Deno.env.get("SLACK_BOT_TOKEN"); // views.open は Bot Token が要る。secrets はプロジェクト共通なので notify-slack と同じ値が入る（2026-11-07 確認）
   await fetch("https://slack.com/api/views.open", {
@@ -616,6 +635,8 @@ function attendanceDeleteModal(value: any, notificationId: string | null) {
     ],
   };
 }
+// 2026-11-12: 修正の入力はフォーム（kintai.html）に一本化したため、このモーダルは開かない（どこからも呼ばない）。
+//   送信処理 attendance.fix.modal が受け取る入力欄の形の記録と、古い動きへ戻すとき（attendance.alert.fix で openModal する 1 行）のために定義を残す。
 function attendanceFixModal(value: any, notificationId: string | null) {
   const now = Math.floor(Date.now() / 1000);
   return {
