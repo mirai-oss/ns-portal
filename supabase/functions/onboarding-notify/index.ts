@@ -28,7 +28,8 @@
 //   デプロイ: supabase functions deploy onboarding-notify --no-verify-jwt --project-ref uuvsxzhpxtghojoubjcc --yes（関数内で認証するため）
 // =============================================================
 import { createClient } from "npm:@supabase/supabase-js@2";
-import { changeEffectBlocks, changeEffectText, payChangeBlocks, payChangeText, transferHoldBlocks, transferHoldText, parentMessage, wageFailedBlocks, wageDateAdjustedBlocks, wageLine, nowJst, commuteCheckBlocks, uiJobResultBlocks, autoApprovedBlocks, personContactTemplate, personContactResultBlocks, staleAlertThreadText, staleAlertSummaryBlocks, postJoinSubmittedBlocks, yearEndCompareText, POST_JOIN_TRACK_LABEL, POST_JOIN_STATUS_LABEL, RELATIONSHIP_LABEL, ITEM_ORDER, PAY_TYPE_LABEL, JUDGEMENT_LABEL, yen, jpDate, type WorkflowView } from "../_shared/onboarding-blocks.ts";
+import { shouldMaskChannel } from "../_shared/amount-mask.ts";
+import { setHideAmounts, changeEffectBlocks, changeEffectText, payChangeBlocks, payChangeText, transferHoldBlocks, transferHoldText, parentMessage, wageFailedBlocks, wageDateAdjustedBlocks, wageLine, nowJst, commuteCheckBlocks, uiJobResultBlocks, autoApprovedBlocks, personContactTemplate, personContactResultBlocks, staleAlertThreadText, staleAlertSummaryBlocks, postJoinSubmittedBlocks, yearEndCompareText, POST_JOIN_TRACK_LABEL, POST_JOIN_STATUS_LABEL, RELATIONSHIP_LABEL, ITEM_ORDER, PAY_TYPE_LABEL, JUDGEMENT_LABEL, yen, jpDate, type WorkflowView } from "../_shared/onboarding-blocks.ts";
 import { linePush } from "../_shared/line.ts";
 
 const cors = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "authorization, content-type, apikey, x-client-info, x-notify-secret" };
@@ -224,6 +225,14 @@ Deno.serve(async (req) => {
   if (!authorized(req)) return json({ ok: false, error: "unauthorized" }, 401);
   const body = await req.json().catch(() => ({}));
   const sb = svc();
+  // 2026-11-12: 金額を出さない表示。設定（slack_policy.hide_amount_channels）に入社登録のチャンネルが入っているときだけ（既定は無し＝これまでどおり）
+  try {
+    const [{ data: pol }, { data: osl }] = await Promise.all([
+      sb.from("app_settings").select("value").eq("key", "slack_policy").maybeSingle(),
+      sb.from("app_settings").select("value").eq("key", "onboarding_slack").maybeSingle(),
+    ]);
+    setHideAmounts(shouldMaskChannel(pol?.value ?? null, String(osl?.value?.channel_key ?? "hq.jinji")));
+  } catch (_e) { setHideAmounts(false); }
   const isUuid = (s: unknown) => typeof s === "string" && /^[0-9a-f-]{36}$/i.test(s);
   try {
     switch (String(body.op ?? "")) {

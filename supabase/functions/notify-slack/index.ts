@@ -21,6 +21,7 @@
 //   （B の合言葉方式があるため JWT 検証は関数内で行う）
 // =============================================================
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { maskAmountsDeep, maskAmountsText, shouldMaskChannel } from "../_shared/amount-mask.ts";
 
 const cors = {
   "Access-Control-Allow-Origin": "*",
@@ -118,12 +119,23 @@ async function resolveTarget(sb: any, channelKey: string): Promise<{ channel?: s
   return { channel: ch.slack_channel_id };
 }
 
+// ---- 金額の表示を止めるチャンネル（2026-11-12）: app_settings.slack_policy.hide_amount_channels に入っているチャンネルあてだけ、
+//      本文とブロックの読む文字から金額を消す（ボタンの value などは変えない）。設定が無い・読めないときは何もしない＝これまでどおり
+async function amountPolicy(sb: any): Promise<unknown> {
+  try { const { data } = await sb.from("app_settings").select("value").eq("key", "slack_policy").maybeSingle(); return data?.value ?? null; }
+  catch (_e) { return null; }
+}
+
 // ---- send ---------------------------------------------------
 async function doSend(sb: any, b: SendBody, actor: string) {
   const channelKey = (b.channel_key ?? "").trim();
-  const text = (b.text ?? "").trim();
+  let text = (b.text ?? "").trim();
   if (!channelKey) return json({ ok: false, error: "channel_key が必要です" }, 400);
   if (!text && !b.blocks) return json({ ok: false, error: "text か blocks が必要です" }, 400);
+  if (shouldMaskChannel(await amountPolicy(sb), channelKey)) {
+    text = maskAmountsText(text);
+    if (b.blocks) b = { ...b, blocks: maskAmountsDeep(b.blocks) };
+  }
 
   // 冪等: dedupe_key が既に sent なら再送しない
   if (b.dedupe_key) {
@@ -199,8 +211,11 @@ async function doSend(sb: any, b: SendBody, actor: string) {
 // ---- update（送信済みメッセージの差し替え。ボタン操作後の「✅修正済み」など）----
 async function doUpdate(sb: any, b: SendBody) {
   if (!b.notification_id) return json({ ok: false, error: "notification_id が必要です" }, 400);
-  const { data: row } = await sb.from("notification_deliveries").select("id,slack_channel_id,slack_ts,payload").eq("id", b.notification_id).maybeSingle();
+  const { data: row } = await sb.from("notification_deliveries").select("id,channel_key,slack_channel_id,slack_ts,payload").eq("id", b.notification_id).maybeSingle();
   if (!row?.slack_ts) return json({ ok: false, error: "送信済みの通知ではありません" }, 404);
+  if (shouldMaskChannel(await amountPolicy(sb), String(row.channel_key ?? ""))) {
+    b = { ...b, ...(b.text !== undefined ? { text: maskAmountsText(b.text ?? "") } : {}), ...(b.blocks ? { blocks: maskAmountsDeep(b.blocks) } : {}) };
+  }
   const res = await slack("chat.update", {
     channel: row.slack_channel_id, ts: row.slack_ts,
     text: (b.text ?? row.payload?.text ?? "").slice(0, TEXT_LIMIT),

@@ -1,6 +1,6 @@
 // Slack 表示部品の描画テスト（Phase 6 v2・2026-11-09）。deno test supabase/functions/_shared/onboarding-blocks.test.ts
 import { assert, assertEquals } from "jsr:@std/assert@1";
-import { parentMessage, taxSettingModal, postJoinSubmittedBlocks, postJoinLines, postJoinPolicyText, personContactTemplate, yearEndCompareText, uiJobResultBlocks, type WorkflowView } from "./onboarding-blocks.ts";
+import { setHideAmounts, commuteCheckBlocks, autoApprovedBlocks, parentMessage, taxSettingModal, postJoinSubmittedBlocks, postJoinLines, postJoinPolicyText, personContactTemplate, yearEndCompareText, uiJobResultBlocks, type WorkflowView } from "./onboarding-blocks.ts";
 
 const wf: WorkflowView = { id: "11111111-1111-1111-1111-111111111111", user_id: "22222222-2222-2222-2222-222222222222", status: "registering", hire_date: "2026-11-09", role: "SHAIN", contract_id: "sez093z1", contract_label: "トーホー", smaregi_staff_id: "380", hq_task_id: null, user_name: "テスト 太郎", store_names: "鳥一代 本店", items: { join_form: { state: "completed" } },
   year_end: { status: "submitted", target_year: 2026, required: true, deadline: "2026-11-30", source_of_required: "rule", class: "SHAIN" },
@@ -105,4 +105,42 @@ Deno.test("口座・賃金の変更申請の通知: 口座の中身・金額は�
   const th = JSON.stringify(m.transferHoldBlocks(h));
   for (const need of ["振込漏れ注意", "2026-11 月分（2026-12-15 支給）", "除外", "テスト 立会いさん", "テスト 太郎さん", "除外していた人の分を出力", "通常どおり"]) if (!th.includes(need)) throw new Error("不足: " + need);
   if (!m.transferHoldText(h).includes("2 名を振込データから除外")) throw new Error("hold text");
+});
+
+// ---- 2026-11-12: 金額を出さない表示（賃金額・交通費額は管理画面で確認。Slack には処理状況だけ） ----
+const wfAmt: WorkflowView = { ...wf, items: {
+  wage: { state: "completed", completion_source: "smaregi_verified", payload: { rows: [{ division: 0, wage: 1234, holiday_wage: 1500, effective_date: "2026-11-10", store_name: null }] } },
+  commute_check: { state: "pending" }, commute_set: { state: "completed" } } } as any;
+const commuteArg = { judgement: "hq_review", reasons: ["申請額 ¥500 が最安 ¥420 より高い"], claimed: 500, computed: { fare: 420, summary: "A線", time_min: 30, transfers: 1 },
+  reasonable: [{ fare: 420, summary: "A線 → B線", time_min: 30, transfers: 1, uses_bus: false, teiki1: 12340 }], from: "X駅", to: "Y駅", store_name: "テスト店", pay_plan: { text: "1 日 ¥840（上限 ¥6,000）", policy: "daily_cap", over_cap: false } };
+const actionIds = (blocks: any[]) => blocks.flatMap((b) => b.type === "actions" ? b.elements.map((e: any) => e.action_id) : []);
+Deno.test("金額を出さない表示: 親メッセージは 賃金設定済み／交通費確認待ち／交通費設定済み だけ（金額なし）。既定の表示は変わらない", () => {
+  setHideAmounts(false);
+  const before = JSON.stringify(parentMessage(wfAmt, "nid").blocks);
+  assert(before.includes("¥1,234") && before.includes("スマレジ照合済み"), "既定はこれまでどおり金額つき");
+  assert(!before.includes("賃金設定済み"));
+  setHideAmounts(true);
+  try {
+    const m = parentMessage(wfAmt, "nid"); const txt = JSON.stringify(m.blocks);
+    assert(!/[¥￥]|\d円/.test(txt), "金額が残っている: " + txt.slice(0, 300));
+    assert(txt.includes("賃金設定済み") && txt.includes("スマレジ照合済み") && txt.includes("交通費確認待ち") && txt.includes("交通費設定済み"));
+    assertEquals(actionIds(m.blocks as any[]).sort(), actionIds(JSON.parse(before)).sort(), "ボタンは同じ");
+  } finally { setHideAmounts(false); }
+});
+Deno.test("金額を出さない表示: 交通費の確認カード・自動承認の文面に金額・候補・理由を出さない。ボタンの名前は同じ＋管理画面へのリンク", () => {
+  setHideAmounts(false);
+  const normal = commuteCheckBlocks(wfAmt, "nid", commuteArg as any) as any[];
+  assert(JSON.stringify(normal).includes("¥420"));
+  setHideAmounts(true);
+  try {
+    const b = commuteCheckBlocks(wfAmt, "nid", commuteArg as any) as any[]; const txt = JSON.stringify(b);
+    assert(!/[¥￥]|\d円|420|500|12340|12,340/.test(txt.replace(/"value":"[^"]*(\\"[^"]*)*"/g, "")), "金額が残っている: " + txt.slice(0, 400));
+    assert(txt.includes("交通費確認待ち") && txt.includes("管理画面") && txt.includes("本部の確認が必要") && !txt.includes("X駅"));
+    const ids = actionIds(b);
+    for (const id of actionIds(normal)) assert(ids.includes(id), "ボタンが無い: " + id);
+    assert(ids.includes("hr.onboarding.link.nippo") && txt.includes("?page=admin&u=" + wf.user_id));
+    assertEquals(b[1].elements[0].value, normal[2].elements[0].value, "value は同じ（操作はそのまま）");
+    const a = JSON.stringify(autoApprovedBlocks(wfAmt, "nid", { fare: 420, reasons: ["¥420 以下"], from: "X駅", to: "Y駅", computed_fare: 420 }));
+    assert(!/[¥￥]|420/.test(a.replace(/"value":"[^"]*(\\"[^"]*)*"/g, "")) && a.includes("自動承認しました") && a.includes("hr.onboarding.commute.undo"));
+  } finally { setHideAmounts(false); }
 });

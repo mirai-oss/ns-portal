@@ -77,6 +77,18 @@ export const nowJst = () => new Date().toLocaleString("ja-JP", { timeZone: "Asia
 const NIPPO_URL = "https://mirai-oss.github.io/nippo/";
 const TASKS_URL = "https://mirai-oss.github.io/ns-portal/tasks.html";
 
+// 2026-11-12: 金額を出さない表示（賃金額・交通費額は権限つきの管理画面で確認。Slack には処理状況だけ）。
+//   既定は false＝これまでどおり。onboarding-notify が、設定（app_settings.slack_policy.hide_amount_channels）に入社登録のチャンネルが入っているときだけ true にする。
+//   ここで拾いきれない金額は、Slack への出口（notify-slack）がチャンネル単位で消す（二重の守り）
+let HIDE_AMOUNTS = false;
+export function setHideAmounts(v: boolean) { HIDE_AMOUNTS = !!v; }
+export function hideAmounts(): boolean { return HIDE_AMOUNTS; }
+const HIDE_STATUS: Record<string, Record<string, string>> = {
+  wage: { pending: "賃金設定待ち", running: "賃金設定待ち", retry_wait: "賃金設定待ち", manual_required: "賃金設定待ち", manual_running: "賃金設定待ち", failed: "賃金設定待ち", completed: "賃金設定済み" },
+  commute_check: { pending: "交通費確認待ち", running: "交通費確認待ち", retry_wait: "交通費確認待ち", manual_required: "交通費確認待ち", manual_running: "交通費確認待ち", failed: "交通費確認待ち", completed: "交通費確認済み" },
+  commute_set: { pending: "交通費設定待ち", running: "交通費設定待ち", retry_wait: "交通費設定待ち", manual_required: "交通費設定待ち", manual_running: "交通費設定待ち", failed: "交通費設定待ち", completed: "交通費設定済み" },
+};
+
 /** 賃金 1 行の説明文（例: 時給 ¥1,200（2026/11/10から・全事業所共通）） */
 export function wageLine(r: { division: number; wage: number; holiday_wage?: number | null; effective_date: string; store_name?: string | null }): string {
   const target = r.division === 0 ? (r.store_name ? `${r.store_name}だけ` : "全事業所共通") : "";
@@ -99,13 +111,16 @@ export function parentMessage(wf: WorkflowView, notificationId: string): { text:
     let emoji = STATE_EMOJI[st];
     if (st === "completed" && (src === "manual_check" || src === "manual_step")) { emoji = "☑️"; extra = "　_（本部タスクで手動 ✓・スマレジ反映は未確認）_"; }
     if (key === "wage" && st === "completed" && Array.isArray(it?.payload?.rows) && src !== "manual_check" && src !== "manual_step") {
-      extra = "　" + it.payload.rows.map((r: any) => wageLine(r)).join("／") + (src === "smaregi_verified" ? "　_スマレジ照合済み_" : src === "smaregi_unverified" ? "　_（保存済み・照合は未確認）_" : "");
+      extra = "　" + (HIDE_AMOUNTS ? "" : it.payload.rows.map((r: any) => wageLine(r)).join("／")) + (src === "smaregi_verified" ? "　_スマレジ照合済み_" : src === "smaregi_unverified" ? "　_（保存済み・照合は未確認）_" : "");
     }
+    // 金額を出さない表示: 賃金・交通費は処理状況の言葉を出す（金額は管理画面）
+    const hideLabel = HIDE_AMOUNTS ? (HIDE_STATUS[key]?.[st] ?? "") : "";
     if ((st === "failed" || st === "manual_required") && it?.last_error) extra = `　_${String(it.last_error).slice(0, 80)}_`;
     if (st === "pending" && ["commute_set", "withholding_tax", "web_payslip"].includes(key)) extra = "　_（今は手作業。本部タスクの ✓ で反映）_";
     else if (st === "pending" && key === "email") extra = "　_（今は手作業。本部タスク工程①の完了で反映）_";
     else if (st === "pending" && key === "smaregi_account") extra = "　_（「🔎 スマレジ照合」で確認。API に項目が無いため管理画面の読み取りが要ります）_";
     else if (st === "pending" && phase > 1) extra = "　_（Phase 2 以降で自動化）_";
+    if (hideLabel) return `${emoji} ${label}　*${hideLabel}*${extra.trim() ? extra : ""}`;
     return `${emoji} ${label}${extra}`;
   });
   const value = JSON.stringify({ workflow_id: wf.id, notification_id: notificationId });
@@ -216,6 +231,21 @@ export function commuteCheckBlocks(wf: WorkflowView, notificationId: string | nu
   pay_plan?: { text: string; policy: string; over_cap: boolean } | null; bus_allowed?: boolean;
 }) {
   const value = JSON.stringify({ workflow_id: wf.id, notification_id: notificationId });
+  if (HIDE_AMOUNTS) {
+    // 金額・経路の候補・理由（金額を含むことがある）は出さない。操作はそのまま（ボタンの名前と value は同じ）
+    return [
+      { type: "section", text: { type: "mrkdwn", text: `🚃 *交通費確認待ち*${c.store_name ? `（${c.store_name}）` : ""}\n判定: *${JUDGEMENT_LABEL[c.judgement] ?? c.judgement}*\n金額・経路の候補・判定の理由は、管理画面（従業員ページ）で確認してください。` } },
+      { type: "actions", block_id: "onboarding_commute", elements: [
+        ...(c.computed?.fare != null ? [{ type: "button", style: "primary", text: { type: "plain_text", text: "✅ 検索した経路の金額で承認", emoji: true }, action_id: "hr.onboarding.commute.approve_computed", value }] : []),
+        ...(c.claimed != null && c.claimed !== c.computed?.fare ? [{ type: "button", ...(c.computed?.fare == null ? { style: "primary" } : {}), text: { type: "plain_text", text: "本人の申告額で承認", emoji: true }, action_id: "hr.onboarding.commute.approve", value }] : []),
+        { type: "button", text: { type: "plain_text", text: "⚙️ 支給方法", emoji: true }, action_id: "hr.onboarding.commute.policy", value },
+        { type: "button", text: { type: "plain_text", text: "🙋 本人に確認", emoji: true }, action_id: "hr.onboarding.commute.person", value },
+        { type: "button", text: { type: "plain_text", text: "🔁 再検索", emoji: true }, action_id: "hr.onboarding.commute.research", value },
+        ...(wf.user_id ? [{ type: "button", text: { type: "plain_text", text: "💻 管理画面で金額を確認", emoji: true }, action_id: "hr.onboarding.link.nippo", url: `${NIPPO_URL}?page=admin&u=${wf.user_id}`, value }] : []),
+      ] },
+      { type: "context", elements: [{ type: "mrkdwn", text: "承認の前に、管理画面で金額と経路を確認してください。承認すると次は「🚌 交通費を設定」です。" }] },
+    ];
+  }
   const cands = c.reasonable.slice(0, 4).map((r, i) => `${i + 1}. ${r.summary}　${yen(r.fare)}／${r.time_min ?? "?"}分／乗換${r.transfers ?? "?"}${r.uses_bus ? "／バス" : ""}${r.teiki1 ? `／定期1か月 ${yen(r.teiki1)}` : ""}`).join("\n");
   const head = `🚃 *交通費の確認*（${c.from} → ${c.to}${c.store_name ? "・" + c.store_name : ""}）\n` +
     `本人の申告（参考）: *片道 ${c.claimed != null ? yen(c.claimed) : "なし"}*${c.method ? `／通勤手段: ${methodJa(c.method)}` : ""}${c.uses_bus ? "／バス利用" : ""}${c.route_text ? `\n本人の経路メモ: ${c.route_text.slice(0, 120)}` : ""}\n` +
@@ -242,6 +272,7 @@ export function commuteCheckBlocks(wf: WorkflowView, notificationId: string | nu
 export function autoApprovedBlocks(wf: WorkflowView, notificationId: string | null, a: { fare: number; reasons: string[]; from: string; to: string; computed_fare: number | null }) {
   const value = JSON.stringify({ workflow_id: wf.id, notification_id: notificationId });
   return [
+    HIDE_AMOUNTS ? { type: "section", text: { type: "mrkdwn", text: `🤖 *交通費を自動承認しました*（${nowJst()}）\n金額と理由は、管理画面（従業員ページ）で確認してください。\n▶ 次: 親メッセージの「🚌 交通費を設定」` } } :
     { type: "section", text: { type: "mrkdwn", text: `🤖 *交通費を自動承認しました*（片道 *${yen(a.fare)}*・${nowJst()}）\n${a.from} → ${a.to}／API 算出額 ${a.computed_fare != null ? yen(a.computed_fare) : "—"}\n${a.reasons.map((r) => "・" + r).join("\n")}\n▶ 次: 親メッセージの「🚌 交通費を設定」` } },
     { type: "actions", block_id: "onboarding_commute_auto", elements: [
       { type: "button", text: { type: "plain_text", text: "↩️ 取り消して本部で確認", emoji: true }, action_id: "hr.onboarding.commute.undo", value, confirm: { title: { type: "plain_text", text: "自動承認の取り消し" }, text: { type: "plain_text", text: "承認を取り消し、「本部の確認が必要」に戻します" }, confirm: { type: "plain_text", text: "取り消す" }, deny: { type: "plain_text", text: "やめる" } } },
