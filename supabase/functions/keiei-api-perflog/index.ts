@@ -273,6 +273,9 @@ Deno.serve(async (req) => {
         return json({ ok: true, deleted: count ?? 0 });
       }
       try {
+        // 2026-11-11 監視の相互確認: この判定が動いた印を残す（毎朝動かなくなったら monitor_check が知らせる）。失敗しても判定は続ける
+        // deno-lint-ignore no-explicit-any
+        if (!body.dry_run) { try { await (sb as any).rpc("monitor_beat", { p_key: "beat:perflog_daily" }); } catch (_) { /* 印が付かなくても続ける */ } }
         return json(await notifyDailyRanking(sb, body));
       } catch (e) {
         return json({ ok: false, error: String(e) }, 500);
