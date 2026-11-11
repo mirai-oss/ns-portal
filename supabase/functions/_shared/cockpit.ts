@@ -20,25 +20,12 @@ export async function getSecret(sb: any, key: string): Promise<string> {
   return (data?.value ?? "").trim();
 }
 
-// Larkカスタムボットへテキスト送信。webhook未登録・送信失敗でも throw しない（本処理を止めない）
-// 2026-11-04（Slack通知基盤 Phase 2）: 同じ本文を Slack にも並行送信する。channelKey は slack_channels の channel_key
-//   （既定 hq.keiri_kanshi＝#本部-経理監視。コックピット系の通知は hq.dev_system）。Lark 側の挙動は従来どおり。
+// 通知送信（関数名は互換のため larkPost のまま）。2026-11-11: Lark 送信を停止し Slack のみにした（ユーザー指示「Slack にも通知しているものは Lark を解除してよい」）。
+//   channelKey は slack_channels の channel_key（既定 hq.keiri_kanshi＝#本部-経理監視。コックピット系の通知は hq.dev_system）。
+//   戻り値は Slack 送信の成否。app_secrets の cockpit_lark_webhook / cockpit_lark_keyword はもう使わない（失効は全停止の確認後）。
+//   戻し方: git で 2026-11-11 より前の版の larkPost を復元して再デプロイ。
 export async function larkPost(sb: any, text: string, channelKey = "hq.keiri_kanshi"): Promise<boolean> {
-  await slackPost(sb, channelKey, text, { source: "edge", event: channelKey === "hq.dev_system" ? "cockpit" : "keiri" });
-  try {
-    const webhook = await getSecret(sb, "cockpit_lark_webhook");
-    if (!webhook) return false;
-    const keyword = await getSecret(sb, "cockpit_lark_keyword");
-    const body = { msg_type: "text", content: { text: (keyword ? keyword + "\n" : "") + text } };
-    const res = await fetch(webhook, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    return res.ok;
-  } catch (_) {
-    return false;
-  }
+  return await slackPost(sb, channelKey, text, { source: "edge", event: channelKey === "hq.dev_system" ? "cockpit" : "keiri" });
 }
 
 const tk = (t: any) => "TK-" + t.task_no;
