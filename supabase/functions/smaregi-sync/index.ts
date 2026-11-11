@@ -19,6 +19,7 @@
 //     連携済みのスマレジへ反映（プッシュ方向。既に連携済みの人が対象。本人 or CEO/HQ）
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { loadContracts, loadStoreMap, loadStoreMapPending, ID_BASE, API_BASE, fetchRoles, pickRoleId, putStaffStore, wantedRoleName } from "../_shared/smaregi-contracts.ts";
+import { reconcileWages, currentAndFuture, wageSupported as wageSupportedShared } from "../_shared/wage-reconcile.ts";
 
 // 2026-10-17 担当D: 複数契約対応。契約は引数contract_id（省略時は既定の契約＝トーホー）で指定する。
 // sync(入社登録)・terminate(退職)・push_profile・test・staffs が契約ごとに動く。invite/invite_staffs（スマレジ→ポータルの招待）は
@@ -775,6 +776,18 @@ Deno.serve(async (req) => {
       const slice = links.slice(offset, offset + limit);
       const token = await getToken(C);
       let imported = 0, drift = 0, matched = 0, conflicts = 0, skippedStore = 0, unsupported = 0, persons = 0, withWage = 0;
+      // 2026-11-12: 未承認の賃金行を正式登録しない（app_settings.employee_change.wage_import_hold=true のときだけ。既定 false＝これまでどおり）
+      //   有効のとき: スマレジにだけある行は、初期投入（wage_initial_import_users が返す人）以外は取り込まず、外部変更の控え（hr_wage_external_report）に記録する
+      //   dry_run=true: 何も書かずに件数だけ返す（切り替え前の確認用）
+      const dryRun = body.dry_run === true;
+      const { data: ecfg } = await sb.from("app_settings").select("value").eq("key", "employee_change").maybeSingle();
+      const holdOn = ecfg?.value?.wage_import_hold === true || body.hold_preview === true && dryRun;
+      let initialUsers = new Set<string>();
+      if (holdOn) {
+        const { data: iu, error: iuErr } = await sb.rpc("wage_initial_import_users", { p_contract: C, p_users: slice.map((l: any) => l.user_id) });
+        if (!iuErr) initialUsers = new Set(((iu ?? []) as string[]).map(String));   // 取れなかったときは空＝全員を初期投入ではない扱い（安全側＝取り込まない）
+      }
+      const checkedUsers: string[] = []; const externalItems: Record<string, unknown>[] = []; let held = 0, deletedRows = 0;
       const driftRows: { user_id: string; row_id: string; contract_id: string }[] = [];
       const errors: string[] = [];
       const jst = () => new Date().toISOString();
@@ -790,41 +803,33 @@ Deno.serve(async (req) => {
             holidayWage: w.holidayWage === null || w.holidayWage === undefined || w.holidayWage === "" ? null : Number(w.holidayWage),
           }));
           persons++;
-          // 現在有効（区分×事業所ごとに今日以前で最新）＋これから適用
-          const cur: Record<string, any> = {}; const keep: any[] = [];
-          for (const w of list) {
-            if (!wageSupported(w)) { unsupported++; continue; }
-            if (w.effectiveDate > today) { keep.push(w); continue; }
-            const k = `${w.division}|${w.storeId ?? ""}`;
-            if (!cur[k] || cur[k].effectiveDate < w.effectiveDate) cur[k] = w;
-          }
-          keep.push(...Object.values(cur));
-          if (!keep.length) continue;
-          withWage++;
+          // 判定は共有の部品（_shared/wage-reconcile.ts。保留が無効のときは、これまでの取り込みと同じ結果になることをテストで確認済み）
           const { data: mine } = await sb.from("employee_wage_settings").select("*").eq("user_id", l.user_id).eq("contract_id", C);
-          const have: Record<string, any> = {};
-          for (const m of mine ?? []) have[`${m.division}|${m.store_id ?? ""}|${m.effective_date}`] = m;
-          for (const w of keep) {
-            const storeUuid = w.storeId ? (storeMap[w.storeId] ?? null) : null;
-            if (w.storeId && !storeUuid) { skippedStore++; continue; }
-            const ex = have[`${w.division}|${storeUuid ?? ""}|${w.effectiveDate}`];
-            const hol = w.division === 0 ? w.holidayWage : null;
-            if (!ex) {
-              const { error } = await sb.from("employee_wage_settings").insert({ user_id: l.user_id, contract_id: C, division: w.division, store_id: storeUuid, wage: w.wage, holiday_wage: hol, effective_date: w.effectiveDate, smaregi_wage_apply_id: w.id, sync_status: "synced", synced_at: jst() });
+          const rc = reconcileWages(list, (mine ?? []) as any, { today, storeMap, holdEnabled: holdOn, initialAllowed: initialUsers.has(String(l.user_id)), scope: "current_future" });
+          unsupported += rc.counts.unsupported; skippedStore += rc.counts.skipped_store; matched += rc.counts.matched; conflicts += rc.counts.conflicts; drift += rc.counts.drift;
+          held += rc.counts.held; deletedRows += rc.counts.deleted;
+          if (rc.counts.with_wage) withWage++;
+          for (const d of rc.drift) if (driftRows.length < 300) driftRows.push({ user_id: l.user_id, row_id: d.row_id, contract_id: C });
+          if (dryRun) { imported += rc.inserts.length; }
+          else {
+            for (const ins of rc.inserts) {
+              const { error } = await sb.from("employee_wage_settings").insert({ user_id: l.user_id, contract_id: C, division: ins.division, store_id: ins.store_id, wage: ins.wage, holiday_wage: ins.holiday_wage, effective_date: ins.effective_date, smaregi_wage_apply_id: ins.smaregi_wage_apply_id, sync_status: "synced", synced_at: jst() });
               if (error) errors.push(`スタッフ${l.smaregi_staff_id}: 取り込めません(${error.message.slice(0, 80)})`); else imported++;
-            } else if (ex.wage !== w.wage || (ex.holiday_wage ?? null) !== (hol ?? null)) {
-              // 正本は管理システム: 上書きしない。ズレとして返す（未反映の入力がある行は conflicts）
-              if (ex.sync_status === "synced") { drift++; if (driftRows.length < 300) driftRows.push({ user_id: l.user_id, row_id: ex.id, contract_id: C }); }
-              else conflicts++;
-            } else {
-              if (!ex.smaregi_wage_apply_id) await sb.from("employee_wage_settings").update({ smaregi_wage_apply_id: w.id, sync_status: "synced", sync_error: null, synced_at: jst() }).eq("id", ex.id);
-              matched++;
             }
+            for (const k of rc.links) await sb.from("employee_wage_settings").update({ smaregi_wage_apply_id: k.smaregi_wage_apply_id, sync_status: "synced", sync_error: null, synced_at: jst() }).eq("id", k.row_id);
           }
+          if (holdOn) { checkedUsers.push(String(l.user_id)); for (const x of rc.external) externalItems.push({ user_id: l.user_id, ...x }); }
         } catch (e) { errors.push(`スタッフ${l.smaregi_staff_id}: ${String((e as Error).message ?? e).slice(0, 100)}`); }
       }
+      // 保留が有効: 読めた人ぶんの外部変更（未承認の新しい行・金額の違い・行の削除）を控えに記録する。見つからなくなったものは「一致を確認」で閉じる
+      let externalReport: unknown = null;
+      if (holdOn && !dryRun && checkedUsers.length) {
+        const { data: rp, error: rpErr } = await sb.rpc("hr_wage_external_report", { p_contract: C, p_checked: checkedUsers, p_items: externalItems, p_source: "wage_pull_all" });
+        if (rpErr) errors.push(`未承認の変更を記録できません(${rpErr.message.slice(0, 100)})`); else externalReport = rp;
+      }
       const next = offset + slice.length;
-      return json({ ok: true, contract_id: C, total, offset, next_offset: next, done: next >= total, processed: slice.length, persons, with_wage: withWage, imported, drift, drift_rows: driftRows, matched, conflicts, skipped_unmapped_store: skippedStore, unsupported_rows: unsupported, errors });
+      return json({ ok: true, contract_id: C, total, offset, next_offset: next, done: next >= total, processed: slice.length, persons, with_wage: withWage, imported, drift, drift_rows: driftRows, matched, conflicts, skipped_unmapped_store: skippedStore, unsupported_rows: unsupported, errors,
+        hold_enabled: holdOn, dry_run: dryRun, held, deleted_rows: deletedRows, external_report: externalReport });
     }
 
     if (body.action === "wage_push" || body.action === "wage_pull" || body.action === "wage_update" || body.action === "wage_delete") {
@@ -871,6 +876,16 @@ Deno.serve(async (req) => {
         const names: Record<string, string> = {};
         const { data: stn } = await sb.from("stores").select("id,name"); (stn ?? []).forEach((x: any) => { names[x.id] = x.name; });
         const out: any[] = []; let imported = 0, skipped = 0, conflicts = 0, unsupported = 0;
+        // 2026-11-12: 未承認の賃金行を正式登録しない（wage_import_hold。既定 false＝これまでどおり）
+        const todayP = new Date(Date.now() + 9 * 3600e3).toISOString().slice(0, 10);
+        const { data: ecfgP } = await sb.from("app_settings").select("value").eq("key", "employee_change").maybeSingle();
+        const holdOnP = ecfgP?.value?.wage_import_hold === true;
+        let holdThis = false; let heldCount = 0;
+        if (holdOnP) {
+          const { data: iu, error: iuErr } = await sb.rpc("wage_initial_import_users", { p_contract: C, p_users: [uid] });
+          holdThis = iuErr ? true : !((iu ?? []) as string[]).map(String).includes(String(uid));
+        }
+        const cfIds = new Set(currentAndFuture(list.filter((w: any) => wageSupportedShared(w)), todayP, (w: any) => `${w.division}|${w.storeId ?? ""}`, (w: any) => w.effectiveDate).map((w: any) => w.id));
         for (const w of list) {
           if (!wageSupported(w)) { unsupported++; out.push({ ...w, note: "営業時間帯別・事業所別や休日賃金つきの日給は取り込み対象外" }); continue; }
           const storeUuid = w.storeId ? (storeMap[w.storeId] ?? null) : null;
@@ -882,6 +897,12 @@ Deno.serve(async (req) => {
               conflicts++; out.push({ ...row, note: `スマレジの値が管理システムと違います（管理システム ${ex.wage}円）`, drift: true, row_id: ex.id });
             } else { conflicts++; out.push({ ...row, note: `管理システム側に未反映の値があります（${ex.wage}円）` }); }
           } else if (!ex) {
+            // 2026-11-12: 保留が有効で初期投入でない人は、取り込まない（未承認の変更として控えに記録するのは下でまとめて）
+            if (holdThis) {
+              if (cfIds.has(w.id)) { heldCount++; out.push({ ...row, note: body.import === true ? "未承認の変更として保留しました（正式な賃金にはしていません。本部の確認が必要です）" : "未承認の変更（スマレジにだけある行。取り込むと保留になります）", held: true }); }
+              else out.push({ ...row, note: "過去の履歴（取り込み対象外）" });
+              continue;
+            }
             if (body.import === true) {
               await sb.from("employee_wage_settings").insert({ user_id: uid, contract_id: C, division: w.division, store_id: storeUuid, wage: w.wage, holiday_wage: w.division === 0 ? w.holidayWage : null, effective_date: w.effectiveDate, smaregi_wage_apply_id: w.id, sync_status: "synced", synced_at: new Date().toISOString() });
               imported++;
@@ -892,7 +913,14 @@ Deno.serve(async (req) => {
             out.push({ ...row, note: "一致" });
           }
         }
-        return json({ ok: true, contract_id: C, staffId, count: list.length, imported, skipped, conflicts, unsupported, wages: out });
+        // 保留が有効で「取り込む」を押したとき: この人の外部変更（未承認の新しい行・金額の違い・行の削除）を控えに記録する（読むだけの確認では記録しない）
+        let externalReport: unknown = null;
+        if (holdOnP && body.import === true) {
+          const rc = reconcileWages(list as any, (mine ?? []) as any, { today: todayP, storeMap, holdEnabled: true, initialAllowed: !holdThis, scope: "current_future" });
+          const { data: rp, error: rpErr } = await sb.rpc("hr_wage_external_report", { p_contract: C, p_checked: [uid], p_items: rc.external.map((x) => ({ user_id: uid, ...x })), p_source: "wage_pull" });
+          externalReport = rpErr ? { ok: false, error: rpErr.message.slice(0, 100) } : rp;
+        }
+        return json({ ok: true, contract_id: C, staffId, count: list.length, imported, skipped, conflicts, unsupported, wages: out, hold_enabled: holdOnP, held: heldCount, external_report: externalReport });
       }
 
       // ---- wage_update / wage_delete（1行の修正・削除）----

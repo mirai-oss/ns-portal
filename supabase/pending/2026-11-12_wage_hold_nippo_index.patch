@@ -1,0 +1,30 @@
+diff --git a/index.html b/index.html
+--- a/index.html
++++ b/index.html
+@@ -12304,21 +12304,21 @@ function bindPage(){
+  if($("adwagepull"))$("adwagepull").onclick=async()=>{ // 2026-10-23追加: スマレジ→管理システムの賃金の取り込み（読み取りのみ・全契約の在職者）
+   if(!confirm("スマレジ・タイムカードに今入っている賃金（時給・月給。現在有効なものと、これから適用のもの）を、全契約の在職者ぶん、管理システムに取り込みます。\n\n・スマレジには何も書き込みません（読み取りだけ）\n・管理システムにまだ無い設定だけを追加します（初期投入）\n・正本は管理システムです。管理システムにある設定は、上書きしません（スマレジと値が違うものは、件数をお知らせし、あとで「管理システムに合わせる」ができます）\n・日給・営業時間帯別・固定残業代は取り込めません\n\n人数が多いと数分かかります。実行中はこの画面を閉じないでください。よろしいですか？"))return;
+   const b=$("adwagepull");b.disabled=true;
+-  const t={imported:0,drift:0,matched:0,conflicts:0,skipped:0,unsupported:0,persons:0,withWage:0,errors:[],driftRows:[]};
++  const t={imported:0,drift:0,matched:0,conflicts:0,skipped:0,unsupported:0,persons:0,withWage:0,errors:[],driftRows:[],held:0,deleted:0,holdOn:false}; // 2026-11-12: held=未承認の変更として保留した行（正式な賃金にはしない）
+   for(const c of smContracts){
+-   let off=0,total=null,swept=false,persons=0;const found={};
++   let off=0,total=null,swept=false,persons=0,holdC=false;const found={};
+    for(let guard=0;guard<200;guard++){
+     b.textContent=`取り込み中… ${smShort(c.contract_id)} ${off}/${total==null?"?":total}人`;
+     const r=await smFn("wage_pull_all",{contract_id:c.contract_id,offset:off,limit:15});
+     if(!r.ok){t.errors.push(`${smShort(c.contract_id)}: ${smErr(r)||"失敗"}`);break}
+-    total=r.total;t.imported+=r.imported;t.drift+=r.drift;(r.drift_rows||[]).forEach(x=>{t.driftRows.push(x);found[x.user_id]=(found[x.user_id]||0)+1});t.matched+=r.matched;t.conflicts+=r.conflicts;t.skipped+=r.skipped_unmapped_store;t.unsupported+=r.unsupported_rows;t.persons+=r.persons;persons+=r.persons;t.withWage+=r.with_wage;(r.errors||[]).forEach(e=>t.errors.push(e));
++    total=r.total;t.imported+=r.imported;t.held+=(r.held||0);t.deleted+=(r.deleted_rows||0);if(r.hold_enabled){holdC=true;t.holdOn=true}t.drift+=r.drift;(r.drift_rows||[]).forEach(x=>{t.driftRows.push(x);found[x.user_id]=(found[x.user_id]||0)+1});t.matched+=r.matched;t.conflicts+=r.conflicts;t.skipped+=r.skipped_unmapped_store;t.unsupported+=r.unsupported_rows;t.persons+=r.persons;persons+=r.persons;t.withWage+=r.with_wage;(r.errors||[]).forEach(e=>t.errors.push(e));
+     if(r.done){swept=true;break}off=r.next_offset;
+    }
+    // 2026-11-10 ステップ 4: この契約を最後まで読めたときだけ、ズレ（不一致）を「同期・承認の状況」に記録する。RPC が無い環境では何もしない
+-   if(swept){try{await sb.rpc("hr_sync_mismatch_report",{p_kind:"wage",p_scope:c.contract_id,p_checked:null,p_found:Object.keys(found).map(u=>({user_id:u,detail:{rows:found[u]}})),p_source:"wage_pull_all",p_checked_count:persons})}catch(e){}}
++   if(swept){try{await sb.rpc("hr_sync_mismatch_report",{p_kind:"wage",p_scope:c.contract_id,p_checked:null,p_found:holdC?[]:Object.keys(found).map(u=>({user_id:u,detail:{rows:found[u]}})),p_source:"wage_pull_all",p_checked_count:persons})}catch(e){}}
+   }
+   b.disabled=false;b.textContent="💴 スマレジの賃金（時給・月給）を管理システムへ取り込む";
+-  alert(`取り込みが終わりました。\n\n確認した人: ${t.persons}人（賃金設定があった人 ${t.withWage}人）\n追加: ${t.imported}件 ／ 一致: ${t.matched}件\nスマレジと値が違う（管理システムの値を残しました）: ${t.drift}件\n管理システムに未反映の入力があり、確認できなかった: ${t.conflicts}件\n対応する店舗が無く取り込めなかった: ${t.skipped}件\n対象外（日給・営業時間帯別）: ${t.unsupported}件${t.errors.length?`\n\n⚠️エラー ${t.errors.length}件:\n${t.errors.slice(0,8).join("\n")}${t.errors.length>8?"\n…":""}`:""}`);
++  alert(`取り込みが終わりました。\n\n確認した人: ${t.persons}人（賃金設定があった人 ${t.withWage}人）\n追加: ${t.imported}件 ／ 一致: ${t.matched}件\n${t.holdOn?`未承認の変更として保留（正式な賃金にはしていません）: ${t.held}件${t.deleted?` ／ スマレジから消えている行: ${t.deleted}件`:""}\n　→ 従業員一覧の「同期・承認の状況」に出ます。本部で確認してください。\n`:""}スマレジと値が違う（管理システムの値を残しました）: ${t.drift}件\n管理システムに未反映の入力があり、確認できなかった: ${t.conflicts}件\n対応する店舗が無く取り込めなかった: ${t.skipped}件\n対象外（日給・営業時間帯別）: ${t.unsupported}件${t.errors.length?`\n\n⚠️エラー ${t.errors.length}件:\n${t.errors.slice(0,8).join("\n")}${t.errors.length>8?"\n…":""}`:""}`);
+   if(t.driftRows.length&&confirm(`スマレジと値が違う設定が ${t.drift}件ありました。\n正本は管理システムです。管理システムの値で、スマレジを直しますか？\n（スマレジの賃金設定が書き換わります。「キャンセル」なら、そのままにします）`)){
+    let ok=0,ng=0,lastErr="";
+    for(let i=0;i<t.driftRows.length;i++){
