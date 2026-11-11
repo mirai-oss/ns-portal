@@ -1,24 +1,32 @@
 -- ============================================================
--- 2026-11-11 担当B — hq_create_payroll_tasks の不具合修正: 既存テンプレ振込タスクの探し方の「月」がずれていた
--- 【状態】事前報告（未適用・ユーザーの実行承認待ち）
--- 【不具合】既存の月次テンプレタスク「◯月分 【振込◯◯】給料」の題名の月は【支払月】（例: 10月分の給与＝11月払い → 『11月分 【振込トーホー】給料』・期限11/30）。
---   ところが私の関数は 給与月(=2026-10) と同じ『10月分』を探していたため、10月分の給料確定では『10月分（=9月分給与の10月払い・完了済み）』にぶつかり
---   「既存の振込タスクが完了済み」と誤判定して紐づけも新規作成もしなかった（11/11 10:14 のトーホー2026-10の給料確定の通知で発覚。害は無し＝誤った紐づけや二重作成は起きていない）
--- 【修正】探す題名の月を『給与月の翌月（支払月）』に、期限の範囲も『支払月の月初〜+45日』に変更。他は変更なし
--- 【適用後】2026-10 の給料確定ボタンをもう一度押せば、振込タスクが既存の『11月分 【振込トーホー】給料』に工程を足して紐づく（現金手渡しは既に紐づき済みで二重にならない）
--- 【安全ガード】本番の現在の関数が適用済みの版（md5 f47f43e589a226aa030652a6a718c099）と一致しなければ停止（何も変更しない）。権限は create or replace で維持（確認の表を出す）
--- 【rollback】2026-11-09_payroll_finalized_cash_cancel.sql の hq_create_payroll_tasks を再適用
+-- 2026-11-11 担当B — ①既存の給料振込タスク2件の題名を『11月分』→『10月分』に直す（ユーザー指摘）②hq_create_payroll_tasks の既存タスク探しを正しい月に直す
+-- 【状態】事前報告（未適用・ユーザーの実行承認待ち）。1ファイル・1トランザクション（先に直してから関数を替える順を固定）
+-- 【ユーザー指摘（2026-11-11）】「11月分給料は間違い。10月分給料。今の本部タスクが間違えてる」＝月次テンプレが付けた題名『11月分 【振込トーホー】給料』『11月分 【振込Live】給料』
+--   は、実際には【10月分の給与】を11月に払うタスク。題名の月は『給与月』が正しい（給料確定が作るタスクの『10月分　給料振込』や『10月分 【振込Live】源泉所得税』と同じ付け方）
+-- 【①データ修正】対象は2件のみ（トーホー・Live）: 題名の『11月分』→『10月分』。期限・工程・進捗はそのまま（トーホー1c87cccd・Live42f148dd）。件数が2でなければ停止
+-- 【②関数修正】既存タスク探しの条件を『題名の月＝給与月』『期限＝給与月の翌月1日〜+45日（＝支払う月）』に。→ 10月分の確定は、期限が11月のタスクだけを見る＝期限10月の
+--   『10月分（9月分給与）』完了済みタスクにはぶつからない。これで 2026-10 の確定は、直した『10月分』2件に工程を足して紐づく。以前に私が出した『支払月で探す』修正案は取り下げ（作り直し）
+-- 【安全ガード】本番の関数が適用済みの版（md5 f47f43e589a226aa030652a6a718c099）か、取り下げた修正案の版（md5 b8f3f2f3145bba55ed8e88138da8d04b）のどちらかでなければ停止
+-- 【適用後】2026-10 の給料確定ボタンを、トーホーはもう一度、Liveは初めて押す（Liveの2026-10はまだ未確定）。振込タスクが既存『10月分』に工程を足して紐づき、現金手渡しは二重にならない
+-- 【rollback】題名: update hq_tasks set title = replace(title,'10月分','11月分') where id::text like any (array['1c87cccd%','42f148dd%']); 関数: 2026-11-09_payroll_finalized_cash_cancel.sql を再適用
 -- ============================================================
 do $$
-declare n int; r record;
+declare n int; r record; v_n int;
 begin
   select count(*) into n from pg_proc where proname = 'hq_create_payroll_tasks' and pronamespace = 'public'::regnamespace;
   if n <> 1 then raise exception '停止: hq_create_payroll_tasks が % 本あります（1本のはず）', n; end if;
   select p.prosrc, pg_get_function_identity_arguments(p.oid) as args, p.prosecdef into r from pg_proc p where p.proname = 'hq_create_payroll_tasks' and p.pronamespace = 'public'::regnamespace;
   if r.args <> 'p_year_month text, p_corp text, p_corp_id uuid' or not r.prosecdef then raise exception '停止: 引数/SECURITY DEFINER が想定と違います（%）', r.args; end if;
-  if md5(r.prosrc) <> 'f47f43e589a226aa030652a6a718c099' then
+  if md5(r.prosrc) not in ('f47f43e589a226aa030652a6a718c099', 'b8f3f2f3145bba55ed8e88138da8d04b') then
     raise exception '停止: 本番の本文の指紋が想定と一致しません（本番=%・長さ=%）。何も変更していません', md5(r.prosrc), length(r.prosrc);
   end if;
+
+  -- ①題名の修正（対象2件のみ・未削除・テンプレ由来・題名が想定どおりのものだけ）
+  update hq_tasks set title = replace(title, '11月分', '10月分')
+   where id::text like any (array['1c87cccd%', '42f148dd%']) and deleted_at is null and template_id is not null
+     and title ~ '^11月分[[:space:]　]*【振込(トーホー|Live)】給料$';
+  get diagnostics v_n = row_count;
+  if v_n <> 2 then raise exception '停止: 題名を直せたタスクが % 件です（想定2件）。何も変更していません', v_n; end if;
 end $$;
 
 create or replace function public.hq_create_payroll_tasks(p_year_month text, p_corp text default null, p_corp_id uuid default null)
@@ -84,10 +92,10 @@ begin
   elsif v_transfer_names is not null and array_length(v_transfer_names,1) > 0 then
     select coalesce(array_agg(id), array[]::uuid[]) into v_assignees
       from users where is_active and replace(replace(name,' ',''),chr(12288),'') = any(array['青山純','原美香','中山俊士']);
-    -- 月次テンプレ由来の既存「【振込◯◯】給料」タスク（【支払月＝給与月の翌月】・同じ法人・未削除。テンプレの題名は支払月で付く: 10月分給料→『11月分 【振込◯◯】給料』）があれば新規に作らず、そこに確認工程を足して紐づける（二重防止・U-25①）
+    -- 月次テンプレ由来の既存「【振込◯◯】給料」タスク（題名の月＝給与月・期限は給与月の翌月以降・同じ法人・未削除。※過去分の誤った題名『支払月』は先に給与月へ直してから使う）があれば新規に作らず、そこに確認工程を足して紐づける（二重防止・U-25①）
     select array_agg(t.id) into v_tpl from hq_tasks t
      where t.corp = p_corp and t.template_id is not null and t.deleted_at is null
-       and t.title ~ ('^'||extract(month from v_due_month_start)::int||'月分[[:space:]　]*【振込[^】]*】給料$') and t.title not like '%口振%'
+       and t.title ~ ('^'||v_mon||'月分[[:space:]　]*【振込[^】]*】給料$') and t.title not like '%口振%'
        and t.due_date >= v_due_month_start and t.due_date <= (v_due_month_start + 45);
     if v_tpl is not null and array_length(v_tpl,1) > 1 then
       v_warn := v_warn || '既存の振込タスクが'||array_length(v_tpl,1)||'件見つかったため、自動では紐づけず新規作成もしていません。本部で整理してください。';
@@ -165,9 +173,11 @@ end;
 $function$;
 
 -- ===== 適用後の確認（無害）=====
+select left(id::text, 8) as タスク, title as 題名, status as 状態, due_date as 期限 from hq_tasks
+ where id::text like any (array['1c87cccd%', '42f148dd%']) order by title;
 select count(*) as 本数, bool_and(p.prosecdef) as security_definer,
-       bool_or(p.prosrc like '%extract(month from v_due_month_start)%') as 支払月で探す,
-       bool_or(p.prosrc like '%''^''||v_mon||''月分%') as 旧の探し方が残っている
+       bool_or(p.prosrc like '%t.due_date >= v_due_month_start%') as 翌月以降の期限で探す,
+       bool_or(p.prosrc like '%extract(month from v_due_month_start)%') as 取り下げた案が残っている
   from pg_proc p where p.proname = 'hq_create_payroll_tasks' and p.pronamespace = 'public'::regnamespace;
 select a.grantee::regrole::text as grantee, a.privilege_type
   from pg_proc p, aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) a
