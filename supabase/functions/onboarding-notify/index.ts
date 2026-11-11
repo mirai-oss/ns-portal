@@ -29,7 +29,7 @@
 // =============================================================
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { shouldMaskChannel } from "../_shared/amount-mask.ts";
-import { setHideAmounts, changeEffectBlocks, changeEffectText, payChangeBlocks, payChangeText, transferHoldBlocks, transferHoldText, parentMessage, wageFailedBlocks, wageDateAdjustedBlocks, wageLine, nowJst, commuteCheckBlocks, uiJobResultBlocks, autoApprovedBlocks, personContactTemplate, personContactResultBlocks, staleAlertThreadText, staleAlertSummaryBlocks, postJoinSubmittedBlocks, yearEndCompareText, POST_JOIN_TRACK_LABEL, POST_JOIN_STATUS_LABEL, RELATIONSHIP_LABEL, ITEM_ORDER, PAY_TYPE_LABEL, JUDGEMENT_LABEL, yen, jpDate, type WorkflowView } from "../_shared/onboarding-blocks.ts";
+import { setHideAmounts, hideAmounts, AMOUNT_HIDDEN, changeEffectBlocks, changeEffectText, payChangeBlocks, payChangeText, transferHoldBlocks, transferHoldText, parentMessage, wageFailedBlocks, wageDateAdjustedBlocks, wageLine, nowJst, commuteCheckBlocks, uiJobResultBlocks, autoApprovedBlocks, personContactTemplate, personContactResultBlocks, staleAlertThreadText, staleAlertSummaryBlocks, postJoinSubmittedBlocks, yearEndCompareText, POST_JOIN_TRACK_LABEL, POST_JOIN_STATUS_LABEL, RELATIONSHIP_LABEL, ITEM_ORDER, PAY_TYPE_LABEL, JUDGEMENT_LABEL, yen, jpDate, type WorkflowView } from "../_shared/onboarding-blocks.ts";
 import { linePush } from "../_shared/line.ts";
 
 const cors = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "authorization, content-type, apikey, x-client-info, x-notify-secret" };
@@ -231,7 +231,15 @@ Deno.serve(async (req) => {
       sb.from("app_settings").select("value").eq("key", "slack_policy").maybeSingle(),
       sb.from("app_settings").select("value").eq("key", "onboarding_slack").maybeSingle(),
     ]);
-    setHideAmounts(shouldMaskChannel(pol?.value ?? null, String(osl?.value?.channel_key ?? "hq.jinji")));
+    // 出し先は入社登録ごとに持っている（onboarding_workflows.slack_channel_key。既定 hq.jinji）。その入社登録が分かるときは、その出し先で判定する
+    let chKey = String(osl?.value?.channel_key ?? "hq.jinji");
+    const wfKey = typeof body.workflow_id === "string" && /^[0-9a-f-]{36}$/i.test(body.workflow_id) ? { col: "id", val: body.workflow_id }
+      : typeof body.user_id === "string" && /^[0-9a-f-]{36}$/i.test(body.user_id) ? { col: "user_id", val: body.user_id } : null;
+    if (wfKey) {
+      const { data: wr } = await sb.from("onboarding_workflows").select("slack_channel_key").eq(wfKey.col, wfKey.val).maybeSingle();
+      if (wr?.slack_channel_key) chKey = String(wr.slack_channel_key);
+    }
+    setHideAmounts(shouldMaskChannel(pol?.value ?? null, chKey));
   } catch (_e) { setHideAmounts(false); }
   const isUuid = (s: unknown) => typeof s === "string" && /^[0-9a-f-]{36}$/i.test(s);
   try {
@@ -357,7 +365,7 @@ Deno.serve(async (req) => {
         const { data: s } = await sb.from("employee_commute_settings").select("*").eq("id", body.setting_id).maybeSingle();
         const who = await actorName(sb, isUuid(body.actor_id) ? body.actor_id : null);
         const scope = s?.scope === "per_store" ? "事業所別" : "全事業所";
-        const line = `・${PAY_TYPE_LABEL[s?.pay_type] ?? s?.pay_type}／${scope}／${s?.scope === "per_store" ? JSON.stringify(s?.store_amounts) : yen(s?.amount)}${s?.cap_amount != null ? `／上限 ${yen(s.cap_amount)}` : ""}（${jpDate(s?.effective_date)}から）`;
+        const line = `・${PAY_TYPE_LABEL[s?.pay_type] ?? s?.pay_type}／${scope}／${s?.scope === "per_store" ? (hideAmounts() ? `事業所ごとの金額${AMOUNT_HIDDEN}` : JSON.stringify(s?.store_amounts)) : yen(s?.amount)}${s?.cap_amount != null ? `／上限 ${yen(s.cap_amount)}` : ""}（${jpDate(s?.effective_date)}から）`;
         const tail = s?.sync_status === "manual"
           ? `🙋 スマレジへの自動反映はまだ有効化されていません（実機検証後に有効化）。*スマレジ管理画面でこの値を入力*し、本部タスクの「交通費」に ✓ を付けてください`
           : `⏳ Mac の自動操作でスマレジに反映します（数分〜）。結果はこのスレッドに届きます${body.duplicate ? "\nℹ️ 同じ人の未完了ジョブがあるため、そのジョブに相乗りします" : ""}`;
@@ -436,7 +444,9 @@ Deno.serve(async (req) => {
           } else summary = `（照合できず: ${g?.error ?? "不明"}）`;
         } else if (job.status === "success" && job.dry_run) {
           const rr: any = job.result ?? {};
-          summary = `読み取り結果: ${JSON.stringify({ ...rr, dependents_rows: Array.isArray(rr.dependents_rows) ? `${rr.dependents_rows.length} 行（氏名は Slack に出しません）` : undefined, screenshot: undefined }).slice(0, 300)}`;
+          // 金額を出さない表示のとき: スマレジの画面の文字（交通費・源泉の表）をそのまま出さない。読めた項目の名前だけ
+          if (hideAmounts()) summary = `読み取り結果: ${Object.keys(rr).filter((k) => k !== "screenshot" && k !== "dependents_rows" && k !== "url").join("・") || "なし"} を読み取りました（内容は管理画面・スマレジで確認）`;
+          else summary = `読み取り結果: ${JSON.stringify({ ...rr, dependents_rows: Array.isArray(rr.dependents_rows) ? `${rr.dependents_rows.length} 行（氏名は Slack に出しません）` : undefined, screenshot: undefined }).slice(0, 300)}`;
           // 読むだけジョブが扶養の表（氏名・続柄・生年月日）を返したら、その 1 人ぶんだけ参考値（snapshot）として取り込む。提出状況は変えない（方針⑥。一括禁止）
           if (job.kind === "smaregi_read" && Array.isArray(rr.dependents_rows) && job.user_id) {
             const { error: ie } = await sb.rpc("post_join_import_snapshot", { p_user: job.user_id, p_year_end: null, p_dependents: rr.dependents_rows, p_actor: null, p_year: null });

@@ -3,7 +3,7 @@
 //   スマレジ同期（smaregi-sync の wage_pull_all / wage_pull）が使う、判定だけの部品（DB にもスマレジにも触らない＝単体でテストできる）。
 //   正本は管理システム。スマレジにだけある行の扱い:
 //     ・保留が無効（holdEnabled=false・既定）: これまでどおり「管理システムに無い行」を取り込む
-//     ・保留が有効: 初期投入（initialAllowed＝その契約の賃金が 1 件も無い人で、入社手続き中または連携から 14 日以内）のときだけ取り込む。
+//     ・保留が有効: 初期投入（initialAllowed＝SQL の wage_initial_import_users が返す人。入社手続きの状態・賃金の履歴・承認の状態を組み合わせて判定）のときだけ取り込む。
 //                   それ以外は、正式な賃金にせず「未承認の変更（new_row）」として返す（呼び出し側が外部変更の控えに記録する）
 //   あわせて、保留が有効のときは「金額の違い（amount_changed）」「行の削除（deleted）」も外部変更として返す
 // =============================================================
@@ -37,6 +37,13 @@ export function currentAndFuture<T>(list: T[], today: string, keyOf: (x: T) => s
   }
   keep.push(...Object.values(cur));
   return keep;
+}
+
+/** その人を保留の対象にするか（決め方はここ 1 か所）。
+ *   スイッチが true: 全員が対象。初期投入の条件を満たす人だけ、これまでどおり取り込む（未解決の控えがある人は初期投入にしない）
+ *   スイッチが false: これまでどおり。ただし未解決（open）の控えがある人は保留を続ける（保留中の行を、スイッチを戻しただけで正式な賃金にしない） */
+export function holdFor(switchOn: boolean, hasOpenRecord: boolean, initialAllowed: boolean): { holdEnabled: boolean; initialAllowed: boolean } {
+  return { holdEnabled: switchOn || hasOpenRecord, initialAllowed: switchOn && initialAllowed && !hasOpenRecord };
 }
 
 export function reconcileWages(list: SmaregiWage[], mine: SystemWage[], o: ReconcileOpts): ReconcileResult {

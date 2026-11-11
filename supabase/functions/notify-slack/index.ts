@@ -21,7 +21,7 @@
 //   （B の合言葉方式があるため JWT 検証は関数内で行う）
 // =============================================================
 import { createClient } from "npm:@supabase/supabase-js@2";
-import { maskAmountsDeep, maskAmountsText, shouldMaskChannel } from "../_shared/amount-mask.ts";
+import { findAmountLeaks, maskAmountsDeep, maskAmountsText, shouldMaskChannel } from "../_shared/amount-mask.ts";
 
 const cors = {
   "Access-Control-Allow-Origin": "*",
@@ -126,15 +126,66 @@ async function amountPolicy(sb: any): Promise<unknown> {
   catch (_e) { return null; }
 }
 
+// ---- 消し残りがあったとき（2026-11-12 ユーザー指示）: その通知は送らない。台帳に「止めた」と残し、本部に知らせる ----
+//   知らせる先: ① 送るはずだった場所（同じチャンネル・同じスレッド）に「1 件止めました」とだけ ② エラーの通知先（slack_policy.leak_alert_channel。既定 hq.dev_system）に場所の名前つきで
+//   どちらにも、通知の中身と金額は書かない。台帳の payload にも中身を残さない（金額が入っているため）
+const LEAK_ERROR = "amount_leak_blocked";
+async function blockLeak(sb: any, policy: unknown, o: { id: string | null; channelKey: string; channel?: string | null; threadTs?: string | null; event?: string; source?: string; leaks: string[]; dedupeKey?: string | null; ref?: { table?: string; id?: string } | null; mode: "send" | "update" }) {
+  const now = new Date().toISOString();
+  const safePayload = { text: "（金額が残っていたため、送信を止めました。中身は残していません）", blocks: null, thread_ts: o.threadTs ?? null, leak_fields: o.leaks.slice(0, 20), mode: o.mode };
+  let id = o.id;
+  if (o.mode === "send") {
+    const row = { source: o.source ?? "unknown", event: o.event ?? "generic", channel_key: o.channelKey, payload: safePayload, dedupe_key: null, ref_table: o.ref?.table ?? null, ref_id: o.ref?.id ?? null,
+      delivery_status: "failed", error: LEAK_ERROR, attempts: 1, updated_at: now };
+    if (id) {
+      const { data: upd } = await sb.from("notification_deliveries").update(row).eq("id", id).select("id");
+      if (!upd || upd.length === 0) await sb.from("notification_deliveries").insert({ id, ...row });
+    } else {
+      const { data: ins } = await sb.from("notification_deliveries").insert(row).select("id").single();
+      id = ins?.id ?? null;
+    }
+  } else if (id) {
+    // 更新を止めたとき: 元の通知の行はそのまま（Slack 上の表示も元のまま）。止めたことだけ error に残す
+    await sb.from("notification_deliveries").update({ error: LEAK_ERROR, updated_at: now }).eq("id", id);
+  }
+  // 同じ宛先・同じ種類・同じ対象の知らせは、1 時間に 1 回だけ（親メッセージの描き直しのように何度も呼ばれる処理で、知らせがあふれないように）。止めること自体は毎回行う
+  const throttleKey = `${o.channelKey}|${o.event ?? "generic"}|${o.ref?.id ?? (o.mode === "update" ? id : "") ?? ""}`;
+  const { data: recent } = await sb.from("notification_deliveries").select("id").eq("event", "amount_leak_alert").eq("payload->>throttle_key", throttleKey).gte("created_at", new Date(Date.now() - 3600e3).toISOString()).limit(1);
+  if ((recent ?? []).length) return json({ ok: false, notification_id: id, error: LEAK_ERROR, blocked: true, leak_fields: o.leaks.slice(0, 20), alert: "throttled" }, 422);
+  const { data: chRow } = await sb.from("slack_channels").select("display_name").eq("channel_key", o.channelKey).maybeSingle();
+  const destName = chRow?.display_name ?? (o.channelKey.startsWith("user:") ? "個人あて（DM）" : o.channelKey);
+  // ① 送るはずだった場所へ
+  let dest = o.channel ?? null;
+  if (!dest) { const t = await resolveTarget(sb, o.channelKey); dest = t.channel ?? null; }
+  if (dest) {
+    await slack("chat.postMessage", { channel: dest, ...(o.threadTs ? { thread_ts: o.threadTs } : {}), unfurl_links: false,
+      text: `🔴 通知を 1 件止めました（金額が残っていたため）。内容は管理画面で確認してください。システム担当に連絡済みです。` });
+  }
+  // ② エラーの通知先へ（金額・中身は書かない。場所の名前だけ）
+  const alertKey = String((policy as { leak_alert_channel?: unknown } | null)?.leak_alert_channel ?? "hq.dev_system");
+  const at = await resolveTarget(sb, alertKey);
+  if (at.channel) {
+    const body = `🔴 *金額の消し残りを検知して、送信を止めました*\n・宛先: ${destName}${o.threadTs ? "（スレッド）" : ""}\n・種類: ${o.event ?? "generic"}／送信元: ${o.source ?? "unknown"}／${o.mode === "update" ? "メッセージの更新" : "新しい送信"}\n・台帳: ${id ?? "—"}\n・残っていた場所: ${o.leaks.slice(0, 8).join("、")}${o.leaks.length > 8 ? " ほか" : ""}\n金額そのものは、この通知にも台帳にも残していません。文面を作っている処理の修正が必要です。`;
+    const r = await slack("chat.postMessage", { channel: at.channel, text: body, unfurl_links: false });
+    await sb.from("notification_deliveries").insert({ source: "ef:notify-slack", event: "amount_leak_alert", channel_key: alertKey, payload: { text: body, blocks: null, thread_ts: null, throttle_key: throttleKey }, ref_table: "notification_deliveries", ref_id: id,
+      delivery_status: r.ok ? "sent" : "failed", error: r.ok ? null : (r.error ?? "slack_error"), slack_channel_id: at.channel, slack_ts: r.ts ?? null, attempts: 1, sent_at: r.ok ? now : null, updated_at: now });
+  }
+  return json({ ok: false, notification_id: id, error: LEAK_ERROR, blocked: true, leak_fields: o.leaks.slice(0, 20) }, 422);
+}
+
 // ---- send ---------------------------------------------------
 async function doSend(sb: any, b: SendBody, actor: string) {
   const channelKey = (b.channel_key ?? "").trim();
   let text = (b.text ?? "").trim();
   if (!channelKey) return json({ ok: false, error: "channel_key が必要です" }, 400);
   if (!text && !b.blocks) return json({ ok: false, error: "text か blocks が必要です" }, 400);
-  if (shouldMaskChannel(await amountPolicy(sb), channelKey)) {
+  const policy = await amountPolicy(sb);
+  if (shouldMaskChannel(policy, channelKey)) {
     text = maskAmountsText(text);
     if (b.blocks) b = { ...b, blocks: maskAmountsDeep(b.blocks) };
+    // 消したあとにも金額らしいものが残っていたら、送らない（想定外の書き方の金額を、そのまま流さない）
+    const leaks = findAmountLeaks(text, b.blocks);
+    if (leaks.length) return await blockLeak(sb, policy, { id: b.notification_id ?? null, channelKey, threadTs: b.thread_ts ?? null, event: b.event, source: b.source ?? actor, leaks, ref: b.ref ?? null, mode: "send" });
   }
 
   // 冪等: dedupe_key が既に sent なら再送しない
@@ -213,8 +264,11 @@ async function doUpdate(sb: any, b: SendBody) {
   if (!b.notification_id) return json({ ok: false, error: "notification_id が必要です" }, 400);
   const { data: row } = await sb.from("notification_deliveries").select("id,channel_key,slack_channel_id,slack_ts,payload").eq("id", b.notification_id).maybeSingle();
   if (!row?.slack_ts) return json({ ok: false, error: "送信済みの通知ではありません" }, 404);
-  if (shouldMaskChannel(await amountPolicy(sb), String(row.channel_key ?? ""))) {
+  const policy = await amountPolicy(sb);
+  if (shouldMaskChannel(policy, String(row.channel_key ?? ""))) {
     b = { ...b, ...(b.text !== undefined ? { text: maskAmountsText(b.text ?? "") } : {}), ...(b.blocks ? { blocks: maskAmountsDeep(b.blocks) } : {}) };
+    const leaks = findAmountLeaks(b.text ?? null, b.blocks);
+    if (leaks.length) return await blockLeak(sb, policy, { id: row.id, channelKey: String(row.channel_key), channel: row.slack_channel_id, threadTs: row.payload?.thread_ts ?? row.slack_ts, event: b.event, source: b.source, leaks, mode: "update" });
   }
   const res = await slack("chat.update", {
     channel: row.slack_channel_id, ts: row.slack_ts,

@@ -1,5 +1,5 @@
 import { assertEquals, assert } from "jsr:@std/assert@1";
-import { reconcileWages, type SmaregiWage, type SystemWage } from "./wage-reconcile.ts";
+import { holdFor, reconcileWages, type SmaregiWage, type SystemWage } from "./wage-reconcile.ts";
 
 const T = "2026-11-12";
 const sm = (id: string, division: number, effectiveDate: string, wage: number, o: Partial<SmaregiWage> = {}): SmaregiWage => ({ id, division, storeId: null, effectiveDate, wage, holidayWage: null, ...o });
@@ -79,4 +79,24 @@ Deno.test("1 人ぶんの取り込み（全部の行を見る）: 保留が有�
   const off = reconcileWages(smList.slice(0, 3), mine, { ...base, scope: "all", holdEnabled: false, initialAllowed: false });
   assertEquals(off.rows.map((x) => [x.w.id, x.outcome]), [["s1", "insert"], ["s2", "matched"], ["s3", "insert"]], "無効ならこれまでどおり全部取り込む");
   assert(off.external.length === 0);
+});
+
+Deno.test("スイッチを false に戻したとき: 保留中（未解決の控えがある）の人は保留のまま。ほかの人はこれまでどおり", () => {
+  assertEquals(holdFor(false, false, false), { holdEnabled: false, initialAllowed: false });   // これまでどおり（全部取り込む）
+  assertEquals(holdFor(false, true, true), { holdEnabled: true, initialAllowed: false });      // 保留を続ける
+  assertEquals(holdFor(true, false, true), { holdEnabled: true, initialAllowed: true });       // 初期投入
+  assertEquals(holdFor(true, true, true), { holdEnabled: true, initialAllowed: false });       // 控えがある人は初期投入にしない
+  assertEquals(holdFor(true, false, false), { holdEnabled: true, initialAllowed: false });
+  // スイッチ false・控えあり: 保留中の行（s3）も、そのあとスマレジに足された行（s8）も、正式な賃金には入らない。控えは「まだある」と返り続ける＝勝手に閉じない
+  const mine = [sys("m2", 0, "2026-10-01", 1250, { smaregi_wage_apply_id: "s2" })];
+  const list = [sm("s2", 0, "2026-10-01", 1250), sm("s3", 0, "2027-01-01", 1300), sm("s8", 1, "2026-11-01", 9000)];
+  const carry = reconcileWages(list, mine, { ...base, ...holdFor(false, true, false) });
+  assertEquals(carry.inserts.length, 0);
+  assertEquals(carry.external.map((x) => [x.kind, x.smaregi_wage_apply_id]), [["new_row", "s3"], ["new_row", "s8"]]);
+  // 同じ状況で、控えの無い人はこれまでどおり取り込まれる
+  const plain = reconcileWages(list, mine, { ...base, ...holdFor(false, false, false) });
+  assertEquals(plain.inserts.map((x) => x.smaregi_wage_apply_id).sort(), ["s3", "s8"]); assertEquals(plain.external.length, 0);
+  // 本部が同じ内容を正式に登録したあと（管理システムに行ができた）: 違いが無くなる → 外部変更は 0 件（呼び出し側が控えを「一致」で閉じる）
+  const after = reconcileWages(list, [...mine, sys("m3", 0, "2027-01-01", 1300, { smaregi_wage_apply_id: null }), sys("m8", 1, "2026-11-01", 9000, { smaregi_wage_apply_id: null })], { ...base, ...holdFor(false, true, false) });
+  assertEquals(after.external.length, 0); assertEquals(after.inserts.length, 0); assertEquals(after.links.length, 2);
 });

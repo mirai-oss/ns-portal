@@ -70,7 +70,10 @@ export const STATE_LABEL: Record<ItemState, string> = {
   pending: "未", running: "処理中", completed: "完了", retry_wait: "再試行待ち", manual_required: "手動対応が必要", manual_running: "手動対応中", cancelled: "中止", failed: "失敗",
 };
 
-export const yen = (n: unknown) => (n === null || n === undefined || n === "" ? "" : "¥" + Number(n).toLocaleString("ja-JP"));
+let HIDE_AMOUNTS = false;
+// 金額を出さない表示（HIDE_AMOUNTS）のときは、金額の項目そのものを数字にしない（項目の単位で止める。出口の notify-slack での置き換え・検査は、その先の安全網）
+export const AMOUNT_HIDDEN = "（金額は管理画面で確認）";
+export const yen = (n: unknown) => (n === null || n === undefined || n === "" ? "" : HIDE_AMOUNTS ? AMOUNT_HIDDEN : "¥" + Number(n).toLocaleString("ja-JP"));
 export const jpDate = (d: string | null | undefined) => (d ? String(d).slice(0, 10).replace(/-/g, "/") : "未設定");
 export const nowJst = () => new Date().toLocaleString("ja-JP", { timeZone: "Asia/Tokyo", hour12: false, month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
 
@@ -80,7 +83,6 @@ const TASKS_URL = "https://mirai-oss.github.io/ns-portal/tasks.html";
 // 2026-11-12: 金額を出さない表示（賃金額・交通費額は権限つきの管理画面で確認。Slack には処理状況だけ）。
 //   既定は false＝これまでどおり。onboarding-notify が、設定（app_settings.slack_policy.hide_amount_channels）に入社登録のチャンネルが入っているときだけ true にする。
 //   ここで拾いきれない金額は、Slack への出口（notify-slack）がチャンネル単位で消す（二重の守り）
-let HIDE_AMOUNTS = false;
 export function setHideAmounts(v: boolean) { HIDE_AMOUNTS = !!v; }
 export function hideAmounts(): boolean { return HIDE_AMOUNTS; }
 const HIDE_STATUS: Record<string, Record<string, string>> = {

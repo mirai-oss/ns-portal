@@ -8,7 +8,8 @@
 --
 --   スイッチが true のとき（Edge Function のデプロイ後）:
 --     ・スマレジにだけある「いま有効・これから適用」の賃金の行 → 正式な賃金（employee_wage_settings）に入れず、ここに「未承認（open）」で記録
---     ・初期投入だけは、これまでどおり自動で取り込む: その契約の賃金が管理システムに 1 件も無い人で、入社手続き中、またはその契約へのスマレジ連携が出来てから 14 日以内
+--     ・初期投入だけは、これまでどおり自動で取り込む: 入社したばかりの人だけ（入社手続きの状態・賃金の履歴・承認の状態・連携の履歴を組み合わせて判定。下の 2.）
+--     ・スイッチを false に戻しても、未解決（open）の控えがある人は保留を続ける（Edge Function 側。保留中の行を、戻しただけで正式な賃金にしない）
 --     ・金額の違い・行の削除も、ここに記録する
 --     ・次の照合で違いが無くなっていたら（スマレジ側が戻った・正式に登録された）、自動で「一致を確認」で閉じる
 --   承認済みの賃金のスマレジ同期（管理システム → スマレジ）と、入社時の初期賃金登録は変えない。
@@ -46,15 +47,24 @@ create policy wage_external_changes_read on wage_external_changes for select usi
 update app_settings set value = '{"wage_import_hold": false}'::jsonb || value where key = 'employee_change';
 
 -- ============ 2. 初期投入としてこれまでどおり取り込んでよい人 ============
---   その契約の賃金が管理システムに 1 件も無く、かつ（入社手続き中、または その契約へのスマレジ連携が出来てから 14 日以内）
+--   「連携から 14 日以内」だけでは許可しない（2026-11-12 ユーザー指示）。既存の従業員の再連携・法人をまたぐ異動で、未承認の賃金が自動登録されないようにする。
+--   次の全部を満たす人だけ（＝入社したばかりで、管理システムに賃金の記録も申請も無い人）:
+--     ① 入社手続きの状態: 入社登録が進行中、または完了してから 14 日以内（取り消しは不可。入社登録が無い人は不可）
+--     ② 賃金の履歴: 管理システムに賃金が 1 件も無い（どの契約にも。別の法人に賃金がある人＝異動は不可）
+--     ③ 承認の状態: 承認待ちの賃金変更の申請が無い／未解決（open）の外部変更の控えが無い
+--     ④ 連携の履歴: 終了したスマレジ連携が無い（再連携・異動は不可）／入社登録より 14 日以上前からある連携が無い（既存の従業員は不可）
 create or replace function wage_initial_import_users(p_contract text, p_users uuid[])
 returns uuid[] language plpgsql stable security definer set search_path = public as $$
 begin
   if not (hq_can_manage() or onboarding_is_service()) then raise exception '権限がありません'; end if;
   return coalesce((select array_agg(u) from unnest(p_users) u
-    where not exists (select 1 from employee_wage_settings w where w.user_id = u and w.contract_id = p_contract)
-      and (exists (select 1 from onboarding_workflows f where f.user_id = u and f.status in ('hired_confirmed', 'form_sent', 'registering'))
-        or exists (select 1 from employee_smaregi_links l where l.user_id = u and l.contract_id = p_contract and l.created_at > now() - interval '14 days'))), '{}');
+    where exists (select 1 from onboarding_workflows f where f.user_id = u
+                    and (f.status in ('hired_confirmed', 'form_sent', 'registering') or (f.status = 'completed' and f.completed_at > now() - interval '14 days'))
+                    and not exists (select 1 from employee_smaregi_links l where l.user_id = u and (l.effective_to is not null or l.created_at < f.created_at - interval '14 days')))
+      and exists (select 1 from employee_smaregi_links l where l.user_id = u and l.contract_id = p_contract)
+      and not exists (select 1 from employee_wage_settings w where w.user_id = u)
+      and not exists (select 1 from profile_change_requests q where q.user_id = u and q.field = 'wage' and q.status = 'pending')
+      and not exists (select 1 from wage_external_changes e where e.user_id = u and e.status = 'open')), '{}');
 end $$;
 
 -- ============ 3. 照合の結果を記録する（Edge Function が呼ぶ。スマレジにも、正式な賃金にも書かない） ============

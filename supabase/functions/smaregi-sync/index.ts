@@ -19,7 +19,7 @@
 //     連携済みのスマレジへ反映（プッシュ方向。既に連携済みの人が対象。本人 or CEO/HQ）
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { loadContracts, loadStoreMap, loadStoreMapPending, ID_BASE, API_BASE, fetchRoles, pickRoleId, putStaffStore, wantedRoleName } from "../_shared/smaregi-contracts.ts";
-import { reconcileWages, currentAndFuture, wageSupported as wageSupportedShared } from "../_shared/wage-reconcile.ts";
+import { reconcileWages, holdFor, currentAndFuture, wageSupported as wageSupportedShared } from "../_shared/wage-reconcile.ts";
 
 // 2026-10-17 担当D: 複数契約対応。契約は引数contract_id（省略時は既定の契約＝トーホー）で指定する。
 // sync(入社登録)・terminate(退職)・push_profile・test・staffs が契約ごとに動く。invite/invite_staffs（スマレジ→ポータルの招待）は
@@ -787,6 +787,13 @@ Deno.serve(async (req) => {
         const { data: iu, error: iuErr } = await sb.rpc("wage_initial_import_users", { p_contract: C, p_users: slice.map((l: any) => l.user_id) });
         if (!iuErr) initialUsers = new Set(((iu ?? []) as string[]).map(String));   // 取れなかったときは空＝全員を初期投入ではない扱い（安全側＝取り込まない）
       }
+      // 2026-11-12（OFF に戻したとき）: 未解決（open）の控えがある人は、スイッチが false でも保留を続ける（保留中の行を、勝手に正式な賃金にしない）。
+      //   控えの表が無い・読めないときは空＝これまでどおり（SQL を外したあとは旧い動きに戻る）
+      const carryUsers = new Set<string>();
+      if (!holdOn && slice.length) {
+        const { data: ox, error: oxErr } = await sb.from("wage_external_changes").select("user_id").eq("contract_id", C).eq("status", "open").in("user_id", slice.map((l: any) => l.user_id));
+        if (!oxErr) for (const x of (ox ?? []) as any[]) carryUsers.add(String(x.user_id));
+      }
       const checkedUsers: string[] = []; const externalItems: Record<string, unknown>[] = []; let held = 0, deletedRows = 0;
       const driftRows: { user_id: string; row_id: string; contract_id: string }[] = [];
       const errors: string[] = [];
@@ -805,7 +812,9 @@ Deno.serve(async (req) => {
           persons++;
           // 判定は共有の部品（_shared/wage-reconcile.ts。保留が無効のときは、これまでの取り込みと同じ結果になることをテストで確認済み）
           const { data: mine } = await sb.from("employee_wage_settings").select("*").eq("user_id", l.user_id).eq("contract_id", C);
-          const rc = reconcileWages(list, (mine ?? []) as any, { today, storeMap, holdEnabled: holdOn, initialAllowed: initialUsers.has(String(l.user_id)), scope: "current_future" });
+          const hf = holdFor(holdOn, carryUsers.has(String(l.user_id)), initialUsers.has(String(l.user_id)));
+          const holdUser = hf.holdEnabled;
+          const rc = reconcileWages(list, (mine ?? []) as any, { today, storeMap, holdEnabled: hf.holdEnabled, initialAllowed: hf.initialAllowed, scope: "current_future" });
           unsupported += rc.counts.unsupported; skippedStore += rc.counts.skipped_store; matched += rc.counts.matched; conflicts += rc.counts.conflicts; drift += rc.counts.drift;
           held += rc.counts.held; deletedRows += rc.counts.deleted;
           if (rc.counts.with_wage) withWage++;
@@ -818,18 +827,19 @@ Deno.serve(async (req) => {
             }
             for (const k of rc.links) await sb.from("employee_wage_settings").update({ smaregi_wage_apply_id: k.smaregi_wage_apply_id, sync_status: "synced", sync_error: null, synced_at: jst() }).eq("id", k.row_id);
           }
-          if (holdOn) { checkedUsers.push(String(l.user_id)); for (const x of rc.external) externalItems.push({ user_id: l.user_id, ...x }); }
+          if (holdUser) { checkedUsers.push(String(l.user_id)); for (const x of rc.external) externalItems.push({ user_id: l.user_id, ...x }); }
         } catch (e) { errors.push(`スタッフ${l.smaregi_staff_id}: ${String((e as Error).message ?? e).slice(0, 100)}`); }
       }
       // 保留が有効: 読めた人ぶんの外部変更（未承認の新しい行・金額の違い・行の削除）を控えに記録する。見つからなくなったものは「一致を確認」で閉じる
       let externalReport: unknown = null;
-      if (holdOn && !dryRun && checkedUsers.length) {
+      if (!dryRun && checkedUsers.length) {
         const { data: rp, error: rpErr } = await sb.rpc("hr_wage_external_report", { p_contract: C, p_checked: checkedUsers, p_items: externalItems, p_source: "wage_pull_all" });
         if (rpErr) errors.push(`未承認の変更を記録できません(${rpErr.message.slice(0, 100)})`); else externalReport = rp;
       }
       const next = offset + slice.length;
       return json({ ok: true, contract_id: C, total, offset, next_offset: next, done: next >= total, processed: slice.length, persons, with_wage: withWage, imported, drift, drift_rows: driftRows, matched, conflicts, skipped_unmapped_store: skippedStore, unsupported_rows: unsupported, errors,
-        hold_enabled: holdOn, dry_run: dryRun, held, deleted_rows: deletedRows, external_report: externalReport });
+        hold_enabled: holdOn, dry_run: dryRun, held, deleted_rows: deletedRows, external_report: externalReport,
+        hold_carryover_users: carryUsers.size, initial_allowed_users: holdOn ? slice.filter((l: any) => initialUsers.has(String(l.user_id))).length : 0 });
     }
 
     if (body.action === "wage_push" || body.action === "wage_pull" || body.action === "wage_update" || body.action === "wage_delete") {
@@ -880,10 +890,14 @@ Deno.serve(async (req) => {
         const todayP = new Date(Date.now() + 9 * 3600e3).toISOString().slice(0, 10);
         const { data: ecfgP } = await sb.from("app_settings").select("value").eq("key", "employee_change").maybeSingle();
         const holdOnP = ecfgP?.value?.wage_import_hold === true;
-        let holdThis = false; let heldCount = 0;
+        let holdThis = false; let heldCount = 0; let carryP = false;
         if (holdOnP) {
           const { data: iu, error: iuErr } = await sb.rpc("wage_initial_import_users", { p_contract: C, p_users: [uid] });
           holdThis = iuErr ? true : !((iu ?? []) as string[]).map(String).includes(String(uid));
+        } else {
+          // スイッチが false でも、未解決（open）の控えがある人は保留を続ける（表が無い・読めないときはこれまでどおり）
+          const { data: ox, error: oxErr } = await sb.from("wage_external_changes").select("id").eq("contract_id", C).eq("status", "open").eq("user_id", uid).limit(1);
+          carryP = !oxErr && (ox ?? []).length > 0; holdThis = carryP;
         }
         const cfIds = new Set(currentAndFuture(list.filter((w: any) => wageSupportedShared(w)), todayP, (w: any) => `${w.division}|${w.storeId ?? ""}`, (w: any) => w.effectiveDate).map((w: any) => w.id));
         for (const w of list) {
@@ -915,12 +929,12 @@ Deno.serve(async (req) => {
         }
         // 保留が有効で「取り込む」を押したとき: この人の外部変更（未承認の新しい行・金額の違い・行の削除）を控えに記録する（読むだけの確認では記録しない）
         let externalReport: unknown = null;
-        if (holdOnP && body.import === true) {
+        if ((holdOnP || carryP) && body.import === true) {
           const rc = reconcileWages(list as any, (mine ?? []) as any, { today: todayP, storeMap, holdEnabled: true, initialAllowed: !holdThis, scope: "current_future" });
           const { data: rp, error: rpErr } = await sb.rpc("hr_wage_external_report", { p_contract: C, p_checked: [uid], p_items: rc.external.map((x) => ({ user_id: uid, ...x })), p_source: "wage_pull" });
           externalReport = rpErr ? { ok: false, error: rpErr.message.slice(0, 100) } : rp;
         }
-        return json({ ok: true, contract_id: C, staffId, count: list.length, imported, skipped, conflicts, unsupported, wages: out, hold_enabled: holdOnP, held: heldCount, external_report: externalReport });
+        return json({ ok: true, contract_id: C, staffId, count: list.length, imported, skipped, conflicts, unsupported, wages: out, hold_enabled: holdOnP, hold_carryover: carryP, held: heldCount, external_report: externalReport });
       }
 
       // ---- wage_update / wage_delete（1行の修正・削除）----

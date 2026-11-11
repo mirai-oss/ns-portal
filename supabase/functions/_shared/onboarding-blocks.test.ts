@@ -1,6 +1,6 @@
 // Slack 表示部品の描画テスト（Phase 6 v2・2026-11-09）。deno test supabase/functions/_shared/onboarding-blocks.test.ts
 import { assert, assertEquals } from "jsr:@std/assert@1";
-import { setHideAmounts, commuteCheckBlocks, autoApprovedBlocks, parentMessage, taxSettingModal, postJoinSubmittedBlocks, postJoinLines, postJoinPolicyText, personContactTemplate, yearEndCompareText, uiJobResultBlocks, type WorkflowView } from "./onboarding-blocks.ts";
+import { yen, wageLine, AMOUNT_HIDDEN, wageFailedBlocks, setHideAmounts, commuteCheckBlocks, autoApprovedBlocks, parentMessage, taxSettingModal, postJoinSubmittedBlocks, postJoinLines, postJoinPolicyText, personContactTemplate, yearEndCompareText, uiJobResultBlocks, type WorkflowView } from "./onboarding-blocks.ts";
 
 const wf: WorkflowView = { id: "11111111-1111-1111-1111-111111111111", user_id: "22222222-2222-2222-2222-222222222222", status: "registering", hire_date: "2026-11-09", role: "SHAIN", contract_id: "sez093z1", contract_label: "トーホー", smaregi_staff_id: "380", hq_task_id: null, user_name: "テスト 太郎", store_names: "鳥一代 本店", items: { join_form: { state: "completed" } },
   year_end: { status: "submitted", target_year: 2026, required: true, deadline: "2026-11-30", source_of_required: "rule", class: "SHAIN" },
@@ -143,4 +143,29 @@ Deno.test("金額を出さない表示: 交通費の確認カード・自動承�
     const a = JSON.stringify(autoApprovedBlocks(wfAmt, "nid", { fare: 420, reasons: ["¥420 以下"], from: "X駅", to: "Y駅", computed_fare: 420 }));
     assert(!/[¥￥]|420/.test(a.replace(/"value":"[^"]*(\\"[^"]*)*"/g, "")) && a.includes("自動承認しました") && a.includes("hr.onboarding.commute.undo"));
   } finally { setHideAmounts(false); }
+});
+
+import { findAmountLeaks, maskAmountsDeep, maskAmountsText } from "./amount-mask.ts";
+Deno.test("金額を出さない表示: 金額の項目そのものを数字にしない（yen・賃金の 1 行）。日付・対象は残る。出口の検査でも消し残りなし", () => {
+  setHideAmounts(false);
+  assertEquals(yen(1200), "¥1,200");
+  const line0 = wageLine({ division: 0, wage: 1234, holiday_wage: 1500, effective_date: "2026-11-09", store_name: null });
+  assert(line0.includes("¥1,234") && line0.includes("2026/11/09"));
+  setHideAmounts(true);
+  try {
+    assertEquals(yen(1200), AMOUNT_HIDDEN); assertEquals(yen(null), "");
+    const line = wageLine({ division: 0, wage: 1234, holiday_wage: 1500, effective_date: "2026-11-09", store_name: null });
+    assert(!/1234|1,234|1500|1,500|[¥￥]/.test(line) && line.includes("時給") && line.includes("2026/11/09から") && line.includes("全事業所共通"), line);
+    // 金額を出さない表示で作った 親メッセージ・交通費の確認カード・自動承認の文面は、出口の置き換えをかけても変わらず、消し残りの検査も通る
+    for (const blocks of [parentMessage(wfAmt, "nid").blocks, commuteCheckBlocks(wfAmt, "nid", commuteArg as any), autoApprovedBlocks(wfAmt, "nid", { fare: 420, reasons: ["¥420 以下"], from: "X駅", to: "Y駅", computed_fare: 420 })]) {
+      assertEquals(findAmountLeaks("", maskAmountsDeep(blocks)), []);
+    }
+    const t = `✅ 賃金をスマレジに反映しました（本部 花子・11/9 17:01）\n・${line}　スマレジ賃金設定ID 890`;
+    assertEquals(findAmountLeaks(maskAmountsText(t), null), []);
+  } finally { setHideAmounts(false); }
+  // これまでの表示（金額つき）が出口を通ったとき: 置き換えで消え、検査も通る（親メッセージ・交通費の確認カード）
+  for (const blocks of [parentMessage(wfAmt, "nid").blocks, commuteCheckBlocks(wfAmt, "nid", commuteArg as any)]) {
+    const m = maskAmountsDeep(blocks); assert(!/[¥￥]/.test(JSON.stringify(m).replace(/"value":"[^"]*(\\"[^"]*)*"/g, "")));
+    assertEquals(findAmountLeaks("", m), []);
+  }
 });

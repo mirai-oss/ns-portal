@@ -4,6 +4,7 @@
 --
 --   これは「部品」だけ。適用しても、いま出ている通知は 1 つも変わらない（どの通知も、まだこの部品を呼んでいない。種類の形式の版は全部 1＝旧い形のまま）。
 --   足すのは表 5 つ・関数 5 つ・設定の項目 2 つ。既存の表・関数は作り替えない。
+--   2026-11-12 追記（ユーザー指示）: 未連携の確認タスクの主担当は複数人（チーム長 3 人）／店舗ごとの保留（N-Style 4 店は勤怠通知の対象外として保留）
 --
 --   確定している方針（2026-11-11 ユーザー決定）:
 --     ・メンション先と承認権限は別に持つ（ここはメンション先だけ。承認権限は approval_routes と既存の権限関数）
@@ -109,35 +110,68 @@ create policy notice_cases_read on notice_cases for select using (hq_can_manage(
 drop policy if exists notice_unlinked_tasks_read on notice_unlinked_tasks;
 create policy notice_unlinked_tasks_read on notice_unlinked_tasks for select using (hq_can_manage());
 
--- 設定: 未連携の確認タスクの担当（主担当 1 人・予備）と、通知の対象から外すアカウント（テスト用・連携用）。
+-- 設定: 未連携の確認タスクの担当（主担当＝複数可・予備）と、通知の対象から外すアカウント（テスト用・連携用）。
 --   ★ 担当者は SQL に書かない（公開リポジトリのため）。切り替えのときに notice_settings_set で入れる。入っていないあいだ、確認タスクは作らない（勝手に別の人へ割り当てない）
-insert into app_settings(key, value) values ('notice', '{"unlinked_task_owner": null, "unlinked_task_backup": [], "exclude_user_ids": []}'::jsonb) on conflict (key) do nothing;
+insert into app_settings(key, value) values ('notice', '{"unlinked_task_owners": [], "unlinked_task_backup": [], "exclude_user_ids": []}'::jsonb) on conflict (key) do nothing;
 insert into app_settings(key, value) values ('slack_policy', '{"hide_amount_channels": []}'::jsonb) on conflict (key) do nothing;
 
-create or replace function notice_settings_set(p_owner uuid, p_backup uuid[] default '{}', p_exclude uuid[] default null)
+create or replace function notice_settings_set(p_owners uuid[], p_backup uuid[] default '{}', p_exclude uuid[] default null)
 returns jsonb language plpgsql security definer set search_path = public as $$
 declare v jsonb;
 begin
   if not (onboarding_is_service() or coalesce((select is_master from users where id = auth.uid() and is_active), false)) then raise exception '権限がありません（マスターのみ）'; end if;
-  if p_owner is not null and not exists (select 1 from users where id = p_owner and is_active) then raise exception '主担当のアカウントが見つからないか、無効です'; end if;
-  if exists (select 1 from unnest(coalesce(p_backup, '{}')) b where not exists (select 1 from users u where u.id = b and u.is_active)) then raise exception '予備担当に、見つからないか無効のアカウントがあります'; end if;
+  if exists (select 1 from unnest(coalesce(p_owners, '{}')) b where not exists (select 1 from users u where u.id = b and u.is_active and u.deactivated_at is null)) then raise exception '主担当に、見つからないか無効のアカウントがあります'; end if;
+  if exists (select 1 from unnest(coalesce(p_backup, '{}')) b where not exists (select 1 from users u where u.id = b and u.is_active and u.deactivated_at is null)) then raise exception '予備担当に、見つからないか無効のアカウントがあります'; end if;
   select value into v from app_settings where key = 'notice';
-  v := coalesce(v, '{}'::jsonb) || jsonb_build_object('unlinked_task_owner', p_owner, 'unlinked_task_backup', to_jsonb(coalesce(p_backup, '{}')))
+  v := coalesce(v, '{}'::jsonb) || jsonb_build_object('unlinked_task_owners', to_jsonb(coalesce(p_owners, '{}')), 'unlinked_task_backup', to_jsonb(coalesce(p_backup, '{}')))
        || case when p_exclude is not null then jsonb_build_object('exclude_user_ids', to_jsonb(p_exclude)) else '{}'::jsonb end;
   update app_settings set value = v where key = 'notice';
   return v;
 end $$;
 
+-- 店舗ごとの保留（その種類の通知を、その店舗については出さない）。担当者が未登録の店舗を、推測で埋めずに「対象外として保留」にしておくためのもの。
+--   保留を外すときは notice_store_hold_set(種類, 店舗, false)（マスターのみ）。行を消すだけなので、あとから対象に加えられる。
+create table if not exists notice_store_holds (
+  type_key   text not null references notice_types(type_key) on delete cascade,
+  store_id   uuid not null,
+  reason     text,
+  created_at timestamptz not null default now(),
+  created_by uuid,
+  primary key (type_key, store_id)
+);
+alter table notice_store_holds enable row level security;
+drop policy if exists notice_store_holds_read on notice_store_holds;
+create policy notice_store_holds_read on notice_store_holds for select using (hq_can_manage());
+-- N-Style の 4 店: 社員・店長・担当チーム長・スマレジ事業所の対応が未登録のため、勤怠通知の対象外として保留（2026-11-12 ユーザー決定。鳥一代グループ 8 店には触れない）
+insert into notice_store_holds(type_key, store_id, reason)
+select 'attendance_fix', s.id, '担当者（社員・店長・担当チーム長）とスマレジ事業所の対応が未登録のため保留（2026-11-12）'
+  from stores s where s.name in ('じんべぇ 川崎', 'じんべぇ 新横浜', 'エース 本厚木', '秋葉原 肉寿司')
+on conflict (type_key, store_id) do nothing;
+
+create or replace function notice_store_hold_set(p_type text, p_store uuid, p_on boolean, p_reason text default null)
+returns jsonb language plpgsql security definer set search_path = public as $$
+begin
+  if not (onboarding_is_service() or coalesce((select is_master from users where id = auth.uid() and is_active), false)) then raise exception '権限がありません（マスターのみ）'; end if;
+  if not exists (select 1 from stores where id = p_store) then raise exception '店舗が見つかりません'; end if;
+  if p_on then insert into notice_store_holds(type_key, store_id, reason, created_by) values (p_type, p_store, p_reason, auth.uid()) on conflict (type_key, store_id) do update set reason = coalesce(excluded.reason, notice_store_holds.reason);
+  else delete from notice_store_holds where type_key = p_type and store_id = p_store; end if;
+  return jsonb_build_object('ok', true, 'hold', p_on, 'holds', (select count(*) from notice_store_holds where type_key = p_type));
+end $$;
+
 -- ============ 5. メンション先の解決（ここ 1 か所） ============
 --   返すもの: targets＝メンションする人（Slack のユーザー ID つき）／unlinked＝対象だが Slack と紐付いていない人／rule_found
 --   対象に 1 人もメンションできなくても、ほかの人には広げない（targets が空のまま返る）
+--   hold=true: その店舗はその種類の通知を保留中（送信の入口は、通知そのものを出さない。未連携の確認タスクも作らない）
 create or replace function notice_mention_targets(p_type text, p_scene text, p_store uuid default null, p_task_assignees uuid[] default null)
 returns jsonb language plpgsql stable security definer set search_path = public as $$
 declare r notice_mention_rules%rowtype; t jsonb; v_ids uuid[] := '{}'; v_ex uuid[];
 begin
   if not (hq_can_manage() or onboarding_is_service()) then raise exception '権限がありません'; end if;
   select * into r from notice_mention_rules where type_key = p_type and scene = p_scene;
-  if r.id is null then return jsonb_build_object('rule_found', false, 'targets', '[]'::jsonb, 'unlinked', '[]'::jsonb); end if;
+  if p_store is not null and exists (select 1 from notice_store_holds h where h.type_key = p_type and h.store_id = p_store) then
+    return jsonb_build_object('rule_found', r.id is not null, 'hold', true, 'targets', '[]'::jsonb, 'unlinked', '[]'::jsonb);
+  end if;
+  if r.id is null then return jsonb_build_object('rule_found', false, 'hold', false, 'targets', '[]'::jsonb, 'unlinked', '[]'::jsonb); end if;
   select coalesce(array_agg(x::uuid), '{}') into v_ex from jsonb_array_elements_text(coalesce((select value -> 'exclude_user_ids' from app_settings where key = 'notice'), '[]'::jsonb)) x;
   for t in select * from jsonb_array_elements(r.targets) loop
     if t ->> 'kind' = 'role' then
@@ -156,16 +190,19 @@ begin
     with c as (   -- 重複を 1 人に・退職/無効を除く・通知から外す設定の人を除く
       select distinct u.id, u.role, k.slack_user_id from users u left join user_slack k on k.user_id = u.id
        where u.id = any(v_ids) and u.is_active and u.deactivated_at is null and not (u.id = any(v_ex)))
-    select jsonb_build_object('rule_found', true,
+    select jsonb_build_object('rule_found', true, 'hold', false,
       'targets', coalesce((select jsonb_agg(jsonb_build_object('user_id', c.id, 'slack_user_id', c.slack_user_id) order by c.id) from c where c.slack_user_id is not null), '[]'::jsonb),
       'unlinked', coalesce((select jsonb_agg(c.id order by c.id) from c where c.slack_user_id is null), '[]'::jsonb)));
 end $$;
 
--- ============ 6. 未連携の確認タスク（決めた主担当に 1 人 1 件。担当が決まっていなければ作らない） ============
---   紐付けが済んだ人のタスクは、呼ばれたときに自動で完了にする
+-- ============ 6. 未連携の確認タスク（未連携の人ごとに 1 件。主担当＝決めた人たち全員。担当が決まっていなければ作らない） ============
+--   ・主担当が複数のとき: 全員を担当に入れる。先頭に出すのは、その人の店舗を担当するチームのチーム長（主担当の中にいれば）。
+--   ・タスクは担当者と本部（社長・本部・マスター）だけに見える（visibility 'members'。本部は hq_can_manage で全部見える）。
+--     主担当が対応できなくても、タスクは自動では消えない＝本部の未処理タスクの一覧に残る（消えるのは、紐付けが済んだとき・本人が退職/無効になったときだけ）。
+--   ・紐付けが済んだ人のタスクは、呼ばれたときに自動で完了にする
 create or replace function notice_unlinked_task_sync(p_users uuid[], p_type text, p_urgent boolean default false)
 returns jsonb language plpgsql security definer set search_path = public as $$
-declare v_cfg jsonb; v_owner uuid; v_backup uuid[]; u uuid; rec notice_unlinked_tasks%rowtype; v_task uuid; v_name text; v_label text; v_created int := 0; v_updated int := 0; v_closed int := 0; q record;
+declare v_cfg jsonb; v_owner uuid; v_owners uuid[]; v_ord uuid[]; v_backup uuid[]; u uuid; rec notice_unlinked_tasks%rowtype; v_task uuid; v_name text; v_label text; v_created int := 0; v_updated int := 0; v_closed int := 0; q record;
 begin
   if not (hq_can_manage() or onboarding_is_service()) then raise exception '権限がありません'; end if;
   -- 紐付けが済んだ人・退職した人のタスクを閉じる
@@ -177,12 +214,16 @@ begin
     v_closed := v_closed + 1;
   end loop;
   select value into v_cfg from app_settings where key = 'notice';
-  v_owner := nullif(v_cfg ->> 'unlinked_task_owner', '')::uuid;
-  if v_owner is null or not exists (select 1 from users where id = v_owner and is_active) then
+  -- 主担当（設定の順のまま。無効・退職の人は外す）
+  select coalesce(array_agg(o.id order by o.ord), '{}') into v_owners
+    from (select x::uuid id, ord from jsonb_array_elements_text(coalesce(v_cfg -> 'unlinked_task_owners', '[]'::jsonb)) with ordinality t(x, ord)) o
+   where exists (select 1 from users z where z.id = o.id and z.is_active and z.deactivated_at is null);
+  if cardinality(v_owners) = 0 then
     -- 担当が決まっていない・無効: 勝手に別の人へ割り当てない。作らずに知らせる
     return jsonb_build_object('ok', false, 'reason', 'owner_unset', 'created', 0, 'closed', v_closed, 'pending_users', coalesce(cardinality(p_users), 0));
   end if;
-  select coalesce(array_agg(x::uuid), '{}') into v_backup from jsonb_array_elements_text(coalesce(v_cfg -> 'unlinked_task_backup', '[]'::jsonb)) x;
+  select coalesce(array_agg(x::uuid), '{}') into v_backup from jsonb_array_elements_text(coalesce(v_cfg -> 'unlinked_task_backup', '[]'::jsonb)) x
+   where exists (select 1 from users z where z.id = x::uuid and z.is_active and z.deactivated_at is null);
   select label into v_label from notice_types where type_key = p_type;
   foreach u in array coalesce(p_users, '{}') loop
     if exists (select 1 from user_slack k where k.user_id = u) or not exists (select 1 from users x where x.id = u and x.is_active) then continue; end if;
@@ -196,6 +237,10 @@ begin
       continue;
     end if;
     select name into v_name from users where id = u;
+    -- 先頭に出す人: その人の店舗を担当するチームのチーム長が主担当の中にいれば、その人。いなければ設定の先頭の人
+    select o into v_owner from unnest(v_owners) with ordinality t(o, ord)
+     order by (exists (select 1 from users tl join team_stores ts on ts.team_id = tl.team_id join user_stores us on us.store_id = ts.store_id where tl.id = o and tl.role = 'TEAM' and us.user_id = u)) desc, ord limit 1;
+    v_ord := array[v_owner] || array(select o from unnest(v_owners) with ordinality t(o, ord) where o <> v_owner order by ord);
     insert into hq_tasks(title, corp, freq, target_date, due_date, notes, description, visibility, created_by)
     values (case when p_urgent then '【至急】' else '' end || 'Slack 未連携の確認（' || coalesce(v_name, '—') || 'さん）',
             coalesce((select c.name from user_stores us join stores st on st.id = us.store_id join corporations c on c.id = st.corporation_id where us.user_id = u order by us.is_primary desc, st.sort_order limit 1), 'トーホー'), 'once', current_date, current_date + 3, '',
@@ -205,7 +250,7 @@ begin
             'members', v_owner)
     returning id into v_task;
     insert into hq_task_steps(task_id, title, assignee_id, assignee_ids, sort_order, kind, due_date)
-    values (v_task, '本人に Slack の参加・紐付けを案内する', v_owner, array[v_owner] || v_backup, 10, 'step', current_date + 3);
+    values (v_task, '本人に Slack の参加・紐付けを案内する', v_owner, v_ord || v_backup, 10, 'step', current_date + 3);
     insert into hq_task_activity(task_id, actor_id, kind, detail) values (v_task, v_owner, 'create', 'Slack 未連携のため自動作成（' || coalesce(v_label, p_type) || '）');
     insert into notice_unlinked_tasks(user_id, task_id, types, urgent) values (u, v_task, array[p_type], coalesce(p_urgent, false))
     on conflict (user_id) do update set task_id = excluded.task_id, types = excluded.types, urgent = excluded.urgent, created_at = now(), updated_at = now(), closed_at = null;
@@ -239,6 +284,6 @@ begin
   return to_jsonb(c);
 end $$;
 
-revoke all on function notice_settings_set(uuid, uuid[], uuid[]), notice_mention_targets(text, text, uuid, uuid[]), notice_unlinked_task_sync(uuid[], text, boolean), notice_case_upsert(text, text, text, jsonb) from public, anon, authenticated;
-grant execute on function notice_settings_set(uuid, uuid[], uuid[]), notice_mention_targets(text, text, uuid, uuid[]), notice_unlinked_task_sync(uuid[], text, boolean) to authenticated, service_role;
+revoke all on function notice_settings_set(uuid[], uuid[], uuid[]), notice_store_hold_set(text, uuid, boolean, text), notice_mention_targets(text, text, uuid, uuid[]), notice_unlinked_task_sync(uuid[], text, boolean), notice_case_upsert(text, text, text, jsonb) from public, anon, authenticated;
+grant execute on function notice_settings_set(uuid[], uuid[], uuid[]), notice_store_hold_set(text, uuid, boolean, text), notice_mention_targets(text, text, uuid, uuid[]), notice_unlinked_task_sync(uuid[], text, boolean) to authenticated, service_role;
 grant execute on function notice_case_upsert(text, text, text, jsonb) to service_role;
