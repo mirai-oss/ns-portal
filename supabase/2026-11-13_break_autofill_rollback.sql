@@ -14,6 +14,7 @@ drop function if exists attendance_break_autofill_finish(uuid, text, text, jsonb
 drop function if exists attendance_break_autofill_begin(uuid, timestamptz, timestamptz, jsonb, text, text);
 drop function if exists attendance_break_autofill_scan(date, date, uuid);
 drop function if exists attendance_break_autofill_cfg();
+drop function if exists attendance_pay_type(uuid, text, date);
 drop table if exists attendance_break_exceptions;
 drop table if exists attendance_break_autofills;
 delete from app_settings where key = 'attendance_break_autofill';

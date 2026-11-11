@@ -6,7 +6,10 @@
 --   動くのは、設定 app_settings.attendance_break_autofill.enabled が true で、Edge Function attendance-break-autofill が呼ばれたときだけ（既定 false）。
 --
 --   仕様（ユーザー確定 2026-11-11）:
---     ・対象: 社員・店長（アルバイトは対象外。役割で見る）のうち、月給の人（日給の人は対象外。時給だけの人も補完しない）。6 時間を超える勤務で、休憩が 1 つも登録されていないとき、60 分を補完する
+--     ・対象: **給与形態が月給の人**（2026-11-11 夜 ユーザー確定。役職・所属では判定しない。本部でも時給なら対象外、店舗でも月給なら対象）。
+--       6 時間を超える勤務で、休憩が 1 つも登録されていないとき、60 分を補完する。時給の人・日給の人は補完しない（時給の人の休憩を自動で引くことは禁止）
+--       給与形態は、その勤務日に有効な、正式に登録された賃金（管理システムの賃金で、スマレジと同期済みのもの）で決める。
+--       決められないとき（賃金の登録なし・月給と時給の両方があって新しいほうが決まらない・月給と日給の両方がある・同期が済んでいない賃金がある・未承認の賃金変更がある）は補完せず、確認の対象にする
 --     ・登録済みの休憩は上書きしない／休憩を取っていない・短かったという申告がある日は補完しない／人が直した勤怠・申請や確認が出ている勤怠は補完しない
 --     ・給与確定済みの月は対象外／同じ勤怠には 1 回だけ（二重登録の防止）／スマレジ側で休憩が自動で引かれている疑いがあれば補完しない（二重控除の防止）
 --     ・推定した時刻は「推定」として履歴に残す。あとから実際の時刻に直されたら「置き換えられた」と残す
@@ -15,7 +18,7 @@
 --       人が管理画面で確認した印（設定 smaregi_auto_break_confirmed_off=true）が無ければ動かない。そのうえで、勤怠ごとにも「休憩が入っていないか・勤務時間が引かれていないか」を確かめる
 
 insert into app_settings(key, value) values ('attendance_break_autofill',
-  '{"enabled": false, "roles": ["SHAIN", "TENCHO"], "min_span_minutes": 360, "break_minutes": 60, "lookback_days": 35, "max_per_run": 30, "max_attempts": 3, "deducted_tolerance_minutes": 30, "test_user_ids": []}'::jsonb)
+  '{"enabled": false, "min_span_minutes": 360, "break_minutes": 60, "lookback_days": 35, "max_per_run": 30, "max_attempts": 3, "deducted_tolerance_minutes": 30, "test_user_ids": []}'::jsonb)
 on conflict (key) do nothing;
 
 -- ============ 1. 補完の履歴（1 勤怠 1 行） ============
@@ -69,13 +72,36 @@ drop policy if exists attendance_break_exceptions_read on attendance_break_excep
 create policy attendance_break_exceptions_read on attendance_break_exceptions for select using (hq_can_manage() or user_id = auth.uid() or declared_by = auth.uid());
 
 create or replace function attendance_break_autofill_cfg() returns jsonb language sql stable security definer set search_path = public as $$
-  select '{"enabled": false, "roles": ["SHAIN", "TENCHO"], "min_span_minutes": 360, "break_minutes": 60, "lookback_days": 35, "max_per_run": 30, "max_attempts": 3, "deducted_tolerance_minutes": 30, "test_user_ids": []}'::jsonb
+  select '{"enabled": false, "min_span_minutes": 360, "break_minutes": 60, "lookback_days": 35, "max_per_run": 30, "max_attempts": 3, "deducted_tolerance_minutes": 30, "test_user_ids": []}'::jsonb
          || coalesce((select value from app_settings where key = 'attendance_break_autofill'), '{}'::jsonb)
 $$;
 
--- ============ 3. 対象の判定（ここ 1 か所） ============
+-- ============ 3. 給与形態の判定と、対象の判定（ここ 1 か所） ============
+--   その人の、その契約での、その日に有効な給与形態。戻り値: monthly／hourly／daily／unknown（登録なし）／ambiguous（決められない）／unsynced（同期が済んでいない賃金がある）／unapproved（未承認の賃金変更がある）
+--   決め方: 区分（時給・日給・月給）ごとに、その日以前でいちばん新しい適用開始日を見る。
+--     月給だけ → monthly／時給だけ → hourly／日給だけ → daily
+--     月給と時給の両方: 時給が「適用開始日なしの初期の行（1970-01-01）」だけなら monthly。日付のある時給より月給のほうが新しければ monthly。それ以外（時給が新しい・同じ日）は ambiguous
+--     日給と、月給または日付のある時給の両方 → ambiguous
+--   未承認の賃金変更（スマレジで直接変更された賃金の控え・承認待ちの申請）がある人は、正式な給与形態として扱わず unapproved
+create or replace function attendance_pay_type(p_user uuid, p_contract text, p_date date)
+returns text language sql stable security definer set search_path = public as $$
+  with cur as (select w.division, max(w.effective_date) d from employee_wage_settings w where w.user_id = p_user and w.contract_id = p_contract and w.effective_date <= p_date group by w.division),
+  a as (select max(d) filter (where division = 0) h, max(d) filter (where division = 1) dy, max(d) filter (where division = 2) m from cur)
+  select case
+    when exists (select 1 from wage_external_changes e where e.user_id = p_user and e.status = 'open')
+      or exists (select 1 from profile_change_requests q where q.user_id = p_user and q.field = 'wage' and q.status = 'pending') then 'unapproved'
+    when exists (select 1 from employee_wage_settings w where w.user_id = p_user and w.contract_id = p_contract and w.sync_status <> 'synced') then 'unsynced'
+    when a.h is null and a.dy is null and a.m is null then 'unknown'
+    when a.dy is not null and (a.m is not null or (a.h is not null and a.h <> date '1970-01-01')) then 'ambiguous'
+    when a.dy is not null then 'daily'
+    when a.m is not null and (a.h is null or a.h = date '1970-01-01' or a.m > a.h) then 'monthly'
+    when a.m is not null then 'ambiguous'
+    else 'hourly' end
+  from a
+$$;
+
 --   休憩が未登録で、6 時間を超える、社員・店長の勤怠を返す。eligible＝補完してよい／skip_reason＝補完しない理由
--- p_only_labor: その 1 件だけを見る（実機テスト用。設定 test_user_ids に入っているテスト用の従業員は、この指定があるときだけ、役割・賃金の種類に関係なく対象になる）
+-- p_only_labor: その 1 件だけを見る（実機テスト用。判定はふだんと同じ）
 create or replace function attendance_break_autofill_scan(p_from date default null, p_to date default null, p_only_labor uuid default null)
 returns table(labor_cost_daily_id uuid, user_id uuid, store_id uuid, work_date date, clock_in timestamptz, clock_out timestamptz, span_minutes numeric, worked_minutes numeric,
               smaregi_shift_result_id text, contract_id text, eligible boolean, skip_reason text)
@@ -87,7 +113,6 @@ language sql stable security definer set search_path = public as $$
            case when l.smaregi_shift_result_id like '%:%' then split_part(l.smaregi_shift_result_id, ':', 1) else (select contract_id from def) end contract_id
       from labor_cost_daily l join users u on u.id = l.user_id, cfg
      where u.is_active and (p_only_labor is null or l.id = p_only_labor)
-       and (u.role in (select jsonb_array_elements_text(cfg.c -> 'roles')) or (p_only_labor is not null and u.id::text in (select jsonb_array_elements_text(coalesce(cfg.c -> 'test_user_ids', '[]'::jsonb)))))
        and l.clock_in is not null and l.clock_out is not null
        and l.break_start_1 is null and l.break_end_1 is null and l.break_start_2 is null and l.break_end_2 is null and coalesce(l.break_minutes, 0) = 0
        and extract(epoch from (l.clock_out - l.clock_in)) / 60 > (cfg.c ->> 'min_span_minutes')::numeric
@@ -104,11 +129,9 @@ language sql stable security definer set search_path = public as $$
       when b.smaregi_shift_result_id is null or b.smaregi_shift_result_id like 'req:%' then 'no_smaregi_id'
       when exists (select 1 from payroll_finalized f join smaregi_contracts sc on sc.corporation_id = f.corporation_id where sc.contract_id = b.contract_id and f.year_month = to_char(b.work_date, 'YYYY-MM')) then 'finalized'
       when b.worked_minutes is not null and b.span - b.worked_minutes >= (cfg.c ->> 'deducted_tolerance_minutes')::numeric then 'deducted'
-      -- 賃金の種類（2026-11-11 ユーザー指示）: 月給の人だけ。日給の人は対象外。時給だけの人・賃金の登録が無い人も補完しない（その勤務日に有効な賃金で見る）
-      when p_only_labor is not null and b.user_id::text in (select jsonb_array_elements_text(coalesce(cfg.c -> 'test_user_ids', '[]'::jsonb))) then null   -- テスト用の従業員（1 件指定のとき）は、賃金の種類を見ない
-      when exists (select 1 from employee_wage_settings w where w.user_id = b.user_id and w.division = 1 and w.effective_date <= b.work_date
-                     and not exists (select 1 from employee_wage_settings w2 where w2.user_id = w.user_id and w2.contract_id = w.contract_id and w2.division = 1 and w2.effective_date <= b.work_date and w2.effective_date > w.effective_date)) then 'daily_wage'
-      when not exists (select 1 from employee_wage_settings w where w.user_id = b.user_id and w.division = 2 and w.effective_date <= b.work_date) then 'not_monthly'
+      -- 給与形態（役職・所属では見ない）: 月給の人だけ補完する。時給・日給は対象外。決められないときは確認の対象
+      else (select case t when 'monthly' then null when 'hourly' then 'hourly_wage' when 'daily' then 'daily_wage' when 'unknown' then 'wage_unknown' when 'ambiguous' then 'wage_ambiguous'
+                          when 'unsynced' then 'wage_unsynced' else 'wage_unapproved' end from attendance_pay_type(b.user_id, b.contract_id, b.work_date) t)
       end reason) r
 $$;
 
@@ -254,9 +277,9 @@ begin
     'exceptions', (select count(*) from attendance_break_exceptions e where e.work_date >= v_from and e.cancelled_at is null));
 end $$;
 
-revoke all on function attendance_break_autofill_cfg(), attendance_break_autofill_scan(date, date, uuid), attendance_break_autofill_begin(uuid, timestamptz, timestamptz, jsonb, text, text),
+revoke all on function attendance_pay_type(uuid, text, date), attendance_break_autofill_cfg(), attendance_break_autofill_scan(date, date, uuid), attendance_break_autofill_begin(uuid, timestamptz, timestamptz, jsonb, text, text),
   attendance_break_autofill_finish(uuid, text, text, jsonb, numeric, numeric), attendance_break_autofill_reconcile(), attendance_break_source(uuid), sf_break_exception_submit(uuid, date, text, integer, text, uuid),
   attendance_break_autofill_task_sync(), hr_break_autofill_status(integer) from public, anon, authenticated;
-grant execute on function attendance_break_autofill_cfg(), attendance_break_autofill_scan(date, date, uuid), attendance_break_autofill_begin(uuid, timestamptz, timestamptz, jsonb, text, text),
+grant execute on function attendance_pay_type(uuid, text, date), attendance_break_autofill_cfg(), attendance_break_autofill_scan(date, date, uuid), attendance_break_autofill_begin(uuid, timestamptz, timestamptz, jsonb, text, text),
   attendance_break_autofill_finish(uuid, text, text, jsonb, numeric, numeric), attendance_break_autofill_reconcile(), sf_break_exception_submit(uuid, date, text, integer, text, uuid), attendance_break_autofill_task_sync() to service_role;
 grant execute on function attendance_break_source(uuid), hr_break_autofill_status(integer) to authenticated, service_role;
