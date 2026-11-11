@@ -83,6 +83,7 @@
 - 運用注意（11/11 事故）: 共有の ~/ns-portal 作業ツリーで `git pull --rebase --autostash` を使い、他担当の未コミット編集が stash に退避された（C が v171 で復旧・実害なし）。**各担当は自分の worktree で作業し、共有作業ツリーで pull/rebase/autostash をしない。**
 
 ## 進捗
+- 11/11 午後〜夜 **日報の Lark/Chatwork 停止・#経営-レポート停止（A セッションでユーザー前倒し指示）**: 店舗別 Slack 配信 8 店が本番稼働（11/10 分 8/8 送信）。Lark group1〜3 無効化・lark-report.yml の Lark 直送ジョブ停止（5820896）・Chatwork は有効な送り先なし・slack_tori/slack_nstyle も無効化（週報・月報を含め #経営-レポート への配信はすべて停止）。nippo 側日報は未変更。→ 解除計画の「対象外（日報）」は解消。27 番は結果として「Slack 側も停止」となった（週報・月報はどこにも配信されない状態＝再開するなら slack_tori/slack_nstyle を有効化）。
 - 11/11 ①の 8・9 **完了**（C セッションでユーザー承認）: _shared/cockpit.ts larkPost の Lark 送信削除（d87f62d）。再デプロイ cockpit-ingest v24→v25 / cockpit-notify v12→v13 / invoice-payment-scan v25→v26（--no-verify-jwt）。smaregi-affiliation-sync（v24）は D が B1 と同時に再デプロイ予定。app_secrets の cockpit_lark_* は未削除（失効は全停止後）。戻し方: cockpit.ts を d87f62d の 1 つ前に戻して再デプロイ。
 - 27（追加・担当A）: 経営レポート 週報・月報（tori-dashboard Actions lark-report.yml report ジョブ＋group1〜3）: L＋S(#経営-レポート・#経営-レポート-nstyle) 並行済み → ①相当。止め方=report_channels group1〜3 の report_kinds を {daily} に／report ジョブに weekly/monthly を送らない条件（約5行）。次回週報 11/15・月報 12/1 → 11/14 までに反映が望ましい。戻し方=report_kinds を戻す・条件を外す。**日報は対象外**。**11/11 承認・適用済み**（report_channels group1〜3 → {daily}・lark-report.yml report ジョブに weekly/monthly 除外・tori-dashboard 65432fb）。事後確認=11/15 の週報が Slack のみに届くこと（A が当日確認）。
 - 19・20（精算 GAS）の Slack 送信は C のローカル未コミット（本番 GAS 未反映・プロパティ未登録・到着確認 0 件）。手順書（GAS 差分のみ）→プロパティ登録→sd_testSlack 1 回→到着確認→承認→設定シート 3 セル（Lark完了報告Webhook・ChatWork APIトークン・ルームID）を空に。
