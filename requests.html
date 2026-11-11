@@ -273,12 +273,33 @@ function bankAttachmentPath(field,value){
 // 2026-11-10: 口座変更の承認は「どの支給回から新しい口座にするか」を承認する人が必ず選ぶ（自動では決めない）。
 //   選べる支給回は従業員ごと（hr_pay_change_config）。出力済みの回は、理由を入れた個別の確認・承認だけ。ハブ側が未適用なら従来どおり
 let PAY_RUNS={};
+// 2026-11-11: 賃金の変更は「本部確認 → 社長の最終承認」（共通承認基盤）。ルートが有効な申請は、段階と期限を表示して nippo の従業員ページで操作する。
+//   ハブ側が未適用（RPC なし）・ルートが無効のときは空のまま＝従来どおり
+let APV_CASES={};
+async function loadApprovalCases(){
+  APV_CASES={};
+  try{ const a=await authed("/rest/v1/rpc/hr_approval_overview",{method:"POST",body:JSON.stringify({p_only_open:true})});
+    if(a.ok&&a.body&&a.body.ok) (a.body.cases||[]).forEach(c=>{ APV_CASES[c.source_id]=c; }); }catch(e){}
+}
+function approvalStageHtml(c){
+  const fd=t=>t?new Date(t).toLocaleString("ja-JP",{month:"numeric",day:"numeric",hour:"2-digit",minute:"2-digit"}):"";
+  const flow=(c.flow||[]).map((l,i)=>i<c.stage_index?`✅ ${esc(l)}`:(i===c.stage_index&&c.status==="pending"?`<b>▶ ${esc(l)}待ち</b>`:esc(l))).join(" → ");
+  const due=c.status==="pending"&&c.stage_due_at?(c.deadline_state==="overdue"?`<span style="color:var(--bad);font-weight:600">⏰ 承認期限を過ぎています（${fd(c.stage_due_at)} まで）</span>`:`承認期限 ${fd(c.stage_due_at)}`):"";
+  const close=c.close&&c.close.message?`<div style="color:var(--bad)">⚠️ ${esc(c.close.message)}</div>`:"";
+  return `<div style="margin-top:8px;font-size:13px;padding:8px;border-radius:8px;background:#eef4ff">
+    <div>${flow}${c.status==="returned"?`　<b style="color:var(--warn)">↩ 差し戻し中（申請した人の修正待ち）</b>`:""}</div>
+    ${due?`<div style="margin-top:2px">${due}</div>`:""}${close}
+    <div style="margin-top:6px">この申請は 2 段階の承認です。内容の確認と操作は、nippo の従業員ページで行ってください（期限を過ぎても自動では承認されません）。</div>
+    <a href="https://mirai-oss.github.io/nippo/?page=admin&u=${encodeURIComponent(c.user_id)}" target="_blank" rel="noopener" style="display:inline-block;margin-top:6px;color:var(--accent)">nippo の従業員ページを開く →</a>
+  </div>`;
+}
 async function loadApprovePanel(){
   const base="/rest/v1/profile_change_requests?status=eq.pending&order=requested_at.asc&select=id,user_id,field,old_value,new_value,requested_at,target:users!profile_change_requests_user_id_fkey(name)";
   let r=await authed(base+",effective_year_month,effective_date,request_reason,apply_note");
   if(!(r.ok&&Array.isArray(r.body))) r=await authed(base); // ハブ側が未適用（列が無い）ときは従来の読み方
   PENDING_PROFILE=(r.ok&&Array.isArray(r.body))?r.body:[];
   PAY_RUNS={};
+  await loadApprovalCases();
   for(const q of PENDING_PROFILE.filter(x=>x.field==="bank_account")){
     try{ const c=await authed("/rest/v1/rpc/hr_pay_change_config",{method:"POST",body:JSON.stringify({p_user:q.user_id})}); if(c.ok&&c.body&&c.body.ok) PAY_RUNS[q.id]=c.body.runs||[]; }catch(e){}
   }
@@ -312,9 +333,10 @@ function renderApprovePanel(){
           ${path?`<button type="button" onclick="viewAttachment('${path.replace(/'/g,"\\'")}')" style="width:auto;padding:3px 8px;font-size:11px;border-radius:6px;border:1px solid var(--accent);color:var(--accent);background:none;margin-left:6px">📎添付を見る</button>`:""}
         </div>
         ${r.field==="wage"&&r.effective_date?`<div style="margin-top:4px;font-size:12px;color:var(--muted)">適用開始日: ${esc(r.effective_date)}${r.request_reason?`／理由: ${esc(r.request_reason)}`:""}</div>`:""}
-        ${r.apply_note?`<div style="margin-top:4px;font-size:12px;color:var(--warn)">${esc(r.apply_note)}</div>`:""}
+        ${r.apply_note&&!APV_CASES[r.id]?`<div style="margin-top:4px;font-size:12px;color:var(--warn)">${esc(r.apply_note)}</div>`:""}
         ${r.field==="bank_account"?payRunSelectHtml(r):""}
-        <div style="margin-top:8px;display:flex;gap:8px">
+        ${APV_CASES[r.id]?approvalStageHtml(APV_CASES[r.id]):""}
+        <div style="margin-top:8px;display:${APV_CASES[r.id]?"none":"flex"};gap:8px">
           <button class="btn" style="width:auto;padding:8px 16px;background:var(--ok)" onclick="reviewProfileRequest('${r.id}',true)">✅ 承認する</button>
           <button class="btn" style="width:auto;padding:8px 16px;background:none;color:var(--bad);border:1px solid var(--bad)" onclick="reviewProfileRequest('${r.id}',false)">却下する</button>
         </div>
