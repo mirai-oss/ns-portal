@@ -795,6 +795,7 @@ Deno.serve(async (req) => {
         if (!oxErr) for (const x of (ox ?? []) as any[]) carryUsers.add(String(x.user_id));
       }
       const checkedUsers: string[] = []; const externalItems: Record<string, unknown>[] = []; let held = 0, deletedRows = 0;
+      const previewRows: Record<string, unknown>[] = [];
       const driftRows: { user_id: string; row_id: string; contract_id: string }[] = [];
       const errors: string[] = [];
       const jst = () => new Date().toISOString();
@@ -828,6 +829,9 @@ Deno.serve(async (req) => {
             for (const k of rc.links) await sb.from("employee_wage_settings").update({ smaregi_wage_apply_id: k.smaregi_wage_apply_id, sync_status: "synced", sync_error: null, synced_at: jst() }).eq("id", k.row_id);
           }
           if (holdUser) { checkedUsers.push(String(l.user_id)); for (const x of rc.external) externalItems.push({ user_id: l.user_id, ...x }); }
+          // 試し読み（dry_run）のとき: どの人のどの行が保留・初期投入になるかを、金額なしで返す（切り替え前の確認用）
+          if (dryRun) { for (const x of rc.external) previewRows.push({ user_id: l.user_id, kind: x.kind, division: x.division, effective_date: x.effective_date, future: x.effective_date > today });
+            if (hf.initialAllowed) for (const x of rc.inserts) previewRows.push({ user_id: l.user_id, kind: "initial_import", division: x.division, effective_date: x.effective_date, future: x.effective_date > today }); }
         } catch (e) { errors.push(`スタッフ${l.smaregi_staff_id}: ${String((e as Error).message ?? e).slice(0, 100)}`); }
       }
       // 保留が有効: 読めた人ぶんの外部変更（未承認の新しい行・金額の違い・行の削除）を控えに記録する。見つからなくなったものは「一致を確認」で閉じる
@@ -839,7 +843,7 @@ Deno.serve(async (req) => {
       const next = offset + slice.length;
       return json({ ok: true, contract_id: C, total, offset, next_offset: next, done: next >= total, processed: slice.length, persons, with_wage: withWage, imported, drift, drift_rows: driftRows, matched, conflicts, skipped_unmapped_store: skippedStore, unsupported_rows: unsupported, errors,
         hold_enabled: holdOn, dry_run: dryRun, held, deleted_rows: deletedRows, external_report: externalReport,
-        hold_carryover_users: carryUsers.size, initial_allowed_users: holdOn ? slice.filter((l: any) => initialUsers.has(String(l.user_id))).length : 0 });
+        ...(dryRun ? { preview_rows: previewRows } : {}), hold_carryover_users: carryUsers.size, initial_allowed_users: holdOn ? slice.filter((l: any) => initialUsers.has(String(l.user_id))).length : 0 });
     }
 
     if (body.action === "wage_push" || body.action === "wage_pull" || body.action === "wage_update" || body.action === "wage_delete") {

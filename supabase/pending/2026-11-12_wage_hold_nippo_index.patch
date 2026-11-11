@@ -1,4 +1,5 @@
 diff --git a/index.html b/index.html
+index f6c3d36..b96cd2f 100644
 --- a/index.html
 +++ b/index.html
 @@ -12304,21 +12304,21 @@ function bindPage(){
@@ -15,7 +16,7 @@ diff --git a/index.html b/index.html
      const r=await smFn("wage_pull_all",{contract_id:c.contract_id,offset:off,limit:15});
      if(!r.ok){t.errors.push(`${smShort(c.contract_id)}: ${smErr(r)||"失敗"}`);break}
 -    total=r.total;t.imported+=r.imported;t.drift+=r.drift;(r.drift_rows||[]).forEach(x=>{t.driftRows.push(x);found[x.user_id]=(found[x.user_id]||0)+1});t.matched+=r.matched;t.conflicts+=r.conflicts;t.skipped+=r.skipped_unmapped_store;t.unsupported+=r.unsupported_rows;t.persons+=r.persons;persons+=r.persons;t.withWage+=r.with_wage;(r.errors||[]).forEach(e=>t.errors.push(e));
-+    total=r.total;t.imported+=r.imported;t.held+=(r.held||0);t.deleted+=(r.deleted_rows||0);if(r.hold_enabled){holdC=true;t.holdOn=true}t.drift+=r.drift;(r.drift_rows||[]).forEach(x=>{t.driftRows.push(x);found[x.user_id]=(found[x.user_id]||0)+1});t.matched+=r.matched;t.conflicts+=r.conflicts;t.skipped+=r.skipped_unmapped_store;t.unsupported+=r.unsupported_rows;t.persons+=r.persons;persons+=r.persons;t.withWage+=r.with_wage;(r.errors||[]).forEach(e=>t.errors.push(e));
++    total=r.total;t.imported+=r.imported;t.held+=(r.held||0);t.deleted+=(r.deleted_rows||0);if(r.hold_enabled){holdC=true}if(r.hold_enabled||r.held||r.deleted_rows||r.hold_carryover_users){t.holdOn=true}t.drift+=r.drift;(r.drift_rows||[]).forEach(x=>{t.driftRows.push(x);found[x.user_id]=(found[x.user_id]||0)+1});t.matched+=r.matched;t.conflicts+=r.conflicts;t.skipped+=r.skipped_unmapped_store;t.unsupported+=r.unsupported_rows;t.persons+=r.persons;persons+=r.persons;t.withWage+=r.with_wage;(r.errors||[]).forEach(e=>t.errors.push(e));
      if(r.done){swept=true;break}off=r.next_offset;
     }
     // 2026-11-10 ステップ 4: この契約を最後まで読めたときだけ、ズレ（不一致）を「同期・承認の状況」に記録する。RPC が無い環境では何もしない
