@@ -18,7 +18,7 @@
 //   { action: "push_profile", user_id } → 2026-09-05追加。nippo側のemployee_profilesの内容を
 //     連携済みのスマレジへ反映（プッシュ方向。既に連携済みの人が対象。本人 or CEO/HQ）
 import { createClient } from "npm:@supabase/supabase-js@2";
-import { loadContracts, loadStoreMap, loadStoreMapPending, ID_BASE, API_BASE, fetchRoles, pickRoleId, putStaffStore, wantedRoleName } from "../_shared/smaregi-contracts.ts";
+import { loadContracts, getContractToken, loadStoreMap, loadStoreMapPending, ID_BASE, API_BASE, fetchRoles, pickRoleId, putStaffStore, wantedRoleName } from "../_shared/smaregi-contracts.ts";
 import { reconcileWages, holdFor, currentAndFuture, wageSupported as wageSupportedShared } from "../_shared/wage-reconcile.ts";
 
 // 2026-10-17 担当D: 複数契約対応。契約は引数contract_id（省略時は既定の契約＝トーホー）で指定する。
@@ -763,6 +763,41 @@ Deno.serve(async (req) => {
     //   【正本は管理システム（ユーザー確定 2026-10-23）】取り込みは「管理システムに無い行を synced として追加」するだけ（初期投入）。管理システムにある行は上書きしない:
     //   値がスマレジと違うものは drift（ズレ）として返す（直すのは画面の「管理システムに合わせる」＝wage_update でスマレジを管理システムの値に直す）。
     //   スマレジに書き込みはしない（読み取りのみ）。認可: CEO/HQ。応答には氏名を含めない（人数・件数のみ）
+    // ---- 2026-11-13: スマレジ・タイムカードの「休憩時間自動設定」を読む（読むだけ。事業所ごと・従業員区分ごと）。社員の休憩の自動補完と二重にならないことの確認用 ----
+    //   { action:"timecard_auto_break_settings", contract_id? }  認可: CEO/HQ。スマレジには何も書かない
+    if (body.action === "timecard_auto_break_settings") {
+      if (!isAdmin) return json({ ok: false, error: "forbidden" }, 403);
+      const pick = (x: any) => ({ division: x?.autoBreakTimeDivision ?? null,
+        time: [[x?.autoBreakStartTime1 ?? null, x?.autoBreakEndTime1 ?? null], [x?.autoBreakStartTime2 ?? null, x?.autoBreakEndTime2 ?? null]],
+        conditions: [1, 2, 3].map((i) => ({ division: x?.[`autoBreakCondition${i}Division`] ?? null, min_work_minutes: x?.[`autoBreakCondition${i}ConditionTime`] ?? null, break_minutes: x?.[`autoBreakCondition${i}SettingTime`] ?? null })) });
+      const isOn = (x: any) => { const d = String(x?.autoBreakTimeDivision ?? ""); const t = !!(x?.autoBreakStartTime1 || x?.autoBreakEndTime1 || x?.autoBreakStartTime2 || x?.autoBreakEndTime2);
+        const c = [1, 2, 3].some((i) => Number(x?.[`autoBreakCondition${i}SettingTime`] ?? 0) > 0); return d === "2" ? c : d === "1" ? t : (t || c); };
+      const out: Record<string, unknown> = { ok: true, contract_id: C, stores: null, classifications: null, errors: [] as string[] };
+      const errs = out.errors as string[];
+      try {
+        const t1 = await getContractToken(C, "timecard.stores:read");
+        const r1 = await fetch(`${API_BASE}/${C}/timecard/stores?limit=1000`, { headers: { Authorization: `Bearer ${t1}` } });
+        if (!r1.ok) errs.push(`事業所の設定を読めません HTTP ${r1.status} ${(await r1.text()).slice(0, 160)}`);
+        else out.stores = ((await r1.json()) ?? []).map((x: any) => ({ id: String(x.storeId ?? x.id ?? ""), name: String(x.storeName ?? x.name ?? ""), enabled: isOn(x), setting: pick(x) }));
+      } catch (e) { errs.push("事業所: " + String((e as Error).message ?? e).slice(0, 200)); }
+      try {
+        const t2 = await getContractToken(C, "timecard.settings:read");
+        const r2 = await fetch(`${API_BASE}/${C}/timecard/employee_classifications?limit=1000`, { headers: { Authorization: `Bearer ${t2}` } });
+        if (!r2.ok) errs.push(`従業員区分の設定を読めません HTTP ${r2.status} ${(await r2.text()).slice(0, 160)}`);
+        else {
+          const list: unknown[] = [];
+          for (const c of ((await r2.json()) ?? []) as any[]) {
+            const id = String(c.employeeClassificationId ?? c.id ?? ""); const own = c.autoBreakTimeSettingFlag === true || c.autoBreakTimeSettingFlag === "1" || c.autoBreakTimeSettingFlag === 1;
+            let detail: any = null;
+            if (own) { const rd = await fetch(`${API_BASE}/${C}/timecard/employee_classifications/${id}`, { headers: { Authorization: `Bearer ${t2}` } }); detail = rd.ok ? await rd.json() : null; if (!rd.ok) errs.push(`従業員区分 ${id} を読めません HTTP ${rd.status}`); }
+            list.push({ id, name: String(c.employeeClassificationName ?? c.name ?? ""), own_setting: own, enabled: own ? (detail ? isOn(detail) : null) : false, setting: detail ? pick(detail) : null, raw_flag: c.autoBreakTimeSettingFlag ?? null });
+          }
+          out.classifications = list;
+        }
+      } catch (e) { errs.push("従業員区分: " + String((e as Error).message ?? e).slice(0, 200)); }
+      return json(out);
+    }
+
     if (body.action === "wage_pull_all") {
       if (!isAdmin) return json({ ok: false, error: "forbidden" }, 403);
       const sb = svc();
@@ -781,7 +816,11 @@ Deno.serve(async (req) => {
       //   dry_run=true: 何も書かずに件数だけ返す（切り替え前の確認用）
       const dryRun = body.dry_run === true;
       const { data: ecfg } = await sb.from("app_settings").select("value").eq("key", "employee_change").maybeSingle();
-      const holdOn = ecfg?.value?.wage_import_hold === true || body.hold_preview === true && dryRun;
+      // 2026-11-13 取り込みの誤操作防止:
+      //   wage_import_precheck=true（設定）または protect_unconfirmed=true（画面から）→ スイッチ B が false でも、スマレジにだけある行は正式登録せず、未承認の変更として記録する（保護を強める向きにだけ働く）
+      //   record_only=true → 未承認の変更の記録と照合の記録だけを行い、賃金の表には 1 行も書かない（追加も、番号の結び付けもしない）
+      const recordOnly = body.record_only === true;
+      const holdOn = ecfg?.value?.wage_import_hold === true || ecfg?.value?.wage_import_precheck === true || body.protect_unconfirmed === true || recordOnly || body.hold_preview === true && dryRun;
       let initialUsers = new Set<string>();
       if (holdOn) {
         const { data: iu, error: iuErr } = await sb.rpc("wage_initial_import_users", { p_contract: C, p_users: slice.map((l: any) => l.user_id) });
@@ -821,7 +860,7 @@ Deno.serve(async (req) => {
           held += rc.counts.held; deletedRows += rc.counts.deleted;
           if (rc.counts.with_wage) withWage++;
           for (const d of rc.drift) if (driftRows.length < 300) driftRows.push({ user_id: l.user_id, row_id: d.row_id, contract_id: C });
-          if (dryRun) { imported += rc.inserts.length; }
+          if (dryRun || recordOnly) { if (dryRun) imported += rc.inserts.length; }
           else {
             for (const ins of rc.inserts) {
               const { error } = await sb.from("employee_wage_settings").insert({ user_id: l.user_id, contract_id: C, division: ins.division, store_id: ins.store_id, wage: ins.wage, holiday_wage: ins.holiday_wage, effective_date: ins.effective_date, smaregi_wage_apply_id: ins.smaregi_wage_apply_id, sync_status: "synced", synced_at: jst() });
@@ -847,7 +886,7 @@ Deno.serve(async (req) => {
         try { await sb.rpc("hr_wage_reconcile_log", { p_contract: C, p_offset: offset, p_total: total, p_processed: slice.length, p_persons: persons, p_unread: unreadUsers, p_unmapped: skippedStore, p_done: next >= total, p_hold: holdOn, p_source: "wage_pull_all" }); } catch (_e) { /* 記録できなくても取り込みは続ける */ }
       }
       return json({ ok: true, contract_id: C, total, offset, next_offset: next, done: next >= total, processed: slice.length, persons, with_wage: withWage, imported, drift, drift_rows: driftRows, matched, conflicts, skipped_unmapped_store: skippedStore, unsupported_rows: unsupported, errors,
-        hold_enabled: holdOn, dry_run: dryRun, held, deleted_rows: deletedRows, external_report: externalReport,
+        hold_enabled: holdOn, dry_run: dryRun, record_only: recordOnly, protect_supported: true, held, deleted_rows: deletedRows, external_report: externalReport,
         ...(dryRun ? { preview_rows: previewRows } : {}), hold_carryover_users: carryUsers.size, initial_allowed_users: holdOn ? slice.filter((l: any) => initialUsers.has(String(l.user_id))).length : 0 });
     }
 
@@ -898,7 +937,7 @@ Deno.serve(async (req) => {
         // 2026-11-12: 未承認の賃金行を正式登録しない（wage_import_hold。既定 false＝これまでどおり）
         const todayP = new Date(Date.now() + 9 * 3600e3).toISOString().slice(0, 10);
         const { data: ecfgP } = await sb.from("app_settings").select("value").eq("key", "employee_change").maybeSingle();
-        const holdOnP = ecfgP?.value?.wage_import_hold === true;
+        const holdOnP = ecfgP?.value?.wage_import_hold === true || ecfgP?.value?.wage_import_precheck === true || body.protect_unconfirmed === true;   // 2026-11-13: 取り込み前チェックが有効なら、1 人ぶんの取り込みでも同じ保護
         let holdThis = false; let heldCount = 0; let carryP = false;
         if (holdOnP) {
           const { data: iu, error: iuErr } = await sb.rpc("wage_initial_import_users", { p_contract: C, p_users: [uid] });

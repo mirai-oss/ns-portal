@@ -6,7 +6,7 @@
 --   動くのは、設定 app_settings.attendance_break_autofill.enabled が true で、Edge Function attendance-break-autofill が呼ばれたときだけ（既定 false）。
 --
 --   仕様（ユーザー確定 2026-11-11）:
---     ・対象: 社員・店長（アルバイトは対象外）。6 時間を超える勤務で、休憩が 1 つも登録されていないとき、60 分を補完する
+--     ・対象: 社員・店長（アルバイトは対象外。役割で見る）のうち、月給の人（日給の人は対象外。時給だけの人も補完しない）。6 時間を超える勤務で、休憩が 1 つも登録されていないとき、60 分を補完する
 --     ・登録済みの休憩は上書きしない／休憩を取っていない・短かったという申告がある日は補完しない／人が直した勤怠・申請や確認が出ている勤怠は補完しない
 --     ・給与確定済みの月は対象外／同じ勤怠には 1 回だけ（二重登録の防止）／スマレジ側で休憩が自動で引かれている疑いがあれば補完しない（二重控除の防止）
 --     ・推定した時刻は「推定」として履歴に残す。あとから実際の時刻に直されたら「置き換えられた」と残す
@@ -102,6 +102,10 @@ language sql stable security definer set search_path = public as $$
       when b.smaregi_shift_result_id is null or b.smaregi_shift_result_id like 'req:%' then 'no_smaregi_id'
       when exists (select 1 from payroll_finalized f join smaregi_contracts sc on sc.corporation_id = f.corporation_id where sc.contract_id = b.contract_id and f.year_month = to_char(b.work_date, 'YYYY-MM')) then 'finalized'
       when b.worked_minutes is not null and b.span - b.worked_minutes >= (cfg.c ->> 'deducted_tolerance_minutes')::numeric then 'deducted'
+      -- 賃金の種類（2026-11-11 ユーザー指示）: 月給の人だけ。日給の人は対象外。時給だけの人・賃金の登録が無い人も補完しない（その勤務日に有効な賃金で見る）
+      when exists (select 1 from employee_wage_settings w where w.user_id = b.user_id and w.division = 1 and w.effective_date <= b.work_date
+                     and not exists (select 1 from employee_wage_settings w2 where w2.user_id = w.user_id and w2.contract_id = w.contract_id and w2.division = 1 and w2.effective_date <= b.work_date and w2.effective_date > w.effective_date)) then 'daily_wage'
+      when not exists (select 1 from employee_wage_settings w where w.user_id = b.user_id and w.division = 2 and w.effective_date <= b.work_date) then 'not_monthly'
       end reason) r
 $$;
 
