@@ -778,7 +778,19 @@ Deno.serve(async (req) => {
         const t1 = await getContractToken(C, "timecard.stores:read");
         const r1 = await fetch(`${API_BASE}/${C}/timecard/stores?limit=100`, { headers: { Authorization: `Bearer ${t1}` } });
         if (!r1.ok) errs.push(`事業所の設定を読めません HTTP ${r1.status} ${(await r1.text()).slice(0, 160)}`);
-        else out.stores = ((await r1.json()) ?? []).map((x: any) => ({ id: String(x.storeId ?? x.id ?? ""), name: String(x.storeName ?? x.name ?? ""), enabled: isOn(x), setting: pick(x) }));
+        else {
+          const j1 = await r1.json(); const arr: any[] = Array.isArray(j1) ? j1 : (Array.isArray(j1?.stores) ? j1.stores : []);
+          const list: unknown[] = [];
+          for (let x of arr) {
+            const id = String(x.storeId ?? x.id ?? "");
+            if (!("autoBreakTimeDivision" in x)) {   // 一覧に設定が入っていないときは、事業所ごとに読む
+              const rd = await fetch(`${API_BASE}/${C}/timecard/stores/${id}`, { headers: { Authorization: `Bearer ${t1}` } });
+              if (rd.ok) { const d = await rd.json(); x = { ...x, ...(Array.isArray(d) ? d[0] : (d?.store ?? d)) }; } else errs.push(`事業所 ${id} を読めません HTTP ${rd.status}`);
+            }
+            list.push({ id, name: String(x.storeName ?? x.name ?? ""), enabled: "autoBreakTimeDivision" in x ? isOn(x) : null, setting: pick(x) });
+          }
+          out.stores = list;
+        }
       } catch (e) { errs.push("事業所: " + String((e as Error).message ?? e).slice(0, 200)); }
       try {
         const t2 = await getContractToken(C, "timecard.settings:read");
@@ -786,7 +798,8 @@ Deno.serve(async (req) => {
         if (!r2.ok) errs.push(`従業員区分の設定を読めません HTTP ${r2.status} ${(await r2.text()).slice(0, 160)}`);
         else {
           const list: unknown[] = [];
-          for (const c of ((await r2.json()) ?? []) as any[]) {
+          const j2 = await r2.json();
+          for (const c of (Array.isArray(j2) ? j2 : (j2?.employeeClassifications ?? j2?.employee_classifications ?? [])) as any[]) {
             const id = String(c.employeeClassificationId ?? c.id ?? ""); const own = c.autoBreakTimeSettingFlag === true || c.autoBreakTimeSettingFlag === "1" || c.autoBreakTimeSettingFlag === 1;
             let detail: any = null;
             if (own) { const rd = await fetch(`${API_BASE}/${C}/timecard/employee_classifications/${id}`, { headers: { Authorization: `Bearer ${t2}` } }); detail = rd.ok ? await rd.json() : null; if (!rd.ok) errs.push(`従業員区分 ${id} を読めません HTTP ${rd.status}`); }

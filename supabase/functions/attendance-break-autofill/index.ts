@@ -62,11 +62,22 @@ async function smaregiAutoBreak(contractId: string): Promise<{ state: "enabled" 
     const t1 = await getContractToken(contractId, "timecard.stores:read");
     const r1 = await fetch(`${API_BASE}/${contractId}/timecard/stores?limit=100`, { headers: { Authorization: `Bearer ${t1}` } });
     if (!r1.ok) { out.error = `事業所の設定を読めません HTTP ${r1.status}`; return out; }
-    for (const s of ((await r1.json()) ?? []) as any[]) out.stores.push({ id: String(s.storeId ?? s.id ?? ""), name: String(s.storeName ?? s.name ?? ""), on: autoBreakOn(s) });
+    const j1 = await r1.json(); const arr1: any[] = Array.isArray(j1) ? j1 : (Array.isArray(j1?.stores) ? j1.stores : []);
+    for (let s of arr1) {
+      const sid = String(s.storeId ?? s.id ?? "");
+      if (!("autoBreakTimeDivision" in s)) {   // 一覧に設定が入っていないときは、事業所ごとに読む。読めなければ「確認できない」
+        const rd = await fetch(`${API_BASE}/${contractId}/timecard/stores/${sid}`, { headers: { Authorization: `Bearer ${t1}` } });
+        if (!rd.ok) { out.error = `事業所 ${sid} の設定を読めません HTTP ${rd.status}`; return out; }
+        const d = await rd.json(); s = { ...s, ...(Array.isArray(d) ? d[0] : (d?.store ?? d)) };
+        if (!("autoBreakTimeDivision" in s)) { out.error = `事業所 ${sid} の休憩時間自動設定の項目が見つかりません`; return out; }
+      }
+      out.stores.push({ id: sid, name: String(s.storeName ?? s.name ?? ""), on: autoBreakOn(s) });
+    }
     const t2 = await getContractToken(contractId, "timecard.settings:read");
     const r2 = await fetch(`${API_BASE}/${contractId}/timecard/employee_classifications?limit=100`, { headers: { Authorization: `Bearer ${t2}` } });
     if (!r2.ok) { out.error = `従業員区分の設定を読めません HTTP ${r2.status}`; return out; }
-    for (const c of ((await r2.json()) ?? []) as any[]) {
+    const j2 = await r2.json();
+    for (const c of (Array.isArray(j2) ? j2 : (j2?.employeeClassifications ?? j2?.employee_classifications ?? [])) as any[]) {
       const id = String(c.employeeClassificationId ?? c.id ?? ""); let on = false;
       if (c.autoBreakTimeSettingFlag === true || c.autoBreakTimeSettingFlag === "1" || c.autoBreakTimeSettingFlag === 1) {
         const rd = await fetch(`${API_BASE}/${contractId}/timecard/employee_classifications/${id}`, { headers: { Authorization: `Bearer ${t2}` } });
