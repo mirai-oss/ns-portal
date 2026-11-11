@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-11-11-v171";
+const BUILD_TAG="2026-11-11-v172";
 const PAYROLL_CANCEL_READY=true;
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
@@ -11818,6 +11818,256 @@ function payrollAttentionHtml(){
   if(rest.length) h+=`<div style="margin-top:${strong||inv.length?6:0}px"><b>⚠️ 対応が必要な変更申請があります（${rest.length}件）</b>${rest.map(x=>`<div style="margin-top:4px">・${link(x)}: ${esc(x.message||"")}</div>`).join("")}</div>`;
   return h+`</div>`;
 }
+// ===== 賃金の安全確認（給与確定前の安全確認と保留。設計書 §25・SQL 2026-11-12_payroll_wage_guard.sql）2026-11-12 追加 =====
+// ・ハブ側の関数が未適用（404）／スイッチ OFF（enabled=false）／読み込み失敗 → パネルを出さない（これまでどおり動く）。
+// ・通常時は 1 行だけ。問題があるときだけ赤枠で要点を出し、「詳細」を開くと対象者・理由・照合・例外解除の申請と履歴が見える。
+// ・金額は出さない。氏名・理由などサーバーから来た文字列は必ず esc() を通す。
+// ・例外解除: 申請は本部・社長・マスター。承認・却下・解除の取り消しは社長（役割 CEO）だけ（マスターでは代用不可。サーバー側でも拒否）。
+const PAYROLL_WG_SCOPE_NOTES=[
+  "保留の人が 1 人でもいると、その法人のその月の給料確定は全員ぶん止まります（人ごとに分けて確定できないため）。",
+  "振込データ（CSV）は月単位の出力のため、どれかの法人が全体停止のあいだは、その月の振込データは全法人ぶん出力できません。人ごとの保留だけなら、その人だけを外して出力できます。",
+  "止められるのは管理システムの給料確定・振込データ・現金手渡しだけです。スマレジ側の給与計算と Web 給与明細は止まりません。"
+];
+const PAYROLL_WG_STATUS_LABEL={pending:"承認待ち",approved:"承認済み（例外解除中）",rejected:"却下",cancelled:"取り下げ・取り消し済み"};
+const PAYROLL_WG_FORM_DEF={
+  request:{btn:"申請する",ph:"理由（必須・5 文字以上・500 文字まで）",note:"申請しただけでは解除されません（社長の承認が済むまで、保留のままです）。"},
+  approved:{btn:"承認する",ph:"コメント（任意・500 文字まで）",note:"承認すると、この申請の対象（その人、またはその法人）の、この月の保留だけが解除されます。"},
+  rejected:{btn:"却下する",ph:"却下の理由（必須・500 文字まで）",note:"却下すると、保留は続きます。"},
+  withdraw:{btn:"取り下げる",ph:"コメント（任意・500 文字まで）",note:"承認待ちの申請を取り下げます。保留は続きます。"},
+  revoke:{btn:"解除を取り消す",ph:"コメント（任意・500 文字まで）",note:"承認済みの例外解除を取り消します。保留に戻ります。"}
+};
+function payrollWgKey_(){ return `${PAYROLL_STATE.yearMonth||""}|${payrollCorpDef_().key}`; }
+function payrollWgUi_(){ if(!PAYROLL_STATE.wageGuardUi) PAYROLL_STATE.wageGuardUi={open:false,form:null,msg:null,busy:false}; return PAYROLL_STATE.wageGuardUi; }
+// 日時は日本時間で M/D HH:MM（見ている端末の時刻設定に左右されないよう、UTC に 9 時間を足して組み立てる）
+function payrollWgFmtDT_(t){
+  if(!t) return "—"; const d=new Date(t); if(isNaN(d)) return "—";
+  const j=new Date(d.getTime()+9*3600*1000);
+  return `${j.getUTCMonth()+1}/${j.getUTCDate()} ${String(j.getUTCHours()).padStart(2,"0")}:${String(j.getUTCMinutes()).padStart(2,"0")}`;
+}
+function payrollWgAgeH_(t){ const d=new Date(t); if(!t||isNaN(d)) return null; return Math.max(0,Math.floor((Date.now()-d.getTime())/3600000)); }
+function payrollWgCorps_(){
+  const g=PAYROLL_STATE.wageGuard;
+  return (g&&g.enabled===true&&Array.isArray(g.corporations))?g.corporations.filter(c=>c&&c.applicable!==false):[];
+}
+// その法人のその月の給料確定が止まっているか（全体停止、または保留の人が 1 人でもいる）
+function payrollWgCorpBlocked_(c){ return !!(c&&(c.stop_all===true||(Array.isArray(c.holds)&&c.holds.length>0))); }
+// 読み込み: 年月・法人が変わったときに 1 回（force=true は、確定・例外解除のあとの読み直し）。失敗しても他の部分に影響させない
+async function payrollWageGuardLoad(force){
+  let key="";
+  try{
+    key=payrollWgKey_();
+    if(!force&&PAYROLL_STATE.wageGuardKey===key) return;
+    if(PAYROLL_STATE.wageGuardKey!==key){ PAYROLL_STATE.wageGuard=null; PAYROLL_STATE.wageGuardUi=null; }   // 別の月・法人の表示を残さない
+    PAYROLL_STATE.wageGuardKey=key;
+    let data=null;
+    try{
+      const r=await authed("/rest/v1/rpc/hr_payroll_wage_guard_status",{method:"POST",body:JSON.stringify({p_year_month:PAYROLL_STATE.yearMonth,p_corp_id:null})});
+      if(r&&r.ok&&r.body&&r.body.enabled===true&&Array.isArray(r.body.corporations)) data=r.body;   // 未適用（404）・権限なし・スイッチ OFF は「出さない」
+    }catch(e){ data=null; }
+    if(PAYROLL_STATE.wageGuardKey!==key) return;   // 読み込み中に年月・法人が変わった → 古い結果は捨てる
+    PAYROLL_STATE.wageGuard=data;
+  }catch(e){ PAYROLL_STATE.wageGuard=null; }
+  payrollWageGuardPaint_();
+}
+function payrollWgHeadline_(c,mon){
+  const holds=Array.isArray(c.holds)?c.holds:[]; const n=holds.length; const name=c.corp_name||"（法人名なし）";
+  const onlyUnapproved=holds.every(h=>(h.reasons||[]).length>0&&(h.reasons||[]).every(r=>r==="external_open"||r==="request_pending"));
+  const holdTxt=n?`${onlyUnapproved?"未承認の賃金変更":"賃金の確認待ち"} ${n} 人`:"";
+  if(c.stop_all===true){
+    const labels=[...new Set((c.stop_reasons||[]).map(x=>x&&(x.label||x.code)).filter(Boolean))];
+    return `⛔ ${name}: ${mon} 月分は全体停止中（給料確定・振込データ・現金手渡し）: ${labels[0]||"理由は「詳細」"}${labels.length>1?` ほか ${labels.length-1} 件`:""}${holdTxt?`／${holdTxt}`:""}`;
+  }
+  return `⛔ ${name}: ${mon} 月分の給料確定は停止中（${holdTxt}）`;
+}
+function payrollWgScopeNotesHtml_(){
+  return `<ul data-wg-scope style="margin:6px 0 0;padding-left:18px;font-size:11px;color:var(--muted)">${PAYROLL_WG_SCOPE_NOTES.map(s=>`<li>${esc(s)}</li>`).join("")}</ul>`;
+}
+// 理由などの小さな入力欄（ブラウザの入力ダイアログは使わない）。開いている入力欄が、その行のものならその場に出す
+function payrollWgFormHtml_(match){
+  const ui=payrollWgUi_(); const f=ui.form;
+  if(!f||!match(f)) return "";
+  const def=PAYROLL_WG_FORM_DEF[f.kind]; if(!def) return "";
+  return `<div data-wg-form style="margin:4px 0 6px;padding:6px 8px;border:1px solid var(--line);border-radius:6px">
+    <div style="font-size:11px;color:var(--muted);margin-bottom:4px">${esc(def.note)}</div>
+    <textarea data-wg-text rows="2" maxlength="500" placeholder="${esc(def.ph)}" style="width:100%;box-sizing:border-box;font-size:12px" ${ui.busy?"disabled":""}>${esc(f.text||"")}</textarea>
+    ${f.err?`<div class="err" data-wg-form-err style="font-size:12px">${esc(f.err)}</div>`:""}
+    <div style="display:flex;gap:6px;margin-top:4px"><button type="button" class="hq-btn primary" data-wg-act="submit" style="font-size:11px;padding:6px 9px" ${ui.busy?"disabled":""}>${ui.busy?"送信中…":esc(def.btn)}</button><button type="button" class="hq-btn" data-wg-act="close" style="font-size:11px;padding:6px 9px" ${ui.busy?"disabled":""}>やめる</button></div>
+  </div>`;
+}
+function payrollWgReqBtnHtml_(c,userId){
+  const pending=(c.releases||[]).some(x=>x&&x.status==="pending"&&(userId?(x.scope==="person"&&x.user_id===userId):x.scope==="corp"));
+  if(pending) return ` <span style="color:var(--muted)">例外解除を申請中（社長の承認待ち）</span>`;
+  return ` <button type="button" class="hq-btn" data-wg-act="request" data-wg-corp="${esc(c.corporation_id||"")}" data-wg-user="${esc(userId||"")}" style="font-size:11px;padding:3px 8px">例外解除を申請</button>`;
+}
+function payrollWgReconRowHtml_(r,c){
+  const lbl=esc(r.label||r.contract_id||"—"); const red=`style="color:var(--bad,#dc2626)"`;
+  if(!r.finished_at) return `<div>・${lbl}: <b ${red}>未実施</b>（最後まで終わった照合がありません）</div>`;
+  const h=payrollWgAgeH_(r.finished_at);
+  const maxH=Number(PAYROLL_STATE.wageGuard&&PAYROLL_STATE.wageGuard.max_age_hours)||24;   // 期限（時間）。ハブが返さないときは 24
+  const stale=(h!=null&&h>=maxH)||(c.stop_reasons||[]).some(s=>s&&s.code==="reconcile_stale"&&s.contract_id===r.contract_id);
+  return `<div>・${lbl}: ${esc(payrollWgFmtDT_(r.finished_at))}（${h==null?"—":(h<1?"1 時間以内":`${h} 時間前`)}${stale?`・<b ${red}>期限切れ</b>`:""}）／状態: ${r.ok===true?"最後まで完了":`<b ${red}>失敗・中断</b>`}／読めなかった人 ${Number(r.unread)||0} 人（対象 ${Number(r.total)||0} 人）</div>`;
+}
+function payrollWgReleaseRowHtml_(x){
+  const isCeo=!!(ME&&ME.role==="CEO");                      // マスターでも CEO でなければ承認・却下は出さない
+  const self=!!(ME&&x.user_id&&x.user_id===ME.id);           // 自分が対象の申請は承認できない
+  // 申請した本人か: ハブが申請者の ID を返すならそれで、返さない（いまの関数）なら氏名の一致で判定する。違っていてもサーバー側が拒否する
+  const mine=!!(ME&&(x.requested_by?x.requested_by===ME.id:(x.requested_by_name&&x.requested_by_name===ME.name)));
+  const b=(act,label,primary)=>`<button type="button" class="hq-btn${primary?" primary":""}" data-wg-act="${act}" data-wg-id="${esc(x.id||"")}" style="font-size:11px;padding:3px 8px">${label}</button>`;
+  let btns="";
+  if(x.status==="pending"){
+    if(isCeo) btns+=self?`<span style="color:var(--muted)">本人は承認できません</span>`:b("approved","承認",true)+b("rejected","却下");
+    if(isCeo||mine) btns+=b("withdraw","取り下げ");
+  }else if(x.status==="approved"&&isCeo){ btns+=b("revoke","解除を取り消す"); }
+  const target=x.scope==="corp"?"法人全体（全体停止）":`${esc(x.user_name||"—")}さん`;
+  let decided="";
+  const note=x.decide_note?`・コメント: ${esc(x.decide_note)}`:"";
+  if(x.status==="approved") decided=`承認: ${esc(x.decided_by_name||"—")}・${esc(payrollWgFmtDT_(x.decided_at))}${note}`;
+  else if(x.status==="rejected") decided=`却下: ${esc(x.decided_by_name||"—")}・${esc(payrollWgFmtDT_(x.decided_at))}${note}`;
+  else if(x.status==="cancelled") decided=x.decided_at?`承認: ${esc(x.decided_by_name||"—")}・${esc(payrollWgFmtDT_(x.decided_at))} → その後、解除を取り消し${note}`:`取り下げ${note}`;
+  // ハブが履歴（だれが・いつ・コメント）を返すときは、それをそのまま順に出す（承認のあとの取り消しも、だれが・いつが分かる）
+  const LOG_LABEL={approve:"承認",reject:"却下",cancel:(x.decided_at?"解除を取り消し":"取り下げ")};
+  const logs=(Array.isArray(x.log)?x.log:[]).filter(g=>g&&g.action&&g.action!=="request");
+  if(logs.length) decided=logs.map(g=>`${esc(LOG_LABEL[g.action]||g.action)}: ${esc(g.actor_name||"—")}・${esc(payrollWgFmtDT_(g.at))}${g.comment?`・コメント: ${esc(g.comment)}`:""}`).join("<br>");
+  return `<div data-wg-release="${esc(x.id||"")}" style="margin-top:4px;padding-top:4px;border-top:1px dashed var(--line)">
+    <div><b>${esc(PAYROLL_WG_STATUS_LABEL[x.status]||x.status||"")}</b>　対象: ${target}</div>
+    <div>申請: ${esc(x.requested_by_name||"—")}・${esc(payrollWgFmtDT_(x.requested_at))}・理由: ${esc(x.reason||"")}</div>
+    ${decided?`<div>${decided}</div>`:""}
+    ${btns?`<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:3px">${btns}</div>`:""}
+    ${payrollWgFormHtml_(f=>f.kind!=="request"&&f.id===x.id)}
+  </div>`;
+}
+function payrollWgCorpDetailHtml_(c,ym){
+  const holds=Array.isArray(c.holds)?c.holds:[], released=Array.isArray(c.released)?c.released:[], stop=Array.isArray(c.stop_reasons)?c.stop_reasons:[];
+  const recon=Array.isArray(c.reconcile)?c.reconcile:[];
+  const rel=(Array.isArray(c.releases)?c.releases:[]).slice().sort((a,b)=>String(b.requested_at||"")<String(a.requested_at||"")?-1:1);   // 新しい順
+  const red=`style="color:var(--bad,#dc2626)"`;
+  const state=c.stop_all===true?`<b ${red}>全体停止中</b>`:(holds.length?`<b ${red}>保留 ${holds.length} 人</b>`:(c.stop_released===true?"全体停止を例外解除中（社長の承認済み）":"問題なし"));
+  let h=`<div data-wg-corp-block="${esc(c.corporation_id||"")}" style="margin-top:8px;padding-top:8px;border-top:1px solid var(--line)"><div><b>🏢 ${esc(c.corp_name||"（法人名なし）")}</b>　${state}</div>`;
+  if(stop.length&&(c.stop_all===true||c.stop_released===true)){
+    h+=`<div style="margin-top:4px"><b>全体停止の理由</b>${c.stop_released===true?"（社長の承認で例外解除中）":""}${c.stop_all===true?payrollWgReqBtnHtml_(c,null):""}
+      ${stop.map(s=>`<div>・${esc((s&&(s.label||s.code))||"")}${s&&s.contract_label?`（${esc(s.contract_label)}）`:""}</div>`).join("")}
+      ${payrollWgFormHtml_(f=>f.kind==="request"&&f.corpId===c.corporation_id&&!f.userId)}</div>`;
+  }
+  if(holds.length){
+    h+=`<div style="margin-top:4px"><b>保留の人（${esc(ym)} 分・${holds.length} 人）</b>
+      ${holds.map(p=>`<div data-wg-hold="${esc(p.user_id||"")}">・<b>${esc(p.user_name||"—")}</b>さん: ${esc(((p.reason_labels&&p.reason_labels.length?p.reason_labels:p.reasons)||[]).join("／"))}${payrollWgReqBtnHtml_(c,p.user_id)}${payrollWgFormHtml_(f=>f.kind==="request"&&f.corpId===c.corporation_id&&f.userId===p.user_id)}</div>`).join("")}</div>`;
+  }
+  if(released.length) h+=`<div style="margin-top:4px"><b>例外解除中の人</b>（社長の承認済み・この月だけ）: ${released.map(p=>`${esc(p.user_name||"—")}さん`).join("、")}</div>`;
+  h+=`<div style="margin-top:4px"><b>スマレジ照合（最新）</b>${recon.length?recon.map(r=>payrollWgReconRowHtml_(r||{},c)).join(""):`<div>・記録がありません</div>`}</div>`;
+  h+=`<div style="margin-top:4px"><b>例外解除の申請と履歴</b>${rel.length?rel.map(payrollWgReleaseRowHtml_).join(""):`<div style="color:var(--muted)">・この月の申請はありません</div>`}</div>`;
+  return h+`</div>`;
+}
+function payrollWageGuardHtml_(){
+  const g=PAYROLL_STATE.wageGuard;
+  if(!g||g.enabled!==true||PAYROLL_STATE.wageGuardKey!==payrollWgKey_()) return "";
+  const ui=payrollWgUi_(); const corps=payrollWgCorps_();
+  const ym=String(g.year_month||PAYROLL_STATE.yearMonth||""); const mon=String(Number(ym.slice(5,7))||"");
+  const bad=corps.filter(payrollWgCorpBlocked_);
+  const pendingN=corps.reduce((n,c)=>n+(c.releases||[]).filter(x=>x&&x.status==="pending").length,0);
+  const msg=ui.msg?`<div class="err${ui.msg.ok?" msg-ok":""}" data-wg-msg style="margin-top:6px;font-size:12px">${esc(ui.msg.text)}</div>`:"";
+  // 「詳細」の中身。最後に、読み直しのボタン（社長の承認待ち・スマレジ照合のやり直しのあとに、画面全体を再読み込みしなくても確かめられるように）
+  const detail=corps.map(c=>payrollWgCorpDetailHtml_(c,ym)).join("")+`<div style="margin-top:8px"><button type="button" class="hq-btn" data-wg-act="reload" style="font-size:11px;padding:3px 8px" ${ui.busy?"disabled":""}>🔄 最新の状態に更新</button></div>`;
+  if(!bad.length){
+    // 問題なし: 1 行だけ。押すと照合の詳細と例外解除の履歴が開く。最後の照合は、契約ごとの最新のうち一番古いもの（＝全部の契約がそこまでは済んでいる）
+    const fins=[]; corps.forEach(c=>(c.reconcile||[]).forEach(r=>fins.push(r&&r.finished_at?r.finished_at:null)));
+    const last=!fins.length?"":(fins.some(x=>!x)?"未実施の契約あり":payrollWgFmtDT_(fins.slice().sort((a,b)=>new Date(a)-new Date(b))[0]));
+    const exc=corps.some(c=>c.stop_released===true||(c.released||[]).length>0);
+    return `<details data-wg-details data-wg-state="ok" class="card" style="padding:8px 12px;margin:0 0 14px;font-size:12px" ${ui.open?"open":""}>
+      <summary style="cursor:pointer">✅ 賃金の安全確認: 問題なし${last?`（最後の照合 ${esc(last)}）`:""}${exc?"・例外解除あり":""}${pendingN?`・承認待ちの申請 ${pendingN} 件`:""}</summary>
+      ${detail}${payrollWgScopeNotesHtml_()}
+    </details>${msg}`;
+  }
+  return `<div data-wg-state="stop" style="margin:0 0 14px;padding:8px 10px;border:2px solid var(--bad,#dc2626);border-radius:8px;font-size:12px">
+    <div style="font-weight:800;margin-bottom:2px">賃金の安全確認</div>
+    ${bad.map(c=>`<div data-wg-headline><b style="color:var(--bad,#dc2626)">${esc(payrollWgHeadline_(c,mon))}</b></div>`).join("")}
+    ${pendingN?`<div>例外解除の申請が承認待ちです（${pendingN} 件）。承認できるのは社長だけです。</div>`:""}
+    ${payrollWgScopeNotesHtml_()}${msg}
+    <details data-wg-details style="margin-top:6px" ${ui.open?"open":""}>
+      <summary style="cursor:pointer;font-weight:700">詳細（対象者・理由・照合・例外解除）</summary>
+      ${detail}
+    </details>
+  </div>`;
+}
+// 画面に埋め込む用。中で何が起きても、給与仕訳の他の部分は止めない
+function payrollWageGuardHtml(){ try{ return payrollWageGuardHtml_(); }catch(e){ return ""; } }
+// 給料確定ボタンの下の小さな注意（選んでいる法人が止まっているときだけ）
+function payrollWageGuardStopNoteHtml(){
+  try{
+    if(PAYROLL_STATE.wageGuardKey!==payrollWgKey_()) return "";
+    const id=payrollCorpId(); if(!id) return "";
+    const c=payrollWgCorps_().find(x=>x.corporation_id===id);
+    return payrollWgCorpBlocked_(c)?`<div style="margin-top:4px;font-size:11px;color:var(--bad,#dc2626)">⛔ 停止中（理由は下の「賃金の安全確認」）</div>`:"";
+  }catch(e){ return ""; }
+}
+function payrollWageGuardWire_(box){
+  try{
+    box=box||document.getElementById("payroll-wage-guard"); if(!box) return;
+    box.querySelectorAll("[data-wg-act]").forEach(b=>b.onclick=ev=>{ if(ev&&ev.preventDefault) ev.preventDefault(); payrollWageGuardAct_(b.dataset.wgAct,b.dataset); });
+    box.querySelectorAll("[data-wg-text]").forEach(t=>t.oninput=()=>{ const f=payrollWgUi_().form; if(f) f.text=t.value; });
+    box.querySelectorAll("[data-wg-details]").forEach(d=>d.ontoggle=()=>{ payrollWgUi_().open=!!d.open; });   // 一覧の絞り込みなどで描き直しても、開閉を保つ
+  }catch(e){}
+}
+// パネルと「停止中」の注意だけを描き直す（給与仕訳の一覧は描き直さない）
+function payrollWageGuardPaint_(){
+  try{
+    const box=document.getElementById("payroll-wage-guard");
+    if(box){ box.innerHTML=payrollWageGuardHtml(); payrollWageGuardWire_(box); }
+    const note=document.querySelector("[data-payroll-wage-stop]");
+    if(note) note.innerHTML=payrollWageGuardStopNoteHtml();
+  }catch(e){}
+}
+// 入力欄にカーソルを戻す（描き直すと外れるため。入力済みの文字の末尾へ）
+function payrollWgFocus_(){ try{ const t=document.querySelector("#payroll-wage-guard [data-wg-text]"); if(t&&t.focus){ t.focus(); if(t.setSelectionRange) t.setSelectionRange(t.value.length,t.value.length); } }catch(e){} }
+function payrollWageGuardAct_(act,d){
+  const ui=payrollWgUi_(); d=d||{};
+  if(ui.busy) return;
+  if(act==="submit") return payrollWageGuardSubmit_();
+  if(act==="reload"){ ui.form=null; ui.msg=null; return payrollWageGuardLoad(true); }
+  if(act==="close"){ ui.form=null; }
+  else if(act==="request"){ if(!d.wgCorp) return; ui.form={kind:"request",ym:PAYROLL_STATE.yearMonth,corpId:d.wgCorp,userId:d.wgUser||null,text:"",err:""}; }
+  else if(act==="approved"||act==="rejected"||act==="revoke"){ if(!(ME&&ME.role==="CEO")||!d.wgId) return; ui.form={kind:act,id:d.wgId,text:"",err:""}; }
+  else if(act==="withdraw"){ if(!d.wgId) return; ui.form={kind:act,id:d.wgId,text:"",err:""}; }
+  else return;
+  ui.msg=null; ui.open=true;
+  payrollWageGuardPaint_(); payrollWgFocus_();
+}
+// 入力欄の「申請する／承認する／却下する／取り下げる／解除を取り消す」。入力の不足はここで止め、ハブには送らない
+async function payrollWageGuardSubmit_(){
+  const ui=payrollWgUi_(); const f=ui.form;
+  if(!f||ui.busy) return;
+  const text=String(f.text||"").trim();
+  f.err="";
+  if(f.kind==="request"&&text.length<5) f.err="理由を入力してください（5 文字以上）。";
+  else if(f.kind==="rejected"&&!text) f.err="却下の理由を入力してください。";
+  else if(text.length>500) f.err="500 文字までで入力してください。";
+  if(f.err){ payrollWageGuardPaint_(); payrollWgFocus_(); return; }
+  let fn,body;
+  if(f.kind==="request"){ fn="hr_payroll_wage_hold_release_request"; body={p_year_month:f.ym,p_corp_id:f.corpId,p_user:f.userId||null,p_reason:text}; }
+  else if(f.kind==="approved"||f.kind==="rejected"){ fn="hr_payroll_wage_hold_release_decide"; body={p_release:f.id,p_decision:f.kind,p_comment:text||null}; }
+  else if(f.kind==="withdraw"||f.kind==="revoke"){ fn="hr_payroll_wage_hold_release_cancel"; body={p_release:f.id,p_comment:text||null}; }
+  else return;
+  ui.busy=true; payrollWageGuardPaint_();
+  let r=null;
+  try{ r=await authed("/rest/v1/rpc/"+fn,{method:"POST",body:JSON.stringify(body)}); }catch(e){ r=null; }
+  ui.busy=false;
+  if(!(r&&r.ok&&r.body&&r.body.ok)){
+    f.err="処理できませんでした: "+((r&&r.body&&r.body.message)||"通信に失敗しました。時間をおいて、もう一度お試しください")+"（何も変更されていません）";
+    payrollWageGuardPaint_(); payrollWgFocus_(); return;
+  }
+  const done={request:(r.body.message||"例外解除を申請しました。社長の承認が済むまで、保留は解除されません"),approved:"承認しました。対象の、この月の保留を解除しました。",rejected:"却下しました。保留は続きます。",withdraw:"申請を取り下げました。",revoke:"例外解除を取り消しました。保留に戻ります。"}[f.kind];
+  ui.form=null; ui.open=true; ui.msg={ok:true,text:done};
+  await payrollWageGuardLoad(true);
+  if(f.kind==="approved"||f.kind==="revoke"){
+    // 保留の対象が変わる操作のあとは、振込データの除外の表示なども合わせて読み直す（月を切り替えたときと同じ読み込み）
+    try{ await payrollLoad(); payrollRender(); updateMailSummaryBar(); }catch(e){}
+  }
+}
+// 給料確定に失敗したときの文。賃金の安全確認で止まったとき（ハブの文に「給料確定は停止中」を含む）は、ハブの文をそのまま出す。それ以外は従来どおり
+function payrollFinalizeErrorText_(r){
+  const m=r&&r.body&&r.body.message;
+  if(typeof m==="string"&&m.includes("給料確定は停止中")) return m;
+  return "法人を特定できませんでした。本部タスクの自動発行は行っていません。\n（詳細: "+(r&&r.body&&r.body.message||JSON.stringify(r&&r.body))+"）";
+}
 // 一覧の並び替え・絞り込み（2026-09-01: ユーザー要望「振込済みが1番下に行くように・絞れるように」）
 // 2026-09-02: この月は対象外にした人（sf_payroll_hidden・担当Bからの依頼②）は一覧から常に除外し、
 // 検索キーワード（氏名の部分一致・依頼③）も同時にここで反映する
@@ -12241,10 +12491,12 @@ function payrollRender(){
           <div class="err" id="payroll-sync-msg" style="margin-top:6px"></div>
           <div data-payroll-status style="margin-top:10px;padding:6px 10px;border-radius:8px;font-size:12px;background:#eee;color:#666">確定状態を確認中…</div>
           <button data-payroll-finalize class="hq-btn primary" style="margin-top:6px;width:100%" disabled>✅ 給料確定する（本部タスクを自動発行）</button>
+          <div data-payroll-wage-stop>${payrollWageGuardStopNoteHtml()}</div>
           <button data-payroll-cancel class="hq-btn" style="margin-top:6px;width:100%;display:none;color:#b3261e">↩️ 給料確定を取り消す</button>
         </div>
       </div>
 
+      <div id="payroll-wage-guard">${payrollWageGuardHtml()}</div>
       ${alertTotal>0?`<div class="card pr-alert-panel">
         <div class="pr-alert-head"><div><h2>⚠ 要対応</h2><div style="font-size:9px;color:var(--muted)">今、人間が対応する必要があるもの</div></div><div class="pr-alert-total">${alertTotal}名</div></div>
         <div class="pr-alert-grid">
@@ -12354,6 +12606,7 @@ function payrollRender(){
         <div class="pr-footer-actions"><small>絞り込み条件に応じて自動更新</small><button class="btn" id="payroll-reset-filter">絞り込みをリセット</button></div>
       </div>
     </section>`;
+  payrollWageGuardWire_(); payrollWageGuardLoad().catch(()=>{});   // 2026-11-12: 賃金の安全確認（年月・法人が変わったときだけ読み込む。失敗しても他に影響させない）
   $("payroll-ym").onchange=async()=>{
     PAYROLL_STATE.yearMonth=$("payroll-ym").value;
     $("tabbody").innerHTML=`<section class="invoice-list active"><div class="card" style="padding:16px"><div class="spin" style="padding:20px 0">読み込み中…</div></div></section>`;
@@ -12438,10 +12691,11 @@ function payrollRender(){
     });
     el.disabled=false;
     // 法人を特定できないとき（担当Bの関数がエラーを返す）は、黙って成功扱いにせず止める
-    if(!r.ok){ alert("法人を特定できませんでした。本部タスクの自動発行は行っていません。\n（詳細: "+(r.body&&r.body.message||JSON.stringify(r.body))+"）"); return; }
+    if(!r.ok){ alert(payrollFinalizeErrorText_(r)); payrollWageGuardLoad(true).catch(()=>{}); return; }   // 2026-11-12: 賃金の安全確認で止まったときはハブの文をそのまま出す（それ以外は従来の文）
     const d=r.body;
     alert(`本部タスクを発行しました（法人: ${corp}）。\n・給料振込：対象${d.transfer_count}名／期日${d.transfer_due}\n・現金手渡し：対象${d.cash_count}名／期日${d.cash_due}\n\n本部タスク（tasks.html）で内容を確認してください。`);
     payrollRender();
+    payrollWageGuardLoad(true).catch(()=>{});   // 2026-11-12: 確定のあとは、賃金の安全確認を読み直す
   });
   // 2026-11-10追加: 給料確定の取消（担当B設計のRPC hq_cancel_payroll_preview / hq_cancel_payroll_tasks）。確定済みの月×法人のときだけボタンを出す
   (async()=>{
