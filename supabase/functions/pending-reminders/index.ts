@@ -16,6 +16,7 @@
 // デプロイ: supabase functions deploy pending-reminders --no-verify-jwt --project-ref uuvsxzhpxtghojoubjcc --yes
 // =============================================================
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { remindInThread } from "../_shared/attendance-alert-notice.ts";   // 2026-11-11: 勤怠確認の新しい形（親 1 行＋スレッド）は、リマインドをスレッドへの返信で出す（親メッセージを増やさない）
 
 const json = (o: unknown, status = 200) => new Response(JSON.stringify(o), { status, headers: { "Content-Type": "application/json" } });
 const svc = () => createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
@@ -119,6 +120,17 @@ Deno.serve(async (req) => {
     const last = it.reminded_at ?? it.since;
     if (Date.now() - new Date(last).getTime() < minAgeMs) { skippedFresh++; continue; }
     if (sent >= maxPerRun) { capped++; continue; }
+    // 2026-11-11（ユーザー決定）: 新しい形の勤怠確認は、元のメッセージを複製しない。スレッドへの返信（担当にメンション）で知らせる
+    if (it.table === "sf_attendance_alerts") {
+      const n2 = it.remind_count + 1;
+      const tr = await remindInThread(sb, sendSlack, { alertId: it.id, approval: it.kind === "alert_approval", n: n2, since: it.since, dryRun });
+      if (tr.v2) {
+        if (dryRun) { sent++; results.push({ kind: it.kind, id: it.id, n: n2, thread: true, mentions: tr.mentions, dry_run: true }); continue; }
+        if (tr.ok) { await sb.from(it.table).update({ reminded_at: nowIso, remind_count: n2, updated_at: nowIso }).eq("id", it.id); sent++; results.push({ kind: it.kind, id: it.id, n: n2, thread: true, mentions: tr.mentions }); }
+        else { failed++; results.push({ kind: it.kind, id: it.id, thread: true, error: tr.error ?? "send_failed" }); }
+        continue;
+      }
+    }
     // 元メッセージの台帳（送れていたもの）。宛先ごとに 1 通ずつ再送する（承認依頼はマスター各人の DM）
     const { data: rows } = await sb.from("notification_deliveries").select("id,channel_key,payload,delivery_status,created_at").in("id", it.ids).in("delivery_status", ["sent", "updated"]).order("created_at", { ascending: true });
     const byChannel = new Map<string, any>();

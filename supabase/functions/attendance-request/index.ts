@@ -17,6 +17,7 @@
 // =============================================================
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { isUuid, jstLocalToIso, fixRequestArgs, fixRequestedParentText, fixApprovalSend, alertStatusMessage, alertFormRow, isMissingRpc, BREAK_NOT_READY, breakDeclareArgs, sameTimes, NO_CHANGE_MESSAGE } from "../_shared/attendance-fix-notify.ts";
+import { afterRequest, afterDecide, alertCase } from "../_shared/attendance-alert-notice.ts";   // 2026-11-11: 勤怠確認の新しい形（親 1 行＋スレッド）。新しい形のアラートは共通部品が書き換える
 
 const cors = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "authorization, content-type, apikey, x-client-info", "Access-Control-Allow-Methods": "POST, OPTIONS" };
 const json = (o: unknown, status = 200) => new Response(JSON.stringify(o), { status, headers: { ...cors, "Content-Type": "application/json" } });
@@ -205,6 +206,12 @@ async function decideAlert(sb: any, actor: { id: string; name: string }, b: any)
   if (!data?.ok) return json({ ok: false, error: data?.message ?? "処理できませんでした", code: data?.code }, 400);
   const when = new Date().toLocaleString("ja-JP", { timeZone: "Asia/Tokyo", hour12: false }) + "（管理システムから）";
   const isDel = data.request_kind === "delete";
+  // 2026-11-11 新しい形のアラート: Slack のスレッドのカードと親を書き換える（承認ならスマレジへ反映し、結果でもう一度）。古い形は下の今までの処理
+  if (await alertCase(sb, data.alert_id).catch(() => null)) {
+    if (!approve) { await afterDecide(sb, notifySlack, data.alert_id, false, (id) => smaregiFixAlert(id)); return json({ ok: true, approved: false, alert_id: data.alert_id }); }
+    waitUntil(afterDecide(sb, notifySlack, data.alert_id, true, (id) => smaregiFixAlert(id)));
+    return json({ ok: true, approved: true, alert_id: data.alert_id, summary: data.summary, request_kind: data.request_kind });
+  }
   if (!approve) {
     waitUntil((async () => {
       await updateMany(data.approval_notification_ids, `❌ 却下しました（${actor.name}・${when}）\n${data.summary}\n→ 申請 ${data.proposed}（理由: ${data.reason}）${note ? `\n却下理由: ${note}` : ""}`);
@@ -291,6 +298,9 @@ async function alertFix(sb: any, actor: { id: string; name: string }, b: any) {
   // 申請は RPC で記録済み。ここから先（Slack の書き換え・承認依頼）が失敗しても申請は有効なので、エラーにはせず結果に添える
   let approvers = 0, notifyError: string | null = null;
   try {
+    // 2026-11-11 新しい形のアラート: スレッドのカードを「修正内容＋承認・却下」に書き換え、承認できる人へスレッドで知らせる
+    const nv = await afterRequest(sb, notifySlack, data.alert_id, "ef:attendance-request");
+    if (nv.v2) return json({ ok: true, alert_id: data.alert_id, summary: data.summary, proposed: data.proposed, approvers_notified: nv.approvers });
     const req = { alertId: data.alert_id, summary: data.summary, proposed: data.proposed, reason: data.reason, actorName: actor.name };
     const when = new Date().toLocaleString("ja-JP", { timeZone: "Asia/Tokyo", hour12: false });
     await updateMany(data.notification_ids, fixRequestedParentText({ ...req, when }));

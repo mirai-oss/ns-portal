@@ -28,7 +28,8 @@
 //   ボタンの先は slack-interact → RPC（設計書 §10-5・SQL 2026-11-07_sf_attendance_alerts.sql）。押せる人は RPC が判定（店長=自店舗・TEAM/HQ/CEO）。
 //   判定ロジックは無変更。通知は Slack（勤怠確認チャンネル・ボタン付き）。LINE は 2026-11-08 に停止（body { line: true } で一時的に送れる）。body { slack: false } で Slack を止められる（テスト用）。
 import { createClient } from "npm:@supabase/supabase-js@2";
-import { alertFixButton } from "../_shared/attendance-fix-notify.ts";   // 2026-11-12: 「修正する」はフォームを開く url 付きボタン（定義は共通部品・単体テストあり）
+import { alertFixButton } from "../_shared/attendance-fix-notify.ts";
+import { postAlert } from "../_shared/attendance-alert-notice.ts";   // 2026-11-11: 新しい形（親 1 行＋スレッドに詳細と操作）   // 2026-11-12: 「修正する」はフォームを開く url 付きボタン（定義は共通部品・単体テストあり）
 
 const SHORT_MINUTES = 60;
 const LONG_MINUTES = 12 * 60;      // 2026-11-07 ユーザー決定: 12 時間以上（休憩除く）。旧 13 時間超から変更
@@ -125,7 +126,11 @@ async function notifySlack(body: Record<string, unknown>) {
   });
   return await res.json();
 }
-async function slackAlert(sb: any, a: any) {
+// 2026-11-11（ユーザー決定）: 通知の形。"v2"＝親メッセージは 1 行だけ・詳細と操作はスレッド／"v1"＝今までの形（親に詳細とボタン）。
+//   既定は app_settings.slack_policy.attendance_alert_format（無ければ v1）。body.format で 1 回だけ上書きできる（テスト投稿用）。
+//   opt.test=true: テスト用のアラート（承認してもスマレジへ送らない・リマインドのメンションは承認者だけ）。opt.channelKey: テストのときだけ宛先を変えられる。
+type AlertOpt = { format: "v1" | "v2"; test: boolean; channelKey: string; detailButton: boolean };
+async function slackAlert(sb: any, a: any, opt: AlertOpt) {
   // アラート行を確保（同じ勤怠実績には 1 行。既に通知済みなら送らない）
   await sb.from("sf_attendance_alerts").upsert({
     labor_cost_daily_id: a.id, user_id: a.user_id, store_id: a.store_id, work_date: a.work_date,
@@ -136,8 +141,14 @@ async function slackAlert(sb: any, a: any) {
   if (!alert) return { labor_cost_daily_id: a.id, error: "alert row not found" };
   if (alert.status !== "open" || (alert.notification_ids ?? []).length) return { alert_id: alert.id, skipped: alert.status };
 
+  if (opt.format === "v2") {
+    return await postAlert(sb, notifySlack, {
+      alertId: alert.id, userId: a.user_id, storeId: a.store_id, workDate: String(a.work_date), userName: a.name, storeName: a.store, kind: a.kind_code, reasons: a.reasons ?? [],
+      times: { clock_in: a.clock_in, clock_out: a.clock_out, break_start_1: a.b1s ?? null, break_end_1: a.b1e ?? null, break_start_2: a.b2s ?? null, break_end_2: a.b2e ?? null },
+    }, { channelKey: opt.channelKey, test: opt.test, detailButton: opt.detailButton, slackToken: Deno.env.get("SLACK_BOT_TOKEN") ?? null, source: "ef:smaregi-attendance-anomaly-check" });
+  }
   const { title, ci, co, body } = alertText(a);
-  const channels = [ATTENDANCE_CHANNEL_KEY];
+  const channels = [opt.channelKey];
   const sent: { channel_key: string; ok: boolean; notification_id?: string; error?: string }[] = [];
   const ids: string[] = [];
   for (const ch of channels) {
@@ -205,8 +216,12 @@ Deno.serve(async (req) => {
 
     // 2026-11-08 修正: labor_cost_daily は users を 2 本参照する（user_id と manual_fixed_by=手修正ロック 2026-11-07）ため
     // `users(name)` だと PostgREST が「どちらか分からない」で失敗し、エラーを握りつぶして checked=0 になっていた（11/7 昼〜11/8 朝の実損）。参照名を明示する
-    const { data: rows, error: qErr } = await sb.from("labor_cost_daily")
-      .select("id,user_id,store_id,work_date,clock_in,clock_out,worked_minutes,break_start_1,break_end_1,break_start_2,break_end_2,break_minutes,users!labor_cost_daily_user_id_fkey(name),stores!labor_cost_daily_store_id_fkey(name)")
+    // 2026-11-11: body.only_ids（勤怠実績の id の配列）があれば、その行だけを対象にする（テスト投稿・個別の出し直し用。実行記録は残さない）
+    const onlyIds: string[] = Array.isArray(body.only_ids) ? body.only_ids.filter((x: unknown) => typeof x === "string" && /^[0-9a-f-]{36}$/i.test(x)).slice(0, 20) : [];
+    const sel = "id,user_id,store_id,work_date,clock_in,clock_out,worked_minutes,break_start_1,break_end_1,break_start_2,break_end_2,break_minutes,users!labor_cost_daily_user_id_fkey(name),stores!labor_cost_daily_store_id_fkey(name)";
+    const { data: rows, error: qErr } = onlyIds.length
+      ? await sb.from("labor_cost_daily").select(sel).in("id", onlyIds)
+      : await sb.from("labor_cost_daily").select(sel)
       .gte("work_date", dateFrom)
       .lte("work_date", dateTo); // 2026-11-07: 退勤なし（clock_out null）も対象（勤務日の翌朝以降に残っていれば打刻忘れ）
 
@@ -255,14 +270,20 @@ Deno.serve(async (req) => {
     // 2026-11-07: Slack の勤怠確認ボタン（店長へ個人DM）。失敗しても LINE・判定結果には影響させない
     let slack: any[] = [];
     if (anomalies.length && body.slack !== false) {
+      // 通知の形: body.format（1 回だけ）→ 設定 slack_policy.attendance_alert_format → v1
+      let fmt: "v1" | "v2" = "v1";
+      try { const { data: pol } = await sb.from("app_settings").select("value").eq("key", "slack_policy").maybeSingle(); if (pol?.value?.attendance_alert_format === "v2") fmt = "v2"; } catch (_) { /* 読めなければ今までの形 */ }
+      if (body.format === "v1" || body.format === "v2") fmt = body.format;
+      const test = body.test === true;
+      const opt: AlertOpt = { format: fmt, test, channelKey: test && typeof body.channel_key === "string" && body.channel_key ? body.channel_key : ATTENDANCE_CHANNEL_KEY, detailButton: body.detail_button !== false };
       for (const a of anomalies) {
-        try { slack.push(await slackAlert(sb, a)); } catch (e) { slack.push({ labor_cost_daily_id: a.id, error: String(e).slice(0, 200) }); }
+        try { slack.push(await slackAlert(sb, a, opt)); } catch (e) { slack.push({ labor_cost_daily_id: a.id, error: String(e).slice(0, 200) }); }
       }
     }
 
     // 2026-11-08: 実行記録（対象の終わりの日ごと）。10:00 の時点で昨日の行が無かった（checked=0）ときは
     // attendance_anomaly_catchup()（pg_cron 15 分おき）が行の到着を見て流し直す
-    try {
+    if (!onlyIds.length) try {
       await sb.from("sf_attendance_anomaly_runs").upsert({
         date_to: dateTo, date_from: dateFrom, checked: (rows ?? []).length, anomaly_count: anomalies.length,
         slack_sent: slack.filter((x: any) => x && !x.error).length, ran_at: new Date().toISOString(),

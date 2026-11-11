@@ -22,6 +22,8 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { wageModal, commuteSettingModal, cancelModal, personContactModal, personContactTemplate, taxSettingModal, yen, commutePolicyModal } from "../_shared/onboarding-blocks.ts";
 import { isFormLinkPress, fixFormLinkText, fixRequestArgs, fixRequestedParentText, fixApprovalSend, unixToIso, isUuid } from "../_shared/attendance-fix-notify.ts";
+// 2026-11-11（ユーザー決定）: 勤怠確認の新しい形（親 1 行＋スレッドに詳細と操作）。新しい形のアラートは共通部品が親とカードを書き換える。古い形のアラートは今までの処理のまま
+import { renderAlert, afterRequest, afterDecide } from "../_shared/attendance-alert-notice.ts";
 
 const svc = () => createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
 const text = (s: string, status = 200) => new Response(s, { status, headers: { "Content-Type": "text/plain; charset=utf-8" } });
@@ -93,9 +95,14 @@ const handlers: Record<string, Handler> = {
     if (error) return ephemeral(`記録できませんでした: ${error.message}`, ru);
     if (!data?.ok) return ephemeral(data?.message ?? "記録できませんでした", ru);
     // 2026-11-08: Slack は 3 秒以内の返事を要求（スマホは特に厳しく「なかなか接続できません」になる）→ メッセージ更新は返事の後で
-    waitUntil(updateMany(data.notification_ids, `✅ 合っている（${actor.name}・${nowJst()}）\n${data.summary}`));
+    waitUntil((async () => {
+      const r = await renderAlert(sb, sendSlack, data.alert_id);   // 新しい形: 親を「完了」に・カードのボタンを外す
+      if (!r.v2) await updateMany(data.notification_ids, `✅ 合っている（${actor.name}・${nowJst()}）\n${data.summary}`);
+    })());
     return text("");
   },
+  // 親メッセージの「詳細を確認」（スレッドを開くリンクのボタン）。Slack がリンクを開くので、ここは何もしない
+  "attendance.alert.open": async () => text(""),
   // 勤怠確認「🗑 打刻を消す」（2026-11-08）: 理由だけのモーダル → RPC sf_attendance_delete_request → マスターへ承認依頼
   "attendance.alert.delete": async ({ payload, value, notificationId }) => {
     return await openModal(payload.trigger_id, attendanceDeleteModal(value, notificationId));
@@ -109,6 +116,7 @@ const handlers: Record<string, Handler> = {
     if (error) return json({ response_action: "errors", errors: { reason: error.message } });
     if (!data?.ok) return json({ response_action: "errors", errors: { reason: data?.message ?? "申請できませんでした" } });
     waitUntil((async () => {
+      if ((await afterRequest(sb, sendSlack, data.alert_id, "ef:slack-interact")).v2) return;   // 新しい形: カードを書き換え、承認者へスレッドで知らせる
       await updateMany(data.notification_ids, `🗑 打刻の削除を申請しました（${actor.name}・${nowJst()}）\n${data.summary}\n理由: ${data.reason}\n承認待ち（マスター）`);
       const ids: string[] = [];
       for (const ch of await masterChannels(sb)) {
@@ -180,6 +188,7 @@ const handlers: Record<string, Handler> = {
     }
     // 2026-11-08: 申請は RPC で記録済み。Slack の 3 秒制限（スマホで「なかなか接続できません」）を避けるため、ここで先にモーダルを閉じて残りは後で行う
     waitUntil((async () => {
+    if ((await afterRequest(sb, sendSlack, data.alert_id, "ef:slack-interact")).v2) return;   // 新しい形
     const req = { alertId: data.alert_id, summary: data.summary, proposed: data.proposed, reason: data.reason, actorName: actor.name };
     await updateMany(data.notification_ids, fixRequestedParentText({ ...req, when: nowJst() }));
     // マスターへ承認依頼（user_slack 紐付けのあるマスターの DM。居なければ hq.keiri_kanshi）
@@ -666,6 +675,16 @@ async function attendanceDecide({ sb, actor, payload, value }: Ctx, approve: boo
   if (!data?.ok) return ephemeral(data?.message ?? "記録できませんでした", ru);
   const when = nowJst();
   const isDel = data.request_kind === "delete";   // 2026-11-08 打刻削除
+  // 2026-11-11 新しい形のアラート（親 1 行＋スレッド）: カードと親を書き換え、承認ならスマレジへ反映して結果でもう一度書き換える。古い形は下の今までの処理
+  //   v2 かどうかの確認（DB 1 往復）は返事のあとで行う（Slack の 3 秒制限）
+  waitUntil((async () => {
+    if (await afterDecide(sb, sendSlack, data.alert_id, approve, (id) => smaregiFix(id))) return;
+    await attendanceDecideLegacy(data, actor, approve, when, isDel);
+  })());
+  return text("");
+}
+// 古い形のアラート（親に詳細とボタン・承認依頼はマスターの DM）の、承認・却下のあとの書き換え。2026-11-11 より前の処理をそのまま関数に分けたもの
+async function attendanceDecideLegacy(data: any, actor: Actor, approve: boolean, when: string, isDel: boolean) {
   if (!approve) {
     waitUntil((async () => {
       await updateMany(data.approval_notification_ids, `❌ 却下しました（${actor.name}・${when}）\n${data.summary}\n→ 申請 ${data.proposed}（理由: ${data.reason}）`);
