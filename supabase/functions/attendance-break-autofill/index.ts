@@ -9,7 +9,7 @@
 //   二重登録・二重控除・同期ループを防ぐしくみ:
 //     ・同じ勤怠には 1 回だけ（RPC attendance_break_autofill_begin が、勤怠の行をロックして条件を確かめ直し、履歴に 1 行だけ作る）
 //     ・書く前にスマレジのいまの実績を読み直す。休憩が入っていたら書かない／出勤・退勤が変わっていたら書かない／勤務時間が出勤〜退勤より短ければ（スマレジ側で引かれている疑い）書かない
-//     ・スマレジ側の休憩時間自動設定が有効、または確認できないときは、実行そのものを止める
+//     ・スマレジ側の休憩時間自動設定が有効、または確認できない店舗（事業所）の勤怠は、補完しない（従業員区分に独自の設定がある契約は、契約ごと補完しない）
 //     ・成功したら、管理システムの勤怠にも同じ値（スマレジの読み直しの勤務時間・概算人件費）を入れる → 次の取り込みで違いが出ない＝「スマレジ側で直された」という検知・通知が出ない
 //   通常の補完は Slack に出さない。失敗・競合・例外だけを本部タスクに（RPC attendance_break_autofill_task_sync）。
 //   スマレジ API: 既存の勤怠修正の書き戻し（smaregi-attendance-fix）と同じ PUT /{contract}/timecard/shifts/{shift_result_id}
@@ -17,7 +17,7 @@
 //   デプロイ: supabase functions deploy attendance-break-autofill --no-verify-jwt --project-ref uuvsxzhpxtghojoubjcc --yes（★別途承認）
 // =============================================================
 import { createClient } from "npm:@supabase/supabase-js@2";
-import { API_BASE, getContractToken, staffIdsByUser } from "../_shared/smaregi-contracts.ts";
+import { API_BASE, getContractToken, resolveStoreContract, staffIdsByUser } from "../_shared/smaregi-contracts.ts";
 import { buildPayload, DEFAULT_AUTOFILL, estimateBreak, preCheck, type SmaregiDaily, verifyAfter } from "../_shared/break-autofill.ts";
 
 const SCOPES = "timecard.shifts:read timecard.shifts:write";
@@ -121,14 +121,27 @@ Deno.serve(async (req) => {
   const summary = { ok: true, live, enabled: cfg.enabled === true, candidates: rows.filter((r) => r.eligible).length, processed: 0, synced: 0, skipped: 0, conflict: 0, error: 0, would_fill: 0,
     scan_skipped: skipCounts, results: {} as Record<string, number>, superseded: 0, task: null as unknown, smaregi_auto_break: {} as Record<string, string>, stopped: null as string | null };
 
-  // スマレジ側の自動休憩と重ならないこと（実際に書くときは必須。試し実行でも結果を返す）
-  const gate: Record<string, "enabled" | "disabled" | "unknown"> = {};
-  for (const c of new Set(targets.map((r) => String(r.contract_id)))) { const g = await smaregiAutoBreak(c); gate[c] = g.state; summary.smaregi_auto_break[c] = g.state + (g.error ? `（${g.error}）` : ""); }
-  const bad = Object.entries(gate).filter(([, s]) => s === "enabled" || (s === "unknown" && cfg.smaregi_auto_break_confirmed_off !== true)).map(([c]) => c);
-  if (live && bad.length) {
-    summary.stopped = "スマレジ側の「休憩時間自動設定」が有効、または確認できないため、補完を止めました（二重に休憩を引かないため）。スマレジの管理画面で確認してください";
-    return json(summary);
+  // スマレジ側の自動休憩と重ならないこと（2026-11-11 ユーザー指示: 設定が有効、または確認できない店舗は補完しない）
+  //   事業所ごとに見る: その勤怠の店舗に対応するスマレジの事業所で、休憩時間自動設定が有効／読めない／対応が分からない → その勤怠は補完しない
+  //   従業員区分に独自の設定が 1 つでもある契約・設定を読めなかった契約 → だれに効くか分からないので、その契約の勤怠は全部補完しない
+  const gates: Record<string, Awaited<ReturnType<typeof smaregiAutoBreak>>> = {};
+  for (const c of new Set(targets.map((r) => String(r.contract_id)))) {
+    const g = await smaregiAutoBreak(c); gates[c] = g;
+    summary.smaregi_auto_break[c] = g.state === "unknown" ? `確認できない（${g.error ?? ""}）` : `事業所 ${g.stores.filter((x) => x.on).length}/${g.stores.length} で有効・従業員区分の独自設定 ${g.classifications.filter((x) => x.on).length} 件`;
   }
+  const storeBlock: Record<string, string | null> = {};
+  const autoBreakBlock = async (t: any): Promise<string | null> => {
+    const g = gates[String(t.contract_id)];
+    if (!g || g.state === "unknown") return "smaregi_setting_unknown";
+    if (g.classifications.some((x) => x.on)) return "smaregi_auto_break_classification";
+    const k = `${t.store_id}|${t.work_date}`;
+    if (!(k in storeBlock)) {
+      const rc = await resolveStoreContract(sb, String(t.store_id), String(t.work_date));
+      const st = rc && rc.contract.contract_id === String(t.contract_id) ? g.stores.find((x) => x.id === String(rc.smaregiStoreId)) : undefined;
+      storeBlock[k] = !st ? "smaregi_store_unknown" : st.on ? "smaregi_auto_break_store" : null;
+    }
+    return storeBlock[k];
+  };
   if (live) { const { data: sup } = await sb.rpc("attendance_break_autofill_reconcile"); summary.superseded = Number(sup ?? 0); }
 
   const tokens: Record<string, string> = {}; const months: Record<string, Awaited<ReturnType<typeof fetchMonth>>> = {};
@@ -136,8 +149,12 @@ Deno.serve(async (req) => {
   for (const t of targets) {
     summary.processed++;
     const est = estimateBreak(String(t.clock_in), String(t.clock_out), acfg);
-    if (!live) { if (est.ok) summary.would_fill++; else bump("skipped:" + est.reason); continue; }
+    const blocked = await autoBreakBlock(t);
+    if (!live) { if (blocked) bump("skipped:" + blocked); else if (est.ok) summary.would_fill++; else bump("skipped:" + est.reason); continue; }
     try {
+      if (blocked) {   // スマレジ側の自動休憩が有効・確認できない店舗: 補完しない（記録はしない＝設定が変われば、次の実行で対象に戻る）
+        summary.skipped++; bump("skipped:" + blocked); continue;
+      }
       if (!est.ok) {   // 置けない（深夜を避けられない など）: 補完しない。理由を残す
         await sb.rpc("attendance_break_autofill_begin", { p_labor: t.labor_cost_daily_id, p_est_start: null, p_est_end: null, p_rule: { reason: est.reason }, p_status: "skipped", p_reason: est.reason });
         summary.skipped++; bump("skipped:" + est.reason); continue;

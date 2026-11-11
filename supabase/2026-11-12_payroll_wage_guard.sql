@@ -3,7 +3,7 @@
 --   ★ 本番未適用（開発・テストのみ承認。適用・スイッチ変更は別途承認）。戻し方: 2026-11-12_payroll_wage_guard_rollback.sql
 --
 --   適用しただけでは何も変わらない。動くのは、スイッチ app_settings.employee_change.payroll_wage_guard が true のときだけ（既定 false）。
---   前提: 開発 1 のスイッチ B（wage_import_hold）が true で、スマレジの賃金の照合が済んでいること（照合の記録が無い・古いときは、安全側に止める）。
+--   前提: 開発 1 のスイッチ B（wage_import_hold）か取り込み前チェック（wage_import_precheck）が true で、スマレジの賃金の照合が済んでいること（照合の記録が無い・古いときは、安全側に止める）。
 --
 --   止めるもの（スイッチが true のとき）:
 --     ・給料確定（法人×月）: その法人に「全体停止の理由」があるか、保留の人が 1 人でもいれば、確定できない
@@ -132,7 +132,8 @@ begin
   end if;
   if p_year_month is null or p_year_month !~ '^\d{4}-\d{2}$' then raise exception '月（YYYY-MM）が不正です'; end if;
   v_first := to_date(p_year_month || '-01', 'YYYY-MM-DD'); v_end := (v_first + interval '1 month' - interval '1 day')::date;
-  v_hold_sw := coalesce((v_cfg ->> 'wage_import_hold')::boolean, false);
+  -- 保留が有効＝スイッチ B（wage_import_hold）か、取り込み前チェック（wage_import_precheck）のどちらかが true（どちらでも、スマレジにだけある行は正式登録されず、未承認の変更として記録される）
+  v_hold_sw := coalesce((v_cfg ->> 'wage_import_hold')::boolean, false) or coalesce((v_cfg ->> 'wage_import_precheck')::boolean, false);
   v_age := coalesce((v_cfg ->> 'wage_guard_max_age_hours')::numeric, 24); v_ratio := coalesce((v_cfg ->> 'wage_guard_unread_ratio')::numeric, 0.2);
   select coalesce(array_agg(sc.contract_id), '{}') into v_contracts from smaregi_contracts sc where sc.corporation_id = p_corp and coalesce(sc.is_active, true);
   if cardinality(v_contracts) = 0 then   -- スマレジの契約が無い法人: 関所の対象外
