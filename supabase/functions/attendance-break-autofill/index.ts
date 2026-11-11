@@ -5,7 +5,8 @@
 //   op:
 //     run   { dry_run?, from?, to?, limit? }   対象の勤怠（RPC attendance_break_autofill_scan）に、60 分の休憩（推定）を補完してスマレジへ同期する。
 //           実際に書くのは、設定 app_settings.attendance_break_autofill.enabled=true かつ dry_run!==true のときだけ。それ以外は「試し実行」＝何も書かずに件数だけ返す。
-//     test_one { labor_cost_daily_id }         実機テスト用: テスト用の従業員（設定 test_user_ids）の勤怠 1 件だけを、enabled に関係なく実際に補完する
+//     test_one { labor_cost_daily_id }         実機テスト用: テスト用の従業員（設定 test_user_ids）の勤怠 1 件だけを、enabled に関係なく実際に補完する（対象の判定はふだんと同じ＝月給であること など）
+//     peek { labor_cost_daily_id }             実機テストの確認用: スマレジのいまの実績と管理システムの値・履歴を返す（読むだけ。テスト用の従業員だけ）
 //     smaregi_settings { }                     スマレジ側の「休憩時間自動設定」（事業所・従業員区分）を読むだけ。有効なものがあれば一覧を返す
 //   二重登録・二重控除・同期ループを防ぐしくみ:
 //     ・同じ勤怠には 1 回だけ（RPC attendance_break_autofill_begin が、勤怠の行をロックして条件を確かめ直し、履歴に 1 行だけ作る）
@@ -111,6 +112,26 @@ Deno.serve(async (req) => {
   }
   // test_one { labor_cost_daily_id }: 実機テスト用。設定 test_user_ids に入っているテスト用の従業員の勤怠 1 件だけを、設定 enabled に関係なく実際に補完する（本部タスクは作らない）
   const isTest = body.op === "test_one";
+  // peek { labor_cost_daily_id }: 実機テストの確認用。その勤怠の、スマレジのいまの実績（出勤・退勤・休憩・勤務時間）と、管理システムの値・補完の履歴を返す（読むだけ。テスト用の従業員だけ）
+  if (body.op === "peek") {
+    if (!/^[0-9a-f-]{36}$/i.test(String(body.labor_cost_daily_id ?? ""))) return json({ ok: false, error: "labor_cost_daily_id が必要です" }, 400);
+    const { data: l } = await sb.from("labor_cost_daily").select("id,user_id,store_id,work_date,clock_in,clock_out,break_start_1,break_end_1,break_start_2,break_end_2,break_minutes,worked_minutes,smaregi_shift_result_id,manual_fixed_at").eq("id", body.labor_cost_daily_id).maybeSingle();
+    if (!l) return json({ ok: true, hub: null, note: "管理システムにこの勤怠はありません" });
+    const testIds = Array.isArray(cfg.test_user_ids) ? cfg.test_user_ids.map(String) : [];
+    if (!testIds.includes(String(l.user_id))) return json({ ok: false, error: "テスト用の従業員の勤怠ではありません" }, 400);
+    const key = String(l.smaregi_shift_result_id ?? ""); const C = key.includes(":") ? key.split(":")[0] : (contractIds.find(() => true) ?? "");
+    const { data: defc } = await sb.from("smaregi_contracts").select("contract_id").eq("is_default", true).maybeSingle();
+    const contract = key.includes(":") ? C : String(defc?.contract_id ?? C);
+    let smaregi: unknown = null;
+    if (key && !key.startsWith("req:")) {
+      const staff = (await staffIdsByUser(sb, contract, [l.user_id], l.work_date))[l.user_id];
+      if (staff) { const [y, m] = String(l.work_date).split("-"); const mo = await fetchMonth(contract, await getContractToken(contract, SCOPES), staff, y, m); const r = mo.byId[stripContract(key, contract)];
+        smaregi = r ? { found: true, attendance: r.rec.attendance, leaving: r.rec.leaving, breakStartTime1: r.rec.breakStartTime1 || null, breakEndTime1: r.rec.breakEndTime1 || null, breakStartTime2: r.rec.breakStartTime2 || null, breakEndTime2: r.rec.breakEndTime2 || null, dutyMinute: r.rec.dutyMinute ?? null } : { found: false, get_ok: mo.ok, status: mo.status }; }
+    }
+    const { data: hist } = await sb.from("attendance_break_autofills").select("status,reason,est_break_start,est_break_end,attempts,synced_at,superseded_at").eq("labor_cost_daily_id", l.id).maybeSingle();
+    const { data: src } = await sb.rpc("attendance_break_source", { p_labor: l.id });
+    return json({ ok: true, hub: { work_date: l.work_date, clock_in: l.clock_in, clock_out: l.clock_out, break_start_1: l.break_start_1, break_end_1: l.break_end_1, break_start_2: l.break_start_2, break_minutes: l.break_minutes, worked_minutes: l.worked_minutes, shift_id_set: !!key && !key.startsWith("req:"), manual_fixed: !!l.manual_fixed_at }, smaregi, history: hist ?? null, break_source: src ?? null });
+  }
   if ((body.op ?? "run") !== "run" && !isTest) return json({ ok: false, error: "不明な op" }, 400);
   if (isTest && !/^[0-9a-f-]{36}$/i.test(String(body.labor_cost_daily_id ?? ""))) return json({ ok: false, error: "labor_cost_daily_id が必要です" }, 400);
 
