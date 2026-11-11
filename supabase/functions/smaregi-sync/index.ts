@@ -796,6 +796,7 @@ Deno.serve(async (req) => {
       }
       const checkedUsers: string[] = []; const externalItems: Record<string, unknown>[] = []; let held = 0, deletedRows = 0;
       const previewRows: Record<string, unknown>[] = [];
+      const unreadUsers: string[] = [];   // 2026-11-12 開発 2: スマレジを読めなかった人（給与確定前の関所が、その人だけを保留にするために使う）
       const driftRows: { user_id: string; row_id: string; contract_id: string }[] = [];
       const errors: string[] = [];
       const jst = () => new Date().toISOString();
@@ -803,7 +804,7 @@ Deno.serve(async (req) => {
         try {
           const r = await api(C, token, `/staffs/${l.smaregi_staff_id}`);
           const raw = await r.json().catch(() => null);
-          if (!r.ok) { errors.push(`スタッフ${l.smaregi_staff_id}: 取得失敗(${r.status})`); continue; }
+          if (!r.ok) { errors.push(`スタッフ${l.smaregi_staff_id}: 取得失敗(${r.status})`); unreadUsers.push(String(l.user_id)); continue; }
           const st = Array.isArray(raw) ? raw[0] : raw;
           const list = ((st?.wageApply ?? []) as any[]).map((w) => ({
             id: String(w.wageApplyId), division: Number(w.division), storeId: w.storeId ? String(w.storeId) : null,
@@ -832,7 +833,7 @@ Deno.serve(async (req) => {
           // 試し読み（dry_run）のとき: どの人のどの行が保留・初期投入になるかを、金額なしで返す（切り替え前の確認用）
           if (dryRun) { for (const x of rc.external) previewRows.push({ user_id: l.user_id, kind: x.kind, division: x.division, effective_date: x.effective_date, future: x.effective_date > today });
             if (hf.initialAllowed) for (const x of rc.inserts) previewRows.push({ user_id: l.user_id, kind: "initial_import", division: x.division, effective_date: x.effective_date, future: x.effective_date > today }); }
-        } catch (e) { errors.push(`スタッフ${l.smaregi_staff_id}: ${String((e as Error).message ?? e).slice(0, 100)}`); }
+        } catch (e) { errors.push(`スタッフ${l.smaregi_staff_id}: ${String((e as Error).message ?? e).slice(0, 100)}`); if (!unreadUsers.includes(String(l.user_id))) unreadUsers.push(String(l.user_id)); }
       }
       // 保留が有効: 読めた人ぶんの外部変更（未承認の新しい行・金額の違い・行の削除）を控えに記録する。見つからなくなったものは「一致を確認」で閉じる
       let externalReport: unknown = null;
@@ -841,6 +842,10 @@ Deno.serve(async (req) => {
         if (rpErr) errors.push(`未承認の変更を記録できません(${rpErr.message.slice(0, 100)})`); else externalReport = rp;
       }
       const next = offset + slice.length;
+      // 2026-11-12 開発 2: 照合の記録（いつ・最後まで読めたか・読めなかった人）。給与確定前の関所が使う。試し読みは記録しない。記録の関数が無い（SQL 未適用）ときは何もしない
+      if (!dryRun) {
+        try { await sb.rpc("hr_wage_reconcile_log", { p_contract: C, p_offset: offset, p_total: total, p_processed: slice.length, p_persons: persons, p_unread: unreadUsers, p_unmapped: skippedStore, p_done: next >= total, p_hold: holdOn, p_source: "wage_pull_all" }); } catch (_e) { /* 記録できなくても取り込みは続ける */ }
+      }
       return json({ ok: true, contract_id: C, total, offset, next_offset: next, done: next >= total, processed: slice.length, persons, with_wage: withWage, imported, drift, drift_rows: driftRows, matched, conflicts, skipped_unmapped_store: skippedStore, unsupported_rows: unsupported, errors,
         hold_enabled: holdOn, dry_run: dryRun, held, deleted_rows: deletedRows, external_report: externalReport,
         ...(dryRun ? { preview_rows: previewRows } : {}), hold_carryover_users: carryUsers.size, initial_allowed_users: holdOn ? slice.filter((l: any) => initialUsers.has(String(l.user_id))).length : 0 });
