@@ -73,6 +73,12 @@
 - 24〜26（個人宛 Slack DM）: 宛先は既存 user_slack（user_id↔slack_user_id・自動紐づけ）を使い新保管場所なし。経費申請の提出者→承認者通知は RPC 内から notify_route_send('slack','user:<承認者id>') で DB 側送信（画面から送らない）。本部タスク通知（hq_notify_*）と合わせて 1 本の設計を B・C が提示→承認後に実装。
 - 各担当の本番変更は、設計スレッドの承認に加えて **各担当セッションでユーザー本人の承認** を取ってから実行する。
 
+## 担当B 設計案（2026-11-11・設計了承・実行はユーザー意向確認後）
+- 15 入社通知: nippo「Lark通知設定」で Slack 行（hq.jinji）を ON → 同画面の「テスト送信」で #本部-人事 到着確認 → Chatwork 行 OFF。
+- 24 中山個人宛: notify-slack は channel_key='user:<users.id>' で user_slack から Slack ID を引き DM 送信できる（実装済み・14 人紐づけ済み）。lark_routes に Slack DM 行（同 4 イベント・is_active=false）追加 → ON → テスト送信 → Lark 行 OFF。ID は docs に書かない。
+- 25 個人 Chatwork 3 人（全員 user_slack 紐づけ済み）: 各通知関数（hq_notify_comment/step_event/task_urgent・hq_check_alerts・expense_submit/approve/reject）に notify_route_send('slack','user:'||user_id,…) を並行送信として追加 → DM 到着確認 → Chatwork 送信を外す。hq_user_notify_routes の拡張は不要。まず 1 人・1 イベントで確認してから全員へ。
+- 1〜7 notify_lark の Slack 一本化 SQL（2026-11-11_notify_lark_slack_only.sql）は作成済み・未適用。ユーザーが B の作業を一時停止（理由確認中）。
+
 ## 進捗
 - 27（追加・担当A）: 経営レポート 週報・月報（tori-dashboard Actions lark-report.yml report ジョブ＋group1〜3）: L＋S(#経営-レポート・#経営-レポート-nstyle) 並行済み → ①相当。止め方=report_channels group1〜3 の report_kinds を {daily} に／report ジョブに weekly/monthly を送らない条件（約5行）。次回週報 11/15・月報 12/1 → 11/14 までに反映が望ましい。戻し方=report_kinds を戻す・条件を外す。**日報は対象外**。ユーザー承認待ち。
 - 19・20（精算 GAS）の Slack 送信は C のローカル未コミット（本番 GAS 未反映・プロパティ未登録・到着確認 0 件）。手順書（GAS 差分のみ）→プロパティ登録→sd_testSlack 1 回→到着確認→承認→設定シート 3 セル（Lark完了報告Webhook・ChatWork APIトークン・ルームID）を空に。
