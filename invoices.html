@@ -626,8 +626,8 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-11-11-v170";
-const PAYROLL_CANCEL_READY=false;
+const BUILD_TAG="2026-11-11-v171";
+const PAYROLL_CANCEL_READY=true;
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
    ============================================================ */
@@ -12258,7 +12258,7 @@ function payrollRender(){
       <div class="card pr-progress-card">
         <div class="pr-progress-head"><div><h2>今月の処理進捗</h2><p>今月の給与振込がどこで止まっているかを確認</p></div></div>
         <div class="pr-progress-flow">
-          <div class="pr-pstep done"><small>STEP 1</small><b>給与確定</b><div class="count">${allRows.length} / ${allRows.length}</div><div class="bar"><span style="width:100%"></span></div></div>
+          <div class="pr-pstep done"><small>STEP 1</small><b>給与データ取得・計算済み</b><div class="count">${allRows.length} / ${allRows.length}</div><div class="bar"><span style="width:100%"></span></div></div>
           <div class="pr-pstep ${alerts.bankMissing?"warn":"done"}"><small>STEP 2</small><b>口座確認</b><div class="count">${allRows.length-alerts.bankMissing} / ${allRows.length}</div><div class="bar"><span style="width:${allRows.length?Math.round((allRows.length-alerts.bankMissing)/allRows.length*100):0}%"></span></div></div>
           <div class="pr-pstep current"><small>STEP 3</small><b>振込データ作成</b><div class="count">${kpi.registered.n+kpi.paid.n} / ${kpi.bankTotal.n}</div><div class="bar"><span style="width:${kpi.bankTotal.n?Math.round((kpi.registered.n+kpi.paid.n)/kpi.bankTotal.n*100):0}%"></span></div></div>
           <div class="pr-pstep current"><small>STEP 4</small><b>振込</b><div class="count">${kpi.paid.n} / ${kpi.bankTotal.n}</div><div class="bar"><span style="width:${kpi.bankTotal.n?Math.round(kpi.paid.n/kpi.bankTotal.n*100):0}%"></span></div></div>
@@ -12450,19 +12450,20 @@ function payrollRender(){
       await ensureCorpStoreCache();
       const def=payrollCorpDef_(); const corpRow=(CORP_STORE_CACHE.corporations||[]).find(c=>c.corp_code===def.code); if(!corpRow) return;
       const ym=PAYROLL_STATE.yearMonth;
-      const f=await authed(`/rest/v1/payroll_finalized?select=year_month,finalized_at,finalized_by&year_month=eq.${encodeURIComponent(ym)}&corporation_id=eq.${corpRow.id}&limit=1`);
+      const f=await authed("/rest/v1/rpc/payroll_finalized_status",{method:"POST",body:JSON.stringify({p_year_month:ym,p_corp_id:corpRow.id})});
       const st=document.querySelector("[data-payroll-status]"), fin=document.querySelector("[data-payroll-finalize]");
-      if(!f.ok||!Array.isArray(f.body)){
+      if(!f.ok||!f.body||typeof f.body.finalized!=="boolean"){
         // 取得できないときは誤押下防止のため確定ボタンを押せないままにする
         if(st){ st.style.background="#fdecea"; st.style.color="#b3261e"; st.textContent="状態を確認できませんでした（画面を再読み込みしてください）"; }
-      }else if(f.body.length){
-        const dt=f.body[0].finalized_at?new Date(f.body[0].finalized_at):null;
+      }else if(f.body.finalized){
+        const dt=f.body.finalized_at?new Date(f.body.finalized_at):null;
+        const who=f.body.finalized_by_name||"移行登録";
         const ds=dt&&!isNaN(dt)?`${dt.getMonth()+1}/${dt.getDate()} ${String(dt.getHours()).padStart(2,"0")}:${String(dt.getMinutes()).padStart(2,"0")}`:"";
-        if(st){ st.style.background="#e3f4e6"; st.style.color="#1b6b2c"; st.innerHTML=`<b>確定済み</b>${ds?`（${esc(ds)}）`:""}　${esc(corpRow.name)} ${esc(ym)}分`; }
+        if(st){ st.style.background="#e3f4e6"; st.style.color="#1b6b2c"; st.innerHTML=`<b>確定済み</b>（${ds?esc(ds)+"・":""}${esc(who)}）　${esc(corpRow.name)} ${esc(ym)}分`; }
         if(fin){ fin.disabled=true; fin.textContent="✅ 確定済み"; }
         if(PAYROLL_CANCEL_READY) btn.style.display="";   // 取消RPC（担当B）の本番適用後にtrueにする
       }else{
-        if(st){ st.style.background="#eee"; st.style.color="#555"; st.innerHTML=`この月・法人は <b>未確定</b>（${esc(corpRow.name)} ${esc(ym)}分）`; }
+        if(st){ st.style.background="#eee"; st.style.color="#555"; const lc=f.body.last_cancelled_at?new Date(f.body.last_cancelled_at):null; st.innerHTML=`この月・法人は <b>未確定</b>（${esc(corpRow.name)} ${esc(ym)}分）${lc&&!isNaN(lc)?`　<small>※${lc.getMonth()+1}/${lc.getDate()}に確定を取り消し済み</small>`:""}`; }
         if(fin){ fin.disabled=false; fin.textContent="✅ 給料確定する（本部タスクを自動発行）"; }
       }
     }catch(e){
