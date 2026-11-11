@@ -471,7 +471,16 @@ Deno.serve(async (req) => {
           if (job.kind === "smaregi_year_end") await sb.from("employee_post_join_status").update({ status: "error", updated_at: new Date().toISOString() }).eq("user_id", job.user_id).eq("track", "year_end").eq("target_year", Number((job.payload as any)?.target_year ?? new Date().getFullYear()));
           if (job.kind === "smaregi_dependents") await sb.from("employee_post_join_status").update({ status: "error", updated_at: new Date().toISOString() }).eq("user_id", job.user_id).eq("track", "dependents").eq("target_year", 0);
         }
-        await thread(sb, wf, `${job.status === "success" ? "✅" : job.status === "failed" ? (job.error_kind === "screen_changed" && /^事前確認/.test(String(job.error ?? "")) ? "🛑" : "🙋") : "⏳"} スマレジ自動設定（${job.kind}）: ${job.status}${verified === true ? "・照合一致" : verified === false ? "・照合不一致" : ""}`, uiJobResultBlocks(wf, pn?.slack_parent_notification_id ?? null, job, verified, summary), "onboarding_ui_job");
+        // 2026-11-15（ユーザー指示「照合してから完了」）: 照合の結果を記録する。一致したときだけ項目が完了になる（上の setItem）。
+        //   読み直せなかったとき（verified=null）は、項目は「照合待ち」のまま残り、定期のやり直し（ui_job_verify_sweep）がもう一度ここを呼ぶ。5 回読めなければ「手動対応が必要」になる
+        const waitingVerify = job.status === "success" && !job.dry_run && verified === null;
+        if (job.status === "success" && !job.dry_run) {
+          const { data: vr } = await sb.rpc("ui_job_verify_record", { p_job: job.id, p_verified: verified, p_note: verified === null ? summary : null });
+          // やり直しでもまだ読めない: スレッドの投稿を増やさない（手動対応に切り替わったときだけ知らせる）
+          if (waitingVerify && body.sweep === true && vr?.escalated !== true) return json({ ok: true, status: job.status, verified: null, waiting: true });
+          if (waitingVerify && vr?.escalated === true) summary = "スマレジの値を 5 回読み直せなかったため、本部タスクに確認の工程を足しました（登録の操作そのものは終わっています）";
+        }
+        await thread(sb, wf, `${job.status === "success" ? (verified === false ? "⚠️" : waitingVerify ? "⏳" : "✅") : job.status === "failed" ? (job.error_kind === "screen_changed" && /^事前確認/.test(String(job.error ?? "")) ? "🛑" : "🙋") : "⏳"} スマレジ自動設定（${job.kind}）: ${job.status}${verified === true ? "・照合一致" : verified === false ? "・照合不一致" : waitingVerify ? "・照合待ち" : ""}`, uiJobResultBlocks(wf, pn?.slack_parent_notification_id ?? null, job, verified, summary), "onboarding_ui_job");
         await refreshParent(sb, (await loadView(sb, wf.id)) ?? wf);
         return json({ ok: true, status: job.status, verified });
       }

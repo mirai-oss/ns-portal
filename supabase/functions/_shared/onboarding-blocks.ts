@@ -118,6 +118,8 @@ export function parentMessage(wf: WorkflowView, notificationId: string): { text:
     // 金額を出さない表示: 賃金・交通費は処理状況の言葉を出す（金額は管理画面）
     const hideLabel = HIDE_AMOUNTS ? (HIDE_STATUS[key]?.[st] ?? "") : "";
     if ((st === "failed" || st === "manual_required") && it?.last_error) extra = `　_${String(it.last_error).slice(0, 80)}_`;
+    // 2026-11-15: 自動操作は終わったが、スマレジの値との照合がまだ（完了にはしない）
+    if (st === "running" && it?.payload?.verify === "pending") extra = "　_（スマレジに入力済み・照合待ち）_";
     if (st === "pending" && ["commute_set", "withholding_tax", "web_payslip"].includes(key)) extra = "　_（今は手作業。本部タスクの ✓ で反映）_";
     else if (st === "pending" && key === "email") extra = "　_（今は手作業。本部タスク工程①の完了で反映）_";
     else if (st === "pending" && key === "smaregi_account") extra = "　_（「🔎 スマレジ照合」で確認。API に項目が無いため管理画面の読み取りが要ります）_";
@@ -382,7 +384,7 @@ export function uiJobResultBlocks(wf: WorkflowView, notificationId: string | nul
   const label: Record<string, string> = { smaregi_commute: "交通費", smaregi_tax: "源泉所得税", smaregi_payslip: "個別Web給与明細", smaregi_email: "メールアドレス", smaregi_read: "読み取り", smaregi_year_end: "年末調整", smaregi_dependents: "扶養家族", smaregi_store: "事業所" };
   const name = label[job.kind] ?? job.kind;
   if (job.status === "success") {
-    return [{ type: "section", text: { type: "mrkdwn", text: `${verified === false ? "⚠️" : "✅"} *${name}をスマレジに${job.dry_run ? "読み取りました" : "設定しました"}*（自動操作・${nowJst()}）\n${summary}\n${verified === true ? "🔍 保存後にスマレジから読み直して一致を確認しました" : verified === false ? "⚠️ 保存後の読み直しで値が一致しません。スマレジ管理画面で確認してください" : "ℹ️ 照合は行っていません"}` } }];
+    return [{ type: "section", text: { type: "mrkdwn", text: `${verified === false ? "⚠️" : verified === null && !job.dry_run ? "⏳" : "✅"} *${name}をスマレジに${job.dry_run ? "読み取りました" : verified === null ? "入力しました（照合待ち）" : "設定しました"}*（自動操作・${nowJst()}）\n${summary}\n${verified === true ? "🔍 保存後にスマレジから読み直して一致を確認しました" : verified === false ? "⚠️ 保存後の読み直しで値が一致しません。スマレジ管理画面で確認してください" : job.dry_run ? "ℹ️ 照合は行っていません" : "⏳ スマレジの値を読み直して照合しています。一致を確認できるまで「完了」にしません（自動でやり直します）"}` } }];
   }
   const final = job.status === "failed";
   // 書き込み前の 3 点確認（契約ID・従業員ID・所属事業所）で中止したとき（2026-11-09 ユーザー指示）: 再試行ボタンは出さず手動対応へ
