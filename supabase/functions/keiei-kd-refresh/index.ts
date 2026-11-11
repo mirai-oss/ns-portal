@@ -548,6 +548,17 @@ async function refreshStoreMonthly(sb: any) {
       deliveryByKey.set(key, (deliveryByKey.get(key) ?? 0) + (Number(r.net_sales) || 0));
     }
 
+    // ⑤店舗間移動（pl_entries: source='店舗間移動'・category='F'・未削除）を店舗×月の原価に加算（2026-11-13・ユーザー指示。DBの fl_transfer_adj() と同じ定義）。
+    //    日付は memo 末尾の移動日。売上のある最終日（beforeCutoff）までの分だけ。移動は全店合計で0（付け替え）
+    const transferByKey = new Map<string, number>();
+    const trRows = await fetchAll((f, t) => sb.from("pl_entries").select("id,store_id,memo,amount").eq("source", "店舗間移動").eq("category", "F").is("deleted_at", null).order("id").range(f, t));
+    for (const r of (trRows ?? []) as any[]) {
+      const m = /:(\d{4}-\d{2}-\d{2})$/.exec(String(r.memo ?? ""));
+      if (!m || !r.store_id || !beforeCutoff(r.store_id, m[1])) continue;
+      const key = `${r.store_id}|${m[1].slice(0, 7)}`;
+      transferByKey.set(key, (transferByKey.get(key) ?? 0) + (Number(r.amount) || 0));
+    }
+
     const shiireS = await loadShiireInfo(sb);   // TK-222: 無効(既定)なら何もしない。確定月は原価を承認済み請求書の仕入高合計に置換（PLと同じ）
     const upserts = [...byKey.values()].map((b) => {
       const shS = shiireS.enabled ? shiireS.byKey.get(`${b.store_id}|${b.year_month}`) : undefined;
@@ -556,6 +567,7 @@ async function refreshStoreMonthly(sb: any) {
         if (shS && shS.confirmed) { shiireCols.cost_siire = b.cost; b.cost = shS.amount; shiireCols.shiire_status = "confirmed"; }
         else { shiireCols.cost_siire = null; shiireCols.shiire_status = shS && shS.vendors > 0 ? "partial" : null; }
       }
+      b.cost += transferByKey.get(`${b.store_id}|${b.year_month}`) ?? 0;   // 店舗間移動を原価に加算（上の置換の後）
       // 人件費合計はapp.js stat()と同じ定義＝fact_daily_store.labor_cost_total(日次のlabor列の和)+スポット。
       // PA+社員の和ではない（API切替前の月は賞与・法定福利・通勤手当等を含むため和の2倍超になる月がある）。
       const laborTotal = b.labor + b.labor_spot;

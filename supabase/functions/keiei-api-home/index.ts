@@ -176,7 +176,7 @@ Deno.serve(async (req) => {
     ).in("store_id", storeIds).eq("period_date", asOf);
     const dataDate: string = ((homeRes.data ?? []) as HomeRow[]).find((r) => r.data_date)?.data_date ?? asOf;
     const dataStart = monthStart(dataDate);
-    const [dashRes, rsvRes, mtdRes, dvRes] = await Promise.all([
+    const [dashRes, rsvRes, mtdRes, dvRes, trRes] = await Promise.all([
       sb.from("kd_dashboard_daily_summary").select(
         "store_id,period_date,net_sales,guests,parties,avg_check,prior_year_same_weekday_sales,prior_year_same_weekday_ratio",
       ).in("store_id", storeIds).eq("period_date", dataDate),
@@ -186,8 +186,10 @@ Deno.serve(async (req) => {
         .in("store_id", storeIds).gte("period_date", dataStart).lte("period_date", dataDate),
       // TK-252: FL計算用売上の分母に足すデリバリー売上（kd_delivery_daily・税込8%→税抜は÷FL_DELIVERY_TAX_DIVISOR）
       sb.from("kd_delivery_daily").select("store_id,net_sales").in("store_id", storeIds).gte("biz_date", dataStart).lte("biz_date", dataDate),
+      // 店舗間移動（pl_entries）。原価に加算する（2026-11-13・ユーザー指示。DBの fl_transfer_adj() と同じ定義。日付は memo 末尾の移動日）
+      sb.from("pl_entries").select("store_id,memo,amount").eq("source", "店舗間移動").eq("category", "F").is("deleted_at", null).in("store_id", storeIds).eq("year_month", dataDate.slice(0, 7)),
     ]);
-    for (const r of [homeRes, dashRes, rsvRes, mtdRes, dvRes]) {
+    for (const r of [homeRes, dashRes, rsvRes, mtdRes, dvRes, trRes]) {
       if (r.error) return json({ ok: false, error: "ホームスナップショットの取得に失敗しました: " + r.error.message }, 500);
     }
 
@@ -205,6 +207,14 @@ Deno.serve(async (req) => {
         acc.cost += n(r.cost); acc.labor += n(r.labor);
         mtdByStore.set(r.store_id, acc);
         mtdCostTotal += n(r.cost); mtdLaborTotal += n(r.labor);
+      }
+      for (const r of (trRes.data ?? []) as Array<{ store_id: string; memo: string | null; amount: number | null }>) {
+        const m = /:(\d{4}-\d{2}-\d{2})$/.exec(String(r.memo ?? ""));
+        if (!m || m[1] < dataStart || m[1] > dataDate) continue;
+        const acc = mtdByStore.get(r.store_id) ?? { cost: 0, labor: 0 };
+        acc.cost += n(r.amount);
+        mtdByStore.set(r.store_id, acc);
+        mtdCostTotal += n(r.amount);
       }
       const dvExByStore = new Map<string, number>();
       let dvExTotal = 0;
