@@ -1,6 +1,7 @@
 // =============================================================
 // daily-report-card — Slack 画像日報の「データ出し」と「画像の保存」だけを担う Edge Function（2026-11-05）
 //   vm     : 店舗×日付の ViewModel（RPC daily_report_card_vm。正本＝経営ダッシュボードの日次集計・予算）
+//   all_stores : 全12店舗日報（TK-255）用データ（RPC all_stores_report_vm）
 //   upload : 描画済み PNG（base64）を Storage バケット daily-report（非公開）に保存し、期限付き署名 URL を返す（同日2回目以降は別名保存＝上書きしない・vm を渡すと配信時スナップショットも保存／TK-252）
 //   prune  : 保存から一定日数（既定 400 日）を過ぎた日付フォルダの画像を削除する（週1回程度、GitHub Actions から）
 //   health : 疎通
@@ -79,6 +80,15 @@ Deno.serve(async (req) => {
       if (res.error) return json({ ok: false, error: "データ取得に失敗しました" }, 500);
       if (!res.data) return json({ ok: false, error: "店舗が見つかりません" }, 404);
       return json({ ok: true, vm: res.data });
+    }
+
+    if (action === "all_stores") {
+      // 全12店舗日報（TK-255）: 店舗別日報と同じ daily_report_card_vm を12店分並べた読み取り専用データ（RPC all_stores_report_vm）
+      const date = String(b.date ?? "").trim();
+      if (!DATE_RE.test(date)) return json({ ok: false, error: "date は YYYY-MM-DD" }, 400);
+      const res = await sb.rpc("all_stores_report_vm", { p_date: date });
+      if (res.error) return json({ ok: false, error: "データ取得に失敗しました: " + String(res.error.message).slice(0, 120) }, 500);
+      return json({ ok: true, data: res.data });
     }
 
     if (action === "upload") {
