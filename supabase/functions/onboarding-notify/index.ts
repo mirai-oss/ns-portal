@@ -29,12 +29,17 @@
 //     post_join_compare   { workflow_id, track, target_year?, actor_id }     年末調整＝API と提出内容の差分をスレッドへ／扶養＝読むだけジョブ（snapshot）を積む
 //     post_join_snapshot  { workflow_id|user_id, actor_id }                   既存従業員: スマレジの内容を 1 人ぶん取り込む（年末調整＝API、扶養＝読むだけジョブ）。本人の提出状況は変えない
 //     ui_job_result は kind smaregi_year_end（staff_get.yearEnd と照合）/ smaregi_dependents（画面の行数と照合）/ smaregi_store（対応表に登録して hq.jinji へ）にも対応
+//   2026-11-21 通知の新しい形（親は 1 行＋スレッドの先頭に「状況カード」。★ 設定 app_settings.onboarding_slack.format が "v2" のときに作った入社登録だけ。無い・"v1" は今までと同じ）:
+//     どちらの形かは入社登録ごとの控え onboarding_workflows.slack_notice_format（null＝今までの形）。作ったときの形のまま最後まで動く。列が無い（SQL 未適用）ときは必ず今までの形
+//     新しい形: 親＝1 行（parentLine）／状況カード＝項目の一覧とボタン（statusCard・変化のたびに書き換え）／スレッドの返信＝人の対応が要るものと、人の操作の記録だけ（自動処理の成功は返信しない）
+//     open・refresh は body.format（"v1"／"v2"）で、その入社登録だけ形を指定できる（テスト用。親メッセージを新しく作るときだけ効く）
 //   デプロイ: supabase functions deploy onboarding-notify --no-verify-jwt --project-ref uuvsxzhpxtghojoubjcc --yes（関数内で認証するため）
 // =============================================================
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { shouldMaskChannel } from "../_shared/amount-mask.ts";
 import { setHideAmounts, hideAmounts, AMOUNT_HIDDEN, changeEffectBlocks, changeEffectText, payChangeBlocks, payChangeText, transferHoldBlocks, transferHoldText, parentMessage, wageFailedBlocks, wageDateAdjustedBlocks, wageApprovalBlocks, wageApprovalText, WAGE_DIV_LABEL, wageLine, nowJst, commuteCheckBlocks, uiJobResultBlocks, autoApprovedBlocks, personContactTemplate, personContactResultBlocks, staleAlertThreadText, staleAlertSummaryBlocks, postJoinSubmittedBlocks, yearEndCompareText, POST_JOIN_TRACK_LABEL, POST_JOIN_STATUS_LABEL, RELATIONSHIP_LABEL, ITEM_ORDER, PAY_TYPE_LABEL, JUDGEMENT_LABEL, yen, jpDate, type WorkflowView } from "../_shared/onboarding-blocks.ts";
 import { linePush } from "../_shared/line.ts";
+import { pickFormat, rowFormat, parentLine, statusCard, threadWording, wageSyncedNote, commuteDecidedNote, commuteSettingNote, taxSettingNote, accountCheckNote, uiJobNeedsPost, UI_JOB_SUMMARY_V2, type NoticeFormat } from "../_shared/onboarding-notice.ts";
 
 const cors = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "authorization, content-type, apikey, x-client-info, x-notify-secret" };
 const json = (o: unknown, status = 200) => new Response(JSON.stringify(o), { status, headers: { ...cors, "Content-Type": "application/json" } });
@@ -60,6 +65,79 @@ async function slackSend(body: Record<string, unknown>): Promise<any> {
 }
 const BOT = { username: "入社手続き", icon_emoji: ":briefcase:" };
 
+// ---- 通知の形（2026-11-21）。控えの列は、今までの読み取りとは別に読む（列が無い＝SQL 未適用のときは、今までの形として動く）----
+type NoticeRefs = { format: NoticeFormat; card: string | null; permalink: string | null; ready: boolean };
+const NOTICE_V1: NoticeRefs = { format: "v1", card: null, permalink: null, ready: false };
+async function noticeRefs(sb: any, wfId: string): Promise<NoticeRefs> {
+  try {
+    const { data, error } = await sb.from("onboarding_workflows").select("slack_notice_format,slack_card_notification_id,slack_parent_permalink").eq("id", wfId).maybeSingle();
+    if (error) return NOTICE_V1;
+    return { format: rowFormat(data), card: data?.slack_card_notification_id ?? null, permalink: data?.slack_parent_permalink ?? null, ready: true };
+  } catch (_e) { return NOTICE_V1; }
+}
+// 新しい形の入社登録か。新しい形は、設定に関係なく金額を出さない（1 人の入社登録だけを扱う処理の最初に呼ぶ。文面を作る前）
+async function isV2(sb: any, wfId: string): Promise<boolean> {
+  const v2 = (await noticeRefs(sb, wfId)).format === "v2";
+  if (v2) setHideAmounts(true);
+  return v2;
+}
+const NOTICE_SOURCE = "ef:onboarding-notify";
+// 状況カード（スレッドの 1 通目）を出して、控えを残す。取れたら親に「詳細を確認」（カードへのリンク）を付ける。戻り値: カードの台帳の番号（出せなければ null）
+async function ensureCard(sb: any, wf: WorkflowView, a: { parentNid: string; ts: string; channelKey: string; channelId?: string | null }): Promise<string | null> {
+  const cardNid = crypto.randomUUID();
+  const c = statusCard(wf, a.parentNid);
+  const send = () => slackSend({ action: "send", notification_id: cardNid, channel_key: a.channelKey, thread_ts: a.ts, event: "onboarding_card", source: NOTICE_SOURCE,
+    text: c.text, blocks: c.blocks, dedupe_key: `onboarding:${wf.id}:card`, ref: { table: "onboarding_workflows", id: wf.id }, ...BOT });
+  let r = await send();
+  if (!r?.ok) r = await send();
+  if (!r?.ok || !r.notification_id) { await event(sb, wf, "slack.card_failed", { error: String(r?.error ?? "send_failed").slice(0, 200) }); return null; }
+  // 「詳細を確認」: 状況カードへのリンク（読むだけの Slack API）。取れなければボタンなし（Slack 標準の「○件の返信」から開ける）
+  let permalink: string | null = null;
+  const token = Deno.env.get("SLACK_BOT_TOKEN"), channel = a.channelId ?? r.slack_channel_id ?? null;
+  if (token && channel && r.ts) {
+    try {
+      const res = await fetch(`https://slack.com/api/chat.getPermalink?channel=${encodeURIComponent(channel)}&message_ts=${encodeURIComponent(r.ts)}`, { headers: { Authorization: `Bearer ${token}` } });
+      const j = await res.json();
+      if (j?.ok && typeof j.permalink === "string" && j.permalink.startsWith("https://")) permalink = j.permalink;
+    } catch (_e) { /* ボタンなしで続ける */ }
+  }
+  await sb.from("onboarding_workflows").update({ slack_card_notification_id: r.notification_id, slack_parent_permalink: permalink, updated_at: new Date().toISOString() }).eq("id", wf.id);
+  await event(sb, wf, "slack.card", { notification_id: r.notification_id, ts: r.ts ?? null, status: r.status ?? null, permalink: !!permalink });
+  if (permalink) { const p = parentLine(wf, a.parentNid, { permalink }); await slackSend({ action: "update", notification_id: a.parentNid, text: p.text, blocks: p.blocks }); }
+  return r.notification_id;
+}
+// 新しい形で親メッセージ（1 行）を作り、スレッドに状況カードを出す。形の控え（slack_notice_format='v2'）は親と同時に残す
+async function createNoticeV2(sb: any, wf: WorkflowView, channelKey: string): Promise<{ created: boolean; error?: string }> {
+  setHideAmounts(true);
+  const nid = crypto.randomUUID();
+  const msg = parentLine(wf, nid);
+  const r = await slackSend({
+    action: "send", notification_id: nid, channel_key: channelKey, event: "onboarding_parent", source: NOTICE_SOURCE,
+    text: msg.text, blocks: msg.blocks, dedupe_key: `onboarding:${wf.id}:parent`, ref: { table: "onboarding_workflows", id: wf.id }, ...BOT,
+  });
+  if (!r?.ok || !r.ts) return { created: false, error: r?.error ?? "Slack に送れませんでした" };
+  const parentNid: string = r.notification_id ?? nid;
+  await sb.from("onboarding_workflows").update({ slack_parent_notification_id: parentNid, slack_parent_ts: r.ts, slack_channel_id: r.slack_channel_id ?? null, slack_notice_format: "v2", updated_at: new Date().toISOString() }).eq("id", wf.id);
+  await event(sb, wf, "slack.parent", { notification_id: parentNid, ts: r.ts, status: r.status, format: "v2" });
+  await ensureCard(sb, wf, { parentNid, ts: r.ts, channelKey, channelId: r.slack_channel_id ?? null });
+  if (r.status === "duplicate") await refreshNoticeV2(sb, wf, parentNid, await noticeRefs(sb, wf.id));   // 前に出した親が残っていたとき: その親を 1 行に書き換える
+  return { created: r.status !== "duplicate" };
+}
+// 新しい形の書き換え: 親の 1 行と状況カード。カードがまだ無い（最初の投稿に失敗した）ときは、ここで出し直す
+async function refreshNoticeV2(sb: any, wf: WorkflowView, parentNid: string, refs: NoticeRefs): Promise<boolean> {
+  const p = parentLine(wf, parentNid, { permalink: refs.permalink });
+  const r1 = await slackSend({ action: "update", notification_id: parentNid, text: p.text, blocks: p.blocks });
+  if (refs.card) {
+    const c = statusCard(wf, parentNid);
+    const r2 = await slackSend({ action: "update", notification_id: refs.card, text: c.text, blocks: c.blocks });
+    return !!r1?.ok && !!r2?.ok;
+  }
+  const { data: row } = await sb.from("onboarding_workflows").select("slack_parent_ts,slack_channel_key,slack_channel_id").eq("id", wf.id).maybeSingle();
+  if (!row?.slack_parent_ts) return false;
+  const card = await ensureCard(sb, wf, { parentNid, ts: row.slack_parent_ts, channelKey: row.slack_channel_key ?? "hq.jinji", channelId: row.slack_channel_id ?? null });
+  return !!r1?.ok && !!card;
+}
+
 async function loadView(sb: any, workflowId: string): Promise<WorkflowView | null> {
   const { data } = await sb.from("onboarding_workflow_v").select("*").eq("id", workflowId).maybeSingle();
   return (data as WorkflowView) ?? null;
@@ -69,9 +147,16 @@ async function event(sb: any, wf: WorkflowView, kind: string, payload: unknown, 
 }
 
 // 親メッセージが無ければ作る。戻り値: 作ったか
-async function ensureParent(sb: any, wf: WorkflowView): Promise<{ created: boolean; error?: string }> {
+async function ensureParent(sb: any, wf: WorkflowView, want?: unknown): Promise<{ created: boolean; error?: string }> {
   const { data: row } = await sb.from("onboarding_workflows").select("slack_parent_ts,slack_parent_notification_id,slack_channel_key").eq("id", wf.id).maybeSingle();
   if (row?.slack_parent_ts) return { created: false };
+  // 2026-11-21: これから親メッセージを作る入社登録だけ、形を決める（呼び出しの指定 → 設定 onboarding_slack.format → 今までの形）。列が無ければ必ず今までの形
+  {
+    const refs = await noticeRefs(sb, wf.id);
+    let setting: unknown = null;
+    if (refs.ready) { try { const { data: os } = await sb.from("app_settings").select("value").eq("key", "onboarding_slack").maybeSingle(); setting = os?.value ?? null; } catch (_e) { setting = null; } }
+    if (pickFormat({ body: want, setting, columnsReady: refs.ready }) === "v2") return await createNoticeV2(sb, wf, row?.slack_channel_key ?? "hq.jinji");
+  }
   const nid = crypto.randomUUID();
   const msg = parentMessage(wf, nid);
   const r = await slackSend({
@@ -86,6 +171,8 @@ async function ensureParent(sb: any, wf: WorkflowView): Promise<{ created: boole
 async function refreshParent(sb: any, wf: WorkflowView): Promise<boolean> {
   const { data: row } = await sb.from("onboarding_workflows").select("slack_parent_notification_id").eq("id", wf.id).maybeSingle();
   if (!row?.slack_parent_notification_id) return false;
+  const refs = await noticeRefs(sb, wf.id);
+  if (refs.format === "v2") return await refreshNoticeV2(sb, wf, row.slack_parent_notification_id, refs);
   const msg = parentMessage(wf, row.slack_parent_notification_id);
   const r = await slackSend({ action: "update", notification_id: row.slack_parent_notification_id, text: msg.text, blocks: msg.blocks });
   return !!r?.ok;
@@ -93,6 +180,7 @@ async function refreshParent(sb: any, wf: WorkflowView): Promise<boolean> {
 async function thread(sb: any, wf: WorkflowView, text: string, blocks?: unknown[], ev = "onboarding_thread"): Promise<any> {
   const { data: row } = await sb.from("onboarding_workflows").select("slack_parent_ts,slack_channel_key").eq("id", wf.id).maybeSingle();
   if (!row?.slack_parent_ts) return { ok: false, error: "親メッセージがありません" };
+  if ((await noticeRefs(sb, wf.id)).format === "v2") { text = threadWording(text); if (blocks) blocks = threadWording(blocks); }
   return await slackSend({ action: "send", channel_key: row.slack_channel_key ?? "hq.jinji", thread_ts: row.slack_parent_ts, event: ev, source: "ef:onboarding-notify", text, ...(blocks ? { blocks } : {}), ref: { table: "onboarding_workflows", id: wf.id }, ...BOT });
 }
 async function setItem(sb: any, wfId: string, item: string, state: string, payload: unknown, actorId: string | null, via: string, error: string | null = null) {
@@ -129,16 +217,17 @@ async function personChannels(sb: any, userId: string): Promise<{ slack: boolean
 const jstHour = () => Number(new Date().toLocaleString("en-US", { timeZone: "Asia/Tokyo", hour: "2-digit", hour12: false }).replace(/\D/g, "")) % 24;
 
 // ---- op=open ----
-async function opOpen(sb: any, userId: string, source: string) {
+async function opOpen(sb: any, userId: string, source: string, want?: unknown) {
   const { data, error } = await sb.rpc("onboarding_start", { p_user: userId, p_source: source, p_actor: null });
   if (error) return json({ ok: false, error: `onboarding_start: ${error.message}` }, 500);
   if (!data?.ok) return json({ ok: false, error: data?.error ?? "開始できません" }, 400);
   const wfId: string = data.workflow.id;
   const wf = await loadView(sb, wfId);
   if (!wf) return json({ ok: false, error: "ワークフローを読めません" }, 500);
-  const p = await ensureParent(sb, wf);
+  const p = await ensureParent(sb, wf, want);
   if (p.error) return json({ ok: false, workflow_id: wfId, created: data.created, error: p.error }, 502);
-  if (p.created) {
+  // 新しい形: 最初の案内は状況カードに入っているので、スレッドには足さない
+  if (p.created && !(await isV2(sb, wfId))) {
     const it = wf.items ?? {};
     const lines = [
       `📝 入社フォーム 送信済み（${nowJst()}）`,
@@ -163,9 +252,10 @@ async function wageApprovalPending(sb: any, wfId: string): Promise<boolean> {
 const APPROVAL_PENDING_MSG = "賃金は社長の承認待ちです（承認されるまで、スマレジへの反映・確定はできません）";
 
 // ---- op=wage_sync ----
-async function opWageSync(sb: any, wfId: string, actorId: string | null, contractId: string | null) {
+async function opWageSync(sb: any, wfId: string, actorId: string | null, contractId: string | null, o: { recorded?: boolean } = {}) {
   const wf = await loadView(sb, wfId);
   if (!wf || !wf.user_id) return json({ ok: false, error: "ワークフローが見つかりません" }, 404);
+  const v2 = await isV2(sb, wfId);
   // 承認待ちのあいだは何もしない（送る行が無いまま「完了」になるのを防ぐ）
   if (await wageApprovalPending(sb, wfId)) return json({ ok: false, error: APPROVAL_PENDING_MSG, state: "approval_pending" }, 409);
   const C = contractId ?? wf.contract_id;
@@ -229,7 +319,11 @@ async function opWageSync(sb: any, wfId: string, actorId: string | null, contrac
     : `✅ 賃金をスマレジに反映しました（${who}・${nowJst()}）\n` + payloadRows.map((r: any) => `・${wageLine(r)}　スマレジ賃金設定ID ${r.wageApplyId ?? "—"}`).join("\n") +
       `\n${verified === true ? "🔍 反映後にスマレジから読み直して一致を確認しました" : verified === false ? "⚠️ " + verifyNote : "ℹ️ " + verifyNote}` +
       (wf2.hq_task_id ? "\n🗂 本部タスク「給与・明細設定を入力」の「時給」に ✓ を付けました" : "");
-  await thread(sb, wf2, text, undefined, pending.length ? "onboarding_wage_partial" : "onboarding_wage_synced");
+  if (v2 && !pending.length) {
+    // 新しい形: 反映できた＝状況カードの書き換えだけ。人が操作したときの 1 行の記録（金額なし）と、照合できなかったときの確認のお願いだけ返信する
+    const note = wageSyncedNote({ who, when: nowJst(), verified, verifyNote, human: !!actorId, recorded: o.recorded === true });
+    if (note) await thread(sb, wf2, note, undefined, "onboarding_wage_synced");
+  } else await thread(sb, wf2, text, undefined, pending.length ? "onboarding_wage_partial" : "onboarding_wage_synced");
   await refreshParent(sb, wf2);
   return json({ ok: pending.length === 0, pushed: push.pushed, verified, rows: payloadRows, pending: pending.length });
 }
@@ -261,13 +355,13 @@ Deno.serve(async (req) => {
     switch (String(body.op ?? "")) {
       case "open": {
         if (!isUuid(body.user_id)) return json({ ok: false, error: "user_id が不正です" }, 400);
-        return await opOpen(sb, body.user_id, String(body.source ?? "nippo"));
+        return await opOpen(sb, body.user_id, String(body.source ?? "nippo"), body.format);
       }
       case "refresh": {
         if (!isUuid(body.workflow_id)) return json({ ok: false, error: "workflow_id が不正です" }, 400);
         const wf = await loadView(sb, body.workflow_id);
         if (!wf) return json({ ok: false, error: "見つかりません" }, 404);
-        const p = await ensureParent(sb, wf);
+        const p = await ensureParent(sb, wf, body.format);
         const ok = p.created ? true : await refreshParent(sb, wf);
         return json({ ok, parent_created: p.created, error: p.error });
       }
@@ -288,6 +382,7 @@ Deno.serve(async (req) => {
         if (!isUuid(body.workflow_id) || !isUuid(body.actor_id)) return json({ ok: false, error: "workflow_id と actor_id が必要です" }, 400);
         const wf = await loadView(sb, body.workflow_id);
         if (!wf?.user_id) return json({ ok: false, error: "見つかりません" }, 404);
+        await isV2(sb, wf.id);
         const division = Number(body.division), wage = Number(body.wage), date = String(body.date ?? ""), C = body.contract_id ? String(body.contract_id) : wf.contract_id;
         const who = await actorName(sb, body.actor_id);
         const { data, error } = await sb.rpc("hr_save_wage", { p_user: wf.user_id, p_contract: C, p_division: division, p_store: null, p_wage: wage, p_holiday: null, p_date: date, p_actor: body.actor_id });
@@ -350,7 +445,7 @@ Deno.serve(async (req) => {
           if (ev === "approved") await thread(sb, wf, wageApprovalText("approved", { actor: who }), wageApprovalBlocks(wf, nid, "approved", { actor: who }), "onboarding_wage_approved");
           const cs: (string | null)[] = Array.isArray(q.contract_ids) && q.contract_ids.length ? q.contract_ids.map((c: unknown) => String(c)) : [null];
           let last: Response | null = null;
-          for (const c of cs) last = await opWageSync(sb, wf.id, q.decided_by ?? null, c);
+          for (const c of cs) last = await opWageSync(sb, wf.id, q.decided_by ?? null, c, { recorded: ev === "approved" });
           return last ?? json({ ok: true });
         }
         const kind = q.status === "pending" ? "pending" : q.status === "rejected" ? "rejected" : "cancelled";
@@ -365,6 +460,7 @@ Deno.serve(async (req) => {
         if (!isUuid(body.workflow_id) || !isUuid(body.actor_id)) return json({ ok: false, error: "workflow_id と actor_id が必要です" }, 400);
         const wf = await loadView(sb, body.workflow_id);
         if (!wf) return json({ ok: false, error: "見つかりません" }, 404);
+        await isV2(sb, wf.id);
         const it = wf.items?.wage;
         if (it?.state !== "manual_required") return json({ ok: false, error: `賃金の項目は確認待ちではありません（${it?.state ?? "なし"}）` }, 409);
         // 2026-11-18: 社長の承認待ち・却下のあとの「手動対応が必要」は、このボタン（適用開始日の確認）では完了にしない
@@ -383,6 +479,7 @@ Deno.serve(async (req) => {
         if (!isUuid(body.workflow_id)) return json({ ok: false, error: "workflow_id が不正です" }, 400);
         const wf = await loadView(sb, body.workflow_id);
         if (!wf?.user_id) return json({ ok: false, error: "見つかりません" }, 404);
+        await isV2(sb, wf.id);
         const res = await fetch(`${SUPABASE_URL}/functions/v1/commute-route`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${SERVICE_KEY}`, apikey: SERVICE_KEY }, body: JSON.stringify({ user_id: wf.user_id, store_id: body.store_id ?? null }) });
         const r = await res.json().catch(() => ({ ok: false, error: `HTTP ${res.status}` }));
         const { data: cm } = await sb.from("employee_commute").select("method,route_text,uses_bus,claimed_oneway_fare,judgement").eq("user_id", wf.user_id).maybeSingle();
@@ -435,7 +532,8 @@ Deno.serve(async (req) => {
         const text = d === "approved" ? `✅ 交通費の片道額を *${yen(body.fare)}* で承認しました（${who}・${nowJst()}）${body.note ? `\nメモ: ${String(body.note).slice(0, 200)}` : ""}\n${oneStepNext}`
           : d === "person_review" ? `🙋 本人に経路と金額を確認することにしました（${who}・${nowJst()}）。本人への連絡（LINE/メール）は Phase 2 後半で自動化。返答が来たらスレッドに書き、「🔁 再検索」または「✅ 承認」を押してください`
           : `↩️ 交通費を差し戻しました（${who}・${nowJst()}）${body.note ? `\n理由: ${String(body.note).slice(0, 200)}` : ""}`;
-        await thread(sb, wf, text, undefined, "onboarding_commute_decided");
+        // 新しい形: 人の操作の記録（金額なし）。次に人がやることがあるときだけ案内を足す
+        await thread(sb, wf, (await isV2(sb, wf.id)) ? commuteDecidedNote({ decision: d, who, when: nowJst(), note: body.note ? String(body.note) : null, oneStep: os }) : text, undefined, "onboarding_commute_decided");
         await refreshParent(sb, wf);
         return json({ ok: true });
       }
@@ -443,6 +541,7 @@ Deno.serve(async (req) => {
         if (!isUuid(body.workflow_id) || !isUuid(body.setting_id)) return json({ ok: false, error: "workflow_id と setting_id が必要です" }, 400);
         const wf = await loadView(sb, body.workflow_id);
         if (!wf) return json({ ok: false, error: "見つかりません" }, 404);
+        const v2 = await isV2(sb, wf.id);
         const { data: s } = await sb.from("employee_commute_settings").select("*").eq("id", body.setting_id).maybeSingle();
         const who = await actorName(sb, isUuid(body.actor_id) ? body.actor_id : null);
         const scope = s?.scope === "per_store" ? "事業所別" : "全事業所";
@@ -450,7 +549,11 @@ Deno.serve(async (req) => {
         const tail = s?.sync_status === "manual"
           ? `🙋 スマレジへの自動反映はまだ有効化されていません（実機検証後に有効化）。*スマレジ管理画面でこの値を入力*し、本部タスクの「交通費」に ✓ を付けてください`
           : `⏳ Mac の自動操作でスマレジに反映します（数分〜）。結果はこのスレッドに届きます${body.duplicate ? "\nℹ️ 同じ人の未完了ジョブがあるため、そのジョブに相乗りします" : ""}`;
-        await thread(sb, wf, `🚌 交通費の設定を登録しました（${body.one_step === true ? "承認と同時・会社のルールの初期値／" : ""}${who}・${nowJst()}）\n${line}\n${tail}`, undefined, "onboarding_commute_setting");
+        if (v2) {
+          // 新しい形: 自動で反映するとき＝承認と同時の登録は返信しない／人が登録したときは 1 行の記録。手で入力が要るとき（自動反映が未有効化）は必ず出す
+          const note = commuteSettingNote({ who, when: nowJst(), manual: s?.sync_status === "manual", oneStep: body.one_step === true });
+          if (note) await thread(sb, wf, note, undefined, "onboarding_commute_setting");
+        } else await thread(sb, wf, `🚌 交通費の設定を登録しました（${body.one_step === true ? "承認と同時・会社のルールの初期値／" : ""}${who}・${nowJst()}）\n${line}\n${tail}`, undefined, "onboarding_commute_setting");
         await refreshParent(sb, wf);
         return json({ ok: true });
       }
@@ -474,6 +577,8 @@ Deno.serve(async (req) => {
           return json({ ok: true, status: job.status, external_store_id: ext || null });
         }
         if (!wf) return json({ ok: true, note: "ワークフロー無しのジョブ（通知なし）" });
+        const v2 = await isV2(sb, wf.id);
+        let escalated = false;
         const { data: pn } = await sb.from("onboarding_workflows").select("slack_parent_notification_id").eq("id", wf.id).maybeSingle();
         let verified: boolean | null = null; let summary = "";
         if (job.status === "success" && !job.dry_run) {
@@ -559,8 +664,14 @@ Deno.serve(async (req) => {
           const { data: vr } = await sb.rpc("ui_job_verify_record", { p_job: job.id, p_verified: verified, p_note: verified === null ? summary : null });
           // やり直しでもまだ読めない: スレッドの投稿を増やさない（手動対応に切り替わったときだけ知らせる）
           if (waitingVerify && body.sweep === true && vr?.escalated !== true) return json({ ok: true, status: job.status, verified: null, waiting: true });
-          if (waitingVerify && vr?.escalated === true) summary = "スマレジの値を 5 回読み直せなかったため、本部タスクに確認の工程を足しました（登録の操作そのものは終わっています）";
+          if (waitingVerify && vr?.escalated === true) { escalated = true; summary = "スマレジの値を 5 回読み直せなかったため、本部タスクに確認の工程を足しました（登録の操作そのものは終わっています）"; }
         }
+        // 新しい形: 成功（照合一致）・照合待ち・あとで再試行・定期の読み取りは返信しない（状況カードの書き換えだけ）。返信するときも、設定の中身（金額・税の区分・メール）は出さない
+        if (v2 && !uiJobNeedsPost({ status: job.status, dryRun: !!job.dry_run, verified, escalated, snapshot: (job.payload as any)?.snapshot === true })) {
+          await refreshParent(sb, (await loadView(sb, wf.id)) ?? wf);
+          return json({ ok: true, status: job.status, verified, posted: false });
+        }
+        if (v2 && job.status === "success" && !job.dry_run && !escalated) summary = UI_JOB_SUMMARY_V2;
         await thread(sb, wf, `${job.status === "success" ? (verified === false ? "⚠️" : waitingVerify ? "⏳" : "✅") : job.status === "failed" ? (job.error_kind === "screen_changed" && /^事前確認/.test(String(job.error ?? "")) ? "🛑" : "🙋") : "⏳"} スマレジ自動設定（${job.kind}）: ${job.status}${verified === true ? "・照合一致" : verified === false ? "・照合不一致" : waitingVerify ? "・照合待ち" : ""}`, uiJobResultBlocks(wf, pn?.slack_parent_notification_id ?? null, job, verified, summary), "onboarding_ui_job");
         await refreshParent(sb, (await loadView(sb, wf.id)) ?? wf);
         return json({ ok: true, status: job.status, verified });
@@ -616,6 +727,7 @@ Deno.serve(async (req) => {
         if (!wf?.user_id) return json({ ok: false, error: "見つかりません" }, 404);
         const who = await actorName(sb, isUuid(body.actor_id) ? body.actor_id : null);
         const actor = isUuid(body.actor_id) ? body.actor_id : null;
+        const v2 = await isV2(sb, wf.id);
         if (!wf.smaregi_staff_id || !wf.contract_id) { await thread(sb, wf, `🔎 スマレジ照合: スマレジ従業員がまだ作成されていません（${who}・${nowJst()}）`, undefined, "onboarding_account_check"); return json({ ok: false, error: "スマレジ未作成" }); }
         const g = await smaregi("staff_get", { smaregi_staff_id: wf.smaregi_staff_id, contract_id: wf.contract_id });
         if (!g?.ok) { await thread(sb, wf, `🔎 スマレジ照合に失敗: ${g?.error ?? "不明"}（${who}・${nowJst()}）`, undefined, "onboarding_account_check"); return json({ ok: false, error: g?.error }); }
@@ -645,7 +757,9 @@ Deno.serve(async (req) => {
         lines.push(accNote);
         if (g.activeFlag !== null && g.activeFlag !== undefined) lines.push(`ℹ️ スマレジの利用: ${String(g.activeFlag) === "1" || g.activeFlag === true ? "利用可能" : "利用不可"}${g.terminationFlag && String(g.terminationFlag) === "1" ? "・退職済み" : ""}`);
         await event(sb, wf, "account.checked", { done, mail_set: !!g.mail_set, tax: wt.length, payslip: g.personalWebStatementScreenDisplayFlag ?? null, commute: tc.length }, actor);
-        await thread(sb, wf, `🔎 スマレジ照合（${who}・${nowJst()}）\n${lines.join("\n")}${done.length ? `\n→ ${done.join("・")} を ✅ にしました（スマレジ GET で登録を確認）` : ""}`, undefined, "onboarding_account_check");
+        // 新しい形: 結果は状況カードに出る。人が押したときだけ 1 行の記録（項目の名前だけ。メール・区分・金額は出さない）
+        if (v2) { if (actor) await thread(sb, wf, accountCheckNote({ who, when: nowJst(), done, warnings: [accNote].filter((x) => x.startsWith("⚠️")) }), undefined, "onboarding_account_check"); }
+        else await thread(sb, wf, `🔎 スマレジ照合（${who}・${nowJst()}）\n${lines.join("\n")}${done.length ? `\n→ ${done.join("・")} を ✅ にしました（スマレジ GET で登録を確認）` : ""}`, undefined, "onboarding_account_check");
         await refreshParent(sb, (await loadView(sb, wf.id)) ?? wf);
         return json({ ok: true, done, lines });
       }
@@ -722,6 +836,7 @@ Deno.serve(async (req) => {
         if (!wf?.user_id) return json({ ok: false, error: "見つかりません" }, 404);
         const who = await actorName(sb, isUuid(body.actor_id) ? body.actor_id : null);
         const track = String(body.track ?? "");
+        await isV2(sb, wf.id);
         if (!wf.smaregi_staff_id || !wf.contract_id) { await thread(sb, wf, `🔎 比較: スマレジ従業員がまだ作成されていません（${who}）`, undefined, "onboarding_post_join_compare"); return json({ ok: false, error: "スマレジ未作成" }); }
         if (track === "year_end") {
           const { data: pol } = await sb.rpc("post_join_effective_i", { p_user: wf.user_id, p_track: "year_end", p_year: Number.isInteger(body.target_year) ? body.target_year : null });
@@ -763,7 +878,8 @@ Deno.serve(async (req) => {
         const spouse = ({ 0: "対象でない", 1: "源泉控除対象(配偶者控除対象)", 2: "源泉控除対象(配偶者特別控除対象)" } as Record<number, string>)[Number(t?.spouse_deduction_division ?? 0)] ?? "—";
         const line = `・適用開始月 ${String(t?.application_ym ?? "").replace("-", "/")}／区分 ${t?.tax_category === "otsu" ? "乙" : "甲"}／配偶者区分 ${spouse}／親族の数 ${t?.dependents_count ?? 0} 人`;
         const tail = t?.sync_status === "manual" ? "🙋 スマレジへの自動反映はまだ有効化されていません。*スマレジ管理画面（給与設定 → 源泉所得税設定を追加）にこの値を入力*し、本部タスクの「源泉所得税」に ✓ を付けてください" : "⏳ Mac の自動操作でスマレジに反映します（数分〜）。結果はこのスレッドに届きます";
-        await thread(sb, wf, `🧾 源泉所得税の設定を登録しました（${who}・${nowJst()}）\n${line}\n${tail}`, undefined, "onboarding_tax_setting");
+        // 新しい形: 人の操作の記録だけ（区分・配偶者・親族の数は出さない）
+        await thread(sb, wf, (await isV2(sb, wf.id)) ? taxSettingNote({ who, when: nowJst(), manual: t?.sync_status === "manual" }) : `🧾 源泉所得税の設定を登録しました（${who}・${nowJst()}）\n${line}\n${tail}`, undefined, "onboarding_tax_setting");
         await refreshParent(sb, wf);
         return json({ ok: true });
       }
@@ -825,7 +941,7 @@ Deno.serve(async (req) => {
           if (wf) {
             const scopeText = u.scope === "batch" ? "対象リスト（本部が登録・承認）" : "新規入社";
             await event(sb, wf, "post_join.reminded", { channel, sent: ok, tracks: u.tracks.map((t: any) => t.track), scope: u.scope ?? null, batch_id: u.batch_id ?? null, error: err });
-            await thread(sb, wf, ok ? `📨 ${items.join("・")}のフォームのお願いを本人へ送りました（${channel}・${(u.tracks[0]?.remind_count ?? 0) + 1} 回目・必須: ${u.tracks.map((t: any) => t.required_source === "override" ? "個別設定" : "標準ルール").join("/")}・対象: ${scopeText}）` : `⚠️ ${items.join("・")}のフォームのお願いを送れませんでした（Slack/LINE とも未連携か失敗: ${err ?? "連絡先なし"}）。店長から声かけをお願いします`, undefined, "onboarding_post_join_remind");
+            if (!(ok && (await noticeRefs(sb, wf.id)).format === "v2")) await thread(sb, wf, ok ? `📨 ${items.join("・")}のフォームのお願いを本人へ送りました（${channel}・${(u.tracks[0]?.remind_count ?? 0) + 1} 回目・必須: ${u.tracks.map((t: any) => t.required_source === "override" ? "個別設定" : "標準ルール").join("/")}・対象: ${scopeText}）` : `⚠️ ${items.join("・")}のフォームのお願いを送れませんでした（Slack/LINE とも未連携か失敗: ${err ?? "連絡先なし"}）。店長から声かけをお願いします`, undefined, "onboarding_post_join_remind");
           }
           results.push({ user_id: u.user_id, channel, sent: ok, tracks: u.tracks.length, scope: u.scope ?? null });
         }
