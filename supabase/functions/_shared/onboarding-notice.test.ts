@@ -51,21 +51,21 @@ Deno.test("形の決め方: 設定が無い・v1 は今までの形。v2 は設�
 });
 
 // ---- ② 親メッセージ（1 行） ----
-Deno.test("親メッセージ: 1 行だけ（印・入社登録・氏名・入社日）。止まっている＝要対応／完了／中止。入社日が無ければ日付を省く", () => {
+Deno.test("親メッセージ: 1 行だけ（印・入社登録・氏名・入社日）。入社日のあとに状態（進行中／要対応／完了／中止）。入社日が無ければ日付だけ省く", () => {
   assertEquals(monthDay("2026-11-20"), "11/20"); assertEquals(monthDay("2026-01-05"), "1/5"); assertEquals(monthDay(null), null); assertEquals(monthDay("未定"), null);
-  assertEquals(parentLine(base, "nid").text, "🟢 入社登録｜テスト 花子｜入社 11/20");
-  assertEquals(parentLine({ ...base, hire_date: null }, "nid").text, "🟢 入社登録｜テスト 花子");
-  assertEquals(parentLine(withItems({ wage: { state: "failed", last_error: "x" } }), "nid").text, "🛑 入社登録｜テスト 花子｜要対応");
-  assertEquals(parentLine(withItems({ wage: { state: "manual_required", payload: { approval: "pending" } } }), "nid").text, "🛑 入社登録｜テスト 花子｜要対応");
-  assertEquals(parentLine({ ...base, status: "completed", items: allDone }, "nid").text, "✅ 入社登録｜テスト 花子｜完了");
-  assertEquals(parentLine({ ...base, status: "cancelled" }, "nid").text, "⛔ 入社登録｜テスト 花子｜中止");
-  assertEquals(parentLine({ ...base, user_name: null }, "nid").text, "🟢 入社登録｜（氏名不明）｜入社 11/20");
+  assertEquals(parentLine(base, "nid").text, "🟢 入社登録｜テスト 花子｜入社 11/20｜進行中");
+  assertEquals(parentLine({ ...base, hire_date: null }, "nid").text, "🟢 入社登録｜テスト 花子｜進行中");
+  assertEquals(parentLine(withItems({ wage: { state: "failed", last_error: "x" } }), "nid").text, "🛑 入社登録｜テスト 花子｜入社 11/20｜要対応");
+  assertEquals(parentLine(withItems({ wage: { state: "manual_required", payload: { approval: "pending" } } }), "nid").text, "🛑 入社登録｜テスト 花子｜入社 11/20｜要対応");
+  assertEquals(parentLine({ ...base, status: "completed", items: allDone }, "nid").text, "✅ 入社登録｜テスト 花子｜入社 11/20｜完了");
+  assertEquals(parentLine({ ...base, status: "cancelled" }, "nid").text, "⛔ 入社登録｜テスト 花子｜入社 11/20｜中止");
+  assertEquals(parentLine({ ...base, user_name: null }, "nid").text, "🟢 入社登録｜（氏名不明）｜入社 11/20｜進行中");
   // 自動のやり直し待ち（retry_wait）・処理中は、人の対応が要らないので「要対応」にしない
   assertEquals(noticeState(withItems({ email: { state: "retry_wait" }, commute_set: { state: "running" } })).code, "progress");
   // 氏名に区切りの記号や改行が入っていても 1 行のまま
   assert(!parentLine({ ...base, user_name: "テスト｜花子\n二行目" }, "nid").text.includes("\n"));
 });
-Deno.test("親メッセージ: 区分・所属・項目の一覧・操作ボタンは出さない。ボタンは［詳細を確認］（リンク）だけ。完了・中止のあとは外す", () => {
+Deno.test("親メッセージ: 区分・所属・項目の一覧・操作ボタンは出さない。ボタンは［詳細を確認］（リンク）だけ。完了・中止のあとも残す", () => {
   const link = "https://example.slack.com/archives/C000/p1?thread_ts=1";
   const p = parentLine(withItems({ wage: { state: "completed", completion_source: "smaregi_verified", payload: { rows: wageRows } } }), "nid-p", { permalink: link });
   assertEquals(p.blocks.length, 2);
@@ -75,8 +75,9 @@ Deno.test("親メッセージ: 区分・所属・項目の一覧・操作ボタ�
   assertEquals(b.url, link); assertEquals(JSON.parse(b.value), { workflow_id: W, notification_id: "nid-p" });
   for (const ng of ["アルバイト", "テスト店", "賃金", "交通費", "1234", "1,234", "901", "スマレジ"]) assert(!JSON.stringify(p.blocks[0]).includes(ng), "親に出ている: " + ng);
   assertEquals(btns(parentLine(base, "nid").blocks), []);             // リンクが取れなければボタンなし
-  assertEquals(btns(parentLine({ ...base, status: "completed", items: allDone }, "nid", { permalink: link }).blocks), []);
-  assertEquals(btns(parentLine({ ...base, status: "cancelled" }, "nid", { permalink: link }).blocks), []);
+  // 完了・中止のあとも［詳細を確認］は残す（2026-11-12 ユーザー決定）。操作ボタンは出さない
+  assertEquals(btns(parentLine({ ...base, status: "completed", items: allDone }, "nid", { permalink: link }).blocks), ["hr.onboarding.link.open"]);
+  assertEquals(btns(parentLine({ ...base, status: "cancelled" }, "nid", { permalink: link }).blocks), ["hr.onboarding.link.open"]);
 });
 
 // ---- ② 状況カード ----

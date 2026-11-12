@@ -1,6 +1,6 @@
 // =============================================================
 // 入社登録の Slack 通知「新しい形」（2026-11-21。共通の形＝親は 1 行・詳細と操作はスレッド。お手本は勤怠確認 attendance-alert-notice.ts）
-//   親メッセージ    = 1 行だけ（状態の印・「入社登録」・氏名・入社日または短い状況）＋［詳細を確認］。1 人の入社に親は 1 つ。
+//   親メッセージ    = 1 行だけ（状態の印・「入社登録」・氏名・入社日・いまの状態）＋［詳細を確認］（完了・中止のあとも残す）。1 人の入社に親は 1 つ。
 //   スレッド 1 通目 = 「状況カード」（10 項目の一覧・入社後の提出・いま押せるボタン）。変化のたびに同じカードを書き換える（増やさない）。
 //   スレッドの返信  = 人の対応が要るもの（失敗・確認待ち・承認待ち・本人への連絡）と、人が行った操作の記録（だれが・いつ）だけ。
 //                     自動処理の成功・途中経過は、状況カードの書き換えだけ（返信しない）。
@@ -62,17 +62,17 @@ export function noticeState(wf: Pick<WorkflowView, "status" | "items">): NoticeS
 
 // ---- 3. 親メッセージ（1 行） ----------------------------------------------------------
 /**
- * 例: 🟢 入社登録｜山田太郎｜入社 11/20 ／ 🛑 入社登録｜山田太郎｜要対応 ／ ✅ 入社登録｜山田太郎｜完了 ／ ⛔ 入社登録｜山田太郎｜中止
- * 入社日が無いときは日付を省く（🟢 入社登録｜山田太郎）。区分・所属・項目の一覧・操作ボタンは出さない。
- * 「詳細を確認」は、スレッド（状況カード）を開くリンクのボタン。完了・中止のあとは外す。リンクが無いときはボタンなし（Slack 標準の「○件の返信」から開ける）。
+ * 例: 🟢 入社登録｜山田太郎｜入社 11/20｜進行中 ／ 🛑 入社登録｜山田太郎｜入社 11/20｜要対応 ／ ✅ 入社登録｜山田太郎｜入社 11/20｜完了 ／ ⛔ 入社登録｜山田太郎｜入社 11/20｜中止
+ * 氏名・入社日・いまの状態が 1 行で分かる（2026-11-12 ユーザー決定: 要対応のときも入社日を出す）。入社日が無いときは日付だけ省く（🟢 入社登録｜山田太郎｜進行中）。区分・所属・項目の一覧・操作ボタンは出さない。
+ * 「詳細を確認」は、スレッド（状況カード）を開くリンクのボタン。完了・中止のあとも残す（2026-11-12 ユーザー決定）。リンクが無いときはボタンなし（Slack 標準の「○件の返信」から開ける）。
  */
 export function parentLine(wf: Pick<WorkflowView, "id" | "status" | "items" | "user_name" | "hire_date">, notificationId: string, o: { permalink?: string | null } = {}): { text: string; blocks: unknown[] } {
   const st = noticeState(wf);
   const md = monthDay(wf.hire_date);
-  const tail = st.code === "done" ? "完了" : st.code === "cancelled" ? "中止" : st.code === "alert" ? "要対応" : md ? `入社 ${md}` : "";
-  const text = `${st.mark} 入社登録｜${clean(wf.user_name, 30) || "（氏名不明）"}${tail ? `｜${tail}` : ""}`;
+  const word = st.code === "done" ? "完了" : st.code === "cancelled" ? "中止" : st.code === "alert" ? "要対応" : "進行中";
+  const text = `${st.mark} 入社登録｜${clean(wf.user_name, 30) || "（氏名不明）"}${md ? `｜入社 ${md}` : ""}｜${word}`;
   const blocks: unknown[] = [{ type: "section", text: { type: "mrkdwn", text } }];
-  if (o.permalink && !st.done) {
+  if (o.permalink) {
     blocks.push({ type: "actions", block_id: "onboarding_open", elements: [
       // URL ボタンの押下通知は slack-interact の hr.onboarding.link*（何もしない）が受ける
       { type: "button", text: { type: "plain_text", text: "詳細を確認", emoji: true }, action_id: "hr.onboarding.link.open", url: o.permalink, value: JSON.stringify({ workflow_id: wf.id, notification_id: notificationId }) },
