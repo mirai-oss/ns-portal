@@ -4,7 +4,11 @@
 --     ・アルバイト … 社長の承認は不要。権限のある担当者が入力・確定したら、スマレジへ自動反映する。
 --     ・社員       … 社長の最終承認が必須。担当者が入力しただけでは、正式な賃金（employee_wage_settings）に入れない＝スマレジへ送られない。
 --                    社長が管理システムの画面で承認したとき、初めて正式な賃金になる（スマレジへの反映と照合は Edge Function が続けて行う）。
---     ・判定は、給与形態（時給・月給）だけでなく、正式な雇用区分（users.role）を基準にする。不明・食い違いは「確認待ち」にして自動反映しない。
+--     ・判定は、正式な雇用区分（アルバイト・パート／正社員）を基準にする。役職（店長・チーム長・本部）や給与形態（時給・月給）では決めない（2026-11-12 午後 ユーザー決定で修正）。
+--         アルバイト・パート … 社長の承認は不要（月給でも同じ）／正社員 … 社長の承認が必須（時給でも同じ）／雇用区分が分からない・登録と食い違う … 確認待ち（自動反映しない）。
+--         雇用区分の決め方: 役割がアルバイト（AL）＝アルバイト・パート／役割が社員（SHAIN）＝正社員／店長・チーム長・本部は役職なので、役職だけでは決めない
+--         （入力する人が雇用区分を選ぶ。選んでいなければ確認待ち。役職のある人を「アルバイト・パート」として入れるときは、最初の 1 回は社長が確かめる＝確認待ち）。
+--     ・社長本人が入力して「正式に確定」したときは、その確定の操作を承認として扱う（同じ内容を二度承認しない）。入力だけ（下書き）と正式な確定は分ける（p_confirm）。
 --     ・AI が賃金を推測して決めることはしない（この SQL は金額の妥当性を判断しない。形のチェックだけ）。
 --   ほかの機能との境界（混同しない・どれも変えない）:
 --     ・スマレジ側で直接変えられた賃金の控え wage_external_changes（未承認 12 件）… 触らない。一括承認もしない。
@@ -12,6 +16,8 @@
 --       給与安全確認（payroll_wage_guard）・取り込み前チェック（wage_import_precheck）… 値を読まない・変えない。
 --     ・既存従業員の変更申請（profile_change_requests・pay_change_*）… 使わない。この機能は「入社手続き中の人」専用の別の表。
 --     ・hr_save_wage は変えない（この SQL の関数が、条件を満たしたときだけ呼ぶ）。
+--     ・入社手続き中の人の賃金を、従業員ページなど別の入口から直接入れて承認を通さない、を DB の側で止める（下の 8)。既存の従業員の通常の賃金変更は止めない）。
+--     ・却下の理由・金額は管理システムの中だけ（Slack には状態だけ）。
 --   切り替え: app_settings.onboarding_wage_approval.enabled（既定 false）。false のあいだは、適用しても今までと同じ動き。
 --   戻し方: 2026-11-18_onboarding_wage_approval_rollback.sql
 --   適用: python3 scripts/apply_sql.py supabase/2026-11-18_onboarding_wage_approval.sql [--dry-run]
@@ -26,7 +32,7 @@
 insert into public.app_settings(key, value)
 select 'onboarding_wage_approval',
        jsonb_build_object('enabled', false, 'block_direct', true, 'confirmer_ids', '[]'::jsonb,
-                          'note', '2026-11-18 入社時の賃金の承認。enabled を true にすると、アルバイト×時給はその場で確定・社員などは社長の承認待ちになる')
+                          'note', '2026-11-18 入社時の賃金の承認。enabled を true にすると、アルバイト・パートはその場で確定・正社員は社長の承認待ち・雇用区分が分からないときは確認待ちになる')
 where not exists (select 1 from public.app_settings where key = 'onboarding_wage_approval');
 
 -- -------------------------------------------------------------
@@ -44,6 +50,7 @@ create table if not exists public.onboarding_wage_requests (
   rule_result      text not null check (rule_result in ('none', 'president', 'hold')),       -- none=承認なし／president=社長の承認／hold=確認待ち（社長の承認に回す）
   rule_reason      text,                      -- 判定の理由（画面と Slack に出す。金額は入れない）
   rule_detail      jsonb,                     -- 判定に使った値の控え（その時点の役割・入社登録の区分・招待の区分・給与形態）
+  employment_class text check (employment_class is null or employment_class in ('part', 'regular')),   -- 正式な雇用区分（part=アルバイト・パート／regular=正社員）。分からないあいだは null（承認のときに決める）
   status           text not null default 'pending' check (status in ('pending', 'approved', 'rejected', 'cancelled')),
   requested_by     uuid not null,             -- 入力者
   requested_at     timestamptz not null default now(),
@@ -59,7 +66,7 @@ create table if not exists public.onboarding_wage_requests (
 -- 承認待ちは、1 つの入社登録に 1 件まで
 create unique index if not exists onboarding_wage_requests_pending_uq on public.onboarding_wage_requests(workflow_id) where status = 'pending';
 create index if not exists onboarding_wage_requests_user_idx on public.onboarding_wage_requests(user_id, requested_at);
-comment on table public.onboarding_wage_requests is '入社時の賃金の確定依頼（入社手続き中の人だけ）。アルバイト×時給は入力と同時に approved、社員などは社長の承認まで pending。既存従業員の賃金変更（profile_change_requests）・スマレジ側の変更の控え（wage_external_changes）とは別物';
+comment on table public.onboarding_wage_requests is '入社時の賃金の確定依頼（入社手続き中の人だけ）。アルバイト・パートは入力と同時に approved、正社員と確認待ちは社長の承認（または社長本人の正式な確定）まで pending。既存従業員の賃金変更（profile_change_requests）・スマレジ側の変更の控え（wage_external_changes）とは別物';
 
 -- 履歴（だれが・いつ・何をしたか。金額は入れない＝金額の履歴は確定依頼の行そのもの）
 create table if not exists public.onboarding_wage_request_events (
@@ -200,15 +207,17 @@ end $$;
 revoke all on function public.onboarding_wage_notify(uuid, uuid, text) from public, anon, authenticated;
 
 -- -------------------------------------------------------------
--- 3) 判定: 正式な雇用区分（users.role）× 給与形態 → 承認なし（none）／社長の承認（president）／確認待ち（hold）
+-- 3) 判定: 正式な雇用区分 → 承認なし（none＝アルバイト・パート）／社長の承認（president＝正社員）／確認待ち（hold＝分からない・食い違い）
+--    役職（店長・チーム長・本部）や給与形態（時給・月給）では決めない。p_class＝入力する人が選んだ雇用区分（part / regular。役職の人のときに使う）
 --    p_rows を渡さないと、雇用区分だけの仮の判定を返す（画面の案内用）
---    雇用区分の見方は、既存の post_join_class（アルバイト＝AL・それ以外＝社員の扱い）と同じ
 -- -------------------------------------------------------------
-create or replace function public.onboarding_wage_rule(p_workflow uuid, p_rows jsonb default null)
+create or replace function public.onboarding_wage_rule(p_workflow uuid, p_rows jsonb default null, p_class text default null)
 returns jsonb language plpgsql stable security definer set search_path to 'public' as $$
 declare
   wf onboarding_workflows%rowtype; v_role text; v_wf_role text; v_inv_role text; v_divs integer[]; v_rule text; v_reason text;
+  v_base text; v_decl text; v_prev text; v_class text; v_src text; v_need boolean := false;
   v_label jsonb := '{"AL":"アルバイト","SHAIN":"社員","TENCHO":"店長","TEAM":"チーム長","HQ":"本部","CEO":"社長"}'::jsonb;
+  v_cl jsonb := '{"part":"アルバイト・パート","regular":"正社員"}'::jsonb;
 begin
   select * into wf from onboarding_workflows w where w.id = p_workflow;
   if wf.id is null or wf.user_id is null then
@@ -223,8 +232,18 @@ begin
     select array_agg(distinct (e.value ->> 'division')::integer order by (e.value ->> 'division')::integer) into v_divs
       from jsonb_array_elements(p_rows) e;
   end if;
+  v_decl := nullif(btrim(coalesce(p_class, '')), '');
+  -- 役割そのものが雇用区分を表しているもの（アルバイト・社員）。店長・チーム長・本部は役職なので、ここでは決めない
+  v_base := case v_role when 'AL' then 'part' when 'SHAIN' then 'regular' else null end;
+  -- この入社登録で、前に社長が確かめた雇用区分（社長の承認を通った確定依頼の控え。今と同じ役割のときのものだけ）
+  select q.employment_class into v_prev from onboarding_wage_requests q
+   where q.workflow_id = p_workflow and q.status = 'approved' and q.employment_class is not null
+     and q.rule_result in ('president', 'hold') and (q.rule_detail ->> 'role') is not distinct from v_role
+   order by q.decided_at desc nulls last limit 1;
 
-  if v_role is null then
+  if v_decl is not null and v_decl not in ('part', 'regular') then
+    v_rule := 'hold'; v_reason := '雇用区分の指定が正しくありません';
+  elsif v_role is null then
     v_rule := 'hold'; v_reason := '雇用区分（役割）が登録されていません';
   elsif v_role not in ('AL', 'SHAIN', 'TENCHO', 'TEAM', 'HQ', 'CEO') then
     v_rule := 'hold'; v_reason := '雇用区分（役割）が想定していない値です';
@@ -234,44 +253,54 @@ begin
     v_rule := 'hold'; v_reason := '入社登録を始めた時の区分（' || coalesce(v_label ->> v_wf_role, v_wf_role, '記録なし') || '）と、今の区分（' || coalesce(v_label ->> v_role, v_role) || '）が違います';
   elsif v_inv_role is not null and v_inv_role <> v_role then
     v_rule := 'hold'; v_reason := '招待（採用）の時の区分（' || coalesce(v_label ->> v_inv_role, v_inv_role) || '）と、今の区分（' || coalesce(v_label ->> v_role, v_role) || '）が違います';
-  elsif v_divs is null then
-    -- 行が無い（仮の判定）: 区分だけで答える
-    if v_role = 'AL' then v_rule := 'none'; v_reason := 'アルバイトの時給は、担当者の確定でスマレジへ反映します（月給・日給を選ぶと確認待ちになります）';
-    else v_rule := 'president'; v_reason := coalesce(v_label ->> v_role, v_role) || 'の賃金は、社長の最終承認が必要です'; end if;
-  elsif 1 = any(v_divs) then
-    v_rule := 'hold'; v_reason := '日給は、いまの在職者に登録が無い給与形態です（確認が必要）';
-  elsif cardinality(v_divs) > 1 then
-    v_rule := 'hold'; v_reason := '時給と月給が混ざっています（確認が必要）';
-  elsif v_role = 'AL' then
-    if v_divs[1] = 0 then v_rule := 'none'; v_reason := 'アルバイトの時給（社長の承認は不要）';
-    else v_rule := 'hold'; v_reason := 'アルバイトなのに月給です（雇用区分と給与形態が合いません）'; end if;
-  elsif v_role in ('SHAIN', 'TENCHO') then
-    if v_divs[1] = 2 then v_rule := 'president'; v_reason := coalesce(v_label ->> v_role, v_role) || 'の賃金は、社長の最終承認が必要です';
-    else v_rule := 'hold'; v_reason := coalesce(v_label ->> v_role, v_role) || 'なのに時給です（雇用区分と給与形態が合いません）'; end if;
+  elsif v_base is not null then
+    -- アルバイト・社員: 役割が雇用区分。入力された雇用区分が違っていたら、登録の食い違い
+    if v_decl is not null and v_decl <> v_base then
+      v_rule := 'hold'; v_reason := '登録されている雇用区分（' || (v_cl ->> v_base) || '）と、入力された雇用区分（' || (v_cl ->> v_decl) || '）が違います';
+    else
+      v_class := v_base; v_src := 'role';
+    end if;
   else
-    -- チーム長・本部: 月給は社員として社長の承認。時給は、役割からは社員かアルバイトかを決められないので確認待ち
-    if v_divs[1] = 2 then v_rule := 'president'; v_reason := coalesce(v_label ->> v_role, v_role) || 'の賃金は、社長の最終承認が必要です';
-    else v_rule := 'hold'; v_reason := coalesce(v_label ->> v_role, v_role) || 'で時給です（役割からは、社員かアルバイトかを決められません）'; end if;
+    -- 店長・チーム長・本部（役職）: 役職だけでは雇用区分を決めない
+    v_class := coalesce(v_decl, v_prev); v_src := case when v_decl is not null then 'declared' when v_prev is not null then 'confirmed' else null end;
+    if v_class is null then
+      v_need := true;
+      v_rule := 'hold'; v_reason := coalesce(v_label ->> v_role, v_role) || 'は役職です。役職だけでは、正社員か、アルバイト・パートかを決められません（雇用区分を確かめてください）';
+    elsif v_class = 'part' and v_prev is distinct from 'part' then
+      v_rule := 'hold'; v_reason := '役職（' || coalesce(v_label ->> v_role, v_role) || '）のある人を、アルバイト・パートとして登録しようとしています（最初の 1 回は確認が必要）';
+    end if;
+  end if;
+
+  if v_rule is null then
+    if v_divs is not null and cardinality(v_divs) > 1 then
+      v_rule := 'hold'; v_reason := '時給・日給・月給が混ざっています（登録の内容に食い違いがないか、確認が必要）';
+    elsif v_class = 'part' then
+      v_rule := 'none'; v_reason := 'アルバイト・パート（社長の承認は不要。担当者の確定でスマレジへ反映します）';
+    else
+      v_rule := 'president'; v_reason := '正社員の賃金は、社長の最終承認が必要です';
+    end if;
   end if;
 
   return jsonb_build_object('rule', v_rule, 'reason', v_reason, 'role', v_role, 'role_label', v_label ->> v_role,
+    'employment_class', v_class, 'employment_class_label', v_cl ->> v_class, 'class_source', v_src, 'needs_class', v_need,
     'class', case when v_role is null then null else public.post_join_class(v_role) end,
     'workflow_role', v_wf_role, 'invite_role', v_inv_role, 'divisions', to_jsonb(v_divs));
 end $$;
-revoke all on function public.onboarding_wage_rule(uuid, jsonb) from public, anon, authenticated;
-grant execute on function public.onboarding_wage_rule(uuid, jsonb) to service_role;
+revoke all on function public.onboarding_wage_rule(uuid, jsonb, text) from public, anon, authenticated;
+grant execute on function public.onboarding_wage_rule(uuid, jsonb, text) to service_role;
 
 -- -------------------------------------------------------------
--- 4) 入力: 判定が「承認なし」ならその場で正式な賃金にする。「社長の承認」「確認待ち」なら、確定依頼を承認待ちで作るだけ
+-- 4) 入力: p_class＝雇用区分（役職の人のときに選ぶ）／p_confirm＝社長本人が「正式に確定」するとき true（入力だけ＝下書きは false）。
+--    判定が「承認なし」ならその場で正式な賃金にする。「社長の承認」「確認待ち」なら、確定依頼を承認待ちで作るだけ
 --    （正式な賃金の表には入れない＝スマレジへは送られない）。
 --    設定が無効のあいだは、今までと同じ（すぐ hr_save_wage。確定依頼の行は作らない）。
 --    戻り値の applied が true のとき、呼び出し側（Edge Function）が続けてスマレジへ反映する
 -- -------------------------------------------------------------
-create or replace function public.onboarding_wage_submit(p_workflow uuid, p_rows jsonb, p_actor uuid default null)
+create or replace function public.onboarding_wage_submit(p_workflow uuid, p_rows jsonb, p_actor uuid default null, p_class text default null, p_confirm boolean default false)
 returns jsonb language plpgsql security definer set search_path to 'public' as $$
 declare
   wf onboarding_workflows%rowtype; v_actor uuid; v_via text; v_rows jsonb; v_judge jsonb; v_rule text; v_reason text;
-  v_req uuid; v_old uuid; v_ids uuid[]; v_contracts text[]; v_divs integer[]; v_from date;
+  v_req uuid; v_old uuid; v_ids uuid[]; v_contracts text[]; v_divs integer[]; v_from date; v_dec jsonb;
 begin
   v_actor := public.onboarding_wage_actor(p_actor);
   v_via := case when auth.uid() is null then 'slack' else 'nippo' end;
@@ -296,8 +325,13 @@ begin
   if not public.onboarding_wage_can(v_actor, 'confirm') then raise exception '権限がありません（賃金を入力・確定できる担当者だけ）'; end if;
   if v_actor = wf.user_id then raise exception '自分の賃金は、自分では入力できません'; end if;
 
-  v_judge := public.onboarding_wage_rule(p_workflow, v_rows);
+  v_judge := public.onboarding_wage_rule(p_workflow, v_rows, p_class);
   v_rule := v_judge ->> 'rule'; v_reason := v_judge ->> 'reason';
+  -- 社長本人が「正式に確定」するとき: 雇用区分が決まっていなければ、ここで止める（確定の画面で選んでもらう）
+  if coalesce(p_confirm, false) and v_rule <> 'none' and public.onboarding_wage_can(v_actor, 'approve')
+     and (v_judge ->> 'employment_class') is null then
+    raise exception '雇用区分（正社員か、アルバイト・パートか）を選んでから確定してください';
+  end if;
 
   -- 前の承認待ちがあれば取り下げる（入れ直し。行は残る＝履歴）
   for v_old in
@@ -309,14 +343,14 @@ begin
     insert into onboarding_wage_request_events(request_id, workflow_id, kind, actor_id, via) values (v_old, p_workflow, 'superseded', v_actor, v_via);
   end loop;
 
-  insert into onboarding_wage_requests(workflow_id, user_id, wage_rows, contract_ids, divisions, effective_from, rule_result, rule_reason, rule_detail, status, requested_by, requested_via)
-  values (p_workflow, wf.user_id, v_rows, coalesce(v_contracts, '{}'::text[]), coalesce(v_divs, '{}'::integer[]), v_from, v_rule, v_reason, v_judge, 'pending', v_actor, v_via)
+  insert into onboarding_wage_requests(workflow_id, user_id, wage_rows, contract_ids, divisions, effective_from, rule_result, rule_reason, rule_detail, employment_class, status, requested_by, requested_via)
+  values (p_workflow, wf.user_id, v_rows, coalesce(v_contracts, '{}'::text[]), coalesce(v_divs, '{}'::integer[]), v_from, v_rule, v_reason, v_judge, v_judge ->> 'employment_class', 'pending', v_actor, v_via)
   returning id into v_req;
   insert into onboarding_wage_request_events(request_id, workflow_id, kind, actor_id, via, detail)
   values (v_req, p_workflow, 'submitted', v_actor, v_via, jsonb_build_object('rule', v_rule, 'reason', v_reason));
 
   if v_rule = 'none' then
-    -- 承認なし（アルバイト×時給）: その場で確定＝正式な賃金に入れる。入力者と確定者は同じ人
+    -- 承認なし（アルバイト・パート）: その場で確定＝正式な賃金に入れる。入力者と確定者は同じ人
     v_ids := public.onboarding_wage_apply(v_req::text, wf.user_id, v_rows, v_actor);
     update onboarding_wage_requests q
        set status = 'approved', decided_by = v_actor, decided_at = now(), applied_at = now(), wage_setting_ids = v_ids, updated_at = now()
@@ -331,21 +365,36 @@ begin
     jsonb_build_object('approval', 'pending', 'request_id', v_req, 'rule', v_rule, 'reason', v_reason, 'requested_by', v_actor),
     v_actor, v_via,
     case when v_rule = 'hold' then '確認待ち（社長の承認が必要）: ' || left(coalesce(v_reason, ''), 60) else '社長の承認待ち' end);
+
+  -- 社長本人が入力して「正式に確定」した: その確定の操作を承認として扱う（同じ内容を二度承認しない）。
+  --   社長でない人が p_confirm を付けても、入力（承認待ち）のまま。自分の賃金は確定できない（onboarding_wage_decide が断る）
+  if coalesce(p_confirm, false) and public.onboarding_wage_can(v_actor, 'approve') and v_actor <> wf.user_id then
+    v_dec := public.onboarding_wage_decide(v_req, true, '入力と同時に確定（社長）', p_actor, null);
+    if coalesce((v_dec ->> 'ok')::boolean, false) then
+      insert into onboarding_wage_request_events(request_id, workflow_id, kind, actor_id, via, detail)
+      values (v_req, p_workflow, 'confirmed', v_actor, v_via, jsonb_build_object('self_confirmed', true));
+      return jsonb_build_object('ok', true, 'mode', 'approval', 'applied', true, 'self_confirmed', true, 'rule', v_rule, 'reason', v_reason, 'request_id', v_req, 'contract_ids', to_jsonb(v_contracts));
+    end if;
+    -- 確定できなかった（例: 契約が無効）: 承認待ちのまま残し、理由を返す
+    perform public.onboarding_wage_notify(v_req, p_workflow, 'submitted');
+    return jsonb_build_object('ok', true, 'mode', 'approval', 'applied', false, 'rule', v_rule, 'reason', v_reason, 'request_id', v_req, 'confirm_error', v_dec ->> 'error');
+  end if;
+
   perform public.onboarding_wage_notify(v_req, p_workflow, 'submitted');
-  return jsonb_build_object('ok', true, 'mode', 'approval', 'applied', false, 'rule', v_rule, 'reason', v_reason, 'request_id', v_req);
+  return jsonb_build_object('ok', true, 'mode', 'approval', 'applied', false, 'rule', v_rule, 'reason', v_reason, 'request_id', v_req, 'needs_class', coalesce((v_judge ->> 'needs_class')::boolean, false));
 end $$;
-revoke all on function public.onboarding_wage_submit(uuid, jsonb, uuid) from public, anon;
-grant execute on function public.onboarding_wage_submit(uuid, jsonb, uuid) to authenticated, service_role;
+revoke all on function public.onboarding_wage_submit(uuid, jsonb, uuid, text, boolean) from public, anon;
+grant execute on function public.onboarding_wage_submit(uuid, jsonb, uuid, text, boolean) to authenticated, service_role;
 
 -- -------------------------------------------------------------
 -- 5) 承認・却下（社長だけ。マスター権限では代用できない。自分の賃金は承認できない）
 --    承認: ここで初めて hr_save_wage を呼ぶ＝正式な賃金になる（スマレジへの反映と照合は Edge Function が続けて行う）
 --    却下: 正式な賃金には入れない。項目「賃金」は入れ直し待ちになる
 -- -------------------------------------------------------------
-create or replace function public.onboarding_wage_decide(p_request uuid, p_approve boolean, p_note text default null, p_actor uuid default null)
+create or replace function public.onboarding_wage_decide(p_request uuid, p_approve boolean, p_note text default null, p_actor uuid default null, p_class text default null)
 returns jsonb language plpgsql security definer set search_path to 'public' as $$
 declare
-  q onboarding_wage_requests%rowtype; wf onboarding_workflows%rowtype; v_actor uuid; v_via text; v_ids uuid[]; v_err text; v_now jsonb;
+  q onboarding_wage_requests%rowtype; wf onboarding_workflows%rowtype; v_actor uuid; v_via text; v_ids uuid[]; v_err text; v_now jsonb; v_class text;
 begin
   v_actor := public.onboarding_wage_actor(p_actor);
   v_via := case when auth.uid() is null then 'system' else 'nippo' end;
@@ -378,6 +427,11 @@ begin
   if wf.id is null or wf.status = 'cancelled' then
     return jsonb_build_object('ok', false, 'error', 'この入社手続きは中止されているため、承認できません（取り下げてください）', 'status', q.status);
   end if;
+  -- 雇用区分が決まっていない確定依頼（役職の人など）は、承認する社長が雇用区分を選ぶ（選ばなければ承認できない）
+  v_class := coalesce(q.employment_class, nullif(btrim(coalesce(p_class, '')), ''));
+  if v_class is null or v_class not in ('part', 'regular') then
+    raise exception '雇用区分（正社員か、アルバイト・パートか）を選んでから承認してください';
+  end if;
   begin
     v_ids := public.onboarding_wage_apply(q.id::text, q.user_id, q.wage_rows, v_actor);
   exception when others then
@@ -390,21 +444,21 @@ begin
     values (q.id, q.workflow_id, 'apply_failed', v_actor, v_via, jsonb_build_object('error', left(v_err, 300)));
     return jsonb_build_object('ok', false, 'error', '承認できませんでした（賃金を登録できません）: ' || left(v_err, 300), 'status', 'pending');
   end if;
-  v_now := public.onboarding_wage_rule(q.workflow_id, q.wage_rows);   -- 承認した時点の判定も控えに残す
+  v_now := public.onboarding_wage_rule(q.workflow_id, q.wage_rows, v_class);   -- 承認した時点の判定も控えに残す
   update onboarding_wage_requests x
      set status = 'approved', decided_by = v_actor, decided_at = now(), decision_note = nullif(left(btrim(coalesce(p_note, '')), 500), ''),
-         applied_at = now(), wage_setting_ids = v_ids, updated_at = now()
+         applied_at = now(), wage_setting_ids = v_ids, employment_class = v_class, updated_at = now()
    where x.id = q.id;
   insert into onboarding_wage_request_events(request_id, workflow_id, kind, actor_id, via, detail)
-  values (q.id, q.workflow_id, 'approved', v_actor, v_via, jsonb_build_object('rule_at_decision', v_now ->> 'rule', 'reason_at_decision', v_now ->> 'reason'));
+  values (q.id, q.workflow_id, 'approved', v_actor, v_via, jsonb_build_object('rule_at_decision', v_now ->> 'rule', 'reason_at_decision', v_now ->> 'reason', 'employment_class', v_class, 'class_chosen_at_decision', q.employment_class is null));
   perform public.onboarding_set_item(q.workflow_id, 'wage', 'running',
     jsonb_build_object('approval', 'approved', 'request_id', q.id, 'decided_by', v_actor),
     v_actor, case when auth.uid() is null then 'auto' else 'nippo' end, null);
   perform public.onboarding_wage_notify(q.id, q.workflow_id, 'approved');
   return jsonb_build_object('ok', true, 'status', 'approved', 'request_id', q.id, 'workflow_id', q.workflow_id, 'user_id', q.user_id, 'contract_ids', to_jsonb(q.contract_ids));
 end $$;
-revoke all on function public.onboarding_wage_decide(uuid, boolean, text, uuid) from public, anon;
-grant execute on function public.onboarding_wage_decide(uuid, boolean, text, uuid) to authenticated, service_role;
+revoke all on function public.onboarding_wage_decide(uuid, boolean, text, uuid, text) from public, anon;
+grant execute on function public.onboarding_wage_decide(uuid, boolean, text, uuid, text) to authenticated, service_role;
 
 -- -------------------------------------------------------------
 -- 6) 取り下げ（承認待ちのものだけ。入力した人か、入力・確定できる担当者）
@@ -460,7 +514,7 @@ begin
                'id', q.id, 'workflow_id', q.workflow_id, 'user_id', q.user_id,
                'user_name', (select u.name from users u where u.id = q.user_id),
                'user_role', (select u.role from users u where u.id = q.user_id),
-               'status', q.status, 'rule', q.rule_result, 'reason', q.rule_reason,
+               'status', q.status, 'rule', q.rule_result, 'reason', q.rule_reason, 'employment_class', q.employment_class,
                'divisions', to_jsonb(q.divisions), 'contract_ids', to_jsonb(q.contract_ids), 'effective_from', q.effective_from,
                'requested_by', q.requested_by, 'requested_by_name', (select u.name from users u where u.id = q.requested_by),
                'requested_at', q.requested_at, 'requested_via', q.requested_via,
@@ -492,7 +546,7 @@ begin
       'amounts', v_amount),
     'requests', v_list,
     'events', v_events,
-    'rule', case when p_workflow is null then null else public.onboarding_wage_rule(p_workflow, null) end);
+    'rule', case when p_workflow is null then null else public.onboarding_wage_rule(p_workflow, null, null) end);
 end $$;
 revoke all on function public.onboarding_wage_status(uuid, uuid, boolean) from public, anon;
 grant execute on function public.onboarding_wage_status(uuid, uuid, boolean) to authenticated, service_role;

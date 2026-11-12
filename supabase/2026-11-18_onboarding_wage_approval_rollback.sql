@@ -26,9 +26,9 @@ drop trigger if exists onboarding_wage_direct_guard on public.employee_wage_sett
 drop function if exists public.onboarding_wage_direct_guard();
 drop function if exists public.onboarding_wage_status(uuid, uuid, boolean);
 drop function if exists public.onboarding_wage_cancel(uuid, text, uuid);
-drop function if exists public.onboarding_wage_decide(uuid, boolean, text, uuid);
-drop function if exists public.onboarding_wage_submit(uuid, jsonb, uuid);
-drop function if exists public.onboarding_wage_rule(uuid, jsonb);
+drop function if exists public.onboarding_wage_decide(uuid, boolean, text, uuid, text);
+drop function if exists public.onboarding_wage_submit(uuid, jsonb, uuid, text, boolean);
+drop function if exists public.onboarding_wage_rule(uuid, jsonb, text);
 drop function if exists public.onboarding_wage_notify(uuid, uuid, text);
 drop function if exists public.onboarding_wage_apply(text, uuid, jsonb, uuid);
 drop function if exists public.onboarding_wage_rows_norm(jsonb, text);
