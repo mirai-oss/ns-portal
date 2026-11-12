@@ -160,7 +160,17 @@ Deno.serve(async (req) => {
         return json({ ok: true, enabled: cfg.enabled, since_set: !!cfg.since, channel_key: cfg.channelKey });
       }
       case "event": {
-        const r = await handleEvent(db, sendSlack, String(b.applicant_id ?? ""), { kind: typeof b.kind === "string" ? b.kind : undefined, ref: typeof b.ref === "string" ? b.ref : null, source: "ef:recruit-notify" });
+        // 2026-11-12 通しの確認用: test=true は、使い捨ての応募者（answers._test が true）に限り、本番のスイッチが OFF でも動かす。
+        //   実在の応募者には効かない（_test の印が無ければ断る）。メンションはしない（実在の担当者を呼ばないため）。
+        let d: Db = db;
+        if (b.test === true) {
+          const a = await db.applicant(String(b.applicant_id ?? ""));
+          // deno-lint-ignore no-explicit-any
+          if (!a || (a as any).answers?._test !== true) return json({ ok: false, error: "テスト用の応募者ではありません" }, 400);
+          const base = await db.settings();
+          d = { ...db, settings: () => Promise.resolve({ ...base, enabled: true, since: "2026-11-12T00:00:00Z" }), mentions: () => Promise.resolve([]) };
+        }
+        const r = await handleEvent(d, sendSlack, String(b.applicant_id ?? ""), { kind: typeof b.kind === "string" ? b.kind : undefined, ref: typeof b.ref === "string" ? b.ref : null, source: "ef:recruit-notify" });
         // 返事には氏名などを入れない（pg_net の応答の控え net._http_response に残るため）
         return json(r, r.ok ? 200 : 500);
       }
