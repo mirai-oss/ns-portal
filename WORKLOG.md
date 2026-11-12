@@ -11436,3 +11436,8 @@ Q5/Q6の回答を受け、設計メモ§9〜§10を確定し担当別指示書�
 - 検証: SQL dry-run OK・rollback 内 30 項目 OK・deno check 3 本 OK・judge 単体テスト（160→auto_approvable／390,450→hq_review／700→person_review／無申請→hq_review・バスは最安経路がバスのときだけ本部確認）・ブロック描画 OK・Mac 側 node --check 4 本 OK・フラグ OFF で無動作。
 - 未投入のまま: SQL・EF 4 本（commute-route/smaregi-sync/slack-interact/onboarding-notify＝同時投入）・Mac フラグ・nippo（push 済みだが RPC 無しでは黙ってスキップ）。
 - **Phase 2/3 本番投入（11/10 12:00・ユーザー承認条件①〜⑥）**: 詳細は実装報告末尾。SQL `2026-11-10_onboarding_phase2_3.sql`＋`_fix1.sql` 適用（関数 6→16・設定 7・ビュー 2・既存件数不変）、EF 4 本デプロイ（旧版 `supabase/restored/2026-11-10_*`）。スイッチ OFF（書き込みジョブは作らない＝manual 記録）、Mac フラグ OFF、キー未設定。使い捨て（skip_smaregi）で実機確認後に全削除・残留 0。
+
+## 2026-11-12 AI利用料の内訳保存（api_cost_breakdown）
+- ユーザー依頼「AI利用料が少しずつ上がっている。内訳を調べて」→ 内訳を日次で保存するようにした。SQL `2026-11-12_api_cost_breakdown.sql` 適用（新表・RLSはCEO/HQ/マスターのみ参照）／`api-cost-report-sync` 再デプロイ（Cost Report API を group_by=workspace_id,description でも取得。失敗しても合計同期には影響しない）。過去95日を取り直し済み（253行）。
+- 実測（10/1〜11/11・$58.9）: claude-sonnet-5 が $56.1（95%）、claude-sonnet-5-5 $2.7、haiku-5-5 $0.07。種類別は 入力$22・キャッシュ書込$19・キャッシュ読込$8・出力$9。ワークスペースは全て既定（分かれていない）。
+- 注意: 請求書の明細読み取り（invoice-lines-ocr／invoice-auto-sales）は sonnet-5-5 で、全体の5%弱。主因ではない。キャッシュ使用（約半分）はEdge Functionにcache_controlが無いので、Hermes等のエージェント系の使い方。

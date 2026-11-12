@@ -57,6 +57,62 @@ async function fetchCostReport(startingAt: string, endingAt: string): Promise<Ar
   return out;
 }
 
+
+// 内訳（2026-11-12追加）: group_by=workspace_id,description で、ワークスペース×モデル×種類ごとの日次金額を取る。
+// 失敗しても合計の同期（api_cost_daily）には影響させない（呼び出し側で握りつぶして結果に載せる）。
+type BreakRow = { date: string; workspace_id: string; model: string; cost_type: string; token_type: string; amountCents: number };
+async function fetchBreakdown(startingAt: string, endingAt: string): Promise<BreakRow[]> {
+  const key = Deno.env.get("ANTHROPIC_ADMIN_API_KEY");
+  if (!key) throw new Error("ANTHROPIC_ADMIN_API_KEY が未設定です");
+  const acc = new Map<string, BreakRow>();
+  let page: string | null = null;
+  for (let i = 0; i < 60; i++) {
+    const url = new URL("https://api.anthropic.com/v1/organizations/cost_report");
+    url.searchParams.set("starting_at", startingAt);
+    url.searchParams.set("ending_at", endingAt);
+    url.searchParams.set("bucket_width", "1d");
+    url.searchParams.append("group_by[]", "workspace_id");
+    url.searchParams.append("group_by[]", "description");
+    url.searchParams.set("limit", "31");
+    if (page) url.searchParams.set("page", page);
+    const res = await fetch(url, { headers: { "x-api-key": key, "anthropic-version": "2023-06-01" } });
+    if (!res.ok) throw new Error(`cost_report(breakdown) API error: ${res.status} ${await res.text()}`);
+    const body = await res.json();
+    for (const bucket of body.data ?? []) {
+      const date = String(bucket.starting_at).slice(0, 10);
+      for (const r of bucket.results ?? []) {
+        const row: BreakRow = {
+          date, workspace_id: String(r.workspace_id ?? ""), model: String(r.model ?? ""),
+          cost_type: String(r.cost_type ?? ""), token_type: String(r.token_type ?? ""),
+          amountCents: Number(r.amount ?? 0),
+        };
+        const k = [row.date, row.workspace_id, row.model, row.cost_type, row.token_type].join("|");
+        const cur = acc.get(k);
+        if (cur) cur.amountCents += row.amountCents; else acc.set(k, row);
+      }
+    }
+    if (!body.has_more || !body.next_page) break;
+    page = body.next_page;
+  }
+  return [...acc.values()];
+}
+
+// ワークスペースIDと名前の対応（表示用）。取れなくても内訳の保存は続ける
+async function fetchWorkspaceNames(): Promise<Map<string, string>> {
+  const m = new Map<string, string>();
+  const key = Deno.env.get("ANTHROPIC_ADMIN_API_KEY");
+  if (!key) return m;
+  try {
+    const res = await fetch("https://api.anthropic.com/v1/organizations/workspaces?limit=100", {
+      headers: { "x-api-key": key, "anthropic-version": "2023-06-01" },
+    });
+    if (!res.ok) return m;
+    const body = await res.json();
+    for (const w of body.data ?? []) m.set(String(w.id), String(w.name ?? ""));
+  } catch (_) { /* 名前は無くても可 */ }
+  return m;
+}
+
 async function fetchJpyRate(dateStr: string): Promise<number | null> {
   try {
     const res = await fetch(`https://api.frankfurter.dev/v1/${dateStr}?base=USD&symbols=JPY`);
@@ -112,7 +168,27 @@ Deno.serve(async (req) => {
       if (error) return json({ ok: false, error: "保存に失敗: " + error.message }, 500);
     }
 
-    return json({ ok: true, days, synced: upserts.length, rows: upserts });
+    // 内訳（失敗しても合計の同期結果は返す）
+    let breakdown: any = { ok: false };
+    try {
+      const brk = await fetchBreakdown(startingAt, endingAt);
+      const names = await fetchWorkspaceNames();
+      const brkRows = brk.map((r) => ({
+        date: r.date, workspace_id: r.workspace_id, workspace_name: names.get(r.workspace_id) ?? null,
+        model: r.model, cost_type: r.cost_type, token_type: r.token_type,
+        amount_cents: r.amountCents, updated_at: new Date().toISOString(),
+      }));
+      for (let i = 0; i < brkRows.length; i += 500) {
+        const { error } = await sb.from("api_cost_breakdown")
+          .upsert(brkRows.slice(i, i + 500), { onConflict: "date,workspace_id,model,cost_type,token_type" });
+        if (error) throw new Error(error.message);
+      }
+      breakdown = { ok: true, rows: brkRows.length };
+    } catch (e) {
+      breakdown = { ok: false, error: String(e) };
+    }
+
+    return json({ ok: true, days, synced: upserts.length, rows: upserts, breakdown });
   } catch (e) {
     return json({ ok: false, error: String(e) }, 500);
   }
