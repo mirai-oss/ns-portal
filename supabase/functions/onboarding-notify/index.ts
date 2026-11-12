@@ -351,7 +351,14 @@ Deno.serve(async (req) => {
         if (!wf) return json({ ok: false, error: "見つかりません" }, 404);
         const who = await actorName(sb, isUuid(body.actor_id) ? body.actor_id : null);
         const d = String(body.decision ?? "");
-        const text = d === "approved" ? `✅ 交通費の片道額を *${yen(body.fare)}* で承認しました（${who}・${nowJst()}）${body.note ? `\nメモ: ${String(body.note).slice(0, 200)}` : ""}\n▶ 次: 親メッセージの「🚌 交通費を設定」でスマレジに入れる値（支給形態・適用開始日・金額）を決めてください`
+        // 2026-11-19 交通費の 1 回承認: 承認と同時に設定を登録できたか（slack-interact が RPC onboarding_commute_one_step の結果を渡す）で、次の案内を変える
+        const os = String(body.one_step ?? "");
+        const oneStepNext = os === "saved" ? "▶ 会社のルールの初期値で、交通費の設定を登録しました（次の投稿）。変えたいときだけ、親メッセージの「🚌 交通費を設定」から入れ直してください"
+          : os === "already_set" || os === "item_in_progress" ? "ℹ️ 交通費の設定は登録済みです（変えるときは、親メッセージの「🚌 交通費を設定」から）"
+          : os === "no_teiki" ? "▶ 次: 定期代が検索で取れていないため、設定は自動で登録していません。親メッセージの「🚌 交通費を設定」で金額を入れてください"
+          : os === "no_contract" ? "▶ 次: スマレジの従業員登録がまだのため、設定は登録していません。登録のあと、親メッセージの「🚌 交通費を設定」から入れてください"
+          : "▶ 次: 親メッセージの「🚌 交通費を設定」でスマレジに入れる値（支給形態・適用開始日・金額）を決めてください";
+        const text = d === "approved" ? `✅ 交通費の片道額を *${yen(body.fare)}* で承認しました（${who}・${nowJst()}）${body.note ? `\nメモ: ${String(body.note).slice(0, 200)}` : ""}\n${oneStepNext}`
           : d === "person_review" ? `🙋 本人に経路と金額を確認することにしました（${who}・${nowJst()}）。本人への連絡（LINE/メール）は Phase 2 後半で自動化。返答が来たらスレッドに書き、「🔁 再検索」または「✅ 承認」を押してください`
           : `↩️ 交通費を差し戻しました（${who}・${nowJst()}）${body.note ? `\n理由: ${String(body.note).slice(0, 200)}` : ""}`;
         await thread(sb, wf, text, undefined, "onboarding_commute_decided");
@@ -369,7 +376,7 @@ Deno.serve(async (req) => {
         const tail = s?.sync_status === "manual"
           ? `🙋 スマレジへの自動反映はまだ有効化されていません（実機検証後に有効化）。*スマレジ管理画面でこの値を入力*し、本部タスクの「交通費」に ✓ を付けてください`
           : `⏳ Mac の自動操作でスマレジに反映します（数分〜）。結果はこのスレッドに届きます${body.duplicate ? "\nℹ️ 同じ人の未完了ジョブがあるため、そのジョブに相乗りします" : ""}`;
-        await thread(sb, wf, `🚌 交通費の設定を登録しました（${who}・${nowJst()}）\n${line}\n${tail}`, undefined, "onboarding_commute_setting");
+        await thread(sb, wf, `🚌 交通費の設定を登録しました（${body.one_step === true ? "承認と同時・会社のルールの初期値／" : ""}${who}・${nowJst()}）\n${line}\n${tail}`, undefined, "onboarding_commute_setting");
         await refreshParent(sb, wf);
         return json({ ok: true });
       }

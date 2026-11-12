@@ -444,6 +444,8 @@ const handlers: Record<string, Handler> = {
       sb.from("app_settings").select("value").eq("key", "commute_rules").maybeSingle(),
       sb.from("user_stores").select("stores(id,name)").eq("user_id", wf.user_id),
     ]);
+    // 2026-11-19: 経路と片道額を承認していないあいだは、設定に進めない（DB 側の onboarding_set_commute_setting でも同じ確認をする）
+    if (cm?.judgement !== "approved" || cm?.approved_fare == null) return ephemeral("交通費の経路と片道額が、まだ承認されていません。先に、スレッドの「交通費の確認」で承認してください（承認すると、会社のルールの初期値で設定も登録されます）。", ru);
     const stores = (us ?? []).map((x: any) => x.stores).filter(Boolean);
     const capDefault = wf.role === "AL" ? Number(rules?.value?.al_cap_yen ?? 6000) : null;
     return await openModal(payload.trigger_id, commuteSettingModal({ workflow_id: wf.id, user_id: wf.user_id, notification_id: notificationId, contract_id: contracts[0].contract_id },
@@ -559,7 +561,15 @@ async function commuteApprove({ sb, actor, payload, value }: Ctx, mode: "claimed
   const { data, error } = await sb.rpc("onboarding_commute_decide", { p_user: wf.user_id, p_decision: "approved", p_fare: fare, p_note: mode === "computed" ? "検索の最安額で承認" : "申請額で承認", p_actor: actor.user_id });
   if (error) return ephemeral(`記録できませんでした: ${error.message}`, ru);
   if (!data?.ok) return ephemeral("記録できませんでした", ru);
-  waitUntil(onboardingNotify({ op: "commute_decided", workflow_id: wf.id, actor_id: actor.user_id, decision: "approved", fare, note: mode === "computed" ? "検索の最安額で承認" : null }));
+  // 2026-11-19 交通費の 1 回承認: 承認できたら、会社のルールの初期値で交通費の設定も登録する（まだ設定が無いときだけ。RPC onboarding_commute_one_step）。
+  //   スマレジへ入れるのは今までどおり、自動書き込みのスイッチが入っているときだけ（切れていれば「手で入力」の案内）。RPC がまだ無い・失敗したときは、今までどおり「交通費を設定」を案内する
+  waitUntil((async () => {
+    let one: any = null;
+    try { const r = await sb.rpc("onboarding_commute_one_step", { p_workflow: wf.id, p_actor: actor.user_id }); one = r.error ? { ok: false, error: r.error.message } : r.data; } catch (e) { one = { ok: false, error: String(e) }; }
+    const oneStep: string | null = one?.setting_id ? "saved" : (one?.skipped ?? (one?.ok === false ? "error" : null));
+    await onboardingNotify({ op: "commute_decided", workflow_id: wf.id, actor_id: actor.user_id, decision: "approved", fare, note: mode === "computed" ? "検索の最安額で承認" : null, one_step: oneStep });
+    if (one?.setting_id) await onboardingNotify({ op: "commute_setting_saved", workflow_id: wf.id, setting_id: one.setting_id, actor_id: actor.user_id, duplicate: !!one.job?.duplicate, one_step: true });
+  })());
   return text("");
 }
 // 入社後フォーム（年末調整・扶養）の承認／差し戻し。承認は RPC onboarding_post_join_approve → 承認できたら enqueue（スイッチ OFF なら manual）→ op=post_join_decided
