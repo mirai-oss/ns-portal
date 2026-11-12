@@ -12,6 +12,10 @@
 //     thread     { workflow_id, text, blocks?, event? } スレッドに 1 件投稿
 //     wage_sync  { workflow_id, actor_id, contract_id? } 反映待ちの賃金を smaregi-sync wage_push → wage_pull で照合 → 項目を完了/失敗 → スレッド＋親更新
 //     status     { workflow_id | user_id }             状態を返す（確認用）
+//   2026-11-18 入社時の賃金の承認（★ 設定 app_settings.onboarding_wage_approval.enabled が true のときだけ使われる。既定は false＝今までどおり wage_save_sync）:
+//     wage_submit  { workflow_id, actor_id, contract_id?, division, wage, date }  Slack のモーダルから。RPC onboarding_wage_submit（判定つき）→ 承認なしなら wage_sync／承認待ちならスレッドに「社長の承認待ち」（金額なし）
+//     wage_decided { request_id, workflow_id?, event }  管理システムの画面での入力・承認・却下・取り下げのあと DB から呼ばれる（金額は受け取らない・読まない）。承認＝wage_sync／却下・承認待ち・取り下げ＝スレッドに表示
+//     wage_sync・wage_confirm は、承認待ちの確定依頼があるあいだは動かない（スマレジへ送らない・項目を完了にしない）
 //   2026-11-09（Phase 5 の土台。★ いずれも既定フラグ OFF＝本人に自動送信しない・停滞アラートを送らない）:
 //     person_contact { workflow_id, kind, text?, actor_id }  本人への連絡（onboarding_alerts.person_notify_enabled=true のときだけ Slack DM → LINE の順で送る。false は文面をスレッドに出すだけ）
 //     account_check  { workflow_id, actor_id }               スマレジ GET（staff_get）でメール・源泉・Web明細・交通費の登録を照合し、登録済みなら項目を自動 ✓。本人アカウント登録状況は API に項目が無い → UI 読み取りジョブ（account_ui_read_enabled=true のとき）
@@ -29,7 +33,7 @@
 // =============================================================
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { shouldMaskChannel } from "../_shared/amount-mask.ts";
-import { setHideAmounts, hideAmounts, AMOUNT_HIDDEN, changeEffectBlocks, changeEffectText, payChangeBlocks, payChangeText, transferHoldBlocks, transferHoldText, parentMessage, wageFailedBlocks, wageDateAdjustedBlocks, wageLine, nowJst, commuteCheckBlocks, uiJobResultBlocks, autoApprovedBlocks, personContactTemplate, personContactResultBlocks, staleAlertThreadText, staleAlertSummaryBlocks, postJoinSubmittedBlocks, yearEndCompareText, POST_JOIN_TRACK_LABEL, POST_JOIN_STATUS_LABEL, RELATIONSHIP_LABEL, ITEM_ORDER, PAY_TYPE_LABEL, JUDGEMENT_LABEL, yen, jpDate, type WorkflowView } from "../_shared/onboarding-blocks.ts";
+import { setHideAmounts, hideAmounts, AMOUNT_HIDDEN, changeEffectBlocks, changeEffectText, payChangeBlocks, payChangeText, transferHoldBlocks, transferHoldText, parentMessage, wageFailedBlocks, wageDateAdjustedBlocks, wageApprovalBlocks, wageApprovalText, WAGE_DIV_LABEL, wageLine, nowJst, commuteCheckBlocks, uiJobResultBlocks, autoApprovedBlocks, personContactTemplate, personContactResultBlocks, staleAlertThreadText, staleAlertSummaryBlocks, postJoinSubmittedBlocks, yearEndCompareText, POST_JOIN_TRACK_LABEL, POST_JOIN_STATUS_LABEL, RELATIONSHIP_LABEL, ITEM_ORDER, PAY_TYPE_LABEL, JUDGEMENT_LABEL, yen, jpDate, type WorkflowView } from "../_shared/onboarding-blocks.ts";
 import { linePush } from "../_shared/line.ts";
 
 const cors = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "authorization, content-type, apikey, x-client-info, x-notify-secret" };
@@ -149,10 +153,21 @@ async function opOpen(sb: any, userId: string, source: string) {
   return json({ ok: true, workflow_id: wfId, created: data.created, parent_created: p.created, hq_task_id: wf.hq_task_id });
 }
 
+// 入社時の賃金の承認（2026-11-18）: 承認待ちの確定依頼があるか（金額の列は読まない）。表が無い環境（SQL 未適用）・読めないときは「無い」＝今までどおり
+async function wageApprovalPending(sb: any, wfId: string): Promise<boolean> {
+  try {
+    const { data, error } = await sb.from("onboarding_wage_requests").select("id").eq("workflow_id", wfId).eq("status", "pending").limit(1);
+    return !error && Array.isArray(data) && data.length > 0;
+  } catch (_e) { return false; }
+}
+const APPROVAL_PENDING_MSG = "賃金は社長の承認待ちです（承認されるまで、スマレジへの反映・確定はできません）";
+
 // ---- op=wage_sync ----
 async function opWageSync(sb: any, wfId: string, actorId: string | null, contractId: string | null) {
   const wf = await loadView(sb, wfId);
   if (!wf || !wf.user_id) return json({ ok: false, error: "ワークフローが見つかりません" }, 404);
+  // 承認待ちのあいだは何もしない（送る行が無いまま「完了」になるのを防ぐ）
+  if (await wageApprovalPending(sb, wfId)) return json({ ok: false, error: APPROVAL_PENDING_MSG, state: "approval_pending" }, 409);
   const C = contractId ?? wf.contract_id;
   if (!C) return json({ ok: false, error: "スマレジの契約が決まっていません" }, 400);
   const who = await actorName(sb, actorId);
@@ -288,6 +303,63 @@ Deno.serve(async (req) => {
         }
         return await opWageSync(sb, body.workflow_id, body.actor_id, C);
       }
+      case "wage_submit": {
+        // 2026-11-18 入社時の賃金の承認: Slack のモーダルから（設定が有効なときだけ slack-interact がここへ送る）。
+        //   判定（雇用区分×給与形態）と保存は RPC onboarding_wage_submit。承認なし＝その場で正式な賃金になるので続けて反映／社長の承認・確認待ち＝正式な賃金には入らない（スマレジへ送らない）
+        if (!isUuid(body.workflow_id) || !isUuid(body.actor_id)) return json({ ok: false, error: "workflow_id と actor_id が必要です" }, 400);
+        const wf = await loadView(sb, body.workflow_id);
+        if (!wf?.user_id) return json({ ok: false, error: "見つかりません" }, 404);
+        const division = Number(body.division), wage = Number(body.wage), date = String(body.date ?? ""), C = body.contract_id ? String(body.contract_id) : wf.contract_id;
+        const who = await actorName(sb, body.actor_id);
+        const { data: pn } = await sb.from("onboarding_workflows").select("slack_parent_notification_id").eq("id", wf.id).maybeSingle();
+        const { data, error } = await sb.rpc("onboarding_wage_submit", { p_workflow: wf.id, p_rows: [{ contract_id: C, division, store_id: null, wage, holiday_wage: null, effective_date: date }], p_actor: body.actor_id });
+        if (error || !data?.ok) {
+          const msg = error?.message ?? data?.error ?? "保存できませんでした";
+          // 金額は記録にも文面にも入れない（給与形態と適用開始日だけ）
+          await event(sb, wf, "wage.submit_failed", { division, date, contract_id: C, error: msg }, body.actor_id, "wage");
+          await thread(sb, wf, `⚠️ 賃金を保存できませんでした: ${msg}`, [
+            { type: "section", text: { type: "mrkdwn", text: `⚠️ *賃金を保存できませんでした*（${who}・${nowJst()}）\n入力: ${WAGE_DIV_LABEL[division] ?? "賃金"}（${jpDate(date)}から）\n理由: ${msg.slice(0, 300)}` } },
+            { type: "actions", block_id: "onboarding_wage_fix", elements: [{ type: "button", style: "primary", text: { type: "plain_text", text: "💴 賃金を直す", emoji: true }, action_id: "hr.onboarding.wage", value: JSON.stringify({ workflow_id: wf.id, notification_id: pn?.slack_parent_notification_id ?? null }) }] },
+          ], "onboarding_wage_save_failed");
+          return json({ ok: false, error: msg });
+        }
+        if (data.applied) return await opWageSync(sb, wf.id, body.actor_id, C);
+        const wf2 = (await loadView(sb, wf.id)) ?? wf;
+        const a = { actor: who, rule: String(data.rule ?? ""), reason: data.reason ? String(data.reason) : null };
+        await thread(sb, wf2, wageApprovalText("pending", a), wageApprovalBlocks(wf2, pn?.slack_parent_notification_id ?? null, "pending", a), "onboarding_wage_approval_pending");
+        await refreshParent(sb, wf2);
+        return json({ ok: true, applied: false, rule: data.rule, request_id: data.request_id, state: "approval_pending" });
+      }
+      case "wage_decided": {
+        // 2026-11-18 入社時の賃金の承認: 管理システムの画面での入力・承認・却下・取り下げのあと（DB の onboarding_wage_notify から）。
+        //   確定依頼の「状態」だけを読む（金額の列 wage_rows・却下の理由は読まない）。承認＝ここで初めてスマレジへ反映して照合
+        if (!isUuid(body.request_id)) return json({ ok: false, error: "request_id が不正です" }, 400);
+        const { data: q, error: qe } = await sb.from("onboarding_wage_requests").select("id,workflow_id,status,rule_result,rule_reason,contract_ids,requested_by,decided_by").eq("id", body.request_id).maybeSingle();
+        if (qe || !q) return json({ ok: false, error: qe?.message ?? "確定依頼が見つかりません" }, 404);
+        // 届いた出来事と今の状態が合わないとき（あとから別の操作があった）は何もしない＝同じ表示を 2 回出さない
+        const expect: Record<string, string> = { submitted: "pending", confirmed: "approved", approved: "approved", rejected: "rejected", cancelled: "cancelled" };
+        const ev = String(body.event ?? "");
+        if (!expect[ev] || expect[ev] !== q.status) return json({ ok: true, skipped: `状態が ${q.status} のため何もしません（${ev || "event なし"}）` });
+        const wf = await loadView(sb, q.workflow_id);
+        if (!wf?.user_id) return json({ ok: false, error: "入社登録が見つかりません" }, 404);
+        const { data: pn } = await sb.from("onboarding_workflows").select("slack_parent_notification_id").eq("id", wf.id).maybeSingle();
+        const nid = pn?.slack_parent_notification_id ?? null;
+        if (q.status === "approved") {
+          const who = await actorName(sb, q.decided_by);
+          // 社長の承認を経たものだけ「承認しました」を出す（アルバイト×時給の確定は、今までどおり反映の結果だけ）
+          if (ev === "approved") await thread(sb, wf, wageApprovalText("approved", { actor: who }), wageApprovalBlocks(wf, nid, "approved", { actor: who }), "onboarding_wage_approved");
+          const cs: (string | null)[] = Array.isArray(q.contract_ids) && q.contract_ids.length ? q.contract_ids.map((c: unknown) => String(c)) : [null];
+          let last: Response | null = null;
+          for (const c of cs) last = await opWageSync(sb, wf.id, q.decided_by ?? null, c);
+          return last ?? json({ ok: true });
+        }
+        const kind = q.status === "pending" ? "pending" : q.status === "rejected" ? "rejected" : "cancelled";
+        const who = await actorName(sb, kind === "pending" ? q.requested_by : q.decided_by);
+        const a = { actor: who, rule: String(q.rule_result ?? ""), reason: kind === "pending" && q.rule_reason ? String(q.rule_reason) : null };
+        const r = await thread(sb, wf, wageApprovalText(kind, a), wageApprovalBlocks(wf, nid, kind, a), `onboarding_wage_approval_${kind}`);
+        await refreshParent(sb, wf);
+        return json({ ok: !!r?.ok, status: q.status, error: r?.error ?? null });
+      }
       case "wage_confirm": {
         // 「✅ この日付で確定」: manual_required（適用開始日の差異）の賃金項目を、人の確認のうえ完了にする（payload の rows/verified はそのまま）
         if (!isUuid(body.workflow_id) || !isUuid(body.actor_id)) return json({ ok: false, error: "workflow_id と actor_id が必要です" }, 400);
@@ -295,6 +367,8 @@ Deno.serve(async (req) => {
         if (!wf) return json({ ok: false, error: "見つかりません" }, 404);
         const it = wf.items?.wage;
         if (it?.state !== "manual_required") return json({ ok: false, error: `賃金の項目は確認待ちではありません（${it?.state ?? "なし"}）` }, 409);
+        // 2026-11-18: 社長の承認待ち・却下のあとの「手動対応が必要」は、このボタン（適用開始日の確認）では完了にしない
+        if (it.payload?.approval || await wageApprovalPending(sb, body.workflow_id)) return json({ ok: false, error: APPROVAL_PENDING_MSG }, 409);
         const who = await actorName(sb, body.actor_id);
         await setItem(sb, body.workflow_id, "wage", "completed", { ...(it.payload ?? {}), confirmed_by: body.actor_id, confirmed_at: new Date().toISOString() }, body.actor_id, "slack");
         const wf2 = (await loadView(sb, body.workflow_id)) ?? wf;

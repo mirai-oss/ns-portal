@@ -1,6 +1,6 @@
 // Slack 表示部品の描画テスト（Phase 6 v2・2026-11-09）。deno test supabase/functions/_shared/onboarding-blocks.test.ts
 import { assert, assertEquals } from "jsr:@std/assert@1";
-import { yen, wageLine, AMOUNT_HIDDEN, wageFailedBlocks, setHideAmounts, commuteCheckBlocks, autoApprovedBlocks, parentMessage, taxSettingModal, postJoinSubmittedBlocks, postJoinLines, postJoinPolicyText, personContactTemplate, yearEndCompareText, uiJobResultBlocks, type WorkflowView } from "./onboarding-blocks.ts";
+import { yen, wageLine, AMOUNT_HIDDEN, wageFailedBlocks, wageApprovalMark, wageApprovalText, wageApprovalBlocks, wageModal, setHideAmounts, commuteCheckBlocks, autoApprovedBlocks, parentMessage, taxSettingModal, postJoinSubmittedBlocks, postJoinLines, postJoinPolicyText, personContactTemplate, yearEndCompareText, uiJobResultBlocks, type WorkflowView } from "./onboarding-blocks.ts";
 
 const wf: WorkflowView = { id: "11111111-1111-1111-1111-111111111111", user_id: "22222222-2222-2222-2222-222222222222", status: "registering", hire_date: "2026-11-09", role: "SHAIN", contract_id: "sez093z1", contract_label: "トーホー", smaregi_staff_id: "380", hq_task_id: null, user_name: "テスト 太郎", store_names: "鳥一代 本店", items: { join_form: { state: "completed" } },
   year_end: { status: "submitted", target_year: 2026, required: true, deadline: "2026-11-30", source_of_required: "rule", class: "SHAIN" },
@@ -168,4 +168,43 @@ Deno.test("金額を出さない表示: 金額の項目そのものを数字に�
     const m = maskAmountsDeep(blocks); assert(!/[¥￥]/.test(JSON.stringify(m).replace(/"value":"[^"]*(\\"[^"]*)*"/g, "")));
     assertEquals(findAmountLeaks("", m), []);
   }
+});
+
+// 2026-11-18 入社時の賃金の承認: 承認待ち・却下・承認済みの表示。金額はどこにも出ない・承認のボタンは Slack に無い
+Deno.test("入社時の賃金の承認: 親メッセージとスレッドの表示（金額なし・承認は管理システムで）", () => {
+  const item = (state: string, payload: unknown, last_error: string | null = null) => ({ ...wf, items: { ...(wf.items ?? {}), wage: { state, payload, last_error } } }) as WorkflowView;
+  // 印が無ければ今までどおり（何も変わらない）
+  assertEquals(wageApprovalMark({ state: "manual_required", payload: { date_adjusted: [] } } as any), null);
+  assertEquals(wageApprovalMark({ state: "pending" } as any), null);
+  assertEquals(JSON.stringify(parentMessage(item("pending", null), "nid").blocks).includes("社長の承認待ち"), false);
+  // 承認待ち
+  const pend = item("manual_required", { approval: "pending", request_id: "r1", rule: "president", reason: "社員の賃金は、社長の最終承認が必要です" }, "社長の承認待ち");
+  const pm = parentMessage(pend, "nid"); const ptxt = JSON.stringify(pm.blocks);
+  assert(ptxt.includes("⏳ 賃金（時給・日給・月給）")); assert(ptxt.includes("*社長の承認待ち*")); assert(ptxt.includes("止まっています")); assert(pm.text.includes("社長の承認待ち"));
+  assert(!/[¥￥]/.test(ptxt), "金額は出ない");
+  // 確認待ち（食い違い）は理由を出す
+  const hold = item("manual_required", { approval: "pending", rule: "hold", reason: "アルバイトなのに月給です（雇用区分と給与形態が合いません）" }, "確認待ち（社長の承認が必要）: アルバイトなのに月給です");
+  assert(JSON.stringify(parentMessage(hold, "nid").blocks).includes("確認待ち: アルバイトなのに月給です"));
+  // 却下・承認済み（反映中）
+  assert(JSON.stringify(parentMessage(item("manual_required", { approval: "rejected" }, "社長が却下しました（賃金を入れ直してください）"), "nid").blocks).includes("却下（入れ直し待ち）"));
+  assert(JSON.stringify(parentMessage(item("running", { approval: "approved" }), "nid").blocks).includes("承認済み（スマレジへ反映中）"));
+  // 金額を出さない設定のときも同じ言葉（「賃金設定待ち」ではなく「社長の承認待ち」）
+  setHideAmounts(true);
+  try { const h = JSON.stringify(parentMessage(pend, "nid").blocks); assert(h.includes("*社長の承認待ち*")); assert(!h.includes("賃金設定待ち")); } finally { setHideAmounts(false); }
+  // スレッド: 承認待ち＝従業員ページへのリンクだけ（承認・却下のボタンは無い）／却下＝入れ直しのボタン
+  const pb = JSON.stringify(wageApprovalBlocks(pend, "nid", "pending", { actor: "本部 花子", rule: "president", reason: "社員の賃金は、社長の最終承認が必要です" }));
+  assert(pb.includes("社長の承認待ち")); assert(pb.includes("スマレジには反映しません")); assert(pb.includes("hr.onboarding.link.nippo")); assert(pb.includes("page=admin&u=" + wf.user_id));
+  assert(!pb.includes("approve") && !pb.includes("hr.onboarding.wage.confirm"), "Slack に承認のボタンは置かない"); assert(!/[¥￥]|\d円/.test(pb), "金額は出ない");
+  const hb = JSON.stringify(wageApprovalBlocks(hold, null, "pending", { actor: "本部 花子", rule: "hold", reason: "アルバイトなのに月給です" }));
+  assert(hb.includes("確認待ち（社長の承認が必要）")); assert(hb.includes("理由: アルバイトなのに月給です"));
+  const rb = JSON.stringify(wageApprovalBlocks(pend, "nid", "rejected", { actor: "社長" }));
+  assert(rb.includes("却下しました")); assert(rb.includes('"action_id":"hr.onboarding.wage"')); assert(rb.includes("スマレジには反映していません"));
+  assert(JSON.stringify(wageApprovalBlocks(pend, "nid", "approved", { actor: "社長" })).includes("承認しました"));
+  assert(wageApprovalText("pending", { actor: "本部 花子" }).includes("承認されるまでスマレジには反映しません"));
+  assert(wageApprovalText("pending", { actor: "本部 花子", rule: "hold" }).includes("確認待ち"));
+  // モーダル: 承認が有効のときだけ案内と「登録する」。無効なら今までどおり
+  const m0: any = wageModal({ workflow_id: wf.id, user_id: wf.user_id!, notification_id: null }, { name: "テスト 太郎", hire_date: "2026-11-09", contracts: [] });
+  assertEquals(m0.submit.text, "登録してスマレジに反映"); assert(!JSON.stringify(m0.blocks).includes("社長が管理システムで承認"));
+  const m1: any = wageModal({ workflow_id: wf.id, user_id: wf.user_id!, notification_id: null, approval: true }, { name: "テスト 太郎", hire_date: "2026-11-09", contracts: [], approval: true });
+  assertEquals(m1.submit.text, "登録する"); assert(JSON.stringify(m1.blocks).includes("社長が管理システムで承認")); assertEquals(JSON.parse(m1.private_metadata).approval, true);
 });

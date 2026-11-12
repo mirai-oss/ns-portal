@@ -73,6 +73,8 @@ async function resolveActor(sb: any, slackUserId: string): Promise<Actor | null>
 //   hr.onboarding.wage / .wage.modal   入社登録（2026-11-09 Phase 1）: 親メッセージ「💴 賃金を設定」→ モーダル（時給/日給/月給・適用開始日・金額）
 //                                 → RPC hr_save_wage(p_actor) → EF onboarding-notify op=wage_sync（smaregi-sync wage_push → wage_pull 照合 → スレッド＋親更新）
 //   hr.onboarding.retry           失敗したスレッドの「🔁 もう一度反映」→ EF onboarding-notify op=wage_sync
+//                                 2026-11-18 入社時の賃金の承認: 設定 app_settings.onboarding_wage_approval.enabled が true のときだけ、送信先を op=wage_submit にする
+//                                 （アルバイト×時給＝そのまま反映／社員など＝社長が管理システムで承認するまで反映しない）。false・設定なしは今までどおり op=wage_save_sync
 //   hr.onboarding.wage.confirm    適用開始日がスマレジ側の日付に変わった賃金（確認待ち 🙋）の「✅ この日付で確定」→ EF onboarding-notify op=wage_confirm
 //   hr.onboarding.refresh         「🔄 表示を更新」→ EF onboarding-notify op=refresh
 //   hr.onboarding.link            URL ボタン（従業員ページ・本部タスク）の押下通知。何もしない
@@ -261,8 +263,11 @@ const handlers: Record<string, Handler> = {
     if (wf.status === "cancelled") return ephemeral("この入社手続きは中止されています", ru);
     const contracts = await activeContracts(sb, wf.user_id);
     if (!contracts.length) return ephemeral("スマレジにまだ登録されていないため、賃金を反映できません。先に nippo の従業員ページからスマレジに登録してください。", ru);
+    // 2026-11-18 入社時の賃金の承認: 設定が有効かどうかをここで読んで private_metadata に入れる（送信時に DB を引かない）。設定が無い・読めないときは false＝今までどおり
+    let approval = false;
+    try { const { data: wap } = await sb.from("app_settings").select("value").eq("key", "onboarding_wage_approval").maybeSingle(); approval = wap?.value?.enabled === true; } catch (_e) { approval = false; }
     // 契約が 1 つならここで決めて private_metadata に入れる（送信時に DB を引かない＝3 秒以内に返事するため）
-    return await openModal(payload.trigger_id, wageModal({ workflow_id: wf.id, user_id: wf.user_id, notification_id: notificationId, contract_id: contracts.length === 1 ? contracts[0].contract_id : null }, { name: wf.user_name ?? "", hire_date: wf.hire_date, contracts }));
+    return await openModal(payload.trigger_id, wageModal({ workflow_id: wf.id, user_id: wf.user_id, notification_id: notificationId, contract_id: contracts.length === 1 ? contracts[0].contract_id : null, ...(approval ? { approval: true } : {}) }, { name: wf.user_name ?? "", hire_date: wf.hire_date, contracts, approval }));
   },
   "hr.onboarding.wage.modal": async ({ sb, actor, payload }) => {
     const meta = JSON.parse(payload.view?.private_metadata ?? "{}");
@@ -279,7 +284,8 @@ const handlers: Record<string, Handler> = {
     if (!contract) return json({ response_action: "errors", errors: { wage: "スマレジの契約を選んでください（登録されていない場合は先に nippo からスマレジ登録）" } });
     // 2026-11-09: 実機（スマホ）で「Slack になかなか接続できません」＝3 秒超。保存（RPC hr_save_wage・権限と検証は RPC 側）もスマレジ反映も返事の後ろ（EF onboarding-notify op=wage_save_sync）で行い、
     //   保存エラーはスレッドに ⚠️ で届く。ここでは形式チェックだけして先にモーダルを閉じる
-    waitUntil(onboardingNotify({ op: "wage_save_sync", workflow_id: meta.workflow_id, actor_id: actor.user_id, contract_id: contract, division, wage, date }));
+    // 2026-11-18 入社時の賃金の承認: モーダルを開いたときに設定が有効だったら、判定つきの入口（op=wage_submit）へ。無効なら今までどおり
+    waitUntil(onboardingNotify({ op: meta.approval === true ? "wage_submit" : "wage_save_sync", workflow_id: meta.workflow_id, actor_id: actor.user_id, contract_id: contract, division, wage, date }));
     return json({ response_action: "clear" });
   },
   // 救済処理で適用開始日がスマレジ側の日付に変わった賃金（確認待ち）を、人が確認して確定する（2026-11-09）

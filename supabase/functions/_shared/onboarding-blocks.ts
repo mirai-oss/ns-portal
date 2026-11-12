@@ -116,10 +116,13 @@ export function parentMessage(wf: WorkflowView, notificationId: string): { text:
       extra = "　" + (HIDE_AMOUNTS ? "" : it.payload.rows.map((r: any) => wageLine(r)).join("／")) + (src === "smaregi_verified" ? "　_スマレジ照合済み_" : src === "smaregi_unverified" ? "　_（保存済み・照合は未確認）_" : "");
     }
     // 金額を出さない表示: 賃金・交通費は処理状況の言葉を出す（金額は管理画面）
-    const hideLabel = HIDE_AMOUNTS ? (HIDE_STATUS[key]?.[st] ?? "") : "";
+    // 2026-11-18 入社時の賃金の承認: 社長の承認待ち・却下・承認済み（反映中）の印。金額は出さない
+    const apv = key === "wage" ? wageApprovalMark(it) : null;
+    const hideLabel = HIDE_AMOUNTS ? (apv?.label ?? HIDE_STATUS[key]?.[st] ?? "") : "";
     if ((st === "failed" || st === "manual_required") && it?.last_error) extra = `　_${String(it.last_error).slice(0, 80)}_`;
     // 2026-11-15: 自動操作は終わったが、スマレジの値との照合がまだ（完了にはしない）
     if (st === "running" && it?.payload?.verify === "pending") extra = "　_（スマレジに入力済み・照合待ち）_";
+    if (apv) { emoji = apv.emoji; extra = (HIDE_AMOUNTS ? "" : `　*${apv.label}*`) + `　_${apv.note}_`; }
     if (st === "pending" && ["commute_set", "withholding_tax", "web_payslip"].includes(key)) extra = "　_（今は手作業。本部タスクの ✓ で反映）_";
     else if (st === "pending" && key === "email") extra = "　_（今は手作業。本部タスク工程①の完了で反映）_";
     else if (st === "pending" && key === "smaregi_account") extra = "　_（「🔎 スマレジ照合」で確認。API に項目が無いため管理画面の読み取りが要ります）_";
@@ -170,14 +173,54 @@ export function parentMessage(wf: WorkflowView, notificationId: string): { text:
   return { text: `${headEmoji} 入社登録：${name}さん（${kind}／${stores}）${wf.status === "completed" ? " 完了" : wf.status === "cancelled" ? " 中止" : blocked.length ? ` 止まっています: ${blocked.join("・")}` : ` 進行中 ${done}/${total}`}`, blocks };
 }
 
-/** 賃金モーダル。contracts が 2 つ以上のときだけ契約の選択を出す */
-export function wageModal(meta: { workflow_id: string; user_id: string; notification_id: string | null; contract_id?: string | null }, opts: {
-  name: string; hire_date: string | null; contracts: { contract_id: string; label: string; staff_id: string }[];
+/** 入社時の賃金の承認（2026-11-18）: 項目「賃金」に付いた印（payload.approval）から、親メッセージに出す言葉を決める。印が無ければ null（今までどおりの表示） */
+export function wageApprovalMark(it: ItemInfo | undefined | null): { emoji: string; label: string; note: string } | null {
+  const a = it?.payload?.approval;
+  if (it?.state === "manual_required" && a === "pending") {
+    const hold = it.payload?.rule === "hold" && it.payload?.reason;
+    return { emoji: "⏳", label: "社長の承認待ち", note: hold ? `確認待ち: ${String(it.payload.reason).slice(0, 70)}` : "社長が管理システムで承認すると、自動でスマレジに反映されます" };
+  }
+  if (it?.state === "manual_required" && a === "rejected") return { emoji: "↩️", label: "却下（入れ直し待ち）", note: "社長が却下しました。「💴 賃金を設定」から入れ直してください" };
+  if (it?.state === "running" && a === "approved") return { emoji: "🔄", label: "承認済み（スマレジへ反映中）", note: "社長が承認しました" };
+  return null;
+}
+export type WageApprovalEvent = "pending" | "approved" | "rejected" | "cancelled";
+/** 入社時の賃金の承認: スレッドに出す 1 行（通知・検索用）。金額は入れない */
+export function wageApprovalText(ev: WageApprovalEvent, a: { actor: string; rule?: string | null }): string {
+  return ev === "pending" ? `⏳ 賃金は${a.rule === "hold" ? "確認待ち（社長の承認が必要）" : "社長の承認待ち"}です（入力: ${a.actor}）。承認されるまでスマレジには反映しません`
+    : ev === "approved" ? `✅ 社長が賃金を承認しました（${a.actor}）。スマレジへ反映します`
+    : ev === "rejected" ? `↩️ 社長が賃金を却下しました（${a.actor}）。スマレジには反映していません`
+    : `➖ 賃金の確定依頼を取り下げました（${a.actor}）`;
+}
+/** 入社時の賃金の承認: スレッドの表示。金額・却下の理由は出さない（管理システムで確認）。承認・却下のボタンは Slack に置かない（社長が管理システムの画面で行う） */
+export function wageApprovalBlocks(wf: WorkflowView, notificationId: string | null, ev: WageApprovalEvent, a: { actor: string; rule?: string | null; reason?: string | null }): unknown[] {
+  const value = JSON.stringify({ workflow_id: wf.id, notification_id: notificationId, item_key: "wage" });
+  const page = wf.user_id ? `${NIPPO_URL}?page=admin&u=${wf.user_id}` : NIPPO_URL;
+  const kind = ROLE_LABEL[wf.role ?? ""] ?? wf.role ?? "区分未設定";
+  const body = ev === "pending"
+    ? `⏳ *賃金は${a.rule === "hold" ? "確認待ち（社長の承認が必要）" : "社長の承認待ち"}です*（入力: ${a.actor}・${nowJst()}）\n区分: ${kind}${a.reason ? `\n理由: ${String(a.reason).slice(0, 200)}` : ""}\n承認されるまで、スマレジには反映しません。社長が管理システムの従業員ページで承認すると、自動でスマレジに反映・照合します。\n金額は管理システムで確認してください（Slack には出しません）。`
+    : ev === "approved" ? `✅ *社長が賃金を承認しました*（${a.actor}・${nowJst()}）\nこのあとスマレジへ反映し、読み直して照合します。結果はこのスレッドに届きます。`
+    : ev === "rejected" ? `↩️ *社長が賃金を却下しました*（${a.actor}・${nowJst()}）\nスマレジには反映していません。理由は管理システムの従業員ページで確認し、賃金を入れ直してください。`
+    : `➖ *賃金の確定依頼を取り下げました*（${a.actor}・${nowJst()}）\nスマレジには反映していません。`;
+  const blocks: unknown[] = [{ type: "section", text: { type: "mrkdwn", text: body } }];
+  const els: unknown[] = [];
+  if (ev === "pending") els.push({ type: "button", style: "primary", text: { type: "plain_text", text: "従業員ページで確認・承認", emoji: true }, action_id: "hr.onboarding.link.nippo", url: page, value });
+  if (ev === "rejected" || ev === "cancelled") els.push({ type: "button", style: "primary", text: { type: "plain_text", text: "💴 賃金を入れ直す", emoji: true }, action_id: "hr.onboarding.wage", value });
+  if (ev === "rejected") els.push({ type: "button", text: { type: "plain_text", text: "従業員ページ", emoji: true }, action_id: "hr.onboarding.link.nippo", url: page, value });
+  if (els.length) blocks.push({ type: "actions", block_id: `onboarding_wage_approval_${ev}`, elements: els });
+  return blocks;
+}
+
+/** 賃金モーダル。contracts が 2 つ以上のときだけ契約の選択を出す。approval=true（入社時の賃金の承認が有効）のときは、承認の案内を出す */
+export function wageModal(meta: { workflow_id: string; user_id: string; notification_id: string | null; contract_id?: string | null; approval?: boolean }, opts: {
+  name: string; hire_date: string | null; contracts: { contract_id: string; label: string; staff_id: string }[]; approval?: boolean;
 }) {
   const today = new Date(Date.now() + 9 * 3600e3).toISOString().slice(0, 10);
   const initDate = opts.hire_date && /^\d{4}-\d{2}-\d{2}$/.test(opts.hire_date) ? opts.hire_date : today;
   const blocks: unknown[] = [
-    { type: "section", text: { type: "mrkdwn", text: `*${opts.name}さん* の賃金を登録し、スマレジ・タイムカードの賃金設定に反映します。\n結果はスレッドに届きます。` } },
+    { type: "section", text: { type: "mrkdwn", text: opts.approval
+      ? `*${opts.name}さん* の賃金を登録します。\nアルバイトの時給は、そのままスマレジに反映します。社員などの賃金は、*社長が管理システムで承認したあと* にスマレジへ反映します（それまでは反映しません）。\n結果はスレッドに届きます。`
+      : `*${opts.name}さん* の賃金を登録し、スマレジ・タイムカードの賃金設定に反映します。\n結果はスレッドに届きます。` } },
   ];
   if (opts.contracts.length > 1) {
     blocks.push({ type: "input", block_id: "contract", label: { type: "plain_text", text: "スマレジの契約（法人）" }, element: {
@@ -202,7 +245,7 @@ export function wageModal(meta: { workflow_id: string; user_id: string; notifica
   );
   return {
     type: "modal", callback_id: "hr.onboarding.wage.modal", private_metadata: JSON.stringify(meta),
-    title: { type: "plain_text", text: "賃金の設定" }, submit: { type: "plain_text", text: "登録してスマレジに反映" }, close: { type: "plain_text", text: "やめる" },
+    title: { type: "plain_text", text: "賃金の設定" }, submit: { type: "plain_text", text: opts.approval ? "登録する" : "登録してスマレジに反映" }, close: { type: "plain_text", text: "やめる" },
     blocks,
   };
 }
