@@ -1,0 +1,198 @@
+diff --git a/index.html b/index.html
+index aea51c1..8a807c6 100644
+--- a/index.html
++++ b/index.html
+@@ -5216,6 +5216,7 @@ async function adminView(){
+  const sname=id=>{const s=stores.find(x=>x.id===id);return s?s.name:""};
+  let h=`<h2>従業員管理</h2>`;
+  if(me.is_master||["HQ","CEO"].includes(me.role)){h+=await syncStatusCardHtml();h+=await approvalCardHtml()} // 2026-11-10 ステップ 4／2026-11-11 承認待ちの申請（共通承認基盤）
++ if(me.is_master||["HQ","CEO"].includes(me.role))h+=await obWagePendingHtml(); // 2026-11-18 入社時の賃金・社長の承認待ち（関数が無い・無効・0 件のときは何も出さない）
+  // v2.6.64 通知の名前をタップしたら、その方の詳細が開くようにする（見た目はそのまま、押せる場所を足しただけ）
+  (ntfs||[]).forEach(n=>{
+   const uid=(n.link&&n.link.user_id)||"";
+@@ -8018,6 +8019,7 @@ async function adminEditView(){
+  // 2026-10-03追加: この人に配布した書類（源泉徴収票など）。本部・社長・マスターだけが開ける（hr_documentsのRLSと同じ）
+  const smInfo=(smReady&&canApproveRetirement())?await loadSmInfo(adminDetail):undefined; // 2026-10-17追加: スマレジ所属（契約ごと）
+  const wageRows=(smInfo!==undefined&&smInfo&&u.id!==undefined)?await loadWageRows(adminDetail):undefined; // 2026-10-17追加: 賃金設定（テーブルが無い間はnull→非表示）
++ obWage=(Array.isArray(wageRows)&&(me.is_master||["HQ","CEO"].includes(me.role)))?await loadObWage(adminDetail):null; // 2026-11-18 入社時の賃金の承認（関数が無い・無効・入社登録が無いときは null＝これまでどおり）
+  let hrDocs=[];
+  if(me.is_master||["HQ","CEO"].includes(me.role)){try{const {data:dd}=await sb.from("hr_documents").select("id,kind,year,path,uploaded_at,line_notified_at").eq("user_id",adminDetail).order("year",{ascending:false});hrDocs=dd||[]}catch(e){}}
+  const cmInfo=(me.is_master||["HQ","CEO"].includes(me.role))?await loadCommuteInfo(adminDetail):null; // 2026-11-10 Phase 2: 通勤・交通費（RLS と同じ条件の人だけ読む）
+@@ -8805,12 +8807,111 @@ const yen=n=>n==null?"":"¥"+Number(n).toLocaleString("ja-JP");
+ async function loadWageRows(uid){
+  try{const {data,error}=await sb.from("employee_wage_settings").select("*").eq("user_id",uid).order("effective_date",{ascending:false});if(error)return null;return data||[]}catch(e){return null}
+ }
++// ===== 2026-11-18 入社時の賃金の承認（アルバイトの時給＝担当者の登録でそのまま反映／それ以外＝社長が承認するまで反映しない） =====
++//   RPC（onboarding_wage_status / _submit / _decide / _cancel）が無い環境（SQL 未適用）・設定が無効のあいだは、これまでどおりの表示と動き。
++//   承認・却下・取り下げができるかは DB の答え（requests[].can_decide / can_cancel・viewer.can_approve）をそのまま使う。画面では権限を決めない。
++//   スマレジへの反映は DB → Edge Function が行う。この機能の中では、画面から wage_push を呼ばない（二重に送らない）。
++let obWage=null; // 従業員ページ用 {enabled, viewer, requests, rule, events, workflow_id, workflow_status, user_id}。null＝これまでどおり
++const OBW_ST={pending:"社長の承認待ち",approved:"決定",rejected:"却下",cancelled:"取り下げ"};
++const OBW_REENTER="入社手続き中の人は、入力欄から入れ直してください（修正・コピーは使えません）";
++async function loadObWage(uid){
++ try{
++  const {data:wf,error:e1}=await sb.from("onboarding_workflows").select("id,status").eq("user_id",uid).maybeSingle();
++  if(e1||!wf)return null;
++  const {data,error}=await sb.rpc("onboarding_wage_status",{p_workflow:wf.id,p_only_open:false});
++  if(error||!data||!data.ok||!data.enabled)return null;
++  return {...data,workflow_id:wf.id,workflow_status:wf.status,user_id:uid};
++ }catch(e){return null}
++}
++// 入社手続き中で、設定が有効のときだけ true（uid を渡すと、その人のページの情報かどうかも確かめる）
++function obWageActive(uid){return !!(obWage&&obWage.enabled&&(uid===undefined||obWage.user_id===uid)&&["hired_confirmed","form_sent","registering"].includes(obWage.workflow_status))}
++async function obWageRpc(fn,args){ // 戻り値 {ok, data, msg}。エラーは投げない
++ try{
++  const {data,error}=await sb.rpc(fn,args);
++  if(error||!data||!data.ok)return {ok:false,data:data||null,msg:(error&&error.message)||(data&&data.error)||"不明"};
++  return {ok:true,data,msg:""};
++ }catch(e){return {ok:false,data:null,msg:String(e&&e.message||e)}}
++}
++function obWageRowsHtml(q){ // 金額は、DB が返したとき（本部・社長・マスター）だけ出る。従業員ページの中だけで使う
++ return (q.rows||[]).map(r=>`<b>${esc(WAGE_DIV[r.division]||"")} ${esc(yen(r.wage))}</b>${r.holiday_wage!=null?`（休日 ${esc(yen(r.holiday_wage))}）`:""} ／ ${r.store_id?esc(((stores.find(x=>x.id===r.store_id)||storesHidden.find(x=>x.id===r.store_id)||{}).name)||"店舗")+"だけ":"全事業所共通"} ／ ${esc(r.effective_date)}から`).join("<br>");
++}
++function obWageCardHtml(){
++ if(!obWage||!obWage.enabled)return "";
++ const rule=obWage.rule||{},reqs=obWage.requests||[],act=obWageActive();
++ if(!act&&!reqs.length)return ""; // 入社手続きが終わっていて、記録も無い人には出さない
++ const pend=reqs.find(q=>q.status==="pending"),last=reqs[0];
++ let h=`<div id="obwage-box" style="border:1px solid var(--line);border-radius:8px;padding:8px;margin:6px 0;font-size:12.5px"><b>📋 入社のときの賃金</b>`;
++ if(act)h+=`<div class="muted" style="margin-top:2px">${rule.rule==="none"?"アルバイトの時給は、下の入力欄に入れて「登録する」を押すと、自動でスマレジに送られます。月給・日給を選ぶと、社長の承認が必要になります。":`この方の賃金は、下の入力欄に入れて「登録する」を押したあと、社長が承認するまでスマレジに送られません。${rule.reason?`<br>理由: ${esc(rule.reason)}`:""}`}</div>`;
++ if(pend){
++  h+=`<div style="margin-top:6px;padding:6px;background:#eef4ff;border-radius:6px"><b style="color:#1d4ed8">⏳ ${pend.rule==="hold"?"確認が必要です（社長の承認を待っています）":"社長の承認を待っています"}</b>
++   <div style="margin-top:2px">${obWageRowsHtml(pend)}</div>
++   ${pend.reason?`<div class="muted" style="margin-top:2px">理由: ${esc(pend.reason)}</div>`:""}
++   <div class="muted" style="margin-top:2px">入力した人: ${esc(pend.requested_by_name||"—")} ${esc(apvFd(pend.requested_at))}</div>
++   <div class="muted" style="margin-top:2px">社長が承認するまで、スマレジには送られません。下の一覧にも、まだ出ません。</div>
++   <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:6px">
++    ${pend.can_decide?`<button class="btn sm" data-obwage-ok="${esc(pend.id)}">承認する</button><button class="btn sm sub" data-obwage-ng="${esc(pend.id)}">却下する</button>`:`<span class="muted">${obWage.viewer&&obWage.viewer.can_approve?"この賃金は、あなたは承認できません（自分の賃金は、自分では承認できません）":"承認と却下ができるのは、社長だけです"}</span>`}
++    ${pend.can_cancel?`<button class="btn sm sub" data-obwage-cancel="${esc(pend.id)}">取り下げる</button>`:""}</div></div>`;
++ }else if(last&&last.status==="rejected"){
++  h+=`<div style="margin-top:6px;color:#b45309">↩ 社長が却下しました（${esc(last.decided_by_name||"—")} ${esc(apvFd(last.decided_at))}）${last.decision_note?`<br>理由: ${esc(last.decision_note)}`:""}${act?"<br>下の入力欄から、賃金を入れ直してください。":""}</div>`;
++ }else if(last&&last.status==="approved"){
++  h+=`<div style="margin-top:6px;color:#15803d">✅ 賃金が決まりました（${esc(last.decided_by_name||"—")} ${esc(apvFd(last.decided_at))}）。スマレジに送った結果は、Slack のスレッドと下の一覧に出ます。</div>`;
++ }
++ if(reqs.length)h+=`<details style="margin-top:6px"><summary class="muted" style="cursor:pointer">これまでの記録（${reqs.length} 件）</summary>${reqs.map(q=>`<div style="padding:4px 0;border-top:1px solid var(--line)">${esc(OBW_ST[q.status]||q.status)}　${obWageRowsHtml(q)}<br><span class="muted">入力 ${esc(q.requested_by_name||"—")} ${esc(apvFd(q.requested_at))}${q.decided_by_name?`／${q.status==="approved"?"決定":q.status==="rejected"?"却下":"取り下げ"} ${esc(q.decided_by_name)} ${esc(apvFd(q.decided_at))}`:""}${q.status==="rejected"&&q.decision_note?`／理由: ${esc(q.decision_note)}`:""}</span></div>`).join("")}</details>`;
++ return h+`</div>`;
++}
++// スマレジへの反映は裏で進むので、少し待ってから賃金カードだけ読み直す（ページ全体は描き直さない＝ほかの入力欄を消さない）
++function obWageRefreshLater(uid){
++ const same=()=>page==="admin"&&adminMode==="edit"&&adminDetail===uid&&!wageEditId;
++ const card=()=>{const x=$("obwage-box"),c=x&&x.closest(".card");return c&&![...c.querySelectorAll("[data-wamt],[data-whol]")].some(e=>e.value!=="")?c:null}; // 入力の途中なら読み直さない
++ [6000,20000].forEach(ms=>setTimeout(async()=>{
++  try{
++   if(!same()||!card())return;
++   const [info,rows,ob]=await Promise.all([loadSmInfo(uid),loadWageRows(uid),loadObWage(uid)]);
++   const c=card();
++   if(!same()||!c||!info||!Array.isArray(rows)||!ob)return;
++   obWage=ob;
++   const html=wageCardHtml(info,rows);
++   if(!html)return;
++   c.outerHTML=html;bindWageCard(uid);
++  }catch(e){}
++ },ms));
++}
++function bindObWage(uid){ // 承認・却下・取り下げ（ボタンは obWageCardHtml が、DB の答えに合わせて出す）
++ const done=(r,okMsg,later)=>{if(!r.ok){toast("できませんでした: "+r.msg,true);return}toast(okMsg);render();if(later)obWageRefreshLater(uid)};
++ document.querySelectorAll("[data-obwage-ok]").forEach(b=>b.onclick=async()=>{
++  if(!confirm("この賃金を承認します。\n承認すると、自動でスマレジに送られます。\n金額と、いつからの賃金かは合っていますか？"))return;
++  b.disabled=true;const r=await obWageRpc("onboarding_wage_decide",{p_request:b.dataset.obwageOk,p_approve:true});b.disabled=false;
++  done(r,"承認しました。スマレジに送った結果は、Slack のスレッドに出ます",true);
++ });
++ document.querySelectorAll("[data-obwage-ng]").forEach(b=>b.onclick=async()=>{
++  const why=prompt("却下する理由を入れてください。\n（入力した担当者が、この画面で読みます）");if(why===null)return;
++  if(!why.trim()){toast("却下する理由を入れてください",true);return}
++  b.disabled=true;const r=await obWageRpc("onboarding_wage_decide",{p_request:b.dataset.obwageNg,p_approve:false,p_note:why.trim()});b.disabled=false;
++  done(r,"却下しました。スマレジには送られていません");
++ });
++ document.querySelectorAll("[data-obwage-cancel]").forEach(b=>b.onclick=async()=>{
++  if(!confirm("承認待ちの賃金を取り下げます。\n取り下げたあとは、入力欄から入れ直せます。\nよろしいですか？"))return;
++  b.disabled=true;const r=await obWageRpc("onboarding_wage_cancel",{p_request:b.dataset.obwageCancel});b.disabled=false;
++  done(r,"取り下げました");
++ });
++}
++// 管理ページの一覧（「📝 承認待ちの申請」の下）。金額は出さない。名前を押すと、その人のページ
++async function obWagePendingHtml(){
++ let d=null;try{const r=await sb.rpc("onboarding_wage_status",{p_only_open:true});if(r.error||!r.data||!r.data.ok||!r.data.enabled)return "";d=r.data}catch(e){return ""}
++ const rs=(d.requests||[]).filter(q=>q.status==="pending");if(!rs.length)return "";
++ return `<div class="card" id="obw-card"><h3 style="margin-bottom:4px">💴 入社のときの賃金・社長の承認待ち（${rs.length} 件）</h3>`+rs.map(q=>
++  `<div data-au="${esc(q.user_id)}" style="padding:6px 0;border-top:1px solid var(--line);font-size:12.5px;cursor:pointer"><b>${esc(q.user_name||"—")}</b>
++   <div style="margin-top:2px">${q.rule==="hold"?"確認が必要です（社長の承認待ち）":"社長の承認待ち"}${q.can_decide?` <span style="color:#1d4ed8;font-weight:600">← あなたの対応待ち</span>`:""}</div>
++   <div class="muted" style="margin-top:2px">入力 ${esc(q.requested_by_name||"—")} ${esc(apvFd(q.requested_at))}${q.effective_from?`／${esc(q.effective_from)}から`:""}${q.reason?`／${esc(q.reason)}`:""}</div></div>`).join("")
++  +`<p class="muted" style="margin:6px 0 0;font-size:11.5px">名前を押すと、その人のページが開きます。金額を見て、承認か却下を選べます（金額はここには出しません）。社長が承認するまで、スマレジには送られません。</p></div>`;
++}
+ function wageCardHtml(info,rows){
+  if(!info||rows===null)return "";
+  window.__wageRows=rows; // 修正ボタンが区分を調べるため
+  const today=todayStr(),act=l=>!l.effective_to||l.effective_to>=today;
+  const links=(info.links||[]).filter(act);
+  let h=`<div class="card"><h3>💴 賃金設定（スマレジに自動反映）</h3><p class="muted" style="margin:0 0 6px;font-size:12px">時給・月給を入れて保存すると、スマレジ・タイムカードの賃金設定に反映されます。店舗を指定した時給は、その事業所で働くときだけの時給です（ヘルプ先など）。メール・交通費・源泉所得税・個別Web給与明細はスマレジのAPIで書けないため、これまでどおり手作業です。</p>`;
++ h+=obWageCardHtml(); // 2026-11-18 入社時の賃金の承認（無効・対象外のときは空文字）
+  if(!links.length)return h+`<p class="muted" style="margin:0">スマレジに登録されていません（先にスマレジに登録してください）。</p></div>`;
+  links.forEach(l=>{
+   const c=l.contract_id,mine=rows.filter(r=>r.contract_id===c),bad=mine.filter(r=>r.sync_status!=="synced").length;
+@@ -8836,7 +8937,7 @@ function wageCardHtml(info,rows){
+    <input class="inp" type="number" min="0" inputmode="numeric" data-wamt="${esc(c)}" placeholder="金額（円）" style="margin:0">
+    <input class="inp" type="number" min="0" inputmode="numeric" data-whol="${esc(c)}" placeholder="休日賃金（任意）" style="margin:0">
+    <input class="inp" type="date" data-wdate="${esc(c)}" value="${esc(today)}" style="margin:0"></div>
+-   <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px"><button class="btn sm" data-wagesave="${esc(c)}">保存してスマレジに反映</button>
++   <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px"><button class="btn sm" data-wagesave="${esc(c)}">${obWageActive()?"登録する":"保存してスマレジに反映"}</button>
+    ${bad?`<button class="btn sm sub" data-wagepush="${esc(c)}">未反映の${bad}件をもう一度反映</button>`:""}
+    <button class="btn sm sub" data-wagepull="${esc(c)}">スマレジの今の設定を確認・取り込む</button>
+    ${links.filter(x=>x.contract_id!==c).map(x=>`<button class="btn sm sub" data-wagecopy="${esc(x.contract_id)}>${esc(c)}">${esc(smShort(x.contract_id))}の現在の賃金をコピー</button>`).join("")}</div>
+@@ -8860,6 +8961,18 @@ function bindWageCard(uid){
+   if(!date){toast("適用開始日を選んでください",true);return}
+   if(div===2||div===1){if(date.slice(8)!=="01"){date=date.slice(0,8)+"01";toast(`${WAGE_DIV[div]}の適用開始日は月初日です（${date}にします）`)}} // 2026-11-09: 日給も月初日（スマレジ公式仕様）
+   const u=(adminUsers||[]).find(x=>x.id===uid)||{name:""};
++  if(obWageActive(uid)){ // 2026-11-18: 入社手続き中の人は「入社時の賃金の確定」に回す（アルバイトの時給＝そのまま登録／それ以外＝社長の承認待ち。決めるのは DB）
++   const pend=(obWage.requests||[]).some(x=>x.status==="pending");
++   if(!confirm(`${u.name}さんの賃金を登録します。\n${WAGE_DIV[div]} ${yen(amt)}${hol!=null?`（休日 ${yen(hol)}）`:""} ／ ${store?((stores.find(x=>x.id===store)||{}).name+"だけ"):"全事業所共通"}\n${date}から\n\n・アルバイトの時給は、このあと自動でスマレジに送られます。\n・それ以外（社員など）は、社長が承認するまでスマレジに送られません。${pend?"\n・いま承認待ちの内容は取り下げになり、この内容に入れ替わります。":""}\n\nよろしいですか？`))return;
++   b.disabled=true;
++   const r=await obWageRpc("onboarding_wage_submit",{p_workflow:obWage.workflow_id,p_rows:[{contract_id:c,division:div,store_id:store,wage:amt,holiday_wage:div===0?hol:null,effective_date:date}]});
++   if(!r.ok){toast("登録できませんでした: "+r.msg,true);b.disabled=false;return}
++   if(r.data.mode==="legacy"){await push(c);return} // 途中で設定が無効に変わっていたとき: DB はこれまでどおり登録しただけなので、これまでどおり画面から反映する
++   // ここでは wage_push を呼ばない（スマレジへの反映は DB → Edge Function が行う。二重に送らない）
++   toast(r.data.applied?"賃金を登録しました。スマレジには自動で送られます。結果は Slack のスレッドに出ます":`${r.data.rule==="hold"?"確認が必要なため、":""}社長の承認待ちにしました。承認されるまで、スマレジには送られません`);
++   render();if(r.data.applied)obWageRefreshLater(uid);
++   return;
++  }
+   if(payWageNeedsRequest(c)){ // 2026-11-10: 直接編集の禁止フラグ ON → 申請に回す（承認されるまで賃金は変わらない）
+    if(await payWageRequest(uid,{contract_id:c,division:div,store_id:store,wage:amt,holiday_wage:div===0?hol:null},date,"登録・変更"))render();
+    return;
+@@ -8873,6 +8986,7 @@ function bindWageCard(uid){
+  document.querySelectorAll("[data-wagepush]").forEach(b=>b.onclick=async()=>{b.disabled=true;await push(b.dataset.wagepush)});
+  document.querySelectorAll("[data-wagecopy]").forEach(b=>b.onclick=async()=>{ // 元の契約の現在の賃金を、この契約へコピー（適用開始日を指定）
+   const [from,to]=b.dataset.wagecopy.split(">");
++  if(obWageActive(uid)){toast(OBW_REENTER,true);return} // 2026-11-18
+   const date=prompt(`${smLabel(from)} の現在の賃金（全事業所共通の時給・休日賃金・月給）を、${smLabel(to)} にコピーしてスマレジに反映します。\n適用開始日（YYYY-MM-DD）を入れてください。`,todayStr());
+   if(!date)return;
+   if(!/^\d{4}-\d{2}-\d{2}$/.test(date)){toast("日付の形式が違います（例 2026-11-01）",true);return}
+@@ -8883,11 +8997,12 @@ function bindWageCard(uid){
+   else toast(`賃金をコピーしました（${r.copied}件${r.pushOk===false?"・スマレジへの反映に失敗":"・スマレジにも反映"}）${r.skippedStore?`／店舗別の${r.skippedStore}件はコピーしていません`:""}`,r.pushOk===false);
+   render();
+  });
+- document.querySelectorAll("[data-wageedit]").forEach(b=>b.onclick=()=>{wageEditId=b.dataset.wageedit;render()});
++ document.querySelectorAll("[data-wageedit]").forEach(b=>b.onclick=()=>{if(obWageActive(uid)){toast(OBW_REENTER,true);return}wageEditId=b.dataset.wageedit;render()}); // 2026-11-18: 入社手続き中の人は修正を開かない
+  document.querySelectorAll("[data-wageeditcancel]").forEach(b=>b.onclick=()=>{wageEditId=null;render()});
+  document.querySelectorAll("[data-wageeditsave]").forEach(b=>b.onclick=async()=>{
+   const [id,c]=b.dataset.wageeditsave.split("|"),amt=Number($("wedit-amt").value),holEl=$("wedit-hol"),hol=holEl&&holEl.value!==""?Number(holEl.value):null;
+   let date=$("wedit-date").value;
++  if(obWageActive(uid)){toast(OBW_REENTER,true);return} // 2026-11-18: 入社手続き中の人の修正は、入力欄からの入れ直しで行う
+   if(!amt||amt<=0){toast("金額を入れてください",true);return}
+   if(!date){toast("適用開始日を選んでください",true);return}
+   const row=(window.__wageRows||[]).find(x=>x.id===id);
+@@ -8935,6 +9050,7 @@ function bindWageCard(uid){
+    toast(`スマレジを管理システムの値に合わせました（成功${ok}件${ng?`／失敗${ng}件`:""}）`,ng>0);render();
+   }
+  });
++ bindObWage(uid); // 2026-11-18 入社時の賃金の承認・却下・取り下げ
+ }
+ // --- 従業員管理: 所属のズレ一覧（棚卸しスナップショットと管理システムの比較） ---
+ async function adminStoreMisView(){
+@@ -13387,6 +13503,7 @@ function bindPage(){
+  // v2.6.64 通知・発行直後のカードの名前をタップしても詳細が開くようにする
+  document.querySelectorAll(".info[data-au]").forEach(rw=>{if(rw.dataset.au)rw.onclick=()=>openAdminUser(rw.dataset.au)});
+  document.querySelectorAll("#apv-card [data-au],#syncst-card [data-au]").forEach(rw=>{if(rw.dataset.au)rw.onclick=()=>openAdminUser(rw.dataset.au)}); // 2026-11-11
++ document.querySelectorAll("#obw-card [data-au]").forEach(rw=>{if(rw.dataset.au)rw.onclick=()=>openAdminUser(rw.dataset.au)}); // 2026-11-18 入社時の賃金の承認待ち
+  document.querySelectorAll(".chip.nurole").forEach(c=>c.onclick=()=>{nuRole=c.dataset.r;document.querySelectorAll(".chip.nurole").forEach(x=>x.classList.remove("on"));c.classList.add("on")});
+  document.querySelectorAll(".chip.nustore").forEach(c=>c.onclick=()=>{const s=c.dataset.s;nuStores=nuStores.includes(s)?nuStores.filter(x=>x!==s):nuStores.concat([s]);c.classList.toggle("on")});
+  document.querySelectorAll(".chip.eurole").forEach(c=>c.onclick=()=>{euRole=c.dataset.r;document.querySelectorAll(".chip.eurole").forEach(x=>x.classList.remove("on"));c.classList.add("on")});
