@@ -57,10 +57,13 @@ begin
   values (p_user, jsonb_build_object('bank_code', b.bank_code, 'bank_name', b.bank_name, 'branch_code', b.branch_code, 'branch_name', b.branch_name,
                                      'account_type', b.account_type, 'account_number', b.account_number, 'account_holder_kana', b.account_holder_kana),
           b.payment_method, left(btrim(p_reason), 500), auth.uid());
+  -- 口座の「申請 → 承認」の関所（employee_change_pay_guard）が有効でも、この関数（権限と履歴つき）からの書き込みは通す
+  perform set_config('employee_change.via_approval', 'payroll_bank_account_delete', true);
   perform set_config('payroll.bank_delete_ok', '1', true);
   update payroll_bank_accounts set bank_code = null, bank_name = null, branch_code = null, branch_name = null, account_number = null, account_holder_kana = null,
          updated_by = auth.uid(), updated_at = now() where user_id = p_user;
   perform set_config('payroll.bank_delete_ok', '', true);
+  perform set_config('employee_change.via_approval', '', true);
   return jsonb_build_object('ok', true, 'deleted', true);
 end $$;
 revoke all on function public.payroll_bank_account_delete(uuid, text) from public, anon;

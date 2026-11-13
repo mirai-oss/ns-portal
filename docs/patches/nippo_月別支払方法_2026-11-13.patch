@@ -1,0 +1,247 @@
+diff --git a/index.html b/index.html
+index f8f6db4..ad57057 100644
+--- a/index.html
++++ b/index.html
+@@ -8007,15 +8007,129 @@ async function requestStoreSmCreate(storeId,contractId,name){
+  return true;
+ }
+ 
++// ===== 2026-11-13 支払方法を「給与の対象月ごと」に持つ（従業員ページの口座の欄） =====
++// 関数 payroll_month_payment_status が無い・エラーのあいだは payMethodSt=null＝これまでどおり（変わるのは「現金でも口座を消さない・隠さない」だけ）
++let payMethodSt=null; // {ok, default_method, has_account, account_inactive, can_edit, can_correct, months, history, _uid}
++const PM_LBL={bank_transfer:"銀行振込",cash:"現金手渡し"};
++const PM_ST={fixed:"確定",planned:"確定前",default:"（未設定＝既定どおり）"};
++const PM_KIND={month_set:"その月の変更",default_change:"これからの支払方法の変更",default_freeze:"前の月を、今までの支払方法のまま固定",correction:"確定済みの月の訂正",backfill:"これまでの記録から移し替え"};
++const PM_IDLE_NOTE="登録済みの口座（いまは使っていません。振込に戻すときは、正しいか確かめてから使います）";
++const PM_IDLE_ASK="この口座はしばらく使っていません。\nいまも正しいか、本人に確かめましたか？\n\n・確かめた →「OK」\n・まだ →「キャンセル」（先に本人に確かめてください）";
++function pmYm(ym){const m=/^(\d{4})-(\d{2})$/.exec(String(ym??""));return m?`${+m[1]}年${+m[2]}月分`:String(ym??"")}
++function pmName(v){return (v==null||v==="")?"なし":(PM_LBL[v]||(typeof v==="string"?v:"（記録あり）"))}
++async function loadPayMethodSt(uid){
++ try{
++  const {data,error}=await sb.rpc("payroll_month_payment_status",{p_user:uid});
++  if(error||!data||!data.ok)return null;
++  return {...data,_uid:uid};
++ }catch(e){return null}
++}
++// その人のページの情報のときだけ返す（無いときは null＝これまでどおり）
++function payMethodNow(uid){return (payMethodSt&&payMethodSt.ok&&payMethodSt._uid===uid)?payMethodSt:null}
++async function payMethodRpc(fn,args){ // 戻り値 {ok, data, msg}。エラーは投げない
++ try{
++  const {data,error}=await sb.rpc(fn,args);
++  if(error||!data||!data.ok)return {ok:false,data:data||null,msg:(error&&error.message)||(data&&data.error)||"不明"};
++  return {ok:true,data,msg:""};
++ }catch(e){return {ok:false,data:null,msg:String(e&&e.message||e)}}
++}
++// 「何月分の給与から変えますか」を聞く。戻り値は "YYYY-MM"（やめたときは null）
++function payMethodAskMonth(st,method){
++ const ms=(Array.isArray(st.months)?st.months:[]).filter(m=>m&&/^\d{4}-\d{2}$/.test(m.year_month||""));
++ const open=ms.filter(m=>m.status!=="fixed"&&m.has_payroll).map(m=>m.year_month).sort();
++ const ex=todayStr().slice(0,7);
++ let def=open[0]||ex,msg="";
++ for(;;){
++  const a=prompt(`${msg}何月分の給与から「${PM_LBL[method]}」に変えますか？\n\n「${ex}」のように、年（4 けた）-月（2 けた）で入れてください。\n・入れた月より前の月は、変わりません。`,def);
++  if(a===null)return null;
++  const ym=a.trim().replace(/[０-９]/g,c=>String.fromCharCode(c.charCodeAt(0)-0xFEE0)).replace(/[－‐−ー]/g,"-");
++  if(!/^\d{4}-(0[1-9]|1[0-2])$/.test(ym)){msg="【入れ直してください】月の書き方が違います。\n\n";def=a;continue}
++  const hit=ms.find(m=>m.year_month===ym);
++  if(hit&&hit.status==="fixed"){msg=`【入れ直してください】${pmYm(ym)}は、もう確定しています（確定した月は、口座の欄の下の表の［訂正］から直します）。\n\n`;def=ym;continue}
++  return ym;
++ }
++}
++function payMethodConfirmMsg(who,ym,method){
++ return `支払方法を変えます。\n\n対象: ${who}さん\n${pmYm(ym)}の給与から「${PM_LBL[method]}」に変えます。\n\n・${pmYm(ym)}より前の月は変わりません。\n・口座の情報は消えません。\n\nよろしいですか？`;
++}
++function payMethodDoneMsg(d,ym,method){
++ const fz=((d&&Array.isArray(d.frozen_months))?d.frozen_months:[]).map(pmYm);
++ return `支払方法を変えました（${pmYm(ym)}から「${PM_LBL[method]}」）`+(fz.length?`\n${fz.join("・")}は、今までの支払方法のまま固定しました`:"");
++}
++// 口座の欄のすぐ下: 月ごとの支払方法・変更の履歴・口座の削除（金額は出さない）。情報が無いときは空文字
++function payMethodBoxHtml(st){
++ if(!st||!st.ok)return "";
++ const months=(Array.isArray(st.months)?st.months:[]).filter(m=>m&&m.year_month).slice(0,6);
++ const hist=(Array.isArray(st.history)?st.history.filter(Boolean):[]).sort((a,b)=>String(b.at||"").localeCompare(String(a.at||""))).slice(0,5);
++ const td='style="padding:5px 6px;border-bottom:1px solid var(--line)"';
++ let h=`<div id="eu-pmbox" style="margin-top:12px;padding-top:10px;border-top:1px dashed var(--line)">
++  <p style="font-size:12.5px;font-weight:700;margin:0 0 2px">月ごとの支払方法</p>
++  <p class="muted" style="font-size:11px;margin:0 0 4px">給与の「何月分」を、どちらで支払うかの一覧です。「確定」の月は、上で支払方法を変えても変わりません。</p>`;
++ if(months.length){
++  h+=`<div style="overflow-x:auto"><table style="border-collapse:collapse;width:100%;font-size:12.5px">`+months.map(m=>{
++   const eff=m.method||st.default_method||"bank_transfer"; // その月に決まっていなければ、既定の支払方法（無ければ銀行振込の扱い）
++   const to=eff==="cash"?"bank_transfer":"cash";
++   const btn=m.status==="fixed"
++    ?(st.can_correct?`<button class="btn sm sub" style="margin:0" data-pmfix="${esc(m.year_month)}" data-pmto="${to}">訂正</button>`:"")
++    :(st.can_edit?`<button class="btn sm sub" style="margin:0" data-pmone="${esc(m.year_month)}" data-pmto="${to}">この月だけ変える</button>`:"");
++   return `<tr><td ${td}>${esc(pmYm(m.year_month))}</td><td ${td}>${esc(pmName(eff))}</td><td ${td}>${esc(PM_ST[m.status]||m.status||"")}</td><td ${td} align="right">${btn}</td></tr>`;
++  }).join("")+`</table></div>`;
++ }else h+=`<p class="muted" style="font-size:12px;margin:0">まだ、月ごとの記録はありません。</p>`;
++ if(hist.length){
++  h+=`<p style="font-size:12px;font-weight:700;margin:10px 0 2px">変更の履歴（新しい順・${hist.length} 件）</p><div style="font-size:11.5px;line-height:1.7">`+hist.map(x=>
++   `<div ${td}>${esc(apvFd(x.at))}／${esc(x.by_name||"（不明）")}／${x.year_month?esc(pmYm(x.year_month)):"（月の指定なし）"}／${x.before==null?"":esc(pmName(x.before))+" → "}${esc(pmName(x.after))}${x.kind?"（"+esc(PM_KIND[x.kind]||x.kind)+"）":""}／理由: ${esc(x.reason||"なし")}</div>`).join("")+`</div>`;
++ }
++ if(st.has_account&&st.can_correct)h+=`<div style="margin-top:10px"><button class="btn sm ghost" id="eu-bankdel" style="font-size:11.5px">口座の情報を削除する</button></div>`;
++ return h+`</div>`;
++}
++// 表のボタン（この月だけ変える・訂正）と、口座の削除
++function bindPayMethodBox(uid){
++ const st=payMethodNow(uid);if(!st)return;
++ const who=((adminUsers.find(x=>x.id===uid)||{}).name)||"";
++ document.querySelectorAll("[data-pmone]").forEach(b=>b.onclick=async()=>{
++  const ym=b.dataset.pmone,to=b.dataset.pmto==="cash"?"cash":"bank_transfer";
++  if(to==="bank_transfer"){
++   if(!st.has_account){toast("先に、振込口座を登録してください（口座が無いと、銀行振込にできません）",true);return}
++   if(st.account_inactive&&!confirm(PM_IDLE_ASK))return;
++  }
++  if(!confirm(`${who}さんの ${pmYm(ym)}だけを「${PM_LBL[to]}」に変えます。\n\n・ほかの月と、これからの支払方法は変わりません。\n・口座の情報は消えません。\n\nよろしいですか？`))return;
++  b.disabled=true;
++  const r=await payMethodRpc("payroll_payment_change",{p_user:uid,p_year_month:ym,p_method:to,p_set_default:false,p_reason:null});
++  if(!r.ok){toast("変えられませんでした: "+r.msg,true);b.disabled=false;return}
++  toast(`${pmYm(ym)}を「${PM_LBL[to]}」に変えました`);render();
++ });
++ document.querySelectorAll("[data-pmfix]").forEach(b=>b.onclick=async()=>{
++  const ym=b.dataset.pmfix,to=b.dataset.pmto==="cash"?"cash":"bank_transfer";
++  const why=prompt(`${pmYm(ym)}は、もう確定しています。\n「${PM_LBL[to]}」に訂正する理由を入れてください（例: 実際は現金で渡していた）。`);
++  if(!why||!why.trim())return;
++  if(!confirm(`${who}さんの ${pmYm(ym)}を「${PM_LBL[to]}」に訂正します。\n確定済みの月の訂正です。関係する名簿も合わせて直ります。\n\nよろしいですか？`))return;
++  b.disabled=true;
++  const r=await payMethodRpc("payroll_month_payment_correct",{p_user:uid,p_year_month:ym,p_method:to,p_reason:why.trim()});
++  if(!r.ok){toast("訂正できませんでした: "+r.msg,true);b.disabled=false;return}
++  toast(`${pmYm(ym)}を「${PM_LBL[to]}」に訂正しました`);render();
++ });
++ if($("eu-bankdel"))$("eu-bankdel").onclick=async()=>{
++  const why=prompt("口座の情報を削除する理由を入れてください（例: 本人から、口座を解約したと連絡があった）。");
++  if(!why||!why.trim())return;
++  if(!confirm(`${who}さんの口座の情報（金融機関・支店・口座番号・名義）を削除します。\n\n・過去の振込の記録は残ります。\n・支払方法は変わりません。\n・削除したあとは、この画面からは元に戻せません（もう一度使うときは、入れ直します）。\n\nよろしいですか？`))return;
++  $("eu-bankdel").disabled=true;
++  const r=await payMethodRpc("payroll_bank_account_delete",{p_user:uid,p_reason:why.trim()});
++  if(!r.ok){toast("削除できませんでした: "+r.msg,true);if($("eu-bankdel"))$("eu-bankdel").disabled=false;return}
++  toast(r.data.unchanged?"口座の情報は、もう登録されていませんでした":"口座の情報を削除しました");render();
++ };
++}
++
+ async function adminEditView(){
+  const u=adminUsers.find(x=>x.id===adminDetail);
+  if(!u)return `<span class="back" id="adback">← 従業員一覧</span><div class="alert">ユーザーが見つかりません</div>`;
+  const bankAllowed=me.is_master||me.role==="HQ"; // payroll_bank_accountsのRLSと同じ条件
+- const [{data:prof},bankRes]=await Promise.all([
++ const [{data:prof},bankRes,pmSt]=await Promise.all([
+   sb.from("employee_profiles").select("*").eq("user_id",adminDetail).maybeSingle(),
+-  bankAllowed?sb.from("payroll_bank_accounts").select("*").eq("user_id",adminDetail).maybeSingle():Promise.resolve({data:null})
++  bankAllowed?sb.from("payroll_bank_accounts").select("*").eq("user_id",adminDetail).maybeSingle():Promise.resolve({data:null}),
++  bankAllowed?loadPayMethodSt(adminDetail):Promise.resolve(null) // 2026-11-13 月ごとの支払方法（関数が無い・失敗のときは null＝これまでどおり）
+  ]);
+  const bank=bankRes.data;
++ payMethodSt=pmSt;
+  // 2026-10-03追加: この人に配布した書類（源泉徴収票など）。本部・社長・マスターだけが開ける（hr_documentsのRLSと同じ）
+  const smInfo=(smReady&&canApproveRetirement())?await loadSmInfo(adminDetail):undefined; // 2026-10-17追加: スマレジ所属（契約ごと）
+  const wageRows=(smInfo!==undefined&&smInfo&&u.id!==undefined)?await loadWageRows(adminDetail):undefined; // 2026-10-17追加: 賃金設定（テーブルが無い間はnull→非表示）
+@@ -8072,7 +8186,7 @@ async function adminEditView(){
+  ${bankAllowed?`<div class="card"><h3>🏦 振込口座</h3>${(payChgRowsCache||[]).some(q=>q.field==="bank_account"&&q.status==="pending"&&q.user_id===adminDetail)?`<div class="alert" style="font-size:12.5px">口座変更の申請が<b>承認待ち</b>です。申請が承認・却下されるまで、登録口座はここには表示されず、直接の変更もできません（登録が消えたわけではありません）。下の「💴 賃金・口座の変更申請（承認）」で、いまの口座と申請内容を確認して、承認（支給回を選ぶ）または却下してください。</div>`:""}
+   <label class="radio-row"><input type="radio" name="eu-pm" value="bank_transfer" ${(!bank||bank.payment_method!=="cash")?"checked":""}>銀行振込</label>
+   <label class="radio-row"><input type="radio" name="eu-pm" value="cash" ${(bank&&bank.payment_method==="cash")?"checked":""}>現金手渡し</label>
+-  <div id="eu-bankfields" style="${(bank&&bank.payment_method==="cash")?"display:none":""}">
++  <div id="eu-bankfields" style="${(bank&&bank.payment_method==="cash"&&!(bank.account_number||bank.bank_code))?"display:none":""}">${(bank&&bank.payment_method==="cash"&&(bank.account_number||bank.bank_code))?`<p class="muted" id="eu-bankidle" style="font-size:12px;margin:8px 0 0">${PM_IDLE_NOTE}</p>`:""}
+    <p class="muted" style="margin:8px 0 2px">金融機関コード（4桁）</p><input type="text" id="eu-bankcode" value="${esc(bank&&bank.bank_code||"")}" inputmode="numeric" maxlength="4" placeholder="0033">
+    <p class="muted" style="margin:8px 0 2px">金融機関名（表示用・任意）</p><input type="text" id="eu-bankname" value="${esc(bank&&bank.bank_name||"")}" placeholder="例: PayPay銀行">
+    <p class="muted" style="margin:8px 0 2px">支店コード（3桁）</p><input type="text" id="eu-branchcode" value="${esc(bank&&bank.branch_code||"")}" inputmode="numeric" maxlength="3" placeholder="005">
+@@ -8087,7 +8201,7 @@ async function adminEditView(){
+    <p class="muted" style="margin:8px 0 2px">口座名義（半角カタカナ）</p><input type="text" id="eu-acctkana" value="${esc(bank&&bank.account_holder_kana||"")}" placeholder="ﾄﾘｲﾁﾀﾛｳ">
+   </div>
+   <button class="btn sm" id="eu-banksave" style="margin-top:10px">振込口座を保存する</button>
+-  <p class="muted" style="font-size:11px;margin-top:6px">ここで保存した内容は「給与仕訳」タブ・本人からの個人情報変更申請と同じ場所（1つのデータ）に保存されるため、どこから直しても常に最新の内容で連携されます。${bank?`（${new Date(bank.updated_at).toLocaleDateString("ja-JP")}更新）`:""}</p>
++  <p class="muted" style="font-size:11px;margin-top:6px">ここで保存した内容は「給与仕訳」タブ・本人からの個人情報変更申請と同じ場所（1つのデータ）に保存されるため、どこから直しても常に最新の内容で連携されます。${bank?`（${new Date(bank.updated_at).toLocaleDateString("ja-JP")}更新）`:""}</p>${payMethodBoxHtml(payMethodNow(adminDetail))}
+  </div>`:""}`;
+  if(prof){
+   const smaregi=prof.smaregi_sync_status==="synced"?"✅ 登録済み":prof.smaregi_sync_status==="error"?"⚠️ エラー（"+esc(prof.smaregi_error||"")+"）":"未連携";
+@@ -13665,15 +13779,47 @@ function bindPage(){
+    toast("アップロードしました");render();
+   }catch(e){toast("アップロードエラー: "+(e&&e.message?e.message:e),true);btn.disabled=false;btn.textContent="📎 追加でアップロードする"}
+  };
+- document.querySelectorAll('input[name="eu-pm"]').forEach(r=>r.onchange=()=>{
+-  if($("eu-bankfields"))$("eu-bankfields").style.display=(r.value==="cash"&&r.checked)?"none":"";
+- });
++ const euPmSync=()=>{ // 2026-11-13: 現金でも、残してある口座は隠さない（見せるだけ。現金のあいだは書きかえられない）。口座が無いときは、これまでどおり隠す
++  const f=$("eu-bankfields");if(!f)return;
++  const cash=((document.querySelector('input[name="eu-pm"]:checked')||{}).value)==="cash";
++  const has=["eu-bankcode","eu-acctnum"].some(id=>$(id)&&$(id).defaultValue);
++  f.style.display=(cash&&!has)?"none":"";
++  let n=$("eu-bankidle");
++  if(cash&&has&&!n){n=document.createElement("p");n.id="eu-bankidle";n.className="muted";n.style.cssText="font-size:12px;margin:8px 0 0";n.textContent=PM_IDLE_NOTE;f.insertBefore(n,f.firstChild)}
++  if(n)n.style.display=(cash&&has)?"":"none";
++  f.querySelectorAll("input,select").forEach(el=>{el.disabled=cash});
++ };
++ document.querySelectorAll('input[name="eu-pm"]').forEach(r=>r.onchange=euPmSync);
++ euPmSync();
+  if($("eu-banksave"))$("eu-banksave").onclick=async()=>{
+   const pm=(document.querySelector('input[name="eu-pm"]:checked')||{}).value||"bank_transfer";
+   const v=id=>{const el=$(id);return el?el.value.trim():""};
+   const rec={user_id:adminDetail,payment_method:pm,updated_by:me.id,updated_at:new Date().toISOString()};
++  // 2026-11-13: いまの支払方法（画面を開いたときに選ばれていた方。行が無ければ銀行振込の扱い）と、月ごとの支払方法の仕組み（null＝まだ無い → これまでどおりの保存）
++  const dv=id=>{const el=$(id);return el?String(el.defaultValue||"").trim():""}; // 画面を開いたときの値（＝いま登録されている値）
++  const accSel=$("eu-accttype"),accTypeDef=accSel?(([...accSel.options].find(o=>o.defaultSelected)||{}).value||"1"):"1";
++  const curPm=([...document.querySelectorAll('input[name="eu-pm"]')].find(r=>r.defaultChecked)||{}).value||"bank_transfer";
++  const pmSt=payMethodNow(adminDetail),pmChanged=pm!==curPm;
++  const pmWho=((adminUsers.find(x=>x.id===adminDetail)||{}).name)||"";
++  const needReq=!!(payChgConfig&&payChgConfig.bank_approval_required&&payChgConfig.bank_direct_ok===false); // 登録済みの口座の変更は「申請 → 別の人の承認」
++  const btn=$("eu-banksave");
+   if(pm==="cash"){
+-   rec.bank_code=null;rec.bank_name=null;rec.branch_code=null;rec.branch_name=null;rec.account_number=null;rec.account_holder_kana=null;rec.account_type="1";
++   // 2026-11-13: 現金を選んでも、口座の欄は送らない（＝消さない）。以前は、ここで口座の欄を null にして上書きしていた
++   if(!pmChanged){toast("支払方法は「現金手渡し」のままです（変えるところはありません）。口座の情報は、そのまま残しています");return}
++   if(pmSt){ // 何月分から変えるかを聞いて、支払方法だけを変える（口座の欄は保存しない）
++    const ym=payMethodAskMonth(pmSt,pm);if(!ym)return;
++    if(!confirm(payMethodConfirmMsg(pmWho,ym,pm)))return;
++    btn.disabled=true;
++    const r=await payMethodRpc("payroll_payment_change",{p_user:adminDetail,p_year_month:ym,p_method:pm,p_set_default:true,p_reason:null});
++    btn.disabled=false;
++    if(!r.ok){toast("支払方法を変えられませんでした: "+r.msg,true);return}
++    toast(payMethodDoneMsg(r.data,ym,pm)+"\n口座の情報は、そのまま残っています");render();return;
++   }
++   // 月ごとの仕組みがまだ無いとき: これまでどおりの保存。ただし口座の欄は送らない（支払方法・更新者・更新日時だけ）
++   if(needReq){ // 申請に回すときは、いま登録されている口座をそのまま載せる（承認されても口座が空にならないように）
++    rec.bank_code=dv("eu-bankcode")||null;rec.bank_name=dv("eu-bankname")||null;rec.branch_code=dv("eu-branchcode")||null;rec.branch_name=dv("eu-branchname")||null;
++    rec.account_type=accTypeDef;rec.account_number=dv("eu-acctnum")||null;rec.account_holder_kana=dv("eu-acctkana")||null;
++   }
+   }else{
+    const bankCode=v("eu-bankcode"),branchCode=v("eu-branchcode"),acctNum=v("eu-acctnum"),kana=v("eu-acctkana");
+    // 2026-09-05: ユーザー指摘「PayPay銀行振込に必要な金融機関コード・支店コードが絶対割れないように」
+@@ -13684,8 +13830,31 @@ function bindPage(){
+    if(!kana){toast("口座名義（半角カタカナ）を入力してください",true);return}
+    rec.bank_code=bankCode;rec.bank_name=v("eu-bankname")||null;rec.branch_code=branchCode;rec.branch_name=v("eu-branchname")||null;
+    rec.account_type=v("eu-accttype")||"1";rec.account_number=acctNum;rec.account_holder_kana=kana;
++   if(pmChanged&&pmSt){ // 2026-11-13: 現金手渡し → 銀行振込。対象の月を聞く。口座を先に保存してから、支払方法を切り替える
++    if(pmSt.account_inactive&&!confirm(PM_IDLE_ASK))return;
++    const ym=payMethodAskMonth(pmSt,pm);if(!ym)return;
++    if(!confirm(payMethodConfirmMsg(pmWho,ym,pm)))return;
++    const dirty=["eu-bankcode","eu-bankname","eu-branchcode","eu-branchname","eu-acctnum","eu-acctkana"].some(id=>v(id)!==dv(id))||rec.account_type!==accTypeDef; // 口座を書きかえたか
++    if(dirty&&needReq){ // 登録済みの口座の変更は、これまでどおり「申請 → 別の人の承認」
++     const why=prompt("登録済みの振込口座の変更は「申請 → 別の人の承認」が必要です。\n変更の理由を入れてください（例: 本人から口座変更の連絡）。\n承認されるまで、いまの口座のまま振り込みます。");
++     if(!why||!why.trim())return;
++     const payload={payment_method:rec.payment_method,bank_code:rec.bank_code,bank_name:rec.bank_name,branch_code:rec.branch_code,branch_name:rec.branch_name,account_type:rec.account_type,account_number:rec.account_number,account_holder_kana:rec.account_holder_kana};
++     btn.disabled=true;
++     const {error:re}=await sb.rpc("hr_pay_change_request",{p_user:adminDetail,p_kind:"bank_account",p_payload:payload,p_reason:why.trim()});
++     if(re){btn.disabled=false;toast("申請できませんでした: "+re.message,true);return}
++    }else if(dirty){
++     const acc={...rec};delete acc.payment_method; // 支払方法は、このあとの切り替えで変える（ここで先に変えると、前の月を固定できない）
++     btn.disabled=true;
++     const {error:ae}=await sb.from("payroll_bank_accounts").upsert(acc,{onConflict:"user_id"});
++     if(ae){btn.disabled=false;toast("保存エラー: "+ae.message,true);return}
++    }
++    btn.disabled=true;
++    const r=await payMethodRpc("payroll_payment_change",{p_user:adminDetail,p_year_month:ym,p_method:pm,p_set_default:true,p_reason:null});
++    btn.disabled=false;
++    if(!r.ok){toast((dirty?(needReq?"口座の変更は申請しました。":"口座は保存しました。"):"")+"支払方法は変えられませんでした: "+r.msg,true);if(dirty)render();return}
++    toast(payMethodDoneMsg(r.data,ym,pm)+(dirty&&needReq?"\n口座の変更は、別の人の承認待ちです（承認されるまで、いまの口座のままです）":""));render();return;
++   }
+   }
+-  const btn=$("eu-banksave");
+   // 2026-11-10 夜: 口座の直接編集の禁止フラグが ON で、すでに口座が登録されている人の変更は「申請 → 別の人の承認」に回す（初回の登録は従来どおり）
+   if(payChgConfig&&payChgConfig.bank_approval_required&&payChgConfig.bank_direct_ok===false){
+    const why=prompt("登録済みの振込口座の変更は「申請 → 別の人の承認」が必要です。\n変更の理由を入れてください（例: 本人から口座変更の連絡）。\n承認されるまで、いまの口座のまま振り込みます。");
+@@ -13703,6 +13872,7 @@ function bindPage(){
+   if(error){toast("保存エラー: "+error.message,true);return}
+   toast("振込口座を保存しました");render();
+  };
++ bindPayMethodBox(adminDetail); // 2026-11-13 月ごとの支払方法の表のボタン・口座の削除（情報が無いときは何もしない）
+  if($("eu-toggle"))$("eu-toggle").onclick=adminToggle;
+  // v2.6.8 退職日
+  const saveTerm=async(d)=>{
