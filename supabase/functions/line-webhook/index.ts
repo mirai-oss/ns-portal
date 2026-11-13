@@ -17,12 +17,120 @@ const json = (o, status = 200)=>new Response(JSON.stringify(o), {
     }
   });
 const svc = ()=>createClient(Deno.env.get("SUPABASE_URL"), Deno.env.get("SUPABASE_SERVICE_ROLE_KEY"));
-function jwtUid(req) {
+// 2026-11-13（セキュリティ修正）: これまでの jwtUid は、Authorization のトークンの「中身（sub）」を読むだけで、
+//   署名・期限を確かめていなかった（この関数は LINE の Webhook を受けるため verify_jwt=false で配置している）。
+//   → Supabase Auth にトークンを渡して検証する（署名・期限・失効）。検証できたときだけ、利用者の id を返す。
+async function verifiedUid(req, sb) {
   try {
-    const jwt = (req.headers.get("Authorization") ?? "").replace(/^Bearer\s+/i, "");
-    return JSON.parse(atob(jwt.split(".")[1].replace(/-/g, "+").replace(/_/g, "/"))).sub ?? "";
+    const jwt = (req.headers.get("Authorization") ?? "").replace(/^Bearer\s+/i, "").trim();
+    if (!jwt || jwt.split(".").length !== 3) return "";
+    const { data, error } = await sb.auth.getUser(jwt);
+    if (error || !data?.user?.id) return "";
+    return String(data.user.id);
   } catch  {
     return "";
+  }
+}
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const LINE_TEXT_MAX = 5000; // LINE のテキストメッセージの上限
+const DEDUPE_SEC = 30; // 同じ相手・同じ文面の連続送信を断る時間
+async function sha256Hex(text) {
+  const d = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+  return Array.from(new Uint8Array(d)).map((b)=>b.toString(16).padStart(2, "0")).join("");
+}
+// 文字列の比較（長さと中身を、途中で打ち切らずに比べる）
+function safeEqual(a, b) {
+  if (typeof a !== "string" || typeof b !== "string" || a.length !== b.length) return false;
+  let r = 0;
+  for(let i = 0; i < a.length; i++)r |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return r === 0;
+}
+// 送信の記録（だれが・いつ・だれへ・結果）。本文と LINE の宛先は入れない（本文は指紋と長さだけ）。
+//   記録に失敗しても、送信そのものは止めない（begin は重複防止を兼ねるので、重複のときだけ止める）。
+async function auditBegin(sb, a) {
+  try {
+    const hash = await sha256Hex(a.text);
+    const since = new Date(Date.now() - DEDUPE_SEC * 1000).toISOString();
+    const { data: recent } = await sb.from("line_send_audit").select("id").eq("action", a.action).eq("target_id", a.targetId).eq("text_sha256", hash).in("result", [
+      "pending",
+      "ok"
+    ]).gte("created_at", since).limit(1);
+    if (recent && recent.length) {
+      await sb.from("line_send_audit").insert({
+        action: a.action,
+        actor_id: a.actor,
+        target_kind: a.targetKind,
+        target_id: a.targetId,
+        text_sha256: hash,
+        text_len: a.text.length,
+        result: "duplicate",
+        finished_at: new Date().toISOString()
+      });
+      return {
+        duplicate: true,
+        id: null
+      };
+    }
+    const win = new Date(Math.floor(Date.now() / (DEDUPE_SEC * 1000)) * DEDUPE_SEC * 1000).toISOString();
+    const { data: row, error } = await sb.from("line_send_audit").insert({
+      action: a.action,
+      actor_id: a.actor,
+      target_kind: a.targetKind,
+      target_id: a.targetId,
+      text_sha256: hash,
+      text_len: a.text.length,
+      window_start: win,
+      result: "pending"
+    }).select("id").single();
+    if (error) {
+      if (String(error.code) === "23505") return {
+        duplicate: true,
+        id: null
+      }; // 同時に 2 つ来たときの片方
+      console.warn("line_send_audit（記録できず・送信は続行）:", error.message);
+      return {
+        duplicate: false,
+        id: null
+      };
+    }
+    return {
+      duplicate: false,
+      id: row?.id ?? null
+    };
+  } catch (e) {
+    console.warn("line_send_audit（記録できず・送信は続行）:", String(e));
+    return {
+      duplicate: false,
+      id: null
+    };
+  }
+}
+async function auditEnd(sb, id, result, detail) {
+  if (!id) return;
+  try {
+    await sb.from("line_send_audit").update({
+      result,
+      detail: detail ? String(detail).slice(0, 200) : null,
+      finished_at: new Date().toISOString()
+    }).eq("id", id);
+  } catch (e) {
+    console.warn("line_send_audit（結果を記録できず）:", String(e));
+  }
+}
+// 断った操作の記録（ログインは検証できたが、権限・対象・中身で断ったもの）
+async function auditDenied(sb, action, actor, targetKind, targetId, result, detail) {
+  try {
+    await sb.from("line_send_audit").insert({
+      action,
+      actor_id: actor || null,
+      target_kind: targetKind,
+      target_id: targetId && UUID_RE.test(targetId) ? targetId : null,
+      result,
+      detail: String(detail ?? "").slice(0, 200),
+      finished_at: new Date().toISOString()
+    });
+  } catch (e) {
+    console.warn("line_send_audit（断った記録を残せず）:", String(e));
   }
 }
 async function secrets(sb) {
@@ -58,7 +166,7 @@ async function validSignature(secret, body, sig) {
   ]);
   const mac = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(body));
   const b64 = btoa(String.fromCharCode(...new Uint8Array(mac)));
-  return b64 === sig;
+  return safeEqual(b64, sig);
 }
 async function lineReply(token, replyToken, text) {
   if (!token || !replyToken || !text) return;
@@ -368,7 +476,7 @@ Deno.serve(async (req)=>{
     }
     // ---------------- 2.7) シフト未提出リマインド（アプリから呼ばれる。募集権限=recruitとは別の権限） ----------------
     if (body.action === "push_user") {
-      const puid = jwtUid(req);
+      const puid = await verifiedUid(req, sb);
       if (!puid) return json({
         ok: false,
         error: "ログインが必要です"
@@ -388,21 +496,47 @@ Deno.serve(async (req)=>{
         ok: false,
         error: "チャネルアクセストークンが未設定です"
       }, 400);
+      if (typeof body.text !== "string" || typeof body.user_id !== "string" || !UUID_RE.test(body.user_id.trim())) {
+        await auditDenied(sb, "push_user", puid, "user", String(body.user_id ?? ""), "invalid", "形式が不正");
+        return json({
+          ok: false,
+          error: "送信の内容が不正です"
+        }, 400);
+      }
       const text = String(body.text ?? "").trim();
       if (!text) return json({
         ok: false,
         error: "本文が空です"
       }, 400);
-      const { data: target } = await sb.from("users").select("id,line_user_id").eq("id", String(body.user_id ?? "")).maybeSingle();
+      if (text.length > LINE_TEXT_MAX) return json({
+        ok: false,
+        error: `本文が長すぎます（${LINE_TEXT_MAX}文字まで）`
+      }, 400);
+      const { data: target } = await sb.from("users").select("id,line_user_id").eq("id", body.user_id.trim()).maybeSingle();
       if (!target?.line_user_id) return json({
         ok: false,
         error: "この方はまだLINEが連携されていません"
       }, 400);
-      const sent = await linePush(token, target.line_user_id, text);
-      if (!sent.ok) return json({
+      const au = await auditBegin(sb, {
+        action: "push_user",
+        actor: puid,
+        targetKind: "user",
+        targetId: target.id,
+        text
+      });
+      if (au.duplicate) return json({
         ok: false,
-        error: `LINEの応答: ${sent.status} ${sent.body}`
-      }, 400);
+        error: "同じ文面を、直前に送っています。少し待ってから、やり取りを確かめてください"
+      }, 409);
+      const sent = await linePush(token, target.line_user_id, text);
+      if (!sent.ok) {
+        await auditEnd(sb, au.id, "failed", `LINE ${sent.status}`);
+        return json({
+          ok: false,
+          error: `LINEの応答: ${sent.status} ${sent.body}`
+        }, 400);
+      }
+      await auditEnd(sb, au.id, "ok", null);
       return json({
         ok: true
       });
@@ -416,7 +550,7 @@ Deno.serve(async (req)=>{
     // 管理者向け→本人向け（2人称）に書き換えたもの）。未連携の場合は400ではなく
     // ok:false + fallback_textを返す（呼び出し側はこれを見て文面をコピー表示する想定）
     if (body.action === "onboarding_invite") {
-      const puid = jwtUid(req);
+      const puid = await verifiedUid(req, sb);
       if (!puid) return json({
         ok: false,
         error: "ログインが必要です"
@@ -464,30 +598,49 @@ Deno.serve(async (req)=>{
           fallback_text: text
         }, 400);
       }
-      const sent = await linePush(token, target.line_user_id, text);
-      if (!sent.ok) return json({
+      const au = await auditBegin(sb, {
+        action: "onboarding_invite",
+        actor: puid,
+        targetKind: "user",
+        targetId: target.id,
+        text
+      });
+      if (au.duplicate) return json({
         ok: false,
-        error: `LINEの応答: ${sent.status} ${sent.body}`,
-        fallback_text: text
-      }, 400);
+        error: "同じ案内を、直前に送っています。少し待ってから、確かめてください"
+      }, 409);
+      const sent = await linePush(token, target.line_user_id, text);
+      if (!sent.ok) {
+        await auditEnd(sb, au.id, "failed", `LINE ${sent.status}`);
+        return json({
+          ok: false,
+          error: `LINEの応答: ${sent.status} ${sent.body}`,
+          fallback_text: text
+        }, 400);
+      }
+      await auditEnd(sb, au.id, "ok", null);
       return json({
         ok: true
       });
     }
     // ---------------- 3) アプリからの操作（ログイン必須） ----------------
-    const uid = jwtUid(req);
+    const uid = await verifiedUid(req, sb);
     if (!uid) return json({
       ok: false,
       error: "ログインが必要です"
     }, 401);
+    const { data: me } = await sb.from("users").select("is_active").eq("id", uid).maybeSingle();
     const { data: allowed } = await sb.rpc("has_feature", {
       p_user: uid,
       p_feature: "recruit"
     });
-    if (!allowed) return json({
-      ok: false,
-      error: "権限がありません"
-    }, 403);
+    if (!me?.is_active || !allowed) {
+      await auditDenied(sb, String(body.action ?? "").slice(0, 40), uid, "applicant", String(body.applicant_id ?? ""), "denied", "採用の権限なし・または在籍でない");
+      return json({
+        ok: false,
+        error: "権限がありません"
+      }, 403);
+    }
     if (body.action === "test") {
       if (!token) return json({
         ok: false,
@@ -520,30 +673,72 @@ Deno.serve(async (req)=>{
         ok: false,
         error: "チャネルアクセストークンが未設定です"
       }, 400);
+      if (typeof body.text !== "string" || typeof body.applicant_id !== "string" || !UUID_RE.test(body.applicant_id.trim())) {
+        await auditDenied(sb, "push", uid, "applicant", String(body.applicant_id ?? ""), "invalid", "形式が不正");
+        return json({
+          ok: false,
+          error: "送信の内容が不正です"
+        }, 400);
+      }
       const text = String(body.text ?? "").trim();
       if (!text) return json({
         ok: false,
         error: "本文が空です"
       }, 400);
-      const { data: ap } = await sb.from("applicants").select("id,name,line_user_id").eq("id", String(body.applicant_id ?? "")).maybeSingle();
+      if (text.length > LINE_TEXT_MAX) return json({
+        ok: false,
+        error: `本文が長すぎます（${LINE_TEXT_MAX}文字まで）`
+      }, 400);
+      const { data: ap } = await sb.from("applicants").select("id,name,line_user_id,store_id").eq("id", body.applicant_id.trim()).maybeSingle();
       if (!ap) return json({
         ok: false,
         error: "応募者が見つかりません"
       }, 404);
+      // 応募者ごとの確かめ: 画面でその応募者を見られる人だけが送れる（採用の権限＋全店／社長・本部／その店舗の所属）
+      const { data: canSee } = await sb.rpc("can_see_applicant", {
+        p_user: uid,
+        p_store: ap.store_id ?? null
+      });
+      if (!canSee) {
+        await auditDenied(sb, "push", uid, "applicant", ap.id, "denied", "この応募者を見られる権限がない");
+        return json({
+          ok: false,
+          error: "この応募者へ送る権限がありません"
+        }, 403);
+      }
       if (!ap.line_user_id) return json({
         ok: false,
         error: "この応募者はまだLINEが連携されていません"
       }, 400);
-      const sent = await linePush(token, ap.line_user_id, text);
-      if (!sent.ok) return json({
+      const au = await auditBegin(sb, {
+        action: "push",
+        actor: uid,
+        targetKind: "applicant",
+        targetId: ap.id,
+        text
+      });
+      if (au.duplicate) return json({
         ok: false,
-        error: `LINEの応答: ${sent.status} ${sent.body}`
-      }, 400);
-      await sb.rpc("line_log_out", {
+        error: "同じ文面を、直前に送っています。少し待ってから、やり取りを確かめてください"
+      }, 409);
+      const sent = await linePush(token, ap.line_user_id, text);
+      if (!sent.ok) {
+        await auditEnd(sb, au.id, "failed", `LINE ${sent.status}`);
+        return json({
+          ok: false,
+          error: `LINEの応答: ${sent.status} ${sent.body}`
+        }, 400);
+      }
+      await auditEnd(sb, au.id, "ok", null);
+      const { data: msgId } = await sb.rpc("line_log_out", {
         p_secret: intakeSecret,
         p_applicant: ap.id,
         p_text: text
       });
+      // やり取りの行に、送った人を残す（今までは空だった）
+      if (msgId) await sb.from("applicant_messages").update({
+        sent_by: uid
+      }).eq("id", msgId).is("sent_by", null);
       return json({
         ok: true
       });
