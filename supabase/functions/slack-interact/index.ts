@@ -24,6 +24,12 @@ import { wageModal, commuteSettingModal, cancelModal, personContactModal, person
 import { isFormLinkPress, fixFormLinkText, fixRequestArgs, fixRequestedParentText, fixApprovalSend, unixToIso, isUuid } from "../_shared/attendance-fix-notify.ts";
 // 2026-11-11（ユーザー決定）: 勤怠確認の新しい形（親 1 行＋スレッドに詳細と操作）。新しい形のアラートは共通部品が親とカードを書き換える。古い形のアラートは今までの処理のまま
 import { renderAlert, afterRequest, afterDecide } from "../_shared/attendance-alert-notice.ts";
+// 2026-11-26: 採用管理のカードの［担当者を変更］。業務の処理は RPC（recruit_assignee_candidates / recruit_assignee_set）。ここは受付と振り分けだけ
+import { assigneeOpen, assigneeSubmit, ASSIGNEE_ACTION, ASSIGNEE_MODAL, lineOpen, lineInput, lineConfirm, LINE_ACTION, LINE_MODAL, LINE_CONFIRM,
+  interviewOpen, interviewInput, interviewConfirmSubmit, interviewCancelOpen, interviewCancelSubmit, INTERVIEW_ACTION, INTERVIEW_CANCEL_ACTION, INTERVIEW_MODAL, INTERVIEW_CONFIRM, INTERVIEW_CANCEL_MODAL,
+  retrySendOpen, retrySendSubmit, retryCalendarOpen, retryCalendarSubmit, RETRY_SEND_ACTION, RETRY_CAL_ACTION, RETRY_SEND_MODAL, RETRY_CAL_MODAL,
+  hireOpen, hireSubmit, HIRE_ACTION, HIRE_MODAL,
+  type InterviewInfo, type Place, type RecruitDeps, type RecruitOutcome } from "../_shared/recruit-actions.ts";
 
 const svc = () => createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
 const text = (s: string, status = 200) => new Response(s, { status, headers: { "Content-Type": "text/plain; charset=utf-8" } });
@@ -244,6 +250,38 @@ const handlers: Record<string, Handler> = {
     })());
     return text("");
   },
+
+  // ---- 採用管理（2026-11-26）: カードの［担当者を変更］→ 選ぶ窓 → RPC recruit_assignee_set（権限・古い値の照合・二重防止は RPC 側）。
+  //      親とカードの書き換え・スレッドの記録は、応募者の行が変わったことを既存のトリガー（recruit_notice_upd）が拾って recruit-notify が行う。ここからは Slack に投稿しない ----
+  [ASSIGNEE_ACTION]: async ({ sb, actor, payload, value, notificationId }) =>
+    recruitRespond(await assigneeOpen(recruitDeps(sb), actor, { applicant_id: value?.applicant_id, notification_id: notificationId }), payload),
+  [ASSIGNEE_MODAL]: async ({ sb, actor, payload }) => recruitRespond(await assigneeSubmit(recruitDeps(sb), actor, payload.view), payload),
+  // 2026-11-27: カードの［応募者へ LINE 返信］→ 入力の窓 → 確認の窓 → 送信（送るのは EF recruit-action。スイッチ・試しモード・権限・二重防止は、そちらと RPC が決める）。
+  //   スレッドのふつうの返信は、この関数を通らない（＝今までどおり、応募者へは送られない）
+  [LINE_ACTION]: async ({ sb, actor, payload, value, notificationId }) =>
+    recruitRespond(await lineOpen(recruitDeps(sb, actor, payload), actor, { applicant_id: value?.applicant_id, notification_id: notificationId }, recruitPlace(payload)), payload),
+  [LINE_MODAL]: async ({ sb, actor, payload }) => recruitRespond(await lineInput(recruitDeps(sb, actor, payload), actor, payload.view), payload),
+  [LINE_CONFIRM]: async ({ sb, actor, payload }) => recruitRespond(await lineConfirm(recruitDeps(sb, actor, payload), actor, payload.view), payload),
+  // 2026-11-29: カードの［面接を確定］［面接を変更］→ 入力の窓 → 確認の窓 → 確定／［面接を取り消す］→ 確かめの窓 → 取り消し。
+  //   確定・取り消しは EF recruit-action（権限・社員採用は社長だけ・スイッチ・同じ鍵・同時の操作・古い値の照合は、そちらと RPC が決める）
+  [INTERVIEW_ACTION]: async ({ sb, actor, payload, value, notificationId }) =>
+    recruitRespond(await interviewOpen(recruitDeps(sb, actor, payload), actor, { applicant_id: value?.applicant_id, notification_id: notificationId }, recruitPlace(payload)), payload),
+  [INTERVIEW_MODAL]: async ({ sb, actor, payload }) => recruitRespond(await interviewInput(recruitDeps(sb, actor, payload), actor, payload.view), payload),
+  [INTERVIEW_CONFIRM]: async ({ sb, actor, payload }) => recruitRespond(await interviewConfirmSubmit(recruitDeps(sb, actor, payload), actor, payload.view), payload),
+  [INTERVIEW_CANCEL_ACTION]: async ({ sb, actor, payload, value, notificationId }) =>
+    recruitRespond(await interviewCancelOpen(recruitDeps(sb, actor, payload), actor, { applicant_id: value?.applicant_id, notification_id: notificationId }, recruitPlace(payload)), payload),
+  [INTERVIEW_CANCEL_MODAL]: async ({ sb, actor, payload }) => recruitRespond(await interviewCancelSubmit(recruitDeps(sb, actor, payload), actor, payload.view), payload),
+  // 2026-11-29: 失敗の知らせ（LINE を送れなかった・カレンダーに登録できなかった）の［もう一度］→ 確かめの窓 → EF recruit-action（人が確かめてから、のときだけ動く。権限・スイッチ・二重防止は、そちらと RPC）
+  [RETRY_SEND_ACTION]: async ({ sb, actor, payload, value }) =>
+    recruitRespond(await retrySendOpen(recruitDeps(sb, actor, payload), actor, { applicant_id: value?.applicant_id, outbox_id: value?.outbox_id }, recruitPlace(payload)), payload),
+  [RETRY_SEND_MODAL]: async ({ sb, actor, payload }) => recruitRespond(await retrySendSubmit(recruitDeps(sb, actor, payload), actor, payload.view), payload),
+  [RETRY_CAL_ACTION]: async ({ sb, actor, payload, value }) =>
+    recruitRespond(await retryCalendarOpen(recruitDeps(sb, actor, payload), actor, { applicant_id: value?.applicant_id, note_key: value?.note_key }, recruitPlace(payload)), payload),
+  [RETRY_CAL_MODAL]: async ({ sb, actor, payload }) => recruitRespond(await retryCalendarSubmit(recruitDeps(sb, actor, payload), actor, payload.view), payload),
+  // 2026-11-30: カードの［採用を決める］→ 確認の窓（役割・所属店舗）→ EF recruit-action の hire（既存の採用の処理をそのまま呼ぶ。社員採用の最終決定は社長だけ、などは RPC が確かめる）。不採用・辞退は、ここには無い
+  [HIRE_ACTION]: async ({ sb, actor, payload, value, notificationId }) =>
+    recruitRespond(await hireOpen(recruitDeps(sb, actor, payload), actor, { applicant_id: value?.applicant_id, notification_id: notificationId }, recruitPlace(payload)), payload),
+  [HIRE_MODAL]: async ({ sb, actor, payload }) => recruitRespond(await hireSubmit(recruitDeps(sb, actor, payload), actor, payload.view), payload),
 
   // ---- 入社登録ワークフロー（2026-11-09 Phase 1）。業務ロジックは RPC（hr_save_wage / onboarding_*）と EF onboarding-notify 側。ここは受付と振り分けだけ ----
   "hr.onboarding.link": async () => text(""),
@@ -617,6 +655,73 @@ async function onboardingNotify(body: Record<string, unknown>): Promise<any> {
     });
     return await res.json().catch(() => ({ ok: false, error: `HTTP ${res.status}` }));
   } catch (e) { return { ok: false, error: String(e).slice(0, 200) }; }
+}
+
+// 採用管理の操作（_shared/recruit-actions.ts）に渡す、DB の読み書き。設定は毎回読む（スイッチを切ったら、すぐ効くように）
+// ボタンを押した場所（チャンネルとスレッド）。窓を閉じたあとの、本人だけに見える知らせを出す先
+const recruitPlace = (payload: any): Place => ({ channel_id: payload?.container?.channel_id ?? payload?.channel?.id ?? null, thread_ts: payload?.container?.thread_ts ?? payload?.container?.message_ts ?? null });
+function recruitDeps(sb: any, actor?: Actor, payload?: any): RecruitDeps {
+  return {
+    // 面接の窓に出す材料（読むだけ）。権限は、既存の関数 can_see_applicant（採用の権限＋応募者の店舗）で確かめる。LINE の宛先・電話・メールは、返さない
+    async interviewInfo(applicantId: string): Promise<InterviewInfo> {
+      if (!actor) return { ok: false, code: "denied" };
+      const { data: a } = await sb.from("applicants").select("id,name,store_id,answers,assignee_id,line_user_id,interview_at,interview_mode,interview_place,interview_url,interview_prefs").eq("id", applicantId).maybeSingle();
+      if (!a) return { ok: false, code: "not_found", message: "応募者が見つかりません" };
+      const { data: can } = await sb.rpc("can_see_applicant", { p_user: actor.user_id, p_store: a.store_id });
+      if (can !== true) return { ok: false, code: "denied" };
+      const { data: st } = await sb.from("app_settings").select("key,value").in("key", ["interview_places", "recruit_actions"]);
+      const m: Record<string, any> = {};
+      for (const r of st ?? []) m[r.key] = r.value;
+      const ra = (m.recruit_actions ?? {}) as Record<string, unknown>;
+      const calendar_mode = ra.calendar_mode === "live" ? "live" : "dry";
+      return {
+        ok: true, name: a.name ?? "", is_test: a.answers?._test === true, linked: !!a.line_user_id, assignee_id: a.assignee_id ?? null,
+        interview_at: a.interview_at ?? null, interview_mode: a.interview_mode ?? null, interview_place: a.interview_place ?? null, interview_url: a.interview_url ?? null,
+        prefs: Array.isArray(a.interview_prefs) ? a.interview_prefs : [], format_wish: typeof a.answers?.["_面接形式希望"] === "string" ? a.answers["_面接形式希望"] : null,
+        places: Array.isArray(m.interview_places) ? m.interview_places.filter((p: any) => p && typeof p.name === "string" && p.name).map((p: any) => ({ name: p.name, address: p.address ?? null, note: p.note ?? null })) : [],
+        enabled: ra.send_enabled === true && calendar_mode === "live", line_mode: ra.line_mode === "live" ? "live" : "dry", calendar_mode,
+      };
+    },
+    // 共通の操作の入口（EF recruit-action）を、押した人の操作として呼ぶ（service_role。操作者は actor_id で渡す。権限は、向こうの RPC が確かめる）
+    async action(body) {
+      if (!actor) return { ok: false, code: "error", message: "操作する人が分かりません" };
+      try {
+        const key = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
+        const res = await fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/recruit-action`, {
+          method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}`, apikey: key },
+          body: JSON.stringify({ ...body, actor_id: actor.user_id, via: "slack" }), signal: AbortSignal.timeout(25000),
+        });
+        return await res.json().catch(() => ({ ok: false, code: "error", message: `HTTP ${res.status}` }));
+      } catch (e) { return { ok: false, code: "error", message: "送信の入口を呼べませんでした: " + String(e).slice(0, 120) }; }
+    },
+    // 押した人だけに見える知らせ（窓を閉じたあとの結果）。ボタンを押した場所（チャンネル・スレッド）に出す
+    async tell(place: Place, msg: string) {
+      const user = payload?.user?.id;
+      if (!place?.channel_id || !user) return;
+      await fetch("https://slack.com/api/chat.postEphemeral", {
+        method: "POST", headers: { "Content-Type": "application/json; charset=utf-8", Authorization: `Bearer ${Deno.env.get("SLACK_BOT_TOKEN")}` },
+        body: JSON.stringify({ channel: place.channel_id, user, text: msg, ...(place.thread_ts ? { thread_ts: place.thread_ts } : {}) }), signal: AbortSignal.timeout(10000),
+      }).then((r) => r.body?.cancel()).catch(() => {});
+    },
+    async actionsEnabled() {
+      const { data } = await sb.from("app_settings").select("value").eq("key", "recruit_slack").maybeSingle();
+      return data?.value?.actions_enabled === true;
+    },
+    async rpc(name, args) {
+      const { data, error } = await sb.rpc(name, args);
+      return { data, error: error ? { message: String(error.message ?? error) } : null };
+    },
+  };
+}
+// 採用管理の操作の結果を、Slack への返事にする（本人だけに見える返事／窓を開く／窓の中のエラー／窓を閉じる）
+async function recruitRespond(o: RecruitOutcome, payload: any): Promise<Response> {
+  switch (o.kind) {
+    case "modal": return await openModal(payload.trigger_id, o.view);
+    case "errors": return json({ response_action: "errors", errors: o.errors });
+    case "push": return json({ response_action: "push", view: o.view });
+    case "clear": if (o.after) waitUntil(o.after()); return json({ response_action: "clear" });
+    default: return ephemeral(o.text, payload.response_url);
+  }
 }
 
 // ---- 4. Slack 応答のヘルパー ----

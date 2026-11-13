@@ -61,7 +61,17 @@ function makeDb(sb: any): Db {
       const { data } = await sb.from("app_settings").select("value").eq("key", "recruit_slack").maybeSingle();
       const v = (data?.value ?? {}) as Record<string, unknown>;
       const n = Number(v.body_chars);
-      return { enabled: v.enabled === true, since: typeof v.since === "string" ? v.since : null, channelKey: typeof v.channel_key === "string" && v.channel_key ? v.channel_key : "hr.saiyo", bodyChars: Number.isFinite(n) ? Math.max(0, Math.min(500, n)) : 200 };
+      // 2026-11-27 応募者への送信のスイッチ（別の設定 recruit_actions。ボタンを出しているときだけ読む。無い・読めない・true 以外は false＝実在の応募者のカードに、送るボタンを出さない）
+      //   面接のボタンは、さらに、カレンダーが本番モード（calendar_mode = live）のときだけ、実在の応募者のカードに出す（RPC が通す条件と同じ）
+      let sendEnabled = false, interviewEnabled = false;
+      if (v.actions_enabled === true) {
+        const { data: ra } = await sb.from("app_settings").select("value").eq("key", "recruit_actions").maybeSingle();
+        const rv = (ra?.value ?? {}) as Record<string, unknown>;
+        sendEnabled = rv.send_enabled === true;
+        interviewEnabled = sendEnabled && rv.calendar_mode === "live";
+      }
+      return { enabled: v.enabled === true, since: typeof v.since === "string" ? v.since : null, channelKey: typeof v.channel_key === "string" && v.channel_key ? v.channel_key : "hr.saiyo", bodyChars: Number.isFinite(n) ? Math.max(0, Math.min(500, n)) : 200,
+        actionsEnabled: v.actions_enabled === true, sendEnabled, interviewEnabled };   // 2026-11-26 カードに［担当者を変更］を出すか（既定 false。true 以外は、今までのカードと同じ）
     },
     async applicant(id) {
       // 列の増減に強くするため * で読む。文面に使うのは recruit-notice.ts の Applicant にある列だけ（電話・メールは使わない）

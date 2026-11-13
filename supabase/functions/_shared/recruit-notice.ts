@@ -17,6 +17,8 @@ export const NIPPO_URL = "https://mirai-oss.github.io/nippo/";
 const USERNAME = "採用管理", ICON = ":bust_in_silhouette:";
 // リンクのボタンの action_id: slack-interact は「hr.onboarding.link」で始まるものを「何もしない」で受ける（既存の作り。slack-interact を変えずに済む）
 const LINK_ACTION = "hr.onboarding.link.recruit";
+/** カードの下に出す注意書き（スレッドのふつうの返信は、どこにも送られない＝社内の連絡） */
+export const THREAD_NOTE = "このスレッドの返信は社内の連絡です（応募者へは送られません）。";
 
 // ---- 1. 文面（純粋な関数） ---------------------------------------------------------
 /** 選考中（管理画面の APPLICANT_ACTIVE と同じ） */
@@ -44,6 +46,7 @@ const SEP = "[-\\s().（）－ー―‐]";
 /** 電話番号・メールアドレスらしい文字列を伏せる（全角の数字は半角にしてから見る） */
 export function maskPII(s: string): string {
   return toHalf(String(s ?? ""))
+    .replace(/([?&]invite=)[0-9a-f]{16,}/gi, "$1（省略）")   // 2026-11-30 入社登録の招待リンクの合言葉（これを知っていると、本人として登録できてしまう）
     .replace(/[A-Za-z0-9._%+-]+\s*@\s*[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+/g, "（メールアドレス）")
     .replace(new RegExp(`(?<!\\d)[（(]?(?:\\+81${SEP}?\\d|0\\d)(?:${SEP}{0,2}\\d){8,10}(?!\\d)`, "g"), "（電話番号）");
 }
@@ -87,12 +90,39 @@ export type Applicant = {
   handled_at?: string | null; handled_by?: string | null; hired_at?: string | null; exit_stage?: string | null; exit_reason?: string | null;
   last_msg_at?: string | null; last_msg_dir?: string | null; last_actor_id?: string | null; form_received_at?: string | null; line_linked_at?: string | null;
   answers?: Record<string, unknown> | null; indeed_url?: string | null;
+  line_user_id?: string | null;   // LINE と連携しているかどうかの判定にだけ使う（ID そのものは、文面にも控えにも出さない）
 };
 export type Onboarding = { id: string; status?: string | null; user_id?: string | null; slack_channel_id?: string | null; slack_parent_ts?: string | null };
-export type Cfg = { enabled: boolean; since: string | null; channelKey: string; bodyChars: number };
+export type Cfg = { enabled: boolean; since: string | null; channelKey: string; bodyChars: number; actionsEnabled?: boolean; sendEnabled?: boolean; interviewEnabled?: boolean };   // interviewEnabled＝実在の応募者の面接を、ここから確定できる（送信のスイッチが true、かつ、カレンダーが本番モード）   // actionsEnabled＝カードに操作のボタンを出す（既定 false＝出さない）／sendEnabled＝応募者への送信のスイッチ（app_settings.recruit_actions.send_enabled。既定 false）
 
 const ms = (iso: string | null | undefined) => { const t = iso ? new Date(iso).getTime() : NaN; return Number.isFinite(t) ? t : 0; };
 const prefsOf = (a: Applicant): unknown[] => (Array.isArray(a.interview_prefs) ? a.interview_prefs : []);
+/** カードに出す希望日時の件数の上限 */
+export const PREFS_MAX = 3;
+const PREF_NO = ["①", "②", "③", "④", "⑤"];
+const FORMAT_WISH: Record<string, string> = { online: "オンライン", onsite: "対面", either: "どちらでも" };
+const hm = (s: unknown) => { const m = /^(\d{1,2}):(\d{2})$/.exec(String(s ?? "").trim()); return m && Number(m[1]) < 24 && Number(m[2]) < 60 ? `${Number(m[1])}:${m[2]}` : null; };
+const mdw = (s: unknown) => {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(s ?? "").trim()); if (!m) return null;
+  const d = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
+  return d.getUTCMonth() === Number(m[2]) - 1 && d.getUTCDate() === Number(m[3]) ? `${Number(m[2])}/${Number(m[3])}（${WD[d.getUTCDay()]}）` : null;
+};
+/**
+ * 面接の希望日時 1 件を、カードに出す文字にする。形は applicants.interview_prefs（応募フォームの回答）のまま:
+ *   { mode: "exact", date: "YYYY-MM-DD", from: "HH:MM" }／{ mode: "range", date, from, to }／{ mode: "any", note }
+ * 読めない形（mode が無い・日付が壊れている）は null を返す（カードには出さない。件数には数える）。
+ * 「いつでも」の補足（応募者が自由に書いた文字）は、電話・メールらしい文字を伏せ、長さを切る。
+ */
+export function prefLine(x: unknown): string | null {
+  if (!x || typeof x !== "object") return null;
+  const p = x as Record<string, unknown>;
+  if (p.mode === "any") { const note = String(p.note ?? "").trim(); return note ? `いつでも（${clean(maskPII(note), 30)}）` : "いつでも"; }
+  if (p.mode !== "exact" && p.mode !== "range") return null;
+  const day = mdw(p.date); if (!day) return null;
+  const from = hm(p.from), to = p.mode === "range" ? hm(p.to) : null;
+  return from ? `${day}${from}${to ? `〜${to}` : ""}` : day;
+}
+
 /** 未対応: 選考中で、最後のやり取りが「応募者から」のまま。対応済みにしたあとに新しく届いたら、また未対応（管理画面の rcWaiting のメッセージの部分と同じ） */
 export function waitingOf(a: Applicant): boolean {
   if (!ACTIVE.includes(String(a.status ?? ""))) return false;
@@ -128,6 +158,8 @@ export type View = {
   waiting: boolean; overdue: boolean; needSchedule: boolean; lastMsgAt: string | null; lastMsgDir: string | null;
   exitStage: string | null; exitReason: string | null; formAt: string | null; lineAt: string | null; reapplySig: string | null;
   userId: string | null; onboarding: Onboarding | null; onboardingLink: string | null; moved: string | null;
+  isTest: boolean;   // 2026-11-27 テスト用の応募者（answers._test = true）。送信のスイッチが OFF のあいだ、応募者へ送るボタンは、この印のある応募者にだけ出す
+  prefsLines: string[]; prefsMore: number; formatWish: string | null; lineLinked: boolean;   // 2026-11-26 カードに出す: 希望日時（最大 3 件）・希望の形式・LINE と連携しているか
 };
 export function viewOf(a: Applicant, c: { storeName?: string | null; names?: Record<string, string>; onboarding?: Onboarding | null; onboardingLink?: string | null; now: number }): View {
   const nm = (id: string | null | undefined) => (id ? c.names?.[id] ?? null : null);
@@ -139,6 +171,7 @@ export function viewOf(a: Applicant, c: { storeName?: string | null; names?: Rec
   // Indeed からの再応募を見分ける印（求人・勤務地・返信用の宛先が変わったか）。中身そのものは控えに残さない
   const reapply = a.source === "indeed" || ans["Indeed連絡先"] ? sig([ans["求人"], ans["勤務地"], ans["店舗"], ans["Indeed連絡先"], a.indeed_url].map((x) => String(x ?? "")).join("|")) : null;
   const prefs = prefsOf(a);
+  const prefsAll = prefs.map(prefLine).filter((x): x is string => !!x);
   return {
     id: a.id, name: clean(a.name, 30), storeId: a.store_id ?? null, storeName: c.storeName ?? null, source: a.source ?? null, jobType: a.job_type ?? null, appliedAt: a.applied_at ?? null,
     status: String(a.status ?? "new"), label: st.label, code: waiting || overdue ? "alert" : st.code, done: st.done,
@@ -147,6 +180,8 @@ export function viewOf(a: Applicant, c: { storeName?: string | null; names?: Rec
     waiting, overdue, needSchedule: ACTIVE.includes(String(a.status ?? "")) && !a.interview_at && prefs.length > 0, lastMsgAt: a.last_msg_at ?? null, lastMsgDir: a.last_msg_dir ?? null,
     exitStage: a.exit_stage ?? null, exitReason: a.exit_reason ?? null, formAt: a.form_received_at ?? null, lineAt: a.line_linked_at ?? null, reapplySig: reapply,
     userId: onb?.user_id ?? a.user_id ?? null, onboarding: onb, onboardingLink: c.onboardingLink ?? null, moved,
+    prefsLines: prefsAll.slice(0, PREFS_MAX), prefsMore: Math.max(0, prefs.length - Math.min(prefsAll.length, PREFS_MAX)),
+    formatWish: FORMAT_WISH[String(ans["_面接形式希望"] ?? "")] ?? null, lineLinked: !!a.line_user_id, isTest: ans["_test"] === true,
   };
 }
 
@@ -171,10 +206,33 @@ export function parentMessage(v: View, o: { permalink?: string | null } = {}): {
   return { text, blocks };
 }
 
-/** スレッドの 1 通目「概要のカード」。状態が変わるたびに、同じメッセージを書き換える。押せるのはリンクのボタンだけ（Slack から状態は変えない） */
-export function cardMessage(v: View): { text: string; blocks: unknown[] } {
+/** カードの操作のボタン［担当者を変更］（押すと slack-interact が受ける。処理は _shared/recruit-actions.ts） */
+export const ASSIGNEE_ACTION = "recruit.assignee.open";
+/** カードの操作のボタン［応募者へ LINE 返信］（押すと slack-interact が受ける。送るのは recruit-action。スレッドのふつうの返信は、今までどおり、どこにも送られない） */
+export const LINE_ACTION = "recruit.line.open";
+/** カードの操作のボタン［面接を確定］／［面接を変更］（同じ窓）と、［面接を取り消す］（押すと slack-interact が受ける。処理は recruit-action） */
+export const INTERVIEW_ACTION = "recruit.interview.open", INTERVIEW_CANCEL_ACTION = "recruit.interview.cancel";
+/** カードの操作のボタン［採用を決める］（押すと slack-interact が受ける。処理は recruit-action の hire ＝既存の採用の処理をそのまま呼ぶ） */
+export const HIRE_ACTION = "recruit.hire.open";
+/**
+ * actions＝操作のボタンを出すか（設定 app_settings.recruit_slack.actions_enabled。false・未指定なら、今までのカードと同じ）／notificationId＝このカードの台帳の番号（だれが押したかの記録用）
+ * send＝応募者への送信のスイッチ（app_settings.recruit_actions.send_enabled）。［応募者へ LINE 返信］は、LINE と連携している応募者にだけ出す。
+ *       スイッチが false のあいだは、さらに、テスト用の応募者（answers._test = true）にだけ出す（実在の応募者のカードには出さない）
+ * interview＝実在の応募者の面接を、ここから確定できるか（recruit-notify が設定から決める）。false のあいだは、面接のボタンも、テスト用の応募者にだけ出す
+ */
+export type CardOpts = { actions?: boolean; notificationId?: string | null; send?: boolean; interview?: boolean };
+
+/**
+ * スレッドの 1 通目「概要のカード」。状態が変わるたびに、同じメッセージを書き換える。
+ * 押せるのは、リンクのボタンと、（設定が ON のときだけ・選考中のあいだだけ）［担当者を変更］。ボタンの値には、応募者の id と台帳の番号だけを入れる（氏名などは入れない）。
+ */
+export function cardMessage(v: View, o: CardOpts = {}): { text: string; blocks: unknown[] } {
   const att = attentionOf(v);
   const src = SOURCE_LABEL[String(v.source ?? "")] ?? clean(v.source, 12);
+  // 2026-11-26 選考中のあいだだけ足す行: 面接の希望日時（最大 3 件）・希望の形式（面接の行のすぐ下）と、LINE と連携しているか（担当の行の下）
+  const wish: string[] = [];
+  if (!v.done && v.prefsLines.length) wish.push(`希望日時：${v.prefsLines.map((t, i) => `${PREF_NO[i] ?? "・"}${t}`).join("　")}${v.prefsMore > 0 ? `　（ほか ${v.prefsMore} 件は管理画面で）` : ""}`);
+  if (!v.done && v.formatWish) wish.push(`希望の形式：${v.formatWish}`);
   const lines = [
     `*【採用管理】${clean(v.name, 30)}*`,
     `状態：${v.label ?? "応募受付"}${att ? `　🔴${att}` : ""}`,
@@ -182,15 +240,33 @@ export function cardMessage(v: View): { text: string; blocks: unknown[] } {
     `応募媒体：${src}${v.jobType ? `（${clean(v.jobType, 40)}）` : ""}`,
     `応募日時：${whenJst(v.appliedAt)}`,
     `面接：${interviewText(v.interviewAt, v.interviewMode, v.interviewPlace)}${v.needSchedule ? `（希望日時 ${v.prefsN} 件あり → 日程の確定をお願いします）` : ""}`,
+    ...wish,
     `担当：${v.assigneeName ? clean(v.assigneeName, 20) : "未定"}`,
   ];
+  if (!v.done) lines.push(v.lineLinked ? "LINE 連携：あり" : "LINE 連携：なし（この応募者へは、ここから送れません）");
   if (v.lastMsgAt) lines.push(`やり取り：最後は${v.lastMsgDir === "in" ? "応募者から" : "こちらから"}（${whenJst(v.lastMsgAt)}）`);
   if (v.exitReason) lines.push(`離脱の記録：${EXIT_STAGE[String(v.exitStage ?? "")] ?? "—"}・${EXIT_REASON[v.exitReason] ?? "その他"}`);
   if (v.moved) lines.push(v.onboarding ? "入社登録：✅ 入社登録へ移行済み（以降の手続きは、入社登録のスレッドで進めます）" : "入社登録：✅ 本人の登録が済みました");
   const blocks: unknown[] = [
     { type: "section", text: { type: "mrkdwn", text: lines.join("\n") } },
-    { type: "context", elements: [{ type: "mrkdwn", text: "電話番号・メールアドレス・回答の内容は Slack に出しません。管理画面で確認してください。" }] },
+    { type: "context", elements: [
+      { type: "mrkdwn", text: "電話番号・メールアドレス・回答の内容は Slack に出しません。管理画面で確認してください。" },
+      { type: "mrkdwn", text: THREAD_NOTE },
+    ] },
   ];
+  if (o.actions === true && !v.done) {
+    const value = JSON.stringify({ applicant_id: v.id, notification_id: o.notificationId ?? null });
+    const acts: unknown[] = [];
+    if (o.interview === true || v.isTest) {
+      acts.push({ type: "button", text: { type: "plain_text", text: v.interviewAt ? "面接を変更" : "面接を確定", emoji: true }, action_id: INTERVIEW_ACTION, value });
+      if (v.interviewAt) acts.push({ type: "button", text: { type: "plain_text", text: "面接を取り消す", emoji: true }, action_id: INTERVIEW_CANCEL_ACTION, value });
+    }
+    // ［採用を決める］: 実在の応募者は、送信のスイッチが true のときだけ（RPC が通す条件と同じ）。テスト用の応募者は、いつでも
+    if (o.send === true || v.isTest) acts.push({ type: "button", text: { type: "plain_text", text: "採用を決める", emoji: true }, action_id: HIRE_ACTION, value });
+    if (v.lineLinked && (o.send === true || v.isTest)) acts.push({ type: "button", text: { type: "plain_text", text: "応募者へ LINE 返信", emoji: true }, action_id: LINE_ACTION, value });
+    acts.push({ type: "button", text: { type: "plain_text", text: "担当者を変更", emoji: true }, action_id: ASSIGNEE_ACTION, value });
+    blocks.push({ type: "actions", block_id: "recruit_actions", elements: acts });
+  }
   const btns: unknown[] = [linkButton("管理画面で開く", `${NIPPO_URL}?a=${v.id}`, v.id)];
   if (v.onboardingLink) btns.push(linkButton("入社登録のスレッド", v.onboardingLink, v.id, "_onb"));
   if (v.moved && v.userId) btns.push(linkButton("従業員ページ", `${NIPPO_URL}?page=admin&u=${v.userId}`, v.id, "_user"));
@@ -384,7 +460,7 @@ async function syncOnce(db: Db, notify: Notify, cfg: Cfg, id: string, o: EventOp
     const r = await notify({ action: "update", notification_id: refs.parent, text: p.text, blocks: p.blocks });
     if (r?.ok) { patch.parent_sig = pSig; patch.title = parentTitle(v); updated++; } else incomplete = true;
   }
-  const c = cardMessage(v); const cSig = sig(JSON.stringify(c));
+  const c = cardMessage(v, { actions: cfg.actionsEnabled === true, notificationId: refs.card ?? null, send: cfg.sendEnabled === true, interview: cfg.interviewEnabled === true }); const cSig = sig(JSON.stringify(c));
   if (cSig !== refs.card_sig) {
     const r = await notify({ action: "update", notification_id: refs.card, text: c.text, blocks: c.blocks });
     if (r?.ok) { patch.card_sig = cSig; updated++; } else incomplete = true;
@@ -449,7 +525,7 @@ async function openThread(db: Db, notify: Notify, cfg: Cfg, v: View, old: Refs, 
   const p = parentMessage(v);
   const r1 = await notify({ action: "send", notification_id: parentId, channel_key: cfg.channelKey, text: p.text, blocks: p.blocks, event: "recruit_parent", dedupe_key: `recruit:parent:${v.id}`, ref, ...base(source) });
   if (!r1?.ok || !r1.ts) return { error: "parent_send_failed: " + String(r1?.error ?? ""), updated: 0 };
-  const c = cardMessage(v);
+  const c = cardMessage(v, { actions: cfg.actionsEnabled === true, notificationId: cardId, send: cfg.sendEnabled === true, interview: cfg.interviewEnabled === true });
   const sendCard = () => notify({ action: "send", notification_id: cardId, channel_key: cfg.channelKey, thread_ts: r1.ts, text: c.text, blocks: c.blocks, event: "recruit_card", dedupe_key: `recruit:card:${v.id}`, ref, ...base(source) });
   let r2 = await sendCard();
   if (!r2?.ok) r2 = await sendCard();

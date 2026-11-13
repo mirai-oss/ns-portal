@@ -1,0 +1,217 @@
+{
+ "note": "nippo/index.html の interviewText（画面の関数）の出力そのまま。作り直しは gen_interview_fixture.mjs（TZ=Asia/Tokyo）",
+ "places": [
+  {
+   "name": "テスト本店",
+   "address": "東京都テスト区1-2-3 テストビル2F",
+   "note": "入口は建物の裏側です。\n着いたらスタッフに声をかけてください。"
+  },
+  {
+   "name": "テスト駅前店",
+   "address": "東京都テスト区4-5-6",
+   "note": ""
+  },
+  {
+   "name": "住所なし店",
+   "address": "",
+   "note": ""
+  }
+ ],
+ "cases": [
+  {
+   "input": {
+    "name": "試験 太郎",
+    "interview_at": "2026-11-20T05:00:00.000Z",
+    "interview_mode": "online",
+    "interview_url": "https://meet.google.com/abc-defg-hij"
+   },
+   "expected": "試験 太郎さん\n\nこの度はご応募いただきありがとうございます。\n面接の日時が決まりましたのでご連絡いたします。\n\n【面接日時】11月20日(金) 14:00\n【面接URL】https://meet.google.com/abc-defg-hij\n\nお時間になりましたら、上のリンクからご参加ください。\n\nご都合が悪くなった場合は、このままご返信ください。\nお会いできるのを楽しみにしております。"
+  },
+  {
+   "input": {
+    "name": "試験 太郎",
+    "interview_at": "2026-11-20T05:00:00+00:00",
+    "interview_mode": "online",
+    "interview_url": ""
+   },
+   "expected": "試験 太郎さん\n\nこの度はご応募いただきありがとうございます。\n面接の日時が決まりましたのでご連絡いたします。\n\n【面接日時】11月20日(金) 14:00\n\nご都合が悪くなった場合は、このままご返信ください。\nお会いできるのを楽しみにしております。"
+  },
+  {
+   "input": {
+    "name": "試験 太郎",
+    "interview_at": "2026-11-20T05:00:00+00:00",
+    "interview_mode": "online",
+    "interview_url": null
+   },
+   "expected": "試験 太郎さん\n\nこの度はご応募いただきありがとうございます。\n面接の日時が決まりましたのでご連絡いたします。\n\n【面接日時】11月20日(金) 14:00\n\nご都合が悪くなった場合は、このままご返信ください。\nお会いできるのを楽しみにしております。"
+  },
+  {
+   "input": {
+    "name": "試験 太郎",
+    "interview_at": "2026-11-20T05:00:00+00:00",
+    "interview_mode": null,
+    "interview_url": "https://meet.google.com/abc-defg-hij"
+   },
+   "expected": "試験 太郎さん\n\nこの度はご応募いただきありがとうございます。\n面接の日時が決まりましたのでご連絡いたします。\n\n【面接日時】11月20日(金) 14:00\n【面接URL】https://meet.google.com/abc-defg-hij\n\nお時間になりましたら、上のリンクからご参加ください。\n\nご都合が悪くなった場合は、このままご返信ください。\nお会いできるのを楽しみにしております。"
+  },
+  {
+   "input": {
+    "name": "試験 太郎",
+    "interview_at": "2026-11-20T05:00:00+00:00",
+    "interview_url": "https://meet.google.com/abc-defg-hij"
+   },
+   "expected": "試験 太郎さん\n\nこの度はご応募いただきありがとうございます。\n面接の日時が決まりましたのでご連絡いたします。\n\n【面接日時】11月20日(金) 14:00\n【面接URL】https://meet.google.com/abc-defg-hij\n\nお時間になりましたら、上のリンクからご参加ください。\n\nご都合が悪くなった場合は、このままご返信ください。\nお会いできるのを楽しみにしております。"
+  },
+  {
+   "input": {
+    "name": "試験 太郎",
+    "interview_at": "2026-12-06T00:05:00+00:00",
+    "interview_mode": "onsite",
+    "interview_place": "テスト本店",
+    "interview_address": "東京都テスト区1-2-3 テストビル2F",
+    "interview_url": "https://meet.google.com/old-link"
+   },
+   "expected": "試験 太郎さん\n\nこの度はご応募いただきありがとうございます。\n面接の日時が決まりましたのでご連絡いたします。\n\n【面接日時】12月6日(日) 09:05\n【場所】テスト本店\n【住所】東京都テスト区1-2-3 テストビル2F\n入口は建物の裏側です。\n着いたらスタッフに声をかけてください。\n\nお気をつけてお越しください。\n\nご都合が悪くなった場合は、このままご返信ください。\nお会いできるのを楽しみにしております。"
+  },
+  {
+   "input": {
+    "name": "試験 太郎",
+    "interview_at": "2026-12-06T00:05:00+00:00",
+    "interview_mode": "onsite",
+    "interview_place": "テスト本店",
+    "interview_address": ""
+   },
+   "expected": "試験 太郎さん\n\nこの度はご応募いただきありがとうございます。\n面接の日時が決まりましたのでご連絡いたします。\n\n【面接日時】12月6日(日) 09:05\n【場所】テスト本店\n【住所】東京都テスト区1-2-3 テストビル2F\n入口は建物の裏側です。\n着いたらスタッフに声をかけてください。\n\nお気をつけてお越しください。\n\nご都合が悪くなった場合は、このままご返信ください。\nお会いできるのを楽しみにしております。"
+  },
+  {
+   "input": {
+    "name": "試験 太郎",
+    "interview_at": "2026-12-06T00:05:00+00:00",
+    "interview_mode": "onsite",
+    "interview_place": "テスト駅前店",
+    "interview_address": "東京都テスト区4-5-6"
+   },
+   "expected": "試験 太郎さん\n\nこの度はご応募いただきありがとうございます。\n面接の日時が決まりましたのでご連絡いたします。\n\n【面接日時】12月6日(日) 09:05\n【場所】テスト駅前店\n【住所】東京都テスト区4-5-6\n\nお気をつけてお越しください。\n\nご都合が悪くなった場合は、このままご返信ください。\nお会いできるのを楽しみにしております。"
+  },
+  {
+   "input": {
+    "name": "試験 太郎",
+    "interview_at": "2026-12-06T00:05:00+00:00",
+    "interview_mode": "onsite",
+    "interview_place": "住所なし店",
+    "interview_address": ""
+   },
+   "expected": "試験 太郎さん\n\nこの度はご応募いただきありがとうございます。\n面接の日時が決まりましたのでご連絡いたします。\n\n【面接日時】12月6日(日) 09:05\n【場所】住所なし店\n\nお気をつけてお越しください。\n\nご都合が悪くなった場合は、このままご返信ください。\nお会いできるのを楽しみにしております。"
+  },
+  {
+   "input": {
+    "name": "試験 太郎",
+    "interview_at": "2026-12-06T00:05:00+00:00",
+    "interview_mode": "onsite",
+    "interview_place": "設定に無い店",
+    "interview_address": ""
+   },
+   "expected": "試験 太郎さん\n\nこの度はご応募いただきありがとうございます。\n面接の日時が決まりましたのでご連絡いたします。\n\n【面接日時】12月6日(日) 09:05\n【場所】設定に無い店\n\nお気をつけてお越しください。\n\nご都合が悪くなった場合は、このままご返信ください。\nお会いできるのを楽しみにしております。"
+  },
+  {
+   "input": {
+    "name": "試験 太郎",
+    "interview_at": "2026-12-06T00:05:00+00:00",
+    "interview_mode": "onsite",
+    "interview_place": "",
+    "interview_address": ""
+   },
+   "expected": "試験 太郎さん\n\nこの度はご応募いただきありがとうございます。\n面接の日時が決まりましたのでご連絡いたします。\n\n【面接日時】12月6日(日) 09:05\n【場所】\n\nお気をつけてお越しください。\n\nご都合が悪くなった場合は、このままご返信ください。\nお会いできるのを楽しみにしております。"
+  },
+  {
+   "input": {
+    "name": "山田 花子",
+    "interview_at": "2026-12-31T15:00:00+00:00",
+    "interview_mode": "online",
+    "interview_url": "https://meet.google.com/zzz-zzzz-zzz"
+   },
+   "expected": "山田 花子さん\n\nこの度はご応募いただきありがとうございます。\n面接の日時が決まりましたのでご連絡いたします。\n\n【面接日時】1月1日(金) 00:00\n【面接URL】https://meet.google.com/zzz-zzzz-zzz\n\nお時間になりましたら、上のリンクからご参加ください。\n\nご都合が悪くなった場合は、このままご返信ください。\nお会いできるのを楽しみにしております。"
+  },
+  {
+   "input": {
+    "name": "山田 花子",
+    "interview_at": "2027-01-10T14:59:00+00:00",
+    "interview_mode": "online",
+    "interview_url": "https://meet.google.com/zzz-zzzz-zzz"
+   },
+   "expected": "山田 花子さん\n\nこの度はご応募いただきありがとうございます。\n面接の日時が決まりましたのでご連絡いたします。\n\n【面接日時】1月10日(日) 23:59\n【面接URL】https://meet.google.com/zzz-zzzz-zzz\n\nお時間になりましたら、上のリンクからご参加ください。\n\nご都合が悪くなった場合は、このままご返信ください。\nお会いできるのを楽しみにしております。"
+  },
+  {
+   "input": {
+    "name": "山田 花子",
+    "interview_at": "2026-11-15T23:30:00+00:00",
+    "interview_mode": "online",
+    "interview_url": "https://meet.google.com/zzz-zzzz-zzz"
+   },
+   "expected": "山田 花子さん\n\nこの度はご応募いただきありがとうございます。\n面接の日時が決まりましたのでご連絡いたします。\n\n【面接日時】11月16日(月) 08:30\n【面接URL】https://meet.google.com/zzz-zzzz-zzz\n\nお時間になりましたら、上のリンクからご参加ください。\n\nご都合が悪くなった場合は、このままご返信ください。\nお会いできるのを楽しみにしております。"
+  },
+  {
+   "input": {
+    "name": "試験 太郎",
+    "interview_at": "2026-11-15T03:07:00+00:00",
+    "interview_mode": "online",
+    "interview_url": "https://meet.google.com/abc-defg-hij"
+   },
+   "expected": "試験 太郎さん\n\nこの度はご応募いただきありがとうございます。\n面接の日時が決まりましたのでご連絡いたします。\n\n【面接日時】11月15日(日) 12:07\n【面接URL】https://meet.google.com/abc-defg-hij\n\nお時間になりましたら、上のリンクからご参加ください。\n\nご都合が悪くなった場合は、このままご返信ください。\nお会いできるのを楽しみにしております。"
+  },
+  {
+   "input": {
+    "name": "試験 太郎",
+    "interview_at": "2026-11-16T03:07:00+00:00",
+    "interview_mode": "online",
+    "interview_url": "https://meet.google.com/abc-defg-hij"
+   },
+   "expected": "試験 太郎さん\n\nこの度はご応募いただきありがとうございます。\n面接の日時が決まりましたのでご連絡いたします。\n\n【面接日時】11月16日(月) 12:07\n【面接URL】https://meet.google.com/abc-defg-hij\n\nお時間になりましたら、上のリンクからご参加ください。\n\nご都合が悪くなった場合は、このままご返信ください。\nお会いできるのを楽しみにしております。"
+  },
+  {
+   "input": {
+    "name": "試験 太郎",
+    "interview_at": "2026-11-17T03:07:00+00:00",
+    "interview_mode": "online",
+    "interview_url": "https://meet.google.com/abc-defg-hij"
+   },
+   "expected": "試験 太郎さん\n\nこの度はご応募いただきありがとうございます。\n面接の日時が決まりましたのでご連絡いたします。\n\n【面接日時】11月17日(火) 12:07\n【面接URL】https://meet.google.com/abc-defg-hij\n\nお時間になりましたら、上のリンクからご参加ください。\n\nご都合が悪くなった場合は、このままご返信ください。\nお会いできるのを楽しみにしております。"
+  },
+  {
+   "input": {
+    "name": "試験 太郎",
+    "interview_at": "2026-11-18T03:07:00+00:00",
+    "interview_mode": "online",
+    "interview_url": "https://meet.google.com/abc-defg-hij"
+   },
+   "expected": "試験 太郎さん\n\nこの度はご応募いただきありがとうございます。\n面接の日時が決まりましたのでご連絡いたします。\n\n【面接日時】11月18日(水) 12:07\n【面接URL】https://meet.google.com/abc-defg-hij\n\nお時間になりましたら、上のリンクからご参加ください。\n\nご都合が悪くなった場合は、このままご返信ください。\nお会いできるのを楽しみにしております。"
+  },
+  {
+   "input": {
+    "name": "試験 太郎",
+    "interview_at": "2026-11-19T03:07:00+00:00",
+    "interview_mode": "online",
+    "interview_url": "https://meet.google.com/abc-defg-hij"
+   },
+   "expected": "試験 太郎さん\n\nこの度はご応募いただきありがとうございます。\n面接の日時が決まりましたのでご連絡いたします。\n\n【面接日時】11月19日(木) 12:07\n【面接URL】https://meet.google.com/abc-defg-hij\n\nお時間になりましたら、上のリンクからご参加ください。\n\nご都合が悪くなった場合は、このままご返信ください。\nお会いできるのを楽しみにしております。"
+  },
+  {
+   "input": {
+    "name": "試験 太郎",
+    "interview_at": "2026-11-20T03:07:00+00:00",
+    "interview_mode": "online",
+    "interview_url": "https://meet.google.com/abc-defg-hij"
+   },
+   "expected": "試験 太郎さん\n\nこの度はご応募いただきありがとうございます。\n面接の日時が決まりましたのでご連絡いたします。\n\n【面接日時】11月20日(金) 12:07\n【面接URL】https://meet.google.com/abc-defg-hij\n\nお時間になりましたら、上のリンクからご参加ください。\n\nご都合が悪くなった場合は、このままご返信ください。\nお会いできるのを楽しみにしております。"
+  },
+  {
+   "input": {
+    "name": "試験 太郎",
+    "interview_at": "2026-11-21T03:07:00+00:00",
+    "interview_mode": "online",
+    "interview_url": "https://meet.google.com/abc-defg-hij"
+   },
+   "expected": "試験 太郎さん\n\nこの度はご応募いただきありがとうございます。\n面接の日時が決まりましたのでご連絡いたします。\n\n【面接日時】11月21日(土) 12:07\n【面接URL】https://meet.google.com/abc-defg-hij\n\nお時間になりましたら、上のリンクからご参加ください。\n\nご都合が悪くなった場合は、このままご返信ください。\nお会いできるのを楽しみにしております。"
+  }
+ ]
+}
