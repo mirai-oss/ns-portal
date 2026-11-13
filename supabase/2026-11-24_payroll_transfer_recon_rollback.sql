@@ -17,13 +17,17 @@ drop function if exists public.bank_bulk_transfer_ingest(jsonb, jsonb);
 drop function if exists public.payroll_transfer_recon_run(uuid);
 drop function if exists public.payroll_transfer_mf_total_record(uuid, text, text, integer, date, text, numeric, text, boolean);
 drop function if exists public.payroll_transfer_batch_discard(uuid, text);
-drop function if exists public.payroll_transfer_batch_freeze(text, uuid, date, boolean, boolean);
+drop function if exists public.payroll_transfer_batch_freeze_custom(text, uuid, text, date, jsonb, text, text);
+drop function if exists public.payroll_transfer_batch_freeze(text, uuid, date, boolean);
+drop function if exists public.payroll_transfer_batch_freeze(text, uuid, date, boolean, boolean);   -- 最初の版の形（念のため）
 -- 内部用
 drop function if exists public.payroll_recon_eval(uuid, text);
 drop function if exists public.payroll_recon_complete(uuid, text, text, text);
 drop function if exists public.payroll_recon_set_line(uuid, text, text, text);
 drop function if exists public.payroll_recon_set_batch(uuid, text, text, text, jsonb);
 drop function if exists public.payroll_recon_log(uuid, uuid, text, text, text, text, text, jsonb);
+drop function if exists public.payroll_recon_lines_match(uuid, uuid);
+drop function if exists public.payroll_transfer_kind_label(text);
 drop function if exists public.payroll_transfer_status_label(text, text);
 drop function if exists public.payroll_recon_acct_key(text, text, text, text);
 drop function if exists public.payroll_recon_kana_norm(text);

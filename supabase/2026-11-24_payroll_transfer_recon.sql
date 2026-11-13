@@ -5,6 +5,10 @@
 --   第 2 段階: PayPay 銀行の総合振込（1 件＋明細 N 件）を取り込み、振込バッチの予定者と 1 対 1 で結ぶ → 「PayPay 銀行明細照合済み」
 --              銀行の結果が全件成功で、1 対 1 に合ったときだけ「振込完了」。
 --              自動で「振込完了」にするのは、スイッチ app_settings.payroll_transfer_recon の auto_complete が true のときだけ（既定 false）。
+--   振込バッチは、同じ月 × 法人に複数持てる（batch_kind: regular＝通常／additional＝追加／retry＝再振込／adjustment＝差額。batch_seq＝月 × 法人の中の連番）。
+--     通常のバッチは月 × 法人に 1 つまで（取り下げたものは行ごと消えるので数えない）。追加・再振込・差額は、いくつでも。
+--     通常のバッチだけ、給与データから対象者と金額を自動で決める。追加・再振込・差額は、対象者と金額を呼ぶ側が渡す。
+--     1 対 1 の照合・「同じ銀行取引は 1 つのバッチだけ」・MF の出金の一意は、バッチ単位。
 --   この SQL が足すもの: 新しい表 8 つ・新しい関数・スイッチの行 1 つ（app_settings に key を 1 つ足すだけ）。
 --   この SQL が変えないもの: 既存の表の定義・既存の関数・既存の行（給与データ・口座・月ごとの支払方法・支払記録 paid_at には触れない）。
 --   使う既存のもの（読むだけ）: sf_payroll_sync.net_pay／smaregi_contracts／payroll_month_payments（method・status・account）／payroll_month_method()／
@@ -28,12 +32,15 @@ on conflict (key) do nothing;
 
 -- ===== 1. 表 =====
 
--- 1-1. 給与の振込バッチ（給与の対象月 × 法人 × 回。seq 1＝本体・2 以降＝除外していた人の追加分）
+-- 1-1. 給与の振込バッチ（給与の対象月 × 法人 × 連番。種類: regular＝通常／additional＝追加／retry＝再振込／adjustment＝差額）
 create table if not exists public.payroll_transfer_batches (
   id               uuid primary key default gen_random_uuid(),
   year_month       text not null check (year_month ~ '^[0-9]{4}-(0[1-9]|1[0-2])$'),   -- 給与の対象月（支払月ではない）
   corporation_id   uuid not null,
-  seq              integer not null default 1 check (seq >= 1),
+  batch_seq        integer not null default 1 check (batch_seq >= 1),                 -- 月 × 法人の中の連番
+  batch_kind       text not null default 'regular'
+                   check (batch_kind in ('regular', 'additional', 'retry', 'adjustment')),
+  kind_reason      text,                                                               -- 追加・再振込・差額の理由（通常以外は必須）
   scheduled_date   date not null,                                                      -- 振込指定日
   expected_count   integer not null check (expected_count > 0),
   expected_total   numeric not null check (expected_total > 0),
@@ -50,9 +57,11 @@ create table if not exists public.payroll_transfer_batches (
   frozen_by        uuid,
   frozen_at        timestamptz not null default now(),
   updated_at       timestamptz not null default now(),
-  unique (year_month, corporation_id, seq)
+  unique (year_month, corporation_id, batch_seq),
+  check (batch_kind = 'regular' or (kind_reason is not null and btrim(kind_reason) <> ''))
 );
-comment on table public.payroll_transfer_batches is '給与の振込バッチ（対象月×法人×回）。固めたあと、対象月・法人・人数・合計・指紋は変えられない';
+create unique index if not exists payroll_transfer_batches_regular_key on public.payroll_transfer_batches(year_month, corporation_id) where batch_kind = 'regular';   -- 通常のバッチは、月 × 法人に 1 つまで
+comment on table public.payroll_transfer_batches is '給与の振込バッチ（対象月×法人×連番。通常・追加・再振込・差額）。固めたあと、対象月・法人・種類・人数・合計・指紋は変えられない';
 
 -- 1-2. 銀行の総合振込 1 件（取り込み）。結び先のバッチは batch_id の 1 列だけ＝同じ銀行取引を 2 つのバッチに結べない
 create table if not exists public.bank_bulk_transfers (
@@ -117,11 +126,15 @@ create table if not exists public.payroll_transfer_batch_lines (
   bank_detail_id          uuid references public.bank_bulk_transfer_details(id),
   manual_confirmation_id  bigint,
   completed_at            timestamptz,
+  retry_of_line_id        uuid references public.payroll_transfer_batch_lines(id),     -- 再振込のとき、元の行（失敗・組戻しになった行）。元の行は消さない・変えない
+  account_source          text not null default 'month' check (account_source in ('month', 'current')),   -- 振込先の出どころ: month＝給料確定のときの控え／current＝固めた時点の登録口座
+  line_note               text,
   created_at              timestamptz not null default now(),
   updated_at              timestamptz not null default now(),
-  unique (batch_id, user_id),
-  unique (year_month, corporation_id, user_id)                                         -- 同じ月×法人で、同じ人を 2 つのバッチに入れない
+  unique (batch_id, user_id)                                                           -- 同じバッチの中に、同じ人は 1 行（別のバッチ＝再振込・差額には入れる）
 );
+create unique index if not exists payroll_transfer_batch_lines_retry_key on public.payroll_transfer_batch_lines(retry_of_line_id) where retry_of_line_id is not null;   -- 1 つの元の行に、再振込の行は 1 つだけ
+create index if not exists payroll_transfer_batch_lines_user_idx on public.payroll_transfer_batch_lines(year_month, corporation_id, user_id);
 create unique index if not exists payroll_transfer_batch_lines_detail_key on public.payroll_transfer_batch_lines(bank_detail_id) where bank_detail_id is not null;   -- 明細 1 件は 1 人にだけ
 create index if not exists payroll_transfer_batch_lines_batch_idx on public.payroll_transfer_batch_lines(batch_id, acct_key);
 
@@ -232,16 +245,18 @@ begin
   end if;
   if tg_table_name = 'payroll_transfer_batches' and tg_op = 'UPDATE' then
     if new.id is distinct from old.id or new.year_month is distinct from old.year_month or new.corporation_id is distinct from old.corporation_id
-       or new.seq is distinct from old.seq or new.expected_count is distinct from old.expected_count or new.expected_total is distinct from old.expected_total
+       or new.batch_seq is distinct from old.batch_seq or new.batch_kind is distinct from old.batch_kind or new.kind_reason is distinct from old.kind_reason
+       or new.expected_count is distinct from old.expected_count or new.expected_total is distinct from old.expected_total
        or new.lines_hash is distinct from old.lines_hash or new.frozen_at is distinct from old.frozen_at or new.frozen_by is distinct from old.frozen_by then
-      raise exception '固めた振込バッチの内容（対象月・法人・人数・合計）は変えられません';
+      raise exception '固めた振込バッチの内容（対象月・法人・種類・人数・合計）は変えられません';
     end if;
   end if;
   if tg_table_name = 'payroll_transfer_batch_lines' and tg_op = 'UPDATE' then
     if new.id is distinct from old.id or new.batch_id is distinct from old.batch_id or new.year_month is distinct from old.year_month
        or new.corporation_id is distinct from old.corporation_id or new.user_id is distinct from old.user_id or new.amount is distinct from old.amount
-       or new.account is distinct from old.account or new.acct_key is distinct from old.acct_key or new.kana_norm is distinct from old.kana_norm then
-      raise exception '固めた予定者の行（金額・振込先の控え）は変えられません';
+       or new.account is distinct from old.account or new.acct_key is distinct from old.acct_key or new.kana_norm is distinct from old.kana_norm
+       or new.retry_of_line_id is distinct from old.retry_of_line_id or new.account_source is distinct from old.account_source then
+      raise exception '固めた予定者の行（金額・振込先の控え・再振込の元の行）は変えられません';
     end if;
     if old.bank_detail_id is not null and new.bank_detail_id is distinct from old.bank_detail_id then
       raise exception '銀行の明細と結んだ行は、別の明細へ付け替えられません';
@@ -361,6 +376,29 @@ $$;
 revoke all on function public.payroll_transfer_status_label(text, text) from public, anon;
 grant execute on function public.payroll_transfer_status_label(text, text) to authenticated, service_role;
 
+-- バッチの種類の表示名
+create or replace function public.payroll_transfer_kind_label(p_kind text)
+returns text language sql immutable as $$
+  select case p_kind when 'regular' then '通常' when 'additional' then '追加' when 'retry' then '再振込' when 'adjustment' then '差額' else p_kind end
+$$;
+revoke all on function public.payroll_transfer_kind_label(text) from public, anon;
+grant execute on function public.payroll_transfer_kind_label(text) to authenticated, service_role;
+
+-- バッチの予定者の行が、銀行取引の明細とぴったり合うか（人数が同じ・全員に、口座＋カナ＋金額の一致する明細がちょうど 1 件・同じ口座の人がいない）。
+--   同じ日・同じ件数・同じ合計のバッチが複数あるとき、どのバッチの取引かを見分けるのに使う（内部用）
+create or replace function public.payroll_recon_lines_match(p_batch_id uuid, p_transfer_id uuid)
+returns boolean language sql stable security definer set search_path to 'public' as $$
+  select (select count(*) from payroll_transfer_batch_lines l where l.batch_id = p_batch_id)
+       = (select count(*) from bank_bulk_transfer_details d where d.transfer_id = p_transfer_id)
+     and exists (select 1 from payroll_transfer_batch_lines l where l.batch_id = p_batch_id)
+     and not exists (select 1 from payroll_transfer_batch_lines l
+                      where l.batch_id = p_batch_id
+                        and (select count(*) from bank_bulk_transfer_details d
+                              where d.transfer_id = p_transfer_id and d.acct_key = l.acct_key and d.kana_norm = l.kana_norm and d.amount = l.amount) <> 1)
+     and not exists (select 1 from payroll_transfer_batch_lines l where l.batch_id = p_batch_id group by l.acct_key having count(*) > 1)
+$$;
+revoke all on function public.payroll_recon_lines_match(uuid, uuid) from public, anon, authenticated;
+
 -- 履歴に 1 行足す（内部用）
 create or replace function public.payroll_recon_log(p_batch_id uuid, p_line_id uuid, p_event text, p_from text, p_to text, p_actor_kind text, p_reason text, p_detail jsonb)
 returns void language sql security definer set search_path to 'public' as $$
@@ -414,11 +452,13 @@ end $$;
 revoke all on function public.payroll_recon_complete(uuid, text, text, text) from public, anon, authenticated;
 
 -- ===== 5. 振込バッチを固める =====
+--   5-1. 通常のバッチ（月 × 法人に 1 つ。対象者と金額は、給与データから自動で決める）
 --   予定者＝その法人の契約の給与データ（差引支給額の合計が 1 円以上）のうち、その月の支払方法が振込で、対象外・保留でない人。
+--          すでにその月 × 法人のどれかのバッチ（追加など）に入っている人は入れない（二重に振り込まないため）。
 --   振込先＝給料確定のときの控え（payroll_month_payments の fixed・bank_transfer の account）。控えが無い人・口座が読めない人がいるときは、固めずに知らせる
---   （p_skip_unready = true で、その人を外して固める。外した人は、あとで p_extra = true の追加分に入れられる）。
---   同じ月 × 法人で 2 回呼んでも、2 つ目は作らない（最初のバッチを返す）。追加分は p_extra = true のときだけ（まだどのバッチにも入っていない人だけ）。
-create or replace function public.payroll_transfer_batch_freeze(p_year_month text, p_corp_id uuid, p_scheduled_date date default null, p_extra boolean default false, p_skip_unready boolean default false)
+--   （p_skip_unready = true で、その人を外して固める。外した人は、あとで「追加」のバッチに入れられる）。
+--   同じ月 × 法人で 2 回呼んでも、通常のバッチの 2 つ目は作らない（最初のバッチを返す）。
+create or replace function public.payroll_transfer_batch_freeze(p_year_month text, p_corp_id uuid, p_scheduled_date date default null, p_skip_unready boolean default false)
 returns jsonb language plpgsql security definer set search_path to 'public' as $$
 declare
   v_date date; v_seq integer; v_batch uuid; v_existing uuid; v_cand jsonb; v_ready jsonb;
@@ -430,11 +470,10 @@ begin
   perform pg_advisory_xact_lock(hashtext('payroll_transfer_batch:' || p_year_month || ':' || p_corp_id::text));   -- 同時に押されても 1 つだけ
 
   select b.id into v_existing from payroll_transfer_batches b
-   where b.year_month = p_year_month and b.corporation_id = p_corp_id order by b.seq limit 1;
-  if v_existing is not null and not coalesce(p_extra, false) then
+   where b.year_month = p_year_month and b.corporation_id = p_corp_id and b.batch_kind = 'regular';
+  if v_existing is not null then
     return jsonb_build_object('ok', true, 'already', true, 'batch_id', v_existing);
   end if;
-  if v_existing is null and coalesce(p_extra, false) then raise exception 'まだ本体のバッチがありません（追加分は、本体を固めたあとに作ります）'; end if;
 
   v_date := coalesce(p_scheduled_date, (select t.scheduled_date from payroll_transfer_schedule t where t.year_month = p_year_month));
   if v_date is null then raise exception '振込指定日が決まっていません'; end if;
@@ -482,27 +521,154 @@ begin
     return jsonb_build_object('ok', false, 'reason', 'no_targets', 'unready_count', v_unready, 'message', '固める対象の人がいません');
   end if;
 
-  select coalesce(max(b.seq), 0) + 1 into v_seq from payroll_transfer_batches b where b.year_month = p_year_month and b.corporation_id = p_corp_id;
+  select coalesce(max(b.batch_seq), 0) + 1 into v_seq from payroll_transfer_batches b where b.year_month = p_year_month and b.corporation_id = p_corp_id;
 
   perform set_config('payroll.recon_ok', '1', true);
-  insert into payroll_transfer_batches(year_month, corporation_id, seq, scheduled_date, expected_count, expected_total, lines_hash, frozen_by)
-  values (p_year_month, p_corp_id, v_seq, v_date, v_count, v_total, v_hash, auth.uid())
+  insert into payroll_transfer_batches(year_month, corporation_id, batch_seq, batch_kind, scheduled_date, expected_count, expected_total, lines_hash, frozen_by)
+  values (p_year_month, p_corp_id, v_seq, 'regular', v_date, v_count, v_total, v_hash, auth.uid())
   returning id into v_batch;
-  insert into payroll_transfer_batch_lines(batch_id, year_month, corporation_id, user_id, amount, account, acct_key, kana_norm)
+  insert into payroll_transfer_batch_lines(batch_id, year_month, corporation_id, user_id, amount, account, acct_key, kana_norm, account_source)
   select v_batch, p_year_month, p_corp_id, (e.value ->> 'user_id')::uuid, (e.value ->> 'amount')::numeric, e.value -> 'account',
          public.payroll_recon_acct_key(e.value -> 'account' ->> 'bank_code', e.value -> 'account' ->> 'branch_code',
                                        e.value -> 'account' ->> 'account_type', e.value -> 'account' ->> 'account_number'),
-         public.payroll_recon_kana_norm(e.value -> 'account' ->> 'account_holder_kana')
+         public.payroll_recon_kana_norm(e.value -> 'account' ->> 'account_holder_kana'), 'month'
     from jsonb_array_elements(v_ready) e;
   perform public.payroll_recon_log(v_batch, null, 'frozen', null, 'planned', 'human', null,
-                                   jsonb_build_object('seq', v_seq, 'count', v_count, 'scheduled_date', v_date, 'skipped_unready', v_unready));
+                                   jsonb_build_object('batch_seq', v_seq, 'batch_kind', 'regular', 'count', v_count, 'scheduled_date', v_date, 'skipped_unready', v_unready));
   perform public.payroll_recon_eval(v_batch, 'auto_bank');   -- 銀行のデータが先に取り込まれていた場合に備えて、すぐ照合する（無ければ何も変わらない）
   perform set_config('payroll.recon_ok', '', true);
 
-  return jsonb_build_object('ok', true, 'already', false, 'batch_id', v_batch, 'seq', v_seq, 'count', v_count, 'skipped_unready', v_unready);
+  return jsonb_build_object('ok', true, 'already', false, 'batch_id', v_batch, 'batch_seq', v_seq, 'batch_kind', 'regular', 'count', v_count, 'skipped_unready', v_unready);
 end $$;
-revoke all on function public.payroll_transfer_batch_freeze(text, uuid, date, boolean, boolean) from public, anon;
-grant execute on function public.payroll_transfer_batch_freeze(text, uuid, date, boolean, boolean) to authenticated;
+revoke all on function public.payroll_transfer_batch_freeze(text, uuid, date, boolean) from public, anon;
+grant execute on function public.payroll_transfer_batch_freeze(text, uuid, date, boolean) to authenticated;
+
+--   5-2. 追加・再振込・差額のバッチ（対象者と金額を、呼ぶ側が渡して固める。月 × 法人に、いくつでも作れる）
+--   p_kind : additional＝追加（その月 × 法人のどのバッチにも、まだ入っていない人だけ）
+--            retry＝再振込（前のバッチで失敗・組戻しになった行にだけ。元の行の id を持つ。1 つの元の行に 1 つだけ）
+--            adjustment＝差額（すでに別のバッチに入っている人でもよい）
+--   p_lines: [ { "user_id": "…", "amount": 12345, "retry_of_line_id": "…"（再振込のときだけ必須）, "note": "…"（任意） }, … ]
+--            同じバッチの中に、同じ人は 1 行。金額は 1 円以上の整数。
+--   p_account_source: month＝給料確定のときの控え（追加・差額の既定）／current＝いまの登録口座（再振込の既定。口座を直してから再振込する場合のため）
+--   振込先が用意できない人が 1 人でもいれば、固めずに知らせる。理由（p_reason）は必須。固めたあと、金額・口座は変えられない（通常のバッチと同じ）。
+--   元の行（失敗・組戻し）とその履歴は、消さない・変えない（「再振込を作った」という履歴を足すだけ）。
+create or replace function public.payroll_transfer_batch_freeze_custom(p_year_month text, p_corp_id uuid, p_kind text, p_scheduled_date date, p_lines jsonb, p_reason text,
+                                                                       p_account_source text default null)
+returns jsonb language plpgsql security definer set search_path to 'public' as $$
+declare
+  v_uid uuid := auth.uid(); v_src text; v_seq integer; v_batch uuid; v_cand jsonb; v_ready jsonb;
+  v_n integer := 0; v_distinct integer := 0; v_bad integer := 0; v_count integer := 0; v_total numeric := 0; v_hash text; v_unready integer := 0; v_rl record;
+begin
+  if v_uid is null or not public.payroll_pay_can() then raise exception '権限がありません'; end if;
+  if p_year_month is null or p_year_month !~ '^[0-9]{4}-(0[1-9]|1[0-2])$' then raise exception '月（YYYY-MM）が不正です'; end if;
+  if p_corp_id is null then raise exception '法人が指定されていません'; end if;
+  if p_kind is null or p_kind not in ('additional', 'retry', 'adjustment') then
+    raise exception '種類が不正です（additional＝追加／retry＝再振込／adjustment＝差額。通常のバッチは payroll_transfer_batch_freeze で作ります）';
+  end if;
+  if p_scheduled_date is null then raise exception '振込指定日が必要です'; end if;
+  if coalesce(btrim(p_reason), '') = '' then raise exception '理由を入力してください'; end if;
+  if p_lines is null or jsonb_typeof(p_lines) <> 'array' or jsonb_array_length(p_lines) = 0 then raise exception '対象者と金額がありません'; end if;
+  v_src := coalesce(nullif(btrim(p_account_source), ''), case when p_kind = 'retry' then 'current' else 'month' end);
+  if v_src not in ('month', 'current') then raise exception '振込先の出どころが不正です（month＝給料確定のときの控え／current＝いまの登録口座）'; end if;
+  perform pg_advisory_xact_lock(hashtext('payroll_transfer_batch:' || p_year_month || ':' || p_corp_id::text));
+
+  -- 形の確かめ: 人の ID があること・同じ人が 2 回いないこと・金額が 1 円以上の整数であること
+  select count(*), count(distinct e.value ->> 'user_id'),
+         count(*) filter (where (e.value ->> 'user_id') is null
+                             or not (case when (e.value ->> 'amount') ~ '^[0-9]+$' then (e.value ->> 'amount')::numeric > 0 else false end))
+    into v_n, v_distinct, v_bad
+    from jsonb_array_elements(p_lines) e;
+  if v_bad > 0 then raise exception '対象者の ID が無い行、または金額が 1 円以上の整数でない行があります'; end if;
+  if v_distinct <> v_n then raise exception '同じ人が 2 回入っています（同じバッチの中に、同じ人は 1 行です）'; end if;
+
+  if p_kind in ('additional', 'adjustment') then
+    if exists (select 1 from jsonb_array_elements(p_lines) e
+                where not exists (select 1 from sf_payroll_sync sp join smaregi_contracts sc on sc.contract_id = sp.contract_id
+                                   where sp.user_id = (e.value ->> 'user_id')::uuid and sp.year_month = p_year_month and sc.corporation_id = p_corp_id)) then
+      raise exception 'その月・その法人の給与データが無い人が入っています';
+    end if;
+  end if;
+  if p_kind = 'additional' then
+    if exists (select 1 from jsonb_array_elements(p_lines) e
+                where exists (select 1 from payroll_transfer_batch_lines l0
+                               where l0.year_month = p_year_month and l0.corporation_id = p_corp_id and l0.user_id = (e.value ->> 'user_id')::uuid)) then
+      raise exception 'すでにこの月の振込バッチに入っている人がいます（追加ではなく、差額・再振込を使ってください）';
+    end if;
+  end if;
+  if p_kind = 'retry' then
+    if exists (select 1 from jsonb_array_elements(p_lines) e
+                where (e.value ->> 'retry_of_line_id') is null
+                   or not exists (select 1 from payroll_transfer_batch_lines o
+                                   where o.id = (e.value ->> 'retry_of_line_id')::uuid and o.user_id = (e.value ->> 'user_id')::uuid
+                                     and o.year_month = p_year_month and o.corporation_id = p_corp_id and o.line_status in ('failed', 'returned'))) then
+      raise exception '再振込は、同じ月・同じ法人・同じ人の「失敗・組戻しになった行」にだけ作れます（元の行の id が必要です）';
+    end if;
+    if exists (select 1 from jsonb_array_elements(p_lines) e
+                where exists (select 1 from payroll_transfer_batch_lines r where r.retry_of_line_id = (e.value ->> 'retry_of_line_id')::uuid)) then
+      raise exception 'その行には、すでに再振込のバッチがあります（1 つの元の行に、再振込は 1 つだけ。再振込も失敗したときは、その再振込の行を元にします）';
+    end if;
+  end if;
+
+  -- 振込先の控え（呼ぶ側からは口座を渡さない。DB にある控え・登録口座だけを使う）
+  select coalesce(jsonb_agg(jsonb_build_object(
+           'user_id', e.value ->> 'user_id', 'amount', (e.value ->> 'amount')::numeric,
+           'retry_of_line_id', case when p_kind = 'retry' then e.value ->> 'retry_of_line_id' end, 'note', e.value ->> 'note',
+           'account', case when v_src = 'month'
+                           then (select m.account from payroll_month_payments m
+                                  where m.user_id = (e.value ->> 'user_id')::uuid and m.year_month = p_year_month and m.status = 'fixed' and m.method = 'bank_transfer')
+                           else public.payroll_account_snapshot((e.value ->> 'user_id')::uuid) end)
+           order by e.value ->> 'user_id'), '[]'::jsonb)
+    into v_cand
+    from jsonb_array_elements(p_lines) e;
+  select coalesce(jsonb_agg(e.value order by e.value ->> 'user_id'), '[]'::jsonb) into v_ready
+    from jsonb_array_elements(v_cand) e
+   where jsonb_typeof(e.value -> 'account') = 'object'
+     and public.payroll_recon_acct_key(e.value -> 'account' ->> 'bank_code', e.value -> 'account' ->> 'branch_code',
+                                       e.value -> 'account' ->> 'account_type', e.value -> 'account' ->> 'account_number') is not null
+     and public.payroll_recon_kana_norm(e.value -> 'account' ->> 'account_holder_kana') <> '';
+  v_unready := jsonb_array_length(v_cand) - jsonb_array_length(v_ready);
+  if v_unready > 0 then
+    return jsonb_build_object('ok', false, 'reason', 'unready', 'unready_count', v_unready, 'account_source', v_src,
+                              'message', '振込先が用意できない人がいます（給料確定のときの控え、または登録口座を確かめてください）');
+  end if;
+
+  select count(*), coalesce(sum((e.value ->> 'amount')::numeric), 0),
+         encode(sha256(convert_to(coalesce(string_agg(concat_ws('|', e.value ->> 'user_id', e.value ->> 'amount',
+                  public.payroll_recon_acct_key(e.value -> 'account' ->> 'bank_code', e.value -> 'account' ->> 'branch_code',
+                                                e.value -> 'account' ->> 'account_type', e.value -> 'account' ->> 'account_number'),
+                  public.payroll_recon_kana_norm(e.value -> 'account' ->> 'account_holder_kana'),
+                  coalesce(e.value ->> 'retry_of_line_id', '')), E'\n' order by e.value ->> 'user_id'), ''), 'UTF8')), 'hex')
+    into v_count, v_total, v_hash
+    from jsonb_array_elements(v_ready) e;
+
+  select coalesce(max(b.batch_seq), 0) + 1 into v_seq from payroll_transfer_batches b where b.year_month = p_year_month and b.corporation_id = p_corp_id;
+
+  perform set_config('payroll.recon_ok', '1', true);
+  insert into payroll_transfer_batches(year_month, corporation_id, batch_seq, batch_kind, kind_reason, scheduled_date, expected_count, expected_total, lines_hash, frozen_by)
+  values (p_year_month, p_corp_id, v_seq, p_kind, btrim(p_reason), p_scheduled_date, v_count, v_total, v_hash, v_uid)
+  returning id into v_batch;
+  insert into payroll_transfer_batch_lines(batch_id, year_month, corporation_id, user_id, amount, account, acct_key, kana_norm, retry_of_line_id, account_source, line_note)
+  select v_batch, p_year_month, p_corp_id, (e.value ->> 'user_id')::uuid, (e.value ->> 'amount')::numeric, e.value -> 'account',
+         public.payroll_recon_acct_key(e.value -> 'account' ->> 'bank_code', e.value -> 'account' ->> 'branch_code',
+                                       e.value -> 'account' ->> 'account_type', e.value -> 'account' ->> 'account_number'),
+         public.payroll_recon_kana_norm(e.value -> 'account' ->> 'account_holder_kana'),
+         (e.value ->> 'retry_of_line_id')::uuid, v_src, nullif(btrim(e.value ->> 'note'), '')
+    from jsonb_array_elements(v_ready) e;
+  -- 再振込: 元の行の側にも「再振込を作った」と履歴を足す（元の行そのものは変えない）
+  for v_rl in
+    select o.id as line_id, o.batch_id from payroll_transfer_batch_lines n join payroll_transfer_batch_lines o on o.id = n.retry_of_line_id where n.batch_id = v_batch
+  loop
+    perform public.payroll_recon_log(v_rl.batch_id, v_rl.line_id, 'retry_created', null, null, 'human', btrim(p_reason), jsonb_build_object('retry_batch_id', v_batch, 'retry_batch_seq', v_seq));
+  end loop;
+  perform public.payroll_recon_log(v_batch, null, 'frozen', null, 'planned', 'human', btrim(p_reason),
+                                   jsonb_build_object('batch_seq', v_seq, 'batch_kind', p_kind, 'count', v_count, 'scheduled_date', p_scheduled_date, 'account_source', v_src));
+  perform public.payroll_recon_eval(v_batch, 'auto_bank');
+  perform set_config('payroll.recon_ok', '', true);
+
+  return jsonb_build_object('ok', true, 'batch_id', v_batch, 'batch_seq', v_seq, 'batch_kind', p_kind, 'count', v_count, 'account_source', v_src);
+end $$;
+revoke all on function public.payroll_transfer_batch_freeze_custom(text, uuid, text, date, jsonb, text, text) from public, anon;
+grant execute on function public.payroll_transfer_batch_freeze_custom(text, uuid, text, date, jsonb, text, text) to authenticated;
 
 -- 固めまちがえたバッチを取り下げる（まだ何とも照合していない「振込予定」のときだけ。理由が必須・履歴に残る）
 create or replace function public.payroll_transfer_batch_discard(p_batch_id uuid, p_reason text)
@@ -516,14 +682,15 @@ begin
   if v_b.status <> 'planned'
      or exists (select 1 from bank_bulk_transfers t where t.batch_id = v_b.id)
      or exists (select 1 from payroll_mf_total_matches m where m.batch_id = v_b.id)
-     or exists (select 1 from payroll_transfer_batch_lines l where l.batch_id = v_b.id and (l.bank_detail_id is not null or l.manual_confirmation_id is not null)) then
-    raise exception '照合や確認の記録があるバッチは、取り下げられません';
+     or exists (select 1 from payroll_transfer_batch_lines l where l.batch_id = v_b.id and (l.bank_detail_id is not null or l.manual_confirmation_id is not null))
+     or exists (select 1 from payroll_transfer_batch_lines l join payroll_transfer_batch_lines r on r.retry_of_line_id = l.id where l.batch_id = v_b.id) then
+    raise exception '照合・確認・再振込の記録があるバッチは、取り下げられません';
   end if;
   perform set_config('payroll.recon_ok', '1', true);
   delete from payroll_transfer_batch_lines l where l.batch_id = v_b.id;
   delete from payroll_transfer_batches b where b.id = v_b.id;
   perform public.payroll_recon_log(v_b.id, null, 'discarded', 'planned', null, 'human', p_reason,
-                                   jsonb_build_object('year_month', v_b.year_month, 'corporation_id', v_b.corporation_id, 'seq', v_b.seq, 'count', v_b.expected_count));
+                                   jsonb_build_object('year_month', v_b.year_month, 'corporation_id', v_b.corporation_id, 'batch_seq', v_b.batch_seq, 'batch_kind', v_b.batch_kind, 'count', v_b.expected_count));
   perform set_config('payroll.recon_ok', '', true);
   return jsonb_build_object('ok', true);
 end $$;
@@ -601,7 +768,10 @@ grant execute on function public.payroll_transfer_mf_total_record(uuid, text, te
 
 -- ===== 7. 第 2 段階: 1 対 1 の照合（内部用。呼ぶ側が payroll.recon_ok を立てておく） =====
 --   ① まだ銀行取引と結んでいないバッチ: 出金口座がその法人のもの・振込指定日が同じ・件数が同じ・合計が同じ・まだどのバッチにも結ばれていない取引が、
---      ちょうど 1 件のときだけ結ぶ。2 件以上・件数や合計が合わないものしか無い → 確認待ち。無い → 何も変えない。
+--      ちょうど 1 件のときだけ結ぶ。2 件以上あるときは、明細がこのバッチの予定者とぴったり合う取引が 1 件だけなら、それを結ぶ。それでも決まらない → 確認待ち。
+--      件数や合計が合わないものしか無い → 確認待ち。無い → 何も変えない。
+--      同じ日・同じ件数・同じ合計の別のバッチ（追加・再振込・差額など）にぴったり合う取引は、このバッチの候補にしない（取りちがえを防ぐ）。
+--      1 つの銀行取引は、1 つのバッチにだけ結べる（batch_id の 1 列）。
 --   ② 予定者の行と明細: 金融機関・支店・種別・口座番号（acct_key）＋受取人カナ＋金額が、すべて一致する明細が 1 件だけのときに結ぶ。
 --      0 件・2 件以上・同じ口座の人がバッチに 2 人 → 結ばずに確認待ち。氏名だけ・金額だけでは結ばない。
 --   ③ 全員が結べて（または手動確認済みで）、銀行の結果が全件「成功」・取引の状態が「処理済み」:
@@ -611,7 +781,7 @@ create or replace function public.payroll_recon_eval(p_batch_id uuid, p_actor_ki
 returns jsonb language plpgsql security definer set search_path to 'public' as $$
 declare
   v_b payroll_transfer_batches%rowtype; v_t bank_bulk_transfers%rowtype; v_allowed jsonb;
-  v_exact integer; v_near integer; v_l record; v_cnt integer; v_did uuid; v_reason text;
+  v_exact integer; v_full integer; v_near integer; v_exact_ids uuid[]; v_full_ids uuid[]; v_pick uuid; v_l record; v_cnt integer; v_did uuid; v_reason text;
   v_total integer; v_linked integer; v_manual integer; v_failed integer; v_notfinal integer; v_extra integer; v_counts jsonb;
 begin
   select * into v_b from payroll_transfer_batches b where b.id = p_batch_id for update;
@@ -626,16 +796,30 @@ begin
       end if;
       return jsonb_build_object('batch_id', v_b.id, 'linked', false, 'status', (select b.status from payroll_transfer_batches b where b.id = v_b.id));
     end if;
-    select count(*) filter (where t.total_count = v_b.expected_count and t.total_amount = v_b.expected_total), count(*)
-      into v_exact, v_near
-      from bank_bulk_transfers t
-     where t.batch_id is null and t.designated_date = v_b.scheduled_date and v_allowed ? t.source_account_key;
-    if v_exact = 1 then
+    select array_agg(c.id order by c.id) filter (where c.exact), array_agg(c.id order by c.id) filter (where c.exact and c.full_match), count(*)
+      into v_exact_ids, v_full_ids, v_near
+      from (
+        select t.id,
+               (t.total_count = v_b.expected_count and t.total_amount = v_b.expected_total) as exact,
+               public.payroll_recon_lines_match(v_b.id, t.id) as full_match
+          from bank_bulk_transfers t
+         where t.batch_id is null and t.designated_date = v_b.scheduled_date and v_allowed ? t.source_account_key
+           -- ほかのバッチ（まだ銀行取引と結んでいないもの）にぴったり合う取引は、このバッチの候補にしない。このバッチにもぴったり合うときは候補に残す
+           and (public.payroll_recon_lines_match(v_b.id, t.id)
+                or not exists (select 1 from payroll_transfer_batches b2
+                                where b2.id <> v_b.id and b2.scheduled_date = t.designated_date
+                                  and b2.expected_count = t.total_count and b2.expected_total = t.total_amount
+                                  and not exists (select 1 from bank_bulk_transfers t2 where t2.batch_id = b2.id)
+                                  and public.payroll_recon_lines_match(b2.id, t.id)))
+      ) c;
+    v_exact := coalesce(array_length(v_exact_ids, 1), 0);
+    v_full := coalesce(array_length(v_full_ids, 1), 0);
+    v_pick := case when v_exact = 1 then v_exact_ids[1] when v_exact > 1 and v_full = 1 then v_full_ids[1] else null end;
+    if v_pick is not null then
       update bank_bulk_transfers t set batch_id = v_b.id, linked_at = now()
-       where t.batch_id is null and t.designated_date = v_b.scheduled_date and v_allowed ? t.source_account_key
-         and t.total_count = v_b.expected_count and t.total_amount = v_b.expected_total
+       where t.id = v_pick and t.batch_id is null
       returning * into v_t;
-      perform public.payroll_recon_log(v_b.id, null, 'bank_linked', null, null, p_actor_kind, null, jsonb_build_object('bank_transfer_id', v_t.id));
+      perform public.payroll_recon_log(v_b.id, null, 'bank_linked', null, null, p_actor_kind, null, jsonb_build_object('bank_transfer_id', v_t.id, 'candidates', v_exact));
     elsif v_exact > 1 then
       perform public.payroll_recon_set_batch(v_b.id, 'pending_check', 'multiple_bank_candidates', p_actor_kind, jsonb_build_object('candidates', v_exact));
       return jsonb_build_object('batch_id', v_b.id, 'linked', false, 'status', 'pending_check');
@@ -855,7 +1039,7 @@ begin
     for v_batch in
       select b.id from payroll_transfer_batches b
        where b.scheduled_date = v_date and not exists (select 1 from bank_bulk_transfers t2 where t2.batch_id = b.id)
-       order by b.year_month, b.seq
+       order by public.payroll_recon_lines_match(b.id, v_t.id) desc, b.year_month, b.batch_seq   -- 明細がぴったり合うバッチを先に
     loop
       v_evals := v_evals || jsonb_build_array(public.payroll_recon_eval(v_batch, 'auto_bank'));
     end loop;
@@ -1030,7 +1214,8 @@ grant execute on function public.payroll_transfer_evidence_unavailable(text, uui
 
 -- ===== 11. 画面用・Slack 用（読むだけ） =====
 
--- 画面用の状況（本部・社長・マスターだけ）。口座番号・名義カナ・口座の鍵は返さない（金融機関名だけ）
+-- 画面用の状況（本部・社長・マスターだけ）。その月（× 法人）のバッチを、法人・連番の順に並べて返す（通常・追加・再振込・差額）。
+--   口座番号・名義カナ・口座の鍵は返さない（金融機関名だけ）
 create or replace function public.payroll_transfer_recon_status(p_year_month text, p_corp_id uuid default null)
 returns jsonb language plpgsql stable security definer set search_path to 'public' as $$
 begin
@@ -1039,12 +1224,14 @@ begin
     'ok', true, 'year_month', p_year_month,
     'switches', jsonb_build_object('mf_total_enabled', public.payroll_recon_flag('mf_total_enabled'), 'bank_read_enabled', public.payroll_recon_flag('bank_read_enabled'),
                                    'auto_complete', public.payroll_recon_flag('auto_complete'), 'slack_enabled', public.payroll_recon_flag('slack_enabled')),
+    'batch_count', (select count(*) from payroll_transfer_batches b where b.year_month = p_year_month and (p_corp_id is null or b.corporation_id = p_corp_id)),
     'batches', (
-      select coalesce(jsonb_agg(x.j order by x.corp_name, x.seq), '[]'::jsonb)
+      select coalesce(jsonb_agg(x.j order by x.corp_name, x.batch_seq), '[]'::jsonb)
         from (
-          select coalesce((select c.name from corporations c where c.id = b.corporation_id), '') as corp_name, b.seq,
+          select coalesce((select c.name from corporations c where c.id = b.corporation_id), '') as corp_name, b.batch_seq,
                  jsonb_build_object(
-                   'batch_id', b.id, 'corporation_id', b.corporation_id, 'corp_name', (select c.name from corporations c where c.id = b.corporation_id), 'seq', b.seq,
+                   'batch_id', b.id, 'corporation_id', b.corporation_id, 'corp_name', (select c.name from corporations c where c.id = b.corporation_id),
+                   'batch_seq', b.batch_seq, 'batch_kind', b.batch_kind, 'batch_kind_label', public.payroll_transfer_kind_label(b.batch_kind), 'kind_reason', b.kind_reason,
                    'scheduled_date', b.scheduled_date, 'status', b.status, 'status_label', public.payroll_transfer_status_label(b.status, b.completed_kind),
                    'status_reason', b.status_reason, 'expected_count', b.expected_count, 'expected_total', b.expected_total,
                    'mf_matched_at', b.mf_matched_at, 'bank_matched_at', b.bank_matched_at, 'completed_at', b.completed_at, 'completed_kind', b.completed_kind,
@@ -1056,9 +1243,15 @@ begin
                               from bank_bulk_transfers t where t.batch_id = b.id),
                    'line_counts', (select coalesce(jsonb_object_agg(s.line_status, s.n), '{}'::jsonb)
                                      from (select l.line_status, count(*) as n from payroll_transfer_batch_lines l where l.batch_id = b.id group by l.line_status) s),
-                   'lines', (select coalesce(jsonb_agg(jsonb_build_object('user_id', l.user_id, 'name', (select u.name from users u where u.id = l.user_id), 'line_status', l.line_status,
+                   'lines', (select coalesce(jsonb_agg(jsonb_build_object('line_id', l.id, 'user_id', l.user_id, 'name', (select u.name from users u where u.id = l.user_id), 'line_status', l.line_status,
                                                                          'reason', l.status_reason, 'amount', l.amount, 'bank_name', l.account ->> 'bank_name',
-                                                                         'linked', l.bank_detail_id is not null, 'manual', l.manual_confirmation_id is not null)
+                                                                         'linked', l.bank_detail_id is not null, 'manual', l.manual_confirmation_id is not null,
+                                                                         'retry_of_line_id', l.retry_of_line_id, 'note', l.line_note,
+                                                                         -- この行（失敗・組戻し）に対して作られた再振込（あれば、そのバッチの連番と行の状態）
+                                                                         'retried_by', (select jsonb_build_object('batch_id', rb.id, 'batch_seq', rb.batch_seq, 'line_status', r.line_status,
+                                                                                                                   'batch_status_label', public.payroll_transfer_status_label(rb.status, rb.completed_kind))
+                                                                                          from payroll_transfer_batch_lines r join payroll_transfer_batches rb on rb.id = r.batch_id
+                                                                                         where r.retry_of_line_id = l.id))
                                                       order by (l.line_status in ('completed', 'bank_matched')), l.user_id), '[]'::jsonb)
                                from payroll_transfer_batch_lines l where l.batch_id = b.id),
                    'manual', (select coalesce(jsonb_agg(jsonb_build_object('id', mc.id, 'user_id', mc.user_id, 'action', mc.action, 'basis', mc.basis, 'reason', mc.reason,
@@ -1068,7 +1261,7 @@ begin
                    'evidence', (select coalesce(jsonb_agg(jsonb_build_object('evidence_id', e.id, 'kind', e.kind, 'wanted_kind', e.wanted_kind, 'storage_bucket', e.storage_bucket,
                                                                             'storage_path', e.storage_path, 'size_bytes', e.size_bytes, 'fetched_at', e.fetched_at, 'source', e.source,
                                                                             'fetched_by', e.fetched_by, 'unavailable_reason', e.unavailable_reason) order by e.fetched_at), '[]'::jsonb)
-                                  from payroll_transfer_evidence e where e.year_month = b.year_month and e.corporation_id = b.corporation_id),
+                                  from payroll_transfer_evidence e where e.batch_id = b.id),
                    'events', (select coalesce(jsonb_agg(ev.j order by ev.id desc), '[]'::jsonb)
                                 from (select v.id, jsonb_build_object('id', v.id, 'event', v.event, 'from', v.from_status, 'to', v.to_status, 'actor_kind', v.actor_kind,
                                                                       'actor_name', (select u.name from users u where u.id = v.actor_id), 'reason', v.reason, 'line_id', v.line_id, 'at', v.created_at) as j
@@ -1076,7 +1269,13 @@ begin
                  ) as j
             from payroll_transfer_batches b
            where b.year_month = p_year_month and (p_corp_id is null or b.corporation_id = p_corp_id)
-        ) x)
+        ) x),
+    -- どのバッチにも結び付けていない証憑（その月 × 法人）
+    'evidence_other', (select coalesce(jsonb_agg(jsonb_build_object('evidence_id', e.id, 'corporation_id', e.corporation_id, 'kind', e.kind, 'wanted_kind', e.wanted_kind,
+                                                                   'storage_bucket', e.storage_bucket, 'storage_path', e.storage_path, 'size_bytes', e.size_bytes, 'fetched_at', e.fetched_at,
+                                                                   'source', e.source, 'fetched_by', e.fetched_by, 'unavailable_reason', e.unavailable_reason) order by e.fetched_at), '[]'::jsonb)
+                         from payroll_transfer_evidence e
+                        where e.year_month = p_year_month and (p_corp_id is null or e.corporation_id = p_corp_id) and e.batch_id is null)
   );
 end $$;
 revoke all on function public.payroll_transfer_recon_status(text, uuid) from public, anon;
@@ -1096,7 +1295,9 @@ begin
     'channel_key', public.payroll_recon_setting() ->> 'slack_channel_key',
     'year_month', v_b.year_month,
     'corp_name', (select c.name from corporations c where c.id = v_b.corporation_id),
-    'seq', v_b.seq,
+    'batch_seq', v_b.batch_seq,
+    'batch_kind', v_b.batch_kind,
+    'batch_kind_label', public.payroll_transfer_kind_label(v_b.batch_kind),
     'status', v_b.status,
     'status_label', public.payroll_transfer_status_label(v_b.status, v_b.completed_kind),
     'status_reason', v_b.status_reason,
