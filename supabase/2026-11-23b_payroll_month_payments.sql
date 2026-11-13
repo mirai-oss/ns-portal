@@ -181,10 +181,9 @@ begin
     values (p_user, p_year_month, 'month_set', jsonb_build_object('method', v_old), jsonb_build_object('method', p_method, 'status', 'planned'), nullif(left(btrim(coalesce(p_reason, '')), 500), ''), auth.uid());
   end if;
 
-  -- これからの月の初期値（口座の列は触らない）
+  -- これからの月の初期値（口座の列は触らない）。口座の「申請 → 承認」の関所（bank_approval_required）が有効なときは、関所がこの書き込みを止める＝承認のルールを迂回しない
+  --   （そのときは p_set_default=false で「その月だけ」を変えるか、申請 → 承認の流れを使う）
   if coalesce(p_set_default, true) then
-  -- 口座の「申請 → 承認」の関所（employee_change_pay_guard）が有効でも、この関数（権限と履歴つき）からの書き込みは通す
-    perform set_config('employee_change.via_approval', 'payroll_payment_change', true);
     if b.user_id is null then
       insert into payroll_bank_accounts(user_id, payment_method, account_type, updated_by, updated_at) values (p_user, p_method, '1', auth.uid(), now());
       v_default_changed := true;
@@ -196,7 +195,6 @@ begin
       insert into payroll_month_payment_history(user_id, year_month, kind, before, after, reason, changed_by)
       values (p_user, p_year_month, 'default_change', jsonb_build_object('method', b.payment_method), jsonb_build_object('method', p_method), nullif(left(btrim(coalesce(p_reason, '')), 500), ''), auth.uid());
     end if;
-    perform set_config('employee_change.via_approval', '', true);
   end if;
   return jsonb_build_object('ok', true, 'year_month', p_year_month, 'method', p_method, 'default_changed', v_default_changed, 'frozen_months', to_jsonb(v_frozen),
                             'unchanged', not v_default_changed and not (m.user_id is null or m.method <> p_method));
