@@ -10709,6 +10709,8 @@ async function payrollLoad(){
   PAYROLL_STATE.taxes=(deptR.ok&&deptR.body.taxes)||[];
   PAYROLL_STATE.allocations=(allocR.ok&&Array.isArray(allocR.body))?allocR.body:[];
   PAYROLL_STATE.bankAccounts=(bankR.ok&&Array.isArray(bankR.body))?bankR.body:[];
+  // 2026-11-23: この月の支払方法（月ごとの記録がある人だけ）。関数が無い・読めないときは null＝今までどおり現在値で判定
+  try{ const mmR=await authed("/rest/v1/rpc/payroll_month_methods",{method:"POST",body:JSON.stringify({p_year_month:ym})}); PAYROLL_STATE.monthMethods=(mmR.ok&&Array.isArray(mmR.body))?Object.fromEntries(mmR.body.map(x=>[x.user_id,x.method])):null; }catch(e){ PAYROLL_STATE.monthMethods=null; }
   PAYROLL_STATE.hiddenUserIds=new Set((hiddenR.ok&&Array.isArray(hiddenR.body))?hiddenR.body.map(h=>h.user_id):[]);
   PAYROLL_STATE.drafts=(draftR.ok&&Array.isArray(draftR.body))?draftR.body:[];
   PAYROLL_STATE.transferScheduledDate=(scheduleR.ok&&Array.isArray(scheduleR.body)&&scheduleR.body[0])?scheduleR.body[0].scheduled_date:null;
@@ -11778,7 +11780,8 @@ function payrollDropUntouchedZeroRows(branches){
 // あとで登録口座が変わっても、確定済みの振込データは自動では変わらない（変えるのは本部の個別の確認・承認があったときだけ＝控えが差し替わる）。
 // 控えに無い人（出力後に口座を登録した人・除外が解けた人）と、まだ出力していない月は、登録口座をそのまま使う。
 function payrollBankMaster(userId){ return (PAYROLL_STATE.bankAccounts||[]).find(b=>b.user_id===userId); }
-function payrollBankFor(userId){ const s=PAYROLL_STATE.transferSnapshot; return (s&&s[userId])||payrollBankMaster(userId); }
+// 2026-11-23: 支払方法は「その月の記録」（payroll_month_payments）があればそれを使う（現在値を変えても、確定した月の振込／現金の区分が変わらないように）。記録が無い人・関数が無い環境は今までどおり
+function payrollBankFor(userId){ const s=PAYROLL_STATE.transferSnapshot; const b=(s&&s[userId])||payrollBankMaster(userId); const mm=PAYROLL_STATE.monthMethods&&PAYROLL_STATE.monthMethods[userId]; return (b&&mm&&b.payment_method!==mm)?{...b,payment_method:mm}:b; }
 async function payrollTransferPrepare(ym){
   PAYROLL_STATE.transferSnapshot=null; PAYROLL_STATE.payAttention=[]; PAYROLL_STATE.bankApprovalRequired=false;
   PAYROLL_STATE.transferHold=[]; PAYROLL_STATE.transferReady=[]; PAYROLL_STATE.transferHoldRecords=[]; PAYROLL_STATE.transferPendingMode="exclude"; PAYROLL_STATE.transferPrepared=false; PAYROLL_STATE.transferPaused=false; PAYROLL_STATE.transferToken=null;
@@ -13077,7 +13080,8 @@ function payrollOpenBankModal(userId){
     const isCash=$("pb-method").value==="cash";
     let payload;
     if(isCash){
-      payload={ user_id:userId, payment_method:"cash", bank_code:null,bank_name:null,branch_code:null,branch_name:null,account_number:null,account_holder_kana:null, account_type:"1", updated_by:ME.id, updated_at:new Date().toISOString() };
+      // 2026-11-23: 現金に変えても、登録済みの口座の情報は消さない（口座の列は送らない）。まだ行が無い人だけ、口座種別の初期値を入れる
+      payload={ user_id:userId, payment_method:"cash", ...(payrollBankMaster(userId)?{}:{account_type:"1"}), updated_by:ME.id, updated_at:new Date().toISOString() };
     }else{
       const bankCode=$("pb-bankcode").value.trim(), branchCode=$("pb-branchcode").value.trim();
       const accountNumber=$("pb-accountnumber").value.trim(), holderKana=$("pb-holderkana").value.trim();
@@ -13105,8 +13109,27 @@ function payrollOpenBankModal(userId){
       setTimeout(async()=>{ history.back(); await payrollLoad(); payrollRender(); updateMailSummaryBar(); },1500);
       return true;
     };
+    // 2026-11-23: 支払方法そのものを変えるときは「◯月分から」をはっきりさせ、月ごとの記録に書く（それより前の月は変わらない・口座は消えない）。関数が無い環境は今までどおり
+    const curBank=payrollBankMaster(userId), newMethod=isCash?"cash":"bank_transfer";
+    const methodChanged=!!curBank&&(curBank.payment_method||"bank_transfer")!==newMethod;
+    if(methodChanged){
+      const ymNow=PAYROLL_STATE.yearMonth;
+      if(!confirm(`${name}さんの支払方法を、${ymNow}分の給与から「${isCash?"現金手渡し":"銀行振込"}」に変えます。\n\n・${ymNow}分より前の月は変わりません。\n・登録済みの口座の情報は消えません。${isCash?"":"\n・口座が、いまも正しいかを確かめましたか？"}\n\nよろしいですか？`)) return;
+      payload.payment_method=curBank.payment_method||"bank_transfer";   // 先に口座の欄だけ保存し、支払方法の切り替えは下の関数で行う
+    }
     $("pb-save").disabled=true; msg.textContent="保存中…";
-    const r=await authed("/rest/v1/payroll_bank_accounts",{method:"POST",headers:{Prefer:"resolution=merge-duplicates,return=minimal"},body:JSON.stringify(payload)});
+    let r={ok:true,body:null};
+    if(!(methodChanged&&isCash)) r=await authed("/rest/v1/payroll_bank_accounts",{method:"POST",headers:{Prefer:"resolution=merge-duplicates,return=minimal"},body:JSON.stringify(payload)});
+    if(r.ok&&methodChanged){
+      const ch=await authed("/rest/v1/rpc/payroll_payment_change",{method:"POST",body:JSON.stringify({p_user:userId,p_year_month:PAYROLL_STATE.yearMonth,p_method:newMethod,p_set_default:true,p_reason:null})});
+      if(!ch.ok&&ch.status===404){   // 関数がまだ無い: 今までどおり現在値を書き換える（口座の列は送らない）
+        r=await authed("/rest/v1/payroll_bank_accounts",{method:"POST",headers:{Prefer:"resolution=merge-duplicates,return=minimal"},body:JSON.stringify({user_id:userId,payment_method:newMethod,updated_by:ME.id,updated_at:new Date().toISOString()})});
+      }else if(!ch.ok){
+        const em=(ch.body&&ch.body.message)||"支払方法を変えられませんでした";
+        msg.textContent=/確定済み/.test(em)?`${PAYROLL_STATE.yearMonth}分は給料が確定済みのため、ここでは変えられません。日報サイトの従業員ページの「訂正」（理由が必要）から直してください。`:em;
+        $("pb-save").disabled=false; return;
+      }
+    }
     if(!r.ok&&PAYROLL_STATE.bankApprovalRequired&&payrollBankMaster(userId)&&/申請/.test((r.body&&r.body.message)||"")){ $("pb-save").disabled=false; msg.textContent=""; await requestChange(); return; }
     if(!r.ok){ msg.textContent="保存に失敗しました"; $("pb-save").disabled=false; return; }
     const kept=!!(PAYROLL_STATE.transferSnapshot&&PAYROLL_STATE.transferSnapshot[userId]); // この月は出力済み → この月の一覧と出し直しは出力時の口座のまま
@@ -13114,8 +13137,14 @@ function payrollOpenBankModal(userId){
     setTimeout(async()=>{ history.back(); await payrollLoad(); payrollRender(); updateMailSummaryBar(); },kept?2500:700);
   };
   if($("pb-delete")) $("pb-delete").onclick=async()=>{
-    if(!confirm(`${name}さんの支払方法の登録を削除しますか？`)) return;
-    await authed(`/rest/v1/payroll_bank_accounts?user_id=eq.${userId}`,{method:"DELETE"});
+    // 2026-11-23: 口座の情報の削除は、理由つきの削除の関数で行う（消す前の値は控えに残る・過去の振込の記録は変わらない）。関数が無い環境は今までどおり
+    const whyDel=prompt(`${name}さんの口座の情報を削除します。\n過去の振込の記録は残ります。\n削除する理由を入れてください（例: 本人から口座の解約の連絡）。`);
+    if(!whyDel||!whyDel.trim()) return;
+    const del=await authed("/rest/v1/rpc/payroll_bank_account_delete",{method:"POST",body:JSON.stringify({p_user:userId,p_reason:whyDel.trim()})});
+    if(!del.ok&&del.status===404){
+      if(!confirm(`${name}さんの支払方法の登録を削除しますか？`)) return;
+      await authed(`/rest/v1/payroll_bank_accounts?user_id=eq.${userId}`,{method:"DELETE"});
+    }else if(!del.ok){ alert((del.body&&del.body.message)||"削除できませんでした"); return; }
     history.back(); payrollLoad().then(()=>{ payrollRender(); updateMailSummaryBar(); });
   };
 }
