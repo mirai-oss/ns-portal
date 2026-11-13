@@ -12438,6 +12438,580 @@ function payrollMatchesQuick(r,q){
   if(q==="cash") return isCash;
   return true;
 }
+// ===== 給与: 振込照合・証憑（2026-11-13 下書き・カード 1 枚。★SQL の下書き 2026-11-24_payroll_transfer_recon.sql が本番に入るまでは、何も出ない）=====
+// 読むのは DB の関数 payroll_transfer_recon_status だけ（口座番号は返ってこない）。関数が無い（404）・エラー・権限なし・法人が分からない → 何も出さない（今までと同じ画面）。
+// 押せるのは 2 つだけ: ［この月の振込予定を固める］（payroll_transfer_batch_freeze）と、まだ銀行の記録と結べていない人の［手動で確認済みにする］（payroll_transfer_manual_confirm・理由が必須）。
+// 自動で「振込完了」にするボタンは置かない。
+function payrollReconKey_(){ return `${PAYROLL_STATE.yearMonth||""}|${payrollCorpId()||""}`; }
+function payrollReconUi_(){ if(!PAYROLL_STATE.reconUi) PAYROLL_STATE.reconUi={open:{},busy:false,msg:null}; return PAYROLL_STATE.reconUi; }
+// 読み込み: 年月・法人が変わったときに 1 回（force=true は、操作のあとの読み直し）。失敗しても他の部分に影響させない
+async function payrollReconLoad(force){
+  let key="";
+  try{
+    key=payrollReconKey_();
+    if(!force&&PAYROLL_STATE.reconKey===key) return;
+    if(PAYROLL_STATE.reconKey!==key){ PAYROLL_STATE.recon=null; PAYROLL_STATE.reconUi=null; }   // 別の月・法人の表示を残さない
+    PAYROLL_STATE.reconKey=key;
+    let data=null;
+    try{
+      const corpId=payrollCorpId();
+      if(canManage(ME)&&corpId){   // 本部・社長・マスターだけ（DB 側でも payroll_pay_can で確かめている）
+        const r=await authed("/rest/v1/rpc/payroll_transfer_recon_status",{method:"POST",body:JSON.stringify({p_year_month:PAYROLL_STATE.yearMonth,p_corp_id:corpId})});
+        if(r&&r.ok&&r.body&&r.body.ok===true&&Array.isArray(r.body.batches)) data=r.body;   // 未適用（404）・権限なし・エラーは「出さない」
+      }
+    }catch(e){ data=null; }
+    if(PAYROLL_STATE.reconKey!==key) return;   // 読み込み中に年月・法人が変わった → 古い結果は捨てる
+    PAYROLL_STATE.recon=data;
+  }catch(e){ PAYROLL_STATE.recon=null; }
+  payrollReconPaint_();
+}
+const PAYROLL_RECON_STATUS={planned:"振込予定",mf_total_matched:"マネーフォワード総額照合済み",bank_matched:"PayPay 銀行明細照合済み",completed:"振込完了",pending_check:"確認待ち",failed:"振込失敗"};
+const PAYROLL_RECON_STATUS_COLOR={planned:"#64748b",mf_total_matched:"#2563eb",bank_matched:"#0d9488",completed:"#15803d",pending_check:"#b45309",failed:"#b91c1c"};
+const PAYROLL_RECON_LINE={planned:"これから照合",bank_matched:"銀行の明細と一致",completed:"振込完了",pending_check:"確認待ち",failed:"振込失敗",returned:"お金が戻ってきた",manual_confirmed:"人が確認済み"};
+const PAYROLL_RECON_REASON={
+  mf_multiple_candidates:"マネーフォワードに、合計が同じ出金が 2 件以上あります（どれか決められません）",
+  mf_amount_mismatch:"マネーフォワードの出金と、金額が合いません",
+  mf_date_mismatch:"マネーフォワードの出金の日付が、振込指定日と違います",
+  mf_deposit_account_mismatch:"マネーフォワードの出金が、登録した出金口座からではありません",
+  mf_deposit_account_not_configured:"この法人の出金口座（預金の名前）が、まだ設定に登録されていません",
+  mf_remark_mismatch:"マネーフォワードの出金の摘要が「WEB総振」ではありません",
+  source_account_not_configured:"この法人の出金口座が、まだ設定に登録されていません",
+  multiple_bank_candidates:"銀行に、同じ日・同じ人数・同じ合計の振込が 2 件以上あります",
+  bank_total_mismatch:"同じ日の銀行の振込と、人数か合計が合いません",
+  bank_details_missing:"銀行の明細（1 人ずつの内容）が、まだ読めていません",
+  lines_not_matched:"銀行の明細と結べていない人がいます",
+  bank_has_extra_details:"銀行の明細に、予定に無い振込があります",
+  bank_result_not_final:"銀行の結果が、まだ出ていません（受付・処理中）",
+  bank_failed_or_returned:"銀行で、振り込めなかった人・お金が戻ってきた人がいます",
+  manual_revoked:"人の確認が取り消されました",
+  same_account_two_people:"同じ口座の人が 2 人います（自動では結びません）",
+  multiple_candidates:"銀行の明細に、同じ内容のものが 2 件以上あります",
+  amount_mismatch:"銀行の明細と、金額が合いません",
+  kana_mismatch:"銀行の明細と、口座の名義（カナ）が合いません",
+  account_mismatch:"銀行の明細と、口座が合いません",
+  bank_account_unreadable:"銀行の明細の口座番号が読めません（伏せ字など）",
+  not_found_in_bank:"銀行の明細に、この人が見つかりません",
+  bank_failed:"銀行で、振り込めませんでした",
+  bank_returned:"振り込んだお金が戻ってきました",
+  matched:"合いました",remark_mismatch:"摘要が「WEB総振」ではありません",date_mismatch:"日付が振込指定日と違います",
+  deposit_account_not_configured:"出金口座が、まだ設定に登録されていません",deposit_account_mismatch:"登録した出金口座からの出金ではありません",
+};
+function payrollReconReason_(code){ const c=String(code??""); if(!c||c==="manual") return ""; if(PAYROLL_RECON_REASON[c]) return PAYROLL_RECON_REASON[c]; if(c==="bank_result_unknown") return "口座・名義・金額は合っています（成功・失敗は、まだ分かりません）"; if(c==="not_checked_yet") return "まだ照合していません"; if(c.startsWith("bank_result_")) return "銀行の結果が、まだ出ていません（受付・処理中）"; return c; }
+// バッチの種類（DB の batch_kind: regular＝通常／additional＝追加／retry＝再振込／adjustment＝差額）。DB が表示名（batch_kind_label）を返せばそれを使う
+function payrollReconKindLabel_(b){
+  const k=String(b.batch_kind??"").toLowerCase();
+  const M={regular:"通常",additional:"追加",retry:"再振込",adjustment:"差額"};
+  if(Object.prototype.hasOwnProperty.call(M,k)) return M[k];
+  if(b.batch_kind_label) return String(b.batch_kind_label);
+  if(k) return k;
+  return Number(b.batch_seq??b.seq)>1?"追加":"通常";   // 種類が返ってこない古い形のとき
+}
+function payrollReconIsRegular_(b){ const k=String(b.batch_kind??"").toLowerCase(); return k?k==="regular":!(Number(b.batch_seq??b.seq)>1); }
+// 同じ種類が 2 つ以上あっても見分けられるように、月 × 法人の中の連番を添える（例: 追加（3 番目））
+function payrollReconBatchName_(b){ const n=Number(b.batch_seq??b.seq)||0; return payrollReconKindLabel_(b)+(n>1?`（${n} 番目）`:""); }
+function payrollReconCounts_(b){
+  const ls=Array.isArray(b.lines)?b.lines:[]; const n=f=>ls.filter(f).length;
+  return {
+    done:n(l=>l.line_status==="completed"||l.line_status==="manual_confirmed"),
+    manual:n(l=>l.line_status==="manual_confirmed"),
+    pending:n(l=>l.line_status==="pending_check"||(l.line_status==="bank_matched"&&l.reason)),
+    failed:n(l=>l.line_status==="failed"||l.line_status==="returned"),
+  };
+}
+// 手動確認のボタンを出す行: まだ銀行の明細と結べていない・まだ確認済みでない・自分の給与ではない（DB の決まりと同じ）
+function payrollReconCanManual_(l){ return !!l&&!l.linked&&l.line_status!=="manual_confirmed"&&l.line_status!=="completed"&&!!l.user_id&&!(ME&&ME.id===l.user_id); }
+function payrollReconMfCell_(b){
+  const ms=Array.isArray(b.mf)?b.mf:[]; const hit=ms.filter(m=>m&&m.result==="matched");
+  if(hit.length>1) return `<b>—</b><div style="font-size:10px;color:#b45309">合計が同じ出金が ${hit.length} 件あります</div>`;
+  if(hit.length===1){ const m=hit[0]; return `<b>${esc(yen(m.amount??b.expected_total))}</b><div style="font-size:10px;color:var(--muted)">合いました（${esc(fmtD(m.transaction_date))}${m.deposit_account?`・${esc(m.deposit_account)}`:""}）</div>`; }
+  if(ms.length){ const m=ms[ms.length-1]||{}; return `<b>${m.amount!=null?esc(yen(m.amount)):"—"}</b><div style="font-size:10px;color:#b45309">合いません: ${esc(payrollReconReason_(m.result))}</div>`; }
+  return `<b>—</b><div style="font-size:10px;color:var(--muted)">まだ見つかっていません</div>`;
+}
+function payrollReconBankCell_(b){
+  const t=b.bank;
+  if(!t) return `<b>—</b><div style="font-size:10px;color:var(--muted)">まだ読み取っていません</div>`;
+  return `<b>${t.total_amount!=null?esc(yen(t.total_amount)):"—"}</b><div style="font-size:10px;color:var(--muted)">${esc(Number(t.total_count)||0)} 件${t.bank_status_raw?`・${esc(t.bank_status_raw)}`:""}${t.last_seen_at?`・${esc(fmtDT(t.last_seen_at))} に読み取り`:""}</div>${payrollReconBankExtraHtml_(b)}`;
+}
+function payrollReconBatchRowHtml_(b,ym,corpLabel){
+  const c=payrollReconCounts_(b); const col=Object.prototype.hasOwnProperty.call(PAYROLL_RECON_STATUS_COLOR,b.status)?PAYROLL_RECON_STATUS_COLOR[b.status]:"#64748b";
+  const label=b.status_label||PAYROLL_RECON_STATUS[b.status]||b.status||"—"; const why=payrollReconReason_(b.status_reason);
+  return `<tr>
+    <td>${esc(String(ym||"").replace("-","年"))}月分<div style="font-size:10px;color:var(--muted)">${esc(b.corp_name||corpLabel||"")}</div></td>
+    <td>${esc(payrollReconBatchName_(b))}${b.kind_reason?`<div style="font-size:10px;color:var(--muted)">理由: ${esc(b.kind_reason)}</div>`:""}</td>
+    <td>${esc(fmtD(b.scheduled_date))}</td>
+    <td style="text-align:right">${esc(Number(b.expected_count)||0)} 名</td>
+    <td style="text-align:right"><b>${esc(yen(b.expected_total))}</b></td>
+    <td style="text-align:right">${payrollReconMfCell_(b)}</td>
+    <td style="text-align:right">${payrollReconBankCell_(b)}</td>
+    <td><span style="display:inline-block;padding:3px 8px;border-radius:999px;font-weight:700;font-size:11px;color:#fff;background:${col}">${esc(label)}</span>${why?`<div style="font-size:10px;color:#b45309;margin-top:3px">${esc(why)}</div>`:""}</td>
+    <td style="text-align:right">${c.done} 名${c.manual?`<div style="font-size:10px;color:var(--muted)">うち人が確認 ${c.manual} 名</div>`:""}</td>
+    <td style="text-align:right;${c.pending?"color:#b45309;font-weight:700":""}">${c.pending} 名</td>
+    <td style="text-align:right;${c.failed?"color:#b91c1c;font-weight:700":""}">${c.failed} 名</td>
+  </tr>`;
+}
+// まだ終わっていない人の一覧（口座番号は出さない。金融機関の名前だけ）
+function payrollReconPeopleHtml_(b){
+  const ls=(Array.isArray(b.lines)?b.lines:[]).filter(l=>l&&!(l.line_status==="completed"||(l.line_status==="bank_matched"&&!l.reason)));
+  if(!ls.length) return "";
+  const open=!!payrollReconUi_().open[b.batch_id];
+  return `<details data-recon-details="${esc(b.batch_id)}" ${open?"open":""} style="margin-top:8px">
+    <summary style="cursor:pointer;font-size:12px">${esc(payrollReconBatchName_(b))}の分: まだ終わっていない人・人が確認した人（${ls.length} 名）を見る</summary>
+    <table class="pr-table" style="width:100%;border-collapse:collapse;margin-top:6px"><thead><tr><th>名前</th><th style="text-align:right">金額</th><th>振込先の銀行</th><th>いまの状態</th><th>操作</th></tr></thead><tbody>
+    ${ls.map(l=>{ const why=payrollReconReason_(l.reason); return `<tr>
+      <td>${esc(l.name||"—")}</td><td style="text-align:right">${esc(yen(l.amount))}</td><td>${esc(l.bank_name||"—")}</td>
+      <td>${esc(PAYROLL_RECON_LINE[l.line_status]||l.line_status||"—")}${why?`<div style="font-size:10px;color:#b45309">${esc(why)}</div>`:""}${l.retried_by?`<div style="font-size:10px;color:var(--muted)">再振込のバッチを作成済み（${esc(l.retried_by.batch_status_label||"")}）</div>`:""}${l.retry_of_line_id?`<div style="font-size:10px;color:var(--muted)">前の振込のやり直し（再振込）</div>`:""}</td>
+      <td>${payrollReconCanManual_(l)?`<button class="hq-btn" style="font-size:11px;padding:5px 8px" data-recon-act="manual" data-recon-batch="${esc(b.batch_id)}" data-recon-user="${esc(l.user_id)}">手動で確認済みにする</button>`:(ME&&ME.id===l.user_id&&!l.linked&&l.line_status!=="manual_confirmed"?`<span style="font-size:10px;color:var(--muted)">自分の分は、ほかの人が確認します</span>`:"")}</td>
+    </tr>`; }).join("")}
+    </tbody></table>
+  </details>`;
+}
+// 証憑（バッチごと。銀行の明細・結果の PDF/CSV。無いものは「未取得」と理由）。どのバッチにも結び付いていないファイル（evidence_other）は、最後にまとめて出す
+function payrollReconEvidenceHtml_(batches,other){
+  const all=new Map();
+  const btn=e=>{ all.set(String(e.evidence_id),e); return `<button class="hq-btn" style="font-size:11px;padding:4px 8px;margin-right:4px" data-recon-act="ev" data-recon-ev="${esc(e.evidence_id)}">開く</button><span style="font-size:10px;color:var(--muted);margin-right:8px">${esc(fmtDT(e.fetched_at))} 取得${e.source?`・${esc(e.source)}`:""}</span>`; };
+  const kinds=[["detail_pdf","明細 PDF"],["detail_csv","明細 CSV"],["result_pdf","結果 PDF"],["result_csv","結果 CSV"]];
+  const one=b=>{
+    const evs=(Array.isArray(b.evidence)?b.evidence:[]).filter(e=>e&&e.evidence_id);
+    const cell=(k,label)=>{
+      const files=evs.filter(e=>e.kind===k&&e.storage_path);
+      if(files.length) return `<div style="margin:3px 0"><b>${esc(label)}</b>: ${files.map(btn).join("")}</div>`;
+      const na=evs.filter(e=>e.kind==="unavailable"&&e.wanted_kind===k).pop();
+      return `<div style="margin:3px 0"><b>${esc(label)}</b>: <span style="color:#b45309">未取得</span> <span style="font-size:10px;color:var(--muted)">理由: ${na?`${esc(na.unavailable_reason||"")}（${esc(fmtDT(na.fetched_at))}）`:"まだ取りに行っていません（銀行の読み取りは準備中です）"}</span></div>`;
+    };
+    const manual=evs.filter(e=>e.kind==="manual_upload"&&e.storage_path);
+    return `<div style="margin-top:6px"><div style="font-size:11px;color:var(--muted)">${esc(payrollReconBatchName_(b))}の分（振込指定日 ${esc(fmtD(b.scheduled_date))}）</div>
+      ${kinds.map(([k,label])=>cell(k,label)).join("")}
+      ${manual.length?`<div style="margin:3px 0"><b>人が上げたファイル</b>: ${manual.map(btn).join("")}</div>`:""}</div>`;
+  };
+  const bodies=batches.map(one).join("");
+  const rest=(Array.isArray(other)?other:[]).filter(e=>e&&e.evidence_id&&e.storage_path);
+  const restHtml=rest.length?`<div style="margin-top:6px"><div style="font-size:11px;color:var(--muted)">どのバッチにも結び付いていないファイル</div><div style="margin:3px 0">${rest.map(btn).join("")}</div></div>`:"";
+  PAYROLL_STATE.reconEvidence=all;
+  if(!bodies&&!restHtml) return "";
+  return `<div style="margin-top:10px;padding-top:8px;border-top:1px solid var(--line)">
+    <div style="font-size:12px;font-weight:700;margin-bottom:2px">📄 証憑（銀行の明細・結果のファイル）</div>
+    ${bodies}${restHtml}
+    <div style="font-size:10px;color:var(--muted);margin-top:4px">「開く」を押すと、新しいタブで開きます（5 分だけ使えるリンクです）。</div>
+  </div>`;
+}
+function payrollReconHtml_(){
+  const d=PAYROLL_STATE.recon;
+  if(!d||PAYROLL_STATE.reconKey!==payrollReconKey_()||!canManage(ME)||!Array.isArray(d.batches)) return "";
+  const ui=payrollReconUi_(); const ym=PAYROLL_STATE.yearMonth; const corpLabel=payrollCorpDef_().label;
+  const bs=d.batches.filter(b=>b&&b.batch_id); const sw=d.switches||{};
+  const onoff=v=>v===true?"ON":"OFF";
+  return `<div class="card" id="payroll-recon" style="padding:16px;margin-bottom:14px">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap">
+      <div><h3 style="font-size:14px;margin:0 0 4px">🏦 振込照合・証憑</h3>
+        <div style="font-size:12px;color:var(--muted)">振り込む予定の人と金額を「固めて」から、マネーフォワードと銀行の記録と見くらべます。この画面から銀行へ振り込むことはありません。自動で「振込完了」にもなりません。</div></div>
+      <button class="hq-btn" style="font-size:11px;padding:5px 8px" data-recon-act="reload">🔄 読み直す</button>
+    </div>
+    ${ui.msg?`<div style="margin-top:8px;padding:8px 10px;border-radius:8px;font-size:12px;background:${ui.msg.ok?"#eef6ee":"#fdecea"};color:${ui.msg.ok?"#15803d":"#b91c1c"}">${esc(ui.msg.text)}</div>`:""}
+    ${bs.length?`<div style="overflow-x:auto;margin-top:10px"><table class="pr-table" style="width:100%;border-collapse:collapse;min-width:980px">
+      <thead><tr><th>給与の対象月・法人</th><th>バッチ</th><th>振込指定日</th><th style="text-align:right">振込予定の人数</th><th style="text-align:right">振込予定の合計額</th><th style="text-align:right">マネーフォワードの出金額</th><th style="text-align:right">PayPay 銀行の WEB総振の金額</th><th>照合結果</th><th style="text-align:right">振込完了</th><th style="text-align:right">確認待ち</th><th style="text-align:right">振込失敗</th></tr></thead>
+      <tbody>${bs.map(b=>payrollReconBatchRowHtml_(b,ym,corpLabel)).join("")}</tbody></table></div>
+      ${bs.map(payrollReconPeopleHtml_).join("")}
+      <div style="font-size:10px;color:var(--muted);margin-top:6px">［手動で確認済みにする］は、銀行の自動照合ではなく、人の確認として記録されます（理由が必要です）。［固める］で作れるのは「通常」の分だけです（追加・再振込・差額の分を作る操作は、この画面にはまだありません）。</div>`
+    :""}
+    ${bs.some(payrollReconIsRegular_)?"":`<div style="margin-top:10px;padding:10px;border:1px dashed var(--line);border-radius:8px;font-size:12px">
+        ${esc(String(ym||"").replace("-","年"))}月分・${esc(corpLabel)}の${bs.length?"「通常」の分の":""}振込予定は、<b>まだ固めていません</b>。<br>
+        「固める」と、いまの「だれに・いくら」をそのまま記録して、あとで銀行の記録と見くらべられるようになります。
+        <div style="margin-top:8px"><button class="hq-btn primary" style="font-size:12px;padding:7px 12px" data-recon-act="freeze" ${ui.busy?"disabled":""}>この月の振込予定を固める</button></div>
+      </div>`}
+    ${payrollReconExtraHtml_(d,bs)}${payrollReconEvidenceHtml_(bs,d.evidence_other)}
+    <div style="font-size:10px;color:var(--muted);margin-top:8px">自動の照合のスイッチ: マネーフォワード＝${onoff(sw.mf_enabled??sw.mf_total_enabled)}／銀行の読み取り＝${onoff(sw.bank_read_enabled)}／自動で振込完了＝${onoff(sw.auto_complete)}</div>
+  </div>`;
+}
+function payrollReconHtml(){ try{ return payrollReconHtml_(); }catch(e){ return ""; } }
+// カードだけを描き直す（給与の一覧は描き直さない）。出すものが無いときは、何も足さない（すでにあれば取りのぞく）
+function payrollReconPaint_(){
+  try{
+    const html=payrollReconHtml(); const old=document.getElementById("payroll-recon");
+    if(old){ if(html) old.outerHTML=html; else old.remove(); }
+    else if(html){ const anchor=document.querySelector("#tabbody .pr-progress-card"); if(anchor) anchor.insertAdjacentHTML("afterend",html); }
+    payrollReconWire_();
+  }catch(e){}
+}
+function payrollReconWire_(){
+  try{
+    const box=document.getElementById("payroll-recon"); if(!box) return;
+    box.querySelectorAll("[data-recon-act]").forEach(b=>b.onclick=ev=>{ if(ev&&ev.preventDefault) ev.preventDefault(); payrollReconAct_(b.dataset.reconAct,b.dataset); });
+    box.querySelectorAll("[data-recon-details]").forEach(d=>d.ontoggle=()=>{ payrollReconUi_().open[d.dataset.reconDetails]=!!d.open; });   // 描き直しても、開閉を保つ
+    payrollReconUploadWire_(box);
+  }catch(e){}
+}
+function payrollReconErrText_(r,fallback){ const m=r&&r.body&&(r.body.message||r.body.error||r.body.hint); return m?String(m):fallback; }
+// 証憑の「見るためのリンク」を取る（取り方は、この関数 1 つにまとめてある）。
+// TODO(証憑の置き場): Storage の非公開バケット（案: payroll-transfer-evidence）は、まだ作っていない。バケットと「本部・社長・マスターだけが読める」決まりができるまで、ここは null を返す（＝開けない、と表示する）。
+//   置き場が決まったら、この関数だけを直せばよい（例: 権限を確かめてから短いリンクを返す DB の関数や Edge Function に取りかえる）。
+async function payrollReconEvidenceUrl_(ev){
+  try{
+    if(!ev||!ev.storage_bucket||!ev.storage_path) return null;
+    const path=String(ev.storage_path).split("/").map(encodeURIComponent).join("/");
+    const r=await authed(`/storage/v1/object/sign/${encodeURIComponent(ev.storage_bucket)}/${path}`,{method:"POST",body:JSON.stringify({expiresIn:300})});
+    return (r&&r.ok&&r.body&&r.body.signedURL)?`${SUPA_URL}/storage/v1${r.body.signedURL}`:null;
+  }catch(e){ return null; }
+}
+async function payrollReconAct_(act,d){
+  const ui=payrollReconUi_(); d=d||{};
+  if(ui.busy) return;
+  if(act==="reload"){ ui.msg=null; return payrollReconLoad(true); }
+  if(act==="csv-register"||act==="csv-clear"||act==="bulk-manual") return payrollReconUploadAct_(act,d);   // 2026-11-13: 銀行の CSV の登録・まとめての手動確認
+  if(act==="ev"){
+    const ev=(PAYROLL_STATE.reconEvidence||new Map()).get(String(d.reconEv||"")); if(!ev) return;
+    const w=window.open("about:blank","_blank");   // 先にタブを開いておく（あとから開くと、ブラウザに止められることがある）
+    const url=await payrollReconEvidenceUrl_(ev);
+    if(!url){ if(w) w.close(); alert("このファイルは、まだ開けません。\n（保管場所の準備ができていないか、見る権限がありません）"); return; }
+    if(w){ try{ w.opener=null; }catch(e){} w.location.href=url; } else window.open(url,"_blank","noopener");
+    return;
+  }
+  const ym=PAYROLL_STATE.yearMonth, corpId=payrollCorpId(), corpLabel=payrollCorpDef_().label; if(!ym||!corpId) return;
+  if(act==="freeze"){
+    const date=(prompt("振込指定日（銀行で指定した、お金が振り込まれる日）を確かめてください。\n書き方の例: 2026-11-13",PAYROLL_STATE.transferScheduledDate||"")||"").trim();
+    if(!date) return;
+    if(!/^\d{4}-\d{2}-\d{2}$/.test(date)||isNaN(Date.parse(date))){ alert("日付は 2026-11-13 のように書いてください。"); return; }
+    if(!confirm(`${ym.replace("-","年")}月分・${corpLabel}の振込予定を固めます。\n振込指定日: ${date}\n\n・いまの「だれに・いくら・どの口座へ」を、そのまま記録します。\n・銀行への振込は行いません（記録するだけです）。\n・固めたあとは、人数と金額を変えられません。\n\nよろしいですか？`)) return;
+    ui.busy=true; ui.msg=null;
+    let r=null; try{ r=await authed("/rest/v1/rpc/payroll_transfer_batch_freeze",{method:"POST",body:JSON.stringify({p_year_month:ym,p_corp_id:corpId,p_scheduled_date:date,p_skip_unready:false})}); }catch(e){ r=null; }
+    ui.busy=false;
+    const b=r&&r.ok?r.body:null;
+    if(!b) ui.msg={ok:false,text:payrollReconErrText_(r,"固められませんでした。少し待ってから、もう一度ためしてください。")};
+    else if(b.ok===false) ui.msg={ok:false,text:`固めていません。${b.message||""}${b.unready_count?`（${Number(b.unready_count)||0} 名）`:""}`};
+    else if(b.already) ui.msg={ok:true,text:"この月の振込予定は、すでに固めてあります。"};
+    else ui.msg={ok:true,text:`振込予定を固めました（${Number(b.count)||0} 名）。`};
+    return payrollReconLoad(true);
+  }
+  if(act==="manual"){
+    const batchId=d.reconBatch, userId=d.reconUser; if(!batchId||!userId) return;
+    const b=((PAYROLL_STATE.recon&&PAYROLL_STATE.recon.batches)||[]).find(x=>x&&x.batch_id===batchId);
+    const l=b&&(b.lines||[]).find(x=>x&&x.user_id===userId); if(!payrollReconCanManual_(l)) return;
+    const basis=(prompt(`${l.name||""}さんの振込を、何を見て確かめましたか？（必ず書いてください）\n例: 銀行の画面の振込結果／通帳`)||"").trim();
+    if(!basis){ alert("何を見て確かめたかを書いてください。記録していません。"); return; }
+    const reason=(prompt("手動で確認済みにする理由を書いてください（必ず書いてください）\n例: 銀行の明細を自動で読めなかったため")||"").trim();
+    if(!reason){ alert("理由を書いてください。記録していません。"); return; }
+    if(!confirm(`${l.name||""}さんを「人が確認済み」にします。\n\nこれは、銀行の自動照合ではなく、人の確認として記録されます。\n（だれが・いつ・何を見て・なぜ、が記録に残ります）\n\nよろしいですか？`)) return;
+    ui.busy=true; ui.msg=null;
+    let r=null; try{ r=await authed("/rest/v1/rpc/payroll_transfer_manual_confirm",{method:"POST",body:JSON.stringify({p_batch_id:batchId,p_user_id:userId,p_basis:basis,p_reason:reason,p_evidence_id:null})}); }catch(e){ r=null; }
+    ui.busy=false;
+    if(r&&r.ok&&r.body&&r.body.ok===true) ui.msg={ok:true,text:`${l.name||""}さんを「人が確認済み」と記録しました（銀行の自動照合ではありません）。`};
+    else ui.msg={ok:false,text:payrollReconErrText_(r,"記録できませんでした。少し待ってから、もう一度ためしてください。")};
+    ui.open[batchId]=true;
+    return payrollReconLoad(true);
+  }
+}
+// ===== 給与: 銀行の CSV（PayPay 銀行 WEB総振の「全銀形式」「振込先一覧形式」）を読む部品（2026-11-13 下書き。ブラウザと node の両方で動く・通信しない） =====
+// 取得ジョブ用の ns-daily-import/lib/sofuri-csv.js と同じ決まり（CP932・"" で囲んだ項目・形式の自動判定・集計行との一致・コードと口座番号は文字のまま 0 埋め）。
+// 形が想定と違えば、例外で止まる（誤ったデータを登録しない）。例外の文には、行番号と「型」だけを書く（名義・口座番号・金額は書かない）。
+function payrollBankCsvErr_(reason,msg){ const e=new Error("CSV の形式が想定と違います: "+msg); e.csvReason=reason; return e; }
+// バイト列（Uint8Array）→ 文字。最後の EOF の印（0x1A）は、読む前にバイトのまま外す
+function payrollBankCsvDecode_(bytes){
+  if(!(bytes instanceof Uint8Array)||bytes.length===0) throw payrollBankCsvErr_("empty","ファイルが空です");
+  if(bytes.length>=3&&bytes[0]===0xEF&&bytes[1]===0xBB&&bytes[2]===0xBF) throw payrollBankCsvErr_("utf8_bom","UTF-8 の印（BOM）が付いています（銀行の CSV は Shift_JIS のはずです）");
+  const body=bytes[bytes.length-1]===0x1A?bytes.subarray(0,bytes.length-1):bytes;
+  let text;
+  try{ text=new TextDecoder("shift_jis",{fatal:true}).decode(body); }catch(e){ throw payrollBankCsvErr_("decode_failed","Shift_JIS として読めない文字があります"); }
+  if(text.indexOf("�")>=0) throw payrollBankCsvErr_("decode_failed","Shift_JIS として読めない文字があります");
+  return text;
+}
+function payrollBankCsvLine_(line,no){
+  const out=[]; let i=0; const n=line.length;
+  for(;;){
+    if(line[i]==='"'){
+      let j=i+1, v="", closed=false;
+      while(j<n){ if(line[j]==='"'){ if(line[j+1]==='"'){ v+='"'; j+=2; continue; } closed=true; j+=1; break; } v+=line[j]; j+=1; }
+      if(!closed) throw payrollBankCsvErr_("bad_quote",no+" 行目: 引用符が閉じていません");
+      out.push(v); i=j;
+    }else{
+      let j=line.indexOf(",",i); if(j<0) j=n;
+      const v=line.slice(i,j); if(v.indexOf('"')>=0) throw payrollBankCsvErr_("bad_quote",no+" 行目: 引用符の位置が不正です");
+      out.push(v); i=j;
+    }
+    if(i>=n) break;
+    if(line[i]!==",") throw payrollBankCsvErr_("bad_quote",no+" 行目: 項目の区切りが不正です");
+    i+=1; if(i>=n){ out.push(""); break; }
+  }
+  return out;
+}
+function payrollBankCsvRows_(text){
+  const lines=text.split(/\r\n|\n/); while(lines.length&&lines[lines.length-1]==="") lines.pop();
+  if(!lines.length) throw payrollBankCsvErr_("empty","行がありません");
+  return lines.map((l,i)=>{ if(l==="") throw payrollBankCsvErr_("blank_line",(i+1)+" 行目: 空の行があります"); if(l.indexOf("\r")>=0) throw payrollBankCsvErr_("bad_newline",(i+1)+" 行目: 改行の形が不正です"); return payrollBankCsvLine_(l,i+1); });
+}
+function payrollBankCsvDetail_(w,bank,branch,type,acct,name,amount){
+  const dig=(v,max,what)=>{ if(typeof v!=="string"||!new RegExp("^[0-9]{1,"+max+"}$").test(v)) throw payrollBankCsvErr_("bad_field",w+"の"+what+"が、数字 1〜"+max+" 桁ではありません"); return v; };
+  if(["1","2","4","9"].indexOf(type)<0) throw payrollBankCsvErr_("bad_field",w+"の預金種目が 1・2・4・9 のどれでもありません");
+  if(typeof name!=="string"||name.trim()===""||/[\u0000-\u001F\u007F]/.test(name)) throw payrollBankCsvErr_("bad_field",w+"の受取人名が空、または読めない文字があります");
+  dig(amount,12,"金額"); const a=Number(amount);
+  if(!Number.isSafeInteger(a)||a<=0) throw payrollBankCsvErr_("bad_field",w+"の金額が 1 円以上の整数ではありません");
+  return {bankCode:dig(bank,4,"金融機関コード").padStart(4,"0"),branchCode:dig(branch,3,"支店コード").padStart(3,"0"),accountType:type,accountNumber:dig(acct,7,"口座番号").padStart(7,"0"),holderKana:name,amount:a};
+}
+// バイト列 → { format: "zengin"|"list", header, details[], count, total }。想定と違えば例外（e.csvReason に理由）
+function payrollBankCsvParse_(bytes){
+  const rows=payrollBankCsvRows_(payrollBankCsvDecode_(bytes)); const n=rows.length; const first=rows[0], last=rows[n-1];
+  const num=(v,what)=>{ if(typeof v!=="string"||!/^[0-9]{1,12}$/.test(v)) throw payrollBankCsvErr_("bad_field",what+"が数字ではありません"); return Number(v); };
+  let format=null, header=null, details=[], tCount=0, tTotal=0;
+  if(first.length===13&&first[0]==="1"&&n>=2&&rows[1][0]==="2"&&rows[1].length===16){
+    format="zengin";
+    if(n<4) throw payrollBankCsvErr_("too_short","全銀形式の行が足りません");
+    if(rows[n-1][0]!=="9") throw payrollBankCsvErr_("no_end_record","終了の行（区分 9）が最後にありません（ファイルが途中で切れた可能性）");
+    if(rows[n-2][0]!=="8") throw payrollBankCsvErr_("no_trailer_record","合計の行（区分 8）が、終了の行の前にありません");
+    if(first[1]!=="21") throw payrollBankCsvErr_("bad_type_code","種別コードが 21（総合振込）ではありません");
+    if(!/^(0[1-9]|1[0-2])(0[1-9]|[12][0-9]|3[01])$/.test(first[5])) throw payrollBankCsvErr_("bad_field","ヘッダーの振込指定日が月日 4 桁ではありません");
+    if(["1","2","4","9"].indexOf(first[10])<0) throw payrollBankCsvErr_("bad_field","ヘッダーの預金種目が不正です");
+    const dg=(v,max)=>{ if(!new RegExp("^[0-9]{1,"+max+"}$").test(v)) throw payrollBankCsvErr_("bad_field","ヘッダーの出金口座が数字ではありません"); return v.padStart(max,"0"); };
+    header={designatedMd:first[5],requesterName:first[4],source:{bankCode:dg(first[6],4),branchCode:dg(first[8],3),accountType:first[10],accountNumber:dg(first[11],7)}};
+    for(let i=1;i<=n-3;i++){
+      const r=rows[i], w=(i+1)+" 行目";
+      if(r[0]!=="2") throw payrollBankCsvErr_("bad_record_order",w+": 明細（区分 2）のはずが、別の区分です");
+      if(r.length!==16) throw payrollBankCsvErr_("bad_columns",w+": 明細の列の数が 16 ではありません（"+r.length+"）");
+      details.push(payrollBankCsvDetail_(w,r[1],r[3],r[6],r[7],r[8],r[9]));
+    }
+    const t=rows[n-2]; if(t.length!==4) throw payrollBankCsvErr_("bad_columns","合計の行の列の数が 4 ではありません");
+    if(rows[n-1].length!==2) throw payrollBankCsvErr_("bad_columns","終了の行の列の数が 2 ではありません");
+    tCount=num(t[1],"合計の行の件数"); tTotal=num(t[2],"合計の行の金額");
+  }else if(first.length===8&&first[0]==="1"&&last.length===8&&last[0]==="2"){
+    format="list";
+    if(last[1]!==""||last[2]!==""||last[3]!==""||last[4]!==""||last[7]!=="") throw payrollBankCsvErr_("bad_columns","合計の行の、空のはずの列に値があります");
+    for(let i=0;i<n-1;i++){
+      const r=rows[i], w=(i+1)+" 行目";
+      if(r[0]!=="1") throw payrollBankCsvErr_("bad_record_order",w+": 明細（区分 1）のはずが、別の区分です");
+      if(r.length!==8) throw payrollBankCsvErr_("bad_columns",w+": 明細の列の数が 8 ではありません（"+r.length+"）");
+      details.push(payrollBankCsvDetail_(w,r[1],r[2],r[3],r[4],r[5],r[6]));
+    }
+    header={designatedMd:null,requesterName:null,source:null};
+    tCount=num(last[5],"合計の行の件数"); tTotal=num(last[6],"合計の行の金額");
+  }else{
+    throw payrollBankCsvErr_("unknown_format","全銀形式でも、振込先一覧形式でもありません（1 行目の列の数: "+first.length+"）");
+  }
+  const total=details.reduce((a,d)=>a+d.amount,0);
+  if(details.length<1) throw payrollBankCsvErr_("no_details","明細が 1 件もありません");
+  if(tCount!==details.length) throw payrollBankCsvErr_("count_mismatch","合計の行の件数と、明細の行の数が合いません");
+  if(tTotal!==total) throw payrollBankCsvErr_("total_mismatch","合計の行の金額と、明細の金額の合計が合いません");
+  return {format,header,details,count:details.length,total};
+}
+async function payrollBankCsvSha256_(bytes){ const h=await crypto.subtle.digest("SHA-256",bytes); return Array.from(new Uint8Array(h)).map(b=>b.toString(16).padStart(2,"0")).join(""); }
+// 出金口座の印（口座番号そのものではない。「paypay:」＋ SHA-256 の先頭 16 文字＋「:」＋下 4 桁）。lib/sofuri-csv.js の sourceAccountKey と同じ作り方
+async function payrollBankCsvSourceKey_(source){
+  if(!source) return null;
+  if(["1","2","4"].indexOf(source.accountType)<0) return null;
+  const key=`${source.bankCode}-${source.branchCode}-${source.accountType}-${source.accountNumber}`;
+  const h=await payrollBankCsvSha256_(new TextEncoder().encode("paypay|"+key));
+  return "paypay:"+h.slice(0,16)+":"+key.slice(-4);
+}
+// DB の取り込みの入口（payroll_transfer_bank_csv_register）へ渡す明細の形（結果は入れない。CSV には成功・失敗が無い）
+function payrollBankCsvDetailsForDb_(parsed){ return parsed.details.map(d=>({bank_code:d.bankCode,branch_code:d.branchCode,account_type:d.accountType,account_number:d.accountNumber,holder_kana:d.holderKana,amount:d.amount})); }
+// ===== 給与: 振込照合・証憑 — 銀行の CSV を人が登録する・まとめて手動確認する（2026-11-13 下書き。★SQL の下書き 2026-11-27_payroll_transfer_recon_upload.sql が本番に入るまでは、何も出ない）=====
+// 出すのは、DB の関数 payroll_transfer_recon_status が、足した項目（manual_bulk・source_account_keys・evidence_bucket）を返すときだけ（返さなければ、今までのカードのまま）。
+// 守り: ①この登録だけでは、だれも「振込完了」にならない（CSV には 1 人ずつの成功・失敗が無い）②名義・口座番号は画面に並べない ③まとめての手動確認は、DB が条件を満たすと答えたときだけボタンを出し、
+//       根拠と理由を書いて、確認してから ④銀行への操作は何もしない ⑤CSV の原本は、本部・社長・マスターだけが読める置き場へ（上書き・削除はできない）。
+const PAYROLL_RECON_BANK_STATES=[["done","振込正常"],["processing","実行中"],["failed","振込元エラー"],["partial","振込先エラー"]];
+const PAYROLL_RECON_SOURCE_LABEL={csv_upload:"人が登録した CSV（1 人ずつの成功・失敗は、まだ分かりません）",screen_rows:"銀行の画面の行で確認済み",summary:"銀行の一覧と件数だけ（1 人ずつの結果は、まだ分かりません）",none:"明細なし"};
+const PAYROLL_RECON_BLOCKER={
+  no_bank_transfer:"銀行の取引が、まだこの分に結び付いていません（先に、銀行の CSV を登録してください）",
+  bank_status_not_done:"銀行の状態が「振込正常」ではありません",
+  ok_count_not_all:"正常件数が、全件ではありません",
+  error_count_not_zero:"エラー件数が 0 件ではありません",
+  no_csv_evidence:"銀行の CSV の証憑が、まだ登録されていません",
+};
+function payrollReconUploadOn_(d){ return !!(d&&Array.isArray(d.source_account_keys)&&typeof d.evidence_bucket==="string"&&d.evidence_bucket); }
+function payrollReconUp_(){ const ui=payrollReconUi_(); if(!ui.up) ui.up={file:null,bytes:null,parsed:null,sha:null,key:null,err:null,f:{}}; return ui.up; }
+function payrollReconIntText_(v){ const t=String(v??"").normalize("NFKC").replace(/[,\s¥円]/g,""); return /^[0-9]{1,12}$/.test(t)?Number(t):null; }
+// 銀行の取引のくわしい情報（受付番号・実行日・手数料・合計・正常/エラー件数・予定との差・明細の出どころ）。口座番号は出さない
+function payrollReconBankExtraHtml_(b){
+  try{
+    const t=b&&b.bank; if(!t||t.bank_ref==null) return "";
+    const diff=b.bank_amount_diff; const line=s=>`<div style="font-size:10px;color:var(--muted)">${s}</div>`;
+    return line(`受付番号 ${esc(t.bank_ref)}${t.executed_date?`・実行日 ${esc(fmtD(t.executed_date))}`:""}`)
+      +line(`手数料 ${t.fee_total!=null?esc(yen(t.fee_total)):"—"}・合計 ${t.grand_total!=null?esc(yen(t.grand_total)):"—"}`)
+      +line(`正常 ${t.ok_count!=null?esc(Number(t.ok_count)):"—"} 件・エラー ${t.error_count!=null?esc(Number(t.error_count)):"—"} 件`)
+      +(diff==null?"":`<div style="font-size:10px;${Number(diff)===0?"color:var(--muted)":"color:#b91c1c;font-weight:700"}">予定との差 ${Number(diff)===0?"¥0（同じ）":esc((Number(diff)>0?"+":"−")+yen(Math.abs(Number(diff))))}</div>`)
+      +(t.detail_source?line(esc(PAYROLL_RECON_SOURCE_LABEL[t.detail_source]||t.detail_source)):"")
+      +(t.entered_at?line(`${esc(t.entered_by_name||"担当者")} が ${esc(fmtDT(t.entered_at))} に登録`):"")
+      +(t.result_verified_at?line(`銀行の画面で ${esc(fmtDT(t.result_verified_at))} に確認`):"");
+  }catch(e){ return ""; }
+}
+// 同じ振込指定日で、まだどの分にも結び付いていない銀行の取引（予定との差が分かるように出す）
+function payrollReconUnlinkedHtml_(d,bs){
+  const us=(Array.isArray(d.bank_unlinked)?d.bank_unlinked:[]).filter(t=>t&&t.bank_transfer_id); if(!us.length) return "";
+  return `<div style="margin-top:10px;padding:10px;border:1px solid #fcd9b6;background:#fff7ed;border-radius:8px;font-size:12px">
+    <b>まだ、どの分にも結び付いていない銀行の取引</b>
+    ${us.map(t=>{ const same=bs.filter(b=>b.scheduled_date===t.designated_date&&!b.bank);
+      const why=!t.source_account_known?"この出金口座が、まだ設定に登録されていません"
+        :same.length?same.map(b=>{ const dc=Number(t.total_count)-Number(b.expected_count), da=Number(t.total_amount)-Number(b.expected_total);
+            return `${esc(payrollReconBatchName_(b))}の予定とくらべて: 人数 ${dc===0?"同じ":esc((dc>0?"+":"−")+Math.abs(dc)+" 件")}・金額 ${da===0?"同じ":esc((da>0?"+":"−")+yen(Math.abs(da)))}`; }).join("／")
+        :"同じ振込指定日の、まだ結び付いていない分がありません";
+      return `<div style="margin-top:6px">受付番号 ${esc(t.bank_ref)}・振込日 ${esc(fmtD(t.designated_date))}・${esc(Number(t.total_count)||0)} 件・${esc(yen(t.total_amount))}${t.bank_status_raw?`・${esc(t.bank_status_raw)}`:""}<div style="font-size:11px;color:#b45309">${why}</div></div>`; }).join("")}
+  </div>`;
+}
+// まとめての手動確認（DB が「条件を満たす」と答えたときだけ、ボタンを出す）
+function payrollReconBulkHtml_(b){
+  const m=b&&b.manual_bulk; if(!m||typeof m!=="object") return "";
+  const cand=Number(m.candidates)||0, self=Number(m.skipped_self)||0; if(!cand&&!self) return "";
+  const blockers=(Array.isArray(m.blockers)?m.blockers:[]).filter(x=>x!=="no_candidates");
+  const head=`<b>${esc(payrollReconBatchName_(b))}の分</b>: 銀行の CSV と、口座・名義・金額が合っている人が ${cand+self} 名います（1 人ずつの成功・失敗は、CSV では分かりません）。`;
+  const selfNote=self?`<div style="font-size:11px;color:var(--muted);margin-top:4px">このうち ${self} 名は、あなた自身の分です。自分の分は、ほかの担当者が確認します。</div>`:"";
+  if(m.eligible===true&&cand>0&&m.csv_evidence_id){
+    return `<div style="margin-top:10px;padding:10px;border:1px solid #bfdbfe;background:#eff6ff;border-radius:8px;font-size:12px">${head}
+      <div style="margin-top:4px">銀行の画面で「振込正常・正常 ${esc(Number(b.bank&&b.bank.ok_count)||0)} 件・エラー 0 件」を確かめたうえで、この ${cand} 名を、まとめて「人が確認済み」にできます。</div>${selfNote}
+      <div style="margin-top:8px"><button class="hq-btn" style="font-size:12px;padding:7px 12px" data-recon-act="bulk-manual" data-recon-batch="${esc(b.batch_id)}">合っている ${cand} 名を、まとめて手動で確認済みにする</button></div>
+      <div style="font-size:10px;color:var(--muted);margin-top:4px">銀行の自動照合ではなく、人の確認として記録されます（「振込完了（手動確認）」と表示されます）。合っていない人は、変わりません。</div></div>`;
+  }
+  if(!blockers.length) return selfNote?`<div style="margin-top:10px;padding:10px;border:1px dashed var(--line);border-radius:8px;font-size:12px">${head}${selfNote}</div>`:"";
+  return `<div style="margin-top:10px;padding:10px;border:1px dashed var(--line);border-radius:8px;font-size:12px">${head}
+    <div style="margin-top:4px;color:#b45309">まとめての手動確認は、まだできません: ${blockers.map(x=>esc(PAYROLL_RECON_BLOCKER[x]||x)).join("／")}</div>${selfNote}</div>`;
+}
+// 銀行の CSV を登録する（ファイルを選ぶ → 読めた件数と「合計の行と合っているか」だけを出す → 銀行の画面の値を入れる → 確認 → 登録）
+function payrollReconUploadHtml_(d,bs){
+  const ui=payrollReconUi_(), up=payrollReconUp_(), f=up.f||{};
+  const sel=bs.find(b=>b.batch_id===f.batch)||bs.find(b=>!b.bank)||bs[0]; if(!sel) return "";
+  const inp=(k,label,ph,type)=>`<label style="display:block;font-size:11px;color:var(--muted)">${esc(label)}<br><input data-recon-up="${esc(k)}" type="${esc(type||"text")}" value="${esc(f[k]??"")}" placeholder="${esc(ph||"")}" style="width:100%;padding:6px 8px;font-size:13px;border:1px solid var(--line);border-radius:6px;box-sizing:border-box"></label>`;
+  let read="";
+  if(up.err) read=`<div style="margin-top:6px;color:#b91c1c">このファイルは読めませんでした: ${esc(up.err)}<br><span style="font-size:11px">銀行の画面（WEB総振 → 振込結果照会）から落とした CSV を、開かずに・書きかえずに、そのまま選んでください。</span></div>`;
+  else if(up.parsed){
+    const known=up.key&&d.source_account_keys.indexOf(up.key)>=0;
+    read=`<div style="margin-top:6px;color:#15803d">読めました: <b>${up.parsed.format==="zengin"?"全銀形式":"振込先一覧形式"}</b>・明細 <b>${esc(up.parsed.count)}</b> 件・合計の行と合っている: <b>○</b></div>`
+      +(up.parsed.format==="zengin"
+        ?(known?`<div style="font-size:11px;color:var(--muted)">出金口座: 設定に登録済み</div>`
+               :`<div style="font-size:11px;color:#b45309">この CSV の出金口座は、まだ設定に登録されていません。登録するまで、照合は「確認待ち」のままです。<br>出金口座の印: <code>${esc(up.key||"（作れませんでした）")}</code> ← この印を、管理の担当（設定を登録する人）に伝えてください。</div>`)
+        :`<div style="font-size:11px;color:var(--muted)">振込先一覧形式には出金口座が入っていないので、この法人に登録してある出金口座（${esc(d.source_account_keys.length)} 件）を使います。全銀形式の CSV があれば、そちらをおすすめします。</div>`);
+  }
+  return `<div style="margin-top:10px;padding:10px;border:1px solid var(--line);border-radius:8px;font-size:12px" data-recon-upbox="1">
+    <div style="font-weight:700">📥 銀行の CSV を登録する</div>
+    <div style="font-size:11px;color:var(--muted);margin-top:2px">銀行の画面から自分で落とした CSV と、画面に出ている数字を記録します。この登録だけでは、だれも「振込完了」になりません（CSV には、1 人ずつの成功・失敗が入っていないためです）。</div>
+    <div style="margin-top:8px"><input type="file" accept=".csv,text/csv" data-recon-file="1" ${ui.busy?"disabled":""}>${up.file?` <span style="font-size:11px;color:var(--muted)">選んだファイル: ${esc(Number(up.file.size)||0)} バイト</span>`:""}</div>
+    ${read}
+    ${up.parsed?`<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin-top:10px">
+      <label style="display:block;font-size:11px;color:var(--muted)">どの分の振込か<br><select data-recon-up="batch" style="width:100%;padding:6px 8px;font-size:13px;border:1px solid var(--line);border-radius:6px">${bs.map(b=>`<option value="${esc(b.batch_id)}" ${b.batch_id===sel.batch_id?"selected":""}>${esc(payrollReconBatchName_(b))}（振込指定日 ${esc(fmtD(b.scheduled_date))}・${esc(Number(b.expected_count)||0)} 名）</option>`).join("")}</select></label>
+      ${inp("ref","受付番号（銀行の画面のとおり）","例: 123456-001")}
+      ${inp("exec","実行日","","date")}
+      ${inp("count","振込件数","例: 80")}
+      ${inp("ok","正常件数","例: 80")}
+      ${inp("ng","エラー件数","例: 0")}
+      ${inp("amount","振込金額（円）","手数料を含まない金額")}
+      ${inp("fee","手数料（円）","例: 0")}
+      <label style="display:block;font-size:11px;color:var(--muted)">状態（銀行の画面のとおり）<br><select data-recon-up="status" style="width:100%;padding:6px 8px;font-size:13px;border:1px solid var(--line);border-radius:6px"><option value="">えらんでください</option>${PAYROLL_RECON_BANK_STATES.map(([v,l])=>`<option value="${esc(v)}" ${f.status===v?"selected":""}>${esc(l)}</option>`).join("")}</select></label>
+    </div>
+    <div style="margin-top:10px"><button class="hq-btn primary" style="font-size:12px;padding:7px 12px" data-recon-act="csv-register" ${ui.busy?"disabled":""}>内容を確かめて登録する</button>
+      <button class="hq-btn" style="font-size:11px;padding:5px 8px;margin-left:6px" data-recon-act="csv-clear" ${ui.busy?"disabled":""}>やめる</button></div>`:""}
+  </div>`;
+}
+function payrollReconExtraHtml_(d,bs){
+  try{ if(!payrollReconUploadOn_(d)||!canManage(ME)) return ""; return payrollReconUnlinkedHtml_(d,bs)+bs.map(payrollReconBulkHtml_).join("")+(bs.length?payrollReconUploadHtml_(d,bs):""); }catch(e){ return ""; }
+}
+function payrollReconUploadWire_(box){
+  try{
+    const up=payrollReconUp_();
+    box.querySelectorAll("[data-recon-up]").forEach(el=>{ const k=el.dataset.reconUp; const h=()=>{ up.f[k]=el.value; }; el.oninput=h; el.onchange=h; if(el.tagName==="SELECT"&&up.f[k]==null) up.f[k]=el.value; });
+    box.querySelectorAll("[data-recon-file]").forEach(el=>el.onchange=()=>{ const file=el.files&&el.files[0]; if(file) payrollReconFilePicked_(file); });
+  }catch(e){}
+}
+// ファイルを読む（ブラウザの中だけ。ここでは、どこにも送らない）
+async function payrollReconFilePicked_(file){
+  const ui=payrollReconUi_(); const keep=(ui.up&&ui.up.f)||{};
+  const up=ui.up={file:{size:file.size},bytes:null,parsed:null,sha:null,key:null,err:null,f:keep};
+  try{
+    if(file.size>20*1024*1024) throw new Error("ファイルが大きすぎます（20MB まで）");
+    const bytes=new Uint8Array(await file.arrayBuffer());
+    const parsed=payrollBankCsvParse_(bytes);
+    up.sha=await payrollBankCsvSha256_(bytes); up.key=await payrollBankCsvSourceKey_(parsed.header.source);
+    up.bytes=bytes; up.parsed=parsed;
+  }catch(e){ up.err=String((e&&e.message)||e); up.bytes=null; up.parsed=null; }
+  ui.msg=null; payrollReconPaint_();
+}
+function payrollReconStamp_(d){ const p=n=>String(n).padStart(2,"0"); return `${d.getFullYear()}${p(d.getMonth()+1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`; }
+// CSV の原本を、証憑の置き場へ入れる。同じ中身（同じ SHA-256）がすでにあれば、入れ直さずにその場所を返す（上書きしない）
+async function payrollReconStoreCsv_(bucket,folder,sha,bytes){
+  const tail=`_${sha.slice(0,12)}.csv`;
+  try{
+    const ls=await authed(`/storage/v1/object/list/${encodeURIComponent(bucket)}`,{method:"POST",body:JSON.stringify({prefix:folder,limit:1000})});
+    const hit=ls&&ls.ok&&Array.isArray(ls.body)?ls.body.find(o=>o&&typeof o.name==="string"&&o.name.endsWith(tail)):null;
+    if(hit) return {ok:true,path:`${folder}/${hit.name}`,reused:true};
+  }catch(e){}
+  const path=`${folder}/detail_csv_${payrollReconStamp_(new Date())}${tail}`;
+  const r=await authed(`/storage/v1/object/${encodeURIComponent(bucket)}/${path.split("/").map(encodeURIComponent).join("/")}`,{method:"POST",isBinary:true,headers:{"Content-Type":"text/csv","x-upsert":"false"},body:bytes});
+  return r&&r.ok?{ok:true,path,reused:false}:{ok:false,error:payrollReconErrText_(r,"保存できませんでした")};
+}
+async function payrollReconUploadAct_(act,d){
+  const ui=payrollReconUi_(); d=d||{};
+  if(ui.busy) return;
+  const data=PAYROLL_STATE.recon; if(!payrollReconUploadOn_(data)||!canManage(ME)) return;
+  const bs=(data.batches||[]).filter(b=>b&&b.batch_id);
+  if(act==="csv-clear"){ ui.up=null; ui.msg=null; return payrollReconPaint_(); }
+  const ym=PAYROLL_STATE.yearMonth, corpId=payrollCorpId(), corp=payrollCorpDef_(); if(!ym||!corpId) return;
+  if(act==="bulk-manual"){
+    const b=bs.find(x=>x.batch_id===d.reconBatch); const m=b&&b.manual_bulk;
+    if(!b||!m||m.eligible!==true||!(Number(m.candidates)>0)||!m.csv_evidence_id) return;
+    const n=Number(m.candidates);
+    const basis=(prompt(`${payrollReconBatchName_(b)}の分の ${n} 名について、何を見て確かめましたか？（必ず書いてください）\n例: 銀行の画面「振込結果詳細一覧」で、振込正常・正常 ${Number(b.bank&&b.bank.ok_count)||0} 件・エラー 0 件を確認`)||"").trim();
+    if(!basis){ alert("何を見て確かめたかを書いてください。記録していません。"); return; }
+    const reason=(prompt("まとめて手動で確認済みにする理由を書いてください（必ず書いてください）\n例: 銀行の結果を自動で読み取る仕組みが、まだ動いていないため")||"").trim();
+    if(!reason){ alert("理由を書いてください。記録していません。"); return; }
+    if(!confirm(`${payrollReconBatchName_(b)}の分のうち、銀行の CSV と口座・名義・金額が合っている ${n} 名を「人が確認済み」にします。\n\n・銀行の自動照合ではなく、人の確認として記録されます（「振込完了（手動確認）」と表示されます）。\n・だれが・いつ・何を見て・なぜ・どの CSV を根拠に、が記録に残ります。\n・合っていない人・あなた自身の分は、変わりません。\n\nよろしいですか？`)) return;
+    ui.busy=true; ui.msg=null;
+    let r=null; try{ r=await authed("/rest/v1/rpc/payroll_transfer_manual_confirm_matched",{method:"POST",body:JSON.stringify({p_batch_id:b.batch_id,p_basis:basis,p_reason:reason,p_evidence_id:m.csv_evidence_id})}); }catch(e){ r=null; }
+    ui.busy=false;
+    const o=r&&r.ok?r.body:null;
+    if(o&&o.ok===true) ui.msg={ok:true,text:`${Number(o.confirmed)||0} 名を「人が確認済み」と記録しました（銀行の自動照合ではありません）。${Number(o.skipped_unmatched)?`合っていない ${Number(o.skipped_unmatched)} 名は、そのままです。`:""}${Number(o.skipped_self)?`あなた自身の分 ${Number(o.skipped_self)} 名は、ほかの担当者が確認してください。`:""}いまの状態: ${o.status_label||""}`};
+    else ui.msg={ok:false,text:payrollReconErrText_(r,"記録できませんでした。少し待ってから、もう一度ためしてください。")};
+    return payrollReconLoad(true);
+  }
+  if(act==="csv-register"){
+    const up=payrollReconUp_(), f=up.f||{}; if(!up.parsed||!up.bytes||!up.sha) return;
+    const b=bs.find(x=>x.batch_id===f.batch)||bs.find(x=>!x.bank)||bs[0]; if(!b) return;
+    const ref=String(f.ref??"").normalize("NFKC").trim(), exec=String(f.exec??"").trim();
+    const cnt=payrollReconIntText_(f.count), okN=payrollReconIntText_(f.ok), ngN=payrollReconIntText_(f.ng), amount=payrollReconIntText_(f.amount), fee=payrollReconIntText_(f.fee);
+    const st=PAYROLL_RECON_BANK_STATES.find(x=>x[0]===f.status);
+    const stop=m=>{ alert(m+"\n登録していません。"); };
+    if(!/^[0-9A-Za-z\-]{3,40}$/.test(ref)) return stop("受付番号を、銀行の画面のとおりに入れてください（数字と「-」）。");
+    if(!/^\d{4}-\d{2}-\d{2}$/.test(exec)||isNaN(Date.parse(exec))) return stop("実行日を入れてください。");
+    if(cnt==null||okN==null||ngN==null||amount==null||fee==null) return stop("振込件数・正常件数・エラー件数・振込金額・手数料を、数字で入れてください（手数料が無いときは 0）。");
+    if(!st) return stop("状態を、銀行の画面のとおりにえらんでください。");
+    if(cnt!==up.parsed.count) return stop(`CSV の明細は ${up.parsed.count} 件ですが、入れた振込件数は ${cnt} 件です。銀行の画面の「振込件数」と、選んだファイルを確かめてください。`);
+    if(amount!==up.parsed.total) return stop("CSV の金額の合計と、入れた振込金額が合いません。銀行の画面の「振込金額」（手数料を含まない金額）と、選んだファイルを確かめてください。");
+    if(okN+ngN>cnt) return stop("正常件数とエラー件数の合計が、振込件数より多くなっています。");
+    const md=String(b.scheduled_date||"").slice(5,7)+String(b.scheduled_date||"").slice(8,10);
+    if(up.parsed.format==="zengin"&&up.parsed.header.designatedMd!==md) return stop(`CSV の振込指定日（月日）が、${payrollReconBatchName_(b)}の分の振込指定日（${fmtD(b.scheduled_date)}）と違います。別の月・別の回の CSV ではないか、確かめてください。`);
+    if(up.parsed.format==="zengin"&&!up.key) return stop("CSV の出金口座が読めませんでした。");
+    if(!confirm(`${ym.replace("-","年")}月分・${corp.label}・${payrollReconBatchName_(b)}の分に、銀行の CSV を登録します。\n\n受付番号: ${ref}\n振込指定日: ${b.scheduled_date}／実行日: ${exec}\n振込件数: ${cnt} 件（正常 ${okN} 件・エラー ${ngN} 件）\n振込金額: ${yen(amount)}／手数料: ${yen(fee)}／合計: ${yen(amount+fee)}\n状態: ${st[1]}\n\n・合計（振込金額＋手数料）が、銀行の画面の「合計金額」と同じことを確かめてください。\n・CSV の原本を、証憑として保存します（本部・社長・マスターだけが開けます。上書き・削除はできません）。\n・この登録だけでは、だれも「振込完了」になりません。\n・銀行への操作は、何も行いません。\n\nよろしいですか？`)) return;
+    ui.busy=true; ui.msg={ok:true,text:"登録しています…（画面を閉じないでください）"}; payrollReconPaint_();
+    let fail=null, evId=null, reg=null;
+    try{
+      // 1. 原本を置き場へ（すでに同じ中身があれば、入れ直さない）
+      const folder=`${corp.code}/${ym}/${Number(b.batch_seq)||1}`;
+      const put=await payrollReconStoreCsv_(data.evidence_bucket,folder,up.sha,up.bytes);
+      if(!put.ok) fail="CSV の原本を保存できませんでした（"+put.error+"）。何も登録していません。";
+      // 2. 証憑の記録
+      if(!fail){
+        const r=await authed("/rest/v1/rpc/payroll_transfer_evidence_add",{method:"POST",body:JSON.stringify({p_year_month:ym,p_corp_id:corpId,p_kind:"detail_csv",p_storage_bucket:data.evidence_bucket,p_storage_path:put.path,p_sha256:up.sha,
+          p_size_bytes:up.bytes.length,p_mime:"text/csv",p_fetched_at:new Date().toISOString(),p_source:"人が登録（PayPay 銀行 BA-PLUS・WEB総振の画面から、担当者がダウンロード）",p_fetched_by:null,p_batch_id:b.batch_id,p_bank_transfer_id:null,p_bank_status:st[0]})});
+        if(r&&r.ok&&r.body&&r.body.ok===true&&r.body.evidence_id) evId=r.body.evidence_id; else fail="証憑の記録ができませんでした（"+payrollReconErrText_(r,"エラー")+"）。銀行の内容は登録していません。";
+      }
+      // 3. 取り込み（結果は、DB の側で必ず「不明」になる）
+      if(!fail){
+        const tr={bank_ref:ref,designated_date:b.scheduled_date,executed_date:exec,total_count:cnt,total_amount:amount,ok_count:okN,error_count:ngN,fee_total:fee,grand_total:amount+fee,bank_status:st[0],bank_status_raw:st[1],corporation_id:corpId};
+        if(up.parsed.format==="zengin"){ tr.source_account_key=up.key; tr.csv_designated_md=up.parsed.header.designatedMd; }
+        const r=await authed("/rest/v1/rpc/payroll_transfer_bank_csv_register",{method:"POST",body:JSON.stringify({p_transfer:tr,p_details:payrollBankCsvDetailsForDb_(up.parsed),p_csv_sha256:up.sha,p_csv_format:up.parsed.format})});
+        if(r&&r.ok&&r.body&&r.body.ok===true) reg=r.body; else fail="銀行の内容を登録できませんでした（"+payrollReconErrText_(r,"エラー")+"）。CSV の原本と証憑の記録は、残っています。";
+      }
+      // 4. 照合（DB の関数。合った人・合わなかった人が決まる。完了にはしない）
+      if(!fail){ try{ await authed("/rest/v1/rpc/payroll_transfer_recon_run",{method:"POST",body:JSON.stringify({p_batch_id:b.batch_id})}); }catch(e){} }
+    }catch(e){ fail="登録の途中で止まりました。少し待ってから、もう一度ためしてください。"; }
+    ui.busy=false;
+    if(fail){ ui.msg={ok:false,text:fail}; return payrollReconLoad(true); }
+    ui.up=null; ui.open[b.batch_id]=true;
+    await payrollReconLoad(true);
+    // 5. 結果（読み直した状況から数える）
+    const nb=((PAYROLL_STATE.recon&&PAYROLL_STATE.recon.batches)||[]).find(x=>x&&x.batch_id===b.batch_id)||{};
+    const lds=Array.isArray(nb.line_details)?nb.line_details:[]; const hit=lds.filter(l=>l&&l.linked).length;
+    const mc=nb.mismatch_counts&&typeof nb.mismatch_counts==="object"?nb.mismatch_counts:{}; const miss=Object.keys(mc).reduce((a,k)=>a+(Number(mc[k])||0),0);
+    const whyTxt=Object.keys(mc).map(k=>`${payrollReconReason_(k)||k}: ${Number(mc[k])||0} 名`).join("／");
+    const text=reg.already_verified?(reg.failure_reflected===true?"この受付番号は、すでに銀行の画面の行で確認済みですが、入れた「エラー」の状態は記録しました（確認待ちになります。1 人ずつの結果は変えていません）。":"この受付番号は、すでに銀行の画面の行で確認済みです。CSV の原本だけ保存しました（内容は変えていません）。")
+      :!nb.bank?`銀行の内容と CSV の原本は記録しましたが、${payrollReconBatchName_(b)}の分とは、まだ結び付いていません（${payrollReconReason_(nb.status_reason)||"人数か合計が合わない、または出金口座が未登録"}）。`
+      :`登録しました。口座・名義・金額が合った人 ${hit} 名／合わなかった人 ${miss} 名${whyTxt?`（${whyTxt}）`:""}。まだ、だれも「振込完了」にはなっていません。`;
+    payrollReconUi_().msg={ok:!!nb.bank&&miss===0&&reg.failure_reflected!==true,text}; payrollReconUi_().open[b.batch_id]=true;
+    return payrollReconPaint_();
+  }
+}
 function payrollRender(){
   // 2026-09-17新規：対象月が今月以降（＝まだ月が終わっていない）なら、月を間違えての誤操作
   // （手渡しサイン・振込処理）を防ぐため一覧自体を表示しない。月選択欄だけは残し、先月以前へ
@@ -12519,7 +13093,7 @@ function payrollRender(){
           <div class="pr-pstep current"><small>STEP 4</small><b>振込</b><div class="count">${kpi.paid.n} / ${kpi.bankTotal.n}</div><div class="bar"><span style="width:${kpi.bankTotal.n?Math.round(kpi.paid.n/kpi.bankTotal.n*100):0}%"></span></div></div>
           <div class="pr-pstep"><small>STEP 5</small><b>支払確認</b><div class="count">${kpi.paid.n} / ${kpi.bankTotal.n}</div><div class="bar"><span style="width:${kpi.bankTotal.n?Math.round(kpi.paid.n/kpi.bankTotal.n*100):0}%"></span></div></div>
         </div>
-      </div>
+      </div>${payrollReconHtml()}
 
       <div class="pr-kpis">
         <div class="card pr-kpi total" data-pr-quick="all"><small>振込対象</small><b>${kpi.total.n}名</b><div class="amount">${yen(kpi.total.amt)}</div><div class="sub">現金支払を含む全対象</div></div>
@@ -12610,6 +13184,7 @@ function payrollRender(){
       </div>
     </section>`;
   payrollWageGuardWire_(); payrollWageGuardLoad().catch(()=>{});   // 2026-11-12: 賃金の安全確認（年月・法人が変わったときだけ読み込む。失敗しても他に影響させない）
+  payrollReconWire_(); payrollReconLoad().catch(()=>{});   // 2026-11-13: 振込照合・証憑（関数が無い・権限なしのときは何も出さない。失敗しても他に影響させない）
   $("payroll-ym").onchange=async()=>{
     PAYROLL_STATE.yearMonth=$("payroll-ym").value;
     $("tabbody").innerHTML=`<section class="invoice-list active"><div class="card" style="padding:16px"><div class="spin" style="padding:20px 0">読み込み中…</div></div></section>`;
