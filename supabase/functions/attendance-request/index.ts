@@ -18,6 +18,8 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { isUuid, jstLocalToIso, fixRequestArgs, fixRequestedParentText, fixApprovalSend, alertStatusMessage, alertFormRow, isMissingRpc, BREAK_NOT_READY, breakDeclareArgs, sameTimes, NO_CHANGE_MESSAGE } from "../_shared/attendance-fix-notify.ts";
 import { afterRequest, afterDecide, alertCase } from "../_shared/attendance-alert-notice.ts";   // 2026-11-11: 勤怠確認の新しい形（親 1 行＋スレッド）。新しい形のアラートは共通部品が書き換える
+// 2026-11-15（社長の指示）: フォームの勤怠申請も「親 1 行＋スレッド＋修正前後のカード」に。スイッチ app_settings.attendance_request_flow.thread が true のときだけ。false・設定なしは、下の今までの処理のまま
+import { flowSettings, postRequest, requestCase, afterRequestDecide } from "../_shared/attendance-request-notice.ts";
 
 const cors = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "authorization, content-type, apikey, x-client-info", "Access-Control-Allow-Methods": "POST, OPTIONS" };
 const json = (o: unknown, status = 200) => new Response(JSON.stringify(o), { status, headers: { ...cors, "Content-Type": "application/json" } });
@@ -107,6 +109,12 @@ Deno.serve(async (req) => {
   if (error) return json({ ok: false, error: error.message }, 400);
   if (!data?.ok) return json({ ok: false, error: data?.message ?? "申請できませんでした", code: data?.code }, 400);
 
+  // 2026-11-15 新しい形（スイッチが ON のときだけ）: #勤怠確認 に親 1 行 → スレッドに修正前後のカード（承認・却下のボタン）→ 承認者へスレッドで知らせる（＋リンクだけの DM）。
+  //   送れなかったときは、下の今までの通知（DM のボタン＋「申請あり」）へ進む（承認の依頼が届かないことを避ける）
+  if ((await flowSettings(sb)).thread) {
+    const pr = await postRequest(sb, notifySlack, data.request_id, { source: "ef:attendance-request", slackToken: Deno.env.get("SLACK_BOT_TOKEN") ?? null }).catch((e) => ({ ok: false, error: String(e).slice(0, 200) }));
+    if (pr.ok) return json({ ok: true, request_id: data.request_id, summary: data.summary, approvers_notified: (pr as { mentions?: number }).mentions ?? 0, form_url: FORM_URL, thread: true });
+  }
   // マスターへ承認依頼（DM）
   const ids: string[] = [];
   const kindLabel = data.kind === "add" ? "勤怠追加" : "勤怠修正";
@@ -166,6 +174,13 @@ async function decide(sb: any, actor: { id: string; name: string }, b: any) {
   const { data, error } = await sb.rpc("sf_attendance_request_decide", { p_request_id: String(b.request_id ?? ""), p_actor: actor.id, p_approve: approve, p_note: note, p_via: "portal" });
   if (error) return json({ ok: false, error: error.message }, 400);
   if (!data?.ok) return json({ ok: false, error: data?.message ?? "処理できませんでした", code: data?.code }, 400);
+  // 2026-11-15 新しい形の申請（親 1 行＋スレッド）: スレッドに結果の行 → 親とカードを書き換え → 承認ならスマレジへ反映して、結果でもう一度。今までの形は下の処理のまま
+  if (await requestCase(sb, data.request_id).catch(() => null)) {
+    const after = afterRequestDecide(sb, notifySlack, data.request_id, { approve, source: "ef:attendance-request", smaregiFix: (id) => smaregiFix(id) });
+    if (!approve) { await after; return json({ ok: true, approved: false, request_id: data.request_id }); }
+    waitUntil(after);
+    return json({ ok: true, approved: true, request_id: data.request_id, summary: data.summary });
+  }
   const when = new Date().toLocaleString("ja-JP", { timeZone: "Asia/Tokyo", hour12: false });
   const kindLabel = data.kind === "add" ? "勤怠追加" : "勤怠修正";
   const via = "（管理システムから）";

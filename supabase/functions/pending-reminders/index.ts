@@ -16,6 +16,7 @@
 // デプロイ: supabase functions deploy pending-reminders --no-verify-jwt --project-ref uuvsxzhpxtghojoubjcc --yes
 // =============================================================
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { remindRequestInThread } from "../_shared/attendance-request-notice.ts";   // 2026-11-15: フォームの勤怠申請の新しい形も、リマインドはスレッドへの返信（親を増やさない・承認依頼の DM を増やさない）
 import { remindInThread } from "../_shared/attendance-alert-notice.ts";   // 2026-11-11: 勤怠確認の新しい形（親 1 行＋スレッド）は、リマインドをスレッドへの返信で出す（親メッセージを増やさない）
 
 const json = (o: unknown, status = 200) => new Response(JSON.stringify(o), { status, headers: { "Content-Type": "application/json" } });
@@ -124,6 +125,17 @@ Deno.serve(async (req) => {
     if (it.table === "sf_attendance_alerts") {
       const n2 = it.remind_count + 1;
       const tr = await remindInThread(sb, sendSlack, { alertId: it.id, approval: it.kind === "alert_approval", n: n2, since: it.since, dryRun });
+      if (tr.v2) {
+        if (dryRun) { sent++; results.push({ kind: it.kind, id: it.id, n: n2, thread: true, mentions: tr.mentions, dry_run: true }); continue; }
+        if (tr.ok) { await sb.from(it.table).update({ reminded_at: nowIso, remind_count: n2, updated_at: nowIso }).eq("id", it.id); sent++; results.push({ kind: it.kind, id: it.id, n: n2, thread: true, mentions: tr.mentions }); }
+        else { failed++; results.push({ kind: it.kind, id: it.id, thread: true, error: tr.error ?? "send_failed" }); }
+        continue;
+      }
+    }
+    // 2026-11-15（社長の指示）: 新しい形の勤怠申請（フォーム申請）も、元のメッセージを複製しない。スレッドへの返信（いま動く人にメンション）で知らせる
+    if (it.table === "sf_attendance_requests") {
+      const n2 = it.remind_count + 1;
+      const tr = await remindRequestInThread(sb, sendSlack, { requestId: it.id, n: n2, since: it.since, dryRun });
       if (tr.v2) {
         if (dryRun) { sent++; results.push({ kind: it.kind, id: it.id, n: n2, thread: true, mentions: tr.mentions, dry_run: true }); continue; }
         if (tr.ok) { await sb.from(it.table).update({ reminded_at: nowIso, remind_count: n2, updated_at: nowIso }).eq("id", it.id); sent++; results.push({ kind: it.kind, id: it.id, n: n2, thread: true, mentions: tr.mentions }); }

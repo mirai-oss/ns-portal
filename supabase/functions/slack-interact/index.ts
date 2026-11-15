@@ -24,6 +24,8 @@ import { wageModal, commuteSettingModal, cancelModal, personContactModal, person
 import { isFormLinkPress, fixFormLinkText, fixRequestArgs, fixRequestedParentText, fixApprovalSend, unixToIso, isUuid } from "../_shared/attendance-fix-notify.ts";
 // 2026-11-11（ユーザー決定）: 勤怠確認の新しい形（親 1 行＋スレッドに詳細と操作）。新しい形のアラートは共通部品が親とカードを書き換える。古い形のアラートは今までの処理のまま
 import { renderAlert, afterRequest, afterDecide } from "../_shared/attendance-alert-notice.ts";
+// 2026-11-15（社長の指示）: フォームの勤怠申請の新しい形（親 1 行＋スレッド＋修正前後のカード）。新しい形の申請は共通部品が親とカードを書き換える。今までの形の申請は今までの処理のまま
+import { requestCase, afterRequestDecide } from "../_shared/attendance-request-notice.ts";
 // 2026-11-26: 採用管理のカードの［担当者を変更］。業務の処理は RPC（recruit_assignee_candidates / recruit_assignee_set）。ここは受付と振り分けだけ
 import { assigneeOpen, assigneeSubmit, ASSIGNEE_ACTION, ASSIGNEE_MODAL, lineOpen, lineInput, lineConfirm, LINE_ACTION, LINE_MODAL, LINE_CONFIRM,
   interviewOpen, interviewInput, interviewConfirmSubmit, interviewCancelOpen, interviewCancelSubmit, INTERVIEW_ACTION, INTERVIEW_CANCEL_ACTION, INTERVIEW_MODAL, INTERVIEW_CONFIRM, INTERVIEW_CANCEL_MODAL,
@@ -111,6 +113,8 @@ const handlers: Record<string, Handler> = {
   },
   // 親メッセージの「詳細を確認」（スレッドを開くリンクのボタン）。Slack がリンクを開くので、ここは何もしない
   "attendance.alert.open": async () => text(""),
+  // 勤怠申請のカードの「管理システムで開く」「直して出し直す」（リンクのボタン）。Slack がリンクを開くので、ここは何もしない
+  "attendance.req.open": async () => text(""),
   // 勤怠確認「🗑 打刻を消す」（2026-11-08）: 理由だけのモーダル → RPC sf_attendance_delete_request → マスターへ承認依頼
   "attendance.alert.delete": async ({ payload, value, notificationId }) => {
     return await openModal(payload.trigger_id, attendanceDeleteModal(value, notificationId));
@@ -846,6 +850,11 @@ async function requestDecide({ sb, actor, payload, value }: Ctx, approve: boolea
   const { data, error } = await sb.rpc("sf_attendance_request_decide", { p_request_id: value?.request_id, p_actor: actor.user_id, p_approve: approve, p_note: null, p_via: "slack" });
   if (error) return ephemeral(`記録できませんでした: ${error.message}`, ru);
   if (!data?.ok) return ephemeral(data?.message ?? "記録できませんでした", ru);
+  // 2026-11-15 新しい形の申請（親 1 行＋スレッド）: スレッドに結果の行 → 親とカードを書き換え → 承認ならスマレジへ反映して、結果でもう一度。今までの形は下の処理のまま
+  if (await requestCase(sb, data.request_id).catch(() => null)) {
+    waitUntil(afterRequestDecide(sb, sendSlack, data.request_id, { approve, source: "ef:slack-interact", smaregiFix: (id) => smaregiFix(id, "request_id") }));
+    return text("");
+  }
   const when = nowJst();
   const kindLabel = data.kind === "add" ? "勤怠追加" : "勤怠修正";
   if (!approve) {
