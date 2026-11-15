@@ -12,8 +12,8 @@
 // =============================================================
 import { clean, excerpt, sig, whenJst } from "./recruit-notice.ts";
 import type { LineResult } from "./recruit-line.ts";
-import type { GasConfig, MeetArgs, MeetResult } from "./recruit-calendar.ts";
-import { interviewText } from "./recruit-interview-text.ts";
+import type { BusyResult, GasConfig, MeetArgs, MeetResult } from "./recruit-calendar.ts";
+import { interviewCancelText, interviewChangeText, interviewText } from "./recruit-interview-text.ts";
 
 // deno-lint-ignore no-explicit-any
 export type Rpc = (name: string, args: Record<string, unknown>) => Promise<{ data: any; error: { message: string } | null }>;
@@ -38,6 +38,8 @@ export type OpsDeps = {
     config(): Promise<GasConfig | null>;
     meet(cfg: GasConfig, a: MeetArgs): Promise<MeetResult>;
     remove(cfg: GasConfig, eventId: string): Promise<{ ok: boolean; why: string | null }>;
+    /** その時間に、面接のカレンダーに別の予定があるか（2026-12-03。GAS に入口を足してから使う。無ければ、確かめない） */
+    busy?(cfg: GasConfig, a: { start: string; minutes: number; excludeEventId: string }): Promise<BusyResult>;
   };
 };
 export type OpsActor = { user_id: string; via: "slack" | "web" | "app" };
@@ -249,6 +251,15 @@ export async function interviewConfirm(deps: OpsDeps, actor: OpsActor,
       if (!deps.calendar || !cfg?.url) cal = { ok: false, mode: "live", url: null, event_id: null, updated: false, why: "カレンダーの設定（GAS の URL）がありません", deleted_old: false };
       else {
         const old: string = typeof d.event_id === "string" ? d.event_id : "";
+        // 2026-12-03 カレンダーの空き（設定が true で、GAS が対応しているときだけ）: 別の予定と重なっていたら、何も変えずに止める。確かめられなかったときは、止めない（記録に残す）
+        if (d.busy_check === true && deps.calendar.busy) {
+          const bz = await deps.calendar.busy(cfg, { start: at, minutes: Number(d.interview_minutes) > 0 ? Number(d.interview_minutes) : 30, excludeEventId: old }).catch(() => ({ checked: false, busy: false, why: "空きの確かめが止まりました" } as BusyResult));
+          if (bz.checked && bz.busy) {
+            await step(deps, op, "calendar", { ok: false, mode: "live", busy: true, why: "カレンダーに、別の予定があります" });
+            await finish(deps, op, "failed", "カレンダーに、別の予定があります（何も変えていません）");
+            return { ok: false, code: "overlap", message: "その時間は、カレンダーに別の予定があります。別の日時を選んでください" };
+          }
+        }
         let deleted = false;
         // オンライン⇔対面の切り替え: 古い予定（Meet の有無が違う）を消してから、新しく作る（画面と同じ）
         if (d.mode_changed === true && old) { await deps.calendar.remove(cfg, old).catch(() => null); deleted = true; }
@@ -277,8 +288,12 @@ export async function interviewConfirm(deps: OpsDeps, actor: OpsActor,
     // 3) 応募者への案内（「送る」を選んだときだけ。LINE と連携していなければ、送らずに文面を返す）
     let notice: { status: string; outbox_id?: string; text?: string } = { status: "skipped_off" };
     if (d.notify !== false) {
-      const text = interviewText({ name: String(s.applicant_name ?? d.applicant_name ?? ""), interview_at: String(s.interview_at ?? at), interview_mode: mode, interview_place: s.interview_place ?? d.place ?? "",
-        interview_address: s.interview_address ?? d.address ?? "", interview_url: s.interview_url ?? null }, mode === "onsite" ? { name: d.place, address: d.address, note: d.place_note } : null);
+      const iv = { name: String(s.applicant_name ?? d.applicant_name ?? ""), interview_at: String(s.interview_at ?? at), interview_mode: mode, interview_place: s.interview_place ?? d.place ?? "",
+        interview_address: s.interview_address ?? d.address ?? "", interview_url: s.interview_url ?? null };
+      const pl = mode === "onsite" ? { name: d.place, address: d.address, note: d.place_note } : null;
+      // 2026-12-03: 前の面接があった（＝変更）ときは、「変更」と分かる文面（変更後の URL・場所を必ず書く）。初めての確定は、画面と同じ文面
+      //   前の面接を、まだ応募者へ案内していなかった（日時だけ保存してあった）ときは、初めての確定として送る
+      const text = typeof d.prev_at === "string" && d.prev_at && d.prev_sent !== false ? interviewChangeText(iv, pl, d.prev_at) : interviewText(iv, pl);
       if (d.linked !== true) notice = { status: "skipped_unlinked", text };
       else {
         const r = await messageSend(deps, actor, { applicant_id: applicantId, text, request_key: `iv:${op}:notice`, purpose: "interview_notice",
@@ -306,12 +321,13 @@ export async function interviewConfirm(deps: OpsDeps, actor: OpsActor,
 }
 
 /** 面接の取り消し（いまの画面の「取り消す」と同じ: 予定を消す → 日時・URL・予定の番号・案内の印を空に。応募者へは送らない） */
-export async function interviewCancel(deps: OpsDeps, actor: OpsActor, b: { applicant_id?: unknown; request_key?: unknown; expected?: unknown }): Promise<OpsResult> {
+export async function interviewCancel(deps: OpsDeps, actor: OpsActor, b: { applicant_id?: unknown; request_key?: unknown; expected?: unknown; notify?: unknown }): Promise<OpsResult> {
   if (!isUuid(b.applicant_id)) return bad("applicant_id が正しくありません");
   const key = typeof b.request_key === "string" ? b.request_key.trim() : "";
   if (key.length < 8 || key.length > 200) return bad("request_key が正しくありません");
   const applicantId = b.applicant_id;
-  const begin = await deps.rpc("recruit_interview_begin", { p_applicant: applicantId, p_kind: "cancel", p_request_key: key, p_actor: actor.user_id, p_via: actor.via,
+  // 2026-12-03: 取り消しも、応募者へ LINE で知らせる（既定。notify=false のときだけ、知らせない）
+  const begin = await deps.rpc("recruit_interview_begin", { p_applicant: applicantId, p_kind: "cancel", p_request_key: key, p_actor: actor.user_id, p_via: actor.via, p_notify: b.notify !== false,
     p_expected: b.expected && typeof b.expected === "object" ? b.expected : null });
   if (begin.error) return { ok: false, code: "error", message: String(begin.error.message).slice(0, 200) };
   const d = begin.data ?? {};
@@ -333,9 +349,21 @@ export async function interviewCancel(deps: OpsDeps, actor: OpsActor, b: { appli
       return { ok: false, code: "failed", message: "面接の取り消しを保存できませんでした: " + msg };
     }
     if (!cal.ok) await note(deps, applicantId, `recruit:iv:${op}:calendar`, `⚠️ カレンダーの予定を消せませんでした（操作: ${by}）。面接の取り消しは保存されています。予定は、カレンダーで手で消してください。\n理由: ${clean(cal.why ?? "不明", 160)}`);
-    const result = cal.ok ? "done" : "partial";
-    await finish(deps, op, result, cal.ok ? null : "予定: " + (cal.why ?? "失敗"));
-    return { ok: true, code: result, op_id: op, message: cal.ok ? "面接の日程を取り消しました" : "面接は取り消しましたが、カレンダーの予定を消せませんでした", calendar: cal };
+    // 応募者への取り消しの案内（「知らせる」のときだけ。LINE と連携していなければ、送らずに文面を返す）。送信箱を通す＝スイッチ・試しモード・二重防止は、ほかの送信と同じ
+    let notice: { status: string; outbox_id?: string; text?: string } = { status: "skipped_off" };
+    if (d.notify !== false && typeof d.prev_at === "string" && d.prev_at) {
+      const text = interviewCancelText(String(d.applicant_name ?? ""), d.prev_at);
+      if (d.linked !== true) notice = { status: "skipped_unlinked", text };
+      else {
+        const m = await messageSend(deps, actor, { applicant_id: applicantId, text, request_key: `iv:${op}:cancel`, purpose: "interview_cancel", dedupe_key: `interview-cancel:${applicantId}:${sig(new Date(d.prev_at).toISOString())}:${op}` });
+        notice = { status: m.code === "replayed" ? String(m.status ?? "replayed") : m.code, outbox_id: m.outbox_id };
+      }
+    }
+    await step(deps, op, "notice", { status: notice.status, outbox_id: notice.outbox_id ?? null });
+    const noticeBad = NOTICE_BAD.includes(notice.status);
+    const result = cal.ok && !noticeBad ? "done" : "partial";
+    await finish(deps, op, result, result === "done" ? null : [cal.ok ? null : "予定: " + (cal.why ?? "失敗"), noticeBad ? "案内: " + notice.status : null].filter(Boolean).join(" ／ "));
+    return { ok: true, code: result, op_id: op, message: cal.ok ? "面接の日程を取り消しました" : "面接は取り消しましたが、カレンダーの予定を消せませんでした", calendar: cal, notice };
   } catch (e) {
     await finish(deps, op, "failed", "処理が止まりました: " + String((e as Error)?.message ?? e).slice(0, 200));
     return { ok: false, code: "error", message: "処理が止まりました。面接の状態を、管理画面で確かめてください" };
@@ -414,11 +442,12 @@ export async function hireInfo(deps: OpsDeps, actor: OpsActor, b: { applicant_id
   if (error) return { ok: false, code: "error", message: String(error.message).slice(0, 200) };
   return { ok: data?.ok === true, code: String(data?.code ?? "error"), message: data?.message ?? undefined, can: data?.can === true, name: data?.name ?? null, kind: data?.kind ?? null, status: data?.status ?? null,
     default_role: data?.default_role ?? null, roles: Array.isArray(data?.roles) ? data.roles : [], stores: Array.isArray(data?.stores) ? data.stores : [], store_id: data?.store_id ?? null,
-    linked: data?.linked === true, is_test: data?.is_test === true, mode: data?.line_mode === "live" ? "live" : "dry" };
+    linked: data?.linked === true, is_test: data?.is_test === true, mode: data?.line_mode === "live" ? "live" : "dry",
+    classes: Array.isArray(data?.classes) ? data.classes : [], default_class: data?.default_class ?? null };   // 2026-12-04 雇用区分（役割とは別の項目）
 }
 
 export async function hire(deps: OpsDeps, actor: OpsActor,
-  b: { applicant_id?: unknown; role?: unknown; store_ids?: unknown; request_key?: unknown; expected?: unknown; notify?: unknown }): Promise<OpsResult> {
+  b: { applicant_id?: unknown; role?: unknown; store_ids?: unknown; request_key?: unknown; expected?: unknown; notify?: unknown; employment_class?: unknown }): Promise<OpsResult> {
   if (!isUuid(b.applicant_id)) return bad("applicant_id が正しくありません");
   const key = typeof b.request_key === "string" ? b.request_key.trim() : "";
   if (key.length < 8 || key.length > 200) return bad("request_key が正しくありません");
@@ -427,7 +456,8 @@ export async function hire(deps: OpsDeps, actor: OpsActor,
   if (!stores.length || stores.length !== (Array.isArray(b.store_ids) ? b.store_ids.length : 0)) return bad("所属店舗が正しくありません");
   const applicantId = b.applicant_id;
   const r = await deps.rpc("recruit_hire", { p_applicant: applicantId, p_role: b.role, p_store_ids: stores, p_request_key: key, p_actor: actor.user_id, p_via: actor.via,
-    p_expected: b.expected && typeof b.expected === "object" ? b.expected : null, p_invite_base: INVITE_BASE });
+    p_expected: b.expected && typeof b.expected === "object" ? b.expected : null, p_invite_base: INVITE_BASE,
+    p_employment_class: typeof b.employment_class === "string" && b.employment_class ? b.employment_class : null });   // 2026-12-04: 雇用区分（arbeit / part / regular。無ければ、RPC が応募の区分から決める）
   if (r.error) return { ok: false, code: "error", message: String(r.error.message).slice(0, 200) };
   const d = r.data ?? {};
   if (d.code === "replayed") return { ok: d.ok === true, code: "replayed", replayed: true, result: d.result, message: d.message };
@@ -443,7 +473,7 @@ export async function hire(deps: OpsDeps, actor: OpsActor,
       if (m.code === "sent") await deps.rpc("recruit_invite_sent", { p_applicant: applicantId, p_actor: actor.user_id }).catch(() => null);   // 招待を送った印（画面と同じ）
     }
   }
-  return { ok: true, code: "done", op_id: d.op_id, message: "採用にしました", role: d.role, kind: d.kind, linked: d.linked === true, invite };   // 招待リンク・文面は返さない
+  return { ok: true, code: "done", op_id: d.op_id, message: "採用にしました", role: d.role, kind: d.kind, employment_class: d.employment_class ?? null, linked: d.linked === true, invite };   // 招待リンク・文面は返さない
 }
 
 /** 入口: op で振り分ける */

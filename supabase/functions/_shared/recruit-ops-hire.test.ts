@@ -30,7 +30,7 @@ Deno.test("採用: RPC recruit_hire を、押した人・役割・店舗・依�
   const r = await hire(d, actor, req());
   assertEquals([r.ok, r.code, (r.invite as { status: string }).status], [true, "done", "dry"]);
   assertEquals(names(w), ["hire", "send_begin"]);
-  assertEquals(w.rpc[0].args, { p_applicant: A1, p_role: "AL", p_store_ids: [S1], p_request_key: "slack:hire:V0TEST0001", p_actor: U1, p_via: "slack", p_expected: { status: "interviewed" }, p_invite_base: INVITE_BASE });
+  assertEquals(w.rpc[0].args, { p_applicant: A1, p_role: "AL", p_store_ids: [S1], p_request_key: "slack:hire:V0TEST0001", p_actor: U1, p_via: "slack", p_expected: { status: "interviewed" }, p_invite_base: INVITE_BASE, p_employment_class: null });
   assertEquals(INVITE_BASE, "https://mirai-oss.github.io/nippo/");
   const sb = w.rpc[1].args;
   assertEquals([sb.p_body, sb.p_purpose, sb.p_request_key, String(sb.p_dedupe_key).startsWith(`invite:${A1}:`)], [TEXT, "invite", `hire:${OP}:invite`, true]);
@@ -83,4 +83,15 @@ Deno.test("採用: 入力の間違い → RPC を呼ばない。材料の確か�
   assert(!("invite_text" in i));
   assertEquals((await handleOp(d, actor, { op: "hire_info", applicant_id: A1 })).can, true);
   assertEquals((await handleOp(deps().d, actor, { op: "hire", ...req() })).code, "done");
+});
+
+// ---- 2026-12-04 雇用区分（役割とは別の項目） ----
+Deno.test("採用: 雇用区分を RPC に渡す（無ければ null＝ RPC が応募の区分から決める）。窓の材料に、選択肢と初期値が入る", async () => {
+  const { d, w } = deps({ hire: { ...DONE, employment_class: "part" }, info: { ok: true, can: true, code: "ok", name: "試験 太郎", kind: "part", status: "new", default_role: "AL", roles: ["AL"], stores: [], classes: ["arbeit", "part"], default_class: "arbeit" } });
+  const r = await hire(d, actor, req({ employment_class: "part", notify: false }));
+  assertEquals([w.rpc[0].args.p_employment_class, r.employment_class, r.code], ["part", "part", "done"]);
+  const i = await hireInfo(d, actor, { applicant_id: A1 });
+  assertEquals([i.classes, i.default_class], [["arbeit", "part"], "arbeit"]);
+  const bad = deps({ hire: { ok: false, code: "bad_class", message: "雇用区分が、応募の区分と合っていません" } });
+  assertEquals((await hire(bad.d, actor, req({ employment_class: "regular" }))).code, "bad_class");
 });

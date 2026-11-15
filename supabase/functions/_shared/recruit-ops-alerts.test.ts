@@ -152,3 +152,23 @@ Deno.test("カレンダーのやり直し: 試しモードなら GAS を呼ば�
   const no = deps({ answers: { recruit_calendar_retry_begin: { ok: false, code: "busy", message: "ほかの人が操作しています" } } });
   assertEquals([(await calendarRetry(no.d, actor, { applicant_id: A1, request_key: "slack:calretry:V0TEST0005" })).code, no.w.meets.length, no.w.rpc.length], ["busy", 0, 1]);
 });
+
+// ---- 2026-12-03 1 回の上限（20 件）を超えた分は、次の回に繰り越す（知らせ漏れが無い） ----
+Deno.test("24 時間の未対応: 30 件あるとき、1 回目に古い順の 20 件、2 回目に残りの 10 件。同じ応募者に 2 回は出さず、30 件すべてに 1 回ずつ出る", async () => {
+  const all = Array.from({ length: 30 }, (_x, i) => ({ applicant_id: `11111111-1111-4111-8111-${String(i).padStart(12, "0")}`, assignee_id: U1, backup_user_id: U2, waiting_since: new Date(NOW - (80 - i) * 3600e3).toISOString(), kind: "part" }));
+  const marked = new Set<string>();   // 「知らせた印」（本物は SQL の recruit_unhandled_mark。印の付いた応募者は、24 時間は対象から外れる）
+  const posted: string[] = [];
+  const mk = () => deps({ answers: {
+    recruit_alerts_on: true,
+    recruit_unhandled_targets: () => all.filter((x) => !marked.has(x.applicant_id)),          // 本物と同じ: 古い順・印の無いものだけ
+    recruit_unhandled_mark: (a: Record<string, unknown>) => { marked.add(String(a.p_applicant)); return true; },
+  }, post: (id) => { posted.push(id); return "sent"; } });
+  const r1 = await alertsScan(mk().d, { now: NOW });
+  assertEquals([r1.sent, r1.targets, r1.more, posted.length], [20, 30, true, 20]);
+  assertEquals(posted, all.slice(0, 20).map((x) => x.applicant_id), "1 回目は、待たせている時間の長い順に 20 件");
+  const r2 = await alertsScan(mk().d, { now: NOW + 3600e3 });
+  assertEquals([r2.sent, r2.targets, r2.more, posted.length], [10, 10, false, 30]);
+  assertEquals(new Set(posted).size, 30, "30 件すべてに、1 回ずつ");
+  const r3 = await alertsScan(mk().d, { now: NOW + 2 * 3600e3 });
+  assertEquals([r3.sent, r3.targets, posted.length], [0, 0, 30]);
+});

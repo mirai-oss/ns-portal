@@ -1,6 +1,6 @@
 // 面接の予定（GAS）を呼ぶ部品のテスト（GAS は呼ばない。にせものの fetch を渡す）。deno test supabase/functions/_shared/recruit-calendar.test.ts
 import { assert, assertEquals } from "jsr:@std/assert@1";
-import { gasDelete, gasMeet, type FetchLike } from "./recruit-calendar.ts";
+import { gasBusy, gasDelete, gasMeet, type FetchLike } from "./recruit-calendar.ts";
 
 const CFG = { url: "https://gas.example/exec", key: "test-key", cal: "test-cal" };
 const fake = (body: string, status = 200) => { const calls: { url: string; init: RequestInit }[] = []; const f: FetchLike = (url, init) => { calls.push({ url, init }); return Promise.resolve(new Response(body, { status })); }; return { f, calls }; };
@@ -47,4 +47,15 @@ Deno.test("予定を消す: 番号が無ければ呼ばない。GAS の返事が
   assertEquals([b.action, b.event_id, b.calendar_id, b.key], ["delete_event", "ev1", "test-cal", "test-key"]);
   assertEquals((await gasDelete(CFG, "ev1", fake('{"ok":false,"error":"x"}').f)).ok, false);
   assertEquals((await gasDelete(CFG, "ev1", fake("<html>").f)).ok, false);
+});
+
+Deno.test("カレンダーの空き（2026-12-03。GAS に入口を足してから使う）: busy の答えだけを信じる。GAS が知らない・読めない・届かないときは「確かめられなかった」（止めない）", async () => {
+  const b = fake('{"ok":true,"busy":true}');
+  assertEquals(await gasBusy(CFG, { start: ARGS.start, minutes: 30, excludeEventId: "ev1" }, b.f), { checked: true, busy: true, why: null });
+  const body = JSON.parse(String(b.calls[0].init.body));
+  assertEquals([body.action, body.start, body.minutes, body.exclude_event_id, body.calendar_id, body.key], ["busy", ARGS.start, 30, "ev1", "test-cal", "test-key"]);
+  assertEquals((await gasBusy(CFG, { start: ARGS.start, minutes: 30, excludeEventId: "" }, fake('{"ok":true,"busy":false}').f)).busy, false);
+  for (const res of ['{"ok":false,"error":"unknown action"}', "<html>", '{"ok":true}']) assertEquals((await gasBusy(CFG, { start: ARGS.start, minutes: 30, excludeEventId: "" }, fake(res).f)).checked, false);
+  const boom: FetchLike = () => Promise.reject(new DOMException("timed out", "TimeoutError"));
+  assertEquals((await gasBusy(CFG, { start: ARGS.start, minutes: 30, excludeEventId: "" }, boom)).checked, false);
 });

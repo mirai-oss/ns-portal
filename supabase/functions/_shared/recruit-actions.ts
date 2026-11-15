@@ -10,7 +10,7 @@
 //   設計: scratchpad ob18/設計_採用_面接確定とLINEのSlack操作.md ／ DB 側: supabase/2026-11-26_recruit_action_base.sql
 // =============================================================
 import { ASSIGNEE_ACTION, clean, dayJst, HIRE_ACTION, INTERVIEW_ACTION, INTERVIEW_CANCEL_ACTION, LINE_ACTION, prefLine, PREFS_MAX } from "./recruit-notice.ts";
-import { interviewText } from "./recruit-interview-text.ts";
+import { interviewCancelText, interviewChangeText, interviewText } from "./recruit-interview-text.ts";
 import { RETRY_CAL_ACTION, RETRY_SEND_ACTION } from "./recruit-ops.ts";
 
 export { HIRE_ACTION, RETRY_CAL_ACTION, RETRY_SEND_ACTION };
@@ -296,8 +296,10 @@ export function interviewConfirmModal(meta: IvMeta & IvChoice, info: InterviewIn
   ];
   const blocks: unknown[] = [{ type: "section", text: { type: "mrkdwn", text: lines.join("\n") } }];
   if (meta.notify || !meta.linked) {
-    const text = interviewText({ name: meta.name, interview_at: meta.at, interview_mode: meta.mode, interview_place: meta.place ?? "", interview_address: pl?.address ?? "",
-      interview_url: meta.mode === "online" ? (info.interview_url || "（確定のときに発行します）") : null }, meta.mode === "onsite" ? pl : null);
+    const iv = { name: meta.name, interview_at: meta.at, interview_mode: meta.mode, interview_place: meta.place ?? "", interview_address: pl?.address ?? "",
+      interview_url: meta.mode === "online" ? (info.interview_url || "（確定のときに発行します）") : null };
+    // 2026-12-03: 前の面接がある（＝変更）ときは、「変更」と分かる文面を見せる（実際に送る文面と同じ作り）
+    const text = meta.exp_at ? interviewChangeText(iv, meta.mode === "onsite" ? pl : null, meta.exp_at) : interviewText(iv, meta.mode === "onsite" ? pl : null);
     blocks.push({ type: "divider" }, { type: "section", text: { type: "plain_text", text: text.slice(0, 2900), emoji: false } });
   }
   return { type: "modal", callback_id: INTERVIEW_CONFIRM, private_metadata: JSON.stringify(meta), title: plain("面接の確認"), submit: plain("確定する"), close: plain("もどる"), blocks };
@@ -363,7 +365,13 @@ function ivResultText(name: string, r: any, what: "confirm" | "cancel"): string 
   if (r?.code === "noop") return `ℹ️ ${String(r.message ?? "すでにその内容です")}（何も変えていません）。`;
   if (r?.code === "replayed") return r.ok ? `ℹ️ ${String(r.message ?? "処理済みです")}` : `⚠️ ${String(r.message ?? "処理できていません")}`;
   if (!r?.ok) return `⚠️ ${n} さんの面接は、${what === "cancel" ? "取り消して" : "確定して"}いません: ${r?.code === "denied" && !r?.message ? DENIED_TEXT : String(r?.message ?? "実行できませんでした")}`;
-  if (what === "cancel") return r.code === "done" ? `✅ ${n} さんの面接の日程を取り消しました（応募者へは連絡していません）。` : `⚠️ ${n} さんの面接は取り消しましたが、カレンダーの予定を消せませんでした。カレンダーで、手で消してください。`;
+  if (what === "cancel") {
+    const st = String(r.notice?.status ?? "skipped_off");
+    const told = st === "sent" ? "応募者へ、LINE で知らせました。" : st === "dry" || st === "dry_done" ? "🧪 応募者への連絡は試しモード（届いていません）。" : st === "skipped_off" ? "応募者へは連絡していません。"
+      : st === "skipped_unlinked" ? "応募者へは連絡していません（LINE 未連携。下の文面を、Indeed などで送ってください）。" : "⚠️ 応募者への LINE は送れていません（自動では再送しません）。";
+    const cal = r.calendar?.ok === false ? "⚠️ カレンダーの予定は消せませんでした。カレンダーで、手で消してください。" : "";
+    return `${r.code === "done" ? "✅" : "⚠️"} ${n} さんの面接の日程を取り消しました。${told}${cal}` + (st === "skipped_unlinked" && typeof r.notice?.text === "string" ? "\n```" + r.notice.text.replace(/`/g, "'").slice(0, 2500) + "```" : "");
+  }
   const iv = r.interview ?? {}, cal = r.calendar ?? {}, nt = r.notice ?? {};
   const parts = [`${r.code === "done" ? "✅" : "⚠️"} ${n} さんの面接を確定しました（${ivWhen(iv.at, iv.mode, iv.place)}）。`];
   parts.push(cal.ok === false ? `カレンダー：登録できませんでした（${clean(cal.why ?? "不明", 100)}）` : cal.mode === "dry" ? "カレンダー：🧪 試しモード（予定は作っていません）" : cal.mode === "manual" ? "カレンダー：貼り付けた URL を使いました" : "カレンダー：登録しました");
@@ -408,9 +416,14 @@ export async function interviewCancelOpen(deps: RecruitDeps, _actor: RecruitActo
     type: "modal", callback_id: INTERVIEW_CANCEL_MODAL, private_metadata: JSON.stringify(meta), title: plain("面接を取り消す"), submit: plain("取り消す"), close: plain("やめる"),
     blocks: [
       { type: "section", text: { type: "mrkdwn", text: `*${clean(meta.name, 30)}* さんの面接（${ivWhen(info.interview_at, info.interview_mode, info.interview_place)}）を取り消します。` } },
+      // 2026-12-03: 取り消しも、応募者へ LINE で知らせる（初期値は「知らせる」）。送る文面を、ここで見せる
+      ...(meta.linked
+        ? [{ type: "input", optional: true, block_id: "notify", label: plain("応募者への連絡"), element: { type: "checkboxes", action_id: "notify", initial_options: [opt("LINE で、取り消しを知らせる", "yes")], options: [opt("LINE で、取り消しを知らせる", "yes")] } },
+           { type: "section", text: { type: "plain_text", text: interviewCancelText(meta.name, info.interview_at).slice(0, 2900), emoji: false } }]
+        : [{ type: "context", elements: [{ type: "mrkdwn", text: "この応募者は LINE と連携していないため、ここからは知らせられません。取り消しのあと、案内文をあなただけに表示します（Indeed などで送ってください）。" }] }]),
       { type: "context", elements: [
         { type: "mrkdwn", text: info.calendar_mode === "live" ? "カレンダーの予定も消します。" : "🧪 カレンダーは試しモードです（予定は消しません）。" },
-        { type: "mrkdwn", text: "応募者へは、連絡しません（いまの管理システムと同じ）。知らせるときは、取り消したあとに連絡してください。" },
+        ...(meta.linked && info.line_mode !== "live" ? [{ type: "mrkdwn", text: "🧪 LINE は試しモードです（応募者には届きません）。" }] : []),
       ] },
     ],
   } };
@@ -427,7 +440,9 @@ export async function interviewCancelSubmit(deps: RecruitDeps, _actor: RecruitAc
   return { kind: "clear", after: async () => {
     // deno-lint-ignore no-explicit-any
     let r: any;
-    try { r = await action({ op: "interview_cancel", applicant_id: meta.applicant_id, request_key: `slack:ivc:${root}`, expected: { interview_at: meta.exp_at, assignee_id: meta.exp_asg } }); }
+    try { r = await action({ op: "interview_cancel", applicant_id: meta.applicant_id, request_key: `slack:ivc:${root}`, expected: { interview_at: meta.exp_at, assignee_id: meta.exp_asg },
+      // LINE 連携あり＝チェックのとおり／未連携＝案内文を返してもらうために true（未連携なので、送られない）
+      notify: meta.linked ? (view?.state?.values?.notify?.notify?.selected_options ?? []).some((o: { value?: string }) => o?.value === "yes") : true }); }
     catch (e) { r = { ok: false, code: "error", message: "入口を呼べませんでした: " + String((e as Error)?.message ?? e).slice(0, 100) }; }
     await deps.tell?.(place, ivResultText(meta.name, r, "cancel"));
   } };
@@ -530,6 +545,8 @@ export async function retryCalendarSubmit(deps: RecruitDeps, _actor: RecruitActo
 //   招待リンクは、Slack には出さない（LINE と連携していれば、送信箱を通して本人へ。未連携なら、管理画面の「リンクを送る」から）。
 const ROLE_LABEL: Record<string, string> = { AL: "アルバイト", SHAIN: "社員", TENCHO: "店長", TEAM: "チーム長", HQ: "本部" };
 const KIND_LABEL: Record<string, string> = { part: "アルバイト・パート", employee: "社員" };
+/** 雇用区分（役割とは別の項目。2026-12-04） */
+const CLASS_LABEL: Record<string, string> = { arbeit: "アルバイト", part: "パート", regular: "正社員" };
 type HireMeta = LineMeta & { exp_status: string | null; linked: boolean };
 
 /** カードの［採用を決める］が押されたとき: 権限・雇用区分・スイッチを確かめて、確認の窓を返す。決められないときは、押した人だけに理由 */
@@ -545,10 +562,14 @@ export async function hireOpen(deps: RecruitDeps, _actor: RecruitActor, value: {
   const meta: HireMeta = { applicant_id: applicantId, notification_id: isUuid(value?.notification_id) ? value.notification_id : null, name: String(r.name ?? ""), channel_id: strOrNull(place.channel_id), thread_ts: strOrNull(place.thread_ts),
     exp_status: strOrNull(r.status), linked: r.linked === true };
   const role0 = roles.includes(r.default_role) ? r.default_role : roles[0], store0 = stores.find((s) => s.id === r.store_id);
+  const classes: string[] = (Array.isArray(r.classes) ? r.classes : []).filter((x: unknown) => typeof x === "string" && CLASS_LABEL[x as string]);
+  const class0 = classes.includes(r.default_class) ? r.default_class : classes[0];
   const sOpt = (s: { id: string; name: string }) => opt(clean(s.name, 60), s.id);
   const blocks: unknown[] = [
     { type: "section", text: { type: "mrkdwn", text: `*${clean(meta.name, 30)}* さんを *採用* にします（区分：${KIND_LABEL[String(r.kind)] ?? "—"}）。\n採用にすると、入社登録の招待リンクが発行され、本人が入社登録に進めるようになります。` } },
     { type: "input", block_id: "role", label: plain("役割"), element: { type: "static_select", action_id: "role", initial_option: opt(ROLE_LABEL[role0], role0), options: roles.map((x) => opt(ROLE_LABEL[x], x)) } },
+    // 雇用区分は、役割とは別に選ぶ（アルバイト・パートの応募＝アルバイト／パート。社員の応募＝正社員）。DB 側が古く、選択肢が来ないときは出さない（今までどおり）
+    ...(classes.length ? [{ type: "input", block_id: "eclass", label: plain("雇用区分"), element: { type: "static_select", action_id: "eclass", initial_option: opt(CLASS_LABEL[class0], class0), options: classes.map((x) => opt(CLASS_LABEL[x], x)) } }] : []),
     { type: "input", block_id: "stores", label: plain("所属店舗"), element: { type: "multi_static_select", action_id: "stores", placeholder: plain("選んでください"), ...(store0 ? { initial_options: [sOpt(store0)] } : {}), options: stores.map(sOpt) } },
   ];
   if (meta.linked) blocks.push({ type: "input", optional: true, block_id: "notify", label: plain("招待リンク"), element: { type: "checkboxes", action_id: "notify", initial_options: [opt("LINE で本人に送る", "yes")], options: [opt("LINE で本人に送る", "yes")] } });
@@ -572,16 +593,19 @@ export async function hireSubmit(deps: RecruitDeps, _actor: RecruitActor, view: 
   if (typeof role !== "string" || !ROLE_LABEL[role]) return { kind: "errors", errors: { role: "役割を選んでください。" } };
   if (!stores.length) return { kind: "errors", errors: { stores: "所属店舗を、1 つ以上選んでください。" } };
   const notify = linked && (v.notify?.notify?.selected_options ?? []).some((o: { value?: string }) => o?.value === "yes");
+  const eclass = v.eclass?.eclass?.selected_option?.value;
+  const employment_class = typeof eclass === "string" && CLASS_LABEL[eclass] ? eclass : null;
   const action = deps.action;
   return { kind: "clear", after: async () => {
     // deno-lint-ignore no-explicit-any
     let r: any;
-    try { r = await action({ op: "hire", applicant_id: b.applicant_id, role, store_ids: stores, notify, request_key: `slack:hire:${root}`, expected: { status: exp } }); }
+    try { r = await action({ op: "hire", applicant_id: b.applicant_id, role, store_ids: stores, notify, request_key: `slack:hire:${root}`, expected: { status: exp }, employment_class }); }
     catch (e) { r = { ok: false, code: "error", message: "入口を呼べませんでした: " + String((e as Error)?.message ?? e).slice(0, 100) }; }
     const n = clean(b.name, 30), st = String(r?.invite?.status ?? "");
     const inv = st === "sent" ? "招待リンクを、LINE で本人に送りました。" : st === "dry" || st === "dry_done" ? "🧪 招待リンクは試しモード（本人には届いていません）。" : st === "skipped_unlinked" ? "招待リンクは送っていません（LINE 未連携）。管理画面の「リンクを送る」から送ってください。"
       : st === "skipped_off" ? "招待リンクは送っていません。管理画面の「リンクを送る」から送れます。" : st === "duplicate" || st === "duplicate_recent" ? "同じ招待を、すでに送っています。" : "⚠️ 招待リンクの LINE は送れていません（自動では再送しません）。管理画面の「リンクを送る」から送ってください。";
-    await deps.tell?.(place, r?.code === "done" ? `🎉 ${n} さんを採用にしました（役割：${ROLE_LABEL[role]}）。${inv}`
+    const cls = CLASS_LABEL[String(r?.employment_class ?? employment_class ?? "")];
+    await deps.tell?.(place, r?.code === "done" ? `🎉 ${n} さんを採用にしました（役割：${ROLE_LABEL[role]}${cls ? `・雇用区分：${cls}` : ""}）。${inv}`
       : r?.code === "noop" || r?.code === "replayed" ? `ℹ️ ${String(r?.message ?? "すでに採用済みです")}`
       : r?.code === "conflict" ? `⚠️ ${n} さんの状態が、先に変更されています。何も変えていません。カードを確かめて、もう一度開いてください。` : `⚠️ ${n} さんは、採用にしていません: ${refusal(r)}`);
   } };

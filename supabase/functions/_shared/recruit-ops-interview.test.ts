@@ -3,7 +3,7 @@
 //   ※ 氏名・住所・URL は、テスト用の作りもの
 import { assert, assertEquals } from "jsr:@std/assert@1";
 import { handleOp, interviewCancel, interviewConfirm, type OpsDeps } from "./recruit-ops.ts";
-import { interviewText } from "./recruit-interview-text.ts";
+import { interviewCancelText, interviewChangeText, interviewText } from "./recruit-interview-text.ts";
 import type { MeetResult } from "./recruit-calendar.ts";
 import type { LineResult } from "./recruit-line.ts";
 
@@ -171,12 +171,12 @@ Deno.test("入力の間違い → 何も呼ばない。手で貼った URL（htt
   assertEquals(bad.w.meets.length, 1, "https でない文字は、手で貼った URL として扱わない");
 });
 
-Deno.test("取り消し: 予定を消す（本番モードで、予定の番号があるときだけ）→ 保存 → 終わり。応募者へは何も送らない", async () => {
+Deno.test("取り消し: 予定を消す（本番モードで、予定の番号があるときだけ）→ 保存 → 案内 → 終わり。前の面接の日時が無ければ、案内は送らない", async () => {
   const dry = ideps({ begin: { ...GO, kind: "cancel", event_id: "ev-old" } });
   const r1 = await interviewCancel(dry.d, actor, { applicant_id: A1, request_key: "slack:ivc:V0TEST0002", expected: { interview_at: "2026-11-20T05:00:00+00:00" } });
   assertEquals([r1.ok, r1.code, dry.w.removes.length, dry.w.lines.length], [true, "done", 0, 0]);
-  assertEquals(dry.w.order, ["interview_begin", "step:calendar", "interview_save", "interview_finish"]);
-  assertEquals(dry.w.rpc[0].args, { p_applicant: A1, p_kind: "cancel", p_request_key: "slack:ivc:V0TEST0002", p_actor: U1, p_via: "slack", p_expected: { interview_at: "2026-11-20T05:00:00+00:00" } });
+  assertEquals(dry.w.order, ["interview_begin", "step:calendar", "interview_save", "step:notice", "interview_finish"]);
+  assertEquals(dry.w.rpc[0].args, { p_applicant: A1, p_kind: "cancel", p_request_key: "slack:ivc:V0TEST0002", p_actor: U1, p_via: "slack", p_notify: true, p_expected: { interview_at: "2026-11-20T05:00:00+00:00" } });
   const live = ideps({ begin: { ...GO, kind: "cancel", calendar_mode: "live", event_id: "ev-old" } });
   const r2 = await interviewCancel(live.d, actor, { applicant_id: A1, request_key: "slack:ivc:V0TEST0003" });
   assertEquals([r2.code, live.w.removes, live.w.order.includes("send_begin")], ["done", ["ev-old"], false]);
@@ -193,4 +193,65 @@ Deno.test("取り消し: 予定を消す（本番モードで、予定の番号�
 Deno.test("振り分け: interview_confirm / interview_cancel", async () => {
   assertEquals((await handleOp(ideps().d, actor, { op: "interview_confirm", ...req() })).code, "done");
   assertEquals((await handleOp(ideps({ begin: { ...GO, kind: "cancel" } }).d, actor, { op: "interview_cancel", applicant_id: A1, request_key: "slack:ivc:V0TEST0006" })).code, "done");
+});
+
+// ---- 2026-12-03 面接の変更・取り消しの案内と、カレンダーの空きの確かめ ----
+Deno.test("変更（前の面接がある）: 「変更」と分かる文面を送る（変更前と変更後・新しい URL）。初めての確定は、今までどおり画面と同じ文面", async () => {
+  const PREV = "2026-11-19T05:00:00+00:00";
+  const { d, w } = ideps({ begin: { ...GO, calendar_mode: "live", event_id: "ev-old", prev_at: PREV, prev_mode: "online" }, meet: { ok: true, url: "https://meet.example/new2", event_id: "ev-old", updated: true, why: null } });
+  const r = await interviewConfirm(d, actor, req());
+  assertEquals(r.code, "done");
+  const body = String(w.rpc.find((c) => c.name === "recruit_send_begin")!.args.p_body);
+  assertEquals(body, interviewChangeText({ name: "試験 太郎", interview_at: "2026-11-20T05:00:00+00:00", interview_mode: "online", interview_place: "", interview_address: "", interview_url: "https://meet.example/new2" }, null, PREV));
+  assert(body.includes("面接の日時が変更になりました") && body.includes("【変更前】11月19日(木) 14:00") && body.includes("【変更後の面接日時】11月20日(金) 14:00") && body.includes("【面接URL】https://meet.example/new2") && !body.includes("決まりました"));
+  assertEquals((w.meets[0] as { eventId: string }).eventId, "ev-old", "予定は、同じ番号を直す（増やさない）");
+  // 前の面接はあるが、まだ案内していなかった（日時だけ保存してあった）→ 初めての確定の文面
+  const unsent = ideps({ begin: { ...GO, prev_at: PREV, prev_sent: false } });
+  await interviewConfirm(unsent.d, actor, req());
+  assert(String(unsent.w.rpc.find((c) => c.name === "recruit_send_begin")!.args.p_body).includes("面接の日時が決まりましたのでご連絡いたします。"));
+  const first = ideps({ begin: { ...GO, prev_at: null } });
+  await interviewConfirm(first.d, actor, req());
+  assert(String(first.w.rpc.find((c) => c.name === "recruit_send_begin")!.args.p_body).includes("面接の日時が決まりましたのでご連絡いたします。"));
+});
+
+Deno.test("取り消し: 応募者へ LINE で知らせる（既定）。知らせない、を選んだら送らない。LINE 未連携なら、送らずに文面を返す。案内の失敗は partial", async () => {
+  const PREV = "2026-11-20T05:00:00+00:00";
+  const C = { ...GO, kind: "cancel", event_id: "ev-old", prev_at: PREV, notify: true };
+  const { d, w } = ideps({ begin: C });
+  const r = await interviewCancel(d, actor, { applicant_id: A1, request_key: "slack:ivc:V0TEST0010" });
+  assertEquals([r.code, (r.notice as { status: string }).status], ["done", "dry"]);
+  assertEquals(w.order, ["interview_begin", "step:calendar", "interview_save", "send_begin", "step:notice", "interview_finish"]);
+  const sb = w.rpc.find((c) => c.name === "recruit_send_begin")!.args;
+  assertEquals([sb.p_body, sb.p_purpose, sb.p_request_key], [interviewCancelText("試験 太郎", PREV), "interview_cancel", `iv:${OP}:cancel`]);
+  assert(String(sb.p_body).includes("取り消し（キャンセル）となりました") && String(sb.p_body).includes("【取り消しとなった面接】11月20日(金) 14:00"));
+  const off = ideps({ begin: { ...C, notify: false } });
+  const r2 = await interviewCancel(off.d, actor, { applicant_id: A1, request_key: "slack:ivc:V0TEST0011", notify: false });
+  assertEquals([(r2.notice as { status: string }).status, off.w.order.includes("send_begin"), off.w.rpc[0].args.p_notify], ["skipped_off", false, false]);
+  const un = ideps({ begin: { ...C, linked: false } });
+  const r3 = await interviewCancel(un.d, actor, { applicant_id: A1, request_key: "slack:ivc:V0TEST0012" });
+  assertEquals([(r3.notice as { status: string; text: string }).status, (r3.notice as { text: string }).text, un.w.order.includes("send_begin")], ["skipped_unlinked", interviewCancelText("試験 太郎", PREV), false]);
+  const ng = ideps({ begin: C, sendBegin: { ok: true, code: "send", outbox_id: O1, mode: "live", retry_key: "dddddddd-dddd-4ddd-8ddd-ddddddddddd1", to: "Utest", text: "x", actor_name: "担当 花子" }, line: { status: "failed", http: 400, error: "e", requestId: null } });
+  const r4 = await interviewCancel(ng.d, actor, { applicant_id: A1, request_key: "slack:ivc:V0TEST0013" });
+  assertEquals([r4.ok, r4.code, finishOf(ng.w)!.p_result], [true, "partial", "partial"]);
+});
+
+Deno.test("カレンダーの空きの確かめ（設定が true のときだけ）: 別の予定があれば、何も変えずに止める。確かめられなかったときは、止めない。設定が false なら呼ばない", async () => {
+  const mk = (busy: { checked: boolean; busy: boolean; why: string | null } | null, begin: Record<string, unknown>) => {
+    const x = ideps({ begin: { ...GO, calendar_mode: "live", event_id: "ev-old", interview_minutes: 30, ...begin } });
+    const calls: unknown[] = [];
+    x.d.calendar!.busy = (_c, a) => { calls.push(a); return busy ? Promise.resolve(busy) : Promise.reject(new Error("x")); };
+    return { ...x, calls };
+  };
+  const b = mk({ checked: true, busy: true, why: null }, { busy_check: true });
+  const r = await interviewConfirm(b.d, actor, req());
+  assertEquals([r.ok, r.code, b.w.meets.length, b.w.order.includes("interview_save"), finishOf(b.w)!.p_result], [false, "overlap", 0, false, "failed"]);
+  assertEquals(b.calls, [{ start: AT, minutes: 30, excludeEventId: "ev-old" }]);
+  for (const res of [{ checked: true, busy: false, why: null }, { checked: false, busy: false, why: "GAS が、空きの確かめに対応していません" }, null]) {
+    const ok = mk(res, { busy_check: true });
+    assertEquals([(await interviewConfirm(ok.d, actor, req())).code, ok.w.meets.length, ok.calls.length], ["done", 1, 1]);
+  }
+  const off = mk({ checked: true, busy: true, why: null }, { busy_check: false });
+  assertEquals([(await interviewConfirm(off.d, actor, req())).code, off.calls.length], ["done", 0]);
+  const dry = mk({ checked: true, busy: true, why: null }, { busy_check: true, calendar_mode: "dry" });
+  assertEquals([(await interviewConfirm(dry.d, actor, req())).code, dry.calls.length], ["done", 0]);   // 試しモードでは、GAS を呼ばない
 });

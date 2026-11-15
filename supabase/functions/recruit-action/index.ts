@@ -30,7 +30,7 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { alertsScan, handleOp, type OpsActor, type OpsDeps } from "../_shared/recruit-ops.ts";
 import { linePushOnce } from "../_shared/recruit-line.ts";
-import { gasDelete, gasMeet } from "../_shared/recruit-calendar.ts";
+import { gasBusy, gasDelete, gasMeet } from "../_shared/recruit-calendar.ts";
 import { NOTICE_TYPE, REF_TABLE, uuidFrom } from "../_shared/recruit-notice.ts";
 
 const cors = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "authorization, content-type, apikey, x-client-info" };
@@ -101,6 +101,7 @@ function makeDeps(sb: any): OpsDeps {
       },
       meet: (cfg, a) => gasMeet(cfg, a),
       remove: (cfg, eventId) => gasDelete(cfg, eventId),
+      busy: (cfg, a) => gasBusy(cfg, a),   // 設定 calendar_busy_check が true のときだけ呼ばれる（既定 false）
     },
     async bodyChars() {
       const { data } = await sb.from("app_settings").select("value").eq("key", "recruit_slack").maybeSingle();

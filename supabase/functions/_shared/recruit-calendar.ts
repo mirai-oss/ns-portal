@@ -42,3 +42,17 @@ export async function gasDelete(cfg: GasConfig, eventId: string, fetchFn: FetchL
     return j.ok === false ? { ok: false, why: "GAS 側で失敗: " + String(j.error ?? "不明").slice(0, 120) } : { ok: true, why: null };
   } catch (e) { return { ok: false, why: "GAS に届きませんでした: " + String((e as Error)?.name ?? e).slice(0, 60) }; }
 }
+
+// ---- 2026-12-03 カレンダーの空きの確かめ（社長の指示: 面接担当者の予定が重ならないように） ----
+//   ★ いまの GAS には、この入口（action: "busy"）が無い（画面が呼んでいるのは meet と delete_event だけ）。GAS に足すコードと手順は、scratchpad ob18/stage4/GASに足すコード_カレンダーの空き.md。
+//   足すまでは、設定 recruit_actions.calendar_busy_check を false のままにする（＝ここは呼ばれない）。呼んで、GAS が知らない・読めない返事なら「確かめられなかった」として、面接の確定は止めない。
+export type BusyResult = { checked: boolean; busy: boolean; why: string | null };
+/** その時間に、面接のカレンダーに別の予定があるか。excludeEventId＝いまの面接の予定（日時の変更のとき、自分自身を数えない） */
+export async function gasBusy(cfg: GasConfig, a: { start: string; minutes: number; excludeEventId: string }, fetchFn: FetchLike = fetch, timeoutMs = 15000): Promise<BusyResult> {
+  if (!cfg?.url) return { checked: false, busy: false, why: "カレンダーの設定（GAS の URL）がありません" };
+  try {
+    const j = await post(cfg, { action: "busy", start: a.start, minutes: a.minutes, exclude_event_id: a.excludeEventId || "" }, fetchFn, timeoutMs);
+    if (!j || j.ok !== true || typeof j.busy !== "boolean") return { checked: false, busy: false, why: !j ? "GAS の返事が読めませんでした" : "GAS が、空きの確かめに対応していません: " + String(j.error ?? "不明").slice(0, 80) };
+    return { checked: true, busy: j.busy, why: null };
+  } catch (e) { return { checked: false, busy: false, why: "GAS に届きませんでした: " + String((e as Error)?.name ?? e).slice(0, 60) }; }
+}

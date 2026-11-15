@@ -408,15 +408,29 @@ Deno.test("取り消し: 確かめの窓 →［取り消す］で interview_canc
   // deno-lint-ignore no-explicit-any
   const v = o.view as any;
   assertEquals([v.callback_id, v.title.text, v.submit.text], [INTERVIEW_CANCEL_MODAL, "面接を取り消す", "取り消す"]);
-  assert(texts(v).includes("（11/20（金）14:00・オンライン）を取り消します") && texts(v).includes("応募者へは、連絡しません") && texts(v).includes("試しモード"));
+  assert(texts(v).includes("（11/20（金）14:00・オンライン）を取り消します") && texts(v).includes("試しモード"));
+  // 2026-12-03: 取り消しも LINE で知らせる（初期値は「知らせる」）。送る文面を見せる
+  assertEquals(blockOf(v, "notify").element.initial_options.length, 1);
+  assert(texts(v).includes("取り消し（キャンセル）となりました") && texts(v).includes("【取り消しとなった面接】11月20日(金) 14:00"));
   assertEquals(acts.length, 0);
   const s2 = await interviewCancelSubmit(d, actor, { id: "V0IVCANCEL1", root_view_id: "V0IVCANCEL1", private_metadata: v.private_metadata, state: { values: {} } });
   assert(s2.kind === "clear"); await s2.after!();
-  assertEquals(acts, [{ op: "interview_cancel", applicant_id: A1, request_key: "slack:ivc:V0IVCANCEL1", expected: { interview_at: "2026-11-20T05:00:00+00:00", assignee_id: U2 } }]);
-  assertEquals(tells[0].text, "✅ 試験 太郎 さんの面接の日程を取り消しました（応募者へは連絡していません）。");
+  assertEquals(acts, [{ op: "interview_cancel", applicant_id: A1, request_key: "slack:ivc:V0IVCANCEL1", expected: { interview_at: "2026-11-20T05:00:00+00:00", assignee_id: U2 }, notify: false }]);   // チェックを外した（この窓の state に notify が無い）＝知らせない
+  assertEquals(tells[0].text, "✅ 試験 太郎 さんの面接の日程を取り消しました。応募者へは連絡していません。");
+  // チェックあり → notify=true。結果の知らせに、LINE の結果が出る。LINE 未連携 → 案内文を返してもらう（notify=true）・文面を本人にだけ見せる
+  const y = vdeps({ info, result: { ok: true, code: "done", notice: { status: "sent" } } });
+  const sy = await interviewCancelSubmit(y.d, actor, { id: "V3", private_metadata: v.private_metadata, state: { values: { notify: { notify: { selected_options: [{ value: "yes" }] } } } } }); assert(sy.kind === "clear"); await sy.after!();
+  assertEquals([y.acts[0].notify, y.tells[0].text], [true, "✅ 試験 太郎 さんの面接の日程を取り消しました。応募者へ、LINE で知らせました。"]);
+  const un = vdeps({ info: { ...info, linked: false }, result: { ok: true, code: "done", notice: { status: "skipped_unlinked", text: "試験 太郎さん\n\n取り消しの案内" } } });
+  const ou = await interviewCancelOpen(un.d, actor, { applicant_id: A1 }, PLACE);
+  // deno-lint-ignore no-explicit-any
+  assert(ou.kind === "modal" && blockOf((ou as any).view, "notify") === undefined && texts((ou as any).view).includes("LINE と連携していないため"));
+  // deno-lint-ignore no-explicit-any
+  const su = await interviewCancelSubmit(un.d, actor, { id: "V4", private_metadata: (ou as any).view.private_metadata, state: { values: {} } }); assert(su.kind === "clear"); await su.after!();
+  assert(un.acts[0].notify === true && un.tells[0].text.includes("LINE 未連携") && un.tells[0].text.includes("```試験 太郎さん"));
   const ng = vdeps({ info, result: { ok: true, code: "partial" } });
   const s3 = await interviewCancelSubmit(ng.d, actor, { id: "V1", private_metadata: v.private_metadata }); assert(s3.kind === "clear"); await s3.after!();
-  assert(ng.tells[0].text.includes("カレンダーの予定を消せませんでした"));
+  assert(ng.tells[0].text.startsWith("⚠️"));
   const no = vdeps({ info, result: { ok: false, code: "conflict", current_interview_at: null } });
   const s4 = await interviewCancelSubmit(no.d, actor, { id: "V2", private_metadata: v.private_metadata }); assert(s4.kind === "clear"); await s4.after!();
   assert(no.tells[0].text.includes("先に変更されています"));
@@ -563,7 +577,7 @@ Deno.test("確認の窓の［採用にする］: 窓を閉じ、そのあとで 
   const { d, acts, tells } = hdeps();
   const o = await hireSubmit(d, actor, hv({ role: "AL", stores: [S1, S2] }));
   assert(o.kind === "clear" && typeof o.after === "function"); assertEquals(acts.length, 0); await o.after!();
-  assertEquals(acts, [{ op: "hire", applicant_id: A1, role: "AL", store_ids: [S1, S2], notify: true, request_key: "slack:hire:V0HIRE00001", expected: { status: "interviewed" } }]);
+  assertEquals(acts, [{ op: "hire", applicant_id: A1, role: "AL", store_ids: [S1, S2], notify: true, request_key: "slack:hire:V0HIRE00001", expected: { status: "interviewed" }, employment_class: null }]);   // 雇用区分の欄が無い窓（古い形）＝ null（RPC が決める）
   assertEquals(tells, ["🎉 試験 太郎 さんを採用にしました（役割：アルバイト）。🧪 招待リンクは試しモード（本人には届いていません）。"]);
   // 役割・店舗を選んでいない → 窓の中にエラー（採用にしない）
   const e1 = hdeps(); assertEquals([(await hireSubmit(e1.d, actor, hv({ stores: [S1] }))).kind, (await hireSubmit(e1.d, actor, hv({ role: "AL" }))).kind, (await hireSubmit(e1.d, actor, hv({ role: "CEO", stores: [S1] }))).kind, e1.acts.length], ["errors", "errors", "errors", 0]);
@@ -578,4 +592,43 @@ Deno.test("確認の窓の［採用にする］: 窓を閉じ、そのあとで 
   assert((await say({ ok: false, code: "conflict", message: "先に変更されています", current_status: "rejected" })).includes("先に変更されています"));
   assert((await say({ ok: true, code: "noop", message: "すでに採用済みです" })).startsWith("ℹ️ すでに採用済みです"));
   assert((await say({ ok: false, code: "kind_unknown", message: "雇用区分（アルバイト／社員）が決まっていません。管理画面で、区分を先に決めてください" })).includes("区分を先に決めてください"));
+});
+
+Deno.test("面接の変更の確認の窓: 見せる文面は「変更」の文面（変更前・変更後）。初めての確定は、今までどおり", async () => {
+  const ch = await interviewInput(vdeps({ info: { ...INFO, interview_at: "2026-11-19T05:00:00+00:00", interview_mode: "online", interview_url: "https://meet.example/old" } }).d, actor,
+    ivView({ pick: "2026-11-20T05:00:00.000Z", mode: "online" }, { ...IVMETA, exp_at: "2026-11-19T05:00:00+00:00" }), NOW);
+  assert(ch.kind === "push");
+  // deno-lint-ignore no-explicit-any
+  const body = (ch.view as any).blocks.find((b: any) => b.type === "section" && b.text.type === "plain_text").text.text as string;
+  assert(body.includes("面接の日時が変更になりました") && body.includes("【変更前】11月19日(木) 14:00") && body.includes("【変更後の面接日時】11月20日(金) 14:00") && !body.includes("決まりました"));
+  // 重なりで止まったとき: 理由を、押した人だけに知らせる（相手の名前は無い）
+  const x = vdeps({ result: { ok: false, code: "overlap", message: "その時間は、同じ担当者の別の面接と重なっています。別の日時を選んでください" } });
+  // deno-lint-ignore no-explicit-any
+  const cv: any = { id: "V9", root_view_id: "V8", private_metadata: JSON.stringify({ ...IVMETA, at: "2026-11-20T05:00:00.000Z", mode: "online", place: null, notify: true }), state: { values: {} } };
+  const r = await interviewConfirmSubmit(x.d, actor, cv); assert(r.kind === "clear"); await r.after!();
+  assert(x.tells[0].text.includes("確定していません: その時間は、同じ担当者の別の面接と重なっています"));
+});
+
+// ---- 2026-12-04 採用の窓の「雇用区分」（役割とは別の項目） ----
+Deno.test("採用の窓: 雇用区分を、役割とは別に選ぶ（アルバイト・パートの応募＝アルバイト／パート。社員の応募＝正社員）。選んだ区分を hire に渡し、結果の知らせにも出す", async () => {
+  const part = await hireOpen(hdeps({ info: { ...HINFO, classes: ["arbeit", "part"], default_class: "arbeit" } }).d, actor, { applicant_id: A1 }, PLACE);
+  assert(part.kind === "modal");
+  // deno-lint-ignore no-explicit-any
+  const v = part.view as any;
+  // deno-lint-ignore no-explicit-any
+  assertEquals([blockOf(v, "eclass").element.initial_option.value, blockOf(v, "eclass").element.options.map((x: any) => [x.value, x.text.text]), blockOf(v, "role").element.options.map((x: any) => x.value)], ["arbeit", [["arbeit", "アルバイト"], ["part", "パート"]], ["AL"]]);
+  const emp = await hireOpen(hdeps({ info: { ...HINFO, kind: "employee", default_role: "SHAIN", roles: ["SHAIN", "TENCHO", "TEAM", "HQ"], classes: ["regular"], default_class: "regular" } }).d, actor, { applicant_id: A1 }, PLACE);
+  // deno-lint-ignore no-explicit-any
+  assert(emp.kind === "modal" && blockOf((emp as any).view, "eclass").element.options.map((x: any) => x.text.text).join() === "正社員" && blockOf((emp as any).view, "role").element.options.length === 4);
+  // DB 側が古い（選択肢が来ない）ときは、欄を出さない
+  const old = await hireOpen(hdeps().d, actor, { applicant_id: A1 }, PLACE);
+  // deno-lint-ignore no-explicit-any
+  assert(old.kind === "modal" && blockOf((old as any).view, "eclass") === undefined);
+  // deno-lint-ignore no-explicit-any
+  const hv: any = { id: "V0HIRE00009", private_metadata: JSON.stringify({ ...LMETA, exp_status: "interviewed", linked: true }), state: { values: { role: { role: { selected_option: { value: "AL" } } }, eclass: { eclass: { selected_option: { value: "part" } } },
+    stores: { stores: { selected_options: [{ value: S1 }] } }, notify: { notify: { selected_options: [] } } } } };
+  const x = hdeps({ result: { ok: true, code: "done", employment_class: "part", invite: { status: "skipped_off" } } });
+  const r = await hireSubmit(x.d, actor, hv); assert(r.kind === "clear"); await r.after!();
+  assertEquals([x.acts[0].employment_class, x.acts[0].role], ["part", "AL"]);
+  assert(x.tells[0].startsWith("🎉 試験 太郎 さんを採用にしました（役割：アルバイト・雇用区分：パート）。"));
 });
