@@ -28,6 +28,7 @@
 //   ボタンの先は slack-interact → RPC（設計書 §10-5・SQL 2026-11-07_sf_attendance_alerts.sql）。押せる人は RPC が判定（店長=自店舗・TEAM/HQ/CEO）。
 //   判定ロジックは無変更。通知は Slack（勤怠確認チャンネル・ボタン付き）。LINE は 2026-11-08 に停止（body { line: true } で一時的に送れる）。body { slack: false } で Slack を止められる（テスト用）。
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { isServiceRoleRequest, verifiedUid } from "../_shared/auth-verify.ts";
 import { alertFixButton } from "../_shared/attendance-fix-notify.ts";
 import { postAlert } from "../_shared/attendance-alert-notice.ts";   // 2026-11-11: 新しい形（親 1 行＋スレッドに詳細と操作）   // 2026-11-12: 「修正する」はフォームを開く url 付きボタン（定義は共通部品・単体テストあり）
 
@@ -46,12 +47,9 @@ const json = (o: unknown, status = 200) =>
 
 const svc = () => createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
 
-function jwtUid(req: Request): string {
-  try {
-    const jwt = (req.headers.get("Authorization") ?? "").replace(/^Bearer\s+/i, "");
-    return JSON.parse(atob(jwt.split(".")[1].replace(/-/g, "+").replace(/_/g, "/"))).sub ?? "";
-  } catch (_) { return ""; }
-}
+// 2026-11-15（セキュリティ修正）: これまでは jwtUid で、Authorization のトークンの「中身（sub）」を読むだけで、署名・期限を確かめていなかった
+//   （この関数は verify_jwt=false で配置している）。→ _shared/auth-verify.ts の verifiedUid（Supabase Auth にトークンを渡して検証）に置きかえた。
+//   サービス用の鍵の判定も、includes（部分一致）から完全一致（isServiceRoleRequest）へ。
 
 async function linePush(sb: ReturnType<typeof createClient>, text: string) {
   const { data: sec } = await sb.from("app_secrets").select("key,value").eq("key", "line_channel_token").maybeSingle();
@@ -193,14 +191,13 @@ Deno.serve(async (req) => {
     let body: any = {};
     try { body = await req.json(); } catch { /* GET等ボディなし */ }
 
-    const authHeader = req.headers.get("Authorization") ?? "";
-    const isServiceRole = authHeader.includes(Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? " ");
+    const isServiceRole = isServiceRoleRequest(req);
     // 2026-11-08: pg_cron（毎朝 10:00 JST・attendance_anomaly_check_trigger）からは x-notify-secret で呼ぶ（他の cron 起動 EF と同じ）
     const secret = (Deno.env.get("NOTIFY_SLACK_SECRET") ?? "").trim();
     const hdr = (req.headers.get("x-notify-secret") ?? "").trim();
     const isCronSecret = !!(secret && hdr && secret.length === hdr.length && [...secret].every((c, i) => c === hdr[i]));
     if (!isServiceRole && !isCronSecret) {
-      const uid = jwtUid(req);
+      const uid = await verifiedUid(req, sb);
       const { data: u } = await sb.from("users").select("role,is_master,is_active").eq("id", uid).maybeSingle();
       if (!u?.is_active || !(u.is_master || ["CEO", "HQ"].includes(u.role))) {
         return json({ ok: false, error: "権限がありません（CEO/HQ/マスターのみ）" }, 403);

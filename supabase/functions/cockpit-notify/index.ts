@@ -9,6 +9,7 @@
 // デプロイ: supabase functions deploy cockpit-notify --no-verify-jwt
 // =============================================================
 import { notifyTaskEvent, svc } from "../_shared/cockpit.ts";
+import { verifiedUid } from "../_shared/auth-verify.ts";
 
 const cors = {
   "Access-Control-Allow-Origin": "*",
@@ -17,20 +18,16 @@ const cors = {
 const json = (o: unknown, status = 200) =>
   new Response(JSON.stringify(o), { status, headers: { ...cors, "Content-Type": "application/json" } });
 
-function jwtUid(req: Request): string {
-  try {
-    const jwt = (req.headers.get("Authorization") ?? "").replace(/^Bearer\s+/i, "");
-    return JSON.parse(atob(jwt.split(".")[1].replace(/-/g, "+").replace(/_/g, "/"))).sub ?? "";
-  } catch (_) { return ""; }
-}
+// 2026-11-15（セキュリティ修正）: これまでは jwtUid で、Authorization のトークンの「中身（sub）」を読むだけで、署名・期限を確かめていなかった
+//   （この関数は verify_jwt=false で配置している）。→ _shared/auth-verify.ts の verifiedUid（Supabase Auth にトークンを渡して検証）に置きかえた。
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
   if (req.method !== "POST") return json({ ok: false, error: "POSTのみ" }, 405);
 
-  const uid = jwtUid(req);
-  if (!uid) return json({ ok: false, error: "ログインが必要です" }, 401);
   const sb = svc();
+  const uid = await verifiedUid(req, sb);
+  if (!uid) return json({ ok: false, error: "ログインが必要です" }, 401);
   const { data: u } = await sb.from("users").select("id,name,is_master,is_active").eq("id", uid).maybeSingle();
   if (!u?.is_master || u.is_active === false) return json({ ok: false, error: "マスター専用です" }, 403);
 

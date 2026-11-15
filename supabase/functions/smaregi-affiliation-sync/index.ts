@@ -19,6 +19,7 @@
 // 認可: service_role直呼び、または CEO/HQ のJWT。
 // 応答は件数のみ（公開リポジトリのActionsログに氏名・店舗名を残さない）。名前を含む詳細はLark(社内)と staff_store_sync_log にだけ出す。
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { isServiceRoleRequest, verifiedUid } from "../_shared/auth-verify.ts";
 import { loadContracts, getContractToken, loadLinks, loadStoreMap, loadStoreMapPending, API_BASE, fetchRoles, pickRoleId, putStaffStore, wantedRoleName } from "../_shared/smaregi-contracts.ts";
 import { larkPost } from "../_shared/cockpit.ts";
 
@@ -33,12 +34,9 @@ const json = (o: unknown, status = 200) =>
   new Response(JSON.stringify(o), { status, headers: { ...cors, "Content-Type": "application/json" } });
 const svc = () => createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
 
-function jwtUid(req: Request): string {
-  try {
-    const jwt = (req.headers.get("Authorization") ?? "").replace(/^Bearer\s+/i, "");
-    return JSON.parse(atob(jwt.split(".")[1].replace(/-/g, "+").replace(/_/g, "/"))).sub ?? "";
-  } catch (_) { return ""; }
-}
+// 2026-11-15（セキュリティ修正）: これまでは jwtUid で、Authorization のトークンの「中身（sub）」を読むだけで、署名・期限を確かめていなかった
+//   （この関数は verify_jwt=false で配置している）。→ _shared/auth-verify.ts の verifiedUid（Supabase Auth にトークンを渡して検証）に置きかえた。
+//   サービス用の鍵の判定も、includes（部分一致）から完全一致（isServiceRoleRequest）へ。
 
 const tcApi = (c: string, token: string, path: string, init: RequestInit = {}) =>
   fetch(`${API_BASE}/${c}/timecard${path}`, { ...init, headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", ...(init.headers ?? {}) } });
@@ -67,10 +65,9 @@ Deno.serve(async (req) => {
   try {
     const sb = svc();
     const body = await req.json().catch(() => ({}));
-    const authHeader = req.headers.get("Authorization") ?? "";
-    const isServiceRole = authHeader.includes(Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? " ");
+    const isServiceRole = isServiceRoleRequest(req);
     if (!isServiceRole) {
-      const uid = jwtUid(req);
+      const uid = await verifiedUid(req, sb);
       const { data: u } = await sb.from("users").select("role,is_active,is_master").eq("id", uid).maybeSingle();
       if (!u?.is_active || !(u.is_master || ["CEO", "HQ"].includes(u.role))) return json({ ok: false, error: "権限がありません（CEO/HQのみ）" }, 403);
     }

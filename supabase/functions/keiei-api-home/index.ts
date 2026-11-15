@@ -10,6 +10,7 @@
 // 返り値: { ok:true, asOf, dataDate, monthStart, latestBizDate, totals, stores, scope, source }
 //   2026-10-03: dataDate=売上のある最新営業日（通常は前日）。todaySales等・mtd*・目標達成率はdataDate基準（スナップショット経路のみ。フォールバック経路は従来どおり）
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { isServiceRoleRequest, verifiedUid } from "../_shared/auth-verify.ts";
 
 const cors: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -20,12 +21,9 @@ const json = (o: unknown, status = 200) =>
 
 const svc = () => createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
 
-function jwtUid(req: Request): string {
-  try {
-    const jwt = (req.headers.get("Authorization") ?? "").replace(/^Bearer\s+/i, "");
-    return JSON.parse(atob(jwt.split(".")[1].replace(/-/g, "+").replace(/_/g, "/"))).sub ?? "";
-  } catch (_) { return ""; }
-}
+// 2026-11-15（セキュリティ修正）: これまでは jwtUid で、Authorization のトークンの「中身（sub）」を読むだけで、署名・期限を確かめていなかった
+//   （この関数は verify_jwt=false で配置している）。→ _shared/auth-verify.ts の verifiedUid（Supabase Auth にトークンを渡して検証）に置きかえた。
+//   サービス用の鍵の判定も、includes（部分一致）から完全一致（isServiceRoleRequest）へ。
 
 function jstToday(): string {
   return new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10);
@@ -133,12 +131,11 @@ Deno.serve(async (req) => {
     let body: any = {};
     try { body = await req.json(); } catch (_) { /* bodyなしは既定値で動かす */ }
 
-    const authHeader = req.headers.get("Authorization") ?? "";
-    const isServiceRole = authHeader.includes(Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? " ");
+    const isServiceRole = isServiceRoleRequest(req);
     let restrictedStoreIds: string[] | null = null;
     let role = "service_role";
     if (!isServiceRole) {
-      const uid = jwtUid(req);
+      const uid = await verifiedUid(req, sb);
       if (!uid) return json({ ok: false, error: "ログインが必要です" }, 401);
       const scope = await resolveScope(sb, uid);
       if (!scope.allowed) return json({ ok: false, error: scope.error }, 403);

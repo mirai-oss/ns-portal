@@ -4,6 +4,7 @@
 // これにより「ログイン→スプレッドシート全読み」という遅い経路は無くなる（GAS自体は残るが軽い問い合わせのみ）。
 // 目標/目標月次（手入力のためBQ未ミラー）は引き続き従来どおりのログイン経由（dashCall/action=data）で取得する。
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { safeEqual, verifiedUid } from "../_shared/auth-verify.ts";
 // 2026-11-08 P0-1: GAS からの日次同期（action=daily）の合言葉は Supabase Secrets（環境変数 DASH_SYNC_DAILY_SECRET）
 // に置き、専用ヘッダ X-Intake-Secret で受ける。コードや本文には値を書かない。
 const DAILY_SECRET = (Deno.env.get("DASH_SYNC_DAILY_SECRET") ?? "").trim();
@@ -18,12 +19,9 @@ const json = (o: unknown, status = 200) =>
 
 const svc = () => createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
 
-function jwtUid(req: Request): string {
-  try {
-    const jwt = (req.headers.get("Authorization") ?? "").replace(/^Bearer\s+/i, "");
-    return JSON.parse(atob(jwt.split(".")[1].replace(/-/g, "+").replace(/_/g, "/"))).sub ?? "";
-  } catch (_) { return ""; }
-}
+// 2026-11-15（セキュリティ修正）: これまでは jwtUid で、Authorization のトークンの「中身（sub）」を読むだけで、署名・期限を確かめていなかった
+//   （この関数は verify_jwt=false で配置している）。→ _shared/auth-verify.ts の verifiedUid（Supabase Auth にトークンを渡して検証）に置きかえた。
+//   合言葉（X-Intake-Secret・本文の token）の比較も、途中で打ち切らない比較（safeEqual）へ。通す・断るの結果は今までと同じ。
 
 async function dashSecrets(sb: any) {
   const { data } = await sb.from("app_secrets").select("key,value").in("key", ["dash_id", "dash_pw"]);
@@ -216,20 +214,20 @@ Deno.serve(async (req) => {
     if (body.action === "daily") {
       const given = (req.headers.get("x-intake-secret") ?? "").trim();
       if (!DAILY_SECRET) return json({ ok: false, error: "受け口の設定がありません（DASH_SYNC_DAILY_SECRET 未設定）" }, 503);
-      if (!given || given !== DAILY_SECRET) return json({ ok: false, error: "認証エラー" }, 403);
+      if (!given || !safeEqual(given, DAILY_SECRET)) return json({ ok: false, error: "認証エラー" }, 403);
       const result = await runSync(sb);
       return json(result, result.ok ? 200 : 500);
     }
     // ---------------- GASから目標を保存した直後（BQ_LOAD_TOKEN認証・即202で裏実行。目標・目標月次だけ反映） ----------------
     if (body.action === "target_sync") {
       const tk = Deno.env.get("BQ_LOAD_TOKEN") ?? "";
-      if (!tk || String(body.token ?? "").trim() !== tk.trim()) return json({ ok: false, error: "認証エラー" }, 403);
+      if (!tk.trim() || !safeEqual(String(body.token ?? "").trim(), tk.trim())) return json({ ok: false, error: "認証エラー" }, 403);
       // deno-lint-ignore no-explicit-any
       (globalThis as any).EdgeRuntime?.waitUntil(runSync(sb, true).catch(() => {}));
       return json({ ok: true, started: true }, 202);
     }
     // ---------------- ここから先はログイン必須 ----------------
-    const uid = jwtUid(req);
+    const uid = await verifiedUid(req, sb);
     if (!uid) return json({ ok: false, error: "ログインが必要です" }, 401);
     const { data: u } = await sb.from("users").select("role").eq("id", uid).maybeSingle();
     if (!u || !["CEO", "HQ", "TEAM", "TENCHO"].includes(u.role)) {

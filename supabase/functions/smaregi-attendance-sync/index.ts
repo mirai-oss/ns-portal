@@ -20,6 +20,7 @@
 //     現状はservice_role権限での呼び出し（launchd/cron等の内部呼び出し）を主眼に、
 //     人が確認のため叩く場合は認証済みCEO/HQ/マスターのJWTを必須にする。
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { isServiceRoleRequest, verifiedUid } from "../_shared/auth-verify.ts";
 import { loadContracts, getContractToken, loadLinks, loadStoreMap, API_BASE } from "../_shared/smaregi-contracts.ts";
 
 // 2026-11-07: 休憩（breakStartTime1〜breakEndTime2）を labor_cost_daily の break_* 列へ。取込・判定ロジックは無変更（列の追加のみ）。
@@ -39,12 +40,9 @@ const json = (o: unknown, status = 200) =>
 
 const svc = () => createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
 
-function jwtUid(req: Request): string {
-  try {
-    const jwt = (req.headers.get("Authorization") ?? "").replace(/^Bearer\s+/i, "");
-    return JSON.parse(atob(jwt.split(".")[1].replace(/-/g, "+").replace(/_/g, "/"))).sub ?? "";
-  } catch (_) { return ""; }
-}
+// 2026-11-15（セキュリティ修正）: これまでは jwtUid で、Authorization のトークンの「中身（sub）」を読むだけで、署名・期限を確かめていなかった
+//   （この関数は verify_jwt=false で配置している）。→ _shared/auth-verify.ts の verifiedUid（Supabase Auth にトークンを渡して検証）に置きかえた。
+//   サービス用の鍵の判定も、includes（部分一致）から完全一致（isServiceRoleRequest）へ。
 
 // {y}-{m} の月ごとにdaily(division=result)を取得。年月をまたぐ範囲指定はこの関数の外でループする
 async function fetchMonthResults(token: string, contract: string, staffId: string, year: number, month: number) {
@@ -171,10 +169,9 @@ Deno.serve(async (req) => {
     // 認可: CEO/HQ/マスター/店長/チーム長のJWT、またはservice_roleキー直呼び（内部バッチ用）を許可
     // 2026-09-08追加: ユーザー指示「店長・チーム長もスマレジと同期の権限付与してください」に対応
     //   （nippoのシフト管理UI「実績・差異」タブのスマレジ最新取得ボタンを店長・チーム長にも開放）
-    const authHeader = req.headers.get("Authorization") ?? "";
-    const isServiceRole = authHeader.includes(Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? " ");
+    const isServiceRole = isServiceRoleRequest(req);
     if (!isServiceRole) {
-      const uid = jwtUid(req);
+      const uid = await verifiedUid(req, sb);
       const { data: u } = await sb.from("users").select("role,is_master,is_active").eq("id", uid).maybeSingle();
       if (!u?.is_active || !(u.is_master || ["CEO", "HQ", "TENCHO", "TEAM"].includes(u.role))) {
         return json({ ok: false, error: "権限がありません（CEO/HQ/店長/チーム長/マスターのみ）" }, 403);

@@ -12,6 +12,7 @@
 //   さかのぼって2日分を毎回再同期し、Anthropic側の集計が遅れて反映されるケースに備える）
 //   認可: CEO/HQ/マスターのユーザーJWT、またはservice_role直呼び（他のD担当関数と同じ方針）
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { isServiceRoleRequest, verifiedUid } from "../_shared/auth-verify.ts";
 
 const cors: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -22,12 +23,9 @@ const json = (o: unknown, status = 200) =>
 
 const svc = () => createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
 
-function jwtUid(req: Request): string {
-  try {
-    const jwt = (req.headers.get("Authorization") ?? "").replace(/^Bearer\s+/i, "");
-    return JSON.parse(atob(jwt.split(".")[1].replace(/-/g, "+").replace(/_/g, "/"))).sub ?? "";
-  } catch (_) { return ""; }
-}
+// 2026-11-15（セキュリティ修正）: これまでは jwtUid で、Authorization のトークンの「中身（sub）」を読むだけで、署名・期限を確かめていなかった
+//   （この関数は verify_jwt=false で配置している）。→ _shared/auth-verify.ts の verifiedUid（Supabase Auth にトークンを渡して検証）に置きかえた。
+//   サービス用の鍵の判定も、includes（部分一致）から完全一致（isServiceRoleRequest）へ。
 
 async function fetchCostReport(startingAt: string, endingAt: string): Promise<Array<{ date: string; amountCents: number }>> {
   const key = Deno.env.get("ANTHROPIC_ADMIN_API_KEY");
@@ -131,10 +129,9 @@ Deno.serve(async (req) => {
     let body: any = {};
     try { body = await req.json(); } catch { /* GET等ボディなし */ }
 
-    const authHeader = req.headers.get("Authorization") ?? "";
-    const isServiceRole = authHeader.includes(Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? " ");
+    const isServiceRole = isServiceRoleRequest(req);
     if (!isServiceRole) {
-      const uid = jwtUid(req);
+      const uid = await verifiedUid(req, sb);
       const { data: u } = await sb.from("users").select("role,is_master,is_active").eq("id", uid).maybeSingle();
       if (!u?.is_active || !(u.is_master || ["CEO", "HQ"].includes(u.role))) {
         return json({ ok: false, error: "権限がありません（CEO/HQ/マスターのみ）" }, 403);

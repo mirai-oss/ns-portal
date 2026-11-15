@@ -24,6 +24,7 @@
 //   バッチ処理からの呼び出しには向かない。テーブルは共有するが関数としては独立させる）。
 //   宛先は users.role が CEO/HQ かつ line_user_id 連携済みの人全員（2026-08-22時点はCEO本人のみ想定）。
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { isServiceRoleRequest, verifiedUid } from "../_shared/auth-verify.ts";
 import { loadContracts, getContractToken, loadLinks, API_BASE } from "../_shared/smaregi-contracts.ts";
 
 // 2026-10-17 担当D: 複数契約対応。契約ごとに、その契約で打刻された勤怠(labor_cost_daily)とその契約の給与明細を突合する。
@@ -43,12 +44,9 @@ const json = (o: unknown, status = 200) =>
 
 const svc = () => createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
 
-function jwtUid(req: Request): string {
-  try {
-    const jwt = (req.headers.get("Authorization") ?? "").replace(/^Bearer\s+/i, "");
-    return JSON.parse(atob(jwt.split(".")[1].replace(/-/g, "+").replace(/_/g, "/"))).sub ?? "";
-  } catch (_) { return ""; }
-}
+// 2026-11-15（セキュリティ修正）: これまでは jwtUid で、Authorization のトークンの「中身（sub）」を読むだけで、署名・期限を確かめていなかった
+//   （この関数は verify_jwt=false で配置している）。→ _shared/auth-verify.ts の verifiedUid（Supabase Auth にトークンを渡して検証）に置きかえた。
+//   サービス用の鍵の判定も、includes（部分一致）から完全一致（isServiceRoleRequest）へ。
 
 // store_id=0 を指定すると「総合給与」（全店舗合算）が取れる（2026-08-22 使い捨てEdge Functionで確認済み）
 async function fetchMonthlyBudget(token: string, contract: string, staffId: string, year: number, month: number) {
@@ -94,10 +92,9 @@ Deno.serve(async (req) => {
     try { body = await req.json(); } catch { /* GET等ボディなし */ }
 
     // 認可: smaregi-attendance-syncと同じ方針（CEO/HQ/マスターのJWT、またはservice_role直呼び）
-    const authHeader = req.headers.get("Authorization") ?? "";
-    const isServiceRole = authHeader.includes(Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? " ");
+    const isServiceRole = isServiceRoleRequest(req);
     if (!isServiceRole) {
-      const uid = jwtUid(req);
+      const uid = await verifiedUid(req, sb);
       const { data: u } = await sb.from("users").select("role,is_master,is_active").eq("id", uid).maybeSingle();
       if (!u?.is_active || !(u.is_master || ["CEO", "HQ"].includes(u.role))) {
         return json({ ok: false, error: "権限がありません（CEO/HQ/マスターのみ）" }, 403);

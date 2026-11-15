@@ -23,6 +23,7 @@
 //   ③monthly_summary: { mode:'monthly_summary', year_month:'YYYY-MM', store_id?, store?, includeSubBrand? }
 //      → kd_reservation_daily_summaryのその月ぶんを店舗ごとに合算して返す（予約件数・当日率等）
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { isServiceRoleRequest, verifiedUid } from "../_shared/auth-verify.ts";
 
 const cors: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -33,12 +34,9 @@ const json = (o: unknown, status = 200) =>
 
 const svc = () => createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
 
-function jwtUid(req: Request): string {
-  try {
-    const jwt = (req.headers.get("Authorization") ?? "").replace(/^Bearer\s+/i, "");
-    return JSON.parse(atob(jwt.split(".")[1].replace(/-/g, "+").replace(/_/g, "/"))).sub ?? "";
-  } catch (_) { return ""; }
-}
+// 2026-11-15（セキュリティ修正）: これまでは jwtUid で、Authorization のトークンの「中身（sub）」を読むだけで、署名・期限を確かめていなかった
+//   （この関数は verify_jwt=false で配置している）。→ _shared/auth-verify.ts の verifiedUid（Supabase Auth にトークンを渡して検証）に置きかえた。
+//   サービス用の鍵の判定も、includes（部分一致）から完全一致（isServiceRoleRequest）へ。
 
 // GAS bqGetReservation()と同じ一時的サブブランド除外（設計書§8.8 R1・初回突合が済むまでの措置）。
 // 変更する場合はtori-dashboard/gas/Code.gs側の同名リストとA担当を通じて必ず同期させること。
@@ -85,12 +83,11 @@ Deno.serve(async (req) => {
     try { body = await req.json(); } catch { return json({ ok: false, error: "リクエストボディが不正です" }, 400); }
 
     // ---------------- 権限チェック（service_role直呼びは内部ツール/バッチ用に許可） ----------------
-    const authHeader = req.headers.get("Authorization") ?? "";
-    const isServiceRole = authHeader.includes(Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? " ");
+    const isServiceRole = isServiceRoleRequest(req);
     let restrictedStoreIds: string[] | null = null;
     let role = "service_role";
     if (!isServiceRole) {
-      const uid = jwtUid(req);
+      const uid = await verifiedUid(req, sb);
       if (!uid) return json({ ok: false, error: "ログインが必要です" }, 401);
       const scope = await resolveScope(sb, uid);
       if (!scope.allowed) return json({ ok: false, error: scope.error }, 403);

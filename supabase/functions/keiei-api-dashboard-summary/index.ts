@@ -21,6 +21,7 @@
 // （まだDB_PL未反映＝振込確定待ち/PL同期待ち。cost_total等には含まれていない「処理中」の金額）を
 // 追加した。詳細はsupabase/2026-09-06_kd_pl_monthly_seisan.sqlのコメント参照。
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { isServiceRoleRequest, verifiedUid } from "../_shared/auth-verify.ts";
 
 const cors: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -31,12 +32,9 @@ const json = (o: unknown, status = 200) =>
 
 const svc = () => createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
 
-function jwtUid(req: Request): string {
-  try {
-    const jwt = (req.headers.get("Authorization") ?? "").replace(/^Bearer\s+/i, "");
-    return JSON.parse(atob(jwt.split(".")[1].replace(/-/g, "+").replace(/_/g, "/"))).sub ?? "";
-  } catch (_) { return ""; }
-}
+// 2026-11-15（セキュリティ修正）: これまでは jwtUid で、Authorization のトークンの「中身（sub）」を読むだけで、署名・期限を確かめていなかった
+//   （この関数は verify_jwt=false で配置している）。→ _shared/auth-verify.ts の verifiedUid（Supabase Auth にトークンを渡して検証）に置きかえた。
+//   サービス用の鍵の判定も、includes（部分一致）から完全一致（isServiceRoleRequest）へ。
 function isYm(s: unknown): s is string { return typeof s === "string" && /^\d{4}-\d{2}$/.test(s); }
 
 // keiei-api-homeのresolveScope()と同じ判定（経営Dと同じ役職ゲート）。
@@ -210,9 +208,8 @@ Deno.serve(async (req) => {
 
     if (typeof body.kind === "string" && DETAIL_KINDS.includes(body.kind)) {
       // 明細分析（期間は日付単位。年月単位の他kindとは入力が違うため別枠で認証・スコープ判定を行う）
-      const ah = req.headers.get("Authorization") ?? "";
-      if (ah.includes(Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? " ")) return await handleDetail(sb, body, "service_role", null);
-      const uid0 = jwtUid(req);
+      if (isServiceRoleRequest(req)) return await handleDetail(sb, body, "service_role", null);
+      const uid0 = await verifiedUid(req, sb);
       if (!uid0) return json({ ok: false, error: "ログインが必要です" }, 401);
       const sc0 = await resolveScope(sb, uid0);
       if (!sc0.allowed) return json({ ok: false, error: sc0.error }, 403);
@@ -239,12 +236,11 @@ Deno.serve(async (req) => {
     const limit = Math.min(5000, Math.max(1, Number(body.limit) || 500));
     const offset = Math.max(0, Math.floor(Number(body.offset) || 0));
 
-    const authHeader = req.headers.get("Authorization") ?? "";
-    const isServiceRole = authHeader.includes(Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? " ");
+    const isServiceRole = isServiceRoleRequest(req);
     let restrictedStoreIds: string[] | null = null;
     let role = "service_role";
     if (!isServiceRole) {
-      const uid = jwtUid(req);
+      const uid = await verifiedUid(req, sb);
       if (!uid) return json({ ok: false, error: "ログインが必要です" }, 401);
       const scope = await resolveScope(sb, uid);
       if (!scope.allowed) return json({ ok: false, error: scope.error }, 403);

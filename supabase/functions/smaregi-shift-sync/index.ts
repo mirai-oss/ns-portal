@@ -3,6 +3,7 @@
 // v2.6.82: 個別削除(delete_one)・スマレジ側の既存予定を取り込む(import_from_smaregi)を追加
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { getContractToken, resolveStoreContract, staffIdsByUser, API_BASE } from "../_shared/smaregi-contracts.ts";
+import { verifiedUid } from "../_shared/auth-verify.ts";
 
 // 2026-10-17 担当D: 複数契約対応。シフトは店舗単位の操作なので、店舗の運営（＝スマレジ契約）で送り先の契約を決める
 // （店舗の対応は store_external_mappings の有効期間で引く＝運営変更の前後で別契約に切り替わる。判定日はシフトの日付）。
@@ -25,12 +26,8 @@ function addOneDay(dateStr: string): string {
   return d.toISOString().slice(0, 10);
 }
 
-function jwtUid(req: Request): string {
-  try {
-    const jwt = (req.headers.get("Authorization") ?? "").replace(/^Bearer\s+/i, "");
-    return JSON.parse(atob(jwt.split(".")[1].replace(/-/g, "+").replace(/_/g, "/"))).sub ?? "";
-  } catch (_) { return ""; }
-}
+// 2026-11-15（セキュリティ修正）: これまでは jwtUid で、Authorization のトークンの「中身（sub）」を読むだけで、署名・期限を確かめていなかった
+//   （この関数は verify_jwt=false で配置している）。→ _shared/auth-verify.ts の verifiedUid（Supabase Auth にトークンを渡して検証）に置きかえた。
 
 // マスター/CEO/HQ/TEAMは常に可、TENCHOは自店舗のみ
 async function callerAllowed(sb: any, uid: string, storeId: string): Promise<boolean> {
@@ -58,9 +55,9 @@ Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
   try {
     const body = await req.json().catch(() => ({}));
-    const uid = jwtUid(req);
-    if (!uid) return json({ ok: false, error: "unauthorized" }, 401);
     const sb = svc();
+    const uid = await verifiedUid(req, sb);
+    if (!uid) return json({ ok: false, error: "unauthorized" }, 401);
     const action = String(body.action ?? "sync_publish");
 
     // ---- 個別削除: 1件のシフトをスマレジ側も含めて削除する ----
