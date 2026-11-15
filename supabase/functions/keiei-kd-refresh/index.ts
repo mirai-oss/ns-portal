@@ -398,6 +398,25 @@ async function refreshDashboardDaily(sb: any, body: any) {
       });
     }
 
+    // 人件費の内訳をSupabaseの月給判定で上書き（2026-11-15・ユーザー指示）: 2026-10-01以降は、アルバイト＝打刻（その日に月給でない人）、社員＝社員給料・インセンティブ配分のみ。
+    //   スマレジ給与明細からの社員の予備計上はしない／アルバイトだった時期は社員に変わっても必ずアルバイト。BQ(GAS)側の値は使わない。DBの labor_split_daily()（2026-11-15_labor_split_by_pay_type.sql）
+    const LABOR_SPLIT_FROM = "2026-10-01";
+    try {
+      const lsDates = parsed.map((p) => p.period_date).filter((d) => d >= LABOR_SPLIT_FROM).sort();
+      if (lsDates.length) {
+        const ls = await fetchAll((f, t) => sb.rpc("labor_split_daily", { p_from: lsDates[0], p_to: lsDates[lsDates.length - 1] }).order("work_date").order("store_id").range(f, t));
+        const lsMap = new Map<string, any>();
+        for (const r of (ls ?? []) as any[]) lsMap.set(`${r.store_id}|${String(r.work_date).slice(0, 10)}`, r);
+        for (const p of parsed) {
+          if (p.period_date < LABOR_SPLIT_FROM) continue;
+          const r = lsMap.get(`${p.store_id}|${p.period_date}`);
+          const pa = Number(r?.pa) || 0, emp = Number(r?.emp_total) || 0;
+          p.labor_pa = pa; p.labor_emp = emp; p.labor = pa + emp;
+          p.employee_salary_bonus = Number(r?.emp_salary) || 0; p.statutory_welfare = Number(r?.emp_statutory) || 0; p.commute_allowance = Number(r?.emp_commute) || 0;
+        }
+      }
+    } catch (e) { console.error("labor_split_daily 失敗（BQ値のまま続行）:", String(e).slice(0, 200)); }
+
     // 前年同曜日比較: 同じ店舗の364日前（同曜日）の行を自テーブルから引く（蓄積が浅いうちはnullのまま）
     const priorDates = [...new Set(parsed.map((p) => addDays(p.period_date, -364)))];
     const storeIds = [...new Set(parsed.map((p) => p.store_id))];
