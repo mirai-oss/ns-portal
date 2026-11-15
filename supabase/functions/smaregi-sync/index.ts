@@ -41,14 +41,17 @@ const json = (o: unknown, status = 200) =>
 
 const svc = () => createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
 
-function jwtUid(req: Request): string {
-  try {
-    const jwt = (req.headers.get("Authorization") ?? "").replace(/^Bearer\s+/i, "");
-    return JSON.parse(atob(jwt.split(".")[1].replace(/-/g, "+").replace(/_/g, "/"))).sub ?? "";
-  } catch (_) { return ""; }
-}
+// 2026-11-15（セキュリティ修正）: これまでは、Authorization のトークンの「中身（sub）」を読むだけで、署名・期限を確かめていなかった
+//   （この関数は verify_jwt=false で配置している）。→ Supabase Auth にトークンを渡して検証し、検証できたときだけ利用者として扱う。
+//   サービス用の鍵・合言葉（x-notify-secret）での呼び出しは、今までどおり各入口で別に判定する（ここでは利用者なしになる）。
 async function callerRole(req: Request): Promise<{ uid: string; role: string }> {
-  const uid = jwtUid(req);
+  const jwt = (req.headers.get("Authorization") ?? "").replace(/^Bearer\s+/i, "").trim();
+  if (!jwt || jwt.split(".").length !== 3) return { uid: "", role: "" };
+  let uid = "";
+  try {
+    const { data: au, error } = await svc().auth.getUser(jwt);
+    if (!error && au?.user?.id) uid = String(au.user.id);
+  } catch (_) { uid = ""; }
   if (!uid) return { uid: "", role: "" };
   const { data } = await svc().from("users").select("role,is_active").eq("id", uid).single();
   return { uid, role: data && data.is_active ? data.role : "" };
@@ -57,6 +60,25 @@ async function callerRole(req: Request): Promise<{ uid: string; role: string }> 
 // 管理システムで扱う賃金設定: 時給(0)・月給(2)・日給(1。全事業所共通・休日賃金なしだけ＝employee_wage_settings の CHECK と同じ）。営業時間帯別(3)は対象外（2026-11-09 日給を追加）
 const wageSupported = (w: { division: number; storeId: string | null; holidayWage: number | null }) =>
   w.division === 0 || w.division === 2 || (w.division === 1 && !w.storeId && (w.holidayWage === null || w.holidayWage === undefined));
+
+// 2026-11-15: 社員の月給の止め（app_settings.employee_change.monthly_wage_sync_hold）。
+//   止めているあいだは、月給（division=2）の行の修正・削除・送信を、スマレジへ触る前に断る（DB の見張り monthly_wage_sync_hold_guard と同じ除外: 確認が終わった人・入社手続き中の人）。
+//   設定を読めないときは、止めている扱い（安全側）。
+const MONTHLY_HOLD_MSG = "社員の月給は、スマレジとの差（固定残業代など）の確認が終わるまで、変更・削除を止めています。本部に確認してください";
+// deno-lint-ignore no-explicit-any
+async function monthlyWageHold(sb: any, userId: string): Promise<boolean> {
+  try {
+    const { data, error } = await sb.from("app_settings").select("value").eq("key", "employee_change").maybeSingle();
+    if (error) return true;
+    // deno-lint-ignore no-explicit-any
+    const v = (data?.value ?? {}) as Record<string, any>;
+    if (v.monthly_wage_sync_hold !== true) return false;
+    if (Array.isArray(v.monthly_wage_sync_hold_exempt) && v.monthly_wage_sync_hold_exempt.includes(userId)) return false;
+    const { data: wf, error: wErr } = await sb.from("onboarding_workflows").select("id").eq("user_id", userId).in("status", ["hired_confirmed", "form_sent", "registering"]).limit(1);
+    if (wErr) return true;
+    return !(wf && wf.length);
+  } catch (_e) { return true; }
+}
 
 async function getToken(C: string): Promise<string> {
   const res = await fetch(`${ID_BASE}/app/${C}/token`, {
@@ -1003,6 +1025,9 @@ Deno.serve(async (req) => {
         const id = String(body.id ?? "");
         const { data: row } = await sb.from("employee_wage_settings").select("*").eq("id", id).eq("user_id", uid).eq("contract_id", C).maybeSingle();
         if (!row) return json({ ok: false, error: "賃金設定が見つかりません" }, 404);
+        if (Number(row.division) === 2 && await monthlyWageHold(sb, uid)) {
+          return json({ ok: false, error: MONTHLY_HOLD_MSG, hold: "monthly_wage" }, 409);   // スマレジへは何も送っていない
+        }
         if (body.action === "wage_delete") {
           if (row.smaregi_wage_apply_id) {
             const dr = await api(C, token, `/staffs/${staffId}/wage_apply/${encodeURIComponent(String(row.smaregi_wage_apply_id))}`, { method: "DELETE" });
@@ -1029,8 +1054,11 @@ Deno.serve(async (req) => {
       // ---- wage_push ----
       let rowsQ = sb.from("employee_wage_settings").select("*").eq("user_id", uid).eq("contract_id", C).in("sync_status", ["pending", "error"]);
       if (body.action === "wage_update" && body.id) rowsQ = rowsQ.eq("id", String(body.id));
-      const { data: rows } = await rowsQ.order("effective_date");
-      if (!rows?.length) return json({ ok: true, contract_id: C, staffId, pushed: 0, failed: 0, results: [] });
+      const { data: rowsAll } = await rowsQ.order("effective_date");
+      // 月給の止め: 止めているあいだは、月給の行を送らない（送る待ちに月給が紛れても、スマレジへ出さない）
+      const holdMonthly = (rowsAll ?? []).some((r: { division: number }) => Number(r.division) === 2) ? await monthlyWageHold(sb, uid) : false;
+      const rows = (rowsAll ?? []).filter((r: { division: number }) => !(holdMonthly && Number(r.division) === 2));
+      if (!rows?.length) return json({ ok: true, contract_id: C, staffId, pushed: 0, failed: 0, results: [], held_monthly: holdMonthly ? (rowsAll ?? []).length : 0 });
       const results: any[] = [];
       let existing: any[] | null = null;
       const mark = async (id: string, patch: Record<string, unknown>) => { await sb.from("employee_wage_settings").update({ ...patch, updated_at: new Date().toISOString() }).eq("id", id); };
