@@ -12458,6 +12458,8 @@ async function payrollReconLoad(force){
       if(canManage(ME)&&corpId){   // 本部・社長・マスターだけ（DB 側でも payroll_pay_can で確かめている）
         const r=await authed("/rest/v1/rpc/payroll_transfer_recon_status",{method:"POST",body:JSON.stringify({p_year_month:PAYROLL_STATE.yearMonth,p_corp_id:corpId})});
         if(r&&r.ok&&r.body&&r.body.ok===true&&Array.isArray(r.body.batches)) data=r.body;   // 未適用（404）・権限なし・エラーは「出さない」
+        // 2026-11-15: 「正式な証憑から除外した」記録（無ければ空。関数が無い・エラーのときは、今までどおりの表示）
+        if(data){ try{ const c=await authed("/rest/v1/rpc/payroll_transfer_evidence_corrections_list",{method:"POST",body:JSON.stringify({p_year_month:PAYROLL_STATE.yearMonth,p_corp_id:corpId})}); data.evidence_corrections=(c&&c.ok&&Array.isArray(c.body))?c.body:[]; }catch(e){ data.evidence_corrections=[]; } }
       }
     }catch(e){ data=null; }
     if(PAYROLL_STATE.reconKey!==key) return;   // 読み込み中に年月・法人が変わった → 古い結果は捨てる
@@ -12570,11 +12572,17 @@ function payrollReconEvidenceHtml_(batches,other){
   const all=new Map();
   const btn=e=>{ all.set(String(e.evidence_id),e); return `<button class="hq-btn" style="font-size:11px;padding:4px 8px;margin-right:4px" data-recon-act="ev" data-recon-ev="${esc(e.evidence_id)}">開く</button><span style="font-size:10px;color:var(--muted);margin-right:8px">${esc(fmtDT(e.fetched_at))} 取得${e.source?`・${esc(e.source)}`:""}</span>`; };
   const kinds=[["detail_pdf","明細 PDF"],["detail_csv","明細 CSV"],["result_pdf","結果 PDF"],["result_csv","結果 CSV"]];
+  // 2026-11-15: 正式な証憑から除外したもの（最新の記録が excluded）は、正式な証憑に数えず、理由つきで別に出す（ファイルと記録は消さない）
+  const corr=(PAYROLL_STATE.recon&&Array.isArray(PAYROLL_STATE.recon.evidence_corrections))?PAYROLL_STATE.recon.evidence_corrections:[];
+  const exOf=id=>{ const c=corr.filter(x=>x&&String(x.evidence_id)===String(id)&&x.is_latest).pop(); return c&&c.action==="excluded"?c:null; };
+  const exHtml=list=>list.length?`<div style="margin:2px 0 2px 12px;font-size:10px;color:var(--muted)">除外した記録（正式な証憑には数えません）: ${list.map(e=>{ const c=exOf(e.evidence_id); all.set(String(e.evidence_id),e); return `<button class="hq-btn" style="font-size:10px;padding:2px 6px;margin-right:4px;opacity:.7" data-recon-act="ev" data-recon-ev="${esc(e.evidence_id)}">開く</button>理由: ${esc(c.reason||"")}（${esc(c.actor_name||"")}・${esc(fmtDT(c.created_at))}）`; }).join(" ／ ")}</div>`:"";
   const one=b=>{
     const evs=(Array.isArray(b.evidence)?b.evidence:[]).filter(e=>e&&e.evidence_id);
     const cell=(k,label)=>{
-      const files=evs.filter(e=>e.kind===k&&e.storage_path);
-      if(files.length) return `<div style="margin:3px 0"><b>${esc(label)}</b>: ${files.map(btn).join("")}</div>`;
+      const allFiles=evs.filter(e=>e.kind===k&&e.storage_path);
+      const files=allFiles.filter(e=>!exOf(e.evidence_id)), exFiles=allFiles.filter(e=>exOf(e.evidence_id));
+      if(files.length) return `<div style="margin:3px 0"><b>${esc(label)}</b>: ${files.map(btn).join("")}</div>${exHtml(exFiles)}`;
+      if(exFiles.length) return `<div style="margin:3px 0"><b>${esc(label)}</b>: <span style="color:#b45309">正式な証憑はありません</span></div>${exHtml(exFiles)}`;
       const na=evs.filter(e=>e.kind==="unavailable"&&e.wanted_kind===k).pop();
       return `<div style="margin:3px 0"><b>${esc(label)}</b>: <span style="color:#b45309">未取得</span> <span style="font-size:10px;color:var(--muted)">理由: ${na?`${esc(na.unavailable_reason||"")}（${esc(fmtDT(na.fetched_at))}）`:"まだ取りに行っていません（銀行の読み取りは準備中です）"}</span></div>`;
     };
