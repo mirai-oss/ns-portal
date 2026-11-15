@@ -26,6 +26,8 @@ import { isFormLinkPress, fixFormLinkText, fixRequestArgs, fixRequestedParentTex
 import { renderAlert, afterRequest, afterDecide } from "../_shared/attendance-alert-notice.ts";
 // 2026-11-15（社長の指示）: フォームの勤怠申請の新しい形（親 1 行＋スレッド＋修正前後のカード）。新しい形の申請は共通部品が親とカードを書き換える。今までの形の申請は今までの処理のまま
 import { requestCase, afterRequestDecide } from "../_shared/attendance-request-notice.ts";
+// 2026-11-15（社長の指示）: 勤怠申請の 2 段階承認の専用の操作（一次承認・本人確認中・差戻し・却下・最終承認・スマレジへの再実行）。権限と状態の検査は DB の関数。ここは受付と振り分けだけ
+import { actRequest, reasonModal, reasonFromView, REQ_REASON_MODAL, type ReqAction } from "../_shared/attendance-request-actions.ts";
 // 2026-11-26: 採用管理のカードの［担当者を変更］。業務の処理は RPC（recruit_assignee_candidates / recruit_assignee_set）。ここは受付と振り分けだけ
 import { assigneeOpen, assigneeSubmit, ASSIGNEE_ACTION, ASSIGNEE_MODAL, lineOpen, lineInput, lineConfirm, LINE_ACTION, LINE_MODAL, LINE_CONFIRM,
   interviewOpen, interviewInput, interviewConfirmSubmit, interviewCancelOpen, interviewCancelSubmit, INTERVIEW_ACTION, INTERVIEW_CANCEL_ACTION, INTERVIEW_MODAL, INTERVIEW_CONFIRM, INTERVIEW_CANCEL_MODAL,
@@ -115,6 +117,22 @@ const handlers: Record<string, Handler> = {
   "attendance.alert.open": async () => text(""),
   // 勤怠申請のカードの「管理システムで開く」「直して出し直す」（リンクのボタン）。Slack がリンクを開くので、ここは何もしない
   "attendance.req.open": async () => text(""),
+  // 勤怠申請の 2 段階承認（2026-11-15）。カードのボタン → DB の関数 sf_attendance_request_act（一次承認＝その申請の一次承認者だけ／最終承認＝社長だけ／自己承認の禁止／二重の操作／元データの変化、を確かめる）
+  //   差戻し・却下は、理由を書く窓を開く（理由が無いと送れない）。スレッドのふつうの文章の返信は、この関数を通らない（＝承認にも却下にもならない）
+  "attendance.req.first.approve": (ctx) => reqAct(ctx, "first_approve"),
+  "attendance.req.final.approve": (ctx) => reqAct(ctx, "final_approve"),
+  "attendance.req.ask": (ctx) => reqAct(ctx, "ask"),
+  "attendance.req.sync.retry": (ctx) => reqAct(ctx, "retry_sync"),
+  "attendance.req.return": async ({ payload, value, notificationId }) => await openModal(payload.trigger_id, reasonModal({ requestId: value?.request_id, notificationId, op: "return" })),
+  "attendance.req.reject": async ({ payload, value, notificationId }) => await openModal(payload.trigger_id, reasonModal({ requestId: value?.request_id, notificationId, op: "reject" })),
+  [REQ_REASON_MODAL]: async ({ sb, actor, payload }) => {
+    const m = reasonFromView(payload.view);
+    if (!m) return json({ response_action: "errors", errors: { reason: "理由を入れてください" } });
+    const r = await actRequest(sb, sendSlack, { requestId: m.requestId, actorId: actor.user_id, action: m.op, note: m.reason, via: "slack", source: "ef:slack-interact", smaregiFix: (id) => smaregiFix(id, "request_id") });
+    waitUntil(r.after());
+    if (!r.ok) return json({ response_action: "errors", errors: { reason: r.message ?? "処理できませんでした" } });
+    return json({ response_action: "clear" });
+  },
   // 勤怠確認「🗑 打刻を消す」（2026-11-08）: 理由だけのモーダル → RPC sf_attendance_delete_request → マスターへ承認依頼
   "attendance.alert.delete": async ({ payload, value, notificationId }) => {
     return await openModal(payload.trigger_id, attendanceDeleteModal(value, notificationId));
@@ -842,6 +860,13 @@ async function attendanceDecideLegacy(data: any, actor: Actor, approve: boolean,
     await updateMany(data.notification_ids, headMgr + tail);
   })();
   waitUntil(after);
+  return text("");
+}
+// 勤怠申請の 2 段階承認のボタン（一次承認・本人確認中・最終承認・スマレジへの再実行）。DB の関数の結果を、押した人だけに返す。カードと親の書き換え・スレッドの行・スマレジへの反映は、返事のあとで
+async function reqAct({ sb, actor, payload, value }: Ctx, action: ReqAction) {
+  const r = await actRequest(sb, sendSlack, { requestId: value?.request_id, actorId: actor.user_id, action, via: "slack", source: "ef:slack-interact", smaregiFix: (id) => smaregiFix(id, "request_id") });
+  waitUntil(r.after());
+  if (!r.ok) return ephemeral(r.message ?? "処理できませんでした", payload.response_url);
   return text("");
 }
 // フォーム申請の承認 / 却下。承認: RPC がハブに反映 → EF smaregi-attendance-fix（request_id）でスマレジへ（修正=PUT・追加=POST）

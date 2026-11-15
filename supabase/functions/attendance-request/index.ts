@@ -20,6 +20,8 @@ import { isUuid, jstLocalToIso, fixRequestArgs, fixRequestedParentText, fixAppro
 import { afterRequest, afterDecide, alertCase } from "../_shared/attendance-alert-notice.ts";   // 2026-11-11: 勤怠確認の新しい形（親 1 行＋スレッド）。新しい形のアラートは共通部品が書き換える
 // 2026-11-15（社長の指示）: フォームの勤怠申請も「親 1 行＋スレッド＋修正前後のカード」に。スイッチ app_settings.attendance_request_flow.thread が true のときだけ。false・設定なしは、下の今までの処理のまま
 import { flowSettings, postRequest, requestCase, afterRequestDecide } from "../_shared/attendance-request-notice.ts";
+// 2026-11-15: 2 段階承認の専用の操作（管理システムの承認画面から）。Slack のボタンと同じ共通部品・同じ DB の関数を通る（＝Slack と管理システムの状態がずれない）
+import { actRequest, resubmitRequest, messageRequest, approverSet, REQ_ACTIONS, type ReqAction } from "../_shared/attendance-request-actions.ts";
 
 const cors = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "authorization, content-type, apikey, x-client-info", "Access-Control-Allow-Methods": "POST, OPTIONS" };
 const json = (o: unknown, status = 200) => new Response(JSON.stringify(o), { status, headers: { ...cors, "Content-Type": "application/json" } });
@@ -90,6 +92,12 @@ Deno.serve(async (req) => {
   if (b.op === "alert") return await alertGet(sb, actor, b);
   if (b.op === "alert_fix") return await alertFix(sb, actor, b);
   if (b.op === "break_declare") return await breakDeclare(sb, actor, b);
+  // 2026-11-15 追加の op（2 段階承認。処理は末尾の関数。ここより上・下の既存の op は無変更）
+  if (b.op === "req_get") return await reqGet(sb, actor, b);
+  if (b.op === "req_act") return await reqActOp(sb, actor, b);
+  if (b.op === "req_resubmit") return await reqResubmit(sb, actor, b);
+  if (b.op === "req_message") return await reqMessage(sb, actor, b);
+  if (b.op === "approver_set") return await approverSetOp(sb, actor, b);
   if (b.op !== "submit") return json({ ok: false, error: "op は staff / day / submit / decide" }, 400);
 
   // 2026-11-11（ユーザー決定）: 勤怠修正で、変更前後が同じ申請は受け付けない（その人・その日・その店舗の勤怠が 1 件に決まるときだけ確かめる）
@@ -171,6 +179,18 @@ async function smaregiFix(requestId: string): Promise<{ ok: boolean; error?: str
 async function decide(sb: any, actor: { id: string; name: string }, b: any) {
   const approve = b.approve === true || b.approve === "true";
   const note = typeof b.note === "string" && b.note.trim() ? b.note.trim().slice(0, 300) : null;
+  // 2026-11-15: 2 段階承認の申請（flow=two_stage）は、今までの 1 段階の承認の関数では動かせない（DB が止める）。
+  //   今までの画面（経営ダッシュボードの申請履歴）から来たときは、承認＝最終承認（社長だけ）・却下＝却下（理由が必須）として、専用の操作へ回す。
+  //   第 2 弾の SQL が未適用のあいだは flow の列が無い＝読めない＝この分かれ道には入らない（今までどおり）
+  {
+    const { data: fr } = await sb.from("sf_attendance_requests").select("flow").eq("id", String(b.request_id ?? "")).maybeSingle();
+    if (fr?.flow === "two_stage") {
+      const r = await actRequest(sb, notifySlack, { requestId: b.request_id, actorId: actor.id, action: approve ? "final_approve" : "reject", note, via: "portal", source: "ef:attendance-request", smaregiFix: (id) => smaregiFix(id) });
+      if (approve && r.ok) waitUntil(r.after()); else await r.after();
+      if (!r.ok) return json({ ok: false, error: r.message ?? "処理できませんでした", code: r.code }, 400);
+      return json({ ok: true, approved: approve, request_id: b.request_id, two_stage: true, state: r.state });
+    }
+  }
   const { data, error } = await sb.rpc("sf_attendance_request_decide", { p_request_id: String(b.request_id ?? ""), p_actor: actor.id, p_approve: approve, p_note: note, p_via: "portal" });
   if (error) return json({ ok: false, error: error.message }, 400);
   if (!data?.ok) return json({ ok: false, error: data?.message ?? "処理できませんでした", code: data?.code }, 400);
@@ -358,4 +378,51 @@ async function breakDeclare(sb: any, actor: { id: string; name: string }, b: any
   if (!data?.ok) return json({ ok: false, error: data?.message ?? data?.error ?? "申告できませんでした", code: data?.code }, 400);
   // message / already_autofilled: RPC が返す案内（例: すでに自動補完済みなので勤怠修正で直す）。あれば画面にそのまま出す
   return json({ ok: true, id: data.id ?? null, message: typeof data.message === "string" ? data.message : null, already_autofilled: data.already_autofilled === true });
+}
+
+// =============================================================
+// 2026-11-15 追加: 勤怠申請の 2 段階承認（管理システムの承認画面 kintai.html?req=<id> から）
+//   権限と状態の検査は DB の関数（sf_attendance_request_detail / _act / _resubmit / _message / sf_attendance_first_approver_set）。
+//   Slack のカードと親の書き換え・スレッドの行は、共通部品（_shared/attendance-request-actions.ts）が Slack のボタンと同じように行う。
+// =============================================================
+// op=req_get { request_id } … 中身（修正前後）・状態・履歴・「あなたが今できる操作」。見られるのは、対象の本人・申請した人・一次承認者・その店舗を管理できる人
+async function reqGet(sb: any, actor: { id: string; name: string }, b: any) {
+  const id = String(b.request_id ?? "");
+  if (!isUuid(id)) return json({ ok: false, code: "not_found", error: "この申請は見つかりません" }, 404);
+  const { data, error } = await sb.rpc("sf_attendance_request_detail", { p_request_id: id, p_viewer: actor.id });
+  if (error) return json({ ok: false, error: isMissingRpc(error) ? "この機能はまだ使えません" : error.message }, 400);
+  if (!data?.ok) return json({ ok: false, code: data?.code, error: data?.message ?? "見られません" }, data?.code === "not_found" ? 404 : 403);
+  return json(data);
+}
+// op=req_act { request_id, action: first_approve|ask|return|reject|final_approve|cancel|retry_sync, note? } … 差戻し・却下は note（理由）が必須（DB の関数が確かめる）
+async function reqActOp(sb: any, actor: { id: string; name: string }, b: any) {
+  const action = String(b.action ?? "") as ReqAction;
+  if (!REQ_ACTIONS.includes(action)) return json({ ok: false, code: "invalid", error: "この操作はできません" }, 400);
+  const r = await actRequest(sb, notifySlack, { requestId: b.request_id, actorId: actor.id, action, note: typeof b.note === "string" ? b.note : null, via: "portal", source: "ef:attendance-request", smaregiFix: (id) => smaregiFix(id) });
+  // スマレジへ送る操作（最終承認・再実行）は数秒かかるので、返事のあとで。ほかは、Slack の書き換えまで済ませてから返す
+  if (r.ok && (action === "final_approve" || action === "retry_sync")) waitUntil(r.after()); else await r.after();
+  if (!r.ok) return json({ ok: false, code: r.code, error: r.message ?? "処理できませんでした" }, 400);
+  return json({ ok: true, request_id: b.request_id, action, state: r.state });
+}
+// op=req_resubmit { request_id, clock_in, clock_out, break_start_1.., reason } … 差戻しのあとの出し直し（時刻は "YYYY-MM-DDTHH:MM"＝JST）
+async function reqResubmit(sb: any, actor: { id: string; name: string }, b: any) {
+  const r = await resubmitRequest(sb, notifySlack, { requestId: b.request_id, actorId: actor.id, reason: String(b.reason ?? ""), via: "form", source: "ef:attendance-request",
+    times: { clock_in: toIso(b.clock_in), clock_out: toIso(b.clock_out), break_start_1: toIso(b.break_start_1), break_end_1: toIso(b.break_end_1), break_start_2: toIso(b.break_start_2), break_end_2: toIso(b.break_end_2) } });
+  await r.after();
+  if (!r.ok) return json({ ok: false, code: r.code, error: r.message ?? "出し直せませんでした" }, 400);
+  return json({ ok: true, request_id: b.request_id, state: r.state });
+}
+// op=req_message { request_id, body } … 質問（一次承認者）／回答（対象の本人・申請した人）。同じ申請の履歴に残り、同じスレッドに出る。承認にはならない
+async function reqMessage(sb: any, actor: { id: string; name: string }, b: any) {
+  const r = await messageRequest(sb, notifySlack, { requestId: b.request_id, actorId: actor.id, body: String(b.body ?? ""), via: "portal", source: "ef:attendance-request" });
+  await r.after();
+  if (!r.ok) return json({ ok: false, code: r.code, error: r.message ?? "書けませんでした" }, 400);
+  return json({ ok: true, request_id: b.request_id, kind: r.kind, state: r.state });
+}
+// op=approver_set { store_id, user_id（null で未設定に戻す）, note? } … 一次承認者の設定。社長だけ（DB の関数が確かめる）
+async function approverSetOp(sb: any, actor: { id: string; name: string }, b: any) {
+  const r = await approverSet(sb, notifySlack, { storeId: b.store_id, userId: b.user_id ?? null, actorId: actor.id, note: typeof b.note === "string" ? b.note : null, source: "ef:attendance-request" });
+  await r.after();
+  if (!r.ok) return json({ ok: false, code: r.code, error: r.message ?? "設定できませんでした" }, r.code === "forbidden" ? 403 : 400);
+  return json({ ok: true, store_id: b.store_id, user_id: b.user_id ?? null, moved_requests: r.moved ?? 0, slack_linked: r.slackLinked === true });
 }

@@ -244,7 +244,7 @@ export function askText(v: RequestView): string {
   const who = mentionOf(n.slackIds);
   return `${who ? who + "　" : ""}${n.text}`;
 }
-export type LineKind = "approved" | "first_approved" | "final_approved" | "rejected" | "returned" | "asked" | "resubmitted" | "source_changed" | "sync_ok" | "sync_skipped" | "sync_failed" | "sync_retry" | "question" | "answer";
+export type LineKind = "approved" | "first_approved" | "final_approved" | "rejected" | "returned" | "cancelled" | "asked" | "resubmitted" | "source_changed" | "sync_ok" | "sync_skipped" | "sync_failed" | "sync_retry" | "question" | "answer";
 /** できごとを 1 行で（だれが・いつ・何を・理由）。ふつうの文章の返信と区別がつくように、先頭に印を付ける */
 export function eventLine(kind: LineKind, o: { actor?: string | null; at?: string | null; note?: string | null } = {}): string {
   const who = `（${clean(o.actor, 20)}${o.at ? `・${whenJst(o.at)}` : ""}）`;
@@ -255,6 +255,7 @@ export function eventLine(kind: LineKind, o: { actor?: string | null; at?: strin
     case "final_approved": return `✅ 最終承認${who}→ スマレジへ反映します`;
     case "rejected": return `❌ 却下${who}${note}`;
     case "returned": return `↩️ 差戻し${who}${note}`;
+    case "cancelled": return `🚫 取り下げ${who}${note}`;
     case "asked": return `💬 本人に確認中${who}`;
     case "resubmitted": return `✏️ 出し直し${who}　上のカードが新しい内容に変わりました。前の承認は取り消して、一次承認からやり直します。`;
     case "source_changed": return "⚠️ 申請のあとに元の打刻が変わったため、差戻しにしました。内容を確かめて、出し直してください。";

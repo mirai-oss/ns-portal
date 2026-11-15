@@ -56,6 +56,19 @@ textarea{resize:vertical}
 .pill.pending{background:#fdf5e0;color:var(--warn)}.pill.approved{background:#e9f6ef;color:var(--ok)}.pill.rejected{background:#fdecec;color:var(--bad)}
 a{color:inherit}
 @media(max-width:400px){.wrap{padding:14px 10px 60px}.card{padding:14px 12px}.seg button{font-size:14px;padding:11px 6px}}
+/* 2026-11-15 勤怠申請の承認画面（?req=<id>）: 修正前 → 修正後の表・状況・履歴・操作 */
+.cmp{width:100%;border-collapse:collapse;font-size:14.5px;margin-top:8px}
+.cmp th{font-size:12px;color:var(--muted);font-weight:600;text-align:left;padding:4px 6px;border-bottom:1px solid var(--line)}
+.cmp td{padding:8px 6px;border-bottom:1px solid var(--line);vertical-align:top;line-height:1.5}
+.cmp td:first-child{white-space:nowrap;color:var(--muted);font-size:13px}
+.cmp tr.chg td{font-weight:700;color:var(--ink)}
+.cmp tr.chg td:last-child{color:var(--accent)}
+.cmp .sub{display:block;font-size:12px;font-weight:400;color:var(--muted)}
+.kv{font-size:14px;line-height:1.9}.kv b{display:inline-block;min-width:5.5em;color:var(--muted);font-weight:600;font-size:13px}
+.state{display:inline-block;font-size:13px;font-weight:700;border-radius:99px;padding:3px 12px;background:var(--next);color:var(--nextink)}
+.state.done{background:rgba(46,125,50,.12);color:var(--ok)}.state.bad{background:rgba(198,40,40,.12);color:var(--bad)}
+.ev{font-size:13px;line-height:1.6;border-bottom:1px solid var(--line);padding:6px 0}.ev:last-child{border-bottom:none}.ev span{color:var(--muted);font-size:12px}
+.btn.danger{background:var(--bad)}.btn.row{margin-top:10px}
 </style>
 </head>
 <body>
@@ -209,6 +222,43 @@ function serverError(r){
   return e||("送信に失敗しました（HTTP "+(r?r.status:"?")+"）");
 }
 const isUuid=v=>/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(v||""));
+/* ---- 2026-11-15 勤怠申請の承認画面（?req=<id>）の計算。受け口（op=req_get）の時刻は ISO（例 2026-11-14T08:00:00+00:00） ---- */
+const jstParts=iso=>{if(!iso)return null;const t=Date.parse(iso);if(!Number.isFinite(t))return null;const j=new Date(t+9*3600*1000).toISOString();return {d:j.slice(0,10),hm:j.slice(11,16),min:Math.floor(t/60000)};};
+/* 時刻（日本時間）。勤務日の翌日は「翌」・前日は「前日」。無ければ「未打刻」 */
+const reqHm=(iso,date)=>{const p=jstParts(iso);return p?(p.d>date?"翌":p.d<date?"前日":"")+p.hm:"未打刻";};
+const reqDur=m=>{m=Math.abs(Math.round(m));const h=Math.floor(m/60);return h?`${h}時間${String(m%60).padStart(2,"0")}分`:`${m}分`;};
+function reqMinutes(t){
+  const a=jstParts(t&&t.clock_in),b=jstParts(t&&t.clock_out);
+  const pair=(s,e)=>{const x=jstParts(s),y=jstParts(e);return x&&y&&y.min>x.min?y.min-x.min:0};
+  const brk=pair(t&&t.break_start_1,t&&t.break_end_1)+pair(t&&t.break_start_2,t&&t.break_end_2);
+  const span=a&&b&&b.min>a.min?b.min-a.min:null;
+  return {span,brk,net:span==null?null:Math.max(0,span-brk)};
+}
+const reqBreakList=(t,date)=>[[t&&t.break_start_1,t&&t.break_end_1],[t&&t.break_start_2,t&&t.break_end_2]].filter(x=>x[0]).map(x=>`${reqHm(x[0],date)}−${x[1]?reqHm(x[1],date):"終了なし"}`);
+/* 修正前（before＝null なら打刻なし）と修正後を、出勤・退勤・休憩・実働の 4 行で比べる（分の単位）。Slack のカードと同じ決まり */
+function reqCompare(before,after,date){
+  const b=before||{},min=v=>{const p=jstParts(v);return p?p.min:null};
+  const mb=reqMinutes(before),ma=reqMinutes(after),lb=reqBreakList(before,date),la=reqBreakList(after,date);
+  const brkChanged=["break_start_1","break_end_1","break_start_2","break_end_2"].some(k=>min(b[k])!==min(after[k]));
+  const num=l=>l.length>1?l.map((x,i)=>"①②"[i]+x).join(" "):(l[0]||"");
+  const rows=[
+    {label:"出勤",before:reqHm(b.clock_in,date),after:reqHm(after.clock_in,date),changed:min(b.clock_in)!==min(after.clock_in),subBefore:"",subAfter:""},
+    {label:"退勤",before:reqHm(b.clock_out,date),after:reqHm(after.clock_out,date),changed:min(b.clock_out)!==min(after.clock_out),subBefore:"",subAfter:""},
+    {label:"休憩",before:lb.length?`${mb.brk}分`:"なし",after:la.length?`${ma.brk}分`:"なし",changed:brkChanged,subBefore:num(lb),subAfter:num(la)},
+    {label:"実働",before:mb.net==null?"—":reqDur(mb.net),after:ma.net==null?"—":reqDur(ma.net),changed:mb.net!==ma.net,subBefore:"",subAfter:""},
+  ];
+  const dm=mb.net!=null&&ma.net!=null?ma.net-mb.net:null;
+  const delta=dm==null?(mb.net==null&&ma.net!=null?"—（修正前が未打刻）":"—"):dm===0?"±0分":`${dm>0?"+":"−"}${reqDur(dm)}`;
+  return {rows,delta,anyChange:rows.some(r=>r.changed)};
+}
+const REQ_STATE={pending:"承認待ち",first_wait:"一次承認待ち",asking:"本人確認中",returned:"差戻し",final_wait:"最終承認待ち",hold:"確認待ち（一次承認者が未設定）",sync_wait:"承認済み・スマレジ反映待ち",synced:"同期済み",sync_error:"同期エラー",rejected:"却下",cancelled:"取り下げ"};
+const REQ_EVENT={submitted:"申請",routed:"担当の決定",first_approved:"一次承認",asked:"本人確認中にした",returned:"差戻し",resubmitted:"出し直し",source_changed:"元の打刻が変わったため差戻し",final_approved:"最終承認",approved:"承認（勤怠に反映）",rejected:"却下",cancelled:"取り下げ",sync_pending:"スマレジへ送信",sync_synced:"スマレジへ反映済み",sync_failed:"スマレジへの反映に失敗",sync_skipped:"スマレジへの反映なし",sync_retry:"スマレジへ送り直し",question:"質問",answer:"回答"};
+const reqStateClass=st=>st==="synced"||st==="rejected"||st==="cancelled"?"done":st==="sync_error"||st==="hold"?"bad":"";
+/* ISO → 入力欄（datetime-local）の形 "YYYY-MM-DDTHH:MM"（日本時間） */
+const isoToLocal=iso=>{const p=jstParts(iso);return p?`${p.d}T${p.hm}`:"";};
+const reqWhen=iso=>{const p=jstParts(iso);if(!p)return "";const d=p.d.split("-").map(Number);return `${d[1]}/${d[2]} ${p.hm}`;};
+/* 差戻し・却下は理由が必須（受け口と DB でも確かめる） */
+const reqNeedsNote=action=>action==="return"||action==="reject";
 /* ==== LOGIC:END ==== */
 </script>
 <script>
@@ -440,6 +490,89 @@ function leaveAlert(){
   try{history.replaceState(null,"",location.pathname)}catch(e){}   // URL から ?alert= を外す（読み込み直しても通常のフォームのまま）
   render();
 }
+/* ==== 2026-11-15 勤怠申請の承認画面（?req=<申請 id>）。Slack のカードの［管理システムで開く］［直して出し直す］から開く ====
+   中身・状況・履歴・「あなたが今できる操作」は、受け口 op=req_get が返す（権限と状態の検査は DB の関数。画面は出し分けるだけ）。
+   操作は op=req_act / req_resubmit / req_message。Slack のボタンと同じ処理を通る（Slack のカードと親も、同じように書き換わる）。 */
+let REQ=null,REQ_ID="",REQ_ERR="",REQ_MSG="",REQ_BUSY=false;
+const reqParam=()=>{const v=new URLSearchParams(location.search).get("req");return isUuid(v)?v:"";};
+async function openReq(id){
+  REQ_ID=id;
+  if(!REQ)$("app").innerHTML=`<div class="card" style="text-align:center;color:var(--muted)">申請の内容を読み込み中…</div>`;
+  const r=await authed(FN_URL,{method:"POST",body:JSON.stringify({op:"req_get",request_id:id})});
+  if(r.ok&&r.body?.ok){REQ=r.body;REQ_ERR="";}else{REQ=null;REQ_ERR=serverError(r);}
+  renderReq();
+}
+function leaveReq(){REQ=null;REQ_ID="";REQ_ERR="";REQ_MSG="";try{history.replaceState(null,"",location.pathname)}catch(e){}render();}
+function renderReq(){
+  const head=`<div class="card"><h1>⏰ 勤怠申請の確認</h1><div class="who">${esc(ME.name)}（${ROLE_NAME[ME.role]||ME.role}）</div></div>`;
+  const back=`<button class="btn sub" onclick="leaveReq()">申請フォームへ戻る</button>`;
+  if(!REQ){$("app").innerHTML=head+`<div class="card"><div class="msg-err" style="margin-top:0">${esc(REQ_ERR||"この申請は開けません")}</div>${back}</div>`;return;}
+  const q=REQ.request,nm=id=>(id&&REQ.names&&REQ.names[id])||"—",can=REQ.can||{},st=REQ.state||q.status,date=String(q.work_date).slice(0,10);
+  const c=reqCompare(q.kind==="fix"?q.before:null,q,date);
+  const cell=(v,sub)=>`${esc(v)}${sub?`<span class="sub">${esc(sub)}</span>`:""}`;
+  const rows=c.rows.map(r=>`<tr class="${r.changed?"chg":""}"><td>${r.changed?"🔸 ":""}${r.label}</td><td>${cell(r.before,r.subBefore)}</td><td>${r.changed?cell(r.after,r.subAfter):`<span style="color:var(--muted)">変更なし</span>${r.subAfter&&r.label==="休憩"?`<span class="sub">${esc(r.subAfter)}</span>`:""}`}</td></tr>`).join("");
+  const two=q.flow==="two_stage";
+  const first=!two?"":`<div><b>一次承認者</b>${q.first_skipped?"省略（一次承認者 本人の申請）":q.first_approver_id?esc(nm(q.first_approver_id)):"未設定"}${q.first_decided_at?`（一次承認 ${esc(nm(q.first_decided_by))}・${reqWhen(q.first_decided_at)}）`:""}</div>`;
+  const src={changed:"申請のあとに、元の打刻が変わっています。このままの内容では反映できません（差戻しにして、出し直してもらってください）。",gone:"申請のあとに、元の勤怠が無くなっています。このままの内容では反映できません。",appeared:"申請のあとに、この日の打刻が登録されています。「勤怠修正」で出し直しが要ります。"}[REQ.source&&REQ.source.state]||"";
+  const extra=st==="returned"&&q.return_note?`<div class="msg-err">差戻しの理由: ${esc(q.return_note)}</div>`:st==="rejected"&&q.decision_note?`<div class="msg-err">却下の理由: ${esc(q.decision_note)}</div>`:st==="sync_error"?`<div class="msg-err">スマレジへの反映に失敗: ${esc(q.smaregi_error||"不明")}</div>`:"";
+  const info=`<div class="card"><div class="kv">
+    <div><b>種類</b>${q.kind==="add"?"➕ 勤怠追加":"✏️ 勤怠修正"}</div><div><b>店舗</b>${esc(REQ.store_name||"—")}</div><div><b>対象</b>${esc(nm(q.user_id))}</div>
+    <div><b>勤務日</b>${esc(mdwText(date))}</div><div><b>申請</b>${esc(nm(q.requested_by))}（${reqWhen(q.requested_at)}）</div><div><b>理由</b>${esc(q.reason||"—")}</div>
+    ${first}<div><b>状況</b><span class="state ${reqStateClass(st)}">${esc(REQ_STATE[st]||st)}</span></div></div>
+    ${extra}${src?`<div class="msg-err">⚠️ ${esc(src)}</div>`:""}
+    <table class="cmp"><tr><th>項目</th><th>修正前</th><th>修正後</th></tr>${rows}<tr><td>実働の増減</td><td colspan="2">${esc(c.delta)}</td></tr></table></div>`;
+  // 操作: いまできる物だけ（受け口が決めて返す）
+  const b=(label,action,cls)=>`<button class="btn row ${cls||""}" ${REQ_BUSY?"disabled":""} onclick="reqDo('${action}')">${label}</button>`;
+  let ops="";
+  if(can.first_approve)ops+=b("✅ 一次承認する（現場の事実を確認した）","first_approve");
+  if(can.final_approve)ops+=b("✅ 最終承認する（スマレジと管理システムに反映）","final_approve");
+  if(can.legacy_decide)ops+=`<div class="note">この申請は、今までの形（1 段階）です。承認・却下は、Slack のボタンか経営ダッシュボードの申請履歴から行ってください。</div>`;
+  if(can.ask)ops+=b("💬 本人に確認中にする","ask","sub");
+  if(can.retry_sync)ops+=b("🔁 もう一度スマレジへ送る","retry_sync");
+  const needNote=can.return||can.reject||can.cancel;
+  if(needNote)ops+=`<label>理由（差戻し・却下のときは必須）</label><textarea id="req-note" rows="2" maxlength="300" placeholder="例: 退勤は 23:00 のはずです"></textarea>`;
+  if(can.return)ops+=b("↩️ 差戻し（直して出し直してもらう）","return","sub");
+  if(can.reject)ops+=b("❌ 却下する","reject","danger");
+  if(can.cancel)ops+=b("🚫 この申請を取り下げる","cancel","sub");
+  let re="";
+  if(can.resubmit){
+    const f=(id,label,v)=>`<div class="tf"><div class="tl"><span>${label}</span></div><input type="datetime-local" id="${id}" value="${esc(isoToLocal(v))}"></div>`;
+    re=`<div class="card"><div style="font-weight:700;font-size:15px">✏️ 直して出し直す</div><div class="note">出し直すと、前の承認は取り消されて、一次承認からやり直しになります。修正前の値は、いまの打刻で取り直します。</div>
+      <div class="grid2">${f("rs-cin","出勤",q.clock_in)}${f("rs-cout","退勤",q.clock_out)}${f("rs-b1s","休憩1 開始",q.break_start_1)}${f("rs-b1e","休憩1 終了",q.break_end_1)}${f("rs-b2s","休憩2 開始",q.break_start_2)}${f("rs-b2e","休憩2 終了",q.break_end_2)}</div>
+      <label>理由<span class="req">必須</span></label><textarea id="rs-reason" rows="2" maxlength="300">${esc(q.reason||"")}</textarea>
+      <button class="btn" ${REQ_BUSY?"disabled":""} onclick="reqResubmit()">出し直す</button></div>`;
+  }
+  const say=can.message?`<div class="card"><div style="font-weight:700;font-size:15px">💬 質問・回答</div><div class="note">ここに書いた内容は、この申請の履歴と Slack のスレッドに残ります。書いても、承認や却下にはなりません。</div>
+      <textarea id="req-say" rows="2" maxlength="500" style="margin-top:8px"></textarea><button class="btn sub" ${REQ_BUSY?"disabled":""} onclick="reqSay()">送る</button></div>`:"";
+  const evs=(REQ.events||[]).map(e=>`<div class="ev">${esc(REQ_EVENT[e.action]||e.action)}${e.actor_name?`　${esc(e.actor_name)}`:""}　<span>${reqWhen(e.at)}</span>${e.note&&e.action!=="submitted"?`<br>${esc(e.note)}`:""}</div>`).join("")||`<div style="color:var(--muted);font-size:13px">まだありません</div>`;
+  $("app").innerHTML=head+info+(ops||REQ_MSG?`<div class="card">${ops||""}<div id="req-msg">${REQ_MSG}</div></div>`:"")+re+say+`<div class="card"><div style="font-weight:700;font-size:14px;margin-bottom:6px">履歴</div>${evs}</div><div class="card">${back}</div>`;
+}
+async function reqSend(body,after){
+  if(REQ_BUSY)return;REQ_BUSY=true;REQ_MSG="";renderReq();
+  const r=await authed(FN_URL,{method:"POST",body:JSON.stringify(body)});
+  REQ_BUSY=false;
+  REQ_MSG=r.ok&&r.body?.ok?`<div class="msg-ok">✅ ${esc(after)}</div>`:`<div class="msg-err">${esc(serverError(r))}</div>`;
+  await openReq(REQ_ID);   // 受け口の今の状態で描き直す（断られたとき・元の打刻が変わっていて差戻しになったときも、今の状態が出る）
+}
+async function reqDo(action){
+  const note=(($("req-note")||{}).value||"").trim();
+  if(reqNeedsNote(action)&&!note){REQ_MSG=`<div class="msg-err">理由を入れてください（理由が無いと、差戻し・却下はできません）</div>`;renderReq();return;}
+  const ask={first_approve:"一次承認します。よろしいですか？（勤怠はまだ変わりません。このあと社長の最終承認へ進みます）",final_approve:"最終承認します。管理システムの勤怠を書き換えて、スマレジへ反映します。よろしいですか？",reject:"この申請を却下します。よろしいですか？",cancel:"この申請を取り下げます。よろしいですか？"}[action];
+  if(ask&&!confirm(ask))return;
+  const done={first_approve:"一次承認しました。社長の最終承認へ進みます。",final_approve:"最終承認しました。スマレジへ反映しています（結果は、少しして読み込み直すと出ます）。",ask:"「本人確認中」にしました。",return:"差戻しにしました。",reject:"却下しました。",cancel:"取り下げました。",retry_sync:"スマレジへ送り直しています（結果は、少しして読み込み直すと出ます）。"}[action]||"記録しました。";
+  await reqSend({op:"req_act",request_id:REQ_ID,action,note:note||null},done);
+}
+async function reqResubmit(){
+  const v=id=>(($(id)||{}).value||"").trim()||null,reason=(($("rs-reason")||{}).value||"").trim();
+  if(!v("rs-cin")||!v("rs-cout")){REQ_MSG=`<div class="msg-err">出勤と退勤の時刻を入れてください</div>`;renderReq();return;}
+  const e=validateReason(reason);if(e){REQ_MSG=`<div class="msg-err">${esc(e)}</div>`;renderReq();return;}
+  await reqSend({op:"req_resubmit",request_id:REQ_ID,clock_in:v("rs-cin"),clock_out:v("rs-cout"),break_start_1:v("rs-b1s"),break_end_1:v("rs-b1e"),break_start_2:v("rs-b2s"),break_end_2:v("rs-b2e"),reason},"出し直しました。一次承認からやり直しになります。");
+}
+async function reqSay(){
+  const body=(($("req-say")||{}).value||"").trim();
+  if(!body){REQ_MSG=`<div class="msg-err">内容を入れてください</div>`;renderReq();return;}
+  await reqSend({op:"req_message",request_id:REQ_ID,body},"送りました。");
+}
 async function main(){
   if(!sess.get()){renderLogin();return}
   ME=await fetchMe();if(!ME||ME.is_active===false){sess.clear();renderLogin();return}
@@ -448,6 +581,8 @@ async function main(){
   const p=new URLSearchParams(location.search);if(p.get("kind")==="add")KIND="add";if(p.get("kind")==="break")KIND="break";
   DATE=addDays(todayJst(),-1);
   loadHist();
+  const rid=reqParam();
+  if(rid){await openReq(rid);return;}   // 2026-11-15: 勤怠申請の承認画面（?req=<id>）
   const aid=alertParam();
   if(aid)await openAlert(aid);else render();
 }
