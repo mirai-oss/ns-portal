@@ -11730,3 +11730,8 @@ Q5/Q6の回答を受け、設計メモ§9〜§10を確定し担当別指示書�
 - 承認のうえ、ロールバック付きの試し→本番で `bank_bulk_transfer_ingest` を実行（`ns-daily-import/tasks/paypay-sofuri-ingest.js --apply`。bank_read_enabled は送る間だけ ON→終了後 false に戻す）。
 - 結果: 2026-10 トーホー連番1の取引は detail_source=screen_rows・状態 done、明細80件の結果を更新。照合: 80人 / 銀行正常80 / 照合成功80 / ready 80 / 失敗・不一致・確認待ち 0。取引の csv_sha256・csv_format は一覧形式CSVの値に更新。
 - 未実施: 振込済みの自動更新・auto_complete・自動照合（OFFのまま）。bank_read_enabled=false 確認済み。
+
+### 続き 60（2026-11-16）自動完了→振込済み・本部タスクの自動反映（引継ぎ書 5）
+- `2026-12-08_payroll_transfer_auto_reflect.sql`（本番適用済み・rollback つき）: 本番の関数を取得しリポジトリと一致を確認→権限の1行だけ service_role も通す（paid_backfill・task_check）／payroll_recon_complete に「auto 完了かつスイッチ auto_reflect=true のときだけ反映（失敗しても完了は戻さず記録）」を追加。新スイッチ auto_reflect（既定 false）。
+- ロールバック付きの本番試験（通知は無効化）: auto_complete のみ→完了するが反映0／auto_reflect も ON→振込済み印80・名簿チェック80・タスク工程完了・再実行で二重なし。
+- スイッチは全部 OFF のまま（bank_read_enabled・auto_complete・auto_reflect）。ON は別途の明示承認。2026-10 バッチは手動確認で完了済み・振込済み80印は既に反映済み。
