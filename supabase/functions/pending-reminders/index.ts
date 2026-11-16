@@ -65,7 +65,7 @@ async function collect(sb: any, only: Set<string> | null): Promise<Item[]> {
   const want = (k: string) => !only || only.has(k);
   if (want("alert_open") || want("alert_approval")) {
     const { data } = await sb.from("sf_attendance_alerts").select("id,status,notification_ids,approval_notification_ids,created_at,reminded_at,remind_count,updated_at")
-      .in("status", ["open", "fix_requested"]);
+      .in("status", ["open", "fix_requested"]).is("request_id", null);   // 2026-11-16: 「修正する」から 2 段階承認の申請になったアラートは、申請側のリマインドに任せる（アラート側では出さない）
     for (const a of data ?? []) {
       if (a.status === "open" && want("alert_open")) out.push({ kind: "alert_open", table: "sf_attendance_alerts", id: a.id, idsColumn: "notification_ids", ids: a.notification_ids ?? [], since: a.created_at, reminded_at: a.reminded_at, remind_count: a.remind_count ?? 0, label: `勤怠確認 ${a.id.slice(0, 8)}` });
       if (a.status === "fix_requested" && want("alert_approval")) out.push({ kind: "alert_approval", table: "sf_attendance_alerts", id: a.id, idsColumn: "approval_notification_ids", ids: a.approval_notification_ids ?? [], since: a.updated_at ?? a.created_at, reminded_at: a.reminded_at, remind_count: a.remind_count ?? 0, label: `修正承認 ${a.id.slice(0, 8)}` });

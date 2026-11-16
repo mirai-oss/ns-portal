@@ -87,6 +87,7 @@ export type AlertView = {
   decidedByName: string | null; decidedAt: string | null; decisionNote: string | null;
   smaregi: string | null; smaregiError: string | null;
   test: boolean;              // テスト用（スマレジへ反映しない）
+  viaRequest?: boolean;       // 「修正する」から 2 段階承認の申請が作られている（承認・却下は申請のスレッドで行う＝このカードにはボタンを出さない）
 };
 
 /** 親メッセージの状態。done=完了（これ以上の対応は要らない） */
@@ -161,6 +162,9 @@ export function cardMessage(v: AlertView, o: { notificationId: string }): { text
       alertFixButton({ alertId: v.alertId, notificationId: o.notificationId, title: `${d.mdw}　${clean(v.storeName, 30)}　${clean(v.userName, 30)}` }),
       { type: "button", style: "danger", text: { type: "plain_text", text: "🗑 打刻を消す", emoji: true }, action_id: "attendance.alert.delete", value: JSON.stringify({ alert_id: v.alertId, notification_id: o.notificationId, title: `${d.mdw}　${clean(v.storeName, 30)}　${clean(v.userName, 30)}` }) },
     ] });
+  } else if (v.status === "fix_requested" && v.viaRequest) {
+    lines.push("状況：🟡 承認の流れに進んでいます（一次承認 → 社長。承認・却下は、同じチャンネルの「勤怠修正」の申請のスレッドで行います）");
+    push();
   } else if (v.status === "fix_requested") {
     lines.push("状況：🟡 承認待ち");
     push();
@@ -222,7 +226,7 @@ const pickTimes = (r: Record<string, unknown> | null | undefined, prefix = ""): 
 export async function renderAlert(sb: Sb, notify: Notify, alertId: string): Promise<{ v2: boolean; ok?: boolean; error?: string }> {
   const refs = await alertCase(sb, alertId);
   if (!refs) return { v2: false };
-  const { data: a } = await sb.from(REF_TABLE).select(`id,status,request_kind,kind,reasons,user_id,store_id,work_date,labor_cost_daily_id,${TIME_COLS},proposed_clock_in,proposed_clock_out,proposed_break_start_1,proposed_break_end_1,proposed_break_start_2,proposed_break_end_2,fix_reason,requested_by,requested_at,confirmed_by,confirmed_at,decided_by,decided_at,decision_note,smaregi_sync_status,smaregi_error`).eq("id", alertId).maybeSingle();
+  const { data: a } = await sb.from(REF_TABLE).select(`id,status,request_kind,kind,reasons,user_id,store_id,work_date,labor_cost_daily_id,${TIME_COLS},proposed_clock_in,proposed_clock_out,proposed_break_start_1,proposed_break_end_1,proposed_break_start_2,proposed_break_end_2,fix_reason,requested_by,requested_at,confirmed_by,confirmed_at,decided_by,decided_at,decision_note,smaregi_sync_status,smaregi_error,request_id`).eq("id", alertId).maybeSingle();
   if (!a) return { v2: true, ok: false, error: "alert not found" };
   const ids = [...new Set([a.user_id, a.requested_by, a.confirmed_by, a.decided_by].filter(Boolean))];
   const [{ data: us }, { data: st }] = await Promise.all([
@@ -245,7 +249,7 @@ export async function renderAlert(sb: Sb, notify: Notify, alertId: string): Prom
     fixReason: a.fix_reason ?? null, requestedByName: nameOf(a.requested_by), requestedAt: a.requested_at ?? null,
     confirmedByName: nameOf(a.confirmed_by), confirmedAt: a.confirmed_at ?? null,
     decidedByName: nameOf(a.decided_by), decidedAt: a.decided_at ?? null, decisionNote: a.decision_note ?? null,
-    smaregi: a.smaregi_sync_status ?? null, smaregiError: a.smaregi_error ?? null, test: refs.test === true,
+    smaregi: a.smaregi_sync_status ?? null, smaregiError: a.smaregi_error ?? null, test: refs.test === true, viaRequest: !!a.request_id,
   };
   const p = parentMessage(v, { permalink: refs.permalink ?? null });
   const c = cardMessage(v, { notificationId: refs.card! });

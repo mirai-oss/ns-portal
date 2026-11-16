@@ -12,7 +12,7 @@
 //   状態（status・stage・スマレジの結果）は DB のものをそのまま出す。ここでは状態を変えない。
 //   2 段階承認（第 2 弾）の状態とボタンの形も、ここに入れてある（列 flow / stage が無いあいだは、今までの 1 段階の形だけが出る）。
 // =============================================================
-import { hm, dateLabel, whenJst, type Times, type Notify } from "./attendance-alert-notice.ts";
+import { hm, dateLabel, whenJst, renderAlert, type Times, type Notify } from "./attendance-alert-notice.ts";
 import { ATTENDANCE_FORM_URL } from "./attendance-fix-notify.ts";
 
 export const REQ_NOTICE_TYPE = "attendance_request";
@@ -244,7 +244,7 @@ export function askText(v: RequestView): string {
   const who = mentionOf(n.slackIds);
   return `${who ? who + "　" : ""}${n.text}`;
 }
-export type LineKind = "approved" | "first_approved" | "final_approved" | "rejected" | "returned" | "cancelled" | "asked" | "resubmitted" | "source_changed" | "sync_ok" | "sync_skipped" | "sync_failed" | "sync_retry" | "question" | "answer";
+export type LineKind = "approved" | "first_approved" | "final_approved" | "rejected" | "returned" | "cancelled" | "asked" | "resubmitted" | "source_changed" | "sync_ok" | "sync_skipped" | "sync_failed" | "sync_retry" | "question" | "answer" | "president_self";
 /** できごとを 1 行で（だれが・いつ・何を・理由）。ふつうの文章の返信と区別がつくように、先頭に印を付ける */
 export function eventLine(kind: LineKind, o: { actor?: string | null; at?: string | null; note?: string | null } = {}): string {
   const who = `（${clean(o.actor, 20)}${o.at ? `・${whenJst(o.at)}` : ""}）`;
@@ -265,6 +265,7 @@ export function eventLine(kind: LineKind, o: { actor?: string | null; at?: strin
     case "sync_retry": return `🔁 スマレジへもう一度送ります${who}`;
     case "question": return `💬 質問${who}：${cut(o.note, 300)}`;
     case "answer": return `💬 回答${who}：${cut(o.note, 300)}`;
+    case "president_self": return "✅ 本人（社長）の申請のため、承認を省略して反映しました（記録のみ）→ スマレジへ反映します";
   }
 }
 /** リマインド（スレッドへの返信。親は増やさない） */
@@ -326,8 +327,45 @@ export async function renderRequest(sb: Sb, notify: Notify, requestId: string): 
   ]);
   const st = requestState(v);
   await caseUpsert(sb, requestId, { status_code: st.notice, status_label: st.label });
+  await renderLinkedAlert(sb, notify, requestId).catch(() => {});   // 朝のアラートから出した申請なら、アラートのカードも同じ状態に書き換える
   const ok = !!(r1?.ok && r2?.ok);
   return { v2: true, ok, view: v, refs, ...(ok ? {} : { error: String(r1?.error ?? r2?.error ?? "update_failed") }) };
+}
+/** 申請の元の勤怠（labor_cost_daily）に朝のアラートがあれば、アラートのカードと親を書き換える（アラートの状態は DB のトリガーが申請に合わせてある。ここでは状態を変えない） */
+async function renderLinkedAlert(sb: Sb, notify: Notify, requestId: string) {
+  const { data: r } = await sb.from(REQ_REF_TABLE).select("labor_cost_daily_id").eq("id", requestId).maybeSingle();
+  if (!r?.labor_cost_daily_id) return;
+  const { data: a } = await sb.from("sf_attendance_alerts").select("id").eq("labor_cost_daily_id", r.labor_cost_daily_id).maybeSingle();
+  if (a?.id) await renderAlert(sb, notify, a.id);
+}
+
+/**
+ * 申請を作った直後に、社長が自分の勤怠を申請したときだけ承認を省略する（条件の検査は DB の関数 sf_attendance_request_self_apply。条件に合わなければ何もしない）。
+ * 反映できたら true。スマレジへの書き戻しは、afterSelfApply（投稿のあと）で行う。
+ */
+export async function selfApplyPresident(sb: Sb, requestId: string): Promise<boolean> {
+  const { data, error } = await sb.rpc("sf_attendance_request_self_apply", { p_request_id: requestId });
+  return !error && data?.applied === true;
+}
+/**
+ * 朝のアラートの「修正する」から 2 段階承認の申請が作られた直後（道A）: 社長の本人申請なら承認を省略 → アラートのカードを「承認の流れへ」に書き換え
+ * → #勤怠確認 に申請の親＋カード（承認者へメンション）→ 省略したときはスマレジへ反映。同じ申請を 2 回出さない鍵は postRequest 側（申請 id）。
+ */
+export async function afterAlertRequest(sb: Sb, notify: Notify, o: { alertId: string; requestId: string; source: string; slackToken?: string | null; smaregiFix: (requestId: string) => Promise<{ ok: boolean; error?: string }> }): Promise<{ ok: boolean; error?: string; mentions?: number; selfApplied: boolean }> {
+  const applied = await selfApplyPresident(sb, o.requestId).catch(() => false);
+  await renderAlert(sb, notify, o.alertId).catch(() => {});
+  const pr = await postRequest(sb, notify, o.requestId, { source: o.source, slackToken: o.slackToken ?? null }).catch((e) => ({ ok: false, error: String(e).slice(0, 200) }));
+  if (!pr.ok) return { ok: false, error: pr.error, selfApplied: applied };
+  if (applied) await afterSelfApply(sb, notify, o.requestId, { source: o.source, smaregiFix: o.smaregiFix });
+  return { ok: true, mentions: (pr as { mentions?: number }).mentions ?? 0, selfApplied: applied };
+}
+/** 省略して反映したあと: スレッドに記録の行 → スマレジへ反映（札を取れた 1 回だけ）→ 結果の行 */
+export async function afterSelfApply(sb: Sb, notify: Notify, requestId: string, o: { source: string; smaregiFix: (requestId: string) => Promise<{ ok: boolean; error?: string }> }): Promise<void> {
+  const r = await renderRequest(sb, notify, requestId);
+  if (!r.v2 || !r.refs) return;
+  await threadLine(notify, r.refs, requestId, { text: eventLine("president_self"), event: "attendance_request_event", source: o.source, dedupe: `attendance_req_ev:${requestId}:president_self` });
+  const { data: c } = await sb.rpc("sf_attendance_request_sync_claim", { p_request_id: requestId, p_actor: null });
+  if (c?.ok) await syncAndReport(sb, notify, requestId, r.refs, { source: o.source, smaregiFix: o.smaregiFix, key: "sync:self" });
 }
 
 /** いま動く人へ、スレッドで知らせる（メンション）。社長・承認者には、リンクだけの DM も送る（設定で止められる）。key＝同じ知らせを 2 回出さない鍵 */

@@ -25,7 +25,7 @@ import { isFormLinkPress, fixFormLinkText, fixRequestArgs, fixRequestedParentTex
 // 2026-11-11（ユーザー決定）: 勤怠確認の新しい形（親 1 行＋スレッドに詳細と操作）。新しい形のアラートは共通部品が親とカードを書き換える。古い形のアラートは今までの処理のまま
 import { renderAlert, afterRequest, afterDecide } from "../_shared/attendance-alert-notice.ts";
 // 2026-11-15（社長の指示）: フォームの勤怠申請の新しい形（親 1 行＋スレッド＋修正前後のカード）。新しい形の申請は共通部品が親とカードを書き換える。今までの形の申請は今までの処理のまま
-import { requestCase, afterRequestDecide } from "../_shared/attendance-request-notice.ts";
+import { requestCase, afterRequestDecide, afterAlertRequest } from "../_shared/attendance-request-notice.ts";
 // 2026-11-15（社長の指示）: 勤怠申請の 2 段階承認の専用の操作（一次承認・本人確認中・差戻し・却下・最終承認・スマレジへの再実行）。権限と状態の検査は DB の関数。ここは受付と振り分けだけ
 import { actRequest, reasonModal, reasonFromView, REQ_REASON_MODAL, type ReqAction } from "../_shared/attendance-request-actions.ts";
 // 2026-11-26: 採用管理のカードの［担当者を変更］。業務の処理は RPC（recruit_assignee_candidates / recruit_assignee_set）。ここは受付と振り分けだけ
@@ -218,6 +218,7 @@ const handlers: Record<string, Handler> = {
     }
     // 2026-11-08: 申請は RPC で記録済み。Slack の 3 秒制限（スマホで「なかなか接続できません」）を避けるため、ここで先にモーダルを閉じて残りは後で行う
     waitUntil((async () => {
+    if (data.request_id) { await afterAlertRequest(sb, sendSlack, { alertId: data.alert_id, requestId: data.request_id, source: "ef:slack-interact", slackToken: Deno.env.get("SLACK_BOT_TOKEN") ?? null, smaregiFix: (id) => smaregiFix(id, "request_id") }); return; }   // 2026-11-16 道A: 2 段階承認の申請
     if ((await afterRequest(sb, sendSlack, data.alert_id, "ef:slack-interact")).v2) return;   // 新しい形
     const req = { alertId: data.alert_id, summary: data.summary, proposed: data.proposed, reason: data.reason, actorName: actor.name };
     await updateMany(data.notification_ids, fixRequestedParentText({ ...req, when: nowJst() }));

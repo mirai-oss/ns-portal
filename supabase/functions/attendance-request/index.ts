@@ -19,7 +19,7 @@ import { createClient } from "npm:@supabase/supabase-js@2";
 import { isUuid, jstLocalToIso, fixRequestArgs, fixRequestedParentText, fixApprovalSend, alertStatusMessage, alertFormRow, isMissingRpc, BREAK_NOT_READY, breakDeclareArgs, sameTimes, NO_CHANGE_MESSAGE } from "../_shared/attendance-fix-notify.ts";
 import { afterRequest, afterDecide, alertCase } from "../_shared/attendance-alert-notice.ts";   // 2026-11-11: 勤怠確認の新しい形（親 1 行＋スレッド）。新しい形のアラートは共通部品が書き換える
 // 2026-11-15（社長の指示）: フォームの勤怠申請も「親 1 行＋スレッド＋修正前後のカード」に。スイッチ app_settings.attendance_request_flow.thread が true のときだけ。false・設定なしは、下の今までの処理のまま
-import { flowSettings, postRequest, requestCase, afterRequestDecide } from "../_shared/attendance-request-notice.ts";
+import { flowSettings, postRequest, requestCase, afterRequestDecide, afterAlertRequest, selfApplyPresident, afterSelfApply } from "../_shared/attendance-request-notice.ts";
 // 2026-11-15: 2 段階承認の専用の操作（管理システムの承認画面から）。Slack のボタンと同じ共通部品・同じ DB の関数を通る（＝Slack と管理システムの状態がずれない）
 import { actRequest, resubmitRequest, messageRequest, approverSet, REQ_ACTIONS, type ReqAction } from "../_shared/attendance-request-actions.ts";
 
@@ -120,7 +120,10 @@ Deno.serve(async (req) => {
   // 2026-11-15 新しい形（スイッチが ON のときだけ）: #勤怠確認 に親 1 行 → スレッドに修正前後のカード（承認・却下のボタン）→ 承認者へスレッドで知らせる（＋リンクだけの DM）。
   //   送れなかったときは、下の今までの通知（DM のボタン＋「申請あり」）へ進む（承認の依頼が届かないことを避ける）
   if ((await flowSettings(sb)).thread) {
+    // 2026-11-16: 社長が自分の勤怠を申請したときだけ、承認を省略して反映する（条件は DB の関数が検査。ほかは何もしない）
+    const selfApplied = await selfApplyPresident(sb, data.request_id).catch(() => false);
     const pr = await postRequest(sb, notifySlack, data.request_id, { source: "ef:attendance-request", slackToken: Deno.env.get("SLACK_BOT_TOKEN") ?? null }).catch((e) => ({ ok: false, error: String(e).slice(0, 200) }));
+    if (pr.ok && selfApplied) waitUntil(afterSelfApply(sb, notifySlack, data.request_id, { source: "ef:attendance-request", smaregiFix: (id) => smaregiFix(id) }));
     if (pr.ok) return json({ ok: true, request_id: data.request_id, summary: data.summary, approvers_notified: (pr as { mentions?: number }).mentions ?? 0, form_url: FORM_URL, thread: true });
   }
   // マスターへ承認依頼（DM）
@@ -333,6 +336,11 @@ async function alertFix(sb: any, actor: { id: string; name: string }, b: any) {
   // 申請は RPC で記録済み。ここから先（Slack の書き換え・承認依頼）が失敗しても申請は有効なので、エラーにはせず結果に添える
   let approvers = 0, notifyError: string | null = null;
   try {
+    // 2026-11-16 道A: アラートの「修正する」は、2 段階承認の申請として作られる（RPC が request_id を返す）。承認の依頼は申請のスレッドへ
+    if (data.request_id) {
+      const ar = await afterAlertRequest(sb, notifySlack, { alertId: data.alert_id, requestId: data.request_id, source: "ef:attendance-request", slackToken: Deno.env.get("SLACK_BOT_TOKEN") ?? null, smaregiFix: (rid) => smaregiFix(rid) });
+      return json({ ok: true, alert_id: data.alert_id, request_id: data.request_id, summary: data.summary, proposed: data.proposed, approvers_notified: ar.mentions ?? 0, two_stage: true, ...(ar.selfApplied ? { self_applied: true } : {}), ...(ar.ok ? {} : { notify_error: ar.error ?? "Slack への投稿に失敗しました" }) });
+    }
     // 2026-11-11 新しい形のアラート: スレッドのカードを「修正内容＋承認・却下」に書き換え、承認できる人へスレッドで知らせる
     const nv = await afterRequest(sb, notifySlack, data.alert_id, "ef:attendance-request");
     if (nv.v2) return json({ ok: true, alert_id: data.alert_id, summary: data.summary, proposed: data.proposed, approvers_notified: nv.approvers });

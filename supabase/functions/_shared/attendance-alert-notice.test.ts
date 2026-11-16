@@ -178,3 +178,10 @@ Deno.test("投稿: 親 1 通 → スレッドにカード 1 通 → 控えを残
   assertEquals([up.slack_refs.test, up.slack_refs.channel_key, up.status_code], [true, "kintai.check", "todo"]);
   assertEquals(f.upd.find((x) => x.table === "sf_attendance_alerts")!.notification_ids, [up.slack_refs.parent]);
 });
+
+Deno.test("2026-11-16 申請に結びついたアラート: 承認・却下のボタンは出さない（承認は申請のスレッドで行う）", () => {
+  const v: AlertView = { ...base, status: "fix_requested", fixReason: "打刻忘れ", requestedByName: "店長", requestedAt: "2026-11-16T01:00:00Z", proposed: { clock_in: "2026-11-10T06:00:00Z", clock_out: "2026-11-10T14:00:00Z" } };
+  assertEquals(btns(cardMessage({ ...v, viaRequest: true }, { notificationId: "n1" }).blocks), []);
+  assert(body(cardMessage({ ...v, viaRequest: true }, { notificationId: "n1" }).blocks).includes("承認の流れに進んでいます"));
+  assertEquals(btns(cardMessage(v, { notificationId: "n1" }).blocks), ["attendance.fix.approve", "attendance.fix.reject"]);   // 今までの形は変わらない
+});

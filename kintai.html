@@ -584,7 +584,16 @@ async function main(){
   const rid=reqParam();
   if(rid){await openReq(rid);return;}   // 2026-11-15: 勤怠申請の承認画面（?req=<id>）
   const aid=alertParam();
-  if(aid)await openAlert(aid);else render();
+  if(aid){await openAlert(aid);return;}
+  // 2026-11-16: 日報サイトの「修正申請」（時刻なし）の知らせのリンク（?store=&date=&user=）: 店舗・勤務日・本人を選んだ状態で開く（時刻の修正は、ここから勤怠修正を申請する）
+  const pf={store:p.get("store"),date:p.get("date"),user:p.get("user")};
+  if(isUuid(pf.store)&&/^\d{4}-\d{2}-\d{2}$/.test(pf.date||"")){
+    KIND="fix";DATE=pf.date;await setStore(pf.store);
+    for(let i=0;i<50&&DAYLOAD;i++)await new Promise(r=>setTimeout(r,100));   // その日の一覧が読み込まれるまで待つ
+    if(isUuid(pf.user)&&DAY.some(x=>x.user_id===pf.user))pickRow(pf.user);else if(isUuid(pf.user))setUser(pf.user);
+    return;
+  }
+  render();
 }
 /* ログインして「戻る」で戻ってきたとき（ページが保存されていた場合）は読み込み直す */
 window.addEventListener("pageshow",e=>{if(e.persisted&&!ME)location.reload();});
