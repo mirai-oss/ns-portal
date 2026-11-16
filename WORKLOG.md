@@ -7,6 +7,13 @@
 
 ---
 
+**2026-11-16（担当B・この PC）入社登録の小さな直し 3 点＝本番反映済み（社長承認・スイッチ不変・外へ送信なし）**
+- ①メールが仮登録のとき、Slack スレッドに『照合一致』と出ないよう直した（EF `onboarding-notify` **v20**・`_shared/onboarding-blocks.ts` の `uiJobResultBlocks` に任意引数 `provisional`＝既存呼び出しは同じ出力）。ns-portal `18c8737`。デプロイ前に本番を取得して origin/main と同一（6 ファイル全て一致）を確認。
+- ②状況カードから設定の内部名（person_notify_enabled）を削除、③入社手続き中の賃金の入力欄を最初の 1 組だけに（2 組目以降は案内文）。nippo `561fdaf`（Pages 反映・配信ページで確認）。
+- スイッチ（smaregi_write_enabled・onboarding_wage_approval.enabled・新しい通知の形 ほか）は変更していない。次: STEP 2（カレンダーの空き確認の手順書）。
+
+---
+
 **2026-11-11（担当B）給料確定の印・手渡し取消・自動チェックを本番反映／10月誤サイン8件を取消／nippo公開（ee43cc4）**
 - 適用済み（ユーザー実行）: 本体SQL `2026-11-09_payroll_finalized_cash_cancel.sql`（確定の印=法人ID・取消履歴・5関数の権限をauthenticatedのみに・U-25推奨=既存振込タスクに確認工程を足す/取消で振込完了印も戻す・通知）、`2026-11-10_oct_wrong_sign_fix.sql`（2026-10の誤サイン8件を取消・10月を確定前へ）
 - nippo公開: 現金手渡し画面の取消（理由必須・履歴）・確定前の案内。ロールバック=git revert ee43cc4 71c6397
