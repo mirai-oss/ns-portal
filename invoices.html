@@ -12571,7 +12571,7 @@ function payrollReconPeopleHtml_(b){
 function payrollReconEvidenceHtml_(batches,other){
   const all=new Map();
   const btn=e=>{ all.set(String(e.evidence_id),e); return `<button class="hq-btn" style="font-size:11px;padding:4px 8px;margin-right:4px" data-recon-act="ev" data-recon-ev="${esc(e.evidence_id)}">開く</button><span style="font-size:10px;color:var(--muted);margin-right:8px">${esc(fmtDT(e.fetched_at))} 取得${e.source?`・${esc(e.source)}`:""}</span>`; };
-  const kinds=[["detail_pdf","明細 PDF"],["detail_csv","明細 CSV"],["result_pdf","結果 PDF"],["result_csv","結果 CSV"]];
+  const kinds=[["detail_pdf","明細 PDF"],["detail_csv","明細 CSV"],["result_pdf","結果 PDF"],["result_csv","結果 CSV"],["screen_png","銀行の画面（自動取得）"]];
   // 2026-11-15: 正式な証憑から除外したもの（最新の記録が excluded）は、正式な証憑に数えず、理由つきで別に出す（ファイルと記録は消さない）
   const corr=(PAYROLL_STATE.recon&&Array.isArray(PAYROLL_STATE.recon.evidence_corrections))?PAYROLL_STATE.recon.evidence_corrections:[];
   const exOf=id=>{ const c=corr.filter(x=>x&&String(x.evidence_id)===String(id)&&x.is_latest).pop(); return c&&c.action==="excluded"?c:null; };

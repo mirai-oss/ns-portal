@@ -1751,6 +1751,8 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
+**★★★★★★★★2026-11-16 午後（続き 57）WEB総振の取得が成功（80 件正常・CSV 80 件・画面と 1 対 1・PNG 17 枚）→ 証憑保存・一覧形式 CSV・従業員ごとの照合の見える化を実装（ns-daily-import 最新・ns-portal 本コミット）**: SQL `2026-12-06_payroll_transfer_evidence_screen_png.sql` を本番に適用（証憑の種類 screen_png＝取得ジョブだけが登録できる／列 origin／置き場に PNG／`payroll_transfer_line_recon_view`＝読むだけ）。スイッチ `bank_read_enabled`・`auto_complete` は false のまま。**未実行（社長の承認待ち）: ①証憑 18 件の登録 `node tasks/paypay-sofuri-evidence-upload.js <run> --ym 2026-10 --corp 9f3f5239-… --apply` ②銀行結果の DB 送信（bank_bulk_transfer_ingest）③振込済みの自動更新。** 詳細は「続き 57」。
+
 **★★★★★★★2026-11-16 昼（続き 56）WEB総振 段階 2 の最後の 1 か所を実装（ns-daily-import `745e2b5`・実機未実施）**: 「ダウンロード」の先の「振込データのダウンロード」画面の入口 `dl_confirm`（画像リンク `mySubmit_DOWNLOAD()`・形式は CSV 表示のみで選択欄なし）を守りの許可リストに登録し、ジョブが 2 段で押すようにした（テスト全件通過）。**次: 社長に 1 回実行を依頼** `cd /Users/mirai/ns-daily-import && SOFURI_DATE=2026-11-13 node tasks/paypay-sofuri-stage2.js`（13:45〜14:40 を避ける）→ CSV と画面 80 行の 1 対 1 紐づけを確認 → 引継ぎ書 §2 の 3（証憑・個別照合）へ。DB へは送らない版のまま。ns-portal の直近は dcef1f1 以降。
 
 **★★★★★★2026-11-11（担当D）Uber Eats売上取込の調査・実装案を提出（司令塔依頼・本番実装は別承認）**: docs/調査_Uber_Eats売上取込_実装案_担当D_2026-11-11.md。要点: ①取得は **Reporting API（Uber書面承認が必要・15日/32日の範囲上限・72時間で確定）／Manager定期レポート（メール）／Mac mini Playwright／手動週次CSV**。日本版Managerの画面は未確認→スクリーンショット確認が最優先（日別・注文単位のCSVがあるか）。②置き場は既存どおり `stg_delivery_order`（channel='ubereats'）→`kd_delivery_daily`（channel列あり）・`delivery_store_map`に3店追加。③**既存コードの要修正2点**: GAS `bqGetDelivery` は媒体名を「ロケットナウ」固定でチャネル別グループ化していない（Uberが合算される）／「確定行がある店舗×月は速報を使わない」規則がUberの週次確定だと月後半の速報を消す。④税は既存が税込（FLは÷1.08）→Uberは売上＋税で保存。⑤POSとの二重は取込前に1日分で突合（要確認）。⑥工数 約5〜6人日（API承認待ちは別）。質問F1〜F6は報告書末尾。
@@ -11677,3 +11679,9 @@ Q5/Q6の回答を受け、設計メモ§9〜§10を確定し担当別指示書�
 
 ## 2026-11-16 WEB総振 段階 2 仕上げ（続き 56）
 - ns-daily-import `745e2b5`: `lib/sofuri-guard.js` に `dl_confirm`、`lib/sofuri-screen.js` に `HEADING_DL`、`tasks/paypay-sofuri-stage2.js` の `downloadCsv` を 2 段押しに。詳細は ns-daily-import の WORKLOG 同日付。実機は社長の実行待ち。
+
+## 2026-11-16 続き 57: WEB総振の証憑・一覧形式 CSV・従業員ごとの照合
+- 取得は成功（run-20261116-095630・80 件正常・CSV は一覧形式）。ns-daily-import 側: 一覧形式の同一性確認（振込指定日＝一覧・出金口座＝詳細・受付番号・件数・金額。足りなければ停止）／証憑の登録計画と登録コマンド（既定は確認だけ）／保存済みの記録からの組み直し（銀行へ再ログインしない）。テスト 100 件通過。
+- SQL（本番適用済み）: `supabase/2026-12-06_payroll_transfer_evidence_screen_png.sql`（戻し: `…_rollback.sql`）。取引内テストで、PNG 登録・二重防止（同じ SHA-256 は duplicate）・対象の振込なし／JPEG／別の振込は停止・origin=bank_job を確認。`payroll_transfer_line_recon_view(バッチ)`: 既存バッチ（2026-10・80 人）は「照合成功 80・銀行の結果は未確定（CSV 登録のため）・ready 0」。
+- `invoices.html`: 証憑の一覧に「銀行の画面（自動取得）」を追加。
+- 注意: 銀行結果を `bank_bulk_transfer_ingest` で送ると、取引の `csv_sha256`・`csv_format` は新しい CSV（一覧形式）の値に更新される（人が登録した全銀 CSV の値から変わる）。完了済みのバッチなので影響は小さいが、送る前に判断する。
