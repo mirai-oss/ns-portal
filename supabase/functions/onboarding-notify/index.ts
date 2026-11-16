@@ -580,7 +580,7 @@ Deno.serve(async (req) => {
         const v2 = await isV2(sb, wf.id);
         let escalated = false;
         const { data: pn } = await sb.from("onboarding_workflows").select("slack_parent_notification_id").eq("id", wf.id).maybeSingle();
-        let verified: boolean | null = null; let summary = "";
+        let verified: boolean | null = null; let summary = ""; let provisional = false; // provisional: メールが仮登録（本人の認証待ち）。完了扱いにするが「照合済み」とは書かない
         if (job.status === "success" && !job.dry_run) {
           // 保存後の照合: スマレジ GET（smaregi-sync staff_get）と指示値を比べる
           const g = await smaregi("staff_get", { smaregi_staff_id: job.smaregi_staff_id, contract_id: job.contract_id });
@@ -620,7 +620,7 @@ Deno.serve(async (req) => {
             } else if (job.kind === "smaregi_email") {
               // 立会いで確認: 管理画面で入れたメールは本人が登録を完了するまで API の mail に出ない（仮メール）。UI で保存できていれば「仮登録」として完了扱い
               const tmp = !!(job.result as any)?.tmp_email_set;
-              verified = !!g.mail_set || tmp; summary = g.mail_set ? `メールアドレス（${g.mail_masked ?? "—"}）` : tmp ? `メールアドレス（仮登録。本人が認証メールの URL から登録を完了すると確定）` : "メールアドレス（未設定）";
+              verified = !!g.mail_set || tmp; provisional = !g.mail_set && tmp; summary = g.mail_set ? `メールアドレス（${g.mail_masked ?? "—"}）` : tmp ? `メールアドレス（仮登録。本人が認証メールの URL から登録を完了すると確定）` : "メールアドレス（未設定）";
             }
             if (verified !== null && job.item_key) {
               await setItem(sb, wf.id, job.item_key, verified ? "completed" : "failed", { ui_job_id: job.id, verified, result: job.result }, null, "auto", verified ? null : "保存後の照合で不一致（スマレジの値が指示と違う）");
@@ -672,7 +672,7 @@ Deno.serve(async (req) => {
           return json({ ok: true, status: job.status, verified, posted: false });
         }
         if (v2 && job.status === "success" && !job.dry_run && !escalated) summary = UI_JOB_SUMMARY_V2;
-        await thread(sb, wf, `${job.status === "success" ? (verified === false ? "⚠️" : waitingVerify ? "⏳" : "✅") : job.status === "failed" ? (job.error_kind === "screen_changed" && /^事前確認/.test(String(job.error ?? "")) ? "🛑" : "🙋") : "⏳"} スマレジ自動設定（${job.kind}）: ${job.status}${verified === true ? "・照合一致" : verified === false ? "・照合不一致" : waitingVerify ? "・照合待ち" : ""}`, uiJobResultBlocks(wf, pn?.slack_parent_notification_id ?? null, job, verified, summary), "onboarding_ui_job");
+        await thread(sb, wf, `${job.status === "success" ? (verified === false ? "⚠️" : waitingVerify ? "⏳" : "✅") : job.status === "failed" ? (job.error_kind === "screen_changed" && /^事前確認/.test(String(job.error ?? "")) ? "🛑" : "🙋") : "⏳"} スマレジ自動設定（${job.kind}）: ${job.status}${verified === true ? (provisional ? "・仮登録（認証待ち）" : "・照合一致") : verified === false ? "・照合不一致" : waitingVerify ? "・照合待ち" : ""}`, uiJobResultBlocks(wf, pn?.slack_parent_notification_id ?? null, job, verified, summary, { provisional }), "onboarding_ui_job");
         await refreshParent(sb, (await loadView(sb, wf.id)) ?? wf);
         return json({ ok: true, status: job.status, verified });
       }

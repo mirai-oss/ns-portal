@@ -422,12 +422,12 @@ export function commuteSettingModal(meta: { workflow_id: string; user_id: string
 }
 
 /** UI ジョブ（Mac の自動操作）の結果。失敗（打ち切り）なら再実行・手動対応のボタン */
-export function uiJobResultBlocks(wf: WorkflowView, notificationId: string | null, job: { id: string; kind: string; status: string; attempts: number; max_attempts: number; error?: string | null; error_kind?: string | null; dry_run?: boolean }, verified: boolean | null, summary: string) {
+export function uiJobResultBlocks(wf: WorkflowView, notificationId: string | null, job: { id: string; kind: string; status: string; attempts: number; max_attempts: number; error?: string | null; error_kind?: string | null; dry_run?: boolean }, verified: boolean | null, summary: string, opts: { provisional?: boolean } = {}) {
   const value = JSON.stringify({ workflow_id: wf.id, notification_id: notificationId, job_id: job.id, kind: job.kind });
   const label: Record<string, string> = { smaregi_commute: "交通費", smaregi_tax: "源泉所得税", smaregi_payslip: "個別Web給与明細", smaregi_email: "メールアドレス", smaregi_read: "読み取り", smaregi_year_end: "年末調整", smaregi_dependents: "扶養家族", smaregi_store: "事業所" };
   const name = label[job.kind] ?? job.kind;
   if (job.status === "success") {
-    return [{ type: "section", text: { type: "mrkdwn", text: `${verified === false ? "⚠️" : verified === null && !job.dry_run ? "⏳" : "✅"} *${name}をスマレジに${job.dry_run ? "読み取りました" : verified === null ? "入力しました（照合待ち）" : "設定しました"}*（自動操作・${nowJst()}）\n${summary}\n${verified === true ? "🔍 保存後にスマレジから読み直して一致を確認しました" : verified === false ? "⚠️ 保存後の読み直しで値が一致しません。スマレジ管理画面で確認してください" : job.dry_run ? "ℹ️ 照合は行っていません" : "⏳ スマレジの値を読み直して照合しています。一致を確認できるまで「完了」にしません（自動でやり直します）"}` } }];
+    return [{ type: "section", text: { type: "mrkdwn", text: `${verified === false ? "⚠️" : verified === null && !job.dry_run ? "⏳" : "✅"} *${name}をスマレジに${job.dry_run ? "読み取りました" : verified === null ? "入力しました（照合待ち）" : opts.provisional ? "仮登録しました" : "設定しました"}*（自動操作・${nowJst()}）\n${summary}\n${verified === true ? (opts.provisional ? "ℹ️ 仮のメールアドレスとして保存しました。本人が認証メールの URL から登録を完了すると確定します（スマレジから読み直しての照合は、まだできていません）" : "🔍 保存後にスマレジから読み直して一致を確認しました") : verified === false ? "⚠️ 保存後の読み直しで値が一致しません。スマレジ管理画面で確認してください" : job.dry_run ? "ℹ️ 照合は行っていません" : "⏳ スマレジの値を読み直して照合しています。一致を確認できるまで「完了」にしません（自動でやり直します）"}` } }];
   }
   const final = job.status === "failed";
   // 書き込み前の 3 点確認（契約ID・従業員ID・所属事業所）で中止したとき（2026-11-09 ユーザー指示）: 再試行ボタンは出さず手動対応へ
