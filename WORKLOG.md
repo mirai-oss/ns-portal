@@ -11725,3 +11725,8 @@ Q5/Q6の回答を受け、設計メモ§9〜§10を確定し担当別指示書�
 ### 続き 58（2026-11-16）証憑18件を本番に登録
 - `paypay-sofuri-evidence-upload.js --apply` を実行。2026-10 トーホー連番1のバッチに screen_png 17 + result_csv 1 を登録（置き場 `toho/2026-10/1/`）。再実行は「登録済み18・これから0」になる（重複防止）。
 - 銀行結果のDB送信・bank_read_enabled・auto_complete・振込済み自動更新は未実施（すべてOFFのまま、別途承認待ち）。
+
+### 続き 59（2026-11-16）銀行結果を本番DBへ取り込み
+- 承認のうえ、ロールバック付きの試し→本番で `bank_bulk_transfer_ingest` を実行（`ns-daily-import/tasks/paypay-sofuri-ingest.js --apply`。bank_read_enabled は送る間だけ ON→終了後 false に戻す）。
+- 結果: 2026-10 トーホー連番1の取引は detail_source=screen_rows・状態 done、明細80件の結果を更新。照合: 80人 / 銀行正常80 / 照合成功80 / ready 80 / 失敗・不一致・確認待ち 0。取引の csv_sha256・csv_format は一覧形式CSVの値に更新。
+- 未実施: 振込済みの自動更新・auto_complete・自動照合（OFFのまま）。bank_read_enabled=false 確認済み。
