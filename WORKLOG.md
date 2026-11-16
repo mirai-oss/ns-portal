@@ -1751,6 +1751,8 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
+**★★★★★★★2026-11-16 昼（続き 56）WEB総振 段階 2 の最後の 1 か所を実装（ns-daily-import `745e2b5`・実機未実施）**: 「ダウンロード」の先の「振込データのダウンロード」画面の入口 `dl_confirm`（画像リンク `mySubmit_DOWNLOAD()`・形式は CSV 表示のみで選択欄なし）を守りの許可リストに登録し、ジョブが 2 段で押すようにした（テスト全件通過）。**次: 社長に 1 回実行を依頼** `cd /Users/mirai/ns-daily-import && SOFURI_DATE=2026-11-13 node tasks/paypay-sofuri-stage2.js`（13:45〜14:40 を避ける）→ CSV と画面 80 行の 1 対 1 紐づけを確認 → 引継ぎ書 §2 の 3（証憑・個別照合）へ。DB へは送らない版のまま。ns-portal の直近は dcef1f1 以降。
+
 **★★★★★★2026-11-11（担当D）Uber Eats売上取込の調査・実装案を提出（司令塔依頼・本番実装は別承認）**: docs/調査_Uber_Eats売上取込_実装案_担当D_2026-11-11.md。要点: ①取得は **Reporting API（Uber書面承認が必要・15日/32日の範囲上限・72時間で確定）／Manager定期レポート（メール）／Mac mini Playwright／手動週次CSV**。日本版Managerの画面は未確認→スクリーンショット確認が最優先（日別・注文単位のCSVがあるか）。②置き場は既存どおり `stg_delivery_order`（channel='ubereats'）→`kd_delivery_daily`（channel列あり）・`delivery_store_map`に3店追加。③**既存コードの要修正2点**: GAS `bqGetDelivery` は媒体名を「ロケットナウ」固定でチャネル別グループ化していない（Uberが合算される）／「確定行がある店舗×月は速報を使わない」規則がUberの週次確定だと月後半の速報を消す。④税は既存が税込（FLは÷1.08）→Uberは売上＋税で保存。⑤POSとの二重は取込前に1日分で突合（要確認）。⑥工数 約5〜6人日（API承認待ちは別）。質問F1〜F6は報告書末尾。
 
 **★★★2026-11-10 13:30（司令塔）Slack 店舗日報画像 v2 ＋ F/L/FL 評価基準管理＝設計 v1.1 確定（売上KPIは店内のみ・F/L/FL の分母だけ店内＋デリバリー〈税抜換算は Q11 判断待ち〉・月間のみ4段階評価・暫定固定・ダイニー低評価・店舗別Slack配信・停止は日報のみ承認制）。担当A へ実装指示（docs/実装指示書_担当A_店舗日報画像v2_FL評価_2026-11-10.md）。本番未変更。**　同日: P0-1 B マージ済み・融資トークン切替完了（定時実行 11/10 05:00 成功）・給与 U-23/24 の①②適用済み・U-25 本体SQL は担当B で承認待ち。
@@ -11672,3 +11674,6 @@ Q5/Q6の回答を受け、設計メモ§9〜§10を確定し担当別指示書�
 - ユーザー依頼「AI利用料が少しずつ上がっている。内訳を調べて」→ 内訳を日次で保存するようにした。SQL `2026-11-12_api_cost_breakdown.sql` 適用（新表・RLSはCEO/HQ/マスターのみ参照）／`api-cost-report-sync` 再デプロイ（Cost Report API を group_by=workspace_id,description でも取得。失敗しても合計同期には影響しない）。過去95日を取り直し済み（253行）。
 - 実測（10/1〜11/11・$58.9）: claude-sonnet-5 が $56.1（95%）、claude-sonnet-5-5 $2.7、haiku-5-5 $0.07。種類別は 入力$22・キャッシュ書込$19・キャッシュ読込$8・出力$9。ワークスペースは全て既定（分かれていない）。
 - 注意: 請求書の明細読み取り（invoice-lines-ocr／invoice-auto-sales）は sonnet-5-5 で、全体の5%弱。主因ではない。キャッシュ使用（約半分）はEdge Functionにcache_controlが無いので、Hermes等のエージェント系の使い方。
+
+## 2026-11-16 WEB総振 段階 2 仕上げ（続き 56）
+- ns-daily-import `745e2b5`: `lib/sofuri-guard.js` に `dl_confirm`、`lib/sofuri-screen.js` に `HEADING_DL`、`tasks/paypay-sofuri-stage2.js` の `downloadCsv` を 2 段押しに。詳細は ns-daily-import の WORKLOG 同日付。実機は社長の実行待ち。
