@@ -97,6 +97,7 @@ Deno.serve(async (req) => {
   if (b.op === "req_act") return await reqActOp(sb, actor, b);
   if (b.op === "req_resubmit") return await reqResubmit(sb, actor, b);
   if (b.op === "req_message") return await reqMessage(sb, actor, b);
+  if (b.op === "req_mine") return await reqMine(sb, actor);
   if (b.op === "approver_set") return await approverSetOp(sb, actor, b);
   if (b.op !== "submit") return json({ ok: false, error: "op は staff / day / submit / decide" }, 400);
 
@@ -426,6 +427,20 @@ async function reqMessage(sb: any, actor: { id: string; name: string }, b: any) 
   await r.after();
   if (!r.ok) return json({ ok: false, code: r.code, error: r.message ?? "書けませんでした" }, 400);
   return json({ ok: true, request_id: b.request_id, kind: r.kind, state: r.state });
+}
+// op=req_mine … 自分（本人または申請した人）あてに「確認の質問」が来ている申請の一覧（kintai.html の上の目立つ欄。Slack を使っていない人のため）
+async function reqMine(sb: any, actor: { id: string; name: string }) {
+  const { data } = await sb.from("sf_attendance_requests").select("id,work_date,store_id,user_id")
+    .eq("status", "pending").eq("flow", "two_stage").eq("stage", "asking").or(`user_id.eq.${actor.id},requested_by.eq.${actor.id}`)
+    .order("requested_at", { ascending: false }).limit(20);
+  const rows = data ?? [];
+  if (!rows.length) return json({ ok: true, items: [] });
+  const [{ data: sts }, { data: us }] = await Promise.all([
+    sb.from("stores").select("id,name").in("id", [...new Set(rows.map((r: any) => r.store_id))]),
+    sb.from("users").select("id,name").in("id", [...new Set(rows.map((r: any) => r.user_id))]),
+  ]);
+  const nm = (arr: any[] | null, id: string) => (arr ?? []).find((x) => x.id === id)?.name ?? null;
+  return json({ ok: true, items: rows.map((r: any) => ({ request_id: r.id, work_date: r.work_date, store_name: nm(sts, r.store_id), user_name: nm(us, r.user_id) })) });
 }
 // op=approver_set { store_id, user_id（null で未設定に戻す）, note? } … 一次承認者の設定。社長だけ（DB の関数が確かめる）
 async function approverSetOp(sb: any, actor: { id: string; name: string }, b: any) {

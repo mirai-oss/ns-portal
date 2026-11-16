@@ -203,3 +203,13 @@ Deno.test("理由の窓: 差戻しと却下で言葉が変わる。理由が空�
   assertEquals(reasonFromView(view("x", JSON.stringify({ request_id: RID, op: "approve" }))), null);
   assertEquals(reasonFromView(view("x", "{")), null);
 });
+
+Deno.test("2026-11-16 質問: 本人が Slack にいないときは、申請した人（店長など）にメンション＋管理画面で答えてもらう案内。従業員本人へは何も送らない", async () => {
+  const v = rpcView({ stage: "asking" }); v.slack = { [U.first]: "U0FIRST001", [U.requester]: "U0REQST001" } as never;
+  const g = fakes({ view: v, rpc: { sf_attendance_request_message: () => ({ ok: true, kind: "question", state: "asking", actor_name: "チーム長 次郎" }) } });
+  await (await messageRequest(g.sb, g.notify, { requestId: RID, actorId: U.first, body: "退勤は何時でしたか", via: "portal", source: "test" })).after();
+  const t = String(g.sends()[0].text);
+  assert(t.startsWith("<@U0REQST001>　💬 質問（チーム長 次郎・"));
+  assert(t.includes("本人は Slack を使っていません") && t.includes("確認の質問が届いています"));
+  assertEquals(g.sends().length, 1);   // 本人への DM などは出さない
+});

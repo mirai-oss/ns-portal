@@ -107,9 +107,12 @@ export async function messageRequest(sb: Sb, notify: Notify, o: { requestId: unk
     if (!r.v2 || !r.view || !r.refs) return;
     const v = r.view;
     // 回答 → 一次承認者にメンション（答えが来たことに気付けるように）／質問 → 対象の本人が Slack にいればメンション（アルバイトは Slack にいないので、管理画面で見る）
-    const to = kind === "answer" ? (v.firstApproverId ? v.slack[v.firstApproverId] : null) : v.slack[v.userId];
+    //   2026-11-16 STEP 2: 本人が Slack にいないときは、申請した人（店長など）にメンション＋「管理システムの勤怠画面で答えてもらう」案内（従業員本人へは何も送らない）
+    const target = v.slack[v.userId] ?? (v.requestedBy && v.requestedBy !== v.userId ? v.slack[v.requestedBy] : null);
+    const to = kind === "answer" ? (v.firstApproverId ? v.slack[v.firstApproverId] : null) : target;
     const who = mentionOf([to]);
-    await threadLine(notify, r.refs, id, { text: `${who ? who + "　" : ""}${eventLine(kind, { actor: String(data.actor_name ?? ""), at: new Date().toISOString(), note: body })}`,
+    const hint = kind === "question" && !v.slack[v.userId] ? `\n本人は Slack を使っていません。本人には、管理システムの勤怠の画面（上に「確認の質問が届いています」と出ます）で答えてもらってください。` : "";
+    await threadLine(notify, r.refs, id, { text: `${who ? who + "　" : ""}${eventLine(kind, { actor: String(data.actor_name ?? ""), at: new Date().toISOString(), note: body })}${hint}`,
       event: "attendance_request_message", source: o.source, dedupe: `attendance_req_ev:${id}:${kind}:${Date.now()}` });
   } };
 }

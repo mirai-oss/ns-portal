@@ -393,10 +393,14 @@ function formHtml(){
     <div id="msg">${MSG}</div>
   </div>`;
 }
+/* 2026-11-16 STEP 2: 承認する人からの質問（本人・申請した人あて）。Slack を使っていない人（アルバイト）は、ここで気付く */
+let ASKS=[];
+const askHtml=()=>ASKS.length?`<div class="card"><div style="font-weight:700;font-size:15px">💬 確認の質問が届いています（${ASKS.length}件）</div><div class="note">承認する人から、申請の内容について質問があります。開いて、答えを書いてください（承認や却下にはなりません）。</div>${ASKS.map(a=>`<div class="ro"><a href="?req=${esc(a.request_id)}">${esc(String(a.work_date).slice(5).replace("-","/"))}　${esc(a.store_name||"")}　${esc(a.user_name||"")}</a></div>`).join("")}</div>`:"";
+async function loadAsks(){const r=await authed(FN_URL,{method:"POST",body:JSON.stringify({op:"req_mine"})});if(r.ok&&Array.isArray(r.body?.items)){ASKS=r.body.items;if(!reqParam()&&!ALERT)render();}}
 function render(){
   const head=`<div class="card"><h1>⏰ 勤怠の追加・修正申請</h1><div class="who">${esc(ME.name)}（${ROLE_NAME[ME.role]||ME.role}）・承認されるとスマレジと管理システムに反映されます</div></div>`;
   const body=ALERT?alertHtml():(ALERT_MSG?`<div class="card"><div class="msg-err" style="margin-top:0">${esc(ALERT_MSG)}</div><div class="note" style="margin-top:8px">下の通常のフォームから申請できます。</div></div>`:"")+formHtml();
-  $("app").innerHTML=head+body+`<div class="card"><div style="font-weight:700;font-size:14px;margin-bottom:6px">最近の申請</div><div class="hist" id="hist">${HIST_HTML}</div></div>`;
+  $("app").innerHTML=head+askHtml()+body+`<div class="card"><div style="font-weight:700;font-size:14px;margin-bottom:6px">最近の申請</div><div class="hist" id="hist">${HIST_HTML}</div></div>`;
   paintTimes();
 }
 function clearPick(){USER="";BEFORE=null;BEFORE_T=null;SHOW_B2=false;if(KIND==="fix")T=defaultTimes();}
@@ -581,6 +585,7 @@ async function main(){
   const p=new URLSearchParams(location.search);if(p.get("kind")==="add")KIND="add";if(p.get("kind")==="break")KIND="break";
   DATE=addDays(todayJst(),-1);
   loadHist();
+  loadAsks().catch(()=>{});
   const rid=reqParam();
   if(rid){await openReq(rid);return;}   // 2026-11-15: 勤怠申請の承認画面（?req=<id>）
   const aid=alertParam();
