@@ -11721,3 +11721,7 @@ Q5/Q6の回答を受け、設計メモ§9〜§10を確定し担当別指示書�
 - SQL（本番適用済み）: `supabase/2026-12-06_payroll_transfer_evidence_screen_png.sql`（戻し: `…_rollback.sql`）。取引内テストで、PNG 登録・二重防止（同じ SHA-256 は duplicate）・対象の振込なし／JPEG／別の振込は停止・origin=bank_job を確認。`payroll_transfer_line_recon_view(バッチ)`: 既存バッチ（2026-10・80 人）は「照合成功 80・銀行の結果は未確定（CSV 登録のため）・ready 0」。
 - `invoices.html`: 証憑の一覧に「銀行の画面（自動取得）」を追加。
 - 注意: 銀行結果を `bank_bulk_transfer_ingest` で送ると、取引の `csv_sha256`・`csv_format` は新しい CSV（一覧形式）の値に更新される（人が登録した全銀 CSV の値から変わる）。完了済みのバッチなので影響は小さいが、送る前に判断する。
+
+### 続き 58（2026-11-16）証憑18件を本番に登録
+- `paypay-sofuri-evidence-upload.js --apply` を実行。2026-10 トーホー連番1のバッチに screen_png 17 + result_csv 1 を登録（置き場 `toho/2026-10/1/`）。再実行は「登録済み18・これから0」になる（重複防止）。
+- 銀行結果のDB送信・bank_read_enabled・auto_complete・振込済み自動更新は未実施（すべてOFFのまま、別途承認待ち）。
