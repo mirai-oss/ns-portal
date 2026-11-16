@@ -9,8 +9,8 @@ begin
   if not exists (select 1 from app_settings where key = 'recruit_revert_selftest_result') then raise exception '停止: 戻しの予行が成功していません（1/2 を実行して3分待ってください）'; end if;
   if exists (select 1 from cron.job where jobname = 'recruit-revert-selftest') then raise exception '停止: 予行がまだ動いています（もう少し待ってください）'; end if;
   select value into v_cfg from app_settings where key = 'recruit_actions';
-  if (v_cfg ->> 'send_enabled') is distinct from 'false' then raise exception '停止: send_enabled が false ではありません'; end if;
-  if v_cfg ->> 'line_mode' <> 'dry' or v_cfg ->> 'calendar_mode' <> 'dry' then raise exception '停止: すでに live になっています'; end if;
+  if coalesce(v_cfg ->> 'send_enabled', 'false') <> 'false' then raise exception '停止: send_enabled が false ではありません'; end if;
+  if coalesce(v_cfg ->> 'line_mode', 'dry') <> 'dry' or coalesce(v_cfg ->> 'calendar_mode', 'dry') <> 'dry' then raise exception '停止: すでに live になっています'; end if;
   if not exists (select 1 from applicants where name = 'テスト応募者（社長）' and answers ->> '_test' = 'true' and line_user_id is not null) then raise exception '停止: テスト応募者の LINE 連携がまだです'; end if;
 
   perform cron.unschedule('recruit-live-test-revert') where exists (select 1 from cron.job where jobname = 'recruit-live-test-revert');
