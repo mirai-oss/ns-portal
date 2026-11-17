@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-11-17-v173";
+const BUILD_TAG="2026-11-17-v174";
 const PAYROLL_CANCEL_READY=true;
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
@@ -13967,8 +13967,13 @@ async function payrollExportCsv(){
   // 2026-09-05修正：ユーザー指摘「本部タスクの法人がN-Style固定になっている」に対応。
   // 給与仕訳はまだ有限会社トーホーエージェンシー分のみ対応（画面上部の案内文と同じ前提）のため、
   // 既定値をN-Styleからトーホーへ変更した
-  const taskR=await createTransferConfirmTask("payroll",PAYROLL_STATE.yearMonth,transferDate,paidNames,"トーホー"); // scope_key=対象年月（月ごとに1つの開いているタスクとして扱う）
-  const schedBody={ year_month:PAYROLL_STATE.yearMonth, scheduled_date:transferDate, hq_task_id:(taskR.ok&&taskR.body)||null, created_by:ME.id, updated_at:new Date().toISOString() };
+  // 2026-11-17変更: 本部タスクは「対象月×法人」ごとに 1 つ。トーホー＝scope_key が対象年月（今までどおり）、ほかの法人（LiveGate）＝「対象年月:法人コード」。
+  //   法人の名前もタスクの「法人」に入れる（以前は常に「トーホー」）。
+  const pcorp=payrollCorpDef_(); const isToho=pcorp.key==="toho";
+  const taskR=await createTransferConfirmTask("payroll",isToho?PAYROLL_STATE.yearMonth:PAYROLL_STATE.yearMonth+":"+pcorp.code,transferDate,paidNames,pcorp.label);
+  const schedBody={ year_month:PAYROLL_STATE.yearMonth, scheduled_date:transferDate, created_by:ME.id, updated_at:new Date().toISOString() };
+  // 振込予定の表は「対象月」に 1 行だけ（法人別ではない）。トーホーのタスクとの結び付きを、あとから出力した別の法人で上書きしない
+  if(isToho) schedBody.hq_task_id=(taskR.ok&&taskR.body)||null;
   if(PAYROLL_STATE.transferPrepared) schedBody.export_token=PAYROLL_STATE.transferToken; // 出力の印（正しい手順を通った出力であることを DB が確かめる）
   const schedR=await authed(`/rest/v1/payroll_transfer_schedule`,{method:"POST",headers:{Prefer:"resolution=merge-duplicates,return=minimal"},body:JSON.stringify(schedBody)}).catch(()=>({ok:false,body:null}));
   if(PAYROLL_STATE.transferPrepared){

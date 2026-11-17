@@ -11786,3 +11786,10 @@ Q5/Q6の回答を受け、設計メモ§9〜§10を確定し担当別指示書�
 ### 続き 68（2026-11-17）Slack で付けたタスクの完了を、作成者の個人 DM へ
 - SQL（本番適用済み）`2026-12-16_hq_slack_task_complete_notice.sql`: 対象＝Slack のフォームで作ったタスクが完了（画面・Slack どちらでも）。作成者本人がすべて完了した場合は送らない。1 タスク 1 回（hq_slack_complete_log）。適用時刻より前に完了したものは送らない（complete_since）。cron hq-task-completions（日本時間 7:00〜23:55 の 5 分ごと）→ EF hq-task-reminders op=completions（dm_enabled が true のときだけ）。ロールバック付き本番試験 OK（未完了 0・他人が完了 1・送信済み 0・自分で完了 0）。
 - 範囲: Slack で付けたタスクのみ（管理システムの画面で付けたタスクは未対象＝仕組みで自動生成される給与・入社などのタスクの通知がまぎれ込むのを避けるため。広げる場合は別途）。
+
+## 2026-11-17 本部タスク「給与振込確認」を法人ごとに分ける（SQL 本番適用済み・invoices.html build v174）
+- ユーザー指示: LiveGate（11月分・12月払い）の前に、タスクを法人ごとに分ける。原因: タスクは (kind='payroll', scope_key=対象年月) で1つ（transfer_confirm_task_links 主キー）。LiveGate の出力で、トーホーのタスクに名簿が合流し、期限・題名が後の法人の予定日で上書きされる。さらに payroll_transfer_task_check は「振込予定日が同じタスクがちょうど1つ」で探すため、法人別に分けると2つ見つかって止まる。
+- SQL `2026-11-17_payroll_transfer_task_per_corp.sql`（適用済み・戻し `…_rollback.sql`＝変更前の本番定義）: scope_key＝トーホー 'YYYY-MM'（既存の 2026-10 はそのまま）／ほかの法人 'YYYY-MM:法人コード'。新 `payroll_task_scope(月,法人)`、`hq_upsert_transfer_task`（法人別は題名の末尾に「・法人名」）、`payroll_transfer_task_check`（対象月×法人の scope_key でタスクを探す）、`payroll_transfer_confirm_step_guard`（scope_key の ':' の前＝月で、除外した人を調べる＝月単位のまま）。変更なし: autocomplete トリガー（タスクごと）・pay_transfer_hold_task_sync（トーホーの月のタスク）。
+- 検証（取引内・ロールバック）: scope toho=2026-11／livegate=2026-11:livegate／法人不明=トーホー扱い。10月トーホーのバッチでタスク探しが ok（名簿80/80）。同じ月・同じ予定日でも別タスクになる（題名「…・LiveGate」）・同じ法人の2回目は同じタスクで増えない。
+- 画面: payrollExportCsv の本部タスク作成を法人別の scope_key＋法人名に。振込予定の表（payroll_transfer_schedule・対象月で1行）のタスク結び付き hq_task_id は、トーホー以外では上書きしない。
+- 未対応（注意）: payroll_transfer_schedule が対象月で1行のまま＝同じ月に2法人が出力すると scheduled_date・出力の印は後のもので上書き（バッチ側の予定日は法人ごとに保持されるので銀行確認・照合は影響しない）。除外した人（holds）の完了ブロックは月単位のまま（どちらかの法人に確認待ちが残ると、その月の両方のタスクが完了にできない）。
