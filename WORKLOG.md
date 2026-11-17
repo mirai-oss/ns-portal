@@ -11773,3 +11773,6 @@ Q5/Q6の回答を受け、設計メモ§9〜§10を確定し担当別指示書�
 - EF: `hq-task-reminders`（新規・v1・verify_jwt=false・dm_enabled が false の間は dry_run 以外何も送らない・op=post_create_button で「タスクを作る」ボタンを指定チャンネルに置く）／`slack-interact` v27（hqtask.* の 4 操作を追加。★本番を取得し、本番の版＋今回の追加だけをデプロイ＝リポジトリにある担当D の STEP2 未デプロイ分（attendance-request-actions.ts）は載せていない）。共有: `_shared/hqtask-slack.ts`・`hqtask-interact.ts`・テスト 5 件 pass。
 - 試し実行（dry_run・何も送っていない）: いま ON にすると今日 14 件・3 人（期限超過 10・作成者向け 1・3 日前 3）。★未完了 25 件のうち期限超過が多い＝ON の初日は超過の通知が出る。
 - 未実施: スイッチ ON（create_enabled・dm_enabled）／「タスクを作る」ボタンの設置先の決定／実際の Slack でのフォーム表示の確認（送信が要るため ON 後）／Chatwork 並行運用の終了。
+
+### 続き 66（2026-11-17）本部タスクの Slack 連携スイッチを ON（社長の明示承認）
+- app_settings.hq_task_slack: create_enabled=true・dm_enabled=true。最初の DM は次の定期実行（9:00／15:15 JST）で出る。ボタンの設置先チャンネルは未決定（EF hq-task-reminders の op=post_create_button で置く）。Chatwork は並行運用中（1〜2 週間後に止める判断）。戻すときは両方 false。
