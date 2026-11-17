@@ -177,8 +177,8 @@ export function errorField(reason: string | undefined): string {
 
 /** 完了したあとのメッセージ。元の内容（依頼者・期限・タスク名・リンク）は残し、ボタンは外して（リンクのボタンだけ残す）先頭に完了の印を付ける */
 // deno-lint-ignore no-explicit-any
-export function completedBlocks(orig: any[] | undefined, by: string, at: string): unknown[] {
-  const head = { type: "section", text: { type: "mrkdwn", text: `✅ *完了しました*（${clean(by, 30)}・${clean(at, 30)}）` } };
+export function completedBlocks(orig: any[] | undefined, by: string, at: string, stepTitle?: string | null): unknown[] {
+  const head = { type: "section", text: { type: "mrkdwn", text: `✅ *${stepTitle ? `工程「${clean(stepTitle, 40)}」を` : ""}完了しました*（${clean(by, 30)}・${clean(at, 30)}）` } };
   const keep: unknown[] = [];
   for (const b of orig ?? []) {
     if (b?.type === "section") keep.push({ type: "section", text: b.text });
@@ -191,8 +191,8 @@ export function completedBlocks(orig: any[] | undefined, by: string, at: string)
 }
 
 /** 完了を、そのメッセージのスレッドにも 1 通残す（あとから「何のタスクか」が分かるように。依頼者・期限・リンクつき） */
-export function completionThreadText(o: { title: string; due: string; dueTime?: string | null; creatorName?: string | null; by: string; at: string; url: string }): string {
-  return [`✅ 完了しました：*${clean(o.title, 100)}*`, `${o.creatorName ? `依頼：${clean(o.creatorName, 30)}　` : ""}期限：${md(o.due, o.dueTime)}　完了：${clean(o.by, 30)}（${clean(o.at, 30)}）`, `🔗 <${o.url}|管理システムで開く>`].join("\n");
+export function completionThreadText(o: { stepTitle?: string | null; title: string; due: string; dueTime?: string | null; creatorName?: string | null; by: string; at: string; url: string }): string {
+  return [`✅ ${o.stepTitle ? `工程「${clean(o.stepTitle, 40)}」を` : ""}完了しました：*${clean(o.title, 100)}*`, `${o.creatorName ? `依頼：${clean(o.creatorName, 30)}　` : ""}期限：${md(o.due, o.dueTime)}　完了：${clean(o.by, 30)}（${clean(o.at, 30)}）`, `🔗 <${o.url}|管理システムで開く>`].join("\n");
 }
 
 export type StepRow = { id: string; title: string; due: string | null; due_time: string | null; done: boolean; photo: boolean; note: string | null; assignee_names: string[]; assignee_slack_ids: string[] };
@@ -329,4 +329,46 @@ export function parseCreateSteps(values: any): { ok: true; v: CreateStepsInput }
   });
   if (Object.keys(errors).length) return { ok: false, errors };
   return { ok: true, v: { title, corp: String(f.corp), memo: String(f.memo ?? "").trim().slice(0, 500), notes: String(f.notes ?? "").trim().slice(0, 1000), urgent: !!f.urgent, photo: !!f.photo, steps } };
+}
+
+export type MyStep = { step_id: string; title: string; due: string; dueTime?: string | null; done?: boolean; canComplete: boolean };
+
+/** 担当者への割り当て DM。自分の工程を 1 つずつ並べ、工程ごとに「✅ 完了」ボタンを付ける（工程 1 を終えても、工程 2 を完了する場所がある） */
+export function assignedStepsMessage(o: { title: string; creatorName: string; memo?: string | null; notes?: string | null; url: string; steps: MyStep[] }): { text: string; blocks: unknown[] } {
+  const head = [`📌 *新しい本部タスクが割り当てられました*`, `*${clean(o.title, 100)}*`, `依頼：${clean(o.creatorName, 30)}`];
+  if (o.memo && clean(o.memo, 300)) head.push(`詳細：${clean(o.memo, 300)}`);
+  if (o.notes && clean(o.notes, 300)) head.push(`⚠️ 注意事項：${clean(o.notes, 300)}`);
+  head.push(`🔗 <${o.url}|管理システムで開く>`);
+  const blocks: unknown[] = [{ type: "section", text: { type: "mrkdwn", text: head.join("\n") } }, { type: "divider" }];
+  for (const s of o.steps.slice(0, 10)) {
+    const sec: any = { type: "section", text: { type: "mrkdwn", text: `▫️ *${clean(s.title, 60)}*\n期限：${md(s.due, s.dueTime)}${s.canComplete ? "" : "　📷写真が必要（管理システムの画面で完了）"}` } };
+    if (s.canComplete) sec.accessory = { type: "button", style: "primary", text: { type: "plain_text", text: "✅ 完了", emoji: true }, action_id: STEP_DONE, value: JSON.stringify({ step_id: s.step_id }) };
+    blocks.push(sec);
+  }
+  blocks.push({ type: "actions", block_id: "hqtask_link", elements: [{ type: "button", text: { type: "plain_text", text: "管理システムで開く", emoji: true }, url: o.url, action_id: STEP_LINK }] });
+  return { text: `📌 新しい本部タスク：${clean(o.title, 100)}`, blocks };
+}
+
+/** 工程ごとの完了ボタンのあるメッセージで、押された工程だけを「✅ 完了」にする。ほかの工程のボタンは残す。全部完了したら先頭に印 */
+// deno-lint-ignore no-explicit-any
+export function markStepDone(orig: any[] | undefined, stepId: string, by: string, at: string): { blocks: unknown[]; allDone: boolean } | null {
+  let hit = false; let remaining = 0;
+  const out: unknown[] = [];
+  for (const b of orig ?? []) {
+    if (b?.type === "section" && b.accessory?.action_id === STEP_DONE) {
+      let v: any = null; try { v = JSON.parse(b.accessory.value ?? "null"); } catch { v = null; }
+      if (v?.step_id === stepId) {
+        hit = true;
+        const title = String(b.text?.text ?? "").split("\n")[0].replace(/^▫️\s*/, "").replace(/\*/g, "");
+        out.push({ type: "section", text: { type: "mrkdwn", text: `✅ ~${clean(title, 60)}~　完了（${clean(by, 30)}・${clean(at, 30)}）` } });
+        continue;
+      }
+      remaining++;
+    }
+    out.push(b?.type === "section" ? (b.accessory ? { type: "section", text: b.text, accessory: b.accessory } : { type: "section", text: b.text }) : b);
+  }
+  if (!hit) return null;
+  const allDone = remaining === 0;
+  if (allDone) out.unshift({ type: "section", text: { type: "mrkdwn", text: "🎉 *あなたの工程は、すべて完了しました*" } });
+  return { blocks: out, allDone };
 }

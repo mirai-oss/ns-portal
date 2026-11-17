@@ -3,7 +3,7 @@
 //   hqtask.task.edit → 編集フォーム（いまの値が入る）／hqtask.edit.modal → 保存＋スレッドに変更の記録・親とカードの更新・新しい担当者へ DM
 //   hqtask.step.done → 完了／hqtask.step.ack → 対応中
 import { AI_CREATE, AI_EDIT, AI_CANCEL, toDraft, toForm, isComplete, ensureChannelKey, type Draft } from "./hqtask-ai.ts";
-import { createModal, parseCreate, errorField, assignedMessage, parentMessage, taskCardMessage, completedBlocks, completionThreadText, stepsListModal, stepModal, parseStep, parseTaskEdit, parseCreateSteps, readForm, createFormModal, FORM_ADD, FORM_DEL, MAX_STEPS, STEPS_OPEN, STEP_PICK, STEP_ADD, STEP_MODAL, type StepRow, CREATE_OPEN, CREATE_OPEN_DETAIL, CREATE_MODAL, EDIT_ACTION, EDIT_MODAL, STEP_DONE, STEP_ACK, STEP_LINK } from "./hqtask-slack.ts";
+import { createModal, parseCreate, errorField, assignedMessage, assignedStepsMessage, markStepDone, parentMessage, taskCardMessage, completedBlocks, completionThreadText, stepsListModal, stepModal, parseStep, parseTaskEdit, parseCreateSteps, readForm, createFormModal, FORM_ADD, FORM_DEL, MAX_STEPS, STEPS_OPEN, STEP_PICK, STEP_ADD, STEP_MODAL, type StepRow, CREATE_OPEN, CREATE_OPEN_DETAIL, CREATE_MODAL, EDIT_ACTION, EDIT_MODAL, STEP_DONE, STEP_ACK, STEP_LINK } from "./hqtask-slack.ts";
 
 // deno-lint-ignore no-explicit-any
 type Ctx = { sb: any; payload: any; actor: { user_id: string; role: string; is_master: boolean; name: string }; notificationId: string | null; value: any };
@@ -68,9 +68,9 @@ async function afterCreate(d: Deps, sb: any, actor: { user_id: string; name: str
     const per = new Map<string, typeof made>();
     for (const s of made) for (const uid of s.assignee_ids) per.set(uid, [...(per.get(uid) ?? []), s]);
     for (const [uid, mine] of per) {
-      const first = mine[0];
-      const label = made.length > 1 ? `${v.title}（工程：${first.title}${mine.length > 1 ? ` ほか ${mine.length - 1} 件` : ""}）` : v.title;
-      const m = assignedMessage({ title: label, due: first.due, dueTime: first.due_time, steps: mine.length, creatorName: String(data.creator_name ?? actor.name), memo: v.memo, step_id: first.step_id, url, canComplete: !v.photo });
+      // その人の工程を 1 つずつ並べ、工程ごとに「✅ 完了」ボタンを付ける
+      const m = assignedStepsMessage({ title: v.title, creatorName: String(data.creator_name ?? actor.name), memo: v.memo, notes: v.notes, url,
+        steps: mine.map((s) => ({ step_id: s.step_id, title: s.title || "対応する", due: s.due, dueTime: s.due_time, canComplete: !v.photo })) });
       await d.sendSlack({ action: "send", channel_key: `user:${uid}`, text: m.text, blocks: m.blocks, event: "hqtask_assigned", source: "ef:slack-interact",
         dedupe_key: `hqtask_assigned:${data.task_id}:${uid}`, ref: { table: "hq_tasks", id: data.task_id } });
     }
@@ -267,16 +267,22 @@ export function hqtaskHandlers(d: Deps): Record<string, (c: Ctx) => Promise<Resp
       if (error) return d.ephemeral("完了にできませんでした: " + String(error.message).slice(0, 120), payload.response_url);
       if (!data?.ok) return d.ephemeral(String(data?.message ?? "完了にできませんでした"), payload.response_url);
       const at = new Date().toLocaleString("ja-JP", { timeZone: "Asia/Tokyo", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false });
-      // 元のメッセージの内容（依頼者・期限・タスク名・リンク）は残したまま、完了の印だけ付けてボタンを外す
-      if (payload.response_url && !data.already) await fetch(payload.response_url, { method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ replace_original: true, text: "✅ 完了しました", blocks: completedBlocks(payload.message?.blocks, actor.name, at) }) }).catch(() => {});
-      // スレッドにも、何のタスクだったかを残す
-      if (!data.already && data.task_id && payload.message?.ts) d.waitUntil((async () => {
+      const { data: st } = await sb.from("hq_task_steps").select("title").eq("id", value?.step_id).maybeSingle();
+      // 工程ごとのボタンがあるメッセージ: 押された工程だけを「✅ 完了」にして、ほかの工程のボタンは残す。1 つだけのメッセージ: 内容は残して完了の印を付けボタンを外す
+      if (payload.response_url && !data.already) {
+        const per = markStepDone(payload.message?.blocks, String(value?.step_id), actor.name, at);
+        const blocks = per ? per.blocks : completedBlocks(payload.message?.blocks, actor.name, at, st?.title ?? null);
+        await fetch(payload.response_url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ replace_original: true, text: `✅ ${st?.title ?? "工程"}を完了しました`, blocks }) }).catch(() => {});
+      }
+      // スレッドにも、どの工程か・何のタスクだったかを残す／チャンネルのカードの工程の印も更新する
+      if (!data.already && data.task_id) d.waitUntil((async () => {
         const { data: tk } = await sb.from("hq_tasks").select("title,due_date,due_time,created_by").eq("id", data.task_id).maybeSingle();
-        if (!tk) return;
-        const cn = tk.created_by ? (await namesOf(sb, [tk.created_by]))[0] : null;
-        await d.sendSlack({ action: "send", channel_key: `user:${actor.user_id}`, thread_ts: payload.message.ts, text: completionThreadText({ title: tk.title, due: tk.due_date, dueTime: tk.due_time, creatorName: cn, by: actor.name, at, url: urlOf(data.task_id) }),
-          event: "hqtask_step_done_thread", source: "ef:slack-interact", dedupe_key: `hqtask_done_thread:${value?.step_id}:${payload.message.ts}`, ref: { table: "hq_tasks", id: data.task_id } });
+        if (tk && payload.message?.ts) {
+          const cn = tk.created_by ? (await namesOf(sb, [tk.created_by]))[0] : null;
+          await d.sendSlack({ action: "send", channel_key: `user:${actor.user_id}`, thread_ts: payload.message.ts, text: completionThreadText({ stepTitle: st?.title ?? null, title: tk.title, due: tk.due_date, dueTime: tk.due_time, creatorName: cn, by: actor.name, at, url: urlOf(data.task_id) }),
+            event: "hqtask_step_done_thread", source: "ef:slack-interact", dedupe_key: `hqtask_done_thread:${value?.step_id}:${payload.message.ts}`, ref: { table: "hq_tasks", id: data.task_id } });
+        }
+        await refreshCard(sb, d.sendSlack, data.task_id, actor.name);
       })());
       return d.text("");
     },

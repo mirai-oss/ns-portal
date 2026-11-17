@@ -1,5 +1,5 @@
 import { assertEquals, assert } from "jsr:@std/assert@1";
-import { createFormModal, readForm, parseCreateSteps, stepsListModal, stepModal, parseStep, parseTaskEdit, completedBlocks, completionThreadText, reminderMessage, reminderHead, parseCreate, createModal, assignedMessage, taskCardMessage, parentMessage, createButtonMessage, type Candidate } from "./hqtask-slack.ts";
+import { assignedStepsMessage, markStepDone, createFormModal, readForm, parseCreateSteps, stepsListModal, stepModal, parseStep, parseTaskEdit, completedBlocks, completionThreadText, reminderMessage, reminderHead, parseCreate, createModal, assignedMessage, taskCardMessage, parentMessage, createButtonMessage, type Candidate } from "./hqtask-slack.ts";
 
 const base: Candidate = { recipient_id: "r", slack_user_id: "U0123456789", task_id: "t", step_id: "s", task_title: "請求書の確認", step_title: "対応する", due_date: "2026-11-20", kind: "today", days_over: 0, creator_id: "c", can_complete: true, url: "https://example.com/t" };
 
@@ -118,4 +118,19 @@ Deno.test("作成フォーム: 工程ごとの枠（工程名・担当者・期�
   const ok = parseCreateSteps(values); assert(ok.ok); if (ok.ok) { assertEquals(ok.v.steps[0].time, "10:00"); assertEquals(ok.v.steps[0].title, "A"); }
   const ng = parseCreateSteps({ ...values, s1_title: { s1_title: { value: "" } }, s1_users: { s1_users: { selected_users: [] } }, s1_due: { s1_due: { selected_date: null } } });
   assert(!ng.ok); if (!ng.ok) assertEquals(Object.keys(ng.errors).sort(), ["s1_due", "s1_title", "s1_users"]);
+});
+
+Deno.test("担当者の DM: 工程ごとに「✅ 完了」ボタン／押した工程だけ完了にしてほかのボタンは残す／全部終えたら印", () => {
+  const m: any = assignedStepsMessage({ title: "請求書", creatorName: "社長", memo: "詳細", url: "https://x", steps: [
+    { step_id: "s1", title: "資料を集める", due: "2026-11-20", canComplete: true }, { step_id: "s2", title: "確認する", due: "2026-11-22", dueTime: "17:30:00", canComplete: true }, { step_id: "s3", title: "写真つき", due: "2026-11-23", canComplete: false }] });
+  const accs = m.blocks.filter((b: any) => b.accessory);
+  assertEquals(accs.map((b: any) => JSON.parse(b.accessory.value).step_id), ["s1", "s2"]);   // 写真つきの工程にはボタンなし
+  assert(JSON.stringify(m).includes("依頼：社長") && JSON.stringify(m).includes("https://x") && JSON.stringify(m).includes("11/22 17:30"));
+  const r1: any = markStepDone(m.blocks, "s1", "青山", "11/20 10:00");
+  assert(r1 && !r1.allDone);
+  assertEquals(r1.blocks.filter((b: any) => b.accessory).map((b: any) => JSON.parse(b.accessory.value).step_id), ["s2"]);   // 工程 2 のボタンは残る
+  assert(JSON.stringify(r1.blocks).includes("資料を集める") && JSON.stringify(r1.blocks).includes("完了（青山"));
+  const r2: any = markStepDone(r1.blocks, "s2", "青山", "11/20 11:00");
+  assert(r2.allDone && JSON.stringify(r2.blocks[0]).includes("すべて完了"));
+  assertEquals(markStepDone(m.blocks, "zzz", "青山", "x"), null);   // ボタンの無いメッセージ（単独通知）は従来の完了表示へ
 });
