@@ -51,6 +51,30 @@ Deno.serve(async (req: Request) => {
     return json({ ok: !!r?.ok, notification_id: r?.notification_id ?? null, error: r?.ok ? null : String(r?.error ?? "") });
   }
 
+  // 作成者への「完了しました」DM（Slack のフォームで付けたタスクが完了したとき）。dm_enabled が true のときだけ送る
+  if (body?.op === "completions") {
+    const { data: s2 } = await sb.from("app_settings").select("value").eq("key", "hq_task_slack").maybeSingle();
+    const dry2 = body?.dry_run === true;
+    if (s2?.value?.dm_enabled !== true && !dry2) return json({ ok: true, skipped: "switch_off" });
+    const { data: rows, error: e2 } = await sb.rpc("hq_slack_complete_candidates");
+    if (e2) return json({ ok: false, error: "complete_candidates: " + e2.message }, 500);
+    const list2 = (rows ?? []) as any[];
+    if (dry2) return json({ ok: true, dry_run: true, total: list2.length });
+    let sent2 = 0, failed2 = 0;
+    for (const c of list2.slice(0, 30)) {
+      const { data: ok2 } = await sb.rpc("hq_slack_complete_claim", { p_task: c.task_id });
+      if (ok2 !== true) continue;
+      const at = c.completed_at ? new Date(c.completed_at).toLocaleString("ja-JP", { timeZone: "Asia/Tokyo", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false }) : "";
+      const title = String(c.task_title ?? "").replace(/[\u0000-\u001f]/g, " ").slice(0, 100);
+      const text = `✅ *あなたが付けたタスクが完了しました*\n*${title}*\n完了：${c.completer_names ?? "—"}（${at}）`;
+      const r = await sendSlack({ action: "send", channel_key: `user:${c.creator_id}`, text: `✅ 完了しました：${title}`, event: "hqtask_completed", source: "ef:hq-task-reminders",
+        blocks: [{ type: "section", text: { type: "mrkdwn", text } }, { type: "actions", block_id: "hqtask_done", elements: [{ type: "button", text: { type: "plain_text", text: "管理システムで開く", emoji: true }, url: c.url, action_id: "hqtask.link" }] }],
+        dedupe_key: `hqtask_completed:${c.task_id}`, ref: { table: "hq_tasks", id: c.task_id } });
+      if (r?.ok) sent2++; else { failed2++; await sb.rpc("hq_slack_complete_release", { p_task: c.task_id }); }
+    }
+    return json({ ok: true, op: "completions", total: list2.length, sent: sent2, failed: failed2 });
+  }
+
   const dry = body?.dry_run === true;
   const max = Math.min(200, Math.max(1, Number(body?.max) || 60));
   const { data: set } = await sb.from("app_settings").select("value").eq("key", "hq_task_slack").maybeSingle();
