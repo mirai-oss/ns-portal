@@ -11846,3 +11846,8 @@ Q5/Q6の回答を受け、設計メモ§9〜§10を確定し担当別指示書�
 - 復元: 上書き前の版（git 2594086~1）に、app_mention の分岐 6 行だけを足して再デプロイ（v9・verify_jwt=false 不変）。AI の処理は `_shared/hqtask-mention.ts` に分離。既存の team_join・user_change の処理は無変更（差分は import 1 行＋分岐 5 行）。
 - 影響: 上書きの間、team_join / user_change の自動処理は止まっていた。slack_event_log の直近のイベントは 11/16 13:53 UTC で、その後に届いたイベントは無く、取りこぼしは確認されない（毎 10 分の照合 cron `slack-link-sync` も補う）。
 - 教訓: 「新規」と書く関数名は、デプロイ前に `supabase functions list` と git で既存を確認する。
+
+### 続き 76（2026-11-17）@アプリ のメンション機能: Slack 設定を自動操作で完了（AI のスイッチは OFF のまま）
+- Slack アプリ「N-Style 通知Bot」（A0CDG2CGQ7K）: Chrome（社長のログイン）で、①Bot Token Scopes に app_mentions:read を追加 ②再インストール（社長の許可済み・成功）③Event Subscriptions の画面からの保存が Slack 側のエラー（「うーん、何かがおかしい」）で通らなかったため、App Manifest の bot_events に "app_mention" を追加して保存（「Changes saved」）。再読み込みで、購読が team_join・user_change・app_mention の 3 つになっていることを確認。リクエスト URL は slack-events（確認済み ✓）。
+- Anthropic の鍵: 社長が登録済み（Supabase の秘密情報 ANTHROPIC_API_KEY の名前を確認。値は見ていない）。
+- hq_task_slack.ai_enabled は false のまま（社長の「AI を ON にして」待ち）。AI の実呼び出しは未確認。
