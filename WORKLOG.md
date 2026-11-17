@@ -11851,3 +11851,7 @@ Q5/Q6の回答を受け、設計メモ§9〜§10を確定し担当別指示書�
 - Slack アプリ「N-Style 通知Bot」（A0CDG2CGQ7K）: Chrome（社長のログイン）で、①Bot Token Scopes に app_mentions:read を追加 ②再インストール（社長の許可済み・成功）③Event Subscriptions の画面からの保存が Slack 側のエラー（「うーん、何かがおかしい」）で通らなかったため、App Manifest の bot_events に "app_mention" を追加して保存（「Changes saved」）。再読み込みで、購読が team_join・user_change・app_mention の 3 つになっていることを確認。リクエスト URL は slack-events（確認済み ✓）。
 - Anthropic の鍵: 社長が登録済み（Supabase の秘密情報 ANTHROPIC_API_KEY の名前を確認。値は見ていない）。
 - hq_task_slack.ai_enabled は false のまま（社長の「AI を ON にして」待ち）。AI の実呼び出しは未確認。
+
+## 続き77（2026-11-17）AI スイッチ ON
+- 社長の明示指示「AIをオンにして」を受け、app_settings.hq_task_slack.ai_enabled を true に変更（モデル claude-haiku-5-5・1日上限200）。
+- モデルは同じ設定の ai_model を書き換えるだけで変更可能（再デプロイ不要）。
