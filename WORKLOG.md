@@ -11823,3 +11823,9 @@ Q5/Q6の回答を受け、設計メモ§9〜§10を確定し担当別指示書�
 - 申請フォームURL（tori-dashboard 管理 > 申請履歴 > 申請フォームURL・app.js v=285・`b9a1168`）に追加: 📌 本部タスクを作る（tasks.html）・💬 本部タスクを作る（Slack・役員チャットのボタンへのリンク）・🔁 従業員情報の変更（requests.html）・💴 経費申請（ポータル画面 expenses.html）。説明文を「ログイン不要のURL／ポータルにログインして使う画面／Slackのフォーム」に更新。ほかに漏れがあれば追加する（社長の確認待ち）。
 - Slack の作成フォーム: 工程ごとに「工程名・担当者（複数可）・期限（日付）・期限（時刻）」の枠。「＋ 工程を追加」「－ 最後の工程を消す」で枠が増減（入力済みの内容は残る・最大 10・ブロック上限内）。工程が 1 つなら工程名は空でも作れる（「対応する」）。タスク全体の期限は工程の最も遅い期限。下に詳細（詳細・注意事項・写真・最重要）。
 - SQL（本番適用済み）`2026-12-19_hq_slack_task_steps_create.sql`: hq_slack_task_create_steps（1 つでも不正なら何も作らない）／★Slack で付けたタスクは、通知の対象を「未完了の工程すべて」に（工程ごとに担当者・期限が違うため）／工程を順番に関係なくその担当者が完了できる。ロールバック付きの本番試験 OK。担当者ごとに DM（その人の最初の工程・複数あれば件数）。slack-interact 再デプロイ。テスト 10 件 pass。
+
+### 続き 73（2026-11-17）@アプリ へのメンションで本部タスクの下書き（AI）／申請フォームURL に入社・採用・従業員の入口を追加
+- 申請フォームURL（tori-dashboard v=286・`f1d6801`）: 入社登録（招待リンクの発行場所）・応募者の管理／採用の招待リンク・日報サイト（アルバイト・社員の入口）・日報を書く・シフト・勤怠・現金手渡し・マニュアル・自分の書類を追加。
+- @メンション: EF `slack-events`（新規・v1・verify_jwt=false。署名検証・url_verification・app_mention・再送無視・3 秒以内に 200 を返して後ろで処理）／共有 `_shared/hqtask-ai.ts`（プロンプト・厳密なスキーマ・下書きの検証・カード）／slack-interact に hqtask.ai.create/edit/cancel を追加（作成は本人だけ・DB の hq_slack_task_create_steps が再検証）。メンションされた 1 通だけを AI（既定 claude-haiku-5-5・effort low）に渡す。名簿にない担当者・過去や形の悪い日付は取り除き、足りない項目は「決められなかった項目」に出す（作成ボタンは全部そろったときだけ）。1 日 200 回の上限（hq_slack_ai_log）・イベントの二重処理防止・本文は保存しない。メンションされた場所が未登録のチャンネルなら slack_channels に自動登録（auto.<ID>）。作成後はそのスレッドに詳細カード（編集・工程の編集つき）。
+- SQL（本番適用済み）`2026-12-20_hq_slack_ai.sql`（hq_slack_ai_log・hq_slack_ai_draft・設定 ai_enabled=false・ai_daily_cap=200・ai_model）。テスト: hqtask-ai 5 件・hqtask-slack 10 件 pass。
+- 未了（社長の操作）: Slack アプリの設定（app_mentions:read・Event Subscriptions の URL・app_mention・再インストール）・Anthropic の API 鍵を Supabase の秘密情報 ANTHROPIC_API_KEY に登録→「AI を ON」。手順書: docs/手順書_Slackのメンションから本部タスクを作る設定_2026-11-17.md。★AI の実呼び出し（Anthropic API）は、鍵が無いため未確認。

@@ -2,6 +2,7 @@
 //   hqtask.create.open → フォーム／hqtask.create.modal → タスク作成＋担当者へ DM＋（ボタンを押したチャンネルに）親投稿とスレッドの詳細カード
 //   hqtask.task.edit → 編集フォーム（いまの値が入る）／hqtask.edit.modal → 保存＋スレッドに変更の記録・親とカードの更新・新しい担当者へ DM
 //   hqtask.step.done → 完了／hqtask.step.ack → 対応中
+import { AI_CREATE, AI_EDIT, AI_CANCEL, toDraft, toForm, isComplete, ensureChannelKey, type Draft } from "./hqtask-ai.ts";
 import { createModal, parseCreate, errorField, assignedMessage, parentMessage, taskCardMessage, completedBlocks, completionThreadText, stepsListModal, stepModal, parseStep, parseTaskEdit, parseCreateSteps, readForm, createFormModal, FORM_ADD, FORM_DEL, MAX_STEPS, STEPS_OPEN, STEP_PICK, STEP_ADD, STEP_MODAL, type StepRow, CREATE_OPEN, CREATE_OPEN_DETAIL, CREATE_MODAL, EDIT_ACTION, EDIT_MODAL, STEP_DONE, STEP_ACK, STEP_LINK } from "./hqtask-slack.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -43,9 +44,11 @@ async function slackView(method: "views.open" | "views.update" | "views.push", b
 async function refreshCard(sb: any, send: Deps["sendSlack"], taskId: string, editorName: string) {
   const { data: g } = await sb.rpc("hq_slack_task_get", { p_task: taskId });
   const { data: sg } = await sb.rpc("hq_slack_steps_get", { p_task: taskId });
-  if (!g?.ok || !g.parent_notification_id) return null;
-  const pm = parentMessage({ title: g.title, due: g.due, dueTime: g.due_time });
-  await send({ action: "update", notification_id: g.parent_notification_id, text: pm.text, blocks: pm.blocks });
+  if (!g?.ok) return null;
+  if (g.parent_notification_id) {
+    const pm = parentMessage({ title: g.title, due: g.due, dueTime: g.due_time });
+    await send({ action: "update", notification_id: g.parent_notification_id, text: pm.text, blocks: pm.blocks });
+  }
   const steps = ((sg?.steps ?? []) as StepRow[]).map((s) => ({ title: s.title, done: s.done, names: s.assignee_names, due: s.due, dueTime: s.due_time }));
   if (g.card_notification_id) {
     const { data: cr } = await sb.from("users").select("name").eq("id", g.creator_id).maybeSingle();
@@ -56,6 +59,52 @@ async function refreshCard(sb: any, send: Deps["sendSlack"], taskId: string, edi
   return g;
 }
 
+// タスクを作ったあとの通知（担当者ごとの DM・チャンネルの親投稿とスレッドの詳細カード・@メンションの下書きの更新）
+// deno-lint-ignore no-explicit-any
+async function afterCreate(d: Deps, sb: any, actor: { user_id: string; name: string }, v: any, data: any, meta: any): Promise<void> {
+    const url = urlOf(data.task_id);
+    const made = (data.steps ?? []) as { step_id: string; title: string; assignee_ids: string[]; due: string; due_time: string | null }[];
+    // 担当者ごとに DM（その人の最初の工程。複数あれば件数も）
+    const per = new Map<string, typeof made>();
+    for (const s of made) for (const uid of s.assignee_ids) per.set(uid, [...(per.get(uid) ?? []), s]);
+    for (const [uid, mine] of per) {
+      const first = mine[0];
+      const label = made.length > 1 ? `${v.title}（工程：${first.title}${mine.length > 1 ? ` ほか ${mine.length - 1} 件` : ""}）` : v.title;
+      const m = assignedMessage({ title: label, due: first.due, dueTime: first.due_time, steps: mine.length, creatorName: String(data.creator_name ?? actor.name), memo: v.memo, step_id: first.step_id, url, canComplete: !v.photo });
+      await d.sendSlack({ action: "send", channel_key: `user:${uid}`, text: m.text, blocks: m.blocks, event: "hqtask_assigned", source: "ef:slack-interact",
+        dedupe_key: `hqtask_assigned:${data.task_id}:${uid}`, ref: { table: "hq_tasks", id: data.task_id } });
+    }
+    // ボタンを押したチャンネルに、親投稿（1 行）とスレッドの詳細カード（編集ボタンつき）
+    const threadTs: string | undefined = meta.thread_ts;   // @アプリ のメンションから作ったときは、そのスレッドに詳細カードを出す（親投稿は作らない）
+    const key = threadTs ? await ensureChannelKey(sb, meta.channel) : await channelKeyOf(sb, meta.channel);
+    if (key) {
+      let r1: any = null;
+      if (threadTs) r1 = { ok: true, ts: threadTs, notification_id: null, slack_channel_id: meta.channel };
+      else {
+        const pm = parentMessage({ title: v.title, due: data.due, dueTime: data.due_time });
+        r1 = await d.sendSlack({ action: "send", channel_key: key, text: pm.text, blocks: pm.blocks, event: "hqtask_parent", source: "ef:slack-interact", dedupe_key: `hqtask_parent:${data.task_id}`, ref: { table: "hq_tasks", id: data.task_id } });
+      }
+      if (r1?.ok && r1.ts) {
+        const allIds = [...per.keys()];
+        const nameMap = new Map<string, string>(); (await namesOf(sb, allIds)).forEach((n, i) => nameMap.set(allIds[i], n));
+        const steps = made.map((s) => ({ title: s.title, done: false, names: s.assignee_ids.map((u) => nameMap.get(u) ?? "—"), due: s.due, dueTime: s.due_time }));
+        const cm = taskCardMessage({ task_id: data.task_id, title: v.title, corp: v.corp, assigneeNames: allIds.map((u) => nameMap.get(u) ?? "—"), due: data.due, dueTime: data.due_time, memo: v.memo, notes: v.notes, steps, creatorName: String(data.creator_name ?? actor.name), urgent: v.urgent, url });
+        const r2 = await d.sendSlack({ action: "send", channel_key: key, thread_ts: r1.ts, text: cm.text, blocks: cm.blocks, event: "hqtask_card", source: "ef:slack-interact", dedupe_key: `hqtask_card:${data.task_id}`, ref: { table: "hq_tasks", id: data.task_id } });
+        await sb.rpc("hq_slack_task_card_set", { p_task: data.task_id, p_channel: r1.slack_channel_id ?? meta.channel ?? "", p_ts: r1.ts, p_parent: r1.notification_id, p_card: r2?.notification_id ?? null });
+      }
+    } else if (!per.has(actor.user_id)) {
+      await d.sendSlack({ action: "send", channel_key: `user:${actor.user_id}`, text: `✅ 本部タスクを作りました：${v.title}（工程 ${made.length} 個）\n🔗 <${url}|管理システムで開く>`,
+        event: "hqtask_created", source: "ef:slack-interact", dedupe_key: `hqtask_created:${data.task_id}`, ref: { table: "hq_tasks", id: data.task_id } });
+    }
+}
+
+// @メンションの下書きカードを「作成しました」に書き換え、下書きの状態を更新する
+// deno-lint-ignore no-explicit-any
+async function markDraftCreated(d: Deps, sb: any, draftId: string, taskId: string, title: string): Promise<void> {
+  const { data: dr } = await sb.from("hq_slack_ai_draft").update({ status: "created", task_id: taskId }).eq("id", draftId).select("card_notification_id").maybeSingle();
+  if (dr?.card_notification_id) await d.sendSlack({ action: "update", notification_id: dr.card_notification_id, text: `✅ 本部タスクを作成しました：${title}`, blocks: [{ type: "section", text: { type: "mrkdwn", text: `✅ *本部タスクを作成しました*：${title}` } }] });
+}
+
 export function hqtaskHandlers(d: Deps): Record<string, (c: Ctx) => Promise<Response>> {
   const openCreate = async ({ payload, actor }: Ctx) => {
     if (!canCreate(actor)) return d.ephemeral("タスクを作れるのは、本部・社長・店長だけです。", payload.response_url);
@@ -63,6 +112,39 @@ export function hqtaskHandlers(d: Deps): Record<string, (c: Ctx) => Promise<Resp
     return await d.openModal(payload.trigger_id, createModal({ mode: "create", meta: { channel } }));
   };
   return {
+    // ===== @アプリ のメンションから作った下書き（AI が作った下書きを、本人が確認して作成） =====
+    [AI_CREATE]: async ({ sb, payload, value, actor }) => {
+      const { data: dr } = await sb.from("hq_slack_ai_draft").select("*").eq("id", value?.draft_id).maybeSingle();
+      if (!dr || dr.status !== "open") return d.ephemeral("この下書きは、すでに使われたか、やめられています。", payload.response_url);
+      if (dr.requester_id !== actor.user_id) return d.ephemeral("作成できるのは、@アプリ にメンションした本人だけです。", payload.response_url);
+      const dd = dr.draft as Draft;
+      if (!isComplete(dd)) return d.ephemeral("決まっていない項目があります。「フォームで直す」で入れてください。", payload.response_url);
+      const allSlack = [...new Set(dd.steps.flatMap((s) => s.users))];
+      const { data: links } = await sb.from("user_slack").select("user_id,slack_user_id").in("slack_user_id", allSlack);
+      const idOf = new Map((links ?? []).map((l: any) => [l.slack_user_id, l.user_id]));
+      if (allSlack.some((u) => !idOf.has(u))) return d.ephemeral("Slack と紐づいていない担当者がいます。「フォームで直す」で選び直してください。", payload.response_url);
+      const stepsArg = dd.steps.map((s) => ({ title: s.title, assignee_ids: s.users.map((u) => idOf.get(u)), due: s.due, due_time: s.time }));
+      const { data, error } = await sb.rpc("hq_slack_task_create_steps", { p_slack_user_id: payload.user?.id, p_title: dd.title, p_corp: dd.corp, p_memo: dd.memo, p_notes: dd.notes || null, p_urgent: dd.urgent, p_photo: false, p_steps: stepsArg, p_dedupe: `ai:${dr.id}`, p_source: { via: "slack_ai_draft" } });
+      if (error || !data?.ok) return d.ephemeral("作成できませんでした：" + String(data?.message ?? error?.message ?? "").slice(0, 120), payload.response_url);
+      const v = { title: dd.title, corp: dd.corp, memo: dd.memo, notes: dd.notes, urgent: dd.urgent, photo: false, steps: dd.steps.map((s) => ({ title: s.title, slackUsers: s.users, due: s.due, time: s.time })) };
+      if (!data.duplicate) d.waitUntil(afterCreate(d, sb, actor, v, data, { channel: dr.channel_id, thread_ts: dr.thread_ts }));
+      d.waitUntil(markDraftCreated(d, sb, dr.id, data.task_id, dd.title));
+      return d.text("");
+    },
+    [AI_EDIT]: async ({ sb, payload, value, actor }) => {
+      const { data: dr } = await sb.from("hq_slack_ai_draft").select("*").eq("id", value?.draft_id).maybeSingle();
+      if (!dr || dr.status !== "open") return d.ephemeral("この下書きは、すでに使われたか、やめられています。", payload.response_url);
+      if (dr.requester_id !== actor.user_id) return d.ephemeral("直せるのは、@アプリ にメンションした本人だけです。", payload.response_url);
+      return await d.openModal(payload.trigger_id, createModal({ mode: "create", form: toForm(dr.draft as Draft), meta: { channel: dr.channel_id, thread_ts: dr.thread_ts, draft_id: dr.id } }));
+    },
+    [AI_CANCEL]: async ({ sb, payload, value, actor }) => {
+      const { data: dr } = await sb.from("hq_slack_ai_draft").select("*").eq("id", value?.draft_id).maybeSingle();
+      if (!dr || dr.status !== "open") return d.ephemeral("この下書きは、すでに使われたか、やめられています。", payload.response_url);
+      if (dr.requester_id !== actor.user_id) return d.ephemeral("やめられるのは、@アプリ にメンションした本人だけです。", payload.response_url);
+      await sb.from("hq_slack_ai_draft").update({ status: "canceled" }).eq("id", dr.id);
+      if (dr.card_notification_id) await d.sendSlack({ action: "update", notification_id: dr.card_notification_id, text: "下書きをやめました", blocks: [{ type: "section", text: { type: "mrkdwn", text: "下書きをやめました。" } }] });
+      return d.text("");
+    },
     [CREATE_OPEN]: openCreate,
     [CREATE_OPEN_DETAIL]: openCreate,   // 古いカードの「詳細つきで作る」も、同じフォーム（下に詳細の欄がある）を開く
     // 作成フォームの「＋ 工程を追加」「－ 最後の工程を消す」: 入力済みの内容を残したまま、工程の枠を 1 つ増減する
@@ -97,37 +179,8 @@ export function hqtaskHandlers(d: Deps): Record<string, (c: Ctx) => Promise<Resp
       });
       if (error) return d.json({ response_action: "errors", errors: { title: "作成できませんでした: " + String(error.message).slice(0, 120) } });
       if (!data?.ok) return d.json({ response_action: "errors", errors: { [errorField(data?.reason)]: String(data?.message ?? "作成できませんでした") } });
-      if (!data.duplicate) d.waitUntil((async () => {
-        const url = urlOf(data.task_id);
-        const made = (data.steps ?? []) as { step_id: string; title: string; assignee_ids: string[]; due: string; due_time: string | null }[];
-        // 担当者ごとに DM（その人の最初の工程。複数あれば件数も）
-        const per = new Map<string, typeof made>();
-        for (const s of made) for (const uid of s.assignee_ids) per.set(uid, [...(per.get(uid) ?? []), s]);
-        for (const [uid, mine] of per) {
-          const first = mine[0];
-          const label = made.length > 1 ? `${v.title}（工程：${first.title}${mine.length > 1 ? ` ほか ${mine.length - 1} 件` : ""}）` : v.title;
-          const m = assignedMessage({ title: label, due: first.due, dueTime: first.due_time, steps: mine.length, creatorName: String(data.creator_name ?? actor.name), memo: v.memo, step_id: first.step_id, url, canComplete: !v.photo });
-          await d.sendSlack({ action: "send", channel_key: `user:${uid}`, text: m.text, blocks: m.blocks, event: "hqtask_assigned", source: "ef:slack-interact",
-            dedupe_key: `hqtask_assigned:${data.task_id}:${uid}`, ref: { table: "hq_tasks", id: data.task_id } });
-        }
-        // ボタンを押したチャンネルに、親投稿（1 行）とスレッドの詳細カード（編集ボタンつき）
-        const key = await channelKeyOf(sb, meta.channel);
-        if (key) {
-          const pm = parentMessage({ title: v.title, due: data.due, dueTime: data.due_time });
-          const r1 = await d.sendSlack({ action: "send", channel_key: key, text: pm.text, blocks: pm.blocks, event: "hqtask_parent", source: "ef:slack-interact", dedupe_key: `hqtask_parent:${data.task_id}`, ref: { table: "hq_tasks", id: data.task_id } });
-          if (r1?.ok && r1.ts) {
-            const allIds = [...per.keys()];
-            const nameMap = new Map<string, string>(); (await namesOf(sb, allIds)).forEach((n, i) => nameMap.set(allIds[i], n));
-            const steps = made.map((s) => ({ title: s.title, done: false, names: s.assignee_ids.map((u) => nameMap.get(u) ?? "—"), due: s.due, dueTime: s.due_time }));
-            const cm = taskCardMessage({ task_id: data.task_id, title: v.title, corp: v.corp, assigneeNames: allIds.map((u) => nameMap.get(u) ?? "—"), due: data.due, dueTime: data.due_time, memo: v.memo, notes: v.notes, steps, creatorName: String(data.creator_name ?? actor.name), urgent: v.urgent, url });
-            const r2 = await d.sendSlack({ action: "send", channel_key: key, thread_ts: r1.ts, text: cm.text, blocks: cm.blocks, event: "hqtask_card", source: "ef:slack-interact", dedupe_key: `hqtask_card:${data.task_id}`, ref: { table: "hq_tasks", id: data.task_id } });
-            await sb.rpc("hq_slack_task_card_set", { p_task: data.task_id, p_channel: r1.slack_channel_id ?? meta.channel ?? "", p_ts: r1.ts, p_parent: r1.notification_id, p_card: r2?.notification_id ?? null });
-          }
-        } else if (!per.has(actor.user_id)) {
-          await d.sendSlack({ action: "send", channel_key: `user:${actor.user_id}`, text: `✅ 本部タスクを作りました：${v.title}（工程 ${made.length} 個）\n🔗 <${url}|管理システムで開く>`,
-            event: "hqtask_created", source: "ef:slack-interact", dedupe_key: `hqtask_created:${data.task_id}`, ref: { table: "hq_tasks", id: data.task_id } });
-        }
-      })());
+      if (!data.duplicate) d.waitUntil(afterCreate(d, sb, actor, v, data, meta));
+      if (meta.draft_id) d.waitUntil(markDraftCreated(d, sb, meta.draft_id, data.task_id, v.title));
       return d.json({ response_action: "clear" });
     },
     // 編集: いまの値が入ったフォームを開く
