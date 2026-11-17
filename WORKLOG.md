@@ -11764,3 +11764,12 @@ Q5/Q6の回答を受け、設計メモ§9〜§10を確定し担当別指示書�
 ## 2026-11-17 給与仕訳の画面: 証憑を折りたたみに・給与振込一覧の見出しの崩れを修正（invoices.html build v173）
 - ユーザー指示: ①「振込照合・証憑」の証憑（明細PDF・CSV・銀行の画面）が長くて邪魔→しまえるように ②給与振込一覧の見出しのボタンが、端末（スマホ/PC）で並びが崩れる→一定に。
 - ①`payrollReconEvidenceHtml_` を `<details>`（初期は閉じる）に。開閉は `payrollReconUi_().evOpen` に保持（読み直しても保つ）。②見出しを「タイトル（上）＋ボタン群（下）」の2段にし、ボタンは同じ大きさのマス目（grid auto-fill 190px・狭い幅は2列）。以前は `flex-wrap:nowrap` で幅により押しつぶされていた。幅 1200/768/375 の見本で並びを確認済み。
+
+### 続き 65（2026-11-17）本部タスクを Slack から付ける・本人の Slack DM へ通知（第 1 段階・本番配置済み・スイッチ全部 OFF）
+- 社長決定: 作れる人＝本部・社長・店長（マスター含む）／第 3 段階（チャットからの提案）は選んだチャンネルだけ／Chatwork は Slack DM と 1〜2 週間並行してから止める。段階: ①フォーム＋DM通知（今回）②文章で指示（AI・低コストのモデル・下書き→人が作成）③チャンネルからのタスク化提案。
+- 発見: 今の Chatwork の期限通知は「誰かが tasks.html を開いたとき」にブラウザが hq_check_alerts を呼んで送る作りで、サーバー側の定期実行が無い（誰も開かない日は 0 通）。新しい DM 通知はサーバー定期実行（pg_cron 毎日 9:00・15:15 JST）。
+- DB（本番適用済み・rollback つき）: `2026-12-13_hq_slack_task.sql`（設定 hq_task_slack{create_enabled,dm_enabled,escalate_days}・表 2・関数 hq_slack_task_create / reminder_candidates / reminder_claim / release / step_complete / step_ack。service_role 専用・二重登録防止・権限判定は DB 側）、`2026-12-14_hq_task_reminders_cron.sql`（cron 2 本）。ロールバック付きの本番試験: 作成・二重・権限なし・名前なし・過去期限・候補・ack・担当外の完了ブロック・完了まで全 OK。
+- 通知の中身: 期限 3 日前／前日／当日／超過（毎日）。15 時以降は当日・超過で「対応中」未押下に追い通知（_pm）。超過 3 日以上は作成者へも（escalate）。DM のボタン＝完了（写真・判定・名簿つきの工程は画面で）／対応中／管理システムで開く。Slack と紐づいていない人は対象外（今までの Chatwork のまま）。
+- EF: `hq-task-reminders`（新規・v1・verify_jwt=false・dm_enabled が false の間は dry_run 以外何も送らない・op=post_create_button で「タスクを作る」ボタンを指定チャンネルに置く）／`slack-interact` v27（hqtask.* の 4 操作を追加。★本番を取得し、本番の版＋今回の追加だけをデプロイ＝リポジトリにある担当D の STEP2 未デプロイ分（attendance-request-actions.ts）は載せていない）。共有: `_shared/hqtask-slack.ts`・`hqtask-interact.ts`・テスト 5 件 pass。
+- 試し実行（dry_run・何も送っていない）: いま ON にすると今日 14 件・3 人（期限超過 10・作成者向け 1・3 日前 3）。★未完了 25 件のうち期限超過が多い＝ON の初日は超過の通知が出る。
+- 未実施: スイッチ ON（create_enabled・dm_enabled）／「タスクを作る」ボタンの設置先の決定／実際の Slack でのフォーム表示の確認（送信が要るため ON 後）／Chatwork 並行運用の終了。

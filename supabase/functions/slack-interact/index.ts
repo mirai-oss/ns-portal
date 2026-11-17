@@ -23,6 +23,7 @@ import { createClient } from "npm:@supabase/supabase-js@2";
 import { wageModal, commuteSettingModal, cancelModal, personContactModal, personContactTemplate, taxSettingModal, yen, commutePolicyModal } from "../_shared/onboarding-blocks.ts";
 import { isFormLinkPress, fixFormLinkText, fixRequestArgs, fixRequestedParentText, fixApprovalSend, unixToIso, isUuid } from "../_shared/attendance-fix-notify.ts";
 // 2026-11-11（ユーザー決定）: 勤怠確認の新しい形（親 1 行＋スレッドに詳細と操作）。新しい形のアラートは共通部品が親とカードを書き換える。古い形のアラートは今までの処理のまま
+import { hqtaskHandlers } from "../_shared/hqtask-interact.ts";   // 2026-11-17: 本部タスクの Slack 連携（フォーム・DM の完了／対応中）
 import { renderAlert, afterRequest, afterDecide } from "../_shared/attendance-alert-notice.ts";
 // 2026-11-15（社長の指示）: フォームの勤怠申請の新しい形（親 1 行＋スレッド＋修正前後のカード）。新しい形の申請は共通部品が親とカードを書き換える。今までの形の申請は今までの処理のまま
 import { requestCase, afterRequestDecide, afterAlertRequest } from "../_shared/attendance-request-notice.ts";
@@ -100,6 +101,7 @@ type Handler = (ctx: Ctx) => Promise<Response>;
 type Ctx = { sb: any; payload: any; actor: Actor; notificationId: string | null; value: any };
 
 const handlers: Record<string, Handler> = {
+  ...hqtaskHandlers({ text, json, ephemeral, openModal, waitUntil, sendSlack }),   // 2026-11-17: hqtask.*（本部タスク）
   // 勤怠確認「○ 合っている」。権限・状態は RPC 側。結果を店長向けメッセージ（複数可）に反映する。
   "attendance.alert.confirm": async ({ sb, actor, payload, value }) => {
     const ru: string | undefined = payload.response_url;
