@@ -348,17 +348,32 @@ export async function postAlert(sb: Sb, notify: Notify, a: {
     decidedByName: null, decidedAt: null, decisionNote: null, smaregi: null, smaregiError: null, test: o.test === true,
   };
   const ref = { table: REF_TABLE, id: a.alertId };
+  // 2026-11-17: 通知の呼び出しが例外（回線の切れ・JSON でない応答など）で落ちても、ここで受けて「失敗」として扱う（落ちると、親だけ出て詳細が出ないまま、記録も残らなかった）
+  const safe: Notify = async (body) => { try { return await notify(body); } catch (e) { return { ok: false, error: "exception: " + String((e as Error)?.message ?? e).slice(0, 160) }; } };
   const p = parentMessage(v);
-  const r1 = await notify({ action: "send", notification_id: crypto.randomUUID(), channel_key: o.channelKey, text: p.text, blocks: p.blocks, event: "attendance_alert", source: o.source,
+  const r1 = await safe({ action: "send", notification_id: crypto.randomUUID(), channel_key: o.channelKey, text: p.text, blocks: p.blocks, event: "attendance_alert", source: o.source,
     dedupe_key: `attendance_alert:${a.alertId}:${o.channelKey}`, ref, username: USERNAME, icon_emoji: ICON });
   if (!r1?.ok || !r1.notification_id || !r1.ts) return { alert_id: a.alertId, ok: false, format: "v2", error: String(r1?.error ?? "parent_send_failed") };
   const cardId = crypto.randomUUID();
   const c = cardMessage(v, { notificationId: cardId });
-  const sendCard = () => notify({ action: "send", notification_id: cardId, channel_key: o.channelKey, thread_ts: r1.ts, text: c.text, blocks: c.blocks, event: "attendance_alert_card", source: o.source,
+  const sendCard = () => safe({ action: "send", notification_id: cardId, channel_key: o.channelKey, thread_ts: r1.ts, text: c.text, blocks: c.blocks, event: "attendance_alert_card", source: o.source,
     dedupe_key: `attendance_alert_card:${a.alertId}`, ref, username: USERNAME, icon_emoji: ICON });
+  // 親だけ出て詳細が出ない時間を短くする: 最大 3 回（2 秒・5 秒あけて）その場で再試行。それでもだめなら失敗を記録し、15 分ごとの再実行（親は同じ印で二重にならない）に任せる
   let r2 = await sendCard();
-  if (!r2?.ok) r2 = await sendCard();
-  if (!r2?.ok || !r2.notification_id) return { alert_id: a.alertId, ok: false, format: "v2", error: "card_send_failed: " + String(r2?.error ?? "") };
+  for (const wait of [2000, 5000]) {
+    if (r2?.ok && r2.notification_id) break;
+    await new Promise((res) => setTimeout(res, wait));
+    r2 = await sendCard();
+  }
+  if (!r2?.ok || !r2.notification_id) {
+    const msg = "card_send_failed: " + String(r2?.error ?? "");
+    // 失敗の記録（通知の履歴）。あとから原因をたどれるようにする。記録できなくても続ける
+    try {
+      await sb.from("notification_deliveries").insert({ source: o.source, event: "attendance_alert_card", channel_key: o.channelKey, thread_ts: r1.ts, delivery_status: "failed", error: msg.slice(0, 300),
+        attempts: 3, dedupe_key: `attendance_alert_card_failed:${a.alertId}:${new Date().toISOString()}`, ref_table: REF_TABLE, ref_id: a.alertId });
+    } catch (_e) { /* 記録できなくても続ける */ }
+    return { alert_id: a.alertId, ok: false, format: "v2", error: msg };
+  }
   // 「詳細を確認」: スレッドの 1 通目（カード）へのリンク。取れなければボタンなし（Slack 標準の「○件の返信」から開ける）
   let permalink: string | null = null;
   if (o.detailButton !== false && o.slackToken && r1.slack_channel_id && r2.ts) {
