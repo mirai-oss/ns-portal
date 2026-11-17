@@ -11811,3 +11811,10 @@ Q5/Q6の回答を受け、設計メモ§9〜§10を確定し担当別指示書�
 - 直し: タスク本体の「✏️ 編集」は、やること・法人・詳細・注意事項・最重要だけ（担当者・期限・工程の欄を外した）。スレッドのカードに「🧩 工程を編集」を追加→工程の一覧（担当・期限・写真・完了を表示）→工程ごとに「編集」（工程名・担当者・期限（日付＋時刻）・メモ・写真の要否・削除）／「＋ 工程を追加」。保存すると一覧に戻り、カードの工程の行（担当・期限）・親投稿・スレッドの変更記録を更新し、新しく担当になった人へ DM。完了した工程は直せない・消せない。最後の 1 工程は消せない。10 個まで。タスク全体の期限は工程の最も遅い期限に自動で合わせる。
 - SQL（本番適用済み）`2026-12-18_hq_slack_step_edit.sql`: hq_slack_task_update を「null は変えない」に変更／hq_slack_steps_get／hq_slack_step_update。ロールバック付きの本番試験 OK（工程 B だけ担当・期限・写真を変更・追加・本体だけ編集・名前なし拒否・削除・完了した工程は直せない・タスク期限の自動調整）。slack-interact 再デプロイ（本番の版＋hqtask の差分のみ）。テスト 9 件 pass。
 - 注意: 作成フォームの担当者・期限は、最初は全工程に共通で入る（作成後に工程ごとに変える）。実際の Slack での動作は社長の確認待ち。
+
+## 2026-11-17 振込予定の表（payroll_transfer_schedule）も法人別に（SQL 本番適用済み・invoices.html build v175）
+- ユーザー指示: 振り込み予定の表も法人別で分けて。以前は主キー year_month（月で 1 行）で、同じ月にトーホーと LiveGate が出力すると予定日・タスクとの結び付き・出力の印が上書きされた。
+- SQL `2026-11-17_payroll_transfer_schedule_per_corp.sql`（適用済み・戻し `…_rollback.sql`）: 列 `corporation_id`（not null・既定＝トーホー・corporations 参照）を足し、主キーを (year_month, corporation_id) に。既存3行（2026-08/09/10）はトーホー。`pay_run_date(月)` は月の全法人の予定日の最大（共通関数＝scalar subquery が複数行でエラーにならないように。1行なら従来と同じ）、`payroll_transfer_batch_freeze` の予定日の既定は選んだ法人の行。変更なし: 3つのトリガー（印・控え・除外は月×利用者のまま。同じ人が別法人に属さないので二重にならない）・pay_run_state／pay_transfer_invalid_export_task／pay_transfer_pending_holds／hr_payroll_transfer_prepare（月の行の有無だけを見る）。
+- 検証（取引内）: 既存3行はすべてトーホー・pay_run_date(2026-10)=11/13・state=paid のまま。同じ月・違う予定日（トーホー12/14・LiveGate12/20）で2行・pay_run_date=12/20・state 12/15=exported・12/21=paid・LiveGate の書き直しで行は増えない（法人なしの書き込みはトーホーの行）。
+- 画面: 読み込みは選んでいる法人の行だけ／出力の記録は corporation_id つき・`?on_conflict=year_month,corporation_id`・hq_task_id は法人ごとに保存（前回の「トーホー以外では書かない」を戻した）。法人の ID が読めないときは出力の記録を止める。更新前の古い画面（法人なしで書く）はトーホーの行になる。
+- 未対応: 除外した人（payroll_transfer_holds）・出力の印（export_tokens）は月×利用者のまま（法人別にしていない）。どちらかの法人に確認待ちが残ると、その月の両方の本部タスクが完了にできない（guard が月単位）。

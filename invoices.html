@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-11-17-v174";
+const BUILD_TAG="2026-11-17-v175";
 const PAYROLL_CANCEL_READY=true;
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
@@ -10664,7 +10664,7 @@ async function payrollLoad(){
     // 2026-09-02: 一時保存（下書き）機能。「途中で消えてしまう」対策
     authed(`/rest/v1/payroll_journal_drafts?year_month=eq.${ym}&select=*`),
     // 2026-09-05追加：振込予定日（振込CSV出力時にユーザーが入力）。無ければ未設定のまま
-    authed(`/rest/v1/payroll_transfer_schedule?year_month=eq.${ym}&select=*`),
+    authed(`/rest/v1/payroll_transfer_schedule?year_month=eq.${ym}&corporation_id=eq.${payrollCorpId()||"00000000-0000-0000-0000-000000000000"}&select=*`),   // 2026-11-17: 法人別の行（選んでいる法人の分だけ）
   ]);
   // 給与データの取得に失敗した場合（トークン更新タイミング等による一時的な失敗を想定）、少し待って
   // 1回だけ自動で再試行する。ユーザー報告「タブを開き直すとKPIが0にリセットされて見づらい」対策
@@ -13970,12 +13970,14 @@ async function payrollExportCsv(){
   // 2026-11-17変更: 本部タスクは「対象月×法人」ごとに 1 つ。トーホー＝scope_key が対象年月（今までどおり）、ほかの法人（LiveGate）＝「対象年月:法人コード」。
   //   法人の名前もタスクの「法人」に入れる（以前は常に「トーホー」）。
   const pcorp=payrollCorpDef_(); const isToho=pcorp.key==="toho";
+  const schedCorpId=payrollCorpId();
+  if(!schedCorpId){ msg.className="err"; msg.textContent="法人の情報を読み込めていないため、出力を記録できません。画面を再読み込みしてからやり直してください"; return; }
   const taskR=await createTransferConfirmTask("payroll",isToho?PAYROLL_STATE.yearMonth:PAYROLL_STATE.yearMonth+":"+pcorp.code,transferDate,paidNames,pcorp.label);
-  const schedBody={ year_month:PAYROLL_STATE.yearMonth, scheduled_date:transferDate, created_by:ME.id, updated_at:new Date().toISOString() };
-  // 振込予定の表は「対象月」に 1 行だけ（法人別ではない）。トーホーのタスクとの結び付きを、あとから出力した別の法人で上書きしない
-  if(isToho) schedBody.hq_task_id=(taskR.ok&&taskR.body)||null;
+  // 2026-11-17: 振込予定の表も「対象月×法人」ごとに 1 行（corporation_id が主キーに入った）。法人の ID が分からないまま、トーホー以外の法人を
+  //   トーホーの行に書いてしまわないよう、ここで止める
+  const schedBody={ year_month:PAYROLL_STATE.yearMonth, corporation_id:schedCorpId, scheduled_date:transferDate, hq_task_id:(taskR.ok&&taskR.body)||null, created_by:ME.id, updated_at:new Date().toISOString() };
   if(PAYROLL_STATE.transferPrepared) schedBody.export_token=PAYROLL_STATE.transferToken; // 出力の印（正しい手順を通った出力であることを DB が確かめる）
-  const schedR=await authed(`/rest/v1/payroll_transfer_schedule`,{method:"POST",headers:{Prefer:"resolution=merge-duplicates,return=minimal"},body:JSON.stringify(schedBody)}).catch(()=>({ok:false,body:null}));
+  const schedR=await authed(`/rest/v1/payroll_transfer_schedule?on_conflict=year_month,corporation_id`,{method:"POST",headers:{Prefer:"resolution=merge-duplicates,return=minimal"},body:JSON.stringify(schedBody)}).catch(()=>({ok:false,body:null}));
   if(PAYROLL_STATE.transferPrepared){
     if(!schedR||!schedR.ok){ const m0=$("payroll-csv-msg"); m0.className="err"; m0.textContent="出力を記録できなかったため、CSV は作成していません: "+((schedR&&schedR.body&&schedR.body.message)||"原因不明。画面を再読み込みしてやり直してください"); await payrollTransferPrepare(PAYROLL_STATE.yearMonth); payrollRender(); return; }
     deliverCsv();
