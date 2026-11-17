@@ -249,6 +249,34 @@ Deno.serve(async (req) => {
       });
     }
 
+    // 2026-11-16 固定残業代の読み取り確認（読むだけ・スマレジへは書かない）: 月給の人のスマレジ側の賃金設定（wageApply）にある固定残業代の項目を、そのまま返す。
+    //   返すのは項目の有無・適用フラグ・金額・含める 6 つ・適用開始日と、人は user_id の先頭 8 文字だけ（氏名は返さない）。CEO/HQ か、x-notify-secret（DB・運用用）
+    if (body.action === "wage_fixed_probe") {
+      const nsec = (Deno.env.get("NOTIFY_SLACK_SECRET") ?? "").trim();
+      const bySecret = !!nsec && (req.headers.get("x-notify-secret") ?? "").trim() === nsec;
+      if (!isAdmin && !bySecret) return json({ ok: false, error: "forbidden" }, 403);
+      const sb = svc();
+      const { data: ws } = await sb.from("employee_wage_settings").select("user_id").eq("contract_id", C).eq("division", 2);
+      const uids = [...new Set((ws ?? []).map((w: any) => w.user_id as string))];
+      const { data: lk } = await sb.from("employee_smaregi_links").select("user_id,smaregi_staff_id").eq("contract_id", C).is("effective_to", null).in("user_id", uids.length ? uids : ["00000000-0000-0000-0000-000000000000"]);
+      const token = await getToken(C);
+      const people: any[] = []; let keys: string[] | null = null;
+      for (const l of lk ?? []) {
+        const r = await api(C, token, `/staffs/${encodeURIComponent(String(l.smaregi_staff_id))}`);
+        const raw = await r.json().catch(() => null);
+        if (!r.ok) { people.push({ u: String(l.user_id).slice(0, 8), error: `取得失敗(${r.status})` }); continue; }
+        const st = Array.isArray(raw) ? raw[0] : raw;
+        const monthly = (st?.wageApply ?? []).filter((w: any) => Number(w.division) === 2);
+        if (!keys && monthly[0]) keys = Object.keys(monthly[0]).sort();
+        people.push({ u: String(l.user_id).slice(0, 8), monthly: monthly.map((w: any) => ({
+          effectiveDate: String(w.effectiveDate ?? "").slice(0, 10), wage: Number(w.wage),
+          fixedOvertimeWageFlag: w.fixedOvertimeWageFlag ?? null, fixedOvertimeWage: w.fixedOvertimeWage ?? null,
+          flags: [w.fixedWageStatutoryOvertimeFlag, w.fixedWageMidnightFlag, w.fixedWagePrescribedHolidayFlag, w.fixedWageStatutoryHolidayFlag, w.fixedWageMonth45HourOvertimeFlag, w.fixedWageMonth60HourOvertimeFlag].map((x) => x ?? null),
+        })) });
+      }
+      return json({ ok: true, contract_id: C, people_count: people.length, wage_apply_field_names: keys, people });
+    }
+
     if (body.action === "test") {
       if (!isAdmin) return json({ ok: false, error: "forbidden" }, 403);
       const token = await getToken(C);
