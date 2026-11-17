@@ -4,6 +4,7 @@
 
 export const CORPS = ["トーホー", "N-Style", "SK", "LiveGate"] as const;
 export const CREATE_OPEN = "hqtask.create.open";
+export const CREATE_OPEN_DETAIL = "hqtask.create.open.detail";
 export const CREATE_MODAL = "hqtask.create.modal";
 export const STEP_DONE = "hqtask.step.done";
 export const STEP_ACK = "hqtask.step.ack";
@@ -11,11 +12,11 @@ export const STEP_LINK = "hqtask.link";
 
 export type Candidate = {
   recipient_id: string; slack_user_id: string; task_id: string; step_id: string; task_title: string; step_title: string; due_date: string;
-  kind: string; days_over: number; creator_id: string | null; can_complete: boolean; url: string;
+  due_time?: string | null; kind: string; days_over: number; creator_id: string | null; can_complete: boolean; url: string;
 };
 
 const clean = (s: unknown, n: number) => String(s ?? "").replace(/[\u0000-\u001f]/g, " ").trim().slice(0, n);
-const md = (d: string) => { const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(d); return m ? `${Number(m[2])}/${Number(m[3])}` : d; };
+const md = (d: string, time?: string | null) => { const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(d); const day = m ? `${Number(m[2])}/${Number(m[3])}` : d; const tm = /^(\d{2}):(\d{2})/.exec(String(time ?? "")); return tm ? `${day} ${Number(tm[1])}:${tm[2]}` : day; };
 
 /** 種類ごとの見出し。「見逃さない」ため、期限が近いほど強い言い方にする */
 export function reminderHead(kind: string, daysOver: number): { mark: string; head: string } {
@@ -36,7 +37,7 @@ export function reminderHead(kind: string, daysOver: number): { mark: string; he
 export function reminderMessage(c: Candidate): { text: string; blocks: unknown[] } {
   const h = reminderHead(c.kind, c.days_over);
   const title = clean(c.task_title, 100);
-  const lines = [`${h.mark} *${h.head}*`, `*${title}*`, `工程：${clean(c.step_title, 60)}　期限：${md(c.due_date)}`];
+  const lines = [`${h.mark} *${h.head}*`, `*${title}*`, `工程：${clean(c.step_title, 60)}　期限：${md(c.due_date, c.due_time)}`];
   const blocks: unknown[] = [{ type: "section", text: { type: "mrkdwn", text: lines.join("\n") } }];
   const elements: unknown[] = [];
   if (c.kind !== "escalate") {
@@ -50,8 +51,8 @@ export function reminderMessage(c: Candidate): { text: string; blocks: unknown[]
 }
 
 /** 新しく割り当てられたときの DM */
-export function assignedMessage(o: { title: string; stepTitle?: string; due: string; creatorName: string; memo?: string | null; step_id: string; url: string; canComplete: boolean }): { text: string; blocks: unknown[] } {
-  const lines = [`📌 *新しい本部タスクが割り当てられました*`, `*${clean(o.title, 100)}*`, `期限：${md(o.due)}　依頼：${clean(o.creatorName, 30)}`];
+export function assignedMessage(o: { title: string; stepTitle?: string; due: string; dueTime?: string | null; steps?: number; creatorName: string; memo?: string | null; step_id: string; url: string; canComplete: boolean }): { text: string; blocks: unknown[] } {
+  const lines = [`📌 *新しい本部タスクが割り当てられました*`, `*${clean(o.title, 100)}*`, `期限：${md(o.due, o.dueTime)}　依頼：${clean(o.creatorName, 30)}${o.steps && o.steps > 1 ? `　工程：${o.steps} 個` : ""}`];
   if (o.memo && clean(o.memo, 300)) lines.push(`詳細：${clean(o.memo, 300)}`);
   const val = JSON.stringify({ step_id: o.step_id });
   const elements: unknown[] = [];
@@ -66,29 +67,39 @@ export function createButtonMessage(): { text: string; blocks: unknown[] } {
   return {
     text: "本部タスクを作る",
     blocks: [
-      { type: "section", text: { type: "mrkdwn", text: "📝 *本部タスクを作る*\nボタンを押すと入力フォームが開きます。送信すると本部タスクが付き、担当者の Slack の DM に届きます。（作れるのは本部・社長・店長）" } },
-      { type: "actions", block_id: "hqtask_create", elements: [{ type: "button", style: "primary", text: { type: "plain_text", text: "＋ タスクを作る", emoji: true }, action_id: CREATE_OPEN, value: "{}" }] },
+      { type: "section", text: { type: "mrkdwn", text: "📝 *本部タスクを作る*\n「かんたん」は 10 秒で付けられる最小の入力、「詳細つき」は注意事項・工程（1 行 1 工程）・写真の必要もつけられます。送信すると本部タスクが付き、担当者の Slack の DM に届きます。（作れるのは本部・社長・店長）" } },
+      { type: "actions", block_id: "hqtask_create", elements: [
+        { type: "button", style: "primary", text: { type: "plain_text", text: "＋ かんたんに作る", emoji: true }, action_id: CREATE_OPEN, value: "{}" },
+        { type: "button", text: { type: "plain_text", text: "＋ 詳細つきで作る", emoji: true }, action_id: CREATE_OPEN_DETAIL, value: "{}" },
+      ] },
     ],
   };
 }
 
-/** 作成フォーム（モーダル）。入力: 内容・法人・担当者（複数）・期限・詳細・最重要 */
-export function createModal(): unknown {
-  return {
-    type: "modal", callback_id: CREATE_MODAL,
-    title: { type: "plain_text", text: "本部タスクを作る" }, submit: { type: "plain_text", text: "作成" }, close: { type: "plain_text", text: "やめる" },
-    blocks: [
-      { type: "input", block_id: "title", label: { type: "plain_text", text: "やること" }, element: { type: "plain_text_input", action_id: "title", max_length: 120, placeholder: { type: "plain_text", text: "例：10月分の請求書を確認する" } } },
-      { type: "input", block_id: "corp", label: { type: "plain_text", text: "法人" }, element: { type: "static_select", action_id: "corp", placeholder: { type: "plain_text", text: "選ぶ" }, options: CORPS.map((c) => ({ text: { type: "plain_text", text: c }, value: c })) } },
-      { type: "input", block_id: "assignees", label: { type: "plain_text", text: "担当者（複数可）" }, element: { type: "multi_users_select", action_id: "assignees", placeholder: { type: "plain_text", text: "選ぶ" } } },
-      { type: "input", block_id: "due", label: { type: "plain_text", text: "期限" }, element: { type: "datepicker", action_id: "due" } },
-      { type: "input", block_id: "memo", optional: true, label: { type: "plain_text", text: "詳細（任意）" }, element: { type: "plain_text_input", action_id: "memo", multiline: true, max_length: 500 } },
-      { type: "input", block_id: "urgent", optional: true, label: { type: "plain_text", text: "最重要" }, element: { type: "checkboxes", action_id: "urgent", options: [{ text: { type: "plain_text", text: "最重要のタスクにする" }, value: "1" }] } },
-    ],
-  };
+/** 作成フォーム（モーダル）。かんたん＝内容・法人・担当者・期限（日付＋時刻）・詳細・最重要／詳細つき＝さらに注意事項・工程（1 行 1 工程）・写真が必要 */
+export function createModal(detail = false): unknown {
+  const blocks: unknown[] = [
+    { type: "input", block_id: "title", label: { type: "plain_text", text: "やること" }, element: { type: "plain_text_input", action_id: "title", max_length: 120, placeholder: { type: "plain_text", text: "例：10月分の請求書を確認する" } } },
+    { type: "input", block_id: "corp", label: { type: "plain_text", text: "法人" }, element: { type: "static_select", action_id: "corp", placeholder: { type: "plain_text", text: "選ぶ" }, options: CORPS.map((c) => ({ text: { type: "plain_text", text: c }, value: c })) } },
+    { type: "input", block_id: "assignees", label: { type: "plain_text", text: "担当者（複数可）" }, element: { type: "multi_users_select", action_id: "assignees", placeholder: { type: "plain_text", text: "選ぶ" } } },
+    { type: "input", block_id: "due", label: { type: "plain_text", text: "期限（日付）" }, element: { type: "datepicker", action_id: "due" } },
+    { type: "input", block_id: "due_time", optional: true, label: { type: "plain_text", text: "期限（時刻・任意）" }, element: { type: "timepicker", action_id: "due_time", placeholder: { type: "plain_text", text: "時刻を選ぶ" } } },
+    { type: "input", block_id: "memo", optional: true, label: { type: "plain_text", text: "詳細（任意）" }, element: { type: "plain_text_input", action_id: "memo", multiline: true, max_length: 500 } },
+  ];
+  if (detail) {
+    blocks.push(
+      { type: "input", block_id: "notes", optional: true, label: { type: "plain_text", text: "注意事項（任意）" }, element: { type: "plain_text_input", action_id: "notes", multiline: true, max_length: 1000, placeholder: { type: "plain_text", text: "担当者に必ず守ってほしいこと" } } },
+      { type: "input", block_id: "steps", optional: true, label: { type: "plain_text", text: "工程（1 行に 1 つ・最大 10）" }, hint: { type: "plain_text", text: "書かなければ「対応する」の 1 工程になります。担当者と期限は全工程で共通です。" },
+        element: { type: "plain_text_input", action_id: "steps", multiline: true, max_length: 900, placeholder: { type: "plain_text", text: "資料を集める\n内容を確認する\n提出する" } } },
+      { type: "input", block_id: "photo", optional: true, label: { type: "plain_text", text: "写真" }, element: { type: "checkboxes", action_id: "photo", options: [{ text: { type: "plain_text", text: "各工程の完了に写真が必要" }, value: "1" }] } },
+    );
+  }
+  blocks.push({ type: "input", block_id: "urgent", optional: true, label: { type: "plain_text", text: "最重要" }, element: { type: "checkboxes", action_id: "urgent", options: [{ text: { type: "plain_text", text: "最重要のタスクにする" }, value: "1" }] } });
+  return { type: "modal", callback_id: CREATE_MODAL, private_metadata: JSON.stringify({ detail }),
+    title: { type: "plain_text", text: detail ? "本部タスク（詳細つき）" : "本部タスクを作る" }, submit: { type: "plain_text", text: "作成" }, close: { type: "plain_text", text: "やめる" }, blocks };
 }
 
-export type CreateInput = { title: string; corp: string; slackAssignees: string[]; due: string; memo: string; urgent: boolean };
+export type CreateInput = { title: string; corp: string; slackAssignees: string[]; due: string; dueTime: string | null; memo: string; urgent: boolean; notes: string; steps: string[]; photo: boolean };
 /** モーダル送信（view.state.values）を読む。足りないものは errors（入力欄の block_id → 文言） */
 export function parseCreate(values: any): { ok: true; v: CreateInput } | { ok: false; errors: Record<string, string> } {
   const g = values ?? {};
@@ -97,17 +108,23 @@ export function parseCreate(values: any): { ok: true; v: CreateInput } | { ok: f
   const slackAssignees: string[] = Array.isArray(g.assignees?.assignees?.selected_users) ? g.assignees.assignees.selected_users.filter((x: unknown) => /^[UW][A-Z0-9]{6,}$/.test(String(x))).slice(0, 10) : [];
   const due = String(g.due?.due?.selected_date ?? "");
   const memo = String(g.memo?.memo?.value ?? "").trim().slice(0, 500);
+  const tm = String(g.due_time?.due_time?.selected_time ?? "");
+  const dueTime = /^\d{2}:\d{2}$/.test(tm) ? tm : null;
+  const notes = String(g.notes?.notes?.value ?? "").trim().slice(0, 1000);
+  const steps = String(g.steps?.steps?.value ?? "").split(/\r?\n/).map((x) => clean(x, 80)).filter((x) => x);
+  const photo = Array.isArray(g.photo?.photo?.selected_options) && g.photo.photo.selected_options.length > 0;
   const urgent = Array.isArray(g.urgent?.urgent?.selected_options) && g.urgent.urgent.selected_options.length > 0;
   const errors: Record<string, string> = {};
   if (!title) errors.title = "やることを入れてください";
   if (!(CORPS as readonly string[]).includes(corp)) errors.corp = "法人を選んでください";
   if (!slackAssignees.length) errors.assignees = "担当者を選んでください";
   if (!/^\d{4}-\d{2}-\d{2}$/.test(due)) errors.due = "期限を選んでください";
+  if (steps.length > 10) errors.steps = "工程は 10 個までです";
   if (Object.keys(errors).length) return { ok: false, errors };
-  return { ok: true, v: { title, corp, slackAssignees, due, memo, urgent } };
+  return { ok: true, v: { title, corp, slackAssignees, due, dueTime, memo, urgent, notes, steps, photo } };
 }
 
 /** RPC の失敗理由 → モーダルの入力欄のエラー */
 export function errorField(reason: string | undefined): string {
-  switch (reason) { case "title": return "title"; case "corp": return "corp"; case "due": return "due"; case "assignee": return "assignees"; default: return "title"; }
+  switch (reason) { case "title": return "title"; case "corp": return "corp"; case "due": return "due"; case "assignee": return "assignees"; case "steps": return "steps"; default: return "title"; }
 }

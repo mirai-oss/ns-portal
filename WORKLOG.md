@@ -11776,3 +11776,9 @@ Q5/Q6の回答を受け、設計メモ§9〜§10を確定し担当別指示書�
 
 ### 続き 66（2026-11-17）本部タスクの Slack 連携スイッチを ON（社長の明示承認）
 - app_settings.hq_task_slack: create_enabled=true・dm_enabled=true。最初の DM は次の定期実行（9:00／15:15 JST）で出る。ボタンの設置先チャンネルは未決定（EF hq-task-reminders の op=post_create_button で置く）。Chatwork は並行運用中（1〜2 週間後に止める判断）。戻すときは両方 false。
+
+### 続き 67（2026-11-17）Slack フォームを「かんたん」「詳細つき」の 2 つに／期限に時刻／役員チャットにカードを設置
+- SQL（本番適用済み）`2026-12-15_hq_slack_task_detail.sql`: hq_slack_task_create を拡張（期限の時刻 due_time・注意事項 notes・工程 1 行 1 工程（最大 10・空行除外）・写真必須）。hq_slack_reminder_candidates に due_time を追加（DM に「11/20 17:30」と出る）。ロールバック付きの本番試験 OK（工程 3・写真 t・時刻・注意・かんたん＝「対応する」1 工程・11 工程は拒否）。
+- slack-interact v28（本番の版＋hqtask の差分だけ・担当D の STEP2 未デプロイ分は載せていない）／hq-task-reminders 再デプロイ。ボタンは「＋ かんたんに作る」「＋ 詳細つきで作る」（hqtask.create.open / .open.detail）。テスト 6 件 pass。
+- 役員チャット（C0C7ZH7G1ME・slack_channels に hq.exec として登録）にカードを設置（社長の試し）。最初の投稿が channel_not_found（アプリ未参加）→参加後に再投稿。失敗した配信の記録が dedupe で再投稿を妨げたため、その失敗行 1 件だけ削除（要改善: 失敗行は dedupe の対象外にする）。カードは既存メッセージを更新して 2 ボタンにした。ピン留め／ブックマークは社長の操作。
+- 未実施: ショートカット（全体・メッセージ）の登録と受け口、第 2 段階（文章→AI 下書き）、第 3 段階。
