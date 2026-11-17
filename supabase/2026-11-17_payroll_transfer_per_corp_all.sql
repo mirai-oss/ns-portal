@@ -109,7 +109,7 @@ declare v_task uuid; v_step uuid; h record; v_item uuid; v_assignee uuid; v_open
 begin
   -- 2026-11-17: 法人を渡さない呼び出し（古い画面・ほかの処理）は、除外の記録がある法人ごとに回す
   if p_corp is null then
-    for v_cc in select distinct x.corporation_id from payroll_transfer_holds x where x.year_month = p_year_month and x.corporation_id = p_corp loop
+    for v_cc in select distinct x.corporation_id from payroll_transfer_holds x where x.year_month = p_year_month loop
       v_task := public.pay_transfer_hold_task_sync(p_year_month, v_cc);
     end loop;
     return v_task;

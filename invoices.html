@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-11-17-v175";
+const BUILD_TAG="2026-11-17-v176";
 const PAYROLL_CANCEL_READY=true;
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
@@ -11786,7 +11786,7 @@ async function payrollTransferPrepare(ym){
   PAYROLL_STATE.transferSnapshot=null; PAYROLL_STATE.payAttention=[]; PAYROLL_STATE.bankApprovalRequired=false;
   PAYROLL_STATE.transferHold=[]; PAYROLL_STATE.transferReady=[]; PAYROLL_STATE.transferHoldRecords=[]; PAYROLL_STATE.transferPendingMode="exclude"; PAYROLL_STATE.transferPrepared=false; PAYROLL_STATE.transferPaused=false; PAYROLL_STATE.transferToken=null;
   try{
-    const r=await authed("/rest/v1/rpc/hr_payroll_transfer_prepare",{method:"POST",body:JSON.stringify({p_year_month:ym})});
+    const r=await authed("/rest/v1/rpc/hr_payroll_transfer_prepare",{method:"POST",body:JSON.stringify({p_year_month:ym,p_corp:payrollCorpId()||null})});   // 2026-11-17: 法人別（印・口座の控え・除外は、選んでいる法人の分）
     if(!(r.ok&&r.body&&r.body.ok)) return; // ハブ側が未適用・権限なし → 従来どおり（登録口座を使う）
     PAYROLL_STATE.transferPrepared=true;
     PAYROLL_STATE.transferPaused=!!r.body.paused;            // 切り替え作業中: 出力は一時停止
