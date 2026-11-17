@@ -11746,3 +11746,9 @@ Q5/Q6の回答を受け、設計メモ§9〜§10を確定し担当別指示書�
 
 ### 続き 61（2026-11-16）自動化スイッチ3つを ON（社長の明示承認）
 - payroll_transfer_recon: bank_read_enabled・auto_complete・auto_reflect を true に変更。slack_enabled・mf_total_enabled は false のまま。元に戻すときは3つを false にする。
+
+### 続き 62（2026-11-17）MF 総額照合: 預金名を登録・試し実行で一致を確認（スイッチは OFF のまま）
+- 読むだけの確かめ（mf_probe・tools/dev/sqlh.py の ef() 経由＝既存の管理用の入口）: 2026-11-13・WEB総振・7,545,231 円・預金「普通預金/代表/PayPay/964」の出金が 1 件だけ一致（元本。手数料は別の仕訳）。
+- 設定: payroll_transfer_recon.corps.<トーホー>.mf_deposit_accounts = ["普通預金/代表/PayPay/964"] を登録（ライブゲートは未登録＝記録しない）。
+- 試し実行（dry_run・一時的に mf_total_enabled を ON→必ず OFF に戻した）: 2026-10 バッチ 1 件が「合計がぴったり同じ出金が 1 件だけ」(matched_one)・記録 0。総額一致だけで個人は完了にしない設計は不変。
+- 未実施: mf_total_enabled の ON（社長の判断待ち）。
