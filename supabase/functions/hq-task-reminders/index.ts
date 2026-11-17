@@ -9,7 +9,7 @@
 // 認証: service_role（Bearer）か x-notify-secret。デプロイ: supabase functions deploy hq-task-reminders --no-verify-jwt --project-ref uuvsxzhpxtghojoubjcc --yes
 // =============================================================
 import { createClient } from "npm:@supabase/supabase-js@2";
-import { reminderMessage, createButtonMessage, type Candidate } from "../_shared/hqtask-slack.ts";
+import { reminderMessage, createButtonMessage, parentMessage, type Candidate } from "../_shared/hqtask-slack.ts";
 
 const json = (o: unknown, status = 200) => new Response(JSON.stringify(o), { status, headers: { "Content-Type": "application/json" } });
 const svc = () => createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
@@ -71,6 +71,15 @@ Deno.serve(async (req: Request) => {
         blocks: [{ type: "section", text: { type: "mrkdwn", text } }, { type: "actions", block_id: "hqtask_done", elements: [{ type: "button", text: { type: "plain_text", text: "管理システムで開く", emoji: true }, url: c.url, action_id: "hqtask.link" }] }],
         dedupe_key: `hqtask_completed:${c.task_id}`, ref: { table: "hq_tasks", id: c.task_id } });
       if (r?.ok) sent2++; else { failed2++; await sb.rpc("hq_slack_complete_release", { p_task: c.task_id }); }
+      // 親投稿（チャンネル）があれば「✅ … ｜完了」に更新する
+      if (r?.ok) {
+        const { data: lg } = await sb.from("hq_slack_task_log").select("parent_notification_id").eq("task_id", c.task_id).maybeSingle();
+        const { data: tk } = await sb.from("hq_tasks").select("title,due_date,due_time").eq("id", c.task_id).maybeSingle();
+        if (lg?.parent_notification_id && tk) {
+          const pm = parentMessage({ title: tk.title, due: tk.due_date, dueTime: tk.due_time, done: true });
+          await sendSlack({ action: "update", notification_id: lg.parent_notification_id, text: pm.text, blocks: pm.blocks });
+        }
+      }
     }
     return json({ ok: true, op: "completions", total: list2.length, sent: sent2, failed: failed2 });
   }

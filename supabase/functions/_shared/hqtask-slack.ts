@@ -62,41 +62,70 @@ export function assignedMessage(o: { title: string; stepTitle?: string; due: str
   return { text: `📌 新しい本部タスク：${clean(o.title, 100)}`, blocks: [{ type: "section", text: { type: "mrkdwn", text: lines.join("\n") } }, { type: "actions", block_id: "hqtask", elements }] };
 }
 
-/** チャンネルに置く「タスクを作る」ボタンのメッセージ */
+/** チャンネルに置く「タスクを作る」ボタンのメッセージ（ボタンは 1 つ。下の欄に詳細も入れられる） */
 export function createButtonMessage(): { text: string; blocks: unknown[] } {
   return {
     text: "本部タスクを作る",
     blocks: [
-      { type: "section", text: { type: "mrkdwn", text: "📝 *本部タスクを作る*\n「かんたん」は 10 秒で付けられる最小の入力、「詳細つき」は注意事項・工程（1 行 1 工程）・写真の必要もつけられます。送信すると本部タスクが付き、担当者の Slack の DM に届きます。（作れるのは本部・社長・店長）" } },
-      { type: "actions", block_id: "hqtask_create", elements: [
-        { type: "button", style: "primary", text: { type: "plain_text", text: "＋ かんたんに作る", emoji: true }, action_id: CREATE_OPEN, value: "{}" },
-        { type: "button", text: { type: "plain_text", text: "＋ 詳細つきで作る", emoji: true }, action_id: CREATE_OPEN_DETAIL, value: "{}" },
-      ] },
+      { type: "section", text: { type: "mrkdwn", text: "📝 *本部タスクを作る*\nボタンを押すと入力フォームが開きます。上の 4 つ（やること・法人・担当者・期限）だけでも作れます。注意事項・工程・写真は、フォームの下の欄に入れられます。送信すると本部タスクが付き、担当者の Slack の DM に届きます。（作れるのは本部・社長・店長）" } },
+      { type: "actions", block_id: "hqtask_create", elements: [{ type: "button", style: "primary", text: { type: "plain_text", text: "＋ タスクを作る", emoji: true }, action_id: CREATE_OPEN, value: "{}" }] },
     ],
   };
 }
 
-/** 作成フォーム（モーダル）。かんたん＝内容・法人・担当者・期限（日付＋時刻）・詳細・最重要／詳細つき＝さらに注意事項・工程（1 行 1 工程）・写真が必要 */
-export function createModal(detail = false): unknown {
+export const EDIT_ACTION = "hqtask.task.edit";
+export const EDIT_MODAL = "hqtask.edit.modal";
+
+export type Initial = { title?: string; corp?: string; assigneeSlackIds?: string[]; due?: string | null; dueTime?: string | null; memo?: string | null; notes?: string | null; urgent?: boolean };
+
+/** 作成・編集のフォーム（モーダル）。上＝やること・法人・担当者・期限（日付＋時刻）。下＝詳細（任意）: 詳細・注意事項・工程・写真・最重要 */
+export function createModal(o: { mode?: "create" | "edit"; initial?: Initial; meta?: Record<string, unknown> } = {}): unknown {
+  const edit = o.mode === "edit";
+  const ini = o.initial ?? {};
+  const withInit = (el: any, key: string, val: unknown) => (val !== undefined && val !== null && val !== "" ? { ...el, [key]: val } : el);
   const blocks: unknown[] = [
-    { type: "input", block_id: "title", label: { type: "plain_text", text: "やること" }, element: { type: "plain_text_input", action_id: "title", max_length: 120, placeholder: { type: "plain_text", text: "例：10月分の請求書を確認する" } } },
-    { type: "input", block_id: "corp", label: { type: "plain_text", text: "法人" }, element: { type: "static_select", action_id: "corp", placeholder: { type: "plain_text", text: "選ぶ" }, options: CORPS.map((c) => ({ text: { type: "plain_text", text: c }, value: c })) } },
-    { type: "input", block_id: "assignees", label: { type: "plain_text", text: "担当者（複数可）" }, element: { type: "multi_users_select", action_id: "assignees", placeholder: { type: "plain_text", text: "選ぶ" } } },
-    { type: "input", block_id: "due", label: { type: "plain_text", text: "期限（日付）" }, element: { type: "datepicker", action_id: "due" } },
-    { type: "input", block_id: "due_time", optional: true, label: { type: "plain_text", text: "期限（時刻・任意）" }, element: { type: "timepicker", action_id: "due_time", placeholder: { type: "plain_text", text: "時刻を選ぶ" } } },
-    { type: "input", block_id: "memo", optional: true, label: { type: "plain_text", text: "詳細（任意）" }, element: { type: "plain_text_input", action_id: "memo", multiline: true, max_length: 500 } },
+    { type: "input", block_id: "title", label: { type: "plain_text", text: "やること" }, element: withInit({ type: "plain_text_input", action_id: "title", max_length: 120, placeholder: { type: "plain_text", text: "例：10月分の請求書を確認する" } }, "initial_value", ini.title) },
+    { type: "input", block_id: "corp", label: { type: "plain_text", text: "法人" }, element: withInit({ type: "static_select", action_id: "corp", placeholder: { type: "plain_text", text: "選ぶ" }, options: CORPS.map((c) => ({ text: { type: "plain_text", text: c }, value: c })) }, "initial_option", ini.corp ? { text: { type: "plain_text", text: ini.corp }, value: ini.corp } : null) },
+    { type: "input", block_id: "assignees", label: { type: "plain_text", text: "担当者（複数可）" }, element: withInit({ type: "multi_users_select", action_id: "assignees", placeholder: { type: "plain_text", text: "選ぶ" } }, "initial_users", ini.assigneeSlackIds?.length ? ini.assigneeSlackIds : null) },
+    { type: "input", block_id: "due", label: { type: "plain_text", text: "期限（日付）" }, element: withInit({ type: "datepicker", action_id: "due" }, "initial_date", ini.due) },
+    { type: "input", block_id: "due_time", optional: true, label: { type: "plain_text", text: "期限（時刻・任意）" }, element: withInit({ type: "timepicker", action_id: "due_time", placeholder: { type: "plain_text", text: "時刻を選ぶ" } }, "initial_time", ini.dueTime ? String(ini.dueTime).slice(0, 5) : null) },
+    { type: "divider" },
+    { type: "section", text: { type: "mrkdwn", text: "*▼ 詳細（すべて任意・入れなくても作れます）*" } },
+    { type: "input", block_id: "memo", optional: true, label: { type: "plain_text", text: "詳細" }, element: withInit({ type: "plain_text_input", action_id: "memo", multiline: true, max_length: 500 }, "initial_value", ini.memo) },
+    { type: "input", block_id: "notes", optional: true, label: { type: "plain_text", text: "注意事項" }, element: withInit({ type: "plain_text_input", action_id: "notes", multiline: true, max_length: 1000, placeholder: { type: "plain_text", text: "担当者に必ず守ってほしいこと" } }, "initial_value", ini.notes) },
+    { type: "input", block_id: "steps", optional: true, label: { type: "plain_text", text: edit ? "工程を追加（1 行に 1 つ）" : "工程（1 行に 1 つ・最大 10）" }, hint: { type: "plain_text", text: edit ? "いまある工程は消えません。ここに書いたものが、後ろに追加されます。" : "書かなければ「対応する」の 1 工程になります。担当者と期限は全工程で共通です。" },
+      element: { type: "plain_text_input", action_id: "steps", multiline: true, max_length: 900, placeholder: { type: "plain_text", text: "資料を集める\n内容を確認する\n提出する" } } },
   ];
-  if (detail) {
-    blocks.push(
-      { type: "input", block_id: "notes", optional: true, label: { type: "plain_text", text: "注意事項（任意）" }, element: { type: "plain_text_input", action_id: "notes", multiline: true, max_length: 1000, placeholder: { type: "plain_text", text: "担当者に必ず守ってほしいこと" } } },
-      { type: "input", block_id: "steps", optional: true, label: { type: "plain_text", text: "工程（1 行に 1 つ・最大 10）" }, hint: { type: "plain_text", text: "書かなければ「対応する」の 1 工程になります。担当者と期限は全工程で共通です。" },
-        element: { type: "plain_text_input", action_id: "steps", multiline: true, max_length: 900, placeholder: { type: "plain_text", text: "資料を集める\n内容を確認する\n提出する" } } },
-      { type: "input", block_id: "photo", optional: true, label: { type: "plain_text", text: "写真" }, element: { type: "checkboxes", action_id: "photo", options: [{ text: { type: "plain_text", text: "各工程の完了に写真が必要" }, value: "1" }] } },
-    );
-  }
-  blocks.push({ type: "input", block_id: "urgent", optional: true, label: { type: "plain_text", text: "最重要" }, element: { type: "checkboxes", action_id: "urgent", options: [{ text: { type: "plain_text", text: "最重要のタスクにする" }, value: "1" }] } });
-  return { type: "modal", callback_id: CREATE_MODAL, private_metadata: JSON.stringify({ detail }),
-    title: { type: "plain_text", text: detail ? "本部タスク（詳細つき）" : "本部タスクを作る" }, submit: { type: "plain_text", text: "作成" }, close: { type: "plain_text", text: "やめる" }, blocks };
+  if (!edit) blocks.push({ type: "input", block_id: "photo", optional: true, label: { type: "plain_text", text: "写真" }, element: { type: "checkboxes", action_id: "photo", options: [{ text: { type: "plain_text", text: "各工程の完了に写真が必要" }, value: "1" }] } });
+  const urgentOpt = { text: { type: "plain_text", text: "最重要のタスクにする" }, value: "1" };
+  blocks.push({ type: "input", block_id: "urgent", optional: true, label: { type: "plain_text", text: "最重要" }, element: withInit({ type: "checkboxes", action_id: "urgent", options: [urgentOpt] }, "initial_options", ini.urgent ? [urgentOpt] : null) });
+  return { type: "modal", callback_id: edit ? EDIT_MODAL : CREATE_MODAL, private_metadata: JSON.stringify(o.meta ?? {}),
+    title: { type: "plain_text", text: edit ? "本部タスクを編集" : "本部タスクを作る" }, submit: { type: "plain_text", text: edit ? "保存" : "作成" }, close: { type: "plain_text", text: "やめる" }, blocks };
+}
+
+/** 親投稿（1 行）。状態の印・種別・タイトル・期限 */
+export function parentMessage(o: { title: string; due: string; dueTime?: string | null; done?: boolean }): { text: string; blocks: unknown[] } {
+  const text = `${o.done ? "✅" : "🕒"} 本部タスク｜${clean(o.title, 60)}｜${md(o.due, o.dueTime)}${o.done ? "｜完了" : ""}`;
+  return { text, blocks: [{ type: "section", text: { type: "mrkdwn", text } }] };
+}
+
+/** スレッドの詳細カード。「編集」ボタンから Slack の中で直せる */
+export function taskCardMessage(o: { task_id: string; title: string; corp: string; assigneeNames: string[]; due: string; dueTime?: string | null; memo?: string | null; notes?: string | null;
+  steps: { title: string; done: boolean }[]; creatorName: string; urgent?: boolean; url: string }): { text: string; blocks: unknown[] } {
+  const lines = [`${o.urgent ? "🔥 " : ""}*${clean(o.title, 100)}*`, `法人：${clean(o.corp, 20)}　担当：${o.assigneeNames.map((n) => clean(n, 20)).join("・") || "—"}`, `期限：${md(o.due, o.dueTime)}　依頼：${clean(o.creatorName, 30)}`];
+  if (o.memo && clean(o.memo, 300)) lines.push(`詳細：${clean(o.memo, 300)}`);
+  if (o.notes && clean(o.notes, 300)) lines.push(`⚠️ 注意事項：${clean(o.notes, 300)}`);
+  if (o.steps.length > 1 || (o.steps[0] && o.steps[0].title !== "対応する")) lines.push("工程：" + o.steps.map((s) => `${s.done ? "✅" : "▫️"}${clean(s.title, 40)}`).join(" → "));
+  return {
+    text: `本部タスクの詳細：${clean(o.title, 100)}`,
+    blocks: [
+      { type: "section", text: { type: "mrkdwn", text: lines.join("\n") } },
+      { type: "actions", block_id: "hqtask_card", elements: [
+        { type: "button", text: { type: "plain_text", text: "✏️ 編集", emoji: true }, action_id: EDIT_ACTION, value: JSON.stringify({ task_id: o.task_id }) },
+        { type: "button", text: { type: "plain_text", text: "管理システムで開く", emoji: true }, url: o.url, action_id: STEP_LINK },
+      ] },
+    ],
+  };
 }
 
 export type CreateInput = { title: string; corp: string; slackAssignees: string[]; due: string; dueTime: string | null; memo: string; urgent: boolean; notes: string; steps: string[]; photo: boolean };

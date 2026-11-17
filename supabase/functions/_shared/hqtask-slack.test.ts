@@ -1,5 +1,5 @@
 import { assertEquals, assert } from "jsr:@std/assert@1";
-import { reminderMessage, reminderHead, parseCreate, createModal, assignedMessage, type Candidate } from "./hqtask-slack.ts";
+import { reminderMessage, reminderHead, parseCreate, createModal, assignedMessage, taskCardMessage, parentMessage, createButtonMessage, type Candidate } from "./hqtask-slack.ts";
 
 const base: Candidate = { recipient_id: "r", slack_user_id: "U0123456789", task_id: "t", step_id: "s", task_title: "請求書の確認", step_title: "対応する", due_date: "2026-11-20", kind: "today", days_over: 0, creator_id: "c", can_complete: true, url: "https://example.com/t" };
 
@@ -28,11 +28,17 @@ Deno.test("割り当ての DM", () => {
   assert(m.text.includes("新しい本部タスク"));
 });
 Deno.test("作成フォーム: 6 つの入力欄・送信の読み取り", () => {
+  const ids = (m: any) => m.blocks.map((b: any) => b.block_id).filter(Boolean);
   const modal: any = createModal();
-  assertEquals(modal.blocks.map((b: any) => b.block_id), ["title", "corp", "assignees", "due", "due_time", "memo", "urgent"]);
-  const det: any = createModal(true);
-  assertEquals(det.blocks.map((b: any) => b.block_id), ["title", "corp", "assignees", "due", "due_time", "memo", "notes", "steps", "photo", "urgent"]);
-  assert(det.blocks.find((b: any) => b.block_id === "due_time").element.type === "timepicker");
+  assertEquals(ids(modal), ["title", "corp", "assignees", "due", "due_time", "memo", "notes", "steps", "photo", "urgent"]);   // 下に詳細の欄（任意）
+  assert(modal.blocks.find((b: any) => b.block_id === "due_time").element.type === "timepicker");
+  assert(modal.blocks.find((b: any) => b.block_id === "due_time").optional === true && modal.blocks.find((b: any) => b.block_id === "memo").optional === true);
+  const ed: any = createModal({ mode: "edit", meta: { task_id: "t" }, initial: { title: "T", corp: "SK", assigneeSlackIds: ["U0123456789"], due: "2026-11-20", dueTime: "17:30:00", memo: "m", notes: "n", urgent: true } });
+  assertEquals(ed.callback_id, "hqtask.edit.modal");
+  assertEquals(ids(ed), ["title", "corp", "assignees", "due", "due_time", "memo", "notes", "steps", "urgent"]);   // 編集には写真の欄なし
+  assertEquals(ed.blocks.find((b: any) => b.block_id === "title").element.initial_value, "T");
+  assertEquals(ed.blocks.find((b: any) => b.block_id === "due_time").element.initial_time, "17:30");
+  assertEquals(ed.blocks.find((b: any) => b.block_id === "assignees").element.initial_users, ["U0123456789"]);
   const ok = parseCreate({
     title: { title: { value: "確認する" } }, corp: { corp: { selected_option: { value: "SK" } } }, assignees: { assignees: { selected_users: ["U0123456789", "bad"] } },
     due: { due: { selected_date: "2026-11-20" } }, due_time: { due_time: { selected_time: "17:30" } }, notes: { notes: { value: "注意" } }, steps: { steps: { value: "資料\n\n確認\n提出" } }, photo: { photo: { selected_options: [{ value: "1" }] } }, memo: { memo: { value: " 詳細 " } }, urgent: { urgent: { selected_options: [{ value: "1" }] } },
@@ -42,4 +48,13 @@ Deno.test("作成フォーム: 6 つの入力欄・送信の読み取り", () =>
   const ng = parseCreate({ title: { title: { value: "" } } });
   assert(!ng.ok);
   if (!ng.ok) assertEquals(Object.keys(ng.errors).sort(), ["assignees", "corp", "due", "title"]);
+});
+
+Deno.test("親投稿は 1 行・完了の印／詳細カードに編集ボタン／作成ボタンは 1 つ", () => {
+  assert(parentMessage({ title: "請求書", due: "2026-11-20", dueTime: "17:30:00" }).text.startsWith("🕒 本部タスク｜請求書｜11/20 17:30"));
+  assert(parentMessage({ title: "請求書", due: "2026-11-20", done: true }).text.startsWith("✅"));
+  const c: any = taskCardMessage({ task_id: "t", title: "T", corp: "SK", assigneeNames: ["青山"], due: "2026-11-20", steps: [{ title: "A", done: true }, { title: "B", done: false }], creatorName: "社長", url: "https://x" });
+  assertEquals(c.blocks[1].elements.map((e: any) => e.action_id), ["hqtask.task.edit", "hqtask.link"]);
+  assert(JSON.stringify(c).includes("✅A") && JSON.stringify(c).includes("▫️B"));
+  assertEquals((createButtonMessage().blocks[1] as any).elements.length, 1);
 });
