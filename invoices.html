@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-11-11-v172";
+const BUILD_TAG="2026-11-17-v173";
 const PAYROLL_CANCEL_READY=true;
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
@@ -12596,11 +12596,13 @@ function payrollReconEvidenceHtml_(batches,other){
   const restHtml=rest.length?`<div style="margin-top:6px"><div style="font-size:11px;color:var(--muted)">どのバッチにも結び付いていないファイル</div><div style="margin:3px 0">${rest.map(btn).join("")}</div></div>`:"";
   PAYROLL_STATE.reconEvidence=all;
   if(!bodies&&!restHtml) return "";
-  return `<div style="margin-top:10px;padding-top:8px;border-top:1px solid var(--line)">
-    <div style="font-size:12px;font-weight:700;margin-bottom:2px">📄 証憑（銀行の明細・結果のファイル）</div>
+  // 2026-11-17: 証憑の一覧は長いので、折りたたみ（初期は閉じる）。開閉は、画面を読み直しても保つ
+  const evOpen=payrollReconUi_().evOpen===true;
+  return `<details style="margin-top:10px;padding-top:8px;border-top:1px solid var(--line)" ${evOpen?"open":""} ontoggle="payrollReconUi_().evOpen=this.open">
+    <summary style="cursor:pointer;font-size:12px;font-weight:700;margin-bottom:2px">📄 証憑（銀行の明細・結果のファイル）　<span style="font-weight:400;color:var(--muted)">クリックで開閉</span></summary>
     ${bodies}${restHtml}
     <div style="font-size:10px;color:var(--muted);margin-top:4px">「開く」を押すと、新しいタブで開きます（5 分だけ使えるリンクです）。</div>
-  </div>`;
+  </details>`;
 }
 function payrollReconHtml_(){
   const d=PAYROLL_STATE.recon;
@@ -13174,9 +13176,18 @@ function payrollRender(){
         </details>`;
       })()}
 
-      <div class="section" style="display:flex;justify-content:space-between;align-items:end;gap:10px;margin:0 0 10px">
-        <div style="flex:0 0 auto"><h2 style="margin:0;font-size:16px">給与振込一覧</h2><p style="font-size:9px;color:var(--muted);margin:4px 0 0">${esc(PAYROLL_STATE.yearMonth)} / ${rows.length}名表示 ／ <b title="この画面のバージョン。最新でないときは Cmd+Shift+R で強制再読み込み">build ${esc(BUILD_TAG)}</b></p></div>
-        <div class="actionbar" style="flex:1 1 auto;min-width:0;display:flex;flex-wrap:nowrap;justify-content:flex-end;align-items:center;gap:6px"><button class="btn${PAYROLL_STATE.editMode?" primary":""}" id="payroll-edit-toggle" style="font-size:12px;padding:6px 10px;white-space:nowrap" title="選んだ人をまとめて「振込済み」「非表示」「削除」できます">☑ 一括編集</button><button class="btn" id="payroll-diag-btn" style="font-size:12px;padding:6px 10px;white-space:nowrap" title="MF側の部門・補助科目・共通の科目が、自動仕訳に必要なぶんそろっているかを店舗ごとに確認します（何も書き込みません）">🔍 マッピング診断</button><button class="btn" id="payroll-dry-btn" style="font-size:12px;padding:6px 10px;white-space:nowrap" title="登録済みの人も含めて、自動生成の判定だけを行います（下書きの保存・マネーフォワードへの登録は一切しません）">🔬 確認だけ</button><button class="btn" id="payroll-bulk-gen" style="font-size:12px;padding:6px 10px;white-space:nowrap" title="登録前の全員分を、PDF読み取り・検算・前月比チェックまで自動で行います（マネーフォワードへはまだ登録しません）">🧮 全員をAIで自動生成</button><button class="btn primary" id="payroll-bulk-register" style="font-size:12px;padding:6px 10px;white-space:nowrap" ${payrollBulkSelected().length?"":"disabled"} title="自動OK（緑）でチェックした人だけを、1人ずつ順番にマネーフォワードへ登録します">✅ チェックした人をまとめて登録（${payrollBulkSelected().length}名）</button><button class="btn" id="payroll-csv-download" style="font-size:12px;padding:6px 10px;white-space:nowrap">📥 一覧をCSVでダウンロード</button><button class="btn primary" id="payroll-csv-export" style="font-size:12px;padding:6px 10px;white-space:nowrap">🏦 PayPay銀行CSV出力</button><label style="display:flex;gap:4px;align-items:center;font-size:12px;white-space:nowrap;margin-left:6px" title="法人×区分（社員/アルバイト）でテンプレートを自動で割り当てます。人ごとの手動割当は例外として常に優先されます"><input type="checkbox" id="payroll-autoassign-toggle" ${payrollAutoAssignOn()?"checked":""}>🤖区分で自動割当</label></div>
+      <style>
+        /* 2026-11-17: 給与振込一覧の見出し。端末の幅で折り返し方が変わって崩れていたので、見出し（上）とボタン群（下）の2段にして、
+           ボタンは「同じ大きさのマス目」に並べる（広いときは横に何列か・狭いときは2列→1列。形はどの端末でも同じ） */
+        .pr-listhead{margin:0 0 10px}
+        .pr-listhead .pr-actionbar{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:8px;margin-top:8px}
+        .pr-listhead .pr-actionbar .btn{width:100%;min-height:38px;box-sizing:border-box;display:flex;align-items:center;justify-content:center;text-align:center;white-space:normal!important;line-height:1.25;font-size:12px;padding:6px 10px!important}
+        .pr-listhead .pr-actionbar label{grid-column:1/-1;margin:0!important;justify-content:flex-start}
+        @media (max-width:520px){.pr-listhead .pr-actionbar{grid-template-columns:repeat(2,1fr)}}
+      </style>
+      <div class="section pr-listhead">
+        <div><h2 style="margin:0;font-size:16px">給与振込一覧</h2><p style="font-size:9px;color:var(--muted);margin:4px 0 0">${esc(PAYROLL_STATE.yearMonth)} / ${rows.length}名表示 ／ <b title="この画面のバージョン。最新でないときは Cmd+Shift+R で強制再読み込み">build ${esc(BUILD_TAG)}</b></p></div>
+        <div class="actionbar pr-actionbar"><button class="btn${PAYROLL_STATE.editMode?" primary":""}" id="payroll-edit-toggle" style="font-size:12px;padding:6px 10px;white-space:nowrap" title="選んだ人をまとめて「振込済み」「非表示」「削除」できます">☑ 一括編集</button><button class="btn" id="payroll-diag-btn" style="font-size:12px;padding:6px 10px;white-space:nowrap" title="MF側の部門・補助科目・共通の科目が、自動仕訳に必要なぶんそろっているかを店舗ごとに確認します（何も書き込みません）">🔍 マッピング診断</button><button class="btn" id="payroll-dry-btn" style="font-size:12px;padding:6px 10px;white-space:nowrap" title="登録済みの人も含めて、自動生成の判定だけを行います（下書きの保存・マネーフォワードへの登録は一切しません）">🔬 確認だけ</button><button class="btn" id="payroll-bulk-gen" style="font-size:12px;padding:6px 10px;white-space:nowrap" title="登録前の全員分を、PDF読み取り・検算・前月比チェックまで自動で行います（マネーフォワードへはまだ登録しません）">🧮 全員をAIで自動生成</button><button class="btn primary" id="payroll-bulk-register" style="font-size:12px;padding:6px 10px;white-space:nowrap" ${payrollBulkSelected().length?"":"disabled"} title="自動OK（緑）でチェックした人だけを、1人ずつ順番にマネーフォワードへ登録します">✅ チェックした人をまとめて登録（${payrollBulkSelected().length}名）</button><button class="btn" id="payroll-csv-download" style="font-size:12px;padding:6px 10px;white-space:nowrap">📥 一覧をCSVでダウンロード</button><button class="btn primary" id="payroll-csv-export" style="font-size:12px;padding:6px 10px;white-space:nowrap">🏦 PayPay銀行CSV出力</button><label style="display:flex;gap:4px;align-items:center;font-size:12px;white-space:nowrap;margin-left:6px" title="法人×区分（社員/アルバイト）でテンプレートを自動で割り当てます。人ごとの手動割当は例外として常に優先されます"><input type="checkbox" id="payroll-autoassign-toggle" ${payrollAutoAssignOn()?"checked":""}>🤖区分で自動割当</label></div>
       </div>
       ${(()=>{ const extra=`${payrollBulkSummaryHtml()}${payrollBulkListsHtml()}${PAYROLL_STATE.diagHtml||""}${payrollDryRunHtml()}`; return extra.trim()?`<div id="payroll-bulk-bar" style="margin:0 0 12px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--panel-2,#fafafa)">${extra}</div>`:""; })()}
       ${payrollEditPanelHtml()}

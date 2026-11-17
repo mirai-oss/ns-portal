@@ -11760,3 +11760,7 @@ Q5/Q6の回答を受け、設計メモ§9〜§10を確定し担当別指示書�
 - 事象: 11/16 分（10:00 JST）で親の1行だけ先に出て、スレッドの詳細カードは 10:15 の再実行で出た（初回のカード投稿の失敗は記録に残っていなかった）。原因は未特定（Slack 一時失敗か実行の途中切れ）。直近5日の他9件は正常。
 - 直し（`_shared/attendance-alert-notice.ts` の postAlert のみ）: 通知呼び出しの例外を受けて失敗扱いに／カードは最大3回その場で再試行（2秒・5秒）／それでも失敗なら notification_deliveries に failed を記録（event=attendance_alert_card）／親は同じ dedupe 印なので 15 分ごとの再実行で二重にならない。テスト 15 件 pass。
 - デプロイ: 本番を取得して index.ts ほか3ファイルはリポジトリと同一を確認（shared の alert-notice だけ本番が古く、担当D の STEP1 の viaRequest が未反映＝今回の配置で追いつく。anomaly-check は新規アラートしか出さないので動作影響なし）。v29→v30・verify_jwt=false 不変。
+
+## 2026-11-17 給与仕訳の画面: 証憑を折りたたみに・給与振込一覧の見出しの崩れを修正（invoices.html build v173）
+- ユーザー指示: ①「振込照合・証憑」の証憑（明細PDF・CSV・銀行の画面）が長くて邪魔→しまえるように ②給与振込一覧の見出しのボタンが、端末（スマホ/PC）で並びが崩れる→一定に。
+- ①`payrollReconEvidenceHtml_` を `<details>`（初期は閉じる）に。開閉は `payrollReconUi_().evOpen` に保持（読み直しても保つ）。②見出しを「タイトル（上）＋ボタン群（下）」の2段にし、ボタンは同じ大きさのマス目（grid auto-fill 190px・狭い幅は2列）。以前は `flex-wrap:nowrap` で幅により押しつぶされていた。幅 1200/768/375 の見本で並びを確認済み。
