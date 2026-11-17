@@ -2,7 +2,7 @@
 //   hqtask.create.open → フォーム／hqtask.create.modal → タスク作成＋担当者へ DM＋（ボタンを押したチャンネルに）親投稿とスレッドの詳細カード
 //   hqtask.task.edit → 編集フォーム（いまの値が入る）／hqtask.edit.modal → 保存＋スレッドに変更の記録・親とカードの更新・新しい担当者へ DM
 //   hqtask.step.done → 完了／hqtask.step.ack → 対応中
-import { createModal, parseCreate, errorField, assignedMessage, parentMessage, taskCardMessage, CREATE_OPEN, CREATE_OPEN_DETAIL, CREATE_MODAL, EDIT_ACTION, EDIT_MODAL, STEP_DONE, STEP_ACK, STEP_LINK } from "./hqtask-slack.ts";
+import { createModal, parseCreate, errorField, assignedMessage, parentMessage, taskCardMessage, completedBlocks, completionThreadText, CREATE_OPEN, CREATE_OPEN_DETAIL, CREATE_MODAL, EDIT_ACTION, EDIT_MODAL, STEP_DONE, STEP_ACK, STEP_LINK } from "./hqtask-slack.ts";
 
 // deno-lint-ignore no-explicit-any
 type Ctx = { sb: any; payload: any; actor: { user_id: string; role: string; is_master: boolean; name: string }; notificationId: string | null; value: any };
@@ -129,12 +129,22 @@ export function hqtaskHandlers(d: Deps): Record<string, (c: Ctx) => Promise<Resp
       })());
       return d.json({ response_action: "clear" });
     },
-    [STEP_DONE]: async ({ sb, payload, value }) => {
+    [STEP_DONE]: async ({ sb, payload, value, actor }) => {
       const { data, error } = await sb.rpc("hq_slack_step_complete", { p_slack_user_id: payload.user?.id, p_step: value?.step_id });
       if (error) return d.ephemeral("完了にできませんでした: " + String(error.message).slice(0, 120), payload.response_url);
       if (!data?.ok) return d.ephemeral(String(data?.message ?? "完了にできませんでした"), payload.response_url);
-      if (payload.response_url) await fetch(payload.response_url, { method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ replace_original: true, text: data.already ? "✅ すでに完了しています" : "✅ 完了にしました" }) }).catch(() => {});
+      const at = new Date().toLocaleString("ja-JP", { timeZone: "Asia/Tokyo", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false });
+      // 元のメッセージの内容（依頼者・期限・タスク名・リンク）は残したまま、完了の印だけ付けてボタンを外す
+      if (payload.response_url && !data.already) await fetch(payload.response_url, { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ replace_original: true, text: "✅ 完了しました", blocks: completedBlocks(payload.message?.blocks, actor.name, at) }) }).catch(() => {});
+      // スレッドにも、何のタスクだったかを残す
+      if (!data.already && data.task_id && payload.message?.ts) d.waitUntil((async () => {
+        const { data: tk } = await sb.from("hq_tasks").select("title,due_date,due_time,created_by").eq("id", data.task_id).maybeSingle();
+        if (!tk) return;
+        const cn = tk.created_by ? (await namesOf(sb, [tk.created_by]))[0] : null;
+        await d.sendSlack({ action: "send", channel_key: `user:${actor.user_id}`, thread_ts: payload.message.ts, text: completionThreadText({ title: tk.title, due: tk.due_date, dueTime: tk.due_time, creatorName: cn, by: actor.name, at, url: urlOf(data.task_id) }),
+          event: "hqtask_step_done_thread", source: "ef:slack-interact", dedupe_key: `hqtask_done_thread:${value?.step_id}:${payload.message.ts}`, ref: { table: "hq_tasks", id: data.task_id } });
+      })());
       return d.text("");
     },
     [STEP_ACK]: async ({ sb, payload, value }) => {

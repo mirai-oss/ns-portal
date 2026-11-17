@@ -34,10 +34,12 @@ export function reminderHead(kind: string, daysOver: number): { mark: string; he
 }
 
 /** DM のメッセージ（親 1 通）。完了できる工程だけ「完了にする」を出す。escalate（作成者向け）は操作ボタンなし */
-export function reminderMessage(c: Candidate): { text: string; blocks: unknown[] } {
+export function reminderMessage(c: Candidate, x: { creatorName?: string | null; memo?: string | null } = {}): { text: string; blocks: unknown[] } {
   const h = reminderHead(c.kind, c.days_over);
   const title = clean(c.task_title, 100);
-  const lines = [`${h.mark} *${h.head}*`, `*${title}*`, `工程：${clean(c.step_title, 60)}　期限：${md(c.due_date, c.due_time)}`];
+  const lines = [`${h.mark} *${h.head}*`, `*${title}*`, `${x.creatorName ? `依頼：${clean(x.creatorName, 30)}　` : ""}期限：${md(c.due_date, c.due_time)}　工程：${clean(c.step_title, 60)}`];
+  if (x.memo && clean(x.memo, 200)) lines.push(`詳細：${clean(x.memo, 200)}`);
+  lines.push(`🔗 <${c.url}|管理システムで開く>`);
   const blocks: unknown[] = [{ type: "section", text: { type: "mrkdwn", text: lines.join("\n") } }];
   const elements: unknown[] = [];
   if (c.kind !== "escalate") {
@@ -54,6 +56,7 @@ export function reminderMessage(c: Candidate): { text: string; blocks: unknown[]
 export function assignedMessage(o: { title: string; stepTitle?: string; due: string; dueTime?: string | null; steps?: number; creatorName: string; memo?: string | null; step_id: string; url: string; canComplete: boolean }): { text: string; blocks: unknown[] } {
   const lines = [`📌 *新しい本部タスクが割り当てられました*`, `*${clean(o.title, 100)}*`, `期限：${md(o.due, o.dueTime)}　依頼：${clean(o.creatorName, 30)}${o.steps && o.steps > 1 ? `　工程：${o.steps} 個` : ""}`];
   if (o.memo && clean(o.memo, 300)) lines.push(`詳細：${clean(o.memo, 300)}`);
+  lines.push(`🔗 <${o.url}|管理システムで開く>`);
   const val = JSON.stringify({ step_id: o.step_id });
   const elements: unknown[] = [];
   if (o.canComplete) elements.push({ type: "button", style: "primary", text: { type: "plain_text", text: "✅ 完了にする", emoji: true }, action_id: STEP_DONE, value: val });
@@ -156,4 +159,24 @@ export function parseCreate(values: any): { ok: true; v: CreateInput } | { ok: f
 /** RPC の失敗理由 → モーダルの入力欄のエラー */
 export function errorField(reason: string | undefined): string {
   switch (reason) { case "title": return "title"; case "corp": return "corp"; case "due": return "due"; case "assignee": return "assignees"; case "steps": return "steps"; default: return "title"; }
+}
+
+/** 完了したあとのメッセージ。元の内容（依頼者・期限・タスク名・リンク）は残し、ボタンは外して（リンクのボタンだけ残す）先頭に完了の印を付ける */
+// deno-lint-ignore no-explicit-any
+export function completedBlocks(orig: any[] | undefined, by: string, at: string): unknown[] {
+  const head = { type: "section", text: { type: "mrkdwn", text: `✅ *完了しました*（${clean(by, 30)}・${clean(at, 30)}）` } };
+  const keep: unknown[] = [];
+  for (const b of orig ?? []) {
+    if (b?.type === "section") keep.push({ type: "section", text: b.text });
+    else if (b?.type === "actions") {
+      const links = (b.elements ?? []).filter((e: any) => e?.url);
+      if (links.length) keep.push({ type: "actions", block_id: "hqtask_done_link", elements: links });
+    }
+  }
+  return [head, ...keep];
+}
+
+/** 完了を、そのメッセージのスレッドにも 1 通残す（あとから「何のタスクか」が分かるように。依頼者・期限・リンクつき） */
+export function completionThreadText(o: { title: string; due: string; dueTime?: string | null; creatorName?: string | null; by: string; at: string; url: string }): string {
+  return [`✅ 完了しました：*${clean(o.title, 100)}*`, `${o.creatorName ? `依頼：${clean(o.creatorName, 30)}　` : ""}期限：${md(o.due, o.dueTime)}　完了：${clean(o.by, 30)}（${clean(o.at, 30)}）`, `🔗 <${o.url}|管理システムで開く>`].join("\n");
 }

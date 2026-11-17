@@ -66,7 +66,7 @@ Deno.serve(async (req: Request) => {
       if (ok2 !== true) continue;
       const at = c.completed_at ? new Date(c.completed_at).toLocaleString("ja-JP", { timeZone: "Asia/Tokyo", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false }) : "";
       const title = String(c.task_title ?? "").replace(/[\u0000-\u001f]/g, " ").slice(0, 100);
-      const text = `✅ *あなたが付けたタスクが完了しました*\n*${title}*\n完了：${c.completer_names ?? "—"}（${at}）`;
+      const text = `✅ *あなたが付けたタスクが完了しました*\n*${title}*\n完了：${c.completer_names ?? "—"}（${at}）\n🔗 <${c.url}|管理システムで開く>`;
       const r = await sendSlack({ action: "send", channel_key: `user:${c.creator_id}`, text: `✅ 完了しました：${title}`, event: "hqtask_completed", source: "ef:hq-task-reminders",
         blocks: [{ type: "section", text: { type: "mrkdwn", text } }, { type: "actions", block_id: "hqtask_done", elements: [{ type: "button", text: { type: "plain_text", text: "管理システムで開く", emoji: true }, url: c.url, action_id: "hqtask.link" }] }],
         dedupe_key: `hqtask_completed:${c.task_id}`, ref: { table: "hq_tasks", id: c.task_id } });
@@ -97,12 +97,19 @@ Deno.serve(async (req: Request) => {
   for (const c of list) byKind[c.kind] = (byKind[c.kind] ?? 0) + 1;
   if (dry) return json({ ok: true, dry_run: true, switch: on, total: list.length, people: new Set(list.map((c) => c.recipient_id)).size, by_kind: byKind });
 
+  // 依頼者の名前・詳細（DM に「誰から・何を」を必ず出すため）
+  const taskIds = [...new Set(list.map((c) => c.task_id))];
+  const { data: tks } = await sb.from("hq_tasks").select("id,description,created_by").in("id", taskIds.length ? taskIds : ["00000000-0000-0000-0000-000000000000"]);
+  const creatorIds = [...new Set((tks ?? []).map((t: any) => t.created_by).filter(Boolean))];
+  const { data: us } = await sb.from("users").select("id,name").in("id", creatorIds.length ? creatorIds : ["00000000-0000-0000-0000-000000000000"]);
+  const nameOf = new Map((us ?? []).map((u: any) => [u.id, String(u.name ?? "").replace(/[\s\u3000]+/g, "")]));
+  const extra = new Map((tks ?? []).map((t: any) => [t.id, { creatorName: t.created_by ? (nameOf.get(t.created_by) ?? null) : null, memo: t.description ?? null }]));
   let sent = 0, failed = 0, skipped = 0;
   const date = jstDate();
   for (const c of list.slice(0, max)) {
     const { data: claimed, error: ce } = await sb.rpc("hq_slack_reminder_claim", { p_step: c.step_id, p_recipient: c.recipient_id, p_kind: c.kind });
     if (ce || claimed !== true) { skipped++; continue; }
-    const m = reminderMessage(c);
+    const m = reminderMessage(c, extra.get(c.task_id) ?? {});
     const r = await sendSlack({ action: "send", channel_key: `user:${c.recipient_id}`, text: m.text, blocks: m.blocks, event: "hqtask_reminder", source: "ef:hq-task-reminders",
       dedupe_key: `hqtask:${c.step_id}:${c.recipient_id}:${c.kind}:${date}`, ref: { table: "hq_task_steps", id: c.step_id } });
     if (r?.ok) sent++;

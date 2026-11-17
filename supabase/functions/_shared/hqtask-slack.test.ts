@@ -1,5 +1,5 @@
 import { assertEquals, assert } from "jsr:@std/assert@1";
-import { reminderMessage, reminderHead, parseCreate, createModal, assignedMessage, taskCardMessage, parentMessage, createButtonMessage, type Candidate } from "./hqtask-slack.ts";
+import { completedBlocks, completionThreadText, reminderMessage, reminderHead, parseCreate, createModal, assignedMessage, taskCardMessage, parentMessage, createButtonMessage, type Candidate } from "./hqtask-slack.ts";
 
 const base: Candidate = { recipient_id: "r", slack_user_id: "U0123456789", task_id: "t", step_id: "s", task_title: "請求書の確認", step_title: "対応する", due_date: "2026-11-20", kind: "today", days_over: 0, creator_id: "c", can_complete: true, url: "https://example.com/t" };
 
@@ -57,4 +57,17 @@ Deno.test("親投稿は 1 行・完了の印／詳細カードに編集ボタン
   assertEquals(c.blocks[1].elements.map((e: any) => e.action_id), ["hqtask.task.edit", "hqtask.link"]);
   assert(JSON.stringify(c).includes("✅A") && JSON.stringify(c).includes("▫️B"));
   assertEquals((createButtonMessage().blocks[1] as any).elements.length, 1);
+});
+
+Deno.test("通知には依頼者・期限・リンクが必ず入る／完了後も元の内容を残してボタンを外す", () => {
+  const m: any = reminderMessage(base, { creatorName: "社長", memo: "詳細です" });
+  const s = JSON.stringify(m);
+  assert(s.includes("依頼：社長") && s.includes("11/20") && s.includes("請求書の確認") && s.includes("管理システムで開く") && s.includes("https://example.com/t") && s.includes("詳細です"));
+  const done: any[] = completedBlocks(m.blocks, "青山", "11/20 10:00") as any[];
+  assert(done[0].text.text.includes("完了しました") && done[0].text.text.includes("青山"));
+  assert(JSON.stringify(done).includes("請求書の確認") && JSON.stringify(done).includes("依頼：社長"));
+  const act = done.find((b) => b.type === "actions");
+  assertEquals(act.elements.map((e: any) => e.action_id), ["hqtask.link"]);   // 完了・対応中のボタンは外れ、リンクだけ残る
+  const th = completionThreadText({ title: "請求書の確認", due: "2026-11-20", creatorName: "社長", by: "青山", at: "11/20 10:00", url: "https://x" });
+  assert(th.includes("依頼：社長") && th.includes("https://x") && th.includes("期限：11/20"));
 });
