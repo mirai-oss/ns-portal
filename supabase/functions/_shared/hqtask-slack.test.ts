@@ -1,5 +1,5 @@
 import { assertEquals, assert } from "jsr:@std/assert@1";
-import { completedBlocks, completionThreadText, reminderMessage, reminderHead, parseCreate, createModal, assignedMessage, taskCardMessage, parentMessage, createButtonMessage, type Candidate } from "./hqtask-slack.ts";
+import { stepsListModal, stepModal, parseStep, parseTaskEdit, completedBlocks, completionThreadText, reminderMessage, reminderHead, parseCreate, createModal, assignedMessage, taskCardMessage, parentMessage, createButtonMessage, type Candidate } from "./hqtask-slack.ts";
 
 const base: Candidate = { recipient_id: "r", slack_user_id: "U0123456789", task_id: "t", step_id: "s", task_title: "請求書の確認", step_title: "対応する", due_date: "2026-11-20", kind: "today", days_over: 0, creator_id: "c", can_complete: true, url: "https://example.com/t" };
 
@@ -33,12 +33,10 @@ Deno.test("作成フォーム: 6 つの入力欄・送信の読み取り", () =>
   assertEquals(ids(modal), ["title", "corp", "assignees", "due", "due_time", "memo", "notes", "steps", "photo", "urgent"]);   // 下に詳細の欄（任意）
   assert(modal.blocks.find((b: any) => b.block_id === "due_time").element.type === "timepicker");
   assert(modal.blocks.find((b: any) => b.block_id === "due_time").optional === true && modal.blocks.find((b: any) => b.block_id === "memo").optional === true);
-  const ed: any = createModal({ mode: "edit", meta: { task_id: "t" }, initial: { title: "T", corp: "SK", assigneeSlackIds: ["U0123456789"], due: "2026-11-20", dueTime: "17:30:00", memo: "m", notes: "n", urgent: true } });
+  const ed: any = createModal({ mode: "edit", meta: { task_id: "t" }, initial: { title: "T", corp: "SK", memo: "m", notes: "n", urgent: true } });
   assertEquals(ed.callback_id, "hqtask.edit.modal");
-  assertEquals(ids(ed), ["title", "corp", "assignees", "due", "due_time", "memo", "notes", "steps", "urgent"]);   // 編集には写真の欄なし
+  assertEquals(ids(ed), ["title", "corp", "memo", "notes", "urgent"]);   // 編集は本体だけ（担当者・期限・工程は工程ごとの別フォーム）
   assertEquals(ed.blocks.find((b: any) => b.block_id === "title").element.initial_value, "T");
-  assertEquals(ed.blocks.find((b: any) => b.block_id === "due_time").element.initial_time, "17:30");
-  assertEquals(ed.blocks.find((b: any) => b.block_id === "assignees").element.initial_users, ["U0123456789"]);
   const ok = parseCreate({
     title: { title: { value: "確認する" } }, corp: { corp: { selected_option: { value: "SK" } } }, assignees: { assignees: { selected_users: ["U0123456789", "bad"] } },
     due: { due: { selected_date: "2026-11-20" } }, due_time: { due_time: { selected_time: "17:30" } }, notes: { notes: { value: "注意" } }, steps: { steps: { value: "資料\n\n確認\n提出" } }, photo: { photo: { selected_options: [{ value: "1" }] } }, memo: { memo: { value: " 詳細 " } }, urgent: { urgent: { selected_options: [{ value: "1" }] } },
@@ -54,8 +52,8 @@ Deno.test("親投稿は 1 行・完了の印／詳細カードに編集ボタン
   assert(parentMessage({ title: "請求書", due: "2026-11-20", dueTime: "17:30:00" }).text.startsWith("🕒 本部タスク｜請求書｜11/20 17:30"));
   assert(parentMessage({ title: "請求書", due: "2026-11-20", done: true }).text.startsWith("✅"));
   const c: any = taskCardMessage({ task_id: "t", title: "T", corp: "SK", assigneeNames: ["青山"], due: "2026-11-20", steps: [{ title: "A", done: true }, { title: "B", done: false }], creatorName: "社長", url: "https://x" });
-  assertEquals(c.blocks[1].elements.map((e: any) => e.action_id), ["hqtask.task.edit", "hqtask.link"]);
-  assert(JSON.stringify(c).includes("✅A") && JSON.stringify(c).includes("▫️B"));
+  assertEquals(c.blocks[1].elements.map((e: any) => e.action_id), ["hqtask.task.edit", "hqtask.steps.open", "hqtask.link"]);
+  assert(JSON.stringify(c).includes("✅ A") && JSON.stringify(c).includes("▫️ B"));
   assertEquals((createButtonMessage().blocks[1] as any).elements.length, 1);
 });
 
@@ -70,4 +68,28 @@ Deno.test("通知には依頼者・期限・リンクが必ず入る／完了後
   assertEquals(act.elements.map((e: any) => e.action_id), ["hqtask.link"]);   // 完了・対応中のボタンは外れ、リンクだけ残る
   const th = completionThreadText({ title: "請求書の確認", due: "2026-11-20", creatorName: "社長", by: "青山", at: "11/20 10:00", url: "https://x" });
   assert(th.includes("依頼：社長") && th.includes("https://x") && th.includes("期限：11/20"));
+});
+
+Deno.test("工程の一覧・工程ごとのフォーム（担当者・期限・時刻・写真・削除）", () => {
+  const steps: any[] = [
+    { id: "s1", title: "A", due: "2026-11-20", due_time: null, done: true, photo: false, note: null, assignee_names: ["青山"], assignee_slack_ids: ["U0123456789"] },
+    { id: "s2", title: "B", due: "2026-11-22", due_time: "17:30:00", done: false, photo: true, note: "注意", assignee_names: ["中山"], assignee_slack_ids: ["U0123456780"] },
+  ];
+  const list: any = stepsListModal({ taskId: "t", title: "T", steps });
+  const secs = list.blocks.filter((b: any) => b.type === "section" && b.accessory);
+  assertEquals(secs.length, 1);   // 完了した工程には「編集」が出ない
+  assertEquals(JSON.parse(secs[0].accessory.value), { task_id: "t", step_id: "s2" });
+  assert(list.blocks.some((b: any) => b.block_id === "steps_add"));
+  const m: any = stepModal({ taskId: "t", step: steps[1] });
+  assertEquals(m.blocks.map((b: any) => b.block_id), ["title", "assignees", "due", "due_time", "note", "photo", "del"]);
+  assertEquals(m.blocks.find((b: any) => b.block_id === "assignees").element.initial_users, ["U0123456780"]);
+  assertEquals(m.blocks.find((b: any) => b.block_id === "due_time").element.initial_time, "17:30");
+  assertEquals((stepModal({ taskId: "t", step: null }) as any).blocks.map((b: any) => b.block_id).includes("del"), false);   // 追加には削除なし
+  const ok = parseStep({ title: { title: { value: "B2" } }, assignees: { assignees: { selected_users: ["U0123456780"] } }, due: { due: { selected_date: "2026-11-25" } }, due_time: { due_time: { selected_time: "09:00" } }, photo: { photo: { selected_options: [{ value: "1" }] } } });
+  assert(ok.ok); if (ok.ok) { assertEquals(ok.v.dueTime, "09:00"); assertEquals(ok.v.photo, true); assertEquals(ok.v.del, false); }
+  const del = parseStep({ del: { del: { selected_options: [{ value: "1" }] } } });
+  assert(del.ok);   // 削除のときは、ほかの欄が空でも通る
+  assert(!parseStep({ title: { title: { value: "" } } }).ok);
+  const te = parseTaskEdit({ title: { title: { value: "T" } }, corp: { corp: { selected_option: { value: "SK" } } } });
+  assert(te.ok);
 });
