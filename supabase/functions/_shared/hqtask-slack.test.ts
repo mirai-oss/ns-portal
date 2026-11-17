@@ -1,5 +1,5 @@
 import { assertEquals, assert } from "jsr:@std/assert@1";
-import { stepsListModal, stepModal, parseStep, parseTaskEdit, completedBlocks, completionThreadText, reminderMessage, reminderHead, parseCreate, createModal, assignedMessage, taskCardMessage, parentMessage, createButtonMessage, type Candidate } from "./hqtask-slack.ts";
+import { createFormModal, readForm, parseCreateSteps, stepsListModal, stepModal, parseStep, parseTaskEdit, completedBlocks, completionThreadText, reminderMessage, reminderHead, parseCreate, createModal, assignedMessage, taskCardMessage, parentMessage, createButtonMessage, type Candidate } from "./hqtask-slack.ts";
 
 const base: Candidate = { recipient_id: "r", slack_user_id: "U0123456789", task_id: "t", step_id: "s", task_title: "請求書の確認", step_title: "対応する", due_date: "2026-11-20", kind: "today", days_over: 0, creator_id: "c", can_complete: true, url: "https://example.com/t" };
 
@@ -30,9 +30,9 @@ Deno.test("割り当ての DM", () => {
 Deno.test("作成フォーム: 6 つの入力欄・送信の読み取り", () => {
   const ids = (m: any) => m.blocks.map((b: any) => b.block_id).filter(Boolean);
   const modal: any = createModal();
-  assertEquals(ids(modal), ["title", "corp", "assignees", "due", "due_time", "memo", "notes", "steps", "photo", "urgent"]);   // 下に詳細の欄（任意）
-  assert(modal.blocks.find((b: any) => b.block_id === "due_time").element.type === "timepicker");
-  assert(modal.blocks.find((b: any) => b.block_id === "due_time").optional === true && modal.blocks.find((b: any) => b.block_id === "memo").optional === true);
+  assertEquals(ids(modal), ["title", "corp", "s0_title", "s0_users", "s0_due", "s0_time", "form_steps", "memo", "notes", "photo", "urgent"]);   // 工程ごとの枠＋下に詳細の欄（任意）
+  assert(modal.blocks.find((b: any) => b.block_id === "s0_time").element.type === "timepicker");
+  assert(modal.blocks.find((b: any) => b.block_id === "s0_time").optional === true && modal.blocks.find((b: any) => b.block_id === "memo").optional === true);
   const ed: any = createModal({ mode: "edit", meta: { task_id: "t" }, initial: { title: "T", corp: "SK", memo: "m", notes: "n", urgent: true } });
   assertEquals(ed.callback_id, "hqtask.edit.modal");
   assertEquals(ids(ed), ["title", "corp", "memo", "notes", "urgent"]);   // 編集は本体だけ（担当者・期限・工程は工程ごとの別フォーム）
@@ -92,4 +92,30 @@ Deno.test("工程の一覧・工程ごとのフォーム（担当者・期限・
   assert(!parseStep({ title: { title: { value: "" } } }).ok);
   const te = parseTaskEdit({ title: { title: { value: "T" } }, corp: { corp: { selected_option: { value: "SK" } } } });
   assert(te.ok);
+});
+
+Deno.test("作成フォーム: 工程ごとの枠（工程名・担当者・期限・時刻）・工程の増減・入力済みの内容を残す", () => {
+  const two: any = createFormModal({ title: "T", corp: "SK", steps: [{ title: "A", users: ["U0123456789"], due: "2026-11-20", time: "10:00" }, { title: "B", users: [], due: "2026-11-22" }] }, { channel: "C1" });
+  const ids = two.blocks.map((b: any) => b.block_id).filter(Boolean);
+  assertEquals(ids.slice(0, 12), ["title", "corp", "s0_title", "s0_users", "s0_due", "s0_time", "s1_title", "s1_users", "s1_due", "s1_time", "form_steps", "memo"]);
+  assertEquals(two.blocks.find((b: any) => b.block_id === "form_steps").elements.map((e: any) => e.action_id), ["hqtask.form.add", "hqtask.form.del"]);
+  assertEquals(two.blocks.find((b: any) => b.block_id === "s0_time").element.initial_time, "10:00");
+  assertEquals(two.blocks.find((b: any) => b.block_id === "s0_title").optional, false);   // 工程が複数なら工程名は必須
+  const one: any = createFormModal({ steps: [{}] }, {});
+  assertEquals(one.blocks.find((b: any) => b.block_id === "form_steps").elements.length, 1);   // 工程 1 つなら「消す」は出ない
+  assertEquals(one.blocks.find((b: any) => b.block_id === "s0_title").optional, true);
+  // 10 工程でも Slack のブロック上限（100）に収まる
+  const ten: any = createFormModal({ steps: Array.from({ length: 10 }, () => ({})) }, {});
+  assert(ten.blocks.length <= 100);
+  assertEquals(ten.blocks.find((b: any) => b.block_id === "form_steps").elements.length, 1);   // 上限なら「追加」は出ない
+  // 入力済みの読み取り→作り直しで、内容が消えない
+  const values = { title: { title: { value: "T" } }, corp: { corp: { selected_option: { value: "SK" } } }, s0_title: { s0_title: { value: "A" } }, s0_users: { s0_users: { selected_users: ["U0123456789"] } }, s0_due: { s0_due: { selected_date: "2026-11-20" } }, s0_time: { s0_time: { selected_time: "10:00" } } };
+  const f = readForm(values); f.steps.push({});
+  const again: any = createFormModal(f, {});
+  assertEquals(again.blocks.find((b: any) => b.block_id === "s0_users").element.initial_users, ["U0123456789"]);
+  assertEquals(again.blocks.find((b: any) => b.block_id === "title").element.initial_value, "T");
+  // 送信のチェック
+  const ok = parseCreateSteps(values); assert(ok.ok); if (ok.ok) { assertEquals(ok.v.steps[0].time, "10:00"); assertEquals(ok.v.steps[0].title, "A"); }
+  const ng = parseCreateSteps({ ...values, s1_title: { s1_title: { value: "" } }, s1_users: { s1_users: { selected_users: [] } }, s1_due: { s1_due: { selected_date: null } } });
+  assert(!ng.ok); if (!ng.ok) assertEquals(Object.keys(ng.errors).sort(), ["s1_due", "s1_title", "s1_users"]);
 });

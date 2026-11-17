@@ -2,7 +2,7 @@
 //   hqtask.create.open → フォーム／hqtask.create.modal → タスク作成＋担当者へ DM＋（ボタンを押したチャンネルに）親投稿とスレッドの詳細カード
 //   hqtask.task.edit → 編集フォーム（いまの値が入る）／hqtask.edit.modal → 保存＋スレッドに変更の記録・親とカードの更新・新しい担当者へ DM
 //   hqtask.step.done → 完了／hqtask.step.ack → 対応中
-import { createModal, parseCreate, errorField, assignedMessage, parentMessage, taskCardMessage, completedBlocks, completionThreadText, stepsListModal, stepModal, parseStep, parseTaskEdit, STEPS_OPEN, STEP_PICK, STEP_ADD, STEP_MODAL, type StepRow, CREATE_OPEN, CREATE_OPEN_DETAIL, CREATE_MODAL, EDIT_ACTION, EDIT_MODAL, STEP_DONE, STEP_ACK, STEP_LINK } from "./hqtask-slack.ts";
+import { createModal, parseCreate, errorField, assignedMessage, parentMessage, taskCardMessage, completedBlocks, completionThreadText, stepsListModal, stepModal, parseStep, parseTaskEdit, parseCreateSteps, readForm, createFormModal, FORM_ADD, FORM_DEL, MAX_STEPS, STEPS_OPEN, STEP_PICK, STEP_ADD, STEP_MODAL, type StepRow, CREATE_OPEN, CREATE_OPEN_DETAIL, CREATE_MODAL, EDIT_ACTION, EDIT_MODAL, STEP_DONE, STEP_ACK, STEP_LINK } from "./hqtask-slack.ts";
 
 // deno-lint-ignore no-explicit-any
 type Ctx = { sb: any; payload: any; actor: { user_id: string; role: string; is_master: boolean; name: string }; notificationId: string | null; value: any };
@@ -65,44 +65,66 @@ export function hqtaskHandlers(d: Deps): Record<string, (c: Ctx) => Promise<Resp
   return {
     [CREATE_OPEN]: openCreate,
     [CREATE_OPEN_DETAIL]: openCreate,   // 古いカードの「詳細つきで作る」も、同じフォーム（下に詳細の欄がある）を開く
+    // 作成フォームの「＋ 工程を追加」「－ 最後の工程を消す」: 入力済みの内容を残したまま、工程の枠を 1 つ増減する
+    [FORM_ADD]: async ({ payload }) => {
+      const f = readForm(payload.view?.state?.values);
+      if (f.steps.length < MAX_STEPS) { const last = f.steps[f.steps.length - 1]; f.steps.push({ due: last?.due ?? null, time: last?.time ?? null, users: last?.users ?? [] }); }
+      await slackView("views.update", { view_id: payload.view?.id, hash: payload.view?.hash, view: createFormModal(f, metaOf(payload)) });
+      return d.text("");
+    },
+    [FORM_DEL]: async ({ payload }) => {
+      const f = readForm(payload.view?.state?.values);
+      if (f.steps.length > 1) f.steps.pop();
+      await slackView("views.update", { view_id: payload.view?.id, hash: payload.view?.hash, view: createFormModal(f, metaOf(payload)) });
+      return d.text("");
+    },
     [CREATE_MODAL]: async ({ sb, payload, actor }) => {
-      const p = parseCreate(payload.view?.state?.values);
+      const p = parseCreateSteps(payload.view?.state?.values);
       if (!p.ok) return d.json({ response_action: "errors", errors: p.errors });
       const v = p.v;
       const meta = metaOf(payload);
       // Slack の担当者 → 管理システムの人（紐づいていない人は選べない）
-      const { data: links } = await sb.from("user_slack").select("user_id,slack_user_id").in("slack_user_id", v.slackAssignees);
-      const ids: string[] = (links ?? []).map((l: any) => l.user_id);
-      if (ids.length !== new Set(v.slackAssignees).size) return d.json({ response_action: "errors", errors: { assignees: "Slack と紐づいていない人が含まれています（本部に連絡してください）" } });
-      const { data, error } = await sb.rpc("hq_slack_task_create", {
-        p_slack_user_id: payload.user?.id, p_title: v.title, p_corp: v.corp, p_assignee_ids: ids, p_due: v.due, p_memo: v.memo, p_urgent: v.urgent, p_due_time: v.dueTime,
-        p_notes: v.notes || null, p_steps: v.steps.length ? v.steps : null, p_photo: v.photo,
+      const allSlack = [...new Set(v.steps.flatMap((s) => s.slackUsers))];
+      const { data: links } = await sb.from("user_slack").select("user_id,slack_user_id").in("slack_user_id", allSlack);
+      const idOf = new Map((links ?? []).map((l: any) => [l.slack_user_id, l.user_id]));
+      const errs: Record<string, string> = {};
+      v.steps.forEach((s, i) => { if (s.slackUsers.some((u) => !idOf.has(u))) errs[`s${i}_users`] = "Slack と紐づいていない人が含まれています（本部に連絡してください）"; });
+      if (Object.keys(errs).length) return d.json({ response_action: "errors", errors: errs });
+      const stepsArg = v.steps.map((s) => ({ title: s.title, assignee_ids: s.slackUsers.map((u) => idOf.get(u)), due: s.due, due_time: s.time }));
+      const { data, error } = await sb.rpc("hq_slack_task_create_steps", {
+        p_slack_user_id: payload.user?.id, p_title: v.title, p_corp: v.corp, p_memo: v.memo, p_notes: v.notes || null, p_urgent: v.urgent, p_photo: v.photo, p_steps: stepsArg,
         p_dedupe: `modal:${payload.view?.id ?? crypto.randomUUID()}`, p_source: { via: "slack_modal", team: payload.team?.id ?? null },
       });
       if (error) return d.json({ response_action: "errors", errors: { title: "作成できませんでした: " + String(error.message).slice(0, 120) } });
       if (!data?.ok) return d.json({ response_action: "errors", errors: { [errorField(data?.reason)]: String(data?.message ?? "作成できませんでした") } });
       if (!data.duplicate) d.waitUntil((async () => {
         const url = urlOf(data.task_id);
-        const stepsN = v.steps.length || 1;
-        for (const uid of ids) {
-          const m = assignedMessage({ title: v.title, due: v.due, dueTime: v.dueTime, steps: stepsN, creatorName: String(data.creator_name ?? actor.name), memo: v.memo, step_id: String(data.step_id), url, canComplete: !v.photo });
+        const made = (data.steps ?? []) as { step_id: string; title: string; assignee_ids: string[]; due: string; due_time: string | null }[];
+        // 担当者ごとに DM（その人の最初の工程。複数あれば件数も）
+        const per = new Map<string, typeof made>();
+        for (const s of made) for (const uid of s.assignee_ids) per.set(uid, [...(per.get(uid) ?? []), s]);
+        for (const [uid, mine] of per) {
+          const first = mine[0];
+          const label = made.length > 1 ? `${v.title}（工程：${first.title}${mine.length > 1 ? ` ほか ${mine.length - 1} 件` : ""}）` : v.title;
+          const m = assignedMessage({ title: label, due: first.due, dueTime: first.due_time, steps: mine.length, creatorName: String(data.creator_name ?? actor.name), memo: v.memo, step_id: first.step_id, url, canComplete: !v.photo });
           await d.sendSlack({ action: "send", channel_key: `user:${uid}`, text: m.text, blocks: m.blocks, event: "hqtask_assigned", source: "ef:slack-interact",
             dedupe_key: `hqtask_assigned:${data.task_id}:${uid}`, ref: { table: "hq_tasks", id: data.task_id } });
         }
         // ボタンを押したチャンネルに、親投稿（1 行）とスレッドの詳細カード（編集ボタンつき）
         const key = await channelKeyOf(sb, meta.channel);
         if (key) {
-          const pm = parentMessage({ title: v.title, due: v.due, dueTime: v.dueTime });
+          const pm = parentMessage({ title: v.title, due: data.due, dueTime: data.due_time });
           const r1 = await d.sendSlack({ action: "send", channel_key: key, text: pm.text, blocks: pm.blocks, event: "hqtask_parent", source: "ef:slack-interact", dedupe_key: `hqtask_parent:${data.task_id}`, ref: { table: "hq_tasks", id: data.task_id } });
           if (r1?.ok && r1.ts) {
-            const names = await namesOf(sb, ids);
-            const steps = (v.steps.length ? v.steps : ["対応する"]).map((s) => ({ title: s, done: false, names, due: v.due, dueTime: v.dueTime }));
-            const cm = taskCardMessage({ task_id: data.task_id, title: v.title, corp: v.corp, assigneeNames: names, due: v.due, dueTime: v.dueTime, memo: v.memo, notes: v.notes, steps, creatorName: String(data.creator_name ?? actor.name), urgent: v.urgent, url });
+            const allIds = [...per.keys()];
+            const nameMap = new Map<string, string>(); (await namesOf(sb, allIds)).forEach((n, i) => nameMap.set(allIds[i], n));
+            const steps = made.map((s) => ({ title: s.title, done: false, names: s.assignee_ids.map((u) => nameMap.get(u) ?? "—"), due: s.due, dueTime: s.due_time }));
+            const cm = taskCardMessage({ task_id: data.task_id, title: v.title, corp: v.corp, assigneeNames: allIds.map((u) => nameMap.get(u) ?? "—"), due: data.due, dueTime: data.due_time, memo: v.memo, notes: v.notes, steps, creatorName: String(data.creator_name ?? actor.name), urgent: v.urgent, url });
             const r2 = await d.sendSlack({ action: "send", channel_key: key, thread_ts: r1.ts, text: cm.text, blocks: cm.blocks, event: "hqtask_card", source: "ef:slack-interact", dedupe_key: `hqtask_card:${data.task_id}`, ref: { table: "hq_tasks", id: data.task_id } });
             await sb.rpc("hq_slack_task_card_set", { p_task: data.task_id, p_channel: r1.slack_channel_id ?? meta.channel ?? "", p_ts: r1.ts, p_parent: r1.notification_id, p_card: r2?.notification_id ?? null });
           }
-        } else if (!ids.includes(actor.user_id)) {
-          await d.sendSlack({ action: "send", channel_key: `user:${actor.user_id}`, text: `✅ 本部タスクを作りました：${v.title}（期限 ${v.due}・担当 ${ids.length} 名に DM しました）\n${url}`,
+        } else if (!per.has(actor.user_id)) {
+          await d.sendSlack({ action: "send", channel_key: `user:${actor.user_id}`, text: `✅ 本部タスクを作りました：${v.title}（工程 ${made.length} 個）\n🔗 <${url}|管理システムで開く>`,
             event: "hqtask_created", source: "ef:slack-interact", dedupe_key: `hqtask_created:${data.task_id}`, ref: { table: "hq_tasks", id: data.task_id } });
         }
       })());

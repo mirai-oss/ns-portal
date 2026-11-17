@@ -70,12 +70,14 @@ export function createButtonMessage(): { text: string; blocks: unknown[] } {
   return {
     text: "本部タスクを作る",
     blocks: [
-      { type: "section", text: { type: "mrkdwn", text: "📝 *本部タスクを作る*\nボタンを押すと入力フォームが開きます。上の 4 つ（やること・法人・担当者・期限）だけでも作れます。注意事項・工程・写真は、フォームの下の欄に入れられます。送信すると本部タスクが付き、担当者の Slack の DM に届きます。（作れるのは本部・社長・店長）" } },
+      { type: "section", text: { type: "mrkdwn", text: "📝 *本部タスクを作る*\nボタンを押すと入力フォームが開きます。工程ごとに「工程名・担当者・期限（日付と時刻）」を入れられ、「＋ 工程を追加」で枠が増えます。工程が 1 つなら、タスク名・法人・担当者・期限だけで作れます。送信すると本部タスクが付き、担当者の Slack の DM に届きます。（作れるのは本部・社長・店長）" } },
       { type: "actions", block_id: "hqtask_create", elements: [{ type: "button", style: "primary", text: { type: "plain_text", text: "＋ タスクを作る", emoji: true }, action_id: CREATE_OPEN, value: "{}" }] },
     ],
   };
 }
 
+export const FORM_ADD = "hqtask.form.add";
+export const FORM_DEL = "hqtask.form.del";
 export const EDIT_ACTION = "hqtask.task.edit";
 export const STEPS_OPEN = "hqtask.steps.open";
 export const STEP_PICK = "hqtask.step.pick";
@@ -87,8 +89,9 @@ export const EDIT_MODAL = "hqtask.edit.modal";
 export type Initial = { title?: string; corp?: string; assigneeSlackIds?: string[]; due?: string | null; dueTime?: string | null; memo?: string | null; notes?: string | null; urgent?: boolean };
 
 /** 作成・編集のフォーム（モーダル）。上＝やること・法人・担当者・期限（日付＋時刻）。下＝詳細（任意）: 詳細・注意事項・工程・写真・最重要 */
-export function createModal(o: { mode?: "create" | "edit"; initial?: Initial; meta?: Record<string, unknown> } = {}): unknown {
-  const edit = o.mode === "edit";
+export function createModal(o: { mode?: "create" | "edit"; initial?: Initial; meta?: Record<string, unknown>; form?: CreateForm } = {}): unknown {
+  if (o.mode !== "edit") return createFormModal(o.form ?? { steps: [{}] }, o.meta ?? {});
+  const edit = true;
   const ini = o.initial ?? {};
   const withInit = (el: any, key: string, val: unknown) => (val !== undefined && val !== null && val !== "" ? { ...el, [key]: val } : el);
   const blocks: unknown[] = [
@@ -256,4 +259,74 @@ export function parseTaskEdit(values: any): { ok: true; v: { title: string; corp
   if (!(CORPS as readonly string[]).includes(corp)) errors.corp = "法人を選んでください";
   if (Object.keys(errors).length) return { ok: false, errors };
   return { ok: true, v: { title, corp, memo: String(g.memo?.memo?.value ?? "").trim().slice(0, 500), notes: String(g.notes?.notes?.value ?? "").trim().slice(0, 1000), urgent: Array.isArray(g.urgent?.urgent?.selected_options) && g.urgent.urgent.selected_options.length > 0 } };
+}
+
+// ===== 作成フォーム（工程ごとに「工程名・担当者・期限（日付＋時刻）」の枠。「＋ 工程を追加」で枠が増える） =====
+export type StepForm = { title?: string; users?: string[]; due?: string | null; time?: string | null };
+export type CreateForm = { title?: string; corp?: string; memo?: string; notes?: string; urgent?: boolean; photo?: boolean; steps: StepForm[] };
+export const MAX_STEPS = 10;
+
+export function createFormModal(form: CreateForm, meta: Record<string, unknown>): unknown {
+  const withInit = (el: any, key: string, val: unknown) => (val !== undefined && val !== null && val !== "" ? { ...el, [key]: val } : el);
+  const steps = form.steps.length ? form.steps.slice(0, MAX_STEPS) : [{}];
+  const blocks: unknown[] = [
+    { type: "input", block_id: "title", label: { type: "plain_text", text: "やること（タスク名）" }, element: withInit({ type: "plain_text_input", action_id: "title", max_length: 120, placeholder: { type: "plain_text", text: "例：10月分の請求書を確認する" } }, "initial_value", form.title) },
+    { type: "input", block_id: "corp", label: { type: "plain_text", text: "法人" }, element: withInit({ type: "static_select", action_id: "corp", placeholder: { type: "plain_text", text: "選ぶ" }, options: CORPS.map((c) => ({ text: { type: "plain_text", text: c }, value: c })) }, "initial_option", form.corp ? { text: { type: "plain_text", text: form.corp }, value: form.corp } : null) },
+    { type: "divider" },
+  ];
+  steps.forEach((s, i) => {
+    blocks.push({ type: "section", text: { type: "mrkdwn", text: steps.length > 1 ? `*▼ 工程 ${i + 1}*` : "*▼ 工程*（1 つだけなら、工程名は空でも作れます）" } });
+    blocks.push({ type: "input", block_id: `s${i}_title`, optional: steps.length === 1, label: { type: "plain_text", text: "工程名" }, element: withInit({ type: "plain_text_input", action_id: `s${i}_title`, max_length: 80, placeholder: { type: "plain_text", text: "例：資料を集める" } }, "initial_value", s.title) });
+    blocks.push({ type: "input", block_id: `s${i}_users`, label: { type: "plain_text", text: "担当者（複数可）" }, element: withInit({ type: "multi_users_select", action_id: `s${i}_users`, placeholder: { type: "plain_text", text: "選ぶ" } }, "initial_users", s.users?.length ? s.users : null) });
+    blocks.push({ type: "input", block_id: `s${i}_due`, label: { type: "plain_text", text: "期限（日付）" }, element: withInit({ type: "datepicker", action_id: `s${i}_due` }, "initial_date", s.due) });
+    blocks.push({ type: "input", block_id: `s${i}_time`, optional: true, label: { type: "plain_text", text: "期限（時刻・任意）" }, element: withInit({ type: "timepicker", action_id: `s${i}_time`, placeholder: { type: "plain_text", text: "時刻を選ぶ" } }, "initial_time", s.time ? String(s.time).slice(0, 5) : null) });
+  });
+  const btns: unknown[] = [];
+  if (steps.length < MAX_STEPS) btns.push({ type: "button", style: "primary", text: { type: "plain_text", text: "＋ 工程を追加", emoji: true }, action_id: FORM_ADD, value: "{}" });
+  if (steps.length > 1) btns.push({ type: "button", text: { type: "plain_text", text: "－ 最後の工程を消す", emoji: true }, action_id: FORM_DEL, value: "{}" });
+  if (btns.length) blocks.push({ type: "actions", block_id: "form_steps", elements: btns });
+  const photoOpt = { text: { type: "plain_text", text: "各工程の完了に写真が必要" }, value: "1" };
+  const urgentOpt = { text: { type: "plain_text", text: "最重要のタスクにする" }, value: "1" };
+  blocks.push(
+    { type: "divider" },
+    { type: "section", text: { type: "mrkdwn", text: "*▼ 詳細（すべて任意）*" } },
+    { type: "input", block_id: "memo", optional: true, label: { type: "plain_text", text: "詳細" }, element: withInit({ type: "plain_text_input", action_id: "memo", multiline: true, max_length: 500 }, "initial_value", form.memo) },
+    { type: "input", block_id: "notes", optional: true, label: { type: "plain_text", text: "注意事項" }, element: withInit({ type: "plain_text_input", action_id: "notes", multiline: true, max_length: 1000, placeholder: { type: "plain_text", text: "担当者に必ず守ってほしいこと" } }, "initial_value", form.notes) },
+    { type: "input", block_id: "photo", optional: true, label: { type: "plain_text", text: "写真" }, element: withInit({ type: "checkboxes", action_id: "photo", options: [photoOpt] }, "initial_options", form.photo ? [photoOpt] : null) },
+    { type: "input", block_id: "urgent", optional: true, label: { type: "plain_text", text: "最重要" }, element: withInit({ type: "checkboxes", action_id: "urgent", options: [urgentOpt] }, "initial_options", form.urgent ? [urgentOpt] : null) },
+  );
+  return { type: "modal", callback_id: CREATE_MODAL, private_metadata: JSON.stringify(meta), title: { type: "plain_text", text: "本部タスクを作る" }, submit: { type: "plain_text", text: "作成" }, close: { type: "plain_text", text: "やめる" }, blocks };
+}
+
+/** いまの入力（view.state.values）をそのまま読む（入力のチェックはしない）。「＋ 工程を追加」で作り直すとき、入力済みの内容を残すために使う */
+// deno-lint-ignore no-explicit-any
+export function readForm(values: any): CreateForm {
+  const g = values ?? {};
+  const steps: StepForm[] = [];
+  for (let i = 0; i < MAX_STEPS && (g[`s${i}_users`] || g[`s${i}_title`] || g[`s${i}_due`]); i++) {
+    steps.push({ title: g[`s${i}_title`]?.[`s${i}_title`]?.value ?? "", users: g[`s${i}_users`]?.[`s${i}_users`]?.selected_users ?? [], due: g[`s${i}_due`]?.[`s${i}_due`]?.selected_date ?? null, time: g[`s${i}_time`]?.[`s${i}_time`]?.selected_time ?? null });
+  }
+  return { title: g.title?.title?.value ?? "", corp: g.corp?.corp?.selected_option?.value ?? "", memo: g.memo?.memo?.value ?? "", notes: g.notes?.notes?.value ?? "",
+    urgent: Array.isArray(g.urgent?.urgent?.selected_options) && g.urgent.urgent.selected_options.length > 0, photo: Array.isArray(g.photo?.photo?.selected_options) && g.photo.photo.selected_options.length > 0, steps: steps.length ? steps : [{}] };
+}
+
+export type CreateStepsInput = { title: string; corp: string; memo: string; notes: string; urgent: boolean; photo: boolean; steps: { title: string; slackUsers: string[]; due: string; time: string | null }[] };
+/** 送信の読み取り（チェックつき）。工程が 2 つ以上のときは、すべての工程名が必要 */
+// deno-lint-ignore no-explicit-any
+export function parseCreateSteps(values: any): { ok: true; v: CreateStepsInput } | { ok: false; errors: Record<string, string> } {
+  const f = readForm(values);
+  const errors: Record<string, string> = {};
+  const title = clean(f.title, 120);
+  if (!title) errors.title = "やること（タスク名）を入れてください";
+  if (!(CORPS as readonly string[]).includes(String(f.corp))) errors.corp = "法人を選んでください";
+  const steps = f.steps.map((s, i) => {
+    const users = (s.users ?? []).filter((x) => /^[UW][A-Z0-9]{6,}$/.test(String(x))).slice(0, 10);
+    if (!users.length) errors[`s${i}_users`] = "担当者を選んでください";
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(s.due ?? ""))) errors[`s${i}_due`] = "期限を選んでください";
+    const st = clean(s.title, 80);
+    if (f.steps.length > 1 && !st) errors[`s${i}_title`] = "工程名を入れてください";
+    return { title: st, slackUsers: users, due: String(s.due ?? ""), time: /^\d{2}:\d{2}$/.test(String(s.time ?? "")) ? String(s.time) : null };
+  });
+  if (Object.keys(errors).length) return { ok: false, errors };
+  return { ok: true, v: { title, corp: String(f.corp), memo: String(f.memo ?? "").trim().slice(0, 500), notes: String(f.notes ?? "").trim().slice(0, 1000), urgent: !!f.urgent, photo: !!f.photo, steps } };
 }
