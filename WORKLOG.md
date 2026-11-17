@@ -11752,3 +11752,6 @@ Q5/Q6の回答を受け、設計メモ§9〜§10を確定し担当別指示書�
 - 設定: payroll_transfer_recon.corps.<トーホー>.mf_deposit_accounts = ["普通預金/代表/PayPay/964"] を登録（ライブゲートは未登録＝記録しない）。
 - 試し実行（dry_run・一時的に mf_total_enabled を ON→必ず OFF に戻した）: 2026-10 バッチ 1 件が「合計がぴったり同じ出金が 1 件だけ」(matched_one)・記録 0。総額一致だけで個人は完了にしない設計は不変。
 - 未実施: mf_total_enabled の ON（社長の判断待ち）。
+
+### 続き 63（2026-11-17）mf_total_enabled を ON（社長の明示承認）
+- payroll_transfer_recon.mf_total_enabled=true。bank_read_enabled・auto_complete・auto_reflect も true。slack_enabled のみ false。戻すときは該当スイッチを false に。MF の総額一致だけでは個人を完了にしない設計は不変。
