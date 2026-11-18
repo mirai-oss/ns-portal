@@ -9,6 +9,7 @@
 // =============================================================
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { handleMention } from "../_shared/hqtask-mention.ts";   // 2026-11-17: @アプリ へのメンション（本部タスクの下書き）
+import { handleDmThreadReply, isDmThreadReply } from "../_shared/hqtask-reply.ts";   // 2026-11-18: DM のスレッド返信 → 本部タスクのコメント（担当B）
 
 const svc = () => createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
 const json = (o: unknown, status = 200) => new Response(JSON.stringify(o), { status, headers: { "Content-Type": "application/json" } });
@@ -73,6 +74,8 @@ Deno.serve(async (req) => {
     if (!ev.bot_id && !req.headers.get("x-slack-retry-num")) waitUntil(handleMention(body));
     return new Response("", { status: 200 });
   }
+  // 2026-11-18: DM のスレッド返信だけを、本部タスクのコメントとして取り込む（スイッチ・照合・権限確認は _shared/hqtask-reply.ts と DB 関数側。それ以外のメッセージは読み取らない）
+  if (isDmThreadReply(ev)) { waitUntil(handleDmThreadReply(body)); return new Response("", { status: 200 }); }
   if (ev.type !== "team_join" && ev.type !== "user_change") {
     waitUntil((async () => { await svc().from("slack_event_log").insert({ event_type: String(ev.type ?? "?"), result: "ignored", raw: { event_id: body.event_id ?? null } }); })());
   }
