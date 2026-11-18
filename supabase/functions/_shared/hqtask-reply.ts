@@ -18,6 +18,27 @@ async function sendSlack(body: Record<string, unknown>): Promise<unknown> {
   } catch (_e) { return { ok: false }; }
 }
 
+// Slack の書式（<@U…> のメンション・<#C…|名前>・<URL|文字>・&amp; など）を、管理システムのコメントで読める普通の文字にする（2026-11-18）。
+//   メンションは、Slack ユーザーID → user_slack → users.name で「@名前」に直す（DB 側の @名前 のメンション判定にそのまま使える）。本文はログに残さない
+// deno-lint-ignore no-explicit-any
+export async function slackToPlain(sb: any, text: string): Promise<string> {
+  let t = String(text ?? "");
+  const ids = [...new Set([...t.matchAll(/<@([UW][A-Z0-9]+)(?:\|[^>]*)?>/g)].map((m) => m[1]))];
+  const names = new Map<string, string>();
+  if (ids.length) {
+    const { data: links } = await sb.from("user_slack").select("slack_user_id,user_id").in("slack_user_id", ids);
+    const uids = [...new Set((links ?? []).map((l: { user_id: string }) => l.user_id))];
+    const { data: us } = uids.length ? await sb.from("users").select("id,name").in("id", uids) : { data: [] };
+    const nm = new Map((us ?? []).map((u: { id: string; name: string }) => [u.id, String(u.name ?? "").trim()]));
+    for (const l of links ?? []) { const n = nm.get(l.user_id); if (n) names.set(l.slack_user_id, n); }
+  }
+  t = t.replace(/<@([UW][A-Z0-9]+)(?:\|([^>]*))?>/g, (_m, id: string, label?: string) => "@" + (names.get(id) ?? (label && label.trim()) ?? "ユーザー"));
+  t = t.replace(/<#[A-Z0-9]+\|([^>]*)>/g, "#$1");
+  t = t.replace(/<(https?:[^>|]+)\|([^>]+)>/g, "$2 ($1)").replace(/<(https?:[^>]+)>/g, "$1").replace(/<mailto:[^|>]+\|([^>]+)>/g, "$1");
+  t = t.replace(/<!([a-z]+)(?:\|[^>]*)?>/g, "@$1");
+  return t.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+}
+
 // deno-lint-ignore no-explicit-any
 export function isDmThreadReply(ev: any): boolean {
   return ev?.type === "message" && ev?.channel_type === "im" && typeof ev?.thread_ts === "string" && ev.thread_ts !== ev.ts
@@ -31,7 +52,7 @@ export async function handleDmThreadReply(body: any) {
   if (!eventId || !isDmThreadReply(ev)) return;
   const sb = svc();
   const { data, error } = await sb.rpc("hqtask_comment_reply_post", {
-    p_event_id: eventId, p_channel: String(ev.channel), p_thread_ts: String(ev.thread_ts), p_slack_user: String(ev.user), p_body: String(ev.text),
+    p_event_id: eventId, p_channel: String(ev.channel), p_thread_ts: String(ev.thread_ts), p_slack_user: String(ev.user), p_body: await slackToPlain(sb, String(ev.text)),
   });
   if (error || !data) return;
   const code = String(data.code ?? "");
