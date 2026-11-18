@@ -193,6 +193,14 @@ export const attentionOf = (v: Pick<View, "waiting" | "overdue">) => (v.waiting 
 export const parentTitle = (v: Pick<View, "name" | "storeName">) => `👤 採用管理｜${clean(v.name, 30)}｜${v.storeName ? clean(v.storeName, 20) : "店舗未設定"}`;
 const linkButton = (text: string, url: string, id: string, key = "") => ({ type: "button", text: { type: "plain_text", text, emoji: true }, action_id: LINK_ACTION + key, url, value: JSON.stringify({ applicant_id: id }) });
 
+/** 親投稿の 2 行目: 進み具合を絵で。済んだ段階は色つきの絵、まだの段階は ▫️（応募 → LINE → フォーム → 面接 → 採用） */
+export function progressStrip(v: View): string {
+  const hired = v.status === "hired" || !!v.moved;
+  const iv = v.interviewAt ? `📅面接 ${whenJst(v.interviewAt)}` : v.needSchedule ? "📅面接 日程調整中" : "▫️面接";
+  const steps = ["📩応募", v.lineLinked ? "💚LINE連携" : "▫️LINE未連携", v.formAt ? "📝フォーム受信" : "▫️フォーム未受信", iv, hired ? "🎉採用" : "▫️採用"];
+  return steps.join("　›　");
+}
+
 /**
  * 親メッセージ（1 行）。例: 👤 採用管理｜山田太郎｜鳥一代 本店｜面接調整中
  * 未対応・面接結果の入力待ちのときだけ、後ろに「🔴未対応（担当 佐藤）」を付ける。電話・メール・本文・履歴は出さない。
@@ -201,7 +209,7 @@ const linkButton = (text: string, url: string, id: string, key = "") => ({ type:
 export function parentMessage(v: View, o: { permalink?: string | null } = {}): { text: string; blocks: unknown[] } {
   const att = attentionOf(v);
   const text = `${parentTitle(v)}${v.label ? `｜${v.label}` : ""}${att ? `｜🔴${att}（担当 ${v.assigneeName ? clean(v.assigneeName, 20) : "未定"}）` : ""}`;
-  const blocks: unknown[] = [{ type: "section", text: { type: "mrkdwn", text } }];
+  const blocks: unknown[] = [{ type: "section", text: { type: "mrkdwn", text: `${text}\n${progressStrip(v)}` } }];
   if (o.permalink) blocks.push({ type: "actions", block_id: "recruit_open", elements: [linkButton("詳細を確認", o.permalink, v.id, "_thread")] });
   return { text, blocks };
 }
