@@ -2796,7 +2796,9 @@ function groupStoreSteps(steps){
     if(!map.has(key)){ map.set(key,{isGroup:!!(s.store_id&&s.template_step_id),rows:[],sort_order:s.sort_order}); order.push(key); }
     map.get(key).rows.push(s);
   });
-  return order.map(k=>map.get(k)).sort((a,b)=>a.sort_order-b.sort_order);
+  // 2026-11-18 グループ（店舗別チェック）も含め、期限が早い順（グループは中で一番早い期限）。同じなら従来の並び順
+  const gk=g=>g.rows.map(stepDueKey).sort()[0];
+  return order.map(k=>map.get(k)).sort((x,y)=>{ const ka=gk(x),kb=gk(y); return ka<kb?-1:ka>kb?1:(x.sort_order-y.sort_order); });
 }
 async function ensureTodayGenerated(){
   try{ await authed("/rest/v1/rpc/hq_generate_today",{method:"POST",body:JSON.stringify({})}); }catch(e){}
