@@ -125,8 +125,8 @@ async function hasFilesScope(): Promise<boolean> {
 }
 // Slack に上げられた写真・PDF を、管理システムのコメントの添付として保存する（写真と同じ置き場 report-photos・本人のフォルダ）。保存できたものを返す
 // deno-lint-ignore no-explicit-any
-async function saveCommentFiles(sb: any, o: { files: any[]; commentId: string; taskId: string; userId: string }): Promise<{ path: string; name: string; mime: string }[]> {
-  const saved: { path: string; name: string; mime: string }[] = [];
+async function saveCommentFiles(sb: any, o: { files: any[]; commentId: string; taskId: string; userId: string }): Promise<{ id: string; path: string; name: string; mime: string }[]> {
+  const saved: { id: string; path: string; name: string; mime: string }[] = [];
   for (const f of o.files) {
     try {
       const mime = String(f?.mimetype ?? "");
@@ -142,8 +142,8 @@ async function saveCommentFiles(sb: any, o: { files: any[]; commentId: string; t
       const path = `${o.userId}/hqtask_slack_${Date.now()}_${Math.random().toString(36).slice(2, 7)}.${ext}`;
       const up = await sb.storage.from("report-photos").upload(path, bytes, { contentType: mime, upsert: false });
       if (up.error) continue;
-      const ins = await sb.from("hq_task_comment_files").insert({ comment_id: o.commentId, task_id: o.taskId, storage_path: path, file_name: String(f?.name ?? "").slice(0, 120), created_by: o.userId });
-      if (!ins.error) saved.push({ path, name: String(f?.name ?? "").slice(0, 120), mime });
+      const ins = await sb.from("hq_task_comment_files").insert({ comment_id: o.commentId, task_id: o.taskId, storage_path: path, file_name: String(f?.name ?? "").slice(0, 120), created_by: o.userId }).select("id").single();
+      if (!ins.error && ins.data?.id) saved.push({ id: String(ins.data.id), path, name: String(f?.name ?? "").slice(0, 120), mime });
     } catch { /* 1 件ずつ。失敗した分は数えない */ }
   }
   return saved;
@@ -410,17 +410,18 @@ export function hqtaskHandlers(d: Deps): Record<string, (c: Ctx) => Promise<Resp
         const saved = files.length ? await saveCommentFiles(sb, { files, commentId: data.comment_id, taskId, userId: actor.user_id }) : [];
         const { data: g } = await sb.rpc("hq_slack_task_get", { p_task: taskId });
         const key = await channelKeyOf(sb, g?.card_channel);
-        // 2026-11-19 スレッドにも写真を出す（画像はその場で表示・クリックで大きく開く／PDF はリンク）。ファイルは非公開の置き場のまま、24 時間だけ有効な見る用リンクを使う。ずっと見られる場所は管理システム
+        // 2026-11-19 スレッドにも写真を出す（画像はその場で表示・クリックで大きく開く）。各ファイルの名前のリンクは「ずっと使える」管理システム経由（ログインして開く）。画像の表示用の 24 時間リンクは、その場の表示にだけ使う
         const blocksOut: unknown[] = [];
-        const imgs: unknown[] = []; const pdfs: string[] = [];
+        const imgs: unknown[] = []; const links: string[] = [];
         for (const f of saved) {
-          const { data: su } = await sb.storage.from("report-photos").createSignedUrl(f.path, 86400);
-          if (!su?.signedUrl) continue;
-          if (f.mime.startsWith("image/")) imgs.push({ type: "image", image_url: su.signedUrl, alt_text: (f.name || "添付").slice(0, 100), title: { type: "plain_text", text: (f.name || "添付").slice(0, 100) } });
-          else pdfs.push(`<${su.signedUrl}|📄 ${(f.name || "PDF").replace(/[<>|]/g, " ").slice(0, 60)}>`);
+          const nm = (f.name || "添付").replace(/[<>|]/g, " ").slice(0, 50);
+          links.push(`<${urlOf(taskId)}&file=${f.id}|${f.mime.startsWith("image/") ? "🖼" : "📄"} ${nm}>`);   // ずっと使えるリンク（管理システムにログインして開く）
+          if (!f.mime.startsWith("image/")) continue;
+          const { data: su } = await sb.storage.from("report-photos").createSignedUrl(f.path, 86400);   // その場の表示用（24 時間）
+          if (su?.signedUrl) imgs.push({ type: "image", image_url: su.signedUrl, alt_text: nm, title: { type: "plain_text", text: nm } });
         }
         const head = `💬 ${actor.name}：${body.slice(0, 300)}${body.length > 300 ? "…" : ""}`;
-        const tail = `${saved.length ? `\n📎 添付 ${saved.length} 件${pdfs.length ? `　${pdfs.join("　")}` : ""}（ずっと見る場所は管理システム）` : ""}${files.length > saved.length ? `\n⚠️ 添付 ${files.length - saved.length} 件は保存できませんでした` : ""}`;
+        const tail = `${saved.length ? `\n📎 添付 ${saved.length} 件　${links.join("　")}` : ""}${files.length > saved.length ? `\n⚠️ 添付 ${files.length - saved.length} 件は保存できませんでした` : ""}`;
         blocksOut.push({ type: "section", text: { type: "mrkdwn", text: head + tail } }, ...imgs.slice(0, 5));
         if (saved.length) blocksOut.push({ type: "actions", block_id: "hqtask_comment_files", elements: [{ type: "button", text: { type: "plain_text", text: "管理システムで開く", emoji: true }, url: urlOf(taskId), action_id: STEP_LINK }] });
         if (key && g?.parent_ts) await d.sendSlack({ action: "send", channel_key: key, thread_ts: g.parent_ts, text: head + (saved.length ? `（添付 ${saved.length} 件）` : ""), blocks: blocksOut, event: "hqtask_comment_thread", source: "ef:slack-interact",

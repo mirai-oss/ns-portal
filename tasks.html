@@ -4183,6 +4183,19 @@ async function main(){
   // 履歴の起点。これ以降の画面遷移はpushNav()で1階層ずつ積む（戻る操作の基準になる）
   try{ history.replaceState({hqNav:0},"","tasks.html"); }catch(e){}
   const openId=qs.get("task");
+  // 2026-11-19 ?file=<コメントの添付のid> : Slack のスレッドのリンク用。ログイン後、その添付（写真・PDF）を開く（ずっと使えるリンク・見る権限が無ければ何もしない）
+  const openFile=qs.get("file");
+  if(openFile){
+    try{
+      const r=await authed(`/rest/v1/hq_task_comment_files?id=eq.${encodeURIComponent(openFile)}&select=storage_path`);
+      const p=(r.ok&&Array.isArray(r.body)&&r.body[0])?r.body[0].storage_path:null;
+      if(p){
+        const sr=await authed(`/storage/v1/object/sign/${BUCKET}`,{method:"POST",body:JSON.stringify({expiresIn:300,paths:[p]})});
+        const u1=(Array.isArray(sr.body)&&sr.body[0]&&sr.body[0].signedURL)?sr.body[0].signedURL:null;
+        if(u1){ location.href=SUPA_URL+"/storage/v1"+u1; return; }
+      }
+    }catch(e){}
+  }
   if(openId){ openDetail(openId); return; }
   // 全面刷新Phase1: ポータルシェルの「⚙️管理」サブメニューから ?page=perms|corps|notify|past で直接開けるようにする
   // （NAV_STACKへは積まない＝「戻る」を押すと素直にボードへ戻る設計。権限が無ければ静かにボードへフォールバック）
