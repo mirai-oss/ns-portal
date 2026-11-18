@@ -143,3 +143,13 @@ Deno.test("チャンネルのカード: 工程の id があれば、未完了の
   const labels = c.blocks.filter((b: any) => b.type === "actions").flatMap((b: any) => b.elements.map((e: any) => e.text.text));
   assert(labels.some((t: string) => t.includes("コメント")));
 });
+
+Deno.test("本部タスクの親投稿: 2 行目に状態の絵（最重要・担当・工程の進み・期限超過・完了）。1 行目の文面は変えない", () => {
+  const p = parentMessage({ title: "T", due: "2026-11-20", strip: { urgent: true, names: ["青山", "青山", "齋藤"], stepsDone: 1, stepsTotal: 3, overdue: true } });
+  const t = (p.blocks as any[])[0].text.text as string;
+  assert(t.startsWith(p.text + "\n"));
+  assert(t.includes("🔥最重要") && t.includes("⏰期限超過") && t.includes("👤青山・齋藤") && t.includes("✅▫️▫️ 1/3"));
+  const d = (parentMessage({ title: "T", due: "2026-11-20", done: true, strip: { stepsDone: 2, stepsTotal: 2 } }).blocks as any[])[0].text.text as string;
+  assert(d.includes("🎉完了") && d.includes("✅✅ 2/2") && !d.includes("⏰"));
+  assertEquals((parentMessage({ title: "T", due: "2026-11-20" }).blocks as any[])[0].text.text, parentMessage({ title: "T", due: "2026-11-20" }).text);
+});

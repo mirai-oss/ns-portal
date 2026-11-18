@@ -51,6 +51,25 @@ Deno.serve(async (req: Request) => {
     return json({ ok: !!r?.ok, notification_id: r?.notification_id ?? null, error: r?.ok ? null : String(r?.error ?? "") });
   }
 
+  // 2026-11-18 親投稿（チャンネル）を、いまのタスクの状態（絵つきの 2 行目）に合わせて書き換える。社内の Slack の投稿を直すだけ（応募者・外部には送らない）
+  if (body?.op === "refresh_parents") {
+    const max = Math.min(100, Math.max(1, Number(body?.max) || 50));
+    const { data: logs } = await sb.from("hq_slack_task_log").select("task_id,parent_notification_id").not("parent_notification_id", "is", null).order("created_at", { ascending: false }).limit(max);
+    let done = 0, failed = 0;
+    for (const l of (logs ?? []) as any[]) {
+      const { data: g } = await sb.rpc("hq_slack_task_get", { p_task: l.task_id });
+      const { data: sg } = await sb.rpc("hq_slack_steps_get", { p_task: l.task_id });
+      if (!g?.ok) { failed++; continue; }
+      const sl = (sg?.steps ?? []) as any[];
+      const allDone = sl.length > 0 && sl.every((x) => x.done);
+      const pm = parentMessage({ title: g.title, due: g.due, dueTime: g.due_time, done: allDone, strip: { urgent: g.urgent, names: sl.filter((x) => !x.done).flatMap((x) => x.assignee_names ?? []), stepsDone: sl.filter((x) => x.done).length, stepsTotal: sl.length,
+        overdue: !allDone && String(g.due ?? "") !== "" && String(g.due) < jstDate() } });
+      const r = await sendSlack({ action: "update", notification_id: l.parent_notification_id, text: pm.text, blocks: pm.blocks });
+      if (r?.ok) done++; else failed++;
+    }
+    return json({ ok: true, op: "refresh_parents", total: (logs ?? []).length, updated: done, failed });
+  }
+
   // 作成者への「完了しました」DM（Slack のフォームで付けたタスクが完了したとき）。dm_enabled が true のときだけ送る
   if (body?.op === "completions") {
     const { data: s2 } = await sb.from("app_settings").select("value").eq("key", "hq_task_slack").maybeSingle();
@@ -76,7 +95,9 @@ Deno.serve(async (req: Request) => {
         const { data: lg } = await sb.from("hq_slack_task_log").select("parent_notification_id").eq("task_id", c.task_id).maybeSingle();
         const { data: tk } = await sb.from("hq_tasks").select("title,due_date,due_time").eq("id", c.task_id).maybeSingle();
         if (lg?.parent_notification_id && tk) {
-          const pm = parentMessage({ title: tk.title, due: tk.due_date, dueTime: tk.due_time, done: true });
+          const { data: sgs } = await sb.rpc("hq_slack_steps_get", { p_task: c.task_id });
+          const nn = ((sgs?.steps ?? []) as any[]).length;
+          const pm = parentMessage({ title: tk.title, due: tk.due_date, dueTime: tk.due_time, done: true, strip: { stepsDone: nn, stepsTotal: nn } });
           await sendSlack({ action: "update", notification_id: lg.parent_notification_id, text: pm.text, blocks: pm.blocks });
         }
       }

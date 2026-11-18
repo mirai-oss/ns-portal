@@ -119,9 +119,25 @@ export function createModal(o: { mode?: "create" | "edit"; initial?: Initial; me
 }
 
 /** 親投稿（1 行）。状態の印・種別・タイトル・期限 */
-export function parentMessage(o: { title: string; due: string; dueTime?: string | null; done?: boolean }): { text: string; blocks: unknown[] } {
+export type ParentStrip = { urgent?: boolean; names?: string[]; stepsDone: number; stepsTotal: number; overdue?: boolean };
+/** 親投稿の 2 行目（2026-11-18）: いまの状態を絵で。🔥最重要／⏰期限超過／👤担当（未完了の工程の担当）／工程の進み（✅✅▫️ 2/3）／🎉完了 */
+export function parentStrip(x: ParentStrip, done: boolean): string {
+  const n = Math.min(10, Math.max(0, x.stepsTotal)), d = Math.min(n, Math.max(0, x.stepsDone));
+  const parts: string[] = [];
+  if (x.urgent) parts.push("🔥最重要");
+  if (done) parts.push("🎉完了");
+  else {
+    if (x.overdue) parts.push("⏰期限超過");
+    const names = [...new Set(x.names ?? [])].slice(0, 3).map((nm) => clean(nm, 12));
+    if (names.length) parts.push(`👤${names.join("・")}`);
+  }
+  if (n > 0) parts.push(`${"✅".repeat(d)}${"▫️".repeat(n - d)} ${d}/${n}`);
+  return parts.join("　");
+}
+export function parentMessage(o: { title: string; due: string; dueTime?: string | null; done?: boolean; strip?: ParentStrip }): { text: string; blocks: unknown[] } {
   const text = `${o.done ? "✅" : "🕒"} 本部タスク｜${clean(o.title, 60)}｜${md(o.due, o.dueTime)}${o.done ? "｜完了" : ""}`;
-  return { text, blocks: [{ type: "section", text: { type: "mrkdwn", text } }] };
+  const line = o.strip ? parentStrip(o.strip, !!o.done) : "";
+  return { text, blocks: [{ type: "section", text: { type: "mrkdwn", text: line ? `${text}\n${line}` : text } }] };
 }
 
 /** スレッドの詳細カード。「編集」ボタンから Slack の中で直せる */

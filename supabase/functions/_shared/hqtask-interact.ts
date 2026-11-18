@@ -49,7 +49,10 @@ async function refreshCard(sb: any, send: Deps["sendSlack"], taskId: string, edi
   const { data: sg } = await sb.rpc("hq_slack_steps_get", { p_task: taskId });
   if (!g?.ok) return null;
   if (g.parent_notification_id) {
-    const pm = parentMessage({ title: g.title, due: g.due, dueTime: g.due_time });
+    const sl = ((sg?.steps ?? []) as StepRow[]);
+    const allDone = sl.length > 0 && sl.every((x) => x.done);
+    const pm = parentMessage({ title: g.title, due: g.due, dueTime: g.due_time, done: allDone, strip: { urgent: g.urgent, names: sl.filter((x) => !x.done).flatMap((x) => x.assignee_names), stepsDone: sl.filter((x) => x.done).length, stepsTotal: sl.length,
+      overdue: !allDone && String(g.due ?? "") !== "" && String(g.due) < new Date(Date.now() + 9 * 3600_000).toISOString().slice(0, 10) } });
     await send({ action: "update", notification_id: g.parent_notification_id, text: pm.text, blocks: pm.blocks });
   }
   const steps = ((sg?.steps ?? []) as StepRow[]).map((s) => ({ title: s.title, done: s.done, names: s.assignee_names, due: s.due, dueTime: s.due_time, id: s.id, canComplete: !s.photo }));
@@ -84,7 +87,7 @@ async function afterCreate(d: Deps, sb: any, actor: { user_id: string; name: str
       let r1: any = null;
       if (threadTs) r1 = { ok: true, ts: threadTs, notification_id: null, slack_channel_id: meta.channel };
       else {
-        const pm = parentMessage({ title: v.title, due: data.due, dueTime: data.due_time });
+        const pm = parentMessage({ title: v.title, due: data.due, dueTime: data.due_time, strip: { urgent: v.urgent, names: [...new Set(made.flatMap((x) => x.assignee_ids))].length ? (await namesOf(sb, [...new Set(made.flatMap((x) => x.assignee_ids))])) : [], stepsDone: 0, stepsTotal: made.length } });
         r1 = await d.sendSlack({ action: "send", channel_key: key, text: pm.text, blocks: pm.blocks, event: "hqtask_parent", source: "ef:slack-interact", dedupe_key: `hqtask_parent:${data.task_id}`, ref: { table: "hq_tasks", id: data.task_id } });
       }
       if (r1?.ok && r1.ts) {
