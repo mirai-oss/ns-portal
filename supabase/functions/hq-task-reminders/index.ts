@@ -10,7 +10,7 @@
 // =============================================================
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { callModel, jstToday as aiToday, systemPrompt, toDraft, type RosterEntry } from "../_shared/hqtask-ai.ts";
-import { reminderMessage, createButtonMessage, parentMessage, taskCardMessage, type StepRow, type Candidate } from "../_shared/hqtask-slack.ts";
+import { reminderMessage, createButtonMessage, parentMessage, taskCardMessage, nextNoticeMessage, type NextItem, type StepRow, type Candidate } from "../_shared/hqtask-slack.ts";
 
 const json = (o: unknown, status = 200) => new Response(JSON.stringify(o), { status, headers: { "Content-Type": "application/json" } });
 const svc = () => createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
@@ -34,6 +34,34 @@ async function sendSlack(body: Record<string, unknown>): Promise<any> {
 }
 const jstDate = () => new Date(Date.now() + 9 * 3600_000).toISOString().slice(0, 10);
 
+// 2026-11-19 次の担当者への通知。前の工程が止まっている（期限の当日・超過）・前の工程が完了した、ときに、次の工程の担当者へ 1 人 1 通にまとめて DM。
+//   設定 hq_task_slack.next_notice_enabled と dm_enabled が両方 true のときだけ送る（dry_run は件数だけ返す）。only_recipient＝その人だけに送る（試し送り用）
+// deno-lint-ignore no-explicit-any
+async function runNext(sb: any, o: { kinds: string[]; dry?: boolean; onlyRecipient?: string | null }): Promise<Record<string, unknown>> {
+  const { data: set } = await sb.from("app_settings").select("value").eq("key", "hq_task_slack").maybeSingle();
+  const on = set?.value?.dm_enabled === true && set?.value?.next_notice_enabled === true;
+  if (!on && !o.dry) return { next: "switch_off" };
+  const { data: cands, error } = await sb.rpc("hq_slack_next_candidates");
+  if (error) return { next: "error", error: String(error.message).slice(0, 120) };
+  // deno-lint-ignore no-explicit-any
+  const list = ((cands ?? []) as any[]).filter((c) => o.kinds.includes(c.kind) && (!o.onlyRecipient || c.recipient_id === o.onlyRecipient));
+  const people = new Map<string, any[]>();
+  for (const c of list) people.set(c.recipient_id, [...(people.get(c.recipient_id) ?? []), c]);
+  if (o.dry) { const by: Record<string, number> = {}; for (const c of list) by[c.kind] = (by[c.kind] ?? 0) + 1; return { next: "dry_run", total: list.length, people: people.size, by_kind: by }; }
+  let sent = 0, failed = 0;
+  const date = jstDate();
+  for (const [rid, rows] of people) {
+    const mine: any[] = [];
+    for (const c of rows.slice(0, 20)) { const { data: ok } = await sb.rpc("hq_slack_reminder_claim", { p_step: c.step_id, p_recipient: rid, p_kind: c.kind }); if (ok === true) mine.push(c); }
+    if (!mine.length) continue;
+    const m = nextNoticeMessage(mine as NextItem[]);
+    const r = await sendSlack({ action: "send", channel_key: `user:${rid}`, text: m.text, blocks: m.blocks, event: "hqtask_next", source: "ef:hq-task-reminders",
+      dedupe_key: `hqtask_next:${rid}:${date}:${mine.map((c) => `${c.step_id.slice(0, 8)}${c.kind.slice(5, 6)}`).join("")}`, ref: { table: "hq_task_steps", id: mine[0].step_id } });
+    if (r?.ok) sent += mine.length; else { failed += mine.length; for (const c of mine) await sb.rpc("hq_slack_reminder_release", { p_step: c.step_id, p_recipient: rid, p_kind: c.kind }); }
+  }
+  return { next: "done", people: people.size, items_sent: sent, failed };
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method !== "POST") return json({ ok: false, error: "POST のみ" }, 405);
   if (!authorized(req)) return json({ ok: false, error: "認証がありません" }, 401);
@@ -50,6 +78,11 @@ Deno.serve(async (req: Request) => {
     const m = createButtonMessage();
     const r = await sendSlack({ action: "send", channel_key: key, text: m.text, blocks: m.blocks, event: "hqtask_create_button", source: "ef:hq-task-reminders", dedupe_key: `hqtask_create_button:${key}:${jstDate()}` });
     return json({ ok: !!r?.ok, notification_id: r?.notification_id ?? null, error: r?.ok ? null : String(r?.error ?? "") });
+  }
+
+  if (body?.op === "next_notices") {
+    const kinds = Array.isArray(body?.kinds) && body.kinds.length ? body.kinds.map(String) : ["next_today", "next_over", "next_ready"];
+    return json({ ok: true, op: "next_notices", ...(await runNext(sb, { kinds, dry: body?.dry_run === true, onlyRecipient: body?.only_recipient ? String(body.only_recipient) : null })) });
   }
 
   // 2026-11-18 @アプリ の文章→下書きの試験（Slack へは何も送らない・何も保存しない）。text を AI に渡して、下書きと、失敗したときの理由（鍵は出さない）を返す
@@ -108,7 +141,9 @@ Deno.serve(async (req: Request) => {
         else { const r = await sendSlack({ action: "update", notification_id: l.card_notification_id, text: cm.text, blocks: cm.blocks }); if (r?.ok) { cardsDone++; } else failed++; }
       }
     }
-    return json({ ok: true, op: "refresh_parents", total: (logs ?? []).length, updated: done, cards_updated: cardsDone, unchanged: same, gone, failed });
+    // 前の工程が完了した → 次の担当者へ「あなたの番です」（1 分ごとのこの実行に乗せる。スイッチが OFF なら何もしない）
+    const nx = onlyChanged ? await runNext(sb, { kinds: ["next_ready"] }).catch(() => ({ next: "error" })) : {};
+    return json({ ok: true, op: "refresh_parents", total: (logs ?? []).length, updated: done, cards_updated: cardsDone, unchanged: same, gone, failed, ...nx });
   }
 
   // 作成者への「完了しました」DM（Slack のフォームで付けたタスクが完了したとき）。dm_enabled が true のときだけ送る
@@ -177,5 +212,8 @@ Deno.serve(async (req: Request) => {
     if (r?.ok) sent++;
     else { failed++; await sb.rpc("hq_slack_reminder_release", { p_step: c.step_id, p_recipient: c.recipient_id, p_kind: c.kind }); }
   }
-  return json({ ok: true, switch: true, total: list.length, sent, failed, skipped, deferred: Math.max(0, list.length - max), by_kind: byKind });
+  // 朝の実行（日本時間 12 時より前）だけ、次の担当者への通知（前の工程が期限の当日・超過）も送る
+  const jstHour = new Date(Date.now() + 9 * 3600_000).getUTCHours();
+  const nx = jstHour < 12 ? await runNext(sb, { kinds: ["next_today", "next_over"] }).catch(() => ({ next: "error" })) : {};
+  return json({ ok: true, switch: true, total: list.length, sent, failed, skipped, deferred: Math.max(0, list.length - max), by_kind: byKind, ...nx });
 });

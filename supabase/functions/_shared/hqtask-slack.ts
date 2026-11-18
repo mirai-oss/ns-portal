@@ -7,6 +7,7 @@ export const CREATE_OPEN = "hqtask.create.open";
 export const CREATE_OPEN_DETAIL = "hqtask.create.open.detail";
 export const CREATE_MODAL = "hqtask.create.modal";
 export const STEP_DONE = "hqtask.step.done";
+export const STEP_REOPEN = "hqtask.step.reopen";   // 完了にした工程の［↩️ 取り消し］（2026-11-19）
 export const STEP_ACK = "hqtask.step.ack";
 export const STEP_LINK = "hqtask.link";
 export const COMMENT_OPEN = "hqtask.comment.open";   // チャンネルのカードの［💬 コメント］（2026-11-18）
@@ -162,7 +163,13 @@ export function taskCardMessage(o: { task_id: string; title: string; corp: strin
   if (perStep) {
     for (const st of o.steps.slice(0, 10)) {
       const who = `${(st.names ?? []).map((n) => clean(n, 12)).join("・")}${st.due ? `${st.names?.length ? "・" : ""}${md(st.due, st.dueTime)}` : ""}`;
-      if (st.done) { stepBlocks.push({ type: "section", text: { type: "mrkdwn", text: `✅ ~${clean(st.title, 60)}~${who ? `　（${who}）` : ""}` } }); continue; }
+      if (st.done) {
+        // 2026-11-19 間違えて完了にした工程を取り消せる（確認の窓つき）
+        stepBlocks.push({ type: "section", text: { type: "mrkdwn", text: `✅ ~${clean(st.title, 60)}~${who ? `　（${who}）` : ""}` },
+          accessory: { type: "button", text: { type: "plain_text", text: "↩️ 取り消し", emoji: true }, action_id: STEP_REOPEN, value: JSON.stringify({ step_id: st.id }),
+            confirm: { title: { type: "plain_text", text: "完了を取り消しますか？" }, text: { type: "mrkdwn", text: `「${clean(st.title, 40)}」を未完了に戻します。` }, confirm: { type: "plain_text", text: "取り消す" }, deny: { type: "plain_text", text: "やめる" } } } });
+        continue;
+      }
       const sec: any = { type: "section", text: { type: "mrkdwn", text: `▫️ *${clean(st.title, 60)}*${who ? `\n担当・期限：${who}` : ""}${st.canComplete === false ? "\n📷 写真などが必要な工程です（管理システムの画面で完了）" : ""}` } };
       if (st.canComplete !== false) sec.accessory = { type: "button", style: "primary", text: { type: "plain_text", text: "✅ 完了", emoji: true }, action_id: STEP_DONE, value: JSON.stringify({ step_id: st.id }) };
       stepBlocks.push(sec);
@@ -422,4 +429,22 @@ export function commentModal(o: { taskId: string; title: string }): unknown {
         element: { type: "plain_text_input", action_id: "body", multiline: true, max_length: 1500 } },
     ],
   };
+}
+
+/** 次の担当者への通知（2026-11-19）。1 人に 1 通へまとめる。items＝その人の「次の番」の一覧（hq_slack_next_candidates の行）。短く・何が止まっていて・自分の工程がどれか・を出す */
+export type NextItem = { kind: string; task_title: string; step_title: string; step_due: string | null; days_over: number; prev_title: string | null; prev_names: string | null; url: string };
+export function nextNoticeMessage(items: NextItem[]): { text: string; blocks: unknown[] } {
+  const line = (x: NextItem) => {
+    const prev = `「${clean(x.prev_title, 30)}」${x.prev_names ? `（${clean(x.prev_names, 20)}）` : ""}`;
+    const mine = `あなたの「${clean(x.step_title, 30)}」${x.step_due ? `（期限 ${md(x.step_due)}）` : ""}は、その次です。`;
+    const head = x.kind === "next_ready" ? `前の工程${prev}が完了しました。あなたの番です：「${clean(x.step_title, 30)}」${x.step_due ? `（期限 ${md(x.step_due)}）` : ""}`
+      : x.kind === "next_today" ? `前の工程${prev}が、今日が期限です（まだ完了していません）。${mine}`
+      : `前の工程${prev}が、期限を ${Math.max(1, x.days_over)} 日過ぎています。${mine}`;
+    return `• *${clean(x.task_title, 50)}*\n　${head}　<${x.url}|開く>`;
+  };
+  const shown = items.slice(0, 5);
+  const allReady = items.every((x) => x.kind === "next_ready");
+  const title = allReady ? "あなたの番になった工程があります" : "前の工程が止まっています（次はあなたの工程）";
+  const text = `${allReady ? "▶" : "⏳"} *${title}*\n${shown.map(line).join("\n")}${items.length > shown.length ? `\nほか ${items.length - shown.length} 件` : ""}`;
+  return { text: `${title}（${items.length} 件）`, blocks: [{ type: "section", text: { type: "mrkdwn", text } }] };
 }

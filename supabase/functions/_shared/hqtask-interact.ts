@@ -3,7 +3,7 @@
 //   hqtask.task.edit → 編集フォーム（いまの値が入る）／hqtask.edit.modal → 保存＋スレッドに変更の記録・親とカードの更新・新しい担当者へ DM
 //   hqtask.step.done → 完了／hqtask.step.ack → 対応中
 import { AI_CREATE, AI_EDIT, AI_CANCEL, AI_CORP, draftCard, toDraft, toForm, isComplete, ensureChannelKey, type Draft } from "./hqtask-ai.ts";
-import { CORPS, COMMENT_OPEN, COMMENT_MODAL, commentModal, createModal, parseCreate, errorField, assignedMessage, assignedStepsMessage, markStepDone, parentMessage, taskCardMessage, completedBlocks, completionThreadText, stepsListModal, stepModal, parseStep, parseTaskEdit, parseCreateSteps, readForm, createFormModal, FORM_ADD, FORM_DEL, MAX_STEPS, STEPS_OPEN, STEP_PICK, STEP_ADD, STEP_MODAL, type StepRow, CREATE_OPEN, CREATE_OPEN_DETAIL, CREATE_MODAL, EDIT_ACTION, EDIT_MODAL, STEP_DONE, STEP_ACK, STEP_LINK } from "./hqtask-slack.ts";
+import { CORPS, COMMENT_OPEN, COMMENT_MODAL, commentModal, createModal, parseCreate, errorField, assignedMessage, assignedStepsMessage, markStepDone, parentMessage, taskCardMessage, completedBlocks, completionThreadText, stepsListModal, stepModal, parseStep, parseTaskEdit, parseCreateSteps, readForm, createFormModal, FORM_ADD, FORM_DEL, MAX_STEPS, STEPS_OPEN, STEP_PICK, STEP_ADD, STEP_MODAL, type StepRow, CREATE_OPEN, CREATE_OPEN_DETAIL, CREATE_MODAL, EDIT_ACTION, EDIT_MODAL, STEP_DONE, STEP_REOPEN, STEP_ACK, STEP_LINK } from "./hqtask-slack.ts";
 
 // deno-lint-ignore no-explicit-any
 type Ctx = { sb: any; payload: any; actor: { user_id: string; role: string; is_master: boolean; name: string }; notificationId: string | null; value: any };
@@ -326,6 +326,21 @@ export function hqtaskHandlers(d: Deps): Record<string, (c: Ctx) => Promise<Resp
         await refreshCard(sb, d.sendSlack, data.task_id, actor.name);
       })());
       return d.text("");
+    },
+    // 2026-11-19 チャンネルのカードの［↩️ 取り消し］: 完了にした工程を未完了に戻す（権限は DB 側 hq_slack_step_reopen が判定）。記録はスレッドへ・カードは作り直し
+    [STEP_REOPEN]: async ({ sb, payload, value, actor }) => {
+      const { data, error } = await sb.rpc("hq_slack_step_reopen", { p_slack_user_id: payload.user?.id, p_step: value?.step_id });
+      if (error) return d.ephemeral("取り消せませんでした: " + String(error.message).slice(0, 120), payload.response_url);
+      if (!data?.ok) return d.ephemeral(String(data?.message ?? "取り消せませんでした"), payload.response_url);
+      if (data.already) return d.ephemeral(String(data.message ?? "まだ完了していません"), payload.response_url);
+      d.waitUntil((async () => {
+        const key = await channelKeyOf(sb, payload.channel?.id);
+        const threadTs = payload.message?.thread_ts ?? payload.message?.ts;
+        if (key && threadTs) await d.sendSlack({ action: "send", channel_key: key, thread_ts: threadTs, text: `↩️ ${actor.name} が「${String(data.step_title ?? "工程").slice(0, 40)}」の完了を取り消しました（未完了に戻りました）`,
+          event: "hqtask_step_reopen_thread", source: "ef:slack-interact", dedupe_key: `hqtask_reopen_thread:${value?.step_id}:${threadTs}:${Date.now()}`, ref: { table: "hq_tasks", id: data.task_id } });
+        await refreshCard(sb, d.sendSlack, data.task_id, actor.name);
+      })());
+      return d.ephemeral(`↩️ 「${data.step_title ?? "工程"}」の完了を取り消しました。`, payload.response_url);
     },
     // 2026-11-18 チャンネルのカードの［💬 コメント］: 入力窓を開く → 送信でタスクのコメントに入れる（本人の権限で。見えないタスクには入れられない）
     [COMMENT_OPEN]: async ({ sb, payload, value }) => {

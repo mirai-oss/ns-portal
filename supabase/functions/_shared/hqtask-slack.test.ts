@@ -1,5 +1,5 @@
 import { assertEquals, assert } from "jsr:@std/assert@1";
-import { assignedStepsMessage, markStepDone, createFormModal, readForm, parseCreateSteps, stepsListModal, stepModal, parseStep, parseTaskEdit, completedBlocks, completionThreadText, reminderMessage, reminderHead, parseCreate, createModal, assignedMessage, taskCardMessage, parentMessage, createButtonMessage, type Candidate } from "./hqtask-slack.ts";
+import { assignedStepsMessage, markStepDone, createFormModal, readForm, parseCreateSteps, stepsListModal, stepModal, parseStep, parseTaskEdit, completedBlocks, completionThreadText, reminderMessage, reminderHead, parseCreate, createModal, assignedMessage, taskCardMessage, parentMessage, nextNoticeMessage, createButtonMessage, type Candidate } from "./hqtask-slack.ts";
 
 const base: Candidate = { recipient_id: "r", slack_user_id: "U0123456789", task_id: "t", step_id: "s", task_title: "請求書の確認", step_title: "対応する", due_date: "2026-11-20", kind: "today", days_over: 0, creator_id: "c", can_complete: true, url: "https://example.com/t" };
 
@@ -162,4 +162,24 @@ Deno.test("スレッドの詳細カード: 工程は期限が早い順（期限�
     steps: [{ title: "C", done: false, id: "3" }, { title: "B", done: false, id: "2", due: "2026-11-22" }, { title: "A", done: false, id: "1", due: "2026-11-20" }] });
   const txt = c.blocks.filter((b: any) => b.type === "section").map((b: any) => b.text.text).join("|");
   assert(txt.indexOf("*A*") < txt.indexOf("*B*") && txt.indexOf("*B*") < txt.indexOf("*C*"));
+});
+
+Deno.test("カード: 完了した工程に［↩️ 取り消し］（確認つき）／未完了には出ない", () => {
+  const c = taskCardMessage({ task_id: "t", title: "T", corp: "c", assigneeNames: [], due: "2026-11-30", creatorName: "x", url: "u",
+    steps: [{ title: "A", done: true, id: "1", due: "2026-11-20" }, { title: "B", done: false, id: "2", due: "2026-11-22" }] });
+  const re = c.blocks.filter((b: any) => b.accessory?.action_id === "hqtask.step.reopen") as any[];
+  assertEquals(re.length, 1);
+  assertEquals(JSON.parse(re[0].accessory.value).step_id, "1");
+  assert(re[0].accessory.confirm.title.text.includes("取り消"));
+});
+
+Deno.test("次の担当者への通知: 1 通にまとめる・短い・開くリンク・件数が多いと「ほか n 件」", () => {
+  const it = (k: string, n = 0) => ({ kind: k, task_title: "防火管理者の届け出", step_title: "提出", step_due: "2026-11-27", days_over: n, prev_title: "書類を集める", prev_names: "青山純", url: "https://x/y" });
+  const ready = nextNoticeMessage([it("next_ready")]);
+  const t = (ready.blocks as any[])[0].text.text as string;
+  assert(t.includes("あなたの番です") && t.includes("書類を集める") && t.includes("<https://x/y|開く>") && t.startsWith("▶"));
+  const over = (nextNoticeMessage([it("next_over", 4), it("next_today")]).blocks as any[])[0].text.text as string;
+  assert(over.startsWith("⏳") && over.includes("4 日過ぎています") && over.includes("今日が期限") && over.includes("その次です"));
+  const many = (nextNoticeMessage(Array.from({ length: 8 }, () => it("next_over", 1))).blocks as any[])[0].text.text as string;
+  assert(many.includes("ほか 3 件"));
 });
