@@ -13250,11 +13250,13 @@ function payrollRender(){
     const [y,m]=PAYROLL_STATE.yearMonth.split("-").map(Number);
     btn.disabled=true; btn.textContent="取得中…"; msg.className="err"; msg.textContent="";
     try{
-      const s=sess.get();
-      const r=await fetch(`${SUPA_URL}/functions/v1/smaregi-payroll-sync`,{
+      // 2026-11-18: 画面を長く開いたままだとトークンが切れて 401/403 になるため、切れていたら更新してもう一度だけ試す
+      const callSync=()=>{const s=sess.get();return fetch(`${SUPA_URL}/functions/v1/smaregi-payroll-sync`,{
         method:"POST",headers:{apikey:SUPA_KEY,Authorization:"Bearer "+(s?s.at:""),"Content-Type":"application/json"},
         body:JSON.stringify({year:y,month:m}),
-      });
+      })};
+      let r=await callSync();
+      if((r.status===401||r.status===403)&&await refresh()) r=await callSync();
       const j=await r.json().catch(()=>null);
       if(!j||!j.ok){ msg.textContent="取得エラー: "+((j&&j.error)||"不明なエラー"); return; }
       msg.className="err msg-ok"; msg.textContent=`取得しました（${j.syncedCount}名ぶん更新）。画面を更新します…`;

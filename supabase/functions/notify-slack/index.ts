@@ -132,6 +132,8 @@ async function doSend(sb: any, b: SendBody, actor: string) {
     if (dup && (dup.delivery_status === "sent" || dup.delivery_status === "updated")) {
       return json({ ok: true, notification_id: dup.id, slack_channel_id: dup.slack_channel_id, ts: dup.slack_ts, status: "duplicate" });
     }
+    // 2026-11-18: 失敗・未送信の行が残っているときは、新しい行を作らず同じ行で送り直す（新規に作ると dedupe_key の一意制約で書けず、再送が永久に止まっていた）
+    if (dup && !b.notification_id) b.notification_id = dup.id;
   }
 
   // 台帳の行を確保（DB からの呼び出しは notification_id 付きで来る＝既に queued 行がある）
