@@ -80,6 +80,15 @@ Deno.serve(async (req: Request) => {
     return json({ ok: !!r?.ok, notification_id: r?.notification_id ?? null, error: r?.ok ? null : String(r?.error ?? "") });
   }
 
+  // Slack の鍵（Bot Token）に付いている権限（スコープ）の名前だけを返す（鍵の値は出さない）。ファイル添付に files:read が要るかの確認用
+  if (body?.op === "slack_scopes") {
+    const t = Deno.env.get("SLACK_BOT_TOKEN") ?? "";
+    if (!t) return json({ ok: false, error: "SLACK_BOT_TOKEN 未設定" });
+    const r = await fetch("https://slack.com/api/auth.test", { method: "POST", headers: { Authorization: `Bearer ${t}` } });
+    const j = await r.json().catch(() => ({}));
+    return json({ ok: !!j?.ok, scopes: String(r.headers.get("x-oauth-scopes") ?? "").split(",").map((x) => x.trim()).filter(Boolean), error: j?.error ?? null });
+  }
+
   if (body?.op === "next_notices") {
     const kinds = Array.isArray(body?.kinds) && body.kinds.length ? body.kinds.map(String) : ["next_today", "next_over", "next_ready"];
     return json({ ok: true, op: "next_notices", ...(await runNext(sb, { kinds, dry: body?.dry_run === true, onlyRecipient: body?.only_recipient ? String(body.only_recipient) : null })) });

@@ -1,5 +1,5 @@
 import { assertEquals, assert } from "jsr:@std/assert@1";
-import { assignedStepsMessage, markStepDone, createFormModal, readForm, parseCreateSteps, stepsListModal, stepModal, parseStep, parseTaskEdit, completedBlocks, completionThreadText, reminderMessage, reminderHead, parseCreate, createModal, assignedMessage, taskCardMessage, parentMessage, nextNoticeMessage, createButtonMessage, type Candidate } from "./hqtask-slack.ts";
+import { assignedStepsMessage, markStepDone, createFormModal, readForm, parseCreateSteps, stepsListModal, stepModal, parseStep, parseTaskEdit, completedBlocks, completionThreadText, reminderMessage, reminderHead, parseCreate, createModal, assignedMessage, taskCardMessage, parentMessage, nextNoticeMessage, commentModal, createButtonMessage, type Candidate } from "./hqtask-slack.ts";
 
 const base: Candidate = { recipient_id: "r", slack_user_id: "U0123456789", task_id: "t", step_id: "s", task_title: "請求書の確認", step_title: "対応する", due_date: "2026-11-20", kind: "today", days_over: 0, creator_id: "c", can_complete: true, url: "https://example.com/t" };
 
@@ -182,4 +182,11 @@ Deno.test("次の担当者への通知: 1 通にまとめる・短い・開く�
   assert(over.startsWith("⏳") && over.includes("4 日過ぎています") && over.includes("今日が期限") && over.includes("その次です"));
   const many = (nextNoticeMessage(Array.from({ length: 8 }, () => it("next_over", 1))).blocks as any[])[0].text.text as string;
   assert(many.includes("ほか 3 件"));
+});
+
+Deno.test("コメントの窓: 相手は選ぶだけ（multi_users_select）／添付欄は withFiles のときだけ", () => {
+  const ids = (m: any) => m.blocks.filter((b: any) => b.type === "input").map((b: any) => `${b.block_id}:${b.element.type}`);
+  assertEquals(ids(commentModal({ taskId: "t", title: "T" })), ["body:plain_text_input", "mentions:multi_users_select"]);
+  const w = ids(commentModal({ taskId: "t", title: "T", withFiles: true }));
+  assertEquals(w[2], "files:file_input");
 });

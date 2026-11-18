@@ -419,14 +419,17 @@ export function markStepDone(orig: any[] | undefined, stepId: string, by: string
 }
 
 /** チャンネルのカードの［💬 コメント］で開く入力窓（送信するとタスクのコメントに入る。@名前 を書くとその人に通知） */
-export function commentModal(o: { taskId: string; title: string }): unknown {
+export function commentModal(o: { taskId: string; title: string; withFiles?: boolean }): unknown {
   return {
     type: "modal", callback_id: COMMENT_MODAL, private_metadata: JSON.stringify({ task_id: o.taskId }),
     title: { type: "plain_text", text: "コメントを入れる" }, submit: { type: "plain_text", text: "送信" }, close: { type: "plain_text", text: "閉じる" },
     blocks: [
       { type: "section", text: { type: "mrkdwn", text: `*${clean(o.title, 100)}*` } },
-      { type: "input", block_id: "body", label: { type: "plain_text", text: "コメント" }, hint: { type: "plain_text", text: "相手に知らせたいときは「@名前」（管理システムの名前のとおり）を書いてください" },
-        element: { type: "plain_text_input", action_id: "body", multiline: true, max_length: 1500 } },
+      { type: "input", block_id: "body", label: { type: "plain_text", text: "コメント" }, element: { type: "plain_text_input", action_id: "body", multiline: true, max_length: 1500 } },
+      // 2026-11-19 相手は文字で書かずに「選ぶ」だけ（選んだ人の名前を、管理システムの名前で「@名前」としてコメントの頭に付ける。書き間違いでメンションが外れない）
+      { type: "input", block_id: "mentions", optional: true, label: { type: "plain_text", text: "相手に知らせる（選ぶだけ・複数可）" }, element: { type: "multi_users_select", action_id: "mentions", placeholder: { type: "plain_text", text: "知らせたい人を選ぶ" } } },
+      // 添付（写真・PDF）。Slack アプリに files:read の権限があるときだけ出す
+      ...(o.withFiles ? [{ type: "input", block_id: "files", optional: true, label: { type: "plain_text", text: "添付（写真・PDF・5 つまで）" }, element: { type: "file_input", action_id: "files", max_files: 5, filetypes: ["jpg", "jpeg", "png", "gif", "heic", "pdf"] } }] : []),
     ],
   };
 }

@@ -111,6 +111,44 @@ async function markDraftCreated(d: Deps, sb: any, draftId: string, taskId: strin
   if (dr?.card_notification_id) await d.sendSlack({ action: "update", notification_id: dr.card_notification_id, text: `✅ 本部タスクを作成しました：${title}`, blocks: [{ type: "section", text: { type: "mrkdwn", text: `✅ *本部タスクを作成しました*：${title}` } }] });
 }
 
+// Bot Token の権限に files:read があるか（コメントの添付の入力欄を出すかの判断）。10 分だけ覚える
+let _scopeCache: { at: number; ok: boolean } | null = null;
+async function hasFilesScope(): Promise<boolean> {
+  if (_scopeCache && Date.now() - _scopeCache.at < 600_000) return _scopeCache.ok;
+  let ok = false;
+  try {
+    const r = await fetch("https://slack.com/api/auth.test", { method: "POST", headers: { Authorization: `Bearer ${Deno.env.get("SLACK_BOT_TOKEN")}` } });
+    ok = String(r.headers.get("x-oauth-scopes") ?? "").split(",").map((x) => x.trim()).includes("files:read");
+  } catch { ok = false; }
+  _scopeCache = { at: Date.now(), ok };
+  return ok;
+}
+// Slack に上げられた写真・PDF を、管理システムのコメントの添付として保存する（写真と同じ置き場 report-photos・本人のフォルダ）。保存できた件数を返す
+// deno-lint-ignore no-explicit-any
+async function saveCommentFiles(sb: any, o: { files: any[]; commentId: string; taskId: string; userId: string }): Promise<number> {
+  let n = 0;
+  for (const f of o.files) {
+    try {
+      const mime = String(f?.mimetype ?? "");
+      if (!(mime.startsWith("image/") || mime === "application/pdf")) continue;
+      const url = String(f?.url_private_download ?? f?.url_private ?? "");
+      if (!url.startsWith("https://files.slack.com/")) continue;
+      if (Number(f?.size ?? 0) > 15 * 1024 * 1024) continue;
+      const res = await fetch(url, { headers: { Authorization: `Bearer ${Deno.env.get("SLACK_BOT_TOKEN")}` } });
+      if (!res.ok || !(res.headers.get("content-type") ?? "").match(/^(image\/|application\/pdf)/)) continue;
+      const bytes = new Uint8Array(await res.arrayBuffer());
+      if (bytes.length > 15 * 1024 * 1024) continue;
+      const ext = (String(f?.name ?? "").split(".").pop() ?? "").toLowerCase().replace(/[^a-z0-9]/g, "") || (mime === "application/pdf" ? "pdf" : "jpg");
+      const path = `${o.userId}/hqtask_slack_${Date.now()}_${Math.random().toString(36).slice(2, 7)}.${ext}`;
+      const up = await sb.storage.from("report-photos").upload(path, bytes, { contentType: mime, upsert: false });
+      if (up.error) continue;
+      const ins = await sb.from("hq_task_comment_files").insert({ comment_id: o.commentId, task_id: o.taskId, storage_path: path, file_name: String(f?.name ?? "").slice(0, 120), created_by: o.userId });
+      if (!ins.error) n++;
+    } catch { /* 1 件ずつ。失敗した分は数えない */ }
+  }
+  return n;
+}
+
 export function hqtaskHandlers(d: Deps): Record<string, (c: Ctx) => Promise<Response>> {
   const openCreate = async ({ payload, actor }: Ctx) => {
     if (!canCreate(actor)) return d.ephemeral("タスクを作れるのは、本部・社長・店長だけです。", payload.response_url);
@@ -346,20 +384,35 @@ export function hqtaskHandlers(d: Deps): Record<string, (c: Ctx) => Promise<Resp
     [COMMENT_OPEN]: async ({ sb, payload, value }) => {
       const { data, error } = await sb.rpc("hq_slack_task_get", { p_task: value?.task_id });
       if (error || !data?.ok) return d.ephemeral(String(data?.message ?? "開けませんでした"), payload.response_url);
-      return await d.openModal(payload.trigger_id, commentModal({ taskId: value.task_id, title: data.title }));
+      return await d.openModal(payload.trigger_id, commentModal({ taskId: value.task_id, title: data.title, withFiles: await hasFilesScope() }));
     },
     [COMMENT_MODAL]: async ({ sb, payload, actor }) => {
       const taskId = metaOf(payload).task_id;
-      const body = String(payload.view?.state?.values?.body?.body?.value ?? "").trim();
+      const vals = payload.view?.state?.values ?? {};
+      let body = String(vals?.body?.body?.value ?? "").trim();
       if (!body) return d.json({ response_action: "errors", errors: { body: "コメントを入力してください" } });
+      // 選んだ相手（Slack の人）→ 管理システムの名前の「@名前」を頭に付ける（すでに本文にあれば足さない）。管理システムに紐づいていない人は付けられない
+      const picked = ((vals?.mentions?.mentions?.selected_users ?? []) as string[]).filter((u) => /^[UW][A-Z0-9]+$/.test(u)).slice(0, 10);
+      const unlinked: string[] = [];
+      if (picked.length) {
+        const { data: links } = await sb.from("user_slack").select("user_id,slack_user_id").in("slack_user_id", picked);
+        const { data: us } = await sb.from("users").select("id,name").eq("is_active", true).in("id", (links ?? []).map((l: any) => l.user_id));
+        const nm = new Map((us ?? []).map((u: any) => [u.id, String(u.name ?? "").replace(/[\s\u3000]+/g, "")]));
+        const names: string[] = [];
+        for (const sid of picked) { const l = (links ?? []).find((x: any) => x.slack_user_id === sid); const n = l ? nm.get(l.user_id) : null; if (n) { if (!body.includes("@" + n)) names.push("@" + n); } else unlinked.push(sid); }
+        if (names.length) body = `${names.join(" ")} ${body}`.slice(0, 2000);
+      }
       const { data, error } = await sb.rpc("hq_slack_comment_add", { p_slack_user_id: payload.user?.id, p_task: taskId, p_body: body });
       if (error) return d.json({ response_action: "errors", errors: { body: "送信できませんでした: " + String(error.message).slice(0, 120) } });
       if (!data?.ok) return d.json({ response_action: "errors", errors: { body: String(data?.message ?? "送信できませんでした") } });
+      const files = ((vals?.files?.files?.files ?? []) as any[]).slice(0, 5);
       d.waitUntil((async () => {
+        const saved = files.length ? await saveCommentFiles(sb, { files, commentId: data.comment_id, taskId, userId: actor.user_id }) : 0;
         const { data: g } = await sb.rpc("hq_slack_task_get", { p_task: taskId });
         const key = await channelKeyOf(sb, g?.card_channel);
-        if (key && g?.parent_ts) await d.sendSlack({ action: "send", channel_key: key, thread_ts: g.parent_ts, text: `💬 ${actor.name}：${body.slice(0, 300)}${body.length > 300 ? "…" : ""}`, event: "hqtask_comment_thread", source: "ef:slack-interact",
+        if (key && g?.parent_ts) await d.sendSlack({ action: "send", channel_key: key, thread_ts: g.parent_ts, text: `💬 ${actor.name}：${body.slice(0, 300)}${body.length > 300 ? "…" : ""}${saved ? `\n📎 添付 ${saved} 件（管理システムで見られます）` : ""}${files.length > saved ? `\n⚠️ 添付 ${files.length - saved} 件は保存できませんでした` : ""}`, event: "hqtask_comment_thread", source: "ef:slack-interact",
           dedupe_key: `hqtask_comment_thread:${data.comment_id}`, ref: { table: "hq_tasks", id: taskId } });
+        if (unlinked.length) { /* 管理システムに紐づいていない人は、名前を付けられない（コメントは入っている） */ }
       })());
       return d.json({ response_action: "clear" });
     },
