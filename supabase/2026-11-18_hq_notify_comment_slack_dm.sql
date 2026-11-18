@@ -83,7 +83,7 @@ begin
             perform set_config('ns.notify_event', 'hqtask_comment_mention', true);
             perform notify_route_send('slack', 'user:' || v_uid::text,
               '💬 ' || coalesce(v_from, '誰か') || 'さんが、あなたをメンションしました' || E'\n' || '【' || v_task.title || '】' || E'\n' || left(replace(v_com.body, E'\n', ' '), 200)
-              || case when v_hist is not null then E'\n\n—— これまでのコメント（新しい順ではなく古い順・直近5件）——\n' || v_hist else '' end
+              || case when v_hist is not null then E'\n\n—— これまでのコメント（古い順・直近5件）——\n' || v_hist else '' end
               || E'\n\n▶ タスクを開く: ' || v_url);
           end if;
         end if;
