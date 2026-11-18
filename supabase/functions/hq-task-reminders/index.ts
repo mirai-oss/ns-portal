@@ -9,6 +9,7 @@
 // 認証: service_role（Bearer）か x-notify-secret。デプロイ: supabase functions deploy hq-task-reminders --no-verify-jwt --project-ref uuvsxzhpxtghojoubjcc --yes
 // =============================================================
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { callModel, jstToday as aiToday, systemPrompt, toDraft, type RosterEntry } from "../_shared/hqtask-ai.ts";
 import { reminderMessage, createButtonMessage, parentMessage, type Candidate } from "../_shared/hqtask-slack.ts";
 
 const json = (o: unknown, status = 200) => new Response(JSON.stringify(o), { status, headers: { "Content-Type": "application/json" } });
@@ -49,6 +50,24 @@ Deno.serve(async (req: Request) => {
     const m = createButtonMessage();
     const r = await sendSlack({ action: "send", channel_key: key, text: m.text, blocks: m.blocks, event: "hqtask_create_button", source: "ef:hq-task-reminders", dedupe_key: `hqtask_create_button:${key}:${jstDate()}` });
     return json({ ok: !!r?.ok, notification_id: r?.notification_id ?? null, error: r?.ok ? null : String(r?.error ?? "") });
+  }
+
+  // 2026-11-18 @アプリ の文章→下書きの試験（Slack へは何も送らない・何も保存しない）。text を AI に渡して、下書きと、失敗したときの理由（鍵は出さない）を返す
+  if (body?.op === "ai_selftest") {
+    const apiKey = Deno.env.get("ANTHROPIC_API_KEY") ?? "";
+    if (!apiKey) return json({ ok: false, error: "ANTHROPIC_API_KEY 未設定" });
+    const { data: set } = await sb.from("app_settings").select("value").eq("key", "hq_task_slack").maybeSingle();
+    const { data: ros } = await sb.from("user_slack").select("slack_user_id,user_id");
+    const { data: us } = await sb.from("users").select("id,name,role").eq("is_active", true).in("id", (ros ?? []).map((r: any) => r.user_id));
+    const byId = new Map((us ?? []).map((u: any) => [u.id, u]));
+    const roster: RosterEntry[] = (ros ?? []).filter((r: any) => byId.has(r.user_id)).map((r: any) => ({ slack_user_id: r.slack_user_id, name: String((byId.get(r.user_id) as any).name ?? "").replace(/[\s　]+/g, ""), role: (byId.get(r.user_id) as any).role }));
+    let err = "";
+    const today = aiToday();
+    const out = await callModel({ apiKey, model: String(body?.model || set?.value?.ai_model || "claude-haiku-5-5"), system: systemPrompt(today, roster), user: `次の文章から、本部タスクの下書きを作ってください。\n\n${String(body?.text ?? "")}`, onError: (e) => { err = e; } });
+    if (!out) return json({ ok: false, error: err || "unknown" });
+    const d = toDraft(out.json, roster, today);
+    const nm = new Map(roster.map((r) => [r.slack_user_id, r.name]));
+    return json({ ok: true, tokens: [out.inTokens, out.outTokens], draft: { ...d, steps: d.steps.map((x) => ({ ...x, users: x.users.map((u) => nm.get(u) ?? "?") })) } });
   }
 
   // 2026-11-18 親投稿（チャンネル）を、いまのタスクの状態（2 行目＝文字と太字）に合わせて書き換える。社内の Slack の投稿を直すだけ（応募者・外部には送らない）

@@ -96,18 +96,18 @@ export function draftCard(d: Draft, draftId: string, names: Map<string, string>)
 }
 
 /** Anthropic API を呼んで JSON を得る（SDK なしの HTTP・サーバー用）。失敗は null */
-export async function callModel(o: { apiKey: string; model: string; system: string; user: string }): Promise<{ json: unknown; inTokens: number; outTokens: number } | null> {
+export async function callModel(o: { apiKey: string; model: string; system: string; user: string; onError?: (e: string) => void }): Promise<{ json: unknown; inTokens: number; outTokens: number } | null> {
   try {
     const res = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST", headers: { "content-type": "application/json", "x-api-key": o.apiKey, "anthropic-version": "2023-06-01" },
       body: JSON.stringify({ model: o.model, max_tokens: 2000, system: o.system, messages: [{ role: "user", content: o.user }], output_config: { effort: "low", format: { type: "json_schema", schema: SCHEMA } } }),
     });
-    if (!res.ok) return null;
+    if (!res.ok) { o.onError?.(`http ${res.status}: ${(await res.text()).replace(/sk-[A-Za-z0-9_-]+/g, "sk-…").slice(0, 300)}`); return null; }
     const j = await res.json();
-    if (j?.stop_reason === "refusal") return null;
+    if (j?.stop_reason === "refusal") { o.onError?.("refusal"); return null; }
     const text = (j?.content ?? []).filter((b: any) => b?.type === "text").map((b: any) => b.text).join("");
     return { json: JSON.parse(text), inTokens: Number(j?.usage?.input_tokens ?? 0), outTokens: Number(j?.usage?.output_tokens ?? 0) };
-  } catch (_e) { return null; }
+  } catch (e) { o.onError?.(`exception: ${String((e as Error)?.message ?? e).slice(0, 200)}`); return null; }
 }
 
 /** Slack のチャンネル ID → 通知の宛先名。登録が無ければ自動で登録する（@メンションされた場所に、カードを返すため） */
