@@ -12,6 +12,7 @@ export const STEP_ACK = "hqtask.step.ack";
 export const STEP_LINK = "hqtask.link";
 export const COMMENT_OPEN = "hqtask.comment.open";   // チャンネルのカードの［💬 コメント］（2026-11-18）
 export const COMMENT_MODAL = "hqtask.comment.modal";
+export const COMMENT_DELETE = "hqtask.comment.delete";   // スレッドのコメントの［🗑 削除］（2026-11-19）
 
 export type Candidate = {
   recipient_id: string; slack_user_id: string; task_id: string; step_id: string; task_title: string; step_title: string; due_date: string;

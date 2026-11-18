@@ -3,7 +3,7 @@
 //   hqtask.task.edit → 編集フォーム（いまの値が入る）／hqtask.edit.modal → 保存＋スレッドに変更の記録・親とカードの更新・新しい担当者へ DM
 //   hqtask.step.done → 完了／hqtask.step.ack → 対応中
 import { AI_CREATE, AI_EDIT, AI_CANCEL, AI_CORP, draftCard, toDraft, toForm, isComplete, ensureChannelKey, type Draft } from "./hqtask-ai.ts";
-import { CORPS, COMMENT_OPEN, COMMENT_MODAL, commentModal, createModal, parseCreate, errorField, assignedMessage, assignedStepsMessage, markStepDone, parentMessage, taskCardMessage, completedBlocks, completionThreadText, stepsListModal, stepModal, parseStep, parseTaskEdit, parseCreateSteps, readForm, createFormModal, FORM_ADD, FORM_DEL, MAX_STEPS, STEPS_OPEN, STEP_PICK, STEP_ADD, STEP_MODAL, type StepRow, CREATE_OPEN, CREATE_OPEN_DETAIL, CREATE_MODAL, EDIT_ACTION, EDIT_MODAL, STEP_DONE, STEP_REOPEN, STEP_ACK, STEP_LINK } from "./hqtask-slack.ts";
+import { CORPS, COMMENT_OPEN, COMMENT_MODAL, COMMENT_DELETE, commentModal, createModal, parseCreate, errorField, assignedMessage, assignedStepsMessage, markStepDone, parentMessage, taskCardMessage, completedBlocks, completionThreadText, stepsListModal, stepModal, parseStep, parseTaskEdit, parseCreateSteps, readForm, createFormModal, FORM_ADD, FORM_DEL, MAX_STEPS, STEPS_OPEN, STEP_PICK, STEP_ADD, STEP_MODAL, type StepRow, CREATE_OPEN, CREATE_OPEN_DETAIL, CREATE_MODAL, EDIT_ACTION, EDIT_MODAL, STEP_DONE, STEP_REOPEN, STEP_ACK, STEP_LINK } from "./hqtask-slack.ts";
 
 // deno-lint-ignore no-explicit-any
 type Ctx = { sb: any; payload: any; actor: { user_id: string; role: string; is_master: boolean; name: string }; notificationId: string | null; value: any };
@@ -386,49 +386,70 @@ export function hqtaskHandlers(d: Deps): Record<string, (c: Ctx) => Promise<Resp
       if (error || !data?.ok) return d.ephemeral(String(data?.message ?? "開けませんでした"), payload.response_url);
       return await d.openModal(payload.trigger_id, commentModal({ taskId: value.task_id, title: data.title, withFiles: await hasFilesScope() }));
     },
+    // 2026-11-19 送信を押したら、すぐ窓を閉じる（Slack は 3 秒以内の返事を待つ。重い処理を待つと「Slack になかなか接続できません」と出て、実際は送れているのに何度も送ってしまっていた）。
+    //   中身が空のときだけ、その場でエラー。ほかの処理は裏で行い、失敗したときは本人に DM で知らせる。同じ内容を 30 秒以内に同じ人が同じタスクへ送っていたら、二重に入れない
     [COMMENT_MODAL]: async ({ sb, payload, actor }) => {
       const taskId = metaOf(payload).task_id;
       const vals = payload.view?.state?.values ?? {};
-      let body = String(vals?.body?.body?.value ?? "").trim();
-      if (!body) return d.json({ response_action: "errors", errors: { body: "コメントを入力してください" } });
-      // 選んだ相手（Slack の人）→ 管理システムの名前の「@名前」を頭に付ける（すでに本文にあれば足さない）。管理システムに紐づいていない人は付けられない
-      const picked = ((vals?.mentions?.mentions?.selected_users ?? []) as string[]).filter((u) => /^[UW][A-Z0-9]+$/.test(u)).slice(0, 10);
-      const unlinked: string[] = [];
-      if (picked.length) {
-        const { data: links } = await sb.from("user_slack").select("user_id,slack_user_id").in("slack_user_id", picked);
-        const { data: us } = await sb.from("users").select("id,name").eq("is_active", true).in("id", (links ?? []).map((l: any) => l.user_id));
-        const nm = new Map((us ?? []).map((u: any) => [u.id, String(u.name ?? "").replace(/[\s\u3000]+/g, "")]));
-        const names: string[] = [];
-        for (const sid of picked) { const l = (links ?? []).find((x: any) => x.slack_user_id === sid); const n = l ? nm.get(l.user_id) : null; if (n) { if (!body.includes("@" + n)) names.push("@" + n); } else unlinked.push(sid); }
-        if (names.length) body = `${names.join(" ")} ${body}`.slice(0, 2000);
-      }
-      const { data, error } = await sb.rpc("hq_slack_comment_add", { p_slack_user_id: payload.user?.id, p_task: taskId, p_body: body });
-      if (error) return d.json({ response_action: "errors", errors: { body: "送信できませんでした: " + String(error.message).slice(0, 120) } });
-      if (!data?.ok) return d.json({ response_action: "errors", errors: { body: String(data?.message ?? "送信できませんでした") } });
-      const files = ((vals?.files?.files?.files ?? []) as any[]).slice(0, 5);
+      const body0 = String(vals?.body?.body?.value ?? "").trim();
+      if (!body0) return d.json({ response_action: "errors", errors: { body: "コメントを入力してください" } });
+      const slackUser = payload.user?.id;
       d.waitUntil((async () => {
-        const saved = files.length ? await saveCommentFiles(sb, { files, commentId: data.comment_id, taskId, userId: actor.user_id }) : [];
-        const { data: g } = await sb.rpc("hq_slack_task_get", { p_task: taskId });
-        const key = await channelKeyOf(sb, g?.card_channel);
-        // 2026-11-19 スレッドにも写真を出す（画像はその場で表示・クリックで大きく開く）。各ファイルの名前のリンクは「ずっと使える」管理システム経由（ログインして開く）。画像の表示用の 24 時間リンクは、その場の表示にだけ使う
-        const blocksOut: unknown[] = [];
-        const imgs: unknown[] = []; const links: string[] = [];
-        for (const f of saved) {
-          const nm = (f.name || "添付").replace(/[<>|]/g, " ").slice(0, 50);
-          links.push(`<${urlOf(taskId)}&file=${f.id}|${f.mime.startsWith("image/") ? "🖼" : "📄"} ${nm}>`);   // ずっと使えるリンク（管理システムにログインして開く）
-          if (!f.mime.startsWith("image/")) continue;
-          const { data: su } = await sb.storage.from("report-photos").createSignedUrl(f.path, 86400);   // その場の表示用（24 時間）
-          if (su?.signedUrl) imgs.push({ type: "image", image_url: su.signedUrl, alt_text: nm, title: { type: "plain_text", text: nm } });
-        }
-        const head = `💬 ${actor.name}：${body.slice(0, 300)}${body.length > 300 ? "…" : ""}`;
-        const tail = `${saved.length ? `\n📎 添付 ${saved.length} 件　${links.join("　")}` : ""}${files.length > saved.length ? `\n⚠️ 添付 ${files.length - saved.length} 件は保存できませんでした` : ""}`;
-        blocksOut.push({ type: "section", text: { type: "mrkdwn", text: head + tail } }, ...imgs.slice(0, 5));
-        if (saved.length) blocksOut.push({ type: "actions", block_id: "hqtask_comment_files", elements: [{ type: "button", text: { type: "plain_text", text: "管理システムで開く", emoji: true }, url: urlOf(taskId), action_id: STEP_LINK }] });
-        if (key && g?.parent_ts) await d.sendSlack({ action: "send", channel_key: key, thread_ts: g.parent_ts, text: head + (saved.length ? `（添付 ${saved.length} 件）` : ""), blocks: blocksOut, event: "hqtask_comment_thread", source: "ef:slack-interact",
-          dedupe_key: `hqtask_comment_thread:${data.comment_id}`, ref: { table: "hq_tasks", id: taskId } });
-        if (unlinked.length) { /* 管理システムに紐づいていない人は、名前を付けられない（コメントは入っている） */ }
+        const fail = async (why: string) => { await d.sendSlack({ action: "send", channel_key: `user:${actor.user_id}`, text: `⚠️ コメントを送れませんでした：${why}`, event: "hqtask_comment_failed", source: "ef:slack-interact" }); };
+        try {
+          let body = body0;
+          // 選んだ相手（Slack の人）→ 管理システムの名前の「@名前」を頭に付ける（すでに本文にあれば足さない）。管理システムに紐づいていない人は付けられない
+          const picked = ((vals?.mentions?.mentions?.selected_users ?? []) as string[]).filter((u) => /^[UW][A-Z0-9]+$/.test(u)).slice(0, 10);
+          if (picked.length) {
+            const { data: links } = await sb.from("user_slack").select("user_id,slack_user_id").in("slack_user_id", picked);
+            const { data: us } = await sb.from("users").select("id,name").eq("is_active", true).in("id", (links ?? []).map((l: any) => l.user_id));
+            const nm = new Map((us ?? []).map((u: any) => [u.id, String(u.name ?? "").replace(/[\s\u3000]+/g, "")]));
+            const names: string[] = [];
+            for (const sid of picked) { const l = (links ?? []).find((x: any) => x.slack_user_id === sid); const n = l ? nm.get(l.user_id) : null; if (n && !body.includes("@" + n)) names.push("@" + n); }
+            if (names.length) body = `${names.join(" ")} ${body}`.slice(0, 2000);
+          }
+          // 二重送信の防止（同じ人・同じタスク・同じ内容を 30 秒以内）
+          const since = new Date(Date.now() - 30_000).toISOString();
+          const { data: dup } = await sb.from("hq_task_comments").select("id").eq("task_id", taskId).eq("created_by", actor.user_id).eq("body", body).gte("created_at", since).limit(1);
+          if ((dup ?? []).length) return;
+          const { data, error } = await sb.rpc("hq_slack_comment_add", { p_slack_user_id: slackUser, p_task: taskId, p_body: body });
+          if (error) return await fail(String(error.message).slice(0, 120));
+          if (!data?.ok) return await fail(String(data?.message ?? "送信できませんでした"));
+          const files = ((vals?.files?.files?.files ?? []) as any[]).slice(0, 5);
+          const saved = files.length ? await saveCommentFiles(sb, { files, commentId: data.comment_id, taskId, userId: actor.user_id }) : [];
+          const { data: g } = await sb.rpc("hq_slack_task_get", { p_task: taskId });
+          const key = await channelKeyOf(sb, g?.card_channel);
+          // スレッドにも写真を出す（画像はその場で表示・クリックで大きく開く）。各ファイルの名前のリンクは「ずっと使える」管理システム経由（ログインして開く）。画像の表示用の 24 時間リンクは、その場の表示にだけ使う
+          const imgs: unknown[] = []; const links: string[] = [];
+          for (const f of saved) {
+            const nm = (f.name || "添付").replace(/[<>|]/g, " ").slice(0, 50);
+            links.push(`<${urlOf(taskId)}&file=${f.id}|${f.mime.startsWith("image/") ? "🖼" : "📄"} ${nm}>`);
+            if (!f.mime.startsWith("image/")) continue;
+            const { data: su } = await sb.storage.from("report-photos").createSignedUrl(f.path, 86400);
+            if (su?.signedUrl) imgs.push({ type: "image", image_url: su.signedUrl, alt_text: nm, title: { type: "plain_text", text: nm } });
+          }
+          const head = `💬 ${actor.name}：${body.slice(0, 300)}${body.length > 300 ? "…" : ""}`;
+          const tail = `${saved.length ? `\n📎 添付 ${saved.length} 件　${links.join("　")}` : ""}${files.length > saved.length ? `\n⚠️ 添付 ${files.length - saved.length} 件は保存できませんでした` : ""}`;
+          const elements: unknown[] = [];
+          if (saved.length) elements.push({ type: "button", text: { type: "plain_text", text: "管理システムで開く", emoji: true }, url: urlOf(taskId), action_id: STEP_LINK });
+          // ［🗑 削除］: 押すと、このコメントを管理システムからも消し、このメッセージも消す（書いた本人・本部・マスターだけ。確認つき）
+          elements.push({ type: "button", text: { type: "plain_text", text: "🗑 削除", emoji: true }, action_id: COMMENT_DELETE, value: JSON.stringify({ comment_id: data.comment_id }),
+            confirm: { title: { type: "plain_text", text: "このコメントを削除しますか？" }, text: { type: "mrkdwn", text: "管理システムのコメントも一緒に消えます（元に戻せません）。" }, confirm: { type: "plain_text", text: "削除する" }, deny: { type: "plain_text", text: "やめる" } } });
+          const blocksOut: unknown[] = [{ type: "section", text: { type: "mrkdwn", text: head + tail } }, ...imgs.slice(0, 5), { type: "actions", block_id: "hqtask_comment_actions", elements }];
+          if (key && g?.parent_ts) await d.sendSlack({ action: "send", channel_key: key, thread_ts: g.parent_ts, text: head + (saved.length ? `（添付 ${saved.length} 件）` : ""), blocks: blocksOut, event: "hqtask_comment_thread", source: "ef:slack-interact",
+            dedupe_key: `hqtask_comment_thread:${data.comment_id}`, ref: { table: "hq_tasks", id: taskId } });
+        } catch (e) { await fail(String(e).slice(0, 100)); }
       })());
       return d.json({ response_action: "clear" });
+    },
+    // 2026-11-19 スレッドのコメントの［🗑 削除］: 管理システムのコメントを消す（権限は DB 側 hq_slack_comment_delete が判定）→ 成功したら、この Slack のメッセージも消す
+    [COMMENT_DELETE]: async ({ sb, payload, value }) => {
+      const { data, error } = await sb.rpc("hq_slack_comment_delete", { p_slack_user_id: payload.user?.id, p_comment: value?.comment_id });
+      if (error) return d.ephemeral("削除できませんでした: " + String(error.message).slice(0, 120), payload.response_url);
+      if (!data?.ok) return d.ephemeral(String(data?.message ?? "削除できませんでした"), payload.response_url);
+      const ch = payload.channel?.id ?? payload.container?.channel_id; const ts = payload.message?.ts ?? payload.container?.message_ts;
+      if (ch && ts) d.waitUntil((async () => { await fetch("https://slack.com/api/chat.delete", { method: "POST", headers: { "Content-Type": "application/json; charset=utf-8", Authorization: `Bearer ${Deno.env.get("SLACK_BOT_TOKEN")}` }, body: JSON.stringify({ channel: ch, ts }) }).catch(() => {}); })());
+      return d.text("");
     },
     [STEP_ACK]: async ({ sb, payload, value }) => {
       const { data, error } = await sb.rpc("hq_slack_step_ack", { p_slack_user_id: payload.user?.id, p_step: value?.step_id });
