@@ -123,10 +123,10 @@ async function hasFilesScope(): Promise<boolean> {
   _scopeCache = { at: Date.now(), ok };
   return ok;
 }
-// Slack に上げられた写真・PDF を、管理システムのコメントの添付として保存する（写真と同じ置き場 report-photos・本人のフォルダ）。保存できた件数を返す
+// Slack に上げられた写真・PDF を、管理システムのコメントの添付として保存する（写真と同じ置き場 report-photos・本人のフォルダ）。保存できたものを返す
 // deno-lint-ignore no-explicit-any
-async function saveCommentFiles(sb: any, o: { files: any[]; commentId: string; taskId: string; userId: string }): Promise<number> {
-  let n = 0;
+async function saveCommentFiles(sb: any, o: { files: any[]; commentId: string; taskId: string; userId: string }): Promise<{ path: string; name: string; mime: string }[]> {
+  const saved: { path: string; name: string; mime: string }[] = [];
   for (const f of o.files) {
     try {
       const mime = String(f?.mimetype ?? "");
@@ -143,10 +143,10 @@ async function saveCommentFiles(sb: any, o: { files: any[]; commentId: string; t
       const up = await sb.storage.from("report-photos").upload(path, bytes, { contentType: mime, upsert: false });
       if (up.error) continue;
       const ins = await sb.from("hq_task_comment_files").insert({ comment_id: o.commentId, task_id: o.taskId, storage_path: path, file_name: String(f?.name ?? "").slice(0, 120), created_by: o.userId });
-      if (!ins.error) n++;
+      if (!ins.error) saved.push({ path, name: String(f?.name ?? "").slice(0, 120), mime });
     } catch { /* 1 件ずつ。失敗した分は数えない */ }
   }
-  return n;
+  return saved;
 }
 
 export function hqtaskHandlers(d: Deps): Record<string, (c: Ctx) => Promise<Response>> {
@@ -407,10 +407,23 @@ export function hqtaskHandlers(d: Deps): Record<string, (c: Ctx) => Promise<Resp
       if (!data?.ok) return d.json({ response_action: "errors", errors: { body: String(data?.message ?? "送信できませんでした") } });
       const files = ((vals?.files?.files?.files ?? []) as any[]).slice(0, 5);
       d.waitUntil((async () => {
-        const saved = files.length ? await saveCommentFiles(sb, { files, commentId: data.comment_id, taskId, userId: actor.user_id }) : 0;
+        const saved = files.length ? await saveCommentFiles(sb, { files, commentId: data.comment_id, taskId, userId: actor.user_id }) : [];
         const { data: g } = await sb.rpc("hq_slack_task_get", { p_task: taskId });
         const key = await channelKeyOf(sb, g?.card_channel);
-        if (key && g?.parent_ts) await d.sendSlack({ action: "send", channel_key: key, thread_ts: g.parent_ts, text: `💬 ${actor.name}：${body.slice(0, 300)}${body.length > 300 ? "…" : ""}${saved ? `\n📎 添付 ${saved} 件（管理システムで見られます）` : ""}${files.length > saved ? `\n⚠️ 添付 ${files.length - saved} 件は保存できませんでした` : ""}`, event: "hqtask_comment_thread", source: "ef:slack-interact",
+        // 2026-11-19 スレッドにも写真を出す（画像はその場で表示・クリックで大きく開く／PDF はリンク）。ファイルは非公開の置き場のまま、24 時間だけ有効な見る用リンクを使う。ずっと見られる場所は管理システム
+        const blocksOut: unknown[] = [];
+        const imgs: unknown[] = []; const pdfs: string[] = [];
+        for (const f of saved) {
+          const { data: su } = await sb.storage.from("report-photos").createSignedUrl(f.path, 86400);
+          if (!su?.signedUrl) continue;
+          if (f.mime.startsWith("image/")) imgs.push({ type: "image", image_url: su.signedUrl, alt_text: (f.name || "添付").slice(0, 100), title: { type: "plain_text", text: (f.name || "添付").slice(0, 100) } });
+          else pdfs.push(`<${su.signedUrl}|📄 ${(f.name || "PDF").replace(/[<>|]/g, " ").slice(0, 60)}>`);
+        }
+        const head = `💬 ${actor.name}：${body.slice(0, 300)}${body.length > 300 ? "…" : ""}`;
+        const tail = `${saved.length ? `\n📎 添付 ${saved.length} 件${pdfs.length ? `　${pdfs.join("　")}` : ""}（ずっと見る場所は管理システム）` : ""}${files.length > saved.length ? `\n⚠️ 添付 ${files.length - saved.length} 件は保存できませんでした` : ""}`;
+        blocksOut.push({ type: "section", text: { type: "mrkdwn", text: head + tail } }, ...imgs.slice(0, 5));
+        if (saved.length) blocksOut.push({ type: "actions", block_id: "hqtask_comment_files", elements: [{ type: "button", text: { type: "plain_text", text: "管理システムで開く", emoji: true }, url: urlOf(taskId), action_id: STEP_LINK }] });
+        if (key && g?.parent_ts) await d.sendSlack({ action: "send", channel_key: key, thread_ts: g.parent_ts, text: head + (saved.length ? `（添付 ${saved.length} 件）` : ""), blocks: blocksOut, event: "hqtask_comment_thread", source: "ef:slack-interact",
           dedupe_key: `hqtask_comment_thread:${data.comment_id}`, ref: { table: "hq_tasks", id: taskId } });
         if (unlinked.length) { /* 管理システムに紐づいていない人は、名前を付けられない（コメントは入っている） */ }
       })());
