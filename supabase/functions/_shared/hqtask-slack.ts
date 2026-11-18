@@ -9,6 +9,8 @@ export const CREATE_MODAL = "hqtask.create.modal";
 export const STEP_DONE = "hqtask.step.done";
 export const STEP_ACK = "hqtask.step.ack";
 export const STEP_LINK = "hqtask.link";
+export const COMMENT_OPEN = "hqtask.comment.open";   // チャンネルのカードの［💬 コメント］（2026-11-18）
+export const COMMENT_MODAL = "hqtask.comment.modal";
 
 export type Candidate = {
   recipient_id: string; slack_user_id: string; task_id: string; step_id: string; task_title: string; step_title: string; due_date: string;
@@ -124,19 +126,33 @@ export function parentMessage(o: { title: string; due: string; dueTime?: string 
 
 /** スレッドの詳細カード。「編集」ボタンから Slack の中で直せる */
 export function taskCardMessage(o: { task_id: string; title: string; corp: string; assigneeNames: string[]; due: string; dueTime?: string | null; memo?: string | null; notes?: string | null;
-  steps: { title: string; done: boolean; names?: string[]; due?: string | null; dueTime?: string | null }[]; creatorName: string; urgent?: boolean; url: string }): { text: string; blocks: unknown[] } {
+  steps: { title: string; done: boolean; names?: string[]; due?: string | null; dueTime?: string | null; id?: string; canComplete?: boolean }[]; creatorName: string; urgent?: boolean; url: string }): { text: string; blocks: unknown[] } {
   const lines = [`${o.urgent ? "🔥 " : ""}*${clean(o.title, 100)}*`, `法人：${clean(o.corp, 20)}　担当：${o.assigneeNames.map((n) => clean(n, 20)).join("・") || "—"}`, `期限：${md(o.due, o.dueTime)}　依頼：${clean(o.creatorName, 30)}`];
   if (o.memo && clean(o.memo, 300)) lines.push(`詳細：${clean(o.memo, 300)}`);
   if (o.notes && clean(o.notes, 300)) lines.push(`⚠️ 注意事項：${clean(o.notes, 300)}`);
-  if (o.steps.length > 1 || (o.steps[0] && o.steps[0].title !== "対応する")) {
+  // 2026-11-18 工程の id が分かるとき: 工程ごとに［✅ 完了］ボタン（担当者だけが押せる。権限は DB 側 hq_slack_step_complete が判定）を出す
+  const perStep = o.steps.length > 0 && o.steps.every((s) => !!s.id);
+  if (!perStep && (o.steps.length > 1 || (o.steps[0] && o.steps[0].title !== "対応する"))) {
     lines.push("工程：");
     for (const s of o.steps) lines.push(`${s.done ? "✅" : "▫️"} ${clean(s.title, 40)}${s.names?.length || s.due ? `（${(s.names ?? []).map((n) => clean(n, 12)).join("・")}${s.due ? `・${md(s.due, s.dueTime)}` : ""}）` : ""}`);
+  }
+  const stepBlocks: unknown[] = [];
+  if (perStep) {
+    for (const st of o.steps.slice(0, 10)) {
+      const who = `${(st.names ?? []).map((n) => clean(n, 12)).join("・")}${st.due ? `${st.names?.length ? "・" : ""}${md(st.due, st.dueTime)}` : ""}`;
+      if (st.done) { stepBlocks.push({ type: "section", text: { type: "mrkdwn", text: `✅ ~${clean(st.title, 60)}~${who ? `　（${who}）` : ""}` } }); continue; }
+      const sec: any = { type: "section", text: { type: "mrkdwn", text: `▫️ *${clean(st.title, 60)}*${who ? `\n担当・期限：${who}` : ""}${st.canComplete === false ? "\n📷 写真などが必要な工程です（管理システムの画面で完了）" : ""}` } };
+      if (st.canComplete !== false) sec.accessory = { type: "button", style: "primary", text: { type: "plain_text", text: "✅ 完了", emoji: true }, action_id: STEP_DONE, value: JSON.stringify({ step_id: st.id }) };
+      stepBlocks.push(sec);
+    }
   }
   return {
     text: `本部タスクの詳細：${clean(o.title, 100)}`,
     blocks: [
       { type: "section", text: { type: "mrkdwn", text: lines.join("\n") } },
+      ...stepBlocks,
       { type: "actions", block_id: "hqtask_card", elements: [
+        ...(perStep ? [{ type: "button", text: { type: "plain_text", text: "💬 コメント", emoji: true }, action_id: COMMENT_OPEN, value: JSON.stringify({ task_id: o.task_id }) }] : []),
         { type: "button", text: { type: "plain_text", text: "✏️ 編集", emoji: true }, action_id: EDIT_ACTION, value: JSON.stringify({ task_id: o.task_id }) },
         { type: "button", text: { type: "plain_text", text: "🧩 工程を編集", emoji: true }, action_id: STEPS_OPEN, value: JSON.stringify({ task_id: o.task_id }) },
         { type: "button", text: { type: "plain_text", text: "管理システムで開く", emoji: true }, url: o.url, action_id: STEP_LINK },
@@ -371,4 +387,17 @@ export function markStepDone(orig: any[] | undefined, stepId: string, by: string
   const allDone = remaining === 0;
   if (allDone) out.unshift({ type: "section", text: { type: "mrkdwn", text: "🎉 *あなたの工程は、すべて完了しました*" } });
   return { blocks: out, allDone };
+}
+
+/** チャンネルのカードの［💬 コメント］で開く入力窓（送信するとタスクのコメントに入る。@名前 を書くとその人に通知） */
+export function commentModal(o: { taskId: string; title: string }): unknown {
+  return {
+    type: "modal", callback_id: COMMENT_MODAL, private_metadata: JSON.stringify({ task_id: o.taskId }),
+    title: { type: "plain_text", text: "コメントを入れる" }, submit: { type: "plain_text", text: "送信" }, close: { type: "plain_text", text: "閉じる" },
+    blocks: [
+      { type: "section", text: { type: "mrkdwn", text: `*${clean(o.title, 100)}*` } },
+      { type: "input", block_id: "body", label: { type: "plain_text", text: "コメント" }, hint: { type: "plain_text", text: "相手に知らせたいときは「@名前」（管理システムの名前のとおり）を書いてください" },
+        element: { type: "plain_text_input", action_id: "body", multiline: true, max_length: 1500 } },
+    ],
+  };
 }

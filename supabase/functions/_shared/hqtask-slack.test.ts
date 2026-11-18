@@ -134,3 +134,12 @@ Deno.test("担当者の DM: 工程ごとに「✅ 完了」ボタン／押した
   assert(r2.allDone && JSON.stringify(r2.blocks[0]).includes("すべて完了"));
   assertEquals(markStepDone(m.blocks, "zzz", "青山", "x"), null);   // ボタンの無いメッセージ（単独通知）は従来の完了表示へ
 });
+
+Deno.test("チャンネルのカード: 工程の id があれば、未完了の工程ごとに［✅ 完了］と、［💬 コメント］のボタンが出る（写真が要る工程は完了ボタンなし）", () => {
+  const c: any = taskCardMessage({ task_id: "t", title: "T", corp: "SK", assigneeNames: ["青山"], due: "2026-11-20", creatorName: "中山", url: "https://x",
+    steps: [{ title: "A", done: true, id: "s1" }, { title: "B", done: false, id: "s2", canComplete: true }, { title: "C", done: false, id: "s3", canComplete: false }] });
+  const acc = c.blocks.filter((b: any) => b.accessory?.action_id === "hqtask.step.done").map((b: any) => JSON.parse(b.accessory.value).step_id);
+  assertEquals(acc, ["s2"]);
+  const labels = c.blocks.filter((b: any) => b.type === "actions").flatMap((b: any) => b.elements.map((e: any) => e.text.text));
+  assert(labels.some((t: string) => t.includes("コメント")));
+});

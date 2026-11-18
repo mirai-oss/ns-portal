@@ -3,7 +3,7 @@
 //   hqtask.task.edit → 編集フォーム（いまの値が入る）／hqtask.edit.modal → 保存＋スレッドに変更の記録・親とカードの更新・新しい担当者へ DM
 //   hqtask.step.done → 完了／hqtask.step.ack → 対応中
 import { AI_CREATE, AI_EDIT, AI_CANCEL, toDraft, toForm, isComplete, ensureChannelKey, type Draft } from "./hqtask-ai.ts";
-import { createModal, parseCreate, errorField, assignedMessage, assignedStepsMessage, markStepDone, parentMessage, taskCardMessage, completedBlocks, completionThreadText, stepsListModal, stepModal, parseStep, parseTaskEdit, parseCreateSteps, readForm, createFormModal, FORM_ADD, FORM_DEL, MAX_STEPS, STEPS_OPEN, STEP_PICK, STEP_ADD, STEP_MODAL, type StepRow, CREATE_OPEN, CREATE_OPEN_DETAIL, CREATE_MODAL, EDIT_ACTION, EDIT_MODAL, STEP_DONE, STEP_ACK, STEP_LINK } from "./hqtask-slack.ts";
+import { COMMENT_OPEN, COMMENT_MODAL, commentModal, createModal, parseCreate, errorField, assignedMessage, assignedStepsMessage, markStepDone, parentMessage, taskCardMessage, completedBlocks, completionThreadText, stepsListModal, stepModal, parseStep, parseTaskEdit, parseCreateSteps, readForm, createFormModal, FORM_ADD, FORM_DEL, MAX_STEPS, STEPS_OPEN, STEP_PICK, STEP_ADD, STEP_MODAL, type StepRow, CREATE_OPEN, CREATE_OPEN_DETAIL, CREATE_MODAL, EDIT_ACTION, EDIT_MODAL, STEP_DONE, STEP_ACK, STEP_LINK } from "./hqtask-slack.ts";
 
 // deno-lint-ignore no-explicit-any
 type Ctx = { sb: any; payload: any; actor: { user_id: string; role: string; is_master: boolean; name: string }; notificationId: string | null; value: any };
@@ -12,6 +12,9 @@ type Deps = {
   ephemeral: (msg: string, responseUrl?: string) => Response; openModal: (triggerId: string, view: unknown) => Promise<Response>;
   waitUntil: (p: Promise<unknown>) => void; sendSlack: (b: Record<string, unknown>) => Promise<any>;
 };
+// ボタンを押した場所が DM（D で始まる）ではなくチャンネルか
+// deno-lint-ignore no-explicit-any
+const inChannel = (payload: any) => { const id = String(payload?.channel?.id ?? payload?.container?.channel_id ?? ""); return id !== "" && !id.startsWith("D"); };
 const canCreate = (a: Ctx["actor"]) => a.is_master || ["CEO", "HQ", "TENCHO"].includes(a.role);
 const urlOf = (taskId: string) => `https://mirai-oss.github.io/ns-portal/tasks.html?task=${taskId}`;
 // deno-lint-ignore no-explicit-any
@@ -49,7 +52,7 @@ async function refreshCard(sb: any, send: Deps["sendSlack"], taskId: string, edi
     const pm = parentMessage({ title: g.title, due: g.due, dueTime: g.due_time });
     await send({ action: "update", notification_id: g.parent_notification_id, text: pm.text, blocks: pm.blocks });
   }
-  const steps = ((sg?.steps ?? []) as StepRow[]).map((s) => ({ title: s.title, done: s.done, names: s.assignee_names, due: s.due, dueTime: s.due_time }));
+  const steps = ((sg?.steps ?? []) as StepRow[]).map((s) => ({ title: s.title, done: s.done, names: s.assignee_names, due: s.due, dueTime: s.due_time, id: s.id, canComplete: !s.photo }));
   if (g.card_notification_id) {
     const { data: cr } = await sb.from("users").select("name").eq("id", g.creator_id).maybeSingle();
     const cm = taskCardMessage({ task_id: taskId, title: g.title, corp: g.corp, assigneeNames: [...new Set(((sg?.steps ?? []) as StepRow[]).filter((s) => !s.done).flatMap((s) => s.assignee_names))], due: g.due, dueTime: g.due_time, memo: g.memo, notes: g.notes,
@@ -87,7 +90,7 @@ async function afterCreate(d: Deps, sb: any, actor: { user_id: string; name: str
       if (r1?.ok && r1.ts) {
         const allIds = [...per.keys()];
         const nameMap = new Map<string, string>(); (await namesOf(sb, allIds)).forEach((n, i) => nameMap.set(allIds[i], n));
-        const steps = made.map((s) => ({ title: s.title, done: false, names: s.assignee_ids.map((u) => nameMap.get(u) ?? "—"), due: s.due, dueTime: s.due_time }));
+        const steps = made.map((s) => ({ title: s.title, done: false, names: s.assignee_ids.map((u) => nameMap.get(u) ?? "—"), due: s.due, dueTime: s.due_time, id: s.step_id, canComplete: !v.photo }));
         const cm = taskCardMessage({ task_id: data.task_id, title: v.title, corp: v.corp, assigneeNames: allIds.map((u) => nameMap.get(u) ?? "—"), due: data.due, dueTime: data.due_time, memo: v.memo, notes: v.notes, steps, creatorName: String(data.creator_name ?? actor.name), urgent: v.urgent, url });
         const r2 = await d.sendSlack({ action: "send", channel_key: key, thread_ts: r1.ts, text: cm.text, blocks: cm.blocks, event: "hqtask_card", source: "ef:slack-interact", dedupe_key: `hqtask_card:${data.task_id}`, ref: { table: "hq_tasks", id: data.task_id } });
         await sb.rpc("hq_slack_task_card_set", { p_task: data.task_id, p_channel: r1.slack_channel_id ?? meta.channel ?? "", p_ts: r1.ts, p_parent: r1.notification_id, p_card: r2?.notification_id ?? null });
@@ -268,6 +271,22 @@ export function hqtaskHandlers(d: Deps): Record<string, (c: Ctx) => Promise<Resp
       if (!data?.ok) return d.ephemeral(String(data?.message ?? "完了にできませんでした"), payload.response_url);
       const at = new Date().toLocaleString("ja-JP", { timeZone: "Asia/Tokyo", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false });
       const { data: st } = await sb.from("hq_task_steps").select("title").eq("id", value?.step_id).maybeSingle();
+      // 2026-11-18 チャンネルのカードから押されたとき（DM ではない）: カードは DB の最新から作り直し、完了の記録はチャンネルのスレッドへ
+      if (inChannel(payload)) {
+        if (data.already) return d.ephemeral("この工程はすでに完了しています。", payload.response_url);
+        if (data.task_id) d.waitUntil((async () => {
+          const { data: tk } = await sb.from("hq_tasks").select("title,due_date,due_time,created_by").eq("id", data.task_id).maybeSingle();
+          const key = await channelKeyOf(sb, payload.channel?.id);
+          const threadTs = payload.message?.thread_ts ?? payload.message?.ts;
+          if (tk && key && threadTs) {
+            const cn = tk.created_by ? (await namesOf(sb, [tk.created_by]))[0] : null;
+            await d.sendSlack({ action: "send", channel_key: key, thread_ts: threadTs, text: completionThreadText({ stepTitle: st?.title ?? null, title: tk.title, due: tk.due_date, dueTime: tk.due_time, creatorName: cn, by: actor.name, at, url: urlOf(data.task_id) }),
+              event: "hqtask_step_done_thread", source: "ef:slack-interact", dedupe_key: `hqtask_done_thread:${value?.step_id}:${threadTs}`, ref: { table: "hq_tasks", id: data.task_id } });
+          }
+          await refreshCard(sb, d.sendSlack, data.task_id, actor.name);
+        })());
+        return d.ephemeral(`✅ 「${st?.title ?? "工程"}」を完了にしました。`, payload.response_url);
+      }
       // 工程ごとのボタンがあるメッセージ: 押された工程だけを「✅ 完了」にして、ほかの工程のボタンは残す。1 つだけのメッセージ: 内容は残して完了の印を付けボタンを外す
       if (payload.response_url && !data.already) {
         const per = markStepDone(payload.message?.blocks, String(value?.step_id), actor.name, at);
@@ -285,6 +304,27 @@ export function hqtaskHandlers(d: Deps): Record<string, (c: Ctx) => Promise<Resp
         await refreshCard(sb, d.sendSlack, data.task_id, actor.name);
       })());
       return d.text("");
+    },
+    // 2026-11-18 チャンネルのカードの［💬 コメント］: 入力窓を開く → 送信でタスクのコメントに入れる（本人の権限で。見えないタスクには入れられない）
+    [COMMENT_OPEN]: async ({ sb, payload, value }) => {
+      const { data, error } = await sb.rpc("hq_slack_task_get", { p_task: value?.task_id });
+      if (error || !data?.ok) return d.ephemeral(String(data?.message ?? "開けませんでした"), payload.response_url);
+      return await d.openModal(payload.trigger_id, commentModal({ taskId: value.task_id, title: data.title }));
+    },
+    [COMMENT_MODAL]: async ({ sb, payload, actor }) => {
+      const taskId = metaOf(payload).task_id;
+      const body = String(payload.view?.state?.values?.body?.body?.value ?? "").trim();
+      if (!body) return d.json({ response_action: "errors", errors: { body: "コメントを入力してください" } });
+      const { data, error } = await sb.rpc("hq_slack_comment_add", { p_slack_user_id: payload.user?.id, p_task: taskId, p_body: body });
+      if (error) return d.json({ response_action: "errors", errors: { body: "送信できませんでした: " + String(error.message).slice(0, 120) } });
+      if (!data?.ok) return d.json({ response_action: "errors", errors: { body: String(data?.message ?? "送信できませんでした") } });
+      d.waitUntil((async () => {
+        const { data: g } = await sb.rpc("hq_slack_task_get", { p_task: taskId });
+        const key = await channelKeyOf(sb, g?.card_channel);
+        if (key && g?.parent_ts) await d.sendSlack({ action: "send", channel_key: key, thread_ts: g.parent_ts, text: `💬 ${actor.name}：${body.slice(0, 300)}${body.length > 300 ? "…" : ""}`, event: "hqtask_comment_thread", source: "ef:slack-interact",
+          dedupe_key: `hqtask_comment_thread:${data.comment_id}`, ref: { table: "hq_tasks", id: taskId } });
+      })());
+      return d.json({ response_action: "clear" });
     },
     [STEP_ACK]: async ({ sb, payload, value }) => {
       const { data, error } = await sb.rpc("hq_slack_step_ack", { p_slack_user_id: payload.user?.id, p_step: value?.step_id });
