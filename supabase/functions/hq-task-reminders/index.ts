@@ -82,7 +82,10 @@ Deno.serve(async (req: Request) => {
     const ledger = new Map(((led ?? []) as any[]).map((r) => [r.id, r]));
     let done = 0, failed = 0, same = 0, gone = 0, cardsDone = 0;
     // 台帳の最後の表示（blocks）と同じか。同じなら Slack へ送らない
-    const unchanged = (nid: string, blocks: unknown[]) => { const lr = ledger.get(nid); const cur = (lr?.payload?.updated_blocks ?? lr?.payload?.blocks); return JSON.stringify(cur ?? null) === JSON.stringify(blocks); };
+    // DB（jsonb）は項目の並びを入れ替えて保存するので、項目名を並べ直した形で比べる
+    // deno-lint-ignore no-explicit-any
+    const canon = (v: any): any => Array.isArray(v) ? v.map(canon) : v && typeof v === "object" ? Object.fromEntries(Object.keys(v).sort().map((k) => [k, canon(v[k])])) : v;
+    const unchanged = (nid: string, blocks: unknown[]) => { const lr = ledger.get(nid); const cur = (lr?.payload?.updated_blocks ?? lr?.payload?.blocks); return JSON.stringify(canon(cur ?? null)) === JSON.stringify(canon(blocks)); };
     const isGone = (nid: string) => { const lr = ledger.get(nid); return lr?.delivery_status === "failed" && lr?.error === "message_not_found"; };
     for (const l of (logs ?? []) as any[]) {
       if (onlyChanged && (!l.parent_notification_id || isGone(l.parent_notification_id)) && (!l.card_notification_id || isGone(l.card_notification_id))) { gone++; continue; }
