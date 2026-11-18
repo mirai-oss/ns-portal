@@ -277,6 +277,50 @@ Deno.serve(async (req) => {
       return json({ ok: true, contract_id: C, people_count: people.length, wage_apply_field_names: keys, people });
     }
 
+    // 2026-11-18 固定残業代の書き込みの実測（社長承認）。テスト従業員（スマレジ 381・氏名が「テスト」）の、将来の月（2027-02-01）の月給の行だけを使う。
+    //   1 回の呼び出しで 1 手だけ実行し、その行を読み直して、固定残業代の項目だけを返す（管理システムの DB には書かない）。
+    //   step: create（rules は body.rules・既定は法定内残業だけ）／put_plain（fixedWage なしで PUT）／put_empty_rules（rules: []）／put_null（fixedWage: null）／put_rules（body.rules で PUT）／read／delete
+    if (body.action === "wage_fixed_trial") {
+      const nsec = (Deno.env.get("NOTIFY_SLACK_SECRET") ?? "").trim();
+      const bySecret = !!nsec && (req.headers.get("x-notify-secret") ?? "").trim() === nsec;
+      if (!isAdmin && !bySecret) return json({ ok: false, error: "forbidden" }, 403);
+      const sid = "381"; const TRIAL_DATE = "2027-02-01";
+      const sb = svc();
+      const { data: lk } = await sb.from("employee_smaregi_links").select("user_id").eq("contract_id", C).eq("smaregi_staff_id", sid).is("effective_to", null).maybeSingle();
+      const { data: tu } = lk ? await sb.from("users").select("name").eq("id", lk.user_id).maybeSingle() : { data: null };
+      if (!tu || !/テスト/.test(String(tu.name))) return json({ ok: false, error: "テスト従業員ではないため実行しません" }, 400);
+      const token = await getToken(C);
+      const read = async () => {
+        const r = await api(C, token, `/staffs/${sid}`); const raw = await r.json().catch(() => null); const st = Array.isArray(raw) ? raw[0] : raw;
+        return (st?.wageApply ?? []).filter((w: any) => Number(w.division) === 2 && String(w.effectiveDate ?? "").slice(0, 10) === TRIAL_DATE).map((w: any) => ({
+          id: String(w.wageApplyId), wage: Number(w.wage), flag: w.fixedOvertimeWageFlag ?? null, amount: w.fixedOvertimeWage ?? null,
+          flags: [w.fixedWageStatutoryOvertimeFlag, w.fixedWageMidnightFlag, w.fixedWagePrescribedHolidayFlag, w.fixedWageStatutoryHolidayFlag, w.fixedWageMonth45HourOvertimeFlag, w.fixedWageMonth60HourOvertimeFlag].map((x: any) => x ?? null) }));
+      };
+      const step = String(body.step ?? "read"); const wage = Number.isInteger(body.wage) ? body.wage : 200000; const amount = Number.isInteger(body.amount) ? body.amount : 30000;
+      const rules = Array.isArray(body.rules) ? body.rules : ["statutoryOvertime"];
+      const fw = (r: string[]) => ({ amount, rules: r.map((x) => ({ ruleType: x })) });
+      let res: { status: number; text: string } | null = null;
+      if (step === "create") {
+        const rr = await api(C, token, `/staffs/${sid}/wage_apply`, { method: "POST", body: JSON.stringify({ division: 2, effectiveDate: TRIAL_DATE, wage, fixedWage: fw(rules) }) });
+        res = { status: rr.status, text: (await rr.text().catch(() => "")).slice(0, 400) };
+      } else if (["put_plain", "put_empty_rules", "put_null", "put_rules"].includes(step)) {
+        const applyId = String(body.apply_id ?? ""); const cur = (await read()).find((w: any) => w.id === applyId);
+        if (!cur) return json({ ok: false, error: "試験用の行が見つかりません（apply_id を確認）" }, 400);
+        const b: Record<string, unknown> = { division: 2, effectiveDate: TRIAL_DATE, wage };
+        if (step === "put_empty_rules") b.fixedWage = { amount, rules: [] };
+        if (step === "put_null") b.fixedWage = null;
+        if (step === "put_rules") b.fixedWage = fw(rules);
+        const rr = await api(C, token, `/staffs/${sid}/wage_apply/${encodeURIComponent(applyId)}`, { method: "PUT", body: JSON.stringify(b) });
+        res = { status: rr.status, text: (await rr.text().catch(() => "")).slice(0, 400) };
+      } else if (step === "delete") {
+        const applyId = String(body.apply_id ?? ""); const cur = (await read()).find((w: any) => w.id === applyId);
+        if (!cur) return json({ ok: false, error: "試験用の行が見つかりません（apply_id を確認）" }, 400);
+        const rr = await api(C, token, `/staffs/${sid}/wage_apply/${encodeURIComponent(applyId)}`, { method: "DELETE" });
+        res = { status: rr.status, text: (await rr.text().catch(() => "")).slice(0, 200) };
+      }
+      return json({ ok: true, step, result: res, trial_rows: await read() });
+    }
+
     if (body.action === "test") {
       if (!isAdmin) return json({ ok: false, error: "forbidden" }, 403);
       const token = await getToken(C);
