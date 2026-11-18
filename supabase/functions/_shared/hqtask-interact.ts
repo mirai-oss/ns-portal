@@ -2,8 +2,8 @@
 //   hqtask.create.open → フォーム／hqtask.create.modal → タスク作成＋担当者へ DM＋（ボタンを押したチャンネルに）親投稿とスレッドの詳細カード
 //   hqtask.task.edit → 編集フォーム（いまの値が入る）／hqtask.edit.modal → 保存＋スレッドに変更の記録・親とカードの更新・新しい担当者へ DM
 //   hqtask.step.done → 完了／hqtask.step.ack → 対応中
-import { AI_CREATE, AI_EDIT, AI_CANCEL, toDraft, toForm, isComplete, ensureChannelKey, type Draft } from "./hqtask-ai.ts";
-import { COMMENT_OPEN, COMMENT_MODAL, commentModal, createModal, parseCreate, errorField, assignedMessage, assignedStepsMessage, markStepDone, parentMessage, taskCardMessage, completedBlocks, completionThreadText, stepsListModal, stepModal, parseStep, parseTaskEdit, parseCreateSteps, readForm, createFormModal, FORM_ADD, FORM_DEL, MAX_STEPS, STEPS_OPEN, STEP_PICK, STEP_ADD, STEP_MODAL, type StepRow, CREATE_OPEN, CREATE_OPEN_DETAIL, CREATE_MODAL, EDIT_ACTION, EDIT_MODAL, STEP_DONE, STEP_ACK, STEP_LINK } from "./hqtask-slack.ts";
+import { AI_CREATE, AI_EDIT, AI_CANCEL, AI_CORP, draftCard, toDraft, toForm, isComplete, ensureChannelKey, type Draft } from "./hqtask-ai.ts";
+import { CORPS, COMMENT_OPEN, COMMENT_MODAL, commentModal, createModal, parseCreate, errorField, assignedMessage, assignedStepsMessage, markStepDone, parentMessage, taskCardMessage, completedBlocks, completionThreadText, stepsListModal, stepModal, parseStep, parseTaskEdit, parseCreateSteps, readForm, createFormModal, FORM_ADD, FORM_DEL, MAX_STEPS, STEPS_OPEN, STEP_PICK, STEP_ADD, STEP_MODAL, type StepRow, CREATE_OPEN, CREATE_OPEN_DETAIL, CREATE_MODAL, EDIT_ACTION, EDIT_MODAL, STEP_DONE, STEP_ACK, STEP_LINK } from "./hqtask-slack.ts";
 
 // deno-lint-ignore no-explicit-any
 type Ctx = { sb: any; payload: any; actor: { user_id: string; role: string; is_master: boolean; name: string }; notificationId: string | null; value: any };
@@ -142,6 +142,25 @@ export function hqtaskHandlers(d: Deps): Record<string, (c: Ctx) => Promise<Resp
       if (!dr || dr.status !== "open") return d.ephemeral("この下書きは、すでに使われたか、やめられています。", payload.response_url);
       if (dr.requester_id !== actor.user_id) return d.ephemeral("直せるのは、@アプリ にメンションした本人だけです。", payload.response_url);
       return await d.openModal(payload.trigger_id, createModal({ mode: "create", form: toForm(dr.draft as Draft), meta: { channel: dr.channel_id, thread_ts: dr.thread_ts, draft_id: dr.id } }));
+    },
+    // 下書きカードの［法人を選ぶ］: 選んだ法人を下書きに入れ、カードを書き換える（そろえば［この内容で作成する］が出る）
+    [AI_CORP]: async ({ sb, payload, actor }) => {
+      let sel: { draft_id?: string; corp?: string } = {};
+      try { sel = JSON.parse(payload.actions?.[0]?.selected_option?.value ?? "{}"); } catch { /* 下の確認で止まる */ }
+      const { data: dr } = await sb.from("hq_slack_ai_draft").select("*").eq("id", sel.draft_id).maybeSingle();
+      if (!dr || dr.status !== "open") return d.ephemeral("この下書きは、すでに使われたか、やめられています。", payload.response_url);
+      if (dr.requester_id !== actor.user_id) return d.ephemeral("選べるのは、@アプリ にメンションした本人だけです。", payload.response_url);
+      if (!(CORPS as readonly string[]).includes(String(sel.corp))) return d.ephemeral("法人を選び直してください。", payload.response_url);
+      const dd = { ...(dr.draft as Draft), corp: String(sel.corp) }; dd.missing = (dd.missing ?? []).filter((m: string) => m !== "法人");
+      await sb.from("hq_slack_ai_draft").update({ draft: dd }).eq("id", dr.id);
+      const slackIds = [...new Set(dd.steps.flatMap((s) => s.users))];
+      const { data: links } = await sb.from("user_slack").select("user_id,slack_user_id").in("slack_user_id", slackIds.length ? slackIds : ["_"]);
+      const { data: us } = await sb.from("users").select("id,name").in("id", (links ?? []).map((l: any) => l.user_id));
+      const nm = new Map((us ?? []).map((u: any) => [u.id, String(u.name ?? "").replace(/[\s　]+/g, "")]));
+      const names = new Map((links ?? []).map((l: any) => [l.slack_user_id, nm.get(l.user_id) ?? "—"]));
+      const card = draftCard(dd, dr.id, names as Map<string, string>);
+      if (dr.card_notification_id) await d.sendSlack({ action: "update", notification_id: dr.card_notification_id, text: card.text, blocks: card.blocks });
+      return d.text("");
     },
     [AI_CANCEL]: async ({ sb, payload, value, actor }) => {
       const { data: dr } = await sb.from("hq_slack_ai_draft").select("*").eq("id", value?.draft_id).maybeSingle();

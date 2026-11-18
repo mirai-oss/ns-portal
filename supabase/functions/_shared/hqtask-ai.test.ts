@@ -25,6 +25,7 @@ Deno.test("下書き: 全部そろえば作成できる／工程が複数のと�
   assert(!isComplete(two) && two.missing.includes("工程名"));
   const nocorp = toDraft({ title: "T", corp: "不明な法人", memo: "", notes: "", urgent: false, missing: [], steps: [{ title: "", assignee_slack_ids: ["U0000000001"], due: "2026-11-20", time: null }] }, roster, today);
   assertEquals(nocorp.corp, null); assert(nocorp.missing.includes("法人") && !isComplete(nocorp));
+  assert(!toDraft({ title: "T", corp: "SK", missing: ["時刻（完了の時刻）", "担当者"], steps: [] }, roster, today).missing.some((m: string) => m.includes("時刻")));   // 時刻は任意＝足りない項目に出さない
   assertEquals(toDraft({}, roster, today).steps.length, 1);   // 壊れた返答でも落ちない
 });
 Deno.test("下書きカード: 作成ボタンは全部そろったときだけ／直す・やめるは常に", () => {
@@ -33,7 +34,7 @@ Deno.test("下書きカード: 作成ボタンは全部そろったときだけ�
   const ok = toDraft({ title: "T", corp: "SK", memo: "", notes: "", urgent: false, missing: [], steps: [{ title: "", assignee_slack_ids: ["U0000000001"], due: "2026-11-20", time: null }] }, roster, today);
   assertEquals(ids(draftCard(ok, "d1", names)), ["hqtask.ai.create", "hqtask.ai.edit", "hqtask.ai.cancel"]);
   const ng = toDraft({ title: "T" }, roster, today);
-  assertEquals(ids(draftCard(ng, "d1", names)), ["hqtask.ai.edit", "hqtask.ai.cancel"]);
+  assertEquals(ids(draftCard(ng, "d1", names)), ["hqtask.ai.corp", "hqtask.ai.edit", "hqtask.ai.cancel"]);   // 法人が未決のときだけ［法人を選ぶ］が先頭に付く
   assert(JSON.stringify(draftCard(ng, "d1", names)).includes("決められなかった項目"));
   assertEquals(toForm(ok).steps[0].users, ["U0000000001"]);
 });
