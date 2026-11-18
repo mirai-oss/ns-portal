@@ -33,10 +33,10 @@ comment on table hqtask_comment_slack_sent is '本部タスクのコメントの
 
 -- 最初は社長1人だけ ON（到着確認用）。全員にするときは only_user_ids を [] にする（別の SQL・社長の承認のあと）
 insert into app_settings (key, value)
-select 'hqtask_comment_slack_dm', jsonb_build_object('enabled', true, 'only_user_ids', jsonb_build_array(u.id::text),
+select 'hqtask_comment_slack_dm', jsonb_build_object('enabled', true, 'only_user_ids', jsonb_build_array(c.id::text),
          'note', '本部タスクのコメントのメンションを Slack DM にも出す。enabled=true で有効。only_user_ids が空でなければその人だけ（到着確認用）')
-  from users u where u.role = 'CEO' and u.is_active
- having count(*) = 1
+  from (select id from users where role = 'CEO' and is_active) c
+ where (select count(*) from users where role = 'CEO' and is_active) = 1
 on conflict (key) do nothing;
 
 CREATE OR REPLACE FUNCTION public.hq_notify_comment(p_comment_id uuid)
@@ -76,8 +76,8 @@ begin
           if v_ins = 1 then
             select name into v_from from users where id = v_com.created_by;
             -- コメントの履歴: このタスクの直近5件（今回のコメントは除く）を、古い順に 1 行ずつ（名前・日時・冒頭60字）
-            select string_agg('・' || h.nm || '（' || to_char(h.at at time zone 'Asia/Tokyo', 'MM/DD HH24:MI') || '）' || h.bd, E'\n' order by h.at) into v_hist
-              from (select c.created_at as at, coalesce(u.name, '不明') as nm, left(replace(c.body, E'\n', ' '), 60) as bd
+            select string_agg('・' || h.nm || '（' || to_char(h.cat at time zone 'Asia/Tokyo', 'MM/DD HH24:MI') || '）' || h.bd, E'\n' order by h.cat) into v_hist
+              from (select c.created_at as cat, coalesce(u.name, '不明') as nm, left(replace(c.body, E'\n', ' '), 60) as bd
                       from hq_task_comments c left join users u on u.id = c.created_by
                      where c.task_id = v_task.id and c.id <> p_comment_id order by c.created_at desc limit 5) h;
             perform set_config('ns.notify_event', 'hqtask_comment_mention', true);
