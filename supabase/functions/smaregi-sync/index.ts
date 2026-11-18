@@ -20,6 +20,7 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { loadContracts, getContractToken, loadStoreMap, loadStoreMapPending, ID_BASE, API_BASE, fetchRoles, pickRoleId, putStaffStore, wantedRoleName } from "../_shared/smaregi-contracts.ts";
 import { reconcileWages, holdFor, currentAndFuture, wageSupported as wageSupportedShared } from "../_shared/wage-reconcile.ts";
+import { planFixedWage, verifyFixedWage, type FixedPlan } from "../_shared/wage-fixed.ts";
 
 // 2026-10-17 担当D: 複数契約対応。契約は引数contract_id（省略時は既定の契約＝トーホー）で指定する。
 // sync(入社登録)・terminate(退職)・push_profile・test・staffs が契約ごとに動く。invite/invite_staffs（スマレジ→ポータルの招待）は
@@ -1140,9 +1141,24 @@ Deno.serve(async (req) => {
           let dateAdjusted: { requested: string; applied: string } | null = null;   // 2026-11-09: 救済で適用開始日がスマレジ側の日付に変わったとき（呼び出し側が確認待ちにする）
           const smStore = r.store_id ? (reverse[r.store_id] ?? null) : null;
           if (r.division === 0 && r.store_id && !smStore) throw new Error("この契約に対応するスマレジの事業所がありません（店舗の対応を確認してください）");
+          // 2026-11-18 月給は、固定残業代（管理システムの あり／なし／未設定）に合わせて送る。付けずに送るとスマレジの固定残業代が消える（実測）ため、送る前に計画を立てる
+          let fixedPlan: FixedPlan | null = null;
+          const readMonthly = async () => {
+            const gr = await api(C, token, `/staffs/${staffId}`); const raw = await gr.json().catch(() => null); const st = Array.isArray(raw) ? raw[0] : raw;
+            // deno-lint-ignore no-explicit-any
+            return (st?.wageApply ?? []).filter((w: any) => Number(w.division) === 2).map((w: any) => ({ id: String(w.wageApplyId), date: String(w.effectiveDate ?? "").slice(0, 10), wage: Number(w.wage), flag: w.fixedOvertimeWageFlag ?? null, amount: w.fixedOvertimeWage ?? null,
+              flags: [w.fixedWageStatutoryOvertimeFlag, w.fixedWageMidnightFlag, w.fixedWagePrescribedHolidayFlag, w.fixedWageStatutoryHolidayFlag, w.fixedWageMonth45HourOvertimeFlag, w.fixedWageMonth60HourOvertimeFlag] }));
+          };
+          if (r.division === 2) {
+            // deno-lint-ignore no-explicit-any
+            const cur = (await readMonthly()).find((w: any) => (applyId ? w.id === applyId : w.date === r.effective_date)) ?? null;
+            fixedPlan = planFixedWage(r, cur);
+            if (fixedPlan.kind === "refuse") throw new Error(fixedPlan.reason);
+          }
+          const fixedBody = fixedPlan && fixedPlan.kind === "send" ? { fixedWage: fixedPlan.fixedWage } : {};
           // 月給(2)・日給(1) は事業所なし・休日賃金なし（2026-11-09 日給を追加。POST/PUT の body は月給と同じ形）
           const putBody: Record<string, unknown> = r.division === 2 || r.division === 1
-            ? { division: r.division, effectiveDate: r.effective_date, wage: r.wage }
+            ? { division: r.division, effectiveDate: r.effective_date, wage: r.wage, ...fixedBody }
             : { division: 0, effectiveDate: r.effective_date, wage: r.wage, ...(smStore ? { storeId: smStore } : {}), ...(r.holiday_wage !== null && r.holiday_wage !== undefined ? { holidayWage: r.holiday_wage } : {}) };
           const put = async (id: string) => {
             const rr = await api(C, token, `/staffs/${staffId}/wage_apply/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify(putBody) });
@@ -1170,7 +1186,7 @@ Deno.serve(async (req) => {
             await put(applyId);
           } else {
             const postBody = r.division === 2 || r.division === 1
-              ? { division: r.division, effectiveDate: r.effective_date, wage: r.wage }
+              ? { division: r.division, effectiveDate: r.effective_date, wage: r.wage, ...fixedBody }
               : smStore
                 ? { division: 0, effectiveDate: r.effective_date, settings: [{ storeId: smStore, wage: r.wage, ...(r.holiday_wage !== null && r.holiday_wage !== undefined ? { holidayWage: r.holiday_wage } : {}) }] }
                 : { division: 0, effectiveDate: r.effective_date, wage: r.wage };
@@ -1186,6 +1202,13 @@ Deno.serve(async (req) => {
               if (!hit) throw new Error(`賃金設定の登録に失敗(400): ${await errText(rr)}`);
               applyId = hit.id; await put(hit.id);
             } else throw new Error(`賃金設定の登録に失敗(${rr.status}): ${await errText(rr)}`);
+          }
+          // 2026-11-18 月給は、送ったあとにスマレジを読み直して照合する。1 項目でも違えば「エラー」（同期済みにしない）
+          if (r.division === 2 && fixedPlan) {
+            // deno-lint-ignore no-explicit-any
+            const back = (await readMonthly()).find((w: any) => w.id === applyId) ?? null;
+            const bad = verifyFixedWage(r, fixedPlan, back);
+            if (bad.length) throw new Error("スマレジへ送りましたが、読み直しの照合で違いがあります: " + bad.join("・"));
           }
           await mark(r.id, { sync_status: "synced", sync_error: null, synced_at: new Date().toISOString(), smaregi_wage_apply_id: applyId });
           results.push({ id: r.id, ok: true, wageApplyId: applyId, ...(dateAdjusted ? { date_adjusted: dateAdjusted } : {}) });
