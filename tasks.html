@@ -574,7 +574,10 @@ function addDaysStr(base,n){ const d=new Date(base+"T00:00:00"); d.setDate(d.get
 function diffDaysStr(from,to){ return Math.round((new Date(to+"T00:00:00")-new Date(from+"T00:00:00"))/86400000); }
 
 /* ---------- 工程・信号の判定（設計書 第5章） ---------- */
-function sortedSteps(t){ return (t.hq_task_steps||[]).slice().sort((a,b)=>a.sort_order-b.sort_order); }
+// 2026-11-18 工程は「期限が早い順」に自動で並べる（期限なしは最後・同じ期限なら従来の並び順 sort_order）。
+// 未完了の先頭が「いまここ」になる（computeSignalが先頭の未完了を現在の工程とするため）
+function stepDueKey(s){ return s.due_date?(s.due_date+" "+(s.due_time?String(s.due_time).slice(0,8):"23:59:59")):"9999-99-99 99"; }
+function sortedSteps(t){ return (t.hq_task_steps||[]).slice().sort((a,b)=>{ const ka=stepDueKey(a),kb=stepDueKey(b); return ka<kb?-1:ka>kb?1:(a.sort_order-b.sort_order); }); }
 function computeSignal(t){
   const steps=sortedSteps(t);
   const cur=steps.find(s=>!s.completed_at);
@@ -645,12 +648,13 @@ async function runSearch(q){
   renderBoard(ME);
 }
 async function fetchTaskDetail(id){
-  const [t,links,photos,act,coms]=await Promise.all([
+  const [t,links,photos,act,coms,cfiles]=await Promise.all([
     authed(`/rest/v1/hq_tasks?id=eq.${id}&select=*,hq_task_steps(*)`),
     authed(`/rest/v1/hq_task_links?task_id=eq.${id}&order=created_at`),
     authed(`/rest/v1/hq_task_photos?task_id=eq.${id}&order=created_at`),
     authed(`/rest/v1/hq_task_activity?task_id=eq.${id}&order=created_at.desc&limit=100`),
     authed(`/rest/v1/hq_task_comments?task_id=eq.${id}&order=created_at`),
+    authed(`/rest/v1/hq_task_comment_files?task_id=eq.${id}&order=created_at`),
   ]);
   if(!t.ok||!Array.isArray(t.body)||!t.body[0]) return null;
   const task=t.body[0];
@@ -658,6 +662,7 @@ async function fetchTaskDetail(id){
   task._photos=photos.ok?photos.body:[];
   task._activity=act.ok?act.body:[];
   task._comments=coms.ok?coms.body:[];
+  { const cf=(cfiles&&cfiles.ok&&Array.isArray(cfiles.body))?cfiles.body:[]; task._comments.forEach(c=>{ c._files=cf.filter(f=>f.comment_id===c.id); }); }   // 2026-11-18 コメントの添付（表が無い間は空）
   // 工程ごとの写真・リンク（step_id指定）もまとめて取得
   const stepIds=sortedSteps(task).map(s=>s.id);
   if(stepIds.length){
@@ -1246,6 +1251,7 @@ function renderDetail(u){
             <label>コメントを追加（@で本部メンバーをメンション）</label>
             <textarea id="comment-body" rows="2" placeholder="コメントを入力…　@で本部メンバーをメンション"></textarea>
             <div id="mention-dropdown" style="display:none;position:absolute;z-index:10;background:var(--card);border:1px solid var(--line);border-radius:8px;box-shadow:0 4px 14px rgba(0,0,0,.12);max-height:180px;overflow-y:auto;width:calc(100% - 4px)"></div>
+            <div style="margin-top:6px"><label class="linkbtn" style="cursor:pointer">📎 写真・PDFを添付<input type="file" id="comment-files" accept="image/*,application/pdf" multiple style="display:none"></label> <span class="meta" id="comment-files-n"></span></div>
             <button class="btn sm" style="margin-top:8px" id="comment-send">投稿</button>
             <div class="err" id="comment-msg"></div>
           </div>
@@ -1969,7 +1975,8 @@ function commentHtml(c){
       <button class="linkbtn" data-replycomment="${c.created_by}">↩️ 返信</button>
       ${c.created_by===ME.id?`<button class="linkbtn" data-delcomment="${c.id}">削除</button>`:""}
     </span>
-    <div style="margin-top:4px;font-size:14px">${highlightMentions(c.body)}</div>
+    ${c.body?`<div style="margin-top:4px;font-size:14px">${highlightMentions(c.body)}</div>`:""}
+    ${(c._files&&c._files.length)?`<div class="photo-grid" style="margin-top:6px">${c._files.map(f=>photoOrDocHtml(f)).join("")}</div>`:""}
   </div>`;
 }
 function findMentionCandidates(prefix){
@@ -1999,15 +2006,25 @@ function wireCommentBox(t,u){
     });
   };
   ta.onblur=()=>{ setTimeout(()=>{ dd.style.display="none"; },150); };
+  if($("comment-files")) $("comment-files").onchange=()=>{ const n=$("comment-files").files.length; $("comment-files-n").textContent=n?`${n}件を添付します`:""; };
   $("comment-send").onclick=async()=>{
     const body=ta.value.trim();
+    const files=$("comment-files")?[...$("comment-files").files].slice(0,10):[];
     const msg=$("comment-msg"); msg.textContent="";
-    if(!body){ msg.textContent="コメントを入力してください"; return; }
+    if(!body&&!files.length){ msg.textContent="コメントを入力するか、写真・PDFを添付してください"; return; }
     const mentions=assignableUsers().filter(x=>body.includes("@"+x.name)).map(x=>x.id);
     $("comment-send").disabled=true; msg.textContent="投稿中…";
     const r=await authed("/rest/v1/hq_task_comments",{method:"POST",headers:{Prefer:"return=representation"},body:JSON.stringify({task_id:t.id,body,mentions,created_by:ME.id})});
     $("comment-send").disabled=false;
     if(!r.ok||!r.body||!r.body[0]){ msg.textContent="投稿できませんでした"; return; }
+    if(files.length){
+      msg.textContent="添付をアップロード中…";
+      try{
+        const rows=[]; for(const f of files){ const path=await uploadPhoto(f); rows.push({comment_id:r.body[0].id,task_id:t.id,storage_path:path,file_name:String(f.name||"").slice(0,120),created_by:ME.id}); }
+        const fr=await authed("/rest/v1/hq_task_comment_files",{method:"POST",headers:{Prefer:"return=minimal"},body:JSON.stringify(rows)});
+        if(!fr.ok) throw new Error("save");
+      }catch(err){ alert("コメントは投稿しましたが、添付の保存に失敗しました。もう一度、添付をつけてコメントしてください。"); }
+    }
     if(mentions.length){
       const nr=await authed("/rest/v1/rpc/hq_notify_comment",{method:"POST",body:JSON.stringify({p_comment_id:r.body[0].id})});
       if(nr.ok&&Array.isArray(nr.body)) await sendNotifications(nr.body);

@@ -156,3 +156,10 @@ Deno.test("本部タスクの親投稿: 2 行目は文字＋太字だけ（最�
   assert(!d.includes("⏰") && !d.includes("🎉"));
   assertEquals((parentMessage({ title: "T", due: "2026-11-20" }).blocks as any[])[0].text.text, parentMessage({ title: "T", due: "2026-11-20" }).text);
 });
+
+Deno.test("スレッドの詳細カード: 工程は期限が早い順（期限なしは最後・同じ期限は元の順）", () => {
+  const c = taskCardMessage({ task_id: "t", title: "T", corp: "c", assigneeNames: [], due: "2026-11-30", creatorName: "x", url: "u",
+    steps: [{ title: "C", done: false, id: "3" }, { title: "B", done: false, id: "2", due: "2026-11-22" }, { title: "A", done: false, id: "1", due: "2026-11-20" }] });
+  const txt = c.blocks.filter((b: any) => b.type === "section").map((b: any) => b.text.text).join("|");
+  assert(txt.indexOf("*A*") < txt.indexOf("*B*") && txt.indexOf("*B*") < txt.indexOf("*C*"));
+});

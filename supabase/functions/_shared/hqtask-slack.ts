@@ -146,6 +146,9 @@ export function parentMessage(o: { title: string; due: string; dueTime?: string 
 /** スレッドの詳細カード。「編集」ボタンから Slack の中で直せる */
 export function taskCardMessage(o: { task_id: string; title: string; corp: string; assigneeNames: string[]; due: string; dueTime?: string | null; memo?: string | null; notes?: string | null;
   steps: { title: string; done: boolean; names?: string[]; due?: string | null; dueTime?: string | null; id?: string; canComplete?: boolean }[]; creatorName: string; urgent?: boolean; url: string }): { text: string; blocks: unknown[] } {
+  // 2026-11-18 工程は期限が早い順（期限なしは最後）。画面（tasks.html の sortedSteps）と同じ並び
+  const dueKey = (s: { due?: string | null; dueTime?: string | null }) => s.due ? `${s.due} ${s.dueTime ? String(s.dueTime).slice(0, 8) : "23:59:59"}` : "9999-99-99 99";
+  o = { ...o, steps: o.steps.map((s, i) => ({ s, i })).sort((x, y) => { const a = dueKey(x.s), b = dueKey(y.s); return a < b ? -1 : a > b ? 1 : x.i - y.i; }).map((x) => x.s) };
   const lines = [`${o.urgent ? "🔥 " : ""}*${clean(o.title, 100)}*`, `法人：${clean(o.corp, 20)}　担当：${o.assigneeNames.map((n) => clean(n, 20)).join("・") || "—"}`, `期限：${md(o.due, o.dueTime)}　依頼：${clean(o.creatorName, 30)}`];
   if (o.memo && clean(o.memo, 300)) lines.push(`詳細：${clean(o.memo, 300)}`);
   if (o.notes && clean(o.notes, 300)) lines.push(`⚠️ 注意事項：${clean(o.notes, 300)}`);
