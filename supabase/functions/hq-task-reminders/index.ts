@@ -10,7 +10,7 @@
 // =============================================================
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { callModel, jstToday as aiToday, systemPrompt, toDraft, type RosterEntry } from "../_shared/hqtask-ai.ts";
-import { reminderMessage, createButtonMessage, parentMessage, type Candidate } from "../_shared/hqtask-slack.ts";
+import { reminderMessage, createButtonMessage, parentMessage, taskCardMessage, type StepRow, type Candidate } from "../_shared/hqtask-slack.ts";
 
 const json = (o: unknown, status = 200) => new Response(JSON.stringify(o), { status, headers: { "Content-Type": "application/json" } });
 const svc = () => createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
@@ -70,34 +70,42 @@ Deno.serve(async (req: Request) => {
     return json({ ok: true, tokens: [out.inTokens, out.outTokens], draft: { ...d, steps: d.steps.map((x) => ({ ...x, users: x.users.map((u) => nm.get(u) ?? "?") })) } });
   }
 
-  // 2026-11-18 親投稿（チャンネル）を、いまのタスクの状態（2 行目＝文字と太字）に合わせて書き換える。社内の Slack の投稿を直すだけ（応募者・外部には送らない）
+  // 2026-11-18 親投稿とスレッドの詳細カード（チャンネル）を、いまのタスクの状態に合わせて書き換える。社内の Slack の投稿を直すだけ（応募者・外部には送らない）
+  //   管理システム（画面）で工程を足した・完了した・担当や期限を変えたときも、これで Slack に追従する（定期実行は 1 分ごと）。
   //   only_changed: true（定期実行用）＝いまの表示が台帳の最後の表示と同じなら何もしない（Slack への無駄な書き換えをしない）。Slack 側で消えた投稿（message_not_found）は飛ばす
   if (body?.op === "refresh_parents") {
     const max = Math.min(100, Math.max(1, Number(body?.max) || 50));
     const onlyChanged = body?.only_changed === true;
-    const { data: logs } = await sb.from("hq_slack_task_log").select("task_id,parent_notification_id").not("parent_notification_id", "is", null).order("created_at", { ascending: false }).limit(max);
-    const ids = ((logs ?? []) as any[]).map((l) => l.parent_notification_id);
+    const { data: logs } = await sb.from("hq_slack_task_log").select("task_id,parent_notification_id,card_notification_id").or("parent_notification_id.not.is.null,card_notification_id.not.is.null").order("created_at", { ascending: false }).limit(max);
+    const ids = ((logs ?? []) as any[]).flatMap((l) => [l.parent_notification_id, l.card_notification_id]).filter(Boolean);
     const { data: led } = await sb.from("notification_deliveries").select("id,delivery_status,error,payload").in("id", ids.length ? ids : ["00000000-0000-0000-0000-000000000000"]);
     const ledger = new Map(((led ?? []) as any[]).map((r) => [r.id, r]));
-    let done = 0, failed = 0, same = 0, gone = 0;
+    let done = 0, failed = 0, same = 0, gone = 0, cardsDone = 0;
+    // 台帳の最後の表示（blocks）と同じか。同じなら Slack へ送らない
+    const unchanged = (nid: string, blocks: unknown[]) => { const lr = ledger.get(nid); const cur = (lr?.payload?.updated_blocks ?? lr?.payload?.blocks); return JSON.stringify(cur ?? null) === JSON.stringify(blocks); };
+    const isGone = (nid: string) => { const lr = ledger.get(nid); return lr?.delivery_status === "failed" && lr?.error === "message_not_found"; };
     for (const l of (logs ?? []) as any[]) {
-      const lr = ledger.get(l.parent_notification_id);
-      if (onlyChanged && lr?.delivery_status === "failed" && lr?.error === "message_not_found") { gone++; continue; }
+      if (onlyChanged && (!l.parent_notification_id || isGone(l.parent_notification_id)) && (!l.card_notification_id || isGone(l.card_notification_id))) { gone++; continue; }
       const { data: g } = await sb.rpc("hq_slack_task_get", { p_task: l.task_id });
       const { data: sg } = await sb.rpc("hq_slack_steps_get", { p_task: l.task_id });
       if (!g?.ok) { failed++; continue; }
-      const sl = (sg?.steps ?? []) as any[];
-      const allDone = sl.length > 0 && sl.every((x) => x.done);
-      const pm = parentMessage({ title: g.title, due: g.due, dueTime: g.due_time, done: allDone, strip: { urgent: g.urgent, names: sl.filter((x) => !x.done).flatMap((x) => x.assignee_names ?? []), stepsDone: sl.filter((x) => x.done).length, stepsTotal: sl.length,
-        overdue: !allDone && String(g.due ?? "") !== "" && String(g.due) < jstDate() } });
-      if (onlyChanged) {
-        const cur = ((lr?.payload?.updated_blocks ?? lr?.payload?.blocks) as any[] | undefined)?.[0]?.text?.text;
-        if (cur === (pm.blocks as any[])[0].text.text) { same++; continue; }
+      const rows = (sg?.steps ?? []) as StepRow[];
+      const allDone = rows.length > 0 && rows.every((x) => x.done);
+      if (l.parent_notification_id && !(onlyChanged && isGone(l.parent_notification_id))) {
+        const pm = parentMessage({ title: g.title, due: g.due, dueTime: g.due_time, done: allDone, strip: { urgent: g.urgent, names: rows.filter((x) => !x.done).flatMap((x) => x.assignee_names ?? []), stepsDone: rows.filter((x) => x.done).length, stepsTotal: rows.length,
+          overdue: !allDone && String(g.due ?? "") !== "" && String(g.due) < jstDate() } });
+        if (onlyChanged && unchanged(l.parent_notification_id, pm.blocks)) same++;
+        else { const r = await sendSlack({ action: "update", notification_id: l.parent_notification_id, text: pm.text, blocks: pm.blocks }); if (r?.ok) done++; else failed++; }
       }
-      const r = await sendSlack({ action: "update", notification_id: l.parent_notification_id, text: pm.text, blocks: pm.blocks });
-      if (r?.ok) done++; else failed++;
+      if (l.card_notification_id && !(onlyChanged && isGone(l.card_notification_id))) {
+        const { data: cr } = await sb.from("users").select("name").eq("id", g.creator_id).maybeSingle();
+        const cm = taskCardMessage({ task_id: l.task_id, title: g.title, corp: g.corp, assigneeNames: [...new Set(rows.filter((x) => !x.done).flatMap((x) => x.assignee_names ?? []))], due: g.due, dueTime: g.due_time, memo: g.memo, notes: g.notes,
+          steps: rows.map((x) => ({ title: x.title, done: x.done, names: x.assignee_names, due: x.due, dueTime: x.due_time, id: x.id, canComplete: !x.photo })), creatorName: String(cr?.name ?? "").replace(/[\s\u3000]+/g, ""), urgent: g.urgent, url: `https://mirai-oss.github.io/ns-portal/tasks.html?task=${l.task_id}` });
+        if (onlyChanged && unchanged(l.card_notification_id, cm.blocks)) same++;
+        else { const r = await sendSlack({ action: "update", notification_id: l.card_notification_id, text: cm.text, blocks: cm.blocks }); if (r?.ok) { cardsDone++; } else failed++; }
+      }
     }
-    return json({ ok: true, op: "refresh_parents", total: (logs ?? []).length, updated: done, unchanged: same, gone, failed });
+    return json({ ok: true, op: "refresh_parents", total: (logs ?? []).length, updated: done, cards_updated: cardsDone, unchanged: same, gone, failed });
   }
 
   // 作成者への「完了しました」DM（Slack のフォームで付けたタスクが完了したとき）。dm_enabled が true のときだけ送る
