@@ -7,6 +7,14 @@
 
 ---
 
+**2026-11-18（担当B・MacBook）採用・入社登録の残り＋通知まわり。完了したもの／止めているもの／ぶつかりやすい所（ここだけ読めば分かるように）**
+- 【本番反映済み】入社登録の小さな直し3点（EF onboarding-notify v20・nippo 561fdaf）／Indeed リンク: 新しい形（account.indeed.com/o/myaccess…）に GAS を追記で対応し過去分の補完 20→0 件／採用 LINE 実送信・カレンダー実登録テスト（テスト応募者のみ・自動で dry に戻る）／通知ルート整理（求人の Slack 行は #採用-応募通知へ・Chatwork 入社通知を停止。Chatwork 求人2行・Lark 中山通知は社長が画面で削除）／notify_lark は Slack のみ／給料確定の取消(U-27)・題名の月ずれ修正／本部タスクのメンション Slack DM（hq_notify_comment 追記＋新 EF `hqtask-comment-dm`＝親は短く・スレッドにコメントの流れ。社長1人で確認済み→全員ON の SQL `2026-11-18_hqtask_comment_slack_dm_all.sql` は社長の実行待ち）／Slack『#本部-チャット』（slack_channels の hq.chat）に「＋ タスクを作る」ボタンを設置／tasks.html に `?new=1`（ログイン後に作成フォームを直接開く）＋ tori-dashboard 申請フォーム一覧の URL 更新（app.js v288）。
+- 【止めている・未着手（この PC は今動かしていない。着手する人は先にここを読む）】①STEP 6（採用→招待→テスト登録→無効化の片付け。社長の登録結果待ち・DB 上は従業員がまだ無い）②STEP 7（入社登録のスイッチを入れる順番の案）③第2段階＝Slack の DM スレッドへの返信をタスクのコメントに取り込む（**slack-events に分岐を足す必要あり＝もう1台の PC の領域と重なる。社長の分担決定待ち。それまで誰も slack-events を触らない／触る前に司令塔へ**）④管理ボード待ち行列 9（Indeed 経由の LINE 合言葉招待の自動化）・10（Slack カードの使い勝手: 窓を先に開く・返信の窓に直近のやり取り・取消後の状態表示）。
+- 【ぶつかりやすい所（担当B が最近触った。触る前に git fetch ＋ git log origin/main -- <ファイル> を）】DB 関数 hq_notify_comment・hqtask_comment_dm_call／EF hqtask-comment-dm（新規）・onboarding-notify（v20）／tasks.html・tori-dashboard app.js／app_settings: hqtask_comment_slack_dm・recruit_actions（line/calendar_mode は dry に戻し済み・send_enabled=false を動かさない）／slack_channels: hq.chat・hr.saiyo／lark_routes。公開リポジトリに Slack の ID・氏名・秘密の値を書かない決まり（ID は社長が SQL に自分で貼る）。
+- 【運用の確認】`ns-portal/CLAUDE.md` に「作業前に WORKLOG の『📍現在の状況』を読む／作業後に書き換えて push」が明記されている（各セッションが自動で読み込む）。nippo・tori-dashboard にも `CLAUDE.md` がある。担当B は区切りごとにここと管理ボード（docs/司令塔_開発管理ボード.md）の自分の行を更新している。
+
+---
+
 **2026-11-16（担当B）採用の LINE 実送信・カレンダー実登録テスト＝完了（テスト応募者のみ・社長の LINE 宛・一般応募者へは 0 件）**
 - 方式: DB 側の自動戻し（pg_cron 1 分ごと・絶対時刻・line_mode/calendar_mode の 2 キーだけ・戻ってから自分を unschedule）。先に別名の一時行で予行（成功の結果行が 2/2 の前提）→ 20 分だけ live → 04:09 UTC に自動で dry に戻った。send_enabled は終始 false（印の無い応募者は面接確定・LINE 送信箱・採用の 3 か所で拒否）。SQL: `2026-11-16_recruit_live_test_1_prepare.sql`・`_2_live.sql`。
 - 結果: LINE 5 通（返信 2・面接確定／変更／取り消しの案内 各 1・全て社長宛）／予定: 作成＋Meet → 同じ予定の日時変更 → 削除。終了後: dry・cron 0 件・一時行なし・recruit_actions の他キー不変。
@@ -1802,6 +1810,8 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
+
+**★★★★★★★★★2026-11-18（担当B）採用・入社登録・通知まわりの区切り**: 完了／止めている／ぶつかりやすい所は、この WORKLOG の最上部の 2026-11-18（担当B）エントリと管理ボードに整理した。要点＝この PC（担当B）は今 STEP 6・7・スレッド返信・待ち行列 9/10 を動かしていない（slack-events はまだ誰も触らない・分担は社長決定待ち）。メンション DM の全員ON の SQL は社長の実行待ち。
 **★★★★★★★★2026-11-16 午後（続き 57）WEB総振の取得が成功（80 件正常・CSV 80 件・画面と 1 対 1・PNG 17 枚）→ 証憑保存・一覧形式 CSV・従業員ごとの照合の見える化を実装（ns-daily-import 最新・ns-portal 本コミット）**: SQL `2026-12-06_payroll_transfer_evidence_screen_png.sql` を本番に適用（証憑の種類 screen_png＝取得ジョブだけが登録できる／列 origin／置き場に PNG／`payroll_transfer_line_recon_view`＝読むだけ）。スイッチ `bank_read_enabled`・`auto_complete` は false のまま。**未実行（社長の承認待ち）: ①証憑 18 件の登録 `node tasks/paypay-sofuri-evidence-upload.js <run> --ym 2026-10 --corp 9f3f5239-… --apply` ②銀行結果の DB 送信（bank_bulk_transfer_ingest）③振込済みの自動更新。** 詳細は「続き 57」。
 
 **★★★★★★★2026-11-16 昼（続き 56）WEB総振 段階 2 の最後の 1 か所を実装（ns-daily-import `745e2b5`・実機未実施）**: 「ダウンロード」の先の「振込データのダウンロード」画面の入口 `dl_confirm`（画像リンク `mySubmit_DOWNLOAD()`・形式は CSV 表示のみで選択欄なし）を守りの許可リストに登録し、ジョブが 2 段で押すようにした（テスト全件通過）。**次: 社長に 1 回実行を依頼** `cd /Users/mirai/ns-daily-import && SOFURI_DATE=2026-11-13 node tasks/paypay-sofuri-stage2.js`（13:45〜14:40 を避ける）→ CSV と画面 80 行の 1 対 1 紐づけを確認 → 引継ぎ書 §2 の 3（証憑・個別照合）へ。DB へは送らない版のまま。ns-portal の直近は dcef1f1 以降。
