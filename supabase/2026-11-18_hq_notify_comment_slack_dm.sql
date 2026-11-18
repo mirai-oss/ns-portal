@@ -2,11 +2,11 @@
 -- 2026-11-18 担当B（社長の依頼・司令塔了承）— 本部タスクのコメントでメンションされた人に、個人の Slack DM でも通知する（hq_notify_comment への追記だけ）
 -- 【状態】事前報告（未適用・社長の承認待ち）
 -- 【背景】メンション通知は個人の Chatwork ルームにしか出ず、本部メンバーの大半が未登録で届いていなかった。Slack への経路が未実装（2026-10-29_slack_notify_phase1.sql §7 の宿題）
--- 【変更】①hq_notify_comment に、メンションされた人（Slack 紐づけ済み・自分自身は除く）への Slack DM を1通足す。Chatwork 送信・アプリ内通知（hq_notifications）は今のまま・順番も変えない。
---   ②スイッチ app_settings.hqtask_comment_slack_dm（既定 enabled=false＝この SQL を入れただけでは何も送られない）。only_user_ids が空でなければその人だけ（社長1人での到着確認用）
+-- 【変更】①hq_notify_comment に、メンションされた人（Slack 紐づけ済み・自分自身は除く）への Slack DM を1通足す（本文: 誰が・タスク名・コメント冒頭200字・そのタスクの直近5件のコメントの履歴・タスクを開くリンク）。Chatwork 送信・アプリ内通知（hq_notifications）は今のまま・順番も変えない。
+--   ②スイッチ app_settings.hqtask_comment_slack_dm（社長の承認どおり、最初は社長1人だけ enabled=true・only_user_ids=[社長]）。ほかの人には何も送られない。全員に広げるのは別の SQL（承認後）
 --   ③二重送信防止の小さな表 hqtask_comment_slack_sent（同じコメント×同じ相手は1回）。Slack 側が失敗しても関数全体は失敗させない（例外を握る）
 -- 【安全ガード】本番の現在の定義が 2026-10-29 のスナップショット版（md5 0e9bcdc204e6bed7618e1352e47f9a0b）と一致しなければ停止（何も変更しない）
--- 【影響】hq_notify_comment の戻り値・Chatwork 経路は不変。既定OFFのため、スイッチを入れるまで挙動は変わらない。hqtask_*（EF）の DM とは別の種類（コメントのメンション）で二重にならない
+-- 【影響】hq_notify_comment の戻り値・Chatwork 経路は不変。社長1人だけが対象のため、ほかの人の挙動は変わらない。hqtask_*（EF）の DM とは別の種類（コメントのメンション）で二重にならない
 -- 【rollback】スイッチを false に戻す／関数をスナップショット版（restored/2026-10-29_notify_functions_prod_snapshot.sql の hq_notify_comment）で create or replace し直す（表は残して無害）
 -- ============================================================
 do $$
@@ -31,7 +31,12 @@ alter table hqtask_comment_slack_sent enable row level security;
 revoke all on hqtask_comment_slack_sent from public, anon, authenticated;
 comment on table hqtask_comment_slack_sent is '本部タスクのコメントのメンションを Slack DM に出した記録（二重送信防止）。担当B・2026-11-18';
 
-insert into app_settings (key, value) values ('hqtask_comment_slack_dm', '{"enabled": false, "only_user_ids": [], "note": "本部タスクのコメントのメンションを Slack DM にも出す。enabled=true で有効。only_user_ids が空でなければその人だけ（到着確認用）"}'::jsonb)
+-- 最初は社長1人だけ ON（到着確認用）。全員にするときは only_user_ids を [] にする（別の SQL・社長の承認のあと）
+insert into app_settings (key, value)
+select 'hqtask_comment_slack_dm', jsonb_build_object('enabled', true, 'only_user_ids', jsonb_build_array(u.id::text),
+         'note', '本部タスクのコメントのメンションを Slack DM にも出す。enabled=true で有効。only_user_ids が空でなければその人だけ（到着確認用）')
+  from users u where u.role = 'CEO' and u.is_active
+ having count(*) = 1
 on conflict (key) do nothing;
 
 CREATE OR REPLACE FUNCTION public.hq_notify_comment(p_comment_id uuid)
@@ -45,7 +50,7 @@ declare
   v_kinds text[] := '{}'; v_targets text[] := '{}'; v_kws text[] := '{}'; v_titles text[] := '{}'; v_bodies text[] := '{}';
   v_ch record; v_cw text; v_title text; v_body text; v_uname text; v_personal text;
   v_url text;
-  v_dm jsonb; v_from text; v_ins int; -- 2026-11-18 追記（Slack DM）
+  v_dm jsonb; v_from text; v_ins int; v_hist text; -- 2026-11-18 追記（Slack DM）
 begin
   select * into v_com from hq_task_comments where id = p_comment_id;
   if v_com is null then return; end if;
@@ -70,9 +75,16 @@ begin
           get diagnostics v_ins = row_count;
           if v_ins = 1 then
             select name into v_from from users where id = v_com.created_by;
+            -- コメントの履歴: このタスクの直近5件（今回のコメントは除く）を、古い順に 1 行ずつ（名前・日時・冒頭60字）
+            select string_agg('・' || h.nm || '（' || to_char(h.at at time zone 'Asia/Tokyo', 'MM/DD HH24:MI') || '）' || h.bd, E'\n' order by h.at) into v_hist
+              from (select c.created_at as at, coalesce(u.name, '不明') as nm, left(replace(c.body, E'\n', ' '), 60) as bd
+                      from hq_task_comments c left join users u on u.id = c.created_by
+                     where c.task_id = v_task.id and c.id <> p_comment_id order by c.created_at desc limit 5) h;
             perform set_config('ns.notify_event', 'hqtask_comment_mention', true);
             perform notify_route_send('slack', 'user:' || v_uid::text,
-              '💬 ' || coalesce(v_from, '誰か') || 'さんが、あなたをメンションしました（' || v_task.title || '）' || E'\n' || left(replace(v_com.body, E'\n', ' '), 80) || E'\n' || v_url);
+              '💬 ' || coalesce(v_from, '誰か') || 'さんが、あなたをメンションしました' || E'\n' || '【' || v_task.title || '】' || E'\n' || left(replace(v_com.body, E'\n', ' '), 200)
+              || case when v_hist is not null then E'\n\n—— これまでのコメント（新しい順ではなく古い順・直近5件）——\n' || v_hist else '' end
+              || E'\n\n▶ タスクを開く: ' || v_url);
           end if;
         end if;
       exception when others then null;
