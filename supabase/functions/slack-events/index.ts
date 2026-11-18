@@ -76,6 +76,11 @@ Deno.serve(async (req) => {
   }
   // 2026-11-18: DM のスレッド返信だけを、本部タスクのコメントとして取り込む（スイッチ・照合・権限確認は _shared/hqtask-reply.ts と DB 関数側。それ以外のメッセージは読み取らない）
   if (isDmThreadReply(ev)) { waitUntil(handleDmThreadReply(body)); return new Response("", { status: 200 }); }
+  // 2026-11-19 アプリとの DM に、そのまま（スレッドでなく）タスクの依頼を書いたとき → 下書きを DM に返す（チャンネルに依頼の文章を残さないため）。作ると、表紙の親投稿はチャンネルに出る
+  if (ev.type === "message" && ev.channel_type === "im" && !ev.thread_ts && !ev.bot_id && !ev.subtype && typeof ev.user === "string" && typeof ev.text === "string") {
+    if (!req.headers.get("x-slack-retry-num")) waitUntil(handleMention(body));
+    return new Response("", { status: 200 });
+  }
   if (ev.type !== "team_join" && ev.type !== "user_change") {
     waitUntil((async () => { await svc().from("slack_event_log").insert({ event_type: String(ev.type ?? "?"), result: "ignored", raw: { event_id: body.event_id ?? null } }); })());
   }

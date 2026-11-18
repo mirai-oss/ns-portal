@@ -280,33 +280,33 @@ const handlers: Record<string, Handler> = {
   // ---- 採用管理（2026-11-26）: カードの［担当者を変更］→ 選ぶ窓 → RPC recruit_assignee_set（権限・古い値の照合・二重防止は RPC 側）。
   //      親とカードの書き換え・スレッドの記録は、応募者の行が変わったことを既存のトリガー（recruit_notice_upd）が拾って recruit-notify が行う。ここからは Slack に投稿しない ----
   [ASSIGNEE_ACTION]: async ({ sb, actor, payload, value, notificationId }) =>
-    recruitRespond(await assigneeOpen(recruitDeps(sb), actor, { applicant_id: value?.applicant_id, notification_id: notificationId }), payload),
+    recruitOpenFast(payload, () => assigneeOpen(recruitDeps(sb), actor, { applicant_id: value?.applicant_id, notification_id: notificationId })),
   [ASSIGNEE_MODAL]: async ({ sb, actor, payload }) => recruitRespond(await assigneeSubmit(recruitDeps(sb), actor, payload.view), payload),
   // 2026-11-27: カードの［応募者へ LINE 返信］→ 入力の窓 → 確認の窓 → 送信（送るのは EF recruit-action。スイッチ・試しモード・権限・二重防止は、そちらと RPC が決める）。
   //   スレッドのふつうの返信は、この関数を通らない（＝今までどおり、応募者へは送られない）
   [LINE_ACTION]: async ({ sb, actor, payload, value, notificationId }) =>
-    recruitRespond(await lineOpen(recruitDeps(sb, actor, payload), actor, { applicant_id: value?.applicant_id, notification_id: notificationId }, recruitPlace(payload)), payload),
+    recruitOpenFast(payload, () => lineOpen(recruitDeps(sb, actor, payload), actor, { applicant_id: value?.applicant_id, notification_id: notificationId }, recruitPlace(payload))),
   [LINE_MODAL]: async ({ sb, actor, payload }) => recruitRespond(await lineInput(recruitDeps(sb, actor, payload), actor, payload.view), payload),
   [LINE_CONFIRM]: async ({ sb, actor, payload }) => recruitRespond(await lineConfirm(recruitDeps(sb, actor, payload), actor, payload.view), payload),
   // 2026-11-29: カードの［面接を確定］［面接を変更］→ 入力の窓 → 確認の窓 → 確定／［面接を取り消す］→ 確かめの窓 → 取り消し。
   //   確定・取り消しは EF recruit-action（権限・社員採用は社長だけ・スイッチ・同じ鍵・同時の操作・古い値の照合は、そちらと RPC が決める）
   [INTERVIEW_ACTION]: async ({ sb, actor, payload, value, notificationId }) =>
-    recruitRespond(await interviewOpen(recruitDeps(sb, actor, payload), actor, { applicant_id: value?.applicant_id, notification_id: notificationId }, recruitPlace(payload)), payload),
+    recruitOpenFast(payload, () => interviewOpen(recruitDeps(sb, actor, payload), actor, { applicant_id: value?.applicant_id, notification_id: notificationId }, recruitPlace(payload))),
   [INTERVIEW_MODAL]: async ({ sb, actor, payload }) => recruitRespond(await interviewInput(recruitDeps(sb, actor, payload), actor, payload.view), payload),
   [INTERVIEW_CONFIRM]: async ({ sb, actor, payload }) => recruitRespond(await interviewConfirmSubmit(recruitDeps(sb, actor, payload), actor, payload.view), payload),
   [INTERVIEW_CANCEL_ACTION]: async ({ sb, actor, payload, value, notificationId }) =>
-    recruitRespond(await interviewCancelOpen(recruitDeps(sb, actor, payload), actor, { applicant_id: value?.applicant_id, notification_id: notificationId }, recruitPlace(payload)), payload),
+    recruitOpenFast(payload, () => interviewCancelOpen(recruitDeps(sb, actor, payload), actor, { applicant_id: value?.applicant_id, notification_id: notificationId }, recruitPlace(payload))),
   [INTERVIEW_CANCEL_MODAL]: async ({ sb, actor, payload }) => recruitRespond(await interviewCancelSubmit(recruitDeps(sb, actor, payload), actor, payload.view), payload),
   // 2026-11-29: 失敗の知らせ（LINE を送れなかった・カレンダーに登録できなかった）の［もう一度］→ 確かめの窓 → EF recruit-action（人が確かめてから、のときだけ動く。権限・スイッチ・二重防止は、そちらと RPC）
   [RETRY_SEND_ACTION]: async ({ sb, actor, payload, value }) =>
-    recruitRespond(await retrySendOpen(recruitDeps(sb, actor, payload), actor, { applicant_id: value?.applicant_id, outbox_id: value?.outbox_id }, recruitPlace(payload)), payload),
+    recruitOpenFast(payload, () => retrySendOpen(recruitDeps(sb, actor, payload), actor, { applicant_id: value?.applicant_id, outbox_id: value?.outbox_id }, recruitPlace(payload))),
   [RETRY_SEND_MODAL]: async ({ sb, actor, payload }) => recruitRespond(await retrySendSubmit(recruitDeps(sb, actor, payload), actor, payload.view), payload),
   [RETRY_CAL_ACTION]: async ({ sb, actor, payload, value }) =>
-    recruitRespond(await retryCalendarOpen(recruitDeps(sb, actor, payload), actor, { applicant_id: value?.applicant_id, note_key: value?.note_key }, recruitPlace(payload)), payload),
+    recruitOpenFast(payload, () => retryCalendarOpen(recruitDeps(sb, actor, payload), actor, { applicant_id: value?.applicant_id, note_key: value?.note_key }, recruitPlace(payload))),
   [RETRY_CAL_MODAL]: async ({ sb, actor, payload }) => recruitRespond(await retryCalendarSubmit(recruitDeps(sb, actor, payload), actor, payload.view), payload),
   // 2026-11-30: カードの［採用を決める］→ 確認の窓（役割・所属店舗）→ EF recruit-action の hire（既存の採用の処理をそのまま呼ぶ。社員採用の最終決定は社長だけ、などは RPC が確かめる）。不採用・辞退は、ここには無い
   [HIRE_ACTION]: async ({ sb, actor, payload, value, notificationId }) =>
-    recruitRespond(await hireOpen(recruitDeps(sb, actor, payload), actor, { applicant_id: value?.applicant_id, notification_id: notificationId }, recruitPlace(payload)), payload),
+    recruitOpenFast(payload, () => hireOpen(recruitDeps(sb, actor, payload), actor, { applicant_id: value?.applicant_id, notification_id: notificationId }, recruitPlace(payload))),
   [HIRE_MODAL]: async ({ sb, actor, payload }) => recruitRespond(await hireSubmit(recruitDeps(sb, actor, payload), actor, payload.view), payload),
 
   // ---- 入社登録ワークフロー（2026-11-09 Phase 1）。業務ロジックは RPC（hr_save_wage / onboarding_*）と EF onboarding-notify 側。ここは受付と振り分けだけ ----
@@ -759,6 +759,28 @@ async function recruitRespond(o: RecruitOutcome, payload: any): Promise<Response
     case "clear": if (o.after) waitUntil(o.after()); return json({ response_action: "clear" });
     default: return ephemeral(o.text, payload.response_url);
   }
+}
+
+// 2026-11-19 ボタンを押してすぐ「読み込み中」の窓を開き（3 秒の決まりを必ず守る）、確かめ・材料集めのあとで、同じ窓を本物の窓に差し替える。
+//   遅いと「操作がタイムアウトしました。アプリは 3 秒以内に応答する必要があります」と出て、窓が開かなかった（LINE 返信など）。送れない・開けないときの理由は、同じ窓に文字で出す。
+async function recruitOpenFast(payload: any, build: () => Promise<RecruitOutcome>): Promise<Response> {
+  const token = Deno.env.get("SLACK_BOT_TOKEN");
+  const hdr = { "Content-Type": "application/json; charset=utf-8", Authorization: `Bearer ${token}` };
+  const msgView = (title: string, text: string) => ({ type: "modal", title: { type: "plain_text", text: title }, close: { type: "plain_text", text: "閉じる" }, blocks: [{ type: "section", text: { type: "plain_text", text, emoji: false } }] });
+  let viewId: string | null = null;
+  try {
+    const r = await fetch("https://slack.com/api/views.open", { method: "POST", headers: hdr, body: JSON.stringify({ trigger_id: payload.trigger_id, view: msgView("確認しています…", "少し待ってください。") }) });
+    const j = await r.json().catch(() => ({}));
+    viewId = j?.ok ? String(j?.view?.id ?? "") || null : null;
+  } catch { viewId = null; }
+  waitUntil((async () => {
+    let o: RecruitOutcome;
+    try { o = await build(); } catch (e) { o = { kind: "ephemeral", text: "開けませんでした: " + String((e as Error)?.message ?? e).slice(0, 120) }; }
+    const view = o.kind === "modal" ? o.view : msgView("お知らせ", o.kind === "ephemeral" ? o.text : "この操作は、いまはできません。");
+    if (viewId) await fetch("https://slack.com/api/views.update", { method: "POST", headers: hdr, body: JSON.stringify({ view_id: viewId, view }) }).catch(() => {});
+    else if (o.kind === "ephemeral") await ephemeralLater(o.text, payload.response_url);
+  })());
+  return text("");
 }
 
 // ---- 4. Slack 応答のヘルパー ----

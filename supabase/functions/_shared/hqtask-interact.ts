@@ -84,7 +84,15 @@ async function afterCreate(d: Deps, sb: any, actor: { user_id: string; name: str
     // ボタンを押したチャンネルに、親投稿（1 行）とスレッドの詳細カード（編集ボタンつき）
     // 2026-11-19 @アプリ のメンションから作ったときも、ふつうのタスクと同じく「表紙の親投稿」を新しく作り、詳細はその親投稿のスレッドにまとめる（メンションの元の投稿のスレッドには、下書きカードが「作成しました＋表紙へのリンク」に変わる）
     const threadTs: string | undefined = meta.thread_ts;
-    const key = threadTs ? await ensureChannelKey(sb, meta.channel) : await channelKeyOf(sb, meta.channel);
+    // アプリとの DM から作ったとき（チャンネル ID が D で始まる）は、既定の置き場（設定 hq_task_slack.parent_channel_key・なければ hq.chat＝#本部-チャット）に表紙の親投稿を出す
+    const fromDm = String(meta.channel ?? "").startsWith("D");
+    let key: string | null;
+    if (fromDm) {
+      const { data: st } = await sb.from("app_settings").select("value").eq("key", "hq_task_slack").maybeSingle();
+      const want = String(st?.value?.parent_channel_key ?? "hq.chat");
+      const { data: ch } = await sb.from("slack_channels").select("channel_key").eq("channel_key", want).eq("is_active", true).maybeSingle();
+      key = ch?.channel_key ?? null;
+    } else key = threadTs ? await ensureChannelKey(sb, meta.channel) : await channelKeyOf(sb, meta.channel);
     if (key) {
       let r1: any = null;
       {
