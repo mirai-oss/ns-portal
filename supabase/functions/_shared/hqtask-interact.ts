@@ -67,7 +67,8 @@ async function refreshCard(sb: any, send: Deps["sendSlack"], taskId: string, edi
 
 // タスクを作ったあとの通知（担当者ごとの DM・チャンネルの親投稿とスレッドの詳細カード・@メンションの下書きの更新）
 // deno-lint-ignore no-explicit-any
-async function afterCreate(d: Deps, sb: any, actor: { user_id: string; name: string }, v: any, data: any, meta: any): Promise<void> {
+async function afterCreate(d: Deps, sb: any, actor: { user_id: string; name: string }, v: any, data: any, meta: any): Promise<{ channel: string; ts: string } | null> {
+    let parentRef: { channel: string; ts: string } | null = null;
     const url = urlOf(data.task_id);
     const made = (data.steps ?? []) as { step_id: string; title: string; assignee_ids: string[]; due: string; due_time: string | null }[];
     // 担当者ごとに DM（その人の最初の工程。複数あれば件数も）
@@ -81,16 +82,17 @@ async function afterCreate(d: Deps, sb: any, actor: { user_id: string; name: str
         dedupe_key: `hqtask_assigned:${data.task_id}:${uid}`, ref: { table: "hq_tasks", id: data.task_id } });
     }
     // ボタンを押したチャンネルに、親投稿（1 行）とスレッドの詳細カード（編集ボタンつき）
-    const threadTs: string | undefined = meta.thread_ts;   // @アプリ のメンションから作ったときは、そのスレッドに詳細カードを出す（親投稿は作らない）
+    // 2026-11-19 @アプリ のメンションから作ったときも、ふつうのタスクと同じく「表紙の親投稿」を新しく作り、詳細はその親投稿のスレッドにまとめる（メンションの元の投稿のスレッドには、下書きカードが「作成しました＋表紙へのリンク」に変わる）
+    const threadTs: string | undefined = meta.thread_ts;
     const key = threadTs ? await ensureChannelKey(sb, meta.channel) : await channelKeyOf(sb, meta.channel);
     if (key) {
       let r1: any = null;
-      if (threadTs) r1 = { ok: true, ts: threadTs, notification_id: null, slack_channel_id: meta.channel };
-      else {
+      {
         const pm = parentMessage({ title: v.title, due: data.due, dueTime: data.due_time, strip: { urgent: v.urgent, names: [...new Set(made.flatMap((x) => x.assignee_ids))].length ? (await namesOf(sb, [...new Set(made.flatMap((x) => x.assignee_ids))])) : [], stepsDone: 0, stepsTotal: made.length } });
         r1 = await d.sendSlack({ action: "send", channel_key: key, text: pm.text, blocks: pm.blocks, event: "hqtask_parent", source: "ef:slack-interact", dedupe_key: `hqtask_parent:${data.task_id}`, ref: { table: "hq_tasks", id: data.task_id } });
       }
       if (r1?.ok && r1.ts) {
+        parentRef = { channel: String(r1.slack_channel_id ?? meta.channel ?? ""), ts: String(r1.ts) };
         const allIds = [...per.keys()];
         const nameMap = new Map<string, string>(); (await namesOf(sb, allIds)).forEach((n, i) => nameMap.set(allIds[i], n));
         const steps = made.map((s) => ({ title: s.title, done: false, names: s.assignee_ids.map((u) => nameMap.get(u) ?? "—"), due: s.due, dueTime: s.due_time, id: s.step_id, canComplete: !v.photo }));
@@ -102,13 +104,22 @@ async function afterCreate(d: Deps, sb: any, actor: { user_id: string; name: str
       await d.sendSlack({ action: "send", channel_key: `user:${actor.user_id}`, text: `✅ 本部タスクを作りました：${v.title}（工程 ${made.length} 個）\n🔗 <${url}|管理システムで開く>`,
         event: "hqtask_created", source: "ef:slack-interact", dedupe_key: `hqtask_created:${data.task_id}`, ref: { table: "hq_tasks", id: data.task_id } });
     }
+    return parentRef;
 }
 
 // @メンションの下書きカードを「作成しました」に書き換え、下書きの状態を更新する
 // deno-lint-ignore no-explicit-any
-async function markDraftCreated(d: Deps, sb: any, draftId: string, taskId: string, title: string): Promise<void> {
+async function markDraftCreated(d: Deps, sb: any, draftId: string, taskId: string, title: string, parent?: { channel: string; ts: string } | null): Promise<void> {
   const { data: dr } = await sb.from("hq_slack_ai_draft").update({ status: "created", task_id: taskId }).eq("id", draftId).select("card_notification_id").maybeSingle();
-  if (dr?.card_notification_id) await d.sendSlack({ action: "update", notification_id: dr.card_notification_id, text: `✅ 本部タスクを作成しました：${title}`, blocks: [{ type: "section", text: { type: "mrkdwn", text: `✅ *本部タスクを作成しました*：${title}` } }] });
+  // 表紙の親投稿へのリンク（取れなければ、リンクなしで「作成しました」だけ）
+  let link: string | null = null;
+  if (parent?.channel && parent.ts) {
+    try {
+      const r = await fetch(`https://slack.com/api/chat.getPermalink?channel=${encodeURIComponent(parent.channel)}&message_ts=${encodeURIComponent(parent.ts)}`, { headers: { Authorization: `Bearer ${Deno.env.get("SLACK_BOT_TOKEN")}` } });
+      const j = await r.json().catch(() => ({})); if (j?.ok && typeof j.permalink === "string") link = j.permalink;
+    } catch { /* リンクなし */ }
+  }
+  if (dr?.card_notification_id) await d.sendSlack({ action: "update", notification_id: dr.card_notification_id, text: `✅ 本部タスクを作成しました：${title}`, blocks: [{ type: "section", text: { type: "mrkdwn", text: `✅ *本部タスクを作成しました*\n${title}${link ? `\n<${link}|表紙の投稿を開く（詳細はそのスレッドにあります）>` : ""}` } }] });
 }
 
 // Bot Token の権限に files:read があるか（コメントの添付の入力欄を出すかの判断）。10 分だけ覚える
@@ -171,8 +182,7 @@ export function hqtaskHandlers(d: Deps): Record<string, (c: Ctx) => Promise<Resp
       const { data, error } = await sb.rpc("hq_slack_task_create_steps", { p_slack_user_id: payload.user?.id, p_title: dd.title, p_corp: dd.corp, p_memo: dd.memo, p_notes: dd.notes || null, p_urgent: dd.urgent, p_photo: false, p_steps: stepsArg, p_dedupe: `ai:${dr.id}`, p_source: { via: "slack_ai_draft" } });
       if (error || !data?.ok) return d.ephemeral("作成できませんでした：" + String(data?.message ?? error?.message ?? "").slice(0, 120), payload.response_url);
       const v = { title: dd.title, corp: dd.corp, memo: dd.memo, notes: dd.notes, urgent: dd.urgent, photo: false, steps: dd.steps.map((s) => ({ title: s.title, slackUsers: s.users, due: s.due, time: s.time })) };
-      if (!data.duplicate) d.waitUntil(afterCreate(d, sb, actor, v, data, { channel: dr.channel_id, thread_ts: dr.thread_ts }));
-      d.waitUntil(markDraftCreated(d, sb, dr.id, data.task_id, dd.title));
+      d.waitUntil((async () => { const pr = data.duplicate ? null : await afterCreate(d, sb, actor, v, data, { channel: dr.channel_id, thread_ts: dr.thread_ts }); await markDraftCreated(d, sb, dr.id, data.task_id, dd.title, pr); })());
       return d.text("");
     },
     [AI_EDIT]: async ({ sb, payload, value, actor }) => {
@@ -242,8 +252,7 @@ export function hqtaskHandlers(d: Deps): Record<string, (c: Ctx) => Promise<Resp
       });
       if (error) return d.json({ response_action: "errors", errors: { title: "作成できませんでした: " + String(error.message).slice(0, 120) } });
       if (!data?.ok) return d.json({ response_action: "errors", errors: { [errorField(data?.reason)]: String(data?.message ?? "作成できませんでした") } });
-      if (!data.duplicate) d.waitUntil(afterCreate(d, sb, actor, v, data, meta));
-      if (meta.draft_id) d.waitUntil(markDraftCreated(d, sb, meta.draft_id, data.task_id, v.title));
+      d.waitUntil((async () => { const pr = data.duplicate ? null : await afterCreate(d, sb, actor, v, data, meta); if (meta.draft_id) await markDraftCreated(d, sb, meta.draft_id, data.task_id, v.title, pr); })());
       return d.json({ response_action: "clear" });
     },
     // 編集: いまの値が入ったフォームを開く
