@@ -8,9 +8,15 @@
 --     次の 1 人（直前の工程の次）だけ・同じ人が両方の担当なら出さない。送るのは EF hq-task-reminders（設定 hq_task_slack.next_notice_enabled が true のときだけ。最初は false）。
 -- 【戻し方】drop function public.hq_slack_step_reopen(text, uuid); drop function public.hq_slack_next_candidates(); ②は 2026-12-13/12-15 の関数定義を再実行
 do $do$
-declare r record; v_def text; v_new text; v_old constant text := 'order by s2.sort_order limit 1'; v_rep constant text := 'order by s2.due_date nulls last, s2.due_time nulls last, s2.sort_order limit 1';
+declare r record; v_def text; v_new text; v_old text; v_rep text;
 begin
   for r in select p.oid, p.proname from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname in ('hq_slack_reminder_candidates', 'hq_slack_step_complete') loop
+    -- 置き換える 1 行（関数ごと）。hq_slack_reminder_candidates の「いまの工程」＝ s3 の行、hq_slack_step_complete の「先頭の未完了」＝ s2 の行
+    if r.proname = 'hq_slack_reminder_candidates' then
+      v_old := 'order by s3.sort_order limit 1'; v_rep := 'order by s3.due_date nulls last, s3.due_time nulls last, s3.sort_order limit 1';
+    else
+      v_old := 'order by s2.sort_order limit 1'; v_rep := 'order by s2.due_date nulls last, s2.due_time nulls last, s2.sort_order limit 1';
+    end if;
     v_def := pg_get_functiondef(r.oid);
     if position(v_rep in v_def) > 0 then raise notice '% はすでに期限順です（何もしません）', r.proname; continue; end if;
     if (length(v_def) - length(replace(v_def, v_old, ''))) / length(v_old) <> 1 then raise exception '停止: % の並び順の指定が想定と違います（変えずに止めました）', r.proname; end if;
