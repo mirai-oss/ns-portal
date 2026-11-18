@@ -567,11 +567,11 @@ Deno.test("招待リンクの合言葉は、スレッドに出す本文から伏
   assert(!messageLine(m, { bodyChars: 200, staffName: "担当 花子" }).includes("0123456789abcdef"));
 });
 
-Deno.test("親投稿の 2 行目: 応募・LINE・フォーム・面接・採用の進み具合を絵で出す（済んだ段階だけ色つき）", () => {
+Deno.test("親投稿の 2 行目: 応募・LINE・フォーム・面接・採用の進み具合を絵で出す（済みは●太字・まだは○。絵文字なし）", () => {
   const strip0 = parentMessage(view()).blocks as any[];
-  assert(strip0[0].text.text.includes("▫️LINE未連携") && strip0[0].text.text.includes("▫️フォーム未受信") && strip0[0].text.text.includes("▫️採用"));
+  assert(strip0[0].text.text.includes("○ LINE未連携") && strip0[0].text.text.includes("○ フォーム未受信") && strip0[0].text.text.includes("○ 採用") && strip0[0].text.text.includes("● *応募*"));
   const strip1 = parentMessage(view({ line_user_id: "Uxxxx", form_received_at: "2026-11-16T02:00:00Z", status: "interview_set", interview_at: "2026-11-20T05:00:00Z" })).blocks as any[];
   const t = strip1[0].text.text as string;
-  assert(t.includes("💚LINE連携") && t.includes("📝フォーム受信") && t.includes("📅面接 ") && t.includes("▫️採用"));
+  assert(t.includes("● *LINE連携*") && t.includes("● *フォーム受信*") && t.includes("● *面接 ") && t.includes("○ 採用"));
   assert(!t.includes("Uxxxx"));   // LINE の ID は出さない
 });

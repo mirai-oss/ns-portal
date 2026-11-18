@@ -120,22 +120,25 @@ export function createModal(o: { mode?: "create" | "edit"; initial?: Initial; me
 
 /** 親投稿（1 行）。状態の印・種別・タイトル・期限 */
 export type ParentStrip = { urgent?: boolean; names?: string[]; stepsDone: number; stepsTotal: number; overdue?: boolean };
-/** 親投稿の 2 行目（2026-11-18）: いまの状態を絵で。🔥最重要／⏰期限超過／👤担当（未完了の工程の担当）／工程の進み（✅✅▫️ 2/3）／🎉完了 */
+/** 親投稿の 2 行目（2026-11-18・同日シンプル化）: 絵は 1 行目の先頭の 1 つだけ。2 行目は文字＋太字で「目立たせたいもの」だけを強調する。
+ *  例: *最重要*　*期限超過*　担当 齋藤・青山　工程 1/3 ／ 完了: *完了*　工程 3/3（工程が 1 つだけのときは「工程」を出さない） */
 export function parentStrip(x: ParentStrip, done: boolean): string {
   const n = Math.min(10, Math.max(0, x.stepsTotal)), d = Math.min(n, Math.max(0, x.stepsDone));
   const parts: string[] = [];
-  if (x.urgent) parts.push("🔥最重要");
-  if (done) parts.push("🎉完了");
+  if (done) parts.push("*完了*");
   else {
-    if (x.overdue) parts.push("⏰期限超過");
+    if (x.urgent) parts.push("*最重要*");
+    if (x.overdue) parts.push("*期限超過*");
     const names = [...new Set(x.names ?? [])].slice(0, 3).map((nm) => clean(nm, 12));
-    if (names.length) parts.push(`👤${names.join("・")}`);
+    if (names.length) parts.push(`担当 ${names.join("・")}`);
   }
-  if (n > 0) parts.push(`${"✅".repeat(d)}${"▫️".repeat(n - d)} ${d}/${n}`);
+  if (n > 1) parts.push(`工程 ${d}/${n}`);
   return parts.join("　");
 }
 export function parentMessage(o: { title: string; due: string; dueTime?: string | null; done?: boolean; strip?: ParentStrip }): { text: string; blocks: unknown[] } {
-  const text = `${o.done ? "✅" : "🕒"} 本部タスク｜${clean(o.title, 60)}｜${md(o.due, o.dueTime)}${o.done ? "｜完了" : ""}`;
+  // 1 行目の先頭の印は 1 つだけ: ✅完了／⏰期限超過／🔥最重要／🕒ふつう（優先はこの順）。strip が無い呼び出しは従来どおり ✅／🕒
+  const mark = o.done ? "✅" : o.strip?.overdue ? "⏰" : o.strip?.urgent ? "🔥" : "🕒";
+  const text = `${mark} 本部タスク｜${clean(o.title, 60)}｜${md(o.due, o.dueTime)}${o.done ? "｜完了" : ""}`;
   const line = o.strip ? parentStrip(o.strip, !!o.done) : "";
   return { text, blocks: [{ type: "section", text: { type: "mrkdwn", text: line ? `${text}\n${line}` : text } }] };
 }

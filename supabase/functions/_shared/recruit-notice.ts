@@ -195,10 +195,11 @@ const linkButton = (text: string, url: string, id: string, key = "") => ({ type:
 
 /** 親投稿の 2 行目: 進み具合を絵で。済んだ段階は色つきの絵、まだの段階は ▫️（応募 → LINE → フォーム → 面接 → 採用） */
 export function progressStrip(v: View): string {
+  // 2026-11-18 シンプル化: 絵文字は使わず、●＝済み／○＝まだ。済みの項目は太字にして目立たせる
   const hired = v.status === "hired" || !!v.moved;
-  const iv = v.interviewAt ? `📅面接 ${whenJst(v.interviewAt)}` : v.needSchedule ? "📅面接 日程調整中" : "▫️面接";
-  const steps = ["📩応募", v.lineLinked ? "💚LINE連携" : "▫️LINE未連携", v.formAt ? "📝フォーム受信" : "▫️フォーム未受信", iv, hired ? "🎉採用" : "▫️採用"];
-  return steps.join("　›　");
+  const on = (t: string) => `● *${t}*`, off = (t: string) => `○ ${t}`;
+  const iv = v.interviewAt ? on(`面接 ${whenJst(v.interviewAt)}`) : v.needSchedule ? off("面接（日程調整中）") : off("面接");
+  return [on("応募"), v.lineLinked ? on("LINE連携") : off("LINE未連携"), v.formAt ? on("フォーム受信") : off("フォーム未受信"), iv, hired ? on("採用") : off("採用")].join("　");
 }
 
 /**

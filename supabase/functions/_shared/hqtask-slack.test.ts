@@ -144,12 +144,15 @@ Deno.test("チャンネルのカード: 工程の id があれば、未完了の
   assert(labels.some((t: string) => t.includes("コメント")));
 });
 
-Deno.test("本部タスクの親投稿: 2 行目に状態の絵（最重要・担当・工程の進み・期限超過・完了）。1 行目の文面は変えない", () => {
+Deno.test("本部タスクの親投稿: 2 行目は文字＋太字だけ（最重要・期限超過・担当・工程の進み・完了）。絵は 1 行目の先頭の 1 つだけ", () => {
   const p = parentMessage({ title: "T", due: "2026-11-20", strip: { urgent: true, names: ["青山", "青山", "齋藤"], stepsDone: 1, stepsTotal: 3, overdue: true } });
   const t = (p.blocks as any[])[0].text.text as string;
   assert(t.startsWith(p.text + "\n"));
-  assert(t.includes("🔥最重要") && t.includes("⏰期限超過") && t.includes("👤青山・齋藤") && t.includes("✅▫️▫️ 1/3"));
+  assert(p.text.startsWith("⏰"));
+  assertEquals(t.split("\n")[1], "*最重要*　*期限超過*　担当 青山・齋藤　工程 1/3");
+  assert(parentMessage({ title: "T", due: "2026-11-20", strip: { urgent: true, stepsDone: 0, stepsTotal: 1 } }).text.startsWith("🔥"));
   const d = (parentMessage({ title: "T", due: "2026-11-20", done: true, strip: { stepsDone: 2, stepsTotal: 2 } }).blocks as any[])[0].text.text as string;
-  assert(d.includes("🎉完了") && d.includes("✅✅ 2/2") && !d.includes("⏰"));
+  assertEquals(d.split("\n")[1], "*完了*　工程 2/2");
+  assert(!d.includes("⏰") && !d.includes("🎉"));
   assertEquals((parentMessage({ title: "T", due: "2026-11-20" }).blocks as any[])[0].text.text, parentMessage({ title: "T", due: "2026-11-20" }).text);
 });

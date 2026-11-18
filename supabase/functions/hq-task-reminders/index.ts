@@ -51,12 +51,19 @@ Deno.serve(async (req: Request) => {
     return json({ ok: !!r?.ok, notification_id: r?.notification_id ?? null, error: r?.ok ? null : String(r?.error ?? "") });
   }
 
-  // 2026-11-18 親投稿（チャンネル）を、いまのタスクの状態（絵つきの 2 行目）に合わせて書き換える。社内の Slack の投稿を直すだけ（応募者・外部には送らない）
+  // 2026-11-18 親投稿（チャンネル）を、いまのタスクの状態（2 行目＝文字と太字）に合わせて書き換える。社内の Slack の投稿を直すだけ（応募者・外部には送らない）
+  //   only_changed: true（定期実行用）＝いまの表示が台帳の最後の表示と同じなら何もしない（Slack への無駄な書き換えをしない）。Slack 側で消えた投稿（message_not_found）は飛ばす
   if (body?.op === "refresh_parents") {
     const max = Math.min(100, Math.max(1, Number(body?.max) || 50));
+    const onlyChanged = body?.only_changed === true;
     const { data: logs } = await sb.from("hq_slack_task_log").select("task_id,parent_notification_id").not("parent_notification_id", "is", null).order("created_at", { ascending: false }).limit(max);
-    let done = 0, failed = 0;
+    const ids = ((logs ?? []) as any[]).map((l) => l.parent_notification_id);
+    const { data: led } = await sb.from("notification_deliveries").select("id,delivery_status,error,payload").in("id", ids.length ? ids : ["00000000-0000-0000-0000-000000000000"]);
+    const ledger = new Map(((led ?? []) as any[]).map((r) => [r.id, r]));
+    let done = 0, failed = 0, same = 0, gone = 0;
     for (const l of (logs ?? []) as any[]) {
+      const lr = ledger.get(l.parent_notification_id);
+      if (onlyChanged && lr?.delivery_status === "failed" && lr?.error === "message_not_found") { gone++; continue; }
       const { data: g } = await sb.rpc("hq_slack_task_get", { p_task: l.task_id });
       const { data: sg } = await sb.rpc("hq_slack_steps_get", { p_task: l.task_id });
       if (!g?.ok) { failed++; continue; }
@@ -64,10 +71,14 @@ Deno.serve(async (req: Request) => {
       const allDone = sl.length > 0 && sl.every((x) => x.done);
       const pm = parentMessage({ title: g.title, due: g.due, dueTime: g.due_time, done: allDone, strip: { urgent: g.urgent, names: sl.filter((x) => !x.done).flatMap((x) => x.assignee_names ?? []), stepsDone: sl.filter((x) => x.done).length, stepsTotal: sl.length,
         overdue: !allDone && String(g.due ?? "") !== "" && String(g.due) < jstDate() } });
+      if (onlyChanged) {
+        const cur = ((lr?.payload?.updated_blocks ?? lr?.payload?.blocks) as any[] | undefined)?.[0]?.text?.text;
+        if (cur === (pm.blocks as any[])[0].text.text) { same++; continue; }
+      }
       const r = await sendSlack({ action: "update", notification_id: l.parent_notification_id, text: pm.text, blocks: pm.blocks });
       if (r?.ok) done++; else failed++;
     }
-    return json({ ok: true, op: "refresh_parents", total: (logs ?? []).length, updated: done, failed });
+    return json({ ok: true, op: "refresh_parents", total: (logs ?? []).length, updated: done, unchanged: same, gone, failed });
   }
 
   // 作成者への「完了しました」DM（Slack のフォームで付けたタスクが完了したとき）。dm_enabled が true のときだけ送る
