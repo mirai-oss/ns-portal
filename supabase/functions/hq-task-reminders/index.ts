@@ -89,6 +89,22 @@ Deno.serve(async (req: Request) => {
     return json({ ok: !!j?.ok, scopes: String(r.headers.get("x-oauth-scopes") ?? "").split(",").map((x) => x.trim()).filter(Boolean), error: j?.error ?? null });
   }
 
+  // 社長が承認した古い通知の投稿を、Slack から削除する（台帳の番号を指定。台帳が「Indeedから新しい応募」の旧い経路の投稿であるものだけ・Bot が自分で出した投稿だけ）。list_only=true なら、削除せず一覧だけ返す
+  if (body?.op === "delete_old_route_posts") {
+    const ids = (Array.isArray(body?.ids) ? body.ids : []).map(String).slice(0, 10);
+    const { data: led } = await sb.from("notification_deliveries").select("id,event,slack_channel_id,slack_ts,payload,delivery_status,created_at").in("id", ids.length ? ids : ["00000000-0000-0000-0000-000000000000"]);
+    const out: unknown[] = [];
+    for (const r of (led ?? []) as any[]) {
+      const okRow = r.event === "route" && String(r.payload?.text ?? "").includes("Indeedから新しい応募") && r.slack_ts && r.slack_channel_id;
+      if (!okRow) { out.push({ id: r.id, skipped: "対象外" }); continue; }
+      if (body?.list_only === true) { out.push({ id: r.id, at: r.created_at, status: r.delivery_status, text: String(r.payload?.text ?? "").slice(0, 40) }); continue; }
+      const res = await fetch("https://slack.com/api/chat.delete", { method: "POST", headers: { "Content-Type": "application/json; charset=utf-8", Authorization: `Bearer ${Deno.env.get("SLACK_BOT_TOKEN")}` }, body: JSON.stringify({ channel: r.slack_channel_id, ts: r.slack_ts }) });
+      const j = await res.json().catch(() => ({}));
+      out.push({ id: r.id, deleted: !!j?.ok, error: j?.error ?? null });
+    }
+    return json({ ok: true, op: "delete_old_route_posts", results: out });
+  }
+
   if (body?.op === "next_notices") {
     const kinds = Array.isArray(body?.kinds) && body.kinds.length ? body.kinds.map(String) : ["next_today", "next_over", "next_ready"];
     return json({ ok: true, op: "next_notices", ...(await runNext(sb, { kinds, dry: body?.dry_run === true, onlyRecipient: body?.only_recipient ? String(body.only_recipient) : null })) });
