@@ -4172,6 +4172,8 @@ async function main(){
   if(PAGE==="notify"&&canFeature(u,"notify")){ VIEW="notify"; $("app").innerHTML='<div class="spin">読み込み中…</div>'; await fetchNotifySettings(); renderNotify(u); return; }
   if(PAGE==="templates"&&canFeature(u,"templates")){ VIEW="templates"; $("app").innerHTML='<div class="spin">読み込み中…</div>'; await fetchTemplates(); renderTemplates(u); return; } // 手順書のリンク用（?page=templates）
   if(PAGE==="past"){ VIEW="past"; $("app").innerHTML='<div class="spin">読み込み中…</div>'; await fetchPastMonths(); renderPast(u); return; }
+  // 2026-11-18: ?new=1 で、ログイン後に「単発タスクの作成フォーム」を直接開く（申請フォームの一覧のURL用）。作成の権限が無い人は、これまでどおりボードを開く。?task= ?page= は変えない
+  if(qs.get("new")==="1"&&canFeature(u,"newtask")){ VIEW="new"; renderNew(u); return; }
   renderBoard(u);
 }
 main();
