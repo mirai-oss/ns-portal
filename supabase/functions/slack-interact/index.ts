@@ -30,6 +30,7 @@ import { requestCase, afterRequestDecide, afterAlertRequest } from "../_shared/a
 // 2026-11-15（社長の指示）: 勤怠申請の 2 段階承認の専用の操作（一次承認・本人確認中・差戻し・却下・最終承認・スマレジへの再実行）。権限と状態の検査は DB の関数。ここは受付と振り分けだけ
 import { actRequest, reasonModal, reasonFromView, REQ_REASON_MODAL, type ReqAction } from "../_shared/attendance-request-actions.ts";
 // 2026-11-26: 採用管理のカードの［担当者を変更］。業務の処理は RPC（recruit_assignee_candidates / recruit_assignee_set）。ここは受付と振り分けだけ
+import { maskPII } from "../_shared/recruit-notice.ts";   // 2026-11-19 LINE 返信の窓の履歴で、合言葉などを伏せる
 import { assigneeOpen, assigneeSubmit, ASSIGNEE_ACTION, ASSIGNEE_MODAL, lineOpen, lineInput, lineConfirm, LINE_ACTION, LINE_MODAL, LINE_CONFIRM,
   interviewOpen, interviewInput, interviewConfirmSubmit, interviewCancelOpen, interviewCancelSubmit, INTERVIEW_ACTION, INTERVIEW_CANCEL_ACTION, INTERVIEW_MODAL, INTERVIEW_CONFIRM, INTERVIEW_CANCEL_MODAL,
   retrySendOpen, retrySendSubmit, retryCalendarOpen, retryCalendarSubmit, RETRY_SEND_ACTION, RETRY_CAL_ACTION, RETRY_SEND_MODAL, RETRY_CAL_MODAL,
@@ -706,6 +707,17 @@ function recruitDeps(sb: any, actor?: Actor, payload?: any): RecruitDeps {
         places: Array.isArray(m.interview_places) ? m.interview_places.filter((p: any) => p && typeof p.name === "string" && p.name).map((p: any) => ({ name: p.name, address: p.address ?? null, note: p.note ?? null })) : [],
         enabled: ra.send_enabled === true && calendar_mode === "live", line_mode: ra.line_mode === "live" ? "live" : "dry", calendar_mode,
       };
+    },
+    // ［LINE 返信］の窓に出す、これまでのやり取り（最大 limit 件・古い順）。権限は can_see_applicant。本文は短く・合言葉などは伏せる（maskPII）
+    async recentMessages(applicantId: string, limit: number) {
+      if (!actor) return [];
+      const { data: a } = await sb.from("applicants").select("id,store_id").eq("id", applicantId).maybeSingle();
+      if (!a) return [];
+      const { data: can } = await sb.rpc("can_see_applicant", { p_user: actor.user_id, p_store: a.store_id });
+      if (can !== true) return [];
+      const { data: ms } = await sb.from("applicant_messages").select("direction,channel,body,sent_at").eq("applicant_id", applicantId).order("sent_at", { ascending: false }).limit(limit);
+      // deno-lint-ignore no-explicit-any
+      return ((ms ?? []) as any[]).reverse().map((m) => ({ direction: String(m.direction ?? ""), channel: String(m.channel ?? ""), body: maskPII(String(m.body ?? "")).slice(0, 300), sent_at: m.sent_at ?? null }));
     },
     // 共通の操作の入口（EF recruit-action）を、押した人の操作として呼ぶ（service_role。操作者は actor_id で渡す。権限は、向こうの RPC が確かめる）
     async action(body) {

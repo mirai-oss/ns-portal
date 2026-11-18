@@ -171,7 +171,7 @@ Deno.test("LINE 返信のボタン: 入力の窓を開く（宛先・本文の�
   // deno-lint-ignore no-explicit-any
   const v = o.view as any;
   assertEquals([v.callback_id, v.title.text, v.submit.text], [LINE_MODAL, "応募者へ LINE 返信", "確認へ"]);
-  assertEquals(JSON.parse(v.private_metadata), LMETA);
+  assertEquals(JSON.parse(v.private_metadata), { ...LMETA, dry: true });   // 試しモードかを窓に控える（［確認へ］で再確認の呼び出しを省くため）
   assert(texts(v).includes("宛先：*試験 太郎* さん（LINE）") && texts(v).includes("試しモード") && texts(v).includes("スレッドのふつうの返信は社内の連絡"));
   assertEquals(v.blocks.find((b: any) => b.block_id === "body").element.max_length, 1000);
   assertEquals(acts, [{ op: "message_check", applicant_id: A1 }]);
@@ -631,4 +631,21 @@ Deno.test("採用の窓: 雇用区分を、役割とは別に選ぶ（アルバ�
   const r = await hireSubmit(x.d, actor, hv); assert(r.kind === "clear"); await r.after!();
   assertEquals([x.acts[0].employment_class, x.acts[0].role], ["part", "AL"]);
   assert(x.tells[0].startsWith("🎉 試験 太郎 さんを採用にしました（役割：アルバイト・雇用区分：パート）。"));
+});
+
+Deno.test("LINE 返信の窓: これまでのやり取り（古い→新しい・応募者から／こちらから・日時・本文）を出す。無ければ「まだありません」", async () => {
+  const hist = [{ direction: "in", channel: "line", body: "面接の日程を教えてください", sent_at: "2026-11-16T04:01:00Z" }, { direction: "out", channel: "line", body: "11/20 14:00 はいかがですか", sent_at: "2026-11-16T05:30:00Z" }];
+  const { d } = ldeps(); const withHist: RecruitDeps = { ...d, recentMessages: () => Promise.resolve(hist) };
+  const o = await lineOpen(withHist, actor, { applicant_id: A1 }, PLACE);
+  // deno-lint-ignore no-explicit-any
+  const t = texts((o as any).view);
+  assert(t.includes("💬 応募者から（LINE・11/16 13:01）") && t.includes("面接の日程を教えてください") && t.includes("↩️ こちらから（LINE・11/16 14:30）"));
+  assert(t.indexOf("面接の日程") < t.indexOf("11/20 14:00"));
+  const none = await lineOpen({ ...d, recentMessages: () => Promise.resolve([]) }, actor, { applicant_id: A1 }, PLACE);
+  // deno-lint-ignore no-explicit-any
+  assert(texts((none as any).view).includes("まだありません"));
+  // 窓を開いたときに確かめ済みなら、［確認へ］で message_check を呼ばない（3 秒以内に返すため）
+  const { d: d2, acts } = ldeps();
+  const o2 = await lineInput(d2, actor, inputView("本文", { private_metadata: JSON.stringify({ ...LMETA, dry: false }) }));
+  assert(o2.kind === "push" && acts.length === 0);
 });

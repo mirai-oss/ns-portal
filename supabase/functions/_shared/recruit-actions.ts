@@ -41,6 +41,8 @@ export type RecruitDeps = {
   interviewInfo?(applicantId: string): Promise<InterviewInfo>;
   /** 押した人だけに見える知らせ（窓を閉じたあとの結果）。place＝ボタンを押した場所（チャンネルとスレッド） */
   tell?(place: Place, text: string): Promise<void>;
+  /** ［LINE 返信］の窓に出す、これまでのやり取り（新しい順に limit 件まで→古い順で返す）。権限が無ければ空。本文は、短く・合言葉などは伏せた形で返す */
+  recentMessages?(applicantId: string, limit: number): Promise<{ direction: string; channel: string; body: string; sent_at: string | null }[]>;
 };
 export type Place = { channel_id?: string | null; thread_ts?: string | null };
 export type IvPlaceRow = { name: string; address?: string | null; note?: string | null };
@@ -136,16 +138,28 @@ export async function assigneeSubmit(deps: RecruitDeps, actor: RecruitActor, vie
 //   スレッドのふつうの返信は、ここを通らない（＝今までどおり、応募者へは送られない）。
 const LINE_MAX = 1000;
 const DRY_NOTE = "🧪 いまは試しモードです。この窓から送っても、応募者には届きません（送信箱に「試し」と残るだけ）。";
-type LineMeta = { applicant_id: string; notification_id: string | null; name: string; channel_id: string | null; thread_ts: string | null };
+type LineMeta = { applicant_id: string; notification_id: string | null; name: string; channel_id: string | null; thread_ts: string | null; dry?: boolean };
 const strOrNull = (x: unknown) => (typeof x === "string" && x ? x : null);
 
 /** 入力の窓 */
-export function lineInputModal(meta: LineMeta, d: { dry: boolean }): Record<string, unknown> {
+export type HistRow = { direction: string; channel: string; body: string; sent_at: string | null };
+/** これまでのやり取りの表示（2026-11-19）。古い順・最大 5 件。「応募者から」「こちらから」・日時・本文（短く）。plain_text で出す（記法として解釈させない） */
+export function historyBlocks(rows: HistRow[]): Record<string, unknown>[] {
+  if (!rows.length) return [{ type: "context", elements: [{ type: "mrkdwn", text: "これまでのやり取りは、まだありません。" }] }];
+  const when = (t: string | null) => { if (!t) return ""; const d = new Date(new Date(t).getTime() + 9 * 3600_000); return `${d.getUTCMonth() + 1}/${d.getUTCDate()} ${String(d.getUTCHours()).padStart(2, "0")}:${String(d.getUTCMinutes()).padStart(2, "0")}`; };
+  return [
+    { type: "section", text: { type: "mrkdwn", text: `*これまでのやり取り（新しい順に最大 ${rows.length} 件・古い→新しい）*` } },
+    ...rows.map((r) => ({ type: "section", text: { type: "plain_text", emoji: false, text: `${r.direction === "in" ? "💬 応募者から" : "↩️ こちらから"}（${r.channel === "indeed" ? "Indeed" : "LINE"}・${when(r.sent_at)}）\n${clean(r.body, 160)}` } })),
+    { type: "divider" },
+  ];
+}
+export function lineInputModal(meta: LineMeta, d: { dry: boolean }, history: HistRow[] = []): Record<string, unknown> {
   return {
     type: "modal", callback_id: LINE_MODAL, private_metadata: JSON.stringify(meta),
     title: plain("応募者へ LINE 返信"), submit: plain("確認へ"), close: plain("やめる"),
     blocks: [
       { type: "section", text: { type: "mrkdwn", text: `宛先：*${clean(meta.name, 30)}* さん（LINE）` } },
+      ...historyBlocks(history),
       ...(d.dry ? [{ type: "context", elements: [{ type: "mrkdwn", text: DRY_NOTE }] }] : []),
       { type: "input", block_id: "body", label: plain("本文"), element: { type: "plain_text_input", action_id: "body", multiline: true, max_length: LINE_MAX } },
       { type: "context", elements: [{ type: "mrkdwn", text: "次の画面で、宛先と本文を確かめてから送ります。スレッドのふつうの返信は社内の連絡で、応募者には届きません。" }] },
@@ -176,9 +190,10 @@ export async function lineOpen(deps: RecruitDeps, _actor: RecruitActor, value: {
   if (!deps.action || !(await deps.actionsEnabled())) return { kind: "ephemeral", text: OFF_TEXT };
   const r = await deps.action({ op: "message_check", applicant_id: applicantId });
   if (!r?.ok || r.can_send !== true) return { kind: "ephemeral", text: refusal(r) };
+  const hist = deps.recentMessages ? await deps.recentMessages(applicantId, 5).catch(() => []) : [];
   return { kind: "modal", view: lineInputModal(
-    { applicant_id: applicantId, notification_id: isUuid(value?.notification_id) ? value.notification_id : null, name: String(r.applicant_name ?? ""), channel_id: strOrNull(place.channel_id), thread_ts: strOrNull(place.thread_ts) },
-    { dry: r.mode !== "live" }) };
+    { applicant_id: applicantId, notification_id: isUuid(value?.notification_id) ? value.notification_id : null, name: String(r.applicant_name ?? ""), channel_id: strOrNull(place.channel_id), thread_ts: strOrNull(place.thread_ts), dry: r.mode !== "live" },
+    { dry: r.mode !== "live" }, hist) };
 }
 
 // deno-lint-ignore no-explicit-any
@@ -186,7 +201,7 @@ function readMeta(view: any): (LineMeta & { body?: unknown }) | null {
   try {
     const m = JSON.parse(view?.private_metadata ?? "{}") ?? {};
     if (!isUuid(m.applicant_id)) return null;
-    return { applicant_id: m.applicant_id, notification_id: isUuid(m.notification_id) ? m.notification_id : null, name: String(m.name ?? ""), channel_id: strOrNull(m.channel_id), thread_ts: strOrNull(m.thread_ts), body: m.body };
+    return { applicant_id: m.applicant_id, notification_id: isUuid(m.notification_id) ? m.notification_id : null, name: String(m.name ?? ""), channel_id: strOrNull(m.channel_id), thread_ts: strOrNull(m.thread_ts), dry: typeof m.dry === "boolean" ? m.dry : undefined, body: m.body };
   } catch (_e) { return null; }
 }
 
@@ -200,6 +215,9 @@ export async function lineInput(deps: RecruitDeps, _actor: RecruitActor, view: a
   if (!body) return fail("本文を入れてください。");
   if (body.length > LINE_MAX) return fail(`本文が長すぎます（${LINE_MAX} 文字まで）。`);
   if (!deps.action || !(await deps.actionsEnabled())) return fail(OFF_TEXT);
+  // 2026-11-19 窓を開いたときに確かめ済み（dry の印が meta に入っている）なら、ここでの再確認（別の関数を呼ぶので遅い）は省く。Slack は 3 秒以内の返事を待ち、遅いと「Slack になかなか接続できません」と出るため。
+  //   送れるかの最終の確認は、［送信する］のあとの message_send（送信箱の RPC）が必ず行う
+  if (typeof meta.dry === "boolean") return { kind: "push", view: lineConfirmModal({ ...meta, body }, { dry: meta.dry }) };
   const r = await deps.action({ op: "message_check", applicant_id: meta.applicant_id });
   if (!r?.ok || r.can_send !== true) return fail(refusal(r));
   return { kind: "push", view: lineConfirmModal({ ...meta, name: String(r.applicant_name ?? meta.name), body }, { dry: r.mode !== "live" }) };
