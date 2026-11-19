@@ -190,7 +190,7 @@ export function requestCard(v: RequestView, o: { notificationId: string }): { te
   const two = v.flow === "two_stage";
   const lines: string[] = [
     `*${title}*`, `店舗：${clean(v.storeName, 30)}`, `対象：${clean(v.userName, 30)}`, `勤務日：${d.mdw}`,
-    `申請：${clean(v.requestedByName, 20)}${v.requestedAt ? `（${whenJst(v.requestedAt)}）` : ""}`, `理由：${cut(v.reason) || "—"}`,
+    `申請：${clean(v.requestedByName, 20)}${v.requestedAt ? `（${whenJst(v.requestedAt)}）` : ""}`, `> *📝 理由：${(cut(v.reason) || "—").replace(/[*_~`>\n]/g, " ")}*`,   // 2026-11-19 理由は目立たせる（引用＋太字）
     "", "*修正前 → 修正後*", ...compareLines(compareTimes(v.before, v.after, v.workDate)), "",
   ];
   if (two) lines.push(`一次承認者：${v.firstSkipped ? "省略（一次承認者 本人の申請）" : v.firstApproverId ? clean(v.firstApproverName, 20) : "未設定"}${v.firstDecidedAt ? `（一次承認 ${clean(v.firstDecidedByName, 20)}・${whenJst(v.firstDecidedAt)}）` : ""}`);

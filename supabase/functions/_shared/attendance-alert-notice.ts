@@ -151,7 +151,7 @@ export function cardMessage(v: AlertView, o: { notificationId: string }): { text
       const diff = diffLines(v.before ?? v.detected, v.proposed, v.workDate);
       lines.push(...(diff.length ? diff : ["（変更なし）"]));
     }
-    lines.push("", `理由：${String(v.fixReason ?? "—").slice(0, 300)}`, `申請：${clean(v.requestedByName, 20)}${v.requestedAt ? `（${whenJst(v.requestedAt)}）` : ""}`);
+    lines.push("", `> *📝 理由：${String(v.fixReason ?? "—").slice(0, 300).replace(/[*_~`>\n]/g, " ")}*`, `申請：${clean(v.requestedByName, 20)}${v.requestedAt ? `（${whenJst(v.requestedAt)}）` : ""}`);
   }
   const blocks: unknown[] = [];
   const push = () => blocks.push({ type: "section", text: { type: "mrkdwn", text: lines.join("\n") } });
