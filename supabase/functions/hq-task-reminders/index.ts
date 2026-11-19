@@ -10,6 +10,7 @@
 // =============================================================
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { callModel, jstToday as aiToday, systemPrompt, toDraft, type RosterEntry } from "../_shared/hqtask-ai.ts";
+import { parentLinks } from "../_shared/hqtask-parent-link.ts";
 import { reminderMessage, createButtonMessage, parentMessage, taskCardMessage, nextNoticeMessage, type NextItem, type StepRow, type Candidate } from "../_shared/hqtask-slack.ts";
 
 const json = (o: unknown, status = 200) => new Response(JSON.stringify(o), { status, headers: { "Content-Type": "application/json" } });
@@ -54,7 +55,8 @@ async function runNext(sb: any, o: { kinds: string[]; dry?: boolean; onlyRecipie
     const mine: any[] = [];
     for (const c of rows.slice(0, 20)) { const { data: ok } = await sb.rpc("hq_slack_reminder_claim", { p_step: c.step_id, p_recipient: rid, p_kind: c.kind }); if (ok === true) mine.push(c); }
     if (!mine.length) continue;
-    const m = nextNoticeMessage(mine as NextItem[]);
+    const pl = await parentLinks(sb, mine.map((c) => c.task_id)).catch(() => new Map());
+    const m = nextNoticeMessage(mine.map((c) => ({ ...c, parent_url: pl.get(c.task_id)?.url ?? null, parent_channel: pl.get(c.task_id)?.channel ?? null })) as NextItem[]);
     const r = await sendSlack({ action: "send", channel_key: `user:${rid}`, text: m.text, blocks: m.blocks, event: "hqtask_next", source: "ef:hq-task-reminders",
       dedupe_key: `hqtask_next:${rid}:${date}:${mine.map((c) => `${c.step_id.slice(0, 8)}${c.kind.slice(5, 6)}`).join("")}`, ref: { table: "hq_task_steps", id: mine[0].step_id } });
     if (r?.ok) sent += mine.length; else { failed += mine.length; for (const c of mine) await sb.rpc("hq_slack_reminder_release", { p_step: c.step_id, p_recipient: rid, p_kind: c.kind }); }
@@ -226,12 +228,13 @@ Deno.serve(async (req: Request) => {
   const { data: us } = await sb.from("users").select("id,name").in("id", creatorIds.length ? creatorIds : ["00000000-0000-0000-0000-000000000000"]);
   const nameOf = new Map((us ?? []).map((u: any) => [u.id, String(u.name ?? "").replace(/[\s\u3000]+/g, "")]));
   const extra = new Map((tks ?? []).map((t: any) => [t.id, { creatorName: t.created_by ? (nameOf.get(t.created_by) ?? null) : null, memo: t.description ?? null }]));
+  const plinks = await parentLinks(sb, list.slice(0, max).map((c) => c.task_id)).catch(() => new Map());
   let sent = 0, failed = 0, skipped = 0;
   const date = jstDate();
   for (const c of list.slice(0, max)) {
     const { data: claimed, error: ce } = await sb.rpc("hq_slack_reminder_claim", { p_step: c.step_id, p_recipient: c.recipient_id, p_kind: c.kind });
     if (ce || claimed !== true) { skipped++; continue; }
-    const m = reminderMessage(c, extra.get(c.task_id) ?? {});
+    const m = reminderMessage(c, { ...(extra.get(c.task_id) ?? {}), parent: plinks.get(c.task_id) ?? null });
     const r = await sendSlack({ action: "send", channel_key: `user:${c.recipient_id}`, text: m.text, blocks: m.blocks, event: "hqtask_reminder", source: "ef:hq-task-reminders",
       dedupe_key: `hqtask:${c.step_id}:${c.recipient_id}:${c.kind}:${date}`, ref: { table: "hq_task_steps", id: c.step_id } });
     if (r?.ok) sent++;

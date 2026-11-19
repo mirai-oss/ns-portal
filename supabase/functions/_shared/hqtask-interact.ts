@@ -3,6 +3,7 @@
 //   hqtask.task.edit → 編集フォーム（いまの値が入る）／hqtask.edit.modal → 保存＋スレッドに変更の記録・親とカードの更新・新しい担当者へ DM
 //   hqtask.step.done → 完了／hqtask.step.ack → 対応中
 import { AI_CREATE, AI_EDIT, AI_CANCEL, AI_CORP, draftCard, toDraft, toForm, isComplete, ensureChannelKey, type Draft } from "./hqtask-ai.ts";
+import { permalinkOf } from "./hqtask-parent-link.ts";
 import { CORPS, COMMENT_OPEN, COMMENT_MODAL, COMMENT_DELETE, commentModal, createModal, parseCreate, errorField, assignedMessage, assignedStepsMessage, markStepDone, parentMessage, taskCardMessage, completedBlocks, completionThreadText, stepsListModal, stepModal, parseStep, parseTaskEdit, parseCreateSteps, readForm, createFormModal, FORM_ADD, FORM_DEL, MAX_STEPS, STEPS_OPEN, STEP_PICK, STEP_ADD, STEP_MODAL, type StepRow, CREATE_OPEN, CREATE_OPEN_DETAIL, CREATE_MODAL, EDIT_ACTION, EDIT_MODAL, STEP_DONE, STEP_REOPEN, STEP_ACK, STEP_LINK } from "./hqtask-slack.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -74,13 +75,16 @@ async function afterCreate(d: Deps, sb: any, actor: { user_id: string; name: str
     // 担当者ごとに DM（その人の最初の工程。複数あれば件数も）
     const per = new Map<string, typeof made>();
     for (const s of made) for (const uid of s.assignee_ids) per.set(uid, [...(per.get(uid) ?? []), s]);
-    for (const [uid, mine] of per) {
-      // その人の工程を 1 つずつ並べ、工程ごとに「✅ 完了」ボタンを付ける
-      const m = assignedStepsMessage({ title: v.title, creatorName: String(data.creator_name ?? actor.name), memo: v.memo, notes: v.notes, url,
-        steps: mine.map((s) => ({ step_id: s.step_id, title: s.title || "対応する", due: s.due, dueTime: s.due_time, canComplete: !v.photo })) });
-      await d.sendSlack({ action: "send", channel_key: `user:${uid}`, text: m.text, blocks: m.blocks, event: "hqtask_assigned", source: "ef:slack-interact",
-        dedupe_key: `hqtask_assigned:${data.task_id}:${uid}`, ref: { table: "hq_tasks", id: data.task_id } });
-    }
+    //   2026-11-19 DM には［💬 コメント］と「チャンネルの親投稿へのリンク」を付けるため、親投稿を出したあとに送る（下の sendAssignedDms）
+    const sendAssignedDms = async (parent: { url: string; channel: string } | null) => {
+      for (const [uid, mine] of per) {
+        // その人の工程を 1 つずつ並べ、工程ごとに「✅ 完了」ボタンを付ける
+        const m = assignedStepsMessage({ title: v.title, creatorName: String(data.creator_name ?? actor.name), memo: v.memo, notes: v.notes, url, taskId: data.task_id, parent,
+          steps: mine.map((s) => ({ step_id: s.step_id, title: s.title || "対応する", due: s.due, dueTime: s.due_time, canComplete: !v.photo })) });
+        await d.sendSlack({ action: "send", channel_key: `user:${uid}`, text: m.text, blocks: m.blocks, event: "hqtask_assigned", source: "ef:slack-interact",
+          dedupe_key: `hqtask_assigned:${data.task_id}:${uid}`, ref: { table: "hq_tasks", id: data.task_id } });
+      }
+    };
     // ボタンを押したチャンネルに、親投稿（1 行）とスレッドの詳細カード（編集ボタンつき）
     // 2026-11-19 @アプリ のメンションから作ったときも、ふつうのタスクと同じく「表紙の親投稿」を新しく作り、詳細はその親投稿のスレッドにまとめる（メンションの元の投稿のスレッドには、下書きカードが「作成しました＋表紙へのリンク」に変わる）
     const threadTs: string | undefined = meta.thread_ts;
@@ -111,6 +115,10 @@ async function afterCreate(d: Deps, sb: any, actor: { user_id: string; name: str
     } else if (!per.has(actor.user_id)) {
       await d.sendSlack({ action: "send", channel_key: `user:${actor.user_id}`, text: `✅ 本部タスクを作りました：${v.title}（工程 ${made.length} 個）\n🔗 <${url}|管理システムで開く>`,
         event: "hqtask_created", source: "ef:slack-interact", dedupe_key: `hqtask_created:${data.task_id}`, ref: { table: "hq_tasks", id: data.task_id } });
+    }
+    {
+      const pu = parentRef ? await permalinkOf(parentRef.channel, parentRef.ts) : null;
+      await sendAssignedDms(pu && parentRef ? { url: pu, channel: parentRef.channel } : null);
     }
     return parentRef;
 }
@@ -333,7 +341,8 @@ export function hqtaskHandlers(d: Deps): Record<string, (c: Ctx) => Promise<Resp
         if (key && g?.parent_ts && what) await d.sendSlack({ action: "send", channel_key: key, thread_ts: g.parent_ts, text: `✏️ ${data.editor_name ?? actor.name} さんが工程「${data.step_title}」を変更しました：${what}`, event: "hqtask_edited", source: "ef:slack-interact",
           dedupe_key: `hqtask_step_edited:${meta.task_id}:${payload.view?.id ?? crypto.randomUUID()}`, ref: { table: "hq_tasks", id: meta.task_id } });
         for (const uid of (data.new_assignees ?? []) as string[]) {
-          const m = assignedMessage({ title: `${data.title}（工程：${data.step_title}）`, due: v.due, dueTime: v.dueTime, creatorName: String(data.editor_name ?? actor.name), memo: v.note, step_id: String(data.step_id), url: urlOf(meta.task_id), canComplete: !v.photo });
+          const pu = g?.card_channel && g?.parent_ts ? await permalinkOf(String(g.card_channel), String(g.parent_ts)) : null;
+          const m = assignedMessage({ title: `${data.title}（工程：${data.step_title}）`, due: v.due, dueTime: v.dueTime, creatorName: String(data.editor_name ?? actor.name), memo: v.note, step_id: String(data.step_id), url: urlOf(meta.task_id), canComplete: !v.photo, taskId: meta.task_id, parent: pu ? { url: pu, channel: String(g.card_channel) } : null });
           await d.sendSlack({ action: "send", channel_key: `user:${uid}`, text: m.text, blocks: m.blocks, event: "hqtask_assigned", source: "ef:slack-interact", dedupe_key: `hqtask_assigned_step:${data.step_id}:${uid}`, ref: { table: "hq_tasks", id: meta.task_id } });
         }
       })());

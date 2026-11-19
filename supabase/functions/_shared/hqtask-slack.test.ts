@@ -12,9 +12,9 @@ Deno.test("期限が近いほど強い見出し・超過は日数つき・午後
 });
 Deno.test("DM: 完了できる工程だけ『完了にする』・対応中・リンクが付く。作成者向け(escalate)は操作ボタンなし", () => {
   const ids = (m: any) => m.blocks[1].elements.map((e: any) => e.action_id);
-  assertEquals(ids(reminderMessage(base)), ["hqtask.step.done", "hqtask.step.ack", "hqtask.link"]);
-  assertEquals(ids(reminderMessage({ ...base, can_complete: false })), ["hqtask.step.ack", "hqtask.link"]);
-  assertEquals(ids(reminderMessage({ ...base, kind: "escalate", days_over: 3 })), ["hqtask.link"]);
+  assertEquals(ids(reminderMessage(base)), ["hqtask.step.done", "hqtask.step.ack", "hqtask.comment.open", "hqtask.link"]);
+  assertEquals(ids(reminderMessage({ ...base, can_complete: false })), ["hqtask.step.ack", "hqtask.comment.open", "hqtask.link"]);
+  assertEquals(ids(reminderMessage({ ...base, kind: "escalate", days_over: 3 })), ["hqtask.comment.open", "hqtask.link"]);
 });
 Deno.test("DM に金額や口座の文言を入れない・制御文字は除く", () => {
   const m = reminderMessage({ ...base, task_title: "a\nb\u0007c" });
@@ -189,4 +189,20 @@ Deno.test("コメントの窓: 相手は選ぶだけ（multi_users_select）／�
   assertEquals(ids(commentModal({ taskId: "t", title: "T" })), ["body:plain_text_input", "mentions:multi_users_select"]);
   const w = ids(commentModal({ taskId: "t", title: "T", withFiles: true }));
   assertEquals(w[2], "files:file_input");
+});
+
+Deno.test("DM: コメントボタンはタスクIDを持つ・親投稿のリンク（とチャンネル）が出る。リンクが無ければ行を出さない", () => {
+  const m: any = reminderMessage(base, { parent: { url: "https://ws.slack.com/archives/C0AB12CD3/p1", channel: "C0AB12CD3" } });
+  const cb = m.blocks[1].elements.find((e: any) => e.action_id === "hqtask.comment.open");
+  assertEquals(JSON.parse(cb.value).task_id, base.task_id);
+  const t = m.blocks[0].text.text as string;
+  assert(t.includes("<https://ws.slack.com/archives/C0AB12CD3/p1|親投稿を開く>") && t.includes("<#C0AB12CD3>"));
+  assert(!(reminderMessage(base).blocks[0] as any).text.text.includes("親投稿"));
+});
+Deno.test("次の担当者の通知: 親投稿のリンクが出る・1 件のときだけコメントボタン", () => {
+  const it = { kind: "next_ready", task_title: "A", step_title: "B", step_due: "2026-11-27", days_over: 0, prev_title: "C", prev_names: null, url: "https://x/y", task_id: "t1", parent_url: "https://p/1", parent_channel: "C0AB12CD3" };
+  const one: any = nextNoticeMessage([it]);
+  assert(one.blocks[0].text.text.includes("<https://p/1|親投稿を開く>"));
+  assertEquals(JSON.parse(one.blocks[1].elements[0].value).task_id, "t1");
+  assertEquals(nextNoticeMessage([it, it]).blocks.length, 1);
 });

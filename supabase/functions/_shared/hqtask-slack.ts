@@ -22,6 +22,11 @@ export type Candidate = {
 const clean = (s: unknown, n: number) => String(s ?? "").replace(/[\u0000-\u001f]/g, " ").trim().slice(0, n);
 const md = (d: string, time?: string | null) => { const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(d); const day = m ? `${Number(m[2])}/${Number(m[3])}` : d; const tm = /^(\d{2}):(\d{2})/.exec(String(time ?? "")); return tm ? `${day} ${Number(tm[1])}:${tm[2]}` : day; };
 
+/** 親投稿（チャンネル）へのリンク行。どのチャンネルのタスクか分かるよう、チャンネル名も添える（2026-11-19） */
+export type ParentRef = { url: string; channel?: string | null };
+const parentLine = (p?: ParentRef | null) => (p?.url ? `📍 <${p.url}|親投稿を開く>${p.channel && /^[CG][A-Z0-9]+$/.test(p.channel) ? `（<#${p.channel}>）` : ""}` : null);
+const commentBtn = (taskId?: string | null) => (taskId ? [{ type: "button", text: { type: "plain_text", text: "💬 コメント", emoji: true }, action_id: COMMENT_OPEN, value: JSON.stringify({ task_id: taskId }) }] : []);
+
 /** 種類ごとの見出し。「見逃さない」ため、期限が近いほど強い言い方にする */
 export function reminderHead(kind: string, daysOver: number): { mark: string; head: string } {
   const pm = kind.endsWith("_pm");
@@ -38,12 +43,13 @@ export function reminderHead(kind: string, daysOver: number): { mark: string; he
 }
 
 /** DM のメッセージ（親 1 通）。完了できる工程だけ「完了にする」を出す。escalate（作成者向け）は操作ボタンなし */
-export function reminderMessage(c: Candidate, x: { creatorName?: string | null; memo?: string | null } = {}): { text: string; blocks: unknown[] } {
+export function reminderMessage(c: Candidate, x: { creatorName?: string | null; memo?: string | null; parent?: ParentRef | null } = {}): { text: string; blocks: unknown[] } {
   const h = reminderHead(c.kind, c.days_over);
   const title = clean(c.task_title, 100);
   const lines = [`${h.mark} *${h.head}*`, `*${title}*`, `${x.creatorName ? `依頼：${clean(x.creatorName, 30)}　` : ""}期限：${md(c.due_date, c.due_time)}　工程：${clean(c.step_title, 60)}`];
   if (x.memo && clean(x.memo, 200)) lines.push(`詳細：${clean(x.memo, 200)}`);
   lines.push(`🔗 <${c.url}|管理システムで開く>`);
+  const pl = parentLine(x.parent); if (pl) lines.push(pl);
   const blocks: unknown[] = [{ type: "section", text: { type: "mrkdwn", text: lines.join("\n") } }];
   const elements: unknown[] = [];
   if (c.kind !== "escalate") {
@@ -51,20 +57,23 @@ export function reminderMessage(c: Candidate, x: { creatorName?: string | null; 
     if (c.can_complete) elements.push({ type: "button", style: "primary", text: { type: "plain_text", text: "✅ 完了にする", emoji: true }, action_id: STEP_DONE, value: val });
     elements.push({ type: "button", text: { type: "plain_text", text: "🕐 対応中", emoji: true }, action_id: STEP_ACK, value: val });
   }
+  elements.push(...commentBtn(c.task_id));
   elements.push({ type: "button", text: { type: "plain_text", text: "管理システムで開く", emoji: true }, url: c.url, action_id: STEP_LINK });
   blocks.push({ type: "actions", block_id: "hqtask", elements });
   return { text: `${h.mark} ${h.head}：${title}`, blocks };
 }
 
 /** 新しく割り当てられたときの DM */
-export function assignedMessage(o: { title: string; stepTitle?: string; due: string; dueTime?: string | null; steps?: number; creatorName: string; memo?: string | null; step_id: string; url: string; canComplete: boolean }): { text: string; blocks: unknown[] } {
+export function assignedMessage(o: { title: string; stepTitle?: string; due: string; dueTime?: string | null; steps?: number; creatorName: string; memo?: string | null; step_id: string; url: string; canComplete: boolean; taskId?: string; parent?: ParentRef | null }): { text: string; blocks: unknown[] } {
   const lines = [`📌 *新しい本部タスクが割り当てられました*`, `*${clean(o.title, 100)}*`, `期限：${md(o.due, o.dueTime)}　依頼：${clean(o.creatorName, 30)}${o.steps && o.steps > 1 ? `　工程：${o.steps} 個` : ""}`];
   if (o.memo && clean(o.memo, 300)) lines.push(`詳細：${clean(o.memo, 300)}`);
   lines.push(`🔗 <${o.url}|管理システムで開く>`);
+  { const pl = parentLine(o.parent); if (pl) lines.push(pl); }
   const val = JSON.stringify({ step_id: o.step_id });
   const elements: unknown[] = [];
   if (o.canComplete) elements.push({ type: "button", style: "primary", text: { type: "plain_text", text: "✅ 完了にする", emoji: true }, action_id: STEP_DONE, value: val });
   elements.push({ type: "button", text: { type: "plain_text", text: "🕐 対応中", emoji: true }, action_id: STEP_ACK, value: val });
+  elements.push(...commentBtn(o.taskId));
   elements.push({ type: "button", text: { type: "plain_text", text: "管理システムで開く", emoji: true }, url: o.url, action_id: STEP_LINK });
   return { text: `📌 新しい本部タスク：${clean(o.title, 100)}`, blocks: [{ type: "section", text: { type: "mrkdwn", text: lines.join("\n") } }, { type: "actions", block_id: "hqtask", elements }] };
 }
@@ -380,18 +389,19 @@ export function parseCreateSteps(values: any): { ok: true; v: CreateStepsInput }
 export type MyStep = { step_id: string; title: string; due: string; dueTime?: string | null; done?: boolean; canComplete: boolean };
 
 /** 担当者への割り当て DM。自分の工程を 1 つずつ並べ、工程ごとに「✅ 完了」ボタンを付ける（工程 1 を終えても、工程 2 を完了する場所がある） */
-export function assignedStepsMessage(o: { title: string; creatorName: string; memo?: string | null; notes?: string | null; url: string; steps: MyStep[] }): { text: string; blocks: unknown[] } {
+export function assignedStepsMessage(o: { title: string; creatorName: string; memo?: string | null; notes?: string | null; url: string; steps: MyStep[]; taskId?: string; parent?: ParentRef | null }): { text: string; blocks: unknown[] } {
   const head = [`📌 *新しい本部タスクが割り当てられました*`, `*${clean(o.title, 100)}*`, `依頼：${clean(o.creatorName, 30)}`];
   if (o.memo && clean(o.memo, 300)) head.push(`詳細：${clean(o.memo, 300)}`);
   if (o.notes && clean(o.notes, 300)) head.push(`⚠️ 注意事項：${clean(o.notes, 300)}`);
   head.push(`🔗 <${o.url}|管理システムで開く>`);
+  { const pl = parentLine(o.parent); if (pl) head.push(pl); }
   const blocks: unknown[] = [{ type: "section", text: { type: "mrkdwn", text: head.join("\n") } }, { type: "divider" }];
   for (const s of o.steps.slice(0, 10)) {
     const sec: any = { type: "section", text: { type: "mrkdwn", text: `▫️ *${clean(s.title, 60)}*\n期限：${md(s.due, s.dueTime)}${s.canComplete ? "" : "　📷写真が必要（管理システムの画面で完了）"}` } };
     if (s.canComplete) sec.accessory = { type: "button", style: "primary", text: { type: "plain_text", text: "✅ 完了", emoji: true }, action_id: STEP_DONE, value: JSON.stringify({ step_id: s.step_id }) };
     blocks.push(sec);
   }
-  blocks.push({ type: "actions", block_id: "hqtask_link", elements: [{ type: "button", text: { type: "plain_text", text: "管理システムで開く", emoji: true }, url: o.url, action_id: STEP_LINK }] });
+  blocks.push({ type: "actions", block_id: "hqtask_link", elements: [...commentBtn(o.taskId), { type: "button", text: { type: "plain_text", text: "管理システムで開く", emoji: true }, url: o.url, action_id: STEP_LINK }] });
   return { text: `📌 新しい本部タスク：${clean(o.title, 100)}`, blocks };
 }
 
@@ -436,7 +446,7 @@ export function commentModal(o: { taskId: string; title: string; withFiles?: boo
 }
 
 /** 次の担当者への通知（2026-11-19）。1 人に 1 通へまとめる。items＝その人の「次の番」の一覧（hq_slack_next_candidates の行）。短く・何が止まっていて・自分の工程がどれか・を出す */
-export type NextItem = { kind: string; task_title: string; step_title: string; step_due: string | null; days_over: number; prev_title: string | null; prev_names: string | null; url: string };
+export type NextItem = { kind: string; task_title: string; step_title: string; step_due: string | null; days_over: number; prev_title: string | null; prev_names: string | null; url: string; task_id?: string; parent_url?: string | null; parent_channel?: string | null };
 export function nextNoticeMessage(items: NextItem[]): { text: string; blocks: unknown[] } {
   const line = (x: NextItem) => {
     const prev = `「${clean(x.prev_title, 30)}」${x.prev_names ? `（${clean(x.prev_names, 20)}）` : ""}`;
@@ -444,11 +454,14 @@ export function nextNoticeMessage(items: NextItem[]): { text: string; blocks: un
     const head = x.kind === "next_ready" ? `前の工程${prev}が完了しました。あなたの番です：「${clean(x.step_title, 30)}」${x.step_due ? `（期限 ${md(x.step_due)}）` : ""}`
       : x.kind === "next_today" ? `前の工程${prev}が、今日が期限です（まだ完了していません）。${mine}`
       : `前の工程${prev}が、期限を ${Math.max(1, x.days_over)} 日過ぎています。${mine}`;
-    return `• *${clean(x.task_title, 50)}*\n　${head}　<${x.url}|開く>`;
+    return `• *${clean(x.task_title, 50)}*\n　${head}　<${x.url}|開く>${x.parent_url ? `　${parentLine({ url: x.parent_url, channel: x.parent_channel })}` : ""}`;
   };
   const shown = items.slice(0, 5);
   const allReady = items.every((x) => x.kind === "next_ready");
   const title = allReady ? "あなたの番になった工程があります" : "前の工程が止まっています（次はあなたの工程）";
   const text = `${allReady ? "▶" : "⏳"} *${title}*\n${shown.map(line).join("\n")}${items.length > shown.length ? `\nほか ${items.length - shown.length} 件` : ""}`;
-  return { text: `${title}（${items.length} 件）`, blocks: [{ type: "section", text: { type: "mrkdwn", text } }] };
+  const blocks: unknown[] = [{ type: "section", text: { type: "mrkdwn", text } }];
+  // 1 件だけのときは、そのまま［💬 コメント］を押せる（複数件のときは、親投稿のリンクから）
+  if (items.length === 1 && items[0].task_id) blocks.push({ type: "actions", block_id: "hqtask_next", elements: commentBtn(items[0].task_id) });
+  return { text: `${title}（${items.length} 件）`, blocks };
 }
