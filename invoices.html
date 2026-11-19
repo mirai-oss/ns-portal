@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-11-17-v176";
+const BUILD_TAG="2026-11-19-v177";
 const PAYROLL_CANCEL_READY=true;
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
@@ -2866,7 +2866,16 @@ async function loadInboxMaster(){
   all.sort((a,b)=>String(b.received_at||"").localeCompare(String(a.received_at||"")));
   MASTER_MAILS=all;
   MASTER_MAILS_LOADED=true;
+  // 2026-11-19: 自動で請求書が作られたのに、承認待ちまで進まず「要対応」で止まっているメール（未処理のまま残る）を印で見分ける。
+  // 請求書は作成済みなので、メールから新たに処理すると二重になる（ユーザー報告）。件数は少ないので失敗しても一覧は出す
+  try{
+    const ar=await authed(`/rest/v1/invoices?select=email_id,current_stage&intake_source=eq.email_auto&invoice_status=neq.cancelled&email:invoice_emails!inner(mail_status)&email.mail_status=in.(unread,read,processing)&limit=500`);
+    AUTO_INV_MAIL=new Map();
+    if(ar.ok&&Array.isArray(ar.body)) for(const x of ar.body){ if(x.email_id&&!AUTO_OK_STAGES.includes(x.current_stage)) AUTO_INV_MAIL.set(x.email_id,x.current_stage); }
+  }catch(e){ AUTO_INV_MAIL=new Map(); }
 }
+let AUTO_INV_MAIL=new Map();   // メールID → 請求書の段階（自動作成済みで、承認待ちの手前で止まっているもの）
+const AUTO_OK_STAGES=["ready_for_approval","approved","payment_waiting","paid","completed"];
 // KPIカード（未処理・処理中・今月完了）は、MASTER_MAILSがlimitで切り詰められる可能性を
 // 考慮せず常に正確な値を出すため、一覧とは別にDBへ直接件数を問い合わせて求める
 // （ポータル側の未処理件数バッジと同じ方式に統一＝表示がズレていた問題への対応）
@@ -5418,7 +5427,7 @@ function mailItemHtml(m){
     <div class="mail-from">${esc(m.from_address||"—")}</div>
     <div class="mail-subject">${m.mail_kind?MAIL_KIND_LABEL[m.mail_kind]+" ":"❔ "}${m.is_important?"⭐ ":""}${esc(m.subject||"（件名なし）")}</div>
     <div class="mail-preview">${esc(preview)}</div>
-    <div class="mail-meta"><span>${isAutoMail(m)?"🤖 自動処理済み":metaLeft}</span><span>${fmtDT(m.received_at)}</span></div>
+    <div class="mail-meta"><span>${isAutoMail(m)?"🤖 自動処理済み":(AUTO_INV_MAIL.has(m.id)?"📄 請求書は自動作成済み・要対応":metaLeft)}</span><span>${fmtDT(m.received_at)}</span></div>
   </div>`;
 }
 
@@ -5940,12 +5949,14 @@ function renderMailDetail(u){
         ${atts.length?'<span class="hq-pill gray">添付あり</span>':''}
         ${mail.duplicate_suspected?'<span class="hq-pill red">重複疑い</span>':''}
         ${mail.is_important?'<span class="hq-pill amber">⭐ 重要</span>':''}
+        ${AUTO_INV_MAIL.has(mail.id)?'<span class="hq-pill amber">📄 請求書は自動作成済み（要対応）</span>':''}
         ${invoice&&invoice.mf_journal_id?'<span class="hq-pill green">💰 会計処理済み</span>':''}
         ${invoice&&invoice.pl_fee_reflected_at?'<span class="hq-pill green">📊 PL反映済み</span>':''}
         ${invoice&&invoice.pl_fee_seisan_synced_at?'<span class="hq-pill blue">🧮 業務委託精算書へ登録済み</span>':''}
       </div>
       <h2>${esc(mail.subject||"（件名なし）")}</h2>
       <div class="meta">${esc(mail.from_address||"—")} 　→　 ${esc(mail.to_address||"—")}</div>
+      ${AUTO_INV_MAIL.has(mail.id)?'<div class="warn" style="margin:8px 0;padding:8px 12px;background:#fff4e5;border:1px solid #f0b35a;border-radius:8px;font-size:13px">📄 このメールの請求書は<b>すでに自動で作成されています</b>（仕訳などの確認が必要で止まっています）。<b>「請求書」タブの該当の請求書を開いて対応してください。メールから新しく処理すると二重になります。</b></div>':''}
       ${isStandalone?`<div class="mail-detail-grid">
         <div class="mail-mini"><small>取込日</small><b>${fmtDT(mail.received_at)}</b></div>
         <div class="mail-mini"><small>取込元</small><b>${esc(INTAKE_SOURCE_LABEL[invoice&&invoice.intake_source]||"アップロード")}</b></div>
