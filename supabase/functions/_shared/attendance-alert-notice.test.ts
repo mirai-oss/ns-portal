@@ -20,20 +20,20 @@ Deno.test("日付と時刻の書き方", () => {
   assertEquals(punchLine(base.detected, "2026-11-10"), "出勤 15:00／退勤 未登録／休憩 なし");
 });
 
-Deno.test("親メッセージは 1 行だけ。種類・時刻・理由・承認や修正のボタンは出さない", () => {
+Deno.test("親メッセージは 1 行だけ。店舗は出す。種類・時刻・理由・承認や修正のボタンは出さない", () => {
   const p = parentMessage(base, { permalink: "https://x.slack.com/archives/C1/p1?thread_ts=1" });
-  assertEquals(p.text, "🕒 勤怠確認｜山田太郎｜11/10");
+  assertEquals(p.text, "🕒 勤怠確認｜山田太郎｜鳥一代 本店｜11/10");
   assertEquals(btns(p.blocks), ["attendance.alert.open"]);
-  assert(!p.text.includes("打刻") && !p.text.includes("15:00") && !p.text.includes("鳥一代"));
+  assert(!p.text.includes("打刻") && !p.text.includes("15:00") && p.text.includes("鳥一代 本店"));   // 2026-11-19 どの店舗かは出す
   assertEquals(btns(parentMessage(base).blocks), []);   // リンクが取れなければボタンなし
 });
 
 Deno.test("親メッセージで、完了・未完了が分かる", () => {
-  assertEquals(parentMessage({ ...base, status: "fix_requested" }).text, "📝 勤怠確認｜山田太郎｜11/10｜承認待ち");
-  assertEquals(parentMessage({ ...base, status: "approved", smaregi: "synced" }).text, "✅ 勤怠確認｜山田太郎｜11/10｜完了");
-  assertEquals(parentMessage({ ...base, status: "approved", smaregi: "failed" }).text, "🔴 勤怠確認｜山田太郎｜11/10｜要対応");
-  assertEquals(parentMessage({ ...base, status: "confirmed" }).text, "✅ 勤怠確認｜山田太郎｜11/10｜完了");
-  assertEquals(parentMessage({ ...base, status: "rejected" }).text, "✅ 勤怠確認｜山田太郎｜11/10｜完了（却下）");
+  assertEquals(parentMessage({ ...base, status: "fix_requested" }).text, "📝 勤怠確認｜山田太郎｜鳥一代 本店｜11/10｜承認待ち");
+  assertEquals(parentMessage({ ...base, status: "approved", smaregi: "synced" }).text, "✅ 勤怠確認｜山田太郎｜鳥一代 本店｜11/10｜完了");
+  assertEquals(parentMessage({ ...base, status: "approved", smaregi: "failed" }).text, "🔴 勤怠確認｜山田太郎｜鳥一代 本店｜11/10｜要対応");
+  assertEquals(parentMessage({ ...base, status: "confirmed" }).text, "✅ 勤怠確認｜山田太郎｜鳥一代 本店｜11/10｜完了");
+  assertEquals(parentMessage({ ...base, status: "rejected" }).text, "✅ 勤怠確認｜山田太郎｜鳥一代 本店｜11/10｜完了（却下）");
   // 完了したら「詳細を確認」ボタンも外す
   assertEquals(btns(parentMessage({ ...base, status: "confirmed" }, { permalink: "https://x.slack.com/a" }).blocks), []);
   assertEquals(parentState({ status: "approved", smaregi: "failed", test: false }).done, false);
@@ -128,7 +128,7 @@ Deno.test("申請のあと: 申請の時点の打刻を控え、カードを書�
   assertEquals(r, { v2: true, approvers: 1 });
   const card = f.sent.find((x) => x.action === "update" && x.notification_id === "c1")!;
   assert(body(card.blocks as unknown[]).includes("出勤：15:05 → 15:00") && body(card.blocks as unknown[]).includes("退勤：未登録 → 23:30"), "差分の左側は、勤怠実績の今の値");
-  assertEquals(f.sent.find((x) => x.notification_id === "p1")!.text, "📝 勤怠確認｜テスト 立会い｜11/10｜承認待ち");
+  assertEquals(f.sent.find((x) => x.notification_id === "p1")!.text, "📝 勤怠確認｜テスト 立会い｜鳥一代 本店｜11/10｜承認待ち");
   const ask = f.sent.find((x) => x.action === "send")!;
   assertEquals([ask.thread_ts, ask.channel_key], ["1.1", "kintai.check"]);
   assert(String(ask.text).startsWith("<@U0MASTER1>"));
@@ -142,7 +142,7 @@ Deno.test("承認のあと: テスト用はスマレジへ送らない／通常�
   assertEquals(await afterDecide(t.sb, t.notify, base.alertId, true, () => { called++; return Promise.resolve({ ok: true }); }), true);
   assertEquals(called, 0);
   assert(body(t.sent.filter((x) => x.notification_id === "c1").pop()!.blocks as unknown[]).includes("テストのため反映していません"));
-  assertEquals(t.sent.filter((x) => x.notification_id === "p1").pop()!.text, "✅ 勤怠確認｜テスト 立会い｜11/10｜完了");
+  assertEquals(t.sent.filter((x) => x.notification_id === "p1").pop()!.text, "✅ 勤怠確認｜テスト 立会い｜鳥一代 本店｜11/10｜完了");
   const n = mk(false);
   await afterDecide(n.sb, n.notify, base.alertId, true, () => { called++; return Promise.resolve({ ok: true }); });
   assertEquals(called, 1);
@@ -171,7 +171,7 @@ Deno.test("投稿: 親 1 通 → スレッドにカード 1 通 → 控えを残
     { channelKey: "kintai.check", test: true, detailButton: false, source: "t" });
   assertEquals([r.ok, r.format], [true, "v2"]);
   assertEquals(f.sent.length, 2);
-  assertEquals(f.sent[0].text, "🕒 勤怠確認｜テスト 立会い｜11/10");
+  assertEquals(f.sent[0].text, "🕒 勤怠確認｜テスト 立会い｜鳥一代 本店｜11/10");
   assertEquals(f.sent[0].thread_ts, undefined);
   assertEquals(f.sent[1].thread_ts, "1700000000.001");
   const up = f.rpcs.find((x) => x.fn === "notice_case_upsert")!.args.p_patch;

@@ -89,17 +89,17 @@ Deno.test("状態: 社長の指示の 8 つの言葉（＋一次承認者が未�
   assertEquals(s({ stage: "first_wait" })[0], "pending");
 });
 
-Deno.test("親メッセージは 1 行だけ。時刻・理由・店舗・承認のボタンは出さない。完了したら「詳細を確認」を外す", () => {
+Deno.test("親メッセージは 1 行だけ。店舗は出す。時刻・理由・承認のボタンは出さない。完了したら「詳細を確認」を外す", () => {
   const p = requestParent(view(), { permalink: "https://x.slack.com/archives/C1/p1" });
-  assertEquals(p.text, "📝 勤怠修正｜山田太郎｜11/14｜承認待ち");
+  assertEquals(p.text, "📝 勤怠修正｜山田太郎｜鳥一代 本店｜11/14｜承認待ち");
   assertEquals(btns(p.blocks), ["attendance.alert.open"]);
-  assert(!p.text.includes("17:00") && !p.text.includes("打刻") && !p.text.includes("鳥一代"));
+  assert(!p.text.includes("17:00") && !p.text.includes("打刻") && p.text.includes("鳥一代 本店"));   // 2026-11-19 どの店舗かは出す
   assertEquals(btns(requestParent(view()).blocks), []);
-  assertEquals(requestParent(view({ kind: "add", before: null })).text, "📝 勤怠追加｜山田太郎｜11/14｜承認待ち");
-  assertEquals(requestParent(view({ flow: "two_stage", stage: "final_wait" })).text, "📝 勤怠修正｜山田太郎｜11/14｜最終承認待ち");
-  assertEquals(requestParent(view({ status: "approved", smaregi_sync_status: "failed" })).text, "🔴 勤怠修正｜山田太郎｜11/14｜同期エラー");
+  assertEquals(requestParent(view({ kind: "add", before: null })).text, "📝 勤怠追加｜山田太郎｜鳥一代 本店｜11/14｜承認待ち");
+  assertEquals(requestParent(view({ flow: "two_stage", stage: "final_wait" })).text, "📝 勤怠修正｜山田太郎｜鳥一代 本店｜11/14｜最終承認待ち");
+  assertEquals(requestParent(view({ status: "approved", smaregi_sync_status: "failed" })).text, "🔴 勤怠修正｜山田太郎｜鳥一代 本店｜11/14｜同期エラー");
   const done = requestParent(view({ status: "approved", smaregi_sync_status: "synced" }), { permalink: "https://x.slack.com/a" });
-  assertEquals([done.text, btns(done.blocks)], ["✅ 勤怠修正｜山田太郎｜11/14｜同期済み", []]);
+  assertEquals([done.text, btns(done.blocks)], ["✅ 勤怠修正｜山田太郎｜鳥一代 本店｜11/14｜同期済み", []]);
 });
 
 Deno.test("カード（今までの 1 段階）: 店舗・対象・勤務日・申請者・理由・比較・状況。ボタンは今ある承認と却下", () => {
@@ -221,7 +221,7 @@ Deno.test("出す: 親 1 つ → スレッドにカード → 控え → 承認�
   assertEquals(r.ok, true);
   const sends = f.sent.filter((s) => s.action === "send");
   assertEquals(sends.map((s) => s.event), ["attendance_request_parent", "attendance_request_card", "attendance_request_ask", "attendance_request_dm"]);
-  assertEquals([sends[0].channel_key, sends[0].thread_ts, sends[0].dedupe_key, sends[0].text], ["kintai.check", undefined, `attendance_req_parent:${RID}`, "📝 勤怠修正｜山田太郎｜11/14｜承認待ち"]);
+  assertEquals([sends[0].channel_key, sends[0].thread_ts, sends[0].dedupe_key, sends[0].text], ["kintai.check", undefined, `attendance_req_parent:${RID}`, "📝 勤怠修正｜山田太郎｜鳥一代 本店｜11/14｜承認待ち"]);
   assertEquals([sends[1].thread_ts, sends[1].dedupe_key], ["100.1", `attendance_req_card:${RID}`]);
   assertEquals([sends[2].thread_ts, sends[2].channel_key], ["100.1", "kintai.check"]);
   assert(String(sends[2].text).startsWith("<@U0BOSS0001>"));
@@ -263,7 +263,7 @@ Deno.test("承認のあと: スレッドに承認の行 → スマレジへ送�
   assertEquals(sends.map((s) => s.text), ["✅ 承認（社長・11/15 13:05）→ スマレジへ反映します", "🔄 スマレジへ反映しました"]);
   assert(sends.every((s) => s.thread_ts === "100.1"));
   const parents = f.sent.filter((s) => s.action === "update" && s.notification_id === "p-1").map((s) => s.text);
-  assertEquals(parents, ["📝 勤怠修正｜山田太郎｜11/14｜承認済み・スマレジ反映待ち", "✅ 勤怠修正｜山田太郎｜11/14｜同期済み"]);
+  assertEquals(parents, ["📝 勤怠修正｜山田太郎｜鳥一代 本店｜11/14｜承認済み・スマレジ反映待ち", "✅ 勤怠修正｜山田太郎｜鳥一代 本店｜11/14｜同期済み"]);
 });
 
 Deno.test("承認のあと、スマレジに失敗: 親は「同期エラー」・スレッドに失敗の行（担当にメンション）。却下のときはスマレジへ送らない", async () => {
@@ -271,7 +271,7 @@ Deno.test("承認のあと、スマレジに失敗: 親は「同期エラー」�
   await afterRequestDecide(f.sb, f.notify, RID, { approve: true, source: "test", smaregiFix: () => { f.set(rpc({ status: "approved", decided_by: U.boss, smaregi_sync_status: "failed", smaregi_error: "HTTP 409" })); return Promise.resolve({ ok: false, error: "HTTP 409" }); } });
   const last = f.sent.filter((s) => s.action === "send").pop()!;
   assertEquals(last.text, "<@U0BOSS0001>　🔴 スマレジへ反映できませんでした：HTTP 409");
-  assertEquals(f.sent.filter((s) => s.action === "update" && s.notification_id === "p-1").pop()!.text, "🔴 勤怠修正｜山田太郎｜11/14｜同期エラー");
+  assertEquals(f.sent.filter((s) => s.action === "update" && s.notification_id === "p-1").pop()!.text, "🔴 勤怠修正｜山田太郎｜鳥一代 本店｜11/14｜同期エラー");
   const g = fakes({ refs: REFS, view: rpc({ status: "rejected", decided_by: U.boss, decision_note: "時刻が違う" }) });
   await afterRequestDecide(g.sb, g.notify, RID, { approve: false, source: "test", smaregiFix: () => { throw new Error("呼ばれてはいけない"); } });
   assertEquals(g.sent.filter((s) => s.action === "send").map((s) => s.text), ["❌ 却下（社長）　理由：時刻が違う"]);

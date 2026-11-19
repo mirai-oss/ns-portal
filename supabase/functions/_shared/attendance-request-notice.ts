@@ -160,7 +160,7 @@ export const requestFormUrl = (requestId: string) => `${ATTENDANCE_FORM_URL}?req
 /** 例: 📝 勤怠修正｜山田太郎｜11/14｜一次承認待ち。時刻・理由・承認のボタンは出さない。「詳細を確認」は完了したら外す */
 export function requestParent(v: RequestView, o: { permalink?: string | null } = {}): { text: string; blocks: unknown[] } {
   const st = requestState(v);
-  const text = `${st.mark} ${kindLabel(v.kind)}｜${clean(v.userName, 30)}｜${dateLabel(v.workDate).md}｜${st.label}`;
+  const text = `${st.mark} ${kindLabel(v.kind)}｜${clean(v.userName, 30)}｜${v.storeName ? `${clean(v.storeName, 20)}｜` : ""}${dateLabel(v.workDate).md}｜${st.label}`;   // 2026-11-19 どの店舗かも出す
   const blocks: unknown[] = [{ type: "section", text: { type: "mrkdwn", text } }];
   if (o.permalink && !st.done) {
     blocks.push({ type: "actions", block_id: "attendance_req_open", elements: [

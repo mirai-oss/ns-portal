@@ -105,12 +105,12 @@ export function parentState(v: Pick<AlertView, "status" | "smaregi" | "test">): 
   }
 }
 /**
- * 親メッセージ（1 行）。例: 🕒 勤怠確認｜山田太郎｜11/11
+ * 親メッセージ（1 行）。例: 🕒 勤怠確認｜山田太郎｜鳥一代 本店｜11/11
  * 種類・原因・時刻・理由・履歴・承認や修正のボタンは出さない。「詳細を確認」は、スレッドを開くリンクのボタン（完了したら外す）。
  */
-export function parentMessage(v: Pick<AlertView, "alertId" | "status" | "smaregi" | "test" | "userName" | "workDate">, o: { permalink?: string | null } = {}): { text: string; blocks: unknown[] } {
+export function parentMessage(v: Pick<AlertView, "alertId" | "status" | "smaregi" | "test" | "userName" | "workDate"> & { storeName?: string | null }, o: { permalink?: string | null } = {}): { text: string; blocks: unknown[] } {
   const st = parentState(v);
-  const text = `${st.mark} 勤怠確認｜${clean(v.userName, 30)}｜${dateLabel(v.workDate).md}${st.suffix ? `｜${st.suffix}` : ""}`;
+  const text = `${st.mark} 勤怠確認｜${clean(v.userName, 30)}｜${v.storeName ? `${clean(v.storeName, 20)}｜` : ""}${dateLabel(v.workDate).md}${st.suffix ? `｜${st.suffix}` : ""}`;   // 2026-11-19 どの店舗かも出す
   const blocks: unknown[] = [{ type: "section", text: { type: "mrkdwn", text } }];
   if (o.permalink && !st.done) {
     blocks.push({ type: "actions", block_id: "attendance_open", elements: [
