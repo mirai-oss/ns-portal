@@ -10,7 +10,7 @@
 //   どのアラートが新しい形かは、案件の控え notice_cases（type_key=attendance_fix）に card の控えがあるかで決まる。
 //   控えの無いアラート（古い形）は、各 EF の今までの処理がそのまま動く。
 // =============================================================
-import { alertFixButton } from "./attendance-fix-notify.ts";
+import { alertFixButton, alertFormUrl } from "./attendance-fix-notify.ts";
 
 export const NOTICE_TYPE = "attendance_fix";
 export const REF_TABLE = "sf_attendance_alerts";
@@ -160,7 +160,7 @@ export function cardMessage(v: AlertView, o: { notificationId: string }): { text
     blocks.push({ type: "actions", block_id: "attendance", elements: [
       { type: "button", style: "primary", text: { type: "plain_text", text: "○ 合っている", emoji: true }, action_id: "attendance.alert.confirm", value: val },
       alertFixButton({ alertId: v.alertId, notificationId: o.notificationId, title: `${d.mdw}　${clean(v.storeName, 30)}　${clean(v.userName, 30)}` }),
-      { type: "button", style: "danger", text: { type: "plain_text", text: "🗑 打刻を消す", emoji: true }, action_id: "attendance.alert.delete", value: JSON.stringify({ alert_id: v.alertId, notification_id: o.notificationId, title: `${d.mdw}　${clean(v.storeName, 30)}　${clean(v.userName, 30)}` }) },
+      { type: "button", style: "danger", text: { type: "plain_text", text: "🗑 出勤取消（フォームを開く）", emoji: true }, action_id: "attendance.alert.delete", url: `${alertFormUrl(v.alertId)}&kind=delete`, value: JSON.stringify({ form: 1, alert_id: v.alertId, notification_id: o.notificationId, title: `${d.mdw}　${clean(v.storeName, 30)}　${clean(v.userName, 30)}` }) },
     ] });
   } else if (v.status === "fix_requested" && v.viaRequest) {
     lines.push("状況：🟡 承認の流れに進んでいます（一次承認 → 社長。承認・却下は、同じチャンネルの「勤怠修正」の申請のスレッドで行います）");

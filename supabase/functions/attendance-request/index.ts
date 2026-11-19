@@ -109,7 +109,10 @@ Deno.serve(async (req) => {
     if (curRows && curRows.length === 1 && sameTimes(curRows[0], { clock_in: toIso(b.clock_in), clock_out: toIso(b.clock_out), break_start_1: toIso(b.break_start_1), break_end_1: toIso(b.break_end_1), break_start_2: toIso(b.break_start_2), break_end_2: toIso(b.break_end_2) }))
       return json({ ok: false, code: "no_change", error: NO_CHANGE_MESSAGE }, 400);
   }
-  const { data, error } = await sb.rpc("sf_attendance_request_submit", {
+  // 2026-11-19 出勤取消（その日の勤務の記録を丸ごと削除する申請）。時刻は使わない。理由は必須（DB の関数が検査）。承認の流れは勤怠修正と同じ
+  const { data, error } = String(b.kind ?? "") === "delete"
+    ? await sb.rpc("sf_attendance_request_submit_delete", { p_actor: actor.id, p_store_id: b.store_id ?? null, p_user_id: b.user_id ?? null, p_work_date: b.work_date ?? null, p_reason: String(b.reason ?? ""), p_via: "form" })
+    : await sb.rpc("sf_attendance_request_submit", {
     p_actor: actor.id, p_kind: String(b.kind ?? ""), p_store_id: b.store_id ?? null, p_user_id: b.user_id ?? null, p_work_date: b.work_date ?? null,
     p_clock_in: toIso(b.clock_in), p_clock_out: toIso(b.clock_out), p_reason: String(b.reason ?? ""),
     p_break_start_1: toIso(b.break_start_1), p_break_end_1: toIso(b.break_end_1), p_break_start_2: toIso(b.break_start_2), p_break_end_2: toIso(b.break_end_2),
@@ -129,7 +132,7 @@ Deno.serve(async (req) => {
   }
   // マスターへ承認依頼（DM）
   const ids: string[] = [];
-  const kindLabel = data.kind === "add" ? "勤怠追加" : "勤怠修正";
+  const kindLabel = data.kind === "add" ? "勤怠追加" : data.kind === "delete" ? "出勤取消" : "勤怠修正";
   for (const ch of await masterChannels(sb)) {
     const nid = crypto.randomUUID();
     const val = JSON.stringify({ request_id: data.request_id, notification_id: nid });
@@ -415,6 +418,9 @@ async function reqActOp(sb: any, actor: { id: string; name: string }, b: any) {
 }
 // op=req_resubmit { request_id, clock_in, clock_out, break_start_1.., reason } … 差戻しのあとの出し直し（時刻は "YYYY-MM-DDTHH:MM"＝JST）
 async function reqResubmit(sb: any, actor: { id: string; name: string }, b: any) {
+  // 出勤取消の申請は、出し直しできない（時刻の入力が無いため。取り下げて、もう一度申請する）
+  const { data: rk } = await sb.from("sf_attendance_requests").select("kind").eq("id", String(b.request_id ?? "")).maybeSingle();
+  if (rk?.kind === "delete") return json({ ok: false, code: "delete_no_resubmit", error: "出勤取消の申請は、出し直しできません。取り下げてから、もう一度申請してください" }, 400);
   const r = await resubmitRequest(sb, notifySlack, { requestId: b.request_id, actorId: actor.id, reason: String(b.reason ?? ""), via: "form", source: "ef:attendance-request",
     times: { clock_in: toIso(b.clock_in), clock_out: toIso(b.clock_out), break_start_1: toIso(b.break_start_1), break_end_1: toIso(b.break_end_1), break_start_2: toIso(b.break_start_2), break_end_2: toIso(b.break_end_2) } });
   await r.after();

@@ -89,6 +89,14 @@ export function compareLines(c: Compare): string[] {
   return out;
 }
 
+/** 出勤取消（2026-11-19）: 取り消す勤務の中身（出勤・退勤・休憩）。申請の時点の控え（before）から。 */
+export function deleteLines(before: Times | null | undefined, workDate: string): string[] {
+  const c = compareTimes(before ?? null, (before ?? { clock_in: null, clock_out: null }) as Times, workDate);
+  const out: string[] = [];
+  for (const r of c.rows) out.push(`${r.label}：${r.after}`);
+  return out.length ? out : ["（元の勤務の記録が読めません）"];
+}
+
 // ---- 2. 状態（社長の指示の言葉） -------------------------------------------------------
 export type ReqStateCode = "pending" | "first_wait" | "asking" | "returned" | "final_wait" | "hold" | "sync_wait" | "synced" | "sync_error" | "rejected" | "cancelled";
 export type ReqState = { code: ReqStateCode; label: string; mark: string; done: boolean; notice: "todo" | "waiting" | "done" | "alert" };
@@ -113,7 +121,7 @@ export function requestState(v: { status: string; flow?: string | null; stage?: 
 // ---- 3. 表示用の中身 -------------------------------------------------------------------
 export type Person = { user_id: string; slack_user_id: string | null };
 export type RequestView = {
-  requestId: string; kind: "add" | "fix"; status: string; flow: string | null; stage: string | null; round: number;
+  requestId: string; kind: "add" | "fix" | "delete"; status: string; flow: string | null; stage: string | null; round: number;
   workDate: string; storeId: string | null; storeName: string | null;
   userId: string; userName: string | null; requestedBy: string | null; requestedByName: string | null; requestedAt: string | null; reason: string | null;
   before: Times | null; after: Times;
@@ -139,10 +147,10 @@ export function viewFromRpc(j: any): RequestView | null {
   const people = (a: unknown): Person[] => (Array.isArray(a) ? a : []).filter((x) => x && typeof x.user_id === "string").map((x) => ({ user_id: x.user_id, slack_user_id: str(x.slack_user_id) }));
   const src = String(j.source?.state ?? "na");
   return {
-    requestId: r.id, kind: r.kind === "add" ? "add" : "fix", status: String(r.status ?? ""), flow: str(r.flow), stage: str(r.stage), round: Number(r.round ?? 1) || 1,
+    requestId: r.id, kind: r.kind === "add" ? "add" : r.kind === "delete" ? "delete" : "fix", status: String(r.status ?? ""), flow: str(r.flow), stage: str(r.stage), round: Number(r.round ?? 1) || 1,
     workDate: String(r.work_date ?? "").slice(0, 10), storeId: str(r.store_id), storeName: str(j.store_name),
     userId: String(r.user_id ?? ""), userName: nm(r.user_id), requestedBy: str(r.requested_by), requestedByName: nm(r.requested_by), requestedAt: str(r.requested_at), reason: str(r.reason),
-    before: r.kind === "fix" && r.before ? pick(r.before) : null, after: pick(r),
+    before: (r.kind === "fix" || r.kind === "delete") && r.before ? pick(r.before) : null, after: pick(r),
     firstApproverId: str(r.first_approver_id), firstApproverName: nm(r.first_approver_id), firstSkipped: r.first_skipped === true,
     firstDecidedByName: nm(r.first_decided_by), firstDecidedAt: str(r.first_decided_at),
     returnNote: str(r.return_note), returnedByName: nm(r.returned_by), returnedAt: str(r.returned_at),
@@ -152,7 +160,7 @@ export function viewFromRpc(j: any): RequestView | null {
     slack: (j.slack ?? {}) as Record<string, string>, masters: people(j.masters), presidents: people(j.presidents),
   };
 }
-export const kindLabel = (kind: string) => (kind === "add" ? "勤怠追加" : "勤怠修正");
+export const kindLabel = (kind: string) => (kind === "add" ? "勤怠追加" : kind === "delete" ? "出勤取消" : "勤怠修正");
 /** 管理システムの承認画面（勤怠フォームの ?req=）。差戻しの出し直しも、ここから */
 export const requestFormUrl = (requestId: string) => `${ATTENDANCE_FORM_URL}?req=${encodeURIComponent(requestId)}`;
 
@@ -191,7 +199,9 @@ export function requestCard(v: RequestView, o: { notificationId: string }): { te
   const lines: string[] = [
     `*${title}*`, `店舗：${clean(v.storeName, 30)}`, `対象：${clean(v.userName, 30)}`, `勤務日：${d.mdw}`,
     `申請：${clean(v.requestedByName, 20)}${v.requestedAt ? `（${whenJst(v.requestedAt)}）` : ""}`, `> *📝 理由：${(cut(v.reason) || "—").replace(/[*_~`>\n]/g, " ")}*`,   // 2026-11-19 理由は目立たせる（引用＋太字）
-    "", "*修正前 → 修正後*", ...compareLines(compareTimes(v.before, v.after, v.workDate)), "",
+    "", ...(v.kind === "delete"
+      ? ["*🗑 取り消す勤務（この日の勤務の記録を、丸ごと削除します）*", ...deleteLines(v.before, v.workDate)]
+      : ["*修正前 → 修正後*", ...compareLines(compareTimes(v.before, v.after, v.workDate))]), "",
   ];
   if (two) lines.push(`一次承認者：${v.firstSkipped ? "省略（一次承認者 本人の申請）" : v.firstApproverId ? clean(v.firstApproverName, 20) : "未設定"}${v.firstDecidedAt ? `（一次承認 ${clean(v.firstDecidedByName, 20)}・${whenJst(v.firstDecidedAt)}）` : ""}`);
   const who = (name: string | null, at: string | null) => `${clean(name, 20)}${at ? `・${whenJst(at)}` : ""}`;

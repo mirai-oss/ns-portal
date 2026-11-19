@@ -21,7 +21,7 @@
 // =============================================================
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { wageModal, commuteSettingModal, cancelModal, personContactModal, personContactTemplate, taxSettingModal, yen, commutePolicyModal } from "../_shared/onboarding-blocks.ts";
-import { isFormLinkPress, fixFormLinkText, fixRequestArgs, fixRequestedParentText, fixApprovalSend, unixToIso, isUuid } from "../_shared/attendance-fix-notify.ts";
+import { alertFormUrl, isFormLinkPress, fixFormLinkText, fixRequestArgs, fixRequestedParentText, fixApprovalSend, unixToIso, isUuid } from "../_shared/attendance-fix-notify.ts";
 // 2026-11-11（ユーザー決定）: 勤怠確認の新しい形（親 1 行＋スレッドに詳細と操作）。新しい形のアラートは共通部品が親とカードを書き換える。古い形のアラートは今までの処理のまま
 import { hqtaskHandlers } from "../_shared/hqtask-interact.ts";   // 2026-11-17: 本部タスクの Slack 連携（フォーム・DM の完了／対応中）
 import { renderAlert, afterRequest, afterDecide } from "../_shared/attendance-alert-notice.ts";
@@ -138,7 +138,10 @@ const handlers: Record<string, Handler> = {
   },
   // 勤怠確認「🗑 打刻を消す」（2026-11-08）: 理由だけのモーダル → RPC sf_attendance_delete_request → マスターへ承認依頼
   "attendance.alert.delete": async ({ payload, value, notificationId }) => {
-    return await openModal(payload.trigger_id, attendanceDeleteModal(value, notificationId));
+    // 2026-11-19 新しいボタンは url 付き（＝フォームの「出勤取消」を開く。ここは何も返さない）。古いボタン（url なし）には、フォームのリンクを返す（古い 1 段階の削除の申請は、もう使わない）
+    if (isFormLinkPress(value)) return text("");
+    const aid = String(value?.alert_id ?? "");
+    return ephemeral(isUuid(aid) ? `🗑 <${alertFormUrl(aid)}&kind=delete|出勤取消のフォームを開く>\n取り消す人・日付が入った状態で開きます。理由（必須）を入れて申請すると、一次承認 → 社長の最終承認へ進みます。` : "この勤怠確認は開けませんでした。勤怠修正フォームの「出勤取消」から申請してください。", payload.response_url);
   },
   "attendance.delete.modal": async ({ sb, actor, payload }) => {
     const meta = JSON.parse(payload.view?.private_metadata ?? "{}");

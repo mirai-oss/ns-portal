@@ -284,8 +284,8 @@ function fmtRow(r){   // 一覧の 1 行: 出勤−退勤（勤務 n時間n分�
 function dayListHtml(){
   if(!STORE||!DATE) return `<div class="empty">先に店舗と勤務日を選んでください</div>`;
   if(DAYLOAD) return `<div class="empty">読み込み中…</div>`;
-  if(!DAY.length) return `<div class="empty">この日の勤怠はありません${KIND==="fix"?"（打刻が無い日は「➕ 勤怠追加」で申請してください）":""}</div>`;
-  return DAY.map(r=>KIND==="fix"
+  if(!DAY.length) return `<div class="empty">この日の勤怠はありません${KIND==="fix"?"（打刻が無い日は「➕ 勤怠追加」で申請してください）":KIND==="delete"?"（取り消す勤務がありません）":""}</div>`;
+  return DAY.map(r=>(KIND==="fix"||KIND==="delete")
     ?`<div class="${r.user_id===USER?"sel":""}" onclick="pickRow('${r.user_id}')">${esc(r.name)}${r.pending?" <span style='font-size:12px;color:var(--bad)'>承認待ちの申請あり</span>":""}${r.locked?" <span style='font-size:12px'>🔒修正済</span>":""}<span class="sub">${esc(fmtRow(r))}</span></div>`
     :`<div class="ro">${esc(r.name)}<span class="sub">${esc(fmtRow(r))}${KIND==="add"?"（すでに勤怠あり → 直すときは「✏️ 勤怠修正」）":""}</span></div>`).join("");
 }
@@ -356,10 +356,10 @@ function alertHtml(){
 }
 function formHtml(){
   const stOpts=STORES.map(s=>`<option value="${s.id}" ${s.id===STORE?"selected":""}>${esc(s.name)}</option>`).join("");
-  const kindNote=KIND==="add"?"打刻が無かった日の勤務を新しく登録します。":KIND==="fix"?"すでにある勤務の出勤・退勤・休憩を直します。日付と店舗を選ぶとその日の勤怠が出るので、直す人を選んでください。":"休憩を取れなかった日・短かった日を申告します（この日は休憩を自動で入れません）。";
+  const kindNote=KIND==="delete"?"その日の勤務の記録を、丸ごと取り消します（削除）。取り消す人を選び、理由（必須）を入れて申請します。承認（一次承認 → 社長の最終承認）のあとに、管理システムとスマレジの記録が消えます。元には戻せません。":KIND==="add"?"打刻が無かった日の勤務を新しく登録します。":KIND==="fix"?"すでにある勤務の出勤・退勤・休憩を直します。日付と店舗を選ぶとその日の勤怠が出るので、直す人を選んでください。":"休憩を取れなかった日・短かった日を申告します（この日は休憩を自動で入れません）。";
   let person,main,btn;
-  if(KIND==="fix"){
-    person=`<label>直す人（この日の勤怠）<span class="req">必須</span></label><div class="staff-list">${dayListHtml()}</div>`;
+  if(KIND==="fix"||KIND==="delete"){
+    person=`<label>${KIND==="delete"?"取り消す人（この日の勤怠）":"直す人（この日の勤怠）"}<span class="req">必須</span></label><div class="staff-list">${dayListHtml()}</div>`;
   }else{
     person=`<label>${KIND==="break"?"申告する人":"従業員"}<span class="req">必須</span></label>
     <input id="q" type="search" placeholder="名前で絞り込み（ひらがな・漢字どちらでも）" value="${esc(Q)}" oninput="setQ(this.value)" ${STORE?"":"disabled"}>
@@ -372,6 +372,11 @@ function formHtml(){
     ${BKIND==="short"?`<label>実際に休憩した時間（分）<span class="req">必須</span></label><input id="bmin" type="number" inputmode="numeric" min="1" max="59" step="1" placeholder="例: 20" value="${esc(BMIN)}" oninput="setBMin(this.value)"><div class="note">1〜59 分で入れてください。</div>`:""}
     ${reasonHtml("例: 人手が足りず休憩に入れなかった")}`;
     btn="休憩を申告する";
+  }else if(KIND==="delete"){
+    main=(BEFORE&&BEFORE.user_id===USER)
+      ?`<div class="note" style="margin-top:12px;font-weight:700">🗑 取り消す勤務：${esc(mdwText(DATE))}　${esc(BEFORE.name||"")}<br>${esc(fmtRow(BEFORE))}</div>${reasonHtml("例: 別スタッフによる打刻ミス（出勤自体がない）")}`
+      :`<div class="note" style="margin-top:12px">上で取り消す人を選んでください。</div>`;
+    btn=(BEFORE&&BEFORE.user_id===USER)?"出勤取消を申請する":"";
   }else if(KIND==="add"||(BEFORE&&BEFORE.user_id===USER)){
     main=`<div id="times">${timesHtml()}</div>${reasonHtml("例: 退勤の打刻忘れ")}`;
     btn=KIND==="fix"?"修正を申請する":"追加を申請する";
@@ -381,6 +386,7 @@ function formHtml(){
   return `<div class="card">
     <label style="margin-top:0">申請の種類<span class="req">必須</span></label>
     <div class="seg"><button type="button" class="${KIND==="add"?"active":""}" onclick="setKind('add')">➕ 勤怠追加</button><button type="button" class="${KIND==="fix"?"active":""}" onclick="setKind('fix')">✏️ 勤怠修正</button></div>
+    <button type="button" class="mini ${KIND==="delete"?"active":""}" onclick="setKind('delete')">🗑 出勤取消（その日の勤務を丸ごと取り消す）</button>
     <button type="button" class="mini ${KIND==="break"?"active":""}" onclick="setKind('break')">☕ 休憩の申告（取っていない・短かった）</button>
     <div class="note">${kindNote}</div>
     <label>店舗<span class="req">必須</span></label>
@@ -443,6 +449,7 @@ async function submit(){
   if(SENDING)return;
   MSG="";const m=$("msg");if(m)m.innerHTML="";
   if(!ALERT&&KIND==="break")return submitBreak();
+  if(!ALERT&&KIND==="delete")return submitDelete();
   const reason=REASON.trim();
   if(!ALERT&&(!STORE||!USER||!DATE)){showErr(KIND==="fix"?"店舗・勤務日・直す人を選んでください":"店舗・従業員・勤務日を選んでください");return;}
   const e=validateTimes(T)||validateReason(reason);
@@ -460,6 +467,17 @@ async function submit(){
   clearPick();if(KIND==="add")T=defaultTimes();   // MSG は次の操作まで残す（一覧の取り直しで画面を書き直しても消えない）
   loadHist();loadDay();
 }
+async function submitDelete(){   // 出勤取消（2026-11-19）: 理由は必須。承認の流れは勤怠修正と同じ
+  const reason=REASON.trim();
+  if(!STORE||!USER||!DATE){showErr("店舗・勤務日・取り消す人を選んでください");return;}
+  const e=validateReason(reason);if(e){showErr(e);return;}
+  if(!confirm("この日の勤務の記録を、丸ごと取り消す申請を出します（承認されると削除され、元には戻せません）。よろしいですか？"))return;
+  const r=await send({op:"submit",kind:"delete",store_id:STORE,user_id:USER,work_date:DATE,reason},"出勤取消を申請する");
+  if(!r.ok||!r.body?.ok){showErr(serverError(r));return;}
+  REASON="";
+  MSG=`<div class="msg-ok">✅ 出勤取消を申請しました。承認（一次承認 → 社長の最終承認）のあとに、管理システムとスマレジの記録が消えます。<br>${esc(r.body.summary||"")}</div>`;
+  clearPick();loadHist();loadDay();
+}
 async function submitBreak(){
   const o={store:STORE,user:USER,date:DATE,bkind:BKIND,minutes:BMIN,reason:REASON.trim()};
   const e=validateBreakDeclare(o);if(e){showErr(e);return;}
@@ -473,7 +491,7 @@ async function loadHist(){
   if(!r.ok||!Array.isArray(r.body)||!r.body.length){HIST_HTML=`<div style="color:var(--muted)">まだありません</div>`;}
   else{
     const lab={pending:"承認待ち",approved:"承認",rejected:"却下",cancelled:"取消"};
-    HIST_HTML=r.body.map(x=>`<div><span class="pill ${x.status}">${lab[x.status]||x.status}</span>${x.kind==="add"?"追加":"修正"}　${esc(x.work_date)}　${esc(x.stores?.name||"")}　${esc(x.users?.name||"")}${x.status==="approved"?(x.smaregi_sync_status==="synced"?"　<span style='color:var(--ok)'>スマレジ反映済</span>":x.smaregi_sync_status==="failed"?"　<span style='color:var(--bad)'>スマレジ失敗</span>":""):""}</div>`).join("");
+    HIST_HTML=r.body.map(x=>`<div><span class="pill ${x.status}">${lab[x.status]||x.status}</span>${x.kind==="add"?"追加":x.kind==="delete"?"取消":"修正"}　${esc(x.work_date)}　${esc(x.stores?.name||"")}　${esc(x.users?.name||"")}${x.status==="approved"?(x.smaregi_sync_status==="synced"?"　<span style='color:var(--ok)'>スマレジ反映済</span>":x.smaregi_sync_status==="failed"?"　<span style='color:var(--bad)'>スマレジ失敗</span>":""):""}</div>`).join("");
   }
   const el=$("hist");if(el)el.innerHTML=HIST_HTML;
 }
@@ -481,6 +499,11 @@ async function loadHist(){
 async function openAlert(id){
   $("app").innerHTML=`<div class="card" style="text-align:center;color:var(--muted)">勤怠確認の内容を読み込み中…</div>`;
   const r=await authed(FN_URL,{method:"POST",body:JSON.stringify({op:"alert",alert_id:id})});
+  if(r.ok&&r.body?.ok&&r.body.alert&&new URLSearchParams(location.search).get("kind")==="delete"){
+    // 2026-11-19 Slack の勤怠確認の［🗑 出勤取消］から: 通常のフォームの「出勤取消」を、この人・この日で開く（理由は必須）
+    const a=r.body.alert;ALERT=null;ALERT_MSG="";KIND="delete";STORE=a.store_id;DATE=a.work_date;USER=a.user_id;BEFORE=a;BEFORE_T=null;T=defaultTimes();
+    render();loadDay();return;
+  }
   if(r.ok&&r.body?.ok&&r.body.alert){
     const p=alertPrefill(r.body.alert);
     ALERT=r.body.alert;KIND=p.kind;STORE=p.store;DATE=p.date;USER=p.user;BEFORE=p.before;BEFORE_T=p.beforeT;T=p.T;SHOW_B2=p.showB2;
@@ -512,7 +535,7 @@ function renderReq(){
   const back=`<button class="btn sub" onclick="leaveReq()">申請フォームへ戻る</button>`;
   if(!REQ){$("app").innerHTML=head+`<div class="card"><div class="msg-err" style="margin-top:0">${esc(REQ_ERR||"この申請は開けません")}</div>${back}</div>`;return;}
   const q=REQ.request,nm=id=>(id&&REQ.names&&REQ.names[id])||"—",can=REQ.can||{},st=REQ.state||q.status,date=String(q.work_date).slice(0,10);
-  const c=reqCompare(q.kind==="fix"?q.before:null,q,date);
+  const c=q.kind==="delete"?reqCompare(q.before,q.before,date):reqCompare(q.kind==="fix"?q.before:null,q,date);   // 出勤取消は、取り消す勤務（before）だけを出す
   const cell=(v,sub)=>`${esc(v)}${sub?`<span class="sub">${esc(sub)}</span>`:""}`;
   const rows=c.rows.map(r=>`<tr class="${r.changed?"chg":""}"><td>${r.changed?"🔸 ":""}${r.label}</td><td>${cell(r.before,r.subBefore)}</td><td>${r.changed?cell(r.after,r.subAfter):`<span style="color:var(--muted)">変更なし</span>${r.subAfter&&r.label==="休憩"?`<span class="sub">${esc(r.subAfter)}</span>`:""}`}</td></tr>`).join("");
   const two=q.flow==="two_stage";
@@ -520,11 +543,11 @@ function renderReq(){
   const src={changed:"申請のあとに、元の打刻が変わっています。このままの内容では反映できません（差戻しにして、出し直してもらってください）。",gone:"申請のあとに、元の勤怠が無くなっています。このままの内容では反映できません。",appeared:"申請のあとに、この日の打刻が登録されています。「勤怠修正」で出し直しが要ります。"}[REQ.source&&REQ.source.state]||"";
   const extra=st==="returned"&&q.return_note?`<div class="msg-err">差戻しの理由: ${esc(q.return_note)}</div>`:st==="rejected"&&q.decision_note?`<div class="msg-err">却下の理由: ${esc(q.decision_note)}</div>`:st==="sync_error"?`<div class="msg-err">スマレジへの反映に失敗: ${esc(q.smaregi_error||"不明")}</div>`:"";
   const info=`<div class="card"><div class="kv">
-    <div><b>種類</b>${q.kind==="add"?"➕ 勤怠追加":"✏️ 勤怠修正"}</div><div><b>店舗</b>${esc(REQ.store_name||"—")}</div><div><b>対象</b>${esc(nm(q.user_id))}</div>
+    <div><b>種類</b>${q.kind==="add"?"➕ 勤怠追加":q.kind==="delete"?"🗑 出勤取消":"✏️ 勤怠修正"}</div><div><b>店舗</b>${esc(REQ.store_name||"—")}</div><div><b>対象</b>${esc(nm(q.user_id))}</div>
     <div><b>勤務日</b>${esc(mdwText(date))}</div><div><b>申請</b>${esc(nm(q.requested_by))}（${reqWhen(q.requested_at)}）</div><div><b>理由</b>${esc(q.reason||"—")}</div>
     ${first}<div><b>状況</b><span class="state ${reqStateClass(st)}">${esc(REQ_STATE[st]||st)}</span></div></div>
     ${extra}${src?`<div class="msg-err">⚠️ ${esc(src)}</div>`:""}
-    <table class="cmp"><tr><th>項目</th><th>修正前</th><th>修正後</th></tr>${rows}<tr><td>実働の増減</td><td colspan="2">${esc(c.delta)}</td></tr></table></div>`;
+    ${q.kind==="delete"?`<div class="note" style="font-weight:700">🗑 取り消す勤務（この日の勤務の記録を、丸ごと削除します）</div><table class="cmp"><tr><th>項目</th><th>内容</th></tr>${c.rows.map(r=>`<tr><td>${r.label}</td><td>${esc(r.after)}</td></tr>`).join("")}</table>`:`<table class="cmp"><tr><th>項目</th><th>修正前</th><th>修正後</th></tr>${rows}<tr><td>実働の増減</td><td colspan="2">${esc(c.delta)}</td></tr></table>`}</div>`;
   // 操作: いまできる物だけ（受け口が決めて返す）
   const b=(label,action,cls)=>`<button class="btn row ${cls||""}" ${REQ_BUSY?"disabled":""} onclick="reqDo('${action}')">${label}</button>`;
   let ops="";
@@ -539,7 +562,9 @@ function renderReq(){
   if(can.reject)ops+=b("❌ 却下する","reject","danger");
   if(can.cancel)ops+=b("🚫 この申請を取り下げる","cancel","sub");
   let re="";
-  if(can.resubmit){
+  if(can.resubmit&&q.kind==="delete"){
+    re=`<div class="card"><div class="note">この申請は「出勤取消」です。出し直しはできません。「この申請を取り下げる」で取り下げてから、フォームで、もう一度申請してください。</div></div>`;
+  }else if(can.resubmit){
     const f=(id,label,v)=>`<div class="tf"><div class="tl"><span>${label}</span></div><input type="datetime-local" id="${id}" value="${esc(isoToLocal(v))}"></div>`;
     re=`<div class="card"><div style="font-weight:700;font-size:15px">✏️ 直して出し直す</div><div class="note">出し直すと、前の承認は取り消されて、一次承認からやり直しになります。修正前の値は、いまの打刻で取り直します。</div>
       <div class="grid2">${f("rs-cin","出勤",q.clock_in)}${f("rs-cout","退勤",q.clock_out)}${f("rs-b1s","休憩1 開始",q.break_start_1)}${f("rs-b1e","休憩1 終了",q.break_end_1)}${f("rs-b2s","休憩2 開始",q.break_start_2)}${f("rs-b2e","休憩2 終了",q.break_end_2)}</div>
@@ -582,7 +607,7 @@ async function main(){
   ME=await fetchMe();if(!ME||ME.is_active===false){sess.clear();renderLogin();return}
   const r=await authed(`/rest/v1/stores?select=id,name,sort_order&is_active=eq.true&order=sort_order.asc.nullslast,name.asc`);
   STORES=(r.ok&&Array.isArray(r.body)?r.body:[]).filter(s=>s.name!=="本部");
-  const p=new URLSearchParams(location.search);if(p.get("kind")==="add")KIND="add";if(p.get("kind")==="break")KIND="break";
+  const p=new URLSearchParams(location.search);if(p.get("kind")==="add")KIND="add";if(p.get("kind")==="break")KIND="break";if(p.get("kind")==="delete")KIND="delete";
   DATE=addDays(todayJst(),-1);
   loadHist();
   loadAsks().catch(()=>{});

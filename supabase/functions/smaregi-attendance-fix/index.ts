@@ -70,11 +70,11 @@ Deno.serve(async (req) => {
     t = { table: "sf_attendance_alerts", id: a.id, kind: a.request_kind === "delete" ? "delete" : "fix", deleted_key: a.deleted_shift_result_id ?? null, user_id: a.user_id, store_id: a.store_id, work_date: a.work_date, labor_cost_daily_id: a.labor_cost_daily_id,
       clock_in: a.proposed_clock_in, clock_out: a.proposed_clock_out, b1s: a.proposed_break_start_1, b1e: a.proposed_break_end_1, b2s: a.proposed_break_start_2, b2e: a.proposed_break_end_2 };
   } else if (/^[0-9a-f-]{36}$/.test(String(body.request_id ?? ""))) {
-    const { data: r } = await sb.from("sf_attendance_requests").select("id,kind,status,user_id,store_id,work_date,labor_cost_daily_id,clock_in,clock_out,break_start_1,break_end_1,break_start_2,break_end_2,smaregi_sync_status").eq("id", body.request_id).maybeSingle();
+    const { data: r } = await sb.from("sf_attendance_requests").select("id,kind,before_meta,status,user_id,store_id,work_date,labor_cost_daily_id,clock_in,clock_out,break_start_1,break_end_1,break_start_2,break_end_2,smaregi_sync_status").eq("id", body.request_id).maybeSingle();
     if (!r) return json({ ok: false, error: "申請が見つかりません" }, 404);
     if (r.status !== "approved") return json({ ok: false, code: "not_approved", error: `承認済みではありません（${r.status}）` }, 409);
     if (r.smaregi_sync_status === "synced") return json({ ok: true, code: "already_synced" });
-    t = { table: "sf_attendance_requests", id: r.id, kind: r.kind === "add" ? "add" : "fix", user_id: r.user_id, store_id: r.store_id, work_date: r.work_date, labor_cost_daily_id: r.labor_cost_daily_id,
+    t = { table: "sf_attendance_requests", id: r.id, kind: r.kind === "add" ? "add" : r.kind === "delete" ? "delete" : "fix", deleted_key: r.kind === "delete" ? (r.before_meta?.smaregi_shift_result_id ?? null) : null, user_id: r.user_id, store_id: r.store_id, work_date: r.work_date, labor_cost_daily_id: r.labor_cost_daily_id,
       clock_in: r.clock_in, clock_out: r.clock_out, b1s: r.break_start_1, b1e: r.break_end_1, b2s: r.break_start_2, b2e: r.break_end_2 };
   } else {
     return json({ ok: false, error: "alert_id か request_id が必要です" }, 400);

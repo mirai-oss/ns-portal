@@ -295,3 +295,14 @@ Deno.test("スイッチの読み取り: 設定が無い・読めないときは 
   const broken = { from: () => { throw new Error("x"); } };
   assertEquals(await flowSettings(broken), { thread: false, twoStage: false, presidentDm: true });
 });
+
+Deno.test("出勤取消（2026-11-19）: 種類は『出勤取消』・取り消す勤務の中身を出す・修正前→修正後の表は出さない・理由は目立つ", () => {
+  const v = view({ kind: "delete", reason: "別スタッフによる打刻ミス（出勤自体がない）" });
+  assertEquals(v.kind, "delete");
+  assert(v.before !== null);
+  assertEquals(requestParent(v).text, "📝 出勤取消｜山田太郎｜鳥一代 本店｜11/14｜承認待ち");
+  const t = body(requestCard(v, { notificationId: "n1" }).blocks);
+  assert(t.includes("【出勤取消の申請】") && t.includes("取り消す勤務") && t.includes("出勤：17:00") && t.includes("退勤：22:00"));
+  assert(!t.includes("修正前 → 修正後") && !t.includes("実働の増減"));
+  assert(t.includes("> *📝 理由：別スタッフによる打刻ミス（出勤自体がない）*"));
+});
