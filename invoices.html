@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-11-20-v183";
+const BUILD_TAG="2026-11-20-v185";
 const PAYROLL_CANCEL_READY=true;
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
@@ -2312,16 +2312,37 @@ async function plfeeBuildSeisanLines_(invoiceId){
   const nz2=x=>String(x||"").normalize("NFKC").split(/[\/\s・]+/).filter(Boolean).sort().join("|");
   const stores=(CORP_STORE_CACHE&&CORP_STORE_CACHE.stores)||[];
   const lines=[], unmatched=[]; let n=0;
-  for(const b of (gj.body.branches||[])){
+  // MFの仕訳の金額が「税込」か「税抜（税は別計算）」かは、仕訳ごとに違う（外税の仕訳だと、借方の合計が貸方より小さくなる）。
+  // 借方の合計と貸方の合計を比べて判定し、税抜のときは税率をかけて税込に直す（精算書は必ず税込で入れる）
+  const brs=gj.body.branches||[];
+  const debSum=brs.reduce((a,b)=>a+(b.debit&&Number(b.debit.value)>0?Number(b.debit.value):0),0);
+  const creSum=brs.reduce((a,b)=>a+(b.credit&&Number(b.credit.value)>0?Number(b.credit.value):0),0);
+  const valuesAreNet=creSum>0&&debSum<creSum-2;
+  for(const b of brs){
     const d=b.debit; if(!d||!d.account_name) continue; n++;
     if(!plIsExpenseAccount_(d.account_name)) continue;
-    const st=stores.find(x=>nz2(x.name)===nz2(d.department_name));
+    // 店舗マスタの「MFの部門名」(mf_department_name) を最優先、次に店名との照合（順番・区切り違いも吸収）、最後に従来の部分一致
+    const dn=String(d.department_name||"").normalize("NFKC").trim();
+    const st=stores.find(x=>x.mf_department_name&&String(x.mf_department_name).normalize("NFKC").trim()===dn)
+      ||stores.find(x=>nz2(x.name)===nz2(d.department_name))
+      ||stores.find(x=>x.mf_department_name&&nz2(x.mf_department_name)===nz2(d.department_name))
+      ||plfeeFindStoreByName(stores,d.department_name);
     if(!st){ unmatched.push(`${n}行目 ${d.account_name}（部門: ${d.department_name||"なし"}）`); continue; }
     const m=String(d.tax_name||"").match(/(\d+)\s*%/);
-    lines.push({line_no:n,store_id:st.id,store_name:st.name,remark:b.remark||"",amount:Math.round(Number(d.value)),account:d.account_name,sub:d.sub_account_name||"",dept:d.department_name||"",rate:m?Number(m[1]):0});
+    const rate=m?Number(m[1]):0; const val=Math.round(Number(d.value));
+    lines.push({line_no:n,store_id:st.id,store_name:st.name,remark:b.remark||"",amount:valuesAreNet?Math.round(val*(100+rate)/100):val,account:d.account_name,sub:d.sub_account_name||"",dept:d.department_name||"",rate});
   }
-  const seisanLines=lines.filter(l=>{ const x=((inv.checks&&inv.checks.routes)||[]).find(v=>v.store_id===l.store_id); return x&&x.route==="seisan"; });
-  return {inv,gj,lines,seisanLines,unmatched};
+  // 反映先（精算書／PL）は、請求書に保存された判定ではなく、いまの店舗マスタと請求書の対象法人から決め直す
+  const routes=[...new Set(lines.map(l=>l.store_id))].map(sid=>({store_id:sid,route:plfeeSeisanRoute(stores.find(x=>x.id===sid),inv.corporation_id,inv.target_year_month)==="seisan"?"seisan":"pl"}));
+  inv.checks={...(inv.checks||{}),routes};
+  const seisanLines=lines.filter(l=>{ const x=routes.find(v=>v.store_id===l.store_id); return x&&x.route==="seisan"; });
+  // 端数: 税率をかけて税込に直した結果が、貸方の合計（請求書の金額）と数円ずれたら、最後の明細で合わせる（全明細が精算書のときだけ）
+  let note="";
+  if(valuesAreNet&&lines.length&&seisanLines.length===lines.filter(l=>l.account!=="前払費用").length){
+    const tot=lines.reduce((a,l)=>a+l.amount,0), diff=creSum-tot;
+    if(diff!==0&&Math.abs(diff)<=lines.length){ lines[lines.length-1].amount+=diff; note=`端数${diff>0?"+":""}${diff}円を最後の明細で調整`; }
+  }
+  return {inv,gj,lines,seisanLines,unmatched,valuesAreNet,creSum,note};
 }
 async function plfeeRebuildSeisan_(btn){
   const log=$("plfee-rebuild-log"); const say=t=>{ if(log) log.innerHTML=t; };
@@ -2350,7 +2371,7 @@ async function plfeeRebuildBulk_(ym,dry,logEl){
   const rr=await authed(`/rest/v1/invoice_pl_reflections?select=invoice_id,allocations,seisan_store_name,account_name&reflection_route=eq.seisan&year_month=eq.${ym}-01&limit=2000`);
   if(!rr.ok){ out.push('<span style="color:#b91c1c">反映済みの一覧を取得できませんでした</span>'); show(); return; }
   const cur=new Map(); for(const r of rr.body){ const c=cur.get(r.invoice_id)||{n:0,sum:0}; c.n++; c.sum+=Number(r.allocations&&r.allocations[0]&&r.allocations[0].amount)||0; cur.set(r.invoice_id,c); }
-  const ids=[...cur.keys()]; out.push(`<b>${ym}分: 精算書に反映済みの請求書 ${ids.length}件${dry?"（確認だけ・何も変更しません）":""}</b>`); show();
+  const ids=[...cur.keys()]; out.push(`<span style="color:var(--muted)">画面の版: ${esc(BUILD_TAG)}</span>`); out.push(`<b>${ym}分: 精算書に反映済みの請求書 ${ids.length}件${dry?"（確認だけ・何も変更しません）":""}</b>`); show();
   let ok=0, ng=0;
   for(let k=0;k<ids.length;k++){
     const id=ids[k]; const c=cur.get(id);
@@ -2360,7 +2381,7 @@ async function plfeeRebuildBulk_(ym,dry,logEl){
       const nm=esc(b.inv.vendor_name||id.slice(0,8)); const sum=b.seisanLines.reduce((a,l)=>a+l.amount,0);
       const extra=b.unmatched.length?`　<span style="color:#b45309">店舗不明で除外: ${esc(b.unmatched.join("、"))}</span>`:"";
       if(!b.seisanLines.length){ out.push(`⚠️${nm}: 精算書へ入れる明細なし${extra}`); ng++; show(); continue; }
-      if(dry){ out.push(`${nm}: 今 ${c.n}行 ${yen(c.sum)} → 入れ直し後 ${b.seisanLines.length}行 ${yen(sum)}（税込）${extra}`); ok++; show(); continue; }
+      if(dry){ out.push(`${nm}: 今 ${c.n}行 ${yen(c.sum)} → 入れ直し後 ${b.seisanLines.length}行 ${yen(sum)}（税込）${b.valuesAreNet?"　<span style=\"color:var(--muted)\">※MFの金額は税抜のため税込に換算</span>":""}${b.note?"　"+esc(b.note):""}${extra}`); ok++; show(); continue; }
       const res=[]; await plReflectInvoice_({id:b.inv.id,target_year_month:b.inv.target_year_month,checks:b.inv.checks},{transaction_date:b.gj.body.transaction_date},b.lines,res,{onlySeisan:true});
       const bad=res.filter(x=>/⚠️/.test(x));
       out.push(`${bad.length?"⚠️":"✅"}${nm}: ${b.seisanLines.length}行 ${yen(sum)}（税込）${bad.length?"　"+bad.join(" "):""}${extra}`); bad.length?ng++:ok++; show();
