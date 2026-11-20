@@ -30,9 +30,9 @@ Deno.test("複数経路: 最速＋15 分・乗換 2 回以内に絞り、その�
 
 Deno.test("運賃不一致: 申請額が候補の最高＋許容を超えると「本人に確認」", () => {
   const c = parseCourses(SCENARIOS.multi().ResultSet);
-  const j = judge(c, 2500, DEFAULT_RULES);
+  const j = judge(c, 2501, DEFAULT_RULES);
   assertEquals(j.judgement, "person_review");
-  const a = autoJudge(j, input(2500), DEFAULT_AUTO);
+  const a = autoJudge(j, input(2501), DEFAULT_AUTO);
   assertEquals(a.eligible, false);
 });
 
@@ -96,7 +96,7 @@ Deno.test("自動承認: 既定は OFF（shadow）。enabled で live。片道�
 
 Deno.test("判定の数値は app_settings.commute_rules で変えられる（許容額・最速＋分）", () => {
   const c = parseCourses(SCENARIOS.multi().ResultSet);
-  const j = judge(c, 1600, { ...DEFAULT_RULES, tolerance_yen: 0, tolerance_pct: 0 });
+  const j = judge(c, 1601, { ...DEFAULT_RULES, tolerance_yen: 0, tolerance_pct: 0 });
   assertEquals(j.judgement, "person_review");
   const j2 = judge(c, 520, { ...DEFAULT_RULES, max_extra_minutes: 30, max_transfers: 3 });
   assertEquals(j2.reasonable.length, 3); assertEquals(j2.computed?.fare, 520); assertEquals(j2.judgement, "auto_approvable");
@@ -211,4 +211,17 @@ Deno.test("通勤手段は日本語で表示（英字のキーを Slack・判定
   const txt = JSON.stringify(a);
   if (txt.includes("train_bus") && !/"method"/.test(txt)) throw new Error("英字の通勤手段が理由に残っています: " + txt);
   if (!a.reasons.join(" ").includes("電車＋バス")) throw new Error("理由に日本語の通勤手段がありません: " + a.reasons.join(" / "));
+});
+
+Deno.test("往復額の疑い: 申請額の半分が候補の範囲内なら、本人に聞かず本部確認（自動承認はしない）", () => {
+  const mk = (i: number, fare: number) => ({ index: i, summary: "", fare, round: fare * 2, time_min: 46, transfers: 1, walk_min: 0, uses_bus: false, uses_express: false, teiki1: null, teiki3: null, teiki6: null, charge: null, cost: fare }) as any;
+  const cands = [mk(0, 407), mk(1, 418), mk(2, 451)];
+  const j = judge(cands, 862, DEFAULT_RULES);
+  assertEquals(j.judgement, "hq_review");
+  assert(j.reasons.join("").includes("往復"));
+  assertEquals(autoJudge(j, input(862), DEFAULT_AUTO).eligible, false);
+  // 半分にしても範囲外なら従来どおり本人に確認
+  assertEquals(judge(cands, 2500, DEFAULT_RULES).judgement, "person_review");
+  // 最安以下なら従来どおり自動承認の対象
+  assertEquals(judge(cands, 400, DEFAULT_RULES).judgement, "auto_approvable");
 });

@@ -59,6 +59,10 @@ export function judge(cands: Candidate[], claimed: number | null, rules: Rules):
   if (claimed === null || claimed === undefined) { judgement = "hq_review"; reasons.push("本人の申請額がありません"); }
   else if (claimed <= (computed.fare ?? 0)) { judgement = "auto_approvable"; reasons.push(`申請額 ${claimed} 円 ≦ 合理的経路の最安 ${computed.fare} 円`); }
   else if (claimed <= maxFare + tol) { judgement = "hq_review"; reasons.push(`申請額 ${claimed} 円 は候補の範囲内（最安 ${computed.fare}〜最高 ${maxFare} 円＋許容 ${tol} 円）`); }
+  else if (claimed % 2 === 0 && claimed / 2 >= (computed.fare ?? 0) - tol && claimed / 2 <= maxFare + tol) {
+    // 往復額を入れた疑い（2026-11-20）: 半分にすると候補の範囲内 → 本人に聞き直さず本部が確認する（自動承認はしない）
+    judgement = "hq_review"; reasons.push(`申請額 ${claimed} 円 は往復の金額の可能性があります（片道に直すと ${claimed / 2} 円・候補の範囲内: 最安 ${computed.fare}〜最高 ${maxFare} 円）`);
+  }
   else { judgement = "person_review"; reasons.push(`申請額 ${claimed} 円 が候補の最高 ${maxFare} 円＋許容 ${tol} 円 を超えています（本人に経路を確認）`); }
   // バスの扱い: 最安の合理的経路（＝申請額の比較相手）がバスを含むときだけ本部確認に回す（他の候補にバスがあっても自動承認可能のまま）
   if (rules.bus_needs_review && computed.uses_bus && judgement === "auto_approvable") { judgement = "hq_review"; reasons.push("最安の経路がバスを含むため本部確認"); }
