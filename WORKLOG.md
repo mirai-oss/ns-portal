@@ -7,6 +7,16 @@
 
 ---
 
+**2026-11-19〜20（担当B・MacBook）本部タスクの Slack 連携を大きく拡張／採用の Slack ボタン復活（LINE・カレンダー・送信スイッチ ON）／勤怠の出勤取消申請。すべて main 反映・EF 本番デプロイ済み（最新 4adcc5a 以降）**
+- 【本部タスク×Slack（社長依頼で順次・本番反映済み）】親投稿は「表紙」（シンプルな表示・絵文字少なめ）で詳細はスレッド。画面の操作も 1 分以内に親投稿＋カードへ反映（pg_cron `hq-parents-refresh`・変化したものだけ更新）／工程は期限が早い順＋先頭の未完了が「いまここ」／コメントに写真・PDF 添付（Slack・画面とも。リンクは管理システム経由で期限なし）／Slack のコメントでメンション選択・添付・🗑削除（画面のコメントも消える）／完了の取り消し（↩️）と「完了したタスクは直せない」の誤判定の修正／@nstyle-notify の文章からのタスク作成を修正（原因=AI の出力形式 maxItems 非対応。法人の選択・DM では指示文を残さない・表紙の親投稿）／次の担当者への通知（前の工程が期限当日・超過／完了したとき。1 人 1 通にまとめる。設定 hq_task_slack.next_notice_enabled=ON）／3 秒制限対策（先に返事→裏で処理）で「Slack になかなか接続できません」を解消／古い Indeed 重複投稿 2 件を削除。
+- 【11/20 追加】個人 DM の通知（期限・次の担当・新規割り当て）に［💬 コメント］と「📍 親投稿を開く（#チャンネル）」リンク（`_shared/hqtask-parent-link.ts`・chat.getPermalink）。作成時の担当者 DM は親投稿を出したあとに送る。直せる人（作った人・マスター・CEO・HQ）の DM には［✏️ 編集］［🧩 工程を編集］。**画面で作ったタスクも Slack からコメント・編集できるように**する SQL `supabase/2026-11-20_hq_slack_edit_web_tasks.sql`（4 関数の「記録表 hq_slack_task_log に行が無ければ断る」を外す。安全装置つき DO ブロック）＝**社長の実行待ち**（手順書 HTML を渡した）。記録表へ行は足さない（行の有無で「完了通知」「工程の順番」の扱いが変わるため）。
+- 【採用の Slack ボタン復活】LINE 返信/担当者変更/面接確定/取消/採用/再送が動かなくなっていたのを復活。順番=①LINE 実送信 ②カレンダー実登録 ③送信スイッチ ON（recruit_actions={send_enabled:true,line_mode:live,calendar_mode:live} を本番で確認済み）。応募者カードは 6 件を再同期。LINE 返信の窓は直近 5 件の履歴つき・窓を先に開いて速くした。アプリから直接送った LINE は取り込めない（管理システム経由のみ記録）。面接確定→カレンダー反映は社長がテストで確認済み。止める戻し方=`app_settings.recruit_actions` の send_enabled を false。
+- 【勤怠】出勤取消申請（kind=delete）を誰でも申請可に（理由必須・第一承認→最終承認は維持・最終承認でスマレジの出勤も取消）／勤怠修正の画面から申請できる／Slack の親投稿に店舗名・理由を目立たせる／アラートカードの🗑ボタンから申請フォームへ。
+- 【残り・止めているもの】STEP 6（招待リンクでの入社登録テスト。テスト従業員は削除せず「無効」に）／待ち行列 9（Indeed のメッセージ・メールでの自動案内。設計・承認が先）・10 残り（面接取り消し後の状態表示）／個人 DM にする通知の種類の追加（report_feedback・chat_message・interview_today）／Slack 側で直接消したコメントの同期（groups:history＋イベント購読が必要）／出勤取消後の旧アラートカードの更新／社長がテストタスク「テスト」を削除／画面で作ったタスクの Slack 編集の SQL 実行待ち（上記）。
+- 【ぶつかりやすい所】EF slack-interact・hq-task-reminders・recruit-notify・attendance-request・smaregi-attendance-fix、`_shared/hqtask-*.ts`・`recruit-*.ts`・`attendance-*-notice.ts`、DB 関数 hq_slack_*（task_get/task_update/step_update/steps_get/comment_add/comment_delete/step_reopen/next_candidates）、app_settings: hq_task_slack・recruit_actions。作業は worktree `/tmp/nsp-b` で行い、他担当の未コミット編集（~/ns-portal の supabase/functions/*）には触れていない。
+
+---
+
 **2026-11-18（担当B・MacBook）採用・入社登録の残り＋通知まわり。完了したもの／止めているもの／ぶつかりやすい所（ここだけ読めば分かるように）**
 - 【本番反映済み】入社登録の小さな直し3点（EF onboarding-notify v20・nippo 561fdaf）／Indeed リンク: 新しい形（account.indeed.com/o/myaccess…）に GAS を追記で対応し過去分の補完 20→0 件／採用 LINE 実送信・カレンダー実登録テスト（テスト応募者のみ・自動で dry に戻る）／通知ルート整理（求人の Slack 行は #採用-応募通知へ・Chatwork 入社通知を停止。Chatwork 求人2行・Lark 中山通知は社長が画面で削除）／notify_lark は Slack のみ／給料確定の取消(U-27)・題名の月ずれ修正／本部タスクのメンション Slack DM（hq_notify_comment 追記＋新 EF `hqtask-comment-dm`＝親は短く・スレッドにコメントの流れ。社長1人で確認済み→全員ON の SQL `2026-11-18_hqtask_comment_slack_dm_all.sql` は社長の実行待ち）／Slack『#本部-チャット』（slack_channels の hq.chat）に「＋ タスクを作る」ボタンを設置／tasks.html に `?new=1`（ログイン後に作成フォームを直接開く）＋ tori-dashboard 申請フォーム一覧の URL 更新（app.js v288）。
 - 【止めている・未着手（この PC は今動かしていない。着手する人は先にここを読む）】①STEP 6（採用→招待→テスト登録→無効化の片付け。社長の登録結果待ち・DB 上は従業員がまだ無い）②STEP 7（入社登録のスイッチを入れる順番の案）③第2段階＝Slack の DM スレッドへの返信をタスクのコメントに取り込む（**slack-events に分岐を足す必要あり＝もう1台の PC の領域と重なる。社長の分担決定待ち。それまで誰も slack-events を触らない／触る前に司令塔へ**）④管理ボード待ち行列 9（Indeed 経由の LINE 合言葉招待の自動化）・10（Slack カードの使い勝手: 窓を先に開く・返信の窓に直近のやり取り・取消後の状態表示）。
