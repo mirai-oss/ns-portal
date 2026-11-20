@@ -319,6 +319,14 @@ async function processEmail(db: any, emailId: string, secret: string, opts: { dr
     auto_invoice_at: nowIso,
     auto_invoice_note: `下書き${created.length}件作成／重複スキップ${skipped.length}件`,
   }).eq("id", emailId);
+  // 2026-11-19: 請求書を自動で作った時点で、メールは「自動処理済み」にする（請求書側が要対応で止まっていても、続きは「請求書」タブで行う。
+  // メールを未処理のまま残すと、同じ請求書をメールから二重に処理してしまう＝ユーザー報告）。未処理・既読のメールだけ対象（処理中・完了・対象外は触らない）。
+  if (created.length > 0) {
+    await db.from("invoice_emails").update({
+      mail_status: "completed", completed_at: nowIso,
+      completion_note: "自動処理: 請求書を自動作成（要対応で止まっている場合は「請求書」タブで対応）",
+    }).eq("id", emailId).in("mail_status", ["unread", "read"]);
+  }
   return { email_id: emailId, status: "created", created, skipped_duplicates: skipped.length };
 }
 

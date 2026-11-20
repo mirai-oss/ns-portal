@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-11-19-v177";
+const BUILD_TAG="2026-11-19-v178";
 const PAYROLL_CANCEL_READY=true;
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
@@ -2869,7 +2869,7 @@ async function loadInboxMaster(){
   // 2026-11-19: 自動で請求書が作られたのに、承認待ちまで進まず「要対応」で止まっているメール（未処理のまま残る）を印で見分ける。
   // 請求書は作成済みなので、メールから新たに処理すると二重になる（ユーザー報告）。件数は少ないので失敗しても一覧は出す
   try{
-    const ar=await authed(`/rest/v1/invoices?select=email_id,current_stage&intake_source=eq.email_auto&invoice_status=neq.cancelled&email:invoice_emails!inner(mail_status)&email.mail_status=in.(unread,read,processing)&limit=500`);
+    const ar=await authed(`/rest/v1/invoices?select=email_id,current_stage,email:invoice_emails!inner(mail_status)&intake_source=eq.email_auto&invoice_status=neq.cancelled&email.mail_status=in.(unread,read,processing)&limit=500`);
     AUTO_INV_MAIL=new Map();
     if(ar.ok&&Array.isArray(ar.body)) for(const x of ar.body){ if(x.email_id&&!AUTO_OK_STAGES.includes(x.current_stage)) AUTO_INV_MAIL.set(x.email_id,x.current_stage); }
   }catch(e){ AUTO_INV_MAIL=new Map(); }
