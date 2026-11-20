@@ -30,3 +30,11 @@ Deno.test("押したとき: 権限なし・連携済み・合言葉なし・設�
   assertEquals((await inviteOpen({} as any, { applicant_id: ID })).kind, "ephemeral");
   assertEquals((await inviteOpen(deps(ok), { applicant_id: ID })).kind, "modal");
 });
+
+Deno.test("案内文: 専用フォームのリンクがあれば「LINE の登録」と「応募フォーム」の 2 つの案内になる。無ければ LINE だけ", () => {
+  const f = "https://mirai-oss.github.io/nippo/?apply=al&p=" + "a".repeat(64);
+  const t = inviteText({ name: "山田 太郎", oa: "@abc123", code: "AB12CD", formUrl: f });
+  assert(t.includes("① LINE の登録") && t.includes("② 応募フォームのご入力") && t.includes(f) && t.includes("%40abc123/?AB12CD") && t.includes("合言葉：AB12CD"));
+  const only = inviteText({ name: "山田 太郎", oa: "@abc123", code: "AB12CD" });
+  assert(!only.includes("②") && only.includes("%40abc123/?AB12CD"));
+});

@@ -4,7 +4,7 @@
 import { clean } from "./recruit-notice.ts";
 import type { RecruitDeps, RecruitOutcome } from "./recruit-actions.ts";
 
-export type InviteInfo = { ok: boolean; code?: string; message?: string; name?: string; linked?: boolean; line_code?: string | null; oa?: string | null; indeed_url?: string | null };
+export type InviteInfo = { ok: boolean; code?: string; message?: string; name?: string; linked?: boolean; line_code?: string | null; oa?: string | null; indeed_url?: string | null; form_url?: string | null };
 
 const plain = (text: string) => ({ type: "plain_text", text, emoji: true });
 const isUuid = (s: unknown): s is string => typeof s === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s);
@@ -14,22 +14,23 @@ export function lineLink(oa: string, code: string): string {
   return `https://line.me/R/oaMessage/${encodeURIComponent(oa)}/?${encodeURIComponent(code)}`;
 }
 
-/** Indeed のメッセージに貼り付ける案内文 */
-export function inviteText(o: { name: string; oa: string; code: string }): string {
+/** Indeed のメッセージに貼り付ける案内文。formUrl（その人専用の応募フォームのリンク）があれば、LINE の登録と応募フォームの 2 つをお願いする文面にする */
+export function inviteText(o: { name: string; oa: string; code: string; formUrl?: string | null }): string {
   const nm = String(o.name ?? "").trim() ? clean(o.name, 30) : "";   // 氏名が空のとき clean は「—」を返すので、空は先に除く
-  return [
-    ...(nm ? [`${nm} 様`, ""] : []),
-    "ご応募ありがとうございます。",
-    "面接のご連絡は LINE で行っております。",
-    "お手数ですが、下のリンクを押すと LINE が開きます。文字が入った状態になりますので、そのまま送信してください。",
-    "",
+  const head = [...(nm ? [`${nm} 様`, ""] : []), "ご応募ありがとうございます。"];
+  const lineBlock = [
+    "下のリンクを押すと LINE が開き、文字が入った状態になります。そのまま送信してください。",
     lineLink(o.oa, o.code),
-    "",
-    `リンクが開けない場合は、公式 LINE（${o.oa}）に、次の合言葉を送ってください。`,
-    `合言葉：${o.code}`,
-    "",
-    "ご不明な点があれば、このメッセージにご返信ください。",
-  ].join("\n");
+    `（開けない場合は、公式 LINE（${o.oa}）に、次の合言葉を送ってください。合言葉：${o.code}）`,
+  ];
+  if (!o.formUrl) {
+    return [...head, "面接のご連絡は LINE で行っております。", "お手数ですが、下のリンクを押すと LINE が開きます。文字が入った状態になりますので、そのまま送信してください。", "", lineLink(o.oa, o.code), "",
+      `リンクが開けない場合は、公式 LINE（${o.oa}）に、次の合言葉を送ってください。`, `合言葉：${o.code}`, "", "ご不明な点があれば、このメッセージにご返信ください。"].join("\n");
+  }
+  return [...head, "面接のご連絡は LINE で行っております。お手数ですが、次の 2 つをお願いします。", "",
+    "① LINE の登録（1 分ほどです）", ...lineBlock, "",
+    "② 応募フォームのご入力（面接のご希望日時など）", o.formUrl, "※ お名前は入力済みです。電話番号・メールアドレスなどをご入力ください。", "",
+    "ご不明な点があれば、このメッセージにご返信ください。"].join("\n");
 }
 
 /** 案内文の窓（見るだけ。送信ボタンは無い）。コードブロックは、右上のコピーで 1 回でコピーできる */
@@ -54,5 +55,5 @@ export async function inviteOpen(deps: RecruitDeps, value: { applicant_id?: unkn
   if (r.linked) return { kind: "ephemeral", text: "この応募者は、すでに LINE とつながっています。案内は要りません。" };
   if (!r.line_code) return { kind: "ephemeral", text: "合言葉がまだ発行されていません。管理画面の応募者ページで「合言葉を発行する」を押してください。" };
   if (!r.oa) return { kind: "ephemeral", text: "求人用 LINE の設定（公式アカウントの ID）が見つかりません。管理画面の設定で確認してください。" };
-  return { kind: "modal", view: inviteModal({ name: String(r.name ?? ""), text: inviteText({ name: String(r.name ?? ""), oa: r.oa, code: r.line_code }), indeedUrl: r.indeed_url ?? null }) };
+  return { kind: "modal", view: inviteModal({ name: String(r.name ?? ""), text: inviteText({ name: String(r.name ?? ""), oa: r.oa, code: r.line_code, formUrl: r.form_url ?? null }), indeedUrl: r.indeed_url ?? null }) };
 }

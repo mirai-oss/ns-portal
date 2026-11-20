@@ -37,7 +37,7 @@ import { assigneeOpen, assigneeSubmit, ASSIGNEE_ACTION, ASSIGNEE_MODAL, lineOpen
   hireOpen, hireSubmit, HIRE_ACTION, HIRE_MODAL,
   type InterviewInfo, type Place, type RecruitDeps, type RecruitOutcome } from "../_shared/recruit-actions.ts";
 import { inviteOpen } from "../_shared/recruit-invite.ts";
-import { INVITE_ACTION } from "../_shared/recruit-notice.ts";
+import { INVITE_ACTION, NIPPO_URL } from "../_shared/recruit-notice.ts";
 
 const svc = () => createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
 const text = (s: string, status = 200) => new Response(s, { status, headers: { "Content-Type": "text/plain; charset=utf-8" } });
@@ -719,12 +719,18 @@ function recruitDeps(sb: any, actor?: Actor, payload?: any): RecruitDeps {
     // ［LINE 案内文］の材料（読むだけ）。権限は can_see_applicant。電話・メールは返さない
     async inviteInfo(applicantId: string) {
       if (!actor) return { ok: false, code: "denied" };
-      const { data: a } = await sb.from("applicants").select("id,name,store_id,line_user_id,line_code,indeed_url").eq("id", applicantId).maybeSingle();
+      const { data: a } = await sb.from("applicants").select("id,name,store_id,line_user_id,line_code,indeed_url,form_key").eq("id", applicantId).maybeSingle();
       if (!a) return { ok: false, code: "not_found", message: "応募者が見つかりません" };
       const { data: can } = await sb.rpc("can_see_applicant", { p_user: actor.user_id, p_store: a.store_id });
       if (can !== true) return { ok: false, code: "denied" };
       const { data: oa } = await sb.from("app_secrets").select("value").eq("key", "line_oa_id").maybeSingle();
-      return { ok: true, name: a.name ?? "", linked: !!a.line_user_id, line_code: a.line_code ?? null, oa: oa?.value ? String(oa.value) : null, indeed_url: a.indeed_url ?? null };
+      // その人専用の応募フォームのリンク（関数 applicant_form_token が未適用・失敗のときは、LINE だけの案内文にする）
+      let formUrl: string | null = null;
+      try {
+        const { data: tk, error: te } = await sb.rpc("applicant_form_token", { p_applicant: applicantId });
+        if (!te && typeof tk === "string" && tk.length === 64) formUrl = `${NIPPO_URL}?apply=${encodeURIComponent(String(a.form_key || "al"))}&p=${tk}`;
+      } catch (_e) { formUrl = null; }
+      return { ok: true, name: a.name ?? "", linked: !!a.line_user_id, line_code: a.line_code ?? null, oa: oa?.value ? String(oa.value) : null, indeed_url: a.indeed_url ?? null, form_url: formUrl };
     },
     // ［LINE 返信］の窓に出す、これまでのやり取り（最大 limit 件・古い順）。権限は can_see_applicant。本文は短く・合言葉などは伏せる（maskPII）
     async recentMessages(applicantId: string, limit: number) {
