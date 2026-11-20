@@ -158,7 +158,7 @@ Deno.serve(async (req: Request) => {
   const uc = userClient(req);
   // 2026-10-14: zero_orphan（孤立したPLシート行を0円にする・管理用）だけは、サーバー間の共有シークレットでも呼べる
   let bySecret = false;
-  if ((action === "zero_orphan" || action === "retry_sheet_sync" || action === "rebuild_pl_rows" || action === "direct_rebuild") && body?.secret) {
+  if ((action === "zero_orphan" || action === "retry_sheet_sync" || action === "rebuild_pl_rows" || action === "direct_rebuild" || action === "seisan_remove_ext") && body?.secret) {
     const { data: sr } = await svc().from("app_secrets").select("value").eq("key", "invoice_intake_secret").maybeSingle();
     bySecret = !!sr?.value && body.secret === sr.value;
   }
@@ -172,6 +172,26 @@ Deno.serve(async (req: Request) => {
     //   body: { secret, action:"direct_rebuild", months:["2026-10",...], dry?:true }。2026-10以降のみ。
     //   dry=true: 書かずに、店舗×科目ごとの「いまのpl_entries（旧GAS由来の自動行）」と「請求書記録から作る直接行」の合計を比べて返す。
     //   dry=false: 直接行を upsert（冪等キー inv:…）。旧GAS由来行の除去は切替日の手順で別に行う（二重計上に注意）。
+    // 2026-11-20新設: 精算書の外部明細から、誤って入った行（運営委託費など）を取り除く。
+    //   body: { secret, action:"seisan_remove_ext", store, month:"2026-10", account, note_includes, dry?:true }
+    //   dry=true は該当行の一覧だけ返す。行に反映キー(extRef)が無いと消せない（その旨を返す）
+    if (action === "seisan_remove_ext") {
+      const tk0 = Deno.env.get("PL_SYNC_TOKEN");
+      if (!tk0) return json({ error: "PL_SYNC_TOKEN が未設定です" }, 500);
+      const store0 = String(body?.store ?? ""), month0 = String(body?.month ?? "");
+      if (!store0 || !/^\d{4}-\d{2}$/.test(month0) || !body?.account) return json({ error: "store・month・accountは必須です" }, 400);
+      const dbg: any = await seisanCall("sd_apiDebugExtRef", [tk0, store0, month0]);
+      const hit = (dbg?.rows ?? []).filter((r: any) => String(r.account ?? "") === String(body.account) && (!body.note_includes || String(r.note ?? "").includes(String(body.note_includes))));
+      const out: any[] = [];
+      for (const r of hit) {
+        if (body?.dry) { out.push({ row: r.row, item: r.item, note: r.note, extRef: r.extRef }); continue; }
+        if (!r.extRef) { out.push({ row: r.row, ok: false, error: "反映キーが無く自動では消せません" }); continue; }
+        const rm: any = await seisanCall("sd_apiRemoveExternalLine", [tk0, store0, month0, r.extRef]);
+        out.push({ row: r.row, ok: true, result: rm });
+      }
+      return json({ success: true, dry: !!body?.dry, matched: hit.length, rows: out, ok: dbg?.ok });
+    }
+
     if (action === "direct_rebuild") {
       const db = svc();
       const months: string[] = (Array.isArray(body?.months) && body.months.length ? body.months : [PL_DIRECT_FROM]).map(String).filter((m) => m >= PL_DIRECT_FROM);
