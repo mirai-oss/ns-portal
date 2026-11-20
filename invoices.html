@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-11-20-v181";
+const BUILD_TAG="2026-11-20-v182";
 const PAYROLL_CANCEL_READY=true;
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
@@ -2307,7 +2307,9 @@ async function plfeeBuildSeisanLines_(invoiceId){
   const inv=ir.ok&&Array.isArray(ir.body)&&ir.body[0]; if(!inv||!inv.mf_journal_id) return {error:"MFに登録済みの仕訳が見つかりません"};
   const gj=await mfCall("get_journal",{journal_id:inv.mf_journal_id,tenant_id:inv.mf_tenant_id||"default"});
   if(!gj.ok) return {error:"MF仕訳の取得に失敗: "+((gj.body&&gj.body.error)||"")};
-  const nz2=x=>String(x||"").normalize("NFKC").replace(/\s+/g,"");
+  // MFの部門名は「肉寿司/秋葉原」「じんべぇ/川崎」のように「/」区切りで、店舗マスタの「秋葉原 肉寿司」とは順番も区切りも違うため、
+  // 区切り（/・空白）で分けた単語を並べ替えて比べる
+  const nz2=x=>String(x||"").normalize("NFKC").split(/[\/\s・]+/).filter(Boolean).sort().join("|");
   const stores=(CORP_STORE_CACHE&&CORP_STORE_CACHE.stores)||[];
   const lines=[], unmatched=[]; let n=0;
   for(const b of (gj.body.branches||[])){
