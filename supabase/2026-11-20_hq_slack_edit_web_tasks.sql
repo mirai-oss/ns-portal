@@ -27,7 +27,8 @@ begin
       v_new := replace(v_new, 'if v_l.id is null or v_t.id is null then', 'if v_t.id is null then');
       -- ② 作った人（記録表に無ければ hq_tasks.created_by）
       v_n := (length(v_new) - length(replace(v_new, '''creator_id'', v_l.created_by', ''))) / length('''creator_id'', v_l.created_by');
-      if v_n <> 1 then raise exception '% : 置き換え対象(②)が % 個でした。何も変えずに止めました', r.proname, v_n; end if;
+      -- step_update は返り値に creator_id を持たない版が本番にある（0 個で正常）。task_get / task_update は 1 個ちょうど
+      if v_n not in (case when r.proname = 'hq_slack_step_update' then 0 else 1 end, 1) then raise exception '% : 置き換え対象(②)が % 個でした。何も変えずに止めました', r.proname, v_n; end if;
       v_new := replace(v_new, '''creator_id'', v_l.created_by', '''creator_id'', coalesce(v_l.created_by, v_t.created_by)');
       -- ③ 直せる人の判定（update 系のみ）
       if r.proname in ('hq_slack_task_update', 'hq_slack_step_update') then
