@@ -542,11 +542,21 @@ Deno.serve(async (req: Request) => {
         // 重複防止（同じ請求書×科目×補助科目×店舗×税率の既存行があれば、それを更新扱いにする＝同じsourceKeyで上書き）
         // 2026-10-13修正：税率もキーに含める。従来は税率違い（8%と10%）の仕入が同じキーになり、片方がもう片方を上書きして精算書に1行しか入らなかった
         const lineTax: string = a.tax_rate || taxRate;
-        let dupQuery = uc.from("invoice_pl_reflections").select("id, seisan_line_key")
-          .eq("invoice_id", invoiceId).eq("account_name", accountName).eq("reflection_route", "seisan")
-          .eq("seisan_store_name", s.seisan_store_name).eq("tax_rate", lineTax);
-        dupQuery = subAccountName ? dupQuery.eq("sub_account_name", subAccountName) : dupQuery.is("sub_account_name", null);
-        const { data: existing } = await dupQuery.maybeSingle();
+        const mkQuery = () => {
+          let q = uc.from("invoice_pl_reflections").select("id, seisan_line_key, allocations")
+            .eq("invoice_id", invoiceId).eq("account_name", accountName).eq("reflection_route", "seisan")
+            .eq("seisan_store_name", s.seisan_store_name).eq("tax_rate", lineTax);
+          q = subAccountName ? q.eq("sub_account_name", subAccountName) : q.is("sub_account_name", null);
+          return q;
+        };
+        // 2026-11-20: 仕訳の明細ごとに精算書へ入れる（a.line_no＝仕訳の何行目か）。同じ店舗・科目・税率でも明細が複数あれば別の行にする。
+        // 既存の行（line_noなし＝従来の合算行）は、まだ他の明細が使っていなければ最初に来た明細が引き継いで更新する（再反映しても二重にならない）
+        const lineNo: number | null = Number.isFinite(Number(a.line_no)) && Number(a.line_no) > 0 ? Number(a.line_no) : null;
+        const { data: rows0 } = await mkQuery();
+        const rows: any[] = rows0 ?? [];
+        const existing: { id: string; seisan_line_key: string | null } | undefined = lineNo != null
+          ? (rows.find((r) => Number(r.allocations?.[0]?.line_no) === lineNo) ?? rows.find((r) => !r.allocations?.[0]?.line_no))
+          : rows[0];
 
         let reflectionId: string | undefined = existing?.id;
         let sourceKey: string | undefined = existing?.seisan_line_key;
@@ -569,7 +579,7 @@ Deno.serve(async (req: Request) => {
         try {
           const gasRes = await seisanCall("sd_apiAddExternalLine", [tk, s.seisan_store_name, monthKey, {
             sourceKey, item: itemName, amount: Number(a.amount), tax: lineTax,
-            account: accountName, subAccount: subAccountName || undefined, note: body?.note || undefined,
+            account: accountName, subAccount: subAccountName || undefined, note: a.note || body?.note || undefined,
           }]);
           if (!gasRes.ok) {
             throw new Error(gasRes.error || (gasRes.locked ? "この月は振込済みのため精算書への登録・更新はできません" : "精算書側で失敗しました"));
