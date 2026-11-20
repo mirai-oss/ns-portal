@@ -206,3 +206,10 @@ Deno.test("次の担当者の通知: 親投稿のリンクが出る・1 件の�
   assertEquals(JSON.parse(one.blocks[1].elements[0].value).task_id, "t1");
   assertEquals(nextNoticeMessage([it, it]).blocks.length, 1);
 });
+
+Deno.test("DM: 直せる人にだけ［編集］［工程を編集］が出る", () => {
+  const ids = (m: any) => m.blocks[1].elements.map((e: any) => e.action_id);
+  assert(!ids(reminderMessage(base)).includes("hqtask.task.edit"));
+  const e = ids(reminderMessage(base, { canEdit: true }));
+  assert(e.includes("hqtask.task.edit") && e.includes("hqtask.steps.open") && e[e.length - 1] === "hqtask.link");
+});

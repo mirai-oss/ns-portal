@@ -228,13 +228,17 @@ Deno.serve(async (req: Request) => {
   const { data: us } = await sb.from("users").select("id,name").in("id", creatorIds.length ? creatorIds : ["00000000-0000-0000-0000-000000000000"]);
   const nameOf = new Map((us ?? []).map((u: any) => [u.id, String(u.name ?? "").replace(/[\s\u3000]+/g, "")]));
   const extra = new Map((tks ?? []).map((t: any) => [t.id, { creatorName: t.created_by ? (nameOf.get(t.created_by) ?? null) : null, memo: t.description ?? null }]));
+  // DM から直せる人（作った人・マスター・CEO・HQ）には［編集］も出す
+  const rids = [...new Set(list.slice(0, max).map((c) => c.recipient_id))];
+  const { data: rus } = await sb.from("users").select("id,is_master,role").in("id", rids.length ? rids : ["00000000-0000-0000-0000-000000000000"]);
+  const editorIds = new Set((rus ?? []).filter((u: any) => u.is_master || u.role === "CEO" || u.role === "HQ").map((u: any) => u.id));
   const plinks = await parentLinks(sb, list.slice(0, max).map((c) => c.task_id)).catch(() => new Map());
   let sent = 0, failed = 0, skipped = 0;
   const date = jstDate();
   for (const c of list.slice(0, max)) {
     const { data: claimed, error: ce } = await sb.rpc("hq_slack_reminder_claim", { p_step: c.step_id, p_recipient: c.recipient_id, p_kind: c.kind });
     if (ce || claimed !== true) { skipped++; continue; }
-    const m = reminderMessage(c, { ...(extra.get(c.task_id) ?? {}), parent: plinks.get(c.task_id) ?? null });
+    const m = reminderMessage(c, { ...(extra.get(c.task_id) ?? {}), parent: plinks.get(c.task_id) ?? null, canEdit: editorIds.has(c.recipient_id) || (!!c.creator_id && c.creator_id === c.recipient_id) });
     const r = await sendSlack({ action: "send", channel_key: `user:${c.recipient_id}`, text: m.text, blocks: m.blocks, event: "hqtask_reminder", source: "ef:hq-task-reminders",
       dedupe_key: `hqtask:${c.step_id}:${c.recipient_id}:${c.kind}:${date}`, ref: { table: "hq_task_steps", id: c.step_id } });
     if (r?.ok) sent++;

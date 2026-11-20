@@ -25,6 +25,11 @@ const md = (d: string, time?: string | null) => { const m = /^(\d{4})-(\d{2})-(\
 /** 親投稿（チャンネル）へのリンク行。どのチャンネルのタスクか分かるよう、チャンネル名も添える（2026-11-19） */
 export type ParentRef = { url: string; channel?: string | null };
 const parentLine = (p?: ParentRef | null) => (p?.url ? `📍 <${p.url}|親投稿を開く>${p.channel && /^[CG][A-Z0-9]+$/.test(p.channel) ? `（<#${p.channel}>）` : ""}` : null);
+/** DM から直せる人（作った人・本部・社長）だけに出す［✏️ 編集］［🧩 工程を編集］。画面で作ったタスクでも使える（2026-11-20） */
+const editBtns = (taskId?: string | null, can?: boolean) => (taskId && can ? [
+  { type: "button", text: { type: "plain_text", text: "✏️ 編集", emoji: true }, action_id: EDIT_ACTION, value: JSON.stringify({ task_id: taskId }) },
+  { type: "button", text: { type: "plain_text", text: "🧩 工程を編集", emoji: true }, action_id: STEPS_OPEN, value: JSON.stringify({ task_id: taskId }) },
+] : []);
 const commentBtn = (taskId?: string | null) => (taskId ? [{ type: "button", text: { type: "plain_text", text: "💬 コメント", emoji: true }, action_id: COMMENT_OPEN, value: JSON.stringify({ task_id: taskId }) }] : []);
 
 /** 種類ごとの見出し。「見逃さない」ため、期限が近いほど強い言い方にする */
@@ -43,7 +48,7 @@ export function reminderHead(kind: string, daysOver: number): { mark: string; he
 }
 
 /** DM のメッセージ（親 1 通）。完了できる工程だけ「完了にする」を出す。escalate（作成者向け）は操作ボタンなし */
-export function reminderMessage(c: Candidate, x: { creatorName?: string | null; memo?: string | null; parent?: ParentRef | null } = {}): { text: string; blocks: unknown[] } {
+export function reminderMessage(c: Candidate, x: { creatorName?: string | null; memo?: string | null; parent?: ParentRef | null; canEdit?: boolean } = {}): { text: string; blocks: unknown[] } {
   const h = reminderHead(c.kind, c.days_over);
   const title = clean(c.task_title, 100);
   const lines = [`${h.mark} *${h.head}*`, `*${title}*`, `${x.creatorName ? `依頼：${clean(x.creatorName, 30)}　` : ""}期限：${md(c.due_date, c.due_time)}　工程：${clean(c.step_title, 60)}`];
@@ -57,7 +62,7 @@ export function reminderMessage(c: Candidate, x: { creatorName?: string | null; 
     if (c.can_complete) elements.push({ type: "button", style: "primary", text: { type: "plain_text", text: "✅ 完了にする", emoji: true }, action_id: STEP_DONE, value: val });
     elements.push({ type: "button", text: { type: "plain_text", text: "🕐 対応中", emoji: true }, action_id: STEP_ACK, value: val });
   }
-  elements.push(...commentBtn(c.task_id));
+  elements.push(...commentBtn(c.task_id), ...editBtns(c.task_id, x.canEdit));
   elements.push({ type: "button", text: { type: "plain_text", text: "管理システムで開く", emoji: true }, url: c.url, action_id: STEP_LINK });
   blocks.push({ type: "actions", block_id: "hqtask", elements });
   return { text: `${h.mark} ${h.head}：${title}`, blocks };
