@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-11-20-v182";
+const BUILD_TAG="2026-11-20-v183";
 const PAYROLL_CANCEL_READY=true;
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
@@ -941,7 +941,7 @@ function apvRecalc_(modal){
   const credit=(Math.round(Number(cm.value)||0))+ex;
   if(bal) bal.innerHTML=`借方 <b>${yen(debit)}</b>　貸方 <b>${yen(credit)}</b>　${debit===credit?'<span style="color:#15803d">✅ 一致</span>':`<span style="color:#b91c1c">⚠️ 差 ${yen(debit-credit)}（一致しないと登録できません）</span>`}`;
 }
-// 承認画面の「PL・広告費・精算書への反映」欄：今の行の内容から、店舗ごとの反映先と金額（税抜）を要約する
+// 承認画面の「PL・広告費・精算書への反映」欄：今の行の内容から、店舗ごとの反映先と金額（PL・広告費は税抜／精算書は税込）を要約する
 function apvPlSummary_(modal,d,inv){
   const box=modal.querySelector("#apv-plsum"); if(!box) return;
   const col=apvCollect_(modal,d); const stores=(CORP_STORE_CACHE&&CORP_STORE_CACHE.stores)||[];
@@ -952,7 +952,7 @@ function apvPlSummary_(modal,d,inv){
   exp.filter(l=>l.store_id).forEach(l=>{
     const st=stores.find(x=>x.id===l.store_id); const rt=plfeeSeisanRoute(st,inv.corporation_id,inv.target_year_month)==="seisan"?"精算書":(l.account==="広告宣伝費"&&mediaSubs.includes(l.sub)?"広告費":"PL");
     const net=l.net!=null?Math.round(l.net):(l.rate>0?l.amount-Math.floor(l.amount*l.rate/(100+l.rate)):l.amount);
-    const k=l.store_name+"｜"+rt+"｜"+(l.sub?l.account+"/"+l.sub:l.account); by.set(k,(by.get(k)||0)+net);
+    const k=l.store_name+"｜"+rt+"｜"+(l.sub?l.account+"/"+l.sub:l.account); by.set(k,(by.get(k)||0)+(rt==="精算書"?Math.round(Number(l.amount)):net));   // 精算書は税込（MFの仕訳の金額どおり）・PL/広告費は税抜
   });
   const skipped=col.lines.filter(l=>l.account==="仕入高");
   box.innerHTML=(by.size?[...by.entries()].map(([k,v])=>{const [sn,rt,ac]=k.split("｜"); return `<div>・<b>${esc(sn)}</b> → ${esc(rt)}（${esc(ac)}）${yen(v)}</div>`;}).join(""):'<div style="color:var(--muted)">反映の対象になる費用の行がありません</div>')
@@ -1349,7 +1349,7 @@ async function apvApprove_(u,inv,d,modal,dry){
     for(const l of lines.filter(x=>x.store_id)){ if(routes.some(r=>r.store_id===l.store_id)) continue; const st=(CORP_STORE_CACHE.stores||[]).find(x=>x.id===l.store_id); routes.push({store_id:l.store_id,store_name:l.store_name,route:(st&&plfeeSeisanRoute(st,inv.corporation_id,inv.target_year_month)==="seisan")?"seisan":"pl"}); }
     inv.checks={...(inv.checks||{}),routes}; }
   const r=await apvRun_(inv,d,lines,{dry,structureChanged:col.structureChanged,reflect:plMode==="yes",plReason,say:x=>{ msg.textContent=x; },
-    confirmFn:c=>confirm(`MFに仕訳を登録します（${c.n}行・${yen(c.total)}・計上日 ${c.date}）。\n${c.reflect?"登録後、PL・広告費・精算書にも反映します（税抜）。":"PL・広告費・精算書への反映は行いません。"}\n\n一度登録すると、取り消しはMF側での対応になります。よろしいですか？`)});
+    confirmFn:c=>confirm(`MFに仕訳を登録します（${c.n}行・${yen(c.total)}・計上日 ${c.date}）。\n${c.reflect?"登録後、PL・広告費・精算書にも反映します（PL・広告費は税抜／精算書は税込）。":"PL・広告費・精算書への反映は行いません。"}\n\n一度登録すると、取り消しはMF側での対応になります。よろしいですか？`)});
   if(r.cancelled){ btn.disabled=false; return; }
   if(!r.ok){ msg.className="err"; msg.innerHTML=r.html; btn.disabled=false; return; }
   if(r.dry){ btn.disabled=false; msg.className="err msg-ok"; msg.innerHTML=r.html+"「承認してMFに登録」で登録できる状態です。"; return; }
@@ -1440,7 +1440,7 @@ function apbPanelHtml_(){
       <button class="hq-btn" id="apb-all">全部選ぶ／解除</button>
       <button class="hq-btn" id="apb-dry">🔎 選んだものを一括で登録前チェック（登録しない）</button>
       <button class="hq-btn primary" id="apb-run">✅ チェックOKのものを一括で承認してMFに登録</button>
-      <label style="font-size:12px"><input type="checkbox" id="apb-reflect" checked> PL・広告費・精算書にも反映する（税抜）</label>
+      <label style="font-size:12px"><input type="checkbox" id="apb-reflect" checked> PL・広告費・精算書にも反映する（PL・広告費は税抜／精算書は税込）</label>
       <span id="apb-count" style="font-size:12px;color:var(--muted)"></span>
     </div>
     <div id="apb-log" style="margin-top:6px;font-size:12px;line-height:1.7">${A.log||""}</div>
@@ -1484,7 +1484,7 @@ function apbWire_(u){
     if(!ids.length){ alert("先に「一括で登録前チェック」を行い、チェックOKの請求書を選んでください"); return; }
     const sum=ids.reduce((t,i)=>{ const r=UNIFIED_STATE.rows.find(x=>x.id===i); return t+Number((r&&r.amount)||0); },0);
     const reflect=$("apb-reflect").checked;
-    if(!confirm(`チェックOKの ${ids.length}件（合計 ${yen(sum)}）を、まとめてMFに登録します。\n${reflect?"登録後、PL・広告費・精算書にも反映します（税抜）。":"PL・広告費・精算書への反映は行いません。"}\n\n一度登録すると、取り消しはMF側での対応になります。よろしいですか？`)) return;
+    if(!confirm(`チェックOKの ${ids.length}件（合計 ${yen(sum)}）を、まとめてMFに登録します。\n${reflect?"登録後、PL・広告費・精算書にも反映します（PL・広告費は税抜／精算書は税込）。":"PL・広告費・精算書への反映は行いません。"}\n\n一度登録すると、取り消しはMF側での対応になります。よろしいですか？`)) return;
     $("apb-dry").disabled=true; $("apb-run").disabled=true; let ok=0,ng=0,n=0; const out=[]; const cache={};
     for(const id of ids){ n++; log(`登録中… ${n}/${ids.length}`);
       const r=await apbOne_(id,{dry:false,reflect,cache}); A.res[id]=r;
@@ -8726,7 +8726,7 @@ function plpWire_(u){
   $("sbr-dry").onclick=sbr(true); $("sbr-run").onclick=sbr(false);
   $("plp-run").onclick=async()=>{
     if(!P.sel.size){ alert("反映する請求書を選んでください"); return; }
-    if(!confirm(`選んだ${P.sel.size}件を、PL・広告費・精算書へ税抜で反映します（MFには何も登録しません）。よろしいですか？`)) return;
+    if(!confirm(`選んだ${P.sel.size}件を、PL・広告費は税抜・精算書は税込で反映します（MFには何も登録しません）。よろしいですか？`)) return;
     const btn=$("plp-run"); btn.disabled=true; const log=[]; const show=()=>{ $("plp-log").innerHTML=log.join("<br>"); };
     await ensureCorpStoreCache();
     for(const id of [...P.sel]){
