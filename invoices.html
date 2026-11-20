@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-11-20-v179";
+const BUILD_TAG="2026-11-20-v180";
 const PAYROLL_CANCEL_READY=true;
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
@@ -1178,7 +1178,8 @@ function plIsExpenseAccount_(name){
   if(/^(仕入高|売上高)$/.test(n)) return false;
   return !/(現金|預金|売掛金|買掛金|未払|未収|前払費用|前受|仮払|仮受|預り金|立替金|貸付金|借入金|保証金|敷金|有形固定資産|建物|工具器具|ソフトウェア|資本金|繰越利益|事業主|受取|雑収入|売上)/.test(n)||/^長期前払費用$/.test(n);
 }
-async function plReflectInvoice_(inv,d,lines,results){
+// 2026-11-20: 精算書へ入れる金額は税込（精算書の「金額（税込）」列）。PL・広告費は税抜。opts.onlySeisan=精算書の行だけ反映し直す（再反映ボタン用）
+async function plReflectInvoice_(inv,d,lines,results,opts){
   const labelOf=(a,sub)=>sub?`${a}/${sub}`:a;
       const ym=(inv.target_year_month||d.transaction_date||"").slice(0,7)+"-01";
     const stores=(CORP_STORE_CACHE&&CORP_STORE_CACHE.stores)||[]; await ensureCorpStoreCache();
@@ -1190,12 +1191,13 @@ async function plReflectInvoice_(inv,d,lines,results){
       // 2026-11-20: 精算書は、同じ店舗・同じ科目でも仕訳の明細ごとに1行ずつ入れる（従来は店舗×科目で合算され、明細が1行にまとまっていた＝ユーザー報告）。
       // line_no（仕訳の何行目か）で行を区別する。PL（直接反映）は従来どおり店舗×科目で合算
       const bk=rt==="seisan"?l.store_id+"#"+(li+1):l.store_id;
-      const e=g.byStore.get(bk)||{store_id:l.store_id,store_name:st?st.name:l.store_name,amount:0,...(rt==="seisan"?{line_no:li+1,note:(l.remark||"").slice(0,80)||undefined}:{})}; e.amount+=netOf(l); g.byStore.set(bk,e); groups.set(k,g); }
+      const e=g.byStore.get(bk)||{store_id:l.store_id,store_name:st?st.name:l.store_name,amount:0,...(rt==="seisan"?{line_no:li+1,note:(l.remark||"").slice(0,80)||undefined}:{})}; e.amount+=(rt==="seisan"?Math.round(Number(l.amount)):netOf(l)); g.byStore.set(bk,e); groups.set(k,g); }
     const targets=await plFeeTargetAccounts(); const mediaList=["食べログ","ぐるなび","ホットペッパー","Retty"];
     const adDone=new Set();
     for(const g of groups.values()){
       const allocs=[...g.byStore.values()].filter(a=>a.amount>0); if(!allocs.length) continue;
       const name=labelOf(g.account,g.sub);
+      if(opts&&opts.onlySeisan&&g.route!=="seisan") continue;
       if(g.route==="seisan"){
         const r=await plFeeCall("seisan_confirm",{invoice_id:inv.id,account_name:g.account,sub_account_name:g.sub||undefined,item_name:g.account,tax_rate:g.rate?`${g.rate}%`:"非課税",year_month:ym,allocations:allocs.map(a=>({...a,tax_rate:g.rate?`${g.rate}%`:"非課税"}))});
         results.push(r.ok&&r.body.success!==false?`③精算書へ登録: ${esc(name)}`:`③⚠️精算書への登録に失敗: ${esc(name)}（${esc((r.body&&(r.body.error||(r.body.results||[]).filter(x=>!x.ok).map(x=>x.store+": "+x.error).join("／")))||"")}）`);
@@ -2297,6 +2299,43 @@ function plfeeManualAccountHtml(){
     <datalist id="plfee-sub-dl">${plfeeSubAccountOptionsHtml(PLFEE_STATE.currentAccount||"")}</datalist>
   </div>`;
 }
+// 2026-11-20: MFに登録済みの仕訳を読み直して、精算書の行を「明細ごと・税込」で作り直す（ユーザー要望: 同じ店舗×科目の明細が1行に合算されていた）。
+// 下書きの明細が消えている承認済み請求書でも使える（元の明細はMFの仕訳にだけ残っているため）。PL・広告費には触らない
+async function plfeeRebuildSeisan_(btn){
+  const log=$("plfee-rebuild-log"); const say=t=>{ if(log) log.innerHTML=t; };
+  const invoiceId=PLFEE_STATE.ctx&&PLFEE_STATE.ctx.invoiceId; if(!invoiceId) return;
+  btn.disabled=true;
+  try{
+    await ensureCorpStoreCache();
+    const ir=await authed(`/rest/v1/invoices?id=eq.${invoiceId}&select=id,vendor_id,vendor_name,target_year_month,checks,mf_journal_id,mf_tenant_id,corporation_id`);
+    const inv=ir.ok&&Array.isArray(ir.body)&&ir.body[0]; if(!inv||!inv.mf_journal_id){ say('<span style="color:#b91c1c">MFに登録済みの仕訳が見つかりません</span>'); return; }
+    say("MFの仕訳を読み込み中…");
+    const gj=await mfCall("get_journal",{journal_id:inv.mf_journal_id,tenant_id:inv.mf_tenant_id||"default"});
+    if(!gj.ok){ say(`<span style="color:#b91c1c">MF仕訳の取得に失敗: ${esc((gj.body&&gj.body.error)||"")}</span>`); return; }
+    const nz2=x=>String(x||"").normalize("NFKC").replace(/\s+/g,"");
+    const stores=(CORP_STORE_CACHE&&CORP_STORE_CACHE.stores)||[];
+    const lines=[], unmatched=[]; let n=0;
+    for(const b of (gj.body.branches||[])){
+      const d=b.debit; if(!d||!d.account_name) continue; n++;
+      if(!plIsExpenseAccount_(d.account_name)) continue;
+      const st=stores.find(x=>nz2(x.name)===nz2(d.department_name));
+      if(!st){ unmatched.push(`${n}行目 ${d.account_name}（部門: ${d.department_name||"なし"}）`); continue; }
+      const m=String(d.tax_name||"").match(/(\d+)\s*%/);
+      lines.push({line_no:n,store_id:st.id,store_name:st.name,remark:b.remark||"",amount:Math.round(Number(d.value)),account:d.account_name,sub:d.sub_account_name||"",dept:d.department_name||"",rate:m?Number(m[1]):0});
+    }
+    const seisanLines=lines.filter(l=>{ const x=((inv.checks&&inv.checks.routes)||[]).find(v=>v.store_id===l.store_id); return x&&x.route==="seisan"; });
+    if(!seisanLines.length){ say('<span style="color:#b91c1c">精算書へ入れる明細が見つかりませんでした</span>'); return; }
+    const sum=seisanLines.reduce((a,l)=>a+l.amount,0);
+    const listing=seisanLines.map(l=>`・${l.store_name} ${l.account}${l.sub?"/"+l.sub:""} ${yen(l.amount)}`).join("\n");
+    if(!confirm(`MFの仕訳から、精算書へ${seisanLines.length}行（税込 合計${yen(sum)}）を入れ直します。\n\n${listing}${unmatched.length?"\n\n※店舗を特定できず除外: "+unmatched.join("、"):""}\n\nすでに入っている合算の行は、最初の明細に置き換わります。よろしいですか？`)) { say(""); return; }
+    say("精算書へ登録中…");
+    const results=[];
+    await plReflectInvoice_({id:inv.id,target_year_month:inv.target_year_month,checks:inv.checks},{transaction_date:gj.body.transaction_date},lines,results,{onlySeisan:true});
+    say(results.join("<br>")+`<br><b>完了しました。精算書の画面で明細を確認してください。</b>`);
+    await plfeeInit(PLFEE_STATE.ctx);
+  }catch(e){ say(`<span style="color:#b91c1c">エラー: ${esc(String((e&&e.message)||e))}</span>`); }
+  finally{ btn.disabled=false; }
+}
 function plfeeRenderPanel(){
   const box=$(PLFEE_STATE.ctx.boxId);
   if(!box) return;
@@ -2309,6 +2348,8 @@ function plfeeRenderPanel(){
       await plfeeSeisanRefreshStatus();
       return;
     }
+    const rbBtn=e.target.closest("[data-plfee-rebuild]");
+    if(rbBtn){ await plfeeRebuildSeisan_(rbBtn); return; }
     const viewBtn=e.target.closest("[data-plfee-view]");
     if(viewBtn){
       const row=(PLFEE_STATE.reflections||[]).find(x=>x.id===viewBtn.dataset.plfeeView);
@@ -2331,7 +2372,8 @@ function plfeeRenderPanel(){
   // 見れるようにしてほしい」に対応。従来は折りたたみ（<details>）が常に閉じた状態から
   // 始まり、登録内容を確認するには毎回クリックが必要だった。反映済みの内容があるときは
   // 最初から開いた状態（open属性）で見せる
-  const reflectedHtml=reflections.length?`<details open style="margin-bottom:10px"><summary style="cursor:pointer;font-size:12px;color:var(--muted);font-weight:700">▼ 反映履歴（${reflections.length}件）</summary><div style="margin-top:6px">${reflections.map(plfeeReflectedCardHtml).join("")}</div></details>`:"";
+  const rebuildBtnHtml=reflections.some(x=>x.reflection_route==="seisan")?`<div style="margin:6px 0 10px"><button class="hq-btn" data-plfee-rebuild>🔄 MFの仕訳から、精算書へ明細ごとに入れ直す（税込）</button><div style="font-size:11px;color:var(--muted);margin-top:3px">MFに登録済みの仕訳の明細（1行ずつ）を読み直して、精算書の行を作り直します。PLには触りません。</div><div id="plfee-rebuild-log" style="font-size:12px;line-height:1.7;margin-top:4px"></div></div>`:"";
+  const reflectedHtml=reflections.length?rebuildBtnHtml+`<details open style="margin-bottom:10px"><summary style="cursor:pointer;font-size:12px;color:var(--muted);font-weight:700">▼ 反映履歴（${reflections.length}件）</summary><div style="margin-top:6px">${reflections.map(plfeeReflectedCardHtml).join("")}</div></details>`:"";
 
   if(PLFEE_STATE.excludedAt){
     box.innerHTML=`<div class="adcost-box">
