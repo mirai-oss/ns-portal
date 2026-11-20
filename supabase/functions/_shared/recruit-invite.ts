@@ -16,7 +16,7 @@ export function lineLink(oa: string, code: string): string {
 
 /** Indeed のメッセージに貼り付ける案内文 */
 export function inviteText(o: { name: string; oa: string; code: string }): string {
-  const nm = clean(o.name, 30);
+  const nm = String(o.name ?? "").trim() ? clean(o.name, 30) : "";   // 氏名が空のとき clean は「—」を返すので、空は先に除く
   return [
     ...(nm ? [`${nm} 様`, ""] : []),
     "ご応募ありがとうございます。",
