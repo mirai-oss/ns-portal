@@ -11937,3 +11937,9 @@ Q5/Q6の回答を受け、設計メモ§9〜§10を確定し担当別指示書�
   ①スイッチ ON: DB `commute_rules.smaregi_write_enabled=true`・Mac（/Users/mirai/ns-daily-import）の `.env` に `SMAREGI_UI_JOBS=1`（コメントつき。止めるときはこの行を消す／DB を false に）。ON の直前に、待ち行列は 0 件・実入社の未完了項目に自動操作の対象なし（Web明細・メールは 11/17 に手作業で完了）を確認。10 分おきの見回り（onboarding_auto_sweep）が、スマレジ従業員登録の済んだ入社の Web明細・メールを自動で待ち行列に入れる。**Slack連携や本人アカウントの状態には左右されない**（先に動く）。交通費の設定・源泉は、人が承認・入力したあとに待ち行列へ。
   ②SQL `2026-11-20_onboarding_slack_step.sql`（rollback あり・本番の旧定義を取得して作成・ロールバックされるテスト取引で確認→適用）: onboarding_ensure_slack_step（手続き中・タスク未完了の入社に、工程「Slack連携を確認（本人がSlackに参加）」を足して項目に結びつける）／onboarding_set_item（slack_link 完了で工程も完了）／onboarding_auto_sweep（10 分おきに ensure を呼ぶ）。Slack に紐づいたら、項目（既存の onboarding_slack_link_refresh）と本部タスクの工程が自動で完了。※ 11/14 入社者の本部タスクは既に完了済みのため、工程は足されない（完了済みタスクには足さない）。
   ③未確認: 実入社での自動操作の初回実行（次の入社者で確認）。
+
+## 続き86（2026-11-20）LiveGate 側の Playwright 試験（読むだけ）
+- 確認: 入社ワークフローの契約は employee_smaregi_links（現役・主契約優先）から決まり、UI ジョブに引き継がれる。LiveGate 契約 sdm155v1 は config.SMAREGI_UI_CONTRACTS に専用の ID/パスワード（.env）とプロファイル（ns-ui-jobs-livegate）が設定済み。LiveGate の現役リンク40件は全て is_primary=false だが、契約選びは primary 優先の並びのみなので LiveGate だけの入社者でも動く。
+- 試験（社長承認）: smaregi_read・dry_run=true のジョブを1件、LiveGate の現役従業員1人に対して ui_automation_jobs へ直接作成（workflow なし・書き込みなし）。Mac mini が取得し1回目で success。交通費・源泉・メール・アカウント状態（登録済み）・有効状態が読めた。
+- 未確認: 個別Web給与明細の表示（payslip）が null で取れなかった（LiveGate の画面差か読み取り部品の問題か不明）。書き込み系（交通費追加・メール・給与明細切替）は LiveGate では未実行＝初回の入社者で初めて動く。
+- 後片付け: 試験ジョブ行（02349198…）は記録として残す。スクリーンショットは Mac の logs/ui-jobs/。
