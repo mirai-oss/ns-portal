@@ -216,6 +216,8 @@ async function seisanIssued(db: any, b: any) {
   if (!rule) return { status: "skipped", reason: `店舗「${store}」の仕訳の型が未登録です（seisan_statement_rules）` };
   const mo = `${Number(ym.slice(5, 7))}月`;
   const date = monthEnd(ym); const nowIso = new Date().toISOString();
+  // 2026-11-20: 支払期日は仕訳日（対象月末）とは別。月末を過ぎてから精算書を発行した場合は、発行した月の末日にする（作った瞬間に期日超過になるのを防ぐ）
+  const payDue_ = (d: string): string => { const t = new Date(Date.now() + 9 * 3600e3).toISOString().slice(0, 10); if (d >= t) return d; const [yy, mm] = t.split("-").map(Number); return new Date(Date.UTC(yy, mm, 0)).toISOString().slice(0, 10); };
   const v = await resolveVendor(db, rule.exp_payee_vendor);
   const problems: string[] = []; const checks: any[] = [];
   const ck = (key: string, label: string, status: "ok" | "warn" | "ng" | "na", detail?: string) => { checks.push({ key, label, status, ...(detail ? { detail } : {}) }); if (status === "ng") problems.push(detail ? `${label}（${detail}）` : label); };
@@ -273,7 +275,7 @@ async function seisanIssued(db: any, b: any) {
     transaction_date: date, remark, debit_lines: debitLines, credit, credit_lines: [], totals: { debit: invTotal, credit: invTotal, invoice_total: invTotal }, adjustments: [], problems, warnings: [], created_at: nowIso };
   const stage = problems.length ? "journal_draft" : "ready_for_approval";
   const fields: Record<string, unknown> = {
-    vendor_name: v?.name ?? rule.exp_payee_vendor, vendor_id: v?.id ?? null, corporation_id: rule.exp_corporation_id, amount: invTotal, due_date: date,
+    vendor_name: v?.name ?? rule.exp_payee_vendor, vendor_id: v?.id ?? null, corporation_id: rule.exp_corporation_id, amount: invTotal, due_date: payDue_(date),
     target_year_month: `${ym}-01`, journal_draft: draft, journal_draft_at: nowIso, current_stage: stage, blocked_reason: problems.length ? problems.join("／") : null,
     stage_updated_at: nowIso, checks: { checks, routes: [], checked_at: nowIso }, auto_ocr: { source: "seisan_issued", store, month: ym, transfer: total, transfer_ex: feeNet, tax, ...(grouped ? { grouped: true, stores: debitLines.map((l: any) => l.seisan_store) } : {}) }, auto_mode: "auto", updated_at: nowIso,
   };
