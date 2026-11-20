@@ -223,6 +223,8 @@ export const LINE_ACTION = "recruit.line.open";
 export const INTERVIEW_ACTION = "recruit.interview.open", INTERVIEW_CANCEL_ACTION = "recruit.interview.cancel";
 /** カードの操作のボタン［採用を決める］（押すと slack-interact が受ける。処理は recruit-action の hire ＝既存の採用の処理をそのまま呼ぶ） */
 export const HIRE_ACTION = "recruit.hire.open";
+/** カードの［LINE 案内文］（LINE 未連携の Indeed 応募者に出す。押すと、合言葉入りの案内文を本人にだけ見せる＝コピーして Indeed で送る。何も自動では送らない） */
+export const INVITE_ACTION = "recruit.invite.open";
 /**
  * actions＝操作のボタンを出すか（設定 app_settings.recruit_slack.actions_enabled。false・未指定なら、今までのカードと同じ）／notificationId＝このカードの台帳の番号（だれが押したかの記録用）
  * send＝応募者への送信のスイッチ（app_settings.recruit_actions.send_enabled）。［応募者へ LINE 返信］は、LINE と連携している応募者にだけ出す。
@@ -273,6 +275,8 @@ export function cardMessage(v: View, o: CardOpts = {}): { text: string; blocks: 
     // ［採用を決める］: 実在の応募者は、送信のスイッチが true のときだけ（RPC が通す条件と同じ）。テスト用の応募者は、いつでも
     if (o.send === true || v.isTest) acts.push({ type: "button", text: { type: "plain_text", text: "採用を決める", emoji: true }, action_id: HIRE_ACTION, value });
     if (v.lineLinked && (o.send === true || v.isTest)) acts.push({ type: "button", text: { type: "plain_text", text: "応募者へ LINE 返信", emoji: true }, action_id: LINE_ACTION, value });
+    // LINE 未連携の Indeed 応募者（とテスト用）には、合言葉入りの案内文を作るボタン。送るのは人（Indeed の画面）。送信スイッチには関係なく出す
+    if (!v.lineLinked && (String(v.source ?? "") === "indeed" || v.isTest)) acts.push({ type: "button", text: { type: "plain_text", text: "LINE 案内文", emoji: true }, action_id: INVITE_ACTION, value });
     acts.push({ type: "button", text: { type: "plain_text", text: "担当者を変更", emoji: true }, action_id: ASSIGNEE_ACTION, value });
     blocks.push({ type: "actions", block_id: "recruit_actions", elements: acts });
   }

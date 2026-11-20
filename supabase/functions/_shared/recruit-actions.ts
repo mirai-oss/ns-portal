@@ -41,6 +41,8 @@ export type RecruitDeps = {
   interviewInfo?(applicantId: string): Promise<InterviewInfo>;
   /** 押した人だけに見える知らせ（窓を閉じたあとの結果）。place＝ボタンを押した場所（チャンネルとスレッド） */
   tell?(place: Place, text: string): Promise<void>;
+  /** ［LINE 案内文］の材料（氏名・合言葉・公式 LINE の ID・Indeed のページ）。権限が無ければ ok=false・code=denied。電話・メールは返さない */
+  inviteInfo?(applicantId: string): Promise<import("./recruit-invite.ts").InviteInfo>;
   /** ［LINE 返信］の窓に出す、これまでのやり取り（新しい順に limit 件まで→古い順で返す）。権限が無ければ空。本文は、短く・合言葉などは伏せた形で返す */
   recentMessages?(applicantId: string, limit: number): Promise<{ direction: string; channel: string; body: string; sent_at: string | null }[]>;
 };

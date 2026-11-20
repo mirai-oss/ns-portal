@@ -17,7 +17,8 @@ const appl = (x: Partial<Applicant> = {}): Applicant => ({
 });
 const view = (x: Partial<Applicant> = {}, c: { onboarding?: Onboarding | null; onboardingLink?: string | null } = {}) =>
   viewOf(appl(x), { storeName: "テスト本店", names: { u1: "担当 花子", u2: "店長 次郎" }, now: NOW, ...c });
-const btns = (blocks: unknown[]) => (blocks as any[]).filter((b) => b.type === "actions").flatMap((b) => b.elements.map((e: any) => e.text.text));
+const btnsAll = (blocks: unknown[]) => (blocks as any[]).filter((b) => b.type === "actions").flatMap((b) => b.elements.map((e: any) => e.text.text));
+const btns = (blocks: unknown[]) => btnsAll(blocks).filter((t: string) => t !== "LINE 案内文");   // 2026-11-20 追加のボタンは、専用のテストで見る
 const body = (blocks: unknown[]) => (blocks as any[]).filter((b) => b.type === "section").map((b) => b.text.text).join("\n");
 
 // ---- 文面 ----
@@ -426,7 +427,7 @@ Deno.test("ボタンの設定が false・未指定なら、カードは今まで
   assertEquals(JSON.stringify(cardMessage(v, { notificationId: "n1" })), base);
   const on = cardMessage(v, { actions: true, notificationId: "n1" });
   assertEquals(btns(on.blocks), ["担当者を変更", "管理画面で開く"]);
-  const b = (on.blocks as any[]).find((x) => x.block_id === "recruit_actions").elements[0];
+  const b = (on.blocks as any[]).find((x) => x.block_id === "recruit_actions").elements.find((e: any) => e.action_id === ASSIGNEE_ACTION);
   assertEquals([b.action_id, b.value], [ASSIGNEE_ACTION, JSON.stringify({ applicant_id: A1, notification_id: "n1" })]);   // 値は、応募者の id と台帳の番号だけ
   assert(!b.value.includes("試験") && !b.value.includes("090"));
   // ボタン以外（文面・リンク）は、設定で変わらない
@@ -574,4 +575,14 @@ Deno.test("親投稿の 2 行目: 応募・LINE・フォーム・面接・採用
   const t = strip1[0].text.text as string;
   assert(t.includes("● *LINE連携*") && t.includes("● *フォーム受信*") && t.includes("● *面接 ") && t.includes("○ 採用"));
   assert(!t.includes("Uxxxx"));   // LINE の ID は出さない
+});
+
+// ---- 2026-11-20 カードの［LINE 案内文］: LINE 未連携の Indeed 応募者（とテスト用）にだけ。選考中のみ。送信スイッチには関係なく出す ----
+Deno.test("［LINE 案内文］を出す条件: ボタンの設定が true・選考中・LINE 未連携・Indeed（かテスト用）", () => {
+  const ind = view({ source: "indeed", status: "contacted" });
+  assert(btnsAll(cardMessage(ind, { actions: true }).blocks).includes("LINE 案内文"));
+  assert(btnsAll(cardMessage(ind, { actions: true, send: true }).blocks).includes("LINE 案内文"));
+  assert(!btnsAll(cardMessage(ind).blocks).includes("LINE 案内文"));                                              // 設定が false なら今までどおり
+  assert(!btnsAll(cardMessage(view({ source: "indeed", status: "contacted", line_user_id: "Uxxxx" }), { actions: true }).blocks).includes("LINE 案内文"));   // 連携済みは出さない
+  assert(!btnsAll(cardMessage(view({ source: "form", status: "contacted" }), { actions: true }).blocks).includes("LINE 案内文"));                              // Indeed 以外は出さない
 });

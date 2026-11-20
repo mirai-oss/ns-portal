@@ -36,6 +36,8 @@ import { assigneeOpen, assigneeSubmit, ASSIGNEE_ACTION, ASSIGNEE_MODAL, lineOpen
   retrySendOpen, retrySendSubmit, retryCalendarOpen, retryCalendarSubmit, RETRY_SEND_ACTION, RETRY_CAL_ACTION, RETRY_SEND_MODAL, RETRY_CAL_MODAL,
   hireOpen, hireSubmit, HIRE_ACTION, HIRE_MODAL,
   type InterviewInfo, type Place, type RecruitDeps, type RecruitOutcome } from "../_shared/recruit-actions.ts";
+import { inviteOpen } from "../_shared/recruit-invite.ts";
+import { INVITE_ACTION } from "../_shared/recruit-notice.ts";
 
 const svc = () => createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
 const text = (s: string, status = 200) => new Response(s, { status, headers: { "Content-Type": "text/plain; charset=utf-8" } });
@@ -289,6 +291,9 @@ const handlers: Record<string, Handler> = {
   //   スレッドのふつうの返信は、この関数を通らない（＝今までどおり、応募者へは送られない）
   [LINE_ACTION]: async ({ sb, actor, payload, value, notificationId }) =>
     recruitOpenFast(payload, () => lineOpen(recruitDeps(sb, actor, payload), actor, { applicant_id: value?.applicant_id, notification_id: notificationId }, recruitPlace(payload))),
+  // 2026-11-20: カードの［LINE 案内文］（LINE 未連携の Indeed 応募者）→ 合言葉入りの案内文を、押した本人の窓に見せる（送らない・コピーして Indeed で送る）
+  [INVITE_ACTION]: async ({ sb, actor, payload, value }) =>
+    recruitOpenFast(payload, () => inviteOpen(recruitDeps(sb, actor, payload), { applicant_id: value?.applicant_id })),
   [LINE_MODAL]: async ({ sb, actor, payload }) => recruitRespond(await lineInput(recruitDeps(sb, actor, payload), actor, payload.view), payload),
   [LINE_CONFIRM]: async ({ sb, actor, payload }) => recruitRespond(await lineConfirm(recruitDeps(sb, actor, payload), actor, payload.view), payload),
   // 2026-11-29: カードの［面接を確定］［面接を変更］→ 入力の窓 → 確認の窓 → 確定／［面接を取り消す］→ 確かめの窓 → 取り消し。
@@ -710,6 +715,16 @@ function recruitDeps(sb: any, actor?: Actor, payload?: any): RecruitDeps {
         places: Array.isArray(m.interview_places) ? m.interview_places.filter((p: any) => p && typeof p.name === "string" && p.name).map((p: any) => ({ name: p.name, address: p.address ?? null, note: p.note ?? null })) : [],
         enabled: ra.send_enabled === true && calendar_mode === "live", line_mode: ra.line_mode === "live" ? "live" : "dry", calendar_mode,
       };
+    },
+    // ［LINE 案内文］の材料（読むだけ）。権限は can_see_applicant。電話・メールは返さない
+    async inviteInfo(applicantId: string) {
+      if (!actor) return { ok: false, code: "denied" };
+      const { data: a } = await sb.from("applicants").select("id,name,store_id,line_user_id,line_code,indeed_url").eq("id", applicantId).maybeSingle();
+      if (!a) return { ok: false, code: "not_found", message: "応募者が見つかりません" };
+      const { data: can } = await sb.rpc("can_see_applicant", { p_user: actor.user_id, p_store: a.store_id });
+      if (can !== true) return { ok: false, code: "denied" };
+      const { data: oa } = await sb.from("app_secrets").select("value").eq("key", "line_oa_id").maybeSingle();
+      return { ok: true, name: a.name ?? "", linked: !!a.line_user_id, line_code: a.line_code ?? null, oa: oa?.value ? String(oa.value) : null, indeed_url: a.indeed_url ?? null };
     },
     // ［LINE 返信］の窓に出す、これまでのやり取り（最大 limit 件・古い順）。権限は can_see_applicant。本文は短く・合言葉などは伏せる（maskPII）
     async recentMessages(applicantId: string, limit: number) {
