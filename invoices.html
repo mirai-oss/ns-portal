@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-11-20-v185";
+const BUILD_TAG="2026-11-20-v186";
 const PAYROLL_CANCEL_READY=true;
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
@@ -1173,6 +1173,8 @@ async function openApprovalModal(u,invoiceId,opt){
 // ・反映先は仕訳の行の店舗で決まる: 業務委託精算対象店舗=精算書(seisan_confirm)／それ以外=PL(confirm)。1行は1ルートだけ。
 //   広告宣伝費は広告費(ad-cost-reflect)にも反映（従来の手動運用と同じ）。仕入高のPL反映は「請求書とsiire見込の差額調整」方式の確定待ちのため行わない
 // 2026-10-14: 承認後・「PL未反映」一括反映の共通処理。MF登録済みの仕訳（lines）をPL・広告費・精算書へ税抜で反映し、結果の文を results に積む
+// 2026-11-20: 運営委託費（トーホー等への運営委託費の請求書）は精算書に入れない（精算書そのものから作られる請求書のため。ユーザー指示）
+function plIsSeisanExcluded_(name){ return String(name||"").normalize("NFKC").trim()==="運営委託費"; }
 function plIsExpenseAccount_(name){
   const n=String(name||"").normalize("NFKC");
   if(/^(仕入高|売上高)$/.test(n)) return false;
@@ -1186,7 +1188,7 @@ async function plReflectInvoice_(inv,d,lines,results,opts){
     const routeOfStore=sid=>{ const x=((inv.checks&&inv.checks.routes)||[]).find(v=>v.store_id===sid); return x?x.route:"pl"; };
     const netOf=l=>l.net!=null?Math.round(l.net):(l.rate>0?l.amount-Math.floor(l.amount*l.rate/(100+l.rate)):l.amount);
     const groups=new Map(); // key = route|account|sub|rate → store別
-    for(let li=0;li<lines.length;li++){ const l=lines[li]; if(!l.store_id) continue; if(!plIsExpenseAccount_(l.account)) continue; /* 前払費用などの貸借科目はPL・精算書へ反映しない */ const rt=routeOfStore(l.store_id); const k=[rt,l.account,l.sub,rt==="seisan"?l.rate:0].join("\u0001");
+    for(let li=0;li<lines.length;li++){ const l=lines[li]; if(!l.store_id) continue; if(!plIsExpenseAccount_(l.account)) continue; if(plIsSeisanExcluded_(l.account)&&routeOfStore(l.store_id)==="seisan"){ results.push(`③運営委託費は精算書へ入れません（精算書から作られる請求書のため）`); continue; } /* 前払費用などの貸借科目はPL・精算書へ反映しない */ const rt=routeOfStore(l.store_id); const k=[rt,l.account,l.sub,rt==="seisan"?l.rate:0].join("\u0001");
       const g=groups.get(k)||{route:rt,account:l.account,sub:l.sub,rate:l.rate,byStore:new Map()}; const st=stores.find(x=>x.id===l.store_id);
       // 2026-11-20: 精算書は、同じ店舗・同じ科目でも仕訳の明細ごとに1行ずつ入れる（従来は店舗×科目で合算され、明細が1行にまとまっていた＝ユーザー報告）。
       // line_no（仕訳の何行目か）で行を区別する。PL（直接反映）は従来どおり店舗×科目で合算
@@ -2321,6 +2323,7 @@ async function plfeeBuildSeisanLines_(invoiceId){
   for(const b of brs){
     const d=b.debit; if(!d||!d.account_name) continue; n++;
     if(!plIsExpenseAccount_(d.account_name)) continue;
+    if(plIsSeisanExcluded_(d.account_name)) continue;
     // 店舗マスタの「MFの部門名」(mf_department_name) を最優先、次に店名との照合（順番・区切り違いも吸収）、最後に従来の部分一致
     const dn=String(d.department_name||"").normalize("NFKC").trim();
     const st=stores.find(x=>x.mf_department_name&&String(x.mf_department_name).normalize("NFKC").trim()===dn)

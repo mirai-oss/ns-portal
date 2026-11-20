@@ -465,6 +465,8 @@ Deno.serve(async (req: Request) => {
         return json({ error: "勘定科目・対象年月（YYYY-MM-01）・請求書IDは必須です" }, 400);
       }
       if (!allocations.length) return json({ error: "店舗×金額の割り振りが0件です" }, 400);
+      // 2026-11-20: 運営委託費は精算書に入れない（精算書から作られる請求書のため）
+      if (String(accountName).normalize("NFKC").trim() === "運営委託費") return json({ success: true, skipped: true, message: "運営委託費は精算書へ入れません" });
       if (!["10%", "8%", "非課税"].includes(taxRate)) return json({ error: "税率は10%/8%/非課税のいずれかです" }, 400);
       for (const a of allocations) {
         const amt = Number(a.amount);
