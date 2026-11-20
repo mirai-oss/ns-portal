@@ -11943,3 +11943,4 @@ Q5/Q6の回答を受け、設計メモ§9〜§10を確定し担当別指示書�
 - 試験（社長承認）: smaregi_read・dry_run=true のジョブを1件、LiveGate の現役従業員1人に対して ui_automation_jobs へ直接作成（workflow なし・書き込みなし）。Mac mini が取得し1回目で success。交通費・源泉・メール・アカウント状態（登録済み）・有効状態が読めた。
 - 未確認: 個別Web給与明細の表示（payslip）が null で取れなかった（LiveGate の画面差か読み取り部品の問題か不明）。書き込み系（交通費追加・メール・給与明細切替）は LiveGate では未実行＝初回の入社者で初めて動く。
 - 後片付け: 試験ジョブ行（02349198…）は記録として残す。スクリーンショットは Mac の logs/ui-jobs/。
+- 続き86 追記（社長指示）: 給与明細の表示が null だった原因＝読むだけジョブ（readOnly）が詳細ページの「その他」欄を見ていたが、設定は給与設定ページ（edit_payroll）のラジオにある。トーホーの過去3件も null で、LiveGate 固有ではない。修正（ns-daily-import tasks/smaregi-ui-settings.js・給与設定ページを開いて #personalWebStatementpScreenDisplayFlag1/0 の選択を読む・保存はしない。既存テスト21件通過）。LiveGate で再試験（読むだけ・ジョブ bf911b1e…）→ success・payslip=「表示する」。書き込み系の LiveGate での実行は未確認のまま。
