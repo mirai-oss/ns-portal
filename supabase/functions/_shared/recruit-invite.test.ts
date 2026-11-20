@@ -10,7 +10,7 @@ Deno.test("リンクは公式 LINE の ID と合言葉から作る（応募フ�
 Deno.test("案内文: 氏名・リンク・合言葉・公式 LINE を含み、電話やメールは含まない", () => {
   const t = inviteText({ name: "山田 太郎", oa: "@abc123", code: "AB12CD" });
   assert(t.startsWith("山田 太郎 様") && t.includes("https://line.me/R/oaMessage/%40abc123/?AB12CD") && t.includes("合言葉：AB12CD") && t.includes("（@abc123）"));
-  assert(!inviteText({ name: "", oa: "@a", code: "X" }).includes("様"));
+  assert(inviteText({ name: "", oa: "@a", code: "X" }).startsWith("ご応募"));
 });
 Deno.test("窓: コピー用の枠（コードブロック）・送信ボタンなし・Indeed のページのボタン（https のときだけ）", () => {
   const v: any = inviteModal({ name: "山田 太郎", text: "本文```あ", indeedUrl: "https://employers.indeed.com/x" });
