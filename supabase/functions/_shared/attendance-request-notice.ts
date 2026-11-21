@@ -343,9 +343,12 @@ export async function renderRequest(sb: Sb, notify: Notify, requestId: string): 
 }
 /** 申請の元の勤怠（labor_cost_daily）に朝のアラートがあれば、アラートのカードと親を書き換える（アラートの状態は DB のトリガーが申請に合わせてある。ここでは状態を変えない） */
 async function renderLinkedAlert(sb: Sb, notify: Notify, requestId: string) {
-  const { data: r } = await sb.from(REQ_REF_TABLE).select("labor_cost_daily_id").eq("id", requestId).maybeSingle();
-  if (!r?.labor_cost_daily_id) return;
-  const { data: a } = await sb.from("sf_attendance_alerts").select("id").eq("labor_cost_daily_id", r.labor_cost_daily_id).maybeSingle();
+  const { data: r } = await sb.from(REQ_REF_TABLE).select("labor_cost_daily_id,kind,user_id,work_date,store_id").eq("id", requestId).maybeSingle();
+  if (!r) return;
+  let a: { id?: string } | null = null;
+  if (r.labor_cost_daily_id) ({ data: a } = await sb.from("sf_attendance_alerts").select("id").eq("labor_cost_daily_id", r.labor_cost_daily_id).maybeSingle());
+  // 2026-11-21: 出勤取消の承認で勤怠の記録が消えると結びつきが切れる → 本人・日付・店舗で探す（取り消された勤務のアラートのカードを「完了」に書き換えるため）
+  if (!a?.id && r.kind === "delete" && r.user_id && r.work_date && r.store_id) ({ data: a } = await sb.from("sf_attendance_alerts").select("id").eq("user_id", r.user_id).eq("work_date", r.work_date).eq("store_id", r.store_id).maybeSingle());
   if (a?.id) await renderAlert(sb, notify, a.id);
 }
 

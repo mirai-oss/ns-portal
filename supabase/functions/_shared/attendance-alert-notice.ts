@@ -177,6 +177,7 @@ export function cardMessage(v: AlertView, o: { notificationId: string }): { text
     if (v.status === "confirmed") lines.push(`状況：✅ 合っている（${who(v.confirmedByName, v.confirmedAt)}）`);
     else if (v.status === "approved") lines.push(`状況：✅ 承認（${who(v.decidedByName, v.decidedAt)}）`, smaregiLine(v));
     else if (v.status === "rejected") lines.push(`状況：❌ 却下（${who(v.decidedByName, v.decidedAt)}）${v.decisionNote ? `　${String(v.decisionNote).slice(0, 200)}` : ""}`);
+    else if (v.status === "cancelled") lines.push(`状況：✅ 出勤取消の申請が承認され、この日の勤務は取り消されました${v.decidedAt ? `（${who(v.decidedByName, v.decidedAt)}）` : ""}`);   // 2026-11-21 別の「出勤取消」申請で片づいたとき
     else lines.push("状況：取り消し");
     push();
   }
@@ -188,6 +189,11 @@ const mention = (ids: (string | null | undefined)[]) => [...new Set(ids.filter((
 export function approvalAskText(slackIds: (string | null | undefined)[], isDelete: boolean): string {
   const who = mention(slackIds);
   return `${who ? who + "　" : ""}${isDelete ? "打刻の削除" : "修正"}の申請があります。上の内容を確認して、［承認］か［却下］を押してください。`;
+}
+/** 未確認の依頼（スレッドへの返信。2026-11-21: 本人と管理者にメンション） */
+export function openAskText(slackIds: (string | null | undefined)[]): string {
+  const who = mention(slackIds);
+  return `${who ? who + "　" : ""}🔔 勤怠の確認をお願いします。上の［○ 合っている］か［✏️ 修正する］を押してください（出勤自体を取り消すときは［出勤取消］）。`;
 }
 /** リマインド（スレッドへの返信。親メッセージは増やさない） */
 export function reminderText(slackIds: (string | null | undefined)[], o: { n: number; age: string; approval: boolean }): string {
@@ -271,6 +277,12 @@ async function masterSlackIds(sb: Sb): Promise<string[]> {
   const { data: linked } = await sb.from("user_slack").select("slack_user_id").in("user_id", ids);
   return (linked ?? []).map((r: { slack_user_id: string }) => r.slack_user_id).filter(Boolean);
 }
+/** 本人の Slack ID（管理システムと Slack がつながっている人だけ。無ければ空） */
+async function subjectSlackIds(sb: Sb, userId: unknown): Promise<string[]> {
+  if (typeof userId !== "string" || !userId) return [];
+  const { data } = await sb.from("user_slack").select("slack_user_id").eq("user_id", userId);
+  return (data ?? []).map((r: { slack_user_id: string }) => r.slack_user_id).filter(Boolean);
+}
 async function threadReply(notify: Notify, refs: CaseRefs, alertId: string, o: { text: string; event: string; source: string; dedupe: string }) {
   return await notify({ action: "send", channel_key: refs.channel_key, thread_ts: refs.ts, text: o.text, event: o.event, source: o.source, dedupe_key: o.dedupe,
     ref: { table: REF_TABLE, id: alertId }, username: USERNAME, icon_emoji: ICON });
@@ -326,9 +338,10 @@ export async function remindInThread(sb: Sb, notify: Notify, o: { alertId: strin
   let ids: string[] = [];
   if (o.approval || refs.test === true) ids = await masterSlackIds(sb);
   else {
-    const { data: a } = await sb.from(REF_TABLE).select("store_id").eq("id", o.alertId).maybeSingle();
+    const { data: a } = await sb.from(REF_TABLE).select("store_id,user_id").eq("id", o.alertId).maybeSingle();
     const { data: t } = await sb.rpc("notice_mention_targets", { p_type: NOTICE_TYPE, p_scene: "open", p_store: a?.store_id ?? null, p_task_assignees: null });
     ids = ((t?.targets ?? []) as { slack_user_id?: string }[]).map((x) => String(x.slack_user_id ?? "")).filter(Boolean);
+    ids = [...(await subjectSlackIds(sb, a?.user_id)), ...ids, ...(await masterSlackIds(sb))];   // 2026-11-21: 本人と管理者（社長）にも必ずメンション
   }
   if (o.dryRun) return { v2: true, ok: true, mentions: ids.length };
   const r = await threadReply(notify, refs, o.alertId, { text: reminderText(ids, { n: o.n, age: ageText(o.since), approval: o.approval }), event: "reminder", source: "ef:pending-reminders", dedupe: `remind:${REF_TABLE}:${o.alertId}:${o.n}` });
@@ -388,5 +401,10 @@ export async function postAlert(sb: Sb, notify: Notify, a: {
   if (err) return { alert_id: a.alertId, ok: false, format: "v2", error: "case: " + err };
   if (permalink) { const p2 = parentMessage(v, { permalink }); await notify({ action: "update", notification_id: refs.parent, text: p2.text, blocks: p2.blocks }); }
   await sb.from(REF_TABLE).update({ notification_ids: [refs.parent], updated_at: new Date().toISOString() }).eq("id", a.alertId);
+  // 2026-11-21: 本人と管理者（社長）にメンション（テスト用は管理者だけ）。失敗しても、アラート自体の投稿は成功のまま
+  try {
+    const ids = [...(o.test === true ? [] : await subjectSlackIds(sb, a.userId)), ...(await masterSlackIds(sb))];
+    if (ids.length) await safe({ action: "send", channel_key: o.channelKey, thread_ts: r1.ts, text: openAskText(ids), event: "attendance_alert_ask", source: o.source, dedupe_key: `attendance_alert_ask:${a.alertId}`, ref, username: USERNAME, icon_emoji: ICON });
+  } catch (_e) { /* メンションだけ出せなくても続ける */ }
   return { alert_id: a.alertId, ok: true, format: "v2", permalink: !!permalink };
 }

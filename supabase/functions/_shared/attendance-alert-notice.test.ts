@@ -1,6 +1,6 @@
 // 勤怠確認の新しい形（親 1 行＋スレッド）の文面のテスト。deno test supabase/functions/_shared/
 import { assert, assertEquals } from "jsr:@std/assert@1";
-import { parentMessage, cardMessage, diffLines, punchLine, hm, dateLabel, parentState, approvalAskText, reminderText, renderAlert, afterDecide, afterRequest, remindInThread, postAlert, type AlertView } from "./attendance-alert-notice.ts";
+import { parentMessage, cardMessage, diffLines, punchLine, hm, dateLabel, parentState, approvalAskText, openAskText, reminderText, renderAlert, afterDecide, afterRequest, remindInThread, postAlert, type AlertView } from "./attendance-alert-notice.ts";
 
 const base: AlertView = {
   alertId: "11111111-1111-4111-8111-111111111111", status: "open", requestKind: "fix", kind: "no_clock_out", reasons: ["退勤打刻なし"],
@@ -156,7 +156,7 @@ Deno.test("リマインドはスレッドへの返信（親を増やさない）
   await remindInThread(f.sb, f.notify, { alertId: base.alertId, approval: false, n: 1, since });
   assertEquals(f.sent.length, 1);
   assertEquals(f.sent[0].thread_ts, "1.1");
-  assert(String(f.sent[0].text).startsWith("<@U0STAFF01>　⏰ リマインド（1回目）　まだ確認されていません（13時間）"));
+  assert(String(f.sent[0].text).startsWith("<@U0MASTER1> <@U0STAFF01>　⏰ リマインド（1回目）　まだ確認されていません（13時間）"), "本人・店舗の担当・管理者（社長）の順にメンション（同じ人は 1 回だけ）");
   const g = fake({ caseRefs: { ...refs, test: true }, alert: alertRow() });
   await remindInThread(g.sb, g.notify, { alertId: base.alertId, approval: false, n: 1, since });
   assert(String(g.sent[0].text).startsWith("<@U0MASTER1>"));
@@ -170,10 +170,12 @@ Deno.test("投稿: 親 1 通 → スレッドにカード 1 通 → 控えを残
   const r = await postAlert(f.sb, f.notify, { alertId: base.alertId, userId: "u1", storeId: "s1", workDate: "2026-11-10", userName: "テスト 立会い", storeName: "鳥一代 本店", kind: "no_clock_out", reasons: ["退勤打刻なし"], times: base.detected },
     { channelKey: "kintai.check", test: true, detailButton: false, source: "t" });
   assertEquals([r.ok, r.format], [true, "v2"]);
-  assertEquals(f.sent.length, 2);
+  assertEquals(f.sent.length, 3);   // 親・カード・メンションの依頼
   assertEquals(f.sent[0].text, "🕒 勤怠確認｜テスト 立会い｜鳥一代 本店｜11/10");
   assertEquals(f.sent[0].thread_ts, undefined);
   assertEquals(f.sent[1].thread_ts, "1700000000.001");
+  assertEquals([f.sent[2].thread_ts, f.sent[2].event, f.sent[2].dedupe_key], ["1700000000.001", "attendance_alert_ask", `attendance_alert_ask:${base.alertId}`]);
+  assert(String(f.sent[2].text).startsWith("<@U0MASTER1>　🔔 勤怠の確認をお願いします"));
   const up = f.rpcs.find((x) => x.fn === "notice_case_upsert")!.args.p_patch;
   assertEquals([up.slack_refs.test, up.slack_refs.channel_key, up.status_code], [true, "kintai.check", "todo"]);
   assertEquals(f.upd.find((x) => x.table === "sf_attendance_alerts")!.notification_ids, [up.slack_refs.parent]);
@@ -184,4 +186,16 @@ Deno.test("2026-11-16 申請に結びついたアラート: 承認・却下の�
   assertEquals(btns(cardMessage({ ...v, viaRequest: true }, { notificationId: "n1" }).blocks), []);
   assert(body(cardMessage({ ...v, viaRequest: true }, { notificationId: "n1" }).blocks).includes("承認の流れに進んでいます"));
   assertEquals(btns(cardMessage(v, { notificationId: "n1" }).blocks), ["attendance.fix.approve", "attendance.fix.reject"]);   // 今までの形は変わらない
+});
+
+Deno.test("2026-11-21 未確認の依頼文: 本人と管理者にメンション（同じ人は 1 回・不正な ID は無視）", () => {
+  assert(openAskText(["U0AAAAAA1", "U0BBBBBB2", "U0AAAAAA1", "bad"]).startsWith("<@U0AAAAAA1> <@U0BBBBBB2>　🔔 勤怠の確認をお願いします"));
+  assert(openAskText([]).startsWith("🔔"));
+});
+Deno.test("2026-11-21 出勤取消の申請で片づいたアラート（cancelled）: 親は ✅ 完了（取り消し）・カードはボタンなしで理由を出す", () => {
+  const v: AlertView = { ...base, status: "cancelled", decidedByName: "社長", decidedAt: "2026-11-19T01:31:00Z" };
+  assertEquals(parentMessage(v).text, "✅ 勤怠確認｜山田太郎｜鳥一代 本店｜11/10｜完了（取り消し）");
+  const c = cardMessage(v, { notificationId: "n1" });
+  assertEquals(btns(c.blocks), []);
+  assert(body(c.blocks).includes("出勤取消の申請が承認され"));
 });
