@@ -27,6 +27,8 @@
 - 【メンション（社長の決め）】未確認の勤怠確認の投稿直後に、スレッドへ依頼 1 通（attendance_alert_ask）。リマインドも同じ宛先。本部（stores.location_type='hq'）＝本人＋社長（マスター）／ほかの店舗＝本人＋今までの担当（notice_mention_rules の店舗の担当・チーム長。社長は付けない）／テスト用＝社長だけ。本人は user_slack がある人だけ（無ければ付かない）。
 - 配置した EF: attendance-request・slack-interact・pending-reminders・smaregi-attendance-anomaly-check。作業用の clean な checkout は ~/ns-portal-b（origin/main 追従）。
 - 既存の失敗テスト 3 件（_shared/attendance-request-actions.test.ts）は、11/19 の「親投稿に店舗名」の変更で期待値が古いまま（今回の変更とは無関係・未修正）。
+- 【未完了の勤怠確認のまとめ（社長依頼・SQL実行・pending-reminders デプロイ済み＝a3e3244）】毎朝 9:00 JST（cron `attendance-open-digest`→`attendance_open_digest_trigger()`→EF pending-reminders に `{digest:true}`）に、未確認（勤怠確認漏れ）と承認待ち（申請済み）を、社長（マスター）＝全店舗／チーム長（role=TEAM・team_stores の店舗）＝自分のチームの店舗だけ、個人 DM（`user:{id}`）で 1 通。0 件は送らない・テスト用は除く・Slack 未連携は送らない。同じ日の二重送信は dedupe_key。試し実行（`digest:true, dry_run:true`）で 4 件・社長＋チーム長 3 人を確認。実送信の確認は社長の OK 待ち。止め方: `select cron.unschedule('attendance-open-digest')`。
+- 【手順書ツール】添付 HTML はアプリ内で静的表示になりボタンが動かないことがある → SQL はチャットの ```sql の枠でも必ず渡す（tools/make-sql-guide.py --print・13bd753）。
 - 【採用・案C の完了記録】Indeed 応募者への LINE 案内: Slack の「LINE 案内文」ボタン（コピー用の枠・自動送信なし）＋応募者専用フォームのリンク入りの案内文（表 applicant_form_tokens・apply_prefill）。管理システム（nippo 管理画面）にも同じ案内文。社員応募は form_key で社員フォーム。待ち行列 9 は PL 優先のため案A・案B（自動送信）は止めている。
 
 **2026-11-19〜20（担当B・MacBook）本部タスクの Slack 連携を大きく拡張／採用の Slack ボタン復活（LINE・カレンダー・送信スイッチ ON）／勤怠の出勤取消申請。すべて main 反映・EF 本番デプロイ済み（最新 4adcc5a 以降）**
