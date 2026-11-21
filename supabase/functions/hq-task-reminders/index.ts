@@ -2,7 +2,8 @@
 // hq-task-reminders — 本部タスクの期限通知を、本人の Slack DM へ（サーバー側の定期実行。画面を開かなくても動く）
 // 2026-11-17 新規（社長依頼）。DB: supabase/2026-12-13_hq_slack_task.sql。文面: _shared/hqtask-slack.ts。
 // 呼び出し: pg_cron → public.hq_task_reminders_trigger()（毎日 9:00 と 15:15 JST）／手元から x-notify-secret 付き POST
-//   body: { dry_run?: boolean, max?: number（既定 60）, op?: "post_create_button", channel_key?: string }
+//   body: { dry_run?: boolean, max?: number（既定 60）, op?: "post_create_button" | "refresh_done", channel_key?: string }
+//   op=refresh_done（10 分おき）: 完了した工程の DM を「✅ 完了済み」に書き換える（_shared/hqtask-done-sweep.ts）
 // スイッチ: app_settings.hq_task_slack.dm_enabled が true のときだけ送る（false のとき dry_run 以外は何も送らない）。
 //   dry_run: 送らずに「誰に・どの種類を」の件数だけ返す（氏名・タスク名は返さない）。
 // 重複防止: 送る前に hq_slack_reminder_claim で (工程・人・種類・日) を予約。取れなければ送らない。送信に失敗したら release して次回に回す。
@@ -11,6 +12,7 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { callModel, jstToday as aiToday, systemPrompt, toDraft, type RosterEntry } from "../_shared/hqtask-ai.ts";
 import { parentLinks } from "../_shared/hqtask-parent-link.ts";
+import { refreshDoneCards } from "../_shared/hqtask-done-sweep.ts";
 import { reminderMessage, createButtonMessage, parentMessage, taskCardMessage, nextNoticeMessage, type NextItem, type StepRow, type Candidate } from "../_shared/hqtask-slack.ts";
 
 const json = (o: unknown, status = 200) => new Response(JSON.stringify(o), { status, headers: { "Content-Type": "application/json" } });
@@ -70,6 +72,9 @@ Deno.serve(async (req: Request) => {
   // deno-lint-ignore no-explicit-any
   let body: any = {}; try { body = await req.json(); } catch { body = {}; }
   const sb = svc();
+
+  // 2026-11-21 社長依頼: 完了した工程の DM（「今日が期限です」とボタンのまま残ったもの）を「✅ 完了済み」に書き換える。10 分おきの定期実行（新しい通知は出さない）
+  if (body?.op === "refresh_done") return json({ ...(await refreshDoneCards(sb, sendSlack, { dryRun: body.dry_run === true })), dry_run: body.dry_run === true });
 
   // 「タスクを作る」ボタンを、指定のチャンネルに 1 通置く（外へ送る操作。create_enabled が true のときだけ）
   if (body?.op === "post_create_button") {
