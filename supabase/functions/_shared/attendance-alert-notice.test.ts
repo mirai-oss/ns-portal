@@ -1,6 +1,6 @@
 // 勤怠確認の新しい形（親 1 行＋スレッド）の文面のテスト。deno test supabase/functions/_shared/
 import { assert, assertEquals } from "jsr:@std/assert@1";
-import { parentMessage, cardMessage, diffLines, punchLine, hm, dateLabel, parentState, approvalAskText, openAskText, reminderText, renderAlert, afterDecide, afterRequest, remindInThread, postAlert, type AlertView } from "./attendance-alert-notice.ts";
+import { parentMessage, cardMessage, diffLines, punchLine, hm, dateLabel, parentState, approvalAskText, openAskText, reminderText, renderAlert, afterDecide, afterRequest, remindInThread, postAlert, digestText, sendOpenDigest, type DigestRow, type AlertView } from "./attendance-alert-notice.ts";
 
 const base: AlertView = {
   alertId: "11111111-1111-4111-8111-111111111111", status: "open", requestKind: "fix", kind: "no_clock_out", reasons: ["退勤打刻なし"],
@@ -201,4 +201,44 @@ Deno.test("2026-11-21 出勤取消の申請で片づいたアラート（cancell
   const c = cardMessage(v, { notificationId: "n1" });
   assertEquals(btns(c.blocks), []);
   assert(body(c.blocks).includes("出勤取消の申請が承認され"));
+});
+
+Deno.test("2026-11-21 未完了のまとめ: 社長の例の形（日付｜氏名｜店舗）・古い日付から・0 件なら送らない・承認待ちは別の見出し", () => {
+  assertEquals(digestText([]), null);
+  const r = (date: string, userName: string, storeName: string, waiting = false, url: string | null = null): DigestRow => ({ date, userName, storeName, storeId: "s", url, waiting });
+  const t = digestText([r("2026-11-21", "ニャントウン", "芝の鳥一代"), r("2026-11-20", "ニャントウン", "芝の鳥一代"), r("2026-11-20", "A", "鳥一代 本店"), r("2026-11-21", "ニャントウン", "鳥一代 本店"), r("2026-11-19", "B", "本部", true)])!;
+  assert(t.startsWith("*勤怠確認漏れ（4件）*\n11/20｜ニャントウン｜芝の鳥一代\n11/20｜A｜鳥一代 本店\n11/21｜ニャントウン｜芝の鳥一代\n11/21｜ニャントウン｜鳥一代 本店\n"));
+  assert(t.includes("*承認待ち（申請済み）（1件）*\n11/19｜B｜本部"));
+  assert(digestText([r("2026-11-20", "A", "本店", false, "https://x.slack.com/archives/C1/p1")])!.includes("<https://x.slack.com/archives/C1/p1|11/20｜A｜本店>"));
+  assert(!digestText([r("2026-11-20", "A", "本店", false, "javascript:alert(1)")])!.includes("<javascript"), "https 以外のリンクは付けない");
+  const many = Array.from({ length: 45 }, (_, i) => r("2026-11-20", `名${String(i).padStart(2, "0")}`, "本店"));
+  assert(digestText(many)!.includes("…ほか 5 件"));
+});
+Deno.test("2026-11-21 未完了のまとめの宛先: 社長＝全店舗・チーム長＝チームの店舗だけ・テスト用は除く・Slack 未連携は送らない・試し実行は送らない", async () => {
+  const tbl: Record<string, any[]> = {
+    sf_attendance_alerts: [
+      { id: "a1", status: "open", work_date: "2026-11-20", user_id: "u1", store_id: "sA" },
+      { id: "a2", status: "open", work_date: "2026-11-20", user_id: "u2", store_id: "sB" },
+      { id: "a3", status: "fix_requested", work_date: "2026-11-19", user_id: "u1", store_id: "sA" },
+      { id: "a4", status: "open", work_date: "2026-11-19", user_id: "u1", store_id: "sA" },   // テスト用
+    ],
+    notice_cases: [{ ref_id: "a1", slack_refs: { permalink: "https://x.slack.com/p1" } }, { ref_id: "a4", slack_refs: { test: true } }],
+    users: [], stores: [{ id: "sA", name: "店A" }, { id: "sB", name: "店B" }], team_stores: [{ team_id: "t1", store_id: "sA" }],
+    user_slack: [{ user_id: "boss" }, { user_id: "head1" }],   // head2 は未連携
+  };
+  const sbf = (usersQ: (c: Record<string, unknown>) => any[]) => ({ from: (t: string) => { const c: Record<string, unknown> = {}; const b: any = { select: () => b, eq: (k: string, v: unknown) => { c[k] = v; return b; }, in: () => b, not: () => b, order: () => b,
+    then: (res: (v: unknown) => void) => res({ data: t === "users" ? usersQ(c) : tbl[t] ?? [], error: null }) }; return b; } });
+  const sb = sbf((c) => c.is_master === true ? [{ id: "boss" }] : c.role === "TEAM" ? [{ id: "head1", team_id: "t1" }, { id: "head2", team_id: "t1" }] : [{ id: "u1", name: "ニャントウン" }, { id: "u2", name: "A" }]);
+  const sent: any[] = [];
+  const notify = (b: Record<string, unknown>) => { sent.push(b); return Promise.resolve({ ok: true }); };
+  const r = await sendOpenDigest(sb, notify, { source: "t" });
+  assertEquals([r.ok, r.alerts, r.skipped_unlinked], [true, 3, 1]);
+  const by = (u: string) => String(sent.find((x) => x.channel_key === `user:${u}`)?.text ?? "");
+  assert(by("boss").includes("店A") && by("boss").includes("店B") && by("boss").includes("*勤怠確認漏れ（2件）*") && by("boss").includes("*承認待ち（申請済み）（1件）*"), "社長は全店舗・テスト用は入らない");
+  assert(by("head1").includes("店A") && !by("head1").includes("店B"), "チーム長はチームの店舗だけ");
+  assertEquals(sent.length, 2);
+  assert(String(sent[0].dedupe_key).startsWith("attendance_open_digest:") && sent[0].event === "attendance_open_digest");
+  const d = await sendOpenDigest(sb, notify, { dryRun: true });
+  assertEquals(sent.length, 2);
+  assertEquals(d.recipients.map((x) => x.user_id).sort(), ["boss", "head1"]);
 });

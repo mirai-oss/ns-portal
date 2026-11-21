@@ -421,3 +421,87 @@ export async function postAlert(sb: Sb, notify: Notify, a: {
   } catch (_e) { /* メンションだけ出せなくても続ける */ }
   return { alert_id: a.alertId, ok: true, format: "v2", permalink: !!permalink };
 }
+
+// ---- 3. 未完了の勤怠確認のまとめ（個人 DM）2026-11-21 社長依頼 --------------------------
+//   社長（マスター）と各チームのチーム長へ、毎朝 1 通。完了していない勤怠確認（未確認＝「勤怠確認漏れ」／申請済みの承認待ち）を 1 通にまとめる。
+//   社長＝全店舗／チーム長＝自分のチームの店舗だけ。0 件なら送らない。テスト用は含めない。Slack とつながっていない人には送らない。
+export type DigestRow = { date: string; userName: string; storeName: string; storeId: string; url?: string | null; waiting: boolean };
+const DIGEST_MAX = 40;
+/** まとめの文面。rows が空なら null（送らない）。古い日付から並べる。行を押すと、その勤怠確認のスレッドが開く */
+export function digestText(rows: DigestRow[], o: { max?: number } = {}): string | null {
+  if (!rows.length) return null;
+  const max = o.max ?? DIGEST_MAX;
+  const sorted = [...rows].sort((a, b) => a.date.localeCompare(b.date) || a.storeName.localeCompare(b.storeName, "ja") || a.userName.localeCompare(b.userName, "ja"));
+  const line = (r: DigestRow) => {
+    const label = `${dateLabel(r.date).md}｜${clean(r.userName, 30)}｜${clean(r.storeName, 20)}`;
+    return r.url && /^https:\/\//.test(r.url) ? `<${r.url}|${label}>` : label;
+  };
+  const open = sorted.filter((r) => !r.waiting), waiting = sorted.filter((r) => r.waiting);
+  const out: string[] = [];
+  let left = max;
+  const section = (title: string, list: DigestRow[]) => {
+    if (!list.length) return;
+    const shown = list.slice(0, Math.max(0, left));
+    left -= shown.length;
+    out.push(`*${title}（${list.length}件）*`, ...shown.map(line));
+    if (shown.length < list.length) out.push(`…ほか ${list.length - shown.length} 件`);
+    out.push("");
+  };
+  section("勤怠確認漏れ", open);
+  section("承認待ち（申請済み）", waiting);
+  out.push("行を押すと、その勤怠確認のスレッドが開きます。");
+  return out.join("\n");
+}
+
+/** 日本時間の今日（YYYY-MM-DD） */
+const jstToday = () => new Date(Date.now() + 9 * 3600e3).toISOString().slice(0, 10);
+
+/**
+ * 未完了の勤怠確認を集めて、社長とチーム長へ個人 DM で送る。dryRun なら送らず、宛先と件数だけ返す。
+ * 同じ日に 2 回呼ばれても、同じ人には 1 通（dedupe_key）。
+ */
+export async function sendOpenDigest(sb: Sb, notify: Notify, o: { dryRun?: boolean; source?: string } = {}): Promise<{ ok: boolean; alerts: number; recipients: { user_id: string; rows: number; sent?: boolean; error?: string }[]; skipped_unlinked: number; error?: string }> {
+  const { data: al, error: e1 } = await sb.from(REF_TABLE).select("id,status,work_date,user_id,store_id").in("status", ["open", "fix_requested"]).order("work_date");
+  if (e1) return { ok: false, alerts: 0, recipients: [], skipped_unlinked: 0, error: String(e1.message ?? e1) };
+  const alerts = (al ?? []) as { id: string; status: string; work_date: string; user_id: string; store_id: string }[];
+  if (!alerts.length) return { ok: true, alerts: 0, recipients: [], skipped_unlinked: 0 };
+  const ids = alerts.map((a) => a.id);
+  const { data: cases } = await sb.from("notice_cases").select("ref_id,slack_refs").eq("type_key", NOTICE_TYPE).eq("ref_table", REF_TABLE).in("ref_id", ids);
+  const refsOf = new Map<string, CaseRefs>((cases ?? []).map((c: { ref_id: string; slack_refs: CaseRefs }) => [c.ref_id, c.slack_refs ?? {}]));
+  const live = alerts.filter((a) => refsOf.get(a.id)?.test !== true);   // テスト用は含めない
+  const userIds = [...new Set(live.map((a) => a.user_id))], storeIds = [...new Set(live.map((a) => a.store_id))];
+  const [{ data: us }, { data: ss }] = await Promise.all([
+    userIds.length ? sb.from("users").select("id,name").in("id", userIds) : { data: [] },
+    storeIds.length ? sb.from("stores").select("id,name").in("id", storeIds) : { data: [] },
+  ]);
+  const uname = new Map<string, string>((us ?? []).map((u: { id: string; name: string }) => [u.id, u.name]));
+  const sname = new Map<string, string>((ss ?? []).map((s: { id: string; name: string }) => [s.id, s.name]));
+  const rows: DigestRow[] = live.map((a) => ({ date: String(a.work_date).slice(0, 10), userName: uname.get(a.user_id) ?? "—", storeName: sname.get(a.store_id) ?? "—", storeId: a.store_id, url: refsOf.get(a.id)?.permalink ?? null, waiting: a.status === "fix_requested" }));
+
+  // 宛先: 社長（マスター）＝全店舗 ／ チーム長（role=TEAM でチームに入っている人）＝チームの店舗だけ
+  const { data: masters } = await sb.from("users").select("id").eq("is_master", true).eq("is_active", true);
+  const { data: heads } = await sb.from("users").select("id,team_id").eq("role", "TEAM").eq("is_active", true).not("team_id", "is", null);
+  const teamIds = [...new Set((heads ?? []).map((h: { team_id: string }) => h.team_id))];
+  const { data: ts } = teamIds.length ? await sb.from("team_stores").select("team_id,store_id").in("team_id", teamIds) : { data: [] };
+  const storesOfTeam = new Map<string, Set<string>>();
+  for (const t of (ts ?? []) as { team_id: string; store_id: string }[]) { if (!storesOfTeam.has(t.team_id)) storesOfTeam.set(t.team_id, new Set()); storesOfTeam.get(t.team_id)!.add(t.store_id); }
+  const want = new Map<string, Set<string> | "all">();   // user_id → 見える店舗
+  for (const h of (heads ?? []) as { id: string; team_id: string }[]) want.set(h.id, storesOfTeam.get(h.team_id) ?? new Set());
+  for (const m of (masters ?? []) as { id: string }[]) want.set(m.id, "all");   // 社長は全店舗（チーム長を兼ねていても全店舗）
+  const { data: linked } = want.size ? await sb.from("user_slack").select("user_id").in("user_id", [...want.keys()]) : { data: [] };
+  const linkedSet = new Set<string>((linked ?? []).map((l: { user_id: string }) => l.user_id));
+
+  const recipients: { user_id: string; rows: number; sent?: boolean; error?: string }[] = [];
+  let skippedUnlinked = 0;
+  for (const [uid, scope] of want) {
+    const mine = rows.filter((r) => scope === "all" || scope.has(r.storeId));
+    const text = digestText(mine);
+    if (!text) continue;
+    if (!linkedSet.has(uid)) { skippedUnlinked++; continue; }
+    if (o.dryRun) { recipients.push({ user_id: uid, rows: mine.length }); continue; }
+    const r = await notify({ action: "send", channel_key: `user:${uid}`, text, event: "attendance_open_digest", source: o.source ?? "ef:pending-reminders",
+      dedupe_key: `attendance_open_digest:${uid}:${jstToday()}`, username: USERNAME, icon_emoji: ICON });
+    recipients.push({ user_id: uid, rows: mine.length, sent: !!r?.ok, ...(r?.ok ? {} : { error: String(r?.error ?? "send_failed") }) });
+  }
+  return { ok: true, alerts: live.length, recipients, skipped_unlinked: skippedUnlinked };
+}

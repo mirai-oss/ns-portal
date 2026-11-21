@@ -4,7 +4,8 @@
 //
 // 呼び出し: pg_cron → public.pending_reminders_trigger()（08:00〜22:00 JST の毎時。body に min_age_hours=12）／手元から x-notify-secret 付き POST
 //   間隔（ユーザー決定 2026-11-08）: 最後の連絡から 12 時間で送り、完了するまで 12 時間おき。深夜（22〜8 時）は cron を回さない＝朝 8 時に送る。
-//   body: { min_age_hours?: number (既定 12), max_per_run?: number (既定 30), dry_run?: boolean, only?: string[] }
+//   body: { min_age_hours?: number (既定 12), max_per_run?: number (既定 30), dry_run?: boolean, only?: string[], digest?: boolean }
+//   digest=true（毎朝 9:00 JST の cron）: 未完了の勤怠確認のまとめを、社長とチーム長へ個人 DM（sendOpenDigest）。リマインドは送らない
 //   only は "alert_open" | "alert_approval" | "request" | "change" | "decision" の配列（指定なし=全部）
 //
 // やり方: 最初に送ったメッセージの台帳（notification_deliveries.payload）からボタン付きブロックをそのまま取り出し、
@@ -17,7 +18,7 @@
 // =============================================================
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { remindRequestInThread } from "../_shared/attendance-request-notice.ts";   // 2026-11-15: フォームの勤怠申請の新しい形も、リマインドはスレッドへの返信（親を増やさない・承認依頼の DM を増やさない）
-import { remindInThread } from "../_shared/attendance-alert-notice.ts";   // 2026-11-11: 勤怠確認の新しい形（親 1 行＋スレッド）は、リマインドをスレッドへの返信で出す（親メッセージを増やさない）
+import { remindInThread, sendOpenDigest } from "../_shared/attendance-alert-notice.ts";   // 2026-11-11: 勤怠確認の新しい形（親 1 行＋スレッド）は、リマインドをスレッドへの返信で出す（親メッセージを増やさない）
 
 const json = (o: unknown, status = 200) => new Response(JSON.stringify(o), { status, headers: { "Content-Type": "application/json" } });
 const svc = () => createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
@@ -109,6 +110,8 @@ Deno.serve(async (req) => {
   const only = Array.isArray(body.only) && body.only.length ? new Set<string>(body.only.map(String)) : null;
   const sb = svc();
   const nowIso = new Date().toISOString();
+  // 2026-11-21 社長依頼: 未完了の勤怠確認を、社長とチーム長へ個人 DM で 1 通にまとめる（毎朝 1 回。body.digest=true）。リマインドの処理は通らない
+  if (body.digest === true) return json({ ...(await sendOpenDigest(sb, sendSlack, { dryRun })), dry_run: dryRun });
 
   const expired = await expireDecisions(sb, dryRun);
   const items = await collect(sb, only);
