@@ -11,6 +11,10 @@
     アプリ内の埋め込み表示（sandbox）では navigator.clipboard が使えないことがあるため）
   - 失敗したら「枠をクリック→⌘+A→⌘+C」を画面に出し、枠の全文を選択済みにする（枠をクリックしても全選択される）
   - ページ先頭に「コピーできない時」の説明を常に出す
+★2026-11-21 追記（ユーザー指摘「コピーを押してもコピーされなかった」・2 回目）:
+  添付ファイルの表示（アプリ内のプレビュー）は「静的な表示」で、JavaScript が動かないことがある＝ボタンの作りを直しても効かない。
+  対策: ①SQL は、手順書とは別に、必ずチャットにも ```sql のコードの枠で貼る（アプリのコピーボタンが付くので確実）。
+        ②そのために --print を付けると、SQL 本文を標準出力にも出す（チャットに貼る用）。③手順書の先頭に、この案内を常に出す。
 """
 import argparse, html
 
@@ -29,6 +33,7 @@ def main():
     ap.add_argument('--intro', default='')
     ap.add_argument('--expect', action='append', default=[], help='確認の見方（HTML可・確認の順に1つずつ）')
     ap.add_argument('--out', required=True)
+    ap.add_argument('--print', action='store_true', help='SQL 本文を標準出力にも出す（チャットのコードの枠に貼る用）')
     ap.add_argument('--url', default='https://supabase.com/dashboard/project/uuvsxzhpxtghojoubjcc/sql/new')
     a = ap.parse_args()
     sql = open(a.sql, encoding='utf-8').read()
@@ -46,7 +51,7 @@ table{{border-collapse:collapse;margin:8px 0}}td,th{{border:1px solid #d8d3ca;pa
 a.big{{display:inline-block;background:#1f5fbf;color:#fff;text-decoration:none;padding:10px 18px;border-radius:10px;font-weight:700}}kbd{{background:#eee;border:1px solid #ccc;border-radius:4px;padding:1px 6px;font-size:13px}}</style></head><body>
 <h1>📘 {esc(a.title)}</h1>
 {a.intro}
-<div class="warn">📋 <b>「コピー」ボタンが効かない時</b>：下の枠の中を<b>クリック</b>（全部が青く選ばれます）→ <kbd>⌘</kbd>+<kbd>C</kbd>。そのあと SQL Editor で <kbd>⌘</kbd>+<kbd>V</kbd> です。</div>
+<div class="warn">📋 <b>「コピー」ボタンが効かない時</b>（この画面は、アプリの表示だとボタンが動かないことがあります）：<br>① <b>チャットに貼ってある SQL の枠</b>の右上の「コピー」を使う（いちばん確実です）。<br>② または、下の枠の中を<b>クリック</b>→ <kbd>⌘</kbd>+<kbd>A</kbd>（枠の中を全部選ぶ）→ <kbd>⌘</kbd>+<kbd>C</kbd>。そのあと SQL Editor で <kbd>⌘</kbd>+<kbd>V</kbd> です。</div>
 <h2>1. SQL Editor を開く</h2>
 <div class="step"><span class="num">1</span><a class="big" href="{esc(a.url)}" target="_blank">🔗 SQL Editor を開く</a></div>
 <h2>2. 実行する</h2>
@@ -78,6 +83,8 @@ function cp(id,btn){
 </script></body></html>''')
     open(a.out, 'w', encoding='utf-8').write('\n'.join(parts))
     print('wrote', a.out)
+    if a.print:
+        print('----- SQL（チャットに貼る用）-----'); print(sql)
 
 if __name__ == '__main__':
     main()
