@@ -283,6 +283,21 @@ async function subjectSlackIds(sb: Sb, userId: unknown): Promise<string[]> {
   const { data } = await sb.from("user_slack").select("slack_user_id").eq("user_id", userId);
   return (data ?? []).map((r: { slack_user_id: string }) => r.slack_user_id).filter(Boolean);
 }
+/**
+ * 未確認の勤怠確認でメンションする人（2026-11-21 社長の決め）:
+ *   本部（location_type='hq'）の勤怠 … 本人 ＋ 管理者（社長＝マスター）
+ *   ほかの店舗                       … 本人 ＋ 今までどおりの担当（notice_mention_rules＝その店舗の社員・店長・担当チーム長）。社長は付けない
+ *   テスト用                         … 管理者だけ
+ * 本人は、管理システムと Slack がつながっている人だけ（つながっていなければ付かない）。
+ */
+async function openMentionIds(sb: Sb, o: { userId: unknown; storeId: unknown; test: boolean }): Promise<string[]> {
+  if (o.test) return await masterSlackIds(sb);
+  const me = await subjectSlackIds(sb, o.userId);
+  const { data: st } = typeof o.storeId === "string" && o.storeId ? await sb.from("stores").select("location_type").eq("id", o.storeId).maybeSingle() : { data: null };
+  if (st?.location_type === "hq") return [...me, ...(await masterSlackIds(sb))];
+  const { data: t } = await sb.rpc("notice_mention_targets", { p_type: NOTICE_TYPE, p_scene: "open", p_store: typeof o.storeId === "string" ? o.storeId : null, p_task_assignees: null });
+  return [...me, ...((t?.targets ?? []) as { slack_user_id?: string }[]).map((x) => String(x.slack_user_id ?? "")).filter(Boolean)];
+}
 async function threadReply(notify: Notify, refs: CaseRefs, alertId: string, o: { text: string; event: string; source: string; dedupe: string }) {
   return await notify({ action: "send", channel_key: refs.channel_key, thread_ts: refs.ts, text: o.text, event: o.event, source: o.source, dedupe_key: o.dedupe,
     ref: { table: REF_TABLE, id: alertId }, username: USERNAME, icon_emoji: ICON });
@@ -339,9 +354,7 @@ export async function remindInThread(sb: Sb, notify: Notify, o: { alertId: strin
   if (o.approval || refs.test === true) ids = await masterSlackIds(sb);
   else {
     const { data: a } = await sb.from(REF_TABLE).select("store_id,user_id").eq("id", o.alertId).maybeSingle();
-    const { data: t } = await sb.rpc("notice_mention_targets", { p_type: NOTICE_TYPE, p_scene: "open", p_store: a?.store_id ?? null, p_task_assignees: null });
-    ids = ((t?.targets ?? []) as { slack_user_id?: string }[]).map((x) => String(x.slack_user_id ?? "")).filter(Boolean);
-    ids = [...(await subjectSlackIds(sb, a?.user_id)), ...ids, ...(await masterSlackIds(sb))];   // 2026-11-21: 本人と管理者（社長）にも必ずメンション
+    ids = await openMentionIds(sb, { userId: a?.user_id, storeId: a?.store_id, test: false });   // 2026-11-21: 本人＋（本部なら社長／ほかの店舗は今までの担当）
   }
   if (o.dryRun) return { v2: true, ok: true, mentions: ids.length };
   const r = await threadReply(notify, refs, o.alertId, { text: reminderText(ids, { n: o.n, age: ageText(o.since), approval: o.approval }), event: "reminder", source: "ef:pending-reminders", dedupe: `remind:${REF_TABLE}:${o.alertId}:${o.n}` });
@@ -401,9 +414,9 @@ export async function postAlert(sb: Sb, notify: Notify, a: {
   if (err) return { alert_id: a.alertId, ok: false, format: "v2", error: "case: " + err };
   if (permalink) { const p2 = parentMessage(v, { permalink }); await notify({ action: "update", notification_id: refs.parent, text: p2.text, blocks: p2.blocks }); }
   await sb.from(REF_TABLE).update({ notification_ids: [refs.parent], updated_at: new Date().toISOString() }).eq("id", a.alertId);
-  // 2026-11-21: 本人と管理者（社長）にメンション（テスト用は管理者だけ）。失敗しても、アラート自体の投稿は成功のまま
+  // 2026-11-21: 本人＋（本部なら社長／ほかの店舗は今までの担当）にメンション（テスト用は社長だけ）。失敗しても、アラート自体の投稿は成功のまま
   try {
-    const ids = [...(o.test === true ? [] : await subjectSlackIds(sb, a.userId)), ...(await masterSlackIds(sb))];
+    const ids = await openMentionIds(sb, { userId: a.userId, storeId: a.storeId, test: o.test === true });
     if (ids.length) await safe({ action: "send", channel_key: o.channelKey, thread_ts: r1.ts, text: openAskText(ids), event: "attendance_alert_ask", source: o.source, dedupe_key: `attendance_alert_ask:${a.alertId}`, ref, username: USERNAME, icon_emoji: ICON });
   } catch (_e) { /* メンションだけ出せなくても続ける */ }
   return { alert_id: a.alertId, ok: true, format: "v2", permalink: !!permalink };

@@ -93,13 +93,13 @@ Deno.test("メンションは Slack の ID だけ・同じ人は 1 回", () => {
 });
 
 // ---- 読んで・書き換える処理（にせものの DB と送信で確かめる） ----
-function fake(o: { caseRefs?: Record<string, unknown> | null; alert?: Record<string, unknown>; labor?: Record<string, unknown> }) {
+function fake(o: { caseRefs?: Record<string, unknown> | null; alert?: Record<string, unknown>; labor?: Record<string, unknown>; hq?: boolean }) {
   const sent: Record<string, unknown>[] = []; const upd: Record<string, unknown>[] = []; const rpcs: { fn: string; args: any }[] = [];
   const q = (table: string) => {
     const b: any = {
       select: () => b, eq: () => b, in: () => b, limit: () => b,
       update: (x: Record<string, unknown>) => { upd.push({ table, ...x }); if (table === "sf_attendance_alerts" && o.alert) Object.assign(o.alert, x); return b; },
-      maybeSingle: () => Promise.resolve({ data: table === "notice_cases" ? (o.caseRefs ? { slack_refs: o.caseRefs } : null) : table === "sf_attendance_alerts" ? (o.alert ?? null) : table === "labor_cost_daily" ? (o.labor ?? null) : table === "stores" ? { name: "鳥一代 本店" } : null }),
+      maybeSingle: () => Promise.resolve({ data: table === "notice_cases" ? (o.caseRefs ? { slack_refs: o.caseRefs } : null) : table === "sf_attendance_alerts" ? (o.alert ?? null) : table === "labor_cost_daily" ? (o.labor ?? null) : table === "stores" ? { name: "鳥一代 本店", location_type: o.hq ? "hq" : "store" } : null }),
       then: (res: (v: unknown) => void) => res({ data: table === "users" ? [{ id: "u1", name: "テスト 立会い" }, { id: "m1", name: "社長" }] : table === "user_slack" ? [{ slack_user_id: "U0MASTER1" }] : [] }),
     };
     return b;
@@ -156,7 +156,10 @@ Deno.test("リマインドはスレッドへの返信（親を増やさない）
   await remindInThread(f.sb, f.notify, { alertId: base.alertId, approval: false, n: 1, since });
   assertEquals(f.sent.length, 1);
   assertEquals(f.sent[0].thread_ts, "1.1");
-  assert(String(f.sent[0].text).startsWith("<@U0MASTER1> <@U0STAFF01>　⏰ リマインド（1回目）　まだ確認されていません（13時間）"), "本人・店舗の担当・管理者（社長）の順にメンション（同じ人は 1 回だけ）");
+  assert(String(f.sent[0].text).startsWith("<@U0MASTER1> <@U0STAFF01>　⏰ リマインド（1回目）　まだ確認されていません（13時間）"), "本人 → 店舗の担当の順（ほかの店舗は社長を足さない）");
+  const hq = fake({ caseRefs: refs, alert: alertRow(), hq: true });
+  await remindInThread(hq.sb, hq.notify, { alertId: base.alertId, approval: false, n: 1, since });
+  assert(String(hq.sent[0].text).startsWith("<@U0MASTER1>　⏰") && !String(hq.sent[0].text).includes("U0STAFF01"), "本部は 本人＋社長（店舗の担当は付けない）");
   const g = fake({ caseRefs: { ...refs, test: true }, alert: alertRow() });
   await remindInThread(g.sb, g.notify, { alertId: base.alertId, approval: false, n: 1, since });
   assert(String(g.sent[0].text).startsWith("<@U0MASTER1>"));
@@ -170,7 +173,7 @@ Deno.test("投稿: 親 1 通 → スレッドにカード 1 通 → 控えを残
   const r = await postAlert(f.sb, f.notify, { alertId: base.alertId, userId: "u1", storeId: "s1", workDate: "2026-11-10", userName: "テスト 立会い", storeName: "鳥一代 本店", kind: "no_clock_out", reasons: ["退勤打刻なし"], times: base.detected },
     { channelKey: "kintai.check", test: true, detailButton: false, source: "t" });
   assertEquals([r.ok, r.format], [true, "v2"]);
-  assertEquals(f.sent.length, 3);   // 親・カード・メンションの依頼
+  assertEquals(f.sent.length, 3);   // 親・カード・メンションの依頼（テスト用は社長だけ）
   assertEquals(f.sent[0].text, "🕒 勤怠確認｜テスト 立会い｜鳥一代 本店｜11/10");
   assertEquals(f.sent[0].thread_ts, undefined);
   assertEquals(f.sent[1].thread_ts, "1700000000.001");
