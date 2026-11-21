@@ -21,6 +21,14 @@
 
 ---
 
+**2026-11-21（担当B・MacBook）勤怠確認の「出勤取消のあと残るカード」を直した＋本人・管理者へのメンション（社長依頼・SQL実行・EF 4 本デプロイ済み＝3926252）**
+- 【原因】カードの「出勤取消」は、アラートとは別の申請（kind=delete・アラートの request_id に結びつかない）を作る。承認で勤怠実績が消えるとアラートは labor_cost_daily_id が null の「open」のまま残り、毎日リマインドが続いた（ダカル レサ 11/18＝3 回・テスト 立会い 11/19）。11/19 の出勤取消の作り漏れ。
+- 【直し】SQL `2026-11-21_attendance_cancel_alert_sync.sql`（実行済み・確認 OK）: 出勤取消が承認されたら、同じ本人・日付・店舗の open のアラートを cancelled（完了・取り消し）にするトリガー＋残っていた 2 件の補正。EF 共通部品: 申請から元アラートを探す処理が、勤怠実績が消えていても本人・日付・店舗で探す（renderLinkedAlert）／cancelled のカード文言。残っていた 2 件は 11/21 に手元から renderAlert で書き換え済み（親は「✅ 完了（取り消し）」）。
+- 【メンション（社長の決め）】未確認の勤怠確認の投稿直後に、スレッドへ依頼 1 通（attendance_alert_ask）。リマインドも同じ宛先。本部（stores.location_type='hq'）＝本人＋社長（マスター）／ほかの店舗＝本人＋今までの担当（notice_mention_rules の店舗の担当・チーム長。社長は付けない）／テスト用＝社長だけ。本人は user_slack がある人だけ（無ければ付かない）。
+- 配置した EF: attendance-request・slack-interact・pending-reminders・smaregi-attendance-anomaly-check。作業用の clean な checkout は ~/ns-portal-b（origin/main 追従）。
+- 既存の失敗テスト 3 件（_shared/attendance-request-actions.test.ts）は、11/19 の「親投稿に店舗名」の変更で期待値が古いまま（今回の変更とは無関係・未修正）。
+- 【採用・案C の完了記録】Indeed 応募者への LINE 案内: Slack の「LINE 案内文」ボタン（コピー用の枠・自動送信なし）＋応募者専用フォームのリンク入りの案内文（表 applicant_form_tokens・apply_prefill）。管理システム（nippo 管理画面）にも同じ案内文。社員応募は form_key で社員フォーム。待ち行列 9 は PL 優先のため案A・案B（自動送信）は止めている。
+
 **2026-11-19〜20（担当B・MacBook）本部タスクの Slack 連携を大きく拡張／採用の Slack ボタン復活（LINE・カレンダー・送信スイッチ ON）／勤怠の出勤取消申請。すべて main 反映・EF 本番デプロイ済み（最新 4adcc5a 以降）**
 - 【本部タスク×Slack（社長依頼で順次・本番反映済み）】親投稿は「表紙」（シンプルな表示・絵文字少なめ）で詳細はスレッド。画面の操作も 1 分以内に親投稿＋カードへ反映（pg_cron `hq-parents-refresh`・変化したものだけ更新）／工程は期限が早い順＋先頭の未完了が「いまここ」／コメントに写真・PDF 添付（Slack・画面とも。リンクは管理システム経由で期限なし）／Slack のコメントでメンション選択・添付・🗑削除（画面のコメントも消える）／完了の取り消し（↩️）と「完了したタスクは直せない」の誤判定の修正／@nstyle-notify の文章からのタスク作成を修正（原因=AI の出力形式 maxItems 非対応。法人の選択・DM では指示文を残さない・表紙の親投稿）／次の担当者への通知（前の工程が期限当日・超過／完了したとき。1 人 1 通にまとめる。設定 hq_task_slack.next_notice_enabled=ON）／3 秒制限対策（先に返事→裏で処理）で「Slack になかなか接続できません」を解消／古い Indeed 重複投稿 2 件を削除。
 - 【11/20 追加】個人 DM の通知（期限・次の担当・新規割り当て）に［💬 コメント］と「📍 親投稿を開く（#チャンネル）」リンク（`_shared/hqtask-parent-link.ts`・chat.getPermalink）。作成時の担当者 DM は親投稿を出したあとに送る。直せる人（作った人・マスター・CEO・HQ）の DM には［✏️ 編集］［🧩 工程を編集］。**画面で作ったタスクも Slack からコメント・編集できるように**する SQL `supabase/2026-11-20_hq_slack_edit_web_tasks.sql`（4 関数の「記録表 hq_slack_task_log に行が無ければ断る」を外す。安全装置つき DO ブロック）＝**社長の実行待ち**（手順書 HTML を渡した）。記録表へ行は足さない（行の有無で「完了通知」「工程の順番」の扱いが変わるため）。
