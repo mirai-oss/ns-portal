@@ -242,3 +242,23 @@ Deno.test("2026-11-21 未完了のまとめの宛先: 社長＝全店舗・チ�
   assertEquals(sent.length, 2);
   assertEquals(d.recipients.map((x) => x.user_id).sort(), ["boss", "head1"]);
 });
+
+Deno.test("2026-11-22 指定した店舗の最初のメンション: 本人＋指定した人だけ（店舗の担当・社長は付けない）。リマインドは今までどおり。指定の無い店舗は変わらない", async () => {
+  const mk = (overrides: unknown, o: Parameters<typeof fake>[0] = { caseRefs: null }) => {
+    const f = fake(o);
+    const q0 = (f.sb as any).from;
+    (f.sb as any).from = (t: string) => { const b = q0(t); if (t === "app_settings") b.maybeSingle = () => Promise.resolve({ data: overrides ? { value: { overrides } } : null }); return b; };
+    return f;
+  };
+  const run = async (f: ReturnType<typeof mk>) => { await postAlert(f.sb, f.notify, { alertId: base.alertId, userId: "u1", storeId: "sX", workDate: "2026-11-10", userName: "山田", storeName: "店X", kind: "no_clock_out", reasons: [], times: base.detected }, { channelKey: "kintai.check", detailButton: false, source: "t" }); return String(f.sent[2]?.text ?? ""); };
+  const withRule = await run(mk([{ store_ids: ["sX"], user_ids: ["head"] }]));
+  assert(withRule.startsWith("<@U0MASTER1>　🔔") && !withRule.includes("U0STAFF01"), "本人＋指定の人だけ（このテストの疑似データでは、本人も指定の人も同じ Slack ID）");
+  const other = await run(mk([{ store_ids: ["sOther"], user_ids: ["head"] }]));
+  assert(other.includes("U0STAFF01"), "指定の無い店舗は、今までどおり（店舗の担当も付く）");
+  const none = await run(mk(null));
+  assert(none.includes("U0STAFF01"));
+  // リマインド（initial でない）は、指定があっても今までどおり
+  const g = mk([{ store_ids: ["s1"], user_ids: ["head"] }], { caseRefs: { parent: "p1", card: "c1", ts: "1.1", channel_key: "kintai.check" }, alert: alertRow() });
+  await remindInThread(g.sb, g.notify, { alertId: base.alertId, approval: false, n: 1, since: new Date(Date.now() - 13 * 3600e3).toISOString() });
+  assert(String(g.sent[0].text).includes("U0STAFF01"));
+});

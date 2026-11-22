@@ -290,9 +290,19 @@ async function subjectSlackIds(sb: Sb, userId: unknown): Promise<string[]> {
  *   テスト用                         … 管理者だけ
  * 本人は、管理システムと Slack がつながっている人だけ（つながっていなければ付かない）。
  */
-async function openMentionIds(sb: Sb, o: { userId: unknown; storeId: unknown; test: boolean }): Promise<string[]> {
+async function openMentionIds(sb: Sb, o: { userId: unknown; storeId: unknown; test: boolean; initial?: boolean }): Promise<string[]> {
   if (o.test) return await masterSlackIds(sb);
   const me = await subjectSlackIds(sb, o.userId);
+  // 2026-11-22 社長の決め: 指定した店舗の「最初のメンション」は、本人＋指定した人だけ（設定 app_settings.attendance_alert_mention.overrides＝[{ store_ids, user_ids }]）。リマインドは今までどおり
+  if (o.initial === true && typeof o.storeId === "string") {
+    const { data: set } = await sb.from("app_settings").select("value").eq("key", "attendance_alert_mention").maybeSingle();
+    const hit = ((set?.value?.overrides ?? []) as { store_ids?: string[]; user_ids?: string[] }[]).find((x) => Array.isArray(x?.store_ids) && x.store_ids.includes(o.storeId as string));
+    if (hit) {
+      const extra: string[] = [];
+      for (const uid of hit.user_ids ?? []) extra.push(...(await subjectSlackIds(sb, uid)));
+      return [...me, ...extra];
+    }
+  }
   const { data: st } = typeof o.storeId === "string" && o.storeId ? await sb.from("stores").select("location_type").eq("id", o.storeId).maybeSingle() : { data: null };
   if (st?.location_type === "hq") return [...me, ...(await masterSlackIds(sb))];
   const { data: t } = await sb.rpc("notice_mention_targets", { p_type: NOTICE_TYPE, p_scene: "open", p_store: typeof o.storeId === "string" ? o.storeId : null, p_task_assignees: null });
@@ -416,7 +426,7 @@ export async function postAlert(sb: Sb, notify: Notify, a: {
   await sb.from(REF_TABLE).update({ notification_ids: [refs.parent], updated_at: new Date().toISOString() }).eq("id", a.alertId);
   // 2026-11-21: 本人＋（本部なら社長／ほかの店舗は今までの担当）にメンション（テスト用は社長だけ）。失敗しても、アラート自体の投稿は成功のまま
   try {
-    const ids = await openMentionIds(sb, { userId: a.userId, storeId: a.storeId, test: o.test === true });
+    const ids = await openMentionIds(sb, { userId: a.userId, storeId: a.storeId, test: o.test === true, initial: true });
     if (ids.length) await safe({ action: "send", channel_key: o.channelKey, thread_ts: r1.ts, text: openAskText(ids), event: "attendance_alert_ask", source: o.source, dedupe_key: `attendance_alert_ask:${a.alertId}`, ref, username: USERNAME, icon_emoji: ICON });
   } catch (_e) { /* メンションだけ出せなくても続ける */ }
   return { alert_id: a.alertId, ok: true, format: "v2", permalink: !!permalink };
