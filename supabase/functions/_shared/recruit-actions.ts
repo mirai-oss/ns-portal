@@ -9,7 +9,7 @@
 //     ・設定（app_settings.recruit_slack.actions_enabled）が true のときだけ動く。
 //   設計: scratchpad ob18/設計_採用_面接確定とLINEのSlack操作.md ／ DB 側: supabase/2026-11-26_recruit_action_base.sql
 // =============================================================
-import { ASSIGNEE_ACTION, clean, dayJst, HIRE_ACTION, INTERVIEW_ACTION, INTERVIEW_CANCEL_ACTION, LINE_ACTION, prefLine, PREFS_MAX } from "./recruit-notice.ts";
+import { ASSIGNEE_ACTION, STATUS_ACTION, clean, dayJst, HIRE_ACTION, INTERVIEW_ACTION, INTERVIEW_CANCEL_ACTION, LINE_ACTION, prefLine, PREFS_MAX } from "./recruit-notice.ts";
 import { interviewCancelText, interviewChangeText, interviewText } from "./recruit-interview-text.ts";
 import { RETRY_CAL_ACTION, RETRY_SEND_ACTION } from "./recruit-ops.ts";
 
@@ -19,7 +19,7 @@ export const HIRE_MODAL = "recruit.hire.modal";
 /** 失敗の知らせの［もう一度］の、確かめの窓 */
 export const RETRY_SEND_MODAL = "recruit.retry.send.modal", RETRY_CAL_MODAL = "recruit.retry.calendar.modal";
 
-export { ASSIGNEE_ACTION, INTERVIEW_ACTION, INTERVIEW_CANCEL_ACTION, LINE_ACTION };
+export { ASSIGNEE_ACTION, STATUS_ACTION, INTERVIEW_ACTION, INTERVIEW_CANCEL_ACTION, LINE_ACTION };
 /** ［面接を確定］［面接を変更］の窓: 入力（INTERVIEW_MODAL）→ 確認（INTERVIEW_CONFIRM）／［面接を取り消す］の窓（INTERVIEW_CANCEL_MODAL） */
 export const INTERVIEW_MODAL = "recruit.interview.modal", INTERVIEW_CONFIRM = "recruit.interview.confirm", INTERVIEW_CANCEL_MODAL = "recruit.interview.cancel.modal";
 /** ［応募者へ LINE 返信］の窓: 入力（LINE_MODAL）→ 確認（LINE_CONFIRM） */
@@ -131,6 +131,71 @@ export async function assigneeSubmit(deps: RecruitDeps, actor: RecruitActor, vie
   if (error) return fail("変更できませんでした: " + String(error.message));
   if (data?.ok) return { kind: "clear" };   // 変えた／すでにその担当だった。結果は、スレッドの記録とカードで見える
   if (data?.code === "conflict") return fail(`先に変更されています（いまの担当：${data.current_name ? clean(data.current_name, 20) : "未定"}）。この窓を閉じて、もう一度開いてください。`);
+  if (data?.code === "denied") return fail(DENIED_TEXT);
+  return fail(String(data?.message ?? "変更できませんでした"));
+}
+
+// ---- ［状態を変更］（2026-11-22 社長依頼）: 採用だけでなく、連絡済み・面接済み・不採用・辞退・連絡なしなども、Slack から選べる ----------------------
+//   業務の処理は RPC（recruit_status_info / recruit_status_set）。権限・古い状態の照合・二重防止は RPC 側。採用・退職には、ここからは変えない（採用は［採用を決める］）。
+export const STATUS_MODAL = "recruit.status.modal";
+/** 選べる状態（管理画面の並びと同じ。バックレは Slack では「連絡なし」） */
+export const STATUS_CHOICES: { value: string; label: string; exit?: boolean }[] = [
+  { value: "new", label: "新規" }, { value: "contacted", label: "連絡済み" }, { value: "interview_set", label: "面接設定" }, { value: "interviewed", label: "面接済み" },
+  { value: "rejected", label: "不採用", exit: true }, { value: "declined", label: "辞退", exit: true }, { value: "noshow", label: "連絡なし（バックレ）", exit: true },
+];
+const EXIT_STAGE_OPTS = [["before_interview", "面接前"], ["interview", "面接"], ["after_hire", "採用後"], ["during_registration", "入社登録中"], ["first_shift", "初回勤務"]];
+const EXIT_REASON_OPTS = [["interview_noshow", "面接に来なかった"], ["declined_before_interview", "面接前に辞退"], ["no_contact_after_hire", "採用後に連絡がつかない"], ["dropped_during_registration", "入社登録の途中で離脱"],
+  ["first_shift_noshow", "初回勤務に来なかった"], ["declined_before_start", "入社前に辞退"], ["company_reason", "会社の都合で中止"], ["other", "その他"]];
+export function statusModal(meta: { applicant_id: string; expected_status: string; notification_id: string | null }, d: { applicantName: string; status: string }): Record<string, unknown> {
+  const cur = STATUS_CHOICES.find((c) => c.value === d.status);
+  const opt = (v: string, l: string) => ({ text: plain(l), value: v });
+  return {
+    type: "modal", callback_id: STATUS_MODAL, private_metadata: JSON.stringify(meta),
+    title: plain("状態を変更"), submit: plain("変更する"), close: plain("やめる"),
+    blocks: [
+      { type: "section", text: { type: "mrkdwn", text: `*${clean(d.applicantName, 30)}* さんの状態を変更します。\nいまの状態：${cur?.label ?? clean(d.status, 12)}` } },
+      { type: "input", block_id: "status", label: plain("新しい状態"), element: { type: "static_select", action_id: "status", placeholder: plain("選んでください"), options: STATUS_CHOICES.filter((c) => c.value !== d.status).map((c) => opt(c.value, c.label)) } },
+      { type: "input", optional: true, block_id: "exit_stage", label: plain("終了にするとき: 離脱の段階（任意）"), element: { type: "static_select", action_id: "exit_stage", placeholder: plain("選ばなくても変更できます"), options: EXIT_STAGE_OPTS.map(([v, l]) => opt(v, l)) } },
+      { type: "input", optional: true, block_id: "exit_reason", label: plain("終了にするとき: 離脱の理由（任意）"), element: { type: "static_select", action_id: "exit_reason", placeholder: plain("選ばなくても変更できます"), options: EXIT_REASON_OPTS.map(([v, l]) => opt(v, l)) } },
+      { type: "input", optional: true, block_id: "reason", label: plain("メモ（任意・記録に残ります）"), element: { type: "plain_text_input", action_id: "reason", max_length: 200 } },
+      { type: "context", elements: [{ type: "mrkdwn", text: "「採用」にするときは、カードの［採用を決める］を使ってください（入社登録の流れに進みます）。離脱の段階・理由は、不採用・辞退・連絡なしのときだけ使われます（管理画面の「離脱の記録」と同じです）。応募者へは何も送られません。" }] },
+    ],
+  };
+}
+/** カードの［状態を変更］が押されたとき: 設定と権限を確かめ、選ぶ窓を返す */
+export async function statusOpen(deps: RecruitDeps, actor: RecruitActor, value: { applicant_id?: unknown; notification_id?: unknown }): Promise<RecruitOutcome> {
+  const applicantId = value?.applicant_id;
+  if (!isUuid(applicantId)) return { kind: "ephemeral", text: "応募者の番号が読めませんでした。カードを更新してから、もう一度押してください。" };
+  if (!(await deps.actionsEnabled())) return { kind: "ephemeral", text: OFF_TEXT };
+  const { data, error } = await deps.rpc("recruit_status_info", { p_applicant: applicantId, p_actor: actor.user_id });
+  if (error) return { kind: "ephemeral", text: "読み込めませんでした: " + String(error.message).slice(0, 150) };
+  if (!data?.ok) return { kind: "ephemeral", text: data?.code === "denied" ? DENIED_TEXT : String(data?.message ?? "読み込めませんでした") };
+  if (data.locked) return { kind: "ephemeral", text: "採用・退職になっている応募者の状態は、ここからは変えられません。管理画面から行ってください。" };
+  return { kind: "modal", view: statusModal({ applicant_id: applicantId, expected_status: String(data.status ?? ""), notification_id: isUuid(value?.notification_id) ? value.notification_id : null },
+    { applicantName: String(data.applicant_name ?? ""), status: String(data.status ?? "") }) };
+}
+/** 選ぶ窓の［変更する］が押されたとき: RPC recruit_status_set（依頼の鍵＝窓の番号。見ていた状態＝窓を開いたときの状態） */
+// deno-lint-ignore no-explicit-any
+export async function statusSubmit(deps: RecruitDeps, actor: RecruitActor, view: any): Promise<RecruitOutcome> {
+  const fail = (text: string): RecruitOutcome => ({ kind: "errors", errors: { status: text.slice(0, 180) } });
+  let meta: { applicant_id?: unknown; expected_status?: unknown } = {};
+  try { meta = JSON.parse(view?.private_metadata ?? "{}") ?? {}; } catch (_e) { meta = {}; }
+  const viewId = typeof view?.id === "string" ? view.id.trim() : "";
+  const v = view?.state?.values ?? {};
+  const status = v?.status?.status?.selected_option?.value;
+  const stage = v?.exit_stage?.exit_stage?.selected_option?.value ?? null, why = v?.exit_reason?.exit_reason?.selected_option?.value ?? null;
+  const memo = String(v?.reason?.reason?.value ?? "").trim() || null;
+  if (!isUuid(meta.applicant_id) || !viewId) return fail("この窓の情報が読めませんでした。閉じて、もう一度開いてください。");
+  if (typeof status !== "string" || !STATUS_CHOICES.some((c) => c.value === status)) return fail("新しい状態を選んでください。");
+  if (!(await deps.actionsEnabled())) return fail(OFF_TEXT);
+  const exit = STATUS_CHOICES.find((c) => c.value === status)?.exit === true;
+  const { data, error } = await deps.rpc("recruit_status_set", {
+    p_applicant: meta.applicant_id, p_status: status, p_expected_status: typeof meta.expected_status === "string" && meta.expected_status ? meta.expected_status : null,
+    p_exit_stage: exit ? stage : null, p_exit_reason: exit ? why : null, p_request_key: `slack:view:${viewId}`, p_actor: actor.user_id, p_via: "slack", p_reason: memo,
+  });
+  if (error) return fail("変更できませんでした: " + String(error.message));
+  if (data?.ok) return { kind: "clear" };   // 変えた／すでにその状態だった。結果は、親・カード・スレッドの記録で見える（既存のトリガーが反映する）
+  if (data?.code === "conflict") return fail(`先に変更されています（いまの状態：${STATUS_CHOICES.find((c) => c.value === data.current_status)?.label ?? clean(data.current_status, 12)}）。この窓を閉じて、もう一度開いてください。`);
   if (data?.code === "denied") return fail(DENIED_TEXT);
   return fail(String(data?.message ?? "変更できませんでした"));
 }

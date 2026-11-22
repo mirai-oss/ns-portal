@@ -3,7 +3,7 @@
 //   ※ 氏名・電話・メールは、テスト用の作りもの
 import { assert, assertEquals } from "jsr:@std/assert@1";
 import {
-  ASSIGNEE_ACTION, HIRE_ACTION, INTERVIEW_ACTION, INTERVIEW_CANCEL_ACTION, LINE_ACTION, cardMessage, excerpt, handleEvent, prefLine, PREFS_MAX, THREAD_NOTE, historyLines, maskPII, messageLine, openLine, parentMessage, shouldOpen, snapOf, stateOf, uuidFrom, viewOf, waitingOf,
+  ASSIGNEE_ACTION, STATUS_ACTION, kindOf, parentTitle, HIRE_ACTION, INTERVIEW_ACTION, INTERVIEW_CANCEL_ACTION, LINE_ACTION, cardMessage, excerpt, handleEvent, prefLine, PREFS_MAX, THREAD_NOTE, historyLines, maskPII, messageLine, openLine, parentMessage, shouldOpen, snapOf, stateOf, uuidFrom, viewOf, waitingOf,
   type Applicant, type Cfg, type Db, type Msg, type Onboarding, type Refs,
 } from "./recruit-notice.ts";
 
@@ -426,7 +426,7 @@ Deno.test("ボタンの設定が false・未指定なら、カードは今まで
   assertEquals(JSON.stringify(cardMessage(v, { actions: false, notificationId: "n1" })), base);
   assertEquals(JSON.stringify(cardMessage(v, { notificationId: "n1" })), base);
   const on = cardMessage(v, { actions: true, notificationId: "n1" });
-  assertEquals(btns(on.blocks), ["担当者を変更", "管理画面で開く"]);
+  assertEquals(btns(on.blocks), ["状態を変更", "担当者を変更", "管理画面で開く"]);
   const b = (on.blocks as any[]).find((x) => x.block_id === "recruit_actions").elements.find((e: any) => e.action_id === ASSIGNEE_ACTION);
   assertEquals([b.action_id, b.value], [ASSIGNEE_ACTION, JSON.stringify({ applicant_id: A1, notification_id: "n1" })]);   // 値は、応募者の id と台帳の番号だけ
   assert(!b.value.includes("試験") && !b.value.includes("090"));
@@ -434,7 +434,8 @@ Deno.test("ボタンの設定が false・未指定なら、カードは今まで
   assertEquals(JSON.stringify((on.blocks as any[]).filter((x) => x.block_id !== "recruit_actions")), JSON.stringify(cardMessage(v).blocks));
   assertEquals(on.text, cardMessage(v).text);
   // 選考が終わったあとは、設定が true でも出さない
-  for (const st of ["hired", "rejected", "declined", "noshow"]) assertEquals(btns(cardMessage(view({ status: st }), { actions: true }).blocks), ["管理画面で開く"]);
+  assertEquals(btns(cardMessage(view({ status: "hired" }), { actions: true }).blocks), ["管理画面で開く"]);   // 採用・退職には［状態を変更］も出さない
+  for (const st of ["rejected", "declined", "noshow"]) assertEquals(btns(cardMessage(view({ status: st }), { actions: true }).blocks), ["状態を変更", "管理画面で開く"]);   // 2026-11-22 間違いを直せるよう、これだけ残す
 });
 
 Deno.test("通しの動き: 設定が false のあいだは、どの送信にもボタンが無い。true にすると、次の出来事でカードだけが書き換わる（スレッドの行は増えない）", async () => {
@@ -447,7 +448,7 @@ Deno.test("通しの動き: 設定が false のあいだは、どの送信にも
   assertEquals([r.ok, r.replies, r.updated], [true, 0, 1]);
   const upd = w.sent.slice(before);
   assertEquals(upd.map((b) => [b.action, b.notification_id === w.cases[A1].card]), [["update", true]]);
-  assertEquals(btns(upd[0].blocks as unknown[]), ["担当者を変更", "管理画面で開く"]);
+  assertEquals(btns(upd[0].blocks as unknown[]), ["状態を変更", "担当者を変更", "管理画面で開く"]);
   const val = JSON.parse((upd[0].blocks as any[]).find((x) => x.block_id === "recruit_actions").elements[0].value);
   assertEquals(val, { applicant_id: A1, notification_id: w.cases[A1].card });
   assertEquals([threadTexts(w).length, parents(w).length], [threadBefore, 1]);
@@ -463,7 +464,7 @@ Deno.test("通しの動き: 最初から設定が true なら、新しい応募�
   const w = world({ cfg: { ...cfg, actionsEnabled: true } });
   await run(w, A1, { kind: "created" });
   const card = w.sent.find((b) => b.event === "recruit_card")!;
-  assertEquals(btns(card.blocks as unknown[]), ["担当者を変更", "管理画面で開く"]);
+  assertEquals(btns(card.blocks as unknown[]), ["状態を変更", "担当者を変更", "管理画面で開く"]);
   assertEquals(JSON.parse((card.blocks as any[]).find((x) => x.block_id === "recruit_actions").elements[0].value).notification_id, card.notification_id);
   const n = w.sent.length; await run(w, A1, { kind: "created" }); assertEquals(w.sent.length, n);   // 控えの印と合っている＝書き直さない
 });
@@ -493,21 +494,21 @@ Deno.test("［応募者へ LINE 返信］を出す条件: ボタンの設定が 
   for (const o of [{}, { send: true }, { actions: false, send: true }, { send: false }]) assertEquals(JSON.stringify(cardMessage(linked, o)), base);
   assertEquals(JSON.stringify(cardMessage(test, { send: true })), JSON.stringify(cardMessage(test)));
   // 実在の応募者（印なし）: 送信のスイッチが false のあいだは、送るボタンを出さない
-  assertEquals(btns(cardMessage(linked, { actions: true }).blocks), ["担当者を変更", "管理画面で開く"]);
-  assertEquals(btns(cardMessage(linked, { actions: true, send: false }).blocks), ["担当者を変更", "管理画面で開く"]);
-  assertEquals(btns(cardMessage(linked, { actions: true, send: true }).blocks), ["採用を決める", "応募者へ LINE 返信", "担当者を変更", "管理画面で開く"]);   // 2026-11-30: 送信のスイッチが true なら、採用のボタンも出る
+  assertEquals(btns(cardMessage(linked, { actions: true }).blocks), ["状態を変更", "担当者を変更", "管理画面で開く"]);
+  assertEquals(btns(cardMessage(linked, { actions: true, send: false }).blocks), ["状態を変更", "担当者を変更", "管理画面で開く"]);
+  assertEquals(btns(cardMessage(linked, { actions: true, send: true }).blocks), ["採用を決める", "応募者へ LINE 返信", "状態を変更", "担当者を変更", "管理画面で開く"]);   // 2026-11-30: 送信のスイッチが true なら、採用のボタンも出る
   // テスト用の応募者: 送信のスイッチが false でも出す（通しの確認用）
   const c = cardMessage(test, { actions: true, notificationId: "n1" });
-  assertEquals(btns(c.blocks), ["面接を確定", "採用を決める", "応募者へ LINE 返信", "担当者を変更", "管理画面で開く"]);   // 2026-11-29: テスト用の応募者には、面接のボタンも出る
+  assertEquals(btns(c.blocks), ["面接を確定", "採用を決める", "応募者へ LINE 返信", "状態を変更", "担当者を変更", "管理画面で開く"]);   // 2026-11-29: テスト用の応募者には、面接のボタンも出る
   const b = (c.blocks as any[]).find((x) => x.block_id === "recruit_actions").elements.find((e: any) => e.action_id === LINE_ACTION);
   assertEquals([b.action_id, b.value], [LINE_ACTION, JSON.stringify({ applicant_id: A1, notification_id: "n1" })]);
   assert(!JSON.stringify(c).includes(LID), "LINE の ID は、ボタンの値にもカードにも入れない");
   // LINE と連携していない応募者: ボタンを出さず、「送れません」と書く
   const n = cardMessage(none, { actions: true, send: true });
-  assertEquals(btns(n.blocks), ["採用を決める", "担当者を変更", "管理画面で開く"]);
+  assertEquals(btns(n.blocks), ["採用を決める", "状態を変更", "担当者を変更", "管理画面で開く"]);
   assert(body(n.blocks).includes("LINE 連携：なし（この応募者へは、ここから送れません）"));
   // 選考が終わったあとは、出さない
-  assertEquals(btns(cardMessage(view({ status: "rejected", line_user_id: LID }), { actions: true, send: true }).blocks), ["管理画面で開く"]);
+  assertEquals(btns(cardMessage(view({ status: "rejected", line_user_id: LID }), { actions: true, send: true }).blocks), ["状態を変更", "管理画面で開く"]);   // 2026-11-22 終了後は［状態を変更］だけ
   assertEquals(test.isTest, true); assertEquals(linked.isTest, false);
   assertEquals(view({ answers: { _test: "true" } as any }).isTest, false);   // 文字の "true" は印として扱わない（DB の側は文字で比べるが、こちらは厳しい側に倒す）
 });
@@ -519,7 +520,7 @@ Deno.test("通しの動き: 送信のスイッチは、設定（cfg.sendEnabled�
   const th = threadTexts(w).length;
   w.cfg = { ...w.cfg, sendEnabled: true };
   await run(w, A1, { kind: "sweep" });
-  assertEquals(btns(w.sent[w.sent.length - 1].blocks as unknown[]), ["採用を決める", "応募者へ LINE 返信", "担当者を変更", "管理画面で開く"]);
+  assertEquals(btns(w.sent[w.sent.length - 1].blocks as unknown[]), ["採用を決める", "応募者へ LINE 返信", "状態を変更", "担当者を変更", "管理画面で開く"]);
   assertEquals(threadTexts(w).length, th);
   assert(!JSON.stringify(w.sent).includes("Uaaaaaaa") && !JSON.stringify(w.cases).includes("Uaaaaaaa"));
 });
@@ -532,16 +533,16 @@ Deno.test("面接のボタンを出す条件: ボタンの設定が true・選�
   // ボタンの設定が false なら、面接の設定が何であっても、カードは今までと同じ
   for (const o of [{ interview: true }, { actions: false, interview: true, send: true }]) assertEquals(JSON.stringify(cardMessage(real, o)), JSON.stringify(cardMessage(real)));
   // 実在の応募者: 面接の設定が false のあいだは、面接のボタンを出さない（送信のスイッチだけ true でも出さない）
-  assertEquals(btns(cardMessage(real, { actions: true }).blocks), ["担当者を変更", "管理画面で開く"]);
-  assertEquals(btns(cardMessage(real, { actions: true, send: true }).blocks), ["採用を決める", "担当者を変更", "管理画面で開く"]);
-  assertEquals(btns(cardMessage(real, { actions: true, send: true, interview: true }).blocks), ["面接を確定", "採用を決める", "担当者を変更", "管理画面で開く"]);
+  assertEquals(btns(cardMessage(real, { actions: true }).blocks), ["状態を変更", "担当者を変更", "管理画面で開く"]);
+  assertEquals(btns(cardMessage(real, { actions: true, send: true }).blocks), ["採用を決める", "状態を変更", "担当者を変更", "管理画面で開く"]);
+  assertEquals(btns(cardMessage(real, { actions: true, send: true, interview: true }).blocks), ["面接を確定", "採用を決める", "状態を変更", "担当者を変更", "管理画面で開く"]);
   // 面接が決まっているとき: ［面接を変更］と［面接を取り消す］
   const c = cardMessage(set, { actions: true, send: true, interview: true, notificationId: "n1" });
-  assertEquals(btns(c.blocks), ["面接を変更", "面接を取り消す", "採用を決める", "担当者を変更", "管理画面で開く"]);
+  assertEquals(btns(c.blocks), ["面接を変更", "面接を取り消す", "採用を決める", "状態を変更", "担当者を変更", "管理画面で開く"]);
   const els = (c.blocks as any[]).find((x) => x.block_id === "recruit_actions").elements;
   assertEquals(els.slice(0, 2).map((e: any) => [e.action_id, e.value]), [[INTERVIEW_ACTION, JSON.stringify({ applicant_id: A1, notification_id: "n1" })], [INTERVIEW_CANCEL_ACTION, JSON.stringify({ applicant_id: A1, notification_id: "n1" })]]);
   // テスト用の応募者: 設定が false でも出す（通しの確認用）。選考が終わったら出さない
-  assertEquals(btns(cardMessage(test, { actions: true }).blocks), ["面接を確定", "採用を決める", "担当者を変更", "管理画面で開く"]);
+  assertEquals(btns(cardMessage(test, { actions: true }).blocks), ["面接を確定", "採用を決める", "状態を変更", "担当者を変更", "管理画面で開く"]);
   assertEquals(btns(cardMessage(view({ status: "hired", interview_at: "2026-11-20T05:00:00Z" }), { actions: true, send: true, interview: true }).blocks), ["管理画面で開く"]);
 });
 
@@ -549,9 +550,9 @@ Deno.test("面接のボタンを出す条件: ボタンの設定が true・選�
 Deno.test("［採用を決める］を出す条件: ボタンの設定が true・選考中・（実在の応募者は、送信のスイッチが true のときだけ／テスト用の応募者は、いつでも）", () => {
   const real = view({ status: "interviewed" }), test = view({ status: "interviewed", answers: { "求人": "ホールスタッフ", _test: true } });
   for (const o of [{ send: true }, { actions: false, send: true }]) assertEquals(JSON.stringify(cardMessage(real, o)), JSON.stringify(cardMessage(real)));   // ボタンの設定が false なら、今までと同じ
-  assertEquals(btns(cardMessage(real, { actions: true }).blocks), ["担当者を変更", "管理画面で開く"]);
+  assertEquals(btns(cardMessage(real, { actions: true }).blocks), ["状態を変更", "担当者を変更", "管理画面で開く"]);
   const c = cardMessage(real, { actions: true, send: true, notificationId: "n1" });
-  assertEquals(btns(c.blocks), ["採用を決める", "担当者を変更", "管理画面で開く"]);
+  assertEquals(btns(c.blocks), ["採用を決める", "状態を変更", "担当者を変更", "管理画面で開く"]);
   const b = (c.blocks as any[]).find((x) => x.block_id === "recruit_actions").elements[0];
   assertEquals([b.action_id, b.value], [HIRE_ACTION, JSON.stringify({ applicant_id: A1, notification_id: "n1" })]);
   assert(btns(cardMessage(test, { actions: true }).blocks).includes("採用を決める"));
@@ -585,4 +586,25 @@ Deno.test("［LINE 案内文］を出す条件: ボタンの設定が true・選
   assert(!btnsAll(cardMessage(ind).blocks).includes("LINE 案内文"));                                              // 設定が false なら今までどおり
   assert(!btnsAll(cardMessage(view({ source: "indeed", status: "contacted", line_user_id: "Uxxxx" }), { actions: true }).blocks).includes("LINE 案内文"));   // 連携済みは出さない
   assert(!btnsAll(cardMessage(view({ source: "form", status: "contacted" }), { actions: true }).blocks).includes("LINE 案内文"));                              // Indeed 以外は出さない
+});
+
+Deno.test("2026-11-22 応募の区分: form_key が al＝PA（アルバイト）／shain＝社員／それ以外は出さない。親の見出しとカードに出る", () => {
+  assertEquals([kindOf("al"), kindOf("shain"), kindOf(null), kindOf("x")], ["PA", "社員", null, null]);
+  const mk = (form_key: string | null) => viewOf(appl({ form_key } as any), { storeName: "鳥一代 本店", now: Date.now() });
+  assertEquals(parentTitle(mk("al")), "👤 採用管理｜試験 太郎｜鳥一代 本店｜PA");
+  assert(parentTitle(mk("shain")).endsWith("｜社員"));
+  assertEquals(parentTitle(mk(null)), "👤 採用管理｜試験 太郎｜鳥一代 本店");
+  const body = (v: ReturnType<typeof mk>) => JSON.stringify(cardMessage(v, {}).blocks);
+  assert(body(mk("al")).includes("応募区分：PA（アルバイト）") && body(mk("shain")).includes("応募区分：社員") && !body(mk(null)).includes("応募区分"));
+  assert(parentMessage(mk("al")).text.includes("｜PA"));
+});
+Deno.test("2026-11-22 ［状態を変更］: 選考中は出る／不採用・辞退・連絡なしは、それだけ残る（間違いを直せる）／採用・退職には出さない／設定が false なら出さない", () => {
+  const find = (a: any, o: any) => JSON.stringify(cardMessage(viewOf(appl(a), { storeName: "本店", now: Date.now() }), o).blocks).includes(STATUS_ACTION);
+  assert(find({ status: "contacted" }, { actions: true }));
+  assert(find({ status: "declined" }, { actions: true }));
+  assert(find({ status: "rejected" }, { actions: true }));
+  assert(!find({ status: "hired" }, { actions: true }));
+  assert(!find({ status: "retired" }, { actions: true }));
+  assert(!find({ status: "contacted" }, {}));
+  assert(!find({ status: "declined" }, {}));
 });

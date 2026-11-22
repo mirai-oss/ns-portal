@@ -31,7 +31,7 @@ import { requestCase, afterRequestDecide, afterAlertRequest } from "../_shared/a
 import { actRequest, reasonModal, reasonFromView, REQ_REASON_MODAL, type ReqAction } from "../_shared/attendance-request-actions.ts";
 // 2026-11-26: 採用管理のカードの［担当者を変更］。業務の処理は RPC（recruit_assignee_candidates / recruit_assignee_set）。ここは受付と振り分けだけ
 import { maskPII } from "../_shared/recruit-notice.ts";   // 2026-11-19 LINE 返信の窓の履歴で、合言葉などを伏せる
-import { assigneeOpen, assigneeSubmit, ASSIGNEE_ACTION, ASSIGNEE_MODAL, lineOpen, lineInput, lineConfirm, LINE_ACTION, LINE_MODAL, LINE_CONFIRM,
+import { assigneeOpen, assigneeSubmit, ASSIGNEE_ACTION, ASSIGNEE_MODAL, statusOpen, statusSubmit, STATUS_ACTION, STATUS_MODAL, lineOpen, lineInput, lineConfirm, LINE_ACTION, LINE_MODAL, LINE_CONFIRM,
   interviewOpen, interviewInput, interviewConfirmSubmit, interviewCancelOpen, interviewCancelSubmit, INTERVIEW_ACTION, INTERVIEW_CANCEL_ACTION, INTERVIEW_MODAL, INTERVIEW_CONFIRM, INTERVIEW_CANCEL_MODAL,
   retrySendOpen, retrySendSubmit, retryCalendarOpen, retryCalendarSubmit, RETRY_SEND_ACTION, RETRY_CAL_ACTION, RETRY_SEND_MODAL, RETRY_CAL_MODAL,
   hireOpen, hireSubmit, HIRE_ACTION, HIRE_MODAL,
@@ -287,6 +287,10 @@ const handlers: Record<string, Handler> = {
   [ASSIGNEE_ACTION]: async ({ sb, actor, payload, value, notificationId }) =>
     recruitOpenFast(payload, () => assigneeOpen(recruitDeps(sb), actor, { applicant_id: value?.applicant_id, notification_id: notificationId })),
   [ASSIGNEE_MODAL]: async ({ sb, actor, payload }) => recruitRespond(await assigneeSubmit(recruitDeps(sb), actor, payload.view), payload),
+  // 2026-11-22 社長依頼: カードの［状態を変更］→ 選ぶ窓 → RPC recruit_status_set（採用・退職には変えない。権限・古い状態の照合・二重防止は RPC 側）
+  [STATUS_ACTION]: async ({ sb, actor, payload, value, notificationId }) =>
+    recruitOpenFast(payload, () => statusOpen(recruitDeps(sb), actor, { applicant_id: value?.applicant_id, notification_id: notificationId })),
+  [STATUS_MODAL]: async ({ sb, actor, payload }) => recruitRespond(await statusSubmit(recruitDeps(sb), actor, payload.view), payload),
   // 2026-11-27: カードの［応募者へ LINE 返信］→ 入力の窓 → 確認の窓 → 送信（送るのは EF recruit-action。スイッチ・試しモード・権限・二重防止は、そちらと RPC が決める）。
   //   スレッドのふつうの返信は、この関数を通らない（＝今までどおり、応募者へは送られない）
   [LINE_ACTION]: async ({ sb, actor, payload, value, notificationId }) =>

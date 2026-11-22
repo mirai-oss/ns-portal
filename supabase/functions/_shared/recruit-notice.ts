@@ -89,7 +89,7 @@ export type Applicant = {
   applied_at?: string | null; status_changed_at?: string | null; interview_at?: string | null; interview_mode?: string | null; interview_place?: string | null; interview_prefs?: unknown; interview_set_by?: string | null;
   handled_at?: string | null; handled_by?: string | null; hired_at?: string | null; exit_stage?: string | null; exit_reason?: string | null;
   last_msg_at?: string | null; last_msg_dir?: string | null; last_actor_id?: string | null; form_received_at?: string | null; line_linked_at?: string | null;
-  answers?: Record<string, unknown> | null; indeed_url?: string | null;
+  answers?: Record<string, unknown> | null; indeed_url?: string | null; form_key?: string | null;   // form_key＝応募フォームの種類（PA／社員の表示に使う）
   line_user_id?: string | null;   // LINE と連携しているかどうかの判定にだけ使う（ID そのものは、文面にも控えにも出さない）
 };
 export type Onboarding = { id: string; status?: string | null; user_id?: string | null; slack_channel_id?: string | null; slack_parent_ts?: string | null };
@@ -158,6 +158,7 @@ export type View = {
   waiting: boolean; overdue: boolean; needSchedule: boolean; lastMsgAt: string | null; lastMsgDir: string | null;
   exitStage: string | null; exitReason: string | null; formAt: string | null; lineAt: string | null; reapplySig: string | null;
   userId: string | null; onboarding: Onboarding | null; onboardingLink: string | null; moved: string | null;
+  kind: "PA" | "社員" | null;   // 2026-11-22 応募の区分（PA＝アルバイト／社員）
   isTest: boolean;   // 2026-11-27 テスト用の応募者（answers._test = true）。送信のスイッチが OFF のあいだ、応募者へ送るボタンは、この印のある応募者にだけ出す
   prefsLines: string[]; prefsMore: number; formatWish: string | null; lineLinked: boolean;   // 2026-11-26 カードに出す: 希望日時（最大 3 件）・希望の形式・LINE と連携しているか
 };
@@ -181,7 +182,7 @@ export function viewOf(a: Applicant, c: { storeName?: string | null; names?: Rec
     exitStage: a.exit_stage ?? null, exitReason: a.exit_reason ?? null, formAt: a.form_received_at ?? null, lineAt: a.line_linked_at ?? null, reapplySig: reapply,
     userId: onb?.user_id ?? a.user_id ?? null, onboarding: onb, onboardingLink: c.onboardingLink ?? null, moved,
     prefsLines: prefsAll.slice(0, PREFS_MAX), prefsMore: Math.max(0, prefs.length - Math.min(prefsAll.length, PREFS_MAX)),
-    formatWish: FORMAT_WISH[String(ans["_面接形式希望"] ?? "")] ?? null, lineLinked: !!a.line_user_id, isTest: ans["_test"] === true,
+    formatWish: FORMAT_WISH[String(ans["_面接形式希望"] ?? "")] ?? null, lineLinked: !!a.line_user_id, kind: kindOf(a.form_key), isTest: ans["_test"] === true,
   };
 }
 
@@ -190,7 +191,7 @@ const interviewText = (at: string | null, mode: string | null, place: string | n
 /** 対応が要る印（親とカードに出す）。無ければ null */
 export const attentionOf = (v: Pick<View, "waiting" | "overdue">) => (v.waiting ? "未対応" : v.overdue ? "面接結果の入力待ち" : null);
 /** 親の変わらない部分: 👤 採用管理｜氏名｜応募店舗 */
-export const parentTitle = (v: Pick<View, "name" | "storeName">) => `👤 採用管理｜${clean(v.name, 30)}｜${v.storeName ? clean(v.storeName, 20) : "店舗未設定"}`;
+export const parentTitle = (v: Pick<View, "name" | "storeName"> & { kind?: "PA" | "社員" | null }) => `👤 採用管理｜${clean(v.name, 30)}｜${v.storeName ? clean(v.storeName, 20) : "店舗未設定"}${v.kind ? `｜${v.kind}` : ""}`;
 const linkButton = (text: string, url: string, id: string, key = "") => ({ type: "button", text: { type: "plain_text", text, emoji: true }, action_id: LINK_ACTION + key, url, value: JSON.stringify({ applicant_id: id }) });
 
 /** 親投稿の 2 行目: 進み具合を絵で。済んだ段階は色つきの絵、まだの段階は ▫️（応募 → LINE → フォーム → 面接 → 採用） */
@@ -225,6 +226,10 @@ export const INTERVIEW_ACTION = "recruit.interview.open", INTERVIEW_CANCEL_ACTIO
 export const HIRE_ACTION = "recruit.hire.open";
 /** カードの［LINE 案内文］（LINE 未連携の Indeed 応募者に出す。押すと、合言葉入りの案内文を本人にだけ見せる＝コピーして Indeed で送る。何も自動では送らない） */
 export const INVITE_ACTION = "recruit.invite.open";
+/** カードの［状態を変更］（2026-11-22 社長依頼: 採用だけでなく、連絡済み・面接済み・不採用・辞退・連絡なしなども選べる）。窓の処理は recruit-actions の statusOpen / statusSubmit */
+export const STATUS_ACTION = "recruit.status.open";
+/** 応募の区分（応募フォームの種類 form_key で見分ける。al＝PA（アルバイト）／shain＝社員／それ以外は出さない）。2026-11-22 社長依頼 */
+export const kindOf = (formKey: unknown): "PA" | "社員" | null => (formKey === "al" ? "PA" : formKey === "shain" ? "社員" : null);
 /**
  * actions＝操作のボタンを出すか（設定 app_settings.recruit_slack.actions_enabled。false・未指定なら、今までのカードと同じ）／notificationId＝このカードの台帳の番号（だれが押したかの記録用）
  * send＝応募者への送信のスイッチ（app_settings.recruit_actions.send_enabled）。［応募者へ LINE 返信］は、LINE と連携している応募者にだけ出す。
@@ -248,6 +253,7 @@ export function cardMessage(v: View, o: CardOpts = {}): { text: string; blocks: 
     `*【採用管理】${clean(v.name, 30)}*`,
     `状態：${v.label ?? "応募受付"}${att ? `　🔴${att}` : ""}`,
     `応募店舗：${v.storeName ? clean(v.storeName, 30) : "店舗未設定"}`,
+    ...(v.kind ? [`応募区分：${v.kind === "PA" ? "PA（アルバイト）" : "社員"}`] : []),
     `応募媒体：${src}${v.jobType ? `（${clean(v.jobType, 40)}）` : ""}`,
     `応募日時：${whenJst(v.appliedAt)}`,
     `面接：${interviewText(v.interviewAt, v.interviewMode, v.interviewPlace)}${v.needSchedule ? `（希望日時 ${v.prefsN} 件あり → 日程の確定をお願いします）` : ""}`,
@@ -277,8 +283,12 @@ export function cardMessage(v: View, o: CardOpts = {}): { text: string; blocks: 
     if (v.lineLinked && (o.send === true || v.isTest)) acts.push({ type: "button", text: { type: "plain_text", text: "応募者へ LINE 返信", emoji: true }, action_id: LINE_ACTION, value });
     // LINE 未連携の Indeed 応募者（とテスト用）には、合言葉入りの案内文を作るボタン。送るのは人（Indeed の画面）。送信スイッチには関係なく出す
     if (!v.lineLinked && (String(v.source ?? "") === "indeed" || v.isTest)) acts.push({ type: "button", text: { type: "plain_text", text: "LINE 案内文", emoji: true }, action_id: INVITE_ACTION, value });
+    acts.push({ type: "button", text: { type: "plain_text", text: "状態を変更", emoji: true }, action_id: STATUS_ACTION, value });   // 2026-11-22
     acts.push({ type: "button", text: { type: "plain_text", text: "担当者を変更", emoji: true }, action_id: ASSIGNEE_ACTION, value });
     blocks.push({ type: "actions", block_id: "recruit_actions", elements: acts });
+  } else if (o.actions === true && ["rejected", "declined", "noshow"].includes(v.status) && !v.moved) {
+    // 不採用・辞退・連絡なしにしたあとも、間違いに気づいたときのために［状態を変更］だけは残す（採用・退職は、ここからは変えない）
+    blocks.push({ type: "actions", block_id: "recruit_actions", elements: [{ type: "button", text: { type: "plain_text", text: "状態を変更", emoji: true }, action_id: STATUS_ACTION, value: JSON.stringify({ applicant_id: v.id, notification_id: o.notificationId ?? null }) }] });
   }
   const btns: unknown[] = [linkButton("管理画面で開く", `${NIPPO_URL}?a=${v.id}`, v.id)];
   if (v.onboardingLink) btns.push(linkButton("入社登録のスレッド", v.onboardingLink, v.id, "_onb"));
@@ -469,15 +479,15 @@ async function syncOnce(db: Db, notify: Notify, cfg: Cfg, id: string, o: EventOp
 
   // ---- 親とカードを、いまの状態に合わせる（変わったときだけ書き換える） ----
   const p = parentMessage(v, { permalink: refs.permalink ?? null }); const pSig = sig(JSON.stringify(p));
-  if (pSig !== refs.parent_sig) {
-    const r = await notify({ action: "update", notification_id: refs.parent, text: p.text, blocks: p.blocks });
-    if (r?.ok) { patch.parent_sig = pSig; patch.title = parentTitle(v); updated++; } else incomplete = true;
-  }
   const c = cardMessage(v, { actions: cfg.actionsEnabled === true, notificationId: refs.card ?? null, send: cfg.sendEnabled === true, interview: cfg.interviewEnabled === true }); const cSig = sig(JSON.stringify(c));
-  if (cSig !== refs.card_sig) {
-    const r = await notify({ action: "update", notification_id: refs.card, text: c.text, blocks: c.blocks });
-    if (r?.ok) { patch.card_sig = cSig; updated++; } else incomplete = true;
-  }
+  // 2026-11-22 親とカードは同時に書き換える（今までは 1 つずつで、親だけ先に変わって、カードが数十秒遅れて見えることがあった＝「Slack の状態が管理システムとずれている」ように見える）
+  const needP = pSig !== refs.parent_sig, needC = cSig !== refs.card_sig;
+  const [rp, rc] = await Promise.all([
+    needP ? notify({ action: "update", notification_id: refs.parent, text: p.text, blocks: p.blocks }) : Promise.resolve(null),
+    needC ? notify({ action: "update", notification_id: refs.card, text: c.text, blocks: c.blocks }) : Promise.resolve(null),
+  ]);
+  if (needP) { if (rp?.ok) { patch.parent_sig = pSig; patch.title = parentTitle(v); updated++; } else incomplete = true; }
+  if (needC) { if (rc?.ok) { patch.card_sig = cSig; updated++; } else incomplete = true; }
 
   // ---- スレッドに足す行（応募受付／前回から変わったところ／応募者とのやり取り） ----
   const seq = refs.seq ?? 0;
