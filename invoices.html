@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-11-20-v186";
+const BUILD_TAG="2026-11-24-v187";
 const PAYROLL_CANCEL_READY=true;
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
@@ -8218,6 +8218,7 @@ const REASON_FILTER_LABELS={
   overdue:"支払期限超過", bank_change:"振込先口座変更", duplicate:"重複疑い", mf_error:"MF登録エラー",
   unknown_journal:"仕訳不明（未判定）", unknown_company:"法人不明", unknown_store:"店舗・部門不明", import_error:"取込エラー",
   payment_unverified:"振込済み・支払確認待ち",
+  no_payment_info:"振込先・支払方法が未登録",
   incomplete_info:"金額・取引先など未入力",
   auto_blocked:"自動処理が止まっている",
 };
@@ -8286,6 +8287,21 @@ function unifiedStoreLabel(r){
 // payment_unverified（振込済み・支払確認待ち）を要対応に追加し、絞り込みで見つけられるようにした
 // 2026-10-14: 自動取込（メール自動・インフォマート）の請求書は、人が入力した請求書とは別の流れ（自動処理→承認待ち）。
 // 承認待ちに並んでいるだけのものは「要対応」に混ぜない。要対応に出すのは、自動処理が止まっているもの・重複・MFエラー等だけ。
+// 2026-11-24: 仕訳は登録済みなのに、取引先の振込先・支払方法が未登録（または銀行情報が不足）のまま、まだ支払いが終わっていない請求書は「要対応」に出す。
+// （従来は「すべて」にしか出ず、漏れていた）。引き落とし・現金・クレジットは口座情報が不要なので対象外。売上側（精算書の売上など）・完了済みも対象外
+function unifiedNoPaymentInfo(r){
+  if(!("vendor_id" in r)) return false; // 取引先の情報を取っていない一覧では判定しない
+  if(!r.mf_journal_id||r.payment_verified_at||r.payment_status==="paid"||r.current_stage==="completed") return false;
+  if(r.email&&r.email.mail_kind==="sales") return false;
+  if(r.is_payroll_related||r.is_receivable_related) return false;
+  if(!r.vendor_id) return true;
+  const accs=(r.vendor&&Array.isArray(r.vendor.vendor_bank_accounts))?r.vendor.vendor_bank_accounts.filter(a=>a.is_current):[];
+  const a=accs.find(x=>r.store_id&&x.store_id===r.store_id)||accs.find(x=>!x.store_id)||(accs.length===1?accs[0]:null);
+  if(!a) return true;
+  const m=a.payment_method||"bank_transfer";
+  if(m==="bank_transfer"||m==="other_bank_transfer") return !(a.bank_code&&a.branch_code&&a.account_number);
+  return false;
+}
 function unifiedIsAuto(r){ return ["email_auto","infomart","upload_auto","api"].includes(r.intake_source)&&r.auto_mode!=="manual"; }
 function unifiedAutoReasons(r){
   const today=new Date().toISOString().slice(0,10); const reasons=[];
@@ -8296,6 +8312,7 @@ function unifiedAutoReasons(r){
   if(r.bank_account_change_detected) reasons.push("bank_change");
   if(r.mf_registration_error) reasons.push("mf_error");
   if(r.payment_status==="paid") reasons.push("payment_unverified");
+  if(unifiedNoPaymentInfo(r)) reasons.push("no_payment_info");
   if(r.due_date&&r.due_date<today&&r.payment_status!=="paid"&&!(r.email&&r.email.mail_kind==="sales")) reasons.push("overdue");   // 2026-10-19: 売上入金のメールは支払いが無いので期限超過にしない
   return reasons;
 }
@@ -8310,6 +8327,7 @@ function unifiedAttentionReasons(r){
   // 金額が入っていない請求書は必ず要対応として残す
   if(r.amount==null) reasons.push("incomplete_info");
   if(r.payment_status==="paid") reasons.push("payment_unverified"); // 振込済みだが支払確認が済んでいない
+  if(unifiedNoPaymentInfo(r)) reasons.push("no_payment_info");
   if(r.duplicate_suspected) reasons.push("duplicate");
   if(r.bank_account_change_detected) reasons.push("bank_change");
   if(r.mf_registration_error) reasons.push("mf_error");
@@ -8351,7 +8369,7 @@ async function renderUnifiedInvoiceTab(u){
   // 使っている列だけに絞った（請求書詳細モーダルは常に別途id指定でselect=*を取り直す設計の
   // ため、ここを絞っても詳細画面には一切影響しないことを調査済み）
   const [r,corpCache]=await perfTimed("unified_list_load",()=>Promise.all([
-    authed(`/rest/v1/invoices?select=id,created_at,due_date,invoice_status,amount,vendor_name,invoice_number,corporation_id,store_id,email_id,intake_source,ai_match_status,mf_journal_id,mf_journal_number,payment_status,payment_verified_at,duplicate_suspected,bank_account_change_detected,mf_registration_error,is_payroll_related,is_receivable_related,pl_fee_reflected_at,pl_fee_excluded_at,ad_cost_reflected_at,pl_fee_seisan_synced_at,target_year_month,current_stage,blocked_reason,auto_mode,corp_transition,rule_unstable,approved_by,approved_at,email:invoice_emails(mail_kind),vendor:vendors(name),corp:corporations(name),store:stores!invoices_store_id_fkey(name),invoice_stores(store:stores(name)),linked_step:hq_task_steps!linked_hq_step_id(title)&order=created_at.desc&limit=500`),
+    authed(`/rest/v1/invoices?select=id,created_at,due_date,invoice_status,amount,vendor_id,vendor_name,invoice_number,corporation_id,store_id,email_id,intake_source,ai_match_status,mf_journal_id,mf_journal_number,payment_status,payment_verified_at,duplicate_suspected,bank_account_change_detected,mf_registration_error,is_payroll_related,is_receivable_related,pl_fee_reflected_at,pl_fee_excluded_at,ad_cost_reflected_at,pl_fee_seisan_synced_at,target_year_month,current_stage,blocked_reason,auto_mode,corp_transition,rule_unstable,approved_by,approved_at,email:invoice_emails(mail_kind),vendor:vendors(name,vendor_bank_accounts(store_id,payment_method,bank_code,branch_code,account_number,is_current)),corp:corporations(name),store:stores!invoices_store_id_fkey(name),invoice_stores(store:stores(name)),linked_step:hq_task_steps!linked_hq_step_id(title)&order=created_at.desc&limit=500`),
     ensureCorpStoreCache(),
   ]));
   const raw=(r.ok&&Array.isArray(r.body))?r.body:[];
