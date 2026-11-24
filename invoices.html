@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-11-24-v187";
+const BUILD_TAG="2026-11-24-v188";
 const PAYROLL_CANCEL_READY=true;
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
@@ -5841,6 +5841,64 @@ function currentVendorAccount(invoice){
   const cur=accs.filter(a=>a.is_current);
   return cur.find(a=>invoice.store_id&&a.store_id===invoice.store_id)||cur.find(a=>!a.store_id)||(cur.length===1?cur[0]:null);
 }
+// 2026-11-24: 銀行・支店の自動入力（ユーザー要望「銀行名・支店名を入れたら番号を自動で出してほしい」）。
+// 公開データ（bank.teraren.com の銀行・支店一覧）を使う。3か所の入力欄（請求書の口座編集・設定の取引先口座・給与の口座）で共通。
+// ・銀行名を入れる（候補が出る）→銀行コード／銀行コードを入れる→銀行名　・支店名を入れる（候補が出る）→支店コード／支店コードを入れる→支店名
+// ・口座番号から名義人は自動で出せない（銀行が公開していないため）。通信に失敗しても入力は止めない
+const BANKLOOK_SETS=[
+  {code:"pbe-bankcode",name:"pbe-bank",bcode:"pbe-branchcode",bname:"pbe-branch"},
+  {code:"vb-code",name:"vb-name",bcode:"vb-branchcode",bname:"vb-branch"},
+  {code:"pb-bankcode",name:"pb-bankname",bcode:"pb-branchcode",bname:"pb-branchname"},
+];
+const BANKLOOK_CACHE=new Map();
+async function banklookGet_(path){
+  if(BANKLOOK_CACHE.has(path)) return BANKLOOK_CACHE.get(path);
+  try{ const r=await fetch("https://bank.teraren.com"+path); const j=r.ok?await r.json():null; BANKLOOK_CACHE.set(path,j); return j; }catch(e){ return null; }
+}
+function banklookMsg_(el,text,ok){
+  if(!el) return; let m=document.getElementById("bk-msg-"+el.id);
+  if(!m){ m=document.createElement("div"); m.id="bk-msg-"+el.id; m.style.cssText="font-size:11px;margin-top:2px"; el.insertAdjacentElement("afterend",m); }
+  m.style.color=ok?"#15803d":"#b45309"; m.textContent=text||"";
+}
+function banklookList_(el,items,labelFn,valueFn){
+  const id="bk-dl-"+el.id; let dl=document.getElementById(id);
+  if(!dl){ dl=document.createElement("datalist"); dl.id=id; el.insertAdjacentElement("afterend",dl); el.setAttribute("list",id); }
+  dl.innerHTML=(items||[]).slice(0,20).map(x=>`<option value="${esc(valueFn(x))}">${esc(labelFn(x))}</option>`).join("");
+}
+let BANKLOOK_TIMER=null;
+document.addEventListener("input",ev=>{
+  const el=ev.target; if(!el||!el.id) return;
+  const st=BANKLOOK_SETS.find(x=>x.name===el.id||x.bname===el.id); if(!st) return;
+  clearTimeout(BANKLOOK_TIMER);
+  BANKLOOK_TIMER=setTimeout(async()=>{
+    const q=el.value.trim(); if(!q) return;
+    if(el.id===st.name){ const j=await banklookGet_("/banks/search.json?name="+encodeURIComponent(q)); banklookList_(el,Array.isArray(j)?j:[],x=>`${x.normalize&&x.normalize.name||x.name}（${x.code}）`,x=>(x.normalize&&x.normalize.name)||x.name); }
+    else { const bc=(document.getElementById(st.code)||{}).value||""; if(!/^\d{4}$/.test(bc)) return; const j=await banklookGet_(`/banks/${bc}/branches/search.json?name=`+encodeURIComponent(q)); banklookList_(el,Array.isArray(j)?j:[],x=>`${x.normalize&&x.normalize.name||x.name}（${x.code}）`,x=>(x.normalize&&x.normalize.name)||x.name); }
+  },300);
+});
+document.addEventListener("change",async ev=>{
+  const el=ev.target; if(!el||!el.id) return;
+  const st=BANKLOOK_SETS.find(x=>x.code===el.id||x.name===el.id||x.bcode===el.id||x.bname===el.id); if(!st) return;
+  const g=k=>document.getElementById(st[k]); const v=el.value.trim(); if(!v) return;
+  const nm=x=>(x.normalize&&x.normalize.name)||x.name;
+  if(el.id===st.code&&/^\d{4}$/.test(v)){
+    const j=await banklookGet_(`/banks/${v}.json`); if(j&&j.code){ g("name").value=nm(j); banklookMsg_(g("name"),`✓ ${nm(j)}（${j.code}）`,true); } else banklookMsg_(g("name"),"この銀行コードは見つかりませんでした。通帳で確認してください",false);
+  }else if(el.id===st.name){
+    const j=await banklookGet_("/banks/search.json?name="+encodeURIComponent(v)); const arr=Array.isArray(j)?j:[];
+    const hit=arr.find(x=>nm(x)===v||x.name===v)||(arr.length===1?arr[0]:null);
+    if(hit){ g("code").value=hit.code; g("name").value=nm(hit); banklookMsg_(g("name"),`✓ ${nm(hit)}（${hit.code}）を設定しました`,true); }
+    else banklookMsg_(g("name"),arr.length?`候補が${arr.length}件あります。候補から選ぶか、銀行名をもう少し詳しく入れてください`:"見つかりませんでした。銀行コードを直接入れてください",false);
+  }else if(el.id===st.bcode&&/^\d{3}$/.test(v)){
+    const bc=(g("code")||{}).value||""; if(!/^\d{4}$/.test(bc)){ banklookMsg_(g("bname"),"先に銀行（コードか名前）を入れてください",false); return; }
+    const j=await banklookGet_(`/banks/${bc}/branches/${v}.json`); if(j&&j.code){ g("bname").value=nm(j); banklookMsg_(g("bname"),`✓ ${nm(j)}（${j.code}）`,true); } else banklookMsg_(g("bname"),"この支店コードは見つかりませんでした。通帳で確認してください",false);
+  }else if(el.id===st.bname){
+    const bc=(g("code")||{}).value||""; if(!/^\d{4}$/.test(bc)){ banklookMsg_(g("bname"),"先に銀行（コードか名前）を入れてください",false); return; }
+    const j=await banklookGet_(`/banks/${bc}/branches/search.json?name=`+encodeURIComponent(v)); const arr=Array.isArray(j)?j:[];
+    const hit=arr.find(x=>nm(x)===v||x.name===v)||(arr.length===1?arr[0]:null);
+    if(hit){ g("bcode").value=hit.code; g("bname").value=nm(hit); banklookMsg_(g("bname"),`✓ ${nm(hit)}（${hit.code}）を設定しました`,true); }
+    else banklookMsg_(g("bname"),arr.length?`候補が${arr.length}件あります。候補から選んでください`:"見つかりませんでした。支店コードを直接入れてください",false);
+  }
+});
 const BANK_TYPE_LABEL={"2":"当座","4":"貯蓄"};
 const PAYMENT_METHOD_LABEL={bank_transfer:"銀行振込",direct_debit:"引き落とし",cash:"現金払い",credit_card:"クレジット払い",other_bank_transfer:"銀行振込"};   // 2026-10-21: 請求書の支払方法の「銀行振込」は旧「他行口座から振込」（PayPay銀行CSVは給与の支払い専用に変更）
 // 支払方法の色（一覧の左端で、振込と引き落としが一目で分かるように）: 銀行振込=青／引き落とし=オレンジ／現金=緑／クレジット=紫
