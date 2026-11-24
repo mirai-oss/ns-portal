@@ -626,7 +626,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-11-24-v188";
+const BUILD_TAG="2026-11-24-v189";
 const PAYROLL_CANCEL_READY=true;
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
@@ -3757,7 +3757,7 @@ function receivableSourceChipsHtml(){
    ============================================================ */
 async function mlsLoad_(){
   const S=RECEIVABLE_STATE;
-  const r=await authed(`/rest/v1/invoices?select=id,vendor_name,amount,due_date,target_year_month,current_stage,blocked_reason,mf_journal_id,mf_journal_number,journal_draft,corp:corporations(name)&journal_draft->>kind=eq.sales_deposit&order=created_at.desc&limit=100`);
+  const r=await authed(`/rest/v1/invoices?select=id,vendor_name,amount,due_date,target_year_month,current_stage,blocked_reason,mf_journal_id,mf_journal_number,payment_status,payment_verified_at,journal_draft,corp:corporations(name)&journal_draft->>kind=eq.sales_deposit&order=created_at.desc&limit=100`);
   S.mailSales=(r.ok&&Array.isArray(r.body))?r.body:[];
   S.mls=S.mls||{sel:new Set(),ok:new Set(),res:{},log:""};
 }
@@ -3780,7 +3780,7 @@ function mlsPendingCount_(){ return (RECEIVABLE_STATE.mailSales||[]).filter(x=>!
 function mlsPanelHtml_(){
   const S=RECEIVABLE_STATE, M=S.mls||(S.mls={sel:new Set(),ok:new Set(),res:{},log:""});
   const rows=S.mailSales||[];
-  const stateOf=x=>x.mf_journal_id?`<span class="invoice-status done">✅ 登録済み（伝票 ${esc(x.mf_journal_number??"-")}）</span>`:x.current_stage==="ready_for_approval"?'<span class="invoice-status wait">🟡 承認待ち</span>':`<span class="invoice-status err" title="${esc(x.blocked_reason||"")}">⚠️ 要対応</span>${x.blocked_reason?`<div style="font-size:11px;color:var(--muted)">${esc(x.blocked_reason)}</div>`:""}`;
+  const stateOf=x=>x.mf_journal_id?`<span class="invoice-status done">✅ 登録済み（伝票 ${esc(x.mf_journal_number??"-")}）</span>${x.payment_verified_at?' <span class="invoice-status done">💰 入金確認済み</span>':' <span class="invoice-status wait">入金待ち</span>'}`:x.current_stage==="ready_for_approval"?'<span class="invoice-status wait">🟡 承認待ち</span>':`<span class="invoice-status err" title="${esc(x.blocked_reason||"")}">⚠️ 要対応</span>${x.blocked_reason?`<div style="font-size:11px;color:var(--muted)">${esc(x.blocked_reason)}</div>`:""}`;
   const body=rows.map(x=>{ const d=x.journal_draft||{}; const rs=M.res[x.id];
     const res=rs?(rs.ok?`<div style="font-size:11px;color:#15803d">✅ ${esc(rs.dry?"チェックOK":"登録済み")}</div>`:`<div style="font-size:11px;color:#b91c1c">❌ ${rs.html||""}</div>`):"";
     const pend=!x.mf_journal_id&&x.current_stage==="ready_for_approval";
@@ -9132,6 +9132,14 @@ async function receivablePaymentScan(u){
   if(RECEIVABLE_STATE.storeFilter) rows=rows.filter(r=>r.store_id===RECEIVABLE_STATE.storeFilter);
   if(RECEIVABLE_STATE.corpFilter) rows=rows.filter(r=>receivableCorpId(r)===RECEIVABLE_STATE.corpFilter);
   if(RECEIVABLE_STATE.sourceFilter) rows=rows.filter(r=>(r.source_name||"")===RECEIVABLE_STATE.sourceFilter);
+  // 2026-11-24: メールで届いた売上入金（ゼン・ランド・Thumz・トーホー側の精算書など）で、MF登録済み・入金未確認のものも照合の対象にする（月は問わない）。
+  // 入金が見つかって確認したら、その請求書を「入金確認済み」にする（ar_depositsは使わない）。絞り込み（店舗・法人・入金元）をかけているときは含めない
+  if(!(RECEIVABLE_STATE.storeFilter||RECEIVABLE_STATE.corpFilter||RECEIVABLE_STATE.sourceFilter)){
+    try{ await mlsLoad_(); }catch(e){}
+    const mailRows=(RECEIVABLE_STATE.mailSales||[]).filter(x=>x.mf_journal_id&&!x.payment_verified_at&&Number(x.amount)>0&&x.journal_draft&&x.journal_draft.tenant_id)
+      .map(x=>({id:x.id,source_name:x.vendor_name,year_month:(x.target_year_month||"").slice(0,7),expected_amount:Number(x.amount),expected_date:(x.journal_draft&&x.journal_draft.transaction_date)||x.due_date,store_id:null,_mail:true,_tenant:x.journal_draft.tenant_id}));
+    rows=rows.concat(mailRows);
+  }
   if(!rows.length){ alert("この月（今の絞り込み）に、入金待ちで仕訳登録済みの売上入金がありません。"); return; }
   setBusy("MFの仕訳を検索中…");
   try{
@@ -9141,7 +9149,7 @@ async function receivablePaymentScan(u){
     const tenantOf=async r=>{ const cid=receivableCorpId(r); const c=corps.find(x=>x.id===cid); const n=await payNorm(c?c.name:""); const hits=[]; for(const t of tenants){ const tn=await payNorm(t.label||""); if(tn&&n&&(n.includes(tn)||tn.includes(n))) hits.push(t); } return hits.length===1?hits[0].id:(tenants.length===1?tenants[0].id:"default"); };
     const monthEnd=ym=>{ const [y,m]=ym.split("-").map(Number); return new Date(Date.UTC(y,m,0)).toISOString().slice(0,10); };
     const byTenant=new Map();
-    for(const r of rows){ const t=await tenantOf(r); if(!byTenant.has(t)) byTenant.set(t,[]); byTenant.get(t).push(r); }
+    for(const r of rows){ const t=r._tenant||await tenantOf(r); if(!byTenant.has(t)) byTenant.set(t,[]); byTenant.get(t).push(r); }
     const cands=[]; const errs=[];
     for(const [t,rs] of byTenant){
       const items=[]; for(const r of rs) items.push({invoice_id:r.id,vendor_id:await payCounterpartyId(r.source_name||""),vendor_name:r.source_name||"",amount:Number(r.expected_amount)||0,due_date:r.expected_date||monthEnd(r.year_month),method:"in"});
@@ -9184,9 +9192,11 @@ async function receivablePaymentScan(u){
       if(!ids.length){ $("rps-msg").textContent="入金済みにするものにチェックを付けてください"; return; }
       if(!confirm(`${ids.length}件の入金予定を入金済みにします。よろしいですか？`)) return;
       const nowIso=new Date().toISOString(); const deps=[];
-      chosen.forEach(c=>c.invoice_ids.forEach(id=>{ const r=rowById.get(id); deps.push({receivable_id:id,amount:c.kind==="single"?c.outflow_amount:(Number(r&&r.expected_amount)||0),deposit_date:c.transaction_date,bank_source:"MF仕訳から照合"}); }));
-      const dr=await authed("/rest/v1/ar_deposits",{method:"POST",headers:{Prefer:"return=minimal"},body:JSON.stringify(deps)});
+      const mailIds=ids.filter(id=>{ const r=rowById.get(id); return r&&r._mail; });
+      chosen.forEach(c=>c.invoice_ids.forEach(id=>{ const r=rowById.get(id); if(r&&r._mail) return; deps.push({receivable_id:id,amount:c.kind==="single"?c.outflow_amount:(Number(r&&r.expected_amount)||0),deposit_date:c.transaction_date,bank_source:"MF仕訳から照合"}); }));
+      const dr=deps.length?await authed("/rest/v1/ar_deposits",{method:"POST",headers:{Prefer:"return=minimal"},body:JSON.stringify(deps)}):{ok:true};
       if(!dr.ok){ $("rps-msg").textContent="入金の登録に失敗しました"; return; }
+      if(mailIds.length){ const mr=await authed(`/rest/v1/invoices?id=in.(${mailIds.join(",")})`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({payment_status:"paid",payment_verified_at:nowIso,updated_at:nowIso})}); if(!mr.ok){ $("rps-msg").textContent="メールの売上入金の入金確認に失敗しました"; return; } }
       try{
         await authed(`/rest/v1/payment_match_candidates?on_conflict=cand_key`,{method:"POST",headers:{Prefer:"resolution=merge-duplicates,return=minimal"},body:JSON.stringify(chosen.map(c=>({cand_key:["in",c.kind,c.tenant,c.journal_id,[...c.invoice_ids].sort().join(",")].join("|"),direction:"in",kind:c.kind,tenant_id:c.tenant,invoice_ids:c.invoice_ids,journal_id:c.journal_id,transaction_date:c.transaction_date,outflow_amount:c.outflow_amount,invoice_total:c.invoice_total,diff:c.diff,score:c.score,reasons:c.reasons,summary:c.summary,remark:c.remark,status:"confirmed",decided_by:ME.id,decided_at:nowIso})))});
         const rules=[]; for(const c of chosen){ const pat=payRulePattern(c.remark||""); if(pat.length<3) continue; for(const id of c.invoice_ids){ const r=rowById.get(id); if(r) rules.push({vendor_id:await payCounterpartyId(r.source_name||""),tenant_id:c.tenant,pattern:pat,sample_remark:String(c.remark||"").slice(0,120),created_by:ME.id}); } }
