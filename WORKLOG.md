@@ -7,6 +7,14 @@
 
 ---
 
+**2026-11-26（担当B・MacBook）勤怠確認のメンションと毎朝のまとめ DM の確認（読み取りのみ・変更なし）**:
+- 確認（通知の記録と本番の試し実行・送信なし）: 未確認の勤怠確認の最初のメンションは 11/23〜11/26 の分がすべて決まりどおり（本部＝本人＋社長／鶏武者 新横浜・鶏武者 川崎店・黒霧屋 新横浜＝本人＋鍋倉／ほかの店舗＝本人＋今までの担当）。
+- まとめ DM（毎朝 9:00）の送信は 11/22 の 4 通が最後。11/23〜11/26 は 9:00 の時点で未完了が 0 件だったため送っていない（決まりどおり・0 件は送らない）。本番 EF の試し実行は正常（未完了 0 件）。
+- 残り（社長の実機確認・急がない）: 採用の［状態を変更］ボタン／応募者の「LINE 案内文」／画面で作ったタスクの Slack 編集・コメント保存／STEP 6（招待リンクの入社登録）→ 終わったら担当B がテスト従業員を無効化して確認。PL 優先のため待ちのもの: 待ち行列 9 の続き・10 の残り・個人 DM の通知種類の追加・スレッド返信の第 2 段階。
+- 担当B の作業用 checkout は ~/ns-portal-b（origin/main 追従・clean）。
+
+---
+
 **2026-11-26（司令塔）管理ボードに「触ったら必ず WORKLOG に記録」を反映**:
 - `docs/司令塔_開発管理ボード.md` の運用ルールに 10 番を追加（11/26 社長指示・担当C からの連絡）。担当C の行を、WORKLOG の 11/26 の記録に合わせて「精算ダッシュボードを Supabase に切り替え済み・実画面の未確認 3 点」に更新。コード・DB・デプロイの変更なし。
 
@@ -108,9 +116,9 @@
 - 【メンション（社長の決め）】未確認の勤怠確認の投稿直後に、スレッドへ依頼 1 通（attendance_alert_ask）。リマインドも同じ宛先。本部（stores.location_type='hq'）＝本人＋社長（マスター）／ほかの店舗＝本人＋今までの担当（notice_mention_rules の店舗の担当・チーム長。社長は付けない）／テスト用＝社長だけ。本人は user_slack がある人だけ（無ければ付かない）。
 - 配置した EF: attendance-request・slack-interact・pending-reminders・smaregi-attendance-anomaly-check。作業用の clean な checkout は ~/ns-portal-b（origin/main 追従）。
 - 既存の失敗テスト 3 件（_shared/attendance-request-actions.test.ts）は、11/19 の「親投稿に店舗名」の変更で期待値が古いまま（今回の変更とは無関係・未修正）。
-- 【未完了の勤怠確認のまとめ（社長依頼・SQL実行・pending-reminders デプロイ済み＝a3e3244）】毎朝 9:00 JST（cron `attendance-open-digest`→`attendance_open_digest_trigger()`→EF pending-reminders に `{digest:true}`）に、未確認（勤怠確認漏れ）と承認待ち（申請済み）を、社長（マスター）＝全店舗／チーム長（role=TEAM・team_stores の店舗）＝自分のチームの店舗だけ、個人 DM（`user:{id}`）で 1 通。0 件は送らない・テスト用は除く・Slack 未連携は送らない。同じ日の二重送信は dedupe_key。試し実行（`digest:true, dry_run:true`）で 4 件・社長＋チーム長 3 人を確認。実送信の確認は社長の OK 待ち。止め方: `select cron.unschedule('attendance-open-digest')`。
+- 【未完了の勤怠確認のまとめ（社長依頼・SQL実行・pending-reminders デプロイ済み＝a3e3244）】毎朝 9:00 JST（cron `attendance-open-digest`→`attendance_open_digest_trigger()`→EF pending-reminders に `{digest:true}`）に、未確認（勤怠確認漏れ）と承認待ち（申請済み）を、社長（マスター）＝全店舗／チーム長（role=TEAM・team_stores の店舗）＝自分のチームの店舗だけ、個人 DM（`user:{id}`）で 1 通。0 件は送らない・テスト用は除く・Slack 未連携は送らない。同じ日の二重送信は dedupe_key。試し実行（`digest:true, dry_run:true`）で 4 件・社長＋チーム長 3 人を確認。11/21 に社長へテスト 1 通、11/22 9:00 に本番 4 通を送信済み。止め方: `select cron.unschedule('attendance-open-digest')`。
 - 【手順書ツール】添付 HTML はアプリ内で静的表示になりボタンが動かないことがある → SQL はチャットの ```sql の枠でも必ず渡す（tools/make-sql-guide.py --print・13bd753）。
-- 【11/22 追加（社長依頼・すべて SQL 実行・配置済み＝ba00201 / cac9163。ただし 3 点目は SQL 未適用）】①本部タスクの個人 DM（今日が期限です）が、管理システムで完了にしても残る → 10 分おきの cron `hq-task-done-sweep`（EF hq-task-reminders の op=refresh_done・_shared/hqtask-done-sweep.ts）で「✅ 完了済み」に書き換え（［↩️ 取り消し］が付いたカードは触らない）。残っていた分は一括で書き換え済み（テンポス請求書の 6 通ほか）。②採用管理に［状態を変更］（新規・連絡済み・面接設定・面接済み・不採用・辞退・連絡なし。採用・退職には変えない＝採用は［採用を決める］）。RPC `recruit_status_info`/`recruit_status_set`（2026-11-22_recruit_status_set.sql）・slack-interact に STATUS_ACTION/STATUS_MODAL。終了の状態のあとも［状態を変更］だけ残す。親とカードの更新を同時にした（親だけ先に変わって見えるのを防ぐ）。③採用通知に PA（form_key=al）／社員（shain）を親の見出し（｜PA）とカード（応募区分）に表示。既存 9 件は recruit-notify の sweep で書き換え済み。④勤怠確認: 鶏武者 新横浜・鶏武者 川崎店・黒霧屋 新横浜の「最初のメンション」を 本人＋鍋倉だけに（app_settings.attendance_alert_mention.overrides・2026-11-22_attendance_alert_mention_override.sql・**SQL 未適用／smaregi-attendance-anomaly-check 要デプロイ**）。リマインド・まとめ DM・他店舗は今までどおり。
+- 【11/22 追加（社長依頼・すべて SQL 実行・配置済み＝ba00201 / cac9163。4 点とも 11/22 に SQL 実行・配置済み）】①本部タスクの個人 DM（今日が期限です）が、管理システムで完了にしても残る → 10 分おきの cron `hq-task-done-sweep`（EF hq-task-reminders の op=refresh_done・_shared/hqtask-done-sweep.ts）で「✅ 完了済み」に書き換え（［↩️ 取り消し］が付いたカードは触らない）。残っていた分は一括で書き換え済み（テンポス請求書の 6 通ほか）。②採用管理に［状態を変更］（新規・連絡済み・面接設定・面接済み・不採用・辞退・連絡なし。採用・退職には変えない＝採用は［採用を決める］）。RPC `recruit_status_info`/`recruit_status_set`（2026-11-22_recruit_status_set.sql）・slack-interact に STATUS_ACTION/STATUS_MODAL。終了の状態のあとも［状態を変更］だけ残す。親とカードの更新を同時にした（親だけ先に変わって見えるのを防ぐ）。③採用通知に PA（form_key=al）／社員（shain）を親の見出し（｜PA）とカード（応募区分）に表示。既存 9 件は recruit-notify の sweep で書き換え済み。④勤怠確認: 鶏武者 新横浜・鶏武者 川崎店・黒霧屋 新横浜の「最初のメンション」を 本人＋鍋倉だけに（app_settings.attendance_alert_mention.overrides・2026-11-22_attendance_alert_mention_override.sql・11/22 社長が SQL 実行・smaregi-attendance-anomaly-check 配置＝a82d0e0）。リマインド・まとめ DM・他店舗は今までどおり。
 - 【採用・案C の完了記録】Indeed 応募者への LINE 案内: Slack の「LINE 案内文」ボタン（コピー用の枠・自動送信なし）＋応募者専用フォームのリンク入りの案内文（表 applicant_form_tokens・apply_prefill）。管理システム（nippo 管理画面）にも同じ案内文。社員応募は form_key で社員フォーム。待ち行列 9 は PL 優先のため案A・案B（自動送信）は止めている。
 
 **2026-11-19〜20（担当B・MacBook）本部タスクの Slack 連携を大きく拡張／採用の Slack ボタン復活（LINE・カレンダー・送信スイッチ ON）／勤怠の出勤取消申請。すべて main 反映・EF 本番デプロイ済み（最新 4adcc5a 以降）**
