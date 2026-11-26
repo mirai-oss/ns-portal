@@ -41,9 +41,9 @@ input[type=file]{padding:8px;font-size:12px;border-style:dashed;background:var(-
 .msg-ok{color:var(--ok);font-size:13px;background:rgba(46,125,50,.08);border-radius:8px;padding:8px 10px;margin-top:10px}
 .note{font-size:11px;color:var(--muted);margin-top:4px;line-height:1.5}
 .pill{display:inline-block;border-radius:99px;padding:2px 9px;font-size:11px}
-.pill.pending{background:#fdf5e0;color:var(--warn)}
-.pill.approved,.pill.done{background:#e9f6ef;color:var(--ok)}
-.pill.rejected{background:#fdecec;color:var(--bad)}
+.pill.pending{background:rgba(181,138,0,.16);color:var(--warn)}
+.pill.approved,.pill.done{background:rgba(46,125,50,.16);color:var(--ok)}
+.pill.rejected{background:rgba(198,40,40,.14);color:var(--bad)}
 .hist-row{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 0;border-bottom:1px solid var(--line);font-size:13px}
 .hist-row:last-child{border-bottom:none}
 .hist-meta{color:var(--muted);font-size:11px;white-space:nowrap}
@@ -286,7 +286,7 @@ function approvalStageHtml(c){
   const flow=(c.flow||[]).map((l,i)=>i<c.stage_index?`✅ ${esc(l)}`:(i===c.stage_index&&c.status==="pending"?`<b>▶ ${esc(l)}待ち</b>`:esc(l))).join(" → ");
   const due=c.status==="pending"&&c.stage_due_at?(c.deadline_state==="overdue"?`<span style="color:var(--bad);font-weight:600">⏰ 承認期限を過ぎています（${fd(c.stage_due_at)} まで）</span>`:`承認期限 ${fd(c.stage_due_at)}`):"";
   const close=c.close&&c.close.message?`<div style="color:var(--bad)">⚠️ ${esc(c.close.message)}</div>`:"";
-  return `<div style="margin-top:8px;font-size:13px;padding:8px;border-radius:8px;background:#eef4ff">
+  return `<div style="margin-top:8px;font-size:13px;padding:8px;border-radius:8px;background:rgba(52,120,184,.14)">
     <div>${flow}${c.status==="returned"?`　<b style="color:var(--warn)">↩ 差し戻し中（申請した人の修正待ち）</b>`:""}</div>
     ${due?`<div style="margin-top:2px">${due}</div>`:""}${close}
     <div style="margin-top:6px">この申請は 2 段階の承認です。内容の確認と操作は、nippo の従業員ページで行ってください（期限を過ぎても自動では承認されません）。</div>
@@ -317,7 +317,7 @@ function payRunSelectHtml(r){
 function renderApprovePanel(){
   const el=$("approvePanel"); if(!el) return;
   if(!PENDING_PROFILE||PENDING_PROFILE.length===0){ el.innerHTML=""; return; }
-  el.innerHTML=`<div class="card" style="border:2px solid var(--warn);background:#fdf5e0">
+  el.innerHTML=`<div class="card" style="border:2px solid var(--warn);background:rgba(181,138,0,.16)">
     <div class="sec-title" style="color:var(--warn)">🔁 承認待ちの個人情報変更申請（${PENDING_PROFILE.length}件）</div>
     <div id="approveMsg"></div>
     ${PENDING_PROFILE.map(r=>{

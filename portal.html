@@ -860,7 +860,7 @@ async function renderImportJobsBox(){
     ${bad.length?`<div style="margin-bottom:10px;padding:8px 12px;border-radius:8px;background:#fbeaea;color:#a12d2d;font-size:12px;font-weight:700">⚠️ 直近の実行が失敗・一部失敗のジョブ: ${bad.length}件（${bad.map(r=>esc(r.label||r.job)).join("、")}）</div>`:""}
     <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px">
       <thead><tr style="text-align:left;border-bottom:1px solid var(--line,#e3ddd0)"><th style="padding:6px 8px">ジョブ</th><th style="padding:6px 8px">頻度</th><th style="padding:6px 8px">取得元</th><th style="padding:6px 8px">種別</th><th style="padding:6px 8px">前回結果</th><th style="padding:6px 8px">最終実行</th><th style="padding:6px 8px">状態</th>${canRerun?'<th style="padding:6px 8px">操作</th>':""}</tr></thead>
-      <tbody>${rows.length?rows.map(r=>`<tr style="border-bottom:1px solid var(--line,#eee)${r.lastStatus==="failed"||r.lastStatus==="partial"?";background:#fdf3f3":""}">
+      <tbody>${rows.length?rows.map(r=>`<tr style="border-bottom:1px solid var(--line,#eee)${r.lastStatus==="failed"||r.lastStatus==="partial"?";background:rgba(198,40,40,.10)":""}">
         <td style="padding:6px 8px">${esc(r.label||r.job)}</td>
         <td style="padding:6px 8px;white-space:nowrap">${freqBadge(r.freq)}</td>
         <td style="padding:6px 8px">${esc(r.source||"—")}</td>
