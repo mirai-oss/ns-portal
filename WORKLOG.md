@@ -7,6 +7,14 @@
 
 ---
 
+**2026-11-26（tori-dashboard セッション）売上入金タブ「📧 メールの売上入金」: 入金待ちを選んで入金済みにできるように／期限超過アラート／対象月の絞り込みを修正（invoices.html）**
+- 困りごと: MF登録済みのメール売上入金（例: N-Style 9月 9,032,756円）が「入金待ち」のまま選べず・アラートも無し。対象月を9月にしても10・11月分が出る（承認待ちバナーと表が全月を出していた）。
+- 実装: 登録済み・入金未確認の行にチェック → 「💰 選んだものを入金済みにする」（PATCH payment_status=paid, paid_at, paid_by。既存トリガー 2026-10-19_payment_auto_complete が payment_verified_at を付ける。請求書の「振込済みにする」と同じ更新＋payment_completed/verified イベント）。各行に「↩ 取り消し」（not_ready に戻す）。計上日から7日たっても入金待ちの行は、売上入金タブ上部に赤いアラート（全月対象・押すとその月へ）＋行に「⚠️ 入金待ち（期限超過）」。
+- 絞り込み: 表・承認待ちバナー・件数を画面上部の「対象月」に揃え、ほかの月に未処理があれば「2026-11（1件）」ボタンで移動できる案内を表示。取得上限も 100→500 件に。
+- DB変更なし（画面のみ）。確認: ポータルにログインし、売上入金→📧メールの売上入金で、対象月=2026-09 → N-Style 9月に ⚠️ と選択チェックが出ること。
+
+---
+
 **2026-11-26（tori-dashboard セッション）チーム長（佐藤・鍋倉・坂本＝role TEAM）が Slack の「＋ タスクを作る」を使えるように ＝ 本番反映済み**
 - 画面側（tasks.html・newtask 権限=team）は既にチーム長以上。Slack 側だけ `CEO/HQ/TENCHO/master` に限られていた（EF `hqtask-interact.ts` の canCreate・`hqtask-mention.ts`、DB 関数 `hq_slack_task_create` / `hq_slack_task_create_steps`）。
 - 本番適用: SQL `supabase/2026-11-26_hq_slack_task_create_team.sql`（本番の関数定義を読み出して役職判定と案内文だけ置換・戻し `..._ROLLBACK.sql`）／EF `slack-interact`・`slack-events` を `--no-verify-jwt` で配置。

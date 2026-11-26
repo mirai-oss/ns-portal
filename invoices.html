@@ -3757,13 +3757,43 @@ function receivableSourceChipsHtml(){
    ============================================================ */
 async function mlsLoad_(){
   const S=RECEIVABLE_STATE;
-  const r=await authed(`/rest/v1/invoices?select=id,vendor_name,amount,due_date,target_year_month,current_stage,blocked_reason,mf_journal_id,mf_journal_number,payment_status,payment_verified_at,journal_draft,corp:corporations(name)&journal_draft->>kind=eq.sales_deposit&order=created_at.desc&limit=100`);
+  const r=await authed(`/rest/v1/invoices?select=id,vendor_name,amount,due_date,target_year_month,current_stage,blocked_reason,mf_journal_id,mf_journal_number,payment_status,payment_verified_at,journal_draft,corp:corporations(name)&journal_draft->>kind=eq.sales_deposit&order=created_at.desc&limit=500`);
   S.mailSales=(r.ok&&Array.isArray(r.body))?r.body:[];
-  S.mls=S.mls||{sel:new Set(),ok:new Set(),res:{},log:""};
+  S.mls=S.mls||{sel:new Set(),ok:new Set(),res:{},log:""}; if(!S.mls.pay) S.mls.pay=new Set();
+}
+// 2026-11-26: ①対象月の絞り込みが効かず別の月（10月・11月分）も出ていた→ここで対象月（画面上部の「対象月」）に揃える。
+// ②登録済みなのに入金待ちのまま残る行を、請求書の振込待ちと同じく選んで「入金済み」にできるようにし、期限を過ぎたものはアラートを出す。
+function mlsMonthOf_(x){ return String(x.target_year_month||(x.journal_draft&&x.journal_draft.transaction_date)||x.due_date||"").slice(0,7); }
+function mlsInMonth_(x){ const ym=RECEIVABLE_STATE.yearMonth; return !ym||mlsMonthOf_(x)===ym; }
+function mlsRows_(){ return (RECEIVABLE_STATE.mailSales||[]).filter(mlsInMonth_); }
+function mlsDate_(x){ return String((x.journal_draft&&x.journal_draft.transaction_date)||x.due_date||"").slice(0,10); }
+function mlsIsWaiting_(x){ return !!x.mf_journal_id&&!x.payment_verified_at; }                 // MF登録済み・入金未確認＝入金待ち
+function mlsIsOverdue_(x){ const d=mlsDate_(x); if(!d||!mlsIsWaiting_(x)) return false; const lim=new Date(d+"T00:00:00"); lim.setDate(lim.getDate()+7); return lim<new Date(); } // 計上日から7日たっても入金確認がない
+function mlsWaitingCount_(){ return (RECEIVABLE_STATE.mailSales||[]).filter(x=>mlsIsWaiting_(x)&&mlsInMonth_(x)).length; }
+// 絞り込みで隠れている別の月の件数（承認待ち・入金待ち）を、押すとその月へ移れるボタンで案内する
+function mlsOtherMonthsHtml_(){
+  const ym=RECEIVABLE_STATE.yearMonth; if(!ym) return "";
+  const by={}; (RECEIVABLE_STATE.mailSales||[]).forEach(x=>{ const m=mlsMonthOf_(x); if(!m||m===ym) return; if(!x.mf_journal_id||mlsIsWaiting_(x)) by[m]=(by[m]||0)+1; });
+  const ks=Object.keys(by).sort(); if(!ks.length) return "";
+  return `<div style="font-size:12px;color:var(--muted);margin:6px 0">${esc(ym)} の分だけ表示中。ほかの月にも未処理があります：${ks.map(k=>`<button class="hq-btn" style="padding:2px 8px;font-size:12px" data-rcv-jump-ym="${esc(k)}">${esc(k)}（${by[k]}件）</button>`).join(" ")}</div>`;
+}
+// 入金待ちのまま期限を過ぎた行のアラート（月の絞り込みに関係なく全月を出す。見落とし防止）
+function mlsAlertHtml_(){
+  const items=(RECEIVABLE_STATE.mailSales||[]).filter(mlsIsOverdue_).sort((a,b)=>mlsDate_(a).localeCompare(mlsDate_(b)));
+  if(!items.length) return "";
+  const row=x=>`<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:6px 0;border-top:1px solid #f1b4b4">
+      <b style="min-width:70px">${esc(mlsMonthOf_(x))}</b>
+      <span style="flex:1;min-width:200px">${esc(x.vendor_name||"")}<span style="color:var(--muted);font-size:12px">　計上日 ${esc(mlsDate_(x))}</span></span>
+      <b>${yen(x.amount)}</b>
+      <button class="hq-btn primary" data-mls-paygo="${esc(mlsMonthOf_(x))}">入金を確認する →</button></div>`;
+  return `<div class="card" style="padding:10px 14px;margin-bottom:10px;background:#fff1f1;border:1px solid #e07a7a">
+    <div style="font-weight:700;margin-bottom:2px">⚠️ メールの売上入金で、入金待ちのまま期限を過ぎているものが ${items.length}件あります</div>
+    <div style="font-size:12px;color:var(--muted)">計上日から7日たっても「入金済み」になっていません。通帳（MF）で入金を確認して、入金済みにしてください。</div>
+    ${items.map(row).join("")}</div>`;
 }
 // 2026-10-19: メールで届いた売上入金（承認待ち・要確認）を、売上入金タブの一番上に「何月の何が来ているか」付きで並べ、押すとその承認画面へ飛ぶ
 function mlsBannerHtml_(){
-  const items=(RECEIVABLE_STATE.mailSales||[]).filter(x=>!x.mf_journal_id).sort((a,b)=>String(a.target_year_month||"").localeCompare(String(b.target_year_month||"")));
+  const items=(RECEIVABLE_STATE.mailSales||[]).filter(x=>!x.mf_journal_id&&mlsInMonth_(x)).sort((a,b)=>String(a.target_year_month||"").localeCompare(String(b.target_year_month||"")));
   if(!items.length) return "";
   const row=x=>{ const d=x.journal_draft||{}; const pend=x.current_stage==="ready_for_approval";
     return `<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:6px 0;border-top:1px solid #f0d9a8">
@@ -3776,42 +3806,66 @@ function mlsBannerHtml_(){
     <div style="font-weight:700;margin-bottom:2px">📧 メールで届いた売上入金が ${items.length}件、承認待ちです</div>
     ${items.map(row).join("")}</div>`;
 }
-function mlsPendingCount_(){ return (RECEIVABLE_STATE.mailSales||[]).filter(x=>!x.mf_journal_id&&x.current_stage==="ready_for_approval").length; }
+function mlsPendingCount_(){ return (RECEIVABLE_STATE.mailSales||[]).filter(x=>!x.mf_journal_id&&x.current_stage==="ready_for_approval"&&mlsInMonth_(x)).length; }
 function mlsPanelHtml_(){
-  const S=RECEIVABLE_STATE, M=S.mls||(S.mls={sel:new Set(),ok:new Set(),res:{},log:""});
-  const rows=S.mailSales||[];
-  const stateOf=x=>x.mf_journal_id?`<span class="invoice-status done">✅ 登録済み（伝票 ${esc(x.mf_journal_number??"-")}）</span>${x.payment_verified_at?' <span class="invoice-status done">💰 入金確認済み</span>':' <span class="invoice-status wait">入金待ち</span>'}`:x.current_stage==="ready_for_approval"?'<span class="invoice-status wait">🟡 承認待ち</span>':`<span class="invoice-status err" title="${esc(x.blocked_reason||"")}">⚠️ 要対応</span>${x.blocked_reason?`<div style="font-size:11px;color:var(--muted)">${esc(x.blocked_reason)}</div>`:""}`;
+  const S=RECEIVABLE_STATE, M=S.mls||(S.mls={sel:new Set(),ok:new Set(),pay:new Set(),res:{},log:""});
+  const rows=mlsRows_();
+  const stateOf=x=>x.mf_journal_id?`<span class="invoice-status done">✅ 登録済み（伝票 ${esc(x.mf_journal_number??"-")}）</span>${x.payment_verified_at?' <span class="invoice-status done">💰 入金確認済み</span>':(mlsIsOverdue_(x)?' <span class="invoice-status err">⚠️ 入金待ち（期限超過）</span>':' <span class="invoice-status wait">入金待ち</span>')}`:x.current_stage==="ready_for_approval"?'<span class="invoice-status wait">🟡 承認待ち</span>':`<span class="invoice-status err" title="${esc(x.blocked_reason||"")}">⚠️ 要対応</span>${x.blocked_reason?`<div style="font-size:11px;color:var(--muted)">${esc(x.blocked_reason)}</div>`:""}`;
   const body=rows.map(x=>{ const d=x.journal_draft||{}; const rs=M.res[x.id];
     const res=rs?(rs.ok?`<div style="font-size:11px;color:#15803d">✅ ${esc(rs.dry?"チェックOK":"登録済み")}</div>`:`<div style="font-size:11px;color:#b91c1c">❌ ${rs.html||""}</div>`):"";
     const pend=!x.mf_journal_id&&x.current_stage==="ready_for_approval";
     return `<tr>
-      <td>${pend?`<input type="checkbox" class="mls-chk" data-id="${esc(x.id)}" ${M.sel.has(x.id)?"checked":""}>`:""}</td>
+      <td>${pend?`<input type="checkbox" class="mls-chk" data-id="${esc(x.id)}" ${M.sel.has(x.id)?"checked":""}>`:mlsIsWaiting_(x)?`<input type="checkbox" class="mls-paychk" data-id="${esc(x.id)}" ${M.pay.has(x.id)?"checked":""} title="入金待ち（入金済みにできます）">`:""}</td>
       <td><b>${esc(x.vendor_name||"")}</b><div style="font-size:11px;color:var(--muted)">${esc(d.remark||"")}</div></td>
       <td>${esc((x.target_year_month||"").slice(0,7))}</td><td>${esc(d.transaction_date||x.due_date||"")}</td>
       <td style="text-align:right">${yen(x.amount)}</td><td>${esc((x.corp&&x.corp.name)||"")}<div style="font-size:11px;color:var(--muted)">MF: ${esc(d.tenant_id||"")}</div></td>
       <td>${stateOf(x)}${res}</td>
-      <td><button class="hq-btn" data-mls-open="${esc(x.id)}">${pend?"内容を確認して承認":"開く"}</button></td></tr>`; }).join("");
+      <td><button class="hq-btn" data-mls-open="${esc(x.id)}">${pend?"内容を確認して承認":"開く"}</button>${x.mf_journal_id&&x.payment_verified_at?` <button class="hq-btn" style="color:var(--m-red)" data-mls-unpaid="${esc(x.id)}" title="入金済みを取り消して入金待ちに戻す">↩ 取り消し</button>`:""}</td></tr>`; }).join("");
   const pendN=mlsPendingCount_();
   return `<div style="margin-bottom:8px;font-size:13px">メールで届いた売上入金です。AIが送金明細・精算書を読み取り、仕訳の下書きまで作っています。<b>内容（金額・科目・部門）を確認して、承認するとMFに登録されます</b>（売上のPL反映は不要です）。</div>
     <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px">
       <button class="hq-btn" id="mls-all">全部選ぶ／解除</button>
+      <button class="hq-btn" id="mls-paid-all" ${mlsWaitingCount_()?"":"disabled"}>入金待ちを全部選ぶ／解除</button>
+      <button class="hq-btn primary" id="mls-paid" ${mlsWaitingCount_()?"":"disabled"} title="選んだ入金待ちを、実際の入金を確認したうえで「入金済み」にします">💰 選んだものを入金済みにする</button>
       <button class="hq-btn" id="mls-dry" ${pendN?"":"disabled"}>🔎 選んだものを一括で登録前チェック（登録しない）</button>
       <button class="hq-btn primary" id="mls-run" ${pendN?"":"disabled"}>✅ チェックOKのものを一括で承認してMFに登録</button>
       <button class="hq-btn" id="mls-reload">🔄 更新</button>
       <span id="mls-count" style="font-size:12px;color:var(--muted)"></span>
     </div>
+    ${mlsOtherMonthsHtml_()}
     <div id="mls-log" style="margin-bottom:6px;font-size:12px;line-height:1.7">${M.log||""}</div>
     <div class="hq-tablewrap"><table class="invoice-table"><thead><tr><th></th><th>取引先・摘要</th><th>対象月</th><th>計上日</th><th>金額</th><th>法人・MF事業者</th><th>状態</th><th></th></tr></thead>
-    <tbody>${body||'<tr><td colspan="8">メールで届いた売上入金は、まだありません（ゼン・ランドの送金明細・Thumzの精算書などが届くと、ここに並びます）</td></tr>'}</tbody></table></div>`;
+    <tbody>${body||'<tr><td colspan="8">この月のメールの売上入金はありません（ゼン・ランドの送金明細・Thumzの精算書などが届くと、ここに並びます。上の「対象月」を変えると別の月が見られます）</td></tr>'}</tbody></table></div>`;
 }
 function mlsWire_(u){
   const S=RECEIVABLE_STATE; const M=S.mls; if(!M||!$("mls-dry")) { document.querySelectorAll("[data-mls-open]").forEach(el=>el.onclick=()=>openApprovalModal(u,el.dataset.mlsOpen)); return; }
-  const upd=()=>{ const c=$("mls-count"); if(c) c.textContent=`選択中 ${M.sel.size}件／チェックOK ${[...M.sel].filter(i=>M.ok.has(i)).length}件`; };
+  const upd=()=>{ const c=$("mls-count"); if(c) c.textContent=`承認の選択 ${M.sel.size}件／チェックOK ${[...M.sel].filter(i=>M.ok.has(i)).length}件／入金済みにする選択 ${M.pay.size}件`; };
   const log=x=>{ M.log=x; if($("mls-log")) $("mls-log").innerHTML=x; };
   document.querySelectorAll("[data-mls-open]").forEach(el=>el.onclick=()=>openApprovalModal(u,el.dataset.mlsOpen));
   document.querySelectorAll(".mls-chk").forEach(el=>el.onchange=()=>{ if(el.checked) M.sel.add(el.dataset.id); else M.sel.delete(el.dataset.id); upd(); });
   $("mls-all").onclick=()=>{ const bx=[...document.querySelectorAll(".mls-chk")]; const all=bx.length&&bx.every(b=>b.checked); bx.forEach(b=>{ b.checked=!all; if(b.checked) M.sel.add(b.dataset.id); else M.sel.delete(b.dataset.id); }); upd(); };
   $("mls-reload").onclick=async()=>{ await mlsLoad_(); receivableRender(u); };
+  // 2026-11-26: 入金待ち（MF登録済み・入金未確認）を選んで「入金済み」にする（請求書の振込済みと同じ更新。DBのトリガーが支払確認日時も付ける）
+  document.querySelectorAll(".mls-paychk").forEach(el=>el.onchange=()=>{ if(el.checked) M.pay.add(el.dataset.id); else M.pay.delete(el.dataset.id); upd(); });
+  $("mls-paid-all").onclick=()=>{ const bx=[...document.querySelectorAll(".mls-paychk")]; const all=bx.length&&bx.every(b=>b.checked); bx.forEach(b=>{ b.checked=!all; if(b.checked) M.pay.add(b.dataset.id); else M.pay.delete(b.dataset.id); }); upd(); };
+  $("mls-paid").onclick=async()=>{
+    const ids=[...M.pay].filter(id=>{ const x=(S.mailSales||[]).find(y=>y.id===id); return x&&mlsIsWaiting_(x); });
+    if(!ids.length){ alert("入金待ちの行にチェックを付けてください"); return; }
+    const sum=ids.reduce((t,i)=>{ const x=(S.mailSales||[]).find(y=>y.id===i); return t+Number((x&&x.amount)||0); },0);
+    if(!confirm(`${ids.length}件（合計 ${yen(sum)}）を「入金済み」にします。\n通帳（またはMF）で実際の入金を確認しましたか？\n\n間違えたときは、各行の「↩ 取り消し」で戻せます。`)) return;
+    $("mls-paid").disabled=true;
+    const r=await authed(`/rest/v1/invoices?id=in.(${ids.join(",")})`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({payment_status:"paid",paid_at:new Date().toISOString(),paid_by:ME.id})});
+    if(!r.ok){ $("mls-paid").disabled=false; alert("入金済みにできませんでした（"+r.status+"）。もう一度お試しください。"); return; }
+    await Promise.all(ids.map(id=>fireInvoiceEvent(id,"payment_completed").then(()=>fireInvoiceEvent(id,"payment_verified")).catch(()=>{})));
+    ids.forEach(i=>M.pay.delete(i)); M.log=`<b>💰 ${ids.length}件を入金済みにしました</b>`;
+    await mlsLoad_(); await loadAcBadgeCounts().catch(()=>{}); receivableRender(u);
+  };
+  document.querySelectorAll("[data-mls-unpaid]").forEach(el=>el.onclick=async()=>{
+    if(!confirm("「入金済み」を取り消して、入金待ちに戻します。よろしいですか？")) return;
+    const r=await authed(`/rest/v1/invoices?id=eq.${el.dataset.mlsUnpaid}`,{method:"PATCH",headers:{Prefer:"return=minimal"},body:JSON.stringify({payment_status:"not_ready",paid_at:null,paid_by:null})});
+    if(!r.ok){ alert("取り消せませんでした（"+r.status+"）"); return; }
+    M.log="↩ 入金済みを取り消しました"; await mlsLoad_(); await loadAcBadgeCounts().catch(()=>{}); receivableRender(u);
+  });
   $("mls-dry").onclick=async()=>{
     if(!M.sel.size){ alert("対象を選んでください"); return; }
     $("mls-dry").disabled=true; $("mls-run").disabled=true; let ok=0,ng=0,n=0; const cache={};
@@ -3897,6 +3951,7 @@ function receivableRender(u){
   $("tabbody").innerHTML=`
     <section class="invoice-list active">
       <div id="overdue-alert"></div>
+      ${mlsAlertHtml_()}
       ${mlsBannerHtml_()}
       <div class="kpis kpis6">
         <div class="card kpi" style="padding:14px"><small style="color:var(--muted);font-size:9px;display:block">今月入金予定</small><b style="font-size:20px;display:block;margin-top:5px">${kpi.pending.n}件</b><small style="color:var(--muted)">${yen(kpi.pending.amt)}</small></div>
@@ -3936,7 +3991,7 @@ function receivableRender(u){
             return `<button class="mail-chip ${RECEIVABLE_STATE.subTab===k?'active':''}" data-receivable-subtab="${k}">${l}（${n}）</button>`;
           }).join("")}
           <button class="mail-chip ${RECEIVABLE_STATE.subTab==='cashRecon'?'active':''}" data-receivable-subtab="cashRecon">💴 現金売上照合${cashReconChipBadge()}</button>
-          <button class="mail-chip ${RECEIVABLE_STATE.subTab==='mailSales'?'active':''}" data-receivable-subtab="mailSales">📧 メールの売上入金（${mlsPendingCount_()}件 承認待ち）</button>
+          <button class="mail-chip ${RECEIVABLE_STATE.subTab==='mailSales'?'active':''}" data-receivable-subtab="mailSales">📧 メールの売上入金（${mlsPendingCount_()}件 承認待ち${mlsWaitingCount_()?`／${mlsWaitingCount_()}件 入金待ち`:""}）</button>
         </div>
         ${RECEIVABLE_STATE.subTab==="mailSales"?mlsPanelHtml_():RECEIVABLE_STATE.subTab==="cashRecon"?cashReconPanelHtml():`<div class="hq-tablewrap"><table class="invoice-table">
           <thead><tr><th>入金元</th><th>法人</th><th>店舗</th><th>売上決済額</th><th>手数料</th><th>入金予定額</th><th>実入金額</th><th>差異</th><th>入金予定日</th><th>状態</th><th>備考</th><th>MF仕訳</th><th></th></tr></thead>
@@ -3961,6 +4016,7 @@ function receivableRender(u){
   document.querySelectorAll("[data-mls-jump]").forEach(el=>el.onclick=()=>{
     const id=el.dataset.mlsJump; RECEIVABLE_STATE.subTab="mailSales"; receivableRender(u); openApprovalModal(u,id);
   });
+  document.querySelectorAll("[data-mls-paygo]").forEach(el=>el.onclick=()=>{ RECEIVABLE_STATE.yearMonth=el.dataset.mlsPaygo; RECEIVABLE_STATE.subTab="mailSales"; renderReceivableTab(u); });
   wireCashRecon(u);
   overdueAlertRender_();
   mlsWire_(u);
