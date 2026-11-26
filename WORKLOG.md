@@ -7,6 +7,12 @@
 
 ---
 
+**2026-11-26（tori-dashboard セッション）経費申請の文字が見えない件／PCで横幅いっぱいに使う（expenses・requests・kintai・masters）**
+- 経費申請: 金額の「+500」などのボタンは文字色が未指定でブラウザ既定の黒 → ダークで見えなかった。`button{color:var(--ink)}` を追加（4ページ）。金額欄の「0」（placeholder）も var(--muted) に。
+- 横幅: expenses/requests の `.wrap` は 640px 固定で、PCの広い画面では両端が大きく余っていた → 幅900px以上で最大1600px（kintai 1100px、masters 1200px以上で1600px）。経費は広い画面で金額ボタンを6列、一覧カードをグリッド（最小420px）にして余白を使う。スマホの見た目は変更なし。
+
+---
+
 **2026-11-26（tori-dashboard セッション）ダークモード対応の続き: 本部タスク・経費・申請・マスタ・勤怠・ポータル**
 - 本部タスク（tasks.html）: 選択中チップ（かんばん/リスト/カレンダー・法人・頻度）が「背景=--ink（ダークで明るい）＋文字=#fff固定」で読めなかった → 文字を var(--bg) に。種別チップ（入社登録など）の白ベタ背景もテーマ色に。
 - 経費（expenses.html）・申請（requests.html）・マスタ（masters.html）・勤怠（kintai.html）: 状態ピル/バッジの明るい直書き背景（#fdf5e0・#e9f6ef・#fdecec 等）を半透明色（rgba）に。差戻しメモ・警告カードの明るい背景も同様。ポータル（portal.html）の失敗行の薄赤背景も半透明に。invoices.html の `.pr-chip.active`・青い案内の文字色もテーマ色に。

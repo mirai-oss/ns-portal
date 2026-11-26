@@ -17,6 +17,19 @@
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Noto Sans JP",sans-serif;background:var(--bg);color:var(--ink);min-height:100vh}
 .wrap{max-width:640px;margin:0 auto;padding:20px 16px 60px}
+/* 2026-11-26: PCの広い画面では横幅いっぱいに使う（スマホの幅はそのまま）。ダークで読めない文字（ボタンの既定色が黒）も直した */
+button{color:var(--ink)}
+@media(min-width:900px){
+  .wrap{max-width:1600px;padding-left:28px;padding-right:28px}
+}
+@media(min-width:900px){
+  .stepcard{padding:30px 36px}.stepcard h2{font-size:20px}
+  .amtinput{font-size:48px;padding:22px}
+  .yenpad{grid-template-columns:repeat(6,1fr)}.yenpad button{padding:18px 0;font-size:18px}
+  #mine-list,#approve-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(420px,1fr));gap:12px}
+  #mine-list .reqcard,#approve-list .reqcard{margin-bottom:0}
+  #mine-list .empty,#approve-list .empty{grid-column:1/-1}
+}
 a{color:inherit}
 .spin{text-align:center;color:var(--muted);padding:60px 0}
 .err{color:#c62828;font-size:13px}
@@ -49,6 +62,7 @@ textarea{resize:vertical}
 .stepcard h2{font-size:17px;margin:4px 0 14px}
 .amtinput{font-size:36px;font-weight:800;text-align:center;padding:16px;border:2px solid var(--line);border-radius:14px;background:var(--bg)}
 .amtinput:focus{outline:none;border-color:var(--accent)}
+.amtinput::placeholder{color:var(--muted);opacity:1}
 .yenpad{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:12px}
 .yenpad button{padding:14px 0;font-size:16px;font-weight:600;border:1px solid var(--line);border-radius:10px;background:var(--bg);cursor:pointer}
 .yenpad button:active{background:var(--accent-soft,#f6e7e2)}
