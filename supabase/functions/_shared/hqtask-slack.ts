@@ -88,7 +88,7 @@ export function createButtonMessage(): { text: string; blocks: unknown[] } {
   return {
     text: "本部タスクを作る",
     blocks: [
-      { type: "section", text: { type: "mrkdwn", text: "📝 *本部タスクを作る*\nボタンを押すと入力フォームが開きます。工程ごとに「工程名・担当者・期限（日付と時刻）」を入れられ、「＋ 工程を追加」で枠が増えます。工程が 1 つなら、タスク名・法人・担当者・期限だけで作れます。送信すると本部タスクが付き、担当者の Slack の DM に届きます。（作れるのは本部・社長・店長）" } },
+      { type: "section", text: { type: "mrkdwn", text: "📝 *本部タスクを作る*\nボタンを押すと入力フォームが開きます。工程ごとに「工程名・担当者・期限（日付と時刻）」を入れられ、「＋ 工程を追加」で枠が増えます。工程が 1 つなら、タスク名・法人・担当者・期限だけで作れます。送信すると本部タスクが付き、担当者の Slack の DM に届きます。（作れるのは本部・社長・チーム長・店長）" } },
       { type: "actions", block_id: "hqtask_create", elements: [{ type: "button", style: "primary", text: { type: "plain_text", text: "＋ タスクを作る", emoji: true }, action_id: CREATE_OPEN, value: "{}" }] },
     ],
   };

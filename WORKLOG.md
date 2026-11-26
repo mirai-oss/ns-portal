@@ -7,6 +7,15 @@
 
 ---
 
+**2026-11-26（tori-dashboard セッション）チーム長（佐藤・鍋倉・坂本＝role TEAM）が Slack の「＋ タスクを作る」を使えるように ＝ 本番反映済み**
+- 画面側（tasks.html・newtask 権限=team）は既にチーム長以上。Slack 側だけ `CEO/HQ/TENCHO/master` に限られていた（EF `hqtask-interact.ts` の canCreate・`hqtask-mention.ts`、DB 関数 `hq_slack_task_create` / `hq_slack_task_create_steps`）。
+- 本番適用: SQL `supabase/2026-11-26_hq_slack_task_create_team.sql`（本番の関数定義を読み出して役職判定と案内文だけ置換・戻し `..._ROLLBACK.sql`）／EF `slack-interact`・`slack-events` を `--no-verify-jwt` で配置。
+- ⚠️ 配置は「本番ダウンロード版＋今回の2ファイルの変更だけ」の別フォルダから行った。リポジトリの `_shared/attendance-alert-notice.ts`・`attendance-fix-notify.ts`・`hqtask-slack.ts` は本番より先に進んでいる（他の作業の未配置分）ので、次にこの EF を配置する人はそれを承知のこと。`hqtask-slack.ts` の案内文（「チーム長」追記）は未配置。
+- 申請フォーム一覧（tori-dashboard app.js）の「誰が使う」を「本部・社長・チーム長・店長」に更新。
+- Supabase 管理用トークン（`~/.config/ns-portal/supabase_pat`）を再発行して置き直した（SQL・EF配置が再び使える）。
+
+---
+
 **2026-11-26（tori-dashboard セッション）Supabase セキュリティ警告（rls_disabled_in_public）対応 ＝ 本番適用済み・確認済み**
 - 11/25 に「ニッポ（ハブ）にRLS無効の公開テーブルあり」のメール。公開キー（anon）で読み取りテストしたところ、376件中19件がログインなしで読めた（売掛・入金 `ar_*`、人件費配分 `labor_*`、`api_cost_daily`、各種ビュー）。
 - 対応SQL（社長が SQL Editor で実行済み）: `supabase/2026-11-26_close_anon_exposure.sql`（14件）＋ `..._exposure_2.sql`（`ar_matching`＝anon に読み書きとも開いていた最後の1件）。テーブルは RLS 有効化＋authenticated 全許可ポリシー＋anon 権限剥奪、ビューは anon 剥奪。元に戻す: `..._ROLLBACK.sql`。手順書: `docs/手順書_2026-11-26_Supabase公開設定を閉じる.html`。

@@ -16,7 +16,7 @@ type Deps = {
 // ボタンを押した場所が DM（D で始まる）ではなくチャンネルか
 // deno-lint-ignore no-explicit-any
 const inChannel = (payload: any) => { const id = String(payload?.channel?.id ?? payload?.container?.channel_id ?? ""); return id !== "" && !id.startsWith("D"); };
-const canCreate = (a: Ctx["actor"]) => a.is_master || ["CEO", "HQ", "TENCHO"].includes(a.role);
+const canCreate = (a: Ctx["actor"]) => a.is_master || ["CEO", "HQ", "TENCHO", "TEAM"].includes(a.role);
 const urlOf = (taskId: string) => `https://mirai-oss.github.io/ns-portal/tasks.html?task=${taskId}`;
 // deno-lint-ignore no-explicit-any
 const metaOf = (payload: any) => { try { return JSON.parse(payload.view?.private_metadata ?? "{}"); } catch { return {}; } };
@@ -178,7 +178,7 @@ async function saveCommentFiles(sb: any, o: { files: any[]; commentId: string; t
 
 export function hqtaskHandlers(d: Deps): Record<string, (c: Ctx) => Promise<Response>> {
   const openCreate = async ({ payload, actor }: Ctx) => {
-    if (!canCreate(actor)) return d.ephemeral("タスクを作れるのは、本部・社長・店長だけです。", payload.response_url);
+    if (!canCreate(actor)) return d.ephemeral("タスクを作れるのは、本部・社長・チーム長・店長だけです。", payload.response_url);
     const channel = payload.container?.channel_id ?? payload.channel?.id ?? null;
     return await d.openModal(payload.trigger_id, createModal({ mode: "create", meta: { channel } }));
   };

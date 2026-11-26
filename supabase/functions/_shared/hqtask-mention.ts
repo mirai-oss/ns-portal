@@ -41,7 +41,7 @@ export async function handleMention(body: any) {
   const { data: me } = link ? await sb.from("users").select("id,name,role,is_master,is_active").eq("id", link.user_id).maybeSingle() : { data: null };
   if (isDm && me?.id) dmKey = `user:${me.id}`;
   if (!me?.is_active) { await finish("rejected"); await reply(sb, channel, threadTs, "あなたの Slack は、管理システムに紐づいていません。本部に連絡してください。", dmKey); return; }
-  if (!(me.is_master || ["CEO", "HQ", "TENCHO"].includes(me.role))) { await finish("rejected", { user_id: me.id }); await reply(sb, channel, threadTs, "タスクを作れるのは、本部・社長・店長だけです。", dmKey); return; }
+  if (!(me.is_master || ["CEO", "HQ", "TENCHO", "TEAM"].includes(me.role))) { await finish("rejected", { user_id: me.id }); await reply(sb, channel, threadTs, "タスクを作れるのは、本部・社長・チーム長・店長だけです。", dmKey); return; }
   // 1 日の上限（日本時間）
   const cap = Number(set.ai_daily_cap) > 0 ? Number(set.ai_daily_cap) : 200;
   const dayStart = new Date(new Date(Date.now() + 9 * 3600_000).toISOString().slice(0, 10) + "T00:00:00+09:00").toISOString();
