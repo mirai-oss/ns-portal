@@ -7,6 +7,18 @@
 
 ---
 
+**2026-11-26（担当C）精算ダッシュボードを Supabase に切り替えた（本番・22:15〜22:20）／全員共通ルール「触ったら必ず WORKLOG に記録」**:
+- 切り替え: 画面 `seisan-dashboard`（`NEW_SYSTEM=true`・df1d2ea、ae529f1）→ 新しい窓口は Edge Function `seisan-api`（`seisan-dashboard/supabase/`、テーブル `settle_*`・非公開バケット `settle-files`）。DB は mode=live。切替直前の旧計算との差は 0。9・10 月の振込済みは 5 店舗とも引き継ぎ済み。画面表示は約 1.5 秒。
+- 旧 GAS: 停止（凍結）。残るのは PDF・メール送信の係（`sd_apiWorker`）と毎朝 9:00 の `sd_liveDaily`（レジ売上の送り込み・定期処理）。**精算のデータをスプレッドシート側で直しても画面には反映されない。**
+- 呼び先の変更: `invoice-auto-sales`・`pl-fee-reflect`・`invoice-delete` の精算 API を `seisan-api` へ（ns-portal b0b0143・デプロイ済み）。経営ダッシュボードの GAS プロパティ `SEISAN_WEBAPP_URL` も変更済み（社長作業）。
+- 同日の関連修正: 反映の取り消し・請求書削除で精算書の行も消す（2c42414）／二重計上の疑いを画面に警告表示／ポイント売上を売上差異欄に表示／区分の並び順／複数月まとめ入力／添付を精算書の形で表示。社長の指示で重複していた 11 月分の行と添付を削除。
+- 接続テスト: 経営ダッシュボードの実トークンの読み取りテストは合格（11/26 22:27・社長実行・担当A がログ確認）。9・10 月は振込済みで返り、11/30 の定時同期は止めない。「振込済み」の操作制限は解除。
+- 未確認（実画面）: 振込済み→PL 反映／パスワード再設定・利用申請メール／ID とパスワードでのログイン。今後: 11/28 カード取込・12/3 現金突合の結果確認。
+- 戻し方: GAS `sd_rollbackToSheet`・経営D の URL を戻す・`settle_set_mode('copy')`・`NEW_SYSTEM=false`・上記 3 関数の URL を戻す（切替後の入力はシートに戻らない）。手順書は NStyle-AI/docs（非公開）。
+- ルール: 全リポジトリの CLAUDE.md に「触ったら必ず WORKLOG に記録・始める前に最新を確認」を追加。
+
+---
+
 **2026-11-26（tori-dashboard セッション）経費申請の文字が見えない件／PCで横幅いっぱいに使う（expenses・requests・kintai・masters）**
 - 経費申請: 金額の「+500」などのボタンは文字色が未指定でブラウザ既定の黒 → ダークで見えなかった。`button{color:var(--ink)}` を追加（4ページ）。金額欄の「0」（placeholder）も var(--muted) に。
 - 横幅: expenses/requests の `.wrap` は 640px 固定で、PCの広い画面では両端が大きく余っていた → 幅900px以上で最大1600px（kintai 1100px、masters 1200px以上で1600px）。経費は広い画面で金額ボタンを6列、一覧カードをグリッド（最小420px）にして余白を使う。スマホの見た目は変更なし。
@@ -1900,6 +1912,8 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
+
+**★最新 2026-11-26 夜（担当C）精算ダッシュボードは Supabase に切替済み（旧 GAS は停止）。経営D の接続テストは合格（11/26 22:27）。ルール: 何か触ったら必ずこの WORKLOG に記録（CLAUDE.md 冒頭）。詳しくは最上部の担当C エントリ。**
 
 **★★★★★★★★★2026-11-18（担当B）採用・入社登録・通知まわりの区切り**: 完了／止めている／ぶつかりやすい所は、この WORKLOG の最上部の 2026-11-18（担当B）エントリと管理ボードに整理した。要点＝この PC（担当B）は今 STEP 6・7・スレッド返信・待ち行列 9/10 を動かしていない（slack-events はまだ誰も触らない・分担は社長決定待ち）。メンション DM の全員ON の SQL は社長の実行待ち。
 **★★★★★★★★2026-11-16 午後（続き 57）WEB総振の取得が成功（80 件正常・CSV 80 件・画面と 1 対 1・PNG 17 枚）→ 証憑保存・一覧形式 CSV・従業員ごとの照合の見える化を実装（ns-daily-import 最新・ns-portal 本コミット）**: SQL `2026-12-06_payroll_transfer_evidence_screen_png.sql` を本番に適用（証憑の種類 screen_png＝取得ジョブだけが登録できる／列 origin／置き場に PNG／`payroll_transfer_line_recon_view`＝読むだけ）。スイッチ `bank_read_enabled`・`auto_complete` は false のまま。**未実行（社長の承認待ち）: ①証憑 18 件の登録 `node tasks/paypay-sofuri-evidence-upload.js <run> --ym 2026-10 --corp 9f3f5239-… --apply` ②銀行結果の DB 送信（bank_bulk_transfer_ingest）③振込済みの自動更新。** 詳細は「続き 57」。
