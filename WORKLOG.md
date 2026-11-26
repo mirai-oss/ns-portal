@@ -1934,6 +1934,14 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
+**2026-11-26（担当F）法人の振込先口座（正本）を作成: 画面とSQLは push 済み／⚠️本番SQLは未適用（社長の承認待ち）**:
+- `supabase/2026-11-26_corporation_bank_accounts.sql`: 新規テーブル `corporation_bank_accounts`（形は `vendor_bank_accounts` と同じ・1法人につき現在の口座は1つ・前の口座は履歴で残す・削除なし）と RPC `smv2_set_corporation_bank_account`（8引数・本部/社長/マスターのみ）・`smv2_close_corporation_bank_account`。閲覧は本部/社長/マスターのみ（RLS）、直接の追加/更新/削除は不可、anon 不可、service_role は読める（精算の仕組みから参照する想定）。口座番号は7桁にゼロ埋め。
+- `masters.html`（法人・店舗マスタ ①法人）に「振込先口座」の欄を追加。**テーブルが無い間は欄が出ない**（今の画面は変わらない）。
+- 確認: 本番の既定の権限付与を再現した検証用DBで2回適用・登録/変更/停止・入力チェック・本部以外/anonの拒否。画面はスタブで確認（コンソールエラーなし）。本番DB・実ログインでは未確認。
+- 次: 承認後に適用 → 社長が画面で口座を入力 → 担当C（精算）へ参照方法を連絡。
+
+---
+
 **2026-11-26（担当F・本番反映済み）店舗・法人の正本まわりの関数から「ログインなし(anon)」の実行権限を外した（社長承認）**:
 - 内容: `supabase/2026-11-26_store_master_revoke_anon.sql`。`resolve_store`・`smv2_*`・`register_store_mapping`・`register_vendor_alias`・`set_vendor_alias_active`・`store_master_can_edit`・`kd_report_unresolved_name`・`kd_resolve_unresolved_name` ほか計18関数の EXECUTE を anon/PUBLIC から外した（authenticated・service_role・関数の中身・表・データは無変更）。10/7 の担当Fの資料の「匿名は不可」は実際には付いたままだった（Supabase の既定の権限付与）のを直したもの。
 - 確認: 適用前に全リポジトリの利用元（ログイン済み画面・管理用の鍵）とDB内の依存（RLS/ビューの参照なし・他の呼び出し元は definer 関数）を確認→rollback付きの試し実行→適用。適用後 anon 0/18・authenticated 18/18・service_role 18/18。ログインなしの呼び出しは 401、管理用の鍵の店舗判定は従来どおり。**実機のログイン後の操作（法人・店舗マスタの保存／請求書の「この店舗として登録」）は未確認**＝もし「permission denied」が出たら担当Fへ。

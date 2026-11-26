@@ -129,7 +129,7 @@ const SOURCES=[["smaregi","スマレジ（店舗ID）"],["smaregi_timecard","ス
 const SRC_LABEL=Object.fromEntries(SOURCES);
 const LOC_LABEL={store:"店舗",hq:"本社",central_kitchen:"セントラルキッチン",office:"事務所",warehouse:"倉庫"};
 const REL_LABEL={direct:"直営",outsourcing:"業務委託",sublease:"転貸"};
-const S={me:null,tab:"corp",D:null,msg:null,err:null,editBrands:null,relForm:null,relOpen:{},mapQ:"",mapSrc:"",mapShowOff:false,regOpen:null};
+const S={me:null,tab:"corp",bankForm:null,bankHist:{},D:null,msg:null,err:null,editBrands:null,relForm:null,relOpen:{},mapQ:"",mapSrc:"",mapShowOff:false,regOpen:null};
 
 async function loadAll(){
   const [corps,aliases,stores,brands,sbr,rels,vendors,vroles,mappings,unres,cur]=await Promise.all([
@@ -144,7 +144,11 @@ async function loadAll(){
     sel("store_external_mappings?select=*&order=source_system,external_store_name&limit=5000"),
     sel("kd_unresolved_names?select=*&kind=eq.store&status=eq.open&order=occurrences.desc"),
     sel("v_store_current_relations?select=*")]);
-  S.D={corps,aliases,stores,brands,sbr,rels,vendors,vroles,mappings,unres,cur};
+  // 法人の振込先口座（表がまだ本番に無い間は null＝欄を出さない）
+  let cbank=null;
+  try{ cbank=await sel("corporation_bank_accounts?select=*&order=created_at.desc"); }
+  catch(e){ if(!(e instanceof DbNotReady)) throw e; }
+  S.D={corps,aliases,stores,brands,sbr,rels,vendors,vroles,mappings,unres,cur,cbank};
 }
 const corpName=id=>{const c=S.D.corps.find(x=>x.id===id);return c?(c.display_name||c.name):"—"};
 const storeName=id=>{const s=S.D.stores.find(x=>x.id===id);return s?(s.display_name||s.name):"—"};
@@ -186,8 +190,36 @@ function corpTabHtml(){
       <label>別名（請求書の会社名の表記ゆれ。ここに登録した名前は同じ法人として扱われます）</label>
       <div>${al.map(a=>`<span class="chip" style="${a.is_active?"":"opacity:.45;text-decoration:line-through"}">${esc(a.alias)}<button title="${a.is_active?"無効にする":"有効に戻す"}" data-act="aliasToggle" data-id="${a.id}" data-on="${a.is_active?0:1}">${a.is_active?"×":"↺"}</button></span>`).join("")||`<span class="note">まだありません</span>`}</div>
       <div class="toolbar" style="margin-top:8px"><input data-f="newalias" placeholder="別名を追加（例: ㈲トーホー）"><button class="btn sm" data-act="aliasAdd" data-id="${c.id}">追加</button></div>
+      ${bankSectionHtml(c)}
     </div>`;
   }).join("");
+}
+
+/* 法人の振込先口座（この法人が振り込みを受ける口座）。上書きせず、前の口座は履歴に残る */
+const ACCT_TYPE={"1":"普通","2":"当座","4":"貯蓄"};
+const bankLine=b=>`${esc(b.bank_name)}（${esc(b.bank_code)}）${esc(b.branch_name)}（${esc(b.branch_code)}）${ACCT_TYPE[b.account_type]||""} ${esc(b.account_number)}　名義: ${esc(b.account_holder_kana)}`;
+function bankSectionHtml(c){
+  if(!S.D.cbank) return "";
+  const rows=S.D.cbank.filter(b=>b.corporation_id===c.id), cur=rows.find(b=>b.is_current), old=rows.filter(b=>!b.is_current);
+  const open=S.bankForm&&S.bankForm.corpId===c.id;
+  return `<label>振込先口座（この法人が振り込みを受ける口座）</label>
+    <div>${cur?`<b>${bankLine(cur)}</b> <span class="note">（${fmtD(cur.valid_from)} から）</span>`:`<span class="note">まだ登録されていません</span>`}</div>
+    <div class="toolbar" style="margin-top:8px">
+      <button class="btn sm" data-act="bankEdit" data-id="${c.id}">${cur?"口座を変更":"口座を登録"}</button>
+      ${cur?`<button class="btn ghost sm" data-act="bankClose" data-id="${cur.id}">この口座を使わない</button>`:""}
+      ${old.length?`<button class="btn ghost sm" data-act="bankHist" data-id="${c.id}">前の口座 ${old.length}件</button>`:""}
+    </div>
+    ${S.bankHist[c.id]?`<div class="hist">${old.map(b=>`<div>${fmtD(b.valid_from)} 〜 ${fmtD(b.valid_to)}：${bankLine(b)}</div>`).join("")}</div>`:""}
+    ${open?`<div class="dyn"><div class="grid">
+      <div><label>銀行コード（4桁）</label><input data-k="bank_code" inputmode="numeric"></div>
+      <div><label>銀行名</label><input data-k="bank_name"></div>
+      <div><label>支店コード（3桁）</label><input data-k="branch_code" inputmode="numeric"></div>
+      <div><label>支店名</label><input data-k="branch_name"></div>
+      <div><label>種類</label><select data-k="account_type">${Object.entries(ACCT_TYPE).map(([k,l])=>`<option value="${k}">${l}</option>`).join("")}</select></div>
+      <div><label>口座番号（7桁まで）</label><input data-k="account_number" inputmode="numeric"></div>
+      <div><label>口座名義（カナ）</label><input data-k="account_holder_kana"></div></div>
+      <div class="note" style="margin-top:6px">保存すると、これが「今の口座」になります。前の口座は消さずに履歴に残ります。</div>
+      <div class="right"><button class="btn ghost sm" data-act="bankCancel">キャンセル</button><button class="btn sm" data-act="bankSave" data-id="${c.id}">保存する</button></div></div>`:""}`;
 }
 
 /* ② 店舗・事業所 */
@@ -351,7 +383,18 @@ const q1=(root,sel)=>root.querySelector(sel);
 document.addEventListener("click",async ev=>{
   const b=ev.target.closest("[data-act]"); if(!b||!S.D) return;
   const act=b.dataset.act, id=b.dataset.id;
-  if(act==="tab"){ S.tab=b.dataset.k; S.msg=S.err=null; S.editBrands=S.relForm=S.regOpen=null; render(); return; }
+  if(act==="tab"){ S.tab=b.dataset.k; S.msg=S.err=null; S.editBrands=S.relForm=S.regOpen=S.bankForm=null; render(); return; }
+  if(act==="bankEdit"){ S.bankForm={corpId:id}; S.msg=S.err=null; render(); return; }
+  if(act==="bankCancel"){ S.bankForm=null; render(); return; }
+  if(act==="bankHist"){ S.bankHist[id]=!S.bankHist[id]; render(); return; }
+  if(act==="bankClose"){ if(!confirm("この口座を「使わない」にします（記録は残ります）。よろしいですか？")) return;
+    return run(()=>rpc("smv2_close_corporation_bank_account",{p_id:id}),"口座を使わないようにしました"); }
+  if(act==="bankSave"){ const w=b.closest(".dyn"); const v=k=>w.querySelector(`[data-k=${k}]`).value;
+    b.disabled=true;
+    // 失敗しても入力した内容が消えないように、成功してから画面を作り直す
+    try{ await rpc("smv2_set_corporation_bank_account",{p_corporation_id:id,p_bank_code:v("bank_code"),p_bank_name:v("bank_name"),p_branch_code:v("branch_code"),p_branch_name:v("branch_name"),p_account_type:v("account_type"),p_account_number:v("account_number"),p_account_holder_kana:v("account_holder_kana")}); }
+    catch(e){ b.disabled=false; flash(e.message||String(e),true); w.scrollIntoView({block:"center"}); return; }
+    S.bankForm=null; return run(async()=>{},"口座を保存しました"); }
   if(act==="saveCorp"){ const c=b.closest("[data-corp]");
     return run(()=>rpc("smv2_update_corporation",{p_id:id,p_legal_name:q1(c,'[data-f=legal]').value,p_display_name:q1(c,'[data-f=disp]').value,p_is_group_company:q1(c,'[data-f=grp]').value==="1"}),"法人を保存しました"); }
   if(act==="aliasAdd"){ const c=b.closest("[data-corp]"); const v=q1(c,'[data-f=newalias]').value;
