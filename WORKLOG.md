@@ -1934,6 +1934,13 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
+**2026-11-26（担当F・本番反映済み）店舗・法人の正本まわりの関数から「ログインなし(anon)」の実行権限を外した（社長承認）**:
+- 内容: `supabase/2026-11-26_store_master_revoke_anon.sql`。`resolve_store`・`smv2_*`・`register_store_mapping`・`register_vendor_alias`・`set_vendor_alias_active`・`store_master_can_edit`・`kd_report_unresolved_name`・`kd_resolve_unresolved_name` ほか計18関数の EXECUTE を anon/PUBLIC から外した（authenticated・service_role・関数の中身・表・データは無変更）。10/7 の担当Fの資料の「匿名は不可」は実際には付いたままだった（Supabase の既定の権限付与）のを直したもの。
+- 確認: 適用前に全リポジトリの利用元（ログイン済み画面・管理用の鍵）とDB内の依存（RLS/ビューの参照なし・他の呼び出し元は definer 関数）を確認→rollback付きの試し実行→適用。適用後 anon 0/18・authenticated 18/18・service_role 18/18。ログインなしの呼び出しは 401、管理用の鍵の店舗判定は従来どおり。**実機のログイン後の操作（法人・店舗マスタの保存／請求書の「この店舗として登録」）は未確認**＝もし「permission denied」が出たら担当Fへ。
+- 全担当へ: 新しい DB 関数を作る時は `revoke execute on function ... from public, anon;` まで書く（`from public` だけでは anon が残る）。上の関数を drop して作り直した場合は、このSQLを続けて実行する。戻し方は `grant execute ... to anon`（通常は戻さない）。
+
+---
+
 **2026-11-26（担当F）精算の移行に関する「会社・店舗の正本」の使い方を担当Cへ回答（読み取りのみ・コード/DB/本番の変更なし）**:
 - 回答の要点: 正本の書き込みRPC（`smv2_*`・`register_store_mapping`）はポータルのログインユーザーで権限判定するため、service_role の Edge Function からは呼べない（テーブル直接書きもしない）。会社・店舗の追加/切替は当面「法人・店舗マスタ」側で行う。自社法人の代表者・インボイス番号は社内情報 `info.corporations` を正本（必要列のみ指定して読む）。精算は店舗を `store_id` で結び、相手先は `store_operation_relations` を対象月で引く。
 - 社長の判断（11/26・担当C経由で受領）: ①追加/切替の画面は切り替え後 ②法人扱いの委託先の振込先を正本に新設（担当F・`public.corporation_bank_accounts` 案・本番反映前に社長の再承認）③`vendors` の代表者・インボイス登録番号の列は担当C ④黒霧屋の `stores.seisan_target=false` は正しい設定（変更しない）。
