@@ -97,7 +97,8 @@ async function plDirectWrite(db: any, rows: any[]): Promise<{ ok: boolean; error
 // 2026-09-05新設：業務委託精算書自動連携（設計書_業務委託精算書自動連携_2026-09-04.md）。
 // seisan-dashboardのGAS Web App URL（担当A実装・11章で本番デプロイ済み。DASH_API_URLとは別の
 // GASプロジェクト＝別トークンPL_SYNC_TOKENで認証する）
-const SEISAN_API_URL = "https://script.google.com/macros/s/AKfycbzwYN9uSEtcJHSKSVQCoQOrllhO7G6gR-E4dvP-V4o_VdGXr9VQx2mbYYPNyNEFSQCiKg/exec";
+// 2026-11-26: 精算ダッシュボードを Supabase へ移行（関数名と戻り値は同じ）
+const SEISAN_API_URL = "https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/seisan-api";
 // 2026-09-08新設：ユーザー要望「黒霧屋はPLに反映させるか、精算書に反映させるか選べて、精算書に
 // 反映しないで直でPLに反映させるようにできるようにして欲しい。請求書がトーホーになってる場合には
 // トーホーで支払いしてるから精算書には入れない、請求書がN styleになっていたら立替払いしてるから

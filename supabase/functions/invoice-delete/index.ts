@@ -15,7 +15,8 @@ import { zeroPlSheet } from "../_shared/pl-sheet.ts";
 import { removeSeisanLines } from "../_shared/seisan-lines.ts";
 
 // 業務委託精算書のWeb App（pl-fee-reflect と同じ公開URL。認証は PL_SYNC_TOKEN）
-const SEISAN_API_URL = "https://script.google.com/macros/s/AKfycbzwYN9uSEtcJHSKSVQCoQOrllhO7G6gR-E4dvP-V4o_VdGXr9VQx2mbYYPNyNEFSQCiKg/exec";
+// 2026-11-26: 精算ダッシュボードを Supabase へ移行（関数名と戻り値は同じ）
+const SEISAN_API_URL = "https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/seisan-api";
 async function seisanCall(fn: string, args: unknown[]) {
   const res = await fetch(SEISAN_API_URL, { method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" }, body: JSON.stringify({ fn, args }) });
   const text = await res.text();

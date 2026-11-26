@@ -206,7 +206,8 @@ async function buildSeisan(db: any, email: any, att: any, ex: any, firstEmailRow
 // 呼び出し: 精算ダッシュボード(GAS) sd_issueAndSend が「発行・送信」の直後に、PL_SYNC_TOKEN（サーバー間の共有トークン）つきで呼ぶ。
 // {action:"seisan_issued", token, store, month:"YYYY-MM", transfer(税込), transfer_ex(税抜), tax, resend?, pdf?:{file_name, base64}}
 // 同じ店舗×対象月の下書きが既にあれば: 同額→作らない（PDFが無ければ付ける）／金額違い＆未登録→その下書きを新しい内容に更新（再発行）／金額違い＆MF登録済み→要確認として新しい下書き
-const SEISAN_API_URL = "https://script.google.com/macros/s/AKfycbzwYN9uSEtcJHSKSVQCoQOrllhO7G6gR-E4dvP-V4o_VdGXr9VQx2mbYYPNyNEFSQCiKg/exec";
+// 2026-11-26: 精算ダッシュボードを Supabase へ移行（関数名と戻り値は同じ）
+const SEISAN_API_URL = "https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/seisan-api";
 async function seisanIssued(db: any, b: any) {
   const store = String(b.store ?? ""); const ym = /^\d{4}-\d{2}$/.test(String(b.month ?? "")) ? String(b.month) : null;
   const total = toInt(b.transfer), feeNet = toInt(b.transfer_ex), tax = toInt(b.tax);
