@@ -1,0 +1,121 @@
+<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>手順書 Supabase 鍵かけ</title><style>
+:root{--bg:#f6f7f9;--card:#fff;--tx:#1f2937;--mu:#6b7280;--ac:#2563eb;--ok:#16a34a;--okbg:#ecfdf3;--ng:#dc2626;--ngbg:#fef2f2;--tip:#fffbeb;--bd:#e5e7eb}
+@media(prefers-color-scheme:dark){:root{--bg:#0f1115;--card:#1a1d23;--tx:#e5e7eb;--mu:#9ca3af;--ac:#60a5fa;--ok:#4ade80;--okbg:#10261a;--ng:#f87171;--ngbg:#2a1515;--tip:#2a2412;--bd:#2b2f38}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--tx);font:18px/1.8 -apple-system,"Hiragino Sans",sans-serif}
+.wrap{max-width:760px;margin:0 auto;padding:24px 16px 80px}
+h1{font-size:28px;line-height:1.4;margin:8px 0}.sub{color:var(--mu);margin:0 0 20px}
+.intro{background:var(--card);border:1px solid var(--bd);border-radius:14px;padding:18px 20px;margin-bottom:24px}
+.intro p{margin:6px 0}
+.step{display:flex;gap:16px;background:var(--card);border:1px solid var(--bd);border-radius:14px;padding:20px;margin-bottom:18px}
+.num{flex:none;width:44px;height:44px;border-radius:50%;background:var(--ac);color:#fff;font-weight:700;font-size:22px;display:flex;align-items:center;justify-content:center}
+.body{flex:1;min-width:0}h2{margin:2px 0 8px;font-size:22px}
+.act{margin:10px 0;padding-left:0;list-style:none;counter-reset:a}.act li{counter-increment:a;margin:8px 0;padding-left:34px;position:relative}
+.act li:before{content:counter(a);position:absolute;left:0;top:4px;width:24px;height:24px;border-radius:50%;border:2px solid var(--ac);color:var(--ac);font-size:14px;font-weight:700;text-align:center;line-height:20px}
+.ok,.ng,.tip{border-radius:10px;padding:10px 14px;margin:12px 0;font-size:16px;line-height:1.7}
+.ok{background:var(--okbg);border-left:5px solid var(--ok)}.ng{background:var(--ngbg);border-left:5px solid var(--ng)}.tip{background:var(--tip);border-left:5px solid #f59e0b}
+kbd,code{background:var(--bg);border:1px solid var(--bd);border-radius:6px;padding:1px 7px;font:15px ui-monospace,Menlo,monospace}
+a{color:var(--ac)}
+button.copy{display:block;width:100%;font-size:20px;font-weight:700;padding:16px;border:0;border-radius:12px;background:var(--ac);color:#fff;cursor:pointer;margin:12px 0}
+button.copy.done{background:var(--ok)}button.sub2{background:var(--mu)}
+details{margin:10px 0}summary{cursor:pointer;color:var(--ac)}
+pre{background:#0f172a;color:#e2e8f0;padding:12px;border-radius:10px;overflow:auto;max-height:240px;font-size:13px;line-height:1.5;white-space:pre-wrap}
+.warn{background:var(--ngbg);border:2px solid var(--ng);border-radius:14px;padding:16px 20px;margin-top:28px}
+</style></head><body><div class="wrap">
+<h1>🔒 Supabase の「鍵かけ」手順書</h1>
+<p class="sub">所要時間：約3分 ／ やること：コピーして貼って、ボタンを1回押すだけ</p>
+<div class="intro"><p><b>これは何をするの？</b></p>
+<p>データの倉庫（Supabase）から「<b>鍵をかけ忘れた引き出しがあります</b>」という警告メールが来ました。売掛金や人件費の引き出しが、ログインしなくても見られる状態でした。</p>
+<p>今回は、その引き出しに<b>鍵をかけます</b>。ポータルや管理システムは、ログインして使っているので、<b>今まで通り使えます</b>。データは消しません。</p></div>
+
+<section class="step"><div class="num">1</div><div class="body"><h2>まず、鍵をかける文章をコピーする</h2><ul class="act"><li>下の青いボタンを1回押します。</li></ul>
+<button class="copy" id="c1" onclick="cp('c1','sql')">📋 文章をコピーする</button>
+<div class="ok"><b>✅ できた目印</b><br>ボタンが緑色に変わり「コピーしました！」と出ます。</div>
+<div class="tip">💡 この文章は「SQL（エスキューエル）」といって、データの倉庫に「こうして」とお願いするための、特別な文章です。中身は読まなくて大丈夫です。</div>
+<details><summary>中身を見る（見なくてOK）</summary><pre id="sql">-- 2026-11-26 Supabase警告(rls_disabled_in_public)対応
+-- ログイン不要で読めていた14件を閉じる。ログイン済みのポータル/管理システム・サービスキーで動く取込は今まで通り動く。
+-- 残す（意図的に公開: 申請フォーム・GAS・日報が公開キーで読む）: store_directory_v / cost_transfer_items_v / google_review_log_v / kd_sync_status_v / report_channel_matrix_v
+-- テーブル: RLSを有効化＋ログイン済みユーザーには従来どおり全操作を許可するポリシーを追加（既にポリシーがあれば追加しない）＋anonの権限を外す
+-- ビュー: anonの権限を外す
+do $$
+declare n text; k &quot;char&quot;;
+begin
+  foreach n in array array[
+    &#x27;ai_users_v&#x27;,&#x27;api_cost_daily&#x27;,&#x27;ar_deposits&#x27;,&#x27;ar_receivable_attachments&#x27;,&#x27;ar_receivables&#x27;,&#x27;ar_recurring_master&#x27;,
+    &#x27;cash_handoff_role_scope&#x27;,&#x27;google_review_legacy_compare_v&#x27;,&#x27;google_review_store_daily_v&#x27;,&#x27;import_status_today&#x27;,
+    &#x27;labor_allocation_compare_report&#x27;,&#x27;labor_salary_daily_weight&#x27;,&#x27;labor_salary_pay_type&#x27;,&#x27;sync_status_v&#x27;]
+  loop
+    select c.relkind into k from pg_class c join pg_namespace s on s.oid=c.relnamespace
+      where s.nspname=&#x27;public&#x27; and c.relname=n;
+    if k is null then continue; end if;
+    if k in (&#x27;r&#x27;,&#x27;p&#x27;) then
+      execute format(&#x27;alter table public.%I enable row level security&#x27;, n);
+      if not exists (select 1 from pg_policies where schemaname=&#x27;public&#x27; and tablename=n) then
+        execute format(&#x27;create policy authenticated_full_access on public.%I for all to authenticated using (true) with check (true)&#x27;, n);
+      end if;
+    end if;
+    execute format(&#x27;revoke all on public.%I from anon&#x27;, n);
+  end loop;
+end $$;
+
+-- 結果確認: 「まだRLSが無効のテーブル」と、anonが読めるかを一覧表示（残りの調査用）
+select c.relname as table_name,
+       has_table_privilege(&#x27;anon&#x27;, c.oid, &#x27;select&#x27;) as anon_can_read,
+       has_table_privilege(&#x27;anon&#x27;, c.oid, &#x27;insert,update,delete&#x27;) as anon_can_write
+from pg_class c join pg_namespace s on s.oid=c.relnamespace
+where s.nspname=&#x27;public&#x27; and c.relkind in (&#x27;r&#x27;,&#x27;p&#x27;) and not c.relrowsecurity
+order by anon_can_write desc, anon_can_read desc, 1;
+</pre></details></div></section>
+
+<section class="step"><div class="num">2</div><div class="body"><h2>Supabase を開く</h2><ul class="act"><li><a href="https://supabase.com/dashboard" target="_blank">ここをクリック</a>（新しいタブで開きます）。</li><li>ログインを求められたら、いつものメールとパスワードでログインします。</li></ul>
+<div class="ok"><b>✅ できた目印</b><br>「Your projects」（プロジェクト一覧）のような画面が出ます。</div></div></section>
+
+<section class="step"><div class="num">3</div><div class="body"><h2>「ニッポ」を開く</h2><ul class="act"><li>一覧の中から、<b>「ニッポ」</b>という名前のカードを探します。</li><li>そのカードをクリックします。</li></ul>
+<div class="ok"><b>✅ できた目印</b><br>左上に「ニッポ」と出て、左側に縦のメニューが並びます。</div></div></section>
+
+<section class="step"><div class="num">4</div><div class="body"><h2>「SQL Editor」を開く</h2><ul class="act"><li>左側の縦のメニューから、<b>「SQL Editor」</b>（<code>&lt;/&gt;</code> のような記号）をクリックします。</li><li>見つからないときは、メニューを下へスクロールします。</li><li>左上の<b>「＋ New query」</b>をクリックします。</li></ul>
+<div class="ok"><b>✅ できた目印</b><br>中身が空っぽの、文字を入れる大きな四角が開きます。</div></div></section>
+
+<section class="step"><div class="num">5</div><div class="body"><h2>貼り付ける</h2><ul class="act"><li>大きな四角の中を、1回クリックします。</li><li>キーボードで <kbd>⌘</kbd>（コマンド）を押しながら <kbd>V</kbd> を押します。</li></ul>
+<div class="ok"><b>✅ できた目印</b><br><code>do $$</code> で始まる英語の文章がたくさん入ります。一番下に <code>select c.relname as table_name,</code> の行があれば、全部貼れています。</div>
+<div class="ng"><b>⚠️ うまくいかないとき</b><br>何も出ない・別の文章が出たときは、ステップ1に戻って、もう一度コピーボタンを押してください。</div></div></section>
+
+<section class="step"><div class="num">6</div><div class="body"><h2>「Run」を押す</h2><ul class="act"><li>右下の緑色のボタン<b>「Run」</b>をクリックします。</li><li>「この文章を実行しますか？」と確認が出たら、<b>「Run this query」</b>をクリックします。</li></ul>
+<div class="tip">💡 「データを消す操作が含まれています」のような注意が出ても大丈夫です。今回は鍵をかけるだけで、データは消しません。</div>
+<div class="ok"><b>✅ できた目印</b><br>四角の下に<b>表</b>が出ます。一番上の行に <code>table_name</code>・<code>anon_can_read</code>・<code>anon_can_write</code> と書いてあります。</div>
+<div class="ng"><b>⚠️ うまくいかないとき</b><br><b>赤い文字</b>が出たら、何も押さずに、その画面をスクリーンショットして私に送ってください。</div></div></section>
+
+<section class="step"><div class="num">7</div><div class="body"><h2>結果を私に見せる</h2><ul class="act"><li>下に出た表を、画面ごとスクリーンショットします（<kbd>⌘</kbd>＋<kbd>Shift</kbd>＋<kbd>4</kbd> で範囲を選べます）。</li><li>その画像を、私に送ってください。</li></ul>
+<div class="ok"><b>✅ できた目印</b><br>私が「鍵がかかったか」を確かめて、結果を返します。これで完了です。</div></div></section>
+
+<div class="intro"><p><b>もし、ポータルや管理システムの調子が悪くなったら</b></p>
+<p>ほぼ起きませんが、「前は見えていた数字が出ない」ときは、慌てずに私に<b>「元に戻して」</b>と言ってください。すぐ元の状態に戻せます。</p>
+<details><summary>自分で戻したいとき</summary><p>ステップ4〜6と同じ手順で、下の文章を貼って Run します。</p>
+<button class="copy sub2" id="c2" onclick="cp('c2','rb')">📋 元に戻す文章をコピー</button><pre id="rb">-- 2026-11-26_close_anon_exposure.sql を元に戻す（何か動かなくなったときだけ使う）
+do $$
+declare n text; k &quot;char&quot;;
+begin
+  foreach n in array array[
+    &#x27;ai_users_v&#x27;,&#x27;api_cost_daily&#x27;,&#x27;ar_deposits&#x27;,&#x27;ar_receivable_attachments&#x27;,&#x27;ar_receivables&#x27;,&#x27;ar_recurring_master&#x27;,
+    &#x27;cash_handoff_role_scope&#x27;,&#x27;google_review_legacy_compare_v&#x27;,&#x27;google_review_store_daily_v&#x27;,&#x27;import_status_today&#x27;,
+    &#x27;labor_allocation_compare_report&#x27;,&#x27;labor_salary_daily_weight&#x27;,&#x27;labor_salary_pay_type&#x27;,&#x27;sync_status_v&#x27;]
+  loop
+    select c.relkind into k from pg_class c join pg_namespace s on s.oid=c.relnamespace where s.nspname=&#x27;public&#x27; and c.relname=n;
+    if k is null then continue; end if;
+    execute format(&#x27;grant select on public.%I to anon&#x27;, n);
+    if k in (&#x27;r&#x27;,&#x27;p&#x27;) then
+      execute format(&#x27;drop policy if exists authenticated_full_access on public.%I&#x27;, n);
+      execute format(&#x27;alter table public.%I disable row level security&#x27;, n);
+    end if;
+  end loop;
+end $$;
+</pre></details></div>
+
+<div class="warn"><b>🚫 やってはいけないこと</b><br>メールの中の<b>「問題を解決する」ボタンは押さない</b>でください。画面の動きを確かめずに全部へ鍵をかけるボタンなので、日報や人件費が動かなくなる恐れがあります。</div>
+</div>
+<script>
+function cp(b,id){var t=document.getElementById(id).textContent;var el=document.getElementById(b);
+function ok(){el.classList.add('done');el.textContent='✅ コピーしました！';}
+if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(t).then(ok,fb)}else fb();
+function fb(){var a=document.createElement('textarea');a.value=t;document.body.appendChild(a);a.select();document.execCommand('copy');a.remove();ok();}}
+</script></body></html>
