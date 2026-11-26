@@ -38,6 +38,7 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { zeroPlSheet } from "../_shared/pl-sheet.ts";
 import { operatorCorpMap } from "../_shared/store-operator.ts";
+import { removeSeisanLines } from "../_shared/seisan-lines.ts";
 
 const cors: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -850,12 +851,15 @@ Deno.serve(async (req: Request) => {
       const invoiceId = body?.invoice_id;
       if (!reflectionId || !invoiceId) return json({ error: "reflection_id・invoice_idは必須です" }, 400);
       const { data: refl, error: reflErr } = await uc.from("invoice_pl_reflections")
-        .select("id, invoice_id, account_name, sub_account_name, year_month, allocations, reflection_route")
+        .select("id, invoice_id, account_name, sub_account_name, year_month, allocations, reflection_route, seisan_store_name, seisan_line_key, sheet_synced_at")
         .eq("id", reflectionId).eq("invoice_id", invoiceId).maybeSingle();
       if (reflErr) return json({ error: "確認に失敗しました: " + reflErr.message }, 500);
       if (!refl) return json({ error: "対象の反映内容が見つからないか権限がありません" }, 403);
 
       const db = svc();
+      // 2026-11-26: 精算書に入れた行は、先に精算書から消す（残ると登録し直したときに二重計上になる）。消せなければ取り消さない
+      const cleared = await removeSeisanLines([refl as any], Deno.env.get("PL_SYNC_TOKEN"), seisanCall);
+      if (!cleared.ok) return json({ error: "取り消しを中止しました: " + cleared.error }, 409);
       // 2026-10-14: 取り消し時にPLシート側の行も0円にして、二重・過大を防ぐ（精算書ルートは対象外）
       let sheetZero: { ok: boolean; error?: string } = { ok: true };
       // 2026-10-21: pl_entries へ直接書いた行（source_key='inv:<請求書ID>:<反映ID>:…'）があれば、それを取り消す（deleted_at）。無ければ従来どおりシート側を0円にする

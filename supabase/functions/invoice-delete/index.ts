@@ -12,6 +12,18 @@
 // あわせて含む。
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { zeroPlSheet } from "../_shared/pl-sheet.ts";
+import { removeSeisanLines } from "../_shared/seisan-lines.ts";
+
+// 業務委託精算書のWeb App（pl-fee-reflect と同じ公開URL。認証は PL_SYNC_TOKEN）
+const SEISAN_API_URL = "https://script.google.com/macros/s/AKfycbzwYN9uSEtcJHSKSVQCoQOrllhO7G6gR-E4dvP-V4o_VdGXr9VQx2mbYYPNyNEFSQCiKg/exec";
+async function seisanCall(fn: string, args: unknown[]) {
+  const res = await fetch(SEISAN_API_URL, { method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" }, body: JSON.stringify({ fn, args }) });
+  const text = await res.text();
+  let outer: any;
+  try { outer = JSON.parse(text); } catch { throw new Error("精算書APIの応答を読めませんでした: " + text.slice(0, 200)); }
+  if (outer?.ok === false) throw new Error(outer.error || "精算書APIの呼び出しに失敗しました（" + fn + "）");
+  return outer && typeof outer === "object" && "result" in outer ? outer.result : outer;
+}
 
 const cors: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -45,6 +57,14 @@ Deno.serve(async (req: Request) => {
 
   const db = svc();
   try {
+    // 2026-11-26: 精算書に入れた行は、ほかの何かを消す前に精算書から消す。消せなければ（振込済みなど）削除を中止する
+    {
+      const { data: sr, error: srErr } = await db.from("invoice_pl_reflections")
+        .select("reflection_route, seisan_store_name, seisan_line_key, year_month, sheet_synced_at").eq("invoice_id", invoiceId);
+      if (srErr) return json({ error: "精算書への登録状況を確認できなかったため、削除を中止しました: " + srErr.message }, 500);
+      const cleared = await removeSeisanLines((sr ?? []) as any[], Deno.env.get("PL_SYNC_TOKEN"), seisanCall);
+      if (!cleared.ok) return json({ error: "削除を中止しました: " + cleared.error }, 409);
+    }
     // ①invoices.attachment_id（代表添付を指す循環参照の列）を先にnullへ戻す
     await db.from("invoices").update({ attachment_id: null }).eq("id", invoiceId);
     // ②他テーブルからの参照を外す（本部タスク・売上入金の記録自体は残す）
