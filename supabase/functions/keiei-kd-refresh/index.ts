@@ -705,7 +705,8 @@ function plCatForEntries(cat: unknown, item: string): string {
 }
 // stg_plには来ても取り込まない自動行のsource（その行はSupabaseが正本で、pl_entriesへ直接書かれる。2026-10-13〜）。ここを増やすときは取込側・既存行の洗い替え側の両方に効く。
 //   スポット人件費・店舗間移動・仕入高差額調整＝Supabase正本（spot_entries / cost_transfer_*）／請求書由来の確定行＝pl-fee-reflect が pl_entries へ直接書く（Q-C3・担当C・2026-10-21〜）
-const PL_AUTO_IGNORE_SOURCES = ["自動｜スポット人件費", "店舗間移動", "自動｜仕入高差額調整", "自動｜請求書"];
+//   法定福利費＝社員給与賞与×15%の自動計算（kd_labor_refresh）が正。請求書を店舗へ割ったシート行は二重になるので取り込まない（2026-11-27 社長決定）
+const PL_AUTO_IGNORE_SOURCES = ["自動｜スポット人件費", "店舗間移動", "自動｜仕入高差額調整", "自動｜請求書", "自動｜法定福利費"];
 // ハイブリッド同期: stg_pl(GAS bqGetPL)の「自動連携行」だけを正本pl_entriesへ反映（(source×年月)単位のreplace_source）。
 // 手入力(source='手入力')には触れない。内容が変わった(source×年月)だけを入れ替える（毎時回しても履歴・ソフト削除行が増えない）。
 // 安全装置: 既存の自動行が20行以上で、今回の自動行が半分未満なら（取得の部分応答の疑い）中止。
