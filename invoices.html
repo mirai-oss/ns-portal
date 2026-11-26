@@ -630,7 +630,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-11-24-v190";
+const BUILD_TAG="2026-11-27-v191";
 const PAYROLL_CANCEL_READY=true;
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
@@ -1179,6 +1179,8 @@ async function openApprovalModal(u,invoiceId,opt){
 // 2026-10-14: 承認後・「PL未反映」一括反映の共通処理。MF登録済みの仕訳（lines）をPL・広告費・精算書へ税抜で反映し、結果の文を results に積む
 // 2026-11-20: 運営委託費（トーホー等への運営委託費の請求書）は精算書に入れない（精算書そのものから作られる請求書のため。ユーザー指示）
 function plIsSeisanExcluded_(name){ return String(name||"").normalize("NFKC").trim()==="運営委託費"; }
+// 2026-11-27: 法定福利費はPLに自動計算（社員給与賞与×15%）で入るため、請求書からPLへは反映しない（二重計上の防止・経営D側と合わせる）。精算書ルートは従来どおり
+function plIsAutoCalc_(name){ return String(name||"").normalize("NFKC").trim().startsWith("法定福利費"); }
 function plIsExpenseAccount_(name){
   const n=String(name||"").normalize("NFKC");
   if(/^(仕入高|売上高)$/.test(n)) return false;
@@ -1209,6 +1211,7 @@ async function plReflectInvoice_(inv,d,lines,results,opts){
         results.push(r.ok&&r.body.success!==false?`③精算書へ登録: ${esc(name)}`:`③⚠️精算書への登録に失敗: ${esc(name)}（${esc((r.body&&(r.body.error||(r.body.results||[]).filter(x=>!x.ok).map(x=>x.store+": "+x.error).join("／")))||"")}）`);
         continue;
       }
+      if(plIsAutoCalc_(g.account)){ results.push(`③${esc(name)}はPLに自動計算で入るため、請求書からは反映しません（PL未反映に残る場合は「この請求書はPLに反映しない」を選んでください）`); continue; }
       if(g.account==="仕入高"){ results.push(`③仕入高（${esc(g.sub||"")}）のPL反映は、月の請求書がすべて承認された後に「PL未反映」タブの「📦 仕入高の置き換え」でまとめて行います`); continue; }
       if(g.account==="広告宣伝費"&&mediaList.includes(g.sub)&&!adDone.has(g.sub)){
         adDone.add(g.sub); const s2=sess.get();

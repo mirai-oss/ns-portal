@@ -80,7 +80,11 @@ async function plDirectOn(db: any, ym: string): Promise<boolean> {
   const { data } = await db.from("app_secrets").select("value").eq("key", "pl_direct_write").maybeSingle();
   return String(data?.value ?? "").trim() === "1";
 }
+// 2026-11-27: 法定福利費はPLに自動計算（社員給与賞与×15%）で入る。請求書由来の反映・科目登録は受け付けない（二重計上の防止）。精算書ルート（seisan_confirm）は対象外
+function plIsAutoCalc(name: string): boolean { return String(name || "").normalize("NFKC").trim().startsWith("法定福利費"); }
+const PL_AUTO_CALC_MSG = "法定福利費はPLに自動計算（社員給与賞与×15%）で入るため、請求書からは反映できません";
 function plDirectRows(invoiceId: string, reflectionId: string, account: string, sub: string | null, ym: string, allocations: any[]) {
+  if (plIsAutoCalc(account)) return [];
   return allocations.filter((a) => Number(a.amount) > 0 && a.store_id).map((a) => ({
     year_month: String(ym).slice(0, 7), store_id: a.store_id, item: account, category: plCat(account), amount: Number(a.amount),
     memo: "自動｜請求書", sub_item: sub || "", source: "自動｜請求書", source_key: `inv:${invoiceId}:${reflectionId}:${a.store_id}`,
@@ -298,6 +302,7 @@ Deno.serve(async (req: Request) => {
       const accountName: string = (body?.account_name ?? "").trim();
       const subAccountName: string = (body?.sub_account_name ?? "").trim();
       if (!accountName) return json({ error: "勘定科目名は必須です" }, 400);
+      if (plIsAutoCalc(accountName)) return json({ error: PL_AUTO_CALC_MSG }, 400);
       const defaultLabel = accountName + (subAccountName ? "/" + subAccountName : "");
       const db = svc();
       const { error } = await db.from("mf_pl_fee_accounts").insert({
@@ -358,6 +363,7 @@ Deno.serve(async (req: Request) => {
       if (!invoiceId || !accountName || !/^\d{4}-\d{2}-01$/.test(yearMonth)) {
         return json({ error: "勘定科目・対象年月（YYYY-MM-01）・請求書IDは必須です" }, 400);
       }
+      if (plIsAutoCalc(accountName)) return json({ error: PL_AUTO_CALC_MSG }, 400);
       if (!allocations.length) return json({ error: "店舗×金額の割り振りが0件です" }, 400);
       let total = 0;
       for (const a of allocations) {
