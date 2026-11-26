@@ -41,6 +41,10 @@
 }
 @media(prefers-color-scheme:dark){
   :root{--bg:#211d18; --panel:#2b2620; --ink:#f2ede6; --muted:#b3aa9f; --line:#433c33; --accent-soft:#4a2c22; --red-soft:#4a2320; --green-soft:#213a10; --amber-soft:#3d2f10; --blue-soft:#152a3d; --purple-soft:#2c2438;}
+  /* 2026-11-26追加：ユーザー報告「ダークモードで文字が見づらい」。インラインで直書きした濃い赤・橙・緑の文字色を、ダークの時だけ明るい同系色にする */
+  [style*="color:#b91c1c"],[style*="color: #b91c1c"],[style*="color:#c0392b"]{color:#ff8f87 !important}
+  [style*="color:#b45309"],[style*="color: #b45309"],[style*="color:#9a5b12"],[style*="color:#aa700b"]{color:#f2b45f !important}
+  [style*="color:#15803d"],[style*="color: #15803d"],[style*="color:#1a7f37"]{color:#79d493 !important}
   /* 2026-09-05追加：ユーザー報告「夜モードだと色が変わって見づらい」に対応。
      .step-badge.currentは続き27で赤系（--accent-soft背景＋--accentの太字）に変更したが、
      ダークモードの--accent-softは暗い赤茶色になる一方、文字色の--accentはライト/ダーク共通の
@@ -136,7 +140,7 @@ button,input,select,textarea{font:inherit}
 .mail-lock{margin:12px 18px 0;padding:12px;border:1px solid #b8d0eb;background:var(--blue-soft);border-radius:12px;color:#315c86;font-size:12px}
 .mail-alert{margin:12px 18px 0;padding:12px;border:1px solid #efb7aa;background:var(--accent-soft);border-radius:12px;color:#9d3425;font-size:12px}
 .mail-body{padding:18px}
-.mail-body-frame{width:100%;height:260px;border:1px solid var(--m-line);border-radius:10px;background:#fff}
+.mail-body-frame{width:100%;height:260px;border:1px solid var(--m-line);border-radius:10px;background:var(--panel)}
 .invoice-attach{border:1px solid var(--m-line);border-radius:14px;padding:12px;background:var(--bg);margin-top:14px}
 .invoice-attach h3{margin:0 0 8px;font-size:14px}
 .attgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px}
@@ -308,14 +312,14 @@ button,input,select,textarea{font:inherit}
 .pr-hero-main p{font-size:10px;color:var(--muted);margin:9px 0 0}
 .pr-hero-side{padding:16px}
 .pr-hero-side label{display:block;font-size:9px;color:var(--muted);margin-bottom:5px}
-.pr-hero-side select,.pr-hero-side input{width:100%;padding:10px;border:1px solid var(--line);border-radius:9px;background:#fff}
+.pr-hero-side select,.pr-hero-side input{width:100%;padding:10px;border:1px solid var(--line);border-radius:9px;background:var(--panel)}
 .pr-sync-box{margin-top:10px;padding:10px;border-radius:9px;background:var(--blue-soft);border:1px solid var(--blue);color:var(--blue);font-size:9px;display:flex;justify-content:space-between;gap:8px;align-items:center}
 .pr-alert-panel{padding:15px;margin-bottom:14px;border-left:5px solid var(--accent)}
 .pr-alert-head{display:flex;justify-content:space-between;gap:10px;align-items:center;margin-bottom:10px}
 .pr-alert-head h2{font-size:16px;margin:0}
 .pr-alert-total{font-size:24px;font-weight:900;color:var(--accent)}
 .pr-alert-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
-.pr-alert-item{border:1px solid var(--line);border-radius:10px;padding:11px;background:#fff;cursor:pointer;transition:.15s}
+.pr-alert-item{border:1px solid var(--line);border-radius:10px;padding:11px;background:var(--panel);cursor:pointer;transition:.15s}
 .pr-alert-item:hover{transform:translateY(-1px);box-shadow:var(--shadow)}
 .pr-alert-item .name{font-size:9px;color:var(--muted)}
 .pr-alert-item b{display:block;font-size:18px;margin-top:4px}
@@ -348,7 +352,7 @@ button,input,select,textarea{font:inherit}
 .pr-kpi.cash{border-top:4px solid #9a7a49}
 .pr-filters{padding:14px;margin-bottom:12px}
 .pr-filter-row{display:grid;grid-template-columns:repeat(6,1fr);gap:8px}
-.pr-filter-row select,.pr-filter-row input{width:100%;border:1px solid var(--line);border-radius:8px;padding:8px;background:#fff;font-size:10px}
+.pr-filter-row select,.pr-filter-row input{width:100%;border:1px solid var(--line);border-radius:8px;padding:8px;background:var(--panel);font-size:10px}
 .pr-quick-filters{display:flex;gap:7px;flex-wrap:wrap;margin-top:10px}
 .pr-store-stats{margin-top:12px;padding:12px;border:1px solid var(--line);border-radius:10px;background:var(--bg)}
 .pr-store-stats-title{font-size:11px;color:var(--muted);margin-bottom:8px}
@@ -356,7 +360,7 @@ button,input,select,textarea{font:inherit}
 .pr-store-stats-grid>div{display:flex;flex-direction:column;gap:2px}
 .pr-store-stats-grid small{font-size:10px;color:var(--muted)}
 .pr-store-stats-grid b{font-size:15px}
-.pr-chip{border:1px solid var(--line);background:#fff;border-radius:999px;padding:7px 10px;font-size:10px}
+.pr-chip{border:1px solid var(--line);background:var(--panel);border-radius:999px;padding:7px 10px;font-size:10px}
 .pr-chip.active{background:var(--ink);color:#fff;border-color:var(--ink)}
 .pr-chip.attn{border-color:var(--accent);color:var(--accent)}
 .pr-batchbar{display:flex;justify-content:space-between;gap:10px;align-items:center;padding:11px 12px;border:1px solid var(--blue);background:var(--blue-soft);border-radius:10px;margin-bottom:10px;font-size:10px}
@@ -1011,7 +1015,7 @@ async function openApprovalModal(u,invoiceId,opt){
         ${(d.warnings||[]).length?`<div style="margin:6px 0;font-size:12px;color:#b45309">ℹ️ ${d.warnings.map(esc).join("<br>ℹ️ ")}</div>`:""}
       </div>
     </div>
-    ${opt&&opt.edit?`<div class="box" style="background:#fff8e6;border:1px solid #e6c96b;padding:8px 12px;border-radius:8px;margin:8px 0;font-size:12px;line-height:1.7">✏️ <b>修正モード</b>：下の表の「借方（科目・補助）」「部門」「税区分」「貸方」を直してください。<br>・<b>「✅ この内容でMFに登録」</b>…そのままMFに登録します。<b>登録すると、この内容が、この取引先の次回からの自動仕分けとして保存されます。</b><br>・<b>「💾 修正を保存（承認待ちへ）」</b>…登録せずに、直した内容を保存して、承認待ちに移します。</div>`:""}
+    ${opt&&opt.edit?`<div class="box" style="background:var(--amber-soft);border:1px solid var(--amber);padding:8px 12px;border-radius:8px;margin:8px 0;font-size:12px;line-height:1.7">✏️ <b>修正モード</b>：下の表の「借方（科目・補助）」「部門」「税区分」「貸方」を直してください。<br>・<b>「✅ この内容でMFに登録」</b>…そのままMFに登録します。<b>登録すると、この内容が、この取引先の次回からの自動仕分けとして保存されます。</b><br>・<b>「💾 修正を保存（承認待ちへ）」</b>…登録せずに、直した内容を保存して、承認待ちに移します。</div>`:""}
     <div style="margin-top:10px"><b style="font-size:13px">明細ごとの仕訳</b>　<span style="font-size:11px;color:var(--muted)">MF事業者: ${esc(d.tenant_id)}／計上日 ${esc(d.transaction_date||"")}／摘要 ${esc(d.remark||"")}</span>
       <div id="apv-edited" style="display:none;margin:4px 0;font-size:12px;color:#b45309">✏️ 内容を修正しています（修正して承認すると、新しい版のルールとして保存されます）</div>
       <div style="overflow-x:auto"><table class="invoice-table" style="font-size:12px"><thead><tr><th>#</th><th>店舗／反映先</th><th>借方（科目／補助）</th><th>部門</th><th>税区分</th><th style="text-align:right">金額（税込）</th><th>ルール</th></tr></thead><tbody>
@@ -1028,7 +1032,7 @@ async function openApprovalModal(u,invoiceId,opt){
       <div style="font-size:11px;color:var(--muted);margin:6px 0">明細の検算: ${inv.lines_check?esc(JSON.stringify({ok:inv.lines_check.ok,明細合計:inv.lines_check.sum_lines,税抜合計:inv.subtotal_amount,税額:inv.tax_amount,店舗の突合:inv.lines_check.mapping&&{確定:inv.lines_check.mapping.resolved,要確認:(inv.lines_check.mapping.low||0)+(inv.lines_check.mapping.unresolved||0)}})):"—"}</div>
       <div style="font-size:11px">${logs.map(x=>`<div>${fmtDT(x.created_at)}　${esc(x.note||x.action)}</div>`).join("")||"履歴はありません"}</div>
     </details>
-    <div id="apv-pl" style="margin-top:12px;padding:10px 12px;border:1px solid var(--line,#e4ddd0);border-radius:10px;background:#fbfaf6">
+    <div id="apv-pl" style="margin-top:12px;padding:10px 12px;border:1px solid var(--line,#e4ddd0);border-radius:10px;background:var(--bg)">
       <div style="font-weight:700;font-size:13px;margin-bottom:4px">📊 PL・広告費・精算書への反映（承認と同時に行います）</div>
       <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:center;font-size:13px">
         <label style="display:inline-flex;gap:4px;align-items:center"><input type="radio" name="apv-plmode" value="yes" checked style="width:auto">反映する（税抜）</label>
@@ -3673,7 +3677,7 @@ function cashReconPanelHtml(){
             <td>${yen(s.mgmtT)}</td><td>${yen(s.posT)}</td><td style="${s.posT-s.mgmtT?"color:var(--m-red);font-weight:700":""}">${cashReconSigned(s.posT-s.mgmtT)}</td>
             <td>${s.diffDays.length?`<span class="invoice-status err">要確認（${s.diffDays.length}日）</span>`:'<span class="invoice-status done">照合OK</span>'}</td>
             <td style="white-space:nowrap">${s.diffDays.length?`<button class="linkbtn" style="background:none;border:none;color:var(--accent);cursor:pointer;font-size:12px" data-cash-toggle="${esc(s.store)}">${open?"▲ 閉じる":"▼ 日別を見る"}</button> <button class="hq-btn" style="padding:4px 8px" data-cash-fix="${esc(s.store)}" ${fixOpen?"disabled":""}>この店舗を修正</button>`:""}</td></tr>`;
-          const det=(open&&s.diffDays.length)?`<tr><td colspan="9" style="background:#fbf9f5"><table class="invoice-table" style="margin:4px 0"><thead><tr><th>日付</th><th>現金：管理</th><th>現金：レジ</th><th>差額</th><th>全体売上：管理</th><th>全体売上：レジ</th><th>差額</th><th>内容</th></tr></thead><tbody>${s.diffDays.map(x=>{
+          const det=(open&&s.diffDays.length)?`<tr><td colspan="9" style="background:var(--bg)"><table class="invoice-table" style="margin:4px 0"><thead><tr><th>日付</th><th>現金：管理</th><th>現金：レジ</th><th>差額</th><th>全体売上：管理</th><th>全体売上：レジ</th><th>差額</th><th>内容</th></tr></thead><tbody>${s.diffDays.map(x=>{
             const dd=(Number(x.pos_cash)||0)-(Number(x.mgmt_cash)||0);
             const kind={diff:"金額が違う",missing_mgmt:"管理システムにその日が無い",missing_pos:"管理システムにだけある日（自動では消しません・要確認）"}[x.status]||x.status;
             const mt=x.mgmt_values?x.mgmt_values[5]:null, pt=x.pos_values?x.pos_values[5]:null, dt=(Number(pt)||0)-(Number(mt)||0);
@@ -3781,12 +3785,12 @@ function mlsOtherMonthsHtml_(){
 function mlsAlertHtml_(){
   const items=(RECEIVABLE_STATE.mailSales||[]).filter(mlsIsOverdue_).sort((a,b)=>mlsDate_(a).localeCompare(mlsDate_(b)));
   if(!items.length) return "";
-  const row=x=>`<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:6px 0;border-top:1px solid #f1b4b4">
+  const row=x=>`<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:6px 0;border-top:1px solid var(--line)">
       <b style="min-width:70px">${esc(mlsMonthOf_(x))}</b>
       <span style="flex:1;min-width:200px">${esc(x.vendor_name||"")}<span style="color:var(--muted);font-size:12px">　計上日 ${esc(mlsDate_(x))}</span></span>
       <b>${yen(x.amount)}</b>
       <button class="hq-btn primary" data-mls-paygo="${esc(mlsMonthOf_(x))}">入金を確認する →</button></div>`;
-  return `<div class="card" style="padding:10px 14px;margin-bottom:10px;background:#fff1f1;border:1px solid #e07a7a">
+  return `<div class="card" style="padding:10px 14px;margin-bottom:10px;background:var(--red-soft);border:1px solid var(--red)">
     <div style="font-weight:700;margin-bottom:2px">⚠️ メールの売上入金で、入金待ちのまま期限を過ぎているものが ${items.length}件あります</div>
     <div style="font-size:12px;color:var(--muted)">計上日から7日たっても「入金済み」になっていません。通帳（MF）で入金を確認して、入金済みにしてください。</div>
     ${items.map(row).join("")}</div>`;
@@ -3796,13 +3800,13 @@ function mlsBannerHtml_(){
   const items=(RECEIVABLE_STATE.mailSales||[]).filter(x=>!x.mf_journal_id&&mlsInMonth_(x)).sort((a,b)=>String(a.target_year_month||"").localeCompare(String(b.target_year_month||"")));
   if(!items.length) return "";
   const row=x=>{ const d=x.journal_draft||{}; const pend=x.current_stage==="ready_for_approval";
-    return `<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:6px 0;border-top:1px solid #f0d9a8">
+    return `<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:6px 0;border-top:1px solid var(--line)">
       <b style="min-width:70px">${esc((x.target_year_month||"").slice(0,7))}</b>
       <span style="flex:1;min-width:200px">${esc(d.remark||x.vendor_name||"")}<span style="color:var(--muted);font-size:12px">　${esc(x.vendor_name||"")}　MF: ${esc(d.tenant_id||"")}</span></span>
       <b>${yen(x.amount)}</b>
       <span class="invoice-status ${pend?"wait":"err"}">${pend?"🟡 承認待ち":"⚠️ 要確認"}</span>
       <button class="hq-btn primary" data-mls-jump="${esc(x.id)}">確認して承認 →</button></div>`; };
-  return `<div class="card" style="padding:10px 14px;margin-bottom:10px;background:#fff8e6;border:1px solid #f0b35a">
+  return `<div class="card" style="padding:10px 14px;margin-bottom:10px;background:var(--amber-soft);border:1px solid var(--amber)">
     <div style="font-weight:700;margin-bottom:2px">📧 メールで届いた売上入金が ${items.length}件、承認待ちです</div>
     ${items.map(row).join("")}</div>`;
 }
@@ -6171,7 +6175,7 @@ function renderMailDetail(u){
       </div>
       <h2>${esc(mail.subject||"（件名なし）")}</h2>
       <div class="meta">${esc(mail.from_address||"—")} 　→　 ${esc(mail.to_address||"—")}</div>
-      ${AUTO_INV_MAIL.has(mail.id)?'<div class="warn" style="margin:8px 0;padding:8px 12px;background:#fff4e5;border:1px solid #f0b35a;border-radius:8px;font-size:13px">📄 このメールの請求書は<b>すでに自動で作成されています</b>（仕訳などの確認が必要で止まっています）。<b>「請求書」タブの該当の請求書を開いて対応してください。メールから新しく処理すると二重になります。</b></div>':''}
+      ${AUTO_INV_MAIL.has(mail.id)?'<div class="warn" style="margin:8px 0;padding:8px 12px;background:var(--amber-soft);border:1px solid var(--amber);border-radius:8px;font-size:13px">📄 このメールの請求書は<b>すでに自動で作成されています</b>（仕訳などの確認が必要で止まっています）。<b>「請求書」タブの該当の請求書を開いて対応してください。メールから新しく処理すると二重になります。</b></div>':''}
       ${isStandalone?`<div class="mail-detail-grid">
         <div class="mail-mini"><small>取込日</small><b>${fmtDT(mail.received_at)}</b></div>
         <div class="mail-mini"><small>取込元</small><b>${esc(INTAKE_SOURCE_LABEL[invoice&&invoice.intake_source]||"アップロード")}</b></div>
@@ -9299,7 +9303,7 @@ async function overdueAlertRender_(){
     ...[...d.pay].sort((a,b)=>a.due_date.localeCompare(b.due_date)).slice(0,4).map(r=>`🏦 ${esc((r.vendor&&r.vendor.name)||"—")} ${yen(Number(r.amount)||0)}（期日 ${md(r.due_date)}・${over(r.due_date)}日超過）${r.debit?`<span style="color:#8a1c1c">　🔁 引き落とし口座: ${r.debit_label?esc(r.debit_label):"<b>未選択</b>"}</span>`:""}`),
     ...[...d.rec].sort((a,b)=>a.due.localeCompare(b.due)).slice(0,4).map(r=>`💰 ${esc(r.source_name)}（${esc(r.year_month)}）${yen(Number(r.expected_amount)||0)}（期日 ${md(r.due)}・${over(r.due)}日超過）`),
   ];
-  host.innerHTML=`<div style="background:#fdecea;border:2px solid #d33;border-radius:10px;padding:10px 14px;margin-bottom:12px;color:#8a1c1c">
+  host.innerHTML=`<div style="background:var(--red-soft);border:2px solid var(--red);border-radius:10px;padding:10px 14px;margin-bottom:12px;color:var(--ink)">
     <div style="font-weight:700;font-size:14px">⏰ 期日を過ぎても残っています　${d.pay.length?`支払い ${d.pay.length}件（${yen(sumP)}）`:""}${d.pay.length&&d.rec.length?"　／　":""}${d.rec.length?`入金 ${d.rec.length}件（${yen(sumR)}）`:""}</div>
     <div style="font-size:12px;margin-top:4px;line-height:1.7">${lines.join("<br>")}${d.pay.length+d.rec.length>lines.length?`<br>…ほか ${d.pay.length+d.rec.length-lines.length}件`:""}</div>
     <div style="margin-top:6px;display:flex;gap:8px;flex-wrap:wrap">${d.pay.length?'<button class="hq-btn" id="overdue-go-pay">🏦 振込待ちを開く</button>':""}${d.rec.length?`<button class="hq-btn" id="overdue-go-rec">${inRec?(RECEIVABLE_STATE.overdueOnly?"✖ 期日超過だけの表示をやめる":"💰 期日を過ぎた入金だけを表示する"):"💰 売上入金（期日超過）を開く"}</button>`:""}</div></div>`;
@@ -12466,7 +12470,7 @@ function payrollTheadHtml(){
 }
 function payrollEditPanelHtml(){
   if(!PAYROLL_STATE.editMode) return "";
-  return `<div id="payroll-edit-panel" class="card" style="margin:0 0 12px;padding:10px 14px;border:2px solid #e6b800;background:#fffbea;display:flex;flex-wrap:wrap;gap:8px;align-items:center">
+  return `<div id="payroll-edit-panel" class="card" style="margin:0 0 12px;padding:10px 14px;border:2px solid var(--amber);background:var(--amber-soft);display:flex;flex-wrap:wrap;gap:8px;align-items:center">
     <b>☑ 一括編集モード</b>
     <label style="font-size:12px;display:flex;gap:4px;align-items:center"><input type="checkbox" data-pr-selall> 表示中の全員を選択／解除</label>
     <span id="payroll-edit-count" style="font-size:13px"></span>
@@ -13105,7 +13109,7 @@ function payrollReconBankExtraHtml_(b){
 // 同じ振込指定日で、まだどの分にも結び付いていない銀行の取引（予定との差が分かるように出す）
 function payrollReconUnlinkedHtml_(d,bs){
   const us=(Array.isArray(d.bank_unlinked)?d.bank_unlinked:[]).filter(t=>t&&t.bank_transfer_id); if(!us.length) return "";
-  return `<div style="margin-top:10px;padding:10px;border:1px solid #fcd9b6;background:#fff7ed;border-radius:8px;font-size:12px">
+  return `<div style="margin-top:10px;padding:10px;border:1px solid var(--amber);background:var(--amber-soft);border-radius:8px;font-size:12px">
     <b>まだ、どの分にも結び付いていない銀行の取引</b>
     ${us.map(t=>{ const same=bs.filter(b=>b.scheduled_date===t.designated_date&&!b.bank);
       const why=!t.source_account_known?"この出金口座が、まだ設定に登録されていません"
@@ -13123,7 +13127,7 @@ function payrollReconBulkHtml_(b){
   const head=`<b>${esc(payrollReconBatchName_(b))}の分</b>: 銀行の CSV と、口座・名義・金額が合っている人が ${cand+self} 名います（1 人ずつの成功・失敗は、CSV では分かりません）。`;
   const selfNote=self?`<div style="font-size:11px;color:var(--muted);margin-top:4px">このうち ${self} 名は、あなた自身の分です。自分の分は、ほかの担当者が確認します。</div>`:"";
   if(m.eligible===true&&cand>0&&m.csv_evidence_id){
-    return `<div style="margin-top:10px;padding:10px;border:1px solid #bfdbfe;background:#eff6ff;border-radius:8px;font-size:12px">${head}
+    return `<div style="margin-top:10px;padding:10px;border:1px solid var(--blue);background:var(--blue-soft);border-radius:8px;font-size:12px">${head}
       <div style="margin-top:4px">銀行の画面で「振込正常・正常 ${esc(Number(b.bank&&b.bank.ok_count)||0)} 件・エラー 0 件」を確かめたうえで、この ${cand} 名を、まとめて「人が確認済み」にできます。</div>${selfNote}
       <div style="margin-top:8px"><button class="hq-btn" style="font-size:12px;padding:7px 12px" data-recon-act="bulk-manual" data-recon-batch="${esc(b.batch_id)}">合っている ${cand} 名を、まとめて手動で確認済みにする</button></div>
       <div style="font-size:10px;color:var(--muted);margin-top:4px">銀行の自動照合ではなく、人の確認として記録されます（「振込完了（手動確認）」と表示されます）。合っていない人は、変わりません。</div></div>`;
@@ -13338,7 +13342,7 @@ function payrollRender(){
           <div class="pr-corp-pills" style="margin-top:8px"><label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">法人（MF事業者）</label>${PAYROLL_CORPS.map(c=>`<button class="hq-btn payroll-corp-pill${payrollCorpDef_().key===c.key?" primary":""}" data-corpkey="${c.key}" style="margin-right:6px">${esc(c.label)}</button>`).join("")}</div>
           <div class="pr-sync-box"><span>給与データ<br><b>✓ 取得済み</b></span><button class="btn" id="payroll-sync-now">🔄 スマレジから今すぐ取得</button></div>
           <div class="err" id="payroll-sync-msg" style="margin-top:6px"></div>
-          <div data-payroll-status style="margin-top:10px;padding:6px 10px;border-radius:8px;font-size:12px;background:#eee;color:#666">確定状態を確認中…</div>
+          <div data-payroll-status style="margin-top:10px;padding:6px 10px;border-radius:8px;font-size:12px;background:var(--line);color:var(--muted)">確定状態を確認中…</div>
           <button data-payroll-finalize class="hq-btn primary" style="margin-top:6px;width:100%" disabled>✅ 給料確定する（本部タスクを自動発行）</button>
           <div data-payroll-wage-stop>${payrollWageGuardStopNoteHtml()}</div>
           <button data-payroll-cancel class="hq-btn" style="margin-top:6px;width:100%;display:none;color:#b3261e">↩️ 給料確定を取り消す</button>
