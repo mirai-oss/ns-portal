@@ -1940,6 +1940,13 @@
 
 ## 📍 現在の状況（各セッションが作業の頭とお尻で書き換える。ここだけ読めば「今どこまで進んでいるか」が分かる）
 
+**2026-11-26（担当F・本番反映済み）法人の振込先口座 `corporation_bank_accounts` を本番に適用（社長承認）**:
+- `supabase/2026-11-26_corporation_bank_accounts.sql` を適用（下の「未適用」の記録はこれで解消）。確認: 表あり・RLS有効（閲覧は本部/社長/マスターのみ）・anon は閲覧/操作とも不可（実呼び出しで401）・authenticated は直接の追加/更新/削除不可（登録は `smv2_set_corporation_bank_account`）・service_role は読める・登録は0件。公開中の `masters.html` に口座欄が入っていることを確認。
+- 残り: 社長が「法人・店舗マスタ」①法人で口座を入力（未入力）／実ログインでの登録操作は未確認。精算側の参照: `corporation_id` と `is_current=true` で1件（未登録の法人は0件になる前提で扱う）。
+- 戻し方: 登録がまだ0件の間は、SQLファイル冒頭の rollback（関数2つと表の削除）。入力後は削除しない。
+
+---
+
 **2026-11-26（担当F）法人の振込先口座（正本）を作成: 画面とSQLは push 済み／⚠️本番SQLは未適用（社長の承認待ち）**:
 - `supabase/2026-11-26_corporation_bank_accounts.sql`: 新規テーブル `corporation_bank_accounts`（形は `vendor_bank_accounts` と同じ・1法人につき現在の口座は1つ・前の口座は履歴で残す・削除なし）と RPC `smv2_set_corporation_bank_account`（8引数・本部/社長/マスターのみ）・`smv2_close_corporation_bank_account`。閲覧は本部/社長/マスターのみ（RLS）、直接の追加/更新/削除は不可、anon 不可、service_role は読める（精算の仕組みから参照する想定）。口座番号は7桁にゼロ埋め。
 - `masters.html`（法人・店舗マスタ ①法人）に「振込先口座」の欄を追加。**テーブルが無い間は欄が出ない**（今の画面は変わらない）。
