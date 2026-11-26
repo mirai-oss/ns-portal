@@ -112,10 +112,10 @@ const addDays=(d,n)=>{const x=new Date(d+"T00:00:00Z");x.setUTCDate(x.getUTCDate
 const dayDiff=(a,b)=>Math.round((Date.parse(b+"T00:00:00Z")-Date.parse(a+"T00:00:00Z"))/86400000);   // b − a（日）
 const mdText=d=>{const p=String(d).split("-").map(Number);return `${p[1]}/${p[2]}`};
 const mdwText=d=>`${mdText(d)}（${WD[new Date(d+"T00:00:00Z").getUTCDay()]}）`;
-const fld=(hm,off,src)=>({hm:hm||"",off:off||0,src:src||"auto"});
+const fld=(hm,off,src,sec)=>({hm:hm||"",off:off||0,src:src||"auto",sec:sec||"00"});   // sec＝秒（修正前の値だけ実際の秒。入力欄は常に "00"＝分で入れたら 0 秒の扱い）
 /* "YYYY-MM-DDTHH:MM"（JST・受け口の op=day / op=alert が返す形）→ 欄。日付のずれは実際の日付から */
-function fieldFromValue(date,v){if(!v||!date)return fld();const s=String(v);return fld(s.slice(11,16),dayDiff(date,s.slice(0,10)),"data");}
-function timesFromRow(date,row){const T={};for(const k of KEYS)T[k]=fieldFromValue(date,row&&row[COL[k]]);return T;}
+function fieldFromValue(date,v,keepSec){if(!v||!date)return fld();const s=String(v);return fld(s.slice(11,16),dayDiff(date,s.slice(0,10)),"data",keepSec?(s.slice(17,19)||"00"):"00");}
+function timesFromRow(date,row,keepSec){const T={};for(const k of KEYS)T[k]=fieldFromValue(date,row&&row[COL[k]],keepSec);return T;}
 function defaultTimes(){return {cin:fld("17:00"),cout:fld("23:00"),b1s:fld(),b1e:fld(),b2s:fld(),b2e:fld()};}
 /* 自動判定（今までの dt() と同じ規則）: 退勤・休憩は、出勤より早い時刻なら出勤の翌日 */
 function autoOff(T,k){const c=T.cin;return c.off+((k!=="cin"&&T[k].hm&&c.hm&&T[k].hm<c.hm)?1:0);}
@@ -162,14 +162,14 @@ function validateTimes(T){
 function validateReason(r){const n=[...String(r||"").trim()].length;return n<1?"理由を入れてください":n>300?"理由を 300 字以内で入れてください":null;}
 /* 表示 */
 const offMark=off=>off===0?"":off===1?"翌 ":off===-1?"前日 ":off>1?`${off}日後 `:`${-off}日前 `;
-const fieldText=f=>f&&f.hm?offMark(f.off)+f.hm:"なし";
-const sameField=(a,b)=>(a.hm||"")===(b.hm||"")&&(!a.hm||a.off===b.off);
+const fieldText=f=>f&&f.hm?offMark(f.off)+f.hm+(f.sec&&f.sec!=="00"?":"+f.sec:""):"なし";
+const sameField=(a,b)=>(a.hm||"")===(b.hm||"")&&(!a.hm||(a.off===b.off&&(a.sec||"00")===(b.sec||"00")));   // 秒も見る（修正前が 21:15:08 で 21:15 と入れたら 0 秒にそろえる修正）
 const chipLabel=off=>off===0?"当日":off===1?"翌日":off===-1?"前日":off>1?`${off}日後`:`${-off}日前`;
 /* 欄の下の小さな表示: 「修正前 15:00」／変えたら「修正前 15:00 → 16:00」。before が無い（勤怠追加）なら出さない */
 function diffInfo(before,now){
   if(!before)return {changed:false,text:""};
   const ch=!sameField(before,now);
-  return {changed:ch,text:ch?`修正前 ${fieldText(before)} → ${fieldText(now)}`:`修正前 ${fieldText(before)}`};
+  return {changed:ch,text:ch?`修正前 ${fieldText(before)} → ${fieldText(now)}${before.hm&&before.hm===now.hm&&(before.sec||"00")!=="00"?":00":""}`:`修正前 ${fieldText(before)}`};
 }
 function hasChange(BT,T){return KEYS.some(k=>!sameField(BT[k],T[k]));}
 const fmtDur=min=>`${Math.floor(min/60)}時間${min%60}分`;
@@ -431,7 +431,7 @@ async function loadDay(){
 /* 修正する人を選ぶ: 修正前の出勤・退勤・休憩を入力欄に入れる */
 function pickRow(uid){
   const r=DAY.find(x=>x.user_id===uid);if(!r)return;
-  USER=uid;BEFORE=r;BEFORE_T=timesFromRow(DATE,r);T=timesFromRow(DATE,r);SHOW_B2=beforeHasB2();MSG="";render();
+  USER=uid;BEFORE=r;BEFORE_T=timesFromRow(DATE,r,true);T=timesFromRow(DATE,r);SHOW_B2=beforeHasB2();MSG="";render();
 }
 function setQ(v){Q=v;const el=$("staff");if(el)el.innerHTML=staffListHtml();}
 function setUser(id){USER=id;const el=$("staff");if(el)el.innerHTML=staffListHtml();}

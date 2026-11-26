@@ -189,11 +189,11 @@ export function breakDeclareArgs(b: Record<string, unknown>, actorId: string): {
 }
 
 // ---- 変更が無い修正申請は受け付けない（2026-11-11 ユーザー決定。画面でも止めるが、受け口でも確かめる） ----
-//   出勤・退勤・休憩 1・休憩 2 が、いまの勤怠と分の単位まで同じなら true
+//   出勤・退勤・休憩 1・休憩 2 が、いまの勤怠と秒の単位まで同じなら true（申請の時刻は 0 秒。いまの勤怠が秒つきなら「0 秒にそろえる修正」として受け付ける）
 export type TimesLike = { clock_in?: string | null; clock_out?: string | null; break_start_1?: string | null; break_end_1?: string | null; break_start_2?: string | null; break_end_2?: string | null };
 export function sameTimes(cur: TimesLike | null | undefined, prop: TimesLike): boolean {
   if (!cur) return false;
-  const m = (v: string | null | undefined) => { if (!v) return null; const t = new Date(v).getTime(); return Number.isFinite(t) ? Math.floor(t / 60000) : NaN; };
+  const m = (v: string | null | undefined) => { if (!v) return null; const t = new Date(v).getTime(); return Number.isFinite(t) ? Math.floor(t / 1000) : NaN; };   // 2026-11-26: 秒まで見る（21:15:08 → 21:15:00 は変更。分で入れた時刻は 0 秒の扱い）
   return (["clock_in", "clock_out", "break_start_1", "break_end_1", "break_start_2", "break_end_2"] as const).every((k) => m(cur[k]) === m(prop[k]));
 }
 export const NO_CHANGE_MESSAGE = "修正前から変わっていません。直す時刻を入れてから申請してください";

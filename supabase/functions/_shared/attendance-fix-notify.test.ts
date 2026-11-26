@@ -194,10 +194,14 @@ Deno.test("RPC がまだ無いときの判定（PGRST202 / 42883）と文言", (
 });
 
 import { sameTimes } from "./attendance-fix-notify.ts";
-Deno.test("変更が無い修正申請の判定: 分の単位まで同じなら同じ。休憩の有無・1 分の違いは変更", () => {
+Deno.test("変更が無い修正申請の判定: 秒の単位まで同じなら同じ。秒・休憩の有無・1 分の違いは変更", () => {
   const cur = { clock_in: "2026-11-10T06:00:00+00:00", clock_out: "2026-11-10T15:10:00+00:00", break_start_1: "2026-11-10T10:00:00+00:00", break_end_1: "2026-11-10T11:00:00+00:00", break_start_2: null, break_end_2: null };
   assertEquals(sameTimes(cur, { ...cur }), true);
-  assertEquals(sameTimes(cur, { ...cur, clock_in: "2026-11-10T15:00:30+09:00" }), true, "秒の違い・時刻の書き方の違いは同じ扱い");
+  assertEquals(sameTimes(cur, { ...cur, clock_in: "2026-11-10T15:00:00+09:00" }), true, "時刻の書き方の違い（+09:00 と UTC）は同じ扱い");
+  assertEquals(sameTimes(cur, { ...cur, clock_in: "2026-11-10T15:00:30+09:00" }), false, "秒の違いは変更（2026-11-26）");
+  const sec = { ...cur, break_end_1: "2026-11-10T11:00:05+00:00" };
+  assertEquals(sameTimes(sec, { ...sec, break_end_1: "2026-11-10T11:00:00+00:00" }), false, "21:45:05 → 21:45:00 の 0 秒にそろえる修正は受け付ける");
+  assertEquals(sameTimes(sec, { ...sec }), true);
   assertEquals(sameTimes(cur, { ...cur, clock_out: "2026-11-10T15:11:00+00:00" }), false);
   assertEquals(sameTimes(cur, { ...cur, break_start_1: null, break_end_1: null }), false, "休憩なしにするのは変更");
   assertEquals(sameTimes({ ...cur, break_start_1: null, break_end_1: null }, cur), false, "休憩を足すのは変更");
