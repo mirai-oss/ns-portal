@@ -707,6 +707,127 @@ function plCatForEntries(cat: unknown, item: string): string {
 //   スポット人件費・店舗間移動・仕入高差額調整＝Supabase正本（spot_entries / cost_transfer_*）／請求書由来の確定行＝pl-fee-reflect が pl_entries へ直接書く（Q-C3・担当C・2026-10-21〜）
 //   法定福利費＝社員給与賞与×15%の自動計算（kd_labor_refresh）が正。請求書を店舗へ割ったシート行は二重になるので取り込まない（2026-11-27 社長決定）
 const PL_AUTO_IGNORE_SOURCES = ["自動｜スポット人件費", "店舗間移動", "自動｜仕入高差額調整", "自動｜請求書", "自動｜法定福利費"];
+// ============== 業務委託精算書→pl_entries 直接取り込み（担当A・2026-11-27） ==============
+// 従来は 精算書→GAS→DB_PL(シート)→BigQuery→autoSyncFromStgPl の順で、途中で補助科目が別の行のものにずれていた。
+// app_secrets.pl_seisan_direct_from='YYYY-MM' があるときだけ、その月以降は精算の窓口(seisan-api)から直接取り込む（無ければ何もしない＝従来どおり）。
+// 担当C との合意: 取得は sd_apiCategorizedLines（集計の決まりは窓口側が正）・結果の記録は sd_apiMarkPlSynced・
+// 未振込／該当なし／取得失敗の店舗×月は今の行を消さずに残す。戻し方: 旗を消す（次の同期で従来どおりシートから入る）。
+const SEISAN_API_URL = `${Deno.env.get("SUPABASE_URL")}/functions/v1/seisan-api`;
+async function plSeisanDirectFrom(sb: any): Promise<string> {
+  const { data, error } = await sb.from("app_secrets").select("value").eq("key", "pl_seisan_direct_from").maybeSingle();
+  if (error) throw new Error("app_secretsの読み取りに失敗: " + error.message);   // 読めないまま進めるとシート取込と二重の正本になる
+  const v = String(data?.value ?? "").trim();
+  return /^\d{4}-(0[1-9]|1[0-2])$/.test(v) ? v : "";
+}
+async function seisanCall(fn: string, args: unknown[]): Promise<any> {
+  const res = await fetch(SEISAN_API_URL, { method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" }, body: JSON.stringify({ fn, args }), signal: AbortSignal.timeout(30000) });
+  const j = await res.json().catch(() => null);
+  if (!res.ok || !j?.ok) throw new Error(`${fn} 失敗(HTTP ${res.status}): ${String(j?.error ?? "").slice(0, 200)}`);
+  return j.result;
+}
+async function seisanDirectSync(sb: any, dry = false, fromOverride?: string): Promise<any> {
+  const from = (dry && fromOverride) ? fromOverride : await plSeisanDirectFrom(sb);
+  if (!from) return { ok: true, skipped: "off" };
+  const runId = dry ? "dry" : await startRun(sb, "kd_pl_seisan_direct");
+  const marks: { name: string; ym: string; ok: boolean; error: string }[] = [];
+  const token = Deno.env.get("PL_SYNC_TOKEN") ?? "";
+  const mark = async () => {   // 記録の失敗で本処理は止めない
+    let failed = 0;
+    for (const m of marks) {
+      try { const r = await seisanCall("sd_apiMarkPlSynced", [token, m.name, m.ym, { ok: m.ok, syncedAt: new Date().toISOString(), error: m.error }]); if (r?.ok === false) failed++; }
+      catch (_) { failed++; }
+    }
+    return failed;
+  };
+  try {
+    if (!token) throw new Error("PL_SYNC_TOKENが未設定です");
+    const [ss, st] = await Promise.all([
+      sb.from("settle_stores").select("name,store_id,sort_order").order("sort_order"),
+      sb.from("stores").select("id,name,seisan_pl_categories_target"),
+    ]);
+    if (ss.error || st.error) throw new Error("店舗の読み取りに失敗: " + (ss.error ?? st.error).message);
+    const target = new Map<string, string>((st.data ?? []).filter((x: any) => x.seisan_pl_categories_target).map((x: any) => [x.id, x.name]));
+    const stores: { name: string; store_id: string; label: string }[] = (ss.data ?? []).filter((x: any) => x.store_id && target.has(x.store_id)).map((x: any) => ({ name: x.name, store_id: x.store_id, label: target.get(x.store_id)! }));
+    if (!stores.length) throw new Error("精算の対象店舗がありません");
+    type Row = { year_month: string; store_id: string | null; item: string; category: string; amount: number; memo: string; sub_item: string; source: string };
+    const old: Row[] = (await fetchAll((f, t) => sb.from("pl_entries").select("id,year_month,store_id,item,category,amount,memo,sub_item,source")
+      .is("deleted_at", null).eq("source", PL_SEISAN_CAT_MEMO).gte("year_month", from).order("id").range(f, t))) as Row[];
+    const nowYm = jstToday().slice(0, 7);
+    const months = new Set<string>(old.map((x) => x.year_month));
+    for (let ym = from; ym <= nowYm;) { months.add(ym); const [y, m] = ym.split("-").map(Number); ym = m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, "0")}`; }
+    const fresh: Row[] = []; const replaced = new Set<string>(); const status: { month: string; store: string; status: string; rows?: number }[] = [];
+    let calls = 0, errors = 0;
+    for (const ym of [...months].sort()) {
+      const results = await Promise.all(stores.map(async (s) => {
+        try { return { s, r: await seisanCall("sd_apiCategorizedLines", [token, s.name, ym]), err: "" }; }
+        catch (e) { return { s, r: null as any, err: String(e) }; }
+      }));
+      for (const { s, r, err } of results) {
+        calls++;
+        if (err) { errors++; status.push({ month: ym, store: s.label, status: "取得失敗（今の行を残す）" }); marks.push({ name: s.name, ym, ok: false, error: err.slice(0, 200) }); continue; }
+        if (!(r?.found === true && r?.paid === true && Array.isArray(r?.lines))) {
+          status.push({ month: ym, store: s.label, status: r?.found === false ? "店舗なし（残す）" : r?.paid === false ? "未振込（残す）" : "明細なし（残す）" }); continue;
+        }
+        replaced.add(`${ym}|${s.store_id}`);
+        for (const line of r.lines) {
+          const nz = plNormalizeItem(String(line.account ?? "").trim(), String(line.subAccount ?? ""));
+          const amount = Number(line.amountEx);
+          if (!nz.item || !Number.isFinite(amount)) throw new Error(`窓口の行が不正です（${s.label} ${ym}）`);
+          fresh.push({ year_month: ym, store_id: s.store_id, item: nz.item, category: plCatByItem(plSeisanGuessCat(String(line.account).trim()), nz.item, nz.sub), amount, memo: PL_SEISAN_CAT_MEMO, sub_item: nz.sub, source: PL_SEISAN_CAT_MEMO });
+        }
+        status.push({ month: ym, store: s.label, status: "精算書から取込", rows: r.lines.length });
+        marks.push({ name: s.name, ym, ok: true, error: "" });
+      }
+    }
+    if (calls && errors === calls) throw new Error("精算の窓口がすべて失敗しました（認証・停止の疑い）");
+    // 月単位で入れ替えるので、取り込まなかった店舗×月の今の行もそのまま含める
+    const next: Row[] = [...fresh, ...old.filter((x) => !replaced.has(`${x.year_month}|${x.store_id}`))];
+    const sig = (x: Row) => [x.store_id ?? "", x.item, x.category, Number(x.amount), x.memo, x.sub_item ?? ""].join("\u0001");
+    const changed: string[] = [], blocked: string[] = [];
+    for (const ym of [...months].sort()) {
+      const a = old.filter((x) => x.year_month === ym), b = next.filter((x) => x.year_month === ym);
+      if (a.map(sig).sort().join("\u0003") === b.map(sig).sort().join("\u0003")) continue;
+      // 安全装置: 月の行が全部消える／今の半分未満になるときは書かない
+      if (a.length && (!b.length || b.length < a.length * 0.5)) { blocked.push(ym); continue; }
+      changed.push(ym);
+    }
+    let result: any = { inserted: 0, updated: 0, deleted: 0 };
+    let diff: any = undefined;
+    if (dry) {
+      const group = (list: Row[]) => { const m = new Map<string, { amount: number; subs: string[] }>(); for (const x of list) { const k = `${x.year_month}|${x.store_id}|${x.item}`; const g = m.get(k) ?? { amount: 0, subs: [] }; g.amount += Number(x.amount); g.subs.push(`${x.sub_item || "（空欄）"}=${Number(x.amount)}`); m.set(k, g); } return m; };
+      const go = group(old), gn = group(next); const label = new Map(stores.map((s) => [s.store_id, s.label]));
+      const items: any[] = [];
+      for (const k of [...new Set([...go.keys(), ...gn.keys()])].sort()) {
+        const o = go.get(k), n = gn.get(k); const os = (o?.subs ?? []).sort().join(" / "), ns = (n?.subs ?? []).sort().join(" / ");
+        if (os === ns) continue;
+        const [ym, sid, item] = k.split("|");
+        items.push({ month: ym, store: label.get(sid) ?? sid, item, before: os, after: ns, amount_diff: (n?.amount ?? 0) - (o?.amount ?? 0) });
+      }
+      diff = { old_rows: old.length, new_rows: next.length, old_total: old.reduce((t, x) => t + Number(x.amount), 0), new_total: next.reduce((t, x) => t + Number(x.amount), 0), items };
+    } else if (changed.length) {
+      const { data, error } = await sb.rpc("pl_entries_bulk_upsert", { p_rows: next.filter((x) => changed.includes(x.year_month)).map(({ year_month, store_id, item, category, amount, memo, sub_item, source }) => ({ year_month, store_id, item, category, amount, memo, sub_item, source })),
+        p_mode: "replace_source", p_dry_run: false, p_actor: "seisan-direct", p_scope: changed.map((year_month) => ({ source: PL_SEISAN_CAT_MEMO, year_month })) });
+      if (error) throw new Error("pl_entries_bulk_upsert失敗: " + error.message);
+      if (!data?.ok) throw new Error("精算書の取込を検証が拒否: " + JSON.stringify(data?.errors ?? data?.error).slice(0, 300));
+      result = data;
+    }
+    if (dry) return { ok: true, dry: true, from, changed_months: changed, blocked_months: blocked, errors, status, diff };
+    for (const m of marks) if (m.ok && blocked.includes(m.ym)) { m.ok = false; m.error = "PLの行が大きく減るため反映を止めました（担当Aが確認）"; }
+    const markFailed = await mark();
+    const note = [errors ? `取得失敗${errors}件` : "", blocked.length ? `行が大きく減るため止めた月: ${blocked.join("、")}` : "", markFailed ? `反映記録の失敗${markFailed}件` : ""].filter(Boolean).join(" / ");
+    const ok = !errors && !blocked.length;
+    await finishRun(sb, runId, ok, next.length, note || undefined, "kd_pl_seisan_direct");
+    return { ok, from, changed_months: changed, blocked_months: blocked, errors, mark_failed: markFailed, ...result };
+  } catch (e) {
+    if (!dry) {
+      for (const m of marks) if (m.ok) { m.ok = false; m.error = String(e).slice(0, 200); }
+      await mark();
+      await finishRun(sb, runId, false, 0, String(e), "kd_pl_seisan_direct");
+    }
+    throw e;
+  }
+}
+
 // ハイブリッド同期: stg_pl(GAS bqGetPL)の「自動連携行」だけを正本pl_entriesへ反映（(source×年月)単位のreplace_source）。
 // 手入力(source='手入力')には触れない。内容が変わった(source×年月)だけを入れ替える（毎時回しても履歴・ソフト削除行が増えない）。
 // 安全装置: 既存の自動行が20行以上で、今回の自動行が半分未満なら（取得の部分応答の疑い）中止。
@@ -722,6 +843,9 @@ async function autoSyncFromStgPl(sb: any, dry = false, ignoreFromOverride?: stri
     // app_secrets.pl_ignore_invoice_gas_from='YYYY-MM' を入れた時点から有効（その年月以降の行が対象）。未設定なら何もしない。切替の連絡があるまで入れない。
     let ignoreFrom = ignoreFromOverride ?? "";
     if (!ignoreFrom) { const { data: ig } = await sb.from("app_secrets").select("value").eq("key", "pl_ignore_invoice_gas_from").maybeSingle(); ignoreFrom = (ig?.value ?? "").trim(); }
+    // 精算書の直接取り込み(seisanDirectSync)の月は、シート由来を新旧の両側で対象外にする（片側だけだと行が消える）
+    const directFrom = await plSeisanDirectFrom(sb);
+    const isDirect = (source: string, ym: string) => !!directFrom && source === PL_SEISAN_CAT_MEMO && ym >= directFrom;
     type R = { year_month: string; store_id: string | null; item: string; category: string; amount: number; memo: string; sub_item: string; source: string };
     const rows: R[] = [];
     for (let r = 1; r < raw.length; r++) {
@@ -729,6 +853,7 @@ async function autoSyncFromStgPl(sb: any, dry = false, ignoreFromOverride?: stri
       const memo = String(row[5] ?? "").trim(); const source = plAutoSourceOf(memo);
       if (!source || PL_AUTO_IGNORE_SOURCES.includes(source)) continue;   // 仕入高差額調整・店舗間移動もSupabaseが正本（cost_transfer_*・2026-10-13）   // スポット人件費はSupabase正本(spot_entries)から作る（2026-10-13）
       const ym = ymOf(row[0]); if (!ym) { badYm++; continue; }
+      if (isDirect(source, ym)) continue;
       // 対象は pl-fee-reflect 系の旧GAS行＝source が「自動｜<科目>」。広告費の自動計上（媒体販促費（自動計上））や運営委託費（自動計上）も補助科目に『外部連携:』を持つが、請求書のpl直接書込の対象外なので無視しない
       if (ignoreFrom && /^\d{4}-\d{2}$/.test(ignoreFrom) && ym >= ignoreFrom && source.startsWith("自動｜") && String(row[6] ?? "").includes("外部連携:")) { ignoredInvoiceGas++; continue; }
       const nm = String(row[1] ?? "").trim(); let sid: string | null = null;
@@ -738,8 +863,9 @@ async function autoSyncFromStgPl(sb: any, dry = false, ignoreFromOverride?: stri
       const nz = plNormalizeItem(item0, sub0); const item = nz.item;
       rows.push({ year_month: ym, store_id: sid, item, category: plCatByItem(row[3], item, nz.sub), amount: num(row[4]), memo, sub_item: nz.sub, source });   // 店舗間移動・媒体販促費（自動計上）は補助科目を持たない（2026-10-14: 後者はG列に別連携の「PayPay　外部連携:ID」が混入して表示された）（シートのG列に別連携の「名前　外部連携:ID」が混入していたため無視する・2026-10-13）
     }
-    const old = await fetchAll((f, t) => sb.from("pl_entries").select("id,year_month,store_id,item,category,amount,memo,sub_item,source")
-      .is("deleted_at", null).neq("source", "手入力").not("source", "in", `(${PL_AUTO_IGNORE_SOURCES.map((x) => `"${x}"`).join(",")})`).order("id").range(f, t));
+    const old = (await fetchAll((f, t) => sb.from("pl_entries").select("id,year_month,store_id,item,category,amount,memo,sub_item,source")
+      .is("deleted_at", null).neq("source", "手入力").not("source", "in", `(${PL_AUTO_IGNORE_SOURCES.map((x) => `"${x}"`).join(",")})`).order("id").range(f, t)))
+      .filter((x: any) => !isDirect(x.source, x.year_month));
     if (old.length >= 20 && rows.length < old.length * 0.5) throw new Error(`自動行が${rows.length}件（既存${old.length}件の半分未満）のため中止（部分応答の疑い）`);
     const sig = (x: any) => [x.store_id ?? "", x.item, x.category, Number(x.amount), x.memo, x.sub_item ?? ""].join("\u0001");
     const group = (list: any[]) => { const m = new Map<string, string[]>(); for (const x of list) { const k = `${x.source}\u0002${x.year_month}`; (m.get(k) ?? m.set(k, []).get(k)!).push(sig(x)); } for (const v of m.values()) v.sort(); return m; };
@@ -775,7 +901,11 @@ async function autoSyncFromStgPl(sb: any, dry = false, ignoreFromOverride?: stri
 async function bqGetPLRows(sb: any, opts: { skipAuto?: boolean } = {}): Promise<any[][]> {
   const { data: flag } = await sb.from("app_secrets").select("value").eq("key", "pl_source").maybeSingle();
   if ((flag?.value ?? "").trim() === "entries") {
-    if (!opts.skipAuto) await autoSyncFromStgPl(sb);   // 手入力=正本(pl_entries) / 自動行=stg_plから取り込み（ハイブリッド）
+    if (!opts.skipAuto) {
+      await autoSyncFromStgPl(sb);   // 手入力=正本(pl_entries) / 自動行=stg_plから取り込み（ハイブリッド）
+      // 精算書は直接取り込み（旗が無ければ何もしない）。失敗してもPLの集計は今ある行で続ける（失敗はkd_sync_runsと通知に残る）
+      try { await seisanDirectSync(sb); } catch (e) { console.error("seisanDirectSync", String(e)); }
+    }
     const { data: st } = await sb.from("stores").select("id,name,dash_store_name");
     const nameById = new Map<string, string>((st ?? []).map((x: any) => [x.id, String(x.dash_store_name || x.name || "")]));
     const rows = await fetchAll((f, t) => sb.from("pl_entries").select("id,year_month,store_id,item,category,amount,memo,sub_item,source")
@@ -2084,6 +2214,7 @@ Deno.serve(async (req) => {
         break;
       }
       case "pl_auto_sync": result = await autoSyncFromStgPl(sb, body.dry === true, body.dry === true && typeof body.ignore_from === "string" ? body.ignore_from : undefined); break;
+      case "pl_seisan_direct": result = await seisanDirectSync(sb, body.dry !== false, body.dry !== false && typeof body.from === "string" && /^\d{4}-\d{2}$/.test(body.from) ? body.from : undefined); break;   // 既定は試し実行（書かない・記録もしない）
       case "pl_import": {   // 正本pl_entriesへの1回限りの取り込み（kd_pl_entriesから）。force=trueで既存があっても追加
         const { data, error } = await sb.rpc("pl_entries_import_from_kd", { p_actor: String(body.actor ?? "import"), p_force: body.force === true, p_reset: body.reset === true });
         result = error ? { ok: false, error: error.message } : data; break;
