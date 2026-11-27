@@ -38,6 +38,7 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { zeroPlSheet } from "../_shared/pl-sheet.ts";
 import { operatorCorpMap } from "../_shared/store-operator.ts";
+import { type Debit, pickSubAccount } from "../_shared/seisan-sub.ts";
 import { clearSeisanForInvoice, removeSeisanLines } from "../_shared/seisan-lines.ts";
 
 const cors: Record<string, string> = {
@@ -543,6 +544,21 @@ Deno.serve(async (req: Request) => {
       const { data: userData } = rawToken ? await uc.auth.getUser(rawToken) : { data: { user: null } } as any;
       const monthKey = yearMonth.slice(0, 7);
       const results: { store: string; ok: boolean; error?: string; attachments?: number }[] = [];
+      // 2026-11-27: 補助科目が空のときは、MFの仕訳（この請求書）の内訳を使う
+      let debits: Debit[] | null = null;
+      let journalError = "";
+      if (!subAccountName) {
+        const { data: j } = await uc.from("invoices").select("mf_journal_id, mf_tenant_id").eq("id", invoiceId).maybeSingle();
+        if (j?.mf_journal_id) {
+          const gj = await fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/mf-journal`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", apikey: Deno.env.get("SUPABASE_ANON_KEY")!, Authorization: req.headers.get("Authorization") ?? "" },
+            body: JSON.stringify({ action: "get_journal", journal_id: j.mf_journal_id, tenant_id: j.mf_tenant_id || "default" }),
+          }).then(async (r) => ({ ok: r.ok, body: await r.json().catch(() => null) })).catch(() => ({ ok: false, body: null as any }));
+          if (gj.ok && Array.isArray(gj.body?.branches)) debits = gj.body.branches.map((x: any) => x.debit).filter(Boolean);
+          else journalError = "MFの仕訳を確認できませんでした。補助科目を入力してから登録してください";
+        }
+      }
       let anyOk = false;
 
       // 2026-09-10追加：ユーザー要望「請求書のところから仕分け・登録したときの添付ファイルも
@@ -572,18 +588,28 @@ Deno.serve(async (req: Request) => {
         // 重複防止（同じ請求書×科目×補助科目×店舗×税率の既存行があれば、それを更新扱いにする＝同じsourceKeyで上書き）
         // 2026-10-13修正：税率もキーに含める。従来は税率違い（8%と10%）の仕入が同じキーになり、片方がもう片方を上書きして精算書に1行しか入らなかった
         const lineTax: string = a.tax_rate || taxRate;
+        if (journalError) { results.push({ store: s.name, ok: false, error: journalError }); continue; }
+        let subName = subAccountName;
+        if (!subName && debits) {
+          const pick = pickSubAccount(debits, accountName, Number(a.amount), lineTax);
+          if ("choices" in pick) { results.push({ store: s.name, ok: false, error: `補助科目を選んで入力してください（仕訳の内訳: ${pick.choices.join("／")}）` }); continue; }
+          subName = pick.sub;
+        }
         const mkQuery = () => {
-          let q = uc.from("invoice_pl_reflections").select("id, seisan_line_key, allocations")
+          let q = uc.from("invoice_pl_reflections").select("id, seisan_line_key, allocations, sub_account_name")
             .eq("invoice_id", invoiceId).eq("account_name", accountName).eq("reflection_route", "seisan")
             .eq("seisan_store_name", s.seisan_store_name).eq("tax_rate", lineTax);
-          q = subAccountName ? q.eq("sub_account_name", subAccountName) : q.is("sub_account_name", null);
           return q;
         };
         // 2026-11-20: 仕訳の明細ごとに精算書へ入れる（a.line_no＝仕訳の何行目か）。同じ店舗・科目・税率でも明細が複数あれば別の行にする。
         // 既存の行（line_noなし＝従来の合算行）は、まだ他の明細が使っていなければ最初に来た明細が引き継いで更新する（再反映しても二重にならない）
         const lineNo: number | null = Number.isFinite(Number(a.line_no)) && Number(a.line_no) > 0 ? Number(a.line_no) : null;
         const { data: rows0 } = await mkQuery();
-        const rows: any[] = rows0 ?? [];
+        // 同じ補助科目の行を優先し、無ければ補助科目が空の行を引き継ぐ（補助科目を付けて登録し直しても二重にしない）
+        const all: any[] = rows0 ?? [];
+        const same = all.filter((r) => String(r.sub_account_name ?? "") === subName);
+        const blank = all.filter((r) => !r.sub_account_name && (!subAccountName || Math.abs(Number(r.allocations?.[0]?.amount) - Number(a.amount)) <= 3));
+        const rows: any[] = same.length ? same : blank;
         const existing: { id: string; seisan_line_key: string | null } | undefined = lineNo != null
           ? (rows.find((r) => Number(r.allocations?.[0]?.line_no) === lineNo) ?? rows.find((r) => !r.allocations?.[0]?.line_no))
           : rows[0];
@@ -599,7 +625,7 @@ Deno.serve(async (req: Request) => {
         let sourceKey: string | undefined = (existing ?? takeover)?.seisan_line_key ?? undefined;
         if (!reflectionId) {
           const { data: newRow, error: insErr } = await uc.from("invoice_pl_reflections").insert({
-            invoice_id: invoiceId, account_name: accountName, sub_account_name: subAccountName || null,
+            invoice_id: invoiceId, account_name: accountName, sub_account_name: subName || null,
             year_month: yearMonth, allocations: [a], reflected_by: userData?.user?.id ?? null,
             reflection_route: "seisan", seisan_store_name: s.seisan_store_name,
             item_name: itemName, tax_rate: lineTax,
@@ -610,14 +636,14 @@ Deno.serve(async (req: Request) => {
         } else {
           await db.from("invoice_pl_reflections").update({
             allocations: [a], year_month: yearMonth, item_name: itemName, tax_rate: lineTax,
-            account_name: accountName, sub_account_name: subAccountName || null,
+            account_name: accountName, sub_account_name: subName || null,
           }).eq("id", reflectionId);
         }
 
         try {
           const gasRes = await seisanCall("sd_apiAddExternalLine", [tk, s.seisan_store_name, monthKey, {
             sourceKey, item: itemName, amount: Number(a.amount), tax: lineTax,
-            account: accountName, subAccount: subAccountName || undefined, note: a.note || body?.note || undefined,
+            account: accountName, subAccount: subName || undefined, note: a.note || body?.note || undefined,
           }]);
           if (!gasRes.ok) {
             throw new Error(gasRes.error || (gasRes.locked ? "この月は振込済みのため精算書への登録・更新はできません" : "精算書側で失敗しました"));
