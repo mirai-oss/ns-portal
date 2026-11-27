@@ -1,0 +1,29 @@
+name: 精算書→PL 直接取り込みの試し実行（書き込みなし）
+
+# 担当A。keiei-kd-refresh の op=pl_seisan_direct を dry=true 固定で呼ぶ（pl_entries も反映記録も書かない）。
+# 公開リポジトリのログに残るため、出力は件数と成否だけ（店舗名・金額・内訳は出さない）。
+
+on:
+  workflow_dispatch:
+
+jobs:
+  dry:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: 試し実行
+        env:
+          SR_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          RES=$(curl -s -m 200 -w "\n%{http_code}" -X POST "https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/keiei-kd-refresh" \
+            -H "Authorization: Bearer $SR_KEY" -H "Content-Type: application/json" \
+            -d '{"op":"pl_seisan_direct","dry":true,"from":"2026-08"}')
+          CODE=$(echo "$RES" | tail -1)
+          echo "HTTP $CODE"
+          echo "$RES" | sed '$d' | jq -c '{ok, dry, from, changed_months, blocked_months, errors,
+            statuses: ((.status // []) | group_by(.month + " " + .status) | map({k: (.[0].month + " " + .[0].status), n: length})),
+            old_rows: .diff.old_rows, new_rows: .diff.new_rows,
+            total_same: (.diff.old_total == .diff.new_total),
+            changed_items: ((.diff.items // []) | length),
+            amount_changed_items: ((.diff.items // []) | map(select(.amount_diff != 0)) | length)}'
+          test "$CODE" = "200"
