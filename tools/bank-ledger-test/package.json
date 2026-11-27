@@ -1,0 +1,8 @@
+{
+  "name": "bank-ledger-test",
+  "private": true,
+  "type": "module",
+  "description": "銀行入金の正本（段階1 SQL）の権限・守り・再実行・ロールバックを、メモリ上の Postgres（PGlite）で検証する。本番には接続しない。",
+  "scripts": { "test": "node run.mjs" },
+  "devDependencies": { "@electric-sql/pglite": "0.2.17" }
+}

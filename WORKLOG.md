@@ -12,6 +12,7 @@
 - 原因（確定）: 同じ入金が3つの道で画面に届き、更新時刻がそろわない。シート直読み=14:00の取込で即反映／BigQuery（stg_deposit）=朝08:34・11:01の同期のみ／Supabase kd_deposit_*=BigQuery経由でさらに遅れ。BigQuery失敗時は画面がシート直読みに切り替わり数字が急に変わる。実測で2日分（11/26・11/27）だけ不一致。他の原因候補（取引時刻を「分」に切り捨てる重複判定／kd_deposit_dailyの明細50件上限／旧表記の店舗名／2つのシートのずれ）は未確定。
 - 追加（コミット済み・**本番未適用**）: `supabase/2026-11-27_bank_ledger_stage1.sql`（新しい空の箱: bank_accounts・bank_import_files・bank_transactions・bank_transaction_events・bank_account_sync_state・bank_deposit_notes／関数 bank_deposit_daily・bank_sync_status・bank_tx_correct／非公開バケット bank-csv-originals／削除不可・確定行の保護・自動履歴のトリガー。既存への変更なし）、`…_ROLLBACK.sql`（データが入っていたら止まる）、`docs/手順書_銀行入金の正本化_段階1_2026-11-27.html`（設計・移行方式・変更対象ファイル・依存関係・ロールバック・テスト）。
 - 判明した事実: 入金DBは銀行CSV由来だけでなく、手入力の「調整」系の行が含まれ（現在の数字に入っている）、GMOあおぞらの入金（摘要「ATM セブン銀行」）もすでに手動取込で入っている。GMOサンプルCSVは残高の鎖が全行つながり、旧シートと1行ずつ一致。PayPayのCSVは「取引順番号」で一意。
+- 【第2版 2026-11-27 レビュー7点を反映・まだ本番未適用】原本（bank_csv_originals）と取得履歴（bank_import_files）を分離／チーム長は「担当チームの店舗＋所属店舗」だけに（kd_ の「チーム長=全店」とは合わせない）／集計は照合待ち・照合済みだけ入れ、保留・取込途中は別列／原本の事実は不変・訂正は adj_* 列／ロールバックは原本ファイル・全表を確認してから／バケットは既存設定を上書きしない。テスト `tools/bank-ledger-test/`（PGlite・193項目・本番に接続しない）。
 - **残り**: ユーザーがSQLを確認→承認→`apply_sql.py --dry-run`→適用。GMOのログイン後の追加認証・8口座の切り替えは未確認（ID・パスワードはユーザーが .env に保存する。値はここに書かない）。売上DBの「入金チェック」メニューを今も使っているかを確認してから、GAS側の停止を判断。旧シートの6列の取り出し方法（CSVダウンロード or GAS読み取り専用action）をユーザーが選ぶ。
 - 注意: GAS・BigQuery・スプレッドシート・既存の取込（paypay-bank）は**まだ何も止めていない・変えていない**。
 
