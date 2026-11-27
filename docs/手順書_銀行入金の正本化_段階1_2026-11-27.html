@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>銀行入金の正本化（Supabase一本化）— 段階1の設計と手順</title>
+<style>
+:root{--bg:#fff;--ink:#1b2430;--muted:#5d6b7a;--line:#d9e0e8;--card:#f5f8fb;--ok:#0f7b4b;--warn:#a85a00;--bad:#b3261e;--blue:#0b5cad;--code:#eef2f7}
+@media(prefers-color-scheme:dark){:root{--bg:#0f141a;--ink:#e6edf3;--muted:#9aa7b4;--line:#2a3541;--card:#171e26;--ok:#4cc38a;--warn:#f0b35a;--bad:#ff8a80;--blue:#79b8ff;--code:#1d2630}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.75 -apple-system,"Hiragino Sans","Yu Gothic",sans-serif}
+main{max-width:980px;margin:0 auto;padding:20px 16px 80px}
+h1{font-size:24px;margin:8px 0 4px}
+h2{font-size:20px;margin:36px 0 10px;padding-top:10px;border-top:2px solid var(--line)}
+h3{font-size:17px;margin:22px 0 6px}
+.sub{color:var(--muted);font-size:14px}
+.box{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 16px;margin:12px 0}
+.ok{border-left:5px solid var(--ok)}.warn{border-left:5px solid var(--warn)}.bad{border-left:5px solid var(--bad)}
+table{border-collapse:collapse;width:100%;margin:10px 0;font-size:14.5px}
+th,td{border:1px solid var(--line);padding:7px 9px;text-align:left;vertical-align:top}
+th{background:var(--card)}
+code,pre{background:var(--code);border-radius:6px;font-family:ui-monospace,Menlo,monospace;font-size:13px}
+code{padding:1px 5px}pre{padding:10px 12px;overflow-x:auto;white-space:pre-wrap}
+.tbl{overflow-x:auto}
+.tag{display:inline-block;font-size:12px;border:1px solid var(--line);border-radius:999px;padding:0 8px;color:var(--muted)}
+li{margin:3px 0}
+</style>
+</head>
+<body>
+<main>
+<h1>銀行入金の正本化（Supabase一本化）— 段階1の設計と手順</h1>
+<div class="sub">※この文書は公開リポジトリにあるため、口座番号・金額の実額は書いていません。<br>作成 2026-11-27 ／ 状態：<b>下書き（本番には何も適用していません）</b> ／ 対象：PayPay銀行・GMOあおぞらネット銀行</div>
+
+<div class="box ok">
+<b>先に結論</b>
+<ul>
+<li>段階1のSQLは「新しい空の箱を足すだけ」です。適用しても、いまの入金管理画面・取込・分類・照合・消込は<b>何も変わりません</b>。</li>
+<li>本番への適用は、このSQLの中身を見てもらい、<b>承認をもらってから</b>です（まだ流していません）。</li>
+<li>GMOあおぞらの重複判定は、CSVの並び順に頼らず、<b>残高の鎖</b>（前の残高＋入金−出金＝その行の残高）で確かめます。確かめられない行は<b>保留</b>にします。</li>
+<li>GMOの実サンプル（じんべぇ川崎の口座）は、<b>残高の鎖が398行すべてつながり</b>、既存の入金DBの191〜192行と<b>1行ずつ一致</b>しました。</li>
+</ul>
+</div>
+
+<h2>1. 全体の段階（どこで何が変わるか）</h2>
+<div class="tbl"><table>
+<tr><th>段階</th><th>やること</th><th>本番への影響</th><th>承認が要る所</th></tr>
+<tr><td><b>1</b></td><td>新しい箱（テーブル・権限・守り・非公開バケット）を足す。<b>←今回</b></td><td>追加のみ。見た目も数字も変わらない</td><td>SQLを流す前</td></tr>
+<tr><td>2</td><td>取込関数（重複判定・結び付け・保留）と、PayPayの取得ジョブに「原本を保存→記録→確定」を足す。いまのGAS送信は<b>止めず</b>、並行で書く</td><td>取得ジョブの動きが増える（既存の送信は同じ）</td><td>配置の前</td></tr>
+<tr><td>3</td><td>旧シートの入金DBをSupabaseへ移す（§3）</td><td>追加のみ（旧シートは触らない）</td><td>実行の前</td></tr>
+<tr><td>4</td><td>新旧を14日間並行比較（店舗別・日付別の件数と金額）。不一致は一覧にして報告</td><td>なし</td><td>結果の報告</td></tr>
+<tr><td>5</td><td>GMOあおぞらの取込（CSV取込→Playwright取得）</td><td>新しいジョブ（最初の1回はあなたの端末で）</td><td>初回実行の前</td></tr>
+<tr><td>6</td><td>画面の参照先をSupabaseに切り替え。「取得履歴・CSV確認」を追加。BigQuery失敗時のシート直読みは廃止</td><td>画面の数字の元が変わる</td><td>切り替えの前</td></tr>
+<tr><td>7</td><td>GAS入金DBへの書き込みを停止。旧シートは読み取り専用の履歴として残す</td><td>旧経路の停止</td><td>停止の前（§8の確認が全部済んでから）</td></tr>
+</table></div>
+
+<h2>2. 段階1のSQL（<code>supabase/2026-11-27_bank_ledger_stage1.sql</code>）</h2>
+<h3>2-1. 作るもの</h3>
+<div class="tbl"><table>
+<tr><th>名前</th><th>役割</th><th>誰が読める</th></tr>
+<tr><td><code>bank_accounts</code></td><td>入金を受ける口座（銀行・口座番号・法人・店舗）。店舗が未確定の口座も持てる（GMOの未定3口座）</td><td>本部・社長・マスター</td></tr>
+<tr><td><code>bank_import_files</code></td><td>取得履歴・CSV原本の台帳。<b>取り直したCSVも毎回1行</b>残す。SHA-256・置き場所・期間・結果・エラー</td><td>本部・社長・マスター</td></tr>
+<tr><td><code>bank_transactions</code></td><td><b>明細の正本</b>。法人・店舗（未確定可）・口座・日付・時刻・摘要・入金・出金・残高・取得元・取得履歴ID・重複判定・分類・確認・確定</td><td>本部・社長・マスター</td></tr>
+<tr><td><code>bank_transaction_events</code></td><td>訂正・状態変更の履歴（<b>修正前・修正後・修正者・日時</b>）。追記専用</td><td>本部・社長・マスター</td></tr>
+<tr><td><code>bank_account_sync_state</code></td><td>口座ごとの取得状態。「集計が未完了」のとき古い数字を最新と見せないための印</td><td>本部・社長・マスター</td></tr>
+<tr><td><code>bank_deposit_notes</code></td><td>入金備考（いまはシートのDB_入金備考。日付×店舗で1件）</td><td>見る＝いまと同じ範囲／書く＝社長・本部だけ（いまと同じ）</td></tr>
+<tr><td><code>bank_deposit_daily()</code>（関数）</td><td><b>日次集計の唯一の元</b>。明細から作る。店舗ごとに見える範囲を絞る（店長は自店舗、チーム長・本部・社長は全店）</td><td>店舗ごとに絞られる</td></tr>
+<tr><td><code>bank_sync_status()</code>（関数）</td><td>店舗ごとの取得状態（口座番号は出さない）</td><td>同上</td></tr>
+<tr><td><code>bank_tx_correct()</code>（関数）</td><td>確定済みの明細を直せる<b>唯一の入り口</b>。理由が必須</td><td>本部・社長・マスター</td></tr>
+<tr><td>バケット <code>bank-csv-originals</code></td><td>CSV原本の非公開置き場。上書き・削除は誰もできない</td><td>本部・社長・マスター</td></tr>
+</table></div>
+
+<h3>2-2. 守りの仕組み（数字を守る6点）</h3>
+<ol>
+<li>確定済みの明細は直接変えられない。直すには <code>bank_tx_correct</code>（理由必須）を使う。</li>
+<li>明細は削除できない（誤りは訂正で直す）。</li>
+<li>どんな変更も、<b>修正前・修正後・修正者・日時</b>が自動で履歴に残る（手続きを通らない経路でも漏れない）。</li>
+<li>履歴は追記専用（更新・削除できない）。</li>
+<li>取得履歴の「原本のSHA-256・置き場所」は、入ったら変えられない。<b>原本が置き場に無い取り込みは確定できない</b>（保存に失敗したら確定の前に止まる）。</li>
+<li>同じ取引は同じ「重複判定キー」で1行にまとまる（データベースの制約で二重登録を防ぐ）。</li>
+</ol>
+
+<h3>2-3. 適用しても変わらないこと／適用後の確認</h3>
+<div class="box ok">
+既存テーブル・既存関数・既存バケットは<b>1つも変えません</b>（参照するだけ：<code>users</code>・<code>user_stores</code>・<code>stores</code>・<code>corporations</code>）。新しい箱は空のままです。<br>
+適用後は、ファイル末尾の確認用SQL（4行）を1回流して、「0件」「全部RLSあり」「匿名は読めない」「バケットは非公開」を確かめます。
+</div>
+<div class="box warn">
+<b>まだやっていないこと：</b>このSQLは、本番に対して一度も流していません（構文の空振り実行も、承認前なので控えました）。承認をいただいたら、まず <code>python3 scripts/apply_sql.py supabase/2026-11-27_bank_ledger_stage1.sql --dry-run</code>（流して必ず元に戻す確認）→問題なければ本適用、の順で行います。
+</div>
+
+<h2>3. 旧データの移行方式（段階3）</h2>
+<h3>3-1. 旧シートの実態（調べた結果）</h3>
+<ul>
+<li>入金DBは約5,660行（2024-01〜2026-11-26）。<b>銀行CSV由来だけではありません</b>。</li>
+</ul>
+<div class="tbl"><table>
+<tr><th>摘要の種類</th><th>行数</th><th>由来</th></tr>
+<tr><td>ローソンATM入金／セブンATM入金／イオンATM入金</td><td>約4,400</td><td>PayPay銀行CSV（自動取込＋以前の手動取込）</td></tr>
+<tr><td>ATM セブン銀行</td><td>627（2026-05〜）</td><td><b>GMOあおぞらのCSV（すでに手動で取り込まれている）</b></td></tr>
+<tr><td>Ｅ－ｎｅｔＡＴＭ／三井住友ＡＴＭ／ゆうちょＡＴＭ</td><td>約550</td><td>手動取込（他行ATM）</td></tr>
+<tr><td>調整分／調整／sss入金分／sssへ入金</td><td>79（金額は大きい。数字はこの文書には書かない）</td><td><b>手入力の調整。銀行CSVには無い</b></td></tr>
+</table></div>
+<div class="box warn">この調整行は、いまの入金の数字に<b>含まれています</b>。正本化で落とすと数字が変わるので、そのまま移します（<code>tx_kind='adjustment'</code>・<code>counts_as_sales_deposit=true</code>）。扱いの見直しは、移行後に別途相談します。</div>
+
+<h3>3-2. 移行のルール</h3>
+<ol>
+<li><b>シート1行＝明細1行</b>。同日・同額の行も、<b>統合も削除もしません</b>（行の並び順を <code>legacy_seq</code> に残す）。</li>
+<li>各行に、元の6列（店舗・日付・入金額・摘要・取引時刻・取込日時）を <code>legacy_payload</code> にそのまま保存する（いつでも元に戻せる）。</li>
+<li>状態は全行 <b>「移行済み・照合待ち」</b>（<code>match_status='legacy_pending'</code>）。確定状態は <code>open</code>。</li>
+<li>店舗は、いまGASが使っている表記ゆれの表（<code>store_aliases</code>）で店舗IDに解決する。<b>解決できない行は店舗IDを空のまま移し</b>、一覧にして報告する（いまのSupabase集計も、店舗名が合わない行は集計から外れているので、数字は変わらない）。</li>
+<li>同じ移行を2回流しても二重にならない（<code>legacy_batch + legacy_seq</code> の一意制約）。</li>
+<li>入金DBは2つのシート（売上DBとダッシュボード）にあるため、<b>両方を取り出して突き合わせ</b>、違いがあれば先に報告する（片方が自動連携の数式のときは、その旨も）。</li>
+</ol>
+<h3>3-3. 取り出し方（どちらかを選んでもらいます）</h3>
+<div class="tbl"><table>
+<tr><th>方法</th><th>内容</th><th>あなたの作業</th></tr>
+<tr><td><b>A（おすすめ）</b></td><td>入金DBの2つのタブを、スプレッドシートの「ファイル→ダウンロード→CSV」で保存して渡す</td><td>2回の操作（各タブ1回）。GASは触らない</td></tr>
+<tr><td>B</td><td>GASに「読み取り専用で入金DBの6列を返す」操作を足す</td><td>GASの貼り替えと再デプロイが必要</td></tr>
+</table></div>
+<div class="sub">※現在のAPIは摘要・取引時刻を返さない形があるため、移行には6列の生データが要ります。</div>
+
+<h3>3-4. 移行後の確認（一覧にして報告します）</h3>
+<ul>
+<li>行数：シートの行数＝移した行数。</li>
+<li>店舗別×日付別の件数と金額：シート＝正本の集計（店舗IDが空の行は別枠で件数と金額を報告）。</li>
+<li>同日同額の複数行：グループ数と行数（旧シートの実測では、同じ店舗・日付・金額の組が <b>32組・68行</b>）。<b>全て個別の行として移る</b>ことを確認。</li>
+<li>差が出た店舗・日付は、原因を付けて一覧にします。</li>
+</ul>
+
+<h2>4. 重複判定の設計（旧シートの行と、新しいCSVの行をどう結ぶか）</h2>
+<h3>4-1. PayPay銀行</h3>
+<ul>
+<li>CSVの「取引順番号」を使う。<b>口座＋日付＋取引順番号</b>で一意（実CSV 10口座・943行で、重複0を確認）。</li>
+<li>いまのGASは、取引時刻を「分」までに切り捨てて判定するため、同じ分・同額の別取引を同じものとみなす恐れがあります（実CSVに1組あり。実際に取りこぼしているかは移行時に確認）。新しい方式では起きません。</li>
+<li>CSVの「残高」でも鎖を確かめ、つながらない行は保留にする（GMOと同じ検証）。</li>
+</ul>
+<h3>4-2. GMOあおぞら（並び順に頼らない）</h3>
+<div class="box">
+サンプルのCSV（じんべぇ川崎の口座・2026-06-01〜11-26・398行）の実測：
+<ul>
+<li>列は「日付・摘要・入金金額・出金金額・残高・メモ」の6列。<b>取引時刻も取引番号もありません</b>。新しい日付が上。文字コードはShift-JIS。</li>
+<li><b>残高の鎖：398行すべてつながった</b>（切れ目0）。</li>
+<li>「日付＋摘要＋入金＋出金」だけだと、同じになる組が<b>19組</b>ある（＝並び順や金額だけでは、別取引と見分けられない）。</li>
+<li>「日付＋摘要＋入金＋出金＋<b>残高</b>」にすると、同じになる組は<b>0</b>。残高が各取引に固有の指紋になる。</li>
+</ul>
+</div>
+<p><b>判定の流れ（段階2で実装）</b></p>
+<ol>
+<li>CSV内で残高の鎖を検証する（隣の行どうしで「古い行の残高＋入金−出金＝新しい行の残高」）。<b>1か所でも切れたら、そのファイルは取り込まず「保留」</b>（原本と取得履歴だけ保存）。</li>
+<li>重複判定キー＝<code>日付｜摘要｜入金｜出金｜残高</code>（口座ごと）。取得期間が重なる2つのCSVでも、同じ取引は同じキーになり、二重に入らない。</li>
+<li>すでに入っている行と重なる範囲では、<b>残高が食い違っていないか</b>も確かめる（食い違えば「期間が重なる部分で鎖が合わない」として、そのファイル全体を保留）。</li>
+<li>同じキーがCSV内に2行出たら（取引の中身が完全に同じ）、確実に識別できないので<b>その行は保留</b>（理由つき）。</li>
+<li>CSVの一番古い行は、前の残高が分からない。すでに入っている行の残高と照らせるときは照らし、照らせないときは「起点」として扱い、取得履歴に印を付ける。</li>
+<li>保留の行は、集計には入れず（保留の件数は画面に出す）、本部が理由を見て解除・訂正できる。</li>
+</ol>
+<h3>4-3. 旧シートの行との結び付き（「移行済み・照合待ち」→「照合済み」）</h3>
+<ul>
+<li>新しいCSVを取り込むとき、キー（店舗の口座＋日付＋金額＋時刻 or 残高）が合う旧行を探し、<b>1対1で結ぶ</b>。結べた行は「照合済み」になり、口座・残高・原本との結び付きが入る。<b>金額・日付は変えない</b>（食い違えば保留）。</li>
+<li>同じキーの旧行がN個・CSV行がN個なら、順に1対1。数が合わないときは、<b>余った旧行は照合待ちのまま残す</b>（削除しない）。</li>
+<li>GMOは、旧シートの取引時刻の欄に「残高…」の形で残高が入っているはず（手動取込のルール）。移行時に確かめ、合えば残高で確実に結ぶ。</li>
+<li>実測：じんべぇ川崎の旧シートは、サンプルCSVと<b>192行が、日付・金額とも1行ずつ一致</b>（シートにだけある行0・CSVにだけある行0）。</li>
+<li>銀行が返す範囲より古い旧行（PayPayは約3か月、GMOはサンプルで約6か月より前）は、CSVが無いので、<b>照合待ちのまま残る</b>のが正常です。</li>
+</ul>
+
+<h2>5. 数字が変わる問題の直し方（段階2〜7）</h2>
+<div class="box bad"><b>原因（確定）</b>：いまは同じ入金が3つの道で画面に届き、更新の時刻がそろっていません。</div>
+<div class="tbl"><table>
+<tr><th>道</th><th>更新のタイミング</th></tr>
+<tr><td>シートを直接読む</td><td>14:00の取込で即反映</td></tr>
+<tr><td>BigQueryミラー</td><td>朝08:34と11:01の同期だけ（14:00の取込はどちらにも間に合わない）</td></tr>
+<tr><td>Supabaseの集計（kd_deposit_daily）</td><td>BigQueryから作るので、さらに遅れる</td></tr>
+</table></div>
+<p>実測（11/27 夕方時点）：11/26と11/27の2日だけ、シートがBigQuery・Supabaseより件数・金額とも多い（14:00の取込分が未反映）。他の1,042日は一致。BigQueryの取得失敗でシート直読みに切り替わると、数字が急に変わる。</p>
+<p><b>直し方</b></p>
+<ol>
+<li>取込（取得→保存→確定）が成功した<b>同じトランザクションの中で</b>、集計を作り直す。時間差の道を作らない。</li>
+<li>集計の作り直し中は「集計中」と表示し、<b>古い数字を最新として出さない</b>。エラー時に0で上書きしない（失敗は取得履歴に残し、直前の確定値のまま「最終取得日時」を出す）。</li>
+<li>二重実行は、実行ロックと一意制約で防ぐ。</li>
+<li>画面は <code>bank_deposit_daily()</code> だけを読む（BigQueryもシートも読まない）。BigQuery失敗時のシート直読みフォールバックは、<b>段階6の切り替えと同時に廃止</b>（＝移行完了後は存在しなくなる）。</li>
+<li>14日並行比較は、<b>同じ取得完了時点（<code>as_of</code>）までのデータだけ</b>を、店舗別×日付別に件数・金額で照合する。毎日自動で一覧にして出し、14日連続で不一致0件が、切り替えの条件。</li>
+</ol>
+
+<h2>6. GMOあおぞらの取得（段階5）</h2>
+<h3>6-1. ログインの確認結果</h3>
+<ul>
+<li>ログイン画面（<code>https://sso.gmo-aozora.com/corp/b2c/login</code>）は、<b>ログインID（またはログイン名）とパスワード</b>の2項目。パスキー（WebAuthn）とQRコードによるログインの部品も同じ画面にある。</li>
+<li>公式の法人向けガイドには「電子証明書」「ワンタイムパスワード」の記載がある。<b>ログイン後にワンタイムパスワード等を求められるかは、実際にログインしないと分かりません</b>（まだログインしていません。ID・パスワードも受け取っていません）。</li>
+<li>入出金明細のCSVは「全銀CSV／全銀固定長」とは別の、いま添付いただいた6列形式（statement-…csv）で確認済み。</li>
+</ul>
+<h3>6-2. 進め方（安全側）</h3>
+<ol>
+<li>ID・パスワードは、<b>あなたが <code>.env</code>（Git管理外）に保存</b>。私は値を表示・記録・送信しません。</li>
+<li><b>最初の1回は、あなたの端末（Mac mini）で手動ログイン</b>し、追加認証の有無と方式を確認する（PayPayの合言葉と同じ考え方）。追加認証が人の操作を必要とするなら、そこで止まる設計（自動で突破しない）。</li>
+<li>PayPay銀行の <code>tasks/paypay-bank.js</code> の「専用プロファイル・ログアウトを必ず行う・失敗時は止まる・店舗名ゲートウェイ」を再利用し、<b>画面操作とCSV解析だけ</b>を銀行別の部品にする。</li>
+<li>8口座の切り替え方法（画面上の口座選択）は、ログイン後の画面を見てから決める。</li>
+<li>銀行の利用規約で自動取得が許されているかは、<b>あなたの側で契約・規約の確認をお願いします</b>（私は規約の最終判断はできません）。</li>
+</ol>
+<h3>6-3. 口座の扱い</h3>
+<div class="tbl"><table>
+<tr><th>口座</th><th>店舗</th></tr>
+<tr><td>未定の3口座</td><td>未定（<code>store_status='unassigned'</code>）。取り込むが、店舗が決まるまで集計に出ない。決まったら訂正の手続きで店舗を付け、履歴に残る</td></tr>
+<tr><td>口座（番号は非公開）</td><td>じんべぇ川崎</td></tr>
+<tr><td>口座（番号は非公開）</td><td>伊達の宴</td></tr>
+<tr><td>口座（番号は非公開）</td><td>富士酒場 上野</td></tr>
+<tr><td>口座（番号は非公開）</td><td>じんべぇ新横浜</td></tr>
+<tr><td>口座（番号は非公開）</td><td>多摩センター うらやましか</td></tr>
+</table></div>
+<div class="sub">口座番号そのものは、リポジトリに書きません。段階2で、本部・社長だけが読める <code>bank_accounts</code> に、あなたの承認のうえで登録します。</div>
+<div class="box warn">サンプルCSVの摘要には、ATM入金のほかに利息・振込・Visaデビット・ATM手数料が混ざります。売上入金に数えるのは、いまのPayPayと同じく<b>摘要が「ATM」で入金のもの</b>（手数料は出金なので入りません）。利息・振込入金は「明細としては保存、売上入金には数えない」にします。</div>
+
+<h2>7. 変更対象ファイル</h2>
+<div class="tbl"><table>
+<tr><th>段階</th><th>ファイル</th><th>内容</th></tr>
+<tr><td>1</td><td><code>ns-portal/supabase/2026-11-27_bank_ledger_stage1.sql</code> ／ <code>…_ROLLBACK.sql</code></td><td>新規（今回）</td></tr>
+<tr><td>2</td><td><code>ns-portal/supabase/2026-11-xx_bank_ledger_ingest.sql</code>（新規）</td><td>取込関数（重複判定・結び付け・保留・同一トランザクションでの集計）</td></tr>
+<tr><td>2</td><td><code>ns-daily-import/tasks/paypay-bank.js</code></td><td>原本保存→記録→確定の順に変更。<b>GAS送信は残す</b>（並行運用）</td></tr>
+<tr><td>2</td><td><code>ns-daily-import/lib/bank-ledger.js</code>（新規）</td><td>原本保存・SHA-256・取得履歴・Supabase呼び出しの共通部品</td></tr>
+<tr><td>3</td><td><code>ns-portal/scripts/bank_ledger_migrate_legacy.py</code>（新規）＋SQL</td><td>旧シート→正本の移行（再実行しても二重にならない）</td></tr>
+<tr><td>4</td><td><code>ns-portal/supabase/2026-11-xx_bank_ledger_parity.sql</code>（新規）＋日次の比較ジョブ</td><td>新旧の並行比較（同じ取得完了時点で）</td></tr>
+<tr><td>5</td><td><code>ns-daily-import/tasks/gmo-aozora-bank.js</code>（新規）、<code>lib/gmo-aozora-csv.js</code>（新規）、<code>config.js</code>・<code>.env.example</code>・<code>dispatch.js</code></td><td>GMOの取得・CSV解析・口座設定・毎日の登録（登録は承認後）</td></tr>
+<tr><td>6</td><td><code>tori-dashboard/app.js</code>（<code>?v=N</code>を+1）、<code>index.html</code></td><td>入金管理の読み先を <code>bank_deposit_daily()</code> に。手動CSV取込の送り先を新しい窓口に。フォールバック廃止。入金備考の保存先</td></tr>
+<tr><td>6</td><td><code>ns-portal/supabase/functions/keiei-kd-refresh/index.ts</code>・<code>keiei-api-dashboard-summary/index.ts</code></td><td>入金の元をBigQuery/GASから正本に。<b>デプロイ前に本番ソースを取得して差分確認</b>（既存ルール）</td></tr>
+<tr><td>6</td><td><code>ns-portal/invoices.html</code>（会計・請求）</td><td>「取得履歴・CSV確認」画面を追加（本部・社長のみ。ダウンロードは署名つきURL）</td></tr>
+<tr><td>7</td><td><code>tori-dashboard/gas/Code.gs</code>（<code>ping</code>の<code>ver</code>を上げる）</td><td><code>importDeposits</code> の書き込み停止。<b>GASの貼り替え＋再デプロイはあなたの作業</b></td></tr>
+<tr><td>全体</td><td><code>ns-portal/WORKLOG.md</code>・<code>tori-dashboard/HANDOFF.md</code></td><td>各段階の記録</td></tr>
+</table></div>
+
+<h2>8. 停止してよいか：依存関係の確認（段階7の前に全部消す）</h2>
+<p>調べた範囲では、入金DB・GASの入金処理に依存しているものは次のとおりです。<b>停止の前に、各行を「移行済み／不要と確認」にします。</b></p>
+<div class="tbl"><table>
+<tr><th>依存先</th><th>内容</th><th>停止前にやること</th></tr>
+<tr><td>経営ダッシュボード「入金管理」タブ（<code>app.js</code>）</td><td>シート直読み・BigQuery・Supabase速報の3経路／手動CSV取込／入金備考</td><td>段階6で正本に切り替え</td></tr>
+<tr><td>GAS <code>depositCarry</code>（繰越）</td><td>シートを全期間走査</td><td>すでに <code>kd_deposit_carry_v</code> で代替済み（全店一致を確認済み）。正本のビューに作り替え</td></tr>
+<tr><td>BigQuery <code>stg_deposit</code></td><td>入金DBのミラー</td><td>画面が読まなくなったら同期から外す</td></tr>
+<tr><td>Edge Function <code>keiei-kd-refresh</code>（入金）</td><td>BigQuery経由で <code>kd_deposit_*</code> を作る</td><td>正本から作る形に</td></tr>
+<tr><td><b>売上DBのスプレッドシート</b>（GAS）</td><td>「入金CSV取込（銀行）」「入金チェック（現金売上 vs 入金の自動照合）」「売上CSV→入金DB」のメニュー。入金DBを<b>ダッシュボードへ即時ミラー</b>する処理もある</td><td><b>要確認（あなたに質問）：</b>このメニューは今も使っていますか？使っているなら、同じ機能を新しい画面に移す必要があります</td></tr>
+<tr><td>KPI等の <code>kd_deposit_monthly_summary</code>・<code>kd_deposit_daily_v</code></td><td>経営ダッシュボード・ポータル</td><td>正本から作る形に変えても、列と意味は同じにする</td></tr>
+<tr><td>ns-daily-import <code>paypay-bank</code>/<code>-b</code></td><td>GASへ送信</td><td>段階7で送信を外す</td></tr>
+<tr><td>売上入金（<code>ar_deposits</code>）・現金売上照合（<code>cash_recon_*</code>）・本部タスク</td><td>入金DBの行を直接は参照していない（調べた範囲）</td><td>変更なし。切り替え後も同じ数字で動くことを並行比較で確認</td></tr>
+<tr><td>入金以外のシート（支払いDB・媒体別DB・PL等）</td><td>同じGAS・BigQuery・スプレッドシートを使う</td><td><b>停止の対象は「入金DBへの書き込み」だけ</b>。GAS全体・BigQuery全体は止めない</td></tr>
+</table></div>
+
+<h2>9. ロールバック</h2>
+<div class="tbl"><table>
+<tr><th>段階</th><th>戻し方</th></tr>
+<tr><td>1</td><td><code>…_ROLLBACK.sql</code>（データが入る前だけ。1件でも入っていたら何も消さずに止まる）</td></tr>
+<tr><td>2〜3</td><td>箱は「足すだけ」なので消さない。取込を止め（取得ジョブの新しい書き込みを外し）、旧経路はそのまま動いているので、数字は変わらない。移行した行は <code>legacy_batch</code> で一括識別でき、まとめて「無効」にできる設計（削除はしない）</td></tr>
+<tr><td>5</td><td>GMOの毎日登録を外す。保存済みの原本・履歴は残す</td></tr>
+<tr><td>6</td><td>画面の読み先を元に戻す（<code>app.js</code>の<code>?v</code>を戻す・git revert）。旧GAS経路は段階7まで<b>止めていない</b>ので、すぐ戻れる</td></tr>
+<tr><td>7</td><td>GASの <code>importDeposits</code> の書き込みを復活（旧版のコードに貼り替え）。停止中の入金は、正本に残っているので、旧シートへ再書き出しできる</td></tr>
+</table></div>
+
+<h2>10. テスト方法</h2>
+<ul>
+<li>段階1：<code>--dry-run</code>（流して必ず元に戻す）→本適用→確認用SQL。</li>
+<li>権限：本部・社長・マスターで読める／店長・チーム長・匿名では原本・明細・訂正履歴が読めない／店長は自店舗の集計だけ。</li>
+<li>守り：使い捨てデータで「確定済みの直接更新が拒否される」「<code>bank_tx_correct</code> で直せて履歴が残る」「削除できない」「履歴は更新できない」「原本なしでは確定できない」を確認し、終わったら使い捨てデータを全部消して0件を確認。</li>
+<li>重複：同じCSVを2回／期間が重なる2つのCSV／同日同額の別取引で、件数が増えないこと・減らないこと。</li>
+<li>GMO：サンプルCSVで、鎖の検証（398行OK）、重複キーの一意性、わざと1行の残高を壊して「保留」になること。</li>
+<li>移行：行数・店舗別×日付別の件数と金額の照合、再実行しても増えないこと。</li>
+<li>並行比較：同じ <code>as_of</code> までで、14日連続の不一致0件。</li>
+</ul>
+
+<h2>11. まだ確認していないこと／お願い</h2>
+<ul>
+<li>画面収録（.mov）は、私の環境で動画を読めず、内容を見ていません。必要な点があれば、静止画かテキストで教えてください。</li>
+<li>GMOのログイン後の追加認証の有無と、8口座の切り替え画面は、実際に開かないと分かりません（§6）。</li>
+<li>売上DBの「入金チェック」メニューを使っているか（§8）。</li>
+<li>旧シートの取り出し方法（§3-3のAかB）。</li>
+<li>PayPayで「分」切り捨てによる取りこぼしが実際にあったか（移行時に、取引時刻の秒つきで確認します）。</li>
+</ul>
+</main>
+</body>
+</html>
