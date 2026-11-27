@@ -48,6 +48,7 @@
 // マネーフォワードのアクセストークンは_shared/mf.tsのgetValidAccessToken()で取得（自動リフレッシュ込み）
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { getValidAccessToken, mfFetch } from "../_shared/mf.ts";
+import { clearSeisanForInvoice, seisanApiCall, seisanFrozen } from "../_shared/seisan-lines.ts";
 import { dateRange, fetchOutflows, matchPayments, type PayItem, type Rule } from "../_shared/payment-match.ts";
 
 const cors: Record<string, string> = {
@@ -307,6 +308,9 @@ Deno.serve(async (req: Request) => {
       if (!inv) return json({ error: "対象が見つからないか権限がありません" }, 403);
 
       const db = svc();
+      // 2026-11-27: 仕訳を解除するときは、精算書へ入れた行も外す（残ると登録し直したときに二重になる）。発行済み・振込済みなら中止
+      const cleared = await clearSeisanForInvoice(db, invoiceId, Deno.env.get("PL_SYNC_TOKEN"), seisanApiCall);
+      if (!cleared.ok) return json({ error: "紐付けの解除を中止しました: " + cleared.error }, 409);
       const { error: updErr } = await db.from("invoices").update({
         mf_journal_id: null, mf_journal_number: null, mf_journal_created_at: null,
         mf_debit_accounts: null, mf_registration_error: null, mf_registration_error_at: null,
@@ -365,6 +369,14 @@ Deno.serve(async (req: Request) => {
           return json({ error: `この仕訳は決算期間を過ぎている（会計計上日 ${txDate ?? "不明"}・今期は ${fiscalYearStart(delTenant)} 以降）ため、削除・編集できません`, period_closed: true, transaction_date: txDate }, 403);
         }
       }
+      // 2026-11-27: 請求書の仕訳で、精算書の行が発行済み・振込済みの月にあるときは、仕訳を消さない
+      if (inv) {
+        const { data: sr, error: srErr } = await svc().from("invoice_pl_reflections")
+          .select("reflection_route, seisan_store_name, year_month, sheet_synced_at").eq("invoice_id", inv.id).eq("reflection_route", "seisan");
+        if (srErr) return json({ error: "精算書への登録状況を確認できなかったため、削除しませんでした: " + srErr.message }, 500);
+        const free = await seisanFrozen(svc(), (sr ?? []) as any[]);
+        if (!free.ok) return json({ error: "仕訳を削除しませんでした。" + free.error }, 409);
+      }
       if (dryRun) return json({ success: true, dry_run: true, already_gone: alreadyGone, period_closed: false, transaction_date: txDate, journal_number: journalNumber });
       // 3) MF側を削除（既に無ければスキップ）
       if (!alreadyGone) {
@@ -385,6 +397,8 @@ Deno.serve(async (req: Request) => {
         }).eq("id", inv.id);
         if (uErr) return json({ error: "MF側は削除しましたが、請求書の仕訳紐付け解除に失敗しました: " + uErr.message, mf_deleted: true }, 500);
         cleared.push("invoice");
+        const sc = await clearSeisanForInvoice(db, inv.id, Deno.env.get("PL_SYNC_TOKEN"), seisanApiCall);
+        if (!sc.ok) return json({ error: "MF側の仕訳は削除しましたが、精算書の行を消せませんでした: " + sc.error, mf_deleted: true }, 500);
         await db.from("invoice_audit_logs").insert({
           entity_type: "invoice_email", entity_id: inv.email_id, action: "mf_journal_deleted", actor_type: "human",
           note: `マネーフォワードの仕訳を削除しました（伝票番号: ${journalNumber ?? "-"}${alreadyGone ? "・MF側には既に無かったため記録のみ解除" : ""}）。会計・仕訳は未登録の状態に戻りました。`,

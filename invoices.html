@@ -630,7 +630,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-11-27-v191";
+const BUILD_TAG="2026-11-27-v192";
 const PAYROLL_CANCEL_READY=true;
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
@@ -2366,8 +2366,10 @@ async function plfeeRebuildSeisan_(btn){
     if(!seisanLines.length){ say('<span style="color:#b91c1c">精算書へ入れる明細が見つかりませんでした</span>'); return; }
     const sum=seisanLines.reduce((a,l)=>a+l.amount,0);
     const listing=seisanLines.map(l=>`・${l.store_name} ${l.account}${l.sub?"/"+l.sub:""} ${yen(l.amount)}`).join("\n");
-    if(!confirm(`MFの仕訳から、精算書へ${seisanLines.length}行（税込 合計${yen(sum)}）を入れ直します。\n\n${listing}${unmatched.length?"\n\n※店舗を特定できず除外: "+unmatched.join("、"):""}\n\nすでに入っている合算の行は、最初の明細に置き換わります。よろしいですか？`)) { say(""); return; }
+    if(!confirm(`MFの仕訳から、精算書へ${seisanLines.length}行（税込 合計${yen(sum)}）を入れ直します。\n\n${listing}${unmatched.length?"\n\n※店舗を特定できず除外: "+unmatched.join("、"):""}\n\nこの請求書が精算書に入れた今の行は、いったん外してから入れ直します（発行済み・振込済みの月は中止します）。よろしいですか？`)) { say(""); return; }
     say("精算書へ登録中…");
+    const rs=await plFeeCall("seisan_reset",{invoice_id:inv.id});
+    if(!rs.ok||rs.body.success===false){ say(`<span style="color:#b91c1c">${esc((rs.body&&rs.body.error)||"今の行を外せなかったため中止しました")}</span>`); return; }
     const results=[];
     await plReflectInvoice_({id:inv.id,target_year_month:inv.target_year_month,checks:inv.checks},{transaction_date:gj.body.transaction_date},lines,results,{onlySeisan:true});
     say(results.join("<br>")+`<br><b>完了しました。精算書の画面で明細を確認してください。</b>`);
@@ -2392,6 +2394,8 @@ async function plfeeRebuildBulk_(ym,dry,logEl){
       const extra=b.unmatched.length?`　<span style="color:#b45309">店舗不明で除外: ${esc(b.unmatched.join("、"))}</span>`:"";
       if(!b.seisanLines.length){ out.push(`⚠️${nm}: 精算書へ入れる明細なし${extra}`); ng++; show(); continue; }
       if(dry){ out.push(`${nm}: 今 ${c.n}行 ${yen(c.sum)} → 入れ直し後 ${b.seisanLines.length}行 ${yen(sum)}（税込）${b.valuesAreNet?"　<span style=\"color:var(--muted)\">※MFの金額は税抜のため税込に換算</span>":""}${b.note?"　"+esc(b.note):""}${extra}`); ok++; show(); continue; }
+      const rs=await plFeeCall("seisan_reset",{invoice_id:b.inv.id});
+      if(!rs.ok||rs.body.success===false){ out.push(`⚠️${nm}: ${esc((rs.body&&rs.body.error)||"今の行を外せなかったため中止")}`); ng++; show(); continue; }
       const res=[]; await plReflectInvoice_({id:b.inv.id,target_year_month:b.inv.target_year_month,checks:b.inv.checks},{transaction_date:b.gj.body.transaction_date},b.lines,res,{onlySeisan:true});
       const bad=res.filter(x=>/⚠️/.test(x));
       out.push(`${bad.length?"⚠️":"✅"}${nm}: ${b.seisanLines.length}行 ${yen(sum)}（税込）${bad.length?"　"+bad.join(" "):""}${extra}`); bad.length?ng++:ok++; show();

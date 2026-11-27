@@ -38,7 +38,7 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { zeroPlSheet } from "../_shared/pl-sheet.ts";
 import { operatorCorpMap } from "../_shared/store-operator.ts";
-import { removeSeisanLines } from "../_shared/seisan-lines.ts";
+import { clearSeisanForInvoice, removeSeisanLines } from "../_shared/seisan-lines.ts";
 
 const cors: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -587,9 +587,16 @@ Deno.serve(async (req: Request) => {
         const existing: { id: string; seisan_line_key: string | null } | undefined = lineNo != null
           ? (rows.find((r) => Number(r.allocations?.[0]?.line_no) === lineNo) ?? rows.find((r) => !r.allocations?.[0]?.line_no))
           : rows[0];
+        // 2026-11-27: 科目・内訳が違っていても、先に画面で入れた行（明細番号なし・同じ請求書・店舗・税率・金額差3円以内）は引き継ぐ（二重にしない）
+        let takeover: { id: string; seisan_line_key: string | null } | undefined;
+        if (!existing && lineNo != null) {
+          const { data: others } = await uc.from("invoice_pl_reflections").select("id, seisan_line_key, allocations")
+            .eq("invoice_id", invoiceId).eq("reflection_route", "seisan").eq("seisan_store_name", s.seisan_store_name).eq("tax_rate", lineTax);
+          takeover = (others ?? []).find((r: any) => !r.allocations?.[0]?.line_no && Math.abs(Number(r.allocations?.[0]?.amount) - Number(a.amount)) <= 3);
+        }
 
-        let reflectionId: string | undefined = existing?.id;
-        let sourceKey: string | undefined = existing?.seisan_line_key;
+        let reflectionId: string | undefined = (existing ?? takeover)?.id;
+        let sourceKey: string | undefined = (existing ?? takeover)?.seisan_line_key ?? undefined;
         if (!reflectionId) {
           const { data: newRow, error: insErr } = await uc.from("invoice_pl_reflections").insert({
             invoice_id: invoiceId, account_name: accountName, sub_account_name: subAccountName || null,
@@ -603,6 +610,7 @@ Deno.serve(async (req: Request) => {
         } else {
           await db.from("invoice_pl_reflections").update({
             allocations: [a], year_month: yearMonth, item_name: itemName, tax_rate: lineTax,
+            account_name: accountName, sub_account_name: subAccountName || null,
           }).eq("id", reflectionId);
         }
 
@@ -853,6 +861,19 @@ Deno.serve(async (req: Request) => {
     // upsertされ、シート側も正しい内容に上書きされる。つまり「金額や科目を直す」用途では
     // 取り消し→再登録で完全に直るが、「そもそも反映自体を取りやめたい」場合はシート側の
     // 行が孤立して残るため、担当A側でのシート削除（GAS側に削除APIが無い）が別途必要になる。
+    // 2026-11-27: 入れ直しの前に、この請求書が精算書へ入れた行と記録をまるごと外す（内訳が変わっても二重にならないように）。
+    // 発行済み・振込済みの月の行が1つでもあれば、何も変えずに中止する
+    if (action === "seisan_reset") {
+      const invoiceId = body?.invoice_id;
+      if (!invoiceId) return json({ error: "invoice_idは必須です" }, 400);
+      const { data: inv, error: invErr } = await uc.from("invoices").select("id").eq("id", invoiceId).maybeSingle();
+      if (invErr) return json({ error: "確認に失敗しました: " + invErr.message }, 500);
+      if (!inv) return json({ error: "対象が見つからないか権限がありません" }, 403);
+      const cleared = await clearSeisanForInvoice(svc(), invoiceId, Deno.env.get("PL_SYNC_TOKEN"), seisanCall);
+      if (!cleared.ok) return json({ error: "入れ直しを中止しました: " + cleared.error }, 409);
+      return json({ success: true, removed: cleared.removed });
+    }
+
     if (action === "unconfirm") {
       const reflectionId = body?.reflection_id;
       const invoiceId = body?.invoice_id;

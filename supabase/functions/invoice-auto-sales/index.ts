@@ -260,6 +260,11 @@ async function seisanIssued(db: any, b: any) {
   else ck("duplicate", "重複なし", "ok");
 
   let invTotal = total;
+  // 2026-11-27: 法人まとめは、MF登録済みでもこの店舗の金額が同じなら新しい請求書を作らない（再送のたびに二重の下書きができるのを防ぐ）
+  if (grouped && existing && existing.mf_journal_id) {
+    const same = (existing.journal_draft?.debit_lines ?? []).find((l: any) => l.seisan_store === rule.store_label);
+    if (same && Number(same.debit?.amount) === total) return { status: "duplicate", invoice_id: existing.id, reason: "この店舗の同額の行がMF登録済みの請求書にあります" };
+  }
   if (grouped && existing && !existing.mf_journal_id) {   // 法人まとめ: 既存の下書きに、この店舗の行を追加／更新する
     const oldLines: any[] = existing.journal_draft?.debit_lines ?? [];
     const prev = oldLines.find((l: any) => l.seisan_store === rule.store_label);

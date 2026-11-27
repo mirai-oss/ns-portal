@@ -12,7 +12,7 @@
 // あわせて含む。
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { zeroPlSheet } from "../_shared/pl-sheet.ts";
-import { removeSeisanLines } from "../_shared/seisan-lines.ts";
+import { removeSeisanLines, seisanFrozen } from "../_shared/seisan-lines.ts";
 
 // 業務委託精算書のWeb App（pl-fee-reflect と同じ公開URL。認証は PL_SYNC_TOKEN）
 // 2026-11-26: 精算ダッシュボードを Supabase へ移行（関数名と戻り値は同じ）
@@ -63,6 +63,8 @@ Deno.serve(async (req: Request) => {
       const { data: sr, error: srErr } = await db.from("invoice_pl_reflections")
         .select("reflection_route, seisan_store_name, seisan_line_key, year_month, sheet_synced_at").eq("invoice_id", invoiceId);
       if (srErr) return json({ error: "精算書への登録状況を確認できなかったため、削除を中止しました: " + srErr.message }, 500);
+      const free = await seisanFrozen(db, (sr ?? []) as any[]);
+      if (!free.ok) return json({ error: "削除を中止しました: " + free.error }, 409);
       const cleared = await removeSeisanLines((sr ?? []) as any[], Deno.env.get("PL_SYNC_TOKEN"), seisanCall);
       if (!cleared.ok) return json({ error: "削除を中止しました: " + cleared.error }, 409);
     }
