@@ -712,7 +712,12 @@ const PL_AUTO_IGNORE_SOURCES = ["自動｜スポット人件費", "店舗間移�
 // app_secrets.pl_seisan_direct_from='YYYY-MM' があるときだけ、その月以降は精算の窓口(seisan-api)から直接取り込む（無ければ何もしない＝従来どおり）。
 // 担当C との合意: 取得は sd_apiCategorizedLines（集計の決まりは窓口側が正）・結果の記録は sd_apiMarkPlSynced・
 // 未振込／該当なし／取得失敗の店舗×月は今の行を消さずに残す。戻し方: 旗を消す（次の同期で従来どおりシートから入る）。
+// 呼び出し回数の上限（2026-11-27）: 関数から関数への呼び出しは1回の実行あたり60秒に30回まで（超えると失敗する）。そのため
+//   ①毎回読むのは当月と前2か月、それより古い月は1時間に1か月ずつ順番に読む（店舗は5なら最大20回）
+//   ②反映記録は状態が変わるときだけ呼ぶ（成功=記録なし/失敗のとき・失敗=毎回）。残り回数を超える分は次の回へ回す
+//   （請求書側の表示は記録の有無とokだけで決まる＝seisan-api getLines）
 const SEISAN_API_URL = `${Deno.env.get("SUPABASE_URL")}/functions/v1/seisan-api`;
+const SEISAN_MAX_CALLS = 26;   // 上限30に対する余裕（他の呼び出し分）
 async function plSeisanDirectFrom(sb: any): Promise<string> {
   const { data, error } = await sb.from("app_secrets").select("value").eq("key", "pl_seisan_direct_from").maybeSingle();
   if (error) throw new Error("app_secretsの読み取りに失敗: " + error.message);   // 読めないまま進めるとシート取込と二重の正本になる
@@ -731,13 +736,18 @@ async function seisanDirectSync(sb: any, dry = false, fromOverride?: string): Pr
   const runId = dry ? "dry" : await startRun(sb, "kd_pl_seisan_direct");
   const marks: { name: string; ym: string; ok: boolean; error: string }[] = [];
   const token = Deno.env.get("PL_SYNC_TOKEN") ?? "";
+  let calls = 0, errors = 0, markFailed = 0, markDeferred = 0, markError = "";
   const mark = async () => {   // 記録の失敗で本処理は止めない
-    let failed = 0;
-    for (const m of marks) {
-      try { const r = await seisanCall("sd_apiMarkPlSynced", [token, m.name, m.ym, { ok: m.ok, syncedAt: new Date().toISOString(), error: m.error }]); if (r?.ok === false) failed++; }
-      catch (_) { failed++; }
+    if (!marks.length) return;
+    const { data, error } = await sb.from("settle_pl_sync_logs").select("store,month,ok");   // 読むだけ。読めなければ全部を対象にする
+    const okNow = new Set<string>(error ? [] : (data ?? []).filter((g: any) => g.ok).map((g: any) => `${g.store}|${g.month}`));
+    const need = marks.filter((m) => !m.ok || !okNow.has(`${m.name}|${m.ym}`)).sort((a, b) => Number(a.ok) - Number(b.ok) || b.ym.localeCompare(a.ym));
+    const room = Math.max(0, SEISAN_MAX_CALLS - calls);
+    markDeferred = Math.max(0, need.length - room);
+    for (const m of need.slice(0, room)) {
+      try { const r = await seisanCall("sd_apiMarkPlSynced", [token, m.name, m.ym, { ok: m.ok, syncedAt: new Date().toISOString(), error: m.error }]); if (r?.ok === false) { markFailed++; markError ||= String(r?.error ?? ""); } }
+      catch (e) { markFailed++; markError ||= String(e).slice(0, 150); }
     }
-    return failed;
   };
   try {
     if (!token) throw new Error("PL_SYNC_TOKENが未設定です");
@@ -753,10 +763,16 @@ async function seisanDirectSync(sb: any, dry = false, fromOverride?: string): Pr
     const old: Row[] = (await fetchAll((f, t) => sb.from("pl_entries").select("id,year_month,store_id,item,category,amount,memo,sub_item,source")
       .is("deleted_at", null).eq("source", PL_SEISAN_CAT_MEMO).gte("year_month", from).order("id").range(f, t))) as Row[];
     const nowYm = jstToday().slice(0, 7);
-    const months = new Set<string>(old.map((x) => x.year_month));
-    for (let ym = from; ym <= nowYm;) { months.add(ym); const [y, m] = ym.split("-").map(Number); ym = m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, "0")}`; }
+    const all = new Set<string>(old.map((x) => x.year_month));
+    for (let ym = from; ym <= nowYm;) { all.add(ym); const [y, m] = ym.split("-").map(Number); ym = m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, "0")}`; }
+    const [ny, nm] = nowYm.split("-").map(Number);
+    const recentFrom = new Date(Date.UTC(ny, nm - 3, 1)).toISOString().slice(0, 7);   // 当月と前2か月
+    const sorted = [...all].sort();
+    const older = sorted.filter((ym) => ym < recentFrom);
+    const months = new Set<string>(sorted.filter((ym) => ym >= recentFrom));
+    if (older.length) months.add(older[Math.floor(Date.now() / 3600000) % older.length]);
+    if (months.size * stores.length > SEISAN_MAX_CALLS) throw new Error(`対象が多すぎます（店舗${stores.length}×${months.size}か月）。呼び出し上限の見直しが必要です`);
     const fresh: Row[] = []; const replaced = new Set<string>(); const status: { month: string; store: string; status: string; rows?: number }[] = [];
-    let calls = 0, errors = 0;
     for (const ym of [...months].sort()) {
       const results = await Promise.all(stores.map(async (s) => {
         try { return { s, r: await seisanCall("sd_apiCategorizedLines", [token, s.name, ym]), err: "" }; }
@@ -811,13 +827,13 @@ async function seisanDirectSync(sb: any, dry = false, fromOverride?: string): Pr
       if (!data?.ok) throw new Error("精算書の取込を検証が拒否: " + JSON.stringify(data?.errors ?? data?.error).slice(0, 300));
       result = data;
     }
-    if (dry) return { ok: true, dry: true, from, changed_months: changed, blocked_months: blocked, errors, status, diff };
+    if (dry) return { ok: true, dry: true, from, read_months: [...months].sort(), changed_months: changed, blocked_months: blocked, errors, status, diff };
     for (const m of marks) if (m.ok && blocked.includes(m.ym)) { m.ok = false; m.error = "PLの行が大きく減るため反映を止めました（担当Aが確認）"; }
-    const markFailed = await mark();
-    const note = [errors ? `取得失敗${errors}件` : "", blocked.length ? `行が大きく減るため止めた月: ${blocked.join("、")}` : "", markFailed ? `反映記録の失敗${markFailed}件` : ""].filter(Boolean).join(" / ");
+    await mark();
+    const note = [errors ? `取得失敗${errors}件` : "", blocked.length ? `行が大きく減るため止めた月: ${blocked.join("、")}` : "", markFailed ? `反映記録の失敗${markFailed}件: ${markError}` : "", markDeferred ? `反映記録を次の回へ${markDeferred}件` : ""].filter(Boolean).join(" / ");
     const ok = !errors && !blocked.length;
     await finishRun(sb, runId, ok, next.length, note || undefined, "kd_pl_seisan_direct");
-    return { ok, from, changed_months: changed, blocked_months: blocked, errors, mark_failed: markFailed, ...result };
+    return { ok, from, read_months: [...months].sort(), calls, changed_months: changed, blocked_months: blocked, errors, mark_failed: markFailed, mark_deferred: markDeferred, ...result };
   } catch (e) {
     if (!dry) {
       for (const m of marks) if (m.ok) { m.ok = false; m.error = String(e).slice(0, 200); }
