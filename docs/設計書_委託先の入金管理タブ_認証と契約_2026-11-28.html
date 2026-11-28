@@ -28,97 +28,132 @@ li{margin:3px 0}
 <body>
 <main>
 <h1>委託先の入金管理タブ — 認証と契約の設計書</h1>
-<div class="sub">作成 2026-11-28 ／ 読み取り調査のみ（コード・DB・GAS・本番設定は一切変更していません）／ 公開リポジトリのため、口座番号・金額の実額・秘密の値は書いていません。<br>表記：<span class="f">【事実】</span>＝ファイルで確認できたこと　<span class="g">【推測】</span>＝ファイルから読み取った推測　<b>【未確認】</b>＝分からなかったこと</div>
+<div class="sub">作成 2026-11-28／<b>同日改訂（本番構成の読み取り調査を反映）</b> ／ 本番DB・Edge Function は<b>読み取りのみ</b>（SELECT・一覧・ソース取得だけ。書き込み・デプロイ・設定変更・push・commit は一切なし）／ 公開リポジトリのため、口座番号・金額の実額・メール・秘密の値は書いていません。<br>表記：<span class="f">【事実】</span>＝本番DB・本番ソース・最新リポジトリで確認できたこと　<span class="g">【推測】</span>＝事実から読み取った推測　<b>【未確認】</b>＝分からなかったこと</div>
 
-<div class="box ok"><b>結論（先に）</b>
+<div class="box info"><b>2026-11-28 本番構成の読み取り調査の結果（先に読む）</b>
 <ul>
-<li>現行の精算ダッシュボードの認証（平文パスワード・失敗回数の制限なし・トークンを平文で保存）は、銀行入金を委託先に出す認証としては<b>不十分</b>。</li>
-<li>MVP（自店舗の入金日・入金額だけ）は、<b>新しい認証（招待＋ワンタイムリンク、ハッシュ保存のトークン）</b>と<b>サーバー側で契約から店舗を確定する仕組み</b>を最初から入れる。現行ログインは止めず、入金タブを開くときだけ別の認証を求める。</li>
-<li>MVPの実作業は<b>約24時間</b>（1人で連続3日分、2人並行なら約16時間）。本番公開に必要な承認は<b>6件</b>（§1-5）。売上・入金予定・差額はMVPの後。</li>
+<li><span class="f">【事実】</span>初版（この設計書の朝の版）が前提にした「GAS版・平文パスワード」は<b>もう本番ではない</b>。11/26 22:20 に Supabase の Edge Function <code>seisan-api</code>（本番 v12・11/28 16:28 デプロイ・<code>verify_jwt=false</code>）へ切替済み。最新リポジトリ（213df7f）のソースと、本番から取得したソースは、型の記述と整形を除いて<b>同じ内容</b>（認証部分を突き合わせ済み）。</li>
+<li><span class="f">【事実】</span>現在の認証：ログインID またはメール＋パスワード／Googleログイン／（本部・マスターのみ）統合ログイン。パスワードは<b>ハッシュで保存</b>（PBKDF2 10万回、または GAS から写した塩つきSHA-256＝ログイン時に PBKDF2 へ自動で置換）。セッショントークンは UUID で、DB には <b>SHA-256 のハッシュだけ</b>（<code>settle_sessions</code>）。有効期限は発行から<b>固定14日</b>（延長なし）。ログイン失敗は<b>ID（入力文字列）ごとに5回／15分でロック</b>。ログイン・申請・再設定は <code>settle_auth_logs</code> に記録。CORS は精算画面のオリジンだけ。POST のみ。</li>
+<li><span class="f">【事実】</span>委託先の店舗の絞り込みは<b>サーバー側</b>（<code>settle_whoami</code>→<code>settle_can_view</code>→<code>settle_stores</code>）。ブラウザから店舗IDを受け取らない作りが既に出来ている。委託先アカウントは 3 件（全て有効・メール登録あり・担当店舗は空欄でも「全店」でもない・合計5店舗が<code>settle_stores</code>と全て対応）。</li>
+<li><b>結論が変わった点</b>：既存の認証は、<b>入金日・入金額・件数だけを見せる MVP の土台として流用できる</b>（初版の「不十分・別認証を新設」は、手元の古い版への評価だったので撤回）。新しい認証・招待・ワンタイムリンク・契約6表は <b>MVP では作らない</b>。足すのは「入金タブ専用の条件」だけ（§1）：<b>①アカウント別の既定OFFスイッチと閲覧期間 ②入金タブは新ログインの12時間以内だけ ③全店・空欄を拒否 ④閲覧の記録 ⑤返す項目の許可リスト</b>。</li>
+<li><b>MVPの実作業は約12時間</b>（2人並行で約8時間。初版は約24時間）。本番公開に必要な承認は<b>4件</b>（§1-5。初版は6件）。</li>
 </ul></div>
 
-<div class="box warn"><b>最初に知っておくべき食い違い</b>：作業用の <code>seisan-dashboard</code> フォルダは<b>古い版</b>（最終コミット 2026-10-01・GAS版）。WORKLOGによると<b>本番は 2026-11-26 に Supabase の Edge Function <code>seisan-api</code> へ切替済み</b>（旧GASは凍結、11/28 にメールアドレスでのログインを追加）。<code>seisan-api</code> のソースはこの手元には<b>無い</b>ため、現在の本番の認証の中身は<b>読めていません</b>。§2 の評価は「手元のGAS版」についての事実で、本番の <code>seisan-api</code> については【未確認】です。また <code>sd_dash_grant</code> の定義（CREATE文・RLS・GRANT）は、手元のどのSQLにも<b>見つかりません</b>（WORKLOG・計画書に名前が出るだけ）。</div>
+<div class="box warn"><b>残る安全上の問題（入金タブの有無に関係なく既存の認証にある）</b>
+<ul>
+<li><span class="f">【事実】</span>委託先 3 件のうち <b>2 件はまだ「塩つき SHA-256 1回」</b>のハッシュ（総当たりに弱い形。次にそのアカウントがログインした時に PBKDF2 へ置き換わる）。DB は service_role だけが読めるので直ちに漏れる形ではないが、入金タブを有効にする前に、この2件を置き換える（本人にログインしてもらう／パスワード再設定）。</li>
+<li><span class="f">【事実】</span>セッションは<b>固定14日・アイドル切れなし</b>・ブラウザの <code>localStorage</code> に保存。入金タブだけは短い条件（12時間）を RPC で追加する（§1）。</li>
+<li><span class="f">【事実】</span>失敗回数の制限は<b>入力したID文字列ごと</b>（ID と メールは別枠）で、<b>IP ごとの制限はない</b>。他人が連続で失敗させると本人が15分ロックされる（締め出し）。分散した推測には弱い。通知もない（ログのみ）。</li>
+<li><span class="f">【事実】</span>DB 側の判定（<code>settle_can_view</code>）は、委託先でも<b>担当店舗が空欄または「全店」だと全店が見える</b>。空欄は保存画面（<code>saveAccount</code>）で拒否しているが、DB の関数は拒否しない（現在は該当 0 件）。入金の RPC では DB 側でも拒否する。</li>
+<li><span class="f">【事実】</span>旧セッションの経路が残っている：<code>settle_whoami</code> は新しいセッションのほか、<b>旧GAS時代のログイン（<code>sd_dash_grant</code> ＋共通の <code>ds_sessions</code>）も受け付ける</b>（11件・うち委託先4件・<b>2026-12-10 にすべて期限切れ</b>）。入金の RPC はこの経路を<b>使わない</b>。</li>
+<li><span class="f">【事実】</span>旧GASのWebアプリはまだ応答する（<code>ping</code> は <code>v5.41-ready</code>）。コード上は、切替後は PDF・メール係（合言葉つき）以外の関数を全て断る設計（<code>SEISAN_FROZEN</code>）。<b>【未確認】</b>本番でその旗が実際に on か（読み取りで確かめる方法がない）。旧シートの平文パスワード列が残っているか／誰が開けるかも<b>【未確認】</b>。</li>
+<li><span class="f">【事実】</span>共通の <code>ds_sessions</code>（他のダッシュボードと共用・トークンが<b>平文</b>の主キー・134件有効・最長約78日）。RLS で直接は読めないが、<code>anon</code> に表の SELECT 権限が付いたまま（RLS 任せ）。精算の入金タブとは別件（別担当の判断）。</li>
+</ul></div>
 
 <!-- ===================== 1. MVP ===================== -->
-<h2>1. MVP（最小構成）— 最優先</h2>
+<h2>1. MVP（最小構成）— 現在の本番の認証の上に足す</h2>
 
 <h3>1-1. MVPの範囲</h3>
 <div class="tbl"><table>
-<tr><th>出す</th><td>自店舗（契約対象店舗）の<b>入金日・入金額</b>（日ごとの合計と件数）。既存の精算書画面に「入金」タブを1つ足す（閲覧専用）。</td></tr>
+<tr><th>出す</th><td>自店舗（その委託先アカウントの担当店舗）の<b>入金日・入金額</b>（日ごとの合計と件数）。既存の精算書画面に「入金」タブを1つ足す（閲覧専用・月を選ぶ）。</td></tr>
 <tr><th>出さない</th><td>口座番号・残高・CSV原本・摘要（振込人名等が入り得る）・他店舗／他法人の情報・訂正や承認の履歴・保留中の金額。<b>売上・入金予定額・差額はMVPの後</b>（§5-3）。</td></tr>
-<tr><th>必須条件①<br>認証</th><td>平文パスワードに頼らない／トークンは<b>ハッシュだけ保存</b>／有効期限あり／失効できる（契約終了・本人・管理者）。</td></tr>
-<tr><th>必須条件②<br>他店舗の防止</th><td>ブラウザから<b>委託先ID・店舗IDを一切受け取らない</b>。トークン → 担当者 → 委託先 → 有効な契約 → 対象店舗・期間を、<b>サーバー側で毎回確定</b>する。</td></tr>
+<tr><th>再利用する<br>（作らない）</th><td>ログイン画面・ログイン方式・パスワードのハッシュ・セッション（<code>settle_sessions</code>・ハッシュ保存）・ログイン失敗の制限（<code>settle_login_fails</code>）・記録の表（<code>settle_audit</code>・<code>settle_auth_logs</code>）・店舗の対応（<code>settle_stores.store_id</code>：5店舗すべて設定済み）・利用申請→本部承認で個人別アカウント（<code>-01</code>形式）を作る既存の流れ・Edge Function <code>seisan-api</code>・精算画面。</td></tr>
+<tr><th>新しく要る<br>（足す）</th><td>①アカウント別の入金スイッチ表 <code>settle_deposit_access</code>（既定OFF・閲覧期間つき）②入金RPC <code>settle_client_deposits</code> ③<code>seisan-api</code> に読み取りの動作 <code>sd_getDeposits</code> を1つ ④画面の「入金」タブ。</td></tr>
 </table></div>
 
 <h3>1-2. MVPの構成（これだけ作る）</h3>
 <ol>
-<li><b>DB（新規表・追加のみ）</b>：<code>contractors</code>（委託先）／<code>contractor_users</code>（担当者・メール）／<code>contractor_contracts</code>（開始日・終了日・閲覧可能期間）／<code>contractor_contract_stores</code>（契約の対象店舗）／<code>contractor_invites</code>（招待・ログインリンク・確認コードのハッシュ）／<code>contractor_access_log</code>（追記専用の監査・回数制限の元）。トークンの入れ物は既存 <code>sd_dash_grant</code> に<b>nullable の列を足して</b>使う（§3-2・先に本番のDDLを読んで確認する）。</li>
-<li><b>DB関数（RPC）</b>：<code>contractor_deposit_view(p_user uuid, p_from date, p_to date)</code>（service_role だけが実行可。引数は担当者IDと月の範囲だけ。<b>店舗IDも委託先IDも引数に無い</b>）。管理用：招待発行・契約登録・失効（本部／マスターだけ、理由必須）。</li>
-<li><b>Edge Function <code>contractor-portal</code>（1本・<code>verify_jwt=false</code>で独自トークン）</b>：<code>redeem_invite</code>（招待リンク＋確認コード→セッション）／<code>login_request</code>・<code>login_verify</code>（メールのワンタイムリンク）／<code>logout</code>／<code>deposits</code>（月を受け取り、許可リストの項目だけ返す）。サービスキーはこの関数の環境変数にだけ置く。</li>
-<li><b>画面</b>：精算書の画面に「入金」タブ。開くとき<b>現行ログインとは別に</b>、この認証を求める（段階的な本人確認＝step-up）。トークンはURLに載せず、<code>Authorization</code> ヘッダ＋<code>sessionStorage</code>（タブを閉じれば消える）。</li>
+<li><b>DB（追加のみ）</b>
+<ul>
+<li>新表 <code>settle_deposit_access</code>（<code>login_id</code> 主キー／<code>enabled</code> 既定 false／<code>view_from</code> date 必須／<code>view_to</code> date 空可／<code>approved_by</code>・<code>approved_at</code>・<code>note</code>）。他の <code>settle_*</code> と同じく RLS 有効・service_role のみ。<b>行が無い＝見えない</b>（既定OFF）。契約の開始日・終了日は、この表の閲覧期間として本部が登録する（初版の契約6表の代わり。委託先は3件・5店舗なので、表を増やさない）。</li>
+<li>新関数 <code>settle_client_deposits(p_token text, p_month text)</code>（<code>security definer</code>・<code>search_path</code> 固定・<code>revoke … from public, anon, authenticated</code>・<code>grant execute … to service_role</code>。<b>店舗IDも委託先IDも引数に無い</b>）。中の判定を順に：
+<ol>
+<li>トークン → <code>settle_sessions</code> の行（<b>新しいセッションだけ</b>。旧GAS経路は見ない）→ アカウント（有効・役割＝委託先）。</li>
+<li>セッションの発行から<b>12時間以内</b>でなければ「再ログインが必要」を返す（<code>settle_sessions.created_at</code> を使う。既存の列で足りる）。</li>
+<li><code>settle_deposit_access</code> に有効な行があり、今日（JST）が閲覧期間内であること。</li>
+<li>担当店舗 <code>stores_raw</code> が<b>空欄・「全店」なら空を返す</b>。それ以外は <code>settle_stores</code> の店舗に対応づけ、<code>store_id</code> の集合を作る。</li>
+<li>要求の月と閲覧期間を交差させる（範囲外は空）。</li>
+<li>入金の集計は既存の <code>bank_deposit_daily(p_from, p_to)</code> を<b>そのまま呼び</b>、手順4の店舗IDだけに絞る（§5-2：この関数は service_role の呼び出しなら全店を返す作り。これで本部の画面と同じ集計規則を使える＝ロジックの二重持ちが無い。呼び出しの中で <code>auth.role()</code> が service_role のままか、実環境のリハーサルで確認する）。</li>
+<li>返すのは 店舗の表示名・入金日・合計・件数・状態（入金あり／確認中の有無）・最終更新時刻だけ。<code>entries</code>（摘要）・保留金額・各種IDは<b>返さない</b>。</li>
+<li>閲覧を <code>settle_audit</code> に記録（誰が・何月・何店舗・何行。金額は記録しない）。</li>
+</ol></li>
+</ul></li>
+<li><b>Edge Function（既存 <code>seisan-api</code> に追加）</b>：読み取りの動作 <code>sd_getDeposits</code>（引数は <code>[トークン, 月]</code> だけ。月は <code>YYYY-MM</code> の形式検査。他は無視でなく拒否）。トークンは既存の <code>sd_getDashboard</code> と同じ扱い（<code>Cache-Control: no-store</code>・POSTのみ・CORS固定は既存のまま）。入金タブ専用の回数制限（ログインIDごとに1時間60回まで・既存の <code>settle_add_fail</code> を流用）。新しい関数・新しいシークレットは<b>作らない</b>。</li>
+<li><b>画面（<code>seisan-dashboard/index.html</code>）</b>：「入金」タブ（委託先アカウントにだけ表示）。スイッチOFFや期間外は「この機能はまだご利用いただけません」を出す。12時間を過ぎたら既存のログイン画面へ戻す。<code>DB_FNS_</code> に <code>sd_getDeposits</code> を足す。スマホ幅で確認。</li>
 </ol>
 
 <h3>1-3. MVPの認証の流れ（利用者目線）</h3>
 <ol>
-<li>本部が担当者（メール）と契約（開始日・終了日・対象店舗）を登録し、<b>招待リンク</b>（72時間・1回限り）を発行 → 委託先へメールで送る。</li>
-<li>本部が<b>別の経路（電話・LINE等）で6桁の確認コード</b>を伝える（本人確認。5回間違えると無効）。</li>
-<li>委託先が招待リンクを開き確認コードを入れる → セッション発行（アイドル60分・最大12時間）。</li>
-<li>2回目以降は、登録メールを入力 → <b>メールのワンタイムリンク</b>（10分・1回限り）→ セッション。パスワードは存在しない。</li>
-<li>画面の「ログアウト」で自分のセッションを全て失効。管理者は強制失効できる。契約終了日を過ぎると、<b>翌リクエストから自動で空</b>になる（毎回、契約の期間を計算するため。ジョブに頼らない）。</li>
+<li>本部が、入金を見せる委託先アカウントに<b>スイッチを入れる</b>（対象アカウント・閲覧期間・理由。MVPでは本部が承認つきでSQLを実行。管理画面は後）。</li>
+<li>委託先は<b>今までどおり</b>ログインする（ID／メール＋パスワード、またはGoogle）。精算書のタブは今までどおり。</li>
+<li>「入金」タブを開く。ログインから12時間を過ぎていたら、もう一度ログインを求められる。</li>
+<li>自店舗の月の入金日・入金額・件数が出る。他の店舗は出ない（ブラウザから店舗を指定する入力口が無い）。</li>
+<li>契約終了：本部が閲覧期間の終了日を入れる（または <code>enabled</code> を false）。<b>次のリクエストから空</b>になる（毎回、今日と期間を計算するため。ジョブに頼らない）。アカウント自体の停止は既存の「無効化」（セッションも削除される）。</li>
 </ol>
 
 <h3>1-4. 実装時間と最短の順序（時間単位）</h3>
 <div class="tbl"><table>
 <tr><th>順</th><th>作業</th><th>時間</th><th>累計</th><th>待ち・承認</th></tr>
-<tr><td>0</td><td>事実確認（読み取りのみ）：<code>sd_dash_grant</code>・<code>sd_dash_snapshot</code> の本番のDDL／RLS／GRANT／件数、<code>seisan-api</code> の認証部分、最新の <code>seisan-dashboard</code> を取得、現在の委託先アカウント数・メールの有無</td><td>1.5h</td><td>1.5h</td><td>本番DBの読み取りの許可（<b>承認A</b>）</td></tr>
-<tr><td>1</td><td>SQL下書き（新規表・RPC・<code>sd_dash_grant</code>の列追加・ガード）＋PGliteのテスト（他店舗が取れない／契約外の日が取れない／終了後は空／失効後は空／ハッシュのみ保存／匿名・認証済みから直接読めない）＋ロールバックSQL</td><td>4.0h</td><td>5.5h</td><td>—</td></tr>
-<tr><td>2</td><td>本番適用の前の実環境ロールバック付きリハーサル → 本番適用 → 確認SQL</td><td>1.0h</td><td>6.5h</td><td><b>承認B</b>：SQL本番適用（確認5〜10分）</td></tr>
-<tr><td>3a</td><td>Edge Function <code>contractor-portal</code>（5つの動作・回数制限・監査ログ・CORSは精算画面のオリジンだけ許可・<code>Cache-Control: no-store</code>・単体テスト）</td><td>6.0h</td><td>12.5h</td><td>2人並行なら 3a と 3c は同時</td></tr>
-<tr><td>3b</td><td>ワンタイムリンクのメール送信の接続（現在の送信手段は【未確認】。既存の通知の仕組みを流用する前提で見積り）</td><td>2.0h</td><td>14.5h</td><td>—</td></tr>
-<tr><td>3c</td><td>画面：入金タブ＋入金用ログイン画面（スマホ幅）。プレビューで確認</td><td>3.0h</td><td>17.5h</td><td>—</td></tr>
-<tr><td>4</td><td>テスト：攻撃シナリオ（§6の主要10件）／使い捨てのテスト委託先・テスト契約・テスト店舗で通し／<b>本部の画面の入金と数字が一致</b>することの確認／作業後にテストデータを完全削除して0件確認</td><td>3.0h</td><td>20.5h</td><td>—</td></tr>
-<tr><td>5</td><td>Edge Function の本番デプロイ（スイッチは<b>OFF</b>）＋画面の公開（<code>seisan-dashboard</code> はPublicリポジトリ。入金タブはスイッチOFFの間は出ない）</td><td>0.75h</td><td>21.25h</td><td><b>承認C</b>：デプロイ／<b>承認D</b>：画面のpush</td></tr>
-<tr><td>6</td><td>パイロット1社：契約データの確認（対象店舗・開始日・終了日）→ 担当者のメール登録 → 招待送付 → 立ち会って初回ログイン</td><td>1.5h</td><td>22.75h</td><td><b>承認E</b>：実メール・契約内容の確定（社長）／<b>承認F</b>：スイッチON・委託先への入金情報の公開</td></tr>
-<tr><td>7</td><td>WORKLOG・手順書（本部の運用：招待・失効・再発行）</td><td>1.0h</td><td><b>約24h</b></td><td>—</td></tr>
+<tr><td>0</td><td>事実確認（読み取りのみ）</td><td>—（<b>本調査で完了</b>）</td><td>0h</td><td>承認A：社長が承認済み</td></tr>
+<tr><td>1</td><td>SQL下書き（新表1・RPC1・ガード）＋PGliteのテスト（他店舗が取れない／期間外が取れない／スイッチOFFで空／全店・空欄で空／旧セッションで空／12時間超で再ログイン／摘要が返らない）＋ロールバックSQL</td><td>3.0h</td><td>3.0h</td><td>—</td></tr>
+<tr><td>2</td><td>実環境でのロールバック付きリハーサル（<code>auth.role()</code> の確認・本部の画面との数字一致）→ 本番適用 → 確認SQL</td><td>0.75h</td><td>3.75h</td><td><b>承認B</b>：SQL本番適用（5〜10分）</td></tr>
+<tr><td>3a</td><td><code>seisan-api</code> に <code>sd_getDeposits</code> を追加（回数制限・単体テスト）</td><td>1.5h</td><td>5.25h</td><td>3a と 3c は2人なら同時</td></tr>
+<tr><td>3c</td><td>画面の「入金」タブ（スマホ幅・ライト／ダーク・プレビューで確認）</td><td>2.5h</td><td>7.75h</td><td>—</td></tr>
+<tr><td>4</td><td>テスト：攻撃シナリオ（§6の主要項目）／使い捨てのテスト委託先・テスト店舗で通し／<b>本部の画面と数字が一致</b>することの確認／作業後にテストデータを完全削除して0件確認</td><td>2.0h</td><td>9.75h</td><td>—</td></tr>
+<tr><td>5</td><td>Edge の本番デプロイ（スイッチは全アカウントOFF＝誰にも出ない）＋画面の公開（Publicリポジトリ）</td><td>0.5h</td><td>10.25h</td><td><b>承認C</b>：デプロイ／<b>承認D</b>：画面のpush</td></tr>
+<tr><td>6</td><td>パイロット1社：対象アカウントの確認（共有で使われていないか・古い形のハッシュの置き換え）→ スイッチON → 立ち会って確認</td><td>1.0h</td><td>11.25h</td><td><b>承認F</b>：スイッチON＝委託先に自店の入金情報を見せること（契約・銀行規約上の扱いの確認を含む）</td></tr>
+<tr><td>7</td><td>WORKLOG・手順書（本部の運用：ON・OFF・期間変更）</td><td>0.5h</td><td><b>約12h</b></td><td>—</td></tr>
 </table></div>
 <ul>
-<li><b>実作業の合計は約24時間</b>（承認の返事を待つ時間は含まない）。2人（2セッション）で 3a・3b と 3c を並行すれば、壁時計で<b>約16時間</b>。</li>
-<li><b>最短の道筋</b>：0 → 1 → 2（SQL承認）→ 3a/3c 並行 → 4 → 5（デプロイ承認）→ 6（実メール・公開の承認）。承認は各5〜10分の確認で足りるように、<b>承認の前に結果（テスト通過・ロールバック確認）を揃えて</b>出す。</li>
-<li>MVPで<b>やらない</b>：多要素（TOTP・パスキー）／売上・予定・差額／精算書PDFの新経路／管理画面（登録・失効はSQL関数を本部が承認つきで実行）／現行ログインの置き換え。</li>
+<li><b>実作業の合計は約12時間</b>（承認の返事を待つ時間は含まない。初版の約24時間から半減）。2人で 3a と 3c を並行すれば、壁時計で<b>約8時間</b>。</li>
+<li><b>最短の道筋</b>：1 → 2（承認B）→ 3a／3c 並行 → 4 → 5（承認C・D）→ 6（承認F）。承認の前にテスト通過・ロールバック確認を揃えて出す。</li>
+<li>MVPで<b>やらない</b>：新しい認証（招待・ワンタイムリンク・確認コード）／契約6表／多要素／売上・予定・差額／精算書PDFの新経路／管理画面／ログイン全体の改善（下の「MVPの後」）。</li>
 </ul>
+<div class="box info"><b>有効にする前（パイロットの前）に、本部がやること（コードの作業ではなく運用）</b>
+<ol>
+<li>対象アカウントを、<b>1人1アカウント</b>にできるか確認する。委託先アカウントは3件で、メールも1件ずつ＝<span class="g">【推測】</span>会社ごとの共有アカウントの可能性が高い（実態は【未確認】）。共有のままなら、既存の「利用申請→本部承認」で個人別アカウントを作ってもらい、共有アカウントは入金スイッチを入れない。</li>
+<li>古い形のハッシュ（委託先2件）を置き換える（本人にログインしてもらう、または「パスワードを忘れた方」から再設定）。</li>
+<li>担当店舗の欄が、会社の契約と合っているか確認（店舗名の文字列一致で対応づけているため、名前の違いは「見えない」側に倒れる＝安全側だが、見えるべき店舗が出ない）。</li>
+</ol></div>
 
-<h3>1-5. 本番公開に必要な承認（6件）</h3>
+<h3>1-5. 本番公開に必要な承認（4件）</h3>
 <div class="tbl"><table>
 <tr><th>承認</th><th>内容</th><th>承認する人／所要</th></tr>
-<tr><td>A</td><td>本番DBの<b>読み取り</b>（<code>sd_dash_grant</code> 等の定義・件数の確認）</td><td>社長 5分</td></tr>
-<tr><td>B</td><td>新規表・RPC・<code>sd_dash_grant</code>への列追加のSQL本番適用（ロールバック付きリハーサルの結果つき）</td><td>社長 10分</td></tr>
-<tr><td>C</td><td>Edge Function <code>contractor-portal</code> のデプロイ（スイッチOFFで）</td><td>社長 5分</td></tr>
+<tr><td>A</td><td>本番DB・Edge の<b>読み取り</b>（<b>取得済み</b>：2026-11-28 社長承認）</td><td>—</td></tr>
+<tr><td>B</td><td>新表1・RPC1のSQL本番適用（既存の表・関数・ポリシーは変更しない。ロールバック付きリハーサルの結果つき）</td><td>社長 10分</td></tr>
+<tr><td>C</td><td>Edge Function <code>seisan-api</code> の更新デプロイ（最新リポジトリのソース＋<code>sd_getDeposits</code>。既存の動作は無変更であることをdiffで確認。スイッチ全OFF）</td><td>社長 5分</td></tr>
 <tr><td>D</td><td><code>seisan-dashboard</code>（Public）へ入金タブをpush</td><td>社長 5分</td></tr>
-<tr><td>E</td><td>パイロット委託先の<b>実メールの登録</b>・契約の対象店舗と期間の確定・招待メールの送信（外部への送信）</td><td>社長 10分（契約書の確認を含む）</td></tr>
-<tr><td>F</td><td><b>スイッチON＝委託先に自店の入金情報を見せる</b>こと自体の承認（契約上の取り決め・銀行の規約上の扱いは<b>未確認</b>。§8）</td><td>社長（必要なら法務確認）</td></tr>
+<tr><td>F</td><td><b>スイッチON＝委託先に自店の入金情報を見せること</b>の承認（対象アカウント・閲覧期間の確定を含む。契約上・銀行規約上の扱いは<b>未確認</b>。§8）</td><td>社長（必要なら法務確認）</td></tr>
 </table></div>
-<div class="box info">MVPに<b>前提として要らない</b>もの：入金台帳の段階5（店舗未確定の管理）・段階6（法人別の閲覧制御）は、手元では<b>下書き・本番未適用</b>。MVPは「店舗が確定した入金だけ」を契約の店舗・期間で絞るため、これらを待たずに作れる。ただし店舗の割り当てが誤っていれば、その店舗の委託先に誤った入金が見える（§6の事故シナリオ）ので、パイロットでは<b>本部の画面と数字を突き合わせて</b>から公開する。</div>
+<p class="sub">初版の承認E（実メールの登録・招待メールの送信）は、新しい招待を作らないため<b>不要</b>になった。</p>
+<div class="box info">MVPに<b>前提として要らない</b>もの：入金台帳の段階5（店舗未確定の管理）・段階6（法人別の閲覧制御）は、本番<b>未適用</b>（手元では下書き）。MVPは「店舗が確定した入金だけ」を担当店舗で絞るため待たずに作れる（本番では、集計の対象になる入金で<b>店舗未確定の行は0件</b>）。ただし店舗の割り当てが誤っていれば、その店舗の委託先に誤った入金が見える（§6）ので、パイロットでは<b>本部の画面と数字を突き合わせて</b>から公開する。</div>
+<div class="box info"><b>MVPの後（別承認）</b>：ログイン全体の改善（セッションのアイドル切れ・IP単位の制限・失敗の通知・古いハッシュの一斉置き換え・旧GAS経路の撤去）／必要なら TOTP・招待型のワンタイムリンク（§3 は<b>その場合の完全版</b>として残す）／売上・予定・差額（§5-3）。</div>
+
 
 <!-- ===================== 2. 現状の認証の評価 ===================== -->
-<h2>2. 現状の認証の評価（根拠つき）</h2>
-<p class="sub">以下は <code>/Users/mirai/Claude/seisan-dashboard</code>（GAS版 <code>SD_VERSION='v5.24-removeextline'</code>）を読んだ結果。本番の <code>seisan-api</code> は【未確認】。</p>
+<h2>2. 現状の認証の評価（本番の実体・根拠つき）</h2>
+<p class="sub">調査日 2026-11-28。根拠：最新リポジトリ（<code>seisan-dashboard</code> origin/main 213df7f）・本番から取得した <code>seisan-api</code> のソース（認証部分を最新リポジトリと突き合わせ）・本番DBの読み取り（SELECT のみ。実値は出さず、件数と種類だけ記録）。初版（手元の古いGAS版 v5.24 への評価）は撤回し、下表に置き換えた。</p>
 <div class="tbl"><table>
 <tr><th>観点</th><th>確認できたこと（根拠）</th><th>評価</th></tr>
-<tr><td>パスワードの置き場所</td><td><span class="f">【事実】</span>スプレッドシートのシート <code>権限_精算ダッシュボード</code> のB列に<b>平文</b>で置く（<code>gas/SeisanDashboard.gs</code> の <code>sd_authSheet_</code>・<code>sd_findAccount_</code>）。照合は文字列の単純比較（<code>sd_login</code>：<code>String(acc.pw) !== String(pw)</code>）。このシートを開ける人は全員のパスワードが見える。誰が開けるかは<b>【未確認】</b>。</td><td class="g">不十分</td></tr>
-<tr><td>初期パスワードの強さ</td><td><span class="f">【事実】</span>新規作成時の初期パスワードは <code>Utilities.getUuid().split('-')[0]</code>（16進8桁＝約32bit）で、シートと実行ログに平文で出る。</td><td class="g">弱い</td></tr>
-<tr><td>総当たり対策</td><td><span class="f">【事実】</span>失敗時は <code>Utilities.sleep(500)</code> だけ。失敗回数の記録・ロックアウト・IP制限は<b>コード上に無い</b>。READMEの手順では、Webアプリは「アクセスできるユーザー：全員」で公開。<span class="g">【推測】</span>並列に試せば1リクエストごとの0.5秒待ちでは止まらない。Supabase側に回数制限の表も手元のSQLに<b>見当たらない</b>。</td><td class="g">対策なし</td></tr>
-<tr><td>セッションの持ち方</td><td><span class="f">【事実】</span>トークンは UUID（ランダム）。GASの Script Properties に <code>sdtok_&lt;トークン&gt;</code> の名前で、さらに Supabase の <code>ds_sessions</code>（<code>token</code> が主キー）に<b>トークンそのまま</b>保存（ハッシュではない）。期限は使うたびに +336時間（14日）の延長。ブラウザは <code>localStorage</code> の <code>sd_token</code> に保存（<code>index.html</code>）。<code>ds_sessions</code> は RLS ポリシー無し＝service_role だけ（<code>ns-portal/supabase/2026-09-18_ds_sessions.sql</code>）。</td><td class="g">ハッシュ保存なし・14日の延長式</td></tr>
-<tr><td>URLパラメータ経由</td><td><span class="f">【事実】</span><code>doGet</code> は <code>?fn=…&amp;args=[…]</code> で関数を呼べる。画面（<code>apiGet_</code>）は POST がネットワークで失敗するとGETに自動で切り替え、<b>引数（トークン、ログイン時はIDとパスワード）をURLのクエリに載せる</b>。履歴・中継・サーバーの記録に残り得る。</td><td class="g">漏れ得る</td></tr>
-<tr><td>委託先の店舗の絞り込み</td><td><span class="f">【事実】</span>サーバー側で行っている（<code>sd_allowedStores_</code>・<code>sd_listAttachments</code>・<code>sd_getPdfB64</code> が権限を確認）。ブラウザから店舗IDを受けて信用する作りではない。ただし<b>担当店舗が空欄または「全店」なら、委託先でも全店が見える</b>（<code>sd_allowedStores_</code> の先頭の条件）＝入力ミスで全店が見える。店舗は<b>名前の文字列一致</b>。役職の不明な文字列は「委託先」扱い（安全側）。</td><td>概ね良いが空欄で全開</td></tr>
-<tr><td>GASの権限の大きさ</td><td><span class="f">【事実】</span>「次のユーザーとして実行：自分」で、Drive・スプレッドシートを所有者の権限で触る。さらに <code>SUPABASE_SERVICE_KEY</code>（service_role）を Script Properties に持つ読み取りコードがある（<code>sd_sessionSupaHeaders_</code>）。GASのスクリプトを編集できる人・侵害された場合、<b>DB全体に届き得る</b>（鍵の現在の有無は【未確認】）。</td><td class="g">侵害時の被害が大きい</td></tr>
-<tr><td>機械間の合言葉</td><td><span class="f">【事実】</span><code>sd_api*</code> は <code>PL_SYNC_TOKEN</code> を <code>!==</code> で比較（定数時間比較ではない）。委託先の画面とは別系統だが、同じ公開URLで呼べる。</td><td>軽微</td></tr>
-<tr><td>統合ログイン</td><td><span class="f">【事実】</span>本部・マスターは Supabase のトークンを検証して入る設計で、パスワードはGASを通らない。<b>委託先は対象外</b>（<code>sd_supaLogin</code>）。公開キー（publishable）は公開してよい種類。</td><td class="f">良い</td></tr>
-<tr><td>本番の現状（11/26〜）</td><td><span class="f">【事実（WORKLOGより）】</span>画面は <code>seisan-api</code>（Edge Function）に切替済み。11/28「ログインIDまたはメールアドレス」。メールの場合、本部・マスターは先にポータルのパスワード、だめなら精算側のパスワード、<b>委託先も登録メールで可</b>。パスワード再設定・利用申請メールは実画面で未確認。</td><td><b>【未確認】</b>ハッシュ・回数制限の有無</td></tr>
+<tr><td>配信元・呼び先</td><td><span class="f">【事実】</span>画面は GitHub Pages（Publicリポジトリ <code>seisan-dashboard</code>）。<code>index.html</code> は <code>NEW_SYSTEM=true</code>（11/26 22:19 切替）で、ログインを含む全ての呼び出しを Edge Function <code>seisan-api</code>（<code>{fn, args}</code> を POST）へ送る。旧GASの呼び出し経路（GET へのフォールバックでURLに引数が載る作り）は、<code>DB_MODE</code> が true の間は通らない。本番の設定は <code>verify_jwt=false</code>（認証は本文のトークンで行う）。DB の設定 <code>settle_config.mode</code> は <code>live</code>。</td><td class="f">新構成</td></tr>
+<tr><td>ログイン方式</td><td><span class="f">【事実】</span>①ログインID またはメール＋パスワード（11/28 にメールを追加）②Googleログイン（Googleの ID トークンを検証：宛先・発行元・期限・メール確認済み）③統合ログイン（<b>本部・マスターのみ</b>。委託先はサーバーが明示的に拒否）。メールが複数アカウントで重複する場合は、パスワードが合うアカウント。④利用申請（Googleで申請→本部が承認→個人別アカウント <code>-NN</code> を作成。自己承認は拒否）⑤パスワード再設定（メールのリンク30分・1回限り・ハッシュ保存・同じ人の古いリンクは破棄・1時間3回まで）。11/26〜11/28 の記録：成功の記録5件・失敗7件・申請の却下1件。</td><td class="f">妥当</td></tr>
+<tr><td>パスワードの保存</td><td><span class="f">【事実】</span>DB の <code>settle_accounts.pw_hash</code>（service_role だけが読める）。形式は PBKDF2-SHA-256（10万回・16バイトの塩）または GAS から写した「塩つきSHA-256 1回」。後者は<b>ログインに成功した時に PBKDF2 へ置き換わる</b>。全アカウント6件の内訳：PBKDF2 1件・SHA-256 5件。<b>委託先3件では PBKDF2 1件・SHA-256 2件</b>。比較は時間が内容で変わらない書き方。新規・変更時の長さの検査は再設定だけ（8文字以上）で、本部が設定する場合は無し。</td><td class="g">概ね良い。SHA-256 の2件を置き換える。PBKDF2 の回数は現在の推奨（約60万回）より少ない</td></tr>
+<tr><td>セッション</td><td><span class="f">【事実】</span>トークン＝<code>crypto.randomUUID()</code>（122ビットの乱数）。DB（<code>settle_sessions</code>）には <b>SHA-256 のハッシュだけ</b>保存。有効期限は発行から<b>336時間（14日）固定</b>（使うたびの延長はしない）。アイドル切れ・端末の紐付けは無い。失効：ログアウト・パスワード変更／再設定・アカウントの保存（権限や担当店舗の変更）で、そのアカウントのセッションを全削除。ブラウザは <code>localStorage</code> に保存。トークンはPOST本文で送る（URLには載らない）。現在の有効セッション：全体8件（委託先2件）。</td><td class="g">保存は良い。14日固定は入金には長い</td></tr>
+<tr><td>総当たり対策</td><td><span class="f">【事実】</span>失敗は <code>settle_login_fails</code> にID（入力文字列のハッシュ）ごとに記録し、<b>5回失敗で15分ロック</b>（成功で解除）。再設定の依頼はアカウントごとに1時間3回、利用申請はメールごとに24時間3回。<b>IP単位の制限は無い</b>。ロックの通知は無い。ID と メールは別の枠として数えられる（同じアカウントに対し最大2枠）。</td><td class="g">一定の対策あり。IP制限・通知は無し／締め出しの余地</td></tr>
+<tr><td>委託先の店舗の絞り込み</td><td><span class="f">【事実】</span>サーバー側（<code>settle_whoami</code> が持ち主を確定 → <code>settle_can_view</code> が店舗の担当を確認 → 店舗名を正規化して <code>settle_stores</code> と一致）。ブラウザから店舗ID・委託先IDを信用して受ける作りではない。ただし DB 側の判定は<b>担当店舗が空欄または「全店」なら全店</b>を許す（保存時の検査で空欄を拒否しているが、DB関数自体は拒否しない。現在、該当する委託先は0件）。委託先3件の担当店舗は計5エントリで、5件とも <code>settle_stores</code> に対応し、5件とも <code>store_id</code>（正本の店舗）が設定済み。</td><td class="g">概ね良い。空欄・全店の拒否をRPCに入れる</td></tr>
+<tr><td>旧セッションの経路</td><td><span class="f">【事実】</span><code>settle_whoami</code> は、新しいセッションが無い時に<b>旧GAS時代のログイン</b>（<code>sd_dash_grant</code>＋共通の <code>ds_sessions</code>）でも持ち主を確定する。<code>sd_dash_grant</code> 11件（委託先4件）・<code>sd_dash_snapshot</code> 25件（最終更新 11/26）。全て<b>2026-12-10 に期限切れ</b>。画面の写し（<code>sd_dash_get</code>・<code>sd_dash_logout</code>）は <code>anon</code> から呼べるが、トークンが無ければ何も返らず、中身は精算の写しで入金は含まない。</td><td class="g">12/10 に自然に消える。入金RPCは使わない</td></tr>
+<tr><td>DBの権限</td><td><span class="f">【事実】</span><code>sd_dash_*</code>・<code>settle_*</code> の全表：RLS有効・ポリシー0件・<code>anon</code>／<code>authenticated</code> に権限なし・<code>service_role</code> のみ。関数：<code>settle_*</code> は全て <code>service_role</code> のみ実行可。<code>bank_*</code> 表：RLS有効・<code>anon</code> 権限なし。<code>kd_deposit_daily</code>：RLS有効・ポリシーは <code>ai_reader</code> と認証済みの本部系／店長のみ（<code>anon</code> は表の権限だけ付いているがポリシーが無く0行）。</td><td class="f">良い</td></tr>
+<tr><td>CORS・メソッド・秘密</td><td><span class="f">【事実】</span>CORS は <code>https://mirai-oss.github.io</code> だけ（<code>*</code> ではない）。POSTのみ（それ以外は405）。応答は <code>Cache-Control: no-store</code>。エラーは理由を詳しく返さず、トークン・パスワードをログに出さない。サービスキーは環境変数。機械間の合言葉（<code>PL_SYNC_TOKEN</code>・<code>SEISAN_WORKER_SECRET</code>）はハッシュ同士で比較。</td><td class="f">良い</td></tr>
+<tr><td>監査ログ</td><td><span class="f">【事実】</span><code>settle_auth_logs</code>（ログイン・Googleログイン・再設定・申請・承認却下。13件。入力されたID文字列が残る）。<code>settle_audit</code>（明細・設定・添付の操作。54件）。<b>閲覧（読み取り）の記録は無い</b>。</td><td class="g">入金の閲覧は新しく記録する</td></tr>
+<tr><td>委託先アカウントの実態（件数のみ）</td><td><span class="f">【事実】</span>全体6件：マスター1・本部2・委託先3（全て有効）。委託先：メール登録あり3／メール空欄0／担当店舗が空欄0／「全店」0／メールの重複0／<code>-NN</code> 形式の個人別アカウント0／パスワード未設定0。<span class="g">【推測】</span>3件が会社ごとの共有アカウントで、1件に複数人が入っている可能性（実態は【未確認】）。</td><td class="g">共有のままなら入金は出さない</td></tr>
+<tr><td>旧GAS</td><td><span class="f">【事実】</span>旧GASのWebアプリは今も応答する（<code>ping</code>＝<code>v5.41-ready</code>）。コード上、呼び出せるのは許可リストの関数だけで、<code>SEISAN_FROZEN</code> が on なら PDF・メール係以外は全て断る。11/26 の WORKLOG は「旧GAS：停止（凍結）」と記録。<b>【未確認】</b>本番の旗の実際の値。旧シート（<code>権限_精算ダッシュボード</code>）に平文パスワードが残っているか・誰が開けるか。GAS が持つサービスキーの有無。PDF・メール係の URL は Edge Function のソースにも書かれている（URL自体は秘密ではないが、合言葉は環境変数）。</td><td class="g">要確認（別件）</td></tr>
 </table></div>
-<p><b>評価の結論</b>：手元のGAS版は「パスワード＝平文」「失敗回数の制限なし」「トークン＝平文保存・14日延長」「URLに引数が載る経路あり」。銀行入金を委託先に出す認証の土台には<b>使わない</b>。本番の <code>seisan-api</code> が改善済みの可能性はあるが、<b>確認できていないため前提にしない</b>。MVPは現行ログインから切り離した別の認証を入金タブにだけ追加する。</p>
+<p><b>評価の結論</b>：現在の本番の認証は、<b>パスワードのハッシュ化・トークンのハッシュ保存・失敗の制限・CORS固定・サーバー側の店舗確定・自己承認の禁止</b>を備え、初版が懸念した状態（平文パスワード・制限なし・平文トークン・URLに引数）は<b>解消している</b>。<b>入金日・入金額・件数だけを見せる MVP</b> には流用できる。足りないのは、入金のような銀行情報に対する<b>追加の条件</b>（アカウント別スイッチ・短いセッション・全店／空欄の拒否・閲覧の記録・許可リスト）であり、§1 でそれだけを足す。売上・予定・差額・口座等へ広げる段階では、§3 の完全版（IP制限・TOTP・招待）を再検討する。</p>
+
 
 <!-- ===================== 3. 提案構成 ===================== -->
-<h2>3. 提案する構成（完全版）</h2>
+<h2>3. 完全版の構成（MVPの後・範囲を広げる場合）</h2>
+<div class="box info">この章は、<b>MVPでは作らない</b>。入金情報以外（売上・予定・差額・口座に近い情報）へ広げる、またはログイン全体を強化する段階の設計として残す。現在の本番の認証（§2）で既にある部分（トークンのハッシュ保存・失敗の制限・CORS固定・サーバー側の店舗確定）は、そのまま使う。足りないもの（IP制限・アイドル切れ・TOTP・招待型の初回本人確認・契約表）を、以下の案で足す。<code>sd_dash_grant</code> は旧GASの画面の写し用で、2026-12-10 に空になるため、トークンの入れ物としては使わず、既存の <code>settle_sessions</code>（<code>created_at</code>・<code>expires_at</code> あり）に列を足す形が自然（§3-2 の <code>sd_dash_grant</code> の記述は、この意味に読み替える）。</div>
 <h3>3-1. 経路</h3>
 <ul>
 <li>ブラウザ（精算画面・GitHub Pages）→ <b>Edge Function <code>contractor-portal</code></b>（独自トークンの検証・回数制限）→ DB関数（service_role 専用）→ 許可リストの項目だけ返す。</li>
@@ -176,7 +211,8 @@ li{margin:3px 0}
 </ol>
 
 <!-- ===================== 4. 契約表 ===================== -->
-<h2>4. 契約表の最小設計</h2>
+<h2>4. 契約表の最小設計（完全版・MVPでは作らない）</h2>
+<div class="box info">MVPは、アカウント別の閲覧期間（<code>settle_deposit_access</code>）で代える。委託先が増える・契約単位で期間と店舗を管理したい・売上等へ広げる段階で、この表を作る。</div>
 <div class="tbl"><table>
 <tr><th>表</th><th>主な列（型）</th><th>ポイント</th></tr>
 <tr><td><code>contractors</code></td><td>id uuid／name text／vendor_id uuid null（既存 <code>vendors</code>）／corporation_id uuid null（委託先が自社グループ法人の場合）／status text（active・suspended・closed）／closed_at timestamptz</td><td>法人（会社）単位。切り離しの単位。</td></tr>
@@ -203,16 +239,17 @@ li{margin:3px 0}
 <tr><td class="bad">返さない</td><td>銀行口座番号（下4桁も）／残高／CSV原本／<b>摘要（<code>entries</code> の <code>m</code>。振込人名・端末名が入り得る）</b>／取引の時刻／他法人・他店舗／内部の承認・訂正・差異・紐付け履歴／訂正されたことを示す印／保留金額／店舗・法人・口座の内部ID／N-Style収益</td><td>—</td></tr>
 </table></div>
 
-<h3>5-2. 専用のRPCの形</h3>
+<h3>5-2. 専用のRPCの形（MVP）</h3>
 <ul>
-<li><code>contractor_deposit_view(p_user uuid, p_from date, p_to date)</code> → <code>(store_label text, deposit_date date, amount numeric, deposit_count int, day_status text, data_as_of timestamptz)</code>。<code>security definer</code>・<code>search_path</code> 固定・<code>revoke all from public, anon, authenticated</code>・<code>grant execute to service_role</code>。</li>
-<li>集計の条件は台帳の <code>bank_deposit_daily</code> と同じ（<code>counts_as_sales_deposit</code>・<code>store_id</code> 確定・訂正値があれば訂正後・<code>legacy_pending</code> と <code>verified</code> のみ合算）。ただし <code>bank_deposit_daily</code> は <code>auth.uid()</code> で見える範囲を決めるため、Edge Function（service_role）からは使えない。<b>ロジックの二重持ちでずれる危険</b>があるので、テストで「本部の画面（<code>bank_deposit_daily</code>）と同じ店舗・同じ日で同じ数字」を必ず確認する。</li>
-<li>テーブルへの直接のSELECTは委託先の経路に一切つけない。</li>
+<li><code>settle_client_deposits(p_token text, p_month text)</code> → <code>(store_label text, deposit_date date, amount numeric, deposit_count int, day_status text, data_as_of timestamptz)</code> の表（または同じ中身のjson）。<code>security definer</code>・<code>search_path</code> 固定・<code>revoke all from public, anon, authenticated</code>・<code>grant execute to service_role</code>。判定の中身は §1-2。</li>
+<li><span class="f">【事実】</span>集計は<b>既存の <code>bank_deposit_daily(p_from, p_to)</code> を呼んで使う</b>（初版の「service_role からは使えない」は誤りだった）。この関数は、見える範囲の判定 <code>bank_store_visible()</code> が<b>「呼び出しの役割が service_role なら全店を可」</b>と定義されているため、Edge Function（service_role）から呼べば全店分が返る。集計の条件は本部の画面と同じ（<code>counts_as_sales_deposit</code>・<code>store_id</code> 確定・訂正値があれば訂正後・<code>legacy_pending</code> と <code>verified</code> のみ合算）。RPC はその結果を<b>担当店舗の <code>store_id</code> だけに絞り</b>、<code>entries</code>（摘要）・保留金額・各種IDを捨てる。<b>ロジックを二重に持たない</b>ので、本部の画面との食い違いが構造上起きない。<span class="g">【推測】</span>RPC の中から呼んでも <code>auth.role()</code>（リクエストの設定値を読む）は service_role のままのはず。<b>実環境のリハーサルで必ず確認する</b>（そうならない場合の代替：同じ条件の集計を RPC に書き、台帳側の変更時に合わせる＋数字一致のテストを常設）。</li>
+<li>テーブルへの直接のSELECTは委託先の経路に一切つけない（<code>anon</code>・<code>authenticated</code> に新しい権限を出さない）。</li>
 </ul>
+
 
 <h3>5-3. 売上・入金予定額・差額（MVPの後の条件）</h3>
 <ul>
-<li>元は <code>kd_deposit_daily_v</code>（現金売上・入金額・差額）。ただしこの表は旧GAS由来の入金（<code>kd_deposit_daily</code>）で、新しい台帳（<code>bank_transactions</code>）とは<b>別の源</b>。台帳の入金とどこまで一致するか（<code>entries</code> の内容、店舗の割り当て、現金売上のレジ照合の確認状況）は<b>未検証</b>。</li>
+<li>元は <code>kd_deposit_daily_v</code>（現金売上・入金額・差額）。<code>kd_deposit_daily</code> は台帳と<b>別の表</b>（BigQuery 経由の写しで、更新が遅れる／明細は50件で切れる等の既知の問題がある）。本調査で、<b>5店舗の日別の入金を台帳と突き合わせた</b>結果（件数のみ）：台帳と <code>kd_deposit_daily</code> が<b>同じ日・同じ金額・同じ件数 818 日</b>／金額か件数が違う日 1／台帳にだけある日 2（うち1日は <code>kd</code> の最終日より後の 11/28＝更新の遅れ）／<code>kd</code> にだけある日 0。<b>入金に関しては、ほぼ一致している</b>。売上・予定・差額（現金売上のレジ照合の確認状況）は<b>未検証</b>のまま。</li>
 <li>公開の条件：①同じ店舗・同じ期間で <code>kd_deposit_daily_v</code> と台帳の入金が一致（差の理由を説明できる）②現金売上がレジ照合の確認済み ③契約ごとのスイッチ <code>show_sales_expected</code>（既定false）を本部がONにする。</li>
 </ul>
 
@@ -224,14 +261,14 @@ li{margin:3px 0}
 <tr><td>他店舗の推測（IDの総当たり）</td><td>内部UUIDを返さない。応答は一律。トークンは256bit。</td><td>なし</td></tr>
 <tr><td>トークン流出（XSS・共有PC・画面共有）</td><td>sessionStorage（タブを閉じると消える）・アイドル60分・最大12時間・失効・<code>no-store</code>。サーバーにはハッシュのみ＝DB流出でトークンは作れない。</td><td>GitHub Pages では <b>CSPのヘッダを設定できない</b>（metaで一部のみ）。画面内のXSSが起きれば、その時間の閲覧は盗まれ得る。</td></tr>
 <tr><td>招待リンクの転送・メールの乗っ取り</td><td>1回限り・72時間＋<b>別経路の確認コード</b>。メール変更は本部が確認。</td><td>メールとコードの両方が奪われた場合</td></tr>
-<tr><td>契約終了後のアクセス</td><td>毎回、契約の期間で計算＝終了日の翌リクエストから空。夜間ジョブでセッションも失効。</td><td>キャッシュ（<code>sd_dash_snapshot</code>。内容は【未確認】）に入金の集計を載せない。ブラウザの画面に残った表示は消せない。</td></tr>
-<tr><td>契約の途中で店舗が外れる</td><td>店舗ごとの適用期間（<code>valid_to</code>）で絞る。</td><td>登録漏れ（運用）</td></tr>
-<tr><td>リプレイ（盗んだ通信の再送）</td><td>HTTPSのみ・短いアイドル・招待／ログインリンクは原子的に1回限り・URLに載せない。</td><td>有効なセッションが盗まれた間は同じ権限（上のXSS・端末盗難）</td></tr>
-<tr><td>総当たり（コード・ログイン要求の連打）</td><td>コード5回失敗で無効・メール宛の回数制限・IP制限・定数時間比較・失敗の監査ログ・本部へ通知。</td><td>多数のIPからの分散した試行（IPの信頼性は【未確認】）</td></tr>
-<tr><td>GASのスクリプト侵害</td><td>入金タブの経路は<b>GASを通らない</b>。新しい経路に必要な鍵はEdge Functionの環境変数にだけ置く。</td><td><b>既存GASが service_role の鍵を持っている可能性</b>（<code>SUPABASE_SERVICE_KEY</code> の読み取りコードあり・現在の有無は【未確認】）。確認し、不要なら削除する作業を別に。</td></tr>
-<tr><td>旧ログイン（平文パスワード）への総当たり</td><td>入金タブは旧ログインを<b>信用しない</b>（別認証）。旧ログインで得られるのは従来どおりの精算書の範囲のみ。</td><td>旧委託先アカウントは平文のまま残る＝精算書の情報は引き続き狙える。§7で段階的に廃止。</td></tr>
-<tr><td>偽のログイン画面（フィッシング）</td><td>メールの本文に正しいURLを明記。ワンタイムリンクは短時間・1回限り。</td><td>GitHub Pagesの公開ドメイン。独自ドメイン化は別検討</td></tr>
-<tr><td>本部の登録ミス（別会社の店舗を契約に入れる）</td><td>登録者と確定者を分ける／契約の登録時に <code>store_operation_relations</code> と食い違いを検査／公開前に「その委託先として見た画面」を本部がプレビュー（本番に出る前に確認）。</td><td>運用ミスの完全防止は不可</td></tr>
+<tr><td>契約終了後のアクセス</td><td>毎回、<code>settle_deposit_access</code> の有効・閲覧期間と今日（JST）で計算＝終了日の翌リクエストから空。アカウントの無効化でセッションも削除（既存）。</td><td>キャッシュ（<code>sd_dash_snapshot</code>）に入金の集計を載せない（現在は精算の写しだけで、入金は含まない。11/26 以降の更新なし）。ブラウザの画面に残った表示は消せない。</td></tr>
+<tr><td>契約の途中で店舗が外れる</td><td>担当店舗（<code>stores_raw</code>）を変えれば、既存の仕組みでそのアカウントのセッションが全削除され、次から出ない。店舗ごとの適用期間は MVP では持たない（アカウント別の閲覧期間で代える）。</td><td>登録漏れ（運用）。店舗の途中入れ替えは、閲覧期間を分けて運用</td></tr>
+<tr><td>リプレイ（盗んだ通信の再送）</td><td>HTTPSのみ・トークンはPOST本文（URLに載らない）・入金タブは<b>ログインから12時間以内</b>・サーバーにはハッシュのみ。</td><td>有効なセッションが盗まれた間は同じ権限（XSS・端末盗難。ブラウザは <code>localStorage</code>）。MVPの後にアイドル切れ・端末の紐付けを検討</td></tr>
+<tr><td>総当たり（パスワードの連打）</td><td>既存：ID（入力文字列）ごとに5回失敗で15分ロック・失敗の記録・定数時間比較・パスワードはPBKDF2。入金の読み取りは、ログインIDごとに1時間60回までに制限。</td><td>IP単位の制限なし・通知なし／分散した試行に弱い／他人が失敗させて本人を締め出せる（MVPの後に改善）。古い形のハッシュ2件はパイロット前に置き換える</td></tr>
+<tr><td>GASのスクリプト侵害</td><td>入金タブの経路は<b>GASを通らない</b>（<code>seisan-api</code> → DB）。新しい鍵は作らない。</td><td>旧GASのWebアプリは今も応答し、PDF・メール係として稼働中。<b>旧GASが service_role の鍵を持っているか／凍結の旗が実際にonか／旧シートに平文パスワードが残るかは【未確認】</b>。確認し、不要なら削除する作業を別に。</td></tr>
+<tr><td>旧GAS時代のログイン・旧セッションの流用</td><td>入金RPCは<b>旧経路（<code>sd_dash_grant</code>・<code>ds_sessions</code>）を見ない</b>。旧経路の11件は 2026-12-10 に期限切れ。</td><td>旧シートの平文パスワード（あれば）＝【未確認】。旧GASの凍結が効いていれば、ログインには使えない</td></tr>
+<tr><td>偽のログイン画面（フィッシング）</td><td>Googleログインは、ID トークンの宛先が自分のクライアントIDであることを検証（既存）。利用者には正しいURLを明記して案内。</td><td>GitHub Pagesの公開ドメイン。独自ドメイン化は別検討</td></tr>
+<tr><td>本部の登録ミス（別会社の店舗を担当店舗に入れる／別アカウントのスイッチをONにする）</td><td>スイッチは既定OFF・ONは承認つき（理由・承認者を記録）／担当店舗は店舗名の一致（名前が違えば「見えない」側）／公開前に「その委託先として見た画面」を本部がプレビューし、<code>store_operation_relations</code> の運営関係と照合。</td><td>運用ミスの完全防止は不可</td></tr>
 <tr><td>入金の店舗の割り当て誤り（台帳）</td><td>店舗確定済みの行のみ・保留は金額を出さず「確認中」。パイロットで本部の画面と照合。</td><td>段階5（店舗未確定の管理）の本番適用前は、台帳側の割り当て精度に依存</td></tr>
 <tr><td>CSRF・CORS</td><td>Cookieを使わず <code>Authorization</code> ヘッダ＝CSRFは成立しない。CORSは精算画面のオリジンのみ。</td><td>なし</td></tr>
 <tr><td>ログ・エラーからの漏えい</td><td>トークン・メール・金額をログに出さない。エラーは理由を詳しく返さない。</td><td>Supabase側の標準ログの内容は【未確認】</td></tr>
@@ -242,23 +279,25 @@ li{margin:3px 0}
 <h2>7. 既存利用者への影響・移行・テスト・承認</h2>
 <h3>7-1. 既存の精算ダッシュボード利用者への影響と移行手順</h3>
 <ol>
-<li><b>段階0（影響なし）</b>：事実確認（承認A）。</li>
-<li><b>段階1（影響なし）</b>：新規表・関数・Edge Functionを追加。既存の表・関数・画面は変更しない。入金タブはスイッチOFFで<b>非表示</b>。</li>
-<li><b>段階2（影響なし）</b>：本部の担当者を「テスト委託先」として登録し、使い捨てデータで通す（終了後に完全削除）。</li>
-<li><b>段階3（パイロット1社）</b>：既存の精算書ログインは<b>そのまま</b>。入金タブを開いた時だけ新しい認証（step-up）。既存のログインで入った人が、入金タブを開けるわけではない。</li>
+<li><b>段階0（影響なし）</b>：事実確認（承認A。<b>実施済み</b>）。</li>
+<li><b>段階1（影響なし）</b>：新表1・RPC1を追加（承認B）。既存の表・関数・ポリシー・画面は変更しない。スイッチ表は空＝誰にも出ない。</li>
+<li><b>段階2（影響なし）</b>：Edge に <code>sd_getDeposits</code>、画面に入金タブを追加（承認C・D）。スイッチOFFの間は、タブを開いても「まだご利用いただけません」だけ。本部の担当者を使い捨ての「テスト委託先」として登録し、使い捨ての店舗・データで通す（終了後に完全削除）。</li>
+<li><b>段階3（パイロット1社）</b>：個人別アカウントの確認・古いハッシュの置き換え→スイッチON（承認F）。既存の精算書のログインと画面は<b>そのまま</b>。</li>
 <li><b>段階4</b>：他の委託先へ展開。売上・予定・差額（§5-3の条件後）。</li>
-<li><b>段階5（別承認）</b>：委託先のログイン全体を同じ「招待＋ワンタイムリンク」へ移し、旧平文パスワード（委託先分）を廃止。本部・マスターは従来の統合ログイン。</li>
-<li><b>段階6（別承認）</b>：GASに残る service_role 鍵の要否を確認し、不要なら除去。</li>
+<li><b>段階5（別承認）</b>：ログイン全体の改善（アイドル切れ・IP制限・通知・古いハッシュの一斉置き換え）。必要なら §3 の完全版（TOTP・招待）。</li>
+<li><b>段階6（別承認）</b>：旧GASの凍結の旗・サービスキー・旧シートの平文パスワードの有無を確認し、不要なら除去。</li>
 </ol>
-<p>影響を受けるのは「入金タブを使う委託先」だけで、<b>現行ログインを止める段階は5まで来ない</b>。</p>
+<p>影響を受けるのは「入金タブを使う委託先」だけで、<b>現行のログインは止めない</b>。</p>
+
 
 <h3>7-2. テスト項目</h3>
 <ul>
 <li>契約外の店舗・日付・月が取れない／契約終了日の前日・当日・翌日／閲覧可能期間の延長あり・なし／店舗が途中で外れる。</li>
 <li>他社の担当者のトークンで他社の店舗が出ない／失効後・期限切れ・アイドル切れのトークンが拒否される。</li>
-<li>招待・ログインリンクの再使用の拒否／確認コード5回失敗で無効／同時に2回引き換えても1回だけ成功。</li>
+<li>（完全版 §3 を作る場合のみ）招待・ログインリンクの再使用の拒否／確認コード5回失敗で無効／同時に2回引き換えても1回だけ成功。</li>
+<li>（MVP）スイッチ行なし・<code>enabled=false</code>・期間外・担当店舗が空欄／「全店」・旧経路のトークン・12時間超のセッション・役割が委託先以外、のどれでも空（または再ログイン）になる。他の委託先のトークンで他社の店舗が出ない。ログアウト・パスワード変更後のトークンが拒否される。</li>
 <li>DB上にトークン・コードの平文が無い（ハッシュのみ）／匿名・認証済みのキーから新規表と関数を直接呼べない。</li>
-<li>未知のフィールド（<code>store_id</code>・<code>contractor_id</code>）を付けると400。</li>
+<li>未知のフィールド（<code>store_id</code>・<code>contractor_id</code> など）を付けると拒否される（<code>sd_getDeposits</code> は <code>[トークン, 月]</code> 以外を受けない）。</li>
 <li>応答に許可リスト以外の項目が無い（キー一覧の完全一致テスト）。</li>
 <li>本部の画面（<code>bank_deposit_daily</code>）と店舗・日付ごとに数字が一致。保留・未確定の行が合算されない。</li>
 <li>ログ（監査・Edge）に平文のトークン・メール・金額が無い。スマホ幅・ライト／ダークの表示。</li>
@@ -266,23 +305,25 @@ li{margin:3px 0}
 </ul>
 
 <h3>7-3. 承認が必要な点（まとめ）</h3>
-<p>§1-5の承認A〜F。そのほか：メールの送信手段の選定（【未確認】）／委託先に入金情報を見せることの契約上・銀行規約上の扱い／売上・予定・差額の公開（MVPの後に別承認）／旧パスワードの廃止（段階5）／GASの鍵の除去（段階6）。</p>
+<p>§1-5の承認B・C・D・F（Aは取得済み）。そのほか：委託先に入金情報を見せることの契約上・銀行規約上の扱い（承認Fに含む）／売上・予定・差額の公開（MVPの後に別承認）／旧GASの鍵・旗・シートの確認と除去（段階6）／ログイン全体の改善（段階5）。</p>
 
 <!-- ===================== 8. 未確認 ===================== -->
-<h2>8. 未確認事項（ファイルから分からなかったこと）</h2>
+<h2>8. 未確認事項（今回の調査でも分からなかったこと）</h2>
+<p class="sub">初版で【未確認】だった次の項目は、今回の読み取り調査で<b>確認できた</b>：<code>sd_dash_grant</code>・<code>sd_dash_snapshot</code> の定義と件数／本番 <code>seisan-api</code> のソースと認証／委託先アカウントの数・メール有無・担当店舗の空欄／<code>verify_jwt</code>・CORS／<code>kd_deposit_daily</code> と台帳の一致度／台帳段階1〜4の本番適用（<code>bank_deposit_daily</code> は存在し、service_role で実行可）。</p>
 <ol>
-<li><b><code>sd_dash_grant</code>・<code>sd_dash_snapshot</code> の定義</b>（CREATE文・RLS・GRANT・行数・誰が書き誰が読むか・<code>scope_key</code> の意味）。手元のSQLに無い。列名はご指示の記載（<code>token_hash</code>・<code>scope_key</code>・<code>user_name</code>・<code>user_role</code>・<code>expires_at</code>）に従った。</li>
-<li><b>本番 <code>seisan-api</code> のソースと認証</b>（パスワードのハッシュ・回数制限・セッションの保存・Googleログイン・再設定）。手元の <code>seisan-dashboard</code> は 2026-10-01 時点で、<code>supabase/</code> も <code>settle_*</code> の定義も無い。最新版の取得が必要。</li>
-<li>旧GASのWebアプリが今も外部から呼べる状態か／権限シートを開ける人／委託先アカウントの数・メール登録の有無・共有アカウントの有無／担当店舗の空欄の有無。</li>
-<li><code>settle_*</code> の構造・精算書PDFの置き場（<code>settle-files</code>）と、委託先の絞り込みの方法（精算書を新経路に載せる場合に必要）。</li>
-<li>Supabase Edge の、クライアントIPのヘッダの信頼性／プラットフォーム側の回数制限／<code>verify_jwt</code> の設定の置き場（<code>config.toml</code> は手元に無い）／パスキーの対応状況。</li>
-<li>メールの送信手段（ワンタイムリンクの送信元）と、委託先のメールの管理状況（共有メールかどうか）。</li>
-<li>契約の実データ（開始日・終了日・対象店舗・閲覧に関する取り決め）の置き場。<code>store_operation_relations</code> の網羅性。</li>
-<li>委託先の店舗の入金が、店舗ごとの専用口座か複数店舗の共用口座か／台帳（<code>bank_transactions</code>）と <code>kd_deposit_daily</code> の一致の度合い／台帳の段階1〜4の本番の適用状況の最新（WORKLOGでは段階4は適用済みの記載、段階5・6は未適用）。</li>
+<li><b>旧GAS</b>：本番で凍結の旗（<code>SEISAN_FROZEN</code>）が on か／GAS が service_role の鍵を持っているか／旧シート（<code>権限_精算ダッシュボード</code>）に平文パスワードが残るか・誰が開けるか。読み取りでは確かめられない（GASの設定画面か、凍結を確かめる実行が要る）。</li>
+<li>委託先アカウント3件が、<b>会社ごとの共有か、個人か</b>（共有なら、入金は個人別アカウントにしてから）。</li>
+<li><code>auth.role()</code> が、<code>settle_client_deposits</code>（security definer）の中から呼んだ <code>bank_deposit_daily</code> でも service_role と判定されるか（実環境のロールバック付きリハーサルで確認。そうでなければ代替案：§5-2）。本調査では、書き込み・役割の切り替えを伴うため試していない。</li>
+<li>Supabase Edge のクライアントIPのヘッダの信頼性／プラットフォーム側の回数制限（完全版・IP制限を入れる場合に必要）。</li>
+<li>委託先の店舗の入金が、店舗ごとの専用口座か複数店舗の共用口座か（共用なら、店舗への割り当てが正しいかをパイロットで必ず突き合わせる）。台帳の集計対象（店舗確定済みの入金）は全体で 5,673 行、うち <code>legacy_pending</code>（旧データの移行分・照合待ち）4,666 行／<code>verified</code>（照合済み）1,007 行で、5店舗の集計にも両方が含まれる。数字は本部の画面と同じ規則。段階5・6は本番未適用。</li>
 <li>委託先に自店の入金情報を見せることが、委託契約・銀行（PayPay・GMOあおぞら）の規約に反しないか。</li>
-<li><code>sd_dash_snapshot</code>（キャッシュ）が入金の集計を含むか、契約終了後に残るか。</li>
+<li>契約の実データ（開始日・終了日・閲覧に関する取り決め）の置き場と、<code>store_operation_relations</code> の網羅性（MVPはアカウント別の閲覧期間で代えるため、必須ではない）。</li>
+<li>実画面でのメールログイン（WORKLOG：利用者の次回ログインで確認とされている）／パスワード再設定・利用申請メールの実送信。</li>
+<li>メールの送信手段（再設定・利用申請の通知に使う旧GASのPDF・メール係。MVPでは新しいメールは送らない）。</li>
+<li>パスキー・TOTP の対応状況（完全版を作る場合）。</li>
 </ol>
-<div class="sub">この設計書の作成で、コード・DB・GAS・本番設定の変更、SQL実行、デプロイ、push、commit は一切行っていません。</div>
+
+<div class="sub">この設計書の作成・改訂で、コード・DB・GAS・本番設定の変更、SQL書き込み、デプロイ、push、commit は一切行っていません（本番DBは SELECT のみ、Edge Function は一覧とソースの取得のみ、旧GASは <code>ping</code> の応答確認のみ）。</div>
 </main>
 </body>
 </html>

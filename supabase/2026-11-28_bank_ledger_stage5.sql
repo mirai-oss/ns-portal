@@ -120,14 +120,8 @@ begin
 end $$;
 revoke all on function public.bank_ledger_global_set(uuid, boolean, text) from public, anon;
 grant execute on function public.bank_ledger_global_set(uuid, boolean, text) to authenticated, service_role;
--- 移行（従来の見え方を保つ）: 法人の限定が無い本部（user_corporations も役職の許可も無い有効な本部）に、全法人の閲覧権限を明示的に付与する。
---   これ以降に足した本部担当者は、付与か法人の許可を設定するまで何も見えない。
-insert into public.bank_ledger_global_users (user_id, note)
-  select u.id, '段階5適用時の移行（従来の全法人の閲覧を維持）' from public.users u
-   where u.is_active and u.role = 'HQ'
-     and not exists (select 1 from info.user_corporations uc where uc.user_id = u.id)
-     and not exists (select 1 from info.profiles p join info.role_corporations rc on rc.role_id = p.role_id where p.id = u.id and p.is_active)
-     and not exists (select 1 from public.bank_ledger_global_users g where g.user_id = u.id and g.revoked_at is null);
+-- ※本部への全法人の閲覧権限の付与は、自動では行わない。業務上必要な人だけ、全法人の管理者が bank_ledger_global_set() で個別に付与する（理由つき・追記専用の記録）。
+--   適用直後、付与が無い本部は何も見えない（銀行台帳を使う画面は、まだ無い）。
 
 -- =====================================================================
 -- ② 店舗の運営法人の履歴（適用開始日・終了日）

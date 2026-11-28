@@ -2,7 +2,7 @@
 -- 次のどれかがあると、何も消さずに止まる:
 --   ・紐付けの履歴（bank_assignment_history）に 1 件でもある
 --   ・複数店舗共有（multi）の口座がある
---   ・全法人の閲覧権限の付与に、段階5の移行データ以外（人が付与・取り消した記録）がある
+--   ・全法人の閲覧権限の付与の記録が 1 件でもある
 --   ・運営法人の履歴（store_corporation_periods）に、段階5の初期データ以外（人が足した期間・終了日を入れた期間）がある
 do $$
 declare n bigint := 0; m bigint := 0; g bigint := 0; p bigint := 0;
@@ -14,7 +14,7 @@ begin
   end if;
   if m > 0 then raise exception '共有口座または名義確認と結んだ口座が % 件あります。取り消しを中止しました', m; end if;
   if to_regclass('public.bank_ledger_global_users') is not null then
-    select count(*) into g from public.bank_ledger_global_users where not (revoked_at is null and note like '段階5適用時の移行%');
+    select count(*) into g from public.bank_ledger_global_users;
   end if;
   if g > 0 then raise exception '全法人の閲覧権限の付与に、人が操作した記録が % 件あります。取り消しを中止しました', g; end if;
   if to_regclass('public.store_corporation_periods') is not null then

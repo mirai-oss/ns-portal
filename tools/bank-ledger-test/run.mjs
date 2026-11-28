@@ -14,6 +14,7 @@ const STAGE5 = readFileSync(process.env.STAGE5_FILE || join(here, '../../supabas
 const STAGE5_ROLLBACK = readFileSync(join(here, '../../supabase/2026-11-28_bank_ledger_stage5_ROLLBACK.sql'), 'utf8');
 const STAGE6 = readFileSync(process.env.STAGE6_FILE || join(here, '../../supabase/2026-11-28_bank_ledger_stage6.sql'), 'utf8');
 const STAGE6_ROLLBACK = readFileSync(join(here, '../../supabase/2026-11-28_bank_ledger_stage6_ROLLBACK.sql'), 'utf8');
+const GRANT_HQ = `insert into public.bank_ledger_global_users (user_id, note) values ('00000000-0000-4000-8000-000000000102', 'テスト: 本部(hq)に全法人の閲覧権限を付与')`;
 const STAGE4_ROLLBACK = readFileSync(join(here, '../../supabase/2026-11-28_bank_ledger_stage4_ROLLBACK.sql'), 'utf8');
 const STAGE3_ROLLBACK = readFileSync(join(here, '../../supabase/2026-11-28_bank_ledger_stage3_ROLLBACK.sql'), 'utf8');
 const STAGE2_ROLLBACK = readFileSync(join(here, '../../supabase/2026-11-28_bank_ledger_stage2_ROLLBACK.sql'), 'utf8');
@@ -1012,7 +1013,7 @@ async function main() {
   {
     const db = await fresh(); await db.exec(STAGE2); await db.exec(STAGE3); await db.exec(STAGE4);
     const before = await sup(db, `select md5(pg_get_functiondef('public.bank_tx_guard()'::regprocedure)) a, md5(pg_get_functiondef('public.bank_deposit_daily()'::regprocedure)) b`);
-    await db.exec(STAGE5);
+    await db.exec(STAGE5); await db.exec(GRANT_HQ);
     const after = await sup(db, `select md5(pg_get_functiondef('public.bank_tx_guard()'::regprocedure)) a, md5(pg_get_functiondef('public.bank_deposit_daily()'::regprocedure)) b`);
     ok('段階5は、既存の守り（bank_tx_guard）と日次集計（bank_deposit_daily）を書き換えない', same(before.rows, after.rows));
     const A1 = ID.storeA1, A2 = ID.storeA2, B1 = ID.storeB1;
@@ -1122,7 +1123,7 @@ async function main() {
 
   section('11b. 段階5の法人別: 法人を限定された本部は許可された法人の分だけ／法人未確定は全法人の管理者だけ／運営法人の変更は全法人の管理者だけ');
   {
-    const db = await fresh(); await db.exec(STAGE2); await db.exec(STAGE3); await db.exec(STAGE4); await db.exec(STAGE5);
+    const db = await fresh(); await db.exec(STAGE2); await db.exec(STAGE3); await db.exec(STAGE4); await db.exec(STAGE5); await db.exec(GRANT_HQ);
     const A1 = ID.storeA1, B1 = ID.storeB1;
     const C1 = U(751), C2 = U(752), CN = U(753);
     await db.exec(`insert into public.bank_accounts (id, bank_code, login_group, account_no, corporation_id) values ('${C1}','gmo_aozora','g','S5B-1','${ID.corp1}'), ('${C2}','gmo_aozora','g','S5B-2','${ID.corp2}'), ('${CN}','gmo_aozora','g','S5B-3', null)`);
@@ -1154,7 +1155,7 @@ async function main() {
   // ---------- 12. 段階6: 法人別の閲覧・操作（既存の表・ポリシー・関数の切り替え）----------
   section('12. 段階6: 法人を限定された本部は許可された法人の分だけ（明細・口座・原本・取得履歴・訂正履歴・日次集計・置き場）／ほかの人の見え方は不変／全法人をまたぐ記録は全法人の管理者だけ／ロールバック');
   {
-    const db = await fresh(); await db.exec(STAGE2); await db.exec(STAGE3); await db.exec(STAGE4); await db.exec(STAGE5);
+    const db = await fresh(); await db.exec(STAGE2); await db.exec(STAGE3); await db.exec(STAGE4); await db.exec(STAGE5); await db.exec(GRANT_HQ);
     const A1 = ID.storeA1, A2 = ID.storeA2, B1 = ID.storeB1;
     const C1 = U(851), C2 = U(852), CN = U(853);
     await db.exec(`insert into public.bank_accounts (id, bank_code, login_group, account_no, corporation_id, store_id, store_status) values
@@ -1223,8 +1224,8 @@ async function main() {
     const db = await fresh(); await db.exec(STAGE2); await db.exec(STAGE3); await db.exec(STAGE4); await db.exec(STAGE5);   // 段階5だけ（段階6は未適用）
     const call = (who, sql) => as(db, who, sql);
     const A1 = ID.storeA1;
-    const g = (await sup(db, `select u.name, g.note from public.bank_ledger_global_users g join public.users u on u.id = g.user_id where g.revoked_at is null order by 1`)).rows;
-    ok('段階5の移行: 法人の限定が無かった本部（hq）だけに全法人の閲覧権限が明示的に付与される（法人限定の本部・無効な本部・社員は対象外）', g.length === 1 && g[0].name === '本部' && /移行/.test(g[0].note));
+    ok('段階5の適用で、全法人の閲覧権限は【自動では誰にも付与されない】（本部は、付与か法人の許可を設定するまで何も見えない）', (await sup(db, `select count(*)::int n from public.bank_ledger_global_users`)).rows[0].n === 0 && JSON.stringify((await call('hq', `select * from public.bank_unassigned_summary()`)).rows) === '[]');
+    await db.exec(GRANT_HQ);
     // 適用後に足した本部担当者と法人
     const HN = U(111), CORP3 = U(3), ST3 = U(14), AC3 = U(871), AC1 = U(872);
     await db.exec(`insert into public.users (id, name, role, is_master, is_active) values ('${HN}', '新しい本部', 'HQ', false, true);
