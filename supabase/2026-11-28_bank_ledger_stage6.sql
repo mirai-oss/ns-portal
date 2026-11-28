@@ -10,8 +10,8 @@
 --   ・日次集計 bank_deposit_daily・店舗の可視性 bank_store_visible（→ 取得状態・入金備考も）: 明細の帰属法人・店舗の運営法人で絞る
 --   ・訂正 bank_tx_correct: その明細の法人を見られる人だけ（店舗の付け替え先の法人も）。帰属法人は、その日に有効な運営法人（段階5の履歴）で決める
 --   ・複数の法人をまたぐ旧データ移行・差異の判断・毎日の照合・旧シートの控え（bank_legacy_*・bank_diff_*・bank_decision_*・bank_reconcile_*）: 全法人の管理者だけ
--- 【変わらないこと】全法人の管理者（社長・マスター・法人の限定が無い本部）、チーム長・店長・社員（所属店舗の集計）、サービスロール（取込）の見え方・動きは変わらない。
---   影響を受けるのは「法人を限定された本部」だけ（許可された法人の分だけ見える）。取込・照合のジョブ（サービスロール）は、法人に関係なく従来どおり動く。
+-- 【変わらないこと】全法人の管理者（社長・マスター・段階5で全法人の閲覧権限を明示的に付与された本部＝従来、法人の限定が無かった本部）、チーム長・店長・社員（所属店舗の集計）、サービスロール（取込）の見え方・動きは変わらない。
+--   影響を受けるのは「法人を限定された本部」だけ（許可された法人の分だけ見える）。<b>原則は「許可が無ければ拒否」</b>: 段階5以降に足した本部担当者・法人の許可も全法人の付与も無い本部は、何も見えない。取込・照合のジョブ（サービスロール）は、法人に関係なく従来どおり動く。
 -- 【ロールバック】2026-11-28_bank_ledger_stage6_ROLLBACK.sql（元のポリシー・関数の定義に戻す。データは触らない）。
 -- 【適用前の確認】tools/bank-ledger-test/rehearsal_stage6.py（実環境で流して必ず巻き戻す）。
 do $$ begin
@@ -48,11 +48,9 @@ AS $function$
            select 1 from public.users u
             where u.id = auth.uid() and u.is_active
               and (
-                    ((coalesce(u.is_master, false) or u.role in ('CEO', 'HQ'))
-                     and (not (not coalesce(u.is_master, false)
-                               and (exists (select 1 from info.user_corporations uc where uc.user_id = u.id)
-                                    or exists (select 1 from info.profiles p join info.role_corporations rc on rc.role_id = p.role_id where p.id = u.id and p.is_active)))
-                          or (p_store is not null and public.bank_corp_ok((select s.corporation_id from public.stores s where s.id = p_store)))))
+                    coalesce(u.is_master, false) or u.role = 'CEO'
+                 or (u.role = 'HQ' and (public.bank_global_admin()
+                                        or (p_store is not null and public.bank_corp_ok((select s.corporation_id from public.stores s where s.id = p_store)))))
                  or (p_store is not null
                      and ((u.role = 'TEAM'   and p_store = any (coalesce(public.team_store_ids(u.team_id), '{}'::uuid[]) || coalesce(public.user_store_ids(u.id), '{}'::uuid[])))
                        or (u.role in ('TENCHO', 'SHAIN') and p_store = any (coalesce(public.user_store_ids(u.id), '{}'::uuid[])))))))

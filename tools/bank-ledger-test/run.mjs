@@ -1038,7 +1038,7 @@ async function main() {
       txassign: `select public.bank_tx_assign_store(array['${U(711)}']::uuid[],'${A1}','test')`,
       revert: `select public.bank_assignment_revert('${U(999)}','test')`,
       change: `select public.store_corporation_change('${A1}','${ID.corp2}','2030-01-01','test')`,
-      link: `select public.bank_account_link_holder('${X}','${U(999)}','test')`,
+      setglobal: `select public.bank_ledger_global_set('${ID.shain}', true, 'test')`,
     };
     let leak = [];
     for (const who of ['anon', 'service', 'team', 'tenchoA', 'tenchoB', 'shain', 'al', 'hqOff']) {
@@ -1103,9 +1103,6 @@ async function main() {
       && !(await script(db, `insert into public.store_corporation_periods (store_id, corporation_id, valid_from) values ('${A1}','${ID.corp1}','2026-12-10')`)).ok);
     ok('過去へ戻る開始日（現在の期間の開始日以前）での変更は拒否／理由なしも拒否', denied(await call('ceo', `select public.store_corporation_change('${A1}','${ID.corp1}','2026-11-30','x')`)) && denied(await call('ceo', `select public.store_corporation_change('${A1}','${ID.corp1}','2027-01-01','')`)));
     ok('紐付けの履歴は追記専用（更新・削除できない）', !(await script(db, `update public.bank_assignment_history set reason='改ざん'`)).ok && !(await script(db, `delete from public.bank_assignment_history`)).ok);
-    // 7. 名義確認の記録との結び付け
-    await db.exec(`insert into public.corporation_bank_accounts (id, corporation_id, account_number, confirmed_at) values ('${U(801)}','${ID.corp1}','1234567',now()), ('${U(802)}','${ID.corp1}','7654321',null)`);
-    ok('名義確認（confirmed_at あり）の記録だけ結び付けられる', (await call('ceo', `select public.bank_account_link_holder('${X}','${U(801)}','名義確認')`)).ok && denied(await call('ceo', `select public.bank_account_link_holder('${X}','${U(802)}','未確認')`)));
     // 8. 冪等
     const cnt = async () => (await sup(db, `select (select count(*) from public.store_corporation_periods)::int p, (select count(*) from public.bank_assignment_history)::int h`)).rows[0];
     const c0 = await cnt(); const again = await script(db, STAGE5); const c1 = await cnt();
@@ -1114,7 +1111,7 @@ async function main() {
     const dbe = await fresh(); await dbe.exec(STAGE2); await dbe.exec(STAGE3); await dbe.exec(STAGE4);
     await dbe.exec(STAGE5); const rbe = await script(dbe, STAGE5_ROLLBACK);
     ok('空の状態（初期データだけ）なら、段階5のロールバックが通り、新しい表・関数・列が消える', rbe.ok && (await sup(dbe, `select count(*)::int n from pg_class where relname in ('bank_assignment_history','store_corporation_periods')`)).rows[0].n === 0
-      && (await sup(dbe, `select count(*)::int n from information_schema.columns where table_name='bank_accounts' and column_name in ('usage_mode','corporation_bank_account_id')`)).rows[0].n === 0, rbe.err);
+      && (await sup(dbe, `select count(*)::int n from information_schema.columns where table_name='bank_accounts' and column_name in ('usage_mode')`)).rows[0].n === 0, rbe.err);
     ok('ロールバック後に、もう一度適用できる', (await script(dbe, STAGE5)).ok);
     const rb2 = await script(db, STAGE5_ROLLBACK);
     ok('履歴・共有口座・人が足した運営法人の期間があるときは、何も消さずに止まる', !rb2.ok && /取り消しを中止/.test(rb2.err) && (await cnt()).h === c1.h, rb2.err);
@@ -1219,6 +1216,47 @@ async function main() {
     ok('ロールバックしても、データは 1 行も変わらない', same(Object.fromEntries(Object.entries(afterSnap.rowsum).filter(([k]) => k !== 'bank_transaction_events')), Object.fromEntries(Object.entries(snap2.rowsum).filter(([k]) => k !== 'bank_transaction_events'))));
     ok('ロールバック後は、法人を限定された本部が再び全件読める（段階5までの状態に戻る）', JSON.parse((await sig('hqLtd')).tx).length === 4);
     ok('もう一度適用できる', (await script(db, STAGE6)).ok);
+  }
+
+  section('11c. 許可が無ければ拒否: 新しい本部担当者・新しい法人は、権限を設定するまで何も見えない／全法人の閲覧権限の付与と取り消し／段階5だけを適用した状態での漏れ');
+  {
+    const db = await fresh(); await db.exec(STAGE2); await db.exec(STAGE3); await db.exec(STAGE4); await db.exec(STAGE5);   // 段階5だけ（段階6は未適用）
+    const call = (who, sql) => as(db, who, sql);
+    const A1 = ID.storeA1;
+    const g = (await sup(db, `select u.name, g.note from public.bank_ledger_global_users g join public.users u on u.id = g.user_id where g.revoked_at is null order by 1`)).rows;
+    ok('段階5の移行: 法人の限定が無かった本部（hq）だけに全法人の閲覧権限が明示的に付与される（法人限定の本部・無効な本部・社員は対象外）', g.length === 1 && g[0].name === '本部' && /移行/.test(g[0].note));
+    // 適用後に足した本部担当者と法人
+    const HN = U(111), CORP3 = U(3), ST3 = U(14), AC3 = U(871), AC1 = U(872);
+    await db.exec(`insert into public.users (id, name, role, is_master, is_active) values ('${HN}', '新しい本部', 'HQ', false, true);
+      insert into public.corporations (id, name, legacy_info_id) values ('${CORP3}', '法人3', '${U(903)}');
+      insert into public.stores (id, name, corporation_id) values ('${ST3}', 'C1店', '${CORP3}');
+      insert into public.bank_accounts (id, bank_code, login_group, account_no, corporation_id) values ('${AC3}','gmo_aozora','g','S5C-3','${CORP3}'), ('${AC1}','gmo_aozora','g','S5C-1','${ID.corp1}');
+      insert into public.bank_transactions (bank_account_id, corporation_id, txn_date, description, deposit_amount, source_kind, dedupe_key, match_status, tx_kind, counts_as_sales_deposit) values
+        ('${AC3}','${CORP3}','2026-11-01','ATM',100,'manual_entry','s5c-1','verified','atm_deposit',true), ('${AC1}','${ID.corp1}','2026-11-01','ATM',200,'manual_entry','s5c-2','verified','atm_deposit',true);`);
+    const P2 = { role: 'authenticated', id: HN }; P.hqNew = P2;
+    const idsOf = (r) => (r.rows || []).map((x) => x.account_id).sort().join(',');
+    ok('許可も付与も無い新しい本部担当者は、未確定の一覧・運営法人の履歴が空で、紐付け・付与もできない', idsOf(await call('hqNew', `select * from public.bank_unassigned_summary()`)) === '' && denied(await call('hqNew', `select public.bank_account_assign_store('${AC1}','${A1}','x')`)) && denied(await call('hqNew', `select public.bank_ledger_global_set('${HN}', true, 'x')`))
+      && (await call('hqNew', `select count(*)::int n from public.store_corporation_periods`)).rows[0].n === 0 && (await call('hqNew', `select public.bank_corp_ok('${ID.corp1}') v`)).rows[0].v === false && (await call('hqNew', `select count(*)::int n from public.bank_ledger_global_users`)).rows[0].n >= 0);
+    ok('法人の許可を持つ本部（法人1だけ）は、あとから足した法人3 を、許可を足すまで見られない／全法人の付与がある本部は自動で見える', idsOf(await call('hqLtd', `select * from public.bank_unassigned_summary()`)) === AC1 && idsOf(await call('hq', `select * from public.bank_unassigned_summary()`)).includes(AC3) && (await call('ceo', `select public.bank_corp_ok('${CORP3}') v`)).rows[0].v === true && (await call('hqLtd', `select public.bank_corp_ok('${CORP3}') v`)).rows[0].v === false);
+    ok('許可（info.user_corporations）に法人3を足すと、その本部に見える（既存の許可の仕組みをそのまま使う）', await (async () => { await db.exec(`insert into info.user_corporations values ('${ID.hqLtd}', '${U(903)}')`); return idsOf(await call('hqLtd', `select * from public.bank_unassigned_summary()`)).includes(AC3); })());
+    await db.exec(`delete from info.user_corporations where user_id = '${ID.hqLtd}' and corporation_id = '${U(903)}'`);
+    // 役職の許可（role_corporations）での限定
+    const ROLE = U(950);
+    await db.exec(`insert into public.users (id, name, role, is_master, is_active) values ('${U(112)}', '役職で限定の本部', 'HQ', false, true); insert into info.profiles (id, name, role_id, is_master, is_active) values ('${U(112)}', 'x', '${ROLE}', false, true); insert into info.role_corporations values ('${ROLE}', '${ID.infoC2}');`);
+    P.hqRole = { role: 'authenticated', id: U(112) };
+    await db.exec(`insert into public.bank_accounts (id, bank_code, login_group, account_no, corporation_id) values ('${U(873)}','gmo_aozora','g','S5C-2','${ID.corp2}')`);
+    ok('役職の許可（info.role_corporations）で法人2だけに限定された本部は、法人2の分だけ見える（個別の許可が無いとき）', idsOf(await call('hqRole', `select * from public.bank_unassigned_summary()`)) === U(873));
+    // 付与・取り消し
+    const gs = await call('ceo', `select public.bank_ledger_global_set('${HN}', true, '全法人を見る本部として付与') r`);
+    ok('全法人の管理者は、本部（HQ）に全法人の閲覧権限を付与でき、付与された人は全法人が見える', gs.ok && idsOf(await call('hqNew', `select * from public.bank_unassigned_summary()`)).includes(AC3) && (await call('hqNew', `select public.bank_corp_ok(null) v`)).rows[0].v === true);
+    ok('付与は、有効な本部（HQ）だけ・理由が必須／法人限定の本部は付与できない', denied(await call('ceo', `select public.bank_ledger_global_set('${ID.shain}', true, 'x')`)) && denied(await call('ceo', `select public.bank_ledger_global_set('${HN}', true, '')`)) && denied(await call('hqLtd', `select public.bank_ledger_global_set('${HN}', true, 'x')`)));
+    const rv = await call('ceo', `select public.bank_ledger_global_set('${HN}', false, '異動') r`);
+    ok('取り消すと、再び何も見えなくなる（記録は残る＝削除・改ざん不可）', rv.ok && idsOf(await call('hqNew', `select * from public.bank_unassigned_summary()`)) === '' && !(await script(db, `delete from public.bank_ledger_global_users`)).ok && !(await script(db, `update public.bank_ledger_global_users set user_id='${ID.shain}' where revoked_at is not null`)).ok
+      && (await sup(db, `select count(*)::int n from public.bank_ledger_global_users where user_id='${HN}' and revoked_at is not null`)).rows[0].n === 1);
+    ok('社長・マスターは付与なしで全法人／本部以外（チーム長・店長・社員・アルバイト）は付与があっても何も得ない', (await call('master', `select public.bank_global_admin() v`)).rows[0].v === true && (await call('ceo', `select public.bank_global_admin() v`)).rows[0].v === true && (await Promise.all(['team', 'tenchoA', 'shain', 'al', 'anon'].map(async (w) => { const r = await call(w, `select public.bank_global_admin() v`); return !r.ok || r.rows[0].v === false; }))).every(Boolean));
+    // 段階5だけの状態で、新しい表・関数から他法人が漏れない／未ログインは何も読めない
+    ok('段階5だけでも、新しい表（運営法人の履歴・紐付けの履歴・付与の記録）は、未ログインは読めず、管理者以外は読めない', (await Promise.all(['store_corporation_periods', 'bank_assignment_history', 'bank_ledger_global_users'].map(async (t) => denied(await call('anon', `select 1 from public.${t} limit 1`)) && (await Promise.all(['team', 'tenchoA', 'shain', 'al', 'hqNew'].map(async (w) => { const r = await call(w, `select count(*)::int n from public.${t}`); return !r.ok || r.rows[0].n === 0; }))).every(Boolean)))).every(Boolean));
+    ok('段階5だけの状態でも、法人を限定された本部は、新しい関数から他法人の口座・明細を得られない（見えるのは自法人だけ）', idsOf(await call('hqLtd', `select * from public.bank_unassigned_summary()`)) === AC1 && (await call('hqLtd', `select count(*)::int n from public.bank_unassigned_list('${AC3}')`)).rows[0].n === 0);
   }
 
   // ---------- 7. ロールバック ----------

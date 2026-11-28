@@ -5,7 +5,7 @@
 -- 【この SQL がやること】
 --   ① 店舗未確定（store_id が空）の口座・明細の管理: 一覧・口座への店舗の後付け紐付け・取引単位の紐付け・履歴・取り消し。
 --   ② 店舗の運営法人の履歴表（適用開始日・終了日）。店舗マスタの法人を変えても、過去の銀行入金の帰属法人は変わらない。
---   ③ 口座の「利用形態」（single＝1 店舗専用／multi＝複数店舗で共有）と、口座の名義・法人の確認の記録（既存の corporation_bank_accounts）との結び付け。
+--   ③ 口座の「利用形態」（single＝1 店舗専用／multi＝複数店舗で共有）。※口座の名義・法人の確認の記録には、既存の corporation_bank_accounts（振込先口座・法人あたり現在1つ）を流用しない（別設計を提案中）。
 -- 【法人別の可視性】新しい関数 bank_global_admin / bank_corp_ok（既存のポリシーには使わない＝既存の閲覧権限は変わらない）を足し、この段階の関数は最初から法人別に動く:
 --   全法人の管理者（社長・マスター・法人の限定が無い本部）は全件／法人を限定された本部（info.user_corporations・info.role_corporations）は許可された法人の分だけ／法人未確定の明細・口座は全法人の管理者だけ。
 --   既存の表・ストレージ・既存の関数の法人別制御は、段階6（別途承認）。
@@ -24,7 +24,6 @@
 -- ① 口座の利用形態・名義確認との結び付け
 -- =====================================================================
 alter table public.bank_accounts add column if not exists usage_mode text not null default 'single';
-alter table public.bank_accounts add column if not exists corporation_bank_account_id uuid references public.corporation_bank_accounts (id);
 do $$ begin
   if not exists (select 1 from pg_constraint where conname = 'bank_accounts_usage_mode_check' and conrelid = 'public.bank_accounts'::regclass) then
     alter table public.bank_accounts add constraint bank_accounts_usage_mode_check check (usage_mode in ('single', 'multi'));
@@ -34,52 +33,101 @@ do $$ begin
     alter table public.bank_accounts add constraint bank_accounts_multi_no_store check (usage_mode = 'single' or store_id is null);
   end if;
 end $$;
-comment on column public.bank_accounts.corporation_bank_account_id is '口座の名義・法人・有効期間・確認者の記録（corporation_bank_accounts）。名義の法人と、店舗の運営法人は、一致するとは限らない';
 
 -- =====================================================================
--- ①b 法人別の可視性の関数（新しい関数だけ。既存のポリシー・関数は変えない）
---   既存の法人の絞り込み（info.can_access_corp・info.user_corporations・info.role_corporations・public.corporations.legacy_info_id）をそのまま使う。
+-- ①b 法人別の可視性（新しい表・関数だけ。既存のポリシー・関数は変えない）。<b>原則は「許可が無ければ拒否」</b>
+--   ・全法人を見られる管理者 ＝ 社長（CEO）・マスター・「全法人の閲覧権限」を明示的に付与された本部（下の bank_ledger_global_users）。
+--   ・それ以外の本部 ＝ 既存の法人の許可（info.user_corporations。無ければ役職の許可 info.role_corporations）に載っている法人だけ。
+--     <b>どちらも無い本部は、何も見えない</b>（新しい法人・新しい本部担当者を足しても、権限を設定するまで全法人が見えることはない）。
+--     ※既存の info.can_access_corp は「許可が無ければ全法人」の作りのため、そのままは使わず、同じ表（user_corporations・role_corporations・corporations.legacy_info_id）を読んで「許可が無ければ拒否」で判定する。
 -- =====================================================================
--- 法人を限定された人か（マスターは限定されない。info の限定の設定が無ければ全法人＝いまの動き）
-create or replace function public.bank_user_corp_restricted()
-returns boolean language sql stable security definer set search_path to 'public' as $$
-  select coalesce(
-    (select not coalesce(u.is_master, false)
-            and (exists (select 1 from info.user_corporations uc where uc.user_id = u.id)
-                 or exists (select 1 from info.profiles p join info.role_corporations rc on rc.role_id = p.role_id where p.id = u.id and p.is_active))
-       from public.users u where u.id = auth.uid() and u.is_active), false)
-$$;
-revoke all on function public.bank_user_corp_restricted() from public, anon;
-grant execute on function public.bank_user_corp_restricted() to authenticated, service_role;
--- 全法人の管理者（社長・マスター・法人の限定が無い本部）。法人未確定のデータは、この人だけが見られる
+-- 全法人の閲覧権限の付与（本部向け。社長・マスターは付与なしで全法人）。取り消しても行は消さない（revoked_at）。
+create table if not exists public.bank_ledger_global_users (
+  id         uuid primary key default gen_random_uuid(),
+  user_id    uuid not null references public.users (id),
+  granted_at timestamptz not null default now(),
+  granted_by uuid,
+  note       text,
+  revoked_at timestamptz,
+  revoked_by uuid
+);
+create unique index if not exists bank_ledger_global_users_active on public.bank_ledger_global_users (user_id) where revoked_at is null;
+create or replace function public.bank_ledger_global_guard() returns trigger language plpgsql as $$
+begin
+  if tg_op = 'DELETE' then raise exception '全法人の閲覧権限の付与の記録は削除できません（取り消しは revoked_at）'; end if;
+  if new.user_id is distinct from old.user_id or new.granted_at is distinct from old.granted_at or new.granted_by is distinct from old.granted_by then raise exception '付与の記録の本人・日時・付与者は変更できません'; end if;
+  if old.revoked_at is not null and new.revoked_at is distinct from old.revoked_at then raise exception '取り消し済みです'; end if;
+  return new;
+end $$;
+revoke all on function public.bank_ledger_global_guard() from public, anon, authenticated;
+drop trigger if exists bank_ledger_global_guard_trg on public.bank_ledger_global_users;
+create trigger bank_ledger_global_guard_trg before update or delete on public.bank_ledger_global_users for each row execute function public.bank_ledger_global_guard();
+alter table public.bank_ledger_global_users enable row level security;
+revoke all on public.bank_ledger_global_users from anon, authenticated;
+grant select on public.bank_ledger_global_users to authenticated;
+
+-- 全法人の管理者か（社長・マスター・付与された本部）。法人未確定のデータは、この人だけが見られる
 create or replace function public.bank_global_admin()
 returns boolean language sql stable security definer set search_path to 'public' as $$
-  select public.bank_ledger_admin() and not public.bank_user_corp_restricted()
+  select exists (select 1 from public.users u
+                  where u.id = auth.uid() and u.is_active
+                    and (coalesce(u.is_master, false) or u.role = 'CEO'
+                         or (u.role = 'HQ' and exists (select 1 from public.bank_ledger_global_users g where g.user_id = u.id and g.revoked_at is null))))
 $$;
 revoke all on function public.bank_global_admin() from public, anon;
 grant execute on function public.bank_global_admin() to authenticated, service_role;
+drop policy if exists bank_ledger_global_read on public.bank_ledger_global_users;
+create policy bank_ledger_global_read on public.bank_ledger_global_users for select to authenticated using (public.bank_global_admin());
+-- 見てよい法人の ID の一覧（サービスロール・全法人の管理者＝全法人／法人を限定された本部＝許可に載った法人だけ／許可が無い・本部以外＝空）。
+--   行ポリシーや集計で「行ごとに関数を呼ぶ」と遅いので、1 回だけ計算して（(select ...)）使う: (select bank_global_admin()) or 法人列 = any (coalesce((select bank_allowed_corp_ids()), '{}'))
+create or replace function public.bank_allowed_corp_ids()
+returns uuid[] language sql stable security definer set search_path to 'public' as $$
+  select case
+    when coalesce(auth.role(), '') = 'service_role' or public.bank_global_admin() then (select coalesce(array_agg(c.id), '{}'::uuid[]) from public.corporations c)
+    when public.bank_ledger_admin() then (
+      select coalesce(array_agg(c.id), '{}'::uuid[]) from public.corporations c
+       where c.legacy_info_id is not null and c.legacy_info_id in (
+         select uc.corporation_id from info.user_corporations uc where uc.user_id = auth.uid()
+         union
+         select rc.corporation_id from info.profiles p join info.role_corporations rc on rc.role_id = p.role_id
+          where p.id = auth.uid() and p.is_active and not exists (select 1 from info.user_corporations x where x.user_id = auth.uid())))
+    else '{}'::uuid[] end
+$$;
+revoke all on function public.bank_allowed_corp_ids() from public, anon;
+grant execute on function public.bank_allowed_corp_ids() to authenticated, service_role;
 -- その法人のデータを見てよい管理者か。法人が空（未確定）なら、全法人の管理者だけ。サービスロール（取込）は常に可
 create or replace function public.bank_corp_ok(p_corp uuid)
 returns boolean language sql stable security definer set search_path to 'public' as $$
   select coalesce(auth.role(), '') = 'service_role'
       or public.bank_global_admin()
-      or (public.bank_ledger_admin() and p_corp is not null
-          and exists (select 1 from public.corporations c where c.id = p_corp and c.legacy_info_id is not null and info.can_access_corp(c.legacy_info_id)))
+      or (public.bank_ledger_admin() and p_corp is not null and p_corp = any (public.bank_allowed_corp_ids()))
 $$;
 revoke all on function public.bank_corp_ok(uuid) from public, anon;
 grant execute on function public.bank_corp_ok(uuid) to authenticated, service_role;
-
--- 見てよい法人の ID の一覧（全法人の管理者・サービスロール＝全法人／法人を限定された本部＝許可された法人／それ以外＝空）。
---   行ポリシーや集計で「行ごとに関数を呼ぶ」と遅いので、1 回だけ計算して（(select ...)）使う: (select bank_global_admin()) or 法人列 = any ((select bank_allowed_corp_ids()))
-create or replace function public.bank_allowed_corp_ids()
-returns uuid[] language sql stable security definer set search_path to 'public' as $$
-  select case
-    when coalesce(auth.role(), '') = 'service_role' or public.bank_global_admin() then (select coalesce(array_agg(c.id), '{}'::uuid[]) from public.corporations c)
-    when public.bank_ledger_admin() then (select coalesce(array_agg(c.id), '{}'::uuid[]) from public.corporations c where c.legacy_info_id is not null and info.can_access_corp(c.legacy_info_id))
-    else '{}'::uuid[] end
-$$;
-revoke all on function public.bank_allowed_corp_ids() from public, anon;
-grant execute on function public.bank_allowed_corp_ids() to authenticated, service_role;
+-- 付与・取り消し（全法人の管理者だけ。理由が必須。本人への付与は、本部の役職の人だけ）
+create or replace function public.bank_ledger_global_set(p_user uuid, p_on boolean, p_reason text)
+returns jsonb language plpgsql security definer set search_path to 'public' as $$
+begin
+  if not public.bank_global_admin() then raise exception '権限がありません（全法人の閲覧権限の付与は、全法人の管理者だけ）'; end if;
+  if coalesce(btrim(p_reason), '') = '' then raise exception '理由が必要です'; end if;
+  if p_on then
+    if not exists (select 1 from public.users u where u.id = p_user and u.is_active and u.role = 'HQ') then raise exception '付与できるのは、有効な本部（HQ）の人だけです（社長・マスターは付与なしで全法人）'; end if;
+    insert into public.bank_ledger_global_users (user_id, granted_by, note) values (p_user, auth.uid(), btrim(p_reason)) on conflict do nothing;
+  else
+    update public.bank_ledger_global_users set revoked_at = now(), revoked_by = auth.uid(), note = coalesce(note, '') || ' / 取り消し: ' || btrim(p_reason) where user_id = p_user and revoked_at is null;
+  end if;
+  return jsonb_build_object('ok', true, 'user_id', p_user, 'on', p_on);
+end $$;
+revoke all on function public.bank_ledger_global_set(uuid, boolean, text) from public, anon;
+grant execute on function public.bank_ledger_global_set(uuid, boolean, text) to authenticated, service_role;
+-- 移行（従来の見え方を保つ）: 法人の限定が無い本部（user_corporations も役職の許可も無い有効な本部）に、全法人の閲覧権限を明示的に付与する。
+--   これ以降に足した本部担当者は、付与か法人の許可を設定するまで何も見えない。
+insert into public.bank_ledger_global_users (user_id, note)
+  select u.id, '段階5適用時の移行（従来の全法人の閲覧を維持）' from public.users u
+   where u.is_active and u.role = 'HQ'
+     and not exists (select 1 from info.user_corporations uc where uc.user_id = u.id)
+     and not exists (select 1 from info.profiles p join info.role_corporations rc on rc.role_id = p.role_id where p.id = u.id and p.is_active)
+     and not exists (select 1 from public.bank_ledger_global_users g where g.user_id = u.id and g.revoked_at is null);
 
 -- =====================================================================
 -- ② 店舗の運営法人の履歴（適用開始日・終了日）
@@ -327,17 +375,3 @@ begin
 end $$;
 revoke all on function public.bank_assignment_revert(uuid, text) from public, anon;
 grant execute on function public.bank_assignment_revert(uuid, text) to authenticated, service_role;
-
--- 口座の名義・法人の確認の記録（corporation_bank_accounts）との結び付け。確認した人・日時は corporation_bank_accounts 側に残る。名義の法人と店舗の運営法人は、一致するとは限らない。
-create or replace function public.bank_account_link_holder(p_account uuid, p_cba uuid, p_reason text)
-returns jsonb language plpgsql security definer set search_path to 'public' as $$
-begin
-  if not public.bank_ledger_admin() then raise exception '権限がありません'; end if;
-  if coalesce(btrim(p_reason), '') = '' then raise exception '理由が必要です'; end if;
-  if not public.bank_corp_ok((select a.corporation_id from public.bank_accounts a where a.id = p_account)) or not public.bank_corp_ok((select c.corporation_id from public.corporation_bank_accounts c where c.id = p_cba)) then raise exception '権限がありません（法人を見る権限がありません）'; end if;
-  if not exists (select 1 from public.corporation_bank_accounts where id = p_cba and confirmed_at is not null) then raise exception '確認済み（confirmed_at あり）の口座名義の記録だけ結び付けられます'; end if;
-  update public.bank_accounts set corporation_bank_account_id = p_cba, updated_at = now() where id = p_account;
-  return jsonb_build_object('ok', true);
-end $$;
-revoke all on function public.bank_account_link_holder(uuid, uuid, text) from public, anon;
-grant execute on function public.bank_account_link_holder(uuid, uuid, text) to authenticated, service_role;

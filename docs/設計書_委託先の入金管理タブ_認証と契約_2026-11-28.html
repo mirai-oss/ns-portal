@@ -1,0 +1,288 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>設計書：委託先の入金管理タブ（認証と契約）</title>
+<style>
+:root{--bg:#fff;--ink:#1b2430;--muted:#5d6b7a;--line:#d9e0e8;--card:#f5f8fb;--ok:#0f7b4b;--warn:#a85a00;--bad:#b3261e;--blue:#0b5cad;--code:#eef2f7}
+@media(prefers-color-scheme:dark){:root{--bg:#0f141a;--ink:#e6edf3;--muted:#9aa7b4;--line:#2a3541;--card:#171e26;--ok:#4cc38a;--warn:#f0b35a;--bad:#ff8a80;--blue:#79b8ff;--code:#1d2630}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.75 -apple-system,"Hiragino Sans","Yu Gothic",sans-serif}
+main{max-width:980px;margin:0 auto;padding:20px 16px 80px}
+h1{font-size:24px;margin:8px 0 4px}
+h2{font-size:20px;margin:36px 0 10px;padding-top:10px;border-top:2px solid var(--line)}
+h3{font-size:17px;margin:22px 0 6px}
+.sub{color:var(--muted);font-size:14px}
+.box{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 16px;margin:12px 0}
+.ok{border-left:5px solid var(--ok)}.warn{border-left:5px solid var(--warn)}.bad{border-left:5px solid var(--bad)}.info{border-left:5px solid var(--blue)}
+table{border-collapse:collapse;width:100%;margin:10px 0;font-size:14.5px}
+th,td{border:1px solid var(--line);padding:7px 9px;text-align:left;vertical-align:top}
+th{background:var(--card)}
+code{background:var(--code);border-radius:6px;font-family:ui-monospace,Menlo,monospace;font-size:13px;padding:1px 5px}
+.tbl{overflow-x:auto}
+li{margin:3px 0}
+.f{color:var(--ok);font-weight:600}.g{color:var(--warn);font-weight:600}
+</style>
+</head>
+<body>
+<main>
+<h1>委託先の入金管理タブ — 認証と契約の設計書</h1>
+<div class="sub">作成 2026-11-28 ／ 読み取り調査のみ（コード・DB・GAS・本番設定は一切変更していません）／ 公開リポジトリのため、口座番号・金額の実額・秘密の値は書いていません。<br>表記：<span class="f">【事実】</span>＝ファイルで確認できたこと　<span class="g">【推測】</span>＝ファイルから読み取った推測　<b>【未確認】</b>＝分からなかったこと</div>
+
+<div class="box ok"><b>結論（先に）</b>
+<ul>
+<li>現行の精算ダッシュボードの認証（平文パスワード・失敗回数の制限なし・トークンを平文で保存）は、銀行入金を委託先に出す認証としては<b>不十分</b>。</li>
+<li>MVP（自店舗の入金日・入金額だけ）は、<b>新しい認証（招待＋ワンタイムリンク、ハッシュ保存のトークン）</b>と<b>サーバー側で契約から店舗を確定する仕組み</b>を最初から入れる。現行ログインは止めず、入金タブを開くときだけ別の認証を求める。</li>
+<li>MVPの実作業は<b>約24時間</b>（1人で連続3日分、2人並行なら約16時間）。本番公開に必要な承認は<b>6件</b>（§1-5）。売上・入金予定・差額はMVPの後。</li>
+</ul></div>
+
+<div class="box warn"><b>最初に知っておくべき食い違い</b>：作業用の <code>seisan-dashboard</code> フォルダは<b>古い版</b>（最終コミット 2026-10-01・GAS版）。WORKLOGによると<b>本番は 2026-11-26 に Supabase の Edge Function <code>seisan-api</code> へ切替済み</b>（旧GASは凍結、11/28 にメールアドレスでのログインを追加）。<code>seisan-api</code> のソースはこの手元には<b>無い</b>ため、現在の本番の認証の中身は<b>読めていません</b>。§2 の評価は「手元のGAS版」についての事実で、本番の <code>seisan-api</code> については【未確認】です。また <code>sd_dash_grant</code> の定義（CREATE文・RLS・GRANT）は、手元のどのSQLにも<b>見つかりません</b>（WORKLOG・計画書に名前が出るだけ）。</div>
+
+<!-- ===================== 1. MVP ===================== -->
+<h2>1. MVP（最小構成）— 最優先</h2>
+
+<h3>1-1. MVPの範囲</h3>
+<div class="tbl"><table>
+<tr><th>出す</th><td>自店舗（契約対象店舗）の<b>入金日・入金額</b>（日ごとの合計と件数）。既存の精算書画面に「入金」タブを1つ足す（閲覧専用）。</td></tr>
+<tr><th>出さない</th><td>口座番号・残高・CSV原本・摘要（振込人名等が入り得る）・他店舗／他法人の情報・訂正や承認の履歴・保留中の金額。<b>売上・入金予定額・差額はMVPの後</b>（§5-3）。</td></tr>
+<tr><th>必須条件①<br>認証</th><td>平文パスワードに頼らない／トークンは<b>ハッシュだけ保存</b>／有効期限あり／失効できる（契約終了・本人・管理者）。</td></tr>
+<tr><th>必須条件②<br>他店舗の防止</th><td>ブラウザから<b>委託先ID・店舗IDを一切受け取らない</b>。トークン → 担当者 → 委託先 → 有効な契約 → 対象店舗・期間を、<b>サーバー側で毎回確定</b>する。</td></tr>
+</table></div>
+
+<h3>1-2. MVPの構成（これだけ作る）</h3>
+<ol>
+<li><b>DB（新規表・追加のみ）</b>：<code>contractors</code>（委託先）／<code>contractor_users</code>（担当者・メール）／<code>contractor_contracts</code>（開始日・終了日・閲覧可能期間）／<code>contractor_contract_stores</code>（契約の対象店舗）／<code>contractor_invites</code>（招待・ログインリンク・確認コードのハッシュ）／<code>contractor_access_log</code>（追記専用の監査・回数制限の元）。トークンの入れ物は既存 <code>sd_dash_grant</code> に<b>nullable の列を足して</b>使う（§3-2・先に本番のDDLを読んで確認する）。</li>
+<li><b>DB関数（RPC）</b>：<code>contractor_deposit_view(p_user uuid, p_from date, p_to date)</code>（service_role だけが実行可。引数は担当者IDと月の範囲だけ。<b>店舗IDも委託先IDも引数に無い</b>）。管理用：招待発行・契約登録・失効（本部／マスターだけ、理由必須）。</li>
+<li><b>Edge Function <code>contractor-portal</code>（1本・<code>verify_jwt=false</code>で独自トークン）</b>：<code>redeem_invite</code>（招待リンク＋確認コード→セッション）／<code>login_request</code>・<code>login_verify</code>（メールのワンタイムリンク）／<code>logout</code>／<code>deposits</code>（月を受け取り、許可リストの項目だけ返す）。サービスキーはこの関数の環境変数にだけ置く。</li>
+<li><b>画面</b>：精算書の画面に「入金」タブ。開くとき<b>現行ログインとは別に</b>、この認証を求める（段階的な本人確認＝step-up）。トークンはURLに載せず、<code>Authorization</code> ヘッダ＋<code>sessionStorage</code>（タブを閉じれば消える）。</li>
+</ol>
+
+<h3>1-3. MVPの認証の流れ（利用者目線）</h3>
+<ol>
+<li>本部が担当者（メール）と契約（開始日・終了日・対象店舗）を登録し、<b>招待リンク</b>（72時間・1回限り）を発行 → 委託先へメールで送る。</li>
+<li>本部が<b>別の経路（電話・LINE等）で6桁の確認コード</b>を伝える（本人確認。5回間違えると無効）。</li>
+<li>委託先が招待リンクを開き確認コードを入れる → セッション発行（アイドル60分・最大12時間）。</li>
+<li>2回目以降は、登録メールを入力 → <b>メールのワンタイムリンク</b>（10分・1回限り）→ セッション。パスワードは存在しない。</li>
+<li>画面の「ログアウト」で自分のセッションを全て失効。管理者は強制失効できる。契約終了日を過ぎると、<b>翌リクエストから自動で空</b>になる（毎回、契約の期間を計算するため。ジョブに頼らない）。</li>
+</ol>
+
+<h3>1-4. 実装時間と最短の順序（時間単位）</h3>
+<div class="tbl"><table>
+<tr><th>順</th><th>作業</th><th>時間</th><th>累計</th><th>待ち・承認</th></tr>
+<tr><td>0</td><td>事実確認（読み取りのみ）：<code>sd_dash_grant</code>・<code>sd_dash_snapshot</code> の本番のDDL／RLS／GRANT／件数、<code>seisan-api</code> の認証部分、最新の <code>seisan-dashboard</code> を取得、現在の委託先アカウント数・メールの有無</td><td>1.5h</td><td>1.5h</td><td>本番DBの読み取りの許可（<b>承認A</b>）</td></tr>
+<tr><td>1</td><td>SQL下書き（新規表・RPC・<code>sd_dash_grant</code>の列追加・ガード）＋PGliteのテスト（他店舗が取れない／契約外の日が取れない／終了後は空／失効後は空／ハッシュのみ保存／匿名・認証済みから直接読めない）＋ロールバックSQL</td><td>4.0h</td><td>5.5h</td><td>—</td></tr>
+<tr><td>2</td><td>本番適用の前の実環境ロールバック付きリハーサル → 本番適用 → 確認SQL</td><td>1.0h</td><td>6.5h</td><td><b>承認B</b>：SQL本番適用（確認5〜10分）</td></tr>
+<tr><td>3a</td><td>Edge Function <code>contractor-portal</code>（5つの動作・回数制限・監査ログ・CORSは精算画面のオリジンだけ許可・<code>Cache-Control: no-store</code>・単体テスト）</td><td>6.0h</td><td>12.5h</td><td>2人並行なら 3a と 3c は同時</td></tr>
+<tr><td>3b</td><td>ワンタイムリンクのメール送信の接続（現在の送信手段は【未確認】。既存の通知の仕組みを流用する前提で見積り）</td><td>2.0h</td><td>14.5h</td><td>—</td></tr>
+<tr><td>3c</td><td>画面：入金タブ＋入金用ログイン画面（スマホ幅）。プレビューで確認</td><td>3.0h</td><td>17.5h</td><td>—</td></tr>
+<tr><td>4</td><td>テスト：攻撃シナリオ（§6の主要10件）／使い捨てのテスト委託先・テスト契約・テスト店舗で通し／<b>本部の画面の入金と数字が一致</b>することの確認／作業後にテストデータを完全削除して0件確認</td><td>3.0h</td><td>20.5h</td><td>—</td></tr>
+<tr><td>5</td><td>Edge Function の本番デプロイ（スイッチは<b>OFF</b>）＋画面の公開（<code>seisan-dashboard</code> はPublicリポジトリ。入金タブはスイッチOFFの間は出ない）</td><td>0.75h</td><td>21.25h</td><td><b>承認C</b>：デプロイ／<b>承認D</b>：画面のpush</td></tr>
+<tr><td>6</td><td>パイロット1社：契約データの確認（対象店舗・開始日・終了日）→ 担当者のメール登録 → 招待送付 → 立ち会って初回ログイン</td><td>1.5h</td><td>22.75h</td><td><b>承認E</b>：実メール・契約内容の確定（社長）／<b>承認F</b>：スイッチON・委託先への入金情報の公開</td></tr>
+<tr><td>7</td><td>WORKLOG・手順書（本部の運用：招待・失効・再発行）</td><td>1.0h</td><td><b>約24h</b></td><td>—</td></tr>
+</table></div>
+<ul>
+<li><b>実作業の合計は約24時間</b>（承認の返事を待つ時間は含まない）。2人（2セッション）で 3a・3b と 3c を並行すれば、壁時計で<b>約16時間</b>。</li>
+<li><b>最短の道筋</b>：0 → 1 → 2（SQL承認）→ 3a/3c 並行 → 4 → 5（デプロイ承認）→ 6（実メール・公開の承認）。承認は各5〜10分の確認で足りるように、<b>承認の前に結果（テスト通過・ロールバック確認）を揃えて</b>出す。</li>
+<li>MVPで<b>やらない</b>：多要素（TOTP・パスキー）／売上・予定・差額／精算書PDFの新経路／管理画面（登録・失効はSQL関数を本部が承認つきで実行）／現行ログインの置き換え。</li>
+</ul>
+
+<h3>1-5. 本番公開に必要な承認（6件）</h3>
+<div class="tbl"><table>
+<tr><th>承認</th><th>内容</th><th>承認する人／所要</th></tr>
+<tr><td>A</td><td>本番DBの<b>読み取り</b>（<code>sd_dash_grant</code> 等の定義・件数の確認）</td><td>社長 5分</td></tr>
+<tr><td>B</td><td>新規表・RPC・<code>sd_dash_grant</code>への列追加のSQL本番適用（ロールバック付きリハーサルの結果つき）</td><td>社長 10分</td></tr>
+<tr><td>C</td><td>Edge Function <code>contractor-portal</code> のデプロイ（スイッチOFFで）</td><td>社長 5分</td></tr>
+<tr><td>D</td><td><code>seisan-dashboard</code>（Public）へ入金タブをpush</td><td>社長 5分</td></tr>
+<tr><td>E</td><td>パイロット委託先の<b>実メールの登録</b>・契約の対象店舗と期間の確定・招待メールの送信（外部への送信）</td><td>社長 10分（契約書の確認を含む）</td></tr>
+<tr><td>F</td><td><b>スイッチON＝委託先に自店の入金情報を見せる</b>こと自体の承認（契約上の取り決め・銀行の規約上の扱いは<b>未確認</b>。§8）</td><td>社長（必要なら法務確認）</td></tr>
+</table></div>
+<div class="box info">MVPに<b>前提として要らない</b>もの：入金台帳の段階5（店舗未確定の管理）・段階6（法人別の閲覧制御）は、手元では<b>下書き・本番未適用</b>。MVPは「店舗が確定した入金だけ」を契約の店舗・期間で絞るため、これらを待たずに作れる。ただし店舗の割り当てが誤っていれば、その店舗の委託先に誤った入金が見える（§6の事故シナリオ）ので、パイロットでは<b>本部の画面と数字を突き合わせて</b>から公開する。</div>
+
+<!-- ===================== 2. 現状の認証の評価 ===================== -->
+<h2>2. 現状の認証の評価（根拠つき）</h2>
+<p class="sub">以下は <code>/Users/mirai/Claude/seisan-dashboard</code>（GAS版 <code>SD_VERSION='v5.24-removeextline'</code>）を読んだ結果。本番の <code>seisan-api</code> は【未確認】。</p>
+<div class="tbl"><table>
+<tr><th>観点</th><th>確認できたこと（根拠）</th><th>評価</th></tr>
+<tr><td>パスワードの置き場所</td><td><span class="f">【事実】</span>スプレッドシートのシート <code>権限_精算ダッシュボード</code> のB列に<b>平文</b>で置く（<code>gas/SeisanDashboard.gs</code> の <code>sd_authSheet_</code>・<code>sd_findAccount_</code>）。照合は文字列の単純比較（<code>sd_login</code>：<code>String(acc.pw) !== String(pw)</code>）。このシートを開ける人は全員のパスワードが見える。誰が開けるかは<b>【未確認】</b>。</td><td class="g">不十分</td></tr>
+<tr><td>初期パスワードの強さ</td><td><span class="f">【事実】</span>新規作成時の初期パスワードは <code>Utilities.getUuid().split('-')[0]</code>（16進8桁＝約32bit）で、シートと実行ログに平文で出る。</td><td class="g">弱い</td></tr>
+<tr><td>総当たり対策</td><td><span class="f">【事実】</span>失敗時は <code>Utilities.sleep(500)</code> だけ。失敗回数の記録・ロックアウト・IP制限は<b>コード上に無い</b>。READMEの手順では、Webアプリは「アクセスできるユーザー：全員」で公開。<span class="g">【推測】</span>並列に試せば1リクエストごとの0.5秒待ちでは止まらない。Supabase側に回数制限の表も手元のSQLに<b>見当たらない</b>。</td><td class="g">対策なし</td></tr>
+<tr><td>セッションの持ち方</td><td><span class="f">【事実】</span>トークンは UUID（ランダム）。GASの Script Properties に <code>sdtok_&lt;トークン&gt;</code> の名前で、さらに Supabase の <code>ds_sessions</code>（<code>token</code> が主キー）に<b>トークンそのまま</b>保存（ハッシュではない）。期限は使うたびに +336時間（14日）の延長。ブラウザは <code>localStorage</code> の <code>sd_token</code> に保存（<code>index.html</code>）。<code>ds_sessions</code> は RLS ポリシー無し＝service_role だけ（<code>ns-portal/supabase/2026-09-18_ds_sessions.sql</code>）。</td><td class="g">ハッシュ保存なし・14日の延長式</td></tr>
+<tr><td>URLパラメータ経由</td><td><span class="f">【事実】</span><code>doGet</code> は <code>?fn=…&amp;args=[…]</code> で関数を呼べる。画面（<code>apiGet_</code>）は POST がネットワークで失敗するとGETに自動で切り替え、<b>引数（トークン、ログイン時はIDとパスワード）をURLのクエリに載せる</b>。履歴・中継・サーバーの記録に残り得る。</td><td class="g">漏れ得る</td></tr>
+<tr><td>委託先の店舗の絞り込み</td><td><span class="f">【事実】</span>サーバー側で行っている（<code>sd_allowedStores_</code>・<code>sd_listAttachments</code>・<code>sd_getPdfB64</code> が権限を確認）。ブラウザから店舗IDを受けて信用する作りではない。ただし<b>担当店舗が空欄または「全店」なら、委託先でも全店が見える</b>（<code>sd_allowedStores_</code> の先頭の条件）＝入力ミスで全店が見える。店舗は<b>名前の文字列一致</b>。役職の不明な文字列は「委託先」扱い（安全側）。</td><td>概ね良いが空欄で全開</td></tr>
+<tr><td>GASの権限の大きさ</td><td><span class="f">【事実】</span>「次のユーザーとして実行：自分」で、Drive・スプレッドシートを所有者の権限で触る。さらに <code>SUPABASE_SERVICE_KEY</code>（service_role）を Script Properties に持つ読み取りコードがある（<code>sd_sessionSupaHeaders_</code>）。GASのスクリプトを編集できる人・侵害された場合、<b>DB全体に届き得る</b>（鍵の現在の有無は【未確認】）。</td><td class="g">侵害時の被害が大きい</td></tr>
+<tr><td>機械間の合言葉</td><td><span class="f">【事実】</span><code>sd_api*</code> は <code>PL_SYNC_TOKEN</code> を <code>!==</code> で比較（定数時間比較ではない）。委託先の画面とは別系統だが、同じ公開URLで呼べる。</td><td>軽微</td></tr>
+<tr><td>統合ログイン</td><td><span class="f">【事実】</span>本部・マスターは Supabase のトークンを検証して入る設計で、パスワードはGASを通らない。<b>委託先は対象外</b>（<code>sd_supaLogin</code>）。公開キー（publishable）は公開してよい種類。</td><td class="f">良い</td></tr>
+<tr><td>本番の現状（11/26〜）</td><td><span class="f">【事実（WORKLOGより）】</span>画面は <code>seisan-api</code>（Edge Function）に切替済み。11/28「ログインIDまたはメールアドレス」。メールの場合、本部・マスターは先にポータルのパスワード、だめなら精算側のパスワード、<b>委託先も登録メールで可</b>。パスワード再設定・利用申請メールは実画面で未確認。</td><td><b>【未確認】</b>ハッシュ・回数制限の有無</td></tr>
+</table></div>
+<p><b>評価の結論</b>：手元のGAS版は「パスワード＝平文」「失敗回数の制限なし」「トークン＝平文保存・14日延長」「URLに引数が載る経路あり」。銀行入金を委託先に出す認証の土台には<b>使わない</b>。本番の <code>seisan-api</code> が改善済みの可能性はあるが、<b>確認できていないため前提にしない</b>。MVPは現行ログインから切り離した別の認証を入金タブにだけ追加する。</p>
+
+<!-- ===================== 3. 提案構成 ===================== -->
+<h2>3. 提案する構成（完全版）</h2>
+<h3>3-1. 経路</h3>
+<ul>
+<li>ブラウザ（精算画面・GitHub Pages）→ <b>Edge Function <code>contractor-portal</code></b>（独自トークンの検証・回数制限）→ DB関数（service_role 専用）→ 許可リストの項目だけ返す。</li>
+<li>ブラウザは<b>サービスキーを持たない</b>。GASは入金タブの経路に<b>入れない</b>（GASの侵害・鍵の保管を避ける）。</li>
+<li>委託先は <b>Supabase Auth のユーザーにしない</b>。<span class="g">【推測】</span>Supabase の認証済みトークン（<code>authenticated</code>）は PostgREST から直接テーブルに届く。既存のポリシーは <code>to authenticated</code> を前提にしたものが多く、11/26 にも匿名の露出を閉じる作業があった。委託先が <code>authenticated</code> になると、既存表の取り違えのリスクを背負う。独自トークンなら、DB関数以外には届かない。</li>
+<li>CORSは精算画面のオリジンだけ許可（既存関数は <code>*</code> が多いが、これは新規なので絞る。CORSは認証の代わりではない）。</li>
+</ul>
+
+<h3>3-2. トークンの発行・保存・有効期限</h3>
+<div class="tbl"><table>
+<tr><th>項目</th><th>設計</th></tr>
+<tr><td>誰が発行</td><td>招待＝本部／マスター（理由・発行者を記録）。セッション＝本人確認に成功した委託先の担当者（Edge Functionが発行）。</td></tr>
+<tr><td>形式</td><td>256bitの乱数（base64url）。DBには <b>SHA-256（さらにサーバー秘密でHMAC）のハッシュだけ</b>を保存。平文はブラウザにしか無い。ログ・エラーに出さない。</td></tr>
+<tr><td>保存先</td><td>セッション＝既存 <code>sd_dash_grant</code>（<code>token_hash</code>・<code>scope_key</code>・<code>user_name</code>・<code>user_role</code>・<code>expires_at</code>）に、nullable の列を追加：<code>contractor_user_id uuid</code>・<code>kind text</code>（'session'）・<code>issued_at</code>・<code>idle_expires_at</code>・<code>last_used_at</code>・<code>revoked_at</code>・<code>revoked_by</code>・<code>revoke_reason</code>。<code>expires_at</code> は最大期限。<code>scope_key</code> は参考表示で、<b>権限の判断には使わない</b>（毎回、担当者→契約から再計算）。<b>【未確認】</b><code>sd_dash_grant</code> の既存の使われ方・行・RLS。それが確認できるまで、使い道が違う場合は別表 <code>contractor_sessions</code> にする。招待・ログインリンクは別表 <code>contractor_invites</code>。</td></tr>
+<tr><td>有効期限</td><td>招待リンク72時間・1回限り／ログインリンク10分・1回限り／確認コード10分・5回失敗で無効／セッション：<b>アイドル60分・最大12時間</b>（銀行情報なので現行の14日延長は踏襲しない）。</td></tr>
+<tr><td>URLに載せない</td><td>招待・ログインのトークンは <b>URLのフラグメント（#以降）</b>に置き、画面がPOSTで引き換える（メールのリンクチェック機能が先に開いても消費されない・サーバーの記録に残らない）。セッションは <code>Authorization</code> ヘッダのみ。GETでは受けない。</td></tr>
+<tr><td>消費の原子性</td><td>引き換えは <code>update … where used_at is null and expires_at &gt; now() returning</code> の1文（同時に2回使えない）。</td></tr>
+</table></div>
+
+<h3>3-3. 失効・再発行</h3>
+<div class="tbl"><table>
+<tr><th>種類</th><th>方法</th></tr>
+<tr><td>契約終了</td><td>① 毎リクエストで有効な契約を計算（終了日を過ぎたら即、空）。② 夜間ジョブで、有効な契約が1つも無い担当者のセッションを失効（念のため）。</td></tr>
+<tr><td>本人から</td><td>「ログアウト」「すべての端末から失効」（自分のセッション全て）。</td></tr>
+<tr><td>管理者の強制失効</td><td>本部／マスターが <code>contractor_user_suspend(user, reason)</code>：担当者を停止、未使用の招待・セッションを全て失効、記録に残す。<b>自己承認禁止</b>（登録者と契約確定者を別にする）。</td></tr>
+<tr><td>自動</td><td>短時間に多数の失敗、または同じセッションが複数の端末から使われた場合は、そのセッションを失効し、本部へ通知（既存の通知の仕組みの流用。内容に金額は入れない）。</td></tr>
+<tr><td>再発行</td><td>本部が新しい招待を発行（旧招待・旧セッションは失効）。メールアドレスの変更は<b>本部が別経路で本人確認してから</b>（メール変更＝乗っ取りの入口のため、自動では変えない）。</td></tr>
+</table></div>
+
+<h3>3-4. 本人確認と多要素</h3>
+<div class="tbl"><table>
+<tr><th>選択肢</th><th>強さ</th><th>運用負荷</th><th>推奨</th></tr>
+<tr><td>招待リンク＋<b>別経路の確認コード</b>（初回のみ）</td><td>中（本部が電話等で本人を確かめる）</td><td>低（委託先は少数と読める。<span class="g">【推測】</span>運営委託先は約2〜3社、実数は【未確認】）</td><td><b>MVPで採用</b></td></tr>
+<tr><td>毎回のメールのワンタイムリンク</td><td>中（メールの持ち主であること）</td><td>低</td><td><b>MVPで採用</b></td></tr>
+<tr><td>TOTP（認証アプリ）</td><td>高</td><td>中（設定・機種変更時の復旧）</td><td>入金タブを広げる段階で必須化を検討</td></tr>
+<tr><td>パスキー</td><td>高・手間が少ない</td><td>中（対応状況・復旧手順を要確認）</td><td>【未確認】要調査</td></tr>
+<tr><td>SMS</td><td>低〜中（SIM乗っ取り）・番号管理</td><td>中・費用</td><td>採用しない</td></tr>
+</table></div>
+<p>メールの持ち主＝本人、という前提が崩れる（共有メール・乗っ取り）リスクは残る。<b>担当者は1人ずつのメール</b>（共有メールは不可）を条件にする。</p>
+
+<h3>3-5. 回数制限・ロックアウト・監査ログ</h3>
+<ul>
+<li>表 <code>contractor_access_log</code>（追記専用・更新削除不可）：時刻・担当者ID（不明なら空）・動作・成功／失敗・<b>IPのHMAC</b>・UAのハッシュ・件数・期間。<b>金額・口座・メールの平文は記録しない</b>。保持期間は例：2年（要決定）。</li>
+<li>確認コード：1コードにつき5回失敗で無効。ログインリンクの発行：同じメール宛に1時間3回まで。IP単位：15分に10回失敗で429＋待ち時間。応答は<b>登録の有無で変えない</b>（メールの存在を教えない）。比較は定数時間。</li>
+<li>クライアントIPの取り方（Supabaseの転送ヘッダの信頼性）は<b>【未確認】</b>。IPが信用できなくても、担当者単位・コード単位の制限は有効。</li>
+</ul>
+
+<h3>3-6. サーバー側の確定（パラメータに委託先ID・店舗IDを受けない）</h3>
+<ol>
+<li>入力は <code>Authorization</code> のトークンと「月（YYYY-MM）」のみ。それ以外のフィールドは<b>無視ではなく拒否</b>（400）。</li>
+<li>トークンのハッシュ → <code>sd_dash_grant</code> の行（失効なし・最大期限内・アイドル内）→ <code>contractor_user_id</code>。</li>
+<li>担当者 → 委託先（状態＝有効）→ <b>今日（JST）有効な契約</b>（<code>valid_from ≤ 今日 ≤ valid_to</code>）→ <code>contractor_contract_stores</code>。</li>
+<li>見える範囲＝契約の閲覧可能期間 ∩ 店舗の適用期間 ∩ 要求された月。範囲外は空（エラー文で理由を詳しく言わない）。</li>
+<li>DB関数も同じ導出を<b>自分でもう一度</b>行う（Edge Functionが誤っても関数側で防ぐ二重化）。応答の店舗は、画面用の表示名だけ（内部のUUIDは返さない）。</li>
+</ol>
+
+<!-- ===================== 4. 契約表 ===================== -->
+<h2>4. 契約表の最小設計</h2>
+<div class="tbl"><table>
+<tr><th>表</th><th>主な列（型）</th><th>ポイント</th></tr>
+<tr><td><code>contractors</code></td><td>id uuid／name text／vendor_id uuid null（既存 <code>vendors</code>）／corporation_id uuid null（委託先が自社グループ法人の場合）／status text（active・suspended・closed）／closed_at timestamptz</td><td>法人（会社）単位。切り離しの単位。</td></tr>
+<tr><td><code>contractor_users</code></td><td>id／contractor_id／email text（小文字・有効な人の中で一意）／display_name／status（invited・active・suspended・removed）／verified_at・verified_by・verified_method text／last_login_at</td><td>担当者は1人ずつのメール。共有メール不可。</td></tr>
+<tr><td><code>contractor_contracts</code></td><td>id／contractor_id／principal_corporation_id uuid（委託元＝入金を受ける法人）／valid_from date <b>not null</b>／valid_to date null／view_from date／view_to date／status／ended_reason text／created_by・approved_by／operation_relation_id uuid null（既存 <code>store_operation_relations</code> との対応）</td><td><b>閲覧可能期間</b>は契約期間とは別の列。既定＝契約期間と同じ。終了後の閲覧（最終精算の確認など）を許す場合は、<code>view_to</code> を理由つきで延長（既定は延長なし＝「終了後は見えない」）。</td></tr>
+<tr><td><code>contractor_contract_stores</code></td><td>id／contract_id／store_id uuid（<code>stores</code>）／valid_from／valid_to null</td><td>店舗は<b>IDで参照</b>（名前の文字列一致はしない）。同じ店舗の期間が複数の契約で重ならないよう排他制約（期間の重複禁止）。契約の期間内に収まる検査。</td></tr>
+</table></div>
+<ul>
+<li><b>切り離しのしやすさ</b>：全表が <code>contractor_id</code>（または契約経由）で閉じており、既存表からは参照されない（既存表は <code>stores</code>・<code>vendors</code>・<code>corporations</code> を参照されるだけ）。法人追加＝行の追加、売却・終了＝<code>contractors.status='closed'</code>＋全セッション失効、データの持ち出し＝<code>contractor_id</code> で抽出。</li>
+<li>手元の既存資産：<code>store_operation_relations</code>（運営委託の期間履歴：店舗・運営主体・<code>effective_from</code>/<code>effective_to</code>）、<code>stores.seisan_target</code>・<code>seisan_store_name</code>。<b>契約表はこれと二重管理になるおそれ</b>があるため、<code>operation_relation_id</code> で対応づけ、登録時に期間・店舗の食い違いを検査する案。実データの網羅性は【未確認】。</li>
+<li>段階5の <code>store_corporation_periods</code>・<code>store_corporation_on()</code>（店舗の運営法人の履歴）が本番に入れば、「その日の運営法人 ＝ 契約の委託元」の検査を追加できる（現在は本番未適用の下書き）。</li>
+</ul>
+
+<!-- ===================== 5. 許可リスト ===================== -->
+<h2>5. 返す項目の許可リスト</h2>
+<h3>5-1. 返す／返さない</h3>
+<div class="tbl"><table>
+<tr><th>区分</th><th>項目</th><th>段階</th></tr>
+<tr><td class="f">返す</td><td>店舗の表示名／入金日／入金額（日ごとの合計）／入金件数</td><td>MVP</td></tr>
+<tr><td class="f">返す</td><td>日ごとの状態：入金あり／入金なし／確認中（保留・取込途中あり。<b>金額は出さない</b>）</td><td>MVP</td></tr>
+<tr><td class="f">返す</td><td>データの最終更新時刻（古い数字を「最新」と見せない）</td><td>MVP</td></tr>
+<tr><td class="g">条件つき</td><td>売上（現金売上）／入金予定額／差額・未入金の状態</td><td>MVPの後（§5-3）</td></tr>
+<tr><td class="g">条件つき</td><td>自店の精算書（PDF・明細）</td><td>MVPの後（既存の精算書の経路の確認後）。N-Style収益は出さない</td></tr>
+<tr><td class="bad">返さない</td><td>銀行口座番号（下4桁も）／残高／CSV原本／<b>摘要（<code>entries</code> の <code>m</code>。振込人名・端末名が入り得る）</b>／取引の時刻／他法人・他店舗／内部の承認・訂正・差異・紐付け履歴／訂正されたことを示す印／保留金額／店舗・法人・口座の内部ID／N-Style収益</td><td>—</td></tr>
+</table></div>
+
+<h3>5-2. 専用のRPCの形</h3>
+<ul>
+<li><code>contractor_deposit_view(p_user uuid, p_from date, p_to date)</code> → <code>(store_label text, deposit_date date, amount numeric, deposit_count int, day_status text, data_as_of timestamptz)</code>。<code>security definer</code>・<code>search_path</code> 固定・<code>revoke all from public, anon, authenticated</code>・<code>grant execute to service_role</code>。</li>
+<li>集計の条件は台帳の <code>bank_deposit_daily</code> と同じ（<code>counts_as_sales_deposit</code>・<code>store_id</code> 確定・訂正値があれば訂正後・<code>legacy_pending</code> と <code>verified</code> のみ合算）。ただし <code>bank_deposit_daily</code> は <code>auth.uid()</code> で見える範囲を決めるため、Edge Function（service_role）からは使えない。<b>ロジックの二重持ちでずれる危険</b>があるので、テストで「本部の画面（<code>bank_deposit_daily</code>）と同じ店舗・同じ日で同じ数字」を必ず確認する。</li>
+<li>テーブルへの直接のSELECTは委託先の経路に一切つけない。</li>
+</ul>
+
+<h3>5-3. 売上・入金予定額・差額（MVPの後の条件）</h3>
+<ul>
+<li>元は <code>kd_deposit_daily_v</code>（現金売上・入金額・差額）。ただしこの表は旧GAS由来の入金（<code>kd_deposit_daily</code>）で、新しい台帳（<code>bank_transactions</code>）とは<b>別の源</b>。台帳の入金とどこまで一致するか（<code>entries</code> の内容、店舗の割り当て、現金売上のレジ照合の確認状況）は<b>未検証</b>。</li>
+<li>公開の条件：①同じ店舗・同じ期間で <code>kd_deposit_daily_v</code> と台帳の入金が一致（差の理由を説明できる）②現金売上がレジ照合の確認済み ③契約ごとのスイッチ <code>show_sales_expected</code>（既定false）を本部がONにする。</li>
+</ul>
+
+<!-- ===================== 6. 攻撃・事故 ===================== -->
+<h2>6. 攻撃・事故シナリオと対策</h2>
+<div class="tbl"><table>
+<tr><th>シナリオ</th><th>対策</th><th>残るリスク</th></tr>
+<tr><td>URL・パラメータの改ざん（月・店舗ID・委託先IDを書き換える）</td><td>店舗ID・委託先IDの入力口が<b>無い</b>。未知のフィールドは400。月は <code>YYYY-MM</code> のみで、範囲は契約と交差させる。</td><td>なし（入力口が無い）</td></tr>
+<tr><td>他店舗の推測（IDの総当たり）</td><td>内部UUIDを返さない。応答は一律。トークンは256bit。</td><td>なし</td></tr>
+<tr><td>トークン流出（XSS・共有PC・画面共有）</td><td>sessionStorage（タブを閉じると消える）・アイドル60分・最大12時間・失効・<code>no-store</code>。サーバーにはハッシュのみ＝DB流出でトークンは作れない。</td><td>GitHub Pages では <b>CSPのヘッダを設定できない</b>（metaで一部のみ）。画面内のXSSが起きれば、その時間の閲覧は盗まれ得る。</td></tr>
+<tr><td>招待リンクの転送・メールの乗っ取り</td><td>1回限り・72時間＋<b>別経路の確認コード</b>。メール変更は本部が確認。</td><td>メールとコードの両方が奪われた場合</td></tr>
+<tr><td>契約終了後のアクセス</td><td>毎回、契約の期間で計算＝終了日の翌リクエストから空。夜間ジョブでセッションも失効。</td><td>キャッシュ（<code>sd_dash_snapshot</code>。内容は【未確認】）に入金の集計を載せない。ブラウザの画面に残った表示は消せない。</td></tr>
+<tr><td>契約の途中で店舗が外れる</td><td>店舗ごとの適用期間（<code>valid_to</code>）で絞る。</td><td>登録漏れ（運用）</td></tr>
+<tr><td>リプレイ（盗んだ通信の再送）</td><td>HTTPSのみ・短いアイドル・招待／ログインリンクは原子的に1回限り・URLに載せない。</td><td>有効なセッションが盗まれた間は同じ権限（上のXSS・端末盗難）</td></tr>
+<tr><td>総当たり（コード・ログイン要求の連打）</td><td>コード5回失敗で無効・メール宛の回数制限・IP制限・定数時間比較・失敗の監査ログ・本部へ通知。</td><td>多数のIPからの分散した試行（IPの信頼性は【未確認】）</td></tr>
+<tr><td>GASのスクリプト侵害</td><td>入金タブの経路は<b>GASを通らない</b>。新しい経路に必要な鍵はEdge Functionの環境変数にだけ置く。</td><td><b>既存GASが service_role の鍵を持っている可能性</b>（<code>SUPABASE_SERVICE_KEY</code> の読み取りコードあり・現在の有無は【未確認】）。確認し、不要なら削除する作業を別に。</td></tr>
+<tr><td>旧ログイン（平文パスワード）への総当たり</td><td>入金タブは旧ログインを<b>信用しない</b>（別認証）。旧ログインで得られるのは従来どおりの精算書の範囲のみ。</td><td>旧委託先アカウントは平文のまま残る＝精算書の情報は引き続き狙える。§7で段階的に廃止。</td></tr>
+<tr><td>偽のログイン画面（フィッシング）</td><td>メールの本文に正しいURLを明記。ワンタイムリンクは短時間・1回限り。</td><td>GitHub Pagesの公開ドメイン。独自ドメイン化は別検討</td></tr>
+<tr><td>本部の登録ミス（別会社の店舗を契約に入れる）</td><td>登録者と確定者を分ける／契約の登録時に <code>store_operation_relations</code> と食い違いを検査／公開前に「その委託先として見た画面」を本部がプレビュー（本番に出る前に確認）。</td><td>運用ミスの完全防止は不可</td></tr>
+<tr><td>入金の店舗の割り当て誤り（台帳）</td><td>店舗確定済みの行のみ・保留は金額を出さず「確認中」。パイロットで本部の画面と照合。</td><td>段階5（店舗未確定の管理）の本番適用前は、台帳側の割り当て精度に依存</td></tr>
+<tr><td>CSRF・CORS</td><td>Cookieを使わず <code>Authorization</code> ヘッダ＝CSRFは成立しない。CORSは精算画面のオリジンのみ。</td><td>なし</td></tr>
+<tr><td>ログ・エラーからの漏えい</td><td>トークン・メール・金額をログに出さない。エラーは理由を詳しく返さない。</td><td>Supabase側の標準ログの内容は【未確認】</td></tr>
+<tr><td>担当者の端末での共有・画面撮影</td><td>担当者ごとのアカウント（共有しない契約条項）</td><td>技術では防げない</td></tr>
+</table></div>
+
+<!-- ===================== 7. 移行・順序・テスト ===================== -->
+<h2>7. 既存利用者への影響・移行・テスト・承認</h2>
+<h3>7-1. 既存の精算ダッシュボード利用者への影響と移行手順</h3>
+<ol>
+<li><b>段階0（影響なし）</b>：事実確認（承認A）。</li>
+<li><b>段階1（影響なし）</b>：新規表・関数・Edge Functionを追加。既存の表・関数・画面は変更しない。入金タブはスイッチOFFで<b>非表示</b>。</li>
+<li><b>段階2（影響なし）</b>：本部の担当者を「テスト委託先」として登録し、使い捨てデータで通す（終了後に完全削除）。</li>
+<li><b>段階3（パイロット1社）</b>：既存の精算書ログインは<b>そのまま</b>。入金タブを開いた時だけ新しい認証（step-up）。既存のログインで入った人が、入金タブを開けるわけではない。</li>
+<li><b>段階4</b>：他の委託先へ展開。売上・予定・差額（§5-3の条件後）。</li>
+<li><b>段階5（別承認）</b>：委託先のログイン全体を同じ「招待＋ワンタイムリンク」へ移し、旧平文パスワード（委託先分）を廃止。本部・マスターは従来の統合ログイン。</li>
+<li><b>段階6（別承認）</b>：GASに残る service_role 鍵の要否を確認し、不要なら除去。</li>
+</ol>
+<p>影響を受けるのは「入金タブを使う委託先」だけで、<b>現行ログインを止める段階は5まで来ない</b>。</p>
+
+<h3>7-2. テスト項目</h3>
+<ul>
+<li>契約外の店舗・日付・月が取れない／契約終了日の前日・当日・翌日／閲覧可能期間の延長あり・なし／店舗が途中で外れる。</li>
+<li>他社の担当者のトークンで他社の店舗が出ない／失効後・期限切れ・アイドル切れのトークンが拒否される。</li>
+<li>招待・ログインリンクの再使用の拒否／確認コード5回失敗で無効／同時に2回引き換えても1回だけ成功。</li>
+<li>DB上にトークン・コードの平文が無い（ハッシュのみ）／匿名・認証済みのキーから新規表と関数を直接呼べない。</li>
+<li>未知のフィールド（<code>store_id</code>・<code>contractor_id</code>）を付けると400。</li>
+<li>応答に許可リスト以外の項目が無い（キー一覧の完全一致テスト）。</li>
+<li>本部の画面（<code>bank_deposit_daily</code>）と店舗・日付ごとに数字が一致。保留・未確定の行が合算されない。</li>
+<li>ログ（監査・Edge）に平文のトークン・メール・金額が無い。スマホ幅・ライト／ダークの表示。</li>
+<li>本番でのテストは<b>使い捨ての委託先・店舗・契約</b>で行い、終了後に完全削除して0件を確認。</li>
+</ul>
+
+<h3>7-3. 承認が必要な点（まとめ）</h3>
+<p>§1-5の承認A〜F。そのほか：メールの送信手段の選定（【未確認】）／委託先に入金情報を見せることの契約上・銀行規約上の扱い／売上・予定・差額の公開（MVPの後に別承認）／旧パスワードの廃止（段階5）／GASの鍵の除去（段階6）。</p>
+
+<!-- ===================== 8. 未確認 ===================== -->
+<h2>8. 未確認事項（ファイルから分からなかったこと）</h2>
+<ol>
+<li><b><code>sd_dash_grant</code>・<code>sd_dash_snapshot</code> の定義</b>（CREATE文・RLS・GRANT・行数・誰が書き誰が読むか・<code>scope_key</code> の意味）。手元のSQLに無い。列名はご指示の記載（<code>token_hash</code>・<code>scope_key</code>・<code>user_name</code>・<code>user_role</code>・<code>expires_at</code>）に従った。</li>
+<li><b>本番 <code>seisan-api</code> のソースと認証</b>（パスワードのハッシュ・回数制限・セッションの保存・Googleログイン・再設定）。手元の <code>seisan-dashboard</code> は 2026-10-01 時点で、<code>supabase/</code> も <code>settle_*</code> の定義も無い。最新版の取得が必要。</li>
+<li>旧GASのWebアプリが今も外部から呼べる状態か／権限シートを開ける人／委託先アカウントの数・メール登録の有無・共有アカウントの有無／担当店舗の空欄の有無。</li>
+<li><code>settle_*</code> の構造・精算書PDFの置き場（<code>settle-files</code>）と、委託先の絞り込みの方法（精算書を新経路に載せる場合に必要）。</li>
+<li>Supabase Edge の、クライアントIPのヘッダの信頼性／プラットフォーム側の回数制限／<code>verify_jwt</code> の設定の置き場（<code>config.toml</code> は手元に無い）／パスキーの対応状況。</li>
+<li>メールの送信手段（ワンタイムリンクの送信元）と、委託先のメールの管理状況（共有メールかどうか）。</li>
+<li>契約の実データ（開始日・終了日・対象店舗・閲覧に関する取り決め）の置き場。<code>store_operation_relations</code> の網羅性。</li>
+<li>委託先の店舗の入金が、店舗ごとの専用口座か複数店舗の共用口座か／台帳（<code>bank_transactions</code>）と <code>kd_deposit_daily</code> の一致の度合い／台帳の段階1〜4の本番の適用状況の最新（WORKLOGでは段階4は適用済みの記載、段階5・6は未適用）。</li>
+<li>委託先に自店の入金情報を見せることが、委託契約・銀行（PayPay・GMOあおぞら）の規約に反しないか。</li>
+<li><code>sd_dash_snapshot</code>（キャッシュ）が入金の集計を含むか、契約終了後に残るか。</li>
+</ol>
+<div class="sub">この設計書の作成で、コード・DB・GAS・本番設定の変更、SQL実行、デプロイ、push、commit は一切行っていません。</div>
+</main>
+</body>
+</html>
