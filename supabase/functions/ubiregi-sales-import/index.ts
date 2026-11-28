@@ -69,8 +69,12 @@ Deno.serve(async (req) => {
 
     const done = await gas({ action: "paymentDailyReplace", rows: JSON.stringify(rows), dryRun: false, operator: "ubiregi-import" });
     if (!done.ok) return json({ ok: false, stage: "write", error: done.error }, 502);
-    const bq = await gas({ action: "bqSyncSales" });
-    return json({ ok: true, applied: true, ...summary(done), bq_synced: bq.ok === true, bq_error: bq.ok === true ? null : String(bq.error ?? "").slice(0, 200) });
+    // BigQuery への同期は数分かかり、待つと関数の応答の上限（150秒）を超えるので、後ろで走らせて先に返事をする（朝の自動処理でも同じ同期が走る）
+    const sync = gas({ action: "bqSyncSales" })
+      .then((r) => console.log("bqSyncSales", r.ok === true ? "ok" : String(r.error ?? "失敗").slice(0, 200)))
+      .catch((e) => console.error("bqSyncSales", e));
+    (globalThis as any).EdgeRuntime?.waitUntil?.(sync);
+    return json({ ok: true, applied: true, ...summary(done), bq_sync: "started" });
   } catch (e) {
     console.error("ubiregi-sales-import", e);
     return json({ ok: false, error: e instanceof Error ? e.message : String(e) }, 500);
