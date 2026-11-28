@@ -9,6 +9,16 @@
 
 ---
 
+**2026-11-28（担当D・社長依頼）請求書: 求人広告の請求書を店舗ごとに自動で分ける仕組み（本番反映済・実際の請求書での確認は12月）**
+- 新 EF `recruit-invoice-split`（`--no-verify-jwt`）＋`supabase/2026-11-28_recruit_invoice_split.sql`（`recruit_invoice_apply_split`／`recruit_invoice_mark_mismatch`・cron `recruit-invoice-split` 7:05〜23:35 JST の30分ごと）。内訳シートの読み込みは `_shared/recruit-cost-load.ts` に共通化し `recruit-cost-sync` も再デプロイ。
+- 対象: 設定した3取引先（広告費2・固定費1）の請求書で、対象月 2026-11 以降・MF未登録・取消でない・人が直していないもの。明細（税抜＋税）を店舗ごとに入れ替えて既存の `invoice-journal-draft` を呼ぶ。固定費は広告費の割合で按分。請求額がシートの税込と合わなければ分けず `blocked_reason` に理由。MF への登録は今までどおり人の承認。
+- 🔶 担当Cへ: `vendor_line_rules` を変更（固定費の取引先の補助科目を MF の名前に固定＝version 2／広告費の取引先2件に行ルールを追加）。`invoices.html` に `plfeeRecruitSplitRows` を追加（分けた請求書は PL反映の初期値が税抜の明細。仕訳の部門を人が直したら従来どおり）。**ほかの取引先では、PL反映の初期値は今も仕訳の税込額**（`plfeeComputeAllocation` の mf_department）。確認をお願いします。
+- 設定・行ルールのSQLは非公開の NStyle-AI `company/knowledge/recruit-invoice-split-settings-2026-11-28.sql`。
+- 過去の採用教育費の PL（2026-01〜10）は **担当Aが持つ**（担当Dは変更していない）。店舗割りの表は非公開の NStyle-AI `docs/採用教育費_店舗割り_内訳シート基準_2026-11-28.md`。
+- 検証: 単体テスト、DB関数の巻き戻し試し実行、本番EFの読むだけの実行（2026-10の請求書2件の分け方が請求額と一致）。
+
+---
+
 **2026-11-28（担当A）PL 採用教育費の二重の確認（担当D の指摘）: 2026-07 の手入力の二重 1 行を社長承認で削除（本番・営業利益の再集計まで確認）／2026-08 は対応準備中（未デプロイ・未変更）**
 - 8月は、請求書 1 枚が「税抜の全額を1店舗」と「税込の店舗割り」の 2 通りで入る二重。シート由来の行なので pl_entries を直すだけでは毎時の取込で戻る。対応案=keiei-kd-refresh に (source×年月) の取込固定を追加。
 - 分担: 2026-07〜09 の採用教育費の行と取込は担当A（担当D に連絡済み）。控えは非公開の NStyle-AI/docs。
