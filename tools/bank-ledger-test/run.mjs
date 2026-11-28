@@ -10,6 +10,8 @@ const STAGE1 = readFileSync(process.env.STAGE1_FILE || join(here, '../../supabas
 const STAGE2 = readFileSync(process.env.STAGE2_FILE || join(here, '../../supabase/2026-11-28_bank_ledger_stage2.sql'), 'utf8');
 const STAGE3 = readFileSync(process.env.STAGE3_FILE || join(here, '../../supabase/2026-11-28_bank_ledger_stage3.sql'), 'utf8');
 const STAGE4 = readFileSync(process.env.STAGE4_FILE || join(here, '../../supabase/2026-11-28_bank_ledger_stage4.sql'), 'utf8');
+const STAGE5 = readFileSync(process.env.STAGE5_FILE || join(here, '../../supabase/2026-11-28_bank_ledger_stage5.sql'), 'utf8');
+const STAGE5_ROLLBACK = readFileSync(join(here, '../../supabase/2026-11-28_bank_ledger_stage5_ROLLBACK.sql'), 'utf8');
 const STAGE4_ROLLBACK = readFileSync(join(here, '../../supabase/2026-11-28_bank_ledger_stage4_ROLLBACK.sql'), 'utf8');
 const STAGE3_ROLLBACK = readFileSync(join(here, '../../supabase/2026-11-28_bank_ledger_stage3_ROLLBACK.sql'), 'utf8');
 const STAGE2_ROLLBACK = readFileSync(join(here, '../../supabase/2026-11-28_bank_ledger_stage2_ROLLBACK.sql'), 'utf8');
@@ -40,6 +42,7 @@ alter default privileges in schema public grant all on tables to anon, authentic
 alter default privileges in schema public grant all on functions to anon, authenticated, service_role;
 create table public.corporations (id uuid primary key default gen_random_uuid(), name text);
 create table public.stores (id uuid primary key default gen_random_uuid(), name text, corporation_id uuid references public.corporations(id));
+create table public.corporation_bank_accounts (id uuid primary key default gen_random_uuid(), corporation_id uuid references public.corporations(id), account_number text, confirmed_at timestamptz, confirmed_by uuid);
 create table public.users (id uuid primary key, name text, role text, is_master boolean not null default false, is_active boolean not null default true, team_id uuid);
 create table public.user_stores (user_id uuid, store_id uuid, is_primary boolean default false);
 create table public.team_stores (team_id uuid, store_id uuid);
@@ -978,6 +981,122 @@ async function main() {
     ok('空の状態なら段階4のロールバックが通り、bank_legacy_plan は段階3の定義に戻る（新しい表・関数は消える）', rbe.ok && planBefore !== planAfter && (await sup(dbe, `select md5(pg_get_functiondef('public.bank_legacy_plan(uuid)'::regprocedure)) m`)).rows[0].m === planBefore
       && (await sup(dbe, `select count(*)::int n from pg_class where relname like 'bank\\_reconcile\\_%'`)).rows[0].n === 0, rbe.err);
     ok('段階4の SQL は、2 回流しても同じ（データがあっても壊れない）', (await script(db, STAGE4)).ok && (await script(db, STAGE4)).ok && (await sup(db, `select count(*)::int n from public.bank_reconcile_runs`)).rows[0].n === 7);
+  }
+
+  // ---------- 11. 段階5: 店舗未確定の管理・運営法人の履歴 ----------
+  section('11. 段階5: 店舗未確定は集計に入れない／口座・取引単位の後付け紐付け（確定・訂正済みは動かさない）／履歴・取り消し／運営法人の履歴で過去は動かない／共有口座は取引単位／権限');
+  {
+    const db = await fresh(); await db.exec(STAGE2); await db.exec(STAGE3); await db.exec(STAGE4);
+    const before = await sup(db, `select md5(pg_get_functiondef('public.bank_tx_guard()'::regprocedure)) a, md5(pg_get_functiondef('public.bank_deposit_daily()'::regprocedure)) b`);
+    await db.exec(STAGE5);
+    const after = await sup(db, `select md5(pg_get_functiondef('public.bank_tx_guard()'::regprocedure)) a, md5(pg_get_functiondef('public.bank_deposit_daily()'::regprocedure)) b`);
+    ok('段階5は、既存の守り（bank_tx_guard）と日次集計（bank_deposit_daily）を書き換えない', same(before.rows, after.rows));
+    const A1 = ID.storeA1, A2 = ID.storeA2, B1 = ID.storeB1;
+    const X = U(701), M = U(702), Y = U(703);
+    await db.exec(`insert into public.bank_accounts (id, bank_code, login_group, account_no) values ('${X}','gmo_aozora','gmo_corp','S5-X'), ('${M}','gmo_aozora','gmo_corp','S5-M'), ('${Y}','gmo_aozora','gmo_corp','S5-Y');
+      update public.bank_accounts set usage_mode='multi' where id='${M}';`);
+    const tx = (n, acct, date, dep, extra = '') => `insert into public.bank_transactions (id, bank_account_id, txn_date, description, deposit_amount, source_kind, dedupe_key, match_status, tx_kind, counts_as_sales_deposit ${extra ? ', ' + extra.split('=')[0] : ''}) values ('${U(n)}','${acct}','${date}','ATM',${dep},'manual_entry','s5-${n}','verified','atm_deposit',true ${extra ? ', ' + extra.split('=')[1] : ''})`;
+    await db.exec(tx(711, X, '2026-11-01', 10000)); await db.exec(tx(712, X, '2026-11-02', 20000)); await db.exec(tx(713, X, '2026-11-03', 30000)); await db.exec(tx(714, X, '2026-11-04', 40000));
+    await db.exec(`update public.bank_transactions set confirm_status='confirmed', confirmed_at=now() where id='${U(712)}'`);
+    await db.exec(`update public.bank_transactions set adj_deposit_amount=29000 where id='${U(713)}'`);
+    await db.exec(tx(721, M, '2026-11-01', 5000)); await db.exec(tx(722, M, '2026-11-01', 6000)); await db.exec(tx(723, M, '2026-11-02', 7000));
+    await db.exec(`update public.bank_transactions set confirm_status='confirmed', confirmed_at=now() where id='${U(723)}'`);
+    const stateOf = async (n) => (await sup(db, `select store_id, corporation_id, confirm_status, is_adjusted from public.bank_transactions where id='${U(n)}'`)).rows[0];
+    const daily = async (store) => (await as(db, 'ceo', `select deposit_date::text d, amount::int a, deposit_count c from public.bank_deposit_daily() where store_id='${store}' order by 1`)).rows;
+    // 1. 未確定は店舗別の入金に出ない
+    ok('店舗未確定の明細は、どの店舗の入金実績にも計上されない', (await daily(A1)).length === 0 && (await daily(A2)).length === 0 && (await daily(B1)).length === 0);
+    // 2. 権限
+    const call = (who, sql) => as(db, who, sql);
+    const calls = {
+      summary: `select * from public.bank_unassigned_summary()`,
+      list: `select * from public.bank_unassigned_list('${X}')`,
+      assign: `select public.bank_account_assign_store('${X}','${A1}','test')`,
+      txassign: `select public.bank_tx_assign_store(array['${U(711)}']::uuid[],'${A1}','test')`,
+      revert: `select public.bank_assignment_revert('${U(999)}','test')`,
+      change: `select public.store_corporation_change('${A1}','${ID.corp2}','2030-01-01','test')`,
+      link: `select public.bank_account_link_holder('${X}','${U(999)}','test')`,
+    };
+    let leak = [];
+    for (const who of ['anon', 'service', 'team', 'tenchoA', 'tenchoB', 'shain', 'al', 'hqOff']) {
+      for (const [k, sql] of Object.entries(calls)) { const r = await call(who, sql); const empty = r.ok && r.rows.length === 0; if (!(denied(r) || empty)) leak.push(who + ':' + k); }
+    }
+    ok('管理者以外（未ログイン・サービスロール・チーム長・店長・社員・アルバイト・無効な本部）は、未確定の一覧も紐付けも運営法人の変更もできない（見えない・拒否）', leak.length === 0, leak.join(','));
+    ok('管理者（社長・本部・マスター）は、未確定の一覧が見える（口座番号は出ない・末尾4桁だけ）', (await Promise.all(ADMINS.map((w) => call(w, calls.summary)))).every((r) => r.ok && r.rows.length >= 3 && r.rows.every((x) => !('account_no' in x))));
+    ok('理由が空だと、口座の紐付けも取引の紐付けも拒否', denied(await call('ceo', `select public.bank_account_assign_store('${X}','${A1}','  ')`)) && denied(await call('ceo', `select public.bank_tx_assign_store(array['${U(711)}']::uuid[],'${A1}','')`)));
+    ok('未確定の明細の一覧に、残高も口座番号も出ない', (await call('ceo', calls.list)).rows.every((x) => !('balance' in x) && !('account_no' in x)));
+    // 3. 口座への後付け紐付け
+    const r1 = await call('ceo', `select public.bank_account_assign_store('${X}','${A1}','11/28 名義確認のため') r`);
+    ok('口座に店舗を後付けできる（対象は未確定・未訂正の 2 件、確定済み 1・訂正済み 1 は動かさず件数で返る）', r1.ok && r1.rows[0].r.updated_transactions === 2 && r1.rows[0].r.skipped_unassigned_confirmed_or_adjusted === 2, r1.err || JSON.stringify(r1.rows));
+    const s711 = await stateOf(711), s712 = await stateOf(712), s713 = await stateOf(713), s714 = await stateOf(714);
+    ok('未確定・未訂正の明細だけ店舗と帰属法人が入り、確定済み・訂正済みは未確定のまま', s711.store_id === A1 && s714.store_id === A1 && s711.corporation_id === ID.corp1 && s712.store_id === null && s713.store_id === null);
+    ok('紐付け後、その店舗の日次の入金に流れ込む（未確定のまま残った 2 件は入らない）', JSON.stringify(await daily(A1)) === JSON.stringify([{ d: '2026-11-01', a: 10000, c: 1 }, { d: '2026-11-04', a: 40000, c: 1 }]), JSON.stringify(await daily(A1)));
+    const acctX = (await sup(db, `select store_id, store_status, corporation_id from public.bank_accounts where id='${X}'`)).rows[0];
+    ok('口座も 店舗・法人・assigned になる', acctX.store_id === A1 && acctX.store_status === 'assigned' && acctX.corporation_id === ID.corp1);
+    const hist = (await sup(db, `select kind, action, parent_id is not null as child, reason, actor_label from public.bank_assignment_history order by created_at, kind desc`)).rows;
+    ok('履歴: 口座 1 件＋取引 2 件（口座の履歴に紐づく）。理由・実行者・変更前後が残る', hist.length === 3 && hist.filter((h) => h.kind === 'account').length === 1 && hist.filter((h) => h.child).length === 2 && hist.every((h) => h.reason && h.actor_label));
+    ok('明細の変更履歴（既存の bank_transaction_events）にも assign_store と理由が残る', (await sup(db, `select count(*)::int n from public.bank_transaction_events where event_kind='assign_store' and reason like '11/28%'`)).rows[0].n === 2);
+    ok('口座がすでに別の店舗に紐付いているときは、付け替え不可（取り消しから）', denied(await call('ceo', `select public.bank_account_assign_store('${X}','${A2}','間違い')`)));
+    ok('共有口座（multi）は、口座単位では紐付けできない', denied(await call('ceo', `select public.bank_account_assign_store('${M}','${A1}','共有')`)));
+    ok('共有口座に店舗を持たせる更新は制約で拒否される／利用形態は single・multi だけ', !(await script(db, `update public.bank_accounts set store_id='${A1}', store_status='assigned' where id='${M}'`)).ok && !(await script(db, `update public.bank_accounts set usage_mode='x' where id='${Y}'`)).ok);
+    // 4. 取り消し
+    const accHist = (await sup(db, `select id from public.bank_assignment_history where kind='account' and action='assign'`)).rows[0].id;
+    // 取り消しの前に、明細 714 を別の店舗に付け替えておく（その後の変更は戻さない）
+    const rch = await call('ceo', `select public.bank_tx_assign_store(array['${U(714)}']::uuid[],'${A2}','店舗の付け間違い',true) r`);
+    ok('取引単位の付け替え（p_allow_change）ができる', rch.ok && rch.rows[0].r.updated_transactions === 1 && (await stateOf(714)).store_id === A2, rch.err);
+    ok('付け替えなしの指定では、すでに店舗が付いた明細は動かない', (await call('ceo', `select public.bank_tx_assign_store(array['${U(711)}']::uuid[],'${A2}','x') r`)).rows[0].r.updated_transactions === 0 && (await stateOf(711)).store_id === A1);
+    const rv = await call('ceo', `select public.bank_assignment_revert('${accHist}','誤った口座紐付け') r`);
+    ok('口座の紐付けを取り消すと、口座は元に戻り、そのあと変わっていない明細だけ戻る（変わった 1 件は戻さず件数で返す）', rv.ok && rv.rows[0].r.reverted === 1 && rv.rows[0].r.not_reverted_because_changed_later === 1, rv.err || JSON.stringify(rv.rows));
+    const acctX2 = (await sup(db, `select store_id, store_status from public.bank_accounts where id='${X}'`)).rows[0];
+    ok('取り消し後: 口座は未確定、明細 711 は未確定に戻り、付け替えた 714 は A2 のまま', acctX2.store_id === null && acctX2.store_status === 'unassigned' && (await stateOf(711)).store_id === null && (await stateOf(711)).corporation_id === null && (await stateOf(714)).store_id === A2);
+    ok('同じ履歴の二重取り消しは拒否／取り消しの履歴は取り消せない', denied(await call('ceo', `select public.bank_assignment_revert('${accHist}','もう一度')`)) && denied(await call('ceo', `select public.bank_assignment_revert('${(await sup(db, `select id from public.bank_assignment_history where action='revert' limit 1`)).rows[0].id}','戻し戻し')`)));
+    // 取引の取り消し（確定後は拒否）
+    await call('ceo', `select public.bank_tx_assign_store(array['${U(711)}']::uuid[],'${A1}','再紐付け')`);
+    const th = (await sup(db, `select id from public.bank_assignment_history where transaction_id='${U(711)}' and action='assign' order by created_at desc limit 1`)).rows[0].id;
+    await db.exec(`update public.bank_transactions set confirm_status='confirmed', confirmed_at=now() where id='${U(711)}'`);
+    ok('確定された明細の紐付けは、取り消しでは戻せない（訂正の手続きを使う）', denied(await call('ceo', `select public.bank_assignment_revert('${th}','確定後')`)) && (await stateOf(711)).store_id === A1);
+    // 取引の履歴は、そのあとに店舗が変わっていたら戻せない（古い履歴で新しい紐付けを壊さない）
+    await db.exec(tx(741, Y, '2026-11-25', 100)); 
+    await call('ceo', `select public.bank_tx_assign_store(array['${U(741)}']::uuid[],'${A1}','最初の紐付け')`);
+    const h741 = (await sup(db, `select id from public.bank_assignment_history where transaction_id='${U(741)}' and action='assign'`)).rows[0].id;
+    await call('ceo', `select public.bank_tx_assign_store(array['${U(741)}']::uuid[],'${A2}','付け替え',true)`);
+    ok('取引の古い履歴は、そのあとに店舗が変わっていると戻せない（新しい紐付けを壊さない）', denied(await call('ceo', `select public.bank_assignment_revert('${h741}','古い履歴')`)) && (await stateOf(741)).store_id === A2);
+    // 5. 共有口座: 取引単位
+    const rm = await call('ceo', `select public.bank_tx_assign_store(array['${U(721)}','${U(722)}','${U(723)}']::uuid[], '${A1}', '共有口座の分け') r`);
+    ok('共有口座の明細は取引単位で紐付けでき、確定済みの 1 件は動かない', rm.ok && rm.rows[0].r.updated_transactions === 2 && rm.rows[0].r.skipped === 1 && (await stateOf(723)).store_id === null, rm.err);
+    await call('ceo', `select public.bank_tx_assign_store(array['${U(722)}']::uuid[], '${B1}', 'B1 の分', true)`);
+    ok('同じ共有口座の明細を、別の店舗に振り分けられる（口座は店舗を持たない）', (await stateOf(721)).store_id === A1 && (await stateOf(722)).store_id === B1 && (await sup(db, `select store_id from public.bank_accounts where id='${M}'`)).rows[0].store_id === null);
+    // 6. 運営法人の履歴
+    const initP = (await sup(db, `select count(*)::int n from public.store_corporation_periods`)).rows[0].n;
+    ok('運営法人の履歴の初期データ: 現在の店舗マスタの法人から店舗数ぶん（適用開始日 2000-01-01）', initP === 3 && (await sup(db, `select store_corporation_on('${A1}', date '2026-11-15') c`)).rows[0].c === ID.corp1);
+    const ch = await call('ceo', `select public.store_corporation_change('${A1}','${ID.corp2}','2026-12-01','A1 を法人2へ譲渡') r`);
+    ok('運営法人の変更: 現在の期間に終了日を入れ、新しい期間を足す（過去の銀行明細は 0 件しか動かさない）', ch.ok && ch.rows[0].r.past_bank_rows_changed === 0, ch.err);
+    ok('変更後も、変更前の日付の帰属法人は変わらず、変更後の日付は新法人', (await sup(db, `select store_corporation_on('${A1}', date '2026-11-30') a, store_corporation_on('${A1}', date '2026-12-01') b`)).rows.map((r) => r.a === ID.corp1 && r.b === ID.corp2)[0]);
+    ok('すでに紐付けた明細（11/01 分）の帰属法人は、運営法人を変えても動かない', (await stateOf(721)).corporation_id === ID.corp1);
+    await db.exec(tx(731, Y, '2026-11-20', 1000)); await db.exec(tx(732, Y, '2026-12-05', 2000));
+    await call('ceo', `select public.bank_account_assign_store('${Y}','${A1}','Y を A1 へ')`);
+    ok('これから紐付ける明細は、その日付に有効な運営法人（11/20 は法人1・12/05 は法人2）になる', (await stateOf(731)).corporation_id === ID.corp1 && (await stateOf(732)).corporation_id === ID.corp2);
+    ok('運営法人の履歴は、削除・店舗/法人/開始日の変更・期間の重複を拒否する', !(await script(db, `delete from public.store_corporation_periods`)).ok && !(await script(db, `update public.store_corporation_periods set corporation_id='${ID.corp1}' where valid_to is null and store_id='${A1}'`)).ok
+      && !(await script(db, `insert into public.store_corporation_periods (store_id, corporation_id, valid_from) values ('${A1}','${ID.corp1}','2026-12-10')`)).ok);
+    ok('過去へ戻る開始日（現在の期間の開始日以前）での変更は拒否／理由なしも拒否', denied(await call('ceo', `select public.store_corporation_change('${A1}','${ID.corp1}','2026-11-30','x')`)) && denied(await call('ceo', `select public.store_corporation_change('${A1}','${ID.corp1}','2027-01-01','')`)));
+    ok('紐付けの履歴は追記専用（更新・削除できない）', !(await script(db, `update public.bank_assignment_history set reason='改ざん'`)).ok && !(await script(db, `delete from public.bank_assignment_history`)).ok);
+    // 7. 名義確認の記録との結び付け
+    await db.exec(`insert into public.corporation_bank_accounts (id, corporation_id, account_number, confirmed_at) values ('${U(801)}','${ID.corp1}','1234567',now()), ('${U(802)}','${ID.corp1}','7654321',null)`);
+    ok('名義確認（confirmed_at あり）の記録だけ結び付けられる', (await call('ceo', `select public.bank_account_link_holder('${X}','${U(801)}','名義確認')`)).ok && denied(await call('ceo', `select public.bank_account_link_holder('${X}','${U(802)}','未確認')`)));
+    // 8. 冪等
+    const cnt = async () => (await sup(db, `select (select count(*) from public.store_corporation_periods)::int p, (select count(*) from public.bank_assignment_history)::int h`)).rows[0];
+    const c0 = await cnt(); const again = await script(db, STAGE5); const c1 = await cnt();
+    ok('段階5の SQL は、2 回流しても、データを増やさず壊さない', again.ok && same(c0, c1), again.err);
+    // 9. ロールバック
+    const dbe = await fresh(); await dbe.exec(STAGE2); await dbe.exec(STAGE3); await dbe.exec(STAGE4);
+    await dbe.exec(STAGE5); const rbe = await script(dbe, STAGE5_ROLLBACK);
+    ok('空の状態（初期データだけ）なら、段階5のロールバックが通り、新しい表・関数・列が消える', rbe.ok && (await sup(dbe, `select count(*)::int n from pg_class where relname in ('bank_assignment_history','store_corporation_periods')`)).rows[0].n === 0
+      && (await sup(dbe, `select count(*)::int n from information_schema.columns where table_name='bank_accounts' and column_name in ('usage_mode','corporation_bank_account_id')`)).rows[0].n === 0, rbe.err);
+    ok('ロールバック後に、もう一度適用できる', (await script(dbe, STAGE5)).ok);
+    const rb2 = await script(db, STAGE5_ROLLBACK);
+    ok('履歴・共有口座・人が足した運営法人の期間があるときは、何も消さずに止まる', !rb2.ok && /取り消しを中止/.test(rb2.err) && (await cnt()).h === c1.h, rb2.err);
+    const dbm = await fresh(); await dbm.exec(STAGE2); await dbm.exec(STAGE3); await dbm.exec(STAGE4); await dbm.exec(STAGE5);
+    await dbm.exec(`insert into public.bank_accounts (bank_code, login_group, account_no, usage_mode) values ('gmo_aozora','g','m','multi')`);
+    ok('共有口座が 1 つあるだけでも、ロールバックは止まる', !(await script(dbm, STAGE5_ROLLBACK)).ok);
   }
 
   // ---------- 7. ロールバック ----------
