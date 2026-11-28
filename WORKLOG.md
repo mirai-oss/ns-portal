@@ -9,6 +9,16 @@
 
 ---
 
+**2026-11-28（夜）🔴 経営ダッシュボード系 Edge Function 3 本（keiei-api-dashboard-summary v26／keiei-api-home v15／keiei-api-reservation v13）を本番デプロイ＝法人を限定された利用者に他法人のデータを返さない（社長承認）／委託先の入金タブMVPをローカルで実装（本番未反映）／GMO 自動取得の手動ログイン版を 1 回実行→口座選択の不具合を修正**
+- **経営D の法人別制御**（コミット `ae2689d`・main に push 済み）: 共通部品 `supabase/functions/_shared/corp-scope.ts`（マスター=制限なし／個人の許可 `info.user_corporations`／無ければ役職の許可／無ければ制限なし。許可の読み取りに失敗したら 500＝全法人を返す側に倒れない）を 3 関数に適用。法人列のある表は法人で、無い表は「許可法人の店舗」で絞る。**クライアントの store_id・corporation_id・media_name は信用せず、許可範囲との共通部分だけ**使う。本番ソースとリポジトリは事前に完全一致を確認（CLI で取得して diff）。テスト: 単体 11・結合 9（本物の index.ts をにせの Supabase で動かす）・既存 12 すべて成功。修正前の本番ソースでは同じ結合テストが 8 件失敗（漏れを検出できる）。制限なし・店長・サービス・権限なし・偽トークンで 528 リクエストの応答が修正前と一致。デプロイ順 reservation→home→dashboard-summary、`--no-verify-jwt`（本番の verify_jwt=false を維持）。デプロイ後: 未ログインの応答は従来どおり、バージョン +1、verify_jwt は false のまま、info スキーマの読み取り（サービス接続）OK。ロールバック手順 `docs/手順_keiei法人限定_デプロイとロールバック_2026-11-28.md`（cfbb736 のソースを再デプロイ）。期待件数の確認スクリプト `scripts/keiei_corp_scope_expected.py`。
+  - ⚠️要確認: 法人限定ユーザー（本部1人・チーム長4人）の PL は、法人の無い「全社共通経費」行が見えなくなる（RLS と同じ考え方）。社長の確認待ち。デプロイ後に、法人限定の本部・チーム長の画面でホームの店舗数が期待どおりか（自法人の店だけ）確認してもらう。
+  - 同種の問題（修正していない）: `export-preview`／`export-run`（社長・本部・マスターに全有効店舗）、`labor-allocation-compare`、給与・勤怠系の本部権限関数、GAS 経由の経路。第2弾の候補。
+- **委託先の入金タブMVP**（ローカルのみ・push・適用・デプロイなし）: ns-portal `/Users/mirai/Claude/ns-portal-wt-deposit` ブランチ `contractor-deposit-mvp`（`3771245`）＝SQL `2026-11-28_settle_deposit_mvp.sql`（スイッチ表 `settle_deposit_access`＝既定OFF・期間・個人別確認済みの印・承認者必須、回数制限表、RPC `settle_client_deposits`＝service_role のみ・トークンと月だけを受ける）＋ROLLBACK＋PGlite 88 項目（壊した版 18 種を検知）＋手順書。seisan-dashboard `/Users/mirai/Claude/seisan-dashboard-wt-deposit`（`58c2be0`）＝`seisan-api` に `sd_getDeposits`（既存は無変更・追加のみ）＋入金タブ＋Deno テスト（結合含む）。**スイッチは全件 OFF**。実環境リハーサルは未実行（管理用 PAT が空のため）。
+- ⚠️`~/.config/ns-portal/supabase_pat`（管理用トークン）が 11/28 19:22 に 0 バイトになっている（原因不明）。SQL適用・実環境リハーサルのスクリプト（apply_sql.py など）が使えない。Supabase CLI（`npx supabase`）はログイン済みで Edge のデプロイ・読み取り照会は可能だが、書き込みを伴う SQL は CLI が「ユーザーの確認が必要」で止まる。トークンの再発行・保存はユーザーの操作が必要。
+- **GMO**: 手動ログイン版 `gmo-fetch 8412 ingest --manual-login --verify-rerun` をユーザーが 1 回実行。ログイン後の自動の続きで「末尾8412 の口座が選択肢にありません」で停止（取込前。何も保存していない）。原因＝画面の口座番号は全桁表示で、記録（長い数字を伏せ字にしたもの）の `****8412` では一致しなかった。末尾4桁の正規表現で選ぶよう修正（`bank-stage2`）。再実行待ち。
+
+---
+
 **2026-11-28（担当D・社長依頼）採用: 川崎（鶏武者 川崎店）の応募は、指定の1名にも Slack でメンション（SQL本番適用・済）**
 - `supabase/2026-11-28_recruit_mention_store_user.sql`（＋`_rollback`）: `notice_mention_targets` の targets の kind='user' に `store_id` を指定できるようにした（その店舗のときだけ有効・指定なしは従来どおり）。`notice_mention_rules` の recruit の assignee・open に、川崎の分を1件ずつ追加。担当者への通知はそのまま（追加）。Edge Function・画面は変更なし。
 - 検証: 本番で巻き戻しの試し実行（川崎／他店／店舗なし × 担当あり・なし・本人）後に適用。実際の通知での確認はこれから。
