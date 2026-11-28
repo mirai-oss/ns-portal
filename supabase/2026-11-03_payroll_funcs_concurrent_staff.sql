@@ -1,3 +1,7 @@
+-- ⚠️ 2026-11-28 担当B: 公開リポジトリのため、氏名などを伏せ字（社員A・【…】）に置き換えた。これは適用済みの記録。
+--    そのまま実行すると下の行で止まる。実行し直す場合は、伏せ字を本番の値に置き換えてから、この do の行を消す。
+do $$ begin raise exception '停止: 氏名を伏せた記録用の SQL です（2026-11-28）。そのまま実行しないでください'; end $$;
+
 -- ============================================================
 -- 2026-11-03 担当B（nippo）— 兼務の人（sf_payroll_syncが人×年月×契約で2行）に備えた、給与タスク・現金手渡しの法人別化
 -- 【状態】事前報告（ユーザー確認待ち・未適用）。担当D Phase2（sf_payroll_syncの旧一意制約(user_id,year_month)の削除）の前提
@@ -181,7 +185,7 @@ begin
     v_transfer_task := v_existing.task_id;
   elsif v_transfer_names is not null and array_length(v_transfer_names,1) > 0 then
     select coalesce(array_agg(id), array[]::uuid[]) into v_assignees
-      from users where is_active and replace(replace(name,' ',''),chr(12288),'') = any(array['青山純','原美香','中山俊士']);
+      from users where is_active and replace(replace(name,' ',''),chr(12288),'') = any(array['社員A','社員B','社長']);
     insert into hq_tasks(title, corp, freq, target_date, due_date, notes, description, visibility, created_by)
     values (v_mon||'月分　給料振込　'||p_corp, p_corp, 'once', current_date, v_transfer_due, '',
       '給料確定ボタンにより自動発行（対象'||array_length(v_transfer_names,1)||'名）', 'all', auth.uid())
@@ -203,7 +207,7 @@ begin
     v_cash_task := v_existing.task_id;
   elsif v_cash_names is not null and array_length(v_cash_names,1) > 0 then
     select coalesce(array_agg(id), array[]::uuid[]) into v_assignees
-      from users where is_active and replace(replace(name,' ',''),chr(12288),'') = any(array['青山純','原美香','中山俊士','坂本龍太郎','佐藤俊一','鍋倉巧']);
+      from users where is_active and replace(replace(name,' ',''),chr(12288),'') = any(array['社員A','社員B','社長','社員D','社員E','社員F']);
     insert into hq_tasks(title, corp, freq, target_date, due_date, notes, description, visibility, created_by)
     values (v_mon||'月分　現金手渡し　'||p_corp, p_corp, 'once', current_date, v_cash_due, '',
       '給料確定ボタンにより自動発行（対象'||array_length(v_cash_names,1)||'名）', 'all', auth.uid())

@@ -1,3 +1,7 @@
+-- ⚠️ 2026-11-28 担当B: 公開リポジトリのため、氏名などを伏せ字（社員A・【…】）に置き換えた。これは適用済みの記録。
+--    そのまま実行すると下の行で止まる。実行し直す場合は、伏せ字を本番の値に置き換えてから、この do の行を消す。
+do $$ begin raise exception '停止: 氏名を伏せた記録用の SQL です（2026-11-28）。そのまま実行しないでください'; end $$;
+
 -- 2026-09-17 担当B（nippo）
 -- ユーザー報告「振込タスクの方にも現金手渡しの人が入っていたり、8月分の給料がない人の
 -- 名前も入っていたりするので、その月の給料がある人の名前のみ載せてください」に対応。
@@ -6,9 +10,8 @@
 -- 実際に発生していた：
 -- ① 振込対象の判定が「payment_method is distinct from 'cash'」だったため、本来は
 --    payment_method='bank_transfer'であるべき対象を緩く拾っていた。実データでは現在
---    payment_method='cash'の5名（ジンミョートウ・ソーミントゥッ・チマルシナスリザナ・
---    小川さつき-・松本竜季）が振込チェックリストに、逆にpayment_method='bank_transfer'の
---    1名（YOO WOOSUK）が現金手渡しチェックリストに混在していた（一部は既にチェック済み）。
+--    payment_method='cash'の5名（氏名は省略）が振込チェックリストに、逆にpayment_method='bank_transfer'の
+--    1名（氏名は省略）が現金手渡しチェックリストに混在していた（一部は既にチェック済み）。
 -- ② 対象月の給与データ（sf_payroll_sync）が存在するかを一切確認しておらず、振込・現金
 --    手渡しどちらのリストにも「その月の給与計算がまだ無い人」が含まれていた（実データで
 --    10名確認）。
@@ -27,7 +30,7 @@
 -- 作成したら再生成しない設計のため）。8月分の既存チェックリストをどう是正するかは、
 -- 既にチェック済みの項目（給与担当者の実際の確認行動）に影響するため、ユーザーへ内容を
 -- 報告した上で個別に対応する（このファイルでは触れない）。
--- また、同姓同名の従業員（例: 松本隼佑が2名）がいる場合、チェックリスト項目が氏名文字列
+-- また、同姓同名の従業員（例: 同じ氏名の人が2名）がいる場合、チェックリスト項目が氏名文字列
 -- でしか区別されず本人特定が曖昧になる設計上の制約が別途あることも判明したが、これも
 -- 今回のスコープ外として別途報告する。
 
@@ -77,7 +80,7 @@ begin
     v_transfer_task := v_existing.task_id;
   elsif v_transfer_names is not null and array_length(v_transfer_names,1) > 0 then
     select coalesce(array_agg(id), array[]::uuid[]) into v_assignees
-      from users where is_active and replace(replace(name,' ',''),chr(12288),'') = any(array['青山純','原美香','中山俊士']);
+      from users where is_active and replace(replace(name,' ',''),chr(12288),'') = any(array['社員A','社員B','社長']);
     insert into hq_tasks(title, corp, freq, target_date, due_date, notes, description, visibility, created_by)
     values (v_mon||'月分　給料振込　'||p_corp, p_corp, 'once', current_date, v_transfer_due, '',
       '給料確定ボタンにより自動発行（対象'||array_length(v_transfer_names,1)||'名）', 'all', auth.uid())
@@ -99,7 +102,7 @@ begin
     v_cash_task := v_existing.task_id;
   elsif v_cash_names is not null and array_length(v_cash_names,1) > 0 then
     select coalesce(array_agg(id), array[]::uuid[]) into v_assignees
-      from users where is_active and replace(replace(name,' ',''),chr(12288),'') = any(array['青山純','原美香','中山俊士','坂本龍太郎','佐藤俊一','鍋倉巧']);
+      from users where is_active and replace(replace(name,' ',''),chr(12288),'') = any(array['社員A','社員B','社長','社員D','社員E','社員F']);
     insert into hq_tasks(title, corp, freq, target_date, due_date, notes, description, visibility, created_by)
     values (v_mon||'月分　現金手渡し　'||p_corp, p_corp, 'once', current_date, v_cash_due, '',
       '給料確定ボタンにより自動発行（対象'||array_length(v_cash_names,1)||'名）', 'all', auth.uid())

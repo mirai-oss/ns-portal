@@ -1,3 +1,7 @@
+-- ⚠️ 2026-11-28 担当B: 公開リポジトリのため、氏名などを伏せ字（社員A・【…】）に置き換えた。これは適用済みの記録。
+--    そのまま実行すると下の行で止まる。実行し直す場合は、伏せ字を本番の値に置き換えてから、この do の行を消す。
+do $$ begin raise exception '停止: 氏名を伏せた記録用の SQL です（2026-11-28）。そのまま実行しないでください'; end $$;
+
 -- ============================================================
 -- 2026-11-11 担当B — ①既存の給料振込タスク2件の題名を『11月分』→『10月分』に直す（ユーザー指摘）②hq_create_payroll_tasks の既存タスク探しを正しい月に直す
 -- 【状態】事前報告（未適用・ユーザーの実行承認待ち）。1ファイル・1トランザクション（先に直してから関数を替える順を固定）
@@ -91,7 +95,7 @@ begin
     v_transfer_task := v_existing.task_id;
   elsif v_transfer_names is not null and array_length(v_transfer_names,1) > 0 then
     select coalesce(array_agg(id), array[]::uuid[]) into v_assignees
-      from users where is_active and replace(replace(name,' ',''),chr(12288),'') = any(array['青山純','原美香','中山俊士']);
+      from users where is_active and replace(replace(name,' ',''),chr(12288),'') = any(array['社員A','社員B','社長']);
     -- 月次テンプレ由来の既存「【振込◯◯】給料」タスク（題名の月＝給与月・期限は給与月の翌月以降・同じ法人・未削除。※過去分の誤った題名『支払月』は先に給与月へ直してから使う）があれば新規に作らず、そこに確認工程を足して紐づける（二重防止・U-25①）
     select array_agg(t.id) into v_tpl from hq_tasks t
      where t.corp = p_corp and t.template_id is not null and t.deleted_at is null
@@ -138,7 +142,7 @@ begin
     v_cash_task := v_existing.task_id;
   elsif v_cash_names is not null and array_length(v_cash_names,1) > 0 then
     select coalesce(array_agg(id), array[]::uuid[]) into v_assignees
-      from users where is_active and replace(replace(name,' ',''),chr(12288),'') = any(array['青山純','原美香','中山俊士','坂本龍太郎','佐藤俊一','鍋倉巧']);
+      from users where is_active and replace(replace(name,' ',''),chr(12288),'') = any(array['社員A','社員B','社長','社員D','社員E','社員F']);
     insert into hq_tasks(title, corp, freq, target_date, due_date, notes, description, visibility, created_by)
     values (v_mon||'月分　現金手渡し　'||p_corp, p_corp, 'once', current_date, v_cash_due, '',
       '給料確定ボタンにより自動発行（対象'||array_length(v_cash_names,1)||'名）', 'all', auth.uid())

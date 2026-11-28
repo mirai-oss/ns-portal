@@ -12,11 +12,11 @@
 // 認可: CEO/HQ/マスターのユーザーJWT、またはservice_role直呼び（smaregi-payroll-reconcileと同じ方針）
 //
 // 2026-08-29追記（ユーザー確認・再訂正）: regularWage（基本給のみ）だけでは固定残業代等が漏れる
-//   （青山純さんの実例: regularWage=22万円だが実際は固定残業代6万円が別についていた）。
+//   （社員Aの実例: regularWage=22万円だが実際は固定残業代6万円が別についていた）。
 //   人件費として使う主要な値は「支給額合計（totalAllowance・切上げ）から通勤手当を差し引いた額」
 //   ＝本来の固定給（fixed_salary_amount）にする。当初totalTaxable（課税対象額）にしていたが、
 //   これは所得税計算用の額（社会保険料控除後）でありユーザーの意図と異なると判明したため修正。
-//   実データ検証済み: 青山純さん totalAllowance(293984)-transportation(13480)-交通費allowance(504)
+//   実データ検証済み: 社員A totalAllowance(293984)-transportation(13480)-交通費allowance(504)
 //   =280,000円=regularWage(220,000)+fixedOvertimeWage(60,000)と完全一致
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { loadContracts, getContractToken, loadLinks, API_BASE } from "../_shared/smaregi-contracts.ts";

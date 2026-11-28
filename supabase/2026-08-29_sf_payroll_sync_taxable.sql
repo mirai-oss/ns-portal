@@ -1,5 +1,5 @@
 -- 2026-08-29 担当B（nippo）続き
--- ユーザー確認: regularWage（基本給のみ）だけでは固定残業代等が漏れる（青山純さんの例で確認）。
+-- ユーザー確認: regularWage（基本給のみ）だけでは固定残業代等が漏れる（社員Aの例で確認）。
 -- 給与明細の「課税対象額（切上げ）」を正の人件費として使いたい、交通費（通勤手当）も自動取得したい、との要望。
 -- 生レスポンス(raw)で構造確認済み: totalTaxable=課税対象額、allowanceWage.transportation=通勤手当、
 -- allowanceWage.fixedOvertimeWage=固定残業代（参考値として残す）
