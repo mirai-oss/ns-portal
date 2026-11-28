@@ -9,6 +9,12 @@
 
 ---
 
+**2026-11-28（担当D・社長依頼）採用: 川崎（鶏武者 川崎店）の応募は、指定の1名にも Slack でメンション（SQL本番適用・済）**
+- `supabase/2026-11-28_recruit_mention_store_user.sql`（＋`_rollback`）: `notice_mention_targets` の targets の kind='user' に `store_id` を指定できるようにした（その店舗のときだけ有効・指定なしは従来どおり）。`notice_mention_rules` の recruit の assignee・open に、川崎の分を1件ずつ追加。担当者への通知はそのまま（追加）。Edge Function・画面は変更なし。
+- 検証: 本番で巻き戻しの試し実行（川崎／他店／店舗なし × 担当あり・なし・本人）後に適用。実際の通知での確認はこれから。
+
+---
+
 **2026-11-28（担当D・社長依頼）採用: Indeed応募の店舗の取り違えを修正（SQL本番適用・済）**
 - 原因: `indeed_intake` が**求人タイトルだけ**で店舗を決めていた（`job_postings.title_key`）。同じタイトルの求人を別の勤務地で出すと、先に登録した店舗が入る。
 - 修正 `supabase/2026-11-28_recruit_posting_place.sql`（＋`_rollback`）: 新しい内部関数 `job_posting_key(タイトル, メールの店舗名)`。登録と店舗名が違うときは別の行「タイトル｜勤務地」を使う。未登録なら**店舗は空**で行だけ作る → 管理システムの応募管理「求人掲載タイトルの登録」で一度店舗を選べば次から自動。`indeed_intake`・`job_postings_apply` を同じ判定に統一。GAS・画面・Edge Function は変更なし。
