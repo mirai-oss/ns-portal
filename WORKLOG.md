@@ -7,6 +7,14 @@
 
 ---
 
+**2026-11-29（担当D・社長依頼）ユビレジの売上をクラウドから書き込む仕組みを追加（配置済み・試し実行のみ・支払いDBは未書き込み）**
+- 新 EF `ubiregi-sales-import`（`--no-verify-jwt`）＋`_shared/ubiregi-sales.ts`。既存の秘密変数 `BQ_LOAD_TOKEN` で、ダッシュボード GAS の `paymentDailyReplace`（と書き込み後の `bqSyncSales`）を呼ぶ。鍵を PC に置かない。
+- 守り: 既定は試し実行／`app_settings.ubiregi_import` にある店舗と開始日以降だけ／営業が終わっていない日・内訳の不一致は拒否／重複行・既存行の書き換えが出るときは書かない（書き換えは `allow_replace` が必要）。`matchStore` は受け付けない。
+- 試し実行（11/1〜27・27行）: 追加27・書き換え0・重複0。**書き込みは社長の OK 後**。
+- 「分析_日別店舗」の作り直しは別の GAS の朝の自動処理（この関数からは呼ばない）。反映は実行後に確認する。
+
+---
+
 **2026-11-29（担当D・社長OK）ユビレジ 11/1〜27 の取り込み準備: ns-daily-import main に反映（支払いDBへの書き込みはまだ）**
 - ns-daily-import main `49bb70f`: `lib/ubiregi.js`・`tasks/ubiregi-import.js`・`config.UBIREGI_STORES`・日ごとの集計 `data/ubiregi/2026-11-01_27.json`。27日分の売上・会計数・客数がレジのレポートと全日一致。
 - 次: 社長が Mac mini で `git pull --ff-only` → 試し実行 → `--apply`（支払いDB書き込み・分析の作り直し・BigQuery同期）。実行後に担当Dが `dash_sales_daily` への反映を確認。28〜30日分は 12/1 の朝6時以降。
