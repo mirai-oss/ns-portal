@@ -22,6 +22,7 @@
 // 追加した。詳細はsupabase/2026-09-06_kd_pl_monthly_seisan.sqlのコメント参照。
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { isServiceRoleRequest, verifiedUid } from "../_shared/auth-verify.ts";
+import { applyCorpFilter, corpScopeEcho, NO_CORP_RESTRICTION, resolveCorpScope, type CorpScope } from "../_shared/corp-scope.ts";
 
 const cors: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -42,11 +43,11 @@ async function resolveScope(sb: ReturnType<typeof createClient>, uid: string) {
   const { data: u } = await sb.from("users").select("id,role,is_master,is_active").eq("id", uid).maybeSingle();
   if (!u || !u.is_active) return { allowed: false as const, error: "ログインが必要です（アカウントが無効です）" };
   if (u.is_master || ["CEO", "HQ", "TEAM"].includes(u.role)) {
-    return { allowed: true as const, role: u.role, restrictedStoreIds: null as string[] | null };
+    return { allowed: true as const, role: u.role, isMaster: !!u.is_master, restrictedStoreIds: null as string[] | null };
   }
   if (u.role === "TENCHO") {
     const { data: us } = await sb.from("user_stores").select("store_id").eq("user_id", uid);
-    return { allowed: true as const, role: u.role, restrictedStoreIds: (us ?? []).map((r: any) => r.store_id) };
+    return { allowed: true as const, role: u.role, isMaster: false, restrictedStoreIds: (us ?? []).map((r: any) => r.store_id) };
   }
   return { allowed: false as const, error: "権限がありません（社長・本部・チーム長・店長のみ。経営Dと同じ判定）" };
 }
@@ -78,16 +79,17 @@ const SPOT_COLUMNS = "id,spot_id,work_date,store_id,store_name,kind,amount,headc
 const LOAN_COLUMNS = "id,year_month,store_id,store_name,corp_name,principal,memo,computed_at";
 // periodKind: 'ym'=年月(text) / 'day'=日付(date)。dayの範囲指定は from月の1日〜to月の末日。
 // tie: 並び順の最後に足す一意列（同日同店の行がページ境界で重複・欠落しないように）／commonVisible: 全社共通行(store_name='')を店長にも見せる（GASのbqGetPL/bqGetLoanPrincipalと同じ）
-const KINDS: Record<string, { table: string; columns: string; periodCol: string; periodKind: "ym" | "day"; freshCol?: string; noStoreScope?: boolean; tie?: string; commonVisible?: boolean }> = {
-  pl: { table: "kd_pl_monthly_summary", columns: PL_COLUMNS, periodCol: "year_month", periodKind: "ym" },
-  media: { table: "kd_media_monthly_summary", columns: MEDIA_COLUMNS, periodCol: "year_month", periodKind: "ym" },
-  deposit: { table: "kd_deposit_monthly_summary", columns: DEPOSIT_COLUMNS, periodCol: "year_month", periodKind: "ym" },
-  store: { table: "kd_store_monthly_summary", columns: STORE_COLUMNS, periodCol: "year_month", periodKind: "ym" },
+// corpCol: 表に法人の列(corporation_id)がある種別。法人を限定された人には、この列で絞る（無い表は store_id を、法人に属する店舗で絞る。_shared/corp-scope.ts）
+const KINDS: Record<string, { table: string; columns: string; periodCol: string; periodKind: "ym" | "day"; freshCol?: string; noStoreScope?: boolean; tie?: string; commonVisible?: boolean; corpCol?: string }> = {
+  pl: { table: "kd_pl_monthly_summary", columns: PL_COLUMNS, periodCol: "year_month", periodKind: "ym", corpCol: "corporation_id" },
+  media: { table: "kd_media_monthly_summary", columns: MEDIA_COLUMNS, periodCol: "year_month", periodKind: "ym", corpCol: "corporation_id" },
+  deposit: { table: "kd_deposit_monthly_summary", columns: DEPOSIT_COLUMNS, periodCol: "year_month", periodKind: "ym", corpCol: "corporation_id" },
+  store: { table: "kd_store_monthly_summary", columns: STORE_COLUMNS, periodCol: "year_month", periodKind: "ym", corpCol: "corporation_id" },
   // 2026-10-05追加（依頼_レーンP_経営D_F2用kd追加）
-  daily: { table: "kd_daily_store_full", columns: DAILY_COLUMNS, periodCol: "date", periodKind: "day" },            // #1 fact_daily_store互換の日次
+  daily: { table: "kd_daily_store_full", columns: DAILY_COLUMNS, periodCol: "date", periodKind: "day", corpCol: "corporation_id" },            // #1 fact_daily_store互換の日次
   deposit_daily: { table: "kd_deposit_daily_v", columns: DEPOSIT_DAILY_COLUMNS, periodCol: "date", periodKind: "day" }, // #2 店舗×日の現金売上・入金・差額
   deposit_carry: { table: "kd_deposit_carry_v", columns: DEPOSIT_CARRY_COLUMNS, periodCol: "year_month", periodKind: "ym" }, // #2 月初繰越
-  ad: { table: "kd_ad_monthly", columns: AD_COLUMNS, periodCol: "year_month", periodKind: "ym", tie: "id" },                   // #3 店舗×媒体×月
+  ad: { table: "kd_ad_monthly", columns: AD_COLUMNS, periodCol: "year_month", periodKind: "ym", tie: "id", corpCol: "corporation_id" },                   // #3 店舗×媒体×月
   // #4 目標。kind:'target'は従来の列(ym含む)＋売上目標(sales_target=日別目標の月合計)。日別の元値はtarget_daily
   target: { table: "kd_target_monthly_v", columns: TARGET_V_COLUMNS, periodCol: "year_month", periodKind: "ym", freshCol: "updated_at" },
   target_daily: { table: "dash_sales_target_daily", columns: TARGET_DAILY_COLUMNS, periodCol: "biz_date", periodKind: "day" },
@@ -118,7 +120,7 @@ function jstYm(offsetMonths = 0): string {
 // ---------------------------------------------------------------------
 const DETAIL_KINDS = ["detail", "detail_items", "detail_hours", "detail_stores", "detail_coverage", "detail_delivery"];
 const isDay = (s: unknown): s is string => typeof s === "string" && /^\d{4}-\d{2}-\d{2}$/.test(s);
-async function handleDetail(sb: ReturnType<typeof createClient>, body: any, role: string, restrictedStoreIds: string[] | null): Promise<Response> {
+async function handleDetail(sb: ReturnType<typeof createClient>, body: any, role: string, restrictedStoreIds: string[] | null, corp: CorpScope = NO_CORP_RESTRICTION): Promise<Response> {
   const kind: string = body.kind;
   if (!isDay(body.from) || !isDay(body.to) || body.from > body.to) return json({ ok: false, error: "from・to（YYYY-MM-DD・from<=to）が必須です" }, 400);
   const spanDays = (Date.parse(body.to) - Date.parse(body.from)) / 86400000 + 1;
@@ -137,7 +139,9 @@ async function handleDetail(sb: ReturnType<typeof createClient>, body: any, role
     const { data } = await sb.from("stores").select("id").eq("is_active", true);
     stores = (data ?? []).map((r: any) => r.id);
   }
-  const scope = { role, restrictedStoreIds };
+  // 法人を限定された人: 許可された法人の店舗だけに絞る（指定された store_ids は信用せず、共通部分だけを使う）
+  if (corp.storeIds) { const allow = new Set(corp.storeIds); stores = stores.filter((id) => allow.has(id)); }
+  const scope = { role, restrictedStoreIds, ...corpScopeEcho(corp) };
   if (!stores.length) return json({ ok: true, kind, from: body.from, to: body.to, daypart, items: [], hours: [], stores: [], coverage: [], delivery: { by_store: [] }, meta: null, scope });
 
   const want = (k: string) => kind === "detail" || kind === `detail_${k}`;
@@ -213,7 +217,8 @@ Deno.serve(async (req) => {
       if (!uid0) return json({ ok: false, error: "ログインが必要です" }, 401);
       const sc0 = await resolveScope(sb, uid0);
       if (!sc0.allowed) return json({ ok: false, error: sc0.error }, 403);
-      return await handleDetail(sb, body, sc0.role, sc0.restrictedStoreIds);
+      const corp0 = await resolveCorpScope(sb, uid0, { isMaster: sc0.isMaster });
+      return await handleDetail(sb, body, sc0.role, sc0.restrictedStoreIds, corp0);
     }
 
     const kinds: string[] = Array.isArray(body.kinds) ? body.kinds : (body.kind ? [body.kind] : []);
@@ -238,6 +243,7 @@ Deno.serve(async (req) => {
 
     const isServiceRole = isServiceRoleRequest(req);
     let restrictedStoreIds: string[] | null = null;
+    let corp: CorpScope = NO_CORP_RESTRICTION;   // 法人の限定（サービス用の呼び出しは制限なし）
     let role = "service_role";
     if (!isServiceRole) {
       const uid = await verifiedUid(req, sb);
@@ -246,13 +252,16 @@ Deno.serve(async (req) => {
       if (!scope.allowed) return json({ ok: false, error: scope.error }, 403);
       role = scope.role;
       restrictedStoreIds = scope.restrictedStoreIds;
-      if (restrictedStoreIds && restrictedStoreIds.length === 0) {
+      corp = await resolveCorpScope(sb, uid, { isMaster: scope.isMaster });
+      if ((restrictedStoreIds && restrictedStoreIds.length === 0) || (corp.corporationIds && corp.corporationIds.length === 0)) {
         const empty = (k: string) => ({ rows: [], hasMore: false, fresh: null, kind: k });
+        const sc = { role, restrictedStoreIds, ...corpScopeEcho(corp) };
         return multi
-          ? json({ ok: true, from, to, results: Object.fromEntries(kinds.map((k) => [k, empty(k)])), scope: { role, restrictedStoreIds } })
-          : json({ ok: true, kind: kinds[0], from, to, rows: [], scope: { role, restrictedStoreIds } });
+          ? json({ ok: true, from, to, results: Object.fromEntries(kinds.map((k) => [k, empty(k)])), scope: sc })
+          : json({ ok: true, kind: kinds[0], from, to, rows: [], scope: sc });
       }
     }
+    const scopeOut = { role, restrictedStoreIds, ...corpScopeEcho(corp) };
 
     // PostgRESTは1リクエスト最大1000行で打ち切るため、内部で1000行ずつ取り直して最大limit件まで集める
     // （limit最大5000。hasMoreは「まだ続きがあるか」を正しく返す＝呼び出し側が無言に欠落しない）。
@@ -272,10 +281,13 @@ Deno.serve(async (req) => {
         if (restrictedStoreIds) {
           // TENCHO（店長）は自店舗のみ。kd_pl_monthly_summaryの全社共通経費行(store_id is null)は
           // plAgg()の挙動（単一店舗表示では共通経費を含めない）と同じく店長には見せない。
-          q = def.commonVisible
+          // 全社共通行(store_name='')は全法人にまたがるので、法人を限定された人には見せない（下の法人の絞り込みで store_id が必須になる）。
+          q = def.commonVisible && corp.corporationIds === null
             ? q.or(`store_id.in.(${restrictedStoreIds.join(",")}),store_name.eq.`)
             : q.in("store_id", restrictedStoreIds);
         }
+        // 法人を限定された人: 法人の列がある表は corporation_id、無い表は店舗（許可された法人に属する店舗）で絞る。制限なしなら何もしない。
+        q = applyCorpFilter(q, corp, { storeCol: "store_id", corpCol: def.corpCol });
         if (body.store_id && typeof body.store_id === "string") q = q.eq("store_id", body.store_id);
         if (kind === "media" && typeof body.media_name === "string" && body.media_name) q = q.eq("media_name", body.media_name);
         if (kind === "ad" && typeof body.media_name === "string" && body.media_name) q = q.eq("media_name", body.media_name);
@@ -293,11 +305,11 @@ Deno.serve(async (req) => {
 
     if (!multi) {
       const r = await fetchKind(kinds[0]);
-      return json({ ok: true, kind: r.kind, from, to, rows: r.rows, hasMore: r.hasMore, nextOffset: r.nextOffset, fresh: r.fresh, scope: { role, restrictedStoreIds } });
+      return json({ ok: true, kind: r.kind, from, to, rows: r.rows, hasMore: r.hasMore, nextOffset: r.nextOffset, fresh: r.fresh, scope: scopeOut });
     }
     const results: Record<string, unknown> = {};
     for (const r of await Promise.all(kinds.map(fetchKind))) results[r.kind] = r;
-    return json({ ok: true, from, to, results, scope: { role, restrictedStoreIds } });
+    return json({ ok: true, from, to, results, scope: scopeOut });
   } catch (e) {
     return json({ ok: false, error: String(e) }, 500);
   }

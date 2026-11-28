@@ -24,6 +24,7 @@
 //      → kd_reservation_daily_summaryのその月ぶんを店舗ごとに合算して返す（予約件数・当日率等）
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { isServiceRoleRequest, verifiedUid } from "../_shared/auth-verify.ts";
+import { corpScopeEcho, NO_CORP_RESTRICTION, resolveCorpScope, type CorpScope } from "../_shared/corp-scope.ts";
 
 const cors: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -55,11 +56,11 @@ async function resolveScope(sb: ReturnType<typeof createClient>, uid: string) {
   const { data: u } = await sb.from("users").select("id,role,is_master,is_active").eq("id", uid).maybeSingle();
   if (!u || !u.is_active) return { allowed: false as const, error: "ログインが必要です（アカウントが無効です）" };
   if (u.is_master || ["CEO", "HQ", "TEAM"].includes(u.role)) {
-    return { allowed: true as const, role: u.role, restrictedStoreIds: null as string[] | null };
+    return { allowed: true as const, role: u.role, isMaster: !!u.is_master, restrictedStoreIds: null as string[] | null };
   }
   if (u.role === "TENCHO") {
     const { data: us } = await sb.from("user_stores").select("store_id").eq("user_id", uid);
-    return { allowed: true as const, role: u.role, restrictedStoreIds: (us ?? []).map((r: any) => r.store_id) };
+    return { allowed: true as const, role: u.role, isMaster: false, restrictedStoreIds: (us ?? []).map((r: any) => r.store_id) };
   }
   return { allowed: false as const, error: "権限がありません（社長・本部・チーム長・店長のみ。経営Dと同じ判定）" };
 }
@@ -85,6 +86,7 @@ Deno.serve(async (req) => {
     // ---------------- 権限チェック（service_role直呼びは内部ツール/バッチ用に許可） ----------------
     const isServiceRole = isServiceRoleRequest(req);
     let restrictedStoreIds: string[] | null = null;
+    let corp: CorpScope = NO_CORP_RESTRICTION;   // 法人の限定（サービス用の呼び出しは制限なし）
     let role = "service_role";
     if (!isServiceRole) {
       const uid = await verifiedUid(req, sb);
@@ -93,7 +95,9 @@ Deno.serve(async (req) => {
       if (!scope.allowed) return json({ ok: false, error: scope.error }, 403);
       role = scope.role;
       restrictedStoreIds = scope.restrictedStoreIds;
+      corp = await resolveCorpScope(sb, uid, { isMaster: scope.isMaster });
     }
+    const scopeOut = { role, restrictedStoreIds, ...corpScopeEcho(corp) };
 
     const mode = body.mode;
     if (!["list", "cancel_summary", "monthly_summary"].includes(mode)) {
@@ -107,9 +111,15 @@ Deno.serve(async (req) => {
       return json({ ok: false, error: "この店舗の予約を閲覧する権限がありません" }, 403);
     }
     if (!storeId && restrictedStoreIds && restrictedStoreIds.length === 0) {
-      return json({ ok: true, mode, rows: [], scope: { role, restrictedStoreIds } });
+      return json({ ok: true, mode, rows: [], scope: scopeOut });
     }
-    const scopeStoreIds = storeId ? [storeId] : restrictedStoreIds;
+    // 法人を限定された人: 指定された store_id（クライアントから来る値）は信用せず、許可された法人の店舗との共通部分だけを使う。範囲外なら空を返す。
+    let scopeStoreIds = storeId ? [storeId] : restrictedStoreIds;
+    if (corp.storeIds) {
+      const allow = new Set(corp.storeIds);
+      scopeStoreIds = (scopeStoreIds ?? corp.storeIds).filter((id) => allow.has(id));
+      if (scopeStoreIds.length === 0) return json({ ok: true, mode, rows: [], scope: scopeOut });
+    }
     const includeSubBrand = body.includeSubBrand === true;
 
     // ---------------- ①list: rsv_reservations明細（期間・limit必須） ----------------
@@ -149,7 +159,7 @@ Deno.serve(async (req) => {
         customer_name: r.source === "dinii" ? (r.customer_name || "") : null,
         customer_name_kana: r.source === "dinii" ? (r.customer_name_kana || "") : null,
       }));
-      return json({ ok: true, mode, rows, limit, offset, totalCount: count ?? null, scope: { role, restrictedStoreIds } });
+      return json({ ok: true, mode, rows, limit, offset, totalCount: count ?? null, scope: scopeOut });
     }
 
     // ---------------- ②cancel_summary: kd_reservation_daily_summaryの合算（期間必須） ----------------
@@ -200,7 +210,7 @@ Deno.serve(async (req) => {
           noshowRate: denom ? (a.cancel["noshow"]?.count ?? 0) / denom : 0,
         };
       });
-      return json({ ok: true, mode, rows, scope: { role, restrictedStoreIds } });
+      return json({ ok: true, mode, rows, scope: scopeOut });
     }
 
     // ---------------- ③monthly_summary: kd_reservation_daily_summaryの月合算 ----------------
@@ -240,7 +250,7 @@ Deno.serve(async (req) => {
     const rows2 = [...byStore2.values()].map((a) => ({
       ...a, sameDayRate: a.reservationCount ? a.sameDayCount / a.reservationCount : 0,
     }));
-    return json({ ok: true, mode, year_month: body.year_month, rows: rows2, scope: { role, restrictedStoreIds } });
+    return json({ ok: true, mode, year_month: body.year_month, rows: rows2, scope: scopeOut });
   } catch (e) {
     return json({ ok: false, error: String(e) }, 500);
   }

@@ -11,6 +11,7 @@
 //   2026-10-03: dataDate=売上のある最新営業日（通常は前日）。todaySales等・mtd*・目標達成率はdataDate基準（スナップショット経路のみ。フォールバック経路は従来どおり）
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { isServiceRoleRequest, verifiedUid } from "../_shared/auth-verify.ts";
+import { corpScopeEcho, NO_CORP_RESTRICTION, resolveCorpScope, type CorpScope } from "../_shared/corp-scope.ts";
 
 const cors: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -54,12 +55,12 @@ async function resolveScope(sb: ReturnType<typeof createClient>, uid: string) {
   const { data: u } = await sb.from("users").select("id,role,is_master,is_active").eq("id", uid).maybeSingle();
   if (!u || !u.is_active) return { allowed: false as const, error: "ログインが必要です（アカウントが無効です）" };
   if (u.is_master || ["CEO", "HQ", "TEAM"].includes(u.role)) {
-    return { allowed: true as const, role: u.role, restrictedStoreIds: null as string[] | null };
+    return { allowed: true as const, role: u.role, isMaster: !!u.is_master, restrictedStoreIds: null as string[] | null };
   }
   if (u.role === "TENCHO") {
     const { data: us } = await sb.from("user_stores").select("store_id").eq("user_id", uid);
     const ids = (us ?? []).map((r: any) => r.store_id);
-    return { allowed: true as const, role: u.role, restrictedStoreIds: ids };
+    return { allowed: true as const, role: u.role, isMaster: false, restrictedStoreIds: ids };
   }
   return { allowed: false as const, error: "権限がありません（社長・本部・チーム長・店長のみ。経営Dと同じ判定）" };
 }
@@ -133,6 +134,7 @@ Deno.serve(async (req) => {
 
     const isServiceRole = isServiceRoleRequest(req);
     let restrictedStoreIds: string[] | null = null;
+    let corp: CorpScope = NO_CORP_RESTRICTION;   // 法人の限定（サービス用の呼び出しは制限なし）
     let role = "service_role";
     if (!isServiceRole) {
       const uid = await verifiedUid(req, sb);
@@ -141,10 +143,12 @@ Deno.serve(async (req) => {
       if (!scope.allowed) return json({ ok: false, error: scope.error }, 403);
       role = scope.role;
       restrictedStoreIds = scope.restrictedStoreIds;
-      if (restrictedStoreIds && restrictedStoreIds.length === 0) {
-        return json({ ok: true, asOf: body.as_of ?? jstToday(), stores: [], totals: makeKpis(sumDaily([]), 0, 0), scope: { role, restrictedStoreIds } });
+      corp = await resolveCorpScope(sb, uid, { isMaster: scope.isMaster });
+      if ((restrictedStoreIds && restrictedStoreIds.length === 0) || (corp.corporationIds && corp.corporationIds.length === 0)) {
+        return json({ ok: true, asOf: body.as_of ?? jstToday(), stores: [], totals: makeKpis(sumDaily([]), 0, 0), scope: { role, restrictedStoreIds, ...corpScopeEcho(corp) } });
       }
     }
+    const scopeOut = { role, restrictedStoreIds, ...corpScopeEcho(corp) };
 
     const asOf = isDateStr(body.as_of) ? body.as_of : jstToday();
     const start = monthStart(asOf);
@@ -153,12 +157,14 @@ Deno.serve(async (req) => {
 
     let storesQ = sb.from("stores").select("id,name,dash_store_name,sort_order,is_active").eq("is_active", true).order("sort_order");
     if (restrictedStoreIds) storesQ = storesQ.in("id", restrictedStoreIds);
+    // 法人を限定された人: 許可された法人の店舗だけ（以降の集計はすべて、ここで決まった storeIds で読む）
+    if (corp.storeIds) storesQ = storesQ.in("id", corp.storeIds);
     const { data: storesData, error: storesError } = await storesQ;
     if (storesError) return json({ ok: false, error: "店舗一覧の取得に失敗しました: " + storesError.message }, 500);
     const stores = (storesData ?? []) as StoreRow[];
     const storeIds = stores.map((s) => s.id);
     if (!storeIds.length) {
-      return json({ ok: true, asOf, monthStart: start, latestBizDate: null, stores: [], totals: makeKpis(sumDaily([]), 0, 0), scope: { role, restrictedStoreIds } });
+      return json({ ok: true, asOf, monthStart: start, latestBizDate: null, stores: [], totals: makeKpis(sumDaily([]), 0, 0), scope: scopeOut });
     }
 
     // TK-60②（2026-09-11・判定_高速化検証と実装GO）: トップKPIのF率/L率/FLをkd_直読みへ切替するため、
@@ -305,7 +311,7 @@ Deno.serve(async (req) => {
           mtdFlRate: div(mtdCostTotal + mtdLaborTotal, salesTotal + dvExTotal),
         },
         stores: storeSummaries,
-        scope: { role, restrictedStoreIds },
+        scope: scopeOut,
       });
     }
 
@@ -364,7 +370,7 @@ Deno.serve(async (req) => {
       source: "dash_sales_daily + dash_sales_target_daily + dash_target_monthly（Supabase集計済みテーブル。GAS/Sheets非経由）",
       totals: makeKpis(curTotal, targetTotal, lyTotal.sales),
       stores: storeSummaries,
-      scope: { role, restrictedStoreIds },
+      scope: scopeOut,
     });
   } catch (e) {
     return json({ ok: false, error: String(e) }, 500);
