@@ -78,6 +78,12 @@
 
 ---
 
+**2026-11-28（担当A）PL の科目名「家賃」を「地代家賃」に統一（本番・社長承認・確認済み）**:
+- keiei-kd-refresh（cb73df4・区分表に追加、読み替え 家賃→地代家賃）をデプロイ（verify_jwt=false）／tori-dashboard v291（区分表と入力例・d975c3b）／account_items R01 の名前／pl_entries 406行（手入力・区分R・金額と区分は不変）。
+- 確認: keiei-kd-hourly（run 46126386681）成功後、pl_entries の月×店舗×区分の合計と kd_pl_monthly_summary の家賃・営業利益が全月で直す前と一致（差0）。kd_pl_entries も406行が地代家賃。
+- 変更なし: pl-fee-reflect（名前判定で区分R）・settle_pl_mappings（家賃→地代家賃のまま・担当C）・PL管理システムGASの科目一覧。
+- 戻し方: 非公開側の控えの行を pl_entries_bulk_upsert、account_items を戻し、上記コミットを revert して再デプロイ。
+
 **2026-11-28（担当A）1店舗の更新料の月割り 6行を追加（本番・社長承認・確認済み）**:
 - 黒霧屋 新横浜。契約終了月（2029-08）まで 2029-03〜08 を追加（source_key `amort:`）。2026-03〜2029-08 の42か月で重複なし。keiei-kd-hourly（run 46124574880）成功。
 
