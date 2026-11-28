@@ -10,8 +10,8 @@
 // デプロイ: supabase functions deploy recruit-cost-sync --no-verify-jwt --project-ref uuvsxzhpxtghojoubjcc --yes
 // =============================================================
 import { createClient } from "npm:@supabase/supabase-js@2";
-import ExcelJS from "npm:exceljs@4.4.0";
-import { allocate, type Cell, parseSheet, previousMonthJst, type Sheet, sheetMonth } from "../_shared/recruit-cost-sheet.ts";
+import { allocate, parseSheet, previousMonthJst, type Sheet, sheetMonth } from "../_shared/recruit-cost-sheet.ts";
+import { readSheets } from "../_shared/xlsx-lite.ts";
 
 const json = (o: unknown, status = 200) => new Response(JSON.stringify(o), { status, headers: { "Content-Type": "application/json" } });
 const svc = () => createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
@@ -30,32 +30,15 @@ function authorized(req: Request): boolean {
   return !!(secret && hdr && timingSafeEqual(secret, hdr));
 }
 
-/** セルの値を文字か数にそろえる（式は計算結果・装飾つきの文字はつなげる）。 */
-function plain(v: unknown): Cell {
-  if (v === null || v === undefined) return null;
-  if (typeof v === "string" || typeof v === "number") return v;
-  const o = v as { result?: unknown; richText?: { text: string }[]; text?: unknown };
-  if (o.richText) return o.richText.map((t) => t.text).join("");
-  if (o.result !== undefined) return plain(o.result);
-  if (o.text !== undefined) return plain(o.text);
-  return null;
-}
-
-async function loadSheets(fileId: string): Promise<Sheet[]> {
+/** シートのファイルを取り、対象の月のシートを返す。名前（YYYYM / YYYYMM）で探し、無ければ全シートの見出しの期間で探す。 */
+async function loadMonth(fileId: string, month: string): Promise<Sheet[]> {
   const res = await fetch(`https://drive.google.com/uc?export=download&id=${encodeURIComponent(fileId)}`, { redirect: "follow" });
   const buf = new Uint8Array(await res.arrayBuffer());
   if (!res.ok || buf[0] !== 0x50 || buf[1] !== 0x4b) throw new Error(`シートのファイルを読めません（HTTP ${res.status}。共有の設定が変わった可能性があります）`);
   if (buf.length > 10 * 1024 * 1024) throw new Error("シートのファイルが大きすぎます");
-  const wb = new ExcelJS.Workbook();
-  await wb.xlsx.load(buf.buffer);
-  return wb.worksheets.map((ws) => {
-    const rows: Cell[][] = [];
-    for (let i = 1; i <= Math.min(ws.rowCount, 500); i++) {
-      const r = ws.getRow(i);
-      rows.push(Array.from({ length: Math.min(Math.max(ws.columnCount, 1), 30) }, (_, j) => plain(r.getCell(j + 1).value)));
-    }
-    return { name: ws.name, rows };
-  });
+  const byName = (n: string) => sheetMonth({ name: n, rows: [] }) === month;
+  const named = readSheets(buf, byName).filter((s) => sheetMonth(s) === month);
+  return named.length ? named : readSheets(buf, (n) => !byName(n)).filter((s) => sheetMonth(s) === month);
 }
 
 async function dmPresident(sb: any, text: string, dedupe: string) {
@@ -88,7 +71,7 @@ Deno.serve(async (req) => {
     const { count } = await sb.from("recruit_costs").select("*", { count: "exact", head: true }).eq("month", `${month}-01`).eq("note", "auto:indeed-sheet");
     if (count && !dry && body.force !== true) return json({ ok: true, month, skipped: "already" });
 
-    const found = (await loadSheets(String(id.value).trim())).filter((s) => sheetMonth(s) === month);
+    const found = await loadMonth(String(id.value).trim(), month);
     if (!found.length) {
       if (!dry && (day === 10 || day === 20)) await dmPresident(sb, `⚠️ 求人費用: 広告費の内訳シートに${label(month)}がまだありません。20日まで毎朝、もう一度確認します。`, `recruit-cost:${month}:missing:${day}`);
       return json({ ok: true, month, skipped: "sheet_missing" });
