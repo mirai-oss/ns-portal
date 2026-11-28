@@ -7,6 +7,12 @@
 
 ---
 
+**2026-11-28（担当A）PL に BS 科目が混ざっていないかの確認（読み取りのみ）**:
+- `_shared/pl-guard.ts` の決まりで pl_entries（未削除の全行・科目25種）を判定し、該当0件。kd_pl_entries・科目マスタ・8月以降の精算書の科目にも該当なし。
+- `keiei-kd-refresh` のシート取込には BS 科目を止める判定がまだ無い（直接取り込みは担当C の窓口側で除外）。歯止めの追加は社長のOK後。
+
+---
+
 **2026-11-28（担当C）PL の二重 5 行を取消・削除で PL 行が残る不具合を修正・BS 科目は PL に反映しない・明細ルール分割（本番反映・社長承認）**:
 - データ: 削除済み請求書の残りで二重だった pl_entries 5 行を論理削除（pl_entries_delete）。PL 連携対象に登録されていた長期前払費用 1 件を削除。`vendor_line_rules`: 関根修一を「*＝前払費用/05新橋/新東ビル」「電気＝水道光熱費/電気料金」に分割。控えと実行SQLは非公開側。
 - Edge（デプロイ済み）: 新規 `_shared/pl-direct.ts`（`invoice-delete`・`mf-journal` の仕訳削除/解除で PL の直接反映行と反映記録も取り消す）／新規 `_shared/pl-guard.ts`（社長指示: **BS 科目は PL に反映しない**。`pl-fee-reflect` の confirm・科目登録・直接反映で拒否/除外）／`seisan-api` categorizedLines も BS 科目を除外（seisan-dashboard）。
