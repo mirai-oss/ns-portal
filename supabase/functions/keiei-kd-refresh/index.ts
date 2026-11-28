@@ -846,6 +846,9 @@ async function seisanDirectSync(sb: any, dry = false, fromOverride?: string): Pr
   }
 }
 
+// pl_ignore_invoice_gas_from の月以降は、請求書の経費は pl_entries への直接書き込み（自動｜請求書）が正。シートの「自動｜<科目>」行は
+// 取り込まず、残っている行は入れ替えで消える（2026-11-28 社長承認: 直接反映と同額の行が残り二重になっていた）。下は請求書由来でないので従来どおり取り込む。
+const PL_SHEET_KEEP_SOURCES = ["自動｜支払利息", "自動｜精算書"];
 // ハイブリッド同期: stg_pl(GAS bqGetPL)の「自動連携行」だけを正本pl_entriesへ反映（(source×年月)単位のreplace_source）。
 // 手入力(source='手入力')には触れない。内容が変わった(source×年月)だけを入れ替える（毎時回しても履歴・ソフト削除行が増えない）。
 // 安全装置: 既存の自動行が20行以上で、今回の自動行が半分未満なら（取得の部分応答の疑い）中止。
@@ -895,7 +898,7 @@ async function autoSyncFromStgPl(sb: any, dry = false, ignoreFromOverride?: stri
       const ym = ymOf(row[0]); if (!ym) { badYm++; continue; }
       if (isDirect(source, ym)) continue;
       // 対象は pl-fee-reflect 系の旧GAS行＝source が「自動｜<科目>」。広告費の自動計上（媒体販促費（自動計上））や運営委託費（自動計上）も補助科目に『外部連携:』を持つが、請求書のpl直接書込の対象外なので無視しない
-      if (ignoreFrom && /^\d{4}-\d{2}$/.test(ignoreFrom) && ym >= ignoreFrom && source.startsWith("自動｜") && String(row[6] ?? "").includes("外部連携:")) { ignoredInvoiceGas++; continue; }
+      if (ignoreFrom && /^\d{4}-\d{2}$/.test(ignoreFrom) && ym >= ignoreFrom && source.startsWith("自動｜") && !PL_SHEET_KEEP_SOURCES.includes(source)) { ignoredInvoiceGas++; continue; }
       const nm = String(row[1] ?? "").trim(); let sid: string | null = null;
       if (nm) { const hit = lookupStore(maps, nm); if (!hit) { unresolved.add(nm); continue; } sid = hit.store_id; }
       const item0 = String(row[2] ?? "").trim() || "(未分類)";
