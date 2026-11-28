@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>手順書：GMOあおぞら 手動ログイン確認（Mac mini で 1 回だけ）</title>
+<style>
+:root{--bg:#fff;--ink:#1b2430;--muted:#5d6b7a;--line:#d9e0e8;--card:#f5f8fb;--ok:#0f7b4b;--warn:#a85a00;--bad:#b3261e;--blue:#0b5cad;--code:#eef2f7}
+@media(prefers-color-scheme:dark){:root{--bg:#0f141a;--ink:#e6edf3;--muted:#9aa7b4;--line:#2a3541;--card:#171e26;--ok:#4cc38a;--warn:#f0b35a;--bad:#ff8a80;--blue:#79b8ff;--code:#1d2630}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:17px/1.85 -apple-system,"Hiragino Sans","Yu Gothic",sans-serif}
+main{max-width:860px;margin:0 auto;padding:20px 16px 80px}
+h1{font-size:24px;margin:8px 0 4px}
+h2{font-size:20px;margin:34px 0 10px;padding-top:10px;border-top:2px solid var(--line)}
+.sub{color:var(--muted);font-size:14px}
+.box{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 16px;margin:14px 0}
+.ok{border-left:5px solid var(--ok)}.warn{border-left:5px solid var(--warn)}.bad{border-left:5px solid var(--bad)}
+.step{border:1px solid var(--line);border-radius:12px;padding:10px 16px;margin:16px 0}
+.step h3{margin:4px 0 6px;font-size:18px}
+.step .n{display:inline-block;background:var(--blue);color:#fff;border-radius:999px;min-width:28px;text-align:center;margin-right:8px;font-size:15px}
+.check{color:var(--ok);font-weight:600}
+pre,code{background:var(--code);border-radius:6px;font-family:ui-monospace,Menlo,monospace;font-size:14px}
+code{padding:1px 5px}pre{padding:10px 12px;overflow-x:auto;white-space:pre-wrap}
+</style>
+</head>
+<body>
+<main>
+<h1>GMOあおぞら 手動ログイン確認の手順書</h1>
+<div class="sub">作成 2026-11-28 ／ 所要 20〜30 分 ／ やるのは <b>Mac mini の前で、1 回だけ</b></div>
+
+<div class="box ok"><b>これは何のため？</b><br>
+GMOあおぞらは、ログインのあとに「追加の本人確認」が出るかどうかが、人が実際にログインしてみないと分かりません。これが分かると、「機械が自動で明細を取れるか」「どの方法なら規約にも合うか」が決まります。<br>
+この手順で使う道具は、<b>IDもパスワードも入力しません・読みません・保存しません</b>。ログインは、あなたが手で行います。画面の「どんなボタンがあるか」だけを記録します（口座番号のような長い数字は、記録するときに伏せ字になります）。</div>
+
+<div class="box warn"><b>先に読んでください（守ること）</b>
+<ul>
+<li><b>パスワードを間違えない</b>：何回も間違えるとロックされます（GMOの規約にあります）。1 回で入れられるよう、落ち着いて。</li>
+<li>追加の認証（SMS・アプリ・証明書など）が出たら、<b>それも手で</b>進めてください。うまくいかなければ、そこで止めて構いません（どこで止まったかが、そのまま大事な情報です）。</li>
+<li>ふだんの Chrome は使いません。この道具が<b>専用のブラウザを別に開きます</b>（今開いている Chrome には触りません）。</li>
+<li>お金が動く操作（振込・承認）は<b>絶対にしません</b>。見るだけ・CSV をダウンロードするだけです。</li>
+<li>14:00〜14:30 の PayPay の自動取込の時間は避けてください（動作が重なるのを避けるため）。</li>
+</ul></div>
+
+<h2>やること（番号の順に、1 つずつ）</h2>
+
+<div class="step"><h3><span class="n">1</span>ターミナルを開く</h3>
+画面下の Dock（アイコンが並んでいる所）から<b>「ターミナル」</b>（黒い画面のアイコン）を押して開きます。<br>
+<span class="check">✅ うまくいった目印：</span>黒（または白）の画面が出て、文字を打てる状態になる。</div>
+
+<div class="step"><h3><span class="n">2</span>道具のある場所へ移動する</h3>
+次の 1 行を<b>そのまま</b>コピーして、ターミナルに貼り付けて、Enter キーを押します。
+<pre>cd /Users/mirai/ns-daily-import-wt-bank</pre>
+<span class="check">✅ うまくいった目印：</span>エラーが出ず、次の行にまた入力待ちの印が出る。<br>
+（「No such file or directory」と出たら、ここで止めて、その文字をそのまま教えてください。）</div>
+
+<div class="step"><h3><span class="n">3</span>道具を起動する</h3>
+次の 1 行をコピーして貼り付けて、Enter。
+<pre>node gmo-observe.js</pre>
+<span class="check">✅ うまくいった目印：</span>新しいブラウザの窓が 1 つ開き、GMOあおぞらのログイン画面が出る。ターミナルには「ブラウザでログインしてください」と出る。<br>
+<b>ターミナルはこのまま閉じないでください。</b></div>
+
+<div class="step"><h3><span class="n">4</span>手でログインする</h3>
+開いたブラウザの窓で、<b>いつもどおり、IDとパスワードを手で入力</b>してログインします。<br>
+もし「追加の確認」の画面が出たら（例：SMSの番号、スマホのアプリ、確認コード、証明書の選択）、<b>それも手で</b>進めます。<br>
+📝 <b>メモしてください（紙でもスマホでも）：</b>
+<ul>
+<li>追加の確認は<b>出たか／出なかったか</b></li>
+<li>出た場合、<b>どんな方法か</b>（SMS／アプリ／メール／証明書／その他）</li>
+<li>それは<b>毎回出る</b>感じか、<b>前にログインした端末だと出ない</b>感じか（分かる範囲で）</li>
+</ul>
+<span class="check">✅ うまくいった目印：</span>ログイン後のトップ画面（口座の残高や「入出金明細」などのメニュー）が見える。<br>
+<b>この時点では、ターミナルには何も押さないでください。</b></div>
+
+<div class="step"><h3><span class="n">5</span>画面を 1 つずつ記録する（ここが本番）</h3>
+次の画面へ移るたびに、<b>ブラウザで画面を開いてから、ターミナルに戻って Enter キーを 1 回</b>押します。「記録: …」と出れば記録できています。
+<ol>
+<li>トップ画面を開いた状態で → ターミナルで <b>Enter</b></li>
+<li><b>「入出金明細」</b>の画面を開いて → ターミナルで <b>Enter</b></li>
+<li><b>口座を切り替える所</b>（口座名が出ている所、または「口座切替」）を押して、<b>別の口座に切り替えて</b> → ターミナルで <b>Enter</b><br>
+　 📝 切り替えの方法をメモ：画面上のプルダウンから？ 別画面に戻る？ ログインし直し？</li>
+<li><b>「CSVダウンロード」</b>の画面（明細をファイルで取る所）を開いて → ターミナルで <b>Enter</b></li>
+</ol>
+<span class="check">✅ うまくいった目印：</span>ターミナルに「記録: /…… 「画面の名前」 リンク○・ボタン○」のような行が 4 回出る。</div>
+
+<div class="step"><h3><span class="n">6</span>CSV を 1 つだけダウンロードする</h3>
+CSV のダウンロード画面で、<b>期間は「直近 1 週間」くらいの短いもの</b>を選んで、ダウンロードします。<br>
+<span class="check">✅ うまくいった目印：</span>ターミナルに「⬇ ダウンロードを保存: …」と出る。<br>
+📝 <b>メモ：</b>期間をどこまで広げられたか（例：「最大 1 年」「最大 3 か月」と画面に出ていれば、その文言）。<br>
+（ダウンロードが出来なかったり、画面が違ったりしたら、そこまででも構いません。）</div>
+
+<div class="step"><h3><span class="n">7</span>終わらせる</h3>
+<ol>
+<li>ブラウザの窓で、<b>「ログアウト」</b>を押します（押し忘れても、次の手順で閉じれば大丈夫です）。</li>
+<li>ターミナルに戻って、キーボードで <b>q</b> を打って Enter。</li>
+</ol>
+<span class="check">✅ うまくいった目印：</span>ターミナルに「保存しました」のような行が出て、ブラウザの窓が閉じる。</div>
+
+<h2>終わったら、私（Claude）に教えてほしいこと</h2>
+<div class="box">
+<ol>
+<li>手順 4 のメモ：<b>追加の確認は出たか／どんな方法か／毎回か</b></li>
+<li>手順 5 のメモ：<b>口座の切り替え方</b></li>
+<li>手順 6 のメモ：<b>CSV の期間の上限</b>、ダウンロードできたか</li>
+<li>途中で止まったら、<b>どの番号で、画面に何と出たか</b>（文字をそのまま）</li>
+</ol>
+<b>IDとパスワードは、絶対に私に送らないでください。</b>（道具の記録にも入りません。）<br>
+記録ファイルは、このMacの <code>downloads/gmo-observe/</code> に保存されます（インターネットには出ません）。私が中身を読んで、「機械で自動取得できるか」「規約に合うか」を判断します。</div>
+
+<div class="box bad"><b>この確認のあとも、自動ログインは動かしません。</b>
+GMOの自動取得は、規約・認証方式の確認が済んで、あなたが「本番で動かして良い」と承認するまで、本番では動きません。それまでは、CSV を手で取って取り込む方法（手動CSV取込）で運用します。</div>
+</main>
+</body>
+</html>

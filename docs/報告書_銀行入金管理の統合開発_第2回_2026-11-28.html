@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>報告書：銀行入金管理の統合開発 第2回（PayPay並行稼働・GMO・店舗未確定・法人別権限・業務委託先）</title>
+<style>
+:root{--bg:#fff;--ink:#1b2430;--muted:#5d6b7a;--line:#d9e0e8;--card:#f5f8fb;--ok:#0f7b4b;--warn:#a85a00;--bad:#b3261e;--blue:#0b5cad;--code:#eef2f7}
+@media(prefers-color-scheme:dark){:root{--bg:#0f141a;--ink:#e6edf3;--muted:#9aa7b4;--line:#2a3541;--card:#171e26;--ok:#4cc38a;--warn:#f0b35a;--bad:#ff8a80;--blue:#79b8ff;--code:#1d2630}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.75 -apple-system,"Hiragino Sans","Yu Gothic",sans-serif}
+main{max-width:980px;margin:0 auto;padding:20px 16px 80px}
+h1{font-size:24px;margin:8px 0 4px}
+h2{font-size:20px;margin:36px 0 10px;padding-top:10px;border-top:2px solid var(--line)}
+h3{font-size:17px;margin:22px 0 6px}
+.sub{color:var(--muted);font-size:14px}
+.box{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 16px;margin:12px 0}
+.ok{border-left:5px solid var(--ok)}.warn{border-left:5px solid var(--warn)}.bad{border-left:5px solid var(--bad)}
+table{border-collapse:collapse;width:100%;margin:10px 0;font-size:14.5px}
+th,td{border:1px solid var(--line);padding:7px 9px;text-align:left;vertical-align:top}
+th{background:var(--card)}
+code,pre{background:var(--code);border-radius:6px;font-family:ui-monospace,Menlo,monospace;font-size:13px}
+code{padding:1px 5px}pre{padding:10px 12px;overflow-x:auto;white-space:pre-wrap}
+.tbl{overflow-x:auto}
+li{margin:3px 0}
+</style>
+</head>
+<body>
+<main>
+<h1>銀行入金管理の統合開発 — 第2回報告</h1>
+<div class="sub">※公開リポジトリのため、口座番号・金額の実額は書いていません。作成 2026-11-28 ／ 「進めてよいもの」と「確認・承認が要るもの」を分けて書きます。<b>この報告の作業で、本番には何も適用していません</b>（本番に流したのは、必ず巻き戻す検証だけ。巻き戻し後に、本番に新しい物が 1 つも残っていないことを確認済み）。</div>
+
+<div class="box ok"><b>結論（先に）</b>
+<ul>
+<li>① PayPay：11/29 14:00・14:15 の定時のあとの確認が<b>次の一手</b>（時間待ち）。確認後に 11/30 から正本取込を開始できるよう、<b>毎日の照合の「A・B両方の取込完了を待つ」仕組みを実装・テスト済み</b>。</li>
+<li>② GMO：公式APIは<b>個人向けのみ公開</b>、法人向けは<b>会計ソフト等の仲介（アグリゲータ）経由</b>。規約は自動操作を明示的に禁止も許可もしていない。<b>人が実際にログインしてみないと、追加認証の有無が分からない</b>ため、手順書を用意した。</li>
+<li>④⑤ 店舗未確定の管理（<b>段階5</b>）と法人別の閲覧制御（<b>段階6</b>）を、<b>下書き・テスト・実環境の巻き戻し検証まで完了</b>（本番未適用）。</li>
+<li>⑤ 法人を限定された本部は、<b>本番に 1 人だけ</b>（LiveGate・トーホーのみ許可）。その人は<b>現在、全法人の銀行入金（口座・明細・原本の置き場・旧シートの控え）を読める</b>ことを実環境で確認。段階6を適用すると、その人だけ見え方が変わる（ほかの 10 人は変わらないことを実環境で確認）。</li>
+</ul></div>
+
+<h2>1. PayPay：11/29 の確認と 11/30 の正本取込開始</h2>
+<div class="tbl"><table>
+<tr><th>項目</th><th>状況</th></tr>
+<tr><td>11/29 14:00・14:15 の定時のあとの確認</td><td><b>まだ時間が来ていません</b>（今日は 11/28）。確認コマンド <code>node bank-ledger-cli.js check-daily</code> は用意済み。14:20 以降に、口座ごとの取得・保存・重複排除・エラー通知を確認します。</td></tr>
+<tr><td>11/30 から正本取込（<code>BANK_LEDGER_MODE: 'ingest'</code>）</td><td>設定は <code>config.js</code> の 2 行（<code>paypay-bank</code> 14:00／<code>paypay-bank-b</code> 14:15）に足すだけ。<b>11/29 の確認が正常なら反映</b>します（未反映）。GAS送信が先・正本取込は独立（失敗してもGASは止まらない）の設計はテスト済み。</td></tr>
+<tr><td>毎日の照合の登録</td><td><b>A・B両方の当日の取込完了を待つ型</b>を実装（<code>waitForTodayIngest</code>・テスト G1〜G5 を追加、全体 155 件成功、<code>bank-stage2</code> ブランチに push 済み）。固定時刻に頼りません。初回の正本取込が正常なら登録します。</td></tr>
+<tr><td>合格条件</td><td>14 日連続で「タイミング差を除く不一致 0」。曖昧な 2 件・手動調整 79 件は<b>未承認のまま</b>。旧GAS・シート・BigQuery・現在の入金画面は<b>そのまま</b>。</td></tr>
+</table></div>
+
+<h2>2. GMOあおぞら：公式API／Playwright／規約・認証の調査</h2>
+<div class="tbl"><table>
+<tr><th>優先</th><th>方法</th><th>調べて分かったこと</th><th>判定</th></tr>
+<tr><td>①</td><td>公式API</td><td>公開仕様は<b>個人向け</b>（2021 年版）。法人向けは、会計ソフト等の仲介事業者（マネーフォワード・弥生など）経由で提供される形。直接利用できる法人向けAPIは、公開情報では<b>確認できず</b>。開発者向けのパートナー制度はある。</td><td>要問い合わせ（下の文面）</td></tr>
+<tr><td>②</td><td>Playwright（Mac mini）</td><td>取引規定（2026-07 版）には、自動操作の<b>明示的な禁止も許可も無い</b>。一方で、ID・パスワードの管理義務、誤入力の繰り返しでの利用停止、法人は<b>電子証明書方式</b>を使う旨、複数口座一括認証は<b>法人を除く</b>旨の記載がある。法人向けインターネットバンキングの個別規定の本文は<b>取得できていません</b>。ログイン画面には、パスワード入力とWebAuthn（端末認証）の部品がある。<b>ログイン後の追加認証は、人がログインするまで不明</b>。</td><td>手動ログイン確認が必要</td></tr>
+<tr><td>③</td><td>マネーフォワード（保険）</td><td>MFクラウド会計はGMOとPayPayの両方と連携済み。ただし<b>MFから私たちのシステムへデータを渡せるか</b>（API・CSV出力の可否、遅延）は<b>まだ確認していません</b>。別途確認が必要。</td><td>保険。未確認</td></tr>
+</table></div>
+<div class="box warn"><b>認証の回避・規約に反する自動操作はしません。</b>追加認証が出る場合は、毎回人の操作が要る方式に自動化は組み込みません（その場合は手動CSV運用のまま）。本番での自動取得は、あなたの承認まで有効にしません。</div>
+<h3>GMOあおぞらへの問い合わせ文面（案・送信はあなたが判断）</h3>
+<pre>件名：法人インターネットバンキングの入出金明細の自動取得について（ご相談）
+
+いつもお世話になっております。
+法人口座（複数）の入出金明細を、自社の会計・入金管理システムへ毎日 1 回取り込みたいと考えております。
+以下についてご教示ください。
+1. 法人向けに、入出金明細を取得できる公式のAPI（または連携方式）はございますか。利用条件・申込方法をお教えください。
+2. 法人インターネットバンキングの画面から、ご利用者本人の端末で、1 日 1 回程度、明細CSVを自動で取得する運用は、規定上認められますか。認められない場合、代替の方式はございますか。
+3. ログイン後の追加認証（電子証明書・ワンタイムパスワード等）の方式と、ご利用者の端末を記憶させる運用の可否をお教えください。
+以上、お手数ですがよろしくお願いいたします。</pre>
+
+<h2>3. GMO：手動ログイン確認の手順</h2>
+<div class="box ok">別紙 <b>「手順書_GMOあおぞら手動ログイン確認_2026-11-28.html」</b>（1 動作ずつ・うまくいった目印つき）。Mac mini の前で、約 20〜30 分、1 回だけ。IDとパスワードは道具に入力しない・保存しない（手で入力）。確認後に私が記録を読み、②の判定をします。</div>
+<div class="box">GMOの準備（コード・テスト・手動CSV）は<b>進めてよい範囲で完了</b>：CSV解析・重複判定（残高の鎖）・原本保存・取得履歴・1口座の取込実績（8 口座中 1 口座を登録済み、他は未登録のまま＝口座名義の確認後）。<b>GMOの自動取得を本番で動かす部分は未着手・無効</b>。</div>
+
+<h2>4. 店舗未確定・法人未確定の管理（段階5・下書き）</h2>
+<p>ファイル：<code>supabase/2026-11-28_bank_ledger_stage5.sql</code>（＋ROLLBACK）。<b>本番未適用</b>。段階1〜4のファイルは変更していません。</p>
+<div class="tbl"><table>
+<tr><th>ご指示</th><th>実装</th></tr>
+<tr><td>店舗IDが空でも取り込む</td><td>既存の取込が対応済み（口座・明細とも店舗・法人は空を許す）。<b>店舗未確定の明細は、店舗別の入金実績に計上されない</b>（テストで確認）。</td></tr>
+<tr><td>未確定の一覧</td><td><code>bank_unassigned_summary()</code>（口座ごと：件数・入金件数・金額・法人未確定の件数。口座番号は末尾4桁のみ）／<code>bank_unassigned_list()</code>（明細。残高・口座番号は出ない）。</td></tr>
+<tr><td>口座→店舗の後付け紐付け</td><td><code>bank_account_assign_store()</code>：その口座の「店舗未確定・<b>未確定（open）・未訂正</b>」の明細だけに店舗・帰属法人を入れる。<b>確定済み・訂正済み・すでに店舗が付いた明細は書き換えない</b>（件数で返す）。理由が必須。</td></tr>
+<tr><td>取引単位の紐付け・共有口座</td><td><code>bank_tx_assign_store()</code>。<b>複数店舗で共有する口座（<code>usage_mode='multi'</code>）は、口座単位の紐付けを拒否</b>し、取引ごとに振り分ける。付け替えは明示指定のときだけ。</td></tr>
+<tr><td>履歴・取り消し</td><td><code>bank_assignment_history</code>（追記専用：誰が・いつ・なぜ・変更前後）。<code>bank_assignment_revert()</code>：<b>その後に値が変わっていないものだけ</b>戻す（変わっていれば戻さず件数で返す）。確定済みは戻さない（訂正の手続き）。</td></tr>
+<tr><td>過去分の再評価・再集計</td><td>紐付けた瞬間に、過去の未確定明細が対象店舗の日次集計に流れ込む（テストで確認）。</td></tr>
+<tr><td>運営法人の履歴</td><td><code>store_corporation_periods</code>（適用開始日・終了日）。初期値は現在の店舗マスタ（14店舗）。<code>store_corporation_on(店舗,日付)</code>。M&amp;A等の変更 <code>store_corporation_change()</code> は<b>全法人の管理者だけ</b>。<b>過去の銀行明細の帰属法人は動かない</b>（テストで確認）。</td></tr>
+<tr><td>口座名義との結び付け</td><td><code>bank_accounts.corporation_bank_account_id</code> で既存の <code>corporation_bank_accounts</code> と結べる（確認済み＝<code>confirmed_at</code> ありのみ）。<b>注意</b>：この既存表は「<b>振込先口座</b>（法人あたり現在 1 つ）」の設計で、入金を受ける複数口座の名義確認には窮屈です。必要なら、別の確認用の列・表を足す案を次に出します（口座の登録は、名義と実契約の確認後）。</td></tr>
+</table></div>
+<p>検証：PGlite <b>487 項目</b>（うち段階5 ＋ 法人別が約 50 項目）／わざと壊した版は 13 種類のうち 11 種類を検知（残り 2 種類は、別の制約・検査が先に同じ拒否をする等価な変更で、守りは外れていない）／実環境の巻き戻し検証（使い捨ての口座・明細で、紐付け・取り消し・権限・共有口座・運営法人の変更を実行 → 全項目 OK → 巻き戻し済み・本番に残留なし）。</p>
+
+<h2>5. 法人別の閲覧制御（段階6・下書き）と、いまの漏れ</h2>
+<div class="box bad"><b>実環境で確認した現状</b>：法人を限定された本部（本番に 1 人。許可＝LiveGate・トーホーのみ）が、<b>全 6,007 件の銀行明細・全 11 口座・全 11 の原本ファイル・旧シートの控え 5,673 行・日次集計 4,502 行</b>を読める。法人の限定が、銀行入金の権限に<b>一切効いていない</b>。</div>
+<h3>実装（既存の仕組みを再利用）</h3>
+<ul>
+<li>法人の判定は<b>既存の <code>info.can_access_corp()</code>・<code>info.user_corporations</code>・<code>info.role_corporations</code>・<code>corporations.legacy_info_id</code></b> をそのまま使用（重複する対応表は作らない）。</li>
+<li>新しい関数（段階5に同梱・既存の権限は変えない）：<code>bank_global_admin()</code>（全法人の管理者）／<code>bank_corp_ok(法人)</code>／<code>bank_allowed_corp_ids()</code>。<b>法人が空（未確定）のデータは、全法人の管理者だけ</b>。</li>
+<li>段階6で切り替えるもの：明細・口座・原本の台帳・取得履歴・同期状態・訂正履歴の<b>行ポリシー</b>／原本CSVの<b>置き場（Storage）</b>／<b>日次集計・取得状態・入金備考</b>／<b>訂正の関数</b>（他法人の明細・他法人の店舗への付け替えを拒否）／<b>全法人をまたぐ記録</b>（旧シートの控え・差異・判断・照合）は全法人の管理者だけ。<b>UIの選択肢だけでなく、行ポリシー・Storage・関数で強制</b>。</li>
+<li>銀行ログインの単位（PayPay B の1ログインが複数法人をまたぐ）と、閲覧権限は<b>別物</b>として扱う（権限は明細・口座の「帰属法人」で決まる）。</li>
+</ul>
+<h3>検証結果</h3>
+<div class="tbl"><table>
+<tr><th>検証</th><th>結果</th></tr>
+<tr><td>PGlite（法人限定の本部の人物を追加）</td><td>487 項目すべて OK。適用前の漏れの再現 → 適用後は自法人の分だけ。全法人の管理者・チーム長・店長・社員・アルバイト・無効な本部・未ログインの見え方は<b>適用前後で完全に同一</b>。</td></tr>
+<tr><td>わざと壊した版</td><td>段階6：12 種類（行ポリシー・Storage・日次集計・訂正・店舗可視性・全法人記録・各レポート）すべて検知。</td></tr>
+<tr><td>実環境（本番DBで流して必ず巻き戻し）</td><td>測定した有効ユーザー 11 人（社長・本部・チーム長・店長・社員）のうち、<b>見え方が変わったのは法人限定の本部 1 人だけ</b>（明細 6,007→5,078／口座 11→8／原本 11→8／日次 4,502→3,890／旧シートの控え 5,673→0）。ほかの 10 人は変化なし。段階6のロールバックで、<b>ポリシー・関数が適用前と完全に同一</b>。明細・原本は不変。</td></tr>
+<tr><td>表示の速さ</td><td>初版は行ごとに判定して遅かった（日次集計が 8〜20 秒）ため、1回だけ計算する形に書き換え、<b>日次集計は約 0.07 秒</b>に。</td></tr>
+</table></div>
+<h3>暫定の制限案（段階6を待たずに漏れを止めたい場合）</h3>
+<div class="box warn">段階6自体が、検証済みで影響が 1 人に限られ、ロールバックも確認済みのため、<b>暫定策を別に作るより、段階5→段階6の承認を優先することを推奨</b>します。それでも「今すぐ」止めたい場合の選択肢：その 1 人のみ、段階6の適用までの間、銀行入金のページを使わない運用にする（権限の変更なし・運用で止める）。<b>権限の変更は、あなたの承認があるまで一切していません。</b></div>
+
+<h2>6. 業務委託先の入金管理タブ（精算ダッシュボード）— 安全な認証方式</h2>
+<h3>既存の認証の評価（読み取りのみ・変更なし）</h3>
+<ul>
+<li>権限シートの<b>パスワードが平文</b>でスプレッドシートにある／セッションは Script Properties 等に保持。<b>銀行入金の情報を出す認証としては、現状のままでは不十分</b>と判断（パスワード管理・総当たり対策・権限シートの閲覧者が見えてしまう点）。</li>
+<li>一方、<b>Supabase側に <code>sd_dash_grant</code>（トークンのハッシュ・範囲・有効期限）が既にあり</b>、これを土台にできる。</li>
+</ul>
+<h3>推奨する構成（実装は承認後）</h3>
+<ol>
+<li>ブラウザは<b>サービスキーを持たない</b>。入金の取得は、専用の Edge Function（<code>contractor-deposits</code>）だけが行う。</li>
+<li>委託先の特定は、<b>ブラウザから渡される <code>contractor_id</code> ではなく、検証済みのセッション（<code>sd_dash_grant</code> のトークンのハッシュ）から、サーバー側で引く</b>。URL・パラメータを変えても他の委託先・店舗に届かない（パラメータに委託先ID・店舗IDを受け付けない）。</li>
+<li>契約の表（<code>contractors</code>・<code>contractor_contracts</code>）に、<b>対象店舗・開始日・終了日・閲覧可能な期間</b>を持たせ、<b>契約終了後は自動で見えなくなる</b>。</li>
+<li>返す項目は専用のビューに限定：入金日・入金額・入金件数・（整合確認後に）売上・入金予定額・差額/未入金の状態・自店の精算書。<b>口座番号・残高・原本CSV・他店舗/他法人・内部の承認/訂正履歴・他店の差異・委託先に出さない収益情報は含めない</b>。変更・承認・紐付けの操作は無い（閲覧専用）。</li>
+<li>売上・入金予定額は、<code>kd_deposit_daily_v</code> 等との<b>整合を確認してから</b>表示（<b>この整合確認は未実施</b>）。</li>
+</ol>
+<div class="box warn"><b>未確認・要判断</b>：①精算ダッシュボードのログインを、平文パスワードのまま使い続けるのか、見直すのか（見直す場合は別の作業）。②本番公開は別途承認。</div>
+
+<h2>7. 本番適用が必要なSQLと、承認をいただきたい事項</h2>
+<div class="tbl"><table>
+<tr><th>順</th><th>内容</th><th>状態</th><th>承認してほしいこと</th></tr>
+<tr><td>1</td><td><b>段階5</b>：店舗未確定の管理・運営法人の履歴・法人判定の関数（新しい表・関数・列のみ。既存の権限は変えない）</td><td>下書き・検証済み・未適用</td><td><b>適用の承認</b>（影響：新しい表と関数が増えるだけ。既存の表の既存列・ポリシー・関数は不変。<code>bank_accounts</code> に列 2 つ（既定値あり）。戻し方：ROLLBACK SQL）</td></tr>
+<tr><td>2</td><td><b>段階6</b>：法人別の閲覧・操作の制御</td><td>下書き・検証済み・未適用</td><td><b>適用の承認</b>（影響：法人を限定された本部 1 人の見え方が変わる。戻し方：ROLLBACK SQL＝実環境で完全一致を確認済み）。あなたの指示どおり、<b>実環境の検証結果の報告</b>はこの文書の 5 章です。</td></tr>
+<tr><td>3</td><td>11/30 から PayPay の正本取込を有効化（<code>config.js</code> 2 行）</td><td>11/29 の確認待ち</td><td>承認済み（確認が正常なら実施）</td></tr>
+<tr><td>4</td><td>GMO 手動ログイン確認</td><td>手順書あり</td><td><b>あなたの操作</b>（Mac mini で 1 回）</td></tr>
+<tr><td>5</td><td>GMOへの問い合わせ文面の送信</td><td>案あり</td><td>送るかどうかの判断</td></tr>
+</table></div>
+<h3>進めてよい（承認不要・本番に触れない）もの</h3>
+<ul>
+<li>業務委託先タブの契約表の設計・Edge Function の実装とテスト（<b>公開はしない</b>）</li>
+<li>新法人・新店舗の設定機能の設計（設定駆動：法人・店舗・口座・API接続情報・委託先・契約・権限）</li>
+<li>GMO の手動CSV取込の準備・テスト</li>
+</ul>
+<h3>次にやること</h3>
+<ol>
+<li>11/29 14:20 以降：<code>check-daily</code> で定時取込の確認 → 正常なら 11/30 から正本取込、毎日の照合の登録。</li>
+<li>段階5・6の適用承認をいただいたら、実環境で再度巻き戻し検証 → 適用 → 検証。</li>
+<li>GMO手動ログイン確認の結果を読み、自動取得の可否を判定。</li>
+<li>業務委託先タブの設計書（契約表・Edge Function）と、新法人・新店舗の設定機能の設計。</li>
+</ol>
+</main>
+</body>
+</html>
