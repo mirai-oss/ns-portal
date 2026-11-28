@@ -1,5 +1,5 @@
 import { assertEquals } from "jsr:@std/assert@1";
-import { checkRows, lastClosedDate } from "./ubiregi-sales.ts";
+import { checkCovered, checkRows, lastClosedDate } from "./ubiregi-sales.ts";
 
 // 金額は試験用の作り物
 const allowed = { 試験店: "2030-01-01" };
@@ -22,4 +22,12 @@ Deno.test("対象外の店舗・営業中の日・開始前・重複・内訳の
   ], Array(8).fill(true));
   assertEquals(checkRows([row("2030-01-08"), row("2030-01-08")], allowed, now).length, 1);
   assertEquals(checkRows([], allowed, now), ["行がありません"]);
+});
+
+Deno.test("受け取った期間: 正しい期間は通り、逆順・未終了の日・期間外の行は断る", () => {
+  assertEquals(checkCovered([row("2030-01-08")], "2030-01-01", "2030-01-09", now), []);
+  assertEquals(checkCovered([row("2030-01-08")], "2030-01-09", "2030-01-01", now).length, 1);
+  assertEquals(checkCovered([row("2030-01-08")], undefined, "2030-01-09", now).length, 1);
+  assertEquals(checkCovered([row("2030-01-08")], "2030-01-01", "2030-01-10", now).length, 1);
+  assertEquals(checkCovered([row("2030-01-08")], "2030-01-01", "2030-01-07", now).length, 1);
 });

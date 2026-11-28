@@ -5,14 +5,15 @@
 // 呼び先はダッシュボードの GAS の paymentDailyReplace（店舗×日の1行を追加・書き換え。修正ログ付き）と bqSyncSales。
 // 「分析_日別店舗」の作り直しは別の GAS の朝の自動処理（ここからは呼ばない）。
 //
-// body: { rows: [{store,date,values[16]}], apply?: boolean（省略＝試し実行・何も書かない）, allow_replace?: boolean }
+// body: { rows: [{store,date,values[16]}], apply?: boolean（省略＝試し実行・何も書かない）, allow_replace?: boolean,
+//         covered_from, covered_to（apply のとき必須。受け取った CSV の期間の営業日。レジ側の控えとして保存し、現金の月次照合に使う） }
 //   apply でも、先に試し実行をして、重複行がある・既存の行を書き換える（allow_replace なし）ときは書かない。
 // 対象の店舗と開始日: app_settings.ubiregi_import = { stores: { "<正式な店舗名>": "YYYY-MM-DD" } }。ここに無い店舗は書けない。
 // 認証: service_role（Bearer）か x-notify-secret。
 // デプロイ: supabase functions deploy ubiregi-sales-import --no-verify-jwt --project-ref uuvsxzhpxtghojoubjcc --yes
 // =============================================================
 import { createClient } from "npm:@supabase/supabase-js@2";
-import { checkRows, type SalesRow } from "../_shared/ubiregi-sales.ts";
+import { checkCovered, checkRows, type SalesRow } from "../_shared/ubiregi-sales.ts";
 
 const GAS_URL = "https://script.google.com/macros/s/AKfycbwW0qhyEr0-uQWTaLg7MkQhurHq6wMoaOKL7uCCnI_bgnAsGB5-auqG_dm_Q9uJc3Kc/exec";
 const json = (o: unknown, status = 200) => new Response(JSON.stringify(o), { status, headers: { "Content-Type": "application/json" } });
@@ -59,6 +60,10 @@ Deno.serve(async (req) => {
     const errors = checkRows(body.rows, allowed, new Date());
     if (errors.length) return json({ ok: false, error: "書き込めない行があります", errors }, 400);
     const rows = (body.rows as SalesRow[]).map((r) => ({ store: r.store, date: r.date, values: r.values }));
+    if (body.apply === true) {
+      const bad = checkCovered(rows, body.covered_from, body.covered_to, new Date());
+      if (bad.length) return json({ ok: false, error: "受け取った期間を確認してください", errors: bad }, 400);
+    }
 
     const dry = await gas({ action: "paymentDailyReplace", rows: JSON.stringify(rows), dryRun: true, operator: "ubiregi-import" });
     if (!dry.ok) return json({ ok: false, stage: "dry_run", error: dry.error }, 502);
@@ -69,12 +74,18 @@ Deno.serve(async (req) => {
 
     const done = await gas({ action: "paymentDailyReplace", rows: JSON.stringify(rows), dryRun: false, operator: "ubiregi-import" });
     if (!done.ok) return json({ ok: false, stage: "write", error: done.error }, 502);
+    // レジ側の控え（現金の月次照合で使う）。書き込みは済んでいるので、ここが失敗しても失敗にはせず、返事で知らせる
+    const registerErrors: string[] = [];
+    for (const store of [...new Set(rows.map((r) => r.store))]) {
+      const { error: re } = await sb.rpc("ubiregi_register_save", { p_store: store, p_from: body.covered_from, p_to: body.covered_to, p_rows: rows });
+      if (re) registerErrors.push(re.message);
+    }
     // BigQuery への同期は数分かかり、待つと関数の応答の上限（150秒）を超えるので、後ろで走らせて先に返事をする（朝の自動処理でも同じ同期が走る）
     const sync = gas({ action: "bqSyncSales" })
       .then((r) => console.log("bqSyncSales", r.ok === true ? "ok" : String(r.error ?? "失敗").slice(0, 200)))
       .catch((e) => console.error("bqSyncSales", e));
     (globalThis as any).EdgeRuntime?.waitUntil?.(sync);
-    return json({ ok: true, applied: true, ...summary(done), bq_sync: "started" });
+    return json({ ok: true, applied: true, ...summary(done), register_saved: !registerErrors.length, register_errors: registerErrors, bq_sync: "started" });
   } catch (e) {
     console.error("ubiregi-sales-import", e);
     return json({ ok: false, error: e instanceof Error ? e.message : String(e) }, 500);

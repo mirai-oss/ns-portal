@@ -10,6 +10,16 @@ export function lastClosedDate(now: Date, cutoffHour = 6): string {
   return jstMinusCutoff.toISOString().slice(0, 10);
 }
 
+/** 受け取った CSV の期間（営業日）。レジ側の控えと現金の照合に使う。問題があれば理由の一覧を返す。 */
+export function checkCovered(rows: SalesRow[], from: unknown, to: unknown, now: Date): string[] {
+  const ok = (d: unknown): d is string => typeof d === "string" && /^\d{4}-\d{2}-\d{2}$/.test(d) && new Date(`${d}T00:00:00Z`).toISOString().slice(0, 10) === d;
+  if (!ok(from) || !ok(to) || from > to) return ["受け取った期間（covered_from・covered_to）が正しくありません"];
+  const errors: string[] = [];
+  if (to > lastClosedDate(now)) errors.push(`期間の終わり（${to}）は、まだ営業が終わっていません`);
+  if (rows.some((r) => r.date < from || r.date > to)) errors.push("期間の外の日が含まれています");
+  return errors;
+}
+
 /** 問題があれば理由の一覧を返す（空なら書いてよい）。allowed＝書いてよい店舗名と開始日。 */
 export function checkRows(rows: unknown, allowed: Record<string, string>, now: Date): string[] {
   if (!Array.isArray(rows) || !rows.length) return ["行がありません"];
