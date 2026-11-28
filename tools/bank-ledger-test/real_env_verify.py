@@ -38,7 +38,7 @@ declare
   v_ids uuid[]; v_exp uuid[]; v_act uuid[]; v_bad int := 0; v_checked int := 0;
   v_admins uuid[]; v_team uuid; v_tencho uuid; v_ceo uuid; v_al uuid; v_inactive uuid; v_master uuid; v_hq uuid;
   v_err text;
-  v_acct uuid; v_orig uuid; v_if uuid; v_tx uuid; v_store uuid; v_other uuid; v_teamid uuid;
+  v_shain uuid; v_acct uuid; v_orig uuid; v_if uuid; v_tx uuid; v_store uuid; v_other uuid; v_teamid uuid;
   v_sha text := repeat('a', 64);
 begin
   -- ===== 補助（この DO の中だけ）=====
@@ -187,7 +187,7 @@ begin
       select coalesce(array_agg(distinct x order by x), '{}') into v_exp from (
         select store_id x from public.team_stores where team_id = u.team_id
         union select store_id from public.user_stores where user_id = u.id) q;
-    elsif u.is_active and u.role = 'TENCHO' then
+    elsif u.is_active and u.role in ('TENCHO', 'SHAIN') then
       select coalesce(array_agg(distinct store_id order by store_id), '{}') into v_exp from public.user_stores where user_id = u.id;
     else
       v_exp := '{}';
@@ -215,7 +215,7 @@ begin
       v_bad := v_bad + 1; v_err := coalesce(v_err, '') || 'notes/sync:' || u.role || ':' || u.id || ' ';
     end if;
   end loop;
-  res := res || jsonb_build_array(jsonb_build_object('n', '本物のユーザー全員（' || v_checked || ' 人）: 入金・備考・取得状態で見える店舗が期待値（社長・本部・マスター=全店／チーム長=担当チーム＋所属／店長=所属／他=なし／無効=なし）と完全に一致し、台帳・口座は本部・社長・マスター以外に 0 件', 'ok', v_bad = 0, 'i', coalesce(v_err, '全員一致')));
+  res := res || jsonb_build_array(jsonb_build_object('n', '本物のユーザー全員（' || v_checked || ' 人）: 入金・備考・取得状態で見える店舗が期待値（社長・本部・マスター=全店／チーム長=担当チーム＋所属／店長・社員=所属／アルバイト=なし／無効=なし）と完全に一致し、台帳・口座は本部・社長・マスター以外に 0 件', 'ok', v_bad = 0, 'i', coalesce(v_err, '全員一致')));
   -- 役割ごとの人数（どの役割をテストしたか）
   select jsonb_object_agg(k, c) into v from (select (case when not is_active then 'inactive' when coalesce(is_master, false) then 'master' else role end) k, count(*) c from public.users group by 1) q;
   res := res || jsonb_build_array(jsonb_build_object('n', '（参考）テストした本物のユーザーの内訳', 'ok', true, 'i', v));
@@ -282,6 +282,31 @@ begin
     res := res || jsonb_build_array(jsonb_build_object('n', '（スキップ）担当外の店を持つチーム長が実環境にいない', 'ok', true));
   end if;
 
+  -- ===== 9b. 所属店舗の追加・解除が、閲覧権限にすぐ反映される（実在する社員・店長で。変更は巻き戻される）=====
+  select u2.id into v_shain from public.users u2 where u2.role = 'SHAIN' and u2.is_active and not coalesce(u2.is_master, false)
+     and exists (select 1 from public.user_stores us where us.user_id = u2.id) limit 1;
+  if v_shain is not null then
+    select array_agg(store_id order by store_id) into v_exp from public.user_stores where user_id = v_shain;
+    select x.id into v_other from public.stores x where x.id <> all (v_exp) order by x.id limit 1;
+    v := pg_temp.as_user(v_shain, 'authenticated', format('select public.bank_store_visible(%L) v', v_other));
+    res := res || jsonb_build_array(jsonb_build_object('n', '実在の社員: 所属していない店は見えない', 'ok', (v -> 'rows' -> 0 ->> 'v')::boolean = false));
+    insert into public.user_stores (user_id, store_id, is_primary) values (v_shain, v_other, false);
+    v := pg_temp.as_user(v_shain, 'authenticated', format('select public.bank_store_visible(%L) v, (select count(*) from public.bank_deposit_daily() where store_id = %L) d, (select count(*) from public.bank_deposit_notes where store_id = %L) n', v_other, v_other, v_other));
+    res := res || jsonb_build_array(jsonb_build_object('n', '所属を追加すると、その店の入金・備考がすぐ見える', 'ok', (v -> 'rows' -> 0 ->> 'v')::boolean and (v -> 'rows' -> 0 ->> 'd')::int = 1 and (v -> 'rows' -> 0 ->> 'n')::int >= 1, 'i', v));
+    delete from public.user_stores where user_id = v_shain and store_id = v_other;
+    v := pg_temp.as_user(v_shain, 'authenticated', format('select public.bank_store_visible(%L) v', v_other));
+    res := res || jsonb_build_array(jsonb_build_object('n', '所属を解除すると、すぐ見えなくなる', 'ok', (v -> 'rows' -> 0 ->> 'v')::boolean = false));
+    delete from public.user_stores where user_id = v_shain;
+    v := pg_temp.as_user(v_shain, 'authenticated', 'select (select count(*) from public.bank_deposit_daily()) d, (select count(*) from public.bank_deposit_notes) n, (select count(*) from public.bank_sync_status()) s');
+    res := res || jsonb_build_array(jsonb_build_object('n', '所属を全部解除すると、何も見えない', 'ok', (v -> 'rows' -> 0 ->> 'd')::int = 0 and (v -> 'rows' -> 0 ->> 'n')::int = 0 and (v -> 'rows' -> 0 ->> 's')::int = 0, 'i', v));
+    v := pg_temp.dml_as(v_shain, 'authenticated', format('insert into public.bank_deposit_notes (store_id, note_date, note) values (%L, date ''2026-11-04'', ''社員の備考'')', v_other));
+    res := res || jsonb_build_array(jsonb_build_object('n', '社員: 備考を書けない（閲覧のみ）', 'ok', not (v ->> 'ok')::boolean, 'i', v ->> 'err'));
+    v := pg_temp.as_user(v_shain, 'authenticated', format('select public.bank_tx_correct(%L, ''{"adj_deposit_amount": 5}'', ''x'')', v_tx));
+    res := res || jsonb_build_array(jsonb_build_object('n', '社員: 訂正・確定の手続きは使えない', 'ok', not (v ->> 'ok')::boolean and v ->> 'err' like '%権限%', 'i', v ->> 'err'));
+  else
+    res := res || jsonb_build_array(jsonb_build_object('n', '（スキップ）所属店舗のある社員が実環境にいない', 'ok', true));
+  end if;
+
   -- ===== 10. Storage: 置き場の実ファイル・権限 =====
   begin
     insert into storage.objects (bucket_id, name, metadata) values ('bank-csv-originals', 'verify/seed.csv', '{"size": 10}');
@@ -295,6 +320,8 @@ begin
   res := res || jsonb_build_array(jsonb_build_object('n', '本部: 原本ファイルを読める', 'ok', (v ->> 'ok')::boolean and jsonb_array_length(v -> 'rows') >= 1, 'i', v ->> 'err'));
   v := pg_temp.as_user(v_tencho, 'authenticated', 'select name from storage.objects where bucket_id = ''bank-csv-originals''');
   res := res || jsonb_build_array(jsonb_build_object('n', '店長: 原本ファイルは読めない（0 件）', 'ok', (v ->> 'ok')::boolean and jsonb_array_length(v -> 'rows') = 0, 'i', v));
+  v := pg_temp.as_user(v_shain, 'authenticated', 'select name from storage.objects where bucket_id = ''bank-csv-originals''');
+  res := res || jsonb_build_array(jsonb_build_object('n', '社員: 原本ファイルは読めない（0 件）', 'ok', (v ->> 'ok')::boolean and jsonb_array_length(v -> 'rows') = 0, 'i', v));
   v := pg_temp.as_user(v_al, 'authenticated', 'select name from storage.objects where bucket_id = ''bank-csv-originals''');
   res := res || jsonb_build_array(jsonb_build_object('n', 'アルバイト: 原本ファイルは読めない（0 件）', 'ok', (v ->> 'ok')::boolean and jsonb_array_length(v -> 'rows') = 0, 'i', v));
   v := pg_temp.dml_as(v_ceo, 'authenticated', 'update storage.objects set name = ''hacked.csv'' where bucket_id = ''bank-csv-originals''');

@@ -1,5 +1,5 @@
 -- 銀行入金明細の正本（Supabase）— 段階1: 新しい箱・権限・守りだけを作る
--- 作成: 2026-11-27（第2版 2026-11-27: レビュー7点を反映／第3版 2026-11-28: 原本の保存確認を DB の守りに追加・閲覧範囲の明文化）　状態: **下書き（未適用）**。本番への適用は、ユーザーが SQL の中身を確認して承認してから。
+-- 作成: 2026-11-27（第2版 2026-11-27: レビュー7点を反映／第3版 2026-11-28: 原本の保存確認を DB の守りに追加・閲覧範囲の明文化／第4版 2026-11-28: 社員（SHAIN）にも所属店舗の入金を閲覧可に）　状態: **下書き（未適用）**。本番への適用は、ユーザーが SQL の中身を確認して承認してから。
 -- 設計: docs/手順書_銀行入金の正本化_段階1_2026-11-27.html ／ テスト: tools/bank-ledger-test/（PGlite で権限・守り・再実行を検証）
 --
 -- 【この SQL がやること】新しいテーブル 7 つ・関数・非公開バケット 1 つを「足す」だけ。
@@ -31,11 +31,13 @@ grant execute on function public.bank_ledger_admin() to authenticated, service_r
 --   ・チーム長（TEAM）＝担当チームの店舗（team_stores）＋本人の所属店舗（user_stores）だけ
 --       ※経営ダッシュボードの入金管理画面（GAS のセッション）は、チーム長を「所属店舗だけ」にしている。
 --         kd_deposit_daily の RLS は TEAM を全店にしているが、そちらは広すぎるので、ここでは合わせない（より狭い方に倒す）。
---   ・店長（TENCHO）＝本人の所属店舗（user_stores）だけ
---   ・一般社員（SHAIN）・アルバイト（AL）・無効なユーザー・未ログイン＝見えない
+--   ・店長（TENCHO）・社員（SHAIN）＝本人の所属店舗（user_stores）だけ。複数店舗に所属していれば、その登録店舗だけ（所属の追加・解除はすぐ反映される）
+--   ・アルバイト（AL）・無効なユーザー・未ログイン＝見えない
+--   ・見える内容は、日次入金（日付・金額・件数・摘要）・照合状況（保留・照合待ちの件数）・備考・取得状態だけ。
+--     口座番号・銀行残高・原本 CSV・取得履歴・訂正履歴は、表にも関数にも出ない（本部・社長・マスターだけ）。閲覧のみで、編集・訂正・確定の入り口は本部・社長・マスターだけ。
 --   ・店舗が未確定（null）の明細・口座は、本部・社長・マスターだけ
 --   ・サービスロール（取込ジョブ・Edge Function）は全店
---   法人をまたぐ範囲は、店舗の所属（stores.corporation_id）で自然に分かれる。他法人の店舗の担当でなければ見えない。
+--   法人では範囲は広がらない（stores.corporation_id は使わない）。担当チーム・所属として明示的に割り当てられた店舗だけ。
 create or replace function public.bank_store_visible(p_store uuid)
 returns boolean language sql stable security definer set search_path to 'public' as $$
   select coalesce(auth.role(), '') = 'service_role'
@@ -44,7 +46,7 @@ returns boolean language sql stable security definer set search_path to 'public'
             select 1 from public.users u
              where u.id = auth.uid() and u.is_active
                and ((u.role = 'TEAM'   and p_store = any (coalesce(public.team_store_ids(u.team_id), '{}'::uuid[]) || coalesce(public.user_store_ids(u.id), '{}'::uuid[])))
-                 or (u.role = 'TENCHO' and p_store = any (coalesce(public.user_store_ids(u.id), '{}'::uuid[]))))))
+                 or (u.role in ('TENCHO', 'SHAIN') and p_store = any (coalesce(public.user_store_ids(u.id), '{}'::uuid[]))))))
 $$;
 revoke all on function public.bank_store_visible(uuid) from public, anon;
 grant execute on function public.bank_store_visible(uuid) to authenticated, service_role;

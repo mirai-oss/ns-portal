@@ -185,7 +185,7 @@ async function main() {
       for (const t of [...T, 'bank_transaction_events']) { const r = await as(db, who, `select count(*)::int n from public.${t}`); if (!r.ok || r.rows[0].n !== 0) bad.push(t); }
       ok(`${who}: 口座・原本・取得履歴・明細・履歴・取得状態は 0 件（読めない）`, bad.length === 0, bad.join(','));
     }
-    const expectStores = { team: [ID.storeA1, ID.storeA2], tenchoA: [ID.storeA1], tenchoB: [ID.storeB1], shain: [], al: [], hqOff: [] };
+    const expectStores = { team: [ID.storeA1, ID.storeA2], tenchoA: [ID.storeA1], tenchoB: [ID.storeB1], shain: [ID.storeA1], al: [], hqOff: [] };
     for (const [who, exp] of Object.entries(expectStores)) {
       const d = await as(db, who, `select distinct store_id from public.bank_deposit_daily()`);
       const got = d.ok ? d.rows.map((x) => x.store_id).sort() : ['ERR ' + d.err];
@@ -263,6 +263,63 @@ async function main() {
     ok('逆に、店の法人を変えても、明示的に割り当てた人からは消えない', (await vis('team', ID.storeA2)).v === true);
     // 店舗未確定は、社長・本部・マスターだけ
     for (const who of ['team', 'tenchoA', 'tenchoB']) ok(`${who}: 店舗未確定（null）の明細・口座は見えない`, (await as(db, who, `select public.bank_store_visible(null) v`)).rows[0].v === false);
+  }
+
+  // ---------- 2c. 社員・店長の閲覧（所属店舗だけ・閲覧のみ・機密は出ない・所属の変更が反映される）----------
+  section('2c. 社員（SHAIN）・店長（TENCHO）: 所属店舗の入金だけ閲覧／口座番号・残高・原本・取得履歴は見えない／所属の追加・解除が反映／アルバイトは不可');
+  {
+    const db = await fresh(); await db.exec(SEED_LEDGER);
+    const stores = async (who) => { const r = await as(db, who, `select distinct store_id from public.bank_deposit_daily() order by 1`); return r.ok ? r.rows.map((x) => x.store_id).sort() : ['ERR ' + r.err]; };
+    // --- 閲覧できる内容（日次入金額・件数・入金日・照合状況・備考）---
+    const d = await as(db, 'shain', `select * from public.bank_deposit_daily() where store_id = '${ID.storeA1}' and deposit_date = '2026-11-01'`);
+    const row = d.ok && d.rows[0];
+    ok('社員: 自店舗の日次入金（日付・金額・件数）が見える', row && Number(row.amount) === 30000 && row.deposit_count === 2, JSON.stringify(row));
+    ok('社員: 照合状況（照合待ち・保留・取込途中の件数と保留金額）が見える', row && row.legacy_pending_count === 1 && row.held_count === 1 && Number(row.held_amount) === 5000 && row.new_count === 1, JSON.stringify(row));
+    const nt = await as(db, 'shain', `select note from public.bank_deposit_notes`);
+    ok('社員: 自店舗の備考が見える（他店の備考は見えない）', nt.ok && same(nt.rows.map((x) => x.note), ['A1メモ']), JSON.stringify(nt.rows));
+    const ss = await as(db, 'shain', `select * from public.bank_sync_status()`);
+    ok('社員: 自店舗の取得状態が見える', ss.ok && ss.rows.length === 1 && ss.rows[0].store_id === ID.storeA1, JSON.stringify(ss));
+    // --- 機密は出ない: 関数の戻り値の列に口座番号・残高・原本・取得履歴が無い ---
+    const cols = (await sup(db, `select string_agg(column_name, ',') c from (select unnest(proargnames) column_name from pg_proc where proname in ('bank_deposit_daily','bank_sync_status') and pronamespace = 'public'::regnamespace) q`)).rows[0].c;
+    ok('関数の戻り値に、口座番号・残高・原本・取得履歴の機密の列が無い', !/account_no|account_last4|balance|original|sha256|storage_path|file_name|error|import_file|dedupe/.test(cols), cols);
+    const ent = JSON.stringify(row && row.entries);
+    ok('日次入金の中身（entries）に、口座番号・残高が含まれない', row && !/TESTACCT|balance|残高/.test(ent), ent);
+    // --- 正本テーブル・原本は直接読めない ---
+    for (const who of ['shain', 'tenchoA']) {
+      const bad = [];
+      for (const t of ['bank_accounts', 'bank_csv_originals', 'bank_import_files', 'bank_transactions', 'bank_transaction_events', 'bank_account_sync_state']) { const r = await as(db, who, `select count(*)::int n from public.${t}`); if (!r.ok || r.rows[0].n !== 0) bad.push(t); }
+      ok(`${who}: 正本テーブル・口座・原本の台帳・取得履歴・訂正履歴を直接読めない（0 件）`, bad.length === 0, bad.join(','));
+      const so = await as(db, who, `select name from storage.objects where bucket_id = 'bank-csv-originals'`);
+      ok(`${who}: Storage の原本ファイルを読めない`, !so.ok || so.rows.length === 0);
+      const w = await as(db, who, `insert into public.bank_deposit_notes (store_id, note_date, note) values ('${ID.storeA1}', '2026-11-09', 'x')`);
+      ok(`${who}: 備考を書けない（閲覧のみ）`, denied(w));
+      const c = await as(db, who, `select public.bank_tx_correct('${U(602)}', '{"adj_description":"x"}', 'テスト')`);
+      ok(`${who}: 訂正・確定の手続きは使えない`, !c.ok && /権限/.test(c.err));
+    }
+    // --- アルバイトは、所属店舗があっても不可 ---
+    ok('アルバイト: 所属店舗があっても、入金・備考・取得状態は何も見えない', (await stores('al')).length === 0 && (await as(db, 'al', `select (select count(*) from public.bank_deposit_notes)::int n, (select count(*) from public.bank_sync_status())::int s, public.bank_store_visible('${ID.storeA1}') v`)).rows[0].n === 0);
+    // --- 複数店舗・所属の変更が反映される（社員）---
+    ok('社員（A1 のみ所属）: 見える店舗は A1 だけ', same(await stores('shain'), [ID.storeA1]));
+    await sup(db, `insert into public.user_stores values ('${ID.shain}', '${ID.storeA2}', false)`);
+    ok('所属を A2 にも追加すると、社員に A1・A2 が見える（B1 は見えない）', same(await stores('shain'), [ID.storeA1, ID.storeA2].sort()));
+    ok('  備考・取得状態・可視判定にも同じに反映される', (await as(db, 'shain', `select public.bank_store_visible('${ID.storeA2}') a2, public.bank_store_visible('${ID.storeB1}') b1`)).rows[0].a2 === true && (await as(db, 'shain', `select public.bank_store_visible('${ID.storeB1}') b1`)).rows[0].b1 === false);
+    await sup(db, `delete from public.user_stores where user_id = '${ID.shain}' and store_id = '${ID.storeA1}'`);
+    ok('A1 の所属を解除すると、A1 は見えなくなり A2 だけ残る', same(await stores('shain'), [ID.storeA2]) && (await as(db, 'shain', `select count(*)::int n from public.bank_deposit_notes where store_id = '${ID.storeA1}'`)).rows[0].n === 0);
+    await sup(db, `delete from public.user_stores where user_id = '${ID.shain}'`);
+    ok('所属を全部解除すると、何も見えない', (await stores('shain')).length === 0);
+    // --- 所属変更の反映（店長・チーム長・無効化・役割変更）---
+    await sup(db, `insert into public.user_stores values ('${ID.tenchoA}', '${ID.storeB1}', false)`);
+    ok('店長に他法人の店 B1 を所属として割り当てると、B1 も見える（明示的な割り当てだけ）', same(await stores('tenchoA'), [ID.storeA1, ID.storeB1].sort()));
+    await sup(db, `delete from public.user_stores where user_id = '${ID.tenchoA}' and store_id = '${ID.storeB1}'`);
+    ok('割り当てを外すと、また A1 だけ', same(await stores('tenchoA'), [ID.storeA1]));
+    await sup(db, `update public.users set is_active = false where id = '${ID.tenchoA}'`);
+    ok('店長を無効にすると、何も見えない', (await stores('tenchoA')).length === 0);
+    await sup(db, `update public.users set is_active = true, role = 'AL' where id = '${ID.tenchoA}'`);
+    ok('役割がアルバイトに変わると、何も見えない', (await stores('tenchoA')).length === 0);
+    await sup(db, `update public.users set role = 'SHAIN' where id = '${ID.tenchoA}'`);
+    ok('役割が社員に変わると、所属店舗（A1）が見える', same(await stores('tenchoA'), [ID.storeA1]));
+    await sup(db, `delete from public.team_stores where team_id = '${ID.team1}'`);
+    ok('チームの担当店舗を外すと、チーム長は本人の所属店舗（A2）だけになる', same(await stores('team'), [ID.storeA2]));
   }
 
   // ---------- 3. 集計に入れる明細の条件 ----------
