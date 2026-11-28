@@ -17,8 +17,14 @@ create function auth.role() returns text language sql stable as $$ select nullif
 grant usage on schema auth to anon, authenticated, service_role;
 create schema storage;
 create table storage.buckets (id text primary key, name text not null, public boolean default false, file_size_limit bigint, allowed_mime_types text[]);
-create table storage.objects (id uuid primary key default gen_random_uuid(), bucket_id text references storage.buckets(id), name text, owner uuid, created_at timestamptz default now());
+create table storage.objects (id uuid primary key default gen_random_uuid(), bucket_id text references storage.buckets(id), name text, owner uuid, metadata jsonb, created_at timestamptz default now());
 alter table storage.objects enable row level security;
+-- 本物の Supabase は、storage の表への直接の delete を禁止している（実環境の事前検証で判明）。同じ守りを再現する
+create function storage.protect_delete() returns trigger language plpgsql as $f$ begin
+  if coalesce(current_setting('storage.allow_delete_query', true), '') <> 'true' then raise exception 'Direct deletion from storage tables is not allowed. Use the Storage API instead.'; end if;
+  return old; end $f$;
+create trigger protect_buckets_delete before delete on storage.buckets for each row execute function storage.protect_delete();
+create trigger protect_objects_delete before delete on storage.objects for each row execute function storage.protect_delete();
 grant usage on schema storage to anon, authenticated, service_role;
 grant select, insert, update, delete on storage.objects to anon, authenticated, service_role;
 grant select on storage.buckets to anon, authenticated, service_role;
@@ -87,6 +93,8 @@ insert into public.bank_transactions (id, bank_account_id, corporation_id, store
  ('${U(609)}', null, null, null, '2026-11-01', '店舗未確定', 60000, 'legacy_sheet', null, null, 'legacy_pending', null, 'atm_deposit', true, 'L1', 4);
 insert into public.bank_deposit_notes (store_id, note_date, note) values ('${ID.storeA1}', '2026-11-01', 'A1メモ'), ('${ID.storeB1}', '2026-11-01', 'B1メモ');
 insert into storage.objects (bucket_id, name) values ('bank-csv-originals', 'paypay/x/original.csv');
+-- 原本 401 の実ファイル（Storage が付けるサイズつき）
+insert into storage.objects (bucket_id, name, metadata) values ('bank-csv-originals', 'paypay/${ID.acctA1}/' || repeat('a', 64) || '.csv', '{"size": 100}');
 `;
 
 // ---------- 小さなテスト枠 ----------
@@ -218,7 +226,7 @@ async function main() {
     const nw2 = await as(db, 'hq', `insert into public.bank_deposit_notes (store_id, note_date, note) values ('${ID.storeA1}', '2026-11-05', '本部メモ')`); ok('本部: 入金備考を書ける', nw2.ok, nw2.err);
     // Storage
     const so = async (who) => (await as(db, who, `select name from storage.objects where bucket_id = 'bank-csv-originals'`));
-    for (const who of ADMINS) { const r = await so(who); ok(`${who}: 原本ファイルを読める`, r.ok && r.rows.length === 1); }
+    for (const who of ADMINS) { const r = await so(who); ok(`${who}: 原本ファイルを読める`, r.ok && r.rows.length === 2); }
     for (const who of [...NON_ADMIN_LOGGED_IN, 'anon']) { const r = await so(who); ok(`${who}: 原本ファイルは読めない（0 件または拒否）`, !r.ok || r.rows.length === 0); }
     for (const who of ADMINS) { const r = await as(db, who, `insert into storage.objects (bucket_id, name) values ('bank-csv-originals', 'paypay/x/new-${who}.csv')`); ok(`${who}: 原本ファイルを追加できる`, r.ok, r.err); }
     for (const who of [...NON_ADMIN_LOGGED_IN, 'anon']) { const r = await as(db, who, `insert into storage.objects (bucket_id, name) values ('bank-csv-originals', 'paypay/x/evil-${who}.csv')`); ok(`${who}: 原本ファイルを追加できない`, denied(r)); }
@@ -230,6 +238,31 @@ async function main() {
     }
     const sv = await as(db, 'service', `insert into storage.objects (bucket_id, name) values ('bank-csv-originals', 'paypay/x/job.csv')`); ok('サービスロール: 原本ファイルを追加できる（取込ジョブ）', sv.ok, sv.err);
     const tf = await as(db, 'tenchoA', `select public.bank_tx_guard()`); ok('トリガー関数は直接呼べない', denied(tf));
+  }
+
+  // ---------- 2b. 法人をまたぐ閲覧は、明示的に割り当てられた店舗だけ ----------
+  section('2b. 法人をまたぐ閲覧: 担当チームの店舗・本人の所属店舗として明示的に割り当てられた店舗だけ（法人の所属では広がらない）');
+  {
+    const db = await fresh(); await db.exec(SEED_LEDGER);
+    const vis = async (who, store) => { const r = await as(db, who, `select (select count(*)::int from public.bank_deposit_daily() where store_id='${store}') d, (select count(*)::int from public.bank_deposit_notes where store_id='${store}') n, (select count(*)::int from public.bank_sync_status() where store_id='${store}') s, public.bank_store_visible('${store}') v`); return r.ok ? r.rows[0] : null; };
+    let r = await vis('team', ID.storeB1);
+    ok('初期: チーム長は他法人 B1 の入金・備考・取得状態・可視判定のどれも見えない', r && r.d === 0 && r.n === 0 && r.s === 0 && r.v === false, JSON.stringify(r));
+    // 担当チームに B1（他法人）を明示的に入れる → 見える
+    await sup(db, `insert into public.team_stores values ('${ID.team1}', '${ID.storeB1}')`);
+    r = await vis('team', ID.storeB1);
+    ok('担当チームに他法人の店 B1 を入れると、チーム長に B1 だけ見える', r && r.d === 1 && r.n === 1 && r.s === 1 && r.v === true, JSON.stringify(r));
+    ok('同じ他法人でも、店長 A（担当外）には見えない', (await vis('tenchoA', ID.storeB1)).v === false);
+    await sup(db, `delete from public.team_stores where team_id='${ID.team1}' and store_id='${ID.storeB1}'`);
+    ok('割り当てを外すと、すぐ見えなくなる', (await vis('team', ID.storeB1)).v === false);
+    // 本人の所属店舗として他法人の店を割り当て → 見える（店長 A に B1 を所属させる）
+    await sup(db, `insert into public.user_stores values ('${ID.tenchoA}', '${ID.storeB1}', false)`);
+    ok('店長に他法人の店を所属として割り当てると、その店だけ見える', (await vis('tenchoA', ID.storeB1)).v === true && (await vis('tenchoA', ID.storeA2)).v === false);
+    // 法人の所属では広がらない: A1 の法人を B と同じ法人にしても、担当外の店は見えない
+    await sup(db, `update public.stores set corporation_id='${ID.corp2}' where id='${ID.storeA2}'`);
+    ok('店の法人を変えても、担当でない人には見えない（法人では広がらない）', (await vis('tenchoB', ID.storeA2)).v === false && (await vis('shain', ID.storeA2)).v === false);
+    ok('逆に、店の法人を変えても、明示的に割り当てた人からは消えない', (await vis('team', ID.storeA2)).v === true);
+    // 店舗未確定は、社長・本部・マスターだけ
+    for (const who of ['team', 'tenchoA', 'tenchoB']) ok(`${who}: 店舗未確定（null）の明細・口座は見えない`, (await as(db, who, `select public.bank_store_visible(null) v`)).rows[0].v === false);
   }
 
   // ---------- 3. 集計に入れる明細の条件 ----------
@@ -345,9 +378,57 @@ async function main() {
     // 確定の条件: 取込途中の行が残っていると確定できない
     ok('取込途中（new）の明細が残っていると確定できない', denied(await sup(db, `update public.bank_import_files set status='committed' where id='${U(502)}'`)));
     await sup(db, `update public.bank_transactions set match_status='verified' where id='${U(604)}'`);
+    // 取込途中が無くなっても、保存確認（実ファイル・サイズ・読み戻したハッシュ）が無ければ確定できない
+    ok('取込途中が無くなっても、保存確認が無ければ確定できない', denied(await sup(db, `update public.bank_import_files set status='committed' where id='${U(502)}'`)));
+    await sup(db, `update public.bank_import_files set original_verified_at=now(), original_verified_sha256=repeat('a',64), original_verified_size=100 where id='${U(502)}'`);
     const c = await sup(db, `update public.bank_import_files set status='committed', committed_at=now() where id='${U(502)}'`);
-    ok('取込途中が無くなれば確定できる', c.ok, c.err);
+    ok('取込途中が無く、保存確認も済んでいれば確定できる', c.ok, c.err);
     ok('確定した取り込みは元に戻せない', denied(await sup(db, `update public.bank_import_files set status='stored' where id='${U(502)}'`)));
+  }
+
+  // ---------- 5b. 原本の保存確認（実在・サイズ・ハッシュの照合）が段階 2 の必須条件 ----------
+  section('5b. 原本の保存成功・実在・ハッシュ照合: original_id があるだけでは、解析・確定に進めない');
+  {
+    const db = await fresh(); await db.exec(SEED_LEDGER);
+    const mk = async (id, orig = U(401)) => sup(db, `insert into public.bank_import_files (id, bank_account_id, source, original_id, status) values ('${id}','${ID.acctA1}','playwright', ${orig ? `'${orig}'` : 'null'}, 'stored')`);
+    const upd = (id, set) => sup(db, `update public.bank_import_files set ${set} where id='${id}'`);
+    const VER = `original_verified_at=now(), original_verified_sha256=repeat('a',64), original_verified_size=100`;
+    // 作り方の入口
+    ok('最初から「解析済み」で作れない', denied(await sup(db, `insert into public.bank_import_files (bank_account_id, source, original_id, status) values ('${ID.acctA1}','playwright','${U(401)}','parsed')`)));
+    ok('最初から「確定」で作れない', denied(await sup(db, `insert into public.bank_import_files (bank_account_id, source, original_id, status) values ('${ID.acctA1}','playwright','${U(401)}','committed')`)));
+    ok('保存確認の結果を、作成と同時に書き込めない', denied(await sup(db, `insert into public.bank_import_files (bank_account_id, source, original_id, status, original_verified_at, original_verified_sha256, original_verified_size) values ('${ID.acctA1}','playwright','${U(401)}','stored', now(), repeat('a',64), 100)`)));
+    { const r = await sup(db, `insert into public.bank_import_files (bank_account_id, source, original_id, status) values ('${ID.acctB1}','gmo_aozora','${U(401)}','stored')`); ok('別の口座の原本を指したまま作れない', denied(r) && /別の口座/.test(r.err || ''), r.err); }
+    // 解析済みへの条件
+    await mk(U(520));
+    ok('保存確認の記録が無いと、解析済みにできない', denied(await upd(U(520), `status='parsed'`)));
+    ok('ハッシュだけ・サイズだけの記録では、解析済みにできない', denied(await upd(U(520), `status='parsed', original_verified_at=now(), original_verified_sha256=repeat('a',64)`)));
+    ok('読み戻したハッシュが台帳と違うと、解析済みにできない', denied(await upd(U(520), `status='parsed', original_verified_at=now(), original_verified_sha256=repeat('b',64), original_verified_size=100`)));
+    ok('読み戻したサイズが台帳と違うと、解析済みにできない', denied(await upd(U(520), `status='parsed', original_verified_at=now(), original_verified_sha256=repeat('a',64), original_verified_size=99`)));
+    // 実ファイルの実在
+    await sup(db, `insert into public.bank_csv_originals (id, bank_account_id, file_sha256, size_bytes, storage_path) values ('${U(402)}','${ID.acctA1}', repeat('d',64), 50, 'paypay/${ID.acctA1}/' || repeat('d',64) || '.csv')`);
+    await mk(U(521), U(402));
+    ok('台帳の行があっても、置き場に実ファイルが無ければ、解析済みにできない（ハッシュ記録が正しくても）', denied(await upd(U(521), `status='parsed', original_verified_at=now(), original_verified_sha256=repeat('d',64), original_verified_size=50`)));
+    await sup(db, `insert into storage.objects (bucket_id, name, metadata) values ('bank-csv-originals', 'paypay/${ID.acctA1}/' || repeat('d',64) || '.csv', '{"size": 49}')`);
+    ok('置き場のファイルのサイズが台帳と違うと、解析済みにできない', denied(await upd(U(521), `status='parsed', original_verified_at=now(), original_verified_sha256=repeat('d',64), original_verified_size=50`)));
+    await sup(db, `update storage.objects set metadata = '{}' where name like '%' || repeat('d',64) || '.csv'`);
+    ok('置き場のファイルにサイズの情報が無いと、解析済みにできない', denied(await upd(U(521), `status='parsed', original_verified_at=now(), original_verified_sha256=repeat('d',64), original_verified_size=50`)));
+    await sup(db, `update storage.objects set metadata = '{"size": 50}' where name like '%' || repeat('d',64) || '.csv'`);
+    const okp = await upd(U(521), `status='parsed', original_verified_at=now(), original_verified_sha256=repeat('d',64), original_verified_size=50`);
+    ok('実ファイルが実在し、サイズ・読み戻したハッシュが台帳と一致すれば、解析済みにできる', okp.ok, okp.err);
+    // 別バケット・別の名前のファイルは実在にならない
+    await mk(U(522), U(402));
+    await sup(db, `update storage.objects set bucket_id='payroll-transfer-evidence' where name like '%' || repeat('d',64) || '.csv'`);
+    ok('別のバケットに同じ名前のファイルがあっても、実在とは認められない', denied(await upd(U(522), `status='parsed', original_verified_at=now(), original_verified_sha256=repeat('d',64), original_verified_size=50`)));
+    await sup(db, `update storage.objects set bucket_id='bank-csv-originals' where name like '%' || repeat('d',64) || '.csv'`);
+    // 記録後の改ざん
+    ok('保存確認の結果は、あとから変えられない', denied(await upd(U(521), `original_verified_sha256=repeat('a',64)`)) && denied(await upd(U(521), `original_verified_at=null`)));
+    // 一般ユーザーは取得履歴を変えられない（RLS・権限）
+    for (const who of ['ceo', 'hq', 'master', 'team', 'tenchoA', 'shain', 'al', 'anon']) {
+      const r = await as(db, who, `update public.bank_import_files set status='committed' where id='${U(521)}'`);
+      ok(`${who}: 取得履歴を直接書き換えられない（サービスロールの取込ジョブだけ）`, denied(r));
+    }
+    await sup(db, `insert into public.bank_import_files (id, bank_account_id, source, status, error, error_at) values ('${U(510)}','${ID.acctA1}','playwright','failed','保存に失敗', now())`);
+    ok('原本が無い（失敗の）取得履歴は、保存確認をつけても解析済みにできない', denied(await upd(U(510), `status='parsed', ${VER}`)));
   }
 
   // ---------- 6. 再実行（べき等） ----------
@@ -386,7 +467,8 @@ async function main() {
       const db = await fresh({ stage1: false }); const base = await snapshot(db); await db.exec(STAGE1);
       const r = await script(db, ROLLBACK); ok('(a) 空の状態なら、ロールバックが通る', r.ok, r.err);
       const after = await snapshot(db);
-      ok('(a) 表・関数・バケットが消え、既存は適用前と完全に同じ', same(base.cols, after.cols) && same(base.policies, after.policies) && same(base.funcs, after.funcs) && same(base.buckets, after.buckets) && same(base.grants, after.grants));
+      ok('(a) 表・関数・ポリシーが消え、既存は適用前と完全に同じ', same(base.cols, after.cols) && same(base.policies, after.policies) && same(base.funcs, after.funcs) && same(base.grants, after.grants));
+      ok('(a) バケット bank-csv-originals は空・非公開のまま残り（Supabase は直接の削除を禁止）、他のバケットは無傷', same(base.buckets, after.buckets.filter((b) => b.id !== 'bank-csv-originals')) && after.buckets.find((b) => b.id === 'bank-csv-originals')?.public === false);
       ok('(a) ロールバックを 2 回流しても平気', (await script(db, ROLLBACK)).ok);
       ok('(a) 戻したあと、もう一度適用できる', (await script(db, STAGE1)).ok);
     }

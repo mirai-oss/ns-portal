@@ -1,10 +1,10 @@
 -- 段階1（2026-11-27_bank_ledger_stage1.sql）の取り消し。状態: 下書き（未適用）
 -- 使いどころ: 段階1だけを適用し、まだ明細・取得履歴・原本ファイルが 1 件も入っていない間（＝新しい箱が空のまま）。
 -- 安全装置（何かを消す前に、すべて確かめる。1 つでも当てはまれば、何も消さずに止まる）:
---   ・新しい 8 つの表のどれかに 1 行でもデータがある（明細・取得履歴・原本の台帳・訂正履歴・取得状態・口座・入金備考）
+--   ・新しい 7 つの表のどれかに 1 行でもデータがある（明細・取得履歴・原本の台帳・訂正履歴・取得状態・口座・入金備考）
 --   ・バケット bank-csv-originals に、原本ファイルが 1 つでもある
 -- データが入ったあとの取り消しは、消さずに「取込を止める」だけで足りる（箱は足すだけの作りなので、残しても既存の動きに影響しない）。
--- 既存のテーブル・関数・バケットには、触らない。
+-- 既存のテーブル・関数・バケットには、触らない。新しいバケットは空のまま残す（理由は末尾）。
 
 do $$
 declare
@@ -54,7 +54,7 @@ drop function if exists public.bank_import_files_guard();
 drop function if exists public.bank_store_visible(uuid);
 drop function if exists public.bank_ledger_admin();
 
--- バケットは空のときだけ消す（上で原本ファイル 0 個を確認済み。念のためもう一度確かめる）
-delete from storage.buckets b
- where b.id = 'bank-csv-originals'
-   and not exists (select 1 from storage.objects o where o.bucket_id = 'bank-csv-originals');
+-- バケット bank-csv-originals は、この SQL では消さない（残す）。
+--   Supabase は storage.buckets への直接の delete を禁止している（「Use the Storage API instead」。実環境の事前検証で確認）。
+--   空のバケットが残っても、何にも影響しない（非公開・ポリシーも上で外してあるので、誰も読み書きできない）。
+--   バケットも消したいときは、空であることを確かめてから、ダッシュボードの Storage 画面か Storage API（DELETE /storage/v1/bucket/bank-csv-originals）で消す。

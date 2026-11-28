@@ -1,5 +1,5 @@
 -- 銀行入金明細の正本（Supabase）— 段階1: 新しい箱・権限・守りだけを作る
--- 作成: 2026-11-27（第2版 2026-11-27: レビュー7点を反映）　状態: **下書き（未適用）**。本番への適用は、ユーザーが SQL の中身を確認して承認してから。
+-- 作成: 2026-11-27（第2版 2026-11-27: レビュー7点を反映／第3版 2026-11-28: 原本の保存確認を DB の守りに追加・閲覧範囲の明文化）　状態: **下書き（未適用）**。本番への適用は、ユーザーが SQL の中身を確認して承認してから。
 -- 設計: docs/手順書_銀行入金の正本化_段階1_2026-11-27.html ／ テスト: tools/bank-ledger-test/（PGlite で権限・守り・再実行を検証）
 --
 -- 【この SQL がやること】新しいテーブル 7 つ・関数・非公開バケット 1 つを「足す」だけ。
@@ -102,6 +102,11 @@ create table if not exists public.bank_import_files (
   file_name           text,                                 -- この取得でのファイル名
   original_id         uuid references public.bank_csv_originals (id),   -- 原本の保存に失敗したら null のまま（status='failed'）
   original_reused     boolean not null default false,       -- すでにあった原本と同じ中身だった（取り直し）
+  -- ▼原本の保存確認（段階 2 の取込関数が、保存のあと置き場から読み戻して確かめた結果を書く。確認が済むまで、解析・確定に進めない）
+  --   original_id がある＝台帳に行がある、というだけでは「実ファイルが置き場にある」とは言えないため、別に確認の印を持つ。
+  original_verified_at     timestamptz,                     -- 置き場から読み戻して確認を終えた時刻
+  original_verified_sha256 text check (original_verified_sha256 is null or original_verified_sha256 ~ '^[0-9a-f]{64}$'),  -- 読み戻した中身から計算した SHA-256
+  original_verified_size   integer,                         -- 読み戻した中身のバイト数
   status              text not null default 'registered'
                       check (status in ('registered', 'stored', 'parsed', 'committed', 'held', 'failed')),
   balance_chain_ok    boolean,                              -- 残高の鎖が全行つながったか（GMO・PayPay の検証結果）
@@ -256,9 +261,13 @@ create policy bank_deposit_notes_write on public.bank_deposit_notes for all to a
 
 revoke all on public.bank_accounts, public.bank_csv_originals, public.bank_import_files, public.bank_transactions,
               public.bank_transaction_events, public.bank_account_sync_state, public.bank_deposit_notes from anon;
--- ログイン済みの人は読むだけ（上の RLS で絞られる）。入金備考だけ、書くのも権限関数で絞る
-revoke insert, update, delete, truncate on public.bank_accounts, public.bank_csv_originals, public.bank_import_files, public.bank_transactions,
-              public.bank_transaction_events, public.bank_account_sync_state from authenticated;
+-- ログイン済みの人に与えるのは「読む」だけ（上の RLS でさらに絞られる）。Supabase の初期設定で付く他の権限（references・trigger なども）は全部外す。
+-- 入金備考だけは、書くのも権限関数（本部・社長・マスター）で絞った上で、書き込みの権限を渡す。
+revoke all on public.bank_accounts, public.bank_csv_originals, public.bank_import_files, public.bank_transactions,
+              public.bank_transaction_events, public.bank_account_sync_state, public.bank_deposit_notes from authenticated;
+grant select on public.bank_accounts, public.bank_csv_originals, public.bank_import_files, public.bank_transactions,
+                public.bank_transaction_events, public.bank_account_sync_state to authenticated;
+grant select, insert, update, delete on public.bank_deposit_notes to authenticated;
 
 -- =====================================================================
 -- D. 守り（トリガー）
@@ -345,12 +354,15 @@ drop trigger if exists bank_tx_guard_trg on public.bank_transactions;
 create trigger bank_tx_guard_trg before update or delete on public.bank_transactions
   for each row execute function public.bank_tx_guard();
 
+-- D-1b. トリガー用の関数は、誰からも直接は呼ばせない（トリガーとしての実行には、呼び出す人の実行権限はいらない）
+revoke all on function public.bank_tx_guard() from public, anon, authenticated;
 -- D-2. 履歴は追記専用（更新・削除できない）
 create or replace function public.bank_append_only()
 returns trigger language plpgsql as $$
 begin
   raise exception '% は追記専用です（更新・削除はできません）', tg_table_name;
 end $$;
+revoke all on function public.bank_append_only() from public, anon, authenticated;
 drop trigger if exists bank_tx_events_append_only on public.bank_transaction_events;
 create trigger bank_tx_events_append_only before update or delete on public.bank_transaction_events
   for each row execute function public.bank_append_only();
@@ -360,12 +372,34 @@ create trigger bank_csv_originals_append_only before update or delete on public.
   for each row execute function public.bank_append_only();
 
 -- D-3. 取得履歴: 口座・取得元は変えられない。原本との結び付きは、保存が成功したときに null → 値 の 1 回だけ。削除もできない。
---      確定（committed）にできるのは、原本が保存されていて、取込の途中（match_status='new'）の明細が 1 件も残っていないときだけ。
+--      解析済み（parsed）・確定（committed）にできるのは、次の 3 つがすべて満たされたときだけ（original_id があるだけでは通らない）:
+--        ① 置き場（storage.objects）に、その原本の実ファイルが実在し、保存されたサイズが台帳（size_bytes）と一致する
+--        ② 保存のあと読み戻して計算した SHA-256 が記録されていて、台帳の file_sha256 と一致する（original_verified_*）
+--        ③ 読み戻したサイズが台帳の size_bytes と一致する
+--      確定にはさらに、取込の途中（match_status='new'）の明細が 1 件も残っていないこと。
+--      ※ 読み戻して SHA-256 を計算する処理そのものは段階 2 の取込関数がやる（DB の中ではファイルの中身を読めない）。ここはその結果の記録と突き合わせを必須にする。
+--      security definer にするのは、呼ぶ人の権限にかかわらず、置き場の実在を同じ条件で確かめるため。
 create or replace function public.bank_import_files_guard()
-returns trigger language plpgsql as $$
+returns trigger language plpgsql security definer set search_path to 'public', 'storage' as $$
+declare
+  v_orig public.bank_csv_originals%rowtype;
+  v_size bigint;
 begin
   if tg_op = 'DELETE' then
     raise exception '取得履歴は削除できません';
+  end if;
+  if tg_op = 'INSERT' then
+    -- 最初から「解析済み・確定」で作ることはできない（保存確認を飛ばせてしまうため）。登録・保存済み・失敗から始める
+    if new.status not in ('registered', 'stored', 'failed') then
+      raise exception '取得履歴は registered / stored / failed から始めます（保存確認を経ずに解析済み・確定にはできません）';
+    end if;
+    if new.original_verified_at is not null or new.original_verified_sha256 is not null or new.original_verified_size is not null then
+      raise exception '原本の保存確認の結果は、保存の後に記録します';
+    end if;
+    if new.original_id is not null and not exists (select 1 from public.bank_csv_originals o where o.id = new.original_id and o.bank_account_id = new.bank_account_id) then
+      raise exception '原本が別の口座のものです';
+    end if;
+    return new;
   end if;
   if new.bank_account_id is distinct from old.bank_account_id or new.source is distinct from old.source then
     raise exception '取得履歴の口座・取得元は変更できません';
@@ -381,6 +415,30 @@ begin
   if old.status = 'committed' and new.status <> 'committed' then
     raise exception '確定した取り込みの状態は戻せません';
   end if;
+  if old.original_verified_at is not null and (new.original_verified_at is distinct from old.original_verified_at
+     or new.original_verified_sha256 is distinct from old.original_verified_sha256 or new.original_verified_size is distinct from old.original_verified_size) then
+    raise exception '原本の保存確認の結果は変更できません';
+  end if;
+  if new.status in ('parsed', 'committed') and old.status is distinct from new.status then
+    if new.original_id is null then
+      raise exception '原本が保存されていないため、解析・確定に進めません';
+    end if;
+    select * into v_orig from public.bank_csv_originals where id = new.original_id;
+    select nullif(obj.metadata ->> 'size', '')::bigint into v_size
+      from storage.objects obj where obj.bucket_id = v_orig.storage_bucket and obj.name = v_orig.storage_path;
+    if not found then
+      raise exception '原本ファイルが置き場に見つかりません（保存の成功を確認できないため、解析・確定に進めません）';
+    end if;
+    if v_size is distinct from v_orig.size_bytes::bigint then
+      raise exception '置き場の原本ファイルのサイズが台帳と一致しません';
+    end if;
+    if new.original_verified_at is null or new.original_verified_sha256 is null or new.original_verified_size is null then
+      raise exception '原本を置き場から読み戻した確認（ハッシュ・サイズ）が記録されていません';
+    end if;
+    if new.original_verified_sha256 <> v_orig.file_sha256 or new.original_verified_size <> v_orig.size_bytes then
+      raise exception '読み戻した原本のハッシュ・サイズが台帳と一致しません';
+    end if;
+  end if;
   if new.status = 'committed' and old.status <> 'committed' then
     if exists (select 1 from public.bank_transactions t where t.import_file_id = new.id and t.match_status = 'new') then
       raise exception '取込の途中の明細が残っているため、確定できません';
@@ -388,8 +446,9 @@ begin
   end if;
   return new;
 end $$;
+revoke all on function public.bank_import_files_guard() from public, anon, authenticated;
 drop trigger if exists bank_import_files_guard_trg on public.bank_import_files;
-create trigger bank_import_files_guard_trg before update or delete on public.bank_import_files
+create trigger bank_import_files_guard_trg before insert or update or delete on public.bank_import_files
   for each row execute function public.bank_import_files_guard();
 
 -- =====================================================================
