@@ -873,6 +873,29 @@ async function consigneeSubLoader(sb: any): Promise<(storeId: string | null, ym:
   };
 }
 
+// 請求書由来のシート行は補助科目(G列)が行ずれするので、請求書の反映記録の補助科目を使う（2026-11-28 社長承認・担当A。記録は読むだけ）。
+// 月×店舗×科目×金額が一致する記録の補助科目が1つに決まるときだけ置き換える。決まらない行はシートのまま。
+async function invoiceSubLoader(sb: any): Promise<(ym: string, storeId: string | null, item: string, amount: number) => string | null> {
+  const list = await fetchAll((f, t) => sb.from("invoice_pl_reflections").select("id,invoice_id,account_name,sub_account_name,year_month,allocations").order("id").range(f, t));
+  const sums = new Map<string, number>();   // 請求書×月×店舗×科目×補助科目 の合計
+  for (const r of list) {
+    const ym = String(r.year_month ?? "").slice(0, 7); const item = plNormalizeItem(String(r.account_name ?? "").trim(), "").item;
+    for (const a of Array.isArray(r.allocations) ? r.allocations : []) {
+      const k = [r.invoice_id, ym, a?.store_id ?? "", item, String(r.sub_account_name ?? "").trim()].join("\u0001");
+      sums.set(k, (sums.get(k) ?? 0) + num(a?.amount));
+    }
+  }
+  const subs = new Map<string, Set<string>>();
+  for (const [k, amt] of sums) {
+    const [, ym, sid, item, sub] = k.split("\u0001"); const key = [ym, sid, item, amt].join("\u0001");
+    (subs.get(key) ?? subs.set(key, new Set<string>()).get(key)!).add(sub);
+  }
+  return (ym, storeId, item, amount) => {
+    const hit = storeId && amount ? subs.get([ym, storeId, item, amount].join("\u0001")) : undefined;
+    return hit && hit.size === 1 ? [...hit][0] : null;
+  };
+}
+
 async function autoSyncFromStgPl(sb: any, dry = false, ignoreFromOverride?: string): Promise<any> {
   const runId = dry ? "dry" : await startRun(sb, "kd_pl_auto_sync");
   try {
@@ -891,6 +914,7 @@ async function autoSyncFromStgPl(sb: any, dry = false, ignoreFromOverride?: stri
     type R = { year_month: string; store_id: string | null; item: string; category: string; amount: number; memo: string; sub_item: string; source: string };
     const rows: R[] = [];
     const consigneeSub = await consigneeSubLoader(sb);
+    const invoiceSub = await invoiceSubLoader(sb); let subFromInvoice = 0;
     for (let r = 1; r < raw.length; r++) {
       const row = raw[r] ?? [];
       const memo = String(row[5] ?? "").trim(); const source = plAutoSourceOf(memo);
@@ -905,6 +929,8 @@ async function autoSyncFromStgPl(sb: any, dry = false, ignoreFromOverride?: stri
       const sub0 = (source === "店舗間移動" || source === "媒体販促費（自動計上）") ? "" : source === PL_SEISAN_FEE_SOURCE ? await consigneeSub(sid, ym) : String(row[6] ?? "");
       const nz = plNormalizeItem(item0, sub0); const item = nz.item;
       if (plIsBalanceSheet(item)) { ignoredBs++; continue; }   // 前払費用などのBS科目はPLに入れない（2026-11-28 社長指示・担当Cと同じ判定）
+      const fixed = source.startsWith("自動｜") && !PL_SHEET_KEEP_SOURCES.includes(source) ? invoiceSub(ym, sid, item, num(row[4])) : null;
+      if (fixed !== null) { nz.sub = fixed; subFromInvoice++; }
       rows.push({ year_month: ym, store_id: sid, item, category: plCatByItem(row[3], item, nz.sub), amount: num(row[4]), memo, sub_item: nz.sub, source });   // 店舗間移動・媒体販促費（自動計上）は補助科目を持たない（2026-10-14: 後者はG列に別連携の「PayPay　外部連携:ID」が混入して表示された）（シートのG列に別連携の「名前　外部連携:ID」が混入していたため無視する・2026-10-13）
     }
     const old = (await fetchAll((f, t) => sb.from("pl_entries").select("id,year_month,store_id,item,category,amount,memo,sub_item,source")
@@ -919,7 +945,7 @@ async function autoSyncFromStgPl(sb: any, dry = false, ignoreFromOverride?: stri
     for (const k of gOld.keys()) if (!gNew.has(k)) changed.add(k);
     if (dry) {   // 検証用: 書かずに差分だけ返す
       const bySrc: Record<string, number> = {}; for (const x of rows) bySrc[x.source] = (bySrc[x.source] ?? 0) + 1;
-      return { ok: true, dry: true, auto_rows: rows.length, ignored_bs: ignoredBs, ignored_invoice_gas: ignoredInvoiceGas, ignore_from: ignoreFrom || null, existing_auto: old.length, changed_groups: changed.size, changed_sample: [...changed].slice(0, 12).map((k) => k.replace("\u0002", " / ")), by_source: bySrc, unresolved: [...unresolved], bad_ym: badYm };
+      return { ok: true, dry: true, auto_rows: rows.length, sub_from_invoice: subFromInvoice, ignored_bs: ignoredBs, ignored_invoice_gas: ignoredInvoiceGas, ignore_from: ignoreFrom || null, existing_auto: old.length, changed_groups: changed.size, changed_sample: [...changed].slice(0, 12).map((k) => k.replace("\u0002", " / ")), by_source: bySrc, unresolved: [...unresolved], bad_ym: badYm };
     }
     let result: any = { inserted: 0, updated: 0, deleted: 0 };
     if (changed.size) {
@@ -935,7 +961,7 @@ async function autoSyncFromStgPl(sb: any, dry = false, ignoreFromOverride?: stri
     }
     const note = [unresolved.size ? `店舗名未対応(取込せず): ${[...unresolved].join("、")}` : "", badYm ? `年月不正で除外${badYm}行` : "", ignoredBs ? `BS科目で除外${ignoredBs}行` : ""].filter(Boolean).join(" / ");
     await finishRun(sb, runId, true, rows.length, note || undefined);
-    return { ok: true, auto_rows: rows.length, ignored_bs: ignoredBs, ignored_invoice_gas: ignoredInvoiceGas, changed_groups: changed.size, ...result, unresolved: [...unresolved], bad_ym: badYm };
+    return { ok: true, auto_rows: rows.length, sub_from_invoice: subFromInvoice, ignored_bs: ignoredBs, ignored_invoice_gas: ignoredInvoiceGas, changed_groups: changed.size, ...result, unresolved: [...unresolved], bad_ym: badYm };
   } catch (e) {
     await finishRun(sb, runId, false, 0, String(e), "kd_pl_auto_sync");
     throw e;
