@@ -4,6 +4,8 @@ import type { CostRow } from "./recruit-cost-sheet.ts";
 export type Kind = "ad" | "fee"; // ad=広告費の請求書 / fee=毎月の固定費の請求書
 export type StoreRef = { id: string; name: string };
 export type SplitLine = { store_id: string; store_name: string; amount: number; tax_amount: number };
+/** 会計上の按分ルール: この エリア×区分 の金額は、1店舗に入れず、重みの割合で複数の店舗に分ける。 */
+export type ShareRule = { area: string; form_key: "al" | "shain"; shares: { store: StoreRef; weight: number }[] };
 export type Split = { ok: true; lines: SplitLine[]; subtotal: number; tax: number } | { ok: false; reason: string };
 
 /** 端数は余りの大きい順に 1 円ずつ配り、合計を必ず total にする。 */
@@ -18,15 +20,26 @@ function prorate(weights: number[], total: number): number[] {
   return base;
 }
 
-/** rows は allocate(シート, 固定費) の結果。invoiceAmount は請求書の税込金額。合わなければ分けない。 */
-export function splitInvoice(kind: Kind, rows: CostRow[], invoiceAmount: number, areaStores: Record<string, StoreRef>): Split {
+/** rows は allocate(シート, 固定費) の結果。invoiceAmount は請求書の税込金額。合わなければ分けない。
+ *  rules に当たる行は重みで分け（端数は余りの大きい順。同じなら先に書いた店舗）、当たらない行はエリアの店舗へ。 */
+export function splitInvoice(kind: Kind, rows: CostRow[], invoiceAmount: number, areaStores: Record<string, StoreRef>, rules: ShareRule[] = []): Split {
   const byStore = new Map<string, { store: StoreRef; amount: number }>();
+  const add = (store: StoreRef, amount: number) => {
+    const v = byStore.get(store.id) ?? { store, amount: 0 };
+    v.amount += amount;
+    byStore.set(store.id, v);
+  };
   for (const r of rows) {
+    const value = kind === "ad" ? r.ad : r.amount - r.ad;
+    const rule = rules.find((x) => x.area === r.area && x.form_key === r.form_key);
+    if (rule) {
+      if (!rule.shares.length || rule.shares.some((s) => !(s.weight > 0))) return { ok: false, reason: `エリア「${r.area}」の按分の設定が正しくありません` };
+      prorate(rule.shares.map((s) => s.weight), value).forEach((a, i) => add(rule.shares[i].store, a));
+      continue;
+    }
     const store = areaStores[r.area];
     if (!store) return { ok: false, reason: `エリア「${r.area}」の店舗が設定されていません` };
-    const v = byStore.get(store.id) ?? { store, amount: 0 };
-    v.amount += kind === "ad" ? r.ad : r.amount - r.ad;
-    byStore.set(store.id, v);
+    add(store, value);
   }
   const list = [...byStore.values()].filter((v) => v.amount > 0).sort((a, b) => b.amount - a.amount || a.store.name.localeCompare(b.store.name));
   const subtotal = list.reduce((s, v) => s + v.amount, 0);

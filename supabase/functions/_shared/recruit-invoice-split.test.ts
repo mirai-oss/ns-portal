@@ -32,3 +32,17 @@ Deno.test("対象月: 読み取れた月を優先し、無ければ受け取っ�
   assertEquals(invoiceMonth(null, "2030-12-05T00:00:00Z"), "2030-11");
   assertEquals(invoiceMonth(null, "2029-12-31T16:00:00Z"), "2029-12"); // 日本時間では 1/1
 });
+
+Deno.test("按分ルール: 当たる区分だけを重みで分け、ほかはエリアの店舗のまま。合計は変わらない", () => {
+  const st = (id: string) => ({ id, name: id });
+  const rules = [{ area: "恵比寿", form_key: "shain" as const, shares: [{ store: st("s1"), weight: 15 }, { store: st("s3"), weight: 9 }, { store: st("s4"), weight: 2 }, { store: st("s5"), weight: 2 }, { store: st("s6"), weight: 2 }] }];
+  const r = allocate([{ area: "恵比寿", form_key: "al", ad: 1000 }, { area: "恵比寿", form_key: "shain", ad: 3000 }], 0);
+  const s = splitInvoice("ad", r, 4400, stores, rules);
+  assert(s.ok);
+  assertEquals(s.lines.map((l) => [l.store_id, l.amount]), [["s1", 2500], ["s3", 900], ["s4", 200], ["s5", 200], ["s6", 200]]);
+  assertEquals(s.lines.reduce((t, l) => t + l.amount + l.tax_amount, 0), 4400);
+  const odd = splitInvoice("ad", allocate([{ area: "恵比寿", form_key: "shain", ad: 101 }], 0), 111, stores, rules);
+  assert(odd.ok);
+  assertEquals(odd.lines.reduce((t, l) => t + l.amount, 0), 101);
+  assert(!splitInvoice("ad", r, 4400, stores, [{ ...rules[0], shares: [] }]).ok);
+});
