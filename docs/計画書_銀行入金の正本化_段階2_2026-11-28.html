@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>銀行入金の正本化 — 段階2の実装計画</title>
+<style>
+:root{--bg:#fff;--ink:#1b2430;--muted:#5d6b7a;--line:#d9e0e8;--card:#f5f8fb;--ok:#0f7b4b;--warn:#a85a00;--bad:#b3261e;--blue:#0b5cad;--code:#eef2f7}
+@media(prefers-color-scheme:dark){:root{--bg:#0f141a;--ink:#e6edf3;--muted:#9aa7b4;--line:#2a3541;--card:#171e26;--ok:#4cc38a;--warn:#f0b35a;--bad:#ff8a80;--blue:#79b8ff;--code:#1d2630}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.75 -apple-system,"Hiragino Sans","Yu Gothic",sans-serif}
+main{max-width:980px;margin:0 auto;padding:20px 16px 80px}
+h1{font-size:24px;margin:8px 0 4px}
+h2{font-size:20px;margin:36px 0 10px;padding-top:10px;border-top:2px solid var(--line)}
+h3{font-size:17px;margin:22px 0 6px}
+.sub{color:var(--muted);font-size:14px}
+.box{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 16px;margin:12px 0}
+.ok{border-left:5px solid var(--ok)}.warn{border-left:5px solid var(--warn)}.bad{border-left:5px solid var(--bad)}
+table{border-collapse:collapse;width:100%;margin:10px 0;font-size:14.5px}
+th,td{border:1px solid var(--line);padding:7px 9px;text-align:left;vertical-align:top}
+th{background:var(--card)}
+code,pre{background:var(--code);border-radius:6px;font-family:ui-monospace,Menlo,monospace;font-size:13px}
+code{padding:1px 5px}pre{padding:10px 12px;overflow-x:auto;white-space:pre-wrap}
+.tbl{overflow-x:auto}
+.tag{display:inline-block;font-size:12px;border:1px solid var(--line);border-radius:999px;padding:0 8px;color:var(--muted)}
+li{margin:3px 0}
+</style>
+</head>
+<body>
+<main>
+<h1>銀行入金の正本化 — 段階2の実装計画</h1>
+<div class="sub">※公開リポジトリのため、口座番号・金額の実額は書いていません。作成 2026-11-28 ／ 状態：<b>計画（承認待ち）</b>。<b>段階2の本番運用開始は、別途承認</b>です（この計画の承認＝実装に着手してよい、まで）。</div>
+
+<div class="box ok"><b>段階2でやること</b>：PayPay銀行・GMOあおぞらの明細CSVを自動で取得し、<b>原本をそのまま非公開の置き場に保存</b>→読み戻して<b>ハッシュ照合</b>→明細を新しい正本（段階1で作った箱）に<b>重複なく取り込む</b>。<br>
+<b>やらないこと</b>：画面の切り替え（段階6）／旧シートの移行（段階3）／GASの入金DB書き込みの停止（段階7）。<b>いまのPayPay→GAS送信は、そのまま動かし続けます</b>（並行運用）。新しい正本は、画面からまだ誰も読みません。だから、段階2を動かしても、いまの数字は変わりません。</div>
+
+<h2>1. 全体像（1回の取得の流れ）</h2>
+<ol>
+<li><b>登録</b>：取得履歴を1行作る（<code>registered</code>）。同じ口座の取込は、1つずつ順番に（二重実行しない鍵）。</li>
+<li><b>取得</b>：Playwrightでログイン→口座を選ぶ→明細CSVをダウンロード。<b>ファイルの生のバイト列</b>をそのまま保持（文字コード変換前のShift-JISのまま）。</li>
+<li><b>原本保存</b>：SHA-256を計算 → Storage（<code>bank-csv-originals/{銀行}/{口座ID}/{SHA-256}.csv</code>）へ保存 → 台帳（<code>bank_csv_originals</code>）に行を作り、取得履歴を <code>stored</code> に。同じ中身を取り直したときは、置き場は上書きせず、台帳の既存の行を指す（<code>original_reused</code>）。</li>
+<li><b>読み戻して照合</b>：置き場から実ファイルを読み戻し、SHA-256とバイト数を計算 → 取得履歴に記録。<b>DBが、実在・サイズ・ハッシュの一致を確かめるまで、先へ進めません</b>（段階1で実装済み）。</li>
+<li><b>解析</b>：CSVを行に分解。残高の鎖・重複キー・取得期間の重なりを検証（§3）。</li>
+<li><b>取込</b>：1つのトランザクションで、新規は <code>verified</code>、既にある行は何もしない（<code>rows_dup</code>）、識別できない行は <code>held</code>（保留・理由つき）。</li>
+<li><b>確定</b>：取込途中の行が0件のときだけ <code>committed</code>。口座の取得状態（最終成功・取得済み最新日付）を更新。</li>
+<li><b>失敗したとき</b>：どの段階で止まっても、取得履歴に <code>failed</code>・理由・時刻を残す。<b>既存の確定済みの数字は変えない・0で上書きしない</b>。次の取得でやり直す（原本は同じ場所・同じ中身なので重複しない）。</li>
+</ol>
+
+<h2>2. 作るもの</h2>
+<div class="tbl"><table>
+<tr><th>#</th><th>何</th><th>場所</th><th>内容</th></tr>
+<tr><td>A</td><td>段階2のSQL（新規ファイル。段階1は編集しない）</td><td><code>ns-portal/supabase/2026-xx-xx_bank_ledger_stage2.sql</code></td><td>取込用の関数（<b>サービスロールだけが呼べる</b>）：<code>bank_import_register</code>（登録＋口座ごとの排他ロック）／<code>bank_import_attach_original</code>（台帳に原本を登録・再利用）／<code>bank_import_record_verification</code>（読み戻しの結果を記録）／<code>bank_import_ingest</code>（行の取込・重複判定・鎖の検証・保留）／<code>bank_import_commit</code>／<code>bank_import_fail</code>。口座の登録（口座番号は.envから入れる。リポジトリには書かない）。ロールバックSQLつき</td></tr>
+<tr><td>B</td><td>PayPayの取得に「原本保存→取込」を足す</td><td><code>ns-daily-import/tasks/paypay-bank.js</code>（既存）＋新規 <code>lib/bank-ledger.js</code></td><td>いまの <code>downloadCsv</code> は、Shift-JISを文字列にしたものだけ返している。<b>生のバイト列も返す</b>よう足す。既存のGAS送信は<b>変えない</b>。新しい取込は、GAS送信の<b>あと</b>に動かし、失敗してもGAS送信の結果には影響させない（影の運用）</td></tr>
+<tr><td>C</td><td>GMOあおぞらの取得（新規）</td><td><code>ns-daily-import/tasks/gmo-bank.js</code></td><td>PayPayの<code>login</code>・<code>downloadCsv</code>の作りを参考に。8口座の切り替え、期間指定のCSVダウンロード。下の§5の確認が済むまでは「手動の1回」だけ</td></tr>
+<tr><td>D</td><td>CSVの解析（PayPay・GMO）</td><td><code>ns-daily-import/lib/bank-csv-paypay.js</code>・<code>bank-csv-gmo.js</code></td><td>入金だけでなく<b>出金も含む全行</b>を正本に入れる（PayPayの既存の解析は入金だけ）。値は原本のとおり。分類（ATM入金・振込・利息など）は、いまの「入金かどうか」の扱いをそのまま写す</td></tr>
+<tr><td>E</td><td>テスト</td><td><code>ns-portal/tools/bank-ledger-test/</code> ほか</td><td>§6</td></tr>
+<tr><td>F</td><td>運用の登録（<b>本番運用開始は別途承認</b>）</td><td>ディスパッチャ（<code>config.js</code>の予定表）</td><td>承認までは登録しない。承認後も、最初は「保存＋取込のみ・画面は読まない」</td></tr>
+</table></div>
+
+<h2>3. 重複判定の実装（設計は段階1の手順書 §4 のとおり）</h2>
+<div class="tbl"><table>
+<tr><th></th><th>PayPay銀行</th><th>GMOあおぞら</th></tr>
+<tr><td>同じ取引の目印</td><td>（口座, 日付, 取引順番号）</td><td>日付｜摘要｜入金｜出金｜残高（CSVの並び順には頼らない）</td></tr>
+<tr><td>検証</td><td>CSV内の残高の鎖が全行つながること</td><td>残高の鎖が全行つながること。前回の取得と期間が重なる部分が、既存の行と一致すること</td></tr>
+<tr><td>識別できないとき</td><td>同じ順番号が2行／鎖が切れる → 保留</td><td>同じキーがCSV内に2行／鎖が切れる／重なりが一致しない → <b>その行を保留</b>（<code>held</code>・理由つき）。勝手に統合・捨てない。保留は集計に入らず、件数と金額が別に見える</td></tr>
+<tr><td>再取得</td><td colspan="2">同じCSVを2回流しても、行は増えない（一意制約＋取込の関数が冪等）。期間が重なるCSVでも増えない。同日・同額の別取引は、別の行として両方入る</td></tr>
+<tr><td>旧シートとの結び付き</td><td colspan="2">旧シートの移行は段階3。段階2では、新しい行は正本に <code>verified</code> で入るだけで、旧シートの行とは結ばない（段階3の移行時に、1対1でつなぐ）</td></tr>
+</table></div>
+
+<h2>4. 数字を変えないための約束（段階2の間）</h2>
+<ul>
+<li>画面・GAS・BigQuery・Supabaseの <code>kd_*</code> は、<b>まだ新しい正本を読まない</b>。取込が失敗しても、画面には何も起きない。</li>
+<li>PayPayの既存の流れ（14:00 A／14:15 B → GAS <code>importDeposits</code>）は変更しない。新しい取込は、その<b>あとに追加</b>で動く（失敗しても既存の結果を変えない・例外はログと取得履歴に残すだけ）。</li>
+<li>取込は<b>追加と「識別できない行の保留」だけ</b>。既存の行の削除・上書きはしない（DBの守りが拒否する）。</li>
+<li>エラーで0を上書きしない。失敗は「取得状態」に残るので、将来の画面は「最終取得日時」を出して、古い数字を最新と見せない。</li>
+</ul>
+
+<h2>5. GMOあおぞら：着手前に確認が要ること（私が決められないもの）</h2>
+<div class="box warn"><ol>
+<li><b>利用規約の確認（社長）</b>：法人ネットバンキングの規約で、自動操作による明細取得が許されているか。禁止・要申請なら、その時点でGMO側の自動取得は中止し、<b>手動のCSV取込（原本保存・重複判定は同じ）</b>に切り替えます。</li>
+<li><b>ログイン後の追加認証</b>：ログイン画面はID・パスワードのほか、ワンタイム認証やパスキーに関する部品が見えています。<b>最初の1回は、あなたがMac miniで手でログイン</b>して、追加認証の有無と、8口座の切り替え画面（口座の選び方・CSVの出し方）を教えてください（画面収録でも可）。追加認証が毎回必要なら、完全自動はできません（その場合の代案：認証済みのセッションを使う／毎日1回だけ手動で承認／手動CSV取込に切り替え）。</li>
+<li><b>パスワード誤りでのロックを避ける</b>：自動ログインの失敗は<b>1回で止め、再試行しない</b>（ロックされる前に、人に通知）。</li>
+<li><b>店舗が未定の口座3つ</b>：どの店舗の入金か決まるまで、取得・保存はするが<b>店舗に割り当てない</b>（<code>unassigned</code>）。集計には出ません（本部・社長・マスターだけが原本・明細を確認できる）。</li>
+<li>ID・パスワードは<b>.envだけ</b>（コードやWORKLOGに書かない・画面にも出さない）。保存先はすでに用意してもらっています。</li>
+</ol></div>
+
+<h2>6. テスト</h2>
+<ul>
+<li><b>解析</b>：GMOのサンプルCSV（398行）で、鎖が全行つながること・キーがすべて一意なこと／わざと1行の残高を壊して保留になること／並び順を入れ替えても同じ結果になること／PayPayのサンプルで取引順番号による一意性。CSVの文字コード（Shift-JIS）を原本のまま保存できること。</li>
+<li><b>取込の関数（PGlite）</b>：同じCSVを2回／期間が重なる2つのCSV／同日・同額の別取引／同じキーが2行／途中で失敗したときに何も中途半端に残らないこと／同時に2つ走らせても二重にならないこと／サービスロール以外は呼べないこと。</li>
+<li><b>実環境（流して必ず巻き戻す方式）</b>：段階1と同じ <code>real_env_verify.py</code> に段階2の関数を足し、実際のSupabaseで、権限・Storage・保存確認の順序・取込を確認してから適用。</li>
+<li><b>取得の本番前テスト</b>：PayPay・GMOとも、まず「原本をローカルにだけ保存して解析し、結果（件数・金額・鎖の検証）を表示する」ドライラン（Supabaseには何も書かない）。<b>その結果をあなたに見せて承認を得てから</b>、実際に本番の箱へ取り込む（§7の2-5）。</li>
+<li>原本の実在・ハッシュ照合は、段階1のDBの守りが毎回強制（実在しなければ、解析・確定に進めない）。</li>
+</ul>
+
+<h2>7. 進め方（段階2の中の順番）と承認のポイント</h2>
+<div class="tbl"><table>
+<tr><th>順</th><th>作業</th><th>本番への影響</th><th>承認</th></tr>
+<tr><td>2-1</td><td>段階2のSQL作成＋PGliteと実環境の事前検証（巻き戻し）</td><td>なし</td><td>SQLの内容確認→適用の承認</td></tr>
+<tr><td>2-2</td><td>CSV解析＋取込の関数を適用（箱は空のまま）</td><td>新しい関数を足すだけ</td><td>上の承認に含む</td></tr>
+<tr><td>2-3</td><td>PayPay：ドライラン（保存しない・書かない）で、解析結果を確認</td><td>なし（既存の取込は無変更）</td><td>解析結果の確認</td></tr>
+<tr><td>2-4</td><td>GMO：利用規約・追加認証の確認（§5）。サンプルCSVでの解析は完了済みの設計どおり</td><td>なし</td><td>社長の確認</td></tr>
+<tr><td>2-5</td><td>手動の1回：PayPay・GMOを1口座ずつ、原本保存→読み戻し→取込を実行して、台帳・原本・取得履歴を一緒に確認</td><td>新しい箱に最初のデータが入る（画面には出ない）</td><td><b>ここで一度止まって承認</b></td></tr>
+<tr><td>2-6</td><td><b>毎日の自動実行の登録</b>＝本番運用開始</td><td>新しい箱に毎日取り込み始める（画面は読まない）</td><td><b>別途承認（ご指示のとおり）</b></td></tr>
+</table></div>
+<p>その先：段階3（旧シートの移行）→段階4（14日並行比較）→段階5（GMOを画面の数字に含める）→段階6（画面の切り替え・取得履歴画面）→段階7（GAS書き込み停止）。各段階は承認制です。</p>
+
+<h2>8. リスクと対策</h2>
+<div class="tbl"><table>
+<tr><th>リスク</th><th>対策</th></tr>
+<tr><td>CSVの形式変更・列の増減</td><td>見出しの検証で止まる（取得履歴 <code>failed</code>・原本は保存済み）。黙って間違った値を入れない</td></tr>
+<tr><td>取込の途中失敗</td><td>1トランザクション。確定は「取込途中0件」のときだけ。再実行しても増えない</td></tr>
+<tr><td>同時実行</td><td>口座ごとの排他ロック＋一意制約</td></tr>
+<tr><td>原本の保存失敗・破損</td><td>読み戻してハッシュ照合。DBが、確認なしの解析・確定を拒否（段階1）</td></tr>
+<tr><td>サービスロールの鍵の取り扱い</td><td>取込ジョブ（Mac mini）の.envだけ。取込関数は、サービスロール以外は呼べない。鍵の値は書かない・表示しない</td></tr>
+<tr><td>Mac miniの停止・スリープ</td><td>既存のディスパッチャの「予定時刻を過ぎていて本日未実行なら実行」の仕組みに乗せる。未取得の日は「取得状態」で分かる</td></tr>
+<tr><td>GMOの追加認証・規約</td><td>§5。満たせなければ手動CSV取込に切り替え（保存・重複判定は同じ）</td></tr>
+<tr><td>法人別の権限制御（後続の必須課題）</td><td>現段階は社長・本部・マスターが全法人。<b>将来の法人別の切り離しに備え、後続の必須課題として記録済み</b>（段階1の手順書 §2-3f・WORKLOG）。段階2の関数・Storageのパスは、法人を後から足せる形にしておく（口座・明細に法人の列は既にある）</td></tr>
+</table></div>
+
+<h2>9. 承認をお願いしたいこと</h2>
+<ol>
+<li>この計画で、段階2の<b>実装に着手</b>してよいか（2-1〜2-5。毎日の自動実行の登録＝2-6 は、あらためて承認をもらいます）。</li>
+<li>GMOの利用規約の確認（社長）と、Mac miniでの<b>最初の1回の手動ログイン</b>の日程。</li>
+<li>店舗が未定の口座3つの店舗が決まったら教えてください（決まるまでは未割り当てで保存だけ）。</li>
+</ol>
+</main>
+</body>
+</html>
