@@ -873,6 +873,14 @@ async function consigneeSubLoader(sb: any): Promise<(storeId: string | null, ym:
   };
 }
 
+// シートからの取り込みを止める(source×年月)の一覧。app_secrets.pl_sheet_frozen='自動｜<科目>@YYYY-MM,…'（無ければ何もしない）。
+// 二重などを pl_entries で直した月が、毎時の同期で元に戻らないようにする（2026-11-28・担当A）。戻し方: 値から外す（次の同期でシートの内容に戻る）。
+async function plSheetFrozen(sb: any): Promise<Set<string>> {
+  const { data, error } = await sb.from("app_secrets").select("value").eq("key", "pl_sheet_frozen").maybeSingle();
+  if (error) throw new Error("app_secretsの読み取りに失敗: " + error.message);   // 読めないまま進めると直した行がシートの内容に戻る
+  return new Set<string>(String(data?.value ?? "").split(",").map((x) => x.trim()).filter(Boolean));
+}
+
 // 請求書由来のシート行は補助科目(G列)が行ずれするので、請求書の反映記録の補助科目を使う（2026-11-28 社長承認・担当A。記録は読むだけ）。
 // 月×店舗×科目×金額が一致する記録の補助科目が1つに決まるときだけ置き換える。決まらない行はシートのまま。
 async function invoiceSubLoader(sb: any): Promise<(ym: string, storeId: string | null, item: string, amount: number) => string | null> {
@@ -910,7 +918,9 @@ async function autoSyncFromStgPl(sb: any, dry = false, ignoreFromOverride?: stri
     if (!ignoreFrom) { const { data: ig } = await sb.from("app_secrets").select("value").eq("key", "pl_ignore_invoice_gas_from").maybeSingle(); ignoreFrom = (ig?.value ?? "").trim(); }
     // 精算書の直接取り込み(seisanDirectSync)の月は、シート由来を新旧の両側で対象外にする（片側だけだと行が消える）
     const directFrom = await plSeisanDirectFrom(sb);
-    const isDirect = (source: string, ym: string) => !!directFrom && source === PL_SEISAN_CAT_MEMO && ym >= directFrom;
+    // 固定した(source×年月)も同じ扱い（シートから入れず、今の行も入れ替えない＝pl_entries側で直した内容が残る）
+    const frozen = await plSheetFrozen(sb);
+    const isDirect = (source: string, ym: string) => (!!directFrom && source === PL_SEISAN_CAT_MEMO && ym >= directFrom) || frozen.has(`${source}@${ym}`);
     type R = { year_month: string; store_id: string | null; item: string; category: string; amount: number; memo: string; sub_item: string; source: string };
     const rows: R[] = [];
     const consigneeSub = await consigneeSubLoader(sb);
