@@ -114,7 +114,7 @@ Deno.serve(async (req: Request) => {
     const created: any[] = []; const errors: string[] = [];
     for (const [tenant, rs] of byTenant) {
       try {
-        const items: PayItem[] = rs.map((r: any) => ({ invoice_id: r.id, vendor_id: r.vendor_id, vendor_name: r.vendor?.name ?? "", amount: Number(r.amount) || 0, due_date: r.due_date, method: methodOf(r) ?? undefined }));
+        const items: PayItem[] = rs.map((r: any) => ({ invoice_id: r.id, vendor_id: r.vendor_id, vendor_name: r.vendor?.name ?? "", amount: (Number(r.amount) || 0) + ((r.journal_draft?.debit_lines ?? []) as any[]).filter((d) => d?.rule?.source === "policy").reduce((t, d) => t + Number(d.debit?.amount ?? 0), 0), due_date: r.due_date, method: methodOf(r) ?? undefined }));
         const range = dateRange(items, 5, 14);
         const { accessToken } = await getValidAccessToken(tenant);
         const fo = await fetchOutflows(accessToken, range.start, range.end, "out", tenant);

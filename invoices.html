@@ -630,7 +630,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-11-28-v194";
+const BUILD_TAG="2026-11-28-v195";
 const PAYROLL_CANCEL_READY=true;
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
@@ -1309,7 +1309,9 @@ async function apvRun_(inv,d,lines,o){
     if(o.structureChanged&&(edited||d.status==="proposed")){
       results.push("②行を増やした・減らした、または貸方を分けたため、行ルールの更新は行っていません（この請求書だけの内容です）");
     } else if(edited||d.status==="proposed"){ // 2026-10-14: 初回の提案（行ルール無し）を承認したら、そのまま行ルールとして保存する（次回から自動）
-      const first=lines[0]; const same=lines.every(l=>l.account===first.account&&l.sub===first.sub);
+      const feeNos=new Set((d.debit_lines||[]).filter(x=>x.rule&&x.rule.source==="policy").map(x=>x.line_no)); // 手数料の行はルールの学習に含めない
+      const own=lines.filter(l=>!feeNos.has(l.line_no));
+      const first=own[0]||lines[0]; const same=own.every(l=>l.account===first.account&&l.sub===first.sub);
       const vname=(inv.vendor&&inv.vendor.name)||inv.vendor_name||"";
       if(same&&inv.vendor_id){
         const fields={account_name:first.account,sub_account_mode:first.sub?(nz(first.sub)===nz(vname)?"vendor":"fixed"):"none",sub_account_name:first.sub&&nz(first.sub)!==nz(vname)?first.sub:null,vendor_id:inv.vendor_id};
@@ -9340,6 +9342,8 @@ async function overdueAlertRender_(){
 // 金額・補助科目・摘要・日付が合う預金の出金を探して候補にする。MFには何も書かない。振込済みにするのは人が確認して選んだものだけ。
 // 候補の種類: single=請求書1件に一致／bundle=同じ請求先のまとめ払い／mismatch=振込先は合うが金額が合わない（エラー）
 // 確認した「摘要の名前⇔請求先」は payment_match_rules に覚えさせ、次回から候補の精度が上がる。毎朝の自動照合は invoice-payment-scan（Larkへ通知）
+// 引き落とし手数料（仕訳下書きの手数料の行の合計）。引き落とし額は請求額＋これ
+function payFeeOf_(r){ return ((r&&r.journal_draft&&r.journal_draft.debit_lines)||[]).filter(x=>x.rule&&x.rule.source==="policy").reduce((t,x)=>t+(Number(x.debit&&x.debit.amount)||0),0); }
 function payRulePattern(t){ return String(t||"").normalize("NFKC").replace(/株式会社|有限会社|合同会社|[(（]?(株|有|カ|ユ|合)[)）]/g,"").replace(/\s+/g,"").toLowerCase().replace(/[0-9０-９]+(年|月|日|分)?/g,"").replace(/[\/\-・,、.。:：]/g,"").slice(0,40); }
 async function transferPaymentScan(u){
   const msg=$("transfer-msg"); msg.style.color="";
@@ -9350,7 +9354,7 @@ async function transferPaymentScan(u){
   rows.forEach(r=>{ const t=(r.journal_draft&&r.journal_draft.tenant_id)||"default"; if(!byTenant.has(t)) byTenant.set(t,[]); byTenant.get(t).push(r); });
   const cands=[]; const errs=[];
   for(const [t,rs] of byTenant){
-    const items=rs.map(r=>({invoice_id:r.id,vendor_id:r.vendor_id,vendor_name:(r.vendor&&r.vendor.name)||"",amount:Number(r.amount)||0,due_date:r.due_date||"",method:transferMethodKey(r)}));
+    const items=rs.map(r=>({invoice_id:r.id,vendor_id:r.vendor_id,vendor_name:(r.vendor&&r.vendor.name)||"",amount:(Number(r.amount)||0)+payFeeOf_(r),due_date:r.due_date||"",method:transferMethodKey(r)}));
     const a=await mfCall("payment_scan",{tenant_id:t,items});
     if(a.ok&&a.body&&a.body.success) cands.push(...a.body.candidates.map(c=>({...c,tenant:t})));
     else errs.push(`${({nstyle:"N-Style",livegate:"LiveGate",sk:"SK"})[t]||"トーホー"}のMF：${(a.body&&a.body.error)||"取得に失敗しました"}`);
@@ -9389,7 +9393,7 @@ async function transferPaymentScan(u){
   $("tps-ok").onclick=async()=>{
     const chosen=[...modal.querySelectorAll(".tps-check:checked")].map(x=>cands[Number(x.dataset.ci)]).filter(Boolean);
     const list=[]; // 支払済みにする請求書と、実際の金額・理由
-    chosen.forEach(c=>c.invoice_ids.forEach(id=>{ const r=rowById.get(id); list.push({id,paid_amount:Number(r&&r.amount)||0,paid_diff_reason:null}); }));
+    chosen.forEach(c=>c.invoice_ids.forEach(id=>{ const r=rowById.get(id); const fee=payFeeOf_(r); list.push({id,paid_amount:(Number(r&&r.amount)||0)+fee,paid_diff_reason:fee?`振替手数料${fee}円`:null}); }));
     for(const el of modal.querySelectorAll(".tps-bad:checked")){
       const c=cands[Number(el.dataset.ci)]; const reason=modal.querySelector(`.tps-reason[data-ci="${el.dataset.ci}"]`).value.trim();
       if(!reason){ $("tps-msg").textContent="金額が合わないものにチェックを付けた場合は、差額の理由を入力してください"; return; }
@@ -9423,8 +9427,8 @@ function payConfirmDialog_(rows,label){
       <div class="meta" style="font-size:12px;color:var(--muted);margin-bottom:8px">実際の金額を確認してください。請求額と違う場合は、理由を入力すると登録できます（例: 振替手数料880円が差し引かれて引き落とし）。</div>
       ${rows.map((r,i)=>`<div data-pc="${i}" style="border-top:1px solid var(--line);padding:8px 0">
         <div style="font-size:13px"><b>${esc(r.name||"—")}</b>　請求額 ${yen(r.amount)}</div>
-        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:4px;font-size:12px">実際の金額 <input type="number" class="pc-amt" value="${Number(r.amount)||0}" style="width:140px"><span class="pc-diff" style="color:var(--m-red,#c33)"></span></div>
-        <input class="pc-reason" placeholder="金額が違う理由（必須）" style="display:none;width:100%;margin-top:6px"></div>`).join("")}
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:4px;font-size:12px">実際の金額 <input type="number" class="pc-amt" value="${(Number(r.amount)||0)+(r.fee||0)}" style="width:140px"><span class="pc-diff" style="color:var(--m-red,#c33)">${r.fee?`差 +${yen(r.fee)}`:""}</span></div>
+        <input class="pc-reason" placeholder="金額が違う理由（必須）" value="${r.fee?`振替手数料${r.fee}円`:""}" style="display:${r.fee?"block":"none"};width:100%;margin-top:6px"></div>`).join("")}
       <div class="err pc-msg" style="margin-top:6px"></div>
       <div class="mail-actions" style="margin-top:10px"><button class="primary pc-ok">✅ ${label}にする</button><button class="pc-cancel">やめる</button></div></div>`;
     document.body.appendChild(modal);
@@ -9456,7 +9460,7 @@ async function payMarkRows_(list){
 async function transferMarkPaid(u){
   const selected=rows_for_transfer_selection();
   if(!selected.length){ $("transfer-msg").textContent="対象を選択してください"; return; }
-  const list=await payConfirmDialog_(selected.map(r=>({id:r.id,name:(r.vendor&&r.vendor.name)||r.vendor_name,amount:Number(r.amount)||0})),"振込済み");
+  const list=await payConfirmDialog_(selected.map(r=>({id:r.id,name:(r.vendor&&r.vendor.name)||r.vendor_name,amount:Number(r.amount)||0,fee:payFeeOf_(r)})),"振込済み");
   if(!list) return;
   const failed=await payMarkRows_(list);
   if(failed.length) alert(`${failed.length}件は振込済みにできませんでした:\n`+failed.map(f=>f.error).join("\n"));

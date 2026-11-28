@@ -212,6 +212,21 @@ Deno.serve(async (req: Request) => {
     amount: total ?? sumGross,
   } : null;
 
+  // 2026-11-28: 引き落とし手数料が上乗せされる取引先は、手数料の行を足して貸方も同じ額だけ増やす（請求額はそのまま）
+  const fee = Math.round(Number(policy?.debit_fee_amount ?? 0));
+  if (fee > 0 && debitLines.length && credit) {
+    const base = debitLines[0];
+    debitLines.push({
+      line_no: Math.max(...debitLines.map((d) => Number(d.line_no) || 0)) + 1, source_line_id: null, store_id: base.store_id, store_name: base.store_name,
+      debit: { account: policy.debit_fee_account || "支払手数料", sub_account: null, department: base.debit.department, tax: { kind: "purchase", rate: 10 }, amount: fee, net_amount: fee - Math.floor(fee * 10 / 110) },
+      remark: [monthLabel, vendorSub, "振替手数料", base.store_name ?? ""].filter(Boolean).join("　"),
+      rule: { id: null, version: 0, source: "policy" },
+    });
+    credit.amount = Number(credit.amount) + fee;
+    if (policy.fee_credit_account) { credit.account = policy.fee_credit_account; credit.sub_account = policy.fee_credit_sub ?? null; }
+    warnings.push(`引き落とし手数料 ${fee.toLocaleString()}円の行を足しています（引き落とし額は請求額＋${fee.toLocaleString()}円の想定）`);
+  }
+
   const transactionDate = ym ? monthEnd(ym) : monthEnd(String(inv.received_at ?? inv.created_at ?? new Date().toISOString()));
   if (!ym) warnings.push("対象年月が読み取れていないため、計上日は受信月の月末にしています（要確認）");
   const draft = {
