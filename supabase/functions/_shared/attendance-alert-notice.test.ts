@@ -206,8 +206,8 @@ Deno.test("2026-11-21 出勤取消の申請で片づいたアラート（cancell
 Deno.test("2026-11-21 未完了のまとめ: 社長の例の形（日付｜氏名｜店舗）・古い日付から・0 件なら送らない・承認待ちは別の見出し", () => {
   assertEquals(digestText([]), null);
   const r = (date: string, userName: string, storeName: string, waiting = false, url: string | null = null): DigestRow => ({ date, userName, storeName, storeId: "s", url, waiting });
-  const t = digestText([r("2026-11-21", "ニャントウン", "芝の鳥一代"), r("2026-11-20", "ニャントウン", "芝の鳥一代"), r("2026-11-20", "A", "鳥一代 本店"), r("2026-11-21", "ニャントウン", "鳥一代 本店"), r("2026-11-19", "B", "本部", true)])!;
-  assert(t.startsWith("*勤怠確認漏れ（4件）*\n11/20｜ニャントウン｜芝の鳥一代\n11/20｜A｜鳥一代 本店\n11/21｜ニャントウン｜芝の鳥一代\n11/21｜ニャントウン｜鳥一代 本店\n"));
+  const t = digestText([r("2026-11-21", "テスト花子", "芝の鳥一代"), r("2026-11-20", "テスト花子", "芝の鳥一代"), r("2026-11-20", "A", "鳥一代 本店"), r("2026-11-21", "テスト花子", "鳥一代 本店"), r("2026-11-19", "B", "本部", true)])!;
+  assert(t.startsWith("*勤怠確認漏れ（4件）*\n11/20｜テスト花子｜芝の鳥一代\n11/20｜A｜鳥一代 本店\n11/21｜テスト花子｜芝の鳥一代\n11/21｜テスト花子｜鳥一代 本店\n"));
   assert(t.includes("*承認待ち（申請済み）（1件）*\n11/19｜B｜本部"));
   assert(digestText([r("2026-11-20", "A", "本店", false, "https://x.slack.com/archives/C1/p1")])!.includes("<https://x.slack.com/archives/C1/p1|11/20｜A｜本店>"));
   assert(!digestText([r("2026-11-20", "A", "本店", false, "javascript:alert(1)")])!.includes("<javascript"), "https 以外のリンクは付けない");
@@ -228,7 +228,7 @@ Deno.test("2026-11-21 未完了のまとめの宛先: 社長＝全店舗・チ�
   };
   const sbf = (usersQ: (c: Record<string, unknown>) => any[]) => ({ from: (t: string) => { const c: Record<string, unknown> = {}; const b: any = { select: () => b, eq: (k: string, v: unknown) => { c[k] = v; return b; }, in: () => b, not: () => b, order: () => b,
     then: (res: (v: unknown) => void) => res({ data: t === "users" ? usersQ(c) : tbl[t] ?? [], error: null }) }; return b; } });
-  const sb = sbf((c) => c.is_master === true ? [{ id: "boss" }] : c.role === "TEAM" ? [{ id: "head1", team_id: "t1" }, { id: "head2", team_id: "t1" }] : [{ id: "u1", name: "ニャントウン" }, { id: "u2", name: "A" }]);
+  const sb = sbf((c) => c.is_master === true ? [{ id: "boss" }] : c.role === "TEAM" ? [{ id: "head1", team_id: "t1" }, { id: "head2", team_id: "t1" }] : [{ id: "u1", name: "テスト花子" }, { id: "u2", name: "A" }]);
   const sent: any[] = [];
   const notify = (b: Record<string, unknown>) => { sent.push(b); return Promise.resolve({ ok: true }); };
   const r = await sendOpenDigest(sb, notify, { source: "t" });
