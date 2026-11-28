@@ -7,6 +7,13 @@
 
 ---
 
+**2026-11-29（担当D・社長OK）ユビレジ 11/1〜27 の取り込み準備: ns-daily-import main に反映（支払いDBへの書き込みはまだ）**
+- ns-daily-import main `49bb70f`: `lib/ubiregi.js`・`tasks/ubiregi-import.js`・`config.UBIREGI_STORES`・日ごとの集計 `data/ubiregi/2026-11-01_27.json`。27日分の売上・会計数・客数がレジのレポートと全日一致。
+- 次: 社長が Mac mini で `git pull --ff-only` → 試し実行 → `--apply`（支払いDB書き込み・分析の作り直し・BigQuery同期）。実行後に担当Dが `dash_sales_daily` への反映を確認。28〜30日分は 12/1 の朝6時以降。
+- 未対応: 毎日の自動取り込み（API の問い合わせ待ち）・現金の月次照合の対象店舗の追加・精算の店舗登録（担当C）。
+
+---
+
 **2026-11-28（担当D・社長の設計OK）ユビレジの売上取り込み: 読み取りと取込タスクを作成（本番への書き込みなし・未push）**
 - ns-daily-import のブランチ `d/ubiregi-sales`（ローカルのみ）: `lib/ubiregi.js`（売上詳細データCSV→支払いDBの18列。営業日の区切りは朝6時・店舗は `config.UBIREGI_STORES` に1行で追加・知らない支払い方法や金額の食い違いはエラー）・`tasks/ubiregi-import.js`（既定は試し実行。書き込みは既存の `paymentDailyReplace`）。試験4件。
 - 新店舗の11月分（途中まで）を読み取り、ファイル同士の金額の一致を確認。**書き込みは社長の合計確認と OK の後**。書き込みの実行は Mac mini（トークンがこの Mac に無い）。
