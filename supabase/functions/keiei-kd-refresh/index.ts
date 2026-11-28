@@ -26,6 +26,7 @@
 // failedがGitHub Actions側から見えなくなるバグも同時発見・修正済み）。
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { slackPost } from "../_shared/slack.ts";
+import { plIsBalanceSheet } from "../_shared/pl-guard.ts";
 
 const cors: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -789,6 +790,7 @@ async function seisanDirectSync(sb: any, dry = false, fromOverride?: string): Pr
           const nz = plNormalizeItem(String(line.account ?? "").trim(), String(line.subAccount ?? ""));
           const amount = Number(line.amountEx);
           if (!nz.item || !Number.isFinite(amount)) throw new Error(`窓口の行が不正です（${s.label} ${ym}）`);
+          if (plIsBalanceSheet(nz.item)) continue;   // BS科目はPLに入れない
           fresh.push({ year_month: ym, store_id: s.store_id, item: nz.item, category: plCatByItem(plSeisanGuessCat(String(line.account).trim()), nz.item, nz.sub), amount, memo: PL_SEISAN_CAT_MEMO, sub_item: nz.sub, source: PL_SEISAN_CAT_MEMO });
         }
         status.push({ month: ym, store: s.label, status: "精算書から取込", rows: r.lines.length });
@@ -875,7 +877,7 @@ async function autoSyncFromStgPl(sb: any, dry = false, ignoreFromOverride?: stri
     if (!res.ok) throw new Error("bqGetPL取得に失敗: " + (res.error ?? ""));
     const raw: any[][] = res.sheets?.PL ?? [];
     const maps = await loadStoreMaps(sb);
-    const unresolved = new Set<string>(); let badYm = 0; let ignoredInvoiceGas = 0;
+    const unresolved = new Set<string>(); let badYm = 0; let ignoredInvoiceGas = 0; let ignoredBs = 0;
     // 請求書由来のPL確定行をpl_entriesへ直接書く切替（担当C・Q-C3）後は、旧GAS(writePlFee)が出す「補助科目に『外部連携:』を含む」行を取り込まない。
     // app_secrets.pl_ignore_invoice_gas_from='YYYY-MM' を入れた時点から有効（その年月以降の行が対象）。未設定なら何もしない。切替の連絡があるまで入れない。
     let ignoreFrom = ignoreFromOverride ?? "";
@@ -899,6 +901,7 @@ async function autoSyncFromStgPl(sb: any, dry = false, ignoreFromOverride?: stri
       const item0 = String(row[2] ?? "").trim() || "(未分類)";
       const sub0 = (source === "店舗間移動" || source === "媒体販促費（自動計上）") ? "" : source === PL_SEISAN_FEE_SOURCE ? await consigneeSub(sid, ym) : String(row[6] ?? "");
       const nz = plNormalizeItem(item0, sub0); const item = nz.item;
+      if (plIsBalanceSheet(item)) { ignoredBs++; continue; }   // 前払費用などのBS科目はPLに入れない（2026-11-28 社長指示・担当Cと同じ判定）
       rows.push({ year_month: ym, store_id: sid, item, category: plCatByItem(row[3], item, nz.sub), amount: num(row[4]), memo, sub_item: nz.sub, source });   // 店舗間移動・媒体販促費（自動計上）は補助科目を持たない（2026-10-14: 後者はG列に別連携の「PayPay　外部連携:ID」が混入して表示された）（シートのG列に別連携の「名前　外部連携:ID」が混入していたため無視する・2026-10-13）
     }
     const old = (await fetchAll((f, t) => sb.from("pl_entries").select("id,year_month,store_id,item,category,amount,memo,sub_item,source")
@@ -913,7 +916,7 @@ async function autoSyncFromStgPl(sb: any, dry = false, ignoreFromOverride?: stri
     for (const k of gOld.keys()) if (!gNew.has(k)) changed.add(k);
     if (dry) {   // 検証用: 書かずに差分だけ返す
       const bySrc: Record<string, number> = {}; for (const x of rows) bySrc[x.source] = (bySrc[x.source] ?? 0) + 1;
-      return { ok: true, dry: true, auto_rows: rows.length, ignored_invoice_gas: ignoredInvoiceGas, ignore_from: ignoreFrom || null, existing_auto: old.length, changed_groups: changed.size, changed_sample: [...changed].slice(0, 12).map((k) => k.replace("\u0002", " / ")), by_source: bySrc, unresolved: [...unresolved], bad_ym: badYm };
+      return { ok: true, dry: true, auto_rows: rows.length, ignored_bs: ignoredBs, ignored_invoice_gas: ignoredInvoiceGas, ignore_from: ignoreFrom || null, existing_auto: old.length, changed_groups: changed.size, changed_sample: [...changed].slice(0, 12).map((k) => k.replace("\u0002", " / ")), by_source: bySrc, unresolved: [...unresolved], bad_ym: badYm };
     }
     let result: any = { inserted: 0, updated: 0, deleted: 0 };
     if (changed.size) {
@@ -927,9 +930,9 @@ async function autoSyncFromStgPl(sb: any, dry = false, ignoreFromOverride?: stri
     for (const nm of unresolved) {
       try { await sb.rpc("kd_report_unresolved_name", { p_source_table: "pl_entries", p_kind: "store", p_raw_name: nm }); } catch (_) { /* noop */ }
     }
-    const note = [unresolved.size ? `店舗名未対応(取込せず): ${[...unresolved].join("、")}` : "", badYm ? `年月不正で除外${badYm}行` : ""].filter(Boolean).join(" / ");
+    const note = [unresolved.size ? `店舗名未対応(取込せず): ${[...unresolved].join("、")}` : "", badYm ? `年月不正で除外${badYm}行` : "", ignoredBs ? `BS科目で除外${ignoredBs}行` : ""].filter(Boolean).join(" / ");
     await finishRun(sb, runId, true, rows.length, note || undefined);
-    return { ok: true, auto_rows: rows.length, ignored_invoice_gas: ignoredInvoiceGas, changed_groups: changed.size, ...result, unresolved: [...unresolved], bad_ym: badYm };
+    return { ok: true, auto_rows: rows.length, ignored_bs: ignoredBs, ignored_invoice_gas: ignoredInvoiceGas, changed_groups: changed.size, ...result, unresolved: [...unresolved], bad_ym: badYm };
   } catch (e) {
     await finishRun(sb, runId, false, 0, String(e), "kd_pl_auto_sync");
     throw e;
