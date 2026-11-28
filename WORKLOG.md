@@ -9,6 +9,14 @@
 
 ---
 
+**2026-11-28（担当D・社長依頼）採用: 求人費用を広告費の内訳シートから入れ直し＋毎月の自動反映（本番反映済）**
+- 入れ直し: `recruit_costs` を内訳シートにある全17か月で置き換え（各月、シートの広告費＋毎月の固定費。固定費はその月の広告費の割合で按分。エリア×区分で集計・`note='auto:indeed-sheet'`）。全月の合計がシートの「合計」＋固定費と一致することを確認。入れ直し前の控えとSQLは非公開の NStyle-AI リポジトリ側（`company/knowledge/recruit-costs-*`）。
+- 自動反映: 新 EF `recruit-cost-sync`（`--no-verify-jwt`）＋`supabase/2026-11-28_recruit_cost_sync.sql`（`recruit_cost_replace`・cron `recruit-cost-sync` 毎月10〜20日 9:00 JST・前の月）。反映済みの月は何もしない。結果（反映／失敗／10日と20日の「シートがまだ無い」）は社長の Slack DM。合計不一致・知らない店舗や区分があれば何も書かない。
+- ファイルの ID と固定費は公開リポジトリに置かず、app_secrets `recruit_cost_sheet_id`／app_settings `recruit_cost_sheet`。シートの共有（リンクを知っていれば閲覧可）が変わると読めなくなる。
+- 検証: 本番の EF の読むだけの実行で17/17か月が手元の集計と一致（最初の方式は計算量の上限で失敗→軽い読み方に変更）。書き込み関数は巻き戻しで確認。cron からの実反映と DM は初回（12/10）に確認。
+
+---
+
 **2026-11-28（夜）🔴 経営ダッシュボード系 Edge Function 3 本（keiei-api-dashboard-summary v26／keiei-api-home v15／keiei-api-reservation v13）を本番デプロイ＝法人を限定された利用者に他法人のデータを返さない（社長承認）／委託先の入金タブMVPをローカルで実装（本番未反映）／GMO 自動取得の手動ログイン版を 1 回実行→口座選択の不具合を修正**
 - **経営D の法人別制御**（コミット `ae2689d`・main に push 済み）: 共通部品 `supabase/functions/_shared/corp-scope.ts`（マスター=制限なし／個人の許可 `info.user_corporations`／無ければ役職の許可／無ければ制限なし。許可の読み取りに失敗したら 500＝全法人を返す側に倒れない）を 3 関数に適用。法人列のある表は法人で、無い表は「許可法人の店舗」で絞る。**クライアントの store_id・corporation_id・media_name は信用せず、許可範囲との共通部分だけ**使う。本番ソースとリポジトリは事前に完全一致を確認（CLI で取得して diff）。テスト: 単体 11・結合 9（本物の index.ts をにせの Supabase で動かす）・既存 12 すべて成功。修正前の本番ソースでは同じ結合テストが 8 件失敗（漏れを検出できる）。制限なし・店長・サービス・権限なし・偽トークンで 528 リクエストの応答が修正前と一致。デプロイ順 reservation→home→dashboard-summary、`--no-verify-jwt`（本番の verify_jwt=false を維持）。デプロイ後: 未ログインの応答は従来どおり、バージョン +1、verify_jwt は false のまま、info スキーマの読み取り（サービス接続）OK。ロールバック手順 `docs/手順_keiei法人限定_デプロイとロールバック_2026-11-28.md`（cfbb736 のソースを再デプロイ）。期待件数の確認スクリプト `scripts/keiei_corp_scope_expected.py`。
   - ⚠️要確認: 法人限定ユーザー（本部1人・チーム長4人）の PL は、法人の無い「全社共通経費」行が見えなくなる（RLS と同じ考え方）。社長の確認待ち。デプロイ後に、法人限定の本部・チーム長の画面でホームの店舗数が期待どおりか（自法人の店だけ）確認してもらう。
