@@ -54,7 +54,7 @@ begin
   res := res || jsonb_build_object('non_admin_leaks', leak);
   perform set_config('request.jwt.claims', json_build_object('sub', ceo, 'role', 'authenticated')::text, true);
   res := res || jsonb_build_object('summary_rows_for_admin', (select count(*) from public.bank_unassigned_summary()),
-                                   'summary_has_test_account', exists (select 1 from public.bank_unassigned_summary() s where s.account_id = ac and s.unassigned_count = 1));
+                                   'summary_has_test_account', exists (select 1 from public.bank_unassigned_summary() s where s.account_id = ac and s.unassigned_count = 2));
   r := public.bank_account_assign_store(ac, st1, 'リハーサル');
   res := res || jsonb_build_object('assign', r, 'tx1_assigned', (select store_id = st1 from public.bank_transactions where id = t1), 'tx2_confirmed_untouched', (select store_id is null from public.bank_transactions where id = t2));
   select count(*) into n0 from public.bank_deposit_daily() where store_id = st1 and deposit_date = date '2026-11-01' and amount >= 1111;

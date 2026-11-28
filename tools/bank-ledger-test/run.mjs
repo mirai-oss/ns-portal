@@ -12,6 +12,8 @@ const STAGE3 = readFileSync(process.env.STAGE3_FILE || join(here, '../../supabas
 const STAGE4 = readFileSync(process.env.STAGE4_FILE || join(here, '../../supabase/2026-11-28_bank_ledger_stage4.sql'), 'utf8');
 const STAGE5 = readFileSync(process.env.STAGE5_FILE || join(here, '../../supabase/2026-11-28_bank_ledger_stage5.sql'), 'utf8');
 const STAGE5_ROLLBACK = readFileSync(join(here, '../../supabase/2026-11-28_bank_ledger_stage5_ROLLBACK.sql'), 'utf8');
+const STAGE6 = readFileSync(process.env.STAGE6_FILE || join(here, '../../supabase/2026-11-28_bank_ledger_stage6.sql'), 'utf8');
+const STAGE6_ROLLBACK = readFileSync(join(here, '../../supabase/2026-11-28_bank_ledger_stage6_ROLLBACK.sql'), 'utf8');
 const STAGE4_ROLLBACK = readFileSync(join(here, '../../supabase/2026-11-28_bank_ledger_stage4_ROLLBACK.sql'), 'utf8');
 const STAGE3_ROLLBACK = readFileSync(join(here, '../../supabase/2026-11-28_bank_ledger_stage3_ROLLBACK.sql'), 'utf8');
 const STAGE2_ROLLBACK = readFileSync(join(here, '../../supabase/2026-11-28_bank_ledger_stage2_ROLLBACK.sql'), 'utf8');
@@ -40,9 +42,28 @@ grant select on storage.buckets to anon, authenticated, service_role;
 grant usage on schema public to anon, authenticated, service_role;
 alter default privileges in schema public grant all on tables to anon, authenticated, service_role;
 alter default privileges in schema public grant all on functions to anon, authenticated, service_role;
-create table public.corporations (id uuid primary key default gen_random_uuid(), name text);
+create table public.corporations (id uuid primary key default gen_random_uuid(), name text, legacy_info_id uuid);
 create table public.stores (id uuid primary key default gen_random_uuid(), name text, corporation_id uuid references public.corporations(id));
 create table public.corporation_bank_accounts (id uuid primary key default gen_random_uuid(), corporation_id uuid references public.corporations(id), account_number text, confirmed_at timestamptz, confirmed_by uuid);
+-- 既存の「社内情報（info）」の法人の絞り込み（本番と同じ定義）
+create schema info;
+create table info.profiles (id uuid primary key, name text, role_id uuid, is_master boolean default false, is_active boolean default true);
+create table info.user_corporations (user_id uuid, corporation_id uuid);
+create table info.role_corporations (role_id uuid, corporation_id uuid);
+create function info.can_access_corp(corp uuid) returns boolean language sql stable security definer set search_path to 'info', 'public' as $f$
+  select coalesce((
+    select case
+      when p.is_master then true
+      when exists (select 1 from user_corporations uc where uc.user_id = p.id)
+        then exists (select 1 from user_corporations uc where uc.user_id = p.id and uc.corporation_id = corp)
+      when exists (select 1 from role_corporations rc where rc.role_id = p.role_id)
+        then exists (select 1 from role_corporations rc where rc.role_id = p.role_id and rc.corporation_id = corp)
+      else true
+    end
+    from profiles p where p.id = auth.uid() and p.is_active
+  ), false);
+$f$;
+grant usage on schema info to anon, authenticated, service_role;
 create table public.users (id uuid primary key, name text, role text, is_master boolean not null default false, is_active boolean not null default true, team_id uuid);
 create table public.user_stores (user_id uuid, store_id uuid, is_primary boolean default false);
 create table public.team_stores (team_id uuid, store_id uuid);
@@ -55,25 +76,28 @@ create policy payroll_evidence_read on storage.objects for select using (bucket_
 
 const U = (n) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 const ID = { corp1: U(1), corp2: U(2), storeA1: U(11), storeA2: U(12), storeB1: U(13),
-  ceo: U(101), hq: U(102), master: U(103), team: U(104), tenchoA: U(105), tenchoB: U(106), shain: U(107), al: U(108), hqOff: U(109),
+  ceo: U(101), hq: U(102), master: U(103), team: U(104), tenchoA: U(105), tenchoB: U(106), shain: U(107), al: U(108), hqOff: U(109), hqLtd: U(110), infoC1: U(901), infoC2: U(902),
   team1: U(201), acctA1: U(301), acctB1: U(302), acctNone: U(303) };
 const P = {  // 人物: Postgres のロール＋ログイン中のユーザー
   anon: { role: 'anon', id: '' }, service: { role: 'service_role', id: '' },
   ceo: { role: 'authenticated', id: ID.ceo }, hq: { role: 'authenticated', id: ID.hq }, master: { role: 'authenticated', id: ID.master },
   team: { role: 'authenticated', id: ID.team }, tenchoA: { role: 'authenticated', id: ID.tenchoA }, tenchoB: { role: 'authenticated', id: ID.tenchoB },
-  shain: { role: 'authenticated', id: ID.shain }, al: { role: 'authenticated', id: ID.al }, hqOff: { role: 'authenticated', id: ID.hqOff },
+  shain: { role: 'authenticated', id: ID.shain }, al: { role: 'authenticated', id: ID.al }, hqOff: { role: 'authenticated', id: ID.hqOff }, hqLtd: { role: 'authenticated', id: ID.hqLtd },
 };
 const ADMINS = ['ceo', 'hq', 'master'];
 const NON_ADMIN_LOGGED_IN = ['team', 'tenchoA', 'tenchoB', 'shain', 'al', 'hqOff'];
 
 const SEED_USERS = `
-insert into public.corporations (id, name) values ('${ID.corp1}', '法人1'), ('${ID.corp2}', '法人2');
+insert into public.corporations (id, name, legacy_info_id) values ('${ID.corp1}', '法人1', '${ID.infoC1}'), ('${ID.corp2}', '法人2', '${ID.infoC2}');
 insert into public.stores (id, name, corporation_id) values ('${ID.storeA1}', 'A1店', '${ID.corp1}'), ('${ID.storeA2}', 'A2店', '${ID.corp1}'), ('${ID.storeB1}', 'B1店', '${ID.corp2}');
 insert into public.users (id, name, role, is_master, is_active, team_id) values
  ('${ID.ceo}', '社長', 'CEO', false, true, null), ('${ID.hq}', '本部', 'HQ', false, true, null),
  ('${ID.master}', 'マスター', 'SHAIN', true, true, null), ('${ID.team}', 'チーム長', 'TEAM', false, true, '${ID.team1}'),
  ('${ID.tenchoA}', '店長A', 'TENCHO', false, true, null), ('${ID.tenchoB}', '店長B', 'TENCHO', false, true, null),
- ('${ID.shain}', '社員', 'SHAIN', false, true, null), ('${ID.al}', 'アルバイト', 'AL', false, true, null), ('${ID.hqOff}', '退職した本部', 'HQ', false, false, null);
+ ('${ID.shain}', '社員', 'SHAIN', false, true, null), ('${ID.al}', 'アルバイト', 'AL', false, true, null), ('${ID.hqOff}', '退職した本部', 'HQ', false, false, null), ('${ID.hqLtd}', '法人限定の本部', 'HQ', false, true, null);
+-- 法人限定の本部: 法人1だけ（info の限定の設定）
+insert into info.profiles (id, name, is_master, is_active) values ('${ID.hqLtd}', '法人限定の本部', false, true);
+insert into info.user_corporations values ('${ID.hqLtd}', '${ID.infoC1}');
 -- チーム長: チームの店舗 A1 ＋ 本人の所属店舗 A2（B1 は担当外）
 insert into public.team_stores values ('${ID.team1}', '${ID.storeA1}');
 insert into public.user_stores values ('${ID.team}', '${ID.storeA2}', true), ('${ID.tenchoA}', '${ID.storeA1}', true), ('${ID.tenchoB}', '${ID.storeB1}', true), ('${ID.shain}', '${ID.storeA1}', true), ('${ID.al}', '${ID.storeA1}', true), ('${ID.hqOff}', '${ID.storeA1}', true);
@@ -1097,6 +1121,104 @@ async function main() {
     const dbm = await fresh(); await dbm.exec(STAGE2); await dbm.exec(STAGE3); await dbm.exec(STAGE4); await dbm.exec(STAGE5);
     await dbm.exec(`insert into public.bank_accounts (bank_code, login_group, account_no, usage_mode) values ('gmo_aozora','g','m','multi')`);
     ok('共有口座が 1 つあるだけでも、ロールバックは止まる', !(await script(dbm, STAGE5_ROLLBACK)).ok);
+  }
+
+  section('11b. 段階5の法人別: 法人を限定された本部は許可された法人の分だけ／法人未確定は全法人の管理者だけ／運営法人の変更は全法人の管理者だけ');
+  {
+    const db = await fresh(); await db.exec(STAGE2); await db.exec(STAGE3); await db.exec(STAGE4); await db.exec(STAGE5);
+    const A1 = ID.storeA1, B1 = ID.storeB1;
+    const C1 = U(751), C2 = U(752), CN = U(753);
+    await db.exec(`insert into public.bank_accounts (id, bank_code, login_group, account_no, corporation_id) values ('${C1}','gmo_aozora','g','S5B-1','${ID.corp1}'), ('${C2}','gmo_aozora','g','S5B-2','${ID.corp2}'), ('${CN}','gmo_aozora','g','S5B-3', null)`);
+    const mk = (n, acct, corp, date, dep) => db.exec(`insert into public.bank_transactions (id, bank_account_id, corporation_id, txn_date, description, deposit_amount, source_kind, dedupe_key, match_status, tx_kind, counts_as_sales_deposit) values ('${U(n)}','${acct}',${corp ? `'${corp}'` : 'null'},'${date}','ATM',${dep},'manual_entry','s5b-${n}','verified','atm_deposit',true)`);
+    await mk(761, C1, ID.corp1, '2026-11-01', 1000); await mk(762, C2, ID.corp2, '2026-11-01', 2000); await mk(763, CN, null, '2026-11-01', 3000);
+    const call = (who, sql) => as(db, who, sql);
+    const ids = (r) => r.rows.map((x) => x.account_id).sort().join(',');
+    const all3 = [C1, C2, CN].sort().join(',');
+    ok('社長・法人の限定が無い本部・マスターは、3 つの口座（法人1・法人2・法人未確定）がすべて見える', (await Promise.all(['ceo', 'hq', 'master'].map((w) => call(w, `select * from public.bank_unassigned_summary()`)))).every((r) => ids(r) === all3));
+    ok('法人を限定された本部（法人1だけ）は、法人1の口座だけ見える（法人2・法人未確定は見えない）', ids(await call('hqLtd', `select * from public.bank_unassigned_summary()`)) === C1);
+    ok('法人を限定された本部は、法人2・法人未確定の明細の一覧は空', (await call('hqLtd', `select * from public.bank_unassigned_list('${C2}')`)).rows.length === 0 && (await call('hqLtd', `select * from public.bank_unassigned_list('${CN}')`)).rows.length === 0 && (await call('hqLtd', `select * from public.bank_unassigned_list('${C1}')`)).rows.length === 1);
+    ok('法人を限定された本部は、他法人・法人未確定の口座を紐付けられない／他法人の店舗へも紐付けられない', denied(await call('hqLtd', `select public.bank_account_assign_store('${C2}','${B1}','x')`)) && denied(await call('hqLtd', `select public.bank_account_assign_store('${CN}','${A1}','x')`)) && denied(await call('hqLtd', `select public.bank_account_assign_store('${C1}','${B1}','x')`)));
+    ok('取引単位でも、他法人・法人未確定の明細は動かない（0 件）', (await call('hqLtd', `select public.bank_tx_assign_store(array['${U(762)}','${U(763)}']::uuid[],'${A1}','x') r`)).rows[0].r.updated_transactions === 0
+      && (await sup(db, `select count(*)::int n from public.bank_transactions where store_id is not null`)).rows[0].n === 0);
+    ok('法人を限定された本部は、許可された法人の口座は紐付けできる', (await call('hqLtd', `select public.bank_account_assign_store('${C1}','${A1}','自法人の口座') r`)).rows?.[0]?.r?.updated_transactions === 1);
+    const hh = (await sup(db, `select id from public.bank_assignment_history where kind='account' and account_id='${C1}'`)).rows[0].id;
+    ok('紐付けの履歴は、許可された法人の分だけ読める（他法人は読めない）', (await call('hqLtd', `select count(*)::int n from public.bank_assignment_history`)).rows[0].n === 2 && (await call('ceo', `select count(*)::int n from public.bank_assignment_history`)).rows[0].n === 2);
+    ok('法人未確定の口座は、全法人の管理者だけが紐付けできる', (await call('hq', `select public.bank_account_assign_store('${CN}','${B1}','全法人の管理者') r`)).rows?.[0]?.r?.updated_transactions === 1);
+    const hn = (await sup(db, `select id from public.bank_assignment_history where kind='account' and account_id='${CN}'`)).rows[0].id;
+    ok('他法人の紐付けの履歴は、法人を限定された本部が取り消せない／履歴も見えない', denied(await call('hqLtd', `select public.bank_assignment_revert('${hn}','x')`)) && (await call('hqLtd', `select count(*)::int n from public.bank_assignment_history where id='${hn}'`)).rows[0].n === 0);
+    ok('法人未確定だった明細の取引単位の履歴も、法人限定の本部には見えない（全法人の管理者には見える）', (await call('hqLtd', `select count(*)::int n from public.bank_assignment_history where transaction_id='${U(763)}'`)).rows[0].n === 0 && (await call('hq', `select count(*)::int n from public.bank_assignment_history where transaction_id='${U(763)}'`)).rows[0].n === 1);
+    ok('許可された法人の履歴は、本人が取り消せる', (await call('hqLtd', `select public.bank_assignment_revert('${hh}','間違い') r`)).ok);
+    ok('運営法人の変更は、全法人の管理者だけ（法人限定の本部は拒否）', denied(await call('hqLtd', `select public.store_corporation_change('${A1}','${ID.corp1}','2030-01-01','x')`)) && (await call('hq', `select public.store_corporation_change('${A1}','${ID.corp1}','2030-01-01','全法人') r`)).ok);
+    ok('運営法人の履歴は、法人限定の本部には自法人の店舗の分だけ見える', (await call('hqLtd', `select count(*)::int n from public.store_corporation_periods`)).rows[0].n < (await call('ceo', `select count(*)::int n from public.store_corporation_periods`)).rows[0].n);
+    ok('bank_corp_ok: 法人が空は全法人の管理者だけ／サービスロール（取込）は常に可', (await call('hq', `select public.bank_corp_ok(null) v`)).rows[0].v === true && (await call('hqLtd', `select public.bank_corp_ok(null) v`)).rows[0].v === false && (await call('hqLtd', `select public.bank_corp_ok('${ID.corp2}') v`)).rows[0].v === false && (await call('service', `select public.bank_corp_ok(null) v`)).rows[0].v === true
+      && (await call('tenchoA', `select public.bank_corp_ok('${ID.corp1}') v`)).rows[0].v === false);
+  }
+
+  // ---------- 12. 段階6: 法人別の閲覧・操作（既存の表・ポリシー・関数の切り替え）----------
+  section('12. 段階6: 法人を限定された本部は許可された法人の分だけ（明細・口座・原本・取得履歴・訂正履歴・日次集計・置き場）／ほかの人の見え方は不変／全法人をまたぐ記録は全法人の管理者だけ／ロールバック');
+  {
+    const db = await fresh(); await db.exec(STAGE2); await db.exec(STAGE3); await db.exec(STAGE4); await db.exec(STAGE5);
+    const A1 = ID.storeA1, A2 = ID.storeA2, B1 = ID.storeB1;
+    const C1 = U(851), C2 = U(852), CN = U(853);
+    await db.exec(`insert into public.bank_accounts (id, bank_code, login_group, account_no, corporation_id, store_id, store_status) values
+      ('${C1}','paypay','g','S6-1','${ID.corp1}','${A1}','assigned'), ('${C2}','paypay','g','S6-2','${ID.corp2}','${B1}','assigned'), ('${CN}','gmo_aozora','g','S6-3', null, null, 'unassigned')`);
+    for (const [acct, ch] of [[C1, 'a'], [C2, 'b'], [CN, 'c']]) {
+      const sha = ch.repeat(64);
+      await db.exec(`insert into storage.objects (bucket_id, name, metadata) values ('bank-csv-originals', 'paypay/${acct}/${sha}.csv', '{"size": 10}');
+        insert into public.bank_csv_originals (bank_account_id, file_sha256, size_bytes, storage_path) values ('${acct}', '${sha}', 10, 'paypay/${acct}/${sha}.csv');`);
+      await db.exec(`insert into public.bank_import_files (bank_account_id, source, status) values ('${acct}', 'playwright', 'failed');
+        insert into public.bank_account_sync_state (bank_account_id, status) values ('${acct}', 'ok');`);
+    }
+    const mk = (n, acct, corp, store, date, dep) => db.exec(`insert into public.bank_transactions (id, bank_account_id, corporation_id, store_id, txn_date, description, deposit_amount, source_kind, dedupe_key, match_status, tx_kind, counts_as_sales_deposit) values ('${U(n)}','${acct}',${corp ? `'${corp}'` : 'null'},${store ? `'${store}'` : 'null'},'${date}','ATM',${dep},'manual_entry','s6-${n}','verified','atm_deposit',true)`);
+    await mk(861, C1, ID.corp1, A1, '2026-11-01', 1000); await mk(862, C2, ID.corp2, B1, '2026-11-01', 2000); await mk(863, CN, null, null, '2026-11-01', 3000);
+    await mk(864, C2, ID.corp2, A1, '2026-11-01', 4000);   // 店舗 A1 に付いているが、帰属法人は法人2（店舗の運営法人が途中で変わった場合など）
+    await db.exec(`insert into public.bank_deposit_notes (store_id, note_date, note) values ('${A1}', '2026-11-01', 'A1'), ('${B1}', '2026-11-01', 'B1')`);
+    await sup(db, `update public.bank_transactions set adj_description = 'x' where id = '${U(862)}'`);
+    const sig = async (who) => {   // その人に見える物の指紋
+      const g = async (sql) => { const r = await as(db, who, sql); return r.ok ? JSON.stringify(r.rows) : 'DENIED'; };
+      return { tx: await g(`select id from public.bank_transactions order by id`), acct: await g(`select id from public.bank_accounts order by id`), orig: await g(`select id from public.bank_csv_originals order by id`),
+        imp: await g(`select id from public.bank_import_files order by id`), sync: await g(`select bank_account_id from public.bank_account_sync_state order by 1`), ev: await g(`select id from public.bank_transaction_events order by id`),
+        daily: await g(`select store_id, deposit_date, amount, deposit_count from public.bank_deposit_daily() order by 1,2`), status: await g(`select store_id from public.bank_sync_status() order by 1`),
+        notes: await g(`select store_id from public.bank_deposit_notes order by 1`), objs: await g(`select name from storage.objects where bucket_id='bank-csv-originals' order by name`) };
+    };
+    const people = ['ceo', 'hq', 'master', 'team', 'tenchoA', 'tenchoB', 'shain', 'al', 'hqOff', 'hqLtd', 'anon'];
+    const before = {}; for (const w of people) before[w] = await sig(w);
+    const snap0 = await snapshot(db);
+    ok('【適用前に現れる漏れ】法人を限定された本部は、他法人・法人未確定の明細・口座・原本・日次集計まで読める', JSON.parse(before.hqLtd.tx).length === 4 && JSON.parse(before.hqLtd.acct).length === 3 && JSON.parse(before.hqLtd.orig).length === 3 && JSON.parse(before.hqLtd.daily).length === 3 && JSON.parse(before.hqLtd.objs).length === 3);
+    const ap = await script(db, STAGE6); ok('段階6の SQL が流れる', ap.ok, ap.err);
+    ok('段階6の SQL は、2 回流しても同じ', (await script(db, STAGE6)).ok);
+    const after = {}; for (const w of people) after[w] = await sig(w);
+    ok('全法人の管理者（社長・マスター・法人の限定が無い本部）の見え方は、適用前後で完全に同じ', ['ceo', 'hq', 'master'].every((w) => same(before[w], after[w])));
+    ok('チーム長・店長・社員・アルバイト・無効な本部・未ログインの見え方も、適用前後で完全に同じ', ['team', 'tenchoA', 'tenchoB', 'shain', 'al', 'hqOff', 'anon'].every((w) => same(before[w], after[w])));
+    const L = after.hqLtd; const n = (x) => { const v = JSON.parse(x); return Array.isArray(v) ? v.length : -1; };
+    ok('法人を限定された本部: 明細・口座・原本・取得履歴・同期状態は自法人の分だけ（各 1 件）', n(L.tx) === 1 && n(L.acct) === 1 && n(L.orig) === 1 && n(L.imp) === 1 && n(L.sync) === 1, JSON.stringify([L.tx, L.acct].map(n)));
+    ok('法人を限定された本部: 訂正履歴・日次集計・取得状態・入金備考も自法人の分だけ', n(L.ev) === 0 && n(L.daily) === 1 && JSON.parse(L.daily)[0].store_id === A1 && n(L.status) === 1 && n(L.notes) === 1);
+    ok('日次集計は、店舗だけでなく明細の帰属法人でも絞る（店舗 A1 に付いた法人2 の明細 4,000 円は、法人限定の本部には含まれない）', JSON.parse(L.daily)[0].amount == 1000 && JSON.parse(after.ceo.daily).some((r) => r.store_id === A1 && r.amount == 4000));
+    const pol = (await sup(db, `select tablename, policyname, qual from pg_policies where schemaname in ('public','storage') and (policyname like 'bank\\_%') order by 1,2`)).rows;
+    const qual = (t) => pol.find((x) => x.tablename === t)?.qual || '';
+    ok('政策の確認: 全法人をまたぐ 9 つの表の読み取りは bank_global_admin()、明細・口座は法人の許可一覧、原本・取得履歴・同期状態は見てよい口座、置き場は見てよい口座のパス', ['bank_legacy_batches', 'bank_legacy_rows', 'bank_legacy_notes', 'bank_legacy_links', 'bank_diff_items', 'bank_decision_batches', 'bank_diff_decisions', 'bank_reconcile_runs', 'bank_reconcile_mismatches'].every((t) => /bank_global_admin\(\)/.test(qual(t)) && !/bank_ledger_admin/.test(qual(t)))
+      && ['bank_transactions', 'bank_accounts'].every((t) => /bank_allowed_corp_ids/.test(qual(t))) && ['bank_csv_originals', 'bank_import_files', 'bank_account_sync_state'].every((t) => /bank_visible_account_ids/.test(qual(t))) && /bank_visible_account_texts/.test(pol.find((x) => x.tablename === 'objects' && x.policyname === 'bank_csv_originals_read')?.qual || ''));
+    ok('法人を限定された本部: 原本 CSV の置き場も、自法人の口座のファイルだけ（法人未確定・他法人は見えない）', n(L.objs) === 1 && JSON.parse(L.objs)[0].name.includes(C1));
+    const lg = async (who, sql) => (await as(db, who, sql));
+    ok('全法人をまたぐ記録（旧シートの控え・差異・判断・照合）は、法人を限定された本部には見えず、全法人の管理者には見える', (await Promise.all(['bank_legacy_batches', 'bank_legacy_rows', 'bank_legacy_notes', 'bank_legacy_links', 'bank_diff_items', 'bank_decision_batches', 'bank_diff_decisions', 'bank_reconcile_runs', 'bank_reconcile_mismatches'].map(async (t) => (await lg('hqLtd', `select count(*)::int n from public.${t}`)).rows[0].n === 0 && (await lg('ceo', `select 1 from public.${t} limit 1`)).ok))).every(Boolean));
+    const fns = { diff_decide: `select public.bank_diff_decide(array[]::uuid[],'approve','x','manual_adjustment',0,0)`, diff_preview: `select public.bank_diff_preview(null,null,null)`, legacy_report: `select public.bank_legacy_report('${U(999)}')`, reconcile_report: `select public.bank_reconcile_report(14)` };
+    const permErr = async (who, sql) => { const r = await lg(who, sql); return !r.ok && /権限がありません/.test(r.err); };
+    ok('差異の判断・プレビュー・旧シート報告・照合レポートは、法人を限定された本部には「権限がありません」で拒否され、全法人の管理者には権限の拒否が出ない', (await Promise.all(Object.values(fns).map(async (sql) => (await permErr('hqLtd', sql)) && !(await permErr('ceo', sql)) && !(await permErr('hq', sql))))).every(Boolean));
+    // 訂正
+    ok('訂正: 他法人・法人未確定の明細は、法人を限定された本部には直せない', denied(await lg('hqLtd', `select public.bank_tx_correct('${U(862)}', '{"adj_description":"x"}'::jsonb, '訂正')`)) && denied(await lg('hqLtd', `select public.bank_tx_correct('${U(863)}', '{"adj_description":"x"}'::jsonb, '訂正')`)));
+    ok('訂正: 店舗の付け替え先が他法人なら、自法人の明細でも拒否', denied(await lg('hqLtd', `select public.bank_tx_correct('${U(861)}', '{"store_id":"${B1}"}'::jsonb, '付け替え')`)) && (await sup(db, `select store_id from public.bank_transactions where id='${U(861)}'`)).rows[0].store_id === A1);
+    ok('訂正: 自法人の中での付け替えは通り、帰属法人は店舗の運営法人（その日に有効な履歴）になる', (await lg('hqLtd', `select public.bank_tx_correct('${U(861)}', '{"store_id":"${A2}"}'::jsonb, '店舗間違い')`)).ok && (await sup(db, `select store_id, corporation_id from public.bank_transactions where id='${U(861)}'`)).rows[0].corporation_id === ID.corp1);
+    ok('訂正: 全法人の管理者は、どの法人の明細も直せる', (await lg('ceo', `select public.bank_tx_correct('${U(862)}', '{"adj_description":"y"}'::jsonb, '訂正')`)).ok);
+    ok('サービスロール（取込・照合）は、法人に関係なく従来どおり動く', (await lg('service', `select public.bank_account_upsert('gmo_aozora','g','S6-SVC','svc', null)`)).ok && (await lg('service', `select count(*)::int n from public.bank_transactions`)).rows[0].n === 4);
+    ok('入金備考の書き込み: 法人を限定された本部は、他法人の店舗の備考を書けない／自法人は書ける', !(await lg('hqLtd', `insert into public.bank_deposit_notes (store_id, note_date, note) values ('${B1}','2026-11-05','x')`)).ok && (await lg('hqLtd', `insert into public.bank_deposit_notes (store_id, note_date, note) values ('${A1}','2026-11-05','x')`)).ok);
+    // ロールバック
+    const afterSnap = await snapshot(db);
+    ok('段階6のロールバックが通る', (await script(db, STAGE6_ROLLBACK)).ok);
+    const snap2 = await snapshot(db);
+    ok('ロールバック後、ポリシーと関数は適用前（段階5まで）と完全に同じ（新しい関数 bank_storage_object_ok だけ消える）', same(snap0.policies, snap2.policies) && same(snap0.funcs, snap2.funcs) && same(snap0.grants.filter((g) => !/bank_storage/.test(g.table_name)), snap2.grants.filter((g) => !/bank_storage/.test(g.table_name))));
+    ok('ロールバックしても、データは 1 行も変わらない', same(Object.fromEntries(Object.entries(afterSnap.rowsum).filter(([k]) => k !== 'bank_transaction_events')), Object.fromEntries(Object.entries(snap2.rowsum).filter(([k]) => k !== 'bank_transaction_events'))));
+    ok('ロールバック後は、法人を限定された本部が再び全件読める（段階5までの状態に戻る）', JSON.parse((await sig('hqLtd')).tx).length === 4);
+    ok('もう一度適用できる', (await script(db, STAGE6)).ok);
   }
 
   // ---------- 7. ロールバック ----------
