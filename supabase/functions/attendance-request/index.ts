@@ -285,7 +285,7 @@ async function decideAlert(sb: any, actor: { id: string; name: string }, b: any)
 // 2026-11-12 追加: 勤怠確認アラートからの修正をフォームで受ける（Slack のモーダルの置き換え）＋ 休憩の申告
 //   文面・引数の組み立ては _shared/attendance-fix-notify.ts（slack-interact に残したモーダル送信と共通）
 // =============================================================
-// op=alert: フォームの自動入力用。権限は「× 修正する」（RPC sf_attendance_fix_request）と同じ sf_can_manage_as。open 以外は { ok:false, error, status }
+// op=alert: フォームの自動入力用。権限は「× 修正する」（RPC sf_attendance_fix_request）と同じ sf_can_request_as。open 以外は { ok:false, error, status }
 async function alertGet(sb: any, actor: { id: string; name: string }, b: any) {
   const id = String(b.alert_id ?? "");
   const notFound = () => json({ ok: false, code: "not_found", error: "この勤怠確認は見つかりません" }, 404);
@@ -295,7 +295,7 @@ async function alertGet(sb: any, actor: { id: string; name: string }, b: any) {
     .eq("id", id).maybeSingle();
   if (error) return json({ ok: false, error: error.message }, 400);
   if (!a) return notFound();
-  const { data: can } = await sb.rpc("sf_can_manage_as", { p_actor: actor.id, p_store_id: a.store_id });
+  const { data: can } = await sb.rpc("sf_can_request_as", { p_actor: actor.id, p_store_id: a.store_id });   // 2026-11-28: 社員は所属店舗の分も申請できる
   if (can !== true) return json({ ok: false, code: "forbidden", error: "この店舗の勤怠を修正する権限がありません" }, 403);
   if (a.status !== "open") return json({ ok: false, code: "already", status: a.status, request_kind: a.request_kind ?? "fix", error: alertStatusMessage(a.status, a.request_kind) }, 409);
   // 「修正前」は勤怠実績の今の値（承認で上書きされる行。アラートの後に打刻が変わっていても今の値を出す）

@@ -182,7 +182,7 @@ const handlers: Record<string, Handler> = {
   // 勤怠確認「× 修正する」。2026-11-12（ユーザー決定）: Slack の入力画面（モーダル）はやめ、ポータルのフォーム（kintai.html?alert=<id>）に一本化。
   //   新しいボタン（url 付き・value に form:1）: Slack がフォームを開くので、ここは何も返さない。
   //   古いボタン（2026-11-12 より前のメッセージと、それを複製したリマインド）: 押した人だけに見える返信でフォームのリンクを返す。
-  //   権限は RPC sf_attendance_fix_request と同じ判定（sf_can_manage_as）を先に見て、同じ文言で断る。状態はフォーム（op=alert）と同じく open だけ通す。
+  //   権限は RPC sf_attendance_fix_request と同じ判定（sf_can_request_as）を先に見て、同じ文言で断る。状態はフォーム（op=alert）と同じく open だけ通す。
   "attendance.alert.fix": async ({ sb, actor, payload, value }) => {
     if (isFormLinkPress(value)) return text("");
     const ru: string | undefined = payload.response_url;
@@ -194,7 +194,7 @@ const handlers: Record<string, Handler> = {
         const { data: a } = isUuid(alertId) ? await sb.from("sf_attendance_alerts").select("id,status,store_id").eq("id", alertId).maybeSingle() : { data: null };
         if (!a) msg = "この勤怠確認は見つかりません";
         else {
-          const { data: can } = await sb.rpc("sf_can_manage_as", { p_actor: actor.user_id, p_store_id: a.store_id });
+          const { data: can } = await sb.rpc("sf_can_request_as", { p_actor: actor.user_id, p_store_id: a.store_id });   // 2026-11-28: 社員は所属店舗の分も申請できる
           msg = can !== true ? "この店舗の勤怠を修正する権限がありません"
             : a.status !== "open" ? `この勤怠確認はすでに処理されています（${a.status}）`
             : fixFormLinkText(alertId, value?.title);
