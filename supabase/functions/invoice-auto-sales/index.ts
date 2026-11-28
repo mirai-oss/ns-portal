@@ -239,6 +239,14 @@ async function seisanIssued(db: any, b: any) {
   // 既存の下書き
   let existing: any = null;
   if (bizKey) { const { data: ex } = await db.from("invoices").select("id, amount, mf_journal_id, mf_journal_number, source_attachment_id, invoice_status, journal_draft").eq("biz_key", bizKey).neq("invoice_status", "cancelled").limit(1); existing = ex?.[0] ?? null; }
+  // 2026-11-28: 2026-08 以前の精算分は運営委託費を手作業で登録済み（biz_key が無く既存と判定できない）。再送しても下書きを作らない
+  if (!existing && ym < "2026-09") return { status: "skipped", reason: "2026-08 以前の精算分は手作業で登録済みのため、下書きは作りません" };
+  // 同じ支払先・対象月・金額の手作業登録（MF登録済み）があれば作らない
+  if (!existing && !grouped && v) {
+    const { data: manual } = await db.from("invoices").select("id").is("biz_key", null).eq("vendor_id", v.id).eq("amount", total).eq("target_year_month", `${ym}-01`)
+      .not("mf_journal_id", "is", null).neq("invoice_status", "cancelled").limit(1);
+    if (manual?.[0]) return { status: "duplicate", invoice_id: manual[0].id, reason: "同じ支払先・対象月・金額の登録済み請求書があります" };
+  }
   const attachPdf = async (invoiceId: string): Promise<string | null> => {
     const pdf = b.pdf; if (!pdf?.base64) return null;
     const bytes = Uint8Array.from(atob(String(pdf.base64)), (c) => c.charCodeAt(0));

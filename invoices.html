@@ -630,7 +630,7 @@ body.embed-mode .wrap{padding-top:16px}
 // 見出しバー）に小さくビルド日時を表示する。キャッシュで古い版を見ているかどうかを、
 // スクリーンショット1枚で即座に判別できるようにするための診断用マーカー
 // （デプロイのたびにここを更新する）
-const BUILD_TAG="2026-11-27-v192";
+const BUILD_TAG="2026-11-28-v193";
 const PAYROLL_CANCEL_READY=true;
 /* ============================================================
    認証・セッション（index.html / expenses.html と同一実装）
@@ -8463,9 +8463,10 @@ function unifiedAttentionReasons(r){
   if(r.due_date && r.due_date<today && r.payment_status!=="paid" && !(r.email&&r.email.mail_kind==="sales")) reasons.push("overdue");
   return reasons;
 }
-function unifiedNeedsAttention(r){ return unifiedAttentionReasons(r).length>0; }
+function unifiedNeedsAttention(r){ return r.invoice_status!=="cancelled"&&unifiedAttentionReasons(r).length>0; }
 function unifiedMatchesSubTab(r,tab){
   if(tab==="all") return true;
+  if(r.invoice_status==="cancelled") return false; // 2026-11-28: 取り消した請求書は「すべて」にだけ出す
   if(tab==="review") return unifiedNeedsAttention(r);
   if(tab==="approval") return r.current_stage==="ready_for_approval"&&!r.mf_journal_id&&r.auto_mode!=="manual"; // 自動処理で検算・判定を通過した請求書（承認待ち）
   // 2026-11-24: 精算書の発行から自動で作った運営委託費の請求書（biz_keyに「|seisan:」）は、運営委託費の自動計上（精算書→PL）で反映されるので、PL未反映には出さない
