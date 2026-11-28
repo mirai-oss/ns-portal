@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>銀行入金管理の統合開発 — 事前調査と実装計画（GMO・店舗未確定・法人別権限・業務委託先）</title>
+<style>
+:root{--bg:#fff;--ink:#1b2430;--muted:#5d6b7a;--line:#d9e0e8;--card:#f5f8fb;--ok:#0f7b4b;--warn:#a85a00;--bad:#b3261e;--blue:#0b5cad;--code:#eef2f7}
+@media(prefers-color-scheme:dark){:root{--bg:#0f141a;--ink:#e6edf3;--muted:#9aa7b4;--line:#2a3541;--card:#171e26;--ok:#4cc38a;--warn:#f0b35a;--bad:#ff8a80;--blue:#79b8ff;--code:#1d2630}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.75 -apple-system,"Hiragino Sans","Yu Gothic",sans-serif}
+main{max-width:980px;margin:0 auto;padding:20px 16px 80px}
+h1{font-size:24px;margin:8px 0 4px}
+h2{font-size:20px;margin:36px 0 10px;padding-top:10px;border-top:2px solid var(--line)}
+h3{font-size:17px;margin:22px 0 6px}
+.sub{color:var(--muted);font-size:14px}
+.box{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 16px;margin:12px 0}
+.ok{border-left:5px solid var(--ok)}.warn{border-left:5px solid var(--warn)}.bad{border-left:5px solid var(--bad)}
+table{border-collapse:collapse;width:100%;margin:10px 0;font-size:14.5px}
+th,td{border:1px solid var(--line);padding:7px 9px;text-align:left;vertical-align:top}
+th{background:var(--card)}
+code,pre{background:var(--code);border-radius:6px;font-family:ui-monospace,Menlo,monospace;font-size:13px}
+code{padding:1px 5px}pre{padding:10px 12px;overflow-x:auto;white-space:pre-wrap}
+.tbl{overflow-x:auto}
+.tag{display:inline-block;font-size:12px;border:1px solid var(--line);border-radius:999px;padding:0 8px;color:var(--muted)}
+li{margin:3px 0}
+</style>
+</head>
+<body>
+<main>
+<h1>銀行入金管理の統合開発 — 事前調査と実装計画</h1>
+<div class="sub">※公開リポジトリのため、口座番号・金額の実額は書いていません。作成 2026-11-28 ／ 状態：<b>調査・計画（実装は承認後）</b>。この調査では、既存の仕組みを変更していません。</div>
+
+<div class="box ok"><b>今日の実施済み</b>：①<b>段階4のSQLを本番適用</b>（毎日の照合の仕組み。事前検証：PGlite 412項目＋実データのロールバック付きリハーサルに成功してから適用。適用の前後で既存の表・関数・ポリシー・トリガーの指紋は同一・銀行明細6,007件／差異・承認の記録は不変）。②貼り替え後の定時取込の確認は、<b>11/29 14:00・14:15 の定時のあと</b>（貼り替えより前に今日の定時が済んでいたため）。③PayPay正本取込の有効化・毎日の照合の登録は、②の確認のあと。</div>
+
+<h2>1. 現在の実装で再利用できる部分</h2>
+<div class="tbl"><table>
+<tr><th>領域</th><th>すでに有るもの（再利用）</th><th>足りないもの</th></tr>
+<tr><td>共通の銀行台帳</td><td>口座・原本（SHA-256）・取得履歴・明細・訂正履歴・差異・承認・照合の表と関数（段階1〜4）。PayPay・GMOの両方を同じ表で扱う作り。取込関数は<b>店舗ID・法人IDが空でも保存できる</b>（GMOサンプルで確認済み）</td><td>未確定の管理画面・紐付けの履歴・法人別の権限</td></tr>
+<tr><td>法人マスタ</td><td><code>public.corporations</code>（4法人）。<b>列 <code>legacy_info_id</code> が、既存の法人情報システム <code>info.corporations</code> のIDを指している</b>（4法人すべて・正式名も一致を確認）＝<b>ID対応表は既にある</b>。別名表 <code>corporation_aliases</code>・正式名 <code>legal_name</code>・<code>is_group_company</code></td><td>法人ごとの店舗の適用期間（履歴）</td></tr>
+<tr><td>法人の銀行口座</td><td><code>public.corporation_bank_accounts</code>（法人ID・銀行・口座番号・<b>名義カナ</b>・<b>有効期間 valid_from/valid_to</b>・確認者・確認日時）。<b>現在は0件</b></td><td>台帳の口座と結ぶ（口座名義の確認の置き場として使える）</td></tr>
+<tr><td>店舗マスタ</td><td><code>stores.corporation_id</code>（運営法人・現在値のみ）・<code>seisan_target</code>・<code>seisan_store_name</code>・別名つきの店舗ディレクトリ</td><td>運営法人の履歴</td></tr>
+<tr><td>権限の部品</td><td>台帳の <code>bank_store_visible()</code>（社長・本部＝全店／チーム長＝担当チーム＋所属／店長・社員＝所属）。既存の法人別制御 <code>info.can_access_corp()</code>・<code>info.user_corporations</code>・<code>info.role_corporations</code></td><td>台帳が法人を見ていない（調査済み）</td></tr>
+<tr><td>売上（入金予定）</td><td>Supabaseの表示層 <code>kd_deposit_daily_v</code>（店舗×日の現金売上）・<code>kd_daily_store_full</code>・<code>kd_deposit_carry_v</code>。ダッシュボードの「入金予定（現金売上）−入金（ATM）」と同じ元</td><td>業務委託先向けの検証済みの数字の確認</td></tr>
+<tr><td>業務委託先の精算書</td><td>GAS＋スプレッドシートのシステム（<code>seisan-dashboard</code>）。役割は マスター／本部／委託先。<b>委託先は自分の担当店舗だけ閲覧（売上のN-style収益は非表示）</b>。Supabaseには <code>sd_dash_grant</code>（トークン）・<code>sd_dash_snapshot</code>（キャッシュ）だけ</td><td>委託先と店舗・契約期間の対応をSupabaseに</td></tr>
+<tr><td>実行基盤</td><td>Mac miniのPlaywright・ディスパッチャー（数分おき・1日3回まで再試行）・通知（Slack／Lark）・PGliteと実環境のロールバック付き検証の道具</td><td>—</td></tr>
+</table></div>
+
+<h2>2. GMO自動取得の実現方法と、規約・認証上の制約</h2>
+<div class="tbl"><table>
+<tr><th>調べたこと</th><th>結果</th></tr>
+<tr><td>公式API</td><td>公開されている仕様書は個人・個人事業主口座編（2021年版・入出金明細照会あり）。<b>法人口座は、会計ソフト（マネーフォワード・弥生）が「参照系API」で明細を取得</b>している。自社の法人口座を<b>自社のプログラムから直接</b>使う申込方法は、公開資料から確認できない。「銀行APIパートナープログラム」は開発企業向け（開発実績2サービス以上など）で、当社の用途には当てはまりにくい</td></tr>
+<tr><td>規約</td><td>取引規定に、自動操作を明示で禁止・許可する条文は見つからない。ID・パスワードを第三者に知られない管理責任・誤入力が続くと利用停止の規定あり。<b>法人向けのインターネットバンキング規定は未入手</b>（銀行への確認が必要）</td></tr>
+<tr><td>認証</td><td>ログイン画面はID・パスワードの入力と、パスキー（WebAuthn）の部品。法人は電子証明書方式・口座ごとの認証の可能性。<b>ログイン後の追加認証は、人が手でログインしないと分からない</b>（私は認証情報を入力できない）</td></tr>
+<tr><td>既存の別ルート</td><td><b>当社が使っているマネーフォワードで、すでにGMO口座が銀行連携されていれば、その仕組みの明細を使う</b>のが、規約上いちばん安全な選択肢（要確認：MFにGMO口座を連携済みか／MFから明細を取得できるか）</td></tr>
+</table></div>
+<div class="box warn"><b>結論</b>：ご指示の条件（規約に適合・認証制限の回避をしない・実データの検証）の<b>すべては、今日の時点では満たせません</b>。<b>手動CSV取込（原本保存・読み戻し・重複判定・取得履歴）は、すでに完成・検証済み</b>です（1口座のCSVで398行を取込・再取込で増えない）。自動ログインの本番稼働は保留とし、次の2つが揃ったら、実装・検証に進みます：①あなたがMac miniで手動ログインし、認証方式と8口座の切り替え操作を確認（観察ツール <code>gmo-observe.js</code> は用意済み）②GMOに「法人口座の明細を自社プログラムで定期取得してよいか／法人向けの明細取得手段はあるか」を確認、またはマネーフォワード経由の取得の可否を確認。</div>
+
+<h2>3. 今日中に完成できる作業と、翌日から本番稼働できる条件</h2>
+<div class="tbl"><table>
+<tr><th>作業</th><th>今日</th><th>翌日（11/29〜）の本番稼働の条件</th></tr>
+<tr><td>段階4のSQL適用</td><td><b>完了</b></td><td>—</td></tr>
+<tr><td>PayPayの定時確認</td><td>未（定時が貼り替え前）</td><td>11/29 14:20 以降に確認（私が実行）</td></tr>
+<tr><td>PayPay正本取込の有効化</td><td>コード・試験は完了。有効化は未</td><td>上の確認が正常なら、<b>11/30 の定時（次の定時）から開始</b>。初回は私が監視（実行ログ・正本の取込結果・通知）</td></tr>
+<tr><td>毎日の照合タスク（A・B両系統の完了を確認してから）</td><td>実装（待機型：A・Bの実行済みの印と、正本の口座ごとの取得状態の両方が成功になるまで最大約60分待ち、そろってから照合。そろわなければ失敗として通知）</td><td>PayPay正本取込の初回の実行が正常なら、登録</td></tr>
+<tr><td>GMO手動CSV取込</td><td>完成済み（CLIで取込・再取込・照合）</td><td>毎日1回、人がCSVを出して取り込めば、翌日から運用可（自動ではない）</td></tr>
+<tr><td>GMO自動取得</td><td>保留（§2）</td><td>手動ログインの確認と規約の確認が済んだとき。<b>最短でも、確認が済んだ翌日以降</b></td></tr>
+<tr><td>店舗未確定の管理（共通機能）</td><td>SQL・テストまで実装可（本番適用は承認後）</td><td>承認後</td></tr>
+<tr><td>法人別RLS</td><td>設計・SQL・テストまで（<b>本番変更は承認後</b>）</td><td>承認後</td></tr>
+<tr><td>業務委託先の入金管理</td><td>調査・設計のみ（公開は承認後）</td><td>法人別RLS・契約の表・売上の確認のあと</td></tr>
+</table></div>
+
+<h2>4. 店舗ID未設定の明細を保存するために必要な変更</h2>
+<p><b>すでにできること</b>：店舗ID・法人ID未設定の口座・明細を、原本・取得履歴つきで保存できる（試験済み）。未確定の明細は<b>店舗別入金実績（日次集計）に入らない</b>（店舗がnullの行は集計から除外）。法人・店舗が決まらない行は、本部・社長・マスターだけが見られる。</p>
+<div class="tbl"><table>
+<tr><th>#</th><th>追加する変更</th></tr>
+<tr><td>1</td><td><b>未紐付け一覧</b>（関数 <code>bank_unassigned_summary()</code>）：口座別・日付別の「店舗未確定」「法人未確定」の明細の件数・金額・最古の日付。本部管理画面の一覧の元</td></tr>
+<tr><td>2</td><td><b>紐付けの履歴</b>（新しい表 <code>bank_assignment_history</code>、追記専用）：対象（口座／明細）・変更前後（店舗・法人）・変更者・日時・理由・取り消し元。<b>口座の紐付け</b>と<b>取引単位の紐付け</b>の両方を記録</td></tr>
+<tr><td>3</td><td><b>口座の店舗紐付け</b>（<code>bank_account_assign_store</code>）：口座に店舗を設定し、<b>その口座の店舗未確定の明細だけ</b>を再判定して店舗・法人を埋める（すでに別の店舗が付いた明細は触らない）。日次集計は明細から都度計算するので、紐付けた時点で店舗の入金管理に反映される（キャッシュなし）</td></tr>
+<tr><td>4</td><td><b>1口座を複数店舗で使う場合</b>：口座に「利用形態（single／multi）」を持たせ、<b>multi の口座は口座単位では自動計上しない</b>。<b>取引単位</b>（<code>bank_tx_assign_store</code>：明細の選択・摘要の条件で一括）で店舗を付ける。根拠のない自動紐付けはしない（人の操作だけ）</td></tr>
+<tr><td>5</td><td><b>誤りの解除・訂正</b>：紐付けの取り消し（履歴の1件を指定して元に戻す）／別の店舗へ付け替え（新しい履歴が積まれる）。確定済み（confirm_status）の明細は、既存の訂正手続き（理由必須）</td></tr>
+<tr><td>6</td><td><b>法人未確定の隔離</b>：法人IDが空の行・口座は、<b>全法人の権限を持つ管理者（社長・全法人マスター・全法人の本部）だけ</b>が閲覧・紐付けできる（法人限定の本部には見せない）</td></tr>
+<tr><td>7</td><td>画面：本部の入金管理に「未紐付け」タブ（一覧・紐付け・取り消し）。画面の読み先の切替（段階6）と一緒に実装（今は読み先を変えない）</td></tr>
+</table></div>
+
+<h2>5. 法人マスタ・運営会社の紐付け方法</h2>
+<ul>
+<li><b>法人の対応表</b>：<code>public.corporations.legacy_info_id</code> が <code>info.corporations.id</code> を指す（4法人すべて確認済み・正式名も一致）。<b>名前の文字列一致には頼らず、このIDの対応を正とする</b>。対応が欠けた法人が増えたときは、台帳側で「対応なし＝全法人管理者だけ」に倒す。</li>
+<li><b>区別する4つのID</b>：<code>corporation_id</code>（入金が帰属する法人）＝明細・口座に<b>取込時点の値を保存</b>（店舗マスタの法人を変えても、過去の銀行入金の法人は変わらない。現状の作りで既に満たす）／<code>store_id</code>／<code>bank_account_id</code>／<code>contractor_id</code>（業務委託先・新設）。</li>
+<li><b>運営法人の履歴</b>（新設 <code>store_corporation_periods</code>：店舗ID・法人ID・適用開始日・終了日）。現在の <code>stores.corporation_id</code> から初期データを作る。取込時は「入金日に有効な法人」を引いて明細に保存する（既存の明細は変えない）。M&Aで店舗の運営法人が変わったら、新しい期間を足す（過去の期間は残る）。</li>
+<li><b>口座の名義・法人</b>：<code>corporation_bank_accounts</code>（現在0件・有効期間・名義カナ・確認者つき）を、台帳の口座の「名義確認の記録」として使う（台帳の口座に <code>corporation_bank_account_id</code> を足す）。<b>法人ID未確定の口座は、名義を確認してから確定</b>（社長判断どおり）。</li>
+</ul>
+
+<h2>6. 業務委託先の精算書画面と入金管理を統合する方法</h2>
+<h3>6-1. 既存の精算書システムの認証・権限</h3>
+<ul>
+<li>画面＝GitHub Pages（<code>seisan-dashboard</code>）／API＝GAS／データ＝Googleスプレッドシート。権限は<b>スプレッドシートの「権限_精算ダッシュボード」</b>で管理（マスター＞本部＞委託先）。<b>委託先は、Supabaseのユーザーではない</b>（統合ログイン＝Supabase認証の対象外で、サーバー側で拒否されている）。委託先は、自分の担当店舗だけ閲覧（売上のN-style収益は非表示・編集不可）。</li>
+<li>委託先と店舗・契約期間の対応は、いまは<b>Supabaseに無い</b>（スプレッドシートの権限シートのみ）。</li>
+</ul>
+<h3>6-2. 統合の方法（新しいログインは作らない）</h3>
+<ol>
+<li><b>認証は精算書のまま</b>。精算書のGASが、ログイン済みの委託先から<b>サーバー側で</b>「担当店舗」を決める（画面から送られたURL・パラメータの店舗IDは信用しない）。</li>
+<li>Supabaseに <code>contractors</code>（委託先）と <code>contractor_store_contracts</code>（委託先・店舗・<b>契約開始日・終了日・閲覧可能期間・過去分の閲覧の明示設定</b>）を新設。精算書GASは、委託先の識別（<code>contractor_id</code>）だけをSupabaseの<b>専用の読み取り関数</b>に渡す。</li>
+<li>専用関数 <code>vendor_deposit_view(contractor_id, 月)</code>（サービスロール専用・精算書GASからだけ呼べる）が、<b>契約で許可された店舗・期間だけ</b>を、<b>公開してよい項目だけ</b>で返す：店舗名・日付・入金額・件数・入金日・入金差額・未入金。<b>返さない項目</b>：口座番号・残高・原本CSV・他法人／他店舗・内部承認・差異・訂正履歴。<b>契約終了後は自動で空</b>（過去分は明示設定のあるときだけ）。</li>
+<li>画面：精算書の画面に「入金管理」タブを足す（閲覧専用）。<b>売上・入金予定は、元の数字・算出方法が検証できるまで出さない</b>（現状は <code>kd_deposit_daily_v</code> に現金売上があるが、レジ照合の確認状況との対応を確かめてから）。</li>
+<li>検証：URL・APIパラメータの店舗ID・委託先IDを書き換えても、他店舗が取れないこと（関数が契約から店舗を決めるため、引数に店舗IDを受け取らない設計）／契約終了日の前後／過去分の明示設定／他法人／N-style収益の非表示。</li>
+</ol>
+
+<h2>7. 必要なDB変更・RLS変更・画面変更</h2>
+<div class="tbl"><table>
+<tr><th>段階</th><th>DB（新規SQL・既存は編集しない）</th><th>RLS・権限</th><th>画面</th></tr>
+<tr><td>5（店舗未確定）</td><td>紐付け履歴の表・関数（一覧・口座紐付け・取引紐付け・取り消し）・口座に利用形態の列</td><td>既存の管理者権限のまま（法人未確定は全法人管理者のみ）</td><td>本部の「未紐付け」タブ（読み先の切替と同時）</td></tr>
+<tr><td>6（法人マスタ）</td><td>店舗の運営法人の履歴表・口座と法人銀行口座の対応の列・取込時の法人の決め方</td><td>—</td><td>—</td></tr>
+<tr><td>7（法人別RLS）★本番変更は承認後</td><td>法人の許可関数 <code>bank_corp_ok(法人ID)</code>（<code>info.can_access_corp(legacy_info_id)</code> を通す）・全法人管理者の判定</td><td>台帳・口座・原本（Storage）・取得履歴・差異・訂正・承認・日次集計・照合の<b>すべてのRLS・関数・Storageのポリシー</b>に、法人の条件を足す。サービスロールは全法人のまま（一般ユーザーと分離）</td><td>本部の法人切替</td></tr>
+<tr><td>8（業務委託先）</td><td>委託先・契約の表・専用の読み取り関数</td><td>委託先はSupabaseの利用者にしない（精算書GAS経由・サービスロールの専用関数。引数に店舗IDなし）</td><td>精算書に「入金管理」タブ（閲覧専用）</td></tr>
+<tr><td>9（追加の設定機能）</td><td>新法人・新店舗・口座・委託先・契約を、設定の行の追加だけで足せる管理用の関数</td><td>全法人管理者のみ</td><td>設定画面（最小）</td></tr>
+</table></div>
+<p>PayPayの照合（段階4）・取込は、上の変更で<b>書き換えない</b>（関数の入口に法人の条件を足す形で、結果が変わらないことを、テストで確認する）。</p>
+
+<h2>8. 既存PayPay処理への影響と、ロールバック</h2>
+<div class="tbl"><table>
+<tr><th>変更</th><th>影響</th><th>ロールバック</th></tr>
+<tr><td>段階4（適用済み）</td><td>新しい表・関数のみ。bank_legacy_plan の置き換え（期間内の未対応の旧行は移行せず差異へ）。既存データは不変</td><td><code>…_stage4_ROLLBACK.sql</code>（表が空の間のみ）</td></tr>
+<tr><td>PayPay正本取込の有効化</td><td>GAS送信は先・正本は独立（実機試験済み）</td><td><code>config.js</code> の <code>BANK_LEDGER_MODE</code> を消す</td></tr>
+<tr><td>店舗未確定・法人マスタ・法人別RLS・委託先（今後）</td><td>追加のSQLのみ。RLSは<b>法人別の条件を足す</b>ので、法人限定の本部の見える範囲が狭くなる（意図した変更）。取込・照合（サービスロール）は変わらない</td><td>各SQLに戻し用SQLを付ける（RLSは元のポリシーに戻せる形で別ファイル）。適用前に、実環境のロールバック付き検証</td></tr>
+</table></div>
+
+<h2>9. 開発順序・テスト方法・承認ポイント</h2>
+<div class="tbl"><table>
+<tr><th>順</th><th>作業</th><th>テスト</th><th>承認</th></tr>
+<tr><td>1</td><td>PayPay：11/29 定時の確認 → 正本取込の有効化（11/30 定時から・監視）→ 毎日の照合の登録（待機型）→ 14日間</td><td>定時の実行ログ・取込結果・照合の記録</td><td>ご指示済み（確認が正常なら実施）。毎日の照合の登録は、初回の取込が正常なら実施</td></tr>
+<tr><td>2</td><td>GMO：手動CSV取込を運用に載せる／手動ログイン観察・規約の確認／自動取得の安全性検証</td><td>実CSVでの取込精度・再取込・障害時の挙動</td><td><b>GMO自動ログインの本番有効化は別途承認</b></td></tr>
+<tr><td>3</td><td>店舗未確定の管理（共通機能）→ 法人の履歴表・口座の名義確認</td><td>PGlite＋実環境のロールバック付き検証（紐付け・取り消し・複数店舗口座・法人未確定の隔離）</td><td>SQL適用（確認後）</td></tr>
+<tr><td>4</td><td>法人別RLS（全経路）</td><td>法人限定の本部／全法人マスター／他法人の店長／匿名で、表・関数・Storageのすべてを確認（PGlite＋実環境）。サービスロールの取込は変わらないこと</td><td><b>法人別RLSの本番変更は別途承認</b></td></tr>
+<tr><td>5</td><td>業務委託先の入金管理（契約の表・専用関数・精算書のタブ）</td><td>URL・パラメータの書き換え・契約終了・過去分・他法人・非公開項目</td><td><b>委託先への新しい入金情報の公開は別途承認</b></td></tr>
+<tr><td>6</td><td>新店舗・新法人の追加の設定機能</td><td>設定だけで追加できること／切り離しの試験</td><td>SQL適用（確認後）</td></tr>
+</table></div>
+<p>引き続き、入金管理画面の全面切替・旧シート／BigQuery／既存GASの停止・過去の未承認調整の自動承認・根拠のない自動紐付けは、実施しません。</p>
+</main></body></html>
