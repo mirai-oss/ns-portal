@@ -9,6 +9,12 @@
 
 ---
 
+**2026-11-28（担当D・社長承認）請求書の店舗分けに按分ルールを追加（本番反映済）**
+- `recruit-invoice-split` に `rules`（エリア×区分を重みで複数店舗へ）を追加して再デプロイ。社長が担当Aの画面で決めた「恵比寿の正社員求人は鳥一代の全体募集」の割合を `app_settings.recruit_invoice_split.rules` に設定（設定SQLは非公開の NStyle-AI `company/knowledge/recruit-invoice-split-rule-2026-11-28.sql`）。仕訳の部門と PL反映の初期値の両方に効く。**応募管理の求人費用はシートの店舗のまま**（社長確認）。
+- 検証: 単体テスト、本番EFの読むだけの実行で 2026-10 の請求書2件を確認（請求額と一致。担当Aの反映予定表とは端数の1円だけ違う）。実際の請求書での分割は12月が初回。
+
+---
+
 **2026-11-28（担当D・社長依頼）請求書: 求人広告の請求書を店舗ごとに自動で分ける仕組み（本番反映済・実際の請求書での確認は12月）**
 - 新 EF `recruit-invoice-split`（`--no-verify-jwt`）＋`supabase/2026-11-28_recruit_invoice_split.sql`（`recruit_invoice_apply_split`／`recruit_invoice_mark_mismatch`・cron `recruit-invoice-split` 7:05〜23:35 JST の30分ごと）。内訳シートの読み込みは `_shared/recruit-cost-load.ts` に共通化し `recruit-cost-sync` も再デプロイ。
 - 対象: 設定した3取引先（広告費2・固定費1）の請求書で、対象月 2026-11 以降・MF未登録・取消でない・人が直していないもの。明細（税抜＋税）を店舗ごとに入れ替えて既存の `invoice-journal-draft` を呼ぶ。固定費は広告費の割合で按分。請求額がシートの税込と合わなければ分けず `blocked_reason` に理由。MF への登録は今までどおり人の承認。
