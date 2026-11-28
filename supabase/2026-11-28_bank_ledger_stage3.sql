@@ -3,7 +3,7 @@
 -- 前提: 段階1・2 が適用済み。段階1・2のファイルは編集しない（変更はこの新しいファイルで）。
 -- 設計: docs/計画書_銀行入金の正本化_段階3_2026-11-28.html ／ テスト: tools/bank-ledger-test/（PGlite と、実データの「流して必ず巻き戻す」リハーサル）
 --
--- 【この SQL がやること】新しい表 9 つ・関数 9 つを足し、日次集計の関数 bank_deposit_daily を「手動調整（マイナスを含む）も数える」形に 1 つ置き換える。
+-- 【この SQL がやること】新しい表 7 つ・関数 10 つを足し、日次集計の関数 bank_deposit_daily を「手動調整（マイナスを含む）も数える」形に 1 つ置き換える。
 --   旧シートの全行を追記専用の控えに保存 → 銀行CSV由来の既存の明細と「取引単位」で対応づけ → 対応が無い旧行だけを移行 → 差異を一覧にして、保留・承認・訂正・却下を区別して記録する。
 -- 【この SQL がやらないこと】データの移行そのもの（関数を作るだけ。実行は別途承認）、既存の明細（銀行CSV由来の行）の変更、画面・GAS・BigQuery・旧シートの変更。
 -- 【既存への影響】bank_deposit_daily の置き換えだけ。手動調整の行が 1 件も無い現状では、戻り値は置き換え前と完全に同じ（テストで確認）。
@@ -118,6 +118,8 @@ create table if not exists public.bank_decision_batches (
   actor_label text,
   item_ids    uuid[] not null,
   item_count  integer not null check (item_count >= 1),
+  total_amount numeric,                                   -- 対象の金額の合計（符号つき）。一括の承認では、操作者が確認した件数・合計と一致したことの証拠になる
+  expected_count integer, expected_total numeric,         -- 操作者が「確認した」と申告した件数・合計（一括は必須）
   decided_at  timestamptz not null default now()
 );
 create table if not exists public.bank_diff_decisions (
@@ -129,6 +131,16 @@ create table if not exists public.bank_diff_decisions (
   decided_at  timestamptz not null default now()
 );
 create index if not exists bank_diff_decisions_item_idx on public.bank_diff_decisions (item_id, decided_at desc);
+
+-- A-7. 手動調整（マイナスを含む）は、銀行の実際の入出金とは別物。銀行口座に結び付いた行（＝実際の銀行明細）は、調整にできない。
+--      → マイナスの調整は「出金側に絶対値で」入るが、銀行の出金としては数えない（bank_account_id が空・旧シート由来か手入力の行だけが調整）。
+do $$
+begin
+  if not exists (select 1 from pg_constraint where conname = 'bank_tx_adjustment_not_bank_row' and conrelid = 'public.bank_transactions'::regclass) then
+    alter table public.bank_transactions add constraint bank_tx_adjustment_not_bank_row
+      check (tx_kind <> 'adjustment' or (bank_account_id is null and source_kind in ('legacy_sheet', 'manual_entry')));
+  end if;
+end $$;
 
 -- =====================================================================
 -- B. 権限（段階1と同じ: 本部・社長・マスターだけが読める。画面からは書けない）と、守り
@@ -295,7 +307,11 @@ begin
     select lkey, p_batch, 'adjustment', 'manual_adjustment' from _bl_l where store_id is not null and kind = 'adjustment' on conflict (legacy_key) do nothing;
   get diagnostics v_adj = row_count;
   insert into public.bank_diff_items (batch_id, sig, kind, store_id, txn_date, amount, description, legacy_keys, detail)
-    select p_batch, 'adjustment|' || lkey, 'manual_adjustment', store_id, txn_date, amount, description, array[lkey], jsonb_build_object('row_no', row_no)
+    select p_batch, 'adjustment|' || lkey, 'manual_adjustment', store_id, txn_date, amount, description, array[lkey],
+           -- 個別確認の対象: 高額（300 万円以上）・マイナス・ゼロ（金額が 0 以下）。複数に当てはまる行も 1 件として数える（review_class は 1 つ）。
+           -- numbers_preserved: 移行で数字は維持される（自動）。この差異の「承認」は、調整内容が正当かどうかの確認で、数字の維持とは別。
+           jsonb_build_object('row_no', row_no, 'high', abs(amount) >= 3000000, 'negative', amount < 0, 'zero', amount = 0,
+                              'review_class', case when amount <= 0 or abs(amount) >= 3000000 then 'individual' else 'bulk' end, 'numbers_preserved', true)
       from _bl_l where store_id is not null and kind = 'adjustment' on conflict (sig) do nothing;
   -- B. 銀行CSV由来の明細（まだ旧行と結んでいないもの）
   create temporary table _bl_t on commit drop as
@@ -459,32 +475,63 @@ begin
   return jsonb_build_object('inserted', v_ins, 'same', v_same, 'mismatch', v_diff, 'unresolved', v_unres);
 end $$;
 
--- D-6. 差異の決定（個別・一括）。本部・社長・マスターだけ。理由が必須。対象の一覧・理由・操作者・日時を、決定の記録（追記専用）に残す。
---   approved  … このままでよい（旧のみ・調整行・曖昧な対応づけ）。銀行側の保留中の行（旧に無い／旧と対応済みの保留）は、保留を解いて照合済みにする（履歴に release が残る）
+-- D-6. 差異の決定（個別・一括）。本部・社長・マスターだけ。理由が必須。対象の一覧・理由・操作者・日時（と件数・合計）を、決定の記録（追記専用）に残す。
+--   approved  … このままでよい（旧のみ・調整行・曖昧な対応づけ）。銀行側の保留中の行は、保留を解いて照合済みにする（履歴に release が残る）
 --   held      … 保留のまま（理由を残すだけ）
---   rejected  … 集計に入れない（対象の明細の「売上入金として数える」を外す。行は残る。履歴に correct が残る）
---   corrected … 訂正した（先に bank_tx_correct で訂正してあることを確かめる。対象の明細に訂正値か訂正の履歴が無ければ受け付けない）
+--   rejected  … 集計に入れない（対象の明細の「売上入金として数える」を外す。行は残る。履歴に correct が残る）。これは数字が変わる決定
+--   corrected … 訂正した（先に bank_tx_correct で訂正してあることを確かめる）
+--   【数字の維持と、調整の正当性の承認は別】手動調整の行は、移行した時点で数字は維持される（自動）。ここでの「承認」は、その調整が正当かどうかを人が確認した記録で、数字は変えない。
+--   【個別確認の対象】高額（300 万円以上）・マイナス・ゼロの調整（review_class=individual）は、1 件ずつしか承認・却下できない（一括に混ぜられない）。
+--   【一括の確認】2 件以上を approved / rejected にするときは、操作者が一覧で確認した「件数」と「合計（符号つき）」を渡す。実際の対象と一致しなければ拒否する（見ていないものを承認しない）。
+--   【保留の解除（paired_held）の条件】旧の行と銀行の明細が、同じ店舗ID・同じ日付・同じ金額で、1 対 1（確からしさが auto か approved）と確かめられた場合だけ解ける。
 --   p_kind を渡すと、対象がすべてその種類であることを確かめる（一括承認の取り違え防止）。
-create or replace function public.bank_diff_decide(p_item_ids uuid[], p_decision text, p_reason text, p_kind text default null)
+create or replace function public.bank_diff_decide(p_item_ids uuid[], p_decision text, p_reason text, p_kind text default null,
+                                                   p_expect_count integer default null, p_expect_total numeric default null)
 returns jsonb language plpgsql security definer set search_path to 'public' as $$
-declare v_batch uuid; v_it public.bank_diff_items%rowtype; v_name text; v_n int := 0; v_tx uuid; v_ids uuid[];
+declare v_batch uuid; v_it public.bank_diff_items%rowtype; v_name text; v_n int := 0; v_tx uuid; v_ids uuid[]; v_cnt int; v_total numeric; v_mode text;
 begin
   if not public.bank_ledger_admin() then raise exception '権限がありません'; end if;
   if coalesce(btrim(p_reason), '') = '' then raise exception '理由が必要です'; end if;
   if p_decision not in ('approved', 'held', 'rejected', 'corrected') then raise exception '決定は approved / held / rejected / corrected のどれかです'; end if;
   select array_agg(distinct x) into v_ids from unnest(coalesce(p_item_ids, '{}')) x;
   if v_ids is null or array_length(v_ids, 1) < 1 then raise exception '対象が空です'; end if;
-  if (select count(*) from public.bank_diff_items where id = any (v_ids)) <> array_length(v_ids, 1) then raise exception '存在しない差異が含まれています'; end if;
+  v_cnt := array_length(v_ids, 1); v_mode := case when v_cnt = 1 then 'single' else 'bulk' end;
+  if (select count(*) from public.bank_diff_items where id = any (v_ids)) <> v_cnt then raise exception '存在しない差異が含まれています'; end if;
   if p_kind is not null and exists (select 1 from public.bank_diff_items where id = any (v_ids) and kind <> p_kind) then raise exception '指定した種類（%）以外の差異が含まれています', p_kind; end if;
+  select coalesce(sum(coalesce(amount, 0)), 0) into v_total from public.bank_diff_items where id = any (v_ids);
+  -- 個別確認の対象（高額・マイナス・ゼロ）は、一括にできない
+  if v_mode = 'bulk' and p_decision in ('approved', 'rejected')
+     and exists (select 1 from public.bank_diff_items where id = any (v_ids) and detail ->> 'review_class' = 'individual') then
+    raise exception '個別確認が必要な行（高額・マイナス・ゼロの調整）が含まれています。1 件ずつ承認・却下してください';
+  end if;
+  -- 一括の承認・却下は、確認した件数と合計が実際と一致していること
+  if v_mode = 'bulk' and p_decision in ('approved', 'rejected') then
+    if p_expect_count is null or p_expect_total is null then raise exception '一括の承認・却下には、確認した件数と合計（符号つき）が必要です'; end if;
+    if p_expect_count <> v_cnt or p_expect_total <> v_total then raise exception '確認した件数・合計（% 件・%）が、実際の対象（% 件・%）と一致しません', p_expect_count, p_expect_total, v_cnt, v_total; end if;
+  elsif p_expect_count is not null and p_expect_count <> v_cnt or p_expect_total is not null and p_expect_total <> v_total then
+    raise exception '確認した件数・合計が、実際の対象と一致しません';
+  end if;
   select coalesce(u.name, u.id::text) into v_name from public.users u where u.id = auth.uid();
-  insert into public.bank_decision_batches (mode, decision, reason, actor_id, actor_label, item_ids, item_count)
-    values (case when array_length(v_ids, 1) = 1 then 'single' else 'bulk' end, p_decision, btrim(p_reason), auth.uid(), coalesce(v_name, 'user'), v_ids, array_length(v_ids, 1))
-    returning id into v_batch;
+  insert into public.bank_decision_batches (mode, decision, reason, actor_id, actor_label, item_ids, item_count, total_amount, expected_count, expected_total)
+    values (v_mode, p_decision, btrim(p_reason), auth.uid(), coalesce(v_name, 'user'), v_ids, v_cnt, v_total, p_expect_count, p_expect_total) returning id into v_batch;
   for v_it in select * from public.bank_diff_items where id = any (v_ids) order by id for update loop
     if p_decision = 'corrected' then
       foreach v_tx in array v_it.transaction_ids loop
         if not exists (select 1 from public.bank_transactions t where t.id = v_tx and (t.is_adjusted or exists (select 1 from public.bank_transaction_events e where e.transaction_id = v_tx and e.event_kind = 'correct'))) then
           raise exception '訂正の記録がありません（先に bank_tx_correct で訂正してください）';
+        end if;
+      end loop;
+    end if;
+    if p_decision = 'approved' and v_it.kind = 'paired_held' then      -- 保留の解除は、1 対 1 の対応が確かめられたときだけ
+      foreach v_tx in array v_it.transaction_ids loop
+        if not exists (
+          select 1 from public.bank_transactions t
+            join public.bank_legacy_links k on k.transaction_id = t.id and k.kind = 'paired' and k.confidence in ('auto', 'approved')
+            join public.bank_legacy_rows r on r.content_hash || '#' || r.ordinal = k.legacy_key
+           where t.id = v_tx and r.store_id = t.store_id and r.txn_date = t.txn_date and r.amount = t.deposit_amount
+             and (select count(*) from public.bank_legacy_links k2 where k2.transaction_id = t.id) = 1
+             and (select count(*) from public.bank_legacy_links k3 where k3.legacy_key = k.legacy_key) = 1)
+        then raise exception '旧の行との 1 対 1 の対応（同じ店舗ID・日付・金額）が確かめられないため、保留を解けません';
         end if;
       end loop;
     end if;
@@ -499,7 +546,7 @@ begin
       foreach v_tx in array v_it.transaction_ids loop
         perform public.bank_tx_correct(v_tx, '{"counts_as_sales_deposit": false}'::jsonb, p_reason);
       end loop;
-      -- 旧のみ・調整の行（移行済み）も同様に集計から外す
+      -- 旧のみ・調整の行（移行済み）も同様に集計から外す（数字が変わる決定）
       for v_tx in select k.transaction_id from public.bank_legacy_links k where k.legacy_key = any (v_it.legacy_keys) and k.transaction_id is not null and k.kind in ('migrated', 'adjustment') loop
         perform public.bank_tx_correct(v_tx, '{"counts_as_sales_deposit": false}'::jsonb, p_reason);
       end loop;
@@ -508,7 +555,29 @@ begin
     update public.bank_diff_items set status = p_decision, decided_at = now(), decided_by = auth.uid(), decided_reason = btrim(p_reason) where id = v_it.id;
     v_n := v_n + 1;
   end loop;
-  return jsonb_build_object('decision_batch', v_batch, 'mode', case when v_n = 1 then 'single' else 'bulk' end, 'items', v_n);
+  return jsonb_build_object('decision_batch', v_batch, 'mode', v_mode, 'items', v_n, 'total', v_total);
+end $$;
+
+-- D-6b. 一括承認の前に見る「一覧と合計」（読むだけ。本部・社長・マスターだけ）。件数・合計（符号つき）・内訳・個別確認の対象の数（高額・マイナスの重複は 1 件）を返す。
+--   この件数・合計を、そのまま bank_diff_decide の p_expect_count / p_expect_total に渡して一括承認する。
+create or replace function public.bank_diff_preview(p_kind text, p_review_class text default null, p_status text default 'open')
+returns jsonb language plpgsql stable security definer set search_path to 'public' as $$
+declare v jsonb;
+begin
+  if not (public.bank_ledger_admin() or coalesce(auth.role(), '') = 'service_role') then raise exception '権限がありません'; end if;
+  select jsonb_build_object(
+    'kind', p_kind, 'review_class', p_review_class, 'status', p_status,
+    'count', count(*), 'total', coalesce(sum(coalesce(d.amount, 0)), 0),
+    'positive_total', coalesce(sum(d.amount) filter (where d.amount > 0), 0), 'negative_total', coalesce(sum(d.amount) filter (where d.amount < 0), 0),
+    'high', count(*) filter (where (d.detail ->> 'high')::boolean), 'negative', count(*) filter (where (d.detail ->> 'negative')::boolean), 'zero', count(*) filter (where (d.detail ->> 'zero')::boolean),
+    'high_and_negative', count(*) filter (where (d.detail ->> 'high')::boolean and (d.detail ->> 'negative')::boolean),
+    'individual_distinct', count(*) filter (where d.detail ->> 'review_class' = 'individual'),
+    'ids', coalesce(jsonb_agg(d.id order by s.name, d.txn_date, d.id), '[]'::jsonb),
+    'items', coalesce(jsonb_agg(jsonb_build_object('id', d.id, 'store', s.name, 'date', d.txn_date, 'desc', d.description, 'amount', d.amount, 'review_class', d.detail ->> 'review_class') order by s.name, d.txn_date, d.id), '[]'::jsonb))
+    into v
+    from public.bank_diff_items d left join public.stores s on s.id = d.store_id
+   where d.kind = p_kind and d.status = p_status and (p_review_class is null or d.detail ->> 'review_class' = p_review_class);
+  return v;
 end $$;
 
 -- D-7. 既存の銀行CSV由来の明細の指紋（移行の前後で変わらないことの確認用。読むだけ）
@@ -544,6 +613,18 @@ begin
     'notes_legacy', v_notes,
     'notes_saved', (select count(*) from public.bank_legacy_notes where batch_id = p_batch),
     'notes_in_ledger_same', (select count(*) from public.bank_legacy_notes n join public.bank_deposit_notes d on d.store_id = n.store_id and d.note_date = n.note_date and d.note = n.note where n.batch_id = p_batch),
+    'adjustments', (select jsonb_build_object(
+        'rows', count(*),
+        'numbers_preserved_rows', count(*) filter (where k.transaction_id is not null),          -- 移行で数字が維持された行（承認とは別）
+        'legitimacy_pending', count(*) filter (where d.status in ('open', 'held')), 'legitimacy_approved', count(*) filter (where d.status = 'approved'), 'rejected', count(*) filter (where d.status = 'rejected'),
+        'individual_distinct', count(*) filter (where d.detail ->> 'review_class' = 'individual'), 'high', count(*) filter (where (d.detail ->> 'high')::boolean),
+        'negative', count(*) filter (where (d.detail ->> 'negative')::boolean), 'zero', count(*) filter (where (d.detail ->> 'zero')::boolean), 'high_and_negative', count(*) filter (where (d.detail ->> 'high')::boolean and (d.detail ->> 'negative')::boolean),
+        'individual_pending', count(*) filter (where d.detail ->> 'review_class' = 'individual' and d.status in ('open', 'held')),
+        'bulk_pending', count(*) filter (where d.detail ->> 'review_class' = 'bulk' and d.status in ('open', 'held')),
+        'bulk_pending_total', coalesce(sum(d.amount) filter (where d.detail ->> 'review_class' = 'bulk' and d.status in ('open', 'held')), 0),
+        'signed_total', coalesce(sum(d.amount), 0),
+        'negative_rows_not_bank_withdrawals', (select count(*) from public.bank_transactions t where t.tx_kind = 'adjustment' and t.withdrawal_amount > 0 and t.bank_account_id is null))
+       from public.bank_diff_items d left join public.bank_legacy_links k on k.legacy_key = d.legacy_keys[1] where d.batch_id = p_batch and d.kind = 'manual_adjustment'),
     'diff_items_by_kind_status', coalesce((select jsonb_object_agg(kind || '/' || status, c) from (select kind, status, count(*) c from public.bank_diff_items where batch_id = p_batch group by 1, 2) q), '{}'::jsonb),
     'csv_rows_fingerprint', public.bank_csv_rows_fingerprint()
   ) into v;
@@ -558,7 +639,8 @@ revoke all on function public.bank_legacy_migrate(uuid) from public, anon, authe
 revoke all on function public.bank_legacy_migrate_notes(uuid) from public, anon, authenticated;
 revoke all on function public.bank_csv_rows_fingerprint() from public, anon, authenticated;
 revoke all on function public.bank_legacy_report(uuid) from public, anon, authenticated;
-revoke all on function public.bank_diff_decide(uuid[], text, text, text) from public, anon;
+revoke all on function public.bank_diff_decide(uuid[], text, text, text, integer, numeric) from public, anon;
+revoke all on function public.bank_diff_preview(text, text, text) from public, anon;
 grant execute on function public.bank_legacy_load(jsonb, jsonb, jsonb) to service_role;
 grant execute on function public.bank_legacy_plan(uuid) to service_role;
 grant execute on function public.bank_legacy_changes(uuid, uuid) to service_role;
@@ -566,4 +648,5 @@ grant execute on function public.bank_legacy_migrate(uuid) to service_role;
 grant execute on function public.bank_legacy_migrate_notes(uuid) to service_role;
 grant execute on function public.bank_csv_rows_fingerprint() to service_role;
 grant execute on function public.bank_legacy_report(uuid) to service_role, authenticated;
-grant execute on function public.bank_diff_decide(uuid[], text, text, text) to authenticated, service_role;
+grant execute on function public.bank_diff_decide(uuid[], text, text, text, integer, numeric) to authenticated, service_role;
+grant execute on function public.bank_diff_preview(text, text, text) to authenticated, service_role;

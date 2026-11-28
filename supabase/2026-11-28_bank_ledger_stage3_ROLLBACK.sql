@@ -12,7 +12,8 @@ begin
   if v_adj > 0 then raise exception '手動調整の行が % 件あるため、日次集計を元の定義に戻せません。取り消しを中止しました', v_adj; end if;
 end $$;
 
-drop function if exists public.bank_diff_decide(uuid[], text, text, text);
+drop function if exists public.bank_diff_decide(uuid[], text, text, text, integer, numeric);
+drop function if exists public.bank_diff_preview(text, text, text);
 drop function if exists public.bank_legacy_report(uuid);
 drop function if exists public.bank_csv_rows_fingerprint();
 drop function if exists public.bank_legacy_migrate_notes(uuid);
@@ -28,6 +29,7 @@ drop table if exists public.bank_legacy_notes;
 drop table if exists public.bank_legacy_rows;
 drop table if exists public.bank_legacy_batches;
 drop function if exists public.bank_legacy_guard();
+alter table public.bank_transactions drop constraint if exists bank_tx_adjustment_not_bank_row;
 
 -- 段階1の定義に戻す
 create or replace function public.bank_deposit_daily(p_from date default null, p_to date default null)

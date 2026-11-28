@@ -30,7 +30,7 @@ declare
   p_meta jsonb := '__META__'::jsonb;
   res jsonb := '{}'::jsonb; t0 timestamptz := clock_timestamp();
   snap0 text; snap1 text; fp0 jsonb; fp1 jsonb; b uuid; b2 uuid; pl jsonb; pl2 jsonb; mg jsonb; mg2 jsonb; nm jsonb; nm2 jsonb; rep jsonb; v jsonb;
-  ceo uuid; hq uuid; ids uuid[]; ids1 uuid[]; adj_ids uuid[]; n int;
+  ceo uuid; hq uuid; ids uuid[]; ids1 uuid[]; adj_ids uuid[]; n int; daily0 text; daily1 text; tot0 numeric; tot1 numeric; tot2 numeric; pv_bulk jsonb; pv_ind jsonb; ind_ids uuid[]; xid uuid;
 begin
   create function pg_temp.snap() returns text language sql as $f$
     select md5(coalesce(string_agg(x, '|' order by x), '')) from (
@@ -66,8 +66,17 @@ begin
   select count(*) into n from public.bank_transactions where source_kind in ('playwright', 'manual_csv');
   res := res || jsonb_build_object('existing_csv_rows_before', n);
 
-  -- 1. 段階3のSQLを流す（既存の物の指紋が変わらないこと）
+  -- 1. 段階3のSQLを流す（既存の物の指紋が変わらないこと）。日次集計の関数は置き換わるが、調整の無い現状では結果が同じこと／他に使っている物が無いこと
+  select md5(coalesce(jsonb_agg(to_jsonb(d) order by d.store_id, d.deposit_date)::text, '')) into daily0 from public.bank_deposit_daily() d;
   execute s3;
+  perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
+  select md5(coalesce(jsonb_agg(to_jsonb(d) order by d.store_id, d.deposit_date)::text, '')) into daily1 from public.bank_deposit_daily() d;
+  res := res || jsonb_build_object('daily_function_same_result_before_after', daily0 = daily1, 'daily_rows_checked', (select count(*) from public.bank_deposit_daily()),
+    'daily_function_dependents', (select coalesce(jsonb_agg(dep_name), '[]'::jsonb) from (
+        select 'func:' || p.proname dep_name from pg_proc p where p.pronamespace in ('public'::regnamespace) and p.prosrc ilike '%bank_deposit_daily%' and p.proname not in ('bank_deposit_daily', 'bank_legacy_report')
+        union all select 'view:' || c.relname dep_name from pg_class c where c.relkind in ('v', 'm') and c.relnamespace not in ('pg_catalog'::regnamespace, 'information_schema'::regnamespace) and pg_get_viewdef(c.oid) ilike '%bank_deposit_daily%'
+        union all select 'policy:' || tablename || '.' || policyname dep_name from pg_policies where coalesce(qual, '') ilike '%bank_deposit_daily%' or coalesce(with_check, '') ilike '%bank_deposit_daily%'
+        union all select 'trigger:' || tgname dep_name from pg_trigger where not tgisinternal and pg_get_triggerdef(oid) ilike '%bank_deposit_daily%') q));
   perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
   snap1 := pg_temp.snap();
   fp0 := public.bank_csv_rows_fingerprint();
@@ -104,26 +113,50 @@ begin
     'basis_counts', (select jsonb_object_agg(coalesce(basis, '-') || '/' || confidence, c) from (select basis, confidence, count(*) c from public.bank_legacy_links where kind = 'paired' group by 1, 2) q),
     'migrated_basis', (select jsonb_object_agg(coalesce(basis, '-'), c) from (select basis, count(*) c from public.bank_legacy_links where kind = 'migrated' group by 1) q));
 
-  -- 6. 実在の社長・本部で、一括承認・個別承認が動くこと（巻き戻す）
+  -- 6. 手動調整: 数字の維持（移行で自動）と、正当性の承認（人）を分けて確認。高額・マイナスは 1 件ずつ、残りは一覧・合計を確認して一括（実在の社長・本部で。巻き戻す）
   select id into ceo from public.users where role = 'CEO' and is_active limit 1;
   select id into hq from public.users where role = 'HQ' and is_active limit 1;
+  select coalesce(sum(amount), 0) into tot0 from public.bank_deposit_daily();
+  v := pg_temp.as_user(hq, 'authenticated', 'select public.bank_diff_preview(''manual_adjustment'', ''bulk'') r'); pv_bulk := v -> 'rows' -> 0 -> 'r';
+  v := pg_temp.as_user(hq, 'authenticated', 'select public.bank_diff_preview(''manual_adjustment'', ''individual'') r'); pv_ind := v -> 'rows' -> 0 -> 'r';
+  res := res || jsonb_build_object('preview_bulk', pv_bulk - 'items' - 'ids', 'preview_individual', pv_ind - 'items' - 'ids', 'signed_daily_total_before_approval', tot0);
+  select array_agg(x::uuid) into ind_ids from jsonb_array_elements_text(pv_ind -> 'ids') x;
   select array_agg(id order by id) into adj_ids from public.bank_diff_items where kind = 'manual_adjustment';
-  if adj_ids is not null and ceo is not null then
-    v := pg_temp.as_user(hq, 'authenticated', format('select public.bank_diff_decide(%L::uuid[], ''approved'', ''リハーサル: 手動調整を一括承認'', ''manual_adjustment'') r', adj_ids));
-    res := res || jsonb_build_object('bulk_approve', v);
-    v := pg_temp.as_user(ceo, 'authenticated', format('select public.bank_diff_decide(%L::uuid[], ''held'', ''リハーサル: 個別に保留へ戻す'', ''manual_adjustment'') r', array[adj_ids[1]]));
-    res := res || jsonb_build_object('single_hold', v,
-      'decision_batches', (select jsonb_agg(jsonb_build_object('mode', mode, 'decision', decision, 'items', item_count, 'listed', array_length(item_ids, 1), 'actor', actor_label, 'has_time', decided_at is not null, 'reason', reason)) from public.bank_decision_batches),
-      'decisions_rows', (select count(*) from public.bank_diff_decisions));
-    v := pg_temp.as_user(null, 'anon', format('select public.bank_diff_decide(%L::uuid[], ''approved'', ''x'') r', adj_ids));
-    res := res || jsonb_build_object('anon_decide_denied', not (v ->> 'ok')::boolean);
-    -- 旧と対応済みなのに保留のままの行（店舗名の別表記で「旧に無い」と見えていたもの）を承認して保留を解く → 旧との数字のずれが消える
-    select array_agg(id order by id) into ids from public.bank_diff_items where kind = 'paired_held';
-    if ids is not null then
-      v := pg_temp.as_user(ceo, 'authenticated', format('select public.bank_diff_decide(%L::uuid[], ''approved'', ''リハーサル: 旧シートに同じ入金が有るので保留を解く'', ''paired_held'') r', ids));
-      perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
-      res := res || jsonb_build_object('release_paired_held', v, 'report_after_release', public.bank_legacy_report(b));
-    end if;
+  -- 個別確認の行を含む一括は拒否される
+  v := pg_temp.as_user(hq, 'authenticated', format('select public.bank_diff_decide(%L::uuid[], ''approved'', ''リハーサル: 全部まとめて'', ''manual_adjustment'', %s, %s) r', adj_ids, array_length(adj_ids, 1), (pv_bulk ->> 'total')::numeric + (pv_ind ->> 'total')::numeric));
+  res := res || jsonb_build_object('bulk_with_individual_denied', not (v ->> 'ok')::boolean, 'bulk_with_individual_error', v ->> 'err');
+  -- 個別確認の行を 1 件ずつ承認（社長）
+  foreach xid in array coalesce(ind_ids, '{}') loop
+    v := pg_temp.as_user(ceo, 'authenticated', format('select public.bank_diff_decide(%L::uuid[], ''approved'', ''リハーサル: 内容を確認（個別）'', ''manual_adjustment'') r', array[xid]));
+    if not (v ->> 'ok')::boolean then raise exception 'individual approve failed: %', v ->> 'err'; end if;
+  end loop;
+  -- 残りを、一覧・合計を確認して一括承認（本部）
+  v := pg_temp.as_user(hq, 'authenticated', format('select public.bank_diff_decide(%L::uuid[], ''approved'', ''リハーサル: 本部が一覧・合計を確認して一括承認'', ''manual_adjustment'', %s, %s) r',
+         (select array_agg(x::uuid) from jsonb_array_elements_text(pv_bulk -> 'ids') x), pv_bulk ->> 'count', pv_bulk ->> 'total'));
+  res := res || jsonb_build_object('bulk_approve', v);
+  perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
+  select coalesce(sum(amount), 0) into tot1 from public.bank_deposit_daily();
+  res := res || jsonb_build_object('signed_daily_total_after_approval', tot1, 'numbers_unchanged_by_approval', tot0 = tot1,
+    'report_adjustments_after', (public.bank_legacy_report(b)) -> 'adjustments');
+  -- 個別に保留へ戻す（記録の確認）
+  v := pg_temp.as_user(ceo, 'authenticated', format('select public.bank_diff_decide(%L::uuid[], ''held'', ''リハーサル: 個別に保留へ戻す'', ''manual_adjustment'') r', array[adj_ids[1]]));
+  res := res || jsonb_build_object('single_hold', v,
+    'decision_batches', (select jsonb_agg(jsonb_build_object('mode', mode, 'decision', decision, 'items', item_count, 'listed', array_length(item_ids, 1), 'total', total_amount, 'expected_count', expected_count, 'expected_total', expected_total, 'actor_set', actor_label is not null, 'has_time', decided_at is not null, 'reason_set', reason <> '')) from public.bank_decision_batches),
+    'decisions_rows', (select count(*) from public.bank_diff_decisions));
+  v := pg_temp.as_user(null, 'anon', format('select public.bank_diff_decide(%L::uuid[], ''approved'', ''x'') r', adj_ids));
+  res := res || jsonb_build_object('anon_decide_denied', not (v ->> 'ok')::boolean);
+  -- 本厚木の保留（旧と対応済みなのに保留のまま）: 同一店舗ID・日付・金額の 1 対 1 が確かめられたものだけ解ける
+  select array_agg(id order by id) into ids from public.bank_diff_items where kind = 'paired_held';
+  if ids is not null then
+    res := res || jsonb_build_object('paired_held_items', array_length(ids, 1),
+      'paired_held_one_to_one_verified', (select count(*) from public.bank_diff_items d join public.bank_transactions t on t.id = d.transaction_ids[1]
+          join public.bank_legacy_links k on k.transaction_id = t.id and k.kind = 'paired' and k.confidence in ('auto', 'approved')
+          join public.bank_legacy_rows r on r.content_hash || '#' || r.ordinal = k.legacy_key and r.store_id = t.store_id and r.txn_date = t.txn_date and r.amount = t.deposit_amount
+         where d.kind = 'paired_held'));
+    v := pg_temp.as_user(ceo, 'authenticated', format('select public.bank_diff_decide(%L::uuid[], ''approved'', ''リハーサル: 旧シートの同じ入金と 1 対 1 を確認したので保留を解く'', ''paired_held'', %s, %s) r', ids, array_length(ids, 1),
+       (select sum(amount) from public.bank_diff_items where kind = 'paired_held')));
+    perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
+    res := res || jsonb_build_object('release_paired_held', v, 'report_after_release', public.bank_legacy_report(b));
   end if;
   perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
   res := res || jsonb_build_object('csv_fingerprint_after_decisions', public.bank_csv_rows_fingerprint(),
