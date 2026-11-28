@@ -1,12 +1,15 @@
 // 銀行入金の正本（段階1）の検証。本番には接続しない（メモリ上の PGlite）。使い方: npm install && npm test
 import { PGlite } from '@electric-sql/pglite';
 import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const STAGE1 = readFileSync(process.env.STAGE1_FILE || join(here, '../../supabase/2026-11-27_bank_ledger_stage1.sql'), 'utf8');   // STAGE1_FILE は「わざと壊した版でテストが落ちるか」の確認用
 const STAGE2 = readFileSync(process.env.STAGE2_FILE || join(here, '../../supabase/2026-11-28_bank_ledger_stage2.sql'), 'utf8');
+const STAGE3 = readFileSync(process.env.STAGE3_FILE || join(here, '../../supabase/2026-11-28_bank_ledger_stage3.sql'), 'utf8');
+const STAGE3_ROLLBACK = readFileSync(join(here, '../../supabase/2026-11-28_bank_ledger_stage3_ROLLBACK.sql'), 'utf8');
 const STAGE2_ROLLBACK = readFileSync(join(here, '../../supabase/2026-11-28_bank_ledger_stage2_ROLLBACK.sql'), 'utf8');
 const ROLLBACK = readFileSync(process.env.ROLLBACK_FILE || join(here, '../../supabase/2026-11-27_bank_ledger_stage1_ROLLBACK.sql'), 'utf8');
 
@@ -644,6 +647,171 @@ async function main() {
     const cntBefore = (await sup(db, `select count(*)::int n from public.bank_transactions`)).rows[0].n;
     ok('段階2のロールバックは関数だけを消し、データ・表・段階1の関数は残る', (await script(db, STAGE2_ROLLBACK)).ok && (await sup(db, `select count(*)::int n from pg_proc where proname in ('bank_import_register','bank_import_attach_original','bank_import_record_verification','bank_import_ingest','bank_import_commit','bank_import_fail','bank_account_upsert','bank_assert_service')`)).rows[0].n === 0
       && (await sup(db, `select count(*)::int n from public.bank_transactions`)).rows[0].n === cntBefore && (await sup(db, `select count(*)::int n from pg_proc where proname in ('bank_deposit_daily','bank_store_visible','bank_tx_correct')`)).rows[0].n === 3);
+  }
+
+  // ---------- 9. 段階3: 旧シートの移行（控え・取引単位の対応づけ・差異の一覧・承認・再実行・既存の明細が不変）----------
+  section('9. 段階3の旧シート移行: 全行を控えに保存／取引単位で対応づけ（同日同額を統合しない）／差異の一覧／承認の記録／再実行で増えない／既存の銀行明細は不変');
+  {
+    const db = await fresh(); await db.exec(STAGE2); await db.exec(STAGE3);
+    const svc = (sql) => as(db, 'service', sql);
+    const one = async (sql) => { const r = await svc(sql); if (!r.ok) throw new Error(r.err + ' :: ' + sql.slice(0, 120)); return Object.values(r.rows[0])[0]; };
+    const j = (o) => `'${JSON.stringify(o).replace(/'/g, "''")}'::jsonb`;
+    const sha = (x) => createHash('sha256').update(JSON.stringify(x)).digest('hex');
+    // 銀行CSV由来の既存の明細（段階2の取込で入れる）
+    const acct = await one(`select public.bank_account_upsert('paypay','paypayA','T-S3-1','店A1','${ID.storeA1}')`);
+    const hexA = 'a'.repeat(64);
+    await sup(db, `insert into storage.objects (bucket_id, name, metadata) values ('bank-csv-originals', 'paypay/${acct}/${hexA}.csv', '{"size": 10}')`);
+    const imp = await one(`select public.bank_import_register('${acct}','playwright','s3.csv')`);
+    await svc(`select public.bank_import_attach_original('${imp}', '${hexA}', 10)`); await svc(`select public.bank_import_record_verification('${imp}', '${hexA}', 10)`);
+    const csvRows = [
+      { date: '2026-11-01', time: '10:00:00', desc: 'ATM セブン銀行', dep: 10000, wd: 0, bal: 1, key: 'pp|1', basis: 'seq_no' },
+      { date: '2026-11-01', time: '12:00:00', desc: 'ATM セブン銀行', dep: 10000, wd: 0, bal: 2, key: 'pp|2', basis: 'seq_no' },
+      { date: '2026-11-02', time: '09:00:00', desc: 'ATM セブン銀行', dep: 5000, wd: 0, bal: 3, key: 'pp|3', basis: 'none', hold_reason: '旧に無いと見えていた保留（テスト）' },   // 旧シートには有る（店舗名の別表記など）
+      { date: '2026-11-03', time: '08:00:00', desc: 'ATM セブン銀行', dep: 7000, wd: 0, bal: 4, key: 'pp|4', basis: 'none', hold_reason: '旧入金DBに無い（テスト）' },
+      { date: '2026-11-05', time: '10:00:00', desc: 'ATM セブン銀行', dep: 20000, wd: 0, bal: 5, key: 'pp|5', basis: 'seq_no' },
+      { date: '2026-11-05', time: '11:00:00', desc: 'ATM セブン銀行', dep: 20000, wd: 0, bal: 6, key: 'pp|6', basis: 'seq_no' },
+      { date: '2026-11-07', time: '15:00:00', desc: 'ATM セブン銀行', dep: 1500, wd: 0, bal: 7, key: 'pp|7', basis: 'seq_no' },   // 旧に無い・照合済み（時刻差など）
+    ];
+    const ing = await svc(`select public.bank_import_ingest('${imp}', ${j(csvRows)}, true) r`); await svc(`select public.bank_import_commit('${imp}')`);
+    ok('準備: 銀行CSV由来の既存の明細 7 行（うち保留 2）が入った', ing.ok && ing.rows[0].r.rows_new === 5 && ing.rows[0].r.rows_held === 2, ing.err);
+    const fp0 = (await svc(`select public.bank_csv_rows_fingerprint() r`)).rows[0].r;
+    // 旧シートの行（6 列の一部。取引時刻・登録日時つき）
+    const A1 = ID.storeA1, B1 = ID.storeB1;
+    const row = (n, store_id, store, date, amount, desc, token, reg = '2026-11-10T05:00:00Z') => ({ row_no: n, store, store_id, date, amount, desc, token, registered_at: reg });
+    const legacy1 = [
+      row(1, A1, 'A1', '2026-11-01', 10000, 'ATM セブン銀行', '12:00:00'),     // 並びは時刻の逆（行番号では対応を決めない）
+      row(2, A1, 'A1', '2026-11-01', 10000, 'ATM セブン銀行', '10:00:00'),
+      row(3, A1, 'A1', '2026-11-02', 5000, 'ATM セブン銀行', '09:00:00'),
+      row(4, A1, 'A1', '2026-11-05', 20000, 'ATM セブン銀行', '#1'),            // 時刻が無い同日同額（確認対象）
+      row(5, A1, 'A1', '2026-11-05', 20000, 'ATM セブン銀行', '#2'),
+      row(6, A1, 'A1', '2026-10-01', 8000, 'ATM セブン銀行', '09:00:00'),        // 銀行CSVの期間より前
+      row(7, A1, 'A1', '2026-11-06', 9000, 'ATM セブン銀行', '10:00:00'),        // 期間内で銀行に無い
+      row(8, A1, 'A1', '2026-11-02', 50000, '調整分', ''),
+      row(9, A1, 'A1', '2026-11-02', -3000, 'sssへ入金', ''),                    // マイナスの手動調整
+      row(10, null, '未知の店', '2026-11-02', 100, 'ATM', '10:00:00'),            // 店舗が決まらない
+      row(11, B1, 'B1', '2026-11-01', 4000, 'ATM セブン銀行', '10:00:00'),        // 銀行口座が正本に無い店舗
+      row(12, B1, 'B1', '2026-11-01', 4000, 'ATM セブン銀行', '10:00:00'),        // 全く同じ内容の行（統合しない）
+    ];
+    const notes1 = [{ store: 'A1', store_id: A1, date: '2026-11-01', note: 'メモ1', updated_by: '社長', updated_at: '2026-11-02T00:00:00Z' }, { store: 'A1', store_id: A1, date: '2026-11-02', note: 'メモ2', updated_by: '本部', updated_at: '2026-11-03T00:00:00Z' }, { store: '未知の店', store_id: null, date: '2026-11-02', note: '店舗不明メモ' }];
+    const meta1 = { source: 'rehearsal', columns_present: ['店舗', '日付', '入金額', '摘要', '取引時刻', '登録日時'], payload_sha256: sha([legacy1, notes1]) };
+    for (const who of ['ceo', 'hq', 'tenchoA', 'shain', 'al', 'anon']) {
+      const r = await as(db, who, `select public.bank_legacy_load(${j(meta1)}, ${j(legacy1)}, ${j(notes1)})`);
+      ok(`${who}: 旧シートの取り込み関数（bank_legacy_load）は呼べない`, !r.ok);
+    }
+    const b1 = await one(`select public.bank_legacy_load(${j(meta1)}, ${j(legacy1)}, ${j(notes1)})`);
+    ok('旧シートの全行（12 行）と備考（3 件）が控えに保存される', (await sup(db, `select (select count(*)::int from public.bank_legacy_rows where batch_id='${b1}') r, (select count(*)::int from public.bank_legacy_notes where batch_id='${b1}') n`)).rows[0].r === 12
+      && (await sup(db, `select count(*)::int n from public.bank_legacy_notes where batch_id='${b1}'`)).rows[0].n === 3);
+    ok('同じ内容の取り出しを再度保存しても、バッチは増えない（同じバッチが返る）', (await one(`select public.bank_legacy_load(${j(meta1)}, ${j(legacy1)}, ${j(notes1)})`)) === b1 && (await sup(db, `select count(*)::int n from public.bank_legacy_batches`)).rows[0].n === 1);
+    const ords = (await sup(db, `select ordinal from public.bank_legacy_rows where batch_id='${b1}' and row_no in (11,12) order by row_no`)).rows.map((x) => x.ordinal);
+    ok('全く同じ内容の 2 行は、出現番号 1・2 で別々の行として残る（内容ハッシュだけで一意としない）', same(ords, [1, 2]) && (await sup(db, `select count(distinct content_hash)::int n from public.bank_legacy_rows where batch_id='${b1}' and row_no in (11,12)`)).rows[0].n === 1);
+    ok('控えは更新・削除できない（追記専用）', denied(await sup(db, `update public.bank_legacy_rows set amount = 1`)) && denied(await sup(db, `delete from public.bank_legacy_rows`)) && denied(await sup(db, `delete from public.bank_legacy_batches`)));
+    // 計画（対応づけ）
+    const plan = (await svc(`select public.bank_legacy_plan('${b1}') r`)).rows[0].r;
+    ok('対応づけ: 銀行CSV由来の明細と 1 対 1 が 5 組・旧のみ移行 4・手動調整 2・店舗未解決 1', plan.paired === 5 && plan.migrated === 4 && plan.adjustments === 2 && plan.unresolved === 1, JSON.stringify(plan));
+    ok('  時刻が一致する同日同額の 2 行は、行の並びが逆でも、時刻で正しく対応づく（確認対象にならない）', (await sup(db, `select count(*)::int n from public.bank_legacy_links k where k.basis = 'time' and k.confidence = 'auto'`)).rows[0].n === 3);
+    const tmap = (await sup(db, `select r.token, t.txn_time::text tt from public.bank_legacy_links k join public.bank_legacy_rows r on r.content_hash || '#' || r.ordinal = k.legacy_key join public.bank_transactions t on t.id = k.transaction_id where k.kind='paired' and r.txn_date='2026-11-01'`)).rows;
+    ok('  （10:00 の旧 ↔ 10:00 の銀行、12:00 ↔ 12:00）', tmap.every((x) => x.token.slice(0, 5) === x.tt.slice(0, 5)) && tmap.length === 2, JSON.stringify(tmap));
+    ok('  時刻で特定できない同日同額（#1・#2）だけが「確認対象（proposed）」になる（件数・金額は変わらない）', (await sup(db, `select count(*)::int n from public.bank_diff_items where kind='ambiguous_pair'`)).rows[0].n === 2 && (await sup(db, `select count(*)::int n from public.bank_legacy_links where confidence='proposed'`)).rows[0].n === 2);
+    ok('  新しい行は作られず、既存の銀行明細の数は変わらない', (await sup(db, `select count(*)::int n from public.bank_transactions where source_kind <> 'legacy_sheet'`)).rows[0].n === 7 && (await sup(db, `select count(*)::int n from public.bank_transactions where source_kind = 'legacy_sheet'`)).rows[0].n === 0);
+    const dif = (await sup(db, `select kind, status, count(*)::int c from public.bank_diff_items group by 1,2 order by 1,2`)).rows.map((x) => `${x.kind}/${x.status}/${x.c}`).join(',');
+    ok('差異の一覧: 旧シートに無い銀行の入金（保留 1・未確認 1）／旧と対応済みなのに保留のまま 1／期間内の旧のみ 1／手動調整 2／曖昧な対応 2／店舗未解決 1', dif === 'ambiguous_pair/open/2,bank_only/held/1,bank_only/open/1,legacy_only_in_window/open/1,manual_adjustment/open/2,paired_held/held/1,unresolved_store/open/1', dif);
+    { const again = (await svc(`select public.bank_legacy_plan('${b1}') r`)).rows[0].r; ok('  計画を 2 回流しても、対応も差異も増えない', Object.values(again).every((v) => v === 0), JSON.stringify(again)); }
+    // 移行
+    const mig = (await svc(`select public.bank_legacy_migrate('${b1}') r`)).rows[0].r;
+    ok('移行: 旧のみ 4 行＋手動調整 2 行＝6 行が legacy_pending で入る（店舗未解決は入れない）', mig.migrated_rows === 6 && mig.still_unmigrated === 0, JSON.stringify(mig));
+    ok('  同じ内容の 2 行（B1）は、2 行とも別々の明細として移行される', (await sup(db, `select count(*)::int n from public.bank_transactions where source_kind='legacy_sheet' and store_id='${B1}' and deposit_amount=4000`)).rows[0].n === 2);
+    ok('  マイナスの手動調整は、出金側に絶対値で保存され、売上入金として数える', (await sup(db, `select withdrawal_amount::int w, deposit_amount::int d, tx_kind, counts_as_sales_deposit c from public.bank_transactions where description='sssへ入金'`)).rows.every((x) => x.w === 3000 && x.d === 0 && x.tx_kind === 'adjustment' && x.c === true));
+    ok('  2 回目の移行は何も増やさない', (await svc(`select public.bank_legacy_migrate('${b1}') r`)).rows[0].r.migrated_rows === 0 && (await sup(db, `select count(*)::int n from public.bank_transactions where source_kind='legacy_sheet'`)).rows[0].n === 6);
+    // 備考
+    const nm0 = (await sup(db, `insert into public.bank_deposit_notes (store_id, note_date, note) values ('${A1}', '2026-11-02', '手で入れた別の文面') returning 1`)).ok;
+    const nm = (await svc(`select public.bank_legacy_migrate_notes('${b1}') r`)).rows[0].r;
+    ok('備考: 既存が無いものだけ入る（1 件）／別の文面が既にあれば上書きせず差異（1 件）／店舗が決まらない備考は差異（1 件）', nm0 && nm.inserted === 1 && nm.mismatch === 1 && nm.unresolved === 1, JSON.stringify(nm));
+    ok('  既存の備考は上書きされていない', (await sup(db, `select note from public.bank_deposit_notes where store_id='${A1}' and note_date='2026-11-02'`)).rows[0].note === '手で入れた別の文面');
+    ok('  備考の移行も 2 回流して増えない', (await svc(`select public.bank_legacy_migrate_notes('${b1}') r`)).rows[0].r.inserted === 0);
+    // 検証レポート
+    const rep = (await svc(`select public.bank_legacy_report('${b1}') r`)).rows[0].r;
+    ok('保存則: 旧の全行が控えに保存され、すべて対応づけか移行か未解決のどれかに入る（リンクの無い行 0・未移行 0）', rep.legacy_rows === 12 && rep.legacy_rows_saved === 12 && rep.rows_without_link === 0 && rep.rows_unmigrated === 0
+      && rep.links_by_kind.paired === 5 && rep.links_by_kind.migrated === 4 && rep.links_by_kind.adjustment === 2 && rep.links_by_kind.unresolved === 1, JSON.stringify(rep.links_by_kind));
+    ok('店舗×日付の件数・金額の比較: 食い違いは 2 日だけ＝旧に無い銀行側の照合済み 1 件（11/07）と、旧と対応済みなのに保留のままの 1 件（11/02）。保留の 11/03 は集計に入らず一致', rep.store_dates_mismatch === 2 && rep.mismatch_sample.map((m) => m.date).join() === '2026-11-02,2026-11-07'
+      && rep.mismatch_sample[1].ledger_count - rep.mismatch_sample[1].legacy_count === 1 && rep.mismatch_sample[0].legacy_count - rep.mismatch_sample[0].ledger_count === 1, JSON.stringify(rep.mismatch_sample));
+    ok('備考の保存: 控え 3 件・うち正本と同じ 1 件', rep.notes_saved === 3 && rep.notes_in_ledger_same === 1);
+    ok('既存の銀行CSV由来の明細は、計画・移行を通して 1 件も変わらない（指紋が同じ）', JSON.stringify(rep.csv_rows_fingerprint) === JSON.stringify(fp0), JSON.stringify([rep.csv_rows_fingerprint, fp0]));
+    const dd = (await as(db, 'ceo', `select deposit_date::text d, amount::int a, deposit_count c from public.bank_deposit_daily() where store_id='${A1}' and deposit_date='2026-11-02'`)).rows[0];
+    ok('日次集計: 11/02 の A1 は 調整 50,000−3,000 ＝ 47,000（件数 2。入金 5,000 は保留中なので入らない）。マイナスの調整も数える', dd && dd.a === 47000 && dd.c === 2, JSON.stringify(dd));
+    // ---- 承認（一括・個別）----
+    const items = (await sup(db, `select id, kind from public.bank_diff_items order by kind, created_at`)).rows;
+    const adj = items.filter((x) => x.kind === 'manual_adjustment').map((x) => x.id);
+    const dec = (who, ids, decision, reason, kind) => as(db, who, `select public.bank_diff_decide('{${ids.join(',')}}'::uuid[], '${decision}', ${reason === null ? 'null' : `'${reason}'`}, ${kind ? `'${kind}'` : 'null'}) r`);
+    for (const who of ['tenchoA', 'shain', 'al', 'anon']) ok(`${who}: 差異の承認はできない`, !(await dec(who, adj, 'approved', 'テスト')).ok);
+    ok('理由が無い承認はできない', !(await dec('ceo', adj, 'approved', '')).ok);
+    ok('種類を指定した一括承認は、別の種類が混じっていると拒否される（取り違え防止）', !(await dec('ceo', [adj[0], items.find((x) => x.kind === 'bank_only').id], 'approved', '一括テスト', 'manual_adjustment')).ok);
+    const d1 = await dec('ceo', [adj[0]], 'approved', '個別承認テスト（調整分）', 'manual_adjustment');
+    ok('個別承認: 社長が理由つきで承認できる（single）', d1.ok && d1.rows[0].r.mode === 'single' && d1.rows[0].r.items === 1, d1.err);
+    const d2 = await dec('hq', items.filter((x) => x.kind === 'manual_adjustment').map((x) => x.id), 'approved', '一括承認テスト（調整分）', 'manual_adjustment');
+    ok('一括承認: 本部が複数をまとめて承認できる（bulk）。すでに承認済みのものも対象に含められ、履歴に残る', d2.ok && d2.rows[0].r.mode === 'bulk' && d2.rows[0].r.items === 2, d2.err);
+    const rec = (await sup(db, `select mode, decision, reason, actor_label, item_count, array_length(item_ids,1) n, decided_at is not null has_time from public.bank_decision_batches order by decided_at`)).rows;
+    ok('承認の記録に、対象の一覧（件数）・理由・操作者・日時が残る（2 回ぶん）', rec.length === 2 && rec.every((x) => x.reason.length > 0 && x.actor_label && x.has_time && x.n === x.item_count) && rec[0].mode === 'single' && rec[1].mode === 'bulk', JSON.stringify(rec));
+    ok('決定の履歴（差異ごとの 状態の移り変わり）が残り、更新・削除できない', (await sup(db, `select count(*)::int n from public.bank_diff_decisions`)).rows[0].n === 3 && denied(await sup(db, `update public.bank_diff_decisions set to_status='open'`)) && denied(await sup(db, `delete from public.bank_decision_batches`)));
+    const bo = items.filter((x) => x.kind === 'bank_only');
+    const heldItem = (await sup(db, `select id from public.bank_diff_items where kind='bank_only' and status='held'`)).rows[0].id;
+    const d3 = await dec('ceo', [heldItem], 'approved', '旧シートにも入れる前提で照合済みに', 'bank_only');
+    ok('銀行側のみで保留中の行を承認すると、保留が解けて照合済みになり、履歴（release）が残る', d3.ok && (await sup(db, `select match_status from public.bank_transactions where dedupe_key='pp|4'`)).rows[0].match_status === 'verified'
+      && (await sup(db, `select count(*)::int n from public.bank_transaction_events e join public.bank_transactions t on t.id=e.transaction_id where t.dedupe_key='pp|4' and e.event_kind='release'`)).rows[0].n === 1, d3.err);
+    const ph = items.find((x) => x.kind === 'paired_held').id;
+    const d3b = await dec('ceo', [ph], 'approved', '旧シートにある入金（店舗名の別表記）と確認したので保留を解く', 'paired_held');
+    ok('旧と対応済みの保留を承認すると、保留が解けて照合済みになり、旧との数字のずれ（11/02）が消える', d3b.ok && (await sup(db, `select match_status from public.bank_transactions where dedupe_key='pp|3'`)).rows[0].match_status === 'verified'
+      && (await svc(`select (public.bank_legacy_report('${b1}')->'mismatch_sample') r`)).rows[0].r.every((m) => m.date !== '2026-11-02'), d3b.err);
+    const inwin = items.find((x) => x.kind === 'legacy_only_in_window').id;
+    const d4 = await dec('ceo', [inwin], 'rejected', '銀行に無いので集計から外す');
+    ok('却下: 旧のみの行を集計から外せる（行は残り、履歴に correct が残る）', d4.ok && (await sup(db, `select counts_as_sales_deposit c from public.bank_transactions where source_kind='legacy_sheet' and txn_date='2026-11-06'`)).rows[0].c === false
+      && (await as(db, 'ceo', `select count(*)::int n from public.bank_deposit_daily() where store_id='${A1}' and deposit_date='2026-11-06'`)).rows[0].n === 0, d4.err);
+    ok('訂正（corrected）は、先に訂正（bank_tx_correct）していないと記録できない', !(await dec('ceo', [items.find((x) => x.kind === 'ambiguous_pair').id], 'corrected', '訂正した')).ok);
+    const d5 = await dec('ceo', items.filter((x) => x.kind === 'ambiguous_pair').map((x) => x.id), 'approved', '時刻を確認して、順番どおりで問題なし', 'ambiguous_pair');
+    ok('曖昧な対応づけを承認すると、対応の確からしさが approved になる', d5.ok && (await sup(db, `select count(*)::int n from public.bank_legacy_links where confidence='approved'`)).rows[0].n === 2, d5.err);
+    ok('決定した差異の内容（金額・日付など）は変えられない', denied(await sup(db, `update public.bank_diff_items set amount = 1`)) && denied(await sup(db, `delete from public.bank_diff_items`)));
+    // ---- 取り出しどうしの変化（並べ替え・追加・削除・修正・同内容の個数変化）----
+    const legacy2 = [legacy1[2], legacy1[0], legacy1[1], legacy1[3], legacy1[4],          // 並べ替え（行 3 を先頭へ）
+      /* 行 6（10/01）は消えた */
+      row(7, A1, 'A1', '2026-11-06', 9500, 'ATM セブン銀行', '10:00:00'),                   // 行 7 の金額を修正（同じ店舗・日付で内容だけ違う＝修正の候補）
+      legacy1[7], legacy1[8], legacy1[9], legacy1[10], legacy1[11],
+      row(13, B1, 'B1', '2026-11-01', 4000, 'ATM セブン銀行', '10:00:00'),                  // 全く同じ内容の 3 行目（個数が増えた）
+      row(14, A1, 'A1', '2026-11-08', 2500, 'ATM セブン銀行', '10:00:00')].map((r, i) => ({ ...r, row_no: i + 1 }));
+    const b2 = await one(`select public.bank_legacy_load(${j({ ...meta1, payload_sha256: sha(['b2']) })}, ${j(legacy2)}, ${j(notes1)})`);
+    const chg = (await svc(`select public.bank_legacy_changes('${b2}', '${b1}') r`)).rows[0].r;
+    ok('変化の検出: 追加 2（新しい行・同じ内容の 3 行目）／削除 1（10/01 の行）／修正の候補 1（11/06 の金額）／並べ替えられた行あり', chg.added === 2 && chg.removed === 1 && chg.modified_candidates === 1 && chg.reordered_rows >= 1, JSON.stringify(chg));
+    ok('  同内容の個数が増えた追加は、そのことが差異に記録される（個数の増減を見分ける）', (await sup(db, `select count(*)::int n from public.bank_diff_items where kind='added_since_prev' and (detail->>'same_content_count_changed')::boolean`)).rows[0].n === 1);
+    const plan2 = (await svc(`select public.bank_legacy_plan('${b2}') r`)).rows[0].r;
+    const mig2 = (await svc(`select public.bank_legacy_migrate('${b2}') r`)).rows[0].r;
+    ok('取り出し 2 回目: 並べ替えた行は同じ行として扱われ、新しい対応づけは増えない（追加された行と修正の候補だけが新しい）', plan2.paired === 0 && plan2.adjustments === 0, JSON.stringify(plan2));
+    ok('  修正の候補の「新しい側」は、人が決めるまで移行されない（二重計上を防ぐ）。追加された通常の行は移行される', mig2.migrated_rows === 2 && mig2.still_unmigrated === 1, JSON.stringify(mig2));
+    ok('  古い側（10/01 の削除された行・11/06 の元の行）の移行済みの明細は、削除も変更もされない', (await sup(db, `select count(*)::int n from public.bank_transactions where source_kind='legacy_sheet' and txn_date in ('2026-10-01','2026-11-06')`)).rows[0].n === 2);
+    ok('  控えは 12 ＋ 13 行（バッチごとに全行が残る）', (await sup(db, `select count(*)::int n from public.bank_legacy_rows`)).rows[0].n === 25);
+    const rep2 = (await svc(`select public.bank_legacy_report('${b1}') r`)).rows[0].r;
+    ok('既存の銀行CSV由来の明細の指紋は、承認・却下・取り出し 2 回目のあとも同じ（照合済みにした 1 行を除き、原本の値は不変）', rep2.csv_rows_fingerprint.rows === 7);
+    // ---- 既存の日次集計との互換 ----
+    const dbc = await fresh(); await dbc.exec(SEED_LEDGER);
+    const before = JSON.stringify((await as(dbc, 'ceo', `select * from public.bank_deposit_daily() order by store_id, deposit_date`)).rows);
+    await dbc.exec(STAGE2); await dbc.exec(STAGE3);
+    const after = JSON.stringify((await as(dbc, 'ceo', `select * from public.bank_deposit_daily() order by store_id, deposit_date`)).rows);
+    ok('段階3を流しても、手動調整が無いデータの日次集計は、1 行も変わらない（段階1の定義と同じ結果）', before === after && before.length > 10);
+    // ---- 権限 ----
+    for (const who of ['tenchoA', 'shain', 'al', 'team']) {
+      const bad = []; for (const t of ['bank_legacy_batches', 'bank_legacy_rows', 'bank_legacy_notes', 'bank_legacy_links', 'bank_diff_items', 'bank_decision_batches', 'bank_diff_decisions']) { const r = await as(db, who, `select count(*)::int n from public.${t}`); if (!r.ok || r.rows[0].n !== 0) bad.push(t); }
+      ok(`${who}: 旧シートの控え・対応・差異・決定の記録は 0 件（読めない）`, bad.length === 0, bad.join(','));
+    }
+    ok('anon: 控え・差異は読めない', denied(await as(db, 'anon', `select 1 from public.bank_legacy_rows limit 1`)) && denied(await as(db, 'anon', `select 1 from public.bank_diff_items limit 1`)));
+    for (const who of ['ceo', 'hq', 'master']) ok(`${who}: 控え・差異・決定の記録を読める`, (await as(db, who, `select (select count(*) from public.bank_legacy_rows) a, (select count(*) from public.bank_diff_items) b, (select count(*) from public.bank_decision_batches) c`)).rows[0].a > 0);
+    ok('社員・店長は、差異の一覧の関数（レポート）も呼べない', !(await as(db, 'shain', `select public.bank_legacy_report('${b1}')`)).ok && !(await as(db, 'tenchoA', `select public.bank_legacy_report('${b1}')`)).ok);
+    // ---- 再実行・ロールバック ----
+    ok('段階3の SQL は、2 回流しても同じ（データがあっても壊れない）', (await script(db, STAGE3)).ok && (await script(db, STAGE3)).ok && (await sup(db, `select count(*)::int n from public.bank_legacy_rows`)).rows[0].n === 25);
+    const rb = await script(db, STAGE3_ROLLBACK);
+    ok('データが入った状態では、段階3のロールバックは何も消さずに止まる', !rb.ok && /取り消しを中止/.test(rb.err) && (await sup(db, `select count(*)::int n from public.bank_legacy_rows`)).rows[0].n === 25, rb.err);
+    const dbe = await fresh(); await dbe.exec(STAGE2); await dbe.exec(STAGE3);
+    const defBefore = (await sup(dbe, `select md5(pg_get_functiondef('public.bank_deposit_daily(date,date)'::regprocedure)) m`)).rows[0].m;
+    const rbe = await script(dbe, STAGE3_ROLLBACK);
+    const db1 = await fresh(); const def1 = (await sup(db1, `select md5(pg_get_functiondef('public.bank_deposit_daily(date,date)'::regprocedure)) m`)).rows[0].m;
+    ok('空の状態なら段階3のロールバックが通り、日次集計は段階1の定義（同一）に戻る。新しい表・関数は全部消える', rbe.ok && (await sup(dbe, `select md5(pg_get_functiondef('public.bank_deposit_daily(date,date)'::regprocedure)) m`)).rows[0].m === def1 && def1 !== defBefore
+      && (await sup(dbe, `select count(*)::int n from pg_class where relname like 'bank\\_legacy\\_%' or relname like 'bank\\_diff\\_%' or relname like 'bank\\_decision\\_%'`)).rows[0].n === 0, rbe.err);
   }
 
   // ---------- 7. ロールバック ----------
