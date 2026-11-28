@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>銀行入金の正本化 — PayPay並行稼働（14日間）の準備と、法人別閲覧制御の調査</title>
+<style>
+:root{--bg:#fff;--ink:#1b2430;--muted:#5d6b7a;--line:#d9e0e8;--card:#f5f8fb;--ok:#0f7b4b;--warn:#a85a00;--bad:#b3261e;--blue:#0b5cad;--code:#eef2f7}
+@media(prefers-color-scheme:dark){:root{--bg:#0f141a;--ink:#e6edf3;--muted:#9aa7b4;--line:#2a3541;--card:#171e26;--ok:#4cc38a;--warn:#f0b35a;--bad:#ff8a80;--blue:#79b8ff;--code:#1d2630}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.75 -apple-system,"Hiragino Sans","Yu Gothic",sans-serif}
+main{max-width:980px;margin:0 auto;padding:20px 16px 80px}
+h1{font-size:24px;margin:8px 0 4px}
+h2{font-size:20px;margin:36px 0 10px;padding-top:10px;border-top:2px solid var(--line)}
+h3{font-size:17px;margin:22px 0 6px}
+.sub{color:var(--muted);font-size:14px}
+.box{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 16px;margin:12px 0}
+.ok{border-left:5px solid var(--ok)}.warn{border-left:5px solid var(--warn)}.bad{border-left:5px solid var(--bad)}
+table{border-collapse:collapse;width:100%;margin:10px 0;font-size:14.5px}
+th,td{border:1px solid var(--line);padding:7px 9px;text-align:left;vertical-align:top}
+th{background:var(--card)}
+code,pre{background:var(--code);border-radius:6px;font-family:ui-monospace,Menlo,monospace;font-size:13px}
+code{padding:1px 5px}pre{padding:10px 12px;overflow-x:auto;white-space:pre-wrap}
+.tbl{overflow-x:auto}
+.tag{display:inline-block;font-size:12px;border:1px solid var(--line);border-radius:999px;padding:0 8px;color:var(--muted)}
+li{margin:3px 0}
+</style>
+</head>
+<body>
+<main>
+<h1>銀行入金の正本化 — PayPay並行稼働（14日間）の準備と、法人別閲覧制御の調査</h1>
+<div class="sub">※公開リポジトリのため、口座番号・金額の実額は書いていません。作成 2026-11-28 ／ 状態：<b>準備完了（自動実行の有効化は別途承認待ち）</b>。<b>この準備では、毎日の自動実行・画面の読み先・旧シート／BigQuery／既存GAS処理・GMOの自動取得に、何も触れていません</b>（本番DBにも、新しい書き込みはありません）。</div>
+
+<div class="box ok"><b>先に結論</b>
+<ul>
+<li>PayPay毎日の取込は、<b>「既存のGAS送信が先、正本（Supabase）への取込は独立した枠で後」</b>の作りにできました。正本側が失敗・遅延・不通でも、GAS送信の結果は変わりません（実際のPayPay＋模擬GASで4パターン確認）。</li>
+<li>14日間の毎日の照合（旧シート ⇔ 正本）の仕組みを作り、実データで試しました（段階4のSQLは<b>未適用</b>・定時にも<b>未登録</b>）。</li>
+<li>GAS貼り替え後の<b>定時取込の確認</b>は、定時（14:00・14:15）が貼り替えより前に済んでいたため、<b>まだ確認できていません</b>。次の定時（11/29 14:00台）のあとに確認します。</li>
+<li>法人別の閲覧制御は、いまの銀行台帳には<b>ありません</b>（本部以上は全法人）。既存の「法人情報システム」には法人別制御があり、<b>その設定では一部の本部ユーザーが2法人に限定されている</b>ため、台帳のほうが広く見えます（§6）。</li>
+</ul></div>
+
+<h2>1. GAS貼り替え後の定時入金取込（ご指示1）</h2>
+<ul>
+<li>GASの貼り替え（<code>-lde1</code>）は、2026-11-28の夕方（17時台）。定時の取込（PayPay A 14:00・B 14:15）は、同日 14:00・14:16 に<b>貼り替えより前に</b>実行済みで、貼り替え後の定時実行は<b>まだ1回もありません</b>。</li>
+<li>貼り替え後の読み取り確認では、既存の入金処理（<code>depositCarry</code>・<code>bqGetDeposit</code>・<code>version</code>・<code>data</code>）は正常で、<code>importDeposits</code> は空の行を従来どおり断りました（書き込みなし）。</li>
+<li><b>確認する日時</b>：2026-11-29 の 14:00・14:15 の定時実行のあと。確認コマンド（読み取りのみ）：<code>node bank-ledger-cli.js check-daily</code>（GASの版・実行の成否・口座ごとのGAS送信結果「追加n件／重複スキップm件」を表示。口座番号は伏せる）。私に「定時を確認して」と言っていただければ実行します。</li>
+</ul>
+
+<h2>2. 既存GAS優先・正本は独立（ご指示2・3）</h2>
+<div class="tbl"><table>
+<tr><th>仕組み</th><th>内容</th></tr>
+<tr><td>順番</td><td>口座ごとに「CSV取得 →（解析）→ <b>GAS送信</b> → 正本への取込」。GAS送信が先に終わるので、正本側が遅くても待たされない</td></tr>
+<tr><td>独立した枠</td><td>正本側の例外・時間切れ（通信1回30秒・口座ごと2分）は、GAS送信の結果にも、他の口座にも影響しない。GAS側が失敗しても、正本側は実行される（GASの不調で正本を止めない）</td></tr>
+<tr><td>失敗の通知</td><td>正本側の失敗は、<b>1回の実行につき1通</b>にまとめて、別に通知（既存の通知の仕組み）。通知自体が失敗しても無視（ジョブの結果は変わらない）。実行結果の詳細にも「正本への取込は n 口座で失敗・GAS送信には影響なし」と残る</td></tr>
+<tr><td>無効のとき</td><td><code>BANK_LEDGER_MODE</code> が未設定なら、これまでと全く同じ動き（正本へは通信しない）</td></tr>
+</table></div>
+<h3>確認の結果</h3>
+<div class="tbl"><table>
+<tr><th>試験</th><th>やり方</th><th>結果</th></tr>
+<tr><td>実機の4パターン</td><td><b>実際のPayPayにログイン</b>して1口座のCSVを取得。GASは手元の模擬サーバー、正本は「解析のみ」または「届かない向き先」。本番のGAS・Supabaseには何も書かない</td><td>①GAS成功・正本成功：両方成功／②<b>GAS成功・正本が不通：タスクは正常終了（GAS送信1回・成功のまま）。正本の失敗は別に通知</b>／③GAS失敗・正本成功：既存どおり口座の失敗として数える。正本側は実行された／④両方失敗：それぞれ別に記録。すべて想定どおり</td></tr>
+<tr><td>自動テスト</td><td>GAS送信×正本取込の組み合わせ・時間切れ・通知の失敗・取込の各段階の故障（模擬）</td><td>25項目すべて成功（<code>test/bank-failure.test.js</code>）。全体150項目</td></tr>
+</table></div>
+
+<h2>3. 自動実行を有効化する前の報告（ご指示4）</h2>
+<div class="tbl"><table>
+<tr><th>項目</th><th>内容</th></tr>
+<tr><td>対象口座</td><td><b>PayPay銀行の10口座</b>。A系統（14:00）7口座＝鳥一代 本店・恵比寿・新橋・はなれ／芝の鳥一代／鶏武者 川崎店・新横浜。B系統（14:15）3口座＝黒霧屋 新横浜・秋葉原 肉寿司・エース 本厚木（B系統の1つのログインが、トーホーとN-Styleの2法人の口座にまたがる）。<b>GMOは含めない</b>（自動取得は保留）</td></tr>
+<tr><td>実行時刻</td><td>既存の定時に<b>相乗り</b>（新しい定時は作らない）：A＝14:00・B＝14:15（1日1回）。実行は既存のディスパッチャー（数分おきに起動し、予定時刻を過ぎて本日未実行なら1本ずつ実行）</td></tr>
+<tr><td>二重実行の防止</td><td>①ディスパッチャーのロックと「その日成功したら実行済みの印」②正本側：<b>同じ口座の取込は同時に1つだけ</b>（実行中の印・30分で期限切れ）③同じ明細は何回取り込んでも増えない（口座×目印の一意制約）④原本は同じ中身なら同じ場所に1つ（上書きしない）</td></tr>
+<tr><td>エラー通知</td><td>正本側の失敗＝1実行1通の別通知（Slack／Larkは既存の設定に従う）。既存のGAS送信の失敗通知は、これまでどおり。毎日の照合（§4）の不一致・失敗も別に1通</td></tr>
+<tr><td>再実行の方法</td><td>①<b>何もしなくても、次の定時で自動で追いつく</b>（CSVは直近約3か月を毎回取るので、取りこぼしは翌日に入る。重複しない）②すぐ直すなら、手動で <code>node bank-ledger-cli.js paypay A ingest</code>（B系統は B。GAS送信はしない・正本だけ）。1口座だけなら末尾に口座の末尾4桁。③GAS送信も含めて再実行するときは、既存と同じ手順（実行済みの印を消して再実行）</td></tr>
+<tr><td>有効化の方法（承認後）</td><td>(1) ns-daily-import のブランチ <code>bank-stage2</code> を main に取り込む（コードは既定で無効のまま）(2) <code>config.js</code> の 2 行（<code>paypay-bank</code>・<code>paypay-bank-b</code>）の環境変数に <code>BANK_LEDGER_MODE: 'ingest'</code> を足す。<b>この2か所だけ</b>です。取り込み方（ブランチのマージ）では、他の担当の未コミットの変更（<code>config.js</code> など）に触れない</td></tr>
+<tr><td>止め方（いつでも）</td><td><code>config.js</code> の <code>BANK_LEDGER_MODE</code> を消すだけで、次の実行から正本へは何もしなくなる。すでに入った正本のデータは、そのまま残る（読む人はまだ誰もいない）</td></tr>
+<tr><td>影響の範囲</td><td>既存のGAS送信・BigQuery・入金管理画面・旧シートは変わらない。正本に毎日の入金が加わる（画面はまだ読まない）。実行時間は、1口座あたり数秒〜十数秒増える見込み（原本の保存・読み戻し・取込）</td></tr>
+<tr><td>前提</td><td>初回の本番自動実行は、<b>別途承認</b>（ご指示5）。承認前には、有効化していません</td></tr>
+</table></div>
+
+<h2>4. 14日間の毎日の照合（ご指示6・7）</h2>
+<div class="box warn"><b>段階4のSQL（本番未適用・承認待ち）と、毎日の照合タスク（定時に未登録）が必要です。</b>下はリハーサル済みの内容です。</div>
+<div class="tbl"><table>
+<tr><th>項目</th><th>内容</th></tr>
+<tr><td>毎日やること</td><td>①旧シートの6列と備考をGASの読み取り専用アクションで全件取得し、行の指紋を検証 ②正本へ「取り出し」として保存 ③前回との変化（追加・削除・修正の候補・並べ替え）を検出 ④取引単位で旧行⇔銀行の明細を1対1に対応づけ ⑤店舗×日付の件数・金額を比べ、不一致を記録 ⑥解消できたものを自動で解消済みに（<code>node bank-ledger-cli.js reconcile</code>／<code>tasks/bank-ledger-reconcile.js</code>。<b>旧シートは読むだけ</b>）</td></tr>
+<tr><td>照合の粒度</td><td>店舗・日付・金額・件数に加えて、<b>取引単位</b>（同じ店舗・日付・金額の旧行と銀行の明細を1件ずつ。時刻が一致すれば自動、特定できないものだけ確認対象）</td></tr>
+<tr><td>不一致の記録</td><td>自動で記録（<code>bank_reconcile_mismatches</code>）：店舗・日付・旧／正本の件数と金額・<b>原因</b>（銀行にだけ有る／旧にだけ有る／保留中／曖昧な対応／旧行の修正の候補／旧行の削除など。分からなければ「原因不明」）・<b>タイミング差か</b>（当日・前日分）・続いている日数・<b>状態（open／自動で解消）</b>・解消した実行</td></tr>
+<tr><td>復旧状況</td><td>後の取り出しで対応が取れれば、自動で「解消済み」（差異の一覧も resolved）。解消しない不一致は、日数つきで毎日の報告に出る。人の対応が要るものは、差異の一覧（保留・承認・訂正・却下）で扱う</td></tr>
+<tr><td>二重計上の防止（並行稼働向けの変更）</td><td>銀行の期間内で、まだ銀行の明細と対応しない旧行は、<b>移行せず</b>差異にだけ出す（銀行側の取込が遅れただけのとき、あとで銀行の明細が入って二重に数えるのを防ぐ）。対応が取れたら自動で結ぶ</td></tr>
+<tr><td>合格基準</td><td>1日の判定「ok」＝<b>タイミング差を除いて、不一致が0</b>。<b>14日連続で ok</b> が、画面切替を判断する条件（<code>bank_reconcile_report</code> が連続日数と未達・達成を返す）</td></tr>
+<tr><td>通知</td><td>不一致（タイミング差を除く）があるとき、または照合が失敗したとき、<b>1通だけ</b>。何もなければ通知しない</td></tr>
+</table></div>
+<h3>リハーサル（実データ・本番DBで実行して巻き戻し済み）</h3>
+<ul>
+<li><b>1日目（いまの旧シート）</b>：取引単位の対応 1,007件・<b>不一致0・状態 ok</b>・旧シートの合計＝正本の合計。</li>
+<li><b>2日目（旧シートに変化を加えて想定）</b>：旧行の追加1・削除1・修正1（手動調整の金額）を<b>すべて検出</b>。不一致3件を原因つきで記録（旧行の削除／修正の候補／新しい旧行＝タイミング差）。状態 mismatch・原因不明0。既存の銀行明細・正本の明細数（6,007）は不変。</li>
+<li>自動テスト（PGlite・全412項目）：1日目ok／銀行が先に入る（タイミング差）→旧に入って自動解消／<b>旧が先に入る→銀行が入って自動解消・二重計上なし</b>／古い日付の不一致が続く→mismatch・日数／旧行の修正の検出／経過報告・権限（社長・本部だけ）／ロールバック。</li>
+</ul>
+
+<h2>5. 保持するもの（ご指示8・9）</h2>
+<ul>
+<li>同日同額の曖昧な1組2件：<b>未確定（open・確からしさ proposed）のまま保持</b>。根拠（時刻などの対応づけの証拠）が確認できるまで動かしません。毎日の照合のリハーサルでも、承認・確定は行っていません。</li>
+<li>手動調整79件：<b>正当性の承認は0件のまま</b>（個別確認9・一括確認70のopen）。数字は維持済み。リハーサルでも承認していません。</li>
+</ul>
+
+<h2>6. 法人別の閲覧制御：現在の実装状況と不足点（ご指示10・調査のみ）</h2>
+<h3>6-1. 銀行台帳（bank_*）の現状</h3>
+<div class="tbl"><table>
+<tr><th>対象</th><th>現状</th></tr>
+<tr><td>社長・本部・マスター</td><td><code>bank_ledger_admin()</code>＝社長・本部・マスターで有効なユーザー（現在5人）。<b>全法人を閲覧・操作できる</b>。法人による絞り込みは<b>ありません</b></td></tr>
+<tr><td>チーム長・店長・社員</td><td><code>bank_store_visible()</code>＝担当チーム／所属店舗として割り当てられた店舗だけ。法人では絞らない（店舗の割り当てがそのまま範囲）。法人をまたぐ割り当ても、割り当て次第で見える</td></tr>
+<tr><td>原本CSV（Storage）</td><td>読み・追加は本部・社長・マスターだけ。法人別の絞り込みなし。パスは <code>{銀行}/{口座ID}/{ハッシュ}.csv</code>（法人は含まない）</td></tr>
+<tr><td>口座・取得履歴・訂正履歴・旧シートの控え・差異・承認の記録</td><td>すべて本部・社長・マスターだけ。法人別なし。口座・明細には<b>法人ID（corporation_id）の列はある</b>（口座の店舗から決まる）が、<b>権限の判定には使っていない</b></td></tr>
+<tr><td>取込ジョブ</td><td>サービスロール（全権限）。PayPay B系統のログインが2法人（トーホー・N-Style）の口座にまたがる</td></tr>
+</table></div>
+<h3>6-2. 既存の「法人別制御」の仕組み（法人情報システム・<code>info</code>）</h3>
+<ul>
+<li><code>info.can_access_corp(法人ID)</code>：マスターは全法人／ユーザー個別の法人リスト（<code>info.user_corporations</code>）があればその法人だけ／なければ役割の法人リスト（<code>info.role_corporations</code>）／どちらも無ければ全法人。<code>info.has_perm('カテゴリ')</code> と組み合わせて、銀行口座・契約などの表のRLSに使われている（例：<code>info.bank_accounts</code> の閲覧＝権限カテゴリ「bank」かつその法人にアクセス可）。</li>
+<li>この仕組みの対象ユーザー（<code>info.profiles</code>・9人）は、<b>public.users と同じID</b>。社長1・本部4（全員が info に登録済み）が含まれる。</li>
+<li><b>実際の設定</b>：本部4人のうち、<b>1人は2法人（LiveGate・トーホーエージェンシー）に限定</b>されている。残りの本部3人・社長（マスター）は全法人。</li>
+</ul>
+<h3>6-3. 不足点</h3>
+<div class="tbl"><table>
+<tr><th>#</th><th>不足</th><th>影響</th></tr>
+<tr><td>1</td><td>銀行台帳の権限判定が、法人を一切見ていない</td><td>法人を限定されている本部ユーザー（上の1人）が、<b>台帳では全法人（N-Styleの口座・明細・原本まで）を見られる</b>。既存の法人情報システムの設定より広い</td></tr>
+<tr><td>2</td><td>2つの法人マスタの<b>IDが別物</b>（<code>info.corporations</code> と <code>public.corporations</code>。名前も「有限会社トーホーエージェンシー」と「トーホー」など表記が違う）</td><td>そのままでは <code>info.can_access_corp()</code> を台帳に使えない。対応表（または <code>public.corporation_aliases</code> の別名）で結ぶ必要がある</td></tr>
+<tr><td>3</td><td>社長・マスターの「全法人」と、本部の「法人限定」を分ける属性が、public.users に無い（ユーザーの法人の持ち物は info 側にだけ）</td><td>台帳の関数は info 側を参照する必要がある（info の更新が台帳の権限に効く）</td></tr>
+<tr><td>4</td><td>原本CSV（Storage）・取込ジョブ（サービスロール）・原本のパスに法人の概念がない</td><td>法人別に原本を分ける場合は、パスに法人を含める／読み取りのポリシーで法人を判定する設計が要る。取込ジョブは1つのログインで2法人にまたがる</td></tr>
+<tr><td>5</td><td>bank_reconcile・差異・承認の記録も、法人で絞れない</td><td>法人別の本部が承認する場合、他法人の差異を見て承認できてしまう</td></tr>
+<tr><td>6</td><td>GAS側（経営ダッシュボード）の役割（社長・本部）も法人を持たない</td><td>画面切替のあと、画面側でも法人別の絞り込みが別途必要</td></tr>
+</table></div>
+<h3>6-4. 設計案（実施はしていません・承認後）</h3>
+<ol>
+<li>2つの法人マスタの対応表（<code>info.corporations</code> ⇔ <code>public.corporations</code>）を作る（別名表を使う）。</li>
+<li><code>bank_ledger_admin()</code> を2段にする：<code>bank_ledger_admin()</code>（役割）＋ <code>bank_ledger_corp_ok(法人ID)</code>（<code>info.can_access_corp</code> を対応表で通す）。表のRLS・日次集計・差異・承認・Storageのポリシーに、法人の条件を足す。</li>
+<li>法人が決まっていない行（店舗未定のGMO口座など）は、<b>全法人の権限を持つ人だけ</b>。</li>
+<li>テスト：本部（全法人）／本部（2法人限定）／マスター／他法人の店長で、台帳・原本・差異・承認が法人で分かれること（PGlite＋実環境）。</li>
+<li>画面側（経営ダッシュボード）の法人別の絞り込みは、画面切替（段階6）の中で設計。</li>
+</ol>
+<p>これは「後続の必須課題」のとおり、<b>画面切替より前に実装することをおすすめします</b>（台帳を画面が読み始める前に、権限を法人別に分けておくため）。</p>
+
+<h2>7. 承認・確認をお願いしたいこと</h2>
+<ol>
+<li><b>2026-11-29 の定時（14:00・14:15）のあとに、貼り替え後の定時取込を確認</b>（私が <code>check-daily</code> を実行します）。</li>
+<li><b>段階4のSQLの本番適用</b>（毎日の照合の表・関数。適用前に実環境の事前検証を再実行）。</li>
+<li><b>PayPayの正本取込の初回の本番自動実行</b>（§3の2行の変更とコードのマージ）。上の報告で問題なければ、実施日・時間帯を指定してください（例：翌日の定時から）。</li>
+<li><b>毎日の照合タスクの定時登録</b>（例：14:40。取込の後）。</li>
+<li>法人別の閲覧制御の実装（§6-4）を、<b>画面切替の前</b>に進めてよいか。</li>
+</ol>
+<p>引き続き、画面の読み先変更・旧シート／BigQuery／既存GASの停止・GMOの自動取得は、実施していません。</p>
+</main></body></html>
