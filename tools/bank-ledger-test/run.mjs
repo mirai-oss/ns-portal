@@ -6,6 +6,8 @@ import { dirname, join } from 'node:path';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const STAGE1 = readFileSync(process.env.STAGE1_FILE || join(here, '../../supabase/2026-11-27_bank_ledger_stage1.sql'), 'utf8');   // STAGE1_FILE は「わざと壊した版でテストが落ちるか」の確認用
+const STAGE2 = readFileSync(process.env.STAGE2_FILE || join(here, '../../supabase/2026-11-28_bank_ledger_stage2.sql'), 'utf8');
+const STAGE2_ROLLBACK = readFileSync(join(here, '../../supabase/2026-11-28_bank_ledger_stage2_ROLLBACK.sql'), 'utf8');
 const ROLLBACK = readFileSync(process.env.ROLLBACK_FILE || join(here, '../../supabase/2026-11-27_bank_ledger_stage1_ROLLBACK.sql'), 'utf8');
 
 // ---------- 土台（Supabase 相当）。既存の表は、本番と同じ列・同じ関数の形だけ ----------
@@ -513,6 +515,135 @@ async function main() {
     ok('バケットが公開になっていたら、設定を変えずに止まる', !pub.ok && /公開/.test(pub.err) && (await sup(db, `select public from storage.buckets where id='bank-csv-originals'`)).rows[0].public === true, pub.err);
     // 空の状態からも 2 回
     const db2 = await fresh(); const r2 = await script(db2, STAGE1); ok('空の状態からの 2 回目も OK', r2.ok, r2.err);
+  }
+
+  // ---------- 8. 段階2: 取込の関数（原本の保存確認・重複しない取込・保留・失敗の記録）----------
+  section('8. 段階2の取込関数: サービスロールだけ／原本の実在・サイズ・ハッシュ照合が済むまで取り込めない／同じ明細を何回取っても増えない／保留・失敗の扱い');
+  {
+    const db = await fresh(); await db.exec(STAGE2);
+    const svc = (sql) => as(db, 'service', sql);
+    const one = async (sql) => { const r = await svc(sql); if (!r.ok) throw new Error(r.err); return Object.values(r.rows[0])[0]; };
+    const j = (o) => `'${JSON.stringify(o).replace(/'/g, "''")}'::jsonb`;
+    const HEX = (c) => c.repeat(64);
+    // 口座
+    const ppAcct = await one(`select public.bank_account_upsert('paypay','paypayA','T-PP-1','テストPP','${ID.storeA1}')`);
+    const gmoAcct = await one(`select public.bank_account_upsert('gmo_aozora','gmo_corp','T-GMO-1','テストGMO',null)`);
+    ok('口座を登録できる（店舗未定の GMO 口座は unassigned・店舗ID なし）', (await sup(db, `select store_status, store_id from public.bank_accounts where id='${gmoAcct}'`)).rows[0].store_status === 'unassigned' && (await sup(db, `select store_id from public.bank_accounts where id='${gmoAcct}'`)).rows[0].store_id === null);
+    await svc(`select public.bank_account_upsert('paypay','paypayA','T-PP-1','テストPP2',null)`);
+    ok('もう一度登録しても、店舗の割り当てを null で消さない・口座は増えない', (await sup(db, `select store_id from public.bank_accounts where id='${ppAcct}'`)).rows[0].store_id === ID.storeA1 && (await sup(db, `select count(*)::int n from public.bank_accounts`)).rows[0].n === 2);
+    // サービスロール以外は呼べない
+    const calls = [`bank_account_upsert('paypay','g','x',null,null)`, `bank_import_register('${ppAcct}','playwright')`, `bank_import_attach_original('${U(1)}', repeat('a',64), 1)`,
+      `bank_import_record_verification('${U(1)}', repeat('a',64), 1)`, `bank_import_ingest('${U(1)}', '[]'::jsonb)`, `bank_import_commit('${U(1)}')`, `bank_import_fail('${U(1)}', 'x')`];
+    for (const who of ['ceo', 'hq', 'master', 'team', 'tenchoA', 'shain', 'al', 'anon']) {
+      const bad = []; for (const c of calls) { const r = await as(db, who, `select public.${c}`); if (r.ok) bad.push(c.split('(')[0]); }
+      ok(`${who}: 取込の 7 つの関数をどれも呼べない`, bad.length === 0, bad.join(','));
+    }
+    // 取込の 1 回ぶんを進める道具
+    const sha = HEX('a'), path = (a, b, sh) => `${b}/${a}/${sh}.csv`;
+    const objAdd = (a, b, sh, size) => sup(db, `insert into storage.objects (bucket_id, name, metadata) values ('bank-csv-originals', '${path(a, b, sh)}', '{"size": ${size}}') on conflict do nothing`);
+    const reg = (a) => one(`select public.bank_import_register('${a}','playwright','x.csv')`);
+    const rowsPP = [
+      { date: '2026-11-01', time: '10:00:00', desc: 'ATM セブン銀行', dep: 10000, wd: 0, bal: 110000, key: 'pp|2026-11-01|1', basis: 'seq_no' },
+      { date: '2026-11-01', time: '12:00:00', desc: 'ATM セブン銀行', dep: 20000, wd: 0, bal: 130000, key: 'pp|2026-11-01|2', basis: 'seq_no' },
+      { date: '2026-11-02', time: '09:00:00', desc: 'ATM利用手数料', dep: 0, wd: 110, bal: 129890, key: 'pp|2026-11-02|3', basis: 'seq_no' },
+    ];
+    // (a) 原本が置き場に無いと、取り込めない（台帳の行・ハッシュ記録があっても）
+    let id1 = await reg(ppAcct);
+    await svc(`select public.bank_import_attach_original('${id1}', '${sha}', 500)`);
+    ok('2 つ目の取込は、同じ口座で実行中の間は始められない', !(await svc(`select public.bank_import_register('${ppAcct}','playwright')`)).ok);
+    await svc(`select public.bank_import_record_verification('${id1}', '${sha}', 500)`);
+    let r = await svc(`select public.bank_import_ingest('${id1}', ${j(rowsPP)}, true)`);
+    ok('実ファイルが置き場に無いと、取り込めない（解析に進まない）', !r.ok && /置き場/.test(r.err), r.err);
+    ok('取り込めなかったとき、明細は 1 行も入っていない', (await sup(db, `select count(*)::int n from public.bank_transactions`)).rows[0].n === 0);
+    await svc(`select public.bank_import_fail('${id1}', '原本が置き場に無い')`);
+    const st = (await sup(db, `select status, last_error from public.bank_account_sync_state where bank_account_id='${ppAcct}'`)).rows[0];
+    ok('失敗を取得履歴と取得状態に残す（取込済みの数字は触らない）', st.status === 'error' && /置き場/.test(st.last_error) && (await sup(db, `select status from public.bank_import_files where id='${id1}'`)).rows[0].status === 'failed');
+    // (b) サイズ・ハッシュの食い違い
+    let id2 = await reg(ppAcct);
+    await svc(`select public.bank_import_attach_original('${id2}', '${sha}', 500)`);
+    const bad1 = await svc(`select public.bank_import_record_verification('${id2}', '${HEX('b')}', 500)`);
+    ok('読み戻したハッシュが台帳と違うと、記録できない（取り込まない）', !bad1.ok && /一致しません/.test(bad1.err), bad1.err);
+    const bad2 = await svc(`select public.bank_import_record_verification('${id2}', '${sha}', 499)`);
+    ok('読み戻したサイズが台帳と違うと、記録できない', !bad2.ok);
+    await svc(`select public.bank_import_record_verification('${id2}', '${sha}', 500)`);
+    await objAdd(ppAcct, 'paypay', sha, 499);
+    r = await svc(`select public.bank_import_ingest('${id2}', ${j(rowsPP)}, true)`);
+    ok('置き場のサイズが台帳と違うと、取り込めない', !r.ok && /サイズ/.test(r.err), r.err);
+    ok('  このとき明細は 1 行も入らず、状態は stored のまま（解析済みにならない）', (await sup(db, `select count(*)::int n from public.bank_transactions`)).rows[0].n === 0 && (await sup(db, `select status from public.bank_import_files where id='${id2}'`)).rows[0].status === 'stored');
+    await svc(`select public.bank_import_fail('${id2}', 'サイズ不一致')`);
+    // (c) 正常: 原本の実在・サイズ・ハッシュが揃う
+    await sup(db, `update storage.objects set metadata = '{"size": 500}' where name = '${path(ppAcct, 'paypay', sha)}'`);
+    let id3 = await reg(ppAcct);
+    const att = await one(`select public.bank_import_attach_original('${id3}', '${sha}', 500)`);
+    ok('同じ SHA-256 の原本は台帳で 1 行にまとまり、2 回目以降は取り直し（reused）', att.reused === true && (await sup(db, `select count(*)::int n from public.bank_csv_originals`)).rows[0].n === 1);
+    ok('置き場所は {銀行}/{口座ID}/{SHA-256}.csv', att.storage_path === path(ppAcct, 'paypay', sha) && att.storage_bucket === 'bank-csv-originals', JSON.stringify(att));
+    await svc(`select public.bank_import_record_verification('${id3}', '${sha}', 500)`);
+    r = await svc(`select public.bank_import_ingest('${id3}', ${j(rowsPP)}, true)`);
+    ok('保存確認が揃えば取り込める（3 行すべて新規）', r.ok && r.rows[0].bank_import_ingest.rows_new === 3 && r.rows[0].bank_import_ingest.rows_dup === 0, r.err || JSON.stringify(r.rows));
+    const cm = await svc(`select public.bank_import_commit('${id3}')`);
+    ok('確定でき、取得状態が ok・取得済みの最新日付が入る', cm.ok && (await sup(db, `select status, covers_through::text d from public.bank_account_sync_state where bank_account_id='${ppAcct}'`)).rows[0].status === 'ok');
+    const cls = (await sup(db, `select tx_kind, counts_as_sales_deposit c, store_id, match_status, identity_basis from public.bank_transactions order by txn_date, txn_time`)).rows;
+    ok('分類: ATM 入金は売上入金に数える／手数料の出金は数えない', cls[0].tx_kind === 'atm_deposit' && cls[0].c === true && cls[2].tx_kind === 'fee' && cls[2].c === false);
+    ok('口座の店舗が明細に入り、照合済み（verified）で、判定の根拠が残る', cls.every((x) => x.store_id === ID.storeA1 && x.match_status === 'verified' && x.identity_basis === 'seq_no'));
+    ok('確定済みの取り込みは、失敗にできない', !(await svc(`select public.bank_import_fail('${id3}', 'x')`)).ok);
+    // (d) 同じ明細を何回取っても増えない／期間が重なる CSV でも増えない
+    for (let k = 1; k <= 2; k++) {
+      const id = await reg(ppAcct);
+      await svc(`select public.bank_import_attach_original('${id}', '${sha}', 500)`); await svc(`select public.bank_import_record_verification('${id}', '${sha}', 500)`);
+      const rr = await svc(`select public.bank_import_ingest('${id}', ${j(rowsPP)}, true)`); await svc(`select public.bank_import_commit('${id}')`);
+      ok(`同じ CSV を ${k + 1} 回目に取り込んでも、行は増えない（rows_dup=3・rows_new=0）`, rr.ok && rr.rows[0].bank_import_ingest.rows_dup === 3 && rr.rows[0].bank_import_ingest.rows_new === 0 && (await sup(db, `select count(*)::int n from public.bank_transactions`)).rows[0].n === 3, rr.err);
+    }
+    const sha2 = HEX('c'); await objAdd(ppAcct, 'paypay', sha2, 700);
+    const ov = [rowsPP[1], rowsPP[2], { date: '2026-11-03', time: '08:00:00', desc: 'ATM セブン銀行', dep: 5000, wd: 0, bal: 134890, key: 'pp|2026-11-03|4', basis: 'seq_no' }];
+    let id4 = await reg(ppAcct);
+    await svc(`select public.bank_import_attach_original('${id4}', '${sha2}', 700)`); await svc(`select public.bank_import_record_verification('${id4}', '${sha2}', 700)`);
+    // 期間が重なる CSV（古い 1 行が欠ける）→ 既存の行（11/01 の 1 件目）が今回の CSV に無い＝食い違い。新しい行は保留で入る
+    r = await svc(`select public.bank_import_ingest('${id4}', ${j(ov)}, true)`);
+    ok('期間が重なる CSV に既存の行が欠けていると、新しい行は保留で入る（overlap_missing=1・rows_held=1・rows_dup=2）', r.ok && r.rows[0].bank_import_ingest.overlap_missing === 1 && r.rows[0].bank_import_ingest.rows_held === 1 && r.rows[0].bank_import_ingest.rows_dup === 2, r.err || JSON.stringify(r.rows));
+    ok('  保留の行には理由が入り、集計（日次入金）に入らない', (await sup(db, `select hold_reason from public.bank_transactions where dedupe_key='pp|2026-11-03|4'`)).rows[0].hold_reason.length > 0
+      && (await as(db, 'ceo', `select count(*)::int n from public.bank_deposit_daily() where deposit_date='2026-11-03'`)).rows[0].n === 1 && Number((await as(db, 'ceo', `select amount from public.bank_deposit_daily() where deposit_date='2026-11-03'`)).rows[0].amount) === 0);
+    await svc(`select public.bank_import_commit('${id4}')`);
+    // 識別できない行（ジョブが hold_reason を付けた行）・同じ目印が 1 回の取込に 2 行
+    const sha3 = HEX('d'); await objAdd(gmoAcct, 'gmo_aozora', sha3, 300);
+    const gmoRows = [
+      { date: '2026-10-01', desc: 'ATM セブン銀行', dep: 148000, wd: 0, bal: 148000, key: 'gmo|2026-10-01|ATM セブン銀行|148000|0|148000', basis: 'balance_chain' },
+      { date: '2026-10-02', desc: 'ATM セブン銀行', dep: 50000, wd: 0, bal: 198000, key: 'gmo|2026-10-02|a|50000|0|198000', basis: 'balance_chain' },
+      { date: '2026-10-03', desc: 'ATM セブン銀行', dep: 1, wd: 0, bal: 5, key: 'gmo|2026-10-03|x#1', basis: 'none', hold_reason: '同じ内容の取引が複数行あり、識別できない' },
+      { date: '2026-10-03', desc: 'ATM セブン銀行', dep: 1, wd: 0, bal: 5, key: 'gmo|2026-10-03|x#2', basis: 'none', hold_reason: '同じ内容の取引が複数行あり、識別できない' },
+      { date: '2026-10-04', desc: 'ATM セブン銀行', dep: 7, wd: 0, bal: 9, key: null, basis: 'none' },
+    ];
+    let id5 = await one(`select public.bank_import_register('${gmoAcct}','manual_csv','g.csv')`);
+    await svc(`select public.bank_import_attach_original('${id5}', '${sha3}', 300)`); await svc(`select public.bank_import_record_verification('${id5}', '${sha3}', 300)`);
+    r = await svc(`select public.bank_import_ingest('${id5}', ${j(gmoRows)}, false)`);
+    const g = r.ok && r.rows[0].bank_import_ingest;
+    ok('GMO（店舗未定の口座）: 2 行が照合済み・3 行が保留（同じ内容 2 行＋目印なし 1 行）', g && g.rows_new === 2 && g.rows_held === 3, r.err || JSON.stringify(g));
+    ok('  保留の 2 行は、別々の行として両方入る（勝手に統合・削除しない）', (await sup(db, `select count(*)::int n from public.bank_transactions where bank_account_id='${gmoAcct}' and match_status='held' and description='ATM セブン銀行' and deposit_amount=1`)).rows[0].n === 2);
+    ok('  店舗未定の口座の明細は、店舗ID なしで保存され、日次入金の集計には出ない', (await sup(db, `select count(*)::int n from public.bank_transactions where bank_account_id='${gmoAcct}' and store_id is null`)).rows[0].n === 5 && (await as(db, 'ceo', `select count(*)::int n from public.bank_deposit_daily() where deposit_date between '2026-10-01' and '2026-10-04'`)).rows[0].n === 0);
+    ok('  残高の鎖の検証結果（false）が取得履歴に残る', (await sup(db, `select balance_chain_ok from public.bank_import_files where id='${id5}'`)).rows[0].balance_chain_ok === false);
+    await svc(`select public.bank_import_commit('${id5}')`);
+    // 同じ GMO を取り直しても、保留の行も含めて増えない
+    let id6 = await one(`select public.bank_import_register('${gmoAcct}','manual_csv','g2.csv')`);
+    await svc(`select public.bank_import_attach_original('${id6}', '${sha3}', 300)`); await svc(`select public.bank_import_record_verification('${id6}', '${sha3}', 300)`);
+    r = await svc(`select public.bank_import_ingest('${id6}', ${j(gmoRows.slice(0, 4))}, false)`);
+    ok('GMO を取り直しても、保留の行を含めて増えない（4 行すべて rows_dup）', r.ok && r.rows[0].bank_import_ingest.rows_dup === 4 && r.rows[0].bank_import_ingest.rows_new === 0 && (await sup(db, `select count(*)::int n from public.bank_transactions where bank_account_id='${gmoAcct}'`)).rows[0].n === 5, r.err);
+    await svc(`select public.bank_import_commit('${id6}')`);
+    ok('同じ原本（SHA-256）を指す取得履歴が複数あり、原本の台帳は増えない', (await sup(db, `select count(*)::int n from public.bank_import_files where original_id = (select id from public.bank_csv_originals where file_sha256='${sha3}')`)).rows[0].n === 2);
+    // 古い「実行中」の印は、30 分で期限切れ
+    await svc(`select public.bank_import_register('${gmoAcct}','playwright')`);
+    ok('実行中の印があると、同じ口座の次の取込は始められない', !(await svc(`select public.bank_import_register('${gmoAcct}','playwright')`)).ok);
+    await sup(db, `update public.bank_account_sync_state set last_attempt_at = now() - interval '31 minutes' where bank_account_id='${gmoAcct}'`);
+    ok('31 分前の実行中の印は期限切れとして、次の取込を始められる', (await svc(`select public.bank_import_register('${gmoAcct}','playwright')`)).ok);
+    // 順序の守り
+    const idx = await one(`select public.bank_import_register('${ppAcct}','playwright')`);
+    ok('原本を結ぶ前に、確認・取込・確定はできない', !(await svc(`select public.bank_import_record_verification('${idx}', '${sha}', 500)`)).ok && !(await svc(`select public.bank_import_ingest('${idx}', '[]'::jsonb)`)).ok && !(await svc(`select public.bank_import_commit('${idx}')`)).ok);
+    // 画面の権限: 取込で入った明細も、他の人には見えない
+    ok('取込で入った明細は、店長・社員・チーム長・アルバイトが直接読めない', (await Promise.all(['tenchoA', 'shain', 'team', 'al'].map((w) => as(db, w, `select count(*)::int n from public.bank_transactions`)))).every((x) => x.ok && x.rows[0].n === 0));
+    ok('店長は自店舗（A1）の日次入金だけ見える（保留・手数料は金額に入らない）', Number((await as(db, 'tenchoA', `select sum(amount) a from public.bank_deposit_daily()`)).rows[0].a) === 30000 + 0);
+    // 再実行・ロールバック
+    ok('段階2の SQL は、2 回流しても同じ（再実行できる）', (await script(db, STAGE2)).ok && (await script(db, STAGE2)).ok);
+    const cntBefore = (await sup(db, `select count(*)::int n from public.bank_transactions`)).rows[0].n;
+    ok('段階2のロールバックは関数だけを消し、データ・表・段階1の関数は残る', (await script(db, STAGE2_ROLLBACK)).ok && (await sup(db, `select count(*)::int n from pg_proc where proname in ('bank_import_register','bank_import_attach_original','bank_import_record_verification','bank_import_ingest','bank_import_commit','bank_import_fail','bank_account_upsert','bank_assert_service')`)).rows[0].n === 0
+      && (await sup(db, `select count(*)::int n from public.bank_transactions`)).rows[0].n === cntBefore && (await sup(db, `select count(*)::int n from pg_proc where proname in ('bank_deposit_daily','bank_store_visible','bank_tx_correct')`)).rows[0].n === 3);
   }
 
   // ---------- 7. ロールバック ----------

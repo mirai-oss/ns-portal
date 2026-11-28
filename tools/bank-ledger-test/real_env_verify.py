@@ -23,7 +23,11 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 SQL_DIR = os.path.join(HERE, '..', '..', 'supabase')
 STAGE1 = open(os.path.join(SQL_DIR, '2026-11-27_bank_ledger_stage1.sql'), encoding='utf-8').read()
 ROLLBACK = open(os.path.join(SQL_DIR, '2026-11-27_bank_ledger_stage1_ROLLBACK.sql'), encoding='utf-8').read()
-for tag, body in (('$__s1__$', STAGE1), ('$__rb__$', ROLLBACK)):
+S2F = os.path.join(SQL_DIR, '2026-11-28_bank_ledger_stage2.sql')
+STAGE2 = open(S2F, encoding='utf-8').read() if os.path.exists(S2F) else ''
+S2RF = os.path.join(SQL_DIR, '2026-11-28_bank_ledger_stage2_ROLLBACK.sql')
+STAGE2_RB = open(S2RF, encoding='utf-8').read() if os.path.exists(S2RF) else ''
+for tag, body in (('$__s1__$', STAGE1), ('$__rb__$', ROLLBACK), ('$__s2__$', STAGE2), ('$__s2r__$', STAGE2_RB)):
     assert tag not in body
 
 body = r"""
@@ -34,6 +38,8 @@ declare
   snap0 text; snap1 text; snap2 text; snap3 text; hb1 text; hb2 text;
   stage1 text := $__s1__$__STAGE1__$__s1__$;
   rbsql  text := $__rb__$__ROLLBACK__$__rb__$;
+  s2sql  text := $__s2__$__STAGE2__$__s2__$;
+  s2rb   text := $__s2r__$__STAGE2RB__$__s2r__$;
   v jsonb; v2 jsonb; n int; r record; u record; s record;
   v_ids uuid[]; v_exp uuid[]; v_act uuid[]; v_bad int := 0; v_checked int := 0;
   v_admins uuid[]; v_team uuid; v_tencho uuid; v_ceo uuid; v_al uuid; v_inactive uuid; v_master uuid; v_hq uuid;
@@ -56,7 +62,7 @@ begin
       union all
       select 'fn:' || n.nspname || '.' || p.proname || ':' || md5(p.prosrc) || ':' || coalesce(p.proacl::text, '')
         from pg_proc p join pg_namespace n on n.oid = p.pronamespace
-       where n.nspname in ('public', 'storage') and p.proname <> all (array['bank_ledger_admin','bank_store_visible','bank_tx_guard','bank_append_only','bank_import_files_guard','bank_tx_correct','bank_deposit_daily','bank_sync_status'])
+       where n.nspname in ('public', 'storage') and p.proname <> all (array['bank_ledger_admin','bank_store_visible','bank_tx_guard','bank_append_only','bank_import_files_guard','bank_tx_correct','bank_deposit_daily','bank_sync_status','bank_assert_service','bank_account_upsert','bank_import_register','bank_import_attach_original','bank_import_record_verification','bank_import_ingest','bank_import_commit','bank_import_fail'])
       union all
       select 'trg:' || tgrelid::regclass::text || '.' || tgname || ':' || md5(pg_get_triggerdef(oid))
         from pg_trigger where not tgisinternal and tgname <> all (array['bank_tx_guard_trg','bank_tx_events_append_only','bank_csv_originals_append_only','bank_import_files_guard_trg'])
@@ -68,7 +74,7 @@ begin
   create function pg_temp.bank_defs() returns text language sql as $f$
     select md5(coalesce(string_agg(x, '|' order by x), '')) from (
       select 'pol:' || tablename || '.' || policyname || ':' || cmd || ':' || coalesce(qual, '') || ':' || coalesce(with_check, '') as x from pg_policies where policyname = any (array['bank_accounts_read','bank_csv_originals_tbl_read','bank_import_files_read','bank_transactions_read','bank_tx_events_read','bank_sync_state_read','bank_deposit_notes_read','bank_deposit_notes_write','bank_csv_originals_read','bank_csv_originals_insert'])
-      union all select 'fn:' || proname || ':' || md5(prosrc) || ':' || coalesce(proacl::text, '') from pg_proc where pronamespace = 'public'::regnamespace and proname = any (array['bank_ledger_admin','bank_store_visible','bank_tx_guard','bank_append_only','bank_import_files_guard','bank_tx_correct','bank_deposit_daily','bank_sync_status'])
+      union all select 'fn:' || proname || ':' || md5(prosrc) || ':' || coalesce(proacl::text, '') from pg_proc where pronamespace = 'public'::regnamespace and proname = any (array['bank_ledger_admin','bank_store_visible','bank_tx_guard','bank_append_only','bank_import_files_guard','bank_tx_correct','bank_deposit_daily','bank_sync_status','bank_assert_service','bank_account_upsert','bank_import_register','bank_import_attach_original','bank_import_record_verification','bank_import_ingest','bank_import_commit','bank_import_fail'])
       union all select 'trg:' || tgname || ':' || md5(pg_get_triggerdef(oid)) from pg_trigger where not tgisinternal and tgname = any (array['bank_tx_guard_trg','bank_tx_events_append_only','bank_csv_originals_append_only','bank_import_files_guard_trg'])
       union all select 'tbl:' || c.relname || ':' || c.relrowsecurity || ':' || coalesce(c.relacl::text, '') from pg_class c where c.relnamespace = 'public'::regnamespace and c.relname = any (array['bank_accounts','bank_csv_originals','bank_import_files','bank_transactions','bank_transaction_events','bank_account_sync_state','bank_deposit_notes']) and c.relkind = 'r'
       union all select 'col:' || table_name || '.' || column_name || ':' || data_type from information_schema.columns where table_schema = 'public' and table_name = any (array['bank_accounts','bank_csv_originals','bank_import_files','bank_transactions','bank_transaction_events','bank_account_sync_state','bank_deposit_notes'])
@@ -127,7 +133,7 @@ begin
   execute rbsql;
   select count(*) into n from pg_class where relnamespace = 'public'::regnamespace and relname = any (array['bank_accounts','bank_csv_originals','bank_import_files','bank_transactions','bank_transaction_events','bank_account_sync_state','bank_deposit_notes']);
   res := res || jsonb_build_array(jsonb_build_object('n', '空の状態でロールバックを流すと、新しい表が全部消える', 'ok', n = 0, 'i', n));
-  select count(*) into n from pg_proc where pronamespace = 'public'::regnamespace and proname = any (array['bank_ledger_admin','bank_store_visible','bank_tx_guard','bank_append_only','bank_import_files_guard','bank_tx_correct','bank_deposit_daily','bank_sync_status']);
+  select count(*) into n from pg_proc where pronamespace = 'public'::regnamespace and proname = any (array['bank_ledger_admin','bank_store_visible','bank_tx_guard','bank_append_only','bank_import_files_guard','bank_tx_correct','bank_deposit_daily','bank_sync_status','bank_assert_service','bank_account_upsert','bank_import_register','bank_import_attach_original','bank_import_record_verification','bank_import_ingest','bank_import_commit','bank_import_fail']);
   res := res || jsonb_build_array(jsonb_build_object('n', 'ロールバックで新しい関数も全部消える', 'ok', n = 0, 'i', n));
   select count(*) into n from pg_policies where policyname = any (array['bank_accounts_read','bank_csv_originals_tbl_read','bank_import_files_read','bank_transactions_read','bank_tx_events_read','bank_sync_state_read','bank_deposit_notes_read','bank_deposit_notes_write','bank_csv_originals_read','bank_csv_originals_insert']);
   res := res || jsonb_build_array(jsonb_build_object('n', 'ロールバックで新しいポリシーも全部消える', 'ok', n = 0, 'i', n));
@@ -135,6 +141,20 @@ begin
   res := res || jsonb_build_array(jsonb_build_object('n', 'ロールバック後の既存の指紋が、段階1を流す前と同じ', 'ok', pg_temp.snap() = snap0));
   execute stage1;
   res := res || jsonb_build_array(jsonb_build_object('n', 'ロールバック後にもう一度流すと、前と同じ定義になる', 'ok', pg_temp.bank_defs() = hb1));
+  if s2sql <> '' then
+    snap2 := pg_temp.snap();
+    execute s2sql;
+    res := res || jsonb_build_array(jsonb_build_object('n', '段階2のSQLを流せた（エラー無し）', 'ok', true));
+    res := res || jsonb_build_array(jsonb_build_object('n', '段階2を流しても、既存の指紋が同じ（関数を足すだけ）', 'ok', pg_temp.snap() = snap2 and pg_temp.snap() = snap0));
+    execute s2sql;
+    res := res || jsonb_build_array(jsonb_build_object('n', '段階2を 2 回流してもエラー無し', 'ok', true));
+    select string_agg(f || '→' || w, ',') into v_err from (
+      select f, w from unnest(array['public.bank_account_upsert(text,text,text,text,uuid)','public.bank_import_register(uuid,text,text,date,date)','public.bank_import_attach_original(uuid,text,integer,text)','public.bank_import_record_verification(uuid,text,integer)','public.bank_import_ingest(uuid,jsonb,boolean)','public.bank_import_commit(uuid)','public.bank_import_fail(uuid,text)','public.bank_assert_service()']) f,
+                       unnest(array['anon','authenticated']) w where has_function_privilege(w, f, 'EXECUTE')) q;
+    res := res || jsonb_build_array(jsonb_build_object('n', '段階2の取込関数 8 つは、anon・authenticated から実行できない（実際の ACL）', 'ok', v_err is null, 'i', v_err));
+    select count(*) into n from pg_proc where pronamespace = 'public'::regnamespace and proname in ('bank_account_upsert','bank_import_register','bank_import_attach_original','bank_import_record_verification','bank_import_ingest','bank_import_commit','bank_import_fail','bank_assert_service') and prosecdef;
+    res := res || jsonb_build_array(jsonb_build_object('n', '取込関数のうち 7 つは security definer（assert は除く）', 'ok', n = 7, 'i', n));
+  end if;
 
   -- ===== 4. 権限の台帳（実際の ACL）=====
   select string_agg(t || ':' || p, ',') into v_err from (
@@ -365,6 +385,42 @@ begin
   v := pg_temp.dml_as(null, 'service_role', format('insert into public.bank_import_files (bank_account_id, source, status) values (%L, ''playwright'', ''committed'')', v_acct));
   res := res || jsonb_build_array(jsonb_build_object('n', '最初から「確定」で取得履歴を作れない', 'ok', not (v ->> 'ok')::boolean, 'i', v ->> 'err'));
 
+  -- ===== 11b. 段階2: 取込の一連の流れを、実環境の Storage・権限で（サービスロール）=====
+  if s2sql <> '' then
+    select id into v_acct from public.bank_accounts where account_no = 'VERIFY-2';
+    v := pg_temp.as_user(v_ceo, 'authenticated', format('select public.bank_import_register(%L, ''playwright'')', v_acct));
+    res := res || jsonb_build_array(jsonb_build_object('n', '社長でも、取込の関数（bank_import_register）は呼べない', 'ok', not (v ->> 'ok')::boolean, 'i', v ->> 'err'));
+    v := pg_temp.as_user(null, 'service_role', format('select public.bank_import_register(%L, ''playwright'', ''v.csv'') r', v_acct));
+    res := res || jsonb_build_array(jsonb_build_object('n', 'サービスロールで取得を登録できる', 'ok', (v ->> 'ok')::boolean, 'i', v ->> 'err'));
+    v_if := (v -> 'rows' -> 0 ->> 'r')::uuid;
+    v := pg_temp.as_user(null, 'service_role', format('select public.bank_import_register(%L, ''playwright'') r', v_acct));
+    res := res || jsonb_build_array(jsonb_build_object('n', '同じ口座の 2 つ目の取込は、実行中の間は始められない', 'ok', not (v ->> 'ok')::boolean, 'i', v ->> 'err'));
+    v := pg_temp.as_user(null, 'service_role', format('select public.bank_import_attach_original(%L, repeat(''e'', 64), 321) r', v_if));
+    res := res || jsonb_build_array(jsonb_build_object('n', '原本を台帳に結べる（置き場所は {銀行}/{口座ID}/{SHA-256}.csv）', 'ok', (v ->> 'ok')::boolean and (v -> 'rows' -> 0 -> 'r' ->> 'storage_path') = 'paypay/' || v_acct || '/' || repeat('e', 64) || '.csv', 'i', coalesce(v ->> 'err', v -> 'rows' -> 0 ->> 'r')));
+    v := pg_temp.as_user(null, 'service_role', format('select public.bank_import_record_verification(%L, repeat(''e'', 64), 321)', v_if));
+    v2 := pg_temp.as_user(null, 'service_role', format('select public.bank_import_ingest(%L, %L::jsonb, true) r', v_if, '[{"date":"2026-11-01","desc":"ATM x","dep":1000,"wd":0,"bal":1000,"key":"v|1","basis":"seq_no"}]'));
+    res := res || jsonb_build_array(jsonb_build_object('n', '実ファイルが置き場に無いと、取り込めない（実環境の Storage 判定）', 'ok', not (v2 ->> 'ok')::boolean and v2 ->> 'err' like '%置き場%', 'i', v2 ->> 'err'));
+    insert into storage.objects (bucket_id, name, metadata) values ('bank-csv-originals', 'paypay/' || v_acct || '/' || repeat('e', 64) || '.csv', '{"size": 321}');
+    v2 := pg_temp.as_user(null, 'service_role', format('select public.bank_import_ingest(%L, %L::jsonb, true) r', v_if, '[{"date":"2026-11-01","desc":"ATM x","dep":1000,"wd":0,"bal":1000,"key":"v|1","basis":"seq_no"},{"date":"2026-11-01","desc":"x","dep":0,"wd":5,"bal":995,"key":"v|2","basis":"seq_no"},{"date":"2026-11-02","desc":"ATM y","dep":7,"wd":0,"bal":999,"key":"v|3","basis":"none","hold_reason":"テスト保留"}]'));
+    res := res || jsonb_build_array(jsonb_build_object('n', '実ファイル・サイズ・ハッシュが揃うと取り込める（新規2・保留1）', 'ok', (v2 ->> 'ok')::boolean and (v2 -> 'rows' -> 0 -> 'r' ->> 'rows_new')::int = 2 and (v2 -> 'rows' -> 0 -> 'r' ->> 'rows_held')::int = 1, 'i', coalesce(v2 ->> 'err', v2 -> 'rows' -> 0 ->> 'r')));
+    v := pg_temp.as_user(null, 'service_role', format('select public.bank_import_commit(%L)', v_if));
+    res := res || jsonb_build_array(jsonb_build_object('n', '確定でき、取得状態が ok になる', 'ok', (v ->> 'ok')::boolean and exists (select 1 from public.bank_account_sync_state where bank_account_id = v_acct and status = 'ok'), 'i', v ->> 'err'));
+    -- 同じ明細をもう一度（別の取得履歴で）→ 増えない
+    v := pg_temp.as_user(null, 'service_role', format('select public.bank_import_register(%L, ''playwright'', ''v2.csv'') r', v_acct));
+    v_if := (v -> 'rows' -> 0 ->> 'r')::uuid;
+    v := pg_temp.as_user(null, 'service_role', format('select public.bank_import_attach_original(%L, repeat(''e'', 64), 321) r', v_if));
+    v := pg_temp.as_user(null, 'service_role', format('select public.bank_import_record_verification(%L, repeat(''e'', 64), 321)', v_if));
+    v2 := pg_temp.as_user(null, 'service_role', format('select public.bank_import_ingest(%L, %L::jsonb, true) r', v_if, '[{"date":"2026-11-01","desc":"ATM x","dep":1000,"wd":0,"bal":1000,"key":"v|1","basis":"seq_no"},{"date":"2026-11-01","desc":"x","dep":0,"wd":5,"bal":995,"key":"v|2","basis":"seq_no"},{"date":"2026-11-02","desc":"ATM y","dep":7,"wd":0,"bal":999,"key":"v|3","basis":"none","hold_reason":"テスト保留"}]'));
+    select count(*) into n from public.bank_transactions where bank_account_id = v_acct;
+    res := res || jsonb_build_array(jsonb_build_object('n', '同じ明細をもう一度取り込んでも増えない（重複3・新規0・明細は3行のまま）', 'ok', (v2 ->> 'ok')::boolean and (v2 -> 'rows' -> 0 -> 'r' ->> 'rows_dup')::int = 3 and (v2 -> 'rows' -> 0 -> 'r' ->> 'rows_new')::int = 0 and n = 3, 'i', coalesce(v2 ->> 'err', v2 -> 'rows' -> 0 ->> 'r')));
+    select count(*) into n from public.bank_csv_originals where bank_account_id = v_acct;
+    res := res || jsonb_build_array(jsonb_build_object('n', '同じ原本は台帳に 1 行のまま（取り直し）', 'ok', n = 1, 'i', n));
+    v := pg_temp.as_user(null, 'service_role', format('select public.bank_import_fail(%L, ''テスト失敗'')', v_if));
+    res := res || jsonb_build_array(jsonb_build_object('n', '失敗を記録でき、取得状態が error になる（取込済みの明細は消えない）', 'ok', (v ->> 'ok')::boolean and exists (select 1 from public.bank_account_sync_state where bank_account_id = v_acct and status = 'error') and (select count(*) from public.bank_transactions where bank_account_id = v_acct) = 3, 'i', v ->> 'err'));
+    v := pg_temp.as_user(v_shain, 'authenticated', 'select count(*) n from public.bank_transactions');
+    res := res || jsonb_build_array(jsonb_build_object('n', '取込で入った明細は、社員が直接は読めない（0 件）', 'ok', (v ->> 'ok')::boolean and (v -> 'rows' -> 0 ->> 'n')::int = 0));
+  end if;
+
   -- ===== 12. データが入った状態では、ロールバックが何も消さずに止まる =====
   begin
     execute rbsql;
@@ -373,6 +429,12 @@ begin
     select count(*) into n from pg_class where relnamespace = 'public'::regnamespace and relname = any (array['bank_accounts','bank_csv_originals','bank_import_files','bank_transactions','bank_transaction_events','bank_account_sync_state','bank_deposit_notes']) and relkind = 'r';
     res := res || jsonb_build_array(jsonb_build_object('n', 'データが入っていると、ロールバックは止まり、表は 7 つ残る', 'ok', n = 7 and sqlerrm like '%取り消しを中止%', 'i', sqlerrm));
   end;
+
+  if s2rb <> '' then
+    execute s2rb;
+    select count(*) into n from pg_proc where pronamespace = 'public'::regnamespace and proname in ('bank_account_upsert','bank_import_register','bank_import_attach_original','bank_import_record_verification','bank_import_ingest','bank_import_commit','bank_import_fail','bank_assert_service');
+    res := res || jsonb_build_array(jsonb_build_object('n', '段階2のロールバックは、取込関数だけを消す（表・データ・段階1の関数は残る）', 'ok', n = 0 and (select count(*) from public.bank_transactions) >= 3 and exists (select 1 from pg_proc where proname = 'bank_deposit_daily'), 'i', n));
+  end if;
 
   -- ===== 13. 巻き戻しの前に、既存への影響がなかったことをもう一度 =====
   res := res || jsonb_build_array(jsonb_build_object('n', '全テストのあとも、既存の指紋が段階1を流す前と同じ', 'ok', pg_temp.snap() = snap0));
@@ -383,7 +445,7 @@ begin
 end
 $__verify__$;
 """
-body = body.replace('__STAGE1__', STAGE1).replace('__ROLLBACK__', ROLLBACK)
+body = body.replace('__STAGE1__', STAGE1).replace('__ROLLBACK__', ROLLBACK).replace('__STAGE2__', STAGE2).replace('__STAGE2RB__', STAGE2_RB)
 
 if '--print' in sys.argv:
     print(body); sys.exit(0)
