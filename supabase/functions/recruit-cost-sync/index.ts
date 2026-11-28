@@ -10,8 +10,8 @@
 // デプロイ: supabase functions deploy recruit-cost-sync --no-verify-jwt --project-ref uuvsxzhpxtghojoubjcc --yes
 // =============================================================
 import { createClient } from "npm:@supabase/supabase-js@2";
-import { allocate, parseSheet, previousMonthJst, type Sheet, sheetMonth } from "../_shared/recruit-cost-sheet.ts";
-import { readSheets } from "../_shared/xlsx-lite.ts";
+import { allocate, parseSheet, previousMonthJst } from "../_shared/recruit-cost-sheet.ts";
+import { loadMonth } from "../_shared/recruit-cost-load.ts";
 
 const json = (o: unknown, status = 200) => new Response(JSON.stringify(o), { status, headers: { "Content-Type": "application/json" } });
 const svc = () => createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
@@ -28,17 +28,6 @@ function authorized(req: Request): boolean {
   const secret = (Deno.env.get("NOTIFY_SLACK_SECRET") ?? "").trim();
   const hdr = (req.headers.get("x-notify-secret") ?? "").trim();
   return !!(secret && hdr && timingSafeEqual(secret, hdr));
-}
-
-/** シートのファイルを取り、対象の月のシートを返す。名前（YYYYM / YYYYMM）で探し、無ければ全シートの見出しの期間で探す。 */
-async function loadMonth(fileId: string, month: string): Promise<Sheet[]> {
-  const res = await fetch(`https://drive.google.com/uc?export=download&id=${encodeURIComponent(fileId)}`, { redirect: "follow" });
-  const buf = new Uint8Array(await res.arrayBuffer());
-  if (!res.ok || buf[0] !== 0x50 || buf[1] !== 0x4b) throw new Error(`シートのファイルを読めません（HTTP ${res.status}。共有の設定が変わった可能性があります）`);
-  if (buf.length > 10 * 1024 * 1024) throw new Error("シートのファイルが大きすぎます");
-  const byName = (n: string) => sheetMonth({ name: n, rows: [] }) === month;
-  const named = readSheets(buf, byName).filter((s) => sheetMonth(s) === month);
-  return named.length ? named : readSheets(buf, (n) => !byName(n)).filter((s) => sheetMonth(s) === month);
 }
 
 async function dmPresident(sb: any, text: string, dedupe: string) {

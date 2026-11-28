@@ -1928,11 +1928,32 @@ async function plfeeLoadJournalGroups(){
   }
   PLFEE_STATE.groups=Array.from(map.values());
 }
+// 自動で店舗に分けた求人広告の請求書なら、店舗×税抜の行を返す。仕訳の部門の店舗が明細と違う（人が直した）ときは null（今までどおり）
+async function plfeeRecruitSplitRows(withDept){
+  try{
+    const id=PLFEE_STATE.ctx&&PLFEE_STATE.ctx.invoiceId; if(!id) return null;
+    const ir=await authed(`/rest/v1/invoices?id=eq.${id}&select=lines_check`);
+    if(!(ir.ok&&Array.isArray(ir.body)&&ir.body[0]&&ir.body[0].lines_check&&ir.body[0].lines_check.recruit_split&&ir.body[0].lines_check.recruit_split.status==="split")) return null;
+    const lr=await authed(`/rest/v1/invoice_lines?invoice_id=eq.${id}&select=amount,resolved_store_id&order=line_no`);
+    const ls=(lr.ok&&Array.isArray(lr.body))?lr.body:[]; if(!ls.length) return null;
+    const rows=[];
+    for(const l of ls){
+      const st=PLFEE_STATE.stores.find(x=>x.id===l.resolved_store_id); if(!st||!(Number(l.amount)>0)) return null;
+      rows.push({store_id:st.id,store_name:st.name,amount:Math.round(Number(l.amount))});
+    }
+    const inJournal=new Set((withDept||[]).map(d=>{ const st=plfeeFindStoreByName(PLFEE_STATE.stores,d.department_name); return st?st.id:""; }));
+    if(inJournal.size&&(inJournal.size!==rows.length||rows.some(r=>!inJournal.has(r.store_id)))) return null;
+    return {rows,total:rows.reduce((t,r)=>t+r.amount,0)};
+  }catch(e){ return null; }
+}
 async function plfeeComputeAllocation(group){
   const total=group.branches.reduce((s,d)=>s+Number(d.value),0);
   PLFEE_STATE.total=total;
   const withDept=group.branches.filter(d=>d.department_name);
   PLFEE_STATE.seisanRows=[]; // 業務委託精算書へ登録する店舗（このgroupを選び直すたびに作り直す）
+  // 2026-11-28 担当D: 求人広告の請求書（内訳シートで店舗に分けたもの）は、明細の税抜額をPLの店舗割りの初期値にする（仕訳の金額は税込のため）
+  const split=await plfeeRecruitSplitRows(withDept);
+  if(split){ PLFEE_STATE.total=split.total; PLFEE_STATE.rows=split.rows; PLFEE_STATE.source="recruit_split"; return; }
   if(withDept.length){
     // 完全業務委託店舗（stores.seisan_target）は精算書経由で別途PLへ自動連携される仕組みが
     // 既にあるため、直接のPL反映（rows）には選ばせない＝二重計上防止（ユーザー指摘・2026-09-03）。
@@ -1997,6 +2018,7 @@ async function plfeeSelectGroup(idx,manual){
 }
 function plfeeSourceLabel(){
   return {
+    recruit_split:"📊 求人広告の内訳シートの店舗割り（税抜）から割り振りました。",
     mf_department:"📊 今回登録した仕訳の部門（店舗）別金額から自動で割り振りました。",
     prev_month_ratio:"📊 店舗別の内訳が仕訳に無かったため、前月の同科目の店舗比率から按分しています。",
     manual:"📊 参考にできる情報が無かったため、店舗を選んで金額を入力してください。",
