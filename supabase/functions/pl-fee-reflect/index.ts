@@ -39,6 +39,8 @@ import { createClient } from "npm:@supabase/supabase-js@2";
 import { zeroPlSheet } from "../_shared/pl-sheet.ts";
 import { operatorCorpMap } from "../_shared/store-operator.ts";
 import { type Debit, pickSubAccount } from "../_shared/seisan-sub.ts";
+import { plIsBalanceSheet } from "../_shared/pl-guard.ts";
+const PL_BS_MSG = "前払費用などの貸借の科目（BS科目）はPLに反映しません";
 import { clearSeisanForInvoice, removeSeisanLines } from "../_shared/seisan-lines.ts";
 
 const cors: Record<string, string> = {
@@ -85,7 +87,7 @@ async function plDirectOn(db: any, ym: string): Promise<boolean> {
 function plIsAutoCalc(name: string): boolean { return String(name || "").normalize("NFKC").trim().startsWith("法定福利費"); }
 const PL_AUTO_CALC_MSG = "法定福利費はPLに自動計算（社員給与賞与×15%）で入るため、請求書からは反映できません";
 function plDirectRows(invoiceId: string, reflectionId: string, account: string, sub: string | null, ym: string, allocations: any[]) {
-  if (plIsAutoCalc(account)) return [];
+  if (plIsAutoCalc(account) || plIsBalanceSheet(account)) return [];
   return allocations.filter((a) => Number(a.amount) > 0 && a.store_id).map((a) => ({
     year_month: String(ym).slice(0, 7), store_id: a.store_id, item: account, category: plCat(account), amount: Number(a.amount),
     memo: "自動｜請求書", sub_item: sub || "", source: "自動｜請求書", source_key: `inv:${invoiceId}:${reflectionId}:${a.store_id}`,
@@ -304,6 +306,7 @@ Deno.serve(async (req: Request) => {
       const subAccountName: string = (body?.sub_account_name ?? "").trim();
       if (!accountName) return json({ error: "勘定科目名は必須です" }, 400);
       if (plIsAutoCalc(accountName)) return json({ error: PL_AUTO_CALC_MSG }, 400);
+      if (plIsBalanceSheet(accountName)) return json({ error: PL_BS_MSG }, 400);
       const defaultLabel = accountName + (subAccountName ? "/" + subAccountName : "");
       const db = svc();
       const { error } = await db.from("mf_pl_fee_accounts").insert({
@@ -365,6 +368,7 @@ Deno.serve(async (req: Request) => {
         return json({ error: "勘定科目・対象年月（YYYY-MM-01）・請求書IDは必須です" }, 400);
       }
       if (plIsAutoCalc(accountName)) return json({ error: PL_AUTO_CALC_MSG }, 400);
+      if (plIsBalanceSheet(accountName)) return json({ error: PL_BS_MSG }, 400);
       if (!allocations.length) return json({ error: "店舗×金額の割り振りが0件です" }, 400);
       let total = 0;
       for (const a of allocations) {

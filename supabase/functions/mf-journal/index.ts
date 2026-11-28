@@ -49,6 +49,7 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { getValidAccessToken, mfFetch } from "../_shared/mf.ts";
 import { clearSeisanForInvoice, seisanApiCall, seisanFrozen } from "../_shared/seisan-lines.ts";
+import { clearDirectPlForInvoice } from "../_shared/pl-direct.ts";
 import { dateRange, fetchOutflows, matchPayments, type PayItem, type Rule } from "../_shared/payment-match.ts";
 
 const cors: Record<string, string> = {
@@ -311,6 +312,8 @@ Deno.serve(async (req: Request) => {
       // 2026-11-27: 仕訳を解除するときは、精算書へ入れた行も外す（残ると登録し直したときに二重になる）。発行済み・振込済みなら中止
       const cleared = await clearSeisanForInvoice(db, invoiceId, Deno.env.get("PL_SYNC_TOKEN"), seisanApiCall);
       if (!cleared.ok) return json({ error: "紐付けの解除を中止しました: " + cleared.error }, 409);
+      const plc = await clearDirectPlForInvoice(db, invoiceId);
+      if (!plc.ok) return json({ error: "紐付けの解除を中止しました: " + plc.error }, 409);
       const { error: updErr } = await db.from("invoices").update({
         mf_journal_id: null, mf_journal_number: null, mf_journal_created_at: null,
         mf_debit_accounts: null, mf_registration_error: null, mf_registration_error_at: null,
@@ -399,6 +402,8 @@ Deno.serve(async (req: Request) => {
         cleared.push("invoice");
         const sc = await clearSeisanForInvoice(db, inv.id, Deno.env.get("PL_SYNC_TOKEN"), seisanApiCall);
         if (!sc.ok) return json({ error: "MF側の仕訳は削除しましたが、精算書の行を消せませんでした: " + sc.error, mf_deleted: true }, 500);
+        const pc = await clearDirectPlForInvoice(db, inv.id);
+        if (!pc.ok) return json({ error: "MF側の仕訳は削除しましたが、PLの行を取り消せませんでした: " + pc.error, mf_deleted: true }, 500);
         await db.from("invoice_audit_logs").insert({
           entity_type: "invoice_email", entity_id: inv.email_id, action: "mf_journal_deleted", actor_type: "human",
           note: `マネーフォワードの仕訳を削除しました（伝票番号: ${journalNumber ?? "-"}${alreadyGone ? "・MF側には既に無かったため記録のみ解除" : ""}）。会計・仕訳は未登録の状態に戻りました。`,

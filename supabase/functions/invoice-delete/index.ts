@@ -13,6 +13,7 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { zeroPlSheet } from "../_shared/pl-sheet.ts";
 import { removeSeisanLines, seisanFrozen } from "../_shared/seisan-lines.ts";
+import { clearDirectPlForInvoice } from "../_shared/pl-direct.ts";
 
 // 業務委託精算書のWeb App（pl-fee-reflect と同じ公開URL。認証は PL_SYNC_TOKEN）
 // 2026-11-26: 精算ダッシュボードを Supabase へ移行（関数名と戻り値は同じ）
@@ -67,6 +68,11 @@ Deno.serve(async (req: Request) => {
       if (!free.ok) return json({ error: "削除を中止しました: " + free.error }, 409);
       const cleared = await removeSeisanLines((sr ?? []) as any[], Deno.env.get("PL_SYNC_TOKEN"), seisanCall);
       if (!cleared.ok) return json({ error: "削除を中止しました: " + cleared.error }, 409);
+    }
+    // 2026-11-28: PLへ直接書いた行も取り消す（残ると登録し直したときに二重になる）
+    {
+      const pl = await clearDirectPlForInvoice(db, invoiceId);
+      if (!pl.ok) return json({ error: "削除を中止しました: " + pl.error }, 409);
     }
     // ①invoices.attachment_id（代表添付を指す循環参照の列）を先にnullへ戻す
     await db.from("invoices").update({ attachment_id: null }).eq("id", invoiceId);
