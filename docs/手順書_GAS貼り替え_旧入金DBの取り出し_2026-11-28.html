@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>手順書: 旧入金DBの取り出し用GASの貼り替え（案B・別途承認が出てから）</title>
+<title>手順書: 旧入金DBの取り出し用GASの貼り替え（Code.gs 全文）</title>
 <style>
 :root{--bg:#fff;--ink:#1b2430;--muted:#5d6b7a;--line:#d9e0e8;--card:#f5f8fb;--ok:#0f7b4b;--warn:#a85a00;--bad:#b3261e;--blue:#0b5cad;--code:#eef2f7}
 @media(prefers-color-scheme:dark){:root{--bg:#0f141a;--ink:#e6edf3;--muted:#9aa7b4;--line:#2a3541;--card:#171e26;--ok:#4cc38a;--warn:#f0b35a;--bad:#ff8a80;--blue:#79b8ff;--code:#1d2630}}
@@ -28,135 +28,49 @@ li{margin:3px 0}
 </head>
 <body>
 <main>
-<h1>手順書: 旧入金DBの取り出し用GASの貼り替え</h1>
-<div class="sub">状態：<b>準備だけ（まだ貼り替えない）</b>。社長の指示（2026-11-28）で、GASの本番デプロイは別途承認です。承認が出てから、この手順で行います。<br>この処理は<b>読み取り専用</b>です（シートに書き込まない・並べ替えない・新しいシートを作らない）。既存の処理は1つも変えません（呼び出し口を1行足し、ping のバージョン表示を1か所変えるだけ）。</div>
+<h1>手順書: 旧入金DBの取り出し用GASの貼り替え（Code.gs を丸ごと貼る・いつもの a7pg と同じやり方）</h1>
+<div class="sub">所要 5 分。<b>貼る場所は「【サーバー】ダッシュボード(v2・バージョン上限のため移行)」のスプレッドシートに付いている Apps Script の <code>Code.gs</code> です</b>（前回の a7pg と同じ場所）。<br>2026-11-28 更新: 追加の処理は <code>Code.gs</code> の末尾に入れました（ファイルを増やさない）。<b>Code.gs 1 ファイルを丸ごと貼れば足ります</b>。</div>
 
-<div class="box ok"><b>これで何ができるようになるか</b>：売上DBの「入金DB」（6列：店舗・日付・入金額・摘要・取引時刻・登録日時）と「DB_入金備考」を、社長・本部のログインでだけ、そのまま読み出せます。正本への移行（段階3）の入力になります。</div>
-
-<h2>貼り替えの前に（1分）</h2>
-<ol>
-<li>ダッシュボードのGAS（Apps Script）を開く（いつもの貼り替えと同じ場所）。</li>
-<li><b>念のため、いまのバージョンを控える</b>：左の「デプロイ」→「デプロイを管理」で、いまの「バージョン」の数字をメモする（戻すときに使う）。<br><b>成功の見分け方</b>：数字（例：123）がメモできた。</li>
-</ol>
+<div class="box warn"><b>どの GAS か（迷ったら）</b>：<br>
+・<b>貼る先</b>＝スプレッドシート「<b>【サーバー】ダッシュボード(v2・バージョン上限のため移行)</b>」→ メニュー「拡張機能」→「Apps Script」→ ファイル「<b>Code.gs</b>」。<br>
+・ほかの GAS（精算ダッシュボード・売上DB のスクリプト・日報など）は<b>触りません</b>。売上DB（入金DB のあるスプレッドシート）に付いた Apps Script でもありません。<br>
+・<b>見分け方</b>：開いた Code.gs の中を ⌘F で <code>token-336h-v1-c19-pllock-a7pg</code> と検索して 1 件見つかれば、正しい場所です。</div>
 
 <h2>手順（1つずつ）</h2>
-<h3>手順1：新しいファイルを足す</h3>
+<h3>手順1：コードをコピーする</h3>
 <ol>
-<li>Apps Script の左の「ファイル」の横の「＋」→「スクリプト」を選ぶ。</li>
-<li>名前を <code>LegacyDepositExport</code> にする（<code>.gs</code>は自動で付く）。</li>
-<li>最初から入っている文字（<code>function myFunction() {…}</code>）を<b>全部消して</b>、下の「貼り付ける内容」を丸ごと貼る。</li>
-<li>保存（Ctrl+S／⌘S）。<br><b>成功の見分け方</b>：ファイルの一覧に <code>LegacyDepositExport.gs</code> が増え、赤い×の印が出ない。</li>
+<li>Finder で <code>Claude</code> → <code>tori-dashboard</code> → <code>gas</code> を開く（<b>最新にしてあります</b>。私が main に入れて、この Mac のフォルダも更新済み）。</li>
+<li><code>Code.gs</code> を <b>右クリック → このアプリケーションで開く → テキストエディット</b>。</li>
+<li>⌘F で <code>a7pg-lde1</code> と検索して、<b>1 件見つかる</b>ことを確認（見つからなければ、まだ古いファイル。私に連絡）。</li>
+<li><b>⌘A（全部選ぶ）→ ⌘C（コピー）</b>。何も変えずに閉じる。<br><b>成功の見分け方</b>：⌘F で <code>a7pg-lde1</code> が 1 件見つかった。</li>
 </ol>
-<h3>手順2：呼び出し口を1行足す（既存の行は消さない）</h3>
+<h3>手順2：Apps Script に貼る</h3>
 <ol>
-<li><code>Code.gs</code> を開き、Ctrl+F（⌘F）で <code>action === 'depositCarry'</code> を探す（1か所だけ見つかる）。</li>
-<li>見つかった行の<b>すぐ下</b>に、次の1行を足す（改行して貼る）。</li>
+<li>Chrome で スプレッドシート「<b>【サーバー】ダッシュボード(v2・バージョン上限のため移行)</b>」を開く。</li>
+<li>上のメニュー「<b>拡張機能</b>」→「<b>Apps Script</b>」。</li>
+<li>左のファイル一覧で「<b>Code.gs</b>」をクリック（<b>他のファイルは触らない</b>。前回、別ファイル <code>LegacyDepositExport</code> を足していたら、<b>そのファイルは消してください</b>：同じ名前の関数が 2 つになるのを避けるため）。</li>
+<li>右の編集画面の中をクリック → <b>⌘A → Delete → ⌘V</b>。</li>
+<li><b>⌘S</b> で保存。<br><b>成功の見分け方</b>：赤いエラーが出ない。貼ったあと、⌘F で <code>a7pg-lde1</code> が 1 件見つかる。</li>
 </ol>
-<pre>if (action === 'legacyDepositExport') return out(legacyDepositExport(p, session)); // 旧入金DB6列＋DB_入金備考の【読み取り専用】取り出し（社長・本部のみ）</pre>
-<ol start="3">
-<li>同じ <code>Code.gs</code> で、Ctrl+F（⌘F）で <code>token-336h-v1-c19-pllock-a7pg</code> を探し、その文字の<b>末尾に</b> <code>-lde1</code> を足す（<code>…a7pg-lde1</code> になる）。<b>これは「貼り替えが効いたか」を確かめる目印です。</b></li>
-<li>保存。<br><b>成功の見分け方</b>：赤い×が出ない。足した1行が、<code>depositCarry</code> の行のすぐ下にある。</li>
-</ol>
-<h3>手順3：新しいバージョンとして公開する</h3>
+<h3>手順3：デプロイを更新する（<b>「新しいデプロイ」は押さない</b>）</h3>
 <ol>
-<li>右上「デプロイ」→「デプロイを管理」→ いまのデプロイの鉛筆（編集）→「バージョン」で「新バージョン」を選ぶ → 「デプロイ」。</li>
-<li><b>成功の見分け方</b>：「デプロイを管理」のバージョンの数字が、控えた数字より1つ増えた。</li>
+<li>右上の青い「<b>デプロイ</b>」→「<b>デプロイを管理</b>」。</li>
+<li>出てきた窓の右上の <b>鉛筆（編集）</b> をクリック。</li>
+<li>「バージョン」のプルダウンを「<b>新バージョン</b>」にする。</li>
+<li>説明の欄に <code>lde1</code> と入れる。</li>
+<li>「<b>デプロイ</b>」→「<b>完了</b>」。<br><b>成功の見分け方</b>：「デプロイを管理」で、バージョンの数字が 1 つ増えた。</li>
 </ol>
-<h3>手順4：効いたか確かめる（私がやります）</h3>
-<p>貼り替えたら、私に「貼り替えました」と伝えてください。次の3つを、読み取りだけで確かめます。①ping のバージョンが <code>…-lde1</code> になった ②社長・本部のログインで6列と備考が返り、指紋（fingerprint）が一致する ③店舗のログインでは断られる。</p>
+<h3>手順4：私に「貼替した」と一言</h3>
+<p>私が、ping のバージョンが <code>…-lde1</code> になったこと、6列と備考が取れること、権限、既存の入金取込への影響を確認します。</p>
+
+<h2>うまくいかないとき</h2>
+<div class="tbl"><table>
+<tr><th>症状</th><th>原因と直し方</th></tr>
+<tr><td>私の確認で「ping が古いまま（<code>…a7pg</code>）」／「unknown action」と出る</td><td>①保存はしたが<b>「新バージョン」でデプロイしていない</b>（保存だけでは本番に反映されません）②別の Apps Script に貼った（上の「どの GAS か」を確認）③<b>「新しいデプロイ」</b>を押して、別の URL ができた（この場合は私に連絡。URL を元に戻す必要があります）</td></tr>
+<tr><td>貼ったあと赤いエラー</td><td>貼る範囲が途中で切れている可能性。手順2をやり直す（⌘A → Delete → ⌘V）</td></tr>
+</table></div>
 
 <h2>戻し方（問題があったとき）</h2>
-<ol>
-<li>「デプロイを管理」→ 鉛筆 → 「バージョン」で、控えた古い数字を選ぶ → 「デプロイ」。</li>
-<li>追加した1行は、そのまま残っていても、呼び出されなければ何も起きません（消すなら、足した1行と <code>-lde1</code> を消す）。</li>
-</ol>
-
-<h2>貼り付ける内容（手順1の <code>LegacyDepositExport.gs</code>）</h2>
-<pre>// 旧入金DB（売上DBの「入金DB」6列）と、DB_入金備考を、そのまま読んで返す【読み取り専用】の専用処理。
-// 銀行入金の正本化（Supabase一本化）の段階3（旧シートの移行）で使う。社長指示（2026-11-28）: 旧シートの取得は専用の読み取り処理を追加する（案B）。
-//
-// 守ること:
-//   ・既存の処理は変更しない（この関数を呼ぶ道を 1 行足すだけ）。
-//   ・シートへ書き込まない・行を並べ替えない・書式を変えない・シートを新しく作らない（getSheetByName だけ。depNoteSheet_ は作成してしまうので使わない）。
-//   ・社長・本部のログインだけ（取引の摘要・登録日時を含むため）。
-//   ・返す値は、6 列をそのまま（日付・登録日時は文字列に直す）。行番号（シート上の行）も付ける。
-//   ・転送の取りこぼしを見つけるため、行ごとの文字列から計算した指紋（fingerprint）を一緒に返す（受け取り側が同じ計算をして一致を確かめる）。
-//
-// 使い方（ログイン後）: action=legacyDepositExport  [source=salesdb|dashboard]  [offset=0] [limit=0（0＝全部）]
-//   応答: { ok, source, sheet_rows, rows:[{row_no,store,date,amount,desc,token,registered_at}], notes:[{date,store,note,updated_by,updated_at}], fingerprint, notes_fingerprint, exported_at }
-function legacyDepositExport(p, session) {
-  if (!isAdmin(session)) return { ok: false, error: &#x27;旧入金DBの取り出しは社長・本部のみです&#x27; };
-  var tz = Session.getScriptTimeZone() || &#x27;Asia/Tokyo&#x27;;
-  var which = String(p &amp;&amp; p.source || &#x27;salesdb&#x27;);
-  var sh = null, label = &#x27;&#x27;;
-  try {
-    if (which === &#x27;dashboard&#x27;) { sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(&#x27;入金DB&#x27;); label = &#x27;dashboard&#x27;; }
-    else { sh = SpreadsheetApp.openById(SALES_DB_ID).getSheetByName(&#x27;入金DB&#x27;); label = &#x27;salesdb&#x27;; }
-  } catch (e) { return { ok: false, error: &#x27;入金DBを開けません: &#x27; + String(e &amp;&amp; e.message || e) }; }
-  if (!sh) return { ok: false, error: &#x27;入金DBシートが見つかりません（&#x27; + which + &#x27;）&#x27; };
-  var head = depositHeaderRow_(sh);
-  if (head &lt; 0) return { ok: false, error: &#x27;入金DBのヘッダー行が見つかりません&#x27; };
-  var last = sh.getLastRow();
-  var offset = Math.max(0, Number(p &amp;&amp; p.offset) || 0), limit = Math.max(0, Number(p &amp;&amp; p.limit) || 0);
-  var rows = [], lines = [];
-  var total = Math.max(0, last - head);
-  if (total &gt; 0) {
-    var from = head + 1 + offset, n = (limit &gt; 0 ? Math.min(limit, total - offset) : total - offset);
-    if (n &gt; 0) {
-      var v = sh.getRange(from, 1, n, 6).getValues();
-      for (var i = 0; i &lt; v.length; i++) {
-        var r = v[i];
-        if (String(r[0]).trim() === &#x27;&#x27;) continue;   // 空行は返さない（行番号は飛ぶ＝シート上の位置が分かる）
-        var o = {
-          row_no: from + i,
-          store: String(r[0]).trim(),
-          date: ymdCell_(r[1], tz),
-          amount: Number(String(r[2]).replace(/[,¥\s]/g, &#x27;&#x27;)) || 0,
-          desc: String(r[3] == null ? &#x27;&#x27; : r[3]),
-          token: tokenCell_(r[4], tz),
-          registered_at: tsCell_(r[5], tz)
-        };
-        rows.push(o);
-        lines.push([o.row_no, o.store, o.date, o.amount, o.desc, o.token, o.registered_at].join(&#x27;|&#x27;));
-      }
-    }
-  }
-  // 備考（ダッシュボード側のスプレッドシート。シートが無ければ空。作らない）
-  var notes = [], nlines = [];
-  var nsh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(&#x27;DB_入金備考&#x27;);
-  if (nsh &amp;&amp; nsh.getLastRow() &gt;= 2 &amp;&amp; (!p || !Number(p.offset))) {
-    var nv = nsh.getRange(2, 1, nsh.getLastRow() - 1, 5).getValues();
-    for (var k = 0; k &lt; nv.length; k++) {
-      var x = nv[k];
-      if (!x[0] || String(x[1]).trim() === &#x27;&#x27;) continue;
-      var no = { date: ymdCell_(x[0], tz), store: String(x[1]).trim(), note: String(x[2] == null ? &#x27;&#x27; : x[2]), updated_by: String(x[3] == null ? &#x27;&#x27; : x[3]), updated_at: tsCell_(x[4], tz) };
-      notes.push(no);
-      nlines.push([no.date, no.store, no.note, no.updated_by, no.updated_at].join(&#x27;|&#x27;));
-    }
-  }
-  return {
-    ok: true, source: label, sheet_rows: total, offset: offset, count: rows.length,
-    rows: rows, notes: notes,
-    fingerprint: legacyDigest_(lines), notes_fingerprint: legacyDigest_(nlines),
-    exported_at: new Date().toISOString()
-  };
-}
-function ymdCell_(v, tz) {
-  if (v instanceof Date) return Utilities.formatDate(v, tz, &#x27;yyyy-MM-dd&#x27;);
-  var m = String(v == null ? &#x27;&#x27; : v).match(/(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/);
-  return m ? m[1] + &#x27;-&#x27; + (&#x27;0&#x27; + m[2]).slice(-2) + &#x27;-&#x27; + (&#x27;0&#x27; + m[3]).slice(-2) : String(v == null ? &#x27;&#x27; : v);
-}
-function tokenCell_(v, tz) {   // 取引時刻（E列は文字列固定のはずだが、時刻型に化けた行も、そのままの見た目で返す）
-  if (v instanceof Date) return Utilities.formatDate(v, tz, &#x27;HH:mm:ss&#x27;);
-  return String(v == null ? &#x27;&#x27; : v).trim();
-}
-function tsCell_(v, tz) {      // 登録日時（Date → 秒までの日時＋時差。空は空）
-  if (v instanceof Date) return Utilities.formatDate(v, tz, &quot;yyyy-MM-dd&#x27;T&#x27;HH:mm:ssXXX&quot;);
-  return String(v == null ? &#x27;&#x27; : v).trim();
-}
-function legacyDigest_(lines) {   // 行ごとの文字列を改行でつないだものの SHA-256（16進）
-  var bytes = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, lines.join(&#x27;\n&#x27;), Utilities.Charset.UTF_8);
-  return bytes.map(function (b) { var h = (b &lt; 0 ? b + 256 : b).toString(16); return h.length === 1 ? &#x27;0&#x27; + h : h; }).join(&#x27;&#x27;);
-}
-</pre>
+<ol><li>「デプロイを管理」→ 鉛筆 → 「バージョン」で、直前の古いバージョンを選ぶ → 「デプロイ」。</li></ol>
+<p>追加した処理は<b>読み取り専用</b>です（シートに書き込まない・並べ替えない・新しいシートを作らない）。既存の処理は、呼び出し口 1 行と ping の版表示以外、1 行も変えていません。</p>
 </main></body></html>
