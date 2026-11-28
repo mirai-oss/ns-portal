@@ -847,6 +847,27 @@ async function seisanDirectSync(sb: any, dry = false, fromOverride?: string): Pr
 // ハイブリッド同期: stg_pl(GAS bqGetPL)の「自動連携行」だけを正本pl_entriesへ反映（(source×年月)単位のreplace_source）。
 // 手入力(source='手入力')には触れない。内容が変わった(source×年月)だけを入れ替える（毎時回しても履歴・ソフト削除行が増えない）。
 // 安全装置: 既存の自動行が20行以上で、今回の自動行が半分未満なら（取得の部分応答の疑い）中止。
+// 運営委託費の補助科目＝その月の業務委託先の会社名（2026-11-28 社長指定。例: 株）FAM Dining）。シートのG列は行ずれで別の内訳が混ざるので使わない。
+// 委託先は精算の店舗マスタ（担当C の settle_client_at・月ごとの切替に対応・読むだけ）。引けない店舗は空欄。
+const PL_SEISAN_FEE_SOURCE = "運営委託費（自動計上）";
+async function consigneeSubLoader(sb: any): Promise<(storeId: string | null, ym: string) => Promise<string>> {
+  const { data, error } = await sb.from("settle_stores").select("store_key,store_id");
+  if (error) throw new Error("settle_storesの読み取りに失敗: " + error.message);
+  const keyById = new Map<string, string>((data ?? []).filter((x: any) => x.store_id).map((x: any) => [x.store_id, x.store_key]));
+  const cache = new Map<string, string>();
+  return async (storeId, ym) => {
+    const key = storeId ? keyById.get(storeId) : undefined;
+    if (!key) return "";
+    const k = `${key}|${ym}`;
+    if (!cache.has(k)) {
+      const r = await sb.rpc("settle_client_at", { p_key: key, p_month: ym });
+      if (r.error) throw new Error("委託先の取得に失敗: " + r.error.message);   // 空欄で上書きしないよう中止する
+      cache.set(k, String(r.data ?? "").trim().replace("株式会社", "株）").replace("有限会社", "有）").replace("合同会社", "合）"));
+    }
+    return cache.get(k)!;
+  };
+}
+
 async function autoSyncFromStgPl(sb: any, dry = false, ignoreFromOverride?: string): Promise<any> {
   const runId = dry ? "dry" : await startRun(sb, "kd_pl_auto_sync");
   try {
@@ -864,6 +885,7 @@ async function autoSyncFromStgPl(sb: any, dry = false, ignoreFromOverride?: stri
     const isDirect = (source: string, ym: string) => !!directFrom && source === PL_SEISAN_CAT_MEMO && ym >= directFrom;
     type R = { year_month: string; store_id: string | null; item: string; category: string; amount: number; memo: string; sub_item: string; source: string };
     const rows: R[] = [];
+    const consigneeSub = await consigneeSubLoader(sb);
     for (let r = 1; r < raw.length; r++) {
       const row = raw[r] ?? [];
       const memo = String(row[5] ?? "").trim(); const source = plAutoSourceOf(memo);
@@ -875,7 +897,7 @@ async function autoSyncFromStgPl(sb: any, dry = false, ignoreFromOverride?: stri
       const nm = String(row[1] ?? "").trim(); let sid: string | null = null;
       if (nm) { const hit = lookupStore(maps, nm); if (!hit) { unresolved.add(nm); continue; } sid = hit.store_id; }
       const item0 = String(row[2] ?? "").trim() || "(未分類)";
-      const sub0 = (source === "店舗間移動" || source === "媒体販促費（自動計上）") ? "" : String(row[6] ?? "");
+      const sub0 = (source === "店舗間移動" || source === "媒体販促費（自動計上）") ? "" : source === PL_SEISAN_FEE_SOURCE ? await consigneeSub(sid, ym) : String(row[6] ?? "");
       const nz = plNormalizeItem(item0, sub0); const item = nz.item;
       rows.push({ year_month: ym, store_id: sid, item, category: plCatByItem(row[3], item, nz.sub), amount: num(row[4]), memo, sub_item: nz.sub, source });   // 店舗間移動・媒体販促費（自動計上）は補助科目を持たない（2026-10-14: 後者はG列に別連携の「PayPay　外部連携:ID」が混入して表示された）（シートのG列に別連携の「名前　外部連携:ID」が混入していたため無視する・2026-10-13）
     }
